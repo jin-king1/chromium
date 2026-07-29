@@ -6,12 +6,19 @@
 
 #include "base/debug/dump_without_crashing.h"
 #include "base/notreached.h"
+#include "third_party/blink/public/mojom/ai/ai_common.mojom-blink.h"
 #include "third_party/blink/public/mojom/ai/ai_manager.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/ai/ai_manager.mojom-shared.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_quota_exceeded_error_options.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
+#include "third_party/blink/renderer/core/dom/quota_exceeded_error.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
 
 namespace blink {
 
@@ -19,6 +26,7 @@ const char kExceptionMessageExecutionContextInvalid[] =
     "The execution context is not valid.";
 const char kExceptionMessageServiceUnavailable[] =
     "Model execution service is not available.";
+const char kExceptionMessageDocumentNotActive[] = "The document is not active.";
 
 const char kExceptionMessagePermissionDenied[] =
     "A user permission error occurred, such as not signed-in or not "
@@ -37,8 +45,16 @@ const char kExceptionMessageCancelled[] = "The request was cancelled.";
 const char kExceptionMessageSessionDestroyed[] =
     "The model execution session has been destroyed.";
 const char kExceptionMessageRequestAborted[] = "The request has been aborted.";
-const char kExceptionRequestTooLarge[] = "The prompt request is too large.";
-
+const char kExceptionMessageInputTooLarge[] = "The input is too large.";
+const char kExceptionMessageResponseExceedsMaxTokens[] =
+    "The response exceeded output limits and was truncated.";
+const char kExceptionMessageResponseExceedsRemainingContext[] =
+    "The response size exceeded the remaining available context.";
+const char kExceptionMessageResponseParsingFailed[] =
+    "Failed to parse the response.";
+const char kExceptionMessageFailedToRunSafety[] =
+    "Failed to run the safety checks.";
+const char kExceptionMessageFailedToCountTokens[] = "Failed to count tokens.";
 const char kExceptionMessageInvalidTemperatureAndTopKFormat[] =
     "Initializing a new session must either specify both topK and temperature, "
     "or neither of them.";
@@ -46,25 +62,41 @@ const char kExceptionMessageInvalidTopK[] =
     "The topK value provided is invalid.";
 const char kExceptionMessageInvalidTemperature[] =
     "The temperature value provided is invalid.";
+const char kExceptionMessageSamplingModeAndParamsConflict[] =
+    "Cannot provide both 'samplingMode' and raw sampling parameters "
+    "('temperature' or 'topK').";
 const char kExceptionMessageUnableToCreateSession[] =
-    "The session cannot be created.";
-const char kExceptionMessageInitialPromptTooLarge[] =
-    "The initial prompts / system prompts are too large to fit in the "
-    "context.";
+    "The device is unable to create a session to run the model. "
+    "Please check the result of availability() first.";
 const char kExceptionMessageUnableToCloneSession[] =
     "The session cannot be cloned.";
-const char kExceptionMessageSystemPromptIsDefinedMultipleTimes[] =
-    "The system prompt should not be defined in both systemPrompt and "
-    "initialPrompts.";
-const char kExceptionMessageSystemPromptIsNotTheFirst[] =
-    "The prompt with 'system' role must be placed at the first entry of "
-    "initialPrompts.";
+const char kExceptionMessageUnableToCalculateUsage[] =
+    "The usage cannot be calculated.";
+const char kExceptionMessagePromptWithSystemRoleIsNotTheFirst[] =
+    "The 'system' role message must be the first message of a session.";
 const char kExceptionMessageUnsupportedLanguages[] =
     "The specified languages are not supported.";
+const char kExceptionMessageIncompatiblePreferenceOptions[] =
+    "The specified options are not supported with the 'speed' performance "
+    "preference.";
+const char kExceptionMessageInvalidRequest[] =
+    "The request is invalid - the input or options could not be processed.";
+const char kExceptionMessageInvalidResponseJsonSchema[] =
+    "Response constraint is not a supported json schema.";
+const char kExceptionMessagePermissionPolicy[] =
+    "Access denied because the Permission Policy is not enabled.";
+const char kExceptionMessageUserActivationRequired[] =
+    "Requires a user gesture when availability is \"downloading\" or "
+    "\"downloadable\".";
 
 void ThrowInvalidContextException(ExceptionState& exception_state) {
   exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
                                     kExceptionMessageExecutionContextInvalid);
+}
+
+void ThrowDocumentNotActiveException(ExceptionState& exception_state) {
+  exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                    kExceptionMessageDocumentNotActive);
 }
 
 void ThrowSessionDestroyedException(ExceptionState& exception_state) {
@@ -89,6 +121,12 @@ DOMException* CreateInternalErrorException() {
       DOMException::GetErrorName(DOMExceptionCode::kOperationError));
 }
 
+DOMException* CreateSessionDestroyedException() {
+  return DOMException::Create(
+      kExceptionMessageSessionDestroyed,
+      DOMException::GetErrorName(DOMExceptionCode::kInvalidStateError));
+}
+
 bool HandleAbortSignal(AbortSignal* signal,
                        ScriptState* script_state,
                        ExceptionState& exception_state) {
@@ -106,6 +144,54 @@ bool HandleAbortSignal(AbortSignal* signal,
   return false;
 }
 
+bool ValidateScriptState(ScriptState* script_state,
+                         ExceptionState& exception_state,
+                         bool permit_workers) {
+  if (!script_state->ContextIsValid()) {
+    ThrowInvalidContextException(exception_state);
+    return false;
+  }
+
+  ExecutionContext* context = ExecutionContext::From(script_state);
+
+  if (context->IsServiceWorkerGlobalScope()) {
+    return permit_workers;
+  }
+
+  LocalDOMWindow* window = DynamicTo<LocalDOMWindow>(context);
+
+  // Realm’s global object must be a Window object.
+  CHECK(window);
+
+  // If document is not fully active, then return a promise rejected with an
+  // "InvalidStateError" DOMException.
+  Document* document = window->document();
+  CHECK(document);
+  if (!document->IsActive()) {
+    ThrowDocumentNotActiveException(exception_state);
+    return false;
+  }
+
+  return true;
+}
+
+String ValidateAndStringifyObject(const ScriptValue& input,
+                                  ScriptState* script_state,
+                                  ExceptionState& exception_state) {
+  v8::Local<v8::String> value;
+  if (!input.V8Value()->IsObject() ||
+      !v8::JSON::Stringify(script_state->GetContext(),
+                           input.V8Value().As<v8::Object>())
+           .ToLocal(&value)) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kNotSupportedError,
+        kExceptionMessageInvalidResponseJsonSchema);
+    return String();
+  }
+  return ToBlinkString<String>(script_state->GetIsolate(), value,
+                               kDoNotExternalize);
+}
+
 namespace {
 // Create an UnknownError exception, include `error` in the exception
 // message. This is intended for handling values of
@@ -113,20 +199,23 @@ namespace {
 // using an on-device model, e.g. errors related to servers.
 DOMException* CreateUnknown(const char* error) {
   return DOMException::Create(
-      String("An unknown error occurred: ") + error,
+      StrCat({"An unknown error occurred: ", error}),
       DOMException::GetErrorName(DOMExceptionCode::kUnknownError));
 }
 }  // namespace
 
 DOMException* ConvertModelStreamingResponseErrorToDOMException(
-    ModelStreamingResponseStatus error) {
+    ModelStreamingResponseStatus error,
+    mojom::blink::QuotaErrorInfoPtr quota_error_info) {
   switch (error) {
     case ModelStreamingResponseStatus::kErrorUnknown:
       base::debug::DumpWithoutCrashing();
       return CreateUnknown("kErrorUnknown");
     case ModelStreamingResponseStatus::kErrorInvalidRequest:
       base::debug::DumpWithoutCrashing();
-      return CreateUnknown("kErrorInvalidRequest");
+      return DOMException::Create(
+          kExceptionMessageInvalidRequest,
+          DOMException::GetErrorName(DOMExceptionCode::kNotSupportedError));
     case ModelStreamingResponseStatus::kErrorRequestThrottled:
       base::debug::DumpWithoutCrashing();
       return CreateUnknown("kErrorRequestThrottled");
@@ -164,14 +253,42 @@ DOMException* ConvertModelStreamingResponseErrorToDOMException(
       return DOMException::Create(
           kExceptionMessageSessionDestroyed,
           DOMException::GetErrorName(DOMExceptionCode::kInvalidStateError));
-    case ModelStreamingResponseStatus::kErrorPromptRequestTooLarge:
+    case ModelStreamingResponseStatus::kErrorInputTooLarge:
+      if (RuntimeEnabledFeatures::QuotaExceededErrorUpdateEnabled()) {
+        CHECK(quota_error_info);
+        auto* options = MakeGarbageCollected<QuotaExceededErrorOptions>();
+        options->setQuota(static_cast<double>(quota_error_info->quota));
+        options->setRequested(static_cast<double>(quota_error_info->requested));
+        return QuotaExceededError::Create(kExceptionMessageInputTooLarge,
+                                          std::move(options));
+      }
       return DOMException::Create(
-          kExceptionRequestTooLarge,
+          kExceptionMessageInputTooLarge,
           DOMException::GetErrorName(DOMExceptionCode::kQuotaExceededError));
     case ModelStreamingResponseStatus::kErrorResponseLowQuality:
       return DOMException::Create(
           kExceptionMessageResponseLowQuality,
           DOMException::GetErrorName(DOMExceptionCode::kNotSupportedError));
+    case ModelStreamingResponseStatus::kErrorResponseExceedsMaxTokens:
+      return DOMException::Create(
+          kExceptionMessageResponseExceedsMaxTokens,
+          DOMException::GetErrorName(DOMExceptionCode::kQuotaExceededError));
+    case ModelStreamingResponseStatus::kErrorResponseExceedsRemainingContext:
+      return DOMException::Create(
+          kExceptionMessageResponseExceedsRemainingContext,
+          DOMException::GetErrorName(DOMExceptionCode::kQuotaExceededError));
+    case ModelStreamingResponseStatus::kErrorResponseParsingFailed:
+      return DOMException::Create(
+          kExceptionMessageResponseParsingFailed,
+          DOMException::GetErrorName(DOMExceptionCode::kUnknownError));
+    case ModelStreamingResponseStatus::kErrorFailedToRunSafety:
+      return DOMException::Create(
+          kExceptionMessageFailedToRunSafety,
+          DOMException::GetErrorName(DOMExceptionCode::kUnknownError));
+    case ModelStreamingResponseStatus::kErrorFailedToCountTokens:
+      return DOMException::Create(
+          kExceptionMessageFailedToCountTokens,
+          DOMException::GetErrorName(DOMExceptionCode::kUnknownError));
     case ModelStreamingResponseStatus::kOngoing:
     case ModelStreamingResponseStatus::kComplete:
       NOTREACHED();
@@ -180,7 +297,7 @@ DOMException* ConvertModelStreamingResponseErrorToDOMException(
 }
 
 // LINT.IfChange(ConvertModelAvailabilityCheckResultToDebugString)
-WTF::String ConvertModelAvailabilityCheckResultToDebugString(
+String ConvertModelAvailabilityCheckResultToDebugString(
     mojom::blink::ModelAvailabilityCheckResult result) {
   switch (result) {
     case mojom::blink::ModelAvailabilityCheckResult::
@@ -203,7 +320,8 @@ WTF::String ConvertModelAvailabilityCheckResultToDebugString(
       return "The GPU is blocked.";
     case mojom::blink::ModelAvailabilityCheckResult::
         kUnavailableTooManyRecentCrashes:
-      return "The model process crashed too many times for this version.";
+      return "The model process crashed too many times for this version. Check "
+             "chrome://crashes for additional information.";
     case mojom::blink::ModelAvailabilityCheckResult::
         kUnavailableSafetyModelNotAvailable:
       return "The safety model was required but not available.";
@@ -217,6 +335,9 @@ WTF::String ConvertModelAvailabilityCheckResultToDebugString(
     case mojom::blink::ModelAvailabilityCheckResult::
         kUnavailableFeatureExecutionNotEnabled:
       return "Model execution for this feature was not enabled.";
+    case mojom::blink::ModelAvailabilityCheckResult::
+        kUnavailableModelAdaptationNotAvailable:
+      return "Model capability is not available.";
     case mojom::blink::ModelAvailabilityCheckResult::
         kUnavailableValidationPending:
       return "Model validation is still pending.";
@@ -233,11 +354,17 @@ WTF::String ConvertModelAvailabilityCheckResultToDebugString(
     case mojom::blink::ModelAvailabilityCheckResult::
         kUnavailableTranslationNotEligible:
       return "The on-device translation is not available.";
+    case mojom::blink::ModelAvailabilityCheckResult::
+        kUnavailableEnterprisePolicyDisabled:
+      return "The on-device model is not available because the enterprise "
+             "policy disables the feature.";
+
+    case mojom::blink::ModelAvailabilityCheckResult::
+        kUnavailableIncompatiblePreferenceOptions:
+      return kExceptionMessageIncompatiblePreferenceOptions;
     case mojom::blink::ModelAvailabilityCheckResult::kAvailable:
     case mojom::blink::ModelAvailabilityCheckResult::kDownloadable:
     case mojom::blink::ModelAvailabilityCheckResult::kDownloading:
-    case mojom::blink::ModelAvailabilityCheckResult::
-        kUnavailableModelAdaptationNotAvailable:
       NOTREACHED();
   }
   NOTREACHED();

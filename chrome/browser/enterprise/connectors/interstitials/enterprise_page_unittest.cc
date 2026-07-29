@@ -5,6 +5,7 @@
 #include "chrome/browser/enterprise/connectors/interstitials/enterprise_block_page.h"
 #include "chrome/browser/enterprise/connectors/interstitials/enterprise_warn_page.h"
 
+#include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/enterprise/connectors/interstitials/enterprise_block_controller_client.h"
 #include "chrome/browser/enterprise/connectors/interstitials/enterprise_warn_controller_client.h"
@@ -116,10 +117,10 @@ TEST_F(EnterprisePageTest, EnterpriseWarn_CustomMessageDisplayed) {
       std::make_unique<EnterpriseWarnControllerClient>(web_contents(),
                                                        GURL("exampleurl.net")));
 
-  base::Value::Dict load_time_data;
+  base::DictValue load_time_data;
   std::string final_message = test_page.GetCustomMessageForTesting();
   std::string expected_message = base::StrCat(
-      {"Your administrator says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
+      {"Your organization says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
        "\">", kTestWarnMessage, "</a>\""});
   EXPECT_EQ(expected_message, final_message);
 }
@@ -138,10 +139,10 @@ TEST_F(EnterprisePageTest, EnterpriseBlock_CustomMessageDisplayed) {
       std::make_unique<EnterpriseBlockControllerClient>(
           web_contents(), GURL("exampleurl.net")));
 
-  base::Value::Dict load_time_data;
+  base::DictValue load_time_data;
   std::string final_message = test_page.GetCustomMessageForTesting();
   std::string expected_message = base::StrCat(
-      {"Your administrator says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
+      {"Your organization says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
        "\">", kTestBlockMessage, "</a>\""});
   EXPECT_EQ(expected_message, final_message);
 }
@@ -165,7 +166,7 @@ TEST_F(EnterprisePageTest, EnterpriseBlock_CustomMessagePrioritization) {
                                                         GURL(kTestUrl)));
 
   std::string expected_message = base::StrCat(
-      {"Your administrator says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
+      {"Your organization says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
        "\">", kTestBlockMessage, "</a>\""});
   EXPECT_EQ(expected_message, test_page1.GetCustomMessageForTesting());
 
@@ -186,7 +187,7 @@ TEST_F(EnterprisePageTest, EnterpriseBlock_CustomMessagePrioritization) {
                                                         GURL(kTestUrl)));
 
   expected_message = base::StrCat(
-      {"Your administrator says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
+      {"Your organization says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
        "\">", kTestBlockMessage, "</a>\""});
   EXPECT_EQ(expected_message, test_page2.GetCustomMessageForTesting());
 
@@ -207,7 +208,7 @@ TEST_F(EnterprisePageTest, EnterpriseBlock_CustomMessagePrioritization) {
                                                         GURL(kTestUrl)));
 
   expected_message = base::StrCat(
-      {"Your administrator says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
+      {"Your organization says: ", "\"<a target=\"_blank\" href=\"", kTestUrl,
        "\">", "", "</a>\""});
   EXPECT_EQ(expected_message, test_page3.GetCustomMessageForTesting());
 }

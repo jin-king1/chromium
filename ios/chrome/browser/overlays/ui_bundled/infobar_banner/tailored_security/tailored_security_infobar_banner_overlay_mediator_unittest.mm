@@ -18,14 +18,14 @@
 namespace {
 
 // The size of the symbol image.
-CGFloat kSymbolImagePointSize = 18.;
+constexpr CGFloat kSymbolImagePointSize = 18.;
 
 // Returns the branded version of the Google shield symbol.
 UIImage* GetBrandedGoogleShieldSymbol() {
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
-  return CustomSymbolWithPointSize(kGoogleShieldSymbol, kSymbolImagePointSize);
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+  return SymbolWithPointSize(SymbolGoogleShield, kSymbolImagePointSize);
 #else
-  return CustomSymbolWithPointSize(kShieldSymbol, kSymbolImagePointSize);
+  return SymbolWithPointSize(SymbolShield, kSymbolImagePointSize);
 #endif
 }
 
@@ -52,7 +52,6 @@ class TailoredSecurityInfobarBannerOverlayMediatorTest : public PlatformTest {
     consumer_ = [[FakeInfobarBannerConsumer alloc] init];
     mediator_ = [[TailoredSecurityInfobarBannerOverlayMediator alloc]
         initWithRequest:request_.get()];
-    ;
     mediator_.consumer = consumer_;
   }
 
@@ -93,7 +92,7 @@ TEST_F(TailoredSecurityInfobarBannerOverlayMediatorTest,
   InitInfobar(TailoredSecurityServiceMessageState::kConsentedAndFlowDisabled);
 
   // Verify that the infobar was set up properly.
-  EXPECT_NSEQ(CustomSymbolWithPointSize(kShieldSymbol, kSymbolImagePointSize),
+  EXPECT_NSEQ(SymbolWithPointSize(SymbolShield, kSymbolImagePointSize),
               consumer_.iconImage);
   EXPECT_TRUE(TailoredSecurityServiceMessageState::kConsentedAndFlowDisabled ==
               delegate_->message_state());

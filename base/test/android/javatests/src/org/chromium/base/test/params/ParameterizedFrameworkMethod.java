@@ -17,21 +17,29 @@ import java.util.List;
  * represents the parameters for this test method
  */
 public class ParameterizedFrameworkMethod extends FrameworkMethod {
-    private ParameterSet mParameterSet;
-    private String mName;
+    private final ParameterSet mParameterSet;
+    private final String mName;
+
+    public ParameterizedFrameworkMethod(
+            Method method,
+            ParameterSet parameterSet,
+            String classParameterSetName,
+            String methodParameterSetName) {
+        super(method);
+        mParameterSet = parameterSet;
+        String suffix = "";
+        if (classParameterSetName != null && !classParameterSetName.isEmpty()) {
+            suffix += "_" + classParameterSetName;
+        }
+        if (methodParameterSetName != null && !methodParameterSetName.isEmpty()) {
+            suffix += "_" + methodParameterSetName;
+        }
+        mName = suffix.isEmpty() ? method.getName() : method.getName() + "_" + suffix;
+    }
 
     public ParameterizedFrameworkMethod(
             Method method, ParameterSet parameterSet, String classParameterSetName) {
-        super(method);
-        mParameterSet = parameterSet;
-        String postFix = "";
-        if (classParameterSetName != null && !classParameterSetName.isEmpty()) {
-            postFix += "_" + classParameterSetName;
-        }
-        if (parameterSet != null && !parameterSet.getName().isEmpty()) {
-            postFix += "_" + parameterSet.getName();
-        }
-        mName = postFix.isEmpty() ? method.getName() : method.getName() + "_" + postFix;
+        this(method, parameterSet, classParameterSetName, parameterSet.getName());
     }
 
     @Override

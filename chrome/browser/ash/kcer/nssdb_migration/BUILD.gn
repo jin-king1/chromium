@@ -2,14 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("nssdb_migration") {
   sources = [
-    "kcer_rollback_helper.cc",
-    "kcer_rollback_helper.h",
     "pkcs12_migrator.cc",
     "pkcs12_migrator.h",
   ]
@@ -20,6 +16,7 @@ static_library("nssdb_migration") {
     "//ash/constants",
     "//base",
     "//chrome/browser/ash/profiles",
+    "//chrome/browser/net",
     "//chrome/browser/profiles:profile",
     "//chrome/common",
     "//chromeos/ash/components/kcer",
@@ -38,10 +35,7 @@ static_library("nssdb_migration") {
 source_set("unit_tests") {
   testonly = true
 
-  sources = [
-    "kcer_rollback_helper_unittest.cc",
-    "pkcs12_migrator_unittest.cc",
-  ]
+  sources = [ "pkcs12_migrator_unittest.cc" ]
 
   deps = [
     ":nssdb_migration",

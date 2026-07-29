@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 
 class ChromeAccountManagerService;
+class GaiaId;
 @protocol IdentityChooserConsumer;
 @protocol SystemIdentity;
 namespace signin {
@@ -22,12 +23,11 @@ class IdentityManager;
 - (instancetype)
     initWithIdentityManager:(signin::IdentityManager*)identityManager
       accountManagerService:(ChromeAccountManagerService*)accountManagerService
+            defaultIdentity:(id<SystemIdentity>)defaultIdentity
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 
-// Selected Chrome identity.
-@property(nonatomic, strong) id<SystemIdentity> selectedIdentity;
 // View controller.
 @property(nonatomic, weak) id<IdentityChooserConsumer> consumer;
 
@@ -36,9 +36,6 @@ class IdentityManager;
 
 // Disconnect the mediator.
 - (void)disconnect;
-
-// Selects an identity with a Gaia ID.
-- (void)selectIdentityWithGaiaID:(NSString*)gaiaID;
 
 @end
 

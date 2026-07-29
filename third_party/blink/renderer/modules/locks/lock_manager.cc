@@ -19,6 +19,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_lock_manager_snapshot.h"
 #include "third_party/blink/renderer/core/dom/abort_signal.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
+#include "third_party/blink/renderer/core/execution_context/navigator_base.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
@@ -102,7 +103,7 @@ class LockManager::LockRequestImpl final
     visitor->Trace(abort_handle_);
   }
 
-  const char* NameInHeapSnapshot() const override {
+  const char* GetHumanReadableName() const override {
     return "LockManager::LockRequestImpl";
   }
 
@@ -295,10 +296,6 @@ ScriptPromise<IDLAny> LockManager::request(ScriptState* script_state,
   ExecutionContext* context = ExecutionContext::From(script_state);
   DCHECK(context->IsContextThread());
 
-  context->GetScheduler()->RegisterStickyFeature(
-      blink::SchedulingPolicy::Feature::kWebLocks,
-      {blink::SchedulingPolicy::DisableBackForwardCache()});
-
   // 5. If origin is an opaque origin, then reject promise with a
   // "SecurityError" DOMException.
   //
@@ -319,7 +316,7 @@ ScriptPromise<IDLAny> LockManager::request(ScriptState* script_state,
 
   // 6. Otherwise, if name starts with U+002D HYPHEN-MINUS (-), then reject
   // promise with a "NotSupportedError" DOMException.
-  if (name.StartsWith("-")) {
+  if (name.starts_with('-')) {
     exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
                                       "Names cannot start with '-'.");
     return EmptyPromise();
@@ -375,7 +372,7 @@ ScriptPromise<IDLAny> LockManager::request(ScriptState* script_state,
 
   CheckStorageAccessAllowed(
       context, resolver,
-      resolver->WrapCallbackInScriptScope(WTF::BindOnce(
+      resolver->WrapCallbackInScriptScope(BindOnce(
           &LockManager::RequestImpl, WrapWeakPersistent(this),
           WrapPersistent(options), name, WrapPersistent(callback), mode)));
 
@@ -396,6 +393,7 @@ void LockManager::RequestImpl(const LockOptions* options,
 
     if (!service_.is_bound()) {
       resolver->RejectWithDOMException(DOMExceptionCode::kAbortError, "");
+      return;
     }
   }
   if (!observer_.is_bound()) {
@@ -405,6 +403,7 @@ void LockManager::RequestImpl(const LockOptions* options,
 
     if (!observer_.is_bound()) {
       resolver->RejectWithDOMException(DOMExceptionCode::kAbortError, "");
+      return;
     }
   }
 
@@ -435,8 +434,8 @@ void LockManager::RequestImpl(const LockOptions* options,
     // In "Request a lock": If signal is present, then add the algorithm signal
     // to abort the request request with signal to signal.
     AbortSignal::AlgorithmHandle* handle = options->signal()->AddAlgorithm(
-        WTF::BindOnce(&LockRequestImpl::Abort, WrapWeakPersistent(request),
-                      WrapPersistent(options->signal())));
+        BindOnce(&LockRequestImpl::Abort, WrapWeakPersistent(request),
+                 WrapPersistent(options->signal())));
     request->InitializeAbortAlgorithm(*handle);
   }
   service_->RequestLock(name, mode, wait, std::move(request_remote));
@@ -471,7 +470,7 @@ ScriptPromise<LockManagerSnapshot> LockManager::query(
   CheckStorageAccessAllowed(
       context, resolver,
       resolver->WrapCallbackInScriptScope(
-          WTF::BindOnce(&LockManager::QueryImpl, WrapWeakPersistent(this))));
+          BindOnce(&LockManager::QueryImpl, WrapWeakPersistent(this))));
   return promise;
 }
 
@@ -485,10 +484,11 @@ void LockManager::QueryImpl(
 
     if (!service_.is_bound()) {
       resolver->RejectWithDOMException(DOMExceptionCode::kAbortError, "");
+      return;
     }
   }
 
-  service_->QueryState(WTF::BindOnce(
+  service_->QueryState(BindOnce(
       [](ScriptPromiseResolver<LockManagerSnapshot>* resolver,
          Vector<mojom::blink::LockInfoPtr> pending,
          Vector<mojom::blink::LockInfoPtr> held) {
@@ -542,7 +542,7 @@ void LockManager::CheckStorageAccessAllowed(
   DCHECK(context->IsWindow() || context->IsWorkerGlobalScope() ||
          context->IsSharedStorageWorkletGlobalScope());
 
-  auto wrapped_callback = WTF::BindOnce(
+  auto wrapped_callback = blink::BindOnce(
       &LockManager::DidCheckStorageAccessAllowed, WrapWeakPersistent(this),
       WrapPersistent(resolver), std::move(callback));
 

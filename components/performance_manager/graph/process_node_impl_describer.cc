@@ -60,22 +60,8 @@ std::string HostedProcessTypesToString(
   return str;
 }
 
-#if !BUILDFLAG(IS_APPLE)
-const char* GetProcessPriorityString(const base::Process& process) {
-  switch (process.GetPriority()) {
-    case base::Process::Priority::kBestEffort:
-      return "Best effort";
-    case base::Process::Priority::kUserVisible:
-      return "User visible";
-    case base::Process::Priority::kUserBlocking:
-      return "User blocking";
-  }
-  NOTREACHED();
-}
-#endif
-
 base::Value GetProcessValueDict(const base::Process& process) {
-  base::Value::Dict ret;
+  base::DictValue ret;
 
   // On Windows, handle is a void *. On Fuchsia it's an int. On other platforms
   // it is equal to the pid, so don't bother to record it.
@@ -108,7 +94,7 @@ base::Value GetProcessValueDict(const base::Process& process) {
     // These properties can only be accessed for valid processes.
     ret.Set("os_priority", process.GetOSPriority());
 #if !BUILDFLAG(IS_APPLE)
-    ret.Set("priority", GetProcessPriorityString(process));
+    ret.Set("priority", base::ProcessPriorityToString(process.GetPriority()));
 #endif
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WIN)
     ret.Set("creation_time",
@@ -147,11 +133,11 @@ void ProcessNodeImplDescriber::OnTakenFromGraph(Graph* graph) {
   graph->GetNodeDataDescriberRegistry()->UnregisterDescriber(this);
 }
 
-base::Value::Dict ProcessNodeImplDescriber::DescribeProcessNodeData(
+base::DictValue ProcessNodeImplDescriber::DescribeProcessNodeData(
     const ProcessNode* node) const {
   const ProcessNodeImpl* impl = ProcessNodeImpl::FromNode(node);
 
-  base::Value::Dict ret;
+  base::DictValue ret;
 
   ret.Set("pid", base::NumberToString(impl->GetProcessId()));
 
@@ -169,16 +155,16 @@ base::Value::Dict ProcessNodeImplDescriber::DescribeProcessNodeData(
     ret.Set("metrics_name", impl->GetMetricsName());
   }
 
-  ret.Set("priority", base::TaskPriorityToString(impl->GetPriority()));
+  ret.Set("priority", base::ProcessPriorityToString(impl->GetPriority()));
 
-  if (impl->GetPrivateFootprintKb()) {
+  if (!impl->GetPrivateFootprint().is_zero()) {
     ret.Set("private_footprint_kb",
-            base::saturated_cast<int>(impl->GetPrivateFootprintKb()));
+            base::saturated_cast<int>(impl->GetPrivateFootprint().InKiB()));
   }
 
-  if (impl->GetResidentSetKb()) {
+  if (!impl->GetResidentSet().is_zero()) {
     ret.Set("resident_set_kb",
-            base::saturated_cast<int>(impl->GetResidentSetKb()));
+            base::saturated_cast<int>(impl->GetResidentSet().InKiB()));
   }
 
   // The content function returns "Tab" for renderers - whereas "Renderer" is

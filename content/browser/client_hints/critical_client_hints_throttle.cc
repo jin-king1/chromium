@@ -68,14 +68,11 @@ void CriticalClientHintsThrottle::BeforeWillProcessResponse(
 }
 
 void CriticalClientHintsThrottle::BeforeWillRedirectRequest(
-    net::RedirectInfo* redirect_info,
+    const net::RedirectInfo& redirect_info,
     const network::mojom::URLResponseHead& response_head,
-    RestartWithURLReset* restart_with_url_reset,
-    std::vector<std::string>* to_be_removed_request_headers,
-    net::HttpRequestHeaders* modified_request_headers,
-    net::HttpRequestHeaders* modified_cors_exempt_request_headers) {
+    RestartWithURLReset* restart_with_url_reset) {
   MaybeRestartWithHints(response_head, restart_with_url_reset);
-  response_url_ = redirect_info->new_url;
+  response_url_ = redirect_info.new_url;
 }
 
 void CriticalClientHintsThrottle::MaybeRestartWithHints(
@@ -143,8 +140,9 @@ void CriticalClientHintsThrottle::MaybeRestartWithHints(
 
   LogCriticalCHStatus(CriticalCHRestart::kHeaderPresent);
 
-  if (!AreCriticalHintsMissing(response_origin, frame_tree_node,
-                               client_hint_delegate_, critical_hints)) {
+  if (GetCriticalHintsMissingStatus(response_origin, frame_tree_node,
+                                    client_hint_delegate_, critical_hints) !=
+      CriticalHintsMissingStatus::kMissing) {
     return;
   }
 
@@ -167,9 +165,11 @@ void CriticalClientHintsThrottle::MaybeRestartWithHints(
             ->commit_params()
             .frame_policy.container_policy);
   } else {
+    // TODO(crbug.com/427866914): Set correct `ftn_for_devtools_override` to
+    // apply DevTools-initiated UA overrides.
     AddPrefetchNavigationRequestClientHintsHeaders(
         response_origin, &modified_headers, context_, client_hint_delegate_,
-        /*is_ua_override_on=*/false);
+        /*is_ua_override_on=*/false, /*ftn_for_devtools_override=*/nullptr);
   }
 
   // If a client hint header is not in the original request,

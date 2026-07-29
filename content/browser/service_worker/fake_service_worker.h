@@ -5,6 +5,8 @@
 #ifndef CONTENT_BROWSER_SERVICE_WORKER_FAKE_SERVICE_WORKER_H_
 #define CONTENT_BROWSER_SERVICE_WORKER_FAKE_SERVICE_WORKER_H_
 
+#include <stdint.h>
+
 #include <string>
 
 #include "base/memory/raw_ptr.h"
@@ -103,6 +105,9 @@ class FakeServiceWorker : public blink::mojom::ServiceWorker {
       DispatchNotificationCloseEventCallback callback) override;
   void DispatchPushEvent(const std::optional<std::string>& payload,
                          DispatchPushEventCallback callback) override;
+  void DispatchPushEventRecordingNetworkRequests(
+      const std::optional<std::string>& payload,
+      DispatchPushEventRecordingNetworkRequestsCallback callback) override;
   void DispatchPushSubscriptionChangeEvent(
       blink::mojom::PushSubscriptionPtr old_subscription,
       blink::mojom::PushSubscriptionPtr new_subscription,
@@ -137,7 +142,7 @@ class FakeServiceWorker : public blink::mojom::ServiceWorker {
       DispatchContentDeleteEventCallback callback) override;
   void Ping(PingCallback callback) override;
   void SetIdleDelay(base::TimeDelta delay) override;
-  void AddKeepAlive() override;
+  void AddKeepAlive(uint64_t keepalive_sequence_number) override;
   void ClearKeepAlive() override;
   void AddMessageToConsole(blink::mojom::ConsoleMessageLevel level,
                            const std::string& message) override;

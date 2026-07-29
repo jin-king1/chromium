@@ -8,7 +8,6 @@
 #import "base/containers/span.h"
 #import "base/memory/raw_ptr.h"
 #import "base/test/ios/wait_util.h"
-#import "base/test/task_environment.h"
 #import "components/favicon/core/large_icon_service_impl.h"
 #import "components/favicon/core/test/mock_favicon_service.h"
 #import "ios/chrome/app/spotlight/fake_searchable_item_factory.h"
@@ -23,6 +22,7 @@
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
 #import "third_party/skia/include/core/SkBitmap.h"
 #import "ui/base/test/ios/ui_image_test_utils.h"
@@ -138,7 +138,7 @@ class OpenTabsSpotlightManagerTest : public PlatformTest {
         });
   }
 
-  base::test::TaskEnvironment task_environment_;
+  web::WebTaskEnvironment task_environment_;
   std::unique_ptr<ProfileIOS> test_profile_;
   FakeSearchableItemFactory* searchableItemFactory_;
   testing::StrictMock<favicon::MockFaviconService> mock_favicon_service_;
@@ -285,7 +285,7 @@ TEST_F(OpenTabsSpotlightManagerTest, TestCloseTab) {
 
   // Close the first tab.
   browser_.get()->GetWebStateList()->CloseWebStateAt(
-      0, WebStateList::CLOSE_USER_ACTION);
+      0, WebStateList::ClosingReason::kUserAction);
 
   // We don't expect to delete the tab url for spotlight index since there still
   // a tab loaded with that url.
@@ -295,7 +295,7 @@ TEST_F(OpenTabsSpotlightManagerTest, TestCloseTab) {
 
   // Close the second tab.
   browser_.get()->GetWebStateList()->CloseWebStateAt(
-      0, WebStateList::CLOSE_USER_ACTION);
+      0, WebStateList::ClosingReason::kUserAction);
 
   // We expect to delete the closed tab (since it was the unique tab that has
   // the loaded url).
@@ -325,7 +325,7 @@ TEST_F(OpenTabsSpotlightManagerTest, TestBackgroundUpdatesPostponed) {
 
   // Close a tab.
   browser_.get()->GetWebStateList()->CloseWebStateAt(
-      0, WebStateList::CLOSE_USER_ACTION);
+      0, WebStateList::ClosingReason::kUserAction);
 
   // We expect to NOT delete the closed tab (since it was the unique tab that
   // has the loaded url).

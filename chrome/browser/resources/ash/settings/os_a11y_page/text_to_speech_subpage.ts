@@ -67,23 +67,19 @@ export class SettingsTextToSpeechSubpageElement extends
        * Indicate whether a screen reader is enabled.
        */
       hasScreenReader: Boolean,
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kChromeVox,
-          Setting.kSelectToSpeak,
-        ]),
-      },
     };
   }
 
-  hasScreenReader: boolean;
+  declare hasScreenReader: boolean;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kChromeVox,
+    Setting.kSelectToSpeak,
+  ]);
+
   private deviceBrowserProxy_: DevicePageBrowserProxy;
-  private hasKeyboard_: boolean;
+  declare private hasKeyboard_: boolean;
   private textToSpeechBrowserProxy_: TextToSpeechSubpageBrowserProxy;
 
   constructor() {

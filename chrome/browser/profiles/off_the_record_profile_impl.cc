@@ -24,7 +24,6 @@
 #include "chrome/browser/background_fetch/background_fetch_delegate_factory.h"
 #include "chrome/browser/background_fetch/background_fetch_delegate_impl.h"
 #include "chrome/browser/background_sync/background_sync_controller_factory.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate_factory.h"
 #include "chrome/browser/client_hints/client_hints_factory.h"
@@ -36,7 +35,6 @@
 #include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"
 #include "chrome/browser/file_system_access/file_system_access_permission_context_factory.h"
 #include "chrome/browser/heavy_ad_intervention/heavy_ad_service_factory.h"
-#include "chrome/browser/k_anonymity_service/k_anonymity_service_factory.h"
 #include "chrome/browser/notifications/platform_notification_service_factory.h"
 #include "chrome/browser/notifications/platform_notification_service_impl.h"
 #include "chrome/browser/origin_trials/origin_trials_factory.h"
@@ -52,7 +50,6 @@
 #include "chrome/browser/ssl/stateful_ssl_host_state_delegate_factory.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/transition_manager/full_browser_transition_manager.h"
-#include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
 #include "chrome/browser/ui/zoom/chrome_zoom_level_otr_delegate.h"
 #include "chrome/browser/webid/federated_identity_api_permission_context.h"
 #include "chrome/browser/webid/federated_identity_api_permission_context_factory.h"
@@ -66,6 +63,7 @@
 #include "chrome/common/chrome_switches.h"
 #include "components/background_sync/background_sync_controller_impl.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/guest_view/buildflags/buildflags.h"
 #include "components/heavy_ad_intervention/heavy_ad_service.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/core/simple_dependency_manager.h"
@@ -86,34 +84,36 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/buildflags.h"
 #include "extensions/buildflags/buildflags.h"
 #include "media/capabilities/in_memory_video_decode_stats_db_impl.h"
 #include "media/mojo/services/video_decode_perf_history.h"
 #include "net/http/transport_security_state.h"
-#include "ppapi/buildflags/buildflags.h"
-#include "storage/browser/database/database_tracker.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "components/prefs/scoped_user_pref_update.h"
 #else
-#include "chrome/browser/profiles/guest_profile_creation_logger.h"
+#include "chrome/browser/accessibility/tree_fixing/pref_names.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/preferences/preferences.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/browser_process_platform_part.h"  // nogncheck crbug.com/40147906
+#include "chrome/browser/global_features.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/pref_names.h"
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "chrome/browser/extensions/extension_service.h"
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/extension_special_storage_policy.h"
-#include "components/guest_view/browser/guest_view_manager.h"
+#include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
 #include "extensions/browser/api/web_request/extension_web_request_event_router.h"
-#include "extensions/browser/extension_pref_store.h"
-#include "extensions/browser/extension_pref_value_map_factory.h"
-#include "extensions/common/extension.h"
+#endif
+
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
+#include "components/guest_view/browser/guest_view_manager.h"
 #endif
 
 #if BUILDFLAG(ENABLE_PLUGINS)
@@ -205,13 +205,13 @@ void OffTheRecordProfileImpl::Init() {
   ChromePluginServiceFilter::GetInstance()->RegisterProfile(this);
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // Make the chrome//extension-icon/ resource available.
   content::URLDataSource::Add(
       this, std::make_unique<extensions::ExtensionIconSource>(profile_));
 
   extensions::WebRequestEventRouter::OnOTRBrowserContextCreated(profile_, this);
-#endif
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   // The DomDistillerViewerSource is not a normal WebUI so it must be registered
   // as a URLDataSource early.
@@ -219,6 +219,12 @@ void OffTheRecordProfileImpl::Init() {
 
   // AccessibilityLabelsService has a default prefs behavior in incognito.
   AccessibilityLabelsService::InitOffTheRecordPrefs(this);
+
+#if !BUILDFLAG(IS_ANDROID)
+  // To avoid using any server-side tree fixing service, it is disabled in
+  // Incognito profiles.
+  tree_fixing::InitOffTheRecordPrefs(this);
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   // The ad service might not be available for some irregular profiles, like the
   // System Profile.
@@ -232,12 +238,6 @@ void OffTheRecordProfileImpl::Init() {
 
   if (IsIncognitoProfile())
     base::RecordAction(base::UserMetricsAction("IncognitoMode_Started"));
-
-#if !BUILDFLAG(IS_ANDROID)
-  if (IsGuestSession()) {
-    profile::MaybeRecordGuestChildCreation(this);
-  }
-#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
   if (otr_profile_id_->IsCaptivePortal()) {
@@ -258,11 +258,6 @@ OffTheRecordProfileImpl::~OffTheRecordProfileImpl() {
 
   FullBrowserTransitionManager::Get()->OnProfileDestroyed(this);
 
-  // Records the number of active KeyedServices for SystemProfile right before
-  // shutting them down.
-  if (IsSystemProfile())
-    ProfileMetrics::LogSystemProfileKeyedServicesCount(this);
-
   // The SimpleDependencyManager should always be passed after the
   // BrowserContextDependencyManager. This is because the KeyedService instances
   // in the BrowserContextDependencyManager's dependency graph can depend on the
@@ -273,7 +268,7 @@ OffTheRecordProfileImpl::~OffTheRecordProfileImpl() {
 
   SimpleKeyMap::GetInstance()->Dissociate(this);
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   extensions::WebRequestEventRouter::OnOTRBrowserContextDestroyed(profile_,
                                                                   this);
 #endif
@@ -329,10 +324,6 @@ void OffTheRecordProfileImpl::TrackZoomLevelsFromParent() {
 std::string OffTheRecordProfileImpl::GetProfileUserName() const {
   // Incognito profile should not return the username.
   return std::string();
-}
-
-base::FilePath OffTheRecordProfileImpl::GetPath() {
-  return profile_->GetPath();
 }
 
 base::FilePath OffTheRecordProfileImpl::GetPath() const {
@@ -404,11 +395,6 @@ bool OffTheRecordProfileImpl::IsChild() const {
   return profile_->IsChild();
 }
 
-bool OffTheRecordProfileImpl::AllowsBrowserWindows() const {
-  return profile_->AllowsBrowserWindows() &&
-         otr_profile_id_->AllowsBrowserWindows();
-}
-
 PrefService* OffTheRecordProfileImpl::GetPrefs() {
   return prefs_.get();
 }
@@ -446,13 +432,8 @@ policy::CloudPolicyManager* OffTheRecordProfileImpl::GetCloudPolicyManager() {
   return GetOriginalProfile()->GetCloudPolicyManager();
 }
 
-scoped_refptr<network::SharedURLLoaderFactory>
-OffTheRecordProfileImpl::GetURLLoaderFactory() {
-  return GetDefaultStoragePartition()->GetURLLoaderFactoryForBrowserProcess();
-}
-
 content::BrowserPluginGuestManager* OffTheRecordProfileImpl::GetGuestManager() {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
   return guest_view::GuestViewManager::FromBrowserContext(this);
 #else
   return NULL;
@@ -461,7 +442,7 @@ content::BrowserPluginGuestManager* OffTheRecordProfileImpl::GetGuestManager() {
 
 storage::SpecialStoragePolicy*
 OffTheRecordProfileImpl::GetSpecialStoragePolicy() {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   return GetExtensionSpecialStoragePolicy();
 #else
   return NULL;
@@ -524,7 +505,7 @@ OffTheRecordProfileImpl::GetReduceAcceptLanguageControllerDelegate() {
 
 std::unique_ptr<media::VideoDecodePerfHistory>
 OffTheRecordProfileImpl::CreateVideoDecodePerfHistory() {
-  // Use the original profile's DB to seed the OTR VideoDecodePerfHisotry. The
+  // Use the original profile's DB to seed the OTR VideoDecodePerfHistory. The
   // original DB is treated as read-only, while OTR playbacks will write stats
   // to the InMemory version (cleared on profile destruction). Guest profiles
   // don't have a root profile like incognito, meaning they don't have a seed
@@ -537,9 +518,7 @@ OffTheRecordProfileImpl::CreateVideoDecodePerfHistory() {
 
   auto stats_db =
       std::make_unique<media::InMemoryVideoDecodeStatsDBImpl>(seed_db_provider);
-  // TODO(liberato): Get the FeatureProviderFactoryCB from BrowserContext.
-  return std::make_unique<media::VideoDecodePerfHistory>(
-      std::move(stats_db), media::learning::FeatureProviderFactoryCB());
+  return std::make_unique<media::VideoDecodePerfHistory>(std::move(stats_db));
 }
 
 content::FileSystemAccessPermissionContext*
@@ -631,7 +610,10 @@ class GuestSessionProfile : public OffTheRecordProfileImpl {
   }
 
   void InitChromeOSPreferences() override {
-    chromeos_preferences_ = std::make_unique<ash::Preferences>();
+    chromeos_preferences_ = std::make_unique<ash::Preferences>(
+        g_browser_process->local_state(),
+        g_browser_process->GetFeatures()->application_locale_storage(),
+        g_browser_process->platform_part()->GetTimezoneResolverManager());
     chromeos_preferences_->Init(
         this, user_manager::UserManager::Get()->GetActiveUser());
   }
@@ -708,7 +690,8 @@ OffTheRecordProfileImpl::GetFederatedIdentityAutoReauthnPermissionContext() {
       this);
 }
 
-content::KAnonymityServiceDelegate*
-OffTheRecordProfileImpl::GetKAnonymityServiceDelegate() {
-  return KAnonymityServiceFactory::GetForProfile(this);
+#if BUILDFLAG(IS_WIN)
+void OffTheRecordProfileImpl::AckCrashForTracking() {
+  profile_->AckCrashForTracking();
 }
+#endif

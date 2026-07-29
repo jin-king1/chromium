@@ -29,6 +29,7 @@ fuchsia::web::Cookie ConvertCanonicalCookie(
   cookie.set_id(std::move(id));
   switch (cause) {
     case net::CookieChangeCause::INSERTED:
+    case net::CookieChangeCause::INSERTED_NO_VALUE_CHANGE_OVERWRITE:
       cookie.set_value(canonical_cookie.Value());
       break;
     case net::CookieChangeCause::EXPLICIT:
@@ -37,6 +38,7 @@ fuchsia::web::Cookie ConvertCanonicalCookie(
     case net::CookieChangeCause::EXPIRED:
     case net::CookieChangeCause::EVICTED:
     case net::CookieChangeCause::EXPIRED_OVERWRITE:
+    case net::CookieChangeCause::INSERTED_NO_CHANGE_OVERWRITE:
       break;
   };
 
@@ -217,7 +219,7 @@ void CookieManagerImpl::GetCookieList(
           net::CookieOptions::SameSiteCookieContext::MakeInclusive());
 
       cookie_manager_->GetCookieList(
-          GURL(*url), options, net::CookiePartitionKeyCollection::Todo(),
+          GURL(*url), options, net::CookiePartitionKeyCollection(),
           base::BindOnce(&OnCookiesAndExcludedReceived, std::move(iterator)));
     } else {
       // TODO(crbug.com/42050622): Support filtering by name.

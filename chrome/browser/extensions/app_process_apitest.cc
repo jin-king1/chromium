@@ -80,7 +80,7 @@ class AppApiTest : public extensions::ExtensionApiTest {
     LOG(INFO) << "Start of test.";
 
     extensions::ProcessMap* process_map =
-        extensions::ProcessMap::Get(browser()->profile());
+        extensions::ProcessMap::Get(profile());
 
     ASSERT_TRUE(LoadExtension(
         test_data_dir_.AppendASCII(app_name)));
@@ -93,10 +93,7 @@ class AppApiTest : public extensions::ExtensionApiTest {
     // navigating it.  Either way, app tabs should be considered extension
     // processes, but they have no elevated privileges and thus should not
     // have WebUI bindings.
-    ui_test_utils::NavigateToURLWithDisposition(
-        browser(), base_url.Resolve("path1/empty.html"),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB,
-        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+    NavigateToURLInNewTab(base_url.Resolve("path1/empty.html"));
     LOG(INFO) << "Nav 1.";
     EXPECT_TRUE(process_map->Contains(browser()
                                           ->tab_strip_model()
@@ -107,7 +104,7 @@ class AppApiTest : public extensions::ExtensionApiTest {
     EXPECT_FALSE(browser()->tab_strip_model()->GetWebContentsAt(1)->GetWebUI());
 
     ui_test_utils::TabAddedWaiter tab_add(browser());
-    chrome::NewTab(browser());
+    chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
     tab_add.Wait();
     LOG(INFO) << "New tab.";
     ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -141,7 +138,7 @@ class AppApiTest : public extensions::ExtensionApiTest {
     // process.
     ASSERT_EQ(1u,
               extensions::browsertest_util::GetWindowControllerCountInProfile(
-                  browser()->profile()));
+                  profile()));
     OpenWindow(tab1, base_url.Resolve("path1/empty.html"), true, true, nullptr);
     LOG(INFO) << "WindowOpenHelper 1.";
     OpenWindow(tab2, base_url.Resolve("path2/empty.html"), true, true, nullptr);
@@ -163,8 +160,7 @@ class BlockedAppApiTest : public AppApiTest {
 // Tests that hosted apps with the background permission get a process-per-app
 // model, since all pages need to be able to script the background page.
 IN_PROC_BROWSER_TEST_F(AppApiTest, AppProcess) {
-  extensions::ProcessMap* process_map =
-      extensions::ProcessMap::Get(browser()->profile());
+  extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile());
 
   ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("app_process")));
 
@@ -174,10 +170,7 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, AppProcess) {
   // Test both opening a URL in a new tab, and opening a tab and then navigating
   // it.  Either way, app tabs should be considered extension processes, but
   // they have no elevated privileges and thus should not have WebUI bindings.
-  ui_test_utils::NavigateToURLWithDisposition(
-      browser(), base_url.Resolve("path1/empty.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  NavigateToURLInNewTab(base_url.Resolve("path1/empty.html"));
   EXPECT_TRUE(process_map->Contains(browser()
                                         ->tab_strip_model()
                                         ->GetWebContentsAt(1)
@@ -186,10 +179,7 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, AppProcess) {
                                         ->GetDeprecatedID()));
   EXPECT_FALSE(browser()->tab_strip_model()->GetWebContentsAt(1)->GetWebUI());
 
-  ui_test_utils::NavigateToURLWithDisposition(
-      browser(), base_url.Resolve("path2/empty.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  NavigateToURLInNewTab(base_url.Resolve("path2/empty.html"));
   EXPECT_TRUE(process_map->Contains(browser()
                                         ->tab_strip_model()
                                         ->GetWebContentsAt(2)
@@ -199,7 +189,7 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, AppProcess) {
   EXPECT_FALSE(browser()->tab_strip_model()->GetWebContentsAt(2)->GetWebUI());
 
   ui_test_utils::TabAddedWaiter tab_add(browser());
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   tab_add.Wait();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), base_url.Resolve("path3/empty.html")));
@@ -233,14 +223,14 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, AppProcess) {
 
   // Now let's do the same using window.open. The same should happen.
   ASSERT_EQ(1u, extensions::browsertest_util::GetWindowControllerCountInProfile(
-                    browser()->profile()));
+                    profile()));
   OpenWindow(tab, base_url.Resolve("path1/empty.html"), true, true, nullptr);
   OpenWindow(tab, base_url.Resolve("path2/empty.html"), true, true, nullptr);
   // TODO(creis): This should open in a new process (i.e., false for the last
   // argument), but we temporarily avoid swapping processes away from a hosted
   // app if it has an opener, because some OAuth providers make script calls
   // between non-app popups and non-app iframes in the app process.
-  // See crbug.com/59285.
+  // See crbug.com/40459952.
   OpenWindow(tab, base_url.Resolve("path3/empty.html"), true, true, nullptr);
 
   // Now let's have these pages navigate, into or out of the extension web
@@ -297,18 +287,18 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, AppProcessBackgroundInstances) {
 // 2. page1 redirects to a page2 outside the app extent (ie, "/server-redirect")
 // 3. page2 redirects back to a page in the app
 // The final navigation should end up in the app process.
-// See http://crbug.com/61757
-// Flaky.  http://crbug.com/341898
+// See http://crbug.com/40471906
+// Flaky.  http://crbug.com/41088563
 IN_PROC_BROWSER_TEST_F(AppApiTest, DISABLED_AppProcessRedirectBack) {
   ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("app_process")));
 
   // Open two tabs in the app.
   GURL base_url = GetTestBaseURL("app_process");
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), base_url.Resolve("path1/empty.html")));
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   // Wait until the second tab finishes its redirect train (2 hops).
   // 1. We navigate to redirect.html
   // 2. Renderer navigates and finishes, counting as a load stop.
@@ -326,8 +316,13 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, DISABLED_AppProcessRedirectBack) {
   // process.
   ASSERT_EQ(3, browser()->tab_strip_model()->count());
   EXPECT_EQ("/extensions/api_test/app_process/path1/empty.html",
-            browser()->tab_strip_model()->GetWebContentsAt(2)->
-                GetController().GetLastCommittedEntry()->GetURL().path());
+            browser()
+                ->tab_strip_model()
+                ->GetWebContentsAt(2)
+                ->GetController()
+                .GetLastCommittedEntry()
+                ->GetURL()
+                .GetPath());
   EXPECT_EQ(browser()
                 ->tab_strip_model()
                 ->GetWebContentsAt(1)
@@ -341,13 +336,12 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, DISABLED_AppProcessRedirectBack) {
 }
 
 // Ensure that re-navigating to a URL after installing or uninstalling it as an
-// app correctly swaps the tab to the app process.  (http://crbug.com/80621)
+// app correctly swaps the tab to the app process.  (http://crbug.com/40560087)
 //
-// Fails on Windows. http://crbug.com/238670
+// Fails on Windows. http://crbug.com/41011126
 // Added logging to help diagnose the location of the problem.
 IN_PROC_BROWSER_TEST_F(AppApiTest, NavigateIntoAppProcess) {
-  extensions::ProcessMap* process_map =
-      extensions::ProcessMap::Get(browser()->profile());
+  extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile());
 
   // The app under test acts on URLs whose host is "localhost",
   // so the URLs we navigate to must have host "localhost".
@@ -388,13 +382,12 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, NavigateIntoAppProcess) {
 }
 
 // Ensure that reloading a URL after installing or uninstalling it as an app
-// correctly swaps the tab to the app process.  (http://crbug.com/80621)
+// correctly swaps the tab to the app process.  (http://crbug.com/40560087)
 //
 // Added logging to help diagnose the location of the problem.
-// http://crbug.com/238670
+// http://crbug.com/41011126
 IN_PROC_BROWSER_TEST_F(AppApiTest, ReloadIntoAppProcess) {
-  extensions::ProcessMap* process_map =
-      extensions::ProcessMap::Get(browser()->profile());
+  extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile());
 
   // The app under test acts on URLs whose host is "localhost",
   // so the URLs we navigate to must have host "localhost".
@@ -453,13 +446,12 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, ReloadIntoAppProcess) {
 }
 
 // Ensure that reloading a URL with JavaScript after installing or uninstalling
-// it as an app correctly swaps the process.  (http://crbug.com/80621)
+// it as an app correctly swaps the process.  (http://crbug.com/40560087)
 //
-// Crashes on Windows and Mac. http://crbug.com/238670
+// Crashes on Windows and Mac. http://crbug.com/41011126
 // Added logging to help diagnose the location of the problem.
 IN_PROC_BROWSER_TEST_F(AppApiTest, ReloadIntoAppProcessWithJavaScript) {
-  extensions::ProcessMap* process_map =
-      extensions::ProcessMap::Get(browser()->profile());
+  extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile());
 
   // The app under test acts on URLs whose host is "localhost",
   // so the URLs we navigate to must have host "localhost".
@@ -510,7 +502,7 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, ReloadIntoAppProcessWithJavaScript) {
 }
 
 // Similar to the previous test, but ensure that popup blocking bypass
-// isn't granted to the iframe.  See crbug.com/117446.
+// isn't granted to the iframe.  See crbug.com/40054678.
 IN_PROC_BROWSER_TEST_F(BlockedAppApiTest, OpenAppFromIframe) {
   // Load app and start URL (not in the app).
   const Extension* app =
@@ -531,7 +523,7 @@ IN_PROC_BROWSER_TEST_F(BlockedAppApiTest, OpenAppFromIframe) {
 
 // Tests that if an extension launches an app via chrome.tabs.create with an URL
 // that's not in the app's extent but that server redirects to it, we still end
-// up with an app process. See http://crbug.com/99349 for more details.
+// up with an app process. See http://crbug.com/41475863 for more details.
 IN_PROC_BROWSER_TEST_F(AppApiTest, ServerRedirectToAppFromExtension) {
   LoadExtension(test_data_dir_.AppendASCII("app_process"));
   const Extension* launcher =
@@ -595,10 +587,9 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, ClientRedirectToAppFromExtension) {
 // in the app process.
 // This is in contrast to OpenAppFromIframe, since here the popup will not be
 // missing special permissions and should be scriptable from the iframe.
-// See http://crbug.com/92669 for more details.
+// See http://crbug.com/40611675 for more details.
 IN_PROC_BROWSER_TEST_F(AppApiTest, OpenWebPopupFromWebIframe) {
-  extensions::ProcessMap* process_map =
-      extensions::ProcessMap::Get(browser()->profile());
+  extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile());
 
   GURL base_url = GetTestBaseURL("app_process");
 
@@ -632,8 +623,7 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, OpenWebPopupFromWebIframe) {
 }
 
 IN_PROC_BROWSER_TEST_F(AppApiTest, ReloadAppAfterCrash) {
-  extensions::ProcessMap* process_map =
-      extensions::ProcessMap::Get(browser()->profile());
+  extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile());
 
   ASSERT_TRUE(LoadExtension(test_data_dir_.AppendASCII("app_process")));
 
@@ -661,8 +651,7 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, ReloadAppAfterCrash) {
 // other windows still work, and a cross-site browser-initiated navigation away
 // from a hosted app switches BrowsingInstances.
 IN_PROC_BROWSER_TEST_F(AppApiTest, NavigatePopupFromAppToOutsideApp) {
-  extensions::ProcessMap* process_map =
-      extensions::ProcessMap::Get(browser()->profile());
+  extensions::ProcessMap* process_map = extensions::ProcessMap::Get(profile());
 
   GURL base_url = GetTestBaseURL("app_process");
 
@@ -722,8 +711,8 @@ IN_PROC_BROWSER_TEST_F(AppApiTest, NavigatePopupFromAppToOutsideApp) {
   // browser-initiated navigation breaks the scripting relationship between the
   // popup and the app, but it currently does not, since we keep the scripting
   // relationship regardless of whether the navigation is browser or
-  // renderer-initiated (see https://crbug.com/828720).  Consider changing
-  // this in the future as part of https://crbug.com/718516.
+  // renderer-initiated (see https://crbug.com/41380648).  Consider changing
+  // this in the future as part of https://crbug.com/40518928.
   {
     content::TestNavigationObserver observer(popup_contents);
     ASSERT_TRUE(ui_test_utils::NavigateToURL(

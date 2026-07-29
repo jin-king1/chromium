@@ -10,10 +10,13 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "crypto/user_verifying_key.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
+#include <variant>
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_CHROMEOS)
 namespace ash {
 class WebAuthNDialogController;
 class ActiveSessionAuthController;
@@ -31,7 +34,7 @@ class UnexportableKeyProvider;
 std::unique_ptr<crypto::UnexportableKeyProvider>
 GetWebAuthnUnexportableKeyProvider();
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 struct UserVerifyingKeyProviderConfigChromeos {
   using AuthDialogController =
       std::variant<raw_ptr<ash::WebAuthNDialogController>,
@@ -64,11 +67,14 @@ GetWebAuthnUserVerifyingKeyProvider(
     crypto::UserVerifyingKeyProvider::Config config);
 #endif
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 // ChromeOS doesn't use the UserVerifyingKeyProvider provided by //crypto, so
 // the test override is handled separately as well.
 void OverrideWebAuthnChromeosUserVerifyingKeyProviderForTesting(
     std::unique_ptr<crypto::UserVerifyingKeyProvider> (*func)());
 #endif
+
+void SetWebAuthnUnexportableKeyProviderForTesting(
+    std::unique_ptr<crypto::UnexportableKeyProvider> (*func)());
 
 #endif  // CHROME_BROWSER_WEBAUTHN_UNEXPORTABLE_KEY_UTILS_H_

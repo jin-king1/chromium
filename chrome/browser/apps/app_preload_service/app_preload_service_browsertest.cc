@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/apps/app_preload_service/app_preload_service.h"
+
 #include <map>
 #include <string>
 
@@ -13,7 +15,6 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
-#include "chrome/browser/apps/app_preload_service/app_preload_service.h"
 #include "chrome/browser/apps/app_preload_service/app_preload_service_factory.h"
 #include "chrome/browser/apps/app_preload_service/proto/app_preload.pb.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
@@ -21,7 +22,6 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "content/public/test/browser_test.h"
@@ -43,9 +43,6 @@ class AppPreloadServiceBrowserTest : public InProcessBrowserTest {
   AppPreloadServiceBrowserTest()
       : startup_check_resetter_(
             AppPreloadService::DisablePreloadsOnStartupForTesting()) {
-    feature_list_.InitWithFeatures(
-        {/*enabled_features=*/features::kAppPreloadService},
-        /*disabled_features=*/{});
     AppPreloadServiceFactory::SkipApiKeyCheckForTesting(true);
   }
 
@@ -114,17 +111,17 @@ class AppPreloadServiceBrowserTest : public InProcessBrowserTest {
     apps_proto_ = response;
   }
 
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
 
   net::EmbeddedTestServer* https_server() { return &https_server_; }
 
   AppRegistryCache& app_registry_cache() {
-    auto* proxy = AppServiceProxyFactory::GetForProfile(browser()->profile());
+    auto* proxy =
+        AppServiceProxyFactory::GetForProfile(browser()->GetProfile());
     return proxy->AppRegistryCache();
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
   net::EmbeddedTestServer https_server_;
   std::map<std::string, std::string> manifest_responses_;
   std::optional<proto::AppPreloadListResponse> apps_proto_;

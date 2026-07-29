@@ -75,11 +75,11 @@ export class CpuCardElement extends CpuCardElementBase {
     };
   }
 
-  testSuiteStatus: TestSuiteStatus;
-  isActive: boolean;
-  private routines: RoutineType[];
-  private cpuUsage: CpuUsage;
-  private cpuChipInfo: string;
+  declare testSuiteStatus: TestSuiteStatus;
+  declare isActive: boolean;
+  declare private routines: RoutineType[];
+  declare private cpuUsage: CpuUsage;
+  declare private cpuChipInfo: string;
   private memoryUsage: MemoryUsage;
   private systemDataProvider: SystemDataProviderInterface =
       getSystemDataProvider();
@@ -165,7 +165,7 @@ export class CpuCardElement extends CpuCardElementBase {
   }
 
   private convertKhzToGhz(num: number): string {
-    return (num / 1000000).toFixed(2);
+    return (num / 1000000).toFixed(3);
   }
 
   protected getCurrentCpuSpeed(): string {

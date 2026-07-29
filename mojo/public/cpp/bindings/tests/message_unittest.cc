@@ -2,10 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
+#include "mojo/public/cpp/bindings/message.h"
 
 #include <stdint.h>
 
@@ -13,7 +10,7 @@
 #include <tuple>
 #include <vector>
 
-#include "mojo/public/cpp/bindings/message.h"
+#include "base/compiler_specific.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -35,8 +32,7 @@ void CreateTestMessagePayload(std::vector<uint8_t>* bytes,
   }
 
   bytes->resize(message.data_num_bytes());
-  std::copy(message.data(), message.data() + message.data_num_bytes(),
-            bytes->begin());
+  std::ranges::copy(message.data_as_span(), bytes->begin());
 
   MessagePipe pipe;
   handles->resize(2);
@@ -56,8 +52,9 @@ TEST(BindingsMessageTest, ConstructFromPayload) {
   WriteMessageRaw(pipe.handle0.get(), in_bytes1.data(), in_bytes1.size(),
                   reinterpret_cast<const MojoHandle*>(in_handles1.data()),
                   in_handles1.size(), MOJO_WRITE_MESSAGE_FLAG_NONE);
-  for (auto& handle : in_handles1)
+  for (auto& handle : in_handles1) {
     std::ignore = handle.release();
+  }
 
   // Now construct a Message object from the same payload and feed that into the
   // pipe.

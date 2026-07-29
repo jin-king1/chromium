@@ -48,11 +48,12 @@ bool FlatlandSysmemNativePixmap::SupportsZeroCopyWebGPUImport() const {
   NOTREACHED();
 }
 
-uint64_t FlatlandSysmemNativePixmap::GetBufferFormatModifier() const {
+uint64_t FlatlandSysmemNativePixmap::GetFormatModifier() const {
   NOTREACHED();
 }
 
-gfx::BufferFormat FlatlandSysmemNativePixmap::GetBufferFormat() const {
+viz::SharedImageFormat FlatlandSysmemNativePixmap::GetSharedImageFormat()
+    const {
   return collection_->format();
 }
 

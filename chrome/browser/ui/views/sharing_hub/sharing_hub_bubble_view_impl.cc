@@ -43,23 +43,23 @@ constexpr int kInterItemPadding = 4;
 }  // namespace
 
 SharingHubBubbleViewImpl::SharingHubBubbleViewImpl(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor,
     share::ShareAttempt attempt,
     SharingHubBubbleController* controller)
-    : LocationBarBubbleDelegateView(anchor_view,
+    : LocationBarBubbleDelegateView(anchor,
                                     attempt.web_contents.get(),
                                     /*autosize=*/true),
       attempt_(attempt) {
-  DCHECK(anchor_view);
+  DCHECK(!anchor.IsNull());
   DCHECK(controller);
 
-  set_background_color(ui::kColorMenuBackground);
+  SetBackgroundColor(ui::kColorMenuBackground);
   SetAccessibleTitle(l10n_util::GetStringUTF16(IDS_SHARING_HUB_TOOLTIP));
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_BUBBLE_PREFERRED_WIDTH));
   RegisterWindowClosingCallback(base::BindOnce(
-      &SharingHubBubbleViewImpl::OnWindowClosing, base::Unretained(this)));
+      &SharingHubBubbleViewImpl::OnWindowClosing, weak_factory_.GetWeakPtr()));
   SetEnableArrowKeyTraversal(true);
   SetShowCloseButton(false);
   SetShowTitle(false);
@@ -105,7 +105,7 @@ void SharingHubBubbleViewImpl::Init() {
 
   scroll_view_ = AddChildView(std::make_unique<views::ScrollView>());
   scroll_view_->ClipHeightTo(0, kActionButtonHeight * kMaximumButtons);
-  scroll_view_->SetBackgroundThemeColorId(ui::kColorMenuBackground);
+  scroll_view_->SetBackgroundColor(ui::kColorMenuBackground);
 
   PopulateScrollView(controller_->GetFirstPartyActions());
 }

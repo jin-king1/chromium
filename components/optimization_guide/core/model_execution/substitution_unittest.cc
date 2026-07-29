@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "components/optimization_guide/core/model_execution/substitution.h"
 
 #include <cstdint>
@@ -18,12 +13,15 @@
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_execution_proto_descriptors.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
+#include "components/optimization_guide/core/model_execution/test/request_builder.h"
+#include "components/optimization_guide/core/model_execution/test/substitution_builder.h"
 #include "components/optimization_guide/proto/descriptors.pb.h"
 #include "components/optimization_guide/proto/features/compose.pb.h"
 #include "components/optimization_guide/proto/features/example_for_testing.pb.h"
 #include "components/optimization_guide/proto/features/prompt_api.pb.h"
-#include "components/optimization_guide/proto/features/tab_organization.pb.h"
+#include "components/optimization_guide/proto/features/history_answer.pb.h"
 #include "components/optimization_guide/proto/substitution.pb.h"
+#include "services/on_device_model/ml/chrome_ml_audio_buffer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -53,17 +51,17 @@ auto ToneField() {
 auto LengthField() {
   return ProtoField({8, 3});
 }
-// TabOrganizationRequest::tabs
-auto TabsField() {
-  return ProtoField({1});
-}
-// Tab::tab_id
-auto TabId() {
-  return ProtoField({1});
-}
-// Tab::title
-auto TabTitle() {
+// HistoryAnswerRequest::passages (field 2)
+auto PassagesField() {
   return ProtoField({2});
+}
+// Passage::passage_id (field 3)
+auto PassageId() {
+  return ProtoField({3});
+}
+// Passage::text (field 1)
+auto PassageText() {
+  return ProtoField({1});
 }
 
 // PromptApiRequest::prompts
@@ -134,7 +132,7 @@ proto::PromptApiPrompt RolePrompt(proto::PromptApiRole role,
                                   std::string content) {
   proto::PromptApiPrompt prompt;
   prompt.set_role(role);
-  prompt.set_content(content);
+  prompt.set_text(content);
   return prompt;
 }
 
@@ -201,6 +199,40 @@ TEST_F(SubstitutionTest, RawString) {
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->ToString(), "hello this is a %test%");
   EXPECT_FALSE(result->should_ignore_input_context);
+}
+
+// Evaluate an expression over a list of passages.
+// The substititon should produce a string like "Tabs: E,E,"
+// Where "E" is the 'expr' evaluated over the list of passages.
+proto::SubstitutedString PassagesExpr(const proto::StringSubstitution& expr) {
+  proto::SubstitutedString root;
+  root.set_string_template("Tabs: %s");
+  auto* range =
+      root.add_substitutions()->add_candidates()->mutable_range_expr();
+  *range->mutable_proto_field() = PassagesField();
+
+  auto* substitution = range->mutable_expr();
+  substitution->set_string_template("%s,");
+  substitution->add_substitutions()->MergeFrom(expr);
+
+  return root;
+}
+
+// Make a simple request with two passages.
+proto::HistoryAnswerRequest TwoPassageRequest() {
+  proto::HistoryAnswerRequest request;
+  auto* passages = request.mutable_passages();
+  {
+    auto* p1 = passages->Add();
+    p1->set_text("tabA");
+    p1->set_passage_id("10");
+  }
+  {
+    auto* p2 = passages->Add();
+    p2->set_text("tabB");
+    p2->set_passage_id("20");
+  }
+  return request;
 }
 
 TEST_F(SubstitutionTest, ControlTokens) {
@@ -328,48 +360,14 @@ TEST_F(SubstitutionTest, Conditions) {
   EXPECT_FALSE(result->should_ignore_input_context);
 }
 
-// Make a simple request with two tabs.
-proto::TabOrganizationRequest TwoTabRequest() {
-  proto::TabOrganizationRequest request;
-  auto* tabs = request.mutable_tabs();
-  {
-    auto* t1 = tabs->Add();
-    t1->set_title("tabA");
-    t1->set_tab_id(10);
-  }
-  {
-    auto* t1 = tabs->Add();
-    t1->set_title("tabB");
-    t1->set_tab_id(20);
-  }
-  return request;
-}
-
-// Evaluate an expression over a list of tabs.
-// The substititon should produce a string like "Tabs: E,E,"
-// Where "E" is the 'expr' evaluated over the list of tabs.
-proto::SubstitutedString TabsExpr(const proto::StringSubstitution& expr) {
-  proto::SubstitutedString root;
-  root.set_string_template("Tabs: %s");
-  auto* range =
-      root.add_substitutions()->add_candidates()->mutable_range_expr();
-  *range->mutable_proto_field() = TabsField();
-
-  auto* substitution = range->mutable_expr();
-  substitution->set_string_template("%s,");
-  substitution->add_substitutions()->MergeFrom(expr);
-
-  return root;
-}
-
 TEST_F(SubstitutionTest, RepeatedRawField) {
   google::protobuf::RepeatedPtrField<proto::SubstitutedString> subs;
   {
     proto::StringSubstitution expr;
     expr.add_candidates()->set_raw_string("E");
-    subs.Add()->MergeFrom(TabsExpr(expr));
+    subs.Add()->MergeFrom(PassagesExpr(expr));
   }
-  proto::TabOrganizationRequest request = TwoTabRequest();
+  proto::HistoryAnswerRequest request = TwoPassageRequest();
   auto result = CreateSubstitutions(MultimodalMessageReadView(request), subs);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->ToString(), "Tabs: E,E,");
@@ -380,10 +378,10 @@ TEST_F(SubstitutionTest, RepeatedProtoField) {
   google::protobuf::RepeatedPtrField<proto::SubstitutedString> subs;
   {
     proto::StringSubstitution expr;
-    *expr.add_candidates()->mutable_proto_field() = TabTitle();
-    subs.Add()->MergeFrom(TabsExpr(expr));
+    *expr.add_candidates()->mutable_proto_field() = PassageText();
+    subs.Add()->MergeFrom(PassagesExpr(expr));
   }
-  proto::TabOrganizationRequest request = TwoTabRequest();
+  proto::HistoryAnswerRequest request = TwoPassageRequest();
   auto result = CreateSubstitutions(MultimodalMessageReadView(request), subs);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->ToString(), "Tabs: tabA,tabB,");
@@ -395,9 +393,9 @@ TEST_F(SubstitutionTest, RepeatedZeroBasedIndexField) {
   {
     proto::StringSubstitution expr;
     expr.add_candidates()->mutable_index_expr();
-    subs.Add()->MergeFrom(TabsExpr(expr));
+    subs.Add()->MergeFrom(PassagesExpr(expr));
   }
-  proto::TabOrganizationRequest request = TwoTabRequest();
+  proto::HistoryAnswerRequest request = TwoPassageRequest();
   auto result = CreateSubstitutions(MultimodalMessageReadView(request), subs);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->ToString(), "Tabs: 0,1,");
@@ -409,9 +407,9 @@ TEST_F(SubstitutionTest, RepeatedOneBasedIndexField) {
   {
     proto::StringSubstitution expr;
     expr.add_candidates()->mutable_index_expr()->set_one_based(true);
-    subs.Add()->MergeFrom(TabsExpr(expr));
+    subs.Add()->MergeFrom(PassagesExpr(expr));
   }
-  proto::TabOrganizationRequest request = TwoTabRequest();
+  proto::HistoryAnswerRequest request = TwoPassageRequest();
   auto result = CreateSubstitutions(MultimodalMessageReadView(request), subs);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->ToString(), "Tabs: 1,2,");
@@ -428,12 +426,12 @@ TEST_F(SubstitutionTest, RepeatedCondition) {
     *c1->mutable_conditions() = ConditionList(
         proto::CONDITION_EVALUATION_TYPE_OR,
         {
-            Condition(TabId(), proto::OPERATOR_TYPE_EQUAL_TO, Int64Proto(10)),
+            Condition(PassageId(), proto::OPERATOR_TYPE_EQUAL_TO, StrProto("10")),
         });
     c2->set_raw_string("NotTen");
-    subs.Add()->MergeFrom(TabsExpr(expr));
+    subs.Add()->MergeFrom(PassagesExpr(expr));
   }
-  proto::TabOrganizationRequest request = TwoTabRequest();
+  proto::HistoryAnswerRequest request = TwoPassageRequest();
   auto result = CreateSubstitutions(MultimodalMessageReadView(request), subs);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->ToString(), "Tabs: Ten,NotTen,");
@@ -501,7 +499,7 @@ TEST_F(SubstitutionTest, PromptApiPersistence) {
             "<model>");
 }
 
-auto ImageSubstitutionConfig() {
+auto MediaSubstitutionConfig() {
   using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
   using NestedProto = ::optimization_guide::proto::ExampleForTestingMessage;
   google::protobuf::RepeatedPtrField<proto::SubstitutedString> subs;
@@ -509,18 +507,18 @@ auto ImageSubstitutionConfig() {
   root->set_string_template("%s");
   *root->add_substitutions()
        ->add_candidates()
-       ->mutable_image_field()
+       ->mutable_media_field()
        ->mutable_proto_field() = ProtoField(
       {RequestProto::kNested1FieldNumber, NestedProto::kMediaFieldNumber});
   return subs;
 }
 
-SkBitmap CreateBlackSkBitmap(int width, int height) {
-  SkBitmap bitmap;
-  bitmap.allocN32Pixels(width, height);
-  // Setting the pixels to transparent-black.
-  memset(bitmap.getPixels(), 0, width * height * 4);
-  return bitmap;
+ml::AudioBuffer CreateAudioBuffer() {
+  ml::AudioBuffer b;
+  b.num_channels = 1;
+  b.num_frames = 1;
+  b.sample_rate_hz = 60;
+  return b;
 }
 
 TEST_F(SubstitutionTest, Image) {
@@ -531,9 +529,22 @@ TEST_F(SubstitutionTest, Image) {
       .GetMutableMessage(RequestProto::kNested1FieldNumber)
       .Set(NestedProto::kMediaFieldNumber, CreateBlackSkBitmap(1, 1));
   std::optional<SubstitutionResult> result =
-      CreateSubstitutions(request.read(), ImageSubstitutionConfig());
+      CreateSubstitutions(request.read(), MediaSubstitutionConfig());
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->ToString(), "<image>");
+}
+
+TEST_F(SubstitutionTest, Audio) {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+  using NestedProto = ::optimization_guide::proto::ExampleForTestingMessage;
+  MultimodalMessage request{RequestProto()};
+  request.edit()
+      .GetMutableMessage(RequestProto::kNested1FieldNumber)
+      .Set(NestedProto::kMediaFieldNumber, CreateAudioBuffer());
+  std::optional<SubstitutionResult> result =
+      CreateSubstitutions(request.read(), MediaSubstitutionConfig());
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->ToString(), "<audio>");
 }
 
 TEST_F(SubstitutionTest, ExcludesEmptyPieces) {
@@ -572,6 +583,140 @@ TEST_F(SubstitutionTest, ExcludesEmptyPieces) {
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->ToString(), "");
   EXPECT_EQ(result->input->pieces.size(), 0u);
+}
+
+Substitutions BlockCheck(proto::StringSubstitution sub) {
+  Substitutions result;
+  auto* expr1 = result.Add();
+  expr1->set_string_template("%s for...%s...%s");
+  expr1->add_substitutions()->add_candidates()->set_raw_string("waiting");
+  *expr1->add_substitutions() = std::move(sub);
+  expr1->add_substitutions()->add_candidates()->set_raw_string("complete");
+  return result;
+}
+
+TEST_F(SubstitutionTest, BlockOnPendingField) {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+
+  Substitutions substitutions = BlockCheck(
+      Always(StringArg(ProtoField({RequestProto::kStringValueFieldNumber}))));
+
+  MultimodalMessage request{proto::ExampleForTestingRequest()};
+  request.edit().MarkPending(RequestProto::kStringValueFieldNumber);
+
+  std::optional<SubstitutionResult> result =
+      CreateSubstitutions(request.read(), substitutions);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->ToString(), "waiting for...");
+}
+
+TEST_F(SubstitutionTest, BlockOnPendingMediaField) {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+  using Msg = ::optimization_guide::proto::ExampleForTestingMessage;
+
+  Substitutions substitutions = BlockCheck(Always(MediaFieldArg(
+      {RequestProto::kNested1FieldNumber, Msg::kMediaFieldNumber})));
+
+  MultimodalMessage request{proto::ExampleForTestingRequest()};
+  request.edit().MarkPending(RequestProto::kNested1FieldNumber);
+
+  std::optional<SubstitutionResult> result =
+      CreateSubstitutions(request.read(), substitutions);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->ToString(), "waiting for...");
+}
+
+TEST_F(SubstitutionTest, BlockOnPendingFieldInCondition) {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+  using Msg = ::optimization_guide::proto::ExampleForTestingMessage;
+
+  Substitutions substitutions = BlockCheck(
+      Candidates({EnumCase(ProtoField({RequestProto::kEnumValueFieldNumber}),
+                           Msg::VALUE0, StringArg("maybe_value")),
+                  StringArg("fallback_value")}));
+
+  MultimodalMessage request{proto::ExampleForTestingRequest()};
+  request.edit().MarkPending(RequestProto::kEnumValueFieldNumber);
+
+  std::optional<SubstitutionResult> result =
+      CreateSubstitutions(request.read(), substitutions);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->ToString(), "waiting for...");
+}
+
+Substitutions BlockCheckRepeatedSubstitution() {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+  using Msg = ::optimization_guide::proto::ExampleForTestingMessage;
+  return BlockCheck(Always(RangeExprArg(
+      ProtoField({RequestProto::kRepeatedFieldFieldNumber}),
+      Just(StringArg(ProtoField({Msg::kStringValueFieldNumber}))))));
+}
+
+MultimodalMessage RepeatedMessage() {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+  using Msg = ::optimization_guide::proto::ExampleForTestingMessage;
+  MultimodalMessage msg{proto::ExampleForTestingRequest()};
+  msg.edit()
+      .MutableRepeatedField(RequestProto::kRepeatedFieldFieldNumber)
+      .Add()
+      .Set(Msg::kStringValueFieldNumber, "A");
+  msg.edit()
+      .MutableRepeatedField(RequestProto::kRepeatedFieldFieldNumber)
+      .Add()
+      .Set(Msg::kStringValueFieldNumber, "B");
+  msg.edit()
+      .MutableRepeatedField(RequestProto::kRepeatedFieldFieldNumber)
+      .Add()
+      .Set(Msg::kStringValueFieldNumber, "C");
+  return msg;
+}
+
+TEST_F(SubstitutionTest, BlockOnPendingRepeated) {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+
+  Substitutions substitutions = BlockCheckRepeatedSubstitution();
+
+  MultimodalMessage request = RepeatedMessage();
+  request.edit().MarkPending(RequestProto::kRepeatedFieldFieldNumber);
+
+  std::optional<SubstitutionResult> result =
+      CreateSubstitutions(request.read(), substitutions);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->ToString(), "waiting for...");
+}
+
+TEST_F(SubstitutionTest, BlockOnPendingFieldInRepeated) {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+  using Msg = ::optimization_guide::proto::ExampleForTestingMessage;
+
+  Substitutions substitutions = BlockCheckRepeatedSubstitution();
+
+  MultimodalMessage request = RepeatedMessage();
+  request.edit()
+      .MutableRepeatedField(RequestProto::kRepeatedFieldFieldNumber)
+      .Get(1)
+      .MarkPending(Msg::kStringValueFieldNumber);
+
+  std::optional<SubstitutionResult> result =
+      CreateSubstitutions(request.read(), substitutions);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->ToString(), "waiting for...A");
+}
+
+TEST_F(SubstitutionTest, BlockOnIncompleteRepeated) {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+
+  Substitutions substitutions = BlockCheckRepeatedSubstitution();
+
+  MultimodalMessage request = RepeatedMessage();
+  request.edit()
+      .MutableRepeatedField(RequestProto::kRepeatedFieldFieldNumber)
+      .MarkIncomplete(true);
+
+  std::optional<SubstitutionResult> result =
+      CreateSubstitutions(request.read(), substitutions);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->ToString(), "waiting for...ABC");
 }
 
 }  // namespace

@@ -16,10 +16,12 @@
 #include "base/notreached.h"
 #include "chrome/browser/ash/notifications/deprecation_notification_controller.h"
 #include "chrome/browser/extensions/extension_commands_global_registry.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/common/pref_names.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/events/ash/mojom/modifier_key.mojom-shared.h"
@@ -73,36 +75,6 @@ EventRewriterDelegateImpl::GetKeyboardRemappedModifierValue(
     int device_id,
     ui::mojom::ModifierKey modifier_key,
     const std::string& pref_name) const {
-  // `modifier_key` and `device_id` are unused when the flag is disabled.
-  if (!ash::features::IsInputDeviceSettingsSplitEnabled()) {
-    if (pref_name.empty()) {
-      return std::nullopt;
-    }
-
-    // If we're at the login screen, try to get the pref from the global prefs
-    // dictionary.
-    int value;
-    if (LoginDisplayHost::default_host() &&
-        LoginDisplayHost::default_host()->GetKeyboardRemappedPrefValue(
-            pref_name, &value)) {
-      return static_cast<ui::mojom::ModifierKey>(value);
-    }
-    const PrefService* pref_service = GetPrefService();
-    if (!pref_service) {
-      return std::nullopt;
-    }
-    const PrefService::Preference* preference =
-        pref_service->FindPreference(pref_name);
-    if (!preference) {
-      return std::nullopt;
-    }
-
-    DCHECK_EQ(preference->GetType(), base::Value::Type::INTEGER);
-    return static_cast<ui::mojom::ModifierKey>(
-        preference->GetValue()->GetInt());
-  }
-
-  // `pref_name` is unused when the flag is enabled.
   const mojom::KeyboardSettings* settings =
       input_device_settings_controller_->GetKeyboardSettings(device_id);
   if (!settings) {
@@ -118,12 +90,10 @@ EventRewriterDelegateImpl::GetKeyboardRemappedModifierValue(
 }
 
 bool EventRewriterDelegateImpl::TopRowKeysAreFunctionKeys(int device_id) const {
-  if (ash::features::IsInputDeviceSettingsSplitEnabled()) {
-    const mojom::KeyboardSettings* settings =
-        input_device_settings_controller_->GetKeyboardSettings(device_id);
-    if (settings) {
-      return settings->top_row_are_fkeys;
-    }
+  const mojom::KeyboardSettings* settings =
+      input_device_settings_controller_->GetKeyboardSettings(device_id);
+  if (settings) {
+    return settings->top_row_are_fkeys;
   }
 
   if (ash::features::IsPeripheralCustomizationEnabled()) {
@@ -163,15 +133,27 @@ bool EventRewriterDelegateImpl::IsExtensionCommandRegistered(
   //    going to be executed.
   // Therefore, we skip converting the accelerator if an extension has
   // registered for this shortcut.
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  if (!profile || !extensions::ExtensionCommandsGlobalRegistry::Get(profile))
+  auto* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  if (!active_session) {
     return false;
+  }
+  auto* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          active_session->account_id());
+  if (!browser_context) {
+    return false;
+  }
+  auto* registry =
+      extensions::ExtensionCommandsGlobalRegistry::Get(browser_context);
+  if (!registry) {
+    return false;
+  }
 
   constexpr int kModifierMasks = ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN |
                                  ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN;
   ui::Accelerator accelerator(key_code, flags & kModifierMasks);
-  return extensions::ExtensionCommandsGlobalRegistry::Get(profile)
-      ->IsRegistered(accelerator);
+  return registry->IsRegistered(accelerator);
 }
 
 bool EventRewriterDelegateImpl::IsSearchKeyAcceleratorReserved() const {
@@ -186,11 +168,6 @@ bool EventRewriterDelegateImpl::IsSearchKeyAcceleratorReserved() const {
 
 bool EventRewriterDelegateImpl::RewriteMetaTopRowKeyComboEvents(
     int device_id) const {
-  // When the flag is disabled, `device_id` is unused.
-  if (!ash::features::IsInputDeviceSettingsSplitEnabled()) {
-    return !suppress_meta_top_row_key_rewrites_;
-  }
-
   const mojom::KeyboardSettings* settings =
       input_device_settings_controller_->GetKeyboardSettings(device_id);
   if (settings) {
@@ -306,8 +283,16 @@ bool EventRewriterDelegateImpl::NotifyDeprecatedSixPackKeyRewrite(
 PrefService* EventRewriterDelegateImpl::GetPrefService() const {
   if (pref_service_for_testing_)
     return pref_service_for_testing_;
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  return profile ? profile->GetPrefs() : nullptr;
+  auto* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  if (!active_session) {
+    return nullptr;
+  }
+
+  // Note: User for the active session must exists always.
+  return user_manager::UserManager::Get()
+      ->FindUserAndModify(active_session->account_id())
+      ->GetProfilePrefs();
 }
 
 void EventRewriterDelegateImpl::SuppressModifierKeyRewrites(
@@ -348,11 +333,14 @@ EventRewriterDelegateImpl::GetExtendedFkeySetting(int device_id,
     return std::nullopt;
   }
 
-  CHECK(settings->f11.has_value() && settings->f12.has_value());
-  if (key_code == ui::KeyboardCode::VKEY_F11) {
+  if (settings->f11.has_value() && key_code == ui::KeyboardCode::VKEY_F11) {
     return settings->f11;
+  } else if (settings->f12.has_value() &&
+             key_code == ui::KeyboardCode::VKEY_F12) {
+    return settings->f12;
   }
-  return settings->f12;
+
+  return std::nullopt;
 }
 
 void EventRewriterDelegateImpl::NotifySixPackRewriteBlockedByFnKey(

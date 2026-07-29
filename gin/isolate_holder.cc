@@ -12,6 +12,7 @@
 #include <optional>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/check_op.h"
 #include "base/system/sys_info.h"
 #include "base/task/current_thread.h"
@@ -188,13 +189,12 @@ IsolateHolder::getDefaultIsolateParams() {
   std::unique_ptr<v8::Isolate::CreateParams> params =
       std::make_unique<v8::Isolate::CreateParams>();
   params->code_event_handler = DebugImpl::GetJitCodeEventHandler();
-  params->constraints.ConfigureDefaults(base::SysInfo::AmountOfPhysicalMemory(),
-                                        base::SysInfo::AmountOfVirtualMemory());
+  params->constraints.ConfigureDefaults(
+      base::SysInfo::AmountOfTotalPhysicalMemory().InBytes(),
+      base::SysInfo::AmountOfVirtualMemory().InBytes());
   params->array_buffer_allocator = g_array_buffer_allocator;
   params->allow_atomics_wait = true;
   params->external_references = g_reference_table;
-  params->embedder_wrapper_type_index = kWrapperInfoIndex;
-  params->embedder_wrapper_object_index = kEncodedValueIndex;
   params->fatal_error_callback = g_fatal_error_callback;
   params->oom_error_callback = g_oom_error_callback;
   return params;

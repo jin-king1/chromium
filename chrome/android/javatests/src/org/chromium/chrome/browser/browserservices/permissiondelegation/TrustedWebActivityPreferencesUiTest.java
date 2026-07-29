@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.browserservices.permissiondelegation;
 
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
 
+import androidx.preference.Preference;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.SmallTest;
 
@@ -15,6 +16,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
@@ -23,7 +25,8 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.settings.SettingsActivity;
 import org.chromium.chrome.browser.site_settings.SiteSettingsTestUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.components.browser_ui.settings.ChromeImageViewPreference;
 import org.chromium.components.browser_ui.settings.ExpandablePreferenceGroup;
 import org.chromium.components.browser_ui.site_settings.SingleCategorySettings;
@@ -31,7 +34,7 @@ import org.chromium.components.browser_ui.site_settings.SingleWebsiteSettings;
 import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory;
 import org.chromium.components.browser_ui.site_settings.Website;
 import org.chromium.components.browser_ui.site_settings.WebsiteAddress;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.embedder_support.util.Origin;
 
@@ -40,15 +43,17 @@ import org.chromium.components.embedder_support.util.Origin;
 @CommandLineFlags.Add({
     ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
 })
+@Batch(Batch.PER_CLASS)
 public class TrustedWebActivityPreferencesUiTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private String mPackage;
 
     @Before
     public void setUp() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
 
         mPackage = ApplicationProvider.getApplicationContext().getPackageName();
     }
@@ -60,7 +65,7 @@ public class TrustedWebActivityPreferencesUiTest {
     @Test
     @SmallTest
     @Feature({"Preferences"})
-    @DisabledTest(message = "https://crbug.com/1202711")
+    @DisabledTest(message = "https://crbug.com/40763065")
     public void testSingleCategoryManagedBy() throws Exception {
         final String site = "http://example.com";
         final Origin origin = Origin.create(site);
@@ -71,7 +76,7 @@ public class TrustedWebActivityPreferencesUiTest {
                                 origin,
                                 mPackage,
                                 ContentSettingsType.NOTIFICATIONS,
-                                ContentSettingValues.ALLOW));
+                                ContentSetting.ALLOW));
 
         SettingsActivity settingsActivity =
                 SiteSettingsTestUtils.startSiteSettingsCategory(
@@ -106,7 +111,7 @@ public class TrustedWebActivityPreferencesUiTest {
                             (ExpandablePreferenceGroup)
                                     websitePreferences.findPreference(groupName);
                     Assert.assertEquals(1, group.getPreferenceCount());
-                    androidx.preference.Preference preference = group.getPreference(0);
+                    Preference preference = group.getPreference(0);
                     CharSequence title = preference.getTitle();
                     Assert.assertEquals("example.com", title.toString());
                 });
@@ -133,7 +138,7 @@ public class TrustedWebActivityPreferencesUiTest {
                                 origin,
                                 mPackage,
                                 ContentSettingsType.NOTIFICATIONS,
-                                ContentSettingValues.ALLOW));
+                                ContentSetting.ALLOW));
 
         WebsiteAddress address = WebsiteAddress.create(site);
         Website website = new Website(address, address);

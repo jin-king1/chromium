@@ -8,7 +8,6 @@
 #include <memory>
 #include <string>
 
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/supports_user_data.h"
@@ -18,10 +17,9 @@
 #include "content/browser/renderer_host/code_cache_host_impl.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/common/child_process_id.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
-#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
-#include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/unique_receiver_set.h"
@@ -71,7 +69,7 @@ class CONTENT_EXPORT ServiceWorkerHost : public BucketContext,
 
   ~ServiceWorkerHost() override;
 
-  int worker_process_id() const { return worker_process_id_; }
+  ChildProcessId worker_process_id() const { return worker_process_id_; }
   ServiceWorkerVersion* version() const { return version_; }
   const blink::ServiceWorkerToken& token() const { return token_; }
 
@@ -82,7 +80,7 @@ class CONTENT_EXPORT ServiceWorkerHost : public BucketContext,
   // Completes initialization of this provider host. It is called once a
   // renderer process has been found to host the worker.
   void CompleteStartWorkerPreparation(
-      int process_id,
+      ChildProcessId process_id,
       mojo::PendingReceiver<blink::mojom::BrowserInterfaceBroker>
           broker_receiver,
       mojo::PendingRemote<service_manager::mojom::InterfaceProvider>
@@ -90,6 +88,8 @@ class CONTENT_EXPORT ServiceWorkerHost : public BucketContext,
 
   void CreateWebTransportConnector(
       mojo::PendingReceiver<blink::mojom::WebTransportConnector> receiver);
+  void CreateWebSocketConnector(
+      mojo::PendingReceiver<blink::mojom::WebSocketConnector> receiver);
   // Used when EagerCacheStorageSetupForServiceWorkers is disabled, or when
   // setup for eager cache storage has failed.
   void BindCacheStorage(
@@ -144,10 +144,10 @@ class CONTENT_EXPORT ServiceWorkerHost : public BucketContext,
 
   void BindAIManager(mojo::PendingReceiver<blink::mojom::AIManager> receiver);
 
- private:
   RenderProcessHost* GetProcessHost() const;
 
-  int worker_process_id_;
+ private:
+  ChildProcessId worker_process_id_;
 
   // The service worker being hosted. Raw pointer is safe because the version
   // owns |this|.

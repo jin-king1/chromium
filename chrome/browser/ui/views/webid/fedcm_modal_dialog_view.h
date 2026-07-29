@@ -10,9 +10,10 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/webid/identity_dialog_controller.h"
-#include "content/public/browser/identity_request_dialog_controller.h"
+#include "chrome/browser/ui/webid/identity_ui_utils.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/webid/identity_request_dialog_controller.h"
 
 namespace webid {
 
@@ -27,41 +28,33 @@ class FedCmModalDialogView : public content::WebContentsObserver {
     virtual void OnPopupWindowDestroyed() = 0;
   };
 
-  // This enum describes the outcome of attempting to open the pop-up window and
-  // is used for histograms. Do not remove or modify existing values, but you
-  // may add new values at the end. This enum should be kept in sync with
-  // FedCmShowPopupWindowResult in tools/metrics/histograms/enums.xml.
-  enum class ShowPopupWindowResult {
-    kSuccess,
-    kFailedByInvalidUrl,
-    kFailedForOtherReasons,
-
-    kMaxValue = kFailedForOtherReasons
-  };
-
   // This enum describes the reason for closing the pop-up window and is used
   // for histograms. Do not remove or modify existing values, but you may add
-  // new values at the end. This enum should be kept in sync with
-  // FedCmClosePopupWindowReason in tools/metrics/histograms/enums.xml.
-  enum class ClosePopupWindowReason {
-    kIdpInitiatedClose,
-    kPopupWindowDestroyed,
+  // new values at the end.
+  // LINT.IfChange(ClosePopupWindowReason)
 
+  enum class ClosePopupWindowReason {
+    kIdpInitiatedClose = 0,
+    kPopupWindowDestroyed = 1,
     kMaxValue = kPopupWindowDestroyed
   };
 
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/blink/enums.xml:FedCmClosePopupWindowReason)
+
   // This enum describes the reason for closing the pop-up window and is used
   // for histograms. Do not remove or modify existing values, but you may add
-  // new values at the end. This enum should be kept in sync with
-  // FedCmPopupInteraction in tools/metrics/histograms/enums.xml.
-  enum class PopupInteraction {
-    kLosesFocusAndIdpInitiatedClose,
-    kLosesFocusAndPopupWindowDestroyed,
-    kNeverLosesFocusAndIdpInitiatedClose,
-    kNeverLosesFocusAndPopupWindowDestroyed,
+  // new values at the end.
+  // LINT.IfChange(PopupInteraction)
 
+  enum class PopupInteraction {
+    kLosesFocusAndIdpInitiatedClose = 0,
+    kLosesFocusAndPopupWindowDestroyed = 1,
+    kNeverLosesFocusAndIdpInitiatedClose = 2,
+    kNeverLosesFocusAndPopupWindowDestroyed = 3,
     kMaxValue = kNeverLosesFocusAndPopupWindowDestroyed
   };
+
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/blink/enums.xml:FedCmPopupInteraction)
 
   explicit FedCmModalDialogView(content::WebContents* web_contents,
                                 FedCmModalDialogView::Observer* observer);
@@ -82,8 +75,7 @@ class FedCmModalDialogView : public content::WebContentsObserver {
   virtual void ClosePopupWindow();
   virtual void ResizeAndFocusPopupWindow();
   virtual void SetCustomYPosition(int y);
-  virtual void SetActiveModeSheetType(
-      AccountSelectionView::SheetType sheet_type);
+  virtual void SetActiveModeSheetType(webid::SheetType sheet_type);
   virtual bool UserCloseCancelsFlow();
 
   // content::WebContentsObserver
@@ -116,7 +108,7 @@ class FedCmModalDialogView : public content::WebContentsObserver {
 
   // The sheet type of the active mode dialog which opened this pop-up.
   // `std::nullopt` for non-active mode cases.
-  std::optional<AccountSelectionView::SheetType> active_mode_sheet_type_;
+  std::optional<webid::SheetType> active_mode_sheet_type_;
 
   // Number of times the user lost focus of the pop-up. i.e. number of times
   // `OnWebContentsLostFocus` is called. This is an int because when the user

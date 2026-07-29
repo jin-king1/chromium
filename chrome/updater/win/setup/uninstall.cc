@@ -11,23 +11,26 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <typeinfo>
+#include <utility>
 #include <vector>
 
 #include "base/base_paths.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
 #include "base/process/process.h"
+#include "base/strings/strcat.h"
 #include "base/strings/strcat_win.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_com_initializer.h"
 #include "chrome/installer/util/install_service_work_item.h"
 #include "chrome/installer/util/registry_util.h"
+#include "chrome/updater/branded_constants.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/util.h"
@@ -207,8 +210,8 @@ int UninstallImpl(UpdaterScope scope, bool uninstall_all) {
     if (std::optional<base::FilePath> log_file = GetLogFilePath(scope);
         log_file &&
         base::PathService::Get(IsSystemInstall(scope)
-                                   ? static_cast<int>(base::DIR_SYSTEM_TEMP)
-                                   : static_cast<int>(base::DIR_TEMP),
+                                   ? std::to_underlying(base::DIR_SYSTEM_TEMP)
+                                   : std::to_underlying(base::DIR_TEMP),
                                &temp_dir)) {
       base::CopyFile(*log_file, temp_dir.Append(log_file->BaseName()));
     }

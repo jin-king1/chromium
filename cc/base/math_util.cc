@@ -7,19 +7,23 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+
 #if defined(ARCH_CPU_X86_FAMILY)
 #include <xmmintrin.h>
 #endif
 
+#include "base/containers/span.h"
 #include "base/numerics/angle_conversions.h"
 #include "base/trace_event/traced_value.h"
 #include "base/values.h"
+#include "third_party/skia/include/core/SkPath.h"
 #include "ui/gfx/geometry/linear_gradient.h"
 #include "ui/gfx/geometry/quad_f.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/rrect_f.h"
+#include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/geometry/vector2d_conversions.h"
 #include "ui/gfx/geometry/vector2d_f.h"
@@ -48,7 +52,7 @@ static HomogeneousCoordinate ProjectHomogeneousPoint(
   }
 
   HomogeneousCoordinate result(p.x(), p.y(), z, 1.0);
-  transform.TransformVector4(result.vec.data());
+  transform.TransformVector4(result.vec);
   return result;
 }
 
@@ -65,7 +69,7 @@ static HomogeneousCoordinate MapHomogeneousPoint(
     const gfx::Transform& transform,
     const gfx::PointF& p) {
   HomogeneousCoordinate result(p.x(), p.y(), 0.0, 1.0);
-  transform.TransformVector4(result.vec.data());
+  transform.TransformVector4(result.vec);
   return result;
 }
 
@@ -316,6 +320,26 @@ gfx::Rect MathUtil::ProjectEnclosingClippedRect(const gfx::Transform& transform,
     return gfx::Rect();
 
   return gfx::ToEnclosingRect(projected_rect);
+}
+
+gfx::Rect MathUtil::ProjectEnclosingClippedRectIgnoringError(
+    const gfx::Transform& transform,
+    const gfx::Rect& src_rect,
+    float ignore_error) {
+  if (transform.IsIdentityOrIntegerTranslation()) {
+    return src_rect + gfx::ToFlooredVector2d(transform.To2dTranslation());
+  }
+
+  gfx::RectF projected_rect =
+      ProjectClippedRect(transform, gfx::RectF(src_rect));
+
+  if (std::isnan(projected_rect.x()) || std::isnan(projected_rect.y()) ||
+      std::isnan(projected_rect.right()) ||
+      std::isnan(projected_rect.bottom())) {
+    return gfx::Rect();
+  }
+
+  return gfx::ToEnclosingRectIgnoringError(projected_rect, ignore_error);
 }
 
 gfx::RectF MathUtil::ProjectClippedRect(const gfx::Transform& transform,
@@ -783,11 +807,29 @@ gfx::Vector2dF MathUtil::ProjectVector(const gfx::Vector2dF& source,
                         projected_length * destination.y());
 }
 
+gfx::PointF MathUtil::ScalePointByInverse(const gfx::PointF& point,
+                                          float scale) {
+  DCHECK_GT(std::abs(scale), std::numeric_limits<float>::epsilon());
+  const float inv_scale_magnitude =
+      1.f / std::max(std::numeric_limits<float>::epsilon(), std::abs(scale));
+  gfx::PointF result = point;
+  result.Scale(std::copysign(inv_scale_magnitude, scale));
+  return result;
+}
+
+gfx::Vector2dF MathUtil::ScaleVectorByInverse(const gfx::Vector2dF& vector,
+                                              float scale) {
+  DCHECK_GT(std::abs(scale), std::numeric_limits<float>::epsilon());
+  const float inv_scale_magnitude =
+      1.f / std::max(std::numeric_limits<float>::epsilon(), std::abs(scale));
+  return gfx::ScaleVector2d(vector, std::copysign(inv_scale_magnitude, scale));
+}
+
 bool MathUtil::FromValue(const base::Value* raw_value, gfx::Rect* out_rect) {
   if (!raw_value->is_list())
     return false;
 
-  const base::Value::List& list = raw_value->GetList();
+  const base::ListValue& list = raw_value->GetList();
 
   if (list.size() != 4)
     return false;
@@ -949,6 +991,21 @@ void MathUtil::AddToTracedValue(const char* name,
   res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kLowerLeft).x());
   res->AppendDouble(rect.GetCornerRadii(gfx::RRectF::Corner::kLowerLeft).y());
   res->EndArray();
+}
+
+void MathUtil::AddToTracedValue(const char* name,
+                                const SkPath& path,
+                                base::trace_event::TracedValue* res) {
+  SkRRect rrect;
+  if (path.isRRect(&rrect)) {
+    AddToTracedValue(name, gfx::RRectF(rrect), res);
+  } else {
+    res->BeginDictionary(name);
+    AddToTracedValue("bounds", gfx::SkRectToRectF(path.getBounds()), res);
+    res->SetInteger("num_points", path.countPoints());
+    res->SetInteger("num_verbs", path.countVerbs());
+    res->EndDictionary();
+  }
 }
 
 void MathUtil::AddCornerRadiiToTracedValue(

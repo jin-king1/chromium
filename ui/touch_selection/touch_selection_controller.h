@@ -6,19 +6,19 @@
 #define UI_TOUCH_SELECTION_TOUCH_SELECTION_CONTROLLER_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/vector2d_f.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/selection_bound.h"
 #include "ui/touch_selection/longpress_drag_selector.h"
 #include "ui/touch_selection/selection_event_type.h"
 #include "ui/touch_selection/touch_handle.h"
 #include "ui/touch_selection/touch_handle_orientation.h"
-#include "ui/touch_selection/touch_selection_metrics.h"
 #include "ui/touch_selection/ui_touch_selection_export.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -29,7 +29,6 @@ class Layer;
 
 namespace ui {
 class MotionEvent;
-class Event;
 
 // Interface through which |TouchSelectionController| issues selection-related
 // commands, notifications and requests.
@@ -56,10 +55,10 @@ class UI_TOUCH_SELECTION_EXPORT TouchSelectionController
     : public TouchHandleClient,
       public LongPressDragSelectorClient {
  public:
-  enum ActiveStatus {
-    INACTIVE,
-    INSERTION_ACTIVE,
-    SELECTION_ACTIVE,
+  enum class ActiveStatus {
+    kInactive,
+    kInsertionActive,
+    kSelectionActive,
   };
 
   struct UI_TOUCH_SELECTION_EXPORT Config {
@@ -126,13 +125,6 @@ class UI_TOUCH_SELECTION_EXPORT TouchSelectionController
                               cc::slim::Layer* parent_layer);
 #endif
 
-  // To be called when a menu command has been requested, to dismiss touch
-  // handles and record metrics if needed.
-  void OnMenuCommand(bool should_dismiss_handles);
-
-  // To be called when an event occurs to deactivate touch selection.
-  void OnSessionEndEvent(const Event& event);
-
 // TODO(crbug.com/375388841): Remove once Aura also uses
 // TouchSelectionControllerInputObserver for receiving inputs.
 #if BUILDFLAG(IS_ANDROID)
@@ -197,7 +189,12 @@ class UI_TOUCH_SELECTION_EXPORT TouchSelectionController
  private:
   friend class TouchSelectionControllerTestApi;
 
-  enum InputEventType { TAP, REPEATED_TAP, LONG_PRESS, INPUT_EVENT_TYPE_NONE };
+  enum class InputEventType {
+    kTap,
+    kRepeatedTap,
+    kLongPress,
+    kNone,
+  };
 
   enum class DragSelectorInitiatingGesture { kNone, kLongPress, kDoublePress };
 
@@ -302,7 +299,7 @@ class UI_TOUCH_SELECTION_EXPORT TouchSelectionController
   // Whether a swipe-to-move-cursor gesture is activated.
   bool swipe_to_move_cursor_activated_ = false;
 
-  TouchSelectionSessionMetricsRecorder session_metrics_recorder_;
+  base::WeakPtrFactory<TouchSelectionController> weak_factory_{this};
 };
 
 }  // namespace ui

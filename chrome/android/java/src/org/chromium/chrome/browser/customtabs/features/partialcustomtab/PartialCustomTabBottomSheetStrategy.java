@@ -10,6 +10,8 @@ import static androidx.browser.customtabs.CustomTabsCallback.ACTIVITY_LAYOUT_STA
 import static androidx.browser.customtabs.CustomTabsCallback.ACTIVITY_LAYOUT_STATE_BOTTOM_SHEET_MAXIMIZED;
 import static androidx.browser.customtabs.CustomTabsCallback.ACTIVITY_LAYOUT_STATE_FULL_SCREEN;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.animation.Animator;
 import android.animation.Animator.AnimatorListener;
 import android.animation.AnimatorListenerAdapter;
@@ -44,24 +46,34 @@ import androidx.swiperefreshlayout.widget.CircularProgressDrawable;
 import org.chromium.base.MathUtils;
 import org.chromium.base.SysUtils;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.EnsuresNonNullIf;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.features.partialcustomtab.ContentGestureListener.GestureState;
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbar;
+import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsCoordinator;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.CustomTabProfileType;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
+import org.chromium.chrome.browser.page_load_metrics.PageLoadMetrics;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.TouchEventObserver;
 import org.chromium.components.browser_ui.widget.TouchEventProvider;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.util.ColorUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.function.Supplier;
 
 /**
  * CustomTabHeightStrategy for Partial Custom Tab. An instance of this class should be owned by the
@@ -69,6 +81,7 @@ import java.lang.annotation.RetentionPolicy;
  * https://docs.google.com/document/d/1YuFXHai2JECqAPE_HgamcKid3VTR05GAvJcyb4jaL6o/edit?usp=sharing}
  * for detailed inner workings and issues addressed along the way.
  */
+@NullMarked
 public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStrategy
         implements ConfigurationChangedObserver,
                 ValueAnimator.AnimatorUpdateListener,
@@ -80,6 +93,7 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
     /** Minimal height the bottom sheet CCT should show is half of the display height. */
     private static final float MINIMAL_HEIGHT_RATIO = 0.5f;
 
+    private static final int MINIMAL_ALLOWED_HEIGHT_DP = 220;
     private static final int SPINNER_FADEIN_DURATION_MS = 100;
     private static final int SPINNER_FADEOUT_DURATION_MS = 400;
     private static final int NAVBAR_BUTTON_HIDE_SHOW_DELAY_MS = 150;
@@ -101,23 +115,24 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
     private final AnimatorListener mSpinnerFadeoutAnimatorListener;
     private final @Px int mUnclampedInitialHeight;
     private final boolean mIsFixedHeight;
-    private final Supplier<TouchEventProvider> mTouchEventProvider;
-    private final Supplier<Tab> mTab;
+    private final Supplier<@Nullable TouchEventProvider> mTouchEventProvider;
+    private final Supplier<@Nullable Tab> mTab;
 
     private CustomTabToolbar.HandleStrategy mHandleStrategy;
-    private GestureDetector mGestureDetector;
-    private ContentGestureListener mGestureHandler;
+    private @Nullable GestureDetector mGestureDetector;
+    private @Nullable ContentGestureListener mGestureHandler;
 
-    private TabAnimator mTabAnimator;
+    private final TabAnimator mTabAnimator;
 
     private @HeightStatus int mStatus = HeightStatus.INITIAL_HEIGHT;
 
-    private ImageView mSpinnerView;
-    private CircularProgressDrawable mSpinner;
-    private Runnable mSoftKeyboardRunnable;
+    private @Nullable ImageView mSpinnerView;
+    private @Nullable CircularProgressDrawable mSpinner;
+    private @Nullable Runnable mSoftKeyboardRunnable;
     private boolean mStopShowingSpinner;
     private boolean mRestoreAfterFindPage;
-    private boolean mContentScrollMayResizeTab;
+    private final boolean mContentScrollMayResizeTab;
+    private final boolean mIsEphemeral;
 
     // Y offset when a dragging gesture/animation starts.
     private int mMoveStartY;
@@ -127,11 +142,15 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
     // This is a workaround to an issue of the host app briefly flashing when the tab is resized.
     private boolean mInitFirstHeight;
 
+    // Translucent background color. This keeps the host app visible while the page is loading.
+    private final @ColorInt int mBackgroundColor;
+    private boolean mUseTranslucentBackground;
+
     public PartialCustomTabBottomSheetStrategy(
             Activity activity,
             BrowserServicesIntentDataProvider intentData,
-            Supplier<TouchEventProvider> touchEventProvider,
-            Supplier<Tab> tab,
+            Supplier<@Nullable TouchEventProvider> touchEventProvider,
+            Supplier<@Nullable Tab> tab,
             OnResizedCallback onResizedCallback,
             OnActivityLayoutCallback onActivityLayoutCallback,
             ActivityLifecycleDispatcher lifecycleDispatcher,
@@ -155,6 +174,7 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
         mTabAnimator = new TabAnimator(this, animTime, this::onMoveEnd);
         lifecycleDispatcher.register(this);
         if (startMaximized) mStatus = HeightStatus.TOP;
+        mIsEphemeral = intentData.getCustomTabMode() == CustomTabProfileType.EPHEMERAL;
 
         mSpinnerFadeoutAnimatorListener =
                 new AnimatorListener() {
@@ -166,8 +186,8 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
 
                     @Override
                     public void onAnimationEnd(Animator animator) {
-                        mSpinner.stop();
-                        mSpinnerView.setVisibility(View.GONE);
+                        assumeNonNull(mSpinner).stop();
+                        assumeNonNull(mSpinnerView).setVisibility(View.GONE);
                     }
 
                     @Override
@@ -185,6 +205,13 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
                     new GestureDetector(
                             activity, mGestureHandler, ThreadUtils.getUiThreadHandler());
         }
+        mBackgroundColor = intentData.getTranslucentBackgroundColor(activity);
+    }
+
+    private void setContentVisibility(boolean visible) {
+        mActivity
+                .findViewById(R.id.compositor_view_holder)
+                .setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
     }
 
     @Override
@@ -199,16 +226,21 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
 
     @Override
     public boolean onInterceptTouchEvent(MotionEvent e) {
-        assert mContentScrollMayResizeTab;
+        assert mContentScrollMayResizeTab && mGestureHandler != null && mGestureDetector != null;
         mGestureDetector.onTouchEvent(e);
         return mGestureHandler.getState() == GestureState.DRAG_TAB;
     }
 
     @Override
+    public boolean mayInterceptTouchSequenceInWebContents() {
+        return true;
+    }
+
+    @Override
     public boolean onTouchEvent(MotionEvent e) {
-        assert mContentScrollMayResizeTab;
+        assert mContentScrollMayResizeTab && mGestureHandler != null && mGestureDetector != null;
         if (mGestureHandler.getState() == GestureState.SCROLL_CONTENT) {
-            mTab.get().getContentView().onTouchEvent(e);
+            assumeNonNull(assumeNonNull(mTab.get()).getContentView()).onTouchEvent(e);
             // Do not return here even if motion events are targeted to the content view.
             // We keep feeding the gesture detector so it can monitor the state changes
             // and can switch the target to PCCT when necessary.
@@ -222,7 +254,9 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
 
         // If the user is scrolling and the event is a cancel or up action, update scroll state and
         // return. Fling should have already cleared the gesture state. The following is for
-        // the non-fling release.
+        // the non-fling release. But user gesture intended as a fling action is often recognized
+        // as non-fling release. We compute the velocity in the GestureHandler to determine which
+        // action to take.
         if (mGestureHandler.getState() != GestureState.NONE
                 && (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)) {
             mGestureHandler.doNonFlingRelease();
@@ -297,6 +331,7 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
     @Override
     public void onPostInflationStartup() {
         super.onPostInflationStartup();
+        if (mUseTranslucentBackground) setContentVisibility(false);
 
         // Bottom-sheet can start in fullscreen mode. Remove the top margin.
         if (isFullscreen()) setTopMargins(0, 0);
@@ -323,31 +358,68 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
 
     private int initialHeightInPortraitMode() {
         assert !isFullHeight() : "initialHeightInPortraitMode() is used in portrait mode only";
+        int minInitialHeight = (int) (mDisplayHeight * MINIMAL_HEIGHT_RATIO);
+
+        if (ChromeFeatureList.sPCctMinimumHeight.isEnabled() && mIsEphemeral) {
+            minInitialHeight =
+                    (int) (mDisplayHeight * ChromeFeatureList.sPCctMinimumHeightRatio.getValue());
+            float density = mActivity.getResources().getDisplayMetrics().density;
+            int minAllowedHeightPx = (int) (MINIMAL_ALLOWED_HEIGHT_DP * density);
+            minInitialHeight = Math.max(minAllowedHeightPx, minInitialHeight);
+        }
+
         return MathUtils.clamp(
-                mUnclampedInitialHeight,
-                mDisplayHeight - mStatusBarHeight,
-                (int) (mDisplayHeight * MINIMAL_HEIGHT_RATIO));
+                mUnclampedInitialHeight, mDisplayHeight - mStatusBarHeight, minInitialHeight);
     }
 
     @Override
+    @Initializer
     public void onToolbarInitialized(
-            View coordinatorView, CustomTabToolbar toolbar, @Px int toolbarCornerRadius) {
-        super.onToolbarInitialized(coordinatorView, toolbar, toolbarCornerRadius);
+            View coordinatorView,
+            CustomTabToolbar toolbar,
+            @Px int toolbarCornerRadius,
+            @Nullable CustomTabToolbarButtonsCoordinator toolbarButtonsCoordinator) {
+        super.onToolbarInitialized(
+                coordinatorView, toolbar, toolbarCornerRadius, toolbarButtonsCoordinator);
 
         mHandleStrategy =
                 new PartialCustomTabHandleStrategy(
                         mActivity, this::isFullHeight, () -> mStatus, this);
         toolbar.setHandleStrategy(mHandleStrategy);
-        toolbar.setMinimizeButtonEnabled(false);
+        assumeNonNull(toolbarButtonsCoordinator);
+        toolbarButtonsCoordinator.setMinimizeButtonEnabled(false);
         CustomTabDragBar dragBar = mActivity.findViewById(R.id.drag_bar);
         dragBar.setHandleStrategy(mHandleStrategy);
         View dragHandle = mActivity.findViewById(R.id.drag_handle);
         dragHandle.setOnClickListener(v -> onDragBarTapped());
 
         if (mContentScrollMayResizeTab) {
-            mTouchEventProvider.get().addTouchEventObserver(this);
+            var touchEventProvider = mTouchEventProvider.get();
+            assumeNonNull(touchEventProvider);
+            touchEventProvider.addTouchEventObserver(this);
         }
         updateDragBarVisibility();
+
+        mUseTranslucentBackground =
+                mBackgroundColor != SemanticColorUtils.getDefaultBgColor(mActivity);
+        if (mUseTranslucentBackground) {
+            mActivity
+                    .findViewById(R.id.custom_tabs_content_background)
+                    .setBackgroundColor(mBackgroundColor);
+            PageLoadMetrics.addObserver(
+                    new PageLoadMetrics.Observer() {
+                        @Override
+                        public void onFirstContentfulPaint(
+                                WebContents webContents,
+                                long navigationId,
+                                long navigationStartMicros,
+                                long firstContentfulPaintMs) {
+                            setContentVisibility(true);
+                            PageLoadMetrics.removeObserver(this);
+                        }
+                    },
+                    true);
+        }
     }
 
     private void onDragBarTapped() {
@@ -418,7 +490,7 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
 
         ImageView handle = mActivity.findViewById(R.id.drag_handle);
         if (Color.alpha(scrimColor) != 0) {
-            @ColorInt int handleColor = mActivity.getColor(R.color.drag_handlebar_color_baseline);
+            @ColorInt int handleColor = SemanticColorUtils.getDragHandleColor(mActivity);
             handle.setColorFilter(ColorUtils.overlayColor(handleColor, scrimColor));
         } else {
             handle.clearColorFilter();
@@ -525,7 +597,7 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
 
     private void updateDragBarVisibility() {
         updateDragBarVisibility(
-                /*dragHandlebarVisibility*/ isFixedHeight() ? View.GONE : View.VISIBLE);
+                /* dragHandlebarVisibility= */ isFixedHeight() ? View.GONE : View.VISIBLE);
     }
 
     @Override
@@ -534,7 +606,9 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
         boolean isMaxWidthLandscapeBottomSheet = isMaxWidthLandscapeBottomSheet();
 
         float maxWidthBottomSheetEv =
-                mActivity.getResources().getDimensionPixelSize(R.dimen.default_elevation_2);
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.custom_tabs_max_width_bottom_sheet_elev);
         float regBottomSheetEv =
                 mActivity.getResources().getDimensionPixelSize(R.dimen.custom_tabs_elevation);
         float elevation = isMaxWidthLandscapeBottomSheet ? maxWidthBottomSheetEv : regBottomSheetEv;
@@ -552,9 +626,10 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
                                 .getResources()
                                 .getDimensionPixelSize(R.dimen.custom_tabs_shadow_offset);
         int sideMargin = isMaxWidthLandscapeBottomSheet ? sideOffset : 0;
-        if (handleView != null) {
+        View handleContainer = mActivity.findViewById(R.id.custom_tabs_handle_container);
+        if (handleContainer != null) {
             ViewGroup.MarginLayoutParams lp =
-                    (ViewGroup.MarginLayoutParams) handleView.getLayoutParams();
+                    (ViewGroup.MarginLayoutParams) handleContainer.getLayoutParams();
             lp.setMargins(sideMargin, shadowOffset, sideMargin, 0);
         }
 
@@ -619,6 +694,11 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
                 return;
             }
         }
+
+        if (!mUseTranslucentBackground) triggerSpinnerView(y);
+    }
+
+    private void triggerSpinnerView(int y) {
         // Show the spinner lazily, only when the tab is dragged _up_, which requires showing
         // more area than initial state.
         if (!mStopShowingSpinner
@@ -642,6 +722,7 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
         }
     }
 
+    @EnsuresNonNullIf("mSpinnerView")
     private boolean isSpinnerVisible() {
         return mSpinnerView != null && mSpinnerView.getVisibility() == View.VISIBLE;
     }
@@ -673,13 +754,14 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
             mVersionCompat.setImeStateCallback(this::onImeStateChanged);
         }
 
-        if (AccessibilityState.isScreenReaderEnabled()) {
+        if (AccessibilityState.isComplexUserInteractionServiceEnabled()) {
             int textId =
                     mStatus == HeightStatus.TOP
                             ? R.string.accessibility_custom_tab_expanded
                             : R.string.accessibility_custom_tab_collapsed;
-            getCoordinatorLayout()
-                    .announceForAccessibility(mActivity.getResources().getString(textId));
+            String tabState = mActivity.getResources().getString(textId);
+            getCoordinatorLayout().setAccessibilityPaneTitle(tabState);
+            mActivity.getWindow().setTitle(tabState);
         }
     }
 
@@ -747,14 +829,14 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
         mSpinnerView.setAlpha(0.f);
         mSpinnerView.setVisibility(View.VISIBLE);
         mSpinnerView.animate().alpha(1.f).setDuration(SPINNER_FADEIN_DURATION_MS).setListener(null);
-        mSpinner.start();
+        assumeNonNull(mSpinner).start();
     }
 
     private void centerSpinnerVertically(ViewGroup.LayoutParams lp) {
         int toolbarHeight = mToolbarView.getHeight();
         int cctHeight = mDisplayHeight - mActivity.getWindow().getAttributes().y - toolbarHeight;
         lp.height = cctHeight;
-        mSpinnerView.setLayoutParams(lp);
+        assumeNonNull(mSpinnerView).setLayoutParams(lp);
     }
 
     private void changeVisibilityNavbarButtons(boolean show) {
@@ -771,12 +853,12 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
 
     private void showNavbarButtons(boolean show) {
         // Resizing while the navbar buttons are visible, at times, flashes the host app.
-        // http://crbug/1360425 fixed this for when the navbar buttons are hidden, so taking
+        // http://crbug.com/40863055 fixed this for when the navbar buttons are hidden, so taking
         // advantage of that fix by hiding for a bit the navigation buttons, during the time the
         // flashing usually occurs. The navbar buttons need to be visible while resizing so that
         // the immersive mode confirmation dialog is not displayed, as fixed with
-        // http://crbug/1360453
-        // TODO: http://crbug/1373984 for follow-up on long term solution for fixing host app
+        // http://crbug.com/40863074
+        // TODO: http://crbug.com/40872053 for follow-up on long term solution for fixing host app
         // flashing issues.
         if (!show) {
             changeVisibilityNavbarButtons(false);
@@ -903,8 +985,7 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
 
     @Override
     protected boolean shouldDrawDividerLine() {
-        // Elevation shadows are only rendered properly on devices >= Android Q
-        return SysUtils.isLowEndDevice() || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q;
+        return SysUtils.isLowEndDevice();
     }
 
     // Restore the window upon exiting fullscreen.
@@ -932,8 +1013,12 @@ public class PartialCustomTabBottomSheetStrategy extends PartialCustomTabBaseStr
 
     @Override
     public void destroy() {
-        if (mContentScrollMayResizeTab && mTouchEventProvider.get() != null) {
-            mTouchEventProvider.get().removeTouchEventObserver(this);
+        super.destroy();
+        if (mContentScrollMayResizeTab) {
+            var provider = mTouchEventProvider.get();
+            if (provider != null) {
+                provider.removeTouchEventObserver(this);
+            }
         }
     }
 

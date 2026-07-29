@@ -37,7 +37,6 @@
 <translation id="2311842470354187719">ngắt trang</translation>
 <translation id="2335594187091864976">bộ chọn ngày và giờ</translation>
 <translation id="2393030564806080191">Giá trị màu thập lục phân</translation>
-<translation id="2398813069815436052">đã mở hộp thoại.</translation>
 <translation id="245932805758469625">số giây còn lại của video</translation>
 <translation id="248395913932153421">Ngày</translation>
 <translation id="2508569020611168319">danh sách thẻ</translation>
@@ -129,7 +128,7 @@
 <translation id="576709008726043716">giới thiệu</translation>
 <translation id="5786442179789148008">hiện trình đơn tốc độ phát</translation>
 <translation id="5787939484346677755">đã mở rộng, có các tùy chọn tự động hoàn thành.</translation>
-<translation id="5860033963881614850">Tắt</translation>
+<translation id="5860033963881614850">Đang tắt</translation>
 <translation id="591047860372322273">hộp tìm kiếm</translation>
 <translation id="5916664084637901428">Đang bật</translation>
 <translation id="5966707198760109579">Tuần</translation>
@@ -223,6 +222,7 @@
 <translation id="8634971699417195529">Hiển thị bộ chọn tháng</translation>
 <translation id="8711688047404765493">thiết bị ra</translation>
 <translation id="8808573423886751634">chương</translation>
+<translation id="8826423933757944500">chú thích</translation>
 <translation id="8851136666856101339">chính</translation>
 <translation id="8861621546968757188">nút bật lên mở ra hộp thoại</translation>
 <translation id="8889402386540077796">Màu sắc</translation>
@@ -238,7 +238,6 @@
 <translation id="9138385573473225930">thông báo</translation>
 <translation id="9155987714137265666"><ph name="WEEK" />, bắt đầu vào <ph name="WEEK_START_DATE" /></translation>
 <translation id="9168329111483466115">chú thích cuối trang</translation>
-<translation id="945780513535800434">Đã kiểm tra một phần</translation>
 <translation id="954003015749068518">vào chế độ hình trong hình</translation>
 <translation id="966787709310836684">menu</translation>
 </translationbundle>

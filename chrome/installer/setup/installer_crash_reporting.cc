@@ -8,10 +8,10 @@
 #include <memory>
 #include <vector>
 
+#include "base/base_paths.h"
 #include "base/command_line.h"
 #include "base/debug/leak_annotations.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/strings/to_string.h"
@@ -22,6 +22,9 @@
 #include "chrome/install_static/install_details.h"
 #include "chrome/installer/setup/installer_crash_reporter_client.h"
 #include "chrome/installer/setup/installer_state.h"
+#include "chrome/installer/util/logging_installer.h"
+#include "chrome/updater/updater_scope.h"
+#include "chrome/updater/util/path_util.h"
 #include "components/crash/core/app/crashpad.h"
 #include "components/crash/core/common/crash_key.h"
 #include "components/crash/core/common/crash_keys.h"
@@ -64,7 +67,8 @@ bool GetSystemTemp(base::FilePath* temp) {
 
 }  // namespace
 
-void ConfigureCrashReporting(const InstallerState& installer_state) {
+void ConfigureCrashReporting(const InitialPreferences& initial_prefs,
+                             const InstallerState& installer_state) {
   // This is inspired by work done in various parts of Chrome startup to connect
   // to the crash service. Since the installer does not split its work between
   // a stub .exe and a main .dll, crash reporting can be configured in one place
@@ -90,8 +94,22 @@ void ConfigureCrashReporting(const InstallerState& installer_state) {
     }
   }
 
+  std::vector<base::FilePath> attachments;
+  attachments.push_back(GetLogFilePath(initial_prefs));
+  const updater::UpdaterScope updater_scope =
+      installer_state.system_install() ? updater::UpdaterScope::kSystem
+                                       : updater::UpdaterScope::kUser;
+  if (auto path = updater::GetLogFilePath(updater_scope);
+      path.has_value() && !path->empty()) {
+    attachments.push_back(*std::move(path));
+  }
+  if (auto path = updater::GetHistoryLogFilePath(updater_scope);
+      path.has_value() && !path->empty()) {
+    attachments.push_back(*std::move(path));
+  }
+
   crash_reporter::InitializeCrashpadWithEmbeddedHandler(
-      true, "Chrome Installer", "", base::FilePath());
+      true, "Chrome Installer", "", base::FilePath(), attachments);
 }
 
 void SetInitialCrashKeys(const InstallerState& state) {
@@ -110,7 +128,7 @@ void SetInitialCrashKeys(const InstallerState& state) {
     state_crash_key.Set(base::WideToUTF8(state_key));
 
   // Set crash keys containing the registry values used to determine Chrome's
-  // update channel at process startup; see https://crbug.com/579504.
+  // update channel at process startup; see https://crbug.com/41235563.
   const auto& details = install_static::InstallDetails::Get();
 
   static CrashKeyString<50> ap_value("ap");

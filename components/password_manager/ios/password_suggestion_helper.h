@@ -11,6 +11,7 @@
 
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/browser/form_suggestion_provider.h"
+#import "components/password_manager/ios/account_select_fill_data.h"
 #import "url/origin.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -86,12 +87,29 @@ class WebState;
                              (SuggestionsAvailableCompletion)completion;
 
 // Retrieves password form fill data for `frameId` and `username`.
-- (std::unique_ptr<password_manager::FillData>)
+// `isBackupCredential` indicates whether the retrieved password should be the
+// backup or the main one.
+- (password_manager::FillDataRetrievalResult)
     passwordFillDataForUsername:(NSString*)username
+             isBackupCredential:(BOOL)isBackupCredential
                      forFrameId:(const std::string&)frameId;
+
+// Retrieves password form fill data for the corresponding `frameId`,
+// `username`, and contextual information. `isBackupCredential` indicates
+// whether the retrieved password should be the backup or the main one.
+- (password_manager::FillDataRetrievalResult)
+    passwordFillDataForUsername:(NSString*)username
+             isBackupCredential:(BOOL)isBackupCredential
+        likelyRealPasswordField:(bool)passwordField
+                 formIdentifier:(autofill::FormRendererId)formId
+                fieldIdentifier:(autofill::FieldRendererId)fieldId
+                        frameId:(const std::string&)frameId;
 
 // The following methods should be called to maintain the correct state along
 // with password forms.
+
+// Cleans up the state associated with the frame when it becomes unavailable.
+- (void)cleanupForFrameId:(const std::string&)frameId;
 
 // Resets fill data, callbacks and state flags for new page. This method should
 // be called in password controller's -webState:didFinishNavigation:.

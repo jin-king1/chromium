@@ -6,6 +6,7 @@
 #define COMPONENTS_BROWSING_DATA_CORE_COUNTERS_HISTORY_COUNTER_H_
 
 #include <memory>
+#include <string>
 
 #include "base/memory/raw_ptr.h"
 #include "base/sequence_checker.h"
@@ -30,13 +31,19 @@ class HistoryCounter : public browsing_data::BrowsingDataCounter {
     HistoryResult(const HistoryCounter* source,
                   ResultInt value,
                   bool is_sync_enabled,
-                  bool has_synced_visits);
+                  bool has_synced_visits,
+                  std::string last_visited_domain);
     ~HistoryResult() override;
 
     bool has_synced_visits() const { return has_synced_visits_; }
 
+    const std::string& last_visited_domain() const {
+      return last_visited_domain_;
+    }
+
    private:
     bool has_synced_visits_;
+    std::string last_visited_domain_;
   };
 
   explicit HistoryCounter(history::HistoryService* history_service,
@@ -54,9 +61,11 @@ class HistoryCounter : public browsing_data::BrowsingDataCounter {
  private:
   void Count() override;
 
-  void OnGetLocalHistoryCount(history::HistoryCountResult result);
-  void OnGetWebHistoryCount(history::WebHistoryService::Request* request,
-                            base::optional_ref<const base::Value::Dict> result);
+  void OnGetWebHistoryCount(
+      history::WebHistoryService::Request* request,
+      base::optional_ref<const history::WebHistoryService::QueryHistoryResult>
+          result);
+  void OnGetUniqueDomains(history::DomainsVisitedResult result);
   void OnWebHistoryTimeout();
   void MergeResults();
 
@@ -72,8 +81,8 @@ class HistoryCounter : public browsing_data::BrowsingDataCounter {
 
   bool has_synced_visits_;
 
-  bool local_counting_finished_;
   bool web_counting_finished_;
+  bool domain_fetching_finished_;
 
   base::CancelableTaskTracker cancelable_task_tracker_;
   std::unique_ptr<history::WebHistoryService::Request> web_history_request_;
@@ -81,7 +90,8 @@ class HistoryCounter : public browsing_data::BrowsingDataCounter {
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  BrowsingDataCounter::ResultInt local_result_;
+  std::string last_visited_domain_;
+  BrowsingDataCounter::ResultInt unique_domains_result_;
 
   base::WeakPtrFactory<HistoryCounter> weak_ptr_factory_{this};
 };

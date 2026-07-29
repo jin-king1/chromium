@@ -15,7 +15,6 @@
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/thread_annotations.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/messaging_layer/upload/file_upload_job.h"
 #include "components/reporting/resources/resource_manager.h"
 #include "components/reporting/util/status.h"
@@ -36,6 +35,9 @@ class FileUploadDelegate : public FileUploadJob::Delegate {
   ~FileUploadDelegate() override;
 
   static std::string GetFileUploadUrl();
+
+  static void SetAllowedDirectoryForTesting(
+      const base::FilePath* allowed_directory);
 
  private:
   // Helper classes.
@@ -124,6 +126,10 @@ class FileUploadDelegate : public FileUploadJob::Delegate {
 
   // Maximum upload size allowed for a single request.
   int64_t max_upload_buffer_size_ GUARDED_BY_CONTEXT(sequence_checker_);
+
+  static bool IsPathAllowed(const base::FilePath& path);
+
+  bool IsResumableUploadUrlAllowed(const GURL& url) const;
 
   // Weak pointer factory used by this delegate.
   // Note that weak pointers here are all dereferenced on UI task runner, and so

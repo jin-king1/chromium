@@ -3,18 +3,19 @@
 // found in the LICENSE file.
 
 #import "base/feature_list.h"
+#import "base/strings/strcat.h"
 #import "components/signin/internal/identity_manager/account_capabilities_constants.h"
-#import "components/supervised_user/core/common/features.h"
 #import "components/supervised_user/core/common/supervised_user_constants.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/policy/model/policy_earl_grey_matchers.h"
+#import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_metrics.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/public/toolbar_constants.h"
-#import "ios/chrome/browser/ui/popup_menu/popup_menu_constants.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
@@ -52,6 +53,12 @@ id<GREYMatcher> SupervisedIncognitoMessage() {
 @end
 
 @implementation SupervisedUserIncognitoModeTestCase
+
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  config.features_enabled.push_back(kChromeNextIa);
+  return config;
+}
 
 - (void)setupAndRegisterHistogramTester {
   chrome_test_util::GREYAssertErrorNil(
@@ -103,18 +110,21 @@ id<GREYMatcher> SupervisedIncognitoMessage() {
 
   [[EarlGrey selectElementWithMatcher:ShowTabsButton()]
       performAction:grey_longPress()];
+
   policy::AssertButtonInCollectionEnabled(IDS_IOS_TOOLS_MENU_NEW_TAB);
   policy::AssertButtonInCollectionDisabled(
       IDS_IOS_TOOLS_MENU_NEW_INCOGNITO_TAB);
 
-  // Dismiss the popup menu by tapping anywhere.
-  [[EarlGrey selectElementWithMatcher:ShowTabsButton()]
-      performAction:grey_tap()];
+  // Dismiss the popup menu.
+  [ChromeEarlGreyUI dismissContextMenuIfPresent];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                      grey_kindOfClassName(@"_UIContextMenuContainerView")];
 
   [SigninEarlGrey signOut];
 
   [[EarlGrey selectElementWithMatcher:ShowTabsButton()]
       performAction:grey_longPress()];
+
   policy::AssertButtonInCollectionEnabled(IDS_IOS_TOOLS_MENU_NEW_TAB);
   policy::AssertButtonInCollectionEnabled(IDS_IOS_TOOLS_MENU_NEW_INCOGNITO_TAB);
 }
@@ -154,17 +164,15 @@ id<GREYMatcher> SupervisedIncognitoMessage() {
                                    grey_sufficientlyVisible(), nil)]
       performAction:grey_tap()];
 
-  // Wait for the Family Link page to finish loading.
-  [ChromeEarlGrey waitForPageToFinishLoading];
+  // The Family Link url will load in a new tab.
+  [ChromeEarlGrey waitForMainTabCount:2];
 
-  // For testing, there will be a redirect to the main Family Link website and
-  // thus we only compare the hostnames.
-  std::string expectedHostname =
-      GURL(supervised_user::kManagedByParentUiMoreInfoUrl).host();
-  GREYAssertEqual([ChromeEarlGrey webStateLastCommittedURL].host(),
-                  expectedHostname,
-                  @"Did not open the correct Learn more URL with hostname %s",
-                  expectedHostname.c_str());
+  GURL currentURL = [ChromeEarlGrey webStateVisibleURL];
+  GURL expectedURL = GURL(supervised_user::kManagedByParentUiMoreInfoUrl);
+  GREYAssertEqual(
+      expectedURL, currentURL,
+      @"Page navigated unexpectedly to %s, instead of the Family Link website",
+      currentURL.spec().c_str());
 
   GREYAssertNil([MetricsAppInterface
                     expectTotalCount:1
@@ -226,9 +234,6 @@ id<GREYMatcher> SupervisedIncognitoMessage() {
     "-", test_switches::kAddFakeIdentitiesAtStartup, "=",
         [FakeSystemIdentity encodeIdentitiesToBase64:@[ fakeIdentity ]]
   }));
-  config.features_enabled.push_back(
-      supervised_user::
-          kReplaceSupervisionSystemCapabilitiesWithAccountCapabilitiesOnIOS);
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   // Set up the histogram tester after restarting.
@@ -287,8 +292,10 @@ id<GREYMatcher> SupervisedIncognitoMessage() {
   [[EarlGrey selectElementWithMatcher:SupervisedIncognitoMessage()]
       assertWithMatcher:grey_sufficientlyVisible()];
 
-  // Check that the edit button is disabled.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridEditButton()]
+  // Check that the overflow menu button is disabled.
+  [[EarlGrey selectElementWithMatcher:
+                 grey_allOf(chrome_test_util::TabGridOverflowMenuButton(),
+                            grey_sufficientlyVisible(), nil)]
       assertWithMatcher:grey_not(grey_enabled())];
 }
 
@@ -313,8 +320,8 @@ id<GREYMatcher> SupervisedIncognitoMessage() {
                   @"Incognito tab count should be 0");
 
   // The user should stay on the new tab page.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::NewTabPageOmnibox()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::FakeOmnibox()]
+      assertWithMatcher:grey_notNil()];
 }
 
 @end

@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/sharing_status_coordinator.h"
 
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
+#import "ios/chrome/browser/first_run/public/best_features_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/password_sharing_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/password_sharing_metrics.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/recipient_info.h"
@@ -14,12 +15,13 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/sharing_status_view_controller_presentation_delegate.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
+#import "ios/chrome/browser/welcome_back/model/features.h"
 #import "url/gurl.h"
 
 @interface SharingStatusCoordinator () <
@@ -74,7 +76,7 @@
       [[SharingStatusViewController alloc] initWithNibName:nil bundle:nil];
   self.viewController.delegate = self;
 
-  ProfileIOS* profile = self.browser->GetProfile();
+  ProfileIOS* profile = self.profile;
   self.mediator = [[SharingStatusMediator alloc]
         initWithAuthService:AuthenticationServiceFactory::GetForProfile(profile)
       accountManagerService:ChromeAccountManagerServiceFactory::GetForProfile(
@@ -90,7 +92,7 @@
   self.viewController.presentationController.delegate = self;
   self.viewController.sheetPresentationController.detents = @[
     self.viewController.preferredHeightDetent,
-    UISheetPresentationControllerDetent.largeDetent
+    [UISheetPresentationControllerDetent largeDetent]
   ];
 
   [self.baseViewController presentViewController:self.viewController
@@ -124,6 +126,10 @@
 
 - (void)startPasswordSharing {
   [self.delegate startPasswordSharing];
+  // Notify Welcome Back to remove Share Passwords from the eligible features.
+  if (IsWelcomeBackEnabled()) {
+    MarkWelcomeBackFeatureUsed(BestFeaturesItemType::kSharePasswordsWithFamily);
+  }
 }
 
 - (void)changePasswordLinkWasTapped {
@@ -140,8 +146,8 @@
 
 // Opens `URL` in new tab and closes the settings UI.
 - (void)openURLInNewTabAndCloseSettings:(const GURL&)URL {
-  id<ApplicationCommands> handler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), ApplicationCommands);
+  id<SceneCommands> handler =
+      HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneCommands);
   OpenNewTabCommand* command = [OpenNewTabCommand commandWithURLFromChrome:URL];
   [handler closePresentedViewsAndOpenURL:command];
 }

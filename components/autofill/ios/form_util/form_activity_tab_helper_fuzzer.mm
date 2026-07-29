@@ -2,21 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "components/autofill/ios/form_util/form_activity_tab_helper.h"
+#import "components/autofill/ios/form_util/form_activity_tab_helper.h"
 
-#include "base/logging.h"
+#import "base/logging.h"
 #import "base/memory/raw_ptr.h"
-#include "base/rand_util.h"
+#import "base/rand_util.h"
 #import "base/test/ios/wait_util.h"
-#include "ios/web/public/js_messaging/fuzzer_support/fuzzer_util.h"
-#include "ios/web/public/js_messaging/fuzzer_support/js_message.pb.h"
-#include "ios/web/public/js_messaging/script_message.h"
-#include "ios/web/public/js_messaging/web_frame.h"
+#import "ios/web/public/js_messaging/fuzzer_support/fuzzer_util.h"
+#import "ios/web/public/js_messaging/fuzzer_support/js_message.pb.h"
+#import "ios/web/public/js_messaging/script_message.h"
+#import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
-#include "ios/web/public/test/fuzzer_env_with_web_state.h"
-#include "ios/web/public/test/web_state_test_util.h"
+#import "ios/web/public/test/fuzzer_env_with_web_state.h"
+#import "ios/web/public/test/web_state_test_util.h"
 #import "ios/web/public/web_state.h"
-#include "testing/libfuzzer/proto/lpm_interface.h"
+#import "testing/libfuzzer/proto/lpm_interface.h"
 
 using base::test::ios::kWaitForJSCompletionTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
@@ -62,11 +62,13 @@ DEFINE_PROTO_FUZZER(const web::ScriptMessageProto& proto_js_message) {
   // creating |Env|. This is because if the |frameID| in |ScriptMessage| is
   // invalid, the fuzzed API will return early and skip most of the interesting
   // logic.
-  if (script_message->body() && script_message->body()->is_dict()) {
+  if (script_message->legacy_body() &&
+      script_message->legacy_body()->is_dict()) {
     // Insert the |frameID| at 98% probability. We still want to check how API
     // behaves at an invalid |frameID|.
     if (base::RandDouble() < 0.98) {
-      script_message->body()->GetDict().Set("frameID", env.main_frame_id_);
+      script_message->legacy_body()->GetDict().Set("frameID",
+                                                   env.main_frame_id_);
     }
   }
 

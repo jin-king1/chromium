@@ -4,7 +4,9 @@
 
 #import "ios/chrome/common/app_group/app_group_helper.h"
 
+#import "base/apple/backup_util.h"
 #import "base/apple/bundle_locations.h"
+#import "base/apple/foundation_util.h"
 #import "base/check.h"
 #import "ios/chrome/common/ios_app_bundle_id_prefix_buildflags.h"
 
@@ -32,7 +34,7 @@
 
   // On a device, the entitlements should always provide an application group to
   // the application. This is not the case on simulator.
-  DCHECK(TARGET_IPHONE_SIMULATOR);
+  DCHECK(TARGET_OS_SIMULATOR);
   return [NSUserDefaults standardUserDefaults];
 }
 
@@ -70,6 +72,7 @@
                                                        error:nil]) {
     return nil;
   }
+  base::apple::SetBackupExclusion(base::apple::NSURLToFilePath(pictureDataURL));
   return pictureDataURL;
 }
 

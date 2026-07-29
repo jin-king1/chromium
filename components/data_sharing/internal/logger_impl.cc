@@ -5,6 +5,7 @@
 #include "components/data_sharing/internal/logger_impl.h"
 
 #include "base/command_line.h"
+#include "base/logging.h"
 #include "components/data_sharing/public/switches.h"
 
 namespace data_sharing {
@@ -48,6 +49,8 @@ void LoggerImpl::Log(base::Time event_time,
                      const std::string& source_file,
                      int source_line,
                      const std::string& message) {
+  VLOG(1) << log_source << ": " << message;
+
   if (!ShouldEnableDebugLogs()) {
     return;
   }

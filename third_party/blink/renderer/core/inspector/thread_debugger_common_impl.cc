@@ -8,6 +8,7 @@
 
 #include "base/check.h"
 #include "base/rand_util.h"
+#include "gin/public/gin_embedders.h"
 #include "third_party/blink/public/mojom/frame/user_activation_notification_type.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_evaluation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
@@ -132,18 +133,18 @@ unsigned ThreadDebuggerCommonImpl::PromiseRejected(
     v8::Local<v8::Context> context,
     const String& error_message,
     v8::Local<v8::Value> exception,
-    std::unique_ptr<SourceLocation> location) {
+    SourceLocation* location) {
   const StringView default_message = "Uncaught (in promise)";
   String message = error_message;
   if (message.empty()) {
     message = "Uncaught (in promise)";
-  } else if (message.StartsWith("Uncaught ")) {
-    message = "Uncaught (in promise)" + StringView(message, 8);
+  } else if (message.starts_with("Uncaught ")) {
+    message = StrCat({"Uncaught (in promise)", StringView(message, 8)});
   }
 
-  ReportConsoleMessage(
-      ToExecutionContext(context), mojom::ConsoleMessageSource::kJavaScript,
-      mojom::ConsoleMessageLevel::kError, message, location.get());
+  ReportConsoleMessage(ToExecutionContext(context),
+                       mojom::ConsoleMessageSource::kJavaScript,
+                       mojom::ConsoleMessageLevel::kError, message, location);
   String url = location->Url();
   return GetV8Inspector()->exceptionThrown(
       context, ToV8InspectorStringView(default_message), exception,
@@ -485,19 +486,20 @@ bool ReadAdditionalSerializationParameters(
   v8::MaybeLocal<v8::Value> include_shadow_tree_parameter =
       additional_parameters->Get(
           context,
-          V8String(context->GetIsolate(), kIncludeShadowTreeParameterName));
+          V8String(v8::Isolate::GetCurrent(), kIncludeShadowTreeParameterName));
   if (!include_shadow_tree_parameter.IsEmpty()) {
     v8::Local<v8::Value> include_shadow_tree_value =
         include_shadow_tree_parameter.ToLocalChecked();
     if (!include_shadow_tree_value->IsUndefined()) {
       if (!include_shadow_tree_value->IsString()) {
         *error_message = ToV8InspectorStringBuffer(
-            String("Parameter " + String(kIncludeShadowTreeParameterName) +
-                   " should be of type string."));
+            StrCat({"Parameter ", kIncludeShadowTreeParameterName,
+                    " should be of type string."}));
         return false;
       }
-      String include_shadow_tree_string = ToCoreString(
-          context->GetIsolate(), include_shadow_tree_value.As<v8::String>());
+      String include_shadow_tree_string =
+          ToCoreString(v8::Isolate::GetCurrent(),
+                       include_shadow_tree_value.As<v8::String>());
 
       if (include_shadow_tree_string == kIncludeShadowTreeValueNone) {
         include_shadow_tree = ShadowTreeSerialization::kNone;
@@ -507,24 +509,24 @@ bool ReadAdditionalSerializationParameters(
         include_shadow_tree = ShadowTreeSerialization::kAll;
       } else {
         *error_message = ToV8InspectorStringBuffer(
-            String("Unknown value " + String(kIncludeShadowTreeParameterName) +
-                   ":" + include_shadow_tree_string));
+            StrCat({"Unknown value ", kIncludeShadowTreeParameterName, ":",
+                    include_shadow_tree_string}));
         return false;
       }
     }
   }
 
   v8::MaybeLocal<v8::Value> max_node_depth_parameter =
-      additional_parameters->Get(
-          context, V8String(context->GetIsolate(), kMaxNodeDepthParameterName));
+      additional_parameters->Get(context, V8String(v8::Isolate::GetCurrent(),
+                                                   kMaxNodeDepthParameterName));
   if (!max_node_depth_parameter.IsEmpty()) {
     v8::Local<v8::Value> max_node_depth_value =
         max_node_depth_parameter.ToLocalChecked();
     if (!max_node_depth_value->IsUndefined()) {
       if (!max_node_depth_value->IsInt32()) {
         *error_message = ToV8InspectorStringBuffer(
-            String("Parameter " + String(kMaxNodeDepthParameterName) +
-                   " should be of type int."));
+            StrCat({"Parameter ", kMaxNodeDepthParameterName,
+                    " should be of type int."}));
         return false;
       }
       max_node_depth = max_node_depth_value.As<v8::Int32>()->Value();
@@ -672,7 +674,7 @@ ThreadDebuggerCommonImpl::descriptionForValueSubtype(
     }
     DCHECK(description.length());
 
-    return ToV8InspectorStringBuffer(description.ToString());
+    return ToV8InspectorStringBuffer(description);
   }
   return nullptr;
 }
@@ -695,9 +697,9 @@ static v8::Maybe<bool> CreateDataProperty(v8::Local<v8::Context> context,
                                           v8::Local<v8::Object> object,
                                           v8::Local<v8::Name> key,
                                           v8::Local<v8::Value> value) {
-  v8::TryCatch try_catch(context->GetIsolate());
+  v8::TryCatch try_catch(v8::Isolate::GetCurrent());
   v8::Isolate::DisallowJavascriptExecutionScope throw_js(
-      context->GetIsolate(),
+      v8::Isolate::GetCurrent(),
       v8::Isolate::DisallowJavascriptExecutionScope::THROW_ON_FAILURE);
   return object->CreateDataProperty(context, key, value);
 }
@@ -710,7 +712,7 @@ static void CreateFunctionPropertyWithData(
     v8::Local<v8::Value> data,
     const char* description,
     v8::SideEffectType side_effect_type) {
-  v8::Local<v8::String> func_name = V8String(context->GetIsolate(), name);
+  v8::Local<v8::String> func_name = V8String(v8::Isolate::GetCurrent(), name);
   v8::Local<v8::Function> func;
   if (!v8::Function::New(context, callback, data, 0,
                          v8::ConstructorBehavior::kThrow, side_effect_type)
@@ -718,14 +720,14 @@ static void CreateFunctionPropertyWithData(
     return;
   func->SetName(func_name);
   v8::Local<v8::String> return_value =
-      V8String(context->GetIsolate(), description);
+      V8String(v8::Isolate::GetCurrent(), description);
   v8::Local<v8::Function> to_string_function;
   if (v8::Function::New(context, ReturnDataCallback, return_value, 0,
                         v8::ConstructorBehavior::kThrow,
                         v8::SideEffectType::kHasNoSideEffect)
           .ToLocal(&to_string_function))
     CreateDataProperty(context, func,
-                       V8AtomicString(context->GetIsolate(), "toString"),
+                       V8AtomicString(v8::Isolate::GetCurrent(), "toString"),
                        to_string_function);
   CreateDataProperty(context, object, func_name, func);
 }
@@ -735,9 +737,9 @@ v8::Maybe<bool> ThreadDebuggerCommonImpl::CreateDataPropertyInArray(
     v8::Local<v8::Array> array,
     int index,
     v8::Local<v8::Value> value) {
-  v8::TryCatch try_catch(context->GetIsolate());
+  v8::TryCatch try_catch(v8::Isolate::GetCurrent());
   v8::Isolate::DisallowJavascriptExecutionScope throw_js(
-      context->GetIsolate(),
+      v8::Isolate::GetCurrent(),
       v8::Isolate::DisallowJavascriptExecutionScope::THROW_ON_FAILURE);
   return array->CreateDataProperty(context, index, value);
 }
@@ -749,9 +751,11 @@ void ThreadDebuggerCommonImpl::CreateFunctionProperty(
     v8::FunctionCallback callback,
     const char* description,
     v8::SideEffectType side_effect_type) {
-  CreateFunctionPropertyWithData(context, object, name, callback,
-                                 v8::External::New(context->GetIsolate(), this),
-                                 description, side_effect_type);
+  CreateFunctionPropertyWithData(
+      context, object, name, callback,
+      v8::External::New(v8::Isolate::GetCurrent(), this,
+                        gin::kThreadDebuggerCommonImplTag),
+      description, side_effect_type);
 }
 
 void ThreadDebuggerCommonImpl::installAdditionalCommandLineAPI(
@@ -775,7 +779,7 @@ void ThreadDebuggerCommonImpl::installAdditionalCommandLineAPI(
       "function getAccessibleRole(node) { [Command Line API] }",
       v8::SideEffectType::kHasNoSideEffect);
 
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   ScriptEvaluationResult result =
       ClassicScript::CreateUnspecifiedScript(
           "(function(e) { console.log(e.type, e); })",
@@ -824,40 +828,50 @@ static Vector<String> NormalizeEventTypes(
           ToCoreString(isolate, v8::Local<v8::String>::Cast(type_value)));
     }
   }
-  if (info.Length() == 1)
-    types.AppendVector(
-        Vector<String>({"mouse",   "key",          "touch",
-                        "pointer", "control",      "load",
-                        "unload",  "abort",        "error",
-                        "select",  "input",        "change",
-                        "submit",  "reset",        "focus",
-                        "blur",    "resize",       "scroll",
-                        "search",  "devicemotion", "deviceorientation"}));
+  if (info.Length() == 1) {
+    static constexpr std::string_view kAllEvents[] = {
+        "mouse",   "key",          "touch",
+        "pointer", "control",      "load",
+        "unload",  "abort",        "error",
+        "select",  "input",        "change",
+        "submit",  "reset",        "focus",
+        "blur",    "resize",       "scroll",
+        "search",  "devicemotion", "deviceorientation",
+    };
+    types.append_range(kAllEvents);
+  }
 
   Vector<String> output_types;
   for (wtf_size_t i = 0; i < types.size(); ++i) {
-    if (types[i] == "mouse")
-      output_types.AppendVector(
-          Vector<String>({"auxclick", "click", "dblclick", "mousedown",
-                          "mouseeenter", "mouseleave", "mousemove", "mouseout",
-                          "mouseover", "mouseup", "mouseleave", "mousewheel"}));
-    else if (types[i] == "key")
-      output_types.AppendVector(
-          Vector<String>({"keydown", "keyup", "keypress", "textInput"}));
-    else if (types[i] == "touch")
-      output_types.AppendVector(Vector<String>(
-          {"touchstart", "touchmove", "touchend", "touchcancel"}));
-    else if (types[i] == "pointer")
-      output_types.AppendVector(Vector<String>(
-          {"pointerover", "pointerout", "pointerenter", "pointerleave",
-           "pointerdown", "pointerup", "pointermove", "pointercancel",
-           "gotpointercapture", "lostpointercapture"}));
-    else if (types[i] == "control")
-      output_types.AppendVector(
-          Vector<String>({"resize", "scroll", "zoom", "focus", "blur", "select",
-                          "input", "change", "submit", "reset"}));
-    else
+    if (types[i] == "mouse") {
+      static constexpr std::string_view kMouseEvents[] = {
+          "auxclick",    "click",      "dblclick",   "mousedown",
+          "mouseeenter", "mouseleave", "mousemove",  "mouseout",
+          "mouseover",   "mouseup",    "mouseleave", "mousewheel"};
+      output_types.append_range(kMouseEvents);
+    } else if (types[i] == "key") {
+      static constexpr std::string_view kKeyEvents[] = {
+          "keydown", "keyup", "keypress", "textInput"};
+      output_types.append_range(kKeyEvents);
+    } else if (types[i] == "touch") {
+      static constexpr std::string_view kTouchEvents[] = {
+          "touchstart", "touchmove", "touchend", "touchcancel"};
+      output_types.append_range(kTouchEvents);
+    } else if (types[i] == "pointer") {
+      static constexpr std::string_view kPointerEvents[] = {
+          "pointerover",       "pointerout",    "pointerenter",
+          "pointerleave",      "pointerdown",   "pointerup",
+          "pointermove",       "pointercancel", "gotpointercapture",
+          "lostpointercapture"};
+      output_types.append_range(kPointerEvents);
+    } else if (types[i] == "control") {
+      static constexpr std::string_view kControlEvents[] = {
+          "resize", "scroll", "zoom",   "focus",  "blur",
+          "select", "input",  "change", "submit", "reset"};
+      output_types.append_range(kControlEvents);
+    } else {
       output_types.push_back(types[i]);
+    }
   }
   return output_types;
 }
@@ -942,7 +956,8 @@ void ThreadDebuggerCommonImpl::GetEventListenersCallback(
     return;
 
   ThreadDebuggerCommonImpl* debugger = static_cast<ThreadDebuggerCommonImpl*>(
-      v8::Local<v8::External>::Cast(callback_info.Data())->Value());
+      v8::Local<v8::External>::Cast(callback_info.Data())
+          ->Value(gin::kThreadDebuggerCommonImplTag));
   DCHECK(debugger);
   v8::Isolate* isolate = callback_info.GetIsolate();
   v8::Local<v8::Context> context = isolate->GetCurrentContext();
@@ -1001,25 +1016,32 @@ static uint64_t GetTraceId(ThreadDebuggerCommonImpl* this_thread_debugger,
 
 void ThreadDebuggerCommonImpl::consoleTime(v8::Isolate* isolate,
                                            v8::Local<v8::String> label) {
-  TRACE_EVENT_COPY_NESTABLE_ASYNC_BEGIN0(
-      "blink.console", ToCoreString(isolate, label).Utf8().c_str(),
-      TRACE_ID_WITH_SCOPE("console.time",
-                          TRACE_ID_LOCAL(GetTraceId(this, label))));
+  TRACE_EVENT_BEGIN(
+      "blink.console",
+      perfetto::DynamicString(ToCoreString(isolate, label).Utf8()),
+      perfetto::NamedTrack("console.time", GetTraceId(this, label)));
 }
 
 void ThreadDebuggerCommonImpl::consoleTimeEnd(v8::Isolate* isolate,
                                               v8::Local<v8::String> label) {
-  TRACE_EVENT_COPY_NESTABLE_ASYNC_END0(
-      "blink.console", ToCoreString(isolate, label).Utf8().c_str(),
-      TRACE_ID_WITH_SCOPE("console.time",
-                          TRACE_ID_LOCAL(GetTraceId(this, label))));
+  TRACE_EVENT_END(
+      "blink.console",
+      perfetto::NamedTrack("console.time", GetTraceId(this, label)));
 }
 
 void ThreadDebuggerCommonImpl::consoleTimeStamp(v8::Isolate* isolate,
                                                 v8::Local<v8::String> label) {
+  v8::LocalVector<v8::Value> empty_args(isolate);
+  consoleTimeStampWithArgs(isolate, label, empty_args);
+}
+
+void ThreadDebuggerCommonImpl::consoleTimeStampWithArgs(
+    v8::Isolate* isolate,
+    v8::Local<v8::String> label,
+    const v8::LocalVector<v8::Value>& args) {
   DEVTOOLS_TIMELINE_TRACE_EVENT_INSTANT(
       "TimeStamp", inspector_time_stamp_event::Data,
-      CurrentExecutionContext(isolate_), ToCoreString(isolate, label));
+      CurrentExecutionContext(isolate_), ToCoreString(isolate, label), args);
   probe::ConsoleTimeStamp(isolate_, label);
 }
 

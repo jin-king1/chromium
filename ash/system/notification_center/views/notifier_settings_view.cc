@@ -36,6 +36,8 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_id.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/paint_recorder.h"
@@ -73,7 +75,6 @@ namespace ash {
 
 using message_center::MessageCenter;
 using message_center::NotifierId;
-using ContentLayerType = AshColorProvider::ContentLayerType;
 
 namespace {
 
@@ -406,8 +407,6 @@ class EmptyNotifierView : public views::View {
 
  public:
   EmptyNotifierView() {
-    const SkColor text_color = AshColorProvider::Get()->GetContentLayerColor(
-        ContentLayerType::kTextColorPrimary);
     auto layout = std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0);
     layout->set_main_axis_alignment(
@@ -417,21 +416,22 @@ class EmptyNotifierView : public views::View {
     SetLayoutManager(std::move(layout));
 
     views::ImageView* icon = new views::ImageView();
-    icon->SetImage(
-        ui::ImageModel::FromVectorIcon(kNotificationCenterEmptyIcon, text_color,
-                                       message_center_style::kEmptyIconSize));
+    icon->SetImage(ui::ImageModel::FromVectorIcon(
+        kNotificationCenterEmptyIcon, cros_tokens::kTextColorPrimary,
+        message_center_style::kEmptyIconSize));
     icon->SetBorder(
         views::CreateEmptyBorder(message_center_style::kEmptyIconPadding));
     AddChildViewRaw(icon);
 
     views::Label* label = new views::Label(
         l10n_util::GetStringUTF16(IDS_ASH_MESSAGE_CENTER_NO_NOTIFIERS));
-    label->SetEnabledColor(text_color);
+    label->SetEnabledColor(cros_tokens::kTextColorPrimary);
     label->SetAutoColorReadabilityEnabled(false);
     label->SetSubpixelRenderingEnabled(false);
     // "Roboto-Medium, 12sp" is specified in the mock.
     label->SetFontList(
         gfx::FontList().DeriveWithWeight(gfx::Font::Weight::MEDIUM));
+    label->SetEnabledColor(cros_tokens::kTextColorPrimary);
     label_ = AddChildViewRaw(label);
   }
 
@@ -439,12 +439,6 @@ class EmptyNotifierView : public views::View {
   EmptyNotifierView& operator=(const EmptyNotifierView&) = delete;
 
  private:
-  void OnThemeChanged() override {
-    views::View::OnThemeChanged();
-    label_->SetEnabledColor(AshColorProvider::Get()->GetContentLayerColor(
-        ContentLayerType::kTextColorPrimary));
-  }
-
   raw_ptr<views::Label> label_;
 };
 
@@ -461,8 +455,7 @@ class NotifierViewCheckbox : public views::Checkbox {
   // views::Checkbox:
   SkColor GetIconImageColor(int icon_state) const override {
     if (icon_state & IconState::CHECKED) {
-      return AshColorProvider::Get()->GetContentLayerColor(
-          ContentLayerType::kIconColorProminent);
+      return GetColorProvider()->GetColor(cros_tokens::kIconColorProminent);
     }
     return views::Checkbox::GetIconImageColor(icon_state);
   }
@@ -492,8 +485,7 @@ class NotifierButtonNameView : public views::Label {
     SetEnabledColor(
         cached_notifier_enforced_
             ? SkColorSetA(GetEnabledColor(), gfx::kDisabledControlAlpha)
-            : AshColorProvider::Get()->GetContentLayerColor(
-                  ContentLayerType::kTextColorPrimary));
+            : GetColorProvider()->GetColor(cros_tokens::kTextColorPrimary));
   }
 
   // NotifierButtonNameView uses different EnabledColor based on the notifier
@@ -511,17 +503,12 @@ class PrimaryTextColorLabel : public ::views::Label {
 
  public:
   explicit PrimaryTextColorLabel(const std::u16string& text)
-      : views::Label(text) {}
+      : views::Label(text) {
+    SetEnabledColor(cros_tokens::kTextColorPrimary);
+  }
   PrimaryTextColorLabel(const PrimaryTextColorLabel&) = delete;
   PrimaryTextColorLabel& operator=(const PrimaryTextColorLabel&) = delete;
   ~PrimaryTextColorLabel() override = default;
-
- private:
-  void OnThemeChanged() override {
-    Label::OnThemeChanged();
-    SetEnabledColor(AshColorProvider::Get()->GetContentLayerColor(
-        ContentLayerType::kTextColorPrimary));
-  }
 };
 
 BEGIN_METADATA(PrimaryTextColorLabel)
@@ -532,20 +519,14 @@ class AdaptiveBadgingIcon : public ::views::ImageView {
   METADATA_HEADER(AdaptiveBadgingIcon, views::ImageView)
 
  public:
-  AdaptiveBadgingIcon() = default;
+  AdaptiveBadgingIcon() {
+    SetImage(ui::ImageModel::FromVectorIcon(kSystemTrayAppBadgingIcon,
+                                            cros_tokens::kIconColorPrimary,
+                                            kMenuIconSize));
+  }
   AdaptiveBadgingIcon(const AdaptiveBadgingIcon&) = delete;
   AdaptiveBadgingIcon& operator=(const AdaptiveBadgingIcon&) = delete;
   ~AdaptiveBadgingIcon() override = default;
-
- private:
-  void OnThemeChanged() override {
-    views::ImageView::OnThemeChanged();
-    SetImage(ui::ImageModel::FromVectorIcon(
-        kSystemTrayAppBadgingIcon,
-        AshColorProvider::Get()->GetContentLayerColor(
-            ContentLayerType::kIconColorPrimary),
-        kMenuIconSize));
-  }
 };
 
 BEGIN_METADATA(AdaptiveBadgingIcon)
@@ -576,8 +557,7 @@ NotifierSettingsView::NotifierButton::NotifierButton(
           },
           this));
   name_view->SetAutoColorReadabilityEnabled(false);
-  name_view->SetEnabledColor(AshColorProvider::Get()->GetContentLayerColor(
-      ContentLayerType::kTextColorPrimary));
+  name_view->SetEnabledColor(cros_tokens::kTextColorPrimary);
   name_view->SetSubpixelRenderingEnabled(false);
   // "Roboto-Regular, 13sp" is specified in the mock.
   name_view->SetFontList(
@@ -632,10 +612,9 @@ void NotifierSettingsView::NotifierButton::UpdateIconImage(
     const gfx::ImageSkia& icon) {
   if (icon.isNull()) {
     icon_view_->SetImage(ui::ImageModel::FromVectorIcon(
-        message_center::kProductIcon,
-        AshColorProvider::Get()->GetContentLayerColor(
-            ContentLayerType::kIconColorPrimary),
-        kEntryIconSize));
+        ::features::IsRoundedIconsEnabled() ? message_center::kChromeProductIcon
+                                            : message_center::kProductOldIcon,
+        cros_tokens::kIconColorPrimary, kEntryIconSize));
   } else {
     icon_view_->SetImage(ui::ImageModel::FromImageSkia(icon));
     icon_view_->SetImageSize(gfx::Size(kEntryIconSize, kEntryIconSize));
@@ -799,9 +778,7 @@ void NotifierSettingsView::NotifierButton::GridChanged() {
   if (!GetEnabled()) {
     auto policy_enforced_icon = std::make_unique<views::ImageView>();
     policy_enforced_icon->SetImage(ui::ImageModel::FromVectorIcon(
-        kSystemMenuBusinessIcon,
-        AshColorProvider::Get()->GetContentLayerColor(
-            ContentLayerType::kIconColorPrimary),
+        kSystemMenuBusinessIcon, cros_tokens::kIconColorPrimary,
         kEntryIconSize));
     layout->AddColumn(
         views::LayoutAlignment::kCenter, views::LayoutAlignment::kCenter,
@@ -826,22 +803,14 @@ NotifierSettingsView::NotifierSettingsView() {
   auto header_view = std::make_unique<views::View>();
   header_view->SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0));
-  // There should be no bottom border under the header view if quick
-  // settings notification permissions split is enabled.
-  if (!features::IsSettingsAppNotificationSettingsEnabled()) {
-    header_view->SetBorder(views::CreateSolidSidedBorder(
-        gfx::Insets::TLBR(0, 0, 4, 0), kTopBorderColor));
-  }
-
-  const SkColor text_color = AshColorProvider::Get()->GetContentLayerColor(
-      ContentLayerType::kTextColorPrimary);
-  const SkColor icon_color = AshColorProvider::Get()->GetContentLayerColor(
-      ContentLayerType::kIconColorPrimary);
+  header_view->SetBorder(views::CreateSolidSidedBorder(
+      gfx::Insets::TLBR(0, 0, 4, 0), kTopBorderColor));
 
   // Row for the app badging toggle button.
   auto app_badging_icon = std::make_unique<AdaptiveBadgingIcon>();
   app_badging_icon->SetImage(ui::ImageModel::FromVectorIcon(
-      kSystemTrayAppBadgingIcon, icon_color, kMenuIconSize));
+      kSystemTrayAppBadgingIcon, cros_tokens::kIconColorPrimary,
+      kMenuIconSize));
   auto app_badging_label =
       std::make_unique<views::Label>(l10n_util::GetStringUTF16(
           IDS_ASH_MESSAGE_CENTER_APP_BADGING_BUTTON_TOOLTIP));
@@ -891,57 +860,35 @@ NotifierSettingsView::NotifierSettingsView() {
   SetQuietModeState(MessageCenter::Get()->IsQuietMode());
   header_view->AddChildView(std::move(quiet_mode_view));
 
-  // With SettingsAppNotificationSettings enabled, notification settings should
-  // be managed through the settings app. The Quick Settings notification
-  // settings UI should redirect users to the settings app in that case.
-  // TODO(crbug/1194632): Add links to open settings page or lacros-browser.
-  if (features::IsSettingsAppNotificationSettingsEnabled()) {
-    auto notification_settings_label =
-        std::make_unique<PrimaryTextColorLabel>(l10n_util::GetStringUTF16(
-            IDS_ASH_MESSAGE_CENTER_NOTIFICATION_SETTINGS_LABEL));
-    notification_settings_label->SetFontList(gfx::FontList().Derive(
-        kLabelFontSizeDelta, gfx::Font::NORMAL, gfx::Font::Weight::MEDIUM));
-    notification_settings_label->SetAutoColorReadabilityEnabled(false);
-    notification_settings_label->SetEnabledColor(text_color);
-    notification_settings_label->SetSubpixelRenderingEnabled(false);
-    notification_settings_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    notification_settings_label->SetMultiLine(true);
-    notification_settings_label->SetBorder(
-        views::CreateEmptyBorder(kLabelPadding));
-    notification_settings_label_ =
-        header_view->AddChildView(std::move(notification_settings_label));
-    header_view_ = AddChildView(std::move(header_view));
-  } else {
-    auto top_label =
-        std::make_unique<PrimaryTextColorLabel>(l10n_util::GetStringUTF16(
-            IDS_ASH_MESSAGE_CENTER_SETTINGS_DIALOG_DESCRIPTION));
-    top_label->SetBorder(views::CreateEmptyBorder(kLabelPadding));
-    // "Roboto-Medium, 13sp" is specified in the mock.
-    top_label->SetFontList(gfx::FontList().Derive(
-        kLabelFontSizeDelta, gfx::Font::NORMAL, gfx::Font::Weight::MEDIUM));
-    top_label->SetAutoColorReadabilityEnabled(false);
-    top_label->SetEnabledColor(text_color);
-    top_label->SetSubpixelRenderingEnabled(false);
-    top_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    top_label->SetMultiLine(true);
-    top_label_ = header_view->AddChildView(std::move(top_label));
+  auto top_label =
+      std::make_unique<PrimaryTextColorLabel>(l10n_util::GetStringUTF16(
+          IDS_ASH_MESSAGE_CENTER_SETTINGS_DIALOG_DESCRIPTION));
+  top_label->SetBorder(views::CreateEmptyBorder(kLabelPadding));
+  // "Roboto-Medium, 13sp" is specified in the mock.
+  top_label->SetFontList(gfx::FontList().Derive(
+      kLabelFontSizeDelta, gfx::Font::NORMAL, gfx::Font::Weight::MEDIUM));
+  top_label->SetAutoColorReadabilityEnabled(false);
+  top_label->SetEnabledColor(cros_tokens::kTextColorPrimary);
+  top_label->SetSubpixelRenderingEnabled(false);
+  top_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  top_label->SetMultiLine(true);
+  top_label_ = header_view->AddChildView(std::move(top_label));
 
-    header_view_ = AddChildView(std::move(header_view));
+  header_view_ = AddChildView(std::move(header_view));
 
-    auto scroller = std::make_unique<views::ScrollView>();
-    scroller->SetBackgroundColor(std::nullopt);
-    scroll_bar_ = scroller->SetVerticalScrollBar(
-        std::make_unique<views::OverlayScrollBar>(
-            views::ScrollBar::Orientation::kVertical));
-    scroller->SetDrawOverflowIndicator(false);
-    scroller_ = AddChildView(std::move(scroller));
+  auto scroller = std::make_unique<views::ScrollView>();
+  scroller->SetBackgroundColor(std::nullopt);
+  scroll_bar_ =
+      scroller->SetVerticalScrollBar(std::make_unique<views::OverlayScrollBar>(
+          views::ScrollBar::Orientation::kVertical));
+  scroller->SetDrawOverflowIndicator(false);
+  scroller_ = AddChildView(std::move(scroller));
 
-    no_notifiers_view_ = AddChildView(std::make_unique<EmptyNotifierView>());
+  no_notifiers_view_ = AddChildView(std::make_unique<EmptyNotifierView>());
 
-    OnNotifiersUpdated({});
-    NotifierSettingsController::Get()->AddNotifierSettingsObserver(this);
-    NotifierSettingsController::Get()->GetNotifiers();
-  }
+  OnNotifiersUpdated({});
+  NotifierSettingsController::Get()->AddNotifierSettingsObserver(this);
+  NotifierSettingsController::Get()->GetNotifiers();
 
   GetViewAccessibility().SetRole(ax::mojom::Role::kList);
   GetViewAccessibility().SetName(l10n_util::GetStringUTF16(
@@ -958,22 +905,19 @@ bool NotifierSettingsView::IsScrollable() {
 
 void NotifierSettingsView::SetQuietModeState(bool is_quiet_mode) {
   quiet_mode_toggle_->SetIsOn(is_quiet_mode);
-  const SkColor icon_color = AshColorProvider::Get()->GetContentLayerColor(
-      ContentLayerType::kIconColorPrimary);
   if (is_quiet_mode) {
     quiet_mode_icon_->SetImage(ui::ImageModel::FromVectorIcon(
-        kSystemTrayDoNotDisturbIcon, icon_color, kMenuIconSize));
+        kSystemTrayDoNotDisturbIcon, cros_tokens::kIconColorPrimary,
+        kMenuIconSize));
   } else {
     quiet_mode_icon_->SetImage(ui::ImageModel::FromVectorIcon(
-        kDoNotDisturbDisabledIcon, icon_color, kMenuIconSize));
+        kDoNotDisturbDisabledIcon, cros_tokens::kIconColorPrimary,
+        kMenuIconSize));
   }
 }
 
 void NotifierSettingsView::OnNotifiersUpdated(
     const std::vector<NotifierMetadata>& notifiers) {
-  // We do not show notifier metadata when notifications settings are
-  // split out of the notifier_settings_view.
-  DCHECK(!features::IsSettingsAppNotificationSettingsEnabled());
   // TODO(tetsui): currently notifier settings list doesn't update after once
   // it's loaded, in order to retain scroll position.
   if (scroller_->contents() && buttons_.size() > 0) {
@@ -1012,11 +956,6 @@ void NotifierSettingsView::OnNotifiersUpdated(
 
 void NotifierSettingsView::OnNotifierIconUpdated(const NotifierId& notifier_id,
                                                  const gfx::ImageSkia& icon) {
-  // Notifier icons are not shown when notification permissions splitting is
-  // enabled.
-  if (features::IsSettingsAppNotificationSettingsEnabled()) {
-    return;
-  }
   for (NotifierButton* button : buttons_) {
     if (button->notifier_id() == notifier_id) {
       button->UpdateIconImage(icon);
@@ -1028,11 +967,6 @@ void NotifierSettingsView::OnNotifierIconUpdated(const NotifierId& notifier_id,
 void NotifierSettingsView::Layout(PassKey) {
   int header_height = header_view_->GetHeightForWidth(width());
   header_view_->SetBounds(0, 0, width(), header_height);
-  // |scroller_| and |no_notifiers_view_| do not exist when notifications
-  // settings are split out of the notifier_settings_view.
-  if (features::IsSettingsAppNotificationSettingsEnabled()) {
-    return;
-  }
 
   views::View* contents_view = scroller_->contents();
   int original_scroll_position = scroller_->GetVisibleRect().y();
@@ -1053,14 +987,6 @@ void NotifierSettingsView::Layout(PassKey) {
 
 gfx::Size NotifierSettingsView::GetMinimumSize() const {
   gfx::Size size(kWidth, kMinimumHeight);
-  // |scroller_| does not exist when notifications settings are split out of the
-  // notifier_settings_view. Thus, minimum size should only take |header_view_|
-  // into consideration.
-  if (features::IsSettingsAppNotificationSettingsEnabled()) {
-    size.set_height(
-        std::max(size.height(), header_view_->GetPreferredSize().height()));
-    return size;
-  }
   int total_height = header_view_->GetPreferredSize().height() +
                      scroller_->contents()->GetPreferredSize().height();
   if (total_height > kMinimumHeight) {
@@ -1072,12 +998,6 @@ gfx::Size NotifierSettingsView::GetMinimumSize() const {
 gfx::Size NotifierSettingsView::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
   gfx::Size header_size = header_view_->GetPreferredSize();
-  // |scroller_| and |no_notifiers_view_| do not exist when notifications
-  // settings are split out of the notifier_settings_view.
-  if (features::IsSettingsAppNotificationSettingsEnabled()) {
-    return gfx::Size(header_size.width(),
-                     std::max(kMinimumHeight, header_size.height()));
-  }
 
   gfx::Size content_size = scroller_->contents()->GetPreferredSize();
   int no_notifiers_height = 0;
@@ -1096,20 +1016,10 @@ bool NotifierSettingsView::OnKeyPressed(const ui::KeyEvent& event) {
     return true;
   }
 
-  // |scroller_| does not exist when notifications settings are split out of the
-  // notifier_settings_view so it cannot consume key events.
-  if (features::IsSettingsAppNotificationSettingsEnabled()) {
-    return false;
-  }
   return scroller_->OnKeyPressed(event);
 }
 
 bool NotifierSettingsView::OnMouseWheel(const ui::MouseWheelEvent& event) {
-  // |scroller_| does not exist when notifications settings are split out of the
-  // notifier_settings_view so mouse wheel events are not consumed.
-  if (features::IsSettingsAppNotificationSettingsEnabled()) {
-    return false;
-  }
   return scroller_->OnMouseWheel(event);
 }
 
@@ -1127,13 +1037,11 @@ std::unique_ptr<views::View> NotifierSettingsView::CreateToggleButtonRow(
   icon->SetBorder(views::CreateEmptyBorder(kToggleButtonRowLabelPadding));
   row_view->AddChildView(std::move(icon));
 
-  const SkColor text_color = AshColorProvider::Get()->GetContentLayerColor(
-      ContentLayerType::kTextColorPrimary);
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   // "Roboto-Regular, 13sp" is specified in the mock.
   label->SetFontList(gfx::FontList().DeriveWithSizeDelta(kLabelFontSizeDelta));
   label->SetAutoColorReadabilityEnabled(false);
-  label->SetEnabledColor(text_color);
+  label->SetEnabledColor(cros_tokens::kTextColorPrimary);
   label->SetSubpixelRenderingEnabled(false);
   label->SetBorder(views::CreateEmptyBorder(kToggleButtonRowLabelPadding));
   auto* label_ptr = row_view->AddChildView(std::move(label));

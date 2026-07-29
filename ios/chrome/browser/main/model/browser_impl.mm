@@ -7,6 +7,8 @@
 #import "base/check.h"
 #import "base/memory/ptr_util.h"
 #import "ios/chrome/browser/main/model/browser_agent_util.h"
+#import "ios/chrome/browser/saved_tab_groups/model/tab_group_service.h"
+#import "ios/chrome/browser/saved_tab_groups/model/tab_group_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser_observer.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -23,7 +25,7 @@ BrowserImpl::BrowserImpl(ProfileIOS* profile,
                          Type type)
     : BrowserWebStateListDelegate(profile, insertion_policy, activation_policy),
       type_(type),
-      web_state_list_(this),
+      web_state_list_(this, TabGroupServiceFactory::GetForProfile(profile)),
       scene_state_(scene_state),
       command_dispatcher_(command_dispatcher),
       active_browser_(active_browser ?: this) {
@@ -39,6 +41,12 @@ BrowserImpl::~BrowserImpl() {
   for (auto& observer : observers_) {
     observer.BrowserDestroyed(this);
   }
+
+  // Destroy all attached UserData before invalidating the instance vtable.
+  // As most of them have a pointer back to the Browser, this ensures they
+  // are destroyed while the pointer is still valid (i.e. they can use the
+  // pointer in their destructor, even if they don't observe the Browser).
+  ClearAllUserData();
 }
 
 Browser::Type BrowserImpl::type() const {

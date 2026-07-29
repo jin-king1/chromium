@@ -15,6 +15,7 @@
 #import "ios/web_view/internal/affiliations/web_view_affiliation_service_factory.h"
 #import "ios/web_view/internal/app/application_context.h"
 #import "ios/web_view/internal/autofill/cwv_autofill_data_manager_internal.h"
+#import "ios/web_view/internal/autofill/cwv_password_affiliation.h"
 #import "ios/web_view/internal/autofill/web_view_personal_data_manager_factory.h"
 #import "ios/web_view/internal/browser_state_keyed_service_factories.h"
 #import "ios/web_view/internal/cwv_global_state_internal.h"
@@ -61,7 +62,8 @@ NSHashTable<CWVWebViewConfiguration*>* gNonPersistentConfigurations = nil;
     return;
   }
 
-  CHECK([[CWVGlobalState sharedInstance] isStarted]);
+  DCHECK([[CWVGlobalState sharedInstance] isStarted]);
+  [[CWVGlobalState sharedInstance] start];
 
   ios_web_view::EnsureBrowserStateKeyedServiceFactoriesBuilt();
 
@@ -146,9 +148,13 @@ NSHashTable<CWVWebViewConfiguration*>* gNonPersistentConfigurations = nil;
     scoped_refptr<password_manager::PasswordStoreInterface> passwordStore =
         ios_web_view::WebViewAccountPasswordStoreFactory::GetForBrowserState(
             self.browserState, ServiceAccessType::EXPLICIT_ACCESS);
+
     _autofillDataManager = [[CWVAutofillDataManager alloc]
-        initWithPersonalDataManager:personalDataManager
-                      passwordStore:passwordStore.get()];
+         initWithPersonalDataManager:personalDataManager
+                       passwordStore:passwordStore.get()
+        isPasswordAffiliationEnabled:
+            self.browserState->GetPrefs()->GetBoolean(
+                ios_web_view::kCWVPasswordAffiliationEnabled)];
   }
   return _autofillDataManager;
 }
@@ -216,6 +222,8 @@ NSHashTable<CWVWebViewConfiguration*>* gNonPersistentConfigurations = nil;
 
 - (void)shutDown {
   [_autofillDataManager shutDown];
+  [_leakCheckService shutDown];
+  [_syncController shutDown];
   for (CWVWebView* webView in _webViews) {
     [webView shutDown];
   }

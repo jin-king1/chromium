@@ -4,17 +4,16 @@
 
 #include "components/safe_browsing/content/renderer/phishing_classifier/phishing_image_embedder.h"
 
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/trace_event/trace_event.h"
-#include "components/safe_browsing/buildflags.h"
+#include "components/safe_browsing/content/renderer/phishing_classifier/phishing_dom_utils.h"
 #include "components/safe_browsing/content/renderer/phishing_classifier/phishing_visual_feature_extractor.h"
-#include "components/safe_browsing/content/renderer/phishing_classifier/scorer.h"
+#include "components/safe_browsing/core/common/phishing_classifier/scorer.h"
+#include "components/safe_browsing/core/common/visual_utils.h"
 #include "content/public/renderer/render_frame.h"
-#include "third_party/blink/public/platform/web_url.h"
-#include "third_party/blink/public/platform/web_url_request.h"
-#include "third_party/blink/public/web/web_document.h"
-#include "third_party/blink/public/web/web_document_loader.h"
 #include "third_party/blink/public/web/web_local_frame.h"
-#include "third_party/blink/public/web/web_view.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace safe_browsing {
 
@@ -29,9 +28,12 @@ PhishingImageEmbedder::~PhishingImageEmbedder() {
   DCHECK(done_callback_.is_null());
 }
 
-void PhishingImageEmbedder::BeginImageEmbedding(DoneCallback done_callback) {
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("safe_browsing", "PhishingImageEmbedding",
-                                    this);
+void PhishingImageEmbedder::BeginImageEmbedding(
+    bool can_extract_visual_features,
+    DoneCallback done_callback) {
+  TRACE_EVENT_BEGIN("safe_browsing", "PhishingImageEmbedding",
+                    perfetto::NamedTrack::FromPointer(
+                        "safe_browsing::PhishingImageEmbedder", this));
   DCHECK(is_ready());
 
   // However, in an opt build, we will go ahead and clean up the pending
@@ -41,57 +43,86 @@ void PhishingImageEmbedder::BeginImageEmbedding(DoneCallback done_callback) {
   visual_extractor_ = std::make_unique<PhishingVisualFeatureExtractor>();
   done_callback_ = std::move(done_callback);
 
+  blink::WebLocalFrame* frame = render_frame_->GetWebFrame();
+
+  PhishingProcessStatus status = CanPerformPhishingDetection(frame);
+  switch (status) {
+    case PhishingProcessStatus::kInvalidUrlFormat:
+      RunFailureCallback(Result::kInvalidURLFormatRequest);
+      return;
+    case PhishingProcessStatus::kInvalidDomLoader:
+      RunFailureCallback(Result::kInvalidDocumentLoader);
+      return;
+    case PhishingProcessStatus::kValid:
+      break;
+  }
+
   visual_extractor_->ExtractFeatures(
-      render_frame_->GetWebFrame(),
+      frame,
       base::BindOnce(&PhishingImageEmbedder::OnPlaybackDone,
-                     weak_factory_.GetWeakPtr()));
+                     weak_factory_.GetWeakPtr(), can_extract_visual_features));
 }
 
-void PhishingImageEmbedder::OnPlaybackDone(std::unique_ptr<SkBitmap> bitmap) {
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
+void PhishingImageEmbedder::OnPlaybackDone(bool can_extract_visual_features,
+                                           std::unique_ptr<SkBitmap> bitmap) {
   if (bitmap) {
     bitmap_ = std::move(bitmap);
+
     ScorerStorage::GetInstance()
         ->GetScorer()
         ->ApplyVisualTfLiteModelImageEmbedding(
             *bitmap_,
             base::BindOnce(&PhishingImageEmbedder::OnImageEmbeddingDone,
-                           weak_factory_.GetWeakPtr()));
+                           weak_factory_.GetWeakPtr(),
+                           can_extract_visual_features));
   } else {
-    RunFailureCallback();
+    RunFailureCallback(Result::kVisualExtractionFailed);
   }
-#else
-  RunFailureCallback();
-#endif
 }
 
 void PhishingImageEmbedder::CancelPendingImageEmbedding() {
-  DCHECK(is_ready());
   visual_extractor_.reset();
   weak_factory_.InvalidateWeakPtrs();
   Clear();
 }
 
 void PhishingImageEmbedder::OnImageEmbeddingDone(
+    bool can_extract_visual_features,
     ImageFeatureEmbedding image_feature_embedding) {
-  if (image_feature_embedding.embedding_value_size() > 0) {
-    Scorer* scorer = ScorerStorage::GetInstance()->GetScorer();
-    image_feature_embedding.set_embedding_model_version(
-        scorer->image_embedding_tflite_model_version());
+  if (can_extract_visual_features) {
+    base::ThreadPool::PostTaskAndReplyWithResult(
+        FROM_HERE,
+        {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+         base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+        base::BindOnce(&visual_utils::ExtractVisualFeatures, *bitmap_),
+        base::BindOnce(&PhishingImageEmbedder::OnVisualFeaturesExtracted,
+                       weak_factory_.GetWeakPtr(), image_feature_embedding));
+  } else {
+    RunCallback(Result::kSuccess, image_feature_embedding, VisualFeatures());
   }
-  RunCallback(image_feature_embedding);
+}
+
+void PhishingImageEmbedder::OnVisualFeaturesExtracted(
+    ImageFeatureEmbedding image_feature_embedding,
+    std::unique_ptr<VisualFeatures> visual_features) {
+  RunCallback(Result::kSuccess, image_feature_embedding,
+              *visual_features.get());
 }
 
 void PhishingImageEmbedder::RunCallback(
-    const ImageFeatureEmbedding& image_feature_embedding) {
-  TRACE_EVENT_NESTABLE_ASYNC_END0("safe_browsing", "PhishingImageEmbedding",
-                                  this);
-  std::move(done_callback_).Run(image_feature_embedding);
+    Result result,
+    const ImageFeatureEmbedding& image_feature_embedding,
+    const VisualFeatures& visual_features) {
+  TRACE_EVENT_END("safe_browsing", /* PhishingImageEmbedding */
+                  perfetto::NamedTrack::FromPointer(
+                      "safe_browsing::PhishingImageEmbedder", this));
+  std::move(done_callback_)
+      .Run(result, image_feature_embedding, visual_features);
   Clear();
 }
 
-void PhishingImageEmbedder::RunFailureCallback() {
-  RunCallback(ImageFeatureEmbedding());
+void PhishingImageEmbedder::RunFailureCallback(Result result) {
+  RunCallback(result, ImageFeatureEmbedding(), VisualFeatures());
 }
 
 void PhishingImageEmbedder::Clear() {

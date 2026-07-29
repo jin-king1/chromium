@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "base/auto_reset.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "base/task/common/checked_lock_impl.h"
@@ -22,16 +21,18 @@
 namespace base::tracing {
 
 PerfettoTaskRunner::PerfettoTaskRunner(
-    scoped_refptr<base::SequencedTaskRunner> task_runner)
-    : task_runner_(std::move(task_runner)) {
+    scoped_refptr<base::SequencedTaskRunner> task_runner,
+    bool defer_delayed_tasks)
+    : task_runner_(std::move(task_runner)),
+      defer_delayed_tasks_(defer_delayed_tasks) {
   CHECK(task_runner_);
 }
 
 PerfettoTaskRunner::~PerfettoTaskRunner() {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
-#if (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   fd_controllers_.clear();
-#endif  // (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 }
 
 void PerfettoTaskRunner::PostTask(std::function<void()> task) {
@@ -40,6 +41,10 @@ void PerfettoTaskRunner::PostTask(std::function<void()> task) {
 
 void PerfettoTaskRunner::PostDelayedTask(std::function<void()> task,
                                          uint32_t delay_ms) {
+  if (defer_delayed_tasks_ && delay_ms) {
+    deferred_delayed_tasks_.emplace_back(task, delay_ms);
+    return;
+  }
   base::ScopedDeferTaskPosting::PostOrDefer(
       task_runner_, FROM_HERE,
       base::BindOnce(
@@ -71,21 +76,23 @@ bool PerfettoTaskRunner::RunsTasksOnCurrentThread() const {
 void PerfettoTaskRunner::AddFileDescriptorWatch(
     perfetto::base::PlatformHandle fd,
     std::function<void()> callback) {
-#if (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
-  DCHECK(!base::Contains(fd_controllers_, fd));
+  auto [it, inserted] = fd_controllers_.try_emplace(fd);
+  DCHECK(inserted);
   // Set up the |fd| in the map to signal intent to add a watch. We need to
   // PostTask the WatchReadable creation because if we do it in this task we'll
   // race with perfetto setting up the connection on this task and the IO thread
   // setting up epoll on the |fd|. Using a CancelableOnceClosure ensures that
   // the |fd| won't be added for watch if RemoveFileDescriptorWatch is called.
-  fd_controllers_[fd].callback.Reset(base::BindOnce(
+  it->second.callback.Reset(base::BindOnce(
       [](PerfettoTaskRunner* perfetto_runner, int fd,
          std::function<void()> callback) {
         DCHECK(perfetto_runner->task_runner_->RunsTasksInCurrentSequence());
         // When this callback runs, we must not have removed |fd|'s watch.
-        CHECK(base::Contains(perfetto_runner->fd_controllers_, fd));
-        auto& controller_and_cb = perfetto_runner->fd_controllers_[fd];
+        auto iter = perfetto_runner->fd_controllers_.find(fd);
+        CHECK(iter != perfetto_runner->fd_controllers_.end());
+        auto& controller_and_cb = iter->second;
         // We should never overwrite an existing watch.
         CHECK(!controller_and_cb.controller);
         controller_and_cb.controller =
@@ -95,36 +102,49 @@ void PerfettoTaskRunner::AddFileDescriptorWatch(
                         std::move(callback)));
       },
       base::Unretained(this), fd, std::move(callback)));
-  task_runner_->PostTask(FROM_HERE, fd_controllers_[fd].callback.callback());
-#else   // (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+  task_runner_->PostTask(FROM_HERE, it->second.callback.callback());
+#else   // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   NOTREACHED();
-#endif  // (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 }
 
 void PerfettoTaskRunner::RemoveFileDescriptorWatch(
     perfetto::base::PlatformHandle fd) {
-#if (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
-  DCHECK(base::Contains(fd_controllers_, fd));
   // This also cancels the base::FileDescriptorWatcher::WatchReadable() task if
   // it's pending.
-  fd_controllers_.erase(fd);
-#else   // (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+  size_t erased = fd_controllers_.erase(fd);
+  DCHECK_GT(erased, 0u);
+#else   // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   NOTREACHED();
-#endif  // (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 }
 
 void PerfettoTaskRunner::ResetTaskRunner(
     scoped_refptr<base::SequencedTaskRunner> task_runner) {
   task_runner_ = std::move(task_runner);
+  defer_delayed_tasks_ = false;
+  for (auto& task : deferred_delayed_tasks_) {
+    PostDelayedTask(task.task, task.delay);
+  }
+  deferred_delayed_tasks_.clear();
 }
 
-#if (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 PerfettoTaskRunner::FDControllerAndCallback::FDControllerAndCallback() =
     default;
 
 PerfettoTaskRunner::FDControllerAndCallback::~FDControllerAndCallback() =
     default;
-#endif  // (BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)) || BUILDFLAG(IS_FUCHSIA)
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+
+PerfettoTaskRunner::DeferredTask::DeferredTask(std::function<void()> task,
+                                               uint32_t delay)
+    : task(std::move(task)), delay(delay) {}
+
+PerfettoTaskRunner::DeferredTask::DeferredTask(DeferredTask&& task) = default;
+
+PerfettoTaskRunner::DeferredTask::~DeferredTask() = default;
 
 }  // namespace base::tracing

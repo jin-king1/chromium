@@ -47,8 +47,15 @@ void SetInstanceForTesting(PlatformHandle* instance_for_testing) {
 
 // static
 bool CanPrompt(ContentSettingsType type) {
-  return g_mock_system_prompt_for_testing_ ||
-         GetPlatformHandle()->CanPrompt(type);
+  if (g_mock_system_prompt_for_testing_) {
+    return true;
+  }
+
+  if (GlobalTestingBlockOverrides().contains(type)) {
+    return false;
+  }
+
+  return GetPlatformHandle()->CanPrompt(type);
 }
 
 // static
@@ -76,11 +83,30 @@ bool IsDenied(ContentSettingsType type) {
 
 // static
 bool IsAllowed(ContentSettingsType type) {
+  if (g_mock_system_permission_denied_for_testing_) {
+    return false;
+  }
+
   if (GlobalTestingBlockOverrides().find(type) !=
       GlobalTestingBlockOverrides().end()) {
     return !GlobalTestingBlockOverrides().at(type);
   }
   return GetPlatformHandle()->IsAllowed(type);
+}
+
+// static
+void IsDeniedFresh(ContentSettingsType type,
+                   SystemPermissionDeniedCallback callback) {
+  if (g_mock_system_permission_denied_for_testing_) {
+    std::move(callback).Run(true);
+    return;
+  }
+  if (GlobalTestingBlockOverrides().find(type) !=
+      GlobalTestingBlockOverrides().end()) {
+    std::move(callback).Run(GlobalTestingBlockOverrides().at(type));
+    return;
+  }
+  GetPlatformHandle()->IsDeniedFresh(type, std::move(callback));
 }
 
 // static

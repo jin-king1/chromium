@@ -26,6 +26,7 @@
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer.h"
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page.h"
@@ -639,7 +640,8 @@ TEST_P(FrameThrottlingTest, UnthrottlingTriggersRepaint) {
   // Scroll down to unthrottle the frame. The first frame we composite after
   // scrolling won't contain the frame yet, but will schedule another repaint.
   WebView().MainFrameImpl()->GetFrameView()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, 480), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 480), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   auto commands = CompositeFrame();
   EXPECT_FALSE(commands.Contains(SimCanvas::kRect, "green"));
 
@@ -679,7 +681,8 @@ TEST_P(FrameThrottlingTest, UnthrottlingTriggersRepaintInCompositedChild) {
   // Scroll down to unthrottle the frame. The first frame we composite after
   // scrolling won't contain the frame yet, but will schedule another repaint.
   WebView().MainFrameImpl()->GetFrameView()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, 480), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 480), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   auto commands = CompositeFrame();
   EXPECT_FALSE(commands.Contains(SimCanvas::kRect, "green"));
 
@@ -713,7 +716,8 @@ TEST_P(FrameThrottlingTest, ChangeStyleInThrottledFrame) {
 
   // Scroll down to unthrottle the frame.
   WebView().MainFrameImpl()->GetFrameView()->LayoutViewport()->SetScrollOffset(
-      ScrollOffset(0, 480), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 480), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   auto commands = CompositeFrame();
   EXPECT_FALSE(commands.Contains(SimCanvas::kRect, "red"));
   EXPECT_FALSE(commands.Contains(SimCanvas::kRect, "green"));
@@ -1974,7 +1978,7 @@ TEST_P(FrameThrottlingTest, PrintThrottledFrame) {
   web_frame->PrintPage(0, recorder.beginRecording());
   auto record = recorder.finishRecordingAsPicture();
   String record_string = RecordAsDebugString(record);
-  EXPECT_TRUE(record_string.Contains("drawTextBlob")) << record_string.Utf8();
+  EXPECT_TRUE(record_string.contains("drawTextBlob")) << record_string.Utf8();
   web_frame->PrintEnd();
 }
 

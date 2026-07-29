@@ -4,10 +4,8 @@
 
 #include "chromecast/device/bluetooth/le/remote_characteristic_impl.h"
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/not_fatal_until.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chromecast/base/bind_to_task_runner.h"
 #include "chromecast/device/bluetooth/le/gatt_client_manager_impl.h"
@@ -124,7 +122,7 @@ RemoteCharacteristicImpl::CreateDescriptorMap() {
   }
 
   if (fake_cccd_) {
-    DCHECK(!base::Contains(ret, RemoteDescriptor::kCccdUuid));
+    DCHECK(!ret.contains(RemoteDescriptor::kCccdUuid));
     ret[fake_cccd_->uuid] = new RemoteDescriptorImpl(
         device_, gatt_client_manager_, fake_cccd_.get(), io_task_runner_);
   }
@@ -183,6 +181,10 @@ void RemoteCharacteristicImpl::SetRegisterNotificationOrIndication(
     RemoteCharacteristic::StatusCallback cb) {
   MAKE_SURE_IO_THREAD(SetRegisterNotificationOrIndication, enable,
                       BindToCurrentSequence(std::move(cb)));
+  if (!gatt_client_manager_) {
+    LOG(ERROR) << __func__ << " failed: Destroyed";
+    EXEC_CB_AND_RET(cb, false);
+  }
 
   if (CharacteristicHasNotify(characteristic_)) {
     SetRegisterNotificationOrIndicationInternal(false, enable, std::move(cb));
@@ -240,7 +242,7 @@ void RemoteCharacteristicImpl::SetRegisterNotificationOrIndicationInternal(
   }
 
   auto it = uuid_to_descriptor_.find(RemoteDescriptor::kCccdUuid);
-  CHECK(it != uuid_to_descriptor_.end(), base::NotFatalUntil::M130);
+  CHECK(it != uuid_to_descriptor_.end());
 
   // CCCD must exist. |fake_cccd_| should have been created if it doesn't exist.
   std::vector<uint8_t> write_val = indication

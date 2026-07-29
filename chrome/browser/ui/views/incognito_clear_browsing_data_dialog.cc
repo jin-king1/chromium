@@ -5,9 +5,8 @@
 #include "chrome/browser/ui/views/incognito_clear_browsing_data_dialog.h"
 
 #include "base/metrics/histogram_functions.h"
+#include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/grit/generated_resources.h"
@@ -21,14 +20,14 @@
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/layout_provider.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/style/typography_provider.h"
-
 IncognitoClearBrowsingDataDialog::IncognitoClearBrowsingDataDialog(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor,
     Profile* incognito_profile,
     Type type)
-    : BubbleDialogDelegateView(anchor_view, views::BubbleBorder::TOP_RIGHT),
+    : views::BubbleDialogDelegateView(anchor, views::BubbleBorder::TOP_RIGHT),
       dialog_type_(type),
       incognito_profile_(incognito_profile) {
   DCHECK(incognito_profile_);
@@ -76,6 +75,7 @@ void IncognitoClearBrowsingDataDialog::SetDialogForDefaultBubbleType() {
           .SetFontList(typography_provider.GetFont(
               views::style::CONTEXT_LABEL, views::style::STYLE_EMPHASIZED))
           .SetHorizontalAlignment(gfx::ALIGN_LEFT)
+          .SetMultiLine(true)
           .Build());
 
   AddChildView(
@@ -85,6 +85,7 @@ void IncognitoClearBrowsingDataDialog::SetDialogForDefaultBubbleType() {
           .SetFontList(typography_provider.GetFont(
               views::style::CONTEXT_LABEL, views::style::STYLE_SECONDARY))
           .SetHorizontalAlignment(gfx::ALIGN_LEFT)
+          .SetMultiLine(true)
           .Build());
 
   // Buttons
@@ -156,9 +157,7 @@ void IncognitoClearBrowsingDataDialog::OnCloseWindowsButtonClicked() {
   // Skipping before-unload trigger to give incognito mode users a chance to
   // quickly close all incognito windows without needing to confirm closing the
   // open forms.
-  BrowserList::CloseAllBrowsersWithIncognitoProfile(
-      incognito_profile_, base::DoNothing(), base::DoNothing(),
-      /*skip_beforeunload=*/true);
+  chrome::CloseAllBrowsersWithIncognitoProfile(incognito_profile_);
 }
 
 void IncognitoClearBrowsingDataDialog::OnCancelButtonClicked() {

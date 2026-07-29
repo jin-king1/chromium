@@ -4,14 +4,12 @@
 
 package org.chromium.net.impl;
 
-import static android.os.Process.THREAD_PRIORITY_BACKGROUND;
-import static android.os.Process.THREAD_PRIORITY_MORE_FAVORABLE;
-
+import android.annotation.SuppressLint;
 import android.content.Context;
-import android.util.Log;
 
 import androidx.annotation.NonNull;
 
+import org.chromium.base.Log;
 import org.chromium.base.metrics.ScopedSysTraceEvent;
 import org.chromium.net.BidirectionalStream;
 import org.chromium.net.ExperimentalBidirectionalStream;
@@ -58,7 +56,7 @@ public final class JavaCronetEngine extends CronetEngineBase {
     private final CronetLogger mLogger;
     private final AtomicInteger mActiveRequestCount = new AtomicInteger();
 
-    /** The network handle to be used for requests that do not explicitly specify one. **/
+    /** The network handle to be used for requests that do not explicitly specify one. */
     private long mNetworkHandle = DEFAULT_NETWORK_HANDLE;
 
     private final Context mContext;
@@ -67,15 +65,6 @@ public final class JavaCronetEngine extends CronetEngineBase {
         try (var traceEvent = ScopedSysTraceEvent.scoped("JavaCronetEngine#JavaCronetEngine")) {
             mContext = builder.getContext();
             mCronetEngineId = hashCode();
-            // On android, all background threads (and all threads that are part
-            // of background processes) are put in a cgroup that is allowed to
-            // consume up to 5% of CPU - these worker threads spend the vast
-            // majority of their time waiting on I/O, so making them contend with
-            // background applications for a slice of CPU doesn't make much sense.
-            // We want to hurry up and get idle.
-            final int threadPriority =
-                    builder.threadPriority(
-                            THREAD_PRIORITY_BACKGROUND + THREAD_PRIORITY_MORE_FAVORABLE);
             this.mUserAgent = builder.getUserAgent();
             // For unbounded work queues, the effective maximum pool size is
             // equivalent to the core pool size.
@@ -85,7 +74,7 @@ public final class JavaCronetEngine extends CronetEngineBase {
                             10,
                             50,
                             TimeUnit.SECONDS,
-                            new LinkedBlockingQueue<Runnable>(),
+                            new LinkedBlockingQueue<>(),
                             new ThreadFactory() {
                                 @Override
                                 public Thread newThread(final Runnable r) {
@@ -97,7 +86,8 @@ public final class JavaCronetEngine extends CronetEngineBase {
                                                             Thread.currentThread()
                                                                     .setName("JavaCronetEngine");
                                                             android.os.Process.setThreadPriority(
-                                                                    threadPriority);
+                                                                    CronetEngineBuilderImpl
+                                                                            .NETWORK_THREAD_PRIORITY);
                                                             r.run();
                                                         }
                                                     });
@@ -145,6 +135,7 @@ public final class JavaCronetEngine extends CronetEngineBase {
     }
 
     @Override
+    @SuppressLint("ReferencesHidden")
     public ExperimentalUrlRequest createRequest(
             String url,
             UrlRequest.Callback callback,
@@ -191,6 +182,7 @@ public final class JavaCronetEngine extends CronetEngineBase {
     }
 
     @Override
+    @SuppressLint("ReferencesHidden")
     protected ExperimentalBidirectionalStream createBidirectionalStream(
             String url,
             BidirectionalStream.Callback callback,
@@ -210,6 +202,7 @@ public final class JavaCronetEngine extends CronetEngineBase {
     }
 
     @Override
+    @SuppressLint("ReferencesHidden")
     public ExperimentalBidirectionalStream.Builder newBidirectionalStreamBuilder(
             String url, BidirectionalStream.Callback callback, Executor executor) {
         throw new UnsupportedOperationException(

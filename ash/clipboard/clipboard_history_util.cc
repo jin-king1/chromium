@@ -10,7 +10,6 @@
 #include "ash/clipboard/clipboard_history_item.h"
 #include "ash/clipboard/views/clipboard_history_view_constants.h"
 #include "ash/metrics/histogram_macros.h"
-#include "ash/public/cpp/assistant/assistant_state.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
@@ -18,10 +17,11 @@
 #include "base/files/file_path.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "cc/paint/paint_flags.h"
-#include "chromeos/crosapi/mojom/clipboard_history.mojom.h"
 #include "chromeos/ui/base/file_icon_util.h"
+#include "chromeos/ui/clipboard_history/clipboard_history_types.h"
 #include "ui/base/clipboard/clipboard_data.h"
 #include "ui/base/clipboard/custom_data_helper.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -191,17 +191,8 @@ const gfx::VectorIcon& GetShortcutKeyIcon() {
   switch (Shell::Get()->keyboard_capability()->GetMetaKeyToDisplay()) {
     case ui::mojom::MetaKey::kSearch:
       return kClipboardSearchIcon;
-    case ui::mojom::MetaKey::kLauncher: {
-      const auto* const assistant_state = AssistantState::Get();
-      const bool is_assistant_available =
-          assistant_state &&
-          assistant_state->allowed_state() ==
-              assistant::AssistantAllowedState::ALLOWED &&
-          assistant_state->settings_enabled().value_or(false);
-
-      return is_assistant_available ? kClipboardLauncherIcon
-                                    : kClipboardLauncherNoAssistantIcon;
-    }
+    case ui::mojom::MetaKey::kLauncher:
+      return kClipboardLauncherNoAssistantIcon;
     case ui::mojom::MetaKey::kLauncherRefresh:
       return kCampbellHeroIcon;
     case ui::mojom::MetaKey::kExternalMeta:
@@ -257,7 +248,7 @@ bool IsEnabledInCurrentMode() {
 
 ui::ImageModel GetIconForFileClipboardItem(const ClipboardHistoryItem& item) {
   DCHECK_EQ(item.display_format(),
-            crosapi::mojom::ClipboardHistoryDisplayFormat::kFile);
+            chromeos::clipboard_history::DisplayFormat::kFile);
   const int copied_files_count = GetCountOfCopiedFiles(item.data());
   if (copied_files_count == 0)
     return ui::ImageModel();
@@ -283,9 +274,9 @@ ui::ImageModel GetHtmlPreviewPlaceholder() {
   return *model;
 }
 
-crosapi::mojom::ClipboardHistoryItemDescriptor ItemToDescriptor(
+chromeos::clipboard_history::ItemDescriptor ItemToDescriptor(
     const ClipboardHistoryItem& item) {
-  return crosapi::mojom::ClipboardHistoryItemDescriptor(
+  return chromeos::clipboard_history::ItemDescriptor(
       item.id(), item.display_format(), item.display_text(), item.file_count());
 }
 

@@ -7,10 +7,13 @@
 #import <memory>
 
 #import "base/check_deref.h"
+#import "base/strings/string_util.h"
 #import "components/country_codes/country_codes.h"
 #import "components/regional_capabilities/regional_capabilities_service.h"
+#import "components/regional_capabilities/regional_capabilities_utils.h"
+#import "components/variations/service/variations_service.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/web/public/browser_state.h"
 
 namespace ios {
 
@@ -19,9 +22,18 @@ namespace {
 class RegionalCapabilitiesServiceClient
     : public regional_capabilities::RegionalCapabilitiesService::Client {
  public:
-  RegionalCapabilitiesServiceClient() = default;
+  explicit RegionalCapabilitiesServiceClient(
+      variations::VariationsService* variations_service)
+      : variations_latest_country_id_(
+            variations_service ? country_codes::CountryId(base::ToUpperASCII(
+                                     variations_service->GetLatestCountry()))
+                               : country_codes::CountryId()) {}
 
-  int GetFallbackCountryId() override {
+  country_codes::CountryId GetVariationsLatestCountryId() override {
+    return variations_latest_country_id_;
+  }
+
+  country_codes::CountryId GetFallbackCountryId() override {
     return country_codes::GetCurrentCountryID();
   }
 
@@ -29,6 +41,9 @@ class RegionalCapabilitiesServiceClient
     std::move(country_id_fetched_callback)
         .Run(country_codes::GetCurrentCountryID());
   }
+
+ private:
+  country_codes::CountryId variations_latest_country_id_;
 };
 
 }  // namespace
@@ -58,12 +73,11 @@ RegionalCapabilitiesServiceFactory::GetForProfile(ProfileIOS* profile) {
 
 std::unique_ptr<KeyedService>
 RegionalCapabilitiesServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
-
+    ProfileIOS* profile) const {
   return std::make_unique<regional_capabilities::RegionalCapabilitiesService>(
       CHECK_DEREF(profile->GetPrefs()),
-      std::make_unique<RegionalCapabilitiesServiceClient>());
+      std::make_unique<RegionalCapabilitiesServiceClient>(
+          GetApplicationContext()->GetVariationsService()));
 }
 
 }  // namespace ios

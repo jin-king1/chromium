@@ -14,6 +14,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "build/build_config.h"
 #include "pdf/loader/url_loader.h"
+#include "pdf/pdf_features.h"
 #include "pdf/pdfium/pdfium_engine.h"
 #include "pdf/pdfium/pdfium_form_filler.h"
 #include "pdf/test/test_client.h"
@@ -34,9 +35,9 @@ namespace {
 base::FilePath GetTestFontsDir() {
   // base::TestSuite::Initialize() should have already set this.
   std::unique_ptr<base::Environment> env(base::Environment::Create());
-  std::string fontconfig_sysroot;
-  CHECK(env->GetVar("FONTCONFIG_SYSROOT", &fontconfig_sysroot));
-  return base::FilePath(fontconfig_sysroot).AppendASCII("test_fonts");
+  auto fontconfig_sysroot = env->GetVar("FONTCONFIG_SYSROOT");
+  CHECK(fontconfig_sysroot.has_value());
+  return base::FilePath(fontconfig_sysroot.value()).AppendASCII("test_fonts");
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
@@ -56,11 +57,13 @@ bool PDFiumTestBase::UsingTestFonts() {
 }
 
 void PDFiumTestBase::SetUp() {
+  base::DiscardableMemoryAllocator::SetInstance(&discardable_memory_allocator_);
   InitializePDFiumSDK();
 }
 
 void PDFiumTestBase::TearDown() {
   FPDF_DestroyLibrary();
+  base::DiscardableMemoryAllocator::SetInstance(nullptr);
 }
 
 std::unique_ptr<PDFiumEngine> PDFiumTestBase::InitializeEngine(
@@ -150,24 +153,27 @@ void PDFiumTestBase::InitializePDFiumSDK() {
 #endif
 
   FPDF_LIBRARY_CONFIG config;
-  config.version = 4;
+  config.version = 6;
   config.m_pUserFontPaths = font_paths_.data();
   config.m_pIsolate = nullptr;
   config.m_v8EmbedderSlot = 0;
   config.m_pPlatform = nullptr;
   config.m_RendererType =
       GetParam() ? FPDF_RENDERERTYPE_SKIA : FPDF_RENDERERTYPE_AGG;
+  config.m_FontLibraryType = FPDF_FONTBACKENDTYPE_FREETYPE;
+  config.m_BrotliEnabled =
+      base::FeatureList::IsEnabled(features::kPdfBrotliDecode);
+
   FPDF_InitLibraryWithConfig(&config);
 }
 
-const PDFiumPage& PDFiumTestBase::GetPDFiumPageForTest(
-    const PDFiumEngine& engine,
-    size_t page_index) {
-  return GetPDFiumPageForTest(const_cast<PDFiumEngine&>(engine), page_index);
+const PDFiumPage& PDFiumTestBase::GetPDFiumPage(const PDFiumEngine& engine,
+                                                size_t page_index) {
+  return GetPDFiumPage(const_cast<PDFiumEngine&>(engine), page_index);
 }
 
-PDFiumPage& PDFiumTestBase::GetPDFiumPageForTest(PDFiumEngine& engine,
-                                                 size_t page_index) {
+PDFiumPage& PDFiumTestBase::GetPDFiumPage(PDFiumEngine& engine,
+                                          size_t page_index) {
   DCHECK_LT(page_index, engine.pages_.size());
   PDFiumPage* page = engine.pages_[page_index].get();
   DCHECK(page);

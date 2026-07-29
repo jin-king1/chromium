@@ -4,14 +4,19 @@
 
 #include "services/network/websocket_factory.h"
 
+#include <algorithm>
+
 #include "base/functional/bind.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "net/base/isolation_info.h"
 #include "net/base/url_util.h"
+#include "net/log/net_log.h"
 #include "net/storage_access_api/status.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/network_context.h"
 #include "services/network/network_service.h"
+#include "services/network/public/cpp/constants.h"
+#include "services/network/public/cpp/websocket_utils.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/websocket.h"
 #include "url/origin.h"
@@ -31,12 +36,12 @@ WebSocketFactory::~WebSocketFactory() {
 void WebSocketFactory::CreateWebSocket(
     const GURL& url,
     const std::vector<std::string>& requested_protocols,
-    const net::SiteForCookies& site_for_cookies,
     net::StorageAccessApiStatus storage_access_api_status,
     const net::IsolationInfo& isolation_info,
     std::vector<mojom::HttpHeaderPtr> additional_headers,
-    int32_t process_id,
+    const network::OriginatingProcessId& process_id,
     const url::Origin& origin,
+    network::mojom::ClientSecurityStatePtr client_security_state,
     uint32_t options,
     net::NetworkTrafficAnnotationTag traffic_annotation,
     mojo::PendingRemote<mojom::WebSocketHandshakeClient> handshake_client,
@@ -44,11 +49,11 @@ void WebSocketFactory::CreateWebSocket(
         url_loader_network_observer,
     mojo::PendingRemote<mojom::WebSocketAuthenticationHandler> auth_handler,
     mojo::PendingRemote<mojom::TrustedHeaderClient> header_client,
-    const std::optional<base::UnguessableToken>& throttling_profile_id) {
-  if (isolation_info.request_type() !=
-      net::IsolationInfo::RequestType::kOther) {
-    mojo::ReportBadMessage(
-        "WebSocket's IsolationInfo::RequestType must be kOther");
+    const std::optional<base::UnguessableToken>& throttling_profile_id,
+    const base::UnguessableToken& network_restrictions_id) {
+  if (auto error = VerifyWebSocketConnectParameters(url, requested_protocols,
+                                                    isolation_info)) {
+    mojo::ReportBadMessage(*error);
     return;
   }
 
@@ -67,8 +72,12 @@ void WebSocketFactory::CreateWebSocket(
     handshake_client_remote.reset();
     return;
   }
-  if (isolation_info.nonce().has_value() &&
-      !context_->IsNetworkForNonceAndUrlAllowed(*isolation_info.nonce(), url)) {
+  // Enforce Connection-Allowlist restrictions for WebSocket connections. Convert
+  // ws(s):// to http(s):// for allowlist matching, since the allowlist patterns
+  // use HTTP schemes.
+  if (!context_->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+          network_restrictions_id, net::ChangeWebSocketSchemeToHttpScheme(url),
+          isolation_info.network_anonymization_key())) {
     mojo::Remote<mojom::WebSocketHandshakeClient> handshake_client_remote(
         std::move(handshake_client));
     handshake_client_remote->OnFailure("Network access revoked",
@@ -80,9 +89,9 @@ void WebSocketFactory::CreateWebSocket(
       context_->network_service()->HasRawHeadersAccess(
           process_id, net::ChangeWebSocketSchemeToHttpScheme(url)));
   connections_.insert(std::make_unique<WebSocket>(
-      this, url, requested_protocols, site_for_cookies,
-      storage_access_api_status, isolation_info, std::move(additional_headers),
-      origin, options, traffic_annotation, has_raw_headers_access,
+      this, url, requested_protocols, storage_access_api_status, isolation_info,
+      std::move(additional_headers), origin, std::move(client_security_state),
+      options, traffic_annotation, has_raw_headers_access,
       std::move(handshake_client), std::move(url_loader_network_observer),
       std::move(auth_handler), std::move(header_client),
       throttler_.IssuePendingConnectionTracker(process_id),
@@ -103,11 +112,25 @@ void WebSocketFactory::Remove(WebSocket* impl) {
   connections_.erase(it);
 }
 
-void WebSocketFactory::RemoveIfNonceMatches(
-    const base::UnguessableToken& nonce) {
-  std::erase_if(connections_, [&nonce](const auto& connection) {
-    return connection->RevokeIfNonceMatches(nonce);
+void WebSocketFactory::CreateNetLogEntriesForActiveConnections(
+    net::NetLog::ThreadSafeObserver* observer) const {
+  // Collect all connections into a sortable vector.
+  std::vector<WebSocket*> connections;
+  for (const auto& connection : connections_) {
+    connections.push_back(connection.get());
+  }
+
+  // Sort chronologically (oldest first), with pending/throttled connections
+  // (no channel yet) at the end.
+  std::ranges::sort(connections, [](const WebSocket* a, const WebSocket* b) {
+    return WebSocket::CompareForNetlog(*a, *b);
   });
+
+  // Create synthetic WEBSOCKET_ALIVE events. AddActiveEntryIfActive skips
+  // connections where the channel hasn't been created yet (pending/throttled).
+  for (WebSocket* websocket : connections) {
+    websocket->AddActiveEntryIfActive(observer);
+  }
 }
 
 }  // namespace network

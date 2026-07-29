@@ -6,7 +6,9 @@
 #define COMPONENTS_PAGE_LOAD_METRICS_RENDERER_PAGE_TIMING_METRICS_SENDER_H_
 
 #include <memory>
+#include <vector>
 
+#include "base/byte_size.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/small_map.h"
 #include "base/memory/raw_ptr.h"
@@ -35,7 +37,7 @@ struct URLLoaderCompletionStatus;
 }  // namespace network
 
 namespace blink {
-struct SoftNavigationMetrics;
+struct SoftNavigationMetricsForReporting;
 }  // namespace blink
 
 namespace page_load_metrics {
@@ -66,7 +68,8 @@ class PageTimingMetricsSender {
   void DidObserveSubresourceLoad(
       const blink::SubresourceLoadMetrics& subresource_load_metrics);
   void DidObserveNewFeatureUsage(const blink::UseCounterFeature& feature);
-  void DidObserveSoftNavigation(blink::SoftNavigationMetrics metrics);
+  void DidObserveSoftNavigation(
+      blink::SoftNavigationMetricsForReporting metrics);
   void DidObserveLayoutShift(double score, bool after_input_or_scroll);
 
   void DidStartResponse(const url::SchemeHostPort& final_response_url,
@@ -74,23 +77,23 @@ class PageTimingMetricsSender {
                         const network::mojom::URLResponseHead& response_head,
                         network::mojom::RequestDestination request_destination,
                         bool is_ad_resource);
-  void DidReceiveTransferSizeUpdate(int resource_id, int received_data_length);
+  void DidReceiveTransferSizeUpdate(int resource_id,
+                                    base::ByteSize received_data_length);
   void DidCompleteResponse(int resource_id,
                            const network::URLLoaderCompletionStatus& status);
   void DidCancelResponse(int resource_id);
   void DidLoadResourceFromMemoryCache(const GURL& response_url,
                                       int request_id,
-                                      int64_t encoded_body_length,
+                                      base::ByteSize encoded_body_length,
                                       const std::string& mime_type);
-  void OnMainFrameIntersectionChanged(
-      const gfx::Rect& main_frame_intersection_rect);
+  void OnMainFrameRectangleChanged(const gfx::Rect& main_frame_rect);
   void OnMainFrameViewportRectangleChanged(
       const gfx::Rect& main_frame_viewport_rect);
-  void OnMainFrameImageAdRectangleChanged(int element_id,
-                                          const gfx::Rect& image_ad_rect);
+  void OnMainFrameAdRectangleChanged(int element_id, const gfx::Rect& ad_rect);
 
   void DidObserveUserInteraction(base::TimeTicks max_event_start,
                                  base::TimeTicks max_event_queued_main_thread,
+                                 base::TimeTicks max_event_processing_start,
                                  base::TimeTicks max_event_commit_finish,
                                  base::TimeTicks max_event_end,
                                  uint64_t interaction_offset);
@@ -98,7 +101,8 @@ class PageTimingMetricsSender {
   // sometime 'soon'.
   void Update(
       mojom::PageLoadTimingPtr timing,
-      const PageTimingMetadataRecorder::MonotonicTiming& monotonic_timing);
+      const PageTimingMetadataRecorder::MonotonicTiming& monotonic_timing,
+      mojom::FontLoadingMetricsPtr font_loading_metrics = nullptr);
 
   // Sends any queued timing data immediately and stops the send timer.
   void SendLatest();
@@ -108,17 +112,10 @@ class PageTimingMetricsSender {
 
   void UpdateResourceMetadata(int resource_id, bool is_main_frame_resource);
 
-  void SetUpUkmReporting(
-      base::ReadOnlySharedMemoryRegion shared_memory_smoothness,
-      base::ReadOnlySharedMemoryRegion shared_memory_dropped_frames);
+  void UpdateCustomUserTimings(mojom::CustomUserTimingMarkPtr);
 
-  void InitiateUserInteractionTiming();
-  mojom::SoftNavigationMetricsPtr GetSoftNavigationMetrics() {
-    return soft_navigation_metrics_->Clone();
-  }
-
-  void UpdateSoftNavigationMetrics(
-      mojom::SoftNavigationMetricsPtr soft_navigation_metrics);
+  void DidObserveSoftLargestContentfulPaint(
+      mojom::LargestContentfulPaintTimingPtr lcp);
 
   void SendCustomUserTimingMark(mojom::CustomUserTimingMarkPtr custom_timing);
 
@@ -138,8 +135,9 @@ class PageTimingMetricsSender {
   std::unique_ptr<base::OneShotTimer> timer_;
   mojom::PageLoadTimingPtr last_timing_;
   mojom::CpuTimingPtr last_cpu_timing_;
-  mojom::InputTimingPtr input_timing_delta_;
+  std::vector<mojom::EventTimingPtr> event_timings_;
   std::optional<blink::SubresourceLoadMetrics> subresource_load_metrics_;
+  mojom::FontLoadingMetricsPtr last_font_loading_metrics_;
 
   // The the sender keep track of metadata as it comes in, because the sender is
   // scoped to a single committed load.
@@ -149,9 +147,13 @@ class PageTimingMetricsSender {
   std::vector<blink::UseCounterFeature> new_features_;
   mojom::FrameRenderDataUpdate render_data_;
 
+  std::vector<mojom::CustomUserTimingMarkPtr> custom_user_timings_;
+
   blink::UseCounterFeatureTracker feature_tracker_;
 
-  mojom::SoftNavigationMetricsPtr soft_navigation_metrics_;
+  std::vector<mojom::SoftNavigationMetricsPtr> soft_navigation_metrics_;
+  std::vector<mojom::LargestContentfulPaintTimingPtr>
+      soft_largest_contentful_paint_;
 
   bool have_sent_ipc_ = false;
 

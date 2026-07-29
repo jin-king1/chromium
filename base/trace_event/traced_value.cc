@@ -10,9 +10,9 @@
 #include <atomic>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/bits.h"
-#include "base/containers/circular_deque.h"
 #include "base/containers/span.h"
 #include "base/json/json_writer.h"
 #include "base/json/string_escape.h"
@@ -22,7 +22,6 @@
 #include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/trace_event_impl.h"
-#include "base/trace_event/trace_log.h"
 #include "base/values.h"
 
 namespace base::trace_event {
@@ -235,7 +234,7 @@ class PickleWriter final : public TracedValue::Writer {
       }
     };
 
-    base::circular_deque<State> state_stack;
+    std::vector<State> state_stack;
 
     out->append("{");
     state_stack.push_back({State::kTypeDict});
@@ -276,7 +275,7 @@ class PickleWriter final : public TracedValue::Writer {
         }
 
         case kTypeBool: {
-          TraceEvent::TraceValue json_value;
+          TraceValue json_value;
           CHECK(it.ReadBool(&json_value.as_bool));
           maybe_append_key_name(state_stack[current_state_index], &it, out);
           json_value.AppendAsJSON(TRACE_VALUE_TYPE_BOOL, out);
@@ -287,14 +286,14 @@ class PickleWriter final : public TracedValue::Writer {
           int value;
           CHECK(it.ReadInt(&value));
           maybe_append_key_name(state_stack[current_state_index], &it, out);
-          TraceEvent::TraceValue json_value;
+          TraceValue json_value;
           json_value.as_int = value;
           json_value.AppendAsJSON(TRACE_VALUE_TYPE_INT, out);
           break;
         }
 
         case kTypeDouble: {
-          TraceEvent::TraceValue json_value;
+          TraceValue json_value;
           CHECK(it.ReadDouble(&json_value.as_double));
           maybe_append_key_name(state_stack[current_state_index], &it, out);
           json_value.AppendAsJSON(TRACE_VALUE_TYPE_DOUBLE, out);
@@ -305,7 +304,7 @@ class PickleWriter final : public TracedValue::Writer {
           std::string value;
           CHECK(it.ReadString(&value));
           maybe_append_key_name(state_stack[current_state_index], &it, out);
-          TraceEvent::TraceValue json_value;
+          TraceValue json_value;
           json_value.as_string = value.c_str();
           json_value.AppendAsJSON(TRACE_VALUE_TYPE_STRING, out);
           break;
@@ -362,7 +361,7 @@ class PickleWriter final : public TracedValue::Writer {
         } break;
 
         case kTypeStartArray: {
-          Value::List new_list;
+          ListValue new_list;
           if (cur_dict) {
             stack.push_back(cur_dict);
             cur_list =
@@ -398,7 +397,7 @@ class PickleWriter final : public TracedValue::Writer {
         } break;
 
         case kTypeDouble: {
-          TraceEvent::TraceValue trace_value;
+          TraceValue trace_value;
           CHECK(it.ReadDouble(&trace_value.as_double));
           Value base_value;
           if (!std::isfinite(trace_value.as_double)) {
@@ -715,10 +714,6 @@ TracedValue::ValueHolder::ValueHolder(TracedValue::Array& value) {
 }
 
 TracedValue::ValueHolder::ValueHolder(TracedValue::ValueHolder&& other) {
-  // Remember to call a destructor if necessary.
-  if (kept_value_type_ == KeptValueType::kStdStringType) {
-    delete (&kept_value_.std_string_value);
-  }
   switch (other.kept_value_type_) {
     case KeptValueType::kIntType: {
       kept_value_.int_value = other.kept_value_.int_value;
@@ -852,7 +847,7 @@ void TracedValue::DictionaryItem::WriteToValue(TracedValue* value) const {
 
 std::unique_ptr<TracedValue> TracedValue::Build(
     const std::initializer_list<DictionaryItem> items) {
-  std::unique_ptr<TracedValue> value(new TracedValue());
+  auto value = std::make_unique<TracedValue>();
   for (const auto& item : items) {
     item.WriteToValue(value.get());
   }

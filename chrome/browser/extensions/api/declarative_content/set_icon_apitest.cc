@@ -5,8 +5,6 @@
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/test/browser_test.h"
@@ -16,11 +14,14 @@
 #include "extensions/browser/extension_action.h"
 #include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/rules_registry_ids.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/features/feature_channel.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/gfx/image/image.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 namespace {
@@ -41,10 +42,7 @@ constexpr char kOneByOneImageData[] =
 
 class SetIconAPITest : public ExtensionApiTest {
  public:
-  SetIconAPITest()
-      // Set the channel to "trunk" since declarativeContent is restricted
-      // to trunk.
-      : current_channel_(version_info::Channel::UNKNOWN) {}
+  SetIconAPITest() = default;
   ~SetIconAPITest() override = default;
 
  protected:
@@ -92,12 +90,7 @@ class SetIconAPITest : public ExtensionApiTest {
         extension);
   }
 
-  content::WebContents* GetActiveWebContents() {
-    return browser()->tab_strip_model()->GetWebContentsAt(0);
-  }
-
  private:
-  extensions::ScopedCurrentChannel current_channel_;
   TestExtensionDir ext_dir_;
 };
 
@@ -121,15 +114,15 @@ IN_PROC_BROWSER_TEST_F(SetIconAPITest, Overview) {
   EXPECT_TRUE(action->GetDeclarativeIcon(tab_id).IsEmpty());
 }
 
-// Regression test for crbug.com/1231027.
+// Regression test for crbug.com/40779405.
 IN_PROC_BROWSER_TEST_F(SetIconAPITest, Parameter) {
   const Extension* extension = LoadTestExtension();
   ASSERT_TRUE(extension);
 
   scoped_refptr<RulesRegistry> rules_registry =
-      extensions::RulesRegistryService::Get(browser()->profile())
-          ->GetRulesRegistry(rules_registry_ids::kDefaultRulesRegistryID,
-                             "declarativeContent.onPageChanged");
+      extensions::RulesRegistryService::Get(profile())->GetRulesRegistry(
+          rules_registry_ids::kDefaultRulesRegistryID,
+          "declarativeContent.onPageChanged");
   ASSERT_TRUE(rules_registry);
 
   std::vector<const api::events::Rule*> rules;
@@ -137,7 +130,7 @@ IN_PROC_BROWSER_TEST_F(SetIconAPITest, Parameter) {
   ASSERT_EQ(1u, rules.size());
   ASSERT_EQ(rules[0]->actions.size(), 1u);
 
-  const base::Value::Dict& action_value = rules[0]->actions[0].GetDict();
+  const base::DictValue& action_value = rules[0]->actions[0].GetDict();
   const std::string* action_instance_type =
       action_value.FindString("instanceType");
   ASSERT_TRUE(action_instance_type);
@@ -158,7 +151,7 @@ class SetIconAPIPrerenderingTest : public SetIconAPITest {
   ~SetIconAPIPrerenderingTest() override = default;
 
  protected:
-  content::FrameTreeNodeId Prerender(const GURL& url) {
+  content::PrerenderHostId Prerender(const GURL& url) {
     return prerender_helper_.AddPrerender(url);
   }
   void Activate(const GURL& url) { prerender_helper_.NavigatePrimaryPage(url); }
@@ -193,7 +186,7 @@ IN_PROC_BROWSER_TEST_F(SetIconAPIPrerenderingTest, Overview) {
   // Prerendering an unmatched page should not reset the icon.
   const GURL kPrerenderingUrl =
       embedded_test_server()->GetURL("/empty.html?hide");
-  content::FrameTreeNodeId host_id = Prerender(kPrerenderingUrl);
+  content::PrerenderHostId host_id = Prerender(kPrerenderingUrl);
   ASSERT_TRUE(host_id);
   EXPECT_FALSE(action->GetDeclarativeIcon(tab_id).IsEmpty());
 

@@ -5,14 +5,15 @@
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
 import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
-import type {LanguageMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {ToolbarEvent, VoiceClientSideStatusCode, VoiceNotificationManager} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import type {VoiceSelectionMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {loadTimeData} from '//resources/js/load_time_data.js';
+import {spinnerDebounceTimeout, ToolbarEvent, VoiceClientSideStatusCode, VoiceNotificationManager} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import type {LanguageMenuElement, SettingsOption, VoiceSelectionMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertStringContains, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {keyDownOn} from 'chrome-untrusted://webui-test/keyboard_mock_interactions.js';
+import {MockTimer} from 'chrome-untrusted://webui-test/mock_timer.js';
 import {hasStyle, microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {createSpeechSynthesisVoice, stubAnimationFrame, waitForSpinnerTimeout} from './common.js';
+import {createSpeechSynthesisVoice, stubAnimationFrame} from './common.js';
 
 function stringToHtmlTestId(s: string): string {
   return s.replace(/\s/g, '-').replace(/[()]/g, '');
@@ -96,7 +97,7 @@ suite('VoiceSelectionMenu', () => {
       const dropdownItems: HTMLButtonElement = getDropdownItemForVoice(voice1);
       assertTrue(isPositionedOnPage(dropdownItems));
       assertEquals(
-          getDropdownItemForVoice(voice1).textContent!.trim(), voice1.name);
+          getDropdownItemForVoice(voice1).textContent.trim(), voice1.name);
     });
 
     test('it shows language menu after button click', async () => {
@@ -121,9 +122,9 @@ suite('VoiceSelectionMenu', () => {
       await openVoiceMenu();
 
       assertEquals(
-          voice1.name, getDropdownItemForVoice(voice1).textContent!.trim());
+          voice1.name, getDropdownItemForVoice(voice1).textContent.trim());
       assertEquals(
-          voice2.name, getDropdownItemForVoice(voice2).textContent!.trim());
+          voice2.name, getDropdownItemForVoice(voice2).textContent.trim());
       assertTrue(isPositionedOnPage(getDropdownItemForVoice(voice1)));
       assertTrue(isPositionedOnPage(getDropdownItemForVoice(voice2)));
     });
@@ -159,12 +160,12 @@ suite('VoiceSelectionMenu', () => {
     const englishVoice2 = englishVoice1.nextElementSibling!;
     const portugueseVoice1 = groupTitles.item(1).nextElementSibling!;
     const portugueseVoice2 = portugueseVoice1.nextElementSibling!;
-    assertEquals(googleVoice1.name, englishVoice1.textContent!.trim());
+    assertEquals(googleVoice1.name, englishVoice1.textContent.trim());
     assertEquals(
-        'System text-to-speech voice', englishVoice2.textContent!.trim());
-    assertEquals(googleVoice2.name, portugueseVoice1.textContent!.trim());
+        'System text-to-speech voice', englishVoice2.textContent.trim());
+    assertEquals(googleVoice2.name, portugueseVoice1.textContent.trim());
     assertEquals(
-        'System text-to-speech voice', portugueseVoice2.textContent!.trim());
+        'System text-to-speech voice', portugueseVoice2.textContent.trim());
   });
   // </if>
 
@@ -190,6 +191,23 @@ suite('VoiceSelectionMenu', () => {
       return setAvailableVoicesAndEnabledLangs(availableVoices);
     });
 
+    test('close all menus event not fired after choosing a voice', async () => {
+      await openVoiceMenu();
+
+      let menuIdToClose = null;
+      document.addEventListener(
+          ToolbarEvent.CLOSE_ALL_MENUS,
+          ((event: CustomEvent<{previousId: SettingsOption | null}>) => {
+            menuIdToClose = event.detail.previousId;
+          }) as EventListener);
+
+      const voiceItemButton = getDropdownItemForVoice(voice1);
+      voiceItemButton.click();
+      await microtasksFinished();
+
+      assertEquals(null, menuIdToClose);
+    });
+
     test('it shows a checkmark for the selected voice', async () => {
       voiceSelectionMenu.selectedVoice = selectedVoice;
       await microtasksFinished();
@@ -201,9 +219,8 @@ suite('VoiceSelectionMenu', () => {
           getDropdownItemForVoice(selectedVoice)
               .querySelector<HTMLElement>('#check-mark')!;
 
-      assertFalse(
-          hasStyle(checkMarkSelectedVoice, 'color', 'rgba(0, 0, 0, 0)'));
-      assertTrue(hasStyle(checkMarkVoice0, 'color', 'rgba(0, 0, 0, 0)'));
+      assertFalse(hasStyle(checkMarkSelectedVoice, 'visibility', 'hidden'));
+      assertTrue(hasStyle(checkMarkVoice0, 'visibility', 'hidden'));
     });
 
     test('it groups voices by language', () => {
@@ -216,10 +233,10 @@ suite('VoiceSelectionMenu', () => {
       const secondVoice = firstVoice.nextElementSibling!;
       const thirdVoice = secondVoice.nextElementSibling!;
       const italianVoice = groupTitles.item(1).nextElementSibling!;
-      assertEquals(voice1.name, firstVoice.textContent!.trim());
-      assertEquals(previewVoice.name, secondVoice.textContent!.trim());
-      assertEquals(selectedVoice.name, thirdVoice.textContent!.trim());
-      assertEquals(voice2.name, italianVoice.textContent!.trim());
+      assertEquals(voice1.name, firstVoice.textContent.trim());
+      assertEquals(previewVoice.name, secondVoice.textContent.trim());
+      assertEquals(selectedVoice.name, thirdVoice.textContent.trim());
+      assertEquals(voice2.name, italianVoice.textContent.trim());
     });
 
     test('it only shows enabled languages', async () => {
@@ -232,7 +249,7 @@ suite('VoiceSelectionMenu', () => {
       assertEquals(1, groupTitles.length);
 
       const italianVoice = groupTitles.item(0).nextElementSibling!;
-      assertEquals(voice2.name, italianVoice.textContent!.trim());
+      assertEquals(voice2.name, italianVoice.textContent.trim());
     });
 
     suite('with Natural voices also available', () => {
@@ -259,16 +276,16 @@ suite('VoiceSelectionMenu', () => {
         assertEquals(4, usEnglishDropdownItems.length);
         assertEquals(
             'Google US English 1 (Natural)',
-            usEnglishDropdownItems.item(0).textContent!.trim());
+            usEnglishDropdownItems.item(0).textContent.trim());
         assertEquals(
             'Google US English 2 (Natural)',
-            usEnglishDropdownItems.item(1).textContent!.trim());
+            usEnglishDropdownItems.item(1).textContent.trim());
         assertEquals(
             previewVoice.name,
-            usEnglishDropdownItems.item(2).textContent!.trim());
+            usEnglishDropdownItems.item(2).textContent.trim());
         assertEquals(
             selectedVoice.name,
-            usEnglishDropdownItems.item(3).textContent!.trim());
+            usEnglishDropdownItems.item(3).textContent.trim());
       });
     });
 
@@ -283,8 +300,8 @@ suite('VoiceSelectionMenu', () => {
               .querySelectorAll<HTMLElement>('.lang-group-title');
 
       assertEquals(
-          'English (United States)', groupTitles.item(0).textContent!.trim());
-      assertEquals('it-it', groupTitles.item(1).textContent!.trim());
+          'English (United States)', groupTitles.item(0).textContent.trim());
+      assertEquals('it-it', groupTitles.item(1).textContent.trim());
     });
 
     test('languages are grouped when voices have same names', async () => {
@@ -301,12 +318,12 @@ suite('VoiceSelectionMenu', () => {
       const voiceNames = menu.querySelectorAll<HTMLElement>('.voice-name');
 
       assertEquals(2, groupTitles.length);
-      assertEquals('en-us', groupTitles.item(0).textContent!.trim());
-      assertEquals('en-uk', groupTitles.item(1).textContent!.trim());
+      assertEquals('en-us', groupTitles.item(0).textContent.trim());
+      assertEquals('en-uk', groupTitles.item(1).textContent.trim());
       assertEquals(3, voiceNames.length);
-      assertEquals('Google English', voiceNames.item(0).textContent!.trim());
-      assertEquals('Google English', voiceNames.item(1).textContent!.trim());
-      assertEquals('Google English', voiceNames.item(2).textContent!.trim());
+      assertEquals('Google English', voiceNames.item(0).textContent.trim());
+      assertEquals('Google English', voiceNames.item(1).textContent.trim());
+      assertEquals('Google English', voiceNames.item(2).textContent.trim());
     });
 
     test('preview button click emits play preview event', async () => {
@@ -325,21 +342,20 @@ suite('VoiceSelectionMenu', () => {
     });
 
     test('spinner shows before speech starts and is hidden after', async () => {
-      // Display dropdown menu
-      voiceSelectionMenu.onVoiceSelectionMenuClick(dots);
-
+      openVoiceMenu();
       const previewButton =
           getDropdownItemForVoice(voice1).querySelector<CrIconButtonElement>(
               '#preview-icon')!;
-      previewButton.click();
-
-      await microtasksFinished();
-      await waitForSpinnerTimeout();
-      stubAnimationFrame();
-
       const spinnerVoice0 =
           getDropdownItemForVoice(voice1).querySelector<CrIconButtonElement>(
               '#spinner-span')!;
+
+      const mockTimer = new MockTimer();
+      mockTimer.install();
+      previewButton.click();
+      mockTimer.tick(spinnerDebounceTimeout);
+      mockTimer.uninstall();
+      await microtasksFinished();
 
       // The spinner should be visible and the preview button should be
       // disabled.
@@ -380,11 +396,18 @@ suite('VoiceSelectionMenu', () => {
       // The play icon should flip to stop for the voice being previewed
       assertTrue(isPositionedOnPage(playIconOfPreviewVoice));
       assertEquals(
-          'read-anything-20:stop-circle', playIconOfPreviewVoice.ironIcon);
+          loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+              'read-anything-20:stop-circle' :
+              'read-anything-20:stop-circle-old',
+          playIconOfPreviewVoice.ironIcon);
       assertStringContains(playIconOfPreviewVoice.title.toLowerCase(), 'stop');
       // The play icon should remain unchanged for the other buttons
       assertTrue(isPositionedOnPage(playIconVoice0));
-      assertEquals('read-anything-20:play-circle', playIconVoice0.ironIcon);
+      assertEquals(
+          loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+              'read-anything-20:play-circle' :
+              'read-anything-20:play-circle-old',
+          playIconVoice0.ironIcon);
       assertStringContains(playIconVoice0.title.toLowerCase(), 'play');
     });
 
@@ -392,7 +415,7 @@ suite('VoiceSelectionMenu', () => {
       await openVoiceMenu();
       voiceSelectionMenu.previewVoicePlaying = previewVoice;
       await microtasksFinished();
-      voiceSelectionMenu.previewVoicePlaying = undefined;
+      voiceSelectionMenu.previewVoicePlaying = null;
       await microtasksFinished();
 
       const playIconVoice0 =
@@ -407,8 +430,15 @@ suite('VoiceSelectionMenu', () => {
       assertTrue(isPositionedOnPage(playIconOfPreviewVoice));
       assertTrue(isPositionedOnPage(playIconVoice0));
       assertEquals(
-          'read-anything-20:play-circle', playIconOfPreviewVoice.ironIcon);
-      assertEquals('read-anything-20:play-circle', playIconVoice0.ironIcon);
+          loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+              'read-anything-20:play-circle' :
+              'read-anything-20:play-circle-old',
+          playIconOfPreviewVoice.ironIcon);
+      assertEquals(
+          loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+              'read-anything-20:play-circle' :
+              'read-anything-20:play-circle-old',
+          playIconVoice0.ironIcon);
       assertStringContains(playIconOfPreviewVoice.title.toLowerCase(), 'play');
       assertStringContains(playIconVoice0.title.toLowerCase(), 'play');
     });
@@ -534,7 +564,7 @@ suite('VoiceSelectionMenu', () => {
         assertEquals(1, msgs.length);
         assertEquals(0, getErrorMessages().length);
         assertStringContains(
-            msgs[0]!.textContent!.trim(), 'Downloading Français voices');
+            msgs[0]!.textContent.trim(), 'Downloading Français voices');
       });
 
       test('hides downloading message when done', async () => {
@@ -555,7 +585,7 @@ suite('VoiceSelectionMenu', () => {
         const msgs = getErrorMessages();
         assertEquals(0, getDownloadMessages().length);
         assertEquals(1, msgs.length);
-        assertStringContains(msgs[0]!.textContent!, 'Connect to the internet');
+        assertStringContains(msgs[0]!.textContent, 'Connect to the internet');
       });
 
       test('shows downloading messages on open', async () => {
@@ -604,13 +634,11 @@ suite('VoiceSelectionMenu', () => {
         const msgs = getDownloadMessages();
         assertEquals(4, msgs.length);
         assertStringContains(
-            msgs[0]!.textContent!,
-            'Downloading English (United States) voices');
+            msgs[0]!.textContent, 'Downloading English (United States) voices');
+        assertStringContains(msgs[1]!.textContent, 'Downloading 日本語 voices');
         assertStringContains(
-            msgs[1]!.textContent!, 'Downloading 日本語 voices');
-        assertStringContains(
-            msgs[2]!.textContent!, 'Downloading Español (España) voices');
-        assertStringContains(msgs[3]!.textContent!, 'Downloading हिन्दी voices');
+            msgs[2]!.textContent, 'Downloading Español (España) voices');
+        assertStringContains(msgs[3]!.textContent, 'Downloading हिन्दी voices');
       });
 
       test('hides downloading messages when done', async () => {
@@ -641,14 +669,13 @@ suite('VoiceSelectionMenu', () => {
         assertEquals(0, getDownloadMessages().length);
         assertEquals(4, msgs.length);
         assertStringContains(
-            msgs[0]!.textContent!,
+            msgs[0]!.textContent,
             'There are no English (United States) voices');
         assertStringContains(
-            msgs[1]!.textContent!, 'There are no 日本語 voices');
+            msgs[1]!.textContent, 'There are no 日本語 voices');
         assertStringContains(
-            msgs[2]!.textContent!, 'There are no Español (España) voices');
-        assertStringContains(
-            msgs[3]!.textContent!, 'There are no हिन्दी voices');
+            msgs[2]!.textContent, 'There are no Español (España) voices');
+        assertStringContains(msgs[3]!.textContent, 'There are no हिन्दी voices');
       });
 
       test('shows only downloading messages on open', async () => {
@@ -665,5 +692,13 @@ suite('VoiceSelectionMenu', () => {
         assertEquals(0, getErrorMessages().length);
       });
     });
+  });
+
+  test('can be closed programatically', () => {
+    stubAnimationFrame();
+    voiceSelectionMenu.open(document.body);
+    assertTrue(voiceSelectionMenu.$.voiceSelectionMenu.get().open);
+    voiceSelectionMenu.close();
+    assertFalse(voiceSelectionMenu.$.voiceSelectionMenu.get().open);
   });
 });

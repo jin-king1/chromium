@@ -46,7 +46,7 @@ class WebpageTestRunner(TestRunner):
                  target_id: Optional[str], logs_dir: Optional[str]) -> None:
         super().__init__(out_dir, test_args, ['web_engine_shell'], target_id)
         self._runner = browser_runner.BrowserRunner(
-            browser_runner.WEB_ENGINE_SHELL, target_id, out_dir)
+            browser_runner.WEB_ENGINE_SHELL, target_id, out_dir, logs_dir)
         if logs_dir:
             self.port_file = os.path.join(logs_dir, _DEVTOOLS_PORT_FILE)
         else:
@@ -55,10 +55,7 @@ class WebpageTestRunner(TestRunner):
     def run_test(self):
         catch_sigterm()
         self._runner.start()
-        device_ip = get_ip_address(self._target_id, ipv4_only=True)
-        addr = device_ip.exploded
-        if device_ip.version == 6:
-            addr = '[' + addr + ']'
+        addr = get_ip_address(self._target_id, ipv4_only=True).exploded
         addr += ':' + str(self._runner.devtools_port)
         if self.port_file:
             with open(self.port_file, 'w') as out:

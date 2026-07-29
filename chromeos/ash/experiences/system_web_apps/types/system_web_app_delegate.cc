@@ -32,6 +32,10 @@ SystemWebAppDelegate::SystemWebAppDelegate(
 
 SystemWebAppDelegate::~SystemWebAppDelegate() = default;
 
+bool SystemWebAppDelegate::ShouldForceReinstall() const {
+  return false;
+}
+
 std::vector<std::string> SystemWebAppDelegate::GetAppIdsToUninstallAndReplace()
     const {
   return {};
@@ -111,7 +115,8 @@ bool SystemWebAppDelegate::IsAppEnabled() const {
   return true;
 }
 
-gfx::Rect SystemWebAppDelegate::GetDefaultBounds(Browser* browser) const {
+gfx::Rect SystemWebAppDelegate::GetDefaultBounds(
+    BrowserDelegate* browser) const {
   return {};
 }
 
@@ -140,10 +145,6 @@ bool SystemWebAppDelegate::IsUrlInSystemAppScope(const GURL& url) const {
 
 bool SystemWebAppDelegate::UseSystemThemeColor() const {
   return true;
-}
-
-bool SystemWebAppDelegate::ShouldAnimateThemeChanges() const {
-  return false;
 }
 
 bool SystemWebAppDelegate::ShouldPinTab(GURL url) const {

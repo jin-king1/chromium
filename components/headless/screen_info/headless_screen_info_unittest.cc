@@ -31,20 +31,24 @@ TEST(HeadlessScreenInfoTest, Basic) {
 }
 
 TEST(HeadlessScreenInfoTest, ScreenOrigin) {
-  EXPECT_EQ(HeadlessScreenInfo::FromString("{100,200}").value()[0],
+  // Primary screen does not allow non zero origin, so test the secondary one.
+  EXPECT_EQ(HeadlessScreenInfo::FromString("{}{100,200}").value()[1],
             HeadlessScreenInfo({.bounds = gfx::Rect(100, 200, 800, 600)}));
 
-  EXPECT_EQ(HeadlessScreenInfo::FromString(" { 100,200 }").value()[0],
+  EXPECT_EQ(HeadlessScreenInfo::FromString("{}{ 100,200 }").value()[1],
             HeadlessScreenInfo({.bounds = gfx::Rect(100, 200, 800, 600)}));
 
-  EXPECT_EQ(HeadlessScreenInfo::FromString("{-100,200}").value()[0],
+  EXPECT_EQ(HeadlessScreenInfo::FromString("{}{-100,200}").value()[1],
             HeadlessScreenInfo({.bounds = gfx::Rect(-100, 200, 800, 600)}));
 
-  EXPECT_EQ(HeadlessScreenInfo::FromString("{100,-200}").value()[0],
+  EXPECT_EQ(HeadlessScreenInfo::FromString("{}{100,-200}").value()[1],
             HeadlessScreenInfo({.bounds = gfx::Rect(100, -200, 800, 600)}));
 
-  EXPECT_EQ(HeadlessScreenInfo::FromString("{-100,-200}").value()[0],
+  EXPECT_EQ(HeadlessScreenInfo::FromString("{}{-100,-200}").value()[1],
             HeadlessScreenInfo({.bounds = gfx::Rect(-100, -200, 800, 600)}));
+
+  EXPECT_EQ(HeadlessScreenInfo::FromString("{100,200}").error(),
+            "Primary screen origin can only be at {0,0}");
 
   EXPECT_EQ(HeadlessScreenInfo::FromString("{ 100, 200}").error(),
             "Invalid screen info: 100, 200");
@@ -336,6 +340,26 @@ TEST(HeadlessScreenInfoTest, Rotation) {
 
   EXPECT_THAT(HeadlessScreenInfo::FromString("{ rotation=42 }").error(),
               "Invalid rotation: 42");
+}
+
+TEST(HeadlessScreenInfoTest, DefaultSecondaryScreenOrigin) {
+  // Default secondary screen origin is to the right of the previous screen.
+  EXPECT_EQ(HeadlessScreenInfo::FromString("{}{}").value()[1],
+            HeadlessScreenInfo({.bounds = gfx::Rect(800, 0, 800, 600)}));
+
+  // Default secondary screen origin should consider previous screen scale
+  // factor.
+  EXPECT_EQ(HeadlessScreenInfo::FromString("{devicePixelRatio=2}{}").value()[1],
+            HeadlessScreenInfo({.bounds = gfx::Rect(400, 0, 800, 600)}));
+
+  EXPECT_EQ(
+      HeadlessScreenInfo::FromString("{devicePixelRatio=2}{}{}").value()[2],
+      HeadlessScreenInfo({.bounds = gfx::Rect(1200, 0, 800, 600)}));
+
+  EXPECT_EQ(HeadlessScreenInfo::FromString(
+                "{devicePixelRatio=2}{devicePixelRatio=2}{}")
+                .value()[2],
+            HeadlessScreenInfo({.bounds = gfx::Rect(800, 0, 800, 600)}));
 }
 
 }  // namespace

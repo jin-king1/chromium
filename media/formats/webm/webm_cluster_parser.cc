@@ -2,22 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/formats/webm/webm_cluster_parser.h"
 
+#include <bit>
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/types/optional_util.h"
+#include "media/base/agtm.h"
 #include "media/base/decrypt_config.h"
 #include "media/base/stream_parser_buffer.h"
 #include "media/base/timestamp_constants.h"
@@ -37,17 +36,16 @@ enum {
   kMaxDurationEstimateLogs = 10,
 };
 
-WebMClusterParser::WebMClusterParser(
-    int64_t timecode_scale_ns,
-    int audio_track_num,
-    base::TimeDelta audio_default_duration,
-    int video_track_num,
-    base::TimeDelta video_default_duration,
-    const std::set<int64_t>& ignored_tracks,
-    const std::string& audio_encryption_key_id,
-    const std::string& video_encryption_key_id,
-    const AudioCodec audio_codec,
-    MediaLog* media_log)
+WebMClusterParser::WebMClusterParser(int64_t timecode_scale_ns,
+                                     int audio_track_num,
+                                     base::TimeDelta audio_default_duration,
+                                     int video_track_num,
+                                     base::TimeDelta video_default_duration,
+                                     const std::set<int64_t>& ignored_tracks,
+                                     const std::string& audio_encryption_key_id,
+                                     const std::string& video_encryption_key_id,
+                                     const AudioCodec audio_codec,
+                                     MediaLog* media_log)
     : timecode_multiplier_(timecode_scale_ns / 1000.0),
       ignored_tracks_(ignored_tracks),
       audio_encryption_key_id_(audio_encryption_key_id),
@@ -64,8 +62,7 @@ WebMClusterParser::WebMClusterParser(
              video_default_duration,
              media_log),
       ready_buffer_upper_bound_(kNoDecodeTimestamp),
-      media_log_(media_log) {
-}
+      media_log_(MediaLog::CloneSafely(media_log)) {}
 
 WebMClusterParser::~WebMClusterParser() = default;
 
@@ -80,12 +77,12 @@ void WebMClusterParser::Reset() {
   ready_buffer_upper_bound_ = kNoDecodeTimestamp;
 }
 
-int WebMClusterParser::Parse(const uint8_t* buf, int size) {
+int WebMClusterParser::Parse(base::span<const uint8_t> buf) {
   audio_.ClearReadyBuffers();
   video_.ClearReadyBuffers();
   ready_buffer_upper_bound_ = kNoDecodeTimestamp;
 
-  int result = parser_.Parse(buf, size);
+  int result = parser_.Parse(buf);
 
   if (result < 0) {
     cluster_ended_ = false;
@@ -133,9 +130,7 @@ void WebMClusterParser::GetBuffers(StreamParser::BufferQueueMap* buffers) {
 }
 
 base::TimeDelta WebMClusterParser::TryGetEncodedAudioDuration(
-    const uint8_t* data,
-    int size) {
-
+    base::span<const uint8_t> data) {
   // Duration is currently read assuming the *entire* stream is unencrypted.
   // The special "Signal Byte" prepended to Blocks in encrypted streams is
   // assumed to not be present.
@@ -143,7 +138,7 @@ base::TimeDelta WebMClusterParser::TryGetEncodedAudioDuration(
   // to return duration for any unencrypted blocks.
 
   if (audio_codec_ == AudioCodec::kOpus) {
-    return ReadOpusDuration(data, size);
+    return ReadOpusDuration(data);
   }
 
   // TODO(wolenetz/chcunningham): Implement duration reading for Vorbis. See
@@ -152,8 +147,8 @@ base::TimeDelta WebMClusterParser::TryGetEncodedAudioDuration(
   return kNoTimestamp;
 }
 
-base::TimeDelta WebMClusterParser::ReadOpusDuration(const uint8_t* data,
-                                                    int size) {
+base::TimeDelta WebMClusterParser::ReadOpusDuration(
+    base::span<const uint8_t> data) {
   // Masks and constants for Opus packets. See
   // https://tools.ietf.org/html/rfc6716#page-14
   static const uint8_t kTocConfigMask = 0xf8;
@@ -161,7 +156,7 @@ base::TimeDelta WebMClusterParser::ReadOpusDuration(const uint8_t* data,
   static const uint8_t kFrameCountMask = 0x3f;
   static const base::TimeDelta kPacketDurationMax = base::Milliseconds(120);
 
-  if (size < 1) {
+  if (data.size() < 1) {
     LIMITED_MEDIA_LOG(DEBUG, media_log_, num_duration_errors_,
                       kMaxDurationErrorLogs)
         << "Invalid zero-byte Opus packet; demuxed block duration may be "
@@ -183,7 +178,7 @@ base::TimeDelta WebMClusterParser::ReadOpusDuration(const uint8_t* data,
       break;
     case 3:
       // Type 3 indicates an arbitrary frame count described in the next byte.
-      if (size < 2) {
+      if (data.size() < 2) {
         LIMITED_MEDIA_LOG(DEBUG, media_log_, num_duration_errors_,
                           kMaxDurationErrorLogs)
             << "Second byte missing from 'Code 3' Opus packet; demuxed block "
@@ -269,8 +264,7 @@ bool WebMClusterParser::OnListEnd(int id) {
     additional = base::span(block_additional_data_.value());
   }
 
-  bool result = ParseBlock(false, data.data(), data.size(), additional.data(),
-                           additional.size(), block_duration_,
+  bool result = ParseBlock(false, data, additional, block_duration_,
                            discard_padding_set_ ? discard_padding_ : 0,
                            reference_block_set_);
   block_data_.reset();
@@ -305,15 +299,13 @@ bool WebMClusterParser::OnUInt(int id, int64_t val) {
 }
 
 bool WebMClusterParser::ParseBlock(bool is_simple_block,
-                                   const uint8_t* buf,
-                                   size_t size,
-                                   const uint8_t* additional,
-                                   int additional_size,
+                                   base::span<const uint8_t> buf,
+                                   base::span<const uint8_t> additional,
                                    int duration,
                                    int64_t discard_padding,
                                    bool reference_block_set) {
   const size_t kBlockHeaderSize = 4;
-  if (size < kBlockHeaderSize) {
+  if (buf.size() < kBlockHeaderSize) {
     return false;
   }
 
@@ -346,22 +338,15 @@ bool WebMClusterParser::ParseBlock(bool is_simple_block,
   bool is_keyframe =
       is_simple_block ? (flags & 0x80) != 0 : !reference_block_set;
 
-  const uint8_t* frame_data = buf + kBlockHeaderSize;
-  size_t frame_size = size - kBlockHeaderSize;
+  base::span<const uint8_t> frame_data = buf.subspan(kBlockHeaderSize);
   return OnBlock(is_simple_block, track_num, timecode, duration, frame_data,
-                 frame_size, additional, additional_size, discard_padding,
-                 is_keyframe);
+                 additional, discard_padding, is_keyframe);
 }
 
-bool WebMClusterParser::OnBinary(int id, const uint8_t* data_ptr, int size) {
-  auto data =
-      // TODO(crbug.com/40284755): This function should receive a span, not a
-      // pointer/size pair.
-      UNSAFE_TODO(base::span(data_ptr, base::checked_cast<size_t>(size)));
+bool WebMClusterParser::OnBinary(int id, base::span<const uint8_t> data) {
   switch (id) {
     case kWebMIdSimpleBlock:
-      return ParseBlock(true, data.data(), data.size(), nullptr, 0, -1, 0,
-                        false);
+      return ParseBlock(true, data, {}, -1, 0, false);
 
     case kWebMIdBlock:
       if (block_data_) {
@@ -375,7 +360,7 @@ bool WebMClusterParser::OnBinary(int id, const uint8_t* data_ptr, int size) {
       return true;
 
     case kWebMIdBlockAdditional: {
-      uint64_t block_add_id = base::ByteSwap(block_add_id_);
+      uint64_t block_add_id = std::byteswap(block_add_id_);
       if (block_additional_data_) {
         // TODO(vigneshv): Technically, more than 1 BlockAdditional is allowed
         // as per matroska spec. But for now we don't have a use case to
@@ -425,10 +410,8 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
                                 int track_num,
                                 int timecode,
                                 int block_duration,
-                                const uint8_t* data,
-                                size_t size,
-                                const uint8_t* additional,
-                                size_t additional_size,
+                                base::span<const uint8_t> data,
+                                base::span<const uint8_t> additional,
                                 int64_t discard_padding,
                                 bool is_keyframe) {
   if (cluster_timecode_ == -1) {
@@ -442,7 +425,7 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
     return false;
   }
 
-  Track* track = NULL;
+  Track* track = nullptr;
   StreamParserBuffer::Type buffer_type = DemuxerStream::AUDIO;
   std::string encryption_key_id;
   base::TimeDelta encoded_duration = kNoTimestamp;
@@ -450,7 +433,7 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
     track = &audio_;
     encryption_key_id = audio_encryption_key_id_;
     if (encryption_key_id.empty()) {
-      encoded_duration = TryGetEncodedAudioDuration(data, size);
+      encoded_duration = TryGetEncodedAudioDuration(data);
     }
   } else if (track_num == video_.track_num()) {
     track = &video_;
@@ -467,8 +450,13 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
 
   int64_t microseconds;
 
-  if (!base::CheckMul(base::CheckAdd(cluster_timecode_, timecode),
-                      timecode_multiplier_)
+  auto checked_add = base::CheckAdd(cluster_timecode_, timecode);
+  if (!checked_add.IsValid()) {
+    MEDIA_LOG(ERROR, media_log_) << "Invalid cluster timecode.";
+    return false;
+  }
+
+  if (!base::CheckMul(checked_add, timecode_multiplier_)
            .AssignIfValid(&microseconds)) {
     MEDIA_LOG(ERROR, media_log_) << "Invalid cluster timecode.";
     return false;
@@ -484,12 +472,10 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
   // Every encrypted Block has a signal byte and IV prepended to it.
   // See: http://www.webmproject.org/docs/webm-encryption/
   std::unique_ptr<DecryptConfig> decrypt_config;
-  int data_offset = 0;
+  size_t data_offset = 0;
   if (!encryption_key_id.empty() &&
-      !WebMCreateDecryptConfig(
-          data, size,
-          reinterpret_cast<const uint8_t*>(encryption_key_id.data()),
-          encryption_key_id.size(), &decrypt_config, &data_offset)) {
+      !WebMCreateDecryptConfig(data, base::as_byte_span(encryption_key_id),
+                               &decrypt_config, &data_offset)) {
     MEDIA_LOG(ERROR, media_log_) << "Failed to extract decrypt config.";
     return false;
   }
@@ -498,12 +484,21 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
   // type with remapped bytestream track numbers and allow multiple tracks as
   // applicable. See https://crbug.com/341581.
   auto buffer =
-      StreamParserBuffer::CopyFrom(data + data_offset, size - data_offset,
+      StreamParserBuffer::CopyFrom(base::span(data).subspan(data_offset),
                                    is_keyframe, buffer_type, track_num);
-  if (additional_size) {
-    buffer->WritableSideData().alpha_data =
-        base::HeapArray<uint8_t>::CopiedFrom(
-            base::span<const uint8_t>(additional, additional_size));
+  if (additional.size() > 8) {
+    auto side_data = additional;
+    // First 8 bytes of side data is the side_data_id in big endian. This is the
+    // same as the matroska BlockAddID whose values are documented here:
+    // https://www.matroska.org/technical/codec_specs.html#block-addition-mappings
+    const uint64_t side_data_id = base::U64FromBigEndian(side_data.first<8u>());
+    if (side_data_id == 1) {
+      buffer->WritableSideData().alpha_data =
+          base::HeapArray<uint8_t>::CopiedFrom(side_data.subspan(8u));
+    } else if (side_data_id == 4) {
+      SetAgtmFromT35(buffer->WritableSideData().hdr_metadata,
+                     side_data.subspan(8u));
+    }
   }
 
   if (decrypt_config) {
@@ -746,10 +741,12 @@ base::TimeDelta WebMClusterParser::Track::GetDurationEstimate() {
   if (max_frame_duration_ == kNoTimestamp) {
     DVLOG(3) << __func__ << " : using hardcoded default duration";
     if (track_type_ == TrackType::AUDIO) {
-      duration = base::Milliseconds(kDefaultAudioBufferDurationInMs);
+      duration = base::Milliseconds(
+          std::to_underlying(kDefaultAudioBufferDurationInMs));
     } else {
       // Video tracks use the larger video default duration.
-      duration = base::Milliseconds(kDefaultVideoBufferDurationInMs);
+      duration = base::Milliseconds(
+          std::to_underlying(kDefaultVideoBufferDurationInMs));
     }
   } else {
     // Use max duration to minimize the risk of introducing gaps in the buffered

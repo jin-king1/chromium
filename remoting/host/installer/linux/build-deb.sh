@@ -16,7 +16,13 @@ REPOCONFIG="deb [arch=${ARCHITECTURE}] http://${BASEREPOCONFIG}"
 REPOCONFIGREGEX="deb (\\\\[arch=[^]]*\\\\b${ARCHITECTURE}\\\\b[^]]*\\\\]"
 REPOCONFIGREGEX+="[[:space:]]*) https?://${BASEREPOCONFIG}"
 
-source ${SCRIPTDIR}/../../../../chrome/installer/linux/common/installer.include
+# The template processor requires these variables to be lowercase for
+# some substitutions to work:
+architecture="$ARCHITECTURE"
+repoconfig="$REPOCONFIG"
+repoconfigregex="$REPOCONFIGREGEX"
+
+source ${SCRIPTDIR}/installer.include
 
 guess_filename() {
   VERSION_FULL=$(get_version_full)
@@ -48,10 +54,11 @@ usage() {
   echo "-p     just print the expected DEB filename that this will build."
   echo "-s     path to the top of the src tree."
   echo "-o     output directory path."
-  echo "-O     option (enable_chromoting_crashpad)"
+  echo "-O     option (no options currently defined)"
+  echo "-b     build timestamp (Epoch seconds)"
 }
 
-while getopts ":s:o:O:ph" OPTNAME
+while getopts ":s:o:O:phb:" OPTNAME
 do
   case $OPTNAME in
     s )
@@ -65,6 +72,9 @@ do
       ;;
     O )
       OPTION="$OPTARG"
+      ;;
+    b )
+      BUILD_TIMESTAMP="$OPTARG"
       ;;
     h )
       usage
@@ -116,17 +126,14 @@ mkdir -p "${tmpdir}/linux"
 cp -a "${SCRIPTDIR}"/* "${tmpdir}/linux"
 cd "${tmpdir}/linux"
 
+# The 'cp -a' command preserves the source file timestamps, which reflect the
+# checkout time and vary between builders. This results in non-reproducible
+# builds. Explicitly set the timestamp of all files to the build timestamp
+# to ensure consistent, deterministic package output.
+find . -exec touch -d "@$BUILD_TIMESTAMP" {} +
+
 if [[ ! "$OUTPUT_PATH" ]]; then
   OUTPUT_PATH="${SCRIPTDIR}/../../../../out/Release"
-fi
-
-# crbug.com/391748031: need to remove stale binary.
-if [[ "$OPTION" = "enable_chromoting_crashpad" ]]; then
-  echo "enable_chromoting_crashpad=true. remove remoting_crash_uploader"
-  rm -f "${OUTPUT_PATH}/remoting_crash_uploader"
-else
-  echo "enable_chromoting_crashpad=false. remove remoting_crashpad_handler"
-  rm -f "${OUTPUT_PATH}/remoting_crashpad_handler"
 fi
 
 echo "Building version $version_full $revision_text"
@@ -140,12 +147,18 @@ debchange --create \
   --force-distribution \
   --distribution unstable \
   "New Debian package $revision_text"
-
+# Manually overwrite the trailer line to force the timestamp for reproducible
+# builds. Without this, debchange uses the current system time (localtime).
+# NOTE: When debchange --date is properly supported in the build environment,
+# this sed command should be removed and --date "$DATE_RFC5322" added to the
+# debchange command above.
+DATE_RFC5322="$(date -u --rfc-email -d "@$BUILD_TIMESTAMP")"
+sed -i "s/^ -- $DEBEMAIL .*/ -- $DEBEMAIL  $DATE_RFC5322/" debian/changelog
 
 CRON_SCRIPT_DIR="${OUTPUT_PATH}/remoting/installer/cron"
 mkdir -p ${CRON_SCRIPT_DIR}
 process_template \
-    "${SCRIPTDIR}/../../../../chrome/installer/linux/common/repo.cron" \
+    "${SCRIPTDIR}/debian/repo.cron" \
     "${CRON_SCRIPT_DIR}/chrome-remote-desktop"
 
 # TODO(mmoss): This is a workaround for a problem where dpkg-shlibdeps was
@@ -156,9 +169,14 @@ process_template \
 # but it seems that we don't currently, so this is the most expediant fix.
 SAVE_LDLP=$LD_LIBRARY_PATH
 unset LD_LIBRARY_PATH
-BUILD_DIR=$OUTPUT_PATH SRC_DIR=${SCRIPTDIR}/../../../.. \
+SOURCE_DATE_EPOCH="$BUILD_TIMESTAMP" \
+  BUILD_DIR=$OUTPUT_PATH SRC_DIR=${SCRIPTDIR}/../../../.. \
   dpkg-buildpackage -b -us -uc
 LD_LIBRARY_PATH=$SAVE_LDLP
+
+# Remove buildinfo references from the changes file as they are not included in
+# the zip and can cause reproducibility issues due to environment differences.
+sed -i '/.buildinfo/d' ../${PACKAGE}_*.changes
 
 mv ../${PACKAGE}_*.deb "$OUTPUT_PATH"/
 mv ../${PACKAGE}_*.changes "$OUTPUT_PATH"/

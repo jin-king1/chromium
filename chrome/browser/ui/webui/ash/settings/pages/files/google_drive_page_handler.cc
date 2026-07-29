@@ -6,10 +6,12 @@
 
 #include <optional>
 
+#include "base/byte_size.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/files/mojom/google_drive_handler.mojom.h"
 #include "chromeos/ash/components/drivefs/drivefs_pinning_manager.h"
@@ -29,11 +31,13 @@ StatusPtr CreateStatusPtr(const Progress& progress) {
   StatusPtr status = Status::New();
   status->required_space =
       (progress.required_space >= 0)
-          ? base::UTF16ToUTF8(ui::FormatBytes(progress.required_space))
+          ? base::UTF16ToUTF8(ui::FormatBytes(base::ByteSize(
+                base::checked_cast<uint64_t>(progress.required_space))))
           : "";
   status->free_space =
       (progress.free_space >= 0)
-          ? base::UTF16ToUTF8(ui::FormatBytes(progress.free_space))
+          ? base::UTF16ToUTF8(ui::FormatBytes(base::ByteSize(
+                base::checked_cast<uint64_t>(progress.free_space))))
           : "";
   status->stage = progress.stage;
   status->listed_files = progress.listed_files;
@@ -51,7 +55,7 @@ GoogleDrivePageHandler::GoogleDrivePageHandler(
       page_(std::move(page)),
       receiver_(this, std::move(receiver)) {
   if (DriveIntegrationService* const service = GetDriveService()) {
-    Observe(service);
+    drive_observation_.Observe(service);
   }
 }
 
@@ -95,6 +99,10 @@ void GoogleDrivePageHandler::OnBulkPinProgress(const Progress& progress) {
   NotifyProgress(progress);
 }
 
+void GoogleDrivePageHandler::OnDriveIntegrationServiceDestroyed() {
+  drive_observation_.Reset();
+}
+
 void GoogleDrivePageHandler::GetContentCacheSize(
     GetContentCacheSizeCallback callback) {
   if (!GetDriveService()) {
@@ -121,7 +129,8 @@ void GoogleDrivePageHandler::OnGetContentCacheSize(
     std::move(callback).Run(std::nullopt);
     return;
   }
-  std::move(callback).Run(base::UTF16ToUTF8(ui::FormatBytes(size)));
+  std::move(callback).Run(base::UTF16ToUTF8(
+      ui::FormatBytes(base::ByteSize(base::checked_cast<uint64_t>(size)))));
 }
 
 void GoogleDrivePageHandler::ClearPinnedFiles(

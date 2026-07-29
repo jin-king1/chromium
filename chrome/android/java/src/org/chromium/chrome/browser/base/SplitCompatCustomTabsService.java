@@ -10,9 +10,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
 
-import androidx.annotation.OptIn;
 import androidx.browser.auth.AuthTabSessionToken;
-import androidx.browser.auth.ExperimentalAuthTab;
 import androidx.browser.customtabs.CustomTabsService;
 import androidx.browser.customtabs.CustomTabsSessionToken;
 import androidx.browser.customtabs.EngagementSignalsCallback;
@@ -29,10 +27,9 @@ import java.util.List;
  * CustomTabsService base class which will call through to the given {@link Impl}. This class must
  * be present in the base module, while the Impl can be in the chrome module.
  */
-@OptIn(markerClass = ExperimentalAuthTab.class)
 @NullMarked
 public class SplitCompatCustomTabsService extends CustomTabsService {
-    private String mServiceClassName;
+    private final String mServiceClassName;
     private Impl mImpl;
 
     public SplitCompatCustomTabsService(String serviceClassName) {
@@ -99,7 +96,7 @@ public class SplitCompatCustomTabsService extends CustomTabsService {
     }
 
     @Override
-    protected Bundle extraCommand(String commandName, @Nullable Bundle args) {
+    protected @Nullable Bundle extraCommand(String commandName, @Nullable Bundle args) {
         return mImpl.extraCommand(commandName, args);
     }
 
@@ -170,19 +167,13 @@ public class SplitCompatCustomTabsService extends CustomTabsService {
     }
 
     @Override
-    @androidx.browser.customtabs.ExperimentalEphemeralBrowsing
-    protected boolean isEphemeralBrowsingSupported(Bundle extras) {
-        return mImpl.isEphemeralBrowsingSupported(extras);
-    }
-
-    @Override
     protected boolean cleanUpSession(AuthTabSessionToken sessionToken) {
         mImpl.cleanUpSession(sessionToken);
         return super.cleanUpSession(sessionToken);
     }
 
     @Override
-    protected boolean newAuthTabSession(AuthTabSessionToken sessionToken) {
+    protected boolean registerAuthTabSession(AuthTabSessionToken sessionToken) {
         return mImpl.newAuthTabSession(sessionToken);
     }
 
@@ -225,7 +216,7 @@ public class SplitCompatCustomTabsService extends CustomTabsService {
         protected abstract void prefetch(
                 CustomTabsSessionToken sessionToken, List<Uri> urls, PrefetchOptions options);
 
-        protected abstract Bundle extraCommand(String commandName, @Nullable Bundle args);
+        protected abstract @Nullable Bundle extraCommand(String commandName, @Nullable Bundle args);
 
         protected abstract boolean updateVisuals(
                 CustomTabsSessionToken sessionToken, @Nullable Bundle bundle);
@@ -254,8 +245,6 @@ public class SplitCompatCustomTabsService extends CustomTabsService {
                 CustomTabsSessionToken sessionToken,
                 EngagementSignalsCallback callback,
                 Bundle extras);
-
-        protected abstract boolean isEphemeralBrowsingSupported(Bundle extras);
 
         protected abstract void cleanUpSession(AuthTabSessionToken sessionToken);
 

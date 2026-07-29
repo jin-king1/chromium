@@ -19,7 +19,6 @@
 #include "net/url_request/url_request_context_builder.h"
 #include "net/url_request/url_request_test_util.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
-#include "services/network/public/mojom/trust_tokens.mojom-forward.h"
 #include "services/network/public/mojom/trust_tokens.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
@@ -112,9 +111,9 @@ class TrustTokenKeyCommitmentControllerTest : public ::testing::Test {
 
  protected:
   std::unique_ptr<net::URLRequest> MakeURLRequest(std::string spec) {
-    return context_->CreateRequest(GURL(spec),
-                                   net::RequestPriority::DEFAULT_PRIORITY,
-                                   &delegate_, TRAFFIC_ANNOTATION_FOR_TESTS);
+    return context_->CreateRequest(
+        GURL(spec), net::RequestPriority::DEFAULT_PRIORITY, &delegate_,
+        TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle);
   }
   const net::URLRequest& IssuerURLRequest() { return *issuer_request_; }
   base::test::TaskEnvironment env_;

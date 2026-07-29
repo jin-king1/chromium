@@ -5,12 +5,21 @@
 #include "chrome/browser/ui/autofill/payments/mandatory_reauth_bubble_controller_impl.h"
 
 #include "base/functional/bind.h"
+#include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "base/test/with_feature_override.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
+#include "chrome/browser/ui/autofill/bubble_manager.h"
+#include "chrome/browser/ui/autofill/mock_bubble_manager.h"
+#include "chrome/browser/ui/autofill/test/test_autofill_bubble_handler.h"
+#include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/autofill/core/browser/metrics/payments/mandatory_reauth_metrics.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_features.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -29,10 +38,15 @@ class TestMandatoryReauthBubbleControllerImpl
   explicit TestMandatoryReauthBubbleControllerImpl(
       content::WebContents* web_contents)
       : MandatoryReauthBubbleControllerImpl(web_contents) {}
+
+  void DoShowBubble() override { SetBubbleView(dummy_bubble_); }
+
+ private:
+  TestAutofillBubble dummy_bubble_;
 };
 
 class MandatoryReauthBubbleControllerImplTest
-    : public BrowserWithTestWindowTest {
+    : public ChromeRenderViewHostTestHarness {
  public:
   MandatoryReauthBubbleControllerImplTest() = default;
   MandatoryReauthBubbleControllerImplTest(
@@ -41,16 +55,47 @@ class MandatoryReauthBubbleControllerImplTest
       MandatoryReauthBubbleControllerImplTest&) = delete;
 
   void SetUp() override {
-    BrowserWithTestWindowTest::SetUp();
-    AddTab(browser(), GURL("about:blank"));
-    content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
-    TestMandatoryReauthBubbleControllerImpl::CreateForTesting(web_contents);
+    ChromeRenderViewHostTestHarness::SetUp();
+    fake_tab_interface_ = std::make_unique<tabs::MockTabInterface>();
+    tab_features_ = std::make_unique<tabs::TabFeatures>();
+    auto mock_bubble_manager =
+        std::make_unique<testing::NiceMock<autofill::MockBubbleManager>>();
+    ON_CALL(*mock_bubble_manager, RequestShowController(testing::_, testing::_))
+        .WillByDefault([](BubbleControllerBase& controller, bool force_show) {
+          controller.ShowBubble();
+        });
+    tab_features_->SetBubbleManagerForTesting(std::move(mock_bubble_manager));
+
+    ON_CALL(*fake_tab_interface_, GetContents())
+        .WillByDefault(testing::Return(web_contents()));
+
+    ON_CALL(*fake_tab_interface_, GetTabFeatures())
+        .WillByDefault(testing::Return(tab_features_.get()));
+
+    ON_CALL(testing::Const(*fake_tab_interface_), GetTabFeatures())
+        .WillByDefault(testing::Return(
+            static_cast<const tabs::TabFeatures*>(tab_features_.get())));
+
+    tabs::TabLookupFromWebContents::CreateForWebContents(
+        web_contents(), fake_tab_interface_.get());
+
+    TestMandatoryReauthBubbleControllerImpl::CreateForTesting(web_contents());
   }
 
+  void TearDown() override {
+    if (web_contents()) {
+      web_contents()->RemoveUserData(
+          tabs::TabLookupFromWebContents::UserDataKey());
+    }
+    fake_tab_interface_.reset();
+    ChromeRenderViewHostTestHarness::TearDown();
+  }
+
+  void ResetFakeTabInterface() { fake_tab_interface_.reset(); }
+
   void ShowBubble() {
-    controller()->ShowBubble(accept_callback.Get(), cancel_callback.Get(),
-                             close_callback.Get());
+    controller()->SetupAndShowBubble(
+        accept_callback.Get(), cancel_callback.Get(), close_callback.Get());
   }
 
   void ReshowBubble() { controller()->ReshowBubble(); }
@@ -83,36 +128,47 @@ class MandatoryReauthBubbleControllerImplTest
   TestMandatoryReauthBubbleControllerImpl* controller() {
     return static_cast<TestMandatoryReauthBubbleControllerImpl*>(
         TestMandatoryReauthBubbleControllerImpl::FromWebContents(
-            browser()->tab_strip_model()->GetActiveWebContents()));
+            web_contents()));
   }
 
  private:
+  std::unique_ptr<tabs::MockTabInterface> fake_tab_interface_;
+  std::unique_ptr<tabs::TabFeatures> tab_features_;
   base::WeakPtrFactory<MandatoryReauthBubbleControllerImplTest>
       weak_ptr_factory_{this};
 };
 
-TEST_F(MandatoryReauthBubbleControllerImplTest,
+class MandatoryReauthBubbleControllerImplTestWithFeatureOverride
+    : public base::test::WithFeatureOverride,
+      public MandatoryReauthBubbleControllerImplTest {
+ public:
+  MandatoryReauthBubbleControllerImplTestWithFeatureOverride()
+      : base::test::WithFeatureOverride(
+            features::kAutofillShowBubblesBasedOnPriorities) {}
+};
+
+TEST_P(MandatoryReauthBubbleControllerImplTestWithFeatureOverride,
        SuccessfullyInvokesAcceptCallback) {
   ShowBubble();
   EXPECT_CALL(accept_callback, Run).Times(1);
   ClickAcceptButton();
 }
 
-TEST_F(MandatoryReauthBubbleControllerImplTest,
+TEST_P(MandatoryReauthBubbleControllerImplTestWithFeatureOverride,
        SuccessfullyInvokesCancelCallback) {
   ShowBubble();
   EXPECT_CALL(cancel_callback, Run).Times(1);
   ClickCancelButton();
 }
 
-TEST_F(MandatoryReauthBubbleControllerImplTest,
+TEST_P(MandatoryReauthBubbleControllerImplTestWithFeatureOverride,
        SuccessfullyInvokesCloseCallback) {
   ShowBubble();
   EXPECT_CALL(close_callback, Run).Times(1);
   CloseBubble();
 }
 
-TEST_F(MandatoryReauthBubbleControllerImplTest,
+TEST_P(MandatoryReauthBubbleControllerImplTestWithFeatureOverride,
        Metrics_OptInConfirmationBubble_Shown) {
   base::HistogramTester histogram_tester;
   ShowBubble();
@@ -125,6 +181,35 @@ TEST_F(MandatoryReauthBubbleControllerImplTest,
       autofill_metrics::MandatoryReauthOptInConfirmationBubbleMetric::kShown,
       1);
 }
+
+// Regression test: on macOS without biometrics, it's possible for the
+// accept/cancel callbacks to destroy web contents when a user accepts the
+// re-auth bubble, which would cause a use-after-free. This test ensures this
+// case is handled.
+TEST_P(MandatoryReauthBubbleControllerImplTestWithFeatureOverride,
+       OnBubbleClosedSurvivesWebContentsDestructionInAcceptCallback) {
+  // The accept callback destroys the WebContents that owns `ctrl` (via
+  // WebContentsUserData).
+  base::OnceClosure destroy_web_contents = base::BindOnce(
+      [](MandatoryReauthBubbleControllerImplTestWithFeatureOverride* test) {
+        if (test->web_contents()) {
+          test->web_contents()->RemoveUserData(
+              tabs::TabLookupFromWebContents::UserDataKey());
+        }
+        test->ResetFakeTabInterface();
+        test->DeleteContents();
+      },
+      this);
+
+  controller()->SetupAndShowBubble(std::move(destroy_web_contents),
+                                   base::DoNothing(), base::DoNothing());
+
+  // Simulate the user clicking "Yes" on the opt-in bubble.
+  controller()->OnBubbleClosed(PaymentsUiClosedReason::kAccepted);
+}
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    MandatoryReauthBubbleControllerImplTestWithFeatureOverride);
 
 class MandatoryReauthBubbleControllerOptInBubbleMetricsTest
     : public MandatoryReauthBubbleControllerImplTest,

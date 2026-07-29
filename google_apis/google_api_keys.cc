@@ -59,7 +59,7 @@ ApiKeyCache& InitializeApiKeyCacheInstance() {
   // is not feasible to check that `g_api_key_cache_instance` is null in
   // tests.
   if (g_api_key_cache_instance) {
-    CHECK_IS_TEST(base::NotFatalUntil::M133);
+    CHECK_IS_TEST();
   }
   return GetApiKeyCacheInstance();
 }
@@ -92,6 +92,10 @@ const std::string& GetSodaAPIKey() {
   return GetApiKeyCacheInstance().api_key_soda();
 }
 
+const std::string& GetPartialTranslateAPIKey() {
+  return GetApiKeyCacheInstance().api_key_partial_translate();
+}
+
 #if !BUILDFLAG(IS_ANDROID)
 const std::string& GetHatsAPIKey() {
   return GetApiKeyCacheInstance().api_key_hats();
@@ -114,6 +118,19 @@ const std::string& GetFresnelAPIKey() {
 const std::string& GetBocaAPIKey() {
   return GetApiKeyCacheInstance().api_key_boca();
 }
+
+const std::string& GetCrosSystemGeoAPIKey() {
+  return GetApiKeyCacheInstance().api_key_cros_system_geo();
+}
+const std::string& GetCrosChromeGeoAPIKey() {
+  return GetApiKeyCacheInstance().api_key_cros_chrome_geo();
+}
+#endif
+
+#if BUILDFLAG(SUPPORT_CDM_SERVER_CERTIFICATE)
+const std::string& GetCdmServerCertificate() {
+  return GetApiKeyCacheInstance().cdm_server_certificate();
+}
 #endif
 
 const std::string& GetMetricsKey() {
@@ -133,11 +150,7 @@ const std::string& GetOAuth2ClientSecret(OAuth2Client client) {
 }
 
 bool IsGoogleChromeAPIKeyUsed() {
-#if defined(USE_OFFICIAL_GOOGLE_API_KEYS)
-  return true;
-#else
-  return false;
-#endif
+  return GetApiKeyCacheInstance().IsGoogleChromeAPIKeyUsed();
 }
 
 #if BUILDFLAG(SUPPORT_EXTERNAL_GOOGLE_API_KEY)

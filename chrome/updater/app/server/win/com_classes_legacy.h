@@ -21,16 +21,19 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/process/process.h"
+#include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "base/types/expected.h"
 #include "base/win/win_util.h"
 #include "chrome/updater/app/server/win/updater_legacy_idl.h"
+#include "chrome/updater/get_updater_scope.h"
 #include "chrome/updater/policy/service.h"
 #include "chrome/updater/update_service.h"
-#include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/util.h"
 #include "chrome/updater/util/win_util.h"
 #include "chrome/updater/win/app_command_runner.h"
 #include "chrome/updater/win/setup/setup_util.h"
+#include "components/update_client/update_client.h"
 
 // Definitions for COM updater classes provided for backward compatibility
 // with Google Update.
@@ -261,10 +264,12 @@ class LegacyAppCommandWebImpl : public IDispatchImpl<IAppCommandWeb> {
     int extra_code1 = 0;
   };
 
-  using PingSender = base::RepeatingCallback<void(UpdaterScope scope,
-                                                  const std::string& app_id,
-                                                  const std::string& command_id,
-                                                  ErrorParams error_params)>;
+  using PingSender =
+      base::RepeatingCallback<void(UpdaterScope scope,
+                                   const std::string& app_id,
+                                   const std::string& command_id,
+                                   ErrorParams error_params,
+                                   update_client::Callback callback)>;
   LegacyAppCommandWebImpl();
   LegacyAppCommandWebImpl(const LegacyAppCommandWebImpl&) = delete;
   LegacyAppCommandWebImpl& operator=(const LegacyAppCommandWebImpl&) = delete;
@@ -303,7 +308,10 @@ class LegacyAppCommandWebImpl : public IDispatchImpl<IAppCommandWeb> {
                          VARIANT substitution8,
                          VARIANT substitution9) override;
 
-  const base::Process& process() const { return process_; }
+  base::Process process() const {
+    base::AutoLock lock(lock_);
+    return process_.Duplicate();
+  }
 
  private:
   friend class LegacyAppCommandWebImplTest;
@@ -311,12 +319,15 @@ class LegacyAppCommandWebImpl : public IDispatchImpl<IAppCommandWeb> {
   static void SendPing(UpdaterScope scope,
                        const std::string& app_id,
                        const std::string& command_id,
-                       ErrorParams error_params);
+                       ErrorParams error_params,
+                       update_client::Callback callback);
 
   ~LegacyAppCommandWebImpl() override;
 
-  base::Process process_;
-  HResultOr<AppCommandRunner> app_command_runner_;
+  mutable base::Lock lock_;
+  base::Process process_ GUARDED_BY(lock_);
+  bool is_executing_ GUARDED_BY(lock_) = false;
+  HResultOr<scoped_refptr<AppCommandRunner>> app_command_runner_;
   UpdaterScope scope_ = UpdaterScope::kSystem;
   std::string app_id_;
   std::string command_id_;

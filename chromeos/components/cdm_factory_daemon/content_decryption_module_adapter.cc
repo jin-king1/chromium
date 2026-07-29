@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chromeos/components/cdm_factory_daemon/content_decryption_module_adapter.h"
 
@@ -353,9 +349,8 @@ void ContentDecryptionModuleAdapter::Decrypt(
     // clear content otherwise.
     DCHECK_EQ(stream_type, Decryptor::kVideo);
     cros_cdm_remote_->Decrypt(
-        std::vector<uint8_t>(encrypted->data(),
-                             encrypted->data() + encrypted->size()),
-        nullptr, true,
+        std::vector<uint8_t>(encrypted->begin(), encrypted->end()), nullptr,
+        true,
         encrypted->side_data() ? encrypted->side_data()->secure_handle : 0,
         base::BindOnce(&ContentDecryptionModuleAdapter::OnDecrypt,
                        base::Unretained(this), stream_type, encrypted,
@@ -377,8 +372,7 @@ void ContentDecryptionModuleAdapter::Decrypt(
   // TODO(jkardatzke): Evaluate the performance cost here of copying the data
   // and see if want to use something like MojoDecoderBufferWriter instead.
   cros_cdm_remote_->Decrypt(
-      std::vector<uint8_t>(encrypted->data(),
-                           encrypted->data() + encrypted->size()),
+      std::vector<uint8_t>(encrypted->begin(), encrypted->end()),
       decrypt_config->Clone(), stream_type == Decryptor::kVideo,
       encrypted->side_data() ? encrypted->side_data()->secure_handle : 0,
       base::BindOnce(&ContentDecryptionModuleAdapter::OnDecrypt,

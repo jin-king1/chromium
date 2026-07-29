@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "net/dns/dns_config_service_win.h"
 
 #include <optional>
@@ -14,10 +9,12 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/memory/free_deleter.h"
 #include "base/test/gmock_expected_support.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
+#include "net/dns/dns_test_util.h"
 #include "net/dns/public/dns_protocol.h"
 #include "net/dns/public/win_dns_system_settings.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -49,74 +46,10 @@ TEST(DnsConfigServiceWinTest, ParseSearchList) {
   }
 }
 
-struct AdapterInfo {
-  IFTYPE if_type;
-  IF_OPER_STATUS oper_status;
-  const WCHAR* dns_suffix;
-  std::string dns_server_addresses[4];  // Empty string indicates end.
-  uint16_t ports[4];
-};
-
-std::unique_ptr<IP_ADAPTER_ADDRESSES, base::FreeDeleter> CreateAdapterAddresses(
-    const AdapterInfo* infos) {
-  size_t num_adapters = 0;
-  size_t num_addresses = 0;
-  for (size_t i = 0; infos[i].if_type; ++i) {
-    ++num_adapters;
-    for (size_t j = 0; !infos[i].dns_server_addresses[j].empty(); ++j) {
-      ++num_addresses;
-    }
-  }
-
-  size_t heap_size = num_adapters * sizeof(IP_ADAPTER_ADDRESSES) +
-                     num_addresses * (sizeof(IP_ADAPTER_DNS_SERVER_ADDRESS) +
-                                      sizeof(struct sockaddr_storage));
-  std::unique_ptr<IP_ADAPTER_ADDRESSES, base::FreeDeleter> heap(
-      static_cast<IP_ADAPTER_ADDRESSES*>(malloc(heap_size)));
-  CHECK(heap.get());
-  memset(heap.get(), 0, heap_size);
-
-  IP_ADAPTER_ADDRESSES* adapters = heap.get();
-  IP_ADAPTER_DNS_SERVER_ADDRESS* addresses =
-      reinterpret_cast<IP_ADAPTER_DNS_SERVER_ADDRESS*>(adapters + num_adapters);
-  struct sockaddr_storage* storage =
-      reinterpret_cast<struct sockaddr_storage*>(addresses + num_addresses);
-
-  for (size_t i = 0; i < num_adapters; ++i) {
-    const AdapterInfo& info = infos[i];
-    IP_ADAPTER_ADDRESSES* adapter = adapters + i;
-    if (i + 1 < num_adapters)
-      adapter->Next = adapter + 1;
-    adapter->IfType = info.if_type;
-    adapter->OperStatus = info.oper_status;
-    adapter->DnsSuffix = const_cast<PWCHAR>(info.dns_suffix);
-    IP_ADAPTER_DNS_SERVER_ADDRESS* address = nullptr;
-    for (size_t j = 0; !info.dns_server_addresses[j].empty(); ++j) {
-      --num_addresses;
-      if (j == 0) {
-        address = adapter->FirstDnsServerAddress = addresses + num_addresses;
-      } else {
-        // Note that |address| is moving backwards.
-        address = address->Next = address - 1;
-      }
-      IPAddress ip;
-      CHECK(ip.AssignFromIPLiteral(info.dns_server_addresses[j]));
-      IPEndPoint ipe = IPEndPoint(ip, info.ports[j]);
-      address->Address.lpSockaddr =
-          reinterpret_cast<LPSOCKADDR>(storage + num_addresses);
-      socklen_t length = sizeof(struct sockaddr_storage);
-      CHECK(ipe.ToSockAddr(address->Address.lpSockaddr, &length));
-      address->Address.iSockaddrLength = static_cast<int>(length);
-    }
-  }
-
-  return heap;
-}
-
 TEST(DnsConfigServiceWinTest, ConvertAdapterAddresses) {
   // Check nameservers and connection-specific suffix.
   const struct TestCase {
-    AdapterInfo input_adapters[4];        // |if_type| == 0 indicates end.
+    std::vector<AdapterInfo> input_adapters;
     std::string expected_nameservers[4];  // Empty string indicates end.
     std::string expected_suffix;
     uint16_t expected_ports[4];
@@ -129,7 +62,6 @@ TEST(DnsConfigServiceWinTest, ConvertAdapterAddresses) {
           { "1.0.0.1" } },
         { IF_TYPE_USB, IfOperStatusUp, L"chromium.org",
           { "10.0.0.10", "2001:FFFF::1111" } },
-        { 0 },
       },
       { "10.0.0.10", "2001:FFFF::1111" },
       "chromium.org",
@@ -153,7 +85,6 @@ TEST(DnsConfigServiceWinTest, ConvertAdapterAddresses) {
           { "1.0.0.1", "fec0:0:0:ffff::2", "8.8.8.8" } },
         { IF_TYPE_USB, IfOperStatusUp, L"chromium.org",
           { "10.0.0.10", "2001:FFFF::1111" } },
-        { 0 },
       },
       { "1.0.0.1", "8.8.8.8" },
       "example.com",
@@ -165,7 +96,6 @@ TEST(DnsConfigServiceWinTest, ConvertAdapterAddresses) {
         { IF_TYPE_FASTETHER, IfOperStatusDormant, L"example.com",
           { "1.0.0.1" } },
         { IF_TYPE_USB, IfOperStatusUp, L"chromium.org" },
-        { 0 },
       },
     },
   };
@@ -175,15 +105,21 @@ TEST(DnsConfigServiceWinTest, ConvertAdapterAddresses) {
     settings.addresses = CreateAdapterAddresses(t.input_adapters);
     // Default settings for the rest.
     std::vector<IPEndPoint> expected_nameservers;
-    for (size_t j = 0; !t.expected_nameservers[j].empty(); ++j) {
+    auto expected_nameservers_span = base::span(t.expected_nameservers);
+    auto expected_ports_span = base::span(t.expected_ports);
+
+    for (size_t j = 0; j < expected_nameservers_span.size() &&
+                       !expected_nameservers_span[j].empty();
+         ++j) {
       IPAddress ip;
-      ASSERT_TRUE(ip.AssignFromIPLiteral(t.expected_nameservers[j]));
-      uint16_t port = t.expected_ports[j];
-      if (!port)
+      ASSERT_TRUE(ip.AssignFromIPLiteral(expected_nameservers_span[j]));
+      uint16_t port = expected_ports_span[j];
+      if (!port) {
         port = dns_protocol::kDefaultPort;
+      }
+
       expected_nameservers.push_back(IPEndPoint(ip, port));
     }
-
     base::expected<DnsConfig, ReadWinSystemDnsSettingsError> config_or_error =
         internal::ConvertSettingsToDnsConfig(std::move(settings));
     bool expected_success = !expected_nameservers.empty();
@@ -195,11 +131,9 @@ TEST(DnsConfigServiceWinTest, ConvertAdapterAddresses) {
     }
   }
 }
-
 TEST(DnsConfigServiceWinTest, ConvertSuffixSearch) {
-  AdapterInfo infos[2] = {
-    { IF_TYPE_USB, IfOperStatusUp, L"connection.suffix", { "1.0.0.1" } },
-    { 0 },
+  const std::vector<AdapterInfo> infos = {
+      {IF_TYPE_USB, IfOperStatusUp, L"connection.suffix", {"1.0.0.1"}},
   };
 
   const struct TestCase {
@@ -400,9 +334,8 @@ TEST(DnsConfigServiceWinTest, ConvertSuffixSearch) {
 }
 
 TEST(DnsConfigServiceWinTest, AppendToMultiLabelName) {
-  AdapterInfo infos[2] = {
-    { IF_TYPE_USB, IfOperStatusUp, L"connection.suffix", { "1.0.0.1" } },
-    { 0 },
+  const std::vector<AdapterInfo> infos = {
+      {IF_TYPE_USB, IfOperStatusUp, L"connection.suffix", {"1.0.0.1"}},
   };
 
   const struct TestCase {
@@ -429,9 +362,8 @@ TEST(DnsConfigServiceWinTest, AppendToMultiLabelName) {
 
 // Setting have_name_resolution_policy_table should set `unhandled_options`.
 TEST(DnsConfigServiceWinTest, HaveNRPT) {
-  AdapterInfo infos[2] = {
-    { IF_TYPE_USB, IfOperStatusUp, L"connection.suffix", { "1.0.0.1" } },
-    { 0 },
+  const std::vector<AdapterInfo> infos = {
+      {IF_TYPE_USB, IfOperStatusUp, L"connection.suffix", {"1.0.0.1"}},
   };
 
   const struct TestCase {
@@ -456,9 +388,8 @@ TEST(DnsConfigServiceWinTest, HaveNRPT) {
 
 // Setting have_proxy should set `unhandled_options`.
 TEST(DnsConfigServiceWinTest, HaveProxy) {
-  AdapterInfo infos[2] = {
+  const std::vector<AdapterInfo> infos = {
       {IF_TYPE_USB, IfOperStatusUp, L"connection.suffix", {"1.0.0.1"}},
-      {0},
   };
 
   const struct TestCase {
@@ -483,10 +414,9 @@ TEST(DnsConfigServiceWinTest, HaveProxy) {
 
 // Setting uses_vpn should set `unhandled_options`.
 TEST(DnsConfigServiceWinTest, UsesVpn) {
-  AdapterInfo infos[3] = {
+  const std::vector<AdapterInfo> infos = {
       {IF_TYPE_USB, IfOperStatusUp, L"connection.suffix", {"1.0.0.1"}},
       {IF_TYPE_PPP, IfOperStatusUp, L"connection.suffix", {"1.0.0.1"}},
-      {0},
   };
 
   WinDnsSystemSettings settings;
@@ -500,7 +430,7 @@ TEST(DnsConfigServiceWinTest, UsesVpn) {
 
 // Setting adapter specific nameservers should set `unhandled_options`.
 TEST(DnsConfigServiceWinTest, AdapterSpecificNameservers) {
-  AdapterInfo infos[3] = {
+  const std::vector<AdapterInfo> infos = {
       {IF_TYPE_FASTETHER,
        IfOperStatusUp,
        L"example.com",
@@ -509,7 +439,6 @@ TEST(DnsConfigServiceWinTest, AdapterSpecificNameservers) {
        IfOperStatusUp,
        L"chromium.org",
        {"10.0.0.10", "2001:FFFF::1111"}},
-      {0},
   };
 
   WinDnsSystemSettings settings;
@@ -524,7 +453,7 @@ TEST(DnsConfigServiceWinTest, AdapterSpecificNameservers) {
 // Setting adapter specific nameservers for non operational adapter should not
 // set `unhandled_options`.
 TEST(DnsConfigServiceWinTest, AdapterSpecificNameserversForNo) {
-  AdapterInfo infos[3] = {
+  const std::vector<AdapterInfo> infos = {
       {IF_TYPE_FASTETHER,
        IfOperStatusUp,
        L"example.com",
@@ -533,7 +462,6 @@ TEST(DnsConfigServiceWinTest, AdapterSpecificNameserversForNo) {
        IfOperStatusDown,
        L"chromium.org",
        {"10.0.0.10", "2001:FFFF::1111"}},
-      {0},
   };
 
   WinDnsSystemSettings settings;

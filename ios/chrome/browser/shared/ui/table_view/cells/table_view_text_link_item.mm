@@ -7,7 +7,6 @@
 #import "base/apple/foundation_util.h"
 #import "base/ios/ns_range.h"
 #import "ios/chrome/browser/net/model/crurl.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -26,9 +25,8 @@
   return self;
 }
 
-- (void)configureCell:(TableViewCell*)tableCell
-           withStyler:(ChromeTableViewStyler*)styler {
-  [super configureCell:tableCell withStyler:styler];
+- (void)configureCell:(LegacyTableViewCell*)tableCell {
+  [super configureCell:tableCell];
   TableViewTextLinkCell* cell =
       base::apple::ObjCCastStrict<TableViewTextLinkCell>(tableCell);
   [cell setText:self.text linkURLs:self.linkURLs linkRanges:self.linkRanges];
@@ -129,27 +127,9 @@
   self.delegate = nil;
 }
 
-#if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (BOOL)textView:(UITextView*)textView
-    shouldInteractWithURL:(NSURL*)URL
-                  inRange:(NSRange)characterRange
-              interaction:(UITextItemInteraction)interaction {
-  if (@available(iOS 17, *)) {
-    return NO;
-  }
-
-  DCHECK(self.textView == textView);
-  DCHECK(URL);
-  CrURL* crurl = [[CrURL alloc] initWithNSURL:URL];
-  [self.delegate tableViewTextLinkCell:self didRequestOpenURL:crurl];
-  // Returns NO as the app is handling the opening of the URL.
-  return NO;
-}
-#endif
-
 - (UIAction*)textView:(UITextView*)textView
     primaryActionForTextItem:(UITextItem*)textItem
-               defaultAction:(UIAction*)defaultAction API_AVAILABLE(ios(17.0)) {
+               defaultAction:(UIAction*)defaultAction {
   DCHECK(self.textView == textView);
   NSURL* URL = textItem.link;
   DCHECK(URL);

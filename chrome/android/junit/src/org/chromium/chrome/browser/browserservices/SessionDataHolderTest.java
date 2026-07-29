@@ -17,12 +17,14 @@ import android.content.Intent;
 import androidx.browser.customtabs.CustomTabsIntent;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
@@ -46,6 +48,7 @@ public class SessionDataHolderTest {
     private SessionHolder<?> mSession1;
     private SessionHolder<?> mSession2;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock CustomTabsConnection mConnection;
     @Mock SessionHandler mHandler1;
     @Mock SessionHandler mHandler2;
@@ -55,7 +58,6 @@ public class SessionDataHolderTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         CustomTabsConnection.setInstanceForTesting(mConnection);
         mIntent1 = createIntentWithSessionId(1);
         mSession1 = SessionHolder.getSessionHolderFromIntent(mIntent1);
@@ -63,8 +65,8 @@ public class SessionDataHolderTest {
         mSession2 = SessionHolder.getSessionHolderFromIntent(mIntent2);
         doReturn(mSession1).when(mHandler1).getSession();
         doReturn(mSession2).when(mHandler2).getSession();
-        when(mHandler1.getActivityClass()).thenReturn((Class) CustomTabActivity.class);
-        when(mHandler2.getActivityClass()).thenReturn((Class) TranslucentCustomTabActivity.class);
+        doReturn(CustomTabActivity.class).when(mHandler1).getActivityClass();
+        doReturn(TranslucentCustomTabActivity.class).when(mHandler2).getActivityClass();
         when(mActivityInTask1.getTaskId()).thenReturn(TASK_ID_1);
         when(mActivityInTask2.getTaskId()).thenReturn(TASK_ID_2);
         doNothing().when(mConnection).setDisconnectCallback(mDisconnectCallbackCaptor.capture());

@@ -11,18 +11,19 @@
 
 #include "ash/ash_export.h"
 #include "ash/public/cpp/autotest_desks_api.h"
-#include "ash/public/cpp/desk_profiles_delegate.h"
 #include "ash/public/cpp/desk_template.h"
 #include "ash/public/cpp/session/session_observer.h"
 #include "ash/wm/desks/desks_histogram_enums.h"
 #include "ash/wm/desks/root_window_desk_switch_animator.h"
 #include "ash/wm/desks/templates/restore_data_collector.h"
+#include "base/auto_reset.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/observer_list_types.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -67,13 +68,12 @@ class DeskTemplate;
 // their windows.
 class ASH_EXPORT DesksController : public chromeos::DesksHelper,
                                    public wm::ActivationChangeObserver,
-                                   public SessionObserver,
-                                   public DeskProfilesDelegate::Observer {
+                                   public SessionObserver {
  public:
   using GetDeskTemplateCallback =
       base::OnceCallback<void(std::unique_ptr<DeskTemplate>)>;
 
-  class Observer {
+  class Observer : public base::CheckedObserver {
    public:
     // Called when `desk` has been created and added to
     // `DesksController::desks_`. It's important to note that `desk` can be
@@ -111,7 +111,7 @@ class ASH_EXPORT DesksController : public chromeos::DesksHelper,
                                    const std::u16string& new_name) {}
 
    protected:
-    virtual ~Observer() = default;
+    ~Observer() override = default;
   };
 
   DesksController();
@@ -414,12 +414,6 @@ class ASH_EXPORT DesksController : public chromeos::DesksHelper,
   void OnActiveUserSessionChanged(const AccountId& account_id) override;
   void OnFirstSessionStarted() override;
 
-  // DeskProfilesDelegate::Observer:
-  void OnProfileRemoved(uint64_t profile_id) override;
-
-  // Fires the timer used for recording desk traversals immediately.
-  void FireMetricsTimerForTesting();
-
   // Resets the animation if there is any ongiong one.
   void ResetAnimation();
 
@@ -588,16 +582,18 @@ class ASH_EXPORT DesksController : public chromeos::DesksHelper,
   // Dedicated controller for the desk bars.
   std::unique_ptr<DeskBarController> desk_bar_controller_;
 
-  base::ObserverList<Observer>::Unchecked observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      Observer,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observers_;
 
   // Scheduler for reporting the weekly active desks metric.
   base::OneShotTimer weekly_active_desks_scheduler_;
 
   // Does the job for the `CaptureActiveDeskAsSavedDesk()` method.
   mutable RestoreDataCollector restore_data_collector_;
-
-  base::ScopedObservation<DeskProfilesDelegate, DeskProfilesDelegate::Observer>
-      desk_profiles_observer_{this};
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.

@@ -9,6 +9,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "gin/public/wrappable_pointer_tags.h"
 #include "gin/wrappable.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -40,8 +41,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_mojo_handle.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_offscreen_canvas.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_readable_stream.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_string_resource.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_union_float32array_uint16array_uint8clampedarray.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_float16array_float32array_uint8clampedarray.h"
 #include "third_party/blink/renderer/core/context_features/context_feature_settings.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/fileapi/blob.h"
@@ -73,10 +73,10 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
-#include "third_party/blink/renderer/platform/wtf/date_math.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkSurface.h"
+#include "v8/include/v8-cppgc.h"
 
 namespace blink {
 namespace {
@@ -108,13 +108,14 @@ v8::Local<v8::Value> RoundTrip(v8::Local<v8::Value> value,
   if (!serialized_script_value)
     return v8::Local<v8::Value>();
   // If there are message ports, make new ones and entangle them.
-  MessagePortArray* transferred_message_ports = MessagePort::EntanglePorts(
+  GCedMessagePortArray* transferred_message_ports = MessagePort::EntanglePorts(
       *scope.GetExecutionContext(), std::move(channels));
+  MessagePortArray message_ports(*transferred_message_ports);
 
   UnpackedSerializedScriptValue* unpacked =
       SerializedScriptValue::Unpack(std::move(serialized_script_value));
   V8ScriptValueDeserializer::Options deserialize_options;
-  deserialize_options.message_ports = transferred_message_ports;
+  deserialize_options.message_ports = &message_ports;
   deserialize_options.blob_info = blob_info;
   V8ScriptValueDeserializer deserializer(script_state, unpacked,
                                          deserialize_options);
@@ -222,6 +223,20 @@ TEST(V8ScriptValueSerializerTest, DeserializationErrorReturnsNull) {
       V8ScriptValueDeserializer(script_state, invalid).Deserialize();
   EXPECT_TRUE(result->IsNull());
   EXPECT_FALSE(scope.GetExceptionState().HadException());
+}
+
+TEST(V8ScriptValueSerializerTest, DeserializationErrorSetsHasError) {
+  test::TaskEnvironment task_environment;
+  V8TestingScope scope;
+  // This is a fundamentally invalid serialized payload.
+  scoped_refptr<SerializedScriptValue> serialized_script_value =
+      SerializedScriptValue::Create(
+          base::span<const uint8_t>({0xFF, 0xFF, 0xFF}));
+  SerializedScriptValue::DeserializeOptions options;
+  V8ScriptValueDeserializer deserializer(scope.GetScriptState(),
+                                         serialized_script_value, options);
+  deserializer.Deserialize();
+  EXPECT_TRUE(deserializer.HasError());
 }
 
 TEST(V8ScriptValueSerializerTest, DetachHappensAfterSerialization) {
@@ -773,7 +788,6 @@ TEST(V8ScriptValueSerializerTest, DecodeDOMMatrixReadOnly) {
       0x10, 0x40, 0xcd, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0x10, 0x40, 0x33, 0x33,
       0x33, 0x33, 0x33, 0x33, 0x11, 0x40, 0x9a, 0x99, 0x99, 0x99, 0x99, 0x99,
       0x11, 0x40,
-
   });
   v8::Local<v8::Value> result =
       V8ScriptValueDeserializer(script_state, input).Deserialize();
@@ -848,13 +862,14 @@ TEST(V8ScriptValueSerializerTest, RoundTripImageDataWithColorSpaceInfo) {
   // deserialize correctly.
   V8TestingScope scope;
   ImageDataSettings* image_data_settings = ImageDataSettings::Create();
-  image_data_settings->setColorSpace("display-p3");
-  image_data_settings->setStorageFormat("float32");
+  image_data_settings->setColorSpace(V8PredefinedColorSpace::Enum::kDisplayP3);
+  image_data_settings->setPixelFormat(
+      V8ImageDataPixelFormat::Enum::kRgbaFloat16);
   ImageData* image_data = ImageData::ValidateAndCreate(
       2, 1, std::nullopt, image_data_settings,
       ImageData::ValidateAndCreateParams(), ASSERT_NO_EXCEPTION);
   SkPixmap pm = image_data->GetSkPixmap();
-  EXPECT_EQ(kRGBA_F32_SkColorType, pm.info().colorType());
+  EXPECT_EQ(kRGBA_F16_SkColorType, pm.info().colorType());
   static_cast<float*>(pm.writable_addr(0, 0))[0] = 200.f;
 
   v8::Local<v8::Value> wrapper =
@@ -867,10 +882,12 @@ TEST(V8ScriptValueSerializerTest, RoundTripImageDataWithColorSpaceInfo) {
   EXPECT_NE(image_data, new_image_data);
   EXPECT_EQ(image_data->Size(), new_image_data->Size());
   ImageDataSettings* new_image_data_settings = new_image_data->getSettings();
-  EXPECT_EQ("display-p3", new_image_data_settings->colorSpace());
-  EXPECT_EQ("float32", new_image_data_settings->storageFormat());
+  EXPECT_EQ(V8PredefinedColorSpace::Enum::kDisplayP3,
+            new_image_data_settings->colorSpace());
+  EXPECT_EQ(V8ImageDataPixelFormat::Enum::kRgbaFloat16,
+            new_image_data_settings->pixelFormat());
   SkPixmap new_pm = new_image_data->GetSkPixmap();
-  EXPECT_EQ(kRGBA_F32_SkColorType, new_pm.info().colorType());
+  EXPECT_EQ(kRGBA_F16_SkColorType, new_pm.info().colorType());
   EXPECT_EQ(200.f, reinterpret_cast<const float*>(new_pm.addr(0, 0))[0]);
 }
 
@@ -930,8 +947,10 @@ TEST(V8ScriptValueSerializerTest, DecodeImageDataV18) {
   ASSERT_NE(new_image_data, nullptr);
   EXPECT_EQ(gfx::Size(2, 1), new_image_data->Size());
   ImageDataSettings* new_image_data_settings = new_image_data->getSettings();
-  EXPECT_EQ("display-p3", new_image_data_settings->colorSpace());
-  EXPECT_EQ("float32", new_image_data_settings->storageFormat());
+  EXPECT_EQ(V8PredefinedColorSpace::Enum::kDisplayP3,
+            new_image_data_settings->colorSpace());
+  EXPECT_EQ(V8ImageDataPixelFormat::Enum::kRgbaFloat32,
+            new_image_data_settings->pixelFormat());
   SkPixmap new_pm = new_image_data->GetSkPixmap();
   EXPECT_EQ(kRGBA_F32_SkColorType, new_pm.info().colorType());
   EXPECT_EQ(200u, static_cast<const uint8_t*>(new_pm.addr(0, 0))[0]);
@@ -1035,20 +1054,23 @@ TEST(V8ScriptValueSerializerTest, OutOfRangeMessagePortIndex) {
   }
   {
     V8ScriptValueDeserializer::Options options;
-    options.message_ports = MakeGarbageCollected<MessagePortArray>();
+    MessagePortArray message_ports;
+    options.message_ports = &message_ports;
     V8ScriptValueDeserializer deserializer(script_state, input, options);
     ASSERT_TRUE(deserializer.Deserialize()->IsNull());
   }
   {
     V8ScriptValueDeserializer::Options options;
-    options.message_ports = MakeGarbageCollected<MessagePortArray>();
+    MessagePortArray message_ports;
+    options.message_ports = &message_ports;
     options.message_ports->push_back(port1);
     V8ScriptValueDeserializer deserializer(script_state, input, options);
     ASSERT_TRUE(deserializer.Deserialize()->IsNull());
   }
   {
     V8ScriptValueDeserializer::Options options;
-    options.message_ports = MakeGarbageCollected<MessagePortArray>();
+    MessagePortArray message_ports;
+    options.message_ports = &message_ports;
     options.message_ports->push_back(port1);
     options.message_ports->push_back(port2);
     V8ScriptValueDeserializer deserializer(script_state, input, options);
@@ -1536,7 +1558,7 @@ TEST(V8ScriptValueSerializerTest, InvalidImageBitmapDecodeV18) {
         V8ScriptValueDeserializer(script_state, input).Deserialize()->IsNull());
   }
   {
-    // Nonsense image serialization tag (kImageDataStorageFormatTag).
+    // Nonsense image serialization tag (kImageDataPixelFormatTag).
     scoped_refptr<SerializedScriptValue> input =
         SerializedValue({0xff, 0x12, 0xff, 0x0d, 0x5c, 0x67, 0x03, 0x00, 0x00,
                          0x01, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00});
@@ -1590,8 +1612,7 @@ TEST(V8ScriptValueSerializerTest, TransferOffscreenCanvas) {
   // More exhaustive tests in web_tests/. This is a sanity check.
   V8TestingScope scope;
   OffscreenCanvas* canvas =
-      OffscreenCanvas::Create(scope.GetScriptState(), 10, 7);
-  canvas->SetPlaceholderCanvasId(519);
+      OffscreenCanvas::Create(scope.GetScriptState(), 10, 7, 0, 0, 519);
   v8::Local<v8::Value> wrapper =
       ToV8Traits<OffscreenCanvas>::ToV8(scope.GetScriptState(), canvas);
   Transferables transferables;
@@ -2145,13 +2166,14 @@ TEST(V8ScriptValueSerializerTest, TransformStreamIntegerOverflow) {
       std::move(serialized_script_value->GetStreams());
 
   // Entangle the message ports.
-  MessagePortArray* transferred_message_ports = MessagePort::EntanglePorts(
+  GCedMessagePortArray* transferred_message_ports = MessagePort::EntanglePorts(
       *scope.GetExecutionContext(), std::move(channels));
+  MessagePortArray message_ports(*transferred_message_ports);
 
   UnpackedSerializedScriptValue* unpacked = SerializedScriptValue::Unpack(
       std::move(corrupted_serialized_script_value));
   V8ScriptValueDeserializer::Options deserialize_options;
-  deserialize_options.message_ports = transferred_message_ports;
+  deserialize_options.message_ports = &message_ports;
   V8ScriptValueDeserializer deserializer(script_state, unpacked,
                                          deserialize_options);
   // If this doesn't crash then the test succeeded.
@@ -2267,19 +2289,22 @@ namespace {
 
 class GinWrappable : public gin::Wrappable<GinWrappable> {
  public:
+  GinWrappable() = default;
   static v8::Local<v8::Object> Create(v8::Isolate* isolate) {
-    auto* instance = new GinWrappable();
+    auto* instance = cppgc::MakeGarbageCollected<GinWrappable>(
+        isolate->GetCppHeap()->GetAllocationHandle());
     return instance->GetWrapper(isolate).ToLocalChecked();
   }
-  ~GinWrappable() override = default;
 
-  static gin::WrapperInfo kWrapperInfo;
+  static constexpr gin::WrapperInfo kWrapperInfo = {{gin::kEmbedderNativeGin},
+                                                    gin::kTestGinWrappable};
+
+  const gin::WrapperInfo* wrapper_info() const override {
+    return &kWrapperInfo;
+  }
 
  private:
-  GinWrappable() = default;
 };
-
-gin::WrapperInfo GinWrappable::kWrapperInfo = {gin::kEmbedderNativeGin};
 
 }  // namespace
 

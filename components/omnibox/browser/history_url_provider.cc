@@ -15,8 +15,6 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -29,6 +27,7 @@
 #include "components/history/core/browser/history_database.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_match_classification.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
@@ -423,8 +422,7 @@ void HistoryURLProvider::Start(const AutocompleteInput& input,
   // re-run the query from scratch and ignore `minimal_changes`.
 
   // Cancel any in-progress query.
-  Stop(true, false);
-
+  Stop(AutocompleteStopReason::kClobbered);
   if (input.IsZeroSuggest() ||
       (input.type() == metrics::OmniboxInputType::EMPTY)) {
     return;
@@ -476,7 +474,7 @@ void HistoryURLProvider::Start(const AutocompleteInput& input,
   }
 
   what_you_typed_match.relevance = CalculateRelevance(WHAT_YOU_TYPED, 0);
-  if (autocomplete_input.InKeywordMode()) {
+  if (autocomplete_input.in_keyword_mode()) {
     // TODO(yoangela): We may want to suppress what you typed matches when in
     // keyword mode.
     what_you_typed_match.from_keyword = true;
@@ -543,10 +541,8 @@ void HistoryURLProvider::Start(const AutocompleteInput& input,
   }
 }
 
-void HistoryURLProvider::Stop(bool clear_cached_results,
-                              bool due_to_user_inactivity) {
-  AutocompleteProvider::Stop(clear_cached_results, due_to_user_inactivity);
-
+void HistoryURLProvider::Stop(AutocompleteStopReason stop_reason) {
+  AutocompleteProvider::Stop(stop_reason);
   if (params_)
     params_->cancel_flag.Set();
 }
@@ -625,7 +621,7 @@ void HistoryURLProvider::DoAutocomplete(history::HistoryBackend* backend,
   // In keyword mode, it's possible we only provide results from one or two
   // autocomplete provider(s), so it's sometimes necessary to show more results
   // than provider_max_matches_.
-  size_t max_matches = params->input.InKeywordMode()
+  size_t max_matches = params->input.in_keyword_mode()
                            ? provider_max_matches_in_keyword_mode_
                            : provider_max_matches_;
 
@@ -900,8 +896,8 @@ bool HistoryURLProvider::FixupExactSuggestion(
   // which will have empty reference fragments.)
   if ((type == UNVISITED_INTRANET) &&
       (params->input.type() != metrics::OmniboxInputType::URL) &&
-      url.username().empty() && url.password().empty() && url.port().empty() &&
-      (url.path_piece() == "/") && url.query().empty() &&
+      url.GetUsername().empty() && url.GetPassword().empty() &&
+      url.GetPort().empty() && (url.path() == "/") && url.GetQuery().empty() &&
       (parsed.CountCharactersBefore(url::Parsed::REF, true) !=
        parsed.CountCharactersBefore(url::Parsed::REF, false))) {
     return false;
@@ -1089,9 +1085,8 @@ size_t HistoryURLProvider::RemoveSubsequentMatchesOf(
   // keep this one since it is rated the highest.
   history::HistoryMatches::iterator first(std::ranges::find_first_of(
       *matches, remove, history::HistoryMatch::EqualsGURL));
-  CHECK(first != matches->end(), base::NotFatalUntil::M130)
-      << "We should have always found at least the "
-         "original URL.";
+  CHECK(first != matches->end()) << "We should have always found at least the "
+                                    "original URL.";
 
   // Find any following occurrences of any URL in the redirect chain, these
   // should be deleted.
@@ -1166,8 +1161,8 @@ AutocompleteMatch HistoryURLProvider::HistoryMatchToACMatch(
   // into the middle of a punycode sequence fixed up to Unicode.  In this case,
   // there can be no inline autocompletion, and the match must not be allowed to
   // be default.
-  if (match.TryRichAutocompletion(match.contents, match.description,
-                                  params.input_before_fixup)) {
+  if (match.TryRichAutocompletion(params.input_before_fixup, match.contents,
+                                  match.description)) {
     // If rich autocompletion applies, we skip trying the alternatives below.
   } else if (inline_autocomplete_offset != std::u16string::npos) {
     DCHECK(inline_autocomplete_offset <= match.fill_into_edit.length());
@@ -1176,7 +1171,7 @@ AutocompleteMatch HistoryURLProvider::HistoryMatchToACMatch(
     match.SetAllowedToBeDefault(params.input_before_fixup);
   }
 
-  if (params.input.InKeywordMode()) {
+  if (params.input.in_keyword_mode()) {
     match.from_keyword = true;
   }
 

@@ -8,7 +8,9 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/fileapi/blob.h"
+#include "third_party/blink/renderer/modules/clipboard/clipboard_change_event_controller.h"
 #include "third_party/blink/renderer/modules/clipboard/clipboard_item.h"
+#include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
 
 namespace blink {
@@ -16,9 +18,10 @@ namespace blink {
 class ExceptionState;
 class Navigator;
 class ScriptState;
-class ClipboardUnsanitizedFormats;
+class ClipboardReadOptions;
 
-class Clipboard : public EventTarget, public Supplement<Navigator> {
+class MODULES_EXPORT Clipboard : public EventTarget,
+                                 public Supplement<Navigator> {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -29,8 +32,9 @@ class Clipboard : public EventTarget, public Supplement<Navigator> {
   Clipboard(const Clipboard&) = delete;
   Clipboard& operator=(const Clipboard&) = delete;
 
-  ScriptPromise<IDLSequence<ClipboardItem>>
-  read(ScriptState*, ClipboardUnsanitizedFormats* formats, ExceptionState&);
+  ScriptPromise<IDLSequence<ClipboardItem>> read(ScriptState*,
+                                                 ClipboardReadOptions* options,
+                                                 ExceptionState&);
   ScriptPromise<IDLSequence<ClipboardItem>> read(
       ScriptState* script_state,
       ExceptionState& exception_state) {
@@ -44,6 +48,7 @@ class Clipboard : public EventTarget, public Supplement<Navigator> {
   ScriptPromise<IDLUndefined> writeText(ScriptState*,
                                         const String&,
                                         ExceptionState&);
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(clipboardchange, kClipboardchange)
 
   // EventTarget
   const AtomicString& InterfaceName() const override;
@@ -55,6 +60,21 @@ class Clipboard : public EventTarget, public Supplement<Navigator> {
   static String ParseWebCustomFormat(const String& format);
 
   void Trace(Visitor*) const override;
+
+  // EventTarget callbacks.
+  void AddedEventListener(const AtomicString& event_type,
+                          RegisteredEventListener&) override;
+  void RemovedEventListener(const AtomicString& event_type,
+                            const RegisteredEventListener&) override;
+
+ private:
+  // Runs post-prerender-activation to perform deferred registration.
+  void OnPrerenderActivatedRegisterController();
+
+  Member<ClipboardChangeEventController> clipboard_change_event_controller_;
+
+  // Set while a deferred registration is queued on a prerendering Document.
+  bool register_with_dispatcher_pending_ = false;
 };
 
 }  // namespace blink

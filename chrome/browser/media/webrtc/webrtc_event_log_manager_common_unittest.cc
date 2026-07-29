@@ -702,8 +702,8 @@ TEST_P(DoesProfileDefaultToLoggingEnabledForUserTypeParametrizedTest,
     case user_manager::UserType::kPublicAccount:
       fake_user_manager_->AddPublicAccountUser(account_id);
       break;
-    case user_manager::UserType::kKioskApp:
-      fake_user_manager_->AddKioskAppUser(account_id);
+    case user_manager::UserType::kKioskChromeApp:
+      fake_user_manager_->AddKioskChromeAppUser(account_id);
       break;
     case user_manager::UserType::kChild:
       fake_user_manager_->AddChildUser(account_id);
@@ -717,8 +717,13 @@ TEST_P(DoesProfileDefaultToLoggingEnabledForUserTypeParametrizedTest,
       std::make_unique<user_manager::ScopedUserManager>(
           std::move(fake_user_manager_));
 
-  EXPECT_EQ(DoesProfileDefaultToLoggingEnabled(testing_profile.get()),
+  EXPECT_EQ(DoesProfileDefaultToLoggingEnabled(
+                testing_profile.get(), webrtc_logging::ApiType::kExtension),
             test_case.defaults_to_logging_enabled);
+
+  EXPECT_EQ(DoesProfileDefaultToLoggingEnabled(testing_profile.get(),
+                                               webrtc_logging::ApiType::kWeb),
+            false);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -729,7 +734,7 @@ INSTANTIATE_TEST_SUITE_P(
             {user_manager::UserType::kRegular, true},
             {user_manager::UserType::kGuest, false},
             {user_manager::UserType::kPublicAccount, false},
-            {user_manager::UserType::kKioskApp, false},
+            {user_manager::UserType::kKioskChromeApp, false},
             {user_manager::UserType::kChild, false},
         }));
 

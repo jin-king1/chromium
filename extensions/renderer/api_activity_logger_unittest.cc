@@ -19,8 +19,6 @@
 #include "extensions/renderer/script_context.h"
 #include "extensions/renderer/script_context_set.h"
 #include "extensions/renderer/test_extensions_renderer_client.h"
-#include "ipc/ipc_message.h"
-#include "ipc/ipc_test_sink.h"
 
 namespace extensions {
 
@@ -44,7 +42,7 @@ class ScopedAllowActivityLogging {
 using ActivityLoggerTest = APIBindingTest;
 using ActivityLogCallType = IPCMessageSender::ActivityLogCallType;
 
-// Regression test for crbug.com/740866.
+// Regression test for crbug.com/40529428.
 TEST_F(ActivityLoggerTest, DontCrashOnUnconvertedValues) {
   TestExtensionsRendererClient client;
   std::set<ExtensionId> extension_ids;
@@ -76,7 +74,7 @@ TEST_F(ActivityLoggerTest, DontCrashOnUnconvertedValues) {
       .WillOnce([&](ScriptContext* script_context,
                     const ExtensionId& extension_id,
                     ActivityLogCallType call_type, const std::string& call_name,
-                    base::Value::List args, const std::string& extra) {
+                    base::ListValue args, const std::string& extra) {
         EXPECT_EQ("someApiMethod", call_name);
         ASSERT_EQ(1u, args.size());
         EXPECT_EQ(base::Value::Type::NONE, args[0].type());

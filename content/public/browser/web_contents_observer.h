@@ -22,10 +22,8 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents_capability_type.h"
-#include "ipc/ipc_message.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "services/network/public/mojom/fetch_api.mojom-forward.h"
-#include "services/service_manager/public/cpp/bind_source_info.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/css/preferred_color_scheme.mojom.h"
@@ -35,8 +33,6 @@
 #include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom-forward.h"
 #include "third_party/blink/public/mojom/loader/resource_load_info.mojom-forward.h"
 #include "third_party/blink/public/mojom/media/capture_handle_config.mojom-forward.h"
-#include "third_party/skia/include/core/SkColor.h"
-#include "ui/accessibility/ax_location_and_scroll_updates.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
 
@@ -64,6 +60,10 @@ enum class VirtualKeyboardMode;
 namespace net::device_bound_sessions {
 struct SessionAccess;
 }  // namespace net::device_bound_sessions
+
+namespace network {
+struct ResourceRequest;
+}  // namespace network
 
 namespace network::mojom {
 class SharedDictionaryAccessDetails;
@@ -184,6 +184,12 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // DidFinishNavigation is recommended).
   virtual void PrimaryPageChanged(Page& page) {}
 
+  // This method is invoked when the primary page of a WebContents is about to
+  // be deactivated. This happens when the primary page is being replaced by
+  // another page (due to a commit of a navigation). Note that this will not be
+  // called if the WebContents is being destroyed.
+  virtual void PrimaryPageWillBeDeactivated(Page& page) {}
+
   // This method is invoked when a frame is destroyed. A subframe is destroyed
   // when its parent detaches it or navigates to a different document. A main
   // frame is destroyed when the whole WebContents is going away, or, with
@@ -241,8 +247,10 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
 
   // This method is invoked when a write-access Captured Surface Control API is
   // successfully invoked by a tab-capturing Web application. These include:
-  // * CaptureController.sendWheel()
-  // * CaptureController.setZoomLevel()
+  // * CaptureController.forwardWheel()
+  // * CaptureController.increaseZoomLevel()
+  // * CaptureController.decreaseZoomLevel()
+  // * CaptureController.resetZoomLevel()
   //
   // Observing this occurrence allows us to update the UX accordingly; for
   // example, show the user an indicator that the capturing tab is being
@@ -500,9 +508,15 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // This method is invoked when a resource associate with the frame
   // |render_frame_host| has been loaded, successfully or not. |request_id| will
   // only be populated for main frame resources.
+  // |original_url| is the unsanitized original URL of the resource request
+  // tracked by the browser process. |resource_load_info| comes directly from
+  // the renderer process. When `kSanitizeOriginalUrlDuringNavigation` is
+  // enabled, |resource_load_info.original_url| may be sanitized to be just the
+  // origin, while |original_url| is always the full URL.
   virtual void ResourceLoadComplete(
       RenderFrameHost* render_frame_host,
       const GlobalRequestID& request_id,
+      const GURL& original_url,
       const blink::mojom::ResourceLoadInfo& resource_load_info) {}
 
   // Called when document reads or sets a cookie (either via document.cookie or
@@ -515,6 +529,9 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // Called when a network request issued by the navigation reads or sets a
   // cookie. If a notification is received after the navigation has committed,
   // it will be attributed to the RenderFrameHost created by the navigation.
+  // This method not only includes accesses from the navigation's
+  // request/response, but also accesses from other requests/responses triggered
+  // by the navigation e.g. early hints requests.
   virtual void OnCookiesAccessed(NavigationHandle* navigation_handle,
                                  const CookieAccessDetails& details) {}
 
@@ -630,6 +647,9 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // configured to ignore UI events, and an UI event took place.
   virtual void DidGetIgnoredUIEvent() {}
 
+  // Invoked before the WebContents changes visibility.
+  virtual void OnVisibilityWillChange(Visibility visibility) {}
+
   // Invoked every time the WebContents changes visibility.
   virtual void OnVisibilityChanged(Visibility visibility) {}
 
@@ -659,6 +679,9 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   virtual void WebAuthnAssertionRequestSucceeded(
       RenderFrameHost* render_frame_host) {}
 
+  // Invoked when a federated login request completes.
+  virtual void OnFedCmFederatedLogin(bool success) {}
+
   // Invoked when the display state of the frame changes.
   virtual void FrameDisplayStateChanged(RenderFrameHost* render_frame_host,
                                         bool is_display_none) {}
@@ -674,11 +697,6 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // (a primary main frame of a WebContents, a fenced frame or a MPArch guest).
   virtual void TitleWasSetForMainFrame(RenderFrameHost* render_frame_host) {}
 
-  // These methods are invoked when a Pepper plugin instance is created/deleted
-  // in the DOM.
-  virtual void PepperInstanceCreated() {}
-  virtual void PepperInstanceDeleted() {}
-
   // This method is called when the viewport fit of a WebContents changes.
   virtual void ViewportFitChanged(blink::mojom::ViewportFit value) {}
 
@@ -692,25 +710,6 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   virtual void VirtualKeyboardModeChanged(ui::mojom::VirtualKeyboardMode mode) {
   }
 
-  // Notification that a plugin has crashed.
-  // |plugin_pid| is the process ID identifying the plugin process. Note that
-  // this ID is supplied by the renderer process, so should not be trusted.
-  // Besides, the corresponding process has probably died at this point. The ID
-  // may even have been reused by a new process.
-  virtual void PluginCrashed(const base::FilePath& plugin_path,
-                             base::ProcessId plugin_pid) {}
-
-  // Notification that the given plugin has hung or become unhung. This
-  // notification is only for Pepper plugins.
-  //
-  // The plugin_child_id is the unique child process ID from the plugin. Note
-  // that this ID is supplied by the renderer process, so should be validated
-  // before it's used for anything in case there's an exploited renderer
-  // process.
-  virtual void PluginHungStatusChanged(int plugin_child_id,
-                                       const base::FilePath& plugin_path,
-                                       bool is_hung) {}
-
   // Notifies that an inner WebContents instance has been created with the
   // observed WebContents as its container. |inner_web_contents| has not been
   // added to the WebContents tree at this point, but can be observed safely.
@@ -721,6 +720,26 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // |inner_web_contents| will have been added to the WebContents tree.
   virtual void InnerWebContentsAttached(WebContents* inner_web_contents,
                                         RenderFrameHost* render_frame_host) {}
+
+  // Called when a SurfaceEmbed child WebContents is attached to its embedder.
+  // `inner_web_contents` is the child WebContents. `embedder_render_frame_host`
+  // is the outer document's RenderFrameHost that embeds it.
+  //
+  // NOTE: This API is intended only for a very specific, narrow use-case.
+  // Very few observers should need this. Do not use this unless you are
+  // specifically managing SurfaceEmbed relationships.
+  virtual void SurfaceEmbedChildWebContentsAttached(
+      WebContents* inner_web_contents,
+      RenderFrameHost* embedder_render_frame_host) {}
+
+  // Called when a SurfaceEmbed child WebContents is detached from its parent.
+  // `inner_web_contents` is the child WebContents.
+  //
+  // NOTE: This API is intended only for a very specific, narrow use-case.
+  // Very few observers should need this. Do not use this unless you are
+  // specifically managing SurfaceEmbed relationships.
+  virtual void SurfaceEmbedChildWebContentsDetached(
+      WebContents* inner_web_contents) {}
 
   // Invoked when WebContents::Clone() was used to clone a WebContents.
   virtual void DidCloneToNewWebContents(WebContents* old_web_contents,
@@ -746,9 +765,12 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // it is recommended to call WebContents::GetFaviconURLs() to get the current
   // list as this callback will not be executed unless there is an update.
   // `render_frame_host` is the main RenderFrameHost for the primary page.
+  // `reason` is the reason for the favicon list update, which can be used to
+  // filter irrelevant updates.
   virtual void DidUpdateFaviconURL(
       RenderFrameHost* render_frame_host,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) {}
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) {}
 
   // Called when an audio change occurs to this WebContents. If |audible| is
   // true then one or more frames or child contents are emitting audio; if
@@ -893,6 +915,12 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
       const MediaPlayerInfo& video_type,
       const MediaPlayerId& id,
       WebContentsObserver::MediaStoppedReason reason) {}
+
+  // Invoked when the set of tracks in the media has changed. Possible reasons
+  // include adding/removing a track via MediaStream.addTrack()/removeTrack().
+  virtual void MediaMetadataChanged(const MediaPlayerInfo& video_type,
+                                    const MediaPlayerId& id) {}
+
   virtual void MediaResized(const gfx::Size& size, const MediaPlayerId& id) {}
   // Invoked when media enters or exits fullscreen. We must use a heuristic
   // to determine this as it is not trivial for media with custom controls.
@@ -923,9 +951,9 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   virtual void OnTextCopiedToClipboard(RenderFrameHost* render_frame_host,
                                        const std::u16string& copied_text) {}
 
-  // Invoked if an IPC message is coming from a specific RenderFrameHost.
-  virtual bool OnMessageReceived(const IPC::Message& message,
-                                 RenderFrameHost* render_frame_host);
+  // Called when text selection is changed.
+  virtual void OnTextSelectionChanged(RenderFrameHost* render_frame_host,
+                                      std::u16string_view selected_text) {}
 
   // Notification that the |render_widget_host| for this WebContents has gained
   // focus.
@@ -936,12 +964,11 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   virtual void OnWebContentsLostFocus(RenderWidgetHost* render_widget_host) {}
 
   // Notification that a RenderFrameHost inside this WebContents has updated
-  // its focused element. |details| contains information on the element
-  // that has received focus. This allows for observing focus changes
-  // within WebContents, as opposed to OnWebContentsFocused/LostFocus
-  // which allows observation that the RenderWidgetHost for the
-  // WebContents has gained/lost focus.
-  virtual void OnFocusChangedInPage(FocusedNodeDetails* details) {}
+  // its focused element. `details` contains information on the element that has
+  // received focus. This allows for observing focus changes within WebContents,
+  // as opposed to OnWebContentsFocused/LostFocus which allows observation that
+  // the RenderWidgetHost for the WebContents has gained/lost focus.
+  virtual void OnFocusChangedInPage(const FocusedNodeDetails& details) {}
 
   // Notifies that the manifest URL for the main frame changed to
   // |manifest_url|. This will be invoked when a document with a manifest loads
@@ -999,7 +1026,30 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   virtual void VibrationRequested() {}
 
   // Called when a first contentful paint happened in the primary main frame.
-  virtual void OnFirstContentfulPaintInPrimaryMainFrame() {}
+  // `presentation_time` is the renderer-side presentation timestamp of the
+  // paint.
+  virtual void OnFirstContentfulPaintInPrimaryMainFrame(
+      base::TimeTicks presentation_time) {}
+
+  // Called when the largest contentful paint candidate changed in the primary
+  // main frame. May be called multiple times as larger elements paint; the
+  // last call (before user input freezes the metric) reflects the page's
+  // largest contentful paint. `presentation_time` is the renderer-side
+  // presentation timestamp of the current candidate.
+  virtual void OnLargestContentfulPaintInPrimaryMainFrame(
+      base::TimeTicks presentation_time) {}
+
+  // Invoked when a fetch keepalive request is created in this WebContents.
+  //
+  // Note that such request is usually initiated from corresponding renderer
+  // process. This method just captures the time when the request is proxied in
+  // the browser process.
+  //
+  // `resource_request` is the fetch keepalive request that is created.
+  // `initiator_rfh` is the RenderFrameHost that initiates the request.
+  virtual void OnKeepAliveRequestCreated(
+      const network::ResourceRequest& resource_request,
+      RenderFrameHost* initiator_rfh) {}
 
   WebContents* web_contents() const;
 

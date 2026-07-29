@@ -2,13 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
-#include "ipcz/router.h"
-
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
@@ -20,6 +13,7 @@
 #include "ipcz/node_link.h"
 #include "ipcz/parcel_wrapper.h"
 #include "ipcz/remote_router_link.h"
+#include "ipcz/router.h"
 #include "ipcz/sequence_number.h"
 #include "ipcz/trap_event_dispatcher.h"
 #include "third_party/abseil-cpp/absl/base/macros.h"
@@ -28,6 +22,7 @@
 #include "util/log.h"
 #include "util/multi_mutex_lock.h"
 #include "util/safe_math.h"
+#include "util/unsafe_buffers.h"
 
 namespace ipcz {
 
@@ -88,13 +83,16 @@ bool ValidateAndAcquireObjectsForTransitFrom(
 
 }  // namespace
 
-Router::Router() = default;
+Router::Router() {
+  DVLOG(5) << "Creating Router " << std::hex << this;
+}
 
 Router::~Router() {
   // A Router MUST be serialized or closed before it can be destroyed. Both
   // operations clear `traps_` and imply that no further traps should be added.
   absl::MutexLock lock(&mutex_);
   ABSL_ASSERT(traps_.empty());
+  DVLOG(5) << "Deleting Router " << std::hex << this;
 }
 
 // static
@@ -403,7 +401,8 @@ IpczResult Router::Put(absl::Span<const uint8_t> data,
   std::unique_ptr<Parcel> parcel =
       AllocateOutboundParcel(data.size(), /*allow_partial=*/false);
   if (!data.empty()) {
-    memcpy(parcel->data_view().data(), data.data(), data.size());
+    IPCZ_UNSAFE_TODO(
+        memcpy(parcel->data_view().data(), data.data(), data.size()));
   }
   parcel->CommitData(data.size());
   parcel->SetObjects(std::move(objects));
@@ -437,6 +436,7 @@ IpczResult Router::BeginPut(IpczBeginPutFlags flags,
   if (data) {
     *data = parcel->data_view().data();
   }
+  absl::MutexLock lock(&mutex_);
   if (!pending_puts_) {
     pending_puts_ = std::make_unique<PendingTransactionSet>();
   }
@@ -455,15 +455,18 @@ IpczResult Router::EndPut(IpczTransaction transaction,
     return IPCZ_RESULT_INVALID_ARGUMENT;
   }
 
-  if (!pending_puts_) {
-    return IPCZ_RESULT_INVALID_ARGUMENT;
-  }
-
   std::unique_ptr<Parcel> parcel;
-  if (aborted) {
-    parcel = pending_puts_->FinalizeForPut(transaction, 0);
-  } else {
-    parcel = pending_puts_->FinalizeForPut(transaction, num_bytes_produced);
+  {
+    absl::MutexLock lock(&mutex_);
+    if (!pending_puts_) {
+      return IPCZ_RESULT_INVALID_ARGUMENT;
+    }
+
+    if (aborted) {
+      parcel = pending_puts_->FinalizeForPut(transaction, 0);
+    } else {
+      parcel = pending_puts_->FinalizeForPut(transaction, num_bytes_produced);
+    }
   }
 
   if (!parcel) {
@@ -537,7 +540,7 @@ IpczResult Router::Get(IpczGetFlags flags,
     }
 
     if (data_size > 0) {
-      memcpy(data, p->data_view().data(), data_size);
+      IPCZ_UNSAFE_TODO(memcpy(data, p->data_view().data(), data_size));
     }
 
     const bool ok = inbound_parcels_.Pop(consumed_parcel);
@@ -720,6 +723,27 @@ Ref<Router> Router::Deserialize(const RouterDescriptor& descriptor,
     return nullptr;
   }
 
+  // Resolve and validate the link state fragment before acquiring the Router
+  // lock. This avoids a potential lock order inversion between `Router::mutex_`
+  // and `BufferPool::mutex_`, as `AdoptFragmentRefIfValid` may acquire the
+  // BufferPool lock.
+  FragmentRef<RouterLinkState> link_state;
+  if (new_decaying_sublink) {
+    link_state =
+        from_node_link.memory().AdoptFragmentRefIfValid<RouterLinkState>(
+            descriptor.new_link_state_fragment);
+    if (link_state.is_null()) {
+      // Central links require a valid link state fragment.
+      return nullptr;
+    }
+  } else {
+    if (!descriptor.new_link_state_fragment.is_null()) {
+      // No RouterLinkState fragment should be provided for this new
+      // peripheral link.
+      return nullptr;
+    }
+  }
+
   auto router = MakeRefCounted<Router>();
   Ref<RemoteRouterLink> new_outward_link;
   {
@@ -766,13 +790,6 @@ Ref<Router> Router::Deserialize(const RouterDescriptor& descriptor,
               ? descriptor.decaying_incoming_sequence_length
               : descriptor.next_incoming_sequence_number);
 
-      auto link_state =
-          from_node_link.memory().AdoptFragmentRefIfValid<RouterLinkState>(
-              descriptor.new_link_state_fragment);
-      if (link_state.is_null()) {
-        // Central links require a valid link state fragment.
-        return nullptr;
-      }
       new_outward_link = from_node_link.AddRemoteRouterLink(
           descriptor.new_sublink, std::move(link_state), LinkType::kCentral,
           LinkSide::kB, router);
@@ -787,11 +804,6 @@ Ref<Router> Router::Deserialize(const RouterDescriptor& descriptor,
                << descriptor.new_sublink << " and decaying sublink "
                << *new_decaying_sublink;
     } else {
-      if (!descriptor.new_link_state_fragment.is_null()) {
-        // No RouterLinkState fragment should be provided for this new
-        // peripheral link.
-        return nullptr;
-      }
       new_outward_link = from_node_link.AddRemoteRouterLink(
           descriptor.new_sublink, nullptr, LinkType::kPeripheralOutward,
           LinkSide::kB, router);
@@ -805,6 +817,8 @@ Ref<Router> Router::Deserialize(const RouterDescriptor& descriptor,
       }
     }
   }
+
+  from_node_link.AcceptEarlyParcelsForSublink(descriptor.new_sublink);
 
   if (!new_outward_link) {
     // The new portal is DOA, either because the associated NodeLink is dead, or
@@ -1236,6 +1250,11 @@ bool Router::StopProxying(SequenceNumber inbound_sequence_length,
     } else if (!inward_edge_ || inward_edge_->is_stable()) {
       // Not a proxy, so this request is invalid.
       return false;
+    } else if (inward_edge_->length_to_decaying_link().has_value() ||
+               inward_edge_->length_from_decaying_link().has_value() ||
+               outward_edge_.length_to_decaying_link().has_value() ||
+               outward_edge_.length_from_decaying_link().has_value()) {
+      return false;
     } else {
       inward_edge_->set_length_to_decaying_link(inbound_sequence_length);
       inward_edge_->set_length_from_decaying_link(outbound_sequence_length);
@@ -1251,6 +1270,17 @@ bool Router::StopProxying(SequenceNumber inbound_sequence_length,
       // The bridge is being or has already been torn down, so there's nothing
       // to do here.
       return true;
+    }
+
+    if (bridge_->length_to_decaying_link().has_value() ||
+        bridge_->length_from_decaying_link().has_value() ||
+        outward_edge_.length_to_decaying_link().has_value() ||
+        outward_edge_.length_from_decaying_link().has_value() ||
+        bridge_peer->bridge_->length_to_decaying_link().has_value() ||
+        bridge_peer->bridge_->length_from_decaying_link().has_value() ||
+        bridge_peer->outward_edge_.length_to_decaying_link().has_value() ||
+        bridge_peer->outward_edge_.length_from_decaying_link().has_value()) {
+      return false;
     }
 
     bridge_->set_length_to_decaying_link(inbound_sequence_length);
@@ -1281,6 +1311,10 @@ bool Router::NotifyProxyWillStop(SequenceNumber inbound_sequence_length) {
       // or we've lost all links due to disconnection. In the latter case we
       // can silently ignore this, but the former case is a validation failure.
       return is_disconnected_;
+    }
+
+    if (outward_edge_.length_from_decaying_link().has_value()) {
+      return false;
     }
 
     DVLOG(4) << "Bypassed proxy will stop forwarding inbound parcels after a "
@@ -1327,6 +1361,12 @@ bool Router::StopProxyingToLocalPeer(SequenceNumber outbound_sequence_length) {
       return false;
     }
 
+    if (local_peer->outward_edge_.length_from_decaying_link().has_value() ||
+        outward_edge_.length_to_decaying_link().has_value() ||
+        inward_edge_->length_from_decaying_link().has_value()) {
+      return false;
+    }
+
     DVLOG(4) << "Stopping proxy with decaying "
              << inward_edge_->decaying_link()->Describe() << " and decaying "
              << our_link->Describe();
@@ -1354,6 +1394,14 @@ bool Router::StopProxyingToLocalPeer(SequenceNumber outbound_sequence_length) {
     MultiMutexLock lock(&mutex_, &local_peer->mutex_, &bridge_peer->mutex_);
     if (outward_edge_.is_stable() || local_peer->outward_edge_.is_stable() ||
         bridge_peer->outward_edge_.is_stable()) {
+      return false;
+    }
+
+    if (local_peer->outward_edge_.length_from_decaying_link().has_value() ||
+        outward_edge_.length_from_decaying_link().has_value() ||
+        bridge_->length_to_decaying_link().has_value() ||
+        bridge_peer->outward_edge_.length_to_decaying_link().has_value() ||
+        bridge_peer->bridge_->length_from_decaying_link().has_value()) {
       return false;
     }
 
@@ -1458,7 +1506,7 @@ void Router::Flush(FlushBehavior behavior) {
       DVLOG(4) << "Outward " << decaying_outward_link->Describe()
                << " fully decayed at " << outbound_sequence_length_sent
                << " sent and " << inbound_sequence_length_received
-               << " recived";
+               << " received";
       outward_link_decayed = true;
     }
 

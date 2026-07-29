@@ -30,7 +30,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/expect_call_in_scope.h"
-#include "ui/base/interaction/framework_specific_implementation.h"
+#include "ui/base/interaction/safe_castable.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
@@ -48,9 +48,15 @@
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 
+#if BUILDFLAG(IS_MAC)
+#include "base/mac/mac_util.h"
+#endif
+
 using user_education::HelpBubbleArrow;
 using user_education::HelpBubbleParams;
 using user_education::HelpBubbleView;
+
+class TestBubbleView;
 
 namespace {
 
@@ -59,6 +65,42 @@ namespace {
 // inside the contents view. This should be sufficient.
 constexpr gfx::Rect kTestBubbleAnchorRect{10, 10, 10, 10};
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestBubbleElementId);
+
+class TestHelpBubbleFactory : public user_education::HelpBubbleFactoryViews {
+ public:
+  TestHelpBubbleFactory() : HelpBubbleFactoryViews(GetHelpBubbleDelegate()) {}
+  ~TestHelpBubbleFactory() override = default;
+
+  DECLARE_SAFE_CAST_TARGET()
+
+  // Returns whether the bubble owner can show a bubble for the TrackedElement.
+  bool CanBuildBubbleForTrackedElement(
+      const ui::TrackedElement* element) const override {
+    if (auto* const element_views =
+            element->AsA<views::TrackedElementViews>()) {
+      return views::IsViewClass<TestBubbleView>(element_views->view());
+    }
+    return false;
+  }
+
+  // Called to actually show the bubble.
+  std::unique_ptr<user_education::HelpBubble> CreateBubble(
+      ui::TrackedElement* element,
+      HelpBubbleParams params) override {
+    user_education::internal::HelpBubbleAnchorParams anchor;
+    anchor.view = element->AsA<views::TrackedElementViews>()->view();
+    auto* const target =
+        views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+            ContentsWebView::kContentsWebViewElementId, element->context());
+    return CreateBubbleImpl(
+        element, anchor, std::move(params),
+        CreateWindowHelpBubbleEventRelay(target->GetWidget()));
+  }
+};
+
+DEFINE_SAFE_CAST_TARGET(TestHelpBubbleFactory)
+
+}  // namespace
 
 // A bubble that anchors to the top left of the contents view in a browser and
 // which should be transparent to events/not activatable.
@@ -87,42 +129,6 @@ class TestBubbleView : public views::BubbleDialogDelegateView {
 
 BEGIN_METADATA(TestBubbleView)
 END_METADATA
-
-class TestHelpBubbleFactory : public user_education::HelpBubbleFactoryViews {
- public:
-  TestHelpBubbleFactory() : HelpBubbleFactoryViews(GetHelpBubbleDelegate()) {}
-  ~TestHelpBubbleFactory() override = default;
-
-  DECLARE_FRAMEWORK_SPECIFIC_METADATA()
-
-  // Returns whether the bubble owner can show a bubble for the TrackedElement.
-  bool CanBuildBubbleForTrackedElement(
-      const ui::TrackedElement* element) const override {
-    if (auto* const element_views =
-            element->AsA<views::TrackedElementViews>()) {
-      return views::IsViewClass<TestBubbleView>(element_views->view());
-    }
-    return false;
-  }
-
-  // Called to actually show the bubble.
-  std::unique_ptr<user_education::HelpBubble> CreateBubble(
-      ui::TrackedElement* element,
-      HelpBubbleParams params) override {
-    user_education::internal::HelpBubbleAnchorParams anchor;
-    anchor.view = element->AsA<views::TrackedElementViews>()->view();
-    auto* const target =
-        views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-            ContentsWebView::kContentsWebViewElementId, element->context());
-    return CreateBubbleImpl(
-        element, anchor, std::move(params),
-        CreateWindowHelpBubbleEventRelay(target->GetWidget()));
-  }
-};
-
-DEFINE_FRAMEWORK_SPECIFIC_METADATA(TestHelpBubbleFactory)
-
-}  // namespace
 
 class HelpBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
  public:
@@ -241,7 +247,6 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleViewInteractiveUiTest,
       SetOnIncompatibleAction(
           OnIncompatibleAction::kSkipTest,
           "Programmatic window activation doesn't work on all platforms."),
-      ObserveState(views::test::kCurrentWidgetFocus),
 
       // Trigger the tab group editor.
       AfterShow(kTabGroupHeaderElementId,
@@ -348,6 +353,13 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleViewInteractiveUiTest, MAYBE_AnnotateMenu) {
     GTEST_SKIP_(kLinuxWaylandErrorMessage);
   }
 
+#if BUILDFLAG(IS_MAC)
+  // TODO(crbug.com/510801992): Re-enable on macOS 26 once test is deflaked
+  if (base::mac::MacOSMajorVersion() == 26) {
+    GTEST_SKIP() << "Disabled on macOS Tahoe.";
+  }
+#endif
+
   UNCALLED_MOCK_CALLBACK(base::OnceClosure, default_button_clicked);
   constexpr char16_t kButton1Text[] = u"button 1";
 
@@ -389,6 +401,13 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleViewInteractiveUiTest, TwoMenuHelpBubbles) {
   if (SkipIfLinuxWayland()) {
     GTEST_SKIP_(kLinuxWaylandErrorMessage);
   }
+
+#if BUILDFLAG(IS_MAC)
+  // TODO(crbug.com/510801992): Re-enable on macOS 26 once test is deflaked
+  if (base::mac::MacOSMajorVersion() == 26) {
+    GTEST_SKIP() << "Disabled on macOS Tahoe.";
+  }
+#endif
 
   UNCALLED_MOCK_CALLBACK(base::OnceClosure, button_clicked);
   constexpr char16_t kButtonText[] = u"button";
@@ -447,6 +466,13 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleViewInteractiveUiTest,
   if (SkipIfLinuxWayland()) {
     GTEST_SKIP_(kLinuxWaylandErrorMessage);
   }
+
+#if BUILDFLAG(IS_MAC)
+  // TODO(crbug.com/510801992): Re-enable on macOS 26 once test is deflaked
+  if (base::mac::MacOSMajorVersion() == 26) {
+    GTEST_SKIP() << "Disabled on macOS Tahoe.";
+  }
+#endif
 
   UNCALLED_MOCK_CALLBACK(base::OnceClosure, default_button_clicked);
   constexpr char16_t kButton1Text[] = u"button 1";

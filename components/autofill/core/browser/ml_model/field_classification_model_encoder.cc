@@ -6,19 +6,25 @@
 
 #include <stddef.h>
 
+#include <algorithm>
+#include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/to_vector.h"
+#include "base/i18n/case_conversion.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/common/autofill_util.h"
+#include "components/autofill/core/common/form_field_data.h"
+#include "components/optimization_guide/proto/autofill_field_classification_model_metadata.pb.h"
 #include "third_party/protobuf/src/google/protobuf/repeated_ptr_field.h"
 #include "third_party/re2/src/re2/re2.h"
 
@@ -65,7 +71,25 @@ FieldClassificationModelEncoder::FieldClassificationModelEncoder(
 FieldClassificationModelEncoder::FieldClassificationModelEncoder() = default;
 FieldClassificationModelEncoder::FieldClassificationModelEncoder(
     const FieldClassificationModelEncoder&) = default;
+FieldClassificationModelEncoder::FieldClassificationModelEncoder(
+    FieldClassificationModelEncoder&&) = default;
+FieldClassificationModelEncoder& FieldClassificationModelEncoder::operator=(
+    const FieldClassificationModelEncoder&) = default;
+FieldClassificationModelEncoder& FieldClassificationModelEncoder::operator=(
+    FieldClassificationModelEncoder&&) = default;
 FieldClassificationModelEncoder::~FieldClassificationModelEncoder() = default;
+
+std::string FieldClassificationModelEncoder::FindTokenById(TokenId id) const {
+  // This is inefficient, but it is only used for populating
+  // chrome://autofill-ml-internals, which is a debugging page. A faster
+  // implementation would require using some memory.
+  for (const auto& [token, token_id] : token_to_id_) {
+    if (token_id == id) {
+      return base::UTF16ToUTF8(token);
+    }
+  }
+  return "";
+}
 
 FieldClassificationModelEncoder::TokenId
 FieldClassificationModelEncoder::TokenToId(std::u16string_view token) const {
@@ -77,24 +101,27 @@ FieldClassificationModelEncoder::TokenToId(std::u16string_view token) const {
 }
 
 std::vector<std::vector<FieldClassificationModelEncoder::TokenId>>
-FieldClassificationModelEncoder::EncodeForm(const FormStructure& form) const {
+FieldClassificationModelEncoder::EncodeForm(const FormData& form) const {
+  size_t num_form_fields_to_encode = std::min(
+      form.fields().size(),
+      static_cast<size_t>(encoding_parameters_.maximum_number_of_fields()));
   // Form-level features are encoded in an additional field.
-  std::vector<std::vector<TokenId>> encoded_form(ShouldEncodeFormLevelFeatures()
-                                                     ? form.field_count() + 1
-                                                     : form.field_count());
+  std::vector<std::vector<TokenId>> encoded_form(
+      ShouldEncodeFormLevelFeatures() ? num_form_fields_to_encode + 1
+                                      : num_form_fields_to_encode);
 
-  for (size_t i = 0; i < form.field_count(); ++i) {
-    encoded_form[i] = EncodeField(*form.field(i));
+  for (size_t i = 0; i < num_form_fields_to_encode; ++i) {
+    encoded_form[i] = EncodeField(form.fields()[i]);
   }
 
   if (ShouldEncodeFormLevelFeatures()) {
-    encoded_form[form.field_count()] = EncodeFormFeatures(form);
+    encoded_form[num_form_fields_to_encode] = EncodeFormFeatures(form);
   }
   return encoded_form;
 }
 
 std::vector<FieldClassificationModelEncoder::TokenId>
-FieldClassificationModelEncoder::EncodeField(const AutofillField& field) const {
+FieldClassificationModelEncoder::EncodeField(const FormFieldData& field) const {
   // Protobuf does not generate an `enum class`. Therefore, this points to the
   // wrapping container class.
   using FeaturesEnum =
@@ -120,13 +147,13 @@ FieldClassificationModelEncoder::EncodeField(const AutofillField& field) const {
         return EncodeAttribute(field.name_attribute());
       case FeaturesEnum::FEATURE_TYPE:
         return EncodeAttribute(base::UTF8ToUTF16(
-            autofill::FormControlTypeToString(field.form_control_type())));
+            FormControlTypeToString(field.form_control_type())));
     }
     return {};
   };
   std::vector<TokenId> output;
   output.reserve(GetFieldEncodingSize(encoding_parameters_));
-  output.emplace_back(cls_token());
+  output.emplace_back(GetClsToken());
 
   for (int feature : encoding_parameters_.features()) {
     std::ranges::move(encode(feature), std::back_inserter(output));
@@ -141,7 +168,7 @@ FieldClassificationModelEncoder::EncodeField(const AutofillField& field) const {
 
 std::vector<FieldClassificationModelEncoder::TokenId>
 FieldClassificationModelEncoder::EncodeFormFeatures(
-    const FormStructure& form) const {
+    const FormData& form) const {
   // Protobuf does not generate an `enum class`. Therefore, this points to the
   // wrapping container class.
   using FeaturesEnum =
@@ -162,7 +189,7 @@ FieldClassificationModelEncoder::EncodeFormFeatures(
       case FeaturesEnum::FEATURE_FORM_NAME:
         return EncodeAttribute(form.name_attribute());
       case FeaturesEnum::FEATURE_FRAME_URL_PATH:
-        return EncodeAttribute(base::UTF8ToUTF16(form.source_url().path()));
+        return EncodeAttribute(base::UTF8ToUTF16(form.url().GetPath()));
     }
     return {};
   };

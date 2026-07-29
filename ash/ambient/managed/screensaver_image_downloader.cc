@@ -6,23 +6,31 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 
 #include "ash/ambient/metrics/managed_screensaver_metrics.h"
 #include "base/containers/flat_set.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/hash/sha1.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/values.h"
+#include "crypto/obsolete/sha1.h"
 #include "net/http/http_request_headers.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 
 namespace ash {
+
+namespace ambient {
+// Not placed in namespace {} so it can be friended from //crypto.
+std::string Sha1UrlAsHexEncodeForFilename(std::string_view url) {
+  return base::HexEncode(crypto::obsolete::Sha1::Hash(url));
+}
+}  // namespace ambient
 
 namespace {
 
@@ -116,12 +124,11 @@ bool VerifyOrCreateDownloadDirectory(const base::FilePath& download_directory) {
 }
 
 std::string GetHashedFileNameForUrl(const std::string& url) {
-  auto hash = base::SHA1Hash(base::as_byte_span(url));
-  return base::HexEncode(hash) + kCacheFileExt;
+  return ambient::Sha1UrlAsHexEncodeForFilename(url) + kCacheFileExt;
 }
 
 std::vector<std::string> GetImageUrlsToProcess(
-    const base::Value::List& image_url_list) {
+    const base::ListValue& image_url_list) {
   std::vector<std::string> urls;
   for (size_t i = 0;
        i < kMaxUrlsToProcessFromPolicy && i < image_url_list.size(); ++i) {
@@ -221,7 +228,7 @@ ScreensaverImageDownloader::ScreensaverImageDownloader(
 ScreensaverImageDownloader::~ScreensaverImageDownloader() = default;
 
 void ScreensaverImageDownloader::UpdateImageUrlList(
-    const base::Value::List& image_url_list) {
+    const base::ListValue& image_url_list) {
   if (image_url_list.empty()) {
     // If the screensaver is listening to updates, notify that the images are no
     // longer available before deleting them.

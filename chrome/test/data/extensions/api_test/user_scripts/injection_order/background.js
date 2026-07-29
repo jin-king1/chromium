@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import {openTab} from '/_test_resources/test_util/tabs_util.js';
+import {waitForUserScriptsAPIAllowed} from '/_test_resources/test_util/user_script_test_util.js';
 
 async function openExampleUrl() {
   const port = (await chrome.test.getConfig()).testServer.port;
@@ -11,38 +12,43 @@ async function openExampleUrl() {
 }
 
 // Individual code pieces that append to a document's title.
-const codeA = {code: `document.title += ' script aaaa';`};
-const codeB = {code: `document.title += ' script bbbb';`};
-const codeC = {code: `document.title += ' script cccc';`};
+const codeA = {
+  code: `document.title += ' script aaaa';`,
+};
+const codeB = {
+  code: `document.title += ' script bbbb';`,
+};
+const codeC = {
+  code: `document.title += ' script cccc';`,
+};
 
 // Individual scripts using the code blocks.
-const scriptA =
-    {
-      id: 'aaaa',
-      matches: ['*://example.com/*'],
-      js: [codeA],
-      runAt: 'document_end',
-    };
-const scriptB =
-    {
-      id: 'bbbb',
-      matches: ['*://example.com/*'],
-      js: [codeB],
-      runAt: 'document_end',
-    };
-const scriptC =
-    {
-      id: 'cccc',
-      matches: ['*://example.com/*'],
-      js: [codeC],
-      runAt: 'document_end',
-    };
+const scriptA = {
+  id: 'aaaa',
+  matches: ['*://example.com/*'],
+  js: [codeA],
+  runAt: 'document_end',
+};
+const scriptB = {
+  id: 'bbbb',
+  matches: ['*://example.com/*'],
+  js: [codeB],
+  runAt: 'document_end',
+};
+const scriptC = {
+  id: 'cccc',
+  matches: ['*://example.com/*'],
+  js: [codeC],
+  runAt: 'document_end',
+};
 
 // A series of tests to exercise injection order of user scripts relative to
 // one another (within the same extension).
 // TODO(crbug.com/337078958): These are inconsistent with one another and should
 // probably be updated.
 chrome.test.runTests([
+  waitForUserScriptsAPIAllowed,
+
   // Tests that user scripts from separate registrations are executed in the
   // order of those registrations. That is, a script registered first will
   // inject before a script registered later.
@@ -84,13 +90,12 @@ chrome.test.runTests([
   // registration, the injection order is the same as the order the code pieces
   // are declared in.
   async function individualScriptsInAUserScriptInjectInDeclaredOrder() {
-    const sharedScript =
-        {
-          id: 'cccc',
-          matches: ['*://example.com/*'],
-          js: [codeB, codeA, codeC],
-          runAt: 'document_end',
-        };
+    const sharedScript = {
+      id: 'cccc',
+      matches: ['*://example.com/*'],
+      js: [codeB, codeA, codeC],
+      runAt: 'document_end',
+    };
     await chrome.userScripts.register([sharedScript]);
 
     // Register a single user script with all three code pieces.
@@ -103,6 +108,5 @@ chrome.test.runTests([
     await chrome.userScripts.unregister();
 
     chrome.test.succeed();
-
   },
 ]);

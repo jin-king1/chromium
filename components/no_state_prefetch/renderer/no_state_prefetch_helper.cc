@@ -5,10 +5,11 @@
 #include "components/no_state_prefetch/renderer/no_state_prefetch_helper.h"
 
 #include "base/metrics/field_trial.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/time/time.h"
 #include "components/no_state_prefetch/common/no_state_prefetch_url_loader_throttle.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/public/renderer/render_thread.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 

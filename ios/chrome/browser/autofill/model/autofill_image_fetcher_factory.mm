@@ -31,9 +31,9 @@ AutofillImageFetcherFactory::~AutofillImageFetcherFactory() = default;
 
 std::unique_ptr<KeyedService>
 AutofillImageFetcherFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  return std::make_unique<autofill::AutofillImageFetcherImpl>(
-      context->GetSharedURLLoaderFactory());
+    ProfileIOS* profile) const {
+  return std::make_unique<AutofillImageFetcherImpl>(
+      profile->GetSharedURLLoaderFactory());
 }
 
 }  // namespace autofill

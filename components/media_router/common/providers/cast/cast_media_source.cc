@@ -8,12 +8,13 @@
 #include <string_view>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/containers/flat_map.h"
+#include "base/logging.h"
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/media_router/common/media_source.h"
 #include "components/media_router/common/providers/cast/channel/cast_device_capability.h"
@@ -278,7 +279,7 @@ std::unique_ptr<CastMediaSource> CreateFromURLParams(
 
 std::unique_ptr<CastMediaSource> ParseCastUrl(const MediaSource::Id& source_id,
                                               const GURL& url) {
-  std::string app_id = url.path();
+  std::string app_id = url.GetPath();
   // App ID must be non-empty.
   if (app_id.empty()) {
     return nullptr;
@@ -304,7 +305,7 @@ std::unique_ptr<CastMediaSource> ParseLegacyCastUrl(
     const MediaSource::Id& source_id,
     const GURL& url) {
   base::StringPairs params;
-  base::SplitStringIntoKeyValuePairs(url.ref(), '=', '/', &params);
+  base::SplitStringIntoKeyValuePairs(url.GetRef(), '=', '/', &params);
   for (auto& pair : params) {
     pair.second = base::UnescapeURLComponent(
         pair.second,
@@ -383,11 +384,24 @@ bool IsAutoJoinAllowed(AutoJoinPolicy policy,
 bool IsSiteInitiatedMirroringSource(const MediaSource::Id& source_id) {
   // A Cast SDK enabled website (e.g. Google Slides) may use the mirroring app
   // ID rather than the tab mirroring URN.
-  return base::StartsWith(
-      source_id,
-      base::StrCat(
-          {"cast:", openscreen::cast::GetCastStreamingAudioVideoAppId()}),
-      base::CompareCase::SENSITIVE);
+  //
+  // This predicate gates kPresentationApiAllowlist (see
+  // CastMediaRouteProvider::GetOrigins()), so it must match exactly the set of
+  // page-supplied Presentation URLs that CastActivityManager will route to a
+  // MirroringActivity (i.e. for which ContainsStreamingApp() is true).  That
+  // means it must accept *any* Cast Presentation URL form (cast: scheme or the
+  // legacy https://google.com/cast#__castAppId__= form) carrying *any* Cast
+  // Streaming app id (0F5096E8 or 85CDB22F), not just the literal
+  // "cast:0F5096E8" prefix.
+  MediaSource source(source_id);
+  if (!source.IsCastPresentationUrl()) {
+    // Browser-initiated tab/desktop mirroring URNs and remote-playback sources
+    // are not page-supplied cast: Presentation URLs.
+    return false;
+  }
+  std::unique_ptr<CastMediaSource> cast_source =
+      CastMediaSource::FromMediaSource(source);
+  return cast_source && cast_source->ContainsStreamingApp();
 }
 
 CastAppInfo::CastAppInfo(const std::string& app_id,
@@ -517,7 +531,7 @@ bool CastMediaSource::ProvidesStreamingAudioCapture() const {
 void CastMediaSource::set_supported_app_types(
     const std::vector<ReceiverAppType>& types) {
   DCHECK(!types.empty());
-  DCHECK(base::Contains(types, ReceiverAppType::kWeb));
+  DCHECK(std::ranges::contains(types, ReceiverAppType::kWeb));
   supported_app_types_ = types;
 }
 

@@ -5,8 +5,8 @@
 #include "ui/accessibility/ax_table_info.h"
 
 #include <iostream>
+#include <optional>
 #include <string>
-#include <unordered_set>
 
 #include "base/check.h"
 #include "base/logging.h"
@@ -16,7 +16,6 @@
 #include "base/strings/string_util.h"
 #include "ui/accessibility/ax_constants.mojom.h"
 #include "ui/accessibility/ax_enum_util.h"
-#include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_id_forward.h"
@@ -39,8 +38,9 @@ namespace {
 // nodes that are ignored, but we don't skp any other roles
 // in-between a table row and its cells.
 void FindCellsInRow(AXNode* node, std::vector<AXNode*>* cell_nodes) {
-  for (auto iter = node->UnignoredChildrenBegin();
-       iter != node->UnignoredChildrenEnd(); ++iter) {
+  for (auto iter = node->UnignoredChildrenBegin(),
+            end = node->UnignoredChildrenEnd();
+       iter != end; ++iter) {
     AXNode* child = iter.get();
     if (child->GetRole() == ax::mojom::Role::kGenericContainer) {
       FindCellsInRow(child, cell_nodes);
@@ -51,8 +51,9 @@ void FindCellsInRow(AXNode* node, std::vector<AXNode*>* cell_nodes) {
 }
 
 bool isRowlessTable(AXNode* node) {
-  for (auto iter = node->UnignoredChildrenBegin();
-       iter != node->UnignoredChildrenEnd(); ++iter) {
+  for (auto iter = node->UnignoredChildrenBegin(),
+            end = node->UnignoredChildrenEnd();
+       iter != end; ++iter) {
     AXNode* child = iter.get();
     if (child->GetRole() == ax::mojom::Role::kGenericContainer ||
         child->GetRole() == ax::mojom::Role::kGroup ||
@@ -81,8 +82,9 @@ bool isRowlessTable(AXNode* node) {
 void FindRows(AXNode* node,
               std::vector<raw_ptr<AXNode, VectorExperimental>>* row_node_list,
               AXNodeID& caption_node_id) {
-  for (auto iter = node->UnignoredChildrenBegin();
-       iter != node->UnignoredChildrenEnd(); ++iter) {
+  for (auto iter = node->UnignoredChildrenBegin(),
+            end = node->UnignoredChildrenEnd();
+       iter != end; ++iter) {
     AXNode* child = iter.get();
     if (child->GetRole() == ax::mojom::Role::kGenericContainer ||
         child->GetRole() == ax::mojom::Role::kGroup ||
@@ -104,6 +106,10 @@ void FindCells(std::vector<raw_ptr<AXNode, VectorExperimental>>* row_node_list,
     cell_nodes_per_row->emplace_back();
     FindCellsInRow(row, &cell_nodes_per_row->back());
   }
+}
+
+size_t GetSizeTAttribute(const AXNode& node, IntAttribute attribute) {
+  return base::saturated_cast<size_t>(node.GetIntAttribute(attribute));
 }
 
 // Find all the cells in a container that does not contain rows as part of the
@@ -133,11 +139,11 @@ void FindCells(std::vector<raw_ptr<AXNode, VectorExperimental>>* row_node_list,
 void FindCellsForRowlessTable(
     AXNode* grid_node,
     std::vector<std::vector<AXNode*>>* cell_nodes_per_row) {
-  int current_row = -1;
-  int current_index = -1;
+  std::optional<size_t> current_row;
   base::queue<AXNode*> child_queue;
-  for (auto iter = grid_node->UnignoredChildrenBegin();
-       iter != grid_node->UnignoredChildrenEnd(); ++iter) {
+  for (auto iter = grid_node->UnignoredChildrenBegin(),
+            end = grid_node->UnignoredChildrenEnd();
+       iter != end; ++iter) {
     child_queue.push(iter.get());
     while (!child_queue.empty()) {
       auto* child = child_queue.front();
@@ -145,40 +151,36 @@ void FindCellsForRowlessTable(
       if (child->GetRole() == ax::mojom::Role::kGenericContainer ||
           child->GetRole() == ax::mojom::Role::kGroup) {
         // Add children of the container to the queue
-        for (auto container_itr = child->UnignoredChildrenBegin();
-             container_itr != child->UnignoredChildrenEnd(); ++container_itr) {
+        for (auto container_itr = child->UnignoredChildrenBegin(),
+                  container_end = child->UnignoredChildrenEnd();
+             container_itr != container_end; ++container_itr) {
           child_queue.push(container_itr.get());
         }
         continue;
       } else if (IsCellOrTableHeader(child->GetRole())) {
-        const int rowIndex =
-            child->GetIntAttribute(ax::mojom::IntAttribute::kTableCellRowIndex);
-        CHECK_GE(rowIndex,0);
-        if (current_row < rowIndex) {
+        const size_t row_index =
+            GetSizeTAttribute(*child, IntAttribute::kTableCellRowIndex);
+        if (!current_row || *current_row < row_index) {
           cell_nodes_per_row->emplace_back();
-          current_row = rowIndex;
-          current_index++;
+          current_row = row_index;
         }
-        CHECK_GE(current_index,0);
-        auto& cell_nodes = cell_nodes_per_row->at(current_index);
-        cell_nodes.push_back(child);
+        cell_nodes_per_row->back().push_back(child);
       }
     }
   }
-}
-
-size_t GetSizeTAttribute(const AXNode& node, IntAttribute attribute) {
-  return base::saturated_cast<size_t>(node.GetIntAttribute(attribute));
 }
 
 }  // namespace
 
 // static
 AXTableInfo* AXTableInfo::Create(AXTree* tree, AXNode* table_node) {
+#if DCHECK_IS_ON()
   DCHECK(tree);
   DCHECK(table_node);
 
-#if DCHECK_IS_ON()
+  DCHECK(table_node->IsTable());
+  DCHECK(!table_node->IsInvisibleOrIgnored());
+
   // Confidence check, make sure the node is in the tree.
   AXNode* node = table_node;
   while (node && node != tree->root()) {
@@ -186,10 +188,6 @@ AXTableInfo* AXTableInfo::Create(AXTree* tree, AXNode* table_node) {
   }
   DCHECK_EQ(node, tree->root());
 #endif
-
-  if (!IsTableLike(table_node->GetRole()) || table_node->IsIgnored()) {
-    return nullptr;
-  }
 
   AXTableInfo* info = new AXTableInfo(tree, table_node);
   bool success = info->Update();
@@ -199,9 +197,8 @@ AXTableInfo* AXTableInfo::Create(AXTree* tree, AXNode* table_node) {
 }
 
 bool AXTableInfo::Update() {
-  if (!table_node_->IsTable()) {
-    return false;
-  }
+  DCHECK(table_node_->IsTable());
+  DCHECK(!table_node_->IsInvisibleOrIgnored());
 
   ClearVectors();
 
@@ -681,7 +678,7 @@ void AXTableInfo::ClearExtraMacNodes() {
     return;
   }
 
-  std::set<AXNodeID> deleting_node_ids;
+  absl::flat_hash_set<AXNodeID> deleting_node_ids;
   for (AXNode* extra_mac_node : extra_mac_nodes) {
     deleting_node_ids.insert(extra_mac_node->id());
     for (AXTreeObserver& observer : tree_->observers()) {

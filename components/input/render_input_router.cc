@@ -8,12 +8,16 @@
 
 #include "base/check.h"
 #include "base/command_line.h"
-#include "base/debug/stack_trace.h"
-#include "base/lazy_instance.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/safety_checks.h"
+#include "base/no_destructor.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/trace_event/trace_event.h"
 #include "base/tracing/protos/chrome_track_event.pbzero.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
+#include "components/input/features.h"
 #include "components/input/input_constants.h"
 #include "components/input/input_router_config_helper.h"
 #include "components/input/input_router_impl.h"
@@ -26,6 +30,7 @@
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/latency/latency_info.h"
@@ -58,6 +63,8 @@ class UnboundWidgetInputHandler : public blink::mojom::WidgetInputHandler {
                          const gfx::Range& range,
                          int32_t start,
                          int32_t end,
+                         blink::mojom::ImeState ime_state,
+                         const blink::DOMNodeIdType& target_dom_node_id,
                          ImeSetCompositionCallback callback) override {
     DLOG(WARNING) << "Input request on unbound interface";
   }
@@ -65,7 +72,12 @@ class UnboundWidgetInputHandler : public blink::mojom::WidgetInputHandler {
                      const std::vector<ui::ImeTextSpan>& ime_text_spans,
                      const gfx::Range& range,
                      int32_t relative_cursor_position,
+                     const blink::DOMNodeIdType& target_dom_node_id,
                      ImeCommitTextCallback callback) override {
+    DLOG(WARNING) << "Input request on unbound interface";
+  }
+  void PasteIntoNode(const std::u16string& text,
+                     const blink::DOMNodeIdType& target_dom_node_id) override {
     DLOG(WARNING) << "Input request on unbound interface";
   }
   void ImeFinishComposingText(bool keep_selection) override {
@@ -78,8 +90,11 @@ class UnboundWidgetInputHandler : public blink::mojom::WidgetInputHandler {
                                  bool monitor_request) override {
     DLOG(WARNING) << "Input request on unbound interface";
   }
-  void DispatchEvent(std::unique_ptr<blink::WebCoalescedInputEvent> event,
-                     DispatchEventCallback callback) override {
+  void DispatchEvent(
+      std::unique_ptr<blink::WebCoalescedInputEvent> event,
+      std::optional<std::unique_ptr<blink::WebCoalescedInputEvent>>
+          original_event_for_gesture,
+      DispatchEventCallback callback) override {
     DLOG(WARNING) << "Input request on unbound interface";
   }
   void DispatchNonBlockingEvent(
@@ -87,6 +102,9 @@ class UnboundWidgetInputHandler : public blink::mojom::WidgetInputHandler {
     DLOG(WARNING) << "Input request on unbound interface";
   }
   void WaitForInputProcessed(WaitForInputProcessedCallback callback) override {
+    DLOG(WARNING) << "Input request on unbound interface";
+  }
+  void PingMainThread(PingMainThreadCallback callback) override {
     DLOG(WARNING) << "Input request on unbound interface";
   }
 #if BUILDFLAG(IS_ANDROID)
@@ -115,13 +133,10 @@ class UnboundWidgetInputHandler : public blink::mojom::WidgetInputHandler {
   }
 };
 
-base::LazyInstance<UnboundWidgetInputHandler>::Leaky g_unbound_input_handler =
-    LAZY_INSTANCE_INITIALIZER;
-
 }  // namespace
 
 RenderInputRouter::~RenderInputRouter() {
-  TRACE_EVENT_INSTANT("input", "RenderInputRouter::~RenderInputRouter");
+  TRACE_EVENT("input", "RenderInputRouter::~RenderInputRouter");
 }
 
 RenderInputRouter::RenderInputRouter(
@@ -131,8 +146,9 @@ RenderInputRouter::RenderInputRouter(
     scoped_refptr<base::SingleThreadTaskRunner> task_runner)
     : should_disable_hang_monitor_(
           base::CommandLine::ForCurrentProcess()->HasSwitch(
-              switches::kDisableHangMonitor)),
-      hung_renderer_delay_(kHungRendererDelay),
+              switches::kDisableHangMonitor) ||
+          !base::FeatureList::IsEnabled(input::features::kRendererHangWatcher)),
+      hung_renderer_delay_(input::features::kRendererHangWatcherDelay.Get()),
       fling_scheduler_(std::move(fling_scheduler)),
       latency_tracker_(
           std::make_unique<RenderInputRouterLatencyTracker>(delegate)),
@@ -147,15 +163,21 @@ void RenderInputRouter::SetupInputRouter(float device_scale_factor) {
   TRACE_EVENT("input", "RenderInputRouter::SetupInputRouter");
 
   in_flight_event_count_ = 0;
+  hang_monitor_timer_state_ = HangMonitorTimerState::kStopped;
   StopInputEventAckTimeout();
+
+  bool was_active = input_router_ && input_router_->IsActive();
 
   input_router_ = std::make_unique<InputRouterImpl>(
       this, this, fling_scheduler_.get(),
       GetInputRouterConfigForPlatform(task_runner_));
 
-  // input_router_ recreated, need to update the force_enable_zoom_ state.
+  // Restore states in the newly recreated `input_router_`.
   input_router_->SetForceEnableZoom(force_enable_zoom_);
   input_router_->SetDeviceScaleFactor(device_scale_factor);
+  if (was_active) {
+    input_router_->MakeActive();
+  }
 }
 
 void RenderInputRouter::SetFlingScheduler(
@@ -174,14 +196,9 @@ void RenderInputRouter::RendererWidgetCreated(bool for_frame_widget,
                                               bool is_in_viz) {
   TRACE_EVENT("input", "RenderInputRouter::RendererWidgetCreated");
 
-  if (is_in_viz) {
-    client_remote_->GetWidgetInputHandlerForInputOnViz(
-        widget_input_handler_.BindNewPipeAndPassReceiver(task_runner_));
-  } else {
-    client_remote_->GetWidgetInputHandler(
-        widget_input_handler_.BindNewPipeAndPassReceiver(task_runner_),
-        input_router_->BindNewHost(task_runner_));
-  }
+  client_remote_->GetWidgetInputHandler(
+      widget_input_handler_.BindNewPipeAndPassReceiver(task_runner_),
+      input_router_->BindNewHost(task_runner_), is_in_viz);
 
   if (for_frame_widget) {
     // `for_frame_widget` is always true for RenderInputRouters created on Viz,
@@ -208,6 +225,7 @@ void RenderInputRouter::SetDeviceScaleFactor(float device_scale_factor) {
 
 void RenderInputRouter::ProgressFlingIfNeeded(base::TimeTicks current_time) {
   TRACE_EVENT("input", "RenderInputRouter::ProgressFlingIfNeeded");
+  CHECK(fling_scheduler_);
   fling_scheduler_->ProgressFlingOnBeginFrameIfneeded(current_time);
 }
 
@@ -235,7 +253,8 @@ blink::mojom::WidgetInputHandler* RenderInputRouter::GetWidgetInputHandler() {
   // the main frame is remote. This is because of ordering issues during
   // widget shutdown, so we present an UnboundWidgetInputHandler had
   // DLOGS the message calls.
-  return g_unbound_input_handler.Pointer();
+  static base::NoDestructor<UnboundWidgetInputHandler> unbound_input_handler;
+  return unbound_input_handler.get();
 }
 
 void RenderInputRouter::OnImeCompositionRangeChanged(
@@ -257,6 +276,12 @@ void RenderInputRouter::OnStartStylusWriting() {
 }
 
 bool RenderInputRouter::IsWheelScrollInProgress() {
+  if (gsb_filtered_for_paint_holding_) {
+    // If the GestureScrollBegin was filtered for paint holding, report that we
+    // are not scrolling, so that the MouseWheelEventQueue will keep sending new
+    // GSB events until we're ready to handle it.
+    return false;
+  }
   return is_in_gesture_scroll_[static_cast<int>(
       blink::WebGestureDevice::kTouchpad)];
 }
@@ -298,15 +323,45 @@ gfx::Size RenderInputRouter::GetRootWidgetViewportSize() {
   return root_view->GetVisibleViewportSize();
 }
 
+void RenderInputRouter::OnUnconfirmedTapConvertedToTap() {
+  // TODO(crbug.com/461701945): Reset gesture timers on Viz as well where
+  // `render_input_router_client_` is null.
+  if (render_input_router_client_) {
+    render_input_router_client_->OnUnconfirmedTapConvertedToTap();
+  }
+}
+
+void RenderInputRouter::OnInputRouterActive() {
+  if (delegate_) {
+    delegate_->OnInputRouterActive();
+  }
+}
+
 blink::mojom::InputEventResultState RenderInputRouter::FilterInputEvent(
     const blink::WebInputEvent& event,
     const ui::LatencyInfo& latency_info) {
+  // Right after a navigation, RenderWidgetHost keeps the InputRouter inactive
+  // while browser paint-holding is active.  This is equivalent to a
+  // non-existent input event consumer.
+  bool filter_for_paint_holding =
+      base::FeatureList::IsEnabled(
+          blink::features::kDropInputEventsWhilePaintHolding) &&
+      input_router_ && !input_router_->IsActive();
+  if (event.GetType() == WebInputEvent::Type::kGestureScrollBegin) {
+    // If we filter a GSB for paint holding, we'd like to receive a new one -
+    // see IsWheelScrollInProgress. Note that we leave is_in_gesture_scroll_ set
+    // for bookkeeping.
+    gsb_filtered_for_paint_holding_ = filter_for_paint_holding;
+  }
+  if (filter_for_paint_holding) {
+    return blink::mojom::InputEventResultState::kNoConsumerExists;
+  }
+
   // Don't ignore touch cancel events, since they may be sent while input
   // events are being ignored in order to keep the renderer from getting
   // confused about how many touches are active.
-  if (delegate_->IsIgnoringWebInputEvents(event) &&
+  if ((is_blocked_ || delegate_->IsIgnoringWebInputEvents(event)) &&
       event.GetType() != WebInputEvent::Type::kTouchCancel) {
-    delegate_->OnInputIgnored(event);
     return blink::mojom::InputEventResultState::kNoConsumerExists;
   }
 
@@ -326,6 +381,8 @@ void RenderInputRouter::StartInputEventAckTimeout() {
   }
 
   if (!input_event_ack_timeout_.IsRunning()) {
+    DCHECK_EQ(hang_monitor_timer_state_, HangMonitorTimerState::kStopped);
+    hang_monitor_timer_state_ = HangMonitorTimerState::kMonitoring;
     input_event_ack_timeout_.Start(
         FROM_HERE, hung_renderer_delay_,
         base::BindOnce(&RenderInputRouter::OnInputEventAckTimeout,
@@ -335,12 +392,15 @@ void RenderInputRouter::StartInputEventAckTimeout() {
 
 void RenderInputRouter::StopInputEventAckTimeout() {
   input_event_ack_timeout_.Stop();
+  hang_monitor_timer_state_ = HangMonitorTimerState::kStopped;  // Reset state
   delegate_->RendererIsResponsive();
 }
 
 void RenderInputRouter::RestartInputEventAckTimeoutIfNecessary() {
-  if (!delegate_->IsRendererProcessBlocked() && !should_disable_hang_monitor_ &&
+  if (!is_blocked_ && !should_disable_hang_monitor_ &&
       in_flight_event_count_ > 0) {
+    // Reset state to Monitoring and restart the standard timer.
+    hang_monitor_timer_state_ = HangMonitorTimerState::kMonitoring;
     input_event_ack_timeout_.Start(
         FROM_HERE, hung_renderer_delay_,
         base::BindOnce(&RenderInputRouter::OnInputEventAckTimeout,
@@ -349,7 +409,32 @@ void RenderInputRouter::RestartInputEventAckTimeoutIfNecessary() {
 }
 
 void RenderInputRouter::OnInputEventAckTimeout() {
-  delegate_->OnInputEventAckTimeout();
+  TRACE_EVENT("input", "RenderInputRouter::OnInputEventAckTimeout", "state",
+              static_cast<int>(hang_monitor_timer_state_));
+
+  if (hang_monitor_timer_state_ == HangMonitorTimerState::kMonitoring) {
+    // The standard delay expired. We must actively probe the main thread.
+    hang_monitor_timer_state_ = HangMonitorTimerState::kPinging;
+
+    // Send the Ping IPC to the MainThread.
+    auto callback = base::BindOnce(&RenderInputRouter::OnPingAck,
+                                   weak_factory_.GetWeakPtr());
+    GetWidgetInputHandler()->PingMainThread(std::move(callback));
+
+    // Start the shorter timer for the IPC response.
+    input_event_ack_timeout_.Start(
+        FROM_HERE, input::kHungRendererPingTimeout,
+        base::BindOnce(&RenderInputRouter::OnInputEventAckTimeout,
+                       weak_factory_.GetWeakPtr()));
+    return;
+  }
+
+  // The renderer is unresponsive. Reset the state so that subsequent events can
+  // restart the monitoring cycle if needed.
+  hang_monitor_timer_state_ = HangMonitorTimerState::kStopped;
+
+  delegate_->OnInputEventAckTimeout(
+      /* ack_timeout_ts= */ base::TimeTicks::Now());
   // Do not add code after this since the Delegate may delete this
   // RenderInputRouter in RendererUnresponsive.
 }
@@ -378,6 +463,19 @@ void RenderInputRouter::DecrementInFlightEventCount(
   }
 }
 
+void RenderInputRouter::OnPingAck() {
+  TRACE_EVENT("input", "RenderInputRouter::OnPingAck");
+
+  if (hang_monitor_timer_state_ != HangMonitorTimerState::kPinging) {
+    // State changed while waiting (e.g., a regular MT ACK arrived just before
+    // this).
+    return;
+  }
+
+  // The main thread executed the ping task. It is responsive.
+  RestartInputEventAckTimeoutIfNecessary();
+}
+
 void RenderInputRouter::OnInputDispatchedToRendererResult(
     const blink::WebInputEvent& event,
     DispatchToRendererResult result) {
@@ -385,10 +483,9 @@ void RenderInputRouter::OnInputDispatchedToRendererResult(
       event, result == DispatchToRendererResult::kDispatched);
 }
 
-void RenderInputRouter::DidOverscroll(const ui::DidOverscrollParams& params) {
-  if (view_input_) {
-    view_input_->DidOverscroll(params);
-  }
+void RenderInputRouter::DidOverscroll(
+    blink::mojom::DidOverscrollParamsPtr params) {
+  delegate_->DidOverscroll(std::move(params));
 }
 
 void RenderInputRouter::DidStartScrollingViewport() {
@@ -410,6 +507,10 @@ void RenderInputRouter::ForwardGestureEvent(
 void RenderInputRouter::ForwardGestureEventWithLatencyInfo(
     const blink::WebGestureEvent& gesture_event,
     const ui::LatencyInfo& latency_info) {
+  // Input comes from the OS (trusted) and is critical for user interaction, we
+  // exclude free-d memory from additional safety checks.
+  // TODO(crbug.com/478562227): Optimize and remove if possible.
+  base::ScopedSafetyChecksExclusion excluded;
   TRACE_EVENT1("input", "RenderInputRouter::ForwardGestureEvent", "type",
                WebInputEvent::GetName(gesture_event.GetType()));
 
@@ -429,7 +530,7 @@ void RenderInputRouter::ForwardGestureEventWithLatencyInfo(
       });
 
   // Early out if necessary, prior to performing latency logic.
-  if (delegate_->IsIgnoringWebInputEvents(gesture_event)) {
+  if (is_blocked_ || delegate_->IsIgnoringWebInputEvents(gesture_event)) {
     // IgnoreWebInputEvents is primarily concerned with suppressing event
     // dispatch to the renderer. However, the embedder may be filtering gesture
     // events to drive its own UI so we still give it an opportunity to see
@@ -560,6 +661,10 @@ void RenderInputRouter::ForwardTouchEventWithLatencyInfo(
     const blink::WebTouchEvent& touch_event,
     const ui::LatencyInfo& latency) {
   TRACE_EVENT0("input,input.scrolling", "RenderInputRouter::ForwardTouchEvent");
+  // Input comes from the OS (trusted) and is critical for user interaction, we
+  // exclude free-d memory from additional safety checks.
+  // TODO(crbug.com/478562227): Optimize and remove if possible.
+  base::ScopedSafetyChecksExclusion excluded;
 
   // Always forward TouchEvents for touch stream consistency. They will be
   // ignored if appropriate in FilterInputEvent().
@@ -608,17 +713,23 @@ void RenderInputRouter::SendGestureEventWithLatencyInfo(
     DispatchToRendererCallback& dispatch_callback) {
   const blink::WebGestureEvent& gesture_event = gesture_with_latency.event;
   if (gesture_event.GetType() == WebInputEvent::Type::kGestureScrollBegin) {
-    DCHECK(
-        !is_in_gesture_scroll_[static_cast<int>(gesture_event.SourceDevice())]);
+    DCHECK(!is_in_gesture_scroll_[static_cast<int>(
+               gesture_event.SourceDevice())] ||
+           gsb_filtered_for_paint_holding_)
+        << "kGestureScrollBegin should not be sent again when "
+        << gesture_event.SourceDevice() << " is in gesture scroll";
     is_in_gesture_scroll_[static_cast<int>(gesture_event.SourceDevice())] =
         true;
   } else if (gesture_event.GetType() ==
              WebInputEvent::Type::kGestureScrollEnd) {
     DCHECK(
-        is_in_gesture_scroll_[static_cast<int>(gesture_event.SourceDevice())]);
+        is_in_gesture_scroll_[static_cast<int>(gesture_event.SourceDevice())])
+        << "kGestureScrollEnd should not be sent when "
+        << gesture_event.SourceDevice() << " is not in gesture scroll";
     is_in_gesture_scroll_[static_cast<int>(gesture_event.SourceDevice())] =
         false;
     is_in_touchpad_gesture_fling_ = false;
+    gsb_filtered_for_paint_holding_ = false;
   } else if (gesture_event.GetType() ==
              WebInputEvent::Type::kGestureFlingStart) {
     if (gesture_event.SourceDevice() == blink::WebGestureDevice::kTouchpad) {
@@ -633,8 +744,10 @@ void RenderInputRouter::SendGestureEventWithLatencyInfo(
 
       is_in_touchpad_gesture_fling_ = true;
     } else {
-      DCHECK(is_in_gesture_scroll_[static_cast<int>(
-          gesture_event.SourceDevice())]);
+      DCHECK(
+          is_in_gesture_scroll_[static_cast<int>(gesture_event.SourceDevice())])
+          << "kGestureFlingStart should not be sent when "
+          << gesture_event.SourceDevice() << " is not in gesture scroll";
 
       // The FlingController handles GFS with touchscreen source and sends GSU
       // events with inertial state to the renderer to progress the fling.
@@ -669,6 +782,12 @@ void RenderInputRouter::SetView(RenderWidgetHostViewInput* view) {
   view_input_ = view->GetInputWeakPtr();
 }
 
+void RenderInputRouter::SetBeginFrameSourceForFlingScheduler(
+    viz::BeginFrameSource* begin_frame_source) {
+  CHECK(fling_scheduler_);
+  fling_scheduler_->SetBeginFrameSource(begin_frame_source);
+}
+
 void RenderInputRouter::ResetFrameWidgetInputInterfaces() {
   frame_widget_input_handler_.reset();
   input_target_client_.reset();
@@ -676,6 +795,22 @@ void RenderInputRouter::ResetFrameWidgetInputInterfaces() {
 
 void RenderInputRouter::ResetWidgetInputInterfaces() {
   widget_input_handler_.reset();
+}
+
+void RenderInputRouter::RenderProcessBlockedStateChanged(bool blocked) {
+  // Early out if the blocked state hasn't actually changed.
+  if (blocked == is_blocked_) {
+    return;
+  }
+
+  is_blocked_ = blocked;
+  is_blocked_ ? StopInputEventAckTimeout()
+              : RestartInputEventAckTimeoutIfNecessary();
+}
+
+void RenderInputRouter::SetHungRendererDelay(base::TimeDelta delay) {
+  CHECK_LE(delay, input::kHungRendererDelay);
+  hung_renderer_delay_ = delay;
 }
 
 void RenderInputRouter::SetInputTargetClientForTesting(

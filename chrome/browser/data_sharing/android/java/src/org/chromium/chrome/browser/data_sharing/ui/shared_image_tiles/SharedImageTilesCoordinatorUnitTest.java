@@ -9,7 +9,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -17,6 +16,7 @@ import static org.mockito.Mockito.verify;
 import android.app.Activity;
 import android.graphics.Bitmap;
 import android.view.View;
+import android.widget.ImageView;
 import android.widget.TextView;
 
 import org.junit.Before;
@@ -38,6 +38,7 @@ import org.chromium.components.data_sharing.GroupData;
 import org.chromium.components.data_sharing.GroupMember;
 import org.chromium.components.data_sharing.configs.DataSharingAvatarBitmapConfig;
 import org.chromium.ui.base.TestActivity;
+import org.chromium.ui.test.util.MockitoHelper;
 
 import java.util.List;
 
@@ -58,26 +59,28 @@ public class SharedImageTilesCoordinatorUnitTest {
     private SharedImageTilesCoordinator mSharedImageTilesCoordinator;
     private SharedImageTilesView mView;
     private TextView mCountTileView;
+    private ImageView mManageIcon;
 
     @Before
     public void setUp() {
         mActivity = Robolectric.buildActivity(TestActivity.class).setup().get();
-        initialize(
-                SharedImageTilesType.DEFAULT,
-                new SharedImageTilesColor(SharedImageTilesColor.Style.DEFAULT));
+        SharedImageTilesConfig config = new SharedImageTilesConfig.Builder(mActivity).build();
+        initialize(config);
     }
 
-    private void initialize(@SharedImageTilesType int type, SharedImageTilesColor color) {
+    private void initialize(SharedImageTilesConfig config) {
         mSharedImageTilesCoordinator =
                 new SharedImageTilesCoordinator(
-                        mActivity, type, color, mDataSharingService, mCollaborationService);
+                        mActivity, config, mDataSharingService, mCollaborationService);
         mView = mSharedImageTilesCoordinator.getView();
         mCountTileView = mView.findViewById(R.id.tiles_count);
+        mManageIcon = mView.findViewById(R.id.shared_image_tiles_manage);
         doReturn(mDataSharingUiDelegate).when(mDataSharingService).getUiDelegate();
     }
 
-    private void verifyViews(int countVisibility, int iconViewCount) {
+    private void verifyViews(int countVisibility, int iconViewCount, int manageVisibility) {
         assertEquals(mCountTileView.getVisibility(), countVisibility);
+        assertEquals(mManageIcon.getVisibility(), manageVisibility);
         assertEquals(mSharedImageTilesCoordinator.getAllIconViews().size(), iconViewCount);
     }
 
@@ -140,25 +143,25 @@ public class SharedImageTilesCoordinatorUnitTest {
         // 3 tile count: Tile Tile Tile
         // 4 tile count: Tile Tile +2
         // etc
-        verifyViews(View.GONE, /* iconViewCount= */ 0);
+        verifyViews(View.GONE, /* iconViewCount= */ 0, View.GONE);
 
         mSharedImageTilesCoordinator.updateMembersCount(1);
-        verifyViews(View.GONE, /* iconViewCount= */ 1);
+        verifyViews(View.GONE, /* iconViewCount= */ 1, View.VISIBLE);
 
         mSharedImageTilesCoordinator.updateMembersCount(2);
-        verifyViews(View.GONE, /* iconViewCount= */ 2);
+        verifyViews(View.GONE, /* iconViewCount= */ 2, View.GONE);
 
         mSharedImageTilesCoordinator.updateMembersCount(3);
-        verifyViews(View.GONE, /* iconViewCount= */ 3);
+        verifyViews(View.GONE, /* iconViewCount= */ 3, View.GONE);
 
         mSharedImageTilesCoordinator.updateMembersCount(4);
-        verifyViews(View.VISIBLE, /* iconViewCount= */ 2);
+        verifyViews(View.VISIBLE, /* iconViewCount= */ 2, View.GONE);
     }
 
     @Test
     public void testFetchPeopleIcon() {
         simulateReadGroupWith2ValidMembers();
-        Callback<Boolean> mockFinishedCallback = mock(Callback.class);
+        Callback<Boolean> mockFinishedCallback = MockitoHelper.mockCallback();
         mSharedImageTilesCoordinator.fetchImagesForCollaborationId(
                 COLLABORATION_ID, mockFinishedCallback);
 
@@ -190,14 +193,14 @@ public class SharedImageTilesCoordinatorUnitTest {
     public void testFetchPeopleIconFailure() {
         simulateReadGroupWith2ValidMembers();
 
-        Callback<Boolean> mockFinishedCallback = mock(Callback.class);
+        Callback<Boolean> mockFinishedCallback = MockitoHelper.mockCallback();
         mSharedImageTilesCoordinator.fetchImagesForCollaborationId(
                 COLLABORATION_ID, mockFinishedCallback);
 
         verify(mockFinishedCallback, never()).onResult(anyBoolean());
 
         // A new update would fail the previous ongoing update.
-        Callback<Boolean> mockFinishedCallback2 = mock(Callback.class);
+        Callback<Boolean> mockFinishedCallback2 = MockitoHelper.mockCallback();
         mSharedImageTilesCoordinator.fetchImagesForCollaborationId(
                 COLLABORATION_ID, mockFinishedCallback2);
 
@@ -226,26 +229,34 @@ public class SharedImageTilesCoordinatorUnitTest {
                 ArgumentCaptor.forClass(DataSharingAvatarBitmapConfig.class);
 
         // Two members.
+        int count = 2;
         mSharedImageTilesCoordinator.onGroupMembersChanged(
                 COLLABORATION_ID, List.of(memberValid1, memberValid2));
-        verify(mDataSharingUiDelegate, times(2)).getAvatarBitmap(configCaptor.capture());
-        verifyViews(View.GONE, /* iconViewCount= */ 2);
+        verify(mDataSharingUiDelegate, times(count)).getAvatarBitmap(configCaptor.capture());
+        verifyViews(View.GONE, /* iconViewCount= */ 2, View.GONE);
 
         // No members.
         mSharedImageTilesCoordinator.onGroupMembersChanged(COLLABORATION_ID, /* members= */ null);
-        verify(mDataSharingUiDelegate, times(2)).getAvatarBitmap(configCaptor.capture());
-        verifyViews(View.GONE, /* iconViewCount= */ 0);
+        verify(mDataSharingUiDelegate, times(count)).getAvatarBitmap(configCaptor.capture());
+        verifyViews(View.GONE, /* iconViewCount= */ 0, View.GONE);
 
         // Two members.
+        count += 2;
         mSharedImageTilesCoordinator.onGroupMembersChanged(
                 COLLABORATION_ID, List.of(memberValid1, memberValid2));
-        verify(mDataSharingUiDelegate, times(4)).getAvatarBitmap(configCaptor.capture());
-        verifyViews(View.GONE, /* iconViewCount= */ 2);
+        verify(mDataSharingUiDelegate, times(count)).getAvatarBitmap(configCaptor.capture());
+        verifyViews(View.GONE, /* iconViewCount= */ 2, View.GONE);
 
         // No group.
         mSharedImageTilesCoordinator.onGroupMembersChanged(
                 /* collaborationId= */ null, /* members= */ null);
-        verify(mDataSharingUiDelegate, times(4)).getAvatarBitmap(configCaptor.capture());
-        verifyViews(View.GONE, /* iconViewCount= */ 0);
+        verify(mDataSharingUiDelegate, times(count)).getAvatarBitmap(configCaptor.capture());
+        verifyViews(View.GONE, /* iconViewCount= */ 0, View.GONE);
+
+        // 1 member + manage icon.
+        count += 1;
+        mSharedImageTilesCoordinator.onGroupMembersChanged(COLLABORATION_ID, List.of(memberValid1));
+        verify(mDataSharingUiDelegate, times(count)).getAvatarBitmap(configCaptor.capture());
+        verifyViews(View.GONE, /* iconViewCount= */ 1, View.VISIBLE);
     }
 }

@@ -19,7 +19,11 @@ source_set("js_messaging") {
   sources = [
     "java_script_feature.h",
     "java_script_feature_util.h",
+    "origin_filter.h",
     "script_message.h",
+    "script_message_dict_value.h",
+    "script_message_list_value.h",
+    "script_message_value.h",
     "web_frame.h",
     "web_frame_user_data.h",
     "web_frames_manager.h",
@@ -37,13 +41,20 @@ source_set("content_world_header") {
   sources = [ "content_world.h" ]
 }
 
-compile_ts("frame_id") {
-  sources = [ "resources/frame_id.ts" ]
+compile_ts("gcrweb_error") {
+  sources = [ "resources/gcrweb_error.ts" ]
+}
 
-  deps = [
-    ":gcrweb",
-    ":util_scripts",
-  ]
+compile_ts("assert") {
+  sources = [ "resources/assert.ts" ]
+
+  deps = [ ":gcrweb_error" ]
+}
+
+compile_ts("crash_keys") {
+  sources = [ "resources/crash_keys.ts" ]
+
+  deps = [ "//ios/web/js_features/crash_keys:crash_keys_js" ]
 }
 
 compile_ts("util_scripts") {
@@ -53,7 +64,10 @@ compile_ts("util_scripts") {
 compile_ts("error_reporting") {
   sources = [ "resources/error_reporting.ts" ]
 
-  deps = [ ":util_scripts" ]
+  deps = [
+    ":util_scripts",
+    "//ios/web/js_features/crash_keys:crash_keys_js",
+  ]
 }
 
 # `compile_ts` and `optimize_js` targets are defined separately here instead of
@@ -61,6 +75,12 @@ compile_ts("error_reporting") {
 # compiled TypeScript to be used as a dependency by other TypeScript targets.
 compile_ts("gcrweb") {
   sources = [ "resources/gcrweb.ts" ]
+
+  deps = [
+    ":error_reporting",
+    ":gcrweb_error",
+    ":util_scripts",
+  ]
 }
 
 optimize_js("gcrweb_js") {
@@ -76,6 +96,8 @@ source_set("unittests") {
   testonly = true
 
   deps = [
+    ":assert_test_api",
+    ":gcrweb_test_api",
     ":util_test_api",
     "//base",
     "//base/test:test_support",
@@ -85,7 +107,11 @@ source_set("unittests") {
     "//url",
   ]
 
-  sources = [ "utils_javascript_test.mm" ]
+  sources = [
+    "assert_javascript_test.mm",
+    "gcrweb_javascript_test.mm",
+    "utils_javascript_test.mm",
+  ]
 }
 
 optimize_ts("util_test_api") {
@@ -96,5 +122,24 @@ optimize_ts("util_test_api") {
   deps = [
     ":gcrweb",
     ":util_scripts",
+  ]
+}
+
+optimize_ts("gcrweb_test_api") {
+  testonly = true
+
+  sources = [ "resources/gcrweb_test_api.ts" ]
+
+  deps = [ ":gcrweb" ]
+}
+
+optimize_ts("assert_test_api") {
+  testonly = true
+
+  sources = [ "resources/assert_test_api.ts" ]
+
+  deps = [
+    ":assert",
+    ":gcrweb",
   ]
 }

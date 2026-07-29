@@ -7,7 +7,9 @@ package org.chromium.ui.base;
 import android.content.ClipData;
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.os.Build;
 import android.os.Bundle;
+import android.text.TextUtils;
 import android.util.SparseArray;
 import android.view.MotionEvent;
 import android.view.PointerIcon;
@@ -22,9 +24,11 @@ import android.view.inputmethod.InputConnection;
 import androidx.annotation.CallSuper;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.view.MarginLayoutParamsCompat;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ObserverList;
@@ -37,28 +41,37 @@ import org.chromium.ui.dragdrop.DragStateTracker;
 import org.chromium.ui.dragdrop.DropDataAndroid;
 import org.chromium.ui.mojom.CursorType;
 
+import java.lang.ref.WeakReference;
+import java.util.HashMap;
+import java.util.Map;
+
 /** Class to acquire, position, and remove anchor views from the implementing View. */
 @JNINamespace("ui")
 @NullMarked
 public class ViewAndroidDelegate {
     private static @Nullable DragAndDropDelegate sDragAndDropDelegateForTesting;
+
+    // A map of native objects to their Java counterparts allows unlimited scaling in of tabs.
+    // Another object owns the ViewAndroidDelegate objects.
+    private static final Map<Long, WeakReference<ViewAndroidDelegate>> sNativeDelegateMap =
+            new HashMap<>();
+    private static final Map<Long, WeakReference<View>> sNativeViewMap = new HashMap<>();
+
     private final DragAndDropDelegateImpl mDragAndDropDelegateImpl;
 
-    /**
-     * The current container view. This view can be updated with
-     * {@link #setContainerView()}.
-     */
-    protected ViewGroup mContainerView;
+    /** The current container view. This view can be updated with {@link #setContainerView()}. */
+    protected @Nullable ViewGroup mContainerView;
 
     // Temporary storage for use as a parameter of getLocationOnScreen().
-    private int[] mTemporaryContainerLocation = new int[2];
+    private final int[] mTemporaryContainerLocation = new int[2];
 
     /** Notifies the observer when container view is updated. */
     public interface ContainerViewObserver {
-        void onUpdateContainerView(ViewGroup view);
+        void onUpdateContainerView(@Nullable ViewGroup view);
     }
 
-    private ObserverList<ContainerViewObserver> mContainerViewObservers = new ObserverList<>();
+    private final ObserverList<ContainerViewObserver> mContainerViewObservers =
+            new ObserverList<>();
 
     /** Notifies the listener of vertical scroll direction changes. */
     public interface VerticalScrollDirectionChangeListener {
@@ -86,14 +99,15 @@ public class ViewAndroidDelegate {
 
     /**
      * Create and return a basic implementation of {@link ViewAndroidDelegate}.
+     *
      * @param containerView {@link ViewGroup} to be used as a container view.
      * @return a new instance of {@link ViewAndroidDelegate}.
      */
-    public static ViewAndroidDelegate createBasicDelegate(ViewGroup containerView) {
+    public static ViewAndroidDelegate createBasicDelegate(@Nullable ViewGroup containerView) {
         return new ViewAndroidDelegate(containerView);
     }
 
-    protected ViewAndroidDelegate(ViewGroup containerView) {
+    protected ViewAndroidDelegate(@Nullable ViewGroup containerView) {
         mContainerView = containerView;
         mDragAndDropDelegateImpl = new DragAndDropDelegateImpl();
     }
@@ -133,23 +147,27 @@ public class ViewAndroidDelegate {
     /**
      * Updates the current container view to which this class delegates.
      *
-     * <p>WARNING: This method can also be used to replace the existing container view,
-     * but you should only do it if you have a very good reason to. Replacing the
-     * container view has been designed to support fullscreen in the Webview so it
-     * might not be appropriate for other use cases.
+     * <p>WARNING: This method can also be used to replace the existing container view, but you
+     * should only do it if you have a very good reason to. Replacing the container view has been
+     * designed to support fullscreen in the Webview so it might not be appropriate for other use
+     * cases.
      *
-     * <p>This method only performs a small part of replacing the container view and
-     * embedders are responsible for:
+     * <p>This method only performs a small part of replacing the container view and embedders are
+     * responsible for:
+     *
      * <ul>
-     *     <li>Disconnecting the old container view from all the references</li>
-     *     <li>Updating the InternalAccessDelegate</li>
-     *     <li>Reconciling the state with the new container view</li>
-     *     <li>Tearing down and recreating the native GL rendering where appropriate</li>
-     *     <li>etc.</li>
+     *   <li>Disconnecting the old container view from all the references
+     *   <li>Updating the InternalAccessDelegate
+     *   <li>Reconciling the state with the new container view
+     *   <li>Tearing down and recreating the native GL rendering where appropriate
+     *   <li>etc.
      * </ul>
      */
-    public final void setContainerView(ViewGroup containerView) {
+    public final void setContainerView(@Nullable ViewGroup containerView) {
         ViewGroup oldContainerView = mContainerView;
+        if (oldContainerView != null) {
+            oldContainerView.setTooltipText("");
+        }
         mContainerView = containerView;
         updateAnchorViews(oldContainerView);
         for (ContainerViewObserver observer : mContainerViewObservers) {
@@ -182,7 +200,7 @@ public class ViewAndroidDelegate {
      *
      * @param oldContainerView Old container view just replaced by a new one.
      */
-    public void updateAnchorViews(ViewGroup oldContainerView) {}
+    public void updateAnchorViews(@Nullable ViewGroup oldContainerView) {}
 
     /**
      * @return An anchor view that can be used to anchor decoration views like Autofill popup.
@@ -293,9 +311,11 @@ public class ViewAndroidDelegate {
     @VisibleForTesting
     @CalledByNative
     public void onCursorChangedToCustom(Bitmap customCursorBitmap, int hotspotX, int hotspotY) {
+        ViewGroup containerView = getContainerViewGroup();
+        if (containerView == null) return;
         PointerIcon icon = PointerIcon.create(customCursorBitmap, hotspotX, hotspotY);
 
-        getContainerViewGroup().setPointerIcon(icon);
+        containerView.setPointerIcon(icon);
     }
 
     @VisibleForTesting
@@ -422,6 +442,7 @@ public class ViewAndroidDelegate {
                 break;
         }
         ViewGroup containerView = getContainerViewGroup();
+        if (containerView == null) return;
         PointerIcon icon = PointerIcon.getSystemIcon(containerView.getContext(), pointerIconType);
 
         containerView.setPointerIcon(icon);
@@ -491,11 +512,11 @@ public class ViewAndroidDelegate {
      * @return container view that the anchor views are added to. May be null.
      */
     @CalledByNative
-    public final View getContainerView() {
+    public final @Nullable View getContainerView() {
         return mContainerView;
     }
 
-    protected final ViewGroup getContainerViewGroup() {
+    protected final @Nullable ViewGroup getContainerViewGroup() {
         return mContainerView;
     }
 
@@ -549,11 +570,17 @@ public class ViewAndroidDelegate {
     private void requestUnbufferedDispatch(MotionEvent event) {
         ViewGroup container = getContainerViewGroup();
         if (container != null) {
-            for (int i = 0; i < event.getPointerCount(); i++) {
-                // This is a workaround for crbug.com/1064161.
-                // TODO(smaier) remove this if LG fixes the stylus bug.
-                if (event.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS) {
-                    return;
+            // This is a workaround for crbug.com/1064161.
+            // It's difficult to tell exactly which devices, and on which builds of Android, had
+            // this bug. So, we are restricting down to only the exact class of devices we know we
+            // saw this problem on.
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R
+                    && ("lge".equalsIgnoreCase(Build.MANUFACTURER)
+                            || "lg".equalsIgnoreCase(Build.MANUFACTURER))) {
+                for (int i = 0; i < event.getPointerCount(); i++) {
+                    if (event.getToolType(i) == MotionEvent.TOOL_TYPE_STYLUS) {
+                        return;
+                    }
                 }
             }
             container.requestUnbufferedDispatch(event);
@@ -570,6 +597,47 @@ public class ViewAndroidDelegate {
     private void requestFocus() {
         View containerView = getContainerViewGroup();
         if (containerView != null) ViewUtils.requestFocus(containerView);
+    }
+
+    @CalledByNative
+    private void setTooltipText(@JniType("std::u16string") String text) {
+        View container = getContainerView();
+        if (container != null) container.setTooltipText(text);
+    }
+
+    @CalledByNative
+    private void setTooltipFromKeyboard(
+            @JniType("std::u16string") String text,
+            int unusedX,
+            int unusedY,
+            int unusedWidth,
+            int unusedHeight) {
+        // Exit early in case of empty or null tooltip Strings.
+        if (TextUtils.isEmpty(text) || text.trim().isEmpty()) {
+            clearTooltipFromKeyboard();
+            return;
+        }
+
+        // Bounds are unused because Android system API has no way to provide them to accessibility
+        // APIs
+        View container = getContainerView();
+        if (container == null) return;
+
+        // Forward to Android system-default accessibility handler.
+        container.setTooltipText(text);
+        container.performAccessibilityAction(
+                AccessibilityActionCompat.ACTION_SHOW_TOOLTIP.getId(), null);
+    }
+
+    @CalledByNative
+    private void clearTooltipFromKeyboard() {
+        View container = getContainerView();
+        if (container == null) return;
+
+        // Forward to Android system-default accessibility handler.
+        container.setTooltipText("");
+        container.performAccessibilityAction(
+                AccessibilityActionCompat.ACTION_HIDE_TOOLTIP.getId(), null);
     }
 
     /**
@@ -617,5 +685,33 @@ public class ViewAndroidDelegate {
     public static void setDragAndDropDelegateForTest(DragAndDropDelegate testDelegate) {
         sDragAndDropDelegateForTesting = testDelegate;
         ResettersForTesting.register(() -> sDragAndDropDelegateForTesting = null);
+    }
+
+    @CalledByNative
+    private static void onNativeSetDelegate(long nativeObjectPtr, ViewAndroidDelegate delegate) {
+        sNativeDelegateMap.put(nativeObjectPtr, new WeakReference<>(delegate));
+    }
+
+    @CalledByNative
+    private static @Nullable ViewAndroidDelegate getDelegate(long nativeObjectPtr) {
+        WeakReference<ViewAndroidDelegate> delegateRef = sNativeDelegateMap.get(nativeObjectPtr);
+        return delegateRef == null ? null : delegateRef.get();
+    }
+
+    @CalledByNative
+    private static void onNativeReset(long nativeObjectPtr) {
+        sNativeDelegateMap.remove(nativeObjectPtr);
+        sNativeViewMap.remove(nativeObjectPtr);
+    }
+
+    @CalledByNative
+    private static void onNativeSetView(long nativeScopedAnchorViewPtr, View view) {
+        sNativeViewMap.put(nativeScopedAnchorViewPtr, new WeakReference<>(view));
+    }
+
+    @CalledByNative
+    private static @Nullable View getView(long nativeScopedAnchorViewPtr) {
+        WeakReference<View> viewRef = sNativeViewMap.get(nativeScopedAnchorViewPtr);
+        return viewRef == null ? null : viewRef.get();
     }
 }

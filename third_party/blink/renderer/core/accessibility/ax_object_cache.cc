@@ -54,12 +54,18 @@ void AXObjectCache::Init(AXObjectCacheCreateFunction function) {
 AXObjectCache* AXObjectCache::Create(Document& document,
                                      const ui::AXMode& ax_mode) {
   DCHECK(create_function_);
-  return create_function_(document, ax_mode);
+  return create_function_(document, ax_mode, /*for_snapshot_only*/ false);
+}
+
+AXObjectCache* AXObjectCache::CreateSnapshotter(Document& document,
+                                                const ui::AXMode& ax_mode) {
+  DCHECK(create_function_);
+  return create_function_(document, ax_mode, /*for_snapshot_only*/ true);
 }
 
 namespace {
 
-using ARIAWidgetSet = HashSet<String, CaseFoldingHashTraits<String>>;
+using ARIAWidgetSet = HashSet<String, DeprecatedCaseFoldingHashTraits<String>>;
 
 const ARIAWidgetSet& ARIARoleWidgetSet() {
   // clang-format off
@@ -80,8 +86,7 @@ const ARIAWidgetSet& ARIARoleWidgetSet() {
 
 bool IncludesARIAWidgetRole(const String& role) {
   const ARIAWidgetSet& role_set = ARIARoleWidgetSet();
-  Vector<String> role_vector;
-  role.Split(' ', role_vector);
+  Vector<String> role_vector = role.SplitSkippingEmpty(' ');
   for (const auto& child : role_vector) {
     if (role_set.Contains(child)) {
       return true;

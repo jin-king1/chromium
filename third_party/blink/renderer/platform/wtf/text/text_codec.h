@@ -34,29 +34,29 @@
 #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
-namespace WTF {
+namespace blink {
 
 class TextEncoding;
 
 // Specifies what will happen when a character is encountered that is
 // not encodable in the character set.
-enum UnencodableHandling {
-  // Encodes the character as an XML entity. For example, U+06DE
-  // would be "&#1758;" (0x6DE = 1758 in octal).
-  kEntitiesForUnencodables,
+enum class UnencodableHandling {
+  // Encodes the character as an XML character reference. For example, U+06DE
+  // would be "&#1758;" (0x6DE = 1758 in decimal).
+  kXmlCharRef,
 
-  // Encodes the character as en entity as above, but escaped
+  // Encodes the character as a character reference as above, but escapes
   // non-alphanumeric characters. This is used in URLs.
   // For example, U+6DE would be "%26%231758%3B".
-  kURLEncodedEntitiesForUnencodables,
+  kUrlEncodedCharRef,
 
-  // Encodes the character as a CSS entity.  For example U+06DE
+  // Encodes the character with the CSS escaping rule.  For example U+06DE
   // would be \06de.  See: https://www.w3.org/TR/css-syntax-3/#escaping
-  kCSSEncodedEntitiesForUnencodables,
+  kCssEscape,
 
   // Used when all characters can be encoded in the character set. Only
   // applicable to UTF-N encodings.
-  kNoUnencodables,
+  kNone,
 };
 
 enum class FlushBehavior {
@@ -65,10 +65,10 @@ enum class FlushBehavior {
 
   // A fetch has hit EOF. Some codecs handle fetches differently, for compat
   // reasons.
-  kFetchEOF,
+  kFetchEof,
 
   // Do a full flush of the codec.
-  kDataEOF
+  kDataEof
 };
 
 class WTF_EXPORT TextCodec {
@@ -113,16 +113,13 @@ class WTF_EXPORT TextCodec {
                                                UnencodableHandling);
 };
 
-typedef void (*EncodingNameRegistrar)(const char* alias, const char* name);
+using EncodingNameRegistrar = void (*)(const char* alias,
+                                       const AtomicString& canonical_name);
 
-typedef std::unique_ptr<TextCodec> (
-    *NewTextCodecFunction)(const TextEncoding&, const void* additional_data);
-typedef void (*TextCodecRegistrar)(const char* name,
-                                   NewTextCodecFunction,
-                                   const void* additional_data);
+typedef std::unique_ptr<TextCodec> (*NewTextCodecFunction)(const TextEncoding&);
+using TextCodecRegistrar = void (*)(const char* canonical_name,
+                                    NewTextCodecFunction);
 
-}  // namespace WTF
-
-using WTF::TextCodec;
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_TEXT_CODEC_H_

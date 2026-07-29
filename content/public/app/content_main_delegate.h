@@ -8,13 +8,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "content/common/content_export.h"
 #include "content/public/common/main_function_params.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace variations {
 class VariationsIdsProvider;
@@ -47,7 +47,7 @@ class CONTENT_EXPORT ContentMainDelegate {
   // the browser process and child processes; for more fine-grained process
   // types check the `switches::kProcessType` command-line switch.
   using InvokedIn =
-      absl::variant<InvokedInBrowserProcess, InvokedInChildProcess>;
+      std::variant<InvokedInBrowserProcess, InvokedInChildProcess>;
 
   virtual ~ContentMainDelegate() = default;
 
@@ -71,7 +71,7 @@ class CONTENT_EXPORT ContentMainDelegate {
   // |main_function_params| back to decline the request and kick-off the
   // default behavior or return a non-negative exit code to indicate it handled
   // the request.
-  virtual absl::variant<int, MainFunctionParams> RunProcess(
+  virtual std::variant<int, MainFunctionParams> RunProcess(
       const std::string& process_type,
       MainFunctionParams main_function_params);
 
@@ -173,6 +173,25 @@ class CONTENT_EXPORT ContentMainDelegate {
   // swallow the event.
   virtual bool ShouldHandleConsoleControlEvents();
 #endif
+
+  // Returns true if content should initialize Perfetto. Returns true by
+  // default. If this returns false, the embedder must initialize Perfetto.
+  // Embedders may wish to override this to control when Perfetto is
+  // initialized.
+  virtual bool ShouldInitializePerfetto(InvokedIn invoked_in);
+
+  // Do we want to initialize feature list early?
+  // This is an experimental feature and its tracking bug is crbug.com/423925400
+  virtual bool IsInitFeatureListEarly();
+
+  // Returns true if PartitionAlloc should be reconfigured after the feature
+  // list has been initialized. Default is true.
+  virtual bool ShouldReconfigurePartitionAlloc();
+
+  // Returns true if content should load the V8 snapshot. The default
+  // implementation returns false for the GPU process and for the browser
+  // process unless it's in single process mode.
+  virtual bool ShouldLoadV8Snapshot(const std::string& process_type);
 
  protected:
   friend class ContentClientCreator;

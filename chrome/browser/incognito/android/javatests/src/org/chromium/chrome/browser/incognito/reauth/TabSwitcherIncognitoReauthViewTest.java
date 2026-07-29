@@ -14,9 +14,8 @@ import static androidx.test.espresso.matcher.ViewMatchers.withText;
 import static org.hamcrest.core.IsNot.not;
 import static org.junit.Assert.assertTrue;
 
-import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.addBlankTabs;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.enterTabSwitcher;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
@@ -45,9 +44,10 @@ import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.TabStateExtractor;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.user_prefs.UserPrefs;
 
 import java.io.IOException;
@@ -56,28 +56,30 @@ import java.io.IOException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures({ChromeFeatureList.INCOGNITO_SCREENSHOT})
-@DisableFeatures(OmniboxFeatureList.ANDROID_HUB_SEARCH)
+@DisableFeatures({ChromeFeatureList.HISTORY_PANE_ANDROID})
 @Batch(Batch.PER_CLASS)
 public class TabSwitcherIncognitoReauthViewTest {
     @Rule
-    public final ChromeTabbedActivityTestRule mActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public final FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(ChromeRenderTestRule.Component.PRIVACY_INCOGNITO)
-                    .setRevision(6)
+                    .setRevision(11)
+                    .setDescription("Updated Incognito splash to GM3")
                     .build();
+
+    private WebPageStation mPage;
 
     @Before
     public void setUp() {
         IncognitoReauthManager.setIsIncognitoReauthFeatureAvailableForTesting(true);
         IncognitoReauthSettingUtils.setIsDeviceScreenLockEnabledForTesting(true);
 
-        mActivityTestRule.startMainActivityOnBlankPage();
-        CriteriaHelper.pollUiThread(
-                mActivityTestRule.getActivity().getTabModelSelector()::isTabStateInitialized);
+        mPage = mActivityTestRule.startOnBlankPage();
+        CriteriaHelper.pollUiThread(mPage.getTabModelSelector()::isTabStateInitialized);
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -118,26 +120,25 @@ public class TabSwitcherIncognitoReauthViewTest {
                 });
     }
 
-    private void openIncognitoReauth(ChromeTabbedActivity cta) {
+    private ChromeTabbedActivity openIncognitoReauth(ChromeTabbedActivity cta) {
         // Open incognito tab.
-        addBlankTabs(cta, true, 1);
-
-        assertTrue(cta.getActivityTab().isIncognito());
+        var incognitoPage = mPage.openNewIncognitoTabOrWindowFast();
+        var incognitoActivity = incognitoPage.getActivity();
 
         // Enter tab switcher in incognito mode.
-        enterTabSwitcher(cta);
-        assertTrue(cta.getTabModelSelector().isIncognitoSelected());
+        enterTabSwitcher(incognitoActivity);
+        assertTrue(incognitoActivity.getTabModelSelector().isIncognitoSelected());
 
         // Reload chrome to trigger incognito reauth screen.
-        triggerIncognitoReauthCustomView(cta);
+        triggerIncognitoReauthCustomView(incognitoActivity);
+        return incognitoActivity;
     }
 
     @Test
     @MediumTest
     @Feature("RenderTest")
     public void testIncognitoReauthView_HubRenderTest() throws IOException {
-        final ChromeTabbedActivity cta = mActivityTestRule.getActivity();
-        openIncognitoReauth(cta);
+        var cta = openIncognitoReauth(mActivityTestRule.getActivity());
 
         onView(withId(R.id.hub_toolbar)).check(matches(isDisplayed()));
         onView(withId(R.id.toolbar_action_button)).check(matches(not(isEnabled())));
@@ -152,8 +153,7 @@ public class TabSwitcherIncognitoReauthViewTest {
                 .check(matches(not(isDisplayed())));
 
         mRenderTestRule.render(
-                cta.findViewById(org.chromium.chrome.R.id.tab_switcher_view_holder),
-                "incognito_reauth_view_hub");
+                cta.findViewById(R.id.tab_switcher_view_holder), "incognito_reauth_view_hub");
     }
 
     @Test
@@ -171,9 +171,6 @@ public class TabSwitcherIncognitoReauthViewTest {
 
         mActivityTestRule.recreateActivity();
 
-        onViewWaiting(
-                        withId(R.id.incognito_reauth_unlock_incognito_button),
-                        true) // checkRootDialog=true ensures dialog is in focus, avoids flakiness.
-                .check(matches(isDisplayed()));
+        waitForView(withId(R.id.incognito_reauth_unlock_incognito_button));
     }
 }

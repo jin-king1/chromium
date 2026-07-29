@@ -9,11 +9,13 @@
 
 #include "base/memory/values_equivalent.h"
 #include "base/notreached.h"
+#include "base/strings/stringprintf.h"
 #include "cc/paint/paint_filter.h"
 #include "cc/paint/paint_op.h"
 #include "cc/paint/paint_op_buffer.h"
 #include "cc/paint/paint_shader.h"
 #include "third_party/skia/include/core/SkColorFilter.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/core/SkPathEffect.h"
 #include "third_party/skia/include/core/SkPathUtils.h"
 
@@ -117,7 +119,12 @@ bool PaintFlags::getFillPath(const SkPath& src,
                              const SkRect* cull_rect,
                              SkScalar res_scale) const {
   SkPaint paint = ToSkPaint();
-  return skpathutils::FillPathWithPaint(src, paint, dst, cull_rect, res_scale);
+  SkPathBuilder dst_builder;
+  bool fill =
+      skpathutils::FillPathWithPaint(src, paint, &dst_builder, cull_rect,
+                                     SkMatrix::Scale(res_scale, res_scale));
+  *dst = dst_builder.detach();
+  return fill;
 }
 
 bool PaintFlags::SupportsFoldingAlpha() const {
@@ -244,21 +251,18 @@ bool PaintFlags::HasDiscardableImages(
   return has_discardable_images;
 }
 
-float PaintFlags::DynamicRangeLimitMixture::ComputeHdrHeadroom(
+float PaintFlags::DynamicRangeLimitMixture::ComputeEffectiveHdrHeadroom(
     float target_hdr_headroom) const {
-  if (constrained_high_mix == 0.f && standard_mix == 0.f) {
-    return target_hdr_headroom;
-  }
+  // It would make more sense to store only `high_mix` and `constrained_mix`,
+  // since `standard_mix` is multiplied by zero.
   const float high_mix = 1.f - constrained_high_mix - standard_mix;
+  constexpr float kConstrainedMax = 1.f;  // Constrained allows at most 1 stop
+  return constrained_high_mix * std::min(kConstrainedMax, target_hdr_headroom) +
+         high_mix * target_hdr_headroom;
+}
 
-  // Average the headrooms in log-space.
-  const float log2_high_headroom = std::log2(target_hdr_headroom);
-  const float log2_constrained_high_headroom =
-      std::min(1.f, log2_high_headroom);
-  const float log2_standard_headroom = 0.f;
-  return std::exp2(standard_mix * log2_standard_headroom +
-                   constrained_high_mix * log2_constrained_high_headroom +
-                   high_mix * log2_high_headroom);
+std::string PaintFlags::DynamicRangeLimitMixture::ToString() const {
+  return base::StringPrintf("%f, %f", standard_mix, constrained_high_mix);
 }
 
 }  // namespace cc

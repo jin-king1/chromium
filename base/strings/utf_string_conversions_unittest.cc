@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "base/strings/utf_string_conversions.h"
 
 #include <stddef.h>
@@ -58,9 +53,9 @@ TEST(UTFStringConversionsTest, ConvertUTF8AndWide) {
     std::ostringstream utf8;
     utf8 << WideToUTF8(i);
     std::wostringstream wide;
-    wide << UTF8ToWide(utf8.str());
+    wide << UTF8ToWide(utf8.view());
 
-    EXPECT_EQ(i, wide.str());
+    EXPECT_EQ(i, wide.view());
   }
 }
 

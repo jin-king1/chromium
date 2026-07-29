@@ -13,10 +13,10 @@
 #include "ui/base/models/image_model.h"
 #include "ui/gfx/font.h"
 #include "ui/gfx/text_constants.h"
+#include "ui/views/border.h"
 #include "ui/views/controls/button/button.h"
 
 namespace views {
-class Border;
 class ImageView;
 class Label;
 }  // namespace views
@@ -53,7 +53,8 @@ class ASH_EXPORT HoverHighlightView : public views::Button {
   // also sets the accessible name. Primarily used for scrollable rows in
   // detailed views.
   // New callers should use the function below which takes an ImageModel.
-  // TODO(b/259490845): Change callers to pass an ImageModel and eliminate this.
+  // Most probably we can migrate callers to pass an ImageModel and eliminate
+  // this function. (see b/259490845)
   void AddIconAndLabel(const gfx::ImageSkia& image, const std::u16string& text);
 
   // The same as the above function with `ImageModel` parameter instead.

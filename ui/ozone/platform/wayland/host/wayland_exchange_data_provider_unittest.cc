@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ui/ozone/platform/wayland/host/wayland_exchange_data_provider.h"
 
@@ -14,6 +10,8 @@
 
 #include "base/containers/span.h"
 #include "base/pickle.h"
+#include "base/strings/string_view_util.h"
+#include "base/test/task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/clipboard_constants.h"
@@ -32,18 +30,23 @@ PlatformClipboard::Data ToClipboardData(const StringType& data_string) {
 }
 }  // namespace
 
+class WaylandExchangeDataProviderTest : public ::testing::Test {
+ protected:
+  base::test::TaskEnvironment task_environment_;
+};
+
 // Regression test for https://crbug.com/1284996.
-TEST(WaylandExchangeDataProviderTest, ExtractPickledData) {
+TEST_F(WaylandExchangeDataProviderTest, ExtractPickledData) {
   WaylandExchangeDataProvider provider;
   std::string extracted;
 
-  EXPECT_FALSE(provider.ExtractData(kMimeTypeText, &extracted));
+  EXPECT_FALSE(provider.ExtractData(kMimeTypePlainText, &extracted));
   EXPECT_FALSE(
       provider.ExtractData(kMimeTypeDataTransferCustomData, &extracted));
 
   extracted.clear();
   provider.SetString(u"dnd-string");
-  EXPECT_TRUE(provider.ExtractData(kMimeTypeText, &extracted));
+  EXPECT_TRUE(provider.ExtractData(kMimeTypePlainText, &extracted));
   EXPECT_EQ("dnd-string", extracted);
 
   extracted.clear();
@@ -65,9 +68,21 @@ TEST(WaylandExchangeDataProviderTest, ExtractPickledData) {
   EXPECT_EQ("pickled-str", read_pickled_str);
 }
 
-TEST(WaylandExchangeDataProviderTest, FileContents) {
+TEST_F(WaylandExchangeDataProviderTest, FileNameAsUriList) {
+  WaylandExchangeDataProvider provider;
+  std::string extracted;
+  EXPECT_FALSE(provider.ExtractData(kMimeTypeUriList, &extracted));
+
+  extracted.clear();
+  provider.AddData(ToClipboardData("file:///dev/null"), kMimeTypeUriList);
+  EXPECT_TRUE(provider.ExtractData(kMimeTypeUriList, &extracted));
+  EXPECT_EQ("file:///dev/null", extracted);
+}
+
+TEST_F(WaylandExchangeDataProviderTest, FileContents) {
   constexpr std::string kName("filename");
-  constexpr std::string kContents("contents");
+  const base::span<const uint8_t> kContents =
+      base::byte_span_from_cstring("contents");
   const std::string kMimeType("application/octet-stream;name=\"filename\"");
 
   WaylandExchangeDataProvider provider;
@@ -84,7 +99,7 @@ TEST(WaylandExchangeDataProviderTest, FileContents) {
 
   std::string extracted;
   EXPECT_TRUE(provider.ExtractData(kMimeType, &extracted));
-  EXPECT_EQ(kContents, extracted);
+  EXPECT_EQ(base::as_string_view(kContents), extracted);
 }
 
 }  // namespace ui

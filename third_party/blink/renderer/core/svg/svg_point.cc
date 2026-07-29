@@ -44,11 +44,6 @@ SVGPoint* SVGPoint::Clone() const {
   return MakeGarbageCollected<SVGPoint>(value_);
 }
 
-SVGPropertyBase* SVGPoint::CloneForAnimation(const String& value) const {
-  // SVGPoint is not animated by itself.
-  NOTREACHED();
-}
-
 String SVGPoint::ValueAsString() const {
   StringBuilder builder;
   builder.AppendNumber(X());
@@ -57,7 +52,7 @@ String SVGPoint::ValueAsString() const {
   return builder.ToString();
 }
 
-void SVGPoint::Add(const SVGPropertyBase* other, const SVGElement*) {
+bool SVGPoint::Add(const SVGPropertyBase* other, const SVGElement*) {
   // SVGPoint is not animated by itself.
   NOTREACHED();
 }

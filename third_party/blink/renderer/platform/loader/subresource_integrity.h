@@ -55,18 +55,20 @@ class PLATFORM_EXPORT SubresourceIntegrity final {
                                         const String& raw_headers,
                                         const FeatureContext*,
                                         IntegrityReport&);
-  static std::optional<String> GetSubresourceIntegrityHash(
-      const SegmentedBuffer*,
-      HashAlgorithm);
+  static String GetSubresourceIntegrityHash(const SegmentedBuffer*,
+                                            HashAlgorithm);
+
+  static bool CheckUnencodedDigests(const Vector<IntegrityMetadata>& digests,
+                                    const SegmentedBuffer* data);
 
   static HashAlgorithm IntegrityAlgorithmToHashAlgorithm(IntegrityAlgorithm);
 
   // The IntegrityMetadataSet argument is an out parameters which contains the
   // set of all valid, parsed metadata from |attribute|.
-  static void ParseIntegrityAttribute(const WTF::String& attribute,
+  static void ParseIntegrityAttribute(const String& attribute,
                                       IntegrityMetadataSet&,
                                       const FeatureContext*);
-  static void ParseIntegrityAttribute(const WTF::String& attribute,
+  static void ParseIntegrityAttribute(const String& attribute,
                                       IntegrityMetadataSet&,
                                       const FeatureContext*,
                                       IntegrityReport*);
@@ -102,7 +104,7 @@ class PLATFORM_EXPORT SubresourceIntegrity final {
       HashMap<HashAlgorithm, String>* computed_hashes);
 
   // Handles hash validation during SRI checks.
-  static bool CheckHashesImpl(const WTF::HashSet<IntegrityMetadataPair>&,
+  static bool CheckHashesImpl(const Vector<IntegrityMetadata>&,
                               const SegmentedBuffer*,
                               const KURL&,
                               const FeatureContext*,
@@ -110,7 +112,7 @@ class PLATFORM_EXPORT SubresourceIntegrity final {
                               HashMap<HashAlgorithm, String>* computed_hashes);
 
   // Handles signature-based matching during SRI checks
-  static bool CheckSignaturesImpl(const WTF::HashSet<IntegrityMetadataPair>&,
+  static bool CheckSignaturesImpl(const Vector<IntegrityMetadata>&,
                                   const KURL& resource_url,
                                   const String& raw_headers,
                                   IntegrityReport&);
@@ -118,11 +120,7 @@ class PLATFORM_EXPORT SubresourceIntegrity final {
   enum AlgorithmParseError { kAlgorithmUnparsable, kAlgorithmUnknown };
   using AlgorithmParseResult = base::expected<size_t, AlgorithmParseError>;
 
-  static IntegrityAlgorithm FindBestAlgorithm(
-      const WTF::HashSet<IntegrityMetadataPair>&);
-
-  static bool CheckSubresourceIntegrityDigest(const IntegrityMetadata&,
-                                              const SegmentedBuffer* buffer);
+  static IntegrityAlgorithm FindBestAlgorithm(const Vector<IntegrityMetadata>&);
 
   static AlgorithmParseResult ParseAttributeAlgorithm(std::string_view token,
                                                       const FeatureContext*,

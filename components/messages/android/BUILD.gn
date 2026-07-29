@@ -53,7 +53,7 @@ android_library("unit_device_javatests") {
     "//content/public/test/android:content_java_test_support",
     "//third_party/androidx:androidx_core_core_java",
     "//third_party/androidx:androidx_test_runner_java",
-    "//third_party/junit:junit",
+    "//third_party/junit",
     "//third_party/mockito:mockito_java",
     "//ui/android:ui_java_test_support",
   ]
@@ -87,18 +87,16 @@ static_library("android") {
     "message_enums.h",
     "message_wrapper.cc",
     "message_wrapper.h",
-    "throttler/domain_session_throttler.cc",
-    "throttler/domain_session_throttler.h",
   ]
   deps = [
     ":jni_headers",
     "//content/public/browser",
-    "//ui/android:android",
   ]
 
   public_deps = [
     "//base",
     "//skia",
+    "//ui/android",
   ]
 }
 
@@ -117,11 +115,18 @@ static_library("test_support") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [ "message_dispatcher_bridge_unittest.cc" ]
+  sources = [
+    "message_dispatcher_bridge_unittest.cc",
+    "message_wrapper_unittest.cc",
+  ]
 
   deps = [
     ":android",
+    ":jni_headers",
+    ":test_support",
     "//base",
+    "//base/test:test_support",
+    "//components/messages/android/test:test_support_cpp",
     "//testing/gtest",
   ]
 }
@@ -169,6 +174,7 @@ robolectric_library("junit") {
       [ "java/src/org/chromium/components/messages/MessageWrapperTest.java" ]
   deps = [
     ":java",
+    ":jni_headers_java",
     "//base:base_java",
     "//base:base_java_test_support",
     "//base:base_junit_test_support",

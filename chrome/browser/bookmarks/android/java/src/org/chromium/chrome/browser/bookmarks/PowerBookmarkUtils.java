@@ -5,18 +5,17 @@
 package org.chromium.chrome.browser.bookmarks;
 
 import android.content.res.Resources;
-import android.os.Build;
-
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 
 import com.google.common.primitives.UnsignedLongs;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ResettersForTesting;
+import org.chromium.build.annotations.Contract;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.commerce.PriceTrackingUtils;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
-import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerFactory;
+import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
@@ -33,15 +32,15 @@ import org.chromium.components.power_bookmarks.PowerBookmarkMeta;
 import org.chromium.components.power_bookmarks.ShoppingSpecifics;
 
 /** Utilities for use in power bookmarks. */
-// TODO(crbug.com/40234642): We should add a JNI layer for the native version of these utilities in
-//                price_tracking_utils and use those instead.
+@NullMarked
 public class PowerBookmarkUtils {
-    private static Boolean sPriceTrackingEligibleForTesting;
-    private static PowerBookmarkMeta sPowerBookmarkMetaForTesting;
+    private static @Nullable Boolean sPriceTrackingEligibleForTesting;
+    private static @Nullable PowerBookmarkMeta sPowerBookmarkMetaForTesting;
 
     /** Returns whether the given meta is a shopping list item. */
+    @Contract("_, null -> false")
     public static boolean isShoppingListItem(
-            ShoppingService shoppingService, PowerBookmarkMeta meta) {
+            ShoppingService shoppingService, @Nullable PowerBookmarkMeta meta) {
         return CommerceFeatureUtils.isShoppingListEligible(shoppingService)
                 && meta != null
                 && meta.hasShoppingSpecifics();
@@ -63,7 +62,7 @@ public class PowerBookmarkUtils {
 
         ShoppingService.ProductInfo info = service.getAvailableProductInfoForUrl(tab.getUrl());
 
-        return info != null && info.productClusterId.isPresent();
+        return info != null && info.productClusterId != null;
     }
 
     /**
@@ -73,8 +72,8 @@ public class PowerBookmarkUtils {
      * @param meta The {@link PowerBookmarkMeta} to create the {@link CommerceSubscription} for.
      * @return The {@link CommerceSubsription} for the given {@link PowerBookmarkMeta}
      */
-    public static @NonNull CommerceSubscription createCommerceSubscriptionForPowerBookmarkMeta(
-            @NonNull PowerBookmarkMeta meta) {
+    public static CommerceSubscription createCommerceSubscriptionForPowerBookmarkMeta(
+            PowerBookmarkMeta meta) {
         return createCommerceSubscriptionForShoppingSpecifics(meta.getShoppingSpecifics());
     }
 
@@ -86,8 +85,8 @@ public class PowerBookmarkUtils {
      *     CommerceSubscription} for.
      * @return The {@link CommerceSubsription} for the given {@link ShoppingSpecifics}
      */
-    public static @NonNull CommerceSubscription createCommerceSubscriptionForShoppingSpecifics(
-            @NonNull ShoppingSpecifics shoppingSpecifics) {
+    public static CommerceSubscription createCommerceSubscriptionForShoppingSpecifics(
+            ShoppingSpecifics shoppingSpecifics) {
         // Use UnsignedLongs to convert ProductClusterId to avoid overflow.
         UserSeenOffer seenOffer =
                 new UserSeenOffer(
@@ -106,7 +105,6 @@ public class PowerBookmarkUtils {
     /**
      * Checks if the given {@link BookmarkId} is price-tracked.
      *
-     * @param bookmarkModel The BookmarkModel used to query bookmarks.
      * @param bookmarkId The BookmarkId to check the price-tracking status of.
      * @param enabled Whether price-tracking should be enabled.
      * @param snackbarManager Manages snackbars, non-null if a message should be sent to alert the
@@ -115,15 +113,16 @@ public class PowerBookmarkUtils {
      * @param profile The current profile.
      * @param callback The status callback, may be called multiple times depending if the user
      *     retries on failure.
+     * @param priceDropNotificationManager Manages price drop notifications.
      */
     public static void setPriceTrackingEnabledWithSnackbars(
-            @NonNull BookmarkModel bookmarkModel,
             @Nullable BookmarkId bookmarkId,
             boolean enabled,
             SnackbarManager snackbarManager,
             Resources resources,
             Profile profile,
-            Callback<Boolean> callback) {
+            Callback<Boolean> callback,
+            PriceDropNotificationManager priceDropNotificationManager) {
         // TODO(crbug.com/393186352): Fix nullable annotation for bookmarkId parameter.
         // Early return when bookmarkId is null.
         if (bookmarkId == null) {
@@ -133,7 +132,7 @@ public class PowerBookmarkUtils {
                             null,
                             Snackbar.TYPE_NOTIFICATION,
                             Snackbar.UMA_PRICE_TRACKING_FAILURE);
-            snackbar.setSingleLine(false);
+            snackbar.setDefaultLines(false);
             snackbarManager.showSnackbar(snackbar);
             callback.onResult(false);
             return;
@@ -143,15 +142,15 @@ public class PowerBookmarkUtils {
         SnackbarManager.SnackbarController retrySnackbarControllerAction =
                 new SnackbarManager.SnackbarController() {
                     @Override
-                    public void onAction(Object actionData) {
+                    public void onAction(@Nullable Object actionData) {
                         setPriceTrackingEnabledWithSnackbars(
-                                bookmarkModel,
                                 bookmarkId,
                                 enabled,
                                 snackbarManager,
                                 resources,
                                 profile,
-                                callback);
+                                callback,
+                                priceDropNotificationManager);
                     }
                 };
         // Wrapper which shows a snackbar and forwards the result.
@@ -183,16 +182,14 @@ public class PowerBookmarkUtils {
                                                                 .price_tracking_error_snackbar_action),
                                                 null);
                     }
-                    snackbar.setSingleLine(false);
+                    snackbar.setDefaultLines(false);
                     snackbarManager.showSnackbar(snackbar);
                     callback.onResult(success);
                 };
         // Make sure the notification channel is initialized when the user tracks a product.
         // TODO(crbug.com/40245507): Add a SubscriptionsObserver in the PriceDropNotificationManager
         // and initialize the channel there.
-        if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            PriceDropNotificationManagerFactory.create(profile).createNotificationChannel();
-        }
+        priceDropNotificationManager.createNotificationChannel();
         PriceTrackingUtils.setPriceTrackingStateForBookmark(
                 profile, bookmarkId.getId(), enabled, wrapperCallback);
     }

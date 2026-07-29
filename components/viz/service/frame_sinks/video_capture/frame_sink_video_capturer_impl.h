@@ -27,12 +27,13 @@
 #include "components/viz/common/surfaces/video_capture_target.h"
 #include "components/viz/service/frame_sinks/video_capture/capturable_frame_sink.h"
 #include "components/viz/service/frame_sinks/video_capture/in_flight_frame_delivery.h"
+#include "components/viz/service/frame_sinks/video_capture/mappable_shared_image_video_frame_pool.h"
 #include "components/viz/service/frame_sinks/video_capture/video_capture_overlay.h"
 #include "components/viz/service/frame_sinks/video_capture/video_frame_pool.h"
 #include "components/viz/service/viz_service_export.h"
 #include "media/base/video_frame.h"
 #include "media/capture/content/video_capture_oracle.h"
-#include "media/video/renderable_gpu_memory_buffer_video_frame_pool.h"
+#include "media/video/renderable_mappable_shared_image_video_frame_pool.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -78,8 +79,8 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
       public VideoCaptureOverlay::FrameSource,
       public mojom::FrameSinkVideoCapturer {
  public:
-  using GpuMemoryBufferVideoFramePoolContext =
-      media::RenderableGpuMemoryBufferVideoFramePool::Context;
+  using MappableSharedImageVideoFramePoolContext =
+      media::RenderableMappableSharedImageVideoFramePool::Context;
   // `frame_sink_manager` must outlive this instance. Binds this instance to the
   // Mojo message pipe endpoint in `receiver`, but `receiver` may be empty for
   // unit testing.
@@ -88,7 +89,8 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
       GmbVideoFramePoolContextProvider* gmb_video_frame_pool_context_provider,
       mojo::PendingReceiver<mojom::FrameSinkVideoCapturer> receiver,
       std::unique_ptr<media::VideoCaptureOracle> oracle,
-      bool log_to_webrtc);
+      bool log_to_webrtc,
+      uint32_t capture_version_source);
 
   FrameSinkVideoCapturerImpl(const FrameSinkVideoCapturerImpl&) = delete;
   FrameSinkVideoCapturerImpl& operator=(const FrameSinkVideoCapturerImpl&) =
@@ -119,6 +121,8 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
                                 const gfx::Size& max_size,
                                 bool use_fixed_aspect_ratio) final;
   void SetAutoThrottlingEnabled(bool enabled) final;
+  void SetAnimationFpsLockIn(bool enabled,
+                             float majority_damaged_pixel_min_ratio) final;
   void ChangeTarget(const std::optional<VideoCaptureTarget>& target,
                     uint32_t sub_capture_target_version) final;
   void Start(mojo::PendingRemote<mojom::FrameSinkVideoConsumer> consumer,
@@ -187,6 +191,15 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
                                        const gfx::Size& source_size,
                                        media::VideoPixelFormat pixel_format);
 
+  // Returns the BufferFormatPreference currently used by the frame pool.
+  // Assumes that the frame pool is of type MappableSharedImageVideoFramePool,
+  // which must hold true for tests that query this method.
+  mojom::BufferFormatPreference
+  mappable_si_frame_pool_buffer_format_preference_for_testing() const {
+    return static_cast<MappableSharedImageVideoFramePool*>(frame_pool_.get())
+        ->buffer_format_preference();
+  }
+
  private:
   friend class FrameSinkVideoCapturerTest;
 
@@ -226,11 +239,6 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
   // to the frame sink manager.
   void ResolveTarget();
 
-  // If the target is resolved, returns true.
-  // Otherwise, makes one attempt to resolve the target, and returns
-  // true iff the attempt was successful.
-  bool TryResolveTarget();
-
   // Helper method that actually implements the refresh logic. `event` is used
   // to determine if the refresh is urgent for scheduling purposes.
   void RefreshInternal(media::VideoCaptureOracle::Event event);
@@ -253,7 +261,7 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
     // Unable to read data out of the CopyOutputResult.
     kI420ReadbackFailed,
     kARGBReadbackFailed,
-    kGpuMemoryBufferReadbackFailed,
+    kMappableSharedImageReadbackFailed,
     kNV12ReadbackFailed,
     // Subcapture target changed during the capture process.
     kSubCaptureTargetChanged,
@@ -402,6 +410,11 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
   // overly chatty and waste CPU.
   void MaybeInformConsumerOfEmptyRegion();
 
+  media::CaptureVersion capture_version() const {
+    return media::CaptureVersion(capture_version_source_,
+                                 capture_version_sub_capture_);
+  }
+
   // Owner/Manager of this instance.
   const raw_ref<FrameSinkVideoCapturerManager> frame_sink_manager_;
 
@@ -522,13 +535,10 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
   // of frames dropped due to being cropped to zero pixels.
   bool consumer_informed_of_empty_region_ = false;
 
-  // The sub-capture-target-version allows Viz to communicate back to Blink the
-  // information of which crop-target each frame is associated with. Better, if
-  // cropTo() is called multiple times, oscillating between two targets, Blink
-  // can even tell whether the frame is cropped to an earlier or later
-  // invocation of cropTo() for a given target, because the
-  // sub-capture-target-version keeps increasing.
-  uint32_t sub_capture_target_version_ = 0;
+  // The current version of the capture, indicating source-changes and the
+  // application of sub-capture.
+  const uint32_t capture_version_source_;
+  uint32_t capture_version_sub_capture_ = 0;
 
   // A weak pointer factory used for cancelling the results from any in-flight
   // copy output requests.

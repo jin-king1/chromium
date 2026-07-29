@@ -16,12 +16,6 @@ namespace safe_browsing {
 // given |profile|.
 ChromeUserPopulation GetUserPopulationForProfile(Profile* profile);
 
-// A convenience function that creates a ChromeUserPopulation proto for the
-// given |profile|. This is used by real-time URL lookups and download pings to
-// sometimes add telemetry about running experiments.
-ChromeUserPopulation GetUserPopulationForProfileWithCookieTheftExperiments(
-    Profile* profile);
-
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 enum class NoCachedPopulationReason {
@@ -35,7 +29,7 @@ enum class NoCachedPopulationReason {
 // A cache of the ChromeUserPopulation is used to validate that we are
 // consistently populating the same values into Safe Browsing pings. This should
 // be cleared whenever we expect the correct value of the ChromeUserPopulation
-// to be cleared. See crbug/1208532.
+// to be cleared. See crbug.com/40766086.
 void ClearCachedUserPopulation(Profile* profile,
                                NoCachedPopulationReason reason);
 

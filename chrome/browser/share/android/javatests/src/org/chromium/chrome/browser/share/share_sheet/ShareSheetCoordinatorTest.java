@@ -21,37 +21,37 @@ import android.content.pm.PackageManager;
 
 import androidx.test.filters.SmallTest;
 
-import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
-import org.robolectric.annotation.Config;
-import org.robolectric.annotation.Implementation;
-import org.robolectric.annotation.Implements;
-import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadows.ShadowPackageManager;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.share.ShareContentTypeHelper;
-import org.chromium.chrome.browser.share.link_to_text.LinkToTextCoordinator.LinkGeneration;
-import org.chromium.chrome.browser.share.share_sheet.ShareSheetCoordinatorTest.ShadowPropertyModelBuilder;
-import org.chromium.chrome.browser.share.share_sheet.ShareSheetLinkToggleMetricsHelper.LinkToggleMetricsDetails;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
@@ -60,15 +60,14 @@ import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Set;
+import java.util.function.Supplier;
 
 /** Tests {@link ShareSheetCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@LooperMode(LooperMode.Mode.LEGACY)
-@Config(shadows = ShadowPropertyModelBuilder.class)
 public final class ShareSheetCoordinatorTest {
     private static final String MOCK_URL = JUnitTestGURLs.EXAMPLE_URL.getSpec();
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private DomDistillerUrlUtils.Natives mDistillerUrlUtilsJniMock;
     @Mock private ActivityLifecycleDispatcher mLifecycleDispatcher;
     @Mock private BottomSheetController mController;
@@ -77,15 +76,20 @@ public final class ShareSheetCoordinatorTest {
     @Mock private WindowAndroid mWindow;
     @Mock private Profile mProfile;
     @Mock Tracker mTracker;
+    @Mock private SigninAndHistorySyncActivityLauncher mSigninAndHistorySyncActivityLauncher;
+    @Mock private ActivityResultTracker mActivityResultTracker;
+    @Mock private ModalDialogManager mModalDialogManager;
+    @Mock private SnackbarManager mSnackbarManager;
 
     private Activity mActivity;
     private ShareParams mParams;
     private ShareSheetCoordinator mShareSheetCoordinator;
     private ShadowPackageManager mShadowPackageManager;
+    private final SettableMonotonicObservableSupplier<ModalDialogManager>
+            mModalDialogManagerSupplier = ObservableSuppliers.createMonotonic(mModalDialogManager);
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         DomDistillerUrlUtilsJni.setInstanceForTesting(mDistillerUrlUtilsJniMock);
 
         Context context = ContextUtils.getApplicationContext();
@@ -108,7 +112,8 @@ public final class ShareSheetCoordinatorTest {
         ArrayList<PropertyModel> thirdPartyPropertyModels =
                 new ArrayList<>(Arrays.asList(testModel1, testModel2));
         when(mWindow.getActivity()).thenReturn(new WeakReference<>(mActivity));
-        ShadowPropertyModelBuilder.sThirdPartyModels = thirdPartyPropertyModels;
+        ShareSheetPropertyModelBuilder.setSelectThirdPartyAppsOverrideForTesting(
+                thirdPartyPropertyModels);
         when(mDistillerUrlUtilsJniMock.getOriginalUrlFromDistillerUrl(anyString()))
                 .thenReturn(new GURL(MOCK_URL));
         TrackerFactory.setTrackerForTests(mTracker);
@@ -127,12 +132,11 @@ public final class ShareSheetCoordinatorTest {
                         false,
                         null,
                         mProfile,
-                        null);
-    }
-
-    @After
-    public void tearDown() {
-        ShadowPropertyModelBuilder.sThirdPartyModels = null;
+                        null,
+                        mSigninAndHistorySyncActivityLauncher,
+                        mActivityResultTracker,
+                        mModalDialogManagerSupplier,
+                        mSnackbarManager);
     }
 
     @Test
@@ -160,6 +164,7 @@ public final class ShareSheetCoordinatorTest {
         doNothing().when(spyShareSheet).finishUpdateShareSheet(any(), any(), any());
 
         spyShareSheet.updateShareSheet(/* saveLastUsed= */ false, () -> {});
+        RobolectricUtil.runAllBackgroundAndUi();
 
         verify(spyShareSheet, never())
                 .createThirdPartyPropertyModels(any(), any(), any(), anyBoolean(), any());
@@ -177,30 +182,10 @@ public final class ShareSheetCoordinatorTest {
         doNothing().when(spyShareSheet).finishUpdateShareSheet(any(), any(), any());
 
         spyShareSheet.updateShareSheet(/* saveLastUsed= */ false, () -> {});
+        RobolectricUtil.runAllBackgroundAndUi();
 
         verify(spyShareSheet, atLeastOnce())
                 .createThirdPartyPropertyModels(any(), any(), any(), anyBoolean(), any());
         verify(spyShareSheet, atLeastOnce()).finishUpdateShareSheet(any(), any(), any());
-    }
-
-    /** Helper shadow class used to inject test only property models. */
-    @Implements(ShareSheetPropertyModelBuilder.class)
-    public static class ShadowPropertyModelBuilder {
-        /** Empty ctor for robolectric to initialize. */
-        public ShadowPropertyModelBuilder() {}
-
-        static List<PropertyModel> sThirdPartyModels;
-
-        @Implementation
-        protected List<PropertyModel> selectThirdPartyApps(
-                ShareSheetBottomSheetContent bottomSheet,
-                Set<Integer> contentTypes,
-                ShareParams params,
-                boolean saveLastUsed,
-                long shareStartTime,
-                @LinkGeneration int linkGenerationStatusForMetrics,
-                LinkToggleMetricsDetails linkToggleMetricsDetails) {
-            return sThirdPartyModels == null ? new ArrayList<>() : sThirdPartyModels;
-        }
     }
 }

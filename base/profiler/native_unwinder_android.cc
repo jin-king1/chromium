@@ -9,8 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/memory/ptr_util.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/notreached.h"
 #include "base/profiler/module_cache.h"
@@ -78,11 +78,13 @@ std::unique_ptr<unwindstack::Regs> CreateFromRegisterContext(
 void CopyToRegisterContext(unwindstack::Regs* regs,
                            RegisterContext* thread_context) {
 #if defined(ARCH_CPU_ARM_FAMILY) && defined(ARCH_CPU_32_BITS)
-  memcpy(reinterpret_cast<void*>(&thread_context->arm_r0), regs->RawData(),
-         unwindstack::ARM_REG_LAST * sizeof(uintptr_t));
+  UNSAFE_TODO(memcpy(reinterpret_cast<void*>(&thread_context->arm_r0),
+                     regs->RawData(),
+                     unwindstack::ARM_REG_LAST * sizeof(uintptr_t)));
 #elif defined(ARCH_CPU_ARM_FAMILY) && defined(ARCH_CPU_64_BITS)
-  memcpy(reinterpret_cast<void*>(&thread_context->regs[0]), regs->RawData(),
-         unwindstack::ARM64_REG_LAST * sizeof(uintptr_t));
+  UNSAFE_TODO(memcpy(reinterpret_cast<void*>(&thread_context->regs[0]),
+                     regs->RawData(),
+                     unwindstack::ARM64_REG_LAST * sizeof(uintptr_t)));
 #else   // #if defined(ARCH_CPU_ARM_FAMILY) && defined(ARCH_CPU_32_BITS)
   NOTREACHED();
 #endif  // #if defined(ARCH_CPU_ARM_FAMILY) && defined(ARCH_CPU_32_BITS)
@@ -105,7 +107,7 @@ size_t UnwindStackMemoryAndroid::Read(uint64_t addr, void* dst, size_t size) {
   if (size >= stack_top_ || addr > stack_top_ - size) {
     return 0;
   }
-  memcpy(dst, reinterpret_cast<void*>(addr), size);
+  UNSAFE_TODO(memcpy(dst, reinterpret_cast<void*>(addr), size));
   return size;
 }
 

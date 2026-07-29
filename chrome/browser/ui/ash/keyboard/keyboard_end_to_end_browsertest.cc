@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -70,7 +71,7 @@ bool WaitUntilHidden() {
 }
 
 gfx::Size GetScreenBounds() {
-  return display::Screen::GetScreen()->GetPrimaryDisplay().GetSizeInPixel();
+  return display::Screen::Get()->GetPrimaryDisplay().GetSizeInPixel();
 }
 
 }  // namespace
@@ -86,7 +87,7 @@ class KeyboardEndToEndTest : public InProcessBrowserTest {
   }
 
   void SetUpOnMainThread() override {
-    GURL test_url = ui_test_utils::GetTestUrl(
+    GURL test_url = chrome_test_utils::GetTestUrl(
         base::FilePath("chromeos/virtual_keyboard"), test_file_);
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url));
     web_contents_ = browser()->tab_strip_model()->GetActiveWebContents();
@@ -186,7 +187,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardEndToEndFormTest,
   ASSERT_TRUE(
       content::EvalJs(web_contents_.get(),
                       "document.getElementById('username').type = 'password'")
-          .error.empty());
+          .is_ok());
 
   base::RunLoop().RunUntilIdle();  // Allow async operations to complete.
   EXPECT_TRUE(ChromeKeyboardControllerClient::Get()->is_keyboard_visible());
@@ -200,7 +201,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardEndToEndFormTest,
   ASSERT_TRUE(
       content::EvalJs(web_contents_.get(),
                       "document.getElementById('username').type = 'submit'")
-          .error.empty());
+          .is_ok());
 
   ASSERT_TRUE(WaitUntilHidden());
 }
@@ -213,7 +214,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardEndToEndFormTest,
   ASSERT_TRUE(
       content::EvalJs(web_contents_.get(),
                       "document.getElementById('username').readOnly = true")
-          .error.empty());
+          .is_ok());
 
   ASSERT_TRUE(WaitUntilHidden());
 }
@@ -226,7 +227,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardEndToEndFormTest,
   ASSERT_TRUE(content::EvalJs(web_contents_.get(),
                               "document.getElementById('username')."
                               "setAttribute('inputmode', 'numeric')")
-                  .error.empty());
+                  .is_ok());
 
   base::RunLoop().RunUntilIdle();  // Allow async operations to complete.
   EXPECT_TRUE(ChromeKeyboardControllerClient::Get()->is_keyboard_visible());
@@ -240,7 +241,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardEndToEndFormTest,
   ASSERT_TRUE(content::EvalJs(web_contents_.get(),
                               "document.getElementById('username')."
                               "setAttribute('inputmode', 'none')")
-                  .error.empty());
+                  .is_ok());
 
   ASSERT_TRUE(WaitUntilHidden());
 }
@@ -251,7 +252,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardEndToEndFormTest, DeleteInputHidesKeyboard) {
 
   ASSERT_TRUE(content::EvalJs(web_contents_.get(),
                               "document.getElementById('username').remove()")
-                  .error.empty());
+                  .is_ok());
 
   ASSERT_TRUE(WaitUntilHidden());
 }
@@ -274,7 +275,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardEndToEndFocusTest,
                        TriggerInputFocusWithoutUserGestureDoesNotShowKeyboard) {
   ASSERT_TRUE(content::EvalJs(web_contents_.get(),
                               "document.getElementById('text').focus()")
-                  .error.empty());
+                  .is_ok());
 
   base::RunLoop().RunUntilIdle();  // Allow async operations to complete.
   EXPECT_FALSE(ChromeKeyboardControllerClient::Get()->is_keyboard_visible());
@@ -359,7 +360,7 @@ class KeyboardEndToEndOverscrollTest : public KeyboardEndToEndTest {
 
 IN_PROC_BROWSER_TEST_F(KeyboardEndToEndOverscrollTest,
                        ToggleKeyboardOnMaximizedWindowAffectsViewport) {
-  browser()->window()->Maximize();
+  browser()->GetWindow()->Maximize();
 
   const int old_height = GetViewportHeight(web_contents_);
 
@@ -380,7 +381,7 @@ IN_PROC_BROWSER_TEST_F(
   // Set the window bounds so that it does not overlap with the keyboard.
   // The virtual keyboard takes up no more than half the screen height.
   gfx::Size screen_bounds = GetScreenBounds();
-  browser()->window()->SetBounds(
+  browser()->GetWindow()->SetBounds(
       gfx::Rect(0, 0, screen_bounds.width(), screen_bounds.height() / 2));
 
   const int old_height = GetViewportHeight(web_contents_);
@@ -403,24 +404,24 @@ IN_PROC_BROWSER_TEST_F(
   // window size so that when it moves upwards, it will no longer overlap with
   // the keyboard.
   gfx::Size screen_bounds = GetScreenBounds();
-  browser()->window()->SetBounds(gfx::Rect(0, screen_bounds.height() / 2,
-                                           screen_bounds.width(),
-                                           screen_bounds.height() / 2));
-  const auto old_browser_bounds = browser()->window()->GetBounds();
+  browser()->GetWindow()->SetBounds(gfx::Rect(0, screen_bounds.height() / 2,
+                                              screen_bounds.width(),
+                                              screen_bounds.height() / 2));
+  const auto old_browser_bounds = browser()->GetWindow()->GetBounds();
   const int old_height = GetViewportHeight(web_contents_);
 
   FocusAndShowKeyboard();
   ASSERT_TRUE(WaitUntilShown());
 
-  EXPECT_LT(browser()->window()->GetBounds().y(), old_browser_bounds.y());
-  EXPECT_EQ(browser()->window()->GetBounds().height(),
+  EXPECT_LT(browser()->GetWindow()->GetBounds().y(), old_browser_bounds.y());
+  EXPECT_EQ(browser()->GetWindow()->GetBounds().height(),
             old_browser_bounds.height());
   EXPECT_EQ(GetViewportHeight(web_contents_), old_height);
 
   HideKeyboard();
   ASSERT_TRUE(WaitUntilHidden());
 
-  EXPECT_EQ(browser()->window()->GetBounds(), old_browser_bounds);
+  EXPECT_EQ(browser()->GetWindow()->GetBounds(), old_browser_bounds);
   EXPECT_EQ(GetViewportHeight(web_contents_), old_height);
 }
 
@@ -431,23 +432,23 @@ IN_PROC_BROWSER_TEST_F(
   // window size so that when it moves upwards, it will still overlap with
   // the keyboard.
   gfx::Size screen_bounds = GetScreenBounds();
-  browser()->window()->SetBounds(gfx::Rect(0, screen_bounds.height() / 3,
-                                           screen_bounds.width(),
-                                           screen_bounds.height() / 3 * 2));
-  const auto old_browser_bounds = browser()->window()->GetBounds();
+  browser()->GetWindow()->SetBounds(gfx::Rect(0, screen_bounds.height() / 3,
+                                              screen_bounds.width(),
+                                              screen_bounds.height() / 3 * 2));
+  const auto old_browser_bounds = browser()->GetWindow()->GetBounds();
   const int old_height = GetViewportHeight(web_contents_);
 
   FocusAndShowKeyboard();
   ASSERT_TRUE(WaitUntilShown());
 
-  EXPECT_LT(browser()->window()->GetBounds().y(), old_browser_bounds.y());
-  EXPECT_EQ(browser()->window()->GetBounds().height(),
+  EXPECT_LT(browser()->GetWindow()->GetBounds().y(), old_browser_bounds.y());
+  EXPECT_EQ(browser()->GetWindow()->GetBounds().height(),
             old_browser_bounds.height());
   EXPECT_LT(GetViewportHeight(web_contents_), old_height);
 
   HideKeyboard();
   ASSERT_TRUE(WaitUntilHidden());
 
-  EXPECT_EQ(browser()->window()->GetBounds(), old_browser_bounds);
+  EXPECT_EQ(browser()->GetWindow()->GetBounds(), old_browser_bounds);
   EXPECT_EQ(GetViewportHeight(web_contents_), old_height);
 }

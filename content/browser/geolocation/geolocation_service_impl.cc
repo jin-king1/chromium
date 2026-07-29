@@ -6,10 +6,16 @@
 
 #include <utility>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
+#include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/features.h"
 #include "content/browser/permissions/permission_controller_impl.h"
+#include "content/browser/web_contents/web_contents_impl.h"
+#include "content/common/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/permission_controller.h"
+#include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/permission_request_description.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -24,6 +30,82 @@
 
 namespace content {
 
+// `GeolocationProxy` acts as a Mojo intermediary between the renderer client
+// and the backing `GeolocationImpl`. It forwards all calls and monitors
+// the connection lifetime of both ends.
+//
+// `GeolocationServiceImpl` uses this to track active sessions and manage
+// the browser-side activity count (UI location indicator). Disconnections on
+// either end trigger `OnProxyDisconnected` to update state.
+class GeolocationServiceImpl::GeolocationProxy
+    : public device::mojom::Geolocation {
+ public:
+  GeolocationProxy(
+      GeolocationServiceImpl* service_impl,
+      mojo::PendingRemote<device::mojom::Geolocation> geolocation_impl_remote,
+      mojo::PendingReceiver<device::mojom::Geolocation> renderer_receiver)
+      : service_impl_(service_impl),
+        geolocation_impl_remote_(std::move(geolocation_impl_remote)),
+        renderer_receiver_(this, std::move(renderer_receiver)) {
+    renderer_receiver_.set_disconnect_handler(base::BindOnce(
+        &GeolocationProxy::OnDisconnect, base::Unretained(this)));
+    geolocation_impl_remote_.set_disconnect_handler(base::BindOnce(
+        &GeolocationProxy::OnDisconnect, base::Unretained(this)));
+  }
+
+  // device::mojom::Geolocation:
+  void SetHighAccuracyHint(bool high_accuracy) override {
+    geolocation_impl_remote_->SetHighAccuracyHint(high_accuracy);
+  }
+  void QueryCachedPosition(QueryCachedPositionCallback callback) override {
+    geolocation_impl_remote_->QueryCachedPosition(std::move(callback));
+  }
+  void QueryNextPosition(QueryNextPositionCallback callback) override {
+    geolocation_impl_remote_->QueryNextPosition(std::move(callback));
+  }
+
+ private:
+  void OnDisconnect() { service_impl_->OnProxyDisconnected(this); }
+
+  // `GeolocationServiceImpl` owns `this` (via `active_proxies_`), so
+  // `service_impl_` is guaranteed to outlive `this`.
+  const raw_ptr<GeolocationServiceImpl> service_impl_;
+  mojo::Remote<device::mojom::Geolocation> geolocation_impl_remote_;
+  mojo::Receiver<device::mojom::Geolocation> renderer_receiver_;
+};
+
+namespace {
+
+using GeolocationPermissionLevel = device::mojom::GeolocationPermissionLevel;
+
+GeolocationPermissionLevel GetPermissionLevel(
+    const PermissionResult& permission_result) {
+  if (base::FeatureList::IsEnabled(
+          content_settings::features::kApproximateGeolocationPermission)) {
+    if (permission_result.status == blink::mojom::PermissionStatus::GRANTED) {
+      // A GRANTED permission must have an associated setting. The setting is
+      // assumed to be the `GeolocationSetting` variant, which is then
+      // extracted.
+      CHECK(permission_result.retrieved_permission_setting.has_value());
+      GeolocationSetting geo_setting = std::get<GeolocationSetting>(
+          *(permission_result.retrieved_permission_setting));
+      if (geo_setting.precise == PermissionOption::kAllowed) {
+        return GeolocationPermissionLevel::kPrecise;
+      } else if (geo_setting.approximate == PermissionOption::kAllowed) {
+        return GeolocationPermissionLevel::kApproximate;
+      }
+    }
+    // Otherwise, the permission is considered denied.
+    return GeolocationPermissionLevel::kDenied;
+  }
+  // With the feature disabled, the result is either granted for precise or
+  // denied.
+  return permission_result.status == blink::mojom::PermissionStatus::GRANTED
+             ? GeolocationPermissionLevel::kPrecise
+             : GeolocationPermissionLevel::kDenied;
+}
+}  // namespace
+
 GeolocationServiceImplContext::GeolocationServiceImplContext() = default;
 
 GeolocationServiceImplContext::~GeolocationServiceImplContext() = default;
@@ -31,6 +113,7 @@ GeolocationServiceImplContext::~GeolocationServiceImplContext() = default;
 void GeolocationServiceImplContext::RequestPermission(
     RenderFrameHost* render_frame_host,
     bool user_gesture,
+    blink::mojom::GeolocationAccuracy accuracy,
     PermissionCallback callback) {
   if (has_pending_permission_request_) {
     mojo::ReportBadMessage(
@@ -41,29 +124,36 @@ void GeolocationServiceImplContext::RequestPermission(
 
   has_pending_permission_request_ = true;
 
+  // Map the requested accuracy to the appropriate permission type.
+  // GEOLOCATION_APPROXIMATE is used specifically when the site accepts or
+  // requests reduced precision for privacy.
+  blink::PermissionType permission_type =
+      (accuracy == blink::mojom::GeolocationAccuracy::kApproximate)
+          ? blink::PermissionType::GEOLOCATION_APPROXIMATE
+          : blink::PermissionType::GEOLOCATION;
+
   render_frame_host->GetBrowserContext()
       ->GetPermissionController()
       ->RequestPermissionFromCurrentDocument(
           render_frame_host,
-          PermissionRequestDescription(blink::PermissionType::GEOLOCATION,
-                                       user_gesture),
-          base::BindOnce(&GeolocationServiceImplContext::HandlePermissionStatus,
+          PermissionRequestDescription(
+              content::PermissionDescriptorUtil::
+                  CreatePermissionDescriptorForPermissionType(permission_type),
+              user_gesture),
+          base::BindOnce(&GeolocationServiceImplContext::HandlePermissionResult,
                          weak_factory_.GetWeakPtr(), std::move(callback)));
 }
 
-void GeolocationServiceImplContext::HandlePermissionStatus(
+void GeolocationServiceImplContext::HandlePermissionResult(
     PermissionCallback callback,
-    blink::mojom::PermissionStatus permission_status) {
+    PermissionResult permission_result) {
   has_pending_permission_request_ = false;
-  std::move(callback).Run(permission_status);
+  std::move(callback).Run(permission_result);
 }
 
 GeolocationServiceImpl::GeolocationServiceImpl(
-    device::mojom::GeolocationContext* geolocation_context,
     RenderFrameHost* render_frame_host)
-    : geolocation_context_(geolocation_context),
-      render_frame_host_(render_frame_host) {
-  DCHECK(geolocation_context);
+    : render_frame_host_(render_frame_host) {
   DCHECK(render_frame_host);
 }
 
@@ -90,6 +180,7 @@ void GeolocationServiceImpl::Bind(
 void GeolocationServiceImpl::CreateGeolocation(
     mojo::PendingReceiver<device::mojom::Geolocation> receiver,
     bool user_gesture,
+    blink::mojom::GeolocationAccuracy accuracy,
     CreateGeolocationCallback callback) {
   if (!render_frame_host_->IsFeatureEnabled(
           network::mojom::PermissionsPolicyFeature::kGeolocation)) {
@@ -103,61 +194,119 @@ void GeolocationServiceImpl::CreateGeolocation(
       std::move(callback), blink::mojom::PermissionStatus::DENIED);
 
   receiver_set_.current_context()->RequestPermission(
-      render_frame_host_, user_gesture,
+      render_frame_host_, user_gesture, accuracy,
       // The owning RenderFrameHost might be destroyed before the permission
       // request finishes. To avoid calling a callback on a destroyed object,
       // use a WeakPtr and skip the callback if the object is invalid.
       base::BindOnce(
-          &GeolocationServiceImpl::CreateGeolocationWithPermissionStatus,
+          &GeolocationServiceImpl::CreateGeolocationWithPermissionResult,
           weak_factory_.GetWeakPtr(), std::move(receiver),
           std::move(scoped_callback)));
 }
 
-void GeolocationServiceImpl::CreateGeolocationWithPermissionStatus(
+void GeolocationServiceImpl::CreateGeolocationWithPermissionResult(
     mojo::PendingReceiver<device::mojom::Geolocation> receiver,
     CreateGeolocationCallback callback,
-    blink::mojom::PermissionStatus permission_status) {
-  std::move(callback).Run(permission_status);
-  if (permission_status != blink::mojom::PermissionStatus::GRANTED)
-    return;
+    PermissionResult permission_result) {
+  GeolocationPermissionLevel permission_level =
+      GetPermissionLevel(permission_result);
 
-  IncrementActivityCount();
+  device::mojom::GeolocationContext* geolocation_context =
+      GetGeolocationContext();
+  if (permission_level == GeolocationPermissionLevel::kDenied ||
+      !geolocation_context) {
+    std::move(callback).Run(blink::mojom::PermissionStatus::DENIED);
+    return;
+  }
 
   requesting_origin_ =
       render_frame_host_->GetMainFrame()->GetLastCommittedOrigin();
   auto requesting_url =
       render_frame_host_->GetMainFrame()->GetLastCommittedURL();
 
-  geolocation_context_->BindGeolocation(
-      std::move(receiver), requesting_url,
-      device::mojom::GeolocationClientId::kGeolocationServiceImpl);
+  bool has_precise_permission =
+      permission_level == GeolocationPermissionLevel::kPrecise;
+
+  if (base::FeatureList::IsEnabled(features::kGeolocationProxy)) {
+    mojo::PendingRemote<device::mojom::Geolocation> geolocation_impl_remote;
+    geolocation_context->BindGeolocation(
+        geolocation_impl_remote.InitWithNewPipeAndPassReceiver(),
+        requesting_origin_,
+        device::mojom::GeolocationClientId::kGeolocationServiceImpl,
+        has_precise_permission);
+
+    if (active_proxies_.empty()) {
+      IncrementActivityCount();
+    }
+    active_proxies_.push_back(std::make_unique<GeolocationProxy>(
+        this, std::move(geolocation_impl_remote), std::move(receiver)));
+
+    std::move(callback).Run(blink::mojom::PermissionStatus::GRANTED);
+  } else {
+    std::move(callback).Run(blink::mojom::PermissionStatus::GRANTED);
+    // NOTE: Legacy behavior may leak the active frame count if multiple
+    // connections are created. Kept as-is for compatibility.
+    IncrementActivityCount();
+
+    geolocation_context->BindGeolocation(
+        std::move(receiver), requesting_origin_,
+        device::mojom::GeolocationClientId::kGeolocationServiceImpl,
+        has_precise_permission);
+  }
   subscription_id_ =
       PermissionControllerImpl::FromBrowserContext(
           render_frame_host_->GetBrowserContext())
-          ->SubscribeToPermissionStatusChange(
-              blink::PermissionType::GEOLOCATION,
+          ->SubscribeToPermissionResultChange(
+              PermissionDescriptorUtil::
+                  CreatePermissionDescriptorForPermissionType(
+                      blink::PermissionType::GEOLOCATION),
               /*render_process_host=*/nullptr, render_frame_host_,
               requesting_url,
               /*should_include_device_status=*/false,
               base::BindRepeating(
-                  &GeolocationServiceImpl::HandlePermissionStatusChange,
+                  &GeolocationServiceImpl::HandlePermissionResultChange,
                   weak_factory_.GetWeakPtr()));
 }
 
-void GeolocationServiceImpl::HandlePermissionStatusChange(
-    blink::mojom::PermissionStatus permission_status) {
-  if (permission_status != blink::mojom::PermissionStatus::GRANTED &&
+void GeolocationServiceImpl::HandlePermissionResultChange(
+    PermissionResult permission_result) {
+  device::mojom::GeolocationContext* geolocation_context =
+      GetGeolocationContext();
+  if (!geolocation_context) {
+    return;
+  }
+
+  GeolocationPermissionLevel permission_level =
+      GetPermissionLevel(permission_result);
+  if (permission_level == GeolocationPermissionLevel::kDenied &&
       subscription_id_.value()) {
     PermissionControllerImpl::FromBrowserContext(
         render_frame_host_->GetBrowserContext())
-        ->UnsubscribeFromPermissionStatusChange(subscription_id_);
-    geolocation_context_->OnPermissionRevoked(requesting_origin_);
+        ->UnsubscribeFromPermissionResultChange(subscription_id_);
+    // When kGeolocationProxy is enabled, DecrementActivityCount is managed
+    // by the GeolocationProxy lifecycle.
+    if (!base::FeatureList::IsEnabled(features::kGeolocationProxy)) {
+      DecrementActivityCount();
+    }
+  }
+  geolocation_context->OnPermissionUpdated(requesting_origin_,
+                                           permission_level);
+}
+
+void GeolocationServiceImpl::OnDisconnected() {
+  // When kGeolocationProxy is enabled, we do not need to perform any cleanup
+  // here because active connection lifetimes are managed by the proxies.
+  if (!base::FeatureList::IsEnabled(features::kGeolocationProxy) &&
+      receiver_set_.empty()) {
     DecrementActivityCount();
   }
 }
 
-void GeolocationServiceImpl::OnDisconnected() {
-  if (receiver_set_.empty()) {
+void GeolocationServiceImpl::OnProxyDisconnected(GeolocationProxy* proxy) {
+  std::erase_if(active_proxies_, [proxy](const auto& active_proxy) {
+    return active_proxy.get() == proxy;
+  });
+  if (active_proxies_.empty()) {
     DecrementActivityCount();
   }
 }
@@ -176,6 +325,22 @@ void GeolocationServiceImpl::DecrementActivityCount() {
     static_cast<WebContentsImpl*>(web_contents)
         ->DecrementGeolocationActiveFrameCount();
   }
+}
+
+// Fetches the GeolocationContext from the WebContents. This is done on-demand
+// to avoid a potential Use-After-Free of the GeolocationContext, which has a
+// shorter lifetime than the RenderFrameHost. Refer to crbug.com/396303129 for
+// more information.
+device::mojom::GeolocationContext*
+GeolocationServiceImpl::GetGeolocationContext() {
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(render_frame_host_);
+
+  if (!web_contents) {
+    return nullptr;
+  }
+
+  return static_cast<WebContentsImpl*>(web_contents)->GetGeolocationContext();
 }
 
 }  // namespace content

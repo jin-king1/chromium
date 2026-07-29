@@ -41,7 +41,7 @@ mojom::blink::PresentationConnectionMessagePtr MakeBinaryMessage(
   auto message =
       mojom::blink::PresentationConnectionMessage::NewData(Vector<uint8_t>());
   Vector<uint8_t>& data = message->get_data();
-  data.AppendSpan(buffer->ByteSpan());
+  data.append_range(buffer->ByteSpan());
   return message;
 }
 
@@ -394,9 +394,8 @@ void PresentationConnection::ContextDestroyed() {
 }
 
 void PresentationConnection::ContextLifecycleStateChanged(
-    mojom::FrameLifecycleState state) {
-  if (state == mojom::FrameLifecycleState::kFrozen ||
-      state == mojom::FrameLifecycleState::kFrozenAutoResumeMedia) {
+    mojom::blink::FrameLifecycleState state) {
+  if (state == mojom::blink::FrameLifecycleState::kFrozen) {
     CloseConnection();
   }
 }
@@ -463,8 +462,8 @@ void PresentationConnection::send(
     return;
   }
 
-  messages_.push_back(
-      MakeGarbageCollected<Message>(array_buffer_view->buffer()));
+  messages_.push_back(MakeGarbageCollected<Message>(
+      DOMArrayBuffer::Create(array_buffer_view->ByteSpan())));
   HandleMessageQueue();
 }
 
@@ -610,8 +609,8 @@ void PresentationConnection::DidFinishLoadingBlob(DOMArrayBuffer* buffer) {
   DCHECK(buffer);
   if (!base::CheckedNumeric<wtf_size_t>(buffer->ByteLength()).IsValid()) {
     // TODO(crbug.com/1036565): generate error message? The problem is that the
-    // content of {buffer} is copied into a WTF::Vector, but a DOMArrayBuffer
-    // has a bigger maximum size than a WTF::Vector. Ignore the current failed
+    // content of {buffer} is copied into a Vector, but a DOMArrayBuffer
+    // has a bigger maximum size than a Vector. Ignore the current failed
     // blob item and continue with next items.
     messages_.pop_front();
     blob_loader_.Clear();

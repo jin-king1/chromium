@@ -5,7 +5,6 @@
 #ifndef CONTENT_BROWSER_CHILD_PROCESS_LAUNCHER_HELPER_H_
 #define CONTENT_BROWSER_CHILD_PROCESS_LAUNCHER_HELPER_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 
@@ -25,7 +24,6 @@
 #include "content/public/common/zygote/zygote_buildflags.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "mojo/public/cpp/system/invitation.h"
-#include "ppapi/buildflags/buildflags.h"
 
 #if !BUILDFLAG(IS_FUCHSIA)
 #include "mojo/public/cpp/platform/named_platform_channel.h"
@@ -60,6 +58,7 @@ class CommandLine;
 
 #if BUILDFLAG(IS_IOS)
 class MachPortRendezvousServerIOS;
+class ScopedTempDir;
 #endif
 }
 
@@ -122,13 +121,15 @@ class ChildProcessLauncherHelper
   };
 
   ChildProcessLauncherHelper(
-      int child_process_id,
+      ChildProcessId child_process_id,
       std::unique_ptr<base::CommandLine> command_line,
       std::unique_ptr<SandboxedProcessLauncherDelegate> delegate,
       const base::WeakPtr<ChildProcessLauncher>& child_process_launcher,
       bool terminate_on_shutdown,
 #if BUILDFLAG(IS_ANDROID)
-      bool is_pre_warmup_required,
+      bool can_use_warm_up_connection,
+      bool is_spare_renderer,
+      bool is_for_outermost_main_frame,
 #endif
       mojo::OutgoingInvitation mojo_invitation,
       const mojo::ProcessErrorCallback& process_error_callback,
@@ -147,6 +148,8 @@ class ChildProcessLauncherHelper
 
   // Platform specific.
   void BeforeLaunchOnClientThread();
+
+  ChildProcessId child_process_id() const { return child_process_id_; }
 
 #if !BUILDFLAG(IS_FUCHSIA)
   // Called to give implementors a chance at creating a server pipe. Platform-
@@ -185,7 +188,9 @@ class ChildProcessLauncherHelper
       const base::LaunchOptions* options,
       std::unique_ptr<FileMappedForLaunch> files_to_register,
 #if BUILDFLAG(IS_ANDROID)
-      bool is_pre_warmup_required,
+      bool can_use_warm_up_connection,
+      bool is_spare_renderer,
+      bool is_for_outermost_main_frame,
 #endif
       bool* is_synchronous_launch,
       int* launch_result);
@@ -241,6 +246,8 @@ class ChildProcessLauncherHelper
   void OnChildProcessStarted(pid_t process_id,
                              std::unique_ptr<LaunchResult> launch_result);
   void ClearProcessStorage();
+  void SetExitCode(int exit_code);
+  std::optional<int> GetExitCode();
 
 #if defined(__OBJC__)
   NSObject* GetProcess();
@@ -248,7 +255,9 @@ class ChildProcessLauncherHelper
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-  void OnChildProcessStarted(JNIEnv* env, jint handle);
+  void OnChildProcessStarted(JNIEnv* env, int32_t handle);
+
+  void OnSpareRendererPriorityGraduatedOnClientThread(bool is_alive);
 
   base::android::ChildBindingState GetEffectiveChildBindingState();
 
@@ -257,7 +266,8 @@ class ChildProcessLauncherHelper
 
   void SetRenderProcessPriorityOnLauncherThread(
       base::Process process,
-      const RenderProcessPriority& priority);
+      const RenderProcessPriority& priority,
+      base::TimeTicks post_from_ui_thread_time);
 #else   // !BUILDFLAG(IS_ANDROID)
   void SetProcessPriorityOnLauncherThread(base::Process process,
                                           base::Process::Priority priority);
@@ -285,7 +295,6 @@ class ChildProcessLauncherHelper
     DCHECK(CurrentlyOnProcessLauncherTaskRunner());
     return command_line_.get();
   }
-  int child_process_id() const { return child_process_id_; }
 
   static void ForceNormalProcessTerminationSync(
       ChildProcessLauncherHelper::Process process);
@@ -296,7 +305,7 @@ class ChildProcessLauncherHelper
   }
 #endif
 
-  const int child_process_id_;
+  const ChildProcessId child_process_id_;
   const scoped_refptr<base::SequencedTaskRunner> client_task_runner_;
   base::TimeTicks begin_launch_time_;
   // Accessed on launcher thread.
@@ -307,12 +316,6 @@ class ChildProcessLauncherHelper
 #if BUILDFLAG(IS_CHROMEOS)
   std::optional<base::ProcessId> process_id_ = std::nullopt;
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-  // The priority of the process. The state is stored to avoid changing the
-  // setting repeatedly.
-  std::optional<base::Process::Priority> priority_;
-#endif
 
   // The PlatformChannel that will be used to transmit an invitation to the
   // child process in most cases. Only used if the platform's helper
@@ -337,7 +340,7 @@ class ChildProcessLauncherHelper
   std::string serialized_policy_;
 #endif  // BUILDFLAG(IS_MAC)
 
-#if BUILDFLAG(IS_IOS)
+#if BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)
   std::unique_ptr<base::MachPortRendezvousServerIOS> rendezvous_server_;
   std::unique_ptr<ProcessStorageBase> process_storage_;
 #endif
@@ -347,6 +350,8 @@ class ChildProcessLauncherHelper
   bool java_peer_avaiable_on_client_thread_ = false;
   // Whether the process can use warmed up connection.
   bool can_use_warm_up_connection_;
+  bool is_spare_renderer_;
+  bool is_for_outermost_main_frame_;
 #endif
 
 #if BUILDFLAG(IS_FUCHSIA)
@@ -356,6 +361,11 @@ class ChildProcessLauncherHelper
 #if BUILDFLAG(IS_WIN)
   // Only valid if the host process has logging enabled.
   base::win::ScopedHandle log_handle_;
+#endif
+
+#if BUILDFLAG(IS_IOS)
+  std::unique_ptr<base::ScopedTempDir> scoped_temp_dir_;
+  std::optional<int> exit_code_;
 #endif
 
   // Histogram shared memory region. Ownership of the memory region object is

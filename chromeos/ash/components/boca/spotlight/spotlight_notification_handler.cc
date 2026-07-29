@@ -11,9 +11,9 @@
 #include "ash/public/cpp/notification_utils.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/timer/timer.h"
 #include "chromeos/ash/components/boca/spotlight/spotlight_notification_constants.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
@@ -55,36 +55,35 @@ SpotlightNotificationHandler::SpotlightNotificationHandler(
 SpotlightNotificationHandler::~SpotlightNotificationHandler() = default;
 
 void SpotlightNotificationHandler::StartSpotlightCountdownNotification(
-    base::OnceClosure callback) {
+    CountdownCompletionCallback completion_callback) {
   if (timer_.IsRunning()) {
     StopSpotlightCountdown();
   }
+  completion_callback_ = std::move(completion_callback);
   notification_duration_ = kSpotlightNotificationDuration;
-  completion_callback_ = std::move(callback);
   timer_.Reset();
 }
 
 void SpotlightNotificationHandler::StopSpotlightCountdown() {
-  timer_.Stop();
   if (completion_callback_) {
     completion_callback_.Reset();
   }
+  timer_.Stop();
   delegate_->ClearNotification(kSpotlightStartedNotificationId);
 }
 
 void SpotlightNotificationHandler::
     StartSpotlightCountdownNotificationInternal() {
   if (!completion_callback_ || !timer_.IsRunning()) {
-    // If there is no callback, the final timer has already been run.
-    // If the timer was stopped, the request was finished or cancelled.
+    // If there is no callback, the final timer has already ran.
     return;
   }
 
   if (!notification_duration_.is_positive()) {
     timer_.Stop();
-    std::move(completion_callback_).Run();
     // Clear pre-existing notifications with the same id if still present.
     delegate_->ClearNotification(kSpotlightStartedNotificationId);
+    std::move(completion_callback_).Run();
     return;
   }
   // TODO: dorianbrandon - Update logo to CT logo when ready.

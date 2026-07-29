@@ -9,6 +9,8 @@
 #include <memory>
 #include <utility>
 
+#include "ash/constants/ash_extension_constants.h"
+#include "base/strings/strcat.h"
 #include "chrome/browser/apps/app_service/app_icon_source.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
@@ -17,11 +19,10 @@
 #include "chrome/browser/ash/file_system_provider/odfs_metrics.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system.h"
 #include "chrome/browser/ash/file_system_provider/request_dispatcher_impl.h"
+#include "chrome/browser/ash/file_system_provider/service_worker_lifetime_manager.h"
 #include "chrome/browser/ash/file_system_provider/throttled_file_system.h"
-#include "chrome/browser/chromeos/extensions/file_system_provider/service_worker_lifetime_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "extensions/browser/event_router.h"
@@ -35,23 +36,22 @@ namespace {
 // aborted.
 constexpr base::TimeDelta kDefaultMountTimeout = base::Minutes(10);
 
-extensions::file_system_provider::ServiceWorkerLifetimeManager*
-GetServiceWorkerLifetimeManager(Profile* profile) {
+ServiceWorkerLifetimeManager* GetServiceWorkerLifetimeManager(
+    Profile* profile) {
   if (!chromeos::features::IsUploadOfficeToCloudEnabled()) {
     return nullptr;
   }
-  return extensions::file_system_provider::ServiceWorkerLifetimeManager::Get(
-      profile);
+  return ServiceWorkerLifetimeManager::Get(profile);
 }
 
 IconSet DefaultIconSet(const extensions::ExtensionId& extension_id) {
   IconSet icon_set;
   icon_set.SetIcon(
       IconSet::IconSize::SIZE_16x16,
-      GURL(std::string("chrome://extension-icon/") + extension_id + "/16/1"));
+      GURL(base::StrCat({"chrome://extension-icon/", extension_id, "/16/1"})));
   icon_set.SetIcon(
       IconSet::IconSize::SIZE_32x32,
-      GURL(std::string("chrome://extension-icon/") + extension_id + "/32/1"));
+      GURL(base::StrCat({"chrome://extension-icon/", extension_id, "/32/1"})));
   return icon_set;
 }
 
@@ -103,8 +103,6 @@ ExtensionProvider::CreateProvidedFileSystem(
     return std::make_unique<ThrottledFileSystem>(
         std::make_unique<ProvidedFileSystem>(profile, file_system_info));
   }
-  // TODO(b/317137739): Check the file system has a CLOUD source before
-  // creating a CloudFileSystem.
   // Cache type is only set when the
   // `FileSystemProviderCloudFileSystemEnabled` and
   // `FileSystemProviderContentCache` feature flags are enabled and the

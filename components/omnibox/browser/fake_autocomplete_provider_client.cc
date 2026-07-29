@@ -24,12 +24,21 @@ FakeAutocompleteProviderClient::FakeAutocompleteProviderClient() {
           /*identity_manager=*/nullptr,
           /*url_loader_factory=*/nullptr);
 
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
   on_device_tail_model_service_ =
       std::make_unique<FakeOnDeviceTailModelService>();
   scoring_model_service_ =
       std::make_unique<FakeAutocompleteScoringModelService>();
-#endif  // BUILDFLAG(BUILD_WITH_TFLITE_LIB)
+
+  fake_tab_group_sync_service_ =
+      std::make_unique<tab_groups::FakeTabGroupSyncService>();
+
+  AimEligibilityService::RegisterProfilePrefs(
+      search_engines_test_enviroment_.pref_service().registry());
+  mock_aim_eligibility_service_ = std::make_unique<MockAimEligibilityService>(
+      search_engines_test_enviroment_.pref_service(),
+      search_engines_test_enviroment_.template_url_service(),
+      /*url_loader_factory=*/nullptr,
+      /*identity_manager=*/nullptr, AimEligibilityService::Configuration());
 }
 
 FakeAutocompleteProviderClient::~FakeAutocompleteProviderClient() {
@@ -72,9 +81,9 @@ FakeAutocompleteProviderClient::GetHistoryClustersService() {
   return history_clusters_service_;
 }
 
-history_embeddings::HistoryEmbeddingsService*
-FakeAutocompleteProviderClient::GetHistoryEmbeddingsService() {
-  return history_embeddings_service_.get();
+history_embeddings::HistoryEmbeddingsSearch*
+FakeAutocompleteProviderClient::GetHistoryEmbeddingsSearch() {
+  return history_embeddings_search_.get();
 }
 
 bookmarks::BookmarkModel* FakeAutocompleteProviderClient::GetBookmarkModel() {
@@ -100,6 +109,11 @@ FakeAutocompleteProviderClient::GetShortcutsBackendIfExists() {
   return shortcuts_backend_;
 }
 
+tab_groups::TabGroupSyncService*
+FakeAutocompleteProviderClient::GetTabGroupSyncService() const {
+  return fake_tab_group_sync_service_.get();
+}
+
 const TabMatcher& FakeAutocompleteProviderClient::GetTabMatcher() const {
   return fake_tab_matcher_;
 }
@@ -112,7 +126,6 @@ std::string FakeAutocompleteProviderClient::ProfileUserName() const {
   return "goodEmail@gmail.com";
 }
 
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
 OnDeviceTailModelService*
 FakeAutocompleteProviderClient::GetOnDeviceTailModelService() const {
   return on_device_tail_model_service_.get();
@@ -123,4 +136,13 @@ FakeAutocompleteProviderClient::GetAutocompleteScoringModelService() const {
   return scoring_model_service_.get();
 }
 
-#endif  // BUILDFLAG(BUILD_WITH_TFLITE_LIB)
+AimEligibilityService*
+FakeAutocompleteProviderClient::GetAimEligibilityService() const {
+  return mock_aim_eligibility_service_.get();
+}
+
+void FakeAutocompleteProviderClient::ResetGeolocationPermissionToAsk(
+    const GURL& url) const {
+  last_reset_geolocation_url_ = url;
+  reset_geolocation_call_count_++;
+}

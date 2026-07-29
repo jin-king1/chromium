@@ -5,9 +5,10 @@
 #import "ios/web/web_state/ui/crw_web_view_proxy_impl.h"
 
 #import "base/check.h"
-#import "ios/web/common/crw_content_view.h"
 #import "ios/web/public/ui/crw_web_view_scroll_view_proxy.h"
+#import "ios/web/web_state/ui/crw_content_view.h"
 #import "ios/web/web_state/ui/crw_web_controller.h"
+#import "ios/web/web_state/ui/crw_web_view_content_view.h"
 
 namespace {
 
@@ -74,6 +75,7 @@ UIView* GetFirstResponderSubview(UIView* view) {
   CRWWebViewScrollViewProxy* _contentViewScrollViewProxy;
 }
 @synthesize contentView = _contentView;
+@synthesize ignoreObscuredInsets = _ignoreObscuredInsets;
 @dynamic keyboardVisible;
 
 - (instancetype)initWithWebController:(CRWWebController*)webController {
@@ -99,6 +101,14 @@ UIView* GetFirstResponderSubview(UIView* view) {
     (BOOL)allowsBackForwardNavigationGestures {
   _webController.allowsBackForwardNavigationGestures =
       allowsBackForwardNavigationGestures;
+}
+
+- (BOOL)allowsLinkPreview {
+  return _webController.allowsLinkPreview;
+}
+
+- (void)setAllowsLinkPreview:(BOOL)allowsLinkPreview {
+  _webController.allowsLinkPreview = allowsLinkPreview;
 }
 
 - (CGRect)bounds {
@@ -194,6 +204,22 @@ UIView* GetFirstResponderSubview(UIView* view) {
 
 - (BOOL)isWebPageInFullscreenMode {
   return [_webController isWebPageInFullscreenMode];
+}
+
+- (UIEdgeInsets)obscuredInsets {
+  return _contentView.obscuredInsets;
+}
+
+- (void)setObscuredInsets:(UIEdgeInsets)obscuredInsets {
+  if (_ignoreObscuredInsets) {
+    return;
+  }
+  [_contentView setObscuredInsets:obscuredInsets];
+}
+
+- (void)setMinimumViewportInset:(UIEdgeInsets)minInset
+           maximumViewportInset:(UIEdgeInsets)maxInset {
+  [_contentView setMinimumViewportInset:minInset maximumViewportInset:maxInset];
 }
 
 @end

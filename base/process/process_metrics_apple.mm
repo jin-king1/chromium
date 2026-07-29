@@ -16,13 +16,16 @@
 
 #include "base/apple/mach_logging.h"
 #include "base/apple/scoped_mach_port.h"
+#include "base/byte_size.h"
 #include "base/containers/heap_array.h"
 #include "base/logging.h"
 #include "base/mac/mac_util.h"
 #include "base/memory/ptr_util.h"
 #include "base/notimplemented.h"
 #include "base/numerics/safe_math.h"
+#include "base/system/sys_info.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
 #include "build/build_config.h"
 
@@ -155,6 +158,7 @@ ProcessMetrics::GetMemoryInfo() const {
 
 base::expected<TimeDelta, ProcessCPUUsageError>
 ProcessMetrics::GetCumulativeCPUUsage() {
+  TRACE_EVENT("base", "GetCumulativeCPUUsage");
   mach_port_t task = TaskForHandle(process_);
   if (task == MACH_PORT_NULL) {
     return base::unexpected(ProcessCPUUsageError::kProcessNotFound);
@@ -249,9 +253,8 @@ size_t GetSystemCommitCharge() {
   return (data.active_count * PAGE_SIZE) / 1024;
 }
 
-bool GetSystemMemoryInfo(SystemMemoryInfoKB* meminfo) {
-  NSProcessInfo* process_info = [NSProcessInfo processInfo];
-  meminfo->total = static_cast<int>(process_info.physicalMemory / 1024);
+bool GetSystemMemoryInfo(SystemMemoryInfo* meminfo) {
+  meminfo->total = SysInfo::AmountOfTotalPhysicalMemory();
 
   base::apple::ScopedMachSendRight host(mach_host_self());
   vm_statistics64_data_t vm_info;
@@ -261,7 +264,7 @@ bool GetSystemMemoryInfo(SystemMemoryInfoKB* meminfo) {
                         &count) != KERN_SUCCESS) {
     return false;
   }
-  DCHECK_EQ(HOST_VM_INFO64_COUNT, count);
+  DCHECK_GE(count, HOST_VM_INFO64_REV1_COUNT);
 
 #if !(BUILDFLAG(IS_IOS) && defined(ARCH_CPU_X86_FAMILY))
   // PAGE_SIZE (aka vm_page_size) isn't constexpr, so this check needs to be
@@ -296,8 +299,8 @@ bool GetSystemMemoryInfo(SystemMemoryInfoKB* meminfo) {
 #endif  // !(defined(IS_IOS) && defined(ARCH_CPU_X86_FAMILY))
 
   if (vm_info.speculative_count <= vm_info.free_count) {
-    meminfo->free = saturated_cast<int>(
-        PAGE_SIZE / 1024 * (vm_info.free_count - vm_info.speculative_count));
+    meminfo->free =
+        ByteSize(PAGE_SIZE * (vm_info.free_count - vm_info.speculative_count));
   } else {
     // Inside the `host_statistics64` call above, `speculative_count` is
     // computed later than `free_count`, so these values are snapshots of two
@@ -310,15 +313,12 @@ bool GetSystemMemoryInfo(SystemMemoryInfoKB* meminfo) {
     // inexact, but even in the case where `speculative_count` is less than
     // `free_count`, the computed `meminfo->free` will only be an approximation
     // given that the two inputs come from different points in time.
-    meminfo->free = 0;
+    meminfo->free = ByteSize(0);
   }
 
-  meminfo->speculative =
-      saturated_cast<int>(PAGE_SIZE / 1024 * vm_info.speculative_count);
-  meminfo->file_backed =
-      saturated_cast<int>(PAGE_SIZE / 1024 * vm_info.external_page_count);
-  meminfo->purgeable =
-      saturated_cast<int>(PAGE_SIZE / 1024 * vm_info.purgeable_count);
+  meminfo->speculative = ByteSize(PAGE_SIZE * vm_info.speculative_count);
+  meminfo->file_backed = ByteSize(PAGE_SIZE * vm_info.external_page_count);
+  meminfo->purgeable = ByteSize(PAGE_SIZE * vm_info.purgeable_count);
 
   return true;
 }
@@ -408,6 +408,14 @@ int ProcessMetrics::GetOpenFdCount() const {
 
 int ProcessMetrics::GetOpenFdSoftLimit() const {
   return checked_cast<int>(GetMaxFds());
+}
+
+ByteSize SystemMemoryInfo::GetAvailablePhysicalMemory() const {
+  // Available memory is free memory plus memory that can be reclaimed without
+  // writing to disk, which on macOS is the file-backed cache. This corresponds
+  // to (free_count - speculative_count + external_page_count) from
+  // vm_statistics64.
+  return free + file_backed;
 }
 
 }  // namespace base

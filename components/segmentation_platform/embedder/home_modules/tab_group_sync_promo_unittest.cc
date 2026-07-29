@@ -7,7 +7,7 @@
 #include "components/prefs/testing_pref_service.h"
 #include "components/segmentation_platform/embedder/home_modules/card_selection_signals.h"
 #include "components/segmentation_platform/embedder/home_modules/constants.h"
-#include "components/segmentation_platform/embedder/home_modules/home_modules_card_registry.h"
+#include "components/segmentation_platform/embedder/home_modules/home_modules_card_registry_android.h"
 #include "components/segmentation_platform/embedder/home_modules/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -20,7 +20,7 @@ class TabGroupSyncPromoTest : public testing::Test {
   ~TabGroupSyncPromoTest() override = default;
 
   void SetUp() override {
-    HomeModulesCardRegistry::RegisterProfilePrefs(pref_service_.registry());
+    TabGroupSyncPromo::RegisterProfilePrefs(pref_service_.registry());
   }
 
   void TearDown() override { Test::TearDown(); }
@@ -28,13 +28,17 @@ class TabGroupSyncPromoTest : public testing::Test {
   void TestComputeCardResultImpl(bool hasTabGroupSyncPromoInteracted,
                                  float syncedTabGroupExists,
                                  float tabGroupSyncPromoShownCount,
+                                 float educationalTipShownCount,
                                  EphemeralHomeModuleRank position) {
-    pref_service_.SetUserPref(
-        kTabGroupSyncPromoInteractedPref,
-        std::make_unique<base::Value>(hasTabGroupSyncPromoInteracted));
     auto card = std::make_unique<TabGroupSyncPromo>(&pref_service_);
+
+    if (hasTabGroupSyncPromoInteracted) {
+      card->OnInteract(&pref_service_, nullptr);
+    }
+
     AllCardSignals all_signals = CreateAllCardSignals(
-        card.get(), {syncedTabGroupExists, tabGroupSyncPromoShownCount});
+        card.get(), {educationalTipShownCount, syncedTabGroupExists,
+                     tabGroupSyncPromoShownCount});
     CardSelectionSignals card_signal(&all_signals, kTabGroupSyncPromo);
     CardSelectionInfo::ShowResult result = card->ComputeCardResult(card_signal);
     EXPECT_EQ(position, result.position);
@@ -48,11 +52,13 @@ class TabGroupSyncPromoTest : public testing::Test {
 TEST_F(TabGroupSyncPromoTest, GetInputsReturnsExpectedInputs) {
   auto card = std::make_unique<TabGroupSyncPromo>(&pref_service_);
   std::map<SignalKey, FeatureQuery> inputs = card->GetInputs();
-  EXPECT_EQ(inputs.size(), 2u);
+  EXPECT_EQ(inputs.size(), 3u);
   // Verify that the inputs map contains the expected keys.
   EXPECT_NE(inputs.find(segmentation_platform::kSyncedTabGroupExists),
             inputs.end());
   EXPECT_NE(inputs.find(segmentation_platform::kTabGroupSyncPromoShownCount),
+            inputs.end());
+  EXPECT_NE(inputs.find(segmentation_platform::kEducationalTipShownCount),
             inputs.end());
 }
 
@@ -62,7 +68,8 @@ TEST_F(TabGroupSyncPromoTest, TestComputeCardResultWithCardEnabled) {
   TestComputeCardResultImpl(
       /* hasTabGroupSyncPromoInteracted */ false,
       /* syncedTabGroupExists */ 1,
-      /* tabGroupSyncPromoShownCount */ 0, EphemeralHomeModuleRank::kLast);
+      /* tabGroupSyncPromoShownCount */ 0,
+      /* educationalTipShownCount */ 0, EphemeralHomeModuleRank::kLast);
 }
 
 // Validates that when the tab group sync promo card is disabled because the
@@ -73,18 +80,19 @@ TEST_F(TabGroupSyncPromoTest,
   TestComputeCardResultImpl(
       /* hasTabGroupSyncPromoInteracted */ false,
       /* syncedTabGroupExists */ 0,
-      /* tabGroupSyncPromoShownCount */ 0, EphemeralHomeModuleRank::kNotShown);
+      /* tabGroupSyncPromoShownCount */ 0,
+      /* educationalTipShownCount */ 0, EphemeralHomeModuleRank::kNotShown);
 }
 
 // Validates that the ComputeCardResult() function returns kNotShown when the
-// card has been displayed to the user more times than the single day limit
-// allows.
+// card has been displayed to the user more times than the limit allows.
 TEST_F(TabGroupSyncPromoTest,
        TestComputeCardResultWithCardDisabledForHasReachedSessionLimit) {
   TestComputeCardResultImpl(
       /* hasTabGroupSyncPromoInteracted */ false,
       /* syncedTabGroupExists */ 1,
-      /* tabGroupSyncPromoShownCount */ 3, EphemeralHomeModuleRank::kNotShown);
+      /* tabGroupSyncPromoShownCount */ 1,
+      /* educationalTipShownCount */ 0, EphemeralHomeModuleRank::kNotShown);
 }
 
 // Validates that the ComputeCardResult() function returns kNotShown when the
@@ -95,7 +103,40 @@ TEST_F(TabGroupSyncPromoTest,
   TestComputeCardResultImpl(
       /* hasTabGroupSyncPromoInteracted */ true,
       /* syncedTabGroupExists */ 1,
-      /* tabGroupSyncPromoShownCount */ 0, EphemeralHomeModuleRank::kNotShown);
+      /* tabGroupSyncPromoShownCount */ 0,
+      /* educationalTipShownCount */ 0, EphemeralHomeModuleRank::kNotShown);
+}
+
+// Validates that the ComputeCardResult() function returns kNotShown when
+// educational tip card has been displayed to the user more times than the limit
+// allows.
+TEST_F(
+    TabGroupSyncPromoTest,
+    TestComputeCardResultWithCardDisabledForEducationalTipCardHasReachedSessionLimit) {
+  TestComputeCardResultImpl(
+      /* hasTabGroupSyncPromoInteracted */ false,
+      /* syncedTabGroupExists */ 1,
+      /* tabGroupSyncPromoShownCount */ 0,
+      /* educationalTipShownCount */ 1, EphemeralHomeModuleRank::kNotShown);
+}
+
+// Validates that `IsEnabled()` returns true when under the impression limit and
+// false otherwise.
+TEST_F(TabGroupSyncPromoTest, IsEnabledReturnsFalseWhenImpressionLimitReached) {
+  auto card = std::make_unique<TabGroupSyncPromo>(&pref_service_);
+
+  EXPECT_TRUE(TabGroupSyncPromo::IsEnabled(&pref_service_));
+
+  // Recreate the card each iteration to simulate separate sessions, as
+  // impressions are counted once per card lifetime.
+  for (int i = 0; i < kSingleEphemeralCardMaxImpressions; ++i) {
+    auto session_card = std::make_unique<TabGroupSyncPromo>(&pref_service_);
+    EXPECT_TRUE(TabGroupSyncPromo::IsEnabled(&pref_service_));
+    session_card->OnShow(&pref_service_, nullptr);
+  }
+
+  // Once max impressions are hit, it should no longer be enabled.
+  EXPECT_FALSE(TabGroupSyncPromo::IsEnabled(&pref_service_));
 }
 
 }  // namespace segmentation_platform::home_modules

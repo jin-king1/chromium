@@ -5,13 +5,36 @@
 package org.chromium.chrome.browser.ui.signin.account_picker;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.signin.services.SigninFlowTimestampsLogger.FlowVariant;
 import org.chromium.components.signin.base.CoreAccountInfo;
 
 /**
  * This interface abstracts the sign-in logic for the account picker bottom sheet. There is one
  * implementation per {@link EntryPoint}.
  */
+@NullMarked
 public interface AccountPickerDelegate {
+
+    /**
+     * A controller for the state of the sign-in flow, e.g. showing error screens.
+     *
+     * @deprecated TODO(crbug.com/469772349): Remove SigninStateController after {@link
+     *     WebSigninAccountPickerDelegate} and {@link SendTabToSelfCoordinator} migration to
+     *     {@BottomSheetSigninAndHistorySyncCoordinator.Delegate}
+     */
+    interface SigninStateController {
+
+        /** Shows the sign-in flow generic error state. */
+        void showGenericError();
+
+        /** Show the sign-in flow auth error state. */
+        void showAuthError();
+
+        /** Must be called when the sign-in flow finishes. */
+        void onSigninComplete();
+    }
+
     /** Releases resources used by this class. */
     void onAccountPickerDestroy();
 
@@ -29,17 +52,33 @@ public interface AccountPickerDelegate {
     void addAccount();
 
     /**
-     * Signs in the user with the given accountInfo. The provided mediator can be used to control
-     * the behavior of the bottom sheet in response to failures, etc.
+     * Notifies the delegate that the sign-in step has completed successfully, and allows it to
+     * perform domain-specific post-sign-in logic before potentially closing the bottom sheet.
+     *
+     * <p>This is called while the sign-in bottom sheet is still visible.
+     *
+     * @param signedInAccount The account that was just signed in.
+     * @param onComplete Callback to be called when the post-sign-in delegate logic is finished.
      */
-    void signIn(CoreAccountInfo accountInfo, AccountPickerBottomSheetMediator mediator);
+    default void runPostSigninAction(
+            CoreAccountInfo signedInAccount,
+            Callback<@PostSigninOperationResult Integer> onComplete) {
+        onComplete.onResult(PostSigninOperationResult.SUCCESS);
+    }
 
-    /** Calls the callback with the result of SigninManager#isAccountManaged(). */
-    void isAccountManaged(CoreAccountInfo accountInfo, Callback<Boolean> callback);
+    /** Called when the sign-in finishes successfully. */
+    void onSignInComplete(
+            CoreAccountInfo accountInfo, AccountPickerDelegate.SigninStateController controller);
 
-    /** See SigninManager#setUserAcceptedAccountManagement. */
-    void setUserAcceptedAccountManagement(boolean confirmed);
+    /**
+     * Called when the sign-in process cannot proceed and has been cancelled. This happens, for
+     * example, if the user manually dismisses the bottom sheet or the targent account is removed
+     * during the seamless sign-in process.
+     */
+    default void onSignInCancel() {}
 
-    /** See SigninManager#extractDomainName. */
-    String extractDomainName(String accountEmail);
+    /** Returns the sign-in flow variant for logging purposes. */
+    default @FlowVariant String getSigninFlowVariant() {
+        return FlowVariant.OTHER;
+    }
 }

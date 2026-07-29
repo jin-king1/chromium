@@ -24,6 +24,7 @@ declare_args() {
   ios_toolchains_path = ""
   xcode_version = ""
   xcode_version_int = 0
+  xcode_version_verbatim = ""
   xcode_build = ""
   machine_os_build = ""
 
@@ -32,6 +33,13 @@ declare_args() {
 
   # Set to true if building an app extension.
   ios_is_app_extension = false
+
+  # Set to `target_platform` to generate Xcode project with the
+  # corresponding platform SDK.
+  target_xcode_platform = target_platform
+
+  # True when Swift 6.3 is used (= the XCode version is >=2700).
+  has_swift_6_3_support = false
 }
 
 # Building XCTests requires copying XCTRunner.app which is part of the iOS
@@ -63,17 +71,31 @@ ios_use_xcode_symlinks =
 
 if (ios_sdk_path == "") {
   # Compute default target.
-  if (target_environment == "simulator") {
-    ios_sdk_name = "iphonesimulator"
-    ios_sdk_platform = "iPhoneSimulator"
-  } else if (target_environment == "device") {
-    ios_sdk_name = "iphoneos"
-    ios_sdk_platform = "iPhoneOS"
-  } else if (target_environment == "catalyst") {
-    ios_sdk_name = "macosx"
-    ios_sdk_platform = "MacOSX"
+  if (target_platform == "iphoneos") {
+    if (target_environment == "simulator") {
+      ios_sdk_name = "iphonesimulator"
+      ios_sdk_platform = "iPhoneSimulator"
+    } else if (target_environment == "device") {
+      ios_sdk_name = "iphoneos"
+      ios_sdk_platform = "iPhoneOS"
+    } else if (target_environment == "catalyst") {
+      ios_sdk_name = "macosx"
+      ios_sdk_platform = "MacOSX"
+    } else {
+      assert(false, "unsupported target_environment=$target_environment")
+    }
+  } else if (target_platform == "tvos") {
+    if (target_environment == "simulator") {
+      ios_sdk_name = "appletvsimulator"
+      ios_sdk_platform = "AppleTVSimulator"
+    } else if (target_environment == "device") {
+      ios_sdk_name = "appletvos"
+      ios_sdk_platform = "AppleTVOS"
+    } else {
+      assert(false, "unsupported target_environment=$target_environment")
+    }
   } else {
-    assert(false, "unsupported environment: $target_environment")
+    assert(false, "unsupported target_platform=$target_platform")
   }
 
   ios_sdk_info_args = [
@@ -106,6 +128,7 @@ if (ios_sdk_path == "") {
   ios_toolchains_path = _ios_sdk_result.toolchains_path
   xcode_version = _ios_sdk_result.xcode_version
   xcode_version_int = _ios_sdk_result.xcode_version_int
+  xcode_version_verbatim = _ios_sdk_result.xcode_version_verbatim
   xcode_build = _ios_sdk_result.xcode_build
   machine_os_build = _ios_sdk_result.machine_os_build
   if (target_environment == "simulator") {
@@ -119,3 +142,4 @@ if (ios_sdk_path == "") {
 
 _sdk_root = rebase_path(ios_sdk_path, root_build_dir)
 ios_sdk_logs = [ "ios_sdk_path=${_sdk_root}" ]
+has_swift_6_3_support = has_swift_6_3_support || xcode_version_int >= 2700

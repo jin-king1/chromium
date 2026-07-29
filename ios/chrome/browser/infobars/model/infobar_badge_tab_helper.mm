@@ -6,7 +6,6 @@
 
 #import <algorithm>
 
-#import "base/containers/contains.h"
 #import "ios/chrome/browser/infobars/model/infobar_badge_tab_helper_delegate.h"
 #import "ios/chrome/browser/infobars/model/infobar_badge_tab_helper_observer.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
@@ -19,8 +18,6 @@ InfobarType GetInfobarType(infobars::InfoBar* infobar) {
 }  // namespace
 
 #pragma mark - InfobarBadgeTabHelper
-
-WEB_STATE_USER_DATA_KEY_IMPL(InfobarBadgeTabHelper)
 
 InfobarBadgeTabHelper::InfobarBadgeTabHelper(web::WebState* web_state)
     : infobar_accept_observer_(this),
@@ -68,7 +65,7 @@ void InfobarBadgeTabHelper::UpdateBadgeForInfobarReverted(
 
 void InfobarBadgeTabHelper::UpdateBadgeForInfobarRead(
     InfobarType infobar_type) {
-  if (!base::Contains(infobar_badge_states_, infobar_type)) {
+  if (!infobar_badge_states_.contains(infobar_type)) {
     return;
   }
   infobar_badge_states_[infobar_type] |= BadgeStateRead;
@@ -76,7 +73,7 @@ void InfobarBadgeTabHelper::UpdateBadgeForInfobarRead(
 
 void InfobarBadgeTabHelper::UpdateBadgeForInfobarBannerPresented(
     InfobarType infobar_type) {
-  if (!base::Contains(infobar_badge_states_, infobar_type)) {
+  if (!infobar_badge_states_.contains(infobar_type)) {
     return;
   }
   infobar_badge_states_[infobar_type] |= BadgeStatePresented;
@@ -85,7 +82,7 @@ void InfobarBadgeTabHelper::UpdateBadgeForInfobarBannerPresented(
 
 void InfobarBadgeTabHelper::UpdateBadgeForInfobarBannerDismissed(
     InfobarType infobar_type) {
-  if (!base::Contains(infobar_badge_states_, infobar_type)) {
+  if (!infobar_badge_states_.contains(infobar_type)) {
     return;
   }
   infobar_badge_states_[infobar_type] &= ~BadgeStatePresented;
@@ -136,7 +133,8 @@ void InfobarBadgeTabHelper::UnregisterInfobar(infobars::InfoBar* infobar) {
             infobar_accept_observer_.scoped_observations();
     InfoBarIOS* infobar_ios = static_cast<InfoBarIOS*>(infobar);
     // TODO(crbug.com/330899285): Fix the root cause of infobar not being
-    // observed, and remove the `else` condition.
+    // observed, and replace the entire conditional by a direct tall to
+    // `RemoveObservation`.
     if (infobar_accept_observations.IsObservingSource(infobar_ios)) {
       infobar_accept_observations.RemoveObservation(infobar_ios);
     } else {
@@ -150,7 +148,7 @@ void InfobarBadgeTabHelper::UnregisterInfobar(infobars::InfoBar* infobar) {
 void InfobarBadgeTabHelper::OnInfobarAcceptanceStateChanged(
     InfobarType infobar_type,
     bool accepted) {
-  if (!base::Contains(infobar_badge_states_, infobar_type)) {
+  if (!infobar_badge_states_.contains(infobar_type)) {
     return;
   }
   if (accepted) {
@@ -219,6 +217,10 @@ InfobarBadgeTabHelper::InfobarManagerObserver::~InfobarManagerObserver() =
 void InfobarBadgeTabHelper::InfobarManagerObserver::OnInfoBarAdded(
     infobars::InfoBar* infobar) {
   tab_helper_->RegisterInfobar(infobar);
+  // Ensure that any changes to the acceptance state prior to registering the
+  // infobar are captured.
+  tab_helper_->OnInfobarAcceptanceStateChanged(
+      GetInfobarType(infobar), static_cast<InfoBarIOS*>(infobar)->accepted());
   tab_helper_->UpdateBadgesShown();
 }
 
@@ -256,7 +258,7 @@ void InfobarBadgeTabHelper::InfobarManagerObserver::OnInfoBarReplaced(
   OnInfoBarAdded(new_infobar);
 }
 
-void InfobarBadgeTabHelper::InfobarManagerObserver::OnManagerShuttingDown(
+void InfobarBadgeTabHelper::InfobarManagerObserver::OnManagerWillBeDestroyed(
     infobars::InfoBarManager* manager) {
   DCHECK(scoped_observation_.IsObservingSource(manager));
   scoped_observation_.Reset();

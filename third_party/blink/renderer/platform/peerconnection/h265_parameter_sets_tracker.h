@@ -9,11 +9,11 @@
 #include <cstdint>
 #include <memory>
 
+#include "base/containers/span.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/hash_functions.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
-#include "third_party/webrtc/api/array_view.h"
 #include "third_party/webrtc/common_video/h265/h265_bitstream_parser.h"
 #include "third_party/webrtc/modules/video_coding/include/video_codec_interface.h"
 
@@ -41,7 +41,7 @@ class PLATFORM_EXPORT H265ParameterSetsTracker {
   };
   struct FixedBitstream {
     PacketAction action;
-    rtc::scoped_refptr<webrtc::EncodedImageBuffer> bitstream;
+    webrtc::scoped_refptr<webrtc::EncodedImageBuffer> bitstream;
   };
 
   H265ParameterSetsTracker();
@@ -58,8 +58,7 @@ class PLATFORM_EXPORT H265ParameterSetsTracker {
   // kPassThrough; If the incoming bitstream needs to be fixed but corresponding
   // parameter set is not found, the returned FixedBitstream will get |action|
   // set to kRequestkeyframe, and its |bitstream| member will not be set.
-  virtual FixedBitstream MaybeFixBitstream(
-      rtc::ArrayView<const uint8_t> bitstream);
+  virtual FixedBitstream MaybeFixBitstream(base::span<const uint8_t> bitstream);
 
  private:
   // Stores PPS payload and the active SPS ID.
@@ -105,21 +104,21 @@ class PLATFORM_EXPORT H265ParameterSetsTracker {
   webrtc::H265BitstreamParser parser_;
   // Map from vps_video_parameter_set_id to the VPS payload associated with this
   // ID.
-  WTF::HashMap<uint32_t,
-               std::unique_ptr<PpsData>,
-               IntWithZeroKeyHashTraits<uint32_t>>
+  HashMap<uint32_t,
+          std::unique_ptr<PpsData>,
+          IntWithZeroKeyHashTraits<uint32_t>>
       pps_data_;
   // Map from sps_video_parameter_set_id to the SPS payload associated with this
   // ID.
-  WTF::HashMap<uint32_t,
-               std::unique_ptr<SpsData>,
-               IntWithZeroKeyHashTraits<uint32_t>>
+  HashMap<uint32_t,
+          std::unique_ptr<SpsData>,
+          IntWithZeroKeyHashTraits<uint32_t>>
       sps_data_;
   // Map from pps_pic_parameter_set_id to the PPS payload associated with this
   // ID.
-  WTF::HashMap<uint32_t,
-               std::unique_ptr<VpsData>,
-               IntWithZeroKeyHashTraits<uint32_t>>
+  HashMap<uint32_t,
+          std::unique_ptr<VpsData>,
+          IntWithZeroKeyHashTraits<uint32_t>>
       vps_data_;
 };
 

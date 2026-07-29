@@ -23,19 +23,16 @@ import android.text.TextUtils;
 
 import org.json.JSONArray;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.Shadows;
-import org.robolectric.android.util.concurrent.RoboExecutorService;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
-import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.shadows.ShadowPackageManager;
 
 import org.chromium.base.ApiCompatibilityUtils;
@@ -44,9 +41,8 @@ import org.chromium.base.FakeTimeTestRule;
 import org.chromium.base.PathUtils;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.task.PostTask;
-import org.chromium.base.task.test.BackgroundShadowAsyncTask;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.blink.mojom.DisplayMode;
 import org.chromium.chrome.browser.ActivityTabProvider;
@@ -61,7 +57,6 @@ import org.chromium.chrome.browser.browserservices.intents.WebappInfo;
 import org.chromium.chrome.browser.browserservices.intents.WebappIntentUtils;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.components.embedder_support.util.ShadowUrlUtilities;
 import org.chromium.components.webapk.lib.common.WebApkMetaDataKeys;
 import org.chromium.components.webapps.WebApkDistributor;
 import org.chromium.components.webapps.WebApkInstallResult;
@@ -82,14 +77,12 @@ import java.util.Map;
 
 /** Unit tests for WebApkUpdateManager. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowUrlUtilities.class, BackgroundShadowAsyncTask.class})
-@LooperMode(LooperMode.Mode.LEGACY)
+@Config(manifest = Config.NONE)
 public class WebApkUpdateManagerUnitTest {
     @Mock public Activity mActivityMock;
     @Mock public ActivityLifecycleDispatcher mLifecycleDispatcher;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public FakeTimeTestRule mClockRule = new FakeTimeTestRule();
 
     private static final String WEBAPK_PACKAGE_NAME = "org.chromium.webapk.test_package";
@@ -98,14 +91,14 @@ public class WebApkUpdateManagerUnitTest {
     private static final int REQUEST_UPDATE_FOR_SHELL_APK_VERSION = 100;
 
     /** Web Manifest URL */
-    private static final String WEB_MANIFEST_URL = "manifest.json";
+    private static final String WEB_MANIFEST_URL = "https://www.example.com/manifest.json";
 
-    private static final String START_URL = "/start_url.html";
-    private static final String SCOPE_URL = "/";
+    private static final String START_URL = "https://www.example.com/start_url.html";
+    private static final String SCOPE_URL = "https://www.example.com/";
     private static final String NAME = "Long Name";
     private static final String SHORT_NAME = "Short Name";
     private static final String MANIFEST_ID = "manifestId";
-    private static final String PRIMARY_ICON_URL = "/icon.png";
+    private static final String PRIMARY_ICON_URL = "https://www.example.com/icon.png";
     private static final String PRIMARY_ICON_MURMUR2_HASH = "3";
     private static final @DisplayMode.EnumType int DISPLAY_MODE = DisplayMode.UNDEFINED;
     private static final int ORIENTATION = ScreenOrientationLockType.DEFAULT;
@@ -114,7 +107,7 @@ public class WebApkUpdateManagerUnitTest {
     private static final long DARK_THEME_COLOR = 3L;
     private static final long DARK_BACKGROUND_COLOR = 4L;
     private static final int DEFAULT_BACKGROUND_COLOR = 3;
-    private static final String SHARE_TARGET_ACTION = "/share_action.html";
+    private static final String SHARE_TARGET_ACTION = "https://www.example.com/share_action.html";
     private static final String SHARE_TARGET_PARAM_TITLE = "share_params_title";
     private static final String SHARE_TARGET_METHOD_GET = "GET";
     private static final String SHARE_TARGET_METHOD_POST = "POST";
@@ -223,9 +216,9 @@ public class WebApkUpdateManagerUnitTest {
          * Whether App Identity updates should be enabled. If either of those is true when the tests
          * run, all App Identity update dialogs will be pre-approved (without showing).
          */
-        private boolean mNameUpdatesEnabled;
+        private final boolean mNameUpdatesEnabled;
 
-        private boolean mIconUpdatesEnabled;
+        private final boolean mIconUpdatesEnabled;
 
         public TestWebApkUpdateManager(Activity activity) {
             this(activity, /* nameUpdatesEnabled= */ false, /* iconUpdatesEnabled= */ false);
@@ -242,10 +235,9 @@ public class WebApkUpdateManagerUnitTest {
         }
 
         private static ActivityTabProvider buildMockTabProvider() {
-            Tab mockTab = Mockito.mock(Tab.class);
-            ActivityTabProvider tabProvider = Mockito.mock(ActivityTabProvider.class);
-            Mockito.when(tabProvider.get()).thenReturn(mockTab);
-            return tabProvider;
+            ActivityTabProvider activityTabProvider = new ActivityTabProvider();
+            activityTabProvider.setForTesting(Mockito.mock(Tab.class));
+            return activityTabProvider;
         }
 
         /** Returns whether the is-update-needed check has been triggered. */
@@ -389,7 +381,7 @@ public class WebApkUpdateManagerUnitTest {
 
     private static class FakeDefaultBackgroundColorResource extends Resources {
         private static final int ID = 10;
-        private int mColorValue;
+        private final int mColorValue;
 
         public FakeDefaultBackgroundColorResource(int colorValue) {
             super(new AssetManager(), null, null);
@@ -416,8 +408,7 @@ public class WebApkUpdateManagerUnitTest {
                                 helper.notifyCalled();
                             }
                         });
-            BackgroundShadowAsyncTask.runBackgroundTasks();
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         helper.waitForOnly();
     }
@@ -733,10 +724,8 @@ public class WebApkUpdateManagerUnitTest {
 
     @Before
     public void setUp() throws Exception {
-        MockitoAnnotations.initMocks(this);
 
         PathUtils.setPrivateDataDirectorySuffix("chrome");
-        PostTask.setPrenativeThreadPoolExecutorForTesting(new RoboExecutorService());
 
         WebApkUpdateManagerJni.setInstanceForTesting(new TestWebApkUpdateManagerJni());
 
@@ -873,6 +862,7 @@ public class WebApkUpdateManagerUnitTest {
         assertTrue(new File(updateRequestPath).exists());
 
         tryCompletingUpdate(updateManager, storage, WebApkInstallResult.FAILURE);
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertNull(storage.getPendingUpdateRequestPath());
         assertFalse(new File(updateRequestPath).exists());
@@ -898,6 +888,7 @@ public class WebApkUpdateManagerUnitTest {
         assertTrue(new File(updateRequestPath).exists());
 
         updateManager.getStoreUpdateRequestCallback().onResult(false);
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertNull(storage.getPendingUpdateRequestPath());
         assertFalse(new File(updateRequestPath).exists());
@@ -924,7 +915,7 @@ public class WebApkUpdateManagerUnitTest {
         updateIfNeeded(WEBAPK_PACKAGE_NAME, updateManager);
         assertTrue(updateManager.updateCheckStarted());
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         assertTrue(updateManager.updateRequested());
         assertEquals(NAME, updateManager.requestedUpdateName());
         assertEquals(MANIFEST_ID, updateManager.requestedAppKey());
@@ -954,7 +945,7 @@ public class WebApkUpdateManagerUnitTest {
 
         updateManager.onDestroy();
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         assertFalse(updateManager.updateRequested());
     }
 
@@ -1148,17 +1139,16 @@ public class WebApkUpdateManagerUnitTest {
     public void testManifestScopeChangedShouldUpgrade() {
         ManifestData oldData = defaultManifestData();
         // webapk_installer.cc sets the scope to the default scope if the scope is empty.
-        oldData.scopeUrl = "/scope1/";
+        oldData.scopeUrl = "https://www.example.com/scope1/";
         ManifestData fetchedData = defaultManifestData();
-        fetchedData.scopeUrl = "/scope2/";
+        fetchedData.scopeUrl = "https://www.example.com/scope2/";
         assertTrue(checkUpdateNeededForFetchedManifest(oldData, fetchedData));
     }
 
     /**
      * Test that an upgrade is not requested when the Web Manifest did not change and the Web
-     * Manifest scope is empty. TODO(crbug.com/40827678): Re-enable test.
+     * Manifest scope is empty.
      */
-    @Ignore
     @Test
     public void testManifestEmptyScopeShouldNotUpgrade() {
         ManifestData oldData = defaultManifestData();
@@ -1177,11 +1167,11 @@ public class WebApkUpdateManagerUnitTest {
     @Test
     public void testManifestNonEmptyScopeToEmptyScopeShouldUpgrade() {
         ManifestData oldData = defaultManifestData();
-        oldData.startUrl = "/fancy/scope/special/snowflake.html";
-        oldData.scopeUrl = "/fancy/scope/";
+        oldData.startUrl = "https://www.example.com/fancy/scope/special/snowflake.html";
+        oldData.scopeUrl = "https://www.example.com/fancy/scope/";
         assertTrue(!oldData.scopeUrl.equals(ShortcutHelper.getScopeFromUrl(oldData.startUrl)));
         ManifestData fetchedData = defaultManifestData();
-        fetchedData.startUrl = "/fancy/scope/special/snowflake.html";
+        fetchedData.startUrl = "https://www.example.com/fancy/scope/special/snowflake.html";
         fetchedData.scopeUrl = "";
 
         assertTrue(checkUpdateNeededForFetchedManifest(oldData, fetchedData));
@@ -1393,9 +1383,9 @@ public class WebApkUpdateManagerUnitTest {
     @Test
     public void testManifestStartUrlChangedShouldUpgrade() {
         ManifestData oldData = defaultManifestData();
-        oldData.startUrl = "/old_start_url.html";
+        oldData.startUrl = "https://www.example.com/old_start_url.html";
         ManifestData fetchedData = defaultManifestData();
-        fetchedData.startUrl = "/new_start_url.html";
+        fetchedData.startUrl = "https://www.example.com/new_start_url.html";
         assertTrue(checkUpdateNeededForFetchedManifest(oldData, fetchedData));
     }
 
@@ -1798,7 +1788,7 @@ public class WebApkUpdateManagerUnitTest {
         updateIfNeeded(WEBAPK_PACKAGE_NAME, updateManager);
         assertTrue(updateManager.updateCheckStarted());
 
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         assertTrue(updateManager.updateRequested());
         assertEquals(NAME, updateManager.requestedUpdateName());
 
@@ -1814,7 +1804,7 @@ public class WebApkUpdateManagerUnitTest {
         verifyHistograms(HISTOGRAM_PRE_APPROVED, 0);
     }
 
-    /** Test for crashing when IntentDataProvider is null, as per https://crbug.com/1342066. */
+    /** Test for crashing when IntentDataProvider is null, as per https://crbug.com/40851507. */
     @Test
     public void testDoesntCrashWithNullProvider() {
         ManifestData androidManifestData = defaultManifestData();

@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/strings/grit/components_strings.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/device_reauth/test/reauthentication_app_interface.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_checkup/password_checkup_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/password_details_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_manager_egtest_utils.h"
@@ -155,8 +157,8 @@ id<GREYMatcher> DismissWarningButton() {
 // Matcher for the "Dismiss" button of the confirmation dialog found in a
 // compromised password's details page when trying to dismiss the warning.
 id<GREYMatcher> DismissWarningConfirmationDialogButton() {
-  return ButtonWithAccessibilityLabel(
-      l10n_util::GetNSString(IDS_IOS_DISMISS_WARNING_DIALOG_DISMISS_BUTTON));
+  return chrome_test_util::AlertItemWithAccessibilityLabelId(
+      IDS_IOS_DISMISS_WARNING_DIALOG_DISMISS_BUTTON);
 }
 
 // Matcher for the "Restore Warning" button found in a muted compromised
@@ -249,8 +251,14 @@ void EditPassword(NSString* new_password) {
       selectElementWithMatcher:password_manager_test_utils::EditDoneButton()]
       performAction:grey_tap()];
 
-  [[EarlGrey selectElementWithMatcher:password_manager_test_utils::
-                                          EditPasswordConfirmationButton()]
+  id<GREYMatcher> edit_password_confirmation_button =
+      password_manager_test_utils::EditPasswordConfirmationButton();
+
+  // Wait for Edit Password Confirmation Button.
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      edit_password_confirmation_button];
+
+  [[EarlGrey selectElementWithMatcher:edit_password_confirmation_button]
       performAction:grey_tap()];
 
   // Wait until the confirmation dialog is dimsissed.
@@ -288,13 +296,15 @@ NSString* LeakedPasswordDescription() {
   [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
 
   // Mock successful reauth for opening the Password Manager.
-  [PasswordSettingsAppInterface setUpMockReauthenticationModule];
-  [PasswordSettingsAppInterface mockReauthenticationModuleExpectedResult:
+  [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
                                     ReauthenticationResult::kSuccess];
 }
 
 - (void)tearDownHelper {
-  [PasswordSettingsAppInterface removeMockReauthenticationModule];
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationPortrait
+                                   error:nil];
+  [PasswordSettingsAppInterface clearPasswordStores];
+  [PasswordSettingsAppInterface clearPasskeyStore];
   [super tearDownHelper];
 }
 
@@ -328,9 +338,9 @@ NSString* LeakedPasswordDescription() {
   OpenPasswordCheckupHomepage(/*result_state=*/PasswordCheckStateSafe,
                               /*result_password_count=*/0);
 
-  [PasswordSettingsAppInterface mockReauthenticationModuleExpectedResult:
+  [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
                                     ReauthenticationResult::kFailure];
-  [PasswordSettingsAppInterface mockReauthenticationModuleShouldSkipReAuth:NO];
+  [ReauthenticationAppInterface mockReauthenticationModuleShouldSkipReAuth:NO];
 
   [[AppLaunchManager sharedManager] backgroundAndForegroundApp];
 
@@ -341,12 +351,12 @@ NSString* LeakedPasswordDescription() {
   [[EarlGrey selectElementWithMatcher:ReauthenticationController()]
       assertWithMatcher:grey_sufficientlyVisible()];
 
-  [PasswordSettingsAppInterface mockReauthenticationModuleReturnMockedResult];
+  [ReauthenticationAppInterface mockReauthenticationModuleReturnMockedResult];
 
   // Password Manager UI should be dismissed leaving the Settings UI Visible.
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:ReauthenticationController()];
   [[EarlGrey selectElementWithMatcher:PasswordCheckupTableView()]
-      assertWithMatcher:grey_notVisible()];
-  [[EarlGrey selectElementWithMatcher:ReauthenticationController()]
       assertWithMatcher:grey_notVisible()];
 
   [[EarlGrey selectElementWithMatcher:SettingsCollectionView()]
@@ -415,12 +425,7 @@ NSString* LeakedPasswordDescription() {
 }
 
 // Tests the loading state of the Password Checkup Homepage.
-// TODO(crbug.com/40921746): Fix and re enable the test.
-- (void)DISABLED_testPasswordCheckupHomepageLoadingState {
-  // TODO(crbug.com/41484731): Test fails on iPad.
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Fails on iPad.");
-  }
+- (void)testPasswordCheckupHomepageLoadingState {
   SaveCompromisedPasswordFormToProfileStore();
 
   NSInteger numberOfAffiliatedGroups = 1;
@@ -428,6 +433,11 @@ NSString* LeakedPasswordDescription() {
   OpenPasswordCheckupHomepage(
       /*result_state=*/PasswordCheckStateUnmutedCompromisedPasswords,
       /*result_password_count=*/1);
+
+  // Artificially keep the loading state while we verify the UI.
+  [PasswordSettingsAppInterface
+      setFakeBulkLeakCheckBufferedState:
+          password_manager::BulkLeakCheckServiceInterface::State::kRunning];
 
   // Trigger a new check by tapping the "Check Again" button.
   [[EarlGrey selectElementWithMatcher:CheckAgainButton()]
@@ -448,6 +458,11 @@ NSString* LeakedPasswordDescription() {
   // Verify that the "Check Again" button is disabled.
   [[EarlGrey selectElementWithMatcher:CheckAgainButton()]
       assertWithMatcher:grey_not(grey_userInteractionEnabled())];
+
+  // Artificially reset the loading state to idle.
+  [PasswordSettingsAppInterface
+      setFakeBulkLeakCheckBufferedStateAndNotifyObservers:
+          password_manager::BulkLeakCheckServiceInterface::State::kIdle];
 
   // Wait for Password Checkup to finish loading.
   [ChromeEarlGrey waitForNotSufficientlyVisibleElementWithMatcher:
@@ -505,8 +520,8 @@ NSString* LeakedPasswordDescription() {
 
   // Rotate device to left landscape orientation before opening the Password
   // Checkup Homepage.
-  [EarlGrey rotateDeviceToOrientation:UIDeviceOrientationLandscapeLeft
-                                error:nil];
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationLandscapeLeft
+                                   error:nil];
 
   OpenPasswordCheckupHomepage(/*result_state=*/PasswordCheckStateSafe,
                               /*result_password_count=*/0);
@@ -518,14 +533,15 @@ NSString* LeakedPasswordDescription() {
 
   // The header image view should be visible after being rotated to portrait
   // orientation.
-  [EarlGrey rotateDeviceToOrientation:UIDeviceOrientationPortrait error:nil];
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationPortrait
+                                   error:nil];
   [[EarlGrey selectElementWithMatcher:PasswordCheckupHompageHeaderImageView()]
       assertWithMatcher:grey_sufficientlyVisible()];
 
   // The header image view should not be visible after being rotated to right
   // landscape orientation.
-  [EarlGrey rotateDeviceToOrientation:UIDeviceOrientationLandscapeRight
-                                error:nil];
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationLandscapeRight
+                                   error:nil];
   [[EarlGrey selectElementWithMatcher:PasswordCheckupHompageHeaderImageView()]
       assertWithMatcher:grey_notVisible()];
 }
@@ -541,7 +557,7 @@ NSString* LeakedPasswordDescription() {
   // Auth should not be required to open Password Issues. The user is
   // authenticated when opening the Password Manager page. Catch any unexpected
   // authentication requests.
-  [PasswordSettingsAppInterface mockReauthenticationModuleCanAttempt:NO];
+  [ReauthenticationAppInterface mockReauthenticationModuleCanAttempt:NO];
 
   // Open the compromised issues page.
   [[EarlGrey selectElementWithMatcher:
@@ -612,10 +628,6 @@ NSString* LeakedPasswordDescription() {
 
 // Tests restoring a muted compromised password warning.
 - (void)testPasswordCheckupRestoreCompromisedPasswordWarning {
-  // TODO(crbug.com/382251787): Test fails when run on iOS 18.2.
-  if (@available(iOS 18.2, *)) {
-    EARL_GREY_TEST_DISABLED(@"Fails on iOS 18.2");
-  }
   SaveMutedCompromisedPasswordFormToProfileStore();
 
   OpenPasswordCheckupHomepage(
@@ -706,7 +718,8 @@ NSString* LeakedPasswordDescription() {
 
 // Tests resolving the last reused passwords issue by editing a password through
 // Password Checkup.
-- (void)testResolveLastIssueByEditingPassword {
+// TODO(crbug.com/511159692): Mark it as flaky and re-enable it once fixed.
+- (void)FLAKY_testResolveLastIssueByEditingPassword {
   SaveReusedPasswordFormsToProfileStore();
 
   OpenPasswordCheckupHomepage(
@@ -779,7 +792,8 @@ NSString* LeakedPasswordDescription() {
 
 // Tests resolving the last compromised passwords issue by deleting a password
 // through Password Checkup.
-- (void)testChangeCompromisedPasswordToSafePassword {
+// TODO(crbug.com/493968696): Test is flaky.
+- (void)FLAKY_testChangeCompromisedPasswordToSafePassword {
   SaveCompromisedPasswordFormToProfileStore();
 
   OpenPasswordCheckupHomepage(
@@ -815,7 +829,15 @@ NSString* LeakedPasswordDescription() {
 
 // Tests changing the password of a muted compromised password to a weak
 // password.
-- (void)testChangeMutedPasswordToWeakPassword {
+// TODO(crbug.com/452549992): Test is flaky on simulator.
+#if TARGET_OS_SIMULATOR
+#define MAYBE_testChangeMutedPasswordToWeakPassword \
+  FLAKY_testChangeMutedPasswordToWeakPassword
+#else
+#define MAYBE_testChangeMutedPasswordToWeakPassword \
+  testChangeMutedPasswordToWeakPassword
+#endif
+- (void)MAYBE_testChangeMutedPasswordToWeakPassword {
   SaveMutedCompromisedPasswordFormToProfileStore();
 
   OpenPasswordCheckupHomepage(
@@ -961,9 +983,9 @@ NSString* LeakedPasswordDescription() {
       performAction:grey_tap()];
   VerifyWeakPasswordIssuesPageIsVisible(/*issue_count=*/1);
 
-  [PasswordSettingsAppInterface mockReauthenticationModuleExpectedResult:
+  [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
                                     ReauthenticationResult::kFailure];
-  [PasswordSettingsAppInterface mockReauthenticationModuleShouldSkipReAuth:NO];
+  [ReauthenticationAppInterface mockReauthenticationModuleShouldSkipReAuth:NO];
 
   [[AppLaunchManager sharedManager] backgroundAndForegroundApp];
 
@@ -974,13 +996,13 @@ NSString* LeakedPasswordDescription() {
   [[EarlGrey selectElementWithMatcher:ReauthenticationController()]
       assertWithMatcher:grey_sufficientlyVisible()];
 
-  [PasswordSettingsAppInterface mockReauthenticationModuleReturnMockedResult];
+  [ReauthenticationAppInterface mockReauthenticationModuleReturnMockedResult];
 
   // Password Manager UI should have been dismissed leaving Settings visible.
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:ReauthenticationController()];
   [[EarlGrey
       selectElementWithMatcher:WeakPasswordIssuesPageTitle(/*issue_count=*/1)]
-      assertWithMatcher:grey_notVisible()];
-  [[EarlGrey selectElementWithMatcher:ReauthenticationController()]
       assertWithMatcher:grey_notVisible()];
 
   [[EarlGrey selectElementWithMatcher:SettingsCollectionView()]

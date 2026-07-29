@@ -14,6 +14,7 @@
 #include "ui/base/accelerators/accelerator_manager.h"
 #import "ui/base/cocoa/nsmenu_additions.h"
 #include "ui/content_accelerators/accelerator_util.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/widget.h"
 
 @implementation ChromeCommandDispatcherDelegate
@@ -33,7 +34,7 @@
   //  1) As regular extension commands, see ExtensionKeybindingRegistryViews.
   //     This always has high priority.
   //  2) As page/browser popup actions, see
-  //     ExtensionActionPlatformDelegateViews. This always has high priority.
+  //     ExtensionActionDelegateDesktop. This always has high priority.
   //
   // The only reasonable way to access the registered accelerators for (1) and
   // (2) is to use the FocusManager. That is what we do here. But that will also
@@ -50,7 +51,7 @@
   ui::Accelerator accelerator =
       ui::GetAcceleratorFromNativeWebKeyboardEvent(keyboard_event);
   auto* bridge =
-      remote_cocoa::NativeWidgetNSWindowBridge::GetFromNativeWindow(window);
+      remote_cocoa::NativeWidgetNSWindowBridge::GetFromNSWindow(window);
   bool was_handled = false;
   if (bridge) {
     bridge->host()->HandleAccelerator(
@@ -65,7 +66,7 @@
                                                    window:(NSWindow*)window {
   // TODO(erikchen): Detect symbolic hot keys, and force control to be passed
   // back to AppKit so that it can handle it correctly.
-  // https://crbug.com/846893.
+  // https://crbug.com/40578102.
 
   NSResponder* responder = [window firstResponder];
   if ([responder respondsToSelector:@selector(isKeyLocked:)]) {
@@ -89,7 +90,7 @@
   //  * Avoiding sleeps. By default, the implementation of NSMenu
   //  performKeyEquivalent: has a nested run loop that spins for 100ms. If we
   //  avoid that by spinning our task runner in their private mode, there's a
-  //  built in nanosleep. See https://crbug.com/836947#c8.
+  //  built in nanosleep. See https://crbug.com/41385540#comment9.
   //
   // By not passing the event to AppKit, we do lose out on the brief
   // highlighting of the NSMenu.
@@ -107,7 +108,7 @@
   }
 
   auto* bridge =
-      remote_cocoa::NativeWidgetNSWindowBridge::GetFromNativeWindow(window);
+      remote_cocoa::NativeWidgetNSWindowBridge::GetFromNSWindow(window);
   if (bridge == nullptr) {
     return ui::PerformKeyEquivalentResult::kUnhandled;
   }
@@ -157,7 +158,7 @@
 
   if (result.found()) {
     auto* bridge =
-        remote_cocoa::NativeWidgetNSWindowBridge::GetFromNativeWindow(window);
+        remote_cocoa::NativeWidgetNSWindowBridge::GetFromNSWindow(window);
     if (bridge) {
       // postPerformKeyEquivalent: is only called on events that are not
       // reserved. We want to bypass the main menu if and only if the event is

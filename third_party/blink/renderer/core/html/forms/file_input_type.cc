@@ -49,6 +49,7 @@
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
@@ -64,8 +65,8 @@ Vector<String> CollectAcceptTypes(const HTMLInputElement& input) {
 
   Vector<String> accept_types;
   accept_types.reserve(mime_types.size() + extensions.size());
-  accept_types.AppendVector(mime_types);
-  accept_types.AppendVector(extensions);
+  accept_types.append_range(mime_types);
+  accept_types.append_range(extensions);
   return accept_types;
 }
 
@@ -182,6 +183,9 @@ void FileInputType::HandleDOMActivateEvent(Event& event) {
         mojom::ConsoleMessageLevel::kWarning, message));
     return;
   }
+  if (RuntimeEnabledFeatures::FileColorPickerConsumeActivationEnabled()) {
+    LocalFrame::ConsumeTransientUserActivation(document.GetFrame());
+  }
 
   OpenPopupView();
   event.SetDefaultHandled();
@@ -191,10 +195,14 @@ void FileInputType::OpenPopupView() {
   HTMLInputElement& input = GetElement();
   Document& document = input.GetDocument();
 
-  bool intercepted = false;
+  bool suppressed = false;
+  bool canceled = false;
   probe::FileChooserOpened(document.GetFrame(), &input, input.Multiple(),
-                           &intercepted);
-  if (intercepted) {
+                           &suppressed, &canceled);
+  if (suppressed) {
+    if (canceled) {
+      SetFilesAndDispatchEvents(nullptr);
+    }
     return;
   }
 
@@ -272,7 +280,7 @@ String FileInputType::ValueInFilenameValueMode() const {
   // decided to try to parse the value by looking for backslashes
   // (because that's what Windows file paths use). To be compatible
   // with that code, we make up a fake path for the file.
-  return "C:\\fakepath\\" + file_list_->item(0)->name();
+  return StrCat({"C:\\fakepath\\", file_list_->item(0)->name()});
 }
 
 void FileInputType::SetValue(const String&,
@@ -299,7 +307,7 @@ FileList* FileInputType::CreateFileList(ExecutionContext& context,
   // |base_dir|.
   if (size && !base_dir.empty()) {
     base::FilePath root_path = base_dir.DirName();
-    int root_length = FilePathToString(root_path).length();
+    string_size_t root_length = FilePathToString(root_path).length();
     DCHECK(root_length);
     if (!root_path.EndsWithSeparator())
       root_length += 1;
@@ -316,9 +324,11 @@ FileList* FileInputType::CreateFileList(ExecutionContext& context,
       }
       String relative_path;
 #if BUILDFLAG(IS_ANDROID)
-      // Android content-URIs do not use tree paths with separators like posix
-      // so we build relative path using base_subdirs.
-      if (base_dir.IsContentUri()) {
+      // Android content-URIs or virtual document paths do not use tree paths
+      // with separators like posix, so we build relative path using pre-filled
+      // base_subdirs.
+      if (base_dir.IsContentUri() ||
+          !file->get_native_file()->base_subdirs.empty()) {
         StringBuilder builder;
         for (const auto& subdir : file->get_native_file()->base_subdirs) {
           builder.Append(subdir);
@@ -330,10 +340,10 @@ FileList* FileInputType::CreateFileList(ExecutionContext& context,
 #endif
       if (relative_path.empty()) {
         DCHECK(
-            string_path.StartsWithIgnoringASCIICase(FilePathToString(base_dir)))
+            string_path.StartsWithIgnoringAsciiCase(FilePathToString(base_dir)))
             << "A path in a FileChooserFileInfo " << string_path
             << " should start with " << FilePathToString(base_dir);
-        relative_path = string_path.Substring(root_length).Replace('\\', '/');
+        relative_path = string_path.substr(root_length).Replace('\\', '/');
       }
       file_list->Append(File::CreateWithRelativePath(
           &context, string_path, display_name, relative_path));
@@ -408,7 +418,7 @@ Node* FileInputType::FileStatusElement() const {
   return GetElement().EnsureShadowSubtree()->lastChild();
 }
 
-void FileInputType::DisabledAttributeChanged() {
+void FileInputType::DisabledAttributeChanged(DisabledChangedReason reason) {
   if (Element* button = UploadButton()) {
     button->SetBooleanAttribute(html_names::kDisabledAttr,
                                 GetElement().IsDisabledFormControl());
@@ -450,7 +460,10 @@ bool FileInputType::SetFiles(FileList* files) {
 }
 
 void FileInputType::SetFilesAndDispatchEvents(FileList* files) {
-  if (SetFiles(files)) {
+  bool force = force_change_event_;
+  force_change_event_ = false;
+
+  if (SetFiles(files) || force) {
     // This call may cause destruction of this instance.
     // input instance is safe since it is ref-counted.
     GetElement().DispatchInputEvent();
@@ -477,12 +490,27 @@ void FileInputType::FilesChosen(FileChooserFileInfoList files,
     }
     ++i;
   }
+  if (RuntimeEnabledFeatures::FilePickerEventsFixEnabled() &&
+      HasConnectedFileChooser()) {
+    force_change_event_ = true;
+  }
   if (!will_be_destroyed_) {
     SetFilesAndDispatchEvents(
         CreateFileList(*GetElement().GetExecutionContext(), files, base_dir));
   }
   if (HasConnectedFileChooser())
     DisconnectFileChooser();
+
+  GetElement().PseudoStateChanged(CSSSelector::kPseudoOpen);
+}
+
+void FileInputType::FileChooserCanceled() {
+  if (!will_be_destroyed_) {
+    GetElement().DispatchCancelEvent();
+  }
+  if (HasConnectedFileChooser()) {
+    DisconnectFileChooser();
+  }
 
   GetElement().PseudoStateChanged(CSSSelector::kPseudoOpen);
 }

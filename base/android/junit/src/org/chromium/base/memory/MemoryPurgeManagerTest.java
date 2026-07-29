@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit;
 @Config(manifest = Config.NONE)
 public class MemoryPurgeManagerTest {
     @Rule public FakeTimeTestRule mFakeTimeTestRule = new FakeTimeTestRule();
-    private Callable<Integer> mGetCount =
+    private final Callable<Integer> mGetCount =
             () -> {
                 return RecordHistogram.getHistogramTotalCountForTesting(
                         MemoryPurgeManager.BACKGROUND_DURATION_HISTOGRAM_NAME);
@@ -79,7 +79,7 @@ public class MemoryPurgeManagerTest {
         ThreadUtils.setUiThread(Looper.getMainLooper());
 
         // Pause main thread to get control over when tasks are run (see runUiThreadFor()).
-        ShadowLooper.pauseMainLooper();
+
     }
 
     @Test

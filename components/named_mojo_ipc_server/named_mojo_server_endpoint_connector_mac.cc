@@ -15,7 +15,6 @@
 #include "base/apple/mach_logging.h"
 #include "base/apple/scoped_mach_port.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/mac/scoped_mach_msg_destroy.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
@@ -113,8 +112,10 @@ mach_port_t NamedMojoServerEndpointConnectorMac::port() {
 bool NamedMojoServerEndpointConnectorMac::TryStart() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  mojo::NamedPlatformChannel::Options options;
+  options.server_name = options_.server_name;
   mojo::PlatformChannelServerEndpoint server_endpoint =
-      mojo::NamedPlatformChannel({options_.server_name}).TakeServerEndpoint();
+      mojo::NamedPlatformChannel(options).TakeServerEndpoint();
   if (!server_endpoint.is_valid() ||
       !server_endpoint.platform_handle().is_valid_mach_receive()) {
     return false;

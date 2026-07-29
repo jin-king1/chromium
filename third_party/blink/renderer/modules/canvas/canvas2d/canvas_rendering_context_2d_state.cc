@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d_state.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <optional>
 
 #include "base/check.h"
@@ -12,6 +13,7 @@
 #include "base/compiler_specific.h"
 #include "base/dcheck_is_on.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "cc/paint/draw_looper.h"
 #include "cc/paint/paint_flags.h"
 #include "cc/paint/path_effect.h"
@@ -30,11 +32,13 @@
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/filter_effect_builder.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/filter_operations.h"
-#include "third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.h"
+#include "third_party/blink/renderer/core/style/shadow_data.h"
+#include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_2d_recorder_context.h"
 #include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_filter.h"
 #include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d.h"
 #include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_style.h"
@@ -71,6 +75,8 @@ static const char defaultSpacing[] = "0px";
 
 namespace blink {
 
+namespace {
+
 // Convert CSS Length String to a number with unit, ex: "2em" to
 // |number_spacing| = 2 and |unit| = CSSPrimitiveValue::UnitType::kEm. It
 // returns true if the conversion succeeded; false otherwise.
@@ -98,68 +104,50 @@ bool StringToNumWithUnit(String spacing,
 }
 
 FontSelectionValue CanvasFontStretchToSelectionValue(
-    V8CanvasFontStretch font_stretch) {
-  FontSelectionValue stretch_value;
-  switch (font_stretch.AsEnum()) {
+    V8CanvasFontStretch::Enum font_stretch) {
+  switch (font_stretch) {
     case (V8CanvasFontStretch::Enum::kUltraCondensed):
-      stretch_value = kUltraCondensedWidthValue;
-      break;
+      return kUltraCondensedWidthValue;
     case (V8CanvasFontStretch::Enum::kExtraCondensed):
-      stretch_value = kExtraCondensedWidthValue;
-      break;
+      return kExtraCondensedWidthValue;
     case (V8CanvasFontStretch::Enum::kCondensed):
-      stretch_value = kCondensedWidthValue;
-      break;
+      return kCondensedWidthValue;
     case (V8CanvasFontStretch::Enum::kSemiCondensed):
-      stretch_value = kSemiCondensedWidthValue;
-      break;
+      return kSemiCondensedWidthValue;
     case (V8CanvasFontStretch::Enum::kNormal):
-      stretch_value = kNormalWidthValue;
-      break;
+      return kNormalWidthValue;
     case (V8CanvasFontStretch::Enum::kUltraExpanded):
-      stretch_value = kUltraExpandedWidthValue;
-      break;
+      return kUltraExpandedWidthValue;
     case (V8CanvasFontStretch::Enum::kExtraExpanded):
-      stretch_value = kExtraExpandedWidthValue;
-      break;
+      return kExtraExpandedWidthValue;
     case (V8CanvasFontStretch::Enum::kExpanded):
-      stretch_value = kExpandedWidthValue;
-      break;
+      return kExpandedWidthValue;
     case (V8CanvasFontStretch::Enum::kSemiExpanded):
-      stretch_value = kSemiExpandedWidthValue;
-      break;
-    default:
-      NOTREACHED();
+      return kSemiExpandedWidthValue;
   }
-  return stretch_value;
+  NOTREACHED();
 }
 
 TextRenderingMode CanvasTextRenderingToTextRenderingMode(
-    V8CanvasTextRendering text_rendering) {
-  TextRenderingMode text_rendering_mode;
-  switch (text_rendering.AsEnum()) {
+    V8CanvasTextRendering::Enum text_rendering) {
+  switch (text_rendering) {
     case (V8CanvasTextRendering::Enum::kAuto):
-      text_rendering_mode = TextRenderingMode::kAutoTextRendering;
-      break;
+      return TextRenderingMode::kAutoTextRendering;
     case (V8CanvasTextRendering::Enum::kOptimizeSpeed):
-      text_rendering_mode = TextRenderingMode::kOptimizeSpeed;
-      break;
+      return TextRenderingMode::kOptimizeSpeed;
     case (V8CanvasTextRendering::Enum::kOptimizeLegibility):
-      text_rendering_mode = TextRenderingMode::kOptimizeLegibility;
-      break;
+      return TextRenderingMode::kOptimizeLegibility;
     case (V8CanvasTextRendering::Enum::kGeometricPrecision):
-      text_rendering_mode = TextRenderingMode::kGeometricPrecision;
-      break;
-    default:
-      NOTREACHED();
+      return TextRenderingMode::kGeometricPrecision;
   }
-  return text_rendering_mode;
+  NOTREACHED();
 }
+
+}  // namespace
 
 CanvasRenderingContext2DState::CanvasRenderingContext2DState()
     : shadow_blur_(0.0),
       shadow_color_(Color::kTransparent),
-      global_alpha_(1.0),
       line_dash_offset_(0.0),
       unparsed_font_(defaultFont),
       font_(MakeGarbageCollected<Font>()),
@@ -178,14 +166,17 @@ CanvasRenderingContext2DState::CanvasRenderingContext2DState()
       image_smoothing_quality_(cc::PaintFlags::FilterQuality::kLow) {
   fill_flags_.setStyle(cc::PaintFlags::kFill_Style);
   fill_flags_.setAntiAlias(true);
+  fill_flags_.setTargetedHdrHeadroom(global_hdr_headroom_);
   image_flags_.setStyle(cc::PaintFlags::kFill_Style);
   image_flags_.setAntiAlias(true);
+  image_flags_.setTargetedHdrHeadroom(global_hdr_headroom_);
   stroke_flags_.setStyle(cc::PaintFlags::kStroke_Style);
   stroke_flags_.setStrokeWidth(1);
   stroke_flags_.setStrokeCap(cc::PaintFlags::kButt_Cap);
   stroke_flags_.setStrokeMiter(10);
   stroke_flags_.setStrokeJoin(cc::PaintFlags::kMiter_Join);
   stroke_flags_.setAntiAlias(true);
+  stroke_flags_.setTargetedHdrHeadroom(global_hdr_headroom_);
   SetImageSmoothingEnabled(true);
 }
 
@@ -211,6 +202,7 @@ CanvasRenderingContext2DState::CanvasRenderingContext2DState(
       shadow_and_foreground_image_filter_(
           other.shadow_and_foreground_image_filter_),
       global_alpha_(other.global_alpha_),
+      global_hdr_headroom_(other.global_hdr_headroom_),
       transform_(other.transform_),
       line_dash_(other.line_dash_),
       line_dash_offset_(other.line_dash_offset_),
@@ -292,7 +284,7 @@ void CanvasRenderingContext2DState::SetLineDash(const Vector<double>& dash) {
   // Spec requires the concatenation of two copies the dash list when the
   // number of elements is odd
   if (dash.size() % 2)
-    line_dash_.AppendVector(dash);
+    line_dash_.append_range(dash);
   // clamp the double values to float
   std::ranges::transform(line_dash_, line_dash_.begin(),
                          [](double d) { return ClampTo<float>(d); });
@@ -339,7 +331,22 @@ void CanvasRenderingContext2DState::SetGlobalAlpha(double alpha) {
   global_alpha_ = alpha;
   stroke_style_.ApplyToFlags(stroke_flags_, global_alpha_);
   fill_style_.ApplyToFlags(fill_flags_, global_alpha_);
-  image_flags_.setColor(ScaleAlpha(SK_ColorBLACK, alpha));
+  // TODO: Don't quantize the alpha to 8-bit.
+  image_flags_.setAlphaf(
+      base::ClampRound<uint8_t>(ClampTo<float>(alpha, 0.0f, 1.0f) * 255) /
+      255.0f);
+}
+
+void CanvasRenderingContext2DState::SetGlobalHDRHeadroom(double h) {
+  // Invalid values (negatives and NaNs) are expected to be avoided by the
+  // caller.
+  global_hdr_headroom_ = h;
+
+  // This will cast `global_hdr_headroom_` from a double to a float. This will
+  // not remove any needed precision, and rounding up to infinity is acceptable.
+  stroke_flags_.setTargetedHdrHeadroom(global_hdr_headroom_);
+  fill_flags_.setTargetedHdrHeadroom(global_hdr_headroom_);
+  image_flags_.setTargetedHdrHeadroom(global_hdr_headroom_);
 }
 
 void CanvasRenderingContext2DState::ClipPath(
@@ -358,7 +365,7 @@ void CanvasRenderingContext2DState::SetLang(const String& lang) {
 
 void CanvasRenderingContext2DState::SetFont(
     const FontDescription& passed_font_description,
-    FontSelector* selector) {
+    UniqueFontSelector* selector) {
   FontDescription font_description = passed_font_description;
   font_description.SetSubpixelAscentDescent(true);
 
@@ -384,7 +391,7 @@ void CanvasRenderingContext2DState::SetFont(
     // Convert word spacing to pixel length and set it in font_description.
     float word_spacing_in_pixel =
         conversion_data.ZoomedComputedPixels(word_spacing_, word_spacing_unit_);
-    font_description.SetWordSpacing(word_spacing_in_pixel);
+    font_description.SetWordSpacing(Length::Fixed(word_spacing_in_pixel));
   }
 
   // If wordSpacing is set in CanvasRenderingContext2D, then update the
@@ -393,17 +400,16 @@ void CanvasRenderingContext2DState::SetFont(
     // Convert letter spacing to pixel length and set it in font_description.
     float letter_spacing_in_pixel = conversion_data.ZoomedComputedPixels(
         letter_spacing_, letter_spacing_unit_);
-    font_description.SetLetterSpacing(letter_spacing_in_pixel);
+    font_description.SetLetterSpacing(Length::Fixed(letter_spacing_in_pixel));
   }
   font_description.SetKerning(font_kerning_);
   font_description.SetTextRendering(
       CanvasTextRenderingToTextRenderingMode(text_rendering_mode_));
   font_variant_caps_ = font_description.VariantCaps();
-  std::optional<blink::V8CanvasFontStretch> font_value =
-      V8CanvasFontStretch::Create(
-          FontDescription::ToString(font_description.Stretch()).LowerASCII());
+  std::optional<V8CanvasFontStretch> font_value = V8CanvasFontStretch::Create(
+      FontDescription::ToString(font_description.Stretch()).ToAsciiLower());
   if (font_value.has_value()) {
-    font_stretch_ = *font_value;
+    font_stretch_ = font_value->AsEnum();
   } else {
     NOTREACHED();
   }
@@ -412,11 +418,12 @@ void CanvasRenderingContext2DState::SetFont(
 
 void CanvasRenderingContext2DState::SetFontInternal(
     const FontDescription& passed_font_description,
-    FontSelector* selector) {
+    UniqueFontSelector* selector) {
   FontDescription font_description = passed_font_description;
   font_description.SetSubpixelAscentDescent(true);
 
-  font_ = MakeGarbageCollected<Font>(font_description, selector);
+  font_ = selector ? selector->FindOrCreateFont(font_description)
+                   : MakeGarbageCollected<Font>(font_description, nullptr);
   realized_font_ = true;
   lang_is_dirty_ = false;  // The font has been created with the current lang.
   if (selector)
@@ -442,7 +449,7 @@ const FontDescription& CanvasRenderingContext2DState::GetFontDescription()
 
 void CanvasRenderingContext2DState::SetFontKerning(
     FontDescription::Kerning font_kerning,
-    FontSelector* selector) {
+    UniqueFontSelector* selector) {
   DCHECK(realized_font_);
   FontDescription font_description(GetFontDescription());
   font_description.SetKerning(font_kerning);
@@ -451,8 +458,8 @@ void CanvasRenderingContext2DState::SetFontKerning(
 }
 
 void CanvasRenderingContext2DState::SetFontStretch(
-    V8CanvasFontStretch font_stretch,
-    FontSelector* selector) {
+    V8CanvasFontStretch::Enum font_stretch,
+    UniqueFontSelector* selector) {
   DCHECK(realized_font_);
   FontSelectionValue stretch_value =
       CanvasFontStretchToSelectionValue(font_stretch);
@@ -464,7 +471,7 @@ void CanvasRenderingContext2DState::SetFontStretch(
 
 void CanvasRenderingContext2DState::SetFontVariantCaps(
     FontDescription::FontVariantCaps font_variant_caps,
-    FontSelector* selector) {
+    UniqueFontSelector* selector) {
   DCHECK(realized_font_);
   FontDescription font_description(GetFontDescription());
   font_description.SetVariantCaps(font_variant_caps);
@@ -508,7 +515,7 @@ void CanvasRenderingContext2DState::ValidateFilterState() const {
 
 sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilterForOffscreenCanvas(
     gfx::Size canvas_size,
-    BaseRenderingContext2D* context) {
+    Canvas2DRecorderContext* context) {
   ValidateFilterState();
   if (filter_state_ != FilterState::kUnresolved)
     return resolved_filter_;
@@ -640,11 +647,15 @@ sk_sp<cc::DrawLooper>& CanvasRenderingContext2DState::EmptyDrawLooper() const {
   return empty_draw_looper_;
 }
 
+float CanvasRenderingContext2DState::ShadowBlurAsSigma() const {
+  return ShadowData::BlurRadiusToStdDev(ClampTo<float>(shadow_blur_));
+}
+
 sk_sp<cc::DrawLooper>& CanvasRenderingContext2DState::ShadowOnlyDrawLooper()
     const {
   if (!shadow_only_draw_looper_) {
     DrawLooperBuilder draw_looper_builder;
-    draw_looper_builder.AddShadow(shadow_offset_, ClampTo<float>(shadow_blur_),
+    draw_looper_builder.AddShadow(shadow_offset_, ShadowBlurAsSigma(),
                                   shadow_color_,
                                   DrawLooperBuilder::kShadowIgnoresTransforms,
                                   DrawLooperBuilder::kShadowRespectsAlpha);
@@ -657,7 +668,7 @@ sk_sp<cc::DrawLooper>&
 CanvasRenderingContext2DState::ShadowAndForegroundDrawLooper() const {
   if (!shadow_and_foreground_draw_looper_) {
     DrawLooperBuilder draw_looper_builder;
-    draw_looper_builder.AddShadow(shadow_offset_, ClampTo<float>(shadow_blur_),
+    draw_looper_builder.AddShadow(shadow_offset_, ShadowBlurAsSigma(),
                                   shadow_color_,
                                   DrawLooperBuilder::kShadowIgnoresTransforms,
                                   DrawLooperBuilder::kShadowRespectsAlpha);
@@ -671,7 +682,7 @@ sk_sp<PaintFilter>& CanvasRenderingContext2DState::ShadowOnlyImageFilter()
     const {
   using ShadowMode = DropShadowPaintFilter::ShadowMode;
   if (!shadow_only_image_filter_) {
-    const auto sigma = BlurRadiusToStdDev(shadow_blur_);
+    const auto sigma = ShadowBlurAsSigma();
     shadow_only_image_filter_ = sk_make_sp<DropShadowPaintFilter>(
         shadow_offset_.x(), shadow_offset_.y(), sigma, sigma,
         shadow_color_.toSkColor4f(), ShadowMode::kDrawShadowOnly, nullptr);
@@ -683,7 +694,7 @@ sk_sp<PaintFilter>&
 CanvasRenderingContext2DState::ShadowAndForegroundImageFilter() const {
   using ShadowMode = DropShadowPaintFilter::ShadowMode;
   if (!shadow_and_foreground_image_filter_) {
-    const auto sigma = BlurRadiusToStdDev(shadow_blur_);
+    const auto sigma = ShadowBlurAsSigma();
     // TODO(crbug/1308932): Remove FromColor and make all SkColor4f.
     shadow_and_foreground_image_filter_ = sk_make_sp<DropShadowPaintFilter>(
         shadow_offset_.x(), shadow_offset_.y(), sigma, sigma,
@@ -858,7 +869,8 @@ const cc::PaintFlags* CanvasRenderingContext2DState::GetFlags(
 }
 
 void CanvasRenderingContext2DState::SetLetterSpacing(
-    const String& letter_spacing) {
+    const String& letter_spacing,
+    UniqueFontSelector* selector) {
   DCHECK(realized_font_);
   letter_spacing_is_set_ = true;
   if (parsed_letter_spacing_ == letter_spacing)
@@ -888,13 +900,15 @@ void CanvasRenderingContext2DState::SetLetterSpacing(
   float letter_spacing_in_pixel =
       conversion_data.ZoomedComputedPixels(num_spacing, unit);
 
-  font_description.SetLetterSpacing(letter_spacing_in_pixel);
-  if (font_->GetFontSelector()) {
-    SetFontInternal(font_description, font_->GetFontSelector());
+  font_description.SetLetterSpacing(Length::Fixed(letter_spacing_in_pixel));
+  if (selector) {
+    SetFontInternal(font_description, selector);
   }
 }
 
-void CanvasRenderingContext2DState::SetWordSpacing(const String& word_spacing) {
+void CanvasRenderingContext2DState::SetWordSpacing(
+    const String& word_spacing,
+    UniqueFontSelector* selector) {
   DCHECK(realized_font_);
   word_spacing_is_set_ = true;
   if (parsed_word_spacing_ == word_spacing)
@@ -924,15 +938,15 @@ void CanvasRenderingContext2DState::SetWordSpacing(const String& word_spacing) {
   float word_spacing_in_pixel =
       conversion_data.ZoomedComputedPixels(num_spacing, unit);
 
-  font_description.SetWordSpacing(word_spacing_in_pixel);
-  if (font_->GetFontSelector()) {
-    SetFontInternal(font_description, font_->GetFontSelector());
+  font_description.SetWordSpacing(Length::Fixed(word_spacing_in_pixel));
+  if (selector) {
+    SetFontInternal(font_description, selector);
   }
 }
 
 void CanvasRenderingContext2DState::SetTextRendering(
-    V8CanvasTextRendering text_rendering,
-    FontSelector* selector) {
+    V8CanvasTextRendering::Enum text_rendering,
+    UniqueFontSelector* selector) {
   DCHECK(realized_font_);
   TextRenderingMode text_rendering_mode =
       CanvasTextRenderingToTextRenderingMode(text_rendering);

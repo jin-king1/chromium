@@ -6,12 +6,14 @@
 #define CHROME_BROWSER_FILE_SYSTEM_ACCESS_CHROME_FILE_SYSTEM_ACCESS_PERMISSION_CONTEXT_H_
 
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "base/auto_reset.h"
 #include "base/callback_list.h"
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/time/clock.h"
@@ -37,6 +39,7 @@
 
 class HostContentSettingsMap;
 class OneTimePermissionsTracker;
+class FileSystemAccessPageActionController;
 enum ContentSetting;
 
 namespace content {
@@ -125,6 +128,120 @@ class ChromeFileSystemAccessPermissionContext
     kMaxValue = kDismissed
   };
 
+  // Represents the blocking behavior for the certain `BlockPathRule`.
+  enum class BlockType {
+    // All children of the given path are blocked as well.
+    kBlockAllChildren,
+    // Access is allowed to individual files in the directory, but nested
+    // directories are still blocked.
+    kBlockNestedDirectories,
+    // Only the given path and its parents are blocked.
+    kDontBlockChildren,
+    // Only write access to the given path and its children are blocked.
+    kBlockWrite,
+  };
+
+  // The initialization status of `block_path_rules_`.
+  // `block_path_rules_` is initialized asynchronously on the first call to
+  // `CheckPathAgainstBlocklist`.
+  enum class BlockPathRulesStatus {
+    kNotInitialized,
+    kInitializationStarted,
+    kInitialized
+  };
+
+  // Specifies how the path in `BlockPath` should be interpreted and matched
+  // against requested paths.
+  enum class BlockPathType {
+    // Blocks the exact absolute `{path}`.
+    kAbsolute,
+    // Blocks `{base_path}/{path}` (where `{base_path}` is resolved from a
+    // base_path_key).
+    kRelative,
+    // Blocks paths that end with `{path}`.
+    kSuffix
+  };
+
+  // These two structs are the wrapper for the path and the BlockType.
+  struct RawBlockPathRule {
+    const base::FilePath::CharType* path;
+    BlockType type;
+  };
+
+  struct BlockPathRule {
+    base::FilePath path;
+    BlockType type;
+  };
+
+  // Describes a rule for blocking a directory, but the file path is only used
+  // to perform a suffix matching of the candidate paths, i.e. it may match
+  // multiple different paths.
+  struct SuffixBlockPathRule {
+    const base::FilePath::CharType* path;
+    BlockType type;
+  };
+
+  // Contains three lists of the block rules:
+  // - `block_path_rules_` contains the file path which is constructed after
+  //   appending to the base path and/or normazation if needed.
+  // - `profile_based_block_path_rules_` contains the file paths which will be
+  //   determined during the check time when profile path is provided.
+  // - `suffix_block_path_rules_` contains the file paths that is going to be
+  //   used for a suffix matching. e.g. `.git` will match all the `*/.git`
+  //   paths.
+  class BlockPathRules {
+   public:
+    BlockPathRules();
+    ~BlockPathRules();
+    BlockPathRules(const BlockPathRules& other);
+    BlockPathRules& operator=(const BlockPathRules& other);
+
+    // The vectors of rules for blocking a directory.
+    std::vector<BlockPathRule> block_path_rules_;
+    std::vector<RawBlockPathRule> profile_based_block_path_rules_;
+    std::vector<RawBlockPathRule> suffix_block_path_rules_;
+  };
+
+  struct BlockPath {
+    // `base::BasePathKey` value (or one of the platform specific extensions to
+    // it) for a path that should be blocked. This is only set when the
+    // `block_path_type` is `kRelative`.
+    std::optional<int> base_path_key;
+    // If `block_path_type` is `kRelative`, this is the relative path appended
+    // to the path from `base_path_key`.
+    // If `block_path_type` is `kAbsolute`, this is the absolute path to block.
+    // If `block_path_type` is `kSuffix`, this it the fraction that is used to
+    // construct the path suffix.
+    const base::FilePath::CharType* path;
+    BlockType block_type;
+    BlockPathType block_path_type;
+
+    static constexpr BlockPath CreateAbsolute(
+        const base::FilePath::CharType* path,
+        BlockType block_type) {
+      return {std::nullopt, path, block_type, BlockPathType::kAbsolute};
+    }
+
+    static constexpr BlockPath CreateRelative(int base_path_key,
+                                              BlockType block_type) {
+      return {base_path_key, /*path=*/nullptr, block_type,
+              BlockPathType::kRelative};
+    }
+
+    static constexpr BlockPath CreateRelative(
+        int base_path_key,
+        const base::FilePath::CharType* path,
+        BlockType block_type) {
+      return {base_path_key, path, block_type, BlockPathType::kRelative};
+    }
+
+    static constexpr BlockPath CreateSuffix(
+        const base::FilePath::CharType* path,
+        BlockType block_type) {
+      return {std::nullopt, path, block_type, BlockPathType::kSuffix};
+    }
+  };
+
   explicit ChromeFileSystemAccessPermissionContext(
       content::BrowserContext* context,
       const base::Clock* clock = base::DefaultClock::GetInstance());
@@ -138,9 +255,9 @@ class ChromeFileSystemAccessPermissionContext
   std::vector<std::unique_ptr<Object>> GetGrantedObjects(
       const url::Origin& origin) override;
   std::vector<std::unique_ptr<Object>> GetAllGrantedObjects() override;
-  std::string GetKeyForObject(const base::Value::Dict& object) override;
-  bool IsValidObject(const base::Value::Dict& object) override;
-  std::u16string GetObjectDisplayName(const base::Value::Dict& object) override;
+  std::string GetKeyForObject(const base::DictValue& object) override;
+  bool IsValidObject(const base::DictValue& object) override;
+  std::u16string GetObjectDisplayName(const base::DictValue& object) override;
   std::set<url::Origin> GetOriginsWithGrants() override;
 
   // OneTimePermissionsTrackerObserver:
@@ -183,8 +300,7 @@ class ChromeFileSystemAccessPermissionContext
       std::unique_ptr<content::FileSystemAccessWriteItem> item,
       content::GlobalRenderFrameHostId frame_id,
       base::OnceCallback<void(AfterWriteCheckResult)> callback) override;
-  bool IsFileTypeDangerous(const base::FilePath& path,
-                           const url::Origin& origin) override;
+  bool IsFileTypeDangerous(const base::FilePath& path) override;
   base::expected<void, std::string> CanShowFilePicker(
       content::RenderFrameHost* rfh) override;
   bool CanObtainReadPermission(const url::Origin& origin) override;
@@ -202,6 +318,10 @@ class ChromeFileSystemAccessPermissionContext
   void NotifyEntryMoved(const url::Origin& origin,
                         const content::PathInfo& old_path,
                         const content::PathInfo& new_path) override;
+  void NotifyEntryModified(const url::Origin& origin,
+                           const content::PathInfo& path) override;
+  void NotifyEntryRemoved(const url::Origin& origin,
+                          const content::PathInfo& path) override;
   void OnFileCreatedFromShowSaveFilePicker(
       const GURL& file_picker_binding_context,
       const storage::FileSystemURL& url) override;
@@ -312,8 +432,8 @@ class ChromeFileSystemAccessPermissionContext
 
   bool RevokeActiveGrantsForTesting(
       const url::Origin& origin,
-      base::FilePath file_path = base::FilePath()) {
-    return RevokeActiveGrants(origin, std::move(file_path));
+      const base::FilePath& file_path = base::FilePath()) {
+    return RevokeActiveGrants(origin, file_path);
   }
 
   scoped_refptr<content::FileSystemAccessPermissionGrant>
@@ -340,6 +460,16 @@ class ChromeFileSystemAccessPermissionContext
   // KeyedService:
   void Shutdown() override;
 
+  // This is needed when updating path with ScopedPathOverride.
+  void ResetBlockPathsForTesting();
+
+  BlockPathRulesStatus GetBlockPathRulesStatusForTesting() {
+    return block_path_rules_status_;
+  }
+
+  bool IsPathInDowngradedReadPathsForTesting(const url::Origin& origin,
+                                             const base::FilePath& path) const;
+
  protected:
   SEQUENCE_CHECKER(sequence_checker_);
 
@@ -359,6 +489,11 @@ class ChromeFileSystemAccessPermissionContext
 
   void PermissionGrantDestroyed(PermissionGrantImpl* grant);
 
+  // Restores the read permission for `path` if it was previously downgraded,
+  // e.g. by a `remove()` call.
+  void MaybeRestoreReadPermission(const url::Origin& origin,
+                                  const base::FilePath& path);
+
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
   void OnContentAnalysisComplete(
       std::vector<content::PathInfo> entries,
@@ -367,11 +502,20 @@ class ChromeFileSystemAccessPermissionContext
       std::vector<bool> allowed);
 #endif
 
+  void CheckShouldBlockAccessToPathAndReply(
+      base::FilePath path,
+      HandleType handle_type,
+      UserAction user_action,
+      std::vector<BlockPathRule> extra_rules,
+      base::OnceCallback<void(bool)> callback,
+      BlockPathRules block_path_rules);
+
   // Checks whether the file or directory at `path` corresponds to a directory
   // Chrome considers sensitive (i.e. system files). Calls `callback` with
   // whether the path is on the blocklist.
   void CheckPathAgainstBlocklist(const content::PathInfo& path_info,
                                  HandleType handle_type,
+                                 UserAction user_action,
                                  base::OnceCallback<void(bool)> callback);
   void DidCheckPathAgainstBlocklist(
       const url::Origin& origin,
@@ -379,13 +523,14 @@ class ChromeFileSystemAccessPermissionContext
       HandleType handle_type,
       UserAction user_action,
       content::GlobalRenderFrameHostId frame_id,
+      const base::TimeTicks start_time,
       base::OnceCallback<void(SensitiveEntryResult)> callback,
       bool should_block);
 
   // An origin can only specify up to `max_ids_per_origin_` custom IDs per
   // origin (not including the default ID). If this limit is exceeded, evict
   // using LRU.
-  void MaybeEvictEntries(base::Value::Dict& dict);
+  void MaybeEvictEntries(base::DictValue& dict) const;
 
   // Schedules triggering all open windows to update their File System Access
   // usage indicator icon. Multiple calls to this method can result in only a
@@ -407,7 +552,7 @@ class ChromeFileSystemAccessPermissionContext
                                    GrantType grant_type) const;
 
   // Returns whether the grant has a `GRANTED` permission status.
-  bool HasGrantedActivePermissionStatus(PermissionGrantImpl* grant) const;
+  bool HasGrantedActivePermissionStatus(const PermissionGrantImpl* grant) const;
 
   // Given the current state of the origin, returns whether it is eligible to
   // trigger the restore permission prompt instead of the permission request
@@ -467,7 +612,7 @@ class ChromeFileSystemAccessPermissionContext
                                GrantType grant_type);
 
   // Returns whether a permission object value has matching fields.
-  bool HasMatchingValue(const base::Value::Dict& value,
+  bool HasMatchingValue(const base::DictValue& value,
                         const base::FilePath& file_path,
                         HandleType handle_type,
                         GrantType grant_type);
@@ -511,7 +656,11 @@ class ChromeFileSystemAccessPermissionContext
   // revoked. If the `file_path` is provided, then only the grant matching
   // the file path is revoked.
   bool RevokeActiveGrants(const url::Origin& origin,
-                          base::FilePath file_path = base::FilePath());
+                          const base::FilePath& file_path = base::FilePath());
+
+  void InitializeBlockPaths();
+  void InitializeBlockPathsInternal();
+  void UpdateBlockPaths(std::unique_ptr<BlockPathRules> block_path_rules);
 
   base::WeakPtr<ChromeFileSystemAccessPermissionContext> GetWeakPtr();
 
@@ -532,6 +681,9 @@ class ChromeFileSystemAccessPermissionContext
   base::ScopedObservation<web_app::WebAppInstallManager,
                           web_app::WebAppInstallManagerObserver>
       install_manager_observation_{this};
+
+  // Updates the File System Access page action icon for the given tab.
+  void UpdatePageAction(FileSystemAccessPageActionController* controller);
 #endif
 
   // Number of custom IDs an origin can specify.
@@ -545,6 +697,20 @@ class ChromeFileSystemAccessPermissionContext
       file_created_from_show_save_file_picker_callback_list_;
 
   std::optional<base::FilePath> profile_path_override_;
+
+  // The normalization flag should be consistent during the initialization and
+  // checking, so we store is as a member variable.
+  bool should_normalize_file_path_ = false;
+
+  // The initialization of `block_path_rules_` needs to be done in a blocking
+  // sequence so it's asynchronous. When we need to check if a path should be
+  // blocked, we need to wait until the initialization completes, hence the
+  // `CallbackListSubscription` and `OnceCallbackList`.
+  std::unique_ptr<BlockPathRules> block_path_rules_;
+  BlockPathRulesStatus block_path_rules_status_ =
+      BlockPathRulesStatus::kNotInitialized;
+  std::vector<base::CallbackListSubscription> block_rules_check_subscription_;
+  base::OnceCallbackList<void(BlockPathRules)> block_rules_check_callbacks_;
 
   base::WeakPtrFactory<ChromeFileSystemAccessPermissionContext> weak_factory_{
       this};

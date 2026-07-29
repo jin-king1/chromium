@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {clearAllCrashKeys, getCrashKeys} from '//ios/web/js_features/crash_keys/resources/crash_keys.js';
 import {sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.js';
 
 /**
@@ -10,8 +11,8 @@ import {sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.j
  * @param closure The closure block to be executed.
  * @return The result of running `closure`.
  */
-export function catchAndReportErrors(functionName: string,
-    closure: Function, closureArgs?: unknown[]): unknown {
+export function catchAndReportErrors(
+    apiName: string, closure: Function, closureArgs?: unknown[]): unknown {
   try {
     return closure.apply(null, closureArgs);
   } catch (error) {
@@ -22,14 +23,23 @@ export function catchAndReportErrors(functionName: string,
       if (error.stack) {
         errorStack = error.stack;
       }
-      if (errorStack.length > 0) {
-        errorStack += '\n';
-      }
-      errorStack += functionName;
     }
-    sendWebKitMessage(
-        'WindowErrorResultHandler',
-        {'message': errorMessage, 'stack': errorStack});
+    if (errorMessage && errorStack) {
+      const stackFrames = errorStack.split('\n');
+      if (stackFrames?.length > 0 &&
+          stackFrames[0]?.includes('@http')) {
+        // If the top of the stack is a webpage script, redact the message.
+        errorMessage = 'JS error in webpage script.';
+      }
+      const crashKeys = getCrashKeys();
+      clearAllCrashKeys();
+      sendWebKitMessage('WindowErrorResultHandler', {
+        'message': errorMessage,
+        'stack': errorStack,
+        'api': apiName,
+        'crashKeys': crashKeys,
+      });
+    }
   }
   return undefined;
 }

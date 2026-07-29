@@ -10,16 +10,15 @@
 #include <string>
 
 #include "base/component_export.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
 #include "components/input/event_with_latency_info.h"
-#include "components/input/input_router_impl.h"
 #include "components/input/render_input_router.h"
 #include "components/viz/common/hit_test/aggregated_hit_test_region.h"
 #include "components/viz/common/hit_test/hit_test_data_provider.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "third_party/blink/public/mojom/input/input_event_result.mojom-shared.h"
 #include "third_party/blink/public/mojom/page/widget.mojom-shared.h"
-#include "ui/events/blink/did_overscroll_params.h"
 #include "ui/events/event.h"
 
 namespace blink {
@@ -29,6 +28,7 @@ class WebMouseWheelEvent;
 
 namespace ui {
 class Cursor;
+class FilteredGestureProvider;
 class LatencyInfo;
 }  // namespace ui
 
@@ -80,8 +80,6 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
   virtual void ProcessAckedTouchEvent(
       const TouchEventWithLatencyInfo& touch,
       blink::mojom::InputEventResultState ack_result);
-
-  virtual void DidOverscroll(const ui::DidOverscrollParams& params) {}
 
   virtual void DidStopFlinging() {}
 
@@ -157,6 +155,14 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
       RenderWidgetHostViewInput* target_view,
       gfx::PointF* transformed_point);
 
+  // Returns true if |target_view| is one of |starting_view|'s ancestors.
+  // If |stay_within| is provided, we only consider ancestors within that
+  // sub-tree.
+  static bool IsAncestorView(
+      RenderWidgetHostViewInput* starting_view,
+      const RenderWidgetHostViewInput* target_view,
+      const RenderWidgetHostViewInput* stay_within = nullptr);
+
   // On success, returns true and modifies |*transform| to represent the
   // transformation mapping a point in the coordinate space of this view
   // into the coordinate space of the target view.
@@ -201,6 +207,8 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
       const blink::WebGestureEvent& event,
       blink::mojom::InputEventResultState ack_result);
 
+  virtual scoped_refptr<ui::FilteredGestureProvider> GetGestureProvider();
+
   virtual void SetLastPointerType(ui::EventPointerType last_pointer_type) {}
 
   // Sets the cursor for this view to the one specified.
@@ -210,7 +218,10 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
   // the current cursor's view which was set by UpdateCursor.
   virtual void DisplayCursor(const ui::Cursor& cursor);
 
-  // Views that manage cursors for window return a CursorManager. Other views
+  // Views that manage cursors for a window return a CursorManager. In the
+  // case of nested WebContents, the RWHV for the inner frame tree may defer
+  // cursor management to the root view and returns its CursorManager as it
+  // represents the appropriate one for the window. Other views
   // return nullptr.
   virtual CursorManager* GetCursorManager();
 
@@ -237,6 +248,7 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
       blink::mojom::StylusWritingFocusResultPtr focus_result) {}
 
   virtual void OnAutoscrollStart() = 0;
+  virtual void OnAutoscrollTargetResolved(bool success) {}
 
   // Add and remove observers for lifetime event notifications. The order in
   // which notifications are sent to observers is undefined. Clients must be

@@ -18,12 +18,17 @@ import androidx.annotation.XmlRes;
 import androidx.appcompat.content.res.AppCompatResources;
 import androidx.appcompat.widget.Toolbar;
 import androidx.core.graphics.drawable.DrawableCompat;
+import androidx.preference.Preference;
 import androidx.preference.PreferenceFragmentCompat;
+import androidx.preference.PreferenceGroup;
+import androidx.preference.PreferenceScreen;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.util.ToolbarUtils;
 import org.chromium.ui.drawable.StateListDrawableBuilder;
+
+import java.util.ArrayList;
 
 /** A helper class for Settings. */
 @NullMarked
@@ -76,8 +81,7 @@ public class SettingsUtils {
         Drawable icon = AppCompatResources.getDrawable(context, resId);
         // DrawableCompat.setTint() doesn't work well on BitmapDrawables on older versions.
         icon.setColorFilter(
-                AppCompatResources.getColorStateList(context, colorId).getDefaultColor(),
-                PorterDuff.Mode.SRC_IN);
+                context.getColorStateList(colorId).getDefaultColor(), PorterDuff.Mode.SRC_IN);
         return icon;
     }
 
@@ -112,9 +116,45 @@ public class SettingsUtils {
 
         Drawable tintableDrawable = DrawableCompat.wrap(builder.build());
         DrawableCompat.setTintList(
-                tintableDrawable,
-                AppCompatResources.getColorStateList(
-                        context, R.color.default_icon_color_tint_list));
+                tintableDrawable, context.getColorStateList(R.color.default_icon_color_tint_list));
         return tintableDrawable;
+    }
+
+    /**
+     * Traverses a {@link PreferenceScreen} and returns a flat list of all visible preferences.
+     *
+     * @param preferenceScreen The preference screen to traverse.
+     * @return A list of visible preferences.
+     */
+    public static ArrayList<Preference> getVisiblePreferences(PreferenceScreen preferenceScreen) {
+        ArrayList<Preference> visiblePreferences = new ArrayList<>();
+        if (preferenceScreen == null) return visiblePreferences;
+
+        for (int i = 0; i < preferenceScreen.getPreferenceCount(); i++) {
+            Preference preference = preferenceScreen.getPreference(i);
+            if (preference.isVisible()) {
+                addVisiblePreferences(preference, visiblePreferences);
+            }
+        }
+        return visiblePreferences;
+    }
+
+    /**
+     * Recursively adds all visible preferences from a {@link PreferenceGroup}.
+     *
+     * @param preference The preference to start from.
+     * @param visiblePreferences The list to add visible preferences to.
+     */
+    private static void addVisiblePreferences(
+            Preference preference, ArrayList<Preference> visiblePreferences) {
+        visiblePreferences.add(preference);
+        if (preference instanceof PreferenceGroup preferenceGroup) {
+            for (int i = 0; i < preferenceGroup.getPreferenceCount(); i++) {
+                Preference nestedPreference = preferenceGroup.getPreference(i);
+                if (nestedPreference.isVisible()) {
+                    addVisiblePreferences(nestedPreference, visiblePreferences);
+                }
+            }
+        }
     }
 }

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "base/check_is_test.h"
+#include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
@@ -27,13 +28,12 @@
 #include "components/content_settings/core/browser/content_settings_observer.h"
 #include "components/content_settings/core/browser/content_settings_utils.h"
 #include "components/content_settings/core/browser/user_modifiable_provider.h"
-
+#include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_constraints.h"
 #include "components/content_settings/core/common/content_settings_metadata.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/keyed_service/core/refcounted_keyed_service.h"
-#include "components/prefs/pref_change_registrar.h"
 
 // In the context of active expiry enforcement, content settings are considered
 // expired if their expiration time is before 'Now() + `kEagerExpiryBuffer` at
@@ -115,10 +115,16 @@ class HostContentSettingsMap : public content_settings::Observer,
       ContentSettingsType content_type,
       ProviderType* provider_id = nullptr) const;
 
+  // Like GetDefaultContentSetting but returns a permission setting.
+  // Returns null if no default setting is set.
+  PermissionSetting GetDefaultPermissionSetting(
+      ContentSettingsType content_type,
+      ProviderType* provider_id = nullptr) const;
+
   // Returns a single |ContentSetting| which applies to the given URLs.  Note
   // that certain internal schemes are allowlisted. For |CONTENT_TYPE_COOKIES|,
   // |CookieSettings| should be used instead. For content types that can't be
-  // converted to a |ContentSetting|, |GetContentSettingValue| should be called.
+  // converted to a |ContentSetting|, |GetWebsiteSetting| should be called.
   // If there is no content setting, returns CONTENT_SETTING_DEFAULT. |info| is
   // populated as explained in |GetWebsiteSetting()|.
   //
@@ -132,6 +138,22 @@ class HostContentSettingsMap : public content_settings::Observer,
   // This is the same as GetContentSetting() but ignores providers which are not
   // user-controllable (e.g. policy and extensions).
   ContentSetting GetUserModifiableContentSetting(
+      const GURL& primary_url,
+      const GURL& secondary_url,
+      ContentSettingsType content_type) const;
+
+  // Same as |GetContentSetting| but returns a variant for either
+  // ContentSettings or other more complex permission state. May be called on
+  // any thread.
+  PermissionSetting GetPermissionSetting(
+      const GURL& primary_url,
+      const GURL& secondary_url,
+      ContentSettingsType content_type,
+      content_settings::SettingInfo* info = nullptr) const;
+
+  // This is the same as GetPermissionSetting() but ignores providers which are
+  // not user-controllable (e.g. policy and extensions).
+  PermissionSetting GetUserModifiablePermissionSetting(
       const GURL& primary_url,
       const GURL& secondary_url,
       ContentSettingsType content_type) const;
@@ -186,6 +208,13 @@ class HostContentSettingsMap : public content_settings::Observer,
   void SetDefaultContentSetting(ContentSettingsType content_type,
                                 ContentSetting setting);
 
+  // Sets the permission setting for a particular content type. This method must
+  // not be invoked on an incognito map.
+  //
+  // This should only be called on the UI thread.
+  void SetDefaultPermissionSetting(ContentSettingsType content_type,
+                                   std::optional<PermissionSetting> setting);
+
   // Sets the content |setting| for the given patterns and|content_type|
   // applying any provided |constraints|. Setting the value to
   // CONTENT_SETTING_DEFAULT causes the default setting for that type to be used
@@ -229,6 +258,24 @@ class HostContentSettingsMap : public content_settings::Observer,
       ContentSetting setting,
       const content_settings::ContentSettingConstraints& constraints = {});
 
+  // Like SetContentSettingCustomScope but accepts PermissionSettings. An empty
+  // setting means that the setting should be deleted.
+  void SetPermissionSettingCustomScope(
+      const ContentSettingsPattern& primary_pattern,
+      const ContentSettingsPattern& secondary_pattern,
+      ContentSettingsType content_type,
+      std::optional<PermissionSetting> setting,
+      const content_settings::ContentSettingConstraints& constraints = {});
+
+  // Like SetContentSettingDefaultScope but accepts PermissionSettings. An empty
+  // setting means that the setting should be deleted.
+  void SetPermissionSettingDefaultScope(
+      const GURL& primary_url,
+      const GURL& secondary_url,
+      ContentSettingsType content_type,
+      std::optional<PermissionSetting> setting,
+      const content_settings::ContentSettingConstraints& constraints = {});
+
   // Sets the |value| for the default scope of the url that is appropriate for
   // the given |content_type| applying any provided |constraints|. Setting the
   // value to NONE (base::Value()) removes the default pattern pair for this
@@ -242,7 +289,7 @@ class HostContentSettingsMap : public content_settings::Observer,
       const GURL& requesting_url,
       const GURL& top_level_url,
       ContentSettingsType content_type,
-      base::Value value,
+      const base::Value& value,
       const content_settings::ContentSettingConstraints& constraints = {});
 
   // Sets a rule to apply the |value| for all sites matching |pattern|,
@@ -253,7 +300,7 @@ class HostContentSettingsMap : public content_settings::Observer,
       const ContentSettingsPattern& primary_pattern,
       const ContentSettingsPattern& secondary_pattern,
       ContentSettingsType content_type,
-      base::Value value,
+      const base::Value& value,
       const content_settings::ContentSettingConstraints& constraints = {});
 
   // Check if a call to SetNarrowestContentSetting would succeed or if it would
@@ -275,7 +322,7 @@ class HostContentSettingsMap : public content_settings::Observer,
       const GURL& primary_url,
       const GURL& secondary_url,
       ContentSettingsType type,
-      ContentSetting setting,
+      std::optional<PermissionSetting> setting,
       const content_settings::ContentSettingConstraints& constraints = {});
 
   // Updates the last used time to a recent timestamp.
@@ -284,15 +331,17 @@ class HostContentSettingsMap : public content_settings::Observer,
                           ContentSettingsType type,
                           const base::Time time);
 
-  // Reset the last visited time to base::Time().
-  void ResetLastVisitedTime(const ContentSettingsPattern& primary_pattern,
-                            const ContentSettingsPattern& secondary_pattern,
-                            ContentSettingsType type);
   // Updates the last visited time to a recent coarse timestamp
   // (week-precision).
   void UpdateLastVisitedTime(const ContentSettingsPattern& primary_pattern,
                              const ContentSettingsPattern& secondary_pattern,
                              ContentSettingsType type);
+
+  // Sets the `autorevocation_bypassed_by_user` field for the given setting.
+  void SetAutorevocationBypassedByUser(
+      const ContentSettingsPattern& primary_pattern,
+      const ContentSettingsPattern& secondary_pattern,
+      ContentSettingsType type);
 
   // Updates the expiration to `lifetime + now()`, if `setting_to_match` is
   // nullopt or if it matches the rule's value. Returns the TimeDelta between
@@ -338,13 +387,18 @@ class HostContentSettingsMap : public content_settings::Observer,
       const ContentSettingsPattern& secondary_pattern,
       ContentSettingsTypeSet content_type_set) override;
 
-
   // Whether this settings map is for an incognito or guest session.
   bool IsOffTheRecord() const { return is_off_the_record_; }
 
   // Adds/removes an observer for content settings changes.
   void AddObserver(content_settings::Observer* observer);
   void RemoveObserver(content_settings::Observer* observer);
+
+  // Forces a sync of content settings and invokes callback when the sync is
+  // done. Useful for ensuring that NOTIFICATIONS content settings are
+  // up-to-date on Android, where they reflect the state of the corresponding OS
+  // channels and need to be initialized from the OS.
+  void EnsureSettingsUpToDate(base::OnceClosure callback);
 
   // Schedules any pending lossy website settings to be written to disk.
   void FlushLossyWebsiteSettings();
@@ -379,6 +433,16 @@ class HostContentSettingsMap : public content_settings::Observer,
       OneTimePermissionExpiryEnforcementUmaInteractiveUiTest,
       TestExpiryEnforcement);
   FRIEND_TEST_ALL_PREFIXES(HostContentSettingsMapTest,
+                           MigrateSettingsEmbeddingOriginToWildcard);
+  FRIEND_TEST_ALL_PREFIXES(
+      HostContentSettingsMapTest,
+      MigrateSettingsEmbeddingOriginToWildcardForGeolocationWithOptions);
+  FRIEND_TEST_ALL_PREFIXES(HostContentSettingsMapTest,
+                           SetOneTimeAndPersistentGeolocationSetting);
+  FRIEND_TEST_ALL_PREFIXES(
+      HostContentSettingsMapTest,
+      SetOneTimeGeolocationGrantWithPersistentPermissionBlocked);
+  FRIEND_TEST_ALL_PREFIXES(HostContentSettingsMapTest,
                            MigrateRequestingAndTopLevelOriginSettings);
   FRIEND_TEST_ALL_PREFIXES(
       HostContentSettingsMapTest,
@@ -389,13 +453,13 @@ class HostContentSettingsMap : public content_settings::Observer,
 
   ~HostContentSettingsMap() override;
 
-  ContentSetting GetDefaultContentSettingFromProvider(
+  std::optional<PermissionSetting> GetDefaultPermissionSettingFromProvider(
       ContentSettingsType content_type,
       content_settings::ProviderInterface* provider) const;
 
   // Retrieves default content setting for |content_type|, and writes the
   // provider's type to |provider_type| (must not be null).
-  ContentSetting GetDefaultContentSettingInternal(
+  PermissionSetting GetDefaultPermissionSettingInternal(
       ContentSettingsType content_type,
       ProviderType* provider_type) const;
 
@@ -528,8 +592,12 @@ class HostContentSettingsMap : public content_settings::Observer,
 
   base::ThreadChecker thread_checker_;
 
-  base::ObserverList<content_settings::Observer>::UncheckedAndDanglingUntriaged
-      observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      content_settings::Observer,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::
+      UncheckedAndDanglingUntriaged observers_;
 
   // When true, allows setting secondary patterns even for types that should not
   // allow them. Only used for testing that inserts previously valid patterns in

@@ -9,9 +9,10 @@
 #include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "components/history/core/browser/history_service.h"
+#include "components/history/core/browser/history_types.h"
 #include "components/history_clusters/core/config.h"
 #include "components/history_clusters/core/history_clusters_util.h"
-#include "components/optimization_guide/core/optimization_guide_decider.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/site_engagement/core/site_engagement_score_provider.h"
 
@@ -153,15 +154,19 @@ ContextClustererHistoryServiceObserver::
 
 void ContextClustererHistoryServiceObserver::OnURLVisited(
     history::HistoryService* history_service,
-    const history::URLRow& url_row,
-    const history::VisitRow& new_visit) {
+    const history::VisitedURLInfo& visited_url_info) {
   TRACE_EVENT0("browser",
                "ContextClusteringHistoryServiceObserver::OnURLVisited");
+  if (visited_url_info.response_code_category ==
+      history::VisitResponseCodeCategory::k404) {
+    return;
+  }
 
   ScopedVisitProcessingTimer url_visited_processing_timer(
       VisitProcessingStage::kUrlVisited);
 
   // Update the normalized URL if it's a search URL.
+  const history::URLRow& url_row = visited_url_info.url_row;
   std::string normalized_url = url_row.url().possibly_invalid_spec();
   std::u16string search_terms;
   bool is_search_normalized_url = false;
@@ -175,6 +180,7 @@ void ContextClustererHistoryServiceObserver::OnURLVisited(
     }
   }
 
+  const history::VisitRow& new_visit = visited_url_info.visit_row;
   history::ClusterVisit cluster_visit =
       CreateClusterVisit(normalized_url, is_search_normalized_url, new_visit);
 
@@ -209,7 +215,7 @@ void ContextClustererHistoryServiceObserver::OnURLVisited(
   }
 
   // See what cluster we should add it to.
-  std::optional<int64_t> cluster_id;
+  std::optional<history::ClusterId> cluster_id;
 
   std::vector<history::VisitID> previous_visit_ids_to_check;
   if (new_visit.opener_visit != 0) {
@@ -251,7 +257,7 @@ void ContextClustererHistoryServiceObserver::OnURLVisited(
   // Add a new cluster if we haven't assigned one already.
   if (is_new_cluster) {
     cluster_id_counter_++;
-    cluster_id = cluster_id_counter_;
+    cluster_id = history::ClusterId(cluster_id_counter_);
 
     in_progress_clusters_.emplace(*cluster_id, InProgressCluster());
   }
@@ -280,7 +286,7 @@ void ContextClustererHistoryServiceObserver::OnURLVisited(
     //   returned the IDs, there's already a callback pending that will add the
     //   visits.
     // For clusters whose IDs are already known, add the visits here.
-    if (in_progress_cluster.persisted_cluster_id > 0) {
+    if (in_progress_cluster.persisted_cluster_id.value() > 0) {
       // Persist visit to existing cluster.
       history_service->AddVisitsToCluster(
           in_progress_cluster.persisted_cluster_id, {std::move(cluster_visit)},
@@ -327,7 +333,7 @@ void ContextClustererHistoryServiceObserver::OnHistoryDeletions(
   }
 
   // Delete relevant visits from in-progress clusters.
-  base::flat_set<int64_t> clusters_to_finalize;
+  base::flat_set<history::ClusterId> clusters_to_finalize;
   for (const auto& deleted_url : deletion_info.deleted_rows()) {
     std::string normalized_deleted_url =
         deleted_url.url().possibly_invalid_spec();
@@ -347,7 +353,7 @@ void ContextClustererHistoryServiceObserver::OnHistoryDeletions(
   }
 
   // Finalize clusters.
-  for (int64_t cluster_id : clusters_to_finalize) {
+  for (history::ClusterId cluster_id : clusters_to_finalize) {
     FinalizeCluster(cluster_id);
   }
 }
@@ -364,12 +370,8 @@ void ContextClustererHistoryServiceObserver::CleanUpClusters() {
     return;
   }
 
-  base::UmaHistogramCounts1000(
-      "History.Clusters.ContextClusterer.NumClusters.AtCleanUp",
-      in_progress_clusters_.size());
-
   // See which clusters we need to clean up.
-  base::flat_set<int64_t> clusters_to_finalize;
+  base::flat_set<history::ClusterId> clusters_to_finalize;
   for (const auto& cluster_id_and_cluster : in_progress_clusters_) {
     if ((clock_->Now() - cluster_id_and_cluster.second.last_visit_time) >
         GetConfig().cluster_navigation_time_cutoff) {
@@ -378,21 +380,13 @@ void ContextClustererHistoryServiceObserver::CleanUpClusters() {
   }
 
   // Finalize clusters.
-  for (int64_t cluster_id : clusters_to_finalize) {
+  for (history::ClusterId cluster_id : clusters_to_finalize) {
     FinalizeCluster(cluster_id);
   }
-
-  base::UmaHistogramCounts1000(
-      "History.Clusters.ContextClusterer.NumClusters.CleanedUp",
-      clusters_to_finalize.size());
-
-  base::UmaHistogramCounts1000(
-      "History.Clusters.ContextClusterer.NumClusters.PostCleanUp",
-      in_progress_clusters_.size());
 }
 
 void ContextClustererHistoryServiceObserver::FinalizeCluster(
-    int64_t cluster_id) {
+    history::ClusterId cluster_id) {
   DCHECK(in_progress_clusters_.find(cluster_id) != in_progress_clusters_.end());
   auto& cluster = in_progress_clusters_.at(cluster_id);
 
@@ -421,19 +415,12 @@ void ContextClustererHistoryServiceObserver::FinalizeCluster(
 
 void ContextClustererHistoryServiceObserver::OnPersistedClusterIdReceived(
     base::TimeTicks start_time,
-    int64_t cluster_id,
-    int64_t persisted_cluster_id) {
+    history::ClusterId cluster_id,
+    history::ClusterId persisted_cluster_id) {
   LogDbLatencyHistogram(ContextClustererDbLatencyType::kReserveNextClusterId,
                         start_time);
 
   auto cluster_it = in_progress_clusters_.find(cluster_id);
-  // This is expected to emit an entry if a cluster was cleaned up  (i.e. erased
-  // from `in_progress_clusters_` instead of flagged as `cleaned_up = true`)
-  // when it had no unpersisted visits left and the first visit of a cluster was
-  // already sent for persistence AND persistence is taking a long time.
-  base::UmaHistogramBoolean(
-      "History.Clusters.ContextClusterer.ClusterCleanedUpBeforePersistence",
-      cluster_it == in_progress_clusters_.end());
   if (cluster_it == in_progress_clusters_.end()) {
     return;
   }
@@ -488,7 +475,7 @@ ContextClustererHistoryServiceObserver::CreateClusterVisit(
 
 float ContextClustererHistoryServiceObserver::GetEngagementScore(
     const GURL& normalized_url) {
-  std::string visit_host = normalized_url.host();
+  std::string visit_host = normalized_url.GetHost();
   auto it = engagement_score_cache_.Peek(visit_host);
   if (it != engagement_score_cache_.end() &&
       it->second.expiry_time > clock_->Now()) {

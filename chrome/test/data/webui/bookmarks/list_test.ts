@@ -18,7 +18,7 @@ suite('<bookmarks-list>', function() {
   setup(function() {
     const nodes = testTree(createFolder('10', [
       createItem('1'),
-      createFolder('3', []),
+      createFolder('3', [createItem('8')]),
       createItem('5'),
       createItem('7'),
     ]));
@@ -105,6 +105,37 @@ suite('<bookmarks-list>', function() {
     assertEquals('1', lastAction.anchor);
     assertDeepEquals(['1', '3'], lastAction.items);
   });
+
+  test('resets focused index if out of bounds', async () => {
+    let items = list.shadowRoot.querySelectorAll('bookmarks-item');
+    assertEquals(4, items.length);
+    assertEquals(0, items[0]!.tabIndex);
+
+    items[3]!.focus();
+    customClick(items[3]!);
+    await microtasksFinished();
+    assertEquals(-1, items[0]!.tabIndex);
+    assertEquals(0, items[3]!.tabIndex);
+
+    // Changing the search term won't reset, if the index is still in bounds.
+    store.data.search.term = 'google.com';
+    store.notifyObservers();
+    await microtasksFinished();
+
+    items = list.shadowRoot.querySelectorAll('bookmarks-item');
+    assertEquals(4, items.length);
+    assertEquals(0, items[3]!.tabIndex);
+
+    // Changing the selected folder such that the index is out of bounds resets
+    // the focused index so that the list remains in the tab order.
+    store.data.selectedFolder = '3';
+    store.notifyObservers();
+    await eventToPromise('items-rendered', list.$.list);
+
+    items = list.shadowRoot.querySelectorAll('bookmarks-item');
+    assertEquals(1, items.length);
+    assertEquals(0, items[0]!.tabIndex);
+  });
 });
 
 suite('<bookmarks-list> integration test', function() {
@@ -189,8 +220,7 @@ suite('<bookmarks-list> integration test', function() {
     assertDeepEquals('5', store.data.selection.anchor);
   });
 
-  // TODO(b/343974530) disable for flaky / unpredictable failures.
-  test.skip('delete restores focus on item after anchor', async function() {
+  test('delete restores focus on item after anchor', async function() {
     customClick(items[2]!);
     customClick(items[4]!, {ctrlKey: true});
     assertDeepEquals(['5', '9'], normalizeIterable(store.data.selection.items));
@@ -262,14 +292,14 @@ suite('<bookmarks-list> command manager integration test', function() {
 
   test('show context menu', async () => {
     const commandManager =
-        app.shadowRoot!.querySelector('bookmarks-command-manager')!;
-    const list = app.shadowRoot!.querySelector('bookmarks-list')!;
+        app.shadowRoot.querySelector('bookmarks-command-manager')!;
+    const list = app.shadowRoot.querySelector('bookmarks-list')!;
     list.dispatchEvent(new CustomEvent(
         'contextmenu',
         {bubbles: true, composed: true, detail: {clientX: 0, clientY: 0}}));
 
-    assertEquals(MenuSource.LIST, commandManager.getMenuSourceForTesting());
     await microtasksFinished();
+    assertEquals(MenuSource.LIST, commandManager.getMenuSourceForTesting());
     const menuCommands =
         commandManager.shadowRoot.querySelectorAll<HTMLElement>(
             '.dropdown-item');

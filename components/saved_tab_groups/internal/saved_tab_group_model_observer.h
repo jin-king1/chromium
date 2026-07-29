@@ -36,6 +36,10 @@ class SavedTabGroupModelObserver {
   virtual void SavedTabGroupLastUserInteractionTimeUpdated(
       const base::Uuid& saved_group_id) {}
 
+  virtual void SavedTabGroupTabLastSeenTimeUpdated(
+      const base::Uuid& saved_tab_id,
+      TriggerSource source) {}
+
   // Called when the title, tabs, or color change. `group_guid` denotes the
   // group that is currently being updated. `tab_guid` denotes if a tab in this
   // group was changed (added, removed, updated). Otherwise, only the group is
@@ -58,8 +62,9 @@ class SavedTabGroupModelObserver {
   // Called when sync / DataTypeStore updates data.
   virtual void SavedTabGroupAddedFromSync(const base::Uuid& guid) {}
 
-  // TODO(crbug.com/40870833): Decide if we want to also remove the tabgroup
-  // from the tabstrip if it is open, or just remove it from sync.
+  // When a group is removed from sync, it is removed from the model. If the
+  // group is open locally, it will remain in the tabstrip but become unsaved.
+  // See crbug.com/40870833 for context.
   virtual void SavedTabGroupRemovedFromSync(
       const SavedTabGroup& removed_group) {}
 
@@ -72,8 +77,8 @@ class SavedTabGroupModelObserver {
       const std::optional<base::Uuid>& tab_guid) {}
 
   // Called when SavedTabGroupModel::LoadStoredEntries has finished loading.
-  // This is currently used to notify the SavedTabGroupKeyedService to link any
-  // tabs restore through session restore to the corresponding SavedTabGroup
+  // This is used to notify the TabGroupSyncService to link any
+  // tabs restored via session restore to the corresponding SavedTabGroup
   // metadata in the SavedTabGroupModel.
   virtual void SavedTabGroupModelLoaded() {}
 
@@ -82,6 +87,11 @@ class SavedTabGroupModelObserver {
   // bridge.
   virtual void OnSyncBridgeUpdateTypeChanged(
       SyncBridgeUpdateType sync_bridge_update_type) {}
+
+  // Called notify that a shared tab group that is transitioning to saved group
+  // is removed.
+  virtual void TabGroupTransitioningToSavedRemovedFromSync(
+      const base::Uuid& group_guid) {}
 
  protected:
   SavedTabGroupModelObserver() = default;

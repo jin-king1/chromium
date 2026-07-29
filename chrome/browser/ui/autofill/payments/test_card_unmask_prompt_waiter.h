@@ -5,7 +5,7 @@
 #ifndef CHROME_BROWSER_UI_AUTOFILL_PAYMENTS_TEST_CARD_UNMASK_PROMPT_WAITER_H_
 #define CHROME_BROWSER_UI_AUTOFILL_PAYMENTS_TEST_CARD_UNMASK_PROMPT_WAITER_H_
 
-#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/autofill/payments/chrome_payments_autofill_client.h"
 #include "components/autofill/core/browser/ui/payments/card_unmask_prompt_controller_impl.h"
 #include "components/prefs/pref_service.h"
@@ -36,9 +36,9 @@ class TestCardUnmaskPromptWaiter {
   bool EnterAndAcceptCvcDialog(const std::u16string& cvc);
 
  private:
-  raw_ptr<autofill::payments::ChromePaymentsAutofillClient> client_;
+  raw_ptr<payments::ChromePaymentsAutofillClient> client_;
   raw_ptr<TestCardUnmaskPromptControllerImpl> injected_controller_;
-  std::unique_ptr<autofill::CardUnmaskPromptControllerImpl> old_controller_;
+  std::unique_ptr<CardUnmaskPromptControllerImpl> old_controller_;
 };
 
 }  // namespace autofill

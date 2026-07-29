@@ -16,7 +16,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial.h"
 #include "base/run_loop.h"
-#include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/scoped_feature_list.h"
@@ -25,9 +24,9 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/component_updater/mock_component_updater_service.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/subresource_filter/content/browser/ruleset_publisher.h"
+#include "components/subresource_filter/content/browser/ruleset_service.h"
 #include "components/subresource_filter/content/browser/safe_browsing_ruleset_publisher.h"
-#include "components/subresource_filter/content/shared/browser/ruleset_publisher.h"
-#include "components/subresource_filter/content/shared/browser/ruleset_service.h"
 #include "components/subresource_filter/core/browser/subresource_filter_features.h"
 #include "components/subresource_filter/core/browser/subresource_filter_features_test_support.h"
 #include "components/subresource_filter/core/common/constants.h"
@@ -57,7 +56,7 @@ class TestRulesetService : public subresource_filter::RulesetService {
   TestRulesetService(const TestRulesetService&) = delete;
   TestRulesetService& operator=(const TestRulesetService&) = delete;
 
-  using UnindexedRulesetInfo = subresource_filter::UnindexedRulesetInfo;
+  using UnindexedRulesetInfo = ::subresource_filter::UnindexedRulesetInfo;
   void IndexAndStoreAndPublishRulesetIfNeeded(
       const UnindexedRulesetInfo& unindexed_ruleset_info) override {
     unindexed_ruleset_info_ = unindexed_ruleset_info;
@@ -131,6 +130,7 @@ class SubresourceFilterComponentInstallerTest : public PlatformTest {
   }
 
   void TearDown() override {
+    test_ruleset_service_ = nullptr;
     TestingBrowserProcess::GetGlobal()->SetRulesetService(nullptr);
     task_environment_.RunUntilIdle();
     PlatformTest::TearDown();
@@ -163,7 +163,7 @@ class SubresourceFilterComponentInstallerTest : public PlatformTest {
   }
 
   void LoadSubresourceFilterRuleset(int ruleset_format) {
-    base::Value::Dict manifest;
+    base::DictValue manifest;
     manifest.Set(
         SubresourceFilterComponentInstallerPolicy::kManifestRulesetFormatKey,
         ruleset_format);
@@ -188,8 +188,7 @@ class SubresourceFilterComponentInstallerTest : public PlatformTest {
   std::unique_ptr<SubresourceFilterComponentInstallerPolicy> policy_;
   TestingPrefServiceSimple pref_service_;
 
-  raw_ptr<TestRulesetService, DanglingUntriaged> test_ruleset_service_ =
-      nullptr;
+  raw_ptr<TestRulesetService> test_ruleset_service_ = nullptr;
 };
 
 TEST_F(SubresourceFilterComponentInstallerTest,
@@ -212,7 +211,7 @@ TEST_F(SubresourceFilterComponentInstallerTest,
   std::unique_ptr<SubresourceFilterMockComponentUpdateService>
       component_updater(new SubresourceFilterMockComponentUpdateService());
   EXPECT_CALL(*component_updater, RegisterComponent(testing::_))
-      .Times(1)
+
       .WillOnce(testing::Return(true));
   RegisterSubresourceFilterComponent(component_updater.get());
   task_environment_.RunUntilIdle();
@@ -309,8 +308,8 @@ TEST_F(SubresourceFilterComponentInstallerTest, InstallerAttributesDefault) {
 }
 
 TEST_F(SubresourceFilterComponentInstallerTest, InstallerAttributesCustomTag) {
-  constexpr char kTagKey[] = "tag";
-  constexpr char kTagValue[] = "a";
+  static constexpr char kTagKey[] = "tag";
+  static constexpr char kTagValue[] = "a";
 
   subresource_filter::testing::ScopedSubresourceFilterConfigurator
       scoped_configuration(CreateConfigUsingRulesetFlavor(kTagValue));

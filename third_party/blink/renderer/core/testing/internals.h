@@ -43,6 +43,7 @@ namespace blink {
 
 class Animation;
 class CallbackFunctionTest;
+class CanvasImageSource;
 class CanvasRenderingContext;
 class DOMArrayBuffer;
 class DOMPoint;
@@ -69,7 +70,6 @@ class HitTestResult;
 class InternalRuntimeFlags;
 class InternalSettings;
 class InternalsUkmRecorder;
-class LocalDOMWindow;
 class LocalFrame;
 class Location;
 class NADCAttributeTest;
@@ -106,7 +106,6 @@ class Internals final : public ScriptWrappable {
   GCObservation* observeGC(ScriptValue, ExceptionState&);
 
   bool isPreloaded(const String& url);
-  bool isPreloadedBy(const String& url, Document*);
   bool isLoading(const String& url);
   bool isLoadingFromMemoryCache(const String& url);
 
@@ -133,15 +132,19 @@ class Internals final : public ScriptWrappable {
   ShadowRoot* createUserAgentShadowRoot(Element* host);
 
   ShadowRoot* shadowRoot(Element* host);
-  String ShadowRootMode(const Node*, ExceptionState&) const;
   uint32_t countElementShadow(const Node*, ExceptionState&) const;
   const AtomicString& shadowPseudoId(Element*);
 
   // Animation testing.
   void pauseAnimations(double pause_time, ExceptionState&);
+  // An animation is composited if it is actively ticking on the compositor.
   bool isCompositedAnimation(Animation*);
+  // An animation is main thread if it is actively ticking on the main thread.
+  // Animations that don't need to tick at all are considered neither compositor
+  // nor main thread animations. Animations that fall into the neither category
+  // are those that are optimized out for having no visual effect.
+  bool isMainThreadAnimation(Animation*);
   void disableCompositedAnimation(Animation*);
-  void disableCSSAdditiveAnimations();
 
   // Advances an animated image. For BitmapImage (e.g., animated gifs) this
   // will advance to the next frame. For SVGImage, this will trigger an
@@ -236,11 +239,6 @@ class Internals final : public ScriptWrappable {
                                  unsigned start_offset,
                                  unsigned end_offset,
                                  bool);
-  String viewportAsText(Document*,
-                        float device_pixel_ratio,
-                        int available_width,
-                        int available_height,
-                        ExceptionState&);
 
   bool elementShouldAutoComplete(Element* input_element, ExceptionState&);
   String suggestedValue(Element*, ExceptionState&);
@@ -318,8 +316,6 @@ class Internals final : public ScriptWrappable {
                       const String& value,
                       ExceptionState&);
 
-  void triggerTestInspectorIssue(Document*);
-
   AtomicString htmlNamespace();
   Vector<AtomicString> htmlTags();
   AtomicString svgNamespace();
@@ -338,7 +334,6 @@ class Internals final : public ScriptWrappable {
                                 ExceptionState&) const;
 
   bool hasSpellingMarker(Document*, int from, int length, ExceptionState&);
-  bool hasGrammarMarker(Document*, int from, int length, ExceptionState&);
   void replaceMisspelled(Document*, const String&, ExceptionState&);
 
   bool canHyphenate(const AtomicString& locale);
@@ -352,12 +347,6 @@ class Internals final : public ScriptWrappable {
 
   String getParsedImportMap(Document*, ExceptionState&);
 
-  void SetDeviceProximity(Document*,
-                          const String& event_type,
-                          double value,
-                          double min,
-                          double max,
-                          ExceptionState&);
 
   String layerTreeAsText(Document*, unsigned flags, ExceptionState&) const;
   String layerTreeAsText(Document*, ExceptionState&) const;
@@ -368,8 +357,6 @@ class Internals final : public ScriptWrappable {
 
   unsigned numberOfLiveNodes() const;
   unsigned numberOfLiveDocuments() const;
-  LocalDOMWindow* OpenDummyInspectorFrontend(const String& url);
-  void CloseDummyInspectorFrontend();
 
   String counterValue(Element*);
 
@@ -424,7 +411,6 @@ class Internals final : public ScriptWrappable {
   void startTrackingRepaints(Document*, ExceptionState&);
   void stopTrackingRepaints(Document*, ExceptionState&);
   void updateLayoutAndRunPostLayoutTasks(Node*, ExceptionState&);
-  void forceFullRepaint(Document*, ExceptionState&);
 
   DOMRectList* draggableRegions(Document*, ExceptionState&);
   DOMRectList* nonDraggableRegions(Document*, ExceptionState&);
@@ -506,7 +492,8 @@ class Internals final : public ScriptWrappable {
   bool isInCanvasFontCache(Document*, const String&);
   unsigned canvasFontCacheMaxFonts();
   void forceLoseCanvasContext(CanvasRenderingContext* context);
-  void disableCanvasAcceleration(HTMLCanvasElement* canvas);
+  void disableCanvasAccelerationForCanvas2D(HTMLCanvasElement* canvas);
+  bool isCanvasImageSourceAccelerated(const CanvasImageSource*) const;
 
   String selectedHTMLForClipboard();
   String selectedTextForClipboard();
@@ -558,11 +545,6 @@ class Internals final : public ScriptWrappable {
 
   // Returns the current time ticks (in microseconds).
   int64_t currentTimeTicks();
-
-  // Returns the run state of the node's scroll animator (see
-  // ScrollAnimatorCompositorCoordinater::RunState), or -1 if the node does not
-  // have a scrollable area.
-  String getScrollAnimationState(Node*) const;
 
   // Returns the run state of the node's programmatic scroll animator (see
   // ScrollAnimatorCompositorCoordinater::RunState), or -1 if the node does not
@@ -628,10 +610,7 @@ class Internals final : public ScriptWrappable {
   Vector<String> getCreatorScripts(HTMLImageElement* img);
 
   ScriptPromise<IDLString> LCPPrediction(ScriptState*, Document* document);
-
-  ScriptPromise<IDLUndefined> exemptUrlFromNetworkRevocation(ScriptState*,
-                                                             const String& url);
-  String lastCompiledScriptFileName(Document* document);
+  String lastCompiledScriptFileName(Document*);
   bool lastCompiledScriptUsedCodeCache(Document* document);
 
  private:

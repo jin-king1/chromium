@@ -6,11 +6,11 @@
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
 
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -19,7 +19,6 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/profiles/profile.h"
@@ -34,6 +33,7 @@
 #include "extensions/browser/blocklist_extension_prefs.h"
 #include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_prefs.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/common/api/extension_action/action_info.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
@@ -74,21 +74,21 @@ class TestExtensionsMetricsProvider : public ExtensionsMetricsProvider {
       Profile* profile) override {
     extensions::ExtensionSet extensions;
     extensions.Insert(extensions::ExtensionBuilder()
-                          .SetManifest(base::Value::Dict()
+                          .SetManifest(base::DictValue()
                                            .Set("name", "Test extension")
                                            .Set("version", "1.0.0")
                                            .Set("manifest_version", 2))
                           .SetID("ahfgeienlihckogmohjhadlkjgocpleb")
                           .Build());
     extensions.Insert(extensions::ExtensionBuilder()
-                          .SetManifest(base::Value::Dict()
+                          .SetManifest(base::DictValue()
                                            .Set("name", "Test extension 2")
                                            .Set("version", "1.0.0")
                                            .Set("manifest_version", 2))
                           .SetID("pknkgggnfecklokoggaggchhaebkajji")
                           .Build());
     extensions.Insert(extensions::ExtensionBuilder()
-                          .SetManifest(base::Value::Dict()
+                          .SetManifest(base::DictValue()
                                            .Set("name", "Colliding Extension")
                                            .Set("version", "1.0.0")
                                            .Set("manifest_version", 2))
@@ -151,8 +151,7 @@ class ExtensionsMetricsProviderTest : public testing::Test {
   void TearDown() override { profile_manager_.DeleteAllTestingProfiles(); }
 
   Profile* CreateTestingProfile(const std::string& test_email) {
-    Profile* profile = profile_manager_.CreateTestingProfile(
-        test_email, /* is_main_profile= */ true);
+    Profile* profile = profile_manager_.CreateTestingProfile(test_email);
     profiles::SetLastUsedProfile(profile->GetBaseName());
     return profile;
   }
@@ -225,6 +224,11 @@ class ExtensionMetricsProviderInstallsTest
     prefs_ = extensions::ExtensionPrefs::Get(profile());
 
     last_sample_time_ = base::Time::Now() - base::Minutes(30);
+  }
+
+  void TearDown() override {
+    prefs_ = nullptr;
+    ExtensionServiceTestBase::TearDown();
   }
 
   ExtensionInstallProto ConstructProto(const Extension& extension) {
@@ -499,20 +503,21 @@ TEST_F(ExtensionMetricsProviderInstallsTest,
        TestGettingAllExtensionsInProfile) {
   scoped_refptr<const Extension> extension =
       ExtensionBuilder("extension").Build();
-  service()->AddExtension(extension.get());
+  registrar()->AddExtension(extension);
   scoped_refptr<const Extension> app =
       ExtensionBuilder("app", ExtensionBuilder::Type::PLATFORM_APP).Build();
-  service()->AddExtension(app.get());
-  service()->DisableExtension(app->id(),
-                              extensions::disable_reason::DISABLE_USER_ACTION);
+  registrar()->AddExtension(app);
+  registrar()->DisableExtension(
+      app->id(), {extensions::disable_reason::DISABLE_USER_ACTION});
 
   std::vector<ExtensionInstallProto> installs = GetInstallsForProfile();
   // There should be two installs total.
   ASSERT_EQ(2u, installs.size());
   // One should be the extension, and the other should be the app. We don't
   // check the specifics of the proto, since that's tested above.
-  EXPECT_TRUE(base::Contains(installs, ExtensionInstallProto::EXTENSION,
-                             &ExtensionInstallProto::type));
-  EXPECT_TRUE(base::Contains(installs, ExtensionInstallProto::PLATFORM_APP,
-                             &ExtensionInstallProto::type));
+  EXPECT_TRUE(std::ranges::contains(installs, ExtensionInstallProto::EXTENSION,
+                                    &ExtensionInstallProto::type));
+  EXPECT_TRUE(std::ranges::contains(installs,
+                                    ExtensionInstallProto::PLATFORM_APP,
+                                    &ExtensionInstallProto::type));
 }

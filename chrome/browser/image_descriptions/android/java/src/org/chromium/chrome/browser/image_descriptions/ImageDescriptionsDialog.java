@@ -11,9 +11,10 @@ import android.widget.CheckBox;
 import android.widget.RadioGroup;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.device.DeviceConditions;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.browser_ui.widget.RadioButtonWithDescription;
@@ -35,6 +36,7 @@ import org.chromium.ui.widget.Toast;
  * see a new option under the main menu to get image descriptions. If they select that option this
  * dialog will display giving the user the option to enable the feature.
  */
+@NullMarked
 public class ImageDescriptionsDialog
         implements ModalDialogProperties.Controller, RadioGroup.OnCheckedChangeListener {
     // Please treat this list as append only and keep it in sync with
@@ -59,24 +61,24 @@ public class ImageDescriptionsDialog
 
     // LINT.ThenChange(/tools/metrics/histograms/metadata/accessibility/enums.xml:AccessibilityImageLabelModeAndroid)
 
-    private ImageDescriptionsControllerDelegate mControllerDelegate;
+    private final ImageDescriptionsControllerDelegate mControllerDelegate;
 
-    private ModalDialogManager mModalDialogManager;
-    private PropertyModel mPropertyModel;
-    private WebContentsObserver mWebContentsObserver;
+    private final ModalDialogManager mModalDialogManager;
+    private final PropertyModel mPropertyModel;
+    private final WebContentsObserver mWebContentsObserver;
 
-    private RadioButtonWithDescriptionLayout mRadioGroup;
-    private RadioButtonWithDescription mOptionJustOnceRadioButton;
-    private RadioButtonWithDescription mOptionAlwaysRadioButton;
-    private CheckBox mOptionalCheckbox;
+    private final RadioButtonWithDescriptionLayout mRadioGroup;
+    private final RadioButtonWithDescription mOptionJustOnceRadioButton;
+    private final RadioButtonWithDescription mOptionAlwaysRadioButton;
+    private final CheckBox mOptionalCheckbox;
 
-    private boolean mShouldShowDontAskAgainOption;
+    private final boolean mShouldShowDontAskAgainOption;
     private boolean mOnlyOnWifiState;
     private boolean mDontAskAgainState;
     private @DialogDismissalCause int mDismissalCause;
-    private WebContents mWebContents;
-    private Profile mProfile;
-    private Context mContext;
+    private final WebContents mWebContents;
+    private final Profile mProfile;
+    private final Context mContext;
 
     protected ImageDescriptionsDialog(
             Context context,
@@ -219,11 +221,15 @@ public class ImageDescriptionsDialog
                                 ? ImageDescriptionsDialogAction.ENABLED_ONLY_ON_WIFI
                                 : ImageDescriptionsDialogAction.ENABLED;
 
-                // If user requested "only on wifi" and we have no wifi, provide alt toast.
-                if (mOnlyOnWifiState
-                        && (DeviceConditions.getCurrentNetConnectionType(mContext)
-                                != ConnectionType.CONNECTION_WIFI)) {
-                    toastMessage = R.string.image_descriptions_toast_on_no_wifi;
+                // If user requested "only on wifi" and we have no wifi or ethernet,
+                // provide alt toast.
+                if (mOnlyOnWifiState) {
+                    int currentNetType = DeviceConditions.getCurrentNetConnectionType(mContext);
+                    boolean isWifi = (currentNetType == ConnectionType.CONNECTION_WIFI);
+                    boolean isEthernet = (currentNetType == ConnectionType.CONNECTION_ETHERNET);
+                    if (!(isWifi || isEthernet)) {
+                        toastMessage = R.string.image_descriptions_toast_on_no_wifi;
+                    }
                 }
             } else if (mOptionJustOnceRadioButton.isChecked()) {
                 mControllerDelegate.getImageDescriptionsJustOnce(mDontAskAgainState, mWebContents);

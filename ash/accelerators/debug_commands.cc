@@ -48,11 +48,13 @@
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/chromeos_buildflags.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/aura/client/aura_constants.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/canvas.h"
@@ -61,6 +63,10 @@
 #include "ui/gfx/image/image_skia_rep.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/widget/widget.h"
+
+#if !BUILDFLAG(IS_CHROMEOS_DEVICE)
+#include "ash/examples/test_app_window.h"
+#endif
 
 namespace ash {
 namespace debug {
@@ -213,7 +219,7 @@ void HandleToggleTouchscreen() {
 
 void HandleToggleTabletMode() {
   Shell::Get()->tablet_mode_controller()->SetEnabledForDev(
-      !display::Screen::GetScreen()->InTabletMode());
+      !display::Screen::Get()->InTabletMode());
 }
 
 void HandleToggleVideoConferenceCameraTrayIcon() {
@@ -325,7 +331,9 @@ void HandleShowSystemNudge() {
 
   if (has_image) {
     nudge_data.image_model = ui::ImageModel::FromVectorIcon(
-        vector_icons::kDogfoodIcon, kColorAshIconColorPrimary,
+        ::features::IsRoundedIconsEnabled() ? vector_icons::kPetsIcon
+                                            : vector_icons::kDogfoodOldIcon,
+        kColorAshIconColorPrimary,
         /*icon_size=*/60);
   }
 
@@ -456,6 +464,11 @@ void PerformDebugActionIfEnabled(AcceleratorAction action) {
       break;
     case AcceleratorAction::kDebugToggleVideoConferenceCameraTrayIcon:
       HandleToggleVideoConferenceCameraTrayIcon();
+      break;
+    case AcceleratorAction::kDebugShowTestWindow:
+#if !BUILDFLAG(IS_CHROMEOS_DEVICE)
+      OpenTestAppWindow(/*client_controlled=*/false);
+#endif
       break;
     default:
       break;

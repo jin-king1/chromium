@@ -5,6 +5,7 @@
 
 #include <utility>
 
+#include "base/logging.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "url/gurl.h"
 
@@ -13,7 +14,7 @@ namespace {
 // Fetch the path from the given url (i.e. "http://foo.bar/baz" -> "/baz")
 std::string UrlPath(const std::string& url) {
   GURL gurl(url);
-  return gurl.path();
+  return gurl.GetPath();
 }
 
 }  // namespace

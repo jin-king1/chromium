@@ -20,6 +20,7 @@
 #include "components/sync/service/local_data_description.h"
 #include "components/sync/service/sync_service_observer.h"
 #include "components/sync/service/type_status_map_for_debugging.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/scoped_java_ref.h"
@@ -189,12 +190,11 @@ class SyncService : public KeyedService {
 
   // Error states that prevent Sync from working well or working at all, usually
   // displayed to the user.
-  // TODO(crbug.com/40890809): Add new cases that are missing, ideally unify
-  // with other enums like AvatarSyncErrorType.
   //
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
   //
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.sync
   // LINT.IfChange(UserActionableError)
   enum class UserActionableError {
     // No errors. This value does not exist in the histograms enum.
@@ -221,7 +221,30 @@ class SyncService : public KeyedService {
     // Same as above, but for the case where data loss may affect all
     // encryptable datatypes.
     kTrustedVaultRecoverabilityDegradedForEverything = 6,
-    kMaxValue = kTrustedVaultRecoverabilityDegradedForEverything,
+// This enum is parsed by java_cpp_enum.py, which doesn't accept &&ing flags.
+#if !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_ANDROID)
+    // Sync settings dialog not confirmed yet.
+    kNeedsSettingsConfirmation = 7,
+    // Sync has encountered an unrecoverable error. It won't attempt to start
+    // again until either the browser is restarted, or the user fully signs out
+    // and back in again. This error is only shown for syncing users, and will
+    // be removed with "Sync The Feature" deprecation.
+    kUnrecoverableError = 8,
+#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // !BUILDFLAG(IS_IOS)
+
+#if BUILDFLAG(IS_ANDROID)
+    // Indicates that the Google Play services need to be upgraded.
+    kNeedsUPMBackendUpgrade = 9,
+#endif  // BUILDFLAG(IS_ANDROID)
+
+    // Indicates that the version of the client/browser is too old and needs to
+    // be upgraded to a more recent version.
+    kNeedsClientUpgrade = 10,
+    // The number of bookmarks has exceeded the limit.
+    kBookmarksLimitExceeded = 11,
+    kMaxValue = kBookmarksLimitExceeded,
   };
   // LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:UserActionableError)
 
@@ -258,15 +281,6 @@ class SyncService : public KeyedService {
   //////////////////////////////////////////////////////////////////////////////
   // USER SETTINGS
   //////////////////////////////////////////////////////////////////////////////
-
-  // Indicates the the user wants Sync-the-Feature to run. It should get invoked
-  // early in the Sync setup flow, after the user has pressed "turn on Sync" but
-  // before they have actually confirmed the settings.
-  // TODO(crbug.com/40772592): Remove this API once the internal sync-requested
-  // bit is fully removed and rollback/killswitch safe. Note that it also
-  // requires finding an alternative solution to resolving
-  // IsSyncFeatureDisabledViaDashboard(), tracked in crbug.com/1443446.
-  virtual void SetSyncFeatureRequested() = 0;
 
   // Returns the SyncUserSettings, which encapsulate all the user-configurable
   // bits for Sync.
@@ -338,12 +352,6 @@ class SyncService : public KeyedService {
   // after startup / profile load, as it caches the last known value.
   virtual bool HasCachedPersistentAuthErrorForMetrics() const = 0;
 
-  // Returns true if the Chrome client is too old and needs to be updated for
-  // Sync to work.
-  // TODO(crbug.com/40890809): Remove this API and use GetUserActionableError()
-  // instead.
-  virtual bool RequiresClientUpgrade() const = 0;
-
   //////////////////////////////////////////////////////////////////////////////
   // DERIVED STATE ACCESS
   //////////////////////////////////////////////////////////////////////////////
@@ -400,7 +408,7 @@ class SyncService : public KeyedService {
   // the change before local and remote data are irrevocably merged).
   // The UI calls this and holds onto the instance for as long as any part of
   // the Sync setup/configuration UI is visible.
-  virtual std::unique_ptr<SyncSetupInProgressHandle>
+  [[nodiscard]] virtual std::unique_ptr<SyncSetupInProgressHandle>
   GetSetupInProgressHandle() = 0;
 
   // Whether a Sync setup is currently in progress, i.e. a setup UI is being
@@ -438,9 +446,11 @@ class SyncService : public KeyedService {
   // synced with the server.
   // Note: This only queries the datatypes in `requested_types`.
   // Note: This includes deletions as well.
+  // Note: This returns an empty result unless invoked in transport-only mode.
   virtual void GetTypesWithUnsyncedData(
       DataTypeSet requested_types,
-      base::OnceCallback<void(DataTypeSet)> callback) const = 0;
+      base::OnceCallback<void(absl::flat_hash_map<DataType, size_t>)> callback)
+      const = 0;
 
   // Queries the count and description/preview of existing local data for
   // `types` data types. This is an asynchronous method which returns the result
@@ -472,6 +482,27 @@ class SyncService : public KeyedService {
   virtual void TriggerLocalDataMigrationForItems(
       std::map<DataType, std::vector<LocalDataItemModel::DataId>> items) = 0;
 
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(BookmarksLimitExceededHelpClickedSource)
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.sync
+  enum class BookmarksLimitExceededHelpClickedSource {
+    kSettings = 0,
+    kSyncErrorMessage = 1,
+    kProfileMenu = 2,
+    kIdentityErrorInfoPill = 3,
+    kAccountMenu = 4,
+    kMaxValue = kAccountMenu,
+  };
+  // LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:BookmarksLimitExceededHelpClickedSource)
+
+  // Acknowledges the `kBookmarksLimitExceeded` user-actionable error. Once
+  // acknowledged, `GetUserActionableError()` will no longer report this error
+  // until the next browser restart. This is used to hide the error UI
+  // after the user has interacted with it.
+  virtual void AcknowledgeBookmarksLimitExceededError(
+      BookmarksLimitExceededHelpClickedSource source) = 0;
+
   // Requests sync service to first enable account storage for the `data_type`
   // and then asynchronously move the specified local data `items` to account.
   // This means that a user selection is mutated - if they had opted out of
@@ -499,9 +530,26 @@ class SyncService : public KeyedService {
   // TODO(crbug.com/40901006): Remove this API.
   virtual void OnDataTypeRequestsSyncStartup(DataType type) = 0;
 
+  // The reason why TriggerRefresh() was called.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(TriggerRefreshSource)
+  enum class TriggerRefreshSource {
+    kUnknown = 0,
+    kBrowserTabsModelProvider = 1,
+    kAndroidSyncServiceBridge = 2,
+    kSyncInvalidationsService = 3,
+    kLocalSync = 4,
+    kSyncInternals = 5,
+    kForeignSessionHelper = 6,
+    kMaxValue = kForeignSessionHelper,
+  };
+  // LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:TriggerRefreshSource)
+
   // Triggers a GetUpdates call for the specified `types`, pulling any new data
-  // from the sync server. Used by tests and debug UI (sync-internals).
-  virtual void TriggerRefresh(const DataTypeSet& types) = 0;
+  // from the sync server.
+  virtual void TriggerRefresh(TriggerRefreshSource source,
+                              const DataTypeSet& types) = 0;
 
   // Informs the data type manager that the preconditions for a controller have
   // changed. If preconditions are NOT met, the datatype will be stopped
@@ -585,7 +633,7 @@ class SyncService : public KeyedService {
   // Asynchronously fetches base::Value representations of all sync nodes and
   // returns them to the specified callback on this thread.
   virtual void GetAllNodesForDebugging(
-      base::OnceCallback<void(base::Value::List)> callback) = 0;
+      base::OnceCallback<void(base::ListValue)> callback) = 0;
 };
 
 }  // namespace syncer

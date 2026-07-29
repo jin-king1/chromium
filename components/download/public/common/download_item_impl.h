@@ -14,6 +14,7 @@
 
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
@@ -44,6 +45,9 @@ class DownloadItemImplDelegate;
 class COMPONENTS_DOWNLOAD_EXPORT DownloadItemImpl
     : public DownloadItem,
       public DownloadDestinationObserver {
+  // TODO(crbug.com/422045023): Remove this macro once the bug gets fixed.
+  ADVANCED_MEMORY_SAFETY_CHECKS();
+
  public:
   // Information about the initial request that triggers the download. Most of
   // the fields are immutable after the DownloadItem is successfully
@@ -125,6 +129,12 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItemImpl
     // content.
     int64_t range_request_from = kInvalidRange;
     int64_t range_request_to = kInvalidRange;
+
+    // True if a Service Worker fetch handler produced the original response.
+    // On resume such downloads cannot be range-continued (SW responses are
+    // one-shot full bodies), so resumption forces a restart and re-dispatches
+    // the fetch event from offset 0.
+    bool fetched_via_service_worker = false;
   };
 
   // Information about the current state of the download destination.
@@ -236,6 +246,7 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItemImpl
   DownloadItemImpl(DownloadItemImplDelegate* delegate,
                    uint32_t id,
                    const base::FilePath& path,
+                   const base::FilePath& display_name,
                    const GURL& url,
                    const std::string& mime_type,
                    DownloadJob::CancelRequestCallback cancel_request_callback);
@@ -251,6 +262,7 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItemImpl
   void UpdateObservers() override;
   void ValidateDangerousDownload() override;
   void ValidateInsecureDownload() override;
+  void ConfirmNonDangerousDownload() override;
   void CopyDownload(AcquireFileCallback callback) override;
   void Pause() override;
   void Resume(bool user_resume) override;
@@ -263,6 +275,8 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItemImpl
   uint32_t GetId() const override;
   const std::string& GetGuid() const override;
   DownloadState GetState() const override;
+  void SetStateForTesting(DownloadState state) override;
+  void SetDownloadUrlForTesting(const GURL& url) override;
   DownloadInterruptReason GetLastReason() const override;
   bool IsPaused() const override;
   bool AllowMetered() const override;
@@ -305,10 +319,11 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItemImpl
   DownloadItemRenameHandler* GetRenameHandler() override;
 #if BUILDFLAG(IS_ANDROID)
   bool IsFromExternalApp() override;
-  bool IsMustDownload() override;
+  bool AllowAutoOpenAfterCompletion() override;
 #endif  // BUILDFLAG(IS_ANDROID)
   bool IsDangerous() const override;
   bool IsInsecure() const override;
+  bool IsUserConfirmed() const override;
   DownloadDangerType GetDangerType() const override;
   InsecureDownloadStatus GetInsecureDownloadStatus() const override;
   bool TimeRemaining(base::TimeDelta* remaining) const override;
@@ -416,6 +431,10 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItemImpl
   }
 
   bool fetch_error_body() const { return fetch_error_body_; }
+
+  bool fetched_via_service_worker() const {
+    return request_info_.fetched_via_service_worker;
+  }
 
   uint64_t ukm_download_id() const { return ukm_download_id_; }
 
@@ -896,9 +915,12 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItemImpl
   // Whether renaming is in progress.
   bool renaming_ = false;
 
+  // Whether user has confirmed dialog.
+  bool is_user_confirmed_ = false;
+
 #if BUILDFLAG(IS_ANDROID)
   bool is_from_external_app_ = false;
-  bool is_must_download_ = false;
+  bool allow_auto_open_after_completion_ = true;
 #endif  // BUILDFLAG(IS_ANDROID)
 
   THREAD_CHECKER(thread_checker_);

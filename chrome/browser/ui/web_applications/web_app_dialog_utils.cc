@@ -14,9 +14,16 @@
 #include "base/metrics/user_metrics.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/shell_integration.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
+#include "chrome/browser/ui/views/web_apps/progress_delay.h"
+#include "chrome/browser/ui/views/web_apps/web_app_install_flow_dialog_delegate.h"
+#include "chrome/browser/ui/web_applications/pwa_install_page_action.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
@@ -31,6 +38,8 @@
 #include "chrome/browser/web_applications/web_app_screenshot_fetcher.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/grit/browser_resources.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "components/webapps/browser/banners/app_banner_manager.h"
 #include "components/webapps/browser/banners/web_app_banner_data.h"
 #include "components/webapps/browser/features.h"
@@ -38,7 +47,16 @@
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/installable/ml_install_operation_tracker.h"
 #include "components/webapps/browser/installable/ml_installability_promoter.h"
+#include "components/webapps/browser/web_app_url_config.h"
 #include "content/public/browser/navigation_entry.h"
+#include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/models/image_model.h"
+#include "ui/base/resource/resource_bundle.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/web_applications/os_integration/mac/icon_utils.h"
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 // TODO(crbug.com/40147906): Enable gn check once it handles conditional
@@ -51,6 +69,9 @@ namespace web_app {
 
 namespace {
 
+constexpr base::TimeDelta kProgressDelay = base::Seconds(2);
+constexpr int kProgressDelaySteps = 100;
+
 #if BUILDFLAG(IS_CHROMEOS)
 namespace cros_events = metrics::structured::events::v2::cr_os_events;
 #endif
@@ -60,14 +81,25 @@ void OnWebAppInstallShowInstallDialog(
     webapps::WebappInstallSource install_source,
     PwaInProductHelpState iph_state,
     std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker,
+    bool show_initiating_origin,
     base::WeakPtr<WebAppScreenshotFetcher> screenshot_fetcher,
     content::WebContents* initiator_web_contents,
     std::unique_ptr<WebAppInstallInfo> web_app_info,
     WebAppInstallationAcceptanceCallback web_app_acceptance_callback) {
   DCHECK(web_app_info);
+  InstallOsType os_type = InstallOsType::kOther;
+#if BUILDFLAG(IS_CHROMEOS)
+  os_type = InstallOsType::kCros;
+#endif
+#if BUILDFLAG(IS_MAC)
+  os_type = InstallOsType::kMac;
+#endif
+#if BUILDFLAG(IS_WIN)
+  os_type = InstallOsType::kWin;
+#endif
 
   switch (flow) {
-    case WebAppInstallFlow::kInstallSite:
+    case WebAppInstallFlow::kInstallSite: {
       web_app_info->user_display_mode = mojom::UserDisplayMode::kStandalone;
 #if BUILDFLAG(IS_CHROMEOS)
       if (install_source == webapps::WebappInstallSource::MENU_BROWSER_TAB) {
@@ -78,37 +110,77 @@ void OnWebAppInstallShowInstallDialog(
                 .SetAppId(app_id));
       }
 #endif
+      if (base::FeatureList::IsEnabled(features::kWebAppInstallDialog)) {
+        InstallDialogType install_type = kSimple;
+        if (screenshot_fetcher) {
+          install_type = kDetailed;
+        } else if (web_app_info->is_diy_app) {
+          install_type = kDiy;
+        }
+
+        std::optional<ui::ImageModel> folder_image_model;
+        std::optional<std::u16string> folder_label;
+#if BUILDFLAG(IS_MAC)
+        // TODO(crbug.com/513676704): Move image manipulation to the thread
+        // pool.
+        folder_image_model = ui::ImageModel::FromImageSkia(
+            GetMacAppsFolderImage(kLargeImageSize).AsImageSkia());
+        folder_label = shell_integration::GetAppShortcutsSubdirName();
+#endif
+        auto progress_delay = std::make_unique<ProgressDelay>(
+            kProgressDelay, kProgressDelaySteps);
+        WebAppInstallFlowDialogDelegate::Show(
+            initiator_web_contents, std::move(web_app_info),
+            std::move(install_tracker), std::move(web_app_acceptance_callback),
+            iph_state, std::move(screenshot_fetcher), show_initiating_origin,
+            install_type, os_type, std::move(progress_delay),
+            folder_image_model, folder_label);
+        return;
+      }
+
+      // The UI methods below expect a callback that takes only 2 arguments, but
+      // WebAppInstallationAcceptanceCallback now takes 3 arguments. We use this
+      // adapter to pass a dummy result callback.
+      auto launch_app_on_install_success =
+          AdaptToLaunchOnInstallSuccess(std::move(web_app_acceptance_callback));
+
       if (screenshot_fetcher) {
         ShowWebAppDetailedInstallDialog(
             initiator_web_contents, std::move(web_app_info),
-            std::move(install_tracker), std::move(web_app_acceptance_callback),
-            screenshot_fetcher, iph_state);
+            std::move(install_tracker),
+            std::move(launch_app_on_install_success), screenshot_fetcher,
+            iph_state);
         return;
       } else if (web_app_info->is_diy_app) {
         ShowDiyAppInstallDialog(initiator_web_contents, std::move(web_app_info),
                                 std::move(install_tracker),
-                                std::move(web_app_acceptance_callback),
+                                std::move(launch_app_on_install_success),
                                 iph_state);
         return;
       } else {
         ShowSimpleInstallDialogForWebApps(
             initiator_web_contents, std::move(web_app_info),
-            std::move(install_tracker), std::move(web_app_acceptance_callback),
-            iph_state);
+            std::move(install_tracker),
+            std::move(launch_app_on_install_success), iph_state,
+            show_initiating_origin);
         return;
       }
+    }
 #if BUILDFLAG(IS_CHROMEOS)
     case WebAppInstallFlow::kCreateShortcut: {
       webapps::AppId app_id =
           web_app::GenerateAppIdFromManifestId(web_app_info->manifest_id());
       metrics::structured::StructuredMetricsClient::Record(
           cros_events::AppDiscovery_Browser_CreateShortcut().SetAppId(app_id));
-    }
+
+      auto launch_app_on_install_success =
+          AdaptToLaunchOnInstallSuccess(std::move(web_app_acceptance_callback));
 
       ShowCreateShortcutDialog(initiator_web_contents, std::move(web_app_info),
                                std::move(install_tracker),
-                               std::move(web_app_acceptance_callback));
+                               std::move(launch_app_on_install_success));
       return;
+    }
 #endif
     case WebAppInstallFlow::kUnknown:
       NOTREACHED();
@@ -133,17 +205,17 @@ void OnWebAppInstalled(WebAppInstalledCallback callback,
 
 }  // namespace
 
-bool CanCreateWebApp(const Browser* browser) {
+bool CanCreateWebApp(Browser* browser) {
   // Check whether user is allowed to install web app.
-  if (!WebAppProvider::GetForWebApps(browser->profile()) ||
-      !AreWebAppsUserInstallable(browser->profile())) {
+  if (!WebAppProvider::GetForWebApps(browser->GetProfile()) ||
+      !AreWebAppsUserInstallable(browser->GetProfile())) {
     return false;
   }
 
   // Check whether we're able to install the current page as an app.
   content::WebContents* web_contents =
       browser->tab_strip_model()->GetActiveWebContents();
-  if (!IsValidWebAppUrl(web_contents->GetLastCommittedURL()) ||
+  if (!webapps::IsUrlEligibleForWebApp(web_contents->GetLastCommittedURL()) ||
       web_contents->IsCrashed()) {
     return false;
   }
@@ -219,7 +291,8 @@ void CreateWebAppFromCurrentWebContents(Browser* browser,
       install_source, web_contents->GetWeakPtr(),
       base::BindOnce(OnWebAppInstallShowInstallDialog, flow, install_source,
                      PwaInProductHelpState::kNotShown,
-                     std::move(install_tracker)),
+                     std::move(install_tracker),
+                     /*show_initiating_origin=*/false),
       base::BindOnce(OnWebAppInstalled, std::move(callback)),
       fallback_behavior);
 }
@@ -266,25 +339,75 @@ bool CreateWebAppFromManifest(content::WebContents* web_contents,
       install_source, web_contents->GetWeakPtr(),
       base::BindOnce(OnWebAppInstallShowInstallDialog,
                      WebAppInstallFlow::kInstallSite, install_source, iph_state,
-                     std::move(install_tracker)),
+                     std::move(install_tracker),
+                     /*show_initiating_origin=*/false),
       base::BindOnce(OnWebAppInstalled, std::move(installed_callback)),
       fallback_behavior);
   return true;
 }
 
-void ShowPwaInstallDialog(Browser* browser) {
-  CHECK(browser);
+void CreateWebAppForBackgroundInstall(
+    content::WebContents* initiating_web_contents,
+    std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
+    const GURL& install_url,
+    const std::optional<GURL>& manifest_id,
+    const GURL& last_committed_url,
+    WebAppInstalledCallback installed_callback) {
+  auto* provider = WebAppProvider::GetForWebContents(initiating_web_contents);
+  CHECK(provider);
+
+  provider->scheduler().InstallAppFromUrl(
+      install_url, manifest_id, initiating_web_contents->GetWeakPtr(),
+      last_committed_url,
+      base::BindOnce(&OnWebAppInstallShowInstallDialog,
+                     WebAppInstallFlow::kInstallSite,
+                     webapps::WebappInstallSource::WEB_INSTALL,
+                     PwaInProductHelpState::kNotShown, std::move(tracker),
+                     /*show_initiating_origin=*/true),
+      std::move(installed_callback));
+}
+
+void CreateWebAppForManifestInstall(
+    content::WebContents* initiating_web_contents,
+    base::WeakPtr<content::Page> initiating_page,
+    std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
+    blink::mojom::ManifestPtr manifest,
+    const GURL& manifest_url,
+    const GURL& requesting_page_url,
+    WebAppInstalledCallback installed_callback) {
+  auto* provider = WebAppProvider::GetForWebContents(initiating_web_contents);
+  CHECK(provider);
+
+  provider->scheduler().InstallAppFromManifest(
+      std::move(manifest), manifest_url, initiating_web_contents->GetWeakPtr(),
+      std::move(initiating_page), requesting_page_url,
+      base::BindOnce(&OnWebAppInstallShowInstallDialog,
+                     WebAppInstallFlow::kInstallSite,
+                     webapps::WebappInstallSource::WEB_INSTALL,
+                     PwaInProductHelpState::kNotShown, std::move(tracker),
+                     /*show_initiating_origin=*/true),
+      std::move(installed_callback));
+}
+
+void ShowPwaInstallDialog(BrowserWindowInterface* bwi) {
+  CHECK(bwi);
 
   base::RecordAction(base::UserMetricsAction("PWAInstallIcon"));
 
   content::WebContents* const web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      bwi->GetTabStripModel()->GetActiveWebContents();
   CHECK(web_contents);
+
+  PwaInstallPageActionController* const pwa_install_controller =
+      bwi->GetActiveTabInterface()
+          ->GetTabFeatures()
+          ->pwa_install_page_action_controller();
+  pwa_install_controller->SetIsExecuting(true);
 
   // Close PWA install IPH if it is showing.
   PwaInProductHelpState iph_state = PwaInProductHelpState::kNotShown;
-  bool install_icon_clicked_after_iph_shown =
-      browser->window()->NotifyFeaturePromoFeatureUsed(
+  const bool install_icon_clicked_after_iph_shown =
+      BrowserUserEducationInterface::From(bwi)->NotifyFeaturePromoFeatureUsed(
           feature_engagement::kIPHDesktopPwaInstallFeature,
           FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
   if (install_icon_clicked_after_iph_shown) {
@@ -301,6 +424,7 @@ void ShowPwaInstallDialog(Browser* browser) {
   CreateWebAppFromManifest(web_contents,
                            webapps::WebappInstallSource::OMNIBOX_INSTALL_ICON,
                            base::DoNothing(), iph_state);
+  pwa_install_controller->SetIsExecuting(false);
 }
 
 void SetInstalledCallbackForTesting(WebAppInstalledCallback callback) {

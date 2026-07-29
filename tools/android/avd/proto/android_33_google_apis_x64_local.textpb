@@ -5,8 +5,8 @@
 # Configuration for an Android-13 (T, API 33) AVD on google_apis on x86_64
 
 emulator_package {
-  package_name: "chromium/third_party/android_sdk/public/emulator"
-  version: "XS__KK27esI_4qZkc_Ybb_ooYjPfcIQ7DDOPUZGYW5wC"  # 35.1.21 (Stable)
+  package_name: "chromium/third_party/android_sdk/public/emulator/linux-amd64"
+  version: "QgDCxG9OzoQx04LpwnENgTz3gby5-Kyx6Rsv5yl91p4C"  # 36.4.9 (Stable)
 }
 
 system_image_package {
@@ -17,9 +17,9 @@ system_image_name: "system-images;android-33;google_apis;x86_64"
 
 avd_package {
   package_name: "chromium/third_party/android_sdk/public/avds/android-33/google_apis/x86_64"
-  # Created in https://ci.chromium.org/ui/b/8734084655359483009
-  # Patched gmscore version 24.26.32 in https://crrev.com/c/5735581
-  version: "4hXIfKQVfT-w-WwOBofV9AOCoyovO6iKNTSJ_LoHcZ8C"
+  # Created in https://ci.chromium.org/ui/b/8687048767805091361
+  # Patched gmscore version 25.07.33 in https://crrev.com/c/6377466
+  version: "Vsp8X1DdSLJmQFDto4WkH92p8Zsvgr1Oz1TeQOS2FtkC"
 }
 avd_name: "android_33_google_apis_x64"
 

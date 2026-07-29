@@ -55,6 +55,10 @@ const char* GetMotionEventActionName(MotionEvent::Action action) {
       return "Action::BUTTON_PRESS";
     case MotionEvent::Action::BUTTON_RELEASE:
       return "Action::BUTTON_RELEASE";
+    case MotionEvent::Action::OUTSIDE:
+      return "Action::OUTSIDE";
+    case MotionEvent::Action::SCROLL:
+      return "Action::SCROLL";
   }
   return "";
 }
@@ -79,8 +83,7 @@ gfx::RectF ClampBoundingBox(const gfx::RectF& bounds,
 
 float EffectiveSlopDistance(const MotionEvent& event,
                             const GestureProvider::Config& config) {
-  return (base::FeatureList::IsEnabled(features::kStylusSpecificTapSlop) &&
-          event.GetToolType() == MotionEvent::ToolType::STYLUS)
+  return event.GetToolType() == MotionEvent::ToolType::STYLUS
              ? config.gesture_detector_config.stylus_slop
              : config.gesture_detector_config.touch_slop;
 }
@@ -297,6 +300,10 @@ class GestureProvider::GestureListenerImpl : public ScaleGestureListener,
              /*should_update=*/false);
   }
 
+  void OnUnconfirmedTapConvertedToTap() {
+    gesture_detector_.OnUnconfirmedTapConvertedToTap();
+  }
+
   // ScaleGestureListener implementation.
   bool OnScaleBegin(const ScaleGestureDetector& detector,
                     const MotionEvent& e) override {
@@ -405,6 +412,9 @@ class GestureProvider::GestureListenerImpl : public ScaleGestureListener,
       distance_y = delta.y();
     }
 
+    float unconstrained_distance_x = distance_x;
+    float unconstrained_distance_y = distance_y;
+
     snap_scroll_controller_.UpdateSnapScrollMode(
         distance_x, distance_y, EffectiveSlopDistance(e2, config_));
     if (snap_scroll_controller_.IsSnappingScrolls()) {
@@ -414,8 +424,9 @@ class GestureProvider::GestureListenerImpl : public ScaleGestureListener,
         distance_x = 0;
     }
 
-    if (!distance_x && !distance_y)
+    if (!unconstrained_distance_x && !unconstrained_distance_y) {
       return true;
+    }
 
     if (!scroll_event_sent_) {
       // Note that scroll start hints are in distance traveled, where
@@ -440,6 +451,8 @@ class GestureProvider::GestureListenerImpl : public ScaleGestureListener,
 
     GestureEventDetails scroll_details = CreateTouchGestureDetails(
         EventType::kGestureScrollUpdate, -distance_x, -distance_y);
+    scroll_details.set_scroll_x_unconstrained(-unconstrained_distance_x);
+    scroll_details.set_scroll_y_unconstrained(-unconstrained_distance_y);
     const gfx::RectF bounding_box = GetBoundingBox(e2, scroll_details.type());
     const gfx::PointF raw_center =
         scroll_focus_point_ +
@@ -720,6 +733,8 @@ class GestureProvider::GestureListenerImpl : public ScaleGestureListener,
 
   bool IsPinchInProgress() const { return pinch_event_sent_; }
 
+  GestureDetector* GetGestureDetectorForTesting() { return &gesture_detector_; }
+
  private:
   bool OnSingleTapImpl(const MotionEvent& e, int tap_count) {
     // Long taps in the edges of the screen have their events delayed by
@@ -930,6 +945,17 @@ void GestureProvider::SendSynthesizedEndEvents() {
   gesture_listener_->SendSynthesizedEndEvents();
 }
 
+void GestureProvider::OnUnconfirmedTapConvertedToTap() {
+  gesture_listener_->OnUnconfirmedTapConvertedToTap();
+}
+
+GestureDetector* GestureProvider::GetGestureDetectorForTesting() {
+  if (!gesture_listener_) {
+    return nullptr;
+  }
+  return gesture_listener_->GetGestureDetectorForTesting();  // IN-TEST
+}
+
 bool GestureProvider::CanHandle(const MotionEvent& event) const {
   // Aura requires one cancel event per touch point, whereas Android requires
   // one cancel event per touch sequence. Thus we need to allow extra cancel
@@ -940,6 +966,7 @@ bool GestureProvider::CanHandle(const MotionEvent& event) const {
 }
 
 void GestureProvider::OnTouchEventHandlingBegin(const MotionEvent& event) {
+  last_event_without_history_ = event.Clone(/*with_history=*/false);
   switch (event.GetAction()) {
     case MotionEvent::Action::DOWN:
       current_down_event_ = event.Clone();
@@ -977,6 +1004,8 @@ void GestureProvider::OnTouchEventHandlingBegin(const MotionEvent& event) {
     case MotionEvent::Action::HOVER_MOVE:
     case MotionEvent::Action::BUTTON_PRESS:
     case MotionEvent::Action::BUTTON_RELEASE:
+    case MotionEvent::Action::OUTSIDE:
+    case MotionEvent::Action::SCROLL:
       NOTREACHED();
   }
 }
@@ -1027,6 +1056,8 @@ void GestureProvider::OnTouchEventHandlingEnd(const MotionEvent& event) {
     case MotionEvent::Action::HOVER_MOVE:
     case MotionEvent::Action::BUTTON_PRESS:
     case MotionEvent::Action::BUTTON_RELEASE:
+    case MotionEvent::Action::OUTSIDE:
+    case MotionEvent::Action::SCROLL:
       NOTREACHED();
   }
 }

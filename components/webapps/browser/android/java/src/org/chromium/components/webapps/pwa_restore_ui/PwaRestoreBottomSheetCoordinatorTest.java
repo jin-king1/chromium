@@ -21,35 +21,32 @@ import androidx.test.filters.MediumTest;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.webapps.R;
 import org.chromium.components.webapps.pwa_restore_ui.PwaRestoreProperties.ViewState;
-import org.chromium.ui.shadows.ShadowColorUtils;
+import org.chromium.ui.util.ColorUtils;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /** Instrumentation tests for PWA Restore bottom sheet. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowColorUtils.class})
-@LooperMode(LooperMode.Mode.PAUSED)
+@Config(manifest = Config.NONE)
 public class PwaRestoreBottomSheetCoordinatorTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     Activity mActivity;
 
-    // Each entry in this list should have a corresponding entry in
-    // mLastUsedList below.
     private final String[] mDefaultAppIds = new String[] {"appId1", "appId2", "appId3"};
     private final String[] mDefaultAppNames = new String[] {"App 1", "App 2", "App 3"};
     private final ArrayList<Bitmap> mDefaultAppIcons =
@@ -58,14 +55,12 @@ public class PwaRestoreBottomSheetCoordinatorTest {
                             createBitmap(Color.RED),
                             createBitmap(Color.GREEN),
                             createBitmap(Color.BLUE)));
-    private final int[] mLastUsedList = new int[] {1, 1, 35};
 
     @Mock private BottomSheetController mBottomSheetControllerMock;
     @Mock private PwaRestoreBottomSheetMediator.Natives mNativeMediatorMock;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mActivity = Robolectric.buildActivity(Activity.class).create().get();
         PwaRestoreBottomSheetMediatorJni.setInstanceForTesting(mNativeMediatorMock);
         when(mNativeMediatorMock.initialize(Mockito.any())).thenReturn(0L);
@@ -73,7 +68,7 @@ public class PwaRestoreBottomSheetCoordinatorTest {
 
     @After
     public void tearDown() {
-        ShadowColorUtils.sInNightMode = false;
+        ColorUtils.setInNightModeForTesting(false);
     }
 
     private static Bitmap createBitmap(int color) {
@@ -89,7 +84,6 @@ public class PwaRestoreBottomSheetCoordinatorTest {
                         mDefaultAppIds,
                         mDefaultAppNames,
                         mDefaultAppIcons,
-                        mLastUsedList,
                         mActivity,
                         mBottomSheetControllerMock,
                         /* backArrowId= */ 0);
@@ -139,7 +133,6 @@ public class PwaRestoreBottomSheetCoordinatorTest {
                         mDefaultAppIds,
                         mDefaultAppNames,
                         mDefaultAppIcons,
-                        mLastUsedList,
                         mActivity,
                         mBottomSheetControllerMock,
                         /* backArrowId= */ 0);

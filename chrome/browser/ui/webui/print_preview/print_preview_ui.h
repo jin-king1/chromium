@@ -20,6 +20,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
 #include "chrome/browser/ui/webui/constrained_web_dialog_ui.h"
 #include "chrome/services/printing/public/mojom/pdf_nup_converter.mojom.h"
 #include "components/printing/common/print.mojom.h"
@@ -77,11 +78,10 @@ class PrintPreviewUI : public ConstrainedWebDialogUI,
 
   mojo::PendingAssociatedRemote<mojom::PrintPreviewUI> BindPrintPreviewUI();
 
-  // Gets the print preview |data|. |index| is zero-based, and can be
-  // |COMPLETE_PREVIEW_DOCUMENT_INDEX| to get the entire preview document.
-  virtual void GetPrintPreviewDataForIndex(
-      int index,
-      scoped_refptr<base::RefCountedMemory>* data) const;
+  // Gets the print preview `data`. `index` is zero-based, and can be
+  // `COMPLETE_PREVIEW_DOCUMENT_INDEX` to get the entire preview document.
+  virtual scoped_refptr<base::RefCountedMemory> GetPrintPreviewDataForIndex(
+      int index) const;
 
   // printing::mojo::PrintPreviewUI:
   void SetOptionsFromDocument(const mojom::OptionsFromDocumentParamsPtr params,
@@ -135,11 +135,11 @@ class PrintPreviewUI : public ConstrainedWebDialogUI,
 
   // Determines whether to cancel a print preview request based on the request
   // id.
-  static bool ShouldCancelRequest(const std::optional<int32_t>& preview_ui_id,
+  static bool ShouldCancelRequest(const base::UnguessableToken& preview_ui_id,
                                   int request_id);
 
   // Returns an id to uniquely identify this PrintPreviewUI.
-  std::optional<int32_t> GetIDForPrintPreviewUI() const;
+  base::UnguessableToken GetIDForPrintPreviewUI() const;
 
   // Notifies the Web UI of a print preview request with |request_id|.
   virtual void OnPrintPreviewRequest(int request_id);
@@ -287,7 +287,7 @@ class PrintPreviewUI : public ConstrainedWebDialogUI,
 
   // The unique ID for this class instance. Stored here to avoid calling
   // GetIDForPrintPreviewUI() everywhere.
-  std::optional<int32_t> id_;
+  base::UnguessableToken id_;
 
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
   // This UI's client ID with the print backend service manager.

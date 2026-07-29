@@ -32,14 +32,17 @@ extern const char kIOSLensKeyboardSupportStatusHistogramName[];
 extern const char kIOSLensNewTabPageSupportStatusHistogramName[];
 
 namespace lens_availability {
+
+// Verifies the availability of the given Lens entry point and search engine
+// default provider.
+bool CheckAvailabilityForLensEntryPoint(LensEntrypoint entry_point,
+                                        bool is_google_default_search_engine);
+
 // Checks for and performs UMA logging for the availability of the given
 // Lens entry point and search engine default provider.
 bool CheckAndLogAvailabilityForLensEntryPoint(
     LensEntrypoint entry_point,
     bool is_google_default_search_engine);
-
-// Checks whether the context menu unified experience in enabled;
-bool IsLensContextMenuUnifiedExperienceEnabled(const PrefService* prefs);
 }  // namespace lens_availability
 
 #endif  // IOS_CHROME_BROWSER_LENS_UI_BUNDLED_LENS_AVAILABILITY_H_

@@ -19,10 +19,9 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
+#include "content/browser/back_forward_cache/back_forward_cache_metrics.h"
 #include "content/browser/bad_message.h"
-#include "content/browser/renderer_host/back_forward_cache_metrics.h"
 #include "content/browser/renderer_host/navigation_type.h"
-#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/javascript_dialog_manager.h"
 #include "content/public/browser/web_contents_delegate.h"
@@ -31,7 +30,7 @@
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "ipc/constants.mojom.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom-forward.h"
@@ -45,7 +44,6 @@ namespace content {
 class FrameTreeNode;
 class RenderFrameHost;
 class RenderFrameHostImpl;
-class RenderWidgetHostImpl;
 class Shell;
 class SiteInstance;
 class SiteInstanceGroup;
@@ -326,107 +324,6 @@ class RenderProcessHostBadIpcMessageWaiter {
 
  private:
   RenderProcessHostKillWaiter internal_waiter_;
-};
-
-// One-shot helper that listens for creation of a new popup widget.
-class CreateNewPopupWidgetInterceptor
-    : public blink::mojom::LocalFrameHostInterceptorForTesting {
- public:
-  explicit CreateNewPopupWidgetInterceptor(
-      RenderFrameHostImpl* rfh,
-      base::OnceCallback<void(RenderWidgetHostImpl*)> did_create_callback);
-
-  ~CreateNewPopupWidgetInterceptor() override;
-
-  // LocalFrameHost overrides:
-  void CreateNewPopupWidget(
-      mojo::PendingAssociatedReceiver<blink::mojom::PopupWidgetHost>
-          blink_popup_widget_host,
-      mojo::PendingAssociatedReceiver<blink::mojom::WidgetHost>
-          blink_widget_host,
-      mojo::PendingAssociatedRemote<blink::mojom::Widget> blink_widget)
-      override;
-
-  // LocalFrameHostInterceptorForTesting overrides:
-  blink::mojom::LocalFrameHost* GetForwardingInterface() override;
-
- private:
-  mojo::test::ScopedSwapImplForTesting<blink::mojom::LocalFrameHost>
-      swapped_impl_;
-  base::OnceCallback<void(RenderWidgetHostImpl*)> did_create_callback_;
-};
-
-class ShowPopupWidgetWaiter
-    : public blink::mojom::PopupWidgetHostInterceptorForTesting {
- public:
-  ShowPopupWidgetWaiter(WebContentsImpl* web_contents,
-                        RenderFrameHostImpl* frame_host);
-
-  ShowPopupWidgetWaiter(const ShowPopupWidgetWaiter&) = delete;
-  ShowPopupWidgetWaiter& operator=(const ShowPopupWidgetWaiter&) = delete;
-
-  ~ShowPopupWidgetWaiter() override;
-
-  gfx::Rect last_initial_rect() const { return initial_rect_; }
-
-  int last_routing_id() const { return routing_id_; }
-
-  // Waits until a popup request is received.
-  void Wait();
-
- private:
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
-  // Helper that waits for a `ShowPopupMenu()` call and then invokes the
-  // observer callback with the requested bounds.  The actual call to show the
-  // popup menu is treated as if it were cancelled.
-  class ShowPopupMenuInterceptor
-      : public blink::mojom::LocalFrameHostInterceptorForTesting {
-   public:
-    explicit ShowPopupMenuInterceptor(RenderFrameHostImpl* rfh,
-                                      base::OnceCallback<void(const gfx::Rect&)>
-                                          did_show_popup_menu_callback);
-    ~ShowPopupMenuInterceptor() override;
-
-    // LocalFrameHost overrides:
-    void ShowPopupMenu(
-        mojo::PendingRemote<blink::mojom::PopupMenuClient> popup_client,
-        const gfx::Rect& bounds,
-        double font_size,
-        int32_t selected_item,
-        std::vector<blink::mojom::MenuItemPtr> menu_items,
-        bool right_aligned,
-        bool allow_multiple_selection) override;
-
-    // LocalFrameHostInterceptorForTesting overrides:
-    blink::mojom::LocalFrameHost* GetForwardingInterface() override;
-
-   private:
-    mojo::test::ScopedSwapImplForTesting<blink::mojom::LocalFrameHost>
-        swapped_impl_;
-    base::OnceCallback<void(const gfx::Rect&)> did_show_popup_menu_callback_;
-  };
-
-  void DidShowPopupMenu(const gfx::Rect& bounds);
-#endif
-
-  // Callback bound for creating a popup widget.
-  void DidCreatePopupWidget(RenderWidgetHostImpl* render_widget_host);
-
-  // blink::mojom::PopupWidgetHostInterceptorForTesting:
-  blink::mojom::PopupWidgetHost* GetForwardingInterface() override;
-  void ShowPopup(const gfx::Rect& initial_rect,
-                 const gfx::Rect& initial_anchor_rect,
-                 ShowPopupCallback callback) override;
-
-  CreateNewPopupWidgetInterceptor create_new_popup_widget_interceptor_;
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
-  ShowPopupMenuInterceptor show_popup_menu_interceptor_;
-#endif
-  base::RunLoop run_loop_;
-  gfx::Rect initial_rect_;
-  int32_t routing_id_ = MSG_ROUTING_NONE;
-  int32_t process_id_ = 0;
-  const raw_ptr<RenderFrameHostImpl> frame_host_;
 };
 
 // This observer waits until WebContentsObserver::OnRendererUnresponsive
@@ -763,8 +660,8 @@ class EffectiveURLContentBrowserTestContentBrowserClient
   void AddTranslation(const GURL& url_to_modify, const GURL& url_to_return);
 
  private:
-  GURL GetEffectiveURL(BrowserContext* browser_context,
-                       const GURL& url) override;
+  std::optional<GURL> GetEffectiveURL(BrowserContext* browser_context,
+                                      const GURL& url) override;
   bool DoesSiteRequireDedicatedProcess(BrowserContext* browser_context,
                                        const GURL& effective_site_url) override;
 
@@ -817,21 +714,59 @@ class CommitNavigationPauser
   mojom::DidCommitProvisionalLoadInterfaceParamsPtr paused_interface_params_;
 };
 
-// Blocks the current execution until the renderer main thread in the main frame
-// is in a steady state, so the caller can issue an `viz::CopyOutputRequest`
-// against the current `WebContents`.
-void WaitForCopyableViewInWebContents(WebContents* web_contents);
-
-// Blocks the current execution until the renderer main thread in the subframe
-// is in a steady state, so the caller can issue an `viz::CopyOutputRequest`
-// against its view.
-void WaitForCopyableViewInFrame(RenderFrameHost* render_frame_host);
-
 // Sets up a /redirect-on-second-navigation?url endpoint on the provided
 // `server`, which will return a 200 OK response for the first request, and
 // redirect the second request to `url` provided in the query param. This should
 // be called before starting `server`.
 void AddRedirectOnSecondNavigationHandler(net::EmbeddedTestServer* server);
+
+// Forwards DidStartLoading calls to the provided callback.
+class LoadingStartObserver : public WebContentsObserver {
+ public:
+  using Callback = base::RepeatingCallback<void()>;
+
+  LoadingStartObserver(WebContents* web_contents, Callback callback);
+  ~LoadingStartObserver() override;
+
+ private:
+  void DidStartLoading() override;
+
+  Callback callback_;
+};
+
+// Forwards DidStopLoading calls to the provided callback.
+class LoadingStopObserver : public WebContentsObserver {
+ public:
+  using Callback = base::RepeatingCallback<void()>;
+
+  LoadingStopObserver(WebContents* web_contents, Callback callback);
+  ~LoadingStopObserver() override;
+
+ private:
+  void DidStopLoading() override;
+
+  Callback callback_;
+};
+
+// Forwards DidFinishLoad calls to the provided callback.
+class LoadFinishObserver : public WebContentsObserver {
+ public:
+  using Callback = base::RepeatingCallback<void(RenderFrameHost*, const GURL&)>;
+
+  LoadFinishObserver(WebContents* web_contents, Callback callback);
+  ~LoadFinishObserver() override;
+
+ private:
+  void DidFinishLoad(RenderFrameHost* render_frame_host,
+                     const GURL& validated_url) override;
+
+  Callback callback_;
+};
+
+#if BUILDFLAG(IS_MAC)
+void RouteMouseEventToPopupViewMacForTesting(RenderWidgetHostView* rwhv,
+                                             const blink::WebMouseEvent& event);
+#endif  // BUILDFLAG(IS_MAC)
 
 }  // namespace content
 

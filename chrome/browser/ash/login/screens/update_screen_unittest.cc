@@ -7,24 +7,26 @@
 #include <memory>
 #include <optional>
 
+#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_mock_time_message_loop_task_runner.h"
+#include "chrome/browser/ash/login/oobe_configuration.h"
 #include "chrome/browser/ash/login/screens/mock_error_screen.h"
 #include "chrome/browser/ash/login/screens/mock_update_screen.h"
 #include "chrome/browser/ash/login/startup_utils.h"
 #include "chrome/browser/ash/login/wizard_context.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "chromeos/ash/components/dbus/oobe_config/oobe_configuration_client.h"
 #include "chromeos/ash/components/dbus/update_engine/fake_update_engine_client.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
 #include "chromeos/ash/components/network/network_handler_test_helper.h"
-#include "chromeos/ash/components/network/portal_detector/mock_network_portal_detector.h"
-#include "chromeos/ash/components/network/portal_detector/network_portal_detector.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 
 namespace ash {
 
@@ -34,7 +36,9 @@ using ::testing::Return;
 
 class UpdateScreenUnitTest : public testing::Test {
  public:
-  UpdateScreenUnitTest() : local_state_(TestingBrowserProcess::GetGlobal()) {}
+  UpdateScreenUnitTest() {
+    feature_list_.InitAndEnableFeature(ash::features::kDeviceMoveConfigSave);
+  }
 
   UpdateScreenUnitTest(const UpdateScreenUnitTest&) = delete;
   UpdateScreenUnitTest& operator=(const UpdateScreenUnitTest&) = delete;
@@ -72,20 +76,17 @@ class UpdateScreenUnitTest : public testing::Test {
     // Initialize objects needed by UpdateScreen.
     wizard_context_ = std::make_unique<WizardContext>();
     chromeos::PowerManagerClient::InitializeFake();
+    OobeConfigurationClient::InitializeFake();
     fake_update_engine_client_ = UpdateEngineClient::InitializeFakeForTest();
     network_handler_test_helper_ = std::make_unique<NetworkHandlerTestHelper>();
-    mock_network_portal_detector_ = new MockNetworkPortalDetector();
-    network_portal_detector::SetNetworkPortalDetector(
-        mock_network_portal_detector_);
-    mock_error_screen_ =
-        std::make_unique<MockErrorScreen>(mock_error_view_.AsWeakPtr());
+    mock_error_screen_ = std::make_unique<MockErrorScreen>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        mock_error_view_.AsWeakPtr());
 
-    // Ensure proper behavior of UpdateScreen's supporting objects.
-    EXPECT_CALL(*mock_network_portal_detector_, IsEnabled())
-        .Times(AnyNumber())
-        .WillRepeatedly(Return(false));
+    network_handler_test_helper_->ConfigureWiFi(shill::kStateOnline);
 
     update_screen_ = std::make_unique<UpdateScreen>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
         mock_view_.AsWeakPtr(), mock_error_screen_.get(),
         base::BindRepeating(&UpdateScreenUnitTest::HandleScreenExit,
                             base::Unretained(this)));
@@ -95,8 +96,8 @@ class UpdateScreenUnitTest : public testing::Test {
     TestingBrowserProcess::GetGlobal()->SetShuttingDown(true);
     update_screen_.reset();
     mock_error_screen_.reset();
-    network_portal_detector::Shutdown();
     network_handler_test_helper_.reset();
+    OobeConfigurationClient::Shutdown();
     chromeos::PowerManagerClient::Shutdown();
     UpdateEngineClient::Shutdown();
   }
@@ -114,10 +115,9 @@ class UpdateScreenUnitTest : public testing::Test {
   MockUpdateView mock_view_;
   MockErrorScreenView mock_error_view_;
   std::unique_ptr<MockErrorScreen> mock_error_screen_;
-  raw_ptr<MockNetworkPortalDetector, DanglingUntriaged>
-      mock_network_portal_detector_;
   raw_ptr<FakeUpdateEngineClient, DanglingUntriaged> fake_update_engine_client_;
   std::unique_ptr<WizardContext> wizard_context_;
+  OobeConfiguration oobe_configuration_;
 
   std::optional<UpdateScreen::Result> last_screen_result_;
 
@@ -128,9 +128,9 @@ class UpdateScreenUnitTest : public testing::Test {
   }
 
   // Test versions of core browser infrastructure.
+  base::test::ScopedFeatureList feature_list_;
   base::test::SingleThreadTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  ScopedTestingLocalState local_state_;
   std::unique_ptr<NetworkHandlerTestHelper> network_handler_test_helper_;
 };
 

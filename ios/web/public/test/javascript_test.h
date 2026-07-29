@@ -19,9 +19,9 @@ class JavascriptTest : public PlatformTest {
   JavascriptTest();
   ~JavascriptTest() override;
 
-  // Loads `html` into `web_view()` and waits for the web view to finish
-  // loading.
-  bool LoadHtml(NSString* html);
+  // Loads the `html` content at `base_url` into `web_view()` and waits for
+  // the web view to finish loading.
+  bool LoadHtml(NSString* html, std::optional<GURL> base_url = std::nullopt);
 
   // Loads `url` into `web_view()` and waits for the web view to finish
   // loading.
@@ -30,12 +30,6 @@ class JavascriptTest : public PlatformTest {
   // Adds the script which configures `__gCrWeb` to `web_view()`s
   // configuration.
   void AddGCrWebScript();
-  // Adds the script which configures `__gCrWeb.common` to `web_view()`s
-  // configuration.
-  void AddCommonScript();
-  // Adds the script which configures `__gCrWeb.message` to `web_view()`s
-  // configuration.
-  void AddMessageScript();
 
   // Adds the script with name `script_name` to `web_view()`s configuration.
   void AddUserScript(NSString* script_name);

@@ -22,13 +22,16 @@ static_library("ash") {
     "ui_hierarchy_data_collector.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+  public_deps = [
+    "//chrome/browser:browser_public_dependencies",
+    "//chrome/browser/support_tool",
+  ]
 
   deps = [
     "//ash",
     "//base",
-    "//chrome/browser/ash/profiles",
     "//chrome/browser/ash/system_logs",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/cryptohome",
     "//chromeos/ash/components/dbus/debug_daemon",
     "//chromeos/ash/components/dbus/shill",
@@ -58,9 +61,10 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/browser",
-    "//chrome/browser/ash/profiles",
     "//chrome/browser/ash/system_logs",
     "//chrome/test:test_support",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/browser_context_helper:test_support",
     "//chromeos/ash/components/dbus/debug_daemon",
     "//chromeos/ash/components/dbus/shill",
     "//chromeos/ash/components/network",
@@ -70,8 +74,11 @@ source_set("unit_tests") {
     "//components/user_manager:test_support",
     "//content/test:test_support",
     "//testing/gtest",
-    "//testing/gtest",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("browser_tests") {
@@ -88,6 +95,7 @@ source_set("browser_tests") {
     "//chrome/browser",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
+    "//chrome/browser/ui/window_metadata",
     "//chrome/test:test_support",
     "//components/feedback/redaction_tool",
     "//content/test:test_support",

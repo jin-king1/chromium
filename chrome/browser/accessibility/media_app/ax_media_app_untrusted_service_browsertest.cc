@@ -14,11 +14,11 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "chrome/browser/accessibility/accessibility_state_utils.h"
 #include "chrome/browser/accessibility/media_app/ax_media_app.h"
 #include "chrome/browser/accessibility/media_app/ax_media_app_service_factory.h"
 #include "chrome/browser/accessibility/media_app/test/fake_ax_media_app.h"
 #include "chrome/browser/accessibility/media_app/test/test_ax_media_app_untrusted_service.h"
+#include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -37,7 +37,6 @@
 #include "services/screen_ai/public/mojom/screen_ai_service.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/ax_action_data.h"
-#include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_event_generator.h"
 #include "ui/accessibility/ax_node.h"
@@ -75,12 +74,12 @@ constexpr std::string_view kTestPageIds = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 constexpr std::string_view kLoadingMessage =
     "AXTree has_parent_tree title=PDF document\n"
     "id=1 pdfRoot FOCUSABLE url=fakepdfurl.pdf clips_children child_ids=10000 "
-    "(0, 0)-(0, 0) "
-    "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+    "(0, 0)-(0, 0) scroll_x_min=0 scroll_y_min=0 "
+    "restriction=readonly text_align=left "
     "scrollable=true is_line_breaking_object=true\n"
     "  id=10000 banner <div> child_ids=10001 offset_container_id=1 (-1, "
-    "-1)-(1, 1) text_align=left is_page_breaking_object=true "
-    "is_line_breaking_object=true has_aria_attribute=true\n"
+    "-1)-(1, 1) text_align=left is_line_breaking_object=true "
+    "is_page_breaking_object=true has_aria_attribute=true\n"
     "    id=10001 status <div> child_ids=10002 offset_container_id=10000 (0, "
     "0)-(1, 1) text_align=left container_relevant=additions text "
     "container_live=polite relevant=additions text live=polite "
@@ -120,7 +119,7 @@ class AXMediaAppUntrustedServiceTest : public InProcessBrowserTest {
         pageReceiver = pageRemote.InitWithNewPipeAndPassReceiver();
 
     service_ = std::make_unique<TestAXMediaAppUntrustedService>(
-        *browser()->profile(), browser()->window()->GetNativeWindow(),
+        *browser()->GetProfile(), browser()->GetWindow()->GetNativeWindow(),
         std::move(pageRemote));
     ASSERT_NE(nullptr, service_.get());
     service_->SetMediaAppForTesting(&fake_media_app_);
@@ -148,6 +147,14 @@ class AXMediaAppUntrustedServiceTest : public InProcessBrowserTest {
 
   FakeAXMediaApp fake_media_app_;
   std::unique_ptr<TestAXMediaAppUntrustedService> service_;
+
+ private:
+  // TODO(https://crbug.com/423465927): Explore a better approach to make the
+  // existing tests run with the prewarm feature enabled.
+  ::test::ScopedPrewarmFeatureList scoped_prewarm_feature_list_{
+      ::test::ScopedPrewarmFeatureList::PrewarmState::kDisabled};
+
+  std::optional<content::ScopedAccessibilityModeOverride> mode_override_;
 };
 
 std::vector<PageMetadataPtr>
@@ -179,37 +186,23 @@ AXMediaAppUntrustedServiceTest::ClonePageMetadataPtrs(
 }
 
 void AXMediaAppUntrustedServiceTest::EnableScreenReaderForTesting() {
-  accessibility_state_utils::OverrideIsScreenReaderEnabledForTesting(true);
-#if BUILDFLAG(IS_CHROMEOS)
   AccessibilityManager::Get()->EnableSpokenFeedback(true);
-#else
-  content::ScopedAccessibilityModeOverride scoped_mode(ui::kAXModeComplete);
-#endif  // BUILDFLAG(IS_CHROMEOS)
+  mode_override_.emplace(ui::kAXModeComplete);
 }
 
 void AXMediaAppUntrustedServiceTest::DisableScreenReaderForTesting() {
-  accessibility_state_utils::OverrideIsScreenReaderEnabledForTesting(false);
-#if BUILDFLAG(IS_CHROMEOS)
   AccessibilityManager::Get()->EnableSpokenFeedback(false);
-#else
-  content::ScopedAccessibilityModeOverride scoped_mode(ui::kNone);
-#endif  // BUILDFLAG(IS_CHROMEOS)
+  mode_override_.reset();
 }
 
 void AXMediaAppUntrustedServiceTest::EnableSelectToSpeakForTesting() {
-#if BUILDFLAG(IS_CHROMEOS)
   AccessibilityManager::Get()->SetSelectToSpeakEnabled(true);
-#else
-  content::ScopedAccessibilityModeOverride scoped_mode(ui::kAXModeComplete);
-#endif  // BUILDFLAG(IS_CHROMEOS)
+  mode_override_.emplace(ui::kAXModeComplete);
 }
 
 void AXMediaAppUntrustedServiceTest::DisableSelectToSpeakForTesting() {
-#if BUILDFLAG(IS_CHROMEOS)
   AccessibilityManager::Get()->SetSelectToSpeakEnabled(false);
-#else
-  content::ScopedAccessibilityModeOverride scoped_mode(ui::kAXModeComplete);
-#endif  // BUILDFLAG(IS_CHROMEOS)
+  mode_override_.reset();
 }
 
 void AXMediaAppUntrustedServiceTest::WaitForOcringPages(
@@ -251,21 +244,22 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
   EXPECT_TRUE(service_->IsAccessibilityEnabled());
   EXPECT_EQ(
       "AXTree has_parent_tree title=PDF document\n"
-      "id=10000 banner <div> child_ids=10001 offset_container_id=1 (-1, "
-      "-1)-(1, 1) text_align=left is_page_breaking_object=true "
-      "is_line_breaking_object=true has_aria_attribute=true\n"
-      "  id=10001 status <div> child_ids=10002 offset_container_id=10000 (0, "
+      "id=1 pdfRoot child_ids=10000 (0, 0)-(0, 0)\n"
+      "  id=10000 banner <div> child_ids=10001 offset_container_id=1 (-1, "
+      "-1)-(1, 1) text_align=left is_line_breaking_object=true "
+      "is_page_breaking_object=true has_aria_attribute=true\n"
+      "    id=10001 status <div> child_ids=10002 offset_container_id=10000 (0, "
       "0)-(1, 1) text_align=left container_relevant=additions text "
       "container_live=polite relevant=additions text live=polite "
       "container_atomic=true container_busy=false atomic=true "
       "is_line_breaking_object=true has_aria_attribute=true\n"
-      "    id=10002 staticText name=This PDF is inaccessible. Couldn't "
+      "      id=10002 staticText name=This PDF is inaccessible. Couldn't "
       "download text extraction files. Please try again later. child_ids=10003 "
       "offset_container_id=10001 (0, 0)-(1, 1) text_align=left "
       "container_relevant=additions text container_live=polite "
       "relevant=additions text live=polite container_atomic=true "
       "container_busy=false atomic=true is_line_breaking_object=true\n"
-      "      id=10003 inlineTextBox name=This PDF is inaccessible. Couldn't "
+      "        id=10003 inlineTextBox name=This PDF is inaccessible. Couldn't "
       "download text extraction files. Please try again later. "
       "offset_container_id=10002 (0, 0)-(1, 1) text_align=left\n",
       service_->GetDocumentTreeToStringForTesting());
@@ -283,21 +277,22 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
   EXPECT_TRUE(service_->IsAccessibilityEnabled());
   EXPECT_EQ(
       "AXTree has_parent_tree title=PDF document\n"
-      "id=10000 banner <div> child_ids=10001 offset_container_id=1 (-1, "
-      "-1)-(1, 1) text_align=left is_page_breaking_object=true "
-      "is_line_breaking_object=true has_aria_attribute=true\n"
-      "  id=10001 status <div> child_ids=10002 offset_container_id=10000 (0, "
+      "id=1 pdfRoot child_ids=10000 (0, 0)-(0, 0)\n"
+      "  id=10000 banner <div> child_ids=10001 offset_container_id=1 (-1, "
+      "-1)-(1, 1) text_align=left is_line_breaking_object=true "
+      "is_page_breaking_object=true has_aria_attribute=true\n"
+      "    id=10001 status <div> child_ids=10002 offset_container_id=10000 (0, "
       "0)-(1, 1) text_align=left container_relevant=additions text "
       "container_live=polite relevant=additions text live=polite "
       "container_atomic=true container_busy=false atomic=true "
       "is_line_breaking_object=true has_aria_attribute=true\n"
-      "    id=10002 staticText name=This PDF is inaccessible. Couldn't "
+      "      id=10002 staticText name=This PDF is inaccessible. Couldn't "
       "download text extraction files. Please try again later. child_ids=10003 "
       "offset_container_id=10001 (0, 0)-(1, 1) text_align=left "
       "container_relevant=additions text container_live=polite "
       "relevant=additions text live=polite container_atomic=true "
       "container_busy=false atomic=true is_line_breaking_object=true\n"
-      "      id=10003 inlineTextBox name=This PDF is inaccessible. Couldn't "
+      "        id=10003 inlineTextBox name=This PDF is inaccessible. Couldn't "
       "download text extraction files. Please try again later. "
       "offset_container_id=10002 (0, 0)-(1, 1) text_align=left\n",
       service_->GetDocumentTreeToStringForTesting());
@@ -349,8 +344,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, PageMetadataUpdated) {
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 4 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3,4,5 "
-      "(0, 0)-(10, 15) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "(0, 0)-(10, 15) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, "
@@ -394,8 +389,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, PageMetadataUpdated) {
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 4 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3,4,5 "
-      "(0, 0)-(10, 15) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "(0, 0)-(10, 15) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, "
@@ -496,8 +491,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 3 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3,4 "
-      "(0, 0)-(10, 15) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "(0, 0)-(10, 15) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, "
@@ -513,8 +508,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 2 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3 (0, "
-      "0)-(10, 15) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "0)-(10, 15) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, "
@@ -617,8 +612,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 3 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3,4 "
-      "(0, 0)-(10, 15) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "(0, 0)-(10, 15) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, "
@@ -634,8 +629,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 2 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3 (0, "
-      "0)-(10, 15) text_align=left restriction=readonly scroll_x_min=0 "
-      "scroll_y_min=0 scrollable=true is_line_breaking_object=true\n"
+      "0)-(10, 15) scroll_x_min=0 scroll_y_min=0 restriction=readonly "
+      "text_align=left scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, "
       "0)-(10, 15) restriction=readonly is_page_breaking_object=true\n"
@@ -916,8 +911,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 2 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3 (0, "
-      "0)-(4, 19) text_align=left restriction=readonly scroll_x_min=0 "
-      "scroll_y_min=0 scrollable=true is_line_breaking_object=true\n"
+      "0)-(4, 19) scroll_x_min=0 scroll_y_min=0 restriction=readonly "
+      "text_align=left scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, 0)-(3, "
       "8) restriction=readonly is_page_breaking_object=true\n"
@@ -1196,7 +1191,7 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, StitchDocumentTree) {
       )HTML";
 
   content::AccessibilityNotificationWaiter load_waiter(
-      browser()->tab_strip_model()->GetActiveWebContents(), ui::kAXModeComplete,
+      browser()->tab_strip_model()->GetActiveWebContents(),
       ax::mojom::Event::kLoadComplete);
   GURL html_data_url("data:text/html," +
                      base::EscapeQueryParamValue(html, /*use_plus=*/false));
@@ -1208,7 +1203,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, StitchDocumentTree) {
       "++++genericContainer\n"
       "++++++canvas htmlTag='canvas'\n"
       "++++++++staticText name='<newline>          '\n"
-      "++++++++staticText name='Text that is not replaced by child tree.'\n"
+      "++++++++paragraph htmlTag='p'\n"
+      "++++++++++staticText name='Text that is not replaced by child tree.'\n"
       "++++++++staticText name='<newline>        '\n"
       "++++++graphicsDocument htmlTag='div' name='graphics-document'\n"
       "++++++++paragraph htmlTag='p'\n"
@@ -1224,7 +1220,7 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, StitchDocumentTree) {
                   ui::AXPropertyFilter("name", ui::AXPropertyFilter::ALLOW)}));
 
   content::AccessibilityNotificationWaiter child_tree_added_waiter(
-      browser()->tab_strip_model()->GetActiveWebContents(), ui::kAXModeComplete,
+      browser()->tab_strip_model()->GetActiveWebContents(),
       ui::AXEventGenerator::Event::CHILDREN_CHANGED);
   const size_t kTestNumPages = 1u;
   std::vector<PageMetadataPtr> fake_metadata =
@@ -1238,7 +1234,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, StitchDocumentTree) {
       "++++genericContainer\n"
       "++++++canvas htmlTag='canvas'\n"
       "++++++++staticText name='<newline>          '\n"
-      "++++++++staticText name='Text that is not replaced by child tree.'\n"
+      "++++++++paragraph htmlTag='p'\n"
+      "++++++++++staticText name='Text that is not replaced by child tree.'\n"
       "++++++++staticText name='<newline>        '\n"
       "++++++graphicsDocument htmlTag='div' name='graphics-document'\n",
       browser()
@@ -1313,8 +1310,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
       "AXTreeUpdate: root id 1\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 3 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3,4 "
-      "(0, 0)-(3, 28) text_align=left restriction=readonly scroll_x_min=0 "
-      "scroll_y_min=0 scrollable=true is_line_breaking_object=true\n"
+      "(0, 0)-(3, 28) scroll_x_min=0 scroll_y_min=0 restriction=readonly "
+      "text_align=left scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, 0)-(3, "
       "8) restriction=readonly is_page_breaking_object=true\n"
@@ -1361,8 +1358,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
       "AXTreeUpdate: root id 1\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 3 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3,4 "
-      "(0, 0)-(8, 28) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "(0, 0)-(8, 28) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, 0)-(3, "
@@ -1384,8 +1381,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
       "AXTreeUpdate: root id 1\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 3 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3,4 "
-      "(0, 0)-(8, 28) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "(0, 0)-(8, 28) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, 0)-(3, "
@@ -2017,8 +2014,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, PageBatching) {
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 2 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3 (0, "
-      "0)-(3, 18) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "0)-(3, 18) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, 0)-(3, "
@@ -2048,8 +2045,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, PageBatching) {
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE name=PDF document containing 4 pages "
       "name_from=attribute url=fakepdfurl.pdf clips_children child_ids=2,3,4,5 "
-      "(0, 0)-(3, 38) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "(0, 0)-(3, 38) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=2 region name=Page 1 name_from=attribute "
       "has_child_tree (0, 0)-(3, "
@@ -2126,8 +2123,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, StatusNodes) {
       "scroll_x_min=0 scroll_y_min=0 restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=10000 banner <div> child_ids=10001 offset_container_id=1 (-1, "
-      "-1)-(1, 1) text_align=left is_page_breaking_object=true "
-      "is_line_breaking_object=true has_aria_attribute=true\n"
+      "-1)-(1, 1) text_align=left is_line_breaking_object=true "
+      "is_page_breaking_object=true has_aria_attribute=true\n"
       "    id=10001 status <div> child_ids=10002 offset_container_id=10000 (0, "
       "0)-(1, 1) text_align=left container_relevant=additions text "
       "container_live=polite relevant=additions text live=polite "
@@ -2177,8 +2174,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest,
       "scroll_x_min=0 scroll_y_min=0 restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=10000 banner <div> child_ids=10001 offset_container_id=1 (-1, "
-      "-1)-(1, 1) text_align=left is_page_breaking_object=true "
-      "is_line_breaking_object=true has_aria_attribute=true\n"
+      "-1)-(1, 1) text_align=left is_line_breaking_object=true "
+      "is_page_breaking_object=true has_aria_attribute=true\n"
       "    id=10001 status <div> child_ids=10002 offset_container_id=10000 (0, "
       "0)-(1, 1) text_align=left container_relevant=additions text "
       "container_live=polite relevant=additions text live=polite "
@@ -2254,8 +2251,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, PostamblePage) {
   EXPECT_EQ(
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE url=fakepdfurl.pdf clips_children "
-      "child_ids=10004 (0, 0)-(0, 0) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "child_ids=10004 (0, 0)-(0, 0) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=10004 region child_ids=10005 (0, 0)-(0, 0) restriction=readonly "
       "is_page_breaking_object=true\n"
@@ -2272,8 +2269,8 @@ IN_PROC_BROWSER_TEST_F(AXMediaAppUntrustedServiceTest, PostamblePage) {
   EXPECT_EQ(
       "AXTree has_parent_tree title=PDF document\n"
       "id=1 pdfRoot FOCUSABLE url=fakepdfurl.pdf clips_children "
-      "child_ids=10004 (0, 0)-(0, 0) "
-      "text_align=left restriction=readonly scroll_x_min=0 scroll_y_min=0 "
+      "child_ids=10004 (0, 0)-(0, 0) scroll_x_min=0 scroll_y_min=0 "
+      "restriction=readonly text_align=left "
       "scrollable=true is_line_breaking_object=true\n"
       "  id=10004 region child_ids=10005 (0, 0)-(0, 0) restriction=readonly "
       "is_page_breaking_object=true\n"

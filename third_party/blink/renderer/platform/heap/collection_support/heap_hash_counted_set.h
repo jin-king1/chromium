@@ -34,12 +34,12 @@ class BasicHeapHashCountedSet final
  private:
   struct TypeConstraints {
     constexpr TypeConstraints() {
-      static_assert(WTF::IsMemberOrWeakMemberType<Value>::value,
+      static_assert(IsMemberOrWeakMemberType<Value>::value,
                     "HeapHashCountedSet supports only Member and WeakMember.");
       static_assert(
           std::is_trivially_destructible<BasicHeapHashCountedSet>::value,
           "HeapHashCountedSet must be trivially destructible.");
-      static_assert(WTF::IsTraceable<Value>::value,
+      static_assert(IsTraceableV<Value>,
                     "For counted sets without traceable elements, use "
                     "HashCountedSet<> instead of HeapHashCountedSet<>.");
     }
@@ -47,7 +47,7 @@ class BasicHeapHashCountedSet final
   NO_UNIQUE_ADDRESS TypeConstraints type_constraints_;
 };
 
-// On-stack for in-field version of WTF::HashCountedSet for referring to
+// On-stack for in-field version of HashCountedSet for referring to
 // GarbageCollected or DISALLOW_NEW() objects with Trace() methods.
 template <typename T, typename Traits = HashTraits<T>>
 using HeapHashCountedSet =
@@ -55,16 +55,16 @@ using HeapHashCountedSet =
                             T,
                             Traits>;
 
-static_assert(WTF::IsDisallowNew<HeapHashCountedSet<int>>);
+static_assert(IsDisallowNew<HeapHashCountedSet<int>>);
 ASSERT_SIZE(HashCountedSet<int>, HeapHashCountedSet<int>);
 
-// GCed version of WTF::HashCountedSet for referring to GarbageCollected or
+// GCed version of HashCountedSet for referring to GarbageCollected or
 // DISALLOW_NEW() objects with Trace() methods.
 template <typename T, typename Traits = HashTraits<T>>
 using GCedHeapHashCountedSet =
     BasicHeapHashCountedSet<internal::HeapCollectionType::kGCed, T, Traits>;
 
-static_assert(!WTF::IsDisallowNew<GCedHeapHashCountedSet<int>>);
+static_assert(!IsDisallowNew<GCedHeapHashCountedSet<int>>);
 ASSERT_SIZE(HashCountedSet<int>, GCedHeapHashCountedSet<int>);
 
 }  // namespace blink

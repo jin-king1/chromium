@@ -31,6 +31,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_SVG_PROPERTIES_SVG_ANIMATED_PROPERTY_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SVG_PROPERTIES_SVG_ANIMATED_PROPERTY_H_
 
+#include <concepts>
+
 #include "base/check_op.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/dom/qualified_name.h"
@@ -91,7 +93,6 @@ class SVGAnimatedPropertyBase : public GarbageCollectedMixin {
     kRemoved,
   };
   void BaseValueChanged(BaseValueChangeType);
-  void EnsureAnimValUpdated();
 
  protected:
   SVGAnimatedPropertyBase(AnimatedPropertyType,
@@ -103,6 +104,13 @@ class SVGAnimatedPropertyBase : public GarbageCollectedMixin {
   static constexpr int kInitialValueStorageBits = 3;
   unsigned InitialValueStorage() const { return initial_value_storage_; }
 
+  template <typename Property, typename Validator, typename... Args>
+  SVGParsingError UpdateBaseValueFromAttribute(Property& base_value,
+                                               const String& value,
+                                               Validator&& validator,
+                                               Args&&... args);
+
+ private:
   enum ContentAttributeState : unsigned {
     // The content attribute is not set (hasAttribute(...) === false).
     kNotSet,
@@ -124,7 +132,6 @@ class SVGAnimatedPropertyBase : public GarbageCollectedMixin {
     content_attribute_state_ = content_attribute_state;
   }
 
- private:
   static_assert(kNumberOfAnimatedPropertyTypes <= (1u << 5),
                 "enough bits for AnimatedPropertyType (type_)");
 
@@ -141,11 +148,40 @@ class SVGAnimatedPropertyBase : public GarbageCollectedMixin {
 };
 
 template <typename T>
-struct ThreadingTrait<
-    T,
-    std::enable_if_t<std::is_base_of_v<SVGAnimatedPropertyBase, T>>> {
+  requires(std::derived_from<T, SVGAnimatedPropertyBase>)
+struct ThreadingTrait<T> {
   static constexpr ThreadAffinity kAffinity = kMainThreadOnly;
 };
+
+template <typename Property, class Validator, typename... Args>
+SVGParsingError SVGAnimatedPropertyBase::UpdateBaseValueFromAttribute(
+    Property& base_value,
+    const String& value,
+    Validator&& validator,
+    Args&&... args) {
+  static_assert(Property::kInitialValueBits <= kInitialValueStorageBits,
+                "enough bits for the initial value");
+
+  const bool is_attr_removal = value.IsNull();
+  SetContentAttributeState(is_attr_removal ? kNotSet : kHasValue);
+
+  if constexpr (Property::kInitialValueBits > 0) {
+    SVGParsingError parse_status = SVGParseStatus::kNoError;
+    if (!is_attr_removal) {
+      parse_status =
+          base_value.SetValueAsString(value, std::forward<Args>(args)...);
+      if (parse_status == SVGParseStatus::kNoError) [[likely]] {
+        parse_status = validator(base_value);
+      }
+    }
+    if (is_attr_removal || parse_status != SVGParseStatus::kNoError) {
+      base_value.SetInitial(InitialValueStorage());
+    }
+    return parse_status;
+  } else {
+    return base_value.SetValueAsString(value, std::forward<Args>(args)...);
+  }
+}
 
 template <typename Property>
 class SVGAnimatedPropertyCommon : public SVGAnimatedPropertyBase {
@@ -160,22 +196,6 @@ class SVGAnimatedPropertyCommon : public SVGAnimatedPropertyBase {
   const SVGPropertyBase& BaseValueBase() const override { return *base_value_; }
 
   bool IsAnimating() const override { return current_value_ != base_value_; }
-
-  SVGParsingError AttributeChanged(const String& value) override {
-    static_assert(Property::kInitialValueBits <= kInitialValueStorageBits,
-                  "enough bits for the initial value");
-
-    const bool has_initial_value = Property::kInitialValueBits > 0;
-    const bool is_attr_removal = value.IsNull();
-    SetContentAttributeState(is_attr_removal ? kNotSet : kHasValue);
-    SVGParsingError parse_status = SVGParseStatus::kNoError;
-    if (!has_initial_value || !is_attr_removal)
-      parse_status = base_value_->SetValueAsString(value);
-    if (has_initial_value &&
-        (is_attr_removal || parse_status != SVGParseStatus::kNoError))
-      base_value_->SetInitial(InitialValueStorage());
-    return parse_status;
-  }
 
   void SetAnimatedValue(SVGPropertyBase* value) override {
     DCHECK(!value || value->GetType() == Property::ClassType());
@@ -203,7 +223,12 @@ class SVGAnimatedPropertyCommon : public SVGAnimatedPropertyBase {
         base_value_(initial_value),
         current_value_(initial_value) {}
 
- private:
+  SVGParsingError AttributeChanged(const String& value) override {
+    return UpdateBaseValueFromAttribute(
+        *base_value_, value,
+        [](const Property&) { return SVGParseStatus::kNoError; });
+  }
+
   Member<Property> base_value_;
   Member<Property> current_value_;
 };
@@ -229,7 +254,6 @@ class SVGAnimatedProperty : public SVGAnimatedPropertyCommon<Property> {
   }
 
   PrimitiveType animVal() {
-    this->EnsureAnimValUpdated();
     return this->CurrentValue()->Value();
   }
 

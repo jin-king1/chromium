@@ -17,14 +17,13 @@
 
 #include "base/check_op.h"
 #include "base/containers/circular_deque.h"
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/hash/hash.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
-#include "base/not_fatal_until.h"
 #include "base/sequence_checker.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/lock.h"
@@ -43,7 +42,6 @@
 #include "mojo/public/cpp/bindings/associated_group.h"
 #include "mojo/public/cpp/bindings/associated_group_controller.h"
 #include "mojo/public/cpp/bindings/connector.h"
-#include "mojo/public/cpp/bindings/features.h"
 #include "mojo/public/cpp/bindings/interface_endpoint_client.h"
 #include "mojo/public/cpp/bindings/interface_endpoint_controller.h"
 #include "mojo/public/cpp/bindings/interface_id.h"
@@ -55,7 +53,6 @@
 #include "mojo/public/cpp/bindings/pipe_control_message_proxy.h"
 #include "mojo/public/cpp/bindings/scoped_message_error_crash_key.h"
 #include "mojo/public/cpp/bindings/sequence_local_sync_event_watcher.h"
-#include "mojo/public/cpp/bindings/tracing_helpers.h"
 
 namespace IPC {
 
@@ -66,7 +63,6 @@ namespace {
 constinit thread_local bool off_sequence_binding_allowed = false;
 
 BASE_FEATURE(kMojoChannelAssociatedSendUsesRunOrPostTask,
-             "MojoChannelAssociatedSendUsesRunOrPostTask",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Used to track some internal Channel state in pursuit of message leaks.
@@ -175,7 +171,8 @@ class ChannelAssociatedGroupController
       bool set_interface_id_namespace_bit,
       const scoped_refptr<base::SingleThreadTaskRunner>& ipc_task_runner,
       const scoped_refptr<base::SingleThreadTaskRunner>& proxy_task_runner)
-      : task_runner_(ipc_task_runner),
+      : AssociatedGroupController(ipc_task_runner),
+        task_runner_(ipc_task_runner),
         proxy_task_runner_(proxy_task_runner),
         set_interface_id_namespace_bit_(set_interface_id_namespace_bit),
         dispatcher_(this),
@@ -337,7 +334,7 @@ class ChannelAssociatedGroupController
         id = next_interface_id_++;
         if (set_interface_id_namespace_bit_)
           id |= mojo::kInterfaceIdNamespaceMask;
-      } while (base::Contains(endpoints_, id));
+      } while (endpoints_.contains(id));
 
       Endpoint* endpoint = new Endpoint(this, id);
       if (encountered_error_)
@@ -399,7 +396,7 @@ class ChannelAssociatedGroupController
       return;
     {
       base::AutoLock locker(lock_);
-      DCHECK(base::Contains(endpoints_, id));
+      DCHECK(endpoints_.contains(id));
       Endpoint* endpoint = endpoints_[id].get();
       DCHECK(!endpoint->client());
       DCHECK(!endpoint->closed());
@@ -431,7 +428,7 @@ class ChannelAssociatedGroupController
     DCHECK(client);
 
     base::AutoLock locker(lock_);
-    DCHECK(base::Contains(endpoints_, id));
+    DCHECK(endpoints_.contains(id));
 
     Endpoint* endpoint = endpoints_[id].get();
     endpoint->AttachClient(client, std::move(runner));
@@ -449,7 +446,7 @@ class ChannelAssociatedGroupController
     DCHECK(mojo::IsValidInterfaceId(id));
 
     base::AutoLock locker(lock_);
-    DCHECK(base::Contains(endpoints_, id));
+    DCHECK(endpoints_.contains(id));
 
     Endpoint* endpoint = endpoints_[id].get();
     endpoint->DetachClient();
@@ -921,7 +918,7 @@ class ChannelAssociatedGroupController
       return true;
     }
 
-    CHECK(connector_->encountered_error(), base::NotFatalUntil::M135);
+    CHECK(connector_->encountered_error());
     return false;
   }
 

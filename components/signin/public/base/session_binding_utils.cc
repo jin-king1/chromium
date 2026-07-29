@@ -6,6 +6,7 @@
 
 #include <optional>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "base/base64url.h"
@@ -15,11 +16,15 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/signin/public/base/hybrid_encryption_key.h"
+#include "crypto/ecdsa_utils.h"
+#include "crypto/keypair.h"
 #include "crypto/sha2.h"
 #include "crypto/signature_verifier.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/boringssl/src/include/openssl/bn.h"
 #include "third_party/boringssl/src/include/openssl/ecdsa.h"
 #include "url/gurl.h"
@@ -52,21 +57,23 @@ std::string Base64UrlEncode(std::string_view data) {
 }
 
 std::string Base64UrlEncode(base::span<const uint8_t> data) {
-  return Base64UrlEncode(std::string_view(
-      reinterpret_cast<const char*>(data.data()), data.size()));
+  std::string output;
+  base::Base64UrlEncode(data, base::Base64UrlEncodePolicy::OMIT_PADDING,
+                        &output);
+  return output;
 }
 
-base::Value::Dict CreatePublicKeyInfo(base::span<const uint8_t> pubkey) {
-  return base::Value::Dict()
+base::DictValue CreatePublicKeyInfo(base::span<const uint8_t> pubkey) {
+  return base::DictValue()
       .Set("kty",
            "accounts.google.com/.well-known/kty/"
            "SubjectPublicKeyInfo")
       .Set("SubjectPublicKeyInfo", Base64UrlEncode(pubkey));
 }
 
-base::Value::Dict CreateHybridPublicKeyInfo(
+base::DictValue CreateHybridPublicKeyInfo(
     std::string_view ephemeral_public_key) {
-  return base::Value::Dict()
+  return base::DictValue()
       .Set("kty",
            "type.googleapis.com/google.crypto.tink.EciesAeadHkdfPublicKey")
       .Set("TinkKeysetPublicKeyInfo", Base64UrlEncode(ephemeral_public_key));
@@ -75,8 +82,8 @@ base::Value::Dict CreateHybridPublicKeyInfo(
 std::optional<std::string> CreateHeaderAndPayloadWithCustomPayload(
     crypto::SignatureVerifier::SignatureAlgorithm algorithm,
     std::string_view schema,
-    const base::Value::Dict& payload) {
-  auto header = base::Value::Dict()
+    const base::DictValue& payload) {
+  auto header = base::DictValue()
                     .Set("alg", SignatureAlgorithmToString(algorithm))
                     .Set("typ", "jwt");
   if (!schema.empty()) {
@@ -101,28 +108,11 @@ std::optional<std::string> CreateHeaderAndPayloadWithCustomPayload(
                        Base64UrlEncode(*payload_serialized)});
 }
 
-std::optional<std::vector<uint8_t>> ConvertDERSignatureToRaw(
-    base::span<const uint8_t> der_signature) {
-  bssl::UniquePtr<ECDSA_SIG> ecdsa_sig(
-      ECDSA_SIG_from_bytes(der_signature.data(), der_signature.size()));
-  if (!ecdsa_sig) {
-    DVLOG(1) << "Failed to create ECDSA_SIG";
-    return {};
-  }
-
-  // TODO(b/301888680): this implicitly depends on a curve used by
-  // `crypto::UnexportableKey`. Make this dependency more explicit.
-  const size_t kMaxBytesPerBN = 32;
-  std::vector<uint8_t> jwt_signature(2 * kMaxBytesPerBN);
-
-  if (!BN_bn2bin_padded(&jwt_signature[0], kMaxBytesPerBN, ecdsa_sig->r) ||
-      !BN_bn2bin_padded(&jwt_signature[kMaxBytesPerBN], kMaxBytesPerBN,
-                        ecdsa_sig->s)) {
-    DVLOG(1) << "Failed to serialize R and S to " << kMaxBytesPerBN << " bytes";
-    return {};
-  }
-
-  return jwt_signature;
+GURL RemoveQueryAndFragment(const GURL& original) {
+  GURL::Replacements replacements;
+  replacements.ClearRef();
+  replacements.ClearQuery();
+  return original.ReplaceComponents(replacements);
 }
 
 }  // namespace
@@ -157,16 +147,26 @@ ParseSignatureAlgorithmList(std::string_view algorithm_list) {
 
 std::optional<std::string> CreateKeyRegistrationHeaderAndPayloadForTokenBinding(
     std::string_view client_id,
-    std::string_view auth_code,
+    const std::variant<TokenBindingAuthCode, TokenBindingChallenge>&
+        auth_code_or_challenge,
     const GURL& registration_url,
     crypto::SignatureVerifier::SignatureAlgorithm algorithm,
     base::span<const uint8_t> pubkey,
     base::Time timestamp) {
+  std::string jti = std::visit(
+      absl::Overload{[](const TokenBindingAuthCode& auth_code) {
+                       return Base64UrlEncode(
+                           crypto::SHA256HashString(auth_code.value()));
+                     },
+                     [](const TokenBindingChallenge& challenge) {
+                       return challenge.value();
+                     }},
+      auth_code_or_challenge);
   auto payload =
-      base::Value::Dict()
+      base::DictValue()
           .Set("sub", client_id)
-          .Set("aud", registration_url.spec())
-          .Set("jti", Base64UrlEncode(crypto::SHA256HashString(auth_code)))
+          .Set("aud", RemoveQueryAndFragment(registration_url).spec())
+          .Set("jti", std::move(jti))
           // Write out int64_t variable as a double.
           // Note: this may discard some precision, but for `base::Value`
           // there's no other option.
@@ -185,8 +185,8 @@ CreateKeyRegistrationHeaderAndPayloadForSessionBinding(
     base::span<const uint8_t> pubkey,
     base::Time timestamp) {
   auto payload =
-      base::Value::Dict()
-          .Set("aud", registration_url.spec())
+      base::DictValue()
+          .Set("aud", RemoveQueryAndFragment(registration_url).spec())
           .Set("jti", challenge)
           // Write out int64_t variable as a double.
           // Note: this may discard some precision, but for `base::Value`
@@ -206,9 +206,9 @@ std::optional<std::string> CreateKeyAssertionHeaderAndPayload(
     const GURL& destination_url,
     std::string_view name_space,
     std::string_view ephemeral_public_key) {
-  auto payload = base::Value::Dict()
+  auto payload = base::DictValue()
                      .Set("sub", client_id)
-                     .Set("aud", destination_url.spec())
+                     .Set("aud", RemoveQueryAndFragment(destination_url).spec())
                      .Set("jti", challenge)
                      .Set("iss", Base64UrlEncode(crypto::SHA256Hash(pubkey)))
                      .Set("namespace", name_space);
@@ -223,10 +223,17 @@ std::optional<std::string> CreateKeyAssertionHeaderAndPayload(
 std::optional<std::string> AppendSignatureToHeaderAndPayload(
     std::string_view header_and_payload,
     crypto::SignatureVerifier::SignatureAlgorithm algorithm,
+    base::span<const uint8_t> pubkey_spki,
     base::span<const uint8_t> signature) {
   std::optional<std::vector<uint8_t>> signature_holder;
   if (algorithm == crypto::SignatureVerifier::ECDSA_SHA256) {
-    signature_holder = ConvertDERSignatureToRaw(signature);
+    std::optional<crypto::keypair::PublicKey> public_key =
+        crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(pubkey_spki);
+    if (!public_key.has_value()) {
+      return std::nullopt;
+    }
+    signature_holder =
+        crypto::ConvertEcdsaDerSignatureToRaw(*public_key, signature);
     if (!signature_holder.has_value()) {
       return std::nullopt;
     }

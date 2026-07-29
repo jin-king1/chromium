@@ -3,7 +3,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import codecs
 import unittest
 from unittest.mock import patch, mock_open, call
 from typing import NamedTuple
@@ -34,7 +33,7 @@ class PolicyGenerationTest(unittest.TestCase):
           "schema": {
               "type": "string"
           },
-          "supported_on": ["chrome_os:1-", "chrome.*:1-"],
+          "supported_on": ["chrome_os:1-", "chrome.*:1-", "android:1-"],
           "id": 1,
           "tags": [],
           "caption": "ExampleStringPolicy caption",
@@ -45,7 +44,7 @@ class PolicyGenerationTest(unittest.TestCase):
           "schema": {
               "type": "boolean"
           },
-          "supported_on": ["chrome_os:1-", "chrome.*:1-"],
+          "supported_on": ["chrome_os:1-", "chrome.*:1-", "android:1-"],
           "id": 2,
           "tags": [],
           "caption": "ExampleBoolPolicy caption",
@@ -148,12 +147,26 @@ class PolicyGenerationTest(unittest.TestCase):
           "caption": "UnsupportedPolicy caption",
           "desc": "UnsupportedPolicy desc"
       }, {
+          "name": "ExampleConflictingPolicy",
+          "type": "main",
+          "schema": {
+              "type": "boolean"
+          },
+          "supported_on": ["chrome_os:1-", "chrome.*:1-", "android:1-"],
+          "id": 10,
+          "features": {
+              "uses_machine_and_user_values": True,
+          },
+          "tags": [],
+          "caption": "ExampleConflictingPolicy caption",
+          "desc": "ExampleConflictingPolicy desc",
+      }, {
           "name": "ChunkZeroLastFieldBooleanPolicy",
           "type": "main",
           "schema": {
               "type": "boolean"
           },
-          "supported_on": ["chrome_os:1-", "chrome.*:1-"],
+          "supported_on": ["chrome_os:1-", "chrome.*:1-", "android:1-"],
           "id": 1040,
           "tags": [],
           "caption": "ChunkZeroLastFieldBooleanPolicy caption",
@@ -164,7 +177,7 @@ class PolicyGenerationTest(unittest.TestCase):
           "schema": {
               "type": "boolean"
           },
-          "supported_on": ["chrome_os:1-", "chrome.*:1-"],
+          "supported_on": ["chrome_os:1-", "chrome.*:1-", "android:1-"],
           "id": 1041,
           "tags": [],
           "caption": "ChunkOneFirstFieldBooleanPolicy caption",
@@ -175,7 +188,7 @@ class PolicyGenerationTest(unittest.TestCase):
           "schema": {
               "type": "boolean"
           },
-          "supported_on": ["chrome_os:1-", "chrome.*:1-"],
+          "supported_on": ["chrome_os:1-", "chrome.*:1-", "android:1-"],
           "id": 1840,
           "tags": [],
           "caption": "ChunkOneLastFieldBooleanPolicy caption",
@@ -186,7 +199,7 @@ class PolicyGenerationTest(unittest.TestCase):
           "schema": {
               "type": "string"
           },
-          "supported_on": ["chrome_os:1-", "chrome.*:1-"],
+          "supported_on": ["chrome_os:1-", "chrome.*:1-", "android:1-"],
           "id": 1841,
           "tags": [],
           "caption": "ChunkTwoFirstFieldStringPolicy caption",
@@ -197,16 +210,69 @@ class PolicyGenerationTest(unittest.TestCase):
           "schema": {
               "type": "string"
           },
-          "supported_on": ["chrome_os:1-", "chrome.*:1-"],
+          "supported_on": ["chrome_os:1-", "chrome.*:1-", "android:1-"],
           "id": 2640,
           "tags": [],
           "caption": "ChunkTwoLastFieldStringPolicy caption",
           "desc": "ChunkTwoLastFieldStringPolicy desc"
+      }, {
+          "name": "SensitivePolicyForMultiplePlatforms",
+          "type": "main",
+          "schema": { "type": "boolean" },
+          "sensitive": True,
+          "supported_on":
+          ["chrome_os:1-", "chrome.*:1-", "android:1-"],
+          "id": 2643,
+          "tags": [],
+          "caption": "SensitivePolicyForMultiplePlatforms caption",
+          "desc": "SensitivePolicyForMultiplePlatforms desc"
+      }, {
+          "name": "SensitivePolicyForChromeOSOnly",
+          "type": "main",
+          "schema": { "type": "boolean" },
+          "sensitive": True,
+          "supported_on": ["chrome_os:1-"],
+          "id": 2644,
+          "tags": [],
+          "caption": "SensitivePolicyForChromeOSOnly caption",
+          "desc": "SensitivePolicyForChromeOSOnly desc"
+      }, {
+          "name": "SensitivePolicyForUnsupportedPlatform",
+          "type": "main",
+          "schema": { "type": "boolean" },
+          "supported_on": ["chrome.win:61-"],
+          "sensitive": True,
+          "id": 2645,
+          "tags": [],
+          "caption": "SensitivePolicyForUnsupportedPlatform caption",
+          "desc": "It should neither be generated nor listed as sensitive."
+      }, {
+          "name": "SensitivePolicyForChromeOSFuture",
+          "type": "main",
+          "schema": { "type": "boolean" },
+          "future_on": ["chrome_os"],
+          "sensitive": True,
+          "id": 2646,
+          "tags": [],
+          "caption": "SensitivePolicyForChromeOSFuture caption",
+          "desc": "SensitivePolicyForChromeOSFuture desc"
+      }, {
+          "name": "SensitivePolicyForChromeOSDeprecated",
+          "type": "main",
+          "schema": { "type": "boolean" },
+          "supported_on": ["chrome_os:1-"],
+          "deprecated": True,
+          "sensitive": True,
+          "id": 2647,
+          "tags": [],
+          "caption": "SensitivePolicyForChromeOSDeprecated caption",
+          "desc": "SensitivePolicyForChromeOSDeprecated desc"
       }],
       "policy_atomic_group_definitions": []
   }
 
   def setUp(self):
+    self.maxDiff = None  # See the full diff in the test output.
     self.chrome_major_version = 94
     self.target_platform = 'chrome_os'
     self.all_target_platforms = ['win', 'mac', 'linux', 'chromeos', 'fuchsia']
@@ -249,13 +315,13 @@ class PolicyGenerationTest(unittest.TestCase):
 
     # Empty list
     stmts, expr = generate_policy_source._GenerateDefaultValue([])
-    self.assertListEqual(['base::Value::List default_value;'], stmts)
+    self.assertListEqual(['base::ListValue default_value;'], stmts)
     self.assertEqual('base::Value(std::move(default_value))', expr)
 
     # List with values
     stmts, expr = generate_policy_source._GenerateDefaultValue([1, '2'])
     self.assertListEqual([
-        'base::Value::List default_value;',
+        'base::ListValue default_value;',
         'default_value.Append(base::Value(1));',
         'default_value.Append(base::Value("2"));'
     ], stmts)
@@ -287,15 +353,16 @@ class PolicyGenerationTest(unittest.TestCase):
   def testWriteCloudPolicyProtobuf(self):
     output_path = 'mock_cloud_policy_proto'
 
-    with patch('codecs.open', mock_open()) as mocked_file:
-      with codecs.open(output_path, 'w', encoding='utf-8') as f:
+    with patch('builtins.open', mock_open()) as mocked_file:
+      with open(output_path, 'w', encoding='utf-8') as f:
         generate_policy_source._WriteCloudPolicyProtobuf(
             self.policies,
             self.policy_atomic_groups,
             self.target_platform,
             f,
             self.risk_tags,
-            chunking=True)
+            chunking=True,
+            mutable=False)
 
     mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
 
@@ -305,15 +372,16 @@ class PolicyGenerationTest(unittest.TestCase):
   def testWriteCloudPolicyProtobufNoChunking(self):
     output_path = 'mock_cloud_policy_proto'
 
-    with patch('codecs.open', mock_open()) as mocked_file:
-      with codecs.open(output_path, 'w', encoding='utf-8') as f:
+    with patch('builtins.open', mock_open()) as mocked_file:
+      with open(output_path, 'w', encoding='utf-8') as f:
         generate_policy_source._WriteCloudPolicyProtobuf(
             self.policies,
             self.policy_atomic_groups,
             self.target_platform,
             f,
             self.risk_tags,
-            chunking=False)
+            chunking=False,
+            mutable=False)
 
     mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
 
@@ -323,15 +391,16 @@ class PolicyGenerationTest(unittest.TestCase):
   def testWriteChromeSettingsProtobuf(self):
     output_path = 'mock_chrome_settings_proto'
 
-    with patch('codecs.open', mock_open()) as mocked_file:
-      with codecs.open(output_path, 'w', encoding='utf-8') as f:
+    with patch('builtins.open', mock_open()) as mocked_file:
+      with open(output_path, 'w', encoding='utf-8') as f:
         generate_policy_source._WriteChromeSettingsProtobuf(
             self.policies,
             self.policy_atomic_groups,
             self.target_platform,
             f,
             self.risk_tags,
-            chunking=True)
+            chunking=True,
+            mutable=False)
 
       mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
 
@@ -341,15 +410,16 @@ class PolicyGenerationTest(unittest.TestCase):
   def testWriteChromeSettingsProtobufNoChunking(self):
     output_path = 'mock_chrome_settings_proto'
 
-    with patch('codecs.open', mock_open()) as mocked_file:
-      with codecs.open(output_path, 'w', encoding='utf-8') as f:
+    with patch('builtins.open', mock_open()) as mocked_file:
+      with open(output_path, 'w', encoding='utf-8') as f:
         generate_policy_source._WriteChromeSettingsProtobuf(
             self.policies,
             self.policy_atomic_groups,
             self.target_platform,
             f,
             self.risk_tags,
-            chunking=False)
+            chunking=False,
+            mutable=False)
 
       mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
 
@@ -360,8 +430,8 @@ class PolicyGenerationTest(unittest.TestCase):
   def testWritePolicyProto(self):
     output_path = 'mock_write_policy_proto'
 
-    with patch('codecs.open', mock_open()) as mocked_file:
-      with codecs.open(output_path, 'w', encoding='utf-8') as f:
+    with patch('builtins.open', mock_open()) as mocked_file:
+      with open(output_path, 'w', encoding='utf-8') as f:
         generate_policy_source._WritePolicyProto(f, self.policies[0])
 
     mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
@@ -384,12 +454,23 @@ class PolicyGenerationTest(unittest.TestCase):
         self.policies, "invalid")
     self.assertEqual(0, len(invalid_metapolicies))
 
+  def testGetSensitivePolicies(self):
+    sensitive_policies = sorted([
+        p.name for p in self.policies if p.is_sensitive and p.is_supported
+    ])
+    self.assertListEqual([
+        "SensitivePolicyForChromeOSDeprecated",
+        "SensitivePolicyForChromeOSFuture",
+        "SensitivePolicyForChromeOSOnly",
+        "SensitivePolicyForMultiplePlatforms",
+    ], sensitive_policies)
+
   def testWritePolicyConstantHeader(self):
     output_path = 'mock_policy_constants_h'
 
     for target_platform in self.all_target_platforms:
-      with patch('codecs.open', mock_open()) as mocked_file:
-        with codecs.open(output_path, 'w', encoding='utf-8') as f:
+      with patch('builtins.open', mock_open()) as mocked_file:
+        with open(output_path, 'w', encoding='utf-8') as f:
           generate_policy_source._WritePolicyConstantHeader(
               self.policies,
               self.policy_atomic_groups,
@@ -397,6 +478,7 @@ class PolicyGenerationTest(unittest.TestCase):
               f,
               self.risk_tags,
               chunking=True,
+              mutable=False,
           )
       with self.subTest(target_platform=target_platform):
         mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
@@ -412,13 +494,42 @@ class PolicyGenerationTest(unittest.TestCase):
         self._assertCallsEqual(expected_formatted,
                                mocked_file().write.call_args_list)
 
+  def testWritePolicyConstantHeaderMutable(self):
+    output_path = 'mock_policy_constants_mutable_h'
+
+    for target_platform in self.all_target_platforms:
+      with patch('builtins.open', mock_open()) as mocked_file:
+        with open(output_path, 'w', encoding='utf-8') as f:
+          generate_policy_source._WritePolicyConstantHeader(
+              self.policies,
+              self.policy_atomic_groups,
+              target_platform,
+              f,
+              self.risk_tags,
+              chunking=True,
+              mutable=True,
+          )
+      with self.subTest(target_platform=target_platform):
+        mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
+
+        if target_platform == 'win':
+          windows_only_part = test_data.POLICY_CONSTANTS_HEADER_WIN_ONLY_PART
+        else:
+          windows_only_part = ''
+        expected_formatted = test_data.EXPECTED_POLICY_CONSTANTS_HEADER_MUTABLE % {
+            "windows_only_part": windows_only_part,
+        }
+
+        self._assertCallsEqual(expected_formatted,
+                               mocked_file().write.call_args_list)
+
   def testWritePolicyConstantSource(self):
     self.maxDiff = None
     output_path = 'mock_policy_constants_cc'
 
     for target_platform in self.all_target_platforms:
-      with patch('codecs.open', mock_open()) as mocked_file:
-        with codecs.open(output_path, 'w', encoding='utf-8') as f:
+      with patch('builtins.open', mock_open()) as mocked_file:
+        with open(output_path, 'w', encoding='utf-8') as f:
           generate_policy_source._WritePolicyConstantSource(
               self.policies,
               self.policy_atomic_groups,
@@ -426,6 +537,7 @@ class PolicyGenerationTest(unittest.TestCase):
               f,
               self.risk_tags,
               chunking=True,
+              mutable=False,
           )
       with self.subTest(target_platform=target_platform):
         mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
@@ -442,17 +554,60 @@ class PolicyGenerationTest(unittest.TestCase):
                                mocked_file().write.call_args_list)
 
 
+  def testWritePolicyConstantSourceMutable(self):
+    self.maxDiff = None
+    output_path = 'mock_policy_constants_mutable_cc'
+
+    for target_platform in self.all_target_platforms:
+      with patch('builtins.open', mock_open()) as mocked_file:
+        with open(output_path, 'w', encoding='utf-8') as f:
+          generate_policy_source._WritePolicyConstantSource(
+              self.policies,
+              self.policy_atomic_groups,
+              target_platform,
+              f,
+              self.risk_tags,
+              chunking=True,
+              mutable=True,
+          )
+      with self.subTest(target_platform=target_platform):
+        mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
+
+        if target_platform == 'win':
+          windows_only_part = test_data.POLICY_CONSTANTS_SOURCE_WIN_ONLY_PART
+        else:
+          windows_only_part = ''
+        expected_formatted = (
+            test_data.EXPECTED_POLICY_CONSTANTS_SOURCE_MUTABLE % {
+                "windows_only_part": windows_only_part,
+            })
+
+        self._assertCallsEqual(expected_formatted,
+                               mocked_file().write.call_args_list)
+
+
   def testWriteAppRestrictions(self):
+    # Create Android-specific policies for testing Android app restrictions.
+    # This ensures we only test with policies that actually support Android.
+    android_target_platform = 'android'
+    android_policies = [
+        generate_policy_source.PolicyDetails(policy, self.chrome_major_version,
+                                             android_target_platform,
+                                             self.risk_tags.GetValidTags())
+        for policy in self.TEMPLATES_JSON['policy_definitions']
+    ]
+
     output_path = 'app_restrictions_xml'
-    with patch('codecs.open', mock_open()) as mocked_file:
-      with codecs.open(output_path, 'w', encoding='utf-8') as f:
+    with patch('builtins.open', mock_open()) as mocked_file:
+      with open(output_path, 'w', encoding='utf-8') as f:
         generate_policy_source._WriteAppRestrictions(
-            self.policies,
+            android_policies,
             self.policy_atomic_groups,
-            self.target_platform,
+            android_target_platform,
             f,
             self.risk_tags,
             chunking=True,
+            mutable=False,
         )
     mocked_file.assert_called_once_with(output_path, 'w', encoding='utf-8')
     self._assertCallsEqual(test_data.EXPECTED_APP_RESTRICTIONS_XML,

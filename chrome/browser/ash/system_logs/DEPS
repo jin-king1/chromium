@@ -21,7 +21,6 @@ include_rules = [
   "+chrome/browser/ash/profiles",
   "+chrome/browser/feedback/system_logs",
   "+chrome/browser/profiles",
-  "+chrome/browser/ui/browser.h",
   "+chrome/common/chrome_switches.h",
   "+chrome/common/logging_chrome.h",
   "+chrome/grit",
@@ -29,7 +28,7 @@ include_rules = [
 ]
 
 specific_include_rules = {
-  "touch_log_source\.cc": [
+  "touch_log_source\\.cc": [
     "+ash/touch/touch_hud_debug.h",
   ],
 }

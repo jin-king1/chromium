@@ -6,6 +6,7 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/blink/public/mojom/loader/code_cache.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_url.h"
 #include "third_party/blink/renderer/platform/loader/fetch/code_cache_host.h"
@@ -127,8 +128,8 @@ void IsolatedCodeCacheFetcher::Start() {
   (*code_cache_host_)
       ->FetchCachedCode(
           code_cache_type_, initial_url_,
-          WTF::BindOnce(&IsolatedCodeCacheFetcher::DidReceiveCachedCode,
-                        base::WrapRefCounted(this)));
+          blink::BindOnce(&IsolatedCodeCacheFetcher::DidReceiveCachedCode,
+                          base::WrapRefCounted(this)));
 }
 
 void IsolatedCodeCacheFetcher::DidReceiveCachedCode(base::Time response_time,

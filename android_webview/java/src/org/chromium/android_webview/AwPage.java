@@ -4,9 +4,11 @@
 
 package org.chromium.android_webview;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.content_public.browser.Page;
 
-/** Represents a Page and is exposed to embedders. See also AwNavigationClient */
+/** Represents a Page and is exposed to embedders. See also AwNavigationListener */
+@NullMarked
 public class AwPage extends AwSupportLibIsomorphic {
     private final Page mPage;
 
@@ -14,7 +16,11 @@ public class AwPage extends AwSupportLibIsomorphic {
         mPage = page;
     }
 
-    public boolean isPrerendering() {
-        return mPage.isPrerendering();
+    public String getUrl() {
+        return mPage.getUrl().getSpec();
+    }
+
+    public Page getInternalPageForTesting() {
+        return mPage;
     }
 }

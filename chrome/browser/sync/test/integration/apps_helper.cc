@@ -14,7 +14,7 @@
 #include "base/test/bind.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/install_tracker_factory.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/test/integration/sync_app_helper.h"
@@ -27,13 +27,11 @@
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
-#include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/common/web_app_id.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
-#include "extensions/browser/extension_system.h"
 #include "extensions/common/manifest.h"
 
 using sync_datatype_helper::test;
@@ -107,13 +105,14 @@ bool AllProfilesHaveSameApps() {
 
 std::string InstallHostedApp(Profile* profile, int index) {
   return SyncExtensionHelper::GetInstance()->InstallExtension(
-      profile, CreateFakeAppName(index), extensions::Manifest::TYPE_HOSTED_APP);
+      profile, CreateFakeAppName(index),
+      extensions::Manifest::Type::kHostedApp);
 }
 
 std::string InstallPlatformApp(Profile* profile, int index) {
   return SyncExtensionHelper::GetInstance()->InstallExtension(
       profile, CreateFakeAppName(index),
-      extensions::Manifest::TYPE_PLATFORM_APP);
+      extensions::Manifest::Type::kPlatformApp);
 }
 
 std::string InstallHostedAppForAllProfiles(int index) {
@@ -203,19 +202,12 @@ bool AwaitWebAppQuiescence(
     std::vector<raw_ptr<Profile, VectorExperimental>> profiles) {
   FlushPendingOperations(profiles);
 
-  // If sync is off, then `AwaitQuiescence()` will crash. This code can be
-  // removed once https://crbug.com/1330792 is fixed.
   if (sync_datatype_helper::test()) {
     SyncTest* test = sync_datatype_helper::test();
-    bool is_sync_on = true;
-    for (SyncServiceImplHarness* client : test->GetSyncClients()) {
-      is_sync_on = is_sync_on && client->service()->IsSyncFeatureActive();
+    if (!test->AwaitQuiescence()) {
+      return false;
     }
-    if (is_sync_on) {
-      if (!test->AwaitQuiescence())
-        return false;
-      FlushPendingOperations(profiles);
-    }
+    FlushPendingOperations(profiles);
   }
 
   for (Profile* profile : profiles) {
@@ -262,13 +254,11 @@ AppsStatusChangeChecker::AppsStatusChangeChecker()
     InstallSyncedApps(profile);
 
     // Fake the installation of synced apps from the web store.
-    CHECK(extensions::ExtensionSystem::Get(profile)
-              ->extension_service()
-              ->updater());
-    extensions::ExtensionSystem::Get(profile)
-        ->extension_service()
-        ->updater()
-        ->SetUpdatingStartedCallbackForTesting(base::BindLambdaForTesting(
+    auto* updater = extensions::ExtensionUpdater::Get(profile);
+    CHECK(updater);
+    CHECK(updater->enabled());
+    updater->SetUpdatingStartedCallbackForTesting(
+        base::BindLambdaForTesting(
             [self = weak_ptr_factory_.GetWeakPtr(), profile]() {
               base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
                   FROM_HERE,
@@ -290,7 +280,7 @@ AppsStatusChangeChecker::AppsStatusChangeChecker()
     prefs->AddObserver(this);
 
     install_tracker_observation_.AddObservation(
-        extensions::InstallTracker::Get(profile));
+        extensions::InstallTrackerFactory::GetForBrowserContext(profile));
   }
 }
 

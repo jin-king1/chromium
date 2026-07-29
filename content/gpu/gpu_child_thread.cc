@@ -22,17 +22,17 @@
 #include "base/threading/thread_checker.h"
 #include "build/build_config.h"
 #include "content/child/child_process.h"
-#include "content/common/process_visibility_tracker.h"
+#include "content/common/process_priority_tracker.h"
 #include "content/gpu/browser_exposed_gpu_interfaces.h"
 #include "content/gpu/gpu_service_factory.h"
 #include "content/public/common/content_client.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/gpu/content_gpu_client.h"
 #include "gpu/command_buffer/common/shm_count.h"
 #include "gpu/ipc/service/gpu_channel_manager.h"
 #include "gpu/ipc/service/gpu_init.h"
 #include "gpu/ipc/service/gpu_watchdog_thread.h"
-#include "ipc/ipc_sync_message_filter.h"
 #include "media/gpu/ipc/service/media_gpu_channel_manager.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -168,10 +168,6 @@ void GpuChildThread::Init(const base::TimeTicks& process_start_time) {
         sk_make_sp<font_service::FontLoader>(std::move(font_service)));
   }
 #endif
-
-  memory_pressure_listener_ = std::make_unique<base::MemoryPressureListener>(
-      FROM_HERE, base::BindRepeating(&GpuChildThread::OnMemoryPressure,
-                                     base::Unretained(this)));
 }
 
 bool GpuChildThread::in_process_gpu() const {
@@ -193,10 +189,10 @@ void GpuChildThread::OnGpuServiceConnection(viz::GpuServiceImpl* gpu_service) {
 #endif
 
   if (!IsInBrowserProcess()) {
-    gpu_service->SetVisibilityChangedCallback(
-        base::BindRepeating([](bool visible) {
-          ProcessVisibilityTracker::GetInstance()->OnProcessVisibilityChanged(
-              visible);
+    gpu_service->SetPriorityChangedCallback(
+        base::BindRepeating([](base::Process::Priority priority) {
+          ProcessPriorityTracker::GetInstance()->OnProcessPriorityChanged(
+              priority);
         }));
   }
 
@@ -206,7 +202,7 @@ void GpuChildThread::OnGpuServiceConnection(viz::GpuServiceImpl* gpu_service) {
       gpu_service->gpu_channel_manager()->gpu_driver_bug_workarounds(),
       gpu_service->gpu_feature_info(), gpu_service->gpu_info(),
       gpu_service->media_gpu_channel_manager()->AsWeakPtr(),
-      gpu_service->gpu_memory_buffer_factory(), std::move(overlay_factory_cb));
+      std::move(overlay_factory_cb));
   for (auto& receiver : pending_service_receivers_)
     BindServiceInterface(std::move(receiver));
   pending_service_receivers_.clear();
@@ -221,7 +217,7 @@ void GpuChildThread::OnGpuServiceConnection(viz::GpuServiceImpl* gpu_service) {
   // that will ensure security review coverage.
   mojo::BinderMap binders;
   content::ExposeGpuInterfacesToBrowser(
-      gpu_service->gpu_preferences(),
+      gpu_service, gpu_service->gpu_preferences(),
       gpu_service->gpu_channel_manager()->gpu_driver_bug_workarounds(),
       &binders);
   ExposeInterfacesToBrowser(std::move(binders));
@@ -234,18 +230,16 @@ void GpuChildThread::PostCompositorThreadCreated(
     gpu_client->PostCompositorThreadCreated(task_runner);
 }
 
-void GpuChildThread::QuitMainMessageLoop() {
-  quit_closure_.Run();
+void GpuChildThread::PostDisplayCompositorGpuThreadCreated(
+    base::SingleThreadTaskRunner* task_runner) {
+  auto* gpu_client = GetContentClient()->gpu();
+  if (gpu_client) {
+    gpu_client->PostDisplayCompositorGpuThreadCreated(task_runner);
+  }
 }
 
-void GpuChildThread::OnMemoryPressure(
-    base::MemoryPressureListener::MemoryPressureLevel level) {
-  if (level != base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL)
-    return;
-
-  if (viz_main_.discardable_shared_memory_manager())
-    viz_main_.discardable_shared_memory_manager()->ReleaseFreeMemory();
-  SkGraphics::PurgeAllCaches();
+void GpuChildThread::QuitMainMessageLoop() {
+  quit_closure_.Run();
 }
 
 void GpuChildThread::QuitSafelyHelper(

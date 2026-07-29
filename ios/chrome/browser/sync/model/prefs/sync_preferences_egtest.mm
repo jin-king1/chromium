@@ -4,23 +4,22 @@
 
 #import <XCTest/XCTest.h>
 
-#import "base/files/file_util.h"
 #import "base/ios/ios_util.h"
+#import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
 #import "components/signin/public/base/signin_switches.h"
 #import "components/sync/base/command_line_switches.h"
 #import "components/sync/base/features.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/chrome/test/earl_grey/test_switches.h"
-#import "ios/chrome/test/earl_grey/web_http_server_chrome_test_case.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
@@ -59,7 +58,7 @@ void WaitForPreferenceValue(int pref_value) {
 
 }  // namespace
 
-@interface SyncPreferencesTestCase : WebHttpServerChromeTestCase
+@interface SyncPreferencesTestCase : ChromeTestCase
 @end
 
 @implementation SyncPreferencesTestCase
@@ -95,9 +94,10 @@ void WaitForPreferenceValue(int pref_value) {
 
   // Sign in and sign out.
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey signinAndWaitForSyncTransportStateActive:fakeIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
   // Pref is not committed to the server.
   WaitForTestPreferenceOnFakeServer(false);
+
   [SigninEarlGrey signOut];
 
   GREYAssertEqual([ChromeEarlGrey userIntegerPref:kTestSyncablePref],
@@ -147,7 +147,7 @@ void WaitForPreferenceValue(int pref_value) {
 - (void)testAccountPrefValueRemovedOnSignout {
   // Set a pref value of `kTestPrefValue2` in account.
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey signinAndWaitForSyncTransportStateActive:fakeIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
 
   [ChromeEarlGrey setIntegerValue:kTestPrefValue2
                       forUserPref:kTestSyncablePref];
@@ -170,27 +170,7 @@ void WaitForPreferenceValue(int pref_value) {
   WaitForPreferenceValue(kTestPrefValue1);
 }
 
-@end
-
-@interface SyncPreferencesWithMigrateAccountPrefsBaseTestCase
-    : WebHttpServerChromeTestCase
-@end
-
-@implementation SyncPreferencesWithMigrateAccountPrefsBaseTestCase
-
-- (void)setUp {
-  [super setUp];
-  GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
-  [ChromeEarlGrey clearFakeSyncServerData];
-}
-
-- (void)tearDownHelper {
-  [ChromeEarlGrey clearUserPrefWithName:kTestSyncablePref];
-  [ChromeEarlGrey clearFakeSyncServerData];
-  [super tearDownHelper];
-}
-
-- (void)restartWithMigrateAccountPrefsEnabled:(FakeSystemIdentity*)identity {
+- (void)restartWithIdentity:(FakeSystemIdentity*)identity {
   // Before restarting, ensure that the FakeServer has written all its pending
   // state to disk.
   [ChromeEarlGrey flushFakeSyncServerToDisk];
@@ -199,24 +179,6 @@ void WaitForPreferenceValue(int pref_value) {
 
   AppLaunchConfiguration config = [self appConfigurationForTestCase];
   config.relaunch_policy = ForceRelaunchByCleanShutdown;
-  config.features_enabled.push_back(syncer::kMigrateAccountPrefs);
-  config.additional_args.push_back(base::StrCat({
-    "-", test_switches::kAddFakeIdentitiesAtStartup, "=",
-        [FakeSystemIdentity encodeIdentitiesToBase64:@[ identity ]]
-  }));
-  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
-}
-
-- (void)restartWithMigrateAccountPrefsDisabled:(FakeSystemIdentity*)identity {
-  // Before restarting, ensure that the FakeServer has written all its pending
-  // state to disk.
-  [ChromeEarlGrey flushFakeSyncServerToDisk];
-  // Also make sure any pending prefs changes are written to disk.
-  [ChromeEarlGrey commitPendingUserPrefsWrite];
-
-  AppLaunchConfiguration config = [self appConfigurationForTestCase];
-  config.relaunch_policy = ForceRelaunchByCleanShutdown;
-  config.features_disabled.push_back(syncer::kMigrateAccountPrefs);
   config.additional_args.push_back(base::StrCat({
     "-", test_switches::kAddFakeIdentitiesAtStartup, "=",
         [FakeSystemIdentity encodeIdentitiesToBase64:@[ identity ]]
@@ -227,7 +189,7 @@ void WaitForPreferenceValue(int pref_value) {
 - (void)setTestSyncablePrefValueTo:(int)pref_value
                    forFakeIdentity:(FakeSystemIdentity*)fakeIdentity {
   // Sign in and set the pref value.
-  [SigninEarlGrey signinAndWaitForSyncTransportStateActive:fakeIdentity];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
   [ChromeEarlGrey setIntegerValue:pref_value forUserPref:kTestSyncablePref];
   WaitForTestPreferenceOnFakeServer(true);
   [SigninEarlGrey signOut];
@@ -236,29 +198,13 @@ void WaitForPreferenceValue(int pref_value) {
   [ChromeEarlGrey clearUserPrefWithName:kTestSyncablePref];
 }
 
-@end
-
-@interface SyncPreferencesWithMigrateAccountPrefsEnabledTestCase
-    : SyncPreferencesWithMigrateAccountPrefsBaseTestCase
-@end
-
-@implementation SyncPreferencesWithMigrateAccountPrefsEnabledTestCase
-
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(syncer::kMigrateAccountPrefs);
-  return config;
-}
-
-#pragma mark - SyncPreferencesWithMigrateAccountPrefsEnabledTestCase Tests
-
 - (void)testAccountPrefsDownloadedWithInitialSync {
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
   // Set a pref value of `kTestPrefValue1` in account.
   [self setTestSyncablePrefValueTo:kTestPrefValue1
                    forFakeIdentity:fakeIdentity];
 
-  [self restartWithMigrateAccountPrefsEnabled:fakeIdentity];
+  [self restartWithIdentity:fakeIdentity];
 
   // Sign in and sync.
   WaitForTestPreferenceOnFakeServer(true);
@@ -282,89 +228,9 @@ void WaitForPreferenceValue(int pref_value) {
   WaitForPreferenceValue(kTestPrefValue1);
 
   // Restart.
-  [self restartWithMigrateAccountPrefsEnabled:fakeIdentity];
+  [self restartWithIdentity:fakeIdentity];
   GREYAssertEqual([ChromeEarlGrey userIntegerPref:kTestSyncablePref],
                   kTestPrefValue1, @"Incorrect local pref value.");
-}
-
-- (void)testDisablingFlag {
-  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-
-  // Set a pref value of `kTestPrefValue1` in account.
-  [self setTestSyncablePrefValueTo:kTestPrefValue1
-                   forFakeIdentity:fakeIdentity];
-
-  // Sign in and sync.
-  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
-  WaitForPreferenceValue(kTestPrefValue1);
-
-  // Restart with MigrateAccountPrefs flag disabled.
-  [self restartWithMigrateAccountPrefsDisabled:fakeIdentity];
-  GREYAssertEqual([ChromeEarlGrey userIntegerPref:kTestSyncablePref],
-                  kTestPrefValue1, @"Incorrect local pref value.");
-
-  // Sign out and validate that the pref is not set locally.
-  [SigninEarlGrey signOut];
-  GREYAssertNotEqual([ChromeEarlGrey userIntegerPref:kTestSyncablePref],
-                     kTestPrefValue1, @"Incorrect local pref value.");
-}
-
-@end
-
-@interface SyncPreferencesWithMigrateAccountPrefsDisabledTestCase
-    : SyncPreferencesWithMigrateAccountPrefsBaseTestCase
-@end
-
-@implementation SyncPreferencesWithMigrateAccountPrefsDisabledTestCase
-
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_disabled.push_back(syncer::kMigrateAccountPrefs);
-  return config;
-}
-
-#pragma mark - SyncPreferencesWithMigrateAccountPrefsDisabledTestCase Tests
-
-- (void)testEnablingFlag {
-  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  // Set a pref value of `kTestPrefValue1` in account.
-  [self setTestSyncablePrefValueTo:kTestPrefValue1
-                   forFakeIdentity:fakeIdentity];
-
-  // Sign in and sync.
-  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
-  WaitForPreferenceValue(kTestPrefValue1);
-
-  // Restart with MigrateAccountPrefs flag enabled.
-  [self restartWithMigrateAccountPrefsEnabled:fakeIdentity];
-  GREYAssertEqual([ChromeEarlGrey userIntegerPref:kTestSyncablePref],
-                  kTestPrefValue1, @"Incorrect local pref value.");
-
-  // Sign out and validate that the pref is not set locally.
-  [SigninEarlGrey signOut];
-  GREYAssertNotEqual([ChromeEarlGrey userIntegerPref:kTestSyncablePref],
-                     kTestPrefValue1, @"Incorrect local pref value.");
-}
-
-- (void)testAccountPrefsDownloadedFromSyncMetadataIfFlagEnabled {
-  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  // Set a pref value of `kTestPrefValue1` in account.
-  [self setTestSyncablePrefValueTo:kTestPrefValue1
-                   forFakeIdentity:fakeIdentity];
-
-  // Sign in and sync.
-  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
-  WaitForPreferenceValue(kTestPrefValue1);
-
-  // Restart with MigrateAccountPrefs flag enabled.
-  [self restartWithMigrateAccountPrefsEnabled:fakeIdentity];
-  GREYAssertEqual([ChromeEarlGrey userIntegerPref:kTestSyncablePref],
-                  kTestPrefValue1, @"Incorrect local pref value.");
-
-  // Sign out and validate that the pref is not set locally.
-  [SigninEarlGrey signOut];
-  GREYAssertNotEqual([ChromeEarlGrey userIntegerPref:kTestSyncablePref],
-                     kTestPrefValue1, @"Incorrect local pref value.");
 }
 
 @end

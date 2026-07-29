@@ -4,20 +4,16 @@
 
 package org.chromium.chrome.browser.bookmarks.bar;
 
-import org.chromium.base.Callback;
+import android.content.res.ColorStateList;
+
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
 /** Properties for the bookmark bar which provides users with bookmark access from top chrome. */
+@NullMarked
 class BookmarkBarProperties {
-
-    /**
-     * The callback to notify of bookmark bar height change events. Note that when binding, the
-     * callback will be immediately notified of the current bookmark bar height.
-     */
-    public static final WritableObjectPropertyKey<Callback<Integer>> HEIGHT_CHANGE_CALLBACK =
-            new WritableObjectPropertyKey<>();
 
     /** The callback to notify of bookmark bar overflow button click events. */
     public static final WritableObjectPropertyKey<Runnable> OVERFLOW_BUTTON_CLICK_CALLBACK =
@@ -33,12 +29,24 @@ class BookmarkBarProperties {
     /** The visibility of the bookmark bar. */
     public static final WritableIntPropertyKey VISIBILITY = new WritableIntPropertyKey();
 
+    /** The tint for the overflow button. */
+    public static final WritableObjectPropertyKey<ColorStateList> OVERFLOW_BUTTON_TINT_LIST =
+            new WritableObjectPropertyKey<>();
+
+    /** The color for the vertical divider. */
+    public static final WritableIntPropertyKey DIVIDER_COLOR = new WritableIntPropertyKey();
+
+    /** The color for the bottom hairline. */
+    public static final WritableIntPropertyKey HAIRLINE_COLOR = new WritableIntPropertyKey();
+
     public static final PropertyKey[] ALL_KEYS =
             new PropertyKey[] {
-                HEIGHT_CHANGE_CALLBACK,
                 OVERFLOW_BUTTON_CLICK_CALLBACK,
                 OVERFLOW_BUTTON_VISIBILITY,
                 TOP_MARGIN,
-                VISIBILITY
+                VISIBILITY,
+                OVERFLOW_BUTTON_TINT_LIST,
+                DIVIDER_COLOR,
+                HAIRLINE_COLOR
             };
 }

@@ -10,8 +10,6 @@
 #include "chrome/browser/ui/views/performance_controls/tab_list_row_view.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/performance_manager/public/resource_attribution/page_context.h"
-#include "content/public/browser/web_contents.h"
-#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -26,8 +24,7 @@ TabListView::TabListView(TabListModel* tab_list_model)
       views::View::SetLayoutManager(std::make_unique<views::FlexLayout>());
   flex_layout->SetOrientation(views::LayoutOrientation::kVertical);
 
-  for (resource_attribution::PageContext context :
-       tab_list_model->page_contexts()) {
+  for (const auto& context : tab_list_model->page_contexts()) {
     AddChildView(std::make_unique<TabListRowView>(
         context, tab_list_model,
         base::BindOnce(&TabListView::RemoveRow, base::Unretained(this),

@@ -9,6 +9,7 @@ import static org.chromium.webapk.lib.common.WebApkConstants.EXTRA_WEBAPK_PACKAG
 
 import android.content.Intent;
 import android.graphics.drawable.Drawable;
+import android.os.Bundle;
 import android.text.TextUtils;
 
 import androidx.browser.customtabs.CustomTabsIntent;
@@ -16,20 +17,25 @@ import androidx.browser.customtabs.CustomTabsIntent;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.app.metrics.LaunchCauseMetrics;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.WebappIntentUtils;
 import org.chromium.chrome.browser.customtabs.BaseCustomTabActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 
 /** Displays a webapp in a nearly UI-less Chrome (InfoBars still appear). */
+@NullMarked
 public class WebappActivity extends BaseCustomTabActivity {
     public static final String WEBAPP_SCHEME = "webapp";
 
-    private static BrowserServicesIntentDataProvider sIntentDataProviderForTesting;
+    private static @Nullable BrowserServicesIntentDataProvider sIntentDataProviderForTesting;
 
     @Override
-    protected BrowserServicesIntentDataProvider buildIntentDataProvider(
+    protected @Nullable BrowserServicesIntentDataProvider buildIntentDataProvider(
             Intent intent, @CustomTabsIntent.ColorScheme int colorScheme) {
         if (intent == null) return null;
 
@@ -46,6 +52,27 @@ public class WebappActivity extends BaseCustomTabActivity {
             BrowserServicesIntentDataProvider intentDataProvider) {
         sIntentDataProviderForTesting = intentDataProvider;
         ResettersForTesting.register(() -> sIntentDataProviderForTesting = null);
+    }
+
+    // When sWebAppShortEdgesCutoutMode is enabled, intentionally skip the activity-level
+    // edge-to-edge token at creation time and let DisplayCutoutController acquire it later,
+    // only after the page declares viewport-fit=cover. Drawing edge-to-edge unconditionally on
+    // create would push standalone PWAs under the status bar even when the page never opted in.
+    @Override
+    protected boolean shouldDrawEdgeToEdgeOnCreate() {
+        return !ChromeFeatureList.sWebAppShortEdgesCutoutMode.isEnabled()
+                && super.shouldDrawEdgeToEdgeOnCreate();
+    }
+
+    @Override
+    protected boolean canColorStatusBarWithEdgeToEdgeHelper() {
+        return ChromeFeatureList.sWebAppShortEdgesCutoutMode.isEnabled()
+                || super.canColorStatusBarWithEdgeToEdgeHelper();
+    }
+
+    @Override
+    protected boolean canSetTransparentStatusBarWithoutDelegate() {
+        return ChromeFeatureList.sWebAppShortEdgesCutoutMode.isEnabled();
     }
 
     @Override
@@ -66,7 +93,11 @@ public class WebappActivity extends BaseCustomTabActivity {
     }
 
     @Override
-    public boolean onMenuOrKeyboardAction(int id, boolean fromMenu) {
+    public boolean onMenuOrKeyboardAction(
+            int id,
+            boolean fromMenu,
+            @Nullable Bundle menuItemData,
+            @Nullable MotionEventInfo triggeringMotion) {
         // Disable creating bookmark.
         if (id == R.id.bookmark_this_page_id) {
             return true;
@@ -80,11 +111,11 @@ public class WebappActivity extends BaseCustomTabActivity {
             }
             return true;
         }
-        return super.onMenuOrKeyboardAction(id, fromMenu);
+        return super.onMenuOrKeyboardAction(id, fromMenu, menuItemData, triggeringMotion);
     }
 
     @Override
-    protected Drawable getBackgroundDrawable() {
+    protected @Nullable Drawable getBackgroundDrawable() {
         return null;
     }
 

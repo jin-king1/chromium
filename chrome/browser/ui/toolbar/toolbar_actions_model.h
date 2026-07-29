@@ -13,6 +13,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
+#include "build/build_config.h"
 #include "chrome/browser/extensions/extension_action_dispatcher.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -24,10 +25,10 @@
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/common/extension.h"
 
-class Browser;
+class BrowserWindowInterface;
+class ExtensionsContainer;
 class PrefService;
 class Profile;
-class ExtensionsContainer;
 
 namespace extensions {
 class ExtensionActionManager;
@@ -57,6 +58,17 @@ class ToolbarActionsModel
 
   ~ToolbarActionsModel() override;
 
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class ExtensionPinReason {
+    kPinnedByDefault = 0,
+    kNotPinnedToggleOff = 1,
+    kNotPinnedFeatureDisabled = 2,
+    kOverriddenByPolicy = 3,
+    kNotPinnedNoAction = 4,
+    kMaxValue = kNotPinnedNoAction,
+  };
+
   // A class which is informed of changes to the model; represents the view of
   // MVC. Also used for signaling view changes such as showing extension popups.
   // TODO(devlin): Should this really be an observer? It acts more like a
@@ -85,6 +97,9 @@ class ToolbarActionsModel
     // Called whenever the pinned actions change.
     virtual void OnToolbarPinnedActionsChanged() = 0;
 
+    // Called when the ToolbarActionsModel is shutting down.
+    virtual void OnToolbarActionsModelShutdown() {}
+
    protected:
     virtual ~Observer() = default;
   };
@@ -92,8 +107,9 @@ class ToolbarActionsModel
   // Convenience function to get the ToolbarActionsModel for a Profile.
   static ToolbarActionsModel* Get(Profile* profile);
 
-  // Returns whether actions can be shown in the toolbar for `browser`.
-  static bool CanShowActionsInToolbar(const Browser& browser);
+  // Returns whether actions can be shown in the toolbar for the browser window
+  // where the extensions UI is enabled.
+  static bool CanShowActionsInToolbar(const BrowserWindowInterface& browser);
 
   // Adds or removes an observer.
   void AddObserver(Observer* observer);
@@ -133,11 +149,17 @@ class ToolbarActionsModel
     return pinned_action_ids_;
   }
 
+  // Re-initializes the action list and re-emits startup histograms for testing.
+  void ReinitializeForTesting();
+
  private:
   // Callback when actions are ready.
   void OnReady();
 
   // ExtensionRegistryObserver:
+  void OnExtensionInstalled(content::BrowserContext* browser_context,
+                            const extensions::Extension* extension,
+                            bool is_update) override;
   void OnExtensionLoaded(content::BrowserContext* browser_context,
                          const extensions::Extension* extension) override;
   void OnExtensionUnloaded(content::BrowserContext* browser_context,
@@ -193,16 +215,22 @@ class ToolbarActionsModel
   // enabled extensions.
   const extensions::Extension* GetExtensionById(const ActionId& id) const;
 
-  // Updates |pinned_action_ids_| per GetFilteredPinnedActionIds() and notifies
-  // observers if they have changed.
-  void UpdatePinnedActionIds();
-
   // Gets a list of pinned action ids that only contains that only contains IDs
   // with a corresponding action in the model.
   std::vector<ActionId> GetFilteredPinnedActionIds() const;
 
   // Notifies `observers_` that `action_id` has been updated.
   void NotifyToolbarActionUpdated(const ActionId& action_id);
+
+  // Updates `pinned_action_ids_` per `GetFilteredPinnedActionIds()` and
+  // notifies observers if they have changed.
+  void UpdateAndNotifyPinnedActionIdsChanged();
+
+  // Updates `pinned_action_ids_` per `GetFilteredPinnedActionIds()`.
+  void UpdatePinnedActionIds();
+
+  // Notify the observers that the pinned actions have changed.
+  void NotifyPinnedActionIdsChanged();
 
   // Our observers.
   base::ObserverList<Observer>::Unchecked observers_;

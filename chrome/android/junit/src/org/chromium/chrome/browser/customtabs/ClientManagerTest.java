@@ -26,14 +26,14 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.Implementation;
-import org.robolectric.annotation.Implements;
 import org.robolectric.shadows.ShadowPackageManager;
 
 import org.chromium.base.IntentUtils;
@@ -55,36 +55,23 @@ import org.chromium.components.content_relationship_verification.OriginVerifier;
 import org.chromium.components.content_relationship_verification.OriginVerifierJni;
 import org.chromium.components.content_relationship_verification.OriginVerifierUnitTestSupport;
 import org.chromium.components.embedder_support.util.Origin;
-import org.chromium.components.embedder_support.util.ShadowUrlUtilities;
 
 /** Tests for ClientManager. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Batch(Batch.UNIT_TESTS)
 @Config(
         manifest = Config.NONE,
-        shadows = {
-            ShadowUrlUtilities.class,
-            ShadowPackageManager.class,
-            ClientManagerTest.ShadowSysUtils.class
-        })
+        shadows = {ShadowPackageManager.class})
 public class ClientManagerTest {
-    @Implements(SysUtils.class)
-    static class ShadowSysUtils {
-        public static boolean sIsLowMemory;
-
-        @Implementation
-        public static boolean isCurrentlyLowMemory() {
-            return sIsLowMemory;
-        }
-    }
-
     private static final String URL = "https://www.android.com";
     private static final String PACKAGE_NAME = "org.chromium.chrome";
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private ClientManager mClientManager;
     private final SessionHolder<?> mSession =
             new SessionHolder<>(CustomTabsSessionToken.createMockSessionTokenForTesting());
-    private int mUid = Process.myUid();
+    private final int mUid = Process.myUid();
+    private final int mPid = Process.myPid();
 
     private EngagementSignalsHandler mEngagementSignalsHandler;
     private PostMessageServiceConnection mPostMessageServiceConnection;
@@ -102,7 +89,6 @@ public class ClientManagerTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
 
         OriginVerifierJni.setInstanceForTesting(mMockOriginVerifierJni);
 
@@ -136,21 +122,6 @@ public class ClientManagerTest {
 
         ChromeOriginVerifier.clearCachedVerificationsForTesting();
         UmaRecorderHolder.resetForTesting();
-
-        ShadowUrlUtilities.setTestImpl(
-                new ShadowUrlUtilities.TestImpl() {
-                    @Override
-                    public boolean urlsMatchIgnoringFragments(String url1, String url2) {
-                        // Limited implementation that is good enough for these tests.
-                        int index1 = url1.indexOf('#');
-                        int index2 = url2.indexOf('#');
-
-                        if (index1 != -1) url1 = url1.substring(0, index1);
-                        if (index2 != -1) url2 = url2.substring(0, index2);
-
-                        return url1.equals(url2);
-                    }
-                });
 
         mPostMessageServiceConnection =
                 new PostMessageServiceConnection(mSession.getSessionAsCustomTab()) {};
@@ -197,6 +168,7 @@ public class ClientManagerTest {
         mClientManager.newSession(
                 mSession,
                 mUid,
+                mPid,
                 null,
                 mPostMessageHandler,
                 mPostMessageServiceConnection,
@@ -213,6 +185,7 @@ public class ClientManagerTest {
         mClientManager.newSession(
                 mSession,
                 mUid,
+                mPid,
                 null,
                 mPostMessageHandler,
                 mPostMessageServiceConnection,
@@ -229,6 +202,7 @@ public class ClientManagerTest {
         mClientManager.newSession(
                 mSession,
                 mUid,
+                mPid,
                 null,
                 mPostMessageHandler,
                 mPostMessageServiceConnection,
@@ -244,6 +218,7 @@ public class ClientManagerTest {
         mClientManager.newSession(
                 mSession,
                 mUid,
+                mPid,
                 null,
                 mPostMessageHandler,
                 mPostMessageServiceConnection,
@@ -256,6 +231,7 @@ public class ClientManagerTest {
         mClientManager.newSession(
                 sessionHolder,
                 mUid,
+                mPid,
                 null,
                 mPostMessageHandler,
                 mPostMessageServiceConnection,
@@ -272,6 +248,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -290,6 +267,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -307,6 +285,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -325,6 +304,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -350,6 +330,7 @@ public class ClientManagerTest {
                 cm.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         MockPostMessageHandler.create(),
                         serviceConnection,
@@ -391,6 +372,7 @@ public class ClientManagerTest {
                 cm.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         MockPostMessageHandler.create(),
                         serviceConnection,
@@ -433,6 +415,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -470,6 +453,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -537,6 +521,7 @@ public class ClientManagerTest {
                 cm.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         MockPostMessageHandler.create(),
                         serviceConnection,
@@ -568,13 +553,14 @@ public class ClientManagerTest {
     @SmallTest
     public void testLogConnectionClosedCTForeground() {
         String histogramName = "CustomTabs.SessionDisconnectStatus";
-        ShadowSysUtils.sIsLowMemory = false;
+        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
 
         Assert.assertTrue(
                 "A new session should have been created.",
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -595,7 +581,7 @@ public class ClientManagerTest {
     @SmallTest
     public void testLogConnectionClosedCTForegroundKeepAlive() {
         String histogramName = "CustomTabs.SessionDisconnectStatus";
-        ShadowSysUtils.sIsLowMemory = false;
+        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
         Intent intent =
                 new Intent()
                         .setComponent(
@@ -608,6 +594,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -629,13 +616,14 @@ public class ClientManagerTest {
     @SmallTest
     public void testLogConnectionClosedCTBackground() {
         String histogramName = "CustomTabs.SessionDisconnectStatus";
-        ShadowSysUtils.sIsLowMemory = false;
+        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
 
         Assert.assertTrue(
                 "A new session should have been created.",
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -656,7 +644,7 @@ public class ClientManagerTest {
     @SmallTest
     public void testLogConnectionClosedCTBackgroundKeepAlive() {
         String histogramName = "CustomTabs.SessionDisconnectStatus";
-        ShadowSysUtils.sIsLowMemory = false;
+        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
         Intent intent =
                 new Intent()
                         .setComponent(
@@ -669,6 +657,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -690,13 +679,14 @@ public class ClientManagerTest {
     @SmallTest
     public void testLogConnectionClosedLowMemoryCTForeground() {
         String histogramName = "CustomTabs.SessionDisconnectStatus";
-        ShadowSysUtils.sIsLowMemory = true;
+        SysUtils.setIsCurrentlyLowMemoryForTesting(true);
 
         Assert.assertTrue(
                 "A new session should have been created.",
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -718,7 +708,7 @@ public class ClientManagerTest {
     @SmallTest
     public void testLogConnectionClosedLowMemoryCTForegroundKeepAlive() {
         String histogramName = "CustomTabs.SessionDisconnectStatus";
-        ShadowSysUtils.sIsLowMemory = true;
+        SysUtils.setIsCurrentlyLowMemoryForTesting(true);
         Intent intent =
                 new Intent()
                         .setComponent(
@@ -731,6 +721,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -752,13 +743,14 @@ public class ClientManagerTest {
     @SmallTest
     public void testLogConnectionClosedLowMemoryCTBackground() {
         String histogramName = "CustomTabs.SessionDisconnectStatus";
-        ShadowSysUtils.sIsLowMemory = true;
+        SysUtils.setIsCurrentlyLowMemoryForTesting(true);
 
         Assert.assertTrue(
                 "A new session should have been created.",
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -780,7 +772,7 @@ public class ClientManagerTest {
     @SmallTest
     public void testLogConnectionClosedLowMemoryCTBackgroundKeepAlive() {
         String histogramName = "CustomTabs.SessionDisconnectStatus";
-        ShadowSysUtils.sIsLowMemory = true;
+        SysUtils.setIsCurrentlyLowMemoryForTesting(true);
         Intent intent =
                 new Intent()
                         .setComponent(
@@ -793,6 +785,7 @@ public class ClientManagerTest {
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,
@@ -814,13 +807,14 @@ public class ClientManagerTest {
     @SmallTest
     public void testLogConnectionClosedCleanupCalledTwiceLogsOnce() {
         String histogramName = "CustomTabs.SessionDisconnectStatus";
-        ShadowSysUtils.sIsLowMemory = false;
+        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
 
         Assert.assertTrue(
                 "A new session should have been created.",
                 mClientManager.newSession(
                         mSession,
                         mUid,
+                        mPid,
                         null,
                         mPostMessageHandler,
                         mPostMessageServiceConnection,

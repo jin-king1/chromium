@@ -9,8 +9,6 @@ import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.clearInvocations;
@@ -24,9 +22,6 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.chromium.base.test.util.Matchers.fulfilledPromise;
 import static org.chromium.base.test.util.Matchers.rejectedPromise;
 
-import androidx.annotation.Nullable;
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -34,52 +29,32 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.ParameterizedRobolectricTestRunner;
-import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.FeatureList;
-import org.chromium.base.FeatureOverrides;
 import org.chromium.base.Promise;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
-import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.components.search_engines.SearchEngineChoiceService.RefreshReason;
+import org.chromium.components.search_engines.SearchEngineCountryDelegate.DefaultBrowserPromoSuppressionDelayType;
 import org.chromium.components.search_engines.SearchEngineCountryDelegate.DeviceChoiceEventType;
 
 import java.time.Instant;
-import java.util.Arrays;
-import java.util.Collection;
+import java.util.concurrent.TimeUnit;
 
-@SmallTest
-@RunWith(ParameterizedRobolectricTestRunner.class)
-@EnableFeatures(SearchEnginesFeatures.CLAY_BACKEND_CONNECTION_V2)
+@RunWith(BaseRobolectricTestRunner.class)
 public class SearchEngineChoiceServiceUnitTest {
-    @Parameters(name = "isClayBlockingEnabled={0}")
-    public static Collection<Object[]> data() {
-        return Arrays.asList(new Object[][] {{true}, {false}});
-    }
-
     public @Rule MockitoRule mockitoRule = MockitoJUnit.rule();
 
     private @Mock SearchEngineCountryDelegate mDelegate;
 
-    private final boolean mIsClayBlockingEnabled;
-
-    public SearchEngineChoiceServiceUnitTest(boolean isClayBlockingEnabled) {
-        this.mIsClayBlockingEnabled = isClayBlockingEnabled;
-    }
-
     @Before
     public void setUp() {
         FeatureList.setDisableNativeForTesting(true);
-        configureClayBlockingFeature(
-                mIsClayBlockingEnabled,
-                /* isDarkLaunchEnabled= */ false,
-                /* defaultBrowserPromoSuppressedMillis= */ null);
-
         doReturn(Promise.rejected()).when(mDelegate).getDeviceCountry();
-        doReturn(new ObservableSupplierImpl<>(false))
+        doReturn(ObservableSuppliers.alwaysFalse())
                 .when(mDelegate)
                 .getIsDeviceChoiceRequiredSupplier();
     }
@@ -99,7 +74,7 @@ public class SearchEngineChoiceServiceUnitTest {
         service.launchDeviceChoiceScreens();
         service.refreshDeviceChoiceRequiredNow(RefreshReason.APP_RESUME);
         service.notifyDeviceChoiceBlockCleared();
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     @Test
@@ -108,26 +83,15 @@ public class SearchEngineChoiceServiceUnitTest {
                 new SearchEngineChoiceService(
                         new FakeSearchEngineCountryDelegate(/* enableLogging= */ true));
 
-        if (mIsClayBlockingEnabled) {
-            // It should have generally sensible values and make the dialog be shown.
-            assertThat(service.getDeviceCountry(), is(fulfilledPromise()));
+        // It should have generally sensible values and make the dialog be shown.
+        assertThat(service.getDeviceCountry(), is(fulfilledPromise()));
 
-            assertTrue(service.isDeviceChoiceDialogEligible());
+        assertTrue(service.isDeviceChoiceDialogEligible());
 
-            var supplier = service.getIsDeviceChoiceRequiredSupplier();
-            ShadowLooper.runUiThreadTasks();
-            assertTrue(supplier.get());
-        } else {
-            // Same as the abstract delegate.
-            assertThat(service.getDeviceCountry(), is(rejectedPromise()));
-
-            assertFalse(service.isDeviceChoiceDialogEligible());
-
-            var supplier = service.getIsDeviceChoiceRequiredSupplier();
-            ShadowLooper.runUiThreadTasks();
-
-            assertFalse(supplier.get());
-        }
+        var supplier = service.getIsDeviceChoiceRequiredSupplier();
+        RobolectricUtil.runAllBackgroundAndUi();
+        ShadowLooper.idleMainLooper(3000, TimeUnit.MILLISECONDS);
+        assertTrue(supplier.get());
 
         // The calls below should be fine to run without triggering anything.
         assertFalse(service.isDefaultBrowserPromoSuppressed());
@@ -135,7 +99,7 @@ public class SearchEngineChoiceServiceUnitTest {
         service.launchDeviceChoiceScreens();
         service.refreshDeviceChoiceRequiredNow(RefreshReason.APP_RESUME);
         service.notifyDeviceChoiceBlockCleared();
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     @Test
@@ -146,7 +110,7 @@ public class SearchEngineChoiceServiceUnitTest {
         var service = new SearchEngineChoiceService(mDelegate);
 
         assertThat(service.getDeviceCountry(), is(rejectedPromise()));
-        verify(mDelegate, times(1)).getDeviceCountry();
+        verify(mDelegate).getDeviceCountry();
 
         // Even if it changes, the device country is not fetched again afterwards.
         reset(mDelegate);
@@ -162,7 +126,7 @@ public class SearchEngineChoiceServiceUnitTest {
         var service = new SearchEngineChoiceService(mDelegate);
 
         assertThat(service.getDeviceCountry(), is(fulfilledPromise(equalTo("countryCode"))));
-        verify(mDelegate, times(1)).getDeviceCountry();
+        verify(mDelegate).getDeviceCountry();
 
         // Even if it changes, the device country is not fetched again afterwards.
         reset(mDelegate);
@@ -176,65 +140,24 @@ public class SearchEngineChoiceServiceUnitTest {
 
         doReturn(false).when(mDelegate).isDeviceChoiceDialogEligible();
         assertFalse(service.isDeviceChoiceDialogEligible());
-        verify(mDelegate, times(mIsClayBlockingEnabled ? 1 : 0)).isDeviceChoiceDialogEligible();
+        verify(mDelegate).isDeviceChoiceDialogEligible();
 
         doReturn(true).when(mDelegate).isDeviceChoiceDialogEligible();
-        if (mIsClayBlockingEnabled) {
-            assertTrue(service.isDeviceChoiceDialogEligible());
-            verify(mDelegate, times(2)).isDeviceChoiceDialogEligible();
-        } else {
-            assertFalse(service.isDeviceChoiceDialogEligible());
-            verify(mDelegate, never()).isDeviceChoiceDialogEligible();
-        }
+        assertTrue(service.isDeviceChoiceDialogEligible());
+        verify(mDelegate, times(2)).isDeviceChoiceDialogEligible();
     }
 
     @Test
     public void testGetIsDeviceChoiceRequiredSupplier() {
-        ObservableSupplier<Boolean> fakeSupplier = new ObservableSupplierImpl<>();
+        MonotonicObservableSupplier<Boolean> fakeSupplier = ObservableSuppliers.createMonotonic();
         doReturn(fakeSupplier).when(mDelegate).getIsDeviceChoiceRequiredSupplier();
 
         var service = new SearchEngineChoiceService(mDelegate);
 
         var actualSupplier = service.getIsDeviceChoiceRequiredSupplier();
 
-        if (mIsClayBlockingEnabled) {
-            assertSame(fakeSupplier, actualSupplier);
-            verify(mDelegate).getIsDeviceChoiceRequiredSupplier();
-        } else {
-            assertNotSame(fakeSupplier, actualSupplier);
-            assertFalse(actualSupplier.get());
-            verify(mDelegate, never()).getIsDeviceChoiceRequiredSupplier();
-        }
-    }
-
-    @Test
-    public void testGetIsDeviceChoiceRequiredSupplier_darkLaunch() {
-        configureClayBlockingFeature(
-                mIsClayBlockingEnabled,
-                /* isDarkLaunchEnabled= */ true,
-                /* defaultBrowserPromoSuppressedMillis= */ null);
-        ObservableSupplierImpl<Boolean> fakeSupplier = new ObservableSupplierImpl<>();
-        doReturn(fakeSupplier).when(mDelegate).getIsDeviceChoiceRequiredSupplier();
-
-        var service = new SearchEngineChoiceService(mDelegate);
-        var actualSupplier = service.getIsDeviceChoiceRequiredSupplier();
-
-        if (mIsClayBlockingEnabled) {
-            // For dark launch, we do call into the delegate, but we don't return its values
-            // directly.
-            assertNotSame(fakeSupplier, actualSupplier);
-            assertNull(actualSupplier.get());
-            verify(mDelegate).getIsDeviceChoiceRequiredSupplier();
-
-            // We match behaviour for the pending states, but when we get a value from the delegate,
-            // we ignore it and always return false.
-            fakeSupplier.set(true);
-            assertFalse(actualSupplier.get());
-        } else {
-            assertNotSame(fakeSupplier, actualSupplier);
-            assertFalse(actualSupplier.get());
-            verify(mDelegate, never()).getIsDeviceChoiceRequiredSupplier();
-        }
+        assertSame(fakeSupplier, actualSupplier);
+        verify(mDelegate).getIsDeviceChoiceRequiredSupplier();
     }
 
     @Test
@@ -242,8 +165,7 @@ public class SearchEngineChoiceServiceUnitTest {
         var service = new SearchEngineChoiceService(mDelegate);
 
         service.notifyDeviceChoiceBlockShown();
-        verify(mDelegate, times(mIsClayBlockingEnabled ? 1 : 0))
-                .notifyDeviceChoiceEvent(DeviceChoiceEventType.BLOCK_SHOWN);
+        verify(mDelegate).notifyDeviceChoiceEvent(DeviceChoiceEventType.BLOCK_SHOWN);
     }
 
     @Test
@@ -251,18 +173,56 @@ public class SearchEngineChoiceServiceUnitTest {
         var service = new SearchEngineChoiceService(mDelegate);
 
         service.notifyDeviceChoiceBlockCleared();
-        verify(mDelegate, times(mIsClayBlockingEnabled ? 1 : 0))
-                .notifyDeviceChoiceEvent(DeviceChoiceEventType.BLOCK_CLEARED);
+        verify(mDelegate).notifyDeviceChoiceEvent(DeviceChoiceEventType.BLOCK_CLEARED);
     }
 
     @Test
-    public void testIsDefaultBrowserPromoSuppressed() {
-        final int defaultBrowserPromoSuppressedMillis = 24_000;
-        // Param state: A suppression period is specified.
-        configureClayBlockingFeature(
-                mIsClayBlockingEnabled,
-                /* isDarkLaunchEnabled= */ false,
-                defaultBrowserPromoSuppressedMillis);
+    public void testIsDefaultBrowserPromoSuppressed_suppressIfChoiceSet_maxDelay() {
+        doReturn(DefaultBrowserPromoSuppressionDelayType.MAX)
+                .when(mDelegate)
+                .getDefaultBrowserPromoSuppressionDelayType();
+
+        {
+            // Default browser selection did not happen => promo should not be suppressed.
+            var service = new SearchEngineChoiceService(mDelegate);
+            doReturn(null).when(mDelegate).getDeviceBrowserSelectedTimestamp();
+            assertFalse(service.isDefaultBrowserPromoSuppressed());
+        }
+
+        {
+            // Default browser selection happened a long time ago => promo should be suppressed.
+            var service = new SearchEngineChoiceService(mDelegate);
+            doReturn(Instant.MIN).when(mDelegate).getDeviceBrowserSelectedTimestamp();
+            assertTrue(service.isDefaultBrowserPromoSuppressed());
+        }
+
+        {
+            // Selection date + suppression period overflow => promo should be suppressed.
+            // Would indicate a configuration issue.
+            var service = new SearchEngineChoiceService(mDelegate);
+            doReturn(Instant.MAX).when(mDelegate).getDeviceBrowserSelectedTimestamp();
+            assertTrue(service.isDefaultBrowserPromoSuppressed());
+        }
+
+        {
+            // Default browser selection happened too recently (simulated by being a date in the
+            // future) => promo should be suppressed if the feature is enabled.
+            Instant futureInstant =
+                    Instant.now()
+                            .plusMillis(
+                                    SearchEnginesFeatureUtils
+                                            .CHOICE_DIALOG_DEFAULT_BROWSER_PROMO_SUPPRESSED_MILLIS);
+            var service = new SearchEngineChoiceService(mDelegate);
+            doReturn(futureInstant).when(mDelegate).getDeviceBrowserSelectedTimestamp();
+            assertTrue(service.isDefaultBrowserPromoSuppressed());
+        }
+    }
+
+    @Test
+    public void testIsDefaultBrowserPromoSuppressed_suppressIfChoiceSet_standardDelay() {
+        doReturn(DefaultBrowserPromoSuppressionDelayType.STANDARD)
+                .when(mDelegate)
+                .getDefaultBrowserPromoSuppressionDelayType();
 
         {
             // Default browser selection did not happen => promo should not be suppressed.
@@ -279,48 +239,36 @@ public class SearchEngineChoiceServiceUnitTest {
         }
 
         {
-            // Selection date + suppression period overflow => promo should not be suppressed.
+            // Selection date + suppression period overflow => promo should be suppressed.
             // Would indicate a configuration issue.
             var service = new SearchEngineChoiceService(mDelegate);
             doReturn(Instant.MAX).when(mDelegate).getDeviceBrowserSelectedTimestamp();
-            assertFalse(service.isDefaultBrowserPromoSuppressed());
+            assertTrue(service.isDefaultBrowserPromoSuppressed());
         }
 
         {
             // Default browser selection happened too recently (simulated by being a date in the
             // future) => promo should be suppressed if the feature is enabled.
-            Instant futureInstant = Instant.now().plusMillis(defaultBrowserPromoSuppressedMillis);
+            Instant futureInstant =
+                    Instant.now()
+                            .plusMillis(
+                                    SearchEnginesFeatureUtils
+                                            .CHOICE_DIALOG_DEFAULT_BROWSER_PROMO_SUPPRESSED_MILLIS);
             var service = new SearchEngineChoiceService(mDelegate);
             doReturn(futureInstant).when(mDelegate).getDeviceBrowserSelectedTimestamp();
-            assertEquals(mIsClayBlockingEnabled, service.isDefaultBrowserPromoSuppressed());
-        }
-
-        // Param state: An invalid suppression period is specified.
-        configureClayBlockingFeature(
-                mIsClayBlockingEnabled,
-                /* isDarkLaunchEnabled= */ false,
-                /* defaultBrowserPromoSuppressedMillis= */ -24);
-        {
-            // Recent selection but invalid suppression period => promo should not be suppressed.
-            Instant futureInstant = Instant.now().plusMillis(defaultBrowserPromoSuppressedMillis);
-            var service = new SearchEngineChoiceService(mDelegate);
-            doReturn(futureInstant).when(mDelegate).getDeviceBrowserSelectedTimestamp();
-            assertFalse(service.isDefaultBrowserPromoSuppressed());
+            assertTrue(service.isDefaultBrowserPromoSuppressed());
         }
     }
 
     @Test
     public void testDelegateRelease() {
-        // Param state: A suppression period is specified.
-        configureClayBlockingFeature(
-                mIsClayBlockingEnabled,
-                /* isDarkLaunchEnabled= */ false,
-                /* defaultBrowserPromoSuppressedMillis= */ 24_000);
-
         var deviceCountryPromise = new Promise<String>();
         doReturn(deviceCountryPromise).when(mDelegate).getDeviceCountry();
         doReturn(false).when(mDelegate).isDeviceChoiceDialogEligible();
         doReturn(Instant.now()).when(mDelegate).getDeviceBrowserSelectedTimestamp();
+        doReturn(DefaultBrowserPromoSuppressionDelayType.MAX)
+                .when(mDelegate)
+                .getDefaultBrowserPromoSuppressionDelayType();
 
         var service = new SearchEngineChoiceService(mDelegate);
 
@@ -328,20 +276,17 @@ public class SearchEngineChoiceServiceUnitTest {
         verify(mDelegate).getDeviceCountry();
 
         service.isDeviceChoiceDialogEligible();
-        verify(mDelegate, mIsClayBlockingEnabled ? times(1) : never())
-                .isDeviceChoiceDialogEligible();
+        verify(mDelegate).isDeviceChoiceDialogEligible();
 
         // Eligibility is checked every time, not cached.
         service.isDeviceChoiceDialogEligible();
-        verify(mDelegate, mIsClayBlockingEnabled ? times(2) : never())
-                .isDeviceChoiceDialogEligible();
+        verify(mDelegate, times(2)).isDeviceChoiceDialogEligible();
 
         // On resolution, the delegate is freed up, but the default browser selection timestamp is
         // proactively checked, in case we need it later.
         deviceCountryPromise.fulfill("deviceCountry");
-        ShadowLooper.runUiThreadTasks();
-        verify(mDelegate, mIsClayBlockingEnabled ? times(1) : never())
-                .getDeviceBrowserSelectedTimestamp();
+        RobolectricUtil.runAllBackgroundAndUi();
+        verify(mDelegate).getDeviceBrowserSelectedTimestamp();
 
         // The delegate is not checked anymore, because it was freed up.
         clearInvocations(mDelegate);
@@ -349,7 +294,7 @@ public class SearchEngineChoiceServiceUnitTest {
         verify(mDelegate, never()).isDeviceChoiceDialogEligible();
 
         // We still can check whether the default browser promo is suppressed.
-        assertEquals(mIsClayBlockingEnabled, service.isDefaultBrowserPromoSuppressed());
+        assertTrue(service.isDefaultBrowserPromoSuppressed());
     }
 
     @Test
@@ -361,42 +306,17 @@ public class SearchEngineChoiceServiceUnitTest {
         var service = new SearchEngineChoiceService(mDelegate);
 
         service.isDeviceChoiceDialogEligible();
-        verify(mDelegate, mIsClayBlockingEnabled ? times(1) : never())
-                .isDeviceChoiceDialogEligible();
+        verify(mDelegate).isDeviceChoiceDialogEligible();
 
         // On resolution, the delegate is not freed up, so we don't need to check the default
         // browser selection timestamp.
         deviceCountryPromise.fulfill("deviceCountry");
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         verify(mDelegate, never()).getDeviceBrowserSelectedTimestamp();
 
         // The delegate is still checked, the service kept it.
         clearInvocations(mDelegate);
         service.isDeviceChoiceDialogEligible();
-        verify(mDelegate, mIsClayBlockingEnabled ? times(1) : never())
-                .isDeviceChoiceDialogEligible();
-    }
-
-    private static void configureClayBlockingFeature(
-            boolean isClayBlockingEnabled,
-            boolean isDarkLaunchEnabled,
-            @Nullable Integer defaultBrowserPromoSuppressedMillis) {
-        FeatureOverrides.Builder overrides = FeatureOverrides.newBuilder();
-        if (isClayBlockingEnabled) {
-            overrides =
-                    overrides
-                            .enable(SearchEnginesFeatures.CLAY_BLOCKING)
-                            .param("is_dark_launch", isDarkLaunchEnabled ? "true" : "")
-                            .param("dialog_timeout_millis", 0);
-            if (defaultBrowserPromoSuppressedMillis != null) {
-                overrides =
-                        overrides.param(
-                                "default_browser_promo_suppressed_millis",
-                                defaultBrowserPromoSuppressedMillis);
-            }
-        } else {
-            overrides = overrides.disable(SearchEnginesFeatures.CLAY_BLOCKING);
-        }
-        overrides.apply();
+        verify(mDelegate).isDeviceChoiceDialogEligible();
     }
 }

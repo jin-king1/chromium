@@ -17,6 +17,7 @@
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
+#include "components/autofill/core/browser/payments/multiple_request_payments_network_interface.h"
 #include "components/autofill/core/browser/payments/payments_network_interface.h"
 #include "components/autofill/core/browser/payments/virtual_card_enrollment_flow.h"
 #include "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
@@ -44,7 +45,7 @@ void RunVirtualCardEnrollmentFieldsLoadedCallback(
     const JavaRef<jobject>& j_callback,
     VirtualCardEnrollmentFields* virtual_card_enrollment_fields) {
   base::android::RunObjectCallbackAndroid(
-      j_callback, autofill::CreateVirtualCardEnrollmentFieldsJavaObject(
+      j_callback, CreateVirtualCardEnrollmentFieldsJavaObject(
                       virtual_card_enrollment_fields));
 }
 }  // namespace
@@ -53,23 +54,23 @@ AutofillPaymentMethodsDelegate::AutofillPaymentMethodsDelegate(Profile* profile)
     : profile_(profile) {
   personal_data_manager_ =
       PersonalDataManagerFactory::GetForBrowserContext(profile);
-  payments_network_interface_ =
-      std::make_unique<payments::PaymentsNetworkInterface>(
+  multiple_request_payments_network_interface_ =
+      std::make_unique<payments::MultipleRequestPaymentsNetworkInterface>(
           profile->GetURLLoaderFactory(),
-          IdentityManagerFactory::GetForProfile(profile),
-          &personal_data_manager_->payments_data_manager());
+          *IdentityManagerFactory::GetForProfile(profile),
+          profile->IsOffTheRecord());
   virtual_card_enrollment_manager_ =
       std::make_unique<VirtualCardEnrollmentManager>(
           &personal_data_manager_->payments_data_manager(),
-          payments_network_interface_.get());
+          multiple_request_payments_network_interface_.get());
 }
 
 AutofillPaymentMethodsDelegate::~AutofillPaymentMethodsDelegate() = default;
 
 // Initializes an instance of AutofillPaymentMethodsDelegate from the
 // Java side.
-static jlong JNI_AutofillPaymentMethodsDelegate_Init(JNIEnv* env,
-                                                     Profile* profile) {
+static int64_t JNI_AutofillPaymentMethodsDelegate_Init(JNIEnv* env,
+                                                       Profile* profile) {
   AutofillPaymentMethodsDelegate* instance =
       new AutofillPaymentMethodsDelegate(profile);
   return reinterpret_cast<intptr_t>(instance);
@@ -82,20 +83,21 @@ void AutofillPaymentMethodsDelegate::Cleanup(JNIEnv* env) {
 void AutofillPaymentMethodsDelegate::InitVirtualCardEnrollment(
     JNIEnv* env,
     int64_t instrument_id,
-    const JavaParamRef<jobject>& jcallback) {
+    const JavaRef<jobject>& jcallback) {
   const CreditCard* credit_card =
       personal_data_manager_->payments_data_manager()
           .GetCreditCardByInstrumentId(instrument_id);
   virtual_card_enrollment_manager_->InitVirtualCardEnroll(
-      *credit_card, VirtualCardEnrollmentSource::kSettingsPage, std::nullopt,
-      profile_->GetPrefs(), base::BindOnce(&risk_util::LoadRiskDataHelper),
+      *credit_card, VirtualCardEnrollmentSource::kSettingsPage,
       base::BindOnce(&RunVirtualCardEnrollmentFieldsLoadedCallback,
-                     ScopedJavaGlobalRef<jobject>(jcallback)));
+                     ScopedJavaGlobalRef<jobject>(jcallback)),
+      std::nullopt, profile_->GetPrefs(),
+      base::BindOnce(&risk_util::LoadRiskDataHelper));
 }
 
 void AutofillPaymentMethodsDelegate::EnrollOfferedVirtualCard(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jcallback) {
+    const JavaRef<jobject>& jcallback) {
   virtual_card_enrollment_manager_->Enroll(
       base::BindOnce(&RunVirtualCardEnrollmentUpdateResponseCallback,
                      ScopedJavaGlobalRef<jobject>(jcallback)));
@@ -104,7 +106,7 @@ void AutofillPaymentMethodsDelegate::EnrollOfferedVirtualCard(
 void AutofillPaymentMethodsDelegate::UnenrollVirtualCard(
     JNIEnv* env,
     int64_t instrument_id,
-    const JavaParamRef<jobject>& jcallback) {
+    const JavaRef<jobject>& jcallback) {
   virtual_card_enrollment_manager_->Unenroll(
       instrument_id,
       base::BindOnce(&RunVirtualCardEnrollmentUpdateResponseCallback,
@@ -116,3 +118,5 @@ void AutofillPaymentMethodsDelegate::DeleteSavedCvcs(JNIEnv* env) {
   personal_data_manager_->payments_data_manager().ClearServerCvcs();
 }
 }  // namespace autofill
+
+DEFINE_JNI(AutofillPaymentMethodsDelegate)

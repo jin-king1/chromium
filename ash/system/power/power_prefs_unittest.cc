@@ -205,6 +205,17 @@ void SetAdaptiveChargingPreference(bool enabled) {
   prefs->SetBoolean(prefs::kPowerAdaptiveChargingEnabled, enabled);
 }
 
+void SetChargeLimitPreference(bool enabled) {
+  PrefService* prefs =
+      Shell::Get()->session_controller()->GetActivePrefService();
+  if (!prefs) {
+    return;
+  }
+
+  prefs->SetBoolean(prefs::kPowerChargeLimitEnabled, enabled);
+}
+
+
 }  // namespace
 
 class PowerPrefsTest : public NoSessionAshTestBase {
@@ -218,8 +229,7 @@ class PowerPrefsTest : public NoSessionAshTestBase {
 
   // NoSessionAshTestBase:
   void SetUp() override {
-    feature_list_.InitWithFeatures(
-        {features::kQuickDim, features::kAdaptiveCharging}, {});
+    feature_list_.InitWithFeatures({features::kQuickDim}, {});
     base::CommandLine::ForCurrentProcess()->AppendSwitch(switches::kHasHps);
     HumanPresenceDBusClient::InitializeFake();
     FakeHumanPresenceDBusClient::Get()->Reset();
@@ -246,17 +256,18 @@ class PowerPrefsTest : public NoSessionAshTestBase {
 
   void TearDown() override {
     power_prefs_->local_state_ = nullptr;
-
+    power_prefs_ = nullptr;
+    power_policy_controller_ = nullptr;
     NoSessionAshTestBase::TearDown();
   }
 
   void SetUpLocalState() {
     auto pref_notifier = std::make_unique<PrefNotifierImpl>();
     auto pref_value_store = std::make_unique<PrefValueStore>(
-        managed_pref_store_.get() /* managed_prefs */,
+        managed_pref_store_ /* managed_prefs */,
         nullptr /* supervised_user_prefs */, nullptr /* extension_prefs */,
-        nullptr /* command_line_prefs */, user_pref_store_.get(),
-        nullptr /* recommended_prefs */, pref_registry_->defaults().get(),
+        nullptr /* command_line_prefs */, user_pref_store_,
+        nullptr /* recommended_prefs */, pref_registry_->defaults(),
         pref_notifier.get());
     local_state_ = std::make_unique<PrefService>(
         std::move(pref_notifier), std::move(pref_value_store), user_pref_store_,
@@ -301,9 +312,9 @@ class PowerPrefsTest : public NoSessionAshTestBase {
   // Start counting histogram updates before we load our first pref service.
   base::HistogramTester histogram_tester_;
 
-  raw_ptr<chromeos::PowerPolicyController, DanglingUntriaged>
-      power_policy_controller_ = nullptr;                         // Not owned.
-  raw_ptr<PowerPrefs, DanglingUntriaged> power_prefs_ = nullptr;  // Not owned.
+  raw_ptr<chromeos::PowerPolicyController> power_policy_controller_ =
+      nullptr;                                 // Not owned.
+  raw_ptr<PowerPrefs> power_prefs_ = nullptr;  // Not owned.
   base::SimpleTestTickClock tick_clock_;
 
   scoped_refptr<TestingPrefStore> user_pref_store_ =
@@ -687,24 +698,24 @@ TEST_F(PowerPrefsTest, ChargeLimit_EnabledByPrefWhenAdaptiveChargingDisabled) {
   SetAdaptiveChargingPreference(false);
   EXPECT_FALSE(power_manager_client()->policy().adaptive_charging_enabled());
 
-  managed_pref_store_->SetBoolean(prefs::kPowerChargeLimitEnabled, true);
+  SetChargeLimitPreference(true);
   EXPECT_TRUE(power_manager_client()->policy().charge_limit_enabled());
 
-  managed_pref_store_->SetBoolean(prefs::kPowerChargeLimitEnabled, false);
+  SetChargeLimitPreference(false);
   EXPECT_FALSE(power_manager_client()->policy().charge_limit_enabled());
 }
 
-TEST_F(PowerPrefsTest, ChargeLimit_DisabledWhenAdaptiveChargingEnabled) {
+TEST_F(PowerPrefsTest, AdaptiveChargingAndChargeLimit_MutuallyExclusive) {
   // Enable adaptive charging hardware support.
   power_manager::PowerSupplyProperties power_props;
   power_props.set_adaptive_charging_supported(true);
   power_manager_client()->UpdatePowerProperties(power_props);
 
-  // When adaptive charging is enabled, charge limit should be disabled.
-  // This ensures that the two features do not conflict.
+  // When both adaptive charging and charge limit enabled, adaptive charging
+  // should be disabled. This ensures that the two features do not conflict.
   SetAdaptiveChargingPreference(true);
-  managed_pref_store_->SetBoolean(prefs::kPowerChargeLimitEnabled, true);
-  EXPECT_TRUE(power_manager_client()->policy().adaptive_charging_enabled());
-  EXPECT_FALSE(power_manager_client()->policy().charge_limit_enabled());
+  SetChargeLimitPreference(true);
+  EXPECT_FALSE(power_manager_client()->policy().adaptive_charging_enabled());
+  EXPECT_TRUE(power_manager_client()->policy().charge_limit_enabled());
 }
 }  // namespace ash

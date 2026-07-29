@@ -2,27 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/credential_provider/gaiacp/gaia_credential_provider.h"
 
 #include <credentialprovider.h>
 #include <shlguid.h>
 
+#include <algorithm>
 #include <iomanip>
 #include <map>
 #include <string>
 #include <utility>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "base/win/scoped_bstr.h"
 #include "chrome/common/chrome_version.h"
 #include "chrome/credential_provider/common/gcp_strings.h"
 #include "chrome/credential_provider/gaiacp/associated_user_validator.h"
@@ -89,16 +86,16 @@ HRESULT InitializeReauthCredential(
   if (FAILED(hr))
     email[0] = 0;
 
-  hr = reauth->SetOSUserInfo(CComBSTR(W2COLE(sid.c_str())),
-                             CComBSTR(W2COLE(domain.c_str())),
-                             CComBSTR(W2COLE(username.c_str())));
+  hr = reauth->SetOSUserInfo(base::win::ScopedBstr(sid.c_str()).Get(),
+                             base::win::ScopedBstr(domain.c_str()).Get(),
+                             base::win::ScopedBstr(username.c_str()).Get());
   if (FAILED(hr)) {
     LOGFN(ERROR) << "cred->SetOSUserInfo hr=" << putHR(hr);
     return hr;
   }
 
   if (email[0]) {
-    hr = reauth->SetEmailForReauth(CComBSTR(email));
+    hr = reauth->SetEmailForReauth(base::win::ScopedBstr(email).Get());
     if (FAILED(hr))
       LOGFN(ERROR) << "reauth->SetEmailForReauth hr=" << putHR(hr);
   } else {
@@ -164,11 +161,11 @@ BackgroundTokenHandleUpdater::BackgroundTokenHandleUpdater(
 }
 
 BackgroundTokenHandleUpdater::~BackgroundTokenHandleUpdater() {
-  if (token_update_thread_.IsValid()) {
+  if (token_update_thread_.is_valid()) {
     // Tell the background thread to quit and then make sure it does.  This
     // prevents it from accessing data members that have been freed.
     token_update_quit_event_.Signal();
-    ::WaitForSingleObject(token_update_thread_.Get(), INFINITE);
+    ::WaitForSingleObject(token_update_thread_.get(), INFINITE);
   }
 }
 
@@ -184,8 +181,9 @@ bool BackgroundTokenHandleUpdater::IsAuthEnforcedOnAssociatedUsers() {
     const std::wstring& sid = sid_to_association.first;
     // Checks if the login UI was already refreshed due to
     // auth enforcements on this sid.
-    if (reauth_sids_ != nullptr && base::Contains(*reauth_sids_, sid))
+    if (reauth_sids_ != nullptr && std::ranges::contains(*reauth_sids_, sid)) {
       continue;
+    }
 
     // Return true if the associated user sid has auth enforced.
     if (AssociatedUserValidator::Get()->IsAuthEnforcedForUser(sid)) {
@@ -515,7 +513,6 @@ void CGaiaCredentialProvider::AddCredentialAndCheckAutoLogon(
     const Microsoft::WRL::ComPtr<IGaiaCredential>& cred,
     const std::wstring& sid,
     GaiaCredentialComPtrStorage* auto_logon_credential) {
-  USES_CONVERSION;
   users_.emplace_back(cred);
 
   if (!auto_logon_credential)
@@ -603,7 +600,7 @@ HRESULT CGaiaCredentialProvider::OnUserAuthenticatedImpl(
       events_->CredentialsChanged(advise_context_);
   }
 
-  LOGFN(VERBOSE) << "Signing in authenticated sid=" << OLE2CW(sid);
+  LOGFN(VERBOSE) << "Signing in authenticated sid=" << sid;
   return S_OK;
 }
 
@@ -806,7 +803,7 @@ HRESULT CGaiaCredentialProvider::GetFieldDescriptorAt(
     *ppcpfd = reinterpret_cast<CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR*>(
         ::CoTaskMemAlloc(sizeof(**ppcpfd)));
     if (*ppcpfd) {
-      **ppcpfd = g_field_desc[index];
+      **ppcpfd = UNSAFE_TODO(g_field_desc[index]);
       // The password field has special greyed out text that is not set through
       // calls to ICredentialProviderCredential::GetStringValue so we need to
       // localize it manually here.

@@ -32,7 +32,9 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_WEB_LOCAL_FRAME_IMPL_H_
 
 #include <memory>
+#include <optional>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -127,6 +129,8 @@ class CORE_EXPORT WebLocalFrameImpl final
   WebLocalFrameClient* Client() const override { return client_; }
   void SetAutofillClient(WebAutofillClient*) override;
   WebAutofillClient* AutofillClient() override;
+  void SetRecordReplayClient(WebRecordReplayClient*) override;
+  WebRecordReplayClient* RecordReplayClient() override;
   void SetContentCaptureClient(WebContentCaptureClient*) override;
   WebContentCaptureClient* ContentCaptureClient() const override;
   BrowserInterfaceBrokerProxy& GetBrowserInterfaceBroker() override;
@@ -136,6 +140,7 @@ class CORE_EXPORT WebLocalFrameImpl final
   void SetName(const WebString&) override;
   bool IsProvisional() const override;
   WebLocalFrameImpl* LocalRoot() override;
+  const WebLocalFrameImpl* LocalRoot() const override;
   WebFrameWidget* FrameWidget() const override;
   WebFrame* FindFrameByName(const WebString& name) override;
   void SetEmbeddingToken(
@@ -144,8 +149,6 @@ class CORE_EXPORT WebLocalFrameImpl final
       const override;
   bool IsInFencedFrameTree() const override;
   void SendPings(const WebURL& destination_url) override;
-  void SendAttributionSrc(const std::optional<Impression>&,
-                          bool did_navigate) override;
   void StartReload(WebFrameLoadType) override;
   void ClearActiveFindMatchForTesting() override;
   void EnableViewSourceMode(bool enable) override;
@@ -219,6 +222,7 @@ class CORE_EXPORT WebLocalFrameImpl final
                               base::i18n::TextDirection& end) const override;
   bool IsSelectionAnchorFirst() const override;
   void SetTextDirectionForTesting(base::i18n::TextDirection direction) override;
+  void SetIsCaretBrowsingOverridden(bool overridden) override;
   bool HasSelection() const override;
   WebRange SelectionRange() const override;
   WebString SelectionAsText() const override;
@@ -241,6 +245,12 @@ class CORE_EXPORT WebLocalFrameImpl final
       const gfx::Point& extent,
       WebFrame::TextGranularity = kCharacterGranularity) override;
   void MoveCaretSelection(const gfx::Point&) override;
+
+#if BUILDFLAG(IS_IOS)
+  void StartAutoscrollForSelectionToPoint(const gfx::PointF&);
+  void StopAutoscroll();
+#endif  // BUILDFLAG(IS_IOS)
+
   bool SetEditableSelectionOffsets(int start, int end) override;
   bool AddImeTextSpansToExistingText(
       const std::vector<ui::ImeTextSpan>& ime_text_spans,
@@ -272,6 +282,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       const std::vector<WebString>& words) override;
   WebContentSettingsClient* GetContentSettingsClient() const override;
   void SetContentSettingsClient(WebContentSettingsClient*) override;
+  const mojom::RendererContentSettingsPtr& GetContentSettings() const override;
   void ReloadImage(const WebNode&) override;
   bool IsAllowedToDownload() const override;
   bool IsCrossOriginToOutermostMainFrame() const override;
@@ -299,12 +310,17 @@ class CORE_EXPORT WebLocalFrameImpl final
   FrameScheduler* Scheduler() const override;
   scheduler::WebAgentGroupScheduler* GetAgentGroupScheduler() const override;
   scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner(TaskType) override;
+  void PostIdleTask(
+      const base::Location&,
+      base::OnceCallback<void(base::TimeTicks deadline)>) override;
   WebInputMethodController* GetInputMethodController() override;
   std::unique_ptr<WebAssociatedURLLoader> CreateAssociatedURLLoader(
       const WebAssociatedURLLoaderOptions&) override;
   void DeprecatedStopLoading() override;
+  [[nodiscard]] base::CallbackListSubscription RequestNetworkIdleCallback(
+      base::OnceClosure callback) override;
   gfx::PointF GetScrollOffset() const override;
-  void SetScrollOffset(const gfx::PointF&) override;
+  bool SetScrollOffset(const gfx::PointF&) override;
   gfx::Size DocumentSize() const override;
   bool HasVisibleContent() const override;
   gfx::Rect VisibleContentRect() const override;
@@ -322,7 +338,8 @@ class CORE_EXPORT WebLocalFrameImpl final
   bool CapturePaintPreview(const gfx::Rect& bounds,
                            cc::PaintCanvas* canvas,
                            bool include_linked_destinations,
-                           bool skip_accelerated_content) override;
+                           bool skip_accelerated_content,
+                           bool allow_scrollbars) override;
   WebPerformanceMetricsForReporting PerformanceMetricsForReporting()
       const override;
   WebPerformanceMetricsForNestedContexts PerformanceMetricsForNestedContexts()
@@ -372,7 +389,10 @@ class CORE_EXPORT WebLocalFrameImpl final
       WebContentSettingsClient::StorageType storage_type) override;
 
   // WebNavigationControl overrides:
-  bool DispatchBeforeUnloadEvent(bool) override;
+  bool DispatchBeforeUnloadEvent(
+      bool is_reload,
+      base::TimeTicks& out_before_unload_dialog_opened_time,
+      base::TimeTicks& out_before_unload_dialog_closed_time) override;
   void CommitNavigation(
       std::unique_ptr<WebNavigationParams> navigation_params,
       std::unique_ptr<WebDocumentLoader::ExtraData> extra_data) override;
@@ -429,7 +449,8 @@ class CORE_EXPORT WebLocalFrameImpl final
       const StorageKey& storage_key,
       const KURL& creator_base_url,
       network::mojom::blink::WebSandboxFlags sandbox_flags =
-          network::mojom::blink::WebSandboxFlags::kNone);
+          network::mojom::blink::WebSandboxFlags::kNone,
+      std::unique_ptr<base::UnguessableToken> sandbox_origin_token = nullptr);
   LocalFrame* GetFrame() const { return frame_.Get(); }
 
   void WillBeDetached();
@@ -447,7 +468,8 @@ class CORE_EXPORT WebLocalFrameImpl final
       network::mojom::blink::WebSandboxFlags,
       const DocumentToken& document_token,
       std::unique_ptr<WebPolicyContainer>,
-      const WebURL& creator_base_url);
+      const WebURL& creator_base_url,
+      std::unique_ptr<base::UnguessableToken> sandbox_origin_token);
   static WebLocalFrameImpl* CreateProvisional(
       WebLocalFrameClient*,
       InterfaceRegistry*,
@@ -519,7 +541,6 @@ class CORE_EXPORT WebLocalFrameImpl final
   void SetFindEndstateFocusAndSelection();
 
   void DidCommitLoad();
-  void DidDispatchDOMContentLoadedEvent();
   void DidFailLoad(const ResourceError&, WebHistoryCommitType);
   void DidFinish();
   void DidFinishLoadForPrinting();
@@ -563,7 +584,7 @@ class CORE_EXPORT WebLocalFrameImpl final
       const ContextMenuData& data,
       const std::optional<gfx::Point>& host_context_menu_location);
 
-  virtual void Trace(Visitor*) const;
+  void Trace(Visitor*) const;
 
   // Functions to add and remove observers for this object.
   void AddObserver(WebLocalFrameObserver* observer);
@@ -577,6 +598,9 @@ class CORE_EXPORT WebLocalFrameImpl final
                                bool discard_duplicates) override;
 
   void AddInspectorIssueImpl(mojom::blink::InspectorIssueCode code) override;
+  void AddUserReidentificationIssueImpl(
+      std::optional<std::string> devtools_request_id,
+      const WebURL& affected_request_url) override;
   void AddGenericIssueImpl(mojom::blink::GenericIssueErrorType error_type,
                            int violating_node_id) override;
   void AddGenericIssueImpl(mojom::blink::GenericIssueErrorType error_type,
@@ -643,17 +667,16 @@ class CORE_EXPORT WebLocalFrameImpl final
       ukm::SourceId document_ukm_source_id,
       const KURL& creator_base_url,
       network::mojom::blink::WebSandboxFlags sandbox_flags =
-          network::mojom::blink::WebSandboxFlags::kNone);
+          network::mojom::blink::WebSandboxFlags::kNone,
+      std::unique_ptr<base::UnguessableToken> sandbox_origin_token = nullptr);
 
   // This function converts mojom::BackForwardCacheNotRestoredReasonsPtr to
   // mojom::blink::BackForwardCacheNotRestoredReasonsPtr.
   mojom::blink::BackForwardCacheNotRestoredReasonsPtr ConvertNotRestoredReasons(
       const mojom::BackForwardCacheNotRestoredReasonsPtr& reasons_struct);
 
-  // If true, requests compositor warm-up when the page is under prerendering.
-  // Please see crbug.com/41496019 for more details.
-  bool ShouldWarmUpCompositorOnPrerenderFromThisPoint(
-      features::Prerender2WarmUpCompositorTriggerPoint trigger_point);
+  // Returns whether we should perform compositor warm-up.
+  bool ShouldWarmUpCompositor();
 
   WebLocalFrameClient* client_;
 
@@ -671,7 +694,9 @@ class CORE_EXPORT WebLocalFrameImpl final
 
   Member<WebDevToolsAgentImpl> dev_tools_agent_;
 
-  WebAutofillClient* autofill_client_;
+  WebAutofillClient* autofill_client_ = nullptr;
+
+  WebRecordReplayClient* record_replay_client_ = nullptr;
 
   WebContentCaptureClient* content_capture_client_ = nullptr;
 

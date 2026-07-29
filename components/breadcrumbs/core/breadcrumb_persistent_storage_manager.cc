@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "components/breadcrumbs/core/breadcrumb_persistent_storage_manager.h"
 
@@ -14,7 +10,6 @@
 #include <string>
 
 #include "base/containers/adapters.h"
-#include "base/files/file_util.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_split.h"
@@ -104,7 +99,7 @@ std::string GetEvents() {
     breadcrumbs.push_back(event);
   }
 
-  std::reverse(breadcrumbs.begin(), breadcrumbs.end());
+  std::ranges::reverse(breadcrumbs);
   return base::JoinString(breadcrumbs, kEventSeparator) + kEventSeparator;
 }
 

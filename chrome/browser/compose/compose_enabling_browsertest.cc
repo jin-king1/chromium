@@ -13,6 +13,8 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/compose/chrome_compose_client.h"
 #include "chrome/browser/optimization_guide/browser_test_util.h"
+#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
+#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
@@ -34,6 +36,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/default_handlers.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/constants/chromeos_features.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -62,10 +65,10 @@ class ComposeEnablingBrowserTestBase : public InProcessBrowserTest {
 
   void EnableComposePreReqs() {
     optimization_guide::EnableSigninAndModelExecutionCapability(
-        browser()->profile());
+        browser()->GetProfile());
 
     // Turn on MSBB.
-    PrefService* prefs = browser()->profile()->GetPrefs();
+    PrefService* prefs = browser()->GetProfile()->GetPrefs();
     prefs->SetBoolean(
         unified_consent::prefs::kUrlKeyedAnonymizedDataCollectionEnabled, true);
 
@@ -74,7 +77,7 @@ class ComposeEnablingBrowserTestBase : public InProcessBrowserTest {
         base::FeatureList::IsEnabled(compose::features::kEnableCompose));
 
     // Enable Compose via the Optimization Guide's pref.
-    browser()->profile()->GetPrefs()->SetInteger(
+    browser()->GetProfile()->GetPrefs()->SetInteger(
         optimization_guide::prefs::GetSettingEnabledPrefName(
             optimization_guide::UserVisibleFeatureKey::kCompose),
         static_cast<int>(
@@ -91,7 +94,7 @@ class ComposeEnablingBrowserTestBase : public InProcessBrowserTest {
 
   OptimizationGuideKeyedService* GetOptimizationGuide() {
     return OptimizationGuideKeyedServiceFactory::GetForProfile(
-        browser()->profile());
+        browser()->GetProfile());
   }
 
  protected:
@@ -296,5 +299,5 @@ IN_PROC_BROWSER_TEST_F(ComposeEnablingWithFencedFramesBrowserTest,
   params.is_content_editable_for_autofill = true;
   params.frame_origin = fenced_child1->GetLastCommittedOrigin();
   EXPECT_FALSE(client->GetComposeEnabling().ShouldTriggerContextMenu(
-      browser()->profile(), nullptr, fenced_child1, params));
+      browser()->GetProfile(), nullptr, fenced_child1, params));
 }

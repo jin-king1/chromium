@@ -30,12 +30,13 @@ class FakeWebFrameImpl : public FakeWebFrame, public WebFrameInternal {
   std::string GetFrameId() const override;
   bool IsMainFrame() const override;
   url::Origin GetSecurityOrigin() const override;
+  GURL GetUrl() const override;
   BrowserState* GetBrowserState() override;
   bool CallJavaScriptFunction(const std::string& name,
-                              const base::Value::List& parameters) override;
+                              const base::ListValue& parameters) override;
   bool CallJavaScriptFunction(
       const std::string& name,
-      const base::Value::List& parameters,
+      const base::ListValue& parameters,
       base::OnceCallback<void(const base::Value*)> callback,
       base::TimeDelta timeout) override;
   bool ExecuteJavaScript(const std::u16string& script) override;
@@ -45,6 +46,14 @@ class FakeWebFrameImpl : public FakeWebFrame, public WebFrameInternal {
   bool ExecuteJavaScript(
       const std::u16string& script,
       base::OnceCallback<void(const base::Value*, NSError*)> callback) override;
+  bool ExecuteAsyncJavaScript(
+      const std::u16string& script,
+      const base::DictValue& parameters,
+      ExecuteJavaScriptCallbackWithError callback) override;
+  bool CallAsyncJavaScriptFunction(
+      const std::string& name,
+      const base::DictValue& parameters,
+      ExecuteJavaScriptCallbackWithError callback) override;
   base::WeakPtr<WebFrame> AsWeakPtr() override;
 
   // FakeWebFrame:
@@ -52,12 +61,14 @@ class FakeWebFrameImpl : public FakeWebFrame, public WebFrameInternal {
   const std::vector<std::u16string>& GetJavaScriptCallHistory() override;
   void ClearJavaScriptCallHistory() override;
   void set_browser_state(BrowserState* browser_state) override;
+  void set_url(GURL url) override;
   void AddJsResultForFunctionCall(base::Value* js_result,
                                   const std::string& function_name) override;
   void AddResultForExecutedJs(base::Value* js_result,
                               const std::u16string& executed_js) override;
   void set_force_timeout(bool force_timeout) override;
-  void set_call_java_script_function_callback(
+  void SetJavaScriptFunctionCallback(
+      const std::string& java_script_feature_name,
       base::RepeatingClosure callback) override;
 
   // WebFrameInternal:
@@ -65,7 +76,7 @@ class FakeWebFrameImpl : public FakeWebFrame, public WebFrameInternal {
   // added to `java_script_calls_`. Always returns true.
   bool CallJavaScriptFunctionInContentWorld(
       const std::string& name,
-      const base::Value::List& parameters,
+      const base::ListValue& parameters,
       JavaScriptContentWorld* content_world) override;
   // The JavaScript call which would be executed by a real WebFrame will be
   // added to `java_script_calls_`. Always returns true.
@@ -73,7 +84,7 @@ class FakeWebFrameImpl : public FakeWebFrame, public WebFrameInternal {
   // AddJsResultForFunctionCall() or null if no such result has been added.
   bool CallJavaScriptFunctionInContentWorld(
       const std::string& name,
-      const base::Value::List& parameters,
+      const base::ListValue& parameters,
       JavaScriptContentWorld* content_world,
       base::OnceCallback<void(const base::Value*)> callback,
       base::TimeDelta timeout) override;
@@ -83,6 +94,17 @@ class FakeWebFrameImpl : public FakeWebFrame, public WebFrameInternal {
   // AddResultForExecutedJs() or null if no such result has been added.
   bool ExecuteJavaScriptInContentWorld(
       const std::u16string& script,
+      JavaScriptContentWorld* content_world,
+      ExecuteJavaScriptCallbackWithError callback) override;
+
+  bool ExecuteAsyncJavaScriptInContentWorld(
+      const std::u16string& script,
+      const base::DictValue& parameters,
+      JavaScriptContentWorld* content_world,
+      ExecuteJavaScriptCallbackWithError callback) override;
+  bool CallAsyncJavaScriptFunctionInContentWorld(
+      const std::string& name,
+      const base::DictValue& parameters,
       JavaScriptContentWorld* content_world,
       ExecuteJavaScriptCallbackWithError callback) override;
 
@@ -103,6 +125,8 @@ class FakeWebFrameImpl : public FakeWebFrame, public WebFrameInternal {
   bool is_main_frame_ = false;
   // The security origin associated with this frame.
   url::Origin security_origin_;
+  // The URL associated with this frame.
+  GURL url_;
   // Vector holding history of all javascript handler calls made in this frame.
   // The calls are sorted with the most recent appended at the end.
   std::vector<std::u16string> java_script_calls_;
@@ -111,7 +135,8 @@ class FakeWebFrameImpl : public FakeWebFrame, public WebFrameInternal {
   bool force_timeout_ = false;
   raw_ptr<BrowserState> browser_state_;
 
-  base::RepeatingClosure call_java_script_function_callback_;
+  std::map<std::string, base::RepeatingClosure>
+      call_java_script_function_callback_;
 
   base::WeakPtrFactory<WebFrame> weak_ptr_factory_{this};
 };

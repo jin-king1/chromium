@@ -4,54 +4,98 @@
 
 #include "components/persistent_cache/persistent_cache.h"
 
-#include "base/notreached.h"
+#include <memory>
+#include <optional>
+#include <utility>
+
+#include "base/check.h"
+#include "base/containers/span.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/synchronization/lock.h"
+#include "base/timer/elapsed_timer.h"
+#include "base/types/expected.h"
+#include "base/types/expected_macros.h"
 #include "components/persistent_cache/backend.h"
-#include "components/persistent_cache/entry.h"
+#include "components/persistent_cache/backend_type.h"
+#include "components/persistent_cache/metrics_util.h"
+#include "components/persistent_cache/pending_backend.h"
+#include "components/persistent_cache/sqlite/sqlite_backend_impl.h"
+#include "components/persistent_cache/transaction_error.h"
 
 namespace persistent_cache {
 
 // static
-std::unique_ptr<PersistentCache> PersistentCache::Open(
-    const BackendParams& backend_params) {
-  std::unique_ptr<Backend> backend;
-  switch (backend_params.type) {
-    case BackendType::kMock:
-      // Reserved for testing;
-      NOTREACHED();
-  }
-
-  return std::make_unique<PersistentCache>(std::move(backend));
+base::expected<std::unique_ptr<PersistentCache>, TransactionError>
+PersistentCache::Bind(Client client, PendingBackend pending_backend) {
+  // If there is ever occasion to have more than one type, branch on the type
+  // here.
+  ASSIGN_OR_RETURN(auto backend,
+                   SqliteBackendImpl::Bind(std::move(pending_backend), client));
+  return std::make_unique<PersistentCache>(client, std::move(backend));
 }
 
-PersistentCache::PersistentCache(std::unique_ptr<Backend> backend) {
-  CHECK(backend);
-
-  if (backend->Initialize()) {
-    backend_ = std::move(backend);
-  }
+PersistentCache::PersistentCache(Client client,
+                                 std::unique_ptr<Backend> backend)
+    : client_(client), backend_(std::move(backend)) {
+  CHECK(backend_);
 }
 
 PersistentCache::~PersistentCache() = default;
 
-std::unique_ptr<Entry> PersistentCache::Find(std::string_view key) {
-  if (!backend_) {
-    return nullptr;
+base::expected<std::optional<EntryMetadata>, TransactionError>
+PersistentCache::Find(base::span<const uint8_t> key,
+                      BufferProvider buffer_provider) {
+  std::optional<base::ElapsedTimer> timer = MaybeGetTimerForHistogram();
+
+  auto entry_metadata = backend_->Find(key, buffer_provider);
+
+  if (timer.has_value()) {
+    base::UmaHistogramMicrosecondsTimes(
+        GetHistogramName(client_, "Find", !backend_->IsReadOnly()),
+        timer->Elapsed());
   }
 
-  return backend_->Find(key);
+  return entry_metadata;
 }
 
-void PersistentCache::Insert(std::string_view key,
-                             base::span<const uint8_t> content) {
-  if (!backend_) {
-    return;
+base::expected<void, TransactionError> PersistentCache::Insert(
+    base::span<const uint8_t> key,
+    base::span<const uint8_t> content,
+    EntryMetadata metadata) {
+  std::optional<base::ElapsedTimer> timer = MaybeGetTimerForHistogram();
+
+  auto result = backend_->Insert(key, content, metadata);
+  if (timer.has_value()) {
+    base::UmaHistogramMicrosecondsTimes(GetHistogramName(client_, "Insert"),
+                                        timer->Elapsed());
+
+    if (result.has_value()) {
+      base::UmaHistogramCounts10M(GetHistogramName(client_, "InsertSize"),
+                                  base::saturated_cast<int>(content.size()));
+    }
   }
 
-  backend_->Insert(key, content);
+  return result;
+}
+
+LockState PersistentCache::Abandon() {
+  return backend_->Abandon();
 }
 
 Backend* PersistentCache::GetBackendForTesting() {
   return backend_.get();
+}
+
+std::optional<base::ElapsedTimer> PersistentCache::MaybeGetTimerForHistogram() {
+  std::optional<base::ElapsedTimer> timer;
+
+  static constexpr double kTimingLoggingProbability = 0.01;
+  if (base::ShouldRecordSubsampledMetric(kTimingLoggingProbability)) {
+    timer.emplace();
+  }
+
+  return timer;
 }
 
 }  // namespace persistent_cache

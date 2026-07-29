@@ -6,6 +6,11 @@ module golden;
 struct ResultTestError {
 };
 
+[GenerateDirectReturnStub]
 interface ResultInterface {
+  [UseCbReturn]
   Method(bool a) => result<bool, ResultTestError>;
+
+  [Sync]
+  SyncMethod(bool a) => result<bool, ResultTestError>;
 };

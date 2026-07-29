@@ -4,12 +4,18 @@
 
 package org.chromium.chrome.browser.download;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.notifications.PendingNotificationTask;
 import org.chromium.components.browser_ui.notifications.ThrottlingNotificationScheduler;
+import org.chromium.components.browser_ui.util.DownloadUtils;
 import org.chromium.components.offline_items_collection.ContentId;
+import org.chromium.components.offline_items_collection.OfflineItemState;
 import org.chromium.components.offline_items_collection.PendingState;
 
 import java.lang.annotation.Retention;
@@ -20,21 +26,23 @@ import java.lang.annotation.RetentionPolicy;
  * This class creates the {@link DownloadNotificationService} when needed, and binds
  * to the latter to issue calls to show and update notifications.
  */
+@NullMarked
 public class SystemDownloadNotifier implements DownloadNotifier {
-    private DownloadNotificationService mDownloadNotificationService;
+    private @Nullable DownloadNotificationService mDownloadNotificationService;
 
     /**
-     * Notification type for constructing the notification later on.
-     * TODO(qinmin): this is very ugly and it doesn't scale if we want a more general notification
-     * frame work. A better solution is to pass a notification builder or a notification into the
-     * queue, so we don't need the switch statement in updateNotification().
+     * Notification type for constructing the notification later on. TODO(qinmin): this is very ugly
+     * and it doesn't scale if we want a more general notification frame work. A better solution is
+     * to pass a notification builder or a notification into the queue, so we don't need the switch
+     * statement in updateNotification().
      */
     @IntDef({
         NotificationType.PROGRESS,
         NotificationType.PAUSED,
         NotificationType.SUCCEEDED,
         NotificationType.FAILED,
-        NotificationType.INTERRUPTED
+        NotificationType.INTERRUPTED,
+        NotificationType.DANGEROUS,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface NotificationType {
@@ -43,6 +51,7 @@ public class SystemDownloadNotifier implements DownloadNotifier {
         int SUCCEEDED = 2;
         int FAILED = 3;
         int INTERRUPTED = 4;
+        int DANGEROUS = 5;
     }
 
     /** Information related to a notification. */
@@ -115,9 +124,16 @@ public class SystemDownloadNotifier implements DownloadNotifier {
     @Override
     public void notifyDownloadProgress(
             DownloadInfo info, long startTime, boolean canDownloadWhileMetered) {
+        boolean isDangerous =
+                DownloadUtils.shouldDisplayDownloadAsDangerous(
+                        info.getDangerType(), OfflineItemState.IN_PROGRESS);
         NotificationInfo notificationInfo =
                 new NotificationInfo(
-                        NotificationType.PROGRESS, info, PendingNotificationTask.Priority.LOW);
+                        isDangerous ? NotificationType.DANGEROUS : NotificationType.PROGRESS,
+                        info,
+                        isDangerous
+                                ? PendingNotificationTask.Priority.HIGH
+                                : PendingNotificationTask.Priority.LOW);
         notificationInfo.mStartTime = startTime;
         notificationInfo.mCanDownloadWhileMetered = canDownloadWhileMetered;
         addPendingNotification(notificationInfo);
@@ -153,9 +169,10 @@ public class SystemDownloadNotifier implements DownloadNotifier {
      * Add a new notification to be handled. If there is currently a posted task to handle pending
      * notifications, adding the new notification to the pending queue. Otherwise, process the
      * notification immediately and post a task to handle incoming ones.
+     *
      * @param notificationInfo Notification to be displayed.
      */
-    void addPendingNotification(NotificationInfo notificationInfo) {
+    private void addPendingNotification(NotificationInfo notificationInfo) {
         ThrottlingNotificationScheduler.getInstance()
                 .addPendingNotificationTask(
                         new PendingNotificationTask(
@@ -177,7 +194,7 @@ public class SystemDownloadNotifier implements DownloadNotifier {
                 getDownloadNotificationService()
                         .notifyDownloadProgress(
                                 info.getContentId(),
-                                info.getFileName(),
+                                assertNonNull(info.getFileName()),
                                 info.getProgress(),
                                 info.getBytesReceived(),
                                 info.getTimeRemainingInMillis(),
@@ -193,7 +210,7 @@ public class SystemDownloadNotifier implements DownloadNotifier {
                 getDownloadNotificationService()
                         .notifyDownloadPaused(
                                 info.getContentId(),
-                                info.getFileName(),
+                                assertNonNull(info.getFileName()),
                                 true,
                                 false,
                                 info.getOtrProfileId(),
@@ -210,8 +227,8 @@ public class SystemDownloadNotifier implements DownloadNotifier {
                         getDownloadNotificationService()
                                 .notifyDownloadSuccessful(
                                         info.getContentId(),
-                                        info.getFilePath(),
-                                        info.getFileName(),
+                                        assertNonNull(info.getFilePath()),
+                                        assertNonNull(info.getFileName()),
                                         notificationInfo.mSystemDownloadId,
                                         info.getOtrProfileId(),
                                         notificationInfo.mIsSupportedMimeType,
@@ -246,7 +263,7 @@ public class SystemDownloadNotifier implements DownloadNotifier {
                 getDownloadNotificationService()
                         .notifyDownloadPaused(
                                 info.getContentId(),
-                                info.getFileName(),
+                                assertNonNull(info.getFileName()),
                                 info.isResumable(),
                                 notificationInfo.mIsAutoResumable,
                                 info.getOtrProfileId(),
@@ -257,6 +274,18 @@ public class SystemDownloadNotifier implements DownloadNotifier {
                                 false,
                                 false,
                                 notificationInfo.mPendingState);
+                break;
+            case NotificationType.DANGEROUS:
+                getDownloadNotificationService()
+                        .notifyDownloadDangerous(
+                                info.getContentId(),
+                                assertNonNull(info.getFileName()),
+                                info.getOriginalUrl(),
+                                info.getShouldPromoteOrigin(),
+                                info.getOtrProfileId(),
+                                notificationInfo.mCanDownloadWhileMetered,
+                                info.getIsTransient(),
+                                info.getDangerType());
                 break;
         }
     }

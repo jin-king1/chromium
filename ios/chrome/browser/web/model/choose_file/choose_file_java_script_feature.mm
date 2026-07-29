@@ -9,10 +9,14 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/no_destructor.h"
 #import "base/strings/utf_string_conversions.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
+#import "base/values.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_event.h"
+#import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_util.h"
 #import "ios/web/public/js_messaging/script_message.h"
+#import "ios/web/public/ui/crw_web_view_proxy.h"
+#import "ios/web/public/ui/crw_web_view_scroll_view_proxy.h"
+#import "ios/web/public/web_state.h"
 
 namespace {
 const char kChooseFileScript[] = "choose_file";
@@ -107,7 +111,7 @@ ChooseFileAccept BucketForChooseFileEvent(int accept_type,
 // an empty vector.
 using ParseFunction = std::vector<std::string> (*)(std::string_view);
 std::vector<std::string> ParseAttributeFromValue(
-    const base::Value::Dict& dict,
+    const base::DictValue& dict,
     std::string_view attribute_name,
     ParseFunction parse_function) {
   if (const std::string* attribute_value = dict.FindString(attribute_name)) {
@@ -119,7 +123,7 @@ std::vector<std::string> ParseAttributeFromValue(
 }  // namespace
 
 ChooseFileJavaScriptFeature::ChooseFileJavaScriptFeature()
-    : JavaScriptFeature(web::ContentWorld::kIsolatedWorld,
+    : JavaScriptFeature(web::ContentWorld::kPageContentWorld,
                         {FeatureScript::CreateWithFilename(
                             kChooseFileScript,
                             FeatureScript::InjectionTime::kDocumentEnd,
@@ -143,15 +147,19 @@ void ChooseFileJavaScriptFeature::ScriptMessageReceived(
   DCHECK(web_state);
 
   // Verify that the message is well-formed before using it
-  if (!message.body()->is_dict()) {
+  if (!message.legacy_body()->is_dict()) {
     return;
   }
-  base::Value::Dict& body_dict = message.body()->GetDict();
+  base::DictValue& body_dict = message.legacy_body()->GetDict();
 
   std::optional<double> accept_type = body_dict.FindDouble("acceptType");
   std::optional<bool> has_multiple = body_dict.FindBool("hasMultiple");
+  std::optional<bool> has_webkitdirectory =
+      body_dict.FindBool("hasWebkitdirectory");
   std::optional<bool> has_selected_file = body_dict.FindBool("hasSelectedFile");
-  if (!accept_type || !has_multiple || !has_selected_file) {
+  std::optional<double> capture = body_dict.FindDouble("capture");
+  if (!accept_type || !has_multiple || !has_webkitdirectory ||
+      !has_selected_file || !capture) {
     return;
   }
   int accept_type_int = static_cast<int>(*accept_type);
@@ -160,19 +168,59 @@ void ChooseFileJavaScriptFeature::ScriptMessageReceived(
   if (accept_type_int < 0 || accept_type_int > 9) {
     return;
   }
+  int capture_int = static_cast<int>(*capture);
+  // See CaptureType enumeration in
+  // ios/chrome/browser/web/model/choose_file/resources/choose_file_utils.ts
+  if (capture_int < 0 || capture_int > 2) {
+    return;
+  }
 
   LogChooseFileEvent(accept_type_int, *has_multiple, *has_selected_file);
 
-  if (base::FeatureList::IsEnabled(kIOSChooseFromDrive)) {
-    std::vector<std::string> accept_file_extensions = ParseAttributeFromValue(
-        body_dict, "fileExtensions", ParseAcceptAttributeFileExtensions);
-    std::vector<std::string> accept_mime_types = ParseAttributeFromValue(
-        body_dict, "mimeTypes", ParseAcceptAttributeMimeTypes);
-    base::UmaHistogramBoolean("IOS.Web.FileInput.EventDropped",
-                              last_choose_file_event_.has_value());
-    last_choose_file_event_ = std::make_optional<ChooseFileEvent>(
-        *has_multiple, *has_selected_file, std::move(accept_file_extensions),
-        std::move(accept_mime_types), web_state);
+  std::vector<std::string> accept_file_extensions = ParseAttributeFromValue(
+      body_dict, "fileExtensions", ParseAcceptAttributeFileExtensions);
+  std::vector<std::string> accept_mime_types = ParseAttributeFromValue(
+      body_dict, "mimeTypes", ParseAcceptAttributeMimeTypes);
+  CGPoint screen_location = CGPointZero;
+  if (const base::DictValue* screen_location_dict =
+          body_dict.FindDict("screenLocation")) {
+    screen_location.x = screen_location_dict->FindDouble("x").value_or(0);
+    screen_location.y = screen_location_dict->FindDouble("y").value_or(0);
+  }
+  if (const std::string* attribute_value =
+          body_dict.FindString("pointerType")) {
+    if (*attribute_value == "mouse" &&
+        !CGPointEqualToPoint(screen_location, CGPointZero)) {
+      // If seems that if the pointer type associated with the event is
+      // "mouse" then screenX and screenY do not account for the zoom scale
+      // and content offset of the document. In this case these coordinates
+      // need to be converted to the browser's coordinate system.
+      const CGFloat zoom_scale =
+          web_state->GetWebViewProxy().scrollViewProxy.zoomScale;
+      const CGPoint content_offset =
+          web_state->GetWebViewProxy().scrollViewProxy.contentOffset;
+      screen_location.x *= zoom_scale;
+      screen_location.y *= zoom_scale;
+      screen_location.x -= content_offset.x;
+      screen_location.y -= content_offset.y;
+    }
+  }
+
+  ChooseFileEvent event =
+      ChooseFileEvent::Builder()
+          .SetAllowMultipleFiles(*has_multiple)
+          .SetOnlyAllowDirectory(*has_webkitdirectory)
+          .SetHasSelectedFile(*has_selected_file)
+          .SetAcceptFileExtensions(std::move(accept_file_extensions))
+          .SetAcceptMimeTypes(std::move(accept_mime_types))
+          .SetWebState(web_state)
+          .SetScreenLocation(screen_location)
+          .SetCapture(static_cast<ChooseFileCaptureType>(capture_int))
+          .Build();
+  ChooseFileTabHelper* tab_helper =
+      ChooseFileTabHelper::FromWebState(web_state);
+  if (tab_helper) {
+    tab_helper->SetLastChooseFileEvent(std::move(event));
   }
 }
 
@@ -185,9 +233,4 @@ void ChooseFileJavaScriptFeature::LogChooseFileEvent(int accept_type,
   base::UmaHistogramEnumeration(
       "IOS.Web.FileInput.ContentState",
       ContentStateFromAttributes(allow_multiple_files, has_selected_file));
-}
-
-std::optional<ChooseFileEvent>
-ChooseFileJavaScriptFeature::ResetLastChooseFileEvent() {
-  return std::exchange(last_choose_file_event_, std::nullopt);
 }

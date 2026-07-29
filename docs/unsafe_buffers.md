@@ -17,7 +17,7 @@ When an unsafe usage is detected, Clang prints a warning similar to
 error: unsafe buffer access [-Werror,-Wunsafe-buffer-usage]
 ```
 and directs developers to this file for more information. Several common
-[Techniques](#container-based-ecosystem) for fixing these issues are presented
+[Techniques](#container_based-ecosystem) for fixing these issues are presented
 later in this document.
 
 Clang documentation includes a guide to working with unsafe-buffer-usage
@@ -34,10 +34,6 @@ a warning similar to
 ```
 error: function 'memcpy' is unsafe [-Werror,-Wunsafe-buffer-usage-in-libc-call]
 ```
-These warnings are not yet enabled by default for chromium builds.
-Suppressions are being incrementally added prior to enabling these
-warnings.
-
 ## Unsafe buffer warning suppressions
 
 Because the Chromium codebase is not yet compliant with these warnings,
@@ -70,8 +66,8 @@ Empty lines are ignored.
 The `#` character introduces a comment until the end of the line.
 
 Lines starting with `.` declare which checks are to be enforced, as
-a comma-separated list of values. Currently allowed values are `buffers`
-and `libc`.
+a comma-separated list of values. Currently allowed values are `buffers`,
+`libc`, and `unique_ptr`.
 
 All other lines specify which paths are to be included/excluded.
 
@@ -142,20 +138,19 @@ expressions to suppress (see the next section).
 ### Opting out individual expressions
 
 Individual expressions or blocks of code are opted out by using the
-`UNSAFE_BUFFERS()` macro as defined in [`//base/compiler_specific.h`[(../base/compiler_specific.h)
+`UNSAFE_BUFFERS()` macro as defined in [`//base/compiler_specific.h`](../base/compiler_specific.h)
 file. These should be rare once a project is fully converted, except
 perhaps when working with C-style external APIs. These must
 always be accompanied by a `// SAFETY:` comment explaining in detail
 how the code has been evaluated to be safe for all possible input.
 
-Code introducing UNSAFE_BUFFERS() macro invocations without corresponding
+Code introducing `UNSAFE_BUFFERS()` macro invocations without corresponding
 `// SAFETY:` comment should be summarily rejected during code review.
 
 To allow for incremental conversion, code can be temporarily opted out by
 using the `UNSAFE_TODO()` macro. This provides the same functionality as
 the `UNSAFE_BUFFERS()` macro, but allows easier searching for code in need
-of revision. Add TODO() comment, along the lines of
-`// TODO(crbug.com/xxxxxx): resolve safety issues`.
+of revision.
 
 This mechanism opts expressions out of all warning categories (unsafe
 buffers and unsafe libc calls).
@@ -568,6 +563,69 @@ Use a range, with `span()` providing a view of a subset of the range:
 ```cc
 auto it = std::ranges::find(base::span(vec).subspan(offset), 20);
 ```
+
+### Identifying span bounds-checking
+
+The bounds-checking that is built into the span operations is often elided
+by the compiler at build time. Even when they remain, the cost of a branch
+not taken is typically negligible on any modern CPU. However, given a
+situation where "spans are slow", the checks that remain can be identified
+via warnings at compile time. The GN args that control this are:
+
+```
+is_debug = false  # Must run an optimized build
+treat_warnings_as_errors = false  # Numerous warnings abound.
+enable_check_elision_warning = true
+```
+
+Such a build will produce voluminous output as these checks can't always
+be elided, but investigation will often reveal subtle bugs. Here's a
+case study:
+
+```cc
+  for (size_t i = 0; i < data.size();) {
+    uint8_t length = data[i];
+    if (i + length >= data.size()) {
+      return nullptr;
+    }
+    texts_.emplace_back(
+        base::as_string_view(base::as_chars(data.subspan(i + 1, length))));
+    i += length + 1;
+  }
+```
+
+This produced the chain of warnings:
+
+```
+warning: call to 'base::check_not_elided()' declared with 'warning' attribute: check not elided [-Wattribute-warning]
+ 1379 |      SPAN_BOUNDS_CHECK(size_type{offset} <= size() &&
+      |      ^
+note: expanded from macro 'SPAN_BOUNDS_CHECK'
+  294 |      base::check_not_elided(); \
+      |      ^
+note: called by function 'subspan'
+note: inlined by function 'Create'
+  246 |          base::as_string_view(base::as_chars(data.subspan(i + 1, length))));
+      |                                                   ^
+
+```
+
+Take a moment and ponder about why the logic above might not be good
+enough to avoid a bounds check in subspan().
+
+Hint: The compiler can't know that data.size() isn't enormous.
+Hint: Hence i + length might overflow and not return early.
+Hint: Hence i + 1 might not overflow and be out of bounds.
+
+This is of course fixed by:
+```cc
+    if (length >= data.size() - i) {
+       return nullptr;
+     }
+```
+since we know i < data.size(), data.size() - i can't underflow.
+
+Tip: AI models are good at explaining these findings.
 
 ### Functions with array pointer parameters
 

@@ -9,21 +9,21 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/synchronization/waitable_event.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_checker.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "gpu/config/gpu_finch_features.h"
-#include "gpu/ipc/common/client_gmb_interface.mojom.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/service_manager/public/cpp/connector.h"
-#include "services/viz/public/cpp/gpu/client_gpu_memory_buffer_manager.h"
 #include "services/viz/public/mojom/gpu.mojom.h"
 
 namespace viz {
@@ -41,16 +41,12 @@ class Gpu::GpuPtrIO {
 
   ~GpuPtrIO() { DCHECK_CALLED_ON_VALID_THREAD(thread_checker_); }
 
-  void Initialize(mojo::PendingRemote<mojom::Gpu> gpu_remote,
-                  mojo::PendingReceiver<gpu::mojom::ClientGmbInterface>
-                      client_gmb_interface_receiver) {
+  void Initialize(mojo::PendingRemote<mojom::Gpu> gpu_remote) {
     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
     gpu_remote_.Bind(std::move(gpu_remote));
     gpu_remote_.set_disconnect_handler(
         base::BindOnce(&GpuPtrIO::ConnectionError, base::Unretained(this)));
-      gpu_remote_->CreateClientGpuMemoryBufferFactory(
-          std::move(client_gmb_interface_receiver));
   }
 
   void EstablishGpuChannel(scoped_refptr<EstablishRequest> establish_request) {
@@ -193,9 +189,13 @@ class Gpu::EstablishRequest
     DCHECK(!received_);
     received_ = true;
     if (channel_handle.is_valid()) {
-      gpu_channel_ = base::MakeRefCounted<gpu::GpuChannelHost>(
+      gpu_channel_ = gpu::GpuChannelHost::Create(
           client_id, gpu_info, gpu_feature_info, shared_image_capabilities,
           std::move(channel_handle));
+      // `GPUChannelHost::Create()` can't fail, since we pass in `gpu_info` etc
+      // directly instead of requesting the info from the GPU process (which can
+      // fail).
+      CHECK(gpu_channel_);
     }
     gpu_remote_disconnected_ = gpu_remote_disconnected;
 
@@ -261,21 +261,16 @@ void Gpu::GpuPtrIO::OnEstablishedGpuChannel(
 }
 
 Gpu::Gpu(mojo::PendingRemote<mojom::Gpu> gpu_remote,
-         scoped_refptr<base::SingleThreadTaskRunner> task_runner)
+         scoped_refptr<base::SingleThreadTaskRunner> task_runner,
+         int client_id,
+         mojo::ScopedMessagePipeHandle initial_channel_handle,
+         gpu::GpuChannelEstablishedCallback callback)
     : main_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
       io_task_runner_(std::move(task_runner)),
       gpu_(new GpuPtrIO(), base::OnTaskRunnerDeleter(io_task_runner_)) {
   DCHECK(main_task_runner_);
   DCHECK(io_task_runner_);
 
-  mojo::PendingRemote<gpu::mojom::ClientGmbInterface> client_gmb_interface;
-  auto client_gmb_interface_receiver =
-      client_gmb_interface.InitWithNewPipeAndPassReceiver();
-
-  // Note that since |gpu_memory_buffer_manager_| is a owned by this object, it
-  // is safe to provide a |this| pointer to it.
-  gpu_memory_buffer_manager_ = std::make_unique<ClientGpuMemoryBufferManager>(
-      std::move(client_gmb_interface));
   // Initialize mojo::Remote<mojom::Gpu> on the IO thread. |gpu_| can only be
   // used on the IO thread after this point. It is safe to use base::Unretained
   // with |gpu_| for IO thread tasks as |gpu_| is destroyed by an IO thread task
@@ -283,8 +278,24 @@ Gpu::Gpu(mojo::PendingRemote<mojom::Gpu> gpu_remote,
   io_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&GpuPtrIO::Initialize, base::Unretained(gpu_.get()),
-                     std::move(gpu_remote),
-                     std::move(client_gmb_interface_receiver)));
+                     std::move(gpu_remote)));
+
+  if (base::FeatureList::IsEnabled(features::kSendGPUChannelEarly) &&
+      initial_channel_handle.is_valid()) {
+    if (!callback.is_null()) {
+      establish_callbacks_.emplace_back(base::TimeTicks::Now(),
+                                        std::move(callback));
+    }
+
+    pending_initial_gpu_channel_builder_ =
+        gpu::GpuChannelHost::Builder::CreateAndGetGPUInfo(
+            base::PassKey<Gpu>(), client_id, std::move(initial_channel_handle),
+            io_task_runner_,
+            base::BindOnce(&Gpu::CompleteInitialChannelCreation,
+                           weak_ptr_factory_.GetWeakPtr()));
+  } else {
+    CHECK(!callback);
+  }
 }
 
 Gpu::~Gpu() {
@@ -301,9 +312,13 @@ Gpu::~Gpu() {
 // static
 std::unique_ptr<Gpu> Gpu::Create(
     mojo::PendingRemote<mojom::Gpu> remote,
-    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner) {
-  return base::WrapUnique(
-      new Gpu(std::move(remote), std::move(io_task_runner)));
+    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
+    int client_id,
+    mojo::ScopedMessagePipeHandle channel_handle,
+    gpu::GpuChannelEstablishedCallback callback) {
+  return base::WrapUnique(new Gpu(std::move(remote), std::move(io_task_runner),
+                                  client_id, std::move(channel_handle),
+                                  std::move(callback)));
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -336,7 +351,23 @@ void Gpu::EstablishGpuChannel(gpu::GpuChannelEstablishedCallback callback) {
     return;
   }
 
-  establish_callbacks_.push_back(std::move(callback));
+  establish_callbacks_.emplace_back(base::TimeTicks::Now(),
+                                    std::move(callback));
+
+  // If we have an early initial channel handle (sent from the browser on
+  // renderer init), wait for that instead of triggering request.
+  if (pending_initial_gpu_channel_builder_) {
+    if (!pending_initial_gpu_channel_builder_->IsLost()) {
+      return;
+    }
+    // An exception is when the initial channel is lost (e.g. due to a crash).
+    // Reset it and fallback to the standard EstablishGpuChannelRequest path.
+    // Note that we don't call `RunEstablishCallbacks()` here like in
+    // `LoseChannel()`, as the `SendEstablishGpuChannelRequest()` would be the
+    // one that triggers it in case of any future failures.
+    pending_initial_gpu_channel_builder_.reset();
+  }
+
   SendEstablishGpuChannelRequest(/*waitable_event=*/nullptr);
 }
 
@@ -347,6 +378,30 @@ scoped_refptr<gpu::GpuChannelHost> Gpu::EstablishGpuChannelSync() {
   scoped_refptr<gpu::GpuChannelHost> channel = GetGpuChannel();
   if (channel)
     return channel;
+
+  if (pending_initial_gpu_channel_builder_) {
+    if (!pending_initial_gpu_channel_builder_->IsLost()) {
+      // We are in the middle of establishing the browser-sent initial channel
+      // asynchronously, but we can just fetch the GPUInfo synchronously right
+      // now to complete the initialization.
+      gpu::GPUInfo gpu_info;
+      gpu::GpuFeatureInfo gpu_feature_info;
+      gpu::SharedImageCapabilities shared_image_capabilities;
+      if (pending_initial_gpu_channel_builder_->GetGPUInfoSync(
+              &gpu_info, &gpu_feature_info, &shared_image_capabilities)) {
+        CompleteInitialChannelCreation(gpu_info, gpu_feature_info,
+                                       shared_image_capabilities);
+        return gpu_channel_;
+      }
+    }
+
+    // Browser-sent initial channel can't be used, or the GetGPUInfo call
+    // failed. Reset the initial channel builder and fallback to creating a new
+    // channel below.  Note that we don't call `RunEstablishCallbacks()` here
+    // like in `LoseChannel()`, as the `SendEstablishGpuChannelRequest()` would
+    // be the one that triggers it in case of any future failures.
+    pending_initial_gpu_channel_builder_.reset();
+  }
 
   base::ElapsedTimer timer;
   SCOPED_UMA_HISTOGRAM_TIMER("GPU.EstablishGpuChannelSyncTime");
@@ -368,15 +423,22 @@ scoped_refptr<gpu::GpuChannelHost> Gpu::EstablishGpuChannelSync() {
   return gpu_channel_;
 }
 
-gpu::GpuMemoryBufferManager* Gpu::GetGpuMemoryBufferManager() {
-  return gpu_memory_buffer_manager_.get();
-}
-
 void Gpu::LoseChannel() {
   DCHECK(main_task_runner_->BelongsToCurrentThread());
   if (gpu_channel_) {
     gpu_channel_->DestroyChannel();
     gpu_channel_.reset();
+  }
+
+  if (pending_initial_gpu_channel_builder_) {
+    // If the browser triggers a software compositing fallback during early
+    // startup, it calls LoseChannel() to signal that the graphics mode has
+    // changed. Resetting the initial channel builder discards the obsolete
+    // connection to the dying GPU process. We must also run pending establish
+    // callbacks here so that they would not be left waiting to be called
+    // indefinitely.
+    pending_initial_gpu_channel_builder_.reset();
+    RunEstablishCallbacks();
   }
 }
 
@@ -387,7 +449,67 @@ scoped_refptr<gpu::GpuChannelHost> Gpu::GetGpuChannel() {
   return gpu_channel_;
 }
 
+void Gpu::CompleteInitialChannelCreation(
+    const gpu::GPUInfo& gpu_info,
+    const gpu::GpuFeatureInfo& gpu_feature_info,
+    const gpu::SharedImageCapabilities& shared_image_capabilities) {
+  DCHECK(main_task_runner_->BelongsToCurrentThread());
+  if (!pending_initial_gpu_channel_builder_) {
+    // The channel might have already been initialized by the sync path.
+    return;
+  }
+  DCHECK(!gpu_channel_);
+
+  if (pending_initial_gpu_channel_builder_->IsLost() ||
+      !gpu_info.IsInitialized()) {
+    pending_initial_gpu_channel_builder_.reset();
+    // Fallback to the standard EstablishGpuChannel path immediately.
+    // The pending callbacks will be handled when that request completes.
+    // Note that we don't call `RunEstablishCallbacks()` here like in
+    // `LoseChannel()`, as the `SendEstablishGpuChannelRequest()` would be the
+    // one that triggers it in case of any future failures.
+    SendEstablishGpuChannelRequest(/*waitable_event=*/nullptr);
+    return;
+  }
+
+  // SetInfo returns the completed GpuChannelHost.
+  gpu_channel_ = pending_initial_gpu_channel_builder_->SetInfo(
+      gpu_info, gpu_feature_info, shared_image_capabilities);
+  pending_initial_gpu_channel_builder_.reset();
+
+  RunEstablishCallbacks();
+}
+
+void Gpu::RunEstablishCallbacks() {
+  DCHECK(main_task_runner_->BelongsToCurrentThread());
+
+  std::vector<std::pair<base::TimeTicks, gpu::GpuChannelEstablishedCallback>>
+      callbacks;
+  callbacks.swap(establish_callbacks_);
+
+  if (!callbacks.empty() && gpu_channel_) {
+    base::TimeTicks now = base::TimeTicks::Now();
+
+    // Report operation duration (using earliest request time).
+    base::TimeTicks earliest_request_time = callbacks.front().first;
+    base::UmaHistogramTimes("GPU.EstablishGpuChannel.EarliestRequestLatency",
+                            now - earliest_request_time);
+
+    // Report individual request latency.
+    for (auto& [request_time, callback] : callbacks) {
+      base::UmaHistogramTimes(
+          "GPU.EstablishGpuChannel.IndividualRequestLatency",
+          now - request_time);
+    }
+  }
+
+  for (auto& [request_time, callback] : callbacks) {
+    std::move(callback).Run(gpu_channel_);
+  }
+}
+
 void Gpu::SendEstablishGpuChannelRequest(base::WaitableEvent* waitable_event) {
+  CHECK(!pending_initial_gpu_channel_builder_);
   if (pending_request_) {
     if (waitable_event) {
       pending_request_->SetWaitableEvent(waitable_event);
@@ -415,10 +537,7 @@ void Gpu::OnEstablishedGpuChannel() {
   gpu_remote_disconnected_ = pending_request_->gpu_remote_disconnected();
   pending_request_.reset();
 
-  std::vector<gpu::GpuChannelEstablishedCallback> callbacks;
-  callbacks.swap(establish_callbacks_);
-  for (auto&& callback : std::move(callbacks))
-    std::move(callback).Run(gpu_channel_);
+  RunEstablishCallbacks();
 }
 
 }  // namespace viz

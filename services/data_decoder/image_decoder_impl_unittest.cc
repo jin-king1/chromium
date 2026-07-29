@@ -2,21 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "services/data_decoder/image_decoder_impl.h"
 
 #include <array>
 #include <memory>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
-#include "base/lazy_instance.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
@@ -81,10 +79,7 @@ class Request {
   const SkBitmap& bitmap() const { return bitmap_; }
 
  private:
-  void OnRequestDone(base::TimeDelta ignored_decoding_time,
-                     const SkBitmap& result_image) {
-    bitmap_ = result_image;
-  }
+  void OnRequestDone(const SkBitmap& result_image) { bitmap_ = result_image; }
 
   raw_ptr<ImageDecoderImpl> decoder_;
   SkBitmap bitmap_;
@@ -108,17 +103,25 @@ class BlinkInitializer : public blink::Platform {
   BlinkInitializer& operator=(const BlinkInitializer&) = delete;
 
   ~BlinkInitializer() override = default;
-};
 
-base::LazyInstance<BlinkInitializer>::Leaky g_blink_initializer =
-    LAZY_INSTANCE_INITIALIZER;
+  // Required for binders to work, for testing, run on a single thread.
+  scoped_refptr<base::SequencedTaskRunner> MediaThreadTaskRunner() override {
+    return base::SequencedTaskRunner::GetCurrentDefault();
+  }
+
+  scoped_refptr<base::SingleThreadTaskRunner> GetIOTaskRunner() const override {
+    return base::SingleThreadTaskRunner::GetCurrentDefault();
+  }
+};
 
 class ImageDecoderImplTest : public testing::Test {
  public:
   ImageDecoderImplTest() = default;
   ~ImageDecoderImplTest() override = default;
 
-  void SetUp() override { g_blink_initializer.Get(); }
+  void SetUp() override {
+    static base::NoDestructor<BlinkInitializer> instance;
+  }
 
  protected:
   ImageDecoderImpl* decoder() { return &decoder_; }
@@ -181,10 +184,7 @@ TEST_F(ImageDecoderImplTest, DecodeImageSizeLimit) {
 
 TEST_F(ImageDecoderImplTest, DecodeImageFailed) {
   // The "jpeg" is just some "random" data;
-  const char kRandomData[] = "u gycfy7xdjkhfgui bdui ";
-  std::vector<unsigned char> jpg(kRandomData,
-                                 kRandomData + sizeof(kRandomData));
-
+  auto jpg = base::ToVector<unsigned char>("u gycfy7xdjkhfgui bdui ");
   Request request(decoder());
   request.DecodeImage(jpg, false);
   EXPECT_TRUE(request.bitmap().isNull());

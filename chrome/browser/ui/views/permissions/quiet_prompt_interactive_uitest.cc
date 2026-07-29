@@ -2,48 +2,54 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/test/scoped_feature_list.h"
-#include "chrome/browser/permissions/quiet_notification_permission_ui_config.h"
-#include "chrome/browser/permissions/quiet_notification_permission_ui_state.h"
+#include "base/strings/stringprintf.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/views/content_setting_bubble_contents.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/infobars/confirm_infobar.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_dashboard_view.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_bubble_base_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "chrome/test/permissions/permission_request_manager_test_api.h"
-#include "components/omnibox/browser/omnibox_view.h"
+#include "components/infobars/content/content_infobar_manager.h"
+#include "components/infobars/core/infobar_manager.h"
 #include "components/omnibox/browser/test_location_bar_model.h"
-#include "components/permissions/features.h"
 #include "components/permissions/permission_actions_history.h"
 #include "components/permissions/permission_uma_util.h"
 #include "components/permissions/permission_util.h"
 #include "components/permissions/permissions_client.h"
 #include "components/permissions/request_type.h"
 #include "components/permissions/test/mock_permission_ui_selector.h"
-#include "components/strings/grit/components_strings.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/interactive_test.h"
+#include "ui/views/window/dialog_client_view.h"
 #include "url/gurl.h"
 
-namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
 const char kLocationBarView[] = "LocationBarView";
-}  // namespace
+const auto QuietChipElementId =
+    PermissionChipView::kPermissionRequestChipElementId;
+const auto QuietBubbleAllowElementId =
+    views::DialogClientView::kOkButtonElementId;
+const auto QuietBubbleElementId = ContentSettingBubbleContents::kMainElementId;
+const auto InfobarElementId = ConfirmInfoBar::kInfoBarElementId;
+using ::testing::ValuesIn;
 
 class QuietPromptInteractiveUITest : public InteractiveBrowserTest {
  public:
   QuietPromptInteractiveUITest() {
-    scoped_features_.InitAndEnableFeature(
-        permissions::features::kPermissionPredictionsV3);
     https_server_ = std::make_unique<net::EmbeddedTestServer>(
         net::EmbeddedTestServer::TYPE_HTTPS);
   }
@@ -86,7 +92,7 @@ class QuietPromptInteractiveUITest : public InteractiveBrowserTest {
   LocationBarView* GetLocationBarView() {
     return BrowserView::GetBrowserViewForBrowser(browser())
         ->toolbar()
-        ->location_bar();
+        ->location_bar_view();
   }
 
   void OverrideVisibleUrlInLocationBar(const std::u16string& text) {
@@ -95,45 +101,41 @@ class QuietPromptInteractiveUITest : public InteractiveBrowserTest {
         new TestLocationBarModel;
     std::unique_ptr<LocationBarModel> location_bar_model(
         test_location_bar_model_);
-    browser()->swap_location_bar_models(&location_bar_model);
+    browser()->GetFeatures().swap_location_bar_models(&location_bar_model);
 
     test_location_bar_model_->set_formatted_full_url(text);
 
     // Normally the URL for display has portions elided. We aren't doing that in
-    // this case, because that is irrevelant for these tests.
+    // this case, because that is irrelevant for these tests.
     test_location_bar_model_->set_url_for_display(text);
 
     omnibox_view->Update();
   }
 
   using QuietUiReason = permissions::PermissionUiSelector::QuietUiReason;
-  using WarningReason = permissions::PermissionUiSelector::WarningReason;
+  using Decision = permissions::PermissionUiSelector::Decision;
 
-  void SetCannedUiDecision(std::optional<QuietUiReason> quiet_ui_reason,
-                           std::optional<WarningReason> warning_reason) {
+  void SetCannedUiDecision(const Decision& decision) {
     test_api_->manager()->set_permission_ui_selector_for_testing(
-        std::make_unique<MockPermissionUiSelector>(
-            permissions::PermissionUiSelector::Decision(quiet_ui_reason,
-                                                        warning_reason)));
+        std::make_unique<MockPermissionUiSelector>(decision));
   }
 
   // Checks that the permission chip is visible and in the given mode.
   // If `is_request` is false, should be in indicator mode instead.
   auto CheckChipIsRequest(bool is_request) {
-    return CheckViewProperty(PermissionChipView::kElementIdForTesting,
+    return CheckViewProperty(QuietChipElementId,
                              &PermissionChipView::GetIsRequestForTesting,
                              is_request);
   }
 
   auto CheckChipText(int id_string) {
-    return CheckViewProperty(PermissionChipView::kElementIdForTesting,
-                             &PermissionChipView::GetText,
+    return CheckViewProperty(QuietChipElementId, &PermissionChipView::GetText,
                              l10n_util::GetStringUTF16(id_string));
   }
 
   auto CheckQuietPromptMessage(int id_string) {
     return CheckViewProperty(
-        ContentSettingBubbleContents::kMainElementId,
+        QuietBubbleElementId,
         &ContentSettingBubbleContents::get_message_for_test,
         l10n_util::GetStringUTF16(id_string));
   }
@@ -146,16 +148,23 @@ class QuietPromptInteractiveUITest : public InteractiveBrowserTest {
             ->GetBrowserContext());
   }
 
+  const base::HistogramTester& HistogramTester() const {
+    return histogram_tester_;
+  }
+
+ protected:
+  base::HistogramTester histogram_tester_;
+
  private:
-  base::test::ScopedFeatureList scoped_features_;
   std::unique_ptr<net::EmbeddedTestServer> https_server_;
   std::unique_ptr<test::PermissionRequestManagerTestApi> test_api_;
 };
 
 IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
                        CPSSv3Notification1DenyRequestChipTest) {
-  SetCannedUiDecision(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
-                      std::nullopt);
+  SetCannedUiDecision(
+      Decision::UseQuietUi(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
+                           Decision::ShowNoWarning()));
   permissions::PermissionActionsHistory* permission_actions_history =
       GetPermissionActionsHistory();
 
@@ -169,10 +178,9 @@ IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
       InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       EnsureNotPresent(PermissionDashboardView::kDashboardElementId),
-      EnsureNotPresent(PermissionChipView::kElementIdForTesting),
+      EnsureNotPresent(QuietChipElementId),
       ExecuteJs(kWebContentsElementId, "requestNotification"),
-      WaitForShow(PermissionChipView::kElementIdForTesting),
-      CheckChipIsRequest(true),
+      WaitForShow(QuietChipElementId), CheckChipIsRequest(true),
       CheckChipText(IDS_NOTIFICATIONS_QUIET_PERMISSION_BUBBLE_TITLE),
       NameView(kLocationBarView, GetLocationBarView()),
       SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
@@ -182,8 +190,9 @@ IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
 
 IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
                        CPSSv3Notification1DenyPromptTest) {
-  SetCannedUiDecision(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
-                      std::nullopt);
+  SetCannedUiDecision(
+      Decision::UseQuietUi(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
+                           Decision::ShowNoWarning()));
   permissions::PermissionActionsHistory* permission_actions_history =
       GetPermissionActionsHistory();
 
@@ -197,26 +206,25 @@ IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
       InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       EnsureNotPresent(PermissionDashboardView::kDashboardElementId),
-      EnsureNotPresent(PermissionChipView::kElementIdForTesting),
+      EnsureNotPresent(QuietChipElementId),
       ExecuteJs(kWebContentsElementId, "requestNotification"),
-      WaitForShow(PermissionChipView::kElementIdForTesting),
-      CheckChipIsRequest(true),
+      WaitForShow(QuietChipElementId), CheckChipIsRequest(true),
       CheckChipText(IDS_NOTIFICATIONS_QUIET_PERMISSION_BUBBLE_TITLE),
-      EnsureNotPresent(ContentSettingBubbleContents::kMainElementId),
-      PressButton(PermissionChipView::kElementIdForTesting),
-      WaitForShow(ContentSettingBubbleContents::kMainElementId),
+      EnsureNotPresent(QuietBubbleElementId), PressButton(QuietChipElementId),
+      WaitForShow(QuietBubbleElementId),
       CheckQuietPromptMessage(
           IDS_NOTIFICATIONS_QUIET_PERMISSION_BUBBLE_PREDICTION_SERVICE_DESCRIPTION),
       SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
                               "Screenshot not supported in all test modes."),
-      ScreenshotSurface(ContentSettingBubbleContents::kMainElementId,
-                        "QuietPromptPopupBubble", "5934206"));
+      ScreenshotSurface(QuietBubbleElementId, "QuietPromptPopupBubble",
+                        "5934206"));
 }
 
 IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
                        CPSSv3Notification5DeniesPromptTest) {
-  SetCannedUiDecision(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
-                      std::nullopt);
+  SetCannedUiDecision(
+      Decision::UseQuietUi(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
+                           Decision::ShowNoWarning()));
   permissions::PermissionActionsHistory* permission_actions_history =
       GetPermissionActionsHistory();
 
@@ -232,26 +240,25 @@ IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
       InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       EnsureNotPresent(PermissionDashboardView::kDashboardElementId),
-      EnsureNotPresent(PermissionChipView::kElementIdForTesting),
+      EnsureNotPresent(QuietChipElementId),
       ExecuteJs(kWebContentsElementId, "requestNotification"),
-      WaitForShow(PermissionChipView::kElementIdForTesting),
-      CheckChipIsRequest(true),
+      WaitForShow(QuietChipElementId), CheckChipIsRequest(true),
       CheckChipText(IDS_NOTIFICATIONS_QUIET_PERMISSION_BUBBLE_TITLE),
-      EnsureNotPresent(ContentSettingBubbleContents::kMainElementId),
-      PressButton(PermissionChipView::kElementIdForTesting),
-      WaitForShow(ContentSettingBubbleContents::kMainElementId),
+      EnsureNotPresent(QuietBubbleElementId), PressButton(QuietChipElementId),
+      WaitForShow(QuietBubbleElementId),
       CheckQuietPromptMessage(
           IDS_NOTIFICATIONS_QUIET_PERMISSION_BUBBLE_PREDICTION_SERVICE_DESCRIPTION),
       SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
                               "Screenshot not supported in all test modes."),
-      ScreenshotSurface(ContentSettingBubbleContents::kMainElementId,
-                        "QuietPromptPopupBubble", "5875965"));
+      ScreenshotSurface(QuietBubbleElementId, "QuietPromptPopupBubble",
+                        "5875965"));
 }
 
 IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
                        CPSSv3Geolocation1DenyRequestChipTest) {
-  SetCannedUiDecision(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
-                      std::nullopt);
+  SetCannedUiDecision(
+      Decision::UseQuietUi(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
+                           Decision::ShowNoWarning()));
   permissions::PermissionActionsHistory* permission_actions_history =
       GetPermissionActionsHistory();
 
@@ -265,10 +272,9 @@ IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
       InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       EnsureNotPresent(PermissionDashboardView::kDashboardElementId),
-      EnsureNotPresent(PermissionChipView::kElementIdForTesting),
+      EnsureNotPresent(QuietChipElementId),
       ExecuteJs(kWebContentsElementId, "requestLocation"),
-      WaitForShow(PermissionChipView::kElementIdForTesting),
-      CheckChipIsRequest(true),
+      WaitForShow(QuietChipElementId), CheckChipIsRequest(true),
       CheckChipText(IDS_GEOLOCATION_QUIET_PERMISSION_BUBBLE_TITLE),
       NameView(kLocationBarView, GetLocationBarView()),
       SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
@@ -278,8 +284,9 @@ IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
 
 IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
                        CPSSv3Geolocation1DenyPromptTest) {
-  SetCannedUiDecision(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
-                      std::nullopt);
+  SetCannedUiDecision(
+      Decision::UseQuietUi(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
+                           Decision::ShowNoWarning()));
   permissions::PermissionActionsHistory* permission_actions_history =
       GetPermissionActionsHistory();
 
@@ -293,26 +300,25 @@ IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
       InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       EnsureNotPresent(PermissionDashboardView::kDashboardElementId),
-      EnsureNotPresent(PermissionChipView::kElementIdForTesting),
+      EnsureNotPresent(QuietChipElementId),
       ExecuteJs(kWebContentsElementId, "requestLocation"),
-      WaitForShow(PermissionChipView::kElementIdForTesting),
-      CheckChipIsRequest(true),
+      WaitForShow(QuietChipElementId), CheckChipIsRequest(true),
       CheckChipText(IDS_GEOLOCATION_QUIET_PERMISSION_BUBBLE_TITLE),
-      EnsureNotPresent(ContentSettingBubbleContents::kMainElementId),
-      PressButton(PermissionChipView::kElementIdForTesting),
-      WaitForShow(ContentSettingBubbleContents::kMainElementId),
+      EnsureNotPresent(QuietBubbleElementId), PressButton(QuietChipElementId),
+      WaitForShow(QuietBubbleElementId),
       CheckQuietPromptMessage(
           IDS_GEOLOCATION_QUIET_PERMISSION_BUBBLE_PREDICTION_SERVICE_DESCRIPTION),
       SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
                               "Screenshot not supported in all test modes."),
-      ScreenshotSurface(ContentSettingBubbleContents::kMainElementId,
-                        "QuietPromptPopupBubble", "5934206"));
+      ScreenshotSurface(QuietBubbleElementId, "QuietPromptPopupBubble",
+                        "5934206"));
 }
 
 IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
                        CPSSv3Geolocation5DeniesPromptTest) {
-  SetCannedUiDecision(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
-                      std::nullopt);
+  SetCannedUiDecision(
+      Decision::UseQuietUi(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
+                           Decision::ShowNoWarning()));
   permissions::PermissionActionsHistory* permission_actions_history =
       GetPermissionActionsHistory();
 
@@ -328,18 +334,85 @@ IN_PROC_BROWSER_TEST_F(QuietPromptInteractiveUITest,
       InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       EnsureNotPresent(PermissionDashboardView::kDashboardElementId),
-      EnsureNotPresent(PermissionChipView::kElementIdForTesting),
+      EnsureNotPresent(QuietChipElementId),
       ExecuteJs(kWebContentsElementId, "requestLocation"),
-      WaitForShow(PermissionChipView::kElementIdForTesting),
-      CheckChipIsRequest(true),
+      WaitForShow(QuietChipElementId), CheckChipIsRequest(true),
       CheckChipText(IDS_GEOLOCATION_QUIET_PERMISSION_BUBBLE_TITLE),
-      EnsureNotPresent(ContentSettingBubbleContents::kMainElementId),
-      PressButton(PermissionChipView::kElementIdForTesting),
-      WaitForShow(ContentSettingBubbleContents::kMainElementId),
+      EnsureNotPresent(QuietBubbleElementId), PressButton(QuietChipElementId),
+      WaitForShow(QuietBubbleElementId),
       CheckQuietPromptMessage(
           IDS_GEOLOCATION_QUIET_PERMISSION_BUBBLE_PREDICTION_SERVICE_DESCRIPTION),
       SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
                               "Screenshot not supported in all test modes."),
-      ScreenshotSurface(ContentSettingBubbleContents::kMainElementId,
-                        "QuietPromptPopupBubble", "5875965"));
+      ScreenshotSurface(QuietBubbleElementId, "QuietPromptPopupBubble",
+                        "5875965"));
+}
+
+struct QuietPromptInfoBarTestCase {
+  std::string test_name;
+  std::string js;
+  bool should_show_infobar;
+};
+
+class QuietPromptInteractiveParamUITest
+    : public QuietPromptInteractiveUITest,
+      public testing::WithParamInterface<QuietPromptInfoBarTestCase> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    PermissionChangeListenerTests,
+    QuietPromptInteractiveParamUITest,
+    ValuesIn<QuietPromptInfoBarTestCase>({
+        {"NotificationWithoutInfobar",
+         "() => {"
+         " registerDummyPermissionChangeListener(\"notifications\")"
+         " .then(()=> {"
+         "   requestNotification();"
+         "  });"
+         "}",
+         false},
+        {"NotificationWithInfobar", "requestNotification", true},
+        {"LocationWithoutInfobar",
+         "() => {"
+         " registerDummyPermissionChangeListener(\"geolocation\")"
+         " .then(()=> {"
+         "   requestLocation();"
+         "  });"
+         "}",
+         false},
+        {"GeolocationWithInfobar", "requestLocation", true},
+    }),
+    /*name_generator=*/
+    [](const testing::TestParamInfo<
+        QuietPromptInteractiveParamUITest::ParamType>& info) {
+      return info.param.test_name;
+    });
+
+IN_PROC_BROWSER_TEST_P(QuietPromptInteractiveParamUITest,
+                       AllowQuietPromptAndMaybeShowInfobar) {
+  SetCannedUiDecision(
+      Decision::UseQuietUi(QuietUiReason::kServicePredictedVeryUnlikelyGrant,
+                           Decision::ShowNoWarning()));
+
+  auto [test_name, js, should_show] = GetParam();
+
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetURL()),
+      ExecuteJs(kWebContentsElementId, js), WaitForShow(QuietChipElementId),
+      CheckChipIsRequest(true), PressButton(QuietChipElementId),
+      WaitForShow(QuietBubbleElementId), PressButton(QuietBubbleAllowElementId),
+      WaitForHide(QuietBubbleElementId), WaitForShow(QuietChipElementId),
+      WaitForHide(QuietChipElementId),
+      If([should_show]() { return should_show; },
+         Then(WaitForShow(InfobarElementId)),
+         Else(EnsureNotPresent(InfobarElementId))),
+      Do([&] {
+        histogram_tester_.ExpectBucketCount(
+            "Permissions.QuietPrompt.Preignore.PageReloadInfoBar", should_show,
+            1);
+      }),
+      NameView(kLocationBarView, GetLocationBarView()),
+      SetOnIncompatibleAction(OnIncompatibleAction::kIgnoreAndContinue,
+                              "Screenshot not supported in all test modes."),
+      Screenshot(kLocationBarView, test_name, "6768828"));
 }

@@ -7,6 +7,7 @@
 #include "base/memory/raw_ptr.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/core/SkRect.h"
 #include "ui/aura/window.h"
 #include "ui/compositor/layer.h"
@@ -59,11 +60,13 @@ void PaintAutoclickRing(gfx::Canvas* canvas,
   canvas->DrawCircle(center, radius, flags);
 
   // Draw the arc.
-  SkPath arc_path;
-  arc_path.addArc(SkRect::MakeXYWH(center.x() - radius, center.y() - radius,
+  const SkPath arc_path =
+      SkPathBuilder()
+          .addArc(SkRect::MakeXYWH(center.x() - radius, center.y() - radius,
                                    2 * radius, 2 * radius),
                   kAutoclickRingAngleStartValue,
-                  end_angle - kAutoclickRingAngleStartValue);
+                  end_angle - kAutoclickRingAngleStartValue)
+          .detach();
   flags.setStrokeWidth(kAutoclickRingArcWidth);
   flags.setColor(kAutoclickRingArcColor);
 
@@ -198,8 +201,8 @@ void AutoclickRingHandler::StopAutoclickRing() {
   current_animation_type_ = AnimationType::kNone;
   Stop();
   if (view_) {
-    ring_widget_->GetRootView()->RemoveChildViewT(view_.get());
-    view_ = nullptr;
+    ring_widget_->GetRootView()->RemoveChildViewT(
+        std::exchange(view_, nullptr));
   }
 }
 
@@ -223,8 +226,8 @@ void AutoclickRingHandler::AnimationStopped() {
     case AnimationType::kNone:
       // Fall through to reset the view.
       if (view_) {
-        ring_widget_->GetRootView()->RemoveChildViewT(view_.get());
-        view_ = nullptr;
+        ring_widget_->GetRootView()->RemoveChildViewT(
+            std::exchange(view_, nullptr));
       }
       break;
   }

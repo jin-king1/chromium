@@ -26,6 +26,8 @@ public final class ContactsPicker {
      */
     private static @Nullable Object sPicker;
 
+    private static @Nullable WebContentsObserver sWebContentsObserver;
+
     private ContactsPicker() {}
 
     /**
@@ -49,11 +51,19 @@ public final class ContactsPicker {
         return webContents.getVisibility() == Visibility.VISIBLE;
     }
 
+    public static @Nullable Object getObserverForTesting() {
+        return sWebContentsObserver;
+    }
+
+    public static boolean hasPickerForTesting() {
+        return sPicker != null;
+    }
+
     /**
      * Called to display the contacts picker.
+     *
      * @param webContents The Web Contents that triggered this call.
-     * @param listener The listener that will be notified of the action the user took in the
-     *                 picker.
+     * @param listener The listener that will be notified of the action the user took in the picker.
      * @param allowMultiple Whether to allow multiple contacts to be selected.
      * @param includeNames Whether to include names of the shared contacts.
      * @param includeEmails Whether to include emails of the shared contacts.
@@ -61,7 +71,8 @@ public final class ContactsPicker {
      * @param includeAddresses Whether to include addresses of the shared contacts.
      * @param includeIcons Whether to include icons of the shared contacts.
      * @param formattedOrigin The origin the data will be shared with, formatted for display with
-     *         the scheme omitted.
+     *     the scheme omitted.
+     * @param contactsFetcher The source of contact information.
      * @return whether a contacts picker is successfully shown.
      */
     public static boolean showContactsPicker(
@@ -73,7 +84,8 @@ public final class ContactsPicker {
             boolean includeTel,
             boolean includeAddresses,
             boolean includeIcons,
-            String formattedOrigin) {
+            String formattedOrigin,
+            @Nullable ContactsFetcher contactsFetcher) {
         if (sContactsPickerDelegate == null) return false;
         assert sPicker == null;
 
@@ -90,7 +102,40 @@ public final class ContactsPicker {
                         includeTel,
                         includeAddresses,
                         includeIcons,
-                        formattedOrigin);
+                        formattedOrigin,
+                        contactsFetcher);
+
+        if (sPicker != null) {
+            assert sWebContentsObserver == null;
+            sWebContentsObserver =
+                    new WebContentsObserver(webContents) {
+                        @Override
+                        public void onVisibilityChanged(@Visibility int visibility) {
+                            if (visibility != Visibility.VISIBLE) {
+                                dismissAndCleanup();
+                            }
+                        }
+
+                        @Override
+                        public void webContentsDestroyed() {
+                            dismissAndCleanup();
+                        }
+
+                        private void dismissAndCleanup() {
+                            if (sPicker != null && sContactsPickerDelegate != null) {
+                                sContactsPickerDelegate.cancelContactsPicker(sPicker);
+                            }
+                        }
+                    };
+
+            // Defensive check in case visibility changed during picker creation.
+            if (webContents.getVisibility() != Visibility.VISIBLE) {
+                if (sContactsPickerDelegate != null) {
+                    sContactsPickerDelegate.cancelContactsPicker(sPicker);
+                }
+            }
+        }
+
         return true;
     }
 
@@ -98,5 +143,9 @@ public final class ContactsPicker {
     public static void onContactsPickerDismissed() {
         assert sPicker != null;
         sPicker = null;
+        if (sWebContentsObserver != null) {
+            sWebContentsObserver.observe(null);
+            sWebContentsObserver = null;
+        }
     }
 }

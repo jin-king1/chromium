@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_DEVICE_API_MANAGED_CONFIGURATION_API_H_
 
 #include <optional>
+#include <string>
 
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
@@ -15,7 +16,6 @@
 #include "base/values.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "url/origin.h"
 
 class Profile;
@@ -52,7 +52,7 @@ class ManagedConfigurationAPI : public KeyedService {
   void GetOriginPolicyConfiguration(
       const url::Origin& origin,
       const std::vector<std::string>& keys,
-      base::OnceCallback<void(std::optional<base::Value::Dict>)> callback);
+      base::OnceCallback<void(std::optional<base::DictValue>)> callback);
 
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
@@ -78,15 +78,11 @@ class ManagedConfigurationAPI : public KeyedService {
   // a callback.
   void DecodeData(const url::Origin& origin,
                   const std::string& url_hash,
-                  std::unique_ptr<std::string> data);
-  void ProcessDecodedConfiguration(
-      const url::Origin& origin,
-      const std::string& url_hash,
-      data_decoder::DataDecoder::ValueOrError result);
+                  std::optional<std::string> data);
 
   // Sends an operation to set the configured value on FILE thread.
   void PostStoreConfiguration(const url::Origin& origin,
-                              base::Value::Dict configuration);
+                              base::DictValue configuration);
   void InformObserversIfConfigurationChanged(const url::Origin& origin,
                                              bool changed);
 

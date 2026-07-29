@@ -45,6 +45,10 @@ void AddMaterialSidePanelColorMixer(ui::ColorProvider* provider,
   mixer[kColorSidePanelDialogSecondaryForeground] = {
       ui::kColorSysOnSurfaceSubtle};
 
+  /* Toolbar search within the side panel */
+  mixer[kColorSidePanelSearchFieldBackground] = {
+      ui::kColorSysBaseContainerElevated};
+
   mixer[kColorSidePanelBadgeBackground] = {ui::kColorSysNeutralContainer};
   mixer[kColorSidePanelBadgeBackgroundUpdated] = {
       ui::kColorSysTertiaryContainer};
@@ -75,6 +79,10 @@ void AddMaterialSidePanelColorMixer(ui::ColorProvider* provider,
       ui::kColorSysOnSurface};
   mixer[kColorSidePanelBookmarksSelectedFolderIcon] = {
       ui::kColorSysOnSurfaceSubtle};
+  mixer[kColorSidePanelBookmarksActiveFolderForeground] = {
+      ui::kColorSysPrimary};
+  mixer[kColorSidePanelBookmarksActiveFolderBackground] = {
+      ui::kColorSysPrimaryContainer};
 
   /* Customize Chrome */
   mixer[kColorSidePanelCustomizeChromeClassicChromeTileBorder] = {

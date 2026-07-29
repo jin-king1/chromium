@@ -7,6 +7,7 @@
 #import "ios/chrome/browser/menu/ui_bundled/action_factory.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_mode_holder.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_mode_observing.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/tab_grid_bottom_toolbar.h"
@@ -80,21 +81,38 @@
   self.topToolbarConsumer.selectedTabsCount = _configuration.selectedItemsCount;
   self.bottomToolbarConsumer.selectedTabsCount =
       _configuration.selectedItemsCount;
-  if (_configuration.selectAllButton) {
-    [self.topToolbarConsumer configureSelectAllButtonTitle];
-  } else {
-    [self.topToolbarConsumer configureDeselectAllButtonTitle];
-  }
+  [self.topToolbarConsumer
+      configureSelectionButtonTitleSelectAll:_configuration.selectAllButton];
 
-  [self configureEditOrUndoButton];
+  [self.topToolbarConsumer
+      setOverflowMenuEnabled:_configuration.overflowMenuButton];
 
   [self.bottomToolbarConsumer
       setNewTabButtonEnabled:_configuration.newTabButton];
 
-  [self.topToolbarConsumer setDoneButtonEnabled:_configuration.doneButton];
-  [self.bottomToolbarConsumer setDoneButtonEnabled:_configuration.doneButton];
+  [self.topToolbarConsumer
+      setExitTabGridButtonEnabled:_configuration.exitTabGridButton];
+  [self.bottomToolbarConsumer
+      setDoneButtonEnabled:_configuration.exitTabGridButton];
 
   [self.topToolbarConsumer setSearchButtonEnabled:_configuration.searchButton];
+
+  BOOL pageActionMenuButtonVisible = _configuration.pageActionMenuButtonVisible;
+  [self.topToolbarConsumer
+      setPageActionMenuButtonVisible:pageActionMenuButtonVisible];
+  BOOL pageActionMenuButtonEnabled =
+      pageActionMenuButtonVisible && _configuration.pageActionMenuButtonEnabled;
+  [self.topToolbarConsumer
+      setPageActionMenuButtonEnabled:pageActionMenuButtonEnabled];
+
+  [self.topToolbarConsumer
+      setSelectTabsActionEnabled:_configuration.selectTabsButton];
+
+  [self.topToolbarConsumer
+      setCloseAllActionEnabled:_configuration.closeAllButton];
+
+  [self.topToolbarConsumer
+      setCloseOtherTabsEnabled:_configuration.closeOtherTabsButton];
 }
 
 - (void)setToolbarsButtonsDelegate:(id<TabGridToolbarsGridDelegate>)delegate {
@@ -123,6 +141,11 @@
     // because the configuration setup is skipped when disabled.
     _isDisabled = YES;
   }
+}
+
+- (void)setIncognitoToolbarsBackgroundHidden:(BOOL)hidden {
+  [self.topToolbarConsumer setIncognitoBackgroundHidden:hidden];
+  [self.bottomToolbarConsumer setIncognitoBackgroundHidden:hidden];
 }
 
 #pragma mark - WebStateListObserving
@@ -219,61 +242,6 @@
   [self.topToolbarConsumer
       setSelectAllButtonEnabled:_configuration.selectAllButton ||
                                 _configuration.deselectAllButton];
-}
-
-// Helpers to determine which button should be selected between "Edit" or "Undo"
-// and if the "Edit" button should be enabled.
-// TODO(crbug.com/40273478): Send buttons configuration directly to the correct
-// consumer instead of send information to object when it is not necessary.
-- (void)configureEditOrUndoButton {
-  [self.topToolbarConsumer useUndoCloseAll:_configuration.undoButton];
-  [self.bottomToolbarConsumer useUndoCloseAll:_configuration.undoButton];
-
-  // TODO(crbug.com/40273478): Separate "Close All" and "Undo".
-  [self.topToolbarConsumer
-      setCloseAllButtonEnabled:_configuration.closeAllButton ||
-                               _configuration.undoButton];
-  [self.bottomToolbarConsumer
-      setCloseAllButtonEnabled:_configuration.closeAllButton ||
-                               _configuration.undoButton];
-
-  BOOL shouldEnableEditButton =
-      _configuration.closeAllButton || _configuration.selectTabsButton;
-
-  [self configureEditButtons];
-  [self.bottomToolbarConsumer setEditButtonEnabled:shouldEnableEditButton];
-  [self.topToolbarConsumer setEditButtonEnabled:shouldEnableEditButton];
-}
-
-// Configures buttons that are available under the edit menu.
-- (void)configureEditButtons {
-  BOOL shouldEnableEditButton =
-      _configuration.closeAllButton || _configuration.selectTabsButton;
-
-  UIMenu* menu = nil;
-  if (shouldEnableEditButton) {
-    ActionFactory* actionFactory = [[ActionFactory alloc]
-        initWithScenario:kMenuScenarioHistogramTabGridEdit];
-    __weak id<TabGridToolbarsGridDelegate> weakButtonDelegate =
-        _buttonsDelegate;
-    NSMutableArray<UIMenuElement*>* menuElements =
-        [@[ [actionFactory actionToCloseAllTabsWithBlock:^{
-          [weakButtonDelegate closeAllButtonTapped:nil];
-        }] ] mutableCopy];
-    // Disable the "Select All" option from the edit button when there are no
-    // tabs in the regular tab grid. "Close All" can still be called if there
-    // are inactive tabs.
-    if (_configuration.selectTabsButton) {
-      [menuElements addObject:[actionFactory actionToSelectTabsWithBlock:^{
-                      [weakButtonDelegate selectTabsButtonTapped:nil];
-                    }]];
-    }
-
-    menu = [UIMenu menuWithChildren:menuElements];
-  }
-
-  [self.topToolbarConsumer setEditButtonMenu:menu];
-  [self.bottomToolbarConsumer setEditButtonMenu:menu];
 }
 
 @end

@@ -11,7 +11,10 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/bind_post_task.h"
+#import "components/password_manager/core/browser/ui/password_check_referrer.h"
 #import "components/prefs/pref_service.h"
+#import "google_apis/gaia/gaia_id.h"
+#import "ios/chrome/browser/content_suggestions/safety_check/model/safety_check_utils.h"
 #import "ios/chrome/browser/push_notification/model/constants.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client_id.h"
@@ -25,14 +28,14 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/ui/content_suggestions/safety_check/utils.h"
 
 namespace {
 
@@ -57,13 +60,17 @@ NSArray<UNNotificationRequest*>* NotificationsWithIdentifiers(
 //  - The existence of a compromised password notification.
 //  - The current notification authorization status (provisional or not yet
 //  determined).
+//  - The status of ProvisionalNotificationsAllowed policy.
 bool CanSendProvisionalNotifications(
     PasswordSafetyCheckState password_check_state,
     password_manager::InsecurePasswordCounts insecure_password_counts,
-    PrefService* local_pref_service) {
+    PrefService* local_pref_service,
+    Browser* browser) {
   CHECK(local_pref_service);
 
-  if (!ProvisionalSafetyCheckNotificationsEnabled()) {
+  if (!browser ||
+      ![PushNotificationUtil
+          provisionalAllowedByPolicyForProfile:browser->GetProfile()]) {
     return false;
   }
 
@@ -103,16 +110,62 @@ NotificationType NotificationTypeForSafetyCheckNotificationType(
   }
 }
 
+// Helper function to log the Safety Check notification requested metric.
+void LogSafetyCheckNotificationRequested(SafetyCheckNotificationType type) {
+  base::UmaHistogramEnumeration("IOS.Notifications.SafetyCheck.Requested",
+                                type);
+}
+
+// Creates a UNNotificationRequest from a ScheduledNotificationRequest struct.
+UNNotificationRequest* CreateNotificationRequestFromScheduledRequest(
+    const ScheduledNotificationRequest& request) {
+  UNNotificationTrigger* trigger = [UNTimeIntervalNotificationTrigger
+      triggerWithTimeInterval:request.time_interval.InSecondsF()
+                      repeats:NO];
+
+  return [UNNotificationRequest requestWithIdentifier:request.identifier
+                                              content:request.content
+                                              trigger:trigger];
+}
+
 }  // namespace
 
 SafetyCheckNotificationClient::SafetyCheckNotificationClient(
     const scoped_refptr<base::SequencedTaskRunner> task_runner)
-    : PushNotificationClient(PushNotificationClientId::kSafetyCheck),
+    : PushNotificationClient(PushNotificationClientId::kSafetyCheck,
+                             PushNotificationClientScope::kPerProfile),
       task_runner_(task_runner) {
   CHECK(task_runner);
+  CHECK(!IsMultiProfilePushNotificationHandlingEnabled());
+}
+
+SafetyCheckNotificationClient::SafetyCheckNotificationClient(
+    ProfileIOS* profile,
+    const scoped_refptr<base::SequencedTaskRunner> task_runner)
+    : PushNotificationClient(PushNotificationClientId::kSafetyCheck, profile),
+      task_runner_(task_runner) {
+  CHECK(profile);
+  CHECK(task_runner);
+  CHECK(IsMultiProfilePushNotificationHandlingEnabled());
 }
 
 SafetyCheckNotificationClient::~SafetyCheckNotificationClient() = default;
+
+bool SafetyCheckNotificationClient::CanHandleNotification(
+    UNNotification* notification) {
+  return ParseSafetyCheckNotificationType(notification.request).has_value();
+}
+
+std::optional<NotificationType>
+SafetyCheckNotificationClient::GetNotificationType(
+    UNNotification* notification) {
+  std::optional<SafetyCheckNotificationType> type =
+      ParseSafetyCheckNotificationType(notification.request);
+  if (!type) {
+    return std::nullopt;
+  }
+  return NotificationTypeForSafetyCheckNotificationType(type.value());
+}
 
 bool SafetyCheckNotificationClient::HandleNotificationInteraction(
     UNNotificationResponse* response) {
@@ -183,7 +236,7 @@ void SafetyCheckNotificationClient::OnSceneActiveForegroundBrowserReady(
   // `IOSChromeSafetyCheckManager` before registering itself as an observer for
   // Safety Check updates.
   if (!IOSChromeSafetyCheckManagerObserver::IsInObserverList()) {
-    Browser* browser = GetSceneLevelForegroundActiveBrowser();
+    Browser* browser = GetActiveForegroundBrowser();
 
     if (!browser) {
       std::move(completion).Run();
@@ -307,28 +360,25 @@ void SafetyCheckNotificationClient::GetPendingRequests(
 bool SafetyCheckNotificationClient::IsPermitted() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // TODO(crbug.com/362260014): Replace current opt-in state logic with
-  // `GetMobileNotificationPermissionStatusForClient()` once
-  // `PushNotificationClient` dependencies are refactored.
-
   PrefService* local_pref_service = GetApplicationContext()->GetLocalState();
 
-  if (CanSendProvisionalNotifications(password_check_state_,
-                                      insecure_password_counts_,
-                                      local_pref_service)) {
+  if (CanSendProvisionalNotifications(
+          password_check_state_, insecure_password_counts_, local_pref_service,
+          GetActiveForegroundBrowser())) {
     return true;
   }
 
-  return local_pref_service
-      ->GetDict(prefs::kAppLevelPushNotificationPermissions)
-      .FindBool(kSafetyCheckNotificationKey)
-      .value_or(false);
+  // SafetyCheck is an app-wide client, not tied to any account. An empty
+  // `GaiaId` is passed.
+  return push_notification_settings::
+      GetMobileNotificationPermissionStatusForClient(
+          PushNotificationClientId::kSafetyCheck, GaiaId());
 }
 
 bool SafetyCheckNotificationClient::IsSceneLevelForegroundActive() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  return GetSceneLevelForegroundActiveBrowser() != nullptr;
+  return GetActiveForegroundBrowser() != nullptr;
 }
 
 void SafetyCheckNotificationClient::OnNotificationsCleared(
@@ -373,73 +423,114 @@ void SafetyCheckNotificationClient::ScheduleSafetyCheckNotifications(
     base::OnceClosure completion) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (!IsPermitted()) {
-    std::move(completion).Run();
+  base::ScopedClosureRunner run_completion(std::move(completion));
+
+  if (!IsPermitted() || !CheckAndResetIfSchedulingIsAllowed()) {
     return;
   }
 
-  if (!CheckAndResetIfSchedulingIsAllowed()) {
-    std::move(completion).Run();
-    return;
-  }
+  auto log_safety_check_notification_requested =
+      [](SafetyCheckNotificationType safety_check_type_to_log, NSError* error) {
+        if (!error) {
+          LogSafetyCheckNotificationRequested(safety_check_type_to_log);
+        }
+      };
 
-  UNNotificationRequest* password_notification =
-      PasswordNotificationRequest(password_state, insecure_password_counts);
+  std::optional<ScheduledNotificationRequest> password_request =
+      GetPasswordNotificationRequest(password_state, insecure_password_counts);
 
-  if (password_notification && AreSafetyCheckPasswordsNotificationsAllowed()) {
-    [UNUserNotificationCenter.currentNotificationCenter
-        addNotificationRequest:password_notification
-         withCompletionHandler:nil];
+  if (password_request.has_value()) {
+    base::OnceCallback<void(NSError*)> schedule_completion_callback =
+        base::BindOnce(log_safety_check_notification_requested,
+                       SafetyCheckNotificationType::kPasswords);
 
     GetApplicationContext()->GetLocalState()->SetInteger(
         prefs::kIosSafetyCheckNotificationsLastSent,
         static_cast<int>(SafetyCheckNotificationType::kPasswords));
 
-    base::UmaHistogramEnumeration("IOS.Notifications.SafetyCheck.Requested",
-                                  SafetyCheckNotificationType::kPasswords);
+    if (IsMultiProfilePushNotificationHandlingEnabled()) {
+      ProfileIOS* current_profile = GetProfile();
+      CHECK(current_profile);
 
-    std::move(completion).Run();
+      ScheduleProfileNotification(password_request.value(),
+                                  std::move(schedule_completion_callback),
+                                  current_profile->GetProfileName());
+    } else {
+      UNNotificationRequest* notification_request =
+          CreateNotificationRequestFromScheduledRequest(
+              password_request.value());
+
+      CHECK(notification_request);
+
+      [UNUserNotificationCenter.currentNotificationCenter
+          addNotificationRequest:notification_request
+           withCompletionHandler:nil];
+
+      LogSafetyCheckNotificationRequested(
+          SafetyCheckNotificationType::kPasswords);
+    }
+
     return;
   }
 
-  UNNotificationRequest* safe_browsing_notification =
-      SafeBrowsingNotificationRequest(safe_browsing_state);
+  std::optional<ScheduledNotificationRequest> safe_browsing_request =
+      GetSafeBrowsingNotificationRequest(safe_browsing_state);
 
-  if (safe_browsing_notification &&
-      AreSafetyCheckSafeBrowsingNotificationsAllowed()) {
-    [UNUserNotificationCenter.currentNotificationCenter
-        addNotificationRequest:safe_browsing_notification
-         withCompletionHandler:nil];
+  if (safe_browsing_request.has_value()) {
+    base::OnceCallback<void(NSError*)> schedule_completion_callback =
+        base::BindOnce(log_safety_check_notification_requested,
+                       SafetyCheckNotificationType::kSafeBrowsing);
 
     GetApplicationContext()->GetLocalState()->SetInteger(
         prefs::kIosSafetyCheckNotificationsLastSent,
         static_cast<int>(SafetyCheckNotificationType::kSafeBrowsing));
 
-    base::UmaHistogramEnumeration("IOS.Notifications.SafetyCheck.Requested",
-                                  SafetyCheckNotificationType::kSafeBrowsing);
+    if (IsMultiProfilePushNotificationHandlingEnabled()) {
+      ProfileIOS* current_profile = GetProfile();
+      CHECK(current_profile);
 
-    std::move(completion).Run();
+      ScheduleProfileNotification(safe_browsing_request.value(),
+                                  std::move(schedule_completion_callback),
+                                  current_profile->GetProfileName());
+    } else {
+      UNNotificationRequest* notification_request =
+          CreateNotificationRequestFromScheduledRequest(
+              safe_browsing_request.value());
+
+      CHECK(notification_request);
+
+      [UNUserNotificationCenter.currentNotificationCenter
+          addNotificationRequest:notification_request
+           withCompletionHandler:nil];
+
+      LogSafetyCheckNotificationRequested(
+          SafetyCheckNotificationType::kSafeBrowsing);
+    }
+
     return;
   }
 
-  UNNotificationRequest* update_chrome_notification =
-      UpdateChromeNotificationRequest(update_chrome_state);
+  std::optional<ScheduledNotificationRequest> update_chrome_request =
+      GetUpdateChromeNotificationRequest(update_chrome_state);
 
-  if (update_chrome_notification &&
-      AreSafetyCheckUpdateChromeNotificationsAllowed()) {
-    [UNUserNotificationCenter.currentNotificationCenter
-        addNotificationRequest:update_chrome_notification
-         withCompletionHandler:nil];
-
+  if (update_chrome_request.has_value()) {
     GetApplicationContext()->GetLocalState()->SetInteger(
         prefs::kIosSafetyCheckNotificationsLastSent,
         static_cast<int>(SafetyCheckNotificationType::kUpdateChrome));
 
-    base::UmaHistogramEnumeration("IOS.Notifications.SafetyCheck.Requested",
-                                  SafetyCheckNotificationType::kUpdateChrome);
-  }
+    UNNotificationRequest* notification_request =
+        CreateNotificationRequestFromScheduledRequest(
+            update_chrome_request.value());
 
-  std::move(completion).Run();
+    CHECK(notification_request);
+
+    [UNUserNotificationCenter.currentNotificationCenter
+        addNotificationRequest:notification_request
+         withCompletionHandler:nil];
+
+    LogSafetyCheckNotificationRequested(
+        SafetyCheckNotificationType::kUpdateChrome);
+  }
 }
 
 void SafetyCheckNotificationClient::ClearAndRescheduleSafetyCheckNotifications(
@@ -450,16 +541,27 @@ void SafetyCheckNotificationClient::ClearAndRescheduleSafetyCheckNotifications(
     base::OnceClosure completion) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  // Remove delivered notifications that are now considered resolved.
+  std::set<SafetyCheckNotificationType> notification_types_to_remove =
+      GetResolvedSafetyCheckTypes(update_chrome_state, safe_browsing_state,
+                                  password_state);
+
+  if (!notification_types_to_remove.empty()) {
+    RemoveDeliveredNotifications(std::move(notification_types_to_remove));
+  }
+
   if ([interacted_notification_metadata_ count]) {
-    Browser* browser = GetSceneLevelForegroundActiveBrowser();
+    Browser* browser = GetActiveForegroundBrowser();
 
     if (browser) {
-      [HandlerForProtocol(browser->GetCommandDispatcher(), ApplicationCommands)
-          prepareToPresentModal:
-              base::CallbackToBlock(base::BindOnce(
-                  &SafetyCheckNotificationClient::ShowUIForNotificationMetadata,
-                  weak_ptr_factory_.GetWeakPtr(),
-                  interacted_notification_metadata_, browser->AsWeakPtr()))];
+      auto showUICallback = base::CallbackToBlock(base::BindOnce(
+          &SafetyCheckNotificationClient::ShowUIForNotificationMetadata,
+          weak_ptr_factory_.GetWeakPtr(), interacted_notification_metadata_,
+          browser->AsWeakPtr()));
+
+      [HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands)
+          prepareToPresentModalWithSnackbarDismissal:NO
+                                          completion:showUICallback];
     }
   }
 
@@ -481,6 +583,7 @@ void SafetyCheckNotificationClient::ShowUIForNotificationMetadata(
     base::WeakPtr<Browser> weak_browser) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   Browser* browser = weak_browser.get();
+
   if (!browser) {
     // The Scene has been closed while preparing to present the notification.
     return;
@@ -497,21 +600,19 @@ void SafetyCheckNotificationClient::ShowUIForNotificationMetadata(
   if (IsProvisionalNotificationAlertEnabled()) {
     AuthenticationService* authService =
         AuthenticationServiceFactory::GetForProfile(browser->GetProfile());
-    id<SystemIdentity> identity =
-        authService->GetPrimaryIdentity(signin::ConsentLevel::kSignin);
-    const GaiaId gaiaID(identity.gaiaID);
+    id<SystemIdentity> identity = authService->GetPrimaryIdentity();
     if (!push_notification_settings::
             GetMobileNotificationPermissionStatusForClient(
-                PushNotificationClientId::kSafetyCheck, gaiaID)) {
+                PushNotificationClientId::kSafetyCheck, identity.gaiaId)) {
       PushNotificationService* service =
           GetApplicationContext()->GetPushNotificationService();
-      service->SetPreference(gaiaID.ToNSString(),
+      service->SetPreference(identity.gaiaId,
                              PushNotificationClientId::kSafetyCheck, true);
     }
   }
 
-  id<ApplicationCommands> applicationHandler =
-      HandlerForProtocol(browser->GetCommandDispatcher(), ApplicationCommands);
+  id<SceneCommands> sceneHandler =
+      HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
 
   id<SettingsCommands> settingsHandler =
       HandlerForProtocol(browser->GetCommandDispatcher(), SettingsCommands);
@@ -534,7 +635,7 @@ void SafetyCheckNotificationClient::ShowUIForNotificationMetadata(
   // If Update Chrome notification, then show the Chrome App Upgrade page.
   if (notification_metadata[kSafetyCheckUpdateChromeNotificationID]) {
     HandleSafetyCheckUpdateChromeTap(
-        safety_check_manager->GetChromeAppUpgradeUrl(), applicationHandler);
+        safety_check_manager->GetChromeAppUpgradeUrl(), sceneHandler);
 
     return;
   }
@@ -549,8 +650,10 @@ void SafetyCheckNotificationClient::ShowUIForNotificationMetadata(
     password_manager::InsecurePasswordCounts insecure_password_counts =
         safety_check_manager->GetInsecurePasswordCounts();
 
-    HandleSafetyCheckPasswordTap(insecure_credentials, insecure_password_counts,
-                                 applicationHandler, settingsHandler);
+    HandleSafetyCheckPasswordTap(
+        insecure_credentials, insecure_password_counts,
+        password_manager::PasswordCheckReferrer::kSafetyCheckNotification,
+        sceneHandler, settingsHandler);
 
     return;
   }
@@ -573,9 +676,6 @@ void SafetyCheckNotificationClient::LogTriggeredNotifications() {
 
   base::UmaHistogramEnumeration("IOS.Notifications.SafetyCheck.Triggered",
                                 type);
-  base::UmaHistogramEnumeration(
-      "IOS.Notification.Received",
-      NotificationTypeForSafetyCheckNotificationType(type));
 
   local_pref_service->SetInteger(
       prefs::kIosSafetyCheckNotificationsLastTriggered, int(type));
@@ -612,6 +712,95 @@ void SafetyCheckNotificationClient::LogDismissedNotifications() {
 
   [UNUserNotificationCenter.currentNotificationCenter
       getDeliveredNotificationsWithCompletionHandler:completion];
+}
+
+void SafetyCheckNotificationClient::RemoveDeliveredNotifications(
+    std::set<SafetyCheckNotificationType> notification_types_to_remove) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (notification_types_to_remove.empty()) {
+    return;
+  }
+
+  auto callback = base::CallbackToBlock(base::BindPostTask(
+      task_runner_,
+      base::BindOnce(
+          &SafetyCheckNotificationClient::OnGetDeliveredNotificationsForRemoval,
+          weak_ptr_factory_.GetWeakPtr(),
+          std::move(notification_types_to_remove))));
+
+  [UNUserNotificationCenter.currentNotificationCenter
+      getDeliveredNotificationsWithCompletionHandler:callback];
+}
+
+void SafetyCheckNotificationClient::OnGetDeliveredNotificationsForRemoval(
+    std::set<SafetyCheckNotificationType> notification_types_to_remove,
+    NSArray<UNNotification*>* notifications) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  NSString* current_profile_name = nil;
+
+  if (IsMultiProfilePushNotificationHandlingEnabled()) {
+    ProfileIOS* profile = GetProfile();
+    CHECK(profile);
+    current_profile_name = base::SysUTF8ToNSString(profile->GetProfileName());
+  }
+
+  NSMutableArray<NSString*>* notification_ids_to_remove =
+      [NSMutableArray array];
+  std::set<SafetyCheckNotificationType> delivered_notification_types_found;
+
+  for (UNNotification* notification in notifications) {
+    std::optional<SafetyCheckNotificationType> type =
+        ParseSafetyCheckNotificationType(notification.request);
+
+    // Skip if not a valid Safety Check type or not in the set of types to
+    // remove.
+    if (!type.has_value() ||
+        !notification_types_to_remove.contains(type.value())) {
+      continue;
+    }
+
+    // Profile Check: Update Chrome notifications are effectively app-wide,
+    // others are per-profile.
+    if (IsMultiProfilePushNotificationHandlingEnabled() &&
+        type.value() != SafetyCheckNotificationType::kUpdateChrome) {
+      NSString* originating_profile_name =
+          notification.request.content.userInfo[kOriginatingProfileNameKey];
+      if (![originating_profile_name isEqualToString:current_profile_name]) {
+        continue;
+      }
+    }
+
+    [notification_ids_to_remove addObject:notification.request.identifier];
+    delivered_notification_types_found.insert(type.value());
+  }
+
+  if ([notification_ids_to_remove count] == 0) {
+    return;
+  }
+
+  [UNUserNotificationCenter.currentNotificationCenter
+      removeDeliveredNotificationsWithIdentifiers:notification_ids_to_remove];
+
+  // Clean up associated metrics for the types we are removing.
+  PrefService* local_pref_service = GetApplicationContext()->GetLocalState();
+
+  for (SafetyCheckNotificationType type : delivered_notification_types_found) {
+    const int type_int = static_cast<int>(type);
+
+    for (std::string_view pref_name :
+         {prefs::kIosSafetyCheckNotificationsLastTriggered,
+          prefs::kIosSafetyCheckNotificationsLastSent}) {
+      const PrefService::Preference* pref =
+          local_pref_service->FindPreference(pref_name);
+
+      if (pref && !pref->IsDefaultValue() &&
+          pref->GetValue()->GetInt() == type_int) {
+        local_pref_service->ClearPref(pref_name);
+      }
+    }
+  }
 }
 
 // Iterates through delivered notifications in the device's notification
@@ -686,17 +875,16 @@ bool SafetyCheckNotificationClient::CheckAndResetIfSchedulingIsAllowed() {
     return true;
   }
 
-  // If the duration defined by
-  // `SuppressDelayForSafetyCheckNotificationsIfPresent()` has not elapsed since
-  // the timestamp was set, scheduling is not allowed.
+  // If the duration defined by `kSafetyCheckNotificationSuppressDelayIfPresent`
+  // has not elapsed since the timestamp was set, scheduling is not allowed.
   if (base::Time::Now() - first_present_time <
-      SuppressDelayForSafetyCheckNotificationsIfPresent()) {
+      kSafetyCheckNotificationSuppressDelayIfPresent) {
     return false;
   }
 
-  // If the duration defined by
-  // `SuppressDelayForSafetyCheckNotificationsIfPresent()` has elapsed since the
-  // timestamp was set, we reset the timestamp and allow scheduling.
+  // If the duration defined by `kSafetyCheckNotificationSuppressDelayIfPresent`
+  // has elapsed since the timestamp was set, we reset the timestamp and allow
+  // scheduling.
   local_pref_service->ClearPref(
       prefs::kIosSafetyCheckNotificationFirstPresentTimestamp);
 

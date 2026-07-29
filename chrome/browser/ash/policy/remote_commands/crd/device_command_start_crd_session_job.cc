@@ -10,28 +10,32 @@
 #include <string_view>
 #include <utility>
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
+#include "base/syslog_logging.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_logging.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_remote_command_utils.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_uma_logger.h"
-#include "chrome/browser/browser_process.h"
+#include "chrome/browser/ash/policy/remote_commands/crd/public/crd_session_result_codes.h"
+#include "chrome/browser/ash/policy/remote_commands/crd/start_crd_session_job_delegate.h"
 #include "chrome/browser/device_identity/device_oauth2_token_service.h"
 #include "chrome/browser/device_identity/device_oauth2_token_service_factory.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/pref_names.h"
+#include "components/crash/core/common/crash_key.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "components/prefs/pref_service.h"
 #include "remoting/host/chromeos/features.h"
@@ -79,7 +83,25 @@ const char kResultMessageFieldName[] = "message";
 // FAILURE_NOT_IDLE result code.
 const char kResultLastActivityFieldName[] = "lastActivitySec";
 
-std::optional<std::string> FindString(const base::Value::Dict& dict,
+// Cutoff time to check if the device was idle in the last 5 minutes.
+const base::TimeDelta kAutoApproveDeviceIdlenessCutoff = base::Minutes(5);
+
+// Timeout used to countdown before the connection request is auto accepted and
+// the session starts.
+const base::TimeDelta kConnectionAutoAcceptTimeout = base::Seconds(30);
+
+// Session cutoff to enforce a maximum duration for shared CRD sessions,
+// automatically terminating sessions exceeding this limit.
+const base::TimeDelta kMaximumRemoteSupportSessionDuration = base::Hours(8);
+
+// Ensure the admin is able to control the host during the CRD session.
+const bool kAllowRemoteInput = true;
+
+// Ensure the admin is able to use clipboard with the host during the CRD
+// session.
+const bool kAllowClipboardSync = true;
+
+std::optional<std::string> FindString(const base::DictValue& dict,
                                       std::string_view key) {
   if (!dict.contains(key)) {
     return std::nullopt;
@@ -99,7 +121,7 @@ void SendResultCodeToUma(CrdSessionType crd_session_type,
 
 std::string CreateSuccessPayload(const std::string& access_code) {
   return base::WriteJson(
-             base::Value::Dict()
+             base::DictValue()
                  .Set(kResultCodeFieldName,
                       static_cast<int>(
                           StartCrdSessionResultCode::START_CRD_SESSION_SUCCESS))
@@ -109,7 +131,7 @@ std::string CreateSuccessPayload(const std::string& access_code) {
 
 std::string CreateNonIdlePayload(const base::TimeDelta& time_delta) {
   return base::WriteJson(
-             base::Value::Dict()
+             base::DictValue()
                  .Set(kResultCodeFieldName,
                       static_cast<int>(
                           StartCrdSessionResultCode::FAILURE_NOT_IDLE))
@@ -123,7 +145,7 @@ std::string CreateErrorPayload(StartCrdSessionResultCode result_code,
   CHECK_NE(result_code, StartCrdSessionResultCode::START_CRD_SESSION_SUCCESS);
   CHECK_NE(result_code, StartCrdSessionResultCode::FAILURE_NOT_IDLE);
 
-  auto payload = base::Value::Dict()  //
+  auto payload = base::DictValue()  //
                      .Set(kResultCodeFieldName, static_cast<int>(result_code));
   if (!error_message.empty()) {
     payload.Set(kResultMessageFieldName, error_message);
@@ -152,16 +174,19 @@ CrdSessionType ToCrdSessionTypeOrDefault(std::optional<int> int_value,
   return static_cast<CrdSessionType>(int_value.value());
 }
 
-void OnCrdSessionFinished(CrdSessionType crd_session_type,
-                          UserSessionType user_session_type,
-                          base::TimeDelta session_duration) {
-  CrdUmaLogger(crd_session_type, user_session_type)
-      .LogSessionDuration(session_duration);
-}
-
 bool IsKioskSession(UserSessionType session_type) {
   return session_type == UserSessionType::AUTO_LAUNCHED_KIOSK_SESSION ||
          session_type == UserSessionType::MANUALLY_LAUNCHED_KIOSK_SESSION;
+}
+
+std::unique_ptr<crash_reporter::ScopedCrashKeyString> CreateCrdCrashKey(
+    CrdSessionType crd_session_type,
+    UserSessionType user_session_type) {
+  static crash_reporter::CrashKeyString<72> enterprise_crd_crash_key(
+      kCrdCrashKeyName);
+  return std::make_unique<crash_reporter::ScopedCrashKeyString>(
+      &enterprise_crd_crash_key,
+      GetCrdCrashKeyValue(crd_session_type, user_session_type));
 }
 
 }  // namespace
@@ -171,14 +196,19 @@ bool IsKioskSession(UserSessionType session_type) {
 ////////////////////////////////////////////////////////////////////////////////
 
 DeviceCommandStartCrdSessionJob::DeviceCommandStartCrdSessionJob(
+    PrefService* local_state,
     Delegate& delegate)
-    : delegate_(delegate),
+    : local_state_(CHECK_DEREF(local_state)),
+      delegate_(delegate),
       robot_account_id_(GetRobotAccountUserName(GetOAuthService())) {}
 
 DeviceCommandStartCrdSessionJob::DeviceCommandStartCrdSessionJob(
+    PrefService* local_state,
     Delegate& delegate,
     std::string_view robot_account_id)
-    : delegate_(delegate), robot_account_id_(robot_account_id) {
+    : local_state_(CHECK_DEREF(local_state)),
+      delegate_(delegate),
+      robot_account_id_(robot_account_id) {
   CHECK_IS_TEST();
 }
 
@@ -191,8 +221,8 @@ DeviceCommandStartCrdSessionJob::GetType() const {
 
 bool DeviceCommandStartCrdSessionJob::ParseCommandPayload(
     const std::string& command_payload) {
-  std::optional<base::Value::Dict> root =
-      base::JSONReader::ReadDict(command_payload);
+  std::optional<base::DictValue> root = base::JSONReader::ReadDict(
+      command_payload, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!root) {
     LOG(WARNING) << "Rejecting remote command with invalid payload: "
                  << std::quoted(command_payload);
@@ -223,7 +253,7 @@ bool DeviceCommandStartCrdSessionJob::ParseCommandPayload(
 
 void DeviceCommandStartCrdSessionJob::RunImpl(
     CallbackWithResult result_callback) {
-  CRD_LOG(INFO) << "Running start CRD session command";
+  SYSLOG(INFO) << "Running start CRD session command";
 
   if (delegate_->HasActiveSession()) {
     CRD_VLOG(1) << "Terminating active session";
@@ -238,8 +268,8 @@ void DeviceCommandStartCrdSessionJob::RunImpl(
         ExtendedStartCrdSessionResultCode::kFailureUnsupportedUserType, "");
   }
 
-  if (curtain_local_user_session_ && !IsRemoteAccessAllowedByPolicy(CHECK_DEREF(
-                                         g_browser_process->local_state()))) {
+  if (IsRemoteAccessSession() &&
+      !IsRemoteAccessAllowedByPolicy(local_state_.get())) {
     LOG(ERROR) << "Rejecting CRD session type as CRD remote access is disabled "
                   "by device policy.";
     return FinishWithError(
@@ -251,6 +281,9 @@ void DeviceCommandStartCrdSessionJob::RunImpl(
     return;
   }
 
+  crd_crash_key_ =
+      CreateCrdCrashKey(GetCrdSessionType(), GetCurrentUserSessionType());
+
   // First perform managed network check,
   CheckManagedNetworkASync(
       // Then start the CRD host.
@@ -259,40 +292,47 @@ void DeviceCommandStartCrdSessionJob::RunImpl(
 }
 
 void DeviceCommandStartCrdSessionJob::CheckManagedNetworkASync(
-    base::OnceClosure on_success) {
-  if (!curtain_local_user_session_) {
-    // No need to check for managed networks if we are not going to curtain
-    // off the local session.
-    std::move(on_success).Run();
-    return;
-  }
-
+    base::OnceCallback<void(bool)> on_success) {
   CalculateIsInManagedEnvironmentAsync(base::BindOnce(
-      [](base::OnceClosure on_success, ErrorCallback on_error,
-         bool is_in_managed_environment) {
-        if (is_in_managed_environment) {
-          std::move(on_success).Run();
-        } else {
+      [](base::OnceCallback<void(bool)> on_success, ErrorCallback on_error,
+         bool require_managed_environment, bool is_in_managed_environment) {
+        if (require_managed_environment && !is_in_managed_environment) {
           std::move(on_error).Run(
               ExtendedStartCrdSessionResultCode::kFailureUnmanagedEnvironment,
               /*error_messages=*/"");
+        } else {
+          std::move(on_success).Run(is_in_managed_environment);
         }
       },
-      std::move(on_success), GetErrorCallback()));
+      std::move(on_success), GetErrorCallback(),
+      /*require_managed_environment=*/IsRemoteAccessSession()));
 }
 
-void DeviceCommandStartCrdSessionJob::StartCrdHostAndGetCode() {
+void DeviceCommandStartCrdSessionJob::StartCrdHostAndGetCode(
+    bool is_in_managed_environment) {
   CRD_VLOG(1) << "Starting CRD host and retrieving CRD access code";
   SessionParameters parameters;
   parameters.user_name = robot_account_id_;
   parameters.terminate_upon_input = ShouldTerminateUponInput();
   parameters.show_confirmation_dialog = ShouldShowConfirmationDialog();
-  parameters.curtain_local_user_session = curtain_local_user_session_;
+  parameters.curtain_local_user_session = IsRemoteAccessSession();
   parameters.admin_email = admin_email_;
   parameters.allow_troubleshooting_tools = ShouldAllowTroubleshootingTools();
   parameters.show_troubleshooting_tools = ShouldShowTroubleshootingTools();
   parameters.allow_reconnections = ShouldAllowReconnections();
   parameters.allow_file_transfer = ShouldAllowFileTransfer();
+  parameters.allow_remote_input = kAllowRemoteInput;
+  parameters.allow_clipboard_sync = kAllowClipboardSync;
+  parameters.request_origin =
+      StartCrdSessionJobDelegate::RequestOrigin::kEnterpriseAdmin;
+  parameters.audio_playback =
+      StartCrdSessionJobDelegate::AudioPlayback::kLocalOnly;
+  if (ShouldAutoAcceptSession(is_in_managed_environment)) {
+    parameters.connection_auto_accept_timeout = kConnectionAutoAcceptTimeout;
+  }
+  if (IsRemoteSupportSession()) {
+    parameters.maximum_session_duration = kMaximumRemoteSupportSessionDuration;
+  }
 
   delegate_->StartCrdHostAndGetCode(
       parameters,
@@ -300,13 +340,12 @@ void DeviceCommandStartCrdSessionJob::StartCrdHostAndGetCode() {
                      weak_factory_.GetWeakPtr()),
       base::BindOnce(&DeviceCommandStartCrdSessionJob::FinishWithError,
                      weak_factory_.GetWeakPtr()),
-      base::BindOnce(&OnCrdSessionFinished, GetCrdSessionType(),
-                     GetCurrentUserSessionType()));
+      /*session_finished_callback=*/base::DoNothing());
 }
 
 void DeviceCommandStartCrdSessionJob::FinishWithSuccess(
     const std::string& access_code) {
-  CRD_LOG(INFO) << "Successfully received CRD access code";
+  SYSLOG(INFO) << "Successfully received CRD access code";
   if (!result_callback_) {
     return;  // Task was terminated.
   }
@@ -323,9 +362,9 @@ void DeviceCommandStartCrdSessionJob::FinishWithError(
     const ExtendedStartCrdSessionResultCode result_code,
     const std::string& message) {
   CHECK_NE(result_code, ExtendedStartCrdSessionResultCode::kSuccess);
-  CRD_LOG(INFO) << "Not starting CRD session because of error (code "
-                << static_cast<int>(result_code) << ", message '" << message
-                << "')";
+  SYSLOG(INFO) << "Not starting CRD session because of error (code "
+               << static_cast<int>(result_code) << ", message '" << message
+               << "')";
   if (!result_callback_) {
     return;  // Task was terminated.
   }
@@ -357,7 +396,7 @@ bool DeviceCommandStartCrdSessionJob::UserTypeSupportsCrd() const {
   CRD_VLOG(2) << "User is of type "
               << UserSessionTypeToString(GetCurrentUserSessionType());
 
-  if (curtain_local_user_session_) {
+  if (IsRemoteAccessSession()) {
     return UserSessionSupportsRemoteAccess(GetCurrentUserSessionType());
   } else {
     return UserSessionSupportsRemoteSupport(GetCurrentUserSessionType());
@@ -365,7 +404,7 @@ bool DeviceCommandStartCrdSessionJob::UserTypeSupportsCrd() const {
 }
 
 CrdSessionType DeviceCommandStartCrdSessionJob::GetCrdSessionType() const {
-  if (curtain_local_user_session_) {
+  if (IsRemoteAccessSession()) {
     return CrdSessionType::REMOTE_ACCESS_SESSION;
   }
   return CrdSessionType::REMOTE_SUPPORT_SESSION;
@@ -373,6 +412,14 @@ CrdSessionType DeviceCommandStartCrdSessionJob::GetCrdSessionType() const {
 
 bool DeviceCommandStartCrdSessionJob::IsDeviceIdle() const {
   return GetDeviceIdleTime() >= idleness_cutoff_;
+}
+
+bool DeviceCommandStartCrdSessionJob::IsRemoteSupportSession() const {
+  return !curtain_local_user_session_;
+}
+
+bool DeviceCommandStartCrdSessionJob::IsRemoteAccessSession() const {
+  return curtain_local_user_session_;
 }
 
 bool DeviceCommandStartCrdSessionJob::ShouldShowConfirmationDialog() const {
@@ -399,7 +446,7 @@ bool DeviceCommandStartCrdSessionJob::ShouldShowConfirmationDialog() const {
 }
 
 bool DeviceCommandStartCrdSessionJob::ShouldTerminateUponInput() const {
-  if (curtain_local_user_session_) {
+  if (IsRemoteAccessSession()) {
     return false;
   }
 
@@ -432,13 +479,8 @@ bool DeviceCommandStartCrdSessionJob::ShouldTerminateUponInput() const {
 }
 
 bool DeviceCommandStartCrdSessionJob::ShouldAllowReconnections() const {
-  if (!base::FeatureList::IsEnabled(
-          remoting::features::kEnableCrdAdminRemoteAccessV2)) {
-    return false;
-  }
-
   // Curtained off sessions support reconnections if Chrome restarts.
-  return curtain_local_user_session_;
+  return IsRemoteAccessSession();
 }
 
 bool DeviceCommandStartCrdSessionJob::ShouldShowTroubleshootingTools() const {
@@ -448,13 +490,34 @@ bool DeviceCommandStartCrdSessionJob::ShouldShowTroubleshootingTools() const {
 bool DeviceCommandStartCrdSessionJob::ShouldAllowTroubleshootingTools() const {
   return IsKioskSession(GetCurrentUserSessionType()) &&
          CHECK_DEREF(ProfileManager::GetActiveUserProfile()->GetPrefs())
-             .GetBoolean(prefs::kKioskTroubleshootingToolsEnabled);
+             .GetBoolean(ash::prefs::kKioskTroubleshootingToolsEnabled);
 }
 
 bool DeviceCommandStartCrdSessionJob::ShouldAllowFileTransfer() const {
-  return IsKioskSession(GetCurrentUserSessionType()) &&
-         base::FeatureList::IsEnabled(
-             remoting::features::kEnableCrdFileTransferForKiosk);
+  return IsKioskSession(GetCurrentUserSessionType());
+}
+
+bool DeviceCommandStartCrdSessionJob::ShouldAutoAcceptSession(
+    bool is_in_managed_environment) const {
+  if (!base::FeatureList::IsEnabled(
+          remoting::features::kAutoApproveEnterpriseSharedSessions)) {
+    return false;
+  }
+
+  if (!is_in_managed_environment || !ShouldShowConfirmationDialog()) {
+    return false;
+  }
+
+  // This enables shared unattended Chrome Remote Desktop (CRD) sessions to
+  // auto-launched managed guest sessions. Specifically, this is for scenarios
+  // where there is an active managed guest session, and the device has been
+  // idle since the last reboot.
+  if (GetCurrentUserSessionType() == UserSessionType::MANAGED_GUEST_SESSION &&
+      IsDeviceIdleSinceReboot()) {
+    return true;
+  }
+
+  return GetDeviceIdleTime() <= kAutoApproveDeviceIdlenessCutoff;
 }
 
 ErrorCallback DeviceCommandStartCrdSessionJob::GetErrorCallback() {

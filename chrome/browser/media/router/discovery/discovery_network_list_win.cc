@@ -2,13 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/media/router/discovery/discovery_network_list_win.h"
 
+#include <windows.h>
 #include <winsock2.h>
 
 #include <windot11.h>
@@ -21,15 +17,20 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/no_destructor.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/threading/scoped_thread_priority.h"
 #include "base/win/hstring_reference.h"
 #include "base/win/scoped_hstring.h"
 #include "base/win/win_util.h"
 #include "base/win/windows_version.h"
+#include "chrome/browser/media/router/discovery/discovery_network_info.h"
 #include "chrome/browser/media/router/discovery/discovery_network_list.h"
 
 namespace WinrtConnectivity = ABI::Windows::Networking::Connectivity;
@@ -57,7 +58,10 @@ void IfTable2Deleter(PMIB_IF_TABLE2 interface_table) {
 }  // namespace
 
 bool GuidOperatorLess::operator()(const GUID& guid1, const GUID& guid2) const {
-  return memcmp(&guid1, &guid2, sizeof(GUID)) < 0;
+  return std::lexicographical_compare(base::byte_span_from_ref(guid1).begin(),
+                                      base::byte_span_from_ref(guid1).end(),
+                                      base::byte_span_from_ref(guid2).begin(),
+                                      base::byte_span_from_ref(guid2).end());
 }
 
 typedef DWORD(WINAPI* WlanOpenHandleFunction)(DWORD dwClientVersion,
@@ -170,7 +174,7 @@ GetInterfaceGuidMacMap() {
 
   base::small_map<std::map<GUID, std::string, GuidOperatorLess>> guid_mac_map;
   for (ULONG i = 0; i < interface_table->NumEntries; ++i) {
-    const auto* interface_row = &interface_table->Table[i];
+    const auto* interface_row = &UNSAFE_TODO(interface_table->Table[i]);
     guid_mac_map.emplace(interface_row->InterfaceGuid,
                          std::string{reinterpret_cast<const char*>(
                                          interface_row->PhysicalAddress),
@@ -222,6 +226,8 @@ base::small_map<std::map<std::string, std::string>> GetMacSsidMap() {
                                            &wlan_current_version,
                                            &wlan_client_handle.handle);
   if (result != ERROR_SUCCESS) {
+    ::SetLastError(result);
+    PLOG(WARNING) << "Failed to open WLAN handle";
     return {};
   }
 
@@ -229,6 +235,8 @@ base::small_map<std::map<std::string, std::string>> GetMacSsidMap() {
   result = wlan_api->wlan_enum_interfaces(wlan_client_handle.handle, nullptr,
                                           &wlan_interface_list_raw);
   if (result != ERROR_SUCCESS) {
+    ::SetLastError(result);
+    PLOG(WARNING) << "Failed to enumerate WLAN interfaces";
     return {};
   }
 
@@ -242,7 +250,8 @@ base::small_map<std::map<std::string, std::string>> GetMacSsidMap() {
   // GUID which we can use to get its MAC address via |guid_mac_map| and its
   // associated SSID via WlanQueryInterface.
   for (DWORD i = 0; i < wlan_interface_list->dwNumberOfItems; ++i) {
-    const auto* interface_info = &wlan_interface_list->InterfaceInfo[i];
+    const auto* interface_info =
+        &UNSAFE_TODO(wlan_interface_list->InterfaceInfo[i]);
     const auto mac_entry = guid_mac_map.find(interface_info->InterfaceGuid);
     if (mac_entry == guid_mac_map.end()) {
       continue;
@@ -304,7 +313,7 @@ HRESULT GetProfileNetworkAdapterId(
     // INetworkAdapter::get_NetworkAdapter() may load the module
     // Windows.Networking.HostName.dll. Temporarily boost the priority of this
     // background thread to avoid causing jank by blocking the UI thread from
-    // loading modules. For more details, see https://crbug.com/973868.
+    // loading modules. For more details, see https://crbug.com/41464781.
     SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY_REPEATEDLY();
 
     HRESULT hr = connection_profile->get_NetworkAdapter(&network_adapter);
@@ -353,7 +362,7 @@ HRESULT GetAllConnectionProfiles(
     // RoGetActivationFactory() may load the Windows.Networking.Connectivity.dll
     // module. Temporarily boost the priority of this background thread to avoid
     // causing jank by blocking the UI thread from loading modules. For more
-    // details, see https://crbug.com/973868.
+    // details, see https://crbug.com/41464781.
     SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY_REPEATEDLY();
 
     HRESULT hr =
@@ -523,9 +532,11 @@ std::vector<DiscoveryNetworkInfo> GetDiscoveryNetworkInfoList() {
         continue;
       }
     }
-    network_ids.emplace_back(
-        name, base::HexEncode(current_adapter->PhysicalAddress,
-                              current_adapter->PhysicalAddressLength));
+    const auto mac_bytes =
+        base::as_byte_span(base::span(current_adapter->PhysicalAddress));
+    const size_t mac_len =
+        static_cast<size_t>(current_adapter->PhysicalAddressLength);
+    network_ids.emplace_back(name, base::HexEncode(mac_bytes.first(mac_len)));
   }
 
   StableSortDiscoveryNetworkInfo(network_ids.begin(), network_ids.end());

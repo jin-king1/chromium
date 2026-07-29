@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/tabs/existing_window_sub_menu_model_chromeos.h"
 
+#include "base/strings/string_number_conversions.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
@@ -19,15 +20,16 @@ namespace chromeos {
 
 namespace {
 
-int GetDeskIndexForBrowser(Browser* browser, int num_desks) {
-  const std::string& workspace = browser->window()->GetWorkspace();
+int GetDeskIndexForBrowser(BrowserWindowInterface* browser, int num_desks) {
+  const std::string& workspace =
+      BrowserWindow::FromBrowser(browser)->GetWorkspace();
   int desk_index;
   // If the window is visible on all workspaces or unassigned
   // (aura::client::kWindowWorkspaceUnassignedWorkspace),
   // we should get the active desk index.
-  if (workspace.empty() || browser->window()->IsVisibleOnAllWorkspaces()) {
-    desk_index = DesksHelper::Get(browser->window()->GetNativeWindow())
-                     ->GetActiveDeskIndex();
+  if (workspace.empty() ||
+      BrowserWindow::FromBrowser(browser)->IsVisibleOnAllWorkspaces()) {
+    desk_index = DesksHelper::Get()->GetActiveDeskIndex();
   } else {
     CHECK(base::StringToInt(workspace, &desk_index));
   }
@@ -39,15 +41,6 @@ int GetDeskIndexForBrowser(Browser* browser, int num_desks) {
 bool ShouldGroupByDesk(const DesksHelper* desks_helper) {
   constexpr int kMinNumOfDesks = 2;
   return desks_helper->GetNumberOfDesks() >= kMinNumOfDesks;
-}
-
-DesksHelper* GetDesksHelper(const std::vector<Browser*>& existing_browsers) {
-  DCHECK_GT(existing_browsers.size(), 0UL);
-  // It is OK to get DesksHelper from the window of the first existing browser
-  // since the APIs (GetNumberOfDesks, GetDeskName(index)) used by this class
-  // doesn't depend on the specific aura::Window.
-  return DesksHelper::Get(
-      (*existing_browsers.begin())->window()->GetNativeWindow());
 }
 
 }  // namespace
@@ -65,10 +58,10 @@ ExistingWindowSubMenuModelChromeOS::ExistingWindowSubMenuModelChromeOS(
                                  context_index) {
   // If we shouldn't group by desk, ExistingWindowSubMenuModel's ctor has
   // already built the menu.
-  std::vector<Browser*> tabbed_browser_windows =
+  std::vector<BrowserWindowInterface*> tabbed_browser_windows =
       tab_menu_model_delegate->GetOtherBrowserWindows(
           model->delegate()->IsForWebApp());
-  if (!ShouldGroupByDesk(GetDesksHelper(tabbed_browser_windows))) {
+  if (!ShouldGroupByDesk(DesksHelper::Get())) {
     return;
   }
 
@@ -80,10 +73,10 @@ ExistingWindowSubMenuModelChromeOS::~ExistingWindowSubMenuModelChromeOS() =
     default;
 
 void ExistingWindowSubMenuModelChromeOS::BuildMenuGroupedByDesk(
-    const std::vector<Browser*>& existing_browsers) {
+    const std::vector<BrowserWindowInterface*>& existing_browsers) {
   // Get the vector of MenuItemInfo for |existing_browsers| and then group them
   // by desk.
-  const DesksHelper* desks_helper = GetDesksHelper(existing_browsers);
+  const DesksHelper* desks_helper = DesksHelper::Get();
   const int num_desks = desks_helper->GetNumberOfDesks();
   std::vector<std::vector<ExistingBaseSubMenuModel::MenuItemInfo>>
       grouped_by_desk_menu_item_infos(num_desks);

@@ -18,7 +18,6 @@
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
@@ -31,7 +30,6 @@
 #include "chrome/browser/ash/policy/scheduled_task_handler/test/scheduled_task_test_util.h"
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
 #include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/dbus/shill/shill_clients.h"
 #include "chromeos/ash/components/dbus/update_engine/fake_update_engine_client.h"
@@ -43,8 +41,10 @@
 #include "chromeos/ash/components/settings/timezone_settings.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power/power_manager_client.h"
+#include "components/policy/core/common/mock_policy_service.h"
 #include "components/policy/core/common/policy_service.h"
 #include "services/device/public/cpp/test/test_wake_lock_provider.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 
@@ -75,19 +75,17 @@ class DeviceScheduledUpdateCheckerForTest
   DeviceScheduledUpdateCheckerForTest(
       ash::CrosSettings* cros_settings,
       ash::NetworkStateHandler* network_state_handler,
+      PolicyService* policy_service,
       std::unique_ptr<ScheduledTaskExecutor> task_executor)
       : DeviceScheduledUpdateChecker(cros_settings,
                                      network_state_handler,
+                                     policy_service,
                                      std::move(task_executor)) {}
 
   DeviceScheduledUpdateCheckerForTest(
       const DeviceScheduledUpdateCheckerForTest&) = delete;
   DeviceScheduledUpdateCheckerForTest& operator=(
       const DeviceScheduledUpdateCheckerForTest&) = delete;
-
-  ~DeviceScheduledUpdateCheckerForTest() override {
-    TestingBrowserProcess::GetGlobal()->ShutdownBrowserPolicyConnector();
-  }
 
   int GetUpdateCheckTimerExpirations() const {
     return update_check_timer_expirations_;
@@ -140,7 +138,13 @@ class DeviceScheduledUpdateCheckerTest : public testing::Test {
         std::make_unique<DeviceScheduledUpdateCheckerForTest>(
             ash::CrosSettings::Get(),
             network_state_test_helper_->network_state_handler(),
-            std::move(task_executor));
+            &mock_policy_service_, std::move(task_executor));
+
+    ON_CALL(mock_policy_service_, RefreshPolicies(testing::_, testing::_))
+        .WillByDefault(
+            [](base::OnceClosure callback, policy::PolicyFetchReason reason) {
+              std::move(callback).Run();
+            });
   }
 
   DeviceScheduledUpdateCheckerTest(const DeviceScheduledUpdateCheckerTest&) =
@@ -352,6 +356,7 @@ class DeviceScheduledUpdateCheckerTest : public testing::Test {
   // Owned by |device_scheduled_update_checker_|
   raw_ptr<FakeScheduledTaskExecutor, DanglingUntriaged>
       scheduled_task_executor_;
+  testing::NiceMock<policy::MockPolicyService> mock_policy_service_;
   std::unique_ptr<DeviceScheduledUpdateCheckerForTest>
       device_scheduled_update_checker_;
   ash::ScopedTestingCrosSettings cros_settings_;
@@ -985,36 +990,6 @@ TEST_F(DeviceScheduledUpdateCheckerTest, CheckUpdateCheckHardTimeout) {
   expected_update_check_requests = 2;
   task_environment_.FastForwardBy(
       base::Days(1) -
-      update_checker_internal::kOsAndPoliciesUpdateCheckHardTimeout);
-  EXPECT_TRUE(CheckStats(expected_update_checks, expected_update_check_requests,
-                         expected_update_check_completions));
-}
-
-// Check that the facility is disabled when the RTC wake support feature is
-// disabled.
-TEST_F(DeviceScheduledUpdateCheckerTest, DisabledFeature) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      ::features::kSupportsRtcWakeOver24Hours);
-
-  base::TimeDelta delay_from_now = base::Hours(1);
-  auto policy_and_next_update_check_time =
-      scheduled_task_test_util::CreatePolicy(
-          scheduled_task_executor_->GetTimeZone(),
-          scheduled_task_executor_->GetCurrentTime(), delay_from_now,
-          ScheduledTaskExecutor::Frequency::kDaily, kTaskTimeFieldName);
-
-  cros_settings_.device_settings()->Set(
-      ash::kDeviceScheduledUpdateCheck,
-      std::move(policy_and_next_update_check_time.first));
-  task_environment_.FastForwardBy(delay_from_now);
-
-  // No check should happen when kSupportsRtcWakeOver24Hours is off.
-  int expected_update_checks = 0;
-  int expected_update_check_requests = 0;
-  int expected_update_check_completions = 0;
-
-  task_environment_.FastForwardBy(
       update_checker_internal::kOsAndPoliciesUpdateCheckHardTimeout);
   EXPECT_TRUE(CheckStats(expected_update_checks, expected_update_check_requests,
                          expected_update_check_completions));

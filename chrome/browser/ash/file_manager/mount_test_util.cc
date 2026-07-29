@@ -3,10 +3,12 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ash/file_manager/mount_test_util.h"
-#include "base/memory/raw_ptr.h"
 
+#include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 
 namespace file_manager {
 namespace test_util {
@@ -19,7 +21,7 @@ class DriveMountPointWaiter : public drive::DriveIntegrationService::Observer {
  public:
   explicit DriveMountPointWaiter(drive::DriveIntegrationService* service)
       : service_(service) {
-    Observe(service_);
+    observation_.Observe(service_);
   }
 
   // DriveIntegrationService::Observer implementation.
@@ -34,6 +36,9 @@ class DriveMountPointWaiter : public drive::DriveIntegrationService::Observer {
 
  private:
   const raw_ptr<drive::DriveIntegrationService> service_;
+  base::ScopedObservation<drive::DriveIntegrationService,
+                          drive::DriveIntegrationService::Observer>
+      observation_{this};
   base::RunLoop run_loop_;
 };
 

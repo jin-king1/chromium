@@ -60,16 +60,10 @@ class UsageHistoryInformation {
   bool HasGreaterRankingThan(const UsageHistoryInformation& other,
                              base::Time comparison_time) const;
 
-  // Given two ranking scores for two data model suggestions, returns if `score`
-  // is greater than `other_score`. In the case of a tie-breaker, uses the most
-  // recent use date as the winner.
-  bool CompareRankingScores(double score,
-                            double other_score,
-                            base::Time other_use_date) const;
-
-  // Merges the use dates of `*this` and `other` into `*this*` by choosing the
-  // most recent use dates.
-  void MergeUseDates(const UsageHistoryInformation& other);
+  // Merges the use count and use dates `*this` and `other` into `*this`.
+  // The higher of the two use counts is retained. Te use dates prefer the most
+  // recent one.
+  void MergeUsageHistories(const UsageHistoryInformation& other);
 
   // Calculate the ranking score of a card or profile depending on their use
   // count and most recent use date.

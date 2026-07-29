@@ -13,8 +13,11 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/threading/thread.h"
 #include "base/values.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/defaults.h"
+#include "chrome/browser/download/download_core_service.h"
+#include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/enterprise/connectors/connectors_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
@@ -39,7 +42,6 @@
 #include "components/history/core/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/profile_metrics/browser_profile_type.h"
-#include "components/safe_browsing/core/common/features.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/url_data_source.h"
@@ -106,6 +108,7 @@ content::WebUIDataSource* CreateAndAddDownloadsUIHTMLSource(Profile* profile) {
        IDS_BLOCK_REASON_SENSITIVE_CONTENT_WARNING},
       {"sensitiveContentBlockedDesc",
        IDS_SENSITIVE_CONTENT_BLOCKED_DESCRIPTION},
+      {"forcedSaveToCloudDesc", IDS_FORCED_SAVE_TO_CLOUD_DESCRIPTION},
       {"blockedTooLargeDesc", IDS_BLOCKED_TOO_LARGE_DESCRIPTION},
       {"blockedPasswordProtectedDesc",
        IDS_BLOCKED_PASSWORD_PROTECTED_DESCRIPTION},
@@ -131,6 +134,9 @@ content::WebUIDataSource* CreateAndAddDownloadsUIHTMLSource(Profile* profile) {
        IDS_DOWNLOADS_TOAST_DELETED_FROM_HISTORY_STILL_ON_DEVICE},
       {"toastDeletedFromHistory", IDS_DOWNLOADS_TOAST_DELETED_FROM_HISTORY},
       {"toastCopiedDownloadLink", IDS_DOWNLOADS_TOAST_COPIED_DOWNLOAD_LINK},
+      {"toastCopiedLink", IDS_DOWNLOADS_TOAST_COPIED_LINK},
+      {"toastCopyDownloadLinkFailed",
+       IDS_DOWNLOADS_TOAST_COPY_DOWNLOAD_LINK_FAILED},
       {"undo", IDS_DOWNLOAD_UNDO},
       {"controlKeepDangerous", IDS_DOWNLOAD_KEEP_DANGEROUS_FILE},
       {"controlKeepSuspicious", IDS_DOWNLOAD_KEEP_SUSPICIOUS_FILE},
@@ -186,18 +192,15 @@ content::WebUIDataSource* CreateAndAddDownloadsUIHTMLSource(Profile* profile) {
       {"dangerDownloadDesc", IDS_BLOCK_DOWNLOAD_REASON_DANGEROUS},
       {"dangerDownloadCookieTheft",
        IDS_BLOCK_DOWNLOAD_REASON_DANGEROUS_COOKIE_THEFT},
-      {"dangerDownloadCookieTheftAndAccountDesc",
-       IDS_BLOCK_DOWNLOAD_REASON_DANGEROUS_COOKIE_THEFT_AND_ACCOUNT},
       {"dangerSettingsDesc", IDS_BLOCK_DOWNLOAD_REASON_POTENTIALLY_UNWANTED},
       {"insecureDownloadDesc", IDS_BLOCK_DOWNLOAD_REASON_INSECURE},
 
-      {"referrerLine", IDS_DOWNLOADS_PAGE_REFERRER_LINE},
+      // Format string for showing the "source" of the downloaded file as the
+      // initiator origin of the download request.
+      {"initiatorLine", IDS_DOWNLOADS_PAGE_INITIATOR_LINE},
   };
   source->AddLocalizedStrings(kStrings);
 
-  source->AddBoolean(
-      "showReferrerUrl",
-      base::FeatureList::IsEnabled(safe_browsing::kDownloadsPageReferrerUrl));
   source->AddLocalizedString(
       "dangerUncommonDesc",
       requests_ap_verdicts
@@ -237,6 +240,10 @@ content::WebUIDataSource* CreateAndAddDownloadsUIHTMLSource(Profile* profile) {
                         GURL(chrome::kDownloadBlockedLearnMoreURL),
                         g_browser_process->GetApplicationLocale())
                         .spec());
+
+  source->AddString("webuiRefresh2026", features::IsWebuiRefresh2026Enabled()
+                                            ? "webui-refresh-2026"
+                                            : "");
 
   return source;
 }
@@ -302,6 +309,12 @@ void DownloadsUI::CreatePageHandler(
     mojo::PendingReceiver<downloads::mojom::PageHandler> receiver) {
   DCHECK(page);
   Profile* profile = Profile::FromWebUI(web_ui());
+  // Make sure download history is initialized.
+  DownloadCoreService* service =
+      DownloadCoreServiceFactory::GetForBrowserContext(profile);
+  if (service) {
+    service->InitializeHistory();
+  }
   DownloadManager* dlm = profile->GetDownloadManager();
 
   page_handler_ = std::make_unique<DownloadsDOMHandler>(

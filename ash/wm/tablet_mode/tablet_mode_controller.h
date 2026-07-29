@@ -114,7 +114,7 @@ class ASH_EXPORT TabletModeController
 
   // Add a special window to the TabletModeWindowManager for tracking. This is
   // only required for special windows which are handled by other window
-  // managers like the |MultiUserWindowManagerImpl|.
+  // managers like the |MultiUserWindowManager|.
   // If the tablet mode is not enabled no action will be performed.
   void AddWindow(aura::Window* window);
 
@@ -514,11 +514,14 @@ class ASH_EXPORT TabletModeController
   // everything in the screen rotation container except the top window. It helps
   // with animation performance because it fully occludes all windows except the
   // animating window for the duration of the animation.
-  // TODO(sammiequon): See if we can move screenshot and tablet mode transition
-  // animation related code into a separate class/file.
   std::unique_ptr<ui::Layer> screenshot_layer_;
 
-  base::ObserverList<TabletModeObserver>::Unchecked tablet_mode_observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      TabletModeObserver,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      tablet_mode_observers_;
 
   TabletModeBehavior tablet_mode_behavior_;
 

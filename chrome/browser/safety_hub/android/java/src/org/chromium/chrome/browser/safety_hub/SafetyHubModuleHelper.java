@@ -6,21 +6,25 @@ package org.chromium.chrome.browser.safety_hub;
 
 import android.view.View;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.safety_hub.SafetyHubModuleMediator.ModuleState;
 
 /** Interface for a helper of the {@link SafetyHubModuleMediator}. */
+@NullMarked
 interface SafetyHubModuleHelper {
-    public String getTitle();
+    String getTitle();
 
-    public String getSummary();
+    @Nullable CharSequence getSummary();
 
-    public String getPrimaryButtonText();
+    @Nullable String getPrimaryButtonText();
 
-    public View.OnClickListener getPrimaryButtonListener();
+    View.@Nullable OnClickListener getPrimaryButtonListener();
 
-    public String getSecondaryButtonText();
+    @Nullable String getSecondaryButtonText();
 
-    public View.OnClickListener getSecondaryButtonListener();
+    View.@Nullable OnClickListener getSecondaryButtonListener();
 
-    public @ModuleState int getModuleState();
+    @ModuleState
+    int getModuleState();
 }

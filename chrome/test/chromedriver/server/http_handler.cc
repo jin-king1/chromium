@@ -15,11 +15,11 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"  // For CHECK macros.
 #include "base/memory/scoped_refptr.h"
+#include "base/notimplemented.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -119,8 +119,12 @@ std::optional<base::Value> Clone(const std::optional<base::Value>& original) {
 
 bool w3cMode(const std::string& session_id,
              const SessionThreadMap& session_thread_map) {
-  if (session_id.length() > 0 && session_thread_map.count(session_id) > 0)
-    return session_thread_map.at(session_id)->w3cMode();
+  if (session_id.length() > 0) {
+    if (auto it = session_thread_map.find(session_id);
+        it != session_thread_map.end()) {
+      return it->second->w3cMode();
+    }
+  }
   return kW3CDefault;
 }
 
@@ -1024,6 +1028,14 @@ HttpHandler::HttpHandler(
               "RunBounceTrackingMitigations",
               base::BindRepeating(&ExecuteRunBounceTrackingMitigations))),
 
+      // Extensions for Protected Audience KAnonymity support:
+      // https://wicg.github.io/turtledove/#kanonymity-automation
+      CommandMapping(
+          kPost, "session/:sessionId/protected_audience/set_k_anonymity",
+          WrapToCommand(
+              "SetProtectedAudienceKAnonymity",
+              base::BindRepeating(&ExecuteSetProtectedAudienceKAnonymity))),
+
       // Extensions for Custom Handlers API:
       // https://html.spec.whatwg.org/multipage/system-state.html#rph-automation
       CommandMapping(
@@ -1065,6 +1077,17 @@ HttpHandler::HttpHandler(
           kDelete, "session/:sessionId/deviceposture",
           WrapToCommand("ClearDevicePosture",
                         base::BindRepeating(&ExecuteClearDevicePosture))),
+
+      // Extensions for Viewport Segments API:
+      // https://drafts.csswg.org/css-viewport-1/#automation-of-the-segments-property
+      CommandMapping(
+          kPost, "session/:sessionId/displayfeatures",
+          WrapToCommand("SetDisplayFeatures",
+                        base::BindRepeating(&ExecuteSetDisplayFeatures))),
+      CommandMapping(
+          kDelete, "session/:sessionId/displayfeatures",
+          WrapToCommand("ClearDisplayFeatures",
+                        base::BindRepeating(&ExecuteClearDisplayFeatures))),
 
       // Extensions for Compute Pressure API:
       // https://w3c.github.io/compute-pressure/#automation
@@ -1287,7 +1310,7 @@ void HttpHandler::HandleCommand(
     const net::HttpServerRequestInfo& request,
     const std::string& trimmed_path,
     const HttpResponseSenderFunc& send_response_func) {
-  base::Value::Dict params;
+  base::DictValue params;
   std::string session_id;
   CommandMap::const_iterator iter = command_map_->begin();
   while (true) {
@@ -1313,9 +1336,9 @@ void HttpHandler::HandleCommand(
   }
 
   if (request.data.length()) {
-    std::optional<base::Value> parsed_body =
-        base::JSONReader::Read(request.data);
-    base::Value::Dict* body_params =
+    std::optional<base::Value> parsed_body = base::JSONReader::Read(
+        request.data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    base::DictValue* body_params =
         parsed_body ? parsed_body->GetIfDict() : nullptr;
     if (!body_params) {
       if (w3cMode(session_id, session_thread_map_)) {
@@ -1392,14 +1415,14 @@ std::unique_ptr<net::HttpServerResponseInfo> HttpHandler::PrepareLegacyResponse(
         kChromeDriverVersion, base::SysInfo::OperatingSystemName().c_str(),
         base::SysInfo::OperatingSystemVersion().c_str(),
         base::SysInfo::OperatingSystemArchitecture().c_str()));
-    base::Value::Dict error;
+    base::DictValue error;
     error.Set("message", full_status.message());
     value = std::make_unique<base::Value>(std::move(error));
   }
   if (!value)
     value = std::make_unique<base::Value>();
 
-  base::Value::Dict body_params;
+  base::DictValue body_params;
   body_params.Set("status", status.code());
   body_params.Set("value", base::Value::FromUniquePtrValue(std::move(value)));
   body_params.Set("sessionId", session_id);
@@ -1557,9 +1580,9 @@ HttpHandler::PrepareStandardResponse(
   if (!value)
     value = std::make_unique<base::Value>();
 
-  base::Value::Dict body_params;
+  base::DictValue body_params;
   if (status.IsError()){
-    base::Value::Dict* inner_params = body_params.EnsureDict("value");
+    base::DictValue* inner_params = body_params.EnsureDict("value");
     inner_params->Set("error", StatusCodeToString(status.code()));
     inner_params->Set("message", status.message());
     inner_params->Set("stacktrace", status.stack_trace());
@@ -1730,7 +1753,7 @@ void HttpHandler::SendResponseOverWebSocket(
     std::unique_ptr<base::Value> result,
     const std::string& session_id,
     bool w3c) {
-  base::Value::Dict response;
+  base::DictValue response;
   if (status.IsOk()) {
     if (!result) {
       return;
@@ -1760,7 +1783,7 @@ Command HttpHandler::WrapCreateNewSessionCommand(Command command) {
       const std::string&, bool)>;
   return base::BindRepeating(
       [](Command create_and_init, CommandCallbackWrapper callback_to_prepend,
-         const base::Value::Dict& params, const std::string& session_id,
+         const base::DictValue& params, const std::string& session_id,
          const CommandCallback& callback) {
         create_and_init.Run(params, session_id,
                             base::BindRepeating(callback_to_prepend, callback));
@@ -1775,7 +1798,7 @@ void HttpHandler::OnNewSessionCreated(const CommandCallback& next_callback,
                                       std::unique_ptr<base::Value> result,
                                       const std::string& session_id,
                                       bool w3c) {
-  base::Value::Dict* dict = result ? result->GetIfDict() : nullptr;
+  base::DictValue* dict = result ? result->GetIfDict() : nullptr;
   if (status.IsOk() && dict &&
       dict->FindByDottedPath("capabilities.webSocketUrl")) {
     session_connection_map_.emplace(session_id, std::vector<int>{});
@@ -1833,7 +1856,7 @@ void HttpHandler::OnNewBidiSessionOnCmdThread(
 void HttpHandler::OnWebSocketMessage(HttpServerInterface* http_server,
                                      int connection_id,
                                      const std::string& data) {
-  base::Value::Dict parsed;
+  base::DictValue parsed;
   Status status = internal::ParseBidiCommand(data, parsed);
 
   auto it = connection_session_map_.find(connection_id);
@@ -1907,7 +1930,7 @@ void HttpHandler::OnWebSocketMessage(HttpServerInterface* http_server,
   }
 
   // Session command handling is delegated to BiDiMapper.
-  base::Value::Dict params;
+  base::DictValue params;
   params.Set("bidiCommand", std::move(parsed));
   params.Set("connectionId", connection_id);
 
@@ -2006,7 +2029,7 @@ bool internal::MatchesCommand(const std::string& method,
                               const std::string& path,
                               const CommandMapping& command,
                               std::string* session_id,
-                              base::Value::Dict* out_params) {
+                              base::DictValue* out_params) {
   if (!MatchesMethod(command.method, method))
     return false;
 
@@ -2017,20 +2040,19 @@ bool internal::MatchesCommand(const std::string& method,
   if (path_parts.size() != command_path_parts.size())
     return false;
 
-  base::Value::Dict params;
+  base::DictValue params;
   for (size_t i = 0; i < path_parts.size(); ++i) {
     CHECK(command_path_parts[i].length());
     if (command_path_parts[i][0] == ':') {
       std::string name = command_path_parts[i];
       name.erase(0, 1);
       CHECK(name.length());
-      url::RawCanonOutputT<char16_t> output;
-      url::DecodeURLEscapeSequences(
-          path_parts[i], url::DecodeURLMode::kUTF8OrIsomorphic, &output);
+      url::UrlEscapeDecoder output(path_parts[i],
+                                   url::DecodeUrlMode::kUtf8OrIsomorphic);
       std::string decoded = base::UTF16ToASCII(output.view());
-      // Due to crbug.com/533361, the url decoding libraries decodes all of the
-      // % escape sequences except for %%. We need to handle this case manually.
-      // So, replacing all the instances of "%%" with "%".
+      // Due to crbug.com/40082880, the url decoding libraries decodes all of
+      // the % escape sequences except for %%. We need to handle this case
+      // manually. So, replacing all the instances of "%%" with "%".
       base::ReplaceSubstringsAfterOffset(&decoded, 0 , "%%" , "%");
       if (name == "sessionId")
         *session_id = decoded;
@@ -2050,9 +2072,10 @@ bool internal::IsNewSession(const CommandMapping& command) {
 }
 
 Status internal::ParseBidiCommand(const std::string& data,
-                                  base::Value::Dict& parsed) {
+                                  base::DictValue& parsed) {
   Status status{kOk};
-  std::optional<base::Value> maybe_bidi_command = base::JSONReader::Read(data);
+  std::optional<base::Value> maybe_bidi_command =
+      base::JSONReader::Read(data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!maybe_bidi_command.has_value()) {
     return Status{kInvalidArgument, "unable to parse BiDi command: " + data};
   }
@@ -2071,7 +2094,7 @@ Status internal::ParseBidiCommand(const std::string& data,
     return Status(kInvalidArgument,
                   "BiDi command has no 'method' of type string: " + data);
   }
-  base::Value::Dict* maybe_params = parsed.FindDict("params");
+  base::DictValue* maybe_params = parsed.FindDict("params");
   if (!maybe_params) {
     return Status(kInvalidArgument,
                   "BiDi command has no 'params' of type dictionary: " + data);
@@ -2079,10 +2102,10 @@ Status internal::ParseBidiCommand(const std::string& data,
   return status;
 }
 
-base::Value::Dict internal::CreateBidiErrorResponse(
+base::DictValue internal::CreateBidiErrorResponse(
     Status status,
     std::optional<base::Value> maybe_id) {
-  base::Value::Dict ret;
+  base::DictValue ret;
   // Error is generated by ChromeDriver
   ret.Set("type", "error");
   ret.Set("message", status.message());

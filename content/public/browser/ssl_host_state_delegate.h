@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/functional/callback_forward.h"
+#include "net/base/net_errors.h"
 #include "net/cert/x509_certificate.h"
 
 class GURL;
@@ -47,7 +48,7 @@ class SSLHostStateDelegate {
   // a specified |error| type.
   virtual void AllowCert(const std::string&,
                          const net::X509Certificate& cert,
-                         int error,
+                         net::Error error,
                          StoragePartition* storage_partition) = 0;
 
   // Clear allow preferences matched by |host_filter|. If the filter is null,
@@ -58,18 +59,16 @@ class SSLHostStateDelegate {
   // Queries whether |cert| is allowed for |host| and |error|. Returns true in
   virtual CertJudgment QueryPolicy(const std::string& host,
                                    const net::X509Certificate& cert,
-                                   int error,
+                                   net::Error error,
                                    StoragePartition* storage_partition) = 0;
 
   // Records that a host has run insecure content of the given |content_type|.
   virtual void HostRanInsecureContent(const std::string& host,
-                                      int child_id,
                                       InsecureContentType content_type) = 0;
 
   // Returns whether the specified host ran insecure content of the given
   // |content_type|.
   virtual bool DidHostRunInsecureContent(const std::string& host,
-                                         int child_id,
                                          InsecureContentType content_type) = 0;
 
   // Allowlists site so it can be loaded over HTTP when HTTPS-First Mode is

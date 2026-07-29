@@ -15,22 +15,10 @@
 #include "third_party/blink/renderer/platform/fonts/font_description.h"
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
 #include "third_party/blink/renderer/platform/testing/font_test_base.h"
+#include "third_party/blink/renderer/platform/testing/font_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 
 namespace blink {
-
-namespace {
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-StringView MaybeStripFontationsSuffix(const String& font_name) {
-  wtf_size_t found_index = font_name.ReverseFind(" (Fontations)");
-  if (found_index != WTF::kNotFound) {
-    return StringView(font_name, 0, found_index);
-  } else {
-    return font_name;
-  }
-}
-#endif
-}  // namespace
 
 class FontCacheTest : public FontTestBase {};
 
@@ -77,7 +65,6 @@ TEST_F(FontCacheTest, NoFallbackForPrivateUseArea) {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 TEST_F(FontCacheTest, FallbackForEmojis) {
   FontCache& font_cache = FontCache::Get();
-  FontCachePurgePreventer purge_preventer;
 
   // Perform the test for the default font family (kStandardFamily) and the
   // -webkit-body font family (kWebkitBodyFamily) since they behave the same in
@@ -107,9 +94,8 @@ TEST_F(FontCacheTest, FallbackForEmojis) {
         const SimpleFontData* font_data = font_cache.FallbackFontForCharacter(
             font_description, character, nullptr,
             FontFallbackPriority::kEmojiEmoji);
-        EXPECT_EQ(MaybeStripFontationsSuffix(
-                      font_data->PlatformData().FontFamilyName()),
-                  kNotoColorEmoji)
+        EXPECT_EQ(font_data->PlatformData().FontFamilyName(),
+                  String::FromUtf8(kNotoColorEmoji))
             << "Character " << character_utf8
             << " doesn't match what we expected for kEmojiEmoji.";
       }
@@ -118,15 +104,13 @@ TEST_F(FontCacheTest, FallbackForEmojis) {
             font_description, character, nullptr,
             FontFallbackPriority::kEmojiText);
         if (available_in_contour_font) {
-          EXPECT_NE(MaybeStripFontationsSuffix(
-                        font_data->PlatformData().FontFamilyName()),
-                    kNotoColorEmoji)
+          EXPECT_NE(font_data->PlatformData().FontFamilyName(),
+                    String::FromUtf8(kNotoColorEmoji))
               << "Character " << character_utf8
               << " doesn't match what we expected for kEmojiText.";
         } else {
-          EXPECT_EQ(MaybeStripFontationsSuffix(
-                        font_data->PlatformData().FontFamilyName()),
-                    kNotoColorEmoji)
+          EXPECT_EQ(font_data->PlatformData().FontFamilyName(),
+                    String::FromUtf8(kNotoColorEmoji))
               << "Character " << character_utf8
               << " doesn't match what we expected for kEmojiText.";
         }
@@ -154,6 +138,29 @@ TEST_F(FontCacheTest, firstAvailableOrFirst) {
   EXPECT_EQ("Arial", FontCache::FirstAvailableOrFirst(", not exist, Arial"));
   EXPECT_EQ("not exist",
             FontCache::FirstAvailableOrFirst(", not exist, not exist"));
+}
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || \
+    BUILDFLAG(IS_ANDROID)
+// local() font matching requires a Mojo connection which is not available in
+// unit tests.
+#define MAYBE_FontUniqueNameMatchAvailable DISABLED_FontUniqueNameMatchAvailable
+#else
+#define MAYBE_FontUniqueNameMatchAvailable FontUniqueNameMatchAvailable
+#endif
+TEST_F(FontCacheTest, MAYBE_FontUniqueNameMatchAvailable) {
+  FontCache& font_cache = FontCache::Get();
+
+  FontDescription font_description;
+  font_description.SetGenericFamily(FontDescription::kStandardFamily);
+  font_description.SetComputedSize(12.f);
+  FontFaceCreationParams creation_params;
+  EXPECT_FALSE(font_cache.IsPlatformFontUniqueNameMatchAvailable(
+      font_description, AtomicString()));
+  EXPECT_TRUE(font_cache.IsPlatformFontUniqueNameMatchAvailable(
+      font_description, AtomicString("Arial")));
+  EXPECT_FALSE(font_cache.IsPlatformFontUniqueNameMatchAvailable(
+      font_description, AtomicString("INVALID_FONT_NAME")));
 }
 
 // Unfortunately, we can't ensure a font here since on Android and Mac the
@@ -201,6 +208,15 @@ TEST_F(FontCacheTest, Locale) {
   key2.SetLocale(AtomicString("ja"));
   EXPECT_NE(key1.GetHash(), key2.GetHash());
   EXPECT_NE(key1, key2);
+}
+
+TEST_F(FontCacheTest, PrewarmFamily) {
+  test::ScopedTestFontPrewarmer prewarmer;
+  EXPECT_EQ(prewarmer.PrewarmedFamilyNames().size(), 0u);
+  FontCache::PrewarmFamily(AtomicString("test-font-cache-prewarm-family"));
+  EXPECT_EQ(prewarmer.PrewarmedFamilyNames().size(), 1u);
+  EXPECT_EQ(prewarmer.PrewarmedFamilyNames()[0],
+            "test-font-cache-prewarm-family");
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 

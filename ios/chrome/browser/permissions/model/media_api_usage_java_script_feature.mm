@@ -48,12 +48,8 @@ MediaAPIUsageJavaScriptFeature* MediaAPIUsageJavaScriptFeature::GetInstance() {
 // static
 bool MediaAPIUsageJavaScriptFeature::ShouldOverrideAPI() {
   // Install JS overrides if access is `...Undetermined` or `...Denied`.
-  if (@available(iOS 17.0, *)) {
-    return [AVAudioApplication sharedInstance].recordPermission !=
-           AVAudioApplicationRecordPermissionGranted;
-  }
-  return [AVAudioSession sharedInstance].recordPermission !=
-         AVAudioSessionRecordPermissionGranted;
+  return [AVAudioApplication sharedInstance].recordPermission !=
+         AVAudioApplicationRecordPermissionGranted;
 }
 
 MediaAPIUsageJavaScriptFeature::MediaAPIUsageJavaScriptFeature()
@@ -76,38 +72,25 @@ void MediaAPIUsageJavaScriptFeature::ScriptMessageReceived(
     const web::ScriptMessage& script_message) {
   std::optional<bool> audio;
   std::optional<bool> video;
-  const base::Value::Dict* script_dict =
-      script_message.body() ? script_message.body()->GetIfDict() : nullptr;
+  const base::DictValue* script_dict =
+      script_message.legacy_body() ? script_message.legacy_body()->GetIfDict()
+                                   : nullptr;
   if (script_dict) {
     audio = script_dict->FindBool(kScriptMessageResponseAudioKey);
     video = script_dict->FindBool(kScriptMessageResponseVideoKey);
   }
 
   std::string metric_name;
-  if (@available(iOS 17.0, *)) {
-    switch ([AVAudioApplication sharedInstance].recordPermission) {
-      case AVAudioApplicationRecordPermissionDenied:
-        metric_name = kMediaAPIAccessedHistogramDenied;
-        break;
-      case AVAudioApplicationRecordPermissionGranted:
-        metric_name = kMediaAPIAccessedHistogramGranted;
-        break;
-      case AVAudioApplicationRecordPermissionUndetermined:
-        metric_name = kMediaAPIAccessedHistogramUndetermined;
-        break;
-    }
-  } else {
-    switch ([AVAudioSession sharedInstance].recordPermission) {
-      case AVAudioSessionRecordPermissionDenied:
-        metric_name = kMediaAPIAccessedHistogramDenied;
-        break;
-      case AVAudioSessionRecordPermissionGranted:
-        metric_name = kMediaAPIAccessedHistogramGranted;
-        break;
-      case AVAudioSessionRecordPermissionUndetermined:
-        metric_name = kMediaAPIAccessedHistogramUndetermined;
-        break;
-    }
+  switch ([AVAudioApplication sharedInstance].recordPermission) {
+    case AVAudioApplicationRecordPermissionDenied:
+      metric_name = kMediaAPIAccessedHistogramDenied;
+      break;
+    case AVAudioApplicationRecordPermissionGranted:
+      metric_name = kMediaAPIAccessedHistogramGranted;
+      break;
+    case AVAudioApplicationRecordPermissionUndetermined:
+      metric_name = kMediaAPIAccessedHistogramUndetermined;
+      break;
   }
 
   if (!audio || !video) {

@@ -13,6 +13,7 @@
 #include "ash/wm/window_transient_descendant_iterator.h"
 #include "ash/wm/wm_metrics.h"
 #include "base/memory/raw_ptr.h"
+#include "chromeos/ui/base/window_properties.h"
 #include "chromeos/ui/base/window_state_type.h"
 #include "ui/aura/window.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
@@ -20,6 +21,14 @@
 #include "ui/wm/core/window_util.h"
 
 class PrefRegistrySimple;
+
+namespace ash {
+class WindowState;
+}  // namespace ash
+
+namespace chromeos {
+class ImmersiveFullscreenController;
+}  // namespace chromeos
 
 namespace gfx {
 class Point;
@@ -37,8 +46,6 @@ class View;
 }  // namespace views
 
 namespace ash::window_util {
-
-ASH_EXPORT int GetMiniWindowRoundedCornerRadius();
 
 // Returns the rounded corners for a mini window representation of
 // `source_window`. It takes into account if the `source_window`
@@ -90,11 +97,17 @@ ASH_EXPORT void GetBlockingContainersForRoot(
 ASH_EXPORT bool IsWindowUserPositionable(aura::Window* window);
 
 // Pins the window on top of other windows.
+// TODO(crbug.com/429215055): Rename 'trusted' to a more appropriate name.
 ASH_EXPORT void PinWindow(aura::Window* window, bool trusted);
 
 // Indicates that the window should autohide the shelf when it is the active
 // window.
 ASH_EXPORT void SetAutoHideShelf(aura::Window* window, bool autohide);
+
+// Updates the shelf's visibility to hide when entering immersive fullscreen.
+ASH_EXPORT void UpdateUiForImmersiveFullscreen(
+    chromeos::ImmersiveFullscreenController* controller,
+    bool entering);
 
 // Moves |window| to the root window for the given |display_id|, if it is not
 // already in the same root window. Returns true if |window| was moved.
@@ -113,13 +126,13 @@ ASH_EXPORT void SetChildrenUseExtendedHitRegionForWindow(aura::Window* window);
 // forward to an associated widget.
 ASH_EXPORT void CloseWidgetForWindow(aura::Window* window);
 
-// Installs a resize handler on the window that makes it easier to resize
-// the window.
-ASH_EXPORT void InstallResizeHandleWindowTargeterForWindow(
-    aura::Window* window);
-
 // Returns true if `window` is currently in tab-dragging process.
 ASH_EXPORT bool IsDraggingTabs(const aura::Window* window);
+
+// For a tab drag window (see `IsDraggingTabs`) returns the state of the source
+// window if any. Otherwise returns nullptr.
+ASH_EXPORT const WindowState* GetTabDraggingSourceWindowState(
+    const aura::Window* drag_window);
 
 // Returns true if `window` should be excluded from the cycle list and/or
 // overview.

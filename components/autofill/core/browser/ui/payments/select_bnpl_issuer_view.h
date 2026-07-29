@@ -13,7 +13,10 @@ class SelectBnplIssuerView {
  public:
   virtual ~SelectBnplIssuerView() = default;
 
-  virtual void Dismiss() = 0;
+  // Update the issuer view of the BNPL select issuer dialog with the updated
+  // issuer contexts after the checkout amount comes back from the server-side
+  // AI call.
+  virtual void UpdateDialogWithIssuers() = 0;
 };
 
 }  // namespace autofill::payments

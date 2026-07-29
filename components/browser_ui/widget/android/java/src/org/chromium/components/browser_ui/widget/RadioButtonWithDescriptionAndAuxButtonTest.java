@@ -26,7 +26,6 @@ import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.components.browser_ui.widget.test.R;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 
 /** Unit tests for {@link RadioButtonWithDescriptionAndAuxButton}. */
@@ -39,7 +38,7 @@ public class RadioButtonWithDescriptionAndAuxButtonTest {
 
     private static class AuxButtonClickedListener
             implements RadioButtonWithDescriptionAndAuxButton.OnAuxButtonClickedListener {
-        private CallbackHelper mCallbackHelper = new CallbackHelper();
+        private final CallbackHelper mCallbackHelper = new CallbackHelper();
         private int mClickedId;
 
         AuxButtonClickedListener() {}

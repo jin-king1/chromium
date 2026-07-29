@@ -15,7 +15,7 @@ import {FakeShimlessRmaService} from 'chrome://shimless-rma/fake_shimless_rma_se
 import {setShimlessRmaServiceForTesting} from 'chrome://shimless-rma/mojo_interface_provider.js';
 import {OnboardingLandingPage} from 'chrome://shimless-rma/onboarding_landing_page.js';
 import type {StateResult} from 'chrome://shimless-rma/shimless_rma.mojom-webui.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
 
@@ -27,6 +27,8 @@ suite('onboardingLandingPageTest', function() {
   const busyIconSelector = '#busyIcon';
   const verificationIconSelector = '#verificationIcon';
   const unqualifiedComponentsLinkSelector = '#unqualifiedComponentsLink';
+  const verificationSkipMessageSelector = '#verificationSkipMessage';
+  const exitButtonSelector = '#landingExit';
 
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -72,7 +74,7 @@ suite('onboardingLandingPageTest', function() {
       await component.onNextButtonClick();
     } catch (error: unknown) {
       assertTrue(error instanceof Error);
-      savedError = error as Error;
+      savedError = error;
     }
 
     const expectedCallCount = 0;
@@ -87,7 +89,7 @@ suite('onboardingLandingPageTest', function() {
 
     assert(service);
     service.triggerHardwareVerificationStatusObserver(
-        /* isCompliant= */ true, /* errorMessage= */ '', /* delayMs= */ 0);
+        /* result= */ {passResult: {}}, /* delayMs= */ 0);
     await flushTasks();
 
     const expectedPromise = new PromiseResolver<{stateResult: StateResult}>();
@@ -113,12 +115,40 @@ suite('onboardingLandingPageTest', function() {
 
     assert(service);
     service.triggerHardwareVerificationStatusObserver(
-        /* isCompliant= */ true, /* errorMessage= */ '', /* delayMs= */ 0);
+        /* result= */ {passResult: {}}, /* delayMs= */ 0);
     await flushTasks();
 
     assertFalse(isVisible(busyIcon));
     assertTrue(isVisible(verification));
     assertEquals('shimless-icon:check', verification.icon);
+  });
+
+  // Verify after skipping validation, the busy icon is hidden and the
+  // warning icon shows.
+  test('ValidationSkippedWarningShows', async () => {
+    await initializeLandingPage();
+
+    assert(component);
+    const busyIcon =
+        strictQuery(busyIconSelector, component.shadowRoot, HTMLElement);
+    const verificationIcon = strictQuery(
+                                 verificationIconSelector, component.shadowRoot,
+                                 HTMLElement) as IronIconElement;
+    const validationSkipMessage = strictQuery(
+        verificationSkipMessageSelector, component.shadowRoot, HTMLElement);
+    assertTrue(isVisible(busyIcon));
+    assertFalse(isVisible(verificationIcon));
+    assertFalse(isVisible(validationSkipMessage));
+
+    assert(service);
+    service.triggerHardwareVerificationStatusObserver(
+        /* result= */ {skipResult: {}}, /* delayMs= */ 0);
+    await flushTasks();
+
+    assertFalse(isVisible(busyIcon));
+    assertTrue(isVisible(verificationIcon));
+    assertTrue(isVisible(validationSkipMessage));
+    assertEquals('shimless-icon:warning', verificationIcon.icon);
   });
 
   // Verify the unqualified link shows if validation fails and the components
@@ -129,7 +159,8 @@ suite('onboardingLandingPageTest', function() {
     const failedComponent = 'Keyboard';
     assert(service);
     service.triggerHardwareVerificationStatusObserver(
-        /* isCompliant= */ false, failedComponent, /* delayMs= */ 0);
+        /* result= */ {failResult: {componentInfo: failedComponent}},
+        /* delayMs= */ 0);
     await flushTasks();
 
     assert(component);
@@ -149,7 +180,18 @@ suite('onboardingLandingPageTest', function() {
     assertEquals(
         failedComponent,
         strictQuery('#dialogBody', component.shadowRoot, HTMLElement)
-            .textContent!.trim());
+            .textContent.trim());
+  });
+
+  // Hides Exit button when canExit is false.
+  test('ExitButtonHidesWhenCannotExit', async () => {
+    await initializeLandingPage();
+    assert(component);
+    component.canExit = false;
+
+    assertTrue(
+        strictQuery(exitButtonSelector, component.shadowRoot, HTMLElement)
+            .hidden);
   });
 
   // Verify clicking the landing page's exit button sends the correct event.

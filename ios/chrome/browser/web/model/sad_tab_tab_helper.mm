@@ -9,16 +9,17 @@
 
 #import <memory>
 
+#import "base/check.h"
 #import "base/check_op.h"
+#import "base/functional/callback_helpers.h"
 #import "base/memory/ptr_util.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/scoped_fullscreen_disabler.h"
-#import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
+#import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/utils/notification_observer_bridge.h"
-#import "ios/chrome/browser/web/model/features.h"
 #import "ios/chrome/browser/web/model/page_placeholder_tab_helper.h"
 #import "ios/chrome/browser/web/model/sad_tab_tab_helper_delegate.h"
 #import "ios/components/webui/web_ui_url_constants.h"
@@ -37,10 +38,17 @@ bool IsApplicationStateActive() {
 SadTabTabHelper::SadTabTabHelper(web::WebState* web_state,
                                  base::TimeDelta repeat_failure_interval)
     : web_state_(web_state), repeat_failure_interval_(repeat_failure_interval) {
+  CHECK(web_state_->IsRealized());
   web_state_->AddObserver(this);
-  if (web_state_->IsRealized()) {
-    CreateNotificationObserver();
-  }
+  base::RepeatingCallback<void(NSNotification*)> backgrounding_closure =
+      base::IgnoreArgs<NSNotification*>(base::BindRepeating(
+          &SadTabTabHelper::OnAppDidBecomeActive, weak_factory_.GetWeakPtr()));
+
+  background_notification_observer_ = [[NSNotificationCenter defaultCenter]
+      addObserverForName:UIApplicationDidBecomeActiveNotification
+                  object:nil
+                   queue:nil
+              usingBlock:base::CallbackToBlock(backgrounding_closure)];
 }
 
 SadTabTabHelper::~SadTabTabHelper() {
@@ -78,8 +86,7 @@ void SadTabTabHelper::RenderProcessGone(web::WebState* web_state) {
   DCHECK_EQ(web_state_, web_state);
 
   // Don't present a sad tab on top of an NTP.
-  NewTabPageTabHelper* NTPHelper = NewTabPageTabHelper::FromWebState(web_state);
-  if (NTPHelper && NTPHelper->IsActive()) {
+  if (IsVisibleURLNewTabPage(web_state)) {
     return;
   }
 
@@ -120,8 +127,8 @@ void SadTabTabHelper::DidFinishNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
   DCHECK_EQ(web_state_, web_state);
-  if (navigation_context->GetUrl().host() == kChromeUICrashHost &&
-      navigation_context->GetUrl().scheme() == kChromeUIScheme) {
+  if (navigation_context->GetUrl().GetHost() == kChromeUICrashHost &&
+      navigation_context->GetUrl().GetScheme() == kChromeUIScheme) {
     OnVisibleCrash(navigation_context->GetUrl());
     PresentSadTab();
   }
@@ -131,23 +138,6 @@ void SadTabTabHelper::WebStateDestroyed(web::WebState* web_state) {
   DCHECK_EQ(web_state_, web_state);
   web_state_->RemoveObserver(this);
   web_state_ = nullptr;
-}
-
-void SadTabTabHelper::WebStateRealized(web::WebState* web_state) {
-  CHECK(!background_notification_observer_, base::NotFatalUntil::M125);
-  CreateNotificationObserver();
-}
-
-void SadTabTabHelper::CreateNotificationObserver() {
-  base::RepeatingCallback<void(NSNotification*)> backgrounding_closure =
-      base::IgnoreArgs<NSNotification*>(base::BindRepeating(
-          &SadTabTabHelper::OnAppDidBecomeActive, weak_factory_.GetWeakPtr()));
-
-  background_notification_observer_ = [[NSNotificationCenter defaultCenter]
-      addObserverForName:UIApplicationDidBecomeActiveNotification
-                  object:nil
-                   queue:nil
-              usingBlock:base::CallbackToBlock(backgrounding_closure)];
 }
 
 void SadTabTabHelper::OnVisibleCrash(const GURL& url_causing_failure) {
@@ -176,8 +166,8 @@ void SadTabTabHelper::PresentSadTab() {
 
   bool is_pdf = web_state_->GetContentsMimeType() == "application/pdf";
   bool is_chrome_external_file_url =
-      last_failed_url_.host() == kChromeUIExternalFileHost &&
-      last_failed_url_.scheme() == kChromeUIScheme;
+      last_failed_url_.GetHost() == kChromeUIExternalFileHost &&
+      last_failed_url_.GetScheme() == kChromeUIScheme;
   UMA_HISTOGRAM_BOOLEAN("IOS.SadTab.FileIsPDF", is_pdf);
   UMA_HISTOGRAM_BOOLEAN("IOS.SadTab.URLIsChromeExternalFile",
                         is_chrome_external_file_url);
@@ -206,5 +196,3 @@ void SadTabTabHelper::OnAppDidBecomeActive() {
   }
   requires_reload_on_becoming_active_ = false;
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(SadTabTabHelper)

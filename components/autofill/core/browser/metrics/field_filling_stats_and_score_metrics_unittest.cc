@@ -7,68 +7,91 @@
 #include <string_view>
 
 #include "base/test/metrics/histogram_tester.h"
+#include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
 #include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/common/form_data_test_api.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill::autofill_metrics {
 namespace {
 
 std::vector<test::FieldDescription> GetTestFormDataFields() {
-  return {
-      {.role = NAME_FULL, .value = u"First Middle Last", .is_autofilled = true},
-      // Those two fields are going to be changed to a value of the
-      // same type.
-      {.role = NAME_FIRST, .value = u"First", .is_autofilled = true},
-      {.role = NAME_LAST, .value = u"Last", .is_autofilled = true},
-      // This field is going to be changed to a value of a different
-      // type.
-      {.role = NAME_FIRST, .value = u"First", .is_autofilled = true},
-      // This field is going to be changed to another value of unknown
-      // type.
-      {.role = NAME_FIRST, .value = u"First", .is_autofilled = true},
-      // This field is going to be changed to the empty value.
-      {.role = NAME_MIDDLE, .value = u"Middle", .is_autofilled = true},
-      // This field remains.
-      {.role = NAME_LAST, .value = u"Last", .is_autofilled = true},
-      // This following two fields are manually filled to a value of
-      // type NAME_FIRST.
-      {.role = NAME_FIRST, .value = u"Elvis", .is_autofilled = false},
-      {.role = NAME_FIRST, .value = u"Elvis", .is_autofilled = false},
-      // This one is manually filled to a value of type NAME_LAST.
-      {.role = NAME_FIRST, .value = u"Presley", .is_autofilled = false},
-      // This next three are manually filled to a value of
-      // UNKNOWN_TYPE.
-      {.role = NAME_FIRST, .value = u"Random Value", .is_autofilled = false},
-      {.role = NAME_MIDDLE, .value = u"Random Value", .is_autofilled = false},
-      {.role = NAME_LAST, .value = u"Random Value", .is_autofilled = false},
-      {.role = ADDRESS_HOME_LINE1,
-       .value = u"Erika-mann",
-       .is_autofilled = true},
-      {.role = ADDRESS_HOME_ZIP, .value = u"89173", .is_autofilled = true},
-      {.role = ADDRESS_HOME_APT_NUM, .value = u"33", .is_autofilled = true},
-      // The last field is not autofilled and empty.
-      {.role = ADDRESS_HOME_CITY, .value = u"", .is_autofilled = false},
-      // We add two credit cards field to make sure those are counted
-      // in separate statistics.
-      {.role = CREDIT_CARD_NAME_FULL,
-       .value = u"Test Name",
-       .is_autofilled = true},
-      {.role = CREDIT_CARD_NUMBER, .value = u"", .is_autofilled = false}};
-}
-
-// Expects that `histogram_tester` contains `sample`. The histogram's name is
-// the concatenation of  "Autofill.FieldFillingStats." and
-// `histogram_name_suffix`. The histogram bucket count defaults to 1.
-void ExpectFieldFillingStatsUniqueSample(
-    const base::HistogramTester& histogram_tester,
-    std::string_view histogram_name_suffix,
-    int sample) {
-  histogram_tester.ExpectUniqueSample(
-      base::StrCat({"Autofill.FieldFillingStats.", histogram_name_suffix}),
-      sample, /*expected_bucket_count=*/1);
+  return {{.role = NAME_FULL,
+           .value = u"First Middle Last",
+           .is_autofilled_according_to_renderer = true},
+          // Those two fields are going to be changed to a value of the
+          // same type.
+          {.role = NAME_FIRST,
+           .value = u"First",
+           .is_autofilled_according_to_renderer = true},
+          {.role = NAME_LAST,
+           .value = u"Last",
+           .is_autofilled_according_to_renderer = true},
+          // This field is going to be changed to a value of a different
+          // type.
+          {.role = NAME_FIRST,
+           .value = u"First",
+           .is_autofilled_according_to_renderer = true},
+          // This field is going to be changed to another value of unknown
+          // type.
+          {.role = NAME_FIRST,
+           .value = u"First",
+           .is_autofilled_according_to_renderer = true},
+          // This field is going to be changed to the empty value.
+          {.role = NAME_MIDDLE,
+           .value = u"Middle",
+           .is_autofilled_according_to_renderer = true},
+          // This field remains.
+          {.role = NAME_LAST,
+           .value = u"Last",
+           .is_autofilled_according_to_renderer = true},
+          // This following two fields are manually filled to a value of
+          // type NAME_FIRST.
+          {.role = NAME_FIRST,
+           .value = u"Elvis",
+           .is_autofilled_according_to_renderer = false},
+          {.role = NAME_FIRST,
+           .value = u"Elvis",
+           .is_autofilled_according_to_renderer = false},
+          // This one is manually filled to a value of type NAME_LAST.
+          {.role = NAME_FIRST,
+           .value = u"Presley",
+           .is_autofilled_according_to_renderer = false},
+          // This next three are manually filled to a value of
+          // UNKNOWN_TYPE.
+          {.role = NAME_FIRST,
+           .value = u"Random Value",
+           .is_autofilled_according_to_renderer = false},
+          {.role = NAME_MIDDLE,
+           .value = u"Random Value",
+           .is_autofilled_according_to_renderer = false},
+          {.role = NAME_LAST,
+           .value = u"Random Value",
+           .is_autofilled_according_to_renderer = false},
+          {.role = ADDRESS_HOME_LINE1,
+           .value = u"Erika-mann",
+           .is_autofilled_according_to_renderer = true},
+          {.role = ADDRESS_HOME_ZIP,
+           .value = u"89173",
+           .is_autofilled_according_to_renderer = true},
+          {.role = ADDRESS_HOME_APT_NUM,
+           .value = u"33",
+           .is_autofilled_according_to_renderer = true},
+          // The last field is not autofilled and empty.
+          {.role = ADDRESS_HOME_CITY,
+           .value = u"",
+           .is_autofilled_according_to_renderer = false},
+          // We add two credit cards field to make sure those are counted
+          // in separate statistics.
+          {.role = CREDIT_CARD_NAME_FULL,
+           .value = u"Test Name",
+           .is_autofilled_according_to_renderer = true},
+          {.role = CREDIT_CARD_NUMBER,
+           .value = u"",
+           .is_autofilled_according_to_renderer = false}};
 }
 
 class AutofillFieldFillingStatsAndScoreMetricsTest
@@ -101,7 +124,7 @@ class AutofillFieldFillingStatsAndScoreMetricsTest
         {.description_for_logging = "FieldFillingStats",
          .fields = fields,
          .renderer_id = test::MakeFormRendererId(),
-         .main_frame_origin = url::Origin::Create(autofill_driver_->url())});
+         .main_frame_origin = url::Origin::Create(autofill_driver().url())});
     return form_data_;
   }
 
@@ -111,61 +134,17 @@ class AutofillFieldFillingStatsAndScoreMetricsTest
   FormData form_data_;
 };
 
-// Test the logging of the field-wise filling stats.
-TEST_F(AutofillFieldFillingStatsAndScoreMetricsTest, FillingStats) {
-  const FormData& form = GetAndAddSeenFormWithFields(GetTestFormDataFields());
-  SimulationOfDefaultUserChangesOnAddedFormTextFields();
-  base::HistogramTester histogram_tester;
-
-  SubmitForm(form);
-
-  // Testing of the FormFillingStats expectations. Note that `form` is an
-  // address form but also a `FormTypeNameForLogging::kPostalAddressForm` form,
-  // as opposed to for example, a `FormTypeNameForLogging::kEmailOnlyForm`.
-  for (std::string_view form_type :
-       {FormTypeNameForLoggingToStringView(
-            FormTypeNameForLogging::kAddressForm),
-        FormTypeNameForLoggingToStringView(
-            FormTypeNameForLogging::kPostalAddressForm)}) {
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".Accepted"}), 5);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".CorrectedToSameType"}), 2);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester,
-        base::StrCat({form_type, ".CorrectedToDifferentType"}), 1);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".CorrectedToUnknownType"}),
-        1);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".CorrectedToEmpty"}), 1);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".LeftEmpty"}), 1);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester,
-        base::StrCat({form_type, ".ManuallyFilledToSameType"}), 2);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester,
-        base::StrCat({form_type, ".ManuallyFilledToDifferentType"}), 1);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester,
-        base::StrCat({form_type, ".ManuallyFilledToUnknownType"}), 3);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".TotalManuallyFilled"}), 6);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".TotalFilled"}), 10);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".TotalCorrected"}), 5);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".TotalUnfilled"}), 7);
-    ExpectFieldFillingStatsUniqueSample(
-        histogram_tester, base::StrCat({form_type, ".Total"}), 17);
-  }
-}
-
 // Test form-wise filling score for the different form types.
 TEST_F(AutofillFieldFillingStatsAndScoreMetricsTest, FillingScores) {
   const FormData& form = GetAndAddSeenFormWithFields(GetTestFormDataFields());
+  FormStructure& form_structure =
+      *test_api(autofill_manager()).FindCachedFormById(form.global_id());
+  for (const auto [field, autofill_field] :
+       base::zip(form.fields(), form_structure.fields())) {
+    if (field.is_autofilled_according_to_renderer()) {
+      autofill_field->AddFieldModifier(FieldModifier::kAutofill);
+    }
+  }
   base::HistogramTester histogram_tester;
   SimulationOfDefaultUserChangesOnAddedFormTextFields();
 
@@ -203,31 +182,28 @@ class AutocompleteUnrecognizedFieldFillingStatsTest
 TEST_F(AutocompleteUnrecognizedFieldFillingStatsTest, FieldFillingStats) {
   FormData form = GetAndAddSeenForm(
       {.fields = {
-           {.role = NAME_FIRST,
-            .autocomplete_attribute = "unrecognized",
-            .is_autofilled = true},
-           {.role = NAME_MIDDLE,
-            .autocomplete_attribute = "unrecognized",
-            .is_autofilled = true},
-           {.role = NAME_LAST,
-            .autocomplete_attribute = "unrecognized",
-            .is_autofilled = true},
+           {.role = NAME_FIRST, .autocomplete_attribute = "unrecognized"},
+           {.role = NAME_MIDDLE, .autocomplete_attribute = "unrecognized"},
+           {.role = NAME_LAST, .autocomplete_attribute = "unrecognized"},
            {.role = ADDRESS_HOME_COUNTRY,
-            .autocomplete_attribute = "unrecognized",
-            .is_autofilled = true},
+            .autocomplete_attribute = "unrecognized"},
            {.role = ADDRESS_HOME_STREET_NAME,
-            .autocomplete_attribute = "unrecognized",
-            .is_autofilled = true},
+            .autocomplete_attribute = "unrecognized"},
            {.role = ADDRESS_HOME_HOUSE_NUMBER,
-            .autocomplete_attribute = "unrecognized",
-            .is_autofilled = true},
+            .autocomplete_attribute = "unrecognized"},
            {.role = ADDRESS_HOME_CITY,
-            .autocomplete_attribute = "unrecognized",
-            .is_autofilled = true},
+            .autocomplete_attribute = "unrecognized"},
            {.role = ADDRESS_HOME_ZIP, .autocomplete_attribute = "unrecognized"},
            {.role = PHONE_HOME_WHOLE_NUMBER,
             .autocomplete_attribute = "unrecognized"},
            {.role = EMAIL_ADDRESS, .autocomplete_attribute = "unrecognized"}}});
+
+  FormStructure& form_structure =
+      *test_api(autofill_manager()).FindCachedFormById(form.global_id());
+  ASSERT_EQ(form_structure.fields().size(), 10u);
+  for (size_t i = 0; i < 7; ++i) {
+    form_structure.field(i)->AddFieldModifier(FieldModifier::kAutofill);
+  }
 
   SimulateUserChangedFieldTo(form, form.fields()[0], u"Corrected First Name");
   SimulateUserChangedFieldTo(form, form.fields()[1], u"Corrected Middle Name");

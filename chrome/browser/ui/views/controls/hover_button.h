@@ -34,7 +34,6 @@ class ImageModel;
 
 namespace views {
 class Label;
-class StyledLabel;
 class View;
 }  // namespace views
 
@@ -48,8 +47,6 @@ class HoverButton : public views::LabelButton {
   METADATA_HEADER(HoverButton, views::LabelButton)
 
  public:
-  enum Style { STYLE_PROMINENT, STYLE_ERROR };
-
   HoverButton();
 
   // Creates a single line hover button with no icon.
@@ -60,15 +57,49 @@ class HoverButton : public views::LabelButton {
               const ui::ImageModel& icon,
               const std::u16string& text);
 
-  // Creates a HoverButton with custom subviews. |icon_view| replaces the
-  // LabelButton icon, and titles appear on separate rows. An empty |subtitle|
-  // and |footer| will vertically center |title|. |footer| will be shown below
-  // |title| and |subtitle|. |secondary_view|, when set, is shown on the
-  // opposite side of the button from |icon_view|. When
-  // |add_vertical_label_spacing| is false it will not add vertical spacing to
-  // the label wrapper. Warning: |icon_view| must have a fixed size and be
-  // correctly set during its constructor for the HoverButton to layout
-  // correctly.
+  // Configuration options for creating a HoverButton with custom subviews.
+  // Warning: `icon_view` must have a fixed size and be correctly set during
+  // its constructor for the HoverButton to layout correctly.
+  struct Params {
+    Params();
+    ~Params();
+    Params(Params&&);
+    Params& operator=(Params&&);
+
+    // LabelButton icon.
+    std::unique_ptr<views::View> icon_view;
+
+    // Title text. Appears on a separate row.
+    std::u16string title;
+
+    // Subtitle text. An empty `subtitle` and `footer` will vertically center
+    // `title`.
+    std::u16string subtitle;
+
+    // Shown on the opposite side of the button from `icon_view`.
+    std::unique_ptr<views::View> secondary_view;
+
+    // When false, does not add vertical spacing to the label wrapper.
+    bool add_vertical_label_spacing = true;
+
+    // Vertical offset applied to the top and bottom spacing of the icon
+    // wrapper.
+    int icon_vertical_offset = 0;
+
+    // Shown below `title` and `subtitle`.
+    std::u16string footer;
+
+    // Horizontal spacing between icon and labels.
+    int icon_label_spacing = ChromeLayoutProvider::Get()->GetDistanceMetric(
+        views::DISTANCE_RELATED_LABEL_HORIZONTAL);
+
+    bool multiline_subtitle = false;
+  };
+
+  // Creates a HoverButton with custom subviews described by `params`.
+  HoverButton(PressedCallback callback, Params params);
+
+  // Legacy constructor for HoverButton. Prefer using the Params struct instead.
   HoverButton(
       PressedCallback callback,
       std::unique_ptr<views::View> icon_view,
@@ -108,14 +139,18 @@ class HoverButton : public views::LabelButton {
   // Set the text context and style of the footer.
   void SetFooterTextStyle(int text_context, views::style::TextStyle text_style);
 
+  // Adds a11y text to the button, which will be read out when the button is
+  // focused.
+  void AddExtraAccessibleText(const std::u16string& text);
+
   void SetIconHorizontalMargins(int left, int right);
 
   PressedCallback& callback(base::PassKey<HoverButtonController>) {
     return callback_;
   }
 
-  views::StyledLabel* title() { return title_; }
-  const views::StyledLabel* title() const { return title_; }
+  views::Label* title() { return title_; }
+  const views::Label* title() const { return title_; }
 
  protected:
   // views::MenuButton:
@@ -149,13 +184,15 @@ class HoverButton : public views::LabelButton {
 
   PressedCallback callback_;
 
-  raw_ptr<views::StyledLabel> title_ = nullptr;
+  raw_ptr<views::Label> title_ = nullptr;
   raw_ptr<views::View> icon_wrapper_ = nullptr;
   raw_ptr<views::View> label_wrapper_ = nullptr;
   raw_ptr<views::Label> subtitle_ = nullptr;
   raw_ptr<views::Label> footer_ = nullptr;
   raw_ptr<views::View> icon_view_ = nullptr;
   raw_ptr<views::View> secondary_view_ = nullptr;
+
+  std::u16string additional_accessible_text_;
 
   std::vector<base::CallbackListSubscription> text_changed_subscriptions_;
 

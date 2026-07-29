@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.auxiliary_search;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
@@ -14,8 +13,8 @@ import org.jni_zero.NativeMethods;
 import org.chromium.base.Callback;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.url.GURL;
@@ -24,18 +23,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /** Java bridge to provide information for the auxiliary search. */
+@NullMarked
 public class AuxiliarySearchBridge {
-    private long mNativeBridge;
+    private final long mNativeBridge;
 
     /**
      * Constructs a bridge for the auxiliary search provider.
      *
      * @param profile The Profile to retrieve the corresponding information.
      */
-    public AuxiliarySearchBridge(@NonNull Profile profile) {
-        if ((!ChromeFeatureList.sAndroidAppIntegration.isEnabled()
-                        && !ChromeFeatureList.sAndroidAppIntegrationV2.isEnabled())
-                || profile.isOffTheRecord()) {
+    public AuxiliarySearchBridge(Profile profile) {
+        if (profile.isOffTheRecord()) {
             mNativeBridge = 0;
         } else {
             mNativeBridge = AuxiliarySearchBridgeJni.get().getForProfile(profile);
@@ -48,16 +46,16 @@ public class AuxiliarySearchBridge {
      * @param tabs A list of {@link Tab}s to check if they are sensitive.
      * @param callback {@link Callback} to pass back the list of non-sensitive {@link Tab}s.
      */
-    public void getNonSensitiveTabs(List<Tab> tabs, Callback<List<Tab>> callback) {
+    public void getNonSensitiveTabs(List<Tab> tabs, Callback<@Nullable List<Tab>> callback) {
         if (mNativeBridge == 0) {
-            PostTask.runOrPostTask(TaskTraits.UI_DEFAULT, () -> callback.onResult(null));
+            PostTask.runOrPostTask(TaskTraits.UI_DEFAULT, callback.bind(null));
             return;
         }
 
         AuxiliarySearchBridgeJni.get()
                 .getNonSensitiveTabs(
                         mNativeBridge,
-                        tabs.toArray(new Tab[0]),
+                        tabs,
                         new Callback<Object[]>() {
                             @Override
                             public void onResult(Object[] tabs) {
@@ -80,44 +78,30 @@ public class AuxiliarySearchBridge {
      * @param callback {@link Callback} to pass back the list of non-sensitive {@link
      *     AuxiliarySearchDataEntry}s.
      */
-    public void getNonSensitiveHistoryData(Callback<List<AuxiliarySearchDataEntry>> callback) {
+    public void getNonSensitiveHistoryData(
+            Callback<@Nullable List<AuxiliarySearchDataEntry>> callback) {
         if (mNativeBridge == 0) {
-            PostTask.runOrPostTask(TaskTraits.UI_DEFAULT, () -> callback.onResult(null));
+            PostTask.runOrPostTask(TaskTraits.UI_DEFAULT, callback.bind(null));
             return;
         }
 
-        List<AuxiliarySearchDataEntry> entries = new ArrayList<>();
-        AuxiliarySearchBridgeJni.get()
-                .getNonSensitiveHistoryData(mNativeBridge, this, entries, callback);
+        AuxiliarySearchBridgeJni.get().getNonSensitiveHistoryData(mNativeBridge, callback);
     }
 
     /**
-     * Helper to add new {@link AuxiliarySearchDataEntry} to list.
+     * This method will return a list of Custom Tabs URLs.
      *
-     * @param type The type of the data source.
-     * @param url The {@link GURL} of the entry.
-     * @param title The page title.
-     * @param lastActiveTime The last visited timestamp.
-     * @param tabId The Tad ID of the entry if it is a local Tab, -1 otherwise.
-     * @param appId The ID of the app which opens the URL if the entry is a CCT, null otherwise.
-     * @param visitId A unique ID of the entry if it isn't a local Tab, -1 otherwise.
-     * @param entries The list of fetched entries.
+     * @param url The current URL of the Custom Tab.
+     * @param callback {@link Callback} to pass back the list of {@link AuxiliarySearchDataEntry}s.
      */
-    @CalledByNative
-    @VisibleForTesting
-    void addDataEntry(
-            @AuxiliarySearchEntryType int type,
-            GURL url,
-            String title,
-            long lastActiveTime,
-            int tabId,
-            @Nullable String appId,
-            int visitId,
-            List<AuxiliarySearchDataEntry> entries) {
-        AuxiliarySearchDataEntry entry =
-                new AuxiliarySearchDataEntry(
-                        type, url, title, lastActiveTime, tabId, appId, visitId);
-        entries.add(entry);
+    public void getCustomTabs(
+            GURL url, long timestamp, Callback<@Nullable List<AuxiliarySearchDataEntry>> callback) {
+        if (mNativeBridge == 0) {
+            PostTask.runOrPostTask(TaskTraits.UI_DEFAULT, callback.bind(null));
+            return;
+        }
+
+        AuxiliarySearchBridgeJni.get().getCustomTabs(mNativeBridge, url, timestamp, callback);
     }
 
     /**
@@ -128,8 +112,8 @@ public class AuxiliarySearchBridge {
      */
     @CalledByNative
     @VisibleForTesting
-    void onDataReady(
-            List<AuxiliarySearchDataEntry> entries,
+    static void onDataReady(
+            @JniType("std::vector") List<AuxiliarySearchDataEntry> entries,
             Callback<List<AuxiliarySearchDataEntry>> callback) {
         callback.onResult(entries);
     }
@@ -140,12 +124,18 @@ public class AuxiliarySearchBridge {
         long getForProfile(@JniType("Profile*") Profile profile);
 
         void getNonSensitiveTabs(
-                long nativeAuxiliarySearchProvider, Tab[] tabs, Callback<Object[]> callback);
+                long nativeAuxiliarySearchProvider,
+                @JniType("std::vector<TabAndroid*>") List<Tab> tabs,
+                Callback<Object[]> callback);
 
         void getNonSensitiveHistoryData(
                 long nativeAuxiliarySearchProvider,
-                AuxiliarySearchBridge self,
-                List<AuxiliarySearchDataEntry> entries,
-                Callback<List<AuxiliarySearchDataEntry>> callback);
+                Callback<@Nullable List<AuxiliarySearchDataEntry>> callback);
+
+        void getCustomTabs(
+                long nativeAuxiliarySearchProvider,
+                GURL url,
+                long timestamp,
+                Callback<@Nullable List<AuxiliarySearchDataEntry>> callback);
     }
 }

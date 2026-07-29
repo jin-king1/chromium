@@ -29,25 +29,20 @@
 LINK_RESOURCE_ID(0, 0)
 
 // InfoBar resources.
-LINK_RESOURCE_ID(IDR_INFOBAR_AUTOFILL_CC, R.drawable.infobar_autofill_cc)
+LINK_RESOURCE_ID(IDR_INFOBAR_AUTOFILL_CC, R.drawable.ic_autofill_cc)
 
 // Android only infobars.
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_LITE_MODE, R.drawable.preview_pin_round)
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_NOTIFICATIONS_OFF,
+DECLARE_RESOURCE_ID(IDR_ANDROID_MESSAGE_NOTIFICATIONS_OFF,
                     R.drawable.permission_push_notification_off)
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_PREVIEWS, R.drawable.infobar_chrome)
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_SAFETYTIP_SHIELD,
+DECLARE_RESOURCE_ID(IDR_ANDROID_MESSAGE_SAFETYTIP_SHIELD,
                     R.drawable.safetytip_shield)
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFOBAR_TRANSLATE, R.drawable.infobar_translate)
 LINK_RESOURCE_ID(IDR_AUTOFILL_GOOGLE_PAY_WITH_DIVIDER,
                  R.drawable.google_pay_with_divider)
 
 // Android only messages (an alternative UI to infobars)
-DECLARE_RESOURCE_ID(IDR_ANDORID_MESSAGE_PERMISSION_VIDEOCAM,
-                    R.drawable.ic_videocam_24dp)
-DECLARE_RESOURCE_ID(IDR_ANDORID_MESSAGE_PERMISSION_STORAGE,
-                    R.drawable.ic_storage)
-DECLARE_RESOURCE_ID(IDR_ANDORID_MESSAGE_PERMISSION_CAMERA,
+DECLARE_RESOURCE_ID(IDR_ANDROID_MESSAGE_PERMISSION_VIDEOCAM,
+                    R.drawable.ic_videocam_fill_24dp)
+DECLARE_RESOURCE_ID(IDR_ANDROID_MESSAGE_PERMISSION_CAMERA,
                     R.drawable.ic_photo_camera_black)
 DECLARE_RESOURCE_ID(IDR_ANDROID_MESSAGE_PERMISSION_XR,
                     R.drawable.gm_filled_cardboard_24)
@@ -60,7 +55,7 @@ DECLARE_RESOURCE_ID(IDR_ANDROID_MESSAGE_SHIELD_GRAY, R.drawable.gray_shield)
 DECLARE_RESOURCE_ID(IDR_ANDORID_MESSAGE_PASSWORD_MANAGER_ERROR,
                     R.drawable.ic_key_error)
 DECLARE_RESOURCE_ID(IDR_ANDROID_IC_MOBILE_FRIENDLY,
-                    R.drawable.ic_mobile_friendly)
+                    R.drawable.ic_mobile_friendly_24dp)
 DECLARE_RESOURCE_ID(IDR_ANDROID_MESSAGE_LOCATION_OFF,
                     R.drawable.permission_location_off)
 
@@ -81,7 +76,7 @@ DECLARE_RESOURCE_ID(IDR_SEND_TAB_TO_SELF, R.drawable.send_tab)
 
 // Icon displayed in the save address message on Android.
 DECLARE_RESOURCE_ID(IDR_ANDROID_AUTOFILL_ADDRESS,
-                    R.drawable.gm_filled_location_on_24)
+                    R.drawable.ic_location_on_fill_24dp)
 DECLARE_RESOURCE_ID(IDR_ANDROID_AUTOFILL_UPLOAD_ADDRESS,
                     R.drawable.ic_cloud_upload_24dp)
 
@@ -90,8 +85,15 @@ LINK_RESOURCE_ID(IDR_CREDIT_CARD_CVC_HINT_BACK, R.drawable.cvc_icon)
 LINK_RESOURCE_ID(IDR_CREDIT_CARD_CVC_HINT_FRONT_AMEX, R.drawable.cvc_icon_amex)
 
 // A generic info outline icon.
-DECLARE_RESOURCE_ID(IDR_ANDROID_INFO_OUTLINE_LOGO_24DP,
-                    R.drawable.ic_info_outline_grey_24dp)
+DECLARE_RESOURCE_ID(IDR_ANDROID_INFO_OUTLINE_LOGO_24DP, R.drawable.ic_info_24dp)
+
+// A generic help icon.
+DECLARE_RESOURCE_ID(IDR_ANDROID_IC_HELP_24DP, R.drawable.ic_help_24dp)
+
+DECLARE_RESOURCE_ID(IDR_ANDROID_IC_SPARK_24DP, R.drawable.ic_spark_24dp)
+DECLARE_RESOURCE_ID(IDR_ANDROID_IC_SPARK_BLUE, R.drawable.ic_spark_blue_24dp)
+DECLARE_RESOURCE_ID(IDR_ANDROID_IC_GOOGLE_SERVICES,
+                    R.drawable.ic_google_services_24dp)
 
 // About this site resources
 // Page insights logo is used for Google branded builds only.
@@ -100,5 +102,5 @@ DECLARE_RESOURCE_ID(IDR_ANDROID_ABOUT_THIS_SITE_LOGO_24DP,
                     R.drawable.ic_page_insights_logo_24dp)
 #else
 DECLARE_RESOURCE_ID(IDR_ANDROID_ABOUT_THIS_SITE_LOGO_24DP,
-                    R.drawable.ic_info_outline_grey_24dp)
+                    R.drawable.ic_info_24dp)
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && BUILDFLAG(IS_ANDROID)

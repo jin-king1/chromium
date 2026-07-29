@@ -68,7 +68,7 @@ class MEDIA_EXPORT EsParserAdts : public EsParser {
   // Signal any audio configuration change (if any).
   // Return false if the current audio config is not
   // a supported ADTS audio config.
-  bool UpdateAudioConfiguration(const uint8_t* adts_header, int size);
+  bool UpdateAudioConfiguration(base::span<const uint8_t> adts_header);
 
   void CalculateSubsamplesForAdtsFrame(const AdtsFrame& adts_frame,
                                        std::vector<SubsampleEntry>* subsamples);
@@ -91,8 +91,6 @@ class MEDIA_EXPORT EsParserAdts : public EsParser {
 
   // Last audio config.
   AudioDecoderConfig last_audio_decoder_config_;
-
-  ADTSStreamParser adts_parser_;
 };
 
 }  // namespace mp2t

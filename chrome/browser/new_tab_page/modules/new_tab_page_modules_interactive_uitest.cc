@@ -7,9 +7,17 @@
 
 #include "base/strings/strcat.h"
 #include "base/test/scoped_feature_list.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/new_tab_page/modules/modules_switches.h"
+#include "content/public/common/content_features.h"
 #include "chrome/browser/new_tab_page/modules/test_support.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/test/tab_strip_interactive_test_mixin.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
@@ -20,17 +28,26 @@
 #include "components/prefs/pref_service.h"
 #include "components/search/ntp_features.h"
 #include "content/public/test/browser_test.h"
+#include "ui/base/interaction/interactive_test.h"
 
 namespace {
 
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNewTabPageElementId);
 
 using DeepQuery = WebContentsInteractionTestUtil::DeepQuery;
-const DeepQuery kModulesV2Container = {"ntp-app", "ntp-modules-v2",
-                                       "#container"};
-const DeepQuery kModulesV2Wrapper = {"ntp-app", "ntp-modules-v2", "#container",
+const DeepQuery kModulesV2Container = {"ntp-app", "ntp-modules", "#container"};
+const DeepQuery kModulesV2Wrapper = {"ntp-app", "ntp-modules", "#container",
                                      "ntp-module-wrapper"};
 const DeepQuery kMicrosoftAuthIframe = {"ntp-app", "#microsoftAuth"};
+const DeepQuery kTabGroupsModule = {"ntp-app", "ntp-modules",
+                                    "ntp-tab-groups-module"};
+const DeepQuery kTabGroupsModuleContainer = {
+    "ntp-app", "ntp-modules", "ntp-tab-groups-module", "#tabGroupsContainer"};
+const DeepQuery kCreateNewTabGroup = {
+    "ntp-app", "ntp-modules", "ntp-tab-groups-module", ".create-new-tab-group"};
+const DeepQuery kFirstTabGroup = {"ntp-app", "ntp-modules",
+                                  "ntp-tab-groups-module",
+                                  ".tab-group:nth-of-type(1)"};
 
 struct ModuleLink {
   const DeepQuery query;
@@ -53,19 +70,22 @@ ModuleDetails kMostRelevantTabResumptionModuleDetails = {
     {{ntp_features::kNtpMostRelevantTabResumptionModule,
       {{ntp_features::kNtpMostRelevantTabResumptionModuleDataParam,
         "Fake Data"}}}},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
-     "ntp-most-relevant-tab-resumption"},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
-     "ntp-most-relevant-tab-resumption", "ntp-module-header-v2", "#menuButton"},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
-     "ntp-most-relevant-tab-resumption", "ntp-module-header-v2",
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
+     "ntp-most-relevant-tab-resumption-module"},
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
+     "ntp-most-relevant-tab-resumption-module", "ntp-module-header-v2",
+     "#menuButton"},
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
+     "ntp-most-relevant-tab-resumption-module", "ntp-module-header-v2",
      "cr-action-menu", "dialog"},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
-     "ntp-most-relevant-tab-resumption", "ntp-module-header-v2", "#dismiss"},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
-     "ntp-most-relevant-tab-resumption", "ntp-module-header-v2", "#disable"},
-    {{{"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
-       "ntp-most-relevant-tab-resumption", "#urlVisits", "a"},
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
+     "ntp-most-relevant-tab-resumption-module", "ntp-module-header-v2",
+     "#dismiss"},
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
+     "ntp-most-relevant-tab-resumption-module", "ntp-module-header-v2",
+     "#disable"},
+    {{{"ntp-app", "ntp-modules", "ntp-module-wrapper",
+       "ntp-most-relevant-tab-resumption-module", "#urlVisits", "a"},
       "https://www.google.com"}},
 };
 
@@ -73,29 +93,29 @@ ModuleDetails kGoogleCalendarModuleDetails = {
     ntp_features::kNtpCalendarModule,
     {{ntp_features::kNtpCalendarModule,
       {{ntp_features::kNtpCalendarModuleDataParam, "fake"}}}},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
      "ntp-google-calendar-module"},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
      "ntp-google-calendar-module", "ntp-module-header-v2", "#menuButton"},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
      "ntp-google-calendar-module", "ntp-module-header-v2", "cr-action-menu",
      "dialog"},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
      "ntp-google-calendar-module", "ntp-module-header-v2", "#dismiss"},
-    {"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
+    {"ntp-app", "ntp-modules", "ntp-module-wrapper",
      "ntp-google-calendar-module", "ntp-module-header-v2", "#disable"},
-    {{{"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
+    {{{"ntp-app", "ntp-modules", "ntp-module-wrapper",
        "ntp-google-calendar-module", "ntp-calendar", "ntp-calendar-event",
        "#header"},
       "https://foo.com/0"},
-     {{"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
+     {{"ntp-app", "ntp-modules", "ntp-module-wrapper",
        "ntp-google-calendar-module", "ntp-calendar", "#seeMore", "a"},
       "https://calendar.google.com"},
-     {{"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
+     {{"ntp-app", "ntp-modules", "ntp-module-wrapper",
        "ntp-google-calendar-module", "ntp-calendar", "ntp-calendar-event",
        "cr-chip"},
       "https://foo.com/attachment0"},
-     {{"ntp-app", "ntp-modules-v2", "ntp-module-wrapper",
+     {{"ntp-app", "ntp-modules", "ntp-module-wrapper",
        "ntp-google-calendar-module", "ntp-calendar", "ntp-calendar-event",
        "cr-button"},
       "https://foo.com/conference0"}},
@@ -136,11 +156,12 @@ class NewTabPageModulesInteractiveUiBaseTest : public InteractiveBrowserTest {
   }
 
   InteractiveTestApi::MultiStep LoadNewTabPage() {
-    return Steps(InstrumentTab(kNewTabPageElementId, 0),
-                 NavigateWebContents(kNewTabPageElementId,
-                                     GURL(chrome::kChromeUINewTabPageURL)),
-                 WaitForWebContentsReady(kNewTabPageElementId,
-                                         GURL(chrome::kChromeUINewTabPageURL)));
+    return Steps(
+        InstrumentTab(kNewTabPageElementId, 0),
+        NavigateWebContents(kNewTabPageElementId,
+                            chrome::ChromeUINewTabPageURLAsGURL()),
+        WaitForWebContentsReady(kNewTabPageElementId,
+                                chrome::ChromeUINewTabPageURLAsGURL()));
   }
 
   InteractiveTestApi::MultiStep WaitForElementToLoad(
@@ -237,8 +258,11 @@ INSTANTIATE_TEST_SUITE_P(All,
                          NewTabPageModulesInteractiveUiTest,
                          ::testing::ValuesIn(kAllModules));
 
+// TODO(crbug.com/416206296): Re-enable once we have a workaround for querying
+// the `module_wrapper.html` slotted element.
+// @see chrome/browser/resources/new_tab_page/modules/module_wrapper.html
 IN_PROC_BROWSER_TEST_P(NewTabPageModulesInteractiveUiTest,
-                       ClickingHideButtonDismissesModule) {
+                       DISABLED_ClickingHideButtonDismissesModule) {
   RunTestSequence(
       // 1. Wait for new tab page to load.
       LoadNewTabPage(),
@@ -269,8 +293,11 @@ IN_PROC_BROWSER_TEST_P(NewTabPageModulesInteractiveUiTest,
       WaitForElementChildElementCount(kModulesV2Container, 0));
 }
 
+// TODO(crbug.com/416206296): Re-enable once we have a workaround for querying
+// the `module_wrapper.html` slotted element.
+// @see chrome/browser/resources/new_tab_page/modules/module_wrapper.html
 IN_PROC_BROWSER_TEST_P(NewTabPageModulesInteractiveUiTest,
-                       ClickingDisableButtonDisablesModule) {
+                       DISABLED_ClickingDisableButtonDisablesModule) {
   const auto& module_details = ModuleDetails();
   RunTestSequence(
       // 1. Wait for new tab page to load.
@@ -334,8 +361,11 @@ INSTANTIATE_TEST_SUITE_P(All,
                          ::testing::ValuesIn(GetAllModuleLinks(kAllModules)));
 #endif
 
+// TODO(crbug.com/416206296): Re-enable once we have a workaround for querying
+// the `module_wrapper.html` slotted element.
+// @see chrome/browser/resources/new_tab_page/modules/module_wrapper.html
 IN_PROC_BROWSER_TEST_P(NewTabPageModulesInteractiveLinkUiTest,
-                       ClickingEntryNavigatesToCorrectPage) {
+                       DISABLED_ClickingEntryNavigatesToCorrectPage) {
   RunTestSequence(
       // 1. Wait for new tab page to load.
       LoadNewTabPage(),
@@ -395,4 +425,230 @@ IN_PROC_BROWSER_TEST_F(NewTabPageModulesInteractiveMicrosoftAuthUiTest,
       LoadNewTabPage(),
       // 2. Wait for iframe to load.
       WaitForElementToLoad(kMicrosoftAuthIframe));
+}
+
+class NewTabPageModulesInteractiveTabGroupsUiTest
+    : public TabStripInteractiveTestMixin<
+          NewTabPageModulesInteractiveUiBaseTest> {
+ public:
+  NewTabPageModulesInteractiveTabGroupsUiTest() = default;
+  ~NewTabPageModulesInteractiveTabGroupsUiTest() override = default;
+  NewTabPageModulesInteractiveTabGroupsUiTest(
+      const NewTabPageModulesInteractiveTabGroupsUiTest&) = delete;
+  void operator=(const NewTabPageModulesInteractiveTabGroupsUiTest&) = delete;
+
+  void SetUp() override {
+    features.InitWithFeatures(
+        /*enabled_features=*/{ntp_features::kNtpTabGroupsModule,
+                              ntp_features::kNtpTabGroupsModuleZeroState},
+        /*disabled_features=*/{});
+    InteractiveBrowserTest::SetUp();
+  }
+
+  InteractiveTestApi::MultiStep ClickElement(
+      const ui::ElementIdentifier& contents_id,
+      const DeepQuery& element) {
+    return Steps(EnsurePresent(contents_id, element),
+                 ScrollIntoView(contents_id, element),
+                 ExecuteJsAt(contents_id, element, "el => el.click()"));
+  }
+
+  InteractiveTestApi::MultiStep OpenTabGroupEditorMenu(
+      tab_groups::TabGroupId group_id) {
+    return Steps(HoverTabGroupHeader(group_id), ClickMouse(ui_controls::RIGHT),
+                 WaitForShow(kTabGroupEditorBubbleId));
+  }
+
+  size_t GetTabGroupCount(Browser* browser) {
+    return browser->tab_strip_model()->group_model()->ListTabGroups().size();
+  }
+
+  size_t GetTabCount(Browser* browser) {
+    return browser->tab_strip_model()->count();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesInteractiveTabGroupsUiTest,
+                       CreateNewTabGroup) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondTab);
+
+  RunTestSequence(
+      // Arrange.
+      // 1. Create tabs to work with.
+      AddInstrumentedTab(kSecondTab, GURL(url::kAboutBlankURL)),
+      // 2. Create 2 tab groups using the existing tabs.
+      Do([&]() {
+        browser()->tab_strip_model()->AddToNewGroup({0});
+        browser()->tab_strip_model()->AddToNewGroup({1});
+      }),
+      // 3. Verify the initial tab group count is 2.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 2),
+
+      // Act.
+      // 4. Wait for new tab page to load.
+      LoadNewTabPage(),
+      // 5. Wait for the module to render.
+      WaitForElementToRender(kTabGroupsModule),
+      // 6. Click the create new tab group link.
+      ClickElement(kNewTabPageElementId, kCreateNewTabGroup),
+
+      // Assert.
+      // 7. Verify a new tab group has been created.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 3));
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesInteractiveTabGroupsUiTest,
+                       CreateNewTabGroup_ZeroState) {
+  RunTestSequence(
+      // Arrange.
+      // 1. Verify the initial tab group count is 0.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 0),
+
+      // Act.
+      // 2. Wait for new tab page to load.
+      LoadNewTabPage(),
+      // 3. Wait for the module to render.
+      WaitForElementToRender(kTabGroupsModule),
+      // 4. Click the create new tab group link.
+      ClickElement(kNewTabPageElementId, kCreateNewTabGroup),
+
+      // Assert.
+      // 5. Verify a new tab group has been created.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 1));
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesInteractiveTabGroupsUiTest,
+                       ResumeTabGroupInCurrentWindow) {
+  ASSERT_TRUE(
+      AddTabAtIndex(0, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED));
+  const tab_groups::TabGroupId group_id =
+      browser()->tab_strip_model()->AddToNewGroup({0});
+
+  RunTestSequence(
+      // Verify current widow: 1 tab group, 2 tabs.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 1),
+      CheckResult([&]() { return GetTabCount(browser()); }, 2),
+      // Open tab group editor bubble.
+      OpenTabGroupEditorMenu(group_id),
+      // Close tab group.
+      Steps(EnsurePresent(kTabGroupEditorBubbleCloseGroupButtonId),
+            MoveMouseTo(kTabGroupEditorBubbleCloseGroupButtonId), ClickMouse(),
+            WaitForHide(kTabGroupEditorBubbleId)),
+      // Verify current window: 0 tab groups, 1 tab.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 0),
+      CheckResult([&]() { return GetTabCount(browser()); }, 1),
+      // Load the New Tab Page.
+      LoadNewTabPage(),
+      // Wait for the module to render.
+      WaitForElementToRender(kTabGroupsModule),
+      // Click the first tab group in the module to re-open it.
+      ClickElement(kNewTabPageElementId, kFirstTabGroup),
+      // Verify the tab group header is visible.
+      WaitForShow(kTabGroupHeaderElementId),
+      // Verify current window: 1 tab group, 2 tabs.
+      CheckResult([&] { return GetTabGroupCount(browser()); }, 1),
+      CheckResult([&]() { return GetTabCount(browser()); }, 2));
+}
+
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_ResumeTabGroupInAnotherWindow \
+  DISABLED_ResumeTabGroupInAnotherWindow
+#else
+#define MAYBE_ResumeTabGroupInAnotherWindow ResumeTabGroupInAnotherWindow
+#endif  // BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesInteractiveTabGroupsUiTest,
+                       MAYBE_ResumeTabGroupInAnotherWindow) {
+  ASSERT_TRUE(
+      AddTabAtIndex(0, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED));
+  const tab_groups::TabGroupId group_id =
+      browser()->tab_strip_model()->AddToNewGroup({0});
+
+  RunTestSequence(
+      // Ensure browser() is active.
+      Do([&]() {
+        ASSERT_EQ(GetLastActiveBrowserWindowInterfaceWithAnyProfile(),
+                  browser());
+      }),
+      // Current widow: 1 tab group, 2 tabs.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 1),
+      CheckResult([&]() { return GetTabCount(browser()); }, 2),
+      // Open tab group editor bubble.
+      OpenTabGroupEditorMenu(group_id),
+      // Move tab group to new window.
+      Steps(EnsurePresent(kTabGroupEditorBubbleMoveGroupToNewWindowButtonId),
+            MoveMouseTo(kTabGroupEditorBubbleMoveGroupToNewWindowButtonId),
+            ClickMouse(), WaitForHide(kTabGroupEditorBubbleId)),
+      // Verify current window: 0 tab groups, 1 tab.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 0),
+      CheckResult([&]() { return GetTabCount(browser()); }, 1),
+      // Verify browser() is not active.
+      Do([&]() {
+        ASSERT_NE(GetLastActiveBrowserWindowInterfaceWithAnyProfile(),
+                  browser());
+      }),
+      // Load the New Tab Page in browser().
+      LoadNewTabPage(),
+      // Wait for the module to render.
+      WaitForElementToRender(kTabGroupsModule),
+      // Click the first tab group in the module to re-open it.
+      ClickElement(kNewTabPageElementId, kFirstTabGroup),
+      // Verify current window stays unchanged: 0 tab groups, 1 tab.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 0),
+      CheckResult([&]() { return GetTabCount(browser()); }, 1),
+      // Verify browser() is not active.
+      Do([&]() {
+        ASSERT_NE(GetLastActiveBrowserWindowInterfaceWithAnyProfile(),
+                  browser());
+      }));
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesInteractiveTabGroupsUiTest,
+                       FilterActiveTabGroup) {
+  RunTestSequence(
+      // Set up two tab groups:
+      // Group 1 contains one tab at index 0.
+      // Group 2 contains two tabs at indices 1 and 2.
+      Do([&]() {
+        browser()->tab_strip_model()->AddToNewGroup({0});
+        ASSERT_TRUE(AddTabAtIndex(1, GURL(url::kAboutBlankURL),
+                                  ui::PAGE_TRANSITION_TYPED));
+        ASSERT_TRUE(AddTabAtIndex(2, GURL(url::kAboutBlankURL),
+                                  ui::PAGE_TRANSITION_TYPED));
+        browser()->tab_strip_model()->AddToNewGroup({1, 2});
+      }),
+
+      // Verify that there are two tab groups and three tabs total.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 2),
+      CheckResult([&]() { return GetTabCount(browser()); }, 3),
+
+      // Activate the tab in group 1 and navigate to chrome://newtab/.
+      Do([&]() { browser()->tab_strip_model()->ActivateTabAt(0); }),
+      LoadNewTabPage(), WaitForElementToRender(kTabGroupsModule),
+
+      // Verify that only one tab group is shown (i.e., the group that doesn't
+      // include the currently active tab).
+      CheckJsResultAt(kNewTabPageElementId, kTabGroupsModuleContainer,
+                      "el => el.querySelectorAll('.tab-group').length", 1),
+      CheckJsResultAt(kNewTabPageElementId, kFirstTabGroup,
+                      "el => "
+                      "el.querySelector('.tab-group-title').textContent.trim()."
+                      "toLowerCase()",
+                      "2 tabs"));
+}
+
+IN_PROC_BROWSER_TEST_F(NewTabPageModulesInteractiveTabGroupsUiTest,
+                       FilterActiveTabGroup_ModuleNotShown) {
+  RunTestSequence(
+      // Set up a tab group containing one tab at index 0.
+      Do([&]() { browser()->tab_strip_model()->AddToNewGroup({0}); }),
+
+      // Verify that there is 1 tab group and 1 tab total.
+      CheckResult([&]() { return GetTabGroupCount(browser()); }, 1),
+      CheckResult([&]() { return GetTabCount(browser()); }, 1),
+
+      // Navigate the current tab to chrome://newtab/.
+      LoadNewTabPage(),
+
+      // Verify that the tab groups module is not visible.
+      EnsureNotPresent(kNewTabPageElementId, kTabGroupsModule));
 }

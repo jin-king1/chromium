@@ -59,6 +59,17 @@ class CORE_EXPORT InlineNode : public LayoutInputNode {
   const InlineItemsData& ItemsData(bool is_first_line) const {
     return Data().ItemsData(is_first_line);
   }
+  const std::optional<TextOffsetMap>& FirstLineOffsetMap() const {
+    if (const auto* first_line = Data().first_line_items_.Get()) [[unlikely]] {
+      return first_line->OffsetMap();
+    }
+    static const std::optional<TextOffsetMap> kEmpty;
+    return kEmpty;
+  }
+
+  // True if `this` should use the first-line `InlineItemsData` for its first
+  // formatted line. See `ItemsData()`. Valid only when pre-layout is clean.
+  bool UseFirstLineStyleItemsData() const;
 
   // There's a special intrinsic size measure quirk for images that are direct
   // children of table cells that have auto inline-size: When measuring
@@ -98,6 +109,7 @@ class CORE_EXPORT InlineNode : public LayoutInputNode {
   bool HasFloats() const { return Data().HasFloats(); }
   bool HasInitialLetterBox() const { return Data().has_initial_letter_box_; }
   bool HasRuby() const { return Data().has_ruby_; }
+  bool HasTextEmphasis() const { return Data().HasTextEmphasis(); }
 
   bool IsBlockLevel() { return EnsureData().is_block_level_; }
 
@@ -119,7 +131,6 @@ class CORE_EXPORT InlineNode : public LayoutInputNode {
     return GetLayoutBlockFlow()->CanContainFirstFormattedLine();
   }
 
-  bool UseFirstLineStyle() const;
   void CheckConsistency() const;
 
   // This function is available after PrepareLayout(), only for SVG <text>.
@@ -129,6 +140,12 @@ class CORE_EXPORT InlineNode : public LayoutInputNode {
   const HeapVector<SvgTextContentRange>& SvgTextLengthRangeList() const;
   // This function is available after PrepareLayout(), only for SVG <text>.
   const HeapVector<SvgTextContentRange>& SvgTextPathRangeList() const;
+
+  const Font& FontForTab() const;
+  // Returns the minimum font-size value, scaled by the device pixel ratio.
+  // Nothing is returned if the user preference has no minimum font-size
+  // setting.
+  std::optional<float> MinimumFontPhysicalSize() const;
 
   String ToString() const;
 
@@ -178,7 +195,7 @@ class CORE_EXPORT InlineNode : public LayoutInputNode {
   bool IsNGShapeCacheAllowed(const String&,
                              const Font*,
                              const InlineItems&,
-                             ShapeResultSpacing<String>&) const;
+                             ShapeResultSpacing&) const;
 
   InlineNodeData* MutableData() const {
     return To<LayoutBlockFlow>(box_.Get())->GetInlineNodeData();
@@ -201,6 +218,7 @@ class CORE_EXPORT InlineNode : public LayoutInputNode {
                                    InlineNodeData* data);
 
   friend class LineBreakerTest;
+  friend class TextAutoSpace;
 };
 
 inline bool InlineNode::IsStickyImagesQuirkForContentSize() const {

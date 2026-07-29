@@ -86,10 +86,10 @@ def _GenerateArray(element_name, field_info, content, lines, indent,
 def _GenerateStruct(element_name, field_info, content, lines, indent,
                     field_name_count):
   """Generates a struct to be included in a static structure initializer. If
-  content is not specified, uses {0}.
+  content is not specified, uses {}.
   """
   if content is None:
-    lines.append(indent + '{0},')
+    lines.append(indent + '{},')
     return
 
   fields = field_info['fields']
@@ -109,8 +109,12 @@ def GenerateFieldContent(element_name, field_info, content, lines, indent,
   if content is None:
     content = field_info.get('default', None)
   type = field_info['type']
-  if type in ('int', 'enum', 'class'):
-    lines.append('%s%s,' % (indent, content))
+  if type in ('bool', 'int', 'enum', 'class'):
+    if isinstance(content, bool):
+      # Re-format Python `True` and `False` as C++ `true` and `false`.
+      lines.append('%s%s,' % (indent, str(content).lower()))
+    else:
+      lines.append('%s%s,' % (indent, content))
   elif type == 'string':
     _GenerateString(content, lines, indent)
   elif type == 'string16':

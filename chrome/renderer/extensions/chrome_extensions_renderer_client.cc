@@ -6,9 +6,11 @@
 
 #include <utility>
 
-#include "base/lazy_instance.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
+#include "chrome/renderer/extensions/chrome_policy_activity_log_filter_delegate.h"
 #include "chrome/renderer/extensions/chrome_resource_request_policy_delegate.h"
 #include "chrome/renderer/extensions/renderer_permissions_policy_delegate.h"
 #include "chrome/renderer/process_state.h"
@@ -17,6 +19,7 @@
 #include "content/public/renderer/render_thread.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/renderer/dispatcher.h"
 #include "extensions/renderer/renderer_extension_registry.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
@@ -59,17 +62,45 @@ ChromeExtensionsRendererClient::~ChromeExtensionsRendererClient() {
 
 // static
 void ChromeExtensionsRendererClient::Create() {
-  static base::LazyInstance<ChromeExtensionsRendererClient>::Leaky client =
-      LAZY_INSTANCE_INITIALIZER;
-  client.Pointer();
+  static base::NoDestructor<ChromeExtensionsRendererClient> client;
 }
 
 bool ChromeExtensionsRendererClient::IsIncognitoProcess() const {
-  return ::IsIncognitoProcess();
+  return process_state::IsIncognitoProcess();
 }
 
 int ChromeExtensionsRendererClient::GetLowestIsolatedWorldId() const {
   return ISOLATED_WORLD_ID_EXTENSIONS;
+}
+
+bool ChromeExtensionsRendererClient::IsPolicyActivityLoggingEnabled() const {
+  return policy_activity_logging_enabled_;
+}
+
+void ChromeExtensionsRendererClient::SetPolicyActivityLoggingEnabled(
+    bool enabled) {
+  policy_activity_logging_enabled_ =
+      enabled &&
+      base::FeatureList::IsEnabled(
+          extensions_features::kEnterpriseExtensionDOMActivityTelemetry);
+
+  if (policy_activity_logging_enabled_) {
+    if (!policy_activity_log_filter_) {
+      policy_activity_log_filter_ =
+          std::make_unique<extensions::ChromePolicyActivityLogFilterDelegate>();
+    }
+  } else {
+    policy_activity_log_filter_.reset();
+  }
+}
+
+extensions::PolicyActivityLogFilter*
+ChromeExtensionsRendererClient::GetPolicyActivityLogFilter() {
+  if (!IsPolicyActivityLoggingEnabled()) {
+    return nullptr;
+  }
+  CHECK(policy_activity_log_filter_);
+  return policy_activity_log_filter_.get();
 }
 
 void ChromeExtensionsRendererClient::FinishInitialization() {
@@ -89,7 +120,7 @@ void ChromeExtensionsRendererClient::RecordMetricsForURLRequest(
   // TODO(crbug.com/41240557): Remove metrics after bug is fixed.
   GURL request_url(target_url);
   if (target_url.ProtocolIs(extensions::kExtensionScheme) &&
-      request_url.host_piece() == extension_misc::kDocsOfflineExtensionId) {
+      request_url.host() == extension_misc::kDocsOfflineExtensionId) {
     if (!ukm_recorder_) {
       mojo::Remote<ukm::mojom::UkmRecorderFactory> factory;
       content::RenderThread::Get()->BindHostReceiver(

@@ -6,6 +6,7 @@
 #define BASE_FILES_FILE_H_
 
 #include <stdint.h>
+#include <sys/types.h>
 
 #include <optional>
 #include <string>
@@ -14,11 +15,14 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
-#include "base/files/file_tracing.h"
 #include "base/files/platform_file.h"
 #include "base/time/time.h"
 #include "base/trace_event/base_tracing_forward.h"
 #include "build/build_config.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/scoped_java_ref.h"
+#endif
 
 struct stat;
 
@@ -77,6 +81,7 @@ class BASE_EXPORT File {
         1 << 21,  // Windows only. Marks the file with a deny ACE that prevents
                   // opening the file with EXECUTE access. Cannot be used with
                   // FILE_WIN_EXECUTE flag. See also PreventExecuteMapping.
+    FLAG_NO_FOLLOW = 1 << 22,  // POSIX only. Do not follow symbolic links.
   };
 
   // This enum has been recorded in multiple histograms using PlatformFileError
@@ -115,7 +120,7 @@ class BASE_EXPORT File {
   // If you add more fields to this structure (platform-specific fields are OK),
   // make sure to update all functions that use it in file_util_{win|posix}.cc,
   // too, and the ParamTraits<base::File::Info> implementation in
-  // ipc/ipc_message_utils.cc.
+  // ipc/param_traits_utils.cc.
   struct BASE_EXPORT Info {
     Info();
     ~Info();
@@ -210,29 +215,23 @@ class BASE_EXPORT File {
   bool ReadAtCurrentPosAndCheck(span<uint8_t> data);
 
   // Reads the given number of bytes (or until EOF is reached) starting with the
-  // given offset. Returns the number of bytes read, or -1 on error. Note that
-  // this function makes a best effort to read all data on all platforms, so it
-  // is not intended for stream oriented files but instead for cases when the
-  // normal expectation is that actually |size| bytes are read unless there is
-  // an error.
-  UNSAFE_BUFFER_USAGE int Read(int64_t offset, char* data, int size);
+  // given offset. Returns the number of bytes read, or `std::nullopt` on error.
+  // Note that this function makes a best effort to read all data on all
+  // platforms, so it is not intended for stream oriented files but instead for
+  // cases when the normal expectation is that actually `data.size()` bytes are
+  // read unless there is an error.
   std::optional<size_t> Read(int64_t offset, base::span<uint8_t> data);
 
   // Same as above but without seek.
-  UNSAFE_BUFFER_USAGE int ReadAtCurrentPos(char* data, int size);
   std::optional<size_t> ReadAtCurrentPos(base::span<uint8_t> data);
 
   // Reads the given number of bytes (or until EOF is reached) starting with the
   // given offset, but does not make any effort to read all data on all
-  // platforms. Returns the number of bytes read, or -1/std::nullopt on error.
-  UNSAFE_BUFFER_USAGE int ReadNoBestEffort(int64_t offset,
-                                           char* data,
-                                           int size);
+  // platforms. Returns the number of bytes read, or std::nullopt on error.
   std::optional<size_t> ReadNoBestEffort(int64_t offset,
                                          base::span<uint8_t> data);
 
   // Same as above but without seek.
-  UNSAFE_BUFFER_USAGE int ReadAtCurrentPosNoBestEffort(char* data, int size);
   std::optional<size_t> ReadAtCurrentPosNoBestEffort(base::span<uint8_t> data);
 
   // Simplified versions of Write() and friends (see below) that check the
@@ -241,24 +240,19 @@ class BASE_EXPORT File {
   bool WriteAndCheck(int64_t offset, span<const uint8_t> data);
   bool WriteAtCurrentPosAndCheck(span<const uint8_t> data);
 
-  // Writes the given buffer into the file at the given offset, overwritting any
-  // data that was previously there. Returns the number of bytes written, or -1
-  // on error. Note that this function makes a best effort to write all data on
-  // all platforms. |data| can be nullptr when |size| is 0.
-  // Ignores the offset and writes to the end of the file if the file was opened
-  // with FLAG_APPEND.
-  UNSAFE_BUFFER_USAGE int Write(int64_t offset, const char* data, int size);
+  // Writes the given buffer into the file at the given offset, overwriting any
+  // data that was previously there. Returns the number of bytes written, or
+  // `std::nullopt` on error. Note that this function makes a best effort to
+  // write all data on all platforms. Ignores the offset and writes to the end
+  // of the file if the file was opened with FLAG_APPEND.
   std::optional<size_t> Write(int64_t offset, base::span<const uint8_t> data);
 
-  // Save as above but without seek.
-  UNSAFE_BUFFER_USAGE int WriteAtCurrentPos(const char* data, int size);
+  // Same as above but without seek.
   std::optional<size_t> WriteAtCurrentPos(base::span<const uint8_t> data);
 
-  // Save as above but does not make any effort to write all data on all
-  // platforms. Returns the number of bytes written, or -1/std::nullopt
+  // Same as above but does not make any effort to write all data on all
+  // platforms. Returns the number of bytes written, or std::nullopt
   // on error.
-  UNSAFE_BUFFER_USAGE int WriteAtCurrentPosNoBestEffort(const char* data,
-                                                        int size);
   std::optional<size_t> WriteAtCurrentPosNoBestEffort(
       base::span<const uint8_t> data);
 
@@ -399,6 +393,8 @@ class BASE_EXPORT File {
   static int Fstat(int fd, stat_wrapper_t* sb);
   // Wrapper for lstat().
   static int Lstat(const FilePath& path, stat_wrapper_t* sb);
+  // Wrapper for mkdir().
+  static int Mkdir(const FilePath& path, mode_t mode);
 #endif
 
   // This function can be used to augment `flags` with the correct flags
@@ -416,7 +412,33 @@ class BASE_EXPORT File {
   }
 
  private:
-  friend class FileTracing::ScopedTrace;
+  // PRECONDITIONS: `size` must be non-negative and `data` must point to at
+  // least `size` valid bytes.
+  UNSAFE_BUFFER_USAGE int ReadAtCurrentPos(char* data, int size);
+
+  // Reads the given number of bytes (or until EOF is reached) starting with the
+  // given offset. Returns the number of bytes read, or -1 on error. Note that
+  // this function makes a best effort to read all data on all platforms, so it
+  // is not intended for stream oriented files but instead for cases when the
+  // normal expectation is that actually |size| bytes are read unless there is
+  // an error.
+  // PRECONDITIONS: `size` must be non-negative and `data` must point to at
+  // least `size` valid bytes.
+  UNSAFE_BUFFER_USAGE int Read(int64_t offset, char* data, int size);
+
+  // PRECONDITIONS: `size` must be non-negative and `data` must point to at
+  // least `size` valid bytes.
+  UNSAFE_BUFFER_USAGE int WriteAtCurrentPos(const char* data, int size);
+
+  // Writes the given buffer into the file at the given offset, overwriting any
+  // data that was previously there. Returns the number of bytes written, or -1
+  // on error. Note that this function makes a best effort to write all data on
+  // all platforms. |data| can be nullptr when |size| is 0.
+  // Ignores the offset and writes to the end of the file if the file was opened
+  // with FLAG_APPEND.
+  // PRECONDITIONS: `size` must be non-negative and `data` must point to at
+  // least `size` valid bytes.
+  UNSAFE_BUFFER_USAGE int Write(int64_t offset, const char* data, int size);
 
   // Creates or opens the given file. Only called if |path| has no
   // traversal ('..') components.
@@ -426,13 +448,20 @@ class BASE_EXPORT File {
 
   ScopedPlatformFile file_;
 
+#if BUILDFLAG(IS_ANDROID)
+  // Keeps the Java ParcelFileDescriptor alive when `this` wraps a file from an
+  // Android content provider (i.e. a content URI). Close() is called on the
+  // object when the file is closed.
+  base::android::ScopedJavaGlobalRef<jobject> java_parcel_file_descriptor_;
+#endif
+
   // Platform path to `file_`. Set if `this` wraps a file from an Android
   // content provider (i.e. a content URI) or if tracing is enabled in
   // `Initialize()`.
+  // On Android it could be a content URI, but never a virtual document path.
+  // path_ will be empty if content URI cannot be opened making the file
+  // invalid.
   FilePath path_;
-
-  // Object tied to the lifetime of |this| that enables/disables tracing.
-  FileTracing::ScopedEnabler trace_enabler_;
 
   Error error_details_ = FILE_ERROR_FAILED;
   bool created_ = false;

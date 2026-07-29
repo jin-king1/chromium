@@ -17,7 +17,7 @@ class MockPasswordFeatureManager : public PasswordFeatureManager {
   ~MockPasswordFeatureManager() override;
 
   MOCK_METHOD(bool, IsGenerationEnabled, (), (override, const));
-  MOCK_METHOD(bool, IsAccountStorageEnabled, (), (override, const));
+  MOCK_METHOD(bool, IsAccountStorageActive, (), (override, const));
 
   MOCK_METHOD(features_util::PasswordAccountStorageUsageLevel,
               ComputePasswordAccountStorageUsageLevel,
@@ -27,10 +27,6 @@ class MockPasswordFeatureManager : public PasswordFeatureManager {
               IsBiometricAuthenticationBeforeFillingEnabled,
               (),
               (override, const));
-
-#if BUILDFLAG(IS_ANDROID)
-  MOCK_METHOD(bool, ShouldUpdateGmsCore, (), (override));
-#endif  // BUILDFLAG(IS_ANDROID)
 };
 
 }  // namespace password_manager

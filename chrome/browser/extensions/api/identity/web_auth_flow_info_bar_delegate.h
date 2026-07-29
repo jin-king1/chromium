@@ -8,6 +8,9 @@
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace content {
 class WebContents;
@@ -15,10 +18,9 @@ class WebContents;
 
 namespace extensions {
 
-// Infobar used by extension auth flow `chrome.identity.launchWebAuthFlow()`
-// when authentication is done through a Browser Tab. A browser tab is opened
-// when needing action from the user in this flow.
-// This infobar displays information to the user to clarify why this tab was
+// Infobar used by extension auth flow `chrome.identity.launchWebAuthFlow()`.
+// A browser window is opened when needing action from the user in this flow.
+// This infobar displays information to the user to clarify why this window was
 // opened, mentioning the extension name as part of the text. Auth flows should
 // take care of managing when to close the bar if not manually closed by the
 // user, otherwise it should live as long as the flow is alive.

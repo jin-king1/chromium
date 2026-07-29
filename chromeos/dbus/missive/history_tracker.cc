@@ -6,8 +6,8 @@
 
 #include <atomic>
 
-#include "base/functional/callback_forward.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/task/thread_pool.h"
 #include "components/reporting/proto/synced/health.pb.h"
 
@@ -23,9 +23,9 @@ HistoryTracker::~HistoryTracker() = default;
 
 // static
 HistoryTracker* HistoryTracker::Get() {
-  static HistoryTracker tracker{
+  static base::NoDestructor<HistoryTracker> tracker{
       base::ThreadPool::CreateSequencedTaskRunner({})};
-  return &tracker;
+  return tracker.get();
 }
 
 void HistoryTracker::AddObserver(HistoryTracker::Observer* observer) {

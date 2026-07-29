@@ -18,7 +18,7 @@ const CGFloat kToolBarHeight = 44;
 // number of month. Otherwise, it's in milliseconds.
 @property(nonatomic, assign) NSInteger initTime;
 // Updated with the selected date in the date picker
-@property(nonatomic, assign) NSDate* selectedDate;
+@property(nonatomic, strong) NSDate* selectedDate;
 @end
 
 @implementation DateTimeChooserViewController
@@ -59,7 +59,7 @@ const CGFloat kToolBarHeight = 44;
       break;
     case ui::TextInputType::TEXT_INPUT_TYPE_MONTH:
       initValue = GetDateFromNumberOfMonths(self.initTime);
-      mode = UIDatePickerModeDate;
+      mode = UIDatePickerModeYearAndMonth;
       style = UIDatePickerStyleWheels;
       break;
     case ui::TextInputType::TEXT_INPUT_TYPE_WEEK:

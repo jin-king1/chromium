@@ -5,9 +5,9 @@
 #include "chrome/browser/digital_credentials/digital_identity_provider_desktop.h"
 
 #include <memory>
+#include <variant>
 
 #include "base/containers/span.h"
-#include "base/functional/overloaded.h"
 #include "base/values.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/digital_credentials/digital_identity_low_risk_origins.h"
@@ -20,6 +20,7 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/qr_code_generator/bitmap_generator.h"
+#include "components/url_formatter/elide_url.h"
 #include "content/public/browser/cross_device_request_info.h"
 #include "content/public/browser/digital_credentials_cross_device.h"
 #include "content/public/browser/digital_identity_provider.h"
@@ -27,6 +28,7 @@
 #include "crypto/random.h"
 #include "device/fido/cable/v2_constants.h"
 #include "device/fido/cable/v2_handshake.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -34,12 +36,16 @@
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/theme_tracking_animated_image_view.h"
 #include "ui/views/layout/box_layout_view.h"
+#include "ui/views/layout/layout_provider.h"
+#include "ui/views/style/typography.h"
+#include "ui/views/style/typography_provider.h"
 #include "ui/views/widget/widget.h"
 
 namespace {
 
 // Smaller than DistanceMetric::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH.
 constexpr int kQrCodeSize = 240;
+constexpr int kQrCodeMargin = 20;
 
 using DigitalIdentityInterstitialAbortCallback =
     content::DigitalIdentityProvider::DigitalIdentityInterstitialAbortCallback;
@@ -80,6 +86,9 @@ std::unique_ptr<views::View> MakeQrCodeImageView(const std::string& qr_url) {
   image_view->GetViewAccessibility().SetName(
       l10n_util::GetStringUTF16(IDS_WEB_DIGITAL_CREDENTIALS_QR_CODE_ALT_TEXT));
   image_view->SetImageSize(gfx::Size(kQrCodeSize, kQrCodeSize));
+  image_view->SetCornerRadius(
+      10);  // Set radius to match that used in the QR-Code Locator.
+  image_view->SetBorder(views::CreateEmptyBorder(gfx::Insets(kQrCodeMargin)));
   return image_view;
 }
 
@@ -100,9 +109,9 @@ DigitalIdentityProviderDesktop::DigitalIdentityProviderDesktop() = default;
 
 DigitalIdentityProviderDesktop::~DigitalIdentityProviderDesktop() = default;
 
-bool DigitalIdentityProviderDesktop::IsLowRiskOrigin(
-    const url::Origin& to_check) const {
-  return digital_credentials::IsLowRiskOrigin(to_check);
+bool DigitalIdentityProviderDesktop::IsLastCommittedOriginLowRisk(
+    content::RenderFrameHost& render_frame_host) const {
+  return digital_credentials::IsLastCommittedOriginLowRisk(render_frame_host);
 }
 
 DigitalIdentityInterstitialAbortCallback
@@ -160,32 +169,35 @@ void DigitalIdentityProviderDesktop::Transact(
         return SystemNetworkContextManager::GetInstance()->GetContext();
       }),
       base::BindRepeating(&DigitalIdentityProviderDesktop::OnEvent,
-                          weak_ptr_factory_.GetWeakPtr(), std::move(qr_url)),
+                          weak_ptr_factory_.GetWeakPtr(), std::move(qr_url),
+                          request_type),
       base::BindOnce(&DigitalIdentityProviderDesktop::OnFinished,
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-void DigitalIdentityProviderDesktop::OnEvent(const std::string& qr_url,
-                                             Event event) {
-  absl::visit(base::Overloaded{
-                  [this, qr_url](SystemEvent event) {
-                    switch (event) {
-                      case SystemEvent::kBluetoothNotPowered:
-                        ShowBluetoothManualTurnOnDialog();
-                        break;
-                      case SystemEvent::kNeedPermission:
-                        // The user is being asked for Bluetooth permission by
-                        // the system. Nothing for Chrome UI to do.
-                        break;
-                      case SystemEvent::kReady:
-                        bluetooth_manual_dialog_controller_.reset();
-                        ShowQrCodeDialog(qr_url);
-                        break;
-                    }
-                  },
-                  [this](device::cablev2::Event event) { OnCableEvent(event); },
-              },
-              event);
+void DigitalIdentityProviderDesktop::OnEvent(
+    const std::string& qr_url,
+    RequestInfo::RequestType request_type,
+    Event event) {
+  std::visit(absl::Overload{
+                 [this, qr_url, request_type](SystemEvent event) {
+                   switch (event) {
+                     case SystemEvent::kBluetoothNotPowered:
+                       ShowBluetoothManualTurnOnDialog();
+                       break;
+                     case SystemEvent::kNeedPermission:
+                       // The user is being asked for Bluetooth permission by
+                       // the system. Nothing for Chrome UI to do.
+                       break;
+                     case SystemEvent::kReady:
+                       bluetooth_manual_dialog_controller_.reset();
+                       ShowQrCodeDialog(qr_url, request_type);
+                       break;
+                   }
+                 },
+                 [this](device::cablev2::Event event) { OnCableEvent(event); },
+             },
+             event);
 }
 
 void DigitalIdentityProviderDesktop::OnCableEvent(
@@ -223,33 +235,34 @@ void DigitalIdentityProviderDesktop::OnFinished(
     return;
   }
 
-  absl::visit(
-      base::Overloaded{
-          [this](SystemError error) {
-            EndRequestWithError(RequestStatusForMetrics::kErrorOther);
-          },
-          [this](ProtocolError error) {
-            EndRequestWithError(RequestStatusForMetrics::kErrorOther);
-          },
-          [this](RemoteError error) {
-            switch (error) {
-              case RemoteError::kNoCredential:
-                EndRequestWithError(
-                    RequestStatusForMetrics::kErrorNoCredential);
-                break;
-              case RemoteError::kUserCanceled:
-                EndRequestWithError(
-                    RequestStatusForMetrics::kErrorUserDeclined);
-                break;
-              case RemoteError::kDeviceAborted:
-                EndRequestWithError(RequestStatusForMetrics::kErrorAborted);
-                break;
-              case RemoteError::kOther:
-                EndRequestWithError(RequestStatusForMetrics::kErrorOther);
-                break;
-            }
-          }},
+  RequestStatusForMetrics status;
+  std::visit(
+      absl::Overload{[&status](SystemError error) {
+                       status = RequestStatusForMetrics::kErrorOther;
+                     },
+                     [&status](ProtocolError error) {
+                       status = RequestStatusForMetrics::kErrorOther;
+                     },
+                     [&status](RemoteError error) {
+                       switch (error) {
+                         case RemoteError::kNoCredential:
+                           status = RequestStatusForMetrics::kErrorNoCredential;
+                           break;
+                         case RemoteError::kUserCanceled:
+                           status = RequestStatusForMetrics::kErrorUserDeclined;
+                           break;
+                         case RemoteError::kDeviceAborted:
+                           status = RequestStatusForMetrics::kErrorAborted;
+                           break;
+                         case RemoteError::kOther:
+                           status = RequestStatusForMetrics::kErrorOther;
+                           break;
+                       }
+                     }},
       result.error());
+  EndRequestWithError(status);
+  // NOTE: `EndRequestWithError` may delete `this`, so it must be the last
+  // thing called in this method.
 }
 
 DigitalIdentityMultiStepDialog*
@@ -261,17 +274,46 @@ DigitalIdentityProviderDesktop::EnsureDialogCreated() {
 }
 
 void DigitalIdentityProviderDesktop::ShowQrCodeDialog(
-    const std::string& qr_url) {
+    const std::string& qr_url,
+    RequestInfo::RequestType request_type) {
   std::u16string dialog_title =
       l10n_util::GetStringUTF16(IDS_WEB_DIGITAL_CREDENTIALS_QR_TITLE);
+
+  int dialog_body_id = 0;
+  switch (request_type) {
+    case RequestInfo::RequestType::kGet:
+      dialog_body_id = IDS_WEB_DIGITAL_CREDENTIALS_PRESENTATION_QR_BODY;
+      break;
+    case RequestInfo::RequestType::kCreate:
+      dialog_body_id = IDS_WEB_DIGITAL_CREDENTIALS_ISSUANCE_QR_BODY;
+      break;
+  }
+  const views::LayoutProvider* layout_provider = views::LayoutProvider::Get();
+  // The dialog content width is used as an approximation of the available
+  // width for the origin.
+  const int dialog_width = layout_provider->GetDistanceMetric(
+      views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH);
+  const gfx::Insets dialog_insets =
+      layout_provider->GetInsetsMetric(views::INSETS_DIALOG);
+  const float content_width = dialog_width - dialog_insets.width();
+  const gfx::FontList& font_list = views::TypographyProvider::Get().GetFont(
+      views::style::CONTEXT_LABEL, views::style::STYLE_PRIMARY);
+  std::u16string formatted_origin =
+      url_formatter::ElideUrl(rp_origin_.GetURL(), font_list, content_width);
+
   std::u16string dialog_body =
-      l10n_util::GetStringUTF16(IDS_WEB_DIGITAL_CREDENTIALS_QR_BODY);
+      l10n_util::GetStringFUTF16(dialog_body_id, formatted_origin);
   EnsureDialogCreated()->TryShow(
       /*accept_button=*/std::nullopt, base::OnceClosure(),
-      ui::DialogModel::Button::Params(),
+      /*cancel_button=*/
+      ui::DialogModel::Button::Params()
+          .SetLabel(l10n_util::GetStringUTF16(
+              IDS_WEB_DIGITAL_CREDENTIALS_FLOW_CANCEL_BUTTON_TEXT))
+          .SetStyle(ui::ButtonStyle::kDefault),
       base::BindOnce(&DigitalIdentityProviderDesktop::OnCanceled,
                      weak_ptr_factory_.GetWeakPtr()),
-      dialog_title, dialog_body, MakeQrCodeImageView(qr_url));
+      dialog_title, dialog_body, MakeQrCodeImageView(qr_url),
+      /*show_progress_bar=*/false);
 }
 
 void DigitalIdentityProviderDesktop::ShowBluetoothManualTurnOnDialog() {
@@ -302,12 +344,17 @@ void DigitalIdentityProviderDesktop::ShowConnectingToPhoneDialog() {
 
   EnsureDialogCreated()->TryShow(
       /*accept_button=*/std::nullopt, base::OnceClosure(),
-      ui::DialogModel::Button::Params(),
+      /*cancel_button=*/
+      ui::DialogModel::Button::Params()
+          .SetLabel(l10n_util::GetStringUTF16(
+              IDS_WEB_DIGITAL_CREDENTIALS_FLOW_CANCEL_BUTTON_TEXT))
+          .SetStyle(ui::ButtonStyle::kDefault),
       base::BindOnce(&DigitalIdentityProviderDesktop::OnCanceled,
                      weak_ptr_factory_.GetWeakPtr()),
-      std::move(title_text), /*dialog_body=*/u"",
-      DigitalIdentityMultiStepDialog::ConfigureHeaderIllustration(
-          std::move(illustration)));
+      /*dialog_title=*/u"", /*dialog_body=*/u"",
+      DigitalIdentityMultiStepDialog::CreateHeaderView(
+          std::move(title_text), /*body_text=*/u"", std::move(illustration)),
+      /*show_progress_bar=*/true);
 }
 
 void DigitalIdentityProviderDesktop::ShowContinueStepsOnThePhoneDialog() {
@@ -316,19 +363,24 @@ void DigitalIdentityProviderDesktop::ShowContinueStepsOnThePhoneDialog() {
   std::u16string title_text = l10n_util::GetStringUTF16(
       IDS_WEB_DIGITAL_CREDENTIALS_CABLEV2_CONNECTED_TITLE);
   auto illustration = std::make_unique<ThemeTrackingNonAccessibleImageView>(
-      ui::ImageModel::FromVectorIcon(kPasskeyPhoneIcon),
-      ui::ImageModel::FromVectorIcon(kPasskeyPhoneDarkIcon),
+      ui::ImageModel::FromVectorIcon(kPasskeyPhoneCustomIcon),
+      ui::ImageModel::FromVectorIcon(kPasskeyPhoneDarkCustomIcon),
       base::BindRepeating(&DigitalIdentityMultiStepDialog::GetBackgroundColor,
                           base::Unretained(dialog_.get())));
 
   EnsureDialogCreated()->TryShow(
       /*accept_button=*/std::nullopt, base::OnceClosure(),
-      ui::DialogModel::Button::Params(),
+      /*cancel_button=*/
+      ui::DialogModel::Button::Params()
+          .SetLabel(l10n_util::GetStringUTF16(
+              IDS_WEB_DIGITAL_CREDENTIALS_FLOW_CANCEL_BUTTON_TEXT))
+          .SetStyle(ui::ButtonStyle::kDefault),
       base::BindOnce(&DigitalIdentityProviderDesktop::OnCanceled,
                      weak_ptr_factory_.GetWeakPtr()),
-      std::move(title_text), /*dialog_body=*/u"",
-      DigitalIdentityMultiStepDialog::ConfigureHeaderIllustration(
-          std::move(illustration)));
+      /*dialog_title=*/u"", /*dialog_body=*/u"",
+      DigitalIdentityMultiStepDialog::CreateHeaderView(
+          std::move(title_text), /*body_text=*/u"", std::move(illustration)),
+      /*show_progress_bar=*/true);
 }
 
 void DigitalIdentityProviderDesktop::OnCableConnectingTimerComplete() {
@@ -338,7 +390,7 @@ void DigitalIdentityProviderDesktop::OnCableConnectingTimerComplete() {
 }
 
 void DigitalIdentityProviderDesktop::OnCanceled() {
-  EndRequestWithError(RequestStatusForMetrics::kErrorOther);
+  EndRequestWithError(RequestStatusForMetrics::kErrorUserDeclined);
 }
 
 void DigitalIdentityProviderDesktop::EndRequestWithError(
@@ -347,8 +399,19 @@ void DigitalIdentityProviderDesktop::EndRequestWithError(
     return;
   }
 
+  // `dialog_.reset()` can synchronously close the UI which (via activation
+  // observers) may destroy the hosting WebContents, resulting in the
+  // synchronous destruction of the frame-bound Mojo DocumentService
+  // `DigitalIdentityRequestImpl` and therefore `this`.
+  //
+  // To avoid a Use-After-Free, move the callback to a local variable on the
+  // stack before resetting the dialog or the manual bluetooth controller (both
+  // of which could trigger synchronous teardown via UI events).
+  auto local_callback = std::move(callback_);
+
   bluetooth_manual_dialog_controller_.reset();
   dialog_.reset();
+  // `this` may be deleted at this point.
 
-  std::move(callback_).Run(base::unexpected(status));
+  std::move(local_callback).Run(base::unexpected(status));
 }

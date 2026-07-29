@@ -10,12 +10,14 @@
 #include "base/memory/weak_ptr.h"
 #include "content/public/browser/certificate_request_result_type.h"
 #include "content/public/browser/navigation_throttle.h"
+#include "net/base/net_errors.h"
 #include "net/ssl/ssl_info.h"
 
 class GURL;
 
 namespace content {
 class NavigationHandle;
+class NavigationThrottleRegistry;
 class WebContents;
 }  // namespace content
 
@@ -33,7 +35,7 @@ class SSLErrorNavigationThrottle : public content::NavigationThrottle {
  public:
   typedef base::OnceCallback<void(
       content::WebContents* web_contents,
-      int cert_error,
+      net::Error cert_error,
       const net::SSLInfo& ssl_info,
       const GURL& request_url,
       base::OnceCallback<void(
@@ -54,7 +56,7 @@ class SSLErrorNavigationThrottle : public content::NavigationThrottle {
       ShouldIgnoreInterstitialBecauseNavigationDefaultedToHttpsCallback;
 
   SSLErrorNavigationThrottle(
-      content::NavigationHandle* handle,
+      content::NavigationThrottleRegistry& registry,
       HandleSSLErrorCallback handle_ssl_error_callback,
       IsInHostedAppCallback is_in_hosted_app_callback,
       ShouldIgnoreInterstitialBecauseNavigationDefaultedToHttpsCallback
@@ -69,12 +71,12 @@ class SSLErrorNavigationThrottle : public content::NavigationThrottle {
  private:
   void QueueShowInterstitial(HandleSSLErrorCallback handle_ssl_error_callback,
                              content::WebContents* web_contents,
-                             int net_error,
+                             net::Error net_error,
                              int cert_status,
                              const net::SSLInfo& ssl_info,
                              const GURL& request_url);
   void ShowInterstitial(
-      int net_error,
+      net::Error net_error,
       std::unique_ptr<security_interstitials::SecurityInterstitialPage>
           blocking_page);
 

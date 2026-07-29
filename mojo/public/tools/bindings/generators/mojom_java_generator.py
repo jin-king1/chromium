@@ -290,6 +290,22 @@ def GetPackage(module):
   return 'org.chromium'
 
 
+def ComputeInterfaceImports(module):
+  imports = []
+
+  def has_result_response(module):
+    for interface in module.interfaces:
+      for method in interface.methods:
+        if method.result_response != None:
+          return True
+    return False
+
+  if has_result_response(module):
+    imports += ['org.chromium.mojo.bindings.Result']
+
+  return imports
+
+
 def GetNameForKind(context, kind, with_nullable=False):
 
   def _GetNameHierachy(kind):
@@ -418,16 +434,19 @@ def ExpressionToText(context, token, kind_spec=''):
 
   if isinstance(token, mojom.NamedValue):
     return _TranslateNamedValue(token)
-  if kind_spec.startswith('i') or kind_spec.startswith('u'):
+  if kind_spec.startswith('i') or kind_spec.startswith(
+      'u') or kind_spec.startswith('?i') or kind_spec.startswith('?u'):
     number = ast.literal_eval(token.lstrip('+ '))
     if not isinstance(number, int):
-      raise ValueError('got unexpected type %r for int literal %r' % (
-          type(number), token))
+      raise ValueError('got unexpected type %r for int literal %r' %
+                       (type(number), token))
     # If the literal is too large to fit a signed long, convert it to the
     # equivalent signed long.
     if number >= 2 ** 63:
       number -= 2 ** 64
-    if number < 2 ** 31 and number >= -2 ** 31:
+    # Always use a long literal for 64-bit values to allow implicit conversion
+    # to the nullable type.
+    if number < 2**31 and number >= -2**31 and not kind_spec.endswith('64'):
       return '%d' % number
     return '%dL' % number
   if isinstance(token, mojom.BuiltinValue):
@@ -514,7 +533,8 @@ def EnumCoversContinuousRange(kind):
 class Generator(generator.Generator):
   def _GetJinjaExports(self):
     return {
-      'package': GetPackage(self.module),
+        'interface_imports': ComputeInterfaceImports(self.module),
+        'package': GetPackage(self.module),
     }
 
   @staticmethod
@@ -538,12 +558,10 @@ class Generator(generator.Generator):
         'is_bool_kind': mojom.IsBoolKind,
         'is_any_handle_kind': mojom.IsAnyHandleKind,
         "is_enum_kind": mojom.IsEnumKind,
-        "is_float_kind": mojom.IsFloatKind,
         'is_map_kind': mojom.IsMapKind,
         'is_nullable_kind': mojom.IsNullableKind,
         "is_nullable_value_kind_packed_field":
         pack.IsNullableValueKindPackedField,
-        "is_object_kind": mojom.IsObjectKind,
         "is_primary_nullable_value_kind_packed_field":
         pack.IsPrimaryNullableValueKindPackedField,
         'is_pointer_array_kind': IsPointerArrayKind,
@@ -640,16 +658,17 @@ class Generator(generator.Generator):
     # srcjar in the output directory.
     basename = "%s.srcjar" % self.module.path
     zip_filename = os.path.join(self.output_dir, basename)
-    with TempDir() as temp_java_root:
-      self.output_dir = os.path.join(temp_java_root, package_path)
-      self._DoGenerateFiles();
-      with action_helpers.atomic_output(zip_filename) as f:
-        zip_helpers.zip_directory(f, temp_java_root)
 
     if args.java_output_directory:
       # If requested, generate the java files directly into indicated directory.
       self.output_dir = os.path.join(args.java_output_directory, package_path)
       self._DoGenerateFiles();
+    else:
+      with TempDir() as temp_java_root:
+        self.output_dir = os.path.join(temp_java_root, package_path)
+        self._DoGenerateFiles()
+        with action_helpers.atomic_output(zip_filename) as f:
+          zip_helpers.zip_directory(f, temp_java_root)
 
   def GetJinjaParameters(self):
     return {

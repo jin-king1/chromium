@@ -7,6 +7,7 @@
 
 #include "base/functional/bind.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/version.h"
 #include "components/update_client/update_client.h"
@@ -43,12 +44,18 @@ void TaskSendPing::Cancel() {
   TaskComplete(Error::UPDATE_CANCELED);
 }
 
-std::vector<std::string> TaskSendPing::GetIds() const {
+std::vector<std::string> TaskSendPing::ids() const {
   return std::vector<std::string>{crx_component_.app_id};
+}
+
+std::string TaskSendPing::name() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return "send ping";
 }
 
 void TaskSendPing::TaskComplete(Error error) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  VLOG(2) << __func__;
 
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,

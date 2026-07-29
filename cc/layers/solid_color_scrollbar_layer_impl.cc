@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
+#include "cc/input/scroll_utils.h"
 #include "cc/trees/occlusion.h"
 #include "components/viz/common/quads/solid_color_draw_quad.h"
 
@@ -53,9 +54,8 @@ SolidColorScrollbarLayerImpl::SolidColorScrollbarLayerImpl(
       thumb_thickness_(thumb_thickness),
       track_start_(track_start) {}
 
-void SolidColorScrollbarLayerImpl::PushPropertiesTo(LayerImpl* layer) {
-  ScrollbarLayerImplBase::PushPropertiesTo(layer);
-  CHECK(!layer->HitTestable());
+void SolidColorScrollbarLayerImpl::CopyPropertiesTo(LayerImpl* layer) const {
+  ScrollbarLayerImplBase::CopyPropertiesTo(layer);
   static_cast<SolidColorScrollbarLayerImpl*>(layer)->set_color(color_);
 }
 
@@ -70,12 +70,8 @@ int SolidColorScrollbarLayerImpl::ThumbThickness() const {
   }
 }
 
-int SolidColorScrollbarLayerImpl::ThumbLength() const {
-  float thumb_length = TrackLength();
-  if (scroll_layer_length())
-    thumb_length *= clip_layer_length() / scroll_layer_length();
-
-  return std::max(static_cast<int>(thumb_length), ThumbThickness());
+int SolidColorScrollbarLayerImpl::MinimumThumbLength() const {
+  return ThumbThickness();
 }
 
 float SolidColorScrollbarLayerImpl::TrackLength() const {

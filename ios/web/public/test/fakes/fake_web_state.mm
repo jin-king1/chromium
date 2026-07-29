@@ -11,17 +11,15 @@
 #import "base/functional/callback.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/sessions/core/session_id.h"
-#import "ios/web/common/crw_content_view.h"
 #import "ios/web/js_messaging/web_frames_manager_impl.h"
 #import "ios/web/public/download/crw_web_view_download.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/navigation/web_state_policy_decider.h"
-#import "ios/web/public/session/crw_navigation_item_storage.h"
-#import "ios/web/public/session/crw_session_storage.h"
-#import "ios/web/public/session/serializable_user_data_manager.h"
 #import "ios/web/public/test/fakes/crw_fake_find_interaction.h"
 #import "ios/web/session/session_certificate_policy_cache_impl.h"
 #import "ios/web/web_state/policy_decision_state_tracker.h"
+#import "ios/web/web_state/ui/crw_content_view.h"
+#import "net/http/http_util.h"
 
 namespace web {
 
@@ -56,6 +54,7 @@ FakeWebState::~FakeWebState() {
   for (auto& observer : policy_deciders_) {
     observer.ResetWebState();
   }
+  ClearAllUserData();
 }
 
 void FakeWebState::SerializeToProto(proto::WebStateStorage& storage) const {}
@@ -77,12 +76,10 @@ bool FakeWebState::IsRealized() const {
   return is_realized_;
 }
 
-WebState* FakeWebState::ForceRealized() {
+WebState* FakeWebState::ForceRealizedWithPolicy(RealizationPolicy policy) {
   if (!is_realized_) {
     is_realized_ = true;
-    for (auto& observer : observers_) {
-      observer.WebStateRealized(this);
-    }
+    NotifyWebStateRealized(observers_);
   }
   return this;
 }
@@ -103,6 +100,10 @@ void FakeWebState::LoadSimulatedRequest(const GURL& url,
       [response_html_string dataUsingEncoding:NSUTF8StringEncoding];
   // LoadSimulatedRequest is always a success. Send the event accordingly.
   OnPageLoaded(web::PageLoadCompletionStatus::SUCCESS);
+}
+
+void FakeWebState::Stop() {
+  was_stopped_ = true;
 }
 
 void FakeWebState::LoadSimulatedRequest(const GURL& url,
@@ -188,18 +189,6 @@ FakeWebState::GetSessionCertificatePolicyCache() {
   return nullptr;
 }
 
-CRWSessionStorage* FakeWebState::BuildSessionStorage() const {
-  CRWSessionStorage* session_storage = [[CRWSessionStorage alloc] init];
-  session_storage.itemStorages = @[ [[CRWNavigationItemStorage alloc] init] ];
-  session_storage.stableIdentifier = stable_identifier_;
-  session_storage.uniqueIdentifier = unique_identifier_;
-  if (const SerializableUserDataManager* manager =
-          SerializableUserDataManager::FromWebState(this)) {
-    session_storage.userData = manager->GetUserDataForSession();
-  }
-  return session_storage;
-}
-
 void FakeWebState::SetNavigationManager(
     std::unique_ptr<NavigationManager> navigation_manager) {
   navigation_manager_ = std::move(navigation_manager);
@@ -247,10 +236,6 @@ void FakeWebState::LoadData(NSData* data,
 }
 
 void FakeWebState::ExecuteUserJavaScript(NSString* javaScript) {}
-
-NSString* FakeWebState::GetStableIdentifier() const {
-  return stable_identifier_;
-}
 
 WebStateID FakeWebState::GetUniqueIdentifier() const {
   return unique_identifier_;
@@ -304,13 +289,6 @@ void FakeWebState::SetTitle(const std::u16string& title) {
   title_ = title;
   for (auto& observer : observers_) {
     observer.TitleWasSet(this);
-  }
-}
-
-void FakeWebState::SetUnderPageBackgroundColor(UIColor* color) {
-  under_page_background_color_ = color;
-  for (auto& observer : observers_) {
-    observer.UnderPageBackgroundColorChanged(this);
   }
 }
 
@@ -512,6 +490,21 @@ CRWWebViewProxyType FakeWebState::GetWebViewProxy() const {
   return web_view_proxy_;
 }
 
+std::optional<std::string> FakeWebState::GetUserAgentOverride() const {
+  return user_agent_override_;
+}
+
+void FakeWebState::SetUserAgentOverride(
+    std::optional<std::string> ua_override) {
+  if (ua_override && !net::HttpUtil::IsValidHeaderValue(*ua_override)) {
+    return;
+  }
+  if (ua_override && ua_override->empty()) {
+    ua_override = std::nullopt;
+  }
+  user_agent_override_ = std::move(ua_override);
+}
+
 void FakeWebState::AddPolicyDecider(WebStatePolicyDecider* decider) {
   policy_deciders_.AddObserver(decider);
 }
@@ -627,12 +620,20 @@ id FakeWebState::GetActivityItem() API_AVAILABLE(ios(16.4)) {
   return nil;
 }
 
+bool FakeWebState::IsCustomOpenPanelSupported() const {
+  return supports_custom_open_panel_;
+}
+
+void FakeWebState::SetCustomOpenPanelSupported(bool supports) {
+  supports_custom_open_panel_ = supports;
+}
+
 UIColor* FakeWebState::GetThemeColor() {
   return nil;
 }
 
 UIColor* FakeWebState::GetUnderPageBackgroundColor() {
-  return under_page_background_color_;
+  return nil;
 }
 
 FakeWebStateWithPolicyCache::FakeWebStateWithPolicyCache(

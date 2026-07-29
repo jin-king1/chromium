@@ -13,7 +13,7 @@
 #include "build/build_config.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-forward.h"
 #include "ui/gfx/geometry/point.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 class Profile;
 
@@ -71,7 +71,8 @@ enum class BookmarkReorderDropTarget {
   kBookmarkBarView = 0,
   kBookmarkManagerAPI = 1,
   kBookmarkMenu = 2,
-  kMaxValue = kBookmarkMenu,
+  kBookmarkSidePanel = 3,
+  kMaxValue = kBookmarkSidePanel,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/bookmarks/enums.xml:BookmarkReorderDropTarget)
 

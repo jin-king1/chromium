@@ -18,6 +18,10 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "media/base/media_drm_storage.h"
 
+namespace base {
+class TickClock;
+}
+
 class MediaDrmOriginIdManagerFactory;
 class PrefRegistrySimple;
 class PrefService;
@@ -65,14 +69,16 @@ class MediaDrmOriginIdManager : public KeyedService {
   // Asynchronously returns a preprovisioned origin ID using |callback|, if one
   // is available. If none are available, an un-provisioned origin ID is
   // returned.
-  // TODO(crbug.com/41433110): Return an empty origin ID once callers
-  // can handle it.
   void GetOriginId(ProvisionedOriginIdCB callback);
 
   // When testing, use the provided |cb| instead of calling MediaDrm.
   void SetProvisioningResultCBForTesting(ProvisioningResultCB cb) {
     provisioning_result_cb_for_testing_ = cb;
   }
+
+  // Overrides the clock used by `backoff_entry_` for testing purposes, allowing
+  // unit tests to simulate advancing mock time under time-based backoff.
+  void SetTickClockForTesting(const base::TickClock* clock);  // IN-TEST
 
  private:
   class NetworkObserver;
@@ -115,8 +121,9 @@ class MediaDrmOriginIdManager : public KeyedService {
   // failed so that tests can verify that the preference is used correctly.
   ProvisioningResultCB provisioning_result_cb_for_testing_;
 
-  // When set, watch for network changes and call PreProvisionIfNecessary()
-  // when connected to a network.
+  // When set, watches for network changes to attempt pre-provisioning when
+  // connected, managing exponential backoff and scheduled retries if attempts
+  // fail.
   std::unique_ptr<NetworkObserver> network_observer_;
 
   THREAD_CHECKER(thread_checker_);

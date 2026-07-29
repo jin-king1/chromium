@@ -25,10 +25,18 @@ const char kMarkAsHighConfidenceAllowlisted[] =
 // real-time lookups.
 const char kArtificialCachedUrlRealTimeVerdictFlag[] =
     "mark_as_real_time_phishing";
-// Command-line flag for caching an artificial phishing verdict for hash-prefix
-// real-time lookups.
-const char kArtificialCachedHashPrefixRealTimeVerdictFlag[] =
-    "mark_as_hash_prefix_real_time_phishing";
+// Command-line flag for caching an artificial phishing verdict for V5
+// SearchHashes.
+const char kArtificialCachedV5SearchHashesVerdictFlag[] =
+    "mark_as_v5_search_hashes_phishing";
+// Command-line flag for caching an artificial blocked enterprise lookup
+// verdict.
+const char kArtificialCachedEnterpriseBlockedVerdictFlag[] =
+    "mark_as_enterprise_blocked";
+// Command-line flag for caching an artificial flagged enterprise lookup
+// verdict.
+const char kArtificialCachedEnterpriseWarnedVerdictFlag[] =
+    "mark_as_enterprise_warned";
 // If the switch is present, any high-confidence allowlist check will return
 // that it does not match the allowlist.
 const char kSkipHighConfidenceAllowlist[] =
@@ -68,9 +76,6 @@ const char kMarkAsPasswordProtectionAllowlisted[] =
 // Cloud content scanning switches
 //
 
-// The command line flag to control the max amount of concurrent active
-// requests.
-const char kWpMaxParallelActiveRequests[] = "wp-max-parallel-active-requests";
 const char kWpMaxFileOpeningThreads[] = "wp-max-file-opening-threads";
 const char kCloudBinaryUploadServiceUrlFlag[] = "binary-upload-service-url";
 
@@ -91,5 +96,10 @@ const char kSbEnableEnhancedProtection[] =
     "safebrowsing-enable-enhanced-protection";
 const char kForceTreatUserAsAdvancedProtection[] =
     "safe-browsing-treat-user-as-advanced-protection";
+
+// Enable the keyboard lock trigger of Scam Detection via command line for
+// easier testing.
+const char kScamDetectionKeyboardLockTriggerAndroid[] =
+    "scam-detection-keyboard-lock-trigger-android";
 
 }  // namespace safe_browsing::switches

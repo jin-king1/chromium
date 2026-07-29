@@ -6,17 +6,13 @@
 
 #include "base/no_destructor.h"
 #include "build/build_config.h"
-#include "chrome/browser/browsing_topics/browsing_topics_service_factory.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/first_party_sets/first_party_sets_policy_service_factory.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_countries.h"
-#include "chrome/browser/privacy_sandbox/privacy_sandbox_countries_impl.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_service_impl.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_settings_factory.h"
-#include "chrome/browser/privacy_sandbox/tracking_protection_settings_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/tpcd/experiment/eligibility_service_factory.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/keyed_service/core/keyed_service.h"
@@ -35,7 +31,7 @@ profile_metrics::BrowserProfileType GetProfileType(Profile* profile) {
   // purposes (e.g. signin screen), to system metrics profiles. This is done
   // here as, due to dependency injection, the service itself does not hold a
   // profile pointer.
-  // TODO (crbug.com/1450490) - Move to simply not creating the service for
+  // TODO (crbug.com/40270186) - Move to simply not creating the service for
   // these types of profiles.
   if (!ash::IsUserBrowserContext(profile)) {
     return profile_metrics::BrowserProfileType::kSystem;
@@ -74,34 +70,23 @@ PrivacySandboxServiceFactory::PrivacySandboxServiceFactory()
   DependsOn(PrivacySandboxSettingsFactory::GetInstance());
   DependsOn(CookieSettingsFactory::GetInstance());
   DependsOn(HostContentSettingsMapFactory::GetInstance());
-  DependsOn(browsing_topics::BrowsingTopicsServiceFactory::GetInstance());
-  DependsOn(TrackingProtectionSettingsFactory::GetInstance());
   DependsOn(
       first_party_sets::FirstPartySetsPolicyServiceFactory::GetInstance());
-
-  // The Eligibility service should be created before the Privacy Sandbox
-  // service is created to determine the cookie deprecation experiment
-  // eligibility.
-  DependsOn(tpcd::experiment::EligibilityServiceFactory::GetInstance());
 }
 
 std::unique_ptr<KeyedService>
 PrivacySandboxServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   Profile* profile = Profile::FromBrowserContext(context);
-  static PrivacySandboxCountriesImpl countries_instance;
   return std::make_unique<PrivacySandboxServiceImpl>(
       profile, PrivacySandboxSettingsFactory::GetForProfile(profile),
-      TrackingProtectionSettingsFactory::GetForProfile(profile),
       CookieSettingsFactory::GetForProfile(profile), profile->GetPrefs(),
-      profile->GetDefaultStoragePartition()->GetInterestGroupManager(),
       GetProfileType(profile),
       (!profile->IsGuestSession() || profile->IsOffTheRecord())
           ? profile->GetBrowsingDataRemover()
           : nullptr,
       HostContentSettingsMapFactory::GetForProfile(profile),
-      browsing_topics::BrowsingTopicsServiceFactory::GetForProfile(profile),
       first_party_sets::FirstPartySetsPolicyServiceFactory::
           GetForBrowserContext(context),
-      &countries_instance);
+      GetSingletonPrivacySandboxCountries());
 }

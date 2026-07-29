@@ -8,7 +8,10 @@
 
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/metrics/histogram_functions.h"
+#include "components/sync/base/features.h"
 #include "components/sync/engine/cancelation_signal.h"
 #include "components/sync/engine/net/http_post_provider.h"
 #include "components/sync/engine/net/http_post_provider_factory.h"
@@ -72,9 +75,9 @@ HttpResponse Connection::PostRequestAndDownloadResponse(
   post_provider_->SetURL(sync_request_url);
 
   if (!access_token.empty()) {
-    std::string headers;
-    headers = "Authorization: Bearer " + access_token;
-    post_provider_->SetExtraRequestHeaders(headers.c_str());
+    net::HttpRequestHeaders headers;
+    headers.SetHeader("Authorization", "Bearer " + access_token);
+    post_provider_->SetExtraRequestHeaders(headers);
   }
 
   // Must be octet-stream, or the payload may be parsed for a cookie.
@@ -101,8 +104,7 @@ HttpResponse Connection::PostRequestAndDownloadResponse(
 
   // We got a server response, copy over response codes and content.
   HttpResponse response = HttpResponse::ForHttpStatusCode(http_status_code);
-  response.content_length =
-      static_cast<int64_t>(post_provider_->GetResponseContentLength());
+  response.content_length = post_provider_->GetResponseContentLength();
 
   // Write the content into the buffer.
   buffer_out->assign(post_provider_->GetResponseContent(),
@@ -132,12 +134,15 @@ SyncServerConnectionManager::~SyncServerConnectionManager() = default;
 
 HttpResponse SyncServerConnectionManager::PostBuffer(
     const std::string& buffer_in,
-    const std::string& access_token,
     std::string* buffer_out) {
-  if (access_token.empty()) {
-    // Print a log to distinguish this "known failure" from others.
-    DVLOG(1) << "ServerConnectionManager forcing SYNC_AUTH_ERROR due to missing"
-                " access token";
+  const bool is_access_token_valid = IsAccessTokenValid();
+  base::UmaHistogramBoolean("Sync.URLFetchAccessToken", is_access_token_valid);
+
+  if (!is_access_token_valid) {
+    ClearAccessToken();
+
+    // Return an auth error in case the access token is invalid (e.g. expired),
+    // so the access token will be renewed.
     return HttpResponse::ForHttpStatusCode(net::HTTP_UNAUTHORIZED);
   }
 
@@ -151,7 +156,7 @@ HttpResponse SyncServerConnectionManager::PostBuffer(
   // Note that the post may be aborted by now, which will just cause Init to
   // fail with CONNECTION_UNAVAILABLE.
   HttpResponse http_response = connection->PostRequestAndDownloadResponse(
-      sync_request_url_, access_token, buffer_in, buffer_out);
+      sync_request_url_, GetAccessToken(), buffer_in, buffer_out);
 
   if (http_response.server_status == HttpResponse::SYNC_AUTH_ERROR) {
     ClearAccessToken();

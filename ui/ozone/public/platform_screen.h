@@ -13,7 +13,7 @@
 #include "base/component_export.h"
 #include "base/values.h"
 #include "ui/gfx/gpu_extra_info.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace base {
 class TimeDelta;
@@ -128,7 +128,7 @@ class COMPONENT_EXPORT(OZONE_BASE) PlatformScreen {
 
   // Returns human readable description of the window manager, desktop, and
   // other system properties related to the compositing.
-  virtual base::Value::List GetGpuExtraInfo(
+  virtual base::ListValue GetGpuExtraInfo(
       const gfx::GpuExtraInfo& gpu_extra_info);
 
   // Returns the preferred scale factor for a |widget|, if any. Used, for
@@ -137,8 +137,11 @@ class COMPONENT_EXPORT(OZONE_BASE) PlatformScreen {
   virtual std::optional<float> GetPreferredScaleFactorForAcceleratedWidget(
       gfx::AcceleratedWidget widget) const;
 
+  // Returns true when running in headless mode.
+  virtual bool IsHeadless() const;
+
  protected:
-  void StorePlatformNameIntoListOfValues(base::Value::List& values,
+  void StorePlatformNameIntoListOfValues(base::ListValue& values,
                                          const std::string& platform_name);
 };
 

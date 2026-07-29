@@ -84,8 +84,8 @@ struct EnumTraits<content_settings::mojom::ContentSetting, ContentSetting> {
   static content_settings::mojom::ContentSetting ToMojom(
       ContentSetting setting);
 
-  static bool FromMojom(content_settings::mojom::ContentSetting setting,
-                        ContentSetting* out);
+  static ContentSetting FromMojom(
+      content_settings::mojom::ContentSetting setting);
 };
 
 template <>
@@ -134,6 +134,11 @@ struct StructTraits<content_settings::mojom::RuleMetaDataDataView,
     return r.decided_by_related_website_sets_;
   }
 
+  static bool autorevocation_bypassed_by_user(
+      const content_settings::RuleMetaData& r) {
+    return r.autorevocation_bypassed_by_user_;
+  }
+
   static bool Read(content_settings::mojom::RuleMetaDataDataView data,
                    content_settings::RuleMetaData* out);
 };
@@ -157,7 +162,7 @@ struct StructTraits<
     return r.setting_value;
   }
 
-  static const content_settings::RuleMetaData metadata(
+  static const content_settings::RuleMetaData& metadata(
       const ContentSettingPatternSource& r) {
     return r.metadata;
   }

@@ -14,13 +14,13 @@
 
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/callback.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "base/types/expected.h"
 #include "base/types/pass_key.h"
 #include "base/version.h"
-#include "media/base/android/android_util.h"
 #include "media/base/android/media_crypto_context.h"
 #include "media/base/android/media_crypto_context_impl.h"
 #include "media/base/android/media_drm_storage_bridge.h"
@@ -101,6 +101,15 @@ class MEDIA_EXPORT MediaDrmBridge : public ContentDecryptionModule,
     MAX_VALUE = UNSUPPORTED_MEDIACRYPTO_SCHEME,
   };
 
+  // Reasons for CDM session closed unique to MediaDrm.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.media
+  enum class MediaDrmCdmSessionClosedReason {
+    CLOSE = 0,
+    SESSION_RECLAIMED = 1,
+    SESSION_LOST = 2,
+    MAX_VALUE = SESSION_LOST,
+  };
+
   using MediaCryptoReadyCB = MediaCryptoContext::MediaCryptoReadyCB;
   using CdmCreationResult =
       CreateCdmTypedStatus::Or<scoped_refptr<MediaDrmBridge>>;
@@ -130,10 +139,9 @@ class MEDIA_EXPORT MediaDrmBridge : public ContentDecryptionModule,
 
   // Gets the current version for `key_system`. Returns an error if unable
   // to create a MediaDrm object, signifying that the device does not support
-  // `security_level`. May return an invalid base::Version if the string
-  // returned does not appear to be a version. For key systems other than
-  // Widevine, base::Version() is returned.
-  static GetVersionResult GetVersion(
+  // `security_level`. For key systems other than Widevine, base::Version() is
+  // returned. Note, this may be invalid.
+  static GetVersionResult MaybeGetVersion(
       const std::string& key_system,
       MediaDrmBridge::SecurityLevel security_level);
 
@@ -255,66 +263,54 @@ class MEDIA_EXPORT MediaDrmBridge : public ContentDecryptionModule,
   // Called by Java after a MediaCrypto object is created.
   void OnMediaCryptoReady(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
-      const base::android::JavaParamRef<jobject>& j_media_crypto);
+      const base::android::JavaRef<jobject>& j_media_crypto);
 
   // Called by Java when we need to send a provisioning request,
   void OnProvisionRequest(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
-      const base::android::JavaParamRef<jstring>& j_default_url,
-      const base::android::JavaParamRef<jbyteArray>& j_request_data);
+      const base::android::JavaRef<jstring>& j_default_url,
+      const base::android::JavaRef<jbyteArray>& j_request_data);
 
   // Called by Java when provisioning is complete. This is only in response to a
   // provision() request.
   void OnProvisioningComplete(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
       bool success);
 
   // Callbacks to resolve the promise for |promise_id|.
-  void OnPromiseResolved(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
-      jint j_promise_id);
+  void OnPromiseResolved(JNIEnv* env, int32_t j_promise_id);
   void OnPromiseResolvedWithSession(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
-      jint j_promise_id,
-      const base::android::JavaParamRef<jbyteArray>& j_session_id);
+      int32_t j_promise_id,
+      const base::android::JavaRef<jbyteArray>& j_session_id);
 
   // Callback to reject the promise for |promise_id| with |error_message|.
   // Note: No |system_error| is available from MediaDrm.
   // TODO(xhwang): Implement Exception code.
   void OnPromiseRejected(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
-      jint j_promise_id,
-      jint j_system_code,
-      const base::android::JavaParamRef<jstring>& j_error_message);
+      int32_t j_promise_id,
+      int32_t j_system_code,
+      const base::android::JavaRef<jstring>& j_error_message);
 
   // Session event callbacks.
 
-  void OnSessionMessage(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
-      const base::android::JavaParamRef<jbyteArray>& j_session_id,
-      jint j_message_type,
-      const base::android::JavaParamRef<jbyteArray>& j_message);
-  void OnSessionClosed(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
-      const base::android::JavaParamRef<jbyteArray>& j_session_id);
+  void OnSessionMessage(JNIEnv* env,
+                        const base::android::JavaRef<jbyteArray>& j_session_id,
+                        int32_t j_message_type,
+                        const base::android::JavaRef<jbyteArray>& j_message);
+  void OnSessionClosed(JNIEnv* env,
+                       const base::android::JavaRef<jbyteArray>& j_session_id,
+                       int32_t j_reason);
 
   // Called when key statuses of session are changed. |is_key_release| is set to
   // true when releasing keys. Some of the MediaDrm key status codes should be
   // mapped to CDM key status differently (e.g. EXPIRE -> RELEASED).
   void OnSessionKeysChange(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
-      const base::android::JavaParamRef<jbyteArray>& j_session_id,
+      const base::android::JavaRef<jbyteArray>& j_session_id,
       // List<KeyStatus>
-      const base::android::JavaParamRef<jobjectArray>& j_keys_info,
+      const base::android::JavaRef<jobjectArray>& j_keys_info,
       bool has_additional_usable_key,
       bool is_key_release);
 
@@ -323,16 +319,16 @@ class MEDIA_EXPORT MediaDrmBridge : public ContentDecryptionModule,
   // indicates that the keys never expire.
   void OnSessionExpirationUpdate(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_media_drm,
-      const base::android::JavaParamRef<jbyteArray>& j_session_id,
-      jlong expiry_time_ms);
+      const base::android::JavaRef<jbyteArray>& j_session_id,
+      int64_t expiry_time_ms);
 
   // Called when an error happens during creation of the MediaDrmBridge Java
   // object.
-  void OnCreateError(JNIEnv* env, jint j_error_code);
+  void OnCreateError(JNIEnv* env, int32_t j_error_code);
 
  private:
   friend class MediaDrmBridgeFactory;
+  FRIEND_TEST_ALL_PREFIXES(MediaDrmBridgeTest, MaybeParseCdmVersion);
   // For DeleteSoon() in DeleteOnCorrectThread().
   friend class base::DeleteHelper<MediaDrmBridge>;
 
@@ -351,6 +347,11 @@ class MEDIA_EXPORT MediaDrmBridge : public ContentDecryptionModule,
 
   ~MediaDrmBridge() override;
 
+  // Parses a version string, handling potential non-numeric suffixes.
+  // This returns an invalid version to be handled by the caller if the
+  // version string cannot be parsed.
+  static base::Version MaybeParseCdmVersion(std::string_view version_str);
+
   // Get the security level of the media. Only valid for Widevine.
   SecurityLevel GetSecurityLevel();
 
@@ -361,7 +362,8 @@ class MEDIA_EXPORT MediaDrmBridge : public ContentDecryptionModule,
   HdcpVersion GetCurrentHdcpLevel();
 
   // A helper method that is called when MediaCrypto is ready.
-  void NotifyMediaCryptoReady(JavaObjectPtr j_media_crypto);
+  void NotifyMediaCryptoReady(
+      base::android::ScopedJavaGlobalRef<jobject> j_media_crypto);
 
   // Sends HTTP provisioning request to a provisioning server.
   void SendProvisioningRequest(const GURL& default_url,
@@ -385,11 +387,10 @@ class MEDIA_EXPORT MediaDrmBridge : public ContentDecryptionModule,
   // Java MediaCrypto instance. Possible values are:
   // !j_media_crypto_:
   //   MediaCrypto creation has not been notified via NotifyMediaCryptoReady().
-  // !j_media_crypto_->is_null():
+  //   Or: MediaCrypto creation failed and it has been notified.
+  // !j_media_crypto_.is_null():
   //   MediaCrypto creation succeeded and it has been notified.
-  // j_media_crypto_->is_null():
-  //   MediaCrypto creation failed and it has been notified.
-  JavaObjectPtr j_media_crypto_;
+  base::android::ScopedJavaGlobalRef<jobject> j_media_crypto_;
 
   // The callback to create a ProvisionFetcher.
   CreateFetcherCB create_fetcher_cb_;

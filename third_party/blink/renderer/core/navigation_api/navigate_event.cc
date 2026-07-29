@@ -4,13 +4,22 @@
 
 #include "third_party/blink/renderer/core/navigation_api/navigate_event.h"
 
+#include "base/functional/bind.h"
+#include "cc/trees/scroll_source_type.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/promise_all.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigate_event_init.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_navigation_defer_page_swap_handler.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_navigation_defer_page_swap_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_navigation_defer_page_swap_restore_callback.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_intercept_handler.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_intercept_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_navigation_intercept_precommit_handler.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_navigation_navigate_options.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/dom/abort_controller.h"
 #include "third_party/blink/renderer/core/dom/abort_signal.h"
@@ -20,6 +29,7 @@
 #include "third_party/blink/renderer/core/event_interface_names.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/frame/deprecation/deprecation.h"
+#include "third_party/blink/renderer/core/frame/dom_window.h"
 #include "third_party/blink/renderer/core/frame/history_util.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -28,45 +38,39 @@
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/loader/progress_tracker.h"
+#include "third_party/blink/renderer/core/navigation_api/navigate_event_dispatch_params.h"
+#include "third_party/blink/renderer/core/navigation_api/navigation_api_method_tracker.h"
+#include "third_party/blink/renderer/core/navigation_api/navigation_defer_page_swap_controller.h"
 #include "third_party/blink/renderer/core/navigation_api/navigation_destination.h"
+#include "third_party/blink/renderer/core/navigation_api/navigation_precommit_controller.h"
+#include "third_party/blink/renderer/core/navigation_api/navigation_type_util.h"
+#include "third_party/blink/renderer/core/page/scrolling/fragment_anchor.h"
+#include "third_party/blink/renderer/core/scheduler/task_attribution_top_level_override_scope.h"
+#include "third_party/blink/renderer/core/scheduler/task_attribution_util.h"
+#include "third_party/blink/renderer/core/scroll/scrollable_area.h"
+#include "third_party/blink/renderer/core/timing/dom_window_performance.h"
+#include "third_party/blink/renderer/core/timing/responsiveness_metrics.h"
+#include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cancellable_task.h"
+#include "v8-function.h"
 
 namespace blink {
 
-class NavigateEvent::FulfillReaction final
-    : public ThenCallable<IDLUndefined, FulfillReaction> {
- public:
-  explicit FulfillReaction(NavigateEvent* navigate_event)
-      : navigate_event_(navigate_event) {}
-  void Trace(Visitor* visitor) const final {
-    ThenCallable<IDLUndefined, FulfillReaction>::Trace(visitor);
-    visitor->Trace(navigate_event_);
-  }
-  void React(ScriptState*) {
-    navigate_event_->ReactDone(ScriptValue(), /*did_fulfill=*/true);
-  }
-
- private:
-  Member<NavigateEvent> navigate_event_;
-};
-
-class NavigateEvent::RejectReaction final
-    : public ThenCallable<IDLAny, RejectReaction> {
- public:
-  explicit RejectReaction(NavigateEvent* navigate_event)
-      : navigate_event_(navigate_event) {}
-  void Trace(Visitor* visitor) const final {
-    ThenCallable<IDLAny, RejectReaction>::Trace(visitor);
-    visitor->Trace(navigate_event_);
-  }
-  void React(ScriptState*, ScriptValue value) {
-    navigate_event_->ReactDone(value, /*did_fulfill=*/false);
-  }
-
- private:
-  Member<NavigateEvent> navigate_event_;
-};
+namespace {
+TaskAttributionTopLevelOverrideScope::Type GetTaskAttributionScopeType(
+    NavigateEventDispatchParams* params) {
+  // The current task state should be used (i.e. not overridden) if the
+  // navigation occurs during JS execution. Otherwise ensure the intercept()
+  // state is propagated to the handlers.
+  return params->involvement == UserNavigationInvolvement::kNone
+             ? TaskAttributionTopLevelOverrideScope::Type::kDoNotOverride
+             : TaskAttributionTopLevelOverrideScope::Type::kOverride;
+}
+}  // namespace
 
 NavigateEvent::NavigateEvent(ExecutionContext* context,
                              const AtomicString& type,
@@ -88,7 +92,8 @@ NavigateEvent::NavigateEvent(ExecutionContext* context,
                 : ScriptValue(context->GetIsolate(),
                               v8::Undefined(context->GetIsolate()))),
       has_ua_visual_transition_(init->hasUAVisualTransition()),
-      source_element_(init->sourceElement()) {
+      source_element_(init->sourceElement()),
+      resume_after_deferred_commit_(context) {
   CHECK(IsA<LocalDOMWindow>(context));
   CHECK(!controller_ || controller_->signal() == signal_);
 }
@@ -98,18 +103,19 @@ bool NavigateEvent::PerformSharedChecks(const String& function_name,
   if (!DomWindow()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidStateError,
-        function_name + "() may not be called in a detached window.");
+        StrCat({function_name, "() may not be called in a detached window."}));
     return false;
   }
   if (!isTrusted()) {
     exception_state.ThrowSecurityError(
-        function_name + "() may only be called on a trusted event.");
+        StrCat({function_name, "() may only be called on a trusted event."}));
     return false;
   }
   if (defaultPrevented()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidStateError,
-        function_name + "() may not be called if the event has been canceled.");
+        StrCat({function_name,
+                "() may not be called if the event has been canceled."}));
     return false;
   }
   return true;
@@ -123,10 +129,10 @@ void NavigateEvent::intercept(NavigationInterceptOptions* options,
 
   if (!can_intercept_) {
     exception_state.ThrowSecurityError(
-        "A navigation with URL '" + dispatch_params_->url.ElidedString() +
-        "' cannot be intercepted by in a window with origin '" +
-        DomWindow()->GetSecurityOrigin()->ToString() + "' and URL '" +
-        DomWindow()->Url().ElidedString() + "'.");
+        StrCat({"A navigation with URL '", dispatch_params_->url.ElidedString(),
+                "' cannot be intercepted by in a window with origin '",
+                DomWindow()->GetSecurityOrigin()->ToString(), "' and URL '",
+                DomWindow()->Url().ElidedString(), "'."}));
     return;
   }
 
@@ -138,15 +144,18 @@ void NavigateEvent::intercept(NavigationInterceptOptions* options,
     return;
   }
 
-  if (RuntimeEnabledFeatures::NavigateEventCommitBehaviorEnabled() &&
-      !cancelable() && options->hasCommit() &&
-      options->commit().AsEnum() ==
-          V8NavigationCommitBehavior::Enum::kAfterTransition) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kInvalidStateError,
-        "intercept() may only be called with a commit option of "
-        "\"after-transition\" when the navigate event is cancelable.");
-    return;
+  if (options->hasPrecommitHandler()) {
+    if (!cancelable()) {
+      exception_state.ThrowDOMException(
+          DOMExceptionCode::kInvalidStateError,
+          "intercept() may only be called with a precommitHandler when the"
+          "navigate event is cancelable.");
+      return;
+    }
+    options->precommitHandler()->SetTaskState(
+        CaptureCurrentTaskState(DomWindow()));
+    navigation_action_precommit_handlers_list_.push_back(
+        options->precommitHandler());
   }
 
   if (!HasNavigationActions()) {
@@ -160,10 +169,10 @@ void NavigateEvent::intercept(NavigationInterceptOptions* options,
           MakeGarbageCollected<ConsoleMessage>(
               mojom::blink::ConsoleMessageSource::kJavaScript,
               mojom::blink::ConsoleMessageLevel::kWarning,
-              "The \"" + options->focusReset().AsString() + "\" value for " +
-                  "intercept()'s focusReset option "
-                  "will override the previously-passed value of \"" +
-                  focus_reset_behavior_->AsString() + "\"."));
+              StrCat({"The \"", options->focusReset().AsStringView(),
+                      "\" value for intercept()'s focusReset option will "
+                      "override the previously-passed value of \"",
+                      focus_reset_behavior_->AsStringView(), "\"."})));
     }
     focus_reset_behavior_ = options->focusReset();
   }
@@ -175,89 +184,105 @@ void NavigateEvent::intercept(NavigationInterceptOptions* options,
           MakeGarbageCollected<ConsoleMessage>(
               mojom::blink::ConsoleMessageSource::kJavaScript,
               mojom::blink::ConsoleMessageLevel::kWarning,
-              "The \"" + options->scroll().AsString() + "\" value for " +
-                  "intercept()'s scroll option "
-                  "will override the previously-passed value of \"" +
-                  scroll_behavior_->AsString() + "\"."));
+              StrCat({"The \"", options->scroll().AsStringView(),
+                      "\" value for intercept()'s scroll option will override "
+                      "the previously-passed value of \"",
+                      scroll_behavior_->AsStringView(), "\"."})));
     }
     scroll_behavior_ = options->scroll();
-  }
-
-  if (RuntimeEnabledFeatures::NavigateEventCommitBehaviorEnabled()) {
-    if (options->hasCommit()) {
-      if (commit_behavior_ &&
-          commit_behavior_->AsEnum() != options->commit().AsEnum()) {
-        GetExecutionContext()->AddConsoleMessage(
-            MakeGarbageCollected<ConsoleMessage>(
-                mojom::blink::ConsoleMessageSource::kJavaScript,
-                mojom::blink::ConsoleMessageLevel::kWarning,
-                "The \"" + options->commit().AsString() + "\" value for " +
-                    "intercept()'s commit option "
-                    "will override the previously-passed value of \"" +
-                    commit_behavior_->AsString() + "\"."));
-      }
-      commit_behavior_ = options->commit();
-    }
   }
 
   CHECK(intercept_state_ == InterceptState::kNone ||
         intercept_state_ == InterceptState::kIntercepted);
   intercept_state_ = InterceptState::kIntercepted;
-  if (options->hasHandler())
+  if (options->hasHandler()) {
+    options->handler()->SetTaskState(CaptureCurrentTaskState(DomWindow()));
     navigation_action_handlers_list_.push_back(options->handler());
+  }
 }
 
-bool NavigateEvent::PerformSharedCommitChecks(const String& function_name,
-                                              ExceptionState& exception_state) {
-  if (!PerformSharedChecks(function_name, exception_state)) {
-    return false;
-  }
-
-  if (intercept_state_ == InterceptState::kNone) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kInvalidStateError,
-        "intercept() must be called before " + function_name + "().");
-    return false;
-  }
-  if (ShouldCommitImmediately()) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kInvalidStateError,
-        function_name +
-            "() may only be used if a navigate event was "
-            "intercepted with { commit: 'after-transition' } specified.");
-    return false;
-  }
-  if (IsBeingDispatched()) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kInvalidStateError,
-        function_name + "() may not be called during event dispatch");
-    return false;
-  }
-  if (intercept_state_ == InterceptState::kFinished) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kInvalidStateError,
-        function_name + "() may not be called after transition completes.");
-    return false;
-  }
-  if (intercept_state_ == InterceptState::kCommitted ||
-      intercept_state_ == InterceptState::kScrolled) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
-                                      "navigation has already committed.");
-    return false;
-  }
-  return true;
-}
-
-void NavigateEvent::commit(ExceptionState& exception_state) {
-  if (!PerformSharedCommitChecks("commit", exception_state)) {
+void NavigateEvent::deferPageSwap(NavigationDeferPageSwapOptions* options,
+                                  ExceptionState& exception_state) {
+  if (!PerformSharedChecks("defer", exception_state)) {
     return;
   }
-  CommitNow();
+
+  if (!can_intercept_) {
+    exception_state.ThrowSecurityError(
+        StrCat({"A navigation with URL '", dispatch_params_->url.ElidedString(),
+                "' cannot be deferred in a window with origin '",
+                DomWindow()->GetSecurityOrigin()->ToString(), "' and URL '",
+                DomWindow()->Url().ElidedString(), "'."}));
+    return;
+  }
+
+  if (!IsBeingDispatched()) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidStateError,
+        "deferPageSwap() may only be called while the navigate event is being "
+        "dispatched.");
+    return;
+  }
+  if (destination_->sameDocument()) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidStateError,
+        "deferPageSwap() may only be called for cross-document navigations.");
+    return;
+  }
+
+  deferred_commit_handler_list_.push_back(options->handler());
 }
 
-void NavigateEvent::redirect(const String& url_string,
+void NavigateEvent::MaybeDeferCrossDocumentCommit(
+    ScriptState* script_state,
+    NavigateEventDispatchParams* params) {
+  if (deferred_commit_handler_list_.empty()) {
+    return;
+  }
+
+  CHECK(RuntimeEnabledFeatures::NavigateEventDeferCrossDocumentCommitEnabled());
+  params->resume_deferred_commit_listener =
+      resume_after_deferred_commit_.BindNewPipeAndPassReceiver(
+          DomWindow()->GetTaskRunner(TaskType::kDOMManipulation));
+
+  HeapVector<Member<V8NavigationDeferPageSwapHandler>> handler_list;
+  handler_list.swap(deferred_commit_handler_list_);
+
+  HeapVector<MemberScriptPromise<IDLAny>> defer_promise_list;
+  auto* controller =
+      MakeGarbageCollected<NavigationDeferPageSwapController>(this);
+  for (auto& handler : handler_list) {
+    ScriptPromise<IDLAny> result;
+    if (handler->Invoke(this, controller).To(&result)) {
+      defer_promise_list.push_back(result);
+    }
+  }
+
+  PromiseAll<IDLAny>::WaitForAll(
+      script_state, defer_promise_list,
+      bindings::HeapBind(
+          [](NavigateEvent* navigate_event, HeapVector<ScriptValue>) {
+            navigate_event->ResumeDeferredCommit();
+          },
+          this),
+      bindings::HeapBind(
+          [](NavigateEvent* navigate_event, ScriptValue) {
+            navigate_event->ResumeDeferredCommit();
+          },
+          this));
+}
+
+void NavigateEvent::Redirect(const String& url_string,
+                             NavigationNavigateOptions* options,
                              ExceptionState& exception_state) {
-  if (!PerformSharedCommitChecks("redirect", exception_state)) {
+  CHECK_NE(intercept_state_, InterceptState::kNone);
+  if (!PerformSharedChecks("redirect", exception_state)) {
+    return;
+  }
+
+  if (intercept_state_ > InterceptState::kIntercepted) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      "navigation has already committed.");
     return;
   }
 
@@ -271,46 +296,143 @@ void NavigateEvent::redirect(const String& url_string,
 
   KURL url = KURL(DomWindow()->BaseURL(), url_string);
   if (!url.IsValid()) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kSyntaxError,
-                                      "Invalid URL '" + url.GetString() + "'.");
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kSyntaxError,
+        StrCat({"Invalid URL '", url.GetString(), "'."}));
     return;
   }
   if (!CanChangeToUrlForHistoryApi(url, DomWindow()->GetSecurityOrigin(),
                                    DomWindow()->Url())) {
     exception_state.ThrowSecurityError(
-        "Cannot redirect to '" + url.ElidedString() +
-        "' in a document with origin '" +
-        DomWindow()->GetSecurityOrigin()->ToString() + "' and URL '" +
-        DomWindow()->Url().ElidedString() + "'.");
+        StrCat({"Cannot redirect to '", url.ElidedString(),
+                "' in a document with origin '",
+                DomWindow()->GetSecurityOrigin()->ToString(), "' and URL '",
+                DomWindow()->Url().ElidedString(), "'."}));
     return;
   }
+
+  if (options->history() == V8NavigationHistoryBehavior::Enum::kPush &&
+      DomWindow()->GetFrame()->ShouldMaintainTrivialSessionHistory()) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kNotSupportedError,
+        "redirect() may not override the history behavior when navigating in a "
+        "trivial session history context");
+    return;
+  }
+
+  if (options->hasState()) {
+    scoped_refptr<SerializedScriptValue> serialized_state =
+        SerializedScriptValue::Serialize(
+            DomWindow()->GetIsolate(), options->state().V8Value(),
+            SerializedScriptValue::SerializeOptions(
+                SerializedScriptValue::kForStorage),
+            exception_state);
+    if (exception_state.HadException()) {
+      return;
+    }
+    destination_->SetSerializedState(serialized_state);
+    if (auto* api_method_tracker =
+            DomWindow()->navigation()->ongoing_api_method_tracker_.Get()) {
+      api_method_tracker->SetSerializedState(serialized_state);
+    }
+  }
+
   dispatch_params_->url = url;
+
+  if (options->history() == V8NavigationHistoryBehavior::Enum::kPush) {
+    navigation_type_ = V8NavigationType::Enum::kPush;
+  } else if (options->history() ==
+             V8NavigationHistoryBehavior::Enum::kReplace) {
+    navigation_type_ = V8NavigationType::Enum::kReplace;
+  }
+
+  if (options->hasInfo()) {
+    info_ = options->info();
+  }
+}
+
+void NavigateEvent::AddHandlerDuringPrecommit(
+    V8NavigationInterceptHandler* handler,
+    ExceptionState& exception_state) {
+  if (!PerformSharedChecks("addHandler", exception_state)) {
+    return;
+  }
+
+  if (intercept_state_ > InterceptState::kIntercepted) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      "navigation has already committed.");
+    return;
+  }
+
+  navigation_action_handlers_list_.push_back(handler);
+}
+
+void NavigateEvent::AddDeferPageSwapRestoreCallback(
+    V8NavigationDeferPageSwapRestoreCallback* callback,
+    ExceptionState& exception_state) {
+  if (!PerformSharedChecks("addRestoreCallback", exception_state)) {
+    return;
+  }
+
+  if (intercept_state_ >= InterceptState::kIntercepted) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidStateError,
+        "navigation has already committed or intercepted.");
+    return;
+  }
+
+  NavigationApi* navigation = DomWindow()->navigation();
+  navigation->restore_callback_list_.push_back(callback);
 }
 
 void NavigateEvent::MaybeCommitImmediately(ScriptState* script_state) {
   delayed_load_start_task_handle_ = PostDelayedCancellableTask(
       *DomWindow()->GetTaskRunner(TaskType::kInternalLoading), FROM_HERE,
-      WTF::BindOnce(&NavigateEvent::DelayedLoadStartTimerFired,
-                    WrapWeakPersistent(this)),
+      BindOnce(&NavigateEvent::DelayedLoadStartTimerFired,
+               WrapWeakPersistent(this)),
       kDelayLoadStart);
 
-  if (ShouldCommitImmediately()) {
+  if (navigation_action_precommit_handlers_list_.empty()) {
     CommitNow();
     return;
   }
 
   DomWindow()->GetFrame()->Loader().Progress().ProgressStarted();
-  FinalizeNavigationActionPromisesList();
-}
 
-bool NavigateEvent::ShouldCommitImmediately() {
-  return !commit_behavior_ || commit_behavior_->AsEnum() ==
-                                  V8NavigationCommitBehavior::Enum::kImmediate;
+  HeapVector<Member<V8NavigationInterceptPrecommitHandler>> handlers_list;
+  handlers_list.swap(navigation_action_precommit_handlers_list_);
+
+  auto* controller = MakeGarbageCollected<NavigationPrecommitController>(this);
+
+  HeapVector<MemberScriptPromise<IDLUndefined>> precommit_promises_list;
+  for (auto& function : handlers_list) {
+    TaskAttributionTopLevelOverrideScope override_scope(
+        DomWindow(), GetTaskAttributionScopeType(dispatch_params_),
+        TaskAttributionTopLevelOverrideScope::PassKeyType{});
+    ScriptPromise<IDLUndefined> result;
+    if (function->Invoke(this, controller).To(&result)) {
+      precommit_promises_list.push_back(result);
+    }
+  }
+
+  PromiseAll<IDLUndefined>::WaitForAll(
+      script_state, precommit_promises_list,
+      bindings::HeapBind(&NavigateEvent::CommitNow, this),
+      bindings::HeapBind(&NavigateEvent::ReactDone, this,
+                         WrapPersistent(script_state), /*did_fulfill=*/false));
 }
 
 void NavigateEvent::CommitNow() {
   CHECK_EQ(intercept_state_, InterceptState::kIntercepted);
   CHECK(!dispatch_params_->destination_item || !dispatch_params_->state_object);
+  if (signal_->aborted()) {
+    return;
+  }
+
+  if (auto* performance = DOMWindowPerformance::performance(*DomWindow())) {
+    performance->GetResponsivenessMetrics().WillNavigateEventCommitNow(
+        dispatch_params_->interaction_id);
+  }
 
   intercept_state_ = InterceptState::kCommitted;
 
@@ -320,49 +442,44 @@ void NavigateEvent::CommitNow() {
   auto fire_popstate =
       dispatch_params_->event_type == NavigateEventType::kFragment &&
               (!DomWindow()->navigation()->ongoing_api_method_tracker_ ||
-               IsBackForwardOrRestore(dispatch_params_->frame_load_type))
+               navigation_type_ == V8NavigationType::Enum::kTraverse)
           ? FirePopstate::kYes
           : FirePopstate::kNo;
-  if (!RuntimeEnabledFeatures::NavigateEventPopstateLimitationsEnabled() &&
-      fire_popstate == FirePopstate::kNo &&
-      dispatch_params_->event_type != NavigateEventType::kHistoryApi) {
-    fire_popstate = FirePopstate::kYes;
-  }
 
   // In the spec, the URL and history update steps are not called for reloads.
   // In our implementation, we call the corresponding function anyway, but
   // |type| being a reload type makes it do none of the spec-relevant
   // steps. Instead it does stuff like the loading spinner and use counters.
+
+  // Pass the original initiator origin to ensure that security checks for the
+  // committed navigation (e.g., Scroll-to-Text Fragment restrictions) are
+  // evaluated against the actual initiator, even though the navigation was
+  // intercepted by this document.
   DomWindow()->document()->Loader()->RunURLAndHistoryUpdateSteps(
       dispatch_params_->url, dispatch_params_->destination_item,
       mojom::blink::SameDocumentNavigationType::kNavigationApiIntercept,
-      state_object, dispatch_params_->frame_load_type, fire_popstate,
-      dispatch_params_->should_skip_screenshot,
-      dispatch_params_->is_browser_initiated,
+      state_object, ToWebFrameLoadType(navigation_type_), fire_popstate,
+      dispatch_params_->should_skip_screenshot, dispatch_params_->involvement,
+      dispatch_params_->interaction_id, dispatch_params_->is_browser_initiated,
       dispatch_params_->is_synchronously_committed_same_document,
-      dispatch_params_->soft_navigation_heuristics_task_id);
+      dispatch_params_->initiator_origin.get());
+  if (LocalDOMWindow* window = DomWindow()) {
+    window->GetFrame()->Loader().Progress().DidNavigationApiIntercept();
+  }
 }
 
 void NavigateEvent::React(ScriptState* script_state) {
   CHECK(navigation_action_handlers_list_.empty());
-
-  if (navigation_action_promises_list_.empty()) {
-    // There is a subtle timing difference between the fast-path for zero
-    // promises and the path for 1+ promises, in both spec and implementation.
-    // In most uses of Promise.all() / the Web IDL spec's "wait for
-    // all", this does not matter. However for us there are so many events and
-    // promise handlers firing around the same time (navigatesuccess, committed
-    // promise, finished promise, ...) that the difference is pretty easily
-    // observable by web developers and web platform tests. So, let's make sure
-    // we always go down the 1+ promises path.
-    navigation_action_promises_list_.push_back(
-        ToResolvedUndefinedPromise(script_state));
-  }
-
-  auto promise = PromiseAll<IDLUndefined>::Create(
-      script_state, navigation_action_promises_list_);
-  promise.Then(script_state, MakeGarbageCollected<FulfillReaction>(this),
-               MakeGarbageCollected<RejectReaction>(this));
+  PromiseAll<IDLUndefined>::WaitForAll(
+      script_state, navigation_action_promises_list_,
+      bindings::HeapBind(
+          [](NavigateEvent* navigate_event, ScriptState* script_state) {
+            navigate_event->ReactDone(script_state, /*did_fulfill=*/true,
+                                      ScriptValue());
+          },
+          this, script_state),
+      bindings::HeapBind(&NavigateEvent::ReactDone, this, script_state,
+                         /*did_fulfill=*/false));
 
   if (HasNavigationActions() && DomWindow()) {
     if (AXObjectCache* cache =
@@ -372,25 +489,37 @@ void NavigateEvent::React(ScriptState* script_state) {
   }
 }
 
-void NavigateEvent::ReactDone(ScriptValue value, bool did_fulfill) {
+void NavigateEvent::ResumeDeferredCommit() {
+  if (!resume_after_deferred_commit_.is_bound()) {
+    return;
+  }
+
+  CHECK(RuntimeEnabledFeatures::NavigateEventDeferCrossDocumentCommitEnabled());
+  resume_after_deferred_commit_->ResumeDeferredCommit();
+}
+
+void NavigateEvent::ReactDone(ScriptState* script_state,
+                              bool did_fulfill,
+                              ScriptValue value) {
   CHECK_NE(intercept_state_, InterceptState::kFinished);
 
   LocalDOMWindow* window = DomWindow();
-  if (signal_->aborted() || !window) {
+  if (!window) {
     return;
   }
 
   delayed_load_start_task_handle_.Cancel();
 
+  if (signal_->aborted()) {
+    return;
+  }
+
   CHECK_EQ(this, window->navigation()->ongoing_navigate_event_);
   window->navigation()->ongoing_navigate_event_ = nullptr;
 
   if (intercept_state_ == InterceptState::kIntercepted) {
-    if (did_fulfill) {
-      CommitNow();
-    } else {
-      DomWindow()->GetFrame()->Client()->DidFailAsyncSameDocumentCommit();
-    }
+    CHECK(!did_fulfill);
+    window->GetFrame()->Client()->DidFailAsyncSameDocumentCommit();
   }
 
   if (intercept_state_ >= InterceptState::kCommitted) {
@@ -404,7 +533,7 @@ void NavigateEvent::ReactDone(ScriptValue value, bool did_fulfill) {
   if (did_fulfill) {
     window->navigation()->DidFinishOngoingNavigation();
   } else {
-    window->navigation()->DidFailOngoingNavigation(value);
+    Abort(script_state, value);
   }
 
   if (HasNavigationActions()) {
@@ -419,19 +548,37 @@ void NavigateEvent::ReactDone(ScriptValue value, bool did_fulfill) {
   }
 }
 
-void NavigateEvent::Abort(ScriptState* script_state,
-                          ScriptValue error,
-                          CancelNavigationReason reason) {
+void NavigateEvent::Abort(ScriptState* script_state, ScriptValue error) {
   if (IsBeingDispatched()) {
     preventDefault();
   }
+
+  NavigationApi* navigation = DomWindow()->navigation();
   CHECK(controller_);
+  auto* previous = navigation->ongoing_navigate_event_.Get();
   controller_->abort(script_state, error);
-  delayed_load_start_task_handle_.Cancel();
-  if (!defaultPrevented() && intercept_state_ == InterceptState::kIntercepted &&
-      reason != CancelNavigationReason::kNavigateEvent) {
-    DomWindow()->GetFrame()->Client()->DidFailAsyncSameDocumentCommit();
+  if (navigation->ongoing_navigate_event_ == previous) {
+    navigation->ongoing_navigate_event_ = nullptr;
   }
+  delayed_load_start_task_handle_.Cancel();
+  if (!defaultPrevented()) {
+    switch (intercept_state_) {
+      case InterceptState::kIntercepted: {
+        LocalFrame* frame = DomWindow()->GetFrame();
+        if (frame->IsLoading()) {
+          frame->Loader().Progress().ProgressCompleted();
+        }
+        frame->Client()->DidFailAsyncSameDocumentCommit();
+        break;
+      }
+      case InterceptState::kCommitted:
+        DomWindow()->GetFrame()->Loader().Progress().ProgressCompleted();
+        break;
+      default:
+        break;
+    }
+  }
+  navigation->DidAbort(error);
 }
 
 void NavigateEvent::DelayedLoadStartTimerFired() {
@@ -449,6 +596,9 @@ void NavigateEvent::FinalizeNavigationActionPromisesList() {
 
   for (auto& function : handlers_list) {
     ScriptPromise<IDLUndefined> result;
+    TaskAttributionTopLevelOverrideScope override_scope(
+        DomWindow(), GetTaskAttributionScopeType(dispatch_params_),
+        TaskAttributionTopLevelOverrideScope::PassKeyType{});
     if (function->Invoke(this).To(&result))
       navigation_action_promises_list_.push_back(result);
   }
@@ -475,7 +625,8 @@ void NavigateEvent::PotentiallyResetTheFocus() {
   }
 
   if (Element* focus_delegate = document->GetAutofocusDelegate()) {
-    focus_delegate->Focus(FocusParams(FocusTrigger::kUserGesture));
+    focus_delegate->Focus(FocusParams(
+        user_initiated_ ? FocusTrigger::kUserGesture : FocusTrigger::kScript));
   } else {
     document->ClearFocusedElement();
     document->SetSequentialFocusNavigationStartingPoint(nullptr);
@@ -532,21 +683,6 @@ void NavigateEvent::PotentiallyProcessScrollBehavior() {
   ProcessScrollBehavior();
 }
 
-WebFrameLoadType LoadTypeFromNavigation(
-    V8NavigationType::Enum navigation_type) {
-  switch (navigation_type) {
-    case V8NavigationType::Enum::kPush:
-      return WebFrameLoadType::kStandard;
-    case V8NavigationType::Enum::kReplace:
-      return WebFrameLoadType::kReplaceCurrentItem;
-    case V8NavigationType::Enum::kTraverse:
-      return WebFrameLoadType::kBackForward;
-    case V8NavigationType::Enum::kReload:
-      return WebFrameLoadType::kReload;
-  }
-  NOTREACHED();
-}
-
 void NavigateEvent::ProcessScrollBehavior() {
   CHECK_EQ(intercept_state_, InterceptState::kCommitted);
   intercept_state_ = InterceptState::kScrolled;
@@ -558,13 +694,21 @@ void NavigateEvent::ProcessScrollBehavior() {
   auto scroll_behavior = has_ua_visual_transition_
                              ? mojom::blink::ScrollBehavior::kInstant
                              : mojom::blink::ScrollBehavior::kAuto;
+
+  if (!FragmentAnchor::TryCreate(dispatch_params_->url,
+                                 *DomWindow()->GetFrame(), false)) {
+    DomWindow()->GetFrame()->View()->GetScrollableArea()->SetScrollOffset(
+        ScrollOffset(0, 0), mojom::blink::ScrollType::kProgrammatic,
+        cc::ScrollSourceType::kNone, mojom::blink::ScrollBehavior::kAuto);
+  }
+
   // Use mojom::blink::ScrollRestorationType::kAuto unconditionally here
   // because we are certain that we want to actually scroll if we reach this
   // point. Using mojom::blink::ScrollRestorationType::kManual would block the
   // scroll.
   DomWindow()->GetFrame()->Loader().ProcessScrollForSameDocumentNavigation(
-      dispatch_params_->url, LoadTypeFromNavigation(navigation_type_),
-      view_state, mojom::blink::ScrollRestorationType::kAuto, scroll_behavior);
+      dispatch_params_->url, ToWebFrameLoadType(navigation_type_), view_state,
+      mojom::blink::ScrollRestorationType::kAuto, scroll_behavior);
 }
 
 const AtomicString& NavigateEvent::InterfaceName() const {
@@ -581,8 +725,11 @@ void NavigateEvent::Trace(Visitor* visitor) const {
   visitor->Trace(form_data_);
   visitor->Trace(info_);
   visitor->Trace(source_element_);
+  visitor->Trace(navigation_action_precommit_handlers_list_);
   visitor->Trace(navigation_action_promises_list_);
   visitor->Trace(navigation_action_handlers_list_);
+  visitor->Trace(deferred_commit_handler_list_);
+  visitor->Trace(resume_after_deferred_commit_);
 }
 
 }  // namespace blink

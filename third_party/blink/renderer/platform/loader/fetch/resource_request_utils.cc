@@ -7,10 +7,10 @@
 #include "base/feature_list.h"
 #include "base/trace_event/common/trace_event_common.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/navigation/preloading_headers.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_client_settings_object.h"
 #include "third_party/blink/renderer/platform/loader/fetch/memory_cache.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/referrer.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
 
@@ -53,16 +53,19 @@ void SetReferrer(
   network::mojom::ReferrerPolicy referrer_policy_to_use =
       request.GetReferrerPolicy();
 
-  if (referrer_to_use == Referrer::ClientReferrerString()) {
-    referrer_to_use = fetch_client_settings_object.GetOutgoingReferrer();
-  }
-
   if (referrer_policy_to_use == network::mojom::ReferrerPolicy::kDefault) {
     referrer_policy_to_use = fetch_client_settings_object.GetReferrerPolicy();
   }
 
-  Referrer generated_referrer = SecurityPolicy::GenerateReferrer(
-      referrer_policy_to_use, request.Url(), referrer_to_use);
+  Referrer generated_referrer;
+  if (referrer_to_use == Referrer::ClientReferrerString()) {
+    generated_referrer = SecurityPolicy::GenerateReferrer(
+        referrer_policy_to_use, request.Url(),
+        fetch_client_settings_object.GetOutgoingReferrerUrl());
+  } else {
+    generated_referrer = SecurityPolicy::GenerateReferrer(
+        referrer_policy_to_use, request.Url(), referrer_to_use);
+  }
 
   request.SetReferrerString(generated_referrer.referrer);
   request.SetReferrerPolicy(generated_referrer.referrer_policy);
@@ -172,25 +175,32 @@ void UpgradeResourceRequestForLoader(
       params.GetRenderBlockingBehavior());
 
   if (resource_type == ResourceType::kLinkPrefetch) {
-    // Add the "Purpose: prefetch" header to requests for prefetch.
-    resource_request.SetPurposeHeader("prefetch");
+    if (base::FeatureList::IsEnabled(
+            blink::features::kSecPurposePrefetchHeaderRelPrefetch)) {
+      // Add the "Sec-Purpose: prefetch" header to requests for prefetch.
+      resource_request.SetHttpHeaderField(http_names::kSecPurpose,
+                                          AtomicString("prefetch"));
+    }
   } else if (context.IsPrerendering()) {
     // Add the "Sec-Purpose: prefetch;prerender" header to requests issued from
     // prerendered pages. Add "Purpose: prefetch" as well for compatibility
     // concerns (See https://github.com/WICG/nav-speculation/issues/133).
-    resource_request.SetHttpHeaderField(http_names::kSecPurpose,
-                                        AtomicString("prefetch;prerender"));
-    resource_request.SetPurposeHeader("prefetch");
+    resource_request.SetHttpHeaderField(
+        http_names::kSecPurpose,
+        AtomicString(kSecPurposePrefetchPrerenderHeaderValue));
   }
 
   context.AddAdditionalRequestHeaders(resource_request);
 
   resource_request_context.RecordTrace();
 
-  if (context.CalculateIfAdSubresource(resource_request,
-                                       std::nullopt /* alias_url */,
-                                       resource_type, options.initiator_info)) {
-    resource_request.SetIsAdResource();
+  if (std::optional<AdProvenance> ad_provenance =
+          context
+              .CalculateResourceAnnotations(
+                  resource_request, /*alias_url=*/std::nullopt, resource_type,
+                  options.initiator_info, /*scan_javascript_stack=*/false)
+              .ad_provenance) {
+    resource_request.SetIsAdResource(std::move(*ad_provenance));
   }
 
   // For initial requests, call PrepareRequest() here before revalidation
@@ -219,8 +229,8 @@ PrepareResourceRequestForCacheAccess(
       CalculateReportingDisposition(params);
 
   // Note that resource_request.GetRedirectInfo() may be non-null here since
-  // e.g. ThreadableLoader may create a new Resource from a ResourceRequest that
-  // originates from the ResourceRequest passed to the redirect handling
+  // e.g. ThreadableLoader may create a new Resource from a ResourceRequest
+  // that originates from the ResourceRequest passed to the redirect handling
   // callback.
 
   // Before modifying the request for CSP, evaluate report-only headers. This
@@ -243,6 +253,8 @@ PrepareResourceRequestForCacheAccess(
       options, reporting_disposition,
       MemoryCache::RemoveFragmentIdentifierIfNeeded(url_before_redirects),
       redirect_status);
+  // There's no need to add an integrity policy check here, as CanRequest() will
+  // do that below.
 
   context.PopulateResourceRequestBeforeCacheAccess(options, resource_request);
   if (!resource_request.Url().IsValid()) {
@@ -291,10 +303,14 @@ PrepareResourceRequestForCacheAccess(
                                  : params.Url()),
                          options, reporting_disposition,
                          resource_request.GetRedirectInfo());
-  if (context.CalculateIfAdSubresource(resource_request,
-                                       std::nullopt /* alias_url */,
-                                       resource_type, options.initiator_info)) {
-    resource_request.SetIsAdResource();
+
+  if (std::optional<AdProvenance> ad_provenance =
+          context
+              .CalculateResourceAnnotations(
+                  resource_request, /*alias_url=*/std::nullopt, resource_type,
+                  options.initiator_info, /*scan_javascript_stack=*/true)
+              .ad_provenance) {
+    resource_request.SetIsAdResource(std::move(*ad_provenance));
   }
   if (blocked_reason) {
     return blocked_reason;

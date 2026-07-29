@@ -31,8 +31,9 @@ const char kAdsInterventionRecordedHistogramName[] =
 
 AdsInterventionStatus GetAdsInterventionStatus(bool activation_status,
                                                bool intervention_active) {
-  if (!intervention_active)
+  if (!intervention_active) {
     return AdsInterventionStatus::kExpired;
+  }
 
   return activation_status ? AdsInterventionStatus::kBlocking
                            : AdsInterventionStatus::kWouldBlock;
@@ -61,7 +62,7 @@ AdsInterventionManager::~AdsInterventionManager() = default;
 void AdsInterventionManager::TriggerAdsInterventionForUrlOnSubsequentLoads(
     const GURL& url,
     mojom::AdsViolation ads_violation) {
-  base::Value::Dict additional_metadata;
+  base::DictValue additional_metadata;
 
   double now = clock_->Now().InSecondsFSinceUnixEpoch();
   additional_metadata.Set(kLastAdsViolationTimeKey, now);
@@ -84,11 +85,11 @@ void AdsInterventionManager::TriggerAdsInterventionForUrlOnSubsequentLoads(
 std::optional<AdsInterventionManager::LastAdsIntervention>
 AdsInterventionManager::GetLastAdsIntervention(const GURL& url) const {
   // The last active ads intervention is stored in the site metadata.
-  std::optional<base::Value::Dict> dict =
-      settings_manager_->GetSiteMetadata(url);
+  std::optional<base::DictValue> dict = settings_manager_->GetSiteMetadata(url);
 
-  if (!dict)
+  if (!dict) {
     return std::nullopt;
+  }
 
   std::optional<int> ads_violation = dict->FindInt(kLastAdsViolationKey);
   std::optional<double> last_violation_time =

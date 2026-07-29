@@ -13,7 +13,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/apps/app_service/app_notifications.h"
-#include "chrome/browser/apps/app_service/launch_result_type.h"
 #include "chrome/browser/apps/app_service/media_requests.h"
 #include "chrome/browser/apps/app_service/paused_apps.h"
 #include "chrome/browser/apps/app_service/publishers/extension_apps_base.h"
@@ -28,6 +27,7 @@
 #include "components/services/app_service/public/cpp/instance.h"
 #include "components/services/app_service/public/cpp/instance_registry.h"
 #include "components/services/app_service/public/cpp/intent.h"
+#include "components/services/app_service/public/cpp/launch_result.h"
 #include "components/services/app_service/public/cpp/menu.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 
@@ -42,8 +42,6 @@ class Notification;
 class NotificationDisplayService;
 
 namespace apps {
-
-class PublisherHost;
 
 // An app publisher (in the App Service sense) of extension-backed apps for
 // ChromeOS, including Chrome Apps (platform apps and legacy packaged apps),
@@ -68,12 +66,10 @@ class ExtensionAppsChromeOs : public ExtensionAppsBase,
 
   void ObserveArc();
 
- private:
-  friend class PublisherHost;
-
   // ExtensionAppsBase overrides.
   void Initialize() override;
 
+ private:
   // Requests a compressed icon data for an app identified by `app_id`. The icon
   // is identified by `size_in_dip` and `scale_factor`. Calls `callback` with
   // the result.
@@ -178,7 +174,7 @@ class ExtensionAppsChromeOs : public ExtensionAppsBase,
   content::WebContents* LaunchImpl(AppLaunchParams&& params) override;
 
   void UpdateAppDisabledState(
-      const base::Value::List& disabled_system_features_pref,
+      const base::ListValue& disabled_system_features_pref,
       int feature,
       const std::string& app_id,
       bool is_disabled_mode_changed);

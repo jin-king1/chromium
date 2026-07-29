@@ -5,7 +5,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_PLAIN_TEXT_PAINTER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_PLAIN_TEXT_PAINTER_H_
 
+#include "base/memory_coordinator/memory_consumer.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
+#include "third_party/blink/renderer/platform/heap/prefinalizer.h"
+#include "third_party/blink/renderer/platform/instrumentation/memory_coordinator/memory_consumer_registration.h"
 
 namespace gfx {
 class PointF;
@@ -19,6 +22,7 @@ class PaintFlags;
 
 namespace blink {
 
+class FrameShapeCache;
 class PlainTextNode;
 class TextRun;
 
@@ -36,11 +40,16 @@ class TextRun;
 // Instances in kShared mode are created only once and accessed via
 // PlainTextPainter::Shared().
 class PLATFORM_EXPORT PlainTextPainter
-    : public GarbageCollected<PlainTextPainter> {
+    : public GarbageCollected<PlainTextPainter>,
+      public base::MemoryConsumer {
+  USING_PRE_FINALIZER(PlainTextPainter, Dispose);
+
  public:
   enum Mode { kCanvas, kShared };
   explicit PlainTextPainter(Mode mode);
   void Trace(Visitor* visitor) const;
+
+  void Dispose();
 
   PlainTextPainter(const PlainTextPainter&) = delete;
   PlainTextPainter& operator=(const PlainTextPainter&) = delete;
@@ -53,12 +62,12 @@ class PLATFORM_EXPORT PlainTextPainter
   const PlainTextNode& SegmentAndShape(const TextRun& run, const Font& font);
 
   // Draw the specified text. This doesn't apply BiDi reorder.
-  void Draw(const TextRun& run,
-            const Font& font,
-            cc::PaintCanvas& canvas,
-            const gfx::PointF& location,
-            const cc::PaintFlags& flags,
-            Font::DrawType = Font::DrawType::kGlyphsOnly);
+  void DrawWithoutBidi(const TextRun& run,
+                       const Font& font,
+                       cc::PaintCanvas& canvas,
+                       const gfx::PointF& location,
+                       const cc::PaintFlags& flags,
+                       Font::DrawType = Font::DrawType::kGlyphsOnly);
 
   // Draw the specified text, from `from_index` to `to_index` (exclusive). This
   // applies BiDi reorder.
@@ -86,26 +95,34 @@ class PLATFORM_EXPORT PlainTextPainter
                              unsigned to_index,
                              const Font& font,
                              gfx::RectF* glyph_bounds = nullptr);
+  // This doesn't apply BiDi reorder for compatibility.
+  float ComputeInlineSizeWithoutBidi(const TextRun& run, const Font& font);
 
-  int OffsetForPosition(const TextRun& run,
-                        const Font& font,
-                        float position,
-                        IncludePartialGlyphsOption partial_option,
-                        BreakGlyphsOption break_option) const;
-  gfx::RectF SelectionRectForText(const TextRun& run,
-                                  unsigned from_index,
-                                  unsigned to_index,
-                                  const Font& font,
-                                  const gfx::PointF& left_baseline,
-                                  float height) const;
+  // This function should be called between the end of an animation frame and
+  // the beginning of the next animation frame. This is for <canvas>, and we
+  // don't need to call this for the shared instance.
+  void DidSwitchFrame();
+
+  // base::MemoryConsumer:
+  void OnUpdateMemoryLimit() override;
+  void OnReleaseMemory() override;
 
  private:
+  friend class PlainTextPainterTest;
+
   const PlainTextNode& CreateNode(const TextRun& text_run,
                                   const Font& font,
-                                  bool supports_bidi = true,
-                                  bool bidi_overridden = false);
+                                  bool supports_bidi = true);
+  FrameShapeCache* GetCacheFor(const Font& font);
 
+  // A map from a FontFallbackList to a FrameShapeCache.
+  // We don't need to worry about Web Fonts. When a Web Font loading state is
+  // changed, affected FontFallbackLists are invalidated, and are disconnected
+  // from owner Fonts. They will be removed from `cache_map_` by GC.
+  HeapHashMap<WeakMember<FontFallbackList>, Member<FrameShapeCache>> cache_map_;
   const Mode mode_;
+
+  std::optional<MemoryConsumerRegistration> memory_consumer_registration_;
 };
 
 }  // namespace blink

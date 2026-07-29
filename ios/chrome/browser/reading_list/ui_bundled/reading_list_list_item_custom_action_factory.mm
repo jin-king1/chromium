@@ -4,6 +4,7 @@
 
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_list_item_custom_action_factory.h"
 
+#import "components/send_tab_to_self/features.h"
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_list_item.h"
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_list_item_accessibility_delegate.h"
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_list_item_factory_delegate.h"
@@ -104,18 +105,16 @@
               item:item];
   [customActions addObject:copyURLAction];
 
-  if (item.distillationState == ReadingListUIDistillationStatusSuccess) {
-    // Add the possibility to open offline version only if the entry is
-    // distilled.
-    ReadingListCustomAction* openOfflineAction =
-        [[ReadingListCustomAction alloc]
-            initWithName:l10n_util::GetNSString(
-                             IDS_IOS_READING_LIST_CONTENT_CONTEXT_OFFLINE)
-                  target:self
-                selector:@selector(openOffline:)
-                    item:item];
 
-    [customActions addObject:openOfflineAction];
+
+  if (send_tab_to_self::AreIOSTabRemindersEnabled()) {
+    ReadingListCustomAction* remindAction = [[ReadingListCustomAction alloc]
+        initWithName:l10n_util::GetNSString(
+                         IDS_IOS_REMINDER_NOTIFICATIONS_SWIPE_ACTION_REMIND)
+              target:self
+            selector:@selector(remind:)
+                item:item];
+    [customActions addObject:remindAction];
   }
 
   return customActions;
@@ -128,6 +127,11 @@
 
 - (BOOL)markUnread:(ReadingListCustomAction*)action {
   [self.accessibilityDelegate markItemUnread:action.item];
+  return YES;
+}
+
+- (BOOL)remind:(ReadingListCustomAction*)action {
+  [self.accessibilityDelegate remindItem:action.item];
   return YES;
 }
 
@@ -151,11 +155,6 @@
 
 - (BOOL)copyURL:(ReadingListCustomAction*)action {
   StoreURLInPasteboard(action.item.entryURL);
-  return YES;
-}
-
-- (BOOL)openOffline:(ReadingListCustomAction*)action {
-  [self.accessibilityDelegate openItemOffline:action.item];
   return YES;
 }
 

@@ -10,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_mouse_enter_exit_handler.h"
@@ -40,6 +41,7 @@ class Image;
 namespace views {
 class Button;
 class ImageButton;
+class Separator;
 }  // namespace views
 
 class OmniboxResultView : public views::View {
@@ -101,6 +103,7 @@ class OmniboxResultView : public views::View {
 
  private:
   FRIEND_TEST_ALL_PREFIXES(OmniboxPopupViewViewsTest, DeleteSuggestion);
+  FRIEND_TEST_ALL_PREFIXES(OmniboxResultViewTest, ContextualSecondaryText);
 
   void OpenIphLink();
 
@@ -109,6 +112,12 @@ class OmniboxResultView : public views::View {
   // Updates the highlight state of the row, as well as conditionally shows
   // controls that are only visible on row hover.
   void UpdateHoverState();
+
+  void UpdateDividerLineVisibility();
+
+  // Sets the visibility of the secondary text (description) based on the
+  // current state. Only applies to contextual suggestions.
+  void UpdateSecondaryTextVisibility();
 
   // Sets the visibility of the |thumbs_up_button_| and |thumbs_down_button_|
   // based on the current state.
@@ -141,6 +150,10 @@ class OmniboxResultView : public views::View {
 
   // A container view for layout.
   raw_ptr<views::View> local_answer_header_and_suggestion_and_buttons_;
+
+  // This separator runs along the top edge to visually divide the toolbelt
+  // match from other matches.
+  raw_ptr<views::Separator> divider_line_;
 
   // The answer header; e.g. 'Summary' or 'Generating...'. Lazily initialized.
   raw_ptr<OmniboxLocalAnswerHeaderView> local_answer_header_ = nullptr;

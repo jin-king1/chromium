@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/rand_util.h"
 #include "components/services/heap_profiling/public/cpp/controller.h"
@@ -64,6 +65,9 @@ bool ShouldProfileNonRendererProcessType(Mode mode, int process_type) {
     case Mode::kUtilityAndBrowser:
       return process_type == content::ProcessType::PROCESS_TYPE_UTILITY ||
              process_type == content::ProcessType::PROCESS_TYPE_BROWSER;
+
+    case Mode::kAllUtilities:
+      return process_type == content::ProcessType::PROCESS_TYPE_UTILITY;
 
     case Mode::kNone:
       return false;
@@ -142,7 +146,8 @@ void ClientConnectionManager::StartProfilingProcess(
   // The RenderProcessHost iterator must be used on the UI thread.
   for (auto iter = content::RenderProcessHost::AllHostsIterator();
        !iter.IsAtEnd(); iter.Advance()) {
-    if (pid == iter.GetCurrentValue()->GetProcess().Pid()) {
+    if (iter.GetCurrentValue()->GetProcess().IsValid() &&
+        pid == iter.GetCurrentValue()->GetProcess().Pid()) {
       StartProfilingRenderer(iter.GetCurrentValue(),
                              std::move(started_profiling_closure));
       return;
@@ -162,7 +167,7 @@ void ClientConnectionManager::StartProfilingProcess(
   for (content::BrowserChildProcessHostIterator browser_child_iter;
        !browser_child_iter.Done(); ++browser_child_iter) {
     const content::ChildProcessData& data = browser_child_iter.GetData();
-    if (data.GetProcess().Pid() == pid) {
+    if (data.GetProcess().IsValid() && data.GetProcess().Pid() == pid) {
       StartProfilingNonRendererChild(data,
                                      std::move(started_profiling_closure));
       return;
@@ -256,7 +261,7 @@ void ClientConnectionManager::StartProfilingNonRendererChild(
                      std::move(started_profiling_closure)));
 }
 
-void ClientConnectionManager::OnRenderProcessHostCreated(
+void ClientConnectionManager::OnRenderProcessLaunched(
     content::RenderProcessHost* host) {
   if (ShouldProfileNewRenderer(host)) {
     StartProfilingRenderer(host, base::DoNothing());

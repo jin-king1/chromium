@@ -28,7 +28,6 @@
 #include "cc/debug/layer_tree_debug_state.h"
 #include "cc/input/layer_selection_bound.h"
 #include "cc/layers/layer.h"
-#include "cc/metrics/ukm_manager.h"
 #include "cc/tiles/raster_dark_mode_filter.h"
 #include "cc/trees/layer_tree_host.h"
 #include "cc/trees/layer_tree_mutator.h"
@@ -56,24 +55,6 @@ class Layer;
 namespace blink {
 
 namespace {
-// This factory is used to defer binding of the InterfacePtr to the compositor
-// thread.
-class UkmRecorderFactoryImpl : public cc::UkmRecorderFactory {
- public:
-  UkmRecorderFactoryImpl() = default;
-  ~UkmRecorderFactoryImpl() override = default;
-
-  // This method gets called on the compositor thread.
-  std::unique_ptr<ukm::UkmRecorder> CreateRecorder() override {
-    mojo::Remote<ukm::mojom::UkmRecorderFactory> factory;
-
-    // Calling these methods on the compositor thread are thread safe.
-    Platform::Current()->GetBrowserInterfaceBroker()->GetInterface(
-        factory.BindNewPipeAndPassReceiver());
-    return ukm::MojoUkmRecorder::Create(*factory);
-  }
-};
-
 }  // namespace
 
 LayerTreeView::LayerTreeView(
@@ -95,13 +76,12 @@ void LayerTreeView::Initialize(
 
   cc::LayerTreeHost::InitParams params;
   params.client = this;
-  params.scheduling_client = this;
+  params.scheduling_delegate = this;
   params.settings = &settings;
   params.task_graph_runner = task_graph_runner;
   params.main_task_runner = std::move(main_thread);
   params.mutator_host = animation_host_.get();
   params.dark_mode_filter = &RasterDarkModeFilterImpl::Instance();
-  params.ukm_recorder_factory = std::make_unique<UkmRecorderFactoryImpl>();
   if (base::ThreadPoolInstance::Get()) {
     // The image worker thread needs to allow waiting since it makes discardable
     // shared memory allocations which need to make synchronous calls to the
@@ -146,12 +126,11 @@ void LayerTreeView::ClearPreviousDelegateAndReattachIfNeeded(
     // `LayerTreeHost::DetachInputDelegateAndRenderFrameObserver()` to avoid
     // having a gap in time in the compositor where the LayerTreeHost is already
     // detached but is still marked as visible. This is done to stop the compositor from producing frames which require an input delegate. See also
-    // https://crbug,com/41496745 for more details.
+    // https://crbug.com/41496745 for more details.
     layer_tree_host_->SetVisible(false);
   }
   layer_tree_host_->DetachInputDelegateAndRenderFrameObserver();
-  layer_tree_host_->StopDeferringCommits(
-      cc::PaintHoldingCommitTrigger::kWidgetSwapped);
+  layer_tree_host_->StopDeferringCommits();
   for (uint32_t i = 0;
        i <= static_cast<uint32_t>(cc::EventListenerClass::kLast); ++i) {
     layer_tree_host_->SetEventListenerProperties(
@@ -288,13 +267,11 @@ void LayerTreeView::OnCommitRequested() {
   delegate_->OnCommitRequested();
 }
 
-void LayerTreeView::OnDeferCommitsChanged(
-    bool status,
-    cc::PaintHoldingReason reason,
-    std::optional<cc::PaintHoldingCommitTrigger> trigger) {
+void LayerTreeView::OnDeferCommitsChanged(bool status,
+                                          cc::PaintHoldingReason reason) {
   if (!delegate_)
     return;
-  delegate_->OnDeferCommitsChanged(status, reason, trigger);
+  delegate_->OnDeferCommitsChanged(status, reason);
 }
 
 void LayerTreeView::BeginMainFrameNotExpectedSoon() {
@@ -329,6 +306,14 @@ void LayerTreeView::UpdateCompositorScrollState(
   delegate_->UpdateCompositorScrollState(commit_data);
 }
 
+void LayerTreeView::UpdateAnimatedImageState(
+    const cc::CompositorCommitData& commit_data) {
+  if (!delegate_) {
+    return;
+  }
+  delegate_->UpdateAnimatedImageState(commit_data);
+}
+
 void LayerTreeView::RequestNewLayerTreeFrameSink() {
   if (!delegate_)
     return;
@@ -339,10 +324,9 @@ void LayerTreeView::RequestNewLayerTreeFrameSink() {
   // When the compositor is not visible it would not request a
   // LayerTreeFrameSink so this is a race where it requested one on the
   // compositor thread while becoming non-visible on the main thread. In that
-  // case, we can wait for it to become visible again before replying. If
-  // `kWarmUpCompositor` is enabled and warm-up is triggered, a
-  // LayerTreeFrameSink is requested even if non-visible state. We can ignore
-  // this branch in that case. If not enabled, `ShouldWarmUp()` is always false.
+  // case, we can wait for it to become visible again before replying.
+  // If the warm-up is triggered, a LayerTreeFrameSink is requested even if
+  // non-visible state. We can ignore this branch in that case.
   if (!layer_tree_host_->ShouldWarmUp() && !layer_tree_host_->IsVisible()) {
     frame_sink_state_ = FrameSinkState::kRequestBufferedInvisible;
     return;
@@ -371,10 +355,8 @@ void LayerTreeView::DidFailToInitializeLayerTreeFrameSink() {
   // LayerTreeFrameSink is being processed, then if it fails we would arrive
   // here. Since the compositor does not request a LayerTreeFrameSink while not
   // visible, we can delay trying again until becoming visible again.
-  // If `kWarmUpCompositor` is enabled and warm-up is
-  // triggered, a LayerTreeFrameSink is requested even if non-visible state. We
-  // can ignore this branch in that case. If not enabled, `ShouldWarmUp()` is
-  // always false.
+  // If the warm-up is triggered, a LayerTreeFrameSink is requested even if
+  // non-visible state. We can ignore this branch in that case.
   if (!layer_tree_host_->ShouldWarmUp() && !layer_tree_host_->IsVisible()) {
     frame_sink_state_ = FrameSinkState::kRequestBufferedInvisible;
     return;
@@ -387,7 +369,9 @@ void LayerTreeView::DidFailToInitializeLayerTreeFrameSink() {
   // unable to be killed after Chrome is closed.
   // https://issues.chromium.org/336164423
   if (!Platform::Current()->IsGpuRemoteDisconnected()) {
-    layer_tree_host_->GetTaskRunnerProvider()->MainThreadTaskRunner()->PostTask(
+    // Run this task on a default priority task runner, so we don't starve mojo
+    // messages while we're in a retry loop.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(&LayerTreeView::RequestNewLayerTreeFrameSink,
                                   weak_factory_.GetWeakPtr()));
   }
@@ -440,8 +424,9 @@ void LayerTreeView::DidPresentCompositorFrame(
   }
   while (!presentation_callbacks_.empty()) {
     const auto& front = presentation_callbacks_.begin();
-    if (viz::FrameTokenGT(front->first, frame_token))
+    if (front->first > frame_token) {
       break;
+    }
     for (auto& callback : front->second)
       std::move(callback).Run(frame_timing_details);
     presentation_callbacks_.erase(front);
@@ -450,8 +435,9 @@ void LayerTreeView::DidPresentCompositorFrame(
 #if BUILDFLAG(IS_APPLE)
   while (!core_animation_error_code_callbacks_.empty()) {
     const auto& front = core_animation_error_code_callbacks_.begin();
-    if (viz::FrameTokenGT(front->first, frame_token))
+    if (front->first > frame_token) {
       break;
+    }
     for (auto& callback : front->second) {
       std::move(callback).Run(
           frame_timing_details.presentation_feedback.ca_layer_error_code);
@@ -559,7 +545,7 @@ void LayerTreeView::AddCallback(
       DCHECK_LE(previous.second.size(), 250u);
       return;
     }
-    DCHECK(viz::FrameTokenGT(frame_token, previous_frame_token));
+    DCHECK_GT(frame_token, previous_frame_token);
   }
   std::vector<Callback> new_callbacks;
   new_callbacks.push_back(std::move(callback));

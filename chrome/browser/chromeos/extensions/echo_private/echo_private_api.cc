@@ -5,28 +5,32 @@
 #include "chrome/browser/chromeos/extensions/echo_private/echo_private_api.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 
-#include "base/files/file_util.h"
+#include "ash/constants/webui_url_constants.h"
 #include "base/functional/bind.h"
-#include "base/i18n/time_formatting.h"
 #include "base/location.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "chrome/browser/ash/crosapi/crosapi_ash.h"
-#include "chrome/browser/ash/crosapi/crosapi_manager.h"
-#include "chrome/browser/ash/crosapi/echo_private_ash.h"
+#include "chrome/browser/ash/notifications/echo_dialog_view.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/extensions/echo_private/echo_private_api_util.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/window_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/common/extensions/api/echo_private.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/common/url_constants.h"
 #include "chromeos/ash/components/report/utils/time_utils.h"
+#include "chromeos/ash/components/settings/cros_settings.h"
+#include "chromeos/ash/components/settings/cros_settings_names.h"
+#include "chromeos/ash/components/settings/cros_settings_provider.h"
+#include "chromeos/ash/components/system/statistics_provider.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "content/public/browser/web_contents.h"
@@ -35,6 +39,31 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
+#include "ui/aura/window.h"
+
+namespace {
+std::string GetRegistrationCode(std::string_view type) {
+  // Possible ECHO code type and corresponding key name in StatisticsProvider.
+  const std::string kCouponType = "COUPON_CODE";
+  const std::string kGroupType = "GROUP_CODE";
+
+  std::string_view name;
+  if (type == kCouponType) {
+    name = ash::system::kOffersCouponCodeKey;
+  } else if (type == kGroupType) {
+    name = ash::system::kOffersGroupCodeKey;
+  } else {
+    return std::string();
+  }
+
+  ash::system::StatisticsProvider* provider =
+      ash::system::StatisticsProvider::GetInstance();
+  const std::optional<std::string_view> offers_code =
+      provider->GetMachineStatistic(name);
+
+  return std::string(offers_code.value_or(""));
+}
+}  // namespace
 
 namespace echo_api = extensions::api::echo_private;
 
@@ -50,33 +79,8 @@ EchoPrivateGetRegistrationCodeFunction::Run() {
       echo_api::GetRegistrationCode::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
 
-  // Possible ECHO code type and corresponding key name in StatisticsProvider.
-  const std::string kCouponType = "COUPON_CODE";
-  const std::string kGroupType = "GROUP_CODE";
-  std::optional<crosapi::mojom::RegistrationCodeType> type;
-  if (params->type == kCouponType) {
-    type = crosapi::mojom::RegistrationCodeType::kCoupon;
-  } else if (params->type == kGroupType) {
-    type = crosapi::mojom::RegistrationCodeType::kGroup;
-  }
-
-  if (!type) {
-    return RespondNow(ArgumentList(
-        echo_api::GetRegistrationCode::Results::Create(std::string())));
-  }
-
-  auto callback = base::BindOnce(
-      &EchoPrivateGetRegistrationCodeFunction::RespondWithResult, this);
-  crosapi::CrosapiManager::Get()
-      ->crosapi_ash()
-      ->echo_private_ash()
-      ->GetRegistrationCode(type.value(), std::move(callback));
-  return RespondLater();
-}
-
-void EchoPrivateGetRegistrationCodeFunction::RespondWithResult(
-    const std::string& result) {
-  Respond(WithArguments(result));
+  return RespondNow(ArgumentList(echo_api::GetRegistrationCode::Results::Create(
+      GetRegistrationCode(params->type))));
 }
 
 EchoPrivateSetOfferInfoFunction::EchoPrivateSetOfferInfoFunction() = default;
@@ -89,7 +93,7 @@ ExtensionFunction::ResponseAction EchoPrivateSetOfferInfoFunction::Run() {
   EXTENSION_FUNCTION_VALIDATE(params);
 
   const std::string& service_id = params->id;
-  base::Value::Dict dict = params->offer_info.additional_properties.Clone();
+  base::DictValue dict = params->offer_info.additional_properties.Clone();
   chromeos::echo_offer::RemoveEmptyValueDicts(dict);
 
   PrefService* local_state = g_browser_process->local_state();
@@ -109,7 +113,7 @@ ExtensionFunction::ResponseAction EchoPrivateGetOfferInfoFunction::Run() {
 
   const std::string& service_id = params->id;
   PrefService* local_state = g_browser_process->local_state();
-  const base::Value::Dict& offer_infos =
+  const base::DictValue& offer_infos =
       local_state->GetDict(prefs::kEchoCheckedOffers);
 
   const base::Value* offer_info = offer_infos.Find("echo." + service_id);
@@ -137,8 +141,10 @@ ExtensionFunction::ResponseAction EchoPrivateGetOobeTimestampFunction::Run() {
     // Returns an empty string on error.
     return RespondNow(WithArguments(std::string()));
   }
-  std::string result = base::UnlocalizedTimeFormatWithPattern(
-      timestamp.value(), "y-M-d", icu::TimeZone::getGMT());
+  base::Time::Exploded exploded;
+  timestamp.value().UTCExplode(&exploded);
+  std::string result = base::StringPrintf(
+      "%d-%d-%d", exploded.year, exploded.month, exploded.day_of_month);
   return RespondNow(WithArguments(std::move(result)));
 }
 
@@ -186,17 +192,77 @@ ExtensionFunction::ResponseAction EchoPrivateGetUserConsentFunction::Run() {
   }
 
   DCHECK(web_contents);
-  crosapi::CrosapiManager::Get()
-      ->crosapi_ash()
-      ->echo_private_ash()
-      ->CheckRedeemOffersAllowed(
+
+  ash::CrosSettingsProvider::TrustedStatus status =
+      ash::CrosSettings::Get()->PrepareTrustedValues(base::BindOnce(
+          &EchoPrivateGetUserConsentFunction::DidPrepareTrustedValues, this,
           web_contents->GetTopLevelNativeWindow(),
           params->consent_requester.service_name,
-          params->consent_requester.origin,
-          base::BindOnce(&EchoPrivateGetUserConsentFunction::Finalize, this));
-  return RespondLater();
+          params->consent_requester.origin));
+
+  if (status == ash::CrosSettingsProvider::TRUSTED) {
+    // Callback was dropped in this case (because it gets called only when
+    // status isn't TRUSTED). Manually invoke.
+    DidPrepareTrustedValues(web_contents->GetTopLevelNativeWindow(),
+                            params->consent_requester.service_name,
+                            params->consent_requester.origin);
+  }
+
+  return did_respond() ? AlreadyResponded() : RespondLater();
+}
+
+void EchoPrivateGetUserConsentFunction::DidPrepareTrustedValues(
+    aura::Window* window,
+    std::string_view service_name,
+    std::string_view origin) {
+  ash::CrosSettingsProvider::TrustedStatus status =
+      ash::CrosSettings::Get()->PrepareTrustedValues(base::NullCallback());
+  if (status != ash::CrosSettingsProvider::TRUSTED) {
+    Respond(WithArguments(false));
+    return;
+  }
+
+  bool allow = true;
+  ash::CrosSettings::Get()->GetBoolean(
+      ash::kAllowRedeemChromeOsRegistrationOffers, &allow);
+
+  // Create and show the dialog.
+  ash::EchoDialogView::Params dialog_params;
+  dialog_params.echo_enabled = allow;
+  if (allow) {
+    dialog_params.service_name = base::UTF8ToUTF16(service_name);
+    dialog_params.origin = base::UTF8ToUTF16(origin);
+  }
+
+  // Add ref to ensure the function stays around until the dialog listener is
+  // called. The reference is released in |Finalize|.
+  AddRef();
+  ash::EchoDialogView* dialog = new ash::EchoDialogView(this, dialog_params);
+  dialog->Show(window);
+}
+
+void EchoPrivateGetUserConsentFunction::OnAccept() {
+  Finalize(true);
+}
+
+void EchoPrivateGetUserConsentFunction::OnCancel() {
+  Finalize(false);
+}
+
+void EchoPrivateGetUserConsentFunction::OnMoreInfoLinkClicked() {
+  NavigateParams params(Profile::FromBrowserContext(browser_context()),
+                        GURL(ash::kChromeUIEchoLearnMoreURL),
+                        ui::PAGE_TRANSITION_LINK);
+  // Open the link in a new window. The echo dialog is modal, so the current
+  // window is useless until the dialog is closed.
+  params.disposition = WindowOpenDisposition::NEW_WINDOW;
+  Navigate(&params);
 }
 
 void EchoPrivateGetUserConsentFunction::Finalize(bool consent) {
   Respond(WithArguments(consent));
+
+  // Release the reference added in |DidPrepareTrustedValues|, before showing
+  // the dialog.
+  Release();
 }

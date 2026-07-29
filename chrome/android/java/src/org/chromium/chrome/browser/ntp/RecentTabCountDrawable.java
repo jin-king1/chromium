@@ -15,8 +15,8 @@ import android.graphics.Typeface;
 import android.graphics.drawable.DrawableWrapper;
 import android.text.TextPaint;
 
-import androidx.appcompat.content.res.AppCompatResources;
-
+import org.chromium.build.annotations.EnsuresNonNull;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
 import org.chromium.ui.UiUtils;
 
@@ -25,8 +25,9 @@ import java.util.Locale;
 /**
  * Class for drawing a tab count icon on the Recent Tabs Page for bulk tab closures.
  *
- * Loosely based on {@link TabSwitcherDrawable} and modified to handle an SVG asset.
+ * <p>Loosely based on {@link TabSwitcherDrawable} and modified to handle an SVG asset.
  */
+@NullMarked
 public class RecentTabCountDrawable extends DrawableWrapper {
     // Avoid allocations during draw by pre-allocating a rect.
     private final Rect mTextBounds = new Rect();
@@ -47,9 +48,7 @@ public class RecentTabCountDrawable extends DrawableWrapper {
                         R.color.default_icon_color_tint_list));
 
         mTextPaint = new TextPaint();
-        setTint(
-                AppCompatResources.getColorStateList(
-                        context, R.color.default_icon_color_tint_list));
+        setTint(context.getColorStateList(R.color.default_icon_color_tint_list));
 
         mTextPaint.setAntiAlias(true);
         mTextPaint.setTextAlign(Align.CENTER);
@@ -69,6 +68,7 @@ public class RecentTabCountDrawable extends DrawableWrapper {
         invalidateSelf();
     }
 
+    @EnsuresNonNull("mTint")
     public void setTint(ColorStateList tint) {
         if (mTint == tint) return;
         mTint = tint;

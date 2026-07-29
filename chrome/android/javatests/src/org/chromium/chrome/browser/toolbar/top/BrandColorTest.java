@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.toolbar.top;
 
 import android.graphics.Color;
+import android.os.Build;
 import android.text.TextUtils;
 
 import androidx.test.filters.SmallTest;
@@ -20,14 +21,17 @@ import org.chromium.base.SysUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UrlUtils;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
@@ -35,8 +39,9 @@ import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabTestUtils;
 import org.chromium.chrome.browser.toolbar.ToolbarDataProvider;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.browser_ui.styles.ChromeColors;
 import org.chromium.ui.base.DeviceFormFactor;
 
@@ -44,9 +49,15 @@ import org.chromium.ui.base.DeviceFormFactor;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Features.DisableFeatures({ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE})
+// TODO(crbug.com/428056054): Do not read color from system window bars on B+.
+@DisableIf.Build(
+        sdk_is_greater_than = Build.VERSION_CODES.VANILLA_ICE_CREAM,
+        message = "crbug.com/428056054")
+@Batch(Batch.PER_CLASS)
 public class BrandColorTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private static final String BRAND_COLOR_1 = "#482329";
     private static final String BRAND_COLOR_2 = "#505050";
@@ -94,13 +105,14 @@ public class BrandColorTest {
         }
     }
 
-    protected void startMainActivityWithURL(String url) {
-        mActivityTestRule.startMainActivityWithURL(url);
+    protected WebPageStation startMainActivityWithURL(String url) {
+        WebPageStation page = mActivityTestRule.startOnWebPage(url);
         mToolbar = (ToolbarPhone) mActivityTestRule.getActivity().findViewById(R.id.toolbar);
         mToolbarDataProvider = mToolbar.getToolbarDataProvider();
         mDefaultColor =
                 ChromeColors.getDefaultThemeColor(
                         mActivityTestRule.getActivity(), /* isIncognito= */ false);
+        return page;
     }
 
     /** Test for having default primary color working correctly. */
@@ -188,6 +200,7 @@ public class BrandColorTest {
     @Test
     @SmallTest
     @Restriction(DeviceFormFactor.PHONE)
+    @DisabledTest(message = "crbug.com/380043209")
     @Feature({"StatusBar", "Omnibox"})
     public void testNavigatingToBrandColorAndBack() {
         startMainActivityWithURL("about:blank");

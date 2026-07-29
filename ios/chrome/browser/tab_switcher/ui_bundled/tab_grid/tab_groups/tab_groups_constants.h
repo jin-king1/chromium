@@ -19,17 +19,39 @@ extern NSString* const kTabGroupViewIdentifier;
 extern NSString* const kTabGroupViewTitleIdentifier;
 extern NSString* const kTabGroupNewTabButtonIdentifier;
 extern NSString* const kTabGroupOverflowMenuButtonIdentifier;
+extern NSString* const kTabGroupCloseButtonIdentifier;
 extern NSString* const kTabGroupFacePileButtonIdentifier;
+extern NSString* const kTabGroupTitleButtonToEditGroupIdentifier;
 
-// Accessibility identifiers for the Tab Groups panel in Tab Grid.
+// Color for the button background.
+UIColor* TabGroupViewButtonBackgroundColor();
+// Height of the buttons.
+extern const CGFloat kTabGroupButtonHeight;
+
+// Accessibility identifiers for the Recent Activity view.
+extern NSString* const kTabGroupRecentActivityIdentifier;
+
+// Accessibility identifiers for the tab groups panel in Tab Grid.
 extern NSString* const kTabGroupsPanelIdentifier;
 
-// Accessibility identifier prefix of a cell in the tab groups panel.
+// Accessibility identifiers of cells in the tab groups panel.
+extern NSString* const kTabGroupsPanelOutOfDateMessageCellIdentifier;
+extern NSString* const kTabGroupsPanelNotificationCellIdentifierPrefix;
 extern NSString* const kTabGroupsPanelCellIdentifierPrefix;
 
-// Accessibility identifier of the Shared Tab Groups user education screen.
+// Accessibility identifiers for the tab groups panel out-of-date message cell.
+extern NSString* const kTabGroupsPanelUpdateOutOfDateMessageIdentifier;
+extern NSString* const kTabGroupsPanelCloseOutOfDateMessageIdentifier;
+
+// Accessibility identifier for the tab groups panel notification cell.
+extern NSString* const kTabGroupsPanelCloseNotificationIdentifier;
+
+// Accessibility identifier of the shared tab groups user education screen.
 extern NSString* const kSharedTabGroupUserEducationAccessibilityIdentifier;
 // Name of the pref storing whether the user education has been shown or not.
 extern NSString* const kSharedTabGroupUserEducationShownOnceKey;
+
+// Accessibility identifier prefix of a cell in the recent activity.
+extern NSString* const kRecentActivityLogCellIdentifierPrefix;
 
 #endif  // IOS_CHROME_BROWSER_TAB_SWITCHER_UI_BUNDLED_TAB_GRID_TAB_GROUPS_TAB_GROUPS_CONSTANTS_H_

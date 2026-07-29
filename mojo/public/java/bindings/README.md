@@ -249,24 +249,6 @@ IPC. Serialization and deserialization when being sent or received across a Mojo
 channel will both perform nullness checks. If you receive a struct over IPC, it
 is guaranteed to comply with the nullability specified in the mojom file.
 
-### Struct equality
-
-Structs autogenerate `equals` and `hashCode` methods. However, you should take
-caution if you plan to use a generated Java struct in a collection that relies
-on the `hashCode` as the struct's Java object itself is mutable.
-
-Additionally, structs with `float` fields set to NaN will report those fields as
-equal despite `Float.NaN != Float.NaN` being `true` in Java. This behavior was
-chosen to satisfy the reflexivity requirement for Java objects (for any non-null
-object x, `x.equals(x)` should be `true`). This decision has the side effect of
-meaning that float fields set to `-0.0f` and `0.0f` respectively will report as
-not equal despite `-0.0f == 0.0f` being `true`.
-
-Structs with fields like handles, remotes and receivers will compare these with
-reference equality checks. This means that it will be very rare for structs
-containing these field types to be equal unless they contain the same instance
-in those fields.
-
 ## Unions
 
 ```
@@ -316,14 +298,6 @@ and therefore may continue to hold references to any nested data under them.
 The constants for the different tags/variants of a union are available under a
 static Tag class under the union's generated Java class and use
 PascalCase. (Note that this is unlike the variants for enums.)
-
-### Union equality
-
-Unions also generate `equals` and `hashCode` methods with the same rules and
-caveats as structs (see [Struct equality](#struct-equality)). One important note
-for unions is that only the tag and the field it represents is compared. Two
-unions may be equal despite some of their fields holding different data
-(provided the tag for those fields is not set).
 
 # Interfaces
 
@@ -458,6 +432,63 @@ Note that a Mojo connection that's bound to an implementation object will keep
 that implementation object alive. However, your implementation object has no
 inherent influence over the lifetime of the connection (after all, you're just
 implementing an interface).
+
+
+## Result<T,E> return methods
+
+`result<T,E>` responses are a way to communicate method success or failure. It is
+syntactic sugar on top of [mojo unions](/mojo/public/tools/bindings/README.md#unions).
+For more information about how and when it should be used, refer to the the
+[mojo IDL document](/mojo/public/tools/bindings/README.md#Result-response).
+
+The Java binding uses a [Result](/mojo/public/java/bindings/src/org/chromium/mojo/bindings/Result.java)
+container to resepresent responses for `result<T,E>` return methods.
+`Result#get()` is used to retrieve success results and `Result#getError()`
+is used to get failure results. Users must check `result#isSuccess()` before
+accessing the result. If an invalid access if performed, a
+`NoSuchElementException` will be thrown. If we were to rewrite the error
+handling [Union](#unions) section above with `result<T, E>`, this is what it
+would look like:
+
+```mojom
+
+interface CoffeeMachine {
+    // No need to declare the BrewCoffeeResponse union. The previous cups_of_coffee
+    // is the successful result. The error_message is the failure result.
+    BrewCoffee() => result<uint64, string>;
+};
+```
+
+To make IPC calls:
+
+```java
+// imagine if coffeeMachine is of type CoffeeMachine.proxy.
+coffeeMachine.BrewCoffee(new CoffeeMachine.BrewCoffee_Response() {
+    @override
+    public void call(Result<Integer, String> result) {
+        if (result.isSuccess()) {
+            Log.i("success! cups of coffee is: " + result.get())
+        } else {
+            Log.i("failure! error message is: " + result.getError());
+        }
+    }
+});
+```
+
+To receive IPC calls:
+```java
+class CofeeMachineImpl implements CoffeeMachine {
+    @Override
+    public void brewCoffee(CofeeMachine.BrewCoffee_Response callback) {
+        if (/** success */) {
+            callback.call(Result.of(4));
+        } else {
+            callback.call(Result.ofError("outta beans!"));
+        }
+
+    }
+}
+```
 
 # Registering, mapping, binding, and passing interfaces
 

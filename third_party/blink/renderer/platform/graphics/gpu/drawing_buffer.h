@@ -34,9 +34,12 @@
 #include <limits>
 #include <memory>
 
+#include "base/byte_size.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/functional/function_ref.h"
 #include "base/memory/raw_ptr.h"
+#include "base/trace_event/memory_dump_provider.h"
 #include "cc/layers/texture_layer_client.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/GLES2/gl2extchromium.h"
@@ -77,7 +80,7 @@ class GLES2Interface;
 
 namespace blink {
 class CanvasResource;
-class CanvasResourceProvider;
+class ExternalCanvasResource;
 class Extensions3DUtil;
 class StaticBitmapImage;
 class WebGraphicsContext3DProvider;
@@ -94,6 +97,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
     // Returns true if the DrawingBuffer is currently bound for draw.
     virtual bool DrawingBufferClientIsBoundForDraw() = 0;
     virtual void DrawingBufferClientRestoreScissorTest() = 0;
+    virtual void DrawingBufferClientRestoreRasterizerDiscard() = 0;
     // Interrupt and restore pixel local storage, if it was active.
     virtual void DrawingBufferClientInterruptPixelLocalStorage() = 0;
     virtual void DrawingBufferClientRestorePixelLocalStorage() = 0;
@@ -123,20 +127,10 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
     kPreserve,
     kDiscard,
   };
-  enum WebGLVersion {
-    kWebGL1,
-    kWebGL2,
-  };
-
-  enum ChromiumImageUsage {
-    kAllowChromiumImage,
-    kDisallowChromiumImage,
-  };
 
   static scoped_refptr<DrawingBuffer> Create(
       std::unique_ptr<WebGraphicsContext3DProvider>,
-      const Platform::GraphicsInfo& graphics_info,
-      bool using_swap_chain,
+      const Platform::WebGLContextInfo&,
       Client*,
       const gfx::Size&,
       bool premultiplied_alpha,
@@ -146,9 +140,8 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
       bool want_antialiasing,
       bool desynchronized,
       PreserveDrawingBuffer,
-      WebGLVersion,
-      ChromiumImageUsage,
-      PredefinedColorSpace color_space,
+      Platform::WebGLContextType,
+      PredefinedColorSpace,
       gl::GpuPreference);
 
   DrawingBuffer(const DrawingBuffer&) = delete;
@@ -161,6 +154,9 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // Issues a glClear() on all framebuffers associated with this DrawingBuffer.
   void ClearFramebuffers(GLbitfield clear_mask);
 
+  // Recreates the back color buffer if it was discarded.
+  void EnsureBackColorBuffer();
+
   // Indicates whether the DrawingBuffer internally allocated a packed
   // depth-stencil renderbuffer in the situation where the end user only asked
   // for a depth buffer. In this case, we need to upgrade clears of the depth
@@ -171,11 +167,11 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   bool HasStencilBuffer() const { return !!depth_stencil_buffer_; }
 
   bool IsUsingGpuCompositing() const {
-    return graphics_info_.using_gpu_compositing;
+    return context_info_.using_gpu_compositing;
   }
 
-  const Platform::GraphicsInfo& GetGraphicsInfo() const {
-    return graphics_info_;
+  const Platform::WebGLContextInfo& ContextInfo() const {
+    return context_info_;
   }
 
   // Given the desired buffer size, provides the largest dimensions that will
@@ -221,10 +217,12 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   bool MarkContentsChanged();
 
   void SetBufferClearNeeded(bool);
+  void RequireExplicitBufferClear();
   bool BufferClearNeeded() const;
 
   void SetIsInHiddenPage(bool);
   void SetHdrMetadata(const gfx::HDRMetadata& hdr_metadata);
+  const gfx::HDRMetadata& GetHdrMetadata() const { return hdr_metadata_; }
 
   // Whether the target for draw operations has format GL_RGBA, but is
   // emulating format GL_RGB. When the target's storage is first
@@ -247,7 +245,6 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   WebGraphicsContext3DProvider* ContextProvider();
   base::WeakPtr<WebGraphicsContext3DProviderWrapper> ContextProviderWeakPtr();
   Client* client() { return client_; }
-  WebGLVersion webgl_version() const { return webgl_version_; }
   bool destroyed() const { return destruction_in_progress_; }
 
   // cc::TextureLayerClient implementation.
@@ -262,26 +259,38 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   scoped_refptr<StaticBitmapImage> TransferToStaticBitmapImage();
 
   // Returns a UnacceleratedStaticBitmapImage backed by a bitmap that will have
-  // a copy of the contents of the front buffer. This is only meant to be used
-  // for unaccelerated canvases as for accelerated contexts there are better
-  // ways to get a copy of the internal contents.
-  scoped_refptr<StaticBitmapImage> GetUnacceleratedStaticBitmapImage();
+  // a copy of the contents of the `source_buffer`. Resulting image will have
+  // N32 format and will have top-left orination and alpha type that matches
+  // `requested_alpha_type` of the drawing buffer.
+  scoped_refptr<StaticBitmapImage> GetRGBAUnacceleratedStaticBitmapImage(
+      SourceDrawingBuffer source_buffer);
 
+  // Returns a UnacceleratedStaticBitmapImage backed by a bitmap that will have
+  // a copy of the contents of the `source_buffer`. This is only meant to be
+  // used for unaccelerated canvases as for accelerated contexts there are
+  // better ways to get a copy of the internal contents. If
+  scoped_refptr<StaticBitmapImage> GetUnacceleratedStaticBitmapImage(
+      SourceDrawingBuffer source_buffer,
+      viz::SharedImageFormat format,
+      SkAlphaType alpha_type,
+      GrSurfaceOrigin origin);
+
+  // `src_rect` is always in top-left coordinate space.
   bool CopyToPlatformTexture(gpu::gles2::GLES2Interface*,
                              GLenum dst_target,
                              GLuint dst_texture,
                              GLint dst_level,
-                             bool premultiply_alpha,
-                             bool flip_y,
+                             SkAlphaType dst_alpha_type,
+                             GrSurfaceOrigin dst_origin,
                              const gfx::Point& dst_texture_offset,
-                             const gfx::Rect& src_sub_rectangle,
+                             const gfx::Rect& src_rect,
                              SourceDrawingBuffer);
 
-  bool CopyToPlatformMailbox(gpu::raster::RasterInterface*,
-                             gpu::Mailbox dst_mailbox,
-                             const gfx::Point& dst_texture_offset,
-                             const gfx::Rect& src_sub_rectangle,
-                             SourceDrawingBuffer src_buffer);
+  std::optional<gpu::SyncToken> CopyToPlatformSharedImage(
+      gpu::raster::RasterInterface*,
+      const scoped_refptr<gpu::ClientSharedImage>& dst_shared_image,
+      const gpu::SyncToken& dst_sync_token,
+      SourceDrawingBuffer src_buffer);
 
   bool CopyToVideoFrame(
       WebGraphicsContext3DVideoFramePool* frame_pool,
@@ -289,8 +298,10 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
       const gfx::ColorSpace& dst_color_space,
       WebGraphicsContext3DVideoFramePool::FrameReadyCallback callback);
 
-  sk_sp<SkData> PaintRenderingResultsToDataArray(SourceDrawingBuffer);
-
+  base::ByteSize EstimatedSizeInBytes() const;
+  void OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
+                    const std::string& dump_base_name,
+                    const base::trace_event::MemoryDumpArgs& args) const;
   int SampleCount() const { return sample_count_; }
   bool ExplicitResolveOfMultisampleData() const {
     return anti_aliasing_mode_ == kAntialiasingModeMSAAExplicitResolve;
@@ -302,31 +313,23 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // Restore all state that may have been dirtied by any call.
   void RestoreAllState();
 
-  bool UsingSwapChain() const { return using_swap_chain_; }
-
-  bool IsOriginTopLeft() const {
-    // If the context has the flip_y extension, it will behave as having the
-    // origin of coordinates on the top left.
-    return opengl_flip_y_extension_;
-  }
-
-  // Keep track of low latency buffer status.
-  bool low_latency_enabled() const { return low_latency_enabled_; }
-  void set_low_latency_enabled(bool low_latency_enabled) {
-    low_latency_enabled_ = low_latency_enabled;
-  }
+  // Returns true if the drawing buffer supports direct (no-copy) export for low
+  // latency (e.g., to the display compositor).
+  bool SupportsNoCopyExportForLowLatency();
 
   scoped_refptr<CanvasResource> ExportCanvasResource();
 
-  scoped_refptr<CanvasResource> ExportLowLatencyCanvasResource(
-      base::WeakPtr<CanvasResourceProvider> resource_provider);
+  scoped_refptr<ExternalCanvasResource> ExportLowLatencyCanvasResource();
+
+  bool IsWebGL2() const {
+    return webgl_version_ == Platform::WebGLContextType::kWebGL2ContextType;
+  }
 
   static const size_t kDefaultColorBufferCacheLimit;
 
  protected:  // For unittests
   DrawingBuffer(std::unique_ptr<WebGraphicsContext3DProvider>,
-                const Platform::GraphicsInfo& graphics_info,
-                bool using_swap_chain,
+                const Platform::WebGLContextInfo&,
                 bool desynchronized,
                 std::unique_ptr<Extensions3DUtil>,
                 Client*,
@@ -335,17 +338,18 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
                 bool want_alpha_channel,
                 bool premultiplied_alpha,
                 PreserveDrawingBuffer,
-                WebGLVersion,
+                Platform::WebGLContextType,
                 bool wants_depth,
                 bool wants_stencil,
-                ChromiumImageUsage,
-                PredefinedColorSpace color_space,
-                gl::GpuPreference gpu_preference);
+                PredefinedColorSpace,
+                gl::GpuPreference);
 
   bool Initialize(const gfx::Size&, bool use_multisampling);
 
   void SetSharedImageInterfaceProviderForSoftwareRenderingTest(
       std::unique_ptr<WebGraphicsSharedImageInterfaceProvider> sii_provider);
+
+  bool HasBackColorBufferForTesting() const { return !!back_color_buffer_; }
 
   struct SoftwareResource {
     SoftwareResource(
@@ -412,9 +416,6 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
 
   struct ColorBuffer : public ThreadSafeRefCounted<ColorBuffer> {
     ColorBuffer(base::WeakPtr<DrawingBuffer> drawing_buffer,
-                const gfx::Size&,
-                viz::SharedImageFormat,
-                SkAlphaType alpha_type,
                 scoped_refptr<gpu::ClientSharedImage> shared_image,
                 std::unique_ptr<gpu::SharedImageTexture> shared_image_texture);
     ColorBuffer(const ColorBuffer&) = delete;
@@ -424,6 +425,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
     void BeginAccess(const gpu::SyncToken& sync_token, bool readonly);
     gpu::SyncToken EndAccess();
     void ForceCleanUp();
+    base::ByteSize EstimatedSizeInBytes() const;
 
     // The thread on which the ColorBuffer is created and the DrawingBuffer is
     // bound to.
@@ -433,9 +435,6 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
     // by the beginDestruction method, which will eventually drain all of its
     // ColorBuffers.
     base::WeakPtr<DrawingBuffer> drawing_buffer;
-    const gfx::Size size;
-    const viz::SharedImageFormat format;
-    const SkAlphaType alpha_type;
 
     // The shared image used to send this buffer to the compositor.
     scoped_refptr<gpu::ClientSharedImage> shared_image;
@@ -459,12 +458,12 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   using CopyFunctionRef = base::FunctionRef<std::optional<gpu::SyncToken>(
       scoped_refptr<gpu::ClientSharedImage>,
       const gpu::SyncToken&,
-      SkAlphaType alpha_type,
-      const gfx::Size&)>;
-  bool CopyToPlatformInternal(gpu::InterfaceBase* dst_interface,
-                              bool dst_is_unpremul_gl,
-                              SourceDrawingBuffer src_buffer,
-                              CopyFunctionRef copy_function);
+      SkAlphaType alpha_type)>;
+  std::optional<gpu::SyncToken> CopyToPlatformInternal(
+      gpu::InterfaceBase* dst_interface,
+      bool dst_is_unpremul_gl,
+      SourceDrawingBuffer src_buffer,
+      CopyFunctionRef copy_function);
 
   enum ClearOption { kClearOnlyMultisampledFBO, kClearAllFBOs };
 
@@ -561,8 +560,10 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // Helper function which does a readback from the currently-bound
   // framebuffer into a buffer of a certain size with 4-byte pixels.
   void ReadBackFramebuffer(base::span<uint8_t> pixels,
-                           SkColorType,
-                           WebGLImageConversion::AlphaOp);
+                           viz::SharedImageFormat destination_format,
+                           SkAlphaType destination_alpha_type,
+                           GrSurfaceOrigin destination_origin,
+                           SourceDrawingBuffer source_buffer);
 
   // If RGB emulation is required, then the CHROMIUM image's alpha channel
   // must be immediately cleared after it is bound to a texture. Nothing
@@ -570,7 +571,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   void ClearChromiumImageAlpha(const ColorBuffer&);
 
   // Tries to create a CHROMIUM_image backed texture if
-  // RuntimeEnabledFeatures::WebGLImageChromiumEnabled() is true. On failure,
+  // SharedGpuContext::WebGLImageChromiumEnabled() is true. On failure,
   // or if the flag is false, creates a default texture. Always returns a valid
   // ColorBuffer.
   scoped_refptr<ColorBuffer> CreateColorBuffer(const gfx::Size&);
@@ -599,9 +600,6 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // and GPU switch
   bool ReallocateMultisampleRenderbuffer(const gfx::Size&);
 
-  // Presents swap chain if swap chain is being used and contents have changed.
-  void ResolveAndPresentSwapChainIfNeeded();
-
   WebGraphicsSharedImageInterfaceProvider*
   GetSharedImageInterfaceProviderForBitmap();
 
@@ -609,7 +607,7 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   raw_ptr<Client> client_ = nullptr;
 
   const PreserveDrawingBuffer preserve_drawing_buffer_;
-  const WebGLVersion webgl_version_;
+  const Platform::WebGLContextType webgl_version_;
 
   std::unique_ptr<WebGraphicsContext3DProviderWrapper> context_provider_;
   // Lifetime is tied to the m_contextProvider.
@@ -629,9 +627,8 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   viz::SharedImageFormat color_buffer_format_ =
       viz::SinglePlaneFormat::kRGBA_8888;
 
-  Platform::GraphicsInfo graphics_info_;
-  const bool using_swap_chain_;
-  bool low_latency_enabled_ = false;
+  Platform::WebGLContextInfo context_info_;
+  bool can_use_low_latency_ = false;
   bool has_implicit_stencil_buffer_ = false;
 
   // The current state restorer, which is used to track state dirtying. It is an
@@ -671,6 +668,10 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // buffer.
   bool contents_changed_ = true;
 
+  // Whether the back buffer has been discarded. Used to make sure that it's
+  // been properly recreated.
+  bool back_buffer_discarded_ = false;
+
   // True if resolveIfNeeded() has been called since the last time
   // markContentsChanged() had been called.
   bool contents_change_resolved_ = false;
@@ -703,14 +704,6 @@ class PLATFORM_EXPORT DrawingBuffer : public cc::TextureLayerClient,
   // DrawingBuffer.
   Deque<scoped_refptr<ColorBuffer>> recycled_color_buffer_queue_;
   base::flat_set<scoped_refptr<ColorBuffer>> exported_color_buffers_;
-
-  // In the case of OffscreenCanvas, we do not want to enable the
-  // WebGLImageChromium flag, so we replace all the
-  // RuntimeEnabledFeatures::WebGLImageChromiumEnabled() call with
-  // shouldUseChromiumImage() calls, and set m_chromiumImageUsage to
-  // DisallowChromiumImage in the case of OffscreenCanvas.
-  ChromiumImageUsage chromium_image_usage_;
-  bool ShouldUseChromiumImage();
 
   bool opengl_flip_y_extension_;
 

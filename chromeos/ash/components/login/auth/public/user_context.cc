@@ -308,6 +308,10 @@ bool UserContext::CanLockManagedGuestSession() const {
   return can_lock_managed_guest_session_;
 }
 
+bool UserContext::GenerateFreshRecoveryId() const {
+  return generate_fresh_recovery_id_;
+}
+
 bool UserContext::HasCredentials() const {
   return (account_id_.is_valid() && !key_.GetSecret().empty()) ||
          !auth_code_.empty();
@@ -465,6 +469,10 @@ void UserContext::SetCanLockManagedGuestSession(
   can_lock_managed_guest_session_ = can_lock_managed_guest_session;
 }
 
+void UserContext::SetGenerateFreshRecoveryId(bool generate_fresh_recovery_id) {
+  generate_fresh_recovery_id_ = generate_fresh_recovery_id;
+}
+
 void UserContext::SetLoginInputMethodIdUsed(
     const std::string& input_method_id) {
   DCHECK(login_input_method_id_used_.empty());
@@ -546,6 +554,22 @@ void UserContext::SetMountState(UserContext::MountState mount_state) {
   cryptohome_.SetMountState(mount_state);
 }
 
+std::vector<std::string> UserContext::GetScrapedSamlPasswords() const {
+  return scraped_saml_passwords_;
+}
+
+void UserContext::SetScrapedSamlPasswords(
+    const std::vector<std::string> scraped_saml_passwords) {
+  scraped_saml_passwords_ = scraped_saml_passwords;
+}
+
+bool UserContext::GetRequiresPasswordConfirmation() const {
+  return requires_password_confirmation_;
+}
+void UserContext::SetRequiresPasswordConfirmation(bool is_requried) {
+  requires_password_confirmation_ = is_requried;
+}
+
 void UserContext::ClearSecrets() {
   key_.ClearSecret();
   password_key_.ClearSecret();
@@ -557,6 +581,7 @@ void UserContext::ClearSecrets() {
   gaia_password_.reset();
   saml_password_.reset();
   local_input_.reset();
+  scraped_saml_passwords_.clear();
 }
 
 }  // namespace ash

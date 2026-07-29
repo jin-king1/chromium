@@ -14,13 +14,14 @@
 #include "base/files/file_error_or.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/location.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ash/extensions/file_manager/event_router.h"
 #include "chrome/browser/ash/extensions/file_manager/event_router_factory.h"
@@ -222,7 +223,7 @@ std::string GetShareUrlFromAlternateUrl(const GURL& alternate_url) {
   // sharing dialog for files and folders (add ?userstoinvite="" to the URL).
   GURL::Replacements replacements;
   std::string new_query =
-      (alternate_url.has_query() ? alternate_url.query() + "&" : "") +
+      (alternate_url.has_query() ? alternate_url.GetQuery() + "&" : "") +
       "userstoinvite=%22%22";
   replacements.SetQueryStr(new_query);
 
@@ -772,14 +773,16 @@ drive::EventLogger* GetLogger(Profile* profile) {
   return service ? service->GetLogger() : nullptr;
 }
 
-std::vector<fmp::MountableGuest> CreateMountableGuestList(Profile* profile) {
+std::vector<fmp::MountableGuest> CreateMountableGuestList(
+    const PrefService& local_state,
+    Profile* profile) {
   auto* service = guest_os::GuestOsServiceFactory::GetForProfile(profile);
   if (!service) {
     return {};
   }
 
   bool local_user_files_allowed =
-      policy::local_user_files::LocalUserFilesAllowed();
+      policy::local_user_files::LocalUserFilesAllowed(local_state);
 
   auto* registry = service->MountProviderRegistry();
   std::vector<fmp::MountableGuest> guests;

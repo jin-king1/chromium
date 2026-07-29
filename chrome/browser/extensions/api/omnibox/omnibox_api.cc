@@ -19,7 +19,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/omnibox/omnibox_input_watcher_factory.h"
 #include "chrome/browser/omnibox/omnibox_suggestions_watcher_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -33,12 +32,15 @@
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_prefs_factory.h"
+#include "extensions/browser/icon_util.h"
 #include "extensions/browser/install_prefs_helper.h"
+#include "extensions/browser/permissions/active_tab_permission_granter.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/api_permission_id.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_skia.h"
 
 namespace extensions {
 
@@ -64,7 +66,7 @@ std::optional<omnibox::SuggestResult> GetOmniboxDefaultSuggestion(
     return std::nullopt;
   }
 
-  const base::Value::Dict* dict =
+  const base::DictValue* dict =
       prefs->ReadPrefAsDict(extension_id, kOmniboxDefaultSuggestion);
   if (!dict) {
     return std::nullopt;
@@ -79,10 +81,11 @@ bool SetOmniboxDefaultSuggestion(
     const ExtensionId& extension_id,
     const omnibox::DefaultSuggestResult& suggestion) {
   ExtensionPrefs* prefs = ExtensionPrefs::Get(profile);
-  if (!prefs)
+  if (!prefs) {
     return false;
+  }
 
-  base::Value::Dict dict = suggestion.ToValue();
+  base::DictValue dict = suggestion.ToValue();
   // Add the content field so that the dictionary can be used to populate an
   // omnibox::SuggestResult.
   dict.Set(kSuggestionContent, base::Value(base::Value::Type::STRING));
@@ -116,7 +119,7 @@ void ExtensionOmniboxEventRouter::OnInputStarted(
     const ExtensionId& extension_id) {
   auto event = std::make_unique<Event>(events::OMNIBOX_ON_INPUT_STARTED,
                                        omnibox::OnInputStarted::kEventName,
-                                       base::Value::List(), profile);
+                                       base::ListValue(), profile);
   EventRouter::Get(profile)
       ->DispatchEventToExtension(extension_id, std::move(event));
 }
@@ -132,7 +135,7 @@ bool ExtensionOmniboxEventRouter::OnInputChanged(
           extension_id, omnibox::OnInputChanged::kEventName))
     return false;
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(input);
   args.Append(suggest_id);
 
@@ -156,22 +159,23 @@ void ExtensionOmniboxEventRouter::OnInputEntered(
       ExtensionRegistry::Get(profile)->enabled_extensions().GetByID(
           extension_id);
   CHECK(extension);
-  extensions::TabHelper::FromWebContents(web_contents)->
-      active_tab_permission_granter()->GrantIfRequested(extension);
+  extensions::ActiveTabPermissionGranter::FromWebContents(web_contents)
+      ->GrantIfRequested(extension);
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(input);
-  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB)
+  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) {
     args.Append(kForegroundTabDisposition);
-  else if (disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB)
+  } else if (disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB) {
     args.Append(kBackgroundTabDisposition);
-  else
+  } else {
     args.Append(kCurrentTabDisposition);
+  }
 
   auto event = std::make_unique<Event>(events::OMNIBOX_ON_INPUT_ENTERED,
                                        omnibox::OnInputEntered::kEventName,
                                        std::move(args), profile);
-  event->user_gesture = EventRouter::USER_GESTURE_ENABLED;
+  event->user_gesture = EventRouter::UserGestureState::kEnabled;
   EventRouter::Get(profile)
       ->DispatchEventToExtension(extension_id, std::move(event));
 
@@ -185,7 +189,7 @@ void ExtensionOmniboxEventRouter::OnInputCancelled(
     const ExtensionId& extension_id) {
   auto event = std::make_unique<Event>(events::OMNIBOX_ON_INPUT_CANCELLED,
                                        omnibox::OnInputCancelled::kEventName,
-                                       base::Value::List(), profile);
+                                       base::ListValue(), profile);
   EventRouter::Get(profile)
       ->DispatchEventToExtension(extension_id, std::move(event));
 }
@@ -194,7 +198,7 @@ void ExtensionOmniboxEventRouter::OnDeleteSuggestion(
     Profile* profile,
     const ExtensionId& extension_id,
     const std::string& suggestion_text) {
-  base::Value::List args;
+  base::ListValue args;
   args.Append(suggestion_text);
 
   auto event = std::make_unique<Event>(events::OMNIBOX_ON_DELETE_SUGGESTION,
@@ -223,7 +227,7 @@ void ExtensionOmniboxEventRouter::OnActionExecuted(
   auto event = std::make_unique<Event>(
       events::OMNIBOX_ON_ACTION_EXECUTED, omnibox::OnActionExecuted::kEventName,
       omnibox::OnActionExecuted::Create(std::move(action_execution)), profile);
-  event->user_gesture = EventRouter::USER_GESTURE_ENABLED;
+  event->user_gesture = EventRouter::UserGestureState::kEnabled;
   event_router->DispatchEventToExtension(extension_id, std::move(event));
 }
 
@@ -344,13 +348,16 @@ OmniboxSendSuggestionsFunction::OmniboxSendSuggestionsFunction() = default;
 OmniboxSendSuggestionsFunction::~OmniboxSendSuggestionsFunction() = default;
 
 ExtensionFunction::ResponseAction OmniboxSendSuggestionsFunction::Run() {
-  params_ = SendSuggestions::Params::Create(args());
-  EXTENSION_FUNCTION_VALIDATE(params_);
+  std::optional<api::omnibox::SendSuggestions::Params> params =
+      SendSuggestions::Params::Create(args());
+  EXTENSION_FUNCTION_VALIDATE(params);
+  request_id_ = params->request_id;
 
-  if (is_from_service_worker() && !params_->suggest_results.empty()) {
+  if (!params->suggest_results.empty()) {
     std::vector<std::string_view> inputs;
-    inputs.reserve(params_->suggest_results.size());
-    for (const auto& suggestion : params_->suggest_results) {
+    inputs.reserve(params->suggest_results.size());
+    for (const auto& suggestion : params->suggest_results) {
+      std::vector<ExtensionSuggestion::Action> actions;
       inputs.push_back(suggestion.description);
       if (suggestion.actions) {
         if (!IsUnscopedModeAllowed(extension())) {
@@ -365,15 +372,49 @@ ExtensionFunction::ResponseAction OmniboxSendSuggestionsFunction::Run() {
               suggestion.actions->size(),
               ExtensionOmniboxEventRouter::kMaxSuggestionActions)));
         }
+        actions.reserve(suggestion.actions->size());
+        for (const auto& action : *suggestion.actions) {
+          base::DictValue canvas_set =
+              action.icon ? action.icon->ToValue() : base::DictValue();
+          gfx::ImageSkia image_skia;
+          if (!canvas_set.empty()) {
+            base::DictValue& image_data = *canvas_set.FindDict("imageData");
+            // The image data should have been verified by the pre-validation
+            // param update.
+            CHECK(!image_data.empty());
+            if (extensions::ParseIconFromCanvasDictionary(image_data,
+                                                          &image_skia) !=
+                extensions::IconParseResult::kSuccess) {
+              return RespondNow(Error(base::StringPrintf(
+                  ExtensionOmniboxEventRouter::kActionIconError,
+                  suggestion.description, action.name)));
+            }
+          }
+          actions.emplace_back(action.name, action.label, action.tooltip_text,
+                               gfx::Image(image_skia));
+        }
       }
+
+      const std::vector<api::omnibox::MatchClassification> empty_styles;
+      const std::vector<api::omnibox::MatchClassification>* styles_ptr =
+          suggestion.description_styles ? &suggestion.description_styles.value()
+                                        : &empty_styles;
+      extension_suggestions_.emplace_back(
+          suggestion.content, suggestion.description,
+          suggestion.deletable.value_or(false),
+          StyleTypesToACMatchClassifications(styles_ptr,
+                                             suggestion.description),
+          std::move(actions), suggestion.icon_url);
     }
 
-    ParseDescriptionsAndStyles(
-        inputs,
-        base::BindOnce(
-            &OmniboxSendSuggestionsFunction::OnParsedDescriptionsAndStyles,
-            this));
-    return RespondLater();
+    if (is_from_service_worker()) {
+      ParseDescriptionsAndStyles(
+          inputs,
+          base::BindOnce(
+              &OmniboxSendSuggestionsFunction::OnParsedDescriptionsAndStyles,
+              this));
+      return RespondLater();
+    }
   }
 
   NotifySuggestionsReady();
@@ -382,7 +423,7 @@ ExtensionFunction::ResponseAction OmniboxSendSuggestionsFunction::Run() {
 
 void OmniboxSendSuggestionsFunction::OnParsedDescriptionsAndStyles(
     DescriptionAndStylesResult result) {
-  DCHECK(params_);
+  DCHECK_NE(0u, extension_suggestions_.size());
   // Since the XML parsing happens asynchronously, the browser context can be
   // torn down in the interim. If this happens, early-out.
   if (!browser_context()) {
@@ -394,8 +435,7 @@ void OmniboxSendSuggestionsFunction::OnParsedDescriptionsAndStyles(
     return;
   }
 
-  if (result.descriptions_and_styles.size() !=
-      params_->suggest_results.size()) {
+  if (result.descriptions_and_styles.size() != extension_suggestions_.size()) {
     // This can technically happen if the extension provided input that mucked
     // with our XML parsing (see suggestion_parser_unittest.cc). This isn't a
     // security concern, but would mean that our mapping to record the other
@@ -405,11 +445,13 @@ void OmniboxSendSuggestionsFunction::OnParsedDescriptionsAndStyles(
     return;
   }
 
-  for (size_t i = 0; i < params_->suggest_results.size(); ++i) {
-    params_->suggest_results[i].description =
+  for (size_t i = 0; i < extension_suggestions_.size(); ++i) {
+    extension_suggestions_[i].description =
         base::UTF16ToUTF8(result.descriptions_and_styles[i].description);
-    params_->suggest_results[i].description_styles =
-        std::move(result.descriptions_and_styles[i].styles);
+    extension_suggestions_[i].match_classifications =
+        StyleTypesToACMatchClassifications(
+            &result.descriptions_and_styles[i].styles,
+            extension_suggestions_[i].description);
   }
 
   NotifySuggestionsReady();
@@ -420,7 +462,8 @@ void OmniboxSendSuggestionsFunction::NotifySuggestionsReady() {
   Profile* profile =
       Profile::FromBrowserContext(browser_context())->GetOriginalProfile();
   OmniboxSuggestionsWatcherFactory::GetForBrowserContext(profile)
-      ->NotifySuggestionsReady(&*params_, extension_id());
+      ->NotifySuggestionsReady(extension_suggestions_, request_id_,
+                               extension_id());
 }
 
 ExtensionFunction::ResponseAction OmniboxSetDefaultSuggestionFunction::Run() {
@@ -443,6 +486,12 @@ ExtensionFunction::ResponseAction OmniboxSetDefaultSuggestionFunction::Run() {
 
 void OmniboxSetDefaultSuggestionFunction::OnParsedDescriptionAndStyles(
     DescriptionAndStylesResult result) {
+  // Since the XML parsing happens asynchronously, the browser context can be
+  // torn down in the interim. If this happens, early-out.
+  if (!browser_context()) {
+    return;
+  }
+
   if (!result.error.empty()) {
     Respond(Error(std::move(result.error)));
     return;
@@ -472,14 +521,14 @@ void OmniboxSetDefaultSuggestionFunction::SetDefaultSuggestion(
 // This function converts style information populated by the JSON schema
 // compiler into an ACMatchClassifications object.
 ACMatchClassifications StyleTypesToACMatchClassifications(
-    const omnibox::SuggestResult &suggestion) {
+    const std::vector<omnibox::MatchClassification>* description_styles,
+    const std::string& suggestion_description) {
   ACMatchClassifications match_classifications;
-  if (suggestion.description_styles) {
-    std::u16string description = base::UTF8ToUTF16(suggestion.description);
+  if (!description_styles->empty()) {
+    std::u16string description = base::UTF8ToUTF16(suggestion_description);
     std::vector<int> styles(description.length(), 0);
 
-    for (const omnibox::MatchClassification& style :
-         *suggestion.description_styles) {
+    for (const omnibox::MatchClassification& style : *description_styles) {
       int length = style.length ? *style.length : description.length();
       size_t offset = style.offset >= 0
                           ? style.offset
@@ -502,8 +551,9 @@ ACMatchClassifications StyleTypesToACMatchClassifications(
           return match_classifications;
       }
 
-      for (size_t j = offset; j < offset + length && j < styles.size(); ++j)
+      for (size_t j = offset; j < offset + length && j < styles.size(); ++j) {
         styles[j] |= type_class;
+      }
     }
 
     for (size_t i = 0; i < styles.size(); ++i) {
@@ -528,15 +578,22 @@ void ApplyDefaultSuggestionForExtensionKeyword(
 
   std::optional<omnibox::SuggestResult> suggestion(
       GetOmniboxDefaultSuggestion(profile, keyword->GetExtensionId()));
-  if (!suggestion || suggestion->description.empty())
+  if (!suggestion || suggestion->description.empty()) {
     return;  // fall back to the universal default
+  }
 
   const std::u16string kPlaceholderText(u"%s");
   const std::u16string kReplacementText(u"<input>");
 
   std::u16string description = base::UTF8ToUTF16(suggestion->description);
   ACMatchClassifications& description_styles = match->contents_class;
-  description_styles = StyleTypesToACMatchClassifications(*suggestion);
+
+  const std::vector<api::omnibox::MatchClassification> empty_styles;
+  const std::vector<api::omnibox::MatchClassification>* styles_list =
+      suggestion->description_styles ? &suggestion->description_styles.value()
+                                     : &empty_styles;
+  description_styles =
+      StyleTypesToACMatchClassifications(styles_list, suggestion->description);
 
   // Replace "%s" with the user's input and adjust the style offsets to the
   // new length of the description.
@@ -547,8 +604,9 @@ void ApplyDefaultSuggestionForExtensionKeyword(
     description.replace(placeholder, kPlaceholderText.length(), replacement);
 
     for (auto& description_style : description_styles) {
-      if (description_style.offset > placeholder)
+      if (description_style.offset > placeholder) {
         description_style.offset += replacement.length() - 2;
+      }
     }
   }
 

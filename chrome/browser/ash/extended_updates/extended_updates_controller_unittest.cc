@@ -20,10 +20,13 @@
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/extended_updates/extended_updates_notification.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
+#include "chrome/browser/ash/ownership/fake_owner_settings_service.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash_factory.h"
-#include "chrome/browser/ash/settings/device_settings_test_helper.h"
+#include "chrome/browser/ash/settings/scoped_test_device_settings_service.h"
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
+#include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
@@ -76,6 +79,11 @@ class ExtendedUpdatesControllerTest : public ChromeAshTestBase {
   ~ExtendedUpdatesControllerTest() override = default;
 
   void SetUp() override {
+    ASSERT_TRUE(profile_manager_.SetUp());
+
+    arc::SetArcAvailableCommandLineForTesting(
+        base::CommandLine::ForCurrentProcess());
+
     ChromeAshTestBase::SetUp();
 
     ExtendedUpdatesController::ResetInstanceForTesting();
@@ -83,26 +91,32 @@ class ExtendedUpdatesControllerTest : public ChromeAshTestBase {
     test_clock_.SetNow(GetTime(kTimeNow));
     controller()->SetClockForTesting(&test_clock_);
 
-    ASSERT_TRUE(profile_manager_.SetUp());
-    profile_ = profile_manager_.CreateTestingProfile(
-        TestingProfile::kDefaultProfileUserName);
-
-    notification_display_service_tester_ =
-        std::make_unique<NotificationDisplayServiceTester>(profile_.get());
+    subscription_ = FakeOwnerSettingsService::SetUpTestingFactory(
+        cros_settings_.device_settings(),
+        ash::OwnerSettingsServiceAshFactory::GetInstance()->GetOwnerKeyUtil());
 
     // Enable arc for test profile.
     // Log in user to ensure ARC PlayStore can be enabled.
     const AccountId account_id(AccountId::FromUserEmailGaiaId(
-        profile_->GetProfileUserName(), kGaiaId));
+        TestingProfile::kDefaultProfileUserName, kGaiaId));
     fake_user_manager_->AddUser(account_id);
     fake_user_manager_->LoginUser(account_id);
-    arc::SetArcAvailableCommandLineForTesting(
-        base::CommandLine::ForCurrentProcess());
+
+    ash::ScopedAccountIdAnnotator annotator(profile_manager_.profile_manager(),
+                                            account_id);
+    profile_ = profile_manager_.CreateTestingProfile(
+        TestingProfile::kDefaultProfileUserName);
+
     arc::SetArcPlayStoreEnabledForProfile(profile_, true);
+
+    notification_display_service_tester_ =
+        std::make_unique<NotificationDisplayServiceTester>(profile_.get());
   }
 
   void TearDown() override {
     controller()->SetClockForTesting(base::DefaultClock::GetInstance());
+
+    subscription_ = {};
 
     ChromeAshTestBase::TearDown();
   }
@@ -172,10 +186,11 @@ class ExtendedUpdatesControllerTest : public ChromeAshTestBase {
 
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       fake_user_manager_;
+  base::CallbackListSubscription subscription_;
   TestingProfileManager profile_manager_;
   base::test::ScopedFeatureList feature_list_{
       features::kExtendedUpdatesOptInFeature};
-  ScopedDeviceSettingsTestHelper device_settings_helper_;
+  ScopedTestDeviceSettingsService device_settings_service_;
   ScopedTestingCrosSettings cros_settings_;
   ash::ScopedStubInstallAttributes test_install_attributes_;
   std::unique_ptr<NotificationDisplayServiceTester>

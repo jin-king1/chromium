@@ -4,10 +4,14 @@
 
 #include "chrome/browser/ash/borealis/borealis_survey_handler.h"
 
+#include "ash/strings/grit/ash_strings.h"
+#include "base/byte_size.h"
 #include "base/containers/flat_map.h"
 #include "base/feature_list.h"
-#include "base/functional/bind_internal.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
@@ -19,7 +23,6 @@
 #include "chrome/browser/ash/hats/hats_config.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/grit/generated_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/display/screen.h"
 
@@ -58,8 +61,7 @@ base::flat_map<std::string, std::string> BorealisSurveyHandler::GetSurveyData(
   // Number of monitors
   int internal_displays = 0;
   int external_displays = 0;
-  for (const display::Display& d :
-       display::Screen::GetScreen()->GetAllDisplays()) {
+  for (const display::Display& d : display::Screen::Get()->GetAllDisplays()) {
     if (d.IsInternal()) {
       internal_displays++;
     } else {
@@ -90,10 +92,11 @@ base::flat_map<std::string, std::string> BorealisSurveyHandler::GetSurveyData(
       {"appName", window_title},
       {"board", base::SysInfo::HardwareModelName()},
       {"specs",
-       base::StringPrintf("%ldGB; %s",
-                          (long)(base::SysInfo::AmountOfPhysicalMemory() /
-                                 (1000 * 1000 * 1000)),
-                          base::SysInfo::CPUModelName().c_str())},
+       base::StringPrintf(
+           "%ldGB; %s",
+           (long)(base::SysInfo::AmountOfTotalPhysicalMemory().InBytes() /
+                  (1000 * 1000 * 1000)),
+           base::SysInfo::CPUModelName().c_str())},
       {"monitorsInternal", base::NumberToString(internal_displays)},
       {"monitorsExternal", base::NumberToString(external_displays)},
       {"proton", compat_tool_info.proton},

@@ -7,6 +7,7 @@
 #include "services/network/public/mojom/content_security_policy.mojom-blink.h"
 #include "third_party/blink/renderer/platform/weborigin/known_ports.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -30,7 +31,7 @@ SchemeMatchingResult SchemeMatches(
     const network::mojom::blink::CSPSource& source,
     const String& protocol,
     const String& self_protocol) {
-  DCHECK_EQ(protocol, protocol.DeprecatedLower());
+  DCHECK(protocol.ContainsNoAsciiUpper());
   const String& scheme =
       (source.scheme.empty() ? self_protocol : source.scheme);
 
@@ -52,7 +53,7 @@ bool HostMatches(const network::mojom::blink::CSPSource& source,
       // host-part = "*"
       return true;
     }
-    if (host.ToString().EndsWith(String("." + source.host))) {
+    if (host.ends_with(StrCat({".", source.host}))) {
       // host-part = "*." 1*host-char *( "." 1*host-char )
       return true;
     }
@@ -85,10 +86,11 @@ bool PathMatches(const network::mojom::blink::CSPSource& source,
     return true;
 
   String path =
-      DecodeURLEscapeSequences(url_path, DecodeURLMode::kUTF8OrIsomorphic);
+      DecodeUrlEscapeSequences(url_path, DecodeUrlMode::kUtf8OrIsomorphic);
 
-  if (source.path.EndsWith("/"))
-    return path.StartsWith(source.path);
+  if (source.path.ends_with('/')) {
+    return path.starts_with(source.path);
+  }
 
   return path == source.path;
 }

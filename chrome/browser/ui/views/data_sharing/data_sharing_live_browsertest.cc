@@ -8,22 +8,21 @@
 #include "chrome/browser/signin/e2e_tests/live_test.h"
 #include "chrome/browser/signin/e2e_tests/signin_util.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
-#include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_action_context_desktop.h"
-#include "chrome/browser/ui/tabs/tab_group.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/data_sharing/data_sharing_bubble_controller.h"
 #include "components/data_sharing/public/features.h"
-#include "components/saved_tab_groups/public/features.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/test_accounts.h"
 #include "components/sync/service/sync_service.h"
 #include "components/tab_groups/tab_group_id.h"
+#include "components/tabs/public/tab_group.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 
 namespace {
 
@@ -101,18 +100,15 @@ class DataSharingLiveTest : public signin::test::LiveTest {
 
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        {data_sharing::features::kDataSharingFeature,
-         tab_groups::kTabGroupsSaveV2,
-         tab_groups::kTabGroupSyncServiceDesktopMigration},
-        {});
+        {data_sharing::features::kDataSharingFeature}, {});
     constexpr char SYNC_URL[] =
         "https://chrome-sync.sandbox.google.com/chrome-sync/alpha";
     base::CommandLine::ForCurrentProcess()->AppendSwitchASCII("sync-url",
                                                               SYNC_URL);
     LiveTest::SetUp();
     // Always disable animation for stability.
-    ui::ScopedAnimationDurationScaleMode disable_animation(
-        ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+    gfx::ScopedAnimationDurationScaleMode disable_animation(
+        gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
   }
 
   signin::IdentityManager* identity_manager() {
@@ -125,10 +121,10 @@ class DataSharingLiveTest : public signin::test::LiveTest {
 
   tab_groups::TabGroupSyncService* tab_group_service() {
     return tab_groups::TabGroupSyncServiceFactory::GetForProfile(
-        browser()->profile());
+        browser()->GetProfile());
   }
 
-  void SignInAndTurnOnSync() {
+  void SignIn() {
     signin::test::SignInFunctions sign_in_functions =
         signin::test::SignInFunctions(
             base::BindLambdaForTesting(
@@ -143,13 +139,12 @@ class DataSharingLiveTest : public signin::test::LiveTest {
         GetTestAccounts()->GetAccount("DATA_SHARING_1");
     CHECK(test_account);
     sign_in_functions.SignInFromSettings(*test_account, 0);
-    sign_in_functions.TurnOnSync(*test_account, 0);
 
     const CoreAccountInfo& primary_account =
-        identity_manager()->GetPrimaryAccountInfo(signin::ConsentLevel::kSync);
+        identity_manager()->GetPrimaryAccountInfo(
+            signin::ConsentLevel::kSignin);
     EXPECT_FALSE(primary_account.IsEmpty());
     EXPECT_TRUE(gaia::AreEmailsSame(test_account->user, primary_account.email));
-    EXPECT_TRUE(sync_service()->IsSyncFeatureEnabled());
   }
 
   std::optional<tab_groups::TabGroupId> OpenTabGroupByTitle(
@@ -159,10 +154,9 @@ class DataSharingLiveTest : public signin::test::LiveTest {
     for (const tab_groups::SavedTabGroup& group :
          tab_group_service->GetAllGroups()) {
       if (group.title() == title) {
-        tab_group_service->OpenTabGroup(
-            group.saved_guid(),
-            std::make_unique<tab_groups::TabGroupActionContextDesktop>(
-                browser(), tab_groups::OpeningSource::kUnknown));
+        tab_groups::SavedTabGroupUtils::OpenSavedTabGroup(
+            browser(), group.saved_guid(), tab_groups::OpeningSource::kUnknown,
+            tab_group_service);
         open = true;
       }
     }
@@ -181,7 +175,7 @@ class DataSharingLiveTest : public signin::test::LiveTest {
 
   void WaitForSDKToLoad() {
     content::WebContents* web_contents =
-        DataSharingBubbleController::GetOrCreateForBrowser(browser())
+        DataSharingBubbleController::From(browser())
             ->BubbleViewForTesting()
             ->get_contents_wrapper_for_testing()
             ->web_contents();
@@ -198,8 +192,9 @@ class DataSharingLiveTest : public signin::test::LiveTest {
 };
 
 // Open the share dialog of a unshared the tab group.
-IN_PROC_BROWSER_TEST_F(DataSharingLiveTest, ShareUnsharedTabGroup) {
-  SignInAndTurnOnSync();
+// TODO(crbug.com/481412280): Re-enable this test.
+IN_PROC_BROWSER_TEST_F(DataSharingLiveTest, DISABLED_ShareUnsharedTabGroup) {
+  SignIn();
 
   const std::u16string unshared_group_title = u"TEST UNSHARED GROUP";
   SavedTabGroupServiceWaiter waiter(tab_group_service(), unshared_group_title);
@@ -207,15 +202,18 @@ IN_PROC_BROWSER_TEST_F(DataSharingLiveTest, ShareUnsharedTabGroup) {
   std::optional<tab_groups::TabGroupId> tab_group_id =
       OpenTabGroupByTitle(tab_group_service(), unshared_group_title);
   CHECK(tab_group_id.has_value());
-  DataSharingBubbleController::GetOrCreateForBrowser(browser())->Show(
-      tab_group_id.value());
+
+  data_sharing::RequestInfo request_info(tab_group_id.value(),
+                                         data_sharing::FlowType::kShare);
+  DataSharingBubbleController::From(browser())->Show(request_info);
 
   WaitForSDKToLoad();
 }
 
 // Open the manage dialog of a shared tab group.
-IN_PROC_BROWSER_TEST_F(DataSharingLiveTest, ManageSharedTabGroup) {
-  SignInAndTurnOnSync();
+// TODO(crbug.com/451733093): Re-enable this test.
+IN_PROC_BROWSER_TEST_F(DataSharingLiveTest, DISABLED_ManageSharedTabGroup) {
+  SignIn();
 
   const std::u16string shared_group_title = u"TEST SHARED GROUP";
   SavedTabGroupServiceWaiter waiter(tab_group_service(), shared_group_title);
@@ -223,8 +221,16 @@ IN_PROC_BROWSER_TEST_F(DataSharingLiveTest, ManageSharedTabGroup) {
   std::optional<tab_groups::TabGroupId> tab_group_id =
       OpenTabGroupByTitle(tab_group_service(), shared_group_title);
   CHECK(tab_group_id.has_value());
-  DataSharingBubbleController::GetOrCreateForBrowser(browser())->Show(
-      tab_group_id.value());
+
+  // Share the group.
+  data_sharing::RequestInfo request_info(tab_group_id.value(),
+                                         data_sharing::FlowType::kShare);
+  auto* controller = DataSharingBubbleController::From(browser());
+  controller->Show(request_info);
+
+  // Manage the group.
+  request_info.type = data_sharing::FlowType::kManage;
+  controller->Show(request_info);
 
   WaitForSDKToLoad();
 }

@@ -10,6 +10,7 @@ import("//build/symlink.gni")
 import("//build/util/process_version.gni")
 import("//chrome/updater/branding.gni")
 import("//chrome/updater/mac/signing/signing_sources.gni")
+import("//chrome/updater/updater.gni")
 import("//chrome/updater/zip.gni")
 import("//chrome/version.gni")
 
@@ -42,6 +43,11 @@ mac_info_plist("launcher_plist") {
       [ "MAC_BUNDLE_IDENTIFIER=$mac_updater_bundle_identifier" ]
 }
 
+bundle_data("updater_app_icon") {
+  sources = [ "$updater_app_icon_path" ]
+  outputs = [ "{{bundle_resources_dir}}/{{source_file_part}}" ]
+}
+
 mac_app_bundle("updater_bundle") {
   info_plist_target = ":updater_plist"
   output_name = updater_product_full_name
@@ -54,6 +60,7 @@ mac_app_bundle("updater_bundle") {
     ":keystone_agent_bundle_resource_plist",
     ":ksadmin",
     ":ksadmin_link",
+    ":updater_app_icon",
     ":updater_bundle_helpers",
     ":updater_bundle_keystone_executable",
     ":updater_bundle_keystone_helpers_ksinstall",
@@ -63,6 +70,7 @@ mac_app_bundle("updater_bundle") {
     "//chrome/updater:base",
     "//chrome/updater:constants_prod",
   ]
+  assert_no_deps = updater_assert_no_deps
 }
 
 mac_app_bundle("updater_bundle_test") {
@@ -76,6 +84,7 @@ mac_app_bundle("updater_bundle_test") {
     ":keystone_agent_bundle_resource_executable_test",
     ":keystone_agent_bundle_resource_plist",
     ":ksadmin_test_copy",
+    ":updater_app_icon",
     ":updater_bundle_helpers_launcher_test",
     ":updater_bundle_keystone_executable",
     ":updater_bundle_keystone_helpers_ksinstall",
@@ -151,6 +160,7 @@ executable("privileged_helper") {
     "//base",
     "//chrome/updater:constants_prod",
   ]
+  assert_no_deps = updater_assert_no_deps
 
   frameworks = [
     "Foundation.framework",
@@ -266,6 +276,7 @@ executable("launcher") {
     ":launcher_plist",
     ":launcher_sources",
   ]
+  assert_no_deps = updater_assert_no_deps
 
   inputs = [ "$target_gen_dir/launcher_plist.plist" ]
 
@@ -332,6 +343,7 @@ source_set("ksadmin_lib") {
     "//chrome/updater:base_app",
     "//chrome/updater:ks_ticket",
     "//chrome/updater:public_sources",
+    "//chrome/updater:tagging",
     "//chrome/updater:version_header",
   ]
 
@@ -351,6 +363,7 @@ executable("ksadmin") {
     "//base",
     "//chrome/updater:constants_prod",
   ]
+  assert_no_deps = updater_assert_no_deps
 
   frameworks = [ "CoreFoundation.framework" ]
 

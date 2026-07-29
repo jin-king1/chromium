@@ -31,11 +31,12 @@ class MockMediaCodecBridge : public MediaCodecBridge,
 
   MOCK_METHOD0(Stop, void());
   MOCK_METHOD0(Flush, MediaCodecResult());
-  MOCK_METHOD1(GetOutputSize, MediaCodecResult(gfx::Size* size));
+  MOCK_METHOD2(GetOutputSizeAndCropRect,
+               MediaCodecResult(gfx::Size& size, gfx::Rect& rect));
   MOCK_METHOD1(GetOutputSamplingRate, MediaCodecResult(int* sampling_rate));
   MOCK_METHOD1(GetOutputChannelCount, MediaCodecResult(int* channel_count));
   MOCK_METHOD1(GetOutputColorSpace,
-               MediaCodecResult(gfx::ColorSpace* color_space));
+               MediaCodecResult(MediaFormatColorSpace* color_space));
   MOCK_METHOD3(GetInputFormat,
                MediaCodecResult(int* stride,
                                 int* slice_height,
@@ -77,8 +78,7 @@ class MockMediaCodecBridge : public MediaCodecBridge,
   MOCK_METHOD2(SetVideoBitrate, void(int bps, int frame_rate));
   MOCK_METHOD0(RequestKeyFrameSoon, void());
   MOCK_METHOD0(IsAdaptivePlaybackSupported, bool());
-  MOCK_METHOD2(OnBuffersAvailable,
-               void(JNIEnv*, const base::android::JavaParamRef<jobject>&));
+  MOCK_METHOD1(OnBuffersAvailable, void(JNIEnv*));
   MOCK_METHOD0(GetMaxInputSize, size_t());
   CodecType GetCodecType() const override;
 

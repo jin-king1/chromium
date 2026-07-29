@@ -21,6 +21,7 @@
 #import "components/favicon/core/favicon_service.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_service_observer.h"
+#include "components/history/core/browser/history_types.h"
 #include "components/sessions/core/session_id.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/sessions/core/tab_restore_service_observer.h"
@@ -203,13 +204,21 @@ class HistoryMenuBridge : public sessions::TabRestoreServiceObserver,
                            NSInteger tag,
                            NSInteger index);
 
+  // Adds an item for the split entry with a submenu containing its tabs.
+  // Returns whether the item was successfully added.
+  bool AddSplitEntryToMenu(sessions::tab_restore::Split* split,
+                           NSMenu* menu,
+                           NSInteger tag,
+                           NSInteger index);
+
   // Adds standard 'Restore All' items and an item for each tab in |tabs|,
   // potentially filtering out tabs like the NTP. Returns the number of tabs
   // successfully added and updates the HistoryItem with those tabs.
   int AddTabsToSubmenu(
       NSMenu* submenu,
       HistoryItem* item,
-      const std::vector<std::unique_ptr<sessions::tab_restore::Tab>>& tabs);
+      const std::vector<std::unique_ptr<sessions::tab_restore::Tab>>& tabs,
+      int restore_string_id);
 
   // Called by the ctor if |service_| is ready at the time, or by a
   // notification receiver. Finishes initialization tasks by subscribing for
@@ -228,7 +237,8 @@ class HistoryMenuBridge : public sessions::TabRestoreServiceObserver,
 
   // Creates a HistoryItem* for the given tab entry.
   std::unique_ptr<HistoryItem> HistoryItemForTab(
-      const sessions::tab_restore::Tab& entry);
+      const sessions::tab_restore::Tab& entry,
+      bool attach_group_icon);
 
   // Helper function that sends an async request to the FaviconService to get
   // an icon. The callback will update the NSMenuItem directly.
@@ -254,8 +264,7 @@ class HistoryMenuBridge : public sessions::TabRestoreServiceObserver,
 
   // history::HistoryServiceObserver:
   void OnURLVisited(history::HistoryService* history_service,
-                    const history::URLRow& url_row,
-                    const history::VisitRow& new_visit) override;
+                    const history::VisitedURLInfo& visited_url_info) override;
   void OnURLsModified(history::HistoryService* history_service,
                       const history::URLRows& changed_urls) override;
   void OnHistoryDeletions(history::HistoryService* history_service,

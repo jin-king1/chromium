@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/feature_list.h"
+#include "base/notreached.h"
 #include "base/stl_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -537,6 +538,17 @@ ChromePermissionMessageRule::GetAllRules() {
        {APIPermissionID::kBluetoothDevices}},
       {IDS_EXTENSION_PROMPT_WARNING_BLUETOOTH_DEVICES,
        {APIPermissionID::kBluetoothDevices},
+       {APIPermissionID::kBluetoothSocket, APIPermissionID::kBluetoothLowEnergy,
+        APIPermissionID::kBluetoothPeripheral}},
+      {IDS_EXTENSION_PROMPT_WARNING_BLUETOOTH_DEVICES_SOCKET,
+       {APIPermissionID::kBluetoothSocket},
+       {APIPermissionID::kBluetoothLowEnergy,
+        APIPermissionID::kBluetoothPeripheral}},
+      {IDS_EXTENSION_PROMPT_WARNING_BLUETOOTH_DEVICES_LOW_ENERGY,
+       {APIPermissionID::kBluetoothLowEnergy},
+       {APIPermissionID::kBluetoothPeripheral}},
+      {IDS_EXTENSION_PROMPT_WARNING_BLUETOOTH_DEVICES_PERIPHERAL,
+       {APIPermissionID::kBluetoothPeripheral},
        {}},
       {IDS_EXTENSION_PROMPT_WARNING_BLUETOOTH_PRIVATE,
        {APIPermissionID::kBluetoothPrivate},
@@ -715,6 +727,9 @@ ChromePermissionMessageRule::GetAllRules() {
        {}},
       {IDS_EXTENSION_PROMPT_WARNING_ENTERPRISE_KIOSK_INPUT,
        {APIPermissionID::kEnterpriseKioskInput},
+       {}},
+      {IDS_EXTENSION_PROMPT_WARNING_ENTERPRISE_LOGIN,
+       {APIPermissionID::kEnterpriseLogin},
        {}},
       {IDS_EXTENSION_PROMPT_WARNING_ENTERPRISE_NETWORKING_ATTRIBUTES,
        {APIPermissionID::kEnterpriseNetworkingAttributes},

@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
 import("//gpu/vulkan/features.gni")
 import("//ui/base/ui_features.gni")
 
@@ -53,11 +52,12 @@ source_set("x11") {
   deps = [
     "//base",
     "//build:chromecast_buildflags",
+    "//components/viz/common/resources:shared_image_format",
     "//gpu/vulkan:buildflags",
     "//net",
     "//skia",
     "//third_party/angle:includes",
-    "//ui/base:base",
+    "//ui/base",
     "//ui/base:buildflags",
     "//ui/base:data_exchange",
     "//ui/base:hit_test",
@@ -83,7 +83,7 @@ source_set("x11") {
     "//ui/gfx",
     "//ui/gfx/geometry",
     "//ui/gfx/linux:gbm",
-    "//ui/gfx/linux:gpu_memory_buffer_support_x11",
+    "//ui/gfx/linux:gbm_support_x11",
     "//ui/gfx/x",
     "//ui/gl",
     "//ui/ozone:ozone_base",
@@ -98,7 +98,11 @@ source_set("x11") {
       "linux_ui_delegate_x11.cc",
       "linux_ui_delegate_x11.h",
     ]
-    deps += [ "//ui/linux:linux_ui" ]
+    deps += [
+      "//components/dbus",
+      "//ui/base/clipboard:clipboard_util_linux",
+      "//ui/linux:linux_ui",
+    ]
   }
 
   if (is_chromeos) {
@@ -138,6 +142,7 @@ source_set("x11_unittests") {
     "test/events_x_unittest.cc",
     "test/x11_event_translation_unittest.cc",
     "test/x11_window_unittest.cc",
+    "test/xinput_util_unittest.cc",
     "x11_screen_ozone_unittest.cc",
     "x11_window_ozone_unittest.cc",
   ]
@@ -192,7 +197,7 @@ source_set("test_support") {
   ]
 
   deps = [
-    "//ui/aura:aura",
+    "//ui/aura",
     "//ui/base/x",
     "//ui/base/x:test_support",
   ]

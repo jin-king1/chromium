@@ -34,6 +34,7 @@ class COMPONENTS_PREFS_EXPORT ScopedUserPrefUpdateBase {
   ScopedUserPrefUpdateBase& operator=(const ScopedUserPrefUpdateBase&) = delete;
 
  protected:
+  ScopedUserPrefUpdateBase(PrefService& service, std::string_view path);
   ScopedUserPrefUpdateBase(PrefService* service, std::string_view path);
 
   // Calls Notify().
@@ -53,13 +54,15 @@ class COMPONENTS_PREFS_EXPORT ScopedUserPrefUpdateBase {
   const std::string path_;
   // Cache of value from user pref store (set between Get() and Notify() calls).
   raw_ptr<base::Value> value_ = nullptr;
+  // Fallback value used when `GetMutableUserPref` returns null.
+  std::optional<base::Value> fallback_value_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 };
 
 }  // namespace subtle
 
-// Class to support modifications to base::Value::Dicts while guaranteeing
+// Class to support modifications to base::DictValues while guaranteeing
 // that PrefObservers are notified of changed values.
 //
 // This class may only be used on the UI thread as it requires access to the
@@ -69,6 +72,8 @@ class COMPONENTS_PREFS_EXPORT ScopedDictPrefUpdate
  public:
   // The underlying dictionary must not be removed from `service` during
   // the lifetime of the created ScopedDictPrefUpdate.
+  ScopedDictPrefUpdate(PrefService& service, std::string_view path)
+      : ScopedUserPrefUpdateBase(service, path) {}
   ScopedDictPrefUpdate(PrefService* service, std::string_view path)
       : ScopedUserPrefUpdateBase(service, path) {}
 
@@ -78,7 +83,7 @@ class COMPONENTS_PREFS_EXPORT ScopedDictPrefUpdate
   // Triggers an update notification if Get() was called.
   ~ScopedDictPrefUpdate() override = default;
 
-  // Returns a mutable `base::Value::Dict` instance that
+  // Returns a mutable `base::DictValue` instance that
   // - is already in the user pref store, or
   // - is (silently) created and written to the user pref store if none existed
   //   before.
@@ -87,14 +92,14 @@ class COMPONENTS_PREFS_EXPORT ScopedDictPrefUpdate
   // being triggered at destruction time.
   //
   // The ownership of the return value remains with the user pref store.
-  base::Value::Dict& Get();
+  base::DictValue& Get();
 
-  base::Value::Dict& operator*() { return Get(); }
+  base::DictValue& operator*() { return Get(); }
 
-  base::Value::Dict* operator->() { return &Get(); }
+  base::DictValue* operator->() { return &Get(); }
 };
 
-// Class to support modifications to base::Value::Lists while guaranteeing
+// Class to support modifications to base::ListValues while guaranteeing
 // that PrefObservers are notified of changed values.
 //
 // This class may only be used on the UI thread as it requires access to the
@@ -104,6 +109,8 @@ class COMPONENTS_PREFS_EXPORT ScopedListPrefUpdate
  public:
   // The underlying list must not be removed from `service` during
   // the lifetime of the created ScopedListPrefUpdate.
+  ScopedListPrefUpdate(PrefService& service, std::string_view path)
+      : ScopedUserPrefUpdateBase(service, path) {}
   ScopedListPrefUpdate(PrefService* service, std::string_view path)
       : ScopedUserPrefUpdateBase(service, path) {}
 
@@ -113,7 +120,7 @@ class COMPONENTS_PREFS_EXPORT ScopedListPrefUpdate
   // Triggers an update notification if Get() was called.
   ~ScopedListPrefUpdate() override = default;
 
-  // Returns a mutable `base::Value::List` instance that
+  // Returns a mutable `base::ListValue` instance that
   // - is already in the user pref store, or
   // - is (silently) created and written to the user pref store if none existed
   //   before.
@@ -122,11 +129,11 @@ class COMPONENTS_PREFS_EXPORT ScopedListPrefUpdate
   // being triggered at destruction time.
   //
   // The ownership of the return value remains with the user pref store.
-  base::Value::List& Get();
+  base::ListValue& Get();
 
-  base::Value::List& operator*() { return Get(); }
+  base::ListValue& operator*() { return Get(); }
 
-  base::Value::List* operator->() { return &Get(); }
+  base::ListValue* operator->() { return &Get(); }
 };
 
 #endif  // COMPONENTS_PREFS_SCOPED_USER_PREF_UPDATE_H_

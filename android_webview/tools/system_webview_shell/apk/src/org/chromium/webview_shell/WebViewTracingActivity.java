@@ -15,6 +15,8 @@ import androidx.webkit.TracingConfig;
 import androidx.webkit.TracingController;
 import androidx.webkit.WebViewClientCompat;
 
+import org.chromium.base.Log;
+
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -43,7 +45,7 @@ public class WebViewTracingActivity extends Activity {
 
     private static class TracingLogger extends FileOutputStream {
         private long mByteCount;
-        private Activity mActivity;
+        private final Activity mActivity;
 
         public TracingLogger(String fileName, Activity activity) throws FileNotFoundException {
             super(fileName);
@@ -60,7 +62,7 @@ public class WebViewTracingActivity extends Activity {
         public void close() throws IOException {
             super.close();
             sOverallTracingTimeEndMs = SystemClock.elapsedRealtime();
-            android.util.Log.i(
+            Log.i(
                     TAG,
                     "TracingLogger.complete(), byte count = "
                             + getByteCount()
@@ -107,7 +109,7 @@ public class WebViewTracingActivity extends Activity {
                     public void onPageFinished(WebView view, String url) {
                         super.onPageFinished(view, url);
                         sUrlLoadTimeEndMs = SystemClock.elapsedRealtime();
-                        android.util.Log.i(
+                        Log.i(
                                 TAG,
                                 "onPageFinished(), enableTracing = "
                                         + enableTracing

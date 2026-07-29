@@ -11,15 +11,10 @@
 #include "ash/ash_export.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "ui/gfx/geometry/rect.h"
 
 namespace aura {
 class Window;
-}
-
-namespace ui {
-class Shadow;
-}
+}  // namespace aura
 
 namespace ash {
 
@@ -53,7 +48,6 @@ class ASH_EXPORT DragWindowController {
   // Returns the drag window/layer owner for given index of the
   // currently active drag windows list.
   const aura::Window* GetDragWindowForTest(size_t index) const;
-  const ui::Shadow* GetDragWindowShadowForTest(size_t index) const;
 
   // Call Layer::OnPaintLayer on all layers under the drag_windows_.
   void RequestLayerPaintForTest();

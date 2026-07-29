@@ -8,12 +8,16 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.content.pm.ProviderInfo;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
+import android.provider.OpenableColumns;
 import android.text.TextUtils;
 import android.webkit.MimeTypeMap;
 
@@ -28,6 +32,9 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /** This class provides methods to access content URI schemes. */
@@ -35,6 +42,7 @@ import java.util.List;
 @NullMarked
 public abstract class ContentUriUtils {
     private static final String TAG = "ContentUriUtils";
+    private static final int INVALID_COLUMN_INDEX = -1;
     private static final String PATH_TREE = "tree";
     private static final String PATH_DOCUMENT = "document";
     private static final String PATH_CREATE_CHILD_DOCUMENT = "create-child-document";
@@ -55,13 +63,20 @@ public abstract class ContentUriUtils {
      * @return file descriptor upon success, or -1 otherwise.
      */
     @CalledByNative
-    public static int openContentUri(
+    public static @Nullable ParcelFileDescriptor openContentUri(
             @JniType("std::string") String uriString, @JniType("std::string") String mode) {
         AssetFileDescriptor afd = getAssetFileDescriptor(uriString, mode);
-        if (afd != null) {
-            return afd.getParcelFileDescriptor().detachFd();
-        }
-        return -1;
+        return afd != null ? afd.getParcelFileDescriptor() : null;
+    }
+
+    @CalledByNative
+    private static int getFd(ParcelFileDescriptor parcelFileDescriptor) {
+        return parcelFileDescriptor.getFd();
+    }
+
+    @CalledByNative
+    private static void close(ParcelFileDescriptor parcelFileDescriptor) {
+        StreamUtil.closeQuietly(parcelFileDescriptor);
     }
 
     /**
@@ -105,11 +120,14 @@ public abstract class ContentUriUtils {
      *
      * @param uriString the content URI to look up.
      * @param listFiles if true, the children of uri are populated, else uri info is populated.
+     * @param fileType the type of files to list. Flags other than FILES and DIRECTORIES are
+     *     ignored.
      * @param nativeVector vector to populate with results via Natives#addFileInfoToVector(). Called
      *     only if file is found.
      */
     @SuppressWarnings("NullAway") // Using broad try/catch to catch NullPointerException
-    private static void populateFileInfo(String uriString, boolean listFiles, long nativeVector) {
+    private static void populateFileInfo(
+            String uriString, boolean listFiles, @FileType int fileType, long nativeVector) {
         String[] columns = {
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
@@ -175,6 +193,14 @@ public abstract class ContentUriUtils {
                                 && DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2));
                 long size = c.isNull(3) ? 0 : c.getLong(3);
                 long lastModified = c.isNull(4) ? 0 : c.getLong(4);
+
+                if ((fileType & FileType.FILES) == 0 && !isDirectory) {
+                    continue;
+                }
+                if ((fileType & FileType.DIRECTORIES) == 0 && isDirectory) {
+                    continue;
+                }
+
                 ContentUriUtilsJni.get()
                         .addFileInfoToVector(
                                 nativeVector, path, displayName, isDirectory, size, lastModified);
@@ -194,19 +220,21 @@ public abstract class ContentUriUtils {
      */
     @CalledByNative
     private static void getFileInfo(@JniType("std::string") String uriString, long nativeVector) {
-        populateFileInfo(uriString, false, nativeVector);
+        populateFileInfo(uriString, false, FileType.DIRECTORIES | FileType.FILES, nativeVector);
     }
 
     /**
      * Provices an array of files and directories contained in the given directory.
      *
      * @param uriString the content URI to look up.
+     * @param fileType specifies the type of files to be enumerated.
      * @param nativeVector vector to populate with results via Natives#addFileInfoToVector(). Called
      *     for each file in this directory.
      */
     @CalledByNative
-    private static void listDirectory(@JniType("std::string") String uriString, long nativeVector) {
-        populateFileInfo(uriString, true, nativeVector);
+    private static void listDirectory(
+            @JniType("std::string") String uriString, @FileType int fileType, long nativeVector) {
+        populateFileInfo(uriString, true, fileType, nativeVector);
     }
 
     /**
@@ -327,12 +355,9 @@ public abstract class ContentUriUtils {
                 }
                 return displayName;
             }
-        } catch (NullPointerException e) {
+        } catch (RuntimeException e) {
             // Some android models don't handle the provider call correctly.
             // see crbug.com/345393
-            return "";
-        } catch (UnsupportedOperationException e) {
-            // Fails for URIs such as a directory tree URI without a document ID.
             Log.w(TAG, "Cannot get display name for %s", uri, e);
             return "";
         }
@@ -410,7 +435,7 @@ public abstract class ContentUriUtils {
     /**
      * @return whether a Uri has content scheme.
      */
-    public static boolean isContentUri(String uri) {
+    public static boolean isContentUri(@Nullable String uri) {
         if (uri == null) return false;
         Uri parsedUri = Uri.parse(uri);
         return parsedUri != null && ContentResolver.SCHEME_CONTENT.equals(parsedUri.getScheme());
@@ -623,6 +648,94 @@ public abstract class ContentUriUtils {
             }
         }
         return null;
+    }
+
+    /**
+     * Checks if the URI is an Openable file with display name and size. This distinguishes files
+     * from oversized content streams passed via URI.
+     */
+    public static boolean isOpenableFile(@Nullable Uri uri) {
+        if (uri == null) return false;
+        if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) return true;
+        ContentResolver cr = ContextUtils.getApplicationContext().getContentResolver();
+        try (Cursor cursor =
+                cr.query(
+                        uri,
+                        /* projection= */ null,
+                        /* selection= */ null,
+                        /* selectionArgs= */ null,
+                        /* sortOrder= */ null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
+                return nameIndex != INVALID_COLUMN_INDEX && sizeIndex != INVALID_COLUMN_INDEX;
+            }
+        } catch (Exception e) {
+            // Catch all exceptions if the external ContentProvider fails or behaves unexpectedly.
+            Log.w(TAG, "Failed to query Openable columns for URI: %s", uri, e);
+        }
+        return false;
+    }
+
+    /**
+     * Reads text content from a URI stream for the specified MIME type.
+     *
+     * @param uri The URI to read from.
+     * @param mimeType The exact MIME type to read (e.g., "text/html").
+     * @return The read text, or null if reading fails or type not supported.
+     */
+    public static @Nullable String readTextFromUri(@Nullable Uri uri, String mimeType) {
+        if (uri == null) return null;
+        ContentResolver cr = ContextUtils.getApplicationContext().getContentResolver();
+
+        String[] supportedTypes = cr.getStreamTypes(uri, mimeType);
+        if (supportedTypes == null
+                || supportedTypes.length == 0
+                || !mimeType.equals(supportedTypes[0])) {
+            return null;
+        }
+
+        try (AssetFileDescriptor assetFileDescriptor =
+                cr.openTypedAssetFileDescriptor(uri, supportedTypes[0], /* opts= */ null)) {
+            if (assetFileDescriptor == null) return null;
+            try (InputStream inputStream = assetFileDescriptor.createInputStream();
+                    InputStreamReader reader =
+                            new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
+                StringBuilder builder = new StringBuilder();
+                char[] buffer = new char[8192];
+                int len;
+                while ((len = reader.read(buffer)) > 0) {
+                    builder.append(buffer, 0, len);
+                }
+                return builder.toString();
+            }
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    public static boolean isUriFromThisApp(Uri uri) {
+        return isUriFromThisApp(uri, ContextUtils.getApplicationContext());
+    }
+
+    /**
+     * Returns whether the content URI is served by a ContentProvider belonging to the current
+     * application (i.e. running under the same UID).
+     *
+     * @param uri The URI to check.
+     * @param context The context to retrieve package and provider info.
+     * @return True if the URI is from the current application, false otherwise.
+     */
+    public static boolean isUriFromThisApp(Uri uri, Context context) {
+        String authority = uri.getAuthority();
+        if (TextUtils.isEmpty(authority)) return false;
+
+        // Remove userId prefix in the authority.
+        authority = authority.substring(authority.lastIndexOf('@') + 1);
+
+        PackageManager pm = context.getPackageManager();
+        ProviderInfo info = pm.resolveContentProvider(authority, 0);
+        return info != null && TextUtils.equals(info.packageName, context.getPackageName());
     }
 
     @NativeMethods

@@ -38,7 +38,7 @@ class SegmentationPlatformServiceFactory
       ProfileIOS* profile);
 
   // Returns the default factory used to build SegmentationPlatformService. Can
-  // be registered with SetTestingFactory to use real instances during testing.
+  // be registered with AddTestingFactory to use real instances during testing.
   static TestingFactory GetDefaultFactory();
 
  private:
@@ -47,10 +47,10 @@ class SegmentationPlatformServiceFactory
   SegmentationPlatformServiceFactory();
   ~SegmentationPlatformServiceFactory() override;
 
-  // BrowserStateKeyedServiceFactory:
+  // ProfileKeyedServiceFactoryIOS:
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
-  void RegisterBrowserStatePrefs(
+      ProfileIOS* profile) const override;
+  void RegisterProfilePrefs(
       user_prefs::PrefRegistrySyncable* registry) override;
 };
 

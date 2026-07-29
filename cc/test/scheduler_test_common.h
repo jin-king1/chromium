@@ -14,8 +14,8 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "cc/metrics/compositor_timing_history.h"
-#include "cc/metrics/dropped_frame_counter.h"
 #include "cc/scheduler/scheduler.h"
+#include "cc/scheduler/scheduler_state_machine.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base {
@@ -23,8 +23,6 @@ class TickClock;
 }
 
 namespace cc {
-
-class RenderingStatsInstrumentation;
 
 class FakeCompositorTimingHistory : public CompositorTimingHistory {
  public:
@@ -60,12 +58,8 @@ class FakeCompositorTimingHistory : public CompositorTimingHistory {
   base::TimeDelta DrawDurationEstimate() const override;
 
  protected:
-  FakeCompositorTimingHistory(bool using_synchronous_renderer_compositor,
-                              std::unique_ptr<RenderingStatsInstrumentation>
-                                  rendering_stats_instrumentation_owned);
-
-  std::unique_ptr<RenderingStatsInstrumentation>
-      rendering_stats_instrumentation_owned_;
+  explicit FakeCompositorTimingHistory(
+      bool using_synchronous_renderer_compositor);
 
   base::TimeDelta begin_main_frame_queue_duration_critical_;
   base::TimeDelta begin_main_frame_queue_duration_not_critical_;
@@ -92,27 +86,27 @@ class TestScheduler : public Scheduler {
   TestScheduler& operator=(const TestScheduler&) = delete;
 
   bool NeedsBeginMainFrame() const {
-    return state_machine_.needs_begin_main_frame();
+    return state_machine_->needs_begin_main_frame();
   }
 
   viz::BeginFrameSource& frame_source() { return *begin_frame_source_; }
 
   bool MainThreadMissedLastDeadline() const {
-    return state_machine_.main_thread_missed_last_deadline();
+    return state_machine_->main_thread_missed_last_deadline();
   }
 
   bool begin_frames_expected() const {
     return begin_frame_source_ && observing_begin_frame_source_;
   }
 
-  bool BeginFrameNeeded() const { return state_machine_.BeginFrameNeeded(); }
+  bool BeginFrameNeeded() const { return state_machine_->BeginFrameNeeded(); }
 
   int current_frame_number() const {
-    return state_machine_.current_frame_number();
+    return state_machine_->current_frame_number();
   }
 
   bool needs_impl_side_invalidation() const {
-    return state_machine_.needs_impl_side_invalidation();
+    return state_machine_->needs_impl_side_invalidation();
   }
 
   ~TestScheduler() override;
@@ -126,14 +120,14 @@ class TestScheduler : public Scheduler {
   // Pass in a fake CompositorTimingHistory that indicates BeginMainFrame
   // to Activation is fast.
   void SetCriticalBeginMainFrameToActivateIsFast(bool is_fast) {
-    state_machine_.SetCriticalBeginMainFrameToActivateIsFast(is_fast);
+    state_machine_->SetCriticalBeginMainFrameToActivateIsFast(is_fast);
   }
 
   bool ImplLatencyTakesPriority() const {
-    return state_machine_.ImplLatencyTakesPriority();
+    return state_machine_->ImplLatencyTakesPriority();
   }
 
-  const SchedulerStateMachine& state_machine() const { return state_machine_; }
+  const SchedulerStateMachine& state_machine() const { return *state_machine_; }
 
  protected:
   // Overridden from Scheduler.

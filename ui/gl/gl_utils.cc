@@ -17,8 +17,9 @@
 #include "ui/gl/gl_surface_egl.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include <sync/sync.h>  // nogncheck
+
 #include "base/posix/eintr_wrapper.h"
-#include "third_party/libsync/src/include/sync/sync.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -126,27 +127,27 @@ void SetGlWorkarounds(const GlWorkarounds& workarounds) {
 }
 
 #if BUILDFLAG(IS_WIN)
-unsigned int FrameRateToPresentDuration(float frame_rate) {
-  if (frame_rate == 0)
-    return 0u;
-  // Present duration unit is 100 ns.
-  return static_cast<unsigned int>(1.0E7 / frame_rate);
-}
-
 unsigned int DirectCompositionRootSurfaceBufferCount() {
-  return base::FeatureList::IsEnabled(features::kDCompTripleBufferRootSwapChain)
-             ? 3u
-             : 2u;
+  if (switches::GetFakeVsyncIntervalFromCommandLine().has_value()) {
+    // We assume 2 swapchain buffers are intended for a standard 60Hz display.
+    // If we are simulating a high refresh rate, we increase the buffer count
+    // to 10 to prevent blocking on presentation if the actual hardware
+    // display refresh rate is slower.
+    // Note: The simulated refresh rate is used here as a heuristic for
+    // debugging high refresh rate behaviors and does not need to be exact.
+    return 10u;
+  }
+  return 2u;
 }
 
 // Labels swapchain buffers with the string name_prefix + _Buffer_ +
 // <buffer_number>
-void LabelSwapChainBuffers(IDXGISwapChain* swap_chain,
+void LabelSwapChainBuffers(IDXGISwapChain3* swap_chain,
                            const char* name_prefix) {
-  DXGI_SWAP_CHAIN_DESC desc;
-  HRESULT hr = swap_chain->GetDesc(&desc);
+  DXGI_SWAP_CHAIN_DESC1 desc;
+  HRESULT hr = swap_chain->GetDesc1(&desc);
   if (FAILED(hr)) {
-    DLOG(ERROR) << "Failed to GetDesc from swap chain: "
+    DLOG(ERROR) << "Failed to GetDesc1 from swap chain: "
                 << logging::SystemErrorCodeToString(hr);
     return;
   }
@@ -170,7 +171,7 @@ void LabelSwapChainBuffers(IDXGISwapChain* swap_chain,
 
 // Labels swapchain with the name_prefix and its buffers with the string
 // name_prefix + _Buffer_ + <buffer_number>.
-void LabelSwapChainAndBuffers(IDXGISwapChain* swap_chain,
+void LabelSwapChainAndBuffers(IDXGISwapChain3* swap_chain,
                               const char* name_prefix) {
   SetDebugName(swap_chain, name_prefix);
   LabelSwapChainBuffers(swap_chain, name_prefix);
@@ -195,6 +196,10 @@ GLDisplay* GetDefaultDisplay() {
 void SetGpuPreferenceEGL(GpuPreference preference, uint64_t system_device_id) {
   GLDisplayManagerEGL::GetInstance()->SetGpuPreference(preference,
                                                        system_device_id);
+}
+
+uint64_t GetSystemDeviceIdEGLForTesting(GpuPreference preference) {
+  return GLDisplayManagerEGL::GetInstance()->GetSystemDeviceId(preference);
 }
 
 void RemoveGpuPreferenceEGL(GpuPreference preference) {
@@ -242,4 +247,58 @@ ScopedPixelStore::~ScopedPixelStore() {
     glPixelStorei(name_, old_value_);
 }
 
+const char* GetDebugSourceString(unsigned int source) {
+  switch (source) {
+    case GL_DEBUG_SOURCE_API:
+      return "OpenGL";
+    case GL_DEBUG_SOURCE_WINDOW_SYSTEM:
+      return "Window System";
+    case GL_DEBUG_SOURCE_SHADER_COMPILER:
+      return "Shader Compiler";
+    case GL_DEBUG_SOURCE_THIRD_PARTY:
+      return "Third Party";
+    case GL_DEBUG_SOURCE_APPLICATION:
+      return "Application";
+    case GL_DEBUG_SOURCE_OTHER:
+      return "Other";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+const char* GetDebugTypeString(unsigned int type) {
+  switch (type) {
+    case GL_DEBUG_TYPE_ERROR:
+      return "Error";
+    case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+      return "Deprecated behavior";
+    case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+      return "Undefined behavior";
+    case GL_DEBUG_TYPE_PORTABILITY:
+      return "Portability";
+    case GL_DEBUG_TYPE_PERFORMANCE:
+      return "Performance";
+    case GL_DEBUG_TYPE_OTHER:
+      return "Other";
+    case GL_DEBUG_TYPE_MARKER:
+      return "Marker";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+const char* GetDebugSeverityString(unsigned int severity) {
+  switch (severity) {
+    case GL_DEBUG_SEVERITY_HIGH:
+      return "High";
+    case GL_DEBUG_SEVERITY_MEDIUM:
+      return "Medium";
+    case GL_DEBUG_SEVERITY_LOW:
+      return "Low";
+    case GL_DEBUG_SEVERITY_NOTIFICATION:
+      return "Notification";
+    default:
+      return "UNKNOWN";
+  }
+}
 }  // namespace gl

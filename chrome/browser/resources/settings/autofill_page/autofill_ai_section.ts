@@ -7,57 +7,47 @@
  * for Autofill AI.
  */
 
-import 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
-import 'chrome://resources/cr_elements/cr_button/cr_button.js';
+import '/shared/settings/controls/extension_controlled_indicator.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
-import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
-import 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
+import 'chrome://resources/cr_elements/cr_icons.css.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
-import '/shared/settings/prefs/prefs.js';
 import 'chrome://resources/cr_elements/icons.html.js';
+import '/shared/settings/prefs/prefs.js';
+import '../ai_page/ai_logging_info_bullet.js';
 import '../controls/settings_toggle_button.js';
 import '../icons.html.js';
 import '../settings_columned_section.css.js';
+import '../settings_page/settings_subpage.js';
 import '../settings_shared.css.js';
-import '../simple_confirmation_dialog.js';
-import './autofill_ai_add_or_edit_dialog.js';
+import '../settings_shared.css.js';
+// <if expr="_google_chrome">
+import '../internal/icons.html.js';
+// </if>
+
+import './autofill_ai_entries_list.js';
+import './walletable_pass_detection_toggle.js';
 
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
-import {HelpBubbleMixin} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin.js';
-import {AnchorAlignment} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
-import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
-import type {CrLazyRenderElement} from 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
-import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
+import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import type {DomRepeatEvent} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
+import {AiEnterpriseFeaturePrefName, ModelExecutionEnterprisePolicyValue} from '../ai_page/constants.js';
+import type {SettingsToggleButtonElement} from '../controls/settings_toggle_button.js';
 import {loadTimeData} from '../i18n_setup.js';
-import {routes} from '../route.js';
-import {Router} from '../router.js';
-import type {SettingsSimpleConfirmationDialogElement} from '../simple_confirmation_dialog.js';
+import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
 
 import {getTemplate} from './autofill_ai_section.html.js';
 import type {EntityDataManagerProxy} from './entity_data_manager_proxy.js';
 import {EntityDataManagerProxyImpl} from './entity_data_manager_proxy.js';
 
-type EntityInstance = chrome.autofillPrivate.EntityInstance;
-type EntityInstanceWithLabels = chrome.autofillPrivate.EntityInstanceWithLabels;
-type EntityType = chrome.autofillPrivate.EntityType;
-
-// browser_element_identifiers constants
-const AUTOFILL_AI_HEADER_ELEMENT_ID =
-    'SettingsUI::kAutofillPredictionImprovementsHeaderElementId';
-
 export interface SettingsAutofillAiSectionElement {
   $: {
-    actionMenu: CrLazyRenderElement<CrActionMenuElement>,
-    addMenu: CrLazyRenderElement<CrActionMenuElement>,
-    entriesHeaderTitle: HTMLElement,
+    prefToggle: SettingsToggleButtonElement,
   };
 }
 
 const SettingsAutofillAiSectionElementBase =
-    HelpBubbleMixin(PrefsMixin(PolymerElement));
+    SettingsViewMixin(I18nMixin(PrefsMixin(PolymerElement)));
 
 export class SettingsAutofillAiSectionElement extends
     SettingsAutofillAiSectionElementBase {
@@ -74,186 +64,226 @@ export class SettingsAutofillAiSectionElement extends
       /**
          If a user is not eligible for Autofill with Ai, but they have data
          saved, the code allows them only to edit and delete their data. They
-         are not allowed to add new data, or to opt-in or opt-out of Autofill
+         are not allowed to add new data, or to opt in or opt-out of Autofill
          with Ai using the toggle at the top of this page.
          If a user is not eligible for Autofill with Ai and they also have no
          data saved, then they cannot access this page at all.
        */
       ineligibleUser: {
         type: Boolean,
-        reflectToAttribute: true,
-        value: false,
+        value() {
+          return !loadTimeData.getBoolean('userEligibleForAutofillAi');
+        },
       },
 
       /**
-         The corresponding `EntityInstance` model for any entity related action
-         menus or dialogs.
+       * Indicates whether the feature `kAutofillAiReauthRequired` is enabled.
        */
-      activeEntity_: {
+      // <if expr="is_win or is_macosx or is_chromeos">
+      autofillAiReauthOnViewingSensitiveDataEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean(
+              'autofillAiReauthOnViewingSensitiveDataEnabled');
+        },
+      },
+      // </if>
+
+      /**
+         A "fake" preference object that reflects the state of the opt-in
+         toggle and the presence/absence of an enterprise policy.
+         This allows leveraging the settings-toggle-button component
+         to reflect enterprise enabled/disabled states.
+       */
+      optedIn_: {
         type: Object,
-        value: null,
+        value: () => ({
+          // Does not correspond to an actual pref - this is faked to allow
+          // writing it into a GAIA-id keyed dictionary of opt-ins.
+          type: chrome.settingsPrivate.PrefType.BOOLEAN,
+          value: false,
+        }),
       },
 
       /**
-         Complete list of entities that exist. When the user wants to add a new
-         entity, this list is displayed.
+        If reflects whether Wallet server data is available for storage.
+      */
+      isWalletServerStorageEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('isWalletServerStorageEnabled');
+        },
+      },
+
+      isUserEligibleForWalletablePassDetection_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean(
+              'isUserEligibleForWalletablePassDetection');
+        },
+      },
+
+      /**
+        If true, Autofill AI does not depend on whether Autofill for addresses
+        is enabled.
+      */
+      autofillSettingsEnterprisePolicyEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean(
+              'AutofillSettingsEnterprisePolicyEnabled');
+        },
+      },
+
+      /**
+         Whether the feature kAutofillAiAvailableByDefault is enabled. When
+         enabled, users do not need to opt-in to enhanced Autofill to use
+         Autofill AI.
        */
-      completeEntityList_: {
-        type: Array,
-        value: () => [],
-      },
-
-      /** The same dialog can be used for both adding and editing entities. */
-      showAddOrEditEntityDialog_: {
+      autofillAiAvailableByDefault_: {
         type: Boolean,
-        value: false,
-      },
-
-      addOrEditEntityDialogTitle_: {
-        type: String,
-        value: '',
-      },
-
-      showRemoveEntityDialog_: {
-        type: Boolean,
-        value: false,
-      },
-
-      entityInstances_: {
-        Array,
-        value: () => [],
+        value() {
+          return loadTimeData.getBoolean('autofillAiAvailableByDefault');
+        },
       },
     };
   }
 
-  ineligibleUser: boolean;
-  private activeEntity_: EntityInstance|null;
-  private completeEntityList_: EntityType[];
-  private showAddOrEditEntityDialog_: boolean;
-  private addOrEditEntityDialogTitle_: string;
-  private showRemoveEntityDialog_: boolean;
-  private entityInstances_: EntityInstanceWithLabels[];
+  static get observers() {
+    return [
+      `onEnterprisePolicyChanged_(prefs.${
+          AiEnterpriseFeaturePrefName.AUTOFILL_AI}.value,
+          prefs.autofill.profile_enabled.*,
+          ineligibleUser)`,
+    ];
+  }
 
-  // The correspondent model for any entity related action menus or dialogs.
-  private activeEntityWithLabels_: EntityInstanceWithLabels|null;
+  declare ineligibleUser: boolean;
+  // <if expr="is_win or is_macosx or is_chromeos">
+  declare private autofillAiReauthOnViewingSensitiveDataEnabled_: boolean;
+  // </if>
+  declare private optedIn_: chrome.settingsPrivate.PrefObject;
+  declare private isWalletServerStorageEnabled_: boolean;
+  declare private isUserEligibleForWalletablePassDetection_: boolean;
+  declare private autofillSettingsEnterprisePolicyEnabled_: boolean;
+  declare private autofillAiAvailableByDefault_: boolean;
+
   private entityDataManager_: EntityDataManagerProxy =
       EntityDataManagerProxyImpl.getInstance();
 
-  override connectedCallback() {
-    super.connectedCallback();
+  private async onEnterprisePolicyChanged_() {
+    // TODO(crbug.com/490338056): replace undefined check with pref
+    // initialization check
+    const addressAutofillEnabled = this.get('prefs.autofill.profile_enabled');
 
-    this.entityDataManager_.getAllEntityTypes().then(
-        (entityTypes: EntityType[]) => {
-          this.completeEntityList_ = entityTypes;
-        });
-
-    this.entityDataManager_.loadEntityInstances().then(
-        (entityInstances: EntityInstanceWithLabels[]) => {
-          // If the user is ineligible for Autofill with Ai and has no data
-          // saved, then they should not be able to access this page. These
-          // lines prevent such a user manually navigating to this page by
-          // typing its URL.
-          if (this.ineligibleUser && entityInstances.length === 0) {
-            Router.getInstance().navigateTo(routes.AUTOFILL);
-            return;
-          }
-          this.entityInstances_ = entityInstances;
-        });
-
-    // TODO(crbug.com/393318914): Remove this help bubble, which was introduced
-    // in crrev.com/c/5939704.
-    this.registerHelpBubble(
-        AUTOFILL_AI_HEADER_ELEMENT_ID, this.$.entriesHeaderTitle);
-  }
-
-  private onToggleSubLabelLinkClick_(): void {
-    OpenWindowProxyImpl.getInstance().openUrl(
-        loadTimeData.getString('autofillAiLearnMoreURL'));
-  }
-
-  /**
-   * Open the action menu.
-   */
-  private onMoreButtonClick_(e: DomRepeatEvent<EntityInstanceWithLabels>) {
-    this.activeEntityWithLabels_ = e.model.item;
-    const moreButton = e.target as HTMLElement;
-    this.$.actionMenu.get().showAt(moreButton);
-  }
-
-  /**
-   * Handles tapping on the "Add" entity button.
-   */
-  private onAddButtonClick_(e: Event) {
-    const addButton = e.target as HTMLElement;
-    this.$.addMenu.get().showAt(addButton, {
-      anchorAlignmentX: AnchorAlignment.BEFORE_END,
-      anchorAlignmentY: AnchorAlignment.AFTER_END,
-      noOffset: true,
-    });
-  }
-
-  private onAddEntityInstanceFromDropdownClick_(e: DomRepeatEvent<EntityType>) {
-    e.preventDefault();
-    // Create a new entity with no attributes and guid. A guid will be assigned
-    // after saving, on the C++ side.
-    this.activeEntity_ = {
-      type: e.model.item,
-      attributes: [],
-      guid: '',
-      nickname: '',
-    };
-    this.addOrEditEntityDialogTitle_ = this.activeEntity_.type.addEntityString;
-    this.showAddOrEditEntityDialog_ = true;
-    this.$.addMenu.get().close();
-  }
-
-  /**
-   * Handles tapping on the "Edit" entity button in the action menu.
-   */
-  private async onMenuEditEntityClick_(e: Event) {
-    e.preventDefault();
-    this.activeEntity_ = await this.entityDataManager_.getEntityInstanceByGuid(
-        this.activeEntityWithLabels_!.guid);
-    this.addOrEditEntityDialogTitle_ = this.activeEntity_.type.editEntityString;
-    this.showAddOrEditEntityDialog_ = true;
-    this.$.actionMenu.get().close();
-  }
-
-  /**
-   * Handles tapping on the "Delete" entity button in the action menu.
-   */
-  private onMenuRemoveEntityClick_(e: Event) {
-    e.preventDefault();
-    this.showRemoveEntityDialog_ = true;
-    this.$.actionMenu.get().close();
-  }
-
-  private onAutofillAiAddOrEditDone_(e: CustomEvent<EntityInstance>) {
-    e.stopPropagation();
-    this.entityDataManager_.addOrUpdateEntityInstance(e.detail);
-  }
-
-  private onAddOrEditEntityDialogClose_(e: Event) {
-    e.stopPropagation();
-    this.showAddOrEditEntityDialog_ = false;
-  }
-
-  private onRemoveEntityDialogClose_() {
-    const wasDeletionConfirmed =
-        this.shadowRoot!
-            .querySelector<SettingsSimpleConfirmationDialogElement>(
-                '#removeEntityDialog')!.wasConfirmed();
-    if (wasDeletionConfirmed) {
-      this.entityDataManager_.removeEntityInstance(
-          this.activeEntityWithLabels_!.guid);
-      // Speculatively update local list to avoid potential stale data issues.
-      const deletedEntityIndex = this.entityInstances_.findIndex(
-          entityInstance =>
-              entityInstance.guid === this.activeEntityWithLabels_!.guid);
-      this.splice('entityInstances_', deletedEntityIndex, 1);
+    if (!!addressAutofillEnabled &&
+        addressAutofillEnabled.enforcement ===
+            chrome.settingsPrivate.Enforcement.ENFORCED &&
+        !addressAutofillEnabled.value &&
+        !this.autofillSettingsEnterprisePolicyEnabled_) {
+      // We need to check addressAutofillEnabled.value here. this.ineligibleUser
+      // does consider addressAutofillEnabled.value, but loadTimeData constants
+      // are refreshed only after page reload.
+      this.set(
+          'optedIn_.value',
+          !this.ineligibleUser && addressAutofillEnabled.value);
+      this.set('optedIn_.enforcement', addressAutofillEnabled.enforcement);
+      this.set('optedIn_.controlledBy', addressAutofillEnabled.controlledBy);
+      return;
     }
 
-    this.showRemoveEntityDialog_ = false;
+    const optedIn = await this.entityDataManager_.getOptInStatus();
+    const autofillAiPolicyDisabled =
+        this.getPref(AiEnterpriseFeaturePrefName.AUTOFILL_AI).value ===
+        ModelExecutionEnterprisePolicyValue.DISABLE;
+    if (autofillAiPolicyDisabled) {
+      this.set(
+          'optedIn_.enforcement', chrome.settingsPrivate.Enforcement.ENFORCED);
+      this.set(
+          'optedIn_.controlledBy',
+          chrome.settingsPrivate.ControlledBy.USER_POLICY);
+    } else {
+      this.set('optedIn_.enforcement', undefined);
+      this.set('optedIn_.controlledBy', undefined);
+    }
+
+    if (this.autofillSettingsEnterprisePolicyEnabled_) {
+      this.set('optedIn_.value', !this.ineligibleUser && optedIn);
+    } else {
+      this.set(
+          'optedIn_.value',
+          !this.ineligibleUser && optedIn && !!addressAutofillEnabled &&
+              addressAutofillEnabled.value);
+    }
+  }
+
+  private async onOptInToggleChange_() {
+    // `setOptInStatus` returns false when the user tries to toggle the opt-in
+    // status when they're ineligible.  This shouldn't happen usually but in
+    // some cases it can happen (see crbug.com/408145195).
+    this.ineligibleUser = !(await this.entityDataManager_.setOptInStatus(
+        this.$.prefToggle.checked));
+    if (this.ineligibleUser) {
+      this.set('optedIn_.value', false);
+    }
+  }
+
+  private onChangeAuthenticationRequirementClicked_(e: Event) {
+    e.preventDefault();
+    if (this.ineligibleUser) {
+      return;
+    }
+    this.entityDataManager_.toggleAutofillAiReauthRequirement();
+  }
+
+  /**
+   * Whether an info bullet regarding logging is shown. Autofill Ai only shows
+   * logging behaviour information for enterprise clients who have either the
+   * feature disabled or just logging disabled.
+   */
+  private showLoggingInfoBullet_(pref: number) {
+    return pref !== ModelExecutionEnterprisePolicyValue.ALLOW;
+  }
+
+  private getFirstWhenOnSectionTitle_() {
+    return this.i18n(
+        this.autofillAiAvailableByDefault_ ?
+            'autofillAiWhenOnCanFillDifficultFields' :
+            'autofillAiWhenOnSavedInfo');
+  }
+
+  private getFirstWhenOnSectionIcon_() {
+    return this.autofillAiAvailableByDefault_ ? 'settings20:text-analysis' :
+                                                'settings20:sync-saved-locally';
+  }
+
+  // SettingsViewMixin implementation.
+  override focusBackButton() {
+    this.shadowRoot!.querySelector('settings-subpage')!.focusBackButton();
+  }
+
+  private showExtensionControlledIndicator_() {
+    // TODO(crbug.com/490338056): replace undefined check with pref
+    // initialization check
+    const addressAutofillEnabled = this.get('prefs.autofill.profile_enabled');
+
+    // We show the extension control only if the extension forces false value
+    return !!addressAutofillEnabled && !!addressAutofillEnabled.extensionId &&
+        !addressAutofillEnabled.value;
+  }
+
+  private optInToggleDisabled_(): boolean {
+    // TODO(crbug.com/490338056): replace undefined check with pref
+    // initialization check
+    const addressAutofillEnabled = this.get('prefs.autofill.profile_enabled');
+    const addressAutofillEnforcedFalse = !!addressAutofillEnabled &&
+        addressAutofillEnabled.enforcement ===
+            chrome.settingsPrivate.Enforcement.ENFORCED &&
+        !addressAutofillEnabled.value;
+    // We need to check addressAutofillEnabled.value here. this.ineligibleUser
+    // does consider addressAutofillEnabled.value, but loadTimeData constants
+    // are refreshed only after page reload.
+    return this.ineligibleUser || addressAutofillEnforcedFalse;
   }
 }
 

@@ -5,7 +5,7 @@
 #include "chrome/browser/devtools/devtools_select_file_dialog.h"
 
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
+#include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/selected_file_info.h"
@@ -24,7 +24,7 @@ void DevToolsSelectFileDialog::SelectFile(content::WebContents* web_contents,
 
 void DevToolsSelectFileDialog::FileSelected(const ui::SelectedFileInfo& file,
                                             int index) {
-  std::move(selected_callback_).Run(file.path());
+  std::move(selected_callback_).Run(file);
   delete this;
 }
 

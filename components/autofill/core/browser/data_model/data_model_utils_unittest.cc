@@ -30,6 +30,7 @@ std::optional<Date> ParseDate(std::u16string_view date,
   return std::nullopt;
 }
 
+// Tests the constraints defined in the documentation of IsValidDateFormat().
 TEST(AutofillDataModelUtils, IsValidDateFormat) {
   EXPECT_TRUE(IsValidDateFormat(u"YYYY-MM-DD"));
   EXPECT_TRUE(IsValidDateFormat(u"YYYY - MM - DD"));
@@ -41,13 +42,41 @@ TEST(AutofillDataModelUtils, IsValidDateFormat) {
   EXPECT_TRUE(IsValidDateFormat(u"DD / MM / YYYY"));
   EXPECT_TRUE(IsValidDateFormat(u"MM/DD/YYYY"));
   EXPECT_TRUE(IsValidDateFormat(u"MM / DD / YYYY"));
+  EXPECT_TRUE(IsValidDateFormat(u"YYYY MM DD"));
   EXPECT_TRUE(IsValidDateFormat(u"YYYYMMDD"));
+  EXPECT_TRUE(IsValidDateFormat(u"YY.M.D"));
+  EXPECT_TRUE(IsValidDateFormat(u"D.M.YY"));
+  EXPECT_TRUE(IsValidDateFormat(u"YY.M.D"));
+  EXPECT_TRUE(IsValidDateFormat(u"YY-M"));
+  EXPECT_TRUE(IsValidDateFormat(u"D/M"));
 
   EXPECT_FALSE(IsValidDateFormat(u"DD/MM-YYYY"));
   EXPECT_FALSE(IsValidDateFormat(u" DD/MM/YYYY"));
   EXPECT_FALSE(IsValidDateFormat(u"DD/MM/YYYY "));
   EXPECT_FALSE(IsValidDateFormat(u"DD_MM_YYYY "));
+  EXPECT_FALSE(IsValidDateFormat(u"DDMM-YYYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"DD-MMYYYY"));
   EXPECT_FALSE(IsValidDateFormat(u"YYDDMMYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"YYYYMMD"));
+  EXPECT_FALSE(IsValidDateFormat(u"DMMYYYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"YYYYMDD"));
+  EXPECT_FALSE(IsValidDateFormat(u"YYMMD"));
+  EXPECT_FALSE(IsValidDateFormat(u"DMMYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"YYMDD"));
+  EXPECT_FALSE(IsValidDateFormat(u"DDMYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"YYD"));
+  EXPECT_FALSE(IsValidDateFormat(u"DYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"YYM"));
+  EXPECT_FALSE(IsValidDateFormat(u"MYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"YYYYD"));
+  EXPECT_FALSE(IsValidDateFormat(u"DYYYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"YYYYM"));
+  EXPECT_FALSE(IsValidDateFormat(u"MYYYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"D.MYYYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"DM.YYYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"D.MYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"DM.YY"));
+  EXPECT_FALSE(IsValidDateFormat(u"DM"));
   EXPECT_FALSE(IsValidDateFormat(u"YYY"));
   EXPECT_FALSE(IsValidDateFormat(u"Y"));
   EXPECT_FALSE(IsValidDateFormat(u"MMM"));
@@ -67,8 +96,15 @@ TEST(AutofillDataModelUtils, IsValidDateFormat) {
   EXPECT_FALSE(IsValidDateFormat(u""));
   EXPECT_FALSE(IsValidDateFormat(u"_"));
   EXPECT_FALSE(IsValidDateFormat(u" _ "));
+
+  // "*" and "+" are wildcards in ParseDate() but not valid date formats.
+  EXPECT_FALSE(IsValidDateFormat(u"DD*MM*YYYY"));
+  EXPECT_FALSE(IsValidDateFormat(u"DD+MM+YYYY"));
 }
 
+// Tests that ParseDate() extracts the right date from a format string.
+// Format strings may contain wildcards for separators.
+// Matches may be partial.
 TEST(AutofillDataModelUtils, ParseDate) {
   EXPECT_EQ(ParseDate(u"2025-12-11", u"YYYY-MM-DD"), Date(2025, 12, 11));
   EXPECT_EQ(ParseDate(u"2025-02-01", u"YYYY-MM-DD"), Date(2025, 2, 1));
@@ -90,6 +126,13 @@ TEST(AutofillDataModelUtils, ParseDate) {
 
   EXPECT_EQ(ParseDate(u"23.02.", u"DD.MM."), Date(0, 2, 23));
   EXPECT_EQ(ParseDate(u"23.2.", u"D.M."), Date(0, 2, 23));
+
+  EXPECT_EQ(ParseDate(u"2025-12-10", u"YYYY*MM*DD"), Date(2025, 12, 10));
+  EXPECT_EQ(ParseDate(u"20251210", u"YYYY*MM*DD"), Date(2025, 12, 10));
+  EXPECT_EQ(ParseDate(u"2025-12-10", u"YYYY+MM+DD"), Date(2025, 12, 10));
+  EXPECT_EQ(ParseDate(u"2025-12-10", u"YYYY+MM*DD"), Date(2025, 12, 10));
+  EXPECT_EQ(ParseDate(u"2025-12-10", u"YYYY*MM+DD"), Date(2025, 12, 10));
+  EXPECT_EQ(ParseDate(u"2025 / 12 / 10", u"YYYY*MM*DD"), Date(2025, 12, 10));
 
   EXPECT_EQ(ParseDate(u"2025", u"YYYY"), Date(2025, 0, 0));
   EXPECT_EQ(ParseDate(u"0001", u"YYYY"), Date(1, 0, 0));
@@ -130,6 +173,7 @@ TEST(AutofillDataModelUtils, ParseDate) {
   EXPECT_EQ(ParseDate(u"202", u"YYYY"), std::nullopt);
   EXPECT_EQ(ParseDate(u"2025", u"YY"), std::nullopt);
   EXPECT_EQ(ParseDate(u"123", u"YY"), std::nullopt);
+  EXPECT_EQ(ParseDate(u"1", u"YY"), std::nullopt);
   EXPECT_EQ(ParseDate(u"7", u"MM"), std::nullopt);
   EXPECT_EQ(ParseDate(u"007", u"MM"), std::nullopt);
   EXPECT_EQ(ParseDate(u"07", u"M"), std::nullopt);
@@ -159,35 +203,94 @@ TEST(AutofillDataModelUtils, ParseDate) {
   EXPECT_EQ(ParseDate(u"2025-12-10", u"M"), std::nullopt);
   EXPECT_EQ(ParseDate(u"2025-12-10", u"DD"), std::nullopt);
   EXPECT_EQ(ParseDate(u"2025-12-10", u"D"), std::nullopt);
+  EXPECT_EQ(ParseDate(u"20251210", u"YYYY+MM+DD"), std::nullopt);
 
   {
     Date date;
-    EXPECT_TRUE(ParseDate(u"2025-12-11", u"YYYY-MM-DD", date));
+    const char16_t* separator = u"whatever";
+    EXPECT_TRUE(ParseDate(u"2025-12-11", u"YYYY-MM-DD", date, separator));
     EXPECT_EQ(date, Date(2025, 12, 11));
+    EXPECT_EQ(separator, nullptr);
   }
 
   {
     Date date;
-    EXPECT_FALSE(ParseDate(u"202512-10", u"YYYYMMDD", date));
-    EXPECT_EQ(date, Date(2025, 12, 0));
+    const char16_t* separator = u"whatever";
+    EXPECT_TRUE(ParseDate(u"2025-12-10", u"YYYY+MM+DD", date, separator));
+    EXPECT_EQ(date, Date(2025, 12, 10));
+    EXPECT_EQ(std::u16string_view(separator), std::u16string_view(u"-"));
   }
 
   {
     Date date;
-    EXPECT_FALSE(ParseDate(u"2025-12-11", u"YYYY-MM", date));
-    EXPECT_EQ(date, Date(2025, 12, 0));
+    const char16_t* separator = u"whatever";
+    EXPECT_TRUE(ParseDate(u"2025-12-10", u"YYYY*MM*DD", date, separator));
+    EXPECT_EQ(date, Date(2025, 12, 10));
+    EXPECT_EQ(std::u16string_view(separator), std::u16string_view(u"-"));
   }
 
   {
     Date date;
-    EXPECT_FALSE(ParseDate(u"2025-12", u"YYYY-MM-DD", date));
-    EXPECT_EQ(date, Date(2025, 12, 0));
+    const char16_t* separator = u"whatever";
+    EXPECT_TRUE(ParseDate(u"20251210", u"YYYY*MM*DD", date, separator));
+    EXPECT_EQ(date, Date(2025, 12, 10));
+    EXPECT_EQ(separator, std::u16string_view(u""));
   }
 
   {
     Date date;
-    EXPECT_FALSE(ParseDate(u"2025-12-10", u"YYYY-ZZ-DD", date));
+    const char16_t* separator = u"whatever";
+    EXPECT_FALSE(ParseDate(u"20251210", u"YYYY+MM+DD", date, separator));
     EXPECT_EQ(date, Date(2025, 0, 0));
+    EXPECT_EQ(separator, std::u16string_view(u""));
+  }
+
+  {
+    Date date;
+    const char16_t* separator = u"whatever";
+    EXPECT_FALSE(ParseDate(u"2025-12-10", u"YYYY-XX-DD", date, separator));
+    EXPECT_EQ(date, Date(2025, 0, 0));
+    EXPECT_EQ(separator, nullptr);
+  }
+
+  {
+    Date date;
+    const char16_t* separator = u"whatever";
+    EXPECT_FALSE(ParseDate(u"202512-10", u"YYYYMMDD", date, separator));
+    EXPECT_EQ(date, Date(2025, 12, 0));
+    EXPECT_EQ(separator, nullptr);
+  }
+
+  {
+    Date date;
+    const char16_t* separator = u"whatever";
+    EXPECT_FALSE(ParseDate(u"202521", u"YYYYMD", date, separator));
+    EXPECT_EQ(date, Date(2025, 21, 0));
+    EXPECT_EQ(separator, nullptr);
+  }
+
+  {
+    Date date;
+    const char16_t* separator = u"whatever";
+    EXPECT_FALSE(ParseDate(u"2025-12-11", u"YYYY-MM", date, separator));
+    EXPECT_EQ(date, Date(2025, 12, 0));
+    EXPECT_EQ(separator, nullptr);
+  }
+
+  {
+    Date date;
+    const char16_t* separator = u"whatever";
+    EXPECT_FALSE(ParseDate(u"2025-12", u"YYYY-MM-DD", date, separator));
+    EXPECT_EQ(date, Date(2025, 12, 0));
+    EXPECT_EQ(separator, nullptr);
+  }
+
+  {
+    Date date;
+    const char16_t* separator = u"whatever";
+    EXPECT_FALSE(ParseDate(u"2025-12-10", u"YYYY-ZZ-DD", date, separator));
+    EXPECT_EQ(date, Date(2025, 0, 0));
+    EXPECT_EQ(separator, nullptr);
   }
 }
 
@@ -260,6 +363,57 @@ TEST(AutofillDataModelUtils, IsValidDateForFormat) {
   EXPECT_FALSE(IsValidDateForFormat(Date(2025, 11, 31), u"YYYY-MM-DD"));
   EXPECT_TRUE(IsValidDateForFormat(Date(2025, 12, 31), u"YYYY-MM-DD"));
   EXPECT_FALSE(IsValidDateForFormat(Date(2025, 12, 32), u"YYYY-MM-DD"));
+}
+
+// Tests the constraints defined in the documentation of IsValidAffixFormat().
+TEST(AutofillDataModelUtils, IsValidAffixFormat) {
+  EXPECT_TRUE(IsValidAffixFormat(u"-8"));
+  EXPECT_TRUE(IsValidAffixFormat(u"-7"));
+  EXPECT_TRUE(IsValidAffixFormat(u"-6"));
+  EXPECT_TRUE(IsValidAffixFormat(u"-5"));
+  EXPECT_TRUE(IsValidAffixFormat(u"-4"));
+  EXPECT_TRUE(IsValidAffixFormat(u"-3"));
+  EXPECT_TRUE(IsValidAffixFormat(u"0"));
+  EXPECT_TRUE(IsValidAffixFormat(u"0", /*exclude_full_value=*/false));
+  EXPECT_TRUE(IsValidAffixFormat(u"3"));
+  EXPECT_TRUE(IsValidAffixFormat(u"4"));
+  EXPECT_TRUE(IsValidAffixFormat(u"5"));
+  EXPECT_TRUE(IsValidAffixFormat(u"6"));
+  EXPECT_TRUE(IsValidAffixFormat(u"7"));
+  EXPECT_TRUE(IsValidAffixFormat(u"8"));
+
+  EXPECT_FALSE(IsValidAffixFormat(u""));
+  EXPECT_FALSE(IsValidAffixFormat(u"foo"));
+  EXPECT_FALSE(IsValidAffixFormat(u"-100"));
+  EXPECT_FALSE(IsValidAffixFormat(u"-9"));
+  EXPECT_FALSE(IsValidAffixFormat(u"-2"));
+  EXPECT_FALSE(IsValidAffixFormat(u"-1"));
+  EXPECT_FALSE(IsValidAffixFormat(u"0", /*exclude_full_value=*/true));
+  EXPECT_FALSE(IsValidAffixFormat(u"1"));
+  EXPECT_FALSE(IsValidAffixFormat(u"2"));
+  EXPECT_FALSE(IsValidAffixFormat(u"9"));
+  EXPECT_FALSE(IsValidAffixFormat(u"100"));
+}
+
+TEST(AutofillDataModelUtilsTest, IsValidFlightNumberFormat) {
+  EXPECT_TRUE(IsValidFlightNumberFormat(u"A"));
+  EXPECT_TRUE(IsValidFlightNumberFormat(u"N"));
+  EXPECT_TRUE(IsValidFlightNumberFormat(u"F"));
+
+  EXPECT_FALSE(IsValidFlightNumberFormat(u"B"));
+  EXPECT_FALSE(IsValidFlightNumberFormat(u"a"));
+  EXPECT_FALSE(IsValidFlightNumberFormat(u"Aa"));
+  EXPECT_FALSE(IsValidFlightNumberFormat(u"F", /*exclude_full_value=*/true));
+}
+
+TEST(AutofillDataModelUtilsTest, LocalizePattern_ShortMonthDay) {
+  EXPECT_EQ(LocalizePattern(u"MMM d", "en_US"), u"MMM d");
+  EXPECT_EQ(LocalizePattern(u"MMM d", "pl_PL"), u"d MMM");
+  EXPECT_EQ(LocalizePattern(u"MMM d", "de_DE"), u"d. MMM");
+}
+
+TEST(AutofillDataModelUtilsTest, LocalizePattern_InvalidLocale) {
+  EXPECT_EQ(LocalizePattern(u"MMM d", "thisisaninvalidlocale"), std::nullopt);
 }
 
 }  // namespace

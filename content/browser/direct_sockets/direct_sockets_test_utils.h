@@ -108,6 +108,8 @@ class MockNetworkContext : public network::TestNetworkContextWithHostResolver {
       network::mojom::RestrictedUDPSocketParamsPtr params,
       mojo::PendingReceiver<network::mojom::RestrictedUDPSocket> receiver,
       mojo::PendingRemote<network::mojom::UDPSocketListener> listener,
+      bool allow_multicast,
+      bool allow_source_specific_multicast,
       CreateRestrictedUDPSocketCallback callback) override;
 
   MockUDPSocket* get_udp_socket() {
@@ -123,8 +125,7 @@ class MockNetworkContext : public network::TestNetworkContextWithHostResolver {
 
 // A wrapper class that allows running javascript asynchronously.
 //
-//    * RunScript(...) returns a unique pointer to
-//      base::test::TestFuture<std::string>. Call
+//    * RunScript(...) returns a base::test::TestFuture<std::string>. Call
 //      Get(...) on the future pointer to wait for
 //      the script to complete.
 //    * Note that the observer expects exactly one message per script
@@ -155,8 +156,7 @@ class AsyncJsRunner : public WebContentsObserver {
   explicit AsyncJsRunner(content::WebContents* web_contents);
   ~AsyncJsRunner() override;
 
-  std::unique_ptr<base::test::TestFuture<std::string>> RunScript(
-      const std::string& script);
+  base::test::TestFuture<std::string> RunScript(const std::string& script);
 
   // WebContentsObserver:
   void DomOperationResponse(RenderFrameHost* render_frame_host,
@@ -168,6 +168,25 @@ class AsyncJsRunner : public WebContentsObserver {
   base::OnceCallback<void(std::string)> future_callback_;
   base::Token token_;
 };
+
+class SetHeaderWithFileUrlBuilder {
+ public:
+  explicit SetHeaderWithFileUrlBuilder(std::string_view path);
+  ~SetHeaderWithFileUrlBuilder();
+
+  SetHeaderWithFileUrlBuilder& WithCOIHeaders();
+  SetHeaderWithFileUrlBuilder& WithPermissionsPolicy(std::string_view feature,
+                                                     std::string_view value);
+
+  GURL Build(net::EmbeddedTestServer* server) const;
+
+ private:
+  std::string path_;
+  std::vector<std::string> headers_;
+  std::map<std::string, std::vector<std::string>> permissions_policy_;
+};
+
+SetHeaderWithFileUrlBuilder FileWithHeaders(std::string_view path);
 
 std::string WrapAsync(const std::string& script);
 
@@ -181,10 +200,6 @@ class IsolatedWebAppContentBrowserClient
 
   bool ShouldUrlUseApplicationIsolationLevel(BrowserContext* browser_context,
                                              const GURL& url) override;
-
-  std::optional<network::ParsedPermissionsPolicy>
-  GetPermissionsPolicyForIsolatedWebApp(WebContents* web_contents,
-                                        const url::Origin& app_origin) override;
 
  private:
   url::Origin isolated_app_origin_;

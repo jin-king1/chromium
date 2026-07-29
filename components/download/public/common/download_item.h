@@ -19,13 +19,12 @@
 
 #include <stdint.h>
 
-#include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/observer_list_types.h"
 #include "base/supports_user_data.h"
 #include "build/build_config.h"
@@ -180,6 +179,9 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItem : public base::SupportsUserData {
   // Called when the user has validated the download of an insecure file.
   virtual void ValidateInsecureDownload() = 0;
 
+  // Called when the user has validated the download of a non-dangerous file.
+  virtual void ConfirmNonDangerousDownload() = 0;
+
   // Called to acquire a dangerous download. Mmakes a temp copy of the
   // download file, and invokes |callback| with the path to the temp
   // copy. The caller is responsible for cleanup.  Note: It is important
@@ -237,6 +239,9 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItem : public base::SupportsUserData {
   // Get the current state of the download. See DownloadState for descriptions
   // of each download state.
   virtual DownloadState GetState() const = 0;
+
+  virtual void SetStateForTesting(DownloadState state);
+  virtual void SetDownloadUrlForTesting(const GURL& url);
 
   // Returns the most recent interrupt reason for this download. Returns
   // |DOWNLOAD_INTERRUPT_REASON_NONE| if there is no previous interrupt reason.
@@ -426,6 +431,11 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItem : public base::SupportsUserData {
   // complete.  False if not insecure or that function has been called.
   virtual bool IsInsecure() const = 0;
 
+  // True if the user has accepted in the non-dangerous dialog to download
+  // a file. False if the user has rejected in the non-dangerous dialog to
+  // download a file.
+  virtual bool IsUserConfirmed() const = 0;
+
   // Why |safety_state_| is not SAFE.
   virtual DownloadDangerType GetDangerType() const = 0;
 
@@ -445,10 +455,11 @@ class COMPONENTS_DOWNLOAD_EXPORT DownloadItem : public base::SupportsUserData {
   // Gets whether the download is triggered from external app.
   virtual bool IsFromExternalApp() = 0;
 
-  // Whether the original URL must be downloded, e.g. triggered by context
-  // menu or from the download service, or has "content-disposition: attachment"
-  // in header.
-  virtual bool IsMustDownload() = 0;
+  // Whether the original URL can be auto opened after download. Certain
+  // download shouldn't be auto-opened after completion, e.g. triggered by
+  // context menu or from the download service, or has "content-disposition:
+  // attachment" in header.
+  virtual bool AllowAutoOpenAfterCompletion() = 0;
 #endif  // BUILDFLAG(IS_ANDROID)
 
   //    Progress State accessors -----------------------------------------------

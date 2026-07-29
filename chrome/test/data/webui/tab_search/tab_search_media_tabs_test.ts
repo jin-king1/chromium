@@ -106,43 +106,48 @@ suite('TabSearchMediaTabsTest', () => {
     const tabs = [
       createTab({
         active: false,
+        visible: false,
         alertStates: [TabAlertState.kMediaRecording],
-        index: 0,
         tabId: 1,
         title: 'Meet',
-        url: {url: 'https://meet.google.com/'},
+        url: 'https://meet.google.com/',
         lastActiveTimeTicks: {internalValue: BigInt(4)},
       }),
       createTab({
         active: false,
+        visible: false,
         alertStates: [TabAlertState.kAudioPlaying],
-        index: 1,
         tabId: 2,
         title: 'Youtube',
-        url: {url: 'https://youtube.com/'},
+        url: 'https://youtube.com/',
         lastActiveTimeTicks: {internalValue: BigInt(3)},
       }),
       createTab({
         active: true,
-        index: 2,
+        visible: true,
         tabId: 3,
         title: 'Google',
-        url: {url: 'https://www.google.com'},
+        url: 'https://www.google.com',
         lastActiveTimeTicks: {internalValue: BigInt(5)},
       }),
       createTab({
         active: false,
-        index: 3,
+        visible: false,
         tabId: 4,
         title: 'Example',
-        url: {url: 'https://www.example.com'},
+        url: 'https://www.example.com',
         lastActiveTimeTicks: {internalValue: BigInt(2)},
       }),
     ];
 
     await setupTest(
         createProfileData({
-          windows: [{active: true, height: SAMPLE_WINDOW_HEIGHT, tabs}],
+          windows: [{
+            active: true,
+            isHostWindow: true,
+            height: SAMPLE_WINDOW_HEIGHT,
+            tabs,
+          }],
         }),
         {mediaTabsEnabled: true});
 
@@ -172,6 +177,7 @@ suite('TabSearchMediaTabsTest', () => {
 
     const tabUpdateInfo = {
       inActiveWindow: true,
+      inHostWindow: true,
       tab: updatedTab,
     };
     testProxy.getCallbackRouterRemote().tabUpdated(tabUpdateInfo);
@@ -197,6 +203,7 @@ suite('TabSearchMediaTabsTest', () => {
 
     const tabUpdateInfo = {
       inActiveWindow: true,
+      inHostWindow: true,
       tab: updatedTab,
     };
     testProxy.getCallbackRouterRemote().tabUpdated(tabUpdateInfo);

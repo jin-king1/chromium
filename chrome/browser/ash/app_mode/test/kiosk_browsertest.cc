@@ -10,31 +10,36 @@
 #include "ash/public/cpp/shelf_config.h"
 #include "ash/public/cpp/shelf_test_api.h"
 #include "ash/shell.h"
+#include "ash/wm/desks/desks_controller.h"
+#include "ash/wm/desks/overview_desk_bar_view.h"
+#include "ash/wm/overview/overview_controller.h"
+#include "ash/wm/overview/overview_test_util.h"
 #include "base/check_deref.h"
 #include "base/test/gtest_tags.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/app_mode/kiosk_app.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_controller.h"
+#include "chrome/browser/ash/app_mode/kiosk_system_session.h"
 #include "chrome/browser/ash/app_mode/test/fake_cws_chrome_apps.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_mixin.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_test_utils.h"
 #include "chrome/browser/ash/app_mode/test/network_state_mixin.h"
-#include "chrome/browser/ash/login/app_mode/test/kiosk_base_test.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/test/test_browser_closed_waiter.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/test/event_generator.h"
-#include "ui/gfx/native_widget_types.h"
 
 namespace ash {
 
@@ -42,8 +47,11 @@ using kiosk::test::AutoLaunchKioskApp;
 using kiosk::test::CloseAppWindow;
 using kiosk::test::CurrentProfile;
 using kiosk::test::IsAppInstalled;
+using kiosk::test::LaunchAppManually;
 using kiosk::test::OfflineEnabledChromeAppV1;
+using kiosk::test::OpenA11ySettings;
 using kiosk::test::TheKioskApp;
+using kiosk::test::WaitKioskLaunched;
 
 namespace {
 
@@ -63,6 +71,7 @@ void AddKioskLaunchTagIdToTestResult(KioskAppType app_type) {
       base::AddFeatureIdTagToTestResult(kLaunchWebAppTag);
       break;
     case KioskAppType::kIsolatedWebApp:
+    case KioskAppType::kArcvmApp:
       break;
   }
 }
@@ -80,6 +89,8 @@ void SimulateSwipeUpGesture() {
                              /*duration=*/base::Milliseconds(300), /*steps=*/4);
 }
 
+
+
 }  // namespace
 
 // Verifies generic Kiosk behavior.
@@ -95,7 +106,7 @@ class KioskTest : public MixinBasedInProcessBrowserTest,
 
   void SetUpOnMainThread() override {
     MixinBasedInProcessBrowserTest::SetUpOnMainThread();
-    ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+    ASSERT_TRUE(WaitKioskLaunched());
   }
 
   KioskMixin kiosk_{&mixin_host_,
@@ -115,35 +126,37 @@ IN_PROC_BROWSER_TEST_P(KioskTest, HidesShelf) {
 }
 
 IN_PROC_BROWSER_TEST_P(KioskTest, CanOpenA11ySettings) {
-  auto& session = CHECK_DEREF(KioskController::Get().GetKioskSystemSession());
-  Browser* settings = OpenA11ySettingsBrowser(&session);
+  Browser* settings = OpenA11ySettings(
+      CHECK_DEREF(user_manager::UserManager::Get()->GetActiveUser()));
   ASSERT_NE(settings, nullptr);
-  EXPECT_TRUE(settings->window()->IsActive());
-  EXPECT_TRUE(settings->window()->IsVisible());
+  EXPECT_TRUE(settings->GetWindow()->IsActive());
+  EXPECT_TRUE(settings->GetWindow()->IsVisible());
 }
 
 IN_PROC_BROWSER_TEST_P(KioskTest, ExitsIfOnlySettingsWindowRemainsOpen) {
-  auto& session = CHECK_DEREF(KioskController::Get().GetKioskSystemSession());
-
-  Browser& settings = CHECK_DEREF(OpenA11ySettingsBrowser(&session));
-  EXPECT_GT(BrowserList::GetInstance()->size(), 0u);
+  Browser& settings = CHECK_DEREF(OpenA11ySettings(
+      CHECK_DEREF(user_manager::UserManager::Get()->GetActiveUser())));
+  EXPECT_GT(GlobalBrowserCollection::GetInstance()->GetSize(), 0u);
 
   // Close the app window and verify the settings browser gets closed too.
   CloseAppWindow(AutoLaunchKioskApp());
-  ASSERT_TRUE(TestBrowserClosedWaiter(&settings).WaitUntilClosed());
-  EXPECT_EQ(BrowserList::GetInstance()->size(), 0u);
+  ui_test_utils::BrowserDestroyedObserver observer(&settings);
+  observer.Wait();
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 0u);
 
+  auto& session = CHECK_DEREF(KioskController::Get().GetKioskSystemSession());
   EXPECT_TRUE(session.is_shutting_down());
 }
 
 IN_PROC_BROWSER_TEST_P(KioskTest, DoesNotExitWhenSettingsWindowCloses) {
+  Browser& settings = CHECK_DEREF(OpenA11ySettings(
+      CHECK_DEREF(user_manager::UserManager::Get()->GetActiveUser())));
+  EXPECT_EQ(GetLastActiveBrowserWindowInterfaceWithAnyProfile(), &settings);
+
+  settings.GetWindow()->Close();
+  ui_test_utils::BrowserDestroyedObserver settings_observer(&settings);
+  settings_observer.Wait();
   auto& session = CHECK_DEREF(KioskController::Get().GetKioskSystemSession());
-
-  Browser& settings = CHECK_DEREF(OpenA11ySettingsBrowser(&session));
-  EXPECT_EQ(BrowserList::GetInstance()->GetLastActive(), &settings);
-
-  settings.window()->Close();
-  ASSERT_TRUE(TestBrowserClosedWaiter(&settings).WaitUntilClosed());
   EXPECT_FALSE(session.is_shutting_down());
 }
 
@@ -151,6 +164,21 @@ IN_PROC_BROWSER_TEST_P(KioskTest, DoesNotSignInWithGaiaAccount) {
   const auto& manager =
       CHECK_DEREF(IdentityManagerFactory::GetForProfile(&CurrentProfile()));
   EXPECT_FALSE(manager.HasPrimaryAccount(signin::ConsentLevel::kSignin));
+}
+
+IN_PROC_BROWSER_TEST_P(KioskTest, CannotCreateNewDesksDuringKioskSession) {
+  int initial_desks_count = DesksController::Get()->GetNumberOfDesks();
+  EXPECT_EQ(1, initial_desks_count);
+  ASSERT_FALSE(DesksController::Get()->CanCreateDesks());
+}
+
+IN_PROC_BROWSER_TEST_P(KioskTest, CannotEnterOverviewDuringKioskSession) {
+  auto* overview_controller = Shell::Get()->overview_controller();
+
+  overview_controller->StartOverview(OverviewStartAction::kTests,
+                                     OverviewEnterExitType::kImmediateEnter);
+
+  ASSERT_FALSE(overview_controller->InOverviewSession());
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -192,24 +220,24 @@ class OfflineKioskTest
 
 IN_PROC_BROWSER_TEST_P(OfflineKioskTest, OfflineLaunchWorksOnceItComesOnline) {
   network_state_.SimulateOffline();
-  ASSERT_TRUE(kiosk_.LaunchManually(TheKioskApp()));
+  ASSERT_TRUE(LaunchAppManually(TheKioskApp()));
 
   network_state_.SimulateOnline();
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
   ASSERT_TRUE((IsAppInstalled(CurrentProfile(), TheKioskApp())));
 }
 
 IN_PROC_BROWSER_TEST_P(OfflineKioskTest, PRE_LaunchesInstalledAppOffline) {
   network_state_.SimulateOnline();
-  ASSERT_TRUE(kiosk_.LaunchManually(TheKioskApp()));
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(LaunchAppManually(TheKioskApp()));
+  ASSERT_TRUE(WaitKioskLaunched());
   ASSERT_TRUE((IsAppInstalled(CurrentProfile(), TheKioskApp())));
 }
 
 IN_PROC_BROWSER_TEST_P(OfflineKioskTest, LaunchesInstalledAppOffline) {
   network_state_.SimulateOffline();
-  ASSERT_TRUE(kiosk_.LaunchManually(TheKioskApp()));
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(LaunchAppManually(TheKioskApp()));
+  ASSERT_TRUE(WaitKioskLaunched());
 }
 
 INSTANTIATE_TEST_SUITE_P(All,

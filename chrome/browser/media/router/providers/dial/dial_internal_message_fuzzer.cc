@@ -12,13 +12,14 @@ namespace media_router {
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   // Limit input size to prevent out-of-memory failures like the one seen in
-  // crbug.com/964715.
+  // crbug.com/40628111.
   if (size > 16 * 1024) {
     return 0;
   }
 
   std::optional<base::Value> input = base::JSONReader::Read(
-      std::string(reinterpret_cast<const char*>(data), size));
+      std::string(reinterpret_cast<const char*>(data), size),
+      base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!input || !input.value().is_dict()) {
     return 0;
   }

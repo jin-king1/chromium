@@ -11,6 +11,12 @@ enum class LocationBarPlaceholderType {
   kNone,
   // Lens overlay button.
   kLensOverlay,
+  // Page action menu entry point.
+  kPageActionMenu,
+  // Default search engine icon (on NTP).
+  kDefaultSearchEngineIcon,
+  // The multimodal AIM plus button (on NTP).
+  kPlusButton,
 };
 
 #endif  // IOS_CHROME_BROWSER_LOCATION_BAR_UI_BUNDLED_LOCATION_BAR_PLACEHOLDER_TYPE_H_

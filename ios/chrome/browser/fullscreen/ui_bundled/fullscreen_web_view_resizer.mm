@@ -104,16 +104,19 @@
   CRWWebViewScrollViewProxy* scrollViewProxy = webViewProxy.scrollViewProxy;
 
   if (self.webState->GetContentsMimeType() == "application/pdf") {
-    scrollViewProxy.contentInset = insets;
-    if (!CGRectEqualToRect(webView.frame, webView.superview.bounds)) {
-      webView.frame = webView.superview.bounds;
+    // Below iOS 26, set the content inset for a PDF page.
+    if (!@available(iOS 26, *)) {
+      scrollViewProxy.contentInset = insets;
+      if (!CGRectEqualToRect(webView.frame, webView.superview.bounds)) {
+        webView.frame = webView.superview.bounds;
+      }
+      return;
     }
-    return;
   }
 
   CGRect newFrame = UIEdgeInsetsInsetRect(webView.superview.bounds, insets);
 
-  if (base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault)) {
+  if (ios::provider::IsFullscreenSmoothScrollingSupported()) {
     // Make sure the frame has changed to avoid a loop as the frame property is
     // actually monitored by this object.
     if (std::fabs(newFrame.origin.x - webView.frame.origin.x) < 0.01 &&
@@ -129,8 +132,7 @@
   // Update the content offset of the scroll view to match the padding
   // that will be included in the frame.
   newContentOffset.y += (insets.top - currentTopInset) / self.model->GetSpeed();
-  if (self.compensateFrameChangeByOffset &&
-      !IsFullscreenTransitionOffsetSet()) {
+  if (self.compensateFrameChangeByOffset) {
     scrollViewProxy.contentOffset = newContentOffset;
   }
 

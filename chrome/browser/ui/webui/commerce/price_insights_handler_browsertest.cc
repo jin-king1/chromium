@@ -48,9 +48,8 @@ class PriceInsightsHandlerBrowserTest : public InProcessBrowserTest {
   std::unique_ptr<PriceInsightsHandler> handler_;
 };
 
-// The feedback dialog on CrOS & LaCrOS happens at the system level,
-// which cannot be easily tested here. LaCrOS has a separate feedback
-// browser test which gives us some coverage.
+// The feedback dialog on CrOS happens at the system level, which cannot be
+// easily tested here.
 #if !BUILDFLAG(IS_CHROMEOS)
 
 IN_PROC_BROWSER_TEST_F(PriceInsightsHandlerBrowserTest, TestShowFeedback) {
@@ -62,8 +61,9 @@ IN_PROC_BROWSER_TEST_F(PriceInsightsHandlerBrowserTest, TestShowFeedback) {
   CHECK(FeedbackDialog::GetInstanceForTest());
   EXPECT_EQ(chrome::kChromeUIFeedbackURL,
             FeedbackDialog::GetInstanceForTest()->GetDialogContentURL());
-  std::optional<base::Value::Dict> meta_data = base::JSONReader::ReadDict(
-      FeedbackDialog::GetInstanceForTest()->GetDialogArgs());
+  std::optional<base::DictValue> meta_data = base::JSONReader::ReadDict(
+      FeedbackDialog::GetInstanceForTest()->GetDialogArgs(),
+      base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(meta_data.has_value());
   ASSERT_EQ(*meta_data->FindString("categoryTag"), "price_insights");
 }

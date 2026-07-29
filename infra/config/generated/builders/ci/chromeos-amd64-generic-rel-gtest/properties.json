@@ -10,7 +10,6 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-chromiumos-archive",
               "builder_group": "chromium.chromiumos",
               "execution_mode": "COMPILE_AND_TEST",
               "legacy_chromium_config": {
@@ -46,7 +45,6 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-chromiumos-archive",
               "builder_group": "chromium.chromiumos",
               "execution_mode": "TEST",
               "legacy_chromium_config": {
@@ -89,16 +87,13 @@
       ],
       "mirroring_builder_group_and_names": [
         {
-          "builder": "chromeos-amd64-generic-rel-gtest",
-          "group": "tryserver.chromium.chromiumos"
-        },
-        {
-          "builder": "chromeos-amd64-generic-rel-gtest-and-tast",
+          "builder": "chromeos-amd64-generic-rel",
           "group": "tryserver.chromium.chromiumos"
         }
       ],
       "retry_failed_shards": true,
-      "targets_spec_directory": "src/infra/config/generated/builders/ci/chromeos-amd64-generic-rel-gtest/targets"
+      "retry_invalid_shards": true,
+      "targets_spec_directory": "infra/config/generated/builders/ci/chromeos-amd64-generic-rel-gtest/targets"
     }
   },
   "$recipe_engine/resultdb/test_presentation": {

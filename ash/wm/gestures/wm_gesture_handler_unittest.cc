@@ -195,11 +195,16 @@ TEST_F(WmGestureHandlerTest, WrongVerticalScrolls) {
 // move selection left or right.
 TEST_F(WmGestureHandlerTest, HorizontalScrollInOverview) {
   const gfx::Rect bounds(0, 0, 400, 400);
-  std::unique_ptr<aura::Window> window1 = CreateTestWindow(bounds);
-  std::unique_ptr<aura::Window> window2 = CreateTestWindow(bounds);
-  std::unique_ptr<aura::Window> window3 = CreateTestWindow(bounds);
-  std::unique_ptr<aura::Window> window4 = CreateTestWindow(bounds);
-  std::unique_ptr<aura::Window> window5 = CreateTestWindow(bounds);
+  std::unique_ptr<aura::Window> window1 =
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, bounds);
+  std::unique_ptr<aura::Window> window2 =
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, bounds);
+  std::unique_ptr<aura::Window> window3 =
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, bounds);
+  std::unique_ptr<aura::Window> window4 =
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, bounds);
+  std::unique_ptr<aura::Window> window5 =
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, bounds);
   const float vertical_scroll = 2 * WmGestureHandler::kVerticalThresholdDp;
   const float horizontal_scroll = WmGestureHandler::kHorizontalThresholdDp;
   // Enter overview mode as if using an accelerator.
@@ -284,7 +289,7 @@ TEST_F(WmGestureHandlerTest, EnterOverviewWithNormalCaptureWindow) {
   // normal type window, we should not handle the event as entering overview
   // mode.
   std::unique_ptr<aura::Window> normal_window =
-      CreateTestWindow(gfx::Rect(100, 100));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100});
   normal_window->SetCapture();
 
   ui::ScrollEvent fling_cancel(ui::EventType::kScrollFlingCancel, gfx::Point(),
@@ -318,12 +323,14 @@ TEST_F(WmGestureHandlerTest, EnterOverviewWithPopupCaptureWindow) {
   // window by not normal, we should ignore the capture state and handle the
   // event as entering overview mode.
   std::unique_ptr<aura::Window> normal_window =
-      CreateTestWindow(gfx::Rect(100, 100));
-  std::unique_ptr<aura::Window> popup_window =
-      base::WrapUnique(aura::test::CreateTestWindowWithDelegateAndType(
-          aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
-          aura::client::WINDOW_TYPE_POPUP, /*id=*/1, gfx::Rect(100, 100),
-          normal_window.get(), /*show_on_creation=*/true));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100});
+  std::unique_ptr<aura::Window> popup_window = aura::test::CreateTestWindow(
+      {.delegate =
+           aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+       .parent = normal_window.get(),
+       .bounds = {100, 100},
+       .window_type = aura::client::WINDOW_TYPE_POPUP,
+       .window_id = 1});
   popup_window->SetCapture();
 
   ui::ScrollEvent fling_cancel(ui::EventType::kScrollFlingCancel, gfx::Point(),
@@ -356,7 +363,7 @@ TEST_F(WmGestureHandlerTest, LockedModeNoSwitchDesk) {
   ASSERT_EQ(desk_controller->desks()[0].get(), desk_controller->active_desk());
 
   // Pin a window to current desk.
-  aura::Window* w1 = CreateTestWindowInShellWithId(0);
+  aura::Window* w1 = CreateTestWindowInShell({.window_id = 0}).release();
   wm::ActivateWindow(w1);
   window_util::PinWindow(w1, /*trusted=*/false);
   EXPECT_TRUE(Shell::Get()->screen_pinning_controller()->IsPinned());
@@ -534,7 +541,7 @@ class WmGestureHandlerKioskTest : public WmGestureHandlerTest {
 
   void SetUp() override {
     WmGestureHandlerTest::SetUp();
-    SimulateKioskMode(user_manager::UserType::kWebKioskApp);
+    SimulateKioskMode(user_manager::UserType::kKioskWebApp);
   }
 };
 

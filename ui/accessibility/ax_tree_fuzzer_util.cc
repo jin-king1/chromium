@@ -2,15 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/accessibility/ax_tree_fuzzer_util.h"
 
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_data.h"
@@ -23,22 +20,26 @@
 #include "ui/accessibility/ax_tree_update.h"
 
 FuzzerData::FuzzerData(const unsigned char* data, size_t size)
-    : data_(data), data_size_(size), data_index_(0) {}
-
-size_t FuzzerData::RemainingBytes() {
-  return data_size_ - data_index_;
+    : data_index_(0) {
+  // SAFETY: `data` points to `size` readable bytes provided by the fuzzer
+  // entrypoint.
+  data_ = (UNSAFE_BUFFERS(base::span(data, size)));
 }
 
-unsigned char FuzzerData::NextByte() {
+size_t FuzzerData::RemainingBytes() {
+  return data_.size() - data_index_;
+}
+
+uint8_t FuzzerData::NextByte() {
   CHECK(RemainingBytes());
   return data_[data_index_++];
 }
 
-const unsigned char* FuzzerData::NextBytes(size_t amount) {
+base::span<const uint8_t> FuzzerData::NextBytes(size_t amount) {
   CHECK(RemainingBytes() >= amount);
-  const unsigned char* current_position = &data_[data_index_];
+  auto current = data_.subspan(data_index_, amount);
   data_index_ += amount;
-  return current_position;
+  return current;
 }
 
 ui::AXTree* AXTreeFuzzerGenerator::GetTree() {
@@ -191,7 +192,7 @@ void AXTreeFuzzerGenerator::RecursiveGenerateUpdate(
         text_size = extra_data_size;
       extra_data_size -= text_size;
       inline_text_data.SetName(
-          GenerateInterestingText(fuzz_data.NextBytes(text_size), text_size));
+          GenerateInterestingText(fuzz_data.NextBytes(text_size)));
       static_text_data.SetName(inline_text_data.GetStringAttribute(
           ax::mojom::StringAttribute::kName));
       tree_update.nodes.push_back(static_text_data);
@@ -205,9 +206,8 @@ void AXTreeFuzzerGenerator::RecursiveGenerateUpdate(
   }
 
   // Visit subtree.
-  for (auto iter = node->AllChildrenBegin(); iter != node->AllChildrenEnd();
-       ++iter) {
-    RecursiveGenerateUpdate(iter.get(), tree_update, fuzz_data, updated_nodes);
+  for (ui::AXNode* child : node->GetAllChildren()) {
+    RecursiveGenerateUpdate(child, tree_update, fuzz_data, updated_nodes);
   }
 }
 
@@ -306,8 +306,7 @@ void AXTreeFuzzerGenerator::AddRoleSpecificProperties(
     if (text_size > extra_data_size)
       text_size = extra_data_size;
     extra_data_size -= text_size;
-    node.SetName(
-        GenerateInterestingText(fuzz_data.NextBytes(text_size), text_size));
+    node.SetName(GenerateInterestingText(fuzz_data.NextBytes(text_size)));
   }
 }
 
@@ -345,15 +344,15 @@ bool AXTreeFuzzerGenerator::CanHaveChildren(ax::mojom::Role role) {
 }
 
 std::u16string AXTreeFuzzerGenerator::GenerateInterestingText(
-    const unsigned char* data,
-    size_t size) {
+    base::span<const uint8_t> data) {
   std::u16string wide_str;
-  for (size_t i = 0; i + 1 < size; i += 2) {
+  for (size_t i = 0; i + 1 < data.size(); i += 2) {
     char16_t char_16 = data[i] << 8;
     char_16 |= data[i + 1];
     // Don't insert a null character.
-    if (char_16)
+    if (char_16) {
       wide_str.push_back(char_16);
+    }
   }
   return wide_str;
 }

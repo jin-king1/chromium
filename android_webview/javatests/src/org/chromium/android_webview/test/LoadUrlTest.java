@@ -6,9 +6,7 @@ package org.chromium.android_webview.test;
 
 import static org.chromium.android_webview.test.AwActivityTestRule.WAIT_TIMEOUT_MS;
 
-import android.content.Context;
 import android.util.Base64;
-import android.view.ViewGroup;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
@@ -23,16 +21,9 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
-import org.chromium.android_webview.AwBrowserContext;
 import org.chromium.android_webview.AwContents;
-import org.chromium.android_webview.AwContents.DependencyFactory;
-import org.chromium.android_webview.AwContents.InternalAccessDelegate;
-import org.chromium.android_webview.AwContents.NativeDrawFunctorFactory;
-import org.chromium.android_webview.AwContentsClient;
-import org.chromium.android_webview.AwContentsClient.AwWebResourceError;
-import org.chromium.android_webview.AwSettings;
+import org.chromium.android_webview.AwWebResourceError;
 import org.chromium.android_webview.WebviewErrorCode;
-import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.android_webview.test.util.CommonResources;
 import org.chromium.android_webview.test.util.JSUtils;
 import org.chromium.base.ThreadUtils;
@@ -41,6 +32,7 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.content_public.browser.test.util.HistoryUtils;
 import org.chromium.net.test.util.TestWebServer;
 
@@ -112,8 +104,8 @@ public class LoadUrlTest extends AwParameterizedTest {
                 ASSET_FILE_URL);
 
         AwWebResourceError error = onReceivedErrorHelper.getError();
-        Assert.assertEquals(WebviewErrorCode.ERROR_UNKNOWN, error.errorCode);
-        Assert.assertEquals("net::ERR_ACCESS_DENIED", error.description);
+        Assert.assertEquals(WebviewErrorCode.ERROR_UNKNOWN, error.getWebviewError());
+        Assert.assertEquals("net::ERR_ACCESS_DENIED", error.getDescription());
     }
 
     @Test
@@ -200,7 +192,7 @@ public class LoadUrlTest extends AwParameterizedTest {
     }
 
     private static class OnProgressChangedClient extends TestAwContentsClient {
-        List<Integer> mProgresses = new ArrayList<Integer>();
+        final List<Integer> mProgresses = new ArrayList<Integer>();
 
         @Override
         public void onProgressChanged(int progress) {
@@ -215,7 +207,7 @@ public class LoadUrlTest extends AwParameterizedTest {
             mCallbackHelper.waitForOnly();
         }
 
-        private CallbackHelper mCallbackHelper = new CallbackHelper();
+        private final CallbackHelper mCallbackHelper = new CallbackHelper();
     }
 
     @Test
@@ -293,10 +285,10 @@ public class LoadUrlTest extends AwParameterizedTest {
             throws Exception {
         String textContent =
                 mActivityTestRule.getJavaScriptResultBodyTextContent(awContents, contentsClient);
-        String[] header_values = textContent.split("\\\\n");
+        String[] headerValues = textContent.split("\\\\n");
         for (int i = 0; i < extraHeader.length; i += 2) {
             Assert.assertEquals(
-                    shouldHeaderExist ? extraHeader[i + 1] : "None", header_values[i / 2]);
+                    shouldHeaderExist ? extraHeader[i + 1] : "None", headerValues[i / 2]);
         }
     }
 
@@ -319,22 +311,11 @@ public class LoadUrlTest extends AwParameterizedTest {
         }
     }
 
-    private final String encodeUrl(String url) {
+    private String encodeUrl(String url) {
         try {
             return URLEncoder.encode(url, "UTF-8");
         } catch (UnsupportedEncodingException e) {
             throw new AssertionError(e);
-        }
-    }
-
-    /** Make a test server URL look like it is a different origin. */
-    private static String toDifferentOriginUrl(String url) {
-        if (url.contains("localhost")) {
-            return url.replace("localhost", "127.0.0.1");
-        } else if (url.contains("127.0.0.1")) {
-            return url.replace("127.0.0.1", "localhost");
-        } else {
-            throw new RuntimeException("Can't convert url " + url + " to different origin");
         }
     }
 
@@ -414,6 +395,38 @@ public class LoadUrlTest extends AwParameterizedTest {
         validateHeadersValue(awContents, contentsClient, extraHeaders, true);
         onReceivedTitleHelper.waitForCallback(onReceivedTitleCallCount);
         Assert.assertEquals("5", onReceivedTitleHelper.getTitle());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testNonTokenHeaderNamesAreIgnored() throws Throwable {
+        final TestAwContentsClient contentsClient = new TestAwContentsClient();
+        final AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentsClient);
+        final AwContents awContents = testContainerView.getAwContents();
+
+        AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
+
+        final String url = mTestServer.getURL("/echoheader?invalid%3Aheader");
+        String[] extraHeaders = {"invalid:header", "valid-value"};
+        try (HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.LoadUrl.RejectedHeaderCount", 1)) {
+            loadUrlWithExtraHeadersSync(
+                    awContents,
+                    contentsClient.getOnPageFinishedHelper(),
+                    url,
+                    createHeadersMap(extraHeaders));
+            watcher.assertExpected();
+        }
+
+        String header =
+                mActivityTestRule.getJavaScriptResultBodyTextContent(awContents, contentsClient);
+        // We should not have a header with an invalid character in it.
+        // But the important thing is that we got to this spot without crashing.
+        // See https://crbug.com/450927905.
+        Assert.assertEquals("None", header);
     }
 
     @Test
@@ -545,94 +558,11 @@ public class LoadUrlTest extends AwParameterizedTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
-    @CommandLineFlags.Add("enable-features=" + AwFeatures.WEBVIEW_EXTRA_HEADERS_SAME_ORIGIN_ONLY)
-    // TODO(crbug.com/40051073) remove flag when enabled by default
-    public void testCrossOriginRedirectWithExtraHeaders() throws Throwable {
-        final TestAwContentsClient contentsClient = new TestAwContentsClient();
-        final AwTestContainerView testContainerView =
-                mActivityTestRule.createAwTestContainerViewOnMainSync(contentsClient);
-        final AwContents awContents = testContainerView.getAwContents();
-        final String echoRedirectedUrlHeader = "echo header";
-        final String echoInitialUrlHeader = "data content";
-
-        AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
-
-        String[] extraHeaders = {
-            "X-ExtraHeaders1", "extra-header-data1", "x-extraHeaders2", "EXTRA-HEADER-DATA2"
-        };
-        final String redirectedUrl =
-                toDifferentOriginUrl(
-                        mTestServer.getURL(
-                                "/echoheader-and-set-data?header="
-                                        + extraHeaders[0]
-                                        + "&header="
-                                        + extraHeaders[2]));
-        final String initialUrl =
-                mTestServer.getURL(
-                        "/server-redirect-echoheader?url="
-                                + encodeUrl(redirectedUrl)
-                                + "&header="
-                                + extraHeaders[0]
-                                + "&header="
-                                + extraHeaders[2]);
-        loadUrlWithExtraHeadersSync(
-                awContents,
-                contentsClient.getOnPageFinishedHelper(),
-                initialUrl,
-                createHeadersMap(extraHeaders));
-        validateHeadersFromJson(
-                awContents, contentsClient, extraHeaders, echoInitialUrlHeader, true);
-        // Check that the headers were removed when the request was redirected to another origin.
-        validateHeadersFromJson(
-                awContents, contentsClient, extraHeaders, echoRedirectedUrlHeader, false);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView"})
-    @CommandLineFlags.Add("enable-features=" + AwFeatures.WEBVIEW_EXTRA_HEADERS_SAME_ORIGIN_ONLY)
-    // TODO(crbug.com/40051073) remove flag when enabled by default
-    public void testRedirectToPreviousExtraHeaders() throws Throwable {
-        final TestAwContentsClient contentsClient = new TestAwContentsClient();
-        final AwTestContainerView testContainerView =
-                mActivityTestRule.createAwTestContainerViewOnMainSync(contentsClient);
-        final AwContents awContents = testContainerView.getAwContents();
-        final String echoRedirectedUrlHeader = "echo header";
-
-        AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
-
-        String[] extraHeaders = {
-            "X-ExtraHeaders1", "extra-header-data1", "x-extraHeaders2", "EXTRA-HEADER-DATA2"
-        };
-        final String redirectedUrl =
-                mTestServer.getURL(
-                        "/echoheader-and-set-data?header="
-                                + extraHeaders[0]
-                                + "&header="
-                                + extraHeaders[2]);
-        final String initialUrl =
-                mTestServer.getURL("/server-redirect-echoheader?url=" + encodeUrl(redirectedUrl));
-
-        // First load the redirect target URL with extra headers
-        loadUrlWithExtraHeadersSync(
-                awContents,
-                contentsClient.getOnPageFinishedHelper(),
-                redirectedUrl,
-                createHeadersMap(extraHeaders));
-        validateHeadersFromJson(
-                awContents, contentsClient, extraHeaders, echoRedirectedUrlHeader, true);
-
-        // Now load the initial URL without any extra headers and let it redirect;
-        // the extra headers should not be added to the redirected request.
-        mActivityTestRule.loadUrlSync(
-                awContents, contentsClient.getOnPageFinishedHelper(), initialUrl);
-        validateHeadersFromJson(
-                awContents, contentsClient, extraHeaders, echoRedirectedUrlHeader, false);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView"})
+    // This test requires BFCache to be disabled in order to trigger the `onPageFinishedHelper`
+    // so we can test the extra headers. Since the page is loaded with `Cache-control: no-store`, it
+    // was not eligible for BFCache, and now `Cache-control: no-store` is no longer a blocking
+    // reason, so we have to disable BFCache with this command line flag.
+    @CommandLineFlags.Add({"disable-features=WebViewBackForwardCache"})
     public void testRendererNavigationAndGoBackWithExtraHeaders() throws Throwable {
         final TestAwContentsClient contentsClient = new TestAwContentsClient();
         final AwTestContainerView testContainerView =
@@ -899,30 +829,6 @@ public class LoadUrlTest extends AwParameterizedTest {
             Assert.assertEquals(iframeLoadedMessage, addMessageToConsoleHelper.getMessage());
         } finally {
             webServer.shutdown();
-        }
-    }
-
-    static class TestAwContentsClientTestDependencyFactory
-            extends AwActivityTestRule.TestDependencyFactory {
-        @Override
-        public AwContents createAwContents(
-                AwBrowserContext browserContext,
-                ViewGroup containerView,
-                Context context,
-                InternalAccessDelegate internalAccessAdapter,
-                NativeDrawFunctorFactory nativeDrawFunctorFactory,
-                AwContentsClient contentsClient,
-                AwSettings settings,
-                DependencyFactory dependencyFactory) {
-            return new TestAwContents(
-                    browserContext,
-                    containerView,
-                    context,
-                    internalAccessAdapter,
-                    nativeDrawFunctorFactory,
-                    contentsClient,
-                    settings,
-                    dependencyFactory);
         }
     }
 }

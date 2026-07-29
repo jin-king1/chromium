@@ -7,7 +7,6 @@
 #include <memory>
 
 #include "base/command_line.h"
-#include "base/functional/bind.h"
 #include "base/test/mock_callback.h"
 #include "chrome/browser/headless/headless_mode_util.h"
 #include "content/public/test/browser_task_environment.h"
@@ -18,8 +17,6 @@ namespace policy {
 
 class HeadlessEnterpriseStartupDialogTest : public ::testing::Test {
  public:
-  static constexpr char kHeadlessSwitchValue[] = "new";
-
   HeadlessEnterpriseStartupDialogTest() = default;
   HeadlessEnterpriseStartupDialogTest(
       const HeadlessEnterpriseStartupDialogTest&) = delete;
@@ -28,8 +25,7 @@ class HeadlessEnterpriseStartupDialogTest : public ::testing::Test {
 
  protected:
   void SetUp() override {
-    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        switches::kHeadless, kHeadlessSwitchValue);
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(switches::kHeadless);
 
     ASSERT_TRUE(headless::IsHeadlessMode());
   }

@@ -49,16 +49,16 @@ void FreeCodecCtx(aom_codec_ctx_t* codec_ctx) {
 // pixel format. If no conversion is needed returns nullopt.
 std::optional<VideoPixelFormat> GetConversionFormat(VideoCodecProfile profile,
                                                     VideoPixelFormat format,
-                                                    bool needs_resize) {
+                                                    bool needs_copy) {
   switch (profile) {
     case AV1PROFILE_PROFILE_MAIN:
       if ((format != PIXEL_FORMAT_NV12 && format != PIXEL_FORMAT_I420) ||
-          needs_resize) {
+          needs_copy) {
         return PIXEL_FORMAT_I420;
       }
       break;
     case AV1PROFILE_PROFILE_HIGH:
-      if (format != PIXEL_FORMAT_I444 || needs_resize) {
+      if (format != PIXEL_FORMAT_I444 || needs_copy) {
         return PIXEL_FORMAT_I444;
       }
       break;
@@ -169,7 +169,7 @@ EncoderStatus SetUpAomConfig(VideoCodecProfile profile,
   config.g_error_resilient = 0;
 
   config.g_timebase.num = 1;
-  config.g_timebase.den = base::Time::kMicrosecondsPerSecond;
+  config.g_timebase.den = base::Time::kMillisecondsPerSecond;
 
   // Set the number of threads based on the image width and num of cores.
   config.g_threads = GetNumberOfThreadsForSoftwareEncoding(opts.frame_size);
@@ -200,7 +200,7 @@ EncoderStatus SetUpAomConfig(VideoCodecProfile profile,
         // quantizer. Instead we just set CBR and set
         // AV1E_SET_QUANTIZER_ONE_PASS before each frame.
         config.rc_end_usage = AOM_CBR;
-        // Let the whole AV1 quantizer range to be used.
+        // Allow the whole AV1 quantizer range to be used.
         config.rc_max_quantizer = 63;
         config.rc_min_quantizer = 1;
         break;
@@ -446,17 +446,17 @@ void Av1VideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
     return;
   }
 
-  if (frame->HasMappableGpuBuffer()) {
+  if (frame->HasMappableSharedImage()) {
     frame = ConvertToMemoryMappedFrame(frame);
     if (!frame) {
-      std::move(done_cb).Run(
-          EncoderStatus(EncoderStatus::Codes::kSystemAPICallError,
-                        "Convert GMB frame to MemoryMappedFrame failed."));
+      std::move(done_cb).Run(EncoderStatus(
+          EncoderStatus::Codes::kSystemAPICallError,
+          "Convert MappableSI frame to MemoryMappedFrame failed."));
       return;
     }
   }
 
-  if (!frame->IsMappable()) {
+  if (!frame->HasDirectCpuAccess()) {
     std::move(done_cb).Run(
         EncoderStatus(EncoderStatus::Codes::kInvalidInputFrame,
                       "Frame is not mappable")
@@ -465,12 +465,22 @@ void Av1VideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
     return;
   }
 
+  bool requires_copy = frame->visible_rect().size() != options_.frame_size ||
+                       (IsYuvPlanar(frame->format()) &&
+                        VideoFrame::NumPlanes(frame->format()) >= 3 &&
+                        frame->stride(VideoFrame::Plane::kU) !=
+                            frame->stride(VideoFrame::Plane::kV));
+
   // Format conversion or resizing may be necessary to get the frame into the
   // form needed by libaom for encoding.
   if (auto conversion_format =
-          GetConversionFormat(profile_, frame->format(),
-                              /*needs_resize=*/frame->visible_rect().size() !=
-                                  options_.frame_size)) {
+          GetConversionFormat(profile_, frame->format(), requires_copy)) {
+    // In cases where we need to
+    // - enlarge the frame
+    // - change the pixel format
+    // - change the aspect ratio or
+    // - use matching U and V strides
+    // we are forced to convert and rescale manually.
     auto temp_frame = frame_pool_.CreateFrame(
         *conversion_format, options_.frame_size, gfx::Rect(options_.frame_size),
         options_.frame_size, frame->timestamp());
@@ -530,7 +540,10 @@ void Av1VideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
   }
 
   bool key_frame = encode_options.key_frame;
-  int64_t duration_us = GetFrameDuration(*frame).InMicroseconds();
+  // Use milliseconds for duration to avoid 32-bit overflow of timestamp
+  // in libaom.
+  int64_t duration_ms =
+      std::max(int64_t{1}, GetFrameDuration(*frame).InMilliseconds());
   last_frame_timestamp_ = frame->timestamp();
   if (last_frame_color_space_ != frame->ColorSpace()) {
     last_frame_color_space_ = frame->ColorSpace();
@@ -548,6 +561,7 @@ void Av1VideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
     DCHECK_EQ(options_.bitrate->mode(), Bitrate::Mode::kExternal);
     // Convert double quantizer to an integer within codec's supported range.
     int qp = static_cast<int>(std::lround(encode_options.quantizer.value()));
+    qp = QIndexToQuantizer(VideoCodec::kAV1, qp);
     qp = std::clamp(qp, static_cast<int>(config_.rc_min_quantizer),
                     static_cast<int>(config_.rc_max_quantizer));
     aom_codec_control(codec_.get(), AV1E_SET_QUANTIZER_ONE_PASS, qp);
@@ -593,7 +607,7 @@ void Av1VideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
   // Use artificial timestamps, so the encoder will not be misled by frame's
   // fickle timestamps when doing rate control.
   auto error =
-      aom_codec_encode(codec_.get(), image, artificial_timestamp_, duration_us,
+      aom_codec_encode(codec_.get(), image, artificial_timestamp_, duration_ms,
                        key_frame ? AOM_EFLAG_FORCE_KF : 0);
   if (error != AOM_CODEC_OK) {
     auto msg = LogAomErrorMessage(codec_.get(), "AOM encoding error", error);
@@ -601,7 +615,7 @@ void Av1VideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
         EncoderStatus(EncoderStatus::Codes::kEncoderFailedEncode, msg));
     return;
   }
-  if (!base::CheckAdd(artificial_timestamp_, duration_us)
+  if (!base::CheckAdd(artificial_timestamp_, duration_ms)
            .AssignIfValid(&artificial_timestamp_)) {
     std::move(done_cb).Run(EncoderStatus(
         EncoderStatus::Codes::kEncoderFailedEncode,
@@ -783,22 +797,22 @@ void Av1VideoEncoder::Flush(EncoderStatusCB done_cb) {
 
 void Av1VideoEncoder::UpdateEncoderColorSpace() {
   auto aom_cs = VideoColorSpace::FromGfxColorSpace(last_frame_color_space_);
-  if (aom_cs.primaries != VideoColorSpace::PrimaryID::INVALID) {
+  if (aom_cs.primaries() != VideoColorSpace::PrimaryID::INVALID) {
     auto status = aom_codec_control(codec_.get(), AV1E_SET_COLOR_PRIMARIES,
-                                    static_cast<int>(aom_cs.primaries));
+                                    static_cast<int>(aom_cs.primaries()));
     if (status != AOM_CODEC_OK)
       LogAomErrorMessage(codec_.get(), "Failed to set color primaries", status);
   }
-  if (aom_cs.transfer != VideoColorSpace::TransferID::INVALID) {
+  if (aom_cs.transfer() != VideoColorSpace::TransferID::INVALID) {
     auto status =
         aom_codec_control(codec_.get(), AV1E_SET_TRANSFER_CHARACTERISTICS,
-                          static_cast<int>(aom_cs.transfer));
+                          static_cast<int>(aom_cs.transfer()));
     if (status != AOM_CODEC_OK)
       LogAomErrorMessage(codec_.get(), "Failed to set color transfer", status);
   }
-  if (aom_cs.matrix != VideoColorSpace::MatrixID::INVALID) {
+  if (aom_cs.matrix() != VideoColorSpace::MatrixID::INVALID) {
     auto status = aom_codec_control(codec_.get(), AV1E_SET_MATRIX_COEFFICIENTS,
-                                    static_cast<int>(aom_cs.matrix));
+                                    static_cast<int>(aom_cs.matrix()));
     if (status != AOM_CODEC_OK)
       LogAomErrorMessage(codec_.get(), "Failed to set color matrix", status);
   }

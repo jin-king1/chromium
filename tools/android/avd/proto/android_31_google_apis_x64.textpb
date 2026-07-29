@@ -5,8 +5,8 @@
 # Configuration for an Android-12 (S, API 31) AVD on google_apis on x86_64
 
 emulator_package {
-  package_name: "chromium/third_party/android_sdk/public/emulator"
-  version: "XS__KK27esI_4qZkc_Ybb_ooYjPfcIQ7DDOPUZGYW5wC"  # 35.1.21 (Stable)
+  package_name: "chromium/third_party/android_sdk/public/emulator/linux-amd64"
+  version: "QgDCxG9OzoQx04LpwnENgTz3gby5-Kyx6Rsv5yl91p4C"  # 36.4.9 (Stable)
 }
 
 system_image_package {
@@ -17,8 +17,8 @@ system_image_name: "system-images;android-31;google_apis;x86_64"
 
 avd_package {
   package_name: "chromium/third_party/android_sdk/public/avds/android-31/google_apis/x86_64"
-  # Created in https://ci.chromium.org/ui/b/8735783234873256961
-  # Patched gmscore version 24.26.32 in https://crrev.com/c/5735581
-  version: "tdIM612NIcS1k7tZ4FD_0mDIb4Zz4xjRYfoqU-Zeq6EC"
+  # Created in https://ci.chromium.org/ui/b/8689292876063261041
+  # Patched gmscore version 25.07.33 in https://crrev.com/c/6377466
+  version: "fZw8pLfbkiMwiXZMXk7DXGuC_H7I9pCcZH_iLS4Tx1gC"
 }
 avd_name: "android_31_google_apis_x64"

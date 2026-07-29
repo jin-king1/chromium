@@ -28,14 +28,17 @@
 
 #include "third_party/blink/renderer/platform/wtf/text/text_codec.h"
 
-namespace WTF {
+namespace blink {
 
-class TextCodecUTF16 final : public TextCodec {
+class TextCodecUtf16 final : public TextCodec {
  public:
   static void RegisterEncodingNames(EncodingNameRegistrar);
   static void RegisterCodecs(TextCodecRegistrar);
+  // Returns true if the given `canonical_name` is supported.
+  // This function ignores ASCII cases.
+  static bool IsSupported(StringView canonical_name);
 
-  TextCodecUTF16(bool little_endian) : little_endian_(little_endian) {}
+  TextCodecUtf16(bool little_endian) : little_endian_(little_endian) {}
 
   String Decode(base::span<const uint8_t> data,
                 FlushBehavior,
@@ -52,6 +55,6 @@ class TextCodecUTF16 final : public TextCodec {
   UChar lead_surrogate_;
 };
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_TEXT_CODEC_UTF16_H_

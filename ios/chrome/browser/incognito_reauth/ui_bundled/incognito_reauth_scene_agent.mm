@@ -5,7 +5,6 @@
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
 
 #import "base/check.h"
-#import "base/ios/crb_protocol_observers.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
@@ -16,32 +15,31 @@
 #import "components/prefs/ios/pref_observer_bridge.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
-#import "ios/chrome/browser/incognito_reauth/ui_bundled/features.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_constants.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_activation_level.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/incognito_lock_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/tab_grid_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util.h"
 
-@interface IncognitoReauthObserverList
-    : CRBProtocolObservers <IncognitoReauthObserver>
-@end
-@implementation IncognitoReauthObserverList
-@end
-
 #pragma mark - IncognitoReauthSceneAgent
 
-@interface IncognitoReauthSceneAgent () <PrefObserverDelegate>
+@interface IncognitoReauthSceneAgent () <IncognitoStateObserver,
+                                         PrefObserverDelegate>
 
 // Whether the window had incognito content (e.g. at least one open tab) upon
 // backgrounding.
@@ -54,9 +52,6 @@
 // to trigger soft lock.
 @property(nonatomic, assign) BOOL backgroundedForEnoughTime;
 
-// Container for observers.
-@property(nonatomic, strong) IncognitoReauthObserverList* observers;
-
 // Tracks the time in which Chrome was last backgrounded.
 @property(nonatomic, assign) base::Time lastBackgroundedTime;
 
@@ -67,6 +62,12 @@
   std::unique_ptr<PrefObserverBridge> _prefObserverBridge;
   // Registrar for pref changes notifications.
   PrefChangeRegistrar _prefChangeRegistrar;
+  // Tracks whether the lock surface was switched during the current foreground
+  // session.
+  BOOL _switchedToIncognitoGrid;
+  // Track whether the app is terminating. This is used to avoid activating
+  // UI when the app is already closing.
+  BOOL _isAppTerminating;
 }
 
 @synthesize lastBackgroundedTime = _lastBackgroundedTime;
@@ -95,28 +96,23 @@
   if (self) {
     DCHECK(reauthModule);
     _reauthModule = reauthModule;
-    _observers = [IncognitoReauthObserverList
-        observersWithProtocol:@protocol(IncognitoReauthObserver)];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(appWillTerminate:)
+               name:UIApplicationWillTerminateNotification
+             object:nil];
   }
   return self;
 }
 
-- (BOOL)isAuthenticationRequired {
-  return self.incognitoLockState != IncognitoLockState::kNone;
+- (void)setSceneState:(SceneState*)sceneState {
+  [super setSceneState:sceneState];
+  [self updateLockState];
+  [sceneState.incognitoState addObserver:self];
 }
 
-- (IncognitoLockState)incognitoLockState {
-  if (self.windowHadIncognitoContentWhenBackgrounded &&
-      !self.authenticatedSinceLastForeground) {
-    if ([self isReauthFeatureEnabled]) {
-      return IncognitoLockState::kReauth;
-    } else if ([self isSoftLockFeatureEnabled] &&
-               self.backgroundedForEnoughTime) {
-      return IncognitoLockState::kSoftLock;
-    }
-  }
-
-  return IncognitoLockState::kNone;
+- (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)manualAuthenticationOverride {
@@ -131,9 +127,9 @@
     (void (^)(BOOL success))completion {
   DCHECK(self.reauthModule);
 
-  if (![self isAuthenticationRequired]) {
+  if (!self.sceneState.incognitoState.isAuthenticationRequired) {
     if ([self areLockFeaturesEnabled]) {
-      [self notifyObservers];
+      [self updateLockState];
     }
     // If reauthentication is not required, it should be considered a success
     // for the caller, but do not update the authenticatedSinceLastForeground
@@ -161,20 +157,12 @@
   }
 }
 
-- (void)addObserver:(id<IncognitoReauthObserver>)observer {
-  [self.observers addObserver:observer];
-}
-
-- (void)removeObserver:(id<IncognitoReauthObserver>)observer {
-  [self.observers removeObserver:observer];
-}
-
 #pragma mark - properties
 
 - (void)setAuthenticatedSinceLastForeground:(BOOL)authenticated {
   _authenticatedSinceLastForeground = authenticated;
   if ([self areLockFeaturesEnabled]) {
-    [self notifyObservers];
+    [self updateLockState];
   }
 }
 
@@ -184,7 +172,7 @@
   }
   _windowHadIncognitoContentWhenBackgrounded = hadIncognitoContent;
   if ([self areLockFeaturesEnabled]) {
-    [self notifyObservers];
+    [self updateLockState];
   }
 }
 
@@ -196,7 +184,7 @@
   _backgroundedForEnoughTime = backgroundedForEnoughTime;
 
   if ([self areLockFeaturesEnabled]) {
-    [self notifyObservers];
+    [self updateLockState];
   }
 }
 
@@ -221,16 +209,25 @@
 
 - (void)sceneState:(SceneState*)sceneState
     transitionedToActivationLevel:(SceneActivationLevel)level {
+  if (_isAppTerminating) {
+    return;
+  }
+
   if (level <= SceneActivationLevelBackground) {
     [self updateWindowHasIncognitoContent:sceneState];
     [self updateBackgroundedForEnoughTimeOnBackground];
     self.authenticatedSinceLastForeground = NO;
+    if (IsIOSSoftLockEnabled()) {
+      _switchedToIncognitoGrid = NO;
+    }
   } else if (level >= SceneActivationLevelForegroundInactive) {
     [self updateWindowHasIncognitoContent:sceneState];
+    [self handleExternalStartupIntents:sceneState];
     [self updateBackgroundedForEnoughTimeOnForeground];
     // Close media presentations when the app is foregrounded rather than
     // backgrounded to avoid freezes.
     [self closeMediaPresentations];
+    [self maybeEnterTabGridWithSceneState:sceneState];
   }
 
   if (IsIOSSoftLockEnabled()) {
@@ -242,6 +239,8 @@
   [self logEnabledHistogramOnce];
   if (IsIOSSoftLockEnabled()) {
     [self setUpPrefObservers];
+    [self updateLockState];
+    [self maybeEnterTabGridWithSceneState:sceneState];
     [self logIncognitoLockStateHistogramOnce];
     [self recordIncognitoLockImpressionForSceneState:sceneState];
   }
@@ -253,20 +252,89 @@
   }
 }
 
-#pragma mark - PrefObserverDelegate
+#pragma mark - IncognitoStateObserver
 
-- (void)onPreferenceChanged:(const std::string&)preferenceName {
-  [self notifyObservers];
-}
-
-- (void)sceneState:(SceneState*)sceneState
-    isDisplayingIncognitoContent:(BOOL)level {
+- (void)willEnterIncognitoForState:(IncognitoState*)incognitoState {
   if (IsIOSSoftLockEnabled()) {
-    [self recordIncognitoLockImpressionForSceneState:sceneState];
+    [self recordIncognitoLockImpressionForSceneState:self.sceneState];
   }
 }
 
+- (void)willExitIncognitoForState:(IncognitoState*)incognitoState {
+  if (IsIOSSoftLockEnabled()) {
+    [self recordIncognitoLockImpressionForSceneState:self.sceneState];
+  }
+}
+
+#pragma mark - PrefObserverDelegate
+
+// Called when the app is about to terminate.
+- (void)appWillTerminate:(NSNotification*)notification {
+  _isAppTerminating = YES;
+}
+
+- (void)onPreferenceChanged:(const std::string&)preferenceName {
+  [self updateLockState];
+}
+
 #pragma mark - private
+
+// Marks the lock screen as authenticated, if reauth is not enabled and Chrome
+// was started via external intents.
+- (void)handleExternalStartupIntents:(SceneState*)sceneState {
+  if (!IsIOSSoftLockEnabled()) {
+    return;
+  }
+
+  if (self.sceneState.incognitoState.lockState != IncognitoLockState::kReauth &&
+      sceneState.startupHadExternalIntent) {
+    self.authenticatedSinceLastForeground = YES;
+  }
+}
+
+// Switch from tab to tab switcher, if the current surface is a locked Incognito
+// tab.
+- (void)maybeEnterTabGridWithSceneState:(SceneState*)sceneState {
+  if (!IsIOSSoftLockEnabled()) {
+    return;
+  }
+
+  BOOL isIncognitoTabVisible =
+      sceneState.UIEnabled &&
+      sceneState.incognitoState.incognitoContentVisible &&
+      !sceneState.controller.tabGridVisible;
+  if (!_switchedToIncognitoGrid && isIncognitoTabVisible &&
+      self.sceneState.incognitoState.isAuthenticationRequired) {
+    _switchedToIncognitoGrid = YES;
+    // TODO(crbug.com/417621249): Add callback that allows specifying animation
+    // type.
+    Browser* browser = self.sceneState.browserProviderInterface
+                           .incognitoBrowserProvider.browser;
+    id<SceneCommands> sceneHandler =
+        HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
+    [sceneHandler displayTabGridInMode:TabGridOpeningMode::kIncognito];
+  }
+}
+
+// Switch from the tab grid to the currently active tab, if we had previously
+// locked while the tab was visible.
+- (void)maybeExitTabGrid {
+  if (!IsIOSSoftLockEnabled()) {
+    return;
+  }
+
+  BOOL isIncognitoTabGridVisible =
+      self.sceneState.UIEnabled &&
+      self.sceneState.incognitoState.incognitoContentVisible &&
+      self.sceneState.controller.tabGridVisible;
+  if (isIncognitoTabGridVisible && _switchedToIncognitoGrid) {
+    Browser* browser = self.sceneState.browserProviderInterface
+                           .incognitoBrowserProvider.browser;
+    id<TabGridCommands> tabGridHandler =
+        HandlerForProtocol(browser->GetCommandDispatcher(), TabGridCommands);
+    [tabGridHandler exitTabGrid];
+  }
+}
 
 // Log authentication setting histogram to determine the feature usage.
 // This is done once per app launch.
@@ -364,6 +432,7 @@
 // and call the completion block (passing authentication result).
 - (void)unlockIncognitoContentWithCompletionBlock:
     (void (^)(BOOL success))completion {
+  [self maybeExitTabGrid];
   self.authenticatedSinceLastForeground = YES;
   if (completion) {
     completion(YES);
@@ -391,6 +460,7 @@
         base::UmaHistogramBoolean(
             "IOS.Incognito.BiometricReauthAttemptSuccessful", success);
 
+        [weakSelf maybeExitTabGrid];
         weakSelf.authenticatedSinceLastForeground = success;
         if (completion) {
           completion(success);
@@ -412,7 +482,8 @@
             ->count() > 0;
     // If there is no tabs, act as if the user authenticated since last
     // foreground to avoid issue with multiwindows.
-    if (!hasIncognitoContent) {
+    if (!hasIncognitoContent && self.sceneState.incognitoState.lockState !=
+                                    IncognitoLockState::kReauth) {
       self.authenticatedSinceLastForeground = YES;
     }
   }
@@ -420,7 +491,7 @@
   self.windowHadIncognitoContentWhenBackgrounded = hasIncognitoContent;
 
   if ([self areLockFeaturesEnabled]) {
-    [self notifyObservers];
+    [self updateLockState];
   }
 }
 
@@ -431,7 +502,7 @@
     return;
   }
 
-  if (!self.isAuthenticationRequired) {
+  if (!self.sceneState.incognitoState.isAuthenticationRequired) {
     self.lastBackgroundedTime = base::Time::Now();
     self.backgroundedForEnoughTime = NO;
   }
@@ -453,15 +524,19 @@
       duration >= kIOSSoftLockBackgroundThreshold.Get();
 }
 
-// Notifies the observers of changes to the state of isAuthenticationRequired.
-- (void)notifyObservers {
-  if (IsIOSSoftLockEnabled()) {
-    [self.observers reauthAgent:self
-        didUpdateIncognitoLockState:self.incognitoLockState];
-  } else {
-    [self.observers reauthAgent:self
-        didUpdateAuthenticationRequirement:self.isAuthenticationRequired];
+// Update the incognito lock state.
+- (void)updateLockState {
+  IncognitoLockState lockState = IncognitoLockState::kNone;
+  if (!self.authenticatedSinceLastForeground) {
+    if ([self isReauthFeatureEnabled]) {
+      lockState = IncognitoLockState::kReauth;
+    } else if ([self isSoftLockFeatureEnabled] &&
+               self.backgroundedForEnoughTime &&
+               self.windowHadIncognitoContentWhenBackgrounded) {
+      lockState = IncognitoLockState::kSoftLock;
+    }
   }
+  self.sceneState.incognitoState.lockState = lockState;
 }
 
 // Registers observers for the relevant preferences, so that settings changes
@@ -494,9 +569,10 @@
 - (void)recordIncognitoLockImpressionForSceneState:(SceneState*)sceneState {
   // sceneState.UIEnabled guarantees that sceneState.controller has been
   // initialized.
-  if (sceneState.UIEnabled && sceneState.incognitoContentVisible &&
+  if (sceneState.UIEnabled &&
+      sceneState.incognitoState.incognitoContentVisible &&
       sceneState.activationLevel == SceneActivationLevelForegroundActive) {
-    switch ([self incognitoLockState]) {
+    switch (self.sceneState.incognitoState.lockState) {
       case IncognitoLockState::kNone:
         // No impression metrics to be recorded when the lock is disabled.
         break;

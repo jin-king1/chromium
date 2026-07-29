@@ -38,36 +38,17 @@ size_t GetDefaultMaxNumUtilityThreads(size_t max_num_foreground_threads_in) {
 ThreadPoolInstance::InitParams::InitParams(size_t max_num_foreground_threads_in)
     : max_num_foreground_threads(max_num_foreground_threads_in),
       max_num_utility_threads(
-          GetDefaultMaxNumUtilityThreads(max_num_foreground_threads_in)) {}
+          GetDefaultMaxNumUtilityThreads(max_num_foreground_threads_in)),
+      max_num_audio_threads(2) {}
 
 ThreadPoolInstance::InitParams::InitParams(size_t max_num_foreground_threads_in,
-                                           size_t max_num_utility_threads_in)
+                                           size_t max_num_utility_threads_in,
+                                           size_t max_num_audio_threads_in)
     : max_num_foreground_threads(max_num_foreground_threads_in),
-      max_num_utility_threads(max_num_utility_threads_in) {}
+      max_num_utility_threads(max_num_utility_threads_in),
+      max_num_audio_threads(max_num_audio_threads_in) {}
 
 ThreadPoolInstance::InitParams::~InitParams() = default;
-
-ThreadPoolInstance::ScopedExecutionFence::ScopedExecutionFence() {
-  DCHECK(g_thread_pool);
-  g_thread_pool->BeginFence();
-}
-
-ThreadPoolInstance::ScopedExecutionFence::~ScopedExecutionFence() {
-  DCHECK(g_thread_pool);
-  g_thread_pool->EndFence();
-}
-
-ThreadPoolInstance::ScopedBestEffortExecutionFence::
-    ScopedBestEffortExecutionFence() {
-  DCHECK(g_thread_pool);
-  g_thread_pool->BeginBestEffortFence();
-}
-
-ThreadPoolInstance::ScopedBestEffortExecutionFence::
-    ~ScopedBestEffortExecutionFence() {
-  DCHECK(g_thread_pool);
-  g_thread_pool->EndBestEffortFence();
-}
 
 ThreadPoolInstance::ScopedRestrictedTasks::ScopedRestrictedTasks() {
   DCHECK(g_thread_pool);
@@ -95,7 +76,6 @@ ThreadPoolInstance::ScopedFizzleBlockShutdownTasks::
   }
 }
 
-#if !BUILDFLAG(IS_NACL)
 // static
 void ThreadPoolInstance::CreateAndStartWithDefaultParams(
     std::string_view name) {
@@ -114,10 +94,13 @@ void ThreadPoolInstance::StartWithDefaultParams() {
       static_cast<size_t>(std::max(3, SysInfo::NumberOfProcessors() - 1));
   Start({max_num_foreground_threads});
 }
-#endif  // !BUILDFLAG(IS_NACL)
 
-void ThreadPoolInstance::Create(std::string_view name) {
-  Set(std::make_unique<internal::ThreadPoolImpl>(name));
+void ThreadPoolInstance::Create(std::string_view name,
+                                RecordLockContention record_lock_contention) {
+  Set(std::make_unique<internal::ThreadPoolImpl>(
+      name, std::make_unique<internal::ThreadPoolImpl::TaskTrackerImpl>(),
+      /*use_background_threads=*/true,
+      /*monitor_worker_thread_priorities=*/true, record_lock_contention));
 }
 
 // static

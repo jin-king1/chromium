@@ -7,12 +7,14 @@
 
 #include <stdint.h>
 
+#include <compare>
 #include <memory>
 #include <optional>
 #include <string_view>
 #include <vector>
 
 #include "base/component_export.h"
+#include "base/containers/lru_cache.h"
 #include "base/memory/raw_ptr.h"
 #include "cc/paint/paint_canvas.h"
 #include "cc/paint/paint_flags.h"
@@ -20,8 +22,8 @@
 #include "cc/paint/skottie_color_map.h"
 #include "cc/paint/skottie_frame_data.h"
 #include "cc/paint/skottie_text_property_value.h"
-#include "ui/gfx/image/image_skia.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
+#include "ui/gfx/platform_font.h"
 #include "ui/gfx/text_constants.h"
 
 namespace cc {
@@ -33,6 +35,8 @@ namespace gfx {
 class Rect;
 class RectF;
 class FontList;
+class ImageSkia;
+class ImageSkiaRep;
 class Point;
 class PointF;
 class Size;
@@ -156,6 +160,29 @@ class COMPONENT_EXPORT(GFX) Canvas {
   // Canvas::TEXT_ALIGN_RIGHT.
   static int DefaultCanvasTextAlignment();
 
+  // Key for the string width cache.
+  using StringWidthCacheKey =
+      std::pair<std::u16string, scoped_refptr<const gfx::PlatformFont>>;
+
+  struct StringWidthCacheKeyCompare {
+    bool operator()(const StringWidthCacheKey& lhs,
+                    const StringWidthCacheKey& rhs) const {
+      if (lhs.first != rhs.first) {
+        return lhs.first < rhs.first;
+      }
+      if (!lhs.second || !rhs.second) {
+        return lhs.second < rhs.second;
+      }
+      return *lhs.second < *rhs.second;
+    }
+  };
+
+  // Cache for string widths.
+  using StringWidthCache =
+      base::LRUCache<StringWidthCacheKey, float, StringWidthCacheKeyCompare>;
+
+  static StringWidthCache& GetStringWidthCacheForTesting();
+
   // Unscales by the image scale factor (aka device scale factor), and returns
   // that factor.  This is useful when callers want to draw directly in the
   // native scale.
@@ -185,8 +212,11 @@ class COMPONENT_EXPORT(GFX) Canvas {
   void ClipRect(const RectF& rect, SkClipOp op = SkClipOp::kIntersect);
 
   // Adds |path| to the current clip. |do_anti_alias| is true if the clip
-  // should be antialiased.
-  void ClipPath(const SkPath& path, bool do_anti_alias);
+  // should be antialiased. Use `SkClipOp::kDifference` for `op` if you want to
+  // subtract this area instead.
+  void ClipPath(const SkPath& path,
+                bool do_anti_alias,
+                SkClipOp op = SkClipOp::kIntersect);
 
   // Returns the bounds of the current clip (in local coordinates) in the
   // |bounds| parameter, and returns true if it is non empty.

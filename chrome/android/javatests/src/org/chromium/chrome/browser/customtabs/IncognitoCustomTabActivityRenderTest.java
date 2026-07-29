@@ -23,10 +23,10 @@ import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoDataTestUtils;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
-import org.chromium.chrome.test.R;
 import org.chromium.net.test.EmbeddedTestServerRule;
 import org.chromium.ui.test.util.RenderTestRule;
 
@@ -63,7 +63,7 @@ public class IncognitoCustomTabActivityRenderTest {
     @Rule
     public final RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(4)
+                    .setRevision(5)
                     .setBugComponent(RenderTestRule.Component.UI_BROWSER_MOBILE_CUSTOM_TABS)
                     .build();
 
@@ -87,9 +87,9 @@ public class IncognitoCustomTabActivityRenderTest {
                         ApplicationProvider.getApplicationContext(), url);
     }
 
-    private void startActivity(String renderTestId, int mScreenOrientation) throws IOException {
+    private void startActivity(String renderTestId, int screenOrientation) throws IOException {
         mCustomTabActivityTestRule.startCustomTabActivityWithIntent(mIntent);
-        mCustomTabActivityTestRule.getActivity().setRequestedOrientation(mScreenOrientation);
+        mCustomTabActivityTestRule.getActivity().setRequestedOrientation(screenOrientation);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         View toolbarView = mCustomTabActivityTestRule.getActivity().findViewById(R.id.toolbar);
         mRenderTestRule.render(toolbarView, renderTestId);

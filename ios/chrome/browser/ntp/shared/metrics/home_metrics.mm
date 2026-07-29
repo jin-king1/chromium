@@ -42,6 +42,7 @@ void RecordHomeAction(IOSHomeActionType type, bool isStartSurface) {
   } else {
     UMA_HISTOGRAM_ENUMERATION(kActionOnNTPHistogram, type);
   }
+  UMA_HISTOGRAM_ENUMERATION(kActionOnHomeHistogram, type);
 }
 
 void RecordMagicStackClick(ContentSuggestionsModuleType type,
@@ -95,16 +96,11 @@ void RecordModuleFreshnessSignal(ContentSuggestionsModuleType module_type,
           base::UserMetricsAction("IOSMagicStackTabResumptionFreshSignal"));
       break;
     }
-    case ContentSuggestionsModuleType::kParcelTracking: {
-      // TODO(crbug.com/398880309): Remove Parcel Tracking Prefs 1+ year after
-      // successful deprecation.
-      PrefService* local_state = GetApplicationContext()->GetLocalState();
-      local_state->SetInteger(
-          prefs::
-              kIosMagicStackSegmentationParcelTrackingImpressionsSinceFreshness,
-          0);
+    case ContentSuggestionsModuleType::kLevelUp: {
+      profile_pref_service->SetInteger(
+          prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness, 0);
       base::RecordAction(
-          base::UserMetricsAction("IOSMagicStackParcelTrackingFreshSignal"));
+          base::UserMetricsAction("IOSMagicStackLevelUpFreshSignal"));
       break;
     }
     default:
@@ -171,28 +167,19 @@ void LogTopModuleImpressionForType(ContentSuggestionsModuleType module_type,
       }
       break;
     }
-    case ContentSuggestionsModuleType::kParcelTracking: {
-      // Increment freshness pref since it is an impression of
-      // the latest Parcel Tracking results as the top module, but only if there
-      // has been a freshness signal.
-      PrefService* local_state = GetApplicationContext()->GetLocalState();
-      int freshness_impression_count = local_state->GetInteger(
-          prefs::
-              kIosMagicStackSegmentationParcelTrackingImpressionsSinceFreshness);
+    case ContentSuggestionsModuleType::kLevelUp: {
+      int freshness_impression_count = profile_pref_service->GetInteger(
+          prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness);
       if (freshness_impression_count >= 0) {
-        local_state->SetInteger(
-            prefs::
-                kIosMagicStackSegmentationParcelTrackingImpressionsSinceFreshness,
+        profile_pref_service->SetInteger(
+            prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness,
             freshness_impression_count + 1);
       }
       break;
     }
-    case ContentSuggestionsModuleType::kSetUpListSync:
     case ContentSuggestionsModuleType::kSetUpListDefaultBrowser:
     case ContentSuggestionsModuleType::kSetUpListAutofill:
     case ContentSuggestionsModuleType::kSetUpListNotifications:
-    case ContentSuggestionsModuleType::kSetUpListDocking:
-    case ContentSuggestionsModuleType::kSetUpListAddressBar:
     case ContentSuggestionsModuleType::kCompactedSetUpList:
     case ContentSuggestionsModuleType::kSetUpListAllSet:
     case ContentSuggestionsModuleType::kPlaceholder:
@@ -203,6 +190,8 @@ void LogTopModuleImpressionForType(ContentSuggestionsModuleType module_type,
     case ContentSuggestionsModuleType::kInvalid:
     case ContentSuggestionsModuleType::kTipsWithProductImage:
     case ContentSuggestionsModuleType::kTips:
+    case ContentSuggestionsModuleType::kAppBundlePromo:
+    case ContentSuggestionsModuleType::kDefaultBrowser:
       break;
   }
   UMA_HISTOGRAM_ENUMERATION(kMagicStackTopModuleImpressionHistogram,

@@ -4,11 +4,13 @@
 
 package org.chromium.content_public.browser.test;
 
+import androidx.annotation.CallSuper;
 import androidx.test.InstrumentationRegistry;
 
 import org.junit.runners.model.InitializationError;
 
 import org.chromium.base.test.BaseJUnit4ClassRunner;
+import org.chromium.base.test.util.DisableIfSkipCheck;
 import org.chromium.base.test.util.SkipCheck;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.display.DisplayUtil;
@@ -17,10 +19,17 @@ import org.chromium.ui.test.util.GmsCoreVersionRestriction;
 import org.chromium.ui.test.util.UiDisableIfSkipCheck;
 import org.chromium.ui.test.util.UiRestriction;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** A custom runner for //content JUnit4 tests. */
 public class ContentJUnit4ClassRunner extends BaseJUnit4ClassRunner {
+    // Display ui scale-up on auto for tests by default, individual tests can restore this scaling.
+    private final ClassHook mSetUiScalingFactorForAutomotiveHook =
+            (targetContext, testClass) -> {
+                DisplayUtil.setUiScalingFactorForAutomotiveForTesting(1.0f);
+            };
+
     /**
      * Create a ContentJUnit4ClassRunner to run {@code klass} and initialize values
      *
@@ -32,16 +41,25 @@ public class ContentJUnit4ClassRunner extends BaseJUnit4ClassRunner {
         DeviceRestriction.registerChecks(mRestrictionSkipCheck);
         GmsCoreVersionRestriction.registerChecks(mRestrictionSkipCheck);
 
-        // Display ui scale-up on auto for tests by default, individual tests can restore this
-        // scaling.
-        DisplayUtil.setUiScalingFactorForAutomotiveForTesting(1.0f);
         EmbeddedTestServer.initCerts();
     }
 
+    @CallSuper
     @Override
     protected List<SkipCheck> getSkipChecks() {
-        return addToList(
-                super.getSkipChecks(),
-                new UiDisableIfSkipCheck(InstrumentationRegistry.getTargetContext()));
+        List<SkipCheck> checks = new ArrayList<>();
+        for (SkipCheck check : super.getSkipChecks()) {
+            if (check.getClass() != DisableIfSkipCheck.class) {
+                checks.add(check);
+            }
+        }
+        checks.add(new UiDisableIfSkipCheck(InstrumentationRegistry.getTargetContext()));
+        return checks;
+    }
+
+    @CallSuper
+    @Override
+    protected List<ClassHook> getPreClassHooks() {
+        return addToList(super.getPreClassHooks(), mSetUiScalingFactorForAutomotiveHook);
     }
 }

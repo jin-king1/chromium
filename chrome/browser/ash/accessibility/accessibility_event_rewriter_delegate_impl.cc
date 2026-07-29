@@ -4,22 +4,26 @@
 
 #include "chrome/browser/ash/accessibility/accessibility_event_rewriter_delegate_impl.h"
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/public/cpp/accessibility_controller_enums.h"
 #include "ash/public/cpp/event_rewriter_controller.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/ash/accessibility/event_handler_common.h"
 #include "chrome/browser/ui/aura/accessibility/automation_manager_aura.h"
 #include "chrome/common/extensions/api/accessibility_private.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/common/constants.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/events/event.h"
 #include "ui/events/event_constants.h"
+#include "ui/events/keycodes/dom/dom_key.h"
+#include "ui/events/keycodes/dom/keycode_converter.h"
 
 namespace ash {
 namespace {
@@ -75,7 +79,12 @@ void AccessibilityEventRewriterDelegateImpl::DispatchKeyEventToChromeVox(
     std::unique_ptr<ui::Event> event,
     bool capture) {
   extensions::ExtensionHost* host =
-      GetAccessibilityExtensionHost(extension_misc::kChromeVoxExtensionId);
+      ::features::IsAccessibilityManifestV3EnabledForChromeVox()
+          ? GetAccessibilityOffscreenDocumentHost(
+                extension_misc::kChromeVoxExtensionId)
+          : GetAccessibilityExtensionHost(
+                extension_misc::kChromeVoxExtensionId);
+
   if (!host)
     return;
 
@@ -85,6 +94,72 @@ void AccessibilityEventRewriterDelegateImpl::DispatchKeyEventToChromeVox(
 
   // Forward the event to ChromeVox's background page.
   ForwardKeyToExtension(*(event->AsKeyEvent()), host);
+}
+
+bool AccessibilityEventRewriterDelegateImpl::DispatchKeyEventToChromeVoxMv3(
+    unsigned int id,
+    std::unique_ptr<ui::Event> event) {
+  CHECK(::features::IsAccessibilityManifestV3EnabledForChromeVox());
+  if (!AccessibilityManager::Get()->IsSpokenFeedbackEnabled()) {
+    // This shouldn't be common, but may happen due to the async nature of MV3
+    // and loading/unloading ChromeVox combined with async getting of prefs when
+    // switching profiles. See b:458302114.
+    // AccessibilityManager is the source of truth for whether Spoken Feedback
+    // is enabled since it handles loading/unloading.
+    return false;
+  }
+
+  CHECK(event->IsKeyEvent());
+  extensions::EventRouter* event_router =
+      extensions::EventRouter::Get(AccessibilityManager::Get()->profile());
+  CHECK(event_router);
+
+  // Transform the ui::KeyEvent into an accessibility_private::KeyboardEvent.
+  const ui::KeyEvent* key_event = event->AsKeyEvent();
+  bool is_pressed = key_event->type() == ui::EventType::kKeyPressed;
+
+  if (!event_router->HasEventListener(
+          is_pressed
+              ? extensions::api::accessibility_private::OnKeyDown::kEventName
+              : extensions::api::accessibility_private::OnKeyUp::kEventName)) {
+    // In the event the service worker has crashed and there is no longer a
+    // listener, do not try to dispatch the event.
+    return false;
+  }
+
+  extensions::api::accessibility_private::KeyboardEvent keyboard_event;
+  keyboard_event.id = id;
+  keyboard_event.alt_key = key_event->IsAltDown();
+  keyboard_event.code =
+      ui::KeycodeConverter::DomCodeToCodeString(key_event->code());
+  keyboard_event.ctrl_key = key_event->IsControlDown();
+  keyboard_event.key =
+      ui::KeycodeConverter::DomKeyToKeyString(key_event->GetDomKey());
+  keyboard_event.key_code = key_event->key_code();
+  keyboard_event.meta_key = key_event->IsCommandDown();
+  keyboard_event.repeat = key_event->is_repeat();
+  keyboard_event.shift_key = key_event->IsShiftDown();
+
+  // Build the extension event.
+  base::ListValue event_args;
+  event_args.Append(keyboard_event.ToValue());
+  std::unique_ptr<extensions::Event> extension_event;
+  if (is_pressed) {
+    extension_event = std::make_unique<extensions::Event>(
+        extensions::events::ACCESSIBILITY_PRIVATE_ON_KEY_DOWN,
+        extensions::api::accessibility_private::OnKeyDown::kEventName,
+        std::move(event_args));
+  } else {
+    extension_event = std::make_unique<extensions::Event>(
+        extensions::events::ACCESSIBILITY_PRIVATE_ON_KEY_UP,
+        extensions::api::accessibility_private::OnKeyUp::kEventName,
+        std::move(event_args));
+  }
+
+  event_router->DispatchEventToExtension(extension_misc::kChromeVoxExtensionId,
+                                         std::move(extension_event));
+
+  return true;
 }
 
 void AccessibilityEventRewriterDelegateImpl::DispatchMouseEvent(
@@ -114,7 +189,7 @@ void AccessibilityEventRewriterDelegateImpl::SendSwitchAccessCommand(
   extensions::EventRouter* event_router =
       extensions::EventRouter::Get(AccessibilityManager::Get()->profile());
 
-  base::Value::List event_args;
+  base::ListValue event_args;
   event_args.Append(ToString(command));
 
   auto event = std::make_unique<extensions::Event>(
@@ -131,11 +206,11 @@ void AccessibilityEventRewriterDelegateImpl::SendPointScanPoint(
   extensions::EventRouter* event_router =
       extensions::EventRouter::Get(AccessibilityManager::Get()->profile());
 
-  base::Value::Dict point_dict;
+  base::DictValue point_dict;
   point_dict.Set("x", point.x());
   point_dict.Set("y", point.y());
 
-  base::Value::List event_args;
+  base::ListValue event_args;
   event_args.Append(std::move(point_dict));
 
   auto event = std::make_unique<extensions::Event>(
@@ -152,7 +227,7 @@ void AccessibilityEventRewriterDelegateImpl::SendMagnifierCommand(
   extensions::EventRouter* event_router =
       extensions::EventRouter::Get(AccessibilityManager::Get()->profile());
 
-  base::Value::List event_args;
+  base::ListValue event_args;
   event_args.Append(ToString(command));
 
   auto event = std::make_unique<extensions::Event>(

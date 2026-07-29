@@ -39,10 +39,14 @@ class DictionarySyncPerfTest : public SyncTest {
   DictionarySyncPerfTest& operator=(const DictionarySyncPerfTest&) = delete;
 
   ~DictionarySyncPerfTest() override = default;
+
+  SyncTest::SetupSyncMode GetSetupSyncMode() const override {
+    return SetupSyncMode::kSyncTransportOnly;
+  }
 };
 
 IN_PROC_BROWSER_TEST_F(DictionarySyncPerfTest, P0) {
-  ASSERT_TRUE(SetupSync()) << "SetupSync() failed.";
+  ASSERT_TRUE(SetupSync());
   dictionary_helper::LoadDictionaries();
   ASSERT_TRUE(
       dictionary_helper::DictionaryChecker(/*expected_words=*/{}).Wait());

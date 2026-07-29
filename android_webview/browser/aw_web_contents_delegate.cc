@@ -39,6 +39,7 @@
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
+#include "url/gurl.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/browser_jni_headers/AwWebContentsDelegate_jni.h"
@@ -46,11 +47,12 @@
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF16ToJavaString;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using blink::mojom::FileChooserFileInfo;
 using blink::mojom::FileChooserFileInfoPtr;
 using blink::mojom::FileChooserParams;
+using content::GlobalRenderFrameHostId;
 using content::WebContents;
 
 namespace android_webview {
@@ -105,12 +107,12 @@ void AwWebContentsDelegate::FindReply(WebContents* web_contents,
                                       const gfx::Rect& selection_rect,
                                       int active_match_ordinal,
                                       bool final_update) {
-  AwContents* aw_contents = AwContents::FromWebContents(web_contents);
-  if (!aw_contents)
-    return;
+  CHECK(web_contents);
+  FindHelper* find_helper = FindHelper::FromWebContents(web_contents);
 
-  aw_contents->GetFindHelper()->HandleFindReply(
-      request_id, number_of_matches, active_match_ordinal, final_update);
+  CHECK(find_helper);
+  find_helper->HandleFindReply(request_id, number_of_matches,
+                               active_match_ordinal, final_update);
 }
 
 void AwWebContentsDelegate::RunFileChooser(
@@ -222,8 +224,7 @@ void AwWebContentsDelegate::NavigationStateChanged(
 // typically happens when popups are created.
 void AwWebContentsDelegate::WebContentsCreated(
     WebContents* source_contents,
-    int opener_render_process_id,
-    int opener_render_frame_id,
+    const GlobalRenderFrameHostId& opener_id,
     const std::string& frame_name,
     const GURL& target_url,
     content::WebContents* new_contents) {
@@ -275,7 +276,7 @@ void AwWebContentsDelegate::RequestMediaAccessPermission(
   if (!aw_contents) {
     std::move(callback).Run(
         blink::mojom::StreamDevicesSet(),
-        blink::mojom::MediaStreamRequestResult::FAILED_DUE_TO_SHUTDOWN,
+        blink::mojom::MediaStreamRequestResult::FAILED_DUE_TO_SHUTDOWN_OTHER,
         nullptr);
     return;
   }
@@ -377,7 +378,7 @@ int AwWebContentsDelegate::AllowedPrerenderingCount(
 }
 
 content::NavigationController::UserAgentOverrideOption
-AwWebContentsDelegate::ShouldOverrideUserAgentForPrerender2() {
+AwWebContentsDelegate::ShouldOverrideUserAgentForPreloading(const GURL& url) {
   // For WebView, always use the user agent override, which is set every time
   // the user agent in AwSettings is modified.
   return content::NavigationController::UA_OVERRIDE_TRUE;
@@ -391,13 +392,24 @@ bool AwWebContentsDelegate::ShouldAllowPartialParamMismatchOfPrerender2(
 
   // `ui::PAGE_TRANSITION_FROM_API` bit distinguishes that the activation
   // navigation is triggered by `WebView.loadUrl()`.
-  bool ret =
-      navigation_handle.GetPageTransition() & ui::PAGE_TRANSITION_FROM_API;
-  if (ret) {
-    CHECK(!navigation_handle.GetInitiatorFrameToken().has_value());
-    CHECK(!navigation_handle.GetInitiatorOrigin().has_value());
+  return navigation_handle.GetPageTransition() & ui::PAGE_TRANSITION_FROM_API;
+}
+
+bool AwWebContentsDelegate::isModalContextMenu() const {
+  JNIEnv* env = AttachCurrentThread();
+
+  ScopedJavaLocalRef<jobject> java_delegate = GetJavaDelegate(env);
+  if (java_delegate.is_null()) {
+    return true;
   }
-  return ret;
+
+  // Feature is behind a flag which is disabled by default.
+  // TODO(crbug/408234669): remove this check once flag is no longer needed.
+  if (!base::FeatureList::IsEnabled(features::kWebViewHyperlinkContextMenu)) {
+    return false;
+  }
+
+  return !Java_AwWebContentsDelegate_isPopupSupported(env, java_delegate);
 }
 
 scoped_refptr<content::FileSelectListener>
@@ -407,11 +419,11 @@ AwWebContentsDelegate::TakeFileSelectListener() {
 
 static void JNI_AwWebContentsDelegate_FilesSelectedInChooser(
     JNIEnv* env,
-    jint process_id,
-    jint render_id,
-    jint mode_flags,
-    const JavaParamRef<jobjectArray>& file_paths,
-    const JavaParamRef<jobjectArray>& display_names) {
+    int32_t process_id,
+    int32_t render_id,
+    int32_t mode_flags,
+    const JavaRef<jobjectArray>& file_paths,
+    const JavaRef<jobjectArray>& display_names) {
   content::RenderFrameHost* rfh =
       content::RenderFrameHost::FromID(process_id, render_id);
   auto* web_contents = WebContents::FromRenderFrameHost(rfh);
@@ -473,3 +485,5 @@ static void JNI_AwWebContentsDelegate_FilesSelectedInChooser(
 }
 
 }  // namespace android_webview
+
+DEFINE_JNI(AwWebContentsDelegate)

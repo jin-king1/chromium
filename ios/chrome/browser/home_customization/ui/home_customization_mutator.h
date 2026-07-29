@@ -7,6 +7,8 @@
 
 #import "ios/chrome/browser/home_customization/utils/home_customization_constants.h"
 
+@protocol BackgroundCustomizationConfiguration;
+
 // Mutator protocol for the UI layer to communicate to the
 // HomeCustomizationMediator.
 @protocol HomeCustomizationMutator

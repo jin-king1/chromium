@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/354829279): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/gfx/geometry/matrix44.h"
 
 #include <algorithm>
@@ -14,6 +9,9 @@
 #include <type_traits>
 #include <utility>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/containers/span_writer.h"
 #include "ui/gfx/geometry/decomposed_transform.h"
 
 namespace gfx {
@@ -106,14 +104,21 @@ ALWAYS_INLINE bool InverseWithDouble4Cols(Double4& c0,
 
 }  // anonymous namespace
 
-void Matrix44::GetColMajor(double dst[16]) const {
-  const double* src = &matrix_[0][0];
-  std::copy(src, src + 16, dst);
+void Matrix44::GetColMajor(base::span<double, 16> dst) const {
+  base::SpanWriter writer(dst);
+  for (const base::span<const double, 4> col : matrix_) {
+    CHECK(writer.Write(col));
+  }
 }
 
-void Matrix44::GetColMajorF(float dst[16]) const {
-  const double* src = &matrix_[0][0];
-  std::copy(src, src + 16, dst);
+void Matrix44::GetColMajorF(base::span<float, 16> dst) const {
+  size_t offset = 0;
+  for (const base::span<const double, 4> col : matrix_) {
+    std::ranges::transform(
+        col, dst.subspan(offset, std::size(col)).begin(),
+        [](double value) { return static_cast<float>(value); });
+    offset += std::size(col);
+  }
 }
 
 void Matrix44::PreTranslate(double dx, double dy) {
@@ -155,8 +160,9 @@ void Matrix44::PostTranslate3d(double dx, double dy, double dz) {
   if (!HasPerspective()) [[likely]] {
     SetCol(3, Col(3) + t);
   } else {
-    for (int i = 0; i < 4; ++i)
+    for (size_t i = 0; i < matrix_.size(); ++i) {
       SetCol(i, Col(i) + t * matrix_[i][3]);
+    }
   }
 }
 
@@ -412,7 +418,7 @@ void Matrix44::Zoom(double zoom_factor) {
   matrix_[3][2] *= zoom_factor;
 }
 
-double Matrix44::MapVector2(double vec[2]) const {
+double Matrix44::MapVector2(base::span<double, 2> vec) const {
   double v0 = vec[0];
   double v1 = vec[1];
   double x = v0 * matrix_[0][0] + v1 * matrix_[1][0] + matrix_[3][0];
@@ -423,7 +429,7 @@ double Matrix44::MapVector2(double vec[2]) const {
   return w;
 }
 
-void Matrix44::MapVector4(double vec[4]) const {
+void Matrix44::MapVector4(base::span<double, 4> vec) const {
   Double4 v = LoadDouble4(vec);
   Double4 r0{matrix_[0][0], matrix_[1][0], matrix_[2][0], matrix_[3][0]};
   Double4 r1{matrix_[0][1], matrix_[1][1], matrix_[2][1], matrix_[3][1]};

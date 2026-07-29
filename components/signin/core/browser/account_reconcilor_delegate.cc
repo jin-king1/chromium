@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <set>
 
-#include "base/containers/contains.h"
 #include "base/logging.h"
 #include "base/time/time.h"
 #include "google_apis/gaia/google_service_auth_error.h"
@@ -21,7 +20,8 @@ bool AccountReconcilorDelegate::IsReconcileEnabled() const {
   return false;
 }
 
-gaia::GaiaSource AccountReconcilorDelegate::GetGaiaApiSource() const {
+gaia::GaiaSource AccountReconcilorDelegate::GetGaiaApiSource(
+    bool is_cookie_upgrade) const {
   NOTREACHED() << "Reconcile is not enabled, no Gaia API calls should be made.";
 }
 
@@ -75,7 +75,7 @@ AccountReconcilorDelegate::ReorderChromeAccountsForReconcile(
   // which go above this count will fail.
   const int kMaxGaiaAccounts = 10;
   DCHECK(first_account.empty() ||
-         base::Contains(chrome_accounts, first_account));
+         std::ranges::contains(chrome_accounts, first_account));
 
   // Ordered list of accounts, this is the result of this function.
   std::vector<CoreAccountId> ordered_accounts;
@@ -181,8 +181,7 @@ AccountReconcilorDelegate::GetChromeAccountsForReconcile(
 void AccountReconcilorDelegate::RevokeSecondaryTokensForReconcileIfNeeded(
     const std::vector<gaia::ListedAccount>& gaia_accounts) {}
 
-void AccountReconcilorDelegate::OnAccountsCookieDeletedByUserAction(
-    bool synced_data_deletion_in_progress) {}
+void AccountReconcilorDelegate::OnAccountsCookieDeletedByUserAction() {}
 
 bool AccountReconcilorDelegate::ShouldRevokeTokensIfNoPrimaryAccount() const {
   return true;

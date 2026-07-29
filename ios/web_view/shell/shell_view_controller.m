@@ -23,8 +23,8 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
                                    CWVDownloadTaskDelegate,
                                    CWVLeakCheckServiceObserver,
                                    CWVNavigationDelegate,
-                                   CWVUIDelegate,
                                    CWVSyncControllerDelegate,
+                                   CWVUIDelegate,
                                    UIScrollViewDelegate,
                                    UITextFieldDelegate>
 // Header containing navigation buttons and |field|.
@@ -50,7 +50,7 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
 // The on-going download task if any.
 @property(nonatomic, strong, nullable) CWVDownloadTask* downloadTask;
 // The path to a local file which the download task is writing to.
-@property(nonatomic, strong, nullable) NSString* downloadFilePath;
+@property(nonatomic, copy, nullable) NSString* downloadFilePath;
 // A controller to show a "Share" menu for the downloaded file.
 @property(nonatomic, strong, nullable)
     UIDocumentInteractionController* documentInteractionController;
@@ -106,6 +106,7 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
   self.headerBackgroundView = [[UIStackView alloc] init];
   self.headerContentView = [[UIStackView alloc] init];
   self.contentView = [[UIView alloc] init];
+  self.contentView.restorationIdentifier = @"contentView";
   self.backButton = [[UIButton alloc] init];
   self.forwardButton = [[UIButton alloc] init];
   self.reloadOrStopButton = [[UIButton alloc] init];
@@ -466,9 +467,11 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
                                   weakAlertController.textFields[1].text;
                               NSString* site =
                                   weakAlertController.textFields[2].text;
+                              NSDate* now = [NSDate date];
                               [dataManager addNewPasswordForUsername:username
                                                             password:password
-                                                                site:site];
+                                                                site:site
+                                                           timestamp:now];
                             }]];
   [self presentViewController:alertController animated:YES completion:nil];
 }
@@ -535,10 +538,11 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
                                          NSString* newPassword =
                                              weakAlertController.textFields
                                                  .lastObject.text;
-                                         [dataManager
-                                             updatePassword:password
-                                                newUsername:newUsername
-                                                newPassword:newPassword];
+                                         NSDate* now = [NSDate date];
+                                         [dataManager updatePassword:password
+                                                         newUsername:newUsername
+                                                         newPassword:newPassword
+                                                           timestamp:now];
                                        }]];
   [self presentViewController:alertController animated:YES completion:nil];
 }
@@ -1139,12 +1143,6 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
                        NSKeyValueObservingOptionInitial
                context:nil];
 
-  [webView
-      addMessageHandler:^(NSDictionary* payload) {
-        NSLog(@"webview message handler payload received =\n%@", payload);
-      }
-             forCommand:@"webViewMessageHandlerCommand"];
-
   return webView;
 }
 
@@ -1153,7 +1151,6 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
   [_webView removeObserver:self forKeyPath:@"canGoBack"];
   [_webView removeObserver:self forKeyPath:@"canGoForward"];
   [_webView removeObserver:self forKeyPath:@"loading"];
-  [_webView removeMessageHandlerForCommand:@"webViewMessageHandlerCommand"];
 
   _webView = nil;
 }
@@ -1162,7 +1159,6 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
   [_webView removeObserver:self forKeyPath:@"canGoBack"];
   [_webView removeObserver:self forKeyPath:@"canGoForward"];
   [_webView removeObserver:self forKeyPath:@"loading"];
-  [_webView removeMessageHandlerForCommand:@"webViewMessageHandlerCommand"];
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField*)field {

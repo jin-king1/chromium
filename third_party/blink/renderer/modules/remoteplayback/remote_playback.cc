@@ -35,6 +35,7 @@
 #include "third_party/blink/renderer/platform/instrumentation/memory_pressure_listener.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -76,9 +77,10 @@ KURL GetAvailabilityUrl(const KURL& source,
   // source URL. |video_codec| and |audio_codec| are used for device capability
   // filter for Media Remoting based Remote Playback on Desktop. The codec
   // fields are optional.
-  std::string source_string = source.GetString().Utf8();
+  StringUtf8Adaptor source_adaptor(source.GetString());
   String encoded_source =
-      WTF::Base64URLEncode(base::as_byte_span(source_string));
+      Base64UrlEncode(base::as_byte_span(source_adaptor),
+                      Base64UrlEncodePolicy::kIncludePadding);
 
   std::string video_codec_str =
       video_codec.has_value()
@@ -88,9 +90,9 @@ KURL GetAvailabilityUrl(const KURL& source,
       audio_codec.has_value()
           ? ("&audio_codec=" + media::GetCodecName(audio_codec.value()))
           : "";
-  return KURL(StringView(kRemotePlaybackPresentationUrlPath) +
-              "?source=" + encoded_source + video_codec_str.c_str() +
-              audio_codec_str.c_str());
+  return KURL(
+      StrCat({kRemotePlaybackPresentationUrlPath, "?source=", encoded_source,
+              video_codec_str.c_str(), audio_codec_str.c_str()}));
 }
 
 bool IsBackgroundAvailabilityMonitoringDisabled() {
@@ -290,15 +292,15 @@ void RemotePlayback::PromptInternal() {
   if (controller && !availability_urls_.empty()) {
     controller->GetPresentationService()->StartPresentation(
         availability_urls_,
-        WTF::BindOnce(&RemotePlayback::HandlePresentationResponse,
-                      WrapPersistent(this)));
+        BindOnce(&RemotePlayback::HandlePresentationResponse,
+                 WrapPersistent(this)));
   } else {
     // TODO(yuryu): Wrapping PromptCancelled with base::OnceClosure as
     // InspectorInstrumentation requires a globally unique pointer to track
     // tasks. We can remove the wrapper if InspectorInstrumentation returns a
     // task id.
     base::OnceClosure task =
-        WTF::BindOnce(&RemotePlayback::PromptCancelled, WrapPersistent(this));
+        BindOnce(&RemotePlayback::PromptCancelled, WrapPersistent(this));
 
     std::unique_ptr<probe::AsyncTaskContext> task_context =
         std::make_unique<probe::AsyncTaskContext>();
@@ -306,9 +308,9 @@ void RemotePlayback::PromptInternal() {
     GetExecutionContext()
         ->GetTaskRunner(TaskType::kMediaElementEvent)
         ->PostTask(FROM_HERE,
-                   WTF::BindOnce(RunRemotePlaybackTask,
-                                 WrapPersistent(GetExecutionContext()),
-                                 std::move(task), std::move(task_context)));
+                   blink::BindOnce(RunRemotePlaybackTask,
+                                   WrapPersistent(GetExecutionContext()),
+                                   std::move(task), std::move(task_context)));
   }
 }
 
@@ -331,17 +333,17 @@ int RemotePlayback::WatchAvailabilityInternal(
   // TODO(yuryu): Wrapping notifyInitialAvailability with base::OnceClosure as
   // InspectorInstrumentation requires a globally unique pointer to track tasks.
   // We can remove the wrapper if InspectorInstrumentation returns a task id.
-  base::OnceClosure task = WTF::BindOnce(
-      &RemotePlayback::NotifyInitialAvailability, WrapPersistent(this), id);
+  base::OnceClosure task = BindOnce(&RemotePlayback::NotifyInitialAvailability,
+                                    WrapPersistent(this), id);
   std::unique_ptr<probe::AsyncTaskContext> task_context =
       std::make_unique<probe::AsyncTaskContext>();
   task_context->Schedule(GetExecutionContext(), "watchAvailabilityCallback");
   GetExecutionContext()
       ->GetTaskRunner(TaskType::kMediaElementEvent)
       ->PostTask(FROM_HERE,
-                 WTF::BindOnce(RunRemotePlaybackTask,
-                               WrapPersistent(GetExecutionContext()),
-                               std::move(task), std::move(task_context)));
+                 blink::BindOnce(RunRemotePlaybackTask,
+                                 WrapPersistent(GetExecutionContext()),
+                                 std::move(task), std::move(task_context)));
 
   MaybeStartListeningForAvailability();
   return id;

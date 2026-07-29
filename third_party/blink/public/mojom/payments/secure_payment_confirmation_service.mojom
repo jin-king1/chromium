@@ -11,6 +11,24 @@ enum PaymentCredentialStorageStatus {
   FAILED_TO_STORE_CREDENTIAL,
 };
 
+// https://w3c.github.io/secure-payment-confirmation/#enumdef-securepaymentconfirmationavailability
+enum SecurePaymentConfirmationAvailabilityEnum {
+  kAvailable,
+  kUnavailableUnknownReason,
+  kUnavailableFeatureNotEnabled,
+  kUnavailableNoPermissionPolicy,
+  kUnavailableNoUserVerifyingPlatformAuthenticator,
+};
+
+// Describes a single Secure Payment Confirmation capability and its support
+// status.
+// https://w3c.github.io/secure-payment-confirmation/#typedefdef-securepaymentconfirmationcapabilities
+struct SecurePaymentConfirmationCapability {
+  string name;
+  bool supported;
+};
+
+
 // Interface providing browser services related to SecurePaymentConfirmation,
 // which are not tied to a specific PaymentRequest instantiation. This includes
 // services required at credential-creation time, which occurs outside of the
@@ -21,8 +39,12 @@ interface SecurePaymentConfirmationService {
   // available to the current browsing context (e.g., there is a compatible
   // authenticator device, etc).
   //
-  // https://w3c.github.io/secure-payment-confirmation/#dom-paymentrequest-issecurepaymentconfirmationavailable
-  IsSecurePaymentConfirmationAvailable() => (bool available);
+  // https://w3c.github.io/secure-payment-confirmation/#dom-paymentrequest-securepaymentconfirmationavailability
+  SecurePaymentConfirmationAvailability() => (SecurePaymentConfirmationAvailabilityEnum availability);
+
+  // Returns an array of supported Secure Payment Confirmation capabilities.
+  // https://w3c.github.io/secure-payment-confirmation/#dom-paymentrequest-getsecurepaymentconfirmationcapabilities
+  GetSecurePaymentConfirmationCapabilities() => (array<SecurePaymentConfirmationCapability> capabilities);
 
   // Store a new PublicKeyCredential with "payment" extension on disk. It can be
   // later used for PaymentRequests.

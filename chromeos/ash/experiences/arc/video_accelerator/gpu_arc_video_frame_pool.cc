@@ -13,7 +13,6 @@
 #include "build/build_config.h"
 #include "chromeos/ash/experiences/arc/video_accelerator/arc_video_accelerator_util.h"
 #include "chromeos/ash/experiences/arc/video_accelerator/protected_buffer_manager.h"
-#include "gpu/ipc/common/gpu_memory_buffer_support.h"
 #include "media/base/decoder_status.h"
 #include "media/base/format_utils.h"
 #include "media/base/video_types.h"
@@ -21,11 +20,11 @@
 #include "media/gpu/chromeos/native_pixmap_frame_resource.h"
 #include "media/gpu/macros.h"
 #include "media/media_buildflags.h"
-#include "ui/gfx/buffer_format_util.h"
+#include "ui/gfx/buffer_types.h"
 
-#if BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 #include "media/gpu/chromeos/platform_video_frame_utils.h"
-#endif  // BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 
 namespace arc {
 
@@ -197,13 +196,13 @@ void GpuArcVideoFramePool::AddVideoFrame(mojom::VideoFramePtr video_frame,
   // If this is the first video frame added after requesting new video frames we
   // may need to notify the VdaVideoFramePool that the layout changed.
   if (notify_layout_changed_cb_) {
-    const uint64_t layout_modifier =
-        (gmb_handle.type == gfx::NATIVE_PIXMAP)
-            ? gmb_handle.native_pixmap_handle.modifier
-            : gfx::NativePixmapHandle::kNoModifier;
+    uint64_t layout_modifier = gfx::NativePixmapHandle::kNoModifier;
     std::vector<media::ColorPlaneLayout> color_planes;
-    for (const auto& plane : gmb_handle.native_pixmap_handle.planes) {
-      color_planes.emplace_back(plane.stride, plane.offset, plane.size);
+    if (gmb_handle.type == gfx::NATIVE_PIXMAP) {
+      layout_modifier = gmb_handle.native_pixmap_handle().modifier;
+      for (const auto& plane : gmb_handle.native_pixmap_handle().planes) {
+        color_planes.emplace_back(plane.stride, plane.offset, plane.size);
+      }
     }
     auto fourcc = media::Fourcc::FromVideoPixelFormat(pixel_format);
     if (!fourcc) {
@@ -468,8 +467,7 @@ gfx::GpuMemoryBufferHandle GpuArcVideoFramePool::CreateGpuMemoryHandle(
       VLOGF(1) << "No protected native pixmap found for handle";
       return gfx::GpuMemoryBufferHandle();
     }
-    gmb_handle.type = gfx::NATIVE_PIXMAP;
-    gmb_handle.native_pixmap_handle = std::move(protected_native_pixmap);
+    gmb_handle = gfx::GpuMemoryBufferHandle(std::move(protected_native_pixmap));
 
     // Explicitly verify the GPU Memory Buffer Handle here. Note that we do not
     // do this for non-protected content because the verification happens on
@@ -496,7 +494,6 @@ gfx::GpuMemoryBufferHandle GpuArcVideoFramePool::CreateGpuMemoryHandle(
     }
     gmb_handle = std::move(handle).value();
   }
-  gmb_handle.id = media::GetNextGpuMemoryBufferId();
 
   return gmb_handle;
 }
@@ -507,8 +504,8 @@ scoped_refptr<media::FrameResource> GpuArcVideoFramePool::CreateFrame(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(!has_error_);
 
-  auto buffer_format = media::VideoPixelFormatToGfxBufferFormat(pixel_format);
-  CHECK(buffer_format);
+  auto si_format = media::VideoPixelFormatToSharedImageFormat(pixel_format);
+  CHECK(si_format);
   // Usage is SCANOUT_CPU_READ_WRITE because we may need to map the buffer in
   // order to use the LibYUVImageProcessorBackend.
   scoped_refptr<media::FrameResource> frame =
@@ -516,8 +513,8 @@ scoped_refptr<media::FrameResource> GpuArcVideoFramePool::CreateFrame(
           gfx::Rect(coded_size_), coded_size_, base::TimeDelta(),
           gfx::BufferUsage::SCANOUT_CPU_READ_WRITE,
           base::MakeRefCounted<gfx::NativePixmapDmaBuf>(
-              coded_size_, *buffer_format,
-              std::move(gmb_handle.native_pixmap_handle)));
+              coded_size_, *si_format,
+              std::move(gmb_handle).native_pixmap_handle()));
 
   // Ensures that the tracking token is unique for frames in the frame pool.
   frame_tracking_token_helper_.SetUniqueTrackingToken(frame->metadata());

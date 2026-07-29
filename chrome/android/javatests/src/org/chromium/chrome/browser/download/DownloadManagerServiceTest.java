@@ -7,7 +7,6 @@ package org.chromium.chrome.browser.download;
 import android.content.Context;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.util.Log;
 import android.util.Pair;
 
 import androidx.annotation.IntDef;
@@ -15,22 +14,23 @@ import androidx.test.filters.MediumTest;
 
 import org.junit.After;
 import org.junit.Assert;
-import org.junit.ClassRule;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.browser.download.DownloadManagerServiceTest.MockDownloadNotifier.MethodID;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.offline_items_collection.ContentId;
 import org.chromium.components.offline_items_collection.OfflineItem.Progress;
 import org.chromium.components.offline_items_collection.OfflineItemProgressUnit;
 import org.chromium.components.offline_items_collection.PendingState;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -44,9 +44,6 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 public class DownloadManagerServiceTest {
-    @ClassRule
-    public static final ChromeBrowserTestRule sBrowserTestRule = new ChromeBrowserTestRule();
-
     private static final int UPDATE_DELAY_FOR_TEST = 1;
     private static final int DELAY_BETWEEN_CALLS = 10;
     private static final int LONG_UPDATE_DELAY_FOR_TEST = 500;
@@ -78,8 +75,7 @@ public class DownloadManagerServiceTest {
         }
 
         // Use MethodID for Integer values.
-        private final Queue<Pair<Integer, Object>> mExpectedCalls =
-                new ConcurrentLinkedQueue<Pair<Integer, Object>>();
+        private final Queue<Pair<Integer, Object>> mExpectedCalls = new ConcurrentLinkedQueue<>();
 
         public MockDownloadNotifier() {
             expect(MethodID.CLEAR_PENDING_DOWNLOADS, null);
@@ -112,7 +108,7 @@ public class DownloadManagerServiceTest {
         }
 
         static Pair<Integer, Object> getMethodSignature(@MethodID int methodId, Object param) {
-            return new Pair<Integer, Object>(methodId, param);
+            return new Pair<>(methodId, param);
         }
 
         void assertCorrectExpectedCall(@MethodID int methodId, Object param, boolean matchParams) {
@@ -183,7 +179,7 @@ public class DownloadManagerServiceTest {
         private final HashSet<Object> mMatches;
 
         OneTimeMatchSet(Object... params) {
-            mMatches = new HashSet<Object>();
+            mMatches = new HashSet<>();
             Collections.addAll(mMatches, params);
         }
 
@@ -233,6 +229,11 @@ public class DownloadManagerServiceTest {
     }
 
     private DownloadManagerServiceForTest mService;
+
+    @Before
+    public void setUp() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
+    }
 
     @After
     public void tearDown() {

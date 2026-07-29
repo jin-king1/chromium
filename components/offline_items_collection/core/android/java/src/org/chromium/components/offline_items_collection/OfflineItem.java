@@ -6,6 +6,7 @@ package org.chromium.components.offline_items_collection;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.components.download.DownloadDangerType;
 import org.chromium.url.GURL;
 
 import java.util.Objects;
@@ -71,7 +72,7 @@ public class OfflineItem implements Cloneable {
     public @Nullable ContentId id;
 
     // Display metadata.
-    public @Nullable String title;
+    public String title;
     public @Nullable String description;
     @OfflineItemFilter public int filter;
     public boolean isTransient;
@@ -107,14 +108,17 @@ public class OfflineItem implements Cloneable {
     public long receivedBytes;
     public @Nullable Progress progress;
     public long timeRemainingMs;
+    @DownloadDangerType public int dangerType;
     public boolean isDangerous;
     @FailState public int failState;
     @PendingState public int pendingState;
+    public boolean allowAutoOpenAfterCompletion;
 
     public OfflineItem() {
         id = new ContentId();
         filter = OfflineItemFilter.OTHER;
         state = OfflineItemState.COMPLETE;
+        title = "";
     }
 
     @Override
@@ -150,8 +154,11 @@ public class OfflineItem implements Cloneable {
         clone.allowMetered = allowMetered;
         clone.receivedBytes = receivedBytes;
         clone.timeRemainingMs = timeRemainingMs;
+        clone.dangerType = dangerType;
+        clone.isDangerous = isDangerous;
         clone.failState = failState;
         clone.pendingState = pendingState;
+        clone.allowAutoOpenAfterCompletion = allowAutoOpenAfterCompletion;
 
         if (progress != null) {
             clone.progress = new Progress(progress.value, progress.max, progress.unit);

@@ -44,14 +44,16 @@
 namespace blink {
 
 class InspectedFrames;
+class WorkerGlobalScope;
 
 class MODULES_EXPORT InspectorIndexedDBAgent final
     : public InspectorBaseAgent<protocol::IndexedDB::Metainfo> {
  public:
-  InspectorIndexedDBAgent(InspectedFrames*, v8_inspector::V8InspectorSession*);
+  InspectorIndexedDBAgent(InspectedFrames*, WorkerGlobalScope*);
   ~InspectorIndexedDBAgent() override;
   void Trace(Visitor*) const override;
 
+  void Dispose() override;
   void Restore() override;
   void DidCommitLoadForLocalFrame(LocalFrame*) override;
 
@@ -75,7 +77,7 @@ class MODULES_EXPORT InspectorIndexedDBAgent final
       std::unique_ptr<protocol::Storage::StorageBucket> storage_bucket,
       const String& database_name,
       const String& object_store_name,
-      const String& index_name,
+      std::optional<String> index_name,
       int skip_count,
       int page_size,
       std::unique_ptr<protocol::IndexedDB::KeyRange>,
@@ -110,8 +112,12 @@ class MODULES_EXPORT InspectorIndexedDBAgent final
       std::unique_ptr<DeleteDatabaseCallback>) override;
 
  private:
+  void ReleaseObjectGroup();
+
+  // This is null while inspecting workers.
   Member<InspectedFrames> inspected_frames_;
-  raw_ptr<v8_inspector::V8InspectorSession, DanglingUntriaged> v8_session_;
+  // This is null while inspecting frames.
+  Member<WorkerGlobalScope> worker_global_scope_;
   InspectorAgentState::Boolean enabled_;
 };
 

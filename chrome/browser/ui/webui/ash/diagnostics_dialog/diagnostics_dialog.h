@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_UI_WEBUI_ASH_DIAGNOSTICS_DIALOG_DIAGNOSTICS_DIALOG_H_
 
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace ash {
 
@@ -15,7 +15,7 @@ namespace {
 // ID used to lookup existing DiagnosticsDialog instance from
 // SystemWebDialogDelegate list and ensure only one instance of
 // DiagnosticsDialog exists at a time.
-constexpr char kDiagnosticsDialogId[] = "diagnostics-dialog";
+inline constexpr char kDiagnosticsDialogId[] = "diagnostics-dialog";
 
 }  // namespace
 

@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
@@ -18,17 +17,21 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/payments/payment_app_install_util.h"
-#include "components/network_session_configurator/common/network_switches.h"
-#include "components/payments/content/payment_manifest_web_data_service.h"
+#include "components/payments/content/service_worker_payment_app_finder_test_api.h"
+#include "components/payments/content/test_payment_manifest_downloader.h"
+#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/const_csp_checker.h"
 #include "components/payments/core/features.h"
-#include "components/payments/core/test_payment_manifest_downloader.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/webdata_services/web_data_service_wrapper_factory.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/browser/weak_document_ptr.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -37,6 +40,9 @@
 
 namespace payments {
 namespace {
+
+using IconInstall = test::PaymentAppInstallUtil::IconInstall;
+
 static const char kDefaultScope[] = "/app1/";
 
 void GetAllInstalledPaymentAppsCallback(
@@ -81,13 +87,6 @@ class ServiceWorkerPaymentAppFinderBrowserTest : public InProcessBrowserTest {
 
   ~ServiceWorkerPaymentAppFinderBrowserTest() override = default;
 
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    // HTTPS server only serves a valid cert for localhost, so this is needed to
-    // load pages from the test servers with custom hostnames without an
-    // interstitial.
-    command_line->AppendSwitch(switches::kIgnoreCertificateErrors);
-  }
-
   permissions::PermissionRequestManager* GetPermissionRequestManager() {
     return permissions::PermissionRequestManager::FromWebContents(
         browser()->tab_strip_model()->GetActiveWebContents());
@@ -113,6 +112,10 @@ class ServiceWorkerPaymentAppFinderBrowserTest : public InProcessBrowserTest {
     ASSERT_TRUE(StartTestServer("kyle.example.test", &kyle_example_));
     ASSERT_TRUE(StartTestServer("larry.example.test", &larry_example_));
 
+    ASSERT_TRUE(content::NavigateToURL(
+        browser()->tab_strip_model()->GetActiveWebContents(),
+        https_server_.GetURL("/payment_handler.html")));
+
     GetPermissionRequestManager()->set_auto_response_for_test(
         permissions::PermissionRequestManager::ACCEPT_ALL);
   }
@@ -129,11 +132,14 @@ class ServiceWorkerPaymentAppFinderBrowserTest : public InProcessBrowserTest {
   // back via domAutomationController.
   void InstallPaymentAppInScopeForMethod(const std::string& scope,
                                          const std::string& method_name) {
-    ASSERT_TRUE(
-        PaymentAppInstallUtil::InstallPaymentAppForPaymentMethodIdentifier(
-            *browser()->tab_strip_model()->GetActiveWebContents(),
-            alicepay_.GetURL("alicepay.test", scope + "app.js"), method_name,
-            PaymentAppInstallUtil::IconInstall::kWithIcon));
+    ASSERT_TRUE(test::PaymentAppInstallUtil::
+                    InstallPaymentAppForPaymentMethodIdentifier(
+                        *browser()
+                             ->tab_strip_model()
+                             ->GetActiveWebContents()
+                             ->GetPrimaryMainFrame(),
+                        alicepay_.GetURL("alicepay.test", scope + "app.js"),
+                        method_name, IconInstall::kWithIcon));
   }
 
   // Retrieves all valid payment apps that can handle the methods in
@@ -144,9 +150,15 @@ class ServiceWorkerPaymentAppFinderBrowserTest : public InProcessBrowserTest {
     content::WebContents* web_contents =
         browser()->tab_strip_model()->GetActiveWebContents();
     content::BrowserContext* context = web_contents->GetBrowserContext();
+    mojo::Remote<network::mojom::URLLoaderFactory> renderer_url_loader_factory;
+    web_contents->GetPrimaryMainFrame()->CreateNetworkServiceDefaultFactory(
+        renderer_url_loader_factory.BindNewPipeAndPassReceiver());
     auto downloader = std::make_unique<TestDownloader>(
-        GetCSPChecker(), context->GetDefaultStoragePartition()
-                             ->GetURLLoaderFactoryForBrowserProcess());
+        GetCSPChecker(),
+        context->GetDefaultStoragePartition()
+            ->GetURLLoaderFactoryForBrowserProcess(),
+        std::move(renderer_url_loader_factory),
+        web_contents->GetPrimaryMainFrame()->GetWeakDocumentPtr());
     downloader->AddTestServerURL("https://alicepay.test/",
                                  alicepay_.GetURL("alicepay.test", "/"));
     downloader->AddTestServerURL("https://bobpay.test/",
@@ -193,7 +205,7 @@ class ServiceWorkerPaymentAppFinderBrowserTest : public InProcessBrowserTest {
             ->tab_strip_model()
             ->GetActiveWebContents()
             ->GetPrimaryMainFrame());
-    finder->SetDownloaderAndIgnorePortInOriginComparisonForTesting(
+    test_api(finder).SetDownloaderAndIgnorePortInOriginComparison(
         std::move(downloader));
 
     std::vector<mojom::PaymentMethodDataPtr> method_data;
@@ -204,9 +216,9 @@ class ServiceWorkerPaymentAppFinderBrowserTest : public InProcessBrowserTest {
 
     base::RunLoop run_loop;
     finder->GetAllPaymentApps(
-        url::Origin::Create(GURL("https://chromium.org")),
+        url::Origin::Create(https_server_.GetURL("/payment_handler.html")),
         webdata_services::WebDataServiceWrapperFactory::
-            GetPaymentManifestWebDataServiceForBrowserContext(
+            GetWebPaymentsWebDataServiceForBrowserContext(
                 context, ServiceAccessType::EXPLICIT_ACCESS),
         std::move(method_data), GetCSPChecker(),
         base::BindOnce(
@@ -243,13 +255,13 @@ class ServiceWorkerPaymentAppFinderBrowserTest : public InProcessBrowserTest {
     ASSERT_FALSE(apps().empty());
     content::StoredPaymentApp* app = nullptr;
     for (const auto& it : apps()) {
-      if (it.second->scope.path() == scope) {
+      if (it.second->scope.GetPath() == scope) {
         app = it.second.get();
         break;
       }
     }
     ASSERT_NE(nullptr, app) << "No app found in scope " << scope;
-    EXPECT_TRUE(base::Contains(app->enabled_methods, expected_method))
+    EXPECT_TRUE(std::ranges::contains(app->enabled_methods, expected_method))
         << "Unable to find payment method " << expected_method
         << " in the list of enabled methods for the app installed from "
         << app->scope;
@@ -296,6 +308,9 @@ class ServiceWorkerPaymentAppFinderBrowserTest : public InProcessBrowserTest {
   bool StartTestServer(const std::string& hostname,
                        net::EmbeddedTestServer* test_server) {
     host_resolver()->AddRule(hostname, "127.0.0.1");
+    if (!hostname.empty()) {
+      test_server->SetCertHostnames({hostname});
+    }
     if (!test_server->InitializeAndListen()) {
       return false;
     }
@@ -832,6 +847,24 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerPaymentAppFinderBrowserTest,
   }
 }
 
+// The payment method https://george.example.test/webpay redirects to
+// https://harry.example.test/webpay, which serves a manifest with a relative
+// URL. This test verifies that the relative URL is resolved against the
+// post-redirect URL (harry) and not the pre-redirect URL (george).
+IN_PROC_BROWSER_TEST_F(
+    ServiceWorkerPaymentAppFinderBrowserTest,
+    RedirectResolvesRelativeManifestUrlAgainstPostRedirectUrl) {
+  {
+    GetAllPaymentAppsForMethods({"https://george.example.test/webpay"});
+
+    EXPECT_TRUE(apps().empty());
+    ASSERT_EQ(1U, installable_apps().size());
+    ExpectInstallablePaymentAppInScope("https://harry.example.test/webpay");
+    EXPECT_TRUE(error_message().empty())
+        << "Expected no error, but error message was: " << error_message();
+  }
+}
+
 // The payment method https://larry.example.test/webpay is not valid, because of
 // its cross-origin service worker scope https://harry.example.test/webpay/".
 IN_PROC_BROWSER_TEST_F(ServiceWorkerPaymentAppFinderBrowserTest,
@@ -886,11 +919,13 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerPaymentAppFinderMetadataRefreshBrowserTest,
                        PaymentAppUpdatesWhenIconChanges) {
   // Start by installing the KylePay app directly, with an initial icon.
   ASSERT_TRUE(
-      PaymentAppInstallUtil::InstallPaymentAppForPaymentMethodIdentifier(
-          *browser()->tab_strip_model()->GetActiveWebContents(),
+      test::PaymentAppInstallUtil::InstallPaymentAppForPaymentMethodIdentifier(
+          *browser()
+               ->tab_strip_model()
+               ->GetActiveWebContents()
+               ->GetPrimaryMainFrame(),
           kylepay_.GetURL("kylepay.test", "/app.js"),
-          "https://kylepay.test/webpay",
-          PaymentAppInstallUtil::IconInstall::kWithIcon));
+          "https://kylepay.test/webpay", IconInstall::kWithIcon));
 
   content::InstalledPaymentAppsFinder::PaymentApps original_apps =
       GetInstalledPaymentApps();
@@ -923,11 +958,13 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerPaymentAppFinderMetadataRefreshBrowserTest,
                        FailedIconFetchDoesNotOverrideOldIcon) {
   // Start by installing the KylePay app directly, with an initial icon.
   ASSERT_TRUE(
-      PaymentAppInstallUtil::InstallPaymentAppForPaymentMethodIdentifier(
-          *browser()->tab_strip_model()->GetActiveWebContents(),
+      test::PaymentAppInstallUtil::InstallPaymentAppForPaymentMethodIdentifier(
+          *browser()
+               ->tab_strip_model()
+               ->GetActiveWebContents()
+               ->GetPrimaryMainFrame(),
           kylepay_.GetURL("kylepay.test", "/app.js"),
-          "https://kylepay.test/webpay",
-          PaymentAppInstallUtil::IconInstall::kWithIcon));
+          "https://kylepay.test/webpay", IconInstall::kWithIcon));
 
   content::InstalledPaymentAppsFinder::PaymentApps original_apps =
       GetInstalledPaymentApps();
@@ -957,11 +994,13 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerPaymentAppFinderMetadataRefreshBrowserTest,
   // Start by installing the KylePay app directly, without any supported
   // delegations.
   ASSERT_TRUE(
-      PaymentAppInstallUtil::InstallPaymentAppForPaymentMethodIdentifier(
-          *browser()->tab_strip_model()->GetActiveWebContents(),
+      test::PaymentAppInstallUtil::InstallPaymentAppForPaymentMethodIdentifier(
+          *browser()
+               ->tab_strip_model()
+               ->GetActiveWebContents()
+               ->GetPrimaryMainFrame(),
           kylepay_.GetURL("kylepay.test", "/app.js"),
-          "https://kylepay.test/webpay",
-          PaymentAppInstallUtil::IconInstall::kWithIcon));
+          "https://kylepay.test/webpay", IconInstall::kWithIcon));
 
   content::InstalledPaymentAppsFinder::PaymentApps original_apps =
       GetInstalledPaymentApps();

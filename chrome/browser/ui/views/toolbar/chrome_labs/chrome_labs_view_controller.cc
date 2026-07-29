@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "base/callback_list.h"
-#include "base/containers/contains.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
@@ -51,10 +50,10 @@ enum class ChromeLabsSelectedLab {
   kUnspecifiedSelected = 0,
   // kReadLaterSelected = 1,
   // kTabSearchSelected = 2,
-  kTabScrollingSelected = 3,
+  // kTabScrollingSelected = 3,
   // kSidePanelSelected = 4,
   // kLensRegionSearchSelected = 5,
-  kWebUITabStripSelected = 6,
+  // kWebUITabStripSelected = 6,
   // kTabSearchMediaTabsSelected = 7,
   // kChromeRefresh2023Selected = 8,
   // kTabGroupsSaveSelected = 9,
@@ -82,15 +81,6 @@ void EmitToHistogram(const std::u16string& selected_lab_state,
   };
 
   const auto get_enum = [](const std::string& internal_name) {
-    if (internal_name == flag_descriptions::kScrollableTabStripFlagId) {
-      return ChromeLabsSelectedLab::kTabScrollingSelected;
-    }
-#if BUILDFLAG(ENABLE_WEBUI_TAB_STRIP) && \
-    (BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS))
-    if (internal_name == flag_descriptions::kWebUITabStripFlagId)
-      return ChromeLabsSelectedLab::kWebUITabStripSelected;
-#endif
-
     return ChromeLabsSelectedLab::kUnspecifiedSelected;
   };
 
@@ -109,13 +99,11 @@ uint32_t GetCurrentDay() {
 }  // namespace
 
 ChromeLabsViewController::ChromeLabsViewController(
-    const ChromeLabsModel* model,
     ChromeLabsBubbleView* chrome_labs_bubble_view,
     Browser* browser,
     flags_ui::FlagsState* flags_state,
     flags_ui::FlagsStorage* flags_storage)
-    : model_(model),
-      chrome_labs_bubble_view_(chrome_labs_bubble_view),
+    : chrome_labs_bubble_view_(chrome_labs_bubble_view),
       browser_(browser),
       flags_state_(flags_state),
       flags_storage_(flags_storage) {
@@ -131,7 +119,7 @@ int ChromeLabsViewController::GetIndexOfEnabledLabState(
   flags_state->GetSanitizedEnabledFlags(flags_storage, &enabled_entries);
   for (int i = 0; i < entry->NumOptions(); i++) {
     const std::string name = entry->NameForOption(i);
-    if (base::Contains(enabled_entries, name)) {
+    if (enabled_entries.contains(name)) {
       return i;
     }
   }
@@ -140,11 +128,12 @@ int ChromeLabsViewController::GetIndexOfEnabledLabState(
 
 void ChromeLabsViewController::ParseModelDataAndAddLabs() {
   // Create each lab item.
-  const std::vector<LabInfo>& all_labs = model_->GetLabInfo();
+  const std::vector<LabInfo>& all_labs =
+      ChromeLabsModel::GetInstance()->GetLabInfo();
   for (const auto& lab : all_labs) {
     const flags_ui::FeatureEntry* entry =
         flags_state_->FindFeatureEntryByName(lab.internal_name);
-    if (IsChromeLabsFeatureValid(lab, browser_->profile())) {
+    if (IsChromeLabsFeatureValid(lab, browser_->GetProfile())) {
       bool valid_entry_type =
           entry->type == flags_ui::FeatureEntry::FEATURE_VALUE ||
           entry->type == flags_ui::FeatureEntry::FEATURE_WITH_PARAMS_VALUE;
@@ -173,7 +162,7 @@ void ChromeLabsViewController::ParseModelDataAndAddLabs() {
               chrome_labs_bubble_view_.get(), lab.internal_name,
               flags_storage_));
       lab_item->SetShowNewBadge(
-          ShouldLabShowNewBadge(browser_->profile(), lab));
+          ShouldLabShowNewBadge(browser_->GetProfile(), lab));
     }
   }
 }
@@ -184,12 +173,12 @@ void ChromeLabsViewController::RestartToApplyFlags() {
   // we apply the newly selected flags.
   VLOG(1) << "Restarting to apply per-session flags...";
   ash::about_flags::FeatureFlagsUpdate(
-      *flags_storage_, browser_->profile()->GetOriginalProfile()->GetPrefs())
+      *flags_storage_, browser_->GetProfile()->GetOriginalProfile()->GetPrefs())
       .UpdateSessionManager();
 #endif
   // During the restart process some situations may cause previously active
   // bubbles to deactivate. Since the restart action itself is not binded to any
-  // state, run the restart asynchronously. See crbug.com/1310212 where
+  // state, run the restart asynchronously. See crbug.com/40830238 where
   // deactivation of bubbles is caused by the modal for downloads in progress
   // being shown.
   content::GetUIThreadTaskRunner({})->PostTask(
@@ -205,11 +194,6 @@ void ChromeLabsViewController::SetRestartCallback() {
 user_education::DisplayNewBadge ChromeLabsViewController::ShouldLabShowNewBadge(
     Profile* profile,
     const LabInfo& lab) {
-  // This experiment was added before adding the new badge and is not new.
-  if (lab.internal_name == flag_descriptions::kScrollableTabStripFlagId) {
-    return user_education::DisplayNewBadge();
-  }
-
 #if BUILDFLAG(IS_CHROMEOS)
   ScopedDictPrefUpdate update(
       profile->GetPrefs(), chrome_labs_prefs::kChromeLabsNewBadgeDictAshChrome);
@@ -218,7 +202,7 @@ user_education::DisplayNewBadge ChromeLabsViewController::ShouldLabShowNewBadge(
                               chrome_labs_prefs::kChromeLabsNewBadgeDict);
 #endif
 
-  base::Value::Dict& new_badge_prefs = update.Get();
+  base::DictValue& new_badge_prefs = update.Get();
   std::optional<int> start_day = new_badge_prefs.FindInt(lab.internal_name);
   DCHECK(start_day);
   uint32_t current_day = GetCurrentDay();

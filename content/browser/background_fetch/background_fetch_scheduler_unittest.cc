@@ -58,7 +58,7 @@ class FakeController : public BackgroundFetchJobController {
     // Record the completed request. Store everything after the origin and the
     // slash, to be able to directly compare with the provided requests.
     controller_sequence_list_->push_back(
-        result->response->url_chain[0].path().substr(1));
+        result->response->url_chain[0].GetPath().substr(1));
 
     // Continue normally.
     BackgroundFetchJobController::DidCompleteRequest(guid, std::move(result));
@@ -149,7 +149,7 @@ class BackgroundFetchSchedulerTest : public BackgroundFetchTestBase {
       base::OnceCallback<void(blink::mojom::BackgroundFetchError)> callback) {
     DCHECK_EQ(failure_reason, blink::mojom::BackgroundFetchFailureReason::NONE);
     base::EraseIf(scheduler_->active_controllers_,
-                  [&registration_id](auto* controller) {
+                  [&registration_id](const auto& controller) {
                     return controller->registration_id() == registration_id;
                   });
     scheduler_->job_controllers_.erase(registration_id.unique_id());

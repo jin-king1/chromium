@@ -8,7 +8,8 @@ import {Point} from '../geometry.js';
 import * as loadTimeData from '../models/load_time_data.js';
 import {DeviceOperator} from '../mojo/device_operator.js';
 import * as state from '../state.js';
-import {CropRegionRect, Mode, Resolution} from '../type.js';
+import type {CropRegionRect, Resolution} from '../type.js';
+import {Mode} from '../type.js';
 
 enum PtzAttr {
   PAN = 'pan',
@@ -271,10 +272,11 @@ function calculateCropRegion(
  * |DIGITAL_ZOOM_CAPABILITIES|.
  */
 function assertPtzRange(attr: PtzAttr, value: number) {
-  const {max: maxValue, min: minValue} = DIGITAL_ZOOM_CAPABILITIES[attr];
+  const capabilities = DIGITAL_ZOOM_CAPABILITIES[attr];
   const tolerance = 1e-3;
   assert(
-      value >= minValue - tolerance && value <= maxValue + tolerance,
+      value >= capabilities.min! - tolerance &&
+          value <= capabilities.max! + tolerance,
       `${attr} value ${value} is not within the allowed range.`);
 }
 

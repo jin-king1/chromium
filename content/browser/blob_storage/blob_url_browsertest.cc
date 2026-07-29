@@ -5,12 +5,19 @@
 #include <memory>
 
 #include "base/strings/pattern.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
+#include "base/test/values_test_util.h"
 #include "base/test/with_feature_override.h"
 #include "build/build_config.h"
 #include "content/browser/devtools/render_frame_devtools_agent_host.h"
+#include "content/browser/permissions/permission_controller_impl.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/storage_partition_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/browser_test.h"
@@ -18,16 +25,26 @@
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_browser_test_utils.h"
+#include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/test_devtools_protocol_client.h"
 #include "content/public/test/test_utils.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "net/base/net_errors.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/http/http_response_headers.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/url_request/redirect_info.h"
+#include "services/network/public/mojom/url_loader.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
+#include "storage/browser/blob/blob_url_registry.h"
 #include "storage/browser/blob/features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -41,8 +58,19 @@ class MockContentBrowserClient : public ContentBrowserTestContentBrowserClient {
 
   MOCK_METHOD(void,
               LogWebFeatureForCurrentPage,
-              (content::RenderFrameHost*, blink::mojom::WebFeature),
+              (RenderFrameHost*, blink::mojom::WebFeature),
               (override));
+
+  bool IsFullCookieAccessAllowed(
+      BrowserContext* browser_context,
+      WebContents* web_contents,
+      const GURL& url,
+      const blink::StorageKey& storage_key,
+      net::CookieSettingOverrides overrides) override {
+    return allow_cookie_access_;
+  }
+
+  bool allow_cookie_access_ = false;
 };
 }  // namespace
 
@@ -50,20 +78,26 @@ class MockContentBrowserClient : public ContentBrowserTestContentBrowserClient {
 class BlobUrlBrowserTest : public ContentBrowserTest {
  public:
   BlobUrlBrowserTest() = default;
-
   BlobUrlBrowserTest(const BlobUrlBrowserTest&) = delete;
   BlobUrlBrowserTest& operator=(const BlobUrlBrowserTest&) = delete;
 
   void SetUpOnMainThread() override {
+    ContentBrowserTest::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
     SetupCrossSiteRedirector(embedded_test_server());
     ASSERT_TRUE(embedded_test_server()->Start());
     client_ = std::make_unique<MockContentBrowserClient>();
+
+    SetupCrossSiteRedirector(&embedded_https_test_server());
+    ASSERT_TRUE(embedded_https_test_server().Start());
   }
 
   MockContentBrowserClient& GetMockClient() { return *client_; }
 
-  void TearDownOnMainThread() override { client_.reset(); }
+  void TearDownOnMainThread() override {
+    client_.reset();
+    ContentBrowserTest::TearDownOnMainThread();
+  }
 
  private:
   std::unique_ptr<MockContentBrowserClient> client_;
@@ -205,6 +239,108 @@ IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest, ReplaceStateToAddAuthorityToBlob) {
   EXPECT_FALSE(base::MatchPattern(window_location, "*spoof*"));
 }
 
+namespace {
+
+// A blink::mojom::Blob implementation that, when Load() is called, responds
+// with a redirect to `redirect_target_` instead of a blob body. This simulates
+// a Blob endpoint that does not behave like a real blob.
+class RedirectingBlob : public blink::mojom::Blob {
+ public:
+  explicit RedirectingBlob(const GURL& redirect_target)
+      : redirect_target_(redirect_target) {}
+
+  mojo::PendingRemote<blink::mojom::Blob> BindNewPipeAndPassRemote() {
+    mojo::PendingRemote<blink::mojom::Blob> remote;
+    receivers_.Add(this, remote.InitWithNewPipeAndPassReceiver());
+    return remote;
+  }
+
+  // blink::mojom::Blob:
+  void Clone(mojo::PendingReceiver<blink::mojom::Blob> receiver) override {
+    receivers_.Add(this, std::move(receiver));
+  }
+  void AsDataPipeGetter(
+      mojo::PendingReceiver<network::mojom::DataPipeGetter>) override {
+    NOTREACHED();
+  }
+  void ReadAll(mojo::ScopedDataPipeProducerHandle,
+               mojo::PendingRemote<blink::mojom::BlobReaderClient>) override {
+    NOTREACHED();
+  }
+  void ReadRange(uint64_t,
+                 uint64_t,
+                 mojo::ScopedDataPipeProducerHandle,
+                 mojo::PendingRemote<blink::mojom::BlobReaderClient>) override {
+    NOTREACHED();
+  }
+  void Load(
+      mojo::PendingReceiver<network::mojom::URLLoader> loader,
+      const std::string& method,
+      const net::HttpRequestHeaders&,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client) override {
+    loader_receiver_ = std::move(loader);
+    client_.reset();
+    client_.Bind(std::move(client));
+    net::RedirectInfo redirect_info;
+    redirect_info.status_code = net::HTTP_FOUND;
+    redirect_info.new_method = method;
+    redirect_info.new_url = redirect_target_;
+    redirect_info.new_site_for_cookies =
+        net::SiteForCookies::FromUrl(redirect_target_);
+    auto head = network::mojom::URLResponseHead::New();
+    head->headers = net::HttpResponseHeaders::TryToCreate(
+        "HTTP/1.1 302 Found\r\nLocation: " + redirect_target_.spec() + "\r\n");
+    head->encoded_data_length = 0;
+    head->bypass_redirect_checks = true;
+    client_->OnReceiveRedirect(redirect_info, std::move(head));
+  }
+  void ReadSideData(ReadSideDataCallback) override { NOTREACHED(); }
+  void CaptureSnapshot(CaptureSnapshotCallback callback) override {
+    std::move(callback).Run(0, std::nullopt);
+  }
+  void GetInternalUUID(GetInternalUUIDCallback callback) override {
+    std::move(callback).Run("");
+  }
+
+ private:
+  const GURL redirect_target_;
+  mojo::ReceiverSet<blink::mojom::Blob> receivers_;
+  mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver_;
+  mojo::Remote<network::mojom::URLLoaderClient> client_;
+};
+
+}  // namespace
+
+// A blob never serves a redirect, so a navigation to a blob URL whose
+// underlying Blob endpoint replies with OnReceiveRedirect must not follow the
+// redirect, regardless of any flags carried in the response head.
+IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest,
+                       NavigationToBlobUrlDoesNotFollowRedirect) {
+  GURL url = embedded_test_server()->GetURL("a.test", "/title1.html");
+  url::Origin origin = url::Origin::Create(url);
+  ASSERT_TRUE(NavigateToURL(shell(), url));
+
+  RenderFrameHostImpl* rfh = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+
+  const GURL redirect_target("data:text/html,redirected");
+  RedirectingBlob blob(redirect_target);
+
+  const GURL blob_url("blob:" + origin.Serialize() +
+                      "/33221100-0000-0000-0000-000000000000");
+  static_cast<StoragePartitionImpl*>(rfh->GetStoragePartition())
+      ->GetBlobUrlRegistry()
+      ->AddUrlMapping(blob_url, blob.BindNewPipeAndPassRemote(),
+                      blink::StorageKey::CreateFirstParty(origin), origin,
+                      rfh->GetProcess()->GetDeprecatedID());
+
+  NavigationHandleObserver observer(shell()->web_contents(), blob_url);
+  EXPECT_FALSE(NavigateToURL(shell(), blob_url));
+  EXPECT_TRUE(observer.is_error());
+  EXPECT_EQ(net::ERR_UNSAFE_REDIRECT, observer.net_error_code());
+  EXPECT_NE(redirect_target, shell()->web_contents()->GetLastCommittedURL());
+}
+
 IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest,
                        TestUseCounterForCrossPartitionSameOriginBlobURLFetch) {
   GURL main_url = embedded_test_server()->GetURL(
@@ -228,31 +364,206 @@ IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest,
   EXPECT_CALL(
       GetMockClient(),
       LogWebFeatureForCurrentPage(
-          testing::_,
+          rfh_c,
+          blink::mojom::WebFeature::kCrossPartitionSameOriginBlobURLFetch))
+      .Times(0);
+
+  EXPECT_CALL(
+      GetMockClient(),
+      LogWebFeatureForCurrentPage(
+          rfh_b,
+          blink::mojom::WebFeature::kCrossPartitionSameOriginBlobURLFetch))
+      .Times(0);
+
+  EXPECT_CALL(
+      GetMockClient(),
+      LogWebFeatureForCurrentPage(
+          rfh_c_2,
           blink::mojom::WebFeature::kCrossPartitionSameOriginBlobURLFetch))
       .Times(1);
 
-  std::string fetch_blob_url_js = JsReplace(
-      "async function test() {"
-      " const blob = await fetch($1).then(response => response.blob());"
-      " await blob.text();}"
-      "test();",
-      blob_url);
+  std::string fetch_blob_url_js = JsReplace("fetch($1)", blob_url);
 
+  EXPECT_TRUE(ExecJs(rfh_c, fetch_blob_url_js));
   EXPECT_FALSE(ExecJs(rfh_b, fetch_blob_url_js));
+  EXPECT_FALSE(ExecJs(rfh_c_2, fetch_blob_url_js));
 
+  EXPECT_TRUE(ExecJs(rfh_c, JsReplace("URL.revokeObjectURL($1)", blob_url)));
+}
+
+IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest, TestBlobFetchRequestError) {
+  base::HistogramTester histogram_tester;
+  GURL url = embedded_test_server()->GetURL("chromium.org", "/title1.html");
+  url::Origin origin = url::Origin::Create(url);
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  // The data should not be accessible after being revoked.
+  EXPECT_EQ("TypeError",
+            EvalJs(shell(),
+                   "async function test() {"
+                   "let error;"
+                   "const url = URL.createObjectURL(new Blob(['potato']));"
+                   "URL.revokeObjectURL(url);"
+                   "try { await fetch(url); } catch (e) { error = e };"
+                   "return new Promise(resolve => { resolve(error.name); });"
+                   "}"
+                   "test();"));
+  FetchHistogramsFromChildProcesses();
+  // The blob error should be recorded in UMA.
+  histogram_tester.ExpectUniqueSample("Net.BlobFetch.ResponseNetErrorCode",
+                                      -net::Error::ERR_FILE_NOT_FOUND, 1u);
+}
+
+// Regression test for crbug.com/426787402, where navigations to blob URLs with
+// a media mime type also result in a resource load for the corresponding blob
+// URL.
+IN_PROC_BROWSER_TEST_F(BlobUrlBrowserTest,
+                       NoPartitioningForMediaBlobUrlNavigations) {
+  GURL main_url = embedded_test_server()->GetURL(
+      "b.com", "/cross_site_iframe_factory.html?b(c)");
+  WebContents* web_contents = shell()->web_contents();
+  EXPECT_TRUE(NavigateToURL(web_contents, main_url));
+
+  RenderFrameHost* rfh_b = web_contents->GetPrimaryMainFrame();
+  RenderFrameHost* rfh_c_in_b = ChildFrameAt(rfh_b, 0);
+
+  Shell* new_shell;
+  {
+    ShellAddedObserver new_shell_observer;
+    EXPECT_TRUE(
+        ExecJs(rfh_c_in_b,
+               "var blob_url;"
+               "var data_url = 'data:audio/wav;base64,"
+               "UklGRnQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YVAAA"
+               "ACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAkI"
+               "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';"
+               "fetch(data_url).then(async (res) => {"
+               "  const blob = await res.blob();"
+               "  blob_url = URL.createObjectURL(blob);"
+               "  window.open(blob_url);"
+               "});"));
+
+    new_shell = new_shell_observer.GetShell();
+    WebContents* new_contents = new_shell->web_contents();
+    EXPECT_TRUE(WaitForLoadStop(new_contents));
+  }
+
+  static constexpr char check_video_element_status_js[] =
+      "function check_video_element_status() {"
+      "  const video = document.getElementsByTagName('video')[0];"
+      "  if (video.readyState === 4) {"
+      "    return video.readyState;"
+      "  }"
+      "  return new Promise(resolve => {"
+      "    video.addEventListener('canplaythrough', () => {"
+      "      resolve(video.readyState);"
+      "    });"
+      "  });"
+      "}"
+      "new Promise(resolve => {"
+      "  if (document.readyState === 'complete') {"
+      "    resolve(check_video_element_status());"
+      "  } else {"
+      "    window.addEventListener('load', () => {"
+      "      resolve(check_video_element_status());"
+      "    });"
+      "  }"
+      "});";
+
+  int ready_state =
+      EvalJs(new_shell, check_video_element_status_js).ExtractInt();
+  // From local testing the HTMLMediaElement.readyState property returned 0
+  // (HTMLMediaElement.HAVE_NOTHING) when partitioning blocked the resource load
+  // and otherwise returned 4 (HTMLMediaElement.HAVE_ENOUGH_DATA). It's possible
+  // that some intermediate states might be reached before the readyState is 4,
+  // so our test code will wait for that. This means that if the bug is present
+  // the call above will timeout, but otherwise readyState should equal 4 here.
+  EXPECT_EQ(ready_state, 4);
+
+  // This should also work if a site appends a fragment identifier to the blob
+  // URL for some reason.
+  {
+    ShellAddedObserver new_shell_observer;
+    EXPECT_TRUE(ExecJs(rfh_c_in_b, "window.open(blob_url + '#foo');"));
+
+    new_shell = new_shell_observer.GetShell();
+    WebContents* new_contents = new_shell->web_contents();
+    EXPECT_TRUE(WaitForLoadStop(new_contents));
+  }
+
+  ready_state = EvalJs(new_shell, check_video_element_status_js).ExtractInt();
+  // See comment above for why we check that `ready_state` is 4 here.
+  EXPECT_EQ(ready_state, 4);
+}
+
+// Regression test for the issue described in
+// https://crbug.com/399308041#comment7 where blob URL partitioning was bypassed
+// for all contexts when third-party cookies were enabled.
+IN_PROC_BROWSER_TEST_F(
+    BlobUrlBrowserTest,
+    BlobUrlPartitioningNotAlwaysBypassedWithThirdPartyCookieEnabled) {
+  GetMockClient().allow_cookie_access_ = true;
+  GURL main_url = embedded_https_test_server().GetURL(
+      "c.com", "/cross_site_iframe_factory.html?c(b(c))");
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  RenderFrameHost* rfh_c = shell()->web_contents()->GetPrimaryMainFrame();
+
+  std::string blob_url_string =
+      EvalJs(
+          rfh_c,
+          "const blob_url = URL.createObjectURL(new "
+          "Blob(['<!doctype html><body>potato</body>'], {type: 'text/html'}));"
+          "blob_url;")
+          .ExtractString();
+  GURL blob_url(blob_url_string);
+
+  RenderFrameHost* rfh_b = ChildFrameAt(rfh_c, 0);
+  RenderFrameHost* rfh_c_2 = ChildFrameAt(rfh_b, 0);
+
+  std::string fetch_blob_url_js = JsReplace("fetch($1)", blob_url);
+
+  EXPECT_TRUE(ExecJs(rfh_c, fetch_blob_url_js));
+
+  // This access shouldn't succeed even though third-party cookies are enabled.
+  EXPECT_FALSE(ExecJs(rfh_c_2, fetch_blob_url_js));
+
+  // Note: the SAA spec carves out an auto-resolve case when the requesting and
+  // embedding origins are same-site: step 16.7 of
+  // https://privacycg.github.io/storage-access/#dom-document-requeststorageaccess.
+  // However, Chrome implements that in //chrome
+  // (`StorageAccessGrantPermissionContext::DecidePermission`), so //content
+  // can't rely on it. Thus, we must manually grant the permission here.
+  base::test::TestFuture<PermissionControllerImpl::OverrideStatus> future;
+  static_cast<PermissionControllerImpl*>(
+      rfh_c_2->GetBrowserContext()->GetPermissionController())
+      ->SetPermissionOverride(
+          /*requesting_origin=*/url::Origin::Create(main_url),
+          /*embedding_origin=*/url::Origin::Create(main_url),
+          blink::PermissionType::STORAGE_ACCESS_GRANT,
+          blink::mojom::PermissionStatus::GRANTED, future.GetCallback());
+  ASSERT_EQ(future.Get(),
+            PermissionControllerImpl::OverrideStatus::kOverrideSet);
+
+  EXPECT_TRUE(ExecJs(rfh_c_2, "document.requestStorageAccess()"));
+
+  // After requesting storage access, this third-party context should now be
+  // able to access the first-party blob URL.
   EXPECT_TRUE(ExecJs(rfh_c_2, fetch_blob_url_js));
 
   EXPECT_TRUE(ExecJs(rfh_c, JsReplace("URL.revokeObjectURL($1)", blob_url)));
 
+  EXPECT_FALSE(ExecJs(rfh_c, fetch_blob_url_js));
   EXPECT_FALSE(ExecJs(rfh_c_2, fetch_blob_url_js));
 }
 
 class BlobUrlDevToolsIssueTest : public ContentBrowserTest {
  protected:
   BlobUrlDevToolsIssueTest() {
-    feature_list_.InitAndEnableFeature(
-        features::kBlockCrossPartitionBlobUrlFetching);
+    feature_list_.InitWithFeatures(
+        {features::kBlockCrossPartitionBlobUrlFetching,
+         blink::features::kEnforceNoopenerOnBlobURLNavigation},
+        {});
   }
 
   void SetUpOnMainThread() override {
@@ -260,47 +571,48 @@ class BlobUrlDevToolsIssueTest : public ContentBrowserTest {
     host_resolver()->AddRule("*", "127.0.0.1");
     SetupCrossSiteRedirector(embedded_test_server());
     ASSERT_TRUE(embedded_test_server()->Start());
+    client_ = std::make_unique<MockContentBrowserClient>();
+  }
+
+  void TearDownOnMainThread() override {
+    client_.reset();
+    ContentBrowserTest::TearDownOnMainThread();
   }
 
   void WaitForIssueAndCheckUrl(const std::string& url,
                                TestDevToolsProtocolClient* client,
                                const std::string& expected_info_enum) {
-    auto is_blob_url_issue = [](const base::Value::Dict& params) {
-      const std::string* issue_code =
-          params.FindStringByDottedPath("issue.code");
-      return issue_code && *issue_code == "PartitioningBlobURLIssue";
-    };
-
     // Wait for notification of a Partitioning Blob URL Issue.
-    base::Value::Dict params = client->WaitForMatchingNotification(
-        "Audits.issueAdded", base::BindRepeating(is_blob_url_issue));
+    base::DictValue params = client->WaitForMatchingNotification(
+        "Audits.issueAdded",
+        base::BindRepeating([](const base::DictValue& params) {
+          const std::string* issue_code =
+              params.FindStringByDottedPath("issue.code");
+          return issue_code && *issue_code == "PartitioningBlobURLIssue";
+        }));
 
-    EXPECT_EQ(*params.FindStringByDottedPath("issue.code"),
-              "PartitioningBlobURLIssue");
-
-    base::Value::Dict* partitioning_blob_url_issue_details =
-        params.FindDictByDottedPath(
-            "issue.details.partitioningBlobURLIssueDetails");
-    ASSERT_TRUE(partitioning_blob_url_issue_details);
-
-    // Verify the reported blob_url match the expected url.
-    std::string* blob_url_ptr =
-        partitioning_blob_url_issue_details->FindString("url");
-    EXPECT_EQ(*blob_url_ptr, url);
-
-    // Verify the reported partitioningBlobURLInfo matches the expected enum.
-    std::string* info_enum_ptr =
-        partitioning_blob_url_issue_details->FindString(
-            "partitioningBlobURLInfo");
-    ASSERT_TRUE(info_enum_ptr);
-    EXPECT_EQ(*info_enum_ptr, expected_info_enum);
+    EXPECT_THAT(params, base::test::IsSupersetOfValue(JsReplace(
+                            R"({
+                  "issue": {
+                    "code": "PartitioningBlobURLIssue",
+                    "details": {
+                      "partitioningBlobURLIssueDetails": {
+                        "url": $1,
+                        "partitioningBlobURLInfo": $2,
+                      }
+                    }
+                  }
+                })",
+                            url, expected_info_enum)));
 
     // Clear existing notifications so subsequent calls don't fail by checking
     // `url` against old notifications.
     client->ClearNotifications();
   }
 
+ private:
   base::test::ScopedFeatureList feature_list_;
+  std::unique_ptr<MockContentBrowserClient> client_;
 };
 
 IN_PROC_BROWSER_TEST_F(BlobUrlDevToolsIssueTest, PartitioningBlobUrlIssue) {
@@ -324,8 +636,19 @@ IN_PROC_BROWSER_TEST_F(BlobUrlDevToolsIssueTest, PartitioningBlobUrlIssue) {
   RenderFrameHost* rfh_b = ChildFrameAt(rfh_c, 0);
   RenderFrameHost* rfh_c_2 = ChildFrameAt(rfh_b, 0);
 
-  std::unique_ptr<content::TestDevToolsProtocolClient> client =
-      std::make_unique<content::TestDevToolsProtocolClient>();
+  base::test::TestFuture<PermissionControllerImpl::OverrideStatus> future;
+  static_cast<PermissionControllerImpl*>(
+      rfh_c_2->GetBrowserContext()->GetPermissionController())
+      ->SetPermissionOverride(
+          /*requesting_origin=*/std::nullopt,
+          /*embedding_origin=*/std::nullopt,
+          blink::PermissionType::STORAGE_ACCESS_GRANT,
+          blink::mojom::PermissionStatus::DENIED, future.GetCallback());
+  ASSERT_EQ(future.Get(),
+            PermissionControllerImpl::OverrideStatus::kOverrideSet);
+
+  std::unique_ptr<TestDevToolsProtocolClient> client =
+      std::make_unique<TestDevToolsProtocolClient>();
   client->AttachToFrameTreeHost(rfh_c_2);
   client->SendCommandSync("Audits.enable");
   client->ClearNotifications();
@@ -371,8 +694,7 @@ IN_PROC_BROWSER_TEST_F(BlobUrlDevToolsIssueTest,
 
   // 3b. Open new tab from b.com context.
   ShellAddedObserver new_shell_observer;
-  EXPECT_TRUE(
-      content::ExecJs(rfh_c, content::JsReplace("window.open($1)", b_url)));
+  EXPECT_TRUE(ExecJs(rfh_c, JsReplace("window.open($1)", b_url)));
 
   Shell* new_shell = new_shell_observer.GetShell();
   WebContents* new_contents = new_shell->web_contents();

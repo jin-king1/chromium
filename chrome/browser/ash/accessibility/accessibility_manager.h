@@ -21,17 +21,18 @@
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/accessibility/chromevox_panel.h"
-#include "chrome/browser/ash/accessibility/service/accessibility_service_client.h"
 #include "chrome/browser/extensions/api/braille_display_private/braille_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/common/extensions/api/accessibility_private.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
+#include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/core/session_manager_observer.h"
 #include "components/soda/soda_installer.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/scoped_accessibility_mode.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
@@ -46,6 +47,9 @@
 #include "ui/events/devices/input_device_event_observer.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/wm/core/coordinate_conversion.h"
+
+class ApplicationLocaleStorage;
+class PrefService;
 
 namespace content {
 struct FocusedNodeDetails;
@@ -69,7 +73,6 @@ enum class SelectToSpeakState;
 enum class SelectToSpeakPanelAction;
 enum class Sound;
 struct AccessibilityFocusRingInfo;
-class AccessibilityServiceClient;
 
 enum class AccessibilityNotificationType {
   kManagerShutdown,
@@ -115,6 +118,8 @@ using InstallFaceGazeAssetsCallback = base::OnceCallback<void(
     std::optional<::extensions::api::accessibility_private::FaceGazeAssets>)>;
 using InstallPumpkinCallback = base::OnceCallback<void(
     std::optional<::extensions::api::accessibility_private::PumpkinData>)>;
+using InstallTenjiCallback = base::OnceCallback<void(
+    std::optional<::extensions::api::accessibility_private::TenjiData>)>;
 
 class AccessibilityPanelWidgetObserver;
 
@@ -131,6 +136,7 @@ enum class PlaySoundOption {
 // watching profile notifications and pref-changes.
 class AccessibilityManager
     : public session_manager::SessionManagerObserver,
+      public ash::SessionTerminationManager::Observer,
       public extensions::api::braille_display_private::BrailleObserver,
       public extensions::ExtensionRegistryObserver,
       public user_manager::UserManager::UserSessionStateObserver,
@@ -145,7 +151,12 @@ class AccessibilityManager
 
   // Creates an instance of AccessibilityManager, this should be called once,
   // because only one instance should exist at the same time.
-  static void Initialize();
+  //
+  // Both `local_state` and `application_locale_storage` must be non-null, and
+  // must live until Shutdown() is called.
+  static void Initialize(
+      PrefService* local_state,
+      const ApplicationLocaleStorage* application_locale_storage);
   // Deletes the existing instance of AccessibilityManager.
   static void Shutdown();
   // Returns the existing instance. If there is no instance, returns NULL.
@@ -220,6 +231,13 @@ class AccessibilityManager
 
   // Returns true if FaceGaze is enabled.
   bool IsFaceGazeEnabled() const;
+
+  // Called from settings to turn FaceGaze on/off.
+  void RequestEnableFaceGaze(bool enable);
+
+  // Called when the FaceGaze disable dialog is accepted/rejected so that the
+  // settings UI can be properly updated.
+  void SendFaceGazeDisableDialogResultToSettings(bool accepted);
 
   // Adds the FaceGazeSettingsEventHandler to process events from FaceGaze.
   void AddFaceGazeSettingsEventHandler(FaceGazeSettingsEventHandler* handler);
@@ -348,6 +366,14 @@ class AccessibilityManager
   // Notify accessibility when locale changes occur.
   void OnLocaleChanged();
 
+  // Called when we first detect two fingers are held down, which can be
+  // used to toggle spoken feedback on some touch-only devices.
+  void OnTwoFingerTouchStart();
+
+  // Called when the user is no longer holding down two fingers (including
+  // releasing one, holding down three, or moving them).
+  void OnTwoFingerTouchStop();
+
   // Whether or not to enable toggling spoken feedback via holding down
   // two fingers on the screen.
   bool ShouldToggleSpokenFeedbackViaTouch();
@@ -390,6 +416,11 @@ class AccessibilityManager
 
   // Starts or stops dictation (type what you speak).
   bool ToggleDictation();
+
+  // Gets the default locale for the active profile.
+  // If this is a |new_user|, it returns the application language.
+  // Otherwise, it returns the Dictation language with default IME language.
+  std::string GetDictationDefaultLocale(bool new_user);
 
   // Sets the focus ring with the given ID based on |focus_ring|.
   void SetFocusRing(std::string focus_ring_id,
@@ -515,6 +546,11 @@ class AccessibilityManager
   // object otherwise.
   void InstallPumpkinForDictation(InstallPumpkinCallback callback);
 
+  // Triggers a request to install Tenji DLC. Runs `callback` with the file
+  // bytes if the DLC was successfully downloaded. Runs `callback` with an empty
+  // object otherwise.
+  void InstallTenji(InstallTenjiCallback callback);
+
   // Reads the contents of a DLC file and runs `callback` with the results.
   void GetTtsDlcContents(
       ::extensions::api::accessibility_private::DlcType dlc,
@@ -531,7 +567,11 @@ class AccessibilityManager
   void LoadEnhancedNetworkTtsForTest();
 
  protected:
-  AccessibilityManager();
+  // Both `local_state` and `application_locale_storage` must be non-null, and
+  // must live until Shutdown() is called.
+  AccessibilityManager(
+      PrefService* local_state,
+      const ApplicationLocaleStorage* application_locale_storage);
   ~AccessibilityManager() override;
 
  private:
@@ -627,6 +667,9 @@ class AccessibilityManager
   // ProfileObserver:
   void OnProfileWillBeDestroyed(Profile* profile) override;
 
+  // ash::SessionTerminationManager::Observer:
+  void OnAppTerminating() override;
+
   // Dictation dialog methods.
   bool ShouldShowNetworkDictationDialog(const std::string& locale);
   void ShowNetworkDictationDialog();
@@ -664,9 +707,19 @@ class AccessibilityManager
       std::optional<::extensions::api::accessibility_private::PumpkinData>
           data);
 
-  void OnAppTerminating();
+  // Tenji-related methods.
+  void OnTenjiInstalled(bool success, const std::string& root_path);
+  void OnTenjiError(std::string_view error);
+  void OnTenjiDataCreated(
+      std::optional<::extensions::api::accessibility_private::TenjiData>
+          assets);
 
   void MaybeLogBrailleDisplayConnectedTime();
+
+  bool spoken_feedback_enabled() const { return bool(screen_reader_mode_); }
+
+  const raw_ref<PrefService> local_state_;
+  const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
 
   // Profile which has the current a11y context.
   raw_ptr<Profile> profile_ = nullptr;
@@ -675,11 +728,15 @@ class AccessibilityManager
   base::ScopedObservation<session_manager::SessionManager,
                           session_manager::SessionManagerObserver>
       session_observation_{this};
+  base::ScopedObservation<ash::SessionTerminationManager,
+                          ash::SessionTerminationManager::Observer>
+      session_termination_observation_{this};
 
   std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;
   std::unique_ptr<PrefChangeRegistrar> local_state_pref_change_registrar_;
 
-  bool spoken_feedback_enabled_ = false;
+  // Only used for ChromeVox aka when spoken feedback is enabled.
+  std::unique_ptr<content::ScopedAccessibilityMode> screen_reader_mode_;
   bool select_to_speak_enabled_ = false;
   bool switch_access_enabled_ = false;
 
@@ -690,8 +747,6 @@ class AccessibilityManager
   std::set<std::string> accessibility_common_enabled_features_;
 
   AccessibilityStatusCallbackList callback_list_;
-
-  std::unique_ptr<AccessibilityServiceClient> accessibility_service_client_;
 
   bool braille_display_connected_ = false;
   base::Time braille_display_connect_time_;
@@ -771,11 +826,11 @@ class AccessibilityManager
   InstallPumpkinCallback install_pumpkin_callback_;
   bool is_pumpkin_installed_for_testing_ = false;
 
+  InstallTenjiCallback install_tenji_callback_;
+
   base::FilePath dlc_path_for_test_;
 
   base::CallbackListSubscription focus_changed_subscription_;
-
-  base::CallbackListSubscription on_app_terminating_subscription_;
 
   base::WeakPtrFactory<AccessibilityManager> weak_ptr_factory_{this};
 
@@ -784,7 +839,6 @@ class AccessibilityManager
   friend class AccessibilityManagerDlcTest;
   friend class AccessibilityManagerNoOnDeviceSpeechRecognitionTest;
   friend class AccessibilityManagerTest;
-  friend class AccessibilityServiceClientTest;
   friend class DictationTest;
   friend class SwitchAccessTest;
 };

@@ -133,7 +133,7 @@ Notification* Notification::Create(ExecutionContext* context,
   // once persistent notifications have been mojofied too.
   if (notification->tag().IsNull() || notification->tag().empty()) {
     auto unguessable_token = base::UnguessableToken::Create();
-    notification->SetToken(unguessable_token.ToString().c_str());
+    notification->SetToken(String(unguessable_token.ToString()));
   } else {
     notification->SetToken(notification->tag());
   }
@@ -201,7 +201,7 @@ void Notification::PrepareShow(TimerBase*) {
   }
 
   loader_ = MakeGarbageCollected<NotificationResourcesLoader>(
-      WTF::BindOnce(&Notification::DidLoadResources, WrapWeakPersistent(this)));
+      BindOnce(&Notification::DidLoadResources, WrapWeakPersistent(this)));
   loader_->Start(GetExecutionContext(), *data_);
 }
 
@@ -321,8 +321,7 @@ String Notification::badge() const {
 VibrationController::VibrationPattern Notification::vibrate() const {
   VibrationController::VibrationPattern pattern;
   if (data_->vibration_pattern.has_value()) {
-    pattern.AppendRange(data_->vibration_pattern->begin(),
-                        data_->vibration_pattern->end());
+    pattern.append_range(*data_->vibration_pattern);
   }
 
   return pattern;
@@ -370,10 +369,10 @@ v8::LocalVector<v8::Value> Notification::actions(
 
     switch (actions[i]->type) {
       case mojom::blink::NotificationActionType::BUTTON:
-        action->setType("button");
+        action->setType(V8NotificationActionType::Enum::kButton);
         break;
       case mojom::blink::NotificationActionType::TEXT:
-        action->setType("text");
+        action->setType(V8NotificationActionType::Enum::kText);
         break;
       default:
         NOTREACHED() << "Unknown action type: " << actions[i]->type;

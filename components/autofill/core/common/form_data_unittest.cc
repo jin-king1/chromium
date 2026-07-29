@@ -8,6 +8,7 @@
 
 #include "base/pickle.h"
 #include "base/strings/utf_string_conversions.h"
+#include "components/autofill/core/common/autofill_test_utils.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -16,6 +17,9 @@
 
 namespace autofill {
 namespace {
+
+using ::autofill::test::FormDataEq;
+using ::autofill::test::WithoutUnserializedData;
 
 // This function serializes the form data into the pickle in version one format.
 // It should always be possible to deserialize it using DeserializeFormData(),
@@ -30,8 +34,8 @@ void SerializeInVersion1Format(const FormData& form_data,
   pickle->WriteString(form_data.action().spec());
   pickle->WriteBool(true);  // Used to be |user_submitted|, which was removed.
   pickle->WriteInt(static_cast<int>(form_data.fields().size()));
-  for (size_t i = 0; i < form_data.fields().size(); ++i) {
-    SerializeFormFieldData(form_data.fields()[i], pickle);
+  for (const FormFieldData& field : form_data.fields()) {
+    SerializeFormFieldData(field, pickle);
   }
 }
 
@@ -43,8 +47,8 @@ void SerializeInVersion2Format(const FormData& form_data,
   pickle->WriteString(form_data.action().spec());
   pickle->WriteBool(true);  // Used to be |user_submitted|, which was removed.
   pickle->WriteInt(static_cast<int>(form_data.fields().size()));
-  for (size_t i = 0; i < form_data.fields().size(); ++i) {
-    SerializeFormFieldData(form_data.fields()[i], pickle);
+  for (const FormFieldData& field : form_data.fields()) {
+    SerializeFormFieldData(field, pickle);
   }
 }
 
@@ -56,8 +60,8 @@ void SerializeInVersion3Format(const FormData& form_data,
   pickle->WriteString(form_data.action().spec());
   pickle->WriteBool(true);  // Used to be |user_submitted|, which was removed.
   pickle->WriteInt(static_cast<int>(form_data.fields().size()));
-  for (size_t i = 0; i < form_data.fields().size(); ++i) {
-    SerializeFormFieldData(form_data.fields()[i], pickle);
+  for (const FormFieldData& field : form_data.fields()) {
+    SerializeFormFieldData(field, pickle);
   }
   pickle->WriteBool(false);  // Used to be `is_form_tag`, which was removed
 }
@@ -69,8 +73,8 @@ void SerializeInVersion4Format(const FormData& form_data,
   pickle->WriteString(form_data.url().spec());
   pickle->WriteString(form_data.action().spec());
   pickle->WriteInt(static_cast<int>(form_data.fields().size()));
-  for (size_t i = 0; i < form_data.fields().size(); ++i) {
-    SerializeFormFieldData(form_data.fields()[i], pickle);
+  for (const FormFieldData& field : form_data.fields()) {
+    SerializeFormFieldData(field, pickle);
   }
   pickle->WriteBool(false);  // Used to be `is_form_tag`, which was removed
 }
@@ -82,8 +86,8 @@ void SerializeInVersion5Format(const FormData& form_data,
   pickle->WriteString(form_data.url().spec());
   pickle->WriteString(form_data.action().spec());
   pickle->WriteInt(static_cast<int>(form_data.fields().size()));
-  for (size_t i = 0; i < form_data.fields().size(); ++i) {
-    SerializeFormFieldData(form_data.fields()[i], pickle);
+  for (const FormFieldData& field : form_data.fields()) {
+    SerializeFormFieldData(field, pickle);
   }
   pickle->WriteBool(false);  // Used to be `is_form_tag`, which was removed
   pickle->WriteBool(/*is_formless_checkout=*/true);
@@ -96,8 +100,8 @@ void SerializeInVersion6Format(const FormData& form_data,
   pickle->WriteString(form_data.url().spec());
   pickle->WriteString(form_data.action().spec());
   pickle->WriteInt(static_cast<int>(form_data.fields().size()));
-  for (size_t i = 0; i < form_data.fields().size(); ++i) {
-    SerializeFormFieldData(form_data.fields()[i], pickle);
+  for (const FormFieldData& field : form_data.fields()) {
+    SerializeFormFieldData(field, pickle);
   }
   pickle->WriteBool(false);  // Used to be `is_form_tag`, which was removed
   pickle->WriteBool(/*is_formless_checkout=*/true);
@@ -111,8 +115,8 @@ void SerializeInVersion7Format(const FormData& form_data,
   pickle->WriteString(form_data.url().spec());
   pickle->WriteString(form_data.action().spec());
   pickle->WriteInt(static_cast<int>(form_data.fields().size()));
-  for (size_t i = 0; i < form_data.fields().size(); ++i) {
-    SerializeFormFieldData(form_data.fields()[i], pickle);
+  for (const FormFieldData& field : form_data.fields()) {
+    SerializeFormFieldData(field, pickle);
   }
   pickle->WriteBool(false);  // Used to be `is_form_tag`, which was removed
   pickle->WriteString(form_data.main_frame_origin().Serialize());
@@ -125,8 +129,8 @@ void SerializeInVersion8Format(const FormData& form_data,
   pickle->WriteString(form_data.url().spec());
   pickle->WriteString(form_data.action().spec());
   pickle->WriteInt(static_cast<int>(form_data.fields().size()));
-  for (size_t i = 0; i < form_data.fields().size(); ++i) {
-    SerializeFormFieldData(form_data.fields()[i], pickle);
+  for (const FormFieldData& field : form_data.fields()) {
+    SerializeFormFieldData(field, pickle);
   }
   pickle->WriteString(form_data.main_frame_origin().Serialize());
 }
@@ -139,8 +143,8 @@ void SerializeIncorrectFormat(const FormData& form_data, base::Pickle* pickle) {
   pickle->WriteString(form_data.action().spec());
   pickle->WriteBool(true);  // Used to be |user_submitted|, which was removed.
   pickle->WriteInt(static_cast<int>(form_data.fields().size()));
-  for (size_t i = 0; i < form_data.fields().size(); ++i) {
-    SerializeFormFieldData(form_data.fields()[i], pickle);
+  for (const FormFieldData& field : form_data.fields()) {
+    SerializeFormFieldData(field, pickle);
   }
 }
 
@@ -158,7 +162,7 @@ void FillInDummyFormData(FormData* data) {
   field_data.set_form_control_type(FormControlType::kInputPassword);
   field_data.set_autocomplete_attribute("off");
   field_data.set_max_length(200);
-  field_data.set_is_autofilled(true);
+  field_data.set_is_autofilled_according_to_renderer(true);
   field_data.set_check_status(FormFieldData::CheckStatus::kChecked);
   field_data.set_is_focusable(true);
   field_data.set_should_autocomplete(false);
@@ -184,7 +188,8 @@ TEST(FormDataTest, SerializeAndDeserialize) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, Serialize_v1_Deserialize_vCurrent) {
@@ -198,7 +203,8 @@ TEST(FormDataTest, Serialize_v1_Deserialize_vCurrent) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, Serialize_v2_Deserialize_vCurrent) {
@@ -212,7 +218,8 @@ TEST(FormDataTest, Serialize_v2_Deserialize_vCurrent) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, Serialize_v3_Deserialize_vCurrent) {
@@ -226,7 +233,8 @@ TEST(FormDataTest, Serialize_v3_Deserialize_vCurrent) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, Serialize_v3_Deserialize_vCurrent_IsFormTagFalse) {
@@ -241,7 +249,8 @@ TEST(FormDataTest, Serialize_v3_Deserialize_vCurrent_IsFormTagFalse) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, Serialize_v4_Deserialize_vCurrent) {
@@ -255,7 +264,8 @@ TEST(FormDataTest, Serialize_v4_Deserialize_vCurrent) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, Serialize_v5_Deserialize_vCurrent) {
@@ -269,7 +279,8 @@ TEST(FormDataTest, Serialize_v5_Deserialize_vCurrent) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, Serialize_v6_Deserialize_vCurrent) {
@@ -283,7 +294,8 @@ TEST(FormDataTest, Serialize_v6_Deserialize_vCurrent) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, Serialize_v7_Deserialize_vCurrent) {
@@ -297,7 +309,8 @@ TEST(FormDataTest, Serialize_v7_Deserialize_vCurrent) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, Serialize_v8_Deserialize_vCurrent) {
@@ -311,7 +324,8 @@ TEST(FormDataTest, Serialize_v8_Deserialize_vCurrent) {
   FormData actual;
   EXPECT_TRUE(DeserializeFormData(&iter, &actual));
 
-  EXPECT_TRUE(FormData::DeepEqual(actual, data));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(data)));
 }
 
 TEST(FormDataTest, SerializeIncorrectFormatAndDeserialize) {
@@ -326,7 +340,8 @@ TEST(FormDataTest, SerializeIncorrectFormatAndDeserialize) {
   EXPECT_FALSE(DeserializeFormData(&iter, &actual));
 
   FormData empty;
-  EXPECT_TRUE(FormData::DeepEqual(actual, empty));
+  EXPECT_THAT(WithoutUnserializedData(actual),
+              FormDataEq(WithoutUnserializedData(empty)));
 }
 
 }  // namespace

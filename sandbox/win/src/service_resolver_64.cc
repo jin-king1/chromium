@@ -5,13 +5,14 @@
 #include "sandbox/win/src/service_resolver.h"
 
 #include <windows.h>
+#include <winternl.h>
 
 #include <ntstatus.h>
 #include <stddef.h>
-#include <winternl.h>
 
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 
 namespace {
@@ -176,16 +177,13 @@ bool IsAnyService(const void* source) {
 namespace sandbox {
 
 NTSTATUS ServiceResolverThunk::Setup(const void* target_module,
-                                     const void* interceptor_module,
                                      const char* target_name,
-                                     const char* interceptor_name,
                                      const void* interceptor_entry_point,
                                      void* thunk_storage,
                                      size_t storage_bytes,
                                      size_t* storage_used) {
-  NTSTATUS ret =
-      Init(target_module, interceptor_module, target_name, interceptor_name,
-           interceptor_entry_point, thunk_storage, storage_bytes);
+  NTSTATUS ret = Init(target_module, target_name, interceptor_entry_point,
+                      thunk_storage, storage_bytes);
   if (!NT_SUCCESS(ret))
     return ret;
 
@@ -247,7 +245,7 @@ bool ServiceResolverThunk::IsFunctionAService(void* local_thunk) const {
     return false;
 
   // Save the verified code.
-  memcpy(local_thunk, &function_code, sizeof(function_code));
+  UNSAFE_TODO(memcpy(local_thunk, &function_code, sizeof(function_code)));
 
   return true;
 }

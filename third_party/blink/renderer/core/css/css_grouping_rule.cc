@@ -36,9 +36,11 @@
 #include "third_party/blink/renderer/core/css/css_style_rule.h"
 #include "third_party/blink/renderer/core/css/css_style_sheet.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser.h"
+#include "third_party/blink/renderer/core/css/style_rule.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -102,8 +104,9 @@ StyleRuleBase* ParseRuleForInsert(const ExecutionContext* execution_context,
   if (index > num_child_rules) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        "the index " + String::Number(index) +
-            " must be less than or equal to the length of the rule list.");
+        StrCat(
+            {"the index ", String::Number(index),
+             " must be less than or equal to the length of the rule list."}));
     return nullptr;
   }
 
@@ -137,7 +140,8 @@ StyleRuleBase* ParseRuleForInsert(const ExecutionContext* execution_context,
   if (!new_rule) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kSyntaxError,
-        "the rule '" + rule_string + "' is invalid and cannot be parsed.");
+        StrCat(
+            {"the rule '", rule_string, "' is invalid and cannot be parsed."}));
     return nullptr;
   }
 
@@ -159,7 +163,8 @@ StyleRuleBase* ParseRuleForInsert(const ExecutionContext* execution_context,
   }
 
   if (!new_rule->IsConditionRule() && !new_rule->IsScopeRule() &&
-      !new_rule->IsStyleRule() && !new_rule->IsNestedDeclarationsRule()) {
+      !new_rule->IsStyleRule() && !new_rule->IsNestedDeclarationsRule() &&
+      !new_rule->IsApplyMixinRule()) {
     for (const CSSRule* current = &parent_rule; current != nullptr;
          current = current->parentRule()) {
       if (IsA<CSSStyleRule>(current)) {
@@ -168,7 +173,7 @@ StyleRuleBase* ParseRuleForInsert(const ExecutionContext* execution_context,
         exception_state.ThrowDOMException(
             DOMExceptionCode::kHierarchyRequestError,
             "Only conditional nested group rules, style rules, @scope rules,"
-            "and nested declaration rules may be nested.");
+            "@apply rules, and nested declaration rules may be nested.");
         return nullptr;
       }
     }
@@ -177,12 +182,13 @@ StyleRuleBase* ParseRuleForInsert(const ExecutionContext* execution_context,
   return new_rule;
 }
 
+template <typename VectorType>
 void ParseAndQuietlyInsertRule(
     const ExecutionContext* execution_context,
     const String& rule_string,
     unsigned index,
     CSSRule& parent_rule,
-    HeapVector<Member<StyleRuleBase>>& child_rules,
+    VectorType& child_rules,
     HeapVector<Member<CSSRule>>& child_rule_cssom_wrappers) {
   CHECK_EQ(child_rule_cssom_wrappers.size(), child_rules.size());
   StyleRuleBase* new_rule =
@@ -192,9 +198,24 @@ void ParseAndQuietlyInsertRule(
   child_rules.insert(index, new_rule);
   child_rule_cssom_wrappers.insert(index, Member<CSSRule>(nullptr));
 }
+template void ParseAndQuietlyInsertRule<GCedHeapVector<Member<StyleRuleBase>>>(
+    const ExecutionContext* execution_context,
+    const String& rule_string,
+    unsigned index,
+    CSSRule& parent_rule,
+    GCedHeapVector<Member<StyleRuleBase>>& child_rules,
+    HeapVector<Member<CSSRule>>& child_rule_cssom_wrappers);
+template void ParseAndQuietlyInsertRule<HeapVector<Member<StyleRuleBase>>>(
+    const ExecutionContext* execution_context,
+    const String& rule_string,
+    unsigned index,
+    CSSRule& parent_rule,
+    HeapVector<Member<StyleRuleBase>>& child_rules,
+    HeapVector<Member<CSSRule>>& child_rule_cssom_wrappers);
 
+template <typename VectorType>
 void QuietlyDeleteRule(unsigned index,
-                       HeapVector<Member<StyleRuleBase>>& child_rules,
+                       VectorType& child_rules,
                        HeapVector<Member<CSSRule>>& child_rule_cssom_wrappers) {
   CHECK_EQ(child_rule_cssom_wrappers.size(), child_rules.size());
   CHECK_LT(index, child_rules.size());
@@ -204,6 +225,14 @@ void QuietlyDeleteRule(unsigned index,
   }
   child_rule_cssom_wrappers.EraseAt(index);
 }
+template void QuietlyDeleteRule<HeapVector<Member<StyleRuleBase>>>(
+    unsigned index,
+    HeapVector<Member<StyleRuleBase>>& child_rules,
+    HeapVector<Member<CSSRule>>& child_rule_cssom_wrappers);
+template void QuietlyDeleteRule<GCedHeapVector<Member<StyleRuleBase>>>(
+    unsigned index,
+    GCedHeapVector<Member<StyleRuleBase>>& child_rules,
+    HeapVector<Member<CSSRule>>& child_rule_cssom_wrappers);
 
 CSSGroupingRule::CSSGroupingRule(StyleRuleGroup* group_rule,
                                  CSSStyleSheet* parent)
@@ -243,8 +272,8 @@ void CSSGroupingRule::deleteRule(unsigned index,
   if (index >= group_rule_->ChildRules().size()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        "the index " + String::Number(index) +
-            " is greated than the length of the rule list.");
+        StrCat({"the index ", String::Number(index),
+                " is greated than the length of the rule list."}));
     return;
   }
 
@@ -333,7 +362,7 @@ CSSRuleList* CSSGroupingRule::cssRules() const {
 
 void CSSGroupingRule::Reattach(StyleRuleBase* rule) {
   DCHECK(rule);
-  group_rule_ = static_cast<StyleRuleGroup*>(rule);
+  group_rule_ = To<StyleRuleGroup>(rule);
   for (unsigned i = 0; i < child_rule_cssom_wrappers_.size(); ++i) {
     if (child_rule_cssom_wrappers_[i]) {
       child_rule_cssom_wrappers_[i]->Reattach(

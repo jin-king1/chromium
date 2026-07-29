@@ -23,6 +23,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/to_string.h"
 #include "base/time/time_delta_from_string.h"
 
 namespace base {
@@ -107,9 +108,9 @@ void LogInvalidEnumValue(const Feature& feature,
 
 bool AssociateFieldTrialParams(const std::string& trial_name,
                                const std::string& group_name,
-                               const FieldTrialParams& params) {
+                               FieldTrialParams params) {
   return FieldTrialParamAssociator::GetInstance()->AssociateFieldTrialParams(
-      trial_name, group_name, params);
+      trial_name, group_name, std::move(params));
 }
 
 bool AssociateFieldTrialParamsFromString(
@@ -141,21 +142,19 @@ bool AssociateFieldTrialParamsFromString(
     }
     std::string trial = decode_data_func(group_parts[0]);
     std::string group = decode_data_func(group_parts[1]);
-    auto trial_group = std::make_pair(trial, group);
-    if (trial_groups.find(trial_group) != trial_groups.end()) {
+    auto [_, inserted] = trial_groups.emplace(trial, group);
+    if (!inserted) {
       DLOG(ERROR) << StringPrintf(
           "A (trial, group) pair listed more than once. (%s, %s)",
           trial.c_str(), group.c_str());
       return false;
     }
-    trial_groups.insert(trial_group);
-    std::map<std::string, std::string> params;
+    FieldTrialParams params;
     for (size_t i = 0; i < key_values.size(); i += 2) {
-      std::string key = decode_data_func(key_values[i]);
-      std::string value = decode_data_func(key_values[i + 1]);
-      params[key] = value;
+      params[decode_data_func(key_values[i])] =
+          decode_data_func(key_values[i + 1]);
     }
-    bool result = AssociateFieldTrialParams(trial, group, params);
+    bool result = AssociateFieldTrialParams(trial, group, std::move(params));
     if (!result) {
       DLOG(ERROR) << "Failed to associate field trial params for group \""
                   << group << "\" in trial \"" << trial << "\"";
@@ -268,7 +267,7 @@ bool GetFieldTrialParamByFeatureAsBool(const Feature& feature,
 
   if (!value_as_string.empty()) {
     LogInvalidValue(feature, "a bool", param_name, value_as_string,
-                    default_value ? "true" : "false");
+                    base::ToString(default_value));
   }
   return default_value;
 }

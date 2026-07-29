@@ -6,7 +6,9 @@
 
 #import "base/check.h"
 #import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
 #import "base/metrics/histogram_macros.h"
+#import "base/task/sequenced_task_runner.h"
 #import "ios/chrome/browser/app_launcher/model/app_launcher_tab_helper.h"
 #import "ios/chrome/browser/mailto_handler/model/mailto_handler_service.h"
 #import "ios/chrome/browser/mailto_handler/model/mailto_handler_service_factory.h"
@@ -25,8 +27,6 @@
 #import "ios/web/public/web_state.h"
 #import "net/base/apple/url_conversions.h"
 #import "url/gurl.h"
-
-BROWSER_USER_DATA_KEY_IMPL(AppLauncherBrowserAgent)
 
 using app_launcher_overlays::AllowAppLaunchResponse;
 using app_launcher_overlays::AppLaunchConfirmationRequest;
@@ -98,6 +98,11 @@ void RecordAppLaunchRequestMetrics(
       UMA_HISTOGRAM_BOOLEAN("Tab.ExternalApplicationOpened.Failed",
                             user_accepted);
       break;
+    case app_launcher_overlays::AppLaunchConfirmationRequestCause::
+        kShortcutsURL:
+      UMA_HISTOGRAM_BOOLEAN("Tab.ExternalApplicationOpened.ShortcutsURL",
+                            user_accepted);
+      break;
   }
 }
 
@@ -147,6 +152,9 @@ RequestCauseFromActionCause(AppLauncherAlertCause cause) {
     case AppLauncherAlertCause::kAppLaunchFailed:
       return app_launcher_overlays::AppLaunchConfirmationRequestCause::
           kAppLaunchFailed;
+    case AppLauncherAlertCause::kShortcutsURL:
+      return app_launcher_overlays::AppLaunchConfirmationRequestCause::
+          kShortcutsURL;
   }
 }
 
@@ -155,24 +163,40 @@ RequestCauseFromActionCause(AppLauncherAlertCause cause) {
 #pragma mark - AppLauncherBrowserAgent
 
 AppLauncherBrowserAgent::AppLauncherBrowserAgent(Browser* browser)
-    : tab_helper_delegate_(browser),
-      tab_helper_delegate_installer_(&tab_helper_delegate_, browser) {
-  browser->AddObserver(this);
+    : BrowserUserData(browser), tab_helper_delegate_(browser) {
+  StartObserving(browser_);
   app_launcher_scene_state_observer_ = [[AppLauncherSceneStateObserver alloc]
       initWithTransitionCallback:
           base::BindRepeating(&AppLauncherBrowserAgent::TabHelperDelegate::
                                   SceneActivationLevelChanged,
                               tab_helper_delegate_.AsWeakPtr())];
-  [browser->GetSceneState() addObserver:app_launcher_scene_state_observer_];
+  [browser_->GetSceneState() addObserver:app_launcher_scene_state_observer_];
 }
 
-AppLauncherBrowserAgent::~AppLauncherBrowserAgent() = default;
+AppLauncherBrowserAgent::~AppLauncherBrowserAgent() {
+  [browser_->GetSceneState() removeObserver:app_launcher_scene_state_observer_];
+  StopObserving();
+}
 
-#pragma mark - BrowserObserver
+#pragma mark - TabsDependencyInstaller
 
-void AppLauncherBrowserAgent::BrowserDestroyed(Browser* browser) {
-  [browser->GetSceneState() removeObserver:app_launcher_scene_state_observer_];
-  browser->RemoveObserver(this);
+void AppLauncherBrowserAgent::OnWebStateInserted(web::WebState* web_state) {
+  AppLauncherTabHelper::FromWebState(web_state)->SetDelegate(
+      &tab_helper_delegate_);
+}
+
+void AppLauncherBrowserAgent::OnWebStateRemoved(web::WebState* web_state) {
+  AppLauncherTabHelper::FromWebState(web_state)->SetDelegate(nullptr);
+}
+
+void AppLauncherBrowserAgent::OnWebStateDeleted(web::WebState* web_state) {
+  // Nothing to do.
+}
+
+void AppLauncherBrowserAgent::OnActiveWebStateChanged(
+    web::WebState* old_active,
+    web::WebState* new_active) {
+  // Nothing to do.
 }
 
 #pragma mark - AppLauncherBrowserAgent::TabHelperDelegate

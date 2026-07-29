@@ -1,9 +1,10 @@
 include_rules = [
-  "+base/containers/fixed_flat_set.h",
   "+base/containers/flat_set.h",
+  "+base/memory_coordinator",
+  "+components/persistent_cache",
+  "+components/subresource_filter/core/common/scoped_rule.h",
   "+net/base/auth.h",
   "+net/base/ip_endpoint.h",
-  "+net/base/schemeful_site.h",
   "+net/dns/public",
   "+net/filter/source_stream_type.h",
   "+net/http/alternate_protocol_usage.h",
@@ -13,6 +14,10 @@ include_rules = [
 ]
 
 specific_include_rules = {
+  "persistent_code_cache_host.cc": [
+    "+base/task",
+    "+url/gurl.h",
+  ],
   "resource_request.cc": [
     "+net/base/request_priority.h",
   ],

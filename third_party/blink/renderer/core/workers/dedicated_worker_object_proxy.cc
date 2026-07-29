@@ -34,6 +34,7 @@
 #include <utility>
 
 #include "base/memory/ptr_util.h"
+#include "third_party/blink/public/common/loader/javascript_framework_detection.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/serialization/serialized_script_value.h"
@@ -50,6 +51,7 @@
 #include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 #include "third_party/blink/renderer/core/workers/worker_thread.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
+#include "third_party/blink/renderer/platform/bindings/source_location_copier.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
@@ -96,16 +98,17 @@ void DedicatedWorkerObjectProxy::ProcessUnhandledException(
   global_scope->ExceptionUnhandled(exception_id);
 }
 
-void DedicatedWorkerObjectProxy::ReportException(
-    const String& error_message,
-    std::unique_ptr<SourceLocation> location,
-    int exception_id) {
+void DedicatedWorkerObjectProxy::ReportException(const String& error_message,
+                                                 const SourceLocation* location,
+                                                 int exception_id) {
+  CrossThreadSourceLocation cross_thread_location =
+      CrossThreadSourceLocation::From(location);
   PostCrossThreadTask(
       *GetParentExecutionContextTaskRunners()->Get(TaskType::kInternalDefault),
       FROM_HERE,
       CrossThreadBindOnce(&DedicatedWorkerMessagingProxy::DispatchErrorEvent,
                           messaging_proxy_weak_ptr_, error_message,
-                          location->Clone(), exception_id));
+                          std::move(cross_thread_location), exception_id));
 }
 
 void DedicatedWorkerObjectProxy::DidFailToFetchClassicScript() {
@@ -124,12 +127,14 @@ void DedicatedWorkerObjectProxy::DidFailToFetchModuleScript() {
                           messaging_proxy_weak_ptr_));
 }
 
-void DedicatedWorkerObjectProxy::DidEvaluateTopLevelScript(bool success) {
+void DedicatedWorkerObjectProxy::DidEvaluateTopLevelScript(
+    bool success,
+    const JavaScriptFrameworkDetectionResult& result) {
   PostCrossThreadTask(
       *GetParentExecutionContextTaskRunners()->Get(TaskType::kInternalLoading),
       FROM_HERE,
       CrossThreadBindOnce(&DedicatedWorkerMessagingProxy::DidEvaluateScript,
-                          messaging_proxy_weak_ptr_, success));
+                          messaging_proxy_weak_ptr_, success, result));
 }
 
 DedicatedWorkerObjectProxy::DedicatedWorkerObjectProxy(

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/accessibility/facegaze_test_utils.h"
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/shell.h"
 #include "base/base_paths.h"
@@ -15,11 +16,12 @@
 #include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/prefs/pref_service.h"
 #include "extensions/browser/browsertest_util.h"
 #include "extensions/browser/extension_host_test_helper.h"
+#include "extensions/browser/extension_registry_test_helper.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/display/screen.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/gfx/geometry/point.h"
@@ -149,7 +151,7 @@ FaceGazeTestUtils::MockFaceLandmarkerResult::WithGesture(
   // receives confidence scores as values [0, 1], so we need to convert the
   // confidence to a decimal before processing it.
   recognized_gestures_.Append(
-      base::Value::Dict()
+      base::DictValue()
           .Set("categoryName", ToString(gesture))
           .Set("score", static_cast<double>(confidence) / 100.0));
   return *this;
@@ -278,23 +280,25 @@ void FaceGazeTestUtils::EnableFaceGaze(const Config& config) {
       prefs::kAccessibilityFaceGazeAcceleratorDialogHasBeenAccepted,
       config.dialog_accepted());
 
-  FaceGazeTestUtils::SetUpMediapipeDir();
+  FaceGazeTestUtils::SetUpMediapipeDir(kMediapipeTestFilePath);
   ASSERT_FALSE(AccessibilityManager::Get()->IsFaceGazeEnabled());
-
-  // Use ExtensionHostTestHelper to detect when the accessibility common
-  // extension loads.
-  extensions::ExtensionHostTestHelper host_helper(
-      AccessibilityManager::Get()->profile(),
-      extension_misc::kAccessibilityCommonExtensionId);
+  // Watch events from an MV3 extension which runs in a service worker.
+  extensions::ExtensionRegistryTestHelper observer(
+      extension_misc::kAccessibilityCommonExtensionId,
+      AccessibilityManager::Get()->profile());
   AccessibilityManager::Get()->EnableFaceGaze(true);
-  host_helper.WaitForHostCompletedFirstLoad();
+  observer.WaitForServiceWorkerStart();
 
   WaitForJSReady();
-  SetUpJSTestSupport();
+  SetUpJSTestSupport(kTestSupportPath);
   if (config.dialog_accepted()) {
     // The FaceLandmarker will be automatically initialized after the dialog has
     // been accepted.
     WaitForFaceLandmarker();
+    // There can be issues during teardown of the webcam stack in manifest
+    // v3. Since the webcam is not actually used during these tests, we
+    // preemptively turn it off.
+    StopWebCam();
   }
 
   CancelMouseControllerInterval();
@@ -340,7 +344,7 @@ void FaceGazeTestUtils::MoveMouseTo(const gfx::Point& location) {
 
 void FaceGazeTestUtils::AssertCursorAt(const gfx::Point& location) {
   WaitForCursorPosition(location);
-  ASSERT_EQ(location, display::Screen::GetScreen()->GetCursorScreenPoint());
+  ASSERT_EQ(location, display::Screen::Get()->GetCursorScreenPoint());
 }
 
 void FaceGazeTestUtils::AssertScrollMode(bool active) {
@@ -357,13 +361,12 @@ void FaceGazeTestUtils::ExecuteAccessibilityCommonScript(
       /*script=*/script);
 }
 
-void FaceGazeTestUtils::SetUpMediapipeDir() {
+void FaceGazeTestUtils::SetUpMediapipeDir(const char* mediapipe_dir) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   base::FilePath gen_root_dir;
   ASSERT_TRUE(
       base::PathService::Get(base::DIR_OUT_TEST_DATA_ROOT, &gen_root_dir));
-  base::FilePath test_file_path =
-      gen_root_dir.AppendASCII(kMediapipeTestFilePath);
+  base::FilePath test_file_path = gen_root_dir.AppendASCII(mediapipe_dir);
   ASSERT_TRUE(base::PathExists(test_file_path));
   AccessibilityManager::Get()->SetDlcPathForTest(test_file_path);
 }
@@ -371,7 +374,7 @@ void FaceGazeTestUtils::SetUpMediapipeDir() {
 void FaceGazeTestUtils::WaitForJSReady() {
   std::string script = base::StringPrintf(R"JS(
     (async function() {
-      window.accessibilityCommon.setFeatureLoadCallbackForTest('facegaze',
+      globalThis.accessibilityCommon.setFeatureLoadCallbackForTest('facegaze',
           () => {
             chrome.test.sendScriptResult('ready');
           });
@@ -380,11 +383,11 @@ void FaceGazeTestUtils::WaitForJSReady() {
   ExecuteAccessibilityCommonScript(script);
 }
 
-void FaceGazeTestUtils::SetUpJSTestSupport() {
+void FaceGazeTestUtils::SetUpJSTestSupport(const char* test_support_dir) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   base::FilePath source_dir;
   CHECK(base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &source_dir));
-  auto test_support_path = source_dir.AppendASCII(kTestSupportPath);
+  auto test_support_path = source_dir.AppendASCII(test_support_dir);
   std::string script;
   ASSERT_TRUE(base::ReadFileToString(test_support_path, &script))
       << test_support_path;
@@ -398,6 +401,11 @@ void FaceGazeTestUtils::CancelMouseControllerInterval() {
 
 void FaceGazeTestUtils::WaitForFaceLandmarker() {
   std::string script = "faceGazeTestSupport.waitForFaceLandmarker();";
+  ExecuteAccessibilityCommonScript(script);
+}
+
+void FaceGazeTestUtils::StopWebCam() {
+  std::string script = "faceGazeTestSupport.stopWebCam();";
   ExecuteAccessibilityCommonScript(script);
 }
 
@@ -485,7 +493,7 @@ void FaceGazeTestUtils::SetGesturesToMacros(
     const base::flat_map<FaceGazeGesture, MacroName>& gestures_to_macros) {
   // Copy the stricly-typed mapping of gestures to macros into a dictionary
   // value that can be used as the preference value.
-  base::Value::Dict dict;
+  base::DictValue dict;
   for (const auto& mapping : gestures_to_macros) {
     dict.Set(ToString(mapping.first), mapping.second);
   }
@@ -498,7 +506,7 @@ void FaceGazeTestUtils::SetGestureConfidences(
     const base::flat_map<FaceGazeGesture, int>& gesture_confidences) {
   // Copy the stricly-typed mapping of gestures to confidences into a dictionary
   // value that can be used as the preference value.
-  base::Value::Dict dict;
+  base::DictValue dict;
   for (const auto& mapping : gesture_confidences) {
     dict.Set(ToString(mapping.first), mapping.second);
   }

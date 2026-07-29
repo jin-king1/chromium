@@ -10,7 +10,7 @@
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/values.h"
 #include "remoting/host/config_file_watcher.h"
 #include "remoting/host/host_config.h"
@@ -28,7 +28,7 @@ bool GetUsageStatsConsent(bool& allowed, bool& set_by_policy) {
   if (command_line->HasSwitch(kHostConfigSwitchName)) {
     base::FilePath config_file_path =
         command_line->GetSwitchValuePath(kHostConfigSwitchName);
-    std::optional<base::Value::Dict> host_config(
+    std::optional<base::DictValue> host_config(
         HostConfigFromJsonFile(config_file_path));
     if (host_config.has_value()) {
       std::optional<bool> host_config_value =

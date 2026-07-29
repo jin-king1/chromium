@@ -15,9 +15,9 @@ static_library("management_disclosure") {
   deps = [
     "//ash/public/cpp",
     "//base",
-    "//chrome/browser:browser_process",
     "//chrome/browser/ash/policy/core",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/webui/management",
   ]
 }
 

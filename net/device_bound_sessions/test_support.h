@@ -21,14 +21,17 @@ namespace net::device_bound_sessions {
 std::pair<base::span<const uint8_t>, std::string>
 GetRS256SpkiAndJwkForTesting();
 
+// Returns the public key used for Origin Trial tokens in
+// `GetTestRequestHandler`.
+extern const char kTestOriginTrialPublicKey[];
+
 // Returns a request handler suitable for use with
 // `EmbeddedTestServer`. The server allows registration of device bound
 // sessions.
 EmbeddedTestServer::HandleRequestCallback GetTestRequestHandler(
     const GURL& base_url);
 
-// Verify the signature of a JWT using the ES256 JWK stored in the "key" claim
-// in its payload.
+// Verify the signature of a JWT using the ES256 JWK stored in it.
 bool VerifyEs256Jwt(std::string_view jwt);
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)

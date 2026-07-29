@@ -5,9 +5,12 @@
 #include "components/feed/core/v2/feed_network_impl.h"
 
 #include <memory>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/base64.h"
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -15,6 +18,7 @@
 #include "base/strings/string_split.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/protobuf_matchers.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "components/feed/core/common/pref_names.h"
@@ -24,7 +28,6 @@
 #include "components/feed/core/proto/v2/wire/response.pb.h"
 #include "components/feed/core/proto/v2/wire/upload_actions_request.pb.h"
 #include "components/feed/core/proto/v2/wire/upload_actions_response.pb.h"
-#include "components/feed/core/proto/v2/wire/web_feeds.pb.h"
 #include "components/feed/core/v2/feed_network.h"
 #include "components/feed/core/v2/public/types.h"
 #include "components/feed/core/v2/test/callback_receiver.h"
@@ -32,6 +35,7 @@
 #include "components/prefs/testing_pref_service.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/sync/base/features.h"
 #include "components/variations/scoped_variations_ids_provider.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "net/http/http_response_headers.h"
@@ -52,14 +56,9 @@
 namespace feed {
 namespace {
 
-constexpr char kEmail[] = "example@gmail.com";
+constexpr std::string_view kEmail = "example@gmail.com";
 
-MATCHER_P(EqualsProto,
-          message,
-          "Match a proto Message equal to the matcher's argument.") {
-  return arg.ShortDebugString() == message.ShortDebugString();
-}
-
+using base::test::EqualsProto;
 using testing::ElementsAre;
 using QueryRequestResult = FeedNetwork::QueryRequestResult;
 
@@ -139,11 +138,14 @@ class FeedNetworkTest : public testing::Test {
     feed_network_ = std::make_unique<FeedNetworkImpl>(
         &delegate_, identity_test_env_.identity_manager(), "dummy_api_key",
         shared_url_loader_factory_, &profile_prefs_);
-    SignIn(signin::ConsentLevel::kSync);
+    SignIn(syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
+               ? signin::ConsentLevel::kSignin
+               : signin::ConsentLevel::kSync);
   }
 
   void SignIn(signin::ConsentLevel consent_level) {
-    identity_test_env_.MakePrimaryAccountAvailable(kEmail, consent_level);
+    identity_test_env_.MakePrimaryAccountAvailable(std::string(kEmail),
+                                                   consent_level);
     identity_test_env_.SetAutomaticIssueOfAccessTokens(true);
   }
 
@@ -189,7 +191,7 @@ class FeedNetworkTest : public testing::Test {
         head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
             "HTTP/1.1 " + base::NumberToString(code));
       }
-      status.decoded_body_length = response_string.length();
+      status.decoded_body_length = base::ByteSize(response_string.length());
     }
 
     test_factory_.AddResponse(url, std::move(head), response_string, status);
@@ -269,7 +271,7 @@ class FeedNetworkTest : public testing::Test {
  protected:
   signin::IdentityTestEnvironment identity_test_env_;
   TestDelegate delegate_{&identity_test_env_};
-  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+  variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
   std::unique_ptr<FeedNetwork> feed_network_;
   RequestMetadata request_metadata_;
@@ -614,8 +616,8 @@ TEST_F(FeedNetworkTest, ShouldIncludeAPIKeyForAuthError) {
                                    GetTestFeedRequest(), account_info(),
                                    receiver.Bind());
   identity_env()->WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
-      GoogleServiceAuthError(
-          GoogleServiceAuthError::State::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   network::ResourceRequest resource_request =
       RespondToQueryRequest(GetTestFeedResponse(), net::HTTP_OK);
@@ -675,7 +677,7 @@ TEST_F(FeedNetworkTest, TestHostOverrideWithAuthHeader) {
                                    GetTestFeedRequest(), account_info(),
                                    receiver.Bind());
 
-  ASSERT_EQ("www.newhost.com", GetPendingRequestURL().host());
+  ASSERT_EQ("www.newhost.com", GetPendingRequestURL().GetHost());
 
   response_headers_ = base::MakeRefCounted<net::HttpResponseHeaders>(
       net::HttpUtil::AssembleRawHeaders(
@@ -696,9 +698,9 @@ TEST_F(FeedNetworkTest, TestHostOverrideWithPath) {
                                    GetTestFeedRequest(), account_info(),
                                    receiver.Bind());
 
-  ASSERT_EQ("www.newhost.com", GetPendingRequestURL().host());
+  ASSERT_EQ("www.newhost.com", GetPendingRequestURL().GetHost());
   ASSERT_EQ("/testpath/httpservice/retry/TrellisClankService/FeedQuery",
-            GetPendingRequestURL().path());
+            GetPendingRequestURL().GetPath());
 }
 
 TEST_F(FeedNetworkTest, TestHostOverrideWithPathTrailingSlash) {
@@ -709,9 +711,9 @@ TEST_F(FeedNetworkTest, TestHostOverrideWithPathTrailingSlash) {
                                    GetTestFeedRequest(), account_info(),
                                    receiver.Bind());
 
-  ASSERT_EQ("www.newhost.com", GetPendingRequestURL().host());
+  ASSERT_EQ("www.newhost.com", GetPendingRequestURL().GetHost());
   ASSERT_EQ("/testpath/httpservice/retry/TrellisClankService/FeedQuery",
-            GetPendingRequestURL().path());
+            GetPendingRequestURL().GetPath());
 }
 
 TEST_F(FeedNetworkTest, SendApiRequest_UploadActions) {
@@ -829,30 +831,6 @@ TEST_F(FeedNetworkTest, SendApiRequestSendsValidRequest_UploadActions) {
   std::string expected_body;
   ASSERT_TRUE(GetTestActionRequest().SerializeToString(&expected_body));
   EXPECT_EQ(expected_body, sent_body_uncompressed);
-}
-
-TEST_F(FeedNetworkTest, SendApiRequest_Unfollow) {
-  CallbackReceiver<
-      FeedNetwork::ApiResult<feedwire::webfeed::UnfollowWebFeedResponse>>
-      receiver;
-  feed_network()->SendApiRequest<UnfollowWebFeedDiscoverApi>(
-      {}, account_info(), request_metadata(), receiver.Bind());
-  RespondToDiscoverRequest("", net::HTTP_OK);
-
-  ASSERT_TRUE(receiver.GetResult());
-  const FeedNetwork::ApiResult<feedwire::webfeed::UnfollowWebFeedResponse>&
-      result = *receiver.GetResult();
-  EXPECT_EQ(net::HTTP_OK, result.response_info.status_code);
-  EXPECT_TRUE(result.response_body);
-  histogram().ExpectBucketCount(
-      "ContentSuggestions.Feed.Network.ResponseStatus.UnfollowWebFeed", 200, 1);
-}
-
-TEST_F(FeedNetworkTest, SendApiRequest_ListWebFeedsSendsCorrectContentType) {
-  feed_network()->SendApiRequest<ListWebFeedsDiscoverApi>(
-      {}, account_info(), request_metadata(), base::DoNothing());
-  EXPECT_EQ("application/x-protobuf", RespondToDiscoverRequest("", net::HTTP_OK)
-                                          .headers.GetHeader("content-type"));
 }
 
 TEST_F(FeedNetworkTest,

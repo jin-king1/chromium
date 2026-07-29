@@ -5,24 +5,34 @@
 #include "net/cookies/cookie_partition_key.h"
 
 #include <compare>
+#include <optional>
 #include <ostream>
 #include <tuple>
 
+#include "base/auto_reset.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
+#include "base/strings/strcat.h"
 #include "base/types/optional_util.h"
 #include "net/base/cronet_buildflags.h"
 #include "net/base/features.h"
+#include "net/base/network_isolation_key.h"
 #include "net/base/network_isolation_partition.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_util.h"
 #include "net/cookies/site_for_cookies.h"
+#include "url/gurl.h"
 
 #if !BUILDFLAG(CRONET_BUILD)
 #include "mojo/public/cpp/bindings/default_construct_tag.h"
 #endif
 
 namespace net {
+
+#if BUILDFLAG(IS_ANDROID)
+bool CookiePartitionKey::g_partitioning_disabled_in_webview_ = false;
+bool CookiePartitionKey::g_constructor_called_ = false;
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace {
 
@@ -60,8 +70,12 @@ std::string CookiePartitionKey::SerializedCookiePartitionKey::GetDebugString()
 }
 
 #if !BUILDFLAG(CRONET_BUILD)
-CookiePartitionKey::CookiePartitionKey(mojo::DefaultConstruct::Tag) {}
-#endif
+CookiePartitionKey::CookiePartitionKey(mojo::DefaultConstruct::Tag) {
+#if BUILDFLAG(IS_ANDROID)
+  g_constructor_called_ = true;
+#endif  // BUILDFLAG(IS_ANDROID)
+}
+#endif  // !BUILDFLAG(CRONET_BUILD)
 bool CookiePartitionKey::SerializedCookiePartitionKey::has_cross_site_ancestor()
     const {
   return has_cross_site_ancestor_;
@@ -78,10 +92,11 @@ CookiePartitionKey::CookiePartitionKey(
     const SchemefulSite& site,
     std::optional<base::UnguessableToken> nonce,
     AncestorChainBit ancestor_chain_bit)
-    : site_(site), nonce_(nonce), ancestor_chain_bit_(ancestor_chain_bit) {}
-
-CookiePartitionKey::CookiePartitionKey(bool from_script)
-    : from_script_(from_script) {}
+    : site_(site), nonce_(nonce), ancestor_chain_bit_(ancestor_chain_bit) {
+#if BUILDFLAG(IS_ANDROID)
+  g_constructor_called_ = true;
+#endif  // BUILDFLAG(IS_ANDROID)
+}
 
 CookiePartitionKey::CookiePartitionKey(const CookiePartitionKey& other) =
     default;
@@ -95,18 +110,6 @@ CookiePartitionKey& CookiePartitionKey::operator=(CookiePartitionKey&& other) =
     default;
 
 CookiePartitionKey::~CookiePartitionKey() = default;
-
-bool CookiePartitionKey::operator==(const CookiePartitionKey& other) const {
-  return (*this <=> other) == 0;
-}
-
-std::strong_ordering CookiePartitionKey::operator<=>(
-    const CookiePartitionKey& other) const {
-  AncestorChainBit this_bit = GetAncestorChainBit();
-  AncestorChainBit other_bit = other.GetAncestorChainBit();
-  return std::tie(site_, nonce_, this_bit) <=>
-         std::tie(other.site_, other.nonce_, other_bit);
-}
 
 // static
 base::expected<CookiePartitionKey::SerializedCookiePartitionKey, std::string>
@@ -137,9 +140,11 @@ std::optional<CookiePartitionKey> CookiePartitionKey::FromNetworkIsolationKey(
       NetworkIsolationPartition::kGeneral) {
     return std::nullopt;
   }
-  if (cookie_util::PartitionedCookiesDisabledByCommandLine()) {
+#if BUILDFLAG(IS_ANDROID)
+  if (g_partitioning_disabled_in_webview_) {
     return std::nullopt;
   }
+#endif
 
   const std::optional<base::UnguessableToken>& nonce =
       network_isolation_key.GetNonce();
@@ -179,9 +184,11 @@ std::optional<CookiePartitionKey> CookiePartitionKey::FromStorageKeyComponents(
     const SchemefulSite& site,
     AncestorChainBit ancestor_chain_bit,
     base::optional_ref<const base::UnguessableToken> nonce) {
-  if (cookie_util::PartitionedCookiesDisabledByCommandLine()) {
+#if BUILDFLAG(IS_ANDROID)
+  if (g_partitioning_disabled_in_webview_) {
     return std::nullopt;
   }
+#endif
   return CookiePartitionKey::FromWire(site, ancestor_chain_bit,
                                       nonce.CopyAsOptional());
 }
@@ -226,9 +233,11 @@ CookiePartitionKey::DeserializeInternal(
     const std::string& top_level_site,
     CookiePartitionKey::AncestorChainBit has_cross_site_ancestor,
     CookiePartitionKey::ParsingMode parsing_mode) {
-  if (cookie_util::PartitionedCookiesDisabledByCommandLine()) {
+#if BUILDFLAG(IS_ANDROID)
+  if (g_partitioning_disabled_in_webview_) {
     return WarnAndCreateUnexpected("Partitioned cookies are disabled");
   }
+#endif
 
   auto schemeful_site = SchemefulSite::Deserialize(top_level_site);
   if (schemeful_site.opaque()) {
@@ -244,8 +253,6 @@ CookiePartitionKey::DeserializeInternal(
 }
 
 bool CookiePartitionKey::IsSerializeable() const {
-  // We should not try to serialize a partition key created by a renderer.
-  DCHECK(!from_script_);
   return !site_.opaque() && !nonce_.has_value();
 }
 
@@ -257,5 +264,23 @@ std::ostream& operator<<(std::ostream& os, const CookiePartitionKey& cpk) {
   os << (cpk.IsThirdParty() ? ",cross_site" : ",same_site");
   return os;
 }
+
+#if BUILDFLAG(IS_ANDROID)
+// static
+void CookiePartitionKey::DisablePartitioningInWebView() {
+  CHECK(!g_constructor_called_);
+  g_partitioning_disabled_in_webview_ = true;
+}
+
+bool CookiePartitionKey::IsPartitioningDisabledInWebView() {
+  return g_partitioning_disabled_in_webview_;
+}
+
+// static
+base::AutoReset<bool>
+CookiePartitionKey::DisablePartitioningInScopeForTesting() {
+  return base::AutoReset<bool>(&g_partitioning_disabled_in_webview_, true);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace net

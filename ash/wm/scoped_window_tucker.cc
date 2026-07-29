@@ -119,6 +119,9 @@ ScopedWindowTucker::ScopedWindowTucker(std::unique_ptr<Delegate> delegate,
 
 ScopedWindowTucker::~ScopedWindowTucker() {
   Shell::Get()->activation_client()->RemoveObserver(this);
+  if (window_->is_destroying()) {
+    return;
+  }
   if (!window_->IsVisible()) {
     window_->Show();
     return;
@@ -268,7 +271,7 @@ void ScopedWindowTucker::InitializeTuckHandleWidget() {
       });
   aura::Window* window_to_activate = nullptr;
   if (app_window_it == mru_windows.end()) {
-    if (display::Screen::GetScreen()->InTabletMode()) {
+    if (display::Screen::Get()->InTabletMode()) {
       window_to_activate = Shell::Get()->app_list_controller()->GetWindow();
     }
   } else {

@@ -23,11 +23,13 @@ import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.AwThreadUtils;
+import org.chromium.android_webview.AwWebResourceRequest;
 import org.chromium.android_webview.common.crash.AwCrashReporterClient;
 import org.chromium.base.JniAndroid;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 
@@ -280,6 +282,7 @@ public class AwUncaughtExceptionTest extends AwParameterizedTest {
     @Test
     @MediumTest
     @Feature({"AndroidWebView"})
+    @DisabledTest(message = "https://crbug.com/502230826")
     public void testShouldOverrideUrlLoading() throws InterruptedException {
         final CountDownLatch latch = new CountDownLatch(1);
         final String msg = "dies.";

@@ -4,10 +4,11 @@
 ../../build/android/pylib/constants/__init__.py
 ../../build/android/pylib/constants/host_paths.py
 ../../build/android/pylib/utils/__init__.py
-../../build/android/pylib/utils/decorators.py
-../../build/android/pylib/utils/google_storage_helper.py
 ../../build/android/pylib/utils/logdog_helper.py
-../../components/variations/service/generate_ui_string_overrider.py
+../../build/util/lib/__init__.py
+../../build/util/lib/common/__init__.py
+../../build/util/lib/common/decorators.py
+../../build/util/lib/common/google_storage_helper.py
 ../../third_party/catapult/common/py_trace_event/py_trace_event/__init__.py
 ../../third_party/catapult/common/py_trace_event/py_trace_event/trace_event.py
 ../../third_party/catapult/common/py_trace_event/py_trace_event/trace_event_impl/__init__.py
@@ -50,6 +51,9 @@
 ../../third_party/catapult/common/py_vulcanize/py_vulcanize/resource_loader.py
 ../../third_party/catapult/common/py_vulcanize/py_vulcanize/strip_js_comments.py
 ../../third_party/catapult/common/py_vulcanize/py_vulcanize/style_sheet.py
+../../third_party/catapult/dashboard/dashboard/__init__.py
+../../third_party/catapult/dashboard/dashboard/common/__init__.py
+../../third_party/catapult/dashboard/dashboard/common/histogram_helpers.py
 ../../third_party/catapult/dependency_manager/dependency_manager/__init__.py
 ../../third_party/catapult/dependency_manager/dependency_manager/archive_info.py
 ../../third_party/catapult/dependency_manager/dependency_manager/base_config.py
@@ -79,7 +83,6 @@
 ../../third_party/catapult/devil/devil/android/devil_util.py
 ../../third_party/catapult/devil/devil/android/flag_changer.py
 ../../third_party/catapult/devil/devil/android/forwarder.py
-../../third_party/catapult/devil/devil/android/install_commands.py
 ../../third_party/catapult/devil/devil/android/logcat_monitor.py
 ../../third_party/catapult/devil/devil/android/ndk/__init__.py
 ../../third_party/catapult/devil/devil/android/ndk/abis.py
@@ -113,7 +116,6 @@
 ../../third_party/catapult/devil/devil/utils/__init__.py
 ../../third_party/catapult/devil/devil/utils/cmd_helper.py
 ../../third_party/catapult/devil/devil/utils/geometry.py
-../../third_party/catapult/devil/devil/utils/host_utils.py
 ../../third_party/catapult/devil/devil/utils/lazy/__init__.py
 ../../third_party/catapult/devil/devil/utils/lazy/weak_constant.py
 ../../third_party/catapult/devil/devil/utils/logging_common.py
@@ -124,7 +126,6 @@
 ../../third_party/catapult/devil/devil/utils/run_tests_helper.py
 ../../third_party/catapult/devil/devil/utils/timeout_retry.py
 ../../third_party/catapult/devil/devil/utils/watchdog_timer.py
-../../third_party/catapult/devil/devil/utils/zip_utils.py
 ../../third_party/catapult/systrace/systrace/__init__.py
 ../../third_party/catapult/systrace/systrace/trace_result.py
 ../../third_party/catapult/systrace/systrace/tracing_agents/__init__.py
@@ -212,6 +213,7 @@
 ../../third_party/catapult/telemetry/telemetry/internal/backends/chrome_inspector/inspector_backend.py
 ../../third_party/catapult/telemetry/telemetry/internal/backends/chrome_inspector/inspector_backend_list.py
 ../../third_party/catapult/telemetry/telemetry/internal/backends/chrome_inspector/inspector_console.py
+../../third_party/catapult/telemetry/telemetry/internal/backends/chrome_inspector/inspector_fetch.py
 ../../third_party/catapult/telemetry/telemetry/internal/backends/chrome_inspector/inspector_log.py
 ../../third_party/catapult/telemetry/telemetry/internal/backends/chrome_inspector/inspector_memory.py
 ../../third_party/catapult/telemetry/telemetry/internal/backends/chrome_inspector/inspector_page.py
@@ -402,6 +404,7 @@
 ../../third_party/catapult/third_party/typ/typ/pool.py
 ../../third_party/catapult/third_party/typ/typ/printer.py
 ../../third_party/catapult/third_party/typ/typ/python_2_3_compat.py
+../../third_party/catapult/third_party/typ/typ/reduced_glob.py
 ../../third_party/catapult/third_party/typ/typ/result_sink.py
 ../../third_party/catapult/third_party/typ/typ/runner.py
 ../../third_party/catapult/third_party/typ/typ/stats.py
@@ -454,6 +457,7 @@
 ../../third_party/logdog/logdog/streamname.py
 ../../third_party/logdog/logdog/varint.py
 ../json_comment_eater/json_comment_eater.py
+../json_to_struct/aggregation.py
 ../json_to_struct/class_generator.py
 ../json_to_struct/element_generator.py
 ../json_to_struct/java_element_generator.py
@@ -476,6 +480,7 @@ benchmarks/loading_metrics_category.py
 benchmarks/media.py
 benchmarks/memory.py
 benchmarks/octane.py
+benchmarks/omnibox_aim_perf_story.py
 benchmarks/power.py
 benchmarks/press.py
 benchmarks/rasterize_and_record_micro.py
@@ -550,17 +555,6 @@ contrib/power/profiling_util_unittest.py
 contrib/power/stories.py
 contrib/power/top_sites_story.py
 contrib/power/wakeups.py
-contrib/shared_storage/__init__.py
-contrib/shared_storage/page_set.py
-contrib/shared_storage/pages.py
-contrib/shared_storage/shared_storage.py
-contrib/shared_storage/shared_storage_shared_page_state.py
-contrib/shared_storage/utils/__init__.py
-contrib/shared_storage/utils/file_util.py
-contrib/shared_storage/utils/histogram_list.py
-contrib/shared_storage/utils/process_results.py
-contrib/shared_storage/utils/util.py
-contrib/shared_storage/utils/xvfb.py
 contrib/system_health_scroll_jank/__init__.py
 contrib/system_health_scroll_jank/janky_story_set.py
 contrib/system_health_scroll_jank/system_health_scroll_jank.py
@@ -620,6 +614,9 @@ page_sets/companion/browser_element_identifiers.py
 page_sets/companion/companion_stories.py
 page_sets/companion/histograms.py
 page_sets/cros_ui_cases.py
+page_sets/crossbench_embedder.py
+page_sets/crossbench_gma_embedder.py
+page_sets/crossbench_loading.py
 page_sets/data/companion_test_sites.py
 page_sets/desktop_power.py
 page_sets/desktop_ui/__init__.py
@@ -636,7 +633,6 @@ page_sets/desktop_ui/story_tags.py
 page_sets/desktop_ui/tab_search_story.py
 page_sets/desktop_ui/ui_devtools_utils.py
 page_sets/desktop_ui/url_list.py
-page_sets/desktop_ui/webui_tab_strip_story.py
 page_sets/desktop_ui/webui_utils.py
 page_sets/dummy_story_set.py
 page_sets/dummy_wpr_story_set.py

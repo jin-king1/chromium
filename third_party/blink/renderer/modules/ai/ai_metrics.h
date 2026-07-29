@@ -5,11 +5,16 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_AI_AI_METRICS_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_AI_AI_METRICS_H_
 
+#include <optional>
 #include <string>
+
+#include "third_party/blink/public/mojom/ai/ai_language_model.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_message_content.h"
+#include "third_party/blink/renderer/modules/modules_export.h"
 
 namespace blink {
 
-class AIMetrics {
+class MODULES_EXPORT AIMetrics {
  public:
   // This class contains all the supported session types.
   // LINT.IfChange(AISessionType)
@@ -20,43 +25,44 @@ class AIMetrics {
     kSummarizer = 3,
     kTranslator = 4,
     kLanguageDetector = 5,
-    kMaxValue = kLanguageDetector,
+    kProofreader = 6,
+    // kClassifier = 7,  // Classifier API is deprecated.
+    kSemanticEmbedder = 8,
+    kMaxValue = kSemanticEmbedder,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/ai/histograms.xml:SessionType)
 
-  // This class contains all the model execution API supported.
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  // TODO(crbug.com/355967885): update the enums when adding metrics for
-  // language model API.
-  // LINT.IfChange(AIAPI)
-  enum class AIAPI {
-    kCanCreateSession = 0,
-    kCreateSession = 1,
-    kSessionPrompt = 2,
-    kSessionPromptStreaming = 3,
-    kDefaultTextSessionOptions = 4,
-    kSessionDestroy = 5,
-    kSessionClone = 6,
-    kTextModelInfo = 7,
-    kSessionSummarize = 8,
-    kSessionSummarizeStreaming = 9,
-    kWriterWrite = 10,
-    kWriterWriteStreaming = 11,
-    kRewriterRewrite = 12,
-    kRewriterRewriteStreaming = 13,
-    kSummarizerSummarize = 14,
-    kSummarizerSummarizeStreaming = 15,
-    kSummarizerCreate = 16,
-    kSummarizerDestroy = 17,
-    kSessionCountPromptTokens = 18,
-
-    kMaxValue = kSessionCountPromptTokens,
+  // LINT.IfChange(LanguageModelInputType)
+  enum class LanguageModelInputType {
+    kText = 0,
+    kImage = 1,
+    kAudio = 2,
+    kToolCall = 3,
+    kToolResponse = 4,
+    kMaxValue = kToolResponse,
   };
-  // LINT.ThenChange(//tools/metrics/histograms/metadata/ai/enums.xml:AIAPI)
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/ai/enums.xml:LanguageModelInputType)
+
+  // LINT.IfChange(LanguageModelInputRole)
+  enum class LanguageModelInputRole {
+    kSystem = 0,
+    kUser = 1,
+    kAssistant = 2,
+    kMaxValue = kAssistant,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/ai/enums.xml:LanguageModelInputRole)
+
+  // LINT.IfChange(LanguageModelCreateOptionsType)
+  enum class LanguageModelCreateOptionsType {
+    kNoParams = 0,
+    kRawParams = 1,
+    kSamplingMode = 2,
+    kMaxValue = kSamplingMode,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/ai/enums.xml:LanguageModelCreateOptionsType)
 
   static std::string GetAIAPIUsageMetricName(AISessionType session_type);
-  static std::string GetAIAvailabilityMetricName(AISessionType session_type);
+  static std::string GetAvailabilityMetricName(AISessionType session_type);
   static std::string GetAISessionRequestSizeMetricName(
       AISessionType session_type);
   static std::string GetAISessionResponseStatusMetricName(
@@ -65,6 +71,22 @@ class AIMetrics {
       AISessionType session_type);
   static std::string GetAISessionResponseCallbackCountMetricName(
       AISessionType session_type);
+  static std::string GetAISessionFirstResponseTimeMetricName(
+      AISessionType session_type);
+  static std::string GetAISessionResponseCompleteTimeMetricName(
+      AISessionType session_type);
+  static std::string GetAISessionContextTokensMetricName(
+      AISessionType session_type);
+  static std::string GetAISessionCrashedMetricName(AISessionType session_type);
+
+  // Enum mappings from mojo/V8 enums to metric enums. Returns nullopt if the
+  // enum is not mapped.
+  static LanguageModelInputType ToLanguageModelInputType(
+      mojom::blink::AILanguageModelPromptContent::Tag type);
+  static LanguageModelInputType ToLanguageModelInputType(
+      V8LanguageModelMessageType::Enum type);
+  static LanguageModelInputRole ToLanguageModelInputRole(
+      mojom::blink::AILanguageModelPromptRole role);
 };
 
 }  // namespace blink

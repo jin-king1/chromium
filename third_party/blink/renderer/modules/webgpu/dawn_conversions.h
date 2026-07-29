@@ -30,7 +30,6 @@ class V8UnionGPUAutoLayoutModeOrGPUPipelineLayout;
 // These conversions are used multiple times and are declared here. Conversions
 // used only once, for example for object construction, are defined
 // individually.
-wgpu::TextureFormat AsDawnType(SkColorType color_type);
 wgpu::PipelineLayout AsDawnType(
     V8UnionGPUAutoLayoutModeOrGPUPipelineLayout* webgpu_layout);
 
@@ -80,10 +79,10 @@ std::unique_ptr<TypeOfDawnType<WebGPUType>[]> AsDawnType(
       std::make_unique<DawnType[]>(count);
   for (wtf_size_t i = 0; i < count; ++i) {
     if (webgpu_objects[i]) {
-      dawn_objects[i] = AsDawnType(webgpu_objects[i].Get());
+      UNSAFE_TODO(dawn_objects[i]) = AsDawnType(webgpu_objects[i].Get());
     } else {
       // Construct a default object if it is null
-      dawn_objects[i] = {};
+      UNSAFE_TODO(dawn_objects[i]) = {};
     }
   }
   return dawn_objects;
@@ -98,12 +97,13 @@ bool ConvertToDawn(const HeapVector<Member<WebGPUType>>& in,
   *out = std::make_unique<DawnType[]>(count);
   for (wtf_size_t i = 0; i < count; ++i) {
     if (in[i]) {
-      if (!ConvertToDawn(in[i].Get(), &(*out)[i], exception_state)) {
+      if (!ConvertToDawn(in[i].Get(), UNSAFE_TODO(&(*out)[i]),
+                         exception_state)) {
         return false;
       }
     } else {
       // Construct a default object if it is null
-      (*out)[i] = {};
+      UNSAFE_TODO((*out)[i]) = {};
     }
   }
   return true;

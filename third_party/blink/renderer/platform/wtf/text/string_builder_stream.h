@@ -10,7 +10,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
-namespace WTF {
+namespace blink {
 
 // Append a Latin-1 string
 inline StringBuilder& operator<<(StringBuilder& builder, const char* cstr) {
@@ -30,7 +30,18 @@ inline StringBuilder& operator<<(StringBuilder& builder,
   return builder;
 }
 
+inline StringBuilder& operator<<(StringBuilder& builder, char c) {
+  builder.Append(c);
+  return builder;
+}
+
+inline StringBuilder& operator<<(StringBuilder& builder, UChar c) {
+  builder.Append(c);
+  return builder;
+}
+
 template <std::integral T>
+  requires(!std::is_same_v<T, char> && !std::is_same_v<T, UChar>)
 StringBuilder& operator<<(StringBuilder& builder, T number) {
   builder.AppendNumber(number);
   return builder;
@@ -42,20 +53,21 @@ StringBuilder& operator<<(StringBuilder& builder, T number) {
   return builder;
 }
 
+// Append the specified `Vector<T>` like "[element0, element1, element2]".
+//
+// `T` should be supported by StringBuilder::Append() or
+// StringBuilder::AppendNumber().
 template <typename T>
+  requires(IsAppendableType<T>)
 StringBuilder& operator<<(StringBuilder& builder, const Vector<T>& vector) {
   builder << "[";
-  String delimiter = "";
-  for (const auto& item : vector) {
-    builder << delimiter << item;
-    delimiter = ", ";
-  }
+  builder.AppendRange(vector, ", ");
   return builder << "]";
 }
 
 // Append index*2 spaces.
 WTF_EXPORT void WriteIndent(StringBuilder& builder, wtf_size_t indent);
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_STRING_BUILDER_STREAM_H_

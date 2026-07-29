@@ -9,6 +9,7 @@
 
 #import "base/time/time.h"
 
+@class SigninCoordinator;
 @protocol SystemIdentity;
 
 // Sign-in result returned Sign-in result.
@@ -29,58 +30,90 @@ typedef NS_ENUM(NSUInteger, SigninCoordinatorResult) {
   // Only triggered by `SceneController` when processing a ShowSigninCommand
   // and when the UI is not ready to present any signin coordinator.
   SigninCoordinatorUINotAvailable,
+  // Sign-in coordinator is stopped because of a change in profile.
+  SigninCoordinatorProfileSwitch,
 };
+
+namespace signin_ui {
+
+// The result of a authentiaction.
+enum class CancelationReason {
+  // Not canceled.
+  kNotCanceled,
+  // Canceled by the user.
+  kUserCanceled,
+  // Canceled, but not by the user.
+  kFailed,
+  // Canceled due to age mismatch.
+  kAgeMismatchCanceled,
+  // Canceled due to age mismatch, user wants to stay signed out.
+  kAgeMismatchCanceledStaySignedOut,
+  // Sign-in is not allowed.
+  kSignInNotAllowed,
+};
+
+}  // namespace signin_ui
+
+// Enum for tracking key events in the Signin Fullscreen Promo flow on iOS.
+// Used in UMA histograms.
+// LINT.IfChange(SigninFullscreenPromoEvents)
+enum class SigninFullscreenPromoEvents {
+  // Recorded when the Promo Manager selects and triggers the display
+  // of the fullscreen sign-in promo.
+  kPromoManagerTriggered = 0,
+
+  // Recorded when the promo is prevented from showing due to
+  // SigninDisabledByPolicy.
+  kPromoCanceledByPolicy = 1,
+
+  // Recorded when the promo is prevented from showing because the UI
+  // is blocked.
+  kPromoCanceledByUIBlocked = 2,
+
+  // Recorded when the UI for the fullscreen sign-in promo is started.
+  kPromoUIStarted = 3,
+
+  // Recorded when the the sign-in UI is started.
+  kSigninUIStarted = 4,
+
+  // Recorded when the history-sync UI is started.
+  kHistorySyncUIStarted = 5,
+
+  // This value should always be the last entry.
+  kMaxValue = kHistorySyncUIStarted,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSSigninFullscreenPromoEvents)
 
 // Called when the sign-in dialog is closed.
-// `result` is the sign-in result state.
-// `signinCompletionIdentity` the identity that was used if any.
+// `coordinator` the SigninCoordinator to which this block was assigned. nil if
+// this block was not assigned to a signin coordinator. `result` is the sign-in
+// result state. `signinCompletionIdentity` the identity that was used if any.
 using SigninCoordinatorCompletionCallback =
-    void (^)(SigninCoordinatorResult result, id<SystemIdentity> identity);
+    void (^)(SigninCoordinator* coordinator,
+             SigninCoordinatorResult result,
+             id<SystemIdentity> identity);
 
-// User's signed-in state as defined by AuthenticationService.
-// TODO(crbug.com/40066949): Revisit after phase 3 migration of syncing users.
-typedef NS_ENUM(NSUInteger, IdentitySigninState) {
-  IdentitySigninStateSignedOut,
-  IdentitySigninStateSignedInWithSyncDisabled,
-  IdentitySigninStateSignedInWithSyncEnabled,
-};
+// Callback called to notify whether a profile change can proceed.
+using SigninChangeProfileCallback = void (^)(BOOL canProceed);
 
-// Action to do when the sign-in dialog needs to be interrupted.
-enum class SigninCoordinatorInterrupt {
-  // Stops the sign-in coordinator without dismissing the view. The sign-in
-  // completion block and the interrupt completion block will be called
-  // synchronously.
-  // This should be only used when UI shutdown.
-  // See crbug.com/1455216.
-  UIShutdownNoDismiss,
-  // Stops the sign-in coordinator and dismisses the view without animation.
-  DismissWithoutAnimation,
-  // Stops the sign-in coordinator and dismisses the view with animation.
-  DismissWithAnimation,
-};
+// Block called to check whether a profile change can occur. The result is
+// sent, synchronously or not, to the callback provided as argument.
+// nil represents the case where the user always accepts, that is,
+// `canProceed` is YES.
+using SigninChangeProfileConfirmationBlock =
+    void (^)(SigninChangeProfileCallback callback);
 
-// Name of accessibility identifier for the skip sign-in button.
-extern NSString* const kSkipSigninAccessibilityIdentifier;
-// Name of accessibility identifier for the add account button in the sign-in
-// flow.
-extern NSString* const kAddAccountAccessibilityIdentifier;
-// Name of accessibility identifier for the confirmation "Yes I'm In" sign-in
-// button.
-extern NSString* const kConfirmationAccessibilityIdentifier;
 // Name of the accessibility identifier for the History Sync view.
 extern NSString* const kHistorySyncViewAccessibilityIdentifier;
-// Name of accessibility identifier for the more button in the sign-in flow.
-extern NSString* const kMoreAccessibilityIdentifier;
-// Name of accessibility identifier for the web sign-in consistency sheet.
-extern NSString* const kWebSigninAccessibilityIdentifier;
+// Name of accessibility identifier for the consistency sign-in consistency
+// sheet.
+extern NSString* const kConsistencySigninAccessibilityIdentifier;
 // Name of accessibility identifier for the primary button that signs in
-// the user for the web sign-in consistency sheet.
-extern NSString* const kWebSigninPrimaryButtonAccessibilityIdentifier;
-// Name of accessibility identifier for "Skip" button in the web sign-in
+// the user for the consistency sign-in consistency sheet.
+extern NSString* const kConsistencySigninPrimaryButtonAccessibilityIdentifier;
+// Name of accessibility identifier for "Skip" button in the consistency sign-in
 // consistency sheet.
-extern NSString* const kWebSigninSkipButtonAccessibilityIdentifier;
-// Name of the accessibility identifier for the Tangible Sync view.
-extern NSString* const kTangibleSyncViewAccessibilityIdentifier;
+extern NSString* const kConsistencySigninSkipButtonAccessibilityIdentifier;
 // Name of the accessibility identifier for the "add account" button in the
 // consistency account chooser.
 extern NSString* const kConsistencyAccountChooserAddAccountIdentifier;
@@ -88,22 +121,24 @@ extern NSString* const kConsistencyAccountChooserAddAccountIdentifier;
 // Name of the accessibility identifier for the managed profile creation screen.
 extern NSString* const kManagedProfileCreationScreenAccessibilityIdentifier;
 
+// Name of the accessibility identifier for the browsing data management screen.
+extern NSString* const kBrowsingDataManagementScreenAccessibilityIdentifier;
+
+// Name of the accessibility identifier for the navigation bar of the managed
+// profile creation screen.
+extern NSString* const
+    kManagedProfileCreationNavigationBarAccessibilityIdentifier;
+
+// Name of the accessibility identifier for the browsing data button on the
+// managed profile creation screen.
+extern NSString* const kBrowsingDataButtonAccessibilityIdentifier;
+
 // Name of the accessibility identifier for the keep browsing data separate
 // cell.
 extern NSString* const kKeepBrowsingDataSeparateCellId;
 
 // Name of the accessibility identifier for the merge browsing data cell.
 extern NSString* const kMergeBrowsingDataCellId;
-
-// Intent for TrustedVaultReauthenticationCoordinator to display either
-// the reauthentication or degraded recoverability dialog.
-typedef NS_ENUM(NSUInteger, SigninTrustedVaultDialogIntent) {
-  // Show reauthentication dialog for fetch keys.
-  SigninTrustedVaultDialogIntentFetchKeys,
-  // Show reauthentication degraded recoverability dialog (to enroll additional
-  // recovery factors).
-  SigninTrustedVaultDialogIntentDegradedRecoverability,
-};
 
 // Max dismissal count for web sign-in consistency dialog (the dismissal value
 // is reset as soon as the user shows sign-in intent).
@@ -155,6 +190,10 @@ extern const char* const kUMASSORecallPromoSeenCount;
 // Default timeout to wait for fetching account capabilities, which determine
 // minor mode restrictions status.
 inline constexpr base::TimeDelta kMinorModeRestrictionsFetchDeadline =
+    base::Milliseconds(500);
+
+// Default timeout to wait for fetching the CanSignInToChrome capability.
+inline constexpr base::TimeDelta kCanSignInToChromeCapabilityFetchTimeout =
     base::Milliseconds(500);
 
 // URL to the learn more screen about managed profiles.

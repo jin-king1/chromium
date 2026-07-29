@@ -11,7 +11,9 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
+#include "chrome/browser/web_applications/test/web_app_icon_test_utils.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
+#include "chrome/browser/web_applications/web_app_icon_generator.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -26,7 +28,6 @@
 enum CreateShortcutViewParams {
   kTabStripEnabled = 0,
   kTabStripDisabled = 1,
-  kCreateShortcutCreatesDiy = 2,
 };
 
 std::string ParamsToString(
@@ -36,10 +37,10 @@ std::string ParamsToString(
       return "TabStripEnabled";
     case kTabStripDisabled:
       return "TabStripDisabled";
-    case kCreateShortcutCreatesDiy:
-      return "CreateShortcutCreatesDiy";
   }
 }
+
+constexpr const char kCreateShortcutIconUrl[] = "https://www.example.com/icon";
 
 class CreateShortcutConfirmationViewBrowserTest
     : public DialogBrowserTest,
@@ -56,6 +57,15 @@ class CreateShortcutConfirmationViewBrowserTest
     auto app_info = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
         GURL("https://example.com"));
     app_info->title = u"Test app";
+
+    const web_app::GeneratedIconsInfo any_icon_info1(
+        web_app::IconPurpose::ANY, {web_app::icon_size::k32}, {SK_ColorBLACK});
+    const web_app::GeneratedIconsInfo any_icon_info2(
+        web_app::IconPurpose::MASKABLE, {web_app::icon_size::k32},
+        {SK_ColorBLUE});
+    web_app::AddIconsToWebAppInstallInfo(app_info.get(),
+                                         GURL(kCreateShortcutIconUrl),
+                                         {any_icon_info1, any_icon_info2});
 
     auto callback = [](bool result,
                        std::unique_ptr<web_app::WebAppInstallInfo>) {};
@@ -78,24 +88,16 @@ class CreateShortcutConfirmationViewBrowserTest
       case CreateShortcutViewParams::kTabStripEnabled:
         features.insert({blink::features::kDesktopPWAsTabStrip, true});
         features.insert({features::kDesktopPWAsTabStripSettings, true});
-        features.insert({features::kDisableShortcutsEnableDiy, false});
         break;
       case CreateShortcutViewParams::kTabStripDisabled:
         features.insert({blink::features::kDesktopPWAsTabStrip, false});
         features.insert({features::kDesktopPWAsTabStripSettings, false});
-        features.insert({features::kDisableShortcutsEnableDiy, false});
-        break;
-      case CreateShortcutViewParams::kCreateShortcutCreatesDiy:
-        features.insert({features::kDisableShortcutsEnableDiy, true});
         break;
     }
 
+    features.insert({::features::kWebAppInstallDialog, false});
     feature_list.InitWithFeatureStates(features);
     DialogBrowserTest::SetUp();
-  }
-
-  bool ShouldCreateDiyAppsForShortcutApps() {
-    return GetParam() == CreateShortcutViewParams::kCreateShortcutCreatesDiy;
   }
 
  private:
@@ -108,8 +110,12 @@ IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
       GURL("https://example.com"));
   app_info->title = u"Test app";
 
-  web_app::SetAutoAcceptWebAppDialogForTesting(/*auto_accept=*/true,
-                                               /*auto_open_in_window=*/true);
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+  base::AutoReset<web_app::CreateShortcutDialogCheckState> auto_check =
+      web_app::SetCreateShortcutDialogCheckStateForTesting(
+          web_app::CreateShortcutDialogCheckState::kChecked);
   bool is_accepted = false;
   std::unique_ptr<web_app::WebAppInstallInfo> install_info;
   auto callback = [&is_accepted, &install_info](
@@ -133,7 +139,7 @@ IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
 
   EXPECT_EQ(install_info->user_display_mode,
             web_app::mojom::UserDisplayMode::kStandalone);
-  EXPECT_EQ(install_info->is_diy_app, ShouldCreateDiyAppsForShortcutApps());
+  EXPECT_TRUE(install_info->is_diy_app);
 }
 
 IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
@@ -142,8 +148,6 @@ IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
       GURL("https://example.com"));
   app_info->title = u"Test app";
 
-  web_app::SetAutoAcceptWebAppDialogForTesting(/*auto_accept=*/false,
-                                               /*auto_open_in_window=*/false);
   base::test::TestFuture<bool, std::unique_ptr<web_app::WebAppInstallInfo>>
       install_result;
 
@@ -171,9 +175,8 @@ IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
   EXPECT_EQ(install_result.Get<std::unique_ptr<web_app::WebAppInstallInfo>>()
                 ->user_display_mode,
             web_app::mojom::UserDisplayMode::kBrowser);
-  EXPECT_EQ(install_result.Get<std::unique_ptr<web_app::WebAppInstallInfo>>()
-                ->is_diy_app,
-            ShouldCreateDiyAppsForShortcutApps());
+  EXPECT_TRUE(install_result.Get<std::unique_ptr<web_app::WebAppInstallInfo>>()
+                  ->is_diy_app);
 }
 
 IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
@@ -182,8 +185,6 @@ IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
       GURL("https://example.com"));
   app_info->title = u"Test app";
 
-  web_app::SetAutoAcceptWebAppDialogForTesting(/*auto_accept=*/false,
-                                               /*auto_open_in_window=*/false);
   base::test::TestFuture<bool, std::unique_ptr<web_app::WebAppInstallInfo>>
       install_result;
 
@@ -219,8 +220,12 @@ IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
 
 IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
                        NormalizeTitles) {
-  web_app::SetAutoAcceptWebAppDialogForTesting(/*auto_accept=*/true,
-                                               /*auto_open_in_window=*/true);
+  base::AutoReset<web_app::InstallDialogTestResponse> auto_accept =
+      web_app::SetPwaInstallationAutoRespondForTesting(
+          web_app::InstallDialogTestResponse::kAcceptAndLaunch);
+  base::AutoReset<web_app::CreateShortcutDialogCheckState> auto_check =
+      web_app::SetCreateShortcutDialogCheckStateForTesting(
+          web_app::CreateShortcutDialogCheckState::kChecked);
 
   struct TestCases {
     std::u16string input;
@@ -242,7 +247,7 @@ IN_PROC_BROWSER_TEST_P(CreateShortcutConfirmationViewBrowserTest,
                         bool result,
                         std::unique_ptr<web_app::WebAppInstallInfo> info) {
       is_accepted = result;
-      title = info->title;
+      title = info->title.value();
     };
 
     content::WebContents* web_contents =
@@ -264,6 +269,5 @@ INSTANTIATE_TEST_SUITE_P(
     All,
     CreateShortcutConfirmationViewBrowserTest,
     ::testing::Values(CreateShortcutViewParams::kTabStripDisabled,
-                      CreateShortcutViewParams::kTabStripEnabled,
-                      CreateShortcutViewParams::kCreateShortcutCreatesDiy),
+                      CreateShortcutViewParams::kTabStripEnabled),
     ParamsToString);

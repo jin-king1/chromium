@@ -4,7 +4,6 @@
 
 #include "partition_alloc/partition_alloc_base/cpu.h"
 
-#include <algorithm>
 #include <cinttypes>
 #include <climits>
 #include <cstddef>
@@ -14,6 +13,8 @@
 #include <utility>
 
 #include "partition_alloc/build_config.h"
+#include "partition_alloc/partition_alloc_base/compiler_specific.h"
+#include "partition_alloc/partition_alloc_base/cxx_wrapper/algorithm.h"
 
 #if PA_BUILDFLAG(PA_ARCH_CPU_ARM_FAMILY) &&                \
     (PA_BUILDFLAG(IS_ANDROID) || PA_BUILDFLAG(IS_LINUX) || \
@@ -61,8 +62,8 @@ void __cpuid(int cpu_info[4], int info_type) {
       "mov %%ebx, %%edi\n"
       "cpuid\n"
       "xchg %%edi, %%ebx\n"
-      : "=a"(cpu_info[0]), "=D"(cpu_info[1]), "=c"(cpu_info[2]),
-        "=d"(cpu_info[3])
+      : "=a"(cpu_info[0]), "=D"(PA_UNSAFE_TODO(cpu_info[1])),
+        "=c"(PA_UNSAFE_TODO(cpu_info[2])), "=d"(PA_UNSAFE_TODO(cpu_info[3]))
       : "a"(info_type), "c"(0));
 }
 
@@ -70,8 +71,9 @@ void __cpuid(int cpu_info[4], int info_type) {
 
 void __cpuid(int cpu_info[4], int info_type) {
   __asm__ volatile("cpuid\n"
-                   : "=a"(cpu_info[0]), "=b"(cpu_info[1]), "=c"(cpu_info[2]),
-                     "=d"(cpu_info[3])
+                   : "=a"(cpu_info[0]), "=b"(PA_UNSAFE_TODO(cpu_info[1])),
+                     "=c"(PA_UNSAFE_TODO(cpu_info[2])),
+                     "=d"(PA_UNSAFE_TODO(cpu_info[3]))
                    : "a"(info_type), "c"(0));
 }
 

@@ -6,16 +6,18 @@
 
 #include "base/files/file_path.h"
 #include "base/no_destructor.h"
+#include "base/path_service.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_constants.h"
+#include "chrome/common/chrome_paths.h"
 #include "components/feature_engagement/public/configuration_provider.h"
 #include "components/feature_engagement/public/field_trial_configuration_provider.h"
 #include "components/feature_engagement/public/local_configuration_provider.h"
 #include "components/feature_engagement/public/tracker.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 
@@ -23,7 +25,7 @@
 #include "chrome/browser/user_education/user_education_configuration_provider.h"
 #endif
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/ash/components/growth/campaigns_configuration_provider.h"
 #endif
 
@@ -73,6 +75,11 @@ TrackerFactory::BuildServiceInstanceForBrowserContext(
   base::FilePath storage_dir = profile->GetPath().Append(
       chrome::kFeatureEngagementTrackerStorageDirname);
 
+  base::FilePath device_storage_dir;
+  base::PathService::Get(chrome::DIR_USER_DATA, &device_storage_dir);
+  device_storage_dir = device_storage_dir.Append(
+      chrome::kFeatureEngagementTrackerStorageDirname);
+
   leveldb_proto::ProtoDatabaseProvider* db_provider =
       profile->GetDefaultStoragePartition()->GetProtoDatabaseProvider();
   auto providers =
@@ -81,14 +88,14 @@ TrackerFactory::BuildServiceInstanceForBrowserContext(
   providers.emplace_back(
       std::make_unique<UserEducationConfigurationProvider>());
 #endif
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   providers.emplace_back(
       std::make_unique<growth::CampaignsConfigurationProvider>());
 #endif
 
   return feature_engagement::Tracker::Create(
-      storage_dir, background_task_runner, db_provider, nullptr,
-      std::move(providers));
+      storage_dir, device_storage_dir, profile->GetPrefs(),
+      background_task_runner, db_provider, nullptr, std::move(providers));
 }
 
 }  // namespace feature_engagement

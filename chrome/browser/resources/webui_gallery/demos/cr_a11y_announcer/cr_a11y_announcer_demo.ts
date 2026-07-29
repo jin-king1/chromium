@@ -40,7 +40,7 @@ export class CrA11yAnnouncerDemoElement extends CrLitElement {
   }
 
   private announcementTextCount_: number = 0;
-  protected forceShowAnnouncer_: boolean = false;
+  protected accessor forceShowAnnouncer_: boolean = false;
 
   protected onAnnounceTextClick_() {
     const announcer = this.forceShowAnnouncer_ ?
@@ -57,8 +57,15 @@ export class CrA11yAnnouncerDemoElement extends CrLitElement {
     announcer.announce('Page has loaded.');
   }
 
-  protected onForceShowAnnouncerChanged_(e: CustomEvent<{value: boolean}>) {
+  protected onForceShowAnnouncerCheckedChanged_(
+      e: CustomEvent<{value: boolean}>) {
     this.forceShowAnnouncer_ = e.detail.value;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'cr-a11y-announcer-demo': CrA11yAnnouncerDemoElement;
   }
 }
 

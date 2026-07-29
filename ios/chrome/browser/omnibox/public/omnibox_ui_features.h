@@ -7,7 +7,17 @@
 
 #import "base/feature_list.h"
 
-// Feature flag to enable actions in suggest.
-BASE_DECLARE_FEATURE(kOmniboxActionsInSuggest);
+/// TODO(crbug.com/388820891): Update milestone after refactoring is complete.
+const base::NotFatalUntil kOmniboxRefactoringNotFatalUntil =
+    base::NotFatalUntil::M200;
+
+// Returns whether rich autocompletion is enabled.
+bool IsRichAutocompletionEnabled();
+
+// Kill switch for ZPS suggestions on clobber in the composebox.
+BASE_DECLARE_FEATURE(kOmniboxZPSOnClobber);
+
+// Returns whether on clobber suggestions are enabled.
+bool IsZPSOnClobberEnabled();
 
 #endif  // IOS_CHROME_BROWSER_OMNIBOX_PUBLIC_OMNIBOX_UI_FEATURES_H_

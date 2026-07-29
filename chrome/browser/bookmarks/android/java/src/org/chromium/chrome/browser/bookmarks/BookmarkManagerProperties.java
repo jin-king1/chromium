@@ -5,7 +5,8 @@
 package org.chromium.chrome.browser.bookmarks;
 
 import org.chromium.base.Callback;
-import org.chromium.chrome.browser.sync.ui.bookmark_batch_upload_card.BookmarkBatchUploadCardCoordinator;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.sync.ui.batch_upload_card.BatchUploadCardCoordinator;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
@@ -13,12 +14,11 @@ import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
 /** Responsible for hosting properties of BookmarkManager views. */
+@NullMarked
 public class BookmarkManagerProperties {
-    public static final WritableObjectPropertyKey<BookmarkPromoHeader> BOOKMARK_PROMO_HEADER =
-            new WritableObjectPropertyKey<>();
-    public static final WritableObjectPropertyKey<BookmarkBatchUploadCardCoordinator>
-            BOOKMARK_BATCH_UPLOAD_CARD_COORDINATOR = new WritableObjectPropertyKey<>();
-    // TODO(https://crbug.com/1416611): Replace with individual fields.
+    public static final WritableObjectPropertyKey<BatchUploadCardCoordinator>
+            BATCH_UPLOAD_CARD_COORDINATOR = new WritableObjectPropertyKey<>();
+    // TODO(https://crbug.com/40256938): Replace with individual fields.
     public static final WritableObjectPropertyKey<BookmarkListEntry> BOOKMARK_LIST_ENTRY =
             new WritableObjectPropertyKey<>();
     public static final WritableObjectPropertyKey<BookmarkId> BOOKMARK_ID =
@@ -28,13 +28,12 @@ public class BookmarkManagerProperties {
             new WritableBooleanPropertyKey();
     public static final WritableBooleanPropertyKey IS_HIGHLIGHTED =
             new WritableBooleanPropertyKey();
-    // TODO(https://crbug.com/1416611): Rework this property to not just expose functionality.
+    // TODO(https://crbug.com/40256938): Rework this property to not just expose functionality.
     public static final WritableObjectPropertyKey<Callback<BookmarkId>> OPEN_FOLDER =
             new WritableObjectPropertyKey<>();
 
     static final PropertyKey[] ALL_KEYS = {
-        BOOKMARK_PROMO_HEADER,
-        BOOKMARK_BATCH_UPLOAD_CARD_COORDINATOR,
+        BATCH_UPLOAD_CARD_COORDINATOR,
         BOOKMARK_LIST_ENTRY,
         BOOKMARK_ID,
         LOCATION,

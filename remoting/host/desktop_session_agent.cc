@@ -12,20 +12,22 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
 #include "base/process/process_handle.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "ipc/ipc_channel_proxy.h"
-#include "ipc/ipc_message.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/scoped_interface_endpoint_handle.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "remoting/base/auto_thread_task_runner.h"
+#include "remoting/base/errors.h"
 #include "remoting/host/action_executor.h"
 #include "remoting/host/audio_capturer.h"
 #include "remoting/host/base/desktop_environment_options.h"
@@ -36,7 +38,6 @@
 #include "remoting/host/desktop_environment.h"
 #include "remoting/host/input_injector.h"
 #include "remoting/host/keyboard_layout_monitor.h"
-#include "remoting/host/mojom/desktop_session.mojom-shared.h"
 #include "remoting/host/mojom/desktop_session.mojom.h"
 #include "remoting/host/mouse_shape_pump.h"
 #include "remoting/host/remote_input_filter.h"
@@ -48,11 +49,14 @@
 #include "remoting/proto/event.pb.h"
 #include "remoting/proto/url_forwarder_control.pb.h"
 #include "remoting/protocol/clipboard_stub.h"
-#include "remoting/protocol/errors.h"
 #include "remoting/protocol/input_event_tracker.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
 #include "third_party/webrtc/modules/desktop_capture/mouse_cursor.h"
 #include "ui/events/types/event_type.h"
+
+#if BUILDFLAG(IS_POSIX)
+#include "remoting/host/security_key/security_key_auth_handler_posix.h"
+#endif
 
 namespace remoting {
 
@@ -105,11 +109,6 @@ DesktopSessionAgent::DesktopSessionAgent(
       input_task_runner_(input_task_runner),
       io_task_runner_(io_task_runner) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
-}
-
-bool DesktopSessionAgent::OnMessageReceived(const IPC::Message& message) {
-  DCHECK(caller_task_runner_->BelongsToCurrentThread());
-  NOTREACHED() << "Received unexpected IPC type: " << message.type();
 }
 
 void DesktopSessionAgent::OnChannelConnected(std::int32_t peer_pid) {
@@ -165,9 +164,13 @@ const std::string& DesktopSessionAgent::client_jid() const {
   return client_jid_;
 }
 
-void DesktopSessionAgent::DisconnectSession(protocol::ErrorCode error) {
+void DesktopSessionAgent::DisconnectSession(
+    ErrorCode error,
+    std::string_view error_details,
+    const SourceLocation& error_location) {
   if (desktop_session_state_handler_) {
-    desktop_session_state_handler_->DisconnectSession(error);
+    desktop_session_state_handler_->DisconnectSession(
+        error, std::string(error_details), error_location);
   }
 }
 
@@ -175,6 +178,10 @@ void DesktopSessionAgent::OnLocalKeyPressed(std::uint32_t usb_keycode) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
   remote_input_filter_->LocalKeyPressed(usb_keycode);
+
+  if (desktop_session_event_handler_) {
+    desktop_session_event_handler_->OnLocalKeyboardInputDetected(usb_keycode);
+  }
 }
 
 void DesktopSessionAgent::OnLocalPointerMoved(
@@ -183,6 +190,13 @@ void DesktopSessionAgent::OnLocalPointerMoved(
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
   remote_input_filter_->LocalPointerMoved(new_pos, type);
+
+  if (desktop_session_event_handler_) {
+    // |type| is always kMouseMoved, if this changes, we need to convey this
+    // information to the network process.
+    DCHECK_EQ(type, ui::EventType::kMouseMoved);
+    desktop_session_event_handler_->OnLocalMouseMoveDetected(new_pos);
+  }
 }
 
 void DesktopSessionAgent::SetDisableInputs(bool disable_inputs) {
@@ -204,6 +218,23 @@ void DesktopSessionAgent::OnDesktopDisplayChanged(
   if (desktop_session_event_handler_) {
     desktop_session_event_handler_->OnDesktopDisplayChanged(*layout);
   }
+}
+
+void DesktopSessionAgent::OnMicrophoneControl(
+    const protocol::MicrophoneControl& control) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  if (desktop_session_event_handler_) {
+    desktop_session_event_handler_->OnMicrophoneControl(control);
+  }
+}
+
+void DesktopSessionAgent::OnAudioInjectorConsumersChanged(bool has_consumers) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  protocol::MicrophoneControl control;
+  control.set_enable(has_consumers);
+  OnMicrophoneControl(control);
 }
 
 void DesktopSessionAgent::Start(
@@ -237,6 +268,37 @@ void DesktopSessionAgent::Start(
   network_channel_->GetRemoteAssociatedInterface(
       &desktop_session_state_handler_);
 
+#if BUILDFLAG(IS_POSIX)
+  if (options.enable_security_key()) {
+    const base::FilePath& socket_name =
+        SecurityKeyAuthHandlerPosix::GetSecurityKeySocketName();
+    if (!socket_name.empty()) {
+      // Since all socket operations in SecurityKeyAuthHandlerPosix are done on
+      // the caller's sequence, we wrap it with a SequenceBound to run it on the
+      // IO thread.
+      security_key_auth_handler_ =
+          base::SequenceBound<SecurityKeyAuthHandlerPosix>(io_task_runner_);
+
+      // We pass `base::Unretained(this)` as the `client_id` token. This is
+      // safe because the handler only uses it as an opaque key for
+      // comparison and never dereferences it.
+      security_key_auth_handler_
+          .AsyncCall(&SecurityKeyAuthHandler::SetSendMessageCallback)
+          .WithArgs(base::BindPostTaskToCurrentDefault(base::BindRepeating(
+                        &DesktopSessionAgent::OnSecurityKeyMessage,
+                        weak_factory_.GetWeakPtr())),
+                    base::Unretained(this));
+
+      security_key_auth_handler_.AsyncCall(
+          &SecurityKeyAuthHandler::CreateSecurityKeyConnection);
+    } else {
+      LOG(WARNING) << "Security key forwarding is enabled, but the socket name "
+                   << "is empty (e.g. XDG_RUNTIME_DIR is not set). "
+                   << "Forwarding will be disabled.";
+    }
+  }
+#endif
+
   // Create a desktop environment for the new session.
   delegate_->desktop_environment_factory().Create(
       weak_factory_.GetWeakPtr(), /* client_session_events= */ nullptr, options,
@@ -245,23 +307,34 @@ void DesktopSessionAgent::Start(
                      std::move(callback)));
 }
 
-void DesktopSessionAgent::OnMouseCursor(webrtc::MouseCursor* cursor) {
+void DesktopSessionAgent::OnMouseCursor(
+    std::unique_ptr<webrtc::MouseCursor> cursor) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
-  std::unique_ptr<webrtc::MouseCursor> owned_cursor(cursor);
-
   if (desktop_session_event_handler_) {
-    desktop_session_event_handler_->OnMouseCursorChanged(*owned_cursor);
+    desktop_session_event_handler_->OnMouseCursorChanged(*cursor);
   }
 
-  video_capturers_.SetMouseCursor(*owned_cursor);
+  video_capturers_.SetMouseCursor(*cursor);
 }
 
 void DesktopSessionAgent::OnMouseCursorPosition(
     const webrtc::DesktopVector& position) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
-  video_capturers_.SetMouseCursorPosition(position);
+  if (!host_cursor_rendered_by_client_) {
+    video_capturers_.SetMouseCursorPosition(position);
+  }
+}
+
+void DesktopSessionAgent::OnMouseCursorFractionalPosition(
+    const protocol::FractionalCoordinate& position) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  if (desktop_session_event_handler_) {
+    desktop_session_event_handler_->OnMouseCursorFractionalPositionChanged(
+        position);
+  }
 }
 
 void DesktopSessionAgent::OnClipboardEvent(
@@ -341,6 +414,9 @@ void DesktopSessionAgent::Stop() {
     input_injector_.reset();
     screen_controls_.reset();
     keyboard_layout_monitor_.reset();
+    audio_injector_.reset();
+    security_key_auth_handler_ = {};
+    security_key_remotes_.clear();
 
     // Stop the audio capturer.
     audio_capture_task_runner_->PostTask(
@@ -402,8 +478,10 @@ void DesktopSessionAgent::InjectMouseEvent(const protocol::MouseEvent& event) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
   CHECK(started_);
 
-  video_capturers_.SetComposeEnabled(event.has_delta_x() ||
-                                     event.has_delta_y());
+  if (!host_cursor_rendered_by_client_) {
+    video_capturers_.SetComposeEnabled(event.has_delta_x() ||
+                                       event.has_delta_y());
+  }
 
   // InputStub implementations must verify events themselves, so we don't need
   // verification here. This matches HostEventDispatcher.
@@ -444,12 +522,22 @@ void DesktopSessionAgent::OnKeyboardLayoutChange(
 }
 
 void DesktopSessionAgent::SetScreenResolution(
-    const ScreenResolution& resolution) {
+    const ScreenResolution& resolution,
+    std::optional<std::int64_t> screen_id) {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
   CHECK(started_);
 
   if (screen_controls_) {
-    screen_controls_->SetScreenResolution(resolution, std::nullopt);
+    screen_controls_->SetScreenResolution(resolution, screen_id);
+  }
+}
+
+void DesktopSessionAgent::SetVideoLayout(const protocol::VideoLayout& layout) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  CHECK(started_);
+
+  if (screen_controls_) {
+    screen_controls_->SetVideoLayout(layout);
   }
 }
 
@@ -499,6 +587,62 @@ void DesktopSessionAgent::BeginFileWrite(const base::FilePath& file_path,
                                                    std::move(callback));
 }
 
+void DesktopSessionAgent::SetHostCursorRenderedByClient() {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  if (host_cursor_rendered_by_client_) {
+    return;
+  }
+
+  host_cursor_rendered_by_client_ = true;
+  // Hide the host cursor from the desktop frames.
+  video_capturers_.SetComposeEnabled(false);
+  if (mouse_shape_pump_) {
+    mouse_shape_pump_->SetSendCursorPositionToClient(true);
+  }
+}
+
+void DesktopSessionAgent::StartAudioInjector(
+    std::unique_ptr<IpcFifoBufferReader> audio_reader) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  if (audio_injector_) {
+    return;
+  }
+
+  audio_injector_ =
+      desktop_environment_->CreateAudioInjector(std::move(audio_reader));
+  if (!audio_injector_) {
+    LOG(ERROR) << "Cannot start audio injector because it is not supported.";
+    return;
+  }
+  if (pending_audio_sample_info_) {
+    base::OnceCallback<void(bool)> done =
+        pending_audio_sample_info_callback_
+            ? std::move(pending_audio_sample_info_callback_)
+            : base::DoNothing();
+    audio_injector_->SetSampleInfo(*pending_audio_sample_info_,
+                                   std::move(done));
+    pending_audio_sample_info_.reset();
+  }
+  audio_injector_->Start(weak_factory_.GetWeakPtr());
+}
+
+void DesktopSessionAgent::SetAudioInjectorSampleInfo(
+    const protocol::AudioSampleInfo& info,
+    SetAudioInjectorSampleInfoCallback callback) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  if (audio_injector_) {
+    audio_injector_->SetSampleInfo(info, std::move(callback));
+  } else {
+    if (pending_audio_sample_info_callback_) {
+      std::move(pending_audio_sample_info_callback_).Run(false);
+    }
+    pending_audio_sample_info_ = info;
+    pending_audio_sample_info_callback_ = std::move(callback);
+  }
+}
+
 void DesktopSessionAgent::OnDesktopEnvironmentCreated(
     const ScreenResolution& resolution,
     StartCallback callback,
@@ -510,7 +654,7 @@ void DesktopSessionAgent::OnDesktopEnvironmentCreated(
 
   // Create the session controller and set the initial screen resolution.
   screen_controls_ = desktop_environment_->CreateScreenControls();
-  SetScreenResolution(resolution);
+  SetScreenResolution(resolution, std::nullopt);
 
   // Create the input injector.
   input_injector_ = desktop_environment_->CreateInputInjector();
@@ -520,8 +664,15 @@ void DesktopSessionAgent::OnDesktopEnvironmentCreated(
   // Hook up the input filter.
   input_tracker_ =
       std::make_unique<protocol::InputEventTracker>(input_injector_.get());
-  remote_input_filter_ =
-      std::make_unique<RemoteInputFilter>(input_tracker_.get());
+  // TODO: crbug.com/456252029 - Verify that `remote_input_filter_` is a no-op
+  // then remove it.
+  remote_input_filter_ = std::make_unique<RemoteInputFilter>(
+      input_tracker_.get(),
+      // Unretained() is safe because `remote_input_filter_` will be destroyed
+      // before `input_tracker_`, after which the callback will no longer be
+      // called.
+      base::BindRepeating(&protocol::InputEventTracker::ReleaseAll,
+                          base::Unretained(input_tracker_.get())));
 
 #if BUILDFLAG(IS_WIN)
   // LocalInputMonitorWin filters out an echo of the injected input before it
@@ -547,6 +698,12 @@ void DesktopSessionAgent::OnDesktopEnvironmentCreated(
       desktop_environment_->CreateMouseCursorMonitor(),
       /*CursorShapeStub*/ nullptr);
   mouse_shape_pump_->SetMouseCursorMonitorCallback(this);
+  if (host_cursor_rendered_by_client_) {
+    // Just always send cursor positions to the "client", i.e. the network
+    // process. The MouseShapePump in the network process will decide whether
+    // they should actually be sent to the client.
+    mouse_shape_pump_->SetSendCursorPositionToClient(true);
+  }
 
   // Unretained is sound because callback will never be invoked after
   // |keyboard_layout_monitor_| is destroyed.
@@ -616,4 +773,34 @@ void DesktopSessionAgent::OnUrlForwarderSetUpStateChanged(
   desktop_session_event_handler_->OnUrlForwarderStateChange(mojo_state);
 }
 
+void DesktopSessionAgent::OnSecurityKeyMessage(int connection_id,
+                                               const std::string& data) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  auto& remote = security_key_remotes_[connection_id];
+  if (!remote.is_bound()) {
+    desktop_session_event_handler_->OnSecurityKeyConnection(
+        remote.BindNewPipeAndPassReceiver());
+    remote.set_disconnect_handler(
+        base::BindOnce(&DesktopSessionAgent::OnSecurityKeyRemoteDisconnected,
+                       weak_factory_.GetWeakPtr(), connection_id));
+  }
+
+  remote->OnSecurityKeyRequest(
+      data, base::BindOnce(&DesktopSessionAgent::OnSecurityKeyResponse,
+                           weak_factory_.GetWeakPtr(), connection_id));
+}
+
+void DesktopSessionAgent::OnSecurityKeyResponse(int connection_id,
+                                                const std::string& data) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  security_key_auth_handler_
+      .AsyncCall(&SecurityKeyAuthHandler::SendClientResponse)
+      .WithArgs(connection_id, data);
+}
+
+void DesktopSessionAgent::OnSecurityKeyRemoteDisconnected(int connection_id) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  security_key_remotes_.erase(connection_id);
+}
 }  // namespace remoting

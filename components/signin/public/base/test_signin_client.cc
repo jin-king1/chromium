@@ -9,12 +9,55 @@
 
 #include "base/check.h"
 #include "base/functional/callback.h"
+#include "components/plus_addresses/core/common/features.h"
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
 #include "components/version_info/channel.h"
+#include "google_apis/gaia/gaia_auth_fetcher.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/test/test_cookie_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+namespace {
+
+class TestOAuthConsumerRegistry : public signin::OAuthConsumerRegistry {
+ protected:
+  signin::OAuthConsumer GetOAuthConsumerForEnterprisePlusAddress()
+      const override {
+    CHECK(base::FeatureList::IsEnabled(
+        plus_addresses::features::kPlusAddressesEnabled));
+    return signin::OAuthConsumer(
+        signin::oauth_consumer_name::kEnterprisePlusAddressName,
+        {plus_addresses::features::kEnterprisePlusAddressOAuthScope.Get()});
+  }
+
+  signin::OAuthConsumer GetOAuthConsumerForGlicUserStatus() const override {
+    NOTREACHED();
+  }
+
+  signin::OAuthConsumer GetOAuthConsumerForGlicInvokeApi() const override {
+    NOTREACHED();
+  }
+
+  signin::OAuthConsumer GetOAuthConsumerForContextualTasks() const override {
+    return signin::OAuthConsumer(
+        signin::oauth_consumer_name::kContextualTasksName, {});
+  }
+
+  signin::OAuthConsumer GetOAuthConsumerForIndigo() const override {
+    NOTREACHED();
+  }
+
+  signin::OAuthConsumer GetOAuthConsumerForSkillsService() const override {
+    return signin::OAuthConsumer("skills_service", {"test_scope"});
+  }
+
+  signin::OAuthConsumer GetOAuthConsumerForBrowserActuator() const override {
+    NOTREACHED();
+  }
+};
+
+}  // namespace
 
 TestWaitForNetworkCallbackHelper::TestWaitForNetworkCallbackHelper() = default;
 TestWaitForNetworkCallbackHelper::~TestWaitForNetworkCallbackHelper() = default;
@@ -51,7 +94,8 @@ TestSigninClient::TestSigninClient(
           std::make_unique<TestWaitForNetworkCallbackHelper>()),
       test_url_loader_factory_(test_url_loader_factory),
       pref_service_(pref_service),
-      are_signin_cookies_allowed_(true) {}
+      are_signin_cookies_allowed_(true),
+      oauth_consumer_registry_(std::make_unique<TestOAuthConsumerRegistry>()) {}
 
 TestSigninClient::~TestSigninClient() = default;
 
@@ -71,6 +115,19 @@ network::mojom::CookieManager* TestSigninClient::GetCookieManager() {
     cookie_manager_ = std::make_unique<network::TestCookieManager>();
   }
   return cookie_manager_.get();
+}
+
+network::mojom::DeviceBoundSessionManager*
+TestSigninClient::GetDeviceBoundSessionManager() const {
+  return device_bound_session_manager_;
+}
+
+std::unique_ptr<signin::BoundSessionOAuthMultiLoginDelegate>
+TestSigninClient::CreateBoundSessionOAuthMultiloginDelegate() const {
+  if (bound_session_oauth_multilogin_delegate_factory_) {
+    return bound_session_oauth_multilogin_delegate_factory_.Run();
+  }
+  return nullptr;
 }
 
 network::mojom::NetworkContext* TestSigninClient::GetNetworkContext() {
@@ -140,15 +197,7 @@ version_info::Channel TestSigninClient::GetClientChannel() {
 void TestSigninClient::OnPrimaryAccountChanged(
     signin::PrimaryAccountChangeEvent event_details) {}
 
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-std::unique_ptr<signin::BoundSessionOAuthMultiLoginDelegate>
-TestSigninClient::CreateBoundSessionOAuthMultiloginDelegate() const {
-  return bound_session_delegate_factory_ ? bound_session_delegate_factory_.Run()
-                                         : nullptr;
+signin::OAuthConsumer TestSigninClient::GetOAuthConsumerFromId(
+    signin::OAuthConsumerId oauth_consumer_id) const {
+  return oauth_consumer_registry_->GetOAuthConsumerFromId(oauth_consumer_id);
 }
-
-void TestSigninClient::SetBoundSessionOauthMultiloginDelegateFactory(
-    BoundSessionOauthMultiloginDelegateFactory factory) {
-  bound_session_delegate_factory_ = std::move(factory);
-}
-#endif

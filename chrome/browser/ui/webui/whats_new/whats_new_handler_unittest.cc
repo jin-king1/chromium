@@ -4,12 +4,14 @@
 
 #include "chrome/browser/ui/webui/whats_new/whats_new_handler.h"
 
+#include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new.mojom.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_ui.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_util.h"
@@ -32,22 +34,7 @@ using whats_new::WhatsNewRegistry;
 namespace {
 
 // Modules
-BASE_FEATURE(kTestEdition, "TestEdition", base::FEATURE_DISABLED_BY_DEFAULT);
-
-class MockPage : public whats_new::mojom::Page {
- public:
-  MockPage() = default;
-  ~MockPage() override = default;
-
-  mojo::PendingRemote<whats_new::mojom::Page> BindAndGetRemote() {
-    DCHECK(!receiver_.is_bound());
-    return receiver_.BindNewPipeAndPassRemote();
-  }
-
-  void FlushForTesting() { receiver_.FlushForTesting(); }
-
-  mojo::Receiver<whats_new::mojom::Page> receiver_{this};
-};
+BASE_FEATURE(kTestEdition, base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace
 
@@ -77,11 +64,8 @@ class WhatsNewHandlerTest : public testing::Test {
         std::make_unique<WhatsNewRegistry>(std::move(mock_storage_service));
 
     handler_ = std::make_unique<WhatsNewHandler>(
-        mojo::PendingReceiver<whats_new::mojom::PageHandler>(),
-        mock_page_.BindAndGetRemote(), profile_.get(), web_contents_,
-        base::Time::Now(), whats_new_registry_.get());
-    mock_page_.FlushForTesting();
-    testing::Mock::VerifyAndClearExpectations(&mock_page_);
+        mojo::PendingReceiver<whats_new::mojom::PageHandler>(), profile_.get(),
+        web_contents_, base::Time::Now(), whats_new_registry_.get());
   }
 
   void TearDown() override {
@@ -96,7 +80,7 @@ class WhatsNewHandlerTest : public testing::Test {
   base::HistogramTester histogram_tester_;
   base::UserActionTester user_action_tester_;
   base::test::ScopedFeatureList feature_list_;
-  base::Value::List mock_module_data_;
+  base::ListValue mock_module_data_;
   raw_ptr<MockWhatsNewStorageService> mock_storage_service_;
 
   // NOTE: The initialization order of these members matters.
@@ -104,7 +88,6 @@ class WhatsNewHandlerTest : public testing::Test {
   raw_ptr<MockHatsService> mock_hats_service_;
   content::TestWebContentsFactory factory_;
   raw_ptr<content::WebContents> web_contents_;  // Weak. Owned by factory_.
-  testing::NiceMock<MockPage> mock_page_;
   std::unique_ptr<WhatsNewRegistry> whats_new_registry_;
   std::unique_ptr<WhatsNewHandler> handler_;
 };
@@ -112,17 +95,16 @@ class WhatsNewHandlerTest : public testing::Test {
 TEST_F(WhatsNewHandlerTest, GetServerUrl) {
   base::MockCallback<WhatsNewHandler::GetServerUrlCallback> callback;
 
-  const GURL expected_url = GURL(base::StringPrintf(
-      "https://www.google.com/chrome/v2/whats-new/?version=%d&internal=true",
-      CHROME_VERSION_MAJOR));
+  const GURL expected_url =
+      GURL(base::StringPrintf("https://www.google.com/chrome/whats-new/"
+                              "?version=%d&internal=true",
+                              CHROME_VERSION_MAJOR));
 
-  EXPECT_CALL(callback, Run)
-      .Times(1)
-      .WillOnce(testing::Invoke(
-          [&](GURL actual_url) { EXPECT_EQ(actual_url, expected_url); }));
+  EXPECT_CALL(callback, Run).Times(1).WillOnce([&](GURL actual_url) {
+    EXPECT_EQ(actual_url, expected_url);
+  });
 
   handler_->GetServerUrl(false, callback.Get());
-  mock_page_.FlushForTesting();
 }
 
 TEST_F(WhatsNewHandlerTest, HistogramsAreEmitted) {
@@ -165,8 +147,10 @@ TEST_F(WhatsNewHandlerTest, HistogramsAreEmitted) {
   handler_->RecordScrollDepth(whats_new::mojom::ScrollDepth::k25);
   histogram_tester_.ExpectTotalCount("UserEducation.WhatsNew.ScrollDepth", 1);
 
-  handler_->RecordTimeOnPage(base::TimeDelta());
+  handler_->RecordTimeOnPage(base::TimeDelta(), true);
   histogram_tester_.ExpectTotalCount("UserEducation.WhatsNew.TimeOnPage", 1);
+  histogram_tester_.ExpectTotalCount(
+      "UserEducation.WhatsNew.TimeOnPageHeartbeat", 1);
 
   handler_->RecordModuleLinkClicked(
       "AnotherFeature", whats_new::mojom::ModulePosition::kExploreMore1);
@@ -229,7 +213,6 @@ TEST_F(WhatsNewHandlerTest, SurveyIsTriggered) {
       .Times(1);
 
   handler_->GetServerUrl(false, callback.Get());
-  mock_page_.FlushForTesting();
 }
 
 TEST_F(WhatsNewHandlerTest, SurveyIsTriggeredWithOverride) {
@@ -254,7 +237,6 @@ TEST_F(WhatsNewHandlerTest, SurveyIsTriggeredWithOverride) {
       .Times(1);
 
   handler_->GetServerUrl(false, callback.Get());
-  mock_page_.FlushForTesting();
 }
 
 TEST_F(WhatsNewHandlerTest, SurveyIsNotTriggeredForPreviouslyUsedEdition) {
@@ -282,5 +264,5 @@ TEST_F(WhatsNewHandlerTest, SurveyIsNotTriggeredForPreviouslyUsedEdition) {
       .Times(1);
 
   handler_->GetServerUrl(false, callback.Get());
-  mock_page_.FlushForTesting();
 }
+

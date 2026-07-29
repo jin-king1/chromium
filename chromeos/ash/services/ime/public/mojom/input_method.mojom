@@ -6,7 +6,7 @@
 // the Chromium repo. This file should be updated first, before syncing in the
 // other repos.
 
-// Next MinVersion: 24
+// Next MinVersion: 26
 
 module ash.ime.mojom;
 
@@ -25,7 +25,7 @@ enum KeyEventType {
 // If a key is not listed here, then it means that the Chrome OS first-party
 // IMEs do not handle it and it is safe for the OS to handle the key itself.
 //
-// Next ordinal: 40
+// Next ordinal: 42
 [Stable, Extensible, RenamedFrom="chromeos.ime.mojom.NamedDomKey"]
 enum NamedDomKey {
   [Default] kOther = 0,
@@ -74,6 +74,8 @@ enum NamedDomKey {
   [MinVersion=23] kAudioVolumeMute = 37,
   [MinVersion=23] kAudioVolumeDown = 38,
   [MinVersion=23] kAudioVolumeUp = 39,
+  [MinVersion=24] kDelete = 40,
+  [MinVersion=25] kNumLock = 41,
 };
 
 // Represents a key pressed by the user, taking into account aspects like
@@ -422,10 +424,10 @@ struct JapaneseSettings {
   [Stable, Extensible]
   enum PunctuationStyle {
     [Default] kUnspecified = 0,
-    kKutenTouten = 1,
+    kToutenKuten = 1,
     kCommaPeriod = 2,
-    kKutenPeriod = 3,
-    kCommaTouten = 4,
+    kToutenPeriod = 3,
+    kCommaKuten = 4,
   };
 
   [Stable, Extensible]
@@ -487,7 +489,7 @@ struct JapaneseSettings {
   [MinVersion=22] bool use_system_dictionary@10;
   [MinVersion=22] uint32 number_of_suggestions@11;
   [MinVersion=22] bool disable_personalized_suggestions@12;
-  [MinVersion=22] bool automatically_send_statistics_to_google@13;
+  [MinVersion=22] bool unused2@13;
 };
 
 // Next ordinal: 3
@@ -623,7 +625,7 @@ struct SuggestionCandidate {
 enum AssistiveWindowType {
   [Default] kHidden = 0,
   kUndo = 1,
-  kEmojiSuggestion = 2,
+  kEmojiSuggestionDeprecated = 2,  // Deprecated
   kPersonalInfoSuggestion = 3,
   kGrammarSuggestion = 4,
   kMultiWordSuggestion = 5,
@@ -757,4 +759,3 @@ struct VietnameseVniSettings {
   // Show an underline for the text under composition mode.
   [MinVersion=20] bool show_underline_for_composition_text@3;
 };
-

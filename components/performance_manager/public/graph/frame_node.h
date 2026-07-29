@@ -7,13 +7,15 @@
 
 #include <optional>
 
+#include "base/byte_size.h"
 #include "base/containers/flat_set.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list_types.h"
+#include "base/time/time.h"
 #include "base/types/strong_alias.h"
 #include "components/performance_manager/public/execution_context_priority/execution_context_priority.h"
 #include "components/performance_manager/public/graph/node.h"
 #include "components/performance_manager/public/graph/node_set_view.h"
-#include "components/performance_manager/public/mojom/coordination_unit.mojom.h"
 #include "components/performance_manager/public/mojom/lifecycle.mojom.h"
 #include "components/performance_manager/public/resource_attribution/frame_context.h"
 #include "components/performance_manager/public/viewport_intersection.h"
@@ -65,7 +67,7 @@ using execution_context_priority::PriorityAndReason;
 // it.
 class FrameNode : public TypedNode<FrameNode> {
  public:
-  using NodeSet = base::flat_set<const Node*>;
+  using NodeSet = base::flat_set<raw_ptr<const Node>>;
   template <class ReturnType>
   using NodeSetView = NodeSetView<NodeSet, ReturnType>;
 
@@ -170,6 +172,10 @@ class FrameNode : public TypedNode<FrameNode> {
   // See FrameNodeObserver::OnCurrentFrameChanged.
   virtual bool IsCurrent() const = 0;
 
+  // Returns true if this frame is active (the document is in the 'active'
+  // lifecycle state). See RenderFrameHost::IsActive() for more details.
+  virtual bool IsActive() const = 0;
+
   // Returns the current priority of the frame, and the reason for the frame
   // having that particular priority.
   virtual const PriorityAndReason& GetPriorityAndReason() const = 0;
@@ -219,12 +225,10 @@ class FrameNode : public TypedNode<FrameNode> {
   virtual bool HasFreezingOriginTrialOptOut() const = 0;
 
   // Returns the ViewportIntersection of this frame. For the outermost main
-  // frame, this always returns a valid value indicating that the frame fully
-  // intersects with the viewport. For child frames, this is initially null on
-  // node creation and is initialized during layout when the viewport
+  // frame, this always returns kIntersecting. For child frames, this is
+  // initially kUnknown, and is initialized during layout when the viewport
   // intersection is first calculated.
-  virtual std::optional<ViewportIntersection> GetViewportIntersection()
-      const = 0;
+  virtual ViewportIntersection GetViewportIntersection() const = 0;
 
   // Returns true if the frame is visible. This value is based on the viewport
   // intersection of the frame, and the visibility of the page.
@@ -233,12 +237,23 @@ class FrameNode : public TypedNode<FrameNode> {
   // account, as opposed to `PageNode::IsVisible()`.
   virtual Visibility GetVisibility() const = 0;
 
+  // Returns true if this frame is intersecting with a large area of the
+  // viewport. Note that this can not return true if `GetViewportIntersection()`
+  // returns kNotIntersecting. Also, this property is assumed to be true if its
+  // value is unknown.
+  virtual bool IsIntersectingLargeArea() const = 0;
+
   // Returns true if the frame is deemed important. This means that the frame
   // had been interacted with by the user, or is intersecting with a large area
   // of the viewport. Note that this is the importance in the context of the
   // containing page. If the page is not visible, the frame should not be
   // considered important, regardless of this value.
   virtual bool IsImportant() const = 0;
+
+  // Returns false if the frame is not rendered, e.g. because it has
+  // `display: none`. A non-rendered frame is not visible, but a visible frame
+  // is not necessarily rendered.
+  virtual bool IsRendered() const = 0;
 
   // Returns a proxy to the RenderFrameHost associated with this node. The
   // proxy may only be dereferenced on the UI thread.
@@ -247,15 +262,18 @@ class FrameNode : public TypedNode<FrameNode> {
   // TODO(joenotcharles): Move the resource usage estimates to a separate
   // class.
 
-  // Returns the most recently estimated resident set of the frame, in
-  // kilobytes. This is an estimate because RSS is computed by process, and a
-  // process can host multiple frames.
-  virtual uint64_t GetResidentSetKbEstimate() const = 0;
+  // Returns the most recently estimated resident set of the frame. This is an
+  // estimate because RSS is computed by process, and a process can host
+  // multiple frames.
+  virtual base::ByteSize GetResidentSetEstimate() const = 0;
 
-  // Returns the most recently estimated private footprint of the frame, in
-  // kilobytes. This is an estimate because it is computed by process, and a
-  // process can host multiple frames.
-  virtual uint64_t GetPrivateFootprintKbEstimate() const = 0;
+  // Returns the most recently estimated private footprint of the frame. This is
+  // an estimate because it is computed by process, and a process can host
+  // multiple frames.
+  virtual base::ByteSize GetPrivateFootprintEstimate() const = 0;
+
+  // Called when the process of a cross-process subframe has gone.
+  virtual void CrossProcessSubframeRenderProcessGone() = 0;
 };
 
 // Observer interface for frame nodes.
@@ -391,16 +409,24 @@ class FrameNodeObserver : public base::CheckedObserver {
       const FrameNode* frame_node) {}
 
   // Invoked when a frame's intersection with the viewport changes. Will only be
-  // invoked for a child frame, as the outermost main frame is always considered
-  // to be fully intersecting with the viewport.
+  // invoked for a child frame, or the main frame of an embedded page, as the
+  // outermost main frame is always considered to be intersecting with the
+  // viewport.
   virtual void OnViewportIntersectionChanged(const FrameNode* frame_node) {}
 
   // Invoked when the visibility property changes.
   virtual void OnFrameVisibilityChanged(const FrameNode* frame_node,
                                         FrameNode::Visibility previous_value) {}
 
+  // Invoked when the `IsIntersectingLargeArea()` property changes.
+  virtual void OnIsIntersectingLargeAreaChanged(const FrameNode* frame_node) {}
+
   // Invoked when the `IsImportant` property changes.
   virtual void OnIsImportantChanged(const FrameNode* frame_node) {}
+
+  // Called when the render process of a cross-process subframe exits.
+  virtual void OnCrossProcessSubframeRenderProcessGone(
+      const FrameNode* frame_node) {}
 
   // Events with no property changes.
 

@@ -33,7 +33,10 @@ import org.robolectric.Robolectric;
 import org.robolectric.shadows.ShadowActivity;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinator;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.components.autofill.payments.AutofillSaveCardUiInfo;
@@ -47,6 +50,7 @@ import java.util.List;
 /** Unit tests for {@link AutofillSaveCardBottomSheetCoordinator} */
 @SmallTest
 @RunWith(BaseRobolectricTestRunner.class)
+@EnableFeatures(ChromeFeatureList.ANDROID_SAVE_CARD_NON_BLOCKING_DIALOG)
 public final class AutofillSaveCardBottomSheetCoordinatorTest {
     @DrawableRes private static final int TEST_DRAWABLE_RES = R.drawable.arrow_up;
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -54,6 +58,7 @@ public final class AutofillSaveCardBottomSheetCoordinatorTest {
     private ShadowActivity mShadowActivity;
     @Mock private TabModel mTabModel;
     @Mock private BottomSheetController mBottomSheetController;
+    @Mock private AnchoredDialogCoordinator mAnchoredDialogCoordinator;
     @Mock private LayoutStateProvider mLayoutStateProvider;
     @Mock private AutofillSaveCardBottomSheetBridge mDelegate;
     private AutofillSaveCardBottomSheetCoordinator mCoordinator;
@@ -68,6 +73,7 @@ public final class AutofillSaveCardBottomSheetCoordinatorTest {
                         uiInfoForTest(),
                         /* skipLoadingForFixFlow= */ false,
                         mBottomSheetController,
+                        mAnchoredDialogCoordinator,
                         mLayoutStateProvider,
                         mTabModel,
                         mDelegate);
@@ -91,6 +97,11 @@ public final class AutofillSaveCardBottomSheetCoordinatorTest {
                 mCoordinator
                         .getPropertyModelForTesting()
                         .get(AutofillSaveCardBottomSheetProperties.LOGO_ICON));
+        assertEquals(
+                uiInfoForTest().getLogoIconDescription(),
+                mCoordinator
+                        .getPropertyModelForTesting()
+                        .get(AutofillSaveCardBottomSheetProperties.LOGO_ICON_DESCRIPTION));
         assertEquals(
                 uiInfoForTest().getCardDescription(),
                 mCoordinator
@@ -190,10 +201,11 @@ public final class AutofillSaveCardBottomSheetCoordinatorTest {
                                 .withDescriptionText("Description text.")
                                 .withIsForUpload(false)
                                 .withLogoIcon(TEST_DRAWABLE_RES)
+                                .withLogoIconDescription("Logo icon description")
                                 .withCardDetail(
                                         new CardDetail(
                                                 TEST_DRAWABLE_RES, "Card label", "Card sub label"))
-                                .withLegalMessageLines(Collections.EMPTY_LIST)
+                                .withLegalMessageLines(Collections.emptyList())
                                 .withConfirmText("Confirm text")
                                 .withCancelText("Cancel text")
                                 .withLoadingDescription("Loading description")
@@ -201,6 +213,7 @@ public final class AutofillSaveCardBottomSheetCoordinatorTest {
                                 .build(),
                         /* skipLoadingForFixFlow= */ false,
                         mBottomSheetController,
+                        mAnchoredDialogCoordinator,
                         mLayoutStateProvider,
                         mTabModel,
                         mDelegate);
@@ -225,6 +238,7 @@ public final class AutofillSaveCardBottomSheetCoordinatorTest {
                         uiInfoForTest(),
                         /* skipLoadingForFixFlow= */ true,
                         mBottomSheetController,
+                        mAnchoredDialogCoordinator,
                         mLayoutStateProvider,
                         mTabModel,
                         mDelegate);
@@ -274,6 +288,7 @@ public final class AutofillSaveCardBottomSheetCoordinatorTest {
                 .withDescriptionText("Description text.")
                 .withIsForUpload(true)
                 .withLogoIcon(TEST_DRAWABLE_RES)
+                .withLogoIconDescription("Logo icon description")
                 .withCardDetail(new CardDetail(TEST_DRAWABLE_RES, "Card label", "Card sub label"))
                 .withLegalMessageLines(List.of(new LegalMessageLine("Legal message line")))
                 .withConfirmText("Confirm text")

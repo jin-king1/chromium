@@ -5,6 +5,7 @@
 #ifndef CHROMEOS_ASH_COMPONENTS_BOCA_ON_TASK_ON_TASK_SYSTEM_WEB_APP_MANAGER_H_
 #define CHROMEOS_ASH_COMPONENTS_BOCA_ON_TASK_ON_TASK_SYSTEM_WEB_APP_MANAGER_H_
 
+#include "ash/webui/boca_ui/url_constants.h"
 #include "base/functional/callback_forward.h"
 #include "chromeos/ash/components/boca/boca_window_observer.h"
 #include "chromeos/ash/components/boca/on_task/on_task_blocklist.h"
@@ -23,10 +24,11 @@ class OnTaskSystemWebAppManager {
       delete;
   virtual ~OnTaskSystemWebAppManager() = default;
 
-  // Launches the Boca SWA and triggers the specified callback to convey the
-  // caller if the launch succeeded.
+  // Launches the Boca SWA with homepage url and triggers the specified callback
+  // to convey the caller if the launch succeeded.
   virtual void LaunchSystemWebAppAsync(
-      base::OnceCallback<void(bool)> callback) = 0;
+      base::OnceCallback<void(bool)> callback,
+      const GURL& url = GURL(kChromeBocaAppUntrustedIndexURL)) = 0;
 
   // Closes the specified Boca SWA window.
   virtual void CloseSystemWebAppWindow(SessionID window_id) = 0;
@@ -38,6 +40,10 @@ class OnTaskSystemWebAppManager {
   // Pins/unpins the specified Boca SWA window based on the specified value.
   virtual void SetPinStateForSystemWebAppWindow(bool pinned,
                                                 SessionID window_id) = 0;
+
+  // Pause/unpause the specified Boca SWA window based on the specified value.
+  virtual void SetPauseStateForSystemWebAppWindow(bool paused,
+                                                  SessionID window_id) = 0;
 
   // Set the window tracker to track the browser browser window with specified
   // id.
@@ -57,6 +63,11 @@ class OnTaskSystemWebAppManager {
       SessionID window_id,
       const std::set<SessionID>& tab_ids_to_remove) = 0;
 
+  // Set restriction_level for the tabs in the specified Boca SWA window.
+  virtual void SetParentTabsRestriction(
+      SessionID window_id,
+      ::boca::LockedNavigationOptions::NavigationType restriction_level) = 0;
+
   // Sets up the specified Boca SWA window for OnTask. Setting
   // `close_bundle_content` will remove all pre-existing content tabs except for
   // the homepage one, normally required at the onset of a new session or when
@@ -74,6 +85,9 @@ class OnTaskSystemWebAppManager {
 
   // Mute/unmute all tabs in all browser instances.
   virtual void SetAllChromeTabsMuted(bool muted) = 0;
+
+  // If current window is in lock/pinned state.
+  virtual bool IsWindowPinned(SessionID window_id) = 0;
 
  protected:
   OnTaskSystemWebAppManager() = default;

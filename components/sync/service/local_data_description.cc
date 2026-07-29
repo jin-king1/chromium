@@ -106,10 +106,10 @@ base::android::ScopedJavaLocalRef<jobject> ConvertToJavaLocalDataDescription(
       local_data_description.domain_count);
 }
 
-std::u16string JNI_LocalDataDescription_GetDomainsDisplayText(
+static std::u16string JNI_LocalDataDescription_GetDomainsDisplayText(
     JNIEnv* env,
     int item_count,
-    std::vector<std::string>& domains,
+    const std::vector<std::string>& domains,
     int domain_count) {
   LocalDataDescription description;
   description.item_count = item_count;
@@ -120,3 +120,7 @@ std::u16string JNI_LocalDataDescription_GetDomainsDisplayText(
 #endif
 
 }  // namespace syncer
+
+#if BUILDFLAG(IS_ANDROID)
+DEFINE_JNI(LocalDataDescription)
+#endif

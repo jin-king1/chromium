@@ -6,22 +6,23 @@
 
 #include <limits>
 
-#include "base/containers/contains.h"
 #include "base/files/file_enumerator.h"
-#include "base/files/file_util.h"
 #include "base/i18n/case_conversion.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/trace_event/trace_event.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_provider_listener.h"
 #include "components/omnibox/browser/base_search_provider.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/browser/on_device_model_update_listener.h"
+#include "components/omnibox/browser/on_device_tail_model_executor.h"
+#include "components/omnibox/browser/on_device_tail_model_service.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/search/search.h"
 #include "components/search_engines/search_terms_data.h"
@@ -29,11 +30,6 @@
 #include "net/base/url_util.h"
 #include "third_party/metrics_proto/omnibox_focus_type.pb.h"
 #include "third_party/metrics_proto/omnibox_input_type.pb.h"
-
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
-#include "components/omnibox/browser/on_device_tail_model_executor.h"
-#include "components/omnibox/browser/on_device_tail_model_service.h"
-#endif
 
 namespace {
 const int kBaseRelevanceForUrlInput = 99;
@@ -152,7 +148,8 @@ void OnDeviceHeadProvider::Start(const AutocompleteInput& input,
   TRACE_EVENT0("omnibox", "OnDeviceHeadProvider::Start");
 
   // Cancel any in-progress request.
-  Stop(!minimal_changes, false);
+  Stop(minimal_changes ? AutocompleteStopReason::kInteraction
+                       : AutocompleteStopReason::kClobbered);
 
   if (!IsOnDeviceHeadProviderAllowed(input)) {
     matches_.clear();
@@ -180,10 +177,8 @@ void OnDeviceHeadProvider::Start(const AutocompleteInput& input,
                      weak_ptr_factory_.GetWeakPtr(), std::move(params)));
 }
 
-void OnDeviceHeadProvider::Stop(bool clear_cached_results,
-                                bool due_to_user_inactivity) {
-  AutocompleteProvider::Stop(clear_cached_results, due_to_user_inactivity);
-
+void OnDeviceHeadProvider::Stop(AutocompleteStopReason stop_reason) {
+  AutocompleteProvider::Stop(stop_reason);
   // Increase the request_id so that any in-progress requests will become
   // obsolete.
   on_device_search_request_id_ =
@@ -245,7 +240,6 @@ void OnDeviceHeadProvider::DoSearch(
 void OnDeviceHeadProvider::HeadModelSearchDone(
     std::unique_ptr<OnDeviceHeadProviderParams> params) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
   if (!ShouldFetchTailSuggestions(*params, client()->GetApplicationLocale()) ||
       client()->GetOnDeviceTailModelService() == nullptr) {
     AllSearchDone(std::move(params));
@@ -255,7 +249,7 @@ void OnDeviceHeadProvider::HeadModelSearchDone(
   // Extract search query from current URL.
   std::string previous_query, query_str;
   const GURL& current_url = params->input.current_url();
-  if (current_url.path() == "/search" &&
+  if (current_url.GetPath() == "/search" &&
       net::GetValueForKeyInQuery(current_url, "q", &query_str)) {
     previous_query = query_str;
   }
@@ -268,12 +262,8 @@ void OnDeviceHeadProvider::HeadModelSearchDone(
   client()->GetOnDeviceTailModelService()->GetPredictionsForInput(
       input, base::BindOnce(&OnDeviceHeadProvider::TailModelSearchDone,
                             weak_ptr_factory_.GetWeakPtr(), std::move(params)));
-#else
-  AllSearchDone(std::move(params));
-#endif
 }
 
-#if BUILDFLAG(BUILD_WITH_TFLITE_LIB)
 void OnDeviceHeadProvider::TailModelSearchDone(
     std::unique_ptr<OnDeviceHeadProviderParams> params,
     std::vector<OnDeviceTailModelExecutor::Prediction> predictions) {
@@ -284,7 +274,6 @@ void OnDeviceHeadProvider::TailModelSearchDone(
   }
   AllSearchDone(std::move(params));
 }
-#endif
 
 void OnDeviceHeadProvider::AllSearchDone(
     std::unique_ptr<OnDeviceHeadProviderParams> params) {
@@ -369,7 +358,7 @@ bool OnDeviceHeadProvider::ShouldFetchTailSuggestions(
     // Determines if the prefix contains multiple words by checking if it has
     // whitespaces; Note this does not work when the prefix is not using
     // whitespace as delimiter, e.g. CJK languages.
-    bool is_single_word_prefix = !base::Contains(sanitized_input, " ");
+    bool is_single_word_prefix = !sanitized_input.contains(" ");
     if (is_single_word_prefix) {
       return false;
     }

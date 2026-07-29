@@ -51,7 +51,6 @@ class SyncableServiceBasedBridge : public DataTypeSyncBridge {
   ~SyncableServiceBasedBridge() override;
 
   // DataTypeSyncBridge implementation.
-  std::unique_ptr<MetadataChangeList> CreateMetadataChangeList() override;
   std::optional<ModelError> MergeFullSyncData(
       std::unique_ptr<MetadataChangeList> metadata_change_list,
       EntityChangeList entity_change_list) override;
@@ -61,8 +60,11 @@ class SyncableServiceBasedBridge : public DataTypeSyncBridge {
   std::unique_ptr<DataBatch> GetDataForCommit(
       StorageKeyList storage_keys) override;
   std::unique_ptr<DataBatch> GetAllDataForDebugging() override;
-  std::string GetClientTag(const EntityData& entity_data) override;
-  std::string GetStorageKey(const EntityData& entity_data) override;
+  std::string GetClientTag(const EntityData& entity_data) const override;
+  std::string GetStorageKey(const EntityData& entity_data) const override;
+  sync_pb::EntitySpecifics TrimAllSupportedFieldsFromRemoteSpecifics(
+      const sync_pb::EntitySpecifics& entity_specifics) const override;
+  bool IsEntityDataValid(const EntityData& entity_data) const override;
   bool SupportsGetClientTag() const override;
   bool SupportsGetStorageKey() const override;
   ConflictResolution ResolveConflict(
@@ -88,6 +90,12 @@ class SyncableServiceBasedBridge : public DataTypeSyncBridge {
                                 std::unique_ptr<MetadataBatch> metadata_batch);
   void OnSyncableServiceReady(std::unique_ptr<MetadataBatch> metadata_batch);
   [[nodiscard]] std::optional<ModelError> StartSyncableService();
+  void ProcessRemoteDelete(const EntityChange& change,
+                           DataTypeStore::WriteBatch* batch,
+                           SyncChangeList* output_sync_change_list);
+  void ProcessRemoteAddOrUpdate(const EntityChange& change,
+                                DataTypeStore::WriteBatch* batch,
+                                SyncChangeList* output_sync_change_list);
   SyncChangeList StoreAndConvertRemoteChanges(
       std::unique_ptr<MetadataChangeList> metadata_change_list,
       EntityChangeList input_entity_change_list);

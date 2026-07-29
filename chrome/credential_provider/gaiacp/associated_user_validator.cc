@@ -81,7 +81,7 @@ unsigned __stdcall CheckReauthStatus(void* param) {
     }
 
     std::string_view response_string(response.data(), response.size());
-    std::optional<base::Value::Dict> properties = base::JSONReader::ReadDict(
+    std::optional<base::DictValue> properties = base::JSONReader::ReadDict(
         response_string, base::JSON_ALLOW_TRAILING_COMMAS);
     if (!properties) {
       LOGFN(ERROR) << "base::JSONReader::ReadDict failed forcing reauth";
@@ -106,8 +106,9 @@ bool TokenHandleNeedsUpdate(const base::Time& last_refresh) {
 
 bool WaitForQueryResult(const base::win::ScopedHandle& thread_handle,
                         const base::Time& until) {
-  if (!thread_handle.IsValid())
+  if (!thread_handle.is_valid()) {
     return true;
+  }
 
   DWORD time_left = std::max<DWORD>(
       static_cast<DWORD>((until - base::Time::Now()).InMilliseconds()), 0);
@@ -115,13 +116,13 @@ bool WaitForQueryResult(const base::win::ScopedHandle& thread_handle,
   // See if a response to the token info can be fetched in a reasonable
   // amount of time. If not, assume there is no internet and that the handle
   // is still valid.
-  HRESULT hr = ::WaitForSingleObject(thread_handle.Get(), time_left);
+  HRESULT hr = ::WaitForSingleObject(thread_handle.get(), time_left);
 
   bool token_handle_validity = false;
   if (hr == WAIT_OBJECT_0) {
     DWORD exit_code;
     token_handle_validity =
-        !::GetExitCodeThread(thread_handle.Get(), &exit_code) || exit_code == 1;
+        !::GetExitCodeThread(thread_handle.get(), &exit_code) || exit_code == 1;
   } else if (hr == WAIT_TIMEOUT) {
     token_handle_validity = true;
   }
@@ -510,7 +511,7 @@ void AssociatedUserValidator::CheckTokenHandleValidity(
     auto existing_validity_it = user_to_token_handle_info_.find(it->first);
     if (existing_validity_it != user_to_token_handle_info_.end() &&
         !existing_validity_it->second->is_valid &&
-        !existing_validity_it->second->pending_query_thread.IsValid()) {
+        !existing_validity_it->second->pending_query_thread.is_valid()) {
       continue;
     }
 
@@ -567,7 +568,7 @@ bool AssociatedUserValidator::IsAuthEnforcedForUser(const std::wstring& sid) {
 
 AssociatedUserValidator::EnforceAuthReason
 AssociatedUserValidator::GetAuthEnforceReason(const std::wstring& sid) {
-  LOGFN(VERBOSE);
+  LOGFN(VERBOSE) << "sid=" << sid;
 
   // Is user not associated, then we shouldn't have any auth enforcement.
   if (!IsUserAssociated(sid)) {
@@ -673,7 +674,7 @@ bool AssociatedUserValidator::IsTokenHandleValidForUser(
   CheckTokenHandleValidity({{sid, validity_it->second->queried_token_handle}});
 
   // If a query is still pending, wait for it and update the validity.
-  if (validity_it->second->pending_query_thread.IsValid()) {
+  if (validity_it->second->pending_query_thread.is_valid()) {
     validity_it->second->is_valid =
         WaitForQueryResult(validity_it->second->pending_query_thread,
                            validity_it->second->last_update);

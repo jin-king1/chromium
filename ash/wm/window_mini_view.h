@@ -134,9 +134,6 @@ class ASH_EXPORT WindowMiniView : public WindowMiniViewBase,
   // `header_view_rounded_corners_` and `preview_view_rounded_corners_`.
   void ResetRoundedCorners();
 
-  // views::View:
-  void OnThemeChanged() override;
-
   // WindowMiniViewBase:
   bool Contains(aura::Window* window) const override;
   aura::Window* GetWindowAtPoint(const gfx::Point& screen_point) const override;
@@ -193,7 +190,7 @@ class ASH_EXPORT WindowMiniView : public WindowMiniViewBase,
   raw_ptr<views::View> backdrop_view_ = nullptr;
 
   // Optionally shows a preview of |window_|.
-  raw_ptr<WindowPreviewView, DanglingUntriaged> preview_view_ = nullptr;
+  raw_ptr<WindowPreviewView> preview_view_;
 
   // If these optional values are set, they will be used otherwise the default
   // rounded corners will be used.

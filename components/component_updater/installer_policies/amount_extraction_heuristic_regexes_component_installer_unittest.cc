@@ -55,7 +55,7 @@ class AmountExtractionHeuristicRegexesInstallerPolicyTest
   }
 
   void LoadTestAmountExtractionHeuristicRegexesData() {
-    base::Value::Dict manifest;
+    base::DictValue manifest;
     ASSERT_TRUE(policy_.VerifyInstallation(manifest, component_install_dir()));
     const base::Version expected_version(
         kAmountExtractionHeuristicRegexesVersion);
@@ -64,7 +64,7 @@ class AmountExtractionHeuristicRegexesInstallerPolicyTest
     RunUntilIdle();
   }
 
-  bool VerifyInstallation(const base::Value::Dict& manifest,
+  bool VerifyInstallation(const base::DictValue& manifest,
                           const base::FilePath& install_dir) {
     return policy_.VerifyInstallation(manifest, install_dir);
   }
@@ -90,7 +90,7 @@ class AmountExtractionHeuristicRegexesInstallerPolicyTest
 TEST_F(AmountExtractionHeuristicRegexesInstallerPolicyTest,
        ComponentRegistered) {
   EXPECT_CALL(component_update_service_, RegisterComponent(testing::_))
-      .Times(1)
+
       .WillOnce(testing::Return(true));
   RegisterAmountExtractionHeuristicRegexesComponent(&component_update_service_);
   RunUntilIdle();
@@ -139,7 +139,7 @@ TEST_F(AmountExtractionHeuristicRegexesInstallerPolicyTest, LoadFileWithData) {
 TEST_F(AmountExtractionHeuristicRegexesInstallerPolicyTest,
        WriteMetrics_InvalidInstallationPath) {
   ASSERT_FALSE(VerifyInstallation(
-      base::Value::Dict(), base::FilePath(FILE_PATH_LITERAL("invalid_dir"))));
+      base::DictValue(), base::FilePath(FILE_PATH_LITERAL("invalid_dir"))));
 
   AssertWriteMetrics(
       autofill::autofill_metrics::AmountExtractionComponentInstallationResult::

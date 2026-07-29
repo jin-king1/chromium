@@ -49,11 +49,6 @@ export interface PaymentsManagerProxy {
   saveIban(iban: chrome.autofillPrivate.IbanEntry): void;
 
   /**
-   * Migrate the local credit cards.
-   */
-  migrateCreditCards(): void;
-
-  /**
    * Logs that the server cards edit link was clicked.
    */
   logServerCardLinkClicked(): void;
@@ -98,7 +93,7 @@ export interface PaymentsManagerProxy {
   getLocalCard(guid: string):
       Promise<chrome.autofillPrivate.CreditCardEntry|null>;
 
-  // <if expr="is_win or is_macosx">
+  // <if expr="is_win or is_macosx or is_chromeos">
   /**
    * Returns true if there is authentication available on this device (biometric
    * or screen lock), false otherwise.
@@ -154,10 +149,6 @@ export class PaymentsManagerImpl implements PaymentsManagerProxy {
     chrome.autofillPrivate.removePaymentsEntity(guid);
   }
 
-  migrateCreditCards() {
-    chrome.autofillPrivate.migrateCreditCards();
-  }
-
   logServerCardLinkClicked() {
     chrome.autofillPrivate.logServerCardLinkClicked();
   }
@@ -195,7 +186,7 @@ export class PaymentsManagerImpl implements PaymentsManagerProxy {
     return chrome.autofillPrivate.getLocalCard(guid);
   }
 
-  // <if expr="is_win or is_macosx">
+  // <if expr="is_win or is_macosx or is_chromeos">
   checkIfDeviceAuthAvailable() {
     return chrome.autofillPrivate.checkIfDeviceAuthAvailable();
   }

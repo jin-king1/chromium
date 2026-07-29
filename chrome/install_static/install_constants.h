@@ -99,6 +99,9 @@ struct InstallConstants {
   // Windows.
   const wchar_t* browser_prog_id_description;
 
+  // The URL scheme for direct launches.
+  const char* direct_launch_url_scheme;
+
   // The prefix for the browser pdf viewer's ProgID.  This prefix may be no more
   // than 11 characters long; see ShellUtil::GetBrowserProgId and
   // https://msdn.microsoft.com/library/windows/desktop/dd542719.aspx.
@@ -112,10 +115,6 @@ struct InstallConstants {
   // Active Setup is used to perform certain operations in a user's context for
   // system-level installs.
   const wchar_t* active_setup_guid;
-
-  // The legacy CommandExecuteImpl CLSID, or an empty string if this install
-  // mode never included a DelegateExecute verb handler.
-  const wchar_t* legacy_command_execute_clsid;
 
   // The CLSID of the COM object registered with the Widnows OS. This is for app
   // activation via user interaction with a toast notification in the Action

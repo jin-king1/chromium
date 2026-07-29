@@ -5,11 +5,13 @@
 #include "third_party/blink/public/platform/media/web_encrypted_media_client_impl.h"
 
 #include <memory>
+#include <unordered_map>
 #include <utility>
 
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
+#include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
 #include "media/base/key_systems.h"
 #include "media/base/media_permission.h"
@@ -61,8 +63,6 @@ std::string ConvertCreateCdmStatusToString(media::CreateCdmStatus status) {
     case media::CreateCdmStatus::kNotAllowedOnUniqueOrigin:
       return "EME use is not allowed on unique origins.";
 #if BUILDFLAG(IS_ANDROID)
-    case media::CreateCdmStatus::kMediaDrmBridgeCreationFailed:
-      return "MediaDrmBridge creation failed.";
     case media::CreateCdmStatus::kMediaCryptoNotAvailable:
       return "MediaCrypto not available.";
     case media::CreateCdmStatus::kAndroidMediaDrmIllegalArgument:
@@ -109,7 +109,7 @@ void CompleteWebContentDecryptionModuleResult(
   if (!cdm) {
     result->CompleteWithError(
         kWebContentDecryptionModuleExceptionNotSupportedError, 0,
-        WebString::FromASCII(ConvertCreateCdmStatusToString(status)));
+        WebString::FromAscii(ConvertCreateCdmStatusToString(status)));
     return;
   }
 
@@ -182,7 +182,7 @@ PerProcessReporterMap& GetPerProcessReporterMap() {
 static PerProcessReporter* GetPerProcessReporter(const WebString& key_system) {
   // Assumes that empty will not be found by GetKeySystemNameForUMA().
   std::string key_system_ascii;
-  if (key_system.ContainsOnlyASCII()) {
+  if (key_system.ContainsOnlyAscii()) {
     key_system_ascii = key_system.Ascii();
   }
 
@@ -268,8 +268,8 @@ void WebEncryptedMediaClientImpl::RequestMediaKeySystemAccess(
 
   pending_requests_.push_back(std::move(request));
   key_systems_->UpdateIfNeeded(
-      WTF::BindOnce(&WebEncryptedMediaClientImpl::OnKeySystemsUpdated,
-                    weak_factory_.GetWeakPtr()));
+      blink::BindOnce(&WebEncryptedMediaClientImpl::OnKeySystemsUpdated,
+                      weak_factory_.GetWeakPtr()));
 }
 
 void WebEncryptedMediaClientImpl::CreateCdm(
@@ -278,8 +278,7 @@ void WebEncryptedMediaClientImpl::CreateCdm(
     std::unique_ptr<WebContentDecryptionModuleResult> result) {
   WebContentDecryptionModuleImpl::Create(
       cdm_factory_, key_systems_, security_origin, cdm_config,
-      WTF::BindOnce(&CompleteWebContentDecryptionModuleResult,
-                    std::move(result)));
+      BindOnce(&CompleteWebContentDecryptionModuleResult, std::move(result)));
 }
 
 void WebEncryptedMediaClientImpl::OnKeySystemsUpdated() {
@@ -292,8 +291,8 @@ void WebEncryptedMediaClientImpl::SelectConfig(
     WebEncryptedMediaRequest request) {
   key_system_config_selector_.SelectConfig(
       request.KeySystem(), request.SupportedConfigurations(),
-      WTF::BindOnce(&WebEncryptedMediaClientImpl::OnConfigSelected,
-                    weak_factory_.GetWeakPtr(), request));
+      blink::BindOnce(&WebEncryptedMediaClientImpl::OnConfigSelected,
+                      weak_factory_.GetWeakPtr(), request));
 }
 
 void WebEncryptedMediaClientImpl::OnConfigSelected(
@@ -337,7 +336,7 @@ void WebEncryptedMediaClientImpl::OnConfigSelected(
 
   // Use the returned key system which should be used for CDM creation.
   request.RequestSucceeded(WebContentDecryptionModuleAccessImpl::Create(
-      origin, *accumulated_configuration, *cdm_config,
+      origin, *accumulated_configuration, request.KeySystem(), *cdm_config,
       weak_factory_.GetWeakPtr()));
 }
 
@@ -345,8 +344,9 @@ WebEncryptedMediaClientImpl::Reporter* WebEncryptedMediaClientImpl::GetReporter(
     const WebString& key_system) {
   // Assumes that empty will not be found by GetKeySystemNameForUMA().
   std::string key_system_ascii;
-  if (key_system.ContainsOnlyASCII())
+  if (key_system.ContainsOnlyAscii()) {
     key_system_ascii = key_system.Ascii();
+  }
 
   // Return a per-frame singleton so that UMA reports will be once-per-frame.
   std::string uma_name = media::GetKeySystemNameForUMA(key_system_ascii);

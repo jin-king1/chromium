@@ -6,15 +6,20 @@
 
 #include <utility>
 
+#include "base/check_deref.h"
 #include "base/test/bind.h"
 #include "components/metrics/metrics_pref_names.h"
+#include "components/metrics/profile_metrics_service.h"
+#include "components/policy/core/common/management/management_service.h"
 #include "components/regional_capabilities/regional_capabilities_service.h"
 #include "components/regional_capabilities/regional_capabilities_test_utils.h"
 #include "components/search_engines/search_engine_choice/search_engine_choice_service.h"
 #include "components/search_engines/search_engines_pref_names.h"
+#include "components/search_engines/search_engines_test_util.h"
 #include "components/search_engines/template_url_prepopulate_data_resolver.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/search_engines/template_url_service_test_util.h"
+#include "components/signin/public/identity_manager/identity_test_environment.h"
 
 namespace search_engines {
 
@@ -29,13 +34,7 @@ SearchEnginesTestEnvironment::ServiceFactories CreateDefaultFactories(
             environment.pref_service());
       });
   default_factories.search_engine_choice_service_factory =
-      base::BindRepeating([](SearchEnginesTestEnvironment& environment) {
-        return std::make_unique<SearchEngineChoiceService>(
-            environment.pref_service(), &environment.local_state(),
-            environment.regional_capabilities_service(),
-            environment.prepopulate_data_resolver(),
-            /*is_profile_eligible_for_dse_guest_propagation=*/false);
-      });
+      SearchEnginesTestEnvironment::GetSearchEngineChoiceServiceFactory();
 
   default_factories.template_url_service_factory = base::BindLambdaForTesting(
       [deps](SearchEnginesTestEnvironment& environment) {
@@ -59,6 +58,31 @@ SearchEnginesTestEnvironment::ServiceFactories::operator=(
     const ServiceFactories& other) = default;
 
 SearchEnginesTestEnvironment::ServiceFactories::~ServiceFactories() = default;
+
+// static
+SearchEnginesTestEnvironment::ServiceFactory<SearchEngineChoiceService>
+SearchEnginesTestEnvironment::GetSearchEngineChoiceServiceFactory(
+    bool skip_init,
+    base::RepeatingCallback<
+        std::unique_ptr<SearchEngineChoiceService::Client>()> client_factory) {
+  return base::BindLambdaForTesting(
+      [skip_init, client_factory](SearchEnginesTestEnvironment& environment) {
+        auto service = std::make_unique<SearchEngineChoiceService>(
+            client_factory
+                ? client_factory.Run()
+                : std::make_unique<FakeSearchEngineChoiceServiceClient>(),
+            environment.pref_service(), &environment.local_state(),
+            environment.regional_capabilities_service(),
+            environment.prepopulate_data_resolver(),
+            CHECK_DEREF(environment.identity_test_env().identity_manager()),
+            environment.management_service(),
+            environment.profile_metrics_service());
+        if (!skip_init) {
+          service->Init();
+        }
+        return service;
+      });
+}
 
 SearchEnginesTestEnvironment::SearchEnginesTestEnvironment(
     const Deps& deps,
@@ -86,6 +110,12 @@ SearchEnginesTestEnvironment::SearchEnginesTestEnvironment(
 }
 
 SearchEnginesTestEnvironment::~SearchEnginesTestEnvironment() = default;
+
+void SearchEnginesTestEnvironment::Shutdown() {
+  if (template_url_service_) {
+    template_url_service_->Shutdown();
+  }
+}
 
 sync_preferences::TestingPrefServiceSyncable&
 SearchEnginesTestEnvironment::pref_service() {
@@ -122,6 +152,24 @@ SearchEnginesTestEnvironment::prepopulate_data_resolver() {
             pref_service(), regional_capabilities_service());
   }
   return *prepopulate_data_resolver_;
+}
+
+policy::ManagementService& SearchEnginesTestEnvironment::management_service() {
+  if (!management_service_) {
+    management_service_ = std::make_unique<policy::ManagementService>(
+        /*providers=*/std::vector<
+            std::unique_ptr<policy::ManagementStatusProvider>>{});
+  }
+  return *management_service_;
+}
+
+metrics::ProfileMetricsService&
+SearchEnginesTestEnvironment::profile_metrics_service() {
+  if (!profile_metrics_service_) {
+    profile_metrics_service_ = std::make_unique<metrics::ProfileMetricsService>(
+        metrics::ProfileMetricsContext(1));
+  }
+  return *profile_metrics_service_;
 }
 
 SearchEngineChoiceService&

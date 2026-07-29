@@ -19,6 +19,7 @@ extern const char kSwitchValueFalse[];
 // Switches for crash_uploader
 extern const char kCrashServerUrl[];
 extern const char kCrashUploaderDaemon[];
+extern const char kCrashReportProductName[];
 
 // Disable Crash Reporting
 extern const char kDisableCrashReporter[];
@@ -117,6 +118,9 @@ extern const char kUseCastBrowserPrefConfig[];
 extern const char kInProcessBroker[];
 
 extern const char kCastMojoBrokerPath[];
+
+// Allows specifying the base::ASSETS dir for Cast via commandline.
+extern const char kCastAssetsDir[];
 
 }  // namespace switches
 

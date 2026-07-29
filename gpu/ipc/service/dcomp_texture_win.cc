@@ -66,14 +66,14 @@ class DCOMPTextureBacking : public ClearTrackingSharedImageBacking {
                       const gfx::Size& size)
       : ClearTrackingSharedImageBacking(
             mailbox,
-            viz::SinglePlaneFormat::kBGRA_8888,
-            size,
-            gfx::ColorSpace(gfx::ColorSpace::PrimaryID::BT709,
-                            gfx::ColorSpace::TransferID::BT709),
-            kTopLeft_GrSurfaceOrigin,
-            kPremul_SkAlphaType,
-            gpu::SHARED_IMAGE_USAGE_SCANOUT,
-            {},
+            SharedImageInfo(viz::SinglePlaneFormat::kBGRA_8888,
+                            size,
+                            gfx::ColorSpace(gfx::ColorSpace::PrimaryID::BT709,
+                                            gfx::ColorSpace::TransferID::BT709),
+                            kTopLeft_GrSurfaceOrigin,
+                            kPremul_SkAlphaType,
+                            gpu::SHARED_IMAGE_USAGE_SCANOUT,
+                            {}),
             /*estimated_size=*/0,
             /*is_thread_safe=*/false),
         dcomp_surface_proxy_(std::move(dcomp_surface_proxy)) {
@@ -185,7 +185,6 @@ void DCOMPTexture::ResetSizeIfNeeded() {
   // destroyed, but we are still showing the last frame), which will trigger
   // `ReleaseChannel()` and set `channel_` to null.
   if (!channel_ &&
-      protected_video_type_ == gfx::ProtectedVideoType::kHardwareProtected &&
       base::TimeTicks::Now() - last_power_change_time_ <
           kPowerChangeDetectionGracePeriod) {
     DVLOG(1) << __func__
@@ -207,8 +206,9 @@ void DCOMPTexture::SetTextureSize(const gfx::Size& size) {
       shared_image_mailbox_created_ = true;
       gpu::Mailbox mailbox = CreateSharedImage();
       client_->OnSharedImageMailboxBound(mailbox);
-    } else
+    } else {
       DLOG(ERROR) << "Unable to call client_->OnSharedImageMailboxBound";
+    }
   }
 }
 
@@ -227,13 +227,13 @@ void DCOMPTexture::SetDCOMPSurfaceHandle(
 
   base::win::ScopedHandle surface_handle =
       gl::DCOMPSurfaceRegistry::GetInstance()->TakeDCOMPSurfaceHandle(token);
-  if (!surface_handle.IsValid()) {
+  if (!surface_handle.is_valid()) {
     DLOG(ERROR) << __func__ << ": No surface registered for token " << token;
     std::move(callback).Run(false);
     return;
   }
 
-  surface_handle_.Set(surface_handle.Take());
+  surface_handle_.Set(surface_handle.release());
   std::move(callback).Run(true);
 }
 
@@ -294,16 +294,6 @@ void DCOMPTexture::SetRect(const gfx::Rect& window_relative_rect) {
 
   if (should_send_output_rect)
     SendOutputRect();
-}
-
-void DCOMPTexture::SetProtectedVideoType(
-    gfx::ProtectedVideoType protected_video_type) {
-  if (protected_video_type == protected_video_type_)
-    return;
-
-  DVLOG(2) << __func__ << ": protected_video_type="
-           << static_cast<int>(protected_video_type);
-  protected_video_type_ = protected_video_type;
 }
 
 void DCOMPTexture::SendOutputRect() {

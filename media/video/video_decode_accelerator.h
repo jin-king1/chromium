@@ -24,7 +24,7 @@
 #include "media/video/picture.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/gpu_memory_buffer.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
 
 typedef unsigned int GLenum;
 
@@ -177,7 +177,7 @@ class MEDIA_EXPORT VideoDecodeAccelerator {
     gfx::ColorSpace target_color_space;
 
     // HDR metadata specified by the container.
-    std::optional<gfx::HDRMetadata> hdr_metadata;
+    gfx::HDRMetadata hdr_metadata;
   };
 
   // Interface for collaborating with picture interface to provide memory for

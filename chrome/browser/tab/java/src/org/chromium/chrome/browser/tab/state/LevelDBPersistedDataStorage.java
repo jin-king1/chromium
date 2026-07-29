@@ -6,19 +6,26 @@ package org.chromium.chrome.browser.tab.state;
 
 import androidx.annotation.MainThread;
 
+import com.google.errorprone.annotations.CheckReturnValue;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ResettersForTesting;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.content_public.browser.BrowserContextHandle;
 
 /** Provides key -> byte[] mapping storage with namespace support for PersistedData */
+@NullMarked
 public class LevelDBPersistedDataStorage implements PersistedDataStorage {
     private static boolean sSkipNativeAssertionsForTesting;
     private long mNativePersistedStateDB;
-    private String mNamespace;
+    private final String mNamespace;
 
     /**
      * @param profile corresponding to LevelDBPersistedDataStorage instance
@@ -30,12 +37,14 @@ public class LevelDBPersistedDataStorage implements PersistedDataStorage {
                 : "LevelDBPersistedTabDataStorage is not supported for incognito profiles";
         mNamespace = namespace;
         LevelDBPersistedDataStorageJni.get().init(this, profile);
-        makeNativeAssertion();
+        if (!sSkipNativeAssertionsForTesting) {
+            assert mNativePersistedStateDB != 0;
+        }
     }
 
     @Override
-    public void save(String key, byte[] data) {
-        makeNativeAssertion();
+    public void save(String key, byte @Nullable [] data) {
+        if (!assertNativeExists()) return;
         LevelDBPersistedDataStorageJni.get()
                 .save(mNativePersistedStateDB, getMasterKey(key), data, null);
     }
@@ -45,44 +54,62 @@ public class LevelDBPersistedDataStorage implements PersistedDataStorage {
     }
 
     @MainThread
-    public void saveForTesting(String key, byte[] data, Runnable onComplete) {
-        makeNativeAssertion();
+    public void saveForTesting(String key, byte[] data, @Nullable Runnable onComplete) {
+        if (!assertNativeExists()) {
+            if (onComplete != null) {
+                PostTask.postTask(TaskTraits.UI_DEFAULT, onComplete);
+            }
+            return;
+        }
         LevelDBPersistedDataStorageJni.get()
                 .save(mNativePersistedStateDB, getMasterKey(key), data, onComplete);
     }
 
     @Override
-    public void load(String key, Callback<byte[]> callback) {
-        makeNativeAssertion();
+    public void load(String key, Callback<byte @Nullable []> callback) {
+        if (!assertNativeExists()) {
+            PostTask.postTask(TaskTraits.UI_DEFAULT, callback.bind(null));
+            return;
+        }
         LevelDBPersistedDataStorageJni.get()
                 .load(mNativePersistedStateDB, getMasterKey(key), callback);
     }
 
     @Override
     public void delete(String key) {
-        makeNativeAssertion();
+        if (!assertNativeExists()) return;
         LevelDBPersistedDataStorageJni.get()
                 .delete(mNativePersistedStateDB, getMasterKey(key), null);
     }
 
     @MainThread
-    public void deleteForTesting(String key, Runnable onComplete) {
-        makeNativeAssertion();
+    public void deleteForTesting(String key, @Nullable Runnable onComplete) {
+        if (!assertNativeExists()) {
+            if (onComplete != null) {
+                PostTask.postTask(TaskTraits.UI_DEFAULT, onComplete);
+            }
+            return;
+        }
         LevelDBPersistedDataStorageJni.get()
                 .delete(mNativePersistedStateDB, getMasterKey(key), onComplete);
     }
 
     @Override
     public void performMaintenance(String[] keysToKeep, String dataId) {
-        makeNativeAssertion();
+        if (!assertNativeExists()) return;
         LevelDBPersistedDataStorageJni.get()
                 .performMaintenance(
                         mNativePersistedStateDB, getMasterKeysToKeep(keysToKeep), dataId, null);
     }
 
     protected void performMaintenanceForTesting(
-            String[] keysToKeep, String dataId, Runnable onComplete) {
-        makeNativeAssertion();
+            String[] keysToKeep, String dataId, @Nullable Runnable onComplete) {
+        if (!assertNativeExists()) {
+            if (onComplete != null) {
+                PostTask.postTask(TaskTraits.UI_DEFAULT, onComplete);
+            }
+            return;
+        }
         LevelDBPersistedDataStorageJni.get()
                 .performMaintenance(
                         mNativePersistedStateDB,
@@ -100,8 +127,10 @@ public class LevelDBPersistedDataStorage implements PersistedDataStorage {
     }
 
     public void destroy() {
-        makeNativeAssertion();
-        LevelDBPersistedDataStorageJni.get().destroy(mNativePersistedStateDB);
+        if (mNativePersistedStateDB != 0) {
+            LevelDBPersistedDataStorageJni.get().destroy(mNativePersistedStateDB);
+            mNativePersistedStateDB = 0;
+        }
     }
 
     @CalledByNative
@@ -113,10 +142,13 @@ public class LevelDBPersistedDataStorage implements PersistedDataStorage {
         mNativePersistedStateDB = nativePtr;
     }
 
-    private void makeNativeAssertion() {
-        if (!sSkipNativeAssertionsForTesting) {
-            assert mNativePersistedStateDB != 0;
+    @CheckReturnValue
+    private boolean assertNativeExists() {
+        if (sSkipNativeAssertionsForTesting) {
+            return true;
         }
+        assert mNativePersistedStateDB != 0;
+        return mNativePersistedStateDB != 0;
     }
 
     public static void setSkipNativeAssertionsForTesting(boolean skipNativeAssertionsForTesting) {
@@ -126,20 +158,24 @@ public class LevelDBPersistedDataStorage implements PersistedDataStorage {
 
     @NativeMethods
     public interface Natives {
-        void init(LevelDBPersistedDataStorage caller, BrowserContextHandle handle);
+        void init(LevelDBPersistedDataStorage self, BrowserContextHandle handle);
 
         void destroy(long nativePersistedStateDB);
 
-        void save(long nativePersistedStateDB, String key, byte[] data, Runnable onComplete);
+        void save(
+                long nativePersistedStateDB,
+                String key,
+                byte @Nullable [] data,
+                @Nullable Runnable onComplete);
 
-        void load(long nativePersistedStateDB, String key, Callback<byte[]> callback);
+        void load(long nativePersistedStateDB, String key, Callback<byte @Nullable []> callback);
 
-        void delete(long nativePersistedStateDB, String key, Runnable onComplete);
+        void delete(long nativePersistedStateDB, String key, @Nullable Runnable onComplete);
 
         void performMaintenance(
                 long nativePersistedStateDB,
                 String[] keysToKeep,
                 String dataId,
-                Runnable onComplete);
+                @Nullable Runnable onComplete);
     }
 }

@@ -6,9 +6,7 @@ package org.chromium.chrome.browser.display_cutout;
 
 import android.content.Intent;
 import android.net.Uri;
-import android.os.Build;
 
-import androidx.annotation.RequiresApi;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.platform.app.InstrumentationRegistry;
 
@@ -20,6 +18,7 @@ import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.blink.mojom.DisplayMode;
 import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.webapps.WebappActivity;
 
 import java.lang.annotation.ElementType;
@@ -28,7 +27,6 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /** Custom test rule for simulating a {@link WebappActivity} with a Display Cutout. */
-@RequiresApi(Build.VERSION_CODES.P)
 public class WebappDisplayCutoutTestRule extends DisplayCutoutTestRule<WebappActivity> {
     /** Test data for the test webapp. */
     private static final String WEBAPP_ID = "webapp_id";
@@ -45,6 +43,12 @@ public class WebappDisplayCutoutTestRule extends DisplayCutoutTestRule<WebappAct
     public @interface TestConfiguration {
         @DisplayMode.EnumType
         int displayMode();
+
+        /**
+         * Whether to observe the real {@link ActivityDisplayCutoutModeSupplier} attached to the
+         * activity's window instead of a test-supplied one.
+         */
+        boolean useRealBrowserCutoutSupplier() default false;
     }
 
     private TestConfiguration mTestConfiguration;
@@ -62,6 +66,14 @@ public class WebappDisplayCutoutTestRule extends DisplayCutoutTestRule<WebappAct
     @Override
     protected void startActivity() {
         startWebappActivity(mTestConfiguration.displayMode());
+    }
+
+    @Override
+    protected TestDisplayCutoutController createDisplayCutoutController(Tab tab) {
+        if (mTestConfiguration.useRealBrowserCutoutSupplier()) {
+            return TestDisplayCutoutController.createWithRealBrowserCutoutSupplier(tab);
+        }
+        return super.createDisplayCutoutController(tab);
     }
 
     private void startWebappActivity(@DisplayMode.EnumType int displayMode) {

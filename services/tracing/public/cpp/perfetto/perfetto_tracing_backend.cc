@@ -8,6 +8,7 @@
 #include "base/command_line.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
@@ -20,6 +21,7 @@
 #include "build/build_config.h"
 #include "components/tracing/common/tracing_switches.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "services/tracing/public/cpp/perfetto/shared_memory.h"
 #include "services/tracing/public/cpp/perfetto/trace_packet_tokenizer.h"
@@ -334,7 +336,9 @@ class ConsumerEndpoint : public perfetto::ConsumerEndpoint,
 
   ~ConsumerEndpoint() override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    consumer_.ExtractAsDangling()->OnDisconnect();  // May delete |consumer_|.
+    if (consumer_) {
+      consumer_.ExtractAsDangling()->OnDisconnect();  // May delete |consumer_|.
+    }
   }
 
   base::WeakPtr<ConsumerEndpoint> GetWeakPtr() {
@@ -416,7 +420,6 @@ class ConsumerEndpoint : public perfetto::ConsumerEndpoint,
         tracing_session_host_->DisableTracingAndEmitJson(
             data_source.config().chrome_config().json_agent_label_filter(),
             std::move(producer_handle),
-            data_source.config().chrome_config().privacy_filtering_enabled(),
             base::BindOnce(&ConsumerEndpoint::OnReadBuffersComplete,
                            base::Unretained(this)));
         return;
@@ -517,6 +520,7 @@ class ConsumerEndpoint : public perfetto::ConsumerEndpoint,
           .error = "Session name is not an UnguessableToken",
       });
     }
+
     consumer_host_->CloneSession(
         tracing_session_host_.BindNewPipeAndPassReceiver(),
         tracing_session_client_.BindNewPipeAndPassRemote(), *uuid,
@@ -575,7 +579,7 @@ class ConsumerEndpoint : public perfetto::ConsumerEndpoint,
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (tokenizer_) {
       // Protobuf-format data.
-      auto packets = tokenizer_->Parse(data.data(), data.size());
+      auto packets = tokenizer_->Parse(data);
       if (!packets.empty())
         consumer_->OnTraceData(std::move(packets), /*has_more=*/true);
     } else {
@@ -613,6 +617,13 @@ class ConsumerEndpoint : public perfetto::ConsumerEndpoint,
     tracing_session_client_.reset();
     drainer_.reset();
     tokenizer_.reset();
+
+    if (consumer_) {
+      perfetto::Consumer* consumer = consumer_.ExtractAsDangling();
+      consumer_ = nullptr;
+      consumer->OnDisconnect();
+      return;
+    }
   }
 
   void OnReadBuffersComplete() {

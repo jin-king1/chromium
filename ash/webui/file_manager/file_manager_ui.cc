@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ash/webui/file_manager/file_manager_ui.h"
 
@@ -31,7 +27,6 @@
 #include "ui/file_manager/grit/file_manager_gen_resources.h"
 #include "ui/file_manager/grit/file_manager_gen_resources_map.h"
 #include "ui/file_manager/grit/file_manager_resources_map.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 
 namespace ash::file_manager {
 namespace {
@@ -51,9 +46,10 @@ bool IsKioskSession() {
     case user_manager::UserType::kGuest:
     case user_manager::UserType::kPublicAccount:
       return false;
-    case user_manager::UserType::kKioskApp:
-    case user_manager::UserType::kWebKioskApp:
+    case user_manager::UserType::kKioskChromeApp:
+    case user_manager::UserType::kKioskWebApp:
     case user_manager::UserType::kKioskIWA:
+    case user_manager::UserType::kKioskArcvmApp:
       return true;
   }
 }
@@ -104,7 +100,7 @@ void FileManagerUI::CreateAndAddTrustedAppDataSource(content::WebUI* web_ui,
       web_ui->GetWebContents()->GetBrowserContext(), kChromeUIFileManagerHost);
 
   // Setup chrome://file-manager main and default page.
-  source->AddResourcePath("", IDR_FILE_MANAGER_MAIN_HTML);
+  source->SetDefaultResource(IDR_FILE_MANAGER_MAIN_HTML);
   // Add chrome://file-manager content.
   source->AddResourcePaths(kFileManagerSwaResources);
 
@@ -113,7 +109,7 @@ void FileManagerUI::CreateAndAddTrustedAppDataSource(content::WebUI* web_ui,
 
   // Load time data: add files app strings and feature flags.
   source->EnableReplaceI18nInJS();
-  base::Value::Dict dict = delegate_->GetLoadTimeData();
+  base::DictValue dict = delegate_->GetLoadTimeData();
   dict.Set("WINDOW_NUMBER", window_number);
   source->AddLocalizedStrings(dict);
   source->UseStringsJs();
@@ -165,12 +161,6 @@ void FileManagerUI::BindInterface(
   if (page_factory_receiver_.is_bound())
     page_factory_receiver_.reset();
   page_factory_receiver_.Bind(std::move(pending_receiver));
-}
-
-void FileManagerUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
 }
 
 void FileManagerUI::CreatePageHandler(

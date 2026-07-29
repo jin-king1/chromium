@@ -15,7 +15,7 @@
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/certificate_provider/certificate_provider_service.h"
+#include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
 #include "chrome/browser/extensions/forced_extensions/force_installed_tracker.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -30,7 +30,7 @@ namespace views {
 class Widget;
 }
 
-namespace chromeos {
+namespace chromeos::certificate_provider {
 class CertificateProvider;
 }
 
@@ -73,7 +73,7 @@ class SecurityTokenSessionController
   // If this controller logged the user out just before, display a notification
   // explaining why this happened. This is only done the first time this
   // happens for a user on a device.
-  static void MaybeDisplayLoginScreenNotification();
+  static void MaybeDisplayLoginScreenNotification(PrefService& local_state);
 
   // Informs the controller that there are new challenge response keys stored
   // in known_user. This will not immediately check that all required
@@ -142,7 +142,8 @@ class SecurityTokenSessionController
   raw_ptr<views::Widget> fullscreen_notification_ = nullptr;
   base::OneShotTimer action_timer_;
   base::OneShotTimer session_activation_timer_;
-  std::unique_ptr<chromeos::CertificateProvider> certificate_provider_;
+  std::unique_ptr<chromeos::certificate_provider::CertificateProvider>
+      certificate_provider_;
   // Whether all of the user's certificates have been provided at least once by
   // the extensions. This field is reset every time the session state changes.
   bool all_required_certificates_were_observed_ = false;

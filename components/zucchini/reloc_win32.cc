@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/zucchini/reloc_win32.h"
 
 #include <algorithm>
 #include <tuple>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "components/zucchini/algorithm.h"
@@ -66,7 +62,7 @@ RelocRvaReaderWin32::RelocRvaReaderWin32(
   CHECK_LE(lo, hi);
   lo = base::checked_cast<offset_t>(reloc_region.InclusiveClamp(lo));
   hi = base::checked_cast<offset_t>(reloc_region.InclusiveClamp(hi));
-  end_it_ = image_.begin() + hi;
+  end_it_ = UNSAFE_TODO(image_.begin() + hi);
 
   // By default, get GetNext() to produce empty output.
   cur_reloc_units_ = BufferSource(end_it_, 0);
@@ -80,8 +76,9 @@ RelocRvaReaderWin32::RelocRvaReaderWin32(
   --block_it;
 
   // Initialize |cur_reloc_units_| and |rva_hi_bits_|.
-  if (!LoadRelocBlock(image_.begin() + *block_it))
+  if (!LoadRelocBlock(UNSAFE_TODO(image_.begin() + *block_it))) {
     return;  // Nothing left.
+  }
 
   // Skip |cur_reloc_units_| to |lo|, truncating up.
   offset_t cur_reloc_units_offset =
@@ -121,11 +118,18 @@ std::optional<RelocUnitWin32> RelocRvaReaderWin32::GetNext() {
 
 bool RelocRvaReaderWin32::LoadRelocBlock(
     ConstBufferView::const_iterator block_begin) {
-  ConstBufferView header_buf(block_begin, sizeof(pe::RelocHeader));
-  if (header_buf.end() >= end_it_ ||
-      end_it_ - header_buf.end() < kRelocUnitSize) {
+  if (!block_begin) {
     return false;
   }
+
+  // Need enough data for `pe::RelocHeader` and at least one reloc
+  // unit.
+  size_t remaining = base::checked_cast<size_t>(end_it_ - block_begin);
+  if (remaining < sizeof(pe::RelocHeader) + kRelocUnitSize) {
+    return false;
+  }
+
+  ConstBufferView header_buf(block_begin, sizeof(pe::RelocHeader));
   const auto& header = header_buf.read<pe::RelocHeader>(0);
   rva_hi_bits_ = header.rva_hi;
   uint32_t block_size = header.size;

@@ -4,6 +4,9 @@
 
 package org.chromium.chrome.browser.merchant_viewer;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.view.ViewGroup;
@@ -11,10 +14,13 @@ import android.view.ViewGroup;
 import androidx.annotation.DrawableRes;
 import androidx.appcompat.content.res.AppCompatResources;
 
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.version_info.VersionInfo;
+import org.chromium.build.annotations.EnsuresNonNull;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.content.ContentUtils;
 import org.chromium.chrome.browser.content.WebContentsFactory;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -22,12 +28,14 @@ import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconUtils;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid;
-import org.chromium.components.embedder_support.util.UrlUtilitiesJni;
+import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.components.security_state.ConnectionSecurityLevel;
 import org.chromium.components.security_state.SecurityStateModel;
 import org.chromium.components.thinwebview.ThinWebView;
+import org.chromium.components.thinwebview.ThinWebViewAttachParams;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.RenderCoordinates;
 import org.chromium.content_public.browser.WebContents;
@@ -40,6 +48,7 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
 /** Mediator class for the component. */
+@NullMarked
 public class MerchantTrustBottomSheetMediator {
     private static final long HIDE_PROGRESS_BAR_DELAY_MS = 50;
 
@@ -49,22 +58,22 @@ public class MerchantTrustBottomSheetMediator {
     private final int mTopControlsHeightDp;
     private final FaviconHelper mFaviconHelper;
     private final int mFaviconSize;
-    private final ObservableSupplier<Profile> mProfileSupplier;
+    private final MonotonicObservableSupplier<Profile> mProfileSupplier;
 
-    private PropertyModel mToolbarModel;
-    private WebContents mWebContents;
-    private ContentView mWebContentView;
-    private WebContentsDelegateAndroid mWebContentsDelegate;
-    private WebContentsObserver mWebContentsObserver;
-    private WebContents mWebContentsForTesting;
-    private Drawable mFaviconDrawableForTesting;
+    private @Nullable PropertyModel mToolbarModel;
+    private @Nullable WebContents mWebContents;
+    private @Nullable ContentView mWebContentView;
+    private @Nullable WebContentsDelegateAndroid mWebContentsDelegate;
+    private @Nullable WebContentsObserver mWebContentsObserver;
+    private @Nullable WebContents mWebContentsForTesting;
+    private @Nullable Drawable mFaviconDrawableForTesting;
 
     /** Creates a new instance. */
     MerchantTrustBottomSheetMediator(
             Context context,
             WindowAndroid windowAndroid,
             MerchantTrustMetrics metrics,
-            ObservableSupplier<Profile> profileSupplier,
+            MonotonicObservableSupplier<Profile> profileSupplier,
             FaviconHelper faviconHelper) {
         mContext = context;
         mWindowAndroid = windowAndroid;
@@ -90,7 +99,7 @@ public class MerchantTrustBottomSheetMediator {
 
         mWebContentsObserver =
                 new WebContentsObserver(mWebContents) {
-                    private GURL mCurrentUrl;
+                    private @Nullable GURL mCurrentUrl;
 
                     @Override
                     public void loadProgressChanged(float progress) {
@@ -113,15 +122,17 @@ public class MerchantTrustBottomSheetMediator {
                     @Override
                     public void titleWasSet(String title) {
                         if (!MerchantViewerConfig.doesTrustSignalsSheetUsePageTitle()) return;
+                        assumeNonNull(mToolbarModel);
                         mToolbarModel.set(BottomSheetToolbarProperties.TITLE, title);
                     }
 
                     @Override
                     public void didFinishNavigationInPrimaryMainFrame(NavigationHandle navigation) {
                         if (navigation.hasCommitted()) {
+                            assumeNonNull(mToolbarModel);
                             mToolbarModel.set(
                                     BottomSheetToolbarProperties.URL,
-                                    getWebContents().getVisibleUrl());
+                                    assumeNonNull(getWebContents()).getVisibleUrl());
                         }
                     }
                 };
@@ -131,6 +142,7 @@ public class MerchantTrustBottomSheetMediator {
                     @Override
                     public void visibleSSLStateChanged() {
                         if (mToolbarModel == null) return;
+                        assumeNonNull(mWebContents);
                         int securityLevel =
                                 SecurityStateModel.getSecurityLevelForWebContents(mWebContents);
                         mToolbarModel.set(
@@ -186,10 +198,16 @@ public class MerchantTrustBottomSheetMediator {
                         return mTopControlsHeightDp;
                     }
                 };
-        if ((mWebContentView != null) && (mWebContentView.getParent() != null)) {
+        assert mWebContentView != null;
+        if (mWebContentView.getParent() != null) {
             ((ViewGroup) mWebContentView.getParent()).removeView(mWebContentView);
         }
-        thinWebView.attachWebContents(mWebContents, mWebContentView, mWebContentsDelegate);
+        thinWebView.attachWebContents(
+                mWebContents,
+                mWebContentView,
+                new ThinWebViewAttachParams.Builder()
+                        .setWebContentsDelegate(mWebContentsDelegate)
+                        .build());
     }
 
     // This method should only be used for the first navigation before showing some content in the
@@ -207,13 +225,17 @@ public class MerchantTrustBottomSheetMediator {
                 : RenderCoordinates.fromWebContents(mWebContents).getScrollYPixInt();
     }
 
+    @EnsuresNonNull("mWebContents")
     private void createWebContents() {
         assert mWebContents == null;
         if (mWebContentsForTesting != null) {
             mWebContents = mWebContentsForTesting;
+            mWebContentView = ContentView.createContentView(mContext, mWebContents);
             return;
         }
-        mWebContents = WebContentsFactory.createWebContents(mProfileSupplier.get(), false, false);
+        mWebContents =
+                WebContentsFactory.createWebContents(
+                        assertNonNull(mProfileSupplier.get()), false, false);
         mWebContentView = ContentView.createContentView(mContext, mWebContents);
         final ViewAndroidDelegate delegate =
                 ViewAndroidDelegate.createBasicDelegate(mWebContentView);
@@ -241,9 +263,11 @@ public class MerchantTrustBottomSheetMediator {
     }
 
     private void loadUrl(GURL url) {
-        if (mWebContents != null) {
-            mWebContents.getNavigationController().loadUrl(new LoadUrlParams(url.getSpec()));
-        }
+        if (mWebContents == null) return;
+        NavigationController navigationController = mWebContents.getNavigationController();
+        if (navigationController == null) return;
+
+        navigationController.loadUrl(new LoadUrlParams(url.getSpec()));
     }
 
     private static @DrawableRes int getSecurityIconResource(
@@ -266,8 +290,8 @@ public class MerchantTrustBottomSheetMediator {
     // whether we want to use a Google icon if no favicon found for the url. When the definition of
     // "valid" url changes, update the favicon rule if needed.
     private boolean isValidUrl(GURL url) {
-        return UrlUtilitiesJni.get().isGoogleDomainUrl(url.getSpec(), true)
-                || UrlUtilitiesJni.get().isGoogleSubDomainUrl(url.getSpec());
+        return UrlUtilities.isGoogleDomainUrl(url.getSpec(), true)
+                || UrlUtilities.isGoogleSubDomainUrl(url.getSpec());
     }
 
     void setWebContentsForTesting(WebContents webContents) {
@@ -284,6 +308,7 @@ public class MerchantTrustBottomSheetMediator {
         // wrong non-null bitmap for the first navigation within bottom sheet, so we use Google icon
         // directly for valid urls.
         if (isValidUrl(url) || (profile == null)) {
+            assumeNonNull(mToolbarModel);
             mToolbarModel.set(
                     BottomSheetToolbarProperties.FAVICON_ICON_DRAWABLE,
                     getDefaultFaviconDrawable(url));
@@ -293,6 +318,7 @@ public class MerchantTrustBottomSheetMediator {
                 profile,
                 url,
                 mFaviconSize,
+                /* fallbackToHost= */ true,
                 (bitmap, iconUrl) -> {
                     Drawable drawable;
                     if (mFaviconDrawableForTesting != null) {
@@ -304,6 +330,7 @@ public class MerchantTrustBottomSheetMediator {
                     } else {
                         drawable = getDefaultFaviconDrawable(url);
                     }
+                    assumeNonNull(mToolbarModel);
                     mToolbarModel.set(BottomSheetToolbarProperties.FAVICON_ICON_DRAWABLE, drawable);
                 });
     }

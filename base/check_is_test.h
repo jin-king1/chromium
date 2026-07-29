@@ -34,6 +34,13 @@
 //     return;
 //   }
 //
+// `CHECK_IS_TEST` should not be used within trivial accessors such as
+// `member_name_for_testing()`.
+//
+// There is a presubmit check which warns against calling `*ForTesting` or
+// `*ForTests` functions in production code, however `CHECK_IS_TEST` may be used
+// in those functions to ensure correctness at runtime.
+//
 // `CHECK_IS_TEST` is thread safe.
 //
 // An optional base::NotFatalUntil argument can be provided to make the
@@ -48,6 +55,7 @@ BASE_EXPORT bool get_is_test_impl();
   CHECK(base::internal::get_is_test_impl() __VA_OPT__(, ) __VA_ARGS__)
 
 // In special cases, code should not execute in a test.
-#define CHECK_IS_NOT_TEST() CHECK(!base::internal::get_is_test_impl())
+#define CHECK_IS_NOT_TEST(...) \
+  CHECK(!base::internal::get_is_test_impl(), __VA_ARGS__)
 
 #endif  // BASE_CHECK_IS_TEST_H_

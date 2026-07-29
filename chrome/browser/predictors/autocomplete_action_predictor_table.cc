@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "base/check_op.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -44,7 +43,7 @@ bool StepAndInitializeRow(
 
   row->id = statement->ColumnString(0);
   row->user_text = statement->ColumnString16(1);
-  row->url = GURL(statement->ColumnString(2));
+  row->url = GURL(statement->ColumnStringView(2));
   row->number_of_hits = statement->ColumnInt(3);
   row->number_of_misses = statement->ColumnInt(4);
   return true;

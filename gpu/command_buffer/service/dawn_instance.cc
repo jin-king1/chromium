@@ -84,7 +84,7 @@ std::unique_ptr<DawnInstance> DawnInstance::Create(
     dawn_search_path = base::apple::FrameworkBundlePath()
                            .Append("Libraries")
                            .AsEndingWithSeparator()
-                           .MaybeAsASCII();
+                           .AsUTF8Unsafe();
   }
   if (dawn_search_path.empty())
 #endif
@@ -94,7 +94,7 @@ std::unique_ptr<DawnInstance> DawnInstance::Create(
 #else
     if (base::PathService::Get(base::DIR_MODULE, &module_path)) {
 #endif
-      dawn_search_path = module_path.AsEndingWithSeparator().MaybeAsASCII();
+      dawn_search_path = module_path.AsEndingWithSeparator().AsUTF8Unsafe();
     }
   }
   const char* dawn_search_path_c_str = dawn_search_path.c_str();
@@ -112,7 +112,12 @@ std::unique_ptr<DawnInstance> DawnInstance::Create(
   // Create the instance with all the previous descriptors chained.
   wgpu::InstanceDescriptor instance_desc;
   instance_desc.nextInChain = &dawn_instance_desc;
-  instance_desc.capabilities.timedWaitAnyEnable = true;
+  static constexpr auto kInstanceFeatures = std::array{
+      wgpu::InstanceFeatureName::MultipleDevicesPerAdapter,
+      wgpu::InstanceFeatureName::TimedWaitAny,
+  };
+  instance_desc.requiredFeatureCount = kInstanceFeatures.size();
+  instance_desc.requiredFeatures = kInstanceFeatures.data();
 
   auto instance = std::make_unique<DawnInstance>(
       reinterpret_cast<const WGPUInstanceDescriptor*>(&instance_desc));

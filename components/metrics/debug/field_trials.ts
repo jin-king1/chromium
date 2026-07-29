@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {assert} from 'chrome://resources/js/assert.js';
 import {CustomElement} from 'chrome://resources/js/custom_element.js';
 import {getTrustedHTML} from 'chrome://resources/js/static_types.js';
 
@@ -214,6 +213,7 @@ interface ElementIdMap {
   'filter': HTMLInputElement;
   'filter-status': HTMLElement;
   'field-trial-list': HTMLElement;
+  'waiting-for-trial-list': HTMLElement;
 }
 
 export class FieldTrialsAppElement extends CustomElement {
@@ -237,9 +237,7 @@ export class FieldTrialsAppElement extends CustomElement {
   onUpdateForTesting = () => {};
 
   private el<K extends keyof ElementIdMap>(id: K): ElementIdMap[K] {
-    const result = this.shadowRoot!.getElementById(id) as any;
-    assert(result);
-    return result;
+    return this.getRequiredElement<ElementIdMap[K]>(`#${id}`);
   }
 
   constructor() {
@@ -264,17 +262,20 @@ export class FieldTrialsAppElement extends CustomElement {
     // submit behavior.
     this.getRequiredElement('form').addEventListener(
         'submit', (e) => e.preventDefault());
+  }
 
+  forceUpdateForTesting() {
+    this.update_();
+  }
+
+  private initFilter_() {
+    this.filterInputElement.removeAttribute('disabled');
     this.filterInputElement.value = localStorage.getItem('filter') || '';
     this.filterInputElement.addEventListener(
         'input', () => this.filterUpdated_());
     this.el('restart-button')
         .addEventListener('click', () => this.proxy_.restart());
     this.filterUpdated_();
-  }
-
-  forceUpdateForTesting() {
-    this.update_();
   }
 
   private setRestartRequired_(): void {
@@ -342,6 +343,9 @@ export class FieldTrialsAppElement extends CustomElement {
   }
 
   private populateState_(state: FieldTrialState) {
+    const waitingForTrialList = this.el('waiting-for-trial-list');
+    waitingForTrialList.style.display = 'none';
+
     const trialListDiv = this.el('field-trial-list');
     this.trials = state.trials.map(t => new TrialRow(this, t));
     this.trials.sort((a, b) => a.sortKey().localeCompare(b.sortKey()));
@@ -350,6 +354,7 @@ export class FieldTrialsAppElement extends CustomElement {
     if (state.restartRequired) {
       this.setRestartRequired_();
     }
+    this.initFilter_();
     this.update_();
   }
 

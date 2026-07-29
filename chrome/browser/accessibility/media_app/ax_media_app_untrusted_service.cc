@@ -22,11 +22,11 @@
 #include "base/numerics/checked_math.h"
 #include "base/strings/stringprintf.h"
 #include "base/types/to_address.h"
-#include "chrome/browser/accessibility/accessibility_state_utils.h"
+#include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/screen_ai/public/optical_character_recognizer.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser.h"         // nogncheck crbug.com/40147906
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"  // nogncheck crbug.com/40147906
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
@@ -35,24 +35,21 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_action_handler_registry.h"
-#include "ui/accessibility/ax_enum_util.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_data.h"
-#include "ui/accessibility/ax_node_id_forward.h"
 #include "ui/accessibility/ax_node_position.h"
 #include "ui/accessibility/ax_tree.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/accessibility/ax_tree_manager.h"
 #include "ui/accessibility/ax_tree_serializer.h"
 #include "ui/accessibility/ax_updates_and_events.h"
-#include "ui/accessibility/platform/inspect/ax_inspect.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/display/screen.h"
-#include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/transform.h"
+#include "ui/native_window_tracker/native_window_tracker.h"
 #include "ui/strings/grit/auto_image_annotation_strings.h"
 
 #if defined(USE_AURA)
@@ -88,16 +85,13 @@ AXMediaAppUntrustedService::AXMediaAppUntrustedService(
     mojo::PendingRemote<media_app_ui::mojom::OcrUntrustedPage> page)
     : browser_context_(context),
       native_window_(native_window),
+      native_window_tracker_(ui::NativeWindowTracker::Create(native_window)),
       media_app_page_(std::move(page)) {
-#if BUILDFLAG(IS_CHROMEOS)
-  if (auto* accessibility_manager = ash::AccessibilityManager::Get()) {
-    // Unretained is safe because `this` owns the subscription.
-    accessibility_status_subscription_ =
-        accessibility_manager->RegisterCallback(base::BindRepeating(
-            &AXMediaAppUntrustedService::OnAshAccessibilityModeChanged,
-            base::Unretained(this)));
-  }
-#endif
+  // Unretained is safe because `this` owns the subscription.
+  accessibility_status_subscription_ =
+      ash::AccessibilityManager::Get()->RegisterCallback(base::BindRepeating(
+          &AXMediaAppUntrustedService::OnAshAccessibilityModeChanged,
+          base::Unretained(this)));
   if (IsAccessibilityEnabled()) {
     ToggleAccessibilityState();
   }
@@ -154,11 +148,12 @@ void AXMediaAppUntrustedService::OnOCRServiceInitialized(bool is_successful) {
 }
 
 bool AXMediaAppUntrustedService::IsAccessibilityEnabled() const {
-  return accessibility_state_utils::IsScreenReaderEnabled() ||
-         accessibility_state_utils::IsSelectToSpeakEnabled();
+  // This class is only supported for ChromeOS, and only needs to be aware of
+  // ChromeOS assistive technologies.
+  return ash::AccessibilityManager::Get()->IsSpokenFeedbackEnabled() ||
+         ash::AccessibilityManager::Get()->IsSelectToSpeakEnabled();
 }
 
-#if BUILDFLAG(IS_CHROMEOS)
 void AXMediaAppUntrustedService::OnAshAccessibilityModeChanged(
     const ash::AccessibilityStatusEventDetails& details) {
   if (details.notification_type ==
@@ -173,7 +168,6 @@ void AXMediaAppUntrustedService::OnAshAccessibilityModeChanged(
     media_app_->AccessibilityEnabledChanged(IsAccessibilityEnabled());
   }
 }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 void AXMediaAppUntrustedService::PerformAction(
     const ui::AXActionData& action_data) {
@@ -486,6 +480,7 @@ void AXMediaAppUntrustedService::PerformAction(
 #endif  // defined(USE_AURA)
       return;
     }
+    case ax::mojom::Action::kReplaceRanges:
     case ax::mojom::Action::kReplaceSelectedText:
     case ax::mojom::Action::kNone:
     case ax::mojom::Action::kGetTextLocation:
@@ -499,6 +494,7 @@ void AXMediaAppUntrustedService::PerformAction(
     case ax::mojom::Action::kStopDuckingMedia:
     case ax::mojom::Action::kSuspendMedia:
     case ax::mojom::Action::kLongClick:
+    case ax::mojom::Action::kRequestLayoutBasedAction:
       NOTIMPLEMENTED();
       return;
   }
@@ -628,12 +624,13 @@ content::WebContents* AXMediaAppUntrustedService::GetMediaAppWebContents()
     const {
   Profile* profile =
       Profile::FromBrowserContext(base::to_address(browser_context_));
-  Browser* browser = chrome::FindLastActiveWithProfile(profile);
+  BrowserWindowInterface* const browser =
+      ProfileBrowserCollection::GetForProfile(profile)->GetLastActiveBrowser();
   if (!browser) {
     return nullptr;
   }
   content::WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   DCHECK(web_contents);
   return web_contents;
 }
@@ -912,7 +909,7 @@ void AXMediaAppUntrustedService::DisconnectFromOcrService() {
   ocr_.reset();
   // To avoid redoing OCR on the content if accessibility is temporarily turned
   // off / on, we keep the existing OCR results and do not reset the
-  // `ocr_state_`.
+  // `ocr_status_`.
 }
 
 void AXMediaAppUntrustedService::StartWatchingForAccessibilityEvents() {
@@ -956,6 +953,7 @@ void AXMediaAppUntrustedService::ViewportUpdated(const gfx::RectF& viewport_box,
   document_update.nodes = {document_root_data};
   if (!document_->ax_tree()->Unserialize(document_update)) {
     mojo::ReportBadMessage(document_->ax_tree()->error());
+    return;
   }
   SendAXTreeToAccessibilityService(*document_, *document_serializer_);
 }
@@ -998,9 +996,20 @@ void AXMediaAppUntrustedService::UpdatePageLocation(
 void AXMediaAppUntrustedService::ShowOcrServiceFailedToInitializeMessage() {
   DCHECK_EQ(ocr_status_, OcrStatus::kInitializationFailed);
   ui::AXTreeUpdate document_update;
-  document_update.nodes = CreateStatusNodesWithLandmark();
-  DCHECK_GT(document_update.nodes.size(), 0u);
-  document_update.root_id = document_update.nodes[0].id;
+  ui::AXNodeData& document_root_data = document_update.nodes.emplace_back();
+  document_root_data.id = kDocumentRootNodeId;
+  document_root_data.role = ax::mojom::Role::kPdfRoot;
+  document_update.root_id = document_root_data.id;
+
+  std::vector<ui::AXNodeData> status_nodes;
+  status_nodes = CreateStatusNodesWithLandmark();
+  DCHECK_GE(status_nodes.size(), 1u);
+  document_root_data.child_ids.push_back(status_nodes.at(0).id);
+
+  document_update.nodes.insert(std::end(document_update.nodes),
+                               std::begin(status_nodes),
+                               std::end(status_nodes));
+
   UpdateDocumentTree(document_update);
 }
 
@@ -1222,11 +1231,12 @@ void AXMediaAppUntrustedService::PushDirtyPage(
   dirty_page_ids_.push_back(dirty_page_id);
 }
 
-std::string AXMediaAppUntrustedService::PopDirtyPage() {
+std::optional<std::string> AXMediaAppUntrustedService::PopDirtyPage() {
   if (dirty_page_ids_.empty()) {
     mojo::ReportBadMessage("`PopDirtyPage()` found no more dirty pages.");
+    return std::nullopt;
   }
-  std::string dirty_page_id = dirty_page_ids_.front();
+  std::string dirty_page_id = std::move(dirty_page_ids_.front());
   dirty_page_ids_.pop_front();
   return dirty_page_id;
 }
@@ -1253,26 +1263,29 @@ void AXMediaAppUntrustedService::OcrNextDirtyPageIfAny() {
       return;
     }
   }
-  const std::string dirty_page_id = PopDirtyPage();
-  // TODO(b/289012145): Refactor this code to support things happening
-  // asynchronously - i.e. `RequestBitmap` will be async.
+  const std::optional<std::string> dirty_page_id = PopDirtyPage();
+  if (!dirty_page_id) {
+    return;
+  }
+  // Note that the following code could be refactored to support things
+  // happening asynchronously - i.e. `RequestBitmap` could be async.
   if (media_app_) [[unlikely]] {
     // `media_app_` is only used for testing.
     CHECK_IS_TEST();
-    SkBitmap page_bitmap = media_app_->RequestBitmap(dirty_page_id);
-    // TODO - b/289012145: screen_ai_annotator_ is only bound in builds with
-    // the ENABLE_SCREEN_AI_SERVICE buildflag. We should figure out a way to
-    // mock it in tests running on bots without this flag and call
-    // OnBitmapReceived() here.
+    SkBitmap page_bitmap = media_app_->RequestBitmap(*dirty_page_id);
+    // `screen_ai_annotator_` is only bound in builds with the
+    // ENABLE_SCREEN_AI_SERVICE buildflag. Note that it may be better to mock it
+    // in tests running on bots without this flag and call OnBitmapReceived()
+    // here.
     ocr_->PerformOCR(
         page_bitmap,
         base::BindOnce(&AXMediaAppUntrustedService::OnPageOcred,
-                       weak_ptr_factory_.GetWeakPtr(), dirty_page_id));
+                       weak_ptr_factory_.GetWeakPtr(), *dirty_page_id));
   } else {
     media_app_ui::mojom::OcrUntrustedPage::RequestBitmapCallback cb =
         base::BindOnce(&AXMediaAppUntrustedService::OnBitmapReceived,
-                       weak_ptr_factory_.GetWeakPtr(), dirty_page_id);
-    media_app_page_->RequestBitmap(dirty_page_id, std::move(cb));
+                       weak_ptr_factory_.GetWeakPtr(), *dirty_page_id);
+    media_app_page_->RequestBitmap(*dirty_page_id, std::move(cb));
   }
 }
 
@@ -1283,9 +1296,11 @@ void AXMediaAppUntrustedService::OnBitmapReceived(
     OnPageOcred(dirty_page_id, ui::AXTreeUpdate());
     return;
   }
-  ocr_->PerformOCR(
-      bitmap, base::BindOnce(&AXMediaAppUntrustedService::OnPageOcred,
-                             weak_ptr_factory_.GetWeakPtr(), dirty_page_id));
+  if (IsOcrServiceEnabled()) {
+    ocr_->PerformOCR(
+        bitmap, base::BindOnce(&AXMediaAppUntrustedService::OnPageOcred,
+                               weak_ptr_factory_.GetWeakPtr(), dirty_page_id));
+  }
 }
 
 void AXMediaAppUntrustedService::OnPageOcred(
@@ -1471,9 +1486,9 @@ std::unique_ptr<gfx::Transform>
 AXMediaAppUntrustedService::MakeTransformFromOffsetAndScale() const {
   auto transform = std::make_unique<gfx::Transform>();
   float device_pixel_ratio = 1.0f;
-  if (native_window_) {
+  if (native_window_ && !native_window_tracker_->WasNativeWindowDestroyed()) {
     const auto maybe_device_pixel_ratio =
-        display::Screen::GetScreen()->GetPreferredScaleFactorForWindow(
+        display::Screen::Get()->GetPreferredScaleFactorForWindow(
             native_window_);
     device_pixel_ratio = maybe_device_pixel_ratio.value_or(device_pixel_ratio);
   }

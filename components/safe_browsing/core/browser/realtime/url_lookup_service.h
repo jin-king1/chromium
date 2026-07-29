@@ -18,6 +18,7 @@
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/realtime/url_lookup_service_base.h"
 #include "components/safe_browsing/core/browser/referring_app_info.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
@@ -75,7 +76,10 @@ class RealTimeUrlLookupService : public RealTimeUrlLookupServiceBase {
       base::RepeatingCallback<base::Time()>
           min_allowed_timestamp_for_referrer_chains_getter,
       ReferrerChainProvider* referrer_chain_provider,
-      WebUIDelegate* delegate);
+      WebUIDelegate* delegate,
+      IntelligentScanDelegate* intelligent_scan_delegate,
+      base::RepeatingCallback<network::mojom::NetworkContext*()>
+          network_context_getter);
 
   RealTimeUrlLookupService(const RealTimeUrlLookupService&) = delete;
   RealTimeUrlLookupService& operator=(const RealTimeUrlLookupService&) = delete;
@@ -94,7 +98,9 @@ class RealTimeUrlLookupService : public RealTimeUrlLookupServiceBase {
   std::string GetProfileDMTokenString() const override;
   std::unique_ptr<enterprise_connectors::ClientMetadata> GetClientMetadata()
       const override;
+  std::string GetContentAreaAccountEmail(const GURL& tab_url) const override;
   std::string GetMetricSuffix() const override;
+  bool ShouldOverrideKnownSafeUrlDecision(const GURL& url) const override;
   bool CanCheckUrl(const GURL& url) override;
 
 #if defined(UNIT_TEST)
@@ -112,40 +118,18 @@ class RealTimeUrlLookupService : public RealTimeUrlLookupServiceBase {
   bool CanPerformFullURLLookupWithToken() const override;
   int GetReferrerUserGestureLimit() const override;
   bool CanSendPageLoadToken() const override;
-  void GetAccessToken(
-      const GURL& url,
-      RTLookupResponseCallback response_callback,
-      scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
-      SessionID tab_id,
-      std::optional<internal::ReferringAppInfo> referring_app_info) override;
   std::optional<std::string> GetDMTokenString() const override;
   bool ShouldIncludeCredentials() const override;
-  void OnResponseUnauthorized(const std::string& invalid_access_token) override;
   std::optional<base::Time> GetMinAllowedTimestampForReferrerChains()
       const override;
   void MaybeLogLastProtegoPingTimeToPrefs(bool sent_with_token) override;
-  void MaybeLogProtegoPingCookieHistograms(bool request_had_cookie,
-                                           bool was_first_request,
-                                           bool sent_with_token) override;
+
   void MaybeFillReferringWebApk(
       const internal::ReferringAppInfo& referring_app_info,
       RTLookupRequest& request) override;
 
-  // Called when the access token is obtained from |token_fetcher_|.
-  void OnGetAccessToken(
-      const GURL& url,
-      RTLookupResponseCallback response_callback,
-      scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
-      base::TimeTicks get_token_start_time,
-      SessionID tab_id,
-      std::optional<internal::ReferringAppInfo> referring_app_info,
-      const std::string& access_token);
-
   // Unowned object used for getting preference settings.
   raw_ptr<PrefService> pref_service_;
-
-  // The token fetcher used for getting access token.
-  std::unique_ptr<SafeBrowsingTokenFetcher> token_fetcher_;
 
   // The callback via which the client of this component indicates whether they
   // are configured to support token fetches.

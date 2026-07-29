@@ -17,8 +17,8 @@
 #include "third_party/blink/renderer/core/loader/interactive_detector.h"
 #include "third_party/blink/renderer/core/paint/timing/lcp_objects.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing.h"
-#include "third_party/blink/renderer/core/paint/timing/paint_timing_detector.h"
 #include "third_party/blink/renderer/core/timing/performance.h"
+#include "third_party/blink/renderer/platform/fonts/font_performance.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_load_timing.h"
 
 namespace blink {
@@ -71,9 +71,7 @@ LargestContentfulPaintDetailsForReporting PerformanceTimingForReporting::
       MonotonicTimeToPseudoWallTime(
           timing.resource_load_timings.discovery_time),
       MonotonicTimeToPseudoWallTime(timing.resource_load_timings.load_start),
-      MonotonicTimeToPseudoWallTime(timing.resource_load_timings.load_end)
-
-  };
+      MonotonicTimeToPseudoWallTime(timing.resource_load_timings.load_end)};
 
   std::optional<base::TimeTicks> merged_unclamped_paint_time =
       MergeLargestContentfulPaintValues(timing);
@@ -86,7 +84,6 @@ LargestContentfulPaintDetailsForReporting PerformanceTimingForReporting::
           timing.largest_contentful_paint_image_bpp,
           largest_text_paint_time,
           timing.largest_text_paint_size,
-          timing.largest_contentful_paint_time,
 
           timing.largest_contentful_paint_image_request_priority,
           merged_unclamped_paint_time};
@@ -130,23 +127,23 @@ PerformanceTimingForReporting::BackForwardCacheRestore() const {
   if (!interactive_detector)
     return {};
 
-  WTF::Vector<base::TimeTicks> navigation_starts =
+  Vector<base::TimeTicks> navigation_starts =
       load_timing->BackForwardCacheRestoreNavigationStarts();
-  WTF::Vector<base::TimeTicks> first_paints =
+  Vector<base::TimeTicks> first_paints =
       paint_timing->FirstPaintsAfterBackForwardCacheRestore();
-  WTF::Vector<std::array<
+  Vector<std::array<
       base::TimeTicks,
       WebPerformanceMetricsForReporting::
           kRequestAnimationFramesToRecordAfterBackForwardCacheRestore>>
       request_animation_frames =
           paint_timing->RequestAnimationFramesAfterBackForwardCacheRestore();
-  WTF::Vector<std::optional<base::TimeDelta>> first_input_delays =
+  Vector<std::optional<base::TimeDelta>> first_input_delays =
       interactive_detector->GetFirstInputDelaysAfterBackForwardCacheRestore();
   DCHECK_EQ(navigation_starts.size(), first_paints.size());
   DCHECK_EQ(navigation_starts.size(), request_animation_frames.size());
   DCHECK_EQ(navigation_starts.size(), first_input_delays.size());
 
-  WTF::Vector<BackForwardCacheRestoreTiming> restore_timings(
+  Vector<BackForwardCacheRestoreTiming> restore_timings(
       navigation_starts.size());
   for (wtf_size_t i = 0; i < restore_timings.size(); i++) {
     restore_timings[i].navigation_start =
@@ -170,6 +167,15 @@ uint64_t PerformanceTimingForReporting::FirstPaintForMetrics() const {
   return MonotonicTimeToIntegerMilliseconds(timing->FirstPaintForMetrics());
 }
 
+base::TimeTicks
+PerformanceTimingForReporting::FirstPaintAsMonotonicTimeForMetrics() const {
+  const PaintTiming* timing = GetPaintTiming();
+  if (!timing) {
+    return base::TimeTicks();
+  }
+  return timing->FirstPaintForMetrics();
+}
+
 uint64_t PerformanceTimingForReporting::FirstImagePaint() const {
   const PaintTiming* timing = GetPaintTiming();
   if (!timing)
@@ -178,15 +184,12 @@ uint64_t PerformanceTimingForReporting::FirstImagePaint() const {
   return MonotonicTimeToIntegerMilliseconds(timing->FirstImagePaint());
 }
 
-uint64_t
-PerformanceTimingForReporting::FirstContentfulPaintIgnoringSoftNavigations()
-    const {
+uint64_t PerformanceTimingForReporting::FirstContentfulPaint() const {
   const PaintTiming* timing = GetPaintTiming();
   if (!timing)
     return 0;
 
-  return MonotonicTimeToIntegerMilliseconds(
-      timing->FirstContentfulPaintIgnoringSoftNavigations());
+  return MonotonicTimeToIntegerMilliseconds(timing->FirstContentfulPaint());
 }
 
 base::TimeTicks PerformanceTimingForReporting::
@@ -205,7 +208,7 @@ PerformanceTimingForReporting::FirstContentfulPaintAsMonotonicTimeForMetrics()
   if (!timing)
     return base::TimeTicks();
 
-  return timing->FirstContentfulPaintIgnoringSoftNavigations();
+  return timing->FirstContentfulPaint();
 }
 
 uint64_t PerformanceTimingForReporting::FirstMeaningfulPaint() const {
@@ -225,32 +228,6 @@ uint64_t PerformanceTimingForReporting::FirstMeaningfulPaintCandidate() const {
       timing->FirstMeaningfulPaintCandidate());
 }
 
-LargestContentfulPaintDetailsForReporting
-PerformanceTimingForReporting::LargestContentfulPaintDetailsForMetrics() const {
-  PaintTimingDetector* paint_timing_detector = GetPaintTimingDetector();
-  if (!paint_timing_detector) {
-    return {};
-  }
-
-  auto timing =
-      paint_timing_detector->LargestContentfulPaintDetailsForMetrics();
-
-  return PopulateLargestContentfulPaintDetailsForReporting(timing);
-}
-
-LargestContentfulPaintDetailsForReporting PerformanceTimingForReporting::
-    SoftNavigationLargestContentfulPaintDetailsForMetrics() const {
-  PaintTimingDetector* paint_timing_detector = GetPaintTimingDetector();
-  if (!paint_timing_detector) {
-    return {};
-  }
-
-  auto timing = paint_timing_detector
-                    ->SoftNavigationLargestContentfulPaintDetailsForMetrics();
-
-  return PopulateLargestContentfulPaintDetailsForReporting(timing);
-}
-
 uint64_t PerformanceTimingForReporting::FirstEligibleToPaint() const {
   const PaintTiming* timing = GetPaintTiming();
   if (!timing) {
@@ -258,16 +235,6 @@ uint64_t PerformanceTimingForReporting::FirstEligibleToPaint() const {
   }
 
   return MonotonicTimeToIntegerMilliseconds(timing->FirstEligibleToPaint());
-}
-
-uint64_t PerformanceTimingForReporting::FirstInputOrScrollNotifiedTimestamp()
-    const {
-  PaintTimingDetector* paint_timing_detector = GetPaintTimingDetector();
-  if (!paint_timing_detector)
-    return 0;
-
-  return MonotonicTimeToIntegerMilliseconds(
-      paint_timing_detector->FirstInputOrScrollNotifiedTimestamp());
 }
 
 std::optional<base::TimeDelta> PerformanceTimingForReporting::FirstInputDelay()
@@ -492,13 +459,6 @@ InteractiveDetector* PerformanceTimingForReporting::GetInteractiveDetector()
   return InteractiveDetector::From(*DomWindow()->document());
 }
 
-PaintTimingDetector* PerformanceTimingForReporting::GetPaintTimingDetector()
-    const {
-  if (!DomWindow())
-    return nullptr;
-  return &DomWindow()->GetFrame()->View()->GetPaintTimingDetector();
-}
-
 std::optional<base::TimeDelta>
 PerformanceTimingForReporting::MonotonicTimeToPseudoWallTime(
     const std::optional<base::TimeTicks>& time) const {
@@ -532,6 +492,51 @@ uint64_t PerformanceTimingForReporting::MonotonicTimeToIntegerMilliseconds(
 
 void PerformanceTimingForReporting::Trace(Visitor* visitor) const {
   ExecutionContextClient::Trace(visitor);
+}
+
+void PerformanceTimingForReporting::SetFirstInputOrScrollNotifiedTimestamp(
+    base::TimeTicks timestamp) {
+  // TODO(crbug.com/494589343): Confirm that this no longer fails since this
+  // object is cleared in WindowPerformance on document reuse.
+  CHECK_EQ(first_input_or_scroll_notified_timestamp_, 0u,
+           base::NotFatalUntil::M152);
+  first_input_or_scroll_notified_timestamp_ =
+      MonotonicTimeToIntegerMilliseconds(timestamp);
+}
+
+base::TimeDelta PerformanceTimingForReporting::SystemFallbackFontTime() const {
+  return FontPerformance::SystemFallbackFontTime();
+}
+
+uint32_t PerformanceTimingForReporting::SystemFallbackFontCount() const {
+  return base::saturated_cast<uint32_t>(
+      FontPerformance::SystemFallbackFontCount());
+}
+
+base::TimeDelta
+PerformanceTimingForReporting::SystemFallbackFontInitialDuration() const {
+  return FontPerformance::SystemFallbackFontInitialDuration();
+}
+
+uint32_t PerformanceTimingForReporting::ShapeCacheHitCount() const {
+  return FontPerformance::ShapeCacheHitCount();
+}
+
+uint32_t PerformanceTimingForReporting::ShapeCacheMissCount() const {
+  return FontPerformance::ShapeCacheMissCount();
+}
+
+std::vector<ScriptFontFallbackDetailsForReporting>
+PerformanceTimingForReporting::GetScriptFontFallbackDetails() const {
+  std::vector<ScriptFontFallbackDetailsForReporting> result;
+  for (const auto& [key, count] : FontPerformance::GetScriptFallbackCounts()) {
+    result.push_back({
+        .script_code = key.script,
+        .fallback_count = count,
+        .is_emoji = key.is_emoji,
+    });
+  }
+  return result;
 }
 
 }  // namespace blink

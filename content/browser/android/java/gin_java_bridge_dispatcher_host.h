@@ -17,6 +17,7 @@
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
 #include "base/values.h"
+#include "components/origin_matcher/origin_matcher.h"
 #include "content/browser/android/java/gin_java_bound_object.h"
 #include "content/browser/android/java/gin_java_method_invocation_helper.h"
 #include "content/common/buildflags.h"
@@ -29,6 +30,11 @@
 namespace content {
 
 class WebContentsImpl;
+
+struct NamedObject {
+  GinJavaBoundObject::ObjectID object_id;
+  origin_matcher::OriginMatcher matcher;
+};
 
 // This class handles injecting Java objects into a single WebContents /
 // WebView. The Java object itself lives in the browser process on a background
@@ -50,10 +56,15 @@ class GinJavaBridgeDispatcherHost
   GinJavaBridgeDispatcherHost& operator=(const GinJavaBridgeDispatcherHost&) =
       delete;
 
+  // Add a JNI object keyed by a name. Only callable by the specified annotation
+  // to prevent accidental exposed methods.
+  // A matcher must also be provided to specify which origins will have this
+  // object injected.
   void AddNamedObject(
       const std::string& name,
       const base::android::JavaRef<jobject>& object,
-      const base::android::JavaRef<jclass>& safe_annotation_clazz);
+      const base::android::JavaRef<jclass>& safe_annotation_clazz,
+      origin_matcher::OriginMatcher matcher);
   void RemoveNamedObject(const std::string& name);
   void SetAllowObjectContentsInspection(bool allow);
 
@@ -71,8 +82,8 @@ class GinJavaBridgeDispatcherHost
   void OnInvokeMethod(const GlobalRenderFrameHostId& routing_id,
                       GinJavaBoundObject::ObjectID object_id,
                       const std::string& method_name,
-                      const base::Value::List& arguments,
-                      base::Value::List* result,
+                      const base::ListValue& arguments,
+                      base::ListValue* result,
                       mojom::GinJavaBridgeError* error_code);
   void OnObjectWrapperDeleted(const GlobalRenderFrameHostId& routing_id,
                               GinJavaBoundObject::ObjectID object_id);
@@ -88,7 +99,7 @@ class GinJavaBridgeDispatcherHost
   void HasMethod(const std::string& method_name,
                  HasMethodCallback callback) override;
   void InvokeMethod(const std::string& method_name,
-                    base::Value::List arguments,
+                    base::ListValue arguments,
                     InvokeMethodCallback callback) override;
 
  private:
@@ -132,13 +143,13 @@ class GinJavaBridgeDispatcherHost
                                   GinJavaBoundObject::ObjectID object_id);
 
   // The following objects are used only on the UI thread.
-
-  typedef std::map<std::string, GinJavaBoundObject::ObjectID> NamedObjectMap;
+  typedef std::map<std::string, NamedObject> NamedObjectMap;
   NamedObjectMap named_objects_;
 
   // The following objects are used on both threads, so locking must be used.
 
   GinJavaBoundObject::ObjectID next_object_id_ = 1;
+
   // Every time a GinJavaBoundObject backed by a real Java object is
   // created/destroyed, we insert/remove a strong ref to that Java object into
   // this set so that it doesn't get garbage collected while it's still

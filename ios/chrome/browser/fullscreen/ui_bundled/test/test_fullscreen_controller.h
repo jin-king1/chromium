@@ -11,6 +11,7 @@
 
 class FullscreenModel;
 @class FullscreenAnimator;
+enum class FullscreenModeTransitionTrigger;
 
 // Test version of FullscreenController with limited functionality:
 // - Enables/disables a FullscreenModel.
@@ -18,8 +19,15 @@ class FullscreenModel;
 // - Supports FullscreenControllerObserver::FullscreenControllerWillShutDown().
 class TestFullscreenController : public FullscreenController {
  public:
-  TestFullscreenController();
+  TestFullscreenController(Browser* browser);
   ~TestFullscreenController() override;
+
+  // Overrides FullscreenController::CreateForBrowser(...) for tests.
+  static void CreateForBrowser(Browser* browser);
+
+  // Overrides FullscreenController::FromBrowser(...) for tests.
+  static TestFullscreenController* FromBrowser(Browser* browser);
+  static const TestFullscreenController* FromBrowser(const Browser* browser);
 
   // FullscreenController:
   ChromeBroadcaster* broadcaster() override;
@@ -37,10 +45,15 @@ class TestFullscreenController : public FullscreenController {
   UIEdgeInsets GetCurrentViewportInsets() const override;
   void EnterFullscreen() override;
   void ExitFullscreen() override;
+  void ExitFullscreen(
+      FullscreenModeTransitionTrigger fullscreen_exit_trigger) override;
   void ExitFullscreenWithoutAnimation() override;
   bool IsForceFullscreenMode() const override;
-  void EnterForceFullscreenMode(bool insets_update_enabled) override;
-  void ExitForceFullscreenMode() override;
+  void EnterForceFullscreenMode(
+      bool insets_update_enabled,
+      FullscreenModeTransitionTrigger trigger) override;
+  void ExitForceFullscreenMode(
+      FullscreenModeTransitionTrigger trigger) override;
   void ResizeHorizontalViewport() override;
   void SetToolbarsSize(ToolbarsSize* ToolbarsSize) override;
   ToolbarsSize* GetToolbarsSize() const override;
@@ -63,7 +76,7 @@ class TestFullscreenController : public FullscreenController {
 
  private:
   // The model.
-  std::unique_ptr<FullscreenModel> model_ = std::make_unique<FullscreenModel>();
+  std::unique_ptr<FullscreenModel> model_;
   // The broadcaster.
   ChromeBroadcaster* broadcaster_ = nil;
   // The observers.

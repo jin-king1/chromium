@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "ash/constants/ash_paths.h"
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -18,7 +17,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
-#include "base/strings/stringprintf.h"
 #include "base/task/thread_pool.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_path_override.h"
@@ -39,6 +37,7 @@
 #include "components/user_manager/scoped_user_manager.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 
 namespace component_updater {
 
@@ -72,7 +71,7 @@ void RecordLoadResult(std::optional<ComponentManagerAsh::Error>* result_out,
 // callback. It expects a success result to be reported.
 void WrapInstallerCallback(update_client::Callback callback,
                            const update_client::CrxInstaller::Result& result) {
-  EXPECT_EQ(0, result.result.code_);
+  EXPECT_EQ(0, result.result.code);
   std::move(callback).Run(update_client::Error::NONE);
 }
 
@@ -85,8 +84,8 @@ class TestUpdater : public OnDemandUpdater {
 
   // Whether has a pending update request (either foreground or background).
   bool HasPendingUpdate(const std::string& name) {
-    return base::Contains(background_updates_, name) ||
-           base::Contains(foreground_updates_, name);
+    return background_updates_.contains(name) ||
+           foreground_updates_.contains(name);
   }
 
   // Finishes a foreground update request. Returns false if there is no pending
@@ -207,8 +206,7 @@ class CrOSComponentInstallerTest : public testing::Test {
                                         .AppendASCII("cros-components");
     preinstalled_components_path_override_ =
         std::make_unique<base::ScopedPathOverride>(
-            chrome::DIR_INTERNAL_PLUGINS,
-            preinstalled_cros_components_.DirName());
+            chrome::DIR_COMPONENTS, preinstalled_cros_components_.DirName());
 
     user_cros_components_ =
         base_component_paths_.GetPath().AppendASCII("user").AppendASCII(
@@ -347,8 +345,7 @@ class CrOSComponentInstallerTest : public testing::Test {
         "min_env_version": "%s"
     })";
     const std::string manifest =
-        base::StringPrintf(kManifestTemplate, name.c_str(), version.c_str(),
-                           min_env_version.c_str());
+        absl::StrFormat(kManifestTemplate, name, version, min_env_version);
     if (!base::WriteFile(path.AppendASCII("manifest.json"), manifest)) {
       return std::nullopt;
     }
@@ -411,7 +408,7 @@ TEST_F(CrOSComponentInstallerTest, CompatibilityOK) {
   EnvVersionInstallerPolicy policy(config, installer.get());
   base::Version version;
   base::FilePath path("/path");
-  base::Value::Dict manifest;
+  base::DictValue manifest;
   manifest.Set("min_env_version", "2.1");
   policy.ComponentReady(version, path, std::move(manifest));
   // Component is compatible and was registered.
@@ -427,7 +424,7 @@ TEST_F(CrOSComponentInstallerTest, CompatibilityMissingManifest) {
   EnvVersionInstallerPolicy policy(config, installer.get());
   base::Version version;
   base::FilePath path("/path");
-  base::Value::Dict manifest;
+  base::DictValue manifest;
   policy.ComponentReady(version, path, std::move(manifest));
   // No compatible path was registered.
   EXPECT_EQ(base::FilePath(), installer->GetCompatiblePath("component"));
@@ -448,7 +445,7 @@ TEST_F(CrOSComponentInstallerTest, RegisterComponent) {
   ComponentConfig config{
       "star-cups-driver", ComponentConfig::PolicyType::kEnvVersion, "1.1",
       "6d24de30f671da5aee6d463d9e446cafe9ddac672800a9defe86877dcde6c466"};
-  EXPECT_CALL(*cus, RegisterComponent(testing::_)).Times(1);
+  EXPECT_CALL(*cus, RegisterComponent(testing::_));
   scoped_refptr<CrOSComponentInstaller> cros_component_manager =
       base::MakeRefCounted<CrOSComponentInstaller>(nullptr, cus.get());
   cros_component_manager->Register(config, base::OnceClosure());

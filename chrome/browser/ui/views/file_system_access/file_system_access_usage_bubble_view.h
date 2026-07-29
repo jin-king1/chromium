@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/files/file_path.h"
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/models/table_model.h"
@@ -30,6 +31,32 @@ class FileSystemAccessUsageBubbleView : public LocationBarBubbleDelegateView {
     std::vector<base::FilePath> writable_directories;
   };
 
+  class FilePathListModel : public ui::TableModel {
+   public:
+    FilePathListModel(std::vector<base::FilePath> files,
+                      std::vector<base::FilePath> directories);
+    FilePathListModel(const FilePathListModel&) = delete;
+    FilePathListModel& operator=(const FilePathListModel&) = delete;
+    ~FilePathListModel() override;
+    // ui::TableModel:
+    size_t RowCount() override;
+    std::u16string GetText(size_t row, int column_id) override;
+    ui::ImageModel GetIcon(size_t row) override;
+    std::u16string GetTooltip(size_t row) override;
+    void SetObserver(ui::TableModelObserver*) override;
+
+    base::FilePath GetPath(size_t row) const {
+      if (row < files_.size()) {
+        return files_[row];
+      }
+      return directories_[row - files_.size()];
+    }
+
+   private:
+    const std::vector<base::FilePath> files_;
+    const std::vector<base::FilePath> directories_;
+  };
+
   FileSystemAccessUsageBubbleView(const FileSystemAccessUsageBubbleView&) =
       delete;
   FileSystemAccessUsageBubbleView& operator=(
@@ -46,26 +73,10 @@ class FileSystemAccessUsageBubbleView : public LocationBarBubbleDelegateView {
   static FileSystemAccessUsageBubbleView* GetBubble();
 
  private:
-  class FilePathListModel : public ui::TableModel {
-   public:
-    FilePathListModel(std::vector<base::FilePath> files,
-                      std::vector<base::FilePath> directories);
-    FilePathListModel(const FilePathListModel&) = delete;
-    FilePathListModel& operator=(const FilePathListModel&) = delete;
-    ~FilePathListModel() override;
-    // ui::TableModel:
-    size_t RowCount() override;
-    std::u16string GetText(size_t row, int column_id) override;
-    ui::ImageModel GetIcon(size_t row) override;
-    std::u16string GetTooltip(size_t row) override;
-    void SetObserver(ui::TableModelObserver*) override;
+  // Updates the visibility state of the bubble in the action item framework.
+  void UpdateBubbleVisibilityState(bool is_bubble_visible);
 
-   private:
-    const std::vector<base::FilePath> files_;
-    const std::vector<base::FilePath> directories_;
-  };
-
-  FileSystemAccessUsageBubbleView(views::View* anchor_view,
+  FileSystemAccessUsageBubbleView(views::BubbleAnchor anchor,
                                   content::WebContents* web_contents,
                                   const url::Origin& origin,
                                   Usage usage);

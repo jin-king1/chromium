@@ -15,11 +15,11 @@
 #include "chrome/browser/tab_group_sync/tab_group_sync_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/most_recent_shared_tab_update_store.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "components/data_sharing/public/features.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_callback.h"
 #include "components/favicon_base/favicon_types.h"
@@ -27,11 +27,15 @@
 #include "components/saved_tab_groups/public/features.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/saved_tab_group_tab.h"
+#include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/saved_tab_groups/public/utils.h"
+#include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/page_transition_types.h"
+#include "url/gurl.h"
 
 namespace tab_groups {
 namespace {
@@ -59,7 +63,8 @@ bool IsUserTriggeredMainFrameNavigation(
       return false;
     }
 
-    if (navigation_handle->GetPageTransition() & ui::PAGE_TRANSITION_RELOAD) {
+    if (ui::PageTransitionCoreTypeIs(navigation_handle->GetPageTransition(),
+                                     ui::PAGE_TRANSITION_RELOAD)) {
       return false;
     }
   }
@@ -90,25 +95,30 @@ DeferredTabState::DeferredTabState(tabs::TabInterface* local_tab,
                                    const std::u16string& title,
                                    favicon::FaviconService* favicon_service)
     : local_tab_(local_tab), url_(url), title_(title) {
-  favicon_tracker_ = std::make_unique<base::CancelableTaskTracker>();
-
-  favicon_service->GetFaviconImageForPageURL(
-      url_,
-      base::BindOnce(&DeferredTabState::OnGetFaviconImageResult,
-                     base::Unretained(this)),
-      favicon_tracker_.get());
+  if (favicon_service) {
+    favicon_tracker_ = std::make_unique<base::CancelableTaskTracker>();
+    favicon_service->GetFaviconImageForPageURL(
+        url_,
+        base::BindOnce(&DeferredTabState::OnGetFaviconImageResult,
+                       base::Unretained(this)),
+        favicon_tracker_.get());
+  }
 }
 DeferredTabState::~DeferredTabState() = default;
 
 void DeferredTabState::OnGetFaviconImageResult(
     const favicon_base::FaviconImageResult& result) {
-  BrowserWindowInterface* browser_window =
-      local_tab_->GetBrowserWindowInterface();
-  if (!browser_window) {
+  if (result.image.IsEmpty()) {
     return;
   }
 
-  if (result.image.IsEmpty()) {
+  if (!local_tab_) {
+    return;
+  }
+
+  BrowserWindowInterface* browser_window =
+      local_tab_->GetBrowserWindowInterface();
+  if (!browser_window) {
     return;
   }
 
@@ -174,15 +184,16 @@ void SavedTabGroupWebContentsListener::NavigateToUrlInternal(const GURL& url) {
     return;
   }
 
-  // Dont navigate to the new URL if its not valid for sync.
-  if (!IsURLValidForSavedTabGroups(url)) {
+  // Dont navigate to the new URL if its not valid for local tabs.
+  if (!IsURLValidForLocalTab(url)) {
     return;
   }
 
-  // If deferring remote navigations is enabled and the tab is in the
+  // If deferring remote navigations is enabled (sharing) and the tab is in the
   // background, then dont actually perform the navigation, instead cache the
   // URL for performing the navigation later.
-  if (!IsTabGroupsDeferringRemoteNavigations() || local_tab_->IsActivated()) {
+  if (!data_sharing::features::IsDataSharingFunctionalityEnabled() ||
+      local_tab_->IsActivated()) {
     PerformNavigation(url);
   } else {
     favicon::FaviconService* favicon_service =
@@ -253,7 +264,10 @@ void SavedTabGroupWebContentsListener::DidFinishNavigation(
     TabGroupSyncTabState::Reset(contents());
   }
 
-  if (!TabGroupSyncUtils::IsSaveableNavigation(navigation_handle)) {
+  // Shard tab groups aren't allowed to navigate via extension
+  bool is_extension_navigation_allowed = !group->collaboration_id().has_value();
+  if (!TabGroupSyncUtils::IsSaveableNavigation(is_extension_navigation_allowed,
+                                               navigation_handle)) {
     return;
   }
 

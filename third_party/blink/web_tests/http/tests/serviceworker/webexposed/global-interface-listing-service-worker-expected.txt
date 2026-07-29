@@ -1,136 +1,4 @@
 [INTERFACES]
-interface AI
-    attribute @@toStringTag
-    getter languageDetector
-    getter languageModel
-    getter rewriter
-    getter summarizer
-    getter translator
-    getter writer
-    method constructor
-interface AICreateMonitor : EventTarget
-    attribute @@toStringTag
-    getter ondownloadprogress
-    method constructor
-    setter ondownloadprogress
-interface AILanguageDetector
-    attribute @@toStringTag
-    method constructor
-    method destroy
-    method detect
-interface AILanguageDetectorCapabilities
-    attribute @@toStringTag
-    getter available
-    method constructor
-    method languageAvailable
-interface AILanguageDetectorFactory
-    attribute @@toStringTag
-    method availability
-    method capabilities
-    method constructor
-    method create
-interface AILanguageModel : EventTarget
-    attribute @@toStringTag
-    getter expectedInputLanguages
-    getter maxTokens
-    getter oncontextoverflow
-    getter temperature
-    getter tokensLeft
-    getter tokensSoFar
-    getter topK
-    method clone
-    method constructor
-    method countPromptTokens
-    method destroy
-    method prompt
-    method promptStreaming
-    setter oncontextoverflow
-interface AILanguageModelFactory
-    attribute @@toStringTag
-    method availability
-    method constructor
-    method create
-    method params
-interface AILanguageModelParams
-    attribute @@toStringTag
-    getter defaultTemperature
-    getter defaultTopK
-    getter maxTemperature
-    getter maxTopK
-    method constructor
-interface AIRewriter
-    attribute @@toStringTag
-    getter expectedContextLanguages
-    getter expectedInputLanguages
-    getter format
-    getter length
-    getter outputLanguage
-    getter sharedContext
-    getter tone
-    method constructor
-    method destroy
-    method rewrite
-    method rewriteStreaming
-interface AIRewriterFactory
-    attribute @@toStringTag
-    method availability
-    method constructor
-    method create
-interface AISummarizer
-    attribute @@toStringTag
-    getter expectedContextLanguages
-    getter expectedInputLanguages
-    getter format
-    getter length
-    getter outputLanguage
-    getter sharedContext
-    getter type
-    method constructor
-    method destroy
-    method summarize
-    method summarizeStreaming
-interface AISummarizerFactory
-    attribute @@toStringTag
-    method availability
-    method constructor
-    method create
-interface AITranslator
-    attribute @@toStringTag
-    getter sourceLanguage
-    getter targetLanguage
-    method constructor
-    method destroy
-    method translate
-    method translateStreaming
-interface AITranslatorCapabilities
-    attribute @@toStringTag
-    getter available
-    method constructor
-    method languagePairAvailable
-interface AITranslatorFactory
-    attribute @@toStringTag
-    method availability
-    method capabilities
-    method constructor
-    method create
-interface AIWriter
-    attribute @@toStringTag
-    getter expectedContextLanguages
-    getter expectedInputLanguages
-    getter format
-    getter length
-    getter outputLanguage
-    getter sharedContext
-    getter tone
-    method constructor
-    method destroy
-    method write
-    method writeStreaming
-interface AIWriterFactory
-    attribute @@toStringTag
-    method availability
-    method constructor
-    method create
 interface AbortController
     attribute @@toStringTag
     getter signal
@@ -201,10 +69,12 @@ interface Blob
     getter size
     getter type
     method arrayBuffer
+    method bytes
     method constructor
     method slice
     method stream
     method text
+    method textStream
 interface BroadcastChannel : EventTarget
     attribute @@toStringTag
     getter name
@@ -324,6 +194,11 @@ interface CountQueuingStrategy
     getter highWaterMark
     getter size
     method constructor
+interface CreateMonitor : EventTarget
+    attribute @@toStringTag
+    getter ondownloadprogress
+    method constructor
+    setter ondownloadprogress
 interface CropTarget
     attribute @@toStringTag
     method constructor
@@ -559,6 +434,12 @@ interface DisposableStack
     method dispose
     method move
     method use
+interface ElementImage
+    attribute @@toStringTag
+    getter height
+    getter width
+    method close
+    method constructor
 interface ErrorEvent : Event
     attribute @@toStringTag
     getter colno
@@ -739,6 +620,7 @@ interface FontFace
     getter style
     getter unicodeRange
     getter variant
+    getter variationSettings
     getter weight
     method constructor
     method load
@@ -753,7 +635,31 @@ interface FontFace
     setter style
     setter unicodeRange
     setter variant
+    setter variationSettings
     setter weight
+interface FontFaceSet : EventTarget
+    attribute @@toStringTag
+    getter onloading
+    getter onloadingdone
+    getter onloadingerror
+    getter ready
+    getter size
+    getter status
+    method @@iterator
+    method add
+    method check
+    method clear
+    method constructor
+    method delete
+    method entries
+    method forEach
+    method has
+    method keys
+    method load
+    method values
+    setter onloading
+    setter onloadingdone
+    setter onloadingerror
 interface FormData
     attribute @@toStringTag
     method @@iterator
@@ -776,11 +682,8 @@ interface GPU
     method requestAdapter
 interface GPUAdapter
     attribute @@toStringTag
-    getter featureLevel
     getter features
     getter info
-    getter isCompatibilityMode
-    getter isFallbackAdapter
     getter limits
     method constructor
     method requestDevice
@@ -789,6 +692,8 @@ interface GPUAdapterInfo
     getter architecture
     getter description
     getter device
+    getter isFallbackAdapter
+    getter subgroupMatrixConfigs
     getter subgroupMaxSize
     getter subgroupMinSize
     getter vendor
@@ -813,6 +718,7 @@ interface GPUBuffer
     method destroy
     method getMappedRange
     method mapAsync
+    method mapSync
     method unmap
     setter label
 interface GPUCanvasContext
@@ -870,7 +776,9 @@ interface GPUComputePassEncoder
     method popDebugGroup
     method pushDebugGroup
     method setBindGroup
+    method setImmediates
     method setPipeline
+    method setResourceTable
     method writeTimestamp
     setter label
 interface GPUComputePipeline
@@ -900,6 +808,7 @@ interface GPUDevice : EventTarget
     method createRenderBundleEncoder
     method createRenderPipeline
     method createRenderPipelineAsync
+    method createResourceTable
     method createSampler
     method createShaderModule
     method createTexture
@@ -950,6 +859,7 @@ interface GPUQueue
     attribute @@toStringTag
     getter label
     method constructor
+    method copyElementImageToTexture
     method copyExternalImageToTexture
     method onSubmittedWorkDone
     method submit
@@ -974,6 +884,7 @@ interface GPURenderBundleEncoder
     method popDebugGroup
     method pushDebugGroup
     method setBindGroup
+    method setImmediates
     method setIndexBuffer
     method setPipeline
     method setVertexBuffer
@@ -997,6 +908,7 @@ interface GPURenderPassEncoder
     method pushDebugGroup
     method setBindGroup
     method setBlendConstant
+    method setImmediates
     method setIndexBuffer
     method setPipeline
     method setScissorRect
@@ -1011,6 +923,16 @@ interface GPURenderPipeline
     method constructor
     method getBindGroupLayout
     setter label
+interface GPUResourceTable
+    attribute @@toStringTag
+    getter label
+    getter size
+    method constructor
+    method destroy
+    method insert
+    method remove
+    method update
+    setter label
 interface GPUSampler
     attribute @@toStringTag
     getter label
@@ -1022,6 +944,14 @@ interface GPUShaderModule
     method constructor
     method getCompilationInfo
     setter label
+interface GPUSubgroupMatrixConfig
+    attribute @@toStringTag
+    getter K
+    getter M
+    getter N
+    getter componentType
+    getter resultComponentType
+    method constructor
 interface GPUSupportedFeatures
     attribute @@toStringTag
     getter size
@@ -1048,6 +978,7 @@ interface GPUSupportedLimits
     getter maxComputeWorkgroupsPerDimension
     getter maxDynamicStorageBuffersPerPipelineLayout
     getter maxDynamicUniformBuffersPerPipelineLayout
+    getter maxImmediateSize
     getter maxInterStageShaderVariables
     getter maxSampledTexturesPerShaderStage
     getter maxSamplersPerShaderStage
@@ -1079,6 +1010,7 @@ interface GPUTexture
     getter label
     getter mipLevelCount
     getter sampleCount
+    getter textureBindingViewDimension
     getter usage
     getter width
     method constructor
@@ -1271,7 +1203,7 @@ interface ImageData
     getter colorSpace
     getter data
     getter height
-    getter storageFormat
+    getter pixelFormat
     getter width
     method constructor
 interface InstallEvent : ExtendableEvent
@@ -1477,6 +1409,7 @@ interface OffscreenCanvas : EventTarget
     method constructor
     method convertToBlob
     method getContext
+    method getElementTransform
     method transferToImageBitmap
     setter height
     setter oncontextlost
@@ -1494,6 +1427,7 @@ interface OffscreenCanvasRenderingContext2D
     getter fontVariantCaps
     getter globalAlpha
     getter globalCompositeOperation
+    getter globalHDRHeadroom
     getter imageSmoothingEnabled
     getter imageSmoothingQuality
     getter lang
@@ -1529,6 +1463,7 @@ interface OffscreenCanvasRenderingContext2D
     method createMesh2DVertexBuffer
     method createPattern
     method createRadialGradient
+    method drawElementImage
     method drawImage
     method drawMesh
     method ellipse
@@ -1540,7 +1475,6 @@ interface OffscreenCanvasRenderingContext2D
     method getContextAttributes
     method getImageData
     method getLineDash
-    method getTextureFormat
     method getTransform
     method isContextLost
     method isPointInPath
@@ -1564,8 +1498,6 @@ interface OffscreenCanvasRenderingContext2D
     method strokeRect
     method strokeText
     method strokeTextCluster
-    method transferBackFromGPUTexture
-    method transferToGPUTexture
     method transform
     method translate
     setter direction
@@ -1577,6 +1509,7 @@ interface OffscreenCanvasRenderingContext2D
     setter fontVariantCaps
     setter globalAlpha
     setter globalCompositeOperation
+    setter globalHDRHeadroom
     setter imageSmoothingEnabled
     setter imageSmoothingQuality
     setter lang
@@ -1595,6 +1528,13 @@ interface OffscreenCanvasRenderingContext2D
     setter textBaseline
     setter textRendering
     setter wordSpacing
+interface Origin
+    static method from
+    attribute @@toStringTag
+    getter opaque
+    method constructor
+    method isSameOrigin
+    method isSameSite
 interface Path2D
     attribute @@toStringTag
     method addPath
@@ -1688,6 +1628,7 @@ interface PerformanceResourceTiming : PerformanceEntry
     getter finalResponseHeadersStart
     getter firstInterimResponseStart
     getter initiatorType
+    getter initiatorUrl
     getter nextHopProtocol
     getter redirectEnd
     getter redirectStart
@@ -1699,6 +1640,10 @@ interface PerformanceResourceTiming : PerformanceEntry
     getter secureConnectionStart
     getter serverTiming
     getter transferSize
+    getter workerCacheLookupStart
+    getter workerFinalSourceType
+    getter workerMatchedSourceType
+    getter workerRouterEvaluationStart
     getter workerStart
     method constructor
     method toJSON
@@ -1738,6 +1683,17 @@ interface PromiseRejectionEvent : Event
     getter promise
     getter reason
     method constructor
+interface Proofreader
+    static method availability
+    static method create
+    attribute @@toStringTag
+    getter correctionExplanationLanguage
+    getter expectedInputLanguages
+    getter includeCorrectionExplanations
+    getter includeCorrectionTypes
+    method constructor
+    method destroy
+    method proofread
 interface PushEvent : ExtendableEvent
     attribute @@toStringTag
     getter data
@@ -1776,27 +1732,10 @@ interface PushSubscriptionOptions
     getter applicationServerKey
     getter userVisibleOnly
     method constructor
-interface RTCRtpAcks
+interface QuotaExceededError : DOMException
     attribute @@toStringTag
-    getter explicitCongestionNotification
-    getter receivedTime
-    getter remoteSendTimestamp
-    method acks
-    method constructor
-interface RTCRtpSendResult
-    attribute @@toStringTag
-    getter sent
-    getter unsent
-    method constructor
-interface RTCRtpSendStream
-    attribute @@toStringTag
-    method constructor
-    method sendRtp
-interface RTCRtpSent
-    attribute @@toStringTag
-    getter ackId
-    getter size
-    getter time
+    getter quota
+    getter requested
     method constructor
 interface ReadableByteStreamController
     attribute @@toStringTag
@@ -1865,6 +1804,7 @@ interface Request
     getter headers
     getter integrity
     getter isHistoryNavigation
+    getter isReloadNavigation
     getter keepalive
     getter method
     getter mode
@@ -1880,8 +1820,10 @@ interface Request
     method clone
     method constructor
     method formData
+    method getRetryOptions
     method json
     method text
+    method textStream
 interface Response
     static method error
     static method redirect
@@ -1903,8 +1845,42 @@ interface Response
     method formData
     method json
     method text
+    method textStream
 interface RestrictionTarget
     attribute @@toStringTag
+    method constructor
+interface RtcReceivedPacket
+    attribute @@toStringTag
+    getter payloadByteLength
+    getter receiveTime
+    method constructor
+    method copyPayloadTo
+interface RtcTransport
+    attribute @@toStringTag
+    getter fingerprint
+    getter fingerprintDigestAlgorithm
+    getter onicecandidate
+    getter onwritablechange
+    method addRemoteCandidate
+    method constructor
+    method getReceivedPackets
+    method sendPackets
+    method setRemoteDtlsParameters
+    method writable
+    setter onicecandidate
+    setter onwritablechange
+interface RtcTransportIceCandidate
+    attribute @@toStringTag
+    getter address
+    getter password
+    getter port
+    getter type
+    getter usernameFragment
+    method constructor
+    method toJSON
+interface RtcTransportIceEvent : Event
+    attribute @@toStringTag
+    getter candidate
     method constructor
 interface Scheduler
     attribute @@toStringTag
@@ -1918,14 +1894,23 @@ interface SecurityPolicyViolationEvent : Event
     getter disposition
     getter documentURI
     getter effectiveDirective
+    getter evalHash
     getter lineNumber
     getter originalPolicy
     getter referrer
     getter sample
     getter sourceFile
     getter statusCode
+    getter urlHash
     getter violatedDirective
     method constructor
+interface SemanticEmbedder
+    static method availability
+    static method create
+    attribute @@toStringTag
+    method constructor
+    method destroy
+    method embed
 interface ServiceWorker : EventTarget
     attribute @@toStringTag
     getter onerror
@@ -2042,8 +2027,8 @@ interface TextCluster
     attribute @@toStringTag
     getter align
     getter baseline
-    getter begin
     getter end
+    getter start
     getter x
     getter y
     method constructor
@@ -2119,6 +2104,11 @@ interface TrustedHTML
     method constructor
     method toJSON
     method toString
+interface TrustedParserOptions
+    attribute @@toStringTag
+    getter runScripts
+    method constructor
+    method sanitizer
 interface TrustedScript
     static method fromLiteral
     attribute @@toStringTag
@@ -2136,14 +2126,14 @@ interface TrustedTypePolicy
     getter name
     method constructor
     method createHTML
+    method createParserOptions
     method createScript
     method createScriptURL
-interface TrustedTypePolicyFactory : EventTarget
+interface TrustedTypePolicyFactory
     attribute @@toStringTag
     getter defaultPolicy
     getter emptyHTML
     getter emptyScript
-    getter onbeforecreatepolicy
     method constructor
     method createPolicy
     method getAttributeType
@@ -2152,7 +2142,6 @@ interface TrustedTypePolicyFactory : EventTarget
     method isHTML
     method isScript
     method isScriptURL
-    setter onbeforecreatepolicy
 interface URL
     static method canParse
     static method parse
@@ -2196,6 +2185,7 @@ interface URLPattern
     getter username
     method constructor
     method exec
+    method generate
     method test
 interface URLSearchParams
     attribute @@toStringTag
@@ -2829,7 +2819,6 @@ interface WebGL2RenderingContext
     method clearStencil
     method clientWaitSync
     method colorMask
-    method commit
     method compileShader
     method compressedTexImage2D
     method compressedTexImage3D
@@ -2962,6 +2951,7 @@ interface WebGL2RenderingContext
     method stencilMaskSeparate
     method stencilOp
     method stencilOpSeparate
+    method texElementImage2D
     method texImage2D
     method texImage3D
     method texParameterf
@@ -3380,7 +3370,6 @@ interface WebGLRenderingContext
     method clearDepth
     method clearStencil
     method colorMask
-    method commit
     method compileShader
     method compressedTexImage2D
     method compressedTexSubImage2D
@@ -3465,6 +3454,7 @@ interface WebGLRenderingContext
     method stencilMaskSeparate
     method stencilOp
     method stencilOpSeparate
+    method texElementImage2D
     method texImage2D
     method texParameterf
     method texParameteri
@@ -3567,16 +3557,23 @@ interface WebSocketStream
     method constructor
 interface WebTransport
     attribute @@toStringTag
+    getter anticipatedConcurrentIncomingBidirectionalStreams
+    getter anticipatedConcurrentIncomingUnidirectionalStreams
     getter closed
+    getter congestionControl
     getter datagrams
     getter incomingBidirectionalStreams
     getter incomingUnidirectionalStreams
+    getter protocol
     getter ready
     method close
     method constructor
     method createBidirectionalStream
+    method createSendGroup
     method createUnidirectionalStream
     method getStats
+    setter anticipatedConcurrentIncomingBidirectionalStreams
+    setter anticipatedConcurrentIncomingUnidirectionalStreams
 interface WebTransportBidirectionalStream
     attribute @@toStringTag
     getter readable
@@ -3586,21 +3583,41 @@ interface WebTransportDatagramDuplexStream
     attribute @@toStringTag
     getter incomingHighWaterMark
     getter incomingMaxAge
+    getter incomingMaxBufferedDatagrams
     getter maxDatagramSize
     getter outgoingHighWaterMark
     getter outgoingMaxAge
+    getter outgoingMaxBufferedDatagrams
     getter readable
     getter writable
     method constructor
     setter incomingHighWaterMark
     setter incomingMaxAge
+    setter incomingMaxBufferedDatagrams
     setter outgoingHighWaterMark
     setter outgoingMaxAge
+    setter outgoingMaxBufferedDatagrams
 interface WebTransportError : DOMException
     attribute @@toStringTag
     getter source
     getter streamErrorCode
     method constructor
+interface WebTransportReceiveStream : ReadableStream
+    attribute @@toStringTag
+    method constructor
+    method getStats
+interface WebTransportSendGroup
+    attribute @@toStringTag
+    method constructor
+    method getStats
+interface WebTransportSendStream : WritableStream
+    attribute @@toStringTag
+    getter sendGroup
+    getter sendOrder
+    method constructor
+    method getStats
+    setter sendGroup
+    setter sendOrder
 interface WindowClient : Client
     attribute @@toStringTag
     getter focused
@@ -3610,7 +3627,6 @@ interface WindowClient : Client
     method navigate
 interface WorkerGlobalScope : EventTarget
     attribute @@toStringTag
-    getter ai
     getter caches
     getter crossOriginEmbedderPolicy
     getter crossOriginIsolated
@@ -3643,7 +3659,6 @@ interface WorkerGlobalScope : EventTarget
     method setInterval
     method setTimeout
     method structuredClone
-    setter ai
     setter onerror
     setter onlanguagechange
     setter onrejectionhandled
@@ -3747,6 +3762,18 @@ namespace GPUTextureUsage
     attribute RENDER_ATTACHMENT
     attribute STORAGE_BINDING
     attribute TEXTURE_BINDING
+    attribute TRANSIENT_ATTACHMENT
+namespace Temporal
+    attribute @@toStringTag
+    attribute Now
+    method Duration
+    method Instant
+    method PlainDate
+    method PlainDateTime
+    method PlainMonthDay
+    method PlainTime
+    method PlainYearMonth
+    method ZonedDateTime
 namespace console
     attribute @@toStringTag
     method assert

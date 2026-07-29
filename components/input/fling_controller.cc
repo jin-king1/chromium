@@ -5,7 +5,10 @@
 #include "components/input/fling_controller.h"
 
 #include "base/time/default_tick_clock.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/gestures/blink/web_gesture_curve_impl.h"
 
@@ -101,13 +104,12 @@ bool FlingController::ObserveAndMaybeConsumeGestureEvent(
   if (gesture_event.event.GetType() ==
           WebInputEvent::Type::kGestureFlingCancel &&
       !fling_curve_) {
-    TRACE_EVENT_INSTANT0("input", "NoActiveFling", TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("input", "NoActiveFling");
     return true;
   }
 
   if (ObserveAndFilterForTapSuppression(gesture_event)) {
-    TRACE_EVENT_INSTANT0("input", "FilterTapSuppression",
-                         TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("input", "FilterTapSuppression");
     return true;
   }
   if (gesture_event.event.GetType() ==
@@ -159,19 +161,22 @@ void FlingController::ProcessGestureFlingStart(
   if (!UpdateCurrentFlingState(gesture_event.event))
     return;
 
-  TRACE_EVENT_ASYNC_BEGIN2("input", kFlingTraceName, this, "vx",
-                           current_fling_parameters_.velocity.x(), "vy",
-                           current_fling_parameters_.velocity.y());
+  TRACE_EVENT_BEGIN("input", perfetto::StaticString(kFlingTraceName),
+                    perfetto::NamedTrack::FromPointer(
+                        perfetto::StaticString(kFlingTraceName), this),
+                    "vx", current_fling_parameters_.velocity.x(), "vy",
+                    current_fling_parameters_.velocity.y());
 
   last_progress_time_ = base::TimeTicks();
 
   // Wait for BeginFrame to call ProgressFling when
   // SetNeedsBeginFrameForFlingProgress is used to progress flings instead of
   // compositor animation observer (happens on Android WebView).
-  if (scheduler_client_->NeedsBeginFrameForFlingProgress())
-    ScheduleFlingProgress();
-  else
+  if (scheduler_client_->ProgressFlingOnFlingStart()) {
     ProgressFling(clock_->NowTicks());
+  } else {
+    ScheduleFlingProgress();
+  }
 }
 
 void FlingController::ScheduleFlingProgress() {
@@ -189,11 +194,15 @@ void FlingController::ProcessGestureFlingCancel(
   EndCurrentFling(gesture_event.event.TimeStamp());
 }
 
-void FlingController::ProgressFling(base::TimeTicks current_time) {
+void FlingController::ProgressFling(
+    base::TimeTicks current_time,
+    std::optional<base::TimeTicks> first_coalesced_frame_begin_time) {
   if (!fling_curve_)
     return;
 
-  TRACE_EVENT_ASYNC_STEP_INTO0("input", kFlingTraceName, this, "ProgressFling");
+  TRACE_EVENT_INSTANT("input", "ProgressFling",
+                      perfetto::NamedTrack::FromPointer(
+                          perfetto::StaticString(kFlingTraceName), this));
 
   if (!first_fling_update_sent()) {
     // Guard against invalid as there are no guarantees fling event and progress
@@ -241,7 +250,17 @@ void FlingController::ProgressFling(base::TimeTicks current_time) {
 
   if (std::abs(delta_to_scroll.x()) > kMinInertialScrollDelta ||
       std::abs(delta_to_scroll.y()) > kMinInertialScrollDelta) {
-    GenerateAndSendFlingProgressEvents(current_time, delta_to_scroll);
+    base::TimeTicks event_generation_time =
+        first_coalesced_frame_begin_time.value_or(current_time);
+
+    if (!first_fling_update_sent() &&
+        base::FeatureList::IsEnabled(
+            blink::features::kResampleScrollEventsForFling)) {
+      // Align the first update's timestamp with the original fling event time.
+      event_generation_time = current_fling_parameters_.fling_start_event_time;
+    }
+
+    GenerateAndSendFlingProgressEvents(event_generation_time, delta_to_scroll);
     last_progress_time_ = current_time;
   }
 
@@ -259,12 +278,12 @@ void FlingController::StopFling() {
 }
 
 void FlingController::GenerateAndSendWheelEvents(
-    base::TimeTicks current_time,
+    base::TimeTicks event_generation_time,
     const gfx::Vector2dF& delta,
     blink::WebMouseWheelEvent::Phase phase) {
   MouseWheelEventWithLatencyInfo synthetic_wheel(
       WebInputEvent::Type::kMouseWheel, current_fling_parameters_.modifiers,
-      current_time, ui::LatencyInfo());
+      event_generation_time, ui::LatencyInfo());
   synthetic_wheel.event.delta_units =
       ui::ScrollGranularity::kScrollByPrecisePixel;
   synthetic_wheel.event.delta_x = delta.x();
@@ -282,11 +301,11 @@ void FlingController::GenerateAndSendWheelEvents(
 }
 
 void FlingController::GenerateAndSendGestureScrollEvents(
-    base::TimeTicks current_time,
+    base::TimeTicks event_generation_time,
     WebInputEvent::Type type,
     const gfx::Vector2dF& delta /* = gfx::Vector2dF() */) {
   GestureEventWithLatencyInfo synthetic_gesture(
-      type, current_fling_parameters_.modifiers, current_time,
+      type, current_fling_parameters_.modifiers, event_generation_time,
       ui::LatencyInfo());
   synthetic_gesture.event.SetPositionInWidget(current_fling_parameters_.point);
   synthetic_gesture.event.SetPositionInScreen(
@@ -298,6 +317,10 @@ void FlingController::GenerateAndSendGestureScrollEvents(
   if (type == WebInputEvent::Type::kGestureScrollUpdate) {
     synthetic_gesture.event.data.scroll_update.delta_x = delta.x();
     synthetic_gesture.event.data.scroll_update.delta_y = delta.y();
+    synthetic_gesture.event.data.scroll_update.delta_x_unconstrained =
+        delta.x();
+    synthetic_gesture.event.data.scroll_update.delta_y_unconstrained =
+        delta.y();
     synthetic_gesture.event.data.scroll_update.inertial_phase =
         WebGestureEvent::InertialPhaseState::kMomentum;
   } else {
@@ -311,20 +334,21 @@ void FlingController::GenerateAndSendGestureScrollEvents(
 }
 
 void FlingController::GenerateAndSendFlingProgressEvents(
-    base::TimeTicks current_time,
+    base::TimeTicks event_generation_time,
     const gfx::Vector2dF& delta) {
   switch (current_fling_parameters_.source_device) {
     case blink::WebGestureDevice::kTouchpad: {
       blink::WebMouseWheelEvent::Phase phase =
           first_fling_update_sent() ? blink::WebMouseWheelEvent::kPhaseChanged
                                     : blink::WebMouseWheelEvent::kPhaseBegan;
-      GenerateAndSendWheelEvents(current_time, delta, phase);
+      GenerateAndSendWheelEvents(event_generation_time, delta, phase);
       break;
     }
     case blink::WebGestureDevice::kTouchscreen:
     case blink::WebGestureDevice::kSyntheticAutoscroll:
       GenerateAndSendGestureScrollEvents(
-          current_time, WebInputEvent::Type::kGestureScrollUpdate, delta);
+          event_generation_time, WebInputEvent::Type::kGestureScrollUpdate,
+          delta);
       break;
     case blink::WebGestureDevice::kUninitialized:
     case blink::WebGestureDevice::kScrollbar:
@@ -363,7 +387,9 @@ void FlingController::EndCurrentFling(base::TimeTicks current_time) {
 
   if (fling_curve_) {
     scheduler_client_->DidStopFlingingOnBrowser(weak_ptr_factory_.GetWeakPtr());
-    TRACE_EVENT_ASYNC_END0("input", kFlingTraceName, this);
+    TRACE_EVENT_END("input",
+                    perfetto::NamedTrack::FromPointer(
+                        perfetto::StaticString(kFlingTraceName), this));
   }
 
   fling_curve_.reset();
@@ -392,6 +418,8 @@ bool FlingController::UpdateCurrentFlingState(
     // scroll, the animation should begin at the time of the last update.
     current_fling_parameters_.start_time = last_seen_scroll_update_;
   }
+  current_fling_parameters_.fling_start_event_time =
+      fling_start_event.TimeStamp();
 
   if (velocity.IsZero() && fling_start_event.SourceDevice() !=
                                blink::WebGestureDevice::kSyntheticAutoscroll) {

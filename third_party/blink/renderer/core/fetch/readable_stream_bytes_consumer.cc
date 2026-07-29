@@ -16,7 +16,6 @@
 #include "third_party/blink/renderer/platform/bindings/scoped_persistent.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
-#include "third_party/blink/renderer/platform/bindings/v8_binding_macros.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -184,9 +183,9 @@ void ReadableStreamBytesConsumer::OnRead(DOMUint8Array* buffer) {
   if (is_inside_read_) {
     scoped_refptr<scheduler::EventLoop> event_loop =
         ExecutionContext::From(script_state_)->GetAgent()->event_loop();
-    event_loop->EnqueueMicrotask(
-        WTF::BindOnce(&ReadableStreamBytesConsumer::OnRead,
-                      WrapPersistent(this), WrapPersistent(buffer)));
+    event_loop->EnqueueMicrotask(BindOnce(&ReadableStreamBytesConsumer::OnRead,
+                                          WrapPersistent(this),
+                                          WrapPersistent(buffer)));
     return;
   }
   is_reading_ = false;
@@ -204,7 +203,7 @@ void ReadableStreamBytesConsumer::OnReadDone() {
   if (is_inside_read_) {
     scoped_refptr<scheduler::EventLoop> event_loop =
         ExecutionContext::From(script_state_)->GetAgent()->event_loop();
-    event_loop->EnqueueMicrotask(WTF::BindOnce(
+    event_loop->EnqueueMicrotask(BindOnce(
         &ReadableStreamBytesConsumer::OnReadDone, WrapPersistent(this)));
     return;
   }
@@ -226,7 +225,7 @@ void ReadableStreamBytesConsumer::OnRejected() {
   if (is_inside_read_) {
     scoped_refptr<scheduler::EventLoop> event_loop =
         ExecutionContext::From(script_state_)->GetAgent()->event_loop();
-    event_loop->EnqueueMicrotask(WTF::BindOnce(
+    event_loop->EnqueueMicrotask(BindOnce(
         &ReadableStreamBytesConsumer::OnRejected, WrapPersistent(this)));
     return;
   }

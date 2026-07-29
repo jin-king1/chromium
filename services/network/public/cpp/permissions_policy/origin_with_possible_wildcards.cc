@@ -94,18 +94,17 @@ bool OriginWithPossibleWildcards::DoesMatchOrigin(
 }
 
 bool operator==(const OriginWithPossibleWildcards& lhs,
-                const OriginWithPossibleWildcards& rhs) {
-  return lhs.csp_source == rhs.csp_source;
-}
+                const OriginWithPossibleWildcards& rhs) = default;
 
-bool operator!=(const OriginWithPossibleWildcards& lhs,
-                const OriginWithPossibleWildcards& rhs) {
-  return lhs.csp_source != rhs.csp_source;
-}
-
-bool operator<(const OriginWithPossibleWildcards& lhs,
-               const OriginWithPossibleWildcards& rhs) {
-  return lhs.csp_source < rhs.csp_source;
+std::strong_ordering operator<=>(const OriginWithPossibleWildcards& lhs,
+                                 const OriginWithPossibleWildcards& rhs) {
+  if (lhs.csp_source < rhs.csp_source) {
+    return std::strong_ordering::less;
+  }
+  if (rhs.csp_source < lhs.csp_source) {
+    return std::strong_ordering::greater;
+  }
+  return std::strong_ordering::equal;
 }
 
 }  // namespace network

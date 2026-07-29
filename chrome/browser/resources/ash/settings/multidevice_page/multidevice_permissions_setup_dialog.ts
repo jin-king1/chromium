@@ -20,7 +20,7 @@ import '../settings_shared.css.js';
 import './multidevice_screen_lock_subpage.js';
 
 import type {CrDialogElement} from 'chrome://resources/ash/common/cr_elements/cr_dialog/cr_dialog.js';
-import {assert} from 'chrome://resources/js/assert.js';
+import {assert, assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -283,34 +283,34 @@ export class SettingsMultidevicePermissionsSetupDialogElement extends
     };
   }
 
-  combinedSetupSupported: boolean;
-  isChromeosScreenLockEnabled: boolean;
-  isPasswordDialogShowing: boolean;
-  isPhoneScreenLockEnabled: boolean;
-  showAppStreaming: boolean;
-  showCameraRoll: boolean;
-  showNotifications: boolean;
+  declare combinedSetupSupported: boolean;
+  declare isChromeosScreenLockEnabled: boolean;
+  declare isPasswordDialogShowing: boolean;
+  declare isPhoneScreenLockEnabled: boolean;
+  declare showAppStreaming: boolean;
+  declare showCameraRoll: boolean;
+  declare showNotifications: boolean;
   private browserProxy_: MultiDeviceBrowserProxy;
-  private completedMode_: number;
-  private description_: string;
-  private didSetupAttemptFail_: boolean;
-  private flowState_: SetupFlowStatus;
-  private hasCompletedSetup_: boolean;
-  private hasStartedSetupAttempt_: boolean;
-  private isNotificationAccessProhibited_: boolean;
-  private isPinNumberSelected_: boolean;
-  private isPinSet_: boolean;
-  private isScreenLockEnabled_: boolean;
-  private isSetupAttemptInProgress_: boolean;
-  private isSetupScreenLockInProgress_: boolean;
-  private learnMoreButtonAriaLabel_: string;
-  private setupMode_: number;
-  private setupScreen_: PhoneHubPermissionsSetupFlowScreens;
-  private setupState_: PermissionsSetupStatus|null;
-  private shouldShowDisabledDoneButton_: boolean;
-  private shouldShowLearnMoreButton_: boolean;
-  private showSetupPinDialog_: boolean;
-  private title_: string;
+  declare private completedMode_: number;
+  declare private description_: string;
+  declare private didSetupAttemptFail_: boolean;
+  declare private flowState_: SetupFlowStatus;
+  declare private hasCompletedSetup_: boolean;
+  declare private hasStartedSetupAttempt_: boolean;
+  declare private isNotificationAccessProhibited_: boolean;
+  declare private isPinNumberSelected_: boolean;
+  declare private isPinSet_: boolean;
+  declare private isScreenLockEnabled_: boolean;
+  declare private isSetupAttemptInProgress_: boolean;
+  declare private isSetupScreenLockInProgress_: boolean;
+  declare private learnMoreButtonAriaLabel_: string;
+  declare private setupMode_: number;
+  declare private setupScreen_: PhoneHubPermissionsSetupFlowScreens;
+  declare private setupState_: PermissionsSetupStatus|null;
+  declare private shouldShowDisabledDoneButton_: boolean;
+  declare private shouldShowLearnMoreButton_: boolean;
+  declare private showSetupPinDialog_: boolean;
+  declare private title_: string;
 
   constructor() {
     super();
@@ -462,6 +462,10 @@ export class SettingsMultidevicePermissionsSetupDialogElement extends
           .SENT_MESSAGE_TO_PHONE_AND_WAITING_FOR_RESPONSE:
         this.setupState_ = combinedSetupResult;
         return;
+      case PermissionsSetupStatus.CONNECTION_ESTABLISHED:
+        break;
+      default:
+        assertNotReachedCase(combinedSetupResult);
     }
 
     // Note: we can only update this.setupState_ after assigning
@@ -667,6 +671,8 @@ export class SettingsMultidevicePermissionsSetupDialogElement extends
         }
         this.propagatePinNumberSelected_(false);
         this.isPasswordDialogShowing = false;
+        break;
+      default:
         break;
     }
 

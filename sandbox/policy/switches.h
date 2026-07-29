@@ -17,9 +17,11 @@ SANDBOX_POLICY_EXPORT extern const char kServiceSandboxType[];
 // Flags owned by the service manager sandbox.
 SANDBOX_POLICY_EXPORT extern const char kAllowSandboxDebugging[];
 SANDBOX_POLICY_EXPORT extern const char kDisableGpuSandbox[];
+SANDBOX_POLICY_EXPORT extern const char kDisableLandlockSandbox[];
 SANDBOX_POLICY_EXPORT extern const char kDisableNamespaceSandbox[];
 SANDBOX_POLICY_EXPORT extern const char kDisableSeccompFilterSandbox[];
 SANDBOX_POLICY_EXPORT extern const char kDisableSetuidSandbox[];
+SANDBOX_POLICY_EXPORT extern const char kDisableWebNNCompilerSandbox[];
 SANDBOX_POLICY_EXPORT extern const char kGpuSandboxAllowSysVShm[];
 SANDBOX_POLICY_EXPORT extern const char kGpuSandboxFailuresFatal[];
 SANDBOX_POLICY_EXPORT extern const char kNoSandbox[];
@@ -38,13 +40,12 @@ SANDBOX_POLICY_EXPORT extern const char kDisableMetalShaderCache[];
 // Flags spied upon from other layers.
 SANDBOX_POLICY_EXPORT extern const char kProcessType[];
 SANDBOX_POLICY_EXPORT extern const char kGpuProcess[];
-SANDBOX_POLICY_EXPORT extern const char kNaClLoaderProcess[];
-SANDBOX_POLICY_EXPORT extern const char kPpapiPluginProcess[];
 SANDBOX_POLICY_EXPORT extern const char kRendererProcess[];
 SANDBOX_POLICY_EXPORT extern const char kUtilityProcess[];
 SANDBOX_POLICY_EXPORT extern const char kZygoteProcessType[];
 SANDBOX_POLICY_EXPORT extern const char kRelauncherProcessType[];
 SANDBOX_POLICY_EXPORT extern const char kCodeSignCloneCleanupProcessType[];
+SANDBOX_POLICY_EXPORT extern const char kAppShimProcessType[];
 
 }  // namespace sandbox::policy::switches
 

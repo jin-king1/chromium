@@ -41,19 +41,22 @@ void RunInterleaveBench(AudioBus* bus,
   perf_test::PerfResultReporter reporter = SetUpReporter(trace_name);
 
   base::TimeTicks start = base::TimeTicks::Now();
-  for (int i = 0; i < kBenchmarkIterations; ++i)
-    bus->ToInterleaved<SampleTraits>(bus->frames(), interleaved.data());
+  for (int i = 0; i < kBenchmarkIterations; ++i) {
+    bus->ToInterleaved<SampleTraits>(interleaved);
+  }
   double total_time_milliseconds =
       (base::TimeTicks::Now() - start).InMillisecondsF();
   reporter.AddResult("_to_interleaved",
                      total_time_milliseconds / kBenchmarkIterations);
 
-  if (to_interleaved_only)
+  if (to_interleaved_only) {
     return;
+  }
 
   start = base::TimeTicks::Now();
-  for (int i = 0; i < kBenchmarkIterations; ++i)
-    bus->FromInterleaved<SampleTraits>(interleaved.data(), bus->frames());
+  for (int i = 0; i < kBenchmarkIterations; ++i) {
+    bus->FromInterleaved<SampleTraits>(interleaved);
+  }
   total_time_milliseconds = (base::TimeTicks::Now() - start).InMillisecondsF();
   reporter.AddResult("_from_interleaved",
                      total_time_milliseconds / kBenchmarkIterations);

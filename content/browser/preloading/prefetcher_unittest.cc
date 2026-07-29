@@ -9,12 +9,11 @@
 #include "base/test/scoped_feature_list.h"
 #include "content/browser/preloading/prefetch/prefetch_document_manager.h"
 #include "content/browser/preloading/prefetch/prefetch_features.h"
-#include "content/browser/preloading/prefetch/prefetch_service.h"
-#include "content/public/browser/speculation_host_delegate.h"
+#include "content/browser/preloading/prefetch/prefetch_test_util_internal.h"
 #include "content/public/common/content_client.h"
 #include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "content/public/test/test_renderer_host.h"
-#include "content/test/test_content_browser_client.h"
 #include "content/test/test_web_contents.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -22,84 +21,16 @@
 namespace content {
 namespace {
 
-class MockSpeculationHostDelegate : public SpeculationHostDelegate {
- public:
-  explicit MockSpeculationHostDelegate(RenderFrameHost& render_frame_host) {}
-  ~MockSpeculationHostDelegate() override = default;
-
-  void ProcessCandidates(
-      std::vector<blink::mojom::SpeculationCandidatePtr>& candidates) override {
-    for (auto&& candidate : candidates) {
-      candidates_.push_back(std::move(candidate));
-    }
-  }
-  std::vector<blink::mojom::SpeculationCandidatePtr>& Candidates() {
-    return candidates_;
-  }
-
-  base::WeakPtr<MockSpeculationHostDelegate> AsWeakPtr() {
-    return weak_ptr_factory_.GetWeakPtr();
-  }
-
- private:
-  std::vector<blink::mojom::SpeculationCandidatePtr> candidates_;
-  base::WeakPtrFactory<MockSpeculationHostDelegate> weak_ptr_factory_{this};
-};
-
-class TestPrefetchService : public PrefetchService {
- public:
-  explicit TestPrefetchService(BrowserContext* browser_context)
-      : PrefetchService(browser_context) {}
-
-  void PrefetchUrl(
-      base::WeakPtr<PrefetchContainer> prefetch_container) override {
-    prefetch_container->DisablePrecogLoggingForTest();
-    prefetches_.push_back(prefetch_container);
-
-    std::unique_ptr<network::ResourceRequest> request =
-        std::make_unique<network::ResourceRequest>();
-    network::ResourceRequest::TrustedParams trusted_params;
-    request->trusted_params = trusted_params;
-  }
-
-  std::vector<base::WeakPtr<PrefetchContainer>> prefetches_;
-};
-
-class MockContentBrowserClient : public TestContentBrowserClient {
- public:
-  MockContentBrowserClient() {
-    old_browser_client_ = SetBrowserClientForTesting(this);
-  }
-  ~MockContentBrowserClient() override {
-    EXPECT_EQ(this, SetBrowserClientForTesting(old_browser_client_));
-  }
-
-  std::unique_ptr<SpeculationHostDelegate> CreateSpeculationHostDelegate(
-      RenderFrameHost& render_frame_host) override {
-    auto delegate =
-        std::make_unique<MockSpeculationHostDelegate>(render_frame_host);
-    delegate_ = delegate->AsWeakPtr();
-    return delegate;
-  }
-
-  base::WeakPtr<MockSpeculationHostDelegate> GetDelegate() { return delegate_; }
-
- private:
-  raw_ptr<ContentBrowserClient> old_browser_client_ = nullptr;
-  base::WeakPtr<MockSpeculationHostDelegate> delegate_;
-};
-
 class PrefetcherTest : public RenderViewHostTestHarness {
  public:
   PrefetcherTest() = default;
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
 
-    browser_context_ = std::make_unique<TestBrowserContext>();
-    web_contents_ = TestWebContents::Create(
-        browser_context_.get(),
-        SiteInstanceImpl::Create(browser_context_.get()));
-    web_contents_->NavigateAndCommit(GetSameOriginUrl("/"));
+    SetContents(TestWebContents::Create(
+        GetBrowserContext(), SiteInstanceImpl::Create(GetBrowserContext())));
+    NavigateAndCommit(GetSameOriginUrl("/"));
+
     prefetch_service_ =
         std::make_unique<TestPrefetchService>(GetBrowserContext());
     PrefetchDocumentManager::SetPrefetchServiceForTesting(
@@ -114,13 +45,8 @@ class PrefetcherTest : public RenderViewHostTestHarness {
     PrefetchDocumentManager::SetPrefetchServiceForTesting(nullptr);
     prefetch_service_.reset();
 
-    web_contents_.reset();
-    browser_context_.reset();
+    DeleteContents();
     RenderViewHostTestHarness::TearDown();
-  }
-
-  RenderFrameHostImpl& GetPrimaryMainFrame() {
-    return web_contents_->GetPrimaryPage().GetMainDocument();
   }
 
   GURL GetSameOriginUrl(const std::string& path) {
@@ -134,17 +60,11 @@ class PrefetcherTest : public RenderViewHostTestHarness {
   TestPrefetchService* GetPrefetchService() { return prefetch_service_.get(); }
 
  private:
-  std::unique_ptr<TestBrowserContext> browser_context_;
-  std::unique_ptr<TestWebContents> web_contents_;
   std::unique_ptr<TestPrefetchService> prefetch_service_;
 };
 
 TEST_F(PrefetcherTest, ProcessCandidatesForPrefetch) {
-  MockContentBrowserClient browser_client;
-  auto prefetcher = Prefetcher(GetPrimaryMainFrame());
-  base::WeakPtr<MockSpeculationHostDelegate> delegate =
-      browser_client.GetDelegate();
-  ASSERT_TRUE(delegate);
+  auto prefetcher = Prefetcher(*main_rfh());
 
   // Create list of SpeculationCandidatePtrs.
   std::vector<blink::mojom::SpeculationCandidatePtr> candidates;
@@ -157,7 +77,6 @@ TEST_F(PrefetcherTest, ProcessCandidatesForPrefetch) {
   candidates.push_back(std::move(candidate1));
 
   prefetcher.ProcessCandidatesForPrefetch(candidates);
-  EXPECT_TRUE(delegate->Candidates().empty());
   EXPECT_EQ(1u, GetPrefetchService()->prefetches_.size());
 
   EXPECT_FALSE(prefetcher.IsPrefetchAttemptFailedOrDiscarded(

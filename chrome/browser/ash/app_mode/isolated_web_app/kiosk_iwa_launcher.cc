@@ -4,8 +4,13 @@
 
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_launcher.h"
 
+#include <string>
+
+#include "ash/constants/ash_pref_names.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
+#include "base/types/expected_macros.h"
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_data.h"
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
@@ -13,13 +18,14 @@
 #include "chrome/browser/ash/app_mode/kiosk_web_app_launcher_base.h"
 #include "chrome/browser/extensions/extension_special_storage_policy.h"  // nogncheck crbug.com/386960384
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_cache_client.h"
 #include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_external_install_options.h"
 #include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_installer.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chrome/common/pref_names.h"
 #include "components/account_id/account_id.h"
 #include "components/webapps/common/web_app_id.h"
+#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash {
@@ -36,18 +42,23 @@ KioskIwaLauncher::~KioskIwaLauncher() = default;
 void KioskIwaLauncher::Initialize() {
   KioskWebAppLauncherBase::Initialize();
 
+  if (web_app::IwaRuntimeDataProvider::GetInstance().IsBundleBlocklisted(
+          iwa_data_->web_bundle_id().id())) {
+    NotifyLaunchFailed(KioskAppLaunchError::Error::kIsolatedAppNotAllowed);
+    return;
+  }
+  KioskIwaManager::Get()->StartObservingAppUpdate(profile(), account_id());
   CHECK_DEREF(profile()->GetExtensionSpecialStoragePolicy())
       .AddOriginWithUnlimitedStorage(iwa_data().origin());
 }
 
 void KioskIwaLauncher::ContinueWithNetworkReady() {
   KioskWebAppLauncherBase::ContinueWithNetworkReady();
-  KioskIwaManager::Get()->StartObservingAppUpdate(profile(), account_id());
 
   if (IsIsolatedWebAppInstalled()) {
     NotifyAppPrepared();
   } else {
-    InstallIsolatedWebApp();
+    InstallIsolatedWebApp(/*retry_with_internet_on_failure=*/false);
   }
 }
 
@@ -56,44 +67,78 @@ bool KioskIwaLauncher::IsIsolatedWebAppInstalled() const {
       web_app::WebAppProvider::GetForWebApps(profile());
   const web_app::WebAppRegistrar& web_app_registrar =
       CHECK_DEREF(provider).registrar_unsafe();
-  return web_app_registrar.GetInstallState(iwa_data().app_id()).has_value();
+  std::optional<web_app::proto::InstallState> install_state =
+      web_app_registrar.GetInstallState(iwa_data().app_id());
+  if (!install_state.has_value()) {
+    return false;
+  }
+
+  // IWAs are not eligible to be migrated, so if an IWA is found to be in the
+  // middle of migration, that is unexpected.
+  CHECK_NE(*install_state,
+           web_app::proto::InstallState::SUGGESTED_FROM_MIGRATION);
+  return true;
 }
 
-void KioskIwaLauncher::InstallIsolatedWebApp() {
-  CHECK(!iwa_installer_);
+void KioskIwaLauncher::InstallIsolatedWebApp(
+    const bool retry_with_internet_on_failure) {
+  iwa_installer_.reset();
 
-  // TODO(crbug.com/374069115): Add IWA update channel.
-  auto install_options = web_app::IsolatedWebAppExternalInstallOptions::Create(
-      iwa_data().update_manifest_url(), iwa_data().web_bundle_id());
-  CHECK(install_options.has_value())
-      << "Cannot configure IWA installation: " << install_options.error();
+  ASSIGN_OR_RETURN(
+      auto install_options,
+      web_app::IsolatedWebAppExternalInstallOptions::Create(
+          iwa_data().web_bundle_id(), iwa_data().update_manifest_url(),
+          iwa_data().update_channel(), iwa_data().pinned_version(),
+          iwa_data().allow_downgrades()),
+      [this](const std::string& error) {
+        LOG(ERROR) << "Cannot configure IWA installation: " << error;
+        NotifyLaunchFailed(KioskAppLaunchError::Error::kUnableToInstall);
+      });
 
-  web_app::WebAppProvider* provider =
-      web_app::WebAppProvider::GetForWebApps(profile());
-  CHECK(provider);
-
-  iwa_installer_ = web_app::IwaInstallerFactory::Create(
-      install_options.value(), web_app::IwaInstaller::InstallSourceType::kKiosk,
-      profile()->GetURLLoaderFactory(), iwa_install_log_, provider,
+  iwa_installer_ = std::make_unique<web_app::IwaInstaller>(
+      install_options, web_app::IwaInstaller::InstallSourceType::kKiosk,
+      profile(), iwa_install_log_,
       base::BindOnce(&KioskIwaLauncher::OnInstallComplete,
-                     weak_ptr_factory_.GetWeakPtr()));
+                     weak_ptr_factory_.GetWeakPtr(),
+                     retry_with_internet_on_failure));
 
   iwa_installer_->Start();
 }
 
-void KioskIwaLauncher::OnInstallComplete(web_app::IwaInstallerResult result) {
+void KioskIwaLauncher::OnInstallComplete(
+    const bool retry_with_internet_on_failure,
+    const web_app::IwaInstallerResult result) {
   if (result.type() == web_app::IwaInstallerResult::Type::kSuccess) {
     NotifyAppPrepared();
-  } else {
-    NotifyLaunchFailed(KioskAppLaunchError::Error::kUnableToInstall);
+    return;
   }
+
+  if (result.type() ==
+      web_app::IwaInstallerResult::Type::kErrorAppNotInAllowlist) {
+    NotifyLaunchFailed(KioskAppLaunchError::Error::kIsolatedAppNotAllowed);
+    return;
+  }
+
+  if (retry_with_internet_on_failure) {
+    delegate_->InitializeNetwork();
+    return;
+  }
+
+  NotifyLaunchFailed(KioskAppLaunchError::Error::kUnableToInstall);
 }
 
 void KioskIwaLauncher::CheckAppInstallState() {
-  const bool offlineLaunchAllowed =
-      profile()->GetPrefs()->GetBoolean(::prefs::kKioskWebAppOfflineEnabled);
-  if (IsIsolatedWebAppInstalled() && offlineLaunchAllowed) {
+  const bool offline_launch_allowed =
+      profile()->GetPrefs()->GetBoolean(ash::prefs::kKioskWebAppOfflineEnabled);
+  if (IsIsolatedWebAppInstalled() && offline_launch_allowed) {
     NotifyAppPrepared();
+    return;
+  }
+
+  // Try to install kiosk from cache.
+  if (web_app::IsIwaBundleCacheEnabledInCurrentSession() &&
+      offline_launch_allowed) {
+    InstallIsolatedWebApp(/*retry_with_internet_on_failure*/ true);
     return;
   }
 

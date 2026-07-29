@@ -14,13 +14,11 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "remoting/base/rsa_key_pair.h"
-#include "remoting/protocol/channel_authenticator.h"
 #include "remoting/protocol/host_authentication_config.h"
 #include "remoting/protocol/negotiating_host_authenticator.h"
 #include "remoting/protocol/rejecting_authenticator.h"
 #include "remoting/signaling/signaling_address.h"
 #include "remoting/signaling/signaling_id_util.h"
-#include "third_party/libjingle_xmpp/xmllite/xmlelement.h"
 
 namespace remoting::protocol {
 
@@ -73,6 +71,13 @@ Me2MeHostAuthenticatorFactory::CreateAuthenticator(
 
   return std::make_unique<RejectingAuthenticator>(
       INVALID_CREDENTIALS, "Invalid HostAuthenticationConfig.");
+}
+
+std::unique_ptr<AuthenticatorFactory> Me2MeHostAuthenticatorFactory::Clone()
+    const {
+  return std::make_unique<Me2MeHostAuthenticatorFactory>(
+      check_access_permission_callback_,
+      std::make_unique<HostAuthenticationConfig>(*config_));
 }
 
 }  // namespace remoting::protocol

@@ -7,13 +7,12 @@
 
 #include <memory>
 
+#include "ash/constants/webui_url_constants.h"
 #include "ash/public/mojom/hid_preserving_bluetooth_state_controller.mojom-forward.h"
 #include "ash/webui/common/mojom/accelerator_fetcher.mojom.h"
 #include "ash/webui/common/mojom/shortcut_input_provider.mojom.h"
 #include "ash/webui/personalization_app/search/search.mojom-forward.h"
 #include "base/time/time.h"
-#include "chrome/browser/ui/webui/app_management/app_management_page_handler_base.h"
-#include "chrome/browser/ui/webui/app_management/app_management_page_handler_factory.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/apps/mojom/app_notification_handler.mojom-forward.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/apps/mojom/app_parental_controls_handler.mojom-forward.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/date_time/date_time_handler_factory.h"
@@ -31,7 +30,6 @@
 #include "chrome/browser/ui/webui/ash/settings/search/mojom/user_action_recorder.mojom-forward.h"
 #include "chrome/browser/ui/webui/nearby_share/nearby_share.mojom.h"
 #include "chrome/browser/ui/webui/webui_load_timer.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chromeos/ash/components/audio/public/mojom/cros_audio_config.mojom-forward.h"
 #include "chromeos/ash/services/auth_factor_config/public/mojom/auth_factor_config.mojom-forward.h"
 #include "chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom-forward.h"
@@ -49,15 +47,12 @@
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "ui/webui/mojo_web_ui_controller.h"
 #include "ui/webui/resources/cr_components/app_management/app_management.mojom-forward.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
 
 namespace user_prefs {
 class PrefRegistrySyncable;
 }  // namespace user_prefs
 
-namespace ui {
-class ColorChangeHandler;
-}  // namespace ui
+class AppManagementPageHandlerFactory;
 
 namespace ash::settings {
 
@@ -76,7 +71,7 @@ class OSSettingsUIConfig : public content::DefaultWebUIConfig<OSSettingsUI> {
  public:
   OSSettingsUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
-                           chrome::kChromeUIOSSettingsHost) {}
+                           ash::kChromeUIOSSettingsHost) {}
 };
 
 // The WebUI handler for chrome://os-settings.
@@ -216,11 +211,6 @@ class OSSettingsUI : public ui::MojoWebUIController {
   void BindInterface(
       mojo::PendingReceiver<chromeos::auth::mojom::InSessionAuth> receiver);
 
-  // Binds to the Jelly dynamic color Mojo
-  void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          receiver);
-
   // Binds to the Google Drive page handler mojo.
   void BindInterface(
       mojo::PendingReceiver<google_drive::mojom::PageHandlerFactory> receiver);
@@ -267,9 +257,6 @@ class OSSettingsUI : public ui::MojoWebUIController {
   std::unique_ptr<DateTimeHandlerFactory> date_time_handler_factory_;
   std::unique_ptr<MagicBoostNoticePageHandlerFactory>
       magic_boost_notice_page_handler_factory_;
-
-  // This handler notifies the WebUI when the color provider changes.
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
 
   WEB_UI_CONTROLLER_TYPE_DECL();
 };

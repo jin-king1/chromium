@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "services/device/usb/usb_descriptors.h"
 
 #include <stddef.h>
@@ -18,8 +13,12 @@
 #include <vector>
 
 #include "base/barrier_closure.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/numerics/byte_conversions.h"
 #include "services/device/public/cpp/usb/usb_utils.h"
 #include "services/device/usb/usb_device_handle.h"
 
@@ -134,7 +133,7 @@ void OnReadConfigDescriptorHeader(scoped_refptr<UsbDeviceHandle> device_handle,
   if (status == UsbTransferStatus::COMPLETED &&
       length == kConfigurationDescriptorLength) {
     auto data = base::span<const uint8_t>(*header);
-    uint16_t total_length = data[2] | data[3] << 8;
+    uint16_t total_length = base::U16FromLittleEndian(data.subspan<2, 2>());
     auto buffer = base::MakeRefCounted<base::RefCountedBytes>(total_length);
     device_handle->ControlTransfer(
         UsbTransferDirection::INBOUND, UsbControlTransferType::STANDARD,
@@ -271,13 +270,16 @@ bool UsbDeviceDescriptor::Parse(base::span<const uint8_t> buffer) {
   mojom::UsbInterfaceInfo* last_interface = nullptr;
   mojom::UsbEndpointInfo* last_endpoint = nullptr;
 
-  for (auto it = buffer.begin(); it != buffer.end();
-       /* incremented internally */) {
-    const uint8_t* data = &it[0];
-    uint8_t length = data[0];
-    if (length < 2 || length > std::distance(it, buffer.end()))
+  while (!buffer.empty()) {
+    if (buffer.size() < 2) {
       return false;
-    it += length;
+    }
+    uint8_t length = buffer[0];
+    if (length < 2 || length > buffer.size()) {
+      return false;
+    }
+    base::span<const uint8_t> data = buffer.first(length);
+    buffer = buffer.subspan(length);
 
     switch (data[1] /* bDescriptorType */) {
       case kDeviceDescriptorType:
@@ -291,8 +293,10 @@ bool UsbDeviceDescriptor::Parse(base::span<const uint8_t> buffer) {
         device_info->class_code = data[4];
         device_info->subclass_code = data[5];
         device_info->protocol_code = data[6];
-        device_info->vendor_id = data[8] | data[9] << 8;
-        device_info->product_id = data[10] | data[11] << 8;
+        device_info->vendor_id =
+            base::U16FromLittleEndian(data.subspan<8, 2>());
+        device_info->product_id =
+            base::U16FromLittleEndian(data.subspan<10, 2>());
         device_info->device_version_minor = data[12] >> 4 & 0xf;
         device_info->device_version_subminor = data[12] & 0xf;
         device_info->device_version_major = data[13];
@@ -333,15 +337,15 @@ bool UsbDeviceDescriptor::Parse(base::span<const uint8_t> buffer) {
         // descriptor.
         if (last_endpoint) {
           last_endpoint->extra_data.insert(last_endpoint->extra_data.end(),
-                                           data, data + length);
+                                           data.begin(), data.end());
         } else if (last_interface) {
           DCHECK_EQ(1u, last_interface->alternates.size());
           last_interface->alternates[0]->extra_data.insert(
-              last_interface->alternates[0]->extra_data.end(), data,
-              data + length);
+              last_interface->alternates[0]->extra_data.end(), data.begin(),
+              data.end());
         } else if (last_config) {
-          last_config->extra_data.insert(last_config->extra_data.end(), data,
-                                         data + length);
+          last_config->extra_data.insert(last_config->extra_data.end(),
+                                         data.begin(), data.end());
         }
     }
   }
@@ -412,13 +416,15 @@ void ReadUsbStringDescriptors(scoped_refptr<UsbDeviceHandle> device_handle,
                      std::move(callback)));
 }
 
-UsbEndpointInfoPtr BuildUsbEndpointInfoPtr(const uint8_t* data) {
+UsbEndpointInfoPtr BuildUsbEndpointInfoPtr(base::span<const uint8_t> data) {
+  DCHECK_GE(data.size(), kEndpointDescriptorLength);
   DCHECK_GE(data[0], kEndpointDescriptorLength);
   DCHECK_EQ(data[1], kEndpointDescriptorType);
 
   return BuildUsbEndpointInfoPtr(
       data[2] /* bEndpointAddress */, data[3] /* bmAttributes */,
-      data[4] + (data[5] << 8) /* wMaxPacketSize */, data[6] /* bInterval */);
+      base::U16FromLittleEndian(data.subspan<4, 2>()) /* wMaxPacketSize */,
+      data[6] /* bInterval */);
 }
 
 UsbEndpointInfoPtr BuildUsbEndpointInfoPtr(uint8_t address,
@@ -496,7 +502,8 @@ UsbEndpointInfoPtr BuildUsbEndpointInfoPtr(uint8_t address,
   return endpoint;
 }
 
-UsbInterfaceInfoPtr BuildUsbInterfaceInfoPtr(const uint8_t* data) {
+UsbInterfaceInfoPtr BuildUsbInterfaceInfoPtr(base::span<const uint8_t> data) {
+  DCHECK_GE(data.size(), kInterfaceDescriptorLength);
   DCHECK_GE(data[0], kInterfaceDescriptorLength);
   DCHECK_EQ(data[1], kInterfaceDescriptorType);
   return BuildUsbInterfaceInfoPtr(
@@ -577,7 +584,9 @@ CombinedInterfaceInfo FindInterfaceInfoFromConfig(
   return interface_info;
 }
 
-UsbConfigurationInfoPtr BuildUsbConfigurationInfoPtr(const uint8_t* data) {
+UsbConfigurationInfoPtr BuildUsbConfigurationInfoPtr(
+    base::span<const uint8_t> data) {
+  DCHECK_GE(data.size(), kConfigurationDescriptorLength);
   DCHECK_GE(data[0], kConfigurationDescriptorLength);
   DCHECK_EQ(data[1], kConfigurationDescriptorType);
   return BuildUsbConfigurationInfoPtr(data[5] /* bConfigurationValue */,

@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_NEW_TAB_PAGE_MODULES_FILE_SUGGESTION_DRIVE_SERVICE_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
@@ -19,12 +20,15 @@
 #include "components/segmentation_platform/public/segmentation_platform_service.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "google_apis/gaia/google_service_auth_error.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 
 class PrefRegistrySimple;
 class PrefService;
+
+namespace base {
+class DictValue;
+}
 
 namespace signin {
 class IdentityManager;
@@ -78,8 +82,8 @@ class DriveService : public KeyedService {
   void OnTokenReceived(GoogleServiceAuthError error,
                        signin::AccessTokenInfo token_info);
   void OnJsonReceived(const std::string& token,
-                      std::unique_ptr<std::string> json_response);
-  void OnJsonParsed(data_decoder::DataDecoder::ValueOrError result);
+                      std::optional<std::string> json_response);
+  void ProcessParsedJson(std::optional<base::DictValue> dict);
 
   // Used for fetching OAuth2 access tokens. Only non-null when a token
   // is made available, or a token is being fetched.
@@ -92,7 +96,7 @@ class DriveService : public KeyedService {
       segmentation_platform_service_;
   std::string application_locale_;
   raw_ptr<PrefService> pref_service_;
-  std::unique_ptr<std::string> cached_json_;
+  std::optional<std::string> cached_json_;
   base::Time cached_json_time_;
   std::string cached_json_token_;
   SEQUENCE_CHECKER(sequence_checker_);

@@ -8,7 +8,9 @@
 #import "ios/net/cookies/system_cookie_util.h"
 #import "net/base/apple/url_conversions.h"
 #import "net/cookies/canonical_cookie.h"
+#import "net/cookies/cookie_access_params.h"
 #import "net/cookies/cookie_constants.h"
+#import "url/gurl.h"
 
 @implementation DownloadSessionCookieStorage {
   __strong NSMutableArray<NSHTTPCookie*>* _cookies;

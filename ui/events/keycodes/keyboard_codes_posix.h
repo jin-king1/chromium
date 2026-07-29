@@ -33,13 +33,15 @@
 #ifndef UI_EVENTS_KEYCODES_KEYBOARD_CODES_POSIX_H_
 #define UI_EVENTS_KEYCODES_KEYBOARD_CODES_POSIX_H_
 
+#include <cstdint>
+
 #include "build/build_config.h"
 
 namespace ui {
 
 // When adding a new KeyboardCode, be sure to also update the associated mojom
 // file at ash/public/mojom/accelerator_keys.mojom.
-enum KeyboardCode : unsigned short {
+enum KeyboardCode : uint16_t {
   VKEY_CANCEL = 0x03,
   VKEY_BACK = 0x08,
   VKEY_TAB = 0x09,
@@ -119,6 +121,7 @@ enum KeyboardCode : unsigned short {
   VKEY_COMMAND = VKEY_LWIN,  // Provide the Mac name for convenience.
   VKEY_RWIN = 0x5C,
   VKEY_APPS = 0x5D,
+  VKEY_RIGHT_COMMAND = VKEY_APPS,
   VKEY_SLEEP = 0x5F,
   VKEY_NUMPAD0 = 0x60,
   VKEY_NUMPAD1 = 0x61,

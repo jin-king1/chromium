@@ -9,10 +9,8 @@
 #include <map>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chromeos/components/sensors/sensor_util.h"
@@ -111,7 +109,7 @@ void PlatformSensorProviderChromeOS::OnNewDeviceAdded(
     const std::vector<chromeos::sensors::mojom::DeviceType>& types) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
-  if (base::Contains(sensors_, iio_device_id))
+  if (sensors_.contains(iio_device_id))
     return;
 
   RegisterDevice(iio_device_id, types);
@@ -145,7 +143,7 @@ void PlatformSensorProviderChromeOS::CreateSensorInternal(
     return;
   }
   int32_t id = id_opt.value();
-  DCHECK(base::Contains(sensors_, id));
+  DCHECK(sensors_.contains(id));
 
   auto& sensor = sensors_[id];
   DCHECK(sensor.scale.has_value());
@@ -223,7 +221,7 @@ void PlatformSensorProviderChromeOS::RegisterSensorClient() {
 
   if (!chromeos::sensors::BindSensorHalClient(
           sensor_hal_client_.BindNewPipeAndPassRemote())) {
-    LOG(ERROR) << "Failed to bind SensorHalClient via Crosapi";
+    LOG(ERROR) << "Failed to bind SensorHalClient";
     return;
   }
 
@@ -352,7 +350,7 @@ void PlatformSensorProviderChromeOS::GetAttributesCallback(
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   auto it = sensors_.find(id);
-  CHECK(it != sensors_.end(), base::NotFatalUntil::M130);
+  CHECK(it != sensors_.end());
   auto& sensor = it->second;
   DCHECK(sensor.remote.is_bound());
 
@@ -554,7 +552,8 @@ void PlatformSensorProviderChromeOS::DetermineLightSensor() {
 
   for (const auto& sensor : sensors_) {
     if (sensor.second.ignored ||
-        !base::Contains(sensor.second.types, mojom::SensorType::AMBIENT_LIGHT))
+        !std::ranges::contains(sensor.second.types,
+                               mojom::SensorType::AMBIENT_LIGHT))
       continue;
 
     if (!id.has_value() || sensor.second.location == SensorLocation::kLid)
@@ -583,7 +582,7 @@ void PlatformSensorProviderChromeOS::RemoveUnusedSensorDeviceRemotes() {
     used_ids.emplace(type_id.second);
 
   for (auto& sensor : sensors_) {
-    if (!base::Contains(used_ids, sensor.first))
+    if (!used_ids.contains(sensor.first))
       sensor.second.remote.reset();
   }
 }
@@ -614,7 +613,7 @@ void PlatformSensorProviderChromeOS::ProcessStoredRequests() {
     }
 
     int32_t id = id_opt.value();
-    DCHECK(base::Contains(sensors_, id));
+    DCHECK(sensors_.contains(id));
 
     auto& sensor = sensors_[id];
     DCHECK(sensor.scale.has_value());

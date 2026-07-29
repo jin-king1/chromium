@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/gpu/v4l2/v4l2_stateful_video_decoder.h"
 
@@ -15,12 +11,13 @@
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
-#include "base/files/file_util.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notimplemented.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
@@ -30,6 +27,7 @@
 #include "media/base/media_switches.h"
 #include "media/gpu/chromeos/video_frame_resource.h"
 #include "media/gpu/macros.h"
+#include "media/gpu/v4l2/v4l2_device.h"
 #include "media/gpu/v4l2/v4l2_framerate_control.h"
 #include "media/gpu/v4l2/v4l2_queue.h"
 #include "media/gpu/v4l2/v4l2_utils.h"
@@ -96,8 +94,7 @@ void WaitOnceForEvents(int device_fd,
       VLOGF(2) << "Resolution change event";
 
       // Dequeue the event otherwise it'll be stuck in the driver forever.
-      struct v4l2_event event;
-      memset(&event, 0, sizeof(event));  // Must do: v4l2_event has a union.
+      struct v4l2_event event = {};
       if (HandledIoctl(device_fd, VIDIOC_DQEVENT, &event) != kIoctlOk) {
         PLOG(ERROR) << "Failed dequeing an event";
         return;
@@ -173,8 +170,9 @@ scoped_refptr<media::DecoderBuffer> ReassembleFragments(
   auto temp_buffer = base::HeapArray<uint8_t>::Uninit(frame_size);
   uint8_t* dst = temp_buffer.data();
   for (const auto& fragment : fragments) {
-    memcpy(dst, fragment->data(), fragment->size());
-    dst += fragment->size();
+    auto fragment_span = base::span(*fragment);
+    UNSAFE_TODO(memcpy(dst, fragment_span.data(), fragment_span.size()));
+    UNSAFE_TODO(dst += fragment_span.size());
   }
 
   auto reassembled_frame =
@@ -233,7 +231,7 @@ class H264FrameReassembler {
     // whole frame.
     bool is_start_of_new_frame;
     // Size in bytes of the NALU under analysis.
-    off_t nalu_size;
+    size_t nalu_size;
   };
   // Parses |data| and returns either std::nullopt, if parsing |data| fails, or
   // a FrameBoundaryInfo describing the first |nalu_size| bytes of |data|.
@@ -313,9 +311,7 @@ void V4L2StatefulVideoDecoder::Initialize(const VideoDecoderConfig& config,
   }
 
   if (!device_fd_.is_valid()) {
-    constexpr char kVideoDeviceDriverPath[] = "/dev/video-dec0";
-    device_fd_.reset(HANDLE_EINTR(
-        open(kVideoDeviceDriverPath, O_RDWR | O_NONBLOCK | O_CLOEXEC)));
+    device_fd_ = V4L2Device::OpenFDForType(V4L2Device::Type::kDecoder);
     if (!device_fd_.is_valid()) {
       std::move(init_cb).Run(DecoderStatus::Codes::kFailedToCreateDecoder);
       return;
@@ -334,8 +330,8 @@ void V4L2StatefulVideoDecoder::Initialize(const VideoDecoderConfig& config,
       return;
     }
 
-    is_mtk8173_ = base::Contains(
-        std::string(reinterpret_cast<const char*>(caps.card)), "8173");
+    is_mtk8173_ =
+        std::string(reinterpret_cast<const char*>(caps.card)).contains("8173");
     DVLOGF_IF(1, is_mtk8173_) << "This is an MTK8173 device (Hana, Oak)";
   }
 
@@ -561,6 +557,12 @@ void V4L2StatefulVideoDecoder::Reset(base::OnceClosure closure) {
   weak_ptr_factory_for_CAPTURE_availability_.InvalidateWeakPtrs();
   cancelable_task_tracker_.TryCancelAll();
 
+  if (wake_event_.is_valid()) {
+    const uint64_t buf = 1;
+    const auto res = HANDLE_EINTR(write(wake_event_.get(), &buf, sizeof(buf)));
+    PLOG_IF(ERROR, res < 0) << "Error writing to |wake_event_|";
+  }
+
   if (h264_frame_reassembler_) {
     h264_frame_reassembler_ = std::make_unique<H264FrameReassembler>();
   }
@@ -773,6 +775,21 @@ bool V4L2StatefulVideoDecoder::InitializeCAPTUREQueue() {
           << chosen_modifier << std::dec << "). Using " << v4l2_num_buffers
           << " |CAPTURE_queue_| slots.";
 
+  // We successfully picked the output format. Now setup output format again.
+  std::optional<struct v4l2_format> format =
+      CAPTURE_queue_->SetFormat(chosen_fourcc.ToV4L2PixFmt(), chosen_size, 0);
+  if (!format) {
+    LOGF(ERROR) << "Failed to set output format.";
+    return false;
+  }
+  gfx::Size adjusted_size(format->fmt.pix_mp.width, format->fmt.pix_mp.height);
+  if (!gfx::Rect(adjusted_size).Contains(gfx::Rect(chosen_size))) {
+    LOGF(ERROR) << "The adjusted coded size (" << adjusted_size.ToString()
+                << ") should contain the original coded size("
+                << chosen_size.ToString() << ").";
+    return false;
+  }
+
   const auto allocated_buffers = CAPTURE_queue_->AllocateBuffers(
       v4l2_num_buffers, buffer_type, /*incoherent=*/false);
   if (allocated_buffers < v4l2_num_buffers) {
@@ -922,7 +939,7 @@ void V4L2StatefulVideoDecoder::TryAndDequeueCAPTUREQueueBuffers() {
 
     const int64_t flat_timespec =
         TimeValToTimeDelta(dequeued_buffer->GetTimeStamp()).InMilliseconds();
-    if (base::Contains(encoding_timestamps_, flat_timespec)) {
+    if (encoding_timestamps_.contains(flat_timespec)) {
       UMA_HISTOGRAM_TIMES(
           "Media.PlatformVideoDecoding.Decode",
           base::TimeTicks::Now() - encoding_timestamps_[flat_timespec]);
@@ -1142,10 +1159,13 @@ bool V4L2StatefulVideoDecoder::TryAndEnqueueOUTPUTQueueBuffers() {
 
       CHECK_EQ(v4l2_buffer->PlanesCount(), 1u);
       uint8_t* dst = static_cast<uint8_t*>(v4l2_buffer->GetPlaneMapping(0));
-      CHECK_GE(v4l2_buffer->GetPlaneSize(/*plane=*/0), media_buffer->size());
-      memcpy(dst, media_buffer->data(), media_buffer->size());
-      v4l2_buffer->SetPlaneBytesUsed(0, media_buffer->size());
-      VLOGF(4) << "Enqueuing " << media_buffer->size() << " bytes.";
+      auto media_buffer_span = base::span(*media_buffer);
+      CHECK_GE(v4l2_buffer->GetPlaneSize(/*plane=*/0),
+               media_buffer_span.size());
+      UNSAFE_TODO(
+          memcpy(dst, media_buffer_span.data(), media_buffer_span.size()));
+      v4l2_buffer->SetPlaneBytesUsed(0, media_buffer_span.size());
+      VLOGF(4) << "Enqueuing " << media_buffer_span.size() << " bytes.";
       v4l2_buffer->SetTimeStamp(TimeDeltaToTimeVal(media_buffer->timestamp()));
 
       const int64_t flat_timespec = media_buffer->timestamp().InMilliseconds();
@@ -1192,9 +1212,7 @@ int V4L2StatefulVideoDecoder::GetMaxNumDecoderInstances() {
   if (!base::FeatureList::IsEnabled(media::kLimitConcurrentDecoderInstances)) {
     return std::numeric_limits<int>::max();
   }
-  constexpr char kVideoDeviceDriverPath[] = "/dev/video-dec0";
-  base::ScopedFD device_fd(HANDLE_EINTR(
-      open(kVideoDeviceDriverPath, O_RDWR | O_NONBLOCK | O_CLOEXEC)));
+  auto device_fd = V4L2Device::OpenFDForType(V4L2Device::Type::kDecoder);
   if (!device_fd.is_valid()) {
     return std::numeric_limits<int>::max();
   }
@@ -1203,8 +1221,8 @@ int V4L2StatefulVideoDecoder::GetMaxNumDecoderInstances() {
     PLOG(ERROR) << "Failed querying caps";
     return std::numeric_limits<int>::max();
   }
-  const bool is_mtk8173 = base::Contains(
-      std::string(reinterpret_cast<const char*>(caps.card)), "8173");
+  const bool is_mtk8173 =
+      std::string(reinterpret_cast<const char*>(caps.card)).contains("8173");
   // Experimentally MTK8173 (e.g. Hana) can initialize the driver  up to 30
   // times simultaneously, however legacy code limits this to 10 [1] . All other
   // drivers used to limit this to 32 [2] but in practice I could only open up
@@ -1287,7 +1305,7 @@ H264FrameReassembler::FindH264FrameBoundary(const uint8_t* const data,
       // found a new NALU boundary. Pretend it's a frame boundary and move on.
       return FrameBoundaryInfo{.is_whole_frame = true,
                                .is_start_of_new_frame = true,
-                               .nalu_size = nalu.size};
+                               .nalu_size = nalu.data.size()};
     }
     DCHECK_EQ(result, H264Parser::kOk);
 
@@ -1306,12 +1324,14 @@ H264FrameReassembler::FindH264FrameBoundary(const uint8_t* const data,
       return std::nullopt;
     }
 
-    CHECK_GE(nalu.data, data);
-    CHECK_LE(nalu.data, data + data_size);
-    const auto nalu_size = nalu.data - data + nalu.size;
-    VLOGF(4) << "H264NALU type " << kKnownNALUNames[nalu.nal_unit_type]
+    CHECK_GE(nalu.data.data(), data);
+    CHECK_LE(nalu.data.data(), UNSAFE_TODO(data + data_size));
+    const auto nalu_size =
+        UNSAFE_TODO(nalu.data.data() - data) + nalu.data.size();
+    VLOGF(4) << "H264NALU type "
+             << UNSAFE_TODO(kKnownNALUNames[nalu.nal_unit_type])
              << ", NALU size=" << nalu_size
-             << " bytes, payload size=" << nalu.size << " bytes";
+             << " bytes, payload size=" << nalu.data.size() << " bytes";
 
     switch (nalu.nal_unit_type) {
       case H264NALU::kSPS:
@@ -1374,7 +1394,9 @@ H264FrameReassembler::FindH264FrameBoundary(const uint8_t* const data,
                                  .is_start_of_new_frame = true,
                                  .nalu_size = nalu_size};
       default:
-        VLOGF(4) << "Unsupported NALU " << kKnownNALUNames[nalu.nal_unit_type];
+        VLOGF(4) << "Unsupported NALU "
+                 << UNSAFE_TODO(kKnownNALUNames[nalu.nal_unit_type]);
+        break;
     }
   }
 }

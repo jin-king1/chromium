@@ -59,7 +59,6 @@
 
 // Returns the OverlayRequestCoordinator subclass responsible for showing
 // `request`'s overlay UI.
-// TODO(crbug.com/40268990): Clean the switch when the default flow is added.
 - (Class)coordinatorClassForRequest:(OverlayRequest*)request {
   if (DefaultInfobarOverlayRequestConfig::RequestSupport()->IsRequestSupported(
           request)) {
@@ -121,9 +120,6 @@
           return [SaveCardInfobarModalOverlayCoordinator class];
         case InfobarType::kInfobarTypeTranslate:
           return [TranslateInfobarModalOverlayCoordinator class];
-        case InfobarType::kInfobarTypeParcelTracking:
-          // TODO(crbug.com/391002352): remove kInfobarTypeParcelTracking.
-          NOTREACHED();
         default:
           break;
       }

@@ -19,27 +19,15 @@ std::unique_ptr<RasterBuffer>
 FakeRasterBufferProviderImpl::AcquireBufferForRaster(
     const ResourcePool::InUsePoolResource& resource,
     uint64_t resource_content_id,
-    uint64_t previous_content_id,
-    bool depends_on_at_raster_decodes,
-    bool depends_on_hardware_accelerated_jpeg_candidates,
-    bool depends_on_hardware_accelerated_webp_candidates) {
+    uint64_t previous_content_id) {
   auto backing = std::make_unique<ResourcePool::Backing>(
-      resource.size(), GetFormat(), resource.color_space());
-  backing->set_shared_image(gpu::ClientSharedImage::CreateForTesting());
+      resource.size(), resource.format(), resource.color_space());
+  backing->CreateSharedImageForTesting();
   resource.set_backing(std::move(backing));
   return nullptr;
 }
 
 void FakeRasterBufferProviderImpl::Flush() {}
-
-viz::SharedImageFormat FakeRasterBufferProviderImpl::GetFormat() const {
-  return is_software_ ? viz::SinglePlaneFormat::kBGRA_8888
-                      : viz::SinglePlaneFormat::kRGBA_8888;
-}
-
-bool FakeRasterBufferProviderImpl::IsResourcePremultiplied() const {
-  return true;
-}
 
 bool FakeRasterBufferProviderImpl::CanPartialRasterIntoProvidedResource()
     const {

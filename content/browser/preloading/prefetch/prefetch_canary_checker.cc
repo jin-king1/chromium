@@ -5,14 +5,16 @@
 #include "content/browser/preloading/prefetch/prefetch_canary_checker.h"
 
 #include <cmath>
+#include <utility>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/stringprintf.h"
 #include "base/task/thread_pool.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "content/browser/preloading/prefetch/prefetch_dns_prober.h"
 #include "content/public/browser/browser_context.h"
@@ -60,7 +62,7 @@ enum class CanaryCheckLookupResult {
 // Please keep this up to date with logged histogram suffix
 // |PrefetchProxy.CanaryChecker.Clients| in
 // //tools/metrics/histograms/metadata/prefetch/histograms.xml.
-std::string NameForClient(PrefetchCanaryChecker::CheckType name) {
+std::string_view NameForClient(PrefetchCanaryChecker::CheckType name) {
   switch (name) {
     case PrefetchCanaryChecker::CheckType::kTLS:
       return "TLS";
@@ -71,26 +73,26 @@ std::string NameForClient(PrefetchCanaryChecker::CheckType name) {
   }
 }
 
-std::string GenerateNetworkID(network::mojom::ConnectionType connection_type) {
-  std::string id = base::NumberToString(static_cast<int>(connection_type));
-  bool is_cellular =
+std::string GenerateNetworkID(
+    net::NetworkChangeNotifier::ConnectionType connection_type) {
+  const bool is_cellular =
       network::NetworkConnectionTracker::IsConnectionCellular(connection_type);
-  if (is_cellular) {
-    // Don't care about cell connection type.
-    id = "cell";
-  }
+  std::string id =
+      is_cellular
+          // Don't care about cell connection type.
+          ? "cell"
+          : base::NumberToString(std::to_underlying(connection_type));
 
 // Further identify WiFi and cell connections. These calls are only supported
 // for Android devices.
 #if BUILDFLAG(IS_ANDROID)
-  if (connection_type == network::mojom::ConnectionType::CONNECTION_WIFI) {
-    return base::StringPrintf("%s,%s", id.c_str(), net::GetWifiSSID().c_str());
+  if (connection_type ==
+      net::NetworkChangeNotifier::ConnectionType::CONNECTION_WIFI) {
+    return base::StrCat({id, ",", net::GetWifiSSID()});
   }
 
   if (is_cellular) {
-    return base::StringPrintf(
-        "%s,%s", id.c_str(),
-        net::android::GetTelephonyNetworkOperator().c_str());
+    return base::StrCat({id, ",", net::android::GetTelephonyNetworkOperator()});
   }
 #endif
 
@@ -100,10 +102,11 @@ std::string GenerateNetworkID(network::mojom::ConnectionType connection_type) {
 void UpdateCacheWithNetworkID(
     network::NetworkConnectionTracker* network_connection_tracker,
     base::OnceCallback<void(std::string key)> updateCallBack) {
-  base::OnceCallback<void(network::mojom::ConnectionType connection_type)>
+  base::OnceCallback<void(
+      net::NetworkChangeNotifier::ConnectionType connection_type)>
       connectionTypeCallback = base::BindOnce(
           [](base::OnceCallback<void(std::string key)> updateCallBack,
-             network::mojom::ConnectionType connection_type) {
+             net::NetworkChangeNotifier::ConnectionType connection_type) {
             base::ThreadPool::PostTaskAndReplyWithResult(
                 FROM_HERE, base::BindOnce(GenerateNetworkID, connection_type),
                 std::move(updateCallBack));
@@ -111,8 +114,8 @@ void UpdateCacheWithNetworkID(
           std::move(updateCallBack));
 
   auto split = base::SplitOnceCallback(std::move(connectionTypeCallback));
-  network::mojom::ConnectionType connection_type =
-      network::mojom::ConnectionType::CONNECTION_UNKNOWN;
+  net::NetworkChangeNotifier::ConnectionType connection_type =
+      net::NetworkChangeNotifier::ConnectionType::CONNECTION_UNKNOWN;
   if (network_connection_tracker->GetConnectionType(&connection_type,
                                                     std::move(split.first))) {
     std::move(split.second).Run(connection_type);
@@ -175,12 +178,14 @@ base::WeakPtr<PrefetchCanaryChecker> PrefetchCanaryChecker::GetWeakPtr() {
 void PrefetchCanaryChecker::UpdateCacheEntry(
     PrefetchCanaryChecker::CacheEntry entry,
     std::string key) {
+  TRACE_EVENT("loading", "PrefetchCanaryChecker::UpdateCacheEntry");
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   latest_cache_key_ = key;
   cache_.Put(key, entry);
 }
 
 void PrefetchCanaryChecker::UpdateCacheKey(std::string key) {
+  TRACE_EVENT("loading", "PrefetchCanaryChecker::UpdateCacheKey");
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   latest_cache_key_ = key;
 }
@@ -257,6 +262,8 @@ void PrefetchCanaryChecker::ProcessTimeout() {
 }
 
 void PrefetchCanaryChecker::ProcessFailure(int net_error) {
+  TRACE_EVENT("loading", "PrefetchCanaryChecker::ProcessFailure", "net_error",
+              net_error);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!retry_timer_ || !retry_timer_->IsRunning());
   DCHECK(!timeout_timer_ || !timeout_timer_->IsRunning());
@@ -284,6 +291,7 @@ void PrefetchCanaryChecker::ProcessFailure(int net_error) {
 }
 
 void PrefetchCanaryChecker::ProcessSuccess() {
+  TRACE_EVENT("loading", "PrefetchCanaryChecker::ProcessSuccess");
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!retry_timer_ || !retry_timer_->IsRunning());
   DCHECK(!timeout_timer_ || !timeout_timer_->IsRunning());
@@ -301,6 +309,7 @@ void PrefetchCanaryChecker::ProcessSuccess() {
 }
 
 std::optional<bool> PrefetchCanaryChecker::CanaryCheckSuccessful() {
+  TRACE_EVENT("loading", "PrefetchCanaryChecker::CanaryCheckSuccessful");
   std::optional<bool> result = LookupAndRunChecksIfNeeded();
   CanaryCheckLookupResult result_enum;
   if (!result.has_value()) {
@@ -324,6 +333,7 @@ void PrefetchCanaryChecker::RunChecksIfNeeded() {
 }
 
 std::optional<bool> PrefetchCanaryChecker::LookupAndRunChecksIfNeeded() {
+  TRACE_EVENT("loading", "PrefetchCanaryChecker::LookupAndRunChecksIfNeeded");
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Asynchronously update the network cache key. On Android, getting the
@@ -362,10 +372,11 @@ std::optional<bool> PrefetchCanaryChecker::LookupAndRunChecksIfNeeded() {
 
 std::string PrefetchCanaryChecker::AppendNameToHistogram(
     const std::string& histogram) const {
-  return base::StringPrintf("%s.%s", histogram.c_str(), name_.c_str());
+  return base::StrCat({histogram, ".", name_});
 }
 
 void PrefetchCanaryChecker::StartDNSResolution(const GURL& url) {
+  TRACE_EVENT("loading", "PrefetchCanaryChecker::StartDNSResolution");
   net::NetworkAnonymizationKey nak =
       net::IsolationInfo::CreateForInternalRequest(url::Origin::Create(url))
           .network_anonymization_key();
@@ -406,13 +417,13 @@ void PrefetchCanaryChecker::StartDNSResolution(const GURL& url) {
 
 void PrefetchCanaryChecker::OnDNSResolved(
     int net_error,
-    const std::optional<net::AddressList>& resolved_addresses) {
+    const net::AddressList& resolved_addresses) {
+  TRACE_EVENT("loading", "PrefetchCanaryChecker::OnDNSResolved");
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   timeout_timer_.reset();
   resolver_control_handle_.reset();
-  bool successful = net_error == net::OK && resolved_addresses &&
-                    !resolved_addresses->empty();
+  bool successful = net_error == net::OK && !resolved_addresses.empty();
   if (successful) {
     ProcessSuccess();
   } else {

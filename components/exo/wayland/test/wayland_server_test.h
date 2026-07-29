@@ -40,10 +40,9 @@ class WaylandServerTest : public WaylandServerTestBase {
 
   // Similar to the two methods above, but provides the convenience of using a
   // capturing lambda directly.
-  template <typename Lambda,
-            typename = std::enable_if_t<
-                std::is_invocable_r_v<void, Lambda, TestClient*> ||
-                std::is_invocable_r_v<void, Lambda>>>
+  template <typename Lambda>
+    requires(std::is_invocable_r_v<void, Lambda, TestClient*> ||
+             std::is_invocable_r_v<void, Lambda>)
   void PostToClientAndWait(Lambda&& lambda) {
     PostToClientAndWait(base::BindLambdaForTesting(std::move(lambda)));
   }
@@ -61,7 +60,10 @@ class WaylandServerTest : public WaylandServerTestBase {
   std::unique_ptr<Server> server_;
 
   std::unique_ptr<TestWaylandClientThread> client_thread_;
-  raw_ptr<wl_client> client_resource_;
+  // This pointer can dangle if the client is destroyed asynchronously (e.g. due
+  // to a protocol error) before the test fixture can clear it in TearDown or
+  // DisconnectClientAndWait.
+  raw_ptr<wl_client, DisableDanglingPtrDetection> client_resource_;
 };
 
 }  // namespace exo::wayland::test

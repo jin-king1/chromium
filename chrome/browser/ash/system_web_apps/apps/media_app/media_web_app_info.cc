@@ -13,9 +13,9 @@
 #include "ash/webui/media_app_ui/url_constants.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/apps/app_service/app_launch_params.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
@@ -27,8 +27,10 @@
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
+#include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/grit/chromeos_media_app_bundle_resources.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/instance_registry.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -349,8 +351,9 @@ bool MediaSystemAppDelegate::ShouldShowNewWindowMenuOption() const {
   return true;
 }
 
-Browser* MediaSystemAppDelegate::GetWindowForLaunch(Profile* profile,
-                                                    const GURL& url) const {
+ash::BrowserDelegate* MediaSystemAppDelegate::GetWindowForLaunch(
+    Profile* profile,
+    const GURL& url) const {
   return nullptr;
 }
 
@@ -358,7 +361,7 @@ bool MediaSystemAppDelegate::ShouldHandleFileOpenIntents() const {
   return true;
 }
 
-Browser* MediaSystemAppDelegate::LaunchAndNavigateSystemWebApp(
+ash::BrowserDelegate* MediaSystemAppDelegate::LaunchAndNavigateSystemWebApp(
     Profile* profile,
     web_app::WebAppProvider* provider,
     const GURL& url,

@@ -19,7 +19,6 @@
 #include "base/values.h"
 #include "chrome/common/extensions/api/cookies.h"
 #include "net/cookies/canonical_cookie.h"
-#include "net/cookies/cookie_monster.h"
 #include "net/cookies/cookie_options.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 
@@ -53,10 +52,10 @@ api::cookies::Cookie CreateCookie(const net::CanonicalCookie& cookie,
 
 // Constructs a new CookieStore object as defined by the cookies API.
 api::cookies::CookieStore CreateCookieStore(Profile* profile,
-                                            base::Value::List tab_ids);
+                                            base::ListValue tab_ids);
 
 // Dispatch a request to the CookieManager for cookies associated with
-// |url| and |partition_key_collection|.
+// `url` and `partition_key_collection`.
 void GetCookieListFromManager(
     network::mojom::CookieManager* manager,
     const GURL& url,
@@ -95,7 +94,7 @@ void AppendMatchingCookiesFromCookieAccessResultListToVector(
 
 // Appends the IDs of all tabs belonging to the given browser to the
 // given list.
-void AppendToTabIdList(WindowController* window, base::Value::List& tab_ids);
+void AppendToTabIdList(WindowController* window, base::ListValue& tab_ids);
 
 // The extensions API allows the caller to provide an incomplete
 // partitionKey that does not contain a hasCrossSiteAncestor value. If the key
@@ -122,7 +121,7 @@ ToNetCookiePartitionKey(
 
 // Returns empty collection if no partition_key.
 // Returns CookiePartitionKeyCollection::ContainsAll() if top_level_site has no
-// value. Returns CookiePartitionKeyCollection::FromOptional() if partition_key
+// value. Returns CookiePartitionKeyCollection(partition_key) if partition_key
 // and top_level_site are both present.
 //
 // If no value for partition_key->has_cross_site_ancestor is provided, keys with

@@ -10,6 +10,7 @@
 
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
+#include "base/observer_list_types.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
 #include "build/build_config.h"
@@ -152,7 +153,7 @@ class MEDIA_EXPORT AudioManager {
   // Allows clients to listen for device state changes; e.g. preferred sample
   // rate or channel layout changes.  The typical response to receiving this
   // callback is to recreate the stream.
-  class AudioDeviceListener {
+  class AudioDeviceListener : public base::CheckedObserver {
    public:
     virtual void OnDeviceChange() = 0;
   };
@@ -160,6 +161,12 @@ class MEDIA_EXPORT AudioManager {
   virtual void AddOutputDeviceChangeListener(AudioDeviceListener* listener) = 0;
   virtual void RemoveOutputDeviceChangeListener(
       AudioDeviceListener* listener) = 0;
+
+  // Returns the device name if it is currently cached in the enumeration
+  // snapshot. Returns an empty string if the ID is not found or the cache is
+  // empty.
+  virtual std::string GetDeviceNameFromCache(const std::string& device_id,
+                                             bool is_input) = 0;
 
   // Create a new AudioLog object for tracking the behavior for one or more
   // instances of the given component.  See AudioLogFactory for more details.
@@ -177,7 +184,11 @@ class MEDIA_EXPORT AudioManager {
       base::WeakPtr<AecdumpRecordingManager> aecdump_recording_manager) = 0;
 
   // Gets the name of the audio manager (e.g., Windows, Mac, PulseAudio).
-  virtual const char* GetName() = 0;
+  virtual const std::string_view GetName() = 0;
+
+  // Logs a message indicating that the AudioManager was created.
+  // This is used to track process restarts.
+  virtual void LogAudioManagerStartup() = 0;
 
   // Starts or stops tracing when a peak in Audio signal amplitude is detected.
   // Does nothing if a call to stop tracing is made without first starting the

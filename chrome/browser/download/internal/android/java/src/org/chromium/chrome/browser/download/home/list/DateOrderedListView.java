@@ -4,13 +4,14 @@
 
 package org.chromium.chrome.browser.download.home.list;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Rect;
 import android.view.View;
 
-import androidx.annotation.Nullable;
 import androidx.core.view.ViewCompat;
 import androidx.recyclerview.widget.DefaultItemAnimator;
 import androidx.recyclerview.widget.GridLayoutManager;
@@ -19,6 +20,8 @@ import androidx.recyclerview.widget.RecyclerView.ItemDecoration;
 import androidx.recyclerview.widget.RecyclerView.Recycler;
 import androidx.recyclerview.widget.RecyclerView.State;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.download.home.DownloadManagerUiConfig;
 import org.chromium.chrome.browser.download.home.list.DateOrderedListCoordinator.DateOrderedListObserver;
 import org.chromium.chrome.browser.download.home.list.ListItem.OfflineItemListItem;
@@ -26,7 +29,8 @@ import org.chromium.chrome.browser.download.home.list.holder.ListItemViewHolder;
 import org.chromium.chrome.browser.download.internal.R;
 import org.chromium.components.browser_ui.widget.displaystyle.HorizontalDisplayStyle;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
-import org.chromium.ui.display.DisplayUtil;
+import org.chromium.components.browser_ui.widget.displaystyle.ViewResizerUtil;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.modelutil.ForwardingListObservable;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.modelutil.RecyclerViewAdapter;
@@ -35,6 +39,7 @@ import org.chromium.ui.modelutil.RecyclerViewAdapter;
  * The View component of a DateOrderedList. This takes the DateOrderedListModel and creates the glue
  * to display it on the screen.
  */
+@NullMarked
 class DateOrderedListView {
     private final DownloadManagerUiConfig mConfig;
     private final DecoratedListItemModel mModel;
@@ -49,7 +54,9 @@ class DateOrderedListView {
     private final RecyclerView mView;
     private final GridLayoutManager mGridLayoutManager;
     private final UiConfig mUiConfig;
-    private Runnable mOnConfigurationChangedCallback;
+    private final Runnable mOnConfigurationChangedCallback;
+
+    private final @Nullable EdgeToEdgePadAdjuster mEdgeToEdgePadAdjuster;
 
     /** Creates an instance of a {@link DateOrderedListView} representing {@code model}. */
     public DateOrderedListView(
@@ -96,15 +103,26 @@ class DateOrderedListView {
                         mView.invalidateItemDecorations();
                         mOnConfigurationChangedCallback.run();
                     }
+
+                    @Override
+                    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+                        super.onSizeChanged(w, h, oldw, oldh);
+                        if (mUiConfig != null) mUiConfig.updateDisplayStyle();
+                    }
                 };
         mView.setId(R.id.download_home_recycler_view);
         mView.setHasFixedSize(true);
+        assumeNonNull(mView.getItemAnimator());
         ((DefaultItemAnimator) mView.getItemAnimator()).setSupportsChangeAnimations(false);
         mView.getItemAnimator().setMoveDuration(0);
 
         mGridLayoutManager = new GridLayoutManagerImpl(context);
         mView.setLayoutManager(mGridLayoutManager);
         mView.addItemDecoration(new ItemDecorationImpl());
+        mEdgeToEdgePadAdjuster =
+                config.edgeToEdgePadAdjusterGenerator == null
+                        ? null
+                        : config.edgeToEdgePadAdjusterGenerator.apply(mView);
         mView.setClipToPadding(false);
 
         PropertyModelChangeProcessor.create(
@@ -141,33 +159,29 @@ class DateOrderedListView {
         return mView;
     }
 
+    /** Destroy this {@link DateOrderedListView}. */
+    public void destroy() {
+        if (mEdgeToEdgePadAdjuster != null) {
+            mEdgeToEdgePadAdjuster.destroy();
+        }
+    }
+
     /**
+     * @param displayStyle The current display style.
+     * @param view The {@link View} whose measured width will be used if layout depends on the
+     *     container width.
+     * @param resources The {@link Resources} used to retrieve configuration and display metrics.
      * @return The start and end padding of the recycler view for the given display style.
      */
     private static int getPaddingForDisplayStyle(
             UiConfig.DisplayStyle displayStyle, View view, Resources resources) {
-        int padding = 0;
-        if (displayStyle.horizontal == HorizontalDisplayStyle.WIDE) {
-            float dpToPx = resources.getDisplayMetrics().density;
-            int screenWidthDp = 0;
-            if (DisplayUtil.isUiScaled() && view != null) {
-                screenWidthDp = (int) (view.getMeasuredWidth() / dpToPx);
-            } else {
-                screenWidthDp = resources.getConfiguration().screenWidthDp;
-            }
-            padding =
-                    (int)
-                            (((screenWidthDp - UiConfig.WIDE_DISPLAY_STYLE_MIN_WIDTH_DP) / 2.f)
-                                    * resources.getDisplayMetrics().density);
-            padding =
-                    (int)
-                            Math.max(
-                                    resources.getDimensionPixelSize(
-                                            R.dimen
-                                                    .download_manager_recycler_view_min_padding_wide_screen),
-                                    padding);
-        }
-        return padding;
+        if (displayStyle.horizontal != HorizontalDisplayStyle.WIDE) return 0;
+
+        int wideWindowMinPaddingPx =
+                resources.getDimensionPixelSize(
+                        R.dimen.download_manager_recycler_view_min_padding_wide_screen);
+        return ViewResizerUtil.computePaddingForWideDisplay(
+                resources, view, wideWindowMinPaddingPx);
     }
 
     /** @return The view width available after start and end padding. */

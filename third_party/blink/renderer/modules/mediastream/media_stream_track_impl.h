@@ -57,6 +57,8 @@ class ScriptState;
 // Primary implementation of the MediaStreamTrack interface and idl type.
 class MODULES_EXPORT MediaStreamTrackImpl : public MediaStreamTrack,
                                             public MediaStreamSource::Observer {
+  USING_PRE_FINALIZER(MediaStreamTrackImpl, Dispose);
+
  public:
   // Create a MediaStreamTrackImpl of the appropriate type for the display
   // surface type.
@@ -123,6 +125,7 @@ class MODULES_EXPORT MediaStreamTrackImpl : public MediaStreamTrack,
   void UnregisterMediaStream(MediaStream*) override;
 
   void RegisterSink(SpeechRecognitionMediaStreamAudioSink*) override;
+  void UnregisterSink(SpeechRecognitionMediaStreamAudioSink*) override;
 
   // EventTarget
   const AtomicString& InterfaceName() const override;
@@ -135,7 +138,8 @@ class MODULES_EXPORT MediaStreamTrackImpl : public MediaStreamTrack,
 
   std::unique_ptr<AudioSourceProvider> CreateWebAudioSource(
       int context_sample_rate,
-      base::TimeDelta platform_buffer_duration) override;
+      base::TimeDelta platform_buffer_duration,
+      uint32_t render_quantum_frames) override;
 
   MediaStreamTrackPlatform::VideoFrameStats GetVideoFrameStats() const;
 
@@ -169,6 +173,8 @@ class MODULES_EXPORT MediaStreamTrackImpl : public MediaStreamTrack,
   friend class CanvasCaptureMediaStreamTrack;
   friend class InternalsMediaStream;
 
+  void Dispose();
+
   // MediaStreamTrack
   void applyConstraints(ScriptPromiseResolver<IDLUndefined>*,
                         const MediaTrackConstraints*) override;
@@ -182,7 +188,9 @@ class MODULES_EXPORT MediaStreamTrackImpl : public MediaStreamTrack,
 #endif
   void PropagateTrackEnded();
 
-  void SendLogMessage(const WTF::String& message);
+  void PropagateTrackEnabled(bool enabled);
+
+  void SendLogMessage(const String& message);
 
   // Ensures that |feature_handle_for_scheduler_| is initialized.
   void EnsureFeatureHandleForScheduler();
@@ -226,6 +234,7 @@ class MODULES_EXPORT MediaStreamTrackImpl : public MediaStreamTrack,
   std::optional<int> zoom_level_;
   MediaConstraints constraints_;
   std::optional<bool> suppress_local_audio_playback_setting_;
+  std::optional<bool> restrict_own_audio_setting_;
   Member<V8UnionMediaStreamTrackAudioStatsOrMediaStreamTrackVideoStats> stats_;
 };
 

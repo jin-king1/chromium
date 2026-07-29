@@ -8,7 +8,6 @@
 #include <memory>
 #include <string>
 
-#include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -27,7 +26,6 @@
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 
 class GURL;
 
@@ -126,7 +124,7 @@ class NetErrorHelper
   mojo::AssociatedRemote<chrome::mojom::NetErrorPageSupport>
       remote_net_error_page_support_;
 
-  base::Value::Dict error_page_params_;
+  base::DictValue error_page_params_;
 
   // Weak factories for vending weak pointers to PageControllers. Weak
   // pointers are invalidated on each commit, to prevent getting messages from

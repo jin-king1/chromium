@@ -5,7 +5,6 @@
 #include "components/exo/wayland/server.h"
 
 #include <alpha-compositing-unstable-v1-server-protocol.h>
-#include <chrome-color-management-server-protocol.h>
 #include <content-type-v1-server-protocol.h>
 #include <cursor-shapes-unstable-v1-server-protocol.h>
 #include <extended-drag-unstable-v1-server-protocol.h>
@@ -16,7 +15,6 @@
 #include <keyboard-extension-unstable-v1-server-protocol.h>
 #include <keyboard-shortcuts-inhibit-unstable-v1-server-protocol.h>
 #include <linux-dmabuf-unstable-v1-server-protocol.h>
-#include <linux-explicit-synchronization-unstable-v1-server-protocol.h>
 #include <notification-shell-unstable-v1-server-protocol.h>
 #include <overlay-prioritizer-server-protocol.h>
 #include <pointer-constraints-unstable-v1-server-protocol.h>
@@ -33,6 +31,7 @@
 #include <xdg-decoration-unstable-v1-server-protocol.h>
 #include <xdg-shell-server-protocol.h>
 
+#include <array>
 #include <memory>
 #include <string>
 #include <utility>
@@ -70,7 +69,6 @@
 #include "components/exo/wayland/xdg_shell.h"
 #include "components/exo/wayland/zaura_shell.h"
 #include "components/exo/wayland/zcr_alpha_compositing.h"
-#include "components/exo/wayland/zcr_color_manager.h"
 #include "components/exo/wayland/zcr_cursor_shapes.h"
 #include "components/exo/wayland/zcr_extended_drag.h"
 #include "components/exo/wayland/zcr_gaming_input.h"
@@ -81,7 +79,6 @@
 #include "components/exo/wayland/zcr_remote_shell_v2.h"
 #include "components/exo/wayland/zcr_stylus.h"
 #include "components/exo/wayland/zcr_stylus_tools.h"
-#include "components/exo/wayland/zcr_test_controller.h"
 #include "components/exo/wayland/zcr_touchpad_haptics.h"
 #include "components/exo/wayland/zcr_ui_controls.h"
 #include "components/exo/wayland/zcr_vsync_feedback.h"
@@ -89,7 +86,6 @@
 #include "components/exo/wayland/zwp_input_timestamps_manager.h"
 #include "components/exo/wayland/zwp_keyboard_shortcuts_inhibit_manager.h"
 #include "components/exo/wayland/zwp_linux_dmabuf.h"
-#include "components/exo/wayland/zwp_linux_explicit_synchronization.h"
 #include "components/exo/wayland/zwp_pointer_constraints.h"
 #include "components/exo/wayland/zwp_pointer_gestures.h"
 #include "components/exo/wayland/zwp_relative_pointer_manager.h"
@@ -124,20 +120,11 @@ constexpr int kMaxPendingConnections = 128;
 // Callback used to find a Server instance for a given wl_display.
 Server::ServerGetter g_server_getter;
 
-bool IsDrmAtomicAvailable() {
-#if BUILDFLAG(IS_OZONE)
-  auto& host_properties =
-      ui::OzonePlatform::GetInstance()->GetPlatformRuntimeProperties();
-  return host_properties.supports_overlays;
-#else
-  LOG(WARNING) << "Ozone disabled, cannot determine whether DrmAtomic is "
-                  "present. Assuming it is not";
-  return false;
-#endif
-}
-
 void wayland_log(const char* fmt, va_list argp) {
-  LOG(WARNING) << "libwayland: " << base::StringPrintV(fmt, argp);
+  // SAFETY: wayland_log is a callback from libwayland that uses va_list.
+  // We format it using base::StringPrintV which is unsafe but necessary here.
+  LOG(WARNING) << "libwayland: "
+               << UNSAFE_BUFFERS(base::StringPrintV(fmt, argp));
 }
 
 int GetTextInputExtensionV1Version() {
@@ -186,9 +173,9 @@ bool Server::Open() {
   // Change permissions on the socket.
   struct group wayland_group;
   struct group* wayland_group_res = nullptr;
-  char buf[10000];
-  if (HANDLE_EINTR(getgrnam_r(kWaylandSocketGroup, &wayland_group, buf,
-                              sizeof(buf), &wayland_group_res)) < 0) {
+  std::array<char, 10000> buf;
+  if (HANDLE_EINTR(getgrnam_r(kWaylandSocketGroup, &wayland_group, buf.data(),
+                              buf.size(), &wayland_group_res)) < 0) {
     PLOG(ERROR) << "getgrnam_r";
     return false;
   }
@@ -293,14 +280,6 @@ void Server::Initialize() {
   wl_global_create(wl_display_.get(), &wl_seat_interface, kWlSeatVersion,
                    seat_data_.get(), bind_seat);
 
-  if (IsDrmAtomicAvailable()) {
-    // The release fence needed by linux-explicit-sync comes from DRM-atomic.
-    // If DRM atomic is not supported, linux-explicit-sync interface is
-    // disabled.
-    wl_global_create(
-        wl_display_.get(), &zwp_linux_explicit_synchronization_v1_interface,
-        /*version=*/2, display_, bind_linux_explicit_synchronization);
-  }
   wl_global_create(wl_display_.get(), &zaura_shell_interface,
                    kZAuraShellVersion, display_, bind_aura_shell);
   wl_global_create(wl_display_.get(), &wl_shell_interface, /*version=*/1,
@@ -317,16 +296,18 @@ void Server::Initialize() {
   wl_global_create(wl_display_.get(), &zcr_notification_shell_v1_interface,
                    /*version=*/1, display_, bind_notification_shell);
 
-  remote_shell_data_ = std::make_unique<WaylandRemoteShellData>(
-      display_,
-      WaylandRemoteShellData::OutputResourceProvider(base::BindRepeating(
-          &Server::GetOutputResource, base::Unretained(this))));
-  wl_global_create(wl_display_.get(), &zcr_remote_shell_v1_interface,
-                   kZcrRemoteShellVersion, remote_shell_data_.get(),
-                   bind_remote_shell);
-  wl_global_create(wl_display_.get(), &zcr_remote_shell_v2_interface,
-                   kZcrRemoteShellV2Version, remote_shell_data_.get(),
-                   bind_remote_shell_v2);
+  if (security_delegate_ && security_delegate_->CanAccessRemoteShell()) {
+    remote_shell_data_ = std::make_unique<WaylandRemoteShellData>(
+        display_,
+        WaylandRemoteShellData::OutputResourceProvider(base::BindRepeating(
+            &Server::GetOutputResource, base::Unretained(this))));
+    wl_global_create(wl_display_.get(), &zcr_remote_shell_v1_interface,
+                     kZcrRemoteShellVersion, remote_shell_data_.get(),
+                     bind_remote_shell);
+    wl_global_create(wl_display_.get(), &zcr_remote_shell_v2_interface,
+                     kZcrRemoteShellV2Version, remote_shell_data_.get(),
+                     bind_remote_shell_v2);
+  }
 
   wl_global_create(wl_display_.get(), &zcr_stylus_tools_v1_interface,
                    /*version=*/1, display_, bind_stylus_tools);
@@ -340,8 +321,6 @@ void Server::Initialize() {
   wl_global_create(wl_display_.get(),
                    &zwp_relative_pointer_manager_v1_interface, /*version=*/1,
                    display_, bind_relative_pointer_manager);
-  wl_global_create(wl_display_.get(), &zcr_color_manager_v1_interface,
-                   kZcrColorManagerVersion, this, bind_zcr_color_manager);
   wl_global_create(wl_display_.get(), &zxdg_decoration_manager_v1_interface,
                    /*version=*/1, display_, bind_zxdg_decoration_manager);
   wl_global_create(wl_display_.get(), &zcr_extended_drag_v1_interface,
@@ -350,7 +329,6 @@ void Server::Initialize() {
                    /*version=*/1, display_, bind_zwp_idle_inhibit_manager);
 
   ui_controls_holder_ = std::make_unique<UiControls>(this);
-  test_controller_ = std::make_unique<TestController>(this);
 
   zcr_keyboard_extension_data_ =
       std::make_unique<WaylandKeyboardExtension>(serial_tracker_.get());

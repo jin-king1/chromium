@@ -33,12 +33,14 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -60,6 +62,7 @@ import java.util.Map;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class CafMessageHandlerTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     private static final String SESSION_ID = "SESSION_ID";
     private static final String INVALID_SESSION_ID = "INVALID_SESSION_ID";
     private static final String CLIENT_ID1 = "client-id-1";
@@ -84,7 +87,6 @@ public class CafMessageHandlerTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mRouteProvider = mock(CafMediaRouteProvider.class);
         mClientRecord1 =
                 new ClientRecord("route-id-1", CLIENT_ID1, "app-id", "auto-join", "origin", 1);
@@ -110,7 +112,7 @@ public class CafMessageHandlerTest {
     }
 
     void setUpForAppMessageTest() throws JSONException {
-        List<String> namespaces = new ArrayList<String>();
+        List<String> namespaces = new ArrayList<>();
         namespaces.add(NAMESPACE1);
         doReturn(namespaces).when(mSessionController).getNamespaces();
         doReturn(true)
@@ -388,7 +390,7 @@ public class CafMessageHandlerTest {
 
     @Test
     public void testCastV2MessageWithWrongTypeInnerMessage() throws JSONException {
-        org.robolectric.shadows.ShadowLog.stream = System.out;
+
         JSONObject innerMessage = new JSONObject().put("type", "STOP");
         final JSONObject message = buildCastV2Message(CLIENT_ID1, innerMessage);
         // Replace the inner JSON message with string.
@@ -415,12 +417,9 @@ public class CafMessageHandlerTest {
         JSONObject innerMessage =
                 new JSONObject()
                         .put("type", "SET_VOLUME")
-                        .put(
-                                "volume",
-                                new JSONObject().put("level", (double) 1).put("muted", false));
+                        .put("volume", new JSONObject().put("level", 1.0).put("muted", false));
         JSONObject message = buildCastV2Message(CLIENT_ID1, innerMessage);
         assertTrue(mMessageHandler.handleMessageFromClient(message.toString()));
-        JSONObject volumeMessage = innerMessage.getJSONObject("volume");
         verify(mSession).setMute(false);
         verify(mSession).setVolume(1.0);
         verify(mMessageHandler)
@@ -438,12 +437,9 @@ public class CafMessageHandlerTest {
         JSONObject innerMessage =
                 new JSONObject()
                         .put("type", "SET_VOLUME")
-                        .put(
-                                "volume",
-                                new JSONObject().put("level", (double) 1).put("muted", false));
+                        .put("volume", new JSONObject().put("level", 1.0).put("muted", false));
         JSONObject message = buildCastV2Message(CLIENT_ID1, innerMessage);
         assertTrue(mMessageHandler.handleMessageFromClient(message.toString()));
-        JSONObject volumeMessage = innerMessage.getJSONObject("volume");
         verify(mSession, never()).setMute(anyBoolean());
         verify(mSession, never()).setVolume(anyDouble());
         verify(mMessageHandler)
@@ -906,7 +902,7 @@ public class CafMessageHandlerTest {
                 .when(mMessageHandler)
                 .sendEnclosedMessageToClient(anyString(), anyString(), anyString(), anyInt());
         assertEquals(0, mMessageHandler.getStopRequestsForTest().size());
-        mMessageHandler.getStopRequestsForTest().put(CLIENT_ID1, new ArrayDeque<Integer>());
+        mMessageHandler.getStopRequestsForTest().put(CLIENT_ID1, new ArrayDeque<>());
         mMessageHandler.getStopRequestsForTest().get(CLIENT_ID1).add(SEQUENCE_NUMBER1);
         mMessageHandler.getStopRequestsForTest().get(CLIENT_ID1).add(SEQUENCE_NUMBER2);
         assertEquals(1, mMessageHandler.getStopRequestsForTest().size());
@@ -988,7 +984,7 @@ public class CafMessageHandlerTest {
                 .when(mMessageHandler)
                 .sendEnclosedMessageToClient(anyString(), anyString(), anyString(), anyInt());
         mMessageHandler.broadcastClientMessage("anytype", "anymessage");
-        for (String clientId : mRouteProvider.getClientIdToRecords().keySet()) {
+        for (String clientId : mClientRecordMap.keySet()) {
             verify(mMessageHandler)
                     .sendEnclosedMessageToClient(
                             eq(clientId),
@@ -1200,7 +1196,7 @@ public class CafMessageHandlerTest {
     private JSONObject buildAppMessage(String clientId, String namespace, Object actualMessage)
             throws JSONException {
         JSONObject innerMessage = new JSONObject();
-        innerMessage.put("sessionId", mSessionController.getSessionId());
+        innerMessage.put("sessionId", SESSION_ID);
         innerMessage.put("namespaceName", namespace);
         innerMessage.put("message", actualMessage);
 

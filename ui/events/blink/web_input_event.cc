@@ -4,8 +4,10 @@
 
 #include "ui/events/blink/web_input_event.h"
 
+#include <utility>
+
 #include "base/feature_list.h"
-#include "base/types/cxx23_to_underlying.h"
+#include "base/notimplemented.h"
 #include "build/build_config.h"
 #include "third_party/blink/public/common/features.h"
 #include "ui/base/ui_base_features.h"
@@ -180,10 +182,10 @@ blink::WebGestureEvent MakeWebGestureEventFromUiEvent(
       break;
     case EventType::kScroll:
       NOTREACHED() << "Invalid gesture type: "
-                   << base::to_underlying(event.type());
+                   << std::to_underlying(event.type());
     default:
       NOTREACHED() << "Unknown gesture type: "
-                   << base::to_underlying(event.type());
+                   << std::to_underlying(event.type());
   }
 
   blink::WebGestureEvent webkit_event(
@@ -239,9 +241,7 @@ blink::WebMouseEvent MakeWebMouseEvent(const MouseEvent& event) {
       MakeWebMouseEventFromUiEvent(event);
 #endif
 
-  if (base::FeatureList::IsEnabled(blink::features::kClickToCapturedPointer)) {
-    webkit_event.UpdateEventModifiersToMatchButton();
-  }
+  webkit_event.UpdateEventModifiersToMatchButton();
 
   // Replace the event's coordinate fields with translated position data from
   // |event|.
@@ -402,7 +402,7 @@ blink::WebMouseEvent MakeWebMouseEventFromUiEvent(const MouseEvent& event) {
       break;
     default:
       NOTIMPLEMENTED() << "Received unexpected event: "
-                       << base::to_underlying(event.type());
+                       << std::to_underlying(event.type());
       break;
   }
 

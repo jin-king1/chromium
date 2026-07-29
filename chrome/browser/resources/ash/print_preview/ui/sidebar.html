@@ -1,4 +1,4 @@
-<style include="cr-hidden-style cr-shared-style">
+<style include="cr-hidden-style cr-shared-style cr-scrollable">
   :host {
     background-color: white;
     border-inline-start: var(--print-preview-settings-border);
@@ -39,7 +39,8 @@
     error="[[error]]" sheet-count="[[sheetCount_]]" state="[[state]]"
     settings="[[settings]]" managed="[[controlsManaged]]">
 </print-preview-header>
-<div id="container" show-bottom-shadow>
+<div id="container" class="cr-scrollable">
+  <div class="cr-scrollable-top-shadow"></div>
   <print-preview-destination-settings id="destinationSettings"
       dark="[[inDarkMode]]" destination="{{destination}}"
       destination-state="{{destinationState}}"
@@ -48,12 +49,10 @@
       disabled="[[controlsDisabled_]]"
       available class="settings-section">
   </print-preview-destination-settings>
-<if expr="is_chromeos">
   <print-preview-pin-settings state="[[state]]" settings="[[settings]]"
       disabled="[[controlsDisabled_]]" is-pin-valid="{{isPinValid_}}"
       hidden$="[[!settings.pin.available]]" class="settings-section">
   </print-preview-pin-settings>
-</if>
   <print-preview-pages-settings settings="[[settings]]"
       page-count="[[pageCount]]" disabled="[[controlsDisabled_]]"
       hidden$="[[!settings.pages.available]]" class="settings-section">
@@ -141,13 +140,8 @@
         hidden$="[[!settings.vendorItems.available]]"
         class="settings-section">
     </print-preview-advanced-options-settings>
-<if expr="not is_chromeos">
-    <print-preview-link-container destination="[[destination]]"
-        app-kiosk-mode="[[isInAppKioskMode_]]"
-        disabled="[[controlsDisabled_]]">
-    </print-preview-link-container>
-</if>
   </cr-collapse>
+  <div class="cr-scrollable-bottom-shadow"></div>
 </div>
 <print-preview-button-strip destination="[[destination]]"
     state="[[state]]" first-load="[[firstLoad_]]" is-pin-valid="[[isPinValid_]]"

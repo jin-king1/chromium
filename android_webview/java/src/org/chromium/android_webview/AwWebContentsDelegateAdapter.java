@@ -12,7 +12,6 @@ import android.os.Handler;
 import android.os.Message;
 import android.provider.MediaStore;
 import android.text.TextUtils;
-import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
 import android.webkit.URLUtil;
@@ -21,9 +20,13 @@ import android.widget.FrameLayout;
 import org.chromium.android_webview.common.Lifetime;
 import org.chromium.base.Callback;
 import org.chromium.base.ContentUriUtils;
+import org.chromium.base.ContextUtils;
+import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.AsyncTask;
+import org.chromium.components.embedder_support.contextmenu.ContextMenuUtils;
 import org.chromium.content_public.browser.InvalidateTypes;
+import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.content_public.common.ResourceRequestBody;
 import org.chromium.url.GURL;
@@ -40,7 +43,6 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     private final AwContents mAwContents;
     private final AwContentsClient mContentsClient;
     private final AwSettings mAwSettings;
-    private final Context mContext;
     private View mContainerView;
     private FrameLayout mCustomView;
     private boolean mDidSynthesizePageLoad;
@@ -49,12 +51,10 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
             AwContents awContents,
             AwContentsClient contentsClient,
             AwSettings settings,
-            Context context,
             View containerView) {
         mAwContents = awContents;
         mContentsClient = contentsClient;
         mAwSettings = settings;
-        mContext = context;
         mDidSynthesizePageLoad = false;
         setContainerView(containerView);
     }
@@ -112,7 +112,10 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
             case KeyEvent.KEYCODE_MEDIA_CLOSE:
             case KeyEvent.KEYCODE_MEDIA_EJECT:
             case KeyEvent.KEYCODE_MEDIA_AUDIO_TRACK:
-                AudioManager am = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
+                AudioManager am =
+                        (AudioManager)
+                                ContextUtils.getApplicationContext()
+                                        .getSystemService(Context.AUDIO_SERVICE);
                 am.dispatchMediaKeyEvent(e);
                 break;
             default:
@@ -163,7 +166,7 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     }
 
     @Override
-    public void onUpdateUrl(GURL url) {
+    public void onUpdateTargetUrl(GURL url) {
         // TODO: implement
     }
 
@@ -249,24 +252,32 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
 
                     @Override
                     public void onResult(String[] results) {
-                        if (mCompleted) {
-                            throw new IllegalStateException("Duplicate showFileChooser result");
-                        }
-                        mCompleted = true;
-                        if (results == null) {
-                            AwWebContentsDelegateJni.get()
-                                    .filesSelectedInChooser(
-                                            processId, renderId, webChromeClientMode, null, null);
-                            return;
-                        }
-                        GetDisplayNameTask task =
-                                new GetDisplayNameTask(
-                                        mContext,
-                                        processId,
-                                        renderId,
-                                        webChromeClientMode,
-                                        results);
-                        task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+                        ThreadUtils.runOnUiThread(
+                                () -> {
+                                    if (mCompleted) {
+                                        throw new IllegalStateException(
+                                                "Duplicate showFileChooser result");
+                                    }
+                                    mCompleted = true;
+                                    if (results == null) {
+                                        AwWebContentsDelegateJni.get()
+                                                .filesSelectedInChooser(
+                                                        processId,
+                                                        renderId,
+                                                        webChromeClientMode,
+                                                        null,
+                                                        null);
+                                        return;
+                                    }
+                                    GetDisplayNameTask task =
+                                            new GetDisplayNameTask(
+                                                    ContextUtils.getApplicationContext(),
+                                                    processId,
+                                                    renderId,
+                                                    webChromeClientMode,
+                                                    results);
+                                    task.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+                                });
                     }
                 },
                 params);
@@ -306,7 +317,11 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     }
 
     @Override
-    public void enterFullscreenModeForTab(boolean prefersNavigationBar, boolean prefersStatusBar) {
+    public void enterFullscreenModeForTab(
+            RenderFrameHost renderFrameHost,
+            boolean prefersNavigationBar,
+            boolean prefersStatusBar,
+            long displayId) {
         enterFullscreen();
     }
 
@@ -337,6 +352,7 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
         if (mAwContents.isFullScreen()) {
             return;
         }
+        Context context = mAwContents.getProvidedContext();
         View fullscreenView = mAwContents.enterFullScreen();
         if (fullscreenView == null) {
             return;
@@ -347,7 +363,7 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
                         mAwContents.requestExitFullscreen();
                     }
                 };
-        mCustomView = new FrameLayout(mContext);
+        mCustomView = new FrameLayout(context);
         mCustomView.addView(fullscreenView);
         mContentsClient.onShowCustomView(mCustomView, cb);
     }
@@ -425,5 +441,17 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
                 mAwContents.zoomOut();
             }
         }
+    }
+
+    /**
+     * Convenience method for native to call without Context object. Determines if popups are
+     * supported for the context menu.
+     *
+     * @return true if popups are supported, false otherwise.
+     */
+    @Override
+    protected boolean isPopupSupported() {
+        Context context = mAwContents.getProvidedContext();
+        return ContextMenuUtils.isPopupSupported(context);
     }
 }

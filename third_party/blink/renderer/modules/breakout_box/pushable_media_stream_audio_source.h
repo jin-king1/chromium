@@ -26,8 +26,7 @@ class MODULES_EXPORT PushableMediaStreamAudioSource
   // PushableMediaStreamAudioSource from multiple threads. This also includes
   // safely posting tasks to/from outside the main thread.
   // The public methods of this class can be called on any thread.
-  class MODULES_EXPORT LOCKABLE Broker
-      : public WTF::ThreadSafeRefCounted<Broker> {
+  class MODULES_EXPORT LOCKABLE Broker : public ThreadSafeRefCounted<Broker> {
    public:
     Broker(const Broker&) = delete;
     Broker& operator=(const Broker&) = delete;
@@ -47,7 +46,11 @@ class MODULES_EXPORT PushableMediaStreamAudioSource
     // old client disconnects.
     void OnClientStopped();
     bool IsRunning();
-    void PushAudioData(scoped_refptr<media::AudioBuffer> data);
+    // Push audio data to the source tracks.
+    // If capture_time is null/default, it falls back to the legacy
+    // timestamp calculation (base::TimeTicks() + data->timestamp()).
+    void PushAudioData(scoped_refptr<media::AudioBuffer> data,
+                       base::TimeTicks capture_time = base::TimeTicks());
     void StopSource();
     void SetShouldDeliverAudioOnAudioTaskRunner(
         bool should_deliver_audio_on_audio_task_runner);
@@ -99,7 +102,8 @@ class MODULES_EXPORT PushableMediaStreamAudioSource
  private:
   friend class Broker;
   // Actually push data to the audio tracks. Can be called from any thread.
-  void DeliverData(scoped_refptr<media::AudioBuffer> data);
+  void DeliverData(scoped_refptr<media::AudioBuffer> data,
+                   base::TimeTicks capture_time);
 
   // MediaStreamAudioSource implementation.
   bool EnsureSourceIsStarted() final;

@@ -16,6 +16,7 @@
 #import "components/autofill/core/browser/form_import/form_data_importer.h"
 #import "components/autofill/core/browser/logging/log_router.h"
 #import "components/autofill/core/browser/suggestions/suggestion_type.h"
+#import "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
 #import "components/autofill/core/common/autofill_prefs.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_factory.h"
 #import "components/autofill/ios/browser/autofill_util.h"
@@ -29,6 +30,7 @@
 #import "ios/web_view/internal/autofill/web_view_autofill_log_router_factory.h"
 #import "ios/web_view/internal/autofill/web_view_personal_data_manager_factory.h"
 #import "ios/web_view/internal/autofill/web_view_strike_database_factory.h"
+#import "ios/web_view/internal/metrics/web_view_profile_metrics_service_factory.h"
 #import "ios/web_view/internal/signin/web_view_identity_manager_factory.h"
 #import "ios/web_view/internal/sync/web_view_sync_service_factory.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
@@ -38,13 +40,12 @@ namespace autofill {
 
 // static
 std::unique_ptr<WebViewAutofillClientIOS> WebViewAutofillClientIOS::Create(
-    FromWebStateImpl from_web_state_impl,
     web::WebState* web_state,
     id<CWVAutofillClientIOSBridge, AutofillDriverIOSBridge> bridge) {
   auto* browser_state = ios_web_view::WebViewBrowserState::FromBrowserState(
       web_state->GetBrowserState());
-  return std::make_unique<autofill::WebViewAutofillClientIOS>(
-      from_web_state_impl, browser_state->GetPrefs(),
+  return std::make_unique<WebViewAutofillClientIOS>(
+      browser_state->GetPrefs(),
       ios_web_view::WebViewPersonalDataManagerFactory::GetForBrowserState(
           browser_state->GetRecordingBrowserState()),
       ios_web_view::WebViewAutocompleteHistoryManagerFactory::
@@ -56,33 +57,34 @@ std::unique_ptr<WebViewAutofillClientIOS> WebViewAutofillClientIOS::Create(
           browser_state->GetRecordingBrowserState()),
       ios_web_view::WebViewSyncServiceFactory::GetForBrowserState(
           browser_state),
-      autofill::WebViewAutofillLogRouterFactory::GetForBrowserState(
-          browser_state));
+      WebViewAutofillLogRouterFactory::GetForBrowserState(browser_state));
 }
 
 WebViewAutofillClientIOS::WebViewAutofillClientIOS(
-    FromWebStateImpl from_web_state_impl,
     PrefService* pref_service,
     PersonalDataManager* personal_data_manager,
     AutocompleteHistoryManager* autocomplete_history_manager,
     web::WebState* web_state,
     id<CWVAutofillClientIOSBridge, AutofillDriverIOSBridge> bridge,
     signin::IdentityManager* identity_manager,
-    StrikeDatabase* strike_database,
+    strike_database::StrikeDatabase* strike_database,
     syncer::SyncService* sync_service,
     LogRouter* log_router)
-    : AutofillClientIOS(from_web_state_impl, web_state, bridge),
+    : AutofillClientIOS(web_state, bridge),
       bridge_(bridge),
       pref_service_(pref_service),
       personal_data_manager_(personal_data_manager),
       autocomplete_history_manager_(autocomplete_history_manager),
       identity_manager_(identity_manager),
       strike_database_(strike_database),
+      form_data_importer_(
+          std::make_unique<FormDataImporter>(this,
+                                             /*history_service=*/nullptr)),
       sync_service_(sync_service),
       log_router_(log_router) {}
 
 WebViewAutofillClientIOS::~WebViewAutofillClientIOS() {
-  HideAutofillSuggestions(SuggestionHidingReason::kTabGone);
+  HideSuggestions(SuggestionHidingReason::kTabGone, /*product=*/std::nullopt);
   if (web_state()) {
     // If web_state() is still valid, WebStateDestroyed() possibly hasn't been
     // called yet. To meet the AutofillClientIOS contract, we call it. See the
@@ -129,6 +131,10 @@ PersonalDataManager& WebViewAutofillClientIOS::GetPersonalDataManager() {
   return CHECK_DEREF(personal_data_manager_);
 }
 
+ValuablesDataManager* WebViewAutofillClientIOS::GetValuablesDataManager() {
+  return nullptr;
+}
+
 EntityDataManager* WebViewAutofillClientIOS::GetEntityDataManager() {
   return nullptr;
 }
@@ -164,11 +170,17 @@ const signin::IdentityManager* WebViewAutofillClientIOS::GetIdentityManager()
   return identity_manager_;
 }
 
+metrics::ProfileMetricsService*
+WebViewAutofillClientIOS::GetProfileMetricsService() {
+  ios_web_view::WebViewBrowserState* browser_state =
+      ios_web_view::WebViewBrowserState::FromBrowserState(
+          web_state()->GetBrowserState());
+  CHECK(browser_state);
+  return ios_web_view::WebViewProfileMetricsServiceFactory::GetForBrowserState(
+      browser_state);
+}
+
 FormDataImporter* WebViewAutofillClientIOS::GetFormDataImporter() {
-  if (!form_data_importer_) {
-    form_data_importer_ =
-        std::make_unique<FormDataImporter>(this, /*history_service=*/nullptr);
-  }
   return form_data_importer_.get();
 }
 
@@ -177,7 +189,7 @@ WebViewAutofillClientIOS::GetPaymentsAutofillClient() {
   return &payments_autofill_client_;
 }
 
-StrikeDatabase* WebViewAutofillClientIOS::GetStrikeDatabase() {
+strike_database::StrikeDatabase* WebViewAutofillClientIOS::GetStrikeDatabase() {
   return strike_database_;
 }
 
@@ -221,7 +233,7 @@ void WebViewAutofillClientIOS::ShowAutofillSettings(
 void WebViewAutofillClientIOS::ConfirmSaveAddressProfile(
     const AutofillProfile& profile,
     const AutofillProfile* original_profile,
-    bool is_migration_to_account,
+    SaveAddressBubbleType save_address_bubble_type,
     AddressProfileSavePromptCallback callback) {
   [bridge_ confirmSaveAddressProfile:profile
                      originalProfile:original_profile
@@ -232,30 +244,42 @@ AutofillClient::SuggestionUiSessionId
 WebViewAutofillClientIOS::ShowAutofillSuggestions(
     const AutofillClient::PopupOpenArgs& open_args,
     base::WeakPtr<AutofillSuggestionDelegate> delegate) {
-  [bridge_ showAutofillPopup:open_args.suggestions suggestionDelegate:delegate];
+  active_suggestion_delegate_ = std::move(delegate);
+  [bridge_ showAutofillPopup:open_args.suggestions
+          suggestionDelegate:active_suggestion_delegate_];
   return SuggestionUiSessionId();
 }
 
 void WebViewAutofillClientIOS::UpdateAutofillDataListValues(
-    base::span<const autofill::SelectOption> datalist) {
+    base::span<const SelectOption> datalist) {
   // No op. ios/web_view does not support display datalist.
 }
 
-void WebViewAutofillClientIOS::HideAutofillSuggestions(
-    SuggestionHidingReason reason) {
+void WebViewAutofillClientIOS::HideSuggestions(
+    SuggestionHidingReason reason,
+    std::optional<FillingProduct> product) {
+  // If a `product` filter is specified, only hide if it matches the active
+  // popup.
+  if (product && active_suggestion_delegate_ &&
+      product != active_suggestion_delegate_->GetMainFillingProduct()) {
+    return;
+  }
+  active_suggestion_delegate_.reset();
   [bridge_ hideAutofillPopup];
 }
 
 bool WebViewAutofillClientIOS::IsAutofillEnabled() const {
-  return IsAutofillProfileEnabled() || IsAutofillPaymentMethodsEnabled();
+  return IsAutofillProfileEnabled() ||
+         AutofillClient::GetPaymentsAutofillClient()
+             ->IsAutofillPaymentMethodsEnabled();
 }
 
 bool WebViewAutofillClientIOS::IsAutofillProfileEnabled() const {
   return prefs::IsAutofillProfileEnabled(GetPrefs());
 }
 
-bool WebViewAutofillClientIOS::IsAutofillPaymentMethodsEnabled() const {
-  return prefs::IsAutofillPaymentMethodsEnabled(GetPrefs());
+bool WebViewAutofillClientIOS::IsWalletPublicPassStorageEnabled() const {
+  return false;
 }
 
 bool WebViewAutofillClientIOS::IsAutocompleteEnabled() const {
@@ -267,18 +291,16 @@ bool WebViewAutofillClientIOS::IsPasswordManagerEnabled() const {
       password_manager::prefs::kCredentialsEnableService);
 }
 
-void WebViewAutofillClientIOS::DidFillForm(AutofillTriggerSource trigger_source,
-                                           bool is_refill) {}
+bool WebViewAutofillClientIOS::UsesPlatformAutofill() const {
+  return false;
+}
 
 bool WebViewAutofillClientIOS::IsContextSecure() const {
   return IsContextSecureForWebState(web_state());
 }
 
-autofill::FormInteractionsFlowId
-WebViewAutofillClientIOS::GetCurrentFormInteractionsFlowId() {
-  // Currently not in use here. See `ChromeAutofillClient` for a proper
-  // implementation.
-  return {};
+bool WebViewAutofillClientIOS::IsCvcSavingSupported() const {
+  return false;
 }
 
 bool WebViewAutofillClientIOS::IsLastQueriedField(FieldGlobalId field_id) {

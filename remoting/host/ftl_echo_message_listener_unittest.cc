@@ -61,10 +61,10 @@ class FtlEchoMessageListenerTest : public testing::Test {
   FtlEchoMessageListenerTest() : signal_strategy_(SignalingAddress(kTestJid)) {}
 
   void SetUp() override {
-    EXPECT_CALL(signal_strategy_, AddListener(NotNull()))
-        .WillRepeatedly(AddListener(&signal_strategy_listeners_));
-    EXPECT_CALL(signal_strategy_, RemoveListener(NotNull()))
-        .WillRepeatedly(RemoveListener(&signal_strategy_listeners_));
+    EXPECT_CALL(signal_strategy_, AddFtlListener(NotNull()))
+        .WillRepeatedly(AddListener(&ftl_listeners_));
+    EXPECT_CALL(signal_strategy_, RemoveFtlListener(NotNull()))
+        .WillRepeatedly(RemoveListener(&ftl_listeners_));
 
     system_sender_id_.set_type(ftl::IdType_Type_SYSTEM);
     system_sender_id_.set_id(kSystemServiceName);
@@ -82,7 +82,7 @@ class FtlEchoMessageListenerTest : public testing::Test {
 
   void TearDown() override {
     ftl_echo_message_listener_.reset();
-    EXPECT_TRUE(signal_strategy_listeners_.empty());
+    EXPECT_TRUE(ftl_listeners_.empty());
   }
 
  protected:
@@ -92,79 +92,89 @@ class FtlEchoMessageListenerTest : public testing::Test {
 
   base::test::TaskEnvironment task_environment_;
 
-  MockSignalStrategy signal_strategy_;
-  std::set<raw_ptr<SignalStrategy::Listener, SetExperimental>>
-      signal_strategy_listeners_;
+  MockFtlSignalStrategy signal_strategy_;
+  std::set<raw_ptr<FtlSignalStrategy::FtlListener, SetExperimental>>
+      ftl_listeners_;
   std::unique_ptr<FtlEchoMessageListener> ftl_echo_message_listener_;
 };
 
 TEST_F(FtlEchoMessageListenerTest, EchoRequestFromOwnerHandled) {
   base::RunLoop run_loop;
-  EXPECT_CALL(signal_strategy_, SendMessage(_, _))
+  EXPECT_CALL(signal_strategy_, SendFtlMessage(_, _))
       .WillOnce([&](const SignalingAddress& destination_address,
-                    const ftl::ChromotingMessage& message) -> bool {
+                    ftl::ChromotingMessage&& message) -> bool {
         std::string username;
         std::string registration_id;
         EXPECT_TRUE(
             destination_address.GetFtlInfo(&username, &registration_id));
-        EXPECT_EQ(kOwnerEmail, username);
-        EXPECT_EQ(kRegistrationId, registration_id);
+        EXPECT_EQ(username, kOwnerEmail);
+        EXPECT_EQ(registration_id, kRegistrationId);
         EXPECT_TRUE(message.has_echo());
-        EXPECT_EQ(kEchoMessagePayload, message.echo().message());
+        EXPECT_EQ(message.echo().message(), kEchoMessagePayload);
 
         run_loop.Quit();
         return true;
       });
 
-  bool is_handled = ftl_echo_message_listener_->OnSignalStrategyIncomingMessage(
-      machine_owner_sender_id_, kRegistrationId,
-      CreateEchoMessageWithPayload(kEchoMessagePayload));
+  ftl::ChromotingMessage message_proto =
+      CreateEchoMessageWithPayload(kEchoMessagePayload);
+  bool is_handled = ftl_echo_message_listener_->OnIncomingFtlMessage(
+      SignalingAddress::CreateFtlSignalingAddress(kOwnerEmail, kRegistrationId),
+      message_proto);
   ASSERT_TRUE(is_handled);
 
   run_loop.Run();
 }
 
 TEST_F(FtlEchoMessageListenerTest, EchoRequestFromServiceRejected) {
-  bool is_handled = ftl_echo_message_listener_->OnSignalStrategyIncomingMessage(
-      system_sender_id_, {}, CreateEchoMessageWithPayload(kEchoMessagePayload));
+  ftl::ChromotingMessage message_proto =
+      CreateEchoMessageWithPayload(kEchoMessagePayload);
+  bool is_handled = ftl_echo_message_listener_->OnIncomingFtlMessage(
+      SignalingAddress("not-ftl-address"), message_proto);
   ASSERT_FALSE(is_handled);
 }
 
 TEST_F(FtlEchoMessageListenerTest, EchoRequestFromNonOwnerRejected) {
-  bool is_handled = ftl_echo_message_listener_->OnSignalStrategyIncomingMessage(
-      unknown_sender_id_, {},
-      CreateEchoMessageWithPayload(kEchoMessagePayload));
+  ftl::ChromotingMessage message_proto =
+      CreateEchoMessageWithPayload(kEchoMessagePayload);
+  bool is_handled = ftl_echo_message_listener_->OnIncomingFtlMessage(
+      SignalingAddress::CreateFtlSignalingAddress(kUnknownEmail,
+                                                  kRegistrationId),
+      message_proto);
   ASSERT_FALSE(is_handled);
 }
 
 TEST_F(FtlEchoMessageListenerTest, SuperLongMessageIsTruncated) {
   base::RunLoop run_loop;
-  EXPECT_CALL(signal_strategy_, SendMessage(_, _))
-      .WillOnce([&](Unused, const ftl::ChromotingMessage& message) -> bool {
-        EXPECT_EQ(kTruncatedMessagePayload, message.echo().message());
+  EXPECT_CALL(signal_strategy_, SendFtlMessage(_, _))
+      .WillOnce([&](Unused, ftl::ChromotingMessage&& message) -> bool {
+        EXPECT_EQ(message.echo().message(), kTruncatedMessagePayload);
 
         run_loop.Quit();
         return true;
       });
 
-  bool is_handled = ftl_echo_message_listener_->OnSignalStrategyIncomingMessage(
-      machine_owner_sender_id_, kRegistrationId,
-      CreateEchoMessageWithPayload(kSuperLongMessagePayload));
+  ftl::ChromotingMessage message_proto =
+      CreateEchoMessageWithPayload(kSuperLongMessagePayload);
+  bool is_handled = ftl_echo_message_listener_->OnIncomingFtlMessage(
+      SignalingAddress::CreateFtlSignalingAddress(kOwnerEmail, kRegistrationId),
+      message_proto);
   ASSERT_TRUE(is_handled);
 
   run_loop.Run();
 }
 
 TEST_F(FtlEchoMessageListenerTest, EmptyMessageIsRejected) {
-  bool is_handled = ftl_echo_message_listener_->OnSignalStrategyIncomingMessage(
-      machine_owner_sender_id_, kRegistrationId, ftl::ChromotingMessage());
+  bool is_handled = ftl_echo_message_listener_->OnIncomingFtlMessage(
+      SignalingAddress::CreateFtlSignalingAddress(kOwnerEmail, kRegistrationId),
+      ftl::ChromotingMessage());
   ASSERT_FALSE(is_handled);
 }
 
 TEST_F(FtlEchoMessageListenerTest, EmptyMessagePayloadIsHandled) {
   base::RunLoop run_loop;
-  EXPECT_CALL(signal_strategy_, SendMessage(_, _))
-      .WillOnce([&](Unused, const ftl::ChromotingMessage& message) -> bool {
+  EXPECT_CALL(signal_strategy_, SendFtlMessage(_, _))
+      .WillOnce([&](Unused, ftl::ChromotingMessage&& message) -> bool {
         EXPECT_TRUE(message.has_echo());
         EXPECT_TRUE(message.echo().message().empty());
 
@@ -172,9 +182,10 @@ TEST_F(FtlEchoMessageListenerTest, EmptyMessagePayloadIsHandled) {
         return true;
       });
 
-  bool is_handled = ftl_echo_message_listener_->OnSignalStrategyIncomingMessage(
-      machine_owner_sender_id_, kRegistrationId,
-      CreateEchoMessageWithPayload(""));
+  ftl::ChromotingMessage message_proto = CreateEchoMessageWithPayload("");
+  bool is_handled = ftl_echo_message_listener_->OnIncomingFtlMessage(
+      SignalingAddress::CreateFtlSignalingAddress(kOwnerEmail, kRegistrationId),
+      message_proto);
   ASSERT_TRUE(is_handled);
 
   run_loop.Run();

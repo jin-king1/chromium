@@ -10,7 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/time/time.h"
@@ -58,9 +57,13 @@ class DnsResponseResultExtractorTest : public ::testing::Test {
  protected:
   base::SimpleTestClock clock_;
   base::SimpleTestTickClock tick_clock_;
-
-  base::HistogramTester histogram_tester_;
 };
+
+constexpr uint8_t fake_test_rdata[] = {'f', 'a', 'k', 'e', ' ',
+                                       'r', 'd', 'a', 't', 'a'};
+
+constexpr uint8_t malformed_test_rdata[] = {
+    'm', 'a', 'l', 'f', 'o', 'r', 'm', 'e', 'd', ' ', 'r', 'd', 'a', 't', 'a'};
 
 TEST_F(DnsResponseResultExtractorTest, ExtractsSingleARecord) {
   constexpr char kName[] = "address.test";
@@ -81,8 +84,6 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsSingleARecord) {
                   /*expiration_matcher=*/Ne(std::nullopt),
                   /*timed_expiration_matcher=*/Ne(std::nullopt),
                   ElementsAre(IPEndPoint(kExpected, /*port=*/0))))));
-  histogram_tester_.ExpectUniqueSample(
-      DnsResponseResultExtractor::kHasValidCnameRecordsHistogram, false, 1);
 }
 
 TEST_F(DnsResponseResultExtractorTest, ExtractsSingleAAAARecord) {
@@ -106,8 +107,6 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsSingleAAAARecord) {
                   /*expiration_matcher=*/Ne(std::nullopt),
                   /*timed_expiration_matcher=*/Ne(std::nullopt),
                   ElementsAre(IPEndPoint(expected, /*port=*/0))))));
-  histogram_tester_.ExpectUniqueSample(
-      DnsResponseResultExtractor::kHasValidCnameRecordsHistogram, false, 1);
 }
 
 TEST_F(DnsResponseResultExtractorTest, ExtractsSingleARecordWithCname) {
@@ -137,8 +136,6 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsSingleARecordWithCname) {
               kName, DnsQueryType::A, kDnsSource,
               /*expiration_matcher=*/Ne(std::nullopt),
               /*timed_expiration_matcher=*/Ne(std::nullopt), kCanonicalName))));
-  histogram_tester_.ExpectUniqueSample(
-      DnsResponseResultExtractor::kHasValidCnameRecordsHistogram, true, 1);
 }
 
 TEST_F(DnsResponseResultExtractorTest, ExtractsARecordsWithCname) {
@@ -179,19 +176,18 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsARecordsWithCname) {
               kName, DnsQueryType::A, kDnsSource,
               /*expiration_matcher=*/Ne(std::nullopt),
               /*timed_expiration_matcher=*/Ne(std::nullopt), "alias.test"))));
-  histogram_tester_.ExpectUniqueSample(
-      DnsResponseResultExtractor::kHasValidCnameRecordsHistogram, true, 1);
 }
 
 TEST_F(DnsResponseResultExtractorTest, ExtractsNxdomainAResponses) {
   constexpr char kName[] = "address.test";
   constexpr auto kTtl = base::Hours(2);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypeA, /*answers=*/{},
-      /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)},
-      /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypeA, /*answers=*/{},
+                           /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)},
+                           /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -212,10 +208,11 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsNodataAResponses) {
   constexpr char kName[] = "address.test";
   constexpr auto kTtl = base::Minutes(15);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypeA, /*answers=*/{},
-      /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)});
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypeA, /*answers=*/{},
+                           /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)});
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -256,7 +253,7 @@ TEST_F(DnsResponseResultExtractorTest, RejectsMalformedARecord) {
   DnsResponse response = BuildTestDnsResponse(
       kName, dns_protocol::kTypeA,
       {BuildTestDnsRecord(kName, dns_protocol::kTypeA,
-                          "malformed rdata")} /* answers */);
+                          malformed_test_rdata)} /* answers */);
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   EXPECT_EQ(extractor
@@ -394,11 +391,12 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsNxdomainTxtResponses) {
   constexpr char kName[] = "name.test";
   constexpr auto kTtl = base::Days(4);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypeTXT, /*answers=*/{},
-      /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)},
-      /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypeTXT, /*answers=*/{},
+                           /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)},
+                           /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -419,10 +417,11 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsNodataTxtResponses) {
   constexpr char kName[] = "name.test";
   constexpr auto kTtl = base::Minutes(42);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypeTXT,
-      /*answers=*/{}, /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)});
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypeTXT,
+                           /*answers=*/{}, /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)});
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -445,7 +444,25 @@ TEST_F(DnsResponseResultExtractorTest, RejectsMalformedTxtRecord) {
   DnsResponse response = BuildTestDnsResponse(
       kName, dns_protocol::kTypeTXT,
       {BuildTestDnsRecord(kName, dns_protocol::kTypeTXT,
-                          "malformed rdata")} /* answers */);
+                          malformed_test_rdata)} /* answers */);
+  DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
+
+  EXPECT_EQ(extractor
+                .ExtractDnsResults(DnsQueryType::TXT,
+                                   /*original_domain_name=*/kName,
+                                   /*request_port=*/0)
+                .error_or(ExtractionError::kOk),
+            ExtractionError::kMalformedRecord);
+}
+
+TEST_F(DnsResponseResultExtractorTest, RejectsMalformedEmptyTxtRecord) {
+  constexpr char kName[] = "name.test";
+
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypeTXT,
+                           /*answers=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeTXT,
+                                               /*rdata=*/{})});
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   EXPECT_EQ(extractor
@@ -544,11 +561,12 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsNxdomainPtrResponses) {
   constexpr char kName[] = "name.test";
   constexpr auto kTtl = base::Hours(5);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypePTR, /*answers=*/{},
-      /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)},
-      /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypePTR, /*answers=*/{},
+                           /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)},
+                           /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -569,10 +587,11 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsNodataPtrResponses) {
   constexpr char kName[] = "name.test";
   constexpr auto kTtl = base::Minutes(50);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypePTR, /*answers=*/{},
-      /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)});
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypePTR, /*answers=*/{},
+                           /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)});
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -595,7 +614,7 @@ TEST_F(DnsResponseResultExtractorTest, RejectsMalformedPtrRecord) {
   DnsResponse response = BuildTestDnsResponse(
       kName, dns_protocol::kTypePTR,
       {BuildTestDnsRecord(kName, dns_protocol::kTypePTR,
-                          "malformed rdata")} /* answers */);
+                          malformed_test_rdata)} /* answers */);
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   EXPECT_EQ(extractor
@@ -719,11 +738,12 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsNxdomainSrvResponses) {
   constexpr char kName[] = "name.test";
   constexpr auto kTtl = base::Days(7);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypeSRV, /*answers=*/{},
-      /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)},
-      /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypeSRV, /*answers=*/{},
+                           /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)},
+                           /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -744,10 +764,11 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsNodataSrvResponses) {
   constexpr char kName[] = "name.test";
   constexpr auto kTtl = base::Hours(12);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypeSRV, /*answers=*/{},
-      /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)});
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypeSRV, /*answers=*/{},
+                           /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)});
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -770,7 +791,7 @@ TEST_F(DnsResponseResultExtractorTest, RejectsMalformedSrvRecord) {
   DnsResponse response = BuildTestDnsResponse(
       kName, dns_protocol::kTypeSRV,
       {BuildTestDnsRecord(kName, dns_protocol::kTypeSRV,
-                          "malformed rdata")} /* answers */);
+                          malformed_test_rdata)} /* answers */);
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   EXPECT_EQ(extractor
@@ -849,6 +870,8 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsComprehensiveHttpsResponses) {
   constexpr char kAlpn[] = "foo";
   constexpr uint8_t kEchConfig[] = "EEEEEEEEECH!";
   constexpr auto kTtl = base::Hours(12);
+  const std::vector<std::vector<uint8_t>> kTrustAnchorIDs = {{0x01, 0x02, 0x03},
+                                                             {0x02, 0x02}};
 
   DnsResponse response = BuildTestDnsResponse(
       kName, dns_protocol::kTypeHttps,
@@ -857,7 +880,8 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsComprehensiveHttpsResponses) {
            /*service_name=*/".",
            /*params=*/
            {BuildTestHttpsServiceAlpnParam({kAlpn}),
-            BuildTestHttpsServiceEchConfigParam(kEchConfig)},
+            BuildTestHttpsServiceEchConfigParam(kEchConfig),
+            BuildTestHttpsServiceTrustAnchorIDsParam(kTrustAnchorIDs)},
            kTtl),
        BuildTestHttpsServiceRecord(
            kName, /*priority=*/3,
@@ -886,7 +910,8 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsComprehensiveHttpsResponses) {
               Pair(4, ExpectConnectionEndpointMetadata(
                           ElementsAre(kAlpn,
                                       dns_protocol::kHttpsServiceDefaultAlpn),
-                          ElementsAreArray(kEchConfig), kName)))))));
+                          ElementsAreArray(kEchConfig), kName,
+                          ElementsAreArray(kTrustAnchorIDs))))))));
 }
 
 TEST_F(DnsResponseResultExtractorTest, IgnoresHttpsResponseWithJustAlias) {
@@ -1475,11 +1500,12 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsNxdomainHttpsResponses) {
   constexpr char kName[] = "https.test";
   constexpr auto kTtl = base::Minutes(45);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypeHttps, /*answers=*/{},
-      /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)},
-      /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypeHttps, /*answers=*/{},
+                           /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)},
+                           /*additional=*/{}, dns_protocol::kRcodeNXDOMAIN);
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -1500,10 +1526,11 @@ TEST_F(DnsResponseResultExtractorTest, ExtractsNodataHttpsResponses) {
   constexpr char kName[] = "https.test";
   constexpr auto kTtl = base::Hours(36);
 
-  DnsResponse response = BuildTestDnsResponse(
-      kName, dns_protocol::kTypeHttps, /*answers=*/{},
-      /*authority=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA, "fake rdata", kTtl)});
+  DnsResponse response =
+      BuildTestDnsResponse(kName, dns_protocol::kTypeHttps, /*answers=*/{},
+                           /*authority=*/
+                           {BuildTestDnsRecord(kName, dns_protocol::kTypeSOA,
+                                               fake_test_rdata, kTtl)});
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   ResultsOrError results =
@@ -1544,7 +1571,7 @@ TEST_F(DnsResponseResultExtractorTest, RejectsMalformedHttpsRecord) {
   DnsResponse response = BuildTestDnsResponse(
       kName, dns_protocol::kTypeHttps,
       {BuildTestDnsRecord(kName, dns_protocol::kTypeHttps,
-                          "malformed rdata")} /* answers */);
+                          malformed_test_rdata)} /* answers */);
   DnsResponseResultExtractor extractor(response, clock_, tick_clock_);
 
   EXPECT_EQ(extractor
@@ -1637,11 +1664,11 @@ TEST_F(DnsResponseResultExtractorTest, IgnoresAdditionalHttpsRecords) {
 TEST_F(DnsResponseResultExtractorTest, IgnoresUnsolicitedHttpsRecords) {
   constexpr char kName[] = "name.test";
   constexpr auto kTtl = base::Minutes(45);
-
+  const uint8_t test_rdata[] = {0x03, 'f', 'o', 'o'};
   DnsResponse response = BuildTestDnsResponse(
       kName, dns_protocol::kTypeTXT,
       /*answers=*/
-      {BuildTestDnsRecord(kName, dns_protocol::kTypeTXT, "\003foo", kTtl)},
+      {BuildTestDnsRecord(kName, dns_protocol::kTypeTXT, test_rdata, kTtl)},
       /*authority=*/{},
       /*additional=*/
       {BuildTestHttpsServiceRecord(
@@ -1752,8 +1779,6 @@ TEST_F(DnsResponseResultExtractorTest, HandlesInOrderCnameChainTypeA) {
               /*expiration_matcher=*/Ne(std::nullopt),
               /*timed_expiration_matcher=*/Ne(std::nullopt),
               ElementsAre(expected_endpoint)))));
-  histogram_tester_.ExpectUniqueSample(
-      DnsResponseResultExtractor::kHasValidCnameRecordsHistogram, true, 1);
 }
 
 TEST_F(DnsResponseResultExtractorTest, HandlesReverseOrderCnameChain) {
@@ -2303,14 +2328,13 @@ TEST_F(DnsResponseResultExtractorTest, ValidatesAliasNames) {
 TEST_F(DnsResponseResultExtractorTest, CanonicalizesAliasNames) {
   const IPAddress kExpected(192, 168, 0, 1);
   constexpr char kName[] = "address.test";
-  constexpr char kCname[] = "\005ALIAS\004test\000";
-
+  constexpr const uint8_t kCname[] = {0x05, 'A', 'L', 'I', 'A', 'S',
+                                      0x04, 't', 'e', 's', 't', 0x00};
   // Need to build records directly in order to manually encode alias target
   // name because BuildTestDnsAddressResponseWithCname() uses
   // DNSDomainFromDot() which does not support non-URL-canonicalized names.
   std::vector<DnsResourceRecord> answers = {
-      BuildTestDnsRecord(kName, dns_protocol::kTypeCNAME,
-                         std::string(kCname, sizeof(kCname) - 1)),
+      BuildTestDnsRecord(kName, dns_protocol::kTypeCNAME, kCname),
       BuildTestAddressRecord("alias.test", kExpected)};
   DnsResponse response =
       BuildTestDnsResponse(kName, dns_protocol::kTypeA, answers);

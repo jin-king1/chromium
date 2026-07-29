@@ -17,6 +17,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl_conformance_swangle_passthrough_tests",
         "resultdb": {
           "enable": true,
@@ -26,7 +28,7 @@
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,

@@ -21,10 +21,13 @@
 #include "components/exo/notification_surface.h"
 #include "components/exo/surface.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/compositor/layer.h"
@@ -41,6 +44,7 @@
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/focus/focus_manager.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
@@ -94,19 +98,22 @@ class ArcNotificationContentView::EventForwarder : public ui::EventHandler {
  private:
   // ui::EventHandler
   void OnEvent(ui::Event* event) override {
+    ArcNotificationContentView* owner = owner_;
+    views::ViewTracker tracker(owner);
+
     // Do not forward event targeted to the floating close button so that
     // keyboard press and tap are handled properly.
-    if (owner_->floating_control_buttons_widget_ && event->target() &&
-        owner_->floating_control_buttons_widget_->GetNativeWindow() ==
+    if (owner->floating_control_buttons_widget_ && event->target() &&
+        owner->floating_control_buttons_widget_->GetNativeWindow() ==
             event->target()) {
       return;
     }
 
-    if (!owner_->item_ || !owner_->surface_) {
+    if (!owner->item_ || !owner->surface_) {
       return;
     }
 
-    views::Widget* widget = owner_->GetWidget();
+    views::Widget* widget = owner->GetWidget();
     if (!widget || !widget->GetNativeWindow()) {
       return;
     }
@@ -124,7 +131,7 @@ class ArcNotificationContentView::EventForwarder : public ui::EventHandler {
                                                     located_event);
       if (located_event->type() == ui::EventType::kMouseEntered ||
           located_event->type() == ui::EventType::kMouseExited) {
-        owner_->UpdateControlButtonsVisibility();
+        owner->UpdateControlButtonsVisibility();
         widget->OnMouseEvent(located_event->AsMouseEvent());
         return;
       }
@@ -133,7 +140,7 @@ class ArcNotificationContentView::EventForwarder : public ui::EventHandler {
           located_event->IsMouseWheelEvent()) {
         widget->OnMouseEvent(located_event->AsMouseEvent());
       } else if (located_event->IsScrollEvent()) {
-        owner_->item_->CancelPress();
+        owner->item_->CancelPress();
         widget->OnScrollEvent(located_event->AsScrollEvent());
         return;
       } else if (located_event->IsGestureEvent() &&
@@ -144,10 +151,10 @@ class ArcNotificationContentView::EventForwarder : public ui::EventHandler {
              event->type() == ui::EventType::kGestureScrollEnd ||
              event->type() == ui::EventType::kGestureSwipe)) {
           gfx::RectF rect =
-              owner_->surface_->GetContentWindow()->transform().MapRect(
-                  gfx::RectF(owner_->item_->GetSwipeInputRect()));
+              owner->surface_->GetContentWindow()->transform().MapRect(
+                  gfx::RectF(owner->item_->GetSwipeInputRect()));
           gfx::Point location = located_event->location();
-          views::View::ConvertPointFromWidget(owner_, &location);
+          views::View::ConvertPointFromWidget(owner, &location);
           bool contains = rect.Contains(gfx::PointF(location));
 
           if (contains && event->type() == ui::EventType::kGestureScrollBegin) {
@@ -158,7 +165,7 @@ class ArcNotificationContentView::EventForwarder : public ui::EventHandler {
         }
 
         if (event->type() == ui::EventType::kGestureScrollBegin) {
-          owner_->item_->CancelPress();
+          owner->item_->CancelPress();
         }
 
         if (event->type() == ui::EventType::kGestureScrollEnd) {
@@ -168,14 +175,18 @@ class ArcNotificationContentView::EventForwarder : public ui::EventHandler {
         if (slide_handled_by_android &&
             event->type() == ui::EventType::kGestureScrollBegin) {
           is_current_slide_handled_by_android_ = true;
-          owner_->message_view_->DisableSlideForcibly(true);
+          owner->message_view_->DisableSlideForcibly(true);
         } else if (is_current_slide_handled_by_android_ &&
                    event->type() == ui::EventType::kGestureScrollEnd) {
           is_current_slide_handled_by_android_ = false;
-          owner_->message_view_->DisableSlideForcibly(false);
+          owner->message_view_->DisableSlideForcibly(false);
         }
 
         widget->OnGestureEvent(located_event->AsGestureEvent());
+      }
+
+      if (!tracker.view()) {
+        return;
       }
 
       // Records UMA when user clicks/taps on the notification surface. Note
@@ -196,7 +207,7 @@ class ArcNotificationContentView::EventForwarder : public ui::EventHandler {
       // When the ARC notification is slid out, all mouse presses and taps
       // should go to underlying widget so the swipe control buttons can
       // pressed. See crbug.com/965603.
-      if (owner_->slide_in_progress()) {
+      if (owner->slide_in_progress()) {
         if (event->type() == ui::EventType::kMouseReleased ||
             event->type() == ui::EventType::kMousePressed) {
           widget->OnMouseEvent(event->AsMouseEvent());
@@ -204,21 +215,19 @@ class ArcNotificationContentView::EventForwarder : public ui::EventHandler {
           widget->OnGestureEvent(event->AsGestureEvent());
         }
       }
-    }
-
-    // If AXTree is attached to notification content view, notification surface
-    // always gets focus. Tab key events are consumed by the surface, and tab
-    // focus traversal gets stuck at Android notification. To prevent it, always
-    // pass tab key event to focus manager of content view.
-    // TODO(yawano): include elements inside Android notification in tab focus
-    // traversal rather than skipping them.
-    if (owner_->surface_->GetAXTreeId() != ui::AXTreeIDUnknown() &&
-        event->IsKeyEvent()) {
-      ui::KeyEvent* key_event = event->AsKeyEvent();
-      if (key_event->key_code() == ui::VKEY_TAB &&
-          (key_event->flags() == ui::EF_NONE ||
-           key_event->flags() == ui::EF_SHIFT_DOWN)) {
-        widget->GetFocusManager()->OnKeyEvent(*key_event);
+    } else if (event->IsKeyEvent()) {
+      // If AXTree is attached to notification content view, notification
+      // surface always gets focus. Tab key events are consumed by the surface,
+      // and tab focus traversal gets stuck at Android notification. To prevent
+      // it, always pass tab key event to focus manager of content view.
+      if (owner->surface_ &&
+          owner->surface_->GetAXTreeId() != ui::AXTreeIDUnknown()) {
+        ui::KeyEvent* key_event = event->AsKeyEvent();
+        if (key_event->key_code() == ui::VKEY_TAB &&
+            (key_event->flags() == ui::EF_NONE ||
+             key_event->flags() == ui::EF_SHIFT_DOWN)) {
+          widget->GetFocusManager()->OnKeyEvent(*key_event);
+        }
       }
     }
   }
@@ -289,6 +298,11 @@ ArcNotificationContentView::ArcNotificationContentView(
       message_view_(message_view),
       control_buttons_view_(message_view) {
   DCHECK(message_view);
+  // ArcNotificationContentsView creates its own layer, so NVH do not need
+  // to create one.
+  SetCreateLayer(false);
+
+  control_buttons_view_.SetButtonIconColors(cros_tokens::kIconColorPrimary);
   control_buttons_view_.SetNotificationControlButtonFactory(
       std::make_unique<AshNotificationControlButtonFactory>());
 
@@ -319,7 +333,7 @@ ArcNotificationContentView::ArcNotificationContentView(
   UpdateAccessibleChildTreeId();
   // Creates the control_buttons_view_, which collects all control buttons into
   // a horizontal box.
-  control_buttons_view_.set_owned_by_client();
+  control_buttons_view_.set_owned_by_client(OwnedByClientPassKey());
   Update(notification);
 
   // Create a layer as an anchor to insert surface copy during a slide.
@@ -413,7 +427,7 @@ void ArcNotificationContentView::UpdateCornerRadius(float top_radius,
   contents_radii_ = gfx::RoundedCornersF(top_radius, top_radius, bottom_radius,
                                          bottom_radius);
   if (GetWidget()) {
-    SetCornerRadii(contents_radii_);
+    SetNativeViewCornerRadii(contents_radii_);
   }
 }
 
@@ -649,7 +663,7 @@ void ArcNotificationContentView::AddedToWidget() {
     HideCopiedSurface();
   }
 
-  SetCornerRadii(contents_radii_);
+  SetNativeViewCornerRadii(contents_radii_);
 }
 
 void ArcNotificationContentView::RemovedFromWidget() {
@@ -742,17 +756,18 @@ void ArcNotificationContentView::Layout(PassKey) {
 void ArcNotificationContentView::OnPaint(gfx::Canvas* canvas) {
   views::NativeViewHost::OnPaint(canvas);
 
-  SkScalar radii[8] = {contents_radii_.upper_left(),
-                       contents_radii_.upper_left(),  // top-left
-                       contents_radii_.upper_right(),
-                       contents_radii_.upper_right(),  // top-right
-                       contents_radii_.lower_right(),
-                       contents_radii_.lower_right(),  // bottom-right
-                       contents_radii_.lower_left(),
-                       contents_radii_.lower_left()};  // bottom-left
-  SkPath path;
-  path.addRoundRect(gfx::RectToSkRect(GetLocalBounds()), radii,
-                    SkPathDirection::kCCW);
+  const SkVector radii[4] = {
+      // top-left
+      {contents_radii_.upper_left(), contents_radii_.upper_left()},
+      // top-right
+      {contents_radii_.upper_right(), contents_radii_.upper_right()},
+      // bottom-right
+      {contents_radii_.lower_right(), contents_radii_.lower_right()},
+      // bottom-left
+      {contents_radii_.lower_left(), contents_radii_.lower_left()}};
+  const SkPath path = SkPath::RRect(
+      SkRRect::MakeRectRadii(gfx::RectToSkRect(GetLocalBounds()), radii),
+      SkPathDirection::kCCW);
   canvas->ClipPath(path, false);
 
   if (!surface_ && item_ && !item_->GetSnapshot().isNull()) {
@@ -763,11 +778,9 @@ void ArcNotificationContentView::OnPaint(gfx::Canvas* canvas) {
         item_->GetSnapshot().height(), contents_bounds.x(), contents_bounds.y(),
         contents_bounds.width(), contents_bounds.height(), true /* filter */);
   } else {
-    // Draw a clear background otherwise. The height of the view/ surface and
+    // Draw a clear background otherwise. The height of the view surface and
     // animation buffer size are not exactly synced and user may see the blank
     // area out of the surface.
-    // TODO: This can be removed once both ARC and Chrome notifications have
-    // smooth expansion animations.
     canvas->DrawColor(SK_ColorTRANSPARENT);
   }
 }
@@ -803,15 +816,6 @@ void ArcNotificationContentView::OnBlur() {
 
   NativeViewHost::OnBlur();
   notification_view->OnContentBlurred();
-}
-
-void ArcNotificationContentView::OnThemeChanged() {
-  View::OnThemeChanged();
-
-  // Adjust control button color.
-  control_buttons_view_.SetButtonIconColors(
-      AshColorProvider::Get()->GetContentLayerColor(
-          AshColorProvider::ContentLayerType::kIconColorPrimary));
 }
 
 void ArcNotificationContentView::OnRemoteInputActivationChanged(

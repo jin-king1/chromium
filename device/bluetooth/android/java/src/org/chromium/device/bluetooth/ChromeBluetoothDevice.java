@@ -4,13 +4,13 @@
 
 package org.chromium.device.bluetooth;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothGatt;
 import android.os.ParcelUuid;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
@@ -23,15 +23,17 @@ import org.chromium.device.bluetooth.wrapper.BluetoothGattCharacteristicWrapper;
 import org.chromium.device.bluetooth.wrapper.BluetoothGattDescriptorWrapper;
 import org.chromium.device.bluetooth.wrapper.BluetoothGattServiceWrapper;
 import org.chromium.device.bluetooth.wrapper.BluetoothGattWrapper;
+import org.chromium.device.bluetooth.wrapper.BluetoothSocketWrapper;
 import org.chromium.device.bluetooth.wrapper.ThreadUtilsWrapper;
 
+import java.io.IOException;
 import java.util.HashMap;
+import java.util.UUID;
 
 /**
- * Exposes android.bluetooth.BluetoothDevice as necessary for C++
- * device::BluetoothDeviceAndroid.
+ * Exposes android.bluetooth.BluetoothDevice as necessary for C++ device::BluetoothDeviceAndroid.
  *
- * Lifetime is controlled by device::BluetoothDeviceAndroid.
+ * <p>Lifetime is controlled by device::BluetoothDeviceAndroid.
  */
 @JNINamespace("device")
 @NullMarked
@@ -41,6 +43,7 @@ final class ChromeBluetoothDevice {
     private long mNativeBluetoothDeviceAndroid;
     final BluetoothDeviceWrapper mDevice;
     @Nullable BluetoothGattWrapper mBluetoothGatt;
+    private boolean mPendingGattConnection;
     private final BluetoothGattCallbackImpl mBluetoothGattCallbackImpl;
     final HashMap<BluetoothGattCharacteristicWrapper, ChromeBluetoothRemoteGattCharacteristic>
             mWrapperToChromeCharacteristicsMap;
@@ -109,6 +112,7 @@ final class ChromeBluetoothDevice {
 
     // Implements BluetoothDeviceAndroid::GetUUIDs for classic devices.
     @CalledByNative
+    @JniType("std::vector<std::string>")
     private String[] getUuids() {
         ParcelUuid[] uuids = mDevice.getUuids();
         if (uuids == null) {
@@ -116,9 +120,35 @@ final class ChromeBluetoothDevice {
         }
         String[] uuidStrings = new String[uuids.length];
         for (int i = 0; i < uuids.length; i++) {
-            uuidStrings[i] = uuids[i].toString();
+            uuidStrings[i] = uuids[i].getUuid().toString();
         }
         return uuidStrings;
+    }
+
+    // Implements BluetoothDeviceAndroid::ConnectToService.
+    @CalledByNative
+    @Nullable
+    private Outcome<BluetoothSocketWrapper> connectToService(
+            @JniType("std::string") String uuidString) {
+        try {
+            return new Outcome<>(
+                    mDevice.createRfcommSocketToServiceRecord(UUID.fromString(uuidString)));
+        } catch (IOException e) {
+            return new Outcome<>(e);
+        }
+    }
+
+    // Implements BluetoothDeviceAndroid::ConnectToServiceInsecurely.
+    @CalledByNative
+    @Nullable
+    private Outcome<BluetoothSocketWrapper> connectToServiceInsecurely(
+            @JniType("std::string") String uuidString) {
+        try {
+            return new Outcome<>(
+                    mDevice.createInsecureRfcommSocketToServiceRecord(UUID.fromString(uuidString)));
+        } catch (IOException e) {
+            return new Outcome<>(e);
+        }
     }
 
     // Implements BluetoothDeviceAndroid::CreateGattConnectionImpl.
@@ -130,6 +160,7 @@ final class ChromeBluetoothDevice {
 
         // autoConnect set to false as under experimentation using autoConnect failed to complete
         // connections.
+        mPendingGattConnection = true;
         mBluetoothGatt =
                 mDevice.connectGatt(
                         ContextUtils.getApplicationContext(),
@@ -143,7 +174,25 @@ final class ChromeBluetoothDevice {
     @CalledByNative
     private void disconnectGatt() {
         Log.i(TAG, "BluetoothGatt.disconnect");
-        if (mBluetoothGatt != null) mBluetoothGatt.disconnect();
+        if (mBluetoothGatt == null) return;
+
+        boolean pendingGattConnection = mPendingGattConnection;
+        mBluetoothGatt.disconnect();
+        if (pendingGattConnection) {
+            // Some Android Bluetooth stacks do not report a callback when disconnect() cancels a
+            // pending connectGatt(); see
+            // https://android-review.googlesource.com/c/platform/packages/modules/Bluetooth/+/4105933.
+            mPendingGattConnection = false;
+            mBluetoothGatt.close();
+            mBluetoothGatt = null;
+            if (mNativeBluetoothDeviceAndroid != 0) {
+                ChromeBluetoothDeviceJni.get()
+                        .onConnectionStateChange(
+                                mNativeBluetoothDeviceAndroid,
+                                BluetoothGatt.GATT_FAILURE,
+                                /* connected= */ false);
+            }
+        }
     }
 
     // Implements callbacks related to a GATT connection.
@@ -163,8 +212,12 @@ final class ChromeBluetoothDevice {
         }
 
         private void onConnectionStateChangeUiThread(int status, int newState) {
+            mPendingGattConnection = false;
             if (newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
-                BluetoothGattWrapper bluetoothGatt = assumeNonNull(mBluetoothGatt);
+                if (mBluetoothGatt == null) {
+                    return;
+                }
+                BluetoothGattWrapper bluetoothGatt = mBluetoothGatt;
                 // Try requesting for a larger ATT MTU so that more information can be exchanged per
                 // transmission.
                 if (!bluetoothGatt.requestMtu(517)) {
@@ -180,7 +233,6 @@ final class ChromeBluetoothDevice {
                 ChromeBluetoothDeviceJni.get()
                         .onConnectionStateChange(
                                 mNativeBluetoothDeviceAndroid,
-                                ChromeBluetoothDevice.this,
                                 status,
                                 newState == android.bluetooth.BluetoothProfile.STATE_CONNECTED);
             }
@@ -236,14 +288,10 @@ final class ChromeBluetoothDevice {
                                     + service.getInstanceId();
                     ChromeBluetoothDeviceJni.get()
                             .createGattRemoteService(
-                                    mNativeBluetoothDeviceAndroid,
-                                    ChromeBluetoothDevice.this,
-                                    serviceInstanceId,
-                                    service);
+                                    mNativeBluetoothDeviceAndroid, serviceInstanceId, service);
                 }
                 ChromeBluetoothDeviceJni.get()
-                        .onGattServicesDiscovered(
-                                mNativeBluetoothDeviceAndroid, ChromeBluetoothDevice.this);
+                        .onGattServicesDiscovered(mNativeBluetoothDeviceAndroid);
             }
         }
 
@@ -357,20 +405,15 @@ final class ChromeBluetoothDevice {
     interface Natives {
         // Binds to BluetoothDeviceAndroid::OnConnectionStateChange.
         void onConnectionStateChange(
-                long nativeBluetoothDeviceAndroid,
-                ChromeBluetoothDevice caller,
-                int status,
-                boolean connected);
+                long nativeBluetoothDeviceAndroid, int status, boolean connected);
 
         // Binds to BluetoothDeviceAndroid::CreateGattRemoteService.
         void createGattRemoteService(
                 long nativeBluetoothDeviceAndroid,
-                ChromeBluetoothDevice caller,
                 String instanceId,
                 BluetoothGattServiceWrapper serviceWrapper);
 
         // Binds to BluetoothDeviceAndroid::GattServicesDiscovered.
-        void onGattServicesDiscovered(
-                long nativeBluetoothDeviceAndroid, ChromeBluetoothDevice caller);
+        void onGattServicesDiscovered(long nativeBluetoothDeviceAndroid);
     }
 }

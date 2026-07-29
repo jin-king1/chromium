@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "mojo/public/cpp/bindings/connector.h"
 
 #include <stddef.h>
@@ -16,6 +11,7 @@
 #include <array>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -40,8 +36,9 @@ class MessageAccumulator : public MessageReceiver {
 
   bool Accept(Message* message) override {
     queue_.Push(message);
-    if (closure_)
+    if (closure_) {
       std::move(closure_).Run();
+    }
     return true;
   }
 
@@ -79,8 +76,9 @@ class ReentrantMessageAccumulator : public MessageAccumulator {
       : connector_(connector), number_of_calls_(0) {}
 
   bool Accept(Message* message) override {
-    if (!MessageAccumulator::Accept(message))
+    if (!MessageAccumulator::Accept(message)) {
       return false;
+    }
     number_of_calls_++;
     if (number_of_calls_ == 1) {
       return connector_->WaitForIncomingMessage();
@@ -110,7 +108,8 @@ class ConnectorTest : public testing::Test {
       std::vector<ScopedHandle> handles = std::vector<ScopedHandle>()) {
     const size_t size = strlen(text) + 1;  // Plus null terminator.
     Message message(1, 0, size, 0, &handles);
-    memcpy(message.payload_buffer()->AllocateAndGet(size), text, size);
+    UNSAFE_TODO(
+        memcpy(message.payload_buffer()->AllocateAndGet(size), text, size));
     return message;
   }
 

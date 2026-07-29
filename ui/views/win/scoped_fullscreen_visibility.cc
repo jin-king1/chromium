@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "base/check.h"
-#include "base/not_fatal_until.h"
 
 namespace views {
 
@@ -28,18 +27,18 @@ ScopedFullscreenVisibility::ScopedFullscreenVisibility(HWND hwnd)
     // ShowWindow(SW_HIDE) will automatically activate another window).  This
     // code can be called while a window is being deactivated, and activating
     // another window will screw up the activation that is already in progress.
-    SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
-                 SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE |
-                     SWP_NOREPOSITION | SWP_NOSIZE | SWP_NOZORDER);
+    ::SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+                   SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE |
+                       SWP_NOREPOSITION | SWP_NOSIZE | SWP_NOZORDER);
   }
 }
 
 ScopedFullscreenVisibility::~ScopedFullscreenVisibility() {
   FullscreenHWNDs::iterator it = full_screen_windows_->find(hwnd_);
-  CHECK(it != full_screen_windows_->end(), base::NotFatalUntil::M130);
+  CHECK(it != full_screen_windows_->end());
   if (--it->second == 0) {
     full_screen_windows_->erase(it);
-    ShowWindow(hwnd_, SW_SHOW);
+    ::ShowWindow(hwnd_, SW_SHOW);
   }
   if (full_screen_windows_->empty()) {
     delete full_screen_windows_;

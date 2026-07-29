@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.autofill.settings;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.os.Bundle;
 
@@ -13,11 +15,15 @@ import androidx.preference.Preference;
 import androidx.preference.PreferenceScreen;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.AutofillImageFetcherFactory;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils;
@@ -25,17 +31,23 @@ import org.chromium.chrome.browser.autofill.PersonalDataManager;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.PersonalDataManagerObserver;
 import org.chromium.chrome.browser.autofill.PersonalDataManagerFactory;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
+import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.components.autofill.ImageSize;
 import org.chromium.components.autofill.payments.AccountType;
 import org.chromium.components.autofill.payments.BankAccount;
 import org.chromium.components.autofill.payments.Ewallet;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
+import org.chromium.components.browser_ui.settings.SettingsFragment;
+import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 
 /** Fragment showing management options for financial accounts like Pix, e-Wallets etc. */
+@NullMarked
 public class FinancialAccountsManagementFragment extends ChromeBaseSettingsFragment
         implements PersonalDataManagerObserver, Preference.OnPreferenceChangeListener {
-    private static Callback<Fragment> sObserverForTest;
+    private static @Nullable Callback<Fragment> sObserverForTest;
 
     // Histograms
     @VisibleForTesting
@@ -57,15 +69,16 @@ public class FinancialAccountsManagementFragment extends ChromeBaseSettingsFragm
     static final String TITLE_KEY = "financial_accounts_management_title";
 
     private PersonalDataManager mPersonalDataManager;
-    private Ewallet[] mEwallets;
-    private BankAccount[] mBankAccounts;
-    private final ObservableSupplierImpl<String> mPageTitle = new ObservableSupplierImpl<>();
+    private Ewallet @Nullable [] mEwallets;
+    private BankAccount @Nullable [] mBankAccounts;
+    private final SettableMonotonicObservableSupplier<String> mPageTitle =
+            ObservableSuppliers.createMonotonic();
     private Callback<String> mFinancialAccountManageLinkOpenerCallback =
             url -> CustomTabActivity.showInfoPage(getActivity(), url);
 
-    // ChromeBaseSettingsFramgent override.
+    // ChromeBaseSettingsFragment override.
     @Override
-    public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
+    public void onCreatePreferences(@Nullable Bundle savedInstanceState, @Nullable String rootKey) {
         Bundle extras = getArguments();
         String title = "";
         if (extras != null) {
@@ -87,28 +100,28 @@ public class FinancialAccountsManagementFragment extends ChromeBaseSettingsFragm
     }
 
     @Override
-    public ObservableSupplier<String> getPageTitle() {
+    public MonotonicObservableSupplier<String> getPageTitle() {
         return mPageTitle;
     }
 
-    // ChromeBaseSettingsFramgent override.
+    // ChromeBaseSettingsFragment override.
     @Override
-    public void onResume() {
-        super.onResume();
+    public void onStart() {
+        super.onStart();
         // Rebuild the preference list in case any of the underlying data has been updated and if
         // any preferences need to be added/removed based on that.
         rebuildPage();
     }
 
-    // ChromeBaseSettingsFramgent override.
+    // ChromeBaseSettingsFragment override.
     @Override
-    public void onActivityCreated(Bundle savedInstanceState) {
+    public void onActivityCreated(@Nullable Bundle savedInstanceState) {
         super.onActivityCreated(savedInstanceState);
         mPersonalDataManager = PersonalDataManagerFactory.getForProfile(getProfile());
         mPersonalDataManager.registerDataObserver(this);
     }
 
-    // ChromeBaseSettingsFramgent override.
+    // ChromeBaseSettingsFragment override.
     @Override
     public void onDestroyView() {
         mPersonalDataManager.unregisterDataObserver(this);
@@ -128,8 +141,7 @@ public class FinancialAccountsManagementFragment extends ChromeBaseSettingsFragm
                 mPersonalDataManager.getFacilitatedPaymentsEwalletPref();
         boolean isFacilitatedPaymentsPixEnabled =
                 mPersonalDataManager.getFacilitatedPaymentsPixPref();
-
-        if (mEwallets.length > 0) {
+        if (shouldShowEwalletPref(getProfile())) {
             ChromeSwitchPreference eWalletSwitch = new ChromeSwitchPreference(getStyledContext());
             eWalletSwitch.setChecked(isFacilitatedPaymentsEwalletEnabled);
             eWalletSwitch.setKey(PREFERENCE_KEY_EWALLET);
@@ -141,7 +153,7 @@ public class FinancialAccountsManagementFragment extends ChromeBaseSettingsFragm
             eWalletSwitch.setOnPreferenceChangeListener(this);
         }
 
-        if (mBankAccounts.length > 0) {
+        if (shouldShowPixPref(getProfile())) {
             ChromeSwitchPreference pixSwitch = new ChromeSwitchPreference(getStyledContext());
             pixSwitch.setChecked(isFacilitatedPaymentsPixEnabled);
             pixSwitch.setKey(PREFERENCE_KEY_PIX);
@@ -158,14 +170,26 @@ public class FinancialAccountsManagementFragment extends ChromeBaseSettingsFragm
         }
     }
 
+    private static boolean shouldShowEwalletPref(Profile profile) {
+        var personalDataManager = PersonalDataManagerFactory.getForProfile(profile);
+        return !ChromeFeatureList.isEnabled(
+                        ChromeFeatureList.AUTOFILL_ENABLE_SEPARATE_PIX_PREFERENCE_ITEM)
+                && personalDataManager.getEwallets().length > 0;
+    }
+
+    private static boolean shouldShowPixPref(Profile profile) {
+        var personalDataManager = PersonalDataManagerFactory.getForProfile(profile);
+        return personalDataManager.getMaskedBankAccounts().length > 0;
+    }
+
     private void addPixAccountPreferences() {
-        for (BankAccount bankAccount : mBankAccounts) {
+        for (BankAccount bankAccount : assumeNonNull(mBankAccounts)) {
             getPreferenceScreen().addPreference(getPreferenceForBankAccount(bankAccount));
         }
     }
 
     private void addEwalletRowItems() {
-        for (Ewallet eWallet : mEwallets) {
+        for (Ewallet eWallet : assumeNonNull(mEwallets)) {
             getPreferenceScreen().addPreference(getEwalletRowItem(eWallet));
         }
     }
@@ -212,7 +236,7 @@ public class FinancialAccountsManagementFragment extends ChromeBaseSettingsFragm
         eWalletPref.setIcon(
                 AutofillUiUtils.getCardIcon(
                         getStyledContext(),
-                        mPersonalDataManager,
+                        AutofillImageFetcherFactory.getForProfile(getProfile()),
                         eWallet.getDisplayIconUrl(),
                         R.drawable.ic_account_balance,
                         ImageSize.LARGE,
@@ -286,5 +310,56 @@ public class FinancialAccountsManagementFragment extends ChromeBaseSettingsFragm
     @VisibleForTesting
     static void setObserverForTest(Callback<Fragment> observerForTest) {
         sObserverForTest = observerForTest;
+        ResettersForTesting.register(() -> sObserverForTest = null);
     }
+
+    @Override
+    public @SettingsFragment.AnimationType int getAnimationType() {
+        return SettingsFragment.AnimationType.PROPERTY;
+    }
+
+    public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
+            new ChromeBaseSearchIndexProvider(
+                    FinancialAccountsManagementFragment.class.getName(), 0) {
+                @Override
+                public void updateDynamicPreferences(
+                        Context context, SettingsIndexData indexData, Profile profile) {
+                    String frag = FinancialAccountsManagementFragment.class.getName();
+                    Bundle extras = getExtras(context, profile);
+                    if (shouldShowEwalletPref(profile)) {
+                        indexData.addEntryForKey(
+                                frag,
+                                PREFERENCE_KEY_EWALLET,
+                                R.string.settings_manage_other_financial_accounts_ewallet,
+                                /* summaryId= */ 0,
+                                extras);
+                    }
+                    if (shouldShowPixPref(profile)) {
+                        indexData.addEntryForKey(
+                                frag,
+                                PREFERENCE_KEY_PIX,
+                                R.string.settings_manage_other_financial_accounts_pix,
+                                /* summaryId= */ 0,
+                                extras);
+                    }
+                }
+
+                private static Bundle getExtras(Context context, Profile profile) {
+                    Bundle extras = new Bundle();
+                    var manager = PersonalDataManagerFactory.getForProfile(profile);
+                    boolean hasEwallets = AutofillPaymentMethodsFragment.hasEwallets(manager);
+                    boolean hasPixAccounts = AutofillPaymentMethodsFragment.hasPixAccounts(manager);
+                    String title = null;
+                    if (AutofillPaymentMethodsFragment.shouldShowManagePix(manager, profile)) {
+                        title = context.getString(R.string.settings_manage_pix_title);
+                    } else if (AutofillPaymentMethodsFragment.shouldShowOtherFinanceAccounts(
+                            profile, hasEwallets, hasPixAccounts)) {
+                        title =
+                                AutofillPaymentMethodsFragment.getFacilitatedPaymentsTitleString(
+                                        context, hasEwallets, hasPixAccounts);
+                    }
+                    extras.putString(TITLE_KEY, title);
+                    return extras;
+                }
+            };
 }

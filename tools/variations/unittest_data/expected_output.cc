@@ -5,68 +5,74 @@
 // GENERATED FROM THE SCHEMA DEFINITION AND DESCRIPTION IN
 //   field_trial_testing_config_schema.json
 //   test_config.json
-// DO NOT EDIT.
+// using json_to_struct.py. DO NOT EDIT.
 
 #include "test_output.h"
 
 
-const OverrideUIString array_kFieldTrialConfig_override_ui_string[] = {
-      {
-        4045341670,
-        "test",
-      },
+const char* const array_kFieldTrialConfig_exclude_hardware_manufacturers[] = {
+      "OnePlus",
 };
-const Study::Platform array_kFieldTrialConfig_platforms_8[] = {
+const char* const array_kFieldTrialConfig_hardware_manufacturers[] = {
+      "Google",
+      "Samsung",
+};
+const Study::Platform array_kFieldTrialConfig_platforms_11[] = {
       Study::PLATFORM_WINDOWS,
 };
-const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_5[] = {
+const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_6[] = {
     {
-      "TestGroup",
-      array_kFieldTrialConfig_platforms_8,
+      "TestGroup1",
+      array_kFieldTrialConfig_platforms_11,
       {},
+      std::nullopt,
       std::nullopt,
       nullptr,
       {},
       {},
       {},
       nullptr,
-      array_kFieldTrialConfig_override_ui_string,
       {},
       {},
+      array_kFieldTrialConfig_hardware_manufacturers,
+      array_kFieldTrialConfig_exclude_hardware_manufacturers,
     },
 };
 const Study::FormFactor array_kFieldTrialConfig_form_factors_0[] = {
       Study::TABLET,
 };
-const Study::Platform array_kFieldTrialConfig_platforms_7[] = {
+const Study::Platform array_kFieldTrialConfig_platforms_10[] = {
       Study::PLATFORM_WINDOWS,
 };
 const Study::FormFactor array_kFieldTrialConfig_form_factors[] = {
       Study::DESKTOP,
       Study::PHONE,
 };
-const Study::Platform array_kFieldTrialConfig_platforms_6[] = {
+const Study::Platform array_kFieldTrialConfig_platforms_9[] = {
       Study::PLATFORM_WINDOWS,
 };
-const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_4[] = {
+const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_5[] = {
     {
       "TestGroup1",
-      array_kFieldTrialConfig_platforms_6,
+      array_kFieldTrialConfig_platforms_9,
       array_kFieldTrialConfig_form_factors,
+      std::nullopt,
       std::nullopt,
       nullptr,
       {},
       {},
       {},
       nullptr,
+      {},
       {},
       {},
       {},
     },
     {
       "TestGroup2",
-      array_kFieldTrialConfig_platforms_7,
+      array_kFieldTrialConfig_platforms_10,
       array_kFieldTrialConfig_form_factors_0,
+      std::nullopt,
       std::nullopt,
       nullptr,
       {},
@@ -76,22 +82,84 @@ const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_4[] = {
       {},
       {},
       {},
+      {},
     },
 };
-const Study::Platform array_kFieldTrialConfig_platforms_5[] = {
+const Study::Platform array_kFieldTrialConfig_platforms_8[] = {
       Study::PLATFORM_WINDOWS,
 };
-const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_3[] = {
+const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_4[] = {
     {
       "ForcedGroup",
-      array_kFieldTrialConfig_platforms_5,
+      array_kFieldTrialConfig_platforms_8,
       {},
+      std::nullopt,
       std::nullopt,
       nullptr,
       {},
       {},
       {},
       "my-forcing-flag",
+      {},
+      {},
+      {},
+      {},
+    },
+};
+const Study::Platform array_kFieldTrialConfig_platforms_7[] = {
+      Study::PLATFORM_WINDOWS,
+};
+const Study::Platform array_kFieldTrialConfig_platforms_6[] = {
+      Study::PLATFORM_WINDOWS,
+};
+const Study::Platform array_kFieldTrialConfig_platforms_5[] = {
+      Study::PLATFORM_WINDOWS,
+};
+const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_3[] = {
+    {
+      "TestGroup1",
+      array_kFieldTrialConfig_platforms_5,
+      {},
+      std::nullopt,
+      true,
+      nullptr,
+      {},
+      {},
+      {},
+      nullptr,
+      {},
+      {},
+      {},
+      {},
+    },
+    {
+      "TestGroup2",
+      array_kFieldTrialConfig_platforms_6,
+      {},
+      std::nullopt,
+      false,
+      nullptr,
+      {},
+      {},
+      {},
+      nullptr,
+      {},
+      {},
+      {},
+      {},
+    },
+    {
+      "TestGroup3",
+      array_kFieldTrialConfig_platforms_7,
+      {},
+      std::nullopt,
+      std::nullopt,
+      nullptr,
+      {},
+      {},
+      {},
+      nullptr,
+      {},
       {},
       {},
       {},
@@ -109,11 +177,13 @@ const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_2[] = {
       array_kFieldTrialConfig_platforms_3,
       {},
       true,
+      std::nullopt,
       nullptr,
       {},
       {},
       {},
       nullptr,
+      {},
       {},
       {},
       {},
@@ -123,11 +193,13 @@ const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_2[] = {
       array_kFieldTrialConfig_platforms_4,
       {},
       false,
+      std::nullopt,
       nullptr,
       {},
       {},
       {},
       nullptr,
+      {},
       {},
       {},
       {},
@@ -145,11 +217,13 @@ const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_1[] = {
       array_kFieldTrialConfig_platforms_2,
       {},
       std::nullopt,
+      std::nullopt,
       nullptr,
       {},
       array_kFieldTrialConfig_enable_features_1,
       {},
       nullptr,
+      {},
       {},
       {},
       {},
@@ -201,11 +275,13 @@ const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_0[] = {
       array_kFieldTrialConfig_platforms_0,
       {},
       std::nullopt,
+      std::nullopt,
       nullptr,
       array_kFieldTrialConfig_params,
       array_kFieldTrialConfig_enable_features,
       array_kFieldTrialConfig_disable_features,
       nullptr,
+      {},
       {},
       {},
       {},
@@ -215,11 +291,13 @@ const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments_0[] = {
       array_kFieldTrialConfig_platforms_1,
       {},
       std::nullopt,
+      std::nullopt,
       nullptr,
       array_kFieldTrialConfig_params_0,
       array_kFieldTrialConfig_enable_features_0,
       array_kFieldTrialConfig_disable_features_0,
       nullptr,
+      {},
       {},
       {},
       {},
@@ -234,11 +312,13 @@ const FieldTrialTestingExperiment array_kFieldTrialConfig_experiments[] = {
       array_kFieldTrialConfig_platforms,
       {},
       std::nullopt,
+      std::nullopt,
       nullptr,
       {},
       {},
       {},
       nullptr,
+      {},
       {},
       {},
       {},
@@ -262,16 +342,20 @@ const FieldTrialTestingStudy array_kFieldTrialConfig_studies[] = {
     array_kFieldTrialConfig_experiments_2,
   },
   {
-    "TrialWithForcingFlag",
+    "TrialWithDisableBenchmarking",
     array_kFieldTrialConfig_experiments_3,
   },
   {
-    "TrialWithFormFactors",
+    "TrialWithForcingFlag",
     array_kFieldTrialConfig_experiments_4,
   },
   {
-    "TrialWithOverrideUIString",
+    "TrialWithFormFactors",
     array_kFieldTrialConfig_experiments_5,
+  },
+  {
+    "TrialWithHardwareManufacturers",
+    array_kFieldTrialConfig_experiments_6,
   },
 };
 const FieldTrialTestingConfig kFieldTrialConfig = {

@@ -10,9 +10,11 @@
 #define COMPONENTS_OMNIBOX_BROWSER_ZERO_SUGGEST_PROVIDER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/gtest_prod_util.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_provider_debouncer.h"
 #include "components/omnibox/browser/base_search_provider.h"
 
@@ -22,7 +24,6 @@ class PrefRegistrySimple;
 namespace network {
 class SimpleURLLoader;
 }
-
 
 // Autocomplete provider for searches based on the current URL.
 //
@@ -53,6 +54,12 @@ class ZeroSuggestProvider : public BaseSearchProvider {
   static ZeroSuggestProvider* Create(AutocompleteProviderClient* client,
                                      AutocompleteProviderListener* listener);
 
+  // Returns an AutocompleteMatch for a navigational suggestion |navigation|.
+  static AutocompleteMatch NavigationToMatch(
+      AutocompleteProvider* provider,
+      AutocompleteProviderClient* client,
+      const SearchSuggestionParser::NavigationResult& navigation);
+
   // Registers a preference used to cache the zero suggest response.
   static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
@@ -66,8 +73,7 @@ class ZeroSuggestProvider : public BaseSearchProvider {
   // AutocompleteProvider:
   void StartPrefetch(const AutocompleteInput& input) override;
   void Start(const AutocompleteInput& input, bool minimal_changes) override;
-  void Stop(bool clear_cached_results,
-            bool due_to_user_inactivity) override;
+  void Stop(AutocompleteStopReason stop_reason) override;
   void DeleteMatch(const AutocompleteMatch& match) override;
   void AddProviderInfo(ProvidersInfo* provider_info) const override;
 
@@ -97,6 +103,10 @@ class ZeroSuggestProvider : public BaseSearchProvider {
   ~ZeroSuggestProvider() override;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(ZeroSuggestProviderTest,
+                           TestCacheStateWithSRPPrefetchDisabled);
+  FRIEND_TEST_ALL_PREFIXES(ZeroSuggestProviderTest,
+                           TestCacheStateWithWebPrefetchDisabled);
   // BaseSearchProvider:
   bool ShouldAppendExtraParams(
       const SearchSuggestionParser::SuggestResult& result) const override;
@@ -110,7 +120,7 @@ class ZeroSuggestProvider : public BaseSearchProvider {
                          const ResultType result_type,
                          const network::SimpleURLLoader* source,
                          const int response_code,
-                         std::unique_ptr<std::string> response_body);
+                         std::optional<std::string> response_body);
   // Called when the prefetch network request has completed.
   // `input` and `result_type` are bound to this callback. The former is the
   // input for which the request was made and the latter indicates the result
@@ -119,15 +129,19 @@ class ZeroSuggestProvider : public BaseSearchProvider {
                                  const ResultType result_type,
                                  const network::SimpleURLLoader* source,
                                  const int response_code,
-                                 std::unique_ptr<std::string> response_body);
+                                 std::optional<std::string> response_body);
+
+  void StartZeroSuggestPrefetchRequest(
+      const AutocompleteInput& input,
+      const ResultType result_type,
+      TemplateURLRef::SearchTermsArgs search_terms_args,
+      std::unique_ptr<network::SimpleURLLoader>* prefetch_loader);
 
   // Called by `debouncer_`.
   void RunZeroSuggestPrefetch(const AutocompleteInput& input,
                               const ResultType result_type);
-
-  // Returns an AutocompleteMatch for a navigational suggestion |navigation|.
-  AutocompleteMatch NavigationToMatch(
-      const SearchSuggestionParser::NavigationResult& navigation);
+  // Called by 'composebox_debouncer_'
+  void RunComposeboxPrefetch(const AutocompleteInput& input);
 
   // Called either in Start() with |results| populated from the cached response,
   // where |matches_| are empty; or in OnURLLoadComplete() with |results|
@@ -154,9 +168,13 @@ class ZeroSuggestProvider : public BaseSearchProvider {
   // Loader used to retrieve results for ZPS prefetch requests on SRP/Web.
   std::unique_ptr<network::SimpleURLLoader> srp_web_prefetch_loader_;
 
+  // Loader used to retrieve results for composebox prefetch requests.
+  std::unique_ptr<network::SimpleURLLoader> composebox_prefetch_loader_;
+
   // Debouncer used to throttle the frequency of ZPS prefetch requests (to
   // minimize the performance impact on the remote Suggest service).
   std::unique_ptr<AutocompleteProviderDebouncer> debouncer_;
+  std::unique_ptr<AutocompleteProviderDebouncer> composebox_debouncer_;
 
   // The list of experiment stats corresponding to |matches_|.
   SearchSuggestionParser::ExperimentStatsV2s experiment_stats_v2s_;

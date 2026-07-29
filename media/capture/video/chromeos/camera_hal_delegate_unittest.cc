@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/capture/video/chromeos/camera_hal_delegate.h"
 
 #include <stddef.h>
@@ -15,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/run_loop.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
@@ -30,7 +26,6 @@
 
 using testing::_;
 using testing::A;
-using testing::Invoke;
 using testing::Return;
 
 namespace {
@@ -51,7 +46,6 @@ class CameraHalDelegateTest : public ::testing::Test {
 
   void SetUp() override {
     test_sii_ = base::MakeRefCounted<gpu::TestSharedImageInterface>();
-    test_sii_->UseTestGMBInSharedImageCreationWithBufferUsage();
     VideoCaptureDeviceFactoryChromeOS::SetSharedImageInterface(test_sii_);
     camera_hal_delegate_ = std::make_unique<CameraHalDelegate>(
         base::SingleThreadTaskRunner::GetCurrentDefault());
@@ -122,7 +116,8 @@ TEST_F(CameraHalDelegateTest, GetBuiltinCameraInfo) {
     min_frame_durations[6] = 720;
     min_frame_durations[7] = 16666666;
     uint8_t* as_int8 = reinterpret_cast<uint8_t*>(min_frame_durations.data());
-    entry->data.assign(as_int8, as_int8 + entry->count * sizeof(int64_t));
+    entry->data.assign(as_int8,
+                       UNSAFE_TODO(as_int8 + entry->count * sizeof(int64_t)));
     static_metadata->entries->push_back(std::move(entry));
 
     entry = cros::mojom::CameraMetadataEntry::New();
@@ -133,7 +128,8 @@ TEST_F(CameraHalDelegateTest, GetBuiltinCameraInfo) {
     entry->count = 4;
     std::vector<int32_t> default_fps_range{30, 30, 60, 60};
     as_int8 = reinterpret_cast<uint8_t*>(default_fps_range.data());
-    entry->data.assign(as_int8, as_int8 + entry->count * sizeof(int32_t));
+    entry->data.assign(as_int8,
+                       UNSAFE_TODO(as_int8 + entry->count * sizeof(int32_t)));
     static_metadata->entries->push_back(std::move(entry));
 
     switch (camera_id) {
@@ -189,7 +185,7 @@ TEST_F(CameraHalDelegateTest, GetBuiltinCameraInfo) {
 
   EXPECT_CALL(mock_camera_module_, DoGetNumberOfCameras(_))
       .Times(1)
-      .WillOnce(Invoke(get_number_of_cameras_cb));
+      .WillOnce(get_number_of_cameras_cb);
   EXPECT_CALL(
       mock_camera_module_,
       DoSetCallbacksAssociated(
@@ -197,28 +193,28 @@ TEST_F(CameraHalDelegateTest, GetBuiltinCameraInfo) {
               cros::mojom::CameraModuleCallbacks>&>(),
           A<cros::mojom::CameraModule::SetCallbacksAssociatedCallback&>()))
       .Times(1)
-      .WillOnce(Invoke(set_callbacks_cb));
+      .WillOnce(set_callbacks_cb);
   EXPECT_CALL(mock_camera_module_,
               DoGetVendorTagOps(
                   A<mojo::PendingReceiver<cros::mojom::VendorTagOps>>(),
                   A<cros::mojom::CameraModule::GetVendorTagOpsCallback&>()))
       .Times(1)
-      .WillOnce(Invoke(get_vendor_tag_ops_cb));
+      .WillOnce(get_vendor_tag_ops_cb);
   EXPECT_CALL(mock_camera_module_,
               DoGetCameraInfo(
                   0, A<cros::mojom::CameraModule::GetCameraInfoCallback&>()))
       .Times(1)
-      .WillOnce(Invoke(get_camera_info_cb));
+      .WillOnce(get_camera_info_cb);
   EXPECT_CALL(mock_camera_module_,
               DoGetCameraInfo(
                   1, A<cros::mojom::CameraModule::GetCameraInfoCallback&>()))
       .Times(1)
-      .WillOnce(Invoke(get_camera_info_cb));
+      .WillOnce(get_camera_info_cb);
   EXPECT_CALL(mock_camera_module_,
               DoGetCameraInfo(
                   2, A<cros::mojom::CameraModule::GetCameraInfoCallback&>()))
       .Times(1)
-      .WillOnce(Invoke(get_camera_info_cb));
+      .WillOnce(get_camera_info_cb);
 
   EXPECT_CALL(mock_vendor_tag_ops_, DoGetTagCount())
       .Times(1)

@@ -26,23 +26,26 @@
     <div class="screen-reader-only">
       [[getA11yIbanDescription_(iban)]], [[iban.nickname]]
     </div>
-    <div id="value" class="ellipses" aria-hidden="true">
-      [[iban.metadata.summaryLabel]]
+    <div id="label" class="ellipses" aria-hidden="true">
+      [[getLabel_(iban)]]
     </div>
-    <div id="nickname" class="ellipses sub-label" aria-hidden="true">
-      [[iban.nickname]]
+    <div id="subLabel" class="ellipses sub-label" aria-hidden="true">
+      [[getSubLabel_(iban)]]
     </div>
   </div>
   <div role="cell" class="second-column">
     <div id="paymentsIndicator"
         hidden$="[[!shouldShowGooglePaymentsIndicator_(iban.metadata)]]">
 <if expr="_google_chrome">
-        <picture id="paymentsIcon">
-          <source
-              srcset="chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_DARK_SMALL"
-              media="(prefers-color-scheme: dark)">
-          <img alt="" src="chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_SMALL">
-        </picture>
+    <picture id="paymentsIcon">
+      <source
+          srcset="[[getGooglePayDarkModeLogoSrcSet_(
+              autofillEnableGradientGoogleLogosEnabled_)]]"
+          media="(prefers-color-scheme: dark)">
+      <img alt=""
+          srcset="[[getGooglePayLightModeLogoSrcSet_(
+              autofillEnableGradientGoogleLogosEnabled_)]]">
+    </picture>
 </if>
 <if expr="not _google_chrome">
         <span class="sub-label">$i18n{googlePayments}</span>
@@ -53,10 +56,19 @@
           title="[[getMoreActionsTitle_(iban)]]" on-click="onDotsMenuClick_">
       </cr-icon-button>
     </template>
-    <template is="dom-if" if="[[!showDotsMenu_(iban.metadata)]]">
+    <template is="dom-if"
+        if="[[shouldShowOutlinkWithWalletBranding_(iban.metadata)]]">
+      <cr-icon-button class="icon-external" id="remoteIbanLink"
+          title="$i18n{remotePaymentMethodsWalletLinkLabel}" role="link"
+          on-click="onRemoteEditClick_"
+          aria-description="$i18n{opensInNewTab}"></cr-icon-button>
+    </template>
+    <template is="dom-if"
+        if="[[shouldShowOutlinkWithoutWalletBranding_(iban.metadata)]]">
       <cr-icon-button class="icon-external" id="remoteIbanLink"
           title="$i18n{remotePaymentMethodsLinkLabel}" role="link"
-          on-click="onRemoteEditClick_"></cr-icon-button>
+          on-click="onRemoteEditClick_"
+          aria-description="$i18n{opensInNewTab}"></cr-icon-button>
     </template>
   </div>
 </div>

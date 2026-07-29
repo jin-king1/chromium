@@ -2,13 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "android_webview/browser/aw_user_agent_metadata.h"
+
 #include <vector>
 
 #include "android_webview/browser/aw_client_hints_controller_delegate.h"
-#include "android_webview/browser/aw_user_agent_metadata.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
+#include "base/strings/string_number_conversions.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/browser_jni_headers/AwUserAgentMetadata_jni.h"
@@ -110,8 +112,8 @@ ScopedJavaLocalRef<jobject> ToJavaAwUserAgentMetadata(
       ToJavaArrayOfStringArray(env, brand_version_list);
   ScopedJavaLocalRef<jobjectArray> java_brand_full_version_lis =
       ToJavaArrayOfStringArray(env, brand_full_version_list);
-  jboolean java_mobile = ua_metadata.mobile;
-  jboolean java_wow64 = ua_metadata.wow64;
+  bool java_mobile = ua_metadata.mobile;
+  bool java_wow64 = ua_metadata.wow64;
   ScopedJavaLocalRef<jobjectArray> java_form_factors =
       ToJavaArrayOfStrings(env, ua_metadata.form_factors);
 
@@ -123,3 +125,5 @@ ScopedJavaLocalRef<jobject> ToJavaAwUserAgentMetadata(
 }
 
 }  // namespace android_webview
+
+DEFINE_JNI(AwUserAgentMetadata)

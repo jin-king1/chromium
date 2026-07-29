@@ -8,7 +8,6 @@
 #include <sstream>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
@@ -62,24 +61,24 @@ std::string CreateConfigurationJsonString(const std::string& guid) {
   return ss.str();
 }
 
-std::string GetSsid(const base::Value::Dict& shill_properties) {
+std::string GetSsid(const base::DictValue& shill_properties) {
   return shill_property_util::GetSSIDFromProperties(shill_properties, false,
                                                     nullptr);
 }
 
-std::string GetSecurityClass(const base::Value::Dict& shill_properties) {
+std::string GetSecurityClass(const base::DictValue& shill_properties) {
   const std::string* security =
       shill_properties.FindString(shill::kSecurityClassProperty);
   return security ? *security : std::string();
 }
 
-std::string GetPassphrase(const base::Value::Dict& shill_properties) {
+std::string GetPassphrase(const base::DictValue& shill_properties) {
   const std::string* passphrase =
       shill_properties.FindString(shill::kPassphraseProperty);
   return passphrase ? *passphrase : std::string();
 }
 
-std::string GetGuid(const base::Value::Dict& shill_properties) {
+std::string GetGuid(const base::DictValue& shill_properties) {
   const std::string* guid = shill_properties.FindString(shill::kGuidProperty);
   return guid ? *guid : std::string();
 }
@@ -89,7 +88,7 @@ std::string GetGuid(const base::Value::Dict& shill_properties) {
 //   - has a non-empty GUID.
 // Returns true if all checks were successful, false otherwise.
 // Fills the GUID of the service into |*out_guid|.
-bool VerifyBaseConfiguration(const base::Value::Dict& shill_properties,
+bool VerifyBaseConfiguration(const base::DictValue& shill_properties,
                              const std::string& expected_ssid,
                              std::string* out_guid) {
   bool ok = true;
@@ -115,7 +114,7 @@ bool VerifyBaseConfiguration(const base::Value::Dict& shill_properties,
 //   - has the passphrase |expected_passphrase|.
 // Returns true if all checks were successful, false otherwise.
 // Fills the GUID of the service into |*out_guid|.
-bool VerifyPskConfiguration(const base::Value::Dict& shill_properties,
+bool VerifyPskConfiguration(const base::DictValue& shill_properties,
                             const std::string& expected_ssid,
                             const std::string& expected_passphrase,
                             std::string* out_guid) {
@@ -147,7 +146,7 @@ bool VerifyPskConfiguration(const base::Value::Dict& shill_properties,
 //   - has security class None.
 // Returns true if all checks were successful, false otherwise.
 // Fills the GUID of the service into |*out_guid|.
-bool VerifyOpenConfiguration(const base::Value::Dict& shill_properties,
+bool VerifyOpenConfiguration(const base::DictValue& shill_properties,
                              const std::string& expected_ssid,
                              std::string* out_guid) {
   bool ok = VerifyBaseConfiguration(shill_properties, expected_ssid, out_guid);
@@ -179,8 +178,8 @@ class WifiHotspotConnectorTest : public testing::Test,
 
     // Returns a Dict object with no entries if no configuration has been passed
     // to TestNetworkConnect yet.
-    const base::Value::Dict GetLastConfiguration() {
-      return last_configuration_.empty() ? base::Value::Dict()
+    const base::DictValue GetLastConfiguration() {
+      return last_configuration_.empty() ? base::DictValue()
                                          : last_configuration_.Clone();
     }
 
@@ -206,12 +205,12 @@ class WifiHotspotConnectorTest : public testing::Test,
     void ShowPortalSignin(const std::string& service_path,
                           NetworkConnect::Source source) override {}
     void ConfigureNetworkIdAndConnect(const std::string& network_id,
-                                      const base::Value::Dict& shill_properties,
+                                      const base::DictValue& shill_properties,
                                       bool shared) override {}
-    void CreateConfigurationAndConnect(base::Value::Dict shill_properties,
+    void CreateConfigurationAndConnect(base::DictValue shill_properties,
                                        bool shared) override {}
 
-    void CreateConfiguration(base::Value::Dict shill_properties,
+    void CreateConfiguration(base::DictValue shill_properties,
                              bool shared) override {
       EXPECT_FALSE(shared);
       last_configuration_ = std::move(shill_properties);
@@ -234,7 +233,7 @@ class WifiHotspotConnectorTest : public testing::Test,
     raw_ptr<NetworkHandlerTestHelper> helper_;
     // Has type base::Value::Type::NONE if no configuration has been passed to
     // TestNetworkConnect yet.
-    base::Value::Dict last_configuration_;
+    base::DictValue last_configuration_;
     std::string last_service_path_created_;
     bool is_running_in_test_task_runner_ = false;
   };
@@ -412,13 +411,16 @@ class WifiHotspotConnectorTest : public testing::Test,
   void HandleConnect() {}
 
   // NetworkConnectionObserver:
-  void ConnectToNetworkRequested(const std::string& service_path) override {
+  ConnectToNetworkRequestVerdict ConnectToNetworkRequested(
+      const std::string& service_path) override {
     if (requested_failure_count_ > 0) {
       helper_.service_test()->SetErrorForNextConnectionAttempt("Failure");
     }
 
     requested_connection_service_paths_.push_back(service_path);
+    return ConnectToNetworkRequestVerdict::kProceed;
   }
+
   void ConnectSucceeded(const std::string& service_path) override {
     successful_connection_service_paths_.push_back(service_path);
   }

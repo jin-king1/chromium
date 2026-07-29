@@ -4,15 +4,32 @@
 
 package org.chromium.chrome.browser.dragdrop;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
+import android.content.ClipDescription;
+import android.content.Context;
+import android.text.TextUtils;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
+import org.chromium.chrome.browser.tabmodel.TabGroupTitleUtils;
+import org.chromium.ui.base.MimeTypeUtils;
+
+import java.util.List;
 
 /** Chrome-specific drop data containing a {@link TabGroupMetadata}. */
+@NullMarked
 public class ChromeTabGroupDropDataAndroid extends ChromeDropDataAndroid {
-    public final TabGroupMetadata tabGroupMetadata;
+    public final @Nullable TabGroupMetadata tabGroupMetadata;
+    public final List<Tab> tabs;
 
     ChromeTabGroupDropDataAndroid(Builder builder) {
         super(builder);
         tabGroupMetadata = builder.mTabGroupMetadata;
+        assert tabGroupMetadata != null;
+        tabs = assertNonNull(builder.mTabs);
     }
 
     @Override
@@ -22,18 +39,33 @@ public class ChromeTabGroupDropDataAndroid extends ChromeDropDataAndroid {
 
     @Override
     public boolean isIncognito() {
-        return hasBrowserContent() && tabGroupMetadata.isIncognito;
+        return tabGroupMetadata != null && tabGroupMetadata.isIncognito;
     }
 
     @Override
-    public String buildTabClipDataText() {
-        // TODO(crbug.com/380327012): Implement clip data text for groups.
-        return null;
+    public String buildTabClipDataText(Context context) {
+        if (tabGroupMetadata == null) return "";
+        if (TextUtils.isEmpty(tabGroupMetadata.tabGroupTitle)) {
+            return TabGroupTitleUtils.getDefaultTitle(
+                    context, tabGroupMetadata.tabIdsToUrls.size());
+        }
+        return tabGroupMetadata.tabGroupTitle;
+    }
+
+    @Override
+    public String[] getSupportedMimeTypes() {
+        // TODO(crbug.com/404709214): Support Link Mimetype by using the shared tab group link.
+        return new String[] {
+            MimeTypeUtils.CHROME_MIMETYPE_TAB_GROUP,
+            ClipDescription.MIMETYPE_TEXT_PLAIN,
+            ClipDescription.MIMETYPE_TEXT_INTENT
+        };
     }
 
     /** Builder for @{@link ChromeTabDropDataAndroid} instance. */
     public static class Builder extends ChromeDropDataAndroid.Builder {
-        private TabGroupMetadata mTabGroupMetadata;
+        private @Nullable TabGroupMetadata mTabGroupMetadata;
+        private @Nullable List<Tab> mTabs;
 
         /**
          * @param tabGroupMetadata The {@link TabGroupMetadata} associated with the dragging group.
@@ -41,6 +73,15 @@ public class ChromeTabGroupDropDataAndroid extends ChromeDropDataAndroid {
          */
         public Builder withTabGroupMetadata(TabGroupMetadata tabGroupMetadata) {
             mTabGroupMetadata = tabGroupMetadata;
+            return this;
+        }
+
+        /**
+         * @param tabs The list of tabs associated with the dragging group.
+         * @return {@link ChromeTabGroupDropDataAndroid.Builder} instance.
+         */
+        public Builder withTabs(List<Tab> tabs) {
+            mTabs = tabs;
             return this;
         }
 

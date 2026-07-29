@@ -7,7 +7,6 @@
 #include <optional>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
@@ -58,8 +57,8 @@ class AppInstallAlmanacEndpointTest : public testing::Test {
   network::TestURLLoaderFactory test_url_loader_factory_;
 
  private:
-  content::BrowserTaskEnvironment task_environment_;
   ash::system::ScopedFakeStatisticsProvider fake_statistics_provider_;
+  content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<TestingProfile> profile_;
 };
 
@@ -168,6 +167,48 @@ TEST_F(AppInstallAlmanacEndpointTest, GetAppInstallInfoSuccessfulResponse) {
   web_app_data.open_as_window = true;
   EXPECT_EQ(base::ToString(response_future.Get().value()),
             base::ToString(expected_data));
+}
+
+TEST_F(AppInstallAlmanacEndpointTest,
+       GetAppInstallInfoIgnoresNonHttpImageUrls) {
+  proto::AppInstallResponse response;
+  proto::AppInstallResponse_AppInstance& instance =
+      *response.mutable_app_instance();
+  instance.set_package_id("android:com.foo.app");
+  instance.set_name("Example");
+  {
+    proto::AppInstallResponse_Icon& icon = *instance.mutable_icon();
+    icon.set_url("data:image/png;base64,abc");
+    icon.set_width_in_pixels(144);
+  }
+  for (const char* url : {
+           "data:image/png;base64,abc",
+           "chrome://resources/images/icon.png",
+           "file:///tmp/icon.png",
+           "https://example.com/screenshot.png",
+       }) {
+    proto::AppInstallResponse_Screenshot& screenshot =
+        *instance.add_screenshots();
+    screenshot.set_url(url);
+    screenshot.set_mime_type("image/png");
+    screenshot.set_width_in_pixels(400);
+    screenshot.set_height_in_pixels(400);
+  }
+
+  test_url_loader_factory_.AddResponse(
+      app_install_almanac_endpoint::GetEndpointUrlForTesting().spec(),
+      response.SerializeAsString());
+
+  ResponseFuture response_future;
+  app_install_almanac_endpoint::GetAppInstallInfo(
+      profile(), kTestPackageId, response_future.GetCallback());
+  ASSERT_TRUE(response_future.Get().has_value());
+  const AppInstallData& data = response_future.Get().value();
+
+  EXPECT_FALSE(data.icon.has_value());
+  ASSERT_EQ(data.screenshots.size(), 1u);
+  EXPECT_EQ(data.screenshots[0].url,
+            GURL("https://example.com/screenshot.png"));
 }
 
 TEST_F(AppInstallAlmanacEndpointTest, GetAppInstallInfoMinimalResponse) {

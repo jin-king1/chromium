@@ -15,6 +15,9 @@
 
 namespace viz {
 
+AsyncReadResultLock::AsyncReadResultLock() = default;
+AsyncReadResultLock::~AsyncReadResultLock() = default;
+
 AsyncReadResultHelper::AsyncReadResultHelper(
     SkiaOutputSurfaceImplOnGpu* impl_on_gpu,
     std::unique_ptr<const SkSurface::AsyncReadResult> result)
@@ -61,10 +64,12 @@ ReadPixelsContext::ReadPixelsContext(
     std::unique_ptr<CopyOutputRequest> request,
     const gfx::Rect& result_rect,
     const gfx::ColorSpace& color_space,
+    const TrackedElementRects& tracked_element_rects,
     base::WeakPtr<SkiaOutputSurfaceImplOnGpu> impl_on_gpu)
     : request(std::move(request)),
       result_rect(result_rect),
       color_space(color_space),
+      tracked_element_rects(tracked_element_rects),
       impl_on_gpu(impl_on_gpu) {}
 
 ReadPixelsContext::~ReadPixelsContext() = default;
@@ -107,6 +112,7 @@ void CopyOutputResultSkiaRGBA::OnReadbackDone(
   auto result = std::make_unique<CopyOutputResultSkiaRGBA>(
       impl_on_gpu, context->result_rect, std::move(async_result),
       context->color_space);
+  result->SetTrackedElementRects(std::move(context->tracked_element_rects));
   context->request->SendResult(std::move(result));
 }
 
@@ -183,10 +189,9 @@ void ReadbackContextTexture::OnMailboxReadyInternal() {
     impl_on_gpu_->ReadbackDone();
   }
 
-  request_->SendResult(std::make_unique<CopyOutputTextureResult>(
-      request_->result_format(), result_rect_,
-      CopyOutputResult::TextureResult(mailbox_, color_space_),
-      CopyOutputResult::ReleaseCallbacks()));
+  request_->SendResult(std::make_unique<CopyOutputSharedImageResult>(
+      request_->result_format(), result_rect_, mailbox_, color_space_,
+      "OnMailboxReadyInternal", ReleaseCallback()));
 }
 
 CopyOutputResultSkiaYUV::CopyOutputResultSkiaYUV(

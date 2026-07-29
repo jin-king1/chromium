@@ -12,9 +12,11 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "media/audio/audio_device_description.h"
+#include "media/base/audio_bus.h"
 #include "media/base/audio_timestamp_helper.h"
 #include "third_party/blink/renderer/modules/media/audio/audio_renderer_mixer.h"
 #include "third_party/blink/renderer/modules/media/audio/audio_renderer_mixer_pool.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
 
@@ -94,6 +96,17 @@ void AudioRendererMixerInput::Start() {
 }
 
 void AudioRendererMixerInput::Stop() {
+  {
+    // Prevents race conditions when Stop() is called during a device change.
+    base::AutoLock auto_lock(device_change_lock_);
+    if (switch_output_device_in_progress_) {
+      switch_output_device_in_progress_ = false;
+    }
+  }
+  StopInternal();
+}
+
+void AudioRendererMixerInput::StopInternal() {
   // Stop() may be called at any time, if Pause() hasn't been called we need to
   // remove our mixer input before shutdown.
   Pause();
@@ -148,14 +161,17 @@ void AudioRendererMixerInput::GetOutputDeviceInfoAsync(
   // immediately. Per the AudioRendererSink API contract, this must be posted.
   if (device_info_.has_value() && (sink_ || mixer_)) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(info_cb), *device_info_));
+        FROM_HERE, blink::BindOnce(std::move(info_cb), *device_info_));
     return;
   }
 
-  if (switch_output_device_in_progress_) {
-    DCHECK(!godia_in_progress_);
-    pending_device_info_cb_ = std::move(info_cb);
-    return;
+  {
+    base::AutoLock auto_lock(device_change_lock_);
+    if (switch_output_device_in_progress_) {
+      DCHECK(!godia_in_progress_);
+      pending_device_info_cb_ = std::move(info_cb);
+      return;
+    }
   }
 
   godia_in_progress_ = true;
@@ -173,8 +189,8 @@ void AudioRendererMixerInput::GetOutputDeviceInfoAsync(
   // The callback is guaranteed to execute on this thread, so there are no
   // threading issues.
   sink_->GetOutputDeviceInfoAsync(
-      base::BindOnce(&AudioRendererMixerInput::OnDeviceInfoReceived,
-                     base::RetainedRef(this), std::move(info_cb)));
+      blink::BindOnce(&AudioRendererMixerInput::OnDeviceInfoReceived,
+                      blink::RetainedRef(this), std::move(info_cb)));
 }
 
 bool AudioRendererMixerInput::IsOptimizedForHardwareParameters() {
@@ -190,7 +206,10 @@ void AudioRendererMixerInput::SwitchOutputDevice(
     media::OutputDeviceStatusCB callback) {
   // If a GODIA() call is in progress, defer until it's complete.
   if (godia_in_progress_) {
-    DCHECK(!switch_output_device_in_progress_);
+    {
+      base::AutoLock auto_lock(device_change_lock_);
+      DCHECK(!switch_output_device_in_progress_);
+    }
 
     // Abort any previous device switch which may be pending.
     if (pending_switch_cb_) {
@@ -212,7 +231,10 @@ void AudioRendererMixerInput::SwitchOutputDevice(
     return;
   }
 
-  switch_output_device_in_progress_ = true;
+  {
+    base::AutoLock auto_lock(device_change_lock_);
+    switch_output_device_in_progress_ = true;
+  }
 
   // Request a new sink using the new device id. This process may fail, so to
   // avoid interrupting working audio, don't set any class variables until we
@@ -224,8 +246,8 @@ void AudioRendererMixerInput::SwitchOutputDevice(
   // The callback is guaranteed to execute on this thread, so there are no
   // threading issues.
   new_sink->GetOutputDeviceInfoAsync(
-      base::BindOnce(&AudioRendererMixerInput::OnDeviceSwitchReady,
-                     base::RetainedRef(this), std::move(callback), new_sink));
+      blink::BindOnce(&AudioRendererMixerInput::OnDeviceSwitchReady,
+                      blink::RetainedRef(this), std::move(callback), new_sink));
 }
 
 double AudioRendererMixerInput::ProvideInput(
@@ -253,16 +275,14 @@ double AudioRendererMixerInput::ProvideInput(
 
     DCHECK_LE(remaining_fade_in_frames_, total_fade_in_frames_);
     const int start_volume = total_fade_in_frames_ - remaining_fade_in_frames_;
+    const float fade_in_step = 1.0f / total_fade_in_frames_;
     DCHECK_GE(start_volume, 0);
 
     // Apply a perfect linear fade-in. Fading-in in steps (e.g. increasing
     // volume by 10% every 1ms over 10ms) introduces high frequency distortions.
-    for (int ch = 0; ch < audio_bus->channels(); ++ch) {
-      float* data = audio_bus->channel(ch);
-
+    for (auto channel : audio_bus->AllChannels()) {
       for (int i = 0; i < frames; ++i) {
-        UNSAFE_TODO(data[i]) *=
-            static_cast<float>(start_volume + i) / total_fade_in_frames_;
+        channel[i] *= static_cast<float>(start_volume + i) * fade_in_step;
       }
     }
 
@@ -307,45 +327,48 @@ void AudioRendererMixerInput::OnDeviceSwitchReady(
     media::OutputDeviceStatusCB switch_cb,
     scoped_refptr<media::AudioRendererSink> sink,
     media::OutputDeviceInfo device_info) {
-  DCHECK(switch_output_device_in_progress_);
-  switch_output_device_in_progress_ = false;
+  auto return_status = device_info.device_status();
 
-  if (device_info.device_status() != media::OUTPUT_DEVICE_STATUS_OK) {
-    sink->Stop();
-    std::move(switch_cb).Run(device_info.device_status());
+  {
+    base::AutoLock auto_lock(device_change_lock_);
 
-    // Start any pending device info request.
-    if (pending_device_info_cb_) {
-      GetOutputDeviceInfoAsync(std::move(pending_device_info_cb_));
+    if (device_info.device_status() != media::OUTPUT_DEVICE_STATUS_OK) {
+      // Case: Device change failed.
+      sink->Stop();
+    } else if (!switch_output_device_in_progress_) {
+      // Case: Stop() called during device change.
+      sink->Stop();
+      return_status = media::OUTPUT_DEVICE_STATUS_ERROR_INTERNAL;
+    } else {
+      // Case: Device change succeeded, connect to new sink.
+      const bool has_mixer = !!mixer_;
+      const bool is_playing = playing_;
+
+      // This may occur if Start() hasn't yet been called.
+      if (sink_) {
+        sink_->Stop();
+      }
+
+      sink_ = std::move(sink);
+      device_info_ = device_info;
+      device_id_ = device_info.device_id();
+
+      auto callback = callback_;
+      StopInternal();
+      callback_ = callback;
+
+      if (has_mixer) {
+        Start();
+        if (is_playing) {
+          Play();
+        }
+      }
     }
 
-    return;
+    switch_output_device_in_progress_ = false;
   }
 
-  const bool has_mixer = !!mixer_;
-  const bool is_playing = playing_;
-
-  // This may occur if Start() hasn't yet been called.
-  if (sink_) {
-    sink_->Stop();
-  }
-
-  sink_ = std::move(sink);
-  device_info_ = device_info;
-  device_id_ = device_info.device_id();
-
-  auto callback = callback_;
-  Stop();
-  callback_ = callback;
-
-  if (has_mixer) {
-    Start();
-    if (is_playing) {
-      Play();
-    }
-  }
-
-  std::move(switch_cb).Run(device_info.device_status());
+  std::move(switch_cb).Run(return_status);
 
   // Start any pending device info request.
   if (pending_device_info_cb_) {

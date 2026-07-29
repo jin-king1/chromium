@@ -45,6 +45,8 @@ interface ManagedDataResponse {
   eolMessage: string;
   eolAdminMessage: string;
   showMonitoredNetworkPrivacyDisclosure: boolean;
+  showWindowsNoticeForDeskSync: boolean;
+  showCookiesNoticeForDeskSync: boolean;
 }
 
 interface ThreatProtectionPermission {
@@ -137,53 +139,76 @@ export interface ManagementBrowserProxy {
    * @return The list of profile reporting info messages.
    */
   initProfileReportingInfo(): Promise<BrowserReportingResponse[]>;
+
+  /**
+   * @return Whether the promotion banner should be shown.
+   */
+  shouldShowPromotion(): Promise<boolean>;
+
+  setBannerDismissed(): Promise<void>;
+
+  recordBannerRedirected(): Promise<void>;
 }
 
 export class ManagementBrowserProxyImpl implements ManagementBrowserProxy {
   getExtensions() {
-    return sendWithPromise('getExtensions');
+    return sendWithPromise<Extension[]>('getExtensions');
   }
 
   getManagedWebsites() {
-    return sendWithPromise('getManagedWebsites');
+    return sendWithPromise<string[]>('getManagedWebsites');
   }
 
   getApplications() {
-    return sendWithPromise('getApplications');
+    return sendWithPromise<Application[]>('getApplications');
   }
 
   // <if expr="is_chromeos">
   getLocalTrustRootsInfo() {
-    return sendWithPromise('getLocalTrustRootsInfo');
+    return sendWithPromise<boolean>('getLocalTrustRootsInfo');
   }
 
   getFilesUploadToCloudInfo() {
-    return sendWithPromise('getFilesUploadToCloudInfo');
+    return sendWithPromise<string>('getFilesUploadToCloudInfo');
   }
 
   getDeviceReportingInfo() {
-    return sendWithPromise('getDeviceReportingInfo');
+    return sendWithPromise<DeviceReportingResponse[]>('getDeviceReportingInfo');
   }
 
   getPluginVmDataCollectionStatus() {
-    return sendWithPromise('getPluginVmDataCollectionStatus');
+    return sendWithPromise<boolean>('getPluginVmDataCollectionStatus');
   }
   // </if>
 
   getContextualManagedData() {
-    return sendWithPromise('getContextualManagedData');
+    return sendWithPromise<ManagedDataResponse>('getContextualManagedData');
   }
 
   getThreatProtectionInfo() {
-    return sendWithPromise('getThreatProtectionInfo');
+    return sendWithPromise<ThreatProtectionInfo>('getThreatProtectionInfo');
   }
 
   initBrowserReportingInfo() {
-    return sendWithPromise('initBrowserReportingInfo');
+    return sendWithPromise<BrowserReportingResponse[]>(
+        'initBrowserReportingInfo');
   }
 
   initProfileReportingInfo() {
-    return sendWithPromise('initProfileReportingInfo');
+    return sendWithPromise<BrowserReportingResponse[]>(
+        'initProfileReportingInfo');
+  }
+
+  shouldShowPromotion() {
+    return sendWithPromise<boolean>('shouldShowPromotion');
+  }
+
+  setBannerDismissed() {
+    return sendWithPromise<void>('setBannerDismissed');
+  }
+
+  recordBannerRedirected() {
+    return sendWithPromise<void>('recordBannerRedirected');
   }
 
   static getInstance(): ManagementBrowserProxy {

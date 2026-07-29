@@ -5,9 +5,10 @@
 #include "ui/accessibility/platform/fuchsia/browser_accessibility_fuchsia.h"
 
 #include "base/fuchsia/fuchsia_logging.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_enums.mojom.h"
-#include "ui/accessibility/platform/fuchsia/browser_accessibility_manager_fuchsia.h"
 #include "ui/accessibility/platform/fuchsia/accessibility_bridge_fuchsia_registry.h"
+#include "ui/accessibility/platform/fuchsia/browser_accessibility_manager_fuchsia.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 
 namespace ui {
@@ -19,7 +20,7 @@ BrowserAccessibilityFuchsia::BrowserAccessibilityFuchsia(
     BrowserAccessibilityManager* manager,
     AXNode* node)
     : BrowserAccessibility(manager, node),
-      platform_node_(AXPlatformNode::Create(this)) {}
+      platform_node_(AXPlatformNode::Create(*this)) {}
 
 AccessibilityBridgeFuchsia*
 BrowserAccessibilityFuchsia::GetAccessibilityBridge() const {
@@ -232,12 +233,9 @@ BrowserAccessibilityFuchsia::GetFuchsiaStates() const {
   // Indicates if the node is hidden.
   states.hidden(IsInvisibleOrIgnored());
 
-  // The user entered value of the node, if applicable.
-  if (HasStringAttribute(ax::mojom::StringAttribute::kValue)) {
-    const std::string& value =
-        GetStringAttribute(ax::mojom::StringAttribute::kValue);
+  if (std::optional<std::string> value = GetAriaValueTextOrValue(); value) {
     states.value(
-        value.substr(0, fuchsia_accessibility_semantics::kMaxLabelSize));
+        value->substr(0, fuchsia_accessibility_semantics::kMaxLabelSize));
   }
 
   // The value a range element currently has.
@@ -389,7 +387,7 @@ fuchsia_ui_gfx::Mat4 BrowserAccessibilityFuchsia::GetFuchsiaTransform() const {
 
   // Convert to fuchsia's transform type.
   std::array<float, 16> mat = {};
-  transform.GetColMajorF(mat.data());
+  transform.GetColMajorF(mat);
   return {{.matrix = mat}};
 }
 
@@ -397,8 +395,9 @@ uint32_t BrowserAccessibilityFuchsia::GetOffsetContainerOrRootNodeID() const {
   int offset_container_id = GetData().relative_bounds.offset_container_id;
 
   BrowserAccessibility* offset_container =
-      offset_container_id == -1 ? manager()->GetBrowserAccessibilityRoot()
-                                : manager()->GetFromID(offset_container_id);
+      offset_container_id == kInvalidAXNodeID
+          ? manager()->GetBrowserAccessibilityRoot()
+          : manager()->GetFromID(offset_container_id);
 
   BrowserAccessibilityFuchsia* fuchsia_container =
       ToBrowserAccessibilityFuchsia(offset_container);

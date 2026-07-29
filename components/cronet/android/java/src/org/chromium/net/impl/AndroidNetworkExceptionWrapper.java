@@ -7,8 +7,12 @@ package org.chromium.net.impl;
 import static org.chromium.net.impl.HttpEngineNativeProvider.EXT_API_LEVEL;
 import static org.chromium.net.impl.HttpEngineNativeProvider.EXT_VERSION;
 
+import androidx.annotation.RequiresApi;
 import androidx.annotation.RequiresExtension;
 
+// Note we specify both RequiresApi and RequiresExtension because some older linters may only
+// recognize the former.
+@RequiresApi(EXT_API_LEVEL)
 @RequiresExtension(extension = EXT_API_LEVEL, version = EXT_VERSION)
 class AndroidNetworkExceptionWrapper extends org.chromium.net.NetworkException {
     private final android.net.http.NetworkException mBackend;
@@ -39,8 +43,12 @@ class AndroidNetworkExceptionWrapper extends org.chromium.net.NetworkException {
 
     @Override
     public int getCronetInternalErrorCode() {
-        // TODO(danstahr): Hidden API
-        return -1;
+        // This maps to `NetError.ERR_HTTPENGINE_PROVIDER_IN_USE`. We cannot directly reference that
+        // because it would introduce a dependency between HttpEngineNativeProvider and code that
+        // ships as part of Cronet's impl JAR.
+        // LINT.IfChange(HTTPENGINE_PROVIDER_IN_USE)
+        return -508;
+        // LINT.ThenChange(//net/base/net_error_list.h:HTTPENGINE_PROVIDER_IN_USE)
     }
 
     @Override

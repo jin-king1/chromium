@@ -30,7 +30,7 @@ void GotSaltAndOrigin(
     bool permissions_override_value,
     base::OnceCallback<void(MediaDeviceSaltAndOrigin, bool)> cb,
     const MediaDeviceSaltAndOrigin& salt_and_origin) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M152);
   if (!MediaStreamManager::IsOriginAllowed(render_process_id,
                                            salt_and_origin.origin())) {
     // In this case, it's likely a navigation has occurred while processing this
@@ -60,7 +60,7 @@ void CheckAccessOnUIThread(
     bool override_permissions,
     bool permissions_override_value,
     base::OnceCallback<void(MediaDeviceSaltAndOrigin, bool)> cb) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M152);
   GetMediaDeviceSaltAndOrigin(
       GlobalRenderFrameHostId(render_process_id, render_frame_id),
       base::BindOnce(&GotSaltAndOrigin, render_process_id, render_frame_id,
@@ -73,10 +73,11 @@ void CheckAccessOnUIThread(
 class AudioOutputAuthorizationHandler::TraceScope {
  public:
   explicit TraceScope(const std::string& device_id) {
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
-        "audio", "Audio output device authorization", this);
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("audio", "Request for device", this,
-                                      "device id", device_id);
+    TRACE_EVENT_BEGIN("audio", "Audio output device authorization",
+                      perfetto::Track::FromPointer(this));
+    TRACE_EVENT_BEGIN("audio", "Request for device",
+                      perfetto::Track::FromPointer(this), "device id",
+                      device_id);
   }
 
   TraceScope(const TraceScope&) = delete;
@@ -84,50 +85,57 @@ class AudioOutputAuthorizationHandler::TraceScope {
 
   ~TraceScope() {
     if (waiting_for_params_) {
-      TRACE_EVENT_NESTABLE_ASYNC_END1("audio", "Getting audio parameters", this,
-                                      "cancelled", true);
+      // End "Getting audio parameters" trace event.
+      TRACE_EVENT_END("audio", perfetto::Track::FromPointer(this), "cancelled",
+                      true);
     }
     if (checking_access_) {
-      TRACE_EVENT_NESTABLE_ASYNC_END1("audio", "Checking access", this,
-                                      "cancelled", true);
+      // End "Checking access" trace event.
+      TRACE_EVENT_END("audio", perfetto::Track::FromPointer(this), "cancelled",
+                      true);
     }
-    TRACE_EVENT_NESTABLE_ASYNC_END0("audio", "Request for device", this);
-    TRACE_EVENT_NESTABLE_ASYNC_END0("audio",
-                                    "Audio output device authorization", this);
+    // End "Request for device" trace event.
+    TRACE_EVENT_END("audio", perfetto::Track::FromPointer(this));
+    // End "Audio output device authorization" trace event.
+    TRACE_EVENT_END("audio", perfetto::Track::FromPointer(this));
   }
 
-  void SimpleEvent(const char* event) {
-    TRACE_EVENT_NESTABLE_ASYNC_INSTANT0("audio", event, this);
+  void SimpleEvent(perfetto::StaticString event) {
+    TRACE_EVENT_INSTANT("audio", event, perfetto::Track::FromPointer(this));
   }
 
   void UsingSessionId(const base::UnguessableToken& session_id,
                       const std::string& device_id) {
-    TRACE_EVENT_NESTABLE_ASYNC_INSTANT2("audio", "Using session id", this,
-                                        "session id", session_id.ToString(),
-                                        "device id", device_id);
+    TRACE_EVENT_INSTANT("audio", "Using session id",
+                        perfetto::Track::FromPointer(this), "session id",
+                        session_id.ToString(), "device id", device_id);
   }
 
   void CheckAccessStart(const std::string& device_id) {
     checking_access_ = true;
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("audio", "Checking access", this,
-                                      "device id", device_id);
+    TRACE_EVENT_BEGIN("audio", "Checking access",
+                      perfetto::Track::FromPointer(this), "device id",
+                      device_id);
   }
 
   void AccessChecked(bool has_access) {
     checking_access_ = false;
-    TRACE_EVENT_NESTABLE_ASYNC_END1("audio", "Checking access", this,
-                                    "access granted", has_access);
+    // End "Checking access" trace event.
+    TRACE_EVENT_END("audio", perfetto::Track::FromPointer(this),
+                    "access granted", has_access);
   }
 
   void StartedGettingAudioParameters(const std::string& raw_device_id) {
     waiting_for_params_ = true;
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN1("audio", "Getting audio parameters", this,
-                                      "device id", raw_device_id);
+    TRACE_EVENT_BEGIN("audio", "Getting audio parameters",
+                      perfetto::Track::FromPointer(this), "device id",
+                      raw_device_id);
   }
 
   void FinishedGettingAudioParameters() {
     waiting_for_params_ = false;
-    TRACE_EVENT_NESTABLE_ASYNC_END0("audio", "Getting audio parameters", this);
+    // End "Getting audio parameters" trace event.
+    TRACE_EVENT_END("audio", perfetto::Track::FromPointer(this));
   }
 
  private:
@@ -142,13 +150,13 @@ AudioOutputAuthorizationHandler::AudioOutputAuthorizationHandler(
     : audio_system_(audio_system),
       media_stream_manager_(media_stream_manager),
       render_process_id_(render_process_id) {
-  DCHECK(media_stream_manager_);
+  CHECK(media_stream_manager_, base::NotFatalUntil::M152);
 }
 
 AudioOutputAuthorizationHandler::~AudioOutputAuthorizationHandler() {
   // |weak_factory| is not thread safe. Make sure it's destructed on the
   // right thread.
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
 }
 
 void AudioOutputAuthorizationHandler::RequestDeviceAuthorization(
@@ -156,21 +164,23 @@ void AudioOutputAuthorizationHandler::RequestDeviceAuthorization(
     const base::UnguessableToken& session_id,
     const std::string& device_id,
     AuthorizationCompletedCallback cb) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
   auto trace_scope = std::make_unique<TraceScope>(device_id);
-
-  if (!IsValidDeviceId(device_id)) {
-    trace_scope->SimpleEvent("Invalid device id");
-    std::move(cb).Run(media::OUTPUT_DEVICE_STATUS_ERROR_NOT_FOUND,
-                      media::AudioParameters::UnavailableDeviceParams(),
-                      std::string(), std::string());
-    return;
-  }
 
   // If |session_id| should be used for output device selection and such an
   // output device is found, reuse the input device permissions.
   if (media::AudioDeviceDescription::UseSessionIdToSelectDevice(session_id,
                                                                 device_id)) {
+    if (!media_stream_manager_->ValidateAudioSession(
+            session_id,
+            GlobalRenderFrameHostId(render_process_id_, render_frame_id))) {
+      trace_scope->SimpleEvent("Unauthorized session");
+      std::move(cb).Run(media::OUTPUT_DEVICE_STATUS_ERROR_NOT_AUTHORIZED,
+                        media::AudioParameters::UnavailableDeviceParams(),
+                        std::string(), std::string());
+      return;
+    }
+
     const blink::MediaStreamDevice* device =
         media_stream_manager_->audio_input_device_manager()
             ->GetOpenedDeviceById(session_id);
@@ -214,13 +224,14 @@ void AudioOutputAuthorizationHandler::RequestDeviceAuthorization(
 
 void AudioOutputAuthorizationHandler::OverridePermissionsForTesting(
     bool override_value) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
   override_permissions_ = true;
   permissions_override_value_ = override_value;
 }
 
 void AudioOutputAuthorizationHandler::
     SetAuthorizedDeviceIdForGlobalMediaControls(std::string hashed_device_id) {
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
   hashed_device_id_for_global_media_controls_ = std::move(hashed_device_id);
 }
 
@@ -237,8 +248,8 @@ void AudioOutputAuthorizationHandler::HashDeviceId(
     AuthorizationCompletedCallback cb,
     const std::string& raw_device_id,
     const MediaDeviceSaltAndOrigin& salt_and_origin) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(!raw_device_id.empty());
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
+  CHECK(!raw_device_id.empty(), base::NotFatalUntil::M152);
   std::string hashed_device_id =
       GetHMACForRawMediaDeviceID(salt_and_origin, raw_device_id);
   trace_scope->StartedGettingAudioParameters(raw_device_id);
@@ -255,7 +266,7 @@ void AudioOutputAuthorizationHandler::AccessChecked(
     const std::string& device_id,
     MediaDeviceSaltAndOrigin salt_and_origin,
     bool has_access) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
   trace_scope->AccessChecked(has_access);
 
   // If this device has been explicitly allowed by the browser, overwrite the
@@ -263,6 +274,14 @@ void AudioOutputAuthorizationHandler::AccessChecked(
   has_access = device_id == hashed_device_id_for_global_media_controls_
                    ? true
                    : has_access;
+
+  if (has_access && !IsValidDeviceId(device_id)) {
+    trace_scope->SimpleEvent("Invalid device id");
+    std::move(cb).Run(media::OUTPUT_DEVICE_STATUS_ERROR_NOT_FOUND,
+                      media::AudioParameters::UnavailableDeviceParams(),
+                      std::string(), std::string());
+    return;
+  }
 
   if (!has_access) {
     std::move(cb).Run(media::OUTPUT_DEVICE_STATUS_ERROR_NOT_AUTHORIZED,
@@ -272,8 +291,8 @@ void AudioOutputAuthorizationHandler::AccessChecked(
   }
 
   MediaDevicesManager::BoolDeviceTypes devices_to_enumerate;
-  devices_to_enumerate[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)] =
-      true;
+  devices_to_enumerate[static_cast<size_t>(
+      MediaDeviceType::kMediaAudioOutput)] = true;
   media_stream_manager_->media_devices_manager()->EnumerateDevices(
       devices_to_enumerate,
       base::BindOnce(&AudioOutputAuthorizationHandler::TranslateDeviceID,
@@ -287,8 +306,9 @@ void AudioOutputAuthorizationHandler::TranslateDeviceID(
     const std::string& device_id,
     const MediaDeviceSaltAndOrigin& salt_and_origin,
     const MediaDeviceEnumeration& enumeration) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(!media::AudioDeviceDescription::IsDefaultDevice(device_id));
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
+  CHECK(!media::AudioDeviceDescription::IsDefaultDevice(device_id),
+        base::NotFatalUntil::M152);
 
   for (const blink::WebMediaDeviceInfo& device_info :
        enumeration[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)]) {
@@ -310,8 +330,8 @@ void AudioOutputAuthorizationHandler::GetDeviceParameters(
     std::unique_ptr<TraceScope> trace_scope,
     AuthorizationCompletedCallback cb,
     const std::string& raw_device_id) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(!raw_device_id.empty());
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
+  CHECK(!raw_device_id.empty(), base::NotFatalUntil::M152);
 
   trace_scope->StartedGettingAudioParameters(raw_device_id);
   audio_system_->GetOutputStreamParameters(
@@ -327,9 +347,9 @@ void AudioOutputAuthorizationHandler::DeviceParametersReceived(
     const std::string& id_for_renderer,
     const std::string& raw_device_id,
     const std::optional<media::AudioParameters>& params) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(!raw_device_id.empty());
-  DCHECK(!params || params->IsValid());
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
+  CHECK(!raw_device_id.empty(), base::NotFatalUntil::M152);
+  CHECK(!params || params->IsValid(), base::NotFatalUntil::M152);
 
   trace_scope->FinishedGettingAudioParameters();
 

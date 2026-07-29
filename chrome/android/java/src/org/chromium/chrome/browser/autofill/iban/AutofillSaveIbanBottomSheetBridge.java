@@ -6,7 +6,6 @@ package org.chromium.chrome.browser.autofill.iban;
 
 import android.content.Context;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
@@ -14,6 +13,10 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinator;
+import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinatorProvider;
 import org.chromium.chrome.browser.layouts.LayoutManagerProvider;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -24,14 +27,16 @@ import org.chromium.ui.base.WindowAndroid;
 
 /** JNI wrapper to trigger Android bottom sheet prompting the user to save their IBAN locally. */
 @JNINamespace("autofill")
+@NullMarked
 public class AutofillSaveIbanBottomSheetBridge
         implements AutofillSaveIbanBottomSheetCoordinator.NativeDelegate {
     private long mNativeAutofillSaveIbanBottomSheetBridge;
-    private final BottomSheetController mBottomSheetController;
-    private final Context mContext;
-    private final LayoutStateProvider mLayoutStateProvider;
+    private final @Nullable BottomSheetController mBottomSheetController;
+    private final @Nullable AnchoredDialogCoordinator mAnchoredDialogCoordinator;
+    private final @Nullable Context mContext;
+    private final @Nullable LayoutStateProvider mLayoutStateProvider;
     private final TabModel mTabModel;
-    @Nullable private AutofillSaveIbanBottomSheetCoordinator mCoordinator;
+    private @Nullable AutofillSaveIbanBottomSheetCoordinator mCoordinator;
 
     /**
      * Creates the bridge.
@@ -48,6 +53,7 @@ public class AutofillSaveIbanBottomSheetBridge
             long nativeAutofillSaveIbanBottomSheetBridge, WindowAndroid window, TabModel tabModel) {
         mNativeAutofillSaveIbanBottomSheetBridge = nativeAutofillSaveIbanBottomSheetBridge;
         mBottomSheetController = BottomSheetControllerProvider.from(window);
+        mAnchoredDialogCoordinator = AnchoredDialogCoordinatorProvider.from(window);
         mContext = window.getContext().get();
         mLayoutStateProvider = LayoutManagerProvider.from(window);
         mTabModel = tabModel;
@@ -60,13 +66,19 @@ public class AutofillSaveIbanBottomSheetBridge
      */
     @CalledByNative
     public void requestShowContent(AutofillSaveIbanUiInfo uiInfo) {
-        if (mNativeAutofillSaveIbanBottomSheetBridge == 0) return;
+        if (mNativeAutofillSaveIbanBottomSheetBridge == 0
+                || mBottomSheetController == null
+                || mAnchoredDialogCoordinator == null
+                || mContext == null
+                || mLayoutStateProvider == null) return;
+
         mCoordinator =
                 new AutofillSaveIbanBottomSheetCoordinator(
                         this,
                         uiInfo,
                         mContext,
                         mBottomSheetController,
+                        mAnchoredDialogCoordinator,
                         mLayoutStateProvider,
                         mTabModel);
         mCoordinator.requestShowContent();
@@ -76,6 +88,7 @@ public class AutofillSaveIbanBottomSheetBridge
     @CalledByNative
     public void hide() {
         if (mNativeAutofillSaveIbanBottomSheetBridge == 0) return;
+        if (mCoordinator == null) return;
         mCoordinator.destroy(BottomSheetController.StateChangeReason.INTERACTION_COMPLETE);
     }
 

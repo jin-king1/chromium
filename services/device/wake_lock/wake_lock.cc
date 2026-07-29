@@ -6,14 +6,16 @@
 
 #include <utility>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "services/device/wake_lock/wake_lock_features.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "services/device/wake_lock/wake_lock_context.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #endif
 
 namespace device {
@@ -24,7 +26,6 @@ WakeLock::WakeLock(mojo::PendingReceiver<mojom::WakeLock> receiver,
                    const std::string& description,
                    int context_id,
                    WakeLockContextCallback native_view_getter,
-                   scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
                    Observer* observer)
     : num_lock_requests_(0),
       type_(type),
@@ -35,7 +36,6 @@ WakeLock::WakeLock(mojo::PendingReceiver<mojom::WakeLock> receiver,
       native_view_getter_(native_view_getter),
 #endif
       main_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
-      file_task_runner_(std::move(file_task_runner)),
       observer_(observer) {
   DCHECK(observer_);
   AddClient(std::move(receiver));
@@ -137,8 +137,8 @@ void WakeLock::UpdateWakeLock() {
 void WakeLock::CreateWakeLock() {
   DCHECK(!wake_lock_);
 
-  wake_lock_ = std::make_unique<PowerSaveBlocker>(
-      type_, reason_, *description_, main_task_runner_, file_task_runner_);
+  wake_lock_ = std::make_unique<PowerSaveBlocker>(type_, reason_, *description_,
+                                                  main_task_runner_);
   observer_->OnWakeLockActivated(type_);
 
   if (type_ != mojom::WakeLockType::kPreventDisplaySleep)
@@ -169,7 +169,7 @@ void WakeLock::SwapWakeLock() {
   // PowerSaveBlocker is unblocked while the new PowerSaveBlocker is not
   // created.
   auto new_wake_lock = std::make_unique<PowerSaveBlocker>(
-      type_, reason_, *description_, main_task_runner_, file_task_runner_);
+      type_, reason_, *description_, main_task_runner_);
   wake_lock_.swap(new_wake_lock);
 }
 

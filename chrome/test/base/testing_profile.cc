@@ -5,11 +5,14 @@
 #include "chrome/test/base/testing_profile.h"
 
 #include <memory>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
 
 #include "base/base_paths.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -27,11 +30,11 @@
 #include "chrome/browser/background_fetch/background_fetch_delegate_factory.h"
 #include "chrome/browser/background_fetch/background_fetch_delegate_impl.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate_factory.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
+#include "chrome/browser/device_reauth/chrome_device_authenticator_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/origin_trials/origin_trials_factory.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
@@ -41,25 +44,29 @@
 #include "chrome/browser/prefs/pref_service_syncable_util.h"
 #include "chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.h"
 #include "chrome/browser/profiles/profile_key.h"
+#include "chrome/browser/profiles/profile_load_tracker_win.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/browser/profiles/storage_partition_descriptor.h"
 #include "chrome/browser/reading_list/reading_list_model_factory.h"
 #include "chrome/browser/search_engines/template_url_fetcher_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ssl/stateful_ssl_host_state_delegate_factory.h"
-#include "chrome/browser/supervised_user/supervised_user_settings_service_factory.h"
+#include "chrome/browser/supervised_user/family_link_settings_service_factory.h"
 #include "chrome/browser/transition_manager/full_browser_transition_manager.h"
 #include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_constants.h"
-#include "chrome/common/chrome_features.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_paths_internal.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/testing_profile_key.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/device_reauth/device_authenticator_common.h"
+#include "components/guest_view/buildflags/buildflags.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/test/history_service_test_util.h"
 #include "components/keyed_service/core/refcounted_keyed_service.h"
@@ -82,7 +89,8 @@
 #include "components/security_interstitials/content/stateful_ssl_host_state_delegate.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/supervised_user/core/browser/supervised_user_settings_service.h"
+#include "components/supervised_user/core/browser/family_link_settings_service.h"
+#include "components/supervised_user/core/browser/supervised_user_test_environment.h"
 #include "components/supervised_user/core/common/pref_names.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 #include "components/sync/base/features.h"
@@ -96,7 +104,6 @@
 #include "content/public/browser/cookie_store_factory.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/render_process_host.h"
-#include "content/public/browser/resource_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/zoom_level_delegate.h"
 #include "content/public/test/test_utils.h"
@@ -107,20 +114,26 @@
 #include "services/service_manager/public/cpp/service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/chrome_extension_system_factory.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_special_storage_policy.h"
 #include "chrome/browser/extensions/test_extension_system.h"
-#include "chrome/browser/web_applications/test/fake_web_app_provider.h"
-#include "chrome/browser/web_applications/web_app_provider_factory.h"
-#include "components/guest_view/browser/guest_view_manager.h"
 #include "extensions/browser/extension_pref_value_map.h"
 #include "extensions/browser/extension_pref_value_map_factory.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_prefs_factory.h"
 #include "extensions/browser/extension_prefs_observer.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/common/switches.h"
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/browser/web_applications/test/fake_web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_provider_factory.h"
+#endif
+
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
+#include "components/guest_view/browser/guest_view_manager.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -128,6 +141,7 @@
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/net/delay_network_call.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
+#include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager_factory.h"
 #include "chrome/browser/ash/system_web_apps/test_support/test_system_web_app_manager.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
@@ -135,11 +149,13 @@
 #include "components/account_manager_core/chromeos/account_manager.h"
 #endif
 
+namespace {
 using base::Time;
 using content::BrowserThread;
 using content::DownloadManagerDelegate;
 using testing::NiceMock;
 using testing::Return;
+}  // namespace
 
 TestingProfile::TestingFactory::TestingFactory(
     BrowserContextKeyedServiceFactory* service_factory,
@@ -229,8 +245,8 @@ TestingProfile::TestingProfile(
 #if BUILDFLAG(IS_CHROMEOS)
     std::unique_ptr<policy::UserCloudPolicyManagerAsh> policy_manager,
 #else
-    absl::variant<std::unique_ptr<policy::UserCloudPolicyManager>,
-                  std::unique_ptr<policy::ProfileCloudPolicyManager>>
+    std::variant<std::unique_ptr<policy::UserCloudPolicyManager>,
+                 std::unique_ptr<policy::ProfileCloudPolicyManager>>
         policy_manager,
 #endif  // BUILDFLAG(IS_CHROMEOS)
     std::unique_ptr<policy::PolicyService> policy_service,
@@ -238,12 +254,16 @@ TestingProfile::TestingProfile(
     const std::string& profile_name,
     std::optional<bool> override_policy_connector_is_managed,
     const OTRProfileID* otr_profile_id,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory
+#if BUILDFLAG(IS_WIN)
+    ,
+    bool profile_load_tracker_enabled
+#endif
+    )
     : Profile(otr_profile_id),
       prefs_(std::move(prefs)),
       original_profile_(parent),
       guest_session_(guest_session),
-      allows_browser_windows_(allows_browser_windows),
       is_new_profile_(is_new_profile),
 #if BUILDFLAG(ENABLE_EXTENSIONS)
       extension_special_storage_policy_(extension_policy),
@@ -254,18 +274,24 @@ TestingProfile::TestingProfile(
       override_policy_connector_is_managed_(
           override_policy_connector_is_managed),
       policy_service_(std::move(policy_service)),
-      url_loader_factory_(url_loader_factory) {
+      url_loader_factory_(url_loader_factory)
+#if BUILDFLAG(IS_WIN)
+      ,
+      profile_load_tracker_enabled_(profile_load_tracker_enabled)
+#endif
+{
+  set_allows_browser_windows_for_testing(allows_browser_windows);
 #if BUILDFLAG(IS_CHROMEOS)
   user_cloud_policy_manager_ = std::move(policy_manager);
 #else
-  if (absl::holds_alternative<std::unique_ptr<policy::UserCloudPolicyManager>>(
+  if (std::holds_alternative<std::unique_ptr<policy::UserCloudPolicyManager>>(
           policy_manager)) {
     user_cloud_policy_manager_ =
-        std::move(absl::get<std::unique_ptr<policy::UserCloudPolicyManager>>(
+        std::move(std::get<std::unique_ptr<policy::UserCloudPolicyManager>>(
             policy_manager));
   } else {
     profile_cloud_policy_manager_ =
-        std::move(absl::get<std::unique_ptr<policy::ProfileCloudPolicyManager>>(
+        std::move(std::get<std::unique_ptr<policy::ProfileCloudPolicyManager>>(
             policy_manager));
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -284,12 +310,13 @@ TestingProfile::TestingProfile(
 
   // If no profile path was supplied, create one.
   if (profile_path_.empty()) {
-    profile_path_ = base::CreateUniqueTempDirectoryScopedToTest();
+    profile_path_ = base::CreateUniqueTempDirectoryScopedToTestInDir(
+        base::PathService::CheckedGet(chrome::DIR_USER_DATA));
   }
 
   // Set any testing factories prior to initializing the services.
   for (auto& f : testing_factories) {
-    absl::visit(
+    std::visit(
         [this](auto& p) {
           p.first->SetTestingFactory(this, std::move(p.second));
         },
@@ -329,6 +356,13 @@ void TestingProfile::Init(bool is_supervised_profile, CreateMode create_mode) {
 
   InitializeProfileType();
 
+#if BUILDFLAG(IS_WIN)
+  if (profile_load_tracker_enabled_ &&
+      base::FeatureList::IsEnabled(features::kProfileLoadTracker)) {
+    profile_load_tracker_ = std::make_unique<ProfileLoadTracker>(*this);
+  }
+#endif
+
   if (delegate_) {
     delegate_->OnProfileCreationStarted(this, create_mode);
   }
@@ -341,7 +375,7 @@ void TestingProfile::Init(bool is_supervised_profile, CreateMode create_mode) {
   }
 
 #if BUILDFLAG(IS_ANDROID)
-  signin::SetUpMockAccountManagerFacade();
+  signin::SetUpFakeAccountManagerFacade();
 #endif
 
   // Normally this would happen during browser startup, but for tests
@@ -350,26 +384,18 @@ void TestingProfile::Init(bool is_supervised_profile, CreateMode create_mode) {
       EnsureBrowserContextKeyedServiceFactoriesBuilt();
 
   if (!IsOffTheRecord()) {
-    supervised_user::SupervisedUserSettingsService* settings_service =
-        SupervisedUserSettingsServiceFactory::GetForKey(key_.get());
-    supervised_user_pref_store_ = base::MakeRefCounted<TestingPrefStore>();
-    settings_service->Init(supervised_user_pref_store_.get());
-    settings_service->MergeDataAndStartSyncing(
-        syncer::SUPERVISED_USER_SETTINGS, syncer::SyncDataList(),
-        std::unique_ptr<syncer::SyncChangeProcessor>(
-            new syncer::FakeSyncChangeProcessor));
-
-    supervised_user_pref_store_->SetInitializationCompleted();
+    supervised_user::InitializeSettingsServiceForTesting(
+        supervised_user::FamilyLinkSettingsServiceFactory::GetForKey(
+            key_.get()));
   }
 
-  if (prefs_.get())
+  if (prefs_.get()) {
     user_prefs::UserPrefs::Set(this, prefs_.get());
-  else if (IsOffTheRecord())
+  } else if (IsOffTheRecord()) {
     CreateIncognitoPrefService();
-  else if (is_supervised_profile)
-    CreatePrefServiceForSupervisedUser();
-  else
+  } else {
     CreateTestingPrefService();
+  }
 
   if (is_supervised_profile)
     SetIsSupervisedProfile();
@@ -382,9 +408,8 @@ void TestingProfile::Init(bool is_supervised_profile, CreateMode create_mode) {
 
 #if BUILDFLAG(IS_CHROMEOS)
   // Initialize |account_manager::AccountManager|.
-  auto* factory =
-      g_browser_process->platform_part()->GetAccountManagerFactory();
-  auto* account_manager = factory->GetAccountManager(profile_path_.value());
+  auto* account_manager = ash::AccountManagerFactory::Get()->GetAccountManager(
+      profile_path_.value());
   account_manager::AccountManager::DelayNetworkCallRunner
       immediate_callback_runner = base::BindRepeating(
           [](base::OnceClosure closure) -> void { std::move(closure).Run(); });
@@ -412,14 +437,14 @@ void TestingProfile::Init(bool is_supervised_profile, CreateMode create_mode) {
 
     extensions_path_ = profile_path_.AppendASCII("Extensions");
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
     // Note that the GetPrefs() creates a TestingPrefService, therefore
     // the extension controlled pref values set in ExtensionPrefs
     // are not reflected in the pref service. One would need to
     // inject a new ExtensionPrefStore(extension_pref_value_map, false).
     bool extensions_disabled =
         base::CommandLine::ForCurrentProcess()->HasSwitch(
-            switches::kDisableExtensions);
+            extensions::switches::kDisableExtensions);
     std::unique_ptr<extensions::ExtensionPrefs> extension_prefs =
         extensions::ExtensionPrefs::Create(
             this, GetPrefs(), extensions_path_,
@@ -431,7 +456,9 @@ void TestingProfile::Init(bool is_supervised_profile, CreateMode create_mode) {
 
     extensions::ChromeExtensionSystemFactory::GetInstance()->SetTestingFactory(
         this, base::BindRepeating(&extensions::TestExtensionSystem::Build));
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
     web_app::WebAppProviderFactory::GetInstance()->SetTestingFactory(
         this, base::BindRepeating(&web_app::FakeWebAppProvider::BuildDefault));
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
@@ -440,6 +467,15 @@ void TestingProfile::Init(bool is_supervised_profile, CreateMode create_mode) {
     ash::SystemWebAppManagerFactory::GetInstance()->SetTestingFactory(
         this, base::BindRepeating(&ash::TestSystemWebAppManager::BuildDefault));
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || \
+    BUILDFLAG(IS_CHROMEOS)
+    ChromeDeviceAuthenticatorFactory::GetInstance()->SetTestingFactory(
+        this, base::BindRepeating([](content::BrowserContext* browser)
+                                      -> std::unique_ptr<KeyedService> {
+          return std::make_unique<DeviceAuthenticatorProxy>();
+        }));
+#endif
   }
 
   // Prefs for incognito profiles are set in CreateIncognitoPrefService().
@@ -548,6 +584,12 @@ TestingProfile::~TestingProfile() {
   if (user_cloud_policy_manager_)
     user_cloud_policy_manager_->Shutdown();
 
+#if !BUILDFLAG(IS_CHROMEOS)
+  if (profile_cloud_policy_manager_) {
+    profile_cloud_policy_manager_->Shutdown();
+  }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
   if (host_content_settings_map_.get())
     host_content_settings_map_->ShutdownOnUIThread();
 
@@ -572,10 +614,6 @@ void TestingProfile::SetGuestSession(bool guest) {
 
 void TestingProfile::SetIsNewProfile(bool is_new_profile) {
   is_new_profile_ = is_new_profile;
-}
-
-base::FilePath TestingProfile::GetPath() {
-  return profile_path_;
 }
 
 base::FilePath TestingProfile::GetPath() const {
@@ -668,7 +706,7 @@ void TestingProfile::DestroyOffTheRecordProfile(Profile* otr_profile) {
 
 bool TestingProfile::HasOffTheRecordProfile(
     const OTRProfileID& otr_profile_id) {
-  return base::Contains(otr_profiles_, otr_profile_id);
+  return otr_profiles_.contains(otr_profile_id);
 }
 
 bool TestingProfile::HasAnyOffTheRecordProfile() {
@@ -689,20 +727,14 @@ const Profile* TestingProfile::GetOriginalProfile() const {
 
 void TestingProfile::SetIsSupervisedProfile(bool is_supervised_profile) {
   if (is_supervised_profile) {
-    GetPrefs()->SetString(prefs::kSupervisedUserId,
-                          supervised_user::kChildAccountSUID);
+    supervised_user::EnableParentalControls(*GetPrefs());
   } else {
-    GetPrefs()->ClearPref(prefs::kSupervisedUserId);
+    supervised_user::DisableParentalControls(*GetPrefs());
   }
 }
 
 bool TestingProfile::IsChild() const {
-  return GetPrefs()->GetString(prefs::kSupervisedUserId) ==
-         supervised_user::kChildAccountSUID;
-}
-
-bool TestingProfile::AllowsBrowserWindows() const {
-  return allows_browser_windows_;
+  return supervised_user::IsSubjectToParentalControls(*GetPrefs());
 }
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -716,7 +748,7 @@ void TestingProfile::SetExtensionSpecialStoragePolicy(
 
 ExtensionSpecialStoragePolicy*
 TestingProfile::GetExtensionSpecialStoragePolicy() {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (!extension_special_storage_policy_.get()) {
     extension_special_storage_policy_ =
         base::MakeRefCounted<ExtensionSpecialStoragePolicy>(nullptr);
@@ -729,19 +761,15 @@ TestingProfile::GetExtensionSpecialStoragePolicy() {
 
 void TestingProfile::CreateTestingPrefService() {
   DCHECK(!prefs_.get());
-  testing_prefs_ = new sync_preferences::TestingPrefServiceSyncable();
-  prefs_.reset(testing_prefs_);
-  user_prefs::UserPrefs::Set(this, prefs_.get());
-  RegisterUserProfilePrefs(testing_prefs_->registry());
-}
-
-void TestingProfile::CreatePrefServiceForSupervisedUser() {
-  DCHECK(!prefs_.get());
 
   // Construct testing_prefs_ by hand to add the supervised user pref store.
   testing_prefs_ = new sync_preferences::TestingPrefServiceSyncable(
       /*managed_prefs=*/base::MakeRefCounted<TestingPrefStore>(),
-      supervised_user_pref_store_,
+      /*supervised_user_prefs=*/
+      supervised_user::CreateTestingPrefStore(
+          supervised_user::FamilyLinkSettingsServiceFactory::GetForKey(
+              key_.get()),
+          g_browser_process->device_parental_controls()),
       /*extension_prefs=*/base::MakeRefCounted<TestingPrefStore>(),
       /*user_prefs=*/base::MakeRefCounted<TestingPrefStore>(),
       /*recommended_prefs=*/base::MakeRefCounted<TestingPrefStore>(),
@@ -763,8 +791,8 @@ void TestingProfile::CreateIncognitoPrefService() {
 }
 
 void TestingProfile::CreateProfilePolicyConnector() {
-  schema_registry_service_ =
-      BuildSchemaRegistryServiceForProfile(this, policy::Schema(), nullptr);
+  schema_registry_service_ = BuildSchemaRegistryServiceForProfile(
+      this, policy::Schema(), policy::Schema(), nullptr);
 
   if (!policy_service_) {
     std::vector<
@@ -934,18 +962,26 @@ void TestingProfile::BlockUntilHistoryProcessesPendingRequests() {
 }
 
 GURL TestingProfile::GetHomePage() {
-  return GURL(chrome::kChromeUINewTabURL);
+  return chrome::ChromeUINewTabURLAsGURL();
 }
 
 void TestingProfile::SetCreationTimeForTesting(base::Time creation_time) {
   start_time_ = creation_time;
 }
 
+#if BUILDFLAG(IS_WIN)
+void TestingProfile::AckCrashForTracking() {
+  if (profile_load_tracker_) {
+    profile_load_tracker_->AckCrashForTracking();
+  }
+}
+#endif
+
 bool TestingProfile::IsSignedIn() {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(this);
   signin::ConsentLevel consent_level =
-      base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos)
+      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
           ? signin::ConsentLevel::kSignin
           : signin::ConsentLevel::kSync;
   return identity_manager && identity_manager->HasPrimaryAccount(consent_level);
@@ -1033,6 +1069,13 @@ TestingProfile::Builder& TestingProfile::Builder::SetPath(
   path_ = path;
   return *this;
 }
+
+#if BUILDFLAG(IS_WIN)
+TestingProfile::Builder& TestingProfile::Builder::EnableProfileLoadTracker() {
+  profile_load_tracker_enabled_ = true;
+  return *this;
+}
+#endif
 
 TestingProfile::Builder& TestingProfile::Builder::SetDelegate(
     Delegate* delegate) {
@@ -1159,8 +1202,8 @@ std::unique_ptr<TestingProfile> TestingProfile::Builder::Build() {
   build_called_ = true;
 
 #if !BUILDFLAG(IS_CHROMEOS)
-  absl::variant<std::unique_ptr<policy::UserCloudPolicyManager>,
-                std::unique_ptr<policy::ProfileCloudPolicyManager>>
+  std::variant<std::unique_ptr<policy::UserCloudPolicyManager>,
+               std::unique_ptr<policy::ProfileCloudPolicyManager>>
       policy_manager;
   if (user_cloud_policy_manager_) {
     DCHECK(!profile_cloud_policy_manager_);
@@ -1182,7 +1225,12 @@ std::unique_ptr<TestingProfile> TestingProfile::Builder::Build() {
       std::move(policy_manager),
 #endif  // BUILDFLAG(IS_CHROMEOS)
       std::move(policy_service_), std::move(testing_factories_), profile_name_,
-      override_policy_connector_is_managed_, nullptr, url_loader_factory_);
+      override_policy_connector_is_managed_, nullptr, url_loader_factory_
+#if BUILDFLAG(IS_WIN)
+      ,
+      profile_load_tracker_enabled_
+#endif
+  );
 }
 
 TestingProfile* TestingProfile::Builder::BuildOffTheRecord(
@@ -1210,7 +1258,12 @@ TestingProfile* TestingProfile::Builder::BuildOffTheRecord(
       std::move(user_cloud_policy_manager_), std::move(policy_service_),
       std::move(testing_factories_), profile_name_,
       override_policy_connector_is_managed_, &otr_profile_id,
-      url_loader_factory_);
+      url_loader_factory_
+#if BUILDFLAG(IS_WIN)
+      ,
+      profile_load_tracker_enabled_
+#endif
+  );
 }
 
 TestingProfile* TestingProfile::Builder::BuildIncognito(

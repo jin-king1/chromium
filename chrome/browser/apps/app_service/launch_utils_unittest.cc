@@ -5,10 +5,10 @@
 #include "chrome/browser/apps/app_service/launch_utils.h"
 
 #include "build/build_config.h"
-#include "chrome/browser/apps/app_service/app_launch_params.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/intent.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
@@ -220,7 +220,9 @@ class FakePublisher : public AppPublisher {
     AppPtr app = std::make_unique<App>(AppType::kWeb, app_id);
     app->readiness = Readiness::kReady;
     app->handles_intents = true;
-    app->intent_filters.push_back(apps_util::MakeIntentFilterForUrlScope(
+
+    app->intent_filters.emplace();
+    app->intent_filters->push_back(apps_util::MakeIntentFilterForUrlScope(
         scope, /*omit_port_for_testing=*/true));
 
     std::vector<AppPtr> apps;

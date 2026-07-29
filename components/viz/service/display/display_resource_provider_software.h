@@ -36,8 +36,7 @@ class VIZ_SERVICE_EXPORT DisplayResourceProviderSoftware
   class VIZ_SERVICE_EXPORT ScopedReadLockSkImage {
    public:
     ScopedReadLockSkImage(DisplayResourceProviderSoftware* resource_provider,
-                          ResourceId resource_id,
-                          SkAlphaType alpha_type);
+                          ResourceId resource_id);
     ~ScopedReadLockSkImage();
 
     ScopedReadLockSkImage(const ScopedReadLockSkImage&) = delete;
@@ -68,7 +67,7 @@ class VIZ_SERVICE_EXPORT DisplayResourceProviderSoftware
   void UnlockForRead(ResourceId id, const SkImage* sk_image);
 
   // DisplayResourceProvider overrides:
-  std::vector<ReturnedResource> DeleteAndReturnUnusedResourcesToChildImpl(
+  std::vector<ReturnedResourceViz> DeleteAndReturnUnusedResourcesToChildImpl(
       Child& child_info,
       DeleteStyle style,
       const std::vector<ResourceId>& unused) override;

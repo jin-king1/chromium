@@ -28,7 +28,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_DOM_LAYOUT_TREE_BUILDER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_DOM_LAYOUT_TREE_BUILDER_H_
 
-#include "base/memory/scoped_refptr.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
 #include "third_party/blink/renderer/core/dom/node.h"
@@ -71,34 +71,7 @@ class LayoutTreeBuilder {
           LayoutTreeBuilderTraversal::NextSiblingLayoutObject(*node_);
       context_.next_sibling_valid = true;
     }
-    LayoutObject* next = context_.next_sibling;
-    // If a text node is wrapped in an anonymous inline for display:contents
-    // (see CreateInlineWrapperForDisplayContents()), use the wrapper as the
-    // next layout object. Otherwise we would need to add code to various
-    // AddChild() implementations to walk up the tree to find the correct
-    // layout tree parent/siblings.
-    if (!next || !next->IsText())
-      return next;
-    auto* const parent = next->Parent();
-    if (!IsAnonymousInline(parent))
-      return next;
-    // Should return a normal result for display:ruby though it can be
-    // an anonymous inline.
-    if (parent->IsInlineRuby()) [[unlikely]] {
-      return next;
-    }
-    if (!parent->IsLayoutTextCombine()) [[unlikely]] {
-      return parent;
-    }
-    auto* const text_combine_parent = parent->Parent();
-    if (IsAnonymousInline(text_combine_parent))
-      return text_combine_parent;
-    return parent;
-  }
-
-  static bool IsAnonymousInline(const LayoutObject* layout_object) {
-    return layout_object && layout_object->IsAnonymous() &&
-           layout_object->IsInline();
+    return context_.next_sibling;
   }
 
   NodeType* node_;

@@ -44,11 +44,6 @@ export class SettingsLiveTranslateElement extends
 
   static get properties() {
     return {
-      prefs: {
-        type: Object,
-        notify: true,
-      },
-
       /**
        * Read-only reference to the languages model provided by the
        * 'settings-languages' instance.
@@ -66,9 +61,9 @@ export class SettingsLiveTranslateElement extends
     };
   }
 
-  languages: LanguagesModel;
-  languageHelper: LanguageHelper;
-  private translatableLanguages_: DropdownMenuOptionList;
+  declare languages: LanguagesModel;
+  declare languageHelper: LanguageHelper;
+  declare private translatableLanguages_: DropdownMenuOptionList;
 
   override ready(): void {
     super.ready();

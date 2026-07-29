@@ -17,10 +17,13 @@ Are you a Google employee? See
     \>=32GB/>=16GB of swap for machines with 8GB/16GB of RAM respectively.
 * At least 100GB of free disk space. It does not have to be on the same drive;
  Allocate ~50-80GB on HDD for build.
-* You must have Git and Python v3.8+ installed already (and `python3` must point
-    to a Python v3.8+ binary). Depot_tools bundles an appropriate version
+* You must have Git and Python v3.9+ installed already (and `python3` must point
+    to a Python v3.9+ binary). Depot_tools bundles an appropriate version
     of Python in `$depot_tools/python-bin`, if you don't have an appropriate
     version already on your system.
+* Chromium's build infrastructure and `depot_tools` currently use Python 3.11.
+  If something is broken with an older Python version, feel free to report or
+  send us fixes.
 * `libc++` is currently the only supported STL. `clang` is the only
   officially-supported compiler, though external community members generally
   keep things building with `gcc`. For more details, see the
@@ -80,6 +83,19 @@ then run `nix-shell tools/nix/shell.nix`.
 If you don't want the full repo history, you can save a lot of time by
 adding the `--no-history` flag to `fetch`.
 
+You can make this much faster by passing `--git-cache` to `fetch`, which
+seeds the checkout from a shared, prebuilt snapshot instead of cloning from
+scratch (and, unlike `--no-history`, keeps the full history):
+
+```shell
+$ fetch --git-cache chromium
+```
+
+The cache directory is chosen automatically (override with `$GIT_CACHE_PATH`).
+It mirrors every repo it fetches (~30 GB for Chromium) and is shared by all
+checkouts on the machine: working trees reference it instead of copying the
+objects, so the per-checkout `.git` stays small.
+
 Expect the command to take 30 minutes on even a fast connection, and many
 hours on slower ones.
 
@@ -123,9 +139,51 @@ keys](https://www.chromium.org/developers/how-tos/api-keys) if you want your
 build to talk to some Google services, but this is not necessary for most
 development and testing purposes.
 
+## Speed up Git operations
+
+Accelerate Git operations in the massive Chromium repo by enabling fsmonitor and
+untrackedCache. This cuts time for `git status` and others significantly (e.g.,
+~3.1s to 0.8s). Note that the first run requires time for indexing.
+
+```shell
+# If the following command fails, install watchman via one of the recommended
+# methods listed on the installation page:
+# https://facebook.github.io/watchman/docs/install
+$ which watchman
+
+$ cd ~/chromium/src
+
+# Copy executable
+$ cp .git/hooks/fsmonitor-watchman.sample ~/bin/query-watchman
+
+# Enable optimization
+$ git config core.untrackedCache true
+$ git config core.fsmonitor $HOME/bin/query-watchman
+
+# Let watchman ignore out. You should gitignore .watchmanconfig globally
+$ echo '{ "ignore_dirs": ["out"] }' > .watchmanconfig
+
+# Increase inotify parameters in case you hit the error like: `inotify:
+# inotify_init: The user limit on the total number of inotify instances
+# has been reached; increase the fs.inotify.max_user_instances sysctl`.
+$ sudo vim /etc/sysctl.d/99-inotify.conf
+
+# Add the following.
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 10485760
+
+# Then apply the change.
+$ sudo sysctl --system
+
+# (optional) `git add -A` is still slow, so create an alias that does the
+# same but faster. Update ~/.bashrc (or ~/.zshrc or whatever) and add:
+alias gaa="git status --porcelain | awk '{print \$2}' | xargs -r git add"
+```
+
 ## Setting up the build
 
-Chromium uses [Ninja](https://ninja-build.org) as its main build tool along with
+Chromium uses [Siso](https://pkg.go.dev/go.chromium.org/build/siso#section-readme)
+as its main build tool along with
 a tool called [GN](https://gn.googlesource.com/gn/+/main/docs/quick_start.md)
 to generate `.ninja` files. You can create any number of *build directories*
 with different configurations. To create a build directory, run:
@@ -134,7 +192,7 @@ with different configurations. To create a build directory, run:
 $ gn gen out/Default
 ```
 
-* You only have to run this once for each new build directory, Ninja will
+* You only have to run this once for each new build directory, Siso will
   update the build files as needed.
 * You can replace `Default` with another name, but
   it should be a subdirectory of `out`.
@@ -150,12 +208,12 @@ $ gn gen out/Default
 This section contains some things you can change to speed up your builds,
 sorted so that the things that make the biggest difference are first.
 
-#### Use Reclient
+#### Use Remote Execution
 
 *** note
 **Warning:** If you are a Google employee, do not follow the instructions below.
 See
-[go/chrome-linux-build#setup-remote-execution](https://goto.google.com/chrome-linux-build#setup-remote-execution)
+[go/chrome-linux-build#set-up-remote-execution](https://goto.google.com/chrome-linux-build#set-up-remote-execution)
 instead.
 ***
 
@@ -163,31 +221,32 @@ Chromium's build can be sped up significantly by using a remote execution system
 compatible with [REAPI](https://github.com/bazelbuild/remote-apis). This allows
 you to benefit from remote caching and executing many build actions in parallel
 on a shared cluster of workers.
+Chromium's build uses a client developed by Google called
+[Siso](https://pkg.go.dev/go.chromium.org/build/siso#section-readme)
+to remotely execute build actions.
+
+To get started, you need access to an REAPI-compatible backend.
+
+##### Google RBE
+
+The following instructions assume that you received an invitation from Google
+to use Chromium's Google RBE service and were granted access to it.
+Otherwise, see [non Google RBE](#non-google-rbe) instead.
 
 For contributors who have
 [tryjob access](https://www.chromium.org/getting-involved/become-a-committer/#try-job-access)
 , please ask a Googler to email accounts@chromium.org on your behalf to access
-RBE backend paid by Google. Note that reclient for external contributors is a
-best-effort process. We do not guarantee when you will be invited. Reach out to
-[reclient-users@chromium.org](https://groups.google.com/a/chromium.org/g/reclient-users)
-if you have any questions about reclient usage.
+RBE backend paid by Google. Note that remote execution for external
+contributors is a best-effort process. We do not guarantee when you will be
+invited.
 
-To get started, you need access to an REAPI-compatible backend. The following
-instructions assume that you received an invitation from Google to use
-Chromium's RBE service and were granted access to it. However, you are welcome
-to use any of the
-[other compatible backends](https://github.com/bazelbuild/remote-apis#servers),
-in which case you will have to adapt the following instructions regarding the
-authentication method, instance name, etc. to work with your backend.
+If you would like to use `siso` with Google's RBE,
+you'll first need to:
 
-Chromium's build uses a client developed by Google called
-[reclient](https://github.com/bazelbuild/reclient) to remotely execute build
-actions. If you would like to use `reclient` with RBE, you'll first need to:
-
-1. [Install the gcloud CLI](https://cloud.google.com/sdk/docs/install). You can
-   pick any installation method from that page that works best for you.
-2. Run `gcloud auth login --update-adc` and login with your authorized
-   account. Ignore the message about the `--update-adc` flag being deprecated.
+1. Run `siso login` and login with your authorized account.
+If it is blocked in OAuth2 flow, run `gcloud auth login` (and
+export environment variable `SISO_CREDENTIAL_HELPER=gcloud`
+since siso v1.3.12).
 
 Next, you'll have to specify your `rbe_instance` in your `.gclient`
 configuration to use the correct one for Chromium contributors:
@@ -195,7 +254,7 @@ configuration to use the correct one for Chromium contributors:
 *** note
 **Warning:** If you are a Google employee, do not follow the instructions below.
 See
-[go/chrome-linux-build#setup-remote-execution](https://goto.google.com/chrome-linux-build#setup-remote-execution)
+[go/chrome-linux-build#set-up-remote-execution](https://goto.google.com/chrome-linux-build#set-up-remote-execution)
 instead.
 ***
 
@@ -206,8 +265,9 @@ solutions = [
     "custom_vars": {
       # This is the correct instance name for using Chromium's RBE service.
       # You can only use it if you were granted access to it. If you use your
-      # own REAPI-compatible backend, you will need to change this accordingly
-      # to its requirements.
+      # own REAPI-compatible backend, you will need to set reapi_address,
+      # reapi_instance and reapi_backend_config_path instead.
+      # see [non Google RBE](#non-google-rbe) below.
       "rbe_instance": "projects/rbe-chromium-untrusted/instances/default_instance",
     },
   },
@@ -215,31 +275,116 @@ solutions = [
 ```
 
 And run `gclient sync`. This will regenerate the config files in
-`buildtools/reclient_cfgs` to use the `rbe_instance` that you just added to your
-`.gclient` file.
+`build/config/siso/.sisoenv` and
+`build/config/siso/backend_config/backend.star` to use the Google RBE
+that you just added to your `.gclient` file.
+
+##### non Google RBE
+
+For others who have no access to Google's RBE backends, you are welcome
+to use any of the
+[other compatible backends](https://github.com/bazelbuild/remote-apis#servers),
+in which case you will have to adapt the following instructions regarding the
+authentication method, instance name, etc. to work with your backend.
+
+- If it is in closed network and no authentication, export environment variable
+`RBE_service_no_security=true`.
+- If it uses mTLS, export environment variable `RBE_tls_client_auth_key` and
+`RBE_tls_client_auth_cert`.
+- If it uses Google OAuth2, you may use `gcloud`. run `gcloud auth login`
+  (and export environment variable `SISO_CREDENTIAL_HELPER=gcloud` since
+  siso v1.3.12).
+- Otherwise, you may need to use your own
+  [credential helper](https://github.com/EngFlow/credential-helper-spec/blob/main/spec.md).
+  export environment variable
+  `SISO_CREDENTIAL_HELPER=/path/to/your/credhelper`.
+
+For own REAPI backend other than Google RBE, you need to prepare own
+backend.star.
+
+e.g. for backend with no large worker pool
+```
+load("@builtin//struct.star", "module")
+
+def __platform_properties(ctx):
+    # fyi: this image is created by
+    # https://chromium.googlesource.com/infra/infra/+/refs/heads/main/rbe/images/siso-chromium/linux/Dockerfile
+    container_image = "docker://gcr.io/chops-public-images-prod/rbe/siso-chromium/linux@sha256:d7cb1ab14a0f20aa669c23f22c15a9dead761dcac19f43985bf9dd5f41fbef3a"
+    return {
+        "default": {
+            # set platform properties for your worker.
+            # it depends on how you configure your workers.
+            "OSFamily": "Linux",
+            "container-image": container_image,
+            # e.g. to use worker in worker pool "linux_x64".
+            # "Pool": "linux_x64",
+        },
+        # no Large workers. empty platform properties will run locally.
+        "large": {},
+    }
+
+backend = module(
+    "backend",
+    platform_properties = __platform_properties,
+)
+```
+See
+[build/config/siso/backend_config/README.md](../../build/config/siso/backend_config/README.md),
+[remote apis platform lexicon](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/platform.md).
+Also check your REAPI documentations.
+
+Set `reapi_address`, `reapi_instance` and `reapi_backend_config_path` which
+is the path name for the your backend.star above.
+
+```
+solutions = [
+  {
+    "custom_vars": {
+      "reapi_instance": "default", # your instance name
+      "reapi_address": "remotebuild.example.com:443",  # your backend address
+      "reapi_backend_config_path": "/path/to/your/backend.star",
+    },
+  }
+]
+```
+
+And run `gclient sync`. This will regenerate the config files in
+`build/config/siso/.sisoenv` and
+`build/config/siso/backend_config/backend.star` to use the REAPI instance
+that you just added to your `.gclient` file.
+
+Tip: you may want to use `--reapi_grpc_conn_pool=1` or so to limit
+connection pool for reapi access.
+
+Tip: you may want to use `--reapi_keep_exec_stream` if your backend
+terminates action when grpc stream is cancelled or closed, and
+doesn't work with WaitExecution.
+
+Tip: you can put these flags in `build/config/siso/.sisorc` like
+
+```shell
+ninja --reapi_grpc_conn_pool=1 --reapi_keep_exec_stream
+```
+so siso will use these flags for `siso ninja`, or `autoninja`.
+
+##### gn setup for remote execution
 
 Then, add the following GN args to your `args.gn`:
 
 ```
 use_remoteexec = true
-reclient_cfg_dir = "../../buildtools/reclient_cfgs/linux"
+use_siso = true
 ```
 
-*** note
-If you are building an older version of Chrome with reclient you will need to
-use `rbe_cfg_dir = "../../buildtools/reclient_cfgs_linux"`
-***
+If `args.gn` contains `use_reclient=true`, drop it or replace it with
+`use_reclient=false`.
 
 That's it. Remember to always use `autoninja` for building Chromium as described
-below, which handles the startup and shutdown of the reproxy daemon process
-that's required during the build, instead of directly invoking `ninja`.
+below, instead of directly invoking `siso` or `ninja`.
 
-#### Disable NaCl
-
-By default, the build includes support for
-[Native Client (NaCl)](https://developer.chrome.com/native-client), but
-most of the time you won't need it. You can set the GN argument
-`enable_nacl=false` and it won't be built.
+Reach out to
+[build@chromium.org](https://groups.google.com/a/chromium.org/g/build)
+if you have any questions about remote execution usage.
 
 #### Include fewer debug symbols
 
@@ -260,7 +405,7 @@ can improve build speeds by setting the GN arg `v8_symbol_level=0`.
 
 [Icecc](https://github.com/icecc/icecream) is the distributed compiler with a
 central scheduler to share build load. Currently, many external contributors use
-it. e.g. Intel, Opera, Samsung (this is not useful if you're using Reclient).
+it. e.g. Intel, Opera, Samsung (this is not useful if you're using Siso).
 
 In order to use `icecc`, set the following GN args:
 
@@ -279,7 +424,7 @@ See [related bug](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=808181).
 #### ccache
 
 You can use [ccache](https://ccache.dev) to speed up local builds (again,
-this is not useful if you're using Reclient).
+this is not useful if you're using Siso).
 
 Increase your ccache hit rate by setting `CCACHE_BASEDIR` to a parent directory
 that the working directories all have in common (e.g.,
@@ -342,30 +487,21 @@ mode, with the GN arg `is_official_build = true`.
 
 ## Build Chromium
 
-Build Chromium (the "chrome" target) with Ninja using the command:
+Build Chromium (the "chrome" target) with Siso or Ninja using the command:
 
 ```shell
 $ autoninja -C out/Default chrome
 ```
 
 (`autoninja` is a wrapper that automatically provides optimal values for the
-arguments passed to `ninja`.)
+arguments passed to `siso` or `ninja`.)
 
 You can get a list of all of the other build targets from GN by running `gn ls
-out/Default` from the command line. To compile one, pass the GN label to Ninja
-with no preceding "//" (so, for `//chrome/test:unit_tests` use `autoninja -C
-out/Default chrome/test:unit_tests`).
+out/Default` from the command line. To compile one, pass the GN label to
+Siso/Ninja with no preceding "//" (so, for `//chrome/test:unit_tests` use
+`autoninja -C out/Default chrome/test:unit_tests`).
 
-## Compile a single file
-
-Ninja supports a special [syntax `^`][ninja hat syntax] to compile a single object file specyfing
-the source file. For example, `autoninja -C out/Default ../../base/logging.cc^`
-compiles `obj/base/base/logging.o`.
-
-[ninja hat syntax]: https://ninja-build.org/manual.html#:~:text=There%20is%20also%20a%20special%20syntax%20target%5E%20for%20specifying%20a%20target%20as%20the%20first%20output%20of%20some%20rule%20containing%20the%20source%20you%20put%20in%20the%20command%20line%2C%20if%20one%20exists.%20For%20example%2C%20if%20you%20specify%20target%20as%20foo.c%5E%20then%20foo.o%20will%20get%20built%20(assuming%20you%20have%20those%20targets%20in%20your%20build%20files)
-
-In addition to `foo.cc^`, Siso also supports `foo.h^` syntax to compile
-the corresponding `foo.o` if it exists.
+Tips: See [Siso tips](../siso_tips.md).
 
 ## Run Chromium
 
@@ -399,7 +535,7 @@ exist in the directory structure. To see what target a given unit test or
 browser test file corresponds to, the following command can be used:
 
 ```shell
-$ gn refs out/Default --testonly=true --type=executable --all chrome/browser/ui/browser_list_unittest.cc
+$ gn refs out/Default --testonly=true --type=executable --all chrome/browser/ui/browser_unittest.cc
 //chrome/test:unit_tests
 ```
 

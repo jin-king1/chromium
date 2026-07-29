@@ -19,15 +19,23 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 
+import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.share.ChromeShareExtras;
 import org.chromium.chrome.browser.share.share_sheet.ChromeOptionShareCallback;
 import org.chromium.chrome.browser.share.share_sheet.ShareSheetLinkToggleCoordinator.LinkToggleState;
@@ -35,21 +43,27 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
+import org.chromium.content_public.browser.NavigationHandle;
+import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.PageTransition;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
 /** Tests for {@link LinkToTextCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@EnableFeatures(ChromeFeatureList.TEXT_HIGHLIGHT_FULL_LINK)
 public class LinkToTextCoordinatorTest {
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private ChromeOptionShareCallback mShareCallback;
     @Mock private WindowAndroid mWindow;
     @Mock private Tab mTab;
     @Mock private WebContents mWebContents;
     @Mock private DomDistillerUrlUtils.Natives mDistillerUrlUtilsJniMock;
     @Mock private LinkToTextBridge.Natives mLinkToTextBridge;
+    @Captor private ArgumentCaptor<Callback<GURL>> mCallbackCaptor;
 
     private LinkToTextCoordinator mLinkToTextCoordinator;
     private Activity mActivity;
@@ -99,7 +113,6 @@ public class LinkToTextCoordinatorTest {
     @Before
     public void setUpTest() {
         mActivity = Robolectric.setupActivity(Activity.class);
-        MockitoAnnotations.initMocks(this);
         DomDistillerUrlUtilsJni.setInstanceForTesting(mDistillerUrlUtilsJniMock);
         when(mDistillerUrlUtilsJniMock.getOriginalUrlFromDistillerUrl(any(String.class)))
                 .thenAnswer(
@@ -345,7 +358,16 @@ public class LinkToTextCoordinatorTest {
         mLinkToTextCoordinator.initLinkToTextCoordinator(
                 mTab, mShareCallback, mChromeShareExtras, SHARE_START_TIME, VISIBLE_URL, "", false);
         mLinkToTextCoordinator.shareLinkToText();
-        mLinkToTextCoordinator.onUpdateUrl(mTab, new GURL(VISIBLE_URL));
+        mLinkToTextCoordinator.onDidStartNavigationInPrimaryMainFrame(
+                mTab,
+                NavigationHandle.createForTesting(
+                        new GURL(VISIBLE_URL),
+                        /* isInPrimaryMainFrame= */ true,
+                        /* isSameDocument= */ false,
+                        /* isRendererInitiated= */ false,
+                        PageTransition.TYPED,
+                        /* hasUserGesture= */ false,
+                        /* isReload= */ false));
 
         // check doesn't show share sheet
         verify(mShareCallback, times(0)).showShareSheet(any(), any(), anyLong());
@@ -364,6 +386,31 @@ public class LinkToTextCoordinatorTest {
         // No new histogram is recorded.
         verify(mLinkToTextBridge, times(1)).logFailureMetrics(any(), anyInt());
         verify(mLinkToTextBridge, times(0)).logSuccessMetrics(any());
+    }
+
+    @Test
+    @SmallTest
+    public void shareLinkToTextTest_LinkNavigation_BeforeRemoteRequestComplete() {
+        mLinkToTextCoordinator.initLinkToTextCoordinator(
+                mTab, mShareCallback, mChromeShareExtras, SHARE_START_TIME, VISIBLE_URL, "", false);
+        mLinkToTextCoordinator.shareLinkToText();
+        mLinkToTextCoordinator.onDidStartNavigationInPrimaryMainFrame(
+                mTab,
+                NavigationHandle.createForTesting(
+                        new GURL(VISIBLE_URL),
+                        /* isInPrimaryMainFrame= */ true,
+                        /* isSameDocument= */ false,
+                        /* isRendererInitiated= */ true,
+                        PageTransition.LINK,
+                        /* hasUserGesture= */ false,
+                        /* isReload= */ false));
+
+        // check doesn't show share sheet
+        verify(mShareCallback, times(0)).showShareSheet(any(), any(), anyLong());
+
+        // Check that histogram will be recorded correctly.
+        verify(mLinkToTextBridge, times(1))
+                .logFailureMetrics(any(), eq(LinkGenerationError.OMNIBOX_NAVIGATION));
     }
 
     @Test
@@ -456,7 +503,16 @@ public class LinkToTextCoordinatorTest {
                 "",
                 false);
         mLinkToTextCoordinator.shareLinkToText();
-        mLinkToTextCoordinator.onUpdateUrl(mTab, new GURL(VISIBLE_URL));
+        mLinkToTextCoordinator.onDidStartNavigationInPrimaryMainFrame(
+                mTab,
+                NavigationHandle.createForTesting(
+                        new GURL(VISIBLE_URL),
+                        /* isInPrimaryMainFrame= */ true,
+                        /* isSameDocument= */ false,
+                        /* isRendererInitiated= */ false,
+                        PageTransition.TYPED,
+                        /* hasUserGesture= */ false,
+                        /* isReload= */ false));
 
         // check doesn't show share sheet
         verify(mShareCallback, times(0)).showShareSheet(any(), any(), anyLong());
@@ -471,5 +527,229 @@ public class LinkToTextCoordinatorTest {
 
         // No new histogram is recorded.
         verify(mLinkToTextBridge, times(1)).logLinkToTextReshareStatus(anyInt());
+    }
+
+    @Test
+    @SmallTest
+    public void shareLinkToTextTest_Reshare_LinkNavigation_BeforeRemoteRequestComplete() {
+        mLinkToTextCoordinator.initLinkToTextCoordinator(
+                mTab,
+                mShareCallback,
+                mReshareChromeShareExtras,
+                SHARE_START_TIME,
+                VISIBLE_URL,
+                "",
+                false);
+        mLinkToTextCoordinator.shareLinkToText();
+        mLinkToTextCoordinator.onDidStartNavigationInPrimaryMainFrame(
+                mTab,
+                NavigationHandle.createForTesting(
+                        new GURL(VISIBLE_URL),
+                        /* isInPrimaryMainFrame= */ true,
+                        /* isSameDocument= */ false,
+                        /* isRendererInitiated= */ true,
+                        PageTransition.LINK,
+                        /* hasUserGesture= */ false,
+                        /* isReload= */ false));
+
+        // check doesn't show share sheet
+        verify(mShareCallback, times(0)).showShareSheet(any(), any(), anyLong());
+
+        // Check that histogram will be recorded correctly.
+        verify(mLinkToTextBridge, times(1))
+                .logLinkToTextReshareStatus(LinkToTextReshareStatus.OMNIBOX_NAVIGATION);
+    }
+
+    @Test
+    @SmallTest
+    public void showShareSheetTest_LinkGeneration_EmptyVisibleUrlFallbackToTabUrl() {
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+        String selector = "selector";
+        String expectedUrlToShare = JUnitTestGURLs.EXAMPLE_URL.getSpec() + "#:~:text=selector";
+        mLinkToTextCoordinator.initLinkToTextCoordinator(
+                mTab,
+                mShareCallback,
+                mChromeShareExtras,
+                SHARE_START_TIME,
+                /* visibleUrl= */ "",
+                SELECTED_TEXT,
+                false);
+        mLinkToTextCoordinator.onSelectorReady(selector);
+        checkShowsShareSheetWithLink(expectedUrlToShare);
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.TEXT_HIGHLIGHT_FULL_LINK)
+    public void shareLinkToTextTest_NavigationDuringUrlRequest() {
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+
+        RenderFrameHost renderFrameHost = Mockito.mock(RenderFrameHost.class);
+        when(mWebContents.getMainFrame()).thenReturn(renderFrameHost);
+        when(mWebContents.getFocusedFrame()).thenReturn(renderFrameHost);
+
+        doNothing().when(renderFrameHost).getCanonicalUrlForSharing(mCallbackCaptor.capture());
+
+        mLinkToTextCoordinator.initLinkToTextCoordinator(
+                mTab, mShareCallback, mChromeShareExtras, SHARE_START_TIME, VISIBLE_URL, "", false);
+
+        setGenerationRemoteRequestResults(
+                "selector",
+                Integer.valueOf(LinkGenerationError.NONE),
+                Integer.valueOf(LinkGenerationReadyStatus.REQUESTED_AFTER_READY));
+
+        mLinkToTextCoordinator.shareLinkToText();
+
+        // Verify that getCanonicalUrlForSharing was called and callback was captured.
+        verify(renderFrameHost, times(1)).getCanonicalUrlForSharing(any());
+
+        // Status should be SELECTOR_RECEIVED because we have received the selector but haven't
+        // called the callback yet.
+        Assert.assertEquals(
+                LinkToTextCoordinator.RemoteRequestStatus.SELECTOR_RECEIVED,
+                mLinkToTextCoordinator.mRemoteRequestStatus);
+
+        // Simulate a cross-document navigation starting during the URL request.
+        mLinkToTextCoordinator.onDidStartNavigationInPrimaryMainFrame(
+                mTab,
+                NavigationHandle.createForTesting(
+                        new GURL(VISIBLE_URL),
+                        /* isInPrimaryMainFrame= */ true,
+                        /* isSameDocument= */ false,
+                        /* isRendererInitiated= */ false,
+                        PageTransition.TYPED,
+                        /* hasUserGesture= */ false,
+                        /* isReload= */ false));
+
+        // Status should now be CANCELLED.
+        Assert.assertEquals(
+                LinkToTextCoordinator.RemoteRequestStatus.CANCELLED,
+                mLinkToTextCoordinator.mRemoteRequestStatus);
+
+        // Now trigger the captured callback with a GURL.
+        mCallbackCaptor.getValue().onResult(JUnitTestGURLs.EXAMPLE_URL);
+
+        // Status should STILL be CANCELLED (not COMPLETED).
+        Assert.assertEquals(
+                LinkToTextCoordinator.RemoteRequestStatus.CANCELLED,
+                mLinkToTextCoordinator.mRemoteRequestStatus);
+
+        // Verify that we did NOT show share sheet at all.
+        verify(mShareCallback, times(0)).showShareSheet(any(), any(), anyLong());
+
+        // Verify that success metrics were NOT logged.
+        verify(mLinkToTextBridge, times(0)).logSuccessMetrics(any());
+
+        // Verify that failure metrics were logged with OMNIBOX_NAVIGATION.
+        verify(mLinkToTextBridge, times(1))
+                .logFailureMetrics(any(), eq(LinkGenerationError.OMNIBOX_NAVIGATION));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.TEXT_HIGHLIGHT_FULL_LINK)
+    public void shareLinkToTextTest_FullUrlFlagEnabled_SkipsCanonicalUrl() {
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+
+        RenderFrameHost renderFrameHost = Mockito.mock(RenderFrameHost.class);
+        when(mWebContents.getMainFrame()).thenReturn(renderFrameHost);
+        when(mWebContents.getFocusedFrame()).thenReturn(renderFrameHost);
+
+        mLinkToTextCoordinator.initLinkToTextCoordinator(
+                mTab, mShareCallback, mChromeShareExtras, SHARE_START_TIME, VISIBLE_URL, "", false);
+
+        setGenerationRemoteRequestResults(
+                "selector",
+                Integer.valueOf(LinkGenerationError.NONE),
+                Integer.valueOf(LinkGenerationReadyStatus.REQUESTED_AFTER_READY));
+
+        mLinkToTextCoordinator.shareLinkToText();
+
+        verify(renderFrameHost, times(0)).getCanonicalUrlForSharing(any());
+        checkShowsShareSheetWithLink(VISIBLE_URL + "#:~:text=selector");
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.TEXT_HIGHLIGHT_FULL_LINK)
+    public void shareLinkToTextTest_Reshare_FullUrlFlagEnabled_SkipsCanonicalUrl() {
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+
+        RenderFrameHost renderFrameHost = Mockito.mock(RenderFrameHost.class);
+        when(mWebContents.getMainFrame()).thenReturn(renderFrameHost);
+        when(mWebContents.getFocusedFrame()).thenReturn(renderFrameHost);
+
+        mLinkToTextCoordinator.initLinkToTextCoordinator(
+                mTab,
+                mShareCallback,
+                mReshareChromeShareExtras,
+                SHARE_START_TIME,
+                VISIBLE_URL,
+                "",
+                false);
+
+        setReshareRemoteRequestResults("selector");
+        mLinkToTextCoordinator.onReshareSelectorsRemoteRequestCompleted("selector");
+
+        verify(renderFrameHost, times(0)).getCanonicalUrlForSharing(any());
+        checkShowsShareSheetWithLink(VISIBLE_URL + "#:~:text=selector");
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.TEXT_HIGHLIGHT_FULL_LINK)
+    public void shareLinkToTextTest_FullUrlFlagDisabled_RequestsCanonicalUrl() {
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+
+        RenderFrameHost renderFrameHost = Mockito.mock(RenderFrameHost.class);
+        when(mWebContents.getMainFrame()).thenReturn(renderFrameHost);
+        when(mWebContents.getFocusedFrame()).thenReturn(renderFrameHost);
+
+        doNothing().when(renderFrameHost).getCanonicalUrlForSharing(mCallbackCaptor.capture());
+
+        mLinkToTextCoordinator.initLinkToTextCoordinator(
+                mTab, mShareCallback, mChromeShareExtras, SHARE_START_TIME, VISIBLE_URL, "", false);
+
+        setGenerationRemoteRequestResults(
+                "selector",
+                Integer.valueOf(LinkGenerationError.NONE),
+                Integer.valueOf(LinkGenerationReadyStatus.REQUESTED_AFTER_READY));
+
+        mLinkToTextCoordinator.shareLinkToText();
+
+        verify(renderFrameHost, times(1)).getCanonicalUrlForSharing(any());
+
+        mCallbackCaptor.getValue().onResult(JUnitTestGURLs.EXAMPLE_URL);
+        checkShowsShareSheetWithLink(JUnitTestGURLs.EXAMPLE_URL.getSpec() + "#:~:text=selector");
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.TEXT_HIGHLIGHT_FULL_LINK)
+    public void shareLinkToTextTest_Reshare_FullUrlFlagDisabled_RequestsCanonicalUrl() {
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
+
+        RenderFrameHost renderFrameHost = Mockito.mock(RenderFrameHost.class);
+        when(mWebContents.getMainFrame()).thenReturn(renderFrameHost);
+        when(mWebContents.getFocusedFrame()).thenReturn(renderFrameHost);
+
+        doNothing().when(renderFrameHost).getCanonicalUrlForSharing(mCallbackCaptor.capture());
+
+        mLinkToTextCoordinator.initLinkToTextCoordinator(
+                mTab,
+                mShareCallback,
+                mReshareChromeShareExtras,
+                SHARE_START_TIME,
+                VISIBLE_URL,
+                "",
+                false);
+
+        setReshareRemoteRequestResults("selector");
+        mLinkToTextCoordinator.onReshareSelectorsRemoteRequestCompleted("selector");
+
+        verify(renderFrameHost, times(1)).getCanonicalUrlForSharing(any());
+
+        mCallbackCaptor.getValue().onResult(JUnitTestGURLs.EXAMPLE_URL);
+        checkShowsShareSheetWithLink(JUnitTestGURLs.EXAMPLE_URL.getSpec() + "#:~:text=selector");
     }
 }

@@ -20,11 +20,8 @@ class AddressFieldParserTest : public FormFieldParserTestBase,
                                public ::testing::Test {
  public:
   AddressFieldParserTest() {
-    default_features.InitWithFeatures({features::kAutofillUseFRAddressModel,
-                                       features::kAutofillUsePLAddressModel,
-                                       features::kAutofillUseINAddressModel,
-                                       features::kAutofillUseITAddressModel,
-                                       features::kAutofillUseNLAddressModel},
+    default_features.InitWithFeatures({features::kAutofillUseINAddressModel,
+                                       features::kAutofillSupportSplitZipCode},
                                       {});
   }
   AddressFieldParserTest(const AddressFieldParserTest&) = delete;
@@ -32,7 +29,7 @@ class AddressFieldParserTest : public FormFieldParserTestBase,
 
  protected:
   std::unique_ptr<FormFieldParser> Parse(ParsingContext& context,
-                                         AutofillScanner* scanner) override {
+                                         AutofillScanner& scanner) override {
     return AddressFieldParser::Parse(context, scanner);
   }
 
@@ -273,6 +270,20 @@ TEST_F(AddressFieldParserTest, ParseCity) {
   ClassifyAndVerify();
 }
 
+TEST_F(AddressFieldParserTest, ParseCity_IgnoreNonCityWordsEndingInCity) {
+  AddTextFormFieldData("opacity", "Opacity", UNKNOWN_TYPE);
+  AddTextFormFieldData("ethnicity", "Ethnicity", UNKNOWN_TYPE);
+  AddTextFormFieldData("capacity", "Capacity", UNKNOWN_TYPE);
+  AddTextFormFieldData("incapacity", "Incapacity", UNKNOWN_TYPE);
+  AddTextFormFieldData("electricity", "Electricity", UNKNOWN_TYPE);
+  AddTextFormFieldData("velocity", "Velocity", UNKNOWN_TYPE);
+  AddTextFormFieldData("publicity", "Publicity", UNKNOWN_TYPE);
+  AddTextFormFieldData("simplicity", "Simplicity", UNKNOWN_TYPE);
+  AddTextFormFieldData("caloricity", "Caloricity", UNKNOWN_TYPE);
+  AddTextFormFieldData("homecity", "Homecity", ADDRESS_HOME_CITY);
+  ClassifyAndVerifyWithMultipleParses();
+}
+
 TEST_F(AddressFieldParserTest, ParseState) {
   AddTextFormFieldData("state", "State", ADDRESS_HOME_STATE);
   ClassifyAndVerify();
@@ -297,8 +308,37 @@ TEST_F(AddressFieldParserTest, ParseStateAndZipOneLabel) {
   ClassifyAndVerify();
 }
 
+TEST_F(AddressFieldParserTest, ParseZipAndCityOneLabel) {
+  AddTextFormFieldData("zip", "zip, city", ADDRESS_HOME_ZIP);
+  AddTextFormFieldData("city", "zip, city", ADDRESS_HOME_CITY);
+  ClassifyAndVerify();
+}
+
 TEST_F(AddressFieldParserTest, ParseCountry) {
   AddTextFormFieldData("country", "Country", ADDRESS_HOME_COUNTRY);
+  ClassifyAndVerify();
+}
+
+TEST_F(AddressFieldParserTest, ParseZipAndZipSuffix1) {
+  AddTextFormFieldData("zip", "Zip", ADDRESS_HOME_ZIP);
+  AddTextFormFieldData("zip2", "Zip", ADDRESS_HOME_ZIP_SUFFIX);
+  ClassifyAndVerify();
+}
+
+TEST_F(AddressFieldParserTest, ParseZipAndZipSuffix2) {
+  AddTextFormFieldData("zip", "Zip", ADDRESS_HOME_ZIP);
+  AddTextFormFieldData("zipPlus", "Zip", ADDRESS_HOME_ZIP_SUFFIX);
+  ClassifyAndVerify();
+}
+
+TEST_F(AddressFieldParserTest, ParseZipAndZipSuffix3) {
+  AddTextFormFieldData("zip", "Zip extended", ADDRESS_HOME_ZIP);
+  AddTextFormFieldData("zip2", "Zip extended", ADDRESS_HOME_ZIP_SUFFIX);
+  ClassifyAndVerify();
+}
+
+TEST_F(AddressFieldParserTest, ParseLonelyZipSuffix) {
+  AddTextFormFieldData("zip2", "Zip", ADDRESS_HOME_ZIP);
   ClassifyAndVerify();
 }
 
@@ -341,20 +381,6 @@ TEST_F(AddressFieldParserTest, ParseAmbiguousCountryState2) {
   ClassifyAndVerify();
 }
 
-// Tests that city and state fields are classified correctly when their names
-// contain keywords for different types. This is achieved by giving the priority
-// to the label over the name for pages in Turkish.
-TEST_F(AddressFieldParserTest, ParseTurkishCityStateWithLabelPrecedence) {
-  // TODO(crbug.com/40735892): Remove once launched.
-  base::test::ScopedFeatureList enabled;
-  enabled.InitAndEnableFeature(
-      features::kAutofillEnableLabelPrecedenceForTurkishAddresses);
-
-  AddTextFormFieldData("city", "Il", ADDRESS_HOME_STATE);
-  AddTextFormFieldData("county", "Ilce", ADDRESS_HOME_CITY);
-  ClassifyAndVerify(ParseResult::kParsed, GeoIpCountryCode("TR"),
-                    LanguageCode("tr"));
-}
 
 // Tests that address name is not misclassified as address.
 TEST_F(AddressFieldParserTest, NotParseAddressName_TR) {
@@ -426,6 +452,120 @@ TEST_F(AddressFieldParserTest, ParseHouseNumberAndAptNum_NL) {
   AddTextFormFieldData("zip code", "Zipcode", ADDRESS_HOME_ZIP);
   ClassifyAndVerify(ParseResult::kParsed, GeoIpCountryCode("NL"),
                     LanguageCode("nl"));
+}
+
+TEST_F(AddressFieldParserTest, ParseStreetLocationIN) {
+  AddTextFormFieldData("flat", "flat",
+                       ADDRESS_HOME_STREET_LOCATION);
+  AddTextFormFieldData("area", "area",
+                       ADDRESS_HOME_DEPENDENT_LOCALITY);
+  AddTextFormFieldData("landmark", "landmark", ADDRESS_HOME_LANDMARK);
+  ClassifyAndVerify(ParseResult::kParsed, GeoIpCountryCode("IN"),
+                    LanguageCode("IN"));
+}
+
+TEST_F(AddressFieldParserTest, ParseOnlyStreetLocationIN) {
+  AddTextFormFieldData("flat", "flat",
+                       ADDRESS_HOME_STREET_LOCATION);
+  ClassifyAndVerify(ParseResult::kParsed, GeoIpCountryCode("IN"),
+                    LanguageCode("IN"));
+}
+
+TEST_F(AddressFieldParserTest, ParseOnlyDependentLocalityIN) {
+  AddTextFormFieldData("area", "area",
+                       ADDRESS_HOME_DEPENDENT_LOCALITY);
+  ClassifyAndVerify(ParseResult::kParsed, GeoIpCountryCode("IN"),
+                    LanguageCode("IN"));
+}
+
+TEST_F(AddressFieldParserTest, ParseOnlyLandmarkIN) {
+  AddTextFormFieldData("landmark", "landmark", ADDRESS_HOME_LANDMARK);
+  ClassifyAndVerify(ParseResult::kParsed, GeoIpCountryCode("IN"),
+                    LanguageCode("IN"));
+}
+
+// The label originates from kLabelTag, which represents the high quality label.
+// When there is no match with such a label, the parsing logic should fall back
+// to the placeholder.
+TEST_F(AddressFieldParserTest,
+       ParseBasedOnPlaceholderWhenHighQualityLabelDoesntMatch) {
+  base::test::ScopedFeatureList feature{
+      features::kAutofillBetterLocalHeuristicPlaceholderSupport};
+
+  AddFormFieldData(FormControlType::kInputText, /*name=*/"",
+                   /*label=*/"Non-matching label",
+                   /*placeholder=*/"Country", /*max_length=*/0,
+                   /*expected_type=*/FieldType::ADDRESS_HOME_COUNTRY);
+  fields_.back().set_label_source(FormFieldData::LabelSource::kLabelTag);
+  ClassifyAndVerify();
+}
+
+// There is no match with the high-quality label. The classification is based on
+// the name and placeholder matches.
+TEST_F(AddressFieldParserTest, ParseBasedOnNameAndPlaceholder) {
+  base::test::ScopedFeatureList feature{
+      features::kAutofillBetterLocalHeuristicPlaceholderSupport};
+
+  AddFormFieldData(FormControlType::kInputText, /*name=*/"Country",
+                   /*label=*/"Non-matching label",
+                   /*placeholder=*/"Country", /*max_length=*/0,
+                   /*expected_type=*/FieldType::ADDRESS_HOME_COUNTRY);
+  fields_.back().set_label_source(FormFieldData::LabelSource::kLabelTag);
+  ClassifyAndVerify();
+}
+
+TEST_F(AddressFieldParserTest, ParseBasedOnHighQualityLabel) {
+  base::test::ScopedFeatureList feature{
+      features::kAutofillBetterLocalHeuristicPlaceholderSupport};
+
+  AddFormFieldData(FormControlType::kInputText, /*name=*/"",
+                   /*label=*/"Country",
+                   /*placeholder=*/"Non-matching placeholder", /*max_length=*/0,
+                   /*expected_type=*/FieldType::ADDRESS_HOME_COUNTRY);
+  fields_.back().set_label_source(FormFieldData::LabelSource::kLabelTag);
+  ClassifyAndVerify();
+}
+
+TEST_F(AddressFieldParserTest, ParseBasedOnLowQualityLabel) {
+  base::test::ScopedFeatureList feature{
+      features::kAutofillBetterLocalHeuristicPlaceholderSupport};
+
+  AddFormFieldData(FormControlType::kInputText, /*name=*/"",
+                   /*label=*/"Country",
+                   /*placeholder=*/"Non-matching placeholder", /*max_length=*/0,
+                   /*expected_type=*/FieldType::ADDRESS_HOME_COUNTRY);
+  fields_.back().set_label_source(FormFieldData::LabelSource::kAriaLabel);
+  ClassifyAndVerify();
+}
+
+// Both high quality label and placeholder are available and provide conflicting
+// information. High quality label is preferred over the placeholder.
+TEST_F(AddressFieldParserTest,
+       ParseBasedOnHighQualityLabelWhenPlaceholderAlsoMatches) {
+  base::test::ScopedFeatureList feature{
+      features::kAutofillBetterLocalHeuristicPlaceholderSupport};
+
+  AddFormFieldData(FormControlType::kInputText, /*name=*/"",
+                   /*label=*/"Country", /*placeholder=*/"City",
+                   /*max_length=*/0,
+                   /*expected_type=*/FieldType::ADDRESS_HOME_COUNTRY);
+  fields_.back().set_label_source(FormFieldData::LabelSource::kLabelTag);
+  ClassifyAndVerify();
+}
+
+// Both low quality label and placeholder are available and provide conflicting
+// information. Placeholder is preferred over low quality label.
+TEST_F(AddressFieldParserTest,
+       ParseBasedOnPlaceholderWhenLowQualityLabelAlsoMatches) {
+  base::test::ScopedFeatureList feature{
+      features::kAutofillBetterLocalHeuristicPlaceholderSupport};
+
+  AddFormFieldData(FormControlType::kInputText, /*name=*/"",
+                   /*label=*/"Country", /*placeholder=*/"City",
+                   /*max_length=*/0,
+                   /*expected_type=*/FieldType::ADDRESS_HOME_CITY);
+  fields_.back().set_label_source(FormFieldData::LabelSource::kAriaLabel);
+  ClassifyAndVerify();
 }
 
 }  // namespace autofill

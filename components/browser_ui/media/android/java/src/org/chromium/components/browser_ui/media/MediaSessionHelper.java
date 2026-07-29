@@ -7,6 +7,8 @@ package org.chromium.components.browser_ui.media;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
+import android.app.KeyguardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.media.AudioManager;
@@ -17,7 +19,13 @@ import android.text.TextUtils;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ContextUtils;
+import org.chromium.base.ResettersForTesting;
+import org.chromium.base.ScreenStateReceiver;
 import org.chromium.base.SysUtils;
+import org.chromium.base.TimeUtils;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -31,6 +39,7 @@ import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
+import org.chromium.media_session.mojom.MediaSession.SuspendType;
 import org.chromium.media_session.mojom.MediaSessionAction;
 import org.chromium.services.media_session.MediaImage;
 import org.chromium.services.media_session.MediaMetadata;
@@ -49,13 +58,15 @@ import java.util.Set;
 @NullMarked
 public class MediaSessionHelper implements MediaImageCallback {
     private static final String UNICODE_PLAY_CHARACTER = "\u25B6";
-    @VisibleForTesting public static final int HIDE_NOTIFICATION_DELAY_MILLIS = 2500;
+    @VisibleForTesting public static final int HIDE_NOTIFICATION_DELAY_MILLIS = 500;
+    private static final long SYSTEM_SLEEP_THRESHOLD_MS = 1000L;
+    private static final long INVALID_DEEP_SLEEP_TIME = -1L;
 
-    private Delegate mDelegate;
+    private final Delegate mDelegate;
     private @Nullable WebContents mWebContents;
     @VisibleForTesting public @Nullable WebContentsObserver mWebContentsObserver;
     @VisibleForTesting public @Nullable MediaSessionObserver mMediaSessionObserver;
-    private MediaImageManager mMediaImageManager;
+    private final MediaImageManager mMediaImageManager;
     private @Nullable Bitmap mPageMediaImage;
     @VisibleForTesting public @Nullable Bitmap mFavicon;
     private @Nullable Bitmap mCurrentMediaImage;
@@ -72,7 +83,7 @@ public class MediaSessionHelper implements MediaImageCallback {
     private @Nullable MediaMetadata mCurrentMetadata;
     private Set<Integer> mMediaSessionActions = Collections.emptySet();
     private @Nullable MediaPosition mMediaPosition;
-    private Handler mHandler;
+    private final Handler mHandler;
     // The delayed task to hide notification. Hiding notification can be immediate or delayed.
     // Delayed hiding will schedule this delayed task to |mHandler|. The task will be canceled when
     // showing or immediate hiding.
@@ -83,7 +94,106 @@ public class MediaSessionHelper implements MediaImageCallback {
     // static getter {@link MediaSession#fromWebContents()}.
     @VisibleForTesting public static @Nullable MediaSession sOverriddenMediaSession;
 
-    private MediaNotificationListener mControlsListener =
+    public static void setOverriddenMediaSessionForTesting(@Nullable MediaSession mediaSession) {
+        sOverriddenMediaSession = mediaSession;
+        if (mediaSession != null) {
+            ResettersForTesting.register(() -> sOverriddenMediaSession = null);
+        }
+    }
+
+    public static @Nullable MediaSessionHelper sInstanceForTesting;
+
+    public ScreenStateReceiver.ScreenStateObserver getScreenStateObserverForTesting() {
+        return mScreenStateObserver;
+    }
+
+    // To track deep sleep duration between screen off and screen on.
+    private long mDeepSleepTimeAtScreenOffMs = INVALID_DEEP_SLEEP_TIME;
+    private boolean mIsPaused;
+    private long mTimeOfLastUnplugPauseMs;
+
+    // Handles actions when the screen turns off/on, such as hiding the notification or pausing
+    // media.
+    private final ScreenStateReceiver.ScreenStateObserver mScreenStateObserver =
+            new ScreenStateReceiver.ScreenStateObserver() {
+                @Override
+                public void onScreenOff(Context context, Intent intent) {
+                    // Hide the notification immediately if we are currently waiting to hide it
+                    // (e.g. because the media became uncontrollable). This is safe because
+                    // `mHideNotificationDelayedTask` is cleared when media becomes controllable
+                    // again.
+                    if (mHideNotificationDelayedTask != null) {
+                        hideNotificationImmediately();
+                    }
+
+                    // Record deep sleep baseline to detect suspension when the screen turns back
+                    // on.
+                    mDeepSleepTimeAtScreenOffMs =
+                            TimeUtils.elapsedRealtimeMillis() - TimeUtils.uptimeMillis();
+                }
+
+                @Override
+                public void onScreenOn(Context context, Intent intent) {
+                    // Only pause if the feature is enabled to avoid regressing background audio
+                    // on standard Android phones.
+                    if (!MediaFeatureList.sPauseMediaOnSystemSleepAndroid.isEnabled()) return;
+
+                    // If the baseline is INVALID_DEEP_SLEEP_TIME, we didn't observe a Screen Off
+                    // event first.
+                    if (mDeepSleepTimeAtScreenOffMs == INVALID_DEEP_SLEEP_TIME) return;
+
+                    final long currentDeepSleepMs =
+                            TimeUtils.elapsedRealtimeMillis() - TimeUtils.uptimeMillis();
+                    final long sleepDeltaMs = currentDeepSleepMs - mDeepSleepTimeAtScreenOffMs;
+
+                    // Reset the baseline now that we've processed the wake event.
+                    mDeepSleepTimeAtScreenOffMs = INVALID_DEEP_SLEEP_TIME;
+
+                    // If the device spent more than the threshold in deep sleep while the screen
+                    // was off, we assume it was a true system suspension (e.g. laptop lid close).
+                    if (sleepDeltaMs >= SYSTEM_SLEEP_THRESHOLD_MS
+                            && !mIsPaused
+                            && mMediaSessionObserver != null
+                            && mMediaSessionObserver.getMediaSession() != null) {
+                        MediaSessionUma.recordPause(MediaSessionActionSource.SYSTEM_SLEEP);
+                        mMediaSessionObserver.getMediaSession().suspend(SuspendType.SYSTEM);
+                    }
+                }
+            };
+
+    // Handles actions when headphones are unplugged.
+    private final AudioBecomingNoisyReceiver.AudioBecomingNoisyObserver
+            mAudioBecomingNoisyObserver =
+                    new AudioBecomingNoisyReceiver.AudioBecomingNoisyObserver() {
+                        @Override
+                        public void onAudioBecomingNoisy() {
+                            if (mIsPaused) return;
+
+                            // Query native flag directly via JNI.
+                            boolean noPause =
+                                    MediaFeatureMap.getInstance()
+                                            .isEnabledInNative(
+                                                    MediaFeatureList
+                                                            .NO_PAUSE_MEDIA_ON_HEADPHONE_UNPLUG);
+                            boolean shouldPause = !noPause;
+
+                            if (mMediaSessionObserver != null
+                                    && mMediaSessionObserver.getMediaSession() != null) {
+                                RecordHistogram.recordBooleanHistogram(
+                                        "Media.Android.AudioBecomingNoisyPaused", shouldPause);
+                                if (shouldPause) {
+                                    mTimeOfLastUnplugPauseMs = TimeUtils.elapsedRealtimeMillis();
+                                    MediaSessionUma.recordPause(
+                                            MediaSessionActionSource.HEADSET_UNPLUG);
+                                    mMediaSessionObserver
+                                            .getMediaSession()
+                                            .suspend(SuspendType.SYSTEM);
+                                }
+                            }
+                        }
+                    };
+
+    private final MediaNotificationListener mControlsListener =
             new MediaNotificationListener() {
                 @Override
                 public void onPlay(int actionSource) {
@@ -94,16 +204,25 @@ public class MediaSessionHelper implements MediaImageCallback {
 
                     if (mMediaSessionObserver.getMediaSession() == null) return;
 
-                    mMediaSessionObserver.getMediaSession().resume();
+                    mMediaSessionObserver.getMediaSession().resume(SuspendType.UI);
                 }
 
                 @Override
                 public void onPause(int actionSource) {
                     if (isNotificationHidingOrHidden()) return;
 
+                    MediaSessionUma.recordPause(
+                            MediaSessionHelper.convertMediaActionSourceToUMA(actionSource));
+
+                    mTimeOfLastUnplugPauseMs = 0;
+
                     if (mMediaSessionObserver.getMediaSession() == null) return;
 
-                    mMediaSessionObserver.getMediaSession().suspend();
+                    int suspendType =
+                            (actionSource == MediaNotificationListener.ACTION_SOURCE_HEADSET_UNPLUG)
+                                    ? SuspendType.SYSTEM
+                                    : SuspendType.UI;
+                    mMediaSessionObserver.getMediaSession().suspend(suspendType);
                 }
 
                 @Override
@@ -191,8 +310,20 @@ public class MediaSessionHelper implements MediaImageCallback {
 
             @Override
             public void mediaSessionStateChanged(boolean isControllable, boolean isPaused) {
+                mIsPaused = isPaused;
+                if (mTimeOfLastUnplugPauseMs > 0 && !isPaused) {
+                    long delta = TimeUtils.elapsedRealtimeMillis() - mTimeOfLastUnplugPauseMs;
+                    RecordHistogram.recordLongTimesHistogram(
+                            "Media.Android.AudioBecomingNoisyPaused.TimeToResume", delta);
+                    mTimeOfLastUnplugPauseMs = 0;
+                }
                 if (!isControllable) {
-                    hideNotificationDelayed();
+                    mTimeOfLastUnplugPauseMs = 0;
+                    if (isDeviceLocked()) {
+                        hideNotificationImmediately();
+                    } else {
+                        hideNotificationDelayed();
+                    }
                     return;
                 }
                 assumeNonNull(mWebContents);
@@ -212,7 +343,7 @@ public class MediaSessionHelper implements MediaImageCallback {
                                 .setPaused(isPaused)
                                 .setOrigin(mOrigin)
                                 .setPrivate(mWebContents.isIncognito())
-                                .setNotificationSmallIcon(R.drawable.audio_playing)
+                                .setNotificationSmallIcon(R.drawable.chrome_product_vd_24)
                                 .setNotificationLargeIcon(mCurrentMediaImage)
                                 .setMediaSessionImage(mPageMediaImage)
                                 .setActions(
@@ -231,7 +362,7 @@ public class MediaSessionHelper implements MediaImageCallback {
                 if (mWebContents.isIncognito()
                         || (mCurrentMediaImage == null && !fetchLargeFaviconImage())) {
                     mNotificationInfoBuilder.setDefaultNotificationLargeIcon(
-                            R.drawable.audio_playing_square);
+                            R.drawable.chrome_product_vd_24);
                 }
                 showNotification();
                 Activity activity = getActivity();
@@ -266,18 +397,18 @@ public class MediaSessionHelper implements MediaImageCallback {
 
             /**
              * Adjust `mMediaPosition` so that it's unambiguous about what the current media time
-             * is.  Otherwise, when transitioning into the paused state, the platform won't know to
-             * adjust the time from the `getLastUpdatedTime()`.  This is especially bad since the
-             * playback rate in the MediaPosition and `isPaused` don't always agree immediately;
-             * we can find out about `isPaused` before being told of the final, playback rate = 0,
-             * MediaPosition.  To avoid this, we adjust the MediaPosition based on its current
+             * is. Otherwise, when transitioning into the paused state, the platform won't know to
+             * adjust the time from the `getLastUpdatedTime()`. This is especially bad since the
+             * playback rate in the MediaPosition and `isPaused` don't always agree immediately; we
+             * can find out about `isPaused` before being told of the final, playback rate = 0,
+             * MediaPosition. To avoid this, we adjust the MediaPosition based on its current
              * playback rate, and update the playback rate to zero so that it's unambiguous.
              */
             private void rebaseMediaPosition(boolean isPaused) {
                 if (mMediaPosition == null) return;
 
                 long now = SystemClock.elapsedRealtime();
-                long rebased_position =
+                long rebasedPosition =
                         mMediaPosition.getPosition()
                                 + (long)
                                         ((now - mMediaPosition.getLastUpdatedTime())
@@ -285,7 +416,7 @@ public class MediaSessionHelper implements MediaImageCallback {
                 mMediaPosition =
                         new MediaPosition(
                                 mMediaPosition.getDuration(),
-                                rebased_position,
+                                rebasedPosition,
                                 isPaused ? 0 : mMediaPosition.getPlaybackRate(),
                                 now);
             }
@@ -402,7 +533,7 @@ public class MediaSessionHelper implements MediaImageCallback {
          * Creates a {@link MediaNotificationInfo.Builder} with basic embedder-specific
          * initialization.
          */
-        public MediaNotificationInfo.Builder createMediaNotificationInfoBuilder();
+        MediaNotificationInfo.Builder createMediaNotificationInfoBuilder();
 
         /** Shows a notification with the given metadata. */
         void showMediaNotification(MediaNotificationInfo notificationInfo);
@@ -427,6 +558,14 @@ public class MediaSessionHelper implements MediaImageCallback {
         if (activity != null) {
             mPreviousVolumeControlStream = activity.getVolumeControlStream();
         }
+
+        ScreenStateReceiver.addObserver(mScreenStateObserver);
+        AudioBecomingNoisyReceiver.addObserver(mAudioBecomingNoisyObserver);
+
+        if (BuildConfig.IS_FOR_TEST) {
+            sInstanceForTesting = this;
+            ResettersForTesting.register(() -> sInstanceForTesting = null);
+        }
     }
 
     /**
@@ -434,19 +573,22 @@ public class MediaSessionHelper implements MediaImageCallback {
      * requires it.
      */
     public void destroy() {
+        mTimeOfLastUnplugPauseMs = 0;
         cleanupMediaSessionObserver();
         hideNotificationImmediately();
         if (mWebContentsObserver != null) mWebContentsObserver.observe(null);
         mWebContentsObserver = null;
         if (mLargeIconBridge != null) mLargeIconBridge.destroy();
         mLargeIconBridge = null;
+        ScreenStateReceiver.removeObserver(mScreenStateObserver);
+        AudioBecomingNoisyReceiver.removeObserver(mAudioBecomingNoisyObserver);
     }
 
     /**
-     * Removes all the leading/trailing white spaces and the quite common unicode play character.
-     * It improves the visibility of the title in the notification.
+     * Removes all the leading/trailing white spaces and the quite common unicode play character. It
+     * improves the visibility of the title in the notification.
      *
-     * @param title The original tab title, e.g. "   ▶   Foo - Bar  "
+     * @param title The original tab title, e.g. " ▶ Foo - Bar "
      * @return The sanitized tab title, e.g. "Foo - Bar"
      */
     private String sanitizeMediaTitle(String title) {
@@ -484,6 +626,13 @@ public class MediaSessionHelper implements MediaImageCallback {
         return windowAndroid.getActivity().get();
     }
 
+    private boolean isDeviceLocked() {
+        Context context = ContextUtils.getApplicationContext();
+        KeyguardManager keyguardManager =
+                (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+        return keyguardManager != null && keyguardManager.isKeyguardLocked();
+    }
+
     /** Returns true if a large favicon might be found. */
     @RequiresNonNull("mWebContents")
     private boolean fetchLargeFaviconImage() {
@@ -515,7 +664,7 @@ public class MediaSessionHelper implements MediaImageCallback {
      * Updates the best favicon if the given icon is better and the favicon is shown in
      * notification.
      */
-    public void updateFavicon(Bitmap icon) {
+    public void updateFavicon(@Nullable Bitmap icon) {
         if (icon == null) return;
 
         mMaybeHasFavicon = true;
@@ -546,7 +695,7 @@ public class MediaSessionHelper implements MediaImageCallback {
             // If we do not have any favicon then make sure we show default sound icon. This
             // icon is used by notification manager only if we do not show any icon.
             mNotificationInfoBuilder.setDefaultNotificationLargeIcon(
-                    R.drawable.audio_playing_square);
+                    R.drawable.chrome_product_vd_24);
             showNotification();
         } else {
             updateFavicon(icon);

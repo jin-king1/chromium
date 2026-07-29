@@ -6,9 +6,9 @@
 #define IOS_WEB_PUBLIC_WEBUI_WEB_UI_IOS_DATA_SOURCE_H_
 
 #include <string>
+#include <string_view>
 
 #include "base/containers/span.h"
-#include "base/functional/callback.h"
 #include "base/supports_user_data.h"
 #include "base/values.h"
 
@@ -26,7 +26,7 @@ class WebUIIOSDataSource : public base::SupportsUserData {
  public:
   ~WebUIIOSDataSource() override {}
 
-  static WebUIIOSDataSource* Create(const std::string& source_name);
+  static WebUIIOSDataSource* Create(std::string_view source_name);
 
   // Adds a WebUIIOS data source to `browser_state`.
   static void Add(BrowserState* browser_state, WebUIIOSDataSource* source);
@@ -43,7 +43,7 @@ class WebUIIOSDataSource : public base::SupportsUserData {
   virtual void AddLocalizedString(const std::string& name, int ids) = 0;
 
   virtual void AddLocalizedStrings(
-      const base::Value::Dict& localized_strings) = 0;
+      const base::DictValue& localized_strings) = 0;
 
   virtual void AddLocalizedStrings(
       base::span<const webui::LocalizedString> strings) = 0;

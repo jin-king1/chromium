@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/webui/shortcut_customization_ui/shortcut_customization_app_ui.h"
 
 #include <memory>
@@ -25,6 +20,7 @@
 #include "ash/webui/shortcut_customization_ui/shortcuts_app_manager.h"
 #include "ash/webui/shortcut_customization_ui/shortcuts_app_manager_factory.h"
 #include "ash/webui/shortcut_customization_ui/url_constants.h"
+#include "base/containers/span.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
@@ -189,6 +185,8 @@ void AddLocalizedStrings(content::WebUIDataSource* source) {
        IDS_SHORTCUT_CUSTOMIZATION_ICON_LABEL_BROWSER_REFRESH},
       {"iconLabelBrowserSearch",
        IDS_SHORTCUT_CUSTOMIZATION_ICON_LABEL_BROWSER_SEARCH},
+      {"iconLabelCameraAccessToggle",
+       IDS_SHORTCUT_CUSTOMIZATION_ICON_LABEL_CAMERA_ACCESS_TOGGLE},
       {"iconLabelContextMenu",
        IDS_SHORTCUT_CUSTOMIZATION_ICON_LABEL_CONTEXT_MENU},
       {"iconLabelDoNotDisturb",
@@ -259,8 +257,6 @@ void AddFeatureFlags(content::WebUIDataSource* html_source) {
       "isCustomizationAllowed",
       Shell::Get()->accelerator_prefs()->IsCustomizationAllowed());
   html_source->AddBoolean("isJellyEnabledForShortcutCustomization", true);
-  html_source->AddBoolean("isInputDeviceSettingsSplitEnabled",
-                          features::IsInputDeviceSettingsSplitEnabled());
   html_source->AddBoolean(
       "hasFunctionKey",
       Shell::Get()->keyboard_capability()->HasFunctionKeyOnAnyKeyboard());
@@ -298,7 +294,7 @@ ShortcutCustomizationAppUI::~ShortcutCustomizationAppUI() {
 }
 
 void ShortcutCustomizationAppUI::OnShortcutPolicyUpdated() {
-  base::Value::Dict update_data;
+  base::DictValue update_data;
   // Update 'isCustomizationAllowed" when policy changes.
   update_data.Set("isCustomizationAllowed",
                   Shell::Get()->accelerator_prefs()->IsCustomizationAllowed());
@@ -343,12 +339,6 @@ void ShortcutCustomizationAppUI::BindInterface(
   DCHECK(search_handler);
 
   search_handler->BindInterface(std::move(receiver));
-}
-
-void ShortcutCustomizationAppUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(ShortcutCustomizationAppUI)

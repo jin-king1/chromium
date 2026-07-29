@@ -5,11 +5,12 @@
 package org.chromium.chrome.browser.browserservices.metrics;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.ukm.UkmRecorder;
 import org.chromium.content_public.browser.WebContents;
 
@@ -17,6 +18,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** Encapsulates Uma recording actions related to Trusted Web Activities. */
+@NullMarked
 public class TrustedWebActivityUmaRecorder {
     @IntDef({ShareRequestMethod.GET, ShareRequestMethod.POST})
     @Retention(RetentionPolicy.SOURCE)
@@ -81,12 +83,11 @@ public class TrustedWebActivityUmaRecorder {
     }
 
     /** Records the notification permission request result for a TWA. */
-    public static void recordNotificationPermissionRequestResult(
-            @ContentSettingValues int settingValue) {
+    public static void recordNotificationPermissionRequestResult(@ContentSetting int settingValue) {
         RecordHistogram.recordEnumeratedHistogram(
                 "TrustedWebActivity.Notification.PermissionRequestResult",
                 settingValue,
-                ContentSettingValues.NUM_SETTINGS);
+                ContentSetting.NUM_SETTINGS);
     }
 
     public static void recordExtraCommandSuccess(String command, boolean success) {

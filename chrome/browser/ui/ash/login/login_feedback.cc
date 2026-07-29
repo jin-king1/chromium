@@ -42,14 +42,10 @@ void LoginFeedback::Request(const std::string& description,
       /*show_questionnaire=*/false,
       /*from_chrome_labs_or_kaleidoscope=*/false,
       /*from_autofill=*/false,
-      /*autofill_metadata=*/base::Value::Dict(),
-      /*ai_metadata=*/base::Value::Dict());
+      /*autofill_metadata=*/base::DictValue(),
+      /*ai_metadata=*/base::DictValue());
 
-  if (ash::features::IsOsFeedbackDialogEnabled()) {
-    OsFeedbackDialog::ShowDialogAsync(profile_, *info, std::move(callback));
-  } else {
-    FeedbackDialog::CreateOrShow(profile_, *info);
-  }
+  OsFeedbackDialog::ShowDialogAsync(profile_, *info, std::move(callback));
 }
 
 }  // namespace ash

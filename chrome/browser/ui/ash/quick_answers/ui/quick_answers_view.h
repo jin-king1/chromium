@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_ASH_QUICK_ANSWERS_UI_QUICK_ANSWERS_VIEW_H_
 
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
@@ -92,7 +93,8 @@ class QuickAnswersView : public chromeos::ReadWriteCardsView {
   void SetIntent(Intent intent);
   std::optional<Intent> GetIntent() const;
 
-  void SetResult(const StructuredResult& structured_result);
+  void SetResult(const StructuredResult& structured_result,
+                 const std::string& application_locale);
 
   void ShowRetryView();
 
@@ -107,9 +109,9 @@ class QuickAnswersView : public chromeos::ReadWriteCardsView {
  private:
   bool HasFocusInside();
   void AddFrameButtons();
-  bool ShouldAddPhoneticsAudioButton(ResultType result_type,
-                                     GURL phonetics_audio,
-                                     bool tts_audio_enabled);
+  bool ShouldAddPhoneticsAudioButton(
+      ResultType result_type,
+      const quick_answers::PhoneticsInfo& phonetics_info);
   void AddPhoneticsAudioButton(
       const quick_answers::PhoneticsInfo& phonetics_info,
       View* container);
@@ -133,7 +135,7 @@ class QuickAnswersView : public chromeos::ReadWriteCardsView {
   base::WeakPtr<QuickAnswersUiController> controller_;
   std::string title_;
   const Design design_;
-  std::optional<Intent> intent_ = std::nullopt;
+  std::optional<Intent> intent_;
   const bool is_internal_;
 
   raw_ptr<QuickAnswersStageButton> quick_answers_stage_button_ = nullptr;

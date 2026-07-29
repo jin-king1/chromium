@@ -14,21 +14,26 @@ typedef NS_ENUM(NSInteger, FeedLayoutUpdateType);
 // Commands related to the new tab page.
 @protocol NewTabPageCommands
 
-// Opens a new tab page scrolled into the feed with a given `feedType` selected.
-- (void)openNTPScrolledIntoFeedType:(FeedType)feedType;
-
-// Notifies the new tab page if there is new unseen content in the Following
-// feed.
-- (void)updateFollowingFeedHasUnseenContent:(BOOL)hasUnseenContent;
-
-// Notifies the new tab page that the `feedType`'s model has completed updates.
+// Notifies the feed model on the new tab page has completed updates.
 // This can include, initial loading of cards, pagination, card removal, and
 // refreshes.
-- (void)handleFeedModelOfType:(FeedType)feedType
-                didEndUpdates:(FeedLayoutUpdateType)updateType;
+- (void)handleFeedModelDidEndUpdates:(FeedLayoutUpdateType)updateType;
 
 // Presents an IPH bubble to highlight the Lens icon in the NTP Fakebox.
 - (void)presentLensIconBubble;
+
+// Navigates to the NTP if needed and presents an IPH bubble to highlight the
+// AI Mode button.
+- (void)presentAIModeBubble;
+
+// Presents an IPH bubble to highlight scrolling on the feed.
+- (void)presentFeedSwipeFirstRunBubble;
+
+// Presents the Home Customization menu.
+- (void)customizationMenuWasTapped;
+
+// Controls the visibility of the blue dot on the NTP.
+- (void)setNTPBlueDotVisible:(BOOL)visible;
 
 @end
 

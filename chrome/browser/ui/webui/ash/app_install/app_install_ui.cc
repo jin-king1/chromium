@@ -4,12 +4,13 @@
 
 #include "chrome/browser/ui/webui/ash/app_install/app_install_ui.h"
 
+#include "ash/constants/webui_url_constants.h"
 #include "ash/webui/common/trusted_types_util.h"
 #include "base/feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/app_install/app_install_dialog.h"
-#include "chrome/browser/ui/webui/sanitized_image_source.h"
-#include "chrome/common/webui_url_constants.h"
+#include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/app_install_resources.h"
 #include "chrome/grit/app_install_resources_map.h"
 #include "chrome/grit/generated_resources.h"
@@ -21,7 +22,6 @@
 #include "content/public/common/url_constants.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/devicetype_utils.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/webui_util.h"
 
 namespace ash::app_install {
@@ -29,7 +29,7 @@ namespace ash::app_install {
 AppInstallDialogUI::AppInstallDialogUI(content::WebUI* web_ui)
     : ui::MojoWebDialogUI(web_ui) {
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui), chrome::kChromeUIAppInstallDialogHost);
+      Profile::FromWebUI(web_ui), ash::kChromeUIAppInstallDialogHost);
 
   static constexpr webui::LocalizedString kStrings[] = {
       {"cancel", IDS_CANCEL},
@@ -65,6 +65,7 @@ AppInstallDialogUI::AppInstallDialogUI(content::WebUI* web_ui)
   Profile* profile = Profile::FromWebUI(web_ui);
   content::URLDataSource::Add(profile,
                               std::make_unique<SanitizedImageSource>(profile));
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 
   ash::EnableTrustedTypesCSP(source);
 }
@@ -96,12 +97,6 @@ void AppInstallDialogUI::BindInterface(
   factory_receiver_.Bind(std::move(pending_receiver));
 }
 
-void AppInstallDialogUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
-}
-
 void AppInstallDialogUI::CreatePageHandler(
     mojo::PendingReceiver<mojom::PageHandler> receiver) {
   page_handler_ = std::make_unique<AppInstallPageHandler>(
@@ -111,13 +106,13 @@ void AppInstallDialogUI::CreatePageHandler(
 }
 
 void AppInstallDialogUI::CloseDialog() {
-  ui::MojoWebDialogUI::CloseDialog(base::Value::List());
+  ui::MojoWebDialogUI::CloseDialog(base::ListValue());
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(AppInstallDialogUI)
 
 AppInstallDialogUIConfig::AppInstallDialogUIConfig()
     : DefaultWebUIConfig(content::kChromeUIScheme,
-                         chrome::kChromeUIAppInstallDialogHost) {}
+                         ash::kChromeUIAppInstallDialogHost) {}
 
 }  // namespace ash::app_install

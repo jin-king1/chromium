@@ -5,7 +5,8 @@
 import './cra/cra-icon.js';
 import './cra/cra-button.js';
 
-import {css, CSSResultGroup, html} from 'chrome://resources/mwc/lit/index.js';
+import type {CSSResultGroup} from 'chrome://resources/mwc/lit/index.js';
+import {css, html} from 'chrome://resources/mwc/lit/index.js';
 
 import {i18n} from '../core/i18n.js';
 import {usePlatformHandler} from '../core/lit/context.js';
@@ -85,17 +86,19 @@ export class SummaryConsentCard extends ReactiveLitElement {
     return html`<div id="container">
       <cra-icon name="summarize_auto"></cra-icon>
       <div id="main" role="dialog" aria-labelledby="header">
-        <span id="header">${i18n.summaryDownloadModelHeader}</span>
-        <span id="description">${i18n.summaryDownloadModelDescription}</span>
+        <span id="header">${i18n.summaryDownloadGenAiModelHeader}</span>
+        <span id="description">
+          ${i18n.summaryDownloadGenAiModelDescription}
+        </span>
         <div id="actions">
           <cra-button
-            .label=${i18n.summaryDownloadModelDisableButton}
+            .label=${i18n.summaryDownloadGenAiModelDisableButton}
             button-style="floating"
             @click=${this.onDisableClick}
           >
           </cra-button>
           <cra-button
-            .label=${i18n.summaryDownloadModelDownloadButton}
+            .label=${i18n.summaryDownloadGenAiModelDownloadButton}
             @click=${this.onDownloadClick}
           >
           </cra-button>

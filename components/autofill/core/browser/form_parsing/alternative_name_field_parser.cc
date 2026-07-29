@@ -4,11 +4,14 @@
 
 #include "components/autofill/core/browser/form_parsing/alternative_name_field_parser.h"
 
-#include <string>
+#include <memory>
+#include <optional>
 
-#include "base/notimplemented.h"
+#include "base/memory/ptr_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_parsing/autofill_scanner.h"
+#include "components/autofill/core/browser/form_parsing/field_candidates.h"
+#include "components/autofill/core/browser/form_parsing/form_field_parser.h"
 
 namespace autofill {
 namespace {
@@ -17,7 +20,7 @@ namespace {
 class AlternativeFullNameField : public AlternativeNameFieldParser {
  public:
   static std::unique_ptr<FormFieldParser> Parse(ParsingContext& context,
-                                                AutofillScanner* scanner);
+                                                AutofillScanner& scanner);
 
   AlternativeFullNameField(const AlternativeFullNameField&) = delete;
   AlternativeFullNameField& operator=(const AlternativeFullNameField&) = delete;
@@ -34,11 +37,11 @@ class AlternativeFullNameField : public AlternativeNameFieldParser {
 // static
 std::unique_ptr<FormFieldParser> AlternativeFullNameField::Parse(
     ParsingContext& context,
-    AutofillScanner* scanner) {
+    AutofillScanner& scanner) {
   auto v = base::WrapUnique(new AlternativeFullNameField());
-  scanner->SaveCursor();
+  const AutofillScanner::Position position = scanner.GetPosition();
 
-  while (!scanner->IsEnd()) {
+  while (!scanner.IsEnd()) {
     // Skip over address label fields, which can have misleading names
     // e.g. "title" or "name".
     if (ParseField(context, scanner, "ADDRESS_NAME_IGNORED")) {
@@ -55,14 +58,14 @@ std::unique_ptr<FormFieldParser> AlternativeFullNameField::Parse(
     return v;
   }
 
-  scanner->Rewind();
+  scanner.Restore(position);
   return nullptr;
 }
 
 void AlternativeFullNameField::AddClassifications(
     FieldCandidatesMap& field_candidates) const {
   AddClassification(alternative_full_name_, ALTERNATIVE_FULL_NAME,
-                    kBaseNameParserScore, field_candidates);
+                    HeuristicParser::kName, field_candidates);
 }
 
 // A form field that can parse a family alternative name field and then given
@@ -70,7 +73,7 @@ void AlternativeFullNameField::AddClassifications(
 class AlternativeFamilyAndGivenNameField : public AlternativeNameFieldParser {
  public:
   static std::unique_ptr<FormFieldParser> Parse(ParsingContext& context,
-                                                AutofillScanner* scanner);
+                                                AutofillScanner& scanner);
 
   AlternativeFamilyAndGivenNameField(
       const AlternativeFamilyAndGivenNameField&) = delete;
@@ -90,11 +93,11 @@ class AlternativeFamilyAndGivenNameField : public AlternativeNameFieldParser {
 // static
 std::unique_ptr<FormFieldParser> AlternativeFamilyAndGivenNameField::Parse(
     ParsingContext& context,
-    AutofillScanner* scanner) {
+    AutofillScanner& scanner) {
   auto v = base::WrapUnique(new AlternativeFamilyAndGivenNameField());
-  scanner->SaveCursor();
+  const AutofillScanner::Position position = scanner.GetPosition();
 
-  while (!scanner->IsEnd()) {
+  while (!scanner.IsEnd()) {
     // Skip over address label fields, which can have misleading names
     // e.g. "title" or "name".
     if (ParseField(context, scanner, "ADDRESS_NAME_IGNORED")) {
@@ -117,24 +120,24 @@ std::unique_ptr<FormFieldParser> AlternativeFamilyAndGivenNameField::Parse(
     return v;
   }
 
-  scanner->Rewind();
+  scanner.Restore(position);
   return nullptr;
 }
 
 void AlternativeFamilyAndGivenNameField::AddClassifications(
     FieldCandidatesMap& field_candidates) const {
   AddClassification(alternative_family_name_, ALTERNATIVE_FAMILY_NAME,
-                    kBaseNameParserScore, field_candidates);
+                    HeuristicParser::kName, field_candidates);
   AddClassification(alternative_given_name_, ALTERNATIVE_GIVEN_NAME,
-                    kBaseNameParserScore, field_candidates);
+                    HeuristicParser::kName, field_candidates);
 }
 }  // namespace
 
 // static
 std::unique_ptr<FormFieldParser> AlternativeNameFieldParser::Parse(
     ParsingContext& context,
-    AutofillScanner* scanner) {
-  if (scanner->IsEnd()) {
+    AutofillScanner& scanner) {
+  if (scanner.IsEnd()) {
     return nullptr;
   }
 

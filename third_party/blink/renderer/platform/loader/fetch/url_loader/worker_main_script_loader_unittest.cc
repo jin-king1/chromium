@@ -5,15 +5,15 @@
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/worker_main_script_loader.h"
 
 #include "base/containers/span.h"
-#include "base/test/scoped_feature_list.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe_utils.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/resource_load_info_notifier.mojom.h"
 #include "third_party/blink/public/mojom/navigation/renderer_eviction_reason.mojom-blink.h"
@@ -42,10 +42,7 @@ class WorkerMainScriptLoaderTest : public testing::Test {
  public:
   WorkerMainScriptLoaderTest()
       : fake_loader_(pending_remote_loader_.InitWithNewPipeAndPassReceiver()),
-        client_(MakeGarbageCollected<TestClient>()) {
-    scoped_feature_list_.InitWithFeatureState(
-        blink::features::kPlzDedicatedWorker, true);
-  }
+        client_(MakeGarbageCollected<TestClient>()) {}
   ~WorkerMainScriptLoaderTest() override {
     // Forced GC in order to finalize objects depending on MockResourceObserver,
     // see details https://crbug.com/1132634.
@@ -94,10 +91,9 @@ class WorkerMainScriptLoaderTest : public testing::Test {
     FakeURLLoader& operator=(const FakeURLLoader&) = delete;
 
     // network::mojom::URLLoader overrides.
-    void FollowRedirect(const std::vector<std::string>&,
-                        const net::HttpRequestHeaders&,
-                        const net::HttpRequestHeaders&,
-                        const std::optional<GURL>&) override {}
+    void FollowRedirect(
+        network::HttpRequestHeadersUpdateParams headers_update_params,
+        const std::optional<GURL>&) override {}
     void SetPriority(net::RequestPriority priority,
                      int32_t intra_priority_value) override {}
 
@@ -218,7 +214,6 @@ class WorkerMainScriptLoaderTest : public testing::Test {
   FakeURLLoader fake_loader_;
 
   Persistent<TestClient> client_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(WorkerMainScriptLoaderTest, ResponseWithSucessThenOnComplete) {
@@ -245,7 +240,7 @@ TEST_F(WorkerMainScriptLoaderTest, ResponseWithSucessThenOnComplete) {
   EXPECT_FALSE(client_->LoadingIsFailed());
   EXPECT_EQ(KURL(kTopLevelScriptURL),
             worker_main_script_loader->GetRequestURL());
-  EXPECT_EQ(UTF8Encoding(), worker_main_script_loader->GetScriptEncoding());
+  EXPECT_EQ(Utf8Encoding(), worker_main_script_loader->GetScriptEncoding());
   auto flatten_data = client_->Data()->CopyAs<Vector<char>>();
   EXPECT_EQ(kTopLevelScript, std::string(base::as_string_view(flatten_data)));
   EXPECT_EQ("text/javascript", fake_resource_load_info_notifier.GetMimeType());

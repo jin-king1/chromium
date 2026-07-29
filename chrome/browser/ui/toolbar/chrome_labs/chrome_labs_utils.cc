@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-#include "base/containers/contains.h"
+#include "base/base_switches.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/rand_util.h"
 #include "chrome/browser/about_flags.h"
@@ -17,7 +17,6 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/channel_info.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "components/variations/variations_switches.h"
 #include "components/webui/flags/feature_entry.h"
 #include "components/webui/flags/pref_service_flags_storage.h"
 
@@ -62,8 +61,7 @@ bool IsChromeLabsFeatureValid(const LabInfo& lab, Profile* profile) {
                                                          *entry);
 }
 
-void UpdateChromeLabsNewBadgePrefs(Profile* profile,
-                                   const ChromeLabsModel* model) {
+void UpdateChromeLabsNewBadgePrefs(Profile* profile) {
 #if BUILDFLAG(IS_CHROMEOS)
   ScopedDictPrefUpdate update(
       profile->GetPrefs(), chrome_labs_prefs::kChromeLabsNewBadgeDictAshChrome);
@@ -72,16 +70,13 @@ void UpdateChromeLabsNewBadgePrefs(Profile* profile,
                               chrome_labs_prefs::kChromeLabsNewBadgeDict);
 #endif
 
-  base::Value::Dict& new_badge_prefs = update.Get();
+  base::DictValue& new_badge_prefs = update.Get();
 
   std::vector<std::string> lab_internal_names;
-  const std::vector<LabInfo>& all_labs = model->GetLabInfo();
+  const std::vector<LabInfo>& all_labs =
+      ChromeLabsModel::GetInstance()->GetLabInfo();
   for (const auto& lab : all_labs) {
-    // Tab Scrolling was added before new badge logic and is not a new
-    // experiment. Adding it to |new_badge_prefs| will falsely indicate a new
-    // experiment for the button’s dot indicator.
-    if (IsChromeLabsFeatureValid(lab, profile) &&
-        (lab.internal_name != flag_descriptions::kScrollableTabStripFlagId)) {
+    if (IsChromeLabsFeatureValid(lab, profile)) {
       lab_internal_names.push_back(lab.internal_name);
       if (!new_badge_prefs.Find(lab.internal_name)) {
         new_badge_prefs.Set(
@@ -93,7 +88,7 @@ void UpdateChromeLabsNewBadgePrefs(Profile* profile,
   std::vector<std::string> entries_to_remove;
   for (auto pref : new_badge_prefs) {
     // The size of |lab_internal_names| is capped around 3-5 elements.
-    if (!base::Contains(lab_internal_names, pref.first)) {
+    if (!std::ranges::contains(lab_internal_names, pref.first)) {
       entries_to_remove.push_back(pref.first);
     }
   }
@@ -103,7 +98,7 @@ void UpdateChromeLabsNewBadgePrefs(Profile* profile,
   }
 }
 
-bool ShouldShowChromeLabsUI(const ChromeLabsModel* model, Profile* profile) {
+bool ShouldShowChromeLabsUI(Profile* profile) {
 #if BUILDFLAG(IS_CHROMEOS)
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           ash::switches::kSafeMode) ||
@@ -112,14 +107,13 @@ bool ShouldShowChromeLabsUI(const ChromeLabsModel* model, Profile* profile) {
   }
 #endif
 
-  return std::ranges::any_of(model->GetLabInfo(),
+  return std::ranges::any_of(ChromeLabsModel::GetInstance()->GetLabInfo(),
                              [&profile](const LabInfo& lab) {
                                return IsChromeLabsFeatureValid(lab, profile);
                              });
 }
 
-bool AreNewChromeLabsExperimentsAvailable(const ChromeLabsModel* model,
-                                          Profile* profile) {
+bool AreNewChromeLabsExperimentsAvailable(Profile* profile) {
 #if BUILDFLAG(IS_CHROMEOS)
   ScopedDictPrefUpdate update(
       profile->GetPrefs(), chrome_labs_prefs::kChromeLabsNewBadgeDictAshChrome);
@@ -128,10 +122,11 @@ bool AreNewChromeLabsExperimentsAvailable(const ChromeLabsModel* model,
                               chrome_labs_prefs::kChromeLabsNewBadgeDict);
 #endif
 
-  base::Value::Dict& new_badge_prefs = update.Get();
+  base::DictValue& new_badge_prefs = update.Get();
 
   std::vector<std::string> lab_internal_names;
-  const std::vector<LabInfo>& all_labs = model->GetLabInfo();
+  const std::vector<LabInfo>& all_labs =
+      ChromeLabsModel::GetInstance()->GetLabInfo();
 
   return std::ranges::any_of(
       all_labs.begin(), all_labs.end(), [&new_badge_prefs](const LabInfo& lab) {
@@ -149,7 +144,7 @@ bool IsChromeLabsEnabled() {
     return false;
   }
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          variations::switches::kEnableBenchmarking)) {
+          ::switches::kEnableBenchmarking)) {
     return true;
   }
   // Could be null in unit tests.
@@ -161,7 +156,7 @@ bool IsChromeLabsEnabled() {
       chrome_labs_prefs::kChromeLabsActivationThresholdDefaultValue) {
     g_browser_process->local_state()->SetInteger(
         chrome_labs_prefs::kChromeLabsActivationThreshold,
-        base::RandInt(1, 100));
+        base::RandIntInclusive(1, 100));
   }
 
   // The percentage of users that should see the feature.

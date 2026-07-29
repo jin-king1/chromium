@@ -31,7 +31,6 @@
 #include "extensions/renderer/native_extension_bindings_system.h"
 #include "extensions/renderer/object_backed_native_handler.h"
 #include "extensions/renderer/script_context.h"
-#include "ipc/message_filter.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "ui/accessibility/ax_event.h"
 #include "ui/accessibility/ax_event_generator.h"
@@ -168,7 +167,7 @@ std::string AutomationInternalCustomBindings::GetOffscreenStateString() const {
 
 void AutomationInternalCustomBindings::DispatchEvent(
     const std::string& event_name,
-    const base::Value::List& event_args) const {
+    const base::ListValue& event_args) const {
   bindings_system_->DispatchEventInContext(event_name, event_args, nullptr,
                                            context());
 }

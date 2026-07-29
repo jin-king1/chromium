@@ -10,6 +10,7 @@
 #include "base/files/file_path.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/time/time.h"
 #include "base/values.h"
 
 PrefRegistrySimple::PrefRegistrySimple() = default;
@@ -52,7 +53,7 @@ void PrefRegistrySimple::RegisterListPref(std::string_view path,
 }
 
 void PrefRegistrySimple::RegisterListPref(std::string_view path,
-                                          base::Value::List default_value,
+                                          base::ListValue default_value,
                                           uint32_t flags) {
   RegisterPreference(path, base::Value(std::move(default_value)), flags);
 }
@@ -63,7 +64,7 @@ void PrefRegistrySimple::RegisterDictionaryPref(std::string_view path,
 }
 
 void PrefRegistrySimple::RegisterDictionaryPref(std::string_view path,
-                                                base::Value::Dict default_value,
+                                                base::DictValue default_value,
                                                 uint32_t flags) {
   RegisterPreference(path, base::Value(std::move(default_value)), flags);
 }
@@ -72,7 +73,7 @@ void PrefRegistrySimple::RegisterInt64Pref(std::string_view path,
                                            int64_t default_value,
                                            uint32_t flags) {
   RegisterPreference(path, base::Value(base::NumberToString(default_value)),
-                     flags);
+                     flags, RegisteredPrefType::kInt64);
 }
 
 void PrefRegistrySimple::RegisterUint64Pref(std::string_view path,
@@ -85,8 +86,11 @@ void PrefRegistrySimple::RegisterUint64Pref(std::string_view path,
 void PrefRegistrySimple::RegisterTimePref(std::string_view path,
                                           base::Time default_value,
                                           uint32_t flags) {
-  RegisterInt64Pref(
-      path, default_value.ToDeltaSinceWindowsEpoch().InMicroseconds(), flags);
+  RegisterPreference(
+      path,
+      base::Value(base::NumberToString(
+          default_value.ToDeltaSinceWindowsEpoch().InMicroseconds())),
+      flags, RegisteredPrefType::kTime);
 }
 
 void PrefRegistrySimple::RegisterTimeDeltaPref(std::string_view path,

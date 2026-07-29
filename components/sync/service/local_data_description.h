@@ -29,6 +29,8 @@ struct LocalDataItemModel {
   using DataId = std::variant<
       // BOOKMARKS.
       int64_t,  // bookmarks::BookmarkNode::id()
+      // READING_LIST.
+      GURL,
       // CONTACT_INFO, THEMES.
       std::string,
       // PASSWORDS.
@@ -59,7 +61,7 @@ struct LocalDataItemModel {
   struct FolderIcon {
     bool operator==(const FolderIcon& other) const = default;
   };
-  using Icon = absl::variant<NoIcon, PageUrlIcon, FolderIcon>;
+  using Icon = std::variant<NoIcon, PageUrlIcon, FolderIcon>;
 
   // This is default-constructed as the NoIcon variant.
   Icon icon;
@@ -148,5 +150,18 @@ base::android::ScopedJavaLocalRef<jobject> ConvertToJavaLocalDataDescription(
 #endif
 
 }  // namespace syncer
+
+#if BUILDFLAG(IS_ANDROID)
+namespace jni_zero {
+
+template <>
+inline ScopedJavaLocalRef<jobject> ToJniType<syncer::LocalDataDescription>(
+    JNIEnv* env,
+    const syncer::LocalDataDescription& input) {
+  return syncer::ConvertToJavaLocalDataDescription(env, input);
+}
+
+}  // namespace jni_zero
+#endif
 
 #endif  // COMPONENTS_SYNC_SERVICE_LOCAL_DATA_DESCRIPTION_H_

@@ -5,10 +5,14 @@
 #ifndef CHROME_BROWSER_PICTURE_IN_PICTURE_AUTO_PICTURE_IN_PICTURE_TAB_HELPER_H_
 #define CHROME_BROWSER_PICTURE_IN_PICTURE_AUTO_PICTURE_IN_PICTURE_TAB_HELPER_H_
 
+#include "base/gtest_prod_util.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/picture_in_picture/auto_picture_in_picture_safe_browsing_checker_client.h"
+#include "chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_base.h"
 #include "chrome/browser/picture_in_picture/auto_pip_setting_helper.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -18,13 +22,17 @@
 #include "services/media_session/public/mojom/audio_focus.mojom.h"
 #include "services/media_session/public/mojom/media_session.mojom.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+
+#if !BUILDFLAG(IS_ANDROID)
 #include "ui/views/bubble/bubble_border.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 namespace permissions {
 class PermissionDecisionAutoBlockerBase;
 }  // namespace permissions
 
-class AutoPictureInPictureTabStripObserverHelper;
+class AutoPictureInPictureHatsService;
+class AutoPictureInPictureTabObserverHelperBase;
 class AutoPipSettingOverlayView;
 class HostContentSettingsMap;
 class MediaEngagementService;
@@ -40,7 +48,10 @@ class MediaEngagementService;
 class AutoPictureInPictureTabHelper
     : public content::WebContentsObserver,
       public content::WebContentsUserData<AutoPictureInPictureTabHelper>,
+// On Android, audio focus is observed via MediaSessionInfoChanged.
+#if !BUILDFLAG(IS_ANDROID)
       public media_session::mojom::AudioFocusObserver,
+#endif  // !BUILDFLAG(IS_ANDROID)
       public media_session::mojom::MediaSessionObserver {
  public:
   // Delay used by `AutoPictureInPictureSafeBrowsingCheckerClient` to check
@@ -64,16 +75,24 @@ class AutoPictureInPictureTabHelper
   void MediaPictureInPictureChanged(bool is_in_picture_in_picture) override;
   void MediaSessionCreated(content::MediaSession* media_session) override;
 
-  // Called by `tab_strip_observer_helper_` when the tab changes between
+  // Called by `tab_observer_helper_` when the tab changes between
   // activated and unactivated.
   void OnTabActivatedChanged(bool is_tab_activated);
 
+  // Called by `window_occlusion_helper_` when the tab's window changes between
+  // occluded and unoccluded.
+  void OnOcclusionStateChanged(
+      AutoPictureInPictureWindowOcclusionHelperBase::OcclusionState
+          occlusion_state);
+
+#if !BUILDFLAG(IS_ANDROID)
   // media_session::mojom::AudioFocusObserver:
   void OnFocusGained(
       media_session::mojom::AudioFocusRequestStatePtr session) override;
   void OnFocusLost(
       media_session::mojom::AudioFocusRequestStatePtr session) override;
   void OnRequestIdReleased(const base::UnguessableToken& request_id) override {}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   // media_session::mojom::MediaSessionObserver:
   void MediaSessionInfoChanged(
@@ -119,9 +138,11 @@ class AutoPictureInPictureTabHelper
     // If we're clearing the auto blocker, then also drop any setting helper we
     // have, since it might also know about it.  This is intended during test
     // cleanup to prevent dangling raw ptrs.
+#if !BUILDFLAG(IS_ANDROID)
     if (auto_pip_setting_helper_ && !auto_blocker) {
       auto_pip_setting_helper_.reset();
     }
+#endif  //! BUILDFLAG(IS_ANDROID)
   }
 
   // Create and return the allow/block overlay view if we should show it for
@@ -132,11 +153,13 @@ class AutoPictureInPictureTabHelper
   // `close_pip_cb` should be a callback to close the pip window, in case it
   // should be blocked.  This may be called before this returned, or later, or
   // never.  The other parameters are described in AutoPipSettingHelper.
+#if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<AutoPipSettingOverlayView>
   CreateOverlayPermissionViewIfNeeded(
       base::OnceClosure close_pip_cb,
       views::View* anchor_view,
       views::BubbleBorder::Arrow arrow);
+#endif  //! BUILDFLAG(IS_ANDROID)
 
   // Should be called when the user closes the pip window manually, so that we
   // can keep the auto-pip setting embargo up to date.
@@ -156,8 +179,44 @@ class AutoPictureInPictureTabHelper
     auto_pip_trigger_reason_ = auto_pip_trigger_reason;
   }
 
+#if BUILDFLAG(IS_ANDROID)
+  // Called from Java when the user dismissed the PiP window either soon after
+  // it opened or using the hide button.
+  void OnPictureInPictureDismissed();
+
+  // Called from native OverlayWindowAndroid when the user clicks the "hide"
+  // button (headphone icon).
+  void OnPictureInPictureWindowWillHide();
+
+  int GetDismissCountForTesting(const GURL& url);
+
+  // Overrides the media engagement check for testing. This is necessary for
+  // Android JNI tests where mocking MediaEngagementService is difficult due
+  // to framework initialization order complexities.
+  void set_has_high_engagement_for_testing(bool value) {
+    has_high_engagement_for_testing_ = value;
+  }
+
+  // TODO(crbug.com/421608904): investigate why IsCapturingUserMedia is still
+  // false after getUserMedia JS call in Android Java tests.
+  // Overrides the camera or mic usage status for testing.
+  void set_is_using_camera_or_microphone_for_testing(bool value) {
+    is_using_camera_or_microphone_for_testing_ = value;
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
   media::PictureInPictureEventsInfo::AutoPipReason GetAutoPipTriggerReason()
       const;
+
+  // Returns information related to auto picture in picture. This information
+  // includes the reason for entering picture in picture automatically, if
+  // known, and various conditions that are used to allow/deny autopip requests.
+  media::PictureInPictureEventsInfo::AutoPipInfo GetAutoPipInfo() const;
+
+  AutoPictureInPictureWindowOcclusionHelperBase*
+  window_occlusion_helper_for_testing() {
+    return window_occlusion_helper_.get();
+  }
 
  private:
   explicit AutoPictureInPictureTabHelper(content::WebContents* web_contents);
@@ -177,6 +236,10 @@ class AutoPictureInPictureTabHelper
   // times.
   void MaybeScheduleAsyncTasks();
 
+  // Reports to the media session that the auto picture-in-picture information
+  // has changed.
+  void MaybeReportAutoPictureInPictureInfoChanged() const;
+
   // Stops any pending URL safety task. Also reset relevant member variables:
   //   * Sets `has_safe_url_` to false.
   //   * Resets `safe_browsing_checker_client_`.
@@ -185,7 +248,7 @@ class AutoPictureInPictureTabHelper
 
   void MaybeExitAutoPictureInPicture();
 
-  void MaybeStartOrStopObservingTabStrip();
+  void MaybeStartOrStopObservers();
 
   bool IsEligibleForAutoPictureInPicture(bool should_record_blocking_metrics);
 
@@ -226,13 +289,23 @@ class AutoPictureInPictureTabHelper
   void EnsureAutoPipSettingHelper();
 
   // Returns the primary main routed frame for the MediaSession, if it exists.
-  // Otherwise, an empty optional is returned.
+  // Otherwise, the primary main frame for the WebContent. If both do not exist,
+  // an empty optional is returned.
   //
   // This method retrieves the routed frame associated with the WebContents's
   // MediaSession. If a routed frame is found and it resides within the primary
   // main frame, an optional containing a pointer to the RenderFrameHost is
-  // returned. Otherwise, an empty optional is returned.
+  // returned.
+  //
+  // If there is no MediaSession routed frame, an optional containing a pointer
+  // to the WebContent primary main frame is returned. For cases where both, the
+  // MediaSession routed frame and the WebContent, primary main frames do not
+  // exist an empty optional is returned.
   std::optional<content::RenderFrameHost*> GetPrimaryMainRoutedFrame() const;
+
+  // Returns true if the media session can enter browser initiated automatic
+  // picture-in-picture.
+  bool CanEnterBrowserInitiatedAutoPictureInPicture() const;
 
   // Returns the page UKM SourceId associated with the primary main routed frame
   // for the MediaSession, if it exists.
@@ -251,13 +324,10 @@ class AutoPictureInPictureTabHelper
 
   // Accumulates the total time spent in picture in picture during the lifetime
   // of `this`, separated by the reason for entering auto picture in picture:
-  // video conferencing or media playback.
-  //
-  // If `is_video_conferencing` is true, `total_pip_time` will be accumulated
-  // for video conferencing, otherwise the time will be accumulated for media
-  // playback.
-  void AccumulateTotalPipTimeForSession(const base::TimeDelta total_pip_time,
-                                        bool is_video_conferencing);
+  // video conferencing, media playback or browser initiated.
+  void AccumulateTotalPipTimeForSession(
+      const base::TimeDelta total_pip_time,
+      media::PictureInPictureEventsInfo::AutoPipReason reason);
 
   // Records the total time spent on a picture in picture window, regardless of
   // the Picture-in-Picture window type (document vs video) and the reason for
@@ -274,6 +344,11 @@ class AutoPictureInPictureTabHelper
   // helper destruction.
   void MaybeRecordTotalPipTimeForSession();
 
+#if !BUILDFLAG(IS_ANDROID)
+  // Returns the auto picture in picture HaTS service.
+  AutoPictureInPictureHatsService* GetHatsService() const;
+#endif  // !BUILDFLAG(IS_ANDROID)
+
   // HostContentSettingsMap is tied to the Profile which outlives the
   // WebContents (which we're tied to), so this is safe.
   const raw_ptr<HostContentSettingsMap> host_content_settings_map_;
@@ -284,11 +359,12 @@ class AutoPictureInPictureTabHelper
 
   // Notifies us when our tab either becomes the active tab on its tabstrip or
   // becomes an inactive tab on its tabstrip.
-  std::unique_ptr<AutoPictureInPictureTabStripObserverHelper>
-      tab_strip_observer_helper_;
+  std::unique_ptr<AutoPictureInPictureTabObserverHelperBase>
+      tab_observer_helper_;
 
-  // True if the tab is the activated tab on its tab strip.
-  bool is_tab_activated_ = false;
+  // Notifies us when our tab's window becomes occluded or unoccluded.
+  std::unique_ptr<AutoPictureInPictureWindowOcclusionHelperBase>
+      window_occlusion_helper_;
 
   // True if the media session associated with the observed WebContents has
   // gained audio focus.
@@ -330,10 +406,12 @@ class AutoPictureInPictureTabHelper
   // `AutoPictureInPictureSafeBrowsingCheckerClient`.
   bool has_safe_url_ = false;
 
+#if !BUILDFLAG(IS_ANDROID)
   // Connections with the media session service to listen for audio focus
   // updates and control media sessions.
   mojo::Receiver<media_session::mojom::AudioFocusObserver>
       audio_focus_observer_receiver_{this};
+#endif  // !BUILDFLAG(IS_ANDROID)
   mojo::Receiver<media_session::mojom::MediaSessionObserver>
       media_session_observer_receiver_{this};
 
@@ -354,21 +432,38 @@ class AutoPictureInPictureTabHelper
 
   // Set to the current time when `this` calls the MediaSession
   // `EnterAutoPictureInPicture` method.
-  std::optional<base::TimeTicks> current_enter_pip_time_ = std::nullopt;
+  std::optional<base::TimeTicks> current_enter_pip_time_;
+
+  // Set to the current time when the media starts playing.
+  std::optional<base::TimeTicks> playing_start_time_;
+
+  // The total accumulated playback time in picture in picture.
+  std::optional<base::TimeDelta> current_pip_playback_time_;
 
   // The total accumulated time spent in picture in picture due to video
   // conferencing. The accumulated time does not differentiate between the
   // different types of picture in picture windows (document vs video).
   // Accumulated time is recorded during the destruction of `this`.
-  std::optional<base::TimeDelta>
-      total_video_conferencing_pip_time_for_session_ = std::nullopt;
+  std::optional<base::TimeDelta> total_video_conferencing_pip_time_for_session_;
 
   // The total accumulated time spent in picture in picture due to media
   // playback. The accumulated time does not differentiate between the different
   // types of picture in picture windows (document vs video). Accumulated time
   // is recorded during the destruction of `this`.
-  std::optional<base::TimeDelta> total_media_playback_pip_time_for_session_ =
-      std::nullopt;
+  std::optional<base::TimeDelta> total_media_playback_pip_time_for_session_;
+
+  // The total accumulated time spent in picture in picture due to browser
+  // initiated automatic picture-in-picture. The accumulated time does not
+  // differentiate between the different types of picture in picture windows
+  // (document vs video). Accumulated time is recorded during the destruction of
+  // `this`.
+  std::optional<base::TimeDelta> total_browser_initiated_pip_time_for_session_;
+
+#if BUILDFLAG(IS_ANDROID)
+  // Set to the current time when the hide button in Android PiP window was
+  // clicked.
+  std::optional<base::TimeTicks> hide_button_clicked_time_;
+#endif  // BUILDFLAG(IS_ANDROID)
 
   // Clock used for metric related to the total time spent with a
   // picture-in-picture window open.
@@ -383,6 +478,16 @@ class AutoPictureInPictureTabHelper
   // or incognito, false otherwise. The value is used to prevent recording
   // duplicate entries for blocking metrics.
   bool blocked_due_to_content_setting_ = false;
+
+#if BUILDFLAG(IS_ANDROID)
+  // If set, this value overrides the result of the real MediaEngagementService
+  // check. Intended for Android JNI tests only.
+  std::optional<bool> has_high_engagement_for_testing_;
+
+  // If set, this value overrides the result of the real IsCapturingUserMedia
+  // check. Intended for Android JNI tests only.
+  std::optional<bool> is_using_camera_or_microphone_for_testing_;
+#endif  // BUILDFLAG(IS_ANDROID)
 
   // WeakPtrFactory used only for requesting URL safety. This weak ptr factory
   // is invalidated during calls to `StopAndResetAsyncTasks`.

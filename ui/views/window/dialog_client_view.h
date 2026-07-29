@@ -8,7 +8,7 @@
 #include <memory>
 #include <utility>
 
-#include "base/gtest_prod_util.h"
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -74,7 +74,8 @@ class VIEWS_EXPORT DialogClientView : public ClientView,
 
 #if BUILDFLAG(IS_CHROMEOS)
   // ClientView implementation:
-  void UpdateWindowRoundedCorners(int corner_radius) override;
+  void UpdateWindowRoundedCorners(
+      const gfx::RoundedCornersF& window_radii) override;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Input protection is triggered upon prompt creation and updated on
@@ -112,7 +113,8 @@ class VIEWS_EXPORT DialogClientView : public ClientView,
     input_protector_ = std::move(input_protector);
   }
 
-  bool IsPossiblyUnintendedInteraction(const ui::Event& event);
+  bool IsPossiblyUnintendedInteraction(const ui::Event& event,
+                                       bool allow_key_events);
 
   // LayoutDelegate:
   ProposedLayout CalculateProposedLayout(

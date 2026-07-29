@@ -72,6 +72,7 @@ bool DownloadManagerDelegate::InterceptDownloadIfApplicable(
     const std::string& request_origin,
     int64_t content_length,
     bool is_transient,
+    bool is_content_initiated,
     WebContents* web_contents) {
   return false;
 }
@@ -157,5 +158,9 @@ bool DownloadManagerDelegate::IsDownloadRestrictedByPolicy() {
   return false;
 }
 #endif  // BUILDFLAG(IS_ANDROID)
+
+bool DownloadManagerDelegate::SupportsHistoryLoading() {
+  return false;
+}
 
 }  // namespace content

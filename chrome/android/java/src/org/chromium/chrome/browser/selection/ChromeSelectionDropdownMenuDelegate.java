@@ -6,33 +6,47 @@ package org.chromium.chrome.browser.selection;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Resources;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.view.View;
+import android.view.ViewGroup;
 
-import androidx.annotation.Nullable;
-
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
 import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate;
+import org.chromium.ui.hierarchicalmenu.FlyoutController;
+import org.chromium.ui.hierarchicalmenu.FlyoutController.FlyoutHandler;
+import org.chromium.ui.hierarchicalmenu.HierarchicalMenuController;
 import org.chromium.ui.listmenu.BasicListMenu;
-import org.chromium.ui.listmenu.BasicListMenu.ListMenuItemType;
+import org.chromium.ui.listmenu.ListItemType;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
+import org.chromium.ui.listmenu.ListMenuUtils;
 import org.chromium.ui.listmenu.ListSectionDividerProperties;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
+import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.AnchoredPopupWindow;
+import org.chromium.ui.widget.FlyoutPopupSpecCalculator;
 import org.chromium.ui.widget.RectProvider;
 
+import java.util.List;
+
 /**
- * Chrome implementation of dropdown context menu which leverages {@link BasicListMenu}
- * and {@link AnchoredPopupWindow}.
+ * Chrome implementation of dropdown context menu which leverages {@link BasicListMenu} and {@link
+ * AnchoredPopupWindow}.
  */
-public class ChromeSelectionDropdownMenuDelegate implements SelectionDropdownMenuDelegate {
-    @Nullable private AnchoredPopupWindow mPopupWindow;
+@NullMarked
+public class ChromeSelectionDropdownMenuDelegate
+        implements SelectionDropdownMenuDelegate, FlyoutHandler<AnchoredPopupWindow> {
+    private @Nullable ItemClickListener mClickListener;
+    private @Nullable View mRootView;
+    private @Nullable HierarchicalMenuController<AnchoredPopupWindow> mHierarchicalMenuController;
 
     @Override
     public void show(
@@ -40,69 +54,153 @@ public class ChromeSelectionDropdownMenuDelegate implements SelectionDropdownMen
             View rootView,
             MVCListAdapter.ModelList items,
             ItemClickListener clickListener,
+            Runnable dismissMenuCallback,
             int x,
             int y) {
-        assert mPopupWindow == null : "Dismiss previous popup window before calling show()";
+        mRootView = rootView;
+        mClickListener = clickListener;
+        mHierarchicalMenuController = ListMenuUtils.createHierarchicalMenuController(context);
+        mHierarchicalMenuController.setupCallbacks(
+                /* headerModelList= */ null, items, dismissMenuCallback);
 
-        Rect dropdownRect = new Rect(x, y, x + 1, y + 1);
+        int[] location = new int[2];
+        rootView.getLocationInWindow(location);
+        int windowX = location[0] + x;
+        int windowY = location[1] + y;
+        Rect dropdownRect = new Rect(windowX, windowY, windowX + 1, windowY + 1);
         BasicListMenu menu =
-                BrowserUiListMenuUtils.getBasicListMenu(context, items, clickListener::onItemClick);
+                BrowserUiListMenuUtils.getBasicListMenu(
+                        context, items, (model, view) -> clickListener.onItemClick(model));
 
-        mPopupWindow =
+        final View contentView = menu.getContentView();
+        int maxWidthPx = calculateMaxWidthPx(rootView);
+        int desiredContentWidth = calculateDesiredContentWidth(contentView, menu, maxWidthPx);
+
+        AnchoredPopupWindow popupWindow =
                 new AnchoredPopupWindow(
                         context,
                         rootView,
                         new ColorDrawable(Color.TRANSPARENT),
                         menu.getContentView(),
-                        new RectProvider(dropdownRect),
-                        null);
+                        new RectProvider(dropdownRect));
         AnchoredPopupWindow.LayoutObserver layoutObserver =
                 (positionBelow, x2, y2, width, height, anchorRect) ->
-                        mPopupWindow.setAnimationStyle(
+                        popupWindow.setAnimationStyle(
                                 positionBelow
                                         ? R.style.StartIconMenuAnim
                                         : R.style.StartIconMenuAnimBottom);
-        mPopupWindow.setLayoutObserver(layoutObserver);
-        mPopupWindow.setVerticalOverlapAnchor(true);
-        mPopupWindow.setHorizontalOverlapAnchor(true);
-        mPopupWindow.setMaxWidth(
-                context.getResources().getDimensionPixelSize(R.dimen.home_button_list_menu_width));
-        mPopupWindow.setFocusable(true);
-        mPopupWindow.setOutsideTouchable(true);
-        mPopupWindow.addOnDismissListener(() -> mPopupWindow = null);
-        mPopupWindow.show();
+        popupWindow.setLayoutObserver(layoutObserver);
+        popupWindow.setVerticalOverlapAnchor(true);
+        popupWindow.setHorizontalOverlapAnchor(true);
+        popupWindow.setMaxWidth(maxWidthPx);
+        popupWindow.setDesiredContentWidth(desiredContentWidth);
+        popupWindow.setFocusable(true);
+        popupWindow.setOutsideTouchable(true);
+        popupWindow.addOnDismissListener(
+                () -> {
+                    dismiss();
+                });
+
+        popupWindow.show();
+
+        mHierarchicalMenuController.setupFlyoutController(
+                /* flyoutHandler= */ this,
+                popupWindow,
+                menu::addOnScrollListener,
+                /* drillDownOverrideValue= */ null);
+        mHierarchicalMenuController.setupBackPressBehaviorForPopupWindow(
+                popupWindow.getContentView(), this::dismiss);
     }
 
     @Override
     public void dismiss() {
-        if (mPopupWindow != null) {
-            mPopupWindow.dismiss();
+        if (mHierarchicalMenuController == null) {
+            return;
         }
-        mPopupWindow = null;
+
+        if (mHierarchicalMenuController.getFlyoutController() != null) {
+            mHierarchicalMenuController.destroyFlyoutController();
+        }
     }
 
     @Override
-    public int getGroupId(PropertyModel itemModel) {
-        return PropertyModel.getFromModelOrDefault(itemModel, ListMenuItemProperties.GROUP_ID, 0);
+    public Rect getPopupRect(AnchoredPopupWindow popupWindow) {
+        View contentView = popupWindow.getContentView();
+
+        if (contentView == null) {
+            return new Rect();
+        }
+
+        return ListMenuUtils.getViewRectRelativeToItsRootView(contentView);
     }
 
     @Override
-    public int getItemId(PropertyModel itemModel) {
-        return PropertyModel.getFromModelOrDefault(
-                itemModel, ListMenuItemProperties.MENU_ITEM_ID, 0);
+    public void dismissPopup(AnchoredPopupWindow popupWindow) {
+        popupWindow.dismiss();
     }
 
-    @Nullable
     @Override
-    public Intent getItemIntent(PropertyModel itemModel) {
-        return PropertyModel.getFromModelOrDefault(itemModel, ListMenuItemProperties.INTENT, null);
+    public void setWindowFocus(AnchoredPopupWindow popupWindow, boolean hasFocus) {
+        ViewGroup contentView = (ViewGroup) popupWindow.getContentView();
+        if (contentView == null) return;
+
+        HierarchicalMenuController.setWindowFocusForFlyoutMenus(contentView, hasFocus);
     }
 
-    @Nullable
     @Override
-    public View.OnClickListener getClickListener(PropertyModel itemModel) {
-        return PropertyModel.getFromModelOrDefault(
-                itemModel, ListMenuItemProperties.CLICK_LISTENER, null);
+    public AnchoredPopupWindow createAndShowFlyoutPopup(
+            List<ListItem> items,
+            View view,
+            Runnable dismissRunnable,
+            View.OnScrollChangeListener scrollListener) {
+        Context context = view.getContext();
+        ModelList modelList = new ModelList();
+        modelList.addAll(items);
+
+        BasicListMenu menu =
+                BrowserUiListMenuUtils.getBasicListMenu(
+                        context,
+                        modelList,
+                        (model, _) -> {
+                            assert mClickListener != null;
+                            mClickListener.onItemClick(model);
+                        });
+
+        final View contentView = menu.getContentView();
+
+        final int lateralPadding = contentView.getPaddingLeft() + contentView.getPaddingRight();
+
+        assert mRootView != null;
+        assert mHierarchicalMenuController != null;
+        AnchoredPopupWindow popupMenu =
+                new AnchoredPopupWindow.Builder(
+                                context,
+                                mRootView,
+                                new ColorDrawable(Color.TRANSPARENT),
+                                () -> contentView,
+                                new RectProvider(
+                                        FlyoutController.calculateFlyoutAnchorRect(
+                                                view, mRootView)))
+                        .setVerticalOverlapAnchor(true)
+                        .setHorizontalOverlapAnchor(false)
+                        .setMaxWidth(
+                                context.getResources()
+                                        .getDimensionPixelSize(R.dimen.home_button_list_menu_width))
+                        .setFocusable(true)
+                        .setTouchModal(false)
+                        .setAnimateFromAnchor(false)
+                        .setAnimationStyle(R.style.PopupWindowAnimFade)
+                        .setSpecCalculator(new FlyoutPopupSpecCalculator())
+                        .setDesiredContentWidth(menu.getMaxItemWidth() + lateralPadding)
+                        .addOnDismissListener(
+                                () -> {
+                                    dismissRunnable.run();
+                                })
+                        .build();
+
+        menu.addOnScrollListener(scrollListener);
+        popupMenu.show();
+        return popupMenu;
     }
 
     @Override
@@ -115,12 +213,12 @@ public class ChromeSelectionDropdownMenuDelegate implements SelectionDropdownMen
                         .with(
                                 ListSectionDividerProperties.RIGHT_PADDING_DIMEN_ID,
                                 R.dimen.list_menu_item_horizontal_padding);
-        return new ListItem(ListMenuItemType.DIVIDER, builder.build());
+        return new ListItem(ListItemType.DIVIDER, builder.build());
     }
 
     @Override
     public ListItem getMenuItem(
-            String title,
+            @Nullable String title,
             @Nullable String contentDescription,
             int groupId,
             int id,
@@ -128,29 +226,44 @@ public class ChromeSelectionDropdownMenuDelegate implements SelectionDropdownMen
             boolean isIconTintable,
             boolean groupContainsIcon,
             boolean enabled,
-            @Nullable View.OnClickListener clickListener,
-            @Nullable Intent intent) {
+            @Nullable Intent intent,
+            int order) {
         PropertyModel.Builder modelBuilder =
                 new PropertyModel.Builder(ListMenuItemProperties.ALL_KEYS)
                         .with(ListMenuItemProperties.TITLE, title)
                         .with(ListMenuItemProperties.CONTENT_DESCRIPTION, contentDescription)
                         .with(ListMenuItemProperties.GROUP_ID, groupId)
                         .with(ListMenuItemProperties.MENU_ITEM_ID, id)
-                        .with(ListMenuItemProperties.START_ICON_DRAWABLE, startIcon)
+                        .with(ListMenuItemProperties.START_ICON_DRAWABLE, null)
                         .with(ListMenuItemProperties.ENABLED, enabled)
-                        .with(ListMenuItemProperties.CLICK_LISTENER, clickListener)
                         .with(ListMenuItemProperties.INTENT, intent)
-                        .with(
-                                ListMenuItemProperties.KEEP_START_ICON_SPACING_WHEN_HIDDEN,
-                                groupContainsIcon)
+                        .with(ListMenuItemProperties.KEEP_START_ICON_SPACING_WHEN_HIDDEN, false)
                         .with(
                                 ListMenuItemProperties.TEXT_APPEARANCE_ID,
-                                BrowserUiListMenuUtils.getDefaultTextAppearanceStyle());
+                                BrowserUiListMenuUtils.getDefaultTextAppearanceStyle())
+                        .with(ListMenuItemProperties.IS_TEXT_ELLIPSIZED_AT_END, true)
+                        .with(ListMenuItemProperties.ORDER, order);
         if (isIconTintable) {
             modelBuilder.with(
                     ListMenuItemProperties.ICON_TINT_COLOR_STATE_LIST_ID,
                     BrowserUiListMenuUtils.getDefaultIconTintColorStateListId());
         }
-        return new ListItem(ListMenuItemType.MENU_ITEM, modelBuilder.build());
+        return new ListItem(ListItemType.MENU_ITEM, modelBuilder.build());
+    }
+
+    private static int calculateMaxWidthPx(View rootView) {
+        Resources res = rootView.getContext().getResources();
+        int viewportWidthPx = rootView.getWidth();
+        int maxWidthPx = res.getDimensionPixelSize(R.dimen.text_selection_context_menu_max_width);
+        int gutterPx =
+                res.getDimensionPixelSize(R.dimen.text_selection_context_menu_viewport_gutter);
+        return Math.min(viewportWidthPx - 2 * gutterPx, maxWidthPx);
+    }
+
+    private static int calculateDesiredContentWidth(
+            View contentView, BasicListMenu menu, int maxWidthPx) {
+        int lateralPadding = contentView.getPaddingLeft() + contentView.getPaddingRight();
+        int desiredContentWidth = menu.getMaxItemWidth() + lateralPadding;
+        return Math.min(desiredContentWidth, maxWidthPx);
     }
 }

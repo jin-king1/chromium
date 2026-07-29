@@ -25,8 +25,11 @@
 #include "components/signin/public/base/signin_switches.h"
 #include "components/sync_bookmarks/bookmark_sync_service.h"
 #include "content/public/test/browser_task_environment.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using bookmarks::BookmarkModel;
 using bookmarks::BookmarkNode;
@@ -51,12 +54,10 @@ MATCHER_P2(MatchesFolder, expected_type, expected_unmodifiable, "") {
 
 class ExtensionBookmarksTest : public testing::Test {
  public:
-  ExtensionBookmarksTest()
-      : managed_(nullptr),
-        model_(nullptr),
-        node_(nullptr),
-        node2_(nullptr),
-        folder_(nullptr) {}
+  ExtensionBookmarksTest() = default;
+  ExtensionBookmarksTest(const ExtensionBookmarksTest&) = delete;
+  ExtensionBookmarksTest& operator=(const ExtensionBookmarksTest&) = delete;
+  ~ExtensionBookmarksTest() override = default;
 
   void SetUp() override {
     TestingProfile::Builder profile_builder;
@@ -106,13 +107,21 @@ class ExtensionBookmarksTest : public testing::Test {
 
   content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<TestingProfile> profile_;
-  raw_ptr<bookmarks::ManagedBookmarkService> managed_;
-  raw_ptr<BookmarkModel> model_;
-  raw_ptr<const BookmarkNode> node_;
-  raw_ptr<const BookmarkNode> node2_;
-  raw_ptr<const BookmarkNode> folder_;
+  raw_ptr<bookmarks::ManagedBookmarkService> managed_ = nullptr;
+  raw_ptr<BookmarkModel> model_ = nullptr;
+  raw_ptr<const BookmarkNode> node_ = nullptr;
+  raw_ptr<const BookmarkNode> node2_ = nullptr;
+  raw_ptr<const BookmarkNode> folder_ = nullptr;
 };
 
+// TODO(crbug.com/414844449): This test depends on which permanent folders are
+// visible when empty (e.g. the bookmarks bar). This behaviour is different on
+// Android Desktop vs. other Desktop platforms. It results in different node
+// counts when you count from the root. That's why only this test is affected,
+// the others count children from a different node. Once the behavior for
+// Android Desktop has been decided this test should be re-enabled. See also
+// bookmarks_apitest.cc.
+#if !BUILDFLAG(IS_ANDROID)
 TEST_F(ExtensionBookmarksTest, GetFullTreeFromRoot) {
   BookmarkTreeNode tree =
       GetBookmarkTreeNode(model_, managed_, model_->root_node(),
@@ -120,6 +129,7 @@ TEST_F(ExtensionBookmarksTest, GetFullTreeFromRoot) {
                           /*only_folders=*/false);
   ASSERT_EQ(4U, tree.children->size());
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(ExtensionBookmarksTest, GetTreeFromOtherPermanentNode) {
   BookmarkTreeNode tree =
@@ -331,7 +341,7 @@ TEST_F(ExtensionBookmarksTest, RemoveNodeRecursive) {
 }
 
 TEST_F(ExtensionBookmarksTest, GetMetaInfo) {
-  base::Value::Dict id_to_meta_info_map;
+  base::DictValue id_to_meta_info_map;
   GetMetaInfo(*model_->other_node(), id_to_meta_info_map);
   EXPECT_EQ(8u, id_to_meta_info_map.size());
 
@@ -341,7 +351,7 @@ TEST_F(ExtensionBookmarksTest, GetMetaInfo) {
         base::NumberToString(model_->other_node()->id()));
     ASSERT_NE(value, nullptr);
     ASSERT_TRUE(value->is_dict());
-    const base::Value::Dict& dict = value->GetDict();
+    const base::DictValue& dict = value->GetDict();
     EXPECT_EQ(0u, dict.size());
   }
 
@@ -351,7 +361,7 @@ TEST_F(ExtensionBookmarksTest, GetMetaInfo) {
         id_to_meta_info_map.Find(base::NumberToString(node_->id()));
     ASSERT_NE(value, nullptr);
     ASSERT_TRUE(value->is_dict());
-    const base::Value::Dict& dict = value->GetDict();
+    const base::DictValue& dict = value->GetDict();
     EXPECT_EQ(2u, dict.size());
     ASSERT_TRUE(dict.FindString("some_key1"));
     EXPECT_EQ("some_value1", *(dict.FindString("some_key1")));
@@ -365,7 +375,7 @@ TEST_F(ExtensionBookmarksTest, GetMetaInfo) {
         id_to_meta_info_map.Find(base::NumberToString(folder_->id()));
     ASSERT_NE(value, nullptr);
     ASSERT_TRUE(value->is_dict());
-    const base::Value::Dict& dict = value->GetDict();
+    const base::DictValue& dict = value->GetDict();
     EXPECT_EQ(1u, dict.size());
     ASSERT_TRUE(dict.FindString("some_key1"));
     EXPECT_EQ("some_value1", *(dict.FindString("some_key1")));
@@ -377,12 +387,89 @@ TEST_F(ExtensionBookmarksTest, GetMetaInfo) {
         id_to_meta_info_map.Find(base::NumberToString(node2_->id()));
     ASSERT_NE(value, nullptr);
     ASSERT_TRUE(value->is_dict());
-    const base::Value::Dict& dict = value->GetDict();
+    const base::DictValue& dict = value->GetDict();
     EXPECT_EQ(1u, dict.size());
     ASSERT_FALSE(dict.FindString("some_key1"));
     ASSERT_TRUE(dict.FindString("some_key2"));
     EXPECT_EQ("some_value2", *(dict.FindString("some_key2")));
   }
+}
+
+TEST_F(ExtensionBookmarksTest, PopulateBookmarkTreeNodeIndexConsistency) {
+  const BookmarkNode* url1 = model_->AddURL(model_->bookmark_bar_node(), 0,
+                                            u"URL1", GURL("http://url1.com"));
+  const BookmarkNode* url2 = model_->AddURL(model_->bookmark_bar_node(), 1,
+                                            u"URL2", GURL("http://url2.com"));
+  const BookmarkNode* subfolder =
+      model_->AddFolder(model_->bookmark_bar_node(), 2, u"Subfolder");
+  const BookmarkNode* url3 =
+      model_->AddURL(subfolder, 0, u"URL3", GURL("http://url3.com"));
+
+  // Get the tree and verify indexes.
+  BookmarkTreeNode tree =
+      GetBookmarkTreeNode(model_, managed_, model_->bookmark_bar_node(),
+                          /*recurse=*/true, /*only_folders=*/false);
+
+  ASSERT_TRUE(tree.children.has_value());
+  const std::vector<BookmarkTreeNode>& children = *tree.children;
+
+  // Helper to find node by title.
+  auto find_node = [](const std::vector<BookmarkTreeNode>& nodes,
+                      const std::string& title) {
+    return std::find_if(
+        nodes.begin(), nodes.end(),
+        [&title](const BookmarkTreeNode& node) { return node.title == title; });
+  };
+
+  // Verify each node's visible_index matches GetAPIIndexOf.
+  auto url1_it = find_node(children, "URL1");
+  ASSERT_NE(url1_it, children.end());
+  EXPECT_EQ(GetAPIIndexOf(*url1), url1_it->index);
+
+  auto url2_it = find_node(children, "URL2");
+  ASSERT_NE(url2_it, children.end());
+  EXPECT_EQ(GetAPIIndexOf(*url2), url2_it->index);
+
+  auto subfolder_it = find_node(children, "Subfolder");
+  ASSERT_NE(subfolder_it, children.end());
+  EXPECT_EQ(GetAPIIndexOf(*subfolder), subfolder_it->index);
+
+  ASSERT_TRUE(subfolder_it->children.has_value());
+  auto url3_it = find_node(*subfolder_it->children, "URL3");
+  ASSERT_NE(url3_it, subfolder_it->children->end());
+  EXPECT_EQ(GetAPIIndexOf(*url3), url3_it->index);
+
+  // Verify indexes reflect the node order.
+  EXPECT_EQ(0U, url1_it->index);
+  EXPECT_EQ(1U, url2_it->index);
+  EXPECT_EQ(2U, subfolder_it->index);
+  EXPECT_EQ(0U, url3_it->index);
+
+  // Directly test PopulateBookmarkTreeNode.
+  api::bookmarks::BookmarkTreeNode populated_node;
+  PopulateBookmarkTreeNode(model_, managed_, url1,
+                           /*recurse=*/false, /*only_folders=*/false,
+                           std::nullopt, &populated_node);
+  EXPECT_EQ(GetAPIIndexOf(*url1), populated_node.index);
+
+  // Test recursive population.
+  api::bookmarks::BookmarkTreeNode recursive_node;
+  PopulateBookmarkTreeNode(model_, managed_, subfolder,
+                           /*recurse=*/true, /*only_folders=*/false,
+                           std::nullopt, &recursive_node);
+  EXPECT_EQ(GetAPIIndexOf(*subfolder), recursive_node.index);
+  ASSERT_TRUE(recursive_node.children.has_value());
+  ASSERT_EQ(1U, recursive_node.children->size());
+  EXPECT_EQ(GetAPIIndexOf(*url3), recursive_node.children->at(0).index);
+
+  // Test only_folders with recursion.
+  api::bookmarks::BookmarkTreeNode folders_node;
+  PopulateBookmarkTreeNode(model_, managed_, model_->bookmark_bar_node(),
+                           /*recurse=*/true, /*only_folders=*/true,
+                           std::nullopt, &folders_node);
+  ASSERT_TRUE(folders_node.children.has_value());
+  ASSERT_EQ(1U, folders_node.children->size());  // Only the subfolder.
+  EXPECT_EQ(GetAPIIndexOf(*subfolder), folders_node.children->at(0).index);
 }
 
 }  // namespace bookmarks_helpers

@@ -25,10 +25,13 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chromecast.base.Controller;
 import org.chromium.chromecast.base.Observer;
 import org.chromium.chromecast.base.Scope;
@@ -38,6 +41,7 @@ import org.chromium.chromecast.shell.CastWebContentsSurfaceHelper.StartParams;
 import org.chromium.content_public.browser.MediaSession;
 import org.chromium.content_public.browser.WebContents;
 
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /** Tests for CastWebContentsSurfaceHelper. */
@@ -51,7 +55,7 @@ public class CastWebContentsSurfaceHelperTest {
     private CastWebContentsSurfaceHelper mSurfaceHelper;
     private @Mock MediaSessionGetter mMediaSessionGetter;
     private @Mock MediaSession mMediaSession;
-    private Controller<Unit> mSurfaceAvailable = new Controller<>();
+    private final Controller<Unit> mSurfaceAvailable = new Controller<>();
 
     private static class StartParamsBuilder {
         private String mId = "0";
@@ -92,14 +96,22 @@ public class CastWebContentsSurfaceHelperTest {
         CastWebContentsIntentUtils.getLocalBroadcastManager().sendBroadcastSync(intent);
     }
 
+    private void sendSystemBroadcast(Intent intent) {
+        ContextUtils.getApplicationContext().sendBroadcast(intent);
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+    }
+
     @Before
     public void setUp() {
+        ContextUtils.initApplicationContextForTests(RuntimeEnvironment.application);
         when(mMediaSessionGetter.get(any())).thenReturn(mMediaSession);
         when(mWebContentsView.open(any())).thenReturn(mock(Scope.class));
         mSurfaceHelper =
                 new CastWebContentsSurfaceHelper(
                         mWebContentsView, mFinishCallback, mSurfaceAvailable);
         mSurfaceHelper.setMediaSessionGetterForTesting(mMediaSessionGetter);
+        // Ensure the BroadcastReceivers are registered.
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     @Test
@@ -207,8 +219,7 @@ public class CastWebContentsSurfaceHelperTest {
         Scope scope = mock(Scope.class);
         when(mWebContentsView.open(webContents)).thenReturn(scope);
         mSurfaceHelper.onNewStartParams(params);
-        // Send SCREEN_OFF broadcast.
-        sendBroadcastSync(new Intent(CastIntents.ACTION_SCREEN_OFF));
+        sendSystemBroadcast(new Intent(Intent.ACTION_SCREEN_OFF));
         verify(scope).close();
     }
 
@@ -273,7 +284,7 @@ public class CastWebContentsSurfaceHelperTest {
         StartParams params = new StartParamsBuilder().withId("0").build();
         mSurfaceHelper.onNewStartParams(params);
         sendBroadcastSync(CastWebContentsIntentUtils.requestStopWebContents("0"));
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(mFinishCallback).accept(CastWebContentsIntentUtils.getInstanceUri("0"));
     }
 
@@ -281,8 +292,8 @@ public class CastWebContentsSurfaceHelperTest {
     public void testFinishLaterCallbackIsRunAfterScreenOff() {
         StartParams params = new StartParamsBuilder().withId("0").build();
         mSurfaceHelper.onNewStartParams(params);
-        sendBroadcastSync(new Intent(CastIntents.ACTION_SCREEN_OFF));
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        sendSystemBroadcast(new Intent(Intent.ACTION_SCREEN_OFF));
+        ShadowLooper.idleMainLooper(1, TimeUnit.SECONDS);
         verify(mFinishCallback).accept(CastWebContentsIntentUtils.getInstanceUri("0"));
     }
 
@@ -293,7 +304,7 @@ public class CastWebContentsSurfaceHelperTest {
         mSurfaceHelper.onNewStartParams(params1);
         sendBroadcastSync(CastWebContentsIntentUtils.requestStopWebContents("1"));
         mSurfaceHelper.onNewStartParams(params2);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(mFinishCallback, never()).accept(any());
     }
 

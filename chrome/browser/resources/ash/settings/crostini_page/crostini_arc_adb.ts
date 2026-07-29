@@ -25,10 +25,12 @@ import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
 import {RouteObserverMixin} from '../common/route_observer_mixin.js';
 import type {PrefsState} from '../common/types.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
-import {type Route, routes} from '../router.js';
+import {routes} from '../router.js';
+import type {Route} from '../router.js';
 
 import {getTemplate} from './crostini_arc_adb.html.js';
-import {type CrostiniBrowserProxy, CrostiniBrowserProxyImpl} from './crostini_browser_proxy.js';
+import {CrostiniBrowserProxyImpl} from './crostini_browser_proxy.js';
+import type {CrostiniBrowserProxy} from './crostini_browser_proxy.js';
 
 export interface SettingsCrostiniArcAdbElement {
   $: {
@@ -94,25 +96,23 @@ export class SettingsCrostiniArcAdbElement extends
         type: Boolean,
         value: false,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([Setting.kCrostiniAdbDebugging]),
-      },
     };
   }
 
-  prefs: PrefsState;
-  private arcAdbEnabled_: boolean;
-  private arcAdbNeedPowerwash_: boolean;
+  declare prefs: PrefsState;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kCrostiniAdbDebugging,
+  ]);
+
+  declare private arcAdbEnabled_: boolean;
+  declare private arcAdbNeedPowerwash_: boolean;
   private browserProxy_: CrostiniBrowserProxy;
-  private canChangeAdbSideloading_: boolean;
-  private isEnterpriseManaged_: boolean;
-  private isOwnerProfile_: boolean;
-  private showConfirmationDialog_: boolean;
+  declare private canChangeAdbSideloading_: boolean;
+  declare private isEnterpriseManaged_: boolean;
+  declare private isOwnerProfile_: boolean;
+  declare private showConfirmationDialog_: boolean;
 
   constructor() {
     super();

@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "pdf/buildflags.h"
@@ -32,10 +33,11 @@ class PreviewModeClient : public PDFiumEngineClient {
 
   // PDFiumEngineClient:
   void ProposeDocumentLayout(const DocumentLayout& layout) override;
+  bool UseSkiaPremultipliedAlpha() override;
   void Invalidate(const gfx::Rect& rect) override;
   void DidScroll(const gfx::Vector2d& offset) override;
-  void ScrollToX(int x_in_screen_coords) override;
-  void ScrollToY(int y_in_screen_coords) override;
+  void ScrollToX(int x_in_screen_coords, bool force_smooth_scroll) override;
+  void ScrollToY(int y_in_screen_coords, bool force_smooth_scroll) override;
   void ScrollBy(const gfx::Vector2d& scroll_delta) override;
   void ScrollToPage(int page) override;
   void NavigateTo(const std::string& url,
@@ -59,8 +61,7 @@ class PreviewModeClient : public PDFiumEngineClient {
              const std::string& body) override;
   void Print() override;
   void SubmitForm(const std::string& url,
-                  const void* data,
-                  int length) override;
+                  base::span<const uint8_t> data) override;
   std::unique_ptr<UrlLoader> CreateUrlLoader() override;
   v8::Isolate* GetIsolate() override;
   std::vector<SearchStringResult> SearchString(const std::u16string& needle,
@@ -75,12 +76,14 @@ class PreviewModeClient : public PDFiumEngineClient {
   void SetSelectedText(const std::string& selected_text) override;
   void SetLinkUnderCursor(const std::string& link_under_cursor) override;
   bool IsValidLink(const std::string& url) override;
+  void OnNewTextFragmentsSearchStarted() override;
 #if BUILDFLAG(ENABLE_PDF_INK2)
   bool IsInAnnotationMode() const override;
 #endif  // BUILDFLAG(ENABLE_PDF_INK2)
 #if BUILDFLAG(ENABLE_SCREEN_AI_SERVICE)
   void OnSearchifyStateChange(bool busy) override;
   void OnHasSearchifyText() override;
+  void MaybeShowSearchifyInProgress() override;
 #endif
 
  private:

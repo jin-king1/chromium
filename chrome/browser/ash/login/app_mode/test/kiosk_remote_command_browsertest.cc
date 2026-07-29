@@ -13,6 +13,7 @@
 #include "base/test/test_future.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_mixin.h"
+#include "chrome/browser/ash/app_mode/test/kiosk_test_utils.h"
 #include "chrome/browser/ash/policy/remote_commands/device_commands_factory_ash.h"
 #include "chrome/browser/ash/policy/test_support/embedded_policy_test_server_mixin.h"
 #include "chrome/browser/ash/policy/test_support/remote_commands_service_mixin.h"
@@ -29,6 +30,8 @@
 #include "third_party/cros_system_api/dbus/power_manager/dbus-constants.h"
 
 namespace ash {
+
+using kiosk::test::WaitKioskLaunched;
 
 namespace {
 
@@ -112,8 +115,12 @@ class KioskRemoteCommandTest
     : public MixinBasedInProcessBrowserTest,
       public testing::WithParamInterface<KioskMixin::Config> {
  public:
-  KioskRemoteCommandTest() = default;
-
+  KioskRemoteCommandTest() {
+    // Force allow Chrome Apps in Kiosk, since they are default disabled since
+    // M138.
+    scoped_feature_list_.InitFromCommandLine("AllowChromeAppsInKioskSessions",
+                                             "");
+  }
   KioskRemoteCommandTest(const KioskRemoteCommandTest&) = delete;
   KioskRemoteCommandTest& operator=(const KioskRemoteCommandTest&) = delete;
 
@@ -142,6 +149,7 @@ class KioskRemoteCommandTest
   EmbeddedPolicyTestServerMixin policy_test_server_mixin_{&mixin_host_};
   policy::RemoteCommandsServiceMixin remote_commands_service_mixin_{
       mixin_host_, policy_test_server_mixin_};
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_P(KioskRemoteCommandTest, SetVolumeWithRemoteCommand) {
@@ -157,14 +165,14 @@ IN_PROC_BROWSER_TEST_P(KioskRemoteCommandTest, SetVolumeWithRemoteCommand) {
   audio_observer.WaitForVolumeChange();
   ASSERT_EQ(kInitVolumePercent, audio_handler.GetOutputVolumePercent());
 
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
 
   // Create a remote command, enqueue from the server and fetch from the client.
   auto response = IssueCommandAndGetResponse(
       NewRemoteCommandBuilder()
           .SetType(em::RemoteCommand_Type_DEVICE_SET_VOLUME)
           .SetPayload(
-              base::WriteJson(base::Value::Dict()  //
+              base::WriteJson(base::DictValue()  //
                                   .Set("volume", kExpectedVolumePercent))
                   .value())
           .Build());
@@ -179,7 +187,7 @@ IN_PROC_BROWSER_TEST_P(KioskRemoteCommandTest, SetVolumeWithRemoteCommand) {
 IN_PROC_BROWSER_TEST_P(KioskRemoteCommandTest, RebootWithRemoteCommand) {
   base::AddFeatureIdTagToTestResult(kKioskRemoteRebootCommandTag);
 
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
 
   // Start observing restart requests in `PowerManagerClient`.
   RestartRequestObserver observer(chromeos::PowerManagerClient::Get());
@@ -200,10 +208,9 @@ IN_PROC_BROWSER_TEST_P(KioskRemoteCommandTest, RebootWithRemoteCommand) {
 IN_PROC_BROWSER_TEST_P(KioskRemoteCommandTest, ScreenshotWithRemoteCommand) {
   base::AddFeatureIdTagToTestResult(kKioskRemoteScreenshotCommandTag);
 
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
 
   // Skips real image upload.
-  // TODO(crbug.com/269432279): Try real upload with embedded test server.
   policy::DeviceCommandsFactoryAsh::set_commands_for_testing(true);
 
   auto response = IssueCommandAndGetResponse(

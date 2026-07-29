@@ -21,6 +21,7 @@ namespace blink {
 // or deprecate permission types.
 // Never delete or reorder an entry; only add new entries
 // immediately before PermissionType::NUM
+// LINT.IfChange(PermissionType)
 enum class PermissionType {
   MIDI_SYSEX = 1,
   // PUSH_MESSAGING = 2,
@@ -28,7 +29,7 @@ enum class PermissionType {
   GEOLOCATION = 4,
   PROTECTED_MEDIA_IDENTIFIER = 5,
   MIDI = 6,
-  DURABLE_STORAGE = 7,
+  PERSISTENT_STORAGE = 7,
   AUDIO_CAPTURE = 8,
   VIDEO_CAPTURE = 9,
   BACKGROUND_SYNC = 10,
@@ -64,11 +65,16 @@ enum class PermissionType {
   AUTOMATIC_FULLSCREEN = 40,
   HAND_TRACKING = 41,
   WEB_APP_INSTALLATION = 42,
+  LOCAL_NETWORK_ACCESS = 43,
+  LOCAL_NETWORK = 44,
+  LOOPBACK_NETWORK = 45,
+  GEOLOCATION_APPROXIMATE = 46,
 
   // Always keep this at the end.
   NUM,
   MIN_VALUE = MIDI_SYSEX,
 };
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml:PermissionType)
 
 // Converts a permission string ("granted", "denied", "prompt") into a
 // PermissionStatus.
@@ -81,10 +87,23 @@ BLINK_COMMON_EXPORT std::string GetPermissionString(PermissionType permission);
 // Get a list of all permission types.
 BLINK_COMMON_EXPORT const std::vector<PermissionType>& GetAllPermissionTypes();
 
-// Given |descriptor|, set |permission_type| to a corresponding PermissionType.
+// Given `PermissionDescriptorPtr`, return the corresponding `PermissionType` if
+// it exists.
 BLINK_COMMON_EXPORT std::optional<PermissionType>
-PermissionDescriptorToPermissionType(
+MaybePermissionDescriptorToPermissionType(
     const mojom::PermissionDescriptorPtr& descriptor);
+
+// Given `PermissionDescriptorPtr`, either return the corresponding
+// `PermissionType` or trigger a CHECK() failure.
+BLINK_COMMON_EXPORT PermissionType PermissionDescriptorToPermissionType(
+    const mojom::PermissionDescriptorPtr& descriptor);
+
+// Given a vector of `PermissionDescriptorPtr`s, return a vector of the
+// corresponding `PermissionType`s. Triggers a CHECK() failure if any
+// `PermissionDescriptorPtr` can't be mapped.
+BLINK_COMMON_EXPORT std::vector<PermissionType>
+PermissionDescriptorToPermissionTypes(
+    const std::vector<mojom::PermissionDescriptorPtr>& descriptors);
 
 // Ideally this would be an equivalent function to
 // |PermissionDescriptorToPermissionType| but for a

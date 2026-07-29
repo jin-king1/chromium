@@ -9,13 +9,19 @@
 #include "chrome/browser/webapps/installable/installed_webapp_provider.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/permissions/permission_decision.h"
+#include "components/permissions/resolvers/permission_prompt_options.h"
 
 class GURL;
 
+namespace permissions {
+struct PermissionPromptDecision;
+}  // namespace permissions
+
 class InstalledWebappBridge {
  public:
-  using PermissionCallback = base::OnceCallback<
-      void(ContentSetting setting, bool is_one_time, bool is_final_decision)>;
+  using PermissionCallback = base::OnceCallback<void(
+      const permissions::PermissionPromptDecision& decision)>;
 
   InstalledWebappBridge() = delete;
   InstalledWebappBridge(const InstalledWebappBridge&) = delete;

@@ -36,7 +36,8 @@
 
 namespace blink {
 
-class NodeListsNodeData final : public GarbageCollected<NodeListsNodeData> {
+class NodeListsNodeData final : public GarbageCollected<NodeListsNodeData>,
+                                public NodeRareDataField {
  public:
   ChildNodeList* GetChildNodeList(ContainerNode& node) {
     DCHECK(!child_node_list_ || node == child_node_list_->VirtualOwnerNode());
@@ -63,9 +64,9 @@ class NodeListsNodeData final : public GarbageCollected<NodeListsNodeData> {
   struct NodeListAtomicCacheMapEntryHashTraits
       : HashTraits<std::pair<CollectionType, AtomicString>> {
     static unsigned GetHash(const NamedNodeListKey& entry) {
-      return WTF::GetHash(entry.second == CSSSelector::UniversalSelectorAtom()
-                              ? g_star_atom
-                              : entry.second) +
+      return blink::GetHash(entry.second == CSSSelector::UniversalSelectorAtom()
+                                ? g_star_atom
+                                : entry.second) +
              entry.first;
     }
     static constexpr bool kSafeToCompareToEmptyOrDeleted =
@@ -175,7 +176,7 @@ class NodeListsNodeData final : public GarbageCollected<NodeListsNodeData> {
     }
   }
 
-  void Trace(Visitor*) const;
+  void Trace(Visitor*) const override;
 
  private:
   // Can be a ChildNodeList or an EmptyNodeList.

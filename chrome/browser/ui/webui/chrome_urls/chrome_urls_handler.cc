@@ -11,7 +11,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/prefs/pref_service.h"
-#include "components/webui/chrome_urls/features.h"
 #include "components/webui/chrome_urls/pref_names.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/internal_webui_config.h"
@@ -35,6 +34,7 @@ base::span<const base::cstring_view> WebUIHostsWithoutConfigs() {
           content::kChromeUIBlobInternalsHost,
           content::kChromeUIDinoHost,
           chrome::kChromeUIExtensionsInternalsHost,
+          chrome::kChromeUIPrefsInternalsHost,
       });
   return base::span(kHostsWithoutConfigs);
 }
@@ -58,12 +58,9 @@ bool CompareWebuiUrlInfos(const chrome_urls::mojom::WebuiUrlInfoPtr& info1,
 
 ChromeUrlsHandler::ChromeUrlsHandler(
     mojo::PendingReceiver<chrome_urls::mojom::PageHandler> receiver,
-    mojo::PendingRemote<chrome_urls::mojom::Page> page,
     content::BrowserContext* browser_context)
     : receiver_(this, std::move(receiver)),
-      page_(std::move(page)),
       browser_context_(browser_context) {
-  DCHECK(base::FeatureList::IsEnabled(chrome_urls::kInternalOnlyUisPref));
 }
 
 ChromeUrlsHandler::~ChromeUrlsHandler() = default;

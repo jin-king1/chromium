@@ -6,8 +6,8 @@
 
 #include "base/strings/strcat.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/on_device_translation/component_manager.h"
-#include "chrome/browser/on_device_translation/language_pack_util.h"
+#include "components/on_device_translation/component_manager.h"
+#include "components/on_device_translation/public/language_pack.h"
 
 using on_device_translation_internals::mojom::LanguagePackInfo;
 using on_device_translation_internals::mojom::LanguagePackInfoPtr;
@@ -72,8 +72,8 @@ void OnDeviceTranslationInternalsPageHandlerImpl::SendLanguagePackInfo() {
   for (const auto& it : kLanguagePackComponentConfigMap) {
     auto key = it.first;
     info_list.push_back(LanguagePackInfo::New(
-        base::StrCat({std::string(ToLanguageCode(it.second->language1)), " - ",
-                      std::string(ToLanguageCode(it.second->language2))}),
+        base::StrCat({ToLanguageCode(it.second->language1), " - ",
+                      ToLanguageCode(it.second->language2)}),
         registered_packs.contains(key)
             ? (installed_packs.contains(key) ? LanguagePackStatus::kInstalled
                                              : LanguagePackStatus::kInstalling)

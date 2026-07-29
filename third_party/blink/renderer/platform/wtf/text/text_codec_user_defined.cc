@@ -23,33 +23,29 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/wtf/text/text_codec_user_defined.h"
 
 #include <memory>
+
+#include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
-namespace WTF {
+namespace blink {
 
 void TextCodecUserDefined::RegisterEncodingNames(
     EncodingNameRegistrar registrar) {
-  registrar("x-user-defined", "x-user-defined");
+  registrar("x-user-defined", AtomicString("x-user-defined"));
 }
 
 static std::unique_ptr<TextCodec> NewStreamingTextDecoderUserDefined(
-    const TextEncoding&,
-    const void*) {
+    const TextEncoding&) {
   return std::make_unique<TextCodecUserDefined>();
 }
 
 void TextCodecUserDefined::RegisterCodecs(TextCodecRegistrar registrar) {
-  registrar("x-user-defined", NewStreamingTextDecoderUserDefined, nullptr);
+  registrar("x-user-defined", NewStreamingTextDecoderUserDefined);
 }
 
 String TextCodecUserDefined::Decode(base::span<const uint8_t> data,
@@ -57,7 +53,7 @@ String TextCodecUserDefined::Decode(base::span<const uint8_t> data,
                                     bool,
                                     bool&) {
   StringBuilder result;
-  result.ReserveCapacity(data.size());
+  result.ReserveCapacity(base::checked_cast<wtf_size_t>(data.size()));
 
   for (const auto cc : data) {
     signed char c = cc;
@@ -71,8 +67,7 @@ template <typename CharType>
 static std::string EncodeComplexUserDefined(
     base::span<const CharType> char_data,
     UnencodableHandling handling) {
-  DCHECK_NE(handling, kNoUnencodables);
-  const auto* characters = char_data.data();
+  DCHECK_NE(handling, UnencodableHandling::kNone);
   const wtf_size_t length = base::checked_cast<wtf_size_t>(char_data.size());
   wtf_size_t target_length = length;
   std::string result;
@@ -81,7 +76,7 @@ static std::string EncodeComplexUserDefined(
   for (wtf_size_t i = 0; i < length;) {
     UChar32 c;
     // TODO(jsbell): Will the input for x-user-defined ever be LChars?
-    U16_NEXT(characters, i, length, c);
+    U16_NEXT(char_data, i, length, c);
     // If the input was a surrogate pair (non-BMP character) then we
     // overestimated the length.
     if (c > 0xffff)
@@ -94,12 +89,6 @@ static std::string EncodeComplexUserDefined(
       std::string replacement =
           TextCodec::GetUnencodableReplacement(c, handling);
       DCHECK_GT(replacement.length(), 0UL);
-      // Only one char was initially reserved per input character, so grow if
-      // necessary.
-      target_length += replacement.length() - 1;
-      if (target_length > result.size()) {
-        result.reserve(target_length);
-      }
       result.append(replacement);
     }
   }
@@ -139,4 +128,4 @@ std::string TextCodecUserDefined::Encode(base::span<const LChar> characters,
   return EncodeCommon(characters, handling);
 }
 
-}  // namespace WTF
+}  // namespace blink

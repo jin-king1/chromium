@@ -2,21 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "device/bluetooth/socket.h"
 
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/memory/ptr_util.h"
+#include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "device/bluetooth/bluetooth_socket.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -109,22 +103,21 @@ void Socket::ReceiveMore() {
   bluetooth_socket_->Receive(
       base::checked_cast<int>(pending_write_buffer.size()),
       base::BindOnce(&Socket::OnBluetoothSocketReceive,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     pending_write_buffer.data()),
+                     weak_ptr_factory_.GetWeakPtr(), pending_write_buffer),
       base::BindOnce(&Socket::OnBluetoothSocketReceiveError,
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-void Socket::OnBluetoothSocketReceive(void* pending_write_buffer,
+void Socket::OnBluetoothSocketReceive(base::span<uint8_t> pending_write_buffer,
                                       int num_bytes_received,
                                       scoped_refptr<net::IOBuffer> io_buffer) {
   DCHECK_GT(num_bytes_received, 0);
-  DCHECK(io_buffer->data());
 
   if (!receive_stream_.is_valid())
     return;
 
-  memcpy(pending_write_buffer, io_buffer->data(), num_bytes_received);
+  pending_write_buffer.copy_prefix_from(
+      io_buffer->first(base::checked_cast<size_t>(num_bytes_received)));
   receive_stream_->EndWriteData(static_cast<uint32_t>(num_bytes_received));
 
   ReceiveMore();
@@ -173,9 +166,11 @@ void Socket::SendMore() {
     return;
   }
 
-  std::string_view chars = base::as_string_view(pending_read_buffer);
-  bluetooth_socket_->Send(base::MakeRefCounted<net::WrappedIOBuffer>(chars),
-                          chars.size(),
+  auto io_buffer =
+      base::MakeRefCounted<net::IOBufferWithSize>(pending_read_buffer.size());
+  io_buffer->span().copy_from(pending_read_buffer);
+  const int buffer_size = io_buffer->size();
+  bluetooth_socket_->Send(std::move(io_buffer), buffer_size,
                           base::BindOnce(&Socket::OnBluetoothSocketSend,
                                          weak_ptr_factory_.GetWeakPtr()),
                           base::BindOnce(&Socket::OnBluetoothSocketSendError,

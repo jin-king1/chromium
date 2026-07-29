@@ -6,7 +6,6 @@
 #define CHROME_BROWSER_COLLABORATION_MESSAGING_MESSAGING_BACKEND_SERVICE_FACTORY_H_
 
 #include "chrome/browser/profiles/profile_keyed_service_factory.h"
-#include "components/collaboration/public/messaging/messaging_backend_service.h"
 
 namespace base {
 template <typename T>
@@ -26,9 +25,9 @@ class MessagingBackendService;
 class MessagingBackendServiceFactory : public ProfileKeyedServiceFactory {
  public:
   // Gets the MessagingBackendService for the profile. Returns null for
-  // incognito.
-  // The caller is responsible for checking that the
-  // data_sharing::features::kDataSharingFeature is enabled.
+  // incognito/guest. If the data sharing functionality is turned off or
+  // sync is disabled or the collaboration service is not enabled, returns
+  // an empty MessagingBackendService.
   static MessagingBackendService* GetForProfile(Profile* profile);
 
   // Gets the lazy singleton instance of MessagingBackendServiceFactory.
@@ -37,7 +36,8 @@ class MessagingBackendServiceFactory : public ProfileKeyedServiceFactory {
   // Disallow copy/assign.
   MessagingBackendServiceFactory(const MessagingBackendServiceFactory&) =
       delete;
-  void operator=(const MessagingBackendServiceFactory&) = delete;
+  MessagingBackendServiceFactory& operator=(
+      const MessagingBackendServiceFactory&) = delete;
 
  private:
   friend base::NoDestructor<MessagingBackendServiceFactory>;

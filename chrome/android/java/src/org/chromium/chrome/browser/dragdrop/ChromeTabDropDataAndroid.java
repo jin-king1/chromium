@@ -4,16 +4,24 @@
 
 package org.chromium.chrome.browser.dragdrop;
 
+import android.content.ClipDescription;
+import android.content.Context;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.ui.base.MimeTypeUtils;
 
 /** Chrome-specific drop data containing a {@link Tab}. */
+@NullMarked
 public class ChromeTabDropDataAndroid extends ChromeDropDataAndroid {
-    public final Tab tab;
+    public final @Nullable Tab tab;
     public final boolean isTabInGroup;
 
     ChromeTabDropDataAndroid(Builder builder) {
         super(builder);
         tab = builder.mTab;
+        assert tab != null;
         isTabInGroup = builder.mIsTabInGroup;
     }
 
@@ -24,17 +32,28 @@ public class ChromeTabDropDataAndroid extends ChromeDropDataAndroid {
 
     @Override
     public boolean isIncognito() {
-        return hasBrowserContent() && tab.isIncognitoBranded();
+        return tab != null && tab.isIncognitoBranded();
     }
 
     @Override
-    public String buildTabClipDataText() {
-        return hasBrowserContent() ? tab.getUrl().getSpec() : null;
+    public String buildTabClipDataText(Context context) {
+        if (tab == null) return "";
+
+        return tab.getUrl().getSpec();
+    }
+
+    @Override
+    public String[] getSupportedMimeTypes() {
+        return new String[] {
+            MimeTypeUtils.CHROME_MIMETYPE_TAB,
+            ClipDescription.MIMETYPE_TEXT_PLAIN,
+            ClipDescription.MIMETYPE_TEXT_INTENT
+        };
     }
 
     /** Builder for @{@link ChromeTabDropDataAndroid} instance. */
     public static class Builder extends ChromeDropDataAndroid.Builder {
-        private Tab mTab;
+        private @Nullable Tab mTab;
         private boolean mIsTabInGroup;
 
         /**

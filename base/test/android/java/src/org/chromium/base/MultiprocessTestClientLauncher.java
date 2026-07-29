@@ -6,7 +6,6 @@ package org.chromium.base;
 
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.IBinder;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
@@ -18,8 +17,8 @@ import org.jni_zero.JNINamespace;
 import org.chromium.base.process_launcher.ChildConnectionAllocator;
 import org.chromium.base.process_launcher.ChildProcessConnection;
 import org.chromium.base.process_launcher.ChildProcessLauncher;
-import org.chromium.base.process_launcher.FileDescriptorInfo;
 import org.chromium.base.process_launcher.IChildProcessService;
+import org.chromium.base.process_launcher.IFileDescriptorInfo;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -110,6 +109,11 @@ public final class MultiprocessTestClientLauncher {
                     sPidToCleanExit.put(connection.getPid(), connection.hasCleanExit());
                     sPidToLauncher.remove(connection.getPid());
                 }
+
+                @Override
+                public int getLibraryProcessType() {
+                    return 0;
+                }
             };
 
     private final CountDownLatch mPidReceived = new CountDownLatch(1);
@@ -134,8 +138,7 @@ public final class MultiprocessTestClientLauncher {
     @GuardedBy("mMainReturnCodeLock")
     private Integer mMainReturnCode;
 
-    private MultiprocessTestClientLauncher(
-            String[] commandLine, FileDescriptorInfo[] filesToMap, IBinder binderBox) {
+    private MultiprocessTestClientLauncher(String[] commandLine, IFileDescriptorInfo[] filesToMap) {
         assert isRunningOnLauncherThread();
 
         if (sConnectionAllocator == null) {
@@ -149,7 +152,6 @@ public final class MultiprocessTestClientLauncher {
                             "org.chromium.native_test.NUM_TEST_CLIENT_SERVICES",
                             /* bindToCaller= */ false,
                             /* bindAsExternalService= */ false,
-                            /* useStrongBinding= */ false,
                             /* fallbackToNextSlot= */ false,
                             /* isSandboxedForHistograms= */ false);
         }
@@ -161,8 +163,7 @@ public final class MultiprocessTestClientLauncher {
                         commandLine,
                         filesToMap,
                         sConnectionAllocator,
-                        Arrays.asList(mCallback),
-                        binderBox);
+                        Arrays.asList(mCallback));
     }
 
     private boolean waitForConnection(long timeoutMs) {
@@ -217,18 +218,14 @@ public final class MultiprocessTestClientLauncher {
      */
     @CalledByNative
     private static int launchClient(
-            final String[] commandLine,
-            final FileDescriptorInfo[] filesToMap,
-            final IBinder binderBox) {
+            final String[] commandLine, final IFileDescriptorInfo[] filesToMap) {
         assert Looper.myLooper() != Looper.getMainLooper();
 
         initLauncherThread();
 
         final MultiprocessTestClientLauncher launcher =
                 runOnLauncherAndGetResult(
-                        () ->
-                                createAndStartLauncherOnLauncherThread(
-                                        commandLine, filesToMap, binderBox));
+                        () -> createAndStartLauncherOnLauncherThread(commandLine, filesToMap));
         if (launcher == null) {
             return 0;
         }
@@ -247,13 +244,15 @@ public final class MultiprocessTestClientLauncher {
     }
 
     private static MultiprocessTestClientLauncher createAndStartLauncherOnLauncherThread(
-            String[] commandLine, FileDescriptorInfo[] filesToMap, final IBinder binderBox) {
+            String[] commandLine, IFileDescriptorInfo[] filesToMap) {
         assert isRunningOnLauncherThread();
 
         MultiprocessTestClientLauncher launcher =
-                new MultiprocessTestClientLauncher(commandLine, filesToMap, binderBox);
+                new MultiprocessTestClientLauncher(commandLine, filesToMap);
         if (!launcher.mLauncher.start(
-                /* setupConnection= */ true, /* queueIfNoFreeConnection= */ true)) {
+                /* setupConnection= */ true,
+                /* queueIfNoFreeConnection= */ true,
+                ChildBindingState.VISIBLE)) {
             return null;
         }
 
@@ -351,10 +350,10 @@ public final class MultiprocessTestClientLauncher {
 
     /** Does not take ownership of of fds. */
     @CalledByNative
-    private static FileDescriptorInfo[] makeFdInfoArray(int[] keys, int[] fds) {
-        FileDescriptorInfo[] fdInfos = new FileDescriptorInfo[keys.length];
+    private static IFileDescriptorInfo[] makeFdInfoArray(int[] keys, int[] fds) {
+        IFileDescriptorInfo[] fdInfos = new IFileDescriptorInfo[keys.length];
         for (int i = 0; i < keys.length; i++) {
-            FileDescriptorInfo fdInfo = makeFdInfo(keys[i], fds[i]);
+            IFileDescriptorInfo fdInfo = makeFdInfo(keys[i], fds[i]);
             if (fdInfo == null) {
                 Log.e(TAG, "Failed to make file descriptor (" + keys[i] + ", " + fds[i] + ").");
                 return null;
@@ -364,7 +363,7 @@ public final class MultiprocessTestClientLauncher {
         return fdInfos;
     }
 
-    private static FileDescriptorInfo makeFdInfo(int id, int fd) {
+    private static IFileDescriptorInfo makeFdInfo(int id, int fd) {
         ParcelFileDescriptor parcelableFd = null;
         try {
             parcelableFd = ParcelFileDescriptor.fromFd(fd);
@@ -372,7 +371,10 @@ public final class MultiprocessTestClientLauncher {
             Log.e(TAG, "Invalid FD provided for process connection, aborting connection.", e);
             return null;
         }
-        return new FileDescriptorInfo(id, parcelableFd, /* offset= */ 0, /* size= */ 0);
+        IFileDescriptorInfo fdInfo = new IFileDescriptorInfo();
+        fdInfo.id = id;
+        fdInfo.fd = parcelableFd;
+        return fdInfo;
     }
 
     private static boolean isRunningOnLauncherThread() {

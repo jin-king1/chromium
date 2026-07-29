@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -59,10 +60,10 @@ class UkmDatabase {
                               const std::string& profile_id) = 0;
 
   // Removes all the URLs from URL table and all the associated metrics in
-  // metrics table, on best effort. Any new metrics added with the URL will
-  // still be stored in metrics table (without URLs). If `all_urls` is true,
-  // then clears all the URLs without using `urls` list. It is an optimization
-  // to clear all the URLs quickly.
+  // metrics table, ensuring that no data related to `urls` remains on disk. Any
+  // new metrics added with the URL will still be stored in metrics table
+  // (without URLs). If `all_urls` is true, then clears all the URLs without
+  // using `urls` list. It is an optimization to clear all the URLs quickly.
   virtual void RemoveUrls(const std::vector<GURL>& urls, bool all_urls) = 0;
 
   // Called once when a new UMA metric is to be recorded in the database.
@@ -87,20 +88,22 @@ class UkmDatabase {
   };
 
   using QueryList = base::flat_map<processing::FeatureIndex, CustomSqlQuery>;
+  // Passes std::nullopt to indicate failure.
   using QueryCallback =
-      base::OnceCallback<void(bool success, processing::IndexedTensors)>;
+      base::OnceCallback<void(std::optional<processing::IndexedTensors>)>;
 
   // Called to query data from the ukm database. The result is returned in the
   // |callback| as a mapping of indexed vectors of processing::ProcessedValue.
   virtual void RunReadOnlyQueries(QueryList&& queries,
                                   QueryCallback callback) = 0;
 
-  // Removes metrics older than or equal to the given `time` from the database.
-  // URLs are removed when there are no references to the metrics.
-  virtual void DeleteEntriesOlderThan(base::Time time) = 0;
+  // Removes UKM metrics older than or equal to the given `ukm_time_limit` and
+  // UMA metrics older than `uma_time_limit` from the database. URLs are
+  // removed when there are no references to the metrics.
+  virtual void CleanupOldEntries(base::Time ukm_time_limit,
+                                 base::Time uma_time_limit) = 0;
 
-  // Cleans up old items from the database. Only cleans up UMA entries. UKM
-  // entries still uses `DeleteEntriesOlderThan()` instead.
+  // Cleans up old items from the database. Only cleans up UMA entries.
   virtual void CleanupItems(const std::string& profile_id,
                             std::vector<CleanupItem> cleanup_items) = 0;
 

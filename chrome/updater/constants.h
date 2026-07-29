@@ -5,6 +5,9 @@
 #ifndef CHROME_UPDATER_CONSTANTS_H_
 #define CHROME_UPDATER_CONSTANTS_H_
 
+#include <optional>
+#include <utility>
+
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/update_client/update_client_errors.h"
@@ -13,14 +16,6 @@ namespace updater {
 
 // Key for storing the installer version in the install settings dictionary.
 inline constexpr char kInstallerVersion[] = "installer_version";
-
-// The updater specific app ID. Defined in the .cc file so that the updater
-// branding constants don't leak in this public header.
-extern const char kUpdaterAppId[];
-
-// The app ID used to qualify the updater. Defined in the .cc file so that the
-// updater branding constants don't leak in this public header.
-extern const char kQualificationAppId[];
 
 // The name of the updater program image.
 #if BUILDFLAG(IS_WIN)
@@ -96,6 +91,21 @@ inline constexpr char kCrashHandlerSwitch[] = "crash-handler";
 // Updates the updater.
 inline constexpr char kUpdateSwitch[] = "update";
 
+// Updates the apps.
+inline constexpr char kUpdateAppsSwitch[] = "update-apps";
+
+// Run as a patch worker.
+inline constexpr char kPatchWorkerSwitch[] = "patch-worker";
+
+// Run as an unzip worker.
+inline constexpr char kUnzipWorkerSwitch[] = "unzip-worker";
+
+#if BUILDFLAG(IS_MAC)
+// Command line switch to run the patch worker at background priority.
+inline constexpr char kPatchWorkerBackgroundPrioritySwitch[] =
+    "patch-worker-background-priority";
+#endif
+
 // Run as a network worker.
 inline constexpr char kNetWorkerSwitch[] = "net-worker";
 
@@ -141,6 +151,14 @@ inline constexpr char kTestSwitch[] = "test";
 
 // Run in recovery mode.
 inline constexpr char kRecoverSwitch[] = "recover";
+
+// This switch does the following:
+// * Force-installs the metainstaller that is run with this switch and makes it
+//   the active `updater`.
+// * Installs the application(s) that are implicitly specified in the tagged
+//   metainstaller, or explicitly specified using the `--install` or `--handoff`
+//   parameters.
+inline constexpr char kForceInstallSwitch[] = "force-install";
 
 // The version of the program triggering recovery.
 inline constexpr char kBrowserVersionSwitch[] = "browser-version";
@@ -199,6 +217,9 @@ inline constexpr char kEnterpriseSwitch[] =
 // Specifies that no UI should be shown.
 inline constexpr char kSilentSwitch[] = "silent";  // backward-compatibility.
 
+// Valid values for the kSilentSwitch.
+inline constexpr char kSilentSwitchValueAllowUAC[] = "allow-uac";
+
 // The "alwayslaunchcmd" switch specifies that launch commands are to be run
 // unconditionally, even for silent modes.
 inline constexpr char kAlwaysLaunchCmdSwitch[] = "alwayslaunchcmd";
@@ -221,12 +242,6 @@ inline constexpr char kOfflineDirSwitch[] =
 // that scenario.
 inline constexpr char kAppArgsSwitch[] = "appargs";  // backward-compatibility.
 
-// If provided alongside the update or install switch, a value is written to the
-// local preferences indicating that the Chrome Enterprise Companion App
-// experiment should be enabled.
-// TODO(crbug.com/342180612): Remove once the application has fully launched.
-inline constexpr char kEnableCecaExperimentSwitch[] = "enable-ceca-experiment";
-
 // The "expect-elevated" switch indicates that updater setup should be running
 // elevated (at high integrity). This switch is needed to avoid running into a
 // loop trying (but failing repeatedly) to elevate updater setup when attempting
@@ -243,10 +258,12 @@ inline constexpr char kCmdLineExpectDeElevated[] = "expect-de-elevated";
 // is now trying to install the app per-user.
 inline constexpr char kCmdLinePrefersUser[] = "prefers-user";
 
-// Environment variables. Defined in the .cc file so that the updater branding
-// constants don't leak in this public header.
-extern const char kUsageStatsEnabled[];
-inline constexpr char kUsageStatsEnabledValueEnabled[] = "1";
+// The "installsource" switch allows an `installsource` that is reported in
+// pings to be user defined on the offline installer command line.
+inline constexpr char kInstallSourceSwitch[] = "installsource";
+
+// An experimental flag to use a WebView-based UI.
+inline constexpr char kWebViewUISwitch[] = "webviewui";
 
 // File system paths.
 //
@@ -261,20 +278,25 @@ inline constexpr char kUninstallScript[] = "uninstall.cmd";
 // Developer override keys.
 inline constexpr char kDevOverrideKeyUrl[] = "url";
 inline constexpr char kDevOverrideKeyCrashUploadUrl[] = "crash_upload_url";
-inline constexpr char kDevOverrideKeyDeviceManagementUrl[] =
-    "device_management_url";
 inline constexpr char kDevOverrideKeyAppLogoUrl[] = "app_logo_url";
+inline constexpr char kDevOverrideKeyEventLoggingUrl[] = "event_logging_url";
 inline constexpr char kDevOverrideKeyUseCUP[] = "use_cup";
 inline constexpr char kDevOverrideKeyInitialDelay[] = "initial_delay";
 inline constexpr char kDevOverrideKeyServerKeepAliveSeconds[] =
     "server_keep_alive";
 inline constexpr char kDevOverrideKeyCrxVerifierFormat[] =
     "crx_verifier_format";
+inline constexpr char kDevOverrideKeyCrxPublicKeyHash[] = "crx_public_key_hash";
+inline constexpr char kDevOverrideKeyMinumumEventLoggingCooldownSeconds[] =
+    "minimum_event_logging_cooldown_seconds";
+inline constexpr char kDevOverrideKeyEventLoggingPermissionProviderAppId[] =
+    "event_logging_permission_provider_app_id";
+#if BUILDFLAG(IS_MAC)
+inline constexpr char
+    kDevOverrideKeyEventLoggingPermissionProviderDirectoryName[] =
+        "event_logging_permission_provider_directory_name";
+#endif
 inline constexpr char kDevOverrideKeyDictPolicies[] = "dict_policies";
-
-// TODO(crbug.com/389965546): remove this once the checked-in old updater builds
-// recognize "dict_policies".
-inline constexpr char kDevOverrideKeyGroupPolicies[] = "group_policies";
 
 inline constexpr char kDevOverrideKeyOverinstallTimeout[] =
     "overinstall_timeout";
@@ -299,20 +321,27 @@ inline constexpr base::TimeDelta kWaitForSetupLock = base::Seconds(5);
 inline constexpr base::TimeDelta kDefaultLastCheckPeriod =
     base::Hours(4) + base::Minutes(30);
 
-#if BUILDFLAG(IS_WIN)
-// How often the installer progress from registry is sampled. This value may
-// be changed to provide a smoother progress experience (crbug.com/1067475).
-inline constexpr int kWaitForInstallerProgressSec = 1;
-#elif BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC)
 // How long to wait for launchd changes to be reported by launchctl.
 inline constexpr int kWaitForLaunchctlUpdateSec = 5;
 #endif  // BUILDFLAG(IS_MAC)
 
-#if BUILDFLAG(IS_MAC)
-// The user defaults suite name. Defined in the .cc file so that the updater
-// branding constants don't leak in this public header.
-extern const char kUserDefaultsSuiteName[];
-#endif  // BUILDFLAG(IS_MAC)
+// The minimum period between remote event logging transmissions. The server may
+// instruct the client to backoff for a longer period.
+inline constexpr base::TimeDelta kMinimumEventLoggingCooldown =
+    base::Minutes(15);
+
+// The minimum factor by which kDefaultLastCheckPeriod can be
+// multiplied to get the next check delay.
+inline constexpr double kUpdateCheckMinDelayFactor = 1.0;
+
+// The maximum factor by which kDefaultLastCheckPeriod can be
+// multiplied to get the next check delay.
+inline constexpr double kUpdateCheckMaxDelayFactor = 1.2;
+
+// Probability of applying kUpdateCheckMaxDelayFactor to the next
+// check delay.
+inline constexpr double kProbabilityOfIncreasedDelay = 0.1;
 
 // Install Errors.
 //
@@ -320,13 +349,8 @@ extern const char kUserDefaultsSuiteName[];
 // reported in such a way that their range does not conflict with the range of
 // generic errors defined by the metainstaller, the `update_client` module, or
 // Windows.
-#if BUILDFLAG(IS_WIN)
 inline constexpr int kCustomInstallErrorBase =
-    static_cast<int>(update_client::InstallError::CUSTOM_ERROR_BASE) + 74000;
-#else
-inline constexpr int kCustomInstallErrorBase =
-    static_cast<int>(update_client::InstallError::CUSTOM_ERROR_BASE);
-#endif
+    std::to_underlying(update_client::InstallError::CUSTOM_ERROR_BASE) + 74000;
 
 // Running the application installer failed.
 inline constexpr int kErrorApplicationInstallerFailed =
@@ -545,6 +569,12 @@ inline constexpr int kErrorNoObserverCompletionInfo = kUpdaterErrorBase + 82;
 // No apps to install.
 inline constexpr int kErrorNoApps = kUpdaterErrorBase + 83;
 
+// A path references the parent directory.
+inline constexpr int kErrorPathReferencesParent = kUpdaterErrorBase + 84;
+
+// The net-worker subprocess failed to drop root privileges.
+inline constexpr int kErrorFailedToDropPrivileges = kUpdaterErrorBase + 85;
+
 // Policy Management constants.
 // The maximum value allowed for policy AutoUpdateCheckPeriodMinutes.
 inline constexpr int kMaxAutoUpdateCheckPeriodMinutes = 43200;
@@ -577,6 +607,9 @@ inline constexpr bool kInstallPolicyDefault = kPolicyEnabled;
 inline constexpr bool kUpdatePolicyDefault = kPolicyEnabled;
 
 // Policy manager constants.
+// Policy source strings below are persisted to event history logs (see
+// //docs/updater/history_log.md) and serialized in GetPoliciesJson Mojo
+// responses. Changing the values is a backwards-incompatible change.
 inline constexpr char kSourceDMPolicyManager[] = "Device Management";
 inline constexpr char kSourceDefaultValuesPolicyManager[] = "Default";
 inline constexpr char kSourceDictValuesPolicyManager[] = "DictValuePolicy";
@@ -602,14 +635,12 @@ inline constexpr char kSourcePlatformPolicyManager[] = "not-defined";
 inline constexpr bool kCloudPolicyOverridesPlatformPolicyDefaultValue = true;
 #endif
 
-// Serializes updater installs. Defined in the .cc file so that the updater
-// branding constants don't leak in this public header.
-extern const char kSetupMutex[];
-
-inline constexpr int kUninstallPingReasonUninstalled = 0;
-inline constexpr int kUninstallPingReasonUserNotAnOwner = 1;
-inline constexpr int kUninstallPingReasonNoAppsRemain = 2;
-inline constexpr int kUninstallPingReasonNeverHadApps = 3;
+enum class UninstallPingReason {
+  kUninstalled = 0,
+  kUserNotAnOwner = 1,
+  kNoAppsRemain = 2,
+  kNeverHadApps = 3,
+};
 
 // The file downloaded to a temporary location could not be moved.
 inline constexpr int kErrorFailedToMoveDownloadedFile = 5;
@@ -652,6 +683,10 @@ inline constexpr char kInstallSourceTaggedMetainstaller[] = "taggedmi";
 inline constexpr char kInstallSourceOffline[] = "offline";
 inline constexpr char kInstallSourcePolicy[] = "policy";
 inline constexpr char kInstallSourceOnDemand[] = "ondemand";
+inline constexpr char kInstallSourceEnterpriseMsi[] = "enterprisemsi";
+
+inline constexpr int kRegistrationSuccess = 0;
+inline constexpr int kRegistrationError = 1;
 
 }  // namespace updater
 

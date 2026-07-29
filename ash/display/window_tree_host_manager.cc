@@ -4,6 +4,7 @@
 
 #include "ash/display/window_tree_host_manager.h"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -27,12 +28,13 @@
 #include "ash/system/status_area_widget.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/wm/window_util.h"
+#include "base/byte_size.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -59,7 +61,9 @@
 #include "ui/display/screen.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/display/util/display_util.h"
+#include "ui/gfx/font_render_params_linux.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
+#include "ui/views/widget/widget.h"
 #include "ui/wm/core/coordinate_conversion.h"
 #include "ui/wm/public/activation_client.h"
 
@@ -76,17 +80,19 @@ namespace {
 // This is initialized in the constructor, and then in CreatePrimaryHost().
 int64_t primary_display_id = -1;
 
-// The compositor memory limit when display size is larger than a threshold.
+// The compositor memory limit when display size is larger than
+// `kUICompositorMemoryLimitDisplaySizeThreshold`.
 constexpr int kUICompositorLargeDisplayMemoryLimitMB = 1024;
-// The compositor memory limit when both the display size and device memory
-// are greater than some thresholds.
-constexpr int kUICompositorLargeDisplayandRamMemoryLimitMB = 2048;
+// The compositor memory limit when the device memory is greater than
+// `kUICompositorMemoryLimitRamCapacityThreshold`.
+constexpr int kUICompositorLargeRamMemoryLimitMB = 2048;
 // The display size threshold, above which the larger memory limits are used.
 // Pixel size was chosen to trigger for 4K+ displays. See: crbug.com/1261776
 constexpr int kUICompositorMemoryLimitDisplaySizeThreshold = 3500;
-// The RAM capacity threshold in MB. When the device has a 4k+ display and
-// 16GB+ of memory, configure the compositor to use a higher memory limit.
-constexpr int kUICompositorMemoryLimitRamCapacityThreshold = 16 * 1024;
+// The RAM capacity threshold. When the device has 16GB+ of memory,
+// configure the compositor to use a higher memory limit.
+constexpr base::ByteSize kUICompositorMemoryLimitRamCapacityThreshold =
+    base::GiBU(16);
 
 // An UMA signal for the current effective resolution/dpi is sent at this rate.
 // This keeps track of the effective resolution/dpi most used on
@@ -188,7 +194,7 @@ void RepeatingEffectiveResolutionUMA(base::RepeatingTimer* timer,
   // Record the UMA only when this is an active user session and the
   // internal display is present.
   if (display::HasInternalDisplay() &&
-      display::Screen::GetScreen()->GetDisplayWithDisplayId(
+      display::Screen::Get()->GetDisplayWithDisplayId(
           display::Display::InternalDisplayId(), &internal_display) &&
       session_controller->IsActiveUserSessionStarted() &&
       session_controller->GetSessionState() ==
@@ -223,6 +229,19 @@ void RepeatingEffectiveResolutionUMA(base::RepeatingTimer* timer,
         FROM_HERE, kEffectiveResolutionRepeatingDelay,
         base::BindRepeating(&RepeatingEffectiveResolutionUMA,
                             nullptr /*timer=*/, false /*is_first_run=*/));
+  }
+}
+
+void PropagateFontRenderParamsChange(aura::Window* window) {
+  views::Widget* widget = views::Widget::GetWidgetForNativeView(window);
+  if (widget) {
+    float dsf = widget->GetLayer()->device_scale_factor();
+    // TODO(crbug.com/517630459): Use a more generic solution for updating font
+    // render params.
+    widget->DeviceScaleFactorChanged(dsf, dsf);
+  }
+  for (aura::Window* child : window->children()) {
+    PropagateFontRenderParamsChange(child);
   }
 }
 
@@ -352,7 +371,7 @@ void WindowTreeHostManager::Shutdown() {
   // DisplayManager outlives WindowTreeHostManager.
   Shell::Get()->display_manager()->set_delegate(nullptr);
 
-  int64_t primary_id = display::Screen::GetScreen()->GetPrimaryDisplay().id();
+  int64_t primary_id = display::Screen::Get()->GetPrimaryDisplay().id();
 
   // Delete non primary root window controllers first, then
   // delete the primary root window controller.
@@ -450,16 +469,6 @@ aura::Window::Windows WindowTreeHostManager::GetAllRootWindows() {
   return windows;
 }
 
-gfx::Insets WindowTreeHostManager::GetOverscanInsets(int64_t display_id) const {
-  return GetDisplayManager()->GetOverscanInsets(display_id);
-}
-
-void WindowTreeHostManager::SetOverscanInsets(
-    int64_t display_id,
-    const gfx::Insets& insets_in_dip) {
-  GetDisplayManager()->SetOverscanInsets(display_id, insets_in_dip);
-}
-
 std::vector<RootWindowController*>
 WindowTreeHostManager::GetAllRootWindowControllers() {
   std::vector<RootWindowController*> controllers;
@@ -474,104 +483,31 @@ WindowTreeHostManager::GetAllRootWindowControllers() {
 }
 
 void WindowTreeHostManager::UpdateMouseLocationAfterDisplayChange() {
-  // If the mouse is currently on a display in native location,
-  // use the same native location. Otherwise find the display closest
-  // to the current cursor location in screen coordinates.
-
-  gfx::Point point_in_screen =
-      display::Screen::GetScreen()->GetCursorScreenPoint();
-  gfx::Point target_location_in_native;
-  int64_t closest_distance_squared = -1;
-  display::DisplayManager* display_manager = GetDisplayManager();
-
-  aura::Window* dst_root_window = nullptr;
-  for (size_t i = 0; i < display_manager->GetNumDisplays(); ++i) {
-    const display::Display& display = display_manager->GetDisplayAt(i);
-    const display::ManagedDisplayInfo display_info =
-        display_manager->GetDisplayInfo(display.id());
-    aura::Window* root_window = GetRootWindowForDisplayId(display.id());
-    if (display_info.bounds_in_native().Contains(
-            cursor_location_in_native_coords_for_restore_)) {
-      dst_root_window = root_window;
-      target_location_in_native = cursor_location_in_native_coords_for_restore_;
-      break;
-    }
-    gfx::Point center = display.bounds().CenterPoint();
-    // Use the distance squared from the center of the display. This is not
-    // exactly "closest" display, but good enough to pick one
-    // appropriate (and there are at most two displays).
-    // We don't care about actual distance, only relative to other displays, so
-    // using the LengthSquared() is cheaper than Length().
-
-    int64_t distance_squared = (center - point_in_screen).LengthSquared();
-    if (closest_distance_squared < 0 ||
-        closest_distance_squared > distance_squared) {
-      ::wm::ConvertPointFromScreen(root_window, &center);
-      root_window->GetHost()->ConvertDIPToScreenInPixels(&center);
-      dst_root_window = root_window;
-      target_location_in_native = center;
-      closest_distance_squared = distance_squared;
-    }
-  }
-
-  gfx::Point target_location_in_root = target_location_in_native;
-  dst_root_window->GetHost()->ConvertScreenInPixelsToDIP(
-      &target_location_in_root);
-
-  gfx::Point target_location_in_screen = target_location_in_root;
-  ::wm::ConvertPointToScreen(dst_root_window, &target_location_in_screen);
-  const display::Display& target_display =
-      display_manager->FindDisplayContainingPoint(target_location_in_screen);
-  // If the original location isn't on any of new display, let ozone move
-  // the cursor.
-  if (!target_display.is_valid())
-    return;
-  int64_t target_display_id = target_display.id();
-
-  // Do not move the cursor if the cursor's location did not change. This avoids
-  // moving (and showing) the cursor:
-  // - At startup.
-  // - When the device is rotated in tablet mode.
-  // |cursor_display_id_for_restore_| is checked to ensure that the cursor is
-  // moved when the cursor's native position does not change but the display
-  // that it is on has changed. This occurs when swapping the primary display.
-  if (target_location_in_native !=
-          cursor_location_in_native_coords_for_restore_ ||
-      target_display_id != cursor_display_id_for_restore_) {
-    if (Shell::Get()->cursor_manager()) {
-      if (Shell::Get()->cursor_manager()->IsCursorVisible()) {
-        dst_root_window->MoveCursorTo(target_location_in_root);
-      } else if (target_display_id != cursor_display_id_for_restore_) {
-        Shell::Get()->cursor_manager()->SetDisplay(target_display);
+  auto* screen = display::Screen::Get();
+  auto* cursor_manager = Shell::Get()->cursor_manager();
+  auto display_id = cursor_manager->GetDisplay().id();
+  display::Display display;
+  if (screen->GetDisplayWithDisplayId(display_id, &display)) {
+    cursor_manager->SetDisplay(display);
+    // DRM cursor controls how cursor position should be updated on the device
+    // when the display configuration changes.  The following code is a best
+    // effort to emulate DRM's cursor implementation, but not 100% equivalent.
+    if (!base::SysInfo::IsRunningOnChromeOS()) {
+      gfx::Point point_in_screen =
+          display::Screen::Get()->GetCursorScreenPoint();
+      if (!display.bounds().Contains(point_in_screen)) {
+        aura::Window* root_window =
+            ash::Shell::GetRootWindowForDisplayId(display_id);
+        CHECK(root_window);
+        // The mouse location is outside of the current display, and the
+        // information about the logical location in that display is already
+        // lost after relayout. Just move the cursor to center point instead in
+        // linux-chromeos environment.
+        gfx::Point center = root_window->bounds().CenterPoint();
+        aura::WindowTreeHost* host = root_window->GetHost();
+        host->MoveCursorToLocationInDIP(center);
       }
     }
-    return;
-  }
-
-  // Convert the screen coords restore location to native, rather than comparing
-  // screen locations directly. Converting back and forth causes floating point
-  // values to be floored at each step, so the conversions must be performed
-  // equally.
-  gfx::Point restore_location_in_native =
-      cursor_location_in_screen_coords_for_restore_;
-  ::wm::ConvertPointFromScreen(dst_root_window, &restore_location_in_native);
-  dst_root_window->GetHost()->ConvertDIPToScreenInPixels(
-      &restore_location_in_native);
-
-  if (target_location_in_native != restore_location_in_native) {
-    // The cursor's native position did not change but its screen position did
-    // change. This occurs when the scale factor or the rotation of the display
-    // that the cursor is on changes.
-    // TODO: conditional should not be necessary. http://crbug.com/631103.
-    if (Shell::Get()->cursor_manager())
-      Shell::Get()->cursor_manager()->SetDisplay(target_display);
-
-    // Update the cursor's root location. This ends up dispatching a synthetic
-    // mouse move. The synthetic mouse move updates the composited cursor's
-    // location and hover effects. Synthetic mouse moves do not affect the
-    // cursor's visibility.
-    dst_root_window->GetHost()->dispatcher()->OnCursorMovedToRootLocation(
-        target_location_in_root);
   }
 }
 
@@ -628,8 +564,8 @@ void WindowTreeHostManager::CreateDisplay(const display::Display& display) {
     }
 
     // |to_delete| has already been removed from |window_tree_hosts_|.
-    DCHECK(!base::Contains(window_tree_hosts_, to_delete,
-                           &WindowTreeHostMap::value_type::second));
+    DCHECK(!std::ranges::contains(window_tree_hosts_, to_delete,
+                                  &WindowTreeHostMap::value_type::second));
 
     DeleteHost(to_delete);
     DCHECK(!primary_tree_host_for_replace_);
@@ -834,7 +770,7 @@ void WindowTreeHostManager::UpdateHostOfDisplayProviders() {
 
 void WindowTreeHostManager::OnHostResized(aura::WindowTreeHost* host) {
   display::Display display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(host->window());
+      display::Screen::Get()->GetDisplayNearestWindow(host->window());
 
   display::DisplayManager* display_manager = GetDisplayManager();
   if (display_manager->UpdateDisplayBounds(display.id(),
@@ -893,7 +829,7 @@ void WindowTreeHostManager::PreDisplayConfigurationChange(bool clear_focus) {
   scoped_pause_ = std::make_unique<aura::WindowOcclusionTracker::ScopedPause>();
 
   focus_activation_store_->Store(clear_focus);
-  display::Screen* screen = display::Screen::GetScreen();
+  display::Screen* screen = display::Screen::Get();
   gfx::Point point_in_screen = screen->GetCursorScreenPoint();
   cursor_location_in_screen_coords_for_restore_ = point_in_screen;
 
@@ -936,7 +872,7 @@ void WindowTreeHostManager::SetPrimaryDisplayId(int64_t id) {
     return;
 
   display::Display old_primary_display =
-      display::Screen::GetScreen()->GetPrimaryDisplay();
+      display::Screen::Get()->GetPrimaryDisplay();
   const int64_t old_primary_id = old_primary_display.id();
   DCHECK_EQ(old_primary_id, primary_display_id);
 
@@ -1007,6 +943,16 @@ void WindowTreeHostManager::PostDisplayConfigurationChange() {
 
   // Unpause occlusion tracking.
   scoped_pause_.reset();
+
+  // Notify all widgets only when font render parameters actually change.
+  const bool current_subpixel_rendering_enabled =
+      gfx::GetFontRenderParamsSubpixelRenderingEnabled();
+  if (subpixel_rendering_enabled_ != current_subpixel_rendering_enabled) {
+    subpixel_rendering_enabled_ = current_subpixel_rendering_enabled;
+    for (aura::Window* root : GetAllRootWindows()) {
+      PropagateFontRenderParamsChange(root);
+    }
+  }
 }
 
 ui::EventDispatchDetails WindowTreeHostManager::DispatchKeyEventPostIME(
@@ -1062,10 +1008,13 @@ AshWindowTreeHost* WindowTreeHostManager::AddWindowTreeHostForDisplay(
                display.GetSizeInPixel().height()) >
       kUICompositorMemoryLimitDisplaySizeThreshold) {
     params_with_bounds.compositor_memory_limit_mb =
-        base::SysInfo::AmountOfPhysicalMemoryMB() >=
-                kUICompositorMemoryLimitRamCapacityThreshold
-            ? kUICompositorLargeDisplayandRamMemoryLimitMB
-            : kUICompositorLargeDisplayMemoryLimitMB;
+        kUICompositorLargeDisplayMemoryLimitMB;
+  }
+
+  if (base::SysInfo::AmountOfTotalPhysicalMemory() >=
+      kUICompositorMemoryLimitRamCapacityThreshold) {
+    params_with_bounds.compositor_memory_limit_mb =
+        kUICompositorLargeRamMemoryLimitMB;
   }
 
   // The AshWindowTreeHost ends up owned by the RootWindowControllers created

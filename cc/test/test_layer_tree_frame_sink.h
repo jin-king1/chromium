@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "cc/trees/layer_tree_frame_sink.h"
 #include "components/viz/common/display/renderer_settings.h"
@@ -83,6 +83,7 @@ class TestLayerTreeFrameSink : public LayerTreeFrameSink,
   void SetDisplayColorSpace(const gfx::ColorSpace& output_color_space);
 
   viz::Display* display() const { return display_.get(); }
+  viz::CompositorFrameSinkSupport* support() const;
   void UnregisterBeginFrameSource();
 
   // LayerTreeFrameSink implementation.
@@ -95,13 +96,13 @@ class TestLayerTreeFrameSink : public LayerTreeFrameSink,
                              bool hit_test_data_changed) override;
   void DidNotProduceFrame(const viz::BeginFrameAck& ack,
                           FrameSkippedReason reason) override;
+  void NotifyNewLocalSurfaceIdExpectedWhilePaused() override {}
 
   // mojom::CompositorFrameSinkClient implementation.
   void DidReceiveCompositorFrameAck(
       std::vector<viz::ReturnedResource> resources) override;
   void OnBeginFrame(const viz::BeginFrameArgs& args,
                     const viz::FrameTimingDetailsMap& timing_details,
-                    bool frame_ack,
                     std::vector<viz::ReturnedResource> resources) override;
   void ReclaimResources(std::vector<viz::ReturnedResource> resources) override;
   void OnBeginFramePausedChanged(bool paused) override;
@@ -116,14 +117,10 @@ class TestLayerTreeFrameSink : public LayerTreeFrameSink,
       viz::AggregatedRenderPassList* render_passes) override;
   void DisplayDidDrawAndSwap() override;
   void DisplayDidReceiveCALayerParams(
-      const gfx::CALayerParams& ca_layer_params) override;
+      gfx::CALayerParams ca_layer_params) override;
   void DisplayDidCompleteSwapWithSize(const gfx::Size& pixel_size) override;
   void DisplayAddChildWindowToBrowser(gpu::SurfaceHandle child_window) override;
   void SetWideColorEnabled(bool enabled) override {}
-  void SetPreferredFrameInterval(base::TimeDelta interval) override {}
-  base::TimeDelta GetPreferredFrameIntervalForFrameSinkId(
-      const viz::FrameSinkId& id,
-      viz::mojom::CompositorFrameSinkType* type) override;
 
   gpu::SharedImageInterface* GetSharedImageInterface() {
     return shared_image_interface_provider_->GetSharedImageInterface();
@@ -143,10 +140,7 @@ class TestLayerTreeFrameSink : public LayerTreeFrameSink,
 
   viz::FrameSinkId frame_sink_id_;
   std::unique_ptr<viz::FrameSinkManagerImpl> frame_sink_manager_;
-  std::unique_ptr<viz::ParentLocalSurfaceIdAllocator>
-      parent_local_surface_id_allocator_;
-  gfx::Size display_size_;
-  float device_scale_factor_ = 0;
+  viz::LocalSurfaceId local_surface_id_;
   gfx::DisplayColorSpaces display_color_spaces_;
 
   // Uses surface_manager_.

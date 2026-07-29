@@ -5,11 +5,15 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_CREDIT_CARD_OTP_AUTHENTICATOR_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_CREDIT_CARD_OTP_AUTHENTICATOR_H_
 
+#include <stdint.h>
+
+#include <memory>
+#include <optional>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
-#include "base/strings/utf_string_conversions.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/payments/otp_unmask_delegate.h"
@@ -91,7 +95,7 @@ class CreditCardOtpAuthenticator : public OtpUnmaskDelegate {
   // |SendSelectChallengeOptionRequest()| to send the selected challenge option
   // to server.
   virtual void OnChallengeOptionSelected(
-      const CreditCard* card,
+      const CreditCard& card,
       const CardUnmaskChallengeOption& selected_challenge_option,
       base::WeakPtr<Requester> requester,
       const std::string& context_token,
@@ -140,8 +144,16 @@ class CreditCardOtpAuthenticator : public OtpUnmaskDelegate {
   // response's callback function is |OnDidGetRealPan()|.
   void SendUnmaskCardRequest();
 
+  payments::PaymentsAutofillClient& GetPaymentsAutofillClient() {
+    return *autofill_client_->GetPaymentsAutofillClient();
+  }
+
+  payments::PaymentsNetworkInterface& GetPaymentsNetworkInterface() {
+    return *GetPaymentsAutofillClient().GetPaymentsNetworkInterface();
+  }
+
   // Card being unmasked.
-  raw_ptr<const CreditCard> card_;
+  CreditCard card_;
 
   // User-entered OTP value.
   std::u16string otp_;

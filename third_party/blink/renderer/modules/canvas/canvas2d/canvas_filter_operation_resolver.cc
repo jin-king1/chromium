@@ -49,6 +49,7 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/size_f.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace blink {
@@ -111,7 +112,7 @@ std::optional<KernelMatrix> GetKernelMatrix(const Dictionary& dict,
       return std::nullopt;
     }
 
-    result.values.AppendVector(row);
+    result.values.append_range(row);
   }
 
   return result;
@@ -189,7 +190,7 @@ ComponentTransferFunction GetComponentTransferFunction(
   std::optional<Vector<float>> table_values =
       transfer_dict.Get<IDLSequence<IDLFloat>>("tableValues", exception_state);
   if (table_values.has_value()) {
-    result.table_values.AppendVector(*table_values);
+    result.table_values.append_range(*table_values);
   }
 
   return result;
@@ -303,7 +304,7 @@ DropShadowFilterOperation* ResolveDropShadow(
   // The shadow blur can have different standard deviations in the X and Y
   // directions. `stdDeviation` can be specified as either a single number
   // (same X & Y blur) or a vector of two numbers (different X & Y blurs).
-  gfx::PointF blur = {2.0f, 2.0f};
+  gfx::SizeF blur = {2.0f, 2.0f};
   if (dict.HasProperty("stdDeviation", no_throw)) {
     base::expected<gfx::PointF, String> std_deviation =
         ResolveFloatOrVec2f("stdDeviation", dict, exception_state);
@@ -313,8 +314,7 @@ DropShadowFilterOperation* ResolveDropShadow(
                          std_deviation.error().Utf8().c_str()));
       return nullptr;
     }
-    blur = *std_deviation;
-    blur.SetToMax({0.0f, 0.0f});
+    blur = gfx::SizeF(std_deviation->x(), std_deviation->y());
   }
 
   StyleColor flood_color =
@@ -442,7 +442,7 @@ FilterOperations CanvasFilterOperationResolver::CreateFilterOperationsFromList(
     ExecutionContext& execution_context,
     ExceptionState& exception_state) {
   FilterOperations operations;
-  for (auto filter : filters) {
+  for (const auto& filter : filters) {
     Dictionary filter_dict = Dictionary(filter);
     std::optional<String> name =
         filter_dict.Get<IDLString>("name", exception_state);
@@ -501,9 +501,8 @@ FilterOperations CanvasFilterOperationResolver::CreateFilterOperationsFromList(
         const String& message =
             (!name.has_value())
                 ? "Canvas filter require key 'name' to specify filter type."
-                : String::Format(
-                      "\"%s\" is not among supported canvas filter types.",
-                      name->Utf8().c_str());
+                : StrCat({"\"", *name,
+                          "\" is not among supported canvas filter types."});
         execution_context.AddConsoleMessage(
             MakeGarbageCollected<ConsoleMessage>(
                 mojom::blink::ConsoleMessageSource::kRendering,
@@ -538,12 +537,19 @@ CanvasFilterOperationResolver::CreateFilterOperationsFromCSSFilter(
   if (!css_value || css_value->IsCSSWideKeyword()) {
     return operations;
   }
-  // The style resolution for fonts is not available in frame-less documents.
+  // The style resolution is not available in frame-less documents.
   if (style_resolution_host != nullptr &&
       style_resolution_host->GetDocument().GetFrame() != nullptr) {
-    return style_resolution_host->GetDocument()
-        .GetStyleResolver()
-        .ComputeFilterOperations(style_resolution_host, *font, *css_value);
+    Document& document = style_resolution_host->GetDocument();
+
+    // Update the filter value to the proper base URL if needed.
+    if (css_value->MayContainUrl()) {
+      document.UpdateStyleAndLayout(DocumentUpdateReason::kCanvas);
+      css_value->ReResolveUrl(document);
+    }
+
+    return document.GetStyleResolver().ComputeFilterOperations(
+        style_resolution_host, *font, *css_value);
   } else {
     return FilterOperationResolver::CreateOffscreenFilterOperations(*css_value,
                                                                     font);

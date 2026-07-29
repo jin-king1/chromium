@@ -15,12 +15,12 @@
 namespace content_settings {
 
 RuleMetaData::RuleMetaData() = default;
-
+RuleMetaData::RuleMetaData(RuleMetaData&& other) = default;
 RuleMetaData::RuleMetaData(const RuleMetaData& other) = default;
 
-RuleMetaData::RuleMetaData(RuleMetaData&& other) = default;
-
-RuleMetaData& RuleMetaData::operator=(const RuleMetaData& other) = default;
+RuleMetaData RuleMetaData::Clone() const {
+  return RuleMetaData(*this);
+}
 
 RuleMetaData& RuleMetaData::operator=(RuleMetaData&& other) = default;
 

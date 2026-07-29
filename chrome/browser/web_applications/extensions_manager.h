@@ -6,10 +6,11 @@
 #define CHROME_BROWSER_WEB_APPLICATIONS_EXTENSIONS_MANAGER_H_
 
 #include <memory>
+#include <string>
 #include <unordered_set>
 
 #include "base/functional/callback_forward.h"
-#include "base/memory/raw_ptr.h"
+#include "chrome/browser/web_applications/mojom/user_display_mode.mojom-forward.h"
 
 class Profile;
 class KeyedServiceBaseFactory;
@@ -20,42 +21,69 @@ class FilePath;
 
 namespace extensions {
 class Extension;
-class ExtensionRegistry;
 class ExtensionService;
 }  // namespace extensions
 
 namespace web_app {
 
+struct ShortcutInfo;
+
 class ExtensionInstallGate {
  public:
-  virtual ~ExtensionInstallGate();
+  virtual ~ExtensionInstallGate() = default;
 };
 
+// This class wraps the extension system in a fakeable dependency, so our system
+// doesn't have to directly depend on the extensions system (so no circular
+// dependencies), and tests can fake this functionality without needing to use
+// the whole Extensions system.
+//
+// IMPORTANT: All WebAppProvider code that depends on the extensions system MUST
+// go through this interface instead of calling `extensions::` KeyedService
+// APIs directly. This ensures that test fakes (`FakeExtensionsManager`) are
+// properly utilized and tests do not hang waiting for an uninitialized global
+// `ExtensionSystem`.
+//
+// TODO(http://crbug.com/454081171): Make tests for the implementation, and move
+// all remaining extensions functionality the WebAppProvider system uses to this
+// manager.
 class ExtensionsManager {
  public:
-  explicit ExtensionsManager(Profile* profile);
-  virtual ~ExtensionsManager();
+  // Creates the 'real' implementation of this system for the given profile.
+  static std::unique_ptr<ExtensionsManager> CreateForProfile(Profile*);
+  static KeyedServiceBaseFactory* GetExtensionSystemSharedFactory();
 
-  virtual std::unordered_set<base::FilePath> GetIsolatedStoragePaths();
+  virtual ~ExtensionsManager() = default;
 
-  // Returns ExtensionsPref::kStorageGarbageCollect which indicates possibly
-  // deleted Storage Partitions on disk requiring garbage collection.
-  // TODO(crbug.com/40922689): Delete ExtensionsPref::kStorageGarbageCollect.
-  virtual bool ShouldGarbageCollectStoragePartitions();
+  // `on_ready` will be called when the extensions system is ready.
+  virtual void OnExtensionSystemReady(base::OnceClosure on_ready) = 0;
 
-  // Sets ExtensionsPref::kStorageGarbageCollect to false.
-  virtual void ResetStorageGarbageCollectPref(base::OnceClosure callback);
+  // Returns the isolated storage paths from the extensions system.
+  virtual std::unordered_set<base::FilePath> GetIsolatedStoragePaths() = 0;
 
   // Creates an ExtensionInstallerGate which registers itself on
   // ExtensionService to delay Extension installs.
   virtual std::unique_ptr<ExtensionInstallGate>
-  RegisterGarbageCollectionInstallGate();
+  RegisterGarbageCollectionInstallGate() = 0;
 
-  static KeyedServiceBaseFactory* GetExtensionSystemSharedFactory();
+  virtual bool IsExtensionBlockedByPolicy(const std::string& extension_id) = 0;
+  virtual bool IsExtensionInstalled(const std::string& extension_id) = 0;
+  virtual bool IsExtensionForceInstalled(const std::string& extension_id,
+                                         std::u16string* reason) = 0;
+  virtual bool IsExtensionDefaultInstalled(const std::string& extension_id) = 0;
+  virtual bool IsExternalExtensionUninstalled(
+      const std::string& extension_id) = 0;
+  virtual bool DidPreinstalledAppsPerformNewInstallation() = 0;
+  virtual bool IsPreinstalledExtensionAppId(const std::string& app_id) = 0;
 
- private:
-  raw_ptr<Profile> profile_ = nullptr;
-  raw_ptr<extensions::ExtensionRegistry> registry_ = nullptr;
+  virtual void CopyAppSortingLayout(const std::string& from_extension_id,
+                                    const std::string& to_web_app_id) = 0;
+  virtual mojom::UserDisplayMode GetExtensionUserDisplayMode(
+      const std::string& extension_id) = 0;
+  virtual std::unique_ptr<ShortcutInfo> GetExtensionShortcutInfo(
+      const std::string& extension_id) = 0;
+  virtual void WaitForExtensionShortcutsDeleted(const std::string& extension_id,
+                                                base::OnceClosure callback) = 0;
 };
 
 }  // namespace web_app

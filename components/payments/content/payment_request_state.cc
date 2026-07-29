@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
+#include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -27,21 +27,26 @@
 #include "components/autofill/core/browser/geo/autofill_country.h"
 #include "components/payments/content/content_payment_request_delegate.h"
 #include "components/payments/content/payment_app.h"
-#include "components/payments/content/payment_manifest_web_data_service.h"
 #include "components/payments/content/payment_response_helper.h"
 #include "components/payments/content/service_worker_payment_app.h"
+#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/error_strings.h"
 #include "components/payments/core/features.h"
 #include "components/payments/core/method_strings.h"
+#include "components/payments/core/payment_prefs.h"
 #include "components/payments/core/payment_request_data_util.h"
 #include "components/payments/core/payments_experimental_features.h"
 #include "components/webauthn/core/browser/internal_authenticator.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/content_switches.h"
 
 namespace payments {
 namespace {
+
+constexpr char kWebDriver[] = "webdriver";
 
 // Invokes the |callback| with |status|.
 void CallStatusCallback(PaymentRequestState::StatusCallback callback,
@@ -111,6 +116,10 @@ void PaymentRequestState::ShowProcessingSpinner() {
   GetPaymentRequestDelegate()->ShowProcessingSpinner();
 }
 
+void PaymentRequestState::ShowLoadingView() {
+  GetPaymentRequestDelegate()->ShowLoadingView();
+}
+
 base::WeakPtr<PaymentRequestSpec> PaymentRequestState::GetSpec() const {
   return spec_;
 }
@@ -155,13 +164,18 @@ PaymentRequestState::CreateInternalAuthenticator() const {
   return GetPaymentRequestDelegate()->CreateInternalAuthenticator();
 }
 
-scoped_refptr<PaymentManifestWebDataService>
-PaymentRequestState::GetPaymentManifestWebDataService() const {
-  return GetPaymentRequestDelegate()->GetPaymentManifestWebDataService();
+scoped_refptr<WebPaymentsWebDataService>
+PaymentRequestState::GetWebPaymentsWebDataService() const {
+  return GetPaymentRequestDelegate()->GetWebPaymentsWebDataService();
 }
 
 bool PaymentRequestState::IsOffTheRecord() const {
   return GetPaymentRequestDelegate()->IsOffTheRecord();
+}
+
+bool PaymentRequestState::PrefsCanMakePayment() const {
+  return GetPaymentRequestDelegate()->GetPrefService()->GetBoolean(
+      kCanMakePaymentEnabled);
 }
 
 void PaymentRequestState::OnPaymentAppCreated(std::unique_ptr<PaymentApp> app) {
@@ -234,15 +248,6 @@ void PaymentRequestState::SetOptOutOffered() {
     journey_logger_->SetOptOutOffered();
 }
 
-std::optional<base::UnguessableToken>
-PaymentRequestState::GetChromeOSTWAInstanceId() const {
-  if (!payment_request_delegate_) {
-    return std::nullopt;
-  }
-
-  return payment_request_delegate_->GetChromeOSTWAInstanceId();
-}
-
 void PaymentRequestState::OnPaymentResponseReady(
     mojom::PaymentResponsePtr payment_response) {
   if (!delegate_)
@@ -252,11 +257,12 @@ void PaymentRequestState::OnPaymentResponseReady(
 }
 
 void PaymentRequestState::OnPaymentResponseError(
+    mojom::PaymentEventResponseType error,
     const std::string& error_message) {
   if (!delegate_)
     return;
 
-  delegate_->OnPaymentResponseError(error_message);
+  delegate_->OnPaymentResponseError(error, error_message);
 }
 
 void PaymentRequestState::OnSpecUpdated() {
@@ -344,8 +350,8 @@ void PaymentRequestState::CheckRequestedMethodsSupported(
 
   if (!are_requested_methods_supported_ &&
       get_all_payment_apps_error_.empty() &&
-      base::Contains(spec_->payment_method_identifiers_set(),
-                     methods::kGooglePlayBilling) &&
+      spec_->payment_method_identifiers_set().contains(
+          methods::kGooglePlayBilling) &&
       !IsInTwa()) {
     get_all_payment_apps_error_ = errors::kAppStoreMethodOnlySupportedInTwa;
   }
@@ -353,12 +359,6 @@ void PaymentRequestState::CheckRequestedMethodsSupported(
   std::move(callback).Run(are_requested_methods_supported_,
                           get_all_payment_apps_error_,
                           get_all_payment_apps_error_reason_);
-}
-
-std::string PaymentRequestState::GetAuthenticatedEmail() const {
-  return payment_request_delegate_
-             ? payment_request_delegate_->GetAuthenticatedEmail()
-             : std::string();
 }
 
 void PaymentRequestState::AddObserver(Observer* observer) {
@@ -518,11 +518,6 @@ autofill::PersonalDataManager* PaymentRequestState::GetPersonalDataManager() {
   return personal_data_manager_;
 }
 
-autofill::RegionDataLoader* PaymentRequestState::GetRegionDataLoader() {
-  return payment_request_delegate_
-             ? payment_request_delegate_->GetRegionDataLoader()
-             : nullptr;
-}
 
 bool PaymentRequestState::IsPaymentAppInvoked() const {
   return !!response_helper_;
@@ -584,6 +579,11 @@ base::WeakPtr<PaymentRequestState> PaymentRequestState::AsWeakPtr() {
 void PaymentRequestState::PopulateProfileCache() {
   std::vector<const autofill::AutofillProfile*> profiles =
       personal_data_manager_->address_data_manager().GetProfilesToSuggest();
+
+  // Remove home and work profiles since they are non-editable.
+  std::erase_if(profiles, [](const autofill::AutofillProfile* profile) {
+    return profile->IsHomeAndWorkProfile();
+  });
 
   std::vector<raw_ptr<autofill::AutofillProfile, VectorExperimental>>
       raw_profiles_for_filtering;
@@ -724,6 +724,32 @@ bool PaymentRequestState::GetCanMakePaymentValue() const {
 
 bool PaymentRequestState::GetHasEnrolledInstrumentValue() const {
   return has_enrolled_instrument_ || can_make_payment_even_without_apps_;
+}
+
+bool PaymentRequestState::user_interaction_in_web_payment_app() const {
+  // Bypass user interaction check in Chrome/Web driver testing environment by
+  // always returning true. These flags are set by chrome driver launcher:
+  // chrome/test/chromedriver/chrome_launcher.cc
+  // TODO(b/525805587): Investigate if user activation can be blessed in the
+  // browser tests, instead of setting flags in the command line.
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(switches::kEnableAutomation) ||
+      command_line->GetSwitchValueASCII(switches::kTestType) == kWebDriver) {
+    return true;
+  }
+  return user_interaction_in_web_payment_app_;
+}
+
+void PaymentRequestState::set_user_interaction_in_web_payment_app(
+    bool user_interaction) {
+  user_interaction_in_web_payment_app_ = user_interaction;
+  if (user_interaction_in_web_payment_app_ && response_helper_) {
+    response_helper_->OnUserInteractionCaptured();
+  }
+}
+
+bool PaymentRequestState::WasPaymentHandlerWindowInteractedWith() const {
+  return user_interaction_in_web_payment_app();
 }
 
 }  // namespace payments

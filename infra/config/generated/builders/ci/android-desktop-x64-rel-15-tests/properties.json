@@ -10,15 +10,17 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-android-desktop-archive",
               "builder_group": "chromium.android.desktop",
               "execution_mode": "COMPILE_AND_TEST",
               "legacy_android_config": {
-                "config": "x64_builder_mb"
+                "config": "base_config"
               },
               "legacy_chromium_config": {
+                "apply_configs": [
+                  "mb"
+                ],
                 "build_config": "Release",
-                "config": "x64_builder_mb",
+                "config": "main_builder",
                 "target_arch": "intel",
                 "target_bits": 64,
                 "target_platform": "android"
@@ -38,15 +40,17 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-android-desktop-archive",
               "builder_group": "chromium.android.desktop",
               "execution_mode": "TEST",
               "legacy_android_config": {
-                "config": "x64_builder_mb"
+                "config": "base_config"
               },
               "legacy_chromium_config": {
+                "apply_configs": [
+                  "mb"
+                ],
                 "build_config": "Release",
-                "config": "x64_builder_mb",
+                "config": "main_builder",
                 "target_arch": "intel",
                 "target_bits": 64,
                 "target_platform": "android"
@@ -75,15 +79,13 @@
       ],
       "mirroring_builder_group_and_names": [
         {
-          "builder": "android-desktop-15-x64-rel",
-          "group": "tryserver.chromium.android"
-        },
-        {
           "builder": "android-desktop-x64-rel",
           "group": "tryserver.chromium.android"
         }
       ],
-      "targets_spec_directory": "src/infra/config/generated/builders/ci/android-desktop-x64-rel-15-tests/targets"
+      "retry_failed_shards": true,
+      "retry_invalid_shards": true,
+      "targets_spec_directory": "infra/config/generated/builders/ci/android-desktop-x64-rel-15-tests/targets"
     }
   },
   "$recipe_engine/resultdb/test_presentation": {

@@ -42,6 +42,7 @@ bool SupportsInvalidation(CSSSelector::MatchType match) {
 bool SupportsInvalidation(CSSSelector::PseudoType type) {
   switch (type) {
     case CSSSelector::kPseudoEmpty:
+    case CSSSelector::kPseudoAnimatedImage:
     case CSSSelector::kPseudoFirstChild:
     case CSSSelector::kPseudoFirstOfType:
     case CSSSelector::kPseudoLastChild:
@@ -56,6 +57,7 @@ bool SupportsInvalidation(CSSSelector::PseudoType type) {
     case CSSSelector::kPseudoState:
     case CSSSelector::kPseudoLink:
     case CSSSelector::kPseudoVisited:
+    case CSSSelector::kPseudoNavSource:
     case CSSSelector::kPseudoAny:
     case CSSSelector::kPseudoWebkitAnyLink:
     case CSSSelector::kPseudoAnyLink:
@@ -69,8 +71,10 @@ bool SupportsInvalidation(CSSSelector::PseudoType type) {
     case CSSSelector::kPseudoFocusVisible:
     case CSSSelector::kPseudoFocusWithin:
     case CSSSelector::kPseudoActive:
+    case CSSSelector::kPseudoActiveOption:
     case CSSSelector::kPseudoChecked:
     case CSSSelector::kPseudoEnabled:
+    case CSSSelector::kPseudoFiltered:
     case CSSSelector::kPseudoFullPageMedia:
     case CSSSelector::kPseudoDefault:
     case CSSSelector::kPseudoDisabled:
@@ -86,20 +90,26 @@ bool SupportsInvalidation(CSSSelector::PseudoType type) {
     case CSSSelector::kPseudoIndeterminate:
     case CSSSelector::kPseudoTarget:
     case CSSSelector::kPseudoTargetCurrent:
+    case CSSSelector::kPseudoTargetBefore:
+    case CSSSelector::kPseudoTargetAfter:
     case CSSSelector::kPseudoCurrent:
     case CSSSelector::kPseudoCheckMark:
     case CSSSelector::kPseudoBefore:
     case CSSSelector::kPseudoAfter:
+    case CSSSelector::kPseudoInterestButton:
+    case CSSSelector::kPseudoExpandIcon:
     case CSSSelector::kPseudoPickerIcon:
     case CSSSelector::kPseudoMarker:
     case CSSSelector::kPseudoModal:
-    case CSSSelector::kPseudoSelectorFragmentAnchor:
     case CSSSelector::kPseudoBackdrop:
     case CSSSelector::kPseudoLang:
     case CSSSelector::kPseudoDir:
     case CSSSelector::kPseudoNot:
+    case CSSSelector::kPseudoOverscrollAreaParent:
+    case CSSSelector::kPseudoOverscrollBackdrop:
     case CSSSelector::kPseudoPlaceholder:
     case CSSSelector::kPseudoDetailsContent:
+    case CSSSelector::kPseudoPermissionIcon:
     case CSSSelector::kPseudoFileSelectorButton:
     case CSSSelector::kPseudoResizer:
     case CSSSelector::kPseudoRoot:
@@ -129,12 +139,8 @@ bool SupportsInvalidation(CSSSelector::PseudoType type) {
     case CSSSelector::kPseudoFullScreen:
     case CSSSelector::kPseudoFullScreenAncestor:
     case CSSSelector::kPseudoFullscreen:
-    case CSSSelector::kPseudoPaused:
-    case CSSSelector::kPseudoPermissionElementInvalidStyle:
-    case CSSSelector::kPseudoPermissionElementOccluded:
     case CSSSelector::kPseudoPermissionGranted:
     case CSSSelector::kPseudoPictureInPicture:
-    case CSSSelector::kPseudoPlaying:
     case CSSSelector::kPseudoInRange:
     case CSSSelector::kPseudoOutOfRange:
     case CSSSelector::kPseudoWebKitCustomElement:
@@ -151,11 +157,18 @@ bool SupportsInvalidation(CSSSelector::PseudoType type) {
     case CSSSelector::kPseudoMultiSelectFocus:
     case CSSSelector::kPseudoHostHasNonAutoAppearance:
     case CSSSelector::kPseudoOpen:
+    case CSSSelector::kPseudoOverscrollOpen:
     case CSSSelector::kPseudoDialogInTopLayer:
     case CSSSelector::kPseudoPicker:
+    case CSSSelector::kPseudoSelectListbox:
     case CSSSelector::kPseudoPopoverInTopLayer:
     case CSSSelector::kPseudoPopoverOpen:
+    case CSSSelector::kPseudoMenulistPopoverWithMenubarAnchor:
+    case CSSSelector::kPseudoMenulistPopoverWithMenulistAnchor:
+    case CSSSelector::kPseudoSelectContainsInput:
+    case CSSSelector::kPseudoSelectHasSlottedButton:
     case CSSSelector::kPseudoSlotted:
+    case CSSSelector::kPseudoUnbounded:
     case CSSSelector::kPseudoVideoPersistent:
     case CSSSelector::kPseudoVideoPersistentAncestor:
     case CSSSelector::kPseudoXrOverlay:
@@ -171,13 +184,26 @@ bool SupportsInvalidation(CSSSelector::PseudoType type) {
     case CSSSelector::kPseudoUnparsed:  // Never invalidates.
     case CSSSelector::kPseudoViewTransition:
     case CSSSelector::kPseudoViewTransitionGroup:
+    case CSSSelector::kPseudoViewTransitionGroupChildren:
     case CSSSelector::kPseudoViewTransitionImagePair:
     case CSSSelector::kPseudoViewTransitionNew:
     case CSSSelector::kPseudoViewTransitionOld:
     case CSSSelector::kPseudoActiveViewTransition:
     case CSSSelector::kPseudoActiveViewTransitionType:
-    case CSSSelector::kPseudoHasInterest:
+    case CSSSelector::kPseudoInterestSource:
+    case CSSSelector::kPseudoInterestTarget:
     case CSSSelector::kPseudoHasSlotted:
+    case CSSSelector::kPseudoLinkTo:
+    case CSSSelector::kPseudoActiveNavigation:
+    case CSSSelector::kPseudoPlaying:
+    case CSSSelector::kPseudoPaused:
+    case CSSSelector::kPseudoSeeking:
+    case CSSSelector::kPseudoBuffering:
+    case CSSSelector::kPseudoStalled:
+    case CSSSelector::kPseudoMuted:
+    case CSSSelector::kPseudoVolumeLocked:
+    case CSSSelector::kPseudoToolFormActive:
+    case CSSSelector::kPseudoToolSubmitActive:
       return true;
     case CSSSelector::kPseudoUnknown:
     case CSSSelector::kPseudoLeftPage:
@@ -216,7 +242,7 @@ bool RequiresSubtreeInvalidation(const CSSSelector& selector) {
   switch (selector.GetPseudoType()) {
     case CSSSelector::kPseudoFirstLine:
     case CSSSelector::kPseudoFirstLetter:
-    // FIXME: Most pseudo classes/elements above can be supported and moved
+    // FIXME: Most pseudo-classes/elements above can be supported and moved
     // to assertSupportedPseudo(). Move on a case-by-case basis. If they
     // require subtree invalidation, document why.
     case CSSSelector::kPseudoHostContext:
@@ -251,14 +277,6 @@ scoped_refptr<InvalidationSet> CopyInvalidationSet(
   return copy;
 }
 
-bool IsSimpleSelectorValidAfterHost(const CSSSelector* simple_selector) {
-  // TODO(blee@igalia.com) Need to support logical combinations after :host
-  // (e.g. ':host:not(:has(.a))')
-  return simple_selector->Match() == CSSSelector::kPseudoElement ||
-         simple_selector->IsHostPseudoClass() ||
-         simple_selector->GetPseudoType() == CSSSelector::kPseudoHas;
-}
-
 }  // anonymous namespace
 
 template <RuleInvalidationDataVisitorType VisitorType>
@@ -269,9 +287,10 @@ RuleInvalidationDataVisitor<VisitorType>::RuleInvalidationDataVisitor(
 template <RuleInvalidationDataVisitorType VisitorType>
 void RuleInvalidationDataVisitor<VisitorType>::InvalidationSetFeatures::Merge(
     const InvalidationSetFeatures& other) {
-  classes.AppendVector(other.classes);
-  attributes.AppendVector(other.attributes);
-  ids.AppendVector(other.ids);
+  classes.append_range(other.classes);
+  attributes.append_range(other.attributes);
+  custom_pseudo_names.append_range(other.custom_pseudo_names);
+  ids.append_range(other.ids);
   // Tag names that have been added to an invalidation set for an ID, a class,
   // or an attribute are called "emitted" tag names. Emitted tag names need to
   // go in a separate vector in order to correctly track which tag names to
@@ -284,11 +303,11 @@ void RuleInvalidationDataVisitor<VisitorType>::InvalidationSetFeatures::Merge(
   // Hence, when processing the rightmost :is(), we end up with li in the
   // emitted_tag_names vector, and span and ol in the regular tag_names vector.
   if (other.has_features_for_rule_set_invalidation) {
-    emitted_tag_names.AppendVector(other.tag_names);
+    emitted_tag_names.append_range(other.tag_names);
   } else {
-    tag_names.AppendVector(other.tag_names);
+    tag_names.append_range(other.tag_names);
   }
-  emitted_tag_names.AppendVector(other.emitted_tag_names);
+  emitted_tag_names.append_range(other.emitted_tag_names);
   max_direct_adjacent_selectors = std::max(max_direct_adjacent_selectors,
                                            other.max_direct_adjacent_selectors);
   invalidation_flags.Merge(other.invalidation_flags);
@@ -301,8 +320,7 @@ bool RuleInvalidationDataVisitor<
     VisitorType>::InvalidationSetFeatures::HasFeatures() const {
   return !classes.empty() || !attributes.empty() || !ids.empty() ||
          !tag_names.empty() || !emitted_tag_names.empty() ||
-         invalidation_flags.InvalidateCustomPseudo() ||
-         invalidation_flags.InvalidatesParts();
+         !custom_pseudo_names.empty() || invalidation_flags.InvalidatesParts();
 }
 
 template <RuleInvalidationDataVisitorType VisitorType>
@@ -348,6 +366,37 @@ RuleInvalidationDataVisitor<VisitorType>::CollectFeaturesFromSelector(
   return SelectorPreMatch::kMayMatch;
 }
 
+namespace {
+
+// True if a selector list pointed to by '&' can possibly match something.
+//
+// For example, a rule like `::before { & {} }` is valid parse-time,
+// but can never match anything (since '&' can't represent a pseudo-element).
+//
+// Note that cases with mixed allowed/disallowed selectors
+// can not be handled here. This is instead handled per argument
+// in SelectorChecker::CheckPseudoElement, via the check on
+// context.in_nested_complex_selector.
+bool ParentPseudoListCanMatchSomething(const CSSSelector* selector_list) {
+  if (!selector_list) {
+    // A '&' selector with no list is valid, and matches like :scope.
+    return true;
+  }
+  for (const CSSSelector* s = selector_list; s; s = CSSSelectorList::Next(*s)) {
+    // Recurse into any inner '&' to catch cases like: ::before { & { & {} } }.
+    if (s->GetPseudoType() == CSSSelector::kPseudoParent) {
+      if (ParentPseudoListCanMatchSomething(s->SelectorListOrParent())) {
+        return true;
+      }
+    } else if (s->IsAllowedInParentPseudo()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 template <RuleInvalidationDataVisitorType VisitorType>
 SelectorPreMatch
 RuleInvalidationDataVisitor<VisitorType>::CollectMetadataFromSelector(
@@ -355,16 +404,11 @@ RuleInvalidationDataVisitor<VisitorType>::CollectMetadataFromSelector(
     unsigned max_direct_adjacent_selectors,
     FeatureMetadata& metadata) {
   CSSSelector::RelationType relation = CSSSelector::kDescendant;
-  bool found_host_pseudo = false;
 
   for (const CSSSelector* current = &selector; current;
        current = current->NextSimpleSelector()) {
     switch (current->GetPseudoType()) {
       case CSSSelector::kPseudoHas:
-        if (found_host_pseudo && !current->IsLastInComplexSelector() &&
-            !IsSimpleSelectorValidAfterHost(current->NextSimpleSelector())) {
-          return SelectorPreMatch::kNeverMatches;
-        }
         break;
       case CSSSelector::kPseudoFirstLine:
         metadata.uses_first_line_rules = true;
@@ -374,29 +418,13 @@ RuleInvalidationDataVisitor<VisitorType>::CollectMetadataFromSelector(
         break;
       case CSSSelector::kPseudoHost:
       case CSSSelector::kPseudoHostContext:
-        if (!found_host_pseudo && relation == CSSSelector::kSubSelector) {
-          return SelectorPreMatch::kNeverMatches;
-        }
-        if (!current->IsLastInComplexSelector() &&
-            !IsSimpleSelectorValidAfterHost(current->NextSimpleSelector())) {
-          return SelectorPreMatch::kNeverMatches;
-        }
-        found_host_pseudo = true;
         CollectMetadataFromSelectorList(current->SelectorListOrParent(),
                                         max_direct_adjacent_selectors,
                                         metadata);
         break;
       case CSSSelector::kPseudoParent:
-        if (const CSSSelector* selector_list = current->SelectorListOrParent();
-            selector_list &&
-            !CSSSelectorList::IsAnyAllowedInParentPseudo(selector_list)) {
-          // A rule like `::before { & {} }` is valid parse-time,
-          // but can never match anything.
-          //
-          // Note that cases with mixed allowed/disallowed selectors
-          // can not be handled here. This is instead handled per argument
-          // in SelectorChecker::CheckPseudoElement, via the check on
-          // context.in_nested_complex_selector.
+        if (!ParentPseudoListCanMatchSomething(
+                current->SelectorListOrParent())) {
           return SelectorPreMatch::kNeverMatches;
         }
         CollectMetadataFromSelectorList(current->SelectorListOrParent(),
@@ -426,10 +454,6 @@ RuleInvalidationDataVisitor<VisitorType>::CollectMetadataFromSelector(
     }
 
     relation = current->Relation();
-
-    if (found_host_pseudo && relation != CSSSelector::kSubSelector) {
-      return SelectorPreMatch::kNeverMatches;
-    }
 
     if (relation == CSSSelector::kDirectAdjacent) {
       max_direct_adjacent_selectors++;
@@ -669,7 +693,7 @@ void RuleInvalidationDataVisitor<VisitorType>::
   switch (selector.GetPseudoType()) {
     case CSSSelector::kPseudoWebKitCustomElement:
     case CSSSelector::kPseudoBlinkInternalElement:
-      features.invalidation_flags.SetInvalidateCustomPseudo(true);
+      features.NarrowToCustomPseudo(selector.Value());
       return;
     case CSSSelector::kPseudoSlotted:
       features.invalidation_flags.SetInvalidatesSlotted(true);
@@ -747,7 +771,7 @@ const CSSSelector* RuleInvalidationDataVisitor<VisitorType>::
     // While adding features to invalidation sets for logical combinations
     // inside :has(), ExtractInvalidationSetFeaturesFromCompound() can be
     // called again to extract features from the compound selector containing
-    // the :has() pseudo class. (e.g. '.a:has(:is(.b ~ .c)) .d')
+    // the :has() pseudo-class. (e.g. '.a:has(:is(.b ~ .c)) .d')
     // To avoid infinite recursive call, skip adding features for :has() if
     // ExtractInvalidationSetFeaturesFromCompound() is invoked for the logical
     // combinations inside :has().
@@ -781,7 +805,7 @@ void RuleInvalidationDataVisitor<VisitorType>::
   }
   CSSSelector::PseudoType pseudo_type = simple_selector.GetPseudoType();
 
-  // For the :has pseudo class, we should not extract invalidation set features
+  // For the :has pseudo-class, we should not extract invalidation set features
   // here because the :has invalidation direction is different with others.
   // (preceding-sibling/ancestors/preceding-sibling-of-ancestors)
   if (pseudo_type == CSSSelector::kPseudoHas) {
@@ -820,7 +844,7 @@ void RuleInvalidationDataVisitor<VisitorType>::
   // Don't add any features if one of the sub-selectors of does not contain
   // any invalidation set features. E.g. :-webkit-any(*, span).
   //
-  // For the :not() pseudo class, we should not use the inner features for
+  // For the :not() pseudo-class, we should not use the inner features for
   // invalidation because we should invalidate elements _without_ that
   // feature. On the other hand, we should still have invalidation sets
   // for the features since we are able to detect when they change.
@@ -967,7 +991,7 @@ void RuleInvalidationDataVisitor<VisitorType>::
     return;
   }
 
-  // For the :has pseudo class, we should not extract invalidation set features
+  // For the :has pseudo-class, we should not extract invalidation set features
   // here because the :has invalidation direction is different with others.
   // (preceding-sibling/ancestors/preceding-sibling-of-ancestors)
   if (pseudo_type == CSSSelector::kPseudoHas) {
@@ -1211,7 +1235,7 @@ void RuleInvalidationDataVisitor<VisitorType>::
     }
   }
 
-  // Add features to invalidation sets only when the :has() pseudo class
+  // Add features to invalidation sets only when the :has() pseudo-class
   // contains logical combinations containing a complex selector as argument.
   if (!pseudo_has.ContainsComplexLogicalCombinationsInsideHasPseudoClass()) {
     return;
@@ -1224,7 +1248,7 @@ void RuleInvalidationDataVisitor<VisitorType>::
     descendant_features.invalidation_flags.SetWholeSubtreeInvalid(true);
   }
 
-  // Use descendant features as sibling features if the :has() pseudo class is
+  // Use descendant features as sibling features if the :has() pseudo-class is
   // in subject position.
   if (!sibling_features && descendant_features.descendant_features_depth == 0) {
     sibling_features = &descendant_features;
@@ -1438,8 +1462,8 @@ void RuleInvalidationDataVisitor<VisitorType>::
       combinator = CSSSelector::kIndirectAdjacent;
       break;
     default:
-      // Implicit combinators for pseudo elements (kUAShadow, kShadowSlot,
-      // kShadowPart) cannot be inside :has() because pseudo elements are
+      // Implicit combinators for pseudo-elements (kUAShadow, kShadowSlot,
+      // kShadowPart) cannot be inside :has() because pseudo-elements are
       // not allowed inside :has().
       // Combinators for relative relations (kRelativeDescendant,
       // kRelativeChild, kRelativeDirectAdjacent, kRelativeIndirectAdjacent)
@@ -1627,70 +1651,6 @@ RuleInvalidationDataVisitor<VisitorType>::InvalidationSetForSimpleSelector(
   }
   if (selector.Match() == CSSSelector::kPseudoClass) {
     switch (selector.GetPseudoType()) {
-      case CSSSelector::kPseudoEmpty:
-      case CSSSelector::kPseudoFirstChild:
-      case CSSSelector::kPseudoLastChild:
-      case CSSSelector::kPseudoOnlyChild:
-      case CSSSelector::kPseudoLink:
-      case CSSSelector::kPseudoVisited:
-      case CSSSelector::kPseudoWebkitAnyLink:
-      case CSSSelector::kPseudoAnyLink:
-      case CSSSelector::kPseudoAutofill:
-      case CSSSelector::kPseudoWebKitAutofill:
-      case CSSSelector::kPseudoAutofillPreviewed:
-      case CSSSelector::kPseudoAutofillSelected:
-      case CSSSelector::kPseudoHover:
-      case CSSSelector::kPseudoDrag:
-      case CSSSelector::kPseudoFocus:
-      case CSSSelector::kPseudoFocusVisible:
-      case CSSSelector::kPseudoFocusWithin:
-      case CSSSelector::kPseudoActive:
-      case CSSSelector::kPseudoChecked:
-      case CSSSelector::kPseudoEnabled:
-      case CSSSelector::kPseudoDefault:
-      case CSSSelector::kPseudoDisabled:
-      case CSSSelector::kPseudoOptional:
-      case CSSSelector::kPseudoPlaceholderShown:
-      case CSSSelector::kPseudoRequired:
-      case CSSSelector::kPseudoReadOnly:
-      case CSSSelector::kPseudoReadWrite:
-      case CSSSelector::kPseudoState:
-      case CSSSelector::kPseudoUserInvalid:
-      case CSSSelector::kPseudoUserValid:
-      case CSSSelector::kPseudoValid:
-      case CSSSelector::kPseudoInvalid:
-      case CSSSelector::kPseudoIndeterminate:
-      case CSSSelector::kPseudoTarget:
-      case CSSSelector::kPseudoTargetCurrent:
-      case CSSSelector::kPseudoLang:
-      case CSSSelector::kPseudoDir:
-      case CSSSelector::kPseudoFullScreen:
-      case CSSSelector::kPseudoFullScreenAncestor:
-      case CSSSelector::kPseudoFullscreen:
-      case CSSSelector::kPseudoPaused:
-      case CSSSelector::kPseudoPermissionElementInvalidStyle:
-      case CSSSelector::kPseudoPermissionElementOccluded:
-      case CSSSelector::kPseudoPermissionGranted:
-      case CSSSelector::kPseudoPictureInPicture:
-      case CSSSelector::kPseudoPlaying:
-      case CSSSelector::kPseudoInRange:
-      case CSSSelector::kPseudoOutOfRange:
-      case CSSSelector::kPseudoDefined:
-      case CSSSelector::kPseudoOpen:
-      case CSSSelector::kPseudoPopoverOpen:
-      case CSSSelector::kPseudoVideoPersistent:
-      case CSSSelector::kPseudoVideoPersistentAncestor:
-      case CSSSelector::kPseudoXrOverlay:
-      case CSSSelector::kPseudoHasDatalist:
-      case CSSSelector::kPseudoMultiSelectFocus:
-      case CSSSelector::kPseudoModal:
-      case CSSSelector::kPseudoSelectorFragmentAnchor:
-      case CSSSelector::kPseudoActiveViewTransition:
-      case CSSSelector::kPseudoActiveViewTransitionType:
-      case CSSSelector::kPseudoHasInterest:
-      case CSSSelector::kPseudoHasSlotted:
-        return EnsurePseudoInvalidationSet(selector.GetPseudoType(), type,
-                                           position, in_nth_child);
       case CSSSelector::kPseudoFirstOfType:
       case CSSSelector::kPseudoLastOfType:
       case CSSSelector::kPseudoOnlyOfType:
@@ -1704,9 +1664,12 @@ RuleInvalidationDataVisitor<VisitorType>::InvalidationSetForSimpleSelector(
                    ? EnsurePseudoInvalidationSet(selector.GetPseudoType(), type,
                                                  position, in_nth_child)
                    : nullptr;
-      case CSSSelector::kPseudoPart:
       default:
         break;
+    }
+    if (CSSSelector::SupportsPseudoStateChange(selector.GetPseudoType())) {
+      return EnsurePseudoInvalidationSet(selector.GetPseudoType(), type,
+                                         position, in_nth_child);
     }
   }
   return nullptr;
@@ -1876,6 +1839,8 @@ void RuleInvalidationDataVisitor<VisitorType>::AddFeaturesToInvalidationSet(
       invalidation_set->SetInsertionPointCrossing();
     }
   }
+  // TODO(crbug.com/337076014): Record entries in InvalidationSetToSelectorMap
+  // for ::slotted().
   if (features.invalidation_flags.InvalidatesSlotted()) {
     if constexpr (is_builder()) {
       invalidation_set->SetInvalidatesSlotted();
@@ -1888,6 +1853,9 @@ void RuleInvalidationDataVisitor<VisitorType>::AddFeaturesToInvalidationSet(
     if constexpr (is_builder()) {
       invalidation_set->SetInvalidatesParts();
     }
+    InvalidationSetToSelectorMap::RecordInvalidationSetEntry(
+        invalidation_set,
+        InvalidationSetToSelectorMap::SelectorFeatureType::kPart, g_empty_atom);
   }
   if (features.content_pseudo_crossing ||
       features.invalidation_flags.WholeSubtreeInvalid()) {
@@ -1919,6 +1887,15 @@ void RuleInvalidationDataVisitor<VisitorType>::AddFeaturesToInvalidationSet(
         InvalidationSetToSelectorMap::SelectorFeatureType::kTagName,
         emitted_tag_name);
   }
+  for (const auto& custom_pseudo_name : features.custom_pseudo_names) {
+    if constexpr (is_builder()) {
+      invalidation_set->AddCustomPseudoName(custom_pseudo_name);
+    }
+    InvalidationSetToSelectorMap::RecordInvalidationSetEntry(
+        invalidation_set,
+        InvalidationSetToSelectorMap::SelectorFeatureType::kCustomPseudoName,
+        custom_pseudo_name);
+  }
   for (const auto& class_name : features.classes) {
     if constexpr (is_builder()) {
       invalidation_set->AddClass(class_name);
@@ -1935,11 +1912,6 @@ void RuleInvalidationDataVisitor<VisitorType>::AddFeaturesToInvalidationSet(
         invalidation_set,
         InvalidationSetToSelectorMap::SelectorFeatureType::kAttribute,
         attribute);
-  }
-  if (features.invalidation_flags.InvalidateCustomPseudo()) {
-    if constexpr (is_builder()) {
-      invalidation_set->SetCustomPseudoInvalid();
-    }
   }
 }
 
@@ -1992,7 +1964,7 @@ bool RuleInvalidationDataVisitor<VisitorType>::
         return false;
       } else {
         rule_invalidation_data_.names_with_self_invalidation =
-            std::make_unique<WTF::BloomFilter<14>>();
+            std::make_unique<BloomFilter<14>>();
       }
     }
     rule_invalidation_data_.names_with_self_invalidation->Add(value.Hash() *

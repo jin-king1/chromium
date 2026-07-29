@@ -6,20 +6,18 @@
 
 #include <utility>
 
+#include "base/byte_size.h"
 #include "net/base/load_timing_info.h"
 
 namespace page_load_metrics {
-
-MemoryUpdate::MemoryUpdate(content::GlobalRenderFrameHostId id, int64_t delta)
-    : routing_id(id), delta_bytes(delta) {}
 
 ExtraRequestCompleteInfo::ExtraRequestCompleteInfo(
     const url::SchemeHostPort& final_url,
     const net::IPEndPoint& remote_endpoint,
     content::FrameTreeNodeId frame_tree_node_id,
     bool was_cached,
-    int64_t raw_body_bytes,
-    int64_t original_network_content_length,
+    base::ByteSize raw_body_bytes,
+    base::ByteSize original_network_content_length,
     network::mojom::RequestDestination request_destination,
     int net_error,
     std::unique_ptr<net::LoadTimingInfo> load_timing_info)
@@ -53,9 +51,13 @@ ExtraRequestCompleteInfo::~ExtraRequestCompleteInfo() = default;
 FailedProvisionalLoadInfo::FailedProvisionalLoadInfo(
     base::TimeDelta interval,
     net::Error error,
+    int net_extended_error_code,
+    std::optional<content::ErrorNavigationTrigger> error_navigation_trigger,
     content::NavigationDiscardReason discard_reason)
     : time_to_failed_provisional_load(interval),
       error(error),
+      net_extended_error_code(net_extended_error_code),
+      error_navigation_trigger(error_navigation_trigger),
       discard_reason(discard_reason) {}
 
 FailedProvisionalLoadInfo::~FailedProvisionalLoadInfo() = default;
@@ -69,12 +71,6 @@ PageLoadMetricsObserver::ObservePolicy PageLoadMetricsObserver::OnStart(
     const GURL& currently_committed_url,
     bool started_in_foreground) {
   return CONTINUE_OBSERVING;
-}
-
-PageLoadMetricsObserver::ObservePolicy PageLoadMetricsObserver::OnPreviewStart(
-    content::NavigationHandle* navigation_handle,
-    const GURL& currently_committed_url) {
-  return STOP_OBSERVING;
 }
 
 PageLoadMetricsObserver::ObservePolicy
@@ -125,8 +121,8 @@ PageLoadMetricsObserver::ShouldObserveMimeType(
 
 PageLoadMetricsObserver::ObservePolicy
 PageLoadMetricsObserver::ShouldObserveScheme(const GURL& url) const {
-  bool should_observe_scheme =
-      url.SchemeIsHTTPOrHTTPS() || delegate_->ShouldObserveScheme(url.scheme());
+  bool should_observe_scheme = url.SchemeIsHTTPOrHTTPS() ||
+                               delegate_->ShouldObserveScheme(url.GetScheme());
   return should_observe_scheme ? CONTINUE_OBSERVING : STOP_OBSERVING;
 }
 

@@ -14,8 +14,6 @@ source_set("model") {
     "lens_overlay_snapshot_controller_delegate.h",
     "lens_overlay_tab_helper.h",
     "lens_overlay_tab_helper.mm",
-    "lens_overlay_url_utils.h",
-    "lens_overlay_url_utils.mm",
     "snapshot_cover_view_controller.h",
     "snapshot_cover_view_controller.mm",
   ]
@@ -23,8 +21,10 @@ source_set("model") {
     ":detent_state_header",
     "//base",
     "//components/google/core/common",
+    "//ios/chrome/browser/fullscreen/model",
+    "//ios/chrome/browser/fullscreen/public:metrics",
     "//ios/chrome/browser/fullscreen/ui_bundled",
-    "//ios/chrome/browser/ntp/model",
+    "//ios/chrome/browser/ntp/model:util",
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/model/web_state_list",
     "//ios/chrome/browser/shared/public/commands",
@@ -37,13 +37,31 @@ source_set("model") {
     "//ui/base",
   ]
   public_deps = [
+    ":bottom_sheet",
     ":configuration_factory",
     ":detent_state_header",
     ":detents_manager",
     ":metrics_recorder",
     ":overflow_menu_factory",
+    ":presentation_type",
+    ":utils",
     "//base",
-    "//ios/chrome/browser/lens_overlay/coordinator:lens_overlay_availability",
+    "//ios/chrome/browser/lens_overlay/public:lens_overlay_availability",
+  ]
+}
+
+source_set("utils") {
+  sources = [
+    "lens_overlay_url_utils.h",
+    "lens_overlay_url_utils.mm",
+  ]
+  deps = [
+    "//components/google/core/common",
+    "//components/lens",
+    "//ios/chrome/browser/shared/public/features:system_flags",
+    "//ios/web/public/navigation",
+    "//net",
+    "//url",
   ]
 }
 
@@ -56,7 +74,7 @@ source_set("overflow_menu_factory") {
   deps = [
     "//base",
     "//ios/chrome/app/strings:ios_strings_grit",
-    "//ios/chrome/browser/lens_overlay/coordinator:lens_overlay_availability",
+    "//ios/chrome/browser/lens_overlay/public:lens_overlay_availability",
     "//ios/chrome/browser/menu/ui_bundled",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/profile",
@@ -69,15 +87,28 @@ source_set("overflow_menu_factory") {
   public_deps = [ ":detent_state_header" ]
 }
 
+source_set("presentation_type") {
+  sources = [
+    "lens_overlay_presentation_type.h",
+    "lens_overlay_presentation_type.mm",
+  ]
+  deps = [
+    "//base",
+    "//ios/chrome/common/ui/util",
+    "//ui/base",
+  ]
+}
+
 source_set("configuration_factory") {
   sources = [
     "lens_overlay_configuration_factory.h",
     "lens_overlay_configuration_factory.mm",
   ]
   deps = [
-    ":entrypoint",
     "//base",
+    "//components/signin/public/base",
     "//ios/chrome/browser/lens/ui_bundled:lens_entrypoint",
+    "//ios/chrome/browser/lens_overlay/public:entrypoint",
     "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/public/features",
@@ -97,13 +128,30 @@ source_set("detents_manager") {
   deps = [
     ":detent_state_header",
     "//base",
+    "//ios/chrome/browser/lens/ui_bundled:features",
     "//ui/base",
   ]
-  public_deps = [ ":detent_state_header" ]
+  public_deps = [
+    ":bottom_sheet",
+    ":detent_state_header",
+  ]
 }
 
 source_set("detent_state_header") {
   sources = [ "lens_overlay_sheet_detent_state.h" ]
+}
+
+source_set("bottom_sheet") {
+  sources = [
+    "lens_overlay_bottom_sheet.h",
+    "lens_overlay_bottom_sheet_detent.h",
+    "lens_overlay_bottom_sheet_detent.mm",
+    "lens_overlay_bottom_sheet_detent_proxy.h",
+    "lens_overlay_bottom_sheet_detent_proxy.mm",
+    "lens_overlay_bottom_sheet_detents_interactor.h",
+    "lens_overlay_bottom_sheet_detents_interactor.mm",
+  ]
+  public_deps = [ "//base" ]
 }
 
 source_set("metrics_recorder") {
@@ -114,28 +162,18 @@ source_set("metrics_recorder") {
     "lens_view_finder_metrics_recorder.mm",
   ]
   deps = [
+    ":detent_state_header",
     "//base",
     "//components/ukm/ios:ukm_url_recorder",
+    "//ios/chrome/browser/lens/ui_bundled:lens_entrypoint",
     "//ios/chrome/browser/shared/model/utils",
     "//ios/web/public",
     "//ui/base",
   ]
   public_deps = [
-    ":entrypoint",
     "//components/lens",
+    "//ios/chrome/browser/lens_overlay/public:entrypoint",
   ]
-}
-
-source_set("entrypoint") {
-  sources = [
-    "lens_overlay_entrypoint.h",
-    "lens_overlay_entrypoint.mm",
-  ]
-  deps = [
-    "//base",
-    "//components/lens",
-  ]
-  public_deps = [ "//base" ]
 }
 
 source_set("unit_tests") {
@@ -150,6 +188,7 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//components/lens:enterprise_policy",
     "//components/prefs",
+    "//components/test/ios",
     "//components/variations",
     "//components/variations:test_support",
     "//ios/chrome/browser/lens/ui_bundled:lens_entrypoint",

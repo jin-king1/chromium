@@ -16,21 +16,21 @@ class Button;
 class View;
 }  // namespace views
 
-constexpr float kToolbarInkDropVisibleOpacity = 0.06f;
+inline constexpr float kToolbarInkDropVisibleOpacity = 0.06f;
 
 // Creates insets for a host view so that when insetting from the host view
 // the resulting mask or inkdrop has the desired inkdrop size.
 gfx::Insets GetToolbarInkDropInsets(const views::View* host_view);
 
 // Returns the ink drop base color that should be used by all toolbar buttons.
-// This is only needed if you can't use ConfigureInkDropForToolbar().
+// This is only needed if you can't use ConfigureInkDrop().
 SkColor GetToolbarInkDropBaseColor(const views::View* host_view);
 
-// Installs `highlight_generator` and configures the inkdrop for `host` in
-// toolbar. Creates a highlight generator when it's not provided.
-void ConfigureInkDropForToolbar(views::Button* host,
-                                std::unique_ptr<views::HighlightPathGenerator>
-                                    highlight_generator = nullptr);
+// Installs `highlight_generator` and configures a toolbar-style inkdrop for
+// `host`. Creates a highlight generator when it's not provided.
+void ConfigureInkDrop(views::Button* host,
+                      std::unique_ptr<views::HighlightPathGenerator>
+                          highlight_generator = nullptr);
 
 // Sets the highlight color callback and ripple color callback for inkdrop when
 // the chrome refresh flag is on.

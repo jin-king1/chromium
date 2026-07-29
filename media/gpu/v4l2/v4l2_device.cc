@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/v4l2/v4l2_device.h"
 
 #include <errno.h>
@@ -22,14 +17,16 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <set>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/not_fatal_until.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "build/build_config.h"
 #include "media/base/color_plane_layout.h"
 #include "media/base/media_switches.h"
@@ -120,7 +117,7 @@ void V4L2Device::OnQueueDestroyed(v4l2_buf_type buf_type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(client_sequence_checker_);
 
   auto it = queues_.find(buf_type);
-  CHECK(it != queues_.end(), base::NotFatalUntil::M130);
+  CHECK(it != queues_.end());
   queues_.erase(it);
 }
 
@@ -148,13 +145,33 @@ bool V4L2Device::Open(Type type, uint32_t v4l2_pixfmt) {
   return true;
 }
 
+base::ScopedFD V4L2Device::OpenFDForType(Type type) {
+  DVLOGF(3);
+  base::ScopedFD devfd;
+  auto dev = base::MakeRefCounted<V4L2Device>();
+
+  const auto& devices = dev->GetDevicesForType(type);
+  if (!devices.empty()) {
+    std::string path = devices.front().first;
+    DCHECK(!path.empty());
+
+    devfd.reset(
+        HANDLE_EINTR(open(path.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC)));
+    VLOGF(3) << "Using device " << path
+             << " for type: " << static_cast<int>(type);
+  } else {
+    VLOGF(1) << "No devices for type: " << static_cast<int>(type);
+  }
+
+  return devfd;
+}
+
 bool V4L2Device::IsValid() {
   return device_poll_interrupt_fd_.is_valid();
 }
 
 std::string V4L2Device::GetDriverName() {
-  struct v4l2_capability caps;
-  memset(&caps, 0, sizeof(caps));
+  struct v4l2_capability caps = {};
   if (Ioctl(VIDIOC_QUERYCAP, &caps) != 0) {
     VPLOGF(1) << "ioctl() failed: VIDIOC_QUERYCAP"
               << ", caps check failed: 0x" << std::hex << caps.capabilities;
@@ -252,8 +269,8 @@ gfx::Size V4L2Device::AllocatedSizeFromV4L2Format(
     bytesperline =
         base::checked_cast<int>(format.fmt.pix_mp.plane_fmt[0].bytesperline);
     for (size_t i = 0; i < format.fmt.pix_mp.num_planes; ++i) {
-      sizeimage +=
-          base::checked_cast<int>(format.fmt.pix_mp.plane_fmt[i].sizeimage);
+      sizeimage += base::checked_cast<int>(
+          UNSAFE_TODO(format.fmt.pix_mp.plane_fmt[i]).sizeimage);
     }
     visible_size.SetSize(base::checked_cast<int>(format.fmt.pix_mp.width),
                          base::checked_cast<int>(format.fmt.pix_mp.height));
@@ -331,7 +348,7 @@ int V4L2Device::Ioctl(int request, void* arg) {
 }
 
 bool V4L2Device::Poll(bool poll_device, bool* event_pending) {
-  struct pollfd pollfds[2];
+  std::array<struct pollfd, 2> pollfds;
   nfds_t nfds;
   int pollfd = -1;
 
@@ -347,7 +364,7 @@ bool V4L2Device::Poll(bool poll_device, bool* event_pending) {
     nfds++;
   }
 
-  if (HANDLE_EINTR(poll(pollfds, nfds, -1)) == -1) {
+  if (HANDLE_EINTR(poll(pollfds.data(), nfds, -1)) == -1) {
     VPLOGF(1) << "poll() failed";
     return false;
   }
@@ -406,8 +423,8 @@ bool V4L2Device::CanCreateEGLImageFrom(const Fourcc fourcc) const {
 #endif
   };
 
-  return base::Contains(kEGLImageDrmFmtsSupported,
-                        V4L2PixFmtToDrmFormat(fourcc.ToV4L2PixFmt()));
+  return std::ranges::contains(kEGLImageDrmFmtsSupported,
+                               V4L2PixFmtToDrmFormat(fourcc.ToV4L2PixFmt()));
 }
 
 std::vector<uint32_t> V4L2Device::PreferredInputFormat(Type type) const {
@@ -421,16 +438,14 @@ std::vector<uint32_t> V4L2Device::PreferredInputFormat(Type type) const {
 VideoEncodeAccelerator::SupportedRateControlMode
 V4L2Device::GetSupportedRateControlMode() {
   auto rate_control_mode = VideoEncodeAccelerator::kNoMode;
-  v4l2_queryctrl query_ctrl;
-  memset(&query_ctrl, 0, sizeof(query_ctrl));
+  v4l2_queryctrl query_ctrl = {};
   query_ctrl.id = V4L2_CID_MPEG_VIDEO_BITRATE_MODE;
   if (Ioctl(VIDIOC_QUERYCTRL, &query_ctrl)) {
     DPLOG(WARNING) << "QUERYCTRL for bitrate mode failed";
     return rate_control_mode;
   }
 
-  v4l2_querymenu query_menu;
-  memset(&query_menu, 0, sizeof(query_menu));
+  v4l2_querymenu query_menu = {};
   query_menu.id = query_ctrl.id;
   for (query_menu.index = query_ctrl.minimum;
        base::checked_cast<int>(query_menu.index) <= query_ctrl.maximum;
@@ -548,14 +563,7 @@ V4L2Device::EnumerateSupportedDecodeProfiles(
                                 V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
 
   for (uint32_t pixelformat : v4l2_codecs_as_pix_fmts) {
-    if (!base::Contains(pixelformats, pixelformat)) {
-      continue;
-    }
-
-    // Skip AV1 decoder profiles if kChromeOSHWAV1Decoder is disabled.
-    if ((pixelformat == V4L2_PIX_FMT_AV1 ||
-         pixelformat == V4L2_PIX_FMT_AV1_FRAME) &&
-        !base::FeatureList::IsEnabled(kChromeOSHWAV1Decoder)) {
+    if (!std::ranges::contains(pixelformats, pixelformat)) {
       continue;
     }
 
@@ -657,8 +665,7 @@ void V4L2Device::SchedulePoll() {
 
 std::optional<struct v4l2_event> V4L2Device::DequeueEvent() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(client_sequence_checker_);
-  struct v4l2_event event;
-  memset(&event, 0, sizeof(event));
+  struct v4l2_event event = {};
 
   if (Ioctl(VIDIOC_DQEVENT, &event) != 0) {
     // The ioctl will fail if there are no pending events. This is part of the
@@ -678,7 +685,7 @@ V4L2RequestsQueue* V4L2Device::GetRequestsQueue() {
 
   requests_queue_creation_called_ = true;
 
-  struct v4l2_capability caps;
+  struct v4l2_capability caps = {};
   if (Ioctl(VIDIOC_QUERYCAP, &caps)) {
     VPLOGF(1) << "Failed to query device capabilities.";
     return nullptr;
@@ -713,7 +720,6 @@ V4L2RequestsQueue* V4L2Device::GetRequestsQueue() {
     struct media_device_info media_info;
     if (HANDLE_EINTR(ioctl(candidate_media_fd.get(), MEDIA_IOC_DEVICE_INFO,
                            &media_info)) < 0) {
-      RecordMediaIoctlUMA(MediaIoctlRequests::kMediaIocDeviceInfo);
       VPLOGF(2) << "Failed to Query media device info.";
       continue;
     }
@@ -724,18 +730,18 @@ V4L2RequestsQueue* V4L2Device::GetRequestsQueue() {
     // drivers didn't fill in the bus_info field for the media device.
     if (strlen(reinterpret_cast<const char*>(caps.bus_info)) > 0 &&
         strlen(reinterpret_cast<const char*>(media_info.bus_info)) > 0 &&
-        strncmp(reinterpret_cast<const char*>(caps.bus_info),
-                reinterpret_cast<const char*>(media_info.bus_info),
-                sizeof(caps.bus_info))) {
+        UNSAFE_TODO(strncmp(reinterpret_cast<const char*>(caps.bus_info),
+                            reinterpret_cast<const char*>(media_info.bus_info),
+                            sizeof(caps.bus_info)))) {
       continue;
     }
 
     // Fall back to matching the video device and the media controller by the
     // driver field. The mtk-vcodec driver does not fill the card and bus fields
     // properly, so those won't work.
-    if (strncmp(reinterpret_cast<const char*>(caps.driver),
-                reinterpret_cast<const char*>(media_info.driver),
-                sizeof(caps.driver))) {
+    if (UNSAFE_TODO(strncmp(reinterpret_cast<const char*>(caps.driver),
+                            reinterpret_cast<const char*>(media_info.driver),
+                            sizeof(caps.driver)))) {
       continue;
     }
 
@@ -757,8 +763,7 @@ V4L2RequestsQueue* V4L2Device::GetRequestsQueue() {
 }
 
 bool V4L2Device::IsCtrlExposed(uint32_t ctrl_id) {
-  struct v4l2_queryctrl query_ctrl;
-  memset(&query_ctrl, 0, sizeof(query_ctrl));
+  struct v4l2_queryctrl query_ctrl = {};
   query_ctrl.id = ctrl_id;
 
   return Ioctl(VIDIOC_QUERYCTRL, &query_ctrl) == 0;
@@ -772,8 +777,7 @@ bool V4L2Device::SetExtCtrls(uint32_t ctrl_class,
   if (ctrls.empty())
     return true;
 
-  struct v4l2_ext_controls ext_ctrls;
-  memset(&ext_ctrls, 0, sizeof(ext_ctrls));
+  struct v4l2_ext_controls ext_ctrls = {};
   ext_ctrls.which = V4L2_CTRL_WHICH_CUR_VAL;
   ext_ctrls.count = 0;
   const bool use_modern_s_ext_ctrls =
@@ -789,7 +793,6 @@ bool V4L2Device::SetExtCtrls(uint32_t ctrl_class,
 
   const int result = Ioctl(VIDIOC_S_EXT_CTRLS, &ext_ctrls);
   if (result < 0) {
-    RecordVidiocIoctlErrorUMA(VidiocIoctlRequests::kVidiocSExtCtrls);
     if (ext_ctrls.error_idx == ext_ctrls.count)
       VPLOGF(1) << "VIDIOC_S_EXT_CTRLS: validation failed while trying to set "
                    "controls";
@@ -805,10 +808,8 @@ bool V4L2Device::SetExtCtrls(uint32_t ctrl_class,
 
 std::optional<struct v4l2_ext_control> V4L2Device::GetCtrl(uint32_t ctrl_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(client_sequence_checker_);
-  struct v4l2_ext_control ctrl;
-  memset(&ctrl, 0, sizeof(ctrl));
-  struct v4l2_ext_controls ext_ctrls;
-  memset(&ext_ctrls, 0, sizeof(ext_ctrls));
+  struct v4l2_ext_control ctrl = {};
+  struct v4l2_ext_controls ext_ctrls = {};
 
   ctrl.id = ctrl_id;
   ext_ctrls.controls = &ctrl;
@@ -830,8 +831,7 @@ bool V4L2Device::SetGOPLength(uint32_t gop_length) {
     // does not support turning off periodic keyframe placement,
     // set the GOP to the maximum supported value.
     if (gop_length == 0) {
-      v4l2_query_ext_ctrl queryctrl;
-      memset(&queryctrl, 0, sizeof(queryctrl));
+      v4l2_query_ext_ctrl queryctrl = {};
 
       queryctrl.id = V4L2_CTRL_CLASS_MPEG | V4L2_CID_MPEG_VIDEO_GOP_SIZE;
       if (Ioctl(VIDIOC_QUERY_EXT_CTRL, &queryctrl) == 0) {
@@ -876,27 +876,33 @@ void V4L2Device::EnumerateDevicesForType(Type type) {
 #endif
 
   std::string device_pattern;
-  v4l2_buf_type buf_type;
+  v4l2_buf_type input_buf_type;
+  v4l2_buf_type output_buf_type;
   switch (type) {
     case Type::kDecoder:
       device_pattern = kDecoderDevicePattern;
-      buf_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+      input_buf_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+      output_buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
       break;
     case Type::kEncoder:
       device_pattern = kEncoderDevicePattern;
-      buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+      input_buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+      output_buf_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
       break;
     case Type::kImageProcessor:
       device_pattern = kImageProcessorDevicePattern;
-      buf_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+      input_buf_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+      output_buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
       break;
     case Type::kJpegDecoder:
       device_pattern = kJpegDecoderDevicePattern;
-      buf_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+      input_buf_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+      output_buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
       break;
     case Type::kJpegEncoder:
       device_pattern = kJpegEncoderDevicePattern;
-      buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+      input_buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+      output_buf_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
       break;
   }
 
@@ -928,12 +934,76 @@ void V4L2Device::EnumerateDevicesForType(Type type) {
     if (!OpenDevicePath(path)) {
       continue;
     }
-    const auto supported_pixelformats = EnumerateSupportedPixFmts(
-        base::BindRepeating(&V4L2Device::Ioctl, this), buf_type);
+    const auto supported_pixelformats_input = EnumerateSupportedPixFmts(
+        base::BindRepeating(&V4L2Device::Ioctl, this), input_buf_type);
+    const auto supported_pixelformats_output = EnumerateSupportedPixFmts(
+        base::BindRepeating(&V4L2Device::Ioctl, this), output_buf_type);
 
-    if (!supported_pixelformats.empty()) {
+    bool found_valid_device;
+#if BUILDFLAG(IS_CHROMEOS)
+    found_valid_device = !supported_pixelformats_input.empty() &&
+                         !supported_pixelformats_output.empty();
+#else
+    const auto is_video_format = [](uint32_t fmt) {
+      return fmt == V4L2_PIX_FMT_H264 || fmt == V4L2_PIX_FMT_HEVC ||
+             fmt == V4L2_PIX_FMT_MPEG || fmt == V4L2_PIX_FMT_VP8 ||
+             fmt == V4L2_PIX_FMT_VP9 || fmt == V4L2_PIX_FMT_AV1 ||
+             fmt == V4L2_PIX_FMT_H264_SLICE || fmt == V4L2_PIX_FMT_HEVC_SLICE ||
+             fmt == V4L2_PIX_FMT_MPEG2_SLICE || fmt == V4L2_PIX_FMT_VP8_FRAME ||
+             fmt == V4L2_PIX_FMT_VP9_FRAME || fmt == V4L2_PIX_FMT_AV1_FRAME;
+    };
+    const auto is_jpeg_format = [](uint32_t fmt) {
+      return fmt == V4L2_PIX_FMT_JPEG;
+    };
+    const auto is_pixel_format = [](uint32_t fmt) {
+      return Fourcc::FromV4L2PixFmt(fmt).has_value();
+    };
+
+    switch (type) {
+      case Type::kDecoder:
+      case Type::kEncoder:
+        found_valid_device =
+            std::all_of(supported_pixelformats_input.begin(),
+                        supported_pixelformats_input.end(),
+                        [&](uint32_t fmt) {
+                          return !is_jpeg_format(fmt) && !is_pixel_format(fmt);
+                        }) &&
+            std::any_of(supported_pixelformats_input.begin(),
+                        supported_pixelformats_input.end(), is_video_format) &&
+            std::any_of(supported_pixelformats_output.begin(),
+                        supported_pixelformats_output.end(), is_pixel_format);
+        break;
+      case Type::kJpegDecoder:
+      case Type::kJpegEncoder:
+        found_valid_device =
+            std::all_of(supported_pixelformats_input.begin(),
+                        supported_pixelformats_input.end(),
+                        [&](uint32_t fmt) {
+                          return !is_video_format(fmt) && !is_pixel_format(fmt);
+                        }) &&
+            std::any_of(supported_pixelformats_input.begin(),
+                        supported_pixelformats_input.end(), is_jpeg_format) &&
+            std::any_of(supported_pixelformats_output.begin(),
+                        supported_pixelformats_output.end(), is_pixel_format);
+        break;
+      case Type::kImageProcessor:
+        found_valid_device =
+            std::all_of(supported_pixelformats_input.begin(),
+                        supported_pixelformats_input.end(),
+                        [&](uint32_t fmt) {
+                          return !is_video_format(fmt) && !is_jpeg_format(fmt);
+                        }) &&
+            std::any_of(supported_pixelformats_input.begin(),
+                        supported_pixelformats_input.end(), is_pixel_format) &&
+            std::any_of(supported_pixelformats_output.begin(),
+                        supported_pixelformats_output.end(), is_pixel_format);
+        break;
+    }
+#endif
+
+    if (found_valid_device) {
       DVLOGF(3) << "Found device: " << path;
-      devices.push_back(std::make_pair(path, supported_pixelformats));
+      devices.push_back(std::make_pair(path, supported_pixelformats_input));
     }
 
     CloseDevice();
@@ -956,7 +1026,7 @@ std::string V4L2Device::GetDevicePathFor(Type type, uint32_t pixfmt) {
   const Devices& devices = GetDevicesForType(type);
 
   for (const auto& device : devices) {
-    if (base::Contains(device.second, pixfmt)) {
+    if (std::ranges::contains(device.second, pixfmt)) {
       return device.first;
     }
   }

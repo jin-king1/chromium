@@ -226,7 +226,7 @@ TEST_F(EmbeddedWorkerInstanceTest, DetachAfterSendingStartWorkerMessage) {
   base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, worker->status());
-  EXPECT_EQ(ChildProcessHost::kInvalidUniqueID, worker->process_id());
+  EXPECT_FALSE(worker->process_id());
 
   // "STARTED" event should not be recorded.
   ASSERT_EQ(1u, events_.size());
@@ -258,7 +258,7 @@ TEST_F(EmbeddedWorkerInstanceTest, StopAfterSendingStartWorkerMessage) {
   base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, worker->status());
-  EXPECT_EQ(ChildProcessHost::kInvalidUniqueID, worker->process_id());
+  EXPECT_FALSE(worker->process_id());
 
   // "STARTED" event should not be recorded.
   ASSERT_EQ(1u, events_.size());
@@ -382,7 +382,7 @@ TEST_F(EmbeddedWorkerInstanceTest, CacheStorageOptimization) {
   RegistrationAndVersionPair pair =
       helper_->PrepareRegistrationAndVersion(scope, url);
   // We should set COEP, or cache storage pipe won't be made.
-  pair.second->set_policy_container_host(
+  pair.second->SetPolicyContainerHost(
       base::MakeRefCounted<PolicyContainerHost>());
   auto worker = std::make_unique<EmbeddedWorkerInstance>(pair.second.get());
 

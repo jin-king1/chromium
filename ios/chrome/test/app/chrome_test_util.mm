@@ -8,6 +8,7 @@
 #import "base/check.h"
 #import "base/ios/ios_util.h"
 #import "base/test/ios/wait_util.h"
+#import "base/time/time.h"
 #import "components/crash/core/common/reporter_running_ios.h"
 #import "components/metrics/metrics_pref_names.h"
 #import "components/metrics/metrics_service.h"
@@ -17,13 +18,12 @@
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/metrics_mediator.h"
 #import "ios/chrome/app/application_delegate/metrics_mediator_testing.h"
-#import "ios/chrome/app/chrome_overlay_window.h"
 #import "ios/chrome/app/main_application_delegate_testing.h"
 #import "ios/chrome/app/main_controller.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/browser/browser_view/ui_bundled/browser_view_controller.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
-#import "ios/chrome/browser/main/ui_bundled/bvc_container_view_controller.h"
+#import "ios/chrome/browser/main/ui/browser_layout_view_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller_testing.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
@@ -37,6 +37,7 @@
 #import "ios/chrome/browser/shared/public/commands/country_code_picker_commands.h"
 #import "ios/chrome/browser/shared/public/commands/drive_file_picker_commands.h"
 #import "ios/chrome/browser/shared/public/commands/unit_conversion_commands.h"
+#import "ios/chrome/browser/shared/ui/chrome_overlay_window/chrome_overlay_window.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/crash_report/crash_helper.h"
 #import "ios/chrome/test/app/tab_test_util.h"
@@ -61,9 +62,17 @@
 
 namespace {
 
+inline constexpr base::TimeDelta kProfileCreationTimeout = base::Seconds(20);
+
 // Returns the original ProfileIOS if `incognito` is false. If
 // `incognito` is true, returns an off-the-record ProfileIOS.
 ProfileIOS* GetProfile(bool incognito) {
+  // The profile can take time to initialize when the app starts (e.g.,
+  // enterprise registration blocking pref initialization).
+  CHECK(base::test::ios::WaitUntilConditionOrTimeout(kProfileCreationTimeout, ^{
+    return chrome_test_util::GetForegroundActiveScene().profileState.profile !=
+           nil;
+  }));
   ProfileIOS* profile =
       chrome_test_util::GetForegroundActiveScene().profileState.profile;
   CHECK(profile);
@@ -71,6 +80,9 @@ ProfileIOS* GetProfile(bool incognito) {
 
   return incognito ? profile->GetOffTheRecordProfile() : profile;
 }
+
+// When present, stores a browser that will override the one from SceneState.
+Browser* gMainBrowserOverride;
 
 }  // namespace
 
@@ -104,7 +116,14 @@ ProfileIOS* GetCurrentIncognitoProfile() {
   return GetProfile(true);
 }
 
+void SetMainBrowserOverride(Browser* browser) {
+  gMainBrowserOverride = browser;
+}
+
 Browser* GetMainBrowser() {
+  if (gMainBrowserOverride) {
+    return gMainBrowserOverride;
+  }
   return GetForegroundActiveScene()
       .browserProviderInterface.mainBrowserProvider.browser;
 }
@@ -121,29 +140,29 @@ UIViewController* GetActiveViewController() {
 
   // The active view controller is either the TabGridViewController or its
   // presented BVC. The BVC is itself contained inside of a
-  // BVCContainerViewController.
+  // BrowserLayoutViewController.
   UIViewController* active_view_controller =
       main_view_controller.presentedViewController
           ? main_view_controller.presentedViewController
           : main_view_controller;
   if ([active_view_controller
-          isKindOfClass:[BVCContainerViewController class]]) {
+          isKindOfClass:[BrowserLayoutViewController class]]) {
     active_view_controller =
-        base::apple::ObjCCastStrict<BVCContainerViewController>(
+        base::apple::ObjCCastStrict<BrowserLayoutViewController>(
             active_view_controller)
-            .currentBVC;
+            .browserViewController;
   }
   return active_view_controller;
 }
 
-id<ApplicationCommands,
+id<SceneCommands,
    BrowserCommands,
    BrowserCoordinatorCommands,
    CountryCodePickerCommands,
    UnitConversionCommands,
    DriveFilePickerCommands>
 HandlerForActiveBrowser() {
-  return static_cast<id<ApplicationCommands, BrowserCommands,
+  return static_cast<id<SceneCommands, BrowserCommands,
                         BrowserCoordinatorCommands, UnitConversionCommands,
                         CountryCodePickerCommands, DriveFilePickerCommands>>(
       GetMainBrowser()->GetCommandDispatcher());
@@ -197,6 +216,16 @@ void SetIntegerUserPref(ProfileIOS* profile, const char* pref_name, int value) {
   pref.SetValue(value);
 }
 
+void SetDoubleUserPref(ProfileIOS* profile,
+                       const char* pref_name,
+                       double value) {
+  DCHECK(profile);
+  DCHECK(profile->GetPrefs());
+  DoublePrefMember pref;
+  pref.Init(pref_name, profile->GetPrefs());
+  pref.SetValue(value);
+}
+
 bool IsMetricsRecordingEnabled() {
   DCHECK(GetApplicationContext());
   DCHECK(GetApplicationContext()->GetMetricsService());
@@ -215,23 +244,6 @@ bool IsCrashpadEnabled() {
 
 bool IsCrashpadReportingEnabled() {
   return crash_helper::common::UserEnabledUploading();
-}
-
-void OpenChromeFromExternalApp(const GURL& url) {
-  UIScene* scene =
-      [[UIApplication sharedApplication].connectedScenes anyObject];
-  [scene.delegate sceneWillResignActive:scene];
-
-  // FakeUIOpenURLContext cannot be instanciated, but it is just needed
-  // for carrying the properties over to the scene delegate.
-  FakeUIOpenURLContext* context = [FakeUIOpenURLContext alloc];
-  context.URL = net::NSURLWithGURL(url);
-
-  NSSet<UIOpenURLContext*>* URLContexts =
-      [[NSSet alloc] initWithArray:@[ context ]];
-
-  [scene.delegate scene:scene openURLContexts:URLContexts];
-  [scene.delegate sceneDidBecomeActive:scene];
 }
 
 bool PurgeCachedWebViewPages() {

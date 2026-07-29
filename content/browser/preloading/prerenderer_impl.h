@@ -5,6 +5,7 @@
 #ifndef CONTENT_BROWSER_PRELOADING_PRERENDERER_IMPL_H_
 #define CONTENT_BROWSER_PRELOADING_PRERENDERER_IMPL_H_
 
+#include <array>
 #include <tuple>
 
 #include "base/scoped_observation.h"
@@ -30,8 +31,8 @@ class CONTENT_EXPORT PrerendererImpl : public Prerenderer,
   void PrimaryPageChanged(Page& page) override;
 
   void ProcessCandidatesForPrerender(
-      const std::vector<blink::mojom::SpeculationCandidatePtr>& candidates)
-      override;
+      const std::vector<blink::mojom::SpeculationCandidatePtr>& candidates,
+      bool enable_cross_origin_prerender_iframes = false) override;
 
   bool MaybePrerender(const blink::mojom::SpeculationCandidatePtr& candidate,
                       const PreloadingPredictor& enacting_predictor,
@@ -46,8 +47,8 @@ class CONTENT_EXPORT PrerendererImpl : public Prerenderer,
       PrerenderCancellationCallback callback) override;
 
   // PrerenderHostRegistry::Observer implementations:
-  void OnCancel(FrameTreeNodeId host_frame_tree_node_id,
-                const PrerenderCancellationReason& reason) override;
+  void OnRetriggerable(PrerenderHostId host_id,
+                       const PrerenderCancellationReason& reason) override;
   void OnRegistryDestroyed() override;
 
   void CancelStartedPrerendersForTesting();
@@ -56,6 +57,11 @@ class CONTENT_EXPORT PrerendererImpl : public Prerenderer,
   struct PrerenderInfo;
 
   void CancelStartedPrerenders();
+
+  // Upgrades a prerender-until-script host to a full prerender. Updates the
+  // PrerenderInfo action and logs a console message. Returns true if the
+  // upgrade was performed.
+  bool TryUpgradePrerenderUntilScriptToFull(PrerenderInfo& prerender_info);
 
   // Used only for metric that counts received prerenders per
   // primary page changed.
@@ -78,8 +84,8 @@ class CONTENT_EXPORT PrerendererImpl : public Prerenderer,
       received_prerenders_by_eagerness_;
 
   // Used to notify cancellation from PrerendererImpl to PreloadingDecider.
-  // This is invoked in OnCancel, which is called when receiving a cancellation
-  // notification from PrerenderHostRegistry.
+  // This is invoked in OnRetriggerable, which is called when receiving a
+  // retriggerable notification from PrerenderHostRegistry.
   PrerenderCancellationCallback prerender_cancellation_callback_ =
       base::DoNothing();
 
@@ -101,6 +107,8 @@ class CONTENT_EXPORT PrerendererImpl : public Prerenderer,
                  PreloadingPredictor /*enacting_predictor*/,
                  PreloadingConfidence /*confidence*/>;
   std::vector<BlockedCandidateInfo> blocked_candidates_;
+
+  bool enable_cross_origin_prerender_iframes_ = false;
 };
 
 }  // namespace content

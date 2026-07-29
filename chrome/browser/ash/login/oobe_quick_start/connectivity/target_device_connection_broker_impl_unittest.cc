@@ -2,17 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/login/oobe_quick_start/connectivity/target_device_connection_broker_impl.h"
 
 #include <array>
 
 #include "base/base64.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -25,7 +22,6 @@
 #include "chrome/browser/ash/login/oobe_quick_start/connectivity/target_device_connection_broker.h"
 #include "chrome/browser/ash/login/oobe_quick_start/connectivity/target_device_connection_broker_factory.h"
 #include "chrome/browser/ash/nearby/fake_quick_start_connectivity_service.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/nearby/common/connections_manager/fake_nearby_connection.h"
 #include "chromeos/ash/components/nearby/common/connections_manager/fake_nearby_connections_manager.h"
@@ -319,13 +315,18 @@ class TargetDeviceConnectionBrokerImplTest : public testing::Test {
     connection_factory_ = connection_factory.get();
 
     if (is_resume_after_update) {
-      session_context_ =
-          SessionContext(kSessionId, advertising_id_, kSharedSecret,
-                         kSecondarySharedSecret, is_resume_after_update);
+      // NOTE: Reset connection_broker_ here as it has session_context_ pointer.
+      connection_broker_.reset();
+      session_context_.reset();
+
+      session_context_ = std::make_unique<SessionContext>(
+          TestingBrowserProcess::GetGlobal()->local_state(), kSessionId,
+          advertising_id_, kSharedSecret, kSecondarySharedSecret,
+          is_resume_after_update);
     }
 
     connection_broker_ = std::make_unique<TargetDeviceConnectionBrokerImpl>(
-        &session_context_, fake_quick_start_connectivity_service_.get(),
+        session_context_.get(), fake_quick_start_connectivity_service_.get(),
         std::move(connection_factory));
   }
 
@@ -381,10 +382,13 @@ class TargetDeviceConnectionBrokerImplTest : public testing::Test {
   scoped_refptr<NiceMock<device::MockBluetoothAdapter>> mock_bluetooth_adapter_;
   std::unique_ptr<FakeQuickStartConnectivityService>
       fake_quick_start_connectivity_service_;
-  SessionContext session_context_ = SessionContext(kSessionId,
-                                                   advertising_id_,
-                                                   kSharedSecret,
-                                                   kSecondarySharedSecret);
+  std::unique_ptr<SessionContext> session_context_ =
+      std::make_unique<SessionContext>(
+          TestingBrowserProcess::GetGlobal()->local_state(),
+          kSessionId,
+          advertising_id_,
+          kSharedSecret,
+          kSecondarySharedSecret);
   raw_ptr<FakeNearbyConnectionsManager> fake_nearby_connections_manager_;
   FakeNearbyConnection fake_nearby_connection_;
   std::unique_ptr<TargetDeviceConnectionBroker> connection_broker_;
@@ -395,8 +399,6 @@ class TargetDeviceConnectionBrokerImplTest : public testing::Test {
   FakeConnectionLifecycleListener connection_lifecycle_listener_;
   raw_ptr<FakeConnection::Factory> connection_factory_ = nullptr;
   base::HistogramTester histogram_tester_;
-  ScopedTestingLocalState scoped_local_state_{
-      TestingBrowserProcess::GetGlobal()};
 
   std::unique_ptr<FakeQuickStartDecoder> fake_quick_start_decoder_ =
       std::make_unique<FakeQuickStartDecoder>();
@@ -607,8 +609,8 @@ TEST_P(TargetDeviceConnectionBrokerImplEndpointInfoTest, GenerateEndpointInfo) {
 
   // The remaining advertising info fields are base64-encoded. Decode them
   // before proceeding.
-  std::vector<uint8_t> advertising_info = Base64DecodeForgiving(
-      base::span<uint8_t>(endpoint_info.begin() + i, endpoint_info.end()));
+  std::vector<uint8_t> advertising_info = Base64DecodeForgiving(UNSAFE_TODO(
+      base::span<uint8_t>(endpoint_info.begin() + i, endpoint_info.end())));
   ASSERT_EQ(advertising_info.size(), 60u);
   i = 0;
 

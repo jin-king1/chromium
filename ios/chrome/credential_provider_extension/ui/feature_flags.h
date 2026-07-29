@@ -7,11 +7,13 @@
 
 #import <Foundation/Foundation.h>
 
+#import <optional>
+
 // Whether automatic passkey upgrade is enabled for the user.
 BOOL IsAutomaticPasskeyUpgradeEnabled();
 
-// Whether passkey PRF support is enabled.
-BOOL IsPasskeyPRFEnabled();
+// Whether passkey Large Blob support is enabled.
+BOOL IsPasskeyLargeBlobEnabled();
 
 // Whether password creation is enabled for this user by preference.
 BOOL IsPasswordCreationUserEnabled();
@@ -23,14 +25,11 @@ BOOL IsPasswordCreationManaged();
 // Whether password sync is enabled for this user.
 BOOL IsPasswordSyncEnabled();
 
-// Whether passkey saving is allowed by policy. Always returns `YES` for
+// Policy about whether passkey saving is allowed. The return value isn't set if
+// the policy isn't set in user defaults. The policy itself returns `true` for
 // unmanaged users, or for users whose enterprise has not configured this
-// policy.
-// IMPORTANT: If `IsPasswordCreationUserEnabled()` is `NO`, that supercedes this
-// policy.
-BOOL IsPasskeyCreationAllowedByPolicy();
-
-// Whether the passkeys M2 feature is currently enabled.
-BOOL IsPasskeysM2Enabled();
+// policy. IMPORTANT: If `IsPasswordCreationUserEnabled()` is `NO`, that
+// supersedes this policy.
+std::optional<bool> GetPasskeyCreationPolicy();
 
 #endif  // IOS_CHROME_CREDENTIAL_PROVIDER_EXTENSION_UI_FEATURE_FLAGS_H_

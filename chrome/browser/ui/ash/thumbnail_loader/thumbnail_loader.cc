@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "ash/public/cpp/image_downloader.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -19,13 +20,13 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
-#include "chrome/browser/extensions/api/messaging/native_message_port.h"
-#include "chrome/browser/image_decoder/image_decoder.h"
+#include "chrome/browser/ash/fileapi/file_system_backend.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
 #include "extensions/browser/api/messaging/channel_endpoint.h"
 #include "extensions/browser/api/messaging/message_service.h"
 #include "extensions/browser/api/messaging/native_message_host.h"
+#include "extensions/browser/api/messaging/native_message_port.h"
 #include "extensions/common/api/messaging/messaging_endpoint.h"
 #include "extensions/common/api/messaging/port_id.h"
 #include "extensions/common/extension.h"
@@ -33,7 +34,7 @@
 #include "net/base/data_url.h"
 #include "net/base/mime_util.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
+#include "services/data_decoder/public/cpp/decode_image.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "third_party/re2/src/re2/re2.h"
@@ -43,6 +44,7 @@
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/image/image_skia.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace ash {
 
@@ -163,10 +165,8 @@ bool IsSupported(const base::FilePath& file_path) {
       }};
 
   // First attempt to match based on `mime_type`.
-  std::string ext = file_path.Extension();
   std::string mime_type;
-  if (!ext.empty() &&
-      net::GetWellKnownMimeTypeFromExtension(ext.substr(1), &mime_type)) {
+  if (net::GetWellKnownMimeTypeFromFile(file_path, &mime_type)) {
     for (const auto& file_match_pattern : kFileMatchPatterns) {
       if (file_match_pattern.second &&
           re2::RE2::FullMatch(mime_type, file_match_pattern.second)) {
@@ -189,12 +189,11 @@ using ThumbnailDataCallback = base::OnceCallback<void(const std::string& data)>;
 
 // Handles a parsed message sent from image loader extension in response to a
 // thumbnail request.
-void HandleParsedThumbnailResponse(
-    const std::string& request_id,
-    ThumbnailDataCallback callback,
-    data_decoder::DataDecoder::ValueOrError result) {
+void HandleParsedThumbnailResponse(const std::string& request_id,
+                                   ThumbnailDataCallback callback,
+                                   const base::JSONReader::Result& result) {
   if (!result.has_value()) {
-    VLOG(2) << "Failed to parse request response " << result.error();
+    VLOG(2) << "Failed to parse request response " << result.error().message;
     std::move(callback).Run("");
     return;
   }
@@ -243,11 +242,12 @@ class ThumbnailLoaderNativeMessageHost : public extensions::NativeMessageHost {
     }
     response_received_ = true;
 
-    // Detach the callback from the message host in case the extension closes
-    // connection by the time the response is parsed.
-    data_decoder::DataDecoder::ParseJsonIsolated(
-        message, base::BindOnce(&HandleParsedThumbnailResponse, request_id_,
-                                std::move(callback_)));
+    // JSONReader is now safe for rule of 2.
+    base::JSONReader::Result result =
+        base::JSONReader::ReadAndReturnValueWithError(message,
+                                                      base::JSON_PARSE_RFC);
+
+    HandleParsedThumbnailResponse(request_id_, std::move(callback_), result);
 
     client_->CloseChannel("");
     client_ = nullptr;
@@ -277,52 +277,6 @@ class ThumbnailLoaderNativeMessageHost : public extensions::NativeMessageHost {
 
 }  // namespace
 
-// Converts a data URL to bitmap.
-class ThumbnailLoader::ThumbnailDecoder : public ImageDecoder::ImageRequest {
- public:
-  ThumbnailDecoder() = default;
-
-  ThumbnailDecoder(const ThumbnailDecoder&) = delete;
-  ThumbnailDecoder& operator=(const ThumbnailDecoder&) = delete;
-  ~ThumbnailDecoder() override = default;
-
-  // ImageDecoder::ImageRequest:
-  void OnImageDecoded(const SkBitmap& bitmap) override {
-    std::move(callback_).Run(&bitmap, base::File::FILE_OK);
-  }
-
-  // ImageDecoder::ImageRequest:
-  void OnDecodeImageFailed() override {
-    std::move(callback_).Run(/*bitmap=*/nullptr, base::File::FILE_ERROR_FAILED);
-  }
-
-  void Start(const std::string& data, ThumbnailLoader::ImageCallback callback) {
-    DCHECK(!callback_);
-
-    // The data sent from the image loader extension should be in form of a data
-    // URL.
-    GURL data_url(data);
-    if (!data_url.is_valid() || !data_url.SchemeIs(url::kDataScheme)) {
-      std::move(callback).Run(/*bitmap=*/nullptr,
-                              base::File::FILE_ERROR_FAILED);
-      return;
-    }
-
-    std::string mime_type, charset, image_data;
-    if (!net::DataURL::Parse(data_url, &mime_type, &charset, &image_data)) {
-      std::move(callback).Run(/*bitmap=*/nullptr,
-                              base::File::FILE_ERROR_FAILED);
-      return;
-    }
-
-    callback_ = std::move(callback);
-    ImageDecoder::Start(this, std::move(image_data));
-  }
-
- private:
-  ThumbnailLoader::ImageCallback callback_;
-};
-
 ThumbnailLoader::ThumbnailLoader(Profile* profile) : profile_(profile) {}
 
 ThumbnailLoader::~ThumbnailLoader() {
@@ -348,8 +302,7 @@ void ThumbnailLoader::Load(const ThumbnailRequest& request,
                            ImageCallback callback) {
   // Get the file's last modified time - this will be used for cache lookup in
   // the image loader extension.
-  GURL source_url = extensions::Extension::GetBaseURLFromExtensionId(
-      file_manager::kImageLoaderExtensionId);
+  GURL source_url = file_manager::util::GetImageLoaderBaseURL();
   file_manager::util::GetMetadataForPath(
       file_manager::util::GetFileSystemContextForSourceURL(profile_,
                                                            source_url),
@@ -385,15 +338,21 @@ void ThumbnailLoader::LoadForFileWithMetadata(
     return;
   }
 
+  const GURL image_loader_url = file_manager::util::GetImageLoaderBaseURL();
+  storage::FileSystemContext* const file_system_context =
+      file_manager::util::GetFileSystemContextForSourceURL(profile_,
+                                                           image_loader_url);
+  auto* const backend = ash::FileSystemBackend::Get(*file_system_context);
+  base::FilePath virtual_path;
   GURL thumbnail_url;
-  if (!file_manager::util::ConvertAbsoluteFilePathToFileSystemUrl(
-          profile_, request.file_path,
-          extensions::Extension::GetBaseURLFromExtensionId(
-              file_manager::kImageLoaderExtensionId),
-          &thumbnail_url)) {
+  if (!backend || !backend->GetVirtualPath(request.file_path, &virtual_path) ||
+      !file_manager::util::ConvertAbsoluteFilePathToFileSystemUrl(
+          profile_, request.file_path, image_loader_url, &thumbnail_url)) {
     std::move(callback).Run(/*bitmap=*/nullptr, base::File::FILE_ERROR_FAILED);
     return;
   }
+  backend->GrantFileAccessToOrigin(url::Origin::Create(image_loader_url),
+                                   virtual_path);
 
   extensions::MessageService* const message_service =
       extensions::MessageService::Get(profile_);
@@ -413,7 +372,7 @@ void ThumbnailLoader::LoadForFileWithMetadata(
 
   // Generate an image loader request. The request type is defined in
   // ui/file_manager/image_loader/load_image_request.js.
-  base::Value::Dict request_dict;
+  base::DictValue request_dict;
   request_dict.Set("taskId", base::Value(request_id.ToString()));
   request_dict.Set("url", base::Value(thumbnail_url.spec()));
   request_dict.Set("timestamp", base::TimeToValue(file_info.last_modified));
@@ -424,8 +383,7 @@ void ThumbnailLoader::LoadForFileWithMetadata(
   request_dict.Set("width", base::Value(size));
   request_dict.Set("height", base::Value(size));
 
-  std::string request_message;
-  base::JSONWriter::Write(request_dict, &request_message);
+  std::string request_message = base::WriteJson(request_dict).value_or("");
 
   // Open a channel to the image loader extension using a message host that send
   // the image loader request.
@@ -461,20 +419,45 @@ void ThumbnailLoader::OnThumbnailLoaded(
     return;
   }
 
-  auto thumbnail_decoder = std::make_unique<ThumbnailDecoder>();
-  ThumbnailDecoder* thumbnail_decoder_ptr = thumbnail_decoder.get();
-  thumbnail_decoders_.emplace(request_id, std::move(thumbnail_decoder));
-  thumbnail_decoder_ptr->Start(
-      data,
-      base::BindOnce(&ThumbnailLoader::RespondToRequest,
+  // The data sent from the image loader extension should be in form of a data
+  // URL.
+  GURL data_url(data);
+  if (!data_url.is_valid() || !data_url.SchemeIs(url::kDataScheme)) {
+    RespondToRequest(request_id, requested_size, /*bitmap=*/nullptr,
+                     base::File::FILE_ERROR_FAILED);
+    return;
+  }
+
+  std::string mime_type, charset, image_data;
+  if (!net::DataURL::Parse(data_url, &mime_type, &charset, &image_data)) {
+    RespondToRequest(request_id, requested_size, /*bitmap=*/nullptr,
+                     base::File::FILE_ERROR_FAILED);
+    return;
+  }
+
+  data_decoder::DecodeImageIsolated(
+      base::as_byte_span(image_data), data_decoder::mojom::ImageCodec::kDefault,
+      /*shrink_to_fit=*/false, data_decoder::kDefaultMaxSizeInBytes,
+      /*desired_image_frame_size=*/gfx::Size(),
+      base::BindOnce(&ThumbnailLoader::OnImageDecoded,
                      weak_factory_.GetWeakPtr(), request_id, requested_size));
+}
+
+void ThumbnailLoader::OnImageDecoded(const base::UnguessableToken& request_id,
+                                     const gfx::Size& requested_size,
+                                     const SkBitmap& bitmap) {
+  if (bitmap.isNull()) {
+    RespondToRequest(request_id, requested_size, /*bitmap=*/nullptr,
+                     base::File::FILE_ERROR_FAILED);
+    return;
+  }
+  RespondToRequest(request_id, requested_size, &bitmap, base::File::FILE_OK);
 }
 
 void ThumbnailLoader::RespondToRequest(const base::UnguessableToken& request_id,
                                        const gfx::Size& requested_size,
                                        const SkBitmap* bitmap,
                                        base::File::Error error) {
-  thumbnail_decoders_.erase(request_id);
   auto request_it = requests_.find(request_id);
   if (request_it == requests_.end()) {
     return;

@@ -10,15 +10,16 @@
 #include "base/functional/bind.h"
 #include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_ostream_operators.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service_observer.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/bookmarks/bookmark_parent_folder_children.h"
+#include "chrome/browser/bookmarks/bookmark_test_utils.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
-#include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/bookmarks/managed/managed_bookmark_service.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/bookmarks/test/test_bookmark_client.h"
@@ -73,48 +74,6 @@ MATCHER_P(HasParent, parent, "") {
   return BookmarkParentFolder::FromFolderNode(node->parent()) == parent;
 }
 
-base::Value::List ConstructManagedBookmarks(size_t managed_bookmarks_size) {
-  const GURL url("http://google.com/");
-  base::Value::List bookmarks_list;
-  for (size_t i = 0; i < managed_bookmarks_size; ++i) {
-    base::Value::List folder_items;
-    folder_items.Append(
-        base::Value::Dict().Set("name", "Google").Set("url", url.spec()));
-    bookmarks_list.Append(
-        base::Value::Dict()
-            .Set("name", "Bookmark folder " + base::NumberToString(i))
-            .Set("children", std::move(folder_items)));
-  }
-  return bookmarks_list;
-}
-
-class TestBookmarkClientWithManagedService
-    : public bookmarks::TestBookmarkClient {
- public:
-  explicit TestBookmarkClientWithManagedService(
-      bookmarks::ManagedBookmarkService* managed_bookmark_service)
-      : managed_bookmark_service_(managed_bookmark_service) {
-    CHECK(managed_bookmark_service);
-  }
-
-  // BookmarkClient:
-  void Init(bookmarks::BookmarkModel* model) override {
-    managed_bookmark_service_->BookmarkModelCreated(model);
-  }
-  bookmarks::LoadManagedNodeCallback GetLoadManagedNodeCallback() override {
-    return managed_bookmark_service_->GetLoadManagedNodeCallback();
-  }
-  bool CanSetPermanentNodeTitle(const BookmarkNode* permanent_node) override {
-    return managed_bookmark_service_->CanSetPermanentNodeTitle(permanent_node);
-  }
-  bool IsNodeManaged(const BookmarkNode* node) override {
-    return managed_bookmark_service_->IsNodeManaged(node);
-  }
-
- private:
-  const raw_ptr<bookmarks::ManagedBookmarkService> managed_bookmark_service_;
-};
-
 class MockBookmarkMergedSurfaceServiceObserver
     : public BookmarkMergedSurfaceServiceObserver {
  public:
@@ -164,7 +123,7 @@ class BookmarkMergedSurfaceServiceTest : public testing::Test {
     if (with_managed_node) {
       CHECK(managed_bookmarks_size);
       managed_bookmark_service_ =
-          CreateManagedBookmarkService(managed_bookmarks_size);
+          CreateManagedBookmarkService(&prefs_, managed_bookmarks_size);
       bookmark_client = std::make_unique<TestBookmarkClientWithManagedService>(
           managed_bookmark_service_.get());
     } else {
@@ -172,10 +131,11 @@ class BookmarkMergedSurfaceServiceTest : public testing::Test {
     }
     model_ =
         std::make_unique<bookmarks::BookmarkModel>(std::move(bookmark_client));
-    model_->LoadEmptyForTest();
     service_ = std::make_unique<BookmarkMergedSurfaceService>(
         model_.get(), managed_bookmark_service_.get());
     service_->AddObserver(&mock_service_observer_);
+    model_->LoadEmptyForTest();
+    service_->LoadForTesting({});
   }
 
   ~BookmarkMergedSurfaceServiceTest() override {
@@ -200,21 +160,6 @@ class BookmarkMergedSurfaceServiceTest : public testing::Test {
   }
 
  private:
-  std::unique_ptr<bookmarks::ManagedBookmarkService>
-  CreateManagedBookmarkService(size_t managed_bookmarks_size) {
-    prefs_.registry()->RegisterListPref(bookmarks::prefs::kManagedBookmarks);
-    prefs_.registry()->RegisterStringPref(
-        bookmarks::prefs::kManagedBookmarksFolderName, std::string());
-
-    prefs_.SetString(bookmarks::prefs::kManagedBookmarksFolderName, "Managed");
-    prefs_.SetManagedPref(bookmarks::prefs::kManagedBookmarks,
-                          ConstructManagedBookmarks(managed_bookmarks_size));
-
-    return std::make_unique<bookmarks::ManagedBookmarkService>(
-        &prefs_, base::BindRepeating(
-                     []() -> std::string { return "managedDomain.com"; }));
-  }
-
   base::test::ScopedFeatureList features_{
       switches::kSyncEnableBookmarksInTransportMode};
   sync_preferences::TestingPrefServiceSyncable prefs_;
@@ -637,8 +582,7 @@ TEST_F(BookmarkMergedSurfaceServiceTest, MoveFromAccountToLocalStorage) {
   base::MockCallback<
       BookmarkMergedSurfaceService::ShowMoveStorageDialogCallback>
       move_storage_callback;
-  service().SetShowMoveStorageDialogCallbackForTesting(
-      move_storage_callback.Get());
+  service().SetShowMoveStorageDialogCallback(move_storage_callback.Get());
   EXPECT_CALL(move_storage_callback, Run(testing::_, node, destination, 1))
       .WillOnce(testing::Invoke(
           this, &BookmarkMergedSurfaceServiceTest::PerformMoveAction));
@@ -672,8 +616,7 @@ TEST_F(BookmarkMergedSurfaceServiceTest, MoveFromLocalToAccountStorage) {
   base::MockCallback<
       BookmarkMergedSurfaceService::ShowMoveStorageDialogCallback>
       move_storage_callback;
-  service().SetShowMoveStorageDialogCallbackForTesting(
-      move_storage_callback.Get());
+  service().SetShowMoveStorageDialogCallback(move_storage_callback.Get());
   EXPECT_CALL(move_storage_callback, Run(testing::_, node, destination, 1))
       .WillOnce(testing::Invoke(
           this, &BookmarkMergedSurfaceServiceTest::PerformMoveAction));
@@ -945,6 +888,28 @@ TEST_F(BookmarkMergedSurfaceServiceTest,
   model().CreateAccountPermanentFolders();
   EXPECT_EQ(service().GetDefaultParentForNewNodes(folder),
             model().account_bookmark_bar_node());
+}
+
+TEST_F(BookmarkMergedSurfaceServiceTest,
+       GetParentForManagedNodeForPermanentManagedNode) {
+  CreateBookmarkMergedSurfaceServiceWithManaged(/*managed_bookmarks_size=*/3);
+  BookmarkParentFolder managed_folder = BookmarkParentFolder::ManagedFolder();
+  EXPECT_EQ(service().GetParentForManagedNode(managed_folder), managed_node());
+}
+
+TEST_F(BookmarkMergedSurfaceServiceTest,
+       GetParentForManagedNodeForNonPermanentNode) {
+  CreateBookmarkMergedSurfaceServiceWithManaged(/*managed_bookmarks_size=*/1);
+  AddNodesFromModelString(&model(), managed_node(), "f1:[ f11:[ 4 ] 5 ] ");
+  // Fetch second node to get the folder since a node was already added at
+  // creation.
+  const BookmarkNode* managed_folder =
+      managed_node()->children()[1].get()->children()[0].get();
+  ASSERT_TRUE(managed_folder->is_folder());
+  ASSERT_FALSE(managed_folder->parent()->is_permanent_node());
+  BookmarkParentFolder folder =
+      BookmarkParentFolder::FromFolderNode(managed_folder);
+  EXPECT_EQ(service().GetParentForManagedNode(folder), managed_folder);
 }
 
 TEST_F(BookmarkMergedSurfaceServiceTest, BookmarkNodeAdded) {
@@ -1388,139 +1353,111 @@ TEST_F(BookmarkMergedSurfaceServiceTest, BookmarkAllUserNodesRemoved) {
       0u);
 }
 
-// Tests for `BookmarkParentFolder`
+TEST(BookmarkMergedSurfaceServiceLoadingTest, ModelLoadedFirst) {
+  std::unique_ptr<bookmarks::BookmarkModel> model =
+      std::make_unique<bookmarks::BookmarkModel>(
+          std::make_unique<bookmarks::TestBookmarkClient>());
+  BookmarkMergedSurfaceService service(model.get(),
+                                       /*managed_bookmark_service=*/nullptr);
+  MockBookmarkMergedSurfaceServiceObserver mock_observer;
+  base::ScopedObservation<BookmarkMergedSurfaceService,
+                          BookmarkMergedSurfaceServiceObserver>
+      scoped_mock_observer{&mock_observer};
+  scoped_mock_observer.Observe(&service);
 
-TEST(BookmarkParentFolderTest, FromPermanentFolderType) {
-  {
-    BookmarkParentFolder folder = BookmarkParentFolder::BookmarkBarFolder();
-    EXPECT_FALSE(folder.HoldsNonPermanentFolder());
-    EXPECT_FALSE(folder.as_non_permanent_folder());
+  EXPECT_CALL(mock_observer, BookmarkMergedSurfaceServiceLoaded()).Times(0);
+  EXPECT_CALL(mock_observer, BookmarkNodeAdded).Times(0);
+  model->LoadEmptyForTest();
+  // Notifications ignored while service is not loaded yet.
+  AddNodesFromModelString(model.get(), model->other_node(), "1 2 3 ");
+  Mock::VerifyAndClearExpectations(&mock_observer);
 
-    ASSERT_TRUE(folder.as_permanent_folder());
-    EXPECT_EQ(*folder.as_permanent_folder(),
-              PermanentFolderType::kBookmarkBarNode);
-  }
-  {
-    BookmarkParentFolder folder = BookmarkParentFolder::OtherFolder();
-    EXPECT_FALSE(folder.HoldsNonPermanentFolder());
-    EXPECT_FALSE(folder.as_non_permanent_folder());
+  EXPECT_CALL(mock_observer, BookmarkMergedSurfaceServiceLoaded()).Times(1);
+  service.LoadForTesting({});
 
-    ASSERT_TRUE(folder.as_permanent_folder());
-    EXPECT_EQ(*folder.as_permanent_folder(), PermanentFolderType::kOtherNode);
-  }
-  {
-    BookmarkParentFolder folder = BookmarkParentFolder::MobileFolder();
-    EXPECT_FALSE(folder.HoldsNonPermanentFolder());
-    EXPECT_FALSE(folder.as_non_permanent_folder());
-
-    ASSERT_TRUE(folder.as_permanent_folder());
-    EXPECT_EQ(*folder.as_permanent_folder(), PermanentFolderType::kMobileNode);
-  }
-  {
-    BookmarkParentFolder folder = BookmarkParentFolder::ManagedFolder();
-    EXPECT_FALSE(folder.HoldsNonPermanentFolder());
-    EXPECT_FALSE(folder.as_non_permanent_folder());
-
-    ASSERT_TRUE(folder.as_permanent_folder());
-    EXPECT_EQ(*folder.as_permanent_folder(), PermanentFolderType::kManagedNode);
-  }
+  // Verify service is observing the bookmark model.
+  EXPECT_CALL(mock_observer,
+              BookmarkNodeAdded(BookmarkParentFolder::BookmarkBarFolder(), _))
+      .Times(3);
+  AddNodesFromModelString(model.get(), model->bookmark_bar_node(), "1 2 3 ");
 }
 
-TEST(BookmarkParentFolderTest, FromFolderNode) {
+TEST(BookmarkMergedSurfaceServiceLoadingTest, ServiceLoadedFirst) {
+  std::unique_ptr<bookmarks::BookmarkModel> model =
+      std::make_unique<bookmarks::BookmarkModel>(
+          std::make_unique<bookmarks::TestBookmarkClient>());
+  BookmarkMergedSurfaceService service(model.get(),
+                                       /*managed_bookmark_service=*/nullptr);
+  MockBookmarkMergedSurfaceServiceObserver mock_observer;
+  base::ScopedObservation<BookmarkMergedSurfaceService,
+                          BookmarkMergedSurfaceServiceObserver>
+      scoped_mock_observer{&mock_observer};
+  scoped_mock_observer.Observe(&service);
+
+  EXPECT_CALL(mock_observer, BookmarkMergedSurfaceServiceLoaded()).Times(0);
+  service.LoadForTesting({});
+  Mock::VerifyAndClearExpectations(&mock_observer);
+
+  EXPECT_CALL(mock_observer, BookmarkMergedSurfaceServiceLoaded()).Times(1);
+  model->LoadEmptyForTest();
+
+  // Verify service is observing the bookmark model.
+  EXPECT_CALL(mock_observer,
+              BookmarkNodeAdded(BookmarkParentFolder::BookmarkBarFolder(), _))
+      .Times(3);
+  AddNodesFromModelString(model.get(), model->bookmark_bar_node(), "1 2 3 ");
+}
+
+TEST(BookmarkMergedSurfaceServiceLoadingTest, IdsReassigned) {
+  std::unique_ptr<bookmarks::BookmarkModel> model =
+      std::make_unique<bookmarks::BookmarkModel>(
+          std::make_unique<bookmarks::TestBookmarkClient>());
+  BookmarkMergedSurfaceService service(model.get(),
+                                       /*managed_bookmark_service=*/nullptr);
+  MockBookmarkMergedSurfaceServiceObserver mock_observer;
+  base::ScopedObservation<BookmarkMergedSurfaceService,
+                          BookmarkMergedSurfaceServiceObserver>
+      scoped_mock_observer{&mock_observer};
+  scoped_mock_observer.Observe(&service);
+
+  EXPECT_CALL(mock_observer, BookmarkMergedSurfaceServiceLoaded()).Times(1);
+  service.BookmarkModelLoaded(/*ids_reassigned=*/true);
+  model->LoadEmptyForTest();
+}
+
+TEST(BookmarkMergedSurfaceServiceLoadingTest, CustomOrder) {
   base::test::ScopedFeatureList features{
       switches::kSyncEnableBookmarksInTransportMode};
-  auto client = std::make_unique<bookmarks::TestBookmarkClient>();
-  bookmarks::BookmarkNode* managed_node = client->EnableManagedNode();
   std::unique_ptr<bookmarks::BookmarkModel> model =
-      bookmarks::TestBookmarkClient::CreateModelWithClient(std::move(client));
-  model->CreateAccountPermanentFolders();
-  const BookmarkNode* folder_node =
-      model->AddFolder(model->bookmark_bar_node(), 0, u"folder");
+      std::make_unique<bookmarks::BookmarkModel>(
+          std::make_unique<bookmarks::TestBookmarkClient>());
+  BookmarkMergedSurfaceService service(model.get(),
+                                       /*managed_bookmark_service=*/nullptr);
+  MockBookmarkMergedSurfaceServiceObserver mock_observer;
+  base::ScopedObservation<BookmarkMergedSurfaceService,
+                          BookmarkMergedSurfaceServiceObserver>
+      scoped_mock_observer{&mock_observer};
+  scoped_mock_observer.Observe(&service);
 
-  EXPECT_EQ(BookmarkParentFolder::FromFolderNode(model->bookmark_bar_node()),
-            BookmarkParentFolder::BookmarkBarFolder());
-  EXPECT_EQ(BookmarkParentFolder::FromFolderNode(model->other_node()),
-            BookmarkParentFolder::OtherFolder());
-  EXPECT_EQ(BookmarkParentFolder::FromFolderNode(model->mobile_node()),
-            BookmarkParentFolder::MobileFolder());
-  EXPECT_EQ(BookmarkParentFolder::FromFolderNode(managed_node),
-            BookmarkParentFolder::ManagedFolder());
+  model->LoadEmptyForTest();
+  model->CreateAccountPermanentFolders();
+  AddNodesFromModelString(model.get(), model->bookmark_bar_node(), "1 ");
+  AddNodesFromModelString(model.get(), model->account_bookmark_bar_node(),
+                          "4 5 ");
+
+  EXPECT_CALL(mock_observer, BookmarkMergedSurfaceServiceLoaded()).Times(1);
+  service.LoadForTesting(
+      {{PermanentFolderType::kBookmarkBarNode,
+        {model->bookmark_bar_node()->children()[0]->id(),
+         model->account_bookmark_bar_node()->children()[0]->id(),
+         model->account_bookmark_bar_node()->children()[1]->id()}}});
 
   EXPECT_EQ(
-      BookmarkParentFolder::FromFolderNode(model->account_bookmark_bar_node()),
-      BookmarkParentFolder::BookmarkBarFolder());
-  EXPECT_EQ(BookmarkParentFolder::FromFolderNode(model->account_other_node()),
-            BookmarkParentFolder::OtherFolder());
-  EXPECT_EQ(BookmarkParentFolder::FromFolderNode(model->account_mobile_node()),
-            BookmarkParentFolder::MobileFolder());
-
-  BookmarkParentFolder folder =
-      BookmarkParentFolder::FromFolderNode(folder_node);
-  EXPECT_TRUE(folder.HoldsNonPermanentFolder());
-  EXPECT_EQ(folder.as_non_permanent_folder(), folder_node);
-  EXPECT_FALSE(folder.as_permanent_folder());
-}
-
-TEST(BookmarkParentFolderTest, HasDirectChildNode) {
-  std::unique_ptr<bookmarks::BookmarkModel> model =
-      std::make_unique<bookmarks::BookmarkModel>(
-          std::make_unique<bookmarks::TestBookmarkClient>());
-  model->LoadEmptyForTest();
-  AddNodesFromModelString(model.get(), model->bookmark_bar_node(),
-                          "1 2 3 f1:[ 4 5 ] ");
-  AddNodesFromModelString(model.get(), model->other_node(), "6 7 8 ");
-
-  const BookmarkNode* f1 = model->bookmark_bar_node()->children()[3].get();
-  {
-    BookmarkParentFolder folder = BookmarkParentFolder::BookmarkBarFolder();
-    for (const auto& node : model->bookmark_bar_node()->children()) {
-      EXPECT_TRUE(folder.HasDirectChildNode(node.get()));
-    }
-    EXPECT_FALSE(folder.HasDirectChildNode(f1->children()[0].get()));
-    EXPECT_FALSE(folder.HasDirectChildNode(model->other_node()));
-    EXPECT_FALSE(
-        folder.HasDirectChildNode(model->other_node()->children()[1].get()));
-  }
-
-  {
-    BookmarkParentFolder folder = BookmarkParentFolder::FromFolderNode(f1);
-    for (const auto& node : f1->children()) {
-      EXPECT_TRUE(folder.HasDirectChildNode(node.get()));
-    }
-    EXPECT_FALSE(folder.HasDirectChildNode(model->bookmark_bar_node()));
-    EXPECT_FALSE(folder.HasDirectChildNode(model->other_node()));
-    EXPECT_FALSE(folder.HasDirectChildNode(f1));
-  }
-}
-
-TEST(BookmarkParentFolderTest, HasAncestor) {
-  std::unique_ptr<bookmarks::BookmarkModel> model =
-      std::make_unique<bookmarks::BookmarkModel>(
-          std::make_unique<bookmarks::TestBookmarkClient>());
-  model->LoadEmptyForTest();
-  AddNodesFromModelString(model.get(), model->bookmark_bar_node(),
-                          "1 2 3 f1:[ 4 5 f2:[ 1 ] ] ");
-
-  const BookmarkNode* f1 = model->bookmark_bar_node()->children()[3].get();
-  const BookmarkParentFolder f1_folder(
-      BookmarkParentFolder::FromFolderNode(f1));
-  EXPECT_TRUE(f1_folder.HasAncestor(BookmarkParentFolder::FromFolderNode(f1)));
-  EXPECT_TRUE(f1_folder.HasAncestor(BookmarkParentFolder::BookmarkBarFolder()));
-  EXPECT_FALSE(f1_folder.HasAncestor(BookmarkParentFolder::OtherFolder()));
-
-  const BookmarkParentFolder f2_folder(
-      BookmarkParentFolder::FromFolderNode(f1->children()[2].get()));
-  EXPECT_FALSE(f1_folder.HasAncestor(f2_folder));
-  EXPECT_TRUE(f2_folder.HasAncestor(f2_folder));
-  EXPECT_TRUE(f2_folder.HasAncestor(BookmarkParentFolder::BookmarkBarFolder()));
-  EXPECT_FALSE(f2_folder.HasAncestor(BookmarkParentFolder::OtherFolder()));
-
-  EXPECT_FALSE(
-      BookmarkParentFolder::BookmarkBarFolder().HasAncestor(f1_folder));
-  EXPECT_TRUE(BookmarkParentFolder::BookmarkBarFolder().HasAncestor(
-      BookmarkParentFolder::BookmarkBarFolder()));
-  EXPECT_FALSE(BookmarkParentFolder::BookmarkBarFolder().HasAncestor(
-      BookmarkParentFolder::OtherFolder()));
+      service.GetNodeAtIndex(BookmarkParentFolder::BookmarkBarFolder(), 0),
+      model->bookmark_bar_node()->children()[0].get());
+  EXPECT_EQ(
+      service.GetNodeAtIndex(BookmarkParentFolder::BookmarkBarFolder(), 1),
+      model->account_bookmark_bar_node()->children()[0].get());
 }
 
 }  // namespace

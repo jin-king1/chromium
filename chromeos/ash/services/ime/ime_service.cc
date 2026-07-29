@@ -10,10 +10,10 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
-#include "base/files/file_util.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chromeos/ash/services/ime/constants.h"
 #include "chromeos/ash/services/ime/decoder/decoder_engine.h"
@@ -160,23 +160,29 @@ bool ImeService::IsFeatureEnabled(const char* feature_name) {
   static const base::Feature* kConsideredFeatures[] = {
       &features::kAssistMultiWord,
       &features::kAutocorrectParamsTuning,
-      &features::kFirstPartyVietnameseInput,
-      &features::kSystemJapanesePhysicalTyping,
       &features::kImeDownloaderExperiment,
-      &features::kImeDownloaderUpdate,
-      &features::kImeKoreanOnlyModeSwitchOnRightAlt,
-      &features::kImeUsEnglishExperimentalModel,
-      &features::kImeUsEnglishModelUpdate,
-      &features::kImeFstDecoderParamsUpdate,
       &features::kAutocorrectByDefault,
-      &features::kInputMethodKoreanRightAltKeyDownFix,
       &features::kImeSwitchCheckConnectionStatus};
+
+  static constexpr std::string_view kEnabledFeatures[] = {
+      "InputMethodKoreanRightAltKeyDownFix",
+      "ImeKoreanOnlyModeSwitchOnRightAlt",
+      "ImeFstDecoderParamsUpdate",
+      "ImeDownloaderUpdate",
+      "ImeUsEnglishModelUpdate",
+  };
 
   // Use consistent feature flag names as in CrOS base::Feature::name and always
   // wire 1:1 to CrOS feature flags without extra logic.
   for (const base::Feature* feature : kConsideredFeatures) {
-    if (strcmp(feature_name, feature->name) == 0) {
+    if (UNSAFE_TODO(strcmp(feature_name, feature->name)) == 0) {
       return base::FeatureList::IsEnabled(*feature);
+    }
+  }
+
+  for (const std::string_view name : kEnabledFeatures) {
+    if (name == feature_name) {
+      return true;
     }
   }
 
@@ -188,13 +194,14 @@ const char* ImeService::GetFieldTrialParamValueByFeature(
     const char* param_name) {
   char* c_string_value;
 
-  if (strcmp(feature_name, features::kAutocorrectParamsTuning.name) == 0) {
+  if (UNSAFE_TODO(
+          strcmp(feature_name, features::kAutocorrectParamsTuning.name)) == 0) {
     std::string string_value =
         field_trial_params_retriever_->GetFieldTrialParamValueByFeature(
             features::kAutocorrectParamsTuning, param_name);
     c_string_value =
         new char[string_value.length() + 1];  // extra slot for NULL '\0' char
-    strcpy(c_string_value, string_value.c_str());
+    UNSAFE_TODO(strcpy(c_string_value, string_value.c_str()));
   } else {
     c_string_value = new char[1];
     c_string_value[0] = '\0';

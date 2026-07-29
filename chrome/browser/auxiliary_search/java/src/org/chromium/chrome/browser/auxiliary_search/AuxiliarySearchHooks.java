@@ -4,12 +4,17 @@
 
 package org.chromium.chrome.browser.auxiliary_search;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import androidx.appsearch.app.PackageIdentifier;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchDonor.SetDocumentClassVisibilityForPackageCallback;
 
+import java.util.Collections;
+import java.util.Set;
+
 /** Provides access to internal AuxiliarySearch implementation parts, if they are available. */
+@NullMarked
 public interface AuxiliarySearchHooks {
     /** Whether the internal components of the Auxiliary Search are available. */
     boolean isEnabled();
@@ -20,16 +25,25 @@ public interface AuxiliarySearchHooks {
      * @param callback The callback to set the document visibilities.
      */
     default void setSchemaTypeVisibilityForPackage(
-            @NonNull SetDocumentClassVisibilityForPackageCallback callback) {}
+            SetDocumentClassVisibilityForPackageCallback callback) {}
+
+    /** Returns the package identifiers of apps for which browsing data is visible. */
+    default Set<PackageIdentifier> getPackagesForBrowsingDataVisibility() {
+        return Collections.emptySet();
+    }
 
     /** Returns whether the sharing Tabs with the system is enabled by default on the device. */
     default boolean isSettingDefaultEnabledByOs() {
         return false;
     }
 
+    /** Returns whether multiple data source is enabled on the device. */
+    default boolean isMultiDataTypeEnabledOnDevice() {
+        return false;
+    }
+
     /** Returns the package name of the supported app which reads the donated Tabs. */
-    @Nullable
-    default String getSupportedPackageName() {
+    default @Nullable String getSupportedPackageName() {
         return null;
     }
 }

@@ -89,6 +89,7 @@ declare global {
         NEED_PASSWORD = 'need_password',
         CANCELLED = 'cancelled',
         BUSY = 'busy',
+        CORRUPTED = 'corrupted',
       }
 
       export enum FormatFileSystemType {
@@ -102,12 +103,6 @@ declare global {
         QUEUED = 'queued',
         COMPLETED = 'completed',
         FAILED = 'failed',
-      }
-
-      export enum InstallLinuxPackageStatus {
-        STARTED = 'started',
-        FAILED = 'failed',
-        INSTALL_ALREADY_ACTIVE = 'install_already_active',
       }
 
       export enum FileWatchEventType {
@@ -367,10 +362,11 @@ declare global {
         ONEDRIVE = 'onedrive',
       }
 
-      export enum CloudProvider {
+      export enum MigrationDestination {
         NOT_SPECIFIED = 'not_specified',
         GOOGLE_DRIVE = 'google_drive',
         ONEDRIVE = 'onedrive',
+        DELETE = 'delete',
       }
 
       export interface FileTaskDescriptor {
@@ -547,7 +543,6 @@ declare global {
       export interface Preferences {
         driveEnabled: boolean;
         driveSyncEnabledOnMeteredNetwork: boolean;
-        searchSuggestEnabled: boolean;
         use24hourClock: boolean;
         timezone: string;
         arcEnabled: boolean;
@@ -560,7 +555,8 @@ declare global {
         driveFsBulkPinningEnabled: boolean;
         localUserFilesAllowed: boolean;
         defaultLocation: DefaultLocation;
-        skyVaultMigrationDestination: CloudProvider;
+        skyVaultMigrationDestination: MigrationDestination;
+        skyVaultMigrationStartTime?: string;
       }
 
       export interface PreferencesChange {
@@ -617,13 +613,6 @@ declare global {
       export interface FileSystemProviderAction {
         id: string;
         title?: string;
-      }
-
-      export interface LinuxPackageInfo {
-        name: string;
-        version: string;
-        summary?: string;
-        description?: string;
       }
 
       export interface CrostiniEvent {
@@ -794,13 +783,16 @@ declare global {
         emptiedQueue: boolean;
       }
 
-      export interface MaterializedView {
-        viewId: number;
+      export interface FileSystemData {
         name: string;
+        rootUrl: string;
       }
 
       export interface EntryData {
         entryUrl: string;
+        isDirectory: boolean;
+        name: string;
+        filesystem: FileSystemData;
       }
 
       export function cancelDialog(): void;
@@ -986,14 +978,6 @@ declare global {
           observeFirstForSession: boolean, vmName: string,
           callback: (response: CrostiniSharedPathResponse) => void): void;
 
-      export function getLinuxPackageInfo(
-          entry: Entry,
-          callback: (linux_package_info: LinuxPackageInfo) => void): void;
-
-      export function installLinuxPackage(
-          entry: Entry,
-          callback: (status: InstallLinuxPackageStatus) => void): void;
-
       export function importCrostiniImage(entry: Entry): void;
 
       export function getAndroidPickerApps(
@@ -1057,11 +1041,6 @@ declare global {
           callback: (progress: BulkPinProgress) => void): void;
 
       export function calculateBulkPinRequiredSpace(callback: () => void): void;
-
-      export function getMaterializedViews(): Promise<MaterializedView[]>;
-
-      export function readMaterializedView(viewId: number):
-          Promise<EntryData[]>;
 
       export const onMountCompleted:
           ChromeEvent<(event: MountCompletedEvent) => void>;

@@ -44,9 +44,6 @@
 - (void)stopReceivingNotifications;
 // Returns the camera attached to `_captureSession`.
 - (AVCaptureDevice*)camera;
-// Returns the AVCaptureVideoOrientation to compensate for the current
-// UIInterfaceOrientation. Defaults to AVCaptureVideoOrientationPortrait.
-- (AVCaptureVideoOrientation)videoOrientationForCurrentInterfaceOrientation;
 
 @end
 
@@ -115,9 +112,13 @@
 - (void)resetVideoOrientation:(AVCaptureVideoPreviewLayer*)previewLayer {
   DCHECK(previewLayer);
   AVCaptureConnection* videoConnection = [previewLayer connection];
-  if ([videoConnection isVideoOrientationSupported]) {
-    [videoConnection setVideoOrientation:
-                         [self videoOrientationForCurrentInterfaceOrientation]];
+  AVCaptureDevice* camera = [self camera];
+  AVCaptureDeviceRotationCoordinator* rotationCoordiantor =
+      [[AVCaptureDeviceRotationCoordinator alloc] initWithDevice:camera
+                                                    previewLayer:previewLayer];
+  CGFloat angle = rotationCoordiantor.videoRotationAngleForHorizonLevelCapture;
+  if ([videoConnection isVideoRotationAngleSupported:angle]) {
+    [videoConnection setVideoRotationAngle:angle];
   }
 }
 
@@ -324,16 +325,6 @@
   return [captureSessionInput device];
 }
 
-- (AVCaptureVideoOrientation)videoOrientationForCurrentInterfaceOrientation {
-  UIInterfaceOrientation orientation = GetInterfaceOrientation();
-  switch (orientation) {
-    case UIInterfaceOrientationUnknown:
-      return AVCaptureVideoOrientationPortrait;
-    default:
-      return static_cast<AVCaptureVideoOrientation>(orientation);
-  }
-}
-
 #pragma mark - Notification Handlers
 
 - (void)handleAVCaptureSessionRuntimeError:(NSNotification*)notification {
@@ -366,6 +357,10 @@
         break;
       case AVCaptureSessionInterruptionReasonAudioDeviceInUseByAnotherClient:
         NOTREACHED();
+      case AVCaptureSessionInterruptionReasonSensitiveContentMitigationActivated:
+        // TODO(crbug.com/423849692): Add a new camera state for this case.
+        [weakSelf setCameraState:scanner::CAMERA_UNAVAILABLE];
+        break;
     }
   });
 }

@@ -10,11 +10,14 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/no_destructor.h"
 #include "base/types/expected.h"
 #include "components/language_detection/content/common/language_detection.mojom-blink.h"
 #include "components/language_detection/content/renderer/language_detection_model_manager.h"
+#include "components/language_detection/core/chinese_script_classifier.h"
 #include "components/language_detection/core/language_detection_model.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
@@ -26,7 +29,7 @@ void LanguageDetectionModel::LoadModelFile(
     CreateLanguageDetectionModelCallback callback) {
   language_detection_model_.UpdateWithFileAsync(
       std::move(model_file),
-      WTF::BindOnce(
+      blink::BindOnce(
           [](LanguageDetectionModel* model,
              CreateLanguageDetectionModelCallback callback) {
             if (!model || !model->language_detection_model_.IsAvailable()) {
@@ -43,7 +46,7 @@ void LanguageDetectionModel::Trace(Visitor* visitor) const {}
 
 void LanguageDetectionModel::DetectLanguage(
     scoped_refptr<base::SequencedTaskRunner>& task_runner,
-    const WTF::String& text,
+    const String& text,
     DetectLanguageCallback on_complete) {
   if (!language_detection_model_.IsAvailable()) {
     std::move(on_complete)
@@ -52,21 +55,34 @@ void LanguageDetectionModel::DetectLanguage(
   }
   task_runner->PostTask(
       FROM_HERE,
-      WTF::BindOnce(&LanguageDetectionModel::DetectLanguageImpl,
-                    WrapPersistent(this), text, std::move(on_complete)));
+      blink::BindOnce(&LanguageDetectionModel::DetectLanguageImpl,
+                      WrapPersistent(this), text, std::move(on_complete)));
 }
 
 void LanguageDetectionModel::DetectLanguageImpl(
-    const WTF::String& text,
+    const String& text,
     DetectLanguageCallback on_complete) {
-  WTF::String text_16 = text;
+  String text_16 = text;
   text_16.Ensure16Bit();
-  auto score_by_language = language_detection_model_.PredictWithScan(
-      std::u16string_view(text_16.Characters16(), text_16.length()));
+  auto score_by_language =
+      language_detection_model_.PredictWithScan(text_16.View16());
 
-  WTF::Vector<LanguagePrediction> predictions;
+  Vector<LanguagePrediction> predictions;
   predictions.reserve(static_cast<wtf_size_t>(score_by_language.size()));
-  for (const auto& it : score_by_language) {
+
+  const bool detect_zh_variants =
+      base::FeatureList::IsEnabled(features::kDetectZhVariants);
+
+  for (auto& it : score_by_language) {
+    if (it.language == "zh" && detect_zh_variants) {
+      static base::NoDestructor<language_detection::ChineseScriptClassifier>
+          zh_classifier;
+      if (zh_classifier->IsInitialized()) {
+        std::string zh_refined = zh_classifier->Classify(text_16.View16());
+        DCHECK(!zh_refined.empty());
+        it.language = zh_refined;
+      }
+    }
     predictions.emplace_back(it.language, it.score);
   }
   std::move(on_complete).Run(predictions);

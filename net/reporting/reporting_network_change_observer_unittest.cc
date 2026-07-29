@@ -69,8 +69,8 @@ TEST_F(ReportingNetworkChangeObserverTest, ClearNothing) {
   UsePolicy(new_policy);
 
   cache()->AddReport(kReportingSource_, kNak_, kUrl_, kUserAgent_, kGroup_,
-                     kType_, base::Value::Dict(), 0, tick_clock()->NowTicks(),
-                     0, ReportingTargetType::kDeveloper);
+                     kType_, base::DictValue(), 0, tick_clock()->NowTicks(),
+                     ReportingTargetType::kDeveloper);
   SetEndpoint();
   ASSERT_EQ(1u, report_count());
   ASSERT_EQ(1u, cache()->GetEndpointCount());
@@ -88,8 +88,8 @@ TEST_F(ReportingNetworkChangeObserverTest, ClearReports) {
   UsePolicy(new_policy);
 
   cache()->AddReport(kReportingSource_, kNak_, kUrl_, kUserAgent_, kGroup_,
-                     kType_, base::Value::Dict(), 0, tick_clock()->NowTicks(),
-                     0, ReportingTargetType::kDeveloper);
+                     kType_, base::DictValue(), 0, tick_clock()->NowTicks(),
+                     ReportingTargetType::kDeveloper);
   SetEndpoint();
   ASSERT_EQ(1u, report_count());
   ASSERT_EQ(1u, cache()->GetEndpointCount());
@@ -107,8 +107,8 @@ TEST_F(ReportingNetworkChangeObserverTest, ClearClients) {
   UsePolicy(new_policy);
 
   cache()->AddReport(kReportingSource_, kNak_, kUrl_, kUserAgent_, kGroup_,
-                     kType_, base::Value::Dict(), 0, tick_clock()->NowTicks(),
-                     0, ReportingTargetType::kDeveloper);
+                     kType_, base::DictValue(), 0, tick_clock()->NowTicks(),
+                     ReportingTargetType::kDeveloper);
   SetEndpoint();
   ASSERT_EQ(1u, report_count());
   ASSERT_EQ(1u, cache()->GetEndpointCount());
@@ -126,8 +126,8 @@ TEST_F(ReportingNetworkChangeObserverTest, ClearReportsAndClients) {
   UsePolicy(new_policy);
 
   cache()->AddReport(kReportingSource_, kNak_, kUrl_, kUserAgent_, kGroup_,
-                     kType_, base::Value::Dict(), 0, tick_clock()->NowTicks(),
-                     0, ReportingTargetType::kDeveloper);
+                     kType_, base::DictValue(), 0, tick_clock()->NowTicks(),
+                     ReportingTargetType::kDeveloper);
   SetEndpoint();
   ASSERT_EQ(1u, report_count());
   ASSERT_EQ(1u, cache()->GetEndpointCount());

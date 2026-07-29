@@ -8,7 +8,6 @@
 
 #include "base/check.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
 #include "base/types/pass_key.h"
 #include "ui/menus/simple_menu_model.h"
 
@@ -19,6 +18,10 @@ ToastSpecification::Builder::Builder(const gfx::VectorIcon& icon,
                                                icon,
                                                body_string_id)) {}
 
+ToastSpecification::Builder::Builder(const gfx::VectorIcon& icon)
+    : toast_specification_(
+          std::make_unique<ToastSpecification>(base::PassKey<Builder>(),
+                                               icon)) {}
 ToastSpecification::Builder::~Builder() {
   // Verify that ToastSpecification::Builder::Build() has been called
   // so the toast specification is completely built.
@@ -48,6 +51,18 @@ ToastSpecification::Builder& ToastSpecification::Builder::AddGlobalScoped() {
   return *this;
 }
 
+ToastSpecification::Builder&
+ToastSpecification::Builder::SetPersistOnNavigation() {
+  toast_specification_->SetPersistOnNavigation();
+  return *this;
+}
+
+ToastSpecification::Builder&
+ToastSpecification::Builder::SetToastAsActionable() {
+  toast_specification_->SetToastAsActionable();
+  return *this;
+}
+
 std::unique_ptr<ToastSpecification> ToastSpecification::Builder::Build() {
   ValidateSpecification();
   return std::move(toast_specification_);
@@ -65,6 +80,14 @@ void ToastSpecification::Builder::ValidateSpecification() {
   if (toast_specification_->has_menu()) {
     CHECK(!toast_specification_->has_close_button());
   }
+
+  // Toasts can be manually set as actionable, or have close / menu buttons. Not
+  // both.
+  if (toast_specification_->has_actionable_override()) {
+    CHECK(!toast_specification_->has_close_button() &&
+          !toast_specification_->has_menu())
+        << "Avoid use of SetToastAsActionable() on an already actionable toast";
+  }
 }
 
 ToastSpecification::ToastSpecification(
@@ -72,6 +95,11 @@ ToastSpecification::ToastSpecification(
     const gfx::VectorIcon& icon,
     int string_id)
     : icon_(icon), body_string_id_(string_id) {}
+
+ToastSpecification::ToastSpecification(
+    base::PassKey<ToastSpecification::Builder>,
+    const gfx::VectorIcon& icon)
+    : icon_(icon) {}
 
 ToastSpecification::~ToastSpecification() = default;
 
@@ -92,4 +120,12 @@ void ToastSpecification::AddMenu() {
 
 void ToastSpecification::AddGlobalScope() {
   is_global_scope_ = true;
+}
+
+void ToastSpecification::SetPersistOnNavigation() {
+  persist_on_navigation_ = true;
+}
+
+void ToastSpecification::SetToastAsActionable() {
+  actionable_toast_override_ = true;
 }

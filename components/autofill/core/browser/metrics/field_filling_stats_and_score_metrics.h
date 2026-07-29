@@ -5,8 +5,12 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_FIELD_FILLING_STATS_AND_SCORE_METRICS_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_FIELD_FILLING_STATS_AND_SCORE_METRICS_H_
 
-#include "base/containers/flat_map.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
+#include <stddef.h>
+
+#include "components/autofill/core/browser/autofill_field.h"
+#include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/browser/form_types.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
 
 namespace autofill::autofill_metrics {
 
@@ -78,7 +82,8 @@ struct FormGroupFillingStats {
 FieldFillingStatus GetFieldFillingStatus(const AutofillField& field);
 
 // Returns the `FormGroupFillingStats` corresponding to the fields in
-// `form_structure` that match `form_type`. This method does not log to UMA but
+// `form_structure` that match `form_type`. `form_type` must not be
+// `kUnknownFormType`. This function does not log to UMA but
 // only returns the statistics of a submitted form. `FormGroupFillingStats` is
 // UMA logged in `LogQualityMetrics()`.
 FormGroupFillingStats GetFormFillingStatsForFormType(
@@ -89,7 +94,9 @@ FormGroupFillingStats GetFormFillingStatsForFormType(
 // `filling_stats` of ac=unrecognized fields. The filling status
 // consistent of the number of accepted, corrected or and unfilled fields. See
 // the .cc file for details.
-void LogFieldFillingStatsAndScore(const FormStructure& form);
+void LogFieldFillingStatsAndScore(
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior);
 
 }  // namespace autofill::autofill_metrics
 

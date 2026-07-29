@@ -26,11 +26,14 @@ chromium-metrics-reviews@google.com.
 
 <enums>
 
-<enum name="CustomTabsAuthScheme">
-  <int value="0" label="Other/Custom"/>
-  <int value="1" label="HTTP"/>
-  <int value="2" label="HTTPS"/>
+<!-- LINT.IfChange(ContextualCustomActionType) -->
+
+<enum name="ContextualCustomActionType">
+  <int value="0" label="Link"/>
+  <int value="1" label="Image"/>
 </enum>
+
+<!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/contextmenu/ChromeContextMenuPopulator.java:ContextualCustomActionType) -->
 
 <enum name="CustomTabsBrandingAppIdType">
   <summary>Used by CustomTabs.Branding.AppIdType</summary>
@@ -52,6 +55,8 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Connected to service w/o KeepAlive connection"/>
   <int value="3" label="Connected to service with KeepAlive connection"/>
 </enum>
+
+<!--LINT.IfChange(CustomTabsFeatureUsed) -->
 
 <enum name="CustomTabsFeatureUsed">
   <int value="0" label="Sessions - counter for all sessions"/>
@@ -97,7 +102,9 @@ chromium-metrics-reviews@google.com.
   <int value="40" label="TWA origins EXTRA_ADDITIONAL_TRUSTED_ORIGINS"/>
   <int value="41" label="Url bar hiding EXTRA_ENABLE_URLBAR_HIDING"/>
   <int value="42" label="Translate specified EXTRA_AUTO_TRANSLATE_LANGUAGE"/>
-  <int value="43" label="Experiment override EXTRA_AGA_EXPERIMENT_ENABLE"/>
+  <int value="43"
+      label="(Obsolete) Experiment override EXTRA_AGA_EXPERIMENT_ENABLE.
+             Removed 2025/07."/>
   <int value="44" label="Partial width custom tab CTF_PARTIAL_SIDE_SHEET"/>
   <int value="45" label="Break point EXTRA_ACTIVITY_SIDE_SHEET_BREAKPOINT_DP"/>
   <int value="46" label="Initial width EXTRA_INITIAL_ACTIVITY_WIDTH_PX"/>
@@ -133,13 +140,21 @@ chromium-metrics-reviews@google.com.
       label="Auth Tab https redirect host EXTRA_HTTPS_REDIRECT_HOST"/>
   <int value="62"
       label="Auth Tab https redirect path EXTRA_HTTPS_REDIRECT_PATH"/>
+  <int value="63"
+      label="Open in Browser button in the toolbar state
+             EXTRA_OPEN_IN_BROWSER_STATE"/>
+  <int value="64" label="Launch Handler API usage EXTRA_LAUNCH_HANDLER"/>
+  <int value="65" label="File Handlers API usage EXTRA_FILE_HANDLERS"/>
+  <int value="66"
+      label="Custom context menu items EXTRA_CUSTOM_CONTENT_ACTIONS"/>
+  <int value="67" label="Timeout minutes EXTRA_TIMEOUT_MINUTES"/>
+  <int value="68"
+      label="(Obsolete) Timeout minutes allowed
+             EXTRA_TIMEOUT_MINUTES_ALLOWED. Removed 2026/06."/>
+  <int value="69" label="Timeout pending intent EXTRA_TIMEOUT_PENDING_INTENT"/>
 </enum>
 
-<enum name="CustomTabsMinimizedEvents">
-  <int value="0" label="Minimized into PiP"/>
-  <int value="1" label="Maximized from PiP"/>
-  <int value="2" label="PiP dismissed or destroyed"/>
-</enum>
+<!--LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabsFeatureUsage.java:CustomTabsFeature) -->
 
 <enum name="CustomTabsMinimizedFeatureAvailability">
   <int value="0" label="Available"/>
@@ -149,6 +164,77 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Unavailable: System doesn't have PiP feature"/>
   <int value="4" label="Unavailable: PiP permission isn't granted"/>
   <int value="5" label="Unavailable: Device is on manufacturer exclude list"/>
+</enum>
+
+<!--LINT.IfChange(CustomTabsMtbHiddenReason) -->
+
+<enum name="CustomTabsMtbHiddenReason">
+  <int value="0" label="Other reason"/>
+  <int value="1" label="Invalid variant"/>
+  <int value="2" label="Duplicated action"/>
+  <int value="3" label="In CPA-only mode"/>
+  <int value="4" label="No space for button"/>
+  <int value="5" label="Toolbar width limit"/>
+  <int value="6" label="Omnibox enabled"/>
+</enum>
+
+<!--LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/customtabs/features/toolbar/CustomTabMtbHiddenReason.java:CustomTabMtbHiddenReason) -->
+
+<!--LINT.IfChange(CustomTabsNavigationEvent) -->
+
+<enum name="CustomTabsNavigationEvent">
+  <int value="1" label="Navigation Started"/>
+  <int value="2" label="Navigation Finished"/>
+  <int value="3" label="Navigation Failed"/>
+  <int value="4" label="Navigation Aborted"/>
+  <int value="5" label="Tab Shown"/>
+  <int value="6" label="Tab Hidden"/>
+</enum>
+
+<!--LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabsConnection.java:CustomTabsNavigationEvent) -->
+
+<!--LINT.IfChange(CustomTabsOpenType) -->
+
+<enum name="CustomTabsOpenType">
+  <int value="0" label="New"/>
+  <int value="1" label="Omnibox"/>
+  <int value="2" label="RestoreOk"/>
+  <int value="3" label="RestoreFail"/>
+</enum>
+
+<!--LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabTabPersistencePolicy.java:CustomTabsOpenType) -->
+
+<enum name="CustomTabsPageContentEligibility">
+  <int value="0" label="ELIGIBILITY_CHECK_STARTED"/>
+  <int value="1" label="ELIGIBLE_ENABLED_BY_CHROME"/>
+  <int value="2" label="ELIGIBLE_ENABLED_BY_EMBEDDER"/>
+  <int value="3" label="ELIGIBLE_REUSED_ENABLED_BY_CHROME"/>
+  <int value="4" label="ELIGIBLE_REUSED_ENABLED_BY_EMBEDDER"/>
+  <int value="5" label="NOT_ELIGIBLE_NO_PAGE_CONTENT_REQUEST_AFTER_PARSING"/>
+  <int value="6" label="NOT_ELIGIBLE_NO_PAGE_CONTENT_REQUEST_EXTRA"/>
+  <int value="7" label="NOT_ELIGIBLE_NO_PERMISSIONS"/>
+  <int value="8" label="NOT_ELIGIBLE_NOT_ENABLED"/>
+  <int value="9" label="NOT_ELIGIBLE_NOT_VERIFIED"/>
+  <int value="10" label="NOT_ELIGIBLE_REUSED"/>
+</enum>
+
+<enum name="CustomTabsPageContentExtractionResult">
+  <int value="0" label="FAILED_CURRENT_TAB_NULL"/>
+  <int value="1" label="FAILED_NO_CONTENT_RETURNED"/>
+  <int value="2" label="FAILED_NO_REQUESTS"/>
+  <int value="3" label="FAILED_NO_REQUESTS_FOR_VIEW_ID"/>
+  <int value="4" label="FAILED_SHOULD_NOT_ADD_PAGE_CONTENT_FOR_CURRENT_TAB"/>
+  <int value="5" label="SUCCESS_APC"/>
+  <int value="6" label="SUCCESS_APC_PLUS_IMAGE"/>
+  <int value="7" label="SUCCESS_IMAGE"/>
+  <int value="8" label="SUCCESS_PDF"/>
+  <int value="9" label="SUCCESS_PDF_IMAGE"/>
+</enum>
+
+<enum name="CustomTabsPageContentRequestedType">
+  <int value="0" label="Annotated Page Content"/>
+  <int value="1" label="PDF"/>
+  <int value="2" label="Screenshot"/>
 </enum>
 
 <enum name="CustomTabsParallelRequestStatusOnStart">
@@ -168,6 +254,28 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Partial Custom Tab is full-size"/>
 </enum>
 
+<!--LINT.IfChange(CustomTabsResetTimeoutOutcome) -->
+
+<enum name="CustomTabsResetTimeoutOutcome">
+  <summary>
+    The result of every CCT session where a timeout was configured.
+  </summary>
+  <int value="0"
+      label="RETURNED_BEFORE_TIMEOUT: User returned to the foreground before
+             the timer expired."/>
+  <int value="1"
+      label="RESET_TRIGGERED_INTENT: Timeout exceeded; successfully fired the
+             PendingIntent"/>
+  <int value="2"
+      label="RESET_TRIGGERED_FALLBACK: Timeout exceeded; PendingIntent failed
+             or was null, so CCT called finish()"/>
+  <int value="3"
+      label="SESSION_CLOSED_MANUALLY: The user manually closed the CCT before
+             any timeout occurred."/>
+</enum>
+
+<!--LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/customtabs/CustomTabsTimeoutOutcome.java:CustomTabsResetTimeoutOutcome) -->
+
 <enum name="CustomTabsSessionDisconnectStatus">
   <int value="0" label="Unknown"/>
   <int value="1" label="Custom Tab in Foreground"/>
@@ -183,6 +291,18 @@ chromium-metrics-reviews@google.com.
       label="Custom Tab in Background, KEEP_ALIVE set, the system is low on
              memory"/>
 </enum>
+
+<!-- LINT.IfChange(FinishReason) -->
+
+<enum name="FinishReason">
+  <int value="0" label="User Navigation"/>
+  <int value="1" label="Reparenting"/>
+  <int value="2" label="Other"/>
+  <int value="3" label="Open in Browser"/>
+  <int value="4" label="Handled by OS"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/android/java/src/org/chromium/chrome/browser/customtabs/content/CustomTabActivityNavigationController.java:FinishReason) -->
 
 <enum name="GoogleBottomBarButtonEvent">
   <int value="0" label="Unknown button"/>
@@ -223,6 +343,8 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Chrome - Reader mode"/>
   <int value="4" label="Chrome - Read later"/>
   <int value="5" label="Ephemeral Tab"/>
+  <int value="6" label="Chrome - Download Home"/>
+  <int value="7" label="Chrome - Contextual Web API Popup"/>
 </enum>
 
 <enum name="MayLaunchUrlType">
@@ -257,6 +379,25 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="High-end and Pip"/>
 </enum>
 
+<enum name="TwaLaunchHandlerClientMode">
+  <int value="0" label="Initial intent (client mode is ignored)"/>
+  <int value="1" label="Client mode navigate_existing"/>
+  <int value="2" label="Client mode navigate_new"/>
+  <int value="3" label="Client mode focus_existing"/>
+  <int value="4" label="Client mode auto"/>
+</enum>
+
+<enum name="TwaLaunchHandlerFailureReason">
+  <int value="0" label="Target URL verification failed"/>
+  <int value="1" label="Current page URL verification failed"/>
+</enum>
+
+<enum name="TwaLaunchHandlerFileHandling">
+  <int value="0" label="No files"/>
+  <int value="1" label="Single file"/>
+  <int value="2" label="Multiple files"/>
+</enum>
+
 <enum name="VisibleTab">
   <int value="0" label="Custom Tab"/>
   <int value="1" label="Chrome Tab"/>
@@ -269,6 +410,40 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Session, No Warmup, Warmup called from another UID"/>
   <int value="3" label="Session, No Warmup"/>
   <int value="4" label="Session, Warmup"/>
+</enum>
+
+<enum name="WebAppBackButtonEvent">
+  <int value="0"
+      label="Invalid back event due to tab switching, e.g. re-parenting."/>
+  <int value="1"
+      label="Back event triggered by click or touch without meta keys."/>
+  <int value="2"
+      label="Open a history navigation popup after long pressing button."/>
+</enum>
+
+<!-- LINT.IfChange(WebAppHeaderDisplayMode) -->
+
+<enum name="WebAppHeaderDisplayMode">
+  <int value="0" label="undefined"/>
+  <int value="1" label="browser"/>
+  <int value="2" label="minimalUI"/>
+  <int value="3" label="standalone"/>
+  <int value="4" label="fullscreen"/>
+  <int value="5" label="windowControlsOverlay"/>
+  <int value="6" label="tabbed"/>
+  <int value="7" label="unframed"/>
+  <int value="8" label="pictureInPicture"/>
+</enum>
+
+<!-- LINT.ThenChange(//third_party/blink/public/mojom/manifest/display_mode.mojom:DisplayMode)-->
+
+<enum name="WebAppReloadButtonEvent">
+  <int value="0"
+      label="Invalid reload type due to tab switching, e.g. re-parenting."/>
+  <int value="1" label="Stop reloading currently active tab."/>
+  <int value="2"
+      label="Reload currently active tab including checking the cache."/>
+  <int value="3" label="Reload currently active tab ignoring the cache."/>
 </enum>
 
 <enum name="WebContentsState">

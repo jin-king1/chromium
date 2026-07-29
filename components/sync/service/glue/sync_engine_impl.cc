@@ -10,7 +10,6 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
@@ -20,14 +19,17 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "components/network_time/network_time_tracker.h"
+#include "components/sync/base/custom_passphrase_bootstrap_token.h"
+#include "components/sync/base/data_type.h"
 #include "components/sync/base/features.h"
 #include "components/sync/engine/data_type_activation_response.h"
 #include "components/sync/engine/events/protocol_event.h"
-#include "components/sync/engine/nigori/nigori.h"
 #include "components/sync/engine/polling_constants.h"
 #include "components/sync/engine/sync_engine_host.h"
 #include "components/sync/engine/sync_string_conversions.h"
 #include "components/sync/invalidations/sync_invalidations_service.h"
+#include "components/sync/protocol/sync_invalidations_payload.pb.h"
 #include "components/sync/service/active_devices_provider.h"
 #include "components/sync/service/glue/sync_engine_backend.h"
 #include "components/sync/service/glue/sync_transport_data_prefs.h"
@@ -59,7 +61,7 @@ enum class SyncTransportDataStartupState {
 
 std::string GenerateCacheGUID() {
   // Generate a GUID with 128 bits of randomness.
-  const int kGuidBytes = 128 / 8;
+  constexpr int kGuidBytes = 128 / 8;
   return base::Base64Encode(base::RandBytesAsVector(kGuidBytes));
 }
 
@@ -101,9 +103,34 @@ SyncTransportDataStartupState ValidateSyncTransportData(
 
 }  // namespace
 
+class SyncEngineImpl::NetworkTimeObserverImpl
+    : public network_time::NetworkTimeTracker::NetworkTimeObserver {
+ public:
+  NetworkTimeObserverImpl(network_time::NetworkTimeTracker* tracker,
+                          SyncEngineImpl* engine)
+      : network_time::NetworkTimeTracker::NetworkTimeObserver(tracker),
+        engine_(engine) {}
+
+  void OnNetworkTimeChanged(
+      const network_time::TimeTracker::TimeTrackerState state) override {}
+
+  void OnNetworkTimeTrackerDestroyed(
+      network_time::NetworkTimeTracker* tracker) override {
+    engine_->OnNetworkTimeTrackerDestroyed();
+  }
+
+ private:
+  // Points to the owning `SyncEngineImpl` instance. This raw pointer is
+  // guaranteed to be safe because `NetworkTimeObserverImpl` is owned as a
+  // `std::unique_ptr` by `SyncEngineImpl`, meaning its lifetime is strictly
+  // bounded by and cannot exceed that of its owner.
+  raw_ptr<SyncEngineImpl> engine_;
+};
+
 SyncEngineImpl::SyncEngineImpl(
     const std::string& name,
     SyncInvalidationsService* sync_invalidations_service,
+    network_time::NetworkTimeTracker* network_time_tracker,
     std::unique_ptr<ActiveDevicesProvider> active_devices_provider,
     std::unique_ptr<SyncTransportDataPrefs> prefs,
     const base::FilePath& sync_data_folder,
@@ -113,12 +140,18 @@ SyncEngineImpl::SyncEngineImpl(
       prefs_(std::move(prefs)),
       sync_invalidations_service_(sync_invalidations_service),
       active_devices_provider_(std::move(active_devices_provider)),
+      network_time_tracker_(network_time_tracker),
       engine_created_time_for_metrics_(base::TimeTicks::Now()) {
   DCHECK(prefs_);
   DCHECK(sync_invalidations_service_);
   backend_ = base::MakeRefCounted<SyncEngineBackend>(
       name_, sync_data_folder, weak_ptr_factory_.GetWeakPtr());
   sync_invalidations_service_->AddTokenObserver(this);
+
+  if (network_time_tracker_) {
+    network_time_observer_ =
+        std::make_unique<NetworkTimeObserverImpl>(network_time_tracker_, this);
+  }
 }
 
 SyncEngineImpl::~SyncEngineImpl() {
@@ -146,9 +179,8 @@ void SyncEngineImpl::Initialize(InitParams params) {
   cached_cache_guid_ = prefs_->GetCacheGuid();
   cached_birthday_ = prefs_->GetBirthday();
 
-  // Clear host here to avoid holding a dangling pointer in case the task
-  // outlives the SyncEngineHost. It is safe to clear host here since
-  // SyncEngineBackend doesn't actually need it.
+  // `params.host` is not needed on the backend thread, so we null it out here
+  // to avoid accidentally using it on the wrong thread.
   params.host = nullptr;
   sync_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&SyncEngineBackend::DoInitialize, backend_,
@@ -237,22 +269,27 @@ void SyncEngineImpl::StartHandlingInvalidations() {
   UpdateStandaloneInvalidationsState();
 }
 
-void SyncEngineImpl::SetEncryptionPassphrase(
-    const std::string& passphrase,
-    const KeyDerivationParams& key_derivation_params) {
+void SyncEngineImpl::SetEncryptionPassphrase(const std::string& passphrase) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   sync_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&SyncEngineBackend::DoSetEncryptionPassphrase,
-                                backend_, passphrase, key_derivation_params));
+                                backend_, passphrase));
 }
 
-void SyncEngineImpl::SetExplicitPassphraseDecryptionKey(
-    std::unique_ptr<Nigori> key) {
+void SyncEngineImpl::SetDecryptionPassphrase(const std::string& passphrase) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  sync_task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&SyncEngineBackend::DoSetDecryptionPassphrase,
+                                backend_, passphrase));
+}
+
+void SyncEngineImpl::SetDecryptionBootstrapToken(
+    const CustomPassphraseBootstrapToken& bootstrap_token) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   sync_task_runner_->PostTask(
       FROM_HERE,
-      base::BindOnce(&SyncEngineBackend::DoSetExplicitPassphraseDecryptionKey,
-                     backend_, std::move(key)));
+      base::BindOnce(&SyncEngineBackend::DoSetDecryptionBootstrapToken,
+                     backend_, bootstrap_token));
 }
 
 void SyncEngineImpl::AddTrustedVaultDecryptionKeys(
@@ -564,6 +601,12 @@ void SyncEngineImpl::RecordNigoriMemoryUsageAndCountsHistograms() {
           backend_));
 }
 
+void SyncEngineImpl::OnNetworkTimeTrackerDestroyed() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  network_time_tracker_ = nullptr;
+  network_time_observer_.reset();
+}
+
 void SyncEngineImpl::OnInvalidationReceived(const std::string& payload) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -574,10 +617,26 @@ void SyncEngineImpl::OnInvalidationReceived(const std::string& payload) {
   // prevent missing incoming invalidations which were received during
   // configuration.
   DCHECK(interested_data_types.has_value());
+
+  const base::Time arrival_time = base::Time::Now();
+  std::optional<base::Time> network_time;
+  std::optional<base::TimeDelta> network_time_uncertainty;
+
+  if (network_time_tracker_) {
+    base::Time nt;
+    base::TimeDelta uncertainty;
+    if (network_time_tracker_->GetNetworkTime(&nt, &uncertainty) ==
+        network_time::NetworkTimeTracker::NETWORK_TIME_AVAILABLE) {
+      network_time = nt;
+      network_time_uncertainty = uncertainty;
+    }
+  }
+
   sync_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&SyncEngineBackend::DoOnStandaloneInvalidationReceived,
-                     backend_, payload, *interested_data_types));
+                     backend_, payload, *interested_data_types, arrival_time,
+                     network_time, network_time_uncertainty));
 }
 
 void SyncEngineImpl::OnFCMRegistrationTokenChanged() {

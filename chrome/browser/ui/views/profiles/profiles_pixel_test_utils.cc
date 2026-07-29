@@ -5,26 +5,24 @@
 #include "chrome/browser/ui/views/profiles/profiles_pixel_test_utils.h"
 
 #include <memory>
+#include <string_view>
 
 #include "base/command_line.h"
 #include "base/scoped_environment_variable_override.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/common/chrome_features.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/signin/public/identity_manager/signin_constants.h"
 #include "components/signin/public/identity_manager/tribool.h"
+#include "content/public/test/browser_test_utils.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_unittest_util.h"
-
-using signin::constants::kNoHostedDomainFound;
 
 AccountInfo FillAccountInfo(
     const CoreAccountInfo& core_info,
@@ -32,31 +30,63 @@ AccountInfo FillAccountInfo(
     signin::Tribool
         can_show_history_sync_opt_ins_without_minor_mode_restrictions) {
   const char kHostedDomain[] = "example.com";
-  AccountInfo account_info;
-
-  account_info.email = core_info.email;
-  account_info.gaia = core_info.gaia;
-  account_info.account_id = core_info.account_id;
-  account_info.is_under_advanced_protection =
-      core_info.is_under_advanced_protection;
-  account_info.full_name = "Test Full Name";
-  account_info.given_name = "Joe";
-  account_info.hosted_domain =
-      management_status == AccountManagementStatus::kManaged
-          ? kHostedDomain
-          : kNoHostedDomainFound;
-  account_info.locale = "en";
-  account_info.picture_url = "https://example.com";
+  AccountInfo account_info =
+      AccountInfo::Builder(core_info)
+          .SetFullName("Test Full Name")
+          .SetGivenName("Joe")
+          .SetHostedDomain(management_status ==
+                                   AccountManagementStatus::kManaged
+                               ? kHostedDomain
+                               : std::string())
+          .SetLocale("en")
+          .SetAvatarUrl("https://example.com")
+          .Build();
+  AccountCapabilitiesTestMutator mutator(&account_info);
+  mutator.set_is_subject_to_enterprise_features(
+      management_status == AccountManagementStatus::kManaged);
 
   if (can_show_history_sync_opt_ins_without_minor_mode_restrictions !=
       signin::Tribool::kUnknown) {
-    AccountCapabilitiesTestMutator mutator(&account_info.capabilities);
     mutator.set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
         signin::TriboolToBoolOrDie(
             can_show_history_sync_opt_ins_without_minor_mode_restrictions));
   }
 
   return account_info;
+}
+
+std::string GetWaitForAnimationsScript(std::string_view component_name) {
+  return content::JsReplace(
+      R"(
+        (async () => {
+          const componentName = $1;
+          await customElements.whenDefined(componentName);
+          const component = document.querySelector(componentName);
+          if (!component) {
+            return false;
+          }
+
+          await component.updateComplete;
+
+          const anims = component.shadowRoot.querySelectorAll('cr-lottie');
+          if (anims.length === 0) {
+            return false;
+          }
+
+          await Promise.all(Array.from(anims, anim => {
+            return new Promise(resolve => {
+              if (anim.isAnimationLoaded_) {
+                resolve(true);
+              } else {
+                anim.addEventListener('cr-lottie-initialized',
+                                      () => resolve(true), {once: true});
+              }
+            });
+          }));
+          return true;
+        })();
+      )",
+      component_name);
 }
 
 AccountInfo SignInWithAccount(

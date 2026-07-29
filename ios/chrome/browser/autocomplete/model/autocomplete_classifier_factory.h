@@ -23,7 +23,7 @@ class AutocompleteClassifierFactory : public ProfileKeyedServiceFactoryIOS {
   static AutocompleteClassifierFactory* GetInstance();
 
   // Returns the default factory used to build AutocompleteClassifiers. Can be
-  // registered with SetTestingFactory to use real instances during testing.
+  // registered with AddTestingFactory to use real instances during testing.
   static TestingFactory GetDefaultFactory();
 
  private:
@@ -32,9 +32,9 @@ class AutocompleteClassifierFactory : public ProfileKeyedServiceFactoryIOS {
   AutocompleteClassifierFactory();
   ~AutocompleteClassifierFactory() override;
 
-  // BrowserStateKeyedServiceFactory implementation.
+  // ProfileKeyedServiceFactoryIOS implementation.
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
+      ProfileIOS* profile) const override;
 };
 
 }  // namespace ios

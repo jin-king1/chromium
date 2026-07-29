@@ -2,23 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 #include "media/gpu/test/video_encoder/decoder_buffer_validator.h"
 
 #include <set>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/numerics/safe_conversions.h"
 #include "build/buildflag.h"
 #include "media/base/decoder_buffer.h"
 #include "media/gpu/buildflags.h"
 #include "media/gpu/h264_decoder.h"
 #include "media/gpu/macros.h"
+#include "media/parsers/bit_reader_macros.h"
+#include "media/parsers/h264_bit_reader.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
@@ -46,6 +44,78 @@ int VideoCodecProfileToVP9Profile(VideoCodecProfile profile) {
       LOG(ERROR) << "Unexpected video profile: " << GetProfileName(profile);
   }
   return 0;
+}
+
+struct H264PrefixNALU {
+  int nal_ref_idc;
+  int nal_unit_type;
+  bool svc_extension_flag;
+  // SVC extension NAL unit header.
+  bool idr_flag;
+  uint8_t priority_id;
+  bool no_inter_layer_pred_flag;
+  uint8_t dependency_id;
+  uint8_t quality_id;
+  uint8_t temporal_id;
+  bool use_ref_base_pic_flag;
+  bool discardable_flag;
+  bool output_flag;
+
+  // RBSP
+  bool store_ref_base_pic_flag;
+};
+
+std::optional<H264PrefixNALU> ParseH264Prefix(const H264NALU& nalu) {
+  H264PrefixNALU res;
+  constexpr auto kInvalidStream = std::nullopt;
+  res.nal_ref_idc = nalu.nal_ref_idc;
+  res.nal_unit_type = nalu.nal_unit_type;
+
+  H264BitReader br_;
+  if (!br_.Initialize(nalu.data)) {
+    return std::nullopt;
+  }
+  // Skip first one byte as it's NALU header.
+  SKIP_BITS_OR_RETURN(8);
+
+  READ_BOOL_OR_RETURN(&res.svc_extension_flag);
+
+  if (res.svc_extension_flag) {
+    READ_BOOL_OR_RETURN(&res.idr_flag);
+    READ_BITS_OR_RETURN(6, &res.priority_id);
+    READ_BOOL_OR_RETURN(&res.no_inter_layer_pred_flag);
+    READ_BITS_OR_RETURN(3, &res.dependency_id);
+    READ_BITS_OR_RETURN(4, &res.quality_id);
+    READ_BITS_OR_RETURN(3, &res.temporal_id);
+    READ_BOOL_OR_RETURN(&res.use_ref_base_pic_flag);
+    READ_BOOL_OR_RETURN(&res.discardable_flag);
+    READ_BOOL_OR_RETURN(&res.output_flag);
+
+    uint8_t reserved_three_2bits = 0;
+    READ_BITS_OR_RETURN(2, &reserved_three_2bits);
+    if (reserved_three_2bits != 3) {
+      LOG(ERROR) << "reserved_three_2bits must be 3";
+      return std::nullopt;
+    }
+  }
+
+  // RBSP
+  if (res.nal_ref_idc != 0) {
+    READ_BOOL_OR_RETURN(&res.store_ref_base_pic_flag);
+    if ((res.use_ref_base_pic_flag || res.store_ref_base_pic_flag) &&
+        res.idr_flag) {
+      LOG(ERROR) << "Don't support parsing dec_ref_base_pic_marking()";
+      return std::nullopt;
+    }
+    bool additional_prefix_nal_unit_extension_flag = false;
+    READ_BOOL_OR_RETURN(&additional_prefix_nal_unit_extension_flag);
+    if (additional_prefix_nal_unit_extension_flag) {
+      LOG(ERROR) << "additional_prefix_nal_unit_extension_flag must be false";
+      return std::nullopt;
+    }
+  }
+
+  return res;
 }
 }  // namespace
 
@@ -103,7 +173,7 @@ H264Validator::H264Validator(VideoCodecProfile profile,
                              size_t num_temporal_layers,
                              std::optional<uint8_t> level)
     : DecoderBufferValidator(visible_rect, num_temporal_layers),
-      cur_pic_(new H264Picture),
+      cur_pic_(base::MakeRefCounted<H264Picture>()),
       profile_(VideoCodecProfileToH264ProfileIDC(profile)),
       level_(level) {}
 
@@ -129,8 +199,7 @@ bool H264Validator::Validate(const DecoderBuffer* buffer,
   }
 
   CHECK(buffer);
-  const DecoderBuffer& decoder_buffer = *buffer;
-  parser_.SetStream(decoder_buffer.data(), decoder_buffer.size());
+  parser_.SetStream(*buffer);
 
   if (num_temporal_layers_ > 1) {
     if (!metadata.h264) {
@@ -147,12 +216,12 @@ bool H264Validator::Validate(const DecoderBuffer* buffer,
   size_t num_frames = 0;
   H264NALU nalu;
   H264Parser::Result result;
+  std::optional<std::pair<int, H264NALU::Type>> expected_associated_slice_nal;
   while ((result = parser_.AdvanceToNextNALU(&nalu)) != H264Parser::kEOStream) {
     if (result != H264Parser::kOk) {
       LOG(ERROR) << "Failed parsing";
       return false;
     }
-
     switch (nalu.nal_unit_type) {
       case H264NALU::kIDRSlice:
         if (!seen_sps_ || !seen_pps_) {
@@ -213,6 +282,20 @@ bool H264Validator::Validate(const DecoderBuffer* buffer,
           return false;
         }
 
+        if (expected_associated_slice_nal) {
+          if (expected_associated_slice_nal->first != nalu.nal_ref_idc) {
+            LOG(ERROR) << "NALU ref_idc mismatched. Actual ref_idc: "
+                       << nalu.nal_ref_idc << ", expected ref_idc: "
+                       << expected_associated_slice_nal->first;
+            return false;
+          }
+          if (expected_associated_slice_nal->second != nalu.nal_unit_type) {
+            LOG(ERROR) << "NALU type mismatched. Actual type: "
+                       << nalu.nal_unit_type << ", expected type: "
+                       << expected_associated_slice_nal->second;
+            return false;
+          }
+        }
         break;
       }
       case H264NALU::kSPS: {
@@ -271,6 +354,86 @@ bool H264Validator::Validate(const DecoderBuffer* buffer,
         // don't check it because it is not enabled due to a hardware limitation
         // on AMD stoneyridge and picasso.
 
+        break;
+      }
+      case H264NALU::kPrefix: {
+        if (!metadata.h264) {
+          LOG(ERROR) << "Prefix NALU should be generated only if temproal "
+                        "layer encoding";
+          return false;
+        }
+
+        bool vaapi_video_encoder = false;
+#if BUILDFLAG(USE_VAAPI)
+        vaapi_video_encoder = true;
+#endif
+        if (!vaapi_video_encoder) {
+          // Skip Prefix NALU check: Trogdor's v4l2 video encoder produces an
+          // invalid prefix NALU. (b/477359926)
+          break;
+        }
+
+        std::optional<H264PrefixNALU> prefix_nalu = ParseH264Prefix(nalu);
+        if (!prefix_nalu) {
+          LOG(ERROR) << "Failed parsing prefix NALU";
+          return false;
+        }
+
+        if (!prefix_nalu->svc_extension_flag) {
+          LOG(ERROR) << "svc_extesion_flag must be true";
+          return false;
+        }
+        if (prefix_nalu->idr_flag != metadata.key_frame) {
+          LOG(ERROR) << "mismatch on idr_flag and key_frame";
+          break;
+        }
+        if (prefix_nalu->priority_id != 0 || prefix_nalu->dependency_id != 0 ||
+            prefix_nalu->quality_id != 0) {
+          LOG(ERROR) << "priority_id, dependency_id, and quality_id must be 0: "
+                     << "priority_id="
+                     << static_cast<int>(prefix_nalu->priority_id)
+                     << ", dependency_id="
+                     << static_cast<int>(prefix_nalu->dependency_id)
+                     << ", quality_id="
+                     << static_cast<int>(prefix_nalu->quality_id);
+          return false;
+        }
+
+        if (!prefix_nalu->no_inter_layer_pred_flag ||
+            prefix_nalu->use_ref_base_pic_flag ||
+            !prefix_nalu->discardable_flag || !prefix_nalu->output_flag) {
+          LOG(ERROR) << "unexpected flags: "
+                     << "no_inter_layer_pred_flag="
+                     << prefix_nalu->no_inter_layer_pred_flag
+                     << ", use_ref_base_pic_flag="
+                     << prefix_nalu->use_ref_base_pic_flag
+                     << ", discardable_flag=" << prefix_nalu->discardable_flag
+                     << ", output_flag=" << prefix_nalu->output_flag;
+          return false;
+        }
+        bool is_ref = metadata.h264->temporal_idx != num_temporal_layers_ - 1;
+        int expected_nal_ref_idc = metadata.key_frame ? 3 : is_ref;
+        H264NALU::Type expected_associated_nal_unit_type =
+            metadata.key_frame ? H264NALU::kIDRSlice : H264NALU::kNonIDRSlice;
+        if (prefix_nalu->nal_ref_idc != expected_nal_ref_idc) {
+          LOG(ERROR) << "mismatch on nal_ref_idc: "
+                     << "prefix_nalu->nal_ref_idc="
+                     << static_cast<int>(prefix_nalu->nal_ref_idc)
+                     << ", expected_nal_ref_idc=" << expected_nal_ref_idc;
+          return false;
+        }
+
+        if (prefix_nalu->temporal_id != metadata.h264->temporal_idx) {
+          LOG(ERROR) << "mismatch on temporal_id: "
+                     << "prefix_nalu->temporal_id="
+                     << static_cast<int>(prefix_nalu->temporal_id)
+                     << ", metadata.h264->temporal_idx="
+                     << static_cast<int>(metadata.h264->temporal_idx);
+          return false;
+        }
+
+        expected_associated_slice_nal = std::make_pair(
+            expected_nal_ref_idc, expected_associated_nal_unit_type);
         break;
       }
       default:
@@ -337,14 +500,12 @@ bool VP8Validator::Validate(const DecoderBuffer* buffer,
   }
 
   CHECK(buffer);
-  const DecoderBuffer& decoder_buffer = *buffer;
 
   // TODO(hiroh): We could be getting more frames in the buffer, but there is
   // no simple way to detect this. We'd need to parse the frames and go through
   // partition numbers/sizes. For now assume one frame per buffer.
   Vp8FrameHeader header;
-  if (!parser_.ParseFrame(decoder_buffer.data(), decoder_buffer.size(),
-                          &header)) {
+  if (!parser_.ParseFrame(*buffer, &header)) {
     LOG(ERROR) << "Failed parsing";
     return false;
   }
@@ -463,8 +624,7 @@ VP9Validator::VP9Validator(VideoCodecProfile profile,
       next_picture_id_(0) {
   const size_t num_parsed_streams = s_mode_ ? max_num_spatial_layers_ : 1u;
   for (size_t i = 0; i < num_parsed_streams; ++i) {
-    parsers_.push_back(
-        std::make_unique<Vp9Parser>(/*parsing_compressed_header=*/false));
+    parsers_.push_back(std::make_unique<Vp9Parser>());
   }
   reference_buffers_.resize(num_parsed_streams);
 }
@@ -506,12 +666,11 @@ bool VP9Validator::Validate(const DecoderBuffer* buffer,
   }
 
   CHECK(buffer);
-  const DecoderBuffer& decoder_buffer = *buffer;
 
   // See Annex B "Superframes" in VP9 spec.
   constexpr uint8_t kSuperFrameMarkerMask = 0b11100000;
   constexpr uint8_t kSuperFrameMarker = 0b11000000;
-  if ((base::span(decoder_buffer).back() & kSuperFrameMarkerMask) ==
+  if ((base::span(*buffer).back() & kSuperFrameMarkerMask) ==
       kSuperFrameMarker) {
     LOG(ERROR) << "Support for super-frames not yet implemented.";
     return false;
@@ -532,7 +691,7 @@ bool VP9Validator::Validate(const DecoderBuffer* buffer,
   auto& parser = *parsers_[parser_index];
   Vp9FrameHeader header;
   gfx::Size allocate_size;
-  parser.SetStream(decoder_buffer.data(), decoder_buffer.size(), nullptr);
+  parser.SetStream(*buffer, nullptr);
   if (parser.ParseNextFrame(&header, &allocate_size, nullptr) ==
       Vp9Parser::kInvalidStream) {
     LOG(ERROR) << "Failed parsing";
@@ -558,11 +717,11 @@ bool VP9Validator::Validate(const DecoderBuffer* buffer,
   }
 
   if (s_mode_) {
-    return ValidateSmodeStream(decoder_buffer, metadata, header);
+    return ValidateSmodeStream(*buffer, metadata, header);
   } else if (svc_encoding) {
-    return ValidateSVCStream(decoder_buffer, metadata, header);
+    return ValidateSVCStream(*buffer, metadata, header);
   }
-  return ValidateVanillaStream(decoder_buffer, metadata, header);
+  return ValidateVanillaStream(*buffer, metadata, header);
 }
 
 bool VP9Validator::ValidateVanillaStream(
@@ -744,7 +903,7 @@ bool VP9Validator::ValidateSVCStream(const DecoderBuffer& decoder_buffer,
                    << static_cast<int>(ref_frame_index);
         return false;
       }
-      if (base::Contains(used_indices, ref_frame_index)) {
+      if (used_indices.contains(ref_frame_index)) {
         // |header.ref_frame_index| might have the same indices because an
         // encoder fills the same index if the actually used ref frames is less
         // than |kVp9NumRefsPerFrame|.
@@ -916,7 +1075,7 @@ bool VP9Validator::ValidateSmodeStream(const DecoderBuffer& decoder_buffer,
                    << static_cast<int>(ref_frame_index);
         return false;
       }
-      if (base::Contains(used_indices, ref_frame_index)) {
+      if (used_indices.contains(ref_frame_index)) {
         // |header.ref_frame_index| might have the same indices because an
         // encoder fills the same index if the actually used ref frames is less
         // than |kVp9NumRefsPerFrame|.
@@ -1007,9 +1166,10 @@ bool AV1Validator::Validate(const DecoderBuffer* buffer,
   }
 
   CHECK(buffer);
-  const DecoderBuffer& decoder_buffer = *buffer;
-  libgav1::ObuParser av1_parser(decoder_buffer.data(), decoder_buffer.size(), 0,
-                                &buffer_pool_, &decoder_state_);
+  auto decoder_buffer_span = base::span(*buffer);
+  libgav1::ObuParser av1_parser(decoder_buffer_span.data(),
+                                decoder_buffer_span.size(), 0, &buffer_pool_,
+                                &decoder_state_);
   libgav1::RefCountedBufferPtr curr_frame;
 
   if (sequence_header_) {
@@ -1060,8 +1220,7 @@ bool AV1Validator::Validate(const DecoderBuffer* buffer,
   }
 
   if (metadata.svc_generic) {
-    ValidateTemporalSVCStream(decoder_buffer, metadata,
-                              av1_parser.frame_header());
+    ValidateTemporalSVCStream(*buffer, metadata, av1_parser.frame_header());
   }
 
   decoder_state_.UpdateReferenceFrames(
@@ -1108,7 +1267,7 @@ bool AV1Validator::ValidateTemporalSVCStream(
                    << static_cast<int>(ref_frame_index);
         return false;
       }
-      if (base::Contains(used_indices, ref_frame_index)) {
+      if (used_indices.contains(ref_frame_index)) {
         // |header.ref_frame_index| might have the same indices because an
         // encoder fills the same index if the actually used ref frames is less
         // than |kNumReferenceFrameTypes|.

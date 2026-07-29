@@ -6,11 +6,8 @@ package org.chromium.content_public.browser.test.util;
 
 import android.view.textclassifier.TextClassifier;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
 import org.chromium.content_public.browser.ActionModeCallback;
 import org.chromium.content_public.browser.ActionModeCallbackHelper;
 import org.chromium.content_public.browser.SelectionClient;
@@ -57,11 +54,6 @@ public class TestSelectionPopupController implements SelectionPopupController {
     }
 
     @Override
-    public ObservableSupplier<Boolean> isSelectActionBarShowingSupplier() {
-        return new ObservableSupplierImpl<>();
-    }
-
-    @Override
     public ActionModeCallbackHelper getActionModeCallbackHelper() {
         return null;
     }
@@ -97,11 +89,13 @@ public class TestSelectionPopupController implements SelectionPopupController {
     public void setPreserveSelectionOnNextLossOfFocus(boolean preserve) {}
 
     @Override
+    public void hidePopupsAndPreserveSelection() {}
+
+    @Override
     public void updateTextSelectionUI(boolean focused) {}
 
     @Override
-    public void setDropdownMenuDelegate(
-            @NonNull SelectionDropdownMenuDelegate dropdownMenuDelegate) {}
+    public void setDropdownMenuDelegate(SelectionDropdownMenuDelegate dropdownMenuDelegate) {}
 
     @Override
     public void setSelectionActionMenuDelegate(@Nullable SelectionActionMenuDelegate delegate) {}

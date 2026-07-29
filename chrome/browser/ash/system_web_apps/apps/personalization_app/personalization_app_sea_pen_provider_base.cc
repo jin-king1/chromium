@@ -14,7 +14,6 @@
 #include "ash/public/cpp/wallpaper/sea_pen_image.h"
 #include "ash/wallpaper/wallpaper_utils/sea_pen_metadata_utils.h"
 #include "ash/wallpaper/wallpaper_utils/wallpaper_resizer.h"
-#include "ash/webui/common/mojom/sea_pen.mojom-forward.h"
 #include "ash/webui/common/mojom/sea_pen.mojom.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
@@ -26,15 +25,17 @@
 #include "chrome/browser/ash/wallpaper_handlers/sea_pen_fetcher.h"
 #include "chrome/browser/ash/wallpaper_handlers/sea_pen_utils.h"
 #include "chrome/browser/ash/wallpaper_handlers/wallpaper_fetcher_delegate.h"
+#include "chrome/browser/ash/wallpaper_handlers/wallpaper_handlers_metric_utils.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_controller_client_impl.h"
+#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/feedback/feedback_constants.h"
-#include "components/manta/features.h"
 #include "components/manta/manta_status.h"
 #include "content/public/browser/web_ui.h"
 #include "google_apis/gaia/gaia_auth_util.h"
@@ -84,7 +85,6 @@ PersonalizationAppSeaPenProviderBase::~PersonalizationAppSeaPenProviderBase() =
 void PersonalizationAppSeaPenProviderBase::BindInterface(
     mojo::PendingReceiver<::ash::personalization_app::mojom::SeaPenProvider>
         receiver) {
-  CHECK(manta::features::IsMantaServiceEnabled());
   CHECK(::ash::features::IsSeaPenEnabled() ||
         ::ash::features::IsVcBackgroundReplaceEnabled());
   sea_pen_receiver_.reset();
@@ -116,7 +116,7 @@ bool PersonalizationAppSeaPenProviderBase::IsManagedSeaPenFeedbackEnabled() {
 
   // Allow Demo Mode public accounts to see and provide feedback.
   if (features::IsSeaPenDemoModeEnabled() &&
-      DemoSession::IsDeviceInDemoMode()) {
+      ash::demo_mode::IsDeviceInDemoMode()) {
     DVLOG(1) << __func__ << " demo mode";
     const auto* user = GetUser(profile_);
     return DemoSession::Get() && user &&
@@ -247,6 +247,8 @@ void PersonalizationAppSeaPenProviderBase::OnFetchThumbnailsDone(
     const mojom::SeaPenQueryPtr& query,
     std::optional<std::vector<SeaPenImage>> images,
     manta::MantaStatusCode status_code) {
+  RecordSeaPenMantaStatusCode(query->which(), status_code,
+                              wallpaper_handlers::SeaPenApiType::kThumbnails);
   if (!images) {
     std::move(callback).Run(std::nullopt, status_code);
     return;
@@ -367,12 +369,13 @@ void PersonalizationAppSeaPenProviderBase::OpenFeedbackDialog(
   std::string feedback_text =
       wallpaper_handlers::GetFeedbackText(query_and_thumbnail->first, metadata);
 
-  base::Value::Dict ai_metadata;
+  base::DictValue ai_metadata;
   ai_metadata.Set(feedback::kSeaPenMetadataKey, "true");
 
   base::RecordAction(base::UserMetricsAction("SeaPen_FeedbackPressed"));
   chrome::ShowFeedbackPage(
-      /*browser=*/chrome::FindBrowserWithProfile(profile_),
+      /*browser=*/ProfileBrowserCollection::GetForProfile(profile_)
+          ->GetLastActiveBrowser(),
       /*source=*/feedback::kFeedbackSourceAI,
       /*description_template=*/feedback_text,
       /*description_placeholder_text=*/
@@ -380,7 +383,7 @@ void PersonalizationAppSeaPenProviderBase::OpenFeedbackDialog(
           l10n_util::GetStringUTF16(IDS_SEA_PEN_FEEDBACK_PLACEHOLDER)),
       /*category_tag=*/std::string(),
       /*extra_diagnostics=*/std::string(),
-      /*autofill_data=*/base::Value::Dict(), std::move(ai_metadata));
+      /*autofill_data=*/base::DictValue(), std::move(ai_metadata));
 }
 
 void PersonalizationAppSeaPenProviderBase::ShouldShowSeaPenIntroductionDialog(
@@ -424,7 +427,7 @@ void PersonalizationAppSeaPenProviderBase::
 
 void PersonalizationAppSeaPenProviderBase::IsInTabletMode(
     IsInTabletModeCallback callback) {
-  std::move(callback).Run(display::Screen::GetScreen()->InTabletMode());
+  std::move(callback).Run(display::Screen::Get()->InTabletMode());
 }
 
 void PersonalizationAppSeaPenProviderBase::MakeTransparent() {

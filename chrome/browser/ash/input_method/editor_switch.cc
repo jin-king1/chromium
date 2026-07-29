@@ -2,12 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/input_method/editor_switch.h"
+
+#include <utility>
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
@@ -20,13 +17,11 @@
 #include "chrome/browser/ash/input_method/editor_consent_enums.h"
 #include "chrome/browser/ash/input_method/input_methods_by_language.h"
 #include "chrome/browser/ash/input_method/url_utils.h"
-#include "chrome/browser/ash/login/demo_mode/demo_session.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/manta/manta_service_factory.h"
-#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/extensions/extension_constants.h"
+#include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/editor_consent_status.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/editor_enterprise_policy_enums.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/editor_mode.h"
@@ -35,7 +30,6 @@
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/ui/base/window_properties.h"
-#include "components/language/core/common/locale_util.h"
 #include "components/manta/manta_service.h"
 #include "extensions/common/constants.h"
 #include "google_apis/gaia/gaia_auth_util.h"
@@ -45,7 +39,7 @@
 namespace ash::input_method {
 namespace {
 
-const char* kWorkspaceDomainsWithPathDenylist[][2] = {
+constexpr const char* kWorkspaceDomainsWithPathDenylist[][2] = {
     {"calendar.google", ""}, {"docs.google", ""},      {"drive.google", ""},
     {"keep.google", ""},     {"mail.google", "/chat"}, {"mail.google", "/mail"},
     {"meet.google", ""},     {"script.google", ""},    {"sites.google", ""},
@@ -202,6 +196,7 @@ bool IsAppAllowed(std::string_view app_id) {
           extension_misc::kGoogleSlidesDemoAppId,
           ash::kGmailAppId,
           ash::kGoogleChatAppId,
+          ash::kOldGoogleChatAppId,
           ash::kGoogleMeetAppId,
           ash::kGoogleDocsAppId,
           ash::kGoogleSlidesAppId,
@@ -224,7 +219,8 @@ std::vector<std::string> GetAllowedInputMethodEngines() {
 
   // Loads allowed imes from field trials
   if (auto parsed = base::JSONReader::Read(
-          base::GetFieldTrialParamValue(kExperimentName, kImeAllowlistLabel));
+          base::GetFieldTrialParamValue(kExperimentName, kImeAllowlistLabel),
+          base::JSON_PARSE_CHROMIUM_EXTENSIONS);
       parsed.has_value() && parsed->is_list()) {
     for (const auto& item : parsed->GetList()) {
       if (item.is_string()) {
@@ -267,12 +263,6 @@ bool IsAllowedForUseInNonDemoMode(Profile* profile,
          base::FeatureList::IsEnabled(features::kOrcaForManagedUsers);
 }
 
-bool IsSystemInEnglishLanguage() {
-  return g_browser_process != nullptr &&
-         language::ExtractBaseLanguage(
-             g_browser_process->GetApplicationLocale()) == "en";
-}
-
 EditorSwitch::EditorSwitch(Observer* observer,
                            Profile* profile,
                            EditorContext* context)
@@ -300,7 +290,7 @@ bool EditorSwitch::IsAllowedForUse() const {
   }
 
   return base::FeatureList::IsEnabled(ash::features::kOrcaSupportDemoMode) &&
-                 ash::DemoSession::IsDeviceInDemoMode()
+                 ash::demo_mode::IsDeviceInDemoMode()
              ? IsAllowedForUseInDemoMode(context_->active_country_code())
              : IsAllowedForUseInNonDemoMode(profile_,
                                             context_->active_country_code());
@@ -313,8 +303,8 @@ bool EditorSwitch::IsFeedbackEnabled() const {
 
   // If managed, check the enablement value.
   return profile_->GetPrefs()->GetInteger(prefs::kHmwManagedSettings) ==
-         base::to_underlying(chromeos::editor_menu::EditorEnterprisePolicy::
-                                 kAllowedWithModelImprovement);
+         std::to_underlying(chromeos::editor_menu::EditorEnterprisePolicy::
+                                kAllowedWithModelImprovement);
 }
 
 bool EditorSwitch::CanShowNoticeBanner() const {
@@ -384,6 +374,10 @@ std::vector<EditorBlockedReason> EditorSwitch::GetBlockedReasons() const {
     blocked_reasons.push_back(EditorBlockedReason::kBlockedBySetting);
   }
 
+  if (!context_->is_selection_valid()) {
+    blocked_reasons.push_back(EditorBlockedReason::kBlockedByInvalidSelection);
+  }
+
   if (!IsTriggerableFromTextLength(context_->selected_text_length())) {
     blocked_reasons.push_back(EditorBlockedReason::kBlockedByTextLength);
   }
@@ -440,13 +434,12 @@ bool EditorSwitch::CanBeTriggered() const {
          !net::NetworkChangeNotifier::IsOffline() &&
          !context_->InTabletMode() &&
          profile_->GetPrefs()->GetInteger(prefs::kHmwManagedSettings) !=
-             base::to_underlying(
+             std::to_underlying(
                  chromeos::editor_menu::EditorEnterprisePolicy::kDisallowed) &&
          // user pref value
          profile_->GetPrefs()->GetBoolean(prefs::kOrcaEnabled) &&
-         context_->selected_text_length() <= kTextLengthMaxLimit &&
-         (!base::FeatureList::IsEnabled(features::kOrcaOnlyInEnglishLocales) ||
-          IsSystemInEnglishLanguage());
+         context_->is_selection_valid() &&
+         context_->selected_text_length() <= kTextLengthMaxLimit;
 }
 
 chromeos::editor_menu::EditorMode EditorSwitch::GetEditorMode() const {

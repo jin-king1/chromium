@@ -10,7 +10,6 @@
 #include <string>
 #include <vector>
 
-#include "base/functional/callback.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
@@ -44,10 +43,10 @@ class TestVotesUploader : public VotesUploader {
       ukm::SourceId ukm_source_id) override;
 
   void UploadVote(std::unique_ptr<FormStructure> submitted_form,
+                  std::vector<AutofillUploadContents> upload_contents,
                   base::TimeTicks initial_interaction_timestamp,
                   base::TimeTicks submission_timestamp,
                   bool observed_submission,
-                  const std::u16string& last_unlocked_credit_card_cvc,
                   const ukm::SourceId source_id) override;
 
   const std::string& submitted_form_signature() {

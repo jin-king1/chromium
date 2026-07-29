@@ -4,17 +4,11 @@
 
 import {assert} from '../../assert.js';
 import {PerfLogger} from '../../perf.js';
-import {
-  CanceledError,
-  Facing,
-  Metadata,
-  PerfEvent,
-  PreviewVideo,
-  Resolution,
-} from '../../type.js';
+import type {Facing, Metadata, PreviewVideo} from '../../type.js';
+import {CanceledError, PerfEvent, Resolution} from '../../type.js';
 import * as util from '../../util.js';
 import {CancelableEvent, WaitableEvent} from '../../waitable_event.js';
-import {StreamConstraints} from '../stream_constraints.js';
+import type {StreamConstraints} from '../stream_constraints.js';
 
 import {ModeBase, ModeFactory} from './mode_base.js';
 
@@ -157,8 +151,8 @@ export class Photo extends ModeBase {
       } else {
         const caps = await this.getImageCapture().getPhotoCapabilities();
         photoSettings = {
-          imageWidth: caps.imageWidth.max,
-          imageHeight: caps.imageHeight.max,
+          imageWidth: caps.imageWidth!.max,
+          imageHeight: caps.imageHeight!.max,
         };
       }
       await this.waitPreviewReady();

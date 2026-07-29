@@ -119,12 +119,6 @@ class PropertyTreeBuilderContext {
 };
 
 // Methods to query state from the AnimationHost ----------------------
-bool OpacityIsAnimating(const MutatorHost& host, Layer* layer) {
-  return host.IsAnimatingProperty(layer->element_id(),
-                                  layer->GetElementTypeForAnimation(),
-                                  TargetProperty::OPACITY);
-}
-
 bool HasPotentiallyRunningOpacityAnimation(const MutatorHost& host,
                                            Layer* layer) {
   return host.HasPotentiallyRunningAnimationForProperty(
@@ -135,12 +129,6 @@ bool HasPotentiallyRunningOpacityAnimation(const MutatorHost& host,
 bool HasPotentialOpacityAnimation(const MutatorHost& host, Layer* layer) {
   return HasPotentiallyRunningOpacityAnimation(host, layer) ||
          layer->OpacityCanAnimateOnImplThread();
-}
-
-bool FilterIsAnimating(const MutatorHost& host, Layer* layer) {
-  return host.IsAnimatingProperty(layer->element_id(),
-                                  layer->GetElementTypeForAnimation(),
-                                  TargetProperty::FILTER);
 }
 
 bool HasPotentiallyRunningFilterAnimation(const MutatorHost& host,
@@ -300,7 +288,7 @@ bool PropertyTreeBuilderContext::AddTransformNodeIfNeeded(
   }
 
   transform_tree_->Insert(TransformNode(), parent_index);
-  TransformNode* node = transform_tree_->back();
+  TransformNode* node = transform_tree_->MutableBack();
   layer->SetTransformTreeIndex(node->id);
   data_for_children->transform_tree_parent = node->id;
 
@@ -333,7 +321,7 @@ bool PropertyTreeBuilderContext::AddTransformNodeIfNeeded(
   node->is_currently_animating = TransformIsAnimating(*mutator_host_, layer);
   node->maximum_animation_scale = MaximumAnimationScale(*mutator_host_, layer);
 
-  node->scroll_offset = layer->scroll_offset();
+  node->SetScrollOffset(layer->scroll_offset(), DamageReason::kUntracked);
 
   node->needs_local_transform_update = true;
   transform_tree_->UpdateTransforms(node->id);
@@ -500,7 +488,7 @@ bool PropertyTreeBuilderContext::AddEffectNodeIfNeeded(
   }
 
   int node_id = effect_tree_->Insert(EffectNode(), parent_id);
-  EffectNode* node = effect_tree_->back();
+  EffectNode* node = effect_tree_->MutableBack();
 
   node->element_id =
       layer->element_id() ? layer->element_id() : ElementId(layer->id());
@@ -538,10 +526,6 @@ bool PropertyTreeBuilderContext::AddEffectNodeIfNeeded(
   node->has_potential_opacity_animation = has_potential_opacity_animation;
   node->has_potential_filter_animation = has_potential_filter_animation;
   node->subtree_hidden = layer->hide_layer_and_subtree();
-  node->is_currently_animating_opacity =
-      OpacityIsAnimating(*mutator_host_, layer);
-  node->is_currently_animating_filter =
-      FilterIsAnimating(*mutator_host_, layer);
   node->effect_changed = layer->subtree_property_changed();
   node->subtree_has_copy_request = layer->subtree_has_copy_request();
   node->render_surface_reason = render_surface_reason;
@@ -633,12 +617,11 @@ bool PropertyTreeBuilderContext::UpdateRenderSurfaceIfNeeded(
     return false;
   }
 
-  EffectNode* effect_node =
-      effect_tree_->Node(data_for_children->effect_tree_parent);
+  EffectNode& effect_node =
+      effect_tree_->MutableNode(data_for_children->effect_tree_parent);
   const bool has_rounded_corner =
-      effect_node->mask_filter_info.HasRoundedCorners();
-  const bool has_gradient_mask =
-      effect_node->mask_filter_info.HasGradientMask();
+      effect_node.mask_filter_info.HasRoundedCorners();
+  const bool has_gradient_mask = effect_node.mask_filter_info.HasGradientMask();
 
   // Having a mask (either rounded corner or gradient) should trigger a
   // transform node.
@@ -652,9 +635,9 @@ bool PropertyTreeBuilderContext::UpdateRenderSurfaceIfNeeded(
   // handle a single rrect/gradient mask per quad at draw time, it would be
   // unable to handle intersections thus resulting in artifacts.
   if (subtree_has_overlapping_rounded_corner && has_rounded_corner) {
-    effect_node->render_surface_reason = RenderSurfaceReason::kRoundedCorner;
+    effect_node.render_surface_reason = RenderSurfaceReason::kRoundedCorner;
   } else if (subtree_has_gradient_mask && has_gradient_mask) {
-    effect_node->render_surface_reason = RenderSurfaceReason::kGradientMask;
+    effect_node.render_surface_reason = RenderSurfaceReason::kGradientMask;
   }
 
   // Inform the parent that its subtree has a mask (either rounded corner or
@@ -667,12 +650,12 @@ bool PropertyTreeBuilderContext::UpdateRenderSurfaceIfNeeded(
   // rounded corners.
   *data_for_children->subtree_has_overlapping_rounded_corner =
       (subtree_has_overlapping_rounded_corner &&
-       !effect_node->HasRenderSurface()) ||
+       !effect_node.HasRenderSurface()) ||
       (has_rounded_corner && !is_rounded_corner_layer_within_parent_bounds);
   *data_for_children->subtree_has_gradient_mask =
-      (subtree_has_gradient_mask && !effect_node->HasRenderSurface()) ||
+      (subtree_has_gradient_mask && !effect_node.HasRenderSurface()) ||
       has_gradient_mask;
-  return effect_node->HasRenderSurface();
+  return effect_node.HasRenderSurface();
 }
 
 bool PropertyTreeBuilderContext::IsRoundedCornerLayerWithinParentLayerBounds(

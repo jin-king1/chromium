@@ -12,9 +12,9 @@
 namespace confirm_infobar_overlays {
 
 ConfirmBannerRequestConfigStorage::ConfirmBannerRequestConfigStorage(
-    infobars::InfoBar* infobar)
-    : infobar_(infobar) {
-  DCHECK(infobar_);
+    infobars::InfoBar* infobar) {
+  DCHECK(infobar);
+  infobar_ = infobar->AsWeakPtr();
   ConfirmInfoBarDelegate* delegate =
       static_cast<ConfirmInfoBarDelegate*>(infobar_->delegate());
   title_text_ = delegate->GetTitleText();
@@ -26,6 +26,7 @@ ConfirmBannerRequestConfigStorage::ConfirmBannerRequestConfigStorage(
   }
   is_high_priority_ = static_cast<InfoBarIOS*>(infobar)->high_priority();
   use_icon_background_tint_ = delegate->UseIconBackgroundTint();
+  ignore_icon_color_with_tint_ = delegate->IgnoreIconColorWithTint();
 }
 
 ConfirmBannerRequestConfigStorage::~ConfirmBannerRequestConfigStorage() =

@@ -11,8 +11,10 @@
 
 #include "base/base_export.h"
 #include "base/compiler_specific.h"
-#include "base/feature_list.h"
+#include "base/containers/span.h"
+#include "base/feature.h"
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/memory/raw_span.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
@@ -81,6 +83,11 @@ typedef std::string (*FieldTrialParamsDecodeStringFunc)(const std::string& str);
 //     constexpr FeatureParam<double> kAssistantTriggerThreshold = {
 //         &kAssistantFeature, "trigger_threshold", 0.10};
 //
+// Equivalent using the caching macro (see base/feature_list.h):
+//
+//     BASE_FEATURE_PARAM(double, kAssistantTriggerThreshold,
+//                        &kAssistantFeature, "trigger_threshold", 0.10);
+//
 // If the feature is not enabled, the parameter is not set, or set to an invalid
 // value, then Get() will return the default value.
 template <typename T, bool IsEnum = std::is_enum_v<T>>
@@ -109,7 +116,8 @@ struct FeatureParam {
   // Calling Get() or GetWithoutCache() will activate the field trial associated
   // with |feature|. See GetFieldTrialParamValueByFeature() for more details.
   BASE_EXPORT T Get() const {
-    if (internal::IsFeatureParamWithCacheEnabled() && cache_getter) {
+    if (internal::IsFeatureParamWithCacheEnabled() && cache_getter &&
+        !feature->IsRuntimeMutable()) {
       return cache_getter(this);
     }
     return GetWithoutCache();
@@ -186,13 +194,12 @@ struct FeatureParam<Enum, true> {
       const Feature* feature,
       const char* name,
       const Enum default_value,
-      const std::array<Option, option_count>& options,
+      const std::array<Option, option_count>& options_array,
       Enum (*cache_getter)(const FeatureParam<Enum>*) = nullptr)
       : feature(feature),
         name(name),
         default_value(default_value),
-        options(options.data()),
-        option_count(option_count),
+        options(options_array),
         cache_getter(cache_getter) {
     static_assert(option_count >= 1, "FeatureParam<enum> has no options");
   }
@@ -202,13 +209,12 @@ struct FeatureParam<Enum, true> {
       const Feature* feature,
       const char* name,
       const Enum default_value,
-      const Option (*options)[option_count],
+      const Option (*options_array)[option_count],
       Enum (*cache_getter)(const FeatureParam<Enum>*) = nullptr)
       : feature(feature),
         name(name),
         default_value(default_value),
-        options(*options),
-        option_count(option_count),
+        options(*options_array),
         cache_getter(cache_getter) {
     static_assert(option_count >= 1, "FeatureParam<enum> has no options");
   }
@@ -222,16 +228,15 @@ struct FeatureParam<Enum, true> {
     return GetWithoutCache();
   }
   Enum GetWithoutCache() const {
-    return GetFieldTrialParamByFeatureAsEnum(
-        *feature, name, default_value,
-        UNSAFE_TODO(base::span(&*options, option_count)));
+    return GetFieldTrialParamByFeatureAsEnum(*feature, name, default_value,
+                                             options);
   }
 
   // Returns the param-string for the given enum value.
   std::string GetName(Enum value) const {
-    for (size_t i = 0; i < option_count; ++i) {
-      if (value == options[i].value) {
-        return options[i].name;
+    for (const auto& option : options) {
+      if (value == option.value) {
+        return option.name;
       }
     }
     NOTREACHED();
@@ -240,10 +245,7 @@ struct FeatureParam<Enum, true> {
   const raw_ptr<const base::Feature> feature;
   const char* const name;
   const Enum default_value;
-  // TODO(crbug.com/40284755): Remove AllowPtrArithmetic if possible after
-  // unsafe buffers have been evaluated.
-  const raw_ptr<const Option, AllowPtrArithmetic> options;
-  const size_t option_count;
+  const raw_span<const Option> options;
   Enum (*const cache_getter)(const FeatureParam<Enum>*);
 };
 
@@ -265,7 +267,7 @@ BASE_EXPORT void LogInvalidEnumValue(const Feature& feature,
 // is already active (group() has been called on it). Thread safe.
 BASE_EXPORT bool AssociateFieldTrialParams(const std::string& trial_name,
                                            const std::string& group_name,
-                                           const FieldTrialParams& params);
+                                           FieldTrialParams params);
 
 // Provides a mechanism to associate multiple set of params to multiple groups
 // with a formatted string as returned by FieldTrialList::AllParamsToString().

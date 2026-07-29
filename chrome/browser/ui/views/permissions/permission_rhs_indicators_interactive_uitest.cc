@@ -9,7 +9,6 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/views/controls/rich_controls_container_view.h"
 #include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_main_view.h"
 #include "chrome/browser/ui/views/page_info/permission_toggle_row_view.h"
@@ -21,13 +20,12 @@
 #include "components/content_settings/core/common/features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
-#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/views/interaction/interaction_test_util_views.h"
-#include "ui/views/view_utils.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/views/views_switches.h"
 
 namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
@@ -68,16 +66,19 @@ class PermissionRHSIndicatorsInteractiveUITest : public InteractiveBrowserTest {
     https_server()->StartAcceptingConnections();
   }
 
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InteractiveBrowserTestMixin::SetUpCommandLine(command_line);
+    // Disables the disregarding of potentially unintended input events.
+    command_line->AppendSwitch(
+        views::switches::kDisableInputEventActivationProtectionForTesting);
+  }
+
   void TearDownOnMainThread() override {
     EXPECT_TRUE(https_server()->ShutdownAndWaitUntilComplete());
     InteractiveBrowserTest::TearDownOnMainThread();
   }
 
   net::EmbeddedTestServer* https_server() { return https_server_.get(); }
-
-  ui::ElementContext context() const {
-    return browser()->window()->GetElementContext();
-  }
 
   // Navigates a tab to `GetURL()` and opens PageInfo.
   auto NavigateAndOpenPageInfo() {
@@ -93,7 +94,7 @@ class PermissionRHSIndicatorsInteractiveUITest : public InteractiveBrowserTest {
 
   void SetPermission(ContentSettingsType type, ContentSetting setting) {
     HostContentSettingsMap* map =
-        HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+        HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
 
     map->SetContentSettingDefaultScope(GetURL(), GetURL(), type, setting);
   }
@@ -107,8 +108,8 @@ class PermissionRHSIndicatorsInteractiveUITest : public InteractiveBrowserTest {
 // Tests that by default PageInfo has no visible permission.
 IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
                        PageInfoWithEmptyPermissionsTest) {
-  RunTestSequenceInContext(
-      context(), NavigateAndOpenPageInfo(),
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
       // There are no permissions in PageInfo as all of them have default state.
       CheckViewProperty(PageInfoMainView::kMainLayoutElementId,
                         &PageInfoMainView::GetVisiblePermissionsCountForTesting,
@@ -120,8 +121,8 @@ IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
   // Set Camera permission to Allow so it becomes visible in PageInfo.
   SetPermission(ContentSettingsType::MEDIASTREAM_CAMERA, CONTENT_SETTING_ALLOW);
 
-  RunTestSequenceInContext(
-      context(), NavigateAndOpenPageInfo(),
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
       CheckViewProperty(PageInfoMainView::kMainLayoutElementId,
                         &PageInfoMainView::GetVisiblePermissionsCountForTesting,
                         1),
@@ -143,8 +144,8 @@ IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
   SetPermission(ContentSettingsType::FILE_SYSTEM_WRITE_GUARD,
                 CONTENT_SETTING_ALLOW);
 
-  RunTestSequenceInContext(
-      context(), NavigateAndOpenPageInfo(),
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
       CheckViewProperty(PageInfoMainView::kMainLayoutElementId,
                         &PageInfoMainView::GetVisiblePermissionsCountForTesting,
                         1),
@@ -165,8 +166,8 @@ IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
 // prompt, and verifies that a new entry for Notifications appeared in PageInfo.
 IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
                        NotificationsPermissionRequestTest) {
-  RunTestSequenceInContext(
-      context(), InstrumentTab(kWebContentsElementId),
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       // Request permission.
       ExecuteJs(kWebContentsElementId, "requestNotification"),
@@ -189,8 +190,8 @@ IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
 
 IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
                        CameraPermissionRequestTest) {
-  RunTestSequenceInContext(
-      context(), InstrumentTab(kWebContentsElementId),
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       // Request permission.
       ExecuteJs(kWebContentsElementId, "requestCamera"),
@@ -213,8 +214,8 @@ IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
 
 IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
                        CameraActivityIndicatorTest) {
-  RunTestSequenceInContext(
-      context(), InstrumentTab(kWebContentsElementId),
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       // Request permission.
       ExecuteJs(kWebContentsElementId, "requestCamera"),
@@ -224,17 +225,18 @@ IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
       // Permission prompt bubble is shown, click on the Allow button.
       PressButton(PermissionPromptBubbleBaseView::kAllowButtonElementId),
       WaitForHide(PermissionPromptBubbleBaseView::kMainViewId),
-      WaitForShow(ContentSettingImageView::kMediaActivityIndicatorElementId),
-      CheckViewProperty(
-          ContentSettingImageView::kMediaActivityIndicatorElementId,
-          &ContentSettingImageView::get_icon_for_testing,
-          &vector_icons::kVideocamChromeRefreshIcon));
+      WaitForShow(ContentSettingImageModel::kMediaStreamIconElementId),
+      CheckViewProperty(ContentSettingImageModel::kMediaStreamIconElementId,
+                        &ContentSettingImageView::get_icon_for_testing,
+                        &(features::IsRoundedIconsEnabled()
+                              ? vector_icons::kVideocamIcon
+                              : vector_icons::kVideocamChromeRefreshOldIcon)));
 }
 
 IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
                        MicrophoneActivityIndicatorTest) {
-  RunTestSequenceInContext(
-      context(), InstrumentTab(kWebContentsElementId),
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       // Request permission.
       ExecuteJs(kWebContentsElementId, "requestMicrophone"),
@@ -244,17 +246,18 @@ IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
       // Permission prompt bubble is shown, click on the Allow button.
       PressButton(PermissionPromptBubbleBaseView::kAllowButtonElementId),
       WaitForHide(PermissionPromptBubbleBaseView::kMainViewId),
-      WaitForShow(ContentSettingImageView::kMediaActivityIndicatorElementId),
-      CheckViewProperty(
-          ContentSettingImageView::kMediaActivityIndicatorElementId,
-          &ContentSettingImageView::get_icon_for_testing,
-          &vector_icons::kMicChromeRefreshIcon));
+      WaitForShow(ContentSettingImageModel::kMediaStreamIconElementId),
+      CheckViewProperty(ContentSettingImageModel::kMediaStreamIconElementId,
+                        &ContentSettingImageView::get_icon_for_testing,
+                        &(features::IsRoundedIconsEnabled()
+                              ? vector_icons::kMicIcon
+                              : vector_icons::kMicChromeRefreshOldIcon)));
 }
 
 IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
                        CameraAndMicrophoneActivityIndicatorTest) {
-  RunTestSequenceInContext(
-      context(), InstrumentTab(kWebContentsElementId),
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
       NavigateWebContents(kWebContentsElementId, GetURL()),
       // Request permission.
       ExecuteJs(kWebContentsElementId, "requestCameraAndMicrophone"),
@@ -264,11 +267,12 @@ IN_PROC_BROWSER_TEST_F(PermissionRHSIndicatorsInteractiveUITest,
       // Permission prompt bubble is shown, click on the Allow button.
       PressButton(PermissionPromptBubbleBaseView::kAllowButtonElementId),
       WaitForHide(PermissionPromptBubbleBaseView::kMainViewId),
-      WaitForShow(ContentSettingImageView::kMediaActivityIndicatorElementId),
+      WaitForShow(ContentSettingImageModel::kMediaStreamIconElementId),
       // In case both camera and microphone permissions are requested and used
       // at once, we show a single indicator with a camera icon.
-      CheckViewProperty(
-          ContentSettingImageView::kMediaActivityIndicatorElementId,
-          &ContentSettingImageView::get_icon_for_testing,
-          &vector_icons::kVideocamChromeRefreshIcon));
+      CheckViewProperty(ContentSettingImageModel::kMediaStreamIconElementId,
+                        &ContentSettingImageView::get_icon_for_testing,
+                        &(features::IsRoundedIconsEnabled()
+                              ? vector_icons::kVideocamIcon
+                              : vector_icons::kVideocamChromeRefreshOldIcon)));
 }

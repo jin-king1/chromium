@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "sql/recovery.h"
 
 #include <stddef.h>
@@ -18,11 +13,13 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
+#include "base/dcheck_is_on.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
@@ -30,11 +27,9 @@
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "build/buildflag.h"
 #include "sql/database.h"
 #include "sql/meta_table.h"
-#include "sql/sql_features.h"
 #include "sql/sqlite_result_code.h"
 #include "sql/sqlite_result_code_values.h"
 #include "sql/statement.h"
@@ -69,8 +64,6 @@ class SqlRecoveryTest : public testing::Test,
  public:
   SqlRecoveryTest()
       : db_(DatabaseOptions().set_wal_mode(ShouldEnableWal()), test::kTestTag) {
-    scoped_feature_list_.InitWithFeatureStates(
-        {{features::kEnableWALModeByDefault, ShouldEnableWal()}});
   }
 
   bool ShouldEnableWal() { return GetParam(); }
@@ -99,13 +92,11 @@ class SqlRecoveryTest : public testing::Test,
   bool OverwriteDatabaseHeader() {
     base::File file(db_path_,
                     base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
-    static constexpr char kText[] = "Now is the winter of our discontent.";
-    constexpr int kTextBytes = sizeof(kText) - 1;
-    return file.Write(0, kText, kTextBytes) == kTextBytes;
+    return file.WriteAndCheck(0, base::byte_span_with_nul_from_cstring(
+                                     "Now is the winter of our discontent."));
   }
 
  protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
   base::ScopedTempDir temp_dir_;
   base::FilePath db_path_;
   Database db_;
@@ -878,8 +869,17 @@ TEST_P(SqlRecoveryTest, CannotRecoverDbWithErrorCallback) {
 // that it is passed a non-null database pointer and will instead likely result
 // in unexpected behavior or crashes.
 TEST_P(SqlRecoveryTest, CannotRecoverNullDb) {
-  EXPECT_CHECK_DEATH(std::ignore = Recovery::RecoverDatabase(
-                         nullptr, Recovery::Strategy::kRecoverOrRaze));
+  // TODO(pbos): Consider consolidating these so that DCHECK builds crash in the
+  // same spot. Probably either by upgrading DCHECKs to CHECKs, or if feasible
+  // by setting up the test to make it past failing DCHECKs to the expected
+  // CHECK.
+  if (DCHECK_IS_ON()) {
+    EXPECT_DCHECK_DEATH(std::ignore = Recovery::RecoverDatabase(
+                            nullptr, Recovery::Strategy::kRecoverOrRaze));
+  } else {
+    EXPECT_CHECK_DEATH(std::ignore = Recovery::RecoverDatabase(
+                           nullptr, Recovery::Strategy::kRecoverOrRaze));
+  }
 }
 
 // TODO(crbug.com/40199997): Ideally this would be a

@@ -41,17 +41,17 @@ export function getHtml(this: CustomizeChromeComboboxElement) {
           </label>
           ${this.isGroupExpanded_(index) ? html`
             ${(item as ComboboxGroup).items.map(subitem => html`
-              <div class="item" role="option" .value="${subitem.key}"
+              <div class="item" role="option" data-value="${subitem.key}"
                   aria-selected="${this.isItemSelected_(subitem)}">
                 <cr-icon icon="cr:check" aria-hidden="true"></cr-icon>
-                <span title=${subitem.label}>${subitem.label}</span>
+                <span title="${subitem.label}">${subitem.label}</span>
               </div>
             `)}
           `: ''}
         </div>
       ` : ''}
       ${!this.isGroup_(item) ? html`
-        <div class="item" role="option" .value="${item.key}"
+        <div class="item" role="option" data-value="${item.key}"
             aria-selected="${this.isItemSelected_(item)}">
           ${(item as ComboboxItem).imagePath ? html`
             <customize-chrome-check-mark-wrapper

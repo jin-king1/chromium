@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {waitForUserScriptsAPIAllowed} from '/_test_resources/test_util/user_script_test_util.js';
+
 chrome.test.runTests([
+  waitForUserScriptsAPIAllowed,
 
   // Tests that calling getScripts with no filter returns all user scripts.
   async function getScripts_NoFilter() {
@@ -13,7 +16,7 @@ chrome.test.runTests([
         excludeMatches: ['*://abc.com/*'],
         allFrames: true,
         js: [{file: 'empty.js'}],
-        world: chrome.userScripts.ExecutionWorld.MAIN
+        world: chrome.userScripts.ExecutionWorld.MAIN,
       },
       {
         id: 'script2',
@@ -27,7 +30,7 @@ chrome.test.runTests([
         matches: ['*://requested.com/*'],
         js: [{file: 'empty2.js'}],
         runAt: 'document_idle',
-      }
+      },
     ];
 
     const contentScriptsToRegister =
@@ -43,7 +46,7 @@ chrome.test.runTests([
         allFrames: true,
         js: [{file: 'empty.js'}],
         runAt: 'document_idle',
-        world: chrome.userScripts.ExecutionWorld.MAIN
+        world: chrome.userScripts.ExecutionWorld.MAIN,
       },
       {
         id: 'script2',
@@ -88,21 +91,21 @@ chrome.test.runTests([
         matches: ['*://*/*'],
         excludeMatches: ['*://abc.com/*'],
         allFrames: true,
-        js: [{file: 'empty.js'}]
+        js: [{file: 'empty.js'}],
       },
       {
         id: 'script2',
         matches: ['*://requested.com/*'],
         js: [{file: 'empty2.js'}],
-        runAt: 'document_end'
-      }
+        runAt: 'document_end',
+      },
     ];
 
 
     await chrome.userScripts.register(userScriptsToRegister);
 
     // Calling getScripts with empty ids in filter returns no scripts.
-    const scripts = await chrome.userScripts.getScripts({ ids: [] });
+    const scripts = await chrome.userScripts.getScripts({ids: []});
     chrome.test.assertEq(0, scripts.length);
 
     chrome.test.succeed();
@@ -115,7 +118,7 @@ chrome.test.runTests([
 
     const scriptsToRegister = [
       {id: 'script3', matches: ['*://*/*'], js: [{file: 'empty.js'}]},
-      {id: 'script4', matches: ['*://*/*'], js: [{file: 'empty2.js'}]}
+      {id: 'script4', matches: ['*://*/*'], js: [{file: 'empty2.js'}]},
     ];
 
     const expectedScripts = [{
@@ -124,12 +127,12 @@ chrome.test.runTests([
       allFrames: false,
       js: [{file: 'empty.js'}],
       runAt: 'document_idle',
-      world: chrome.userScripts.ExecutionWorld.USER_SCRIPT
+      world: chrome.userScripts.ExecutionWorld.USER_SCRIPT,
     }];
 
     await chrome.userScripts.register(scriptsToRegister);
 
-    let scripts =
+    const scripts =
         await chrome.userScripts.getScripts({ids: ['script3', 'nonExistent']});
     chrome.test.assertEq(expectedScripts, scripts);
 

@@ -4,14 +4,13 @@
 
 package org.chromium.android_webview.supervised_user;
 
-import androidx.annotation.NonNull;
-
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.android_webview.common.Lifetime;
 import org.chromium.android_webview.common.SafeModeAction;
 import org.chromium.android_webview.common.SafeModeActionIds;
+import org.chromium.build.annotations.NullMarked;
 
 /**
  * A {@link SafeModeAction} to disable restricted content blocking.
@@ -20,14 +19,14 @@ import org.chromium.android_webview.common.SafeModeActionIds;
  */
 @JNINamespace("android_webview")
 @Lifetime.Singleton
-public class AwSupervisedUserSafeModeAction implements SafeModeAction {
+@NullMarked
+public class AwSupervisedUserSafeModeAction extends SafeModeAction {
     private static final String TAG = "WebViewSafeMode";
 
     // This ID should not be changed or reused.
     private static final String ID = SafeModeActionIds.DISABLE_SUPERVISION_CHECKS;
 
     @Override
-    @NonNull
     public String getId() {
         return ID;
     }
@@ -41,7 +40,7 @@ public class AwSupervisedUserSafeModeAction implements SafeModeAction {
     }
 
     @Override
-    public boolean execute() {
+    public boolean executeAtStartup() {
         AwSupervisedUserSafeModeActionJni.get().setSupervisionEnabled(false);
         return true;
     }

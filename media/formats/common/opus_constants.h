@@ -35,7 +35,7 @@ namespace media {
 //         - else
 //            - stream = byte-M
 
-enum {
+enum : uint8_t {
   // Default audio output channel layout. Used to initialize |stream_map| in
   // OpusExtraData, and passed to opus_multistream_decoder_create() when the
   // extra data does not contain mapping information. The values are valid only
@@ -48,6 +48,12 @@ enum {
   // Specification:
   // http://www.xiph.org/vorbis/doc/Vorbis_I_spec.html
   OPUS_MAX_VORBIS_CHANNELS = 8,
+
+  // Opus Channel Mapping Families (RFC 7845 / RFC 8486).
+  OPUS_CHANNEL_MAPPING_FAMILY_DEFAULT = 0,
+  OPUS_CHANNEL_MAPPING_FAMILY_VORBIS = 1,
+  OPUS_CHANNEL_MAPPING_FAMILY_AMBISONICS = 2,
+  OPUS_CHANNEL_MAPPING_FAMILY_UNDEFINED = 255,
 
   // Size of the Opus extra data excluding optional mapping information.
   OPUS_EXTRADATA_SIZE = 19,

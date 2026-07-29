@@ -16,15 +16,17 @@
               "builder_group": "chromium.fuzz",
               "clusterfuzz_archive": {
                 "archive_name_prefix": "asan",
+                "archive_path": "mac-release-media/asan-mac-release",
                 "archive_subdir": "media",
                 "gs_acl": "public-read",
-                "gs_bucket": "chromium-browser-asan"
+                "gs_bucket": "chromium-browser-asan",
+                "use_archive_path": false
               },
               "execution_mode": "COMPILE_AND_TEST",
               "legacy_chromium_config": {
                 "apply_configs": [
-                  "mb",
-                  "clobber"
+                  "clobber",
+                  "mb"
                 ],
                 "build_config": "Release",
                 "config": "chromium_asan",
@@ -45,7 +47,7 @@
           "project": "chromium"
         }
       ],
-      "targets_spec_directory": "src/infra/config/generated/builders/try/mac-asan-media-rel/targets"
+      "targets_spec_directory": "infra/config/generated/builders/try/mac-asan-media-rel/targets"
     }
   },
   "$build/siso": {
@@ -53,10 +55,10 @@
       "builder"
     ],
     "enable_cloud_monitoring": true,
-    "enable_cloud_profiler": true,
     "enable_cloud_trace": true,
     "experiments": [],
-    "metrics_project": "chromium-reclient-metrics",
+    "keep_going": 3,
+    "profile_mode": "cloud",
     "project": "rbe-chromium-untrusted",
     "remote_jobs": -1
   },

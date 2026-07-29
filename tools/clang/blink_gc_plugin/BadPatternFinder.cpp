@@ -10,9 +10,7 @@
 #include <algorithm>
 
 #include "BlinkGCPluginOptions.h"
-#include "Config.h"
 #include "DiagnosticsReporter.h"
-#include "RecordInfo.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
@@ -90,13 +88,14 @@ class UniquePtrGarbageCollectedMatcher : public MatchFinder::MatchCallback {
 };
 
 bool IsOnStack(const clang::Decl* decl, RecordCache& record_cache) {
-  if (dyn_cast<const clang::VarDecl>(decl)) {
+  if (llvm::dyn_cast<const clang::VarDecl>(decl)) {
     return true;
   }
-  const clang::FieldDecl* field_decl = dyn_cast<const clang::FieldDecl>(decl);
+  const clang::FieldDecl* field_decl =
+      llvm::dyn_cast<const clang::FieldDecl>(decl);
   assert(field_decl);
   const clang::CXXRecordDecl* parent_decl =
-      dyn_cast<const clang::CXXRecordDecl>(field_decl->getParent());
+      llvm::dyn_cast<const clang::CXXRecordDecl>(field_decl->getParent());
   assert(parent_decl);
   return record_cache.Lookup(parent_decl)->IsStackAllocated();
 }
@@ -142,9 +141,7 @@ class OptionalOrRawPtrToGCedMatcher : public MatchFinder::MatchCallback {
       }
       // Optionals of non-GCed traceable or GCed collections are allowed on
       // stack.
-      if (is_optional &&
-          (!is_gced || Config::IsGCCollection(arg_type->getName())) &&
-          IsOnStack(bad_decl, record_cache_)) {
+      if (is_optional && !is_gced && IsOnStack(bad_decl, record_cache_)) {
         return;
       }
       if (is_optional) {
@@ -238,14 +235,15 @@ class CollectionOfGarbageCollectedMatcher : public MatchFinder::MatchCallback {
                   hasName("::std::pair"),
                   hasAnyTemplateArgument(refersToType(member_ptr_or_ref)))))));
     auto gced_or_member = anyOf(gced_ptr_ref_or_pair, member_ptr_ref_or_pair);
-    auto has_wtf_collection_name = hasAnyName(
-        "::WTF::Vector", "::WTF::Deque", "::WTF::HashSet",
-        "::WTF::LinkedHashSet", "::WTF::HashCountedSet", "::WTF::HashMap");
+    auto has_wtf_collection_name =
+        hasAnyName("::blink::Vector", "::blink::Deque", "::blink::HashSet",
+                   "::blink::LinkedHashSet", "::blink::HashCountedSet",
+                   "::blink::HashMap");
     auto has_std_collection_name =
         hasAnyName("::std::vector", "::std::map", "::std::unordered_map",
                    "::std::set", "::std::unordered_set", "::std::array");
     auto partition_allocator = hasCanonicalType(
-        hasDeclaration(cxxRecordDecl(hasName("::WTF::PartitionAllocator"))));
+        hasDeclaration(cxxRecordDecl(hasName("::blink::PartitionAllocator"))));
     auto wtf_collection_decl =
         classTemplateSpecializationDecl(
             has_wtf_collection_name,
@@ -279,7 +277,7 @@ class CollectionOfGarbageCollectedMatcher : public MatchFinder::MatchCallback {
         return;
       }
       if (collection->getNameAsString() == "array") {
-        if (member || Config::IsGCCollection(gc_type->getName())) {
+        if (member) {
           // std::array of Members is fine as long as it is traced (which is
           // enforced by another checker).
           return;
@@ -440,7 +438,7 @@ AST_MATCHER(clang::CXXRecordDecl, isDisallowedNewClass) {
   auto& context = Finder->getASTContext();
 
   auto gc_matcher = GarbageCollectedType();
-  if (gc_matcher.matches(context.getTypeDeclType(&Node), Finder, Builder)) {
+  if (gc_matcher.matches(context.getCanonicalTagType(&Node), Finder, Builder)) {
     // This is a normal GCed class, bail out.
     return false;
   }
@@ -601,9 +599,6 @@ class GCedVarOrField : public MatchFinder::MatchCallback {
   void run(const MatchFinder::MatchResult& result) override {
     const auto* gctype = result.Nodes.getNodeAs<clang::CXXRecordDecl>("gctype");
     assert(gctype);
-    if (Config::IsGCCollection(gctype->getName())) {
-      return;
-    }
     const auto* field = result.Nodes.getNodeAs<clang::FieldDecl>("bad_field");
     if (field) {
       if (Config::IsIgnoreAnnotated(field)) {

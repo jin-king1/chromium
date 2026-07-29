@@ -21,7 +21,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
-#include "base/types/always_false.h"
 #include "base/types/is_complete.h"
 #include "base/types/is_instantiation.h"
 #include "base/types/to_address.h"
@@ -454,7 +453,7 @@ struct TypeList {};
 
 // Implements `DropTypeListItem`.
 template <size_t n, typename List>
-  requires is_instantiation<TypeList, List>
+  requires is_instantiation<List, TypeList>
 struct DropTypeListItemImpl {
   using Type = List;
 };
@@ -470,7 +469,7 @@ using DropTypeListItem = typename DropTypeListItemImpl<n, List>::Type;
 
 // Implements `TakeTypeListItem`.
 template <size_t n, typename List, typename... Accum>
-  requires is_instantiation<TypeList, List>
+  requires is_instantiation<List, TypeList>
 struct TakeTypeListItemImpl {
   using Type = TypeList<Accum...>;
 };
@@ -536,6 +535,16 @@ BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_WITH_QUALS(noexcept);
 BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_WITH_QUALS(const noexcept);
 
 #undef BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_WITH_QUALS
+
+template <typename Callable, typename R, typename... Args>
+struct ExtractCallableRunTypeImpl<Callable, R (*)(Args...)> {
+  using Type = R(Args...);
+};
+
+template <typename Callable, typename R, typename... Args>
+struct ExtractCallableRunTypeImpl<Callable, R (*)(Args...) noexcept> {
+  using Type = R(Args...);
+};
 
 // Evaluated to the RunType of the given callable type; e.g.
 // `ExtractCallableRunType<decltype([](int, char*) { return 0.1; })>` ->
@@ -1143,9 +1152,9 @@ struct BindState final : BindStateBase {
 
   template <typename ForwardFunctor, typename... ForwardBoundArgs>
     requires CancellationTraits::is_cancellable
-  explicit BindState(BindStateBase::InvokeFuncStorage invoke_func,
-                     ForwardFunctor&& functor,
-                     ForwardBoundArgs&&... bound_args)
+  BindState(BindStateBase::InvokeFuncStorage invoke_func,
+            ForwardFunctor&& functor,
+            ForwardBoundArgs&&... bound_args)
       : BindStateBase(invoke_func, &Destroy, &QueryCancellationTraits),
         functor_(std::forward<ForwardFunctor>(functor)),
         bound_args_(std::forward<ForwardBoundArgs>(bound_args)...) {
@@ -1154,9 +1163,9 @@ struct BindState final : BindStateBase {
 
   template <typename ForwardFunctor, typename... ForwardBoundArgs>
     requires(!CancellationTraits::is_cancellable)
-  explicit BindState(BindStateBase::InvokeFuncStorage invoke_func,
-                     ForwardFunctor&& functor,
-                     ForwardBoundArgs&&... bound_args)
+  BindState(BindStateBase::InvokeFuncStorage invoke_func,
+            ForwardFunctor&& functor,
+            ForwardBoundArgs&&... bound_args)
       : BindStateBase(invoke_func, &Destroy),
         functor_(std::forward<ForwardFunctor>(functor)),
         bound_args_(std::forward<ForwardBoundArgs>(bound_args)...) {
@@ -1354,7 +1363,7 @@ struct ValidateReceiverType {
  private:
   // Pointer-like receivers use a different specialization, so this never
   // succeeds.
-  template <bool v = AlwaysFalse<T>>
+  template <bool v = false>
   struct ReceiverMustBePointerLike {
     static constexpr bool value = [] {
       static_assert(v,
@@ -1680,7 +1689,7 @@ template <template <typename> class CallbackT>
 struct BindHelper {
  private:
   static constexpr bool kIsOnce =
-      is_instantiation<OnceCallback, CallbackT<void()>>;
+      is_instantiation<CallbackT<void()>, OnceCallback>;
 
   template <typename Traits, bool v = IsComplete<Traits>>
   struct TraitsAreInstantiable {
@@ -1694,7 +1703,7 @@ struct BindHelper {
   };
 
   template <typename Functor,
-            bool v = !is_instantiation<OnceCallback, std::decay_t<Functor>> ||
+            bool v = !is_instantiation<std::decay_t<Functor>, OnceCallback> ||
                      (kIsOnce && std::is_rvalue_reference_v<Functor&&> &&
                       !std::is_const_v<std::remove_reference_t<Functor>>)>
   struct OnceCallbackFunctorIsValid {
@@ -1717,7 +1726,7 @@ struct BindHelper {
       // Can't use a defaulted template param since it can't come after `Args`.
       constexpr bool v =
           !kIsOnce ||
-          (... && !is_instantiation<PassedWrapper, std::decay_t<Args>>);
+          (... && !is_instantiation<std::decay_t<Args>, PassedWrapper>);
       static_assert(
           v,
           "Use std::move() instead of base::Passed() with base::BindOnce().");
@@ -1728,8 +1737,8 @@ struct BindHelper {
   template <
       typename Functor,
       bool v =
-          !is_instantiation<FunctionRef, std::remove_cvref_t<Functor>> &&
-          !is_instantiation<absl::FunctionRef, std::remove_cvref_t<Functor>>>
+          !is_instantiation<std::remove_cvref_t<Functor>, FunctionRef> &&
+          !is_instantiation<std::remove_cvref_t<Functor>, absl::FunctionRef>>
   struct NotFunctionRef {
     static constexpr bool value = [] {
       static_assert(
@@ -1852,7 +1861,7 @@ struct BindHelper {
   // `OnceCallback` passed to `OnceCallback`, or `RepeatingCallback` passed to
   // `RepeatingCallback`.
   template <typename T>
-    requires is_instantiation<CallbackT, T>
+    requires is_instantiation<T, CallbackT>
   static T BindImpl(T callback) {
     // Guard against null pointers accidentally ending up in posted tasks,
     // causing hard-to-debug crashes.
@@ -1863,7 +1872,7 @@ struct BindHelper {
   // `RepeatingCallback` passed to `OnceCallback`. The opposite direction is
   // intentionally not supported.
   template <typename Signature>
-    requires is_instantiation<CallbackT, OnceCallback<Signature>>
+    requires is_instantiation<OnceCallback<Signature>, CallbackT>
   static OnceCallback<Signature> BindImpl(
       RepeatingCallback<Signature> callback) {
     return BindImpl(OnceCallback<Signature>(callback));
@@ -1914,7 +1923,7 @@ struct BindHelper {
 //   BindOnce(&S::f, weak_s).Run();  // `S::f()` is not called.
 // ```
 template <typename T>
-struct IsWeakReceiver : std::bool_constant<is_instantiation<WeakPtr, T>> {};
+struct IsWeakReceiver : std::bool_constant<is_instantiation<T, WeakPtr>> {};
 
 template <typename T>
 struct IsWeakReceiver<std::reference_wrapper<T>> : IsWeakReceiver<T> {};
@@ -1943,9 +1952,9 @@ struct BindUnwrapTraits {
 template <typename T>
   requires internal::kIsUnretainedWrapper<internal::UnretainedWrapper, T> ||
            internal::kIsUnretainedWrapper<internal::UnretainedRefWrapper, T> ||
-           is_instantiation<internal::RetainedRefWrapper, T> ||
-           is_instantiation<internal::OwnedWrapper, T> ||
-           is_instantiation<internal::OwnedRefWrapper, T>
+           is_instantiation<T, internal::RetainedRefWrapper> ||
+           is_instantiation<T, internal::OwnedWrapper> ||
+           is_instantiation<T, internal::OwnedRefWrapper>
 struct BindUnwrapTraits<T> {
   static decltype(auto) Unwrap(const T& o) { return o.get(); }
 };
@@ -1998,8 +2007,8 @@ struct CallbackCancellationTraits<Functor, std::tuple<BoundArgs...>> {
 
 // Specialization for a nested `Bind()`.
 template <typename Functor, typename... BoundArgs>
-  requires is_instantiation<OnceCallback, Functor> ||
-           is_instantiation<RepeatingCallback, Functor>
+  requires is_instantiation<Functor, OnceCallback> ||
+           is_instantiation<Functor, RepeatingCallback>
 struct CallbackCancellationTraits<Functor, std::tuple<BoundArgs...>> {
   static constexpr bool is_cancellable = true;
 

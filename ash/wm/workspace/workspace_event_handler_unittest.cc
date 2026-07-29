@@ -4,18 +4,22 @@
 
 #include "ash/wm/workspace/workspace_event_handler.h"
 
+#include <algorithm>
+
 #include "ash/screen_util.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
+#include "ash/wm/tablet_mode/tablet_mode_controller.h"
+#include "ash/wm/window_pin_util.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/window_util.h"
 #include "ash/wm/wm_event.h"
 #include "ash/wm/workspace_controller.h"
 #include "ash/wm/workspace_controller_test_api.h"
-#include "base/containers/contains.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
+#include "chromeos/ui/base/window_pin_type.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/test/test_window_delegate.h"
 #include "ui/aura/window.h"
@@ -89,7 +93,7 @@ class WindowPropertyObserver : public aura::WindowObserver {
   ~WindowPropertyObserver() override { window_->RemoveObserver(this); }
 
   bool DidPropertyChange(const void* property) const {
-    return base::Contains(properties_changed_, property);
+    return std::ranges::contains(properties_changed_, property);
   }
 
  private:
@@ -113,9 +117,8 @@ TEST_F(WorkspaceEventHandlerTest, DoubleClickSingleAxisResizeEdge) {
 
   wm::ActivateWindow(window.get());
 
-  gfx::Rect work_area = display::Screen::GetScreen()
-                            ->GetDisplayNearestWindow(window.get())
-                            .work_area();
+  gfx::Rect work_area =
+      display::Screen::Get()->GetDisplayNearestWindow(window.get()).work_area();
 
   ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow(),
                                      window.get());
@@ -175,7 +178,7 @@ TEST_F(WorkspaceEventHandlerTest, DoubleClickSingleAxisResizeEdge) {
   // TODO(crbug.com/40638870): Unit tests should be able to simulate mouse input
   // without having to call |CursorManager::SetDisplay|.
   Shell::Get()->cursor_manager()->SetDisplay(
-      display::Screen::GetScreen()->GetDisplayNearestWindow(second_root));
+      display::Screen::Get()->GetDisplayNearestWindow(second_root));
 
   // Y-axis maximization.
   delegate.set_window_component(HTTOP);
@@ -218,9 +221,8 @@ TEST_F(WorkspaceEventHandlerTest, DoubleClickSingleAxisWhenSideSnapped) {
   std::unique_ptr<aura::Window> window(
       CreateTestWindow(&delegate, restored_bounds));
 
-  gfx::Rect work_area_in_screen = display::Screen::GetScreen()
-                                      ->GetDisplayNearestWindow(window.get())
-                                      .work_area();
+  gfx::Rect work_area_in_screen =
+      display::Screen::Get()->GetDisplayNearestWindow(window.get()).work_area();
 
   WindowState* window_state = WindowState::Get(window.get());
   const WindowSnapWMEvent snap_event(WM_EVENT_SNAP_PRIMARY);
@@ -619,6 +621,34 @@ TEST_F(WorkspaceEventHandlerTest, DoubleTapCaptionTogglesMaximize) {
 
   EXPECT_FALSE(window_state->IsMaximized());
   EXPECT_EQ(bounds.ToString(), window->bounds().ToString());
+}
+
+TEST_F(WorkspaceEventHandlerTest,
+       DoubleTapOnLockedFullscreenWindowDoesNotToggleMaximize) {
+  // Enable tablet mode controller to leverage tablet mode window states for
+  // testing purposes.
+  Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
+
+  aura::test::TestWindowDelegate delegate;
+  const gfx::Rect bounds(10, 20, 30, 40);
+  const std::unique_ptr<aura::Window> window(
+      CreateTestWindow(&delegate, bounds));
+  window->SetProperty(aura::client::kResizeBehaviorKey,
+                      aura::client::kResizeBehaviorCanMaximize);
+  delegate.set_window_component(HTCAPTION);
+
+  // Lock window.
+  window_util::PinWindow(window.get(), /*trusted=*/true);
+  WindowState* const window_state = WindowState::Get(window.get());
+  ASSERT_TRUE(window_state->IsLockedFullscreen());
+
+  ui::test::EventGenerator generator(Shell::GetPrimaryRootWindow(),
+                                     window.get());
+
+  const gfx::Point tap_target = window->bounds().top_center();
+  generator.GestureTapAt(tap_target);
+  generator.GestureTapAt(tap_target);
+  EXPECT_TRUE(window_state->IsLockedFullscreen());
 }
 
 // Verifies deleting the window while dragging doesn't crash.

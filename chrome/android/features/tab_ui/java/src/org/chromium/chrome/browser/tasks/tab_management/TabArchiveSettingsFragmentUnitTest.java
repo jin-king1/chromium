@@ -12,9 +12,8 @@ import android.app.Activity;
 
 import androidx.fragment.app.FragmentManager;
 import androidx.lifecycle.Lifecycle.State;
-import androidx.test.core.app.ActivityScenario;
+import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -22,6 +21,8 @@ import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
@@ -34,7 +35,10 @@ import org.chromium.ui.base.TestActivity;
 public class TabArchiveSettingsFragmentUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    private ActivityScenario<TestActivity> mActivityScenario;
+    @Rule
+    public final ActivityScenarioRule<TestActivity> mActivityScenarioRule =
+            new ActivityScenarioRule<>(TestActivity.class);
+
     private TestActivity mActivity;
     private TabArchiveSettings mArchiveSettings;
 
@@ -42,13 +46,7 @@ public class TabArchiveSettingsFragmentUnitTest {
     public void setUp() {
         mArchiveSettings = new TabArchiveSettings(ChromeSharedPreferences.getInstance());
 
-        mActivityScenario = ActivityScenario.launch(TestActivity.class);
-        mActivityScenario.onActivity(this::onActivity);
-    }
-
-    @After
-    public void tearDown() {
-        mActivityScenario.close();
+        mActivityScenarioRule.getScenario().onActivity(this::onActivity);
     }
 
     private void onActivity(Activity activity) {
@@ -68,7 +66,7 @@ public class TabArchiveSettingsFragmentUnitTest {
                 .beginTransaction()
                 .replace(android.R.id.content, tabArchiveSettingsFragment)
                 .commit();
-        mActivityScenario.moveToState(State.STARTED);
+        mActivityScenarioRule.getScenario().moveToState(State.STARTED);
 
         assertEquals(
                 mActivity.getString(R.string.archive_settings_title),
@@ -91,7 +89,7 @@ public class TabArchiveSettingsFragmentUnitTest {
                                 TabArchiveSettingsFragment.INACTIVE_TIMEDELTA_PREF);
 
         assertEquals(
-                "After 7 days",
+                "After 7 days inactive",
                 archiveTimeDeltaPreference.getCheckedRadioButtonForTesting().getPrimaryText());
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -132,20 +130,36 @@ public class TabArchiveSettingsFragmentUnitTest {
         ChromeSwitchPreference enableArchiveDuplicateTabs =
                 tabArchiveSettingsFragment.findPreference(
                         TabArchiveSettingsFragment.PREF_TAB_ARCHIVE_INCLUDE_DUPLICATE_TABS);
-        assertFalse(enableArchiveDuplicateTabs.isChecked());
-
-        histogramWatcher =
-                HistogramWatcher.newSingleRecordWatcher(
-                        "Tabs.ArchiveSettings.ArchiveDuplicateTabsEnabled", true);
-        enableArchiveDuplicateTabs.onClick();
-        assertTrue(mArchiveSettings.isArchiveDuplicateTabsEnabled());
+        assertTrue(enableArchiveDuplicateTabs.isEnabled());
+        assertTrue(enableArchiveDuplicateTabs.isChecked());
 
         histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Tabs.ArchiveSettings.ArchiveDuplicateTabsEnabled", false);
         enableArchiveDuplicateTabs.onClick();
         histogramWatcher.assertExpected();
+        assertTrue(enableArchiveDuplicateTabs.isEnabled());
         assertFalse(mArchiveSettings.isArchiveDuplicateTabsEnabled());
+
+        histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Tabs.ArchiveSettings.ArchiveDuplicateTabsEnabled", true);
+        enableArchiveDuplicateTabs.onClick();
+        histogramWatcher.assertExpected();
+        assertTrue(enableArchiveDuplicateTabs.isEnabled());
+        assertTrue(mArchiveSettings.isArchiveDuplicateTabsEnabled());
+
+        // Click "Never" radio button to disable archive. The archive duplicate tabs
+        // preference should be disabled.
+        radioButton = archiveTimeDeltaPreference.getRadioButtonForTesting(0);
+        radioButton.onClick(radioButton);
+        // PostTask to ensure the UI is updated after the preference change.
+        PostTask.postTask(
+                TaskTraits.UI_DEFAULT,
+                () -> {
+                    assertFalse(enableArchiveDuplicateTabs.isEnabled());
+                    assertFalse(enableArchiveDuplicateTabs.isChecked());
+                });
     }
 
     @Test
@@ -164,13 +178,13 @@ public class TabArchiveSettingsFragmentUnitTest {
         assertEquals(
                 "Never", archiveTimeDeltaPreference.getRadioButtonForTesting(0).getPrimaryText());
         assertEquals(
-                "After 7 days",
+                "After 7 days inactive",
                 archiveTimeDeltaPreference.getRadioButtonForTesting(1).getPrimaryText());
         assertEquals(
-                "After 14 days",
+                "After 14 days inactive",
                 archiveTimeDeltaPreference.getRadioButtonForTesting(2).getPrimaryText());
         assertEquals(
-                "After 21 days",
+                "After 21 days inactive",
                 archiveTimeDeltaPreference.getRadioButtonForTesting(3).getPrimaryText());
     }
 }

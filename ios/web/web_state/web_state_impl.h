@@ -27,15 +27,17 @@
 #import "ios/web/public/navigation/web_state_policy_decider.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_delegate.h"
+#import "ios/web/web_state/web_view_pass_key.h"
 #import "url/gurl.h"
+#import "url/origin.h"
 
-@class CRWSessionStorage;
 @class CRWWebController;
 @protocol CRWWebViewProxy;
 @protocol CRWWebViewNavigationProxy;
 @class UIViewController;
 @protocol CRWFindInteraction;
 enum WKPermissionDecision : NSInteger;
+@class WKWebView;
 
 namespace web {
 
@@ -73,11 +75,6 @@ class WebStateImpl final : public WebState {
 
   // Constructor for WebStateImpls created for new sessions.
   explicit WebStateImpl(const CreateParams& params);
-
-  // Constructor for WebStateImpls created for deserialized sessions
-  WebStateImpl(const CreateParams& params,
-               CRWSessionStorage* session_storage,
-               NativeSessionFetcher session_fetcher);
 
   // Constructor for WebStateImpls created for deserialized sessions. The
   // callbacks are used to load the complete serialized data from disk when
@@ -145,9 +142,6 @@ class WebStateImpl final : public WebState {
   // changed.
   void OnStateChangedForPermission(Permission permission);
 
-  // Notifies the observers that the under pagebackground color was changed.
-  void OnUnderPageBackgroundColorChanged();
-
   // Returns the NavigationManager for this WebState.
   NavigationManagerImpl& GetNavigationManagerImpl();
 
@@ -175,7 +169,7 @@ class WebStateImpl final : public WebState {
   // a message is received from the web ui JavaScript via `chrome.send` API.
   void HandleWebUIMessage(const GURL& source_url,
                           std::string_view message,
-                          const base::Value::List& args);
+                          const base::ListValue& args);
 
   // Explicitly sets the MIME type, overwriting any MIME type that was set by
   // headers. Note that this should be called after OnNavigationCommitted, as
@@ -235,21 +229,21 @@ class WebStateImpl final : public WebState {
                                    base::OnceCallback<void(bool)> callback);
 
   // Notifies the delegate that a JavaScript alert dialog needs to be presented.
-  void RunJavaScriptAlertDialog(const GURL& origin_url,
+  void RunJavaScriptAlertDialog(const url::Origin& origin,
                                 NSString* message_text,
                                 base::OnceClosure callback);
 
   // Notifies the delegate that a JavaScript confirmation dialog needs to be
   // presented.
   void RunJavaScriptConfirmDialog(
-      const GURL& origin_url,
+      const url::Origin& origin,
       NSString* message_text,
       base::OnceCallback<void(bool success)> callback);
 
   // Notifies the delegate that a JavaScript prompt dialog needs to be
   // presented.
   void RunJavaScriptPromptDialog(
-      const GURL& origin_url,
+      const url::Origin& origin,
       NSString* message_text,
       NSString* default_prompt_text,
       base::OnceCallback<void(NSString* user_input)> callback);
@@ -265,11 +259,16 @@ class WebStateImpl final : public WebState {
                               const GURL& opener_url,
                               bool initiated_by_user);
 
-  // Notifies the delegate that request receives an authentication challenge
+  // Notifies the delegate that request receives a HTTP authentication challenge
   // and is unable to respond using cached credentials.
   void OnAuthRequired(NSURLProtectionSpace* protection_space,
                       NSURLCredential* proposed_credential,
-                      WebStateDelegate::AuthCallback callback);
+                      WebStateDelegate::HTTPAuthCallback callback);
+
+  // Notifies the delegate that request receives a client certificate
+  // authentication challenge and is unable to respond using cached credentials.
+  void OnAuthRequired(NSURLProtectionSpace* protection_space,
+                      WebStateDelegate::ClientCertAuthCallback callback);
 
   // Cancels all dialogs associated with this web_state.
   void CancelDialogs();
@@ -277,6 +276,12 @@ class WebStateImpl final : public WebState {
   // Returns a CRWWebViewNavigationProxy protocol that can be used to access
   // navigation related functions on the main WKWebView.
   id<CRWWebViewNavigationProxy> GetWebViewNavigationProxy() const;
+
+  // Returns the WKWebView of the WebState if it exists.
+  //
+  // Access to this function is restricted. See web_view_pass_key.h for more
+  // context.
+  WKWebView* GetWebView(WebViewPassKey pass_key);
 
   // Broadcasts a JavaScript message to request the frameId of all frames.
   void RetrieveExistingFrames();
@@ -299,7 +304,7 @@ class WebStateImpl final : public WebState {
   void SetDelegate(WebStateDelegate* delegate) final;
   std::unique_ptr<WebState> Clone() const final;
   bool IsRealized() const final;
-  WebState* ForceRealized() final;
+  WebState* ForceRealizedWithPolicy(RealizationPolicy policy) final;
   bool IsWebUsageEnabled() const final;
   void SetWebUsageEnabled(bool enabled) final;
   UIView* GetView() final;
@@ -319,6 +324,8 @@ class WebStateImpl final : public WebState {
                             NSData* response_data,
                             NSString* mime_type) final;
   void Stop() final;
+  std::optional<std::string> GetUserAgentOverride() const final;
+  void SetUserAgentOverride(std::optional<std::string> ua_override) final;
   const NavigationManager* GetNavigationManager() const final;
   NavigationManager* GetNavigationManager() final;
   WebFramesManager* GetPageWorldWebFramesManager() final;
@@ -326,10 +333,8 @@ class WebStateImpl final : public WebState {
   const SessionCertificatePolicyCache* GetSessionCertificatePolicyCache()
       const final;
   SessionCertificatePolicyCache* GetSessionCertificatePolicyCache() final;
-  CRWSessionStorage* BuildSessionStorage() const final;
   void LoadData(NSData* data, NSString* mime_type, const GURL& url) final;
   void ExecuteUserJavaScript(NSString* javaScript) final;
-  NSString* GetStableIdentifier() const final;
   WebStateID GetUniqueIdentifier() const final;
   const std::string& GetContentsMimeType() const final;
   bool ContentIsHTML() const final;
@@ -373,6 +378,8 @@ class WebStateImpl final : public WebState {
   void SetFindInteractionEnabled(bool enabled) final;
   id<CRWFindInteraction> GetFindInteraction() final API_AVAILABLE(ios(16));
   id GetActivityItem() final API_AVAILABLE(ios(16.4));
+  bool IsCustomOpenPanelSupported() const final;
+  void SetCustomOpenPanelSupported(bool supports) final;
   UIColor* GetThemeColor() final;
   UIColor* GetUnderPageBackgroundColor() final;
 
@@ -382,12 +389,9 @@ class WebStateImpl final : public WebState {
   void RemovePolicyDecider(WebStatePolicyDecider* decider) final;
 
  private:
-  // Type aliases for the various ObserverList map used by WebStateImpl (reused
-  // by the RealizedWebState class).
-  using WebStateObserverList = base::ObserverList<WebStateObserver, true>;
-
+  // A list of WebStatePolicyDecider.
   using WebStatePolicyDeciderList =
-      base::ObserverList<WebStatePolicyDecider, true>;
+      base::ReentrantObserverList<WebStatePolicyDecider, true>;
 
   // Force the WebState to become realized (if in "unrealized" state) and
   // then return a pointer to the RealizedWebState. Safe to call if the

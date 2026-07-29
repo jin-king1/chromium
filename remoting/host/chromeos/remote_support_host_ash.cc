@@ -9,7 +9,6 @@
 #include <optional>
 #include <utility>
 
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
@@ -18,7 +17,6 @@
 #include "base/strings/stringize_macros.h"
 #include "remoting/host/chromeos/browser_interop.h"
 #include "remoting/host/chromeos/chromeos_enterprise_params.h"
-#include "remoting/host/chromeos/features.h"
 #include "remoting/host/chromeos/session_storage.h"
 #include "remoting/host/chromoting_host_context.h"
 #include "remoting/host/it2me/it2me_constants.h"
@@ -31,19 +29,15 @@ namespace remoting {
 
 namespace {
 
-using remoting::features::kEnableCrdAdminRemoteAccessV2;
-
-base::Value::Dict SessionParamsToDict(
-    const mojom::SupportSessionParams& params) {
-  auto session_params = base::Value::Dict()
+base::DictValue SessionParamsToDict(const mojom::SupportSessionParams& params) {
+  auto session_params = base::DictValue()
                             .Set(kUserName, params.user_name)
                             .Set(kAuthorizedHelper, *params.authorized_helper);
 
   return session_params;
 }
 
-mojom::SupportSessionParams SessionParamsFromDict(
-    const base::Value::Dict& dict) {
+mojom::SupportSessionParams SessionParamsFromDict(const base::DictValue& dict) {
   mojom::SupportSessionParams result;
   const std::string* user_name = dict.FindString(kUserName);
   if (user_name) {
@@ -142,11 +136,6 @@ void RemoteSupportHostAsh::ReconnectToSession(SessionId session_id,
                                               StartSessionCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (!base::FeatureList::IsEnabled(kEnableCrdAdminRemoteAccessV2)) {
-    std::move(callback).Run(GetUnableToReconnectError());
-    return;
-  }
-
   if (session_id != kEnterpriseSessionId) {
     LOG(ERROR) << "CRD: No reconnectable session found with id " << session_id;
     std::move(callback).Run(GetUnableToReconnectError());
@@ -164,7 +153,7 @@ void RemoteSupportHostAsh::OnSessionRetrieved(
     SessionId session_id,
     const std::string& access_token,
     StartSessionCallback callback,
-    std::optional<base::Value::Dict> session) {
+    std::optional<base::DictValue> session) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!session.has_value()) {
@@ -207,17 +196,13 @@ void RemoteSupportHostAsh::OnHostStateConnected(
     std::optional<ReconnectParams> reconnect_params) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (!base::FeatureList::IsEnabled(kEnableCrdAdminRemoteAccessV2)) {
-    return;
-  }
-
   if (reconnect_params.has_value()) {
     CHECK(enterprise_params.has_value());
     CHECK(enterprise_params->allow_reconnections);
 
     LOG(INFO) << "CRD: Storing information for reconnectable session";
     session_storage_->StoreSession(
-        base::Value::Dict()
+        base::DictValue()
             .Set(kSessionParamsDict, SessionParamsToDict(session_params))
             .Set(kEnterpriseParamsDict, enterprise_params->ToDict())
             .Set(kReconnectParamsDict,

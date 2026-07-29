@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "services/device/hid/hid_service_linux.h"
 
 #include <fcntl.h>
@@ -15,9 +10,12 @@
 
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
+#include "base/compiler_specific.h"
+#include "base/feature_list.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -37,6 +35,7 @@
 #include "device/udev_linux/scoped_udev.h"
 #include "device/udev_linux/udev_watcher.h"
 #include "services/device/hid/hid_connection_linux.h"
+#include "services/device/public/cpp/device_features.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "base/system/sys_info.h"
@@ -66,8 +65,9 @@ udev_device* FindFirstHidAncestor(udev_device* device) {
     const char* subsystem = udev_device_get_subsystem(ancestor);
     if (!subsystem)
       return nullptr;
-    if (strcmp(subsystem, kSubsystemHid) == 0)
+    if (UNSAFE_TODO(strcmp(subsystem, kSubsystemHid)) == 0) {
       return ancestor;
+    }
   } while ((ancestor = udev_device_get_parent(ancestor)));
   return nullptr;
 }
@@ -80,8 +80,8 @@ udev_device* FindFirstNonHidAncestor(udev_device* device) {
     const char* subsystem = udev_device_get_subsystem(ancestor);
     if (!subsystem)
       return nullptr;
-    if (strcmp(subsystem, kSubsystemHid) != 0 &&
-        strcmp(subsystem, kSubsystemHidraw) != 0) {
+    if (UNSAFE_TODO(strcmp(subsystem, kSubsystemHid)) != 0 &&
+        UNSAFE_TODO(strcmp(subsystem, kSubsystemHidraw)) != 0) {
       return ancestor;
     }
   } while ((ancestor = udev_device_get_parent(ancestor)));
@@ -98,16 +98,18 @@ udev_device* FindFirstNonHidAncestor(udev_device* device) {
 const char* GetUsbDeviceSyspath(udev_device* usb_device) {
   do {
     const char* subsystem = udev_device_get_subsystem(usb_device);
-    if (!subsystem || strcmp(subsystem, kSubsystemUsb) != 0)
+    if (!subsystem || UNSAFE_TODO(strcmp(subsystem, kSubsystemUsb)) != 0) {
       return nullptr;
+    }
 
     const char* devtype = udev_device_get_devtype(usb_device);
     if (!devtype)
       return nullptr;
 
     // Use the syspath of the first ancestor with devtype "usb_device".
-    if (strcmp(devtype, kDevtypeUsbDevice) == 0)
+    if (UNSAFE_TODO(strcmp(devtype, kDevtypeUsbDevice)) == 0) {
       return udev_device_get_syspath(usb_device);
+    }
   } while ((usb_device = udev_device_get_parent(usb_device)));
   return nullptr;
 }
@@ -118,8 +120,10 @@ const char* GetUsbDeviceSyspath(udev_device* usb_device) {
 const char* GetBluetoothDeviceSyspath(udev_device* bt_device) {
   do {
     const char* subsystem = udev_device_get_subsystem(bt_device);
-    if (!subsystem || strcmp(subsystem, kSubsystemBluetooth) != 0)
+    if (!subsystem ||
+        UNSAFE_TODO(strcmp(subsystem, kSubsystemBluetooth)) != 0) {
       return nullptr;
+    }
 
     // Look for a sysname like "hci0:123".
     const char* sysfs_name = udev_device_get_sysname(bt_device);
@@ -143,8 +147,9 @@ const char* GetBluetoothDeviceSyspath(udev_device* bt_device) {
 // nullptr on failure.
 const char* GetPhysicalDeviceId(udev_device* hidraw_device) {
   const char* subsystem = udev_device_get_subsystem(hidraw_device);
-  if (!subsystem || strcmp(subsystem, kSubsystemHidraw) != 0)
+  if (!subsystem || UNSAFE_TODO(strcmp(subsystem, kSubsystemHidraw)) != 0) {
     return nullptr;
+  }
 
   udev_device* hid_ancestor = FindFirstHidAncestor(hidraw_device);
   if (!hid_ancestor)
@@ -159,13 +164,13 @@ const char* GetPhysicalDeviceId(udev_device* hidraw_device) {
   if (!ancestor_subsystem)
     return hid_sysfs_path;
 
-  if (strcmp(ancestor_subsystem, kSubsystemUsb) == 0) {
+  if (UNSAFE_TODO(strcmp(ancestor_subsystem, kSubsystemUsb)) == 0) {
     const char* usb_sysfs_path = GetUsbDeviceSyspath(ancestor);
     if (usb_sysfs_path)
       return usb_sysfs_path;
   }
 
-  if (strcmp(ancestor_subsystem, kSubsystemBluetooth) == 0) {
+  if (UNSAFE_TODO(strcmp(ancestor_subsystem, kSubsystemBluetooth)) == 0) {
     const char* bt_sysfs_path = GetBluetoothDeviceSyspath(ancestor);
     if (bt_sysfs_path)
       return bt_sysfs_path;
@@ -219,6 +224,9 @@ class HidServiceLinux::BlockingTaskRunnerHelper : public UdevWatcher::Observer {
                            scoped_refptr<base::SequencedTaskRunner> task_runner)
       : service_(std::move(service)), task_runner_(std::move(task_runner)) {
     watcher_ = UdevWatcher::StartWatching(this);
+    if (!watcher_) {
+      return;
+    }
     watcher_->EnumerateExistingDevices();
     task_runner_->PostTask(
         FROM_HERE,
@@ -245,8 +253,9 @@ class HidServiceLinux::BlockingTaskRunnerHelper : public UdevWatcher::Observer {
     HidPlatformDeviceId platform_device_id = device_path;
 
     const char* subsystem = udev_device_get_subsystem(device.get());
-    if (!subsystem || strcmp(subsystem, kSubsystemHidraw) != 0)
+    if (!subsystem || UNSAFE_TODO(strcmp(subsystem, kSubsystemHidraw)) != 0) {
       return;
+    }
 
     const char* str_property = udev_device_get_devnode(device.get());
     if (!str_property)
@@ -294,6 +303,28 @@ class HidServiceLinux::BlockingTaskRunnerHelper : public UdevWatcher::Observer {
     str_property = udev_device_get_property_value(parent, kHIDName);
     if (str_property)
       product_name = str_property;
+
+    // On Linux, the HID_NAME property often contains a concatenation of the
+    // manufacturer and product strings (e.g., "Manufacturer Product"). To
+    // provide a cleaner product name consistent with other platforms, we
+    // prefer the USB "product" sysattr if available. See crbug.com/40742501.
+    if (base::FeatureList::IsEnabled(features::kProductNameOverHidName)) {
+      std::optional<std::string> name_property = std::nullopt;
+
+      // Read the product name from the USB property.
+      udev_device* usb_dev = udev_device_get_parent_with_subsystem_devtype(
+          parent, kSubsystemUsb, kDevtypeUsbDevice);
+      if (usb_dev) {
+        const char* value = udev_device_get_sysattr_value(usb_dev, "product");
+        if (value) {
+          name_property = value;
+        }
+      }
+
+      if (name_property) {
+        product_name = std::move(*name_property);
+      }
+    }
 
     const char* parent_sysfs_path = udev_device_get_syspath(parent);
     if (!parent_sysfs_path)

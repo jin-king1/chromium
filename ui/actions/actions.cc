@@ -11,7 +11,6 @@
 #include <string_view>
 
 #include "base/no_destructor.h"
-#include "ui/actions/action_utils.h"
 #include "ui/base/class_property.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 
@@ -100,6 +99,26 @@ void BaseAction::ActionListChanged() {}
 
 void BaseAction::ResetActionList() {
   children_.Reset();
+}
+
+void BaseAction::SetPopulateChildrenCallback(PopulateChildActions callback) {
+  if (populate_child_callback_ == callback) {
+    return;
+  }
+  populate_child_callback_ = std::move(callback);
+}
+
+bool BaseAction::HasPopulateChildActionsCallback() const {
+  return !populate_child_callback_.is_null();
+}
+
+void BaseAction::PopulateChildItems() {
+  for (auto& child : GetChildren().children()) {
+    child->PopulateChildItems();
+  }
+  if (populate_child_callback_) {
+    populate_child_callback_.Run(this);
+  }
 }
 
 BEGIN_METADATA_BASE(BaseAction)
@@ -373,14 +392,14 @@ void ActionItem::EndUpdate() {
 }
 
 BEGIN_METADATA(ActionItem)
-ADD_PROPERTY_METADATA(std::u16string_view, AccessibleName)
+ADD_PROPERTY_METADATA(std::u16string, AccessibleName)
 ADD_PROPERTY_METADATA(std::optional<ActionId>, ActionId)
 ADD_PROPERTY_METADATA(ui::Accelerator, Accelerator)
 ADD_PROPERTY_METADATA(bool, Checked)
 ADD_PROPERTY_METADATA(bool, Enabled)
 ADD_PROPERTY_METADATA(std::optional<int>, GroupId)
-ADD_PROPERTY_METADATA(std::u16string_view, Text)
-ADD_PROPERTY_METADATA(std::u16string_view, TooltipText)
+ADD_PROPERTY_METADATA(std::u16string, Text)
+ADD_PROPERTY_METADATA(std::u16string, TooltipText)
 ADD_PROPERTY_METADATA(bool, Visible)
 ADD_READONLY_PROPERTY_METADATA(int, InvokeCount)
 ADD_READONLY_PROPERTY_METADATA(std::optional<base::TimeTicks>, LastInvokeTime)

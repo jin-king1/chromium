@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/functional/callback_helpers.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
@@ -11,7 +10,6 @@
 #include "chrome/browser/ui/views/autofill/payments/payments_window_user_consent_dialog_view.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/autofill/core/browser/metrics/payments/payments_window_metrics.h"
-#include "components/autofill/core/browser/ui/payments/payments_window_user_consent_dialog_controller.h"
 #include "components/autofill/core/browser/ui/payments/payments_window_user_consent_dialog_controller_impl.h"
 #include "content/public/test/browser_test.h"
 #include "ui/views/window/dialog_client_view.h"
@@ -71,8 +69,10 @@ class PaymentsWindowUserConsentDialogBrowserTest
 };
 
 // Ensures the UI can be shown, and verifies that it looks as expected.
-IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_PaymentsWindowUserConsentDialogDisplays) {
+// TODO(crbug.com/441251456): Fix flakiness.
+IN_PROC_BROWSER_TEST_F(
+    PaymentsWindowUserConsentDialogBrowserTest,
+    DISABLED_InvokeUi_PaymentsWindowUserConsentDialogDisplays) {
   const std::string payments_user_consent_dialog_root_view =
       "Payments User Consent Dialog Root View";
   RunTestSequence(
@@ -95,8 +95,9 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that the dialog shown histogram
 // bucket is logged to.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_DialogShownHistogramBucketLogs) {
+                       DISABLED_InvokeUi_DialogShownHistogramBucketLogs) {
   RunTestSequence(
       TriggerDialogAndWaitForShow(
           PaymentsWindowUserConsentDialogView::kTopViewId),
@@ -111,8 +112,9 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that accepting the dialog runs the
 // accept callback and hides the view.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_DialogAcceptance) {
+                       DISABLED_InvokeUi_DialogAcceptance) {
   EXPECT_CALL(accept_callback_, Run);
 
   RunTestSequence(
@@ -126,8 +128,9 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that accepting the dialog logs to
 // the dialog acceptance histogram bucket.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_DialogAcceptanceHistogramBucketLogs) {
+                       DISABLED_InvokeUi_DialogAcceptanceHistogramBucketLogs) {
   EXPECT_CALL(accept_callback_, Run);
 
   RunTestSequence(
@@ -148,8 +151,9 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that cancelling the dialog runs the
 // cancel callback and hides the view.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_DialogCancelled) {
+                       DISABLED_InvokeUi_DialogCancelled) {
   EXPECT_CALL(cancel_callback_, Run);
 
   RunTestSequence(
@@ -164,8 +168,9 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that cancelling the dialog logs to
 // the dialog cancelled histogram bucket.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_DialogCancelledHistogramBucketLogs) {
+                       DISABLED_InvokeUi_DialogCancelledHistogramBucketLogs) {
   EXPECT_CALL(cancel_callback_, Run);
 
   RunTestSequence(
@@ -187,8 +192,9 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that pressing the escape key on the
 // dialog hides the view.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_EscKeyPressed) {
+                       DISABLED_InvokeUi_EscKeyPressed) {
   RunTestSequence(
       TriggerDialogAndWaitForShow(
           PaymentsWindowUserConsentDialogView::kTopViewId),
@@ -205,8 +211,9 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that pressing the escape key on the
 // dialog logs to the escape key pressed histogram bucket.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_EscKeyPressedHistogramBucketLogs) {
+                       DISABLED_InvokeUi_EscKeyPressedHistogramBucketLogs) {
   RunTestSequence(
       TriggerDialogAndWaitForShow(
           PaymentsWindowUserConsentDialogView::kTopViewId),
@@ -230,8 +237,9 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that closing the tab while the
 // dialog is present does not crash.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_CanCloseTabWhileDialogShowing) {
+                       DISABLED_InvokeUi_CanCloseTabWhileDialogShowing) {
   RunTestSequence(
       TriggerDialogAndWaitForShow(
           PaymentsWindowUserConsentDialogView::kTopViewId),
@@ -244,8 +252,10 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that closing the tab while the
 // dialog is present logs to the tab or browser closed histogram bucket.
-IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_CloseTabWhileDialogShowingHistogramBucketLogs) {
+// TODO(crbug.com/441251456): Fix flakiness.
+IN_PROC_BROWSER_TEST_F(
+    PaymentsWindowUserConsentDialogBrowserTest,
+    DISABLED_InvokeUi_CloseTabWhileDialogShowingHistogramBucketLogs) {
   RunTestSequence(
       TriggerDialogAndWaitForShow(
           PaymentsWindowUserConsentDialogView::kTopViewId),
@@ -266,28 +276,30 @@ IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
 
 // Ensures the UI can be shown, and verifies that closing the browser while the
 // dialog is present does not crash.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(PaymentsWindowUserConsentDialogBrowserTest,
-                       InvokeUi_CanCloseBrowserWhileDialogShowing) {
+                       DISABLED_InvokeUi_CanCloseBrowserWhileDialogShowing) {
   RunTestSequence(
       TriggerDialogAndWaitForShow(
           PaymentsWindowUserConsentDialogView::kTopViewId),
       // TriggerDialogAndWaitForShow() changes the context, so the same context
       // must be used.
-      InSameContext(Do([this]() { browser()->window()->Close(); })));
+      InSameContext(Do([this]() { browser()->GetWindow()->Close(); })));
 }
 
 // Ensures the UI can be shown, and verifies that closing the browser while the
 // dialog is present logs to the tab or browser closed histogram bucket.
+// TODO(crbug.com/441251456): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(
     PaymentsWindowUserConsentDialogBrowserTest,
-    InvokeUi_CloseBrowserWhileDialogShowingHistogramBucketLogs) {
+    DISABLED_InvokeUi_CloseBrowserWhileDialogShowingHistogramBucketLogs) {
   RunTestSequence(
       TriggerDialogAndWaitForShow(
           PaymentsWindowUserConsentDialogView::kTopViewId),
       // TriggerDialogAndWaitForShow() changes the context, so the same context
       // must be used.
       InSameContext(
-          Do([this]() { browser()->window()->Close(); }), Check([this]() {
+          Do([this]() { browser()->GetWindow()->Close(); }), Check([this]() {
             return histogram_tester_.GetBucketCount(
                        /*name=*/
                        kPaymentsWindowUserConsentDialogResultVcn3dsHistogramName, /*sample=*/

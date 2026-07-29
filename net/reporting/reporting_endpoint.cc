@@ -7,6 +7,7 @@
 #include <string>
 #include <tuple>
 
+#include "base/strings/strcat.h"
 #include "base/time/time.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/reporting/reporting_target_type.h"
@@ -34,8 +35,8 @@ ReportingEndpointGroupKey::ReportingEndpointGroupKey(
     const std::optional<url::Origin>& origin,
     const std::string& group_name,
     ReportingTargetType target_type)
-    : network_anonymization_key(network_anonymization_key),
-      reporting_source(std::move(reporting_source)),
+    : reporting_source(std::move(reporting_source)),
+      network_anonymization_key(network_anonymization_key),
       origin(origin),
       group_name(group_name),
       target_type(target_type) {
@@ -71,11 +72,6 @@ ReportingEndpointGroupKey& ReportingEndpointGroupKey::operator=(
 
 ReportingEndpointGroupKey::~ReportingEndpointGroupKey() = default;
 
-bool operator!=(const ReportingEndpointGroupKey& lhs,
-                const ReportingEndpointGroupKey& rhs) {
-  return !(lhs == rhs);
-}
-
 bool operator<(const ReportingEndpointGroupKey& lhs,
                const ReportingEndpointGroupKey& rhs) {
   return std::tie(lhs.reporting_source, lhs.network_anonymization_key,
@@ -93,13 +89,13 @@ bool operator>(const ReportingEndpointGroupKey& lhs,
 }
 
 std::string ReportingEndpointGroupKey::ToString() const {
-  return "Source: " +
-         (reporting_source ? reporting_source->ToString() : "null") +
-         "; NAK: " + network_anonymization_key.ToDebugString() +
-         "; Origin: " + (origin ? origin->Serialize() : "null") +
-         "; Group name: " + group_name + "; Target type: " +
-         (target_type == ReportingTargetType::kDeveloper ? "developer"
-                                                         : "enterprise");
+  return base::StrCat(
+      {"Source: ", (reporting_source ? reporting_source->ToString() : "null"),
+       "; NAK: ", network_anonymization_key.ToDebugString(),
+       "; Origin: ", (origin ? origin->Serialize() : "null"),
+       "; Group name: ", group_name, "; Target type: ",
+       (target_type == ReportingTargetType::kDeveloper ? "developer"
+                                                       : "enterprise")});
 }
 
 const int ReportingEndpoint::EndpointInfo::kDefaultPriority = 1;

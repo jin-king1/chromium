@@ -9,6 +9,8 @@
 #include <string>
 #include <utility>
 
+#include "base/functional/callback_helpers.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/values.h"
 #include "chromeos/ash/components/boca/babelorca/caption_bubble_settings_impl.h"
 #include "chromeos/ash/components/boca/babelorca/fakes/fake_caption_controller_delegate.h"
@@ -18,6 +20,7 @@
 #include "components/live_caption/pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
+#include "media/mojo/mojom/speech_recognition.mojom.h"
 #include "media/mojo/mojom/speech_recognition_result.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -41,6 +44,12 @@ void VerifyStyle(const ui::CaptionStyle& style,
   EXPECT_THAT(style.background_color, testing::HasSubstr(base::NumberToString(
                                           kCaptionsBackgroundOpacity / 100.0)));
   EXPECT_THAT(style.text_shadow, testing::HasSubstr(kCaptionsTextShadow));
+}
+
+media::mojom::LanguageIdentificationEventPtr GetLanguageIdentificationEvent() {
+  return media::mojom::LanguageIdentificationEvent::New(
+      "ar-EG", media::mojom::ConfidenceLevel::kConfident,
+      media::mojom::AsrSwitchResult::kSwitchSucceeded);
 }
 
 TEST(CaptionControllerTest, SetStyleOnStartLiveCaption) {
@@ -122,7 +131,8 @@ TEST(CaptionControllerTest, OnLanguageIdentificationEventBeforeStart) {
       /*caption_bubble_context=*/nullptr, &pref_service, kApplicationLocale,
       /*caption_bubble_settings=*/nullptr, std::move(delegate));
 
-  caption_controller.OnLanguageIdentificationEvent(nullptr);
+  caption_controller.OnLanguageIdentificationEvent(
+      GetLanguageIdentificationEvent());
 
   EXPECT_EQ(delegate_ptr->GetOnLanguageIdentificationEventCount(), 0u);
 }
@@ -137,7 +147,8 @@ TEST(CaptionControllerTest, OnLanguageIdentificationEvent) {
       /*caption_bubble_settings=*/nullptr, std::move(delegate));
 
   caption_controller.StartLiveCaption();
-  caption_controller.OnLanguageIdentificationEvent(nullptr);
+  caption_controller.OnLanguageIdentificationEvent(
+      GetLanguageIdentificationEvent());
 
   EXPECT_EQ(delegate_ptr->GetOnLanguageIdentificationEventCount(), 1u);
 }
@@ -153,7 +164,8 @@ TEST(CaptionControllerTest, OnLanguageIdentificationEventAfterStop) {
 
   caption_controller.StartLiveCaption();
   caption_controller.StopLiveCaption();
-  caption_controller.OnLanguageIdentificationEvent(nullptr);
+  caption_controller.OnLanguageIdentificationEvent(
+      GetLanguageIdentificationEvent());
 
   EXPECT_EQ(delegate_ptr->GetOnLanguageIdentificationEventCount(), 0u);
 }
@@ -228,11 +240,34 @@ TEST(CaptionControllerTest, DispatchTranscriptionFailed) {
   bool success = caption_controller.DispatchTranscription(transcript);
 
   EXPECT_FALSE(success);
-  EXPECT_EQ(delegate_ptr->GetCreateBubbleControllerCount(), 2u);
-  ASSERT_EQ(delegate_ptr->GetTranscriptions().size(), 2u);
+  EXPECT_EQ(delegate_ptr->GetCreateBubbleControllerCount(), 1u);
+  ASSERT_EQ(delegate_ptr->GetTranscriptions().size(), 1u);
   EXPECT_EQ(delegate_ptr->GetTranscriptions().at(0), transcript);
-  EXPECT_EQ(delegate_ptr->GetTranscriptions().at(1), transcript);
 }
 
+using CaptionControllerTranslateTest =
+    testing::TestWithParam<std::tuple<bool, bool>>;
+
+TEST_P(CaptionControllerTranslateTest, IsTranslateAllowedAndEnabled) {
+  TestingPrefServiceSimple pref_service;
+  RegisterPrefsForTesting(&pref_service);
+  bool allowed = std::get<0>(GetParam());
+  bool enabled = std::get<1>(GetParam());
+  CaptionController caption_controller(
+      /*caption_bubble_context=*/nullptr, &pref_service, kApplicationLocale,
+      std::make_unique<CaptionBubbleSettingsImpl>(
+          &pref_service, kApplicationLocale, base::DoNothing()),
+      std::make_unique<FakeCaptionControllerDelegate>());
+
+  caption_controller.SetLiveTranslateEnabled(enabled);
+  caption_controller.SetTranslateAllowed(allowed);
+
+  EXPECT_EQ(caption_controller.IsTranslateAllowedAndEnabled(),
+            allowed && enabled);
+}
+
+INSTANTIATE_TEST_SUITE_P(CaptionControllerTranslateTestSuite,
+                         CaptionControllerTranslateTest,
+                         testing::Combine(testing::Bool(), testing::Bool()));
 }  // namespace
 }  // namespace ash::babelorca

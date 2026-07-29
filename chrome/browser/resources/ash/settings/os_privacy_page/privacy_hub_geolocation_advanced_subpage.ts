@@ -54,6 +54,9 @@ export class SettingsPrivacyHubGeolocationAdvancedSubpage extends
     };
   }
 
+  declare private readonly isSecondaryUser_: boolean;
+  declare private readonly showPrivacyHubLocationControl_: boolean;
+
   private settingControlledByPrimaryUserText_(): string {
     return this.i18n(
         'geolocationControlledByPrimaryUserText',

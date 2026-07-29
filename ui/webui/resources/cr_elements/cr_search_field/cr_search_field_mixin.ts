@@ -25,11 +25,13 @@ export const CrSearchFieldMixin = dedupingMixin(
             // Prompt text to display in the search field.
             label: {
               type: String,
+              value: '',
             },
 
             // Tooltip to display on the clear search button.
             clearLabel: {
               type: String,
+              value: '',
             },
 
             hasSearchText: {
@@ -39,9 +41,9 @@ export const CrSearchFieldMixin = dedupingMixin(
           };
         }
 
-        label: string = '';
-        clearLabel: string = '';
-        hasSearchText: boolean = false;
+        declare label: string;
+        declare clearLabel: string;
+        declare hasSearchText: boolean;
         private effectiveValue_: string = '';
         private searchDelayTimer_: number = -1;
 
@@ -59,7 +61,7 @@ export const CrSearchFieldMixin = dedupingMixin(
           return this.getSearchInput().value;
         }
 
-        private fire_(eventName: string, detail?: any) {
+        private fire_<T>(eventName: string, detail?: T) {
           this.dispatchEvent(new CustomEvent(
               eventName, {bubbles: true, composed: true, detail}));
         }

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/atomic_sequence_num.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/notreached.h"
@@ -23,7 +24,6 @@
 #include "cc/debug/layer_tree_debug_state.h"
 #include "cc/input/scroll_state.h"
 #include "cc/layers/layer.h"
-#include "cc/layers/solid_color_layer_impl.h"
 #include "cc/trees/clip_node.h"
 #include "cc/trees/draw_property_utils.h"
 #include "cc/trees/effect_node.h"
@@ -39,6 +39,7 @@
 #include "components/viz/common/quads/debug_border_draw_quad.h"
 #include "components/viz/common/resources/resource_id.h"
 #include "components/viz/common/traced_value.h"
+#include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 #include "ui/gfx/geometry/point_conversions.h"
 #include "ui/gfx/geometry/quad_f.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -90,34 +91,41 @@ const char* LayerTypeAsString(mojom::LayerType type) {
   }
 }
 
+base::AtomicSequenceNumber g_next_stable_id_for_shared_quad_state;
+
 }  // namespace
 
 LayerImpl::RareProperties::RareProperties() = default;
 LayerImpl::RareProperties::RareProperties(const RareProperties&) = default;
 LayerImpl::RareProperties::~RareProperties() = default;
 
-LayerImpl::LayerImpl(LayerTreeImpl* tree_impl,
-                     int id,
-                     bool will_always_push_properties)
+int LayerImpl::GetNextStableIdForSharedQuadState() {
+  // Stable IDs start from 1.
+  return g_next_stable_id_for_shared_quad_state.GetNext() + 1;
+}
+
+LayerImpl::LayerImpl(LayerTreeImpl* tree_impl, int id)
     : layer_id_(id),
       layer_tree_impl_(tree_impl),
-      will_always_push_properties_(will_always_push_properties),
+      stable_id_for_shared_quad_state_(GetNextStableIdForSharedQuadState()),
       transform_tree_index_(kInvalidPropertyNodeId),
       effect_tree_index_(kInvalidPropertyNodeId),
       clip_tree_index_(kInvalidPropertyNodeId),
       scroll_tree_index_(kInvalidPropertyNodeId) {
   DCHECK_GT(layer_id_, 0);
-
+  DCHECK_GT(stable_id_for_shared_quad_state_, 0);
   DCHECK(layer_tree_impl_);
-  layer_tree_impl_->RegisterLayer(this);
 
-  SetNeedsPushProperties(LayerImpl::kChangedAllProperties);
+  if (!layer_tree_impl()->IsActiveTree() ||
+      !layer_tree_impl()->settings().TreesInVizInClientProcess()) {
+    changed_properties_ = LayerImpl::kChangedAllProperties;
+  }
 }
 
 LayerImpl::~LayerImpl() {
-  layer_tree_impl_->UnregisterLayer(this);
-  TRACE_EVENT_OBJECT_DELETED_WITH_ID(
-      TRACE_DISABLED_BY_DEFAULT("cc.debug"), "cc::LayerImpl", this);
+  TRACE_EVENT_INSTANT(
+      TRACE_DISABLED_BY_DEFAULT("cc.debug"), "cc::LayerImpl:deleted",
+      perfetto::TerminatingFlow::FromPointer(this, "LayerImpl"));
 }
 
 mojom::LayerType LayerImpl::GetLayerType() const {
@@ -148,15 +156,6 @@ void LayerImpl::UpdateDebugInfo(LayerDebugInfo* debug_info) {
   debug_info_->invalidations.insert(debug_info_->invalidations.begin(),
                                     existing_invalidations.begin(),
                                     existing_invalidations.end());
-}
-
-void LayerImpl::SetMayContainVideo(bool may_contain_video) {
-  if (may_contain_video_ == may_contain_video) {
-    return;
-  }
-
-  may_contain_video_ = may_contain_video;
-  SetNeedsPushProperties();
 }
 
 void LayerImpl::SetHasTransformNode(bool val) {
@@ -196,11 +195,11 @@ void LayerImpl::SetEffectTreeIndex(int index) {
 }
 
 int LayerImpl::render_target_effect_tree_index() const {
-  EffectNode* effect_node = GetEffectTree().Node(effect_tree_index_);
+  const EffectNode& effect_node = GetEffectTree().Node(effect_tree_index_);
 
   return GetEffectTree().GetRenderSurface(effect_tree_index_)
-             ? effect_node->id
-             : effect_node->target_id;
+             ? effect_node.id
+             : effect_node.target_id;
 }
 
 void LayerImpl::SetScrollTreeIndex(int index) {
@@ -223,7 +222,7 @@ void LayerImpl::SetOffsetToTransformParent(const gfx::Vector2dF& offset) {
 
 void LayerImpl::PopulateSharedQuadState(viz::SharedQuadState* state,
                                         bool contents_opaque) const {
-  EffectNode* effect_node = GetEffectTree().Node(effect_tree_index_);
+  const EffectNode& effect_node = GetEffectTree().Node(effect_tree_index_);
   std::optional<gfx::Rect> clip_rect;
   if (draw_properties_.is_clipped) {
     clip_rect = draw_properties_.clip_rect;
@@ -232,9 +231,10 @@ void LayerImpl::PopulateSharedQuadState(viz::SharedQuadState* state,
                 draw_properties_.visible_layer_rect,
                 draw_properties_.mask_filter_info, clip_rect, contents_opaque,
                 draw_properties_.opacity,
-                effect_node->HasRenderSurface() ? SkBlendMode::kSrcOver
-                                                : effect_node->blend_mode,
-                GetSortingContextId(), static_cast<uint32_t>(id()),
+                effect_node.HasRenderSurface() ? SkBlendMode::kSrcOver
+                                               : effect_node.blend_mode,
+                GetSortingContextId(),
+                static_cast<uint32_t>(stable_id_for_shared_quad_state()),
                 draw_properties_.is_fast_rounded_corner);
 }
 
@@ -261,7 +261,7 @@ void LayerImpl::PopulateScaledSharedQuadStateWithContentRects(
   gfx::Transform scaled_draw_transform =
       GetScaledDrawTransform(layer_to_content_scale);
 
-  EffectNode* effect_node = GetEffectTree().Node(effect_tree_index_);
+  const EffectNode& effect_node = GetEffectTree().Node(effect_tree_index_);
   std::optional<gfx::Rect> clip_rect;
   if (draw_properties().is_clipped) {
     clip_rect = draw_properties().clip_rect;
@@ -269,9 +269,10 @@ void LayerImpl::PopulateScaledSharedQuadStateWithContentRects(
   state->SetAll(scaled_draw_transform, content_rect, visible_content_rect,
                 draw_properties().mask_filter_info, clip_rect, contents_opaque,
                 draw_properties().opacity,
-                effect_node->HasRenderSurface() ? SkBlendMode::kSrcOver
-                                                : effect_node->blend_mode,
-                GetSortingContextId(), static_cast<uint32_t>(id()),
+                effect_node.HasRenderSurface() ? SkBlendMode::kSrcOver
+                                               : effect_node.blend_mode,
+                GetSortingContextId(),
+                static_cast<uint32_t>(stable_id_for_shared_quad_state()),
                 draw_properties().is_fast_rounded_corner);
 }
 
@@ -288,12 +289,23 @@ bool LayerImpl::WillDraw(DrawMode draw_mode,
   // other than kDstIn. For kDstIn mode, we should ignore the source because
   // otherwise we would draw a bad black mask over the destination.
   if (draw_mode == DRAW_MODE_RESOURCELESS_SOFTWARE) {
-    const auto* effect_node = GetEffectTree().Node(effect_tree_index());
-    if (effect_node && effect_node->blend_mode == SkBlendMode::kDstIn)
-      return false;
+    if (effect_tree_index() != kInvalidPropertyNodeId) {
+      const auto& effect_node = GetEffectTree().Node(effect_tree_index());
+      if (effect_node.blend_mode == SkBlendMode::kDstIn) {
+        return false;
+      }
+    }
   }
 
   return true;
+}
+
+bool LayerImpl::HasMissingTiles() const {
+  return false;
+}
+
+bool LayerImpl::ComputeCheckerboardedNeedsRecord() {
+  return false;
 }
 
 bool LayerImpl::ShowDebugBorders(DebugBorderType type) const {
@@ -375,9 +387,8 @@ void LayerImpl::GetContentsResourceId(viz::ResourceId* resource_id,
 
 gfx::Vector2dF LayerImpl::ScrollBy(const gfx::Vector2dF& scroll) {
   ScrollTree& scroll_tree = GetScrollTree();
-  ScrollNode* scroll_node = scroll_tree.Node(scroll_tree_index());
-  DCHECK(scroll_node);
-  return scroll_tree.ScrollBy(*scroll_node, scroll, layer_tree_impl());
+  const ScrollNode& scroll_node = scroll_tree.Node(scroll_tree_index());
+  return scroll_tree.ScrollBy(scroll_node, scroll, layer_tree_impl());
 }
 
 void LayerImpl::SetTouchActionRegion(TouchActionRegion region) {
@@ -407,6 +418,20 @@ void LayerImpl::SetCaptureBounds(viz::RegionCaptureBounds bounds) {
   }
 }
 
+void LayerImpl::SetTrackedElementRects(viz::TrackedElementRects rects) {
+  if (rare_properties_ || !rects.empty()) {
+    EnsureRareProperties().tracked_element_rects = std::move(rects);
+    SetNeedsPushProperties();
+  }
+}
+
+void LayerImpl::SetCanvasChildId(ElementId id) {
+  if (rare_properties_ || id) {
+    EnsureRareProperties().canvas_child_id = id;
+    SetNeedsPushProperties();
+  }
+}
+
 std::unique_ptr<LayerImpl> LayerImpl::CreateLayerImpl(
     LayerTreeImpl* tree_impl) const {
   return LayerImpl::Create(tree_impl, layer_id_);
@@ -416,7 +441,7 @@ bool LayerImpl::IsSnappedToPixelGridInTarget() {
   return false;
 }
 
-void LayerImpl::PushPropertiesTo(LayerImpl* layer) {
+void LayerImpl::CopyPropertiesTo(LayerImpl* layer) const {
   DCHECK(layer->IsActive());
 
   if (GetChangeFlag(kChangedPropertyTreeIndex)) {
@@ -436,7 +461,6 @@ void LayerImpl::PushPropertiesTo(LayerImpl* layer) {
     layer->offset_to_transform_parent_ = offset_to_transform_parent_;
     layer->contents_opaque_ = contents_opaque_;
     layer->contents_opaque_for_text_ = contents_opaque_for_text_;
-    layer->may_contain_video_ = may_contain_video_;
     layer->should_check_backface_visibility_ =
         should_check_backface_visibility_;
     layer->draws_content_ = draws_content_;
@@ -471,19 +495,41 @@ void LayerImpl::PushPropertiesTo(LayerImpl* layer) {
     }
   }
 
-  if (layer_tree_impl()->settings().UseLayerContextForDisplay()) {
+  if (layer_tree_impl()->settings().TreesInVizInClientProcess()) {
     // Ensure updates also propagate to the display tree on its next update.
     layer->SetNeedsPushProperties(changed_properties_);
   }
+}
 
-  // Reset any state that should be cleared for the next update.
-  ResetChangeTracking();
+void LayerImpl::MovePropertiesToActiveLayer(LayerImpl* active_layer) {
+  CopyPropertiesTo(active_layer);
 }
 
 bool LayerImpl::IsAffectedByPageScale() const {
   TransformTree& transform_tree = GetTransformTree();
   return transform_tree.Node(transform_tree_index())
-      ->in_subtree_of_page_scale_layer;
+      .in_subtree_of_page_scale_layer;
+}
+
+DamageReasonSet LayerImpl::GetDamageReasonsFromLayerPropertyChange() const {
+  DamageReasonSet reasons;
+  if (layer_property_changed_not_from_property_trees_ ||
+      layer_property_changed_from_property_trees_ ||
+      GetPropertyTrees()->full_tree_damaged()) {
+    reasons.Put(DamageReason::kUntracked);
+  }
+  if (transform_tree_index() != kInvalidPropertyNodeId) {
+    const TransformNode& transform_node =
+        GetTransformTree().Node(transform_tree_index());
+    reasons.PutAll(transform_node.damage_reasons());
+  }
+  if (effect_tree_index() != kInvalidPropertyNodeId) {
+    const EffectNode& effect_node = GetEffectTree().Node(effect_tree_index());
+    if (effect_node.effect_changed) {
+      reasons.Put(DamageReason::kUntracked);
+    }
+  }
+  return reasons;
 }
 
 bool LayerImpl::LayerPropertyChanged() const {
@@ -497,15 +543,17 @@ bool LayerImpl::LayerPropertyChangedFromPropertyTrees() const {
     return true;
   if (transform_tree_index() == kInvalidPropertyNodeId)
     return false;
-  TransformNode* transform_node =
+  const TransformNode& transform_node =
       GetTransformTree().Node(transform_tree_index());
-  if (transform_node && transform_node->transform_changed)
+  if (transform_node.transform_changed()) {
     return true;
+  }
   if (effect_tree_index() == kInvalidPropertyNodeId)
     return false;
-  EffectNode* effect_node = GetEffectTree().Node(effect_tree_index());
-  if (effect_node && effect_node->effect_changed)
+  const EffectNode& effect_node = GetEffectTree().Node(effect_tree_index());
+  if (effect_node.effect_changed) {
     return true;
+  }
   return false;
 }
 
@@ -515,11 +563,13 @@ bool LayerImpl::LayerPropertyChangedNotFromPropertyTrees() const {
 
 void LayerImpl::NoteLayerPropertyChanged() {
   layer_property_changed_not_from_property_trees_ = true;
+  SetNeedsPushProperties();
   layer_tree_impl()->set_needs_update_draw_properties();
 }
 
 void LayerImpl::NoteLayerPropertyChangedFromPropertyTrees() {
   layer_property_changed_from_property_trees_ = true;
+  SetNeedsPushProperties();
   layer_tree_impl()->set_needs_update_draw_properties();
 }
 
@@ -554,7 +604,7 @@ void LayerImpl::ResetChangeTracking() {
 }
 
 bool LayerImpl::IsActive() const {
-  return layer_tree_impl_->IsActiveTree();
+  return layer_tree_impl_ && layer_tree_impl_->IsActiveTree();
 }
 
 gfx::Size LayerImpl::bounds() const {
@@ -606,14 +656,14 @@ void LayerImpl::SetHitTestOpaqueness(HitTestOpaqueness opaqueness) {
 }
 
 bool LayerImpl::HitTestable() const {
-  EffectTree& effect_tree = GetEffectTree();
   // TODO(sunxd): remove or refactor SetHideLayerAndSubtree, or move this logic
   // to subclasses of Layer. See https://crbug.com/595843 and
   // https://crbug.com/931865.
   // The bit |subtree_hidden| can only be true for ui::Layers. Other layers are
   // not supposed to set this bit.
-  if (const EffectNode* node = effect_tree.Node(effect_tree_index())) {
-    if (node->subtree_hidden) {
+  if (effect_tree_index() != kInvalidPropertyNodeId) {
+    const EffectNode& node = GetEffectTree().Node(effect_tree_index());
+    if (node.subtree_hidden) {
       return false;
     }
   }
@@ -624,7 +674,7 @@ bool LayerImpl::OpaqueToHitTest() const {
   return HitTestable() && hit_test_opaqueness_ == HitTestOpaqueness::kOpaque &&
          !GetEffectTree()
               .Node(effect_tree_index())
-              ->node_or_ancestor_has_fast_rounded_corner;
+              .node_or_ancestor_has_fast_rounded_corner;
 }
 
 void LayerImpl::SetBackgroundColor(SkColor4f background_color) {
@@ -667,10 +717,11 @@ void LayerImpl::SetContentsOpaqueForText(bool opaque) {
 }
 
 float LayerImpl::Opacity() const {
-  if (const EffectNode* node = GetEffectTree().Node(effect_tree_index()))
-    return node->opacity;
-  else
-    return 1.f;
+  if (effect_tree_index() != kInvalidPropertyNodeId) {
+    const EffectNode& node = GetEffectTree().Node(effect_tree_index());
+    return node.opacity;
+  }
+  return 1.f;
 }
 
 void LayerImpl::SetElementId(ElementId element_id) {
@@ -707,9 +758,8 @@ gfx::Rect LayerImpl::GetDamageRect() const {
 }
 
 DamageReasonSet LayerImpl::GetDamageReasons() const {
-  DamageReasonSet reasons;
-  if (LayerPropertyChanged() || !update_rect_.IsEmpty() ||
-      !GetDamageRect().IsEmpty()) {
+  DamageReasonSet reasons = GetDamageReasonsFromLayerPropertyChange();
+  if (!update_rect_.IsEmpty() || !GetDamageRect().IsEmpty()) {
     reasons.Put(DamageReason::kUntracked);
   }
   return reasons;
@@ -742,15 +792,9 @@ void LayerImpl::ReleaseTileResources() {}
 void LayerImpl::RecreateTileResources() {}
 
 void LayerImpl::SetNeedsPushProperties(uint8_t changed_props) {
-  // For the pending tree, there's no need to mark this layer to push properties
-  // when |will_always_push_properties_| is true.
-  if (will_always_push_properties_ && layer_tree_impl()->IsPendingTree()) {
-    return;
-  }
-
   // We never push properties from the active tree unless using a LayerContext.
   if (layer_tree_impl()->IsActiveTree() &&
-      !layer_tree_impl()->settings().UseLayerContextForDisplay()) {
+      !layer_tree_impl()->settings().TreesInVizInClientProcess()) {
     return;
   }
 
@@ -784,7 +828,7 @@ void LayerImpl::AsValueInto(base::trace_event::TracedValue* state) const {
   // consumers.
   viz::TracedValue::MakeDictIntoImplicitSnapshotWithCategory(
       TRACE_DISABLED_BY_DEFAULT("cc.debug"), state, "cc::LayerImpl",
-      LayerTypeAsString(GetLayerType()), this);
+      LayerTypeAsString(GetLayerType()), viz::TracedValue::Id(this));
   state->SetInteger("layer_id", id());
   MathUtil::AddToTracedValue("bounds", bounds_, state);
 
@@ -901,7 +945,7 @@ gfx::Transform LayerImpl::ScreenSpaceTransform() const {
 }
 
 int LayerImpl::GetSortingContextId() const {
-  return GetTransformTree().Node(transform_tree_index())->sorting_context_id;
+  return GetTransformTree().Node(transform_tree_index()).sorting_context_id;
 }
 
 Region LayerImpl::GetInvalidationRegionForDebugging() {
@@ -922,7 +966,7 @@ gfx::Rect LayerImpl::GetScaledEnclosingVisibleRectInTargetSpace(
   bool only_draws_visible_content = GetPropertyTrees()
                                         ->effect_tree()
                                         .Node(effect_tree_index())
-                                        ->only_draws_visible_content;
+                                        .only_draws_visible_content;
   gfx::Rect drawable_bounds = visible_layer_rect();
   if (!only_draws_visible_content) {
     drawable_bounds = gfx::Rect(bounds());
@@ -1046,10 +1090,10 @@ TransformTree& LayerImpl::GetTransformTree() const {
 }
 
 void LayerImpl::EnsureValidPropertyTreeIndices() const {
-  DCHECK(GetTransformTree().Node(transform_tree_index()));
-  DCHECK(GetEffectTree().Node(effect_tree_index()));
-  DCHECK(GetClipTree().Node(clip_tree_index()));
-  DCHECK(GetScrollTree().Node(scroll_tree_index()));
+  CHECK_GT(transform_tree_index(), kInvalidPropertyNodeId);
+  CHECK_GT(effect_tree_index(), kInvalidPropertyNodeId);
+  CHECK_GT(clip_tree_index(), kInvalidPropertyNodeId);
+  CHECK_GT(scroll_tree_index(), kInvalidPropertyNodeId);
 }
 
 bool LayerImpl::is_surface_layer() const {
@@ -1067,40 +1111,6 @@ gfx::ContentColorUsage LayerImpl::GetContentColorUsage() const {
 viz::ViewTransitionElementResourceId LayerImpl::ViewTransitionResourceId()
     const {
   return viz::ViewTransitionElementResourceId();
-}
-
-void LayerImpl::AppendSolidQuad(viz::CompositorRenderPass* render_pass,
-                                AppendQuadsData* append_quads_data,
-                                SkColor4f color) {
-  // TODO(crbug.com/41468388): This is still hard-coded at 1.0. This has some
-  // history:
-  //   - for crbug.com/769319, the contents scale was allowed to change, to
-  //     avoid blurring on high-dpi screens.
-  //   - for crbug.com/796558, the max device scale was hard-coded back to 1.0
-  //     for single-tile masks, to avoid problems with transforms.
-  // To avoid those transform/scale bugs, this is currently left at 1.0. See
-  // crbug.com/979672 for more context and test links.
-  float max_contents_scale = 1;
-
-  // The downstream CA layers use shared_quad_state to generate resources of
-  // the right size even if it is a solid color picture layer.
-  viz::SharedQuadState* shared_quad_state =
-      render_pass->CreateAndAppendSharedQuadState();
-  PopulateScaledSharedQuadState(shared_quad_state, max_contents_scale,
-                                contents_opaque());
-
-  AppendDebugBorderQuad(render_pass, gfx::Rect(bounds()), shared_quad_state,
-                        append_quads_data);
-
-  gfx::Rect scaled_visible_layer_rect =
-      shared_quad_state->visible_quad_layer_rect;
-  Occlusion occlusion = draw_properties().occlusion_in_content_space;
-
-  EffectNode* effect_node = GetEffectTree().Node(effect_tree_index());
-  SolidColorLayerImpl::AppendSolidQuads(
-      render_pass, occlusion, shared_quad_state, scaled_visible_layer_rect,
-      color, !layer_tree_impl()->settings().enable_edge_anti_aliasing,
-      effect_node->blend_mode, append_quads_data);
 }
 
 }  // namespace cc

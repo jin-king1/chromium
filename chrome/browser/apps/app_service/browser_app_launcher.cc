@@ -14,6 +14,7 @@
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/app_launch_params.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
@@ -45,7 +46,7 @@ void OnLaunchCompleteReportRestoreMetrics(
     Profile* profile,
     int restore_id,
     apps::AppLaunchParams params_for_restore,
-    base::WeakPtr<Browser> browser,
+    base::WeakPtr<BrowserWindowInterface> browser,
     base::WeakPtr<content::WebContents> web_contents,
     apps::LaunchContainer launch_container) {
 #if BUILDFLAG(IS_CHROMEOS)
@@ -140,14 +141,6 @@ BrowserAppLauncher::BrowserAppLauncher(Profile* profile) : profile_(profile) {}
 
 BrowserAppLauncher::~BrowserAppLauncher() = default;
 
-#if !BUILDFLAG(IS_CHROMEOS)
-void BrowserAppLauncher::LaunchAppWithParams(
-    AppLaunchParams params,
-    base::OnceCallback<void(content::WebContents*)> callback) {
-  LaunchAppWithParamsImpl(std::move(params), profile_, std::move(callback));
-}
-#endif  // !BUILDFLAG(IS_CHROMEOS)
-
 content::WebContents* BrowserAppLauncher::LaunchAppWithParamsForTesting(
     AppLaunchParams params) {
   // For some ChromeOS tests (and specifically ones that use SpeechMonitor),
@@ -169,20 +162,5 @@ content::WebContents* BrowserAppLauncher::LaunchAppWithParamsForTesting(
   launch_waiter.Run();
   return web_contents_holder;
 }
-
-#if BUILDFLAG(IS_CHROMEOS)
-void BrowserAppLauncher::LaunchPlayStoreWithExtensions() {
-  const extensions::Extension* extension =
-      extensions::ExtensionRegistry::Get(profile_)->GetInstalledExtension(
-          arc::kPlayStoreAppId);
-  DCHECK(extension);
-  DCHECK(extensions::util::IsAppLaunchable(arc::kPlayStoreAppId, profile_));
-  LaunchAppWithParamsImpl(
-      CreateAppLaunchParamsUserContainer(
-          profile_, extension, WindowOpenDisposition::NEW_WINDOW,
-          apps::LaunchSource::kFromChromeInternal),
-      profile_, base::DoNothing());
-}
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace apps

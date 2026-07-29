@@ -60,13 +60,13 @@ class FakeDataTypeControllerDelegate : public DataTypeControllerDelegate {
   int clear_metadata_count() const;
 
   // The value that will be returned for GetAllNodesForDebugging().
-  void SetNodesForDebugging(base::Value::List nodes);
+  void SetNodesForDebugging(base::ListValue nodes);
 
   // DataTypeControllerDelegate overrides
   void OnSyncStarting(const DataTypeActivationRequest& request,
                       StartCallback callback) override;
   void OnSyncStopping(SyncStopMetadataFate metadata_fate) override;
-  void HasUnsyncedData(base::OnceCallback<void(bool)> callback) override;
+  void GetUnsyncedDataCount(base::OnceCallback<void(size_t)> callback) override;
   void GetAllNodesForDebugging(AllNodesCallback callback) override;
   void RecordMemoryUsageAndCountsHistograms() override;
   void GetTypeEntitiesCountForDebugging(
@@ -88,7 +88,7 @@ class FakeDataTypeControllerDelegate : public DataTypeControllerDelegate {
   std::optional<ModelError> model_error_;
   StartCallback start_callback_;
   ModelErrorHandler error_handler_;
-  base::Value::List all_nodes_for_debugging_;
+  base::ListValue all_nodes_for_debugging_;
   base::WeakPtrFactory<FakeDataTypeControllerDelegate> weak_ptr_factory_{this};
 };
 

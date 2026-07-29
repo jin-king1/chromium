@@ -9,7 +9,7 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/VariationsSession_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 
 namespace {
 
@@ -21,8 +21,7 @@ bool g_on_app_enter_foreground_called = false;
 
 static void JNI_VariationsSession_StartVariationsSession(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    std::string& restrict_mode) {
+    const std::string& restrict_mode) {
   DCHECK(g_browser_process);
 
   variations::VariationsService* variations_service =
@@ -37,9 +36,7 @@ static void JNI_VariationsSession_StartVariationsSession(
   }
 }
 
-static std::string JNI_VariationsSession_GetLatestCountry(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+static std::string JNI_VariationsSession_GetLatestCountry(JNIEnv* env) {
   std::string latest_country;
 
   variations::VariationsService* variations_service =
@@ -50,3 +47,5 @@ static std::string JNI_VariationsSession_GetLatestCountry(
 
   return latest_country;
 }
+
+DEFINE_JNI(VariationsSession)

@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -19,13 +20,12 @@ V8TestingScope::V8TestingScope(const KURL& url)
 
 V8TestingScope::V8TestingScope(std::unique_ptr<DummyPageHolder> holder)
     : holder_(std::move(holder)),
-      handle_scope_(GetIsolate()),
+      isolate_(GetScriptState()->GetIsolate()),
+      handle_scope_(isolate_),
       context_(GetScriptState()->GetContext()),
       context_scope_(GetContext()),
-      try_catch_(GetIsolate()),
-      microtasks_scope_(GetIsolate(),
-                        ToMicrotaskQueue(GetScriptState()),
-                        v8::MicrotasksScope::kDoNotRunMicrotasks) {
+      try_catch_(isolate_),
+      microtasks_scope_(GetScriptState()) {
   GetFrame().GetSettings()->SetScriptEnabled(true);
 }
 
@@ -38,7 +38,7 @@ ExecutionContext* V8TestingScope::GetExecutionContext() const {
 }
 
 v8::Isolate* V8TestingScope::GetIsolate() const {
-  return GetScriptState()->GetIsolate();
+  return isolate_;
 }
 
 v8::Local<v8::Context> V8TestingScope::GetContext() const {
@@ -76,8 +76,7 @@ V8TestingScope::~V8TestingScope() {
 }
 
 void V8TestingScope::PerformMicrotaskCheckpoint() {
-  GetContext()->GetMicrotaskQueue()->PerformCheckpoint(
-      GetContext()->GetIsolate());
+  GetContext()->GetMicrotaskQueue()->PerformCheckpoint(isolate_);
 }
 
 }  // namespace blink

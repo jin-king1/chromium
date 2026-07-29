@@ -81,8 +81,10 @@ interface AutofillDriver {
   SelectControlSelectionChanged(FormData form,
                                 FieldRendererId field_id);
 
-  // Notification that a select element's options were modified.
-  SelectFieldOptionsDidChange(FormData form);
+  // Notification that a select element's options were modified. `field_id` is
+  // the renderer ID of the select field that belongs to `form` and whose
+  // option values did change.
+  SelectFieldOptionsDidChange(FormData form, FieldRendererId field_id);
 
   // `FocusOnFormField()` xor `FocusOnNonFormField()` is fired when the focused
   // element changes (https://html.spec.whatwg.org/#focused):
@@ -111,13 +113,27 @@ interface AutofillDriver {
   AskForValuesToFill(FormData form,
                      FieldRendererId field_id,
                      gfx.mojom.Rect caret_bounds,
-                     AutofillSuggestionTriggerSource trigger_source);
+                     AutofillSuggestionTriggerSource trigger_source,
+                     PasswordSuggestionRequest? password_request);
 
   // Instructs the browser to hide the Autofill popup if it is open.
   HidePopup();
 
   // Sent when a form is filled with Autofill suggestions.
-  DidFillAutofillFormData(FormData form, mojo_base.mojom.TimeTicks timestamp);
+  DidAutofillForm(FormData form);
+
+  // Instructs the browser to not trigger an automatic refill of the operation
+  // `fill_id`. Automatic refills may otherwise happen, for example, when a
+  // field is dynamically added to a form.
+  //
+  // A renderer may send this message when a JavaScript observes the `autofill`
+  // event and may therefore programmatically trigger a refill.
+  SuppressAutomaticRefills(FillId fill_id);
+
+  // Requests a refill of the initial fill `fill_id`. The browser process may
+  // either ignore this request or respond with a
+  // mojom::AutofillAgent::ApplyFieldsAction() message with the same `fill_id`.
+  RequestRefill(FillId fill_id);
 
   // Sent when a field was in autofilled state but JavaScript modified the
   // value.
@@ -132,6 +148,21 @@ interface AutofillDriver {
   JavaScriptChangedAutofilledValue(FormData form,
                                    FieldRendererId field_id,
                                    mojo_base.mojom.String16 old_value);
+
+  // Sent when a form with an email verification token is submitted.
+  //
+  // `field_id` must identify a field of `form`. This is enforced by
+  // ContentAutofillDriver.
+  FormWithEmailVerificationTokenSubmitted(FormData form,
+                                          FieldRendererId field_id);
+
+  // Sent when the renderer suspects a custom JavaScript autofill event has
+  // occurred, filling all fields in `field_ids`, and suspecting that
+  // `trigger_field_id` is the field that triggered this.
+  DidDetectJavaScriptAutofill(
+    FormData form,
+    FieldRendererId trigger_field_id,
+    array<JavaScriptFieldModification> field_modifications);
 };
 
 // There is one instance of this interface per web contents in the browser
@@ -180,16 +211,6 @@ interface PasswordManagerDriver {
     mojo_base.mojom.String16 value,
     bool autocomplete_attribute_has_username,
     bool is_likely_otp);
-
-  // Instructs the browser to show a popup or accessory with password
-  // suggestions. The popup will use `request.text_direction` for displaying
-  // text. The accessory uses the `request.form` and the indices of username and
-  // password elements in the form (`request.username_field_index` and
-  // `request.password_field_index` respectively) to calculate submission
-  // readiness for the `request.form`. If the username field is not found,
-  // `request.username_field_index` is set to `request.form.fields.size()`.
-  // Similar for the password field.
-  ShowPasswordSuggestions(PasswordSuggestionRequest request);
 
   // Checks the safe browsing reputation of the website where the focused
   // username/password field is on.

@@ -5,7 +5,6 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TRANSLATE_TRANSLATE_BUBBLE_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_TRANSLATE_TRANSLATE_BUBBLE_VIEW_H_
 
-#include <map>
 #include <memory>
 #include <string>
 
@@ -31,12 +30,13 @@
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/tabbed_pane/tabbed_pane.h"
 #include "ui/views/controls/tabbed_pane/tabbed_pane_listener.h"
-#include "ui/views/window/non_client_view.h"
+#include "ui/views/window/frame_view.h"
 
 class Browser;
 
 namespace translate {
 class TranslateBubbleVisualTest;
+class TranslateBubbleViewBrowserTest;
 }  // namespace translate
 
 namespace views {
@@ -46,6 +46,8 @@ class LabelButton;
 class View;
 }  // namespace views
 
+class TranslateLanguageSearchView;
+
 class TranslateBubbleView : public LocationBarBubbleDelegateView,
                             public ui::SimpleMenuModel::Delegate,
                             public views::TabbedPaneListener {
@@ -53,13 +55,13 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
 
  public:
   // Item IDs for the option button's menu.
-  enum OptionsMenuItem {
-    ALWAYS_TRANSLATE_LANGUAGE,
-    NEVER_TRANSLATE_LANGUAGE,
-    NEVER_TRANSLATE_SITE,
-    CHANGE_TARGET_LANGUAGE,
-    CHANGE_SOURCE_LANGUAGE,
-    OPEN_LANGUAGE_SETTINGS
+  enum class OptionsMenuItem {
+    kAlwaysTranslateLanguage,
+    kNeverTranslateLanguage,
+    kNeverTranslateSite,
+    kChangeTargetLanguage,
+    kChangeSourceLanguage,
+    kOpenLanguageSettings
   };
 
   // Element IDs for ui::ElementTracker.
@@ -77,7 +79,7 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kErrorMessage);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kOpenLanguageSettings);
 
-  TranslateBubbleView(views::View* anchor_view,
+  TranslateBubbleView(views::BubbleAnchor anchor,
                       std::unique_ptr<TranslateBubbleModel> model,
                       translate::TranslateErrors error_type,
                       content::WebContents* web_contents,
@@ -101,7 +103,6 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override;
-  void OnWidgetClosing(views::Widget* widget) override;
 
   // ui::SimpleMenuModel::Delegate:
   bool IsCommandIdChecked(int command_id) const override;
@@ -131,6 +132,7 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
 
   friend class TranslateBubbleViewTest;
   friend class translate::TranslateBubbleVisualTest;
+  friend class translate::TranslateBubbleViewBrowserTest;
   friend void ::translate::test_utils::PressTranslate(::Browser*);
   friend void ::translate::test_utils::PressRevert(::Browser*);
   friend void ::translate::test_utils::SelectTargetLanguageByDisplayName(
@@ -181,6 +183,7 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   // Handles the event when the user changes an index of a combobox.
   void SourceLanguageChanged();
   void TargetLanguageChanged();
+  void TargetLanguageChangedWithIndex(int language_index);
 
   void AlwaysTranslatePressed();
 
@@ -211,10 +214,14 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   // takes ownership of the returned view.
   std::unique_ptr<views::View> CreateViewAdvancedTarget();
 
+  // Create target language selection views.
+  std::unique_ptr<views::View> CreateSearchTargetLanguageView();
+  std::unique_ptr<views::View> CreateTargetLanguageComboboxView();
+
   // Creates the 'advanced' view to show source/target language combobox. Caller
   // takes ownership of the returned view.
   std::unique_ptr<views::View> CreateViewAdvanced(
-      std::unique_ptr<views::Combobox> combobox,
+      std::unique_ptr<views::View> child_view,
       std::unique_ptr<views::Label> language_title_label,
       std::unique_ptr<views::Button> advanced_reset_button,
       std::unique_ptr<views::Button> advanced_done_button,
@@ -232,6 +239,9 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
 
   // Get the current always translate checkbox.
   views::Checkbox* GetAlwaysTranslateCheckbox();
+
+  // Checks if the always translate checkbox should be displayed.
+  bool ShouldShowAlwaysTranslate();
 
   // Sets the window title. The window title still needs to be set, even when it
   // is not shown, for accessibility purposes.
@@ -286,6 +296,8 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
 
   raw_ptr<views::Combobox> source_language_combobox_ = nullptr;
   raw_ptr<views::Combobox> target_language_combobox_ = nullptr;
+  raw_ptr<TranslateLanguageSearchView> translate_language_search_view_ =
+      nullptr;
 
   raw_ptr<views::Checkbox> always_translate_checkbox_ = nullptr;
   raw_ptr<views::Checkbox> advanced_always_translate_checkbox_ = nullptr;
@@ -306,8 +318,6 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
   std::unique_ptr<TranslateBubbleModel> model_;
 
   translate::TranslateErrors error_type_;
-
-  base::WeakPtr<actions::ActionItem> translate_action_item_ = nullptr;
 
   // Whether the window is an incognito window.
   const bool is_in_incognito_window_;

@@ -4,15 +4,17 @@
 
 package org.chromium.chrome.browser.ui;
 
+import static org.chromium.base.TimeUtils.uptimeMillis;
+
 import android.content.Intent;
 import android.text.TextUtils;
 import android.view.View;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.incognito.IncognitoTabLauncher;
@@ -24,9 +26,11 @@ import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
-import org.chromium.chrome.browser.tabmodel.TabPersistentStore;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStore.ActiveTabState;
+import org.chromium.chrome.browser.tabmodel.TabPersistentStoreImpl;
 import org.chromium.components.embedder_support.util.UrlUtilities;
+
+import java.util.function.Supplier;
 
 /**
  * Helper class for blocking {@link ChromeTabbedActivity} content view draw on launch until the
@@ -34,6 +38,7 @@ import org.chromium.components.embedder_support.util.UrlUtilities;
  * #onPostInflationStartup. Once the tab is available, #onActiveTabAvailable should be called stop
  * blocking.
  */
+@NullMarked
 public class AppLaunchDrawBlocker {
     private final ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     private final InflationObserver mInflationObserver;
@@ -42,7 +47,8 @@ public class AppLaunchDrawBlocker {
     private final Supplier<Intent> mIntentSupplier;
     private final Supplier<Boolean> mShouldIgnoreIntentSupplier;
     private final Supplier<Boolean> mIsTabletSupplier;
-    private final ObservableSupplier<Profile> mProfileSupplier;
+    private final MonotonicObservableSupplier<Profile> mProfileSupplier;
+    private final long mStartTime;
 
     /**
      * An app draw blocker that takes care of blocking the draw when we are restoring tabs with
@@ -72,15 +78,14 @@ public class AppLaunchDrawBlocker {
      *     IncognitoRestoreAppLaunchDrawBlocker}.
      */
     public AppLaunchDrawBlocker(
-            @NonNull ActivityLifecycleDispatcher activityLifecycleDispatcher,
-            @NonNull Supplier<View> viewSupplier,
-            @NonNull Supplier<Intent> intentSupplier,
-            @NonNull Supplier<Boolean> shouldIgnoreIntentSupplier,
-            @NonNull Supplier<Boolean> isTabletSupplier,
-            @NonNull ObservableSupplier<Profile> profileSupplier,
-            @NonNull
-                    IncognitoRestoreAppLaunchDrawBlockerFactory
-                            incognitoRestoreAppLaunchDrawBlockerFactory) {
+            ActivityLifecycleDispatcher activityLifecycleDispatcher,
+            Supplier<View> viewSupplier,
+            Supplier<Intent> intentSupplier,
+            Supplier<Boolean> shouldIgnoreIntentSupplier,
+            Supplier<Boolean> isTabletSupplier,
+            MonotonicObservableSupplier<Profile> profileSupplier,
+            IncognitoRestoreAppLaunchDrawBlockerFactory
+                    incognitoRestoreAppLaunchDrawBlockerFactory) {
         mActivityLifecycleDispatcher = activityLifecycleDispatcher;
         mViewSupplier = viewSupplier;
         mInflationObserver =
@@ -116,6 +121,8 @@ public class AppLaunchDrawBlocker {
                         shouldIgnoreIntentSupplier,
                         activityLifecycleDispatcher,
                         this::onIncognitoRestoreUnblockConditionsFired);
+
+        mStartTime = uptimeMillis();
     }
 
     /** Unregister lifecycle observers. */
@@ -128,6 +135,8 @@ public class AppLaunchDrawBlocker {
     /** Should be called when the initial tab is available. */
     public void onActiveTabAvailable() {
         mBlockDrawForInitialTab = false;
+        RecordHistogram.recordTimesHistogram(
+                "Android.AppLaunchDrawBlocker.ActiveTabAvailable", uptimeMillis() - mStartTime);
     }
 
     /**
@@ -167,12 +176,8 @@ public class AppLaunchDrawBlocker {
 
     /** Only block the draw if we believe the initial tab will be the NTP. */
     private void maybeBlockDraw() {
-        @ActiveTabState int tabState = TabPersistentStore.readLastKnownActiveTabStatePref();
-        boolean searchEngineHasLogo =
-                ChromeSharedPreferences.getInstance()
-                        .readBoolean(ChromePreferenceKeys.APP_LAUNCH_SEARCH_ENGINE_HAD_LOGO, true);
-        boolean singleUrlBarMode =
-                NewTabPage.isInSingleUrlBarMode(mIsTabletSupplier.get(), searchEngineHasLogo);
+        @ActiveTabState int tabState = TabPersistentStoreImpl.readLastKnownActiveTabStatePref();
+        boolean singleUrlBarMode = NewTabPage.isInSingleUrlBarMode(mIsTabletSupplier.get());
 
         String url = IntentHandler.getUrlFromIntent(mIntentSupplier.get());
         boolean hasValidIntentUrl = !mShouldIgnoreIntentSupplier.get() && !TextUtils.isEmpty(url);

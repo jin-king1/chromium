@@ -12,6 +12,7 @@
 #include "components/version_info/channel.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "url/origin.h"
 
 namespace password_manager {
 
@@ -19,6 +20,24 @@ StubPasswordManagerClient::StubPasswordManagerClient()
     : ukm_source_id_(ukm::UkmRecorder::GetNewSourceID()) {}
 
 StubPasswordManagerClient::~StubPasswordManagerClient() = default;
+
+bool StubPasswordManagerClient::IsSavingAndFillingEnabled(
+    const url::Origin& origin,
+    base::optional_ref<const GURL> url) const {
+  return true;
+}
+
+bool StubPasswordManagerClient::IsFillingEnabled(
+    const url::Origin& origin,
+    base::optional_ref<const GURL> url) const {
+  return true;
+}
+
+bool StubPasswordManagerClient::IsFieldFilledWithOtp(
+    autofill::FormGlobalId form_id,
+    autofill::FieldGlobalId field_id) {
+  return false;
+}
 
 bool StubPasswordManagerClient::PromptUserToSaveOrUpdatePassword(
     std::unique_ptr<PasswordFormManagerForUI> form_to_save,
@@ -48,6 +67,11 @@ bool StubPasswordManagerClient::PromptUserToChooseCredentials(
   return false;
 }
 
+bool StubPasswordManagerClient::IsReauthBeforeFillingRequired(
+    device_reauth::DeviceAuthenticator* authenticator) {
+  return false;
+}
+
 void StubPasswordManagerClient::NotifyUserAutoSignin(
     std::vector<std::unique_ptr<PasswordForm>> local_forms,
     const url::Origin& origin) {}
@@ -72,6 +96,11 @@ void StubPasswordManagerClient::AutomaticPasswordSave(
 
 PrefService* StubPasswordManagerClient::GetPrefs() const {
   return nullptr;
+}
+
+metrics::ProfileMetricsService*
+StubPasswordManagerClient::GetProfileMetricsService() {
+  return &profile_metrics_service_;
 }
 
 PrefService* StubPasswordManagerClient::GetLocalStatePrefs() const {
@@ -178,6 +207,11 @@ signin::IdentityManager* StubPasswordManagerClient::GetIdentityManager() {
   return nullptr;
 }
 
+const signin::IdentityManager* StubPasswordManagerClient::GetIdentityManager()
+    const {
+  return nullptr;
+}
+
 scoped_refptr<network::SharedURLLoaderFactory>
 StubPasswordManagerClient::GetURLLoaderFactory() {
   return nullptr;
@@ -204,6 +238,8 @@ version_info::Channel StubPasswordManagerClient::GetChannel() const {
     BUILDFLAG(IS_CHROMEOS)
 void StubPasswordManagerClient::OpenPasswordDetailsBubble(
     const password_manager::PasswordForm& form) {}
+void StubPasswordManagerClient::MaybeShowSavePasswordPrimingPromo(
+    const url::Origin& origin) {}
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) ||
         // BUILDFLAG(IS_CHROMEOS)
 
@@ -220,5 +256,10 @@ StubPasswordManagerClient::ShowCrossDomainConfirmationPopup(
   return nullptr;
 }
 #endif  // !BUILDFLAG(IS_IOS)
+
+password_manager::UndoPasswordChangeController*
+StubPasswordManagerClient::GetUndoPasswordChangeController() {
+  return &undo_password_change_controller_;
+}
 
 }  // namespace password_manager

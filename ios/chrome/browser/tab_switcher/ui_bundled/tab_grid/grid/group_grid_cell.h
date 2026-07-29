@@ -9,10 +9,13 @@
 
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_theme.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/group_tab_info.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_context_menu/tab_cell.h"
 
+@protocol FacePileProviding;
 @class GroupGridCell;
+typedef NS_ENUM(NSInteger, EmptyThumbnailLayoutType);
+@class TabGroupColorPalette;
+@class TabSnapshotAndFavicon;
 
 // Informs the receiver of actions on the cell.
 @protocol GroupGridCellDelegate
@@ -27,27 +30,32 @@
 // The look of the cell.
 @property(nonatomic, assign) GridTheme theme;
 // Settable UI elements of the group cell.
-@property(nonatomic, copy) UIColor* groupColor;
 @property(nonatomic, copy) NSString* title;
 @property(nonatomic, assign) NSInteger tabsCount;
+// A color palette containing different tones for the UI.
+@property(nonatomic, copy) TabGroupColorPalette* tabGroupColorPalette;
 // Sets to update and keep cell alpha in sync.
 @property(nonatomic, assign) CGFloat opacity;
 // The current state which the cell should display.
 @property(nonatomic, assign) GridCellState state;
+// The current layout configuration that should be used by the empty thumbnail.
+@property(nonatomic, assign) EmptyThumbnailLayoutType layoutType;
+// The FacePileProvider, to be set externally. Held as a strong reference to
+// ensure the provider's lifecycle is maintained for managing and updating the
+// FacePileView's content.
+@property(nonatomic, strong) id<FacePileProviding> facePileProvider;
 
-// Configures every tab of the group with a given snapshot/favicon pairs and
-// passes the total tabs count to the bottomTrailingView.
-- (void)configureWithGroupTabInfos:(NSArray<GroupTabInfo*>*)groupTabInfos
-                    totalTabsCount:(NSInteger)totalTabsCount;
-
-// Configures the `facePileViewController`, adding it to `parentViewController`.
-// The parent must be non-nil if the face pile is non-nil.
-- (void)setFacePileViewController:(UIViewController*)facePileViewController
-             parentViewController:(UIViewController*)parentViewController;
+// Assigns a `TabSnapshotAndFavicon` object to a specific `tabIndex`
+- (void)configureTabSnapshotAndFavicon:
+            (TabSnapshotAndFavicon*)tabSnapshotAndFavicon
+                              tabIndex:(NSInteger)tabIndex;
 
 // Returns all tab views that compose this tab group view in the order they're
 // presented.
 - (NSArray<UIView*>*)allGroupTabViews;
+
+// Highlights or resets the highlighting of the cell.
+- (void)setHighlightForGrouping:(BOOL)highlight;
 
 @end
 

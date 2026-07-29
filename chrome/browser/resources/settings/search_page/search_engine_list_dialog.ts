@@ -10,22 +10,23 @@
  */
 
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
+import 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
+import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import 'chrome://resources/cr_elements/cr_radio_button/cr_radio_button.js';
 import 'chrome://resources/cr_elements/cr_radio_group/cr_radio_group.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import 'chrome://resources/cr_elements/cr_shared_vars.css.js';
 import '../settings_shared.css.js';
-import '../site_favicon.js';
+import './search_engine_icon.js';
 
 import type {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-import type {SearchEngine, SearchEnginesBrowserProxy} from '../search_engines_page/search_engines_browser_proxy.js';
-import {ChoiceMadeLocation, SearchEnginesBrowserProxyImpl} from '../search_engines_page/search_engines_browser_proxy.js';
-
 import {getTemplate} from './search_engine_list_dialog.html.js';
+import type {SearchEngine, SearchEnginesBrowserProxy} from './search_engines_browser_proxy.js';
+import {ChoiceMadeLocation, SearchEnginesBrowserProxyImpl} from './search_engines_browser_proxy.js';
 
 export interface SettingsSearchEngineListDialogElement {
   $: {
@@ -85,10 +86,11 @@ export class SettingsSearchEngineListDialogElement extends
     };
   }
 
-  searchEngines: SearchEngine[];
+  declare searchEngines: SearchEngine[];
 
-  private selectedEngineId_: string;
-  private saveGuestChoice_: boolean|null = null;
+  declare private selectedEngineId_: string;
+  declare private showSaveGuestChoice_: boolean;
+  declare private saveGuestChoice_: boolean|null;
   private browserProxy_: SearchEnginesBrowserProxy =
       SearchEnginesBrowserProxyImpl.getInstance();
 
@@ -107,7 +109,7 @@ export class SettingsSearchEngineListDialogElement extends
     assert(searchEngine);
 
     this.browserProxy_.setDefaultSearchEngine(
-        searchEngine.modelIndex, ChoiceMadeLocation.SEARCH_SETTINGS,
+        searchEngine.id, ChoiceMadeLocation.SEARCH_SETTINGS,
         this.saveGuestChoice_);
 
     this.dispatchEvent(new CustomEvent('search-engine-changed', {

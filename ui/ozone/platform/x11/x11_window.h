@@ -15,6 +15,7 @@
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-forward.h"
 #include "ui/base/x/x11_desktop_window_move_client.h"
 #include "ui/base/x/x11_drag_drop_client.h"
@@ -35,6 +36,11 @@
 #include "ui/platform_window/wm/wm_move_resize_handler.h"
 
 class SkPath;
+
+namespace x11 {
+class GeometryCache;
+class WmSync;
+}  // namespace x11
 
 namespace ui {
 
@@ -65,10 +71,12 @@ class X11Window : public PlatformWindow,
 
   virtual void Initialize(PlatformWindowInitProperties properties);
 
+  base::WeakPtr<X11Window> GetWeakPtr();
+
   // X11WindowManager calls this.
   void OnXWindowLostCapture();
 
-  void OnMouseEnter();
+  void OnCursorUpdate();
 
   gfx::AcceleratedWidget GetWidget() const;
   gfx::Rect GetOuterBounds() const;
@@ -94,7 +102,7 @@ class X11Window : public PlatformWindow,
   void Maximize() override;
   void Minimize() override;
   void Restore() override;
-  void ShowWindowControlsMenu(const gfx::Point& point) override;
+  void ShowWindowControlsMenu(const gfx::Point& point_in_dip) override;
   PlatformWindowState GetPlatformWindowState() const override;
   void Activate() override;
   void Deactivate() override;
@@ -134,12 +142,13 @@ class X11Window : public PlatformWindow,
   // X11Extension:
   bool IsSyncExtensionAvailable() const override;
   bool IsWmTiling() const override;
-  void OnCompleteSwapAfterResize() override;
+  void OnCompleteSwapAfterResize(const gfx::Size& new_size) override;
   gfx::Rect GetXRootWindowOuterBounds() const override;
   void LowerXWindow() override;
   void SetOverrideRedirect(bool override_redirect) override;
   bool CanResetOverrideRedirect() const override;
   void SetX11ExtensionDelegate(X11ExtensionDelegate* delegate) override;
+  bool IsWmSyncActiveForTest() override;
 
   // x11::EventObserver:
   void OnEvent(const x11::Event& event) override;
@@ -163,9 +172,11 @@ class X11Window : public PlatformWindow,
 
  private:
   FRIEND_TEST_ALL_PREFIXES(X11WindowTest, Shape);
-  FRIEND_TEST_ALL_PREFIXES(X11WindowTest, WindowManagerTogglesFullscreen);
+  FRIEND_TEST_ALL_PREFIXES(X11WindowTest,
+                           SynchronousDestructionDuringEventDispatch);
   FRIEND_TEST_ALL_PREFIXES(X11WindowTest,
                            ToggleMinimizePropogateToPlatformWindowDelegate);
+  FRIEND_TEST_ALL_PREFIXES(X11WindowTest, WindowManagerTogglesFullscreen);
 
   void UpdateDecorationInsets();
 
@@ -221,10 +232,8 @@ class X11Window : public PlatformWindow,
 
   void QuitDragLoop();
 
-  // Handles `key_event` as an Atk Key Event
-  bool HandleAsAtkEvent(const x11::KeyEvent& key_event,
-                        bool send_event,
-                        bool transient);
+  // Handles `event` as an Atk Key Event
+  bool HandleAsAtkEvent(const x11::Event& event);
 
   // Adjusts |requested_size_in_pixels| to avoid the WM "feature" where setting
   // the window size to the monitor size causes the WM to set the EWMH for
@@ -238,7 +247,8 @@ class X11Window : public PlatformWindow,
   void CreateXWindow(const PlatformWindowInitProperties& properties);
   void CloseXWindow();
   void Map(bool inactive = false);
-  void SetFullscreen(bool fullscreen);
+  void SetWMStateFullscreen(bool fullscreen);
+  void SetWMStateMaximize(bool maximize);
   bool IsActive() const;
   bool IsTargetedBy(const x11::Event& xev) const;
   void HandleEvent(const x11::Event& xev);
@@ -283,8 +293,7 @@ class X11Window : public PlatformWindow,
   // Called when |xwindow_|'s _NET_FRAME_EXTENTS property is updated.
   void OnFrameExtentsUpdated();
 
-  void OnConfigureEvent(const x11::ConfigureNotifyEvent& event,
-                        bool send_event);
+  void OnConfigureEvent(const x11::ConfigureNotifyEvent& event);
 
   void OnWorkspaceUpdated();
 
@@ -322,6 +331,15 @@ class X11Window : public PlatformWindow,
 
   // Initializes as a status icon window.
   bool InitializeAsStatusIcon();
+
+  void SetBoundsWithWmSync(const gfx::Rect& bounds_px);
+
+  void OnWmSynced();
+
+  void OnBoundsChanged(const std::optional<gfx::Rect>& old_bounds_px,
+                       const gfx::Rect& new_bounds_px);
+
+  void MaybeUpdateSyncCounter();
 
   // Stores current state of this window.
   PlatformWindowState state_ = PlatformWindowState::kUnknown;
@@ -393,8 +411,12 @@ class X11Window : public PlatformWindow,
   // Whether the window is mapped with respect to the X server.
   bool window_mapped_in_server_ = false;
 
-  // The bounds of |xwindow_|.
-  gfx::Rect bounds_in_pixels_;
+  // The bounds of `xwindow_`.  If `bounds_wm_sync_` is active, then
+  // `last_set_bounds_px_` should be treated as the current bounds.  Otherwise,
+  // the bounds from `geometry_cache_` should be used.
+  gfx::Rect last_set_bounds_px_;
+  std::unique_ptr<x11::WmSync> bounds_wm_sync_;
+  std::unique_ptr<x11::GeometryCache> geometry_cache_;
 
   x11::VisualId visual_id_{};
 
@@ -450,15 +472,6 @@ class X11Window : public PlatformWindow,
   bool had_pointer_grab_ = false;
   bool had_window_focus_ = false;
 
-  // Whenever the bounds are set, we keep the previous set of bounds around so
-  // we can have a better chance of getting the real
-  // |restored_bounds_in_pixels_|. Window managers tend to send a Configure
-  // message with the maximized bounds, and then set the window maximized
-  // property. (We don't rely on this for when we request that the window be
-  // maximized, only when we detect that some other process has requested that
-  // we become the maximized window.)
-  gfx::Rect previous_bounds_in_pixels_;
-
   // True if a Maximize() call should be done after mapping the window.
   bool should_maximize_after_map_ = false;
 
@@ -490,22 +503,10 @@ class X11Window : public PlatformWindow,
   gfx::Insets native_window_frame_borders_in_pixels_;
 
   // Used for synchronizing between `xwindow_` and the WM during resizing.
-  std::optional<x11::Sync::Int64> configure_counter_value_;
-  bool have_configure_ = false;
   x11::Sync::Counter update_counter_{};
-
-  // Used for ignoring bounds changes during the fullscreening process.  For
-  // cross-display fullscreening, there is a Restore() (called by BrowserView)
-  // that may cause configuration bounds updates that make this window appear to
-  // temporarily be on a different screen than its destination screen.  This
-  // restore only happens if the window is maximized. The integer represents how
-  // many events to ignore.
-  int ignore_next_configures_ = 0;
-  // True between Restore() and the next OnXWindowStateChanged().
-  bool restore_in_flight_ = false;
-  // True between SetBoundsInPixels (when the bounds actually change) and the
-  // next OnConfigureEvent.
-  bool bounds_change_in_flight_ = false;
+  std::optional<x11::Sync::Int64> configure_counter_value_;
+  std::optional<gfx::Size> last_configure_size_;
+  std::optional<gfx::Size> last_swapped_size_;
 
   base::CancelableOnceClosure delayed_resize_task_;
 

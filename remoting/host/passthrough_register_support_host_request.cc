@@ -22,6 +22,7 @@ PassthroughRegisterSupportHostRequest::
 
 void PassthroughRegisterSupportHostRequest::StartRequest(
     SignalStrategy* signal_strategy,
+    std::unique_ptr<net::ClientCertStore> client_cert_store,
     scoped_refptr<RsaKeyPair> key_pair,
     const std::string& authorized_helper,
     std::optional<ChromeOsEnterpriseParams> params,
@@ -32,7 +33,7 @@ void PassthroughRegisterSupportHostRequest::StartRequest(
   signal_strategy_->AddListener(this);
 }
 
-void PassthroughRegisterSupportHostRequest::OnSignalStrategyStateChange(
+void PassthroughRegisterSupportHostRequest::OnSignalingStateChanged(
     SignalStrategy::State state) {
   switch (state) {
     case SignalStrategy::State::CONNECTED:
@@ -45,11 +46,6 @@ void PassthroughRegisterSupportHostRequest::OnSignalStrategyStateChange(
       // No work is needed until signaling connects or errors out.
       break;
   }
-}
-
-bool PassthroughRegisterSupportHostRequest::OnSignalStrategyIncomingStanza(
-    const jingle_xmpp::XmlElement* stanza) {
-  return false;
 }
 
 void PassthroughRegisterSupportHostRequest::RunCallback(

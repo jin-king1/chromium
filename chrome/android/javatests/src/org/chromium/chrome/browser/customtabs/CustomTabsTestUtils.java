@@ -115,7 +115,7 @@ public class CustomTabsTestUtils {
                         }
                     }
                 });
-        Assert.assertTrue(connection.warmup(0));
+        Assert.assertTrue(connection.warmup());
         startupCallbackHelper.waitForCallback(0, 1, 20, TimeUnit.SECONDS);
         return connection;
     }
@@ -188,8 +188,8 @@ public class CustomTabsTestUtils {
         for (int i = 0; i < list.size(); i++) {
             PropertyModel model = list.get(i).model;
             items.append("\n").append(model.get(AppMenuItemProperties.TITLE));
-            if (model.get(AppMenuItemProperties.SUBMENU) != null) {
-                for (var submenu : model.get(AppMenuItemProperties.SUBMENU)) {
+            if (model.get(AppMenuItemProperties.ADDITIONAL_ICONS) != null) {
+                for (var submenu : model.get(AppMenuItemProperties.ADDITIONAL_ICONS)) {
                     items.append("\n - ").append(submenu.model.get(AppMenuItemProperties.TITLE));
                 }
             }

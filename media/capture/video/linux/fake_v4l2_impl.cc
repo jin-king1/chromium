@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "media/capture/video/linux/fake_v4l2_impl.h"
 
 #include <string.h>
@@ -20,10 +15,13 @@
 #include <vector>
 
 #include "base/bits.h"
+#include "base/compiler_specific.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/heap_array.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
@@ -80,7 +78,7 @@ struct FakeV4L2Buffer {
   __u32 flags;
   timeval timestamp;
   __u32 sequence;
-  std::unique_ptr<uint8_t[]> data;
+  base::HeapArray<uint8_t> data;
 };
 
 VideoPixelFormat V4L2FourccToPixelFormat(uint32_t fourcc) {
@@ -200,23 +198,23 @@ class FakeV4L2Impl::OpenedDevice {
       return Error(EINVAL);
     }
     fmtdesc->flags = 0u;
-    strcpy(reinterpret_cast<char*>(fmtdesc->description),
-           FourccToString(config_.v4l2_pixel_format).c_str());
+    UNSAFE_TODO(strcpy(reinterpret_cast<char*>(fmtdesc->description),
+                       FourccToString(config_.v4l2_pixel_format).c_str()));
     fmtdesc->pixelformat = config_.v4l2_pixel_format;
-    memset(fmtdesc->reserved, 0, sizeof(fmtdesc->reserved));
+    UNSAFE_TODO(memset(fmtdesc->reserved, 0, sizeof(fmtdesc->reserved)));
     return kSuccessReturnValue;
   }
 
   int querycap(v4l2_capability* cap) {
-    strcpy(reinterpret_cast<char*>(cap->driver), "FakeV4L2");
+    UNSAFE_TODO(strcpy(reinterpret_cast<char*>(cap->driver), "FakeV4L2"));
     CHECK(config_.descriptor.display_name().size() < 31);
-    strcpy(reinterpret_cast<char*>(cap->driver),
-           config_.descriptor.display_name().c_str());
+    UNSAFE_TODO(strcpy(reinterpret_cast<char*>(cap->driver),
+                       config_.descriptor.display_name().c_str()));
     cap->bus_info[0] = 0;
     // Provide arbitrary version info
     cap->version = KERNEL_VERSION(1, 0, 0);
     cap->capabilities = V4L2_CAP_VIDEO_CAPTURE;
-    memset(cap->reserved, 0, sizeof(cap->reserved));
+    UNSAFE_TODO(memset(cap->reserved, 0, sizeof(cap->reserved)));
     return kSuccessReturnValue;
   }
 
@@ -283,7 +281,7 @@ class FakeV4L2Impl::OpenedDevice {
     captureparm.timeperframe = timeperframe_;
     captureparm.extendedmode = 0;
     captureparm.readbuffers = 3;  // arbitrary choice
-    memset(captureparm.reserved, 0, sizeof(captureparm.reserved));
+    UNSAFE_TODO(memset(captureparm.reserved, 0, sizeof(captureparm.reserved)));
     return kSuccessReturnValue;
   }
 
@@ -295,7 +293,7 @@ class FakeV4L2Impl::OpenedDevice {
     timeperframe_ = captureparm.timeperframe;
     captureparm.extendedmode = 0;
     captureparm.readbuffers = 3;  // arbitrary choice
-    memset(captureparm.reserved, 0, sizeof(captureparm.reserved));
+    UNSAFE_TODO(memset(captureparm.reserved, 0, sizeof(captureparm.reserved)));
     return kSuccessReturnValue;
   }
 
@@ -317,7 +315,7 @@ class FakeV4L2Impl::OpenedDevice {
                                    selected_format_.sizeimage);
       current_offset += RoundUpToMultipleOfPageSize(selected_format_.sizeimage);
     }
-    memset(bufs->reserved, 0, sizeof(bufs->reserved));
+    UNSAFE_TODO(memset(bufs->reserved, 0, sizeof(bufs->reserved)));
     return kSuccessReturnValue;
   }
 
@@ -384,7 +382,8 @@ class FakeV4L2Impl::OpenedDevice {
           long len = ftell(fp);
           if (len <= static_cast<long>(buffer->length)) {
             fseek(fp, 0, SEEK_SET);
-            auto read_size = fread(buffer->data.get(), 1, len, fp);
+            auto read_size =
+                UNSAFE_TODO(fread(buffer->data.data(), 1, len, fp));
             buf->bytesused = read_size;
           }
 
@@ -717,9 +716,9 @@ void* FakeV4L2Impl::mmap(void* /*start*/,
     errno = EINVAL;
     return MAP_FAILED;
   }
-  if (!buffer->data)
-    buffer->data = std::make_unique<uint8_t[]>(length);
-  return buffer->data.get();
+  if (buffer->data.empty())
+    buffer->data = base::HeapArray<uint8_t>::Uninit(length);
+  return buffer->data.data();
 }
 
 int FakeV4L2Impl::munmap(void* start, size_t length) {

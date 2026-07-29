@@ -44,7 +44,9 @@ blink::WebElement ChromePrintRenderFrameHelperDelegate::GetPdfElement(
     CHECK_NE(parent_origin,
              url::Origin::Create(GURL(chrome::kChromeUIPrintURL)));
     if (IsPdfExtensionOrigin(parent_origin)) {
+      // LINT.IfChange(GetPdfElement)
       auto plugin_element = frame->GetDocument().QuerySelector("embed");
+      // LINT.ThenChange(//chrome/browser/resources/pdf/pdf_viewer_base.ts:CreateEmbed)
       CHECK(!plugin_element.IsNull());
       return plugin_element;
     }
@@ -67,8 +69,8 @@ bool ChromePrintRenderFrameHelperDelegate::OverridePrint(
     // This message is handled in chrome/browser/resources/pdf/pdf_viewer.js and
     // instructs the PDF plugin to print. This is to make window.print() on a
     // PDF plugin document correctly print the PDF. See
-    // https://crbug.com/448720.
-    base::Value::Dict message;
+    // https://crbug.com/41152018.
+    base::DictValue message;
     message.Set("type", "print");
     post_message_support->PostMessageFromValue(base::Value(std::move(message)));
     return true;

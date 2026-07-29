@@ -27,12 +27,15 @@ import org.junit.runners.model.FrameworkMethod;
 import org.junit.runners.model.InitializationError;
 import org.junit.runners.model.Statement;
 
-import org.chromium.base.LifetimeAssert;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ResettersForTesting.State;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.library_loader.LibraryLoader;
+import org.chromium.base.lifetime.LifetimeAssert;
 import org.chromium.base.metrics.UmaRecorderHolder;
+import org.chromium.base.task.AsyncTask;
 import org.chromium.base.test.params.MethodParamAnnotationRule;
 import org.chromium.base.test.util.AndroidSdkLevelSkipCheck;
 import org.chromium.base.test.util.BaseRestrictions;
@@ -43,11 +46,16 @@ import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.base.test.util.RestrictionSkipCheck;
 import org.chromium.base.test.util.SkipCheck;
 import org.chromium.base.test.util.TestAnimations;
+import org.chromium.base.test.util.TestLocale;
+import org.chromium.build.annotations.Nullable;
 
+import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
+import java.util.ServiceLoader;
 
 /**
  * A custom runner for JUnit4 tests that checks requirements to conditionally ignore tests.
@@ -65,6 +73,33 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
     private static final int STATUS_CODE_TEST_DURATION = 1337;
     private static final String DURATION_BUNDLE_ID = "duration_ms";
 
+    private static List<ClassCleanupHook> sClassCleanupHooks;
+    private static List<AfterCleanupCheck> sAfterCleanupChecks;
+
+    private static List<ClassCleanupHook> getClassCleanupHooks() {
+        if (sClassCleanupHooks == null) {
+            sClassCleanupHooks = new ArrayList<>();
+            for (ClassCleanupHook hook :
+                    ServiceLoader.load(
+                            ClassCleanupHook.class, ClassCleanupHook.class.getClassLoader())) {
+                sClassCleanupHooks.add(hook);
+            }
+        }
+        return sClassCleanupHooks;
+    }
+
+    private static List<AfterCleanupCheck> getAfterCleanupChecks() {
+        if (sAfterCleanupChecks == null) {
+            sAfterCleanupChecks = new ArrayList<>();
+            for (AfterCleanupCheck check :
+                    ServiceLoader.load(
+                            AfterCleanupCheck.class, AfterCleanupCheck.class.getClassLoader())) {
+                sAfterCleanupChecks.add(check);
+            }
+        }
+        return sAfterCleanupChecks;
+    }
+
     /**
      * An interface for classes that have some code to run before (or after) the class is
      * instantiated. They run after {@Link BeforeClass} (or before @AfterClass) methods are called.
@@ -79,7 +114,7 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
         /**
          * @param targetContext the instrumentation context that will be used during the test.
          */
-        public void run(Context targetContext, Class<?> testClass);
+        void run(Context targetContext, Class<?> testClass);
     }
 
     /**
@@ -95,7 +130,34 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
          * @param targetContext the instrumentation context that will be used during the test.
          * @param testMethod the test method to be run.
          */
-        public void run(Context targetContext, FrameworkMethod testMethod);
+        void run(Context targetContext, FrameworkMethod testMethod);
+    }
+
+    /**
+     * An interface for classes to perform after class tear down without being a @ClassRule or added
+     * to the ClassRunner.
+     */
+    public interface ClassCleanupHook {
+        /**
+         * Called after the test method and all its @After methods have executed.
+         *
+         * @param method The test method that was executed.
+         * @param test The test instance.
+         */
+        default void onAfterTest(FrameworkMethod method, Object test) {}
+
+        /**
+         * @param clazz The class that was just run.
+         */
+        void onAfterTestClass(Class<?> clazz);
+    }
+
+    /** An interface for classes that want to do checks after all other tear down is complete. */
+    public interface AfterCleanupCheck {
+        /**
+         * @param clazz The class that was just run.
+         */
+        void onAfterTestClass(Class<?> clazz);
     }
 
     /** Makes it more obvious that all tests are being marked as failed. */
@@ -127,26 +189,12 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
      * failure.
      */
     public static class CascadingFailureException extends RuntimeException {
-        private CascadingFailureException(String message) {
-            super(message);
-        }
-
-        @Override
-        public String toString() {
-            // Shorten full name to just simple name.
-            return getClass().getSimpleName() + ": " + getLocalizedMessage();
-        }
-
-        /**
-         * Returns a new CascadingFailureException with the originalException marked as suppressed.
-         *
-         * @param message Error message for the CascadingFailureException
-         * @param originalException The original throwable being suppressed.
-         */
-        public static CascadingFailureException wrap(String message, Throwable originalException) {
-            CascadingFailureException exception = new CascadingFailureException(message);
-            exception.addSuppressed(originalException);
-            return exception;
+        private CascadingFailureException(String failedTestName, Throwable orig) {
+            super(
+                    "A previous batched test ("
+                            + failedTestName
+                            + ") failed and may be the cause of this failure (see \"Caused By\").",
+                    orig);
         }
     }
 
@@ -154,6 +202,7 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
     private long mTestStartTimeMs;
     private String mFailedBatchTestName;
     private JniTestInstancesSnapshot mJniZeroSnapshot;
+    private boolean mAnyTestFailed;
 
     /**
      * Create a BaseJUnit4ClassRunner to run {@code klass} and initialize values.
@@ -317,6 +366,7 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
 
                     @Override
                     public void testFailure(Failure failure) {
+                        mAnyTestFailed = true;
                         mPendingFailure = failure;
                     }
 
@@ -446,12 +496,7 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
 
     private Throwable wrapExceptionIfCascadingFailure(Throwable originalFailure) {
         if (mFailedBatchTestName == null) return originalFailure;
-        return CascadingFailureException.wrap(
-                "A previous batched test ("
-                        + mFailedBatchTestName
-                        + ") failed and may be the cause of the current failure. See suppressed"
-                        + " failure below.",
-                originalFailure);
+        return new CascadingFailureException(mFailedBatchTestName, originalFailure);
     }
 
     private void onBeforeTestMethod(FrameworkMethod method) {
@@ -461,17 +506,10 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
         boolean firstTestMethod = ResettersForTesting.getState() != State.BETWEEN_METHODS;
         ResettersForTesting.beforeHooksWillExecute();
         if (firstTestMethod) {
-            BaseChromiumAndroidJUnitRunner.sInMemorySharedPreferencesContext
-                    .createSharedPreferencesSnapshot();
             mJniZeroSnapshot = JniTestInstancesSnapshot.snapshotOverridesForTesting();
         } else {
-            BaseChromiumAndroidJUnitRunner.sInMemorySharedPreferencesContext
-                    .restoreSharedPreferencesSnapshot();
             JniTestInstancesSnapshot.restoreSnapshotForTesting(mJniZeroSnapshot);
         }
-
-        // TODO: Might be slow to do this before every test.
-        SharedPreferencesTestUtil.deleteOnDiskSharedPreferences(getApplication());
 
         Class<?> testClass = getTestClass().getJavaClass();
         CommandLineFlags.reset(testClass.getAnnotations(), method.getAnnotations());
@@ -489,15 +527,85 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
     protected void onBeforeTestClass() {
         Class<?> testClass = getTestClass().getJavaClass();
         ResettersForTesting.beforeClassHooksWillExecute();
-        BaseChromiumAndroidJUnitRunner.sInMemorySharedPreferencesContext.resetSharedPreferences();
-        JniTestInstancesSnapshot.clearAllForTesting();
 
-        CommandLineFlags.reset(testClass.getAnnotations(), null);
+        // Reset SharedPreferences only between test classes (not methods) since some tests rely
+        // on state persisting between methods (e.g. when an Activity remains open).
+        // Clear between classes to ensure that one test class cannot impact another.
+        BaseChromiumAndroidJUnitRunner.sInMemorySharedPreferencesContext.resetSharedPreferences();
+        SharedPreferencesTestUtil.deleteOnDiskSharedPreferences(getApplication());
+
+        JniTestInstancesSnapshot.clearAllForTesting();
+        // Test cases are batched based on the set of features they enable in their annotations,
+        // so all test cases in the same run have the same set of features enabled,
+        // so we can set the method-level command-line flags here in onBeforeTestClass().
+        Annotation[] testMethodAnnotations = getTestMethodAnnotations();
+        CommandLineFlags.reset(testClass.getAnnotations(), testMethodAnnotations);
         TestAnimations.reset(testClass, null);
+
+        // Allows tests to set the locale before the feature list is initialized.
+        applyTestLocale();
+        // Allows tests to set the command-line before the feature list is initialized.
+        // The main side-effect being triggered is feature lists.
+        if (ContextUtils.sDoFeatureListInitHookForTesting != null) {
+            ThreadUtils.runOnUiThreadBlocking(ContextUtils.sDoFeatureListInitHookForTesting);
+            ContextUtils.sDoFeatureListInitHookForTesting = null;
+        }
 
         Context targetContext = InstrumentationRegistry.getTargetContext();
         for (ClassHook hook : getPreClassHooks()) {
             hook.run(targetContext, testClass);
+        }
+    }
+
+    // Return the annotations of the test method with a specified name.
+    private Annotation @Nullable [] getTestMethodAnnotations() {
+        String testMethodName = InstrumentationRegistry.getArguments().getString("testMethodName");
+        String extractedName = extractTestMethodName(testMethodName);
+        if (extractedName == null) {
+            return null;
+        }
+        for (FrameworkMethod method : getTestClass().getAnnotatedMethods()) {
+            if (method.getName().equals(extractedName)) {
+                return method.getAnnotations();
+            }
+        }
+        return null;
+    }
+
+    // Extract the actual test method name. For example, return "testShowBottomSheet" when given
+    // "org.chromium.chrome.browser.keyboard_accessory.all_passwords_bottom_sheet.
+    // AllPasswordsBottomSheetRenderTest#testShowBottomSheet__NightMode".
+    private static @Nullable String extractTestMethodName(@Nullable String testMethodName) {
+        if (testMethodName == null) {
+            Log.e(TAG, "Expected testMethodName to be passed");
+            return null;
+        }
+        int index = testMethodName.indexOf('#');
+        if (index == -1) {
+            Log.e(TAG, "Encountered a test method name without #");
+            return null;
+        }
+        String sanitized = testMethodName.substring(index + 1);
+        index = sanitized.indexOf("__");
+        if (index != -1) {
+            sanitized = sanitized.substring(0, index);
+        }
+        index = sanitized.indexOf('[');
+        if (index != -1) {
+            sanitized = sanitized.substring(0, index);
+        }
+        return sanitized;
+    }
+
+    // Allows test classes to set the locale before the feature list is initialized.
+    private void applyTestLocale() {
+        Class<?> testClass = getTestClass().getJavaClass();
+        TestLocale localeAnnotation = testClass.getAnnotation(TestLocale.class);
+        if (localeAnnotation != null) {
+            Locale prevLocale = Locale.getDefault();
+            String localeLanguageTag = localeAnnotation.value();
+            Locale.setDefault(Locale.forLanguageTag(localeLanguageTag));
+            ResettersForTesting.register(() -> Locale.setDefault(prevLocale));
         }
     }
 
@@ -530,7 +638,9 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
             // assertions, and to match the semantics of Robolectric's runners.
             BaseChromiumAndroidJUnitRunner.sInstance.runOnMainSync(
                     ResettersForTesting::afterHooksDidExecute);
+            JniTestInstancesSnapshot.restoreSnapshotForTesting(mJniZeroSnapshot);
             clearJobSchedulerJobs();
+            AsyncTask.cancelAllTasksForTesting();
         } finally {
             Bundle b = new Bundle();
             b.putLong(DURATION_BUNDLE_ID, SystemClock.uptimeMillis() - mTestStartTimeMs);
@@ -549,9 +659,32 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
         // assertions, and to match the semantics of Robolectric's runners.
         BaseChromiumAndroidJUnitRunner.sInstance.runOnMainSync(
                 ResettersForTesting::afterClassHooksDidExecute);
-        ActivityFinisher.finishAll();
-        if (afterClassPassed) {
+        boolean finishSuccess = ActivityFinisher.finishAll();
+        JniTestInstancesSnapshot.clearAllForTesting();
+
+        Throwable hookException = null;
+        for (ClassCleanupHook hook : getClassCleanupHooks()) {
+            try {
+                hook.onAfterTestClass(getTestClass().getJavaClass());
+            } catch (Throwable t) {
+                if (hookException == null) {
+                    hookException = t;
+                } else {
+                    hookException.addSuppressed(t);
+                }
+                Log.e(TAG, "Exception in onAfterTestClass for hook " + hook, t);
+            }
+        }
+        if (hookException != null) {
+            throw new RuntimeException(hookException);
+        }
+        if (afterClassPassed && finishSuccess) {
             LifetimeAssert.assertAllInstancesDestroyedForTesting();
+            if (!mAnyTestFailed) {
+                for (AfterCleanupCheck check : getAfterCleanupChecks()) {
+                    check.onAfterTestClass(getTestClass().getJavaClass());
+                }
+            }
         } else {
             LifetimeAssert.resetForTesting();
         }
@@ -571,6 +704,55 @@ public class BaseJUnit4ClassRunner extends AndroidJUnit4ClassRunner {
     @Override
     protected Statement withAfters(FrameworkMethod method, Object test, Statement base) {
         // Afters are called before @Rule tearDown, so a good time for a screenshot.
-        return super.withAfters(method, test, new ScreenshotOnFailureStatement(base));
+        Statement afters = super.withAfters(method, test, new ScreenshotOnFailureStatement(base));
+        return new HookAftersStatement(method, test, afters);
+    }
+
+    private static class HookAftersStatement extends Statement {
+        private final FrameworkMethod mMethod;
+        private final Object mTest;
+        private final Statement mBase;
+
+        public HookAftersStatement(FrameworkMethod method, Object test, Statement base) {
+            mBase = base;
+            mMethod = method;
+            mTest = test;
+        }
+
+        @Override
+        public void evaluate() throws Throwable {
+            Throwable testException = null;
+            try {
+                mBase.evaluate();
+            } catch (Throwable t) {
+                testException = t;
+            }
+
+            Throwable hookException = null;
+            for (ClassCleanupHook hook : getClassCleanupHooks()) {
+                try {
+                    hook.onAfterTest(mMethod, mTest);
+                } catch (Throwable t) {
+                    if (hookException == null) {
+                        hookException = t;
+                    } else {
+                        hookException.addSuppressed(t);
+                    }
+                    Log.e(TAG, "Exception in onAfterTest for hook " + hook, t);
+                }
+            }
+
+            if (hookException != null) {
+                if (testException != null) {
+                    testException.addSuppressed(hookException);
+                } else {
+                    throw hookException;
+                }
+            }
+
+            if (testException != null) {
+                throw testException;
+            }
+        }
     }
 }

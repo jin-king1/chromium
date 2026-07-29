@@ -24,6 +24,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/animation/linear_animation.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/layout/box_layout.h"
@@ -743,8 +744,17 @@ TEST_F(PrivacyIndicatorsTrayItemViewTest, MultipleAppsAccess) {
   EXPECT_FALSE(privacy_indicators_view()->GetVisible());
 }
 
+// TODO(crbug.com/402479687): Re-enable test when flakiness is fixed.
+#if BUILDFLAG(IS_LINUX) || defined(MEMORY_SANITIZER)
+#define MAYBE_HidingDelayTimerEnabledWithMultipleAppsAccess DISABLED_HidingDelayTimerEnabledWithMultipleAppsAccess
+#else
+#define MAYBE_HidingDelayTimerEnabledWithMultipleAppsAccess HidingDelayTimerEnabledWithMultipleAppsAccess
+#endif
 TEST_F(PrivacyIndicatorsTrayItemViewTest,
-       HidingDelayTimerEnabledWithMultipleAppsAccess) {
+       MAYBE_HidingDelayTimerEnabledWithMultipleAppsAccess) {
+  gfx::ScopedAnimationDurationScaleMode normal_duration(
+      gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+
   EXPECT_FALSE(privacy_indicators_view()->GetVisible());
 
   UpdateCameraAndMicrophoneUsage(
@@ -829,7 +839,7 @@ TEST_F(PrivacyIndicatorsTrayItemViewTest, RecordShowTypeMetrics) {
 }
 
 // TODO(crbug.com/373996845): Re-enable test.
-#if BUILDFLAG(IS_CHROMEOS_ASH) && defined(ADDRESS_SANITIZER)
+#if defined(ADDRESS_SANITIZER)
 #define MAYBE_RecordShowPerSessionMetrics DISABLED_RecordShowPerSessionMetrics
 #else
 #define MAYBE_RecordShowPerSessionMetrics RecordShowPerSessionMetrics

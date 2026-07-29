@@ -17,7 +17,7 @@ namespace {
 
 // Delay of running component updates after the background task fires to give
 // enough time for async component registration.
-const base::TimeDelta kOnStartTaskDelay = base::Seconds(2);
+constexpr base::TimeDelta kOnStartTaskDelay = base::Seconds(2);
 
 }  // namespace
 
@@ -48,9 +48,7 @@ void BackgroundTaskUpdateScheduler::Stop() {
   weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
-void BackgroundTaskUpdateScheduler::OnStartTask(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj) {
+void BackgroundTaskUpdateScheduler::OnStartTask(JNIEnv* env) {
   // Component registration is async. Add some delay to give some time for the
   // registration.
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
@@ -60,9 +58,7 @@ void BackgroundTaskUpdateScheduler::OnStartTask(
       kOnStartTaskDelay);
 }
 
-void BackgroundTaskUpdateScheduler::OnStopTask(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj) {
+void BackgroundTaskUpdateScheduler::OnStopTask(JNIEnv* env) {
   DCHECK(on_stop_);
   on_stop_.Run();
 }
@@ -81,3 +77,5 @@ void BackgroundTaskUpdateScheduler::OnStartTaskDelayed() {
 }
 
 }  // namespace component_updater
+
+DEFINE_JNI(UpdateScheduler)

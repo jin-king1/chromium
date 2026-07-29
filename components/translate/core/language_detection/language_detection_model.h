@@ -7,8 +7,8 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
-#include "base/feature_list.h"
 #include "base/files/file.h"
 #include "build/build_config.h"
 #include "components/language_detection/core/language_detection_model.h"
@@ -57,8 +57,8 @@ class LanguageDetectionModel {
   // Determines content page language from Content-Language code and contents.
   // Returns the contents language results in |predicted_language|,
   // |is_prediction_reliable|, and |prediction_reliability_score|.
-  std::string DeterminePageLanguage(const std::string& code,
-                                    const std::string& html_lang,
+  std::string DeterminePageLanguage(std::string_view code,
+                                    std::string_view html_lang,
                                     const std::u16string& contents,
                                     std::string* predicted_language,
                                     bool* is_prediction_reliable,

@@ -4,6 +4,9 @@
 
 #include "chrome/updater/crash_client.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -11,16 +14,15 @@
 #include "base/debug/dump_without_crashing.h"
 #include "base/environment.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
-#include "base/strings/string_util.h"
+#include "base/sequence_checker.h"
 #include "build/build_config.h"
-#include "chrome/updater/constants.h"
+#include "chrome/updater/branded_constants.h"
 #include "chrome/updater/tag.h"
-#include "chrome/updater/update_usage_stats_task.h"
 #include "chrome/updater/updater_branding.h"
 #include "chrome/updater/updater_scope.h"
+#include "chrome/updater/usage_stats_permissions.h"
 #include "chrome/updater/util/util.h"
 #include "third_party/crashpad/crashpad/client/crash_report_database.h"
 #include "third_party/crashpad/crashpad/client/crashpad_client.h"
@@ -105,8 +107,14 @@ bool CrashClient::InitializeCrashReporting(UpdaterScope updater_scope) {
   if (status_completed == crashpad::CrashReportDatabase::kNoError) {
     VLOG(1) << "Found " << reports_completed.size()
             << " completed crash reports";
-    for (const auto& report : reports_completed) {
-      VLOG(3) << "Crash since last run: ID \"" << report.id << "\", created at "
+    // Display only the most recent N crashes to avoid log spam for crash
+    // looping clients.
+    std::ranges::sort(reports_completed, std::greater<>{},
+                      &crashpad::CrashReportDatabase::Report::creation_time);
+    for (size_t i = 0; i < std::min(reports_completed.size(), std::size_t{5});
+         ++i) {
+      const auto& report = reports_completed.at(i);
+      VLOG(1) << "Crash since last run: ID \"" << report.id << "\", created at "
               << report.creation_time << ", " << report.upload_attempts
               << " upload attempts, file path \"" << report.file_path
               << "\", unique ID \"" << report.uuid.ToString()
@@ -133,13 +141,15 @@ bool CrashClient::InitializeCrashReporting(UpdaterScope updater_scope) {
   }
 
   std::optional<tagging::TagArgs> tag_args = GetTagArgs().tag_args;
-  std::string env_usage_stats;
-  if ((tag_args && tag_args->usage_stats_enable &&
+  const bool usage_stats_enabled =
+      (tag_args && tag_args->usage_stats_enable &&
        *tag_args->usage_stats_enable) ||
-      (base::Environment::Create()->GetVar(kUsageStatsEnabled,
-                                           &env_usage_stats) &&
-       env_usage_stats == kUsageStatsEnabledValueEnabled) ||
-      AnyAppUsageStatsAllowed(updater_scope)) {
+      base::Environment::Create()
+              ->GetVar(kUsageStatsEnabled)
+              .value_or(std::string()) == kUsageStatsEnabledValueEnabled ||
+      AnyAppEnablesUsageStats(updater_scope);
+
+  if (usage_stats_enabled) {
     crashpad::Settings* crashpad_settings = database_->GetSettings();
     CHECK(crashpad_settings);
     crashpad_settings->SetUploadsEnabled(true);

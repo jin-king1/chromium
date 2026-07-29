@@ -52,11 +52,11 @@ import {
 } from '../core/utils/assert.js';
 import {stopPropagation} from '../core/utils/event_handler.js';
 
-import {CraDialog} from './cra/cra-dialog.js';
-import {CraIconButton} from './cra/cra-icon-button.js';
+import type {CraDialog} from './cra/cra-dialog.js';
+import type {CraIconButton} from './cra/cra-icon-button.js';
 import {withTooltip} from './directives/with-tooltip.js';
-import {SpeakerLabelConsentDialog} from './speaker-label-consent-dialog.js';
-import {TranscriptionConsentDialog} from './transcription-consent-dialog.js';
+import type {SpeakerLabelConsentDialog} from './speaker-label-consent-dialog.js';
+import type {TranscriptionConsentDialog} from './transcription-consent-dialog.js';
 
 /**
  * Settings menu for Recording app.
@@ -222,6 +222,16 @@ export class SettingsMenu extends ReactiveLitElement {
         );
       case 'notInstalled':
         return nothing;
+      case 'needsReboot':
+        return html`
+          <spoken-message
+            slot="status"
+            role="status"
+            aria-live="polite"
+          >
+            ${i18n.genAiNeedsRebootStatusMessage}
+          </spoken-message>
+        `;
       case 'error':
         return html`
           <spoken-message
@@ -229,7 +239,7 @@ export class SettingsMenu extends ReactiveLitElement {
             role="status"
             aria-live="polite"
           >
-            ${i18n.summaryDownloadErrorStatusMessage}
+            ${i18n.genAiDownloadErrorStatusMessage}
           </spoken-message>
         `;
       case 'installed':
@@ -242,13 +252,13 @@ export class SettingsMenu extends ReactiveLitElement {
             role="status"
             aria-live="polite"
           >
-            ${i18n.summaryDownloadFinishedStatusMessage}
+            ${i18n.genAiDownloadFinishedStatusMessage}
           </spoken-message>
         `;
       case 'installing':
         return html`
           <spoken-message slot="status" role="status" aria-live="polite">
-            ${i18n.summaryDownloadStartedStatusMessage}
+            ${i18n.genAiDownloadStartedStatusMessage}
           </spoken-message>
         `;
       default:
@@ -262,9 +272,9 @@ export class SettingsMenu extends ReactiveLitElement {
       <cra-button
         slot="action"
         button-style="secondary"
-        .label=${i18n.settingsOptionsSummaryDownloadButton}
+        .label=${i18n.settingsOptionsGenAiDownloadButton}
         @click=${this.onDownloadSummaryClick}
-        aria-label=${i18n.settingsOptionsSummaryDownloadButtonAriaLabel}
+        aria-label=${i18n.settingsOptionsGenAiDownloadButtonAriaLabel}
       ></cra-button>
     `;
     if (state.kind === 'notInstalled') {
@@ -273,14 +283,14 @@ export class SettingsMenu extends ReactiveLitElement {
       // case, but might happen if DLC is cleared manually by any mean.
       return html`
         <span slot="description">
-          ${i18n.settingsOptionsSummaryDescription}
+          ${i18n.settingsOptionsGenAiDescription}
           <a
             href=${HELP_URL}
             target="_blank"
             @click=${stopPropagation}
-            aria-label=${i18n.settingsOptionsSummaryLearnMoreLinkAriaLabel}
+            aria-label=${i18n.settingsOptionsGenAiLearnMoreLinkAriaLabel}
           >
-            ${i18n.settingsOptionsSummaryLearnMoreLink}
+            ${i18n.settingsOptionsGenAiLearnMoreLink}
           </a>
         </span>
         ${downloadButton}
@@ -292,7 +302,7 @@ export class SettingsMenu extends ReactiveLitElement {
       // that users can try download again later.
       return html`
         <span slot="description" class="error">
-          ${i18n.settingsOptionsSummaryErrorDescription}
+          ${i18n.settingsOptionsGenAiErrorDescription}
         </span>
         ${downloadButton}
       `;
@@ -303,7 +313,7 @@ export class SettingsMenu extends ReactiveLitElement {
         slot="action"
         .selected=${this.summaryEnabled}
         @change=${this.onSummaryToggle}
-        aria-label=${i18n.settingsOptionsSummaryLabel}
+        aria-label=${i18n.settingsOptionsGenAiLabel}
       >
       </cros-switch>
     `;
@@ -316,9 +326,16 @@ export class SettingsMenu extends ReactiveLitElement {
         return assertNotReached(
           'Summary model unavailable but the setting is rendered.',
         );
+      case 'needsReboot':
+        return html`
+          <span slot="description" class="error">
+            ${i18n.settingsOptionsGenAiNeedsRebootDescription}
+          </span>
+          ${downloadButton}
+        `;
       case 'installing': {
         const progressDescription =
-          i18n.settingsOptionsSummaryDownloadingProgressDescription(
+          i18n.settingsOptionsGenAiDownloadingProgressDescription(
             state.progress,
           );
         return html`
@@ -326,7 +343,7 @@ export class SettingsMenu extends ReactiveLitElement {
           <cra-button
             slot="action"
             button-style="secondary"
-            .label=${i18n.settingsOptionsSummaryDownloadingButton}
+            .label=${i18n.settingsOptionsGenAiDownloadingButton}
             disabled
           >
             <md-circular-progress indeterminate slot="leading-icon">
@@ -347,7 +364,7 @@ export class SettingsMenu extends ReactiveLitElement {
     }
     return html`
       <settings-row>
-        <span slot="label">${i18n.settingsOptionsSummaryLabel}</span>
+        <span slot="label">${i18n.settingsOptionsGenAiLabel}</span>
         ${this.renderSummaryModelDescriptionAndAction()}
         ${this.renderSummaryModelDownloadStatus()}}
       </settings-row>
@@ -538,6 +555,13 @@ export class SettingsMenu extends ReactiveLitElement {
         return assertNotReached(
           'SODA unavailable but the setting is rendered.',
         );
+      case 'needsReboot':
+        return html`
+          <span slot="description" class="error">
+            ${i18n.settingsOptionsTranscriptionNeedsRebootDescription}
+          </span>
+          ${downloadButton}
+        `;
       case 'installing': {
         const progressDescription =
           i18n.settingsOptionsTranscriptionDownloadingProgressDescription(

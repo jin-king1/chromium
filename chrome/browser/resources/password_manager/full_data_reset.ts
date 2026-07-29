@@ -2,17 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
-import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
+import 'chrome://resources/cr_elements/cr_shared_style.css.js';
+import 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
 import './shared_style.css.js';
 
 import type {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import type {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import type {CrToastElement} from 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -75,12 +77,12 @@ export class FullDataResetElement extends FullDataResetElementBase {
     };
   }
 
-  isSyncingPasswords: boolean;
-  isAccountStoreUser: boolean;
-  private passwordsCount_: string = '';
-  private passkeysCount_: string = '';
-  private passwordsCountDetails_: string = '';
-  private passkeysCountDetails_: string = '';
+  declare isSyncingPasswords: boolean;
+  declare isAccountStoreUser: boolean;
+  declare private passwordsCount_: string;
+  declare private passkeysCount_: string;
+  declare private passwordsCountDetails_: string;
+  declare private passkeysCountDetails_: string;
 
   private async updateCounters_(credentials:
                                     chrome.passwordsPrivate.PasswordUiEntry[]) {
@@ -176,11 +178,29 @@ export class FullDataResetElement extends FullDataResetElementBase {
     return this.i18n('fullResetConfirmationTitleLocal');
   }
 
-  private getAriaLabel_(): string {
+  private getAriaDescription_(): string {
     return [
       this.i18n('fullResetTitle'),
       this.i18n('fullResetRowDescription'),
     ].join('. ');
+  }
+
+  protected getWarningIcon_(): string {
+    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'passwords-icon:warning' :
+        'passwords-icon:outlined-warning-old';
+  }
+
+  protected getPasskeyIcon_(): string {
+    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'passwords-icon:passkey' :
+        'passwords-icon:passkey-filled-old';
+  }
+
+  protected getPasswordIcon_(): string {
+    return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+        'passwords-icon:password' :
+        'passwords-icon:password-old';
   }
 }
 

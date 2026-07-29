@@ -14,8 +14,8 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
 #include "gpu/command_buffer/service/texture_manager.h"
 #include "gpu/command_buffer/service/texture_owner.h"
-#include "gpu/ipc/common/vulkan_ycbcr_info.h"
 #include "gpu/ipc/service/command_buffer_stub.h"
+#include "gpu/vulkan/vulkan_ycbcr_info.h"
 #include "media/base/video_frame.h"
 #include "media/gpu/android/codec_image.h"
 #include "media/gpu/android/maybe_render_early_manager.h"
@@ -90,12 +90,6 @@ class GpuSharedImageVideoFactory
                    scoped_refptr<gpu::RefCountedLock> drdc_lock);
 
  private:
-  // Creates a SharedImage for |mailbox|, and returns success or failure.
-  bool CreateImageInternal(const SharedImageVideoProvider::ImageSpec& spec,
-                           gpu::Mailbox mailbox,
-                           scoped_refptr<CodecImage> image,
-                           scoped_refptr<gpu::RefCountedLock>);
-
   void OnWillDestroyStub(bool have_context) override;
 
   raw_ptr<gpu::CommandBufferStub> stub_ = nullptr;

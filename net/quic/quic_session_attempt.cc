@@ -6,7 +6,10 @@
 
 #include "base/auto_reset.h"
 #include "base/feature_list.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/features.h"
 #include "net/base/net_error_details.h"
@@ -58,18 +61,22 @@ QuicSessionAttempt::QuicSessionAttempt(
     int cert_verify_flags,
     base::TimeTicks dns_resolution_start_time,
     base::TimeTicks dns_resolution_end_time,
+    std::optional<ResolutionDetails> resolution_details,
     bool retry_on_alternate_network_before_handshake,
     bool use_dns_aliases,
     std::set<std::string> dns_aliases,
     std::unique_ptr<QuicCryptoClientConfigHandle> crypto_client_config_handle,
-    MultiplexedSessionCreationInitiator session_creation_initiator)
+    MultiplexedSessionCreationInitiator session_creation_initiator,
+    std::optional<ConnectionManagementConfig> connection_management_config)
     : delegate_(delegate),
+      start_time_(base::TimeTicks::Now()),
       ip_endpoint_(std::move(ip_endpoint)),
       metadata_(std::move(metadata)),
       quic_version_(std::move(quic_version)),
       cert_verify_flags_(cert_verify_flags),
       dns_resolution_start_time_(dns_resolution_start_time),
       dns_resolution_end_time_(dns_resolution_end_time),
+      resolution_details_(std::move(resolution_details)),
       was_alternative_service_recently_broken_(
           pool()->WasQuicRecentlyBroken(key().session_key())),
       retry_on_alternate_network_before_handshake_(
@@ -77,7 +84,8 @@ QuicSessionAttempt::QuicSessionAttempt(
       use_dns_aliases_(use_dns_aliases),
       dns_aliases_(std::move(dns_aliases)),
       crypto_client_config_handle_(std::move(crypto_client_config_handle)),
-      session_creation_initiator_(session_creation_initiator) {
+      session_creation_initiator_(session_creation_initiator),
+      connection_management_config_(connection_management_config) {
   CHECK(delegate_);
   DCHECK_NE(quic_version_, quic::ParsedQuicVersion::Unsupported());
 }
@@ -90,7 +98,8 @@ QuicSessionAttempt::QuicSessionAttempt(
     int cert_verify_flags,
     std::unique_ptr<QuicChromiumClientStream::Handle> proxy_stream,
     const HttpUserAgentSettings* http_user_agent_settings,
-    MultiplexedSessionCreationInitiator session_creation_initiator)
+    MultiplexedSessionCreationInitiator session_creation_initiator,
+    std::optional<ConnectionManagementConfig> connection_management_config)
     : delegate_(delegate),
       ip_endpoint_(std::move(proxy_peer_endpoint)),
       quic_version_(std::move(quic_version)),
@@ -102,7 +111,8 @@ QuicSessionAttempt::QuicSessionAttempt(
       proxy_stream_(std::move(proxy_stream)),
       http_user_agent_settings_(http_user_agent_settings),
       local_endpoint_(std::move(local_endpoint)),
-      session_creation_initiator_(session_creation_initiator) {
+      session_creation_initiator_(session_creation_initiator),
+      connection_management_config_(connection_management_config) {
   CHECK(delegate_);
   DCHECK_NE(quic_version_, quic::ParsedQuicVersion::Unsupported());
 }
@@ -137,6 +147,7 @@ void QuicSessionAttempt::PopulateNetErrorDetails(
 int QuicSessionAttempt::DoLoop(int rv) {
   CHECK(!in_loop_);
   CHECK_NE(next_state_, State::kNone);
+  CHECK_NE(rv, ERR_IO_PENDING);
 
   base::AutoReset<bool> auto_reset(&in_loop_, true);
   do {
@@ -192,14 +203,14 @@ int QuicSessionAttempt::DoCreateSession() {
                          weak_ptr_factory_.GetWeakPtr()),
           key(), quic_version_, cert_verify_flags_, require_confirmation,
           ip_endpoint_, metadata_, dns_resolution_start_time_,
-          dns_resolution_end_time_, net_log(), network_,
-          session_creation_initiator_);
+          dns_resolution_end_time_, resolution_details_, net_log(), network_,
+          session_creation_initiator_, connection_management_config_);
     }
     rv = pool()->CreateSessionSync(
         key(), quic_version_, cert_verify_flags_, require_confirmation,
         ip_endpoint_, metadata_, dns_resolution_start_time_,
-        dns_resolution_end_time_, net_log(), &session_, &network_,
-        session_creation_initiator_);
+        dns_resolution_end_time_, resolution_details_, net_log(), &session_,
+        &network_, session_creation_initiator_, connection_management_config_);
 
     DVLOG(1) << "Created session on network: " << network_;
   }
@@ -215,6 +226,9 @@ int QuicSessionAttempt::DoCreateSessionComplete(int rv) {
   session_creation_finished_ = true;
   if (rv != OK) {
     CHECK(!session_);
+    // Log end event with error since we're skipping DoConfirmConnection().
+    net_log().EndEventWithNetErrorCode(
+        NetLogEventType::QUIC_SESSION_POOL_JOB_CONNECT, rv);
     return rv;
   }
 
@@ -240,6 +254,9 @@ int QuicSessionAttempt::DoCreateSessionComplete(int rv) {
 
 int QuicSessionAttempt::DoCryptoConnect(int rv) {
   if (rv != OK) {
+    // Log end event with error since we're skipping DoConfirmConnection().
+    net_log().EndEventWithNetErrorCode(
+        NetLogEventType::QUIC_SESSION_POOL_JOB_CONNECT, rv);
     // Reset `session_` to avoid dangling pointer.
     ResetSession();
     return rv;
@@ -271,7 +288,8 @@ int QuicSessionAttempt::DoCryptoConnect(int rv) {
 int QuicSessionAttempt::DoConfirmConnection(int rv) {
   UMA_HISTOGRAM_TIMES("Net.QuicSession.TimeFromResolveHostToConfirmConnection",
                       base::TimeTicks::Now() - dns_resolution_start_time_);
-  net_log().EndEvent(NetLogEventType::QUIC_SESSION_POOL_JOB_CONNECT);
+  net_log().EndEventWithNetErrorCode(
+      NetLogEventType::QUIC_SESSION_POOL_JOB_CONNECT, rv);
 
   if (was_alternative_service_recently_broken_) {
     UMA_HISTOGRAM_BOOLEAN("Net.QuicSession.ConnectAfterBroken", rv == OK);
@@ -337,18 +355,38 @@ int QuicSessionAttempt::DoConfirmConnection(int rv) {
     return rv;
   }
 
-  DCHECK(!pool()->HasActiveSession(key().session_key()));
-  // There may well now be an active session for this IP.  If so, use the
-  // existing session instead.
-  if (pool()->HasMatchingIpSession(
-          key(), {ToIPEndPoint(session_->connection()->peer_address())},
-          /*aliases=*/{}, use_dns_aliases_)) {
+  // If another request pooled to an existing session and activated our key
+  // while we were connecting (e.g., while waiting for async cert verification),
+  // this attempt is redundant.
+  if (pool()->HasActiveSession(key().session_key())) {
+    // Retrieve the active session that was created in the background.
+    QuicChromiumClientSession* existing_session =
+        pool()->FindExistingSession(key().session_key(), key().destination());
+    CHECK(existing_session);
+
+    session_->connection()->CloseConnection(
+        quic::QUIC_CONNECTION_CANCELLED,
+        "An active session already exists for the session key.",
+        quic::ConnectionCloseBehavior::SEND_CONNECTION_CLOSE_PACKET);
+    session_ = existing_session;
+    return OK;
+  }
+
+  // There may well now be an active session for this IP. The check above only
+  // covers exact session key matches (e.g. same-origin races). We still need
+  // to check for cross-origin IP pooling. If there is an active session for
+  // this IP with a matching certificate, use the existing session instead of
+  // establishing a new one.
+  if (QuicChromiumClientSession* matching_session =
+          pool()->HasMatchingIpSession(
+              key(), {ToIPEndPoint(session_->connection()->peer_address())},
+              /*aliases=*/{}, use_dns_aliases_)) {
     QuicSessionPool::LogConnectionIpPooling(true);
     session_->connection()->CloseConnection(
         quic::QUIC_CONNECTION_IP_POOLED,
         "An active session exists for the given IP.",
         quic::ConnectionCloseBehavior::SEND_CONNECTION_CLOSE_PACKET);
-    session_ = nullptr;
+    session_ = matching_session;
     return OK;
   }
   QuicSessionPool::LogConnectionIpPooling(false);
@@ -363,6 +401,10 @@ int QuicSessionAttempt::DoConfirmConnection(int rv) {
 void QuicSessionAttempt::OnCreateSessionComplete(
     base::expected<CreateSessionResult, int> result) {
   CHECK_EQ(next_state_, State::kCreateSessionComplete);
+  base::UmaHistogramTimes(
+      base::StrCat({"Net.QuicSessionAttempt.CreateSessionTime.",
+                    result.has_value() ? "Success" : "Failure"}),
+      base::TimeTicks::Now() - start_time_);
   if (result.has_value()) {
     session_ = result->session;
     network_ = result->network;
@@ -378,13 +420,16 @@ void QuicSessionAttempt::OnCreateSessionComplete(
 
   delegate_->OnQuicSessionCreationComplete(rv);
 
-  if (rv != ERR_IO_PENDING && !callback_.is_null()) {
-    std::move(callback_).Run(rv);
-  }
+  MaybeInvokeCallback(rv);
 }
 
 void QuicSessionAttempt::OnCryptoConnectComplete(int rv) {
   CHECK_EQ(next_state_, State::kConfirmConnection);
+
+  base::UmaHistogramTimes(
+      base::StrCat({"Net.QuicSessionAttempt.CryptoConnectTime.",
+                    rv == OK ? "Success" : "Failure"}),
+      base::TimeTicks::Now() - start_time_);
 
   // This early return will be triggered when CloseSessionOnError is called
   // before crypto handshake has completed.
@@ -399,7 +444,15 @@ void QuicSessionAttempt::OnCryptoConnectComplete(int rv) {
   }
 
   rv = DoLoop(rv);
+  MaybeInvokeCallback(rv);
+}
+
+void QuicSessionAttempt::MaybeInvokeCallback(int rv) {
   if (rv != ERR_IO_PENDING && !callback_.is_null()) {
+    base::UmaHistogramTimes(
+        base::StrCat({"Net.QuicSessionAttempt.CompleteTime.",
+                      rv == OK ? "Success" : "Failure"}),
+        base::TimeTicks::Now() - start_time_);
     std::move(callback_).Run(rv);
   }
 }

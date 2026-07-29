@@ -20,12 +20,13 @@ import static org.chromium.chrome.browser.price_insights.PriceInsightsBottomShee
 import android.content.Context;
 import android.view.View.OnClickListener;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.StringRes;
 
 import org.chromium.base.Callback;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.price_insights.PriceInsightsBottomSheetCoordinator.PriceInsightsDelegate;
 import org.chromium.chrome.browser.tab.Tab;
@@ -43,25 +44,26 @@ import org.chromium.ui.widget.Toast;
 import org.chromium.url.GURL;
 
 /** Mediator for price insights bottom sheet responsible for model update. */
+@NullMarked
 public class PriceInsightsBottomSheetMediator {
     private final Context mContext;
     private final Tab mTab;
     private final TabModelSelector mTabModelSelector;
     private final PropertyModel mPropertyModel;
     private final PriceInsightsDelegate mPriceInsightsDelegate;
-    private final ObservableSupplier<Boolean> mPriceTrackingStateSupplier;
+    private final NonNullObservableSupplier<Boolean> mPriceTrackingStateSupplier;
     private final Callback<Boolean> mUpdatePriceTrackingButtonModelCallback =
             this::updatePriceTrackingButtonModel;
 
     private @PriceBucket int mPriceBucket;
 
     public PriceInsightsBottomSheetMediator(
-            @NonNull Context context,
-            @NonNull Tab tab,
-            @NonNull TabModelSelector tabModelSelector,
-            @NonNull ShoppingService shoppingService,
-            @NonNull PriceInsightsDelegate priceInsightsDelegate,
-            @NonNull PropertyModel propertyModel) {
+            Context context,
+            Tab tab,
+            TabModelSelector tabModelSelector,
+            ShoppingService shoppingService,
+            PriceInsightsDelegate priceInsightsDelegate,
+            PropertyModel propertyModel) {
         mContext = context;
         mTab = tab;
         mTabModelSelector = tabModelSelector;
@@ -69,7 +71,7 @@ public class PriceInsightsBottomSheetMediator {
         mPropertyModel = propertyModel;
 
         mPriceTrackingStateSupplier = priceInsightsDelegate.getPriceTrackingStateSupplier(tab);
-        mPriceTrackingStateSupplier.addObserver(mUpdatePriceTrackingButtonModelCallback);
+        mPriceTrackingStateSupplier.addSyncObserver(mUpdatePriceTrackingButtonModelCallback);
     }
 
     public void requestShowContent() {
@@ -110,7 +112,7 @@ public class PriceInsightsBottomSheetMediator {
         ShoppingService service = ShoppingServiceFactory.getForProfile(mTab.getProfile());
         if (service == null) return false;
         ProductInfo info = service.getAvailableProductInfoForUrl(mTab.getUrl());
-        return info != null && info.productClusterId.isPresent();
+        return info != null && info.productClusterId != null;
     }
 
     private void updatePriceTrackingButtonIneligible() {
@@ -188,7 +190,7 @@ public class PriceInsightsBottomSheetMediator {
         Toast.makeText(mContext, textResId, Toast.LENGTH_SHORT).show();
     }
 
-    private void updatePriceInsightsInfo(PriceInsightsInfo info) {
+    private void updatePriceInsightsInfo(@Nullable PriceInsightsInfo info) {
         if (info == null
                 || info.currencyCode.isEmpty()
                 || info.catalogHistoryPrices == null
@@ -201,20 +203,21 @@ public class PriceInsightsBottomSheetMediator {
                 && info.catalogAttributes != null
                 && !info.catalogAttributes.isEmpty()) {
             priceHistoryTitleResId = R.string.price_history_multiple_catalogs_title;
-            mPropertyModel.set(PRICE_HISTORY_DESCRIPTION, info.catalogAttributes.get());
+            mPropertyModel.set(PRICE_HISTORY_DESCRIPTION, info.catalogAttributes);
         }
         mPropertyModel.set(PRICE_HISTORY_TITLE, mContext.getString(priceHistoryTitleResId));
         mPropertyModel.set(
                 PRICE_HISTORY_CHART,
                 mPriceInsightsDelegate.getPriceHistoryChartForPriceInsightsInfo(info));
 
-        boolean hasJackpotUrl = !(info.jackpotUrl == null || info.jackpotUrl.isEmpty());
-        mPropertyModel.set(OPEN_URL_BUTTON_VISIBLE, hasJackpotUrl);
-        if (hasJackpotUrl) {
+        GURL jackpotUrl = info.jackpotUrl;
+        boolean hasJackpotUrl = false;
+        if (jackpotUrl != null && !jackpotUrl.isEmpty()) {
+            hasJackpotUrl = true;
             mPropertyModel.set(
-                    OPEN_URL_BUTTON_ON_CLICK_LISTENER,
-                    view -> openJackpotUrl(info.jackpotUrl.get()));
+                    OPEN_URL_BUTTON_ON_CLICK_LISTENER, view -> openJackpotUrl(jackpotUrl));
         }
+        mPropertyModel.set(OPEN_URL_BUTTON_VISIBLE, hasJackpotUrl);
     }
 
     private void openJackpotUrl(GURL url) {

@@ -10,7 +10,6 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -29,9 +28,10 @@ import org.chromium.chrome.browser.password_manager.PasswordStoreBridge;
 import org.chromium.chrome.browser.password_manager.PasswordStoreCredential;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
+import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.test.util.GmsCoreVersionRestriction;
@@ -53,19 +53,15 @@ public class BrowsingDataTest {
     private EmbeddedTestServer mTestServer;
     private String mUrl;
 
-    @ClassRule
-    public static ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
-
     @Rule
-    public BlankCTATabInitialStateRule mBlankCTATabInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, false);
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     @Rule public SigninTestRule mSigninTestRule = new SigninTestRule();
 
     @Before
     public void setUp() throws Exception {
-        mTestServer = sActivityTestRule.getTestServer();
+        mTestServer = mActivityTestRule.getTestServer();
         mUrl = mTestServer.getURL(TEST_FILE);
     }
 
@@ -109,12 +105,12 @@ public class BrowsingDataTest {
 
     private String runJavascriptAsync(String type) throws Exception {
         return JavaScriptUtils.runJavascriptWithAsyncResult(
-                sActivityTestRule.getWebContents(), type);
+                mActivityTestRule.getWebContents(), type);
     }
 
     private String runJavascriptSync(String type) throws Exception {
         return JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                sActivityTestRule.getWebContents(), type);
+                mActivityTestRule.getWebContents(), type);
     }
 
     /** Test cookies deletion. */
@@ -122,7 +118,7 @@ public class BrowsingDataTest {
     @SmallTest
     public void testCookiesDeleted() throws Exception {
         Assert.assertEquals(0, getCookieCount());
-        sActivityTestRule.loadUrl(mUrl);
+        mActivityTestRule.loadUrl(mUrl);
         Assert.assertEquals("false", runJavascriptSync("hasCookie()"));
 
         runJavascriptSync("setCookie()");
@@ -138,15 +134,10 @@ public class BrowsingDataTest {
     @Test
     @SmallTest
     public void testSiteDataDeleted() throws Exception {
-        // TODO(dullweber): Investigate, why WebSql fails this test.
         List<String> siteData =
                 Arrays.asList(
-                        "LocalStorage",
-                        "ServiceWorker",
-                        "CacheStorage",
-                        "FileSystem",
-                        "IndexedDb" /*, "WebSql"*/);
-        sActivityTestRule.loadUrl(mUrl);
+                        "LocalStorage", "ServiceWorker", "CacheStorage", "FileSystem", "IndexedDb");
+        mActivityTestRule.loadUrl(mUrl);
 
         for (String type : siteData) {
             Assert.assertEquals(type, 0, getCookieCount());
@@ -167,7 +158,7 @@ public class BrowsingDataTest {
 
     /**
      * Test all data deletion for incognito profile. This only checks to see if an android specific
-     * code crashes or not. For details see, crbug.com/990624.
+     * code crashes or not. For details see, crbug.com/40638886.
      */
     @Test
     @SmallTest
@@ -199,11 +190,11 @@ public class BrowsingDataTest {
     @RequiresRestart("crbug.com/358427311")
     public void testLocalAndAccountPasswordsDeleted() throws Exception {
         // Set up a syncing user with one password in each store.
-        mSigninTestRule.addTestAccountThenSigninAndEnableSync();
-        PasswordManagerTestHelper.setAccountForPasswordStore(SigninTestRule.TEST_ACCOUNT_EMAIL);
+        mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
+        PasswordManagerTestHelper.setAccountForPasswordStore(TestAccounts.ACCOUNT1.getEmail());
         PasswordStoreBridge bridge =
                 ThreadUtils.runOnUiThreadBlocking(
-                        () -> new PasswordStoreBridge(sActivityTestRule.getProfile(false)));
+                        () -> new PasswordStoreBridge(mActivityTestRule.getProfile(false)));
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     bridge.insertPasswordCredentialInProfileStore(
@@ -245,7 +236,7 @@ public class BrowsingDataTest {
     @SmallTest
     public void testHistoryDeleted() throws Exception {
         Assert.assertEquals(0, getCookieCount());
-        sActivityTestRule.loadUrlInNewTab(mUrl);
+        mActivityTestRule.loadUrlInNewTab(mUrl);
         Assert.assertEquals("false", runJavascriptSync("hasHistory()"));
 
         runJavascriptSync("setHistory()");

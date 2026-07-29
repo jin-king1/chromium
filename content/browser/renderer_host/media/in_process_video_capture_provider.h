@@ -5,7 +5,7 @@
 #ifndef CONTENT_BROWSER_RENDERER_HOST_MEDIA_IN_PROCESS_VIDEO_CAPTURE_PROVIDER_H_
 #define CONTENT_BROWSER_RENDERER_HOST_MEDIA_IN_PROCESS_VIDEO_CAPTURE_PROVIDER_H_
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "content/browser/media/capture/native_screen_capture_picker.h"
 #include "content/browser/renderer_host/media/video_capture_provider.h"
@@ -28,9 +28,19 @@ class CONTENT_EXPORT InProcessVideoCaptureProvider
       base::OnceCallback<void(DesktopMediaID::Id)> created_callback,
       base::OnceCallback<void(webrtc::DesktopCapturer::Source)> picker_callback,
       base::OnceCallback<void()> cancel_callback,
-      base::OnceCallback<void()> error_callback) override;
+      base::OnceCallback<void()> error_callback,
+      base::OnceCallback<void(DesktopMediaID::Id)> stop_audio_callback)
+      override;
 
   void CloseNativeScreenCapturePicker(DesktopMediaID device_id) override;
+
+#if BUILDFLAG(IS_MAC)
+  void GetApplicationAudioCaptureId(
+      DesktopMediaID::Id session_id,
+      base::OnceCallback<void(
+          const std::optional<desktop_capture::ApplicationAudioCaptureId>&)>
+          callback) override;
+#endif
 
  private:
   explicit InProcessVideoCaptureProvider(

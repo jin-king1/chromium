@@ -24,6 +24,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_RESOLVER_MATCH_REQUEST_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_RESOLVER_MATCH_REQUEST_H_
 
+#include <array>
+
 #include "base/check_op.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_style_sheet.h"
@@ -83,9 +85,11 @@ class CORE_EXPORT RuleSetGroup {
     DCHECK_EQ(style_sheet_first_index_, other.style_sheet_first_index_);
     DCHECK_EQ(single_scope_, other.single_scope_);
     DCHECK_EQ(has_any_attr_rules_, other.has_any_attr_rules_);
+    DCHECK_EQ(has_any_input_rules_, other.has_any_input_rules_);
     DCHECK_EQ(has_universal_rules_, other.has_universal_rules_);
     DCHECK_EQ(need_style_synchronized_, other.need_style_synchronized_);
     DCHECK_EQ(has_link_pseudo_class_rules_, other.has_link_pseudo_class_rules_);
+
     DCHECK_EQ(has_focus_pseudo_class_rules_,
               other.has_focus_pseudo_class_rules_);
     DCHECK_EQ(has_focus_visible_pseudo_class_rules_,
@@ -109,8 +113,11 @@ class CORE_EXPORT RuleSetGroup {
   RuleSetBitmap single_scope_ = 0;
   RuleSetBitmap not_single_scope_ = 0;
 
-  // Which RuleSets have any attribute rules at all.
+  // Which RuleSets have any (non-input[type]) attribute rules at all.
   RuleSetBitmap has_any_attr_rules_ = 0;
+
+  // Which RuleSets have any input[type] rules at all.
+  RuleSetBitmap has_any_input_rules_ = 0;
 
   // Which RuleSets have any universal rules.
   RuleSetBitmap has_universal_rules_ = 0;
@@ -210,11 +217,6 @@ class CORE_EXPORT MatchRequest {
       return bitmap_ == other.bitmap_;
     }
 
-    bool operator!=(const RuleSetIterator& other) const {
-      DCHECK_EQ(&rule_set_group_, &other.rule_set_group_);
-      return bitmap_ != other.bitmap_;
-    }
-
    private:
     const RuleSetGroup& rule_set_group_;
     RuleSetGroup::RuleSetBitmap bitmap_;
@@ -252,11 +254,16 @@ class CORE_EXPORT MatchRequest {
     return RuleSetIteratorProxy(
         &rule_set_group_, rule_set_group_.has_universal_rules_ & enabled_);
   }
+  RuleSetIteratorProxy RuleSetsWithInputRules() const {
+    return RuleSetIteratorProxy(
+        &rule_set_group_, rule_set_group_.has_any_input_rules_ & enabled_);
+  }
   RuleSetIteratorProxy RuleSetsWithLinkPseudoClassRules() const {
     return RuleSetIteratorProxy(
         &rule_set_group_,
         rule_set_group_.has_link_pseudo_class_rules_ & enabled_);
   }
+
   bool HasAnyRuleSetsWithFocusPseudoClassRules() const {
     return (rule_set_group_.has_focus_pseudo_class_rules_ & enabled_) != 0;
   }
@@ -299,17 +306,12 @@ class CORE_EXPORT MatchRequest {
 void AddRuleSetToRuleSetGroupList(RuleSet* rule_set,
                                   HeapVector<RuleSetGroup>& rule_set_group);
 
-}  // namespace blink
-
-namespace WTF {
-
 template <>
-struct VectorTraits<blink::RuleSetGroup>
-    : VectorTraitsBase<blink::RuleSetGroup> {
+struct VectorTraits<RuleSetGroup> : VectorTraitsBase<RuleSetGroup> {
   static constexpr bool kCanClearUnusedSlotsWithMemset = true;
   static constexpr bool kCanMoveWithMemcpy = true;
 };
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_CORE_CSS_RESOLVER_MATCH_REQUEST_H_

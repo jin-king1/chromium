@@ -3,29 +3,32 @@
 # found in the LICENSE file.
 """Definitions of builders in the chromium.fyi builder group."""
 
-load("//lib/branches.star", "branches")
-load("//lib/builder_config.star", "builder_config")
-load("//lib/builder_health_indicators.star", "health_spec")
-load("//lib/builders.star", "builders", "cpu", "os", "siso")
-load("//lib/ci.star", "ci")
-load("//lib/consoles.star", "consoles")
-load("//lib/gn_args.star", "gn_args")
-load("//lib/html.star", "linkify", "linkify_builder")
-load("//lib/targets.star", "targets")
+load("@chromium-luci//branches.star", "branches")
+load("@chromium-luci//builder_config.star", "builder_config")
+load("@chromium-luci//builder_health_indicators.star", "health_spec")
+load("@chromium-luci//builders.star", "cpu", "os")
+load("@chromium-luci//ci.star", "ci")
+load("@chromium-luci//consoles.star", "consoles")
+load("@chromium-luci//gn_args.star", "gn_args")
+load("@chromium-luci//html.star", "linkify")
+load("@chromium-luci//targets.star", "targets")
+load("//lib/ci_constants.star", "ci_constants")
+load("//lib/siso.star", "siso")
 load("//lib/xcode.star", "xcode")
 
 ci.defaults.set(
-    executable = ci.DEFAULT_EXECUTABLE,
+    executable = ci_constants.DEFAULT_EXECUTABLE,
     builder_group = "chromium.fyi",
-    pool = ci.DEFAULT_POOL,
+    pool = ci_constants.DEFAULT_POOL,
     cores = 8,
     execution_timeout = 10 * time.hour,
-    health_spec = health_spec.DEFAULT,
-    priority = ci.DEFAULT_FYI_PRIORITY,
-    reclient_enabled = False,
-    service_account = ci.DEFAULT_SERVICE_ACCOUNT,
-    shadow_service_account = ci.DEFAULT_SHADOW_SERVICE_ACCOUNT,
-    siso_enabled = True,
+    experiments = {
+        "chromium_tests.resultdb_module": 100,
+    },
+    health_spec = health_spec.default(),
+    priority = ci_constants.DEFAULT_FYI_PRIORITY,
+    service_account = ci_constants.DEFAULT_SERVICE_ACCOUNT,
+    shadow_service_account = ci_constants.DEFAULT_SHADOW_SERVICE_ACCOUNT,
     siso_project = siso.project.DEFAULT_TRUSTED,
     siso_remote_jobs = siso.remote_jobs.DEFAULT,
 )
@@ -90,36 +93,20 @@ consoles.console_view(
     },
 )
 
-def fyi_reclient_comparison_builder(*, name, **kwargs):
-    kwargs.setdefault("executable", "recipe:reclient_reclient_comparison")
-    kwargs["reclient_bootstrap_env"] = kwargs.get("reclient_bootstrap_env", {})
-    kwargs["reclient_bootstrap_env"].update({
-        "RBE_ip_reset_min_delay": "-1s",
-        "RBE_fast_log_collection": "true",
-    })
-    kwargs["reclient_enabled"] = True
-    return ci.builder(name = name, **kwargs)
-
 def fyi_ios_builder(*, name, **kwargs):
     kwargs.setdefault("cores", None)
     if kwargs.get("builderless", False):
         kwargs.setdefault("os", os.MAC_DEFAULT)
-    kwargs.setdefault("reclient_scandeps_server", True)
     kwargs.setdefault("xcode", xcode.xcode_default)
     return ci.builder(name = name, **kwargs)
 
 def mac_builder_defaults(**kwargs):
     kwargs.setdefault("cores", 4)
     kwargs.setdefault("os", os.MAC_DEFAULT)
-    kwargs.setdefault("reclient_scandeps_server", True)
     return kwargs
 
 def fyi_mac_builder(*, name, **kwargs):
     return ci.builder(name = name, **mac_builder_defaults(**kwargs))
-
-def fyi_mac_reclient_comparison_builder(*, name, **kwargs):
-    kwargs["reclient_enabled"] = True
-    return fyi_reclient_comparison_builder(name = name, **mac_builder_defaults(**kwargs))
 
 ci.builder(
     name = "Linux Viz",
@@ -132,7 +119,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -169,17 +155,19 @@ ci.builder(
             apply_configs = ["android"],
         ),
         chromium_config = builder_config.chromium_config(
-            config = "android",
+            config = "main_builder",
+            apply_configs = ["mb"],
             build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.ARM,
             target_bits = 64,
             target_platform = builder_config.target_platform.ANDROID,
         ),
-        android_config = builder_config.android_config(config = "arm64_builder_mb"),
-        build_gs_bucket = "chromium-fyi-archive",
+        android_config = builder_config.android_config(config = "base_config"),
     ),
     gn_args = gn_args.config(
         configs = [
             "android_builder",
+            "android_with_static_analysis",
             "release_builder",
             "remoteexec",
             "minimal_symbols",
@@ -203,7 +191,7 @@ ci.builder(
                     },
                 ),
             ),
-            "chromium_pixel_2_pie",
+            "chromium_pixel_2_q",
             "has_native_resultdb_integration",
         ],
     ),
@@ -212,45 +200,6 @@ ci.builder(
         category = "site_isolation",
     ),
     notifies = ["Site Isolation Android"],
-)
-
-ci.builder(
-    name = "linux-trees-in-viz-rel",
-    description_html = "Runs tests with TreesInViz feature enabled",
-    builder_spec = builder_config.builder_spec(
-        gclient_config = builder_config.gclient_config(config = "chromium"),
-        chromium_config = builder_config.chromium_config(
-            config = "chromium",
-            apply_configs = ["mb"],
-            build_config = builder_config.build_config.RELEASE,
-            target_bits = 64,
-            target_platform = builder_config.target_platform.LINUX,
-        ),
-        build_gs_bucket = "chromium-fyi-archive",
-    ),
-    gn_args = gn_args.config(
-        configs = [
-            "release_builder",
-            "remoteexec",
-            "linux",
-            "x64",
-        ],
-    ),
-    targets = targets.bundle(
-        targets = [
-            "trees_in_viz_fyi_gtests",
-        ],
-        mixins = [
-            "linux-jammy",
-            "x86-64",
-        ],
-    ),
-    os = os.LINUX_DEFAULT,
-    console_view_entry = consoles.console_view_entry(
-        category = "compositor",
-    ),
-    contact_team_email = "chrome-compositor@google.com",
-    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CI,
 )
 
 ci.builder(
@@ -264,7 +213,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -289,88 +237,6 @@ ci.builder(
 )
 
 ci.builder(
-    name = "linux-chromeos-dbg-oslogin",
-    description_html = "This builder is used to debug spefically oslogin issues related " +
-                       "to linux-chromeos-dbg-oslogin",
-    builder_spec = builder_config.builder_spec(
-        gclient_config = builder_config.gclient_config(
-            config = "chromium",
-            apply_configs = [
-                "chromeos",
-            ],
-        ),
-        chromium_config = builder_config.chromium_config(
-            config = "chromium",
-            apply_configs = [
-                "mb",
-            ],
-            build_config = builder_config.build_config.DEBUG,
-            target_arch = builder_config.target_arch.INTEL,
-            target_bits = 64,
-            target_platform = builder_config.target_platform.CHROMEOS,
-        ),
-    ),
-    gn_args = gn_args.config(
-        configs = [
-            "chromeos_with_codecs",
-            "debug_builder",
-            "remoteexec",
-            "use_cups",
-            "x64",
-        ],
-    ),
-    targets = targets.bundle(
-        targets = [
-            "linux_chromeos_gtests",
-            "linux_chromeos_isolated_scripts",
-        ],
-        mixins = [
-            "x86-64",
-            "linux-jammy",
-            "chromium-tests-oslogin",
-        ],
-        per_test_modifications = {
-            "browser_tests": targets.mixin(
-                swarming = targets.swarming(
-                    shards = 110,
-                ),
-            ),
-            "content_browsertests": targets.mixin(
-                swarming = targets.swarming(
-                    shards = 16,
-                ),
-            ),
-            "interactive_ui_tests": targets.mixin(
-                swarming = targets.swarming(
-                    shards = 6,
-                ),
-            ),
-            "net_unittests": targets.mixin(
-                swarming = targets.swarming(
-                    shards = 2,
-                ),
-            ),
-            "pthreadpool_unittests": targets.remove(
-                reason = "pthreadpool is not built for ChromeOS currently.",
-            ),
-            "unit_tests": targets.mixin(
-                swarming = targets.swarming(
-                    shards = 4,
-                ),
-            ),
-            "wayland_client_perftests": targets.remove(
-                reason = "https://crbug.com/859307",
-            ),
-        },
-    ),
-    os = os.LINUX_DEFAULT,
-    console_view_entry = consoles.console_view_entry(
-        category = "linux",
-    ),
-    contact_team_email = "chrome-dev-infra-team@google.com",
-)
-
-ci.builder(
     name = "linux-chromeos-annotator-rel",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
@@ -388,7 +254,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.CHROMEOS,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -442,7 +307,7 @@ ci.builder(
     ),
     targets = targets.bundle(
         targets = [
-            "chromium_webkit_isolated_scripts",
+            "chromium_blink_isolated_scripts",
         ],
         mixins = [
             "linux-jammy",
@@ -476,9 +341,10 @@ ci.builder(
 )
 
 ci.builder(
-    name = "linux-blink-wpt-3pcd-fyi-rel",
-    description_html = "Runs {} and web tests against Chrome with third party cookie disabled for experimental.".format(
-        linkify("https://web-platform-tests.org", "web platform tests"),
+    name = "linux-surface-embed-rel",
+    description_html = (
+        "Runs web_tests and wpt_tests using surface embed " +
+        "with complete desktop Chrome browser on Linux."
     ),
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
@@ -486,7 +352,9 @@ ci.builder(
         ),
         chromium_config = builder_config.chromium_config(
             config = "chromium",
-            apply_configs = ["mb"],
+            apply_configs = [
+                "mb",
+            ],
             build_config = builder_config.build_config.RELEASE,
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
@@ -496,47 +364,25 @@ ci.builder(
         configs = [
             "release_builder_blink",
             "remoteexec",
-            "dcheck_always_on",
+            "minimal_symbols",
             "linux",
             "x64",
         ],
     ),
     targets = targets.bundle(
         targets = [
-            "chromium_webkit_isolated_scripts",
+            "chromium_web_tests_surface_embed_isolated_scripts",
         ],
         mixins = [
             "linux-jammy",
         ],
-        per_test_modifications = {
-            "blink_web_tests": targets.mixin(
-                args = [
-                    "--flag-specific=disable-third-party-cookie",
-                ],
-            ),
-            "blink_wpt_tests": targets.mixin(
-                args = [
-                    "--flag-specific=disable-third-party-cookie",
-                ],
-            ),
-            "chrome_wpt_tests": targets.mixin(
-                args = [
-                    "--flag-specific=disable-third-party-cookie",
-                ],
-            ),
-            "headless_shell_wpt_tests": targets.mixin(
-                args = [
-                    "--flag-specific=disable-third-party-cookie",
-                ],
-            ),
-        },
     ),
     os = os.LINUX_DEFAULT,
     console_view_entry = consoles.console_view_entry(
-        category = "linux|blink",
-        short_name = "3pcd",
+        category = "linux",
+        short_name = "se",
     ),
-    contact_team_email = "potassium-engprod-team@twosync.google.com",
+    contact_team_email = "chrome-webium-product-eng@google.com",
 )
 
 ci.builder(
@@ -550,7 +396,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -565,7 +410,7 @@ ci.builder(
     targets = targets.bundle(
         targets = [
             "chromium_gtests",
-            "chromium_webkit_isolated_scripts",
+            "chromium_blink_isolated_scripts",
         ],
         mixins = [
             "linux-jammy",
@@ -591,7 +436,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -618,7 +462,7 @@ ci.builder(
 
 ci.thin_tester(
     name = "mac-fieldtrial-tester",
-    triggered_by = ["ci/mac-arm64-rel"],
+    parent = "ci/mac-arm64-rel",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
         gclient_config = builder_config.gclient_config(
@@ -667,7 +511,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -705,18 +548,18 @@ ci.builder(
             ],
         ),
         chromium_config = builder_config.chromium_config(
-            config = "android",
+            config = "main_builder",
             apply_configs = [
                 "mb",
             ],
             build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.INTEL,
             target_bits = 32,
             target_platform = builder_config.target_platform.ANDROID,
         ),
         android_config = builder_config.android_config(
-            config = "x86_builder",
+            config = "base_config",
         ),
-        build_gs_bucket = "chromium-android-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -728,7 +571,6 @@ ci.builder(
             "strip_debug_info",
             "android_fastbuild",
             "webview_trichrome",
-            "no_secondary_abi",
             "webview_shell",
         ],
     ),
@@ -797,7 +639,7 @@ fyi_ios_builder(
             "mac_default_arm64",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_16_main",
+            "xcode_26_main",
             "xctest",
         ],
     ),
@@ -818,14 +660,15 @@ ci.builder(
             apply_configs = ["android"],
         ),
         chromium_config = builder_config.chromium_config(
-            config = "android",
+            config = "main_builder",
             apply_configs = ["mb"],
             build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.INTEL,
             target_bits = 64,
             target_platform = builder_config.target_platform.ANDROID,
         ),
         android_config = builder_config.android_config(
-            config = "x64_builder",
+            config = "base_config",
         ),
     ),
     gn_args = gn_args.config(
@@ -833,6 +676,7 @@ ci.builder(
             "release_builder",
             "remoteexec",
             "android_builder",
+            "android_with_static_analysis",
             "x64",
         ],
     ),
@@ -871,7 +715,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -883,6 +726,7 @@ ci.builder(
     ),
     targets = targets.bundle(
         targets = [
+            "perfetto_diff_tests_bundle",
             "perfetto_gtests",
         ],
         additional_compile_targets = [
@@ -896,42 +740,6 @@ ci.builder(
     console_view_entry = consoles.console_view_entry(
         category = "linux",
     ),
-)
-
-ci.builder(
-    name = "linux-rr-orchestrator-fyi",
-    description_html = (
-        "The orchestrator to schedules child builds of rr test launcher, and" +
-        " these child builds run top flaky tests using the rr tool and" +
-        " upload recorded traces."
-    ),
-    executable = "recipe:chromium_rr/orchestrator",
-    schedule = "with 3h interval",
-    triggered_by = [],
-    os = os.LINUX_DEFAULT,
-    console_view_entry = consoles.console_view_entry(
-        category = "linux",
-        short_name = "rr",
-    ),
-    contact_team_email = "chrome-browser-infra-team@google.com",
-)
-
-ci.builder(
-    name = "linux-rr-test-launcher-fyi",
-    description_html = (
-        "The rr test launcher compiles input test suites, run" +
-        " input tests using the rr tool and upload recorded traces."
-    ),
-    executable = "recipe:chromium_rr/test_launcher",
-    schedule = "triggered",
-    triggered_by = [],
-    builderless = False,
-    os = os.LINUX_DEFAULT,
-    console_view_entry = consoles.console_view_entry(
-        category = "linux",
-        short_name = "rr",
-    ),
-    contact_team_email = "chrome-browser-infra-team@google.com",
 )
 
 fyi_mac_builder(
@@ -990,17 +798,20 @@ fyi_ios_builder(
         chromium_config = builder_config.chromium_config(
             config = "chromium",
             apply_configs = ["mb"],
-            build_config = builder_config.build_config.DEBUG,
+            build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.ARM,
             target_bits = 64,
             target_platform = builder_config.target_platform.MAC,
         ),
     ),
     gn_args = gn_args.config(
         configs = [
-            "debug_builder",
+            "release_builder",
             "remoteexec",
             "mac",
             "arm64",
+            "minimal_symbols",
+            "gpu_tests",
         ],
     ),
     targets = targets.bundle(
@@ -1099,7 +910,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -1142,8 +952,69 @@ ci.builder(
     experimental = True,
 )
 
+ci.builder(
+    name = "linux-blink-tracing-rel",
+    description_html = "Runs {} with <code>blink*</code> traces added to test results.".format(
+        linkify("https://web-platform-tests.org/", "web platform tests"),
+    ),
+    schedule = "with 24h interval",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+            ],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.LINUX,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "release_builder_blink",
+            "remoteexec",
+            "linux",
+            "x64",
+            # Instrument binaries with `blink.bindings` trace events.
+            "extended_tracing",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = [
+            "headless_shell_wpt_tests_tracing",
+        ],
+        mixins = [
+            "linux-jammy",
+        ],
+        per_test_modifications = {
+            "headless_shell_wpt_tests_tracing": targets.mixin(
+                # This builder isn't latency-sensitive, so use fewer shards than
+                # the base test suite.
+                swarming = targets.swarming(
+                    shards = 12,
+                ),
+            ),
+        },
+    ),
+    os = os.LINUX_DEFAULT,
+    console_view_entry = consoles.console_view_entry(
+        category = "linux|blink",
+        short_name = "trace",
+    ),
+    contact_team_email = "chrome-product-engprod@google.com",
+)
+
 fyi_ios_builder(
     name = "ios-wpt-fyi-rel",
+    description_html = "This builder runs upstream web platform tests for {}.".format(
+        linkify(
+            "https://chromium.googlesource.com/chromium/src/+/HEAD/docs/testing/web_platform_tests.md#wpt_fyi-integration",
+            "reporting results to wpt.fyi",
+        ),
+    ),
     schedule = "with 5h interval",
     triggered_by = [],
     builder_spec = builder_config.builder_spec(
@@ -1179,9 +1050,9 @@ fyi_ios_builder(
         mixins = [
             "has_native_resultdb_integration",
             "ioswpt-chromium-swarming-pool",
-            "mac_14_x64",
+            "mac_15_x64",
             "mac_toolchain",
-            "xcode_16_main",
+            "xcode_26_main",
         ],
     ),
     builderless = True,
@@ -1190,81 +1061,7 @@ fyi_ios_builder(
     console_view_entry = consoles.console_view_entry(
         category = "mac",
     ),
-)
-
-ci.builder(
-    name = "mac-osxbeta-rel",
-    builder_spec = builder_config.builder_spec(
-        gclient_config = builder_config.gclient_config(
-            config = "chromium",
-            apply_configs = [
-                # This is necessary due to this builder running the
-                # telemetry_perf_unittests suite.
-                "chromium_with_telemetry_dependencies",
-            ],
-        ),
-        chromium_config = builder_config.chromium_config(
-            config = "chromium",
-            apply_configs = [
-                "mb",
-            ],
-            build_config = builder_config.build_config.DEBUG,
-            target_bits = 64,
-            target_platform = builder_config.target_platform.MAC,
-        ),
-        build_gs_bucket = "chromium-fyi-archive",
-    ),
-    gn_args = gn_args.config(
-        configs = [
-            "gpu_tests",
-            "debug",
-            "no_symbols",
-            "dcheck_always_on",
-            "static",
-            "remoteexec",
-            "mac",
-            "x64",
-        ],
-    ),
-    targets = targets.bundle(
-        targets = [
-            "chromium_mac_gtests_no_nacl",
-            "chromium_mac_osxbeta_rel_isolated_scripts",
-        ],
-        mixins = [
-            "limited_capacity_bot",
-            "mac_beta_x64",
-        ],
-        per_test_modifications = {
-            "browser_tests": targets.mixin(
-                swarming = targets.swarming(
-                    shards = 35,
-                ),
-            ),
-            # TODO(crbug.com/40794640): dyld was rebuilt for macOS 12, which
-            # breaks the tests. Run this experimentally on all the macOS bots
-            # >= 12 and remove this exception once fixed.
-            "crashpad_tests": targets.mixin(
-                experiment_percentage = 100,
-            ),
-            # TODO (crbug.com/1278617) Re-enable once fixed
-            "interactive_ui_tests": targets.mixin(
-                experiment_percentage = 100,
-                swarming = targets.swarming(
-                    shards = 7,
-                ),
-            ),
-        },
-    ),
-    builderless = False,
-    cores = None,
-    os = os.MAC_BETA,
-    cpu = cpu.ARM64,
-    console_view_entry = consoles.console_view_entry(
-        category = "mac",
-        short_name = "beta",
-    ),
-    main_console_view = None,
+    contact_team_email = "chrome-product-engprod@google.com",
 )
 
 ci.builder(
@@ -1278,7 +1075,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -1376,6 +1172,7 @@ ci.builder(
         configs = [
             "release_builder",
             "remoteexec",
+            "minimal_symbols",
             "win",
             "x64",
         ],
@@ -1446,11 +1243,6 @@ ci.builder(
                     shards = 6,
                 ),
             ),
-            "browser_tests": targets.mixin(
-                swarming = targets.swarming(
-                    shards = 15,
-                ),
-            ),
             "browser_tests_no_field_trial": targets.remove(
                 reason = "crbug.com/40630866",
             ),
@@ -1481,6 +1273,173 @@ ci.builder(
 )
 
 ci.builder(
+    name = "linux-arm64-rel-fyi",
+    description_html = "Linux ARM64 Release FYI builder.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = [
+                "arm64",
+            ],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.ARM,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.LINUX,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "release_builder",
+            "remoteexec",
+            "minimal_symbols",
+            "linux",
+            "arm64",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = [
+            "chromium_linux_gtests",
+        ],
+        mixins = [
+            "linux-jammy",
+            "arm64",
+            "gce",  # So as not to take up baremetal arm bots for VM testing.
+            # TODO(crbug.com/493903786): Can remove the increased expirations
+            # if/when the full resources are delivered.
+            "very_limited_capacity_bot",
+        ],
+        per_test_modifications = {
+            "browser_tests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/linux-arm64-rel-fyi.browser_tests.filter",
+                ],
+            ),
+            "content_browsertests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/linux-arm64-rel-fyi.content_browsertests.filter",
+                ],
+            ),
+            "interactive_ui_tests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/linux-arm64-rel-fyi.interactive_ui_tests.filter",
+                ],
+                swarming = targets.swarming(
+                    shards = 5,
+                ),
+            ),
+            "sync_integration_tests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/linux-arm64-rel-fyi.sync_integration_tests.filter",
+                ],
+            ),
+            "unit_tests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/linux-arm64-rel-fyi.unit_tests.filter",
+                ],
+            ),
+        },
+    ),
+    targets_settings = targets.settings(
+        browser_config = targets.browser_config.RELEASE,
+        os_type = targets.os_type.LINUX,
+    ),
+    os = os.LINUX_DEFAULT,
+    console_view_entry = consoles.console_view_entry(
+        category = "linux|arm64",
+        short_name = "rel",
+    ),
+    contact_team_email = "chrome-linux-engprod@google.com",
+)
+
+ci.builder(
+    name = "linux-arm64-wayland-rel-fyi",
+    description_html = "Linux ARM64 Wayland Release FYI builder.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = [
+                "arm64",
+                "checkout_mutter",
+            ],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.ARM,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.LINUX,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "gpu_tests",
+            "release_builder",
+            "remoteexec",
+            "linux_wayland",
+            "ozone_headless",
+            "arm64",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = [
+            "chromium_gtests_for_linux_wayland_mutter",
+        ],
+        mixins = [
+            targets.mixin(
+                args = [
+                    "--no-xvfb",
+                    "--use-mutter",
+                    "--ozone-platform=wayland",
+                ],
+            ),
+            "linux-jammy",
+            "arm64",
+            "gce",
+            "very_limited_capacity_bot",
+        ],
+        per_test_modifications = {
+            "browser_tests": targets.mixin(
+                args = [
+                    "--mutter-display=1280x800",
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/ozone-linux.browser_tests_mutter.filter;../../testing/buildbot/filters/linux-arm64-wayland-rel-fyi.browser_tests.filter",
+                ],
+                swarming = targets.swarming(
+                    shards = 20,
+                ),
+            ),
+            "content_browsertests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/linux-arm64-wayland-rel-fyi.content_browsertests.filter",
+                ],
+            ),
+            "interactive_ui_tests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/ozone-linux.interactive_ui_tests_mutter.filter;../../testing/buildbot/filters/linux-arm64-wayland-rel-fyi.interactive_ui_tests.filter",
+                ],
+                swarming = targets.swarming(
+                    shards = 24,
+                ),
+            ),
+        },
+    ),
+    targets_settings = targets.settings(
+        browser_config = targets.browser_config.RELEASE,
+        os_type = targets.os_type.LINUX,
+    ),
+    os = os.LINUX_DEFAULT,
+    console_view_entry = consoles.console_view_entry(
+        category = "linux|arm64",
+        short_name = "wl",
+    ),
+    contact_team_email = "chrome-linux-engprod@google.com",
+)
+
+ci.builder(
     name = "linux-upload-perfetto",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(config = "chromium"),
@@ -1491,7 +1450,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -1534,12 +1492,12 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "release_builder",
             "remoteexec",
+            "minimal_symbols",
             "perfetto_zlib",
             "win",
             "x64",
@@ -1566,395 +1524,8 @@ ci.builder(
     siso_remote_jobs = siso.remote_jobs.LOW_JOBS_FOR_CI,
 )
 
-fyi_reclient_comparison_builder(
-    name = "Comparison Android (reclient)",
-    description_html = """\
-This builder measures Android build performance with reclient prod vs test.<br/>\
-The bot specs should be in sync with {}.\
-""".format(linkify_builder("ci", "Deterministic Android (dbg)")),
-    gn_args = {
-        "build1": gn_args.config(
-            configs = [
-                "android_builder",
-                "debug_static_builder",
-                "remoteexec",
-                "arm64",
-                "webview_google",
-            ],
-        ),
-        "build2": gn_args.config(
-            configs = [
-                "android_builder",
-                "debug_static_builder",
-                "remoteexec",
-                "arm64",
-                "webview_google",
-            ],
-        ),
-    },
-    cores = 16,
-    os = os.LINUX_DEFAULT,
-    # Target luci-chromium-ci-bionic-us-central1-b-ssd-16-*.
-    ssd = True,
-    console_view_entry = consoles.console_view_entry(
-        category = "android",
-        short_name = "cmp",
-    ),
-    execution_timeout = 15 * time.hour,
-    reclient_cache_silo = "Comparison Android - cache siloed",
-    shadow_siso_project = siso.project.TEST_UNTRUSTED,
-    siso_project = siso.project.TEST_TRUSTED,
-)
-
-fyi_reclient_comparison_builder(
-    name = "Comparison Android (reclient) (reproxy cache)",
-    description_html = """\
-This builder measures Android build performance with reclient prod vs test using reproxy's deps cache.<br/>\
-The bot specs should be in sync with {}.\
-""".format(linkify_builder("ci", "Comparison Android (reclient)")),
-    cores = 16,
-    os = os.LINUX_DEFAULT,
-    # Target luci-chromium-ci-bionic-us-central1-b-ssd-16-*.
-    ssd = True,
-    console_view_entry = consoles.console_view_entry(
-        category = "android|expcache",
-        short_name = "cmp",
-    ),
-    execution_timeout = 15 * time.hour,
-    reclient_cache_silo = "Comparison Android (reproxy cache) - cache siloed",
-    shadow_siso_project = siso.project.TEST_UNTRUSTED,
-    siso_project = siso.project.TEST_TRUSTED,
-)
-
-fyi_mac_reclient_comparison_builder(
-    name = "Comparison Mac (reclient)",
-    schedule = "0 */4 * * *",
-    gn_args = {
-        "build1": gn_args.config(
-            configs = [
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "mac",
-                "x64",
-            ],
-        ),
-        "build2": gn_args.config(
-            configs = [
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "mac",
-                "x64",
-            ],
-        ),
-    },
-    builderless = True,
-    cores = 12,
-    cpu = cpu.X86_64,
-    console_view_entry = consoles.console_view_entry(
-        category = "mac",
-        short_name = "cmp",
-    ),
-    execution_timeout = 14 * time.hour,
-    reclient_bootstrap_env = {
-        "GLOG_vmodule": "bridge*=2",
-    },
-    reclient_cache_silo = "Comparison Mac - cache siloed",
-    shadow_siso_project = siso.project.TEST_UNTRUSTED,
-    siso_project = siso.project.TEST_TRUSTED,
-)
-
-fyi_mac_reclient_comparison_builder(
-    name = "Comparison Mac arm64 (reclient)",
-    schedule = "0 */4 * * *",
-    gn_args = {
-        "build1": gn_args.config(
-            configs = [
-                "arm64",
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "mac",
-            ],
-        ),
-        "build2": gn_args.config(
-            configs = [
-                "arm64",
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "mac",
-            ],
-        ),
-    },
-    builderless = True,
-    cores = None,
-    cpu = cpu.ARM64,
-    console_view_entry = consoles.console_view_entry(
-        category = "mac",
-        short_name = "cmp",
-    ),
-    execution_timeout = 10 * time.hour,
-    reclient_bootstrap_env = {
-        "GLOG_vmodule": "bridge*=2",
-    },
-    reclient_cache_silo = "Comparison Mac - cache siloed",
-    shadow_siso_project = siso.project.TEST_UNTRUSTED,
-    siso_project = siso.project.TEST_TRUSTED,
-)
-
-fyi_mac_reclient_comparison_builder(
-    name = "Comparison Mac arm64 on arm64 (reclient)",
-    schedule = "0 */4 * * *",
-    gn_args = {
-        "build1": gn_args.config(
-            configs = [
-                "arm64",
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "mac",
-            ],
-        ),
-        "build2": gn_args.config(
-            configs = [
-                "arm64",
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "mac",
-            ],
-        ),
-    },
-    builderless = True,
-    cores = None,
-    cpu = cpu.ARM64,
-    console_view_entry = consoles.console_view_entry(
-        category = "mac",
-        short_name = "cmp",
-    ),
-    execution_timeout = 10 * time.hour,
-    reclient_bootstrap_env = {
-        "GLOG_vmodule": "bridge*=2",
-    },
-    reclient_cache_silo = "Comparison Mac - cache siloed",
-    shadow_siso_project = siso.project.TEST_UNTRUSTED,
-    siso_project = siso.project.TEST_TRUSTED,
-)
-
-fyi_reclient_comparison_builder(
-    name = "Comparison Windows (8 cores) (reclient)",
-    gn_args = {
-        "build1": gn_args.config(
-            configs = [
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "win",
-                "x64",
-            ],
-        ),
-        "build2": gn_args.config(
-            configs = [
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "win",
-                "x64",
-            ],
-        ),
-    },
-    builderless = True,
-    cores = 8,
-    os = os.WINDOWS_DEFAULT,
-    free_space = builders.free_space.high,
-    console_view_entry = consoles.console_view_entry(
-        category = "win",
-        short_name = "re",
-    ),
-    execution_timeout = 14 * time.hour,
-    reclient_cache_silo = "Comparison Windows 8 cores - cache siloed",
-    shadow_siso_project = siso.project.TEST_UNTRUSTED,
-    siso_project = siso.project.TEST_TRUSTED,
-    siso_remote_jobs = 80,
-)
-
-fyi_reclient_comparison_builder(
-    name = "Comparison Windows (reclient)",
-    gn_args = {
-        "build1": gn_args.config(
-            configs = [
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "win",
-                "x64",
-            ],
-        ),
-        "build2": gn_args.config(
-            configs = [
-                "gpu_tests",
-                "release_builder",
-                "remoteexec",
-                "minimal_symbols",
-                "win",
-                "x64",
-            ],
-        ),
-    },
-    builderless = True,
-    cores = "16|32",
-    os = os.WINDOWS_DEFAULT,
-    free_space = builders.free_space.high,
-    console_view_entry = consoles.console_view_entry(
-        category = "win",
-        short_name = "re",
-    ),
-    execution_timeout = 14 * time.hour,
-    reclient_cache_silo = "Comparison Windows - cache siloed",
-    shadow_siso_project = siso.project.TEST_UNTRUSTED,
-    siso_project = siso.project.TEST_TRUSTED,
-)
-
-fyi_reclient_comparison_builder(
-    name = "Comparison Simple Chrome (reclient)",
-    gn_args = {
-        "build1": gn_args.config(
-            configs = [
-                "chromeos_device",
-                "dcheck_off",
-                "remoteexec",
-                "amd64-generic-vm",
-                "ozone_headless",
-                "use_fake_dbus_clients",
-                "x64",
-            ],
-        ),
-        "build2": gn_args.config(
-            configs = [
-                "chromeos_device",
-                "dcheck_off",
-                "remoteexec",
-                "amd64-generic-vm",
-                "ozone_headless",
-                "use_fake_dbus_clients",
-                "x64",
-            ],
-        ),
-    },
-    builderless = True,
-    os = os.LINUX_DEFAULT,
-    console_view_entry = consoles.console_view_entry(
-        category = "cros x64",
-        short_name = "cmp",
-    ),
-    execution_timeout = 14 * time.hour,
-    reclient_cache_silo = "Comparison Simple Chrome - cache siloed",
-    shadow_siso_project = siso.project.TEST_UNTRUSTED,
-    siso_project = siso.project.TEST_TRUSTED,
-)
-
-fyi_mac_reclient_comparison_builder(
-    name = "Comparison ios (reclient)",
-    schedule = "0 */4 * * *",
-    gn_args = {
-        "build1": gn_args.config(
-            configs = [
-                "debug_static_builder",
-                "remoteexec",
-                "ios_simulator",
-                "x64",
-                "xctest",
-            ],
-        ),
-        "build2": gn_args.config(
-            configs = [
-                "debug_static_builder",
-                "remoteexec",
-                "ios_simulator",
-                "x64",
-                "xctest",
-            ],
-        ),
-    },
-    builderless = True,
-    cores = None,
-    cpu = cpu.ARM64,
-    console_view_entry = consoles.console_view_entry(
-        category = "ios",
-        short_name = "cmp",
-    ),
-    execution_timeout = 10 * time.hour,
-    reclient_cache_silo = "Comparison ios - cache siloed",
-    shadow_siso_project = siso.project.TEST_UNTRUSTED,
-    siso_project = siso.project.TEST_TRUSTED,
-    xcode = xcode.xcode_default,
-)
-
-ci.builder(
-    name = "Win x64 Builder (reclient)",
-    builder_spec = builder_config.builder_spec(
-        gclient_config = builder_config.gclient_config(
-            config = "chromium",
-            apply_configs = [
-                "use_clang_coverage",
-                "reclient_test",
-            ],
-        ),
-        chromium_config = builder_config.chromium_config(
-            config = "chromium",
-            apply_configs = ["mb"],
-            build_config = builder_config.build_config.RELEASE,
-            target_bits = 64,
-            target_platform = builder_config.target_platform.WIN,
-        ),
-        build_gs_bucket = "chromium-fyi-archive",
-    ),
-    gn_args = gn_args.config(
-        configs = [
-            "gpu_tests",
-            "release_builder",
-            "remoteexec",
-            "minimal_symbols",
-            "win",
-            "x64",
-        ],
-    ),
-    # Copied from
-    # https://source.chromium.org/chromium/chromium/src/+/7b147a6777cb32d6a12e1716c61a0ed50dc1229a:testing/buildbot/waterfalls.pyl;l=6023-6030
-    targets = targets.bundle(
-        targets = [
-            "chromium_win_scripts",
-        ],
-        additional_compile_targets = [
-            "pdf_fuzzers",
-        ],
-    ),
-    builderless = True,
-    cores = 16,
-    os = os.WINDOWS_DEFAULT,
-    ssd = True,
-    console_view_entry = consoles.console_view_entry(
-        category = "win",
-        short_name = "re",
-    ),
-    shadow_siso_project = None,
-    siso_project = siso.project.TEST_TRUSTED,
-    siso_remote_jobs = None,
-)
-
 fyi_ios_builder(
-    name = "ios-blink-dbg-fyi",
+    name = "ios-blink-rel-fyi",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "ios",
@@ -1969,8 +1540,8 @@ fyi_ios_builder(
             build_config = builder_config.build_config.RELEASE,
             target_bits = 64,
             target_platform = builder_config.target_platform.IOS,
+            host_platform = builder_config.host_platform.MAC,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -1985,7 +1556,7 @@ fyi_ios_builder(
     ),
     targets = targets.bundle(
         targets = [
-            "ios_blink_dbg_tests",
+            "ios_blink_rel_tests",
         ],
         additional_compile_targets = [
             "all",
@@ -1996,7 +1567,7 @@ fyi_ios_builder(
             "mac_beta_arm64",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_16_main",
+            "xcode_26_main",
             "xctest",
         ],
     ),
@@ -2007,6 +1578,72 @@ fyi_ios_builder(
         short_name = "ios-blk",
     ),
     execution_timeout = 3 * time.hour,
+)
+
+fyi_ios_builder(
+    name = "tvos-rel-fyi",
+    description_html = "tvOS builder for building and testing tvOS chromium.",
+    schedule = "0 */1 * * *",  # every hour
+    triggered_by = [],
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "ios",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium_tvos",
+            apply_configs = [
+                "mb",
+            ],
+            # Release for now due to binary size being too large (crbug.com/1464415)
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.IOS,
+            host_platform = builder_config.host_platform.MAC,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "release_builder_blink",
+            "try_builder",
+            "remoteexec",
+            "ios_simulator",
+            "arm64",
+            "use_blink",
+            "tvos_platform",
+            "xctest",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = [
+            "tvos_rel_tests",
+        ],
+        additional_compile_targets = [
+            "base_unittests",
+            "content_shell",
+            "components_browsertests",
+            "components_unittests",
+            "content_unittests",
+            "media_unittests",
+        ],
+        mixins = [
+            "expand-as-isolated-script",
+            "has_native_resultdb_integration",
+            "mac_default_arm64",
+            "mac_toolchain",
+            "out_dir_arg",
+            "xcode_26_main",
+            "xctest",
+        ],
+    ),
+    builderless = True,
+    cpu = cpu.ARM64,
+    console_view_entry = consoles.console_view_entry(
+        category = "iOS",
+        short_name = "tv",
+    ),
+    contact_team_email = "cobalt-appletv@google.com",
+    execution_timeout = 3 * time.hour,
+    xcode = xcode.xcode_default,
 )
 
 fyi_ios_builder(
@@ -2048,7 +1685,7 @@ fyi_ios_builder(
             "mac_vm",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_16_main",
+            "xcode_26_main",
             "xctest",
         ],
     ),
@@ -2064,115 +1701,7 @@ fyi_ios_builder(
 )
 
 fyi_ios_builder(
-    name = "ios-webkit-tot",
-    schedule = "0 1-23/6 * * *",
-    triggered_by = [],
-    builder_spec = builder_config.builder_spec(
-        gclient_config = builder_config.gclient_config(
-            config = "ios",
-            apply_configs = ["ios_webkit_tot"],
-        ),
-        chromium_config = builder_config.chromium_config(
-            config = "chromium",
-            apply_configs = [
-                "mb",
-                "mac_toolchain",
-            ],
-            build_config = builder_config.build_config.DEBUG,
-            target_bits = 64,
-            target_platform = builder_config.target_platform.IOS,
-        ),
-        build_gs_bucket = "chromium-fyi-archive",
-    ),
-    gn_args = gn_args.config(
-        configs = [
-            "debug_static_builder",
-            "remoteexec",
-            "ios_simulator",
-            "x64",
-            "xctest",
-            "no_lld",
-        ],
-    ),
-    targets = targets.bundle(
-        targets = [
-            "ios_webkit_tot_tests",
-        ],
-        mixins = [
-            "expand-as-isolated-script",
-            "has_native_resultdb_integration",
-            "ios_custom_webkit",
-            "mac_default_x64",
-            "mac_toolchain",
-            "out_dir_arg",
-            "xcode_16_main",
-            "xctest",
-        ],
-    ),
-    console_view_entry = consoles.console_view_entry(
-        category = "iOS",
-        short_name = "wk",
-    ),
-    xcode = xcode.x14wk,
-)
-
-fyi_ios_builder(
-    name = "ios17-beta-simulator",
-    builder_spec = builder_config.builder_spec(
-        gclient_config = builder_config.gclient_config(config = "ios"),
-        chromium_config = builder_config.chromium_config(
-            config = "chromium",
-            apply_configs = [
-                "mb",
-                "mac_toolchain",
-            ],
-            build_config = builder_config.build_config.DEBUG,
-            target_bits = 64,
-            target_platform = builder_config.target_platform.IOS,
-        ),
-        build_gs_bucket = "chromium-fyi-archive",
-    ),
-    gn_args = gn_args.config(
-        configs = [
-            "debug_static_builder",
-            "remoteexec",
-            "ios_simulator",
-            "arm64",
-            "xctest",
-        ],
-    ),
-    targets = targets.bundle(
-        targets = [
-            "ios17_beta_simulator_tests",
-        ],
-        additional_compile_targets = [
-            "all",
-        ],
-        mixins = [
-            "expand-as-isolated-script",
-            "has_native_resultdb_integration",
-            "mac_15_arm64",
-            "mac_toolchain",
-            "out_dir_arg",
-            "xcode_16_beta",
-            "xctest",
-        ],
-    ),
-    # TODO(crbug.com/393136335): changing to MAC_BETA to validate Mac-15 prior
-    # to upgrading the rest of the waterfall. Reset to MAC_DEFAULT once the
-    # rest of the waterfall is Mac-15.
-    os = os.MAC_BETA,
-    cpu = cpu.ARM64,
-    console_view_entry = [
-        consoles.console_view_entry(
-            category = "iOS|iOS17",
-            short_name = "ios17",
-        ),
-    ],
-)
-
-fyi_ios_builder(
-    name = "ios18-sdk-device",
+    name = "ios27-sdk-device",
     description_html = (
         "Validates that Chromium on iOS compiles for device using the latest iOS SDK." +
         "Particularly useful during WWDC season when new beta SDKs are being frequently" +
@@ -2192,7 +1721,6 @@ fyi_ios_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.IOS,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -2213,16 +1741,18 @@ fyi_ios_builder(
     cpu = cpu.ARM64,
     console_view_entry = [
         consoles.console_view_entry(
-            category = "iOS|iOS18",
+            category = "iOS|iOS27",
             short_name = "dev",
         ),
     ],
     contact_team_email = "bling-engprod@google.com",
-    xcode = xcode.x16betabots,
+    xcode = xcode.xcode_beta,
 )
 
 fyi_ios_builder(
-    name = "ios17-sdk-simulator",
+    name = "ios27-sdk-simulator",
+    schedule = "0 1,5,9,13,17,21 * * *",
+    triggered_by = [],
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(config = "ios"),
         chromium_config = builder_config.chromium_config(
@@ -2235,7 +1765,6 @@ fyi_ios_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.IOS,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -2248,7 +1777,7 @@ fyi_ios_builder(
     ),
     targets = targets.bundle(
         targets = [
-            "ios17_sdk_simulator_tests",
+            "ios27_sdk_simulator_tests",
         ],
         additional_compile_targets = [
             "all",
@@ -2256,10 +1785,11 @@ fyi_ios_builder(
         mixins = [
             "expand-as-isolated-script",
             "has_native_resultdb_integration",
-            "mac_15_arm64",
+            "ios_beta_test_pool",
+            "mac_26_arm64",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_16_beta",
+            "xcode_27_beta",
             "xctest",
         ],
     ),
@@ -2267,15 +1797,15 @@ fyi_ios_builder(
     cpu = cpu.ARM64,
     console_view_entry = [
         consoles.console_view_entry(
-            category = "iOS|iOS17",
-            short_name = "sdk17",
+            category = "iOS|iOS27",
+            short_name = "sdk27",
         ),
     ],
-    xcode = xcode.x16betabots,
+    xcode = xcode.xcode_beta,
 )
 
 fyi_ios_builder(
-    name = "ios18-beta-simulator",
+    name = "ios26-beta-simulator",
     schedule = "0 0,4,8,12,16,20 * * *",
     triggered_by = [],
     builder_spec = builder_config.builder_spec(
@@ -2292,7 +1822,6 @@ fyi_ios_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.IOS,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -2303,11 +1832,11 @@ fyi_ios_builder(
             "xctest",
         ],
     ),
-    # ios18-beta-sim compiles with xcode version n-1, but
+    # ios26-beta-sim compiles with xcode version n-1, but
     # runs testers with xcode n during an xcode roll.
     targets = targets.bundle(
         targets = [
-            "ios18_beta_simulator_tests",
+            "ios26_beta_simulator_tests",
         ],
         additional_compile_targets = [
             "all",
@@ -2315,10 +1844,11 @@ fyi_ios_builder(
         mixins = [
             "expand-as-isolated-script",
             "has_native_resultdb_integration",
-            "mac_15_arm64",
+            "ios_beta_test_pool",
+            "mac_26_arm64",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_16_beta",
+            "xcode_27_beta",
             "xctest",
         ],
     ),
@@ -2328,13 +1858,70 @@ fyi_ios_builder(
     os = os.MAC_BETA,
     cpu = cpu.ARM64,
     console_view_entry = consoles.console_view_entry(
-        category = "iOS|iOS18",
-        short_name = "ios18",
+        category = "iOS|iOS26",
+        short_name = "ios26",
     ),
 )
 
 fyi_ios_builder(
-    name = "ios18-sdk-simulator",
+    name = "ios27-beta-simulator",
+    schedule = "0 3,7,11,15,19,23 * * *",
+    triggered_by = [],
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(config = "ios"),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+                "mac_toolchain",
+            ],
+            build_config = builder_config.build_config.DEBUG,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.IOS,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "debug_static_builder",
+            "remoteexec",
+            "ios_simulator",
+            "arm64",
+            "xctest",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = [
+            "ios27_beta_simulator_tests",
+        ],
+        additional_compile_targets = [
+            "all",
+        ],
+        mixins = [
+            "expand-as-isolated-script",
+            "has_native_resultdb_integration",
+            "ios_beta_test_pool",
+            "mac_26_arm64",
+            "mac_toolchain",
+            "out_dir_arg",
+            "xcode_27_beta",
+            "xctest",
+        ],
+    ),
+    # TODO(crbug.com/393136335): changing to MAC_BETA to validate Mac-15 prior
+    # to upgrading the rest of the waterfall. Reset to MAC_DEFAULT once the
+    # rest of the waterfall is Mac-15.
+    os = os.MAC_BETA,
+    cpu = cpu.ARM64,
+    console_view_entry = [
+        consoles.console_view_entry(
+            category = "iOS|iOS27",
+            short_name = "ios27",
+        ),
+    ],
+)
+
+fyi_ios_builder(
+    name = "ios26-sdk-simulator",
     schedule = "0 2,6,10,14,18,22 * * *",
     triggered_by = [],
     builder_spec = builder_config.builder_spec(
@@ -2351,7 +1938,6 @@ fyi_ios_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.IOS,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -2362,11 +1948,11 @@ fyi_ios_builder(
             "xctest",
         ],
     ),
-    # ios18-sdk-sim compiles with xcode version n, and runs
+    # ios26-sdk-sim compiles with xcode version n, and runs
     # testers with xcode n during an xcode roll.
     targets = targets.bundle(
         targets = [
-            "ios18_sdk_simulator_tests",
+            "ios26_sdk_simulator_tests",
         ],
         additional_compile_targets = [
             "all",
@@ -2374,20 +1960,21 @@ fyi_ios_builder(
         mixins = [
             "expand-as-isolated-script",
             "has_native_resultdb_integration",
-            "mac_15_arm64",
+            "ios_beta_test_pool",
+            "mac_26_arm64",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_16_beta",
+            "xcode_27_beta",
             "xctest",
         ],
     ),
     os = os.MAC_BETA,
     cpu = cpu.ARM64,
     console_view_entry = consoles.console_view_entry(
-        category = "iOS|iOS18",
-        short_name = "sdk18",
+        category = "iOS|iOS26",
+        short_name = "sdk26",
     ),
-    xcode = xcode.x16betabots,
+    xcode = xcode.xcode_beta,
 )
 
 fyi_mac_builder(
@@ -2404,21 +1991,19 @@ fyi_mac_builder(
         chromium_config = builder_config.chromium_config(
             config = "chromium",
             apply_configs = ["mb"],
-            build_config = builder_config.build_config.DEBUG,
+            build_config = builder_config.build_config.RELEASE,
             target_arch = builder_config.target_arch.ARM,
             target_bits = 64,
             target_platform = builder_config.target_platform.MAC,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "arm64",
             "gpu_tests",
-            "debug_static_builder",
+            "release_builder",
             "remoteexec",
-            "dcheck_off",
-            "shared",
+            "minimal_symbols",
             "mac",
         ],
     ),
@@ -2431,7 +2016,7 @@ fyi_mac_builder(
             "all",
         ],
         mixins = [
-            "mac_beta_arm64",
+            "mac_27_arm64",
         ],
         per_test_modifications = {
             "browser_tests": targets.mixin(
@@ -2522,7 +2107,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -2627,7 +2211,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -2663,7 +2246,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
@@ -2702,12 +2284,12 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-fyi-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "release_builder",
             "remoteexec",
+            "minimal_symbols",
             "win",
             "x64",
         ],
@@ -2729,8 +2311,444 @@ ci.builder(
 )
 
 ci.builder(
-    name = "linux-crossbench",
-    description_html = "Run Crossbench Smoke tests on Linux.",
+    name = "win-no-safe-browsing-rel",
+    description_html = "Builds for Windows with `safe_browsing_mode = 0`.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = [
+                "win",
+            ],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.WIN,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "no_safe_browsing",
+            "release_builder",
+            "remoteexec",
+            "x86",
+            "no_symbols",
+            "win",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = [
+            "browser_tests",
+            "components_unittests",
+            "unit_tests",
+        ],
+        additional_compile_targets = [
+            "chrome",
+        ],
+        mixins = [
+            "win10",
+            "x86-64",
+        ],
+    ),
+    builderless = True,
+    os = os.WINDOWS_DEFAULT,
+    console_view_entry = consoles.console_view_entry(
+        category = "misc",
+        short_name = "nosb",
+    ),
+    contact_team_email = "chrome-counter-abuse-core@google.com",
+)
+
+consoles.console_view(
+    name = "treesinviz",
+    title = "Trees in Viz",
+    ordering = {
+        None: [
+            "win",
+            "mac",
+            "chromeos",
+            "linux",
+            "android",
+        ],
+    },
+)
+
+fyi_mac_builder(
+    name = "mac-treesinviz-disabled-rel",
+    description_html = "This builder runs a set of test suites with the TreesInViz feature disabled.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.MAC,
+        ),
+    ),
+    builder_config_settings = builder_config.ci_settings(
+        retry_failed_shards = True,
+        retry_invalid_shards = True,
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "gpu_tests",
+            "release_builder",
+            "remoteexec",
+            "mac",
+            "x64",
+            "minimal_symbols",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = ["trees_in_viz_disabled_tests"],
+        mixins = [
+            "mac_15_x64",
+        ],
+        per_test_modifications = {
+            "blink_web_tests": targets.mixin(
+                swarming = targets.swarming(
+                    dimensions = {
+                        "gpu": None,
+                    },
+                    shards = 12,
+                ),
+            ),
+            "browser_tests": targets.mixin(
+                swarming = targets.swarming(
+                    # crbug.com/1361887
+                    shards = 20,
+                ),
+            ),
+            "content_browsertests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 12,
+                ),
+            ),
+        },
+    ),
+    builderless = True,
+    cores = None,
+    console_view_entry = [
+        consoles.console_view_entry(
+            category = "treesinviz",
+            short_name = "mac",
+        ),
+        consoles.console_view_entry(
+            console_view = "treesinviz",
+            category = "treesinviz",
+            short_name = "mac",
+        ),
+    ],
+    contact_team_email = "chrome-gpu-team@google.com",
+)
+
+ci.builder(
+    name = "win-treesinviz-disabled-rel",
+    description_html = "This builder runs a set of test suites with the TreesInViz feature disabled.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.WIN,
+        ),
+    ),
+    builder_config_settings = builder_config.ci_settings(
+        retry_failed_shards = True,
+        retry_invalid_shards = True,
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "gpu_tests",
+            "release_builder",
+            "remoteexec",
+            "minimal_symbols",
+            "win",
+            "x64",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = ["trees_in_viz_disabled_tests"],
+        mixins = [
+            "x86-64",
+            "win10",
+        ],
+        per_test_modifications = {
+            "blink_web_tests": targets.mixin(
+                swarming = targets.swarming(
+                    # blink_web_tests has issues when mixing different CPUs.
+                    # see https://crbug.com/1458859
+                    # As of 2024 Q4, all e2 machines in chromium.tests use
+                    # x86-64-Broadwell_GCE. But, the situation may change when
+                    # GCE replaces the hardwares. If that happens, it needs to
+                    # be updated to run on the most popular CPU platform.
+                    dimensions = {
+                        "cpu": "x86-64-Broadwell_GCE",
+                    },
+                    shards = 12,
+                ),
+            ),
+            "browser_tests": targets.mixin(
+                swarming = targets.swarming(
+                    # This is for slow test execution that often becomes a
+                    # critical path of swarming jobs. crbug.com/868114
+                    shards = 55,
+                ),
+            ),
+            "content_browsertests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 8,
+                ),
+            ),
+        },
+    ),
+    os = os.WINDOWS_DEFAULT,
+    console_view_entry = [
+        consoles.console_view_entry(
+            category = "treesinviz",
+            short_name = "win",
+        ),
+        consoles.console_view_entry(
+            console_view = "treesinviz",
+            category = "treesinviz",
+            short_name = "win",
+        ),
+    ],
+    contact_team_email = "chrome-gpu-team@google.com",
+)
+
+ci.builder(
+    name = "linux-chromeos-treesinviz-disabled-rel",
+    description_html = "This builder runs a set of test suites with the TreesInViz feature disabled.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = ["chromeos"],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.INTEL,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.CHROMEOS,
+        ),
+    ),
+    builder_config_settings = builder_config.ci_settings(
+        retry_failed_shards = True,
+        retry_invalid_shards = True,
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "chromeos_with_codecs",
+            "release_builder",
+            "remoteexec",
+            "use_cups",
+            "x64",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = ["trees_in_viz_disabled_tests_chromeos"],
+        mixins = [
+            "x86-64",
+            "linux-jammy",
+        ],
+        per_test_modifications = {
+            "browser_tests": targets.mixin(
+                swarming = targets.swarming(
+                    dimensions = {
+                        "kvm": "1",
+                    },
+                    shards = 60,
+                ),
+            ),
+            "content_browsertests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 6,
+                ),
+            ),
+        },
+    ),
+    os = os.LINUX_DEFAULT,
+    console_view_entry = [
+        consoles.console_view_entry(
+            category = "treesinviz",
+            short_name = "lcr",
+        ),
+        consoles.console_view_entry(
+            console_view = "treesinviz",
+            category = "treesinviz",
+            short_name = "lcr",
+        ),
+    ],
+    contact_team_email = "chrome-gpu-team@google.com",
+)
+
+ci.builder(
+    name = "android-x64-treesinviz-disabled-rel",
+    description_html = "This builder runs a set of test suites with the TreesInViz feature disabled.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = ["android"],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "main_builder",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.INTEL,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.ANDROID,
+        ),
+        android_config = builder_config.android_config(
+            config = "base_config",
+        ),
+    ),
+    builder_config_settings = builder_config.ci_settings(
+        retry_failed_shards = True,
+        retry_invalid_shards = True,
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "android_builder",
+            "release_builder",
+            "remoteexec",
+            "minimal_symbols",
+            "x64",
+            "strip_debug_info",
+            "android_fastbuild",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = ["trees_in_viz_disabled_tests_android"],
+        mixins = [
+            "15-x64-emulator",
+            "emulator-8-cores",
+            "has_native_resultdb_integration",
+            "linux-jammy",
+            "x86-64",
+        ],
+        per_test_modifications = {
+            "android_browsertests": targets.mixin(
+                args = [
+                    # https://crbug.com/361042311
+                    "--gtest_filter=-All/SharedStorageChromeBrowserTest.CrossOriginWorklet_SelectURL_Success/*",
+                ],
+                swarming = targets.swarming(
+                    shards = 12,
+                ),
+            ),
+            "content_browsertests": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/android.emulator_15.content_browsertests.filter",
+                ],
+                swarming = targets.swarming(
+                    shards = 40,
+                ),
+            ),
+        },
+    ),
+    targets_settings = targets.settings(
+        os_type = targets.os_type.ANDROID,
+    ),
+    builderless = True,
+    console_view_entry = [
+        consoles.console_view_entry(
+            category = "treesinviz",
+            short_name = "and",
+        ),
+        consoles.console_view_entry(
+            console_view = "treesinviz",
+            category = "treesinviz",
+            short_name = "and",
+        ),
+    ],
+    contact_team_email = "chrome-gpu-team@google.com",
+    execution_timeout = 4 * time.hour,
+)
+
+ci.builder(
+    name = "linux-treesinviz-enabled-rel",
+    description_html = "This builder runs a set of test suites with the TreesInViz feature enabled.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.LINUX,
+        ),
+    ),
+    builder_config_settings = builder_config.ci_settings(
+        retry_failed_shards = True,
+        retry_invalid_shards = True,
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "gpu_tests",
+            "release_builder",
+            "remoteexec",
+            "devtools_do_typecheck",
+            "linux",
+            "x64",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = ["trees_in_viz_enabled_tests"],
+        mixins = [
+            "linux-jammy",
+        ],
+        per_test_modifications = {
+            "blink_web_tests": targets.mixin(
+                args = [
+                    "--additional-env-var=LLVM_PROFILE_FILE=${ISOLATED_OUTDIR}/profraw/default-%2m.profraw",
+                ],
+                swarming = targets.swarming(
+                    shards = 8,
+                ),
+            ),
+            "browser_tests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 20,
+                ),
+            ),
+            "content_browsertests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 8,
+                ),
+            ),
+        },
+    ),
+    os = os.LINUX_DEFAULT,
+    console_view_entry = [
+        consoles.console_view_entry(
+            category = "treesinviz",
+            short_name = "lnx",
+        ),
+        consoles.console_view_entry(
+            console_view = "treesinviz",
+            category = "treesinviz",
+            short_name = "lnx",
+        ),
+    ],
+    contact_team_email = "chrome-gpu-team@google.com",
+)
+
+ci.builder(
+    name = "linux-tsgo-rel",
+    description_html = "Builds Chrome (and tests) on Linux with GN flag use_typescript_go=true.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(config = "chromium"),
         chromium_config = builder_config.chromium_config(
@@ -2747,20 +2765,86 @@ ci.builder(
             "remoteexec",
             "linux",
             "x64",
+            "use_typescript_go",
         ],
     ),
     targets = targets.bundle(
-        targets = [
-            "crossbench_smoketests",
-        ],
-        mixins = [
-            "linux-jammy",
-            "x86-64",
+        additional_compile_targets = [
+            "browser_tests",
+            "chrome",
+            "interactive_ui_tests",
+            "unit_tests",
         ],
     ),
     os = os.LINUX_DEFAULT,
     console_view_entry = consoles.console_view_entry(
         category = "linux",
+        short_name = "tsgo",
     ),
-    contact_team_email = "crossbench-infra-vteam@google.com",
+    contact_team_email = "chrome-webui@google.com",
+)
+
+ci.builder(
+    name = "linux-chromeos-tsgo-rel",
+    description_html = "Builds Chrome (and tests) for ChromeOS on Linux with GN flag use_typescript_go=true.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = ["chromeos"],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.INTEL,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.CHROMEOS,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "chromeos_with_codecs",
+            "release_builder",
+            "remoteexec",
+            "use_cups",
+            "x64",
+            "use_typescript_go",
+        ],
+    ),
+    targets = targets.bundle(
+        additional_compile_targets = [
+            "browser_tests",
+            "chrome",
+            "interactive_ui_tests",
+            "unit_tests",
+        ],
+    ),
+    os = os.LINUX_DEFAULT,
+    console_view_entry = consoles.console_view_entry(
+        category = "chromeos",
+        short_name = "tsgo",
+    ),
+    contact_team_email = "chrome-webui@google.com",
+)
+
+ci.builder(
+    name = "linux-webdriver-bidi-rel",
+    description_html = "Builder for WebDriver BiDi implementation",
+    schedule = "triggered",
+    triggered_by = [],
+    builder_spec = builder_config.copy_from("ci/Linux Builder"),
+    gn_args = "ci/Linux Builder",
+    targets = targets.bundle(
+        targets = [
+            "webdriver_bidi_e2e_tests",
+            "webdriver_bidi_unittests",
+        ],
+        mixins = [
+            "linux-jammy",
+        ],
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "webdriver",
+    ),
+    contact_team_email = "chrome-devtools@google.com",
 )

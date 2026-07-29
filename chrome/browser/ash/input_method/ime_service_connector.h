@@ -19,6 +19,10 @@
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "url/gurl.h"
 
+namespace net {
+struct RedirectInfo;
+}  // namespace net
+
 namespace network {
 class SharedURLLoaderFactory;
 }  // namespace network
@@ -52,9 +56,6 @@ class ImeServiceConnector : public ime::mojom::PlatformAccessProvider,
   void BindInputMethodUserDataService(
       mojo::PendingReceiver<ime::mojom::InputMethodUserDataService> receiver);
 
-  void OnFileDownloadComplete(DownloadImeFileToCallback client_callback,
-                              base::FilePath path);
-
  private:
   void MaybeTriggerDownload(GURL url,
                             base::FilePath file_path,
@@ -62,6 +63,11 @@ class ImeServiceConnector : public ime::mojom::PlatformAccessProvider,
 
   void HandleDownloadResponse(base::FilePath file_path);
   void NotifyAllDownloadListeners(base::FilePath file_path);
+
+  void OnRedirect(const GURL& url_before_redirect,
+                  const net::RedirectInfo& redirect_info,
+                  const network::mojom::URLResponseHead& response_head,
+                  std::vector<std::string>* removed_headers);
 
   raw_ptr<Profile> profile_;
 

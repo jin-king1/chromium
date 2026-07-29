@@ -20,9 +20,7 @@
 #include "content/public/renderer/render_frame_observer_tracker.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
-#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/platform/web_content_settings_client.h"
-#include "url/gurl.h"
 #include "url/origin.h"
 
 namespace blink {
@@ -57,9 +55,6 @@ class ContentSettingsAgentImpl
     // blink::WebContentSettingsClient methods.
     virtual bool AllowReadFromClipboard();
     virtual bool AllowWriteToClipboard();
-    // If an optional value is
-    // returned, return std::nullopt to use the default logic.
-    virtual std::optional<bool> AllowMutationEvents();
   };
 
   ContentSettingsAgentImpl(content::RenderFrame* render_frame,
@@ -83,7 +78,6 @@ class ContentSettingsAgentImpl
   bool AllowStorageAccessSync(StorageType type) override;
   bool AllowReadFromClipboard() override;
   bool AllowWriteToClipboard() override;
-  bool AllowMutationEvents(bool default_value) override;
   void DidNotAllowImage() override;
   void DidNotAllowScript() override;
   bool AllowRunningInsecureContent(bool allowed_per_settings,
@@ -144,7 +138,21 @@ class ContentSettingsAgentImpl
 
   // Caches the result of AllowStorageAccess.
   using StoragePermissionsKey = std::pair<url::Origin, StorageType>;
+
+  // Initiates an asynchronous IPC (IsStorageAccessAllowed) to fetch the
+  // storage permission for `type` and stores the result in
+  // `cached_storage_permissions_` before JS actually accesses storage.
+  void EagerlyFetchStorageSettings(StorageType type);
+
+  // Callback to store the permission fetched by EagerlyFetchStorageSettings in
+  // the cache.
+  void OnEagerStorageSettingsFetched(StoragePermissionsKey key, bool result);
+
   base::flat_map<StoragePermissionsKey, bool> cached_storage_permissions_;
+
+  // Tracks which StoragePermissionsKey have already been sent to the browser
+  // for usage logging, to avoid sending redundant IPCs.
+  base::flat_set<StoragePermissionsKey> storage_accessed_;
 
   std::unique_ptr<Delegate> delegate_;
 

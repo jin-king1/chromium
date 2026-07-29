@@ -10,10 +10,12 @@ import androidx.core.util.Pair;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
 
 import java.util.ArrayList;
@@ -23,8 +25,8 @@ import java.util.List;
  * Delegate class for modal permission dialogs. Contains all of the data displayed in a prompt,
  * including the button strings, message text and the icon.
  *
- * This class is also the interface to the native-side permissions code. When the user responds to
- * the permission dialog, the decision is conveyed across the JNI so that the native code can
+ * <p>This class is also the interface to the native-side permissions code. When the user responds
+ * to the permission dialog, the decision is conveyed across the JNI so that the native code can
  * respond appropriately.
  */
 @JNINamespace("permissions")
@@ -37,7 +39,7 @@ public class PermissionDialogDelegate {
     private @Nullable PermissionDialogController mDialogController;
 
     /** The window for which to create the dialog. */
-    private WindowAndroid mWindow;
+    private final WindowAndroid mWindow;
 
     /** The icon to display in the dialog. */
     private int mDrawableId;
@@ -70,7 +72,7 @@ public class PermissionDialogDelegate {
      * Defines a (potentially empty) list of ranges represented as pairs of <startIndex, endIndex>,
      * which shall be used by the UI to format the specified ranges as bold text.
      */
-    private List<Pair<Integer, Integer>> mBoldedRanges = new ArrayList<>();
+    private final List<Pair<Integer, Integer>> mBoldedRanges = new ArrayList<>();
 
     public WindowAndroid getWindow() {
         return mWindow;
@@ -124,62 +126,79 @@ public class PermissionDialogDelegate {
         return mEmbeddedPromptVariant != EmbeddedPromptVariant.UNINITIALIZED;
     }
 
+    public @GeolocationPromptType int getGeolocationPromptType() {
+        return PermissionDialogDelegateJni.get().getGeolocationPromptType(mNativeDelegatePtr);
+    }
+
+    public boolean isTablet() {
+        return DeviceFormFactor.isWindowOnTablet(getWindow());
+    }
+
     public void onAccept() {
         assert mNativeDelegatePtr != 0;
-        PermissionDialogDelegateJni.get().accept(mNativeDelegatePtr, PermissionDialogDelegate.this);
+        PermissionDialogDelegateJni.get().accept(mNativeDelegatePtr);
     }
 
     public void onAcceptThisTime() {
         assert mNativeDelegatePtr != 0;
-        PermissionDialogDelegateJni.get()
-                .acceptThisTime(mNativeDelegatePtr, PermissionDialogDelegate.this);
+        PermissionDialogDelegateJni.get().acceptThisTime(mNativeDelegatePtr);
     }
 
     public void onDeny() {
         assert mNativeDelegatePtr != 0;
-        PermissionDialogDelegateJni.get().deny(mNativeDelegatePtr, PermissionDialogDelegate.this);
+        PermissionDialogDelegateJni.get().deny(mNativeDelegatePtr);
     }
 
     public void onDismiss(@DismissalType int dismissalType) {
         assert mNativeDelegatePtr != 0;
-        PermissionDialogDelegateJni.get()
-                .dismissed(mNativeDelegatePtr, PermissionDialogDelegate.this, dismissalType);
+        PermissionDialogDelegateJni.get().dismissed(mNativeDelegatePtr, dismissalType);
     }
 
     public void onAcknowledge() {
         assert mNativeDelegatePtr != 0;
-        PermissionDialogDelegateJni.get()
-                .acknowledge(mNativeDelegatePtr, PermissionDialogDelegate.this);
+        PermissionDialogDelegateJni.get().acknowledge(mNativeDelegatePtr);
     }
 
     public void onSystemPermissionResolved(boolean accepted) {
         assert mNativeDelegatePtr != 0;
-        PermissionDialogDelegateJni.get()
-                .systemPermissionResolved(
-                        mNativeDelegatePtr, PermissionDialogDelegate.this, accepted);
+        PermissionDialogDelegateJni.get().systemPermissionResolved(mNativeDelegatePtr, accepted);
+    }
+
+    public void onCloseButtonClicked() {
+        assert mDialogController != null;
+        mDialogController.dismissByCloseButton(this);
     }
 
     public void destroy() {
         assert mNativeDelegatePtr != 0;
-        PermissionDialogDelegateJni.get()
-                .destroy(mNativeDelegatePtr, PermissionDialogDelegate.this);
+        PermissionDialogDelegateJni.get().destroy(mNativeDelegatePtr);
         mNativeDelegatePtr = 0;
     }
 
     public void onSystemSettingsShown() {
         assert mNativeDelegatePtr != 0;
-        PermissionDialogDelegateJni.get()
-                .systemSettingsShown(mNativeDelegatePtr, PermissionDialogDelegate.this);
+        PermissionDialogDelegateJni.get().systemSettingsShown(mNativeDelegatePtr);
     }
 
     public void onResume() {
         assert mNativeDelegatePtr != 0;
-        PermissionDialogDelegateJni.get()
-                .resumed(mNativeDelegatePtr, PermissionDialogDelegate.this);
+        PermissionDialogDelegateJni.get().resumed(mNativeDelegatePtr);
     }
 
     public void setDialogController(PermissionDialogController controller) {
         mDialogController = controller;
+    }
+
+    public @LocationAccuracy int getInitialGeolocationAccuracySelection() {
+        assert mNativeDelegatePtr != 0;
+        return PermissionDialogDelegateJni.get()
+                .getInitialGeolocationAccuracySelection(mNativeDelegatePtr);
+    }
+
+    public void onGeolocationAccuracySelected(@LocationAccuracy int locationAccuracy) {
+        assert mNativeDelegatePtr != 0;
+        PermissionDialogDelegateJni.get()
+                .onGeolocationAccuracySelected(mNativeDelegatePtr, locationAccuracy);
     }
 
     /** Return the size of the RequestType enum used for permission requests. */
@@ -232,11 +251,11 @@ public class PermissionDialogDelegate {
             WindowAndroid window,
             int[] contentSettingsTypes,
             int iconId,
-            String message,
+            @JniType("std::u16string") String message,
             int[] boldedRanges,
-            String positiveButtonText,
-            String negativeButtonText,
-            String positiveEphemeralButtonText,
+            @JniType("std::u16string") String positiveButtonText,
+            @JniType("std::u16string") String negativeButtonText,
+            @JniType("std::u16string") String positiveEphemeralButtonText,
             boolean showPositiveNonEphemeralAsFirstButton,
             @EmbeddedPromptVariant int variant) {
         assert (boldedRanges.length % 2 == 0); // Contains a list of offset and length values
@@ -260,11 +279,11 @@ public class PermissionDialogDelegate {
             WindowAndroid window,
             int[] contentSettingsTypes,
             int iconId,
-            String message,
+            @JniType("std::u16string") String message,
             int[] boldedRanges,
-            String positiveButtonText,
-            String negativeButtonText,
-            String positiveEphemeralButtonText,
+            @JniType("std::u16string") String positiveButtonText,
+            @JniType("std::u16string") String negativeButtonText,
+            @JniType("std::u16string") String positiveEphemeralButtonText,
             boolean showPositiveNonEphemeralAsFirstButton,
             @EmbeddedPromptVariant int variant) {
         mNativeDelegatePtr = nativeDelegatePtr;
@@ -273,7 +292,7 @@ public class PermissionDialogDelegate {
         mDrawableId = iconId;
         mMessageText = message;
         for (int i = 0; i + 1 < boldedRanges.length; i += 2) {
-            mBoldedRanges.add(new Pair(boldedRanges[i], boldedRanges[i + 1]));
+            mBoldedRanges.add(new Pair<>(boldedRanges[i], boldedRanges[i + 1]));
         }
         mPositiveButtonText = positiveButtonText;
         mNegativeButtonText = negativeButtonText;
@@ -287,11 +306,11 @@ public class PermissionDialogDelegate {
     void updateDialog(
             int[] contentSettingsTypes,
             int iconId,
-            String message,
+            @JniType("std::u16string") String message,
             int[] boldedRanges,
-            String positiveButtonText,
-            String negativeButtonText,
-            String positiveEphemeralButtonText,
+            @JniType("std::u16string") String positiveButtonText,
+            @JniType("std::u16string") String negativeButtonText,
+            @JniType("std::u16string") String positiveEphemeralButtonText,
             boolean showPositiveNonEphemeralAsFirstButton,
             @EmbeddedPromptVariant int variant) {
         mContentSettingsTypes = contentSettingsTypes;
@@ -299,7 +318,7 @@ public class PermissionDialogDelegate {
         mDrawableId = iconId;
         mBoldedRanges.clear();
         for (int i = 0; i + 1 < boldedRanges.length; i += 2) {
-            mBoldedRanges.add(new Pair(boldedRanges[i], boldedRanges[i + 1]));
+            mBoldedRanges.add(new Pair<>(boldedRanges[i], boldedRanges[i + 1]));
         }
         mPositiveButtonText = positiveButtonText;
         mNegativeButtonText = negativeButtonText;
@@ -313,31 +332,32 @@ public class PermissionDialogDelegate {
 
     @NativeMethods
     interface Natives {
-        void accept(long nativePermissionDialogDelegate, PermissionDialogDelegate caller);
+        void accept(long nativePermissionDialogDelegate);
 
-        void acceptThisTime(long nativePermissionDialogDelegate, PermissionDialogDelegate caller);
+        void acceptThisTime(long nativePermissionDialogDelegate);
 
-        void acknowledge(long nativePermissionDialogDelegate, PermissionDialogDelegate caller);
+        void acknowledge(long nativePermissionDialogDelegate);
 
-        void deny(long nativePermissionDialogDelegate, PermissionDialogDelegate caller);
+        void deny(long nativePermissionDialogDelegate);
 
-        void dismissed(
-                long nativePermissionDialogDelegate,
-                PermissionDialogDelegate caller,
-                @DismissalType int dismissalType);
+        void dismissed(long nativePermissionDialogDelegate, @DismissalType int dismissalType);
 
-        void resumed(long nativePermissionDialogDelegate, PermissionDialogDelegate caller);
+        void resumed(long nativePermissionDialogDelegate);
 
-        void destroy(long nativePermissionDialogDelegate, PermissionDialogDelegate caller);
+        void destroy(long nativePermissionDialogDelegate);
 
-        void systemPermissionResolved(
-                long nativePermissionDialogDelegate,
-                PermissionDialogDelegate caller,
-                boolean accept);
+        void systemPermissionResolved(long nativePermissionDialogDelegate, boolean accept);
 
-        void systemSettingsShown(
-                long nativePermissionDialogDelegate, PermissionDialogDelegate caller);
+        void systemSettingsShown(long nativePermissionDialogDelegate);
 
         int getRequestTypeEnumSize();
+
+        void onGeolocationAccuracySelected(
+                long nativePermissionDialogDelegate, @LocationAccuracy int locationAccuracy);
+
+        @LocationAccuracy
+        int getInitialGeolocationAccuracySelection(long nativePermissionDialogDelegate);
+
+        int getGeolocationPromptType(long nativePermissionDialogDelegate);
     }
 }

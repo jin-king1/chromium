@@ -4,8 +4,12 @@
 
 #import <memory>
 #import <string>
+#import <variant>
 
 #import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
+#import "base/strings/strcat.h"
+#import "base/strings/string_number_conversions.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/autofill/core/browser/payments/autofill_save_card_delegate.h"
@@ -16,12 +20,12 @@
 #import "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
-#import "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace autofill {
 
 namespace {
 
+using SaveCardPromptOffer = autofill::autofill_metrics::SaveCardPromptOffer;
 using SaveCreditCardPromptResultIOS =
     autofill_metrics::SaveCreditCardPromptResultIOS;
 using SaveCreditCardPromptOverlayType =
@@ -30,7 +34,9 @@ using SaveCreditCardOptions =
     payments::PaymentsAutofillClient::SaveCreditCardOptions;
 
 constexpr int kNavEntryId = 10;
-const std::string kSaveCreditCardPromptResultIOSPrefix =
+constexpr std::string_view kSaveCreditCardPromptOfferBaseHistogram =
+    "Autofill.SaveCreditCardPromptOffer.IOS";
+constexpr std::string_view kSaveCreditCardPromptResultIOSPrefix =
     "Autofill.SaveCreditCardPromptResult.IOS";
 }  // namespace
 
@@ -69,9 +75,10 @@ class AutofillSaveCardInfoBarDelegateTest : public PlatformTest {
   }
 
   std::unique_ptr<AutofillSaveCardInfoBarDelegateIOS> CreateDelegate(
-      absl::variant<
+      std::variant<
           payments::PaymentsAutofillClient::LocalSaveCardPromptCallback,
-          payments::PaymentsAutofillClient::UploadSaveCardPromptCallback>
+          payments::PaymentsAutofillClient::UploadSaveCardPromptCallback,
+          payments::PaymentsAutofillClient::CardSaveAndFillDialogCallback>
           save_card_callback,
       SaveCreditCardOptions options = {}) {
     auto save_card_delegate = std::make_unique<AutofillSaveCardDelegate>(
@@ -110,7 +117,8 @@ TEST_F(AutofillSaveCardInfoBarDelegateTest, UpdateAndAccept_Local) {
   EXPECT_TRUE(delegate->UpdateAndAccept(
       /*cardholder_name=*/u"Test User",
       /*expiration_date_month=*/u"04",
-      /*expiration_date_year=*/u"24"));
+      /*expiration_date_year=*/u"24",
+      /*cvc=*/u""));
 
   ASSERT_TRUE(last_user_decision_);
   EXPECT_EQ(
@@ -130,11 +138,13 @@ TEST_F(AutofillSaveCardInfoBarDelegateTest, UpdateAndAccept_Upload) {
   const std::u16string cardholder_name = u"Test User";
   const std::u16string expiration_date_month = u"04";
   const std::u16string expiration_date_year = u"24";
+  const std::u16string card_cvc = u"123";
 
   EXPECT_TRUE(delegate->UpdateAndAccept(
       /*cardholder_name=*/cardholder_name,
       /*expiration_date_month=*/expiration_date_month,
-      /*expiration_date_year=*/expiration_date_year));
+      /*expiration_date_year=*/expiration_date_year,
+      /*cvc=*/card_cvc));
 
   ASSERT_TRUE(last_user_decision_ && last_user_provided_card_details_);
   EXPECT_EQ(
@@ -144,7 +154,8 @@ TEST_F(AutofillSaveCardInfoBarDelegateTest, UpdateAndAccept_Upload) {
       *last_user_provided_card_details_,
       ::testing::FieldsAre(/*cardholder_name=*/cardholder_name,
                            /*expiration_date_month=*/expiration_date_month,
-                           /*expiration_date_year=*/expiration_date_year));
+                           /*expiration_date_year=*/expiration_date_year,
+                           /*cvc=*/card_cvc));
 }
 
 // Tests that CreditCardUploadCompleted() runs
@@ -339,6 +350,53 @@ TEST_F(AutofillSaveCardInfoBarDelegateTest,
   EXPECT_FALSE(delegate_->ShouldExpire(nav_details_that_expire_));
 }
 
+TEST_F(AutofillSaveCardInfoBarDelegateTest, LogPromptOfferMetric_ForLocalSave) {
+  payments::PaymentsAutofillClient::LocalSaveCardPromptCallback
+      save_card_callback = base::BindOnce(
+          &AutofillSaveCardInfoBarDelegateTest::LocalSaveCardPromptCallbackFn,
+          base::Unretained(this));
+  std::unique_ptr<AutofillSaveCardInfoBarDelegateIOS> delegate =
+      CreateDelegate(std::move(save_card_callback),
+                     SaveCreditCardOptions().with_num_strikes(0));
+
+  base::HistogramTester histogram_tester;
+  delegate->LogPromptOfferMetric(SaveCardPromptOffer::kShown,
+                                 SaveCreditCardPromptOverlayType::kBanner);
+
+  histogram_tester.ExpectBucketCount(
+      base::StrCat({kSaveCreditCardPromptOfferBaseHistogram,
+                    ".Local.Banner.SavingWithoutCvc"}),
+      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectBucketCount(
+      base::StrCat({kSaveCreditCardPromptOfferBaseHistogram,
+                    ".Local.Banner.NumStrikes.0.NoFixFlow.SavingWithoutCvc"}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_F(AutofillSaveCardInfoBarDelegateTest,
+       LogPromptOfferMetric_ForServerSave) {
+  payments::PaymentsAutofillClient::UploadSaveCardPromptCallback
+      save_card_callback = base::BindOnce(
+          &AutofillSaveCardInfoBarDelegateTest::UploadSaveCardPromptCallbackFn,
+          base::Unretained(this));
+  std::unique_ptr<AutofillSaveCardInfoBarDelegateIOS> delegate =
+      CreateDelegate(std::move(save_card_callback),
+                     SaveCreditCardOptions().with_num_strikes(0));
+
+  base::HistogramTester histogram_tester;
+  delegate->LogPromptOfferMetric(SaveCardPromptOffer::kShown,
+                                 SaveCreditCardPromptOverlayType::kBanner);
+
+  histogram_tester.ExpectBucketCount(
+      base::StrCat({kSaveCreditCardPromptOfferBaseHistogram,
+                    ".Server.Banner.SavingWithoutCvc"}),
+      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectBucketCount(
+      base::StrCat({kSaveCreditCardPromptOfferBaseHistogram,
+                    ".Server.Banner.NumStrikes.0.NoFixFlow.SavingWithoutCvc"}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
 TEST_F(AutofillSaveCardInfoBarDelegateTest,
        LogSaveCreditCardInfoBarResultMetric_WithLocalSave) {
   payments::PaymentsAutofillClient::LocalSaveCardPromptCallback
@@ -356,7 +414,7 @@ TEST_F(AutofillSaveCardInfoBarDelegateTest,
 
   histogram_tester.ExpectUniqueSample(
       base::StrCat({kSaveCreditCardPromptResultIOSPrefix,
-                    ".Local.Banner.NumStrikes.0.NoFixFlow"}),
+                    ".Local.Banner.NumStrikes.0.NoFixFlow.SavingWithoutCvc"}),
       SaveCreditCardPromptResultIOS::kShown, 1);
 }
 
@@ -377,7 +435,7 @@ TEST_F(AutofillSaveCardInfoBarDelegateTest,
 
   histogram_tester.ExpectUniqueSample(
       base::StrCat({kSaveCreditCardPromptResultIOSPrefix,
-                    ".Server.Banner.NumStrikes.0.NoFixFlow"}),
+                    ".Server.Banner.NumStrikes.0.NoFixFlow.SavingWithoutCvc"}),
       SaveCreditCardPromptResultIOS::kShown, 1);
 }
 
@@ -417,7 +475,7 @@ TEST_P(AutofillSaveCardInfoBarDelegateMetricsTest,
       base::StrCat(
           {kSaveCreditCardPromptResultIOSPrefix, ".Server",
            SaveCreditCardPromptOverlayTypeToMetricSuffix(OverlayType()),
-           ".NumStrikes.0.NoFixFlow"}),
+           ".NumStrikes.0.NoFixFlow.SavingWithoutCvc"}),
       Metric(), 1);
 }
 
@@ -467,6 +525,37 @@ class AutofillSaveCardInfoBarDelegateMetricsTestWithFixFlow
 };
 
 TEST_P(AutofillSaveCardInfoBarDelegateMetricsTestWithFixFlow,
+       LogPromptOfferMetric) {
+  payments::PaymentsAutofillClient::UploadSaveCardPromptCallback
+      save_card_callback = base::BindOnce(
+          &AutofillSaveCardInfoBarDelegateTest::UploadSaveCardPromptCallbackFn,
+          base::Unretained(this));
+  std::unique_ptr<AutofillSaveCardInfoBarDelegateIOS> delegate = CreateDelegate(
+      std::move(save_card_callback),
+      SaveCreditCardOptions()
+          .with_num_strikes(0)
+          .with_should_request_name_from_user(RequestingCardHolderName())
+          .with_should_request_expiration_date_from_user(
+              RequestingExpiryDate()));
+
+  base::HistogramTester histogram_tester;
+  delegate->LogPromptOfferMetric(SaveCardPromptOffer::kShown,
+                                 SaveCreditCardPromptOverlayType::kModal);
+
+  histogram_tester.ExpectBucketCount(
+      base::StrCat({kSaveCreditCardPromptOfferBaseHistogram,
+                    ".Server.Modal.SavingWithoutCvc"}),
+      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectBucketCount(
+      base::StrCat({kSaveCreditCardPromptOfferBaseHistogram,
+                    ".Server.Modal.NumStrikes.0",
+                    SaveCreditCardPromptFixFlowSuffix(
+                        RequestingCardHolderName(), RequestingExpiryDate()),
+                    ".SavingWithoutCvc"}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_P(AutofillSaveCardInfoBarDelegateMetricsTestWithFixFlow,
        LogSaveCreditCardInfoBarResultMetric) {
   payments::PaymentsAutofillClient::UploadSaveCardPromptCallback
       save_card_callback = base::BindOnce(
@@ -489,7 +578,8 @@ TEST_P(AutofillSaveCardInfoBarDelegateMetricsTestWithFixFlow,
       base::StrCat({kSaveCreditCardPromptResultIOSPrefix,
                     ".Server.Modal.NumStrikes.0",
                     SaveCreditCardPromptFixFlowSuffix(
-                        RequestingCardHolderName(), RequestingExpiryDate())}),
+                        RequestingCardHolderName(), RequestingExpiryDate()),
+                    ".SavingWithoutCvc"}),
       SaveCreditCardPromptResultIOS::kShown, 1);
 }
 
@@ -502,6 +592,35 @@ INSTANTIATE_TEST_SUITE_P(
 class AutofillSaveCardInfoBarDelegateMetricsTestWithNumStrikes
     : public AutofillSaveCardInfoBarDelegateTest,
       public testing::WithParamInterface</*strike_count*/ int> {};
+
+TEST_P(AutofillSaveCardInfoBarDelegateMetricsTestWithNumStrikes,
+       LogPromptOfferMetric) {
+  payments::PaymentsAutofillClient::UploadSaveCardPromptCallback
+      save_card_callback = base::BindOnce(
+          &AutofillSaveCardInfoBarDelegateTest::UploadSaveCardPromptCallbackFn,
+          base::Unretained(this));
+  std::unique_ptr<AutofillSaveCardInfoBarDelegateIOS> delegate =
+      CreateDelegate(std::move(save_card_callback),
+                     SaveCreditCardOptions().with_num_strikes(GetParam()));
+
+  base::HistogramTester histogram_tester;
+  delegate->LogPromptOfferMetric(SaveCardPromptOffer::kShown,
+                                 SaveCreditCardPromptOverlayType::kModal);
+
+  histogram_tester.ExpectBucketCount(
+      base::StrCat({kSaveCreditCardPromptOfferBaseHistogram,
+                    ".Server.Modal.SavingWithoutCvc"}),
+      SaveCardPromptOffer::kShown, 1);
+
+  // Strike counts that are out of the range [0, 2] should be ignored.
+  int expected_samples = GetParam() > 2 ? 0 : 1;
+
+  histogram_tester.ExpectBucketCount(
+      base::StrCat(
+          {kSaveCreditCardPromptOfferBaseHistogram, ".Server.Modal.NumStrikes.",
+           base::NumberToString(GetParam()), ".NoFixFlow.SavingWithoutCvc"}),
+      SaveCardPromptOffer::kShown, expected_samples);
+}
 
 TEST_P(AutofillSaveCardInfoBarDelegateMetricsTestWithNumStrikes,
        LogSaveCreditCardInfoBarResultMetric) {
@@ -523,9 +642,9 @@ TEST_P(AutofillSaveCardInfoBarDelegateMetricsTestWithNumStrikes,
   int expected_samples = GetParam() > 2 ? 0 : 1;
 
   histogram_tester.ExpectUniqueSample(
-      base::StrCat({kSaveCreditCardPromptResultIOSPrefix,
-                    ".Server.Modal.NumStrikes.",
-                    base::NumberToString(GetParam()), ".NoFixFlow"}),
+      base::StrCat(
+          {kSaveCreditCardPromptResultIOSPrefix, ".Server.Modal.NumStrikes.",
+           base::NumberToString(GetParam()), ".NoFixFlow.SavingWithoutCvc"}),
       SaveCreditCardPromptResultIOS::kShown, expected_samples);
 }
 
@@ -533,5 +652,84 @@ INSTANTIATE_TEST_SUITE_P(
     AutofillSaveCardInfoBarDelegateTest,
     AutofillSaveCardInfoBarDelegateMetricsTestWithNumStrikes,
     /*strike_count*/ testing::Values(0, 1, 2, 3));
+
+class AutofillSaveCardInfoBarDelegateMetricsTestWithCardSaveType
+    : public AutofillSaveCardInfoBarDelegateTest,
+      public testing::WithParamInterface<
+          payments::PaymentsAutofillClient::CardSaveType> {
+ protected:
+  std::string_view CardSaveTypeToMetricSuffix(
+      payments::PaymentsAutofillClient::CardSaveType save_type) {
+    switch (save_type) {
+      case payments::PaymentsAutofillClient::CardSaveType::kCardSaveWithCvc:
+      case payments::PaymentsAutofillClient::CardSaveType::kCvcSaveOnly:
+        return ".SavingWithCvc";
+      case payments::PaymentsAutofillClient::CardSaveType::kCardSaveOnly:
+        return ".SavingWithoutCvc";
+    }
+  }
+};
+
+TEST_P(AutofillSaveCardInfoBarDelegateMetricsTestWithCardSaveType,
+       LogPromptOfferMetric) {
+  base::HistogramTester histogram_tester;
+  payments::PaymentsAutofillClient::UploadSaveCardPromptCallback
+      save_card_callback = base::DoNothing();
+
+  payments::PaymentsAutofillClient::CardSaveType save_type = GetParam();
+
+  std::unique_ptr<AutofillSaveCardInfoBarDelegateIOS> delegate = CreateDelegate(
+      std::move(save_card_callback),
+      SaveCreditCardOptions().with_num_strikes(0).with_card_save_type(
+          save_type));
+
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({kSaveCreditCardPromptOfferBaseHistogram, ".Server.Banner",
+                    CardSaveTypeToMetricSuffix(save_type)}),
+      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({kSaveCreditCardPromptOfferBaseHistogram,
+                    ".Server.Banner.NumStrikes.0.NoFixFlow",
+                    CardSaveTypeToMetricSuffix(save_type)}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_P(AutofillSaveCardInfoBarDelegateMetricsTestWithCardSaveType,
+       LogSaveCreditCardInfoBarResultMetric) {
+  payments::PaymentsAutofillClient::UploadSaveCardPromptCallback
+      save_card_callback = base::BindOnce(
+          &AutofillSaveCardInfoBarDelegateTest::UploadSaveCardPromptCallbackFn,
+          base::Unretained(this));
+
+  payments::PaymentsAutofillClient::CardSaveType save_type = GetParam();
+
+  std::unique_ptr<AutofillSaveCardInfoBarDelegateIOS> delegate = CreateDelegate(
+      std::move(save_card_callback),
+      SaveCreditCardOptions().with_num_strikes(0).with_card_save_type(
+          save_type));
+
+  base::HistogramTester histogram_tester;
+  delegate->LogSaveCreditCardInfoBarResultMetric(
+      SaveCreditCardPromptResultIOS::kShown,
+      SaveCreditCardPromptOverlayType::kBanner);
+
+  std::string suffix =
+      save_type ==
+              payments::PaymentsAutofillClient::CardSaveType::kCardSaveWithCvc
+          ? ".SavingWithCvc"
+          : ".SavingWithoutCvc";
+
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({kSaveCreditCardPromptResultIOSPrefix,
+                    ".Server.Banner.NumStrikes.0.NoFixFlow", suffix}),
+      SaveCreditCardPromptResultIOS::kShown, 1);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AutofillSaveCardInfoBarDelegateTest,
+    AutofillSaveCardInfoBarDelegateMetricsTestWithCardSaveType,
+    testing::Values(
+        payments::PaymentsAutofillClient::CardSaveType::kCardSaveOnly,
+        payments::PaymentsAutofillClient::CardSaveType::kCardSaveWithCvc));
 
 }  // namespace autofill

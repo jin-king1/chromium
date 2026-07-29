@@ -7,8 +7,8 @@
 #include <optional>
 #include <string>
 
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
+#include "base/i18n/rtl.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/url_identity.h"
 #include "content/public/browser/file_system_access_permission_context.h"
@@ -21,6 +21,15 @@
 #endif
 
 namespace {
+
+// The denominator for calculating the available pixel width for different file
+// name. For example, if the file name contains space, the file name should be
+// elided to 2/6 of the modal width.
+// Previously this was introduced as 4 in http://crrev.com/c/3955966, but it
+// needs to be larger to make the string takes less space, so the extension is
+// displayed without clipping.
+// See http://crbug.com/421950224.
+constexpr int kAvailablePixelWidthDenominator = 6;
 
 base::FilePath GetPathForDisplayAsPath(const content::PathInfo& path_info) {
   // Use display_name for android content-URIs.
@@ -53,6 +62,18 @@ constexpr UrlIdentity::FormatOptions kUrlIdentityOptions{
 
 namespace file_system_access_ui_helper {
 
+std::u16string ElidePath(const base::FilePath& path,
+                         const gfx::FontList& font_list,
+                         float available_pixel_width) {
+  if (path.Extension().empty()) {
+    std::u16string name = path.LossyDisplayName();
+    std::u16string elided = gfx::ElideText(
+        name, font_list, available_pixel_width, gfx::ELIDE_MIDDLE);
+    return base::i18n::GetDisplayStringInLTRDirectionality(elided);
+  }
+  return gfx::ElideFilename(path, font_list, available_pixel_width);
+}
+
 std::u16string GetElidedPathForDisplayAsTitle(
     const content::PathInfo& path_info) {
   // TODO(crbug.com/40254943): Consider moving filename elision logic into a
@@ -64,11 +85,10 @@ std::u16string GetElidedPathForDisplayAsTitle(
   // containing a space will bump to the next line if the file name + preceding
   // text in the title is too long, which is still easy to read because the file
   // name is contiguous.
-  int scalar_quarters =
-      base::Contains(GetPathForDisplayAsPath(path_info).value(),
-                     FILE_PATH_LITERAL(" "))
-          ? 2
-          : 3;
+  int scalar_numerators = GetPathForDisplayAsPath(path_info).value().contains(
+                              FILE_PATH_LITERAL(" "))
+                              ? 2
+                              : 3;
   std::optional<int> preferred_width;
 #if defined(TOOLKIT_VIEWS)
   // views::LayoutProvider::Get() may be null in tests.
@@ -77,10 +97,11 @@ std::u16string GetElidedPathForDisplayAsTitle(
         views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH);
   }
 #endif
-  const int available_pixel_width =
-      preferred_width.value_or(400) * scalar_quarters / 4;
-  return gfx::ElideFilename(GetPathForDisplayAsPath(path_info), gfx::FontList(),
-                            available_pixel_width);
+  const int available_pixel_width = preferred_width.value_or(400) *
+                                    scalar_numerators /
+                                    kAvailablePixelWidthDenominator;
+  return ElidePath(GetPathForDisplayAsPath(path_info), gfx::FontList(),
+                   available_pixel_width);
 }
 
 std::u16string GetPathForDisplayAsParagraph(

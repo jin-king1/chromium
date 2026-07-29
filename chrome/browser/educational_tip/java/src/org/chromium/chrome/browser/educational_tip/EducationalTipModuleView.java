@@ -5,20 +5,23 @@
 package org.chromium.chrome.browser.educational_tip;
 
 import android.content.Context;
+import android.graphics.Paint;
 import android.util.AttributeSet;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.TraceEvent;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.setup_list.SetupListModuleUtils;
 import org.chromium.ui.widget.ButtonCompat;
 
 /** View for the educational tip module. */
+@NullMarked
 public class EducationalTipModuleView extends LinearLayout {
     private static final String TAG = "EducationalTipModuleView";
     private TextView mContentTitleView;
@@ -26,9 +29,9 @@ public class EducationalTipModuleView extends LinearLayout {
     private ImageView mContentImageView;
     private ButtonCompat mModuleButtonView;
     private boolean mIsTitleSingleLine;
-    private OnLayoutChangeListener mOnLayoutChangeListener;
+    private @Nullable OnLayoutChangeListener mOnLayoutChangeListener;
 
-    public EducationalTipModuleView(@NonNull Context context, @Nullable AttributeSet attrs) {
+    public EducationalTipModuleView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
     }
 
@@ -84,19 +87,34 @@ public class EducationalTipModuleView extends LinearLayout {
         mContentTitleView.removeOnLayoutChangeListener(mOnLayoutChangeListener);
     }
 
-    void setContentTitle(@NonNull String title) {
+    void setContentTitle(String title) {
         mContentTitleView.setText(title);
     }
 
-    void setContentDescription(@NonNull String description) {
+    void setContentDescription(String description) {
         mContentDescriptionView.setText(description);
     }
 
+    void setButtonText(String buttonText) {
+        mModuleButtonView.setText(buttonText);
+    }
+
     void setContentImageResource(int imageResource) {
+        mContentImageView.setAlpha(1f);
         mContentImageView.setImageResource(imageResource);
     }
 
-    void setModuleButtonOnClickListener(@NonNull View.OnClickListener onClickListener) {
+    void setContentImageResourceWithAnimation(int imageResource) {
+        SetupListModuleUtils.updateIconWithAnimation(mContentImageView, imageResource);
+    }
+
+    void setUseTransparentIconBackground(boolean useTransparentIconBackground) {
+        if (useTransparentIconBackground) {
+            mContentImageView.setBackground(null);
+        }
+    }
+
+    void setModuleButtonOnClickListener(View.OnClickListener onClickListener) {
         mModuleButtonView.setOnClickListener(onClickListener);
     }
 
@@ -110,5 +128,29 @@ public class EducationalTipModuleView extends LinearLayout {
 
     boolean getIsTitleSingleLineForTesting() {
         return mIsTitleSingleLine;
+    }
+
+    void setCompleted(boolean isCompleted) {
+        if (!isCompleted) {
+            return;
+        }
+
+        int disabledColor = getContext().getColor(R.color.default_text_color_disabled_list);
+
+        // Title
+        mContentTitleView.setTextColor(disabledColor);
+        mContentTitleView.setPaintFlags(
+                mContentTitleView.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
+
+        // Description
+        mContentDescriptionView.setTextColor(disabledColor);
+        mContentDescriptionView.setPaintFlags(
+                mContentDescriptionView.getPaintFlags() | Paint.STRIKE_THRU_TEXT_FLAG);
+
+        // Button
+        mModuleButtonView.setEnabled(false);
+        mModuleButtonView.setTextColor(disabledColor);
+
+        SetupListModuleUtils.setCompletedAccessibilityStateDescription(this);
     }
 }

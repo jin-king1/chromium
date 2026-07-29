@@ -9,12 +9,12 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 #include "base/check.h"
 #include "base/strings/strcat.h"
 #include "base/strings/to_string.h"
 #include "base/types/expected_internal.h"  // IWYU pragma: export
-#include "third_party/abseil-cpp/absl/utility/utility.h"
 
 // Class template `expected<T, E>` is a vocabulary type which contains an
 // expected value of type `T`, or an error `E`. The class skews towards behaving
@@ -102,8 +102,10 @@ namespace base {
 //   success values when the implicit conversion above is disallowed.
 // * Calling operator* or operator-> on an unexpected value results in program
 //   termination, and not UB.
-// * There is no operator bool due to bug-prone usage when the value type is
-//   convertible to bool, see e.g. https://abseil.io/tips/141.
+// * There is a conditional explicit operator bool that is only enabled when
+//   the value type is not constructible from bool, to avoid bug-prone usage
+//   when the value type is convertible to bool, see e.g.
+//   https://abseil.io/tips/141.
 // * Moving out of an expected object will put it into a moved-from state.
 //   Trying to use it before re-initializing it will result in program
 //   termination.
@@ -146,9 +148,9 @@ class ok final {
       : value_(std::forward<Args>(args)...) {}
 
   template <typename U, typename... Args>
-  constexpr explicit ok(std::in_place_t,
-                        std::initializer_list<U> il,
-                        Args&&... args) noexcept
+  constexpr ok(std::in_place_t,
+               std::initializer_list<U> il,
+               Args&&... args) noexcept
       : value_(il, std::forward<Args>(args)...) {}
 
   constexpr T& value() & noexcept { return value_; }
@@ -175,7 +177,7 @@ template <typename T>
   requires(std::is_void_v<T>)
 class ok<T> final {
  public:
-  constexpr explicit ok() noexcept = default;
+  constexpr ok() noexcept = default;
 
   std::string ToString() const { return "ok()"; }
 };
@@ -189,11 +191,6 @@ constexpr bool operator==(const ok<T>& lhs, const ok<U>& rhs) noexcept {
   } else {
     return lhs.value() == rhs.value();
   }
-}
-
-template <typename T, typename U>
-constexpr bool operator!=(const ok<T>& lhs, const ok<U>& rhs) noexcept {
-  return !(lhs == rhs);
 }
 
 template <typename T>
@@ -217,9 +214,9 @@ class unexpected final {
       : error_(std::forward<Args>(args)...) {}
 
   template <typename U, typename... Args>
-  constexpr explicit unexpected(std::in_place_t,
-                                std::initializer_list<U> il,
-                                Args&&... args) noexcept
+  constexpr unexpected(std::in_place_t,
+                       std::initializer_list<U> il,
+                       Args&&... args) noexcept
       : error_(il, std::forward<Args>(args)...) {}
 
   // [expected.un.obs] Observers
@@ -270,7 +267,7 @@ unexpected(E) -> unexpected<E>;
 // [expected.expected], class template expected
 // https://eel.is/c++draft/expected#expected
 template <typename T, typename E>
-class [[nodiscard]] expected final {
+class [[nodiscard, gsl::Owner]] expected final {
   // Note: A partial specialization for void value types follows below.
   static_assert(!std::is_void_v<T>, "Error: T must not be void");
 
@@ -311,7 +308,7 @@ class [[nodiscard]] expected final {
   // Deviation from the Standard, which allows implicit conversions as long as U
   // is implicitly convertible to T: Chromium additionally requires that U is
   // not implicitly convertible to E.
-  template <typename U = T>
+  template <typename U = std::remove_cv_t<T>>
     requires(internal::IsValidValueConstruction<T, E, U>)
   explicit(!std::convertible_to<U, T> || std::convertible_to<U, E>)
       // NOLINTNEXTLINE(google-explicit-constructor)
@@ -351,9 +348,9 @@ class [[nodiscard]] expected final {
       : impl_(kValTag, std::forward<Args>(args)...) {}
 
   template <typename U, typename... Args>
-  constexpr explicit expected(std::in_place_t,
-                              std::initializer_list<U> il,
-                              Args&&... args) noexcept
+  constexpr expected(std::in_place_t,
+                     std::initializer_list<U> il,
+                     Args&&... args) noexcept
       : impl_(kValTag, il, std::forward<Args>(args)...) {}
 
   template <typename... Args>
@@ -361,13 +358,13 @@ class [[nodiscard]] expected final {
       : impl_(kErrTag, std::forward<Args>(args)...) {}
 
   template <typename U, typename... Args>
-  constexpr explicit expected(unexpect_t,
-                              std::initializer_list<U> il,
-                              Args&&... args) noexcept
+  constexpr expected(unexpect_t,
+                     std::initializer_list<U> il,
+                     Args&&... args) noexcept
       : impl_(kErrTag, il, std::forward<Args>(args)...) {}
 
   // [expected.object.assign], assignment
-  template <typename U = T>
+  template <typename U = std::remove_cv_t<T>>
     requires(internal::IsValueAssignment<T, E, U>)
   constexpr expected& operator=(U&& v) noexcept {
     emplace(std::forward<U>(v));
@@ -425,10 +422,17 @@ class [[nodiscard]] expected final {
     return std::move(value());
   }
 
-  // Note: Deviation from the Standard: No operator bool due to bug-prone
-  // patterns when the value type is convertible to bool, see e.g.
-  // https://abseil.io/tips/141.
   constexpr bool has_value() const noexcept { return impl_.has_value(); }
+
+  // Note: Deviation from the Standard: operator bool is conditionally enabled,
+  // only when the value type is not constructible from bool, to avoid
+  // bug-prone patterns when the value type is convertible to bool, see e.g.
+  // https://abseil.io/tips/141.
+  constexpr explicit operator bool() const
+    requires(!std::constructible_from<bool, T>)
+  {
+    return has_value();
+  }
 
   constexpr T& value() & noexcept { return impl_.value(); }
   constexpr const T& value() const& noexcept { return impl_.value(); }
@@ -440,7 +444,7 @@ class [[nodiscard]] expected final {
   constexpr E&& error() && noexcept { return std::move(error()); }
   constexpr const E&& error() const&& noexcept { return std::move(error()); }
 
-  template <typename U>
+  template <typename U = std::remove_cv_t<T>>
   constexpr T value_or(U&& v) const& noexcept {
     static_assert(std::copy_constructible<T>,
                   "expected<T, E>::value_or: T must be copy constructible");
@@ -449,7 +453,7 @@ class [[nodiscard]] expected final {
     return has_value() ? value() : static_cast<T>(std::forward<U>(v));
   }
 
-  template <typename U>
+  template <typename U = std::remove_cv_t<T>>
   constexpr T value_or(U&& v) && noexcept {
     static_assert(std::move_constructible<T>,
                   "expected<T, E>::value_or: T must be move constructible");
@@ -459,7 +463,7 @@ class [[nodiscard]] expected final {
                        : static_cast<T>(std::forward<U>(v));
   }
 
-  template <typename G>
+  template <typename G = E>
   constexpr E error_or(G&& e) const& noexcept {
     static_assert(std::copy_constructible<E>,
                   "expected<T, E>::error_or: E must be copy constructible");
@@ -468,7 +472,7 @@ class [[nodiscard]] expected final {
     return has_value() ? static_cast<E>(std::forward<G>(e)) : error();
   }
 
-  template <typename G>
+  template <typename G = E>
   constexpr E error_or(G&& e) && noexcept {
     static_assert(std::move_constructible<E>,
                   "expected<T, E>::error_or: E must be move constructible");
@@ -560,7 +564,7 @@ class [[nodiscard]] expected final {
   //
   // `f`'s return type U needs to be a valid value_type for expected, i.e. any
   // type for which `remove_cv_t` is either void, or a complete non-array object
-  // type that is not `absl::in_place_t`, `base::unexpect_t`, or a
+  // type that is not `std::in_place_t`, `base::unexpect_t`, or a
   // specialization of `base::ok` or `base::unexpected`.
   //
   // Returns an instance of base::expected<remove_cv_t<U>, E> that is
@@ -598,7 +602,7 @@ class [[nodiscard]] expected final {
   //
   // `f`'s return type G needs to be a valid error_type for expected, i.e. any
   // type for which `remove_cv_t` is a complete non-array object type that is
-  // not `absl::in_place_t`, `base::unexpect_t`, or a specialization of
+  // not `std::in_place_t`, `base::unexpect_t`, or a specialization of
   // `base::ok` or `base::unexpected`.
   //
   // Returns an instance of base::expected<T, remove_cv_t<G>> that is
@@ -712,9 +716,9 @@ class [[nodiscard]] expected<T, E> final {
       : impl_(kErrTag, std::forward<Args>(args)...) {}
 
   template <typename U, typename... Args>
-  constexpr explicit expected(unexpect_t,
-                              std::initializer_list<U> il,
-                              Args&&... args) noexcept
+  constexpr expected(unexpect_t,
+                     std::initializer_list<U> il,
+                     Args&&... args) noexcept
       : impl_(kErrTag, il, std::forward<Args>(args)...) {}
 
   // [expected.void.assign], assignment
@@ -737,9 +741,8 @@ class [[nodiscard]] expected<T, E> final {
   friend constexpr void swap(expected& x, expected& y) noexcept { x.swap(y); }
 
   // [expected.void.obs], observers
-  // Note: Deviation from the Standard: No operator bool due to consistency with
-  // non-void expected types.
   constexpr bool has_value() const noexcept { return impl_.has_value(); }
+  constexpr explicit operator bool() const noexcept { return has_value(); }
 
   constexpr void operator*() const { CHECK(has_value()); }
   constexpr void value() const { CHECK(has_value()); }
@@ -847,7 +850,7 @@ class [[nodiscard]] expected<T, E> final {
   //
   // `f`'s return type U needs to be a valid value_type for expected, i.e. any
   // type for which `remove_cv_t` is either void, or a complete non-array object
-  // type that is not `absl::in_place_t`, `base::unexpect_t`, or a
+  // type that is not `std::in_place_t`, `base::unexpect_t`, or a
   // specialization of `base::ok` or `base::unexpected`.
   //
   // Returns an instance of base::expected<remove_cv_t<U>, E> that is
@@ -885,7 +888,7 @@ class [[nodiscard]] expected<T, E> final {
   //
   // `f`'s return type G needs to be a valid error_type for expected, i.e. any
   // type for which `remove_cv_t` is a complete non-array object type that is
-  // not `absl::in_place_t`, `base::unexpect_t`, or a specialization of
+  // not `std::in_place_t`, `base::unexpect_t`, or a specialization of
   // `base::ok` or `base::unexpected`.
   //
   // Returns an instance of base::expected<cv void, remove_cv_t<G>> that is
@@ -925,8 +928,8 @@ class [[nodiscard]] expected<T, E> final {
   }
 
  private:
-  // Note: Since we can't store void types we use absl::monostate instead.
-  using Impl = internal::ExpectedImpl<absl::monostate, E>;
+  // Note: Since we can't store void types we use std::monostate instead.
+  using Impl = internal::ExpectedImpl<std::monostate, E>;
   static constexpr auto kErrTag = Impl::kErrTag;
 
   Impl impl_;

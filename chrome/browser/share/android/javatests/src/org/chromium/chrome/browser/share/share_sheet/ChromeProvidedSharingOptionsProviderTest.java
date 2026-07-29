@@ -33,11 +33,13 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.UserActionTester;
-import org.chromium.build.BuildConfig;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -51,8 +53,10 @@ import org.chromium.chrome.browser.share.send_tab_to_self.SendTabToSelfAndroidBr
 import org.chromium.chrome.browser.share.share_sheet.ShareSheetLinkToggleCoordinator.LinkToggleState;
 import org.chromium.chrome.browser.share.share_sheet.ShareSheetLinkToggleMetricsHelper.LinkToggleMetricsDetails;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
-import org.chromium.chrome.test.AutomotiveContextWrapperTestRule;
+import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
+import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.browser_ui.share.ShareParams;
@@ -61,8 +65,10 @@ import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.user_prefs.UserPrefsJni;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
@@ -79,7 +85,7 @@ public class ChromeProvidedSharingOptionsProviderTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
-    public AutomotiveContextWrapperTestRule mAutoTestRule = new AutomotiveContextWrapperTestRule();
+    public OverrideContextWrapperTestRule mAutoTestRule = new OverrideContextWrapperTestRule();
 
     private static final String URL = JUnitTestGURLs.EXAMPLE_URL.getSpec();
 
@@ -96,11 +102,18 @@ public class ChromeProvidedSharingOptionsProviderTest {
     @Mock private ShareParams.TargetChosenCallback mTargetChosenCallback;
     @Mock private WindowAndroid mWindowAndroid;
     @Mock private DeviceLockActivityLauncher mDeviceLockActivityLauncher;
+    @Mock private SigninAndHistorySyncActivityLauncher mSigninAndHistorySyncActivityLauncher;
+    @Mock private ActivityResultTracker mActivityResultTracker;
+    @Mock private ModalDialogManager mModalDialogManager;
+    @Mock private SnackbarManager mSnackbarManager;
 
     private TestActivity mActivity;
     private ChromeProvidedSharingOptionsProvider mChromeProvidedSharingOptionsProvider;
     private UserActionTester mActionTester;
-    private final ObservableSupplierImpl<Tab> mTabProvider = new ObservableSupplierImpl<>();
+    private final SettableNullableObservableSupplier<Tab> mTabProvider =
+            ObservableSuppliers.createNullable();
+    private final SettableMonotonicObservableSupplier<ModalDialogManager>
+            mModalDialogManagerSupplier = ObservableSuppliers.createMonotonic(mModalDialogManager);
 
     @Before
     public void setUp() {
@@ -187,7 +200,7 @@ public class ChromeProvidedSharingOptionsProviderTest {
                         DetailedContentType.NOT_SPECIFIED,
                         /* isMultiWindow= */ false);
 
-        if (BuildConfig.IS_DESKTOP_ANDROID) {
+        if (DeviceInfo.isDesktop()) {
             assertFalse(
                     "Property models should not contain printing for desktop.",
                     propertyModelsContain(propertyModels, R.string.print_share_activity_title));
@@ -208,7 +221,7 @@ public class ChromeProvidedSharingOptionsProviderTest {
                         DetailedContentType.NOT_SPECIFIED,
                         /* isMultiWindow= */ false);
 
-        if (BuildConfig.IS_DESKTOP_ANDROID) {
+        if (DeviceInfo.isDesktop()) {
             assertFalse(
                     "Property models should not contain printing for desktop.",
                     propertyModelsContain(propertyModels, R.string.print_share_activity_title));
@@ -437,7 +450,7 @@ public class ChromeProvidedSharingOptionsProviderTest {
 
         assertTrue(
                 "Property models should contain send-tab-to-self.",
-                propertyModelsContain(propertyModels, R.string.sharing_send_tab_to_self));
+                propertyModelsContain(propertyModels, R.string.send_tab_to_self));
     }
 
     @Test
@@ -507,7 +520,11 @@ public class ChromeProvidedSharingOptionsProviderTest {
                         new LinkToggleMetricsDetails(
                                 LinkToggleState.COUNT, DetailedContentType.NOT_SPECIFIED),
                         mProfile,
-                        mDeviceLockActivityLauncher);
+                        mDeviceLockActivityLauncher,
+                        mSigninAndHistorySyncActivityLauncher,
+                        mActivityResultTracker,
+                        mModalDialogManagerSupplier,
+                        mSnackbarManager);
     }
 
     private boolean propertyModelsContain(List<PropertyModel> propertyModels, int labelId) {

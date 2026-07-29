@@ -19,16 +19,12 @@ namespace gfx {
 
 class Size;
 
-// Interface for encoding and decoding PNG data. This is a wrapper around
-// libpng, which has an inconvenient interface for callers. This is currently
-// designed for use in tests only (where we control the files), so the handling
-// isn't as robust as would be required for a browser (see Decode() for more).
-// WebKit has its own more complicated PNG decoder which handles, among other
-// things, partially downloaded data.
+// Interface for encoding and decoding PNG data. This is a wrapper
+// around `SkPngRustCodec`. Note that `SkPngRustCodec` is not yet
+// rule-of-2 compliant because some parsing is still done in C/C++
+// (see https://crbug.com/463653726 for more details).
 class CODEC_EXPORT PNGCodec {
  public:
-  static constexpr int DEFAULT_ZLIB_COMPRESSION = 6;
-
   enum ColorFormat {
     // 4 bytes per pixel, in RGBA order in memory regardless of endianness.
     // Alpha is unpremultiplied, the same as what PNG uses.
@@ -125,8 +121,8 @@ class CODEC_EXPORT PNGCodec {
       bool discard_transparency);
 
   // Call `PNGCodec::Encode` on the supplied SkBitmap `input`. The difference
-  // between this and the previous method is that this restricts compression to
-  // zlib q1, which is just rle encoding.
+  // between this and the previous method is that this uses low compression
+  // level (resulting in faster encoding runtime).
   static std::optional<std::vector<uint8_t>> FastEncodeBGRASkBitmap(
       const SkBitmap& input,
       bool discard_transparency);

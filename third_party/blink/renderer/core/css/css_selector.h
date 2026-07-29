@@ -23,6 +23,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_SELECTOR_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_SELECTOR_H_
 
+#include <array>
 #include <memory>
 #include <utility>
 
@@ -37,17 +38,16 @@
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/wtf/bit_field.h"
+#include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/gc_plugin.h"
-
-namespace WTF {
-class StringBuilder;
-}  // namespace WTF
 
 namespace blink {
 
+class ActiveNavigationCondition;
 class CSSParserContext;
 class CSSSelectorList;
 class Document;
+class RouteLocation;
 class StyleRule;
 
 // This class represents a simple selector for a StyleRule.
@@ -183,6 +183,8 @@ class CORE_EXPORT CSSSelector {
   unsigned Specificity() const;
   // Returns specificity components in decreasing order of significance.
   std::array<uint8_t, 3> SpecificityTuple() const;
+  // Returns specificity components for this single simple selector.
+  std::array<uint8_t, 3> SimpleSelectorSpecificityTuple() const;
 
   enum RelationType {
     // No combinator. Used between simple selectors within the same compound.
@@ -195,11 +197,22 @@ class CORE_EXPORT CSSSelector {
     kDirectAdjacent,
     // ~ combinator
     kIndirectAdjacent,
+
     // The relation types below are implicit combinators inserted at parse time
-    // before pseudo elements which match another flat tree element than the
-    // rest of the compound.
+    // before pseudo-elements.
+
+    // The pseudo-child combinator (:>) is inserted before pseudo-elements
+    // that are not covered by kUAShadow, kShadowSlot, or kShadowPart.
     //
-    // Implicit combinator inserted before pseudo elements matching an element
+    // For example, `div::before` effectively becomes `div :> ::before`.
+    //
+    // The CSSWG has resolved to add this combinator to CSS [1], but we
+    // do not (yet) expose this combinator; it exists solely to aid
+    // selector matching.
+    //
+    // [1] https://github.com/w3c/csswg-drafts/issues/7346
+    kPseudoChild,
+    // Implicit combinator inserted before pseudo-elements matching an element
     // inside a UA shadow tree. This combinator allows the selector matching to
     // cross a shadow root.
     //
@@ -225,9 +238,11 @@ class CORE_EXPORT CSSSelector {
 
   enum PseudoType {
     kPseudoActive,
+    kPseudoActiveOption,
     kPseudoActiveViewTransition,
     kPseudoActiveViewTransitionType,
     kPseudoAfter,
+    kPseudoAnimatedImage,
     kPseudoAny,
     kPseudoAnyLink,
     kPseudoAutofill,
@@ -249,7 +264,9 @@ class CORE_EXPORT CSSSelector {
     kPseudoEmpty,
     kPseudoEnabled,
     kPseudoEnd,
+    kPseudoExpandIcon,
     kPseudoFileSelectorButton,
+    kPseudoFiltered,
     kPseudoFirstChild,
     kPseudoFirstLetter,
     kPseudoFirstLine,
@@ -259,12 +276,14 @@ class CORE_EXPORT CSSSelector {
     kPseudoFocusVisible,
     kPseudoFocusWithin,
     kPseudoFullPageMedia,
-    kPseudoHasInterest,
     kPseudoHasSlotted,
     kPseudoHorizontal,
     kPseudoHover,
     kPseudoIncrement,
     kPseudoIndeterminate,
+    kPseudoInterestButton,
+    kPseudoInterestSource,
+    kPseudoInterestTarget,
     kPseudoInvalid,
     kPseudoIs,
     kPseudoLang,
@@ -274,6 +293,7 @@ class CORE_EXPORT CSSSelector {
     kPseudoLink,
     kPseudoMarker,
     kPseudoModal,
+    kPseudoNavSource,
     kPseudoNoButton,
     kPseudoNot,
     kPseudoNthChild,  // Includes :nth-child(An+B of <selector>)
@@ -285,9 +305,8 @@ class CORE_EXPORT CSSSelector {
     kPseudoOptional,
     kPseudoParent,  // Written as & (in nested rules).
     kPseudoPart,
-    kPseudoPermissionElementInvalidStyle,
-    kPseudoPermissionElementOccluded,
     kPseudoPermissionGranted,
+    kPseudoPermissionIcon,
     kPseudoPlaceholder,
     kPseudoPlaceholderShown,
     kPseudoReadOnly,
@@ -306,16 +325,21 @@ class CORE_EXPORT CSSSelector {
     kPseudoSearchText,
     kPseudoPickerIcon,
     kPseudoPicker,
+    kPseudoSelectListbox,
+    kPseudoSelectContainsInput,
+    kPseudoSelectHasSlottedButton,
     kPseudoSelection,
-    kPseudoSelectorFragmentAnchor,
     kPseudoSingleButton,
     kPseudoStart,
     kPseudoState,
     kPseudoTarget,
+    kPseudoTextField,
+    kPseudoToolFormActive,
+    kPseudoToolSubmitActive,
     kPseudoUnknown,
-    // Something that was unparsable, but contained either a nesting
-    // selector (&), or a :scope pseudo-class, and must therefore be kept
-    // for serialization purposes.
+    // Unparsable due to an invalid selector (e.g. :unknown), or contained
+    // either a nesting selector (&) or a :scope pseudo-class. This must be
+    // kept for serialization purposes.
     kPseudoUnparsed,
     kPseudoUserInvalid,
     kPseudoUserValid,
@@ -334,15 +358,13 @@ class CORE_EXPORT CSSSelector {
     kPseudoFullscreen,
     kPseudoInRange,
     kPseudoOutOfRange,
-    kPseudoPaused,
     kPseudoPictureInPicture,
-    kPseudoPlaying,
     kPseudoXrOverlay,
-    // Pseudo elements in UA ShadowRoots. Available in any stylesheets.
+    // Pseudo-elements in UA ShadowRoots. Available in any stylesheets.
     kPseudoWebKitCustomElement,
-    // Pseudo elements in UA ShadowRoots. Available only in UA stylesheets.
+    // Pseudo-elements in UA ShadowRoots. Available only in UA stylesheets.
     kPseudoBlinkInternalElement,
-    // Pseudo element for fragment styling
+    // Pseudo-element for fragment styling
     kPseudoColumn,
     kPseudoCue,
     kPseudoDefined,
@@ -351,12 +373,15 @@ class CORE_EXPORT CSSSelector {
     kPseudoGrammarError,
     kPseudoHas,
     kPseudoHasDatalist,
+    kPseudoHasOpenMenuitem,
     kPseudoHighlight,
     kPseudoHost,
     kPseudoHostContext,
     kPseudoHostHasNonAutoAppearance,
     kPseudoIsHtml,
     kPseudoListBox,
+    kPseudoMenulistPopoverWithMenubarAnchor,
+    kPseudoMenulistPopoverWithMenulistAnchor,
     kPseudoMultiSelectFocus,
     kPseudoOpen,
     kPseudoPastCue,
@@ -367,19 +392,24 @@ class CORE_EXPORT CSSSelector {
     kPseudoSpatialNavigationFocus,
     kPseudoSpellingError,
     kPseudoTargetText,
+    kPseudoUnbounded,
     kPseudoVideoPersistent,
     kPseudoVideoPersistentAncestor,
 
+    kPseudoTargetAfter,
+    kPseudoTargetBefore,
     // Active ::scroll-marker styling.
     // https://drafts.csswg.org/css-overflow-5/#active-scroll-marker
     kPseudoTargetCurrent,
 
-    // The following selectors are used to target pseudo elements created for
+    // The following selectors are used to target pseudo-elements created for
     // ViewTransition.
     // See https://drafts.csswg.org/css-view-transitions-1/#pseudo
+    // and https://drafts.csswg.org/css-view-transitions-2
     // for details.
     kPseudoViewTransition,
     kPseudoViewTransitionGroup,
+    kPseudoViewTransitionGroupChildren,
     kPseudoViewTransitionImagePair,
     kPseudoViewTransitionNew,
     kPseudoViewTransitionOld,
@@ -388,6 +418,27 @@ class CORE_EXPORT CSSSelector {
     kPseudoScrollMarkerGroup,
     // Scroll button pseudo for Carousel
     kPseudoScrollButton,
+
+    // Overscroll gesture support.
+    kPseudoOverscrollAreaParent,
+    kPseudoOverscrollBackdrop,
+    kPseudoOverscrollOpen,
+
+    // :link-to(<route-location>)
+    kPseudoLinkTo,
+    // :active-navigation(<active-navigation-condition>)
+    kPseudoActiveNavigation,
+
+    // https://drafts.csswg.org/selectors/#video-state
+    kPseudoPlaying,
+    kPseudoPaused,
+    kPseudoSeeking,
+    // https://drafts.csswg.org/selectors/#media-loading-state
+    kPseudoBuffering,
+    kPseudoStalled,
+    // https://drafts.csswg.org/selectors/#sound-state
+    kPseudoMuted,
+    kPseudoVolumeLocked,
   };
 
   enum class AttributeMatchType : int {
@@ -399,11 +450,18 @@ class CORE_EXPORT CSSSelector {
   PseudoType GetPseudoType() const {
     return static_cast<PseudoType>(bits_.get<PseudoTypeField>());
   }
+  PseudoType GetPseudoTypeForOilpan() const {
+    return static_cast<PseudoType>(bits_.get_concurrently<PseudoTypeField>());
+  }
 
   void UpdatePseudoType(const AtomicString&,
                         const CSSParserContext&,
                         bool has_arguments,
                         CSSParserMode);
+  bool IsUnparsedInvalid() const {
+    return GetPseudoType() == kPseudoUnparsed &&
+           GetNestingType() == CSSNestingType::kNone;
+  }
   void SetUnparsedPlaceholder(CSSNestingType, const AtomicString&);
   // If this simple selector contains a parent selector (&), returns kNesting.
   // Otherwise, if this simple selector contains a :scope pseudo-class,
@@ -417,7 +475,7 @@ class CORE_EXPORT CSSSelector {
   // Sets this CSSSelector to a :where() class with the specified argument.
   void SetWhere(CSSSelectorList*);
   void UpdatePseudoPage(const AtomicString&, const Document*);
-  static PseudoType NameToPseudoType(const AtomicString&,
+  static PseudoType NameToPseudoType(StringView,
                                      bool has_arguments,
                                      const Document* document);
   static PseudoId GetPseudoId(PseudoType);
@@ -478,9 +536,35 @@ class CORE_EXPORT CSSSelector {
   const AtomicString& Argument() const {
     return HasRareData() ? data_.rare_data_->argument_ : g_null_atom;
   }
+  // Returns the list of values of a parameterized selector. For example,
+  // :lang(en-US, de) returns a vector of strings containing "en-US" and "de".
+  const Vector<AtomicString>* ArgumentList() const {
+    return HasRareData() ? data_.rare_data_->argument_list_.get() : nullptr;
+  }
   const CSSSelectorList* SelectorList() const {
     return HasRareData() ? data_.rare_data_->selector_list_.Get() : nullptr;
   }
+  const RouteLocation* GetRouteLocation() const {
+    if (!HasRareData()) {
+      return nullptr;
+    }
+    return data_.rare_data_->route_location_.Get();
+  }
+  const ActiveNavigationCondition* GetActiveNavigationCondition() const {
+    if (!HasRareData()) {
+      return nullptr;
+    }
+    return data_.rare_data_->active_navigation_condition_.Get();
+  }
+  unsigned NthAValue() const {
+    CHECK_EQ(GetPseudoType(), kPseudoNthChild);
+    return data_.rare_data_->NthAValue();
+  }
+  unsigned NthBValue() const {
+    CHECK_EQ(GetPseudoType(), kPseudoNthChild);
+    return data_.rare_data_->NthBValue();
+  }
+
   // Similar to SelectorList(), but also works for kPseudoParent
   // (i.e., nested selectors); on &, will give the parent's selector list.
   // Will return nullptr if no such list exists (e.g. if we are not a
@@ -511,7 +595,10 @@ class CORE_EXPORT CSSSelector {
   bool IsASCIILower(const AtomicString& value);
   void SetValue(const AtomicString&, bool match_lower_case);
   void SetArgument(const AtomicString&);
+  void SetArgumentList(std::unique_ptr<Vector<AtomicString>>);
   void SetSelectorList(CSSSelectorList*);
+  void SetRouteLocation(RouteLocation*);
+  void SetActiveNavigationCondition(ActiveNavigationCondition*);
   void SetIdentList(std::unique_ptr<Vector<AtomicString>>);
   void SetContainsPseudoInsideHasPseudoClass();
   void SetContainsComplexLogicalCombinationsInsideHasPseudoClass();
@@ -535,6 +622,10 @@ class CORE_EXPORT CSSSelector {
   bool IsOrContainsHostPseudoClass() const;
   bool IsUserActionPseudoClass() const;
   bool IsIdClassOrAttributeSelector() const;
+  // Support :is(:host) and :is(#foo:host) but not :is(:host, #foo);
+  // see SelectorChecker::MatchForRelation() for explanation about
+  // this limitation.
+  bool IsDeeplyHostPseudoClass() const;
 
   RelationType Relation() const {
     return static_cast<RelationType>(bits_.get<RelationField>());
@@ -548,6 +639,9 @@ class CORE_EXPORT CSSSelector {
   MatchType Match() const {
     return static_cast<MatchType>(bits_.get<MatchField>());
   }
+  MatchType MatchForOilpan() const {
+    return static_cast<MatchType>(bits_.get_concurrently<MatchField>());
+  }
   void SetMatch(MatchType match) {
     bits_.set<MatchField>(match);
     DCHECK_EQ(Match(), match);  // using a bitfield.
@@ -555,6 +649,9 @@ class CORE_EXPORT CSSSelector {
 
   bool IsLastInSelectorList() const {
     return bits_.get<IsLastInSelectorListField>();
+  }
+  bool IsLastInSelectorListForOilpan() const {
+    return bits_.get_concurrently<IsLastInSelectorListField>();
   }
   void SetLastInSelectorList(bool is_last) {
     bits_.set<IsLastInSelectorListField>(is_last);
@@ -567,8 +664,13 @@ class CORE_EXPORT CSSSelector {
     bits_.set<IsLastInComplexSelectorField>(is_last);
   }
 
-  // https://drafts.csswg.org/selectors/#compound
-  bool IsCompound() const;
+  // This checks a little bit more than the definition in
+  // https://www.w3.org/TR/selectors-4/#compound .  It checks that:
+  // (a) the selector is compound, that is, that it doesn't have
+  //     combinators or pseudo-elements, and
+  // (b) any pseudo-classes that contain selectors as arguments are also
+  //     compound.
+  bool IsFullyCompound() const;
 
   enum LinkMatchMask {
     kMatchLink = 1,
@@ -579,8 +681,13 @@ class CORE_EXPORT CSSSelector {
   // True if :link or :visited pseudo-classes are found anywhere in
   // the selector.
   bool HasLinkOrVisited() const;
+  // True if :visited pseudo-classes are found anywhere in the selector.
+  bool HasVisited() const;
 
   bool HasRareData() const { return bits_.get<HasRareDataField>(); }
+  bool HasRareDataForOilpan() const {
+    return bits_.get_concurrently<HasRareDataField>();
+  }
 
   bool IsForPage() const { return bits_.get<IsForPageField>(); }
   void SetForPage() { bits_.set<IsForPageField>(true); }
@@ -604,9 +711,6 @@ class CORE_EXPORT CSSSelector {
   static bool IsElementBackedPseudoElement(CSSSelector::PseudoType pseudo);
   bool IsAllowedAfterPart() const;
 
-  // Returns true if the immediately preceding simple selector is ::slotted.
-  bool FollowsSlotted() const;
-
   // Returns true if any preceding selectors have combinators that cross tree
   // scopes.
   bool CrossesTreeScopes() const;
@@ -619,6 +723,14 @@ class CORE_EXPORT CSSSelector {
   // position like :first-of-type and :nth-child().
   bool IsChildIndexedSelector() const;
 
+  bool IsPseudoParent() const {
+    return Match() == kPseudoClass && GetPseudoType() == kPseudoParent;
+  }
+
+  // Returns true if the provided pseudo-class supports invalidation and can be
+  // passed to Element::PseudoStateChanged, otherwise false.
+  static bool SupportsPseudoStateChange(PseudoType);
+
   void Trace(Visitor* visitor) const;
 
   static String FormatPseudoTypeForDebugging(PseudoType);
@@ -628,8 +740,8 @@ class CORE_EXPORT CSSSelector {
   // RuleData bucketing sets is_covered_by_bucketing,
   // and these could happen concurrently. This trips up TSan,
   // even though the race is benign, so use an atomic read
-  // instead of C++ bitfields.
-  using BitField = WTF::ConcurrentlyReadBitField<uint32_t>;
+  // while in the Oilpan thread, instead of C++ bitfields.
+  using BitField = ConcurrentlyReadBitField<uint32_t>;
   using RelationField =
       BitField::DefineFirstValue<uint32_t, 4>;  // RelationType
   using MatchField = RelationField::DefineNextValue<uint32_t, 4>;  // MatchType
@@ -688,16 +800,16 @@ class CORE_EXPORT CSSSelector {
   unsigned SpecificityForPage() const;
 
   template <bool expand_pseudo_references>
-  bool SerializeSimpleSelector(WTF::StringBuilder& builder,
+  void SerializeSimpleSelector(StringBuilder& builder,
                                uintptr_t scope_id) const;
 
   template <bool expand_pseudo_references>
-  const CSSSelector* SerializeCompound(WTF::StringBuilder&,
+  const CSSSelector* SerializeCompound(StringBuilder&,
                                        uintptr_t scope_id) const;
 
   template <bool expand_pseudo_references>
   static void SerializeSelectorList(const CSSSelectorList* selector_list,
-                                    WTF::StringBuilder& builder,
+                                    StringBuilder& builder,
                                     uintptr_t scope_id);
 
   template <bool expand_pseudo_references>
@@ -742,8 +854,12 @@ class CORE_EXPORT CSSSelector {
     } bits_;
     QualifiedName attribute_;  // Used for attribute selector
     AtomicString argument_;    // Used for :contains, :lang, :dir, etc.
+    std::unique_ptr<Vector<AtomicString>> argument_list_;  // Used for :lang
     Member<CSSSelectorList>
         selector_list_;  // Used :is, :not, :-webkit-any, etc.
+    Member<RouteLocation> route_location_;  // Used for :link-to().
+    Member<ActiveNavigationCondition>
+        active_navigation_condition_;  // Used for :active-navigation().
     std::unique_ptr<Vector<AtomicString>>
         ident_list_;  // Used for ::part(), :active-view-transition-type().
 
@@ -779,7 +895,7 @@ class CORE_EXPORT CSSSelector {
     explicit DataUnion(ConstructEmptyValueTag) : value_() {}
 
     // A string `value` is used by many different selectors to store the string
-    // part of the selector. For example the name of a pseudo class (without
+    // part of the selector. For example the name of a pseudo-class (without
     // the colon), the class name of a class selector (without the dot),
     // the attribute of an attribute selector (without the brackets), etc.
     explicit DataUnion(const AtomicString& value) : value_(value) {}
@@ -828,19 +944,14 @@ inline bool CSSSelector::LegacyCaseInsensitiveMatch() const {
 }
 
 inline bool CSSSelector::IsASCIILower(const AtomicString& value) {
-  for (wtf_size_t i = 0; i < value.length(); ++i) {
-    if (IsASCIIUpper(value[i])) {
-      return false;
-    }
-  }
-  return true;
+  return value.ContainsNoAsciiUpper();
 }
 
 inline void CSSSelector::SetValue(const AtomicString& value,
                                   bool match_lower_case = false) {
   DCHECK_NE(Match(), static_cast<unsigned>(kTag));
   DCHECK_NE(Match(), static_cast<unsigned>(kUniversalTag));
-  DCHECK(!(Match() == kPseudoClass && GetPseudoType() == kPseudoParent));
+  DCHECK(!IsPseudoParent());
   if (match_lower_case && !HasRareData() && !IsASCIILower(value)) {
     CreateRareData();
   }
@@ -850,7 +961,7 @@ inline void CSSSelector::SetValue(const AtomicString& value,
     return;
   }
   data_.rare_data_->matching_value_ =
-      match_lower_case ? value.LowerASCII() : value;
+      match_lower_case ? value.ToAsciiLower() : value;
   data_.rare_data_->serializing_value_ = value;
 }
 
@@ -924,9 +1035,10 @@ inline CSSSelector::CSSSelector(const CSSSelector& o)
     new (&data_.tag_q_name_or_attribute_)
         QualifiedName(o.data_.tag_q_name_or_attribute_);
   } else if (o.Match() == kPseudoClass && o.GetPseudoType() == kPseudoParent) {
-    data_.parent_rule_ = o.data_.parent_rule_;
+    new (&data_.parent_rule_) Member<const StyleRule>(o.data_.parent_rule_);
   } else if (o.HasRareData()) {
-    data_.rare_data_ = o.data_.rare_data_;  // Oilpan-managed.
+    new (&data_.rare_data_)
+        Member<RareData>(o.data_.rare_data_);  // Oilpan-managed.
   } else {
     new (&data_.value_) AtomicString(o.data_.value_);
   }
@@ -938,8 +1050,8 @@ inline CSSSelector::CSSSelector(CSSSelector&& o)
   // constructor (i.e., using similar code as in the copy constructor above)
   // after moving to Oilpan, copying the bits one by one. We already allow
   // memcpy + memset by traits, so we can do it by ourselves, too.
-  memcpy(this, &o, sizeof(*this));
-  memset(&o, 0, sizeof(o));
+  UNSAFE_BUFFERS(memcpy(this, &o, sizeof(*this)));
+  UNSAFE_BUFFERS(memset(&o, 0, sizeof(o)));
 }
 
 inline CSSSelector::~CSSSelector() {
@@ -975,6 +1087,7 @@ inline const StyleRule* CSSSelector::ParentRule() const {
 inline const AtomicString& CSSSelector::Value() const {
   DCHECK_NE(Match(), static_cast<unsigned>(kTag));
   DCHECK_NE(Match(), static_cast<unsigned>(kUniversalTag));
+  DCHECK(!IsPseudoParent());
   if (HasRareData()) {
     return data_.rare_data_->matching_value_;
   }
@@ -1004,9 +1117,11 @@ inline bool CSSSelector::IsIdClassOrAttributeSelector() const {
 
 inline void swap(CSSSelector& a, CSSSelector& b) {
   char tmp[sizeof(CSSSelector)];
-  memcpy(tmp, &a, sizeof(CSSSelector));
-  memcpy(&a, &b, sizeof(CSSSelector));
-  memcpy(&b, tmp, sizeof(CSSSelector));
+  UNSAFE_BUFFERS({
+    memcpy(tmp, &a, sizeof(CSSSelector));
+    memcpy(&a, &b, sizeof(CSSSelector));
+    memcpy(&b, tmp, sizeof(CSSSelector));
+  });
 }
 
 // Converts descendant to relative descendant, child to relative child
@@ -1021,15 +1136,13 @@ CSSSelector::RelationType ConvertRelationToRelative(
 // list, e.g. :is(), :where() etc.
 unsigned MaximumSpecificity(const CSSSelector* first_selector);
 
-}  // namespace blink
-
-namespace WTF {
 template <>
-struct VectorTraits<blink::CSSSelector> : VectorTraitsBase<blink::CSSSelector> {
+struct VectorTraits<CSSSelector> : VectorTraitsBase<CSSSelector> {
   static const bool kCanInitializeWithMemset = true;
   static const bool kCanClearUnusedSlotsWithMemset = true;
   static const bool kCanMoveWithMemcpy = true;
 };
-}  // namespace WTF
+
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_SELECTOR_H_

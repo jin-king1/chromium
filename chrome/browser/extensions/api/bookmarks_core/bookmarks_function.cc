@@ -23,6 +23,9 @@
 #include "components/bookmarks/managed/managed_bookmark_service.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_prefs/user_prefs.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using bookmarks::BookmarkModel;
 using bookmarks::BookmarkNode;
@@ -40,8 +43,7 @@ ExtensionFunction::ResponseAction BookmarksFunction::Run() {
     return RespondLater();
   }
 
-  ResponseValue response = RunOnReady();
-  return RespondNow(std::move(response));
+  return RunOnReady();
 }
 
 BookmarkModel* BookmarksFunction::GetBookmarkModel() {
@@ -66,7 +68,7 @@ const BookmarkNode* BookmarksFunction::GetBookmarkNodeFromId(
   const BookmarkNode* node = bookmarks::GetBookmarkNodeByID(model, id);
   if (!node || (base::FeatureList::IsEnabled(
                     kEnforceBookmarkVisibilityOnExtensionsAPI) &&
-                !model->IsNodeVisible(*node))) {
+                !node->IsVisible())) {
     *error = bookmarks_errors::kNoNodeError;
     return nullptr;
   }
@@ -81,11 +83,9 @@ bool BookmarksFunction::EditBookmarksEnabled() {
 
 bool BookmarksFunction::CanBeModified(const BookmarkNode* node,
                                       std::string* error) {
-  BookmarkModel* model =
-      BookmarkModelFactory::GetForBrowserContext(GetProfile());
   if (!node || (base::FeatureList::IsEnabled(
                     kEnforceBookmarkVisibilityOnExtensionsAPI) &&
-                !model->IsNodeVisible(*node))) {
+                !node->IsVisible())) {
     *error = bookmarks_errors::kNoParentError;
     return false;
   }
@@ -108,7 +108,7 @@ Profile* BookmarksFunction::GetProfile() {
 
 void BookmarksFunction::OnResponded() {
   DCHECK(response_type());
-  if (*response_type() == ExtensionFunction::SUCCEEDED) {
+  if (*response_type() == ResponseType::kSucceeded) {
     BookmarksApiWatcher::GetForBrowserContext(browser_context())
         ->NotifyApiInvoked(this);
   }
@@ -119,8 +119,7 @@ void BookmarksFunction::BookmarkModelChanged() {}
 void BookmarksFunction::BookmarkModelLoaded(bool ids_reassigned) {
   GetBookmarkModel()->RemoveObserver(this);
 
-  ResponseValue response = RunOnReady();
-  Respond(std::move(response));
+  RunOnReady().Execute();
 
   Release();  // Balanced in Run().
 }

@@ -6,6 +6,7 @@
 
 #include "content/browser/devtools/protocol/io_handler.h"
 #include "content/browser/devtools/protocol/network_handler.h"
+#include "content/browser/devtools/protocol/storage_handler.h"
 #include "content/browser/devtools/protocol/target_auto_attacher.h"
 #include "content/browser/devtools/protocol/target_handler.h"
 #include "content/browser/devtools/worker_devtools_manager.h"
@@ -23,9 +24,6 @@ DedicatedWorkerDevToolsAgentHost* DedicatedWorkerDevToolsAgentHost::GetFor(
 // static
 void DedicatedWorkerDevToolsAgentHost::AddAllAgentHosts(
     DevToolsAgentHost::List* result) {
-  if (!base::FeatureList::IsEnabled(blink::features::kPlzDedicatedWorker)) {
-    return;
-  }
   WorkerDevToolsManager::GetInstance().AddAllAgentHosts(result);
 }
 
@@ -35,6 +33,7 @@ DedicatedWorkerDevToolsAgentHost::DedicatedWorkerDevToolsAgentHost(
     const std::string& name,
     const base::UnguessableToken& devtools_worker_token,
     const std::string& parent_id,
+    const std::string& parent_frame_id,
     base::OnceCallback<void(DevToolsAgentHostImpl*)> destroyed_callback)
     : WorkerOrWorkletDevToolsAgentHost(process_id,
                                        url,
@@ -43,14 +42,25 @@ DedicatedWorkerDevToolsAgentHost::DedicatedWorkerDevToolsAgentHost(
                                        parent_id,
                                        std::move(destroyed_callback)),
       auto_attacher_(std::make_unique<protocol::RendererAutoAttacherBase>(
-          GetRendererChannel())) {
+          GetRendererChannel())),
+      parent_frame_id_(parent_frame_id) {
   NotifyCreated();
 }
 
 DedicatedWorkerDevToolsAgentHost::~DedicatedWorkerDevToolsAgentHost() = default;
 
+std::optional<blink::StorageKey>
+DedicatedWorkerDevToolsAgentHost::GetStorageKey() {
+  DedicatedWorkerHost* const host = GetDedicatedWorkerHost();
+  return host ? std::make_optional(host->GetWorkerStorageKey()) : std::nullopt;
+}
+
 std::string DedicatedWorkerDevToolsAgentHost::GetType() {
   return kTypeDedicatedWorker;
+}
+
+std::string DedicatedWorkerDevToolsAgentHost::GetParentFrameId() {
+  return parent_frame_id_;
 }
 
 DedicatedWorkerHost*
@@ -65,11 +75,14 @@ DedicatedWorkerDevToolsAgentHost::GetDedicatedWorkerHost() {
 
 bool DedicatedWorkerDevToolsAgentHost::AttachSession(DevToolsSession* session) {
   session->CreateAndAddHandler<protocol::IOHandler>(GetIOContext());
+  session->CreateAndAddHandler<protocol::StorageHandler>(this,
+                                                         session->GetClient());
   session->CreateAndAddHandler<protocol::TargetHandler>(
       protocol::TargetHandler::AccessMode::kAutoAttachOnly, GetId(),
       auto_attacher_.get(), session);
   session->CreateAndAddHandler<protocol::NetworkHandler>(
-      GetId(), devtools_worker_token(), GetIOContext(), base::DoNothing(),
+      GetId(), devtools_worker_token(), GetIOContext(), session,
+      GetProcessHost()->GetStoragePartition(), base::DoNothing(),
       session->GetClient());
   return true;
 }

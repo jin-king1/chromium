@@ -5,11 +5,9 @@
 #include "components/sync_device_info/fake_device_info_tracker.h"
 
 #include <algorithm>
-#include <map>
 
 #include "base/check.h"
 #include "base/memory/raw_ptr.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "components/sync/protocol/sync_enums.pb.h"
 #include "components/sync_device_info/device_info.h"
@@ -21,7 +19,7 @@ FakeDeviceInfoTracker::FakeDeviceInfoTracker() = default;
 FakeDeviceInfoTracker::~FakeDeviceInfoTracker() = default;
 
 bool FakeDeviceInfoTracker::IsSyncing() const {
-  return !devices_.empty();
+  return is_syncing_override_.value_or(!devices_.empty());
 }
 
 const DeviceInfo* FakeDeviceInfoTracker::GetDeviceInfo(
@@ -55,13 +53,13 @@ void FakeDeviceInfoTracker::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-std::map<DeviceInfo::FormFactor, int>
+absl::flat_hash_map<DeviceInfo::FormFactor, int>
 FakeDeviceInfoTracker::CountActiveDevicesByType() const {
   if (device_count_per_type_override_) {
     return *device_count_per_type_override_;
   }
 
-  std::map<DeviceInfo::FormFactor, int> count_by_type;
+  absl::flat_hash_map<DeviceInfo::FormFactor, int> count_by_type;
   for (const syncer::DeviceInfo* device : devices_) {
     count_by_type[device->form_factor()]++;
   }
@@ -107,8 +105,7 @@ void FakeDeviceInfoTracker::Remove(const DeviceInfo* device) {
 void FakeDeviceInfoTracker::Replace(const DeviceInfo* old_device,
                                     const DeviceInfo* new_device) {
   auto it = std::ranges::find(devices_, old_device);
-  CHECK(devices_.end() != it, base::NotFatalUntil::M130)
-      << "Tracker doesn't contain device";
+  CHECK(devices_.end() != it) << "Tracker doesn't contain device";
   *it = new_device;
   for (auto& observer : observers_) {
     observer.OnDeviceInfoChange();
@@ -116,8 +113,16 @@ void FakeDeviceInfoTracker::Replace(const DeviceInfo* old_device,
 }
 
 void FakeDeviceInfoTracker::OverrideActiveDeviceCount(
-    const std::map<DeviceInfo::FormFactor, int>& counts) {
+    const absl::flat_hash_map<DeviceInfo::FormFactor, int>& counts) {
   device_count_per_type_override_ = counts;
+  for (auto& observer : observers_) {
+    observer.OnDeviceInfoChange();
+  }
+}
+
+void FakeDeviceInfoTracker::SetIsSyncingOverride(
+    std::optional<bool> override_value) {
+  is_syncing_override_ = override_value;
   for (auto& observer : observers_) {
     observer.OnDeviceInfoChange();
   }

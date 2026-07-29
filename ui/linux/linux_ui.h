@@ -13,6 +13,7 @@
 #include "base/command_line.h"
 #include "base/component_export.h"
 #include "base/containers/flat_map.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation_traits.h"
 #include "build/buildflag.h"
@@ -29,10 +30,6 @@ class Profile;
 
 namespace aura {
 class Window;
-}
-
-namespace base {
-class TimeDelta;
 }
 
 namespace gfx {
@@ -56,16 +53,22 @@ class LinuxInputMethodContextDelegate;
 class LinuxUiTheme;
 class NativeTheme;
 class NavButtonProvider;
+class PrimaryPastePrefObserver;
 class SelectFileDialog;
 class SelectFilePolicy;
 class WindowButtonOrderObserver;
 class WindowFrameProvider;
+enum class FrameType;
 enum class TextEditCommand;
 
 // Adapter class with targets to render like different toolkits. Set by any
 // project that wants to do linux desktop native rendering.
 class COMPONENT_EXPORT(LINUX_UI) LinuxUi {
  public:
+  // 8px is the default value in GTK for how far the mouse needs to move before
+  // a drag begins.
+  constexpr static int kDefaultWindowDragThreshold = 8;
+
   // Describes the window management actions that could be taken in response to
   // a middle click in the non client area.
   enum class WindowFrameAction {
@@ -121,6 +124,11 @@ class COMPONENT_EXPORT(LINUX_UI) LinuxUi {
 
   void RemoveCursorThemeObserver(CursorThemeManagerObserver* observer);
 
+  // Adds `observer` and calls if the middle click paste preference changes.
+  void AddPrimaryPastePrefObserver(PrimaryPastePrefObserver* observer);
+
+  void RemovePrimaryPastePrefObserver(PrimaryPastePrefObserver* observer);
+
   // Returns details about the default UI font.
   FontSettings GetDefaultFontDescription();
 
@@ -138,8 +146,6 @@ class COMPONENT_EXPORT(LINUX_UI) LinuxUi {
   // initialize the default front render parameters.
   virtual void InitializeFontSettings() = 0;
 
-  virtual base::TimeDelta GetCursorBlinkInterval() const = 0;
-
   // Returns the icon for a given content type from the icon theme.
   // TODO(davidben): Add an observer for the theme changing, so we can drop the
   // caches.
@@ -151,8 +157,8 @@ class COMPONENT_EXPORT(LINUX_UI) LinuxUi {
   virtual base::flat_map<std::string, std::string> GetKeyboardLayoutMap() = 0;
 
 #if BUILDFLAG(ENABLE_PRINTING)
-  virtual printing::PrintDialogLinuxInterface* CreatePrintDialog(
-      printing::PrintingContextLinux* context) = 0;
+  virtual std::unique_ptr<printing::PrintDialogLinuxInterface>
+  CreatePrintDialog(printing::PrintingContextLinux* context) = 0;
 
   virtual gfx::Size GetPdfPaperSize(
       printing::PrintingContextLinux* context) = 0;
@@ -205,6 +211,17 @@ class COMPONENT_EXPORT(LINUX_UI) LinuxUi {
   virtual WindowFrameAction GetWindowFrameAction(
       WindowFrameActionSource source) = 0;
 
+  // Whether a middle mouse click should paste the primary clipboard contents.
+  virtual bool PrimaryPasteEnabled() const = 0;
+
+  // The threshold for moving the mouse after pressing down in the non-client
+  // area after which a window drag is initiated.
+  virtual int GetWindowDragThresholdPx() const = 0;
+
+  // Returns the command line flags that should be copied to subprocesses
+  // to have the same toolkit and version as this process.
+  virtual std::vector<std::string> GetCmdLineFlagsForCopy() const = 0;
+
  protected:
   struct CmdLineArgs {
     CmdLineArgs();
@@ -216,7 +233,8 @@ class COMPONENT_EXPORT(LINUX_UI) LinuxUi {
     int argc = 0;
 
     // Contains C-strings that point into `args`.  `argv.size()` >= `argc`.
-    std::vector<char*> argv;
+    // RAW_PTR_EXCLUSION: Qt API operates directly on the buffer of char*.
+    RAW_PTR_EXCLUSION std::vector<char*> argv;
 
     // `argv` concatenated with NUL characters.
     std::vector<char> args;
@@ -235,6 +253,10 @@ class COMPONENT_EXPORT(LINUX_UI) LinuxUi {
     return cursor_theme_observer_list_;
   }
 
+  base::ObserverList<PrimaryPastePrefObserver>& primary_paste_observers() {
+    return primary_paste_observer_list_;
+  }
+
   display::DisplayConfig& display_config() { return display_config_; }
 
   void set_default_font_settings(
@@ -250,6 +272,9 @@ class COMPONENT_EXPORT(LINUX_UI) LinuxUi {
   // Objects to notify when the cursor theme or size changes.
   base::ObserverList<CursorThemeManagerObserver> cursor_theme_observer_list_;
 
+  // Objects to notify when the middle click paste preference changes.
+  base::ObserverList<PrimaryPastePrefObserver> primary_paste_observer_list_;
+
   display::DisplayConfig display_config_;
 
   std::optional<FontSettings> default_font_settings_;
@@ -261,10 +286,12 @@ class COMPONENT_EXPORT(LINUX_UI) LinuxUiTheme {
   LinuxUiTheme& operator=(const LinuxUiTheme&) = delete;
   virtual ~LinuxUiTheme();
 
-  // Returns the LinuxUi instance for the given window.
+  // Returns the LinuxUi instance for the given window, or the default instance
+  // if the window is nullptr.
   static LinuxUiTheme* GetForWindow(aura::Window* window);
 
-  // Returns the LinuxUi instance for the given profile.
+  // Returns the LinuxUi instance for the given profile, or the default instance
+  // if the profile is nullptr.
   static LinuxUiTheme* GetForProfile(Profile* profile);
 
   // Returns the native theme for this toolkit.
@@ -295,14 +322,16 @@ class COMPONENT_EXPORT(LINUX_UI) LinuxUiTheme {
 
   // Returns a new NavButtonProvider, or nullptr if the underlying
   // toolkit does not support drawing client-side navigation buttons.
-  virtual std::unique_ptr<NavButtonProvider> CreateNavButtonProvider() = 0;
+  virtual std::unique_ptr<NavButtonProvider> CreateNavButtonProvider(
+      FrameType type) = 0;
 
   // Returns a WindowFrameProvider, or nullptr if the underlying toolkit does
   // not support drawing client-side window decorations. |solid_frame| indicates
   // if transparency is unsupported and the frame should be rendered opaque.
   // The returned object is not owned by the caller and will remain alive until
   // the process ends.
-  virtual WindowFrameProvider* GetWindowFrameProvider(bool solid_frame,
+  virtual WindowFrameProvider* GetWindowFrameProvider(FrameType type,
+                                                      bool solid_frame,
                                                       bool tiled,
                                                       bool maximized) = 0;
 
@@ -355,6 +384,18 @@ struct ScopedObservationTraits<ui::LinuxUi, ui::WindowButtonOrderObserver> {
   static void RemoveObserver(ui::LinuxUi* source,
                              ui::WindowButtonOrderObserver* observer) {
     source->RemoveWindowButtonOrderObserver(observer);
+  }
+};
+
+template <>
+struct ScopedObservationTraits<ui::LinuxUi, ui::PrimaryPastePrefObserver> {
+  static void AddObserver(ui::LinuxUi* source,
+                          ui::PrimaryPastePrefObserver* observer) {
+    source->AddPrimaryPastePrefObserver(observer);
+  }
+  static void RemoveObserver(ui::LinuxUi* source,
+                             ui::PrimaryPastePrefObserver* observer) {
+    source->RemovePrimaryPastePrefObserver(observer);
   }
 };
 

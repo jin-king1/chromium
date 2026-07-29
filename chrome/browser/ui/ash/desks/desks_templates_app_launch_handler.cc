@@ -8,8 +8,7 @@
 
 #include "ash/public/cpp/desk_template.h"
 #include "ash/wm/desks/desks_controller.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/numerics/safe_conversions.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
@@ -17,6 +16,7 @@
 #include "chrome/browser/ash/app_restore/app_restore_arc_task_handler.h"
 #include "chrome/browser/ash/app_restore/app_restore_arc_task_handler_factory.h"
 #include "chrome/browser/ash/app_restore/arc_app_queue_restore_handler.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/desks/chrome_desks_util.h"
@@ -278,25 +278,27 @@ void DesksTemplatesAppLaunchHandler::LaunchBrowsers() {
 
       if (!browser_extra_info.tab_group_infos.empty()) {
         chrome_desks_util::AttachTabGroupsToBrowserInstance(
-            browser_extra_info.tab_group_infos, browser);
+            browser_extra_info.tab_group_infos,
+            ash::BrowserController::GetInstance()->GetDelegate(browser));
       }
 
       if (browser_extra_info.first_non_pinned_tab_index.has_value() &&
           browser_extra_info.first_non_pinned_tab_index.value() <=
               static_cast<int>(urls.size())) {
         chrome_desks_util::SetBrowserPinnedTabs(
-            browser_extra_info.first_non_pinned_tab_index.value(), browser);
+            browser_extra_info.first_non_pinned_tab_index.value(),
+            ash::BrowserController::GetInstance()->GetDelegate(browser));
       }
 
       // We need to handle minimized windows separately since unlike other
       // window types, it's not shown.
       if (window_state_type &&
           *window_state_type == chromeos::WindowStateType::kMinimized) {
-        browser->window()->Minimize();
+        browser->GetWindow()->Minimize();
         continue;
       }
 
-      browser->window()->ShowInactive();
+      browser->GetWindow()->ShowInactive();
     }
   }
   restore_data()->RemoveApp(app_constants::kChromeAppId);
@@ -315,7 +317,7 @@ void DesksTemplatesAppLaunchHandler::MaybeLaunchArcApps() {
       [&app_ids, &app_id_to_launch_list](const apps::AppUpdate& update) {
         if (update.Readiness() == apps::Readiness::kReady &&
             update.AppType() == apps::AppType::kArc &&
-            base::Contains(app_id_to_launch_list, update.AppId())) {
+            app_id_to_launch_list.contains(update.AppId())) {
           app_ids.insert(update.AppId());
         }
       });

@@ -5,6 +5,8 @@ Before Refresh --------------
 <DIV class=security-explanation security-explanation-insecure >
     <DEVTOOLS-ICON role=presentation name=warning class=security-property security-property-insecure >
         <#document-fragment >
+            <STYLE >
+            </STYLE>
             <SPAN style=--icon-url: var(--image-file-warning); >
             </SPAN>
         </#document-fragment>
@@ -29,6 +31,8 @@ Reload the page to record requests for HTTP resources.
 <DIV class=security-explanation security-explanation-neutral >
     <DEVTOOLS-ICON role=presentation name=warning class=security-property security-property-neutral >
         <#document-fragment >
+            <STYLE >
+            </STYLE>
             <SPAN style=--icon-url: var(--image-file-warning); >
             </SPAN>
         </#document-fragment>
@@ -55,6 +59,8 @@ Refresh --------------
 <DIV class=security-explanation security-explanation-insecure >
     <DEVTOOLS-ICON role=presentation name=warning class=security-property security-property-insecure >
         <#document-fragment >
+            <STYLE >
+            </STYLE>
             <SPAN style=--icon-url: var(--image-file-warning); >
             </SPAN>
         </#document-fragment>
@@ -72,13 +78,15 @@ active mixed content
 You have recently allowed non-secure content (such as scripts or iframes) to run on this site.
         </DIV>
         <BUTTON class=security-mixed-content devtools-link text-button link-style role=link tabindex=0 >
-View 1 request in Network Panel
+View 1 request in Network panel
         </BUTTON>
     </DIV>
 </DIV>
 <DIV class=security-explanation security-explanation-neutral >
     <DEVTOOLS-ICON role=presentation name=warning class=security-property security-property-neutral >
         <#document-fragment >
+            <STYLE >
+            </STYLE>
             <SPAN style=--icon-url: var(--image-file-warning); >
             </SPAN>
         </#document-fragment>
@@ -96,7 +104,7 @@ mixed content
 This page includes HTTP resources.
         </DIV>
         <BUTTON class=security-mixed-content devtools-link text-button link-style role=link tabindex=0 >
-View 1 request in Network Panel
+View 1 request in Network panel
         </BUTTON>
     </DIV>
 </DIV>

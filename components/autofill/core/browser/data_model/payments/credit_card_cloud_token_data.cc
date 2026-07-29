@@ -4,6 +4,9 @@
 
 #include "components/autofill/core/browser/data_model/payments/credit_card_cloud_token_data.h"
 
+#include <optional>
+#include <string>
+
 #include "components/autofill/core/browser/data_model/data_model_utils.h"
 
 namespace autofill {
@@ -34,13 +37,17 @@ std::u16string CreditCardCloudTokenData::Expiration4DigitYearAsString() const {
 
 void CreditCardCloudTokenData::SetExpirationMonthFromString(
     const std::u16string& month) {
-  data_util::ParseExpirationMonth(month, /*app_locale=*/std::string(),
-                                  &exp_month);
+  if (std::optional<int> parsed_month = data_util::ParseMonthFromString(
+          month, /*app_locale=*/std::string())) {
+    exp_month = *parsed_month;
+  }
 }
 
 void CreditCardCloudTokenData::SetExpirationYearFromString(
     const std::u16string& year) {
-  data_util::ParseExpirationYear(year, &exp_year);
+  if (std::optional<int> parsed_year = data_util::ParseYearFromString(year)) {
+    exp_year = *parsed_year;
+  }
 }
 
 int CreditCardCloudTokenData::Compare(

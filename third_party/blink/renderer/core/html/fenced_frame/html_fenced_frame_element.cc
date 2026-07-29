@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/html/fenced_frame/html_fenced_frame_element.h"
 
 #include "base/metrics/histogram_macros.h"
+#include "base/trace_event/trace_event.h"
 #include "base/types/pass_key.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
@@ -38,11 +39,13 @@
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/layout/layout_iframe.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer_entry.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -128,15 +131,6 @@ double ComputeSizeLossFunction(const PhysicalSize& requested_size,
   return wasted_area_fraction + resolution_penalty;
 }
 
-std::optional<WTF::AtomicString> ConvertEventTypeToFencedEventType(
-    const WTF::String& event_type) {
-  if (!CanNotifyEventTypeAcrossFence(event_type.Ascii())) {
-    return std::nullopt;
-  }
-
-  return event_type_names::kFencedtreeclick;
-}
-
 }  // namespace
 
 HTMLFencedFrameElement::HTMLFencedFrameElement(Document& document)
@@ -181,14 +175,14 @@ HTMLFencedFrameElement::ConstructContainerPolicy() const {
   }
 
   scoped_refptr<const SecurityOrigin> src_origin =
-      GetOriginForPermissionsPolicy();
-  scoped_refptr<const SecurityOrigin> self_origin =
+      MakeOriginForPermissionsPolicy();
+  const SecurityOrigin* self_origin =
       GetExecutionContext()->GetSecurityOrigin();
 
   PolicyParserMessageBuffer logger;
 
   network::ParsedPermissionsPolicy container_policy =
-      PermissionsPolicyParser::ParseAttribute(allow_, self_origin, src_origin,
+      PermissionsPolicyParser::ParseAttribute(allow_, *self_origin, *src_origin,
                                               logger, GetExecutionContext());
 
   for (const auto& message : logger.GetMessages()) {
@@ -238,7 +232,7 @@ void HTMLFencedFrameElement::setConfig(FencedFrameConfig* config) {
   if (config_) {
     NavigateToConfig();
   } else {
-    Navigate(BlankURL());
+    Navigate(BlankUrl());
   }
 }
 
@@ -344,8 +338,8 @@ void HTMLFencedFrameElement::ParseAttribute(
         GetDocument().AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
             mojom::blink::ConsoleMessageSource::kOther,
             mojom::blink::ConsoleMessageLevel::kError,
-            "Error while parsing the 'sandbox' attribute: " +
-                String::FromUTF8(parsed.error_message)));
+            StrCat({"Error while parsing the 'sandbox' attribute: ",
+                    String::FromUtf8(parsed.error_message)})));
       }
     }
     SetSandboxFlags(current_flags);
@@ -440,10 +434,10 @@ void HTMLFencedFrameElement::Navigate(
     GetDocument().AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
         mojom::blink::ConsoleMessageSource::kRendering,
         mojom::blink::ConsoleMessageLevel::kWarning,
-        "Cannot create a fenced frame with mode '" +
-            DeprecatedFencedFrameModeToString(GetDeprecatedMode()) +
-            "' nested in a fenced frame with mode '" +
-            DeprecatedFencedFrameModeToString(parent_mode) + "'."));
+        StrCat({"Cannot create a fenced frame with mode '",
+                DeprecatedFencedFrameModeToString(GetDeprecatedMode()),
+                "' nested in a fenced frame with mode '",
+                DeprecatedFencedFrameModeToString(parent_mode), "'."})));
     RecordFencedFrameCreationOutcome(
         FencedFrameCreationOutcome::kIncompatibleMode);
     return;
@@ -549,8 +543,8 @@ void HTMLFencedFrameElement::CreateDelegateAndNavigate() {
     return;
   if (GetDocument().IsPrerendering()) {
     GetDocument().AddPostPrerenderingActivationStep(
-        WTF::BindOnce(&HTMLFencedFrameElement::CreateDelegateAndNavigate,
-                      WrapWeakPersistent(this)));
+        BindOnce(&HTMLFencedFrameElement::CreateDelegateAndNavigate,
+                 WrapWeakPersistent(this)));
     return;
   }
 
@@ -805,16 +799,6 @@ void HTMLFencedFrameElement::OnResize(const PhysicalRect& content_rect) {
     DCHECK(!frozen_frame_size_);
     FreezeFrameSize(content_rect_->size, /*should_coerce_size=*/true);
   }
-}
-
-void HTMLFencedFrameElement::DispatchFencedEvent(
-    const WTF::String& event_type) {
-  std::optional<WTF::AtomicString> fenced_event_type =
-      ConvertEventTypeToFencedEventType(event_type);
-  CHECK(fenced_event_type.has_value());
-  // Note: This method sets isTrusted = true on the event object, to indicate
-  // that the event was dispatched by the browser.
-  DispatchEvent(*Event::CreateFenced(*fenced_event_type));
 }
 
 // START HTMLFencedFrameElement::FencedFrameDelegate

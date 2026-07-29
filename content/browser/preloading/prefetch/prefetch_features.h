@@ -9,27 +9,25 @@
 #include "base/metrics/field_trial_params.h"
 #include "content/common/content_export.h"
 
+namespace content {
+class BrowserContext;
+}  // namespace content
+
 namespace features {
+
+// Controls params for tests of prefetch.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchTesting);
+
+// The size limit of body size in bytes that can be reused in
+// `PrefetchDataPipeTee`.
+CONTENT_EXPORT extern const base::FeatureParam<int>
+    kPrefetchReusableBodySizeLimit;
 
 // This feature was used to launch the prefetch migration from embedder layer to
 // content/, and this work has finished and the old implemnetation was deleted.
 // Now this flag is just for injecting parameters through field trials as an
 // umberella feature.
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchUseContentRefactor);
-
-// If enabled, PrefetchContainer can be used for more than one navigation.
-// https://crbug.com/1449360
-//
-// TODO(crbug.com/397882995): Remove this.
-CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchReusable);
-
-// The size limit of body size in bytes that can be reused in
-// `kPrefetchReusable`.
-CONTENT_EXPORT extern const base::FeatureParam<int>
-    kPrefetchReusableBodySizeLimit;
-
-CONTENT_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
-                                          kPrefetchReusableUseNewWaitLoop);
 
 // If enabled, navigational prefetch is scoped to the referring document's
 // network isolation key instead of the old behavior of the referring document
@@ -65,27 +63,76 @@ CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchStateContaminationMitigation);
 CONTENT_EXPORT extern const base::FeatureParam<bool>
     kPrefetchStateContaminationSwapsBrowsingContextGroup;
 
-// If explicitly disabled, prefetch proxy is not used.
-BASE_DECLARE_FEATURE(kPrefetchProxy);
+// Enabling this will apply net::RequestPriority::MEDIUM for prefetch
+// requests triggered by embedders. See crbug.com/353628437 to track this issue.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchNetworkPriorityForEmbedders);
 
-// If enabled, responses with an operative Cookie-Indices will not be used
-// if the relevant cookie values have changed.
-CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchCookieIndices);
+// Enabling this will bupm net::RequestPriority once after the running prefetch
+// starts to be served.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(
+    kPrefetchBumpNetworkPriorityAfterBeingServed);
 
-// Does not enable any new behaviour; is only used to parameterize prefetch
-// limit values (see content/browser/preloading/prefetch/prefetch_params.cc).
-CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchNewLimits);
+// Allow prefetching ServiceWorker-controlled URLs.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchServiceWorker);
+bool IsPrefetchServiceWorkerEnabled(content::BrowserContext* browser_context);
 
-// If enabled, use the new wait loop, which is driven by
-// `PrefetchMatchResolver2` instead of `PrefetchService`.
+// Controls params for tests of `PrefetchScheduler`.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchSchedulerTesting);
+CONTENT_EXPORT extern const base::FeatureParam<size_t>
+    kPrefetchSchedulerTestingActiveSetSizeLimitForBase;
+CONTENT_EXPORT extern const base::FeatureParam<size_t>
+    kPrefetchSchedulerTestingActiveSetSizeLimitForBurst;
+
+// Controls field trials parameters for prefetch canary checker.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchCanaryCheckerParams);
+
+// Allows multiple base limit on `PrefetchScheduler`.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchMultipleActiveSetSizeLimitForBase);
+CONTENT_EXPORT extern const base::FeatureParam<size_t>
+    kPrefetchMultipleActiveSetSizeLimitForBaseValue;
+
+// Controls the limit for Eager prefetches.
+CONTENT_EXPORT
+BASE_DECLARE_FEATURE(kPrefetchEagerLimit);
+CONTENT_EXPORT extern const base::FeatureParam<size_t>
+    kMaxNumberOfEagerPrefetchesPerPage;
+
+// Controls the limit for Moderate prefetches.
+CONTENT_EXPORT
+BASE_DECLARE_FEATURE(kPrefetchModerateLimit);
+CONTENT_EXPORT extern const base::FeatureParam<size_t>
+    kMaxNumberOfModeratePrefetchesPerPage;
+
+// Force the off-the-main-thread prefetch code path for testing, to anyway
+// increase the test coverage of off-the-main-thread prefetch.
+// https://crbug.com/452389538
+// This is anyway expected to be incomplete, and expected deviations are
+// explicitly tracked in `TestExpectations` etc.
 //
-// TODO(crbug.com/353490734): Remove this.
-CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchNewWaitLoop);
+// To enable this, also enable `kPrefetchOffTheMainThread`.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchOffTheMainThreadForceForTesting);
 
-// Fix for prefetching a URL controlled by a ServiceWorker without fetch
-// handler. Currently this stops prefetching for such cases
-// (https://crbug.com/379076354).
-CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchServiceWorkerNoFetchHandlerFix);
+// Cancels unrelated prefetch when a navigation is started.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchCancelUnrelatedPrefetch);
+
+enum class PrefetchCancelUnrelatedPrefetchCancelPolicy {
+  // Cancel prefetches that are not servable.
+  kNotServable,
+  // Cancel prefetches that are not servable && initiated by the navigation's
+  // initiator document.
+  //
+  // Since browser-initiated navigations do not have an initiator document,
+  // no prefetches are cancelled for them.
+  kNotServableSameInitiatorDocument,
+};
+
+CONTENT_EXPORT extern const base::FeatureParam<
+    PrefetchCancelUnrelatedPrefetchCancelPolicy>
+    kPrefetchCancelUnrelatedPrefetchCancelPolicy;
+
+// Kill switch for making `PrefetchHandle`'s callbacks async.
+// TODO(crbug.com/480271813): Remove it after confirming stability.
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kPrefetchAsyncPrefetchHandleCallback);
 
 }  // namespace features
 

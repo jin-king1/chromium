@@ -9,6 +9,8 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.ResolveInfo;
 import android.graphics.Rect;
 import android.text.SpannableString;
 import android.util.DisplayMetrics;
@@ -26,6 +28,7 @@ import android.widget.PopupWindow.OnDismissListener;
 import android.widget.TextView;
 
 import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.base.PackageManagerUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.build.annotations.RequiresNonNull;
@@ -142,7 +145,7 @@ public abstract class SuggestionsPopupWindow
                 mContext.getResources()
                         .getDimensionPixelSize(R.dimen.text_suggestion_popup_vertical_margin);
 
-        mSuggestionListView = (ListView) mContentView.findViewById(R.id.suggestionContainer);
+        mSuggestionListView = mContentView.findViewById(R.id.suggestionContainer);
         // android:divider="@null" in the XML file crashes on Android N and O
         // when running as a WebView (b/38346876).
         mSuggestionListView.setDivider(null);
@@ -156,10 +159,10 @@ public abstract class SuggestionsPopupWindow
 
         mDivider = mContentView.findViewById(R.id.divider);
 
-        mAddToDictionaryButton = (TextView) mContentView.findViewById(R.id.addToDictionaryButton);
+        mAddToDictionaryButton = mContentView.findViewById(R.id.addToDictionaryButton);
         mAddToDictionaryButton.setOnClickListener(this);
 
-        mDeleteButton = (TextView) mContentView.findViewById(R.id.deleteButton);
+        mDeleteButton = mContentView.findViewById(R.id.deleteButton);
         mDeleteButton.setOnClickListener(this);
     }
 
@@ -187,11 +190,22 @@ public abstract class SuggestionsPopupWindow
         String wordToAdd = mHighlightedText;
         intent.putExtra(USER_DICTIONARY_EXTRA_WORD, wordToAdd);
         intent.setFlags(intent.getFlags() | Intent.FLAG_ACTIVITY_NEW_TASK);
-        mContext.startActivity(intent);
+
+        ResolveInfo resolveInfo = PackageManagerUtils.resolveActivity(intent, 0);
+        if (resolveInfo != null
+                && resolveInfo.activityInfo != null
+                && resolveInfo.activityInfo.applicationInfo != null) {
+            int flags = resolveInfo.activityInfo.applicationInfo.flags;
+            if ((flags & (ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_UPDATED_SYSTEM_APP))
+                    != 0) {
+                intent.setPackage(resolveInfo.activityInfo.packageName);
+                mContext.startActivity(intent);
+            }
+        }
     }
 
     private class SuggestionAdapter extends BaseAdapter {
-        private LayoutInflater mInflater =
+        private final LayoutInflater mInflater =
                 (LayoutInflater) mContext.getSystemService(Context.LAYOUT_INFLATER_SERVICE);
 
         @Override

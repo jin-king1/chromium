@@ -171,6 +171,7 @@ class OwningDelegate : public Delegate {
       : did_delete_(did_delete), model_(this) {
     model_.AddItem(1, u"foo");
     controller_ = [[WatchedLifetimeMenuController alloc] initWithModel:&model_
+                                                         isContextMenu:YES
                                                               delegate:nil];
     [controller_ setDeallocCalled:did_dealloc];
   }
@@ -226,6 +227,7 @@ TEST_F(MenuControllerTest, EmptyMenu) {
   Delegate delegate;
   SimpleMenuModel model(&delegate);
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   EXPECT_EQ(0, menu.menu.numberOfItems);
 }
@@ -241,6 +243,7 @@ TEST_F(MenuControllerTest, BasicCreation) {
   model.AddItem(5, u"five");
 
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   EXPECT_EQ(6, menu.menu.numberOfItems);
 
@@ -266,6 +269,7 @@ TEST_F(MenuControllerTest, Submenus) {
   model.AddItem(6, u"three");
 
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   EXPECT_EQ(3, menu.menu.numberOfItems);
 
@@ -299,6 +303,7 @@ TEST_F(MenuControllerTest, EmptySubmenu) {
   model.AddSubMenuWithStringId(2, kTestLabelResourceId, &submodel);
 
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   EXPECT_EQ(2, menu.menu.numberOfItems);
 
@@ -325,6 +330,7 @@ TEST_F(MenuControllerTest, EmptySubmenuWhenAllChildItemsAreHidden) {
   model.AddSubMenuWithStringId(4, kTestLabelResourceId, &submodel);
 
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   EXPECT_EQ(2, menu.menu.numberOfItems);
 
@@ -357,7 +363,9 @@ TEST_F(MenuControllerTest, HiddenSubmenu) {
 
   // Create the controller.
   MenuControllerCocoa* menu_controller =
-      [[MenuControllerCocoa alloc] initWithModel:&model delegate:nil];
+      [[MenuControllerCocoa alloc] initWithModel:&model
+                                   isContextMenu:YES
+                                        delegate:nil];
   EXPECT_EQ(2, menu_controller.menu.numberOfItems);
   delegate.menu_to_close_ = menu_controller.menu;
 
@@ -407,7 +415,9 @@ TEST_F(MenuControllerTest, DisabledSubmenu) {
 
   // Create the controller.
   MenuControllerCocoa* menu_controller =
-      [[MenuControllerCocoa alloc] initWithModel:&model delegate:nil];
+      [[MenuControllerCocoa alloc] initWithModel:&model
+                                   isContextMenu:YES
+                                        delegate:nil];
   delegate.menu_to_close_ = menu_controller.menu;
 
   // Show the menu.
@@ -446,16 +456,13 @@ TEST_F(MenuControllerTest, Execute) {
   SimpleMenuModel model(&delegate);
   model.AddItem(1, u"one");
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   EXPECT_EQ(1, menu.menu.numberOfItems);
 
   // Fake selecting the menu item, we expect the delegate to be told to execute
   // a command.
-  NSMenuItem* item = [menu.menu itemAtIndex:0];
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-  [item.target performSelector:item.action withObject:item];
-#pragma clang diagnostic pop
+  [menu.menu performActionForItemAtIndex:0];
   EXPECT_EQ(1, delegate.execute_count_);
 }
 
@@ -479,6 +486,7 @@ TEST_F(MenuControllerTest, Validate) {
   model.AddSubMenuWithStringId(3, kTestLabelResourceId, &submodel);
 
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   EXPECT_EQ(3, menu.menu.numberOfItems);
 
@@ -497,6 +505,7 @@ TEST_F(MenuControllerTest, LabelFontList) {
   model.AddItem(2, u"two");
 
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   EXPECT_EQ(2, menu.menu.numberOfItems);
 
@@ -517,6 +526,7 @@ TEST_F(MenuControllerTest, Dynamic) {
   SimpleMenuModel model(&delegate);
   model.AddItem(1, u"foo");
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   EXPECT_EQ(1, menu.menu.numberOfItems);
   // Validate() simulates opening the menu - the item label/icon should be
@@ -558,6 +568,7 @@ TEST_F(MenuControllerTest, OpenClose) {
 
   // Create the controller.
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
   delegate.menu_to_close_ = menu.menu;
 
@@ -611,7 +622,6 @@ TEST_F(MenuControllerTest, OwningDelegate) {
     delegate = new OwningDelegate(&did_delete, &did_dealloc);  // Self deleting.
     delegate->auto_close_ = false;
 
-    // Unretained reference to the controller.
     MenuControllerCocoa* controller = delegate->controller();
 
     item = [controller.menu itemAtIndex:0];
@@ -625,33 +635,17 @@ TEST_F(MenuControllerTest, OwningDelegate) {
   EXPECT_FALSE(did_dealloc);
   EXPECT_FALSE(did_delete);
 
-  // On 10.15+, [NSMenuItem target] indirectly causes an extra
-  // retain+autorelease of the target. That avoids bugs caused by the
-  // NSMenuItem's action causing destruction of the target, but also causes the
-  // NSMenuItem to get cleaned up later than this test expects. Deal with that
-  // by creating an explicit autorelease pool here.
+  // The `target` property of NSMenuItem is marked as weak, and therefore,
+  // accessing it turns it into a strong reference, with a corresponding release
+  // (or even autorelease) to come later. That's good to avoid bugs caused by
+  // the NSMenuItem's action causing destruction of the target, but also causes
+  // the NSMenuItem to get cleaned up later than this test expects. Deal with
+  // that by creating an explicit autorelease pool here.
   @autoreleasepool {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-    [item.target performSelector:item.action withObject:item];
-#pragma clang diagnostic pop
+    [item.menu performActionForItemAtIndex:0];
   }
   EXPECT_TRUE(did_dealloc);
   EXPECT_TRUE(did_delete);
-}
-
-// Tests to make sure that when |-initWithModel:| is called the menu is
-// constructed.
-TEST_F(MenuControllerTest, InitBuildsMenu) {
-  Delegate delegate;
-  SimpleMenuModel model(&delegate);
-  model.AddItem(1, u"one");
-  model.AddItem(2, u"two");
-  model.AddItem(3, u"three");
-
-  MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
-                                                                delegate:nil];
-  EXPECT_TRUE([menu isMenuBuiltForTesting]);
 }
 
 // Tests that Windows-style ampersand mnemonics are stripped by default, but
@@ -664,6 +658,7 @@ TEST_F(MenuControllerTest, Ampersands) {
   model.SetMayHaveMnemonicsAt(1, false);
 
   MenuControllerCocoa* menu = [[MenuControllerCocoa alloc] initWithModel:&model
+                                                           isContextMenu:YES
                                                                 delegate:nil];
 
   EXPECT_NSEQ([menu.menu itemAtIndex:0].title, @"New");

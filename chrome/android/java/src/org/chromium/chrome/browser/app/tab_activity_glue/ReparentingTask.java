@@ -12,18 +12,18 @@ import android.os.Bundle;
 import android.provider.Browser;
 import android.text.TextUtils;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.UserData;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
+import org.chromium.chrome.browser.customtabs.PopupCreatorFactory;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
@@ -33,6 +33,7 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 
 /** Takes care of reparenting a Tab object from one Activity to another. */
+@NullMarked
 public class ReparentingTask implements UserData {
     public static final String TAG = "ReparentingTask";
 
@@ -44,8 +45,7 @@ public class ReparentingTask implements UserData {
          *
          * <p>Can be null if the CompositorViewHolder does not yet exist.
          */
-        @Nullable
-        CompositorViewHolder getCompositorViewHolder();
+        @Nullable CompositorViewHolder getCompositorViewHolder();
 
         /**
          * Gets a {@link WindowAndroid} which is passed on to {@link ReparentingTask}, used in the
@@ -57,7 +57,7 @@ public class ReparentingTask implements UserData {
          * Gets a {@link TabDelegateFactory} which is passed on to {@link ReparentingTask}, used in
          * the reparenting process.
          */
-        TabDelegateFactory getTabDelegateFactory();
+        @Nullable TabDelegateFactory getTabDelegateFactory();
     }
 
     private static final Class<ReparentingTask> USER_DATA_KEY = ReparentingTask.class;
@@ -66,8 +66,7 @@ public class ReparentingTask implements UserData {
 
     /**
      * @param tab {@link Tab} object.
-     * @return {@link ReparentingTask} object for a given {@link Tab}. Creates one
-     *         if not present.
+     * @return {@link ReparentingTask} object for a given {@link Tab}. Creates one if not present.
      */
     public static ReparentingTask from(Tab tab) {
         ReparentingTask reparentingTask = get(tab);
@@ -90,6 +89,9 @@ public class ReparentingTask implements UserData {
      * Begins the tab reparenting process. Detaches the tab from its current activity and fires an
      * Intent to reparent the tab into its new host activity.
      *
+     * <p>This may return early and revert any actions performed on the {@link Tab} object
+     * associated with this {@link ReparentingTask}, if launching the intent was not successful.
+     *
      * @param context {@link Context} object used to start a new activity.
      * @param intent An optional intent with the desired component, flags, or extras to use when
      *     launching the new host activity. This intent's URI and action will be overridden. This
@@ -97,14 +99,24 @@ public class ReparentingTask implements UserData {
      * @param startActivityOptions Options to pass to {@link Activity#startActivity(Intent, Bundle)}
      * @param finalizeCallback A callback that will be called after the tab is attached to the new
      *     host activity in {@link #attachAndFinishReparenting}.
+     * @return {@code true}, if the intent was successfully launched; {@code false} otherwise.
      */
-    public void begin(
-            Context context,
+    public boolean begin(
+            @Nullable Context context,
             Intent intent,
-            Bundle startActivityOptions,
-            Runnable finalizeCallback) {
+            @Nullable Bundle startActivityOptions,
+            @Nullable Runnable finalizeCallback) {
+        if (context == null) return false;
+        final WindowAndroid originalWindow = mTab.getWindowAndroidChecked();
         setupIntent(intent, finalizeCallback);
-        context.startActivity(intent, startActivityOptions);
+
+        if (!PopupCreatorFactory.getInstance()
+                .tryStartActivity(context, intent, startActivityOptions)) {
+            finishAsNoOp(originalWindow);
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -116,7 +128,7 @@ public class ReparentingTask implements UserData {
      * @param finalizeCallback A callback that will be called after the tab is attached to the new
      *     host activity in {@link #attachAndFinishReparenting}.
      */
-    public void setupIntent(Intent intent, Runnable finalizeCallback) {
+    public void setupIntent(Intent intent, @Nullable Runnable finalizeCallback) {
         if (intent == null) intent = new Intent();
         if (intent.getComponent() == null) {
             intent.setClass(ContextUtils.getApplicationContext(), ChromeLauncherActivity.class);
@@ -134,8 +146,9 @@ public class ReparentingTask implements UserData {
         IntentUtils.addTrustedIntentExtras(intent);
 
         // Add the tab to AsyncTabParamsManager before removing it from the current model to
-        // ensure the global count of tabs is correct. See https://crbug.com/611806.
+        // ensure the global count of tabs is correct. See https://crbug.com/40469243.
         IntentHandler.setTabId(intent, mTab.getId());
+        IntentHandler.setPinnedState(intent, mTab.getIsPinned());
         AsyncTabParamsManagerSingleton.getInstance()
                 .add(mTab.getId(), new TabReparentingParams(mTab, finalizeCallback));
 
@@ -152,7 +165,7 @@ public class ReparentingTask implements UserData {
     public void detach() {
         // TODO(yusufo): We can't call tab.updateWindowAndroid that sets |mWindowAndroid| to null
         // because many code paths (including navigation) expect the tab to always be associated
-        // with an activity, and will crash. crbug.com/657007
+        // with an activity, and will crash. crbug.com/40489451
         WebContents webContents = mTab.getWebContents();
 
         // TODO(crbug.com/40067160): We shouldn't be detaching tabs with null WebContents as it can
@@ -177,7 +190,7 @@ public class ReparentingTask implements UserData {
      * @param delegate A delegate that provides dependencies.
      * @param finalizeCallback A Callback to be called after the Tab has been reparented.
      */
-    public void finish(@NonNull Delegate delegate, @Nullable Runnable finalizeCallback) {
+    public void finish(Delegate delegate, @Nullable Runnable finalizeCallback) {
         if (delegate.getCompositorViewHolder() != null) {
             delegate.getCompositorViewHolder().prepareForTabReparenting();
         }
@@ -193,13 +206,39 @@ public class ReparentingTask implements UserData {
      * @param window A new {@link WindowAndroid} to attach the tab to.
      * @param tabDelegateFactory  The new delegate factory this tab should be using.
      */
-    private void attach(WindowAndroid window, TabDelegateFactory tabDelegateFactory) {
+    private void attach(WindowAndroid window, @Nullable TabDelegateFactory tabDelegateFactory) {
         // Assert that the tab is currently in detached state.
         assert mTab.getWebContents() == null
                 || mTab.getWebContents().getTopLevelNativeWindow() == null;
         mTab.updateAttachment(window, tabDelegateFactory);
         if (mTab.getWebContents() == null) return;
         ReparentingTaskJni.get().attachTab(mTab.getWebContents());
+    }
+
+    private void finishAsNoOp(WindowAndroid originalWindow) {
+        AsyncTabParamsManagerSingleton.getInstance().remove(mTab.getId());
+        finish(
+                new Delegate() {
+                    @Override
+                    public @Nullable CompositorViewHolder getCompositorViewHolder() {
+                        return null;
+                    }
+
+                    @Override
+                    public WindowAndroid getWindowAndroid() {
+                        return originalWindow;
+                    }
+
+                    @Override
+                    public @Nullable TabDelegateFactory getTabDelegateFactory() {
+                        return null;
+                    }
+                },
+                null);
+    }
+
+    public Tab getTabForTesting() {
+        return mTab;
     }
 
     @NativeMethods

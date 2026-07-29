@@ -19,9 +19,11 @@ namespace content {
 using perfetto::protos::pbzero::ChromeTrackEvent;
 
 BatchedProxyIPCSender::BatchedProxyIPCSender(
-    base::SafeRef<RenderFrameProxyHost> root_proxy)
-    : root_proxy_host_(root_proxy) {
-  DCHECK(!root_proxy->frame_tree_node()->parent());
+    base::SafeRef<RenderFrameProxyHost> root_proxy,
+    const std::optional<base::UnguessableToken>& navigation_metrics_token)
+    : root_proxy_host_(root_proxy),
+      navigation_metrics_token_(navigation_metrics_token) {
+  CHECK(!root_proxy->frame_tree_node()->parent(), base::NotFatalUntil::M152);
 }
 
 BatchedProxyIPCSender::~BatchedProxyIPCSender() {}
@@ -67,7 +69,7 @@ void BatchedProxyIPCSender::CreateAllProxies() {
   }
 
   root_proxy_host_->GetAssociatedRemoteFrame()->CreateRemoteChildren(
-      std::move(create_remote_children_params_));
+      std::move(create_remote_children_params_), navigation_metrics_token_);
 
   for (const auto& proxy_host : proxy_hosts_) {
     proxy_host->SetRenderFrameProxyCreated(true);

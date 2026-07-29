@@ -50,8 +50,7 @@ void MirrorChildren(ui::Layer* to_mirror,
                     ui::Layer* parent,
                     bool sync_bounds) {
   for (ui::Layer* child : to_mirror->children()) {
-    ui::Layer* mirror = child->Mirror().release();
-    mirror->set_sync_bounds_with_source(sync_bounds);
+    ui::Layer* mirror = child->Mirror({.sync_bounds = sync_bounds}).release();
     parent->Add(mirror);
     MirrorChildren(child, mirror, sync_bounds);
   }
@@ -110,7 +109,7 @@ void SetWindowFullscreen(aura::Window* window,
     // return the primary display by default.
     int64_t current_display_id =
         window->GetRootWindow()
-            ? display::Screen::GetScreen()->GetDisplayNearestWindow(window).id()
+            ? display::Screen::Get()->GetDisplayNearestWindow(window).id()
             : display::kInvalidDisplayId;
     if (is_fullscreen && target_display_id == current_display_id) {
       // Already fullscreened on the target display.

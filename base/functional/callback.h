@@ -22,7 +22,6 @@
 #include "base/functional/callback_tags.h"
 #include "base/functional/function_ref.h"
 #include "base/notreached.h"
-#include "base/types/always_false.h"
 
 // -----------------------------------------------------------------------------
 // Usage documentation
@@ -166,6 +165,9 @@ class TRIVIAL_ABI OnceCallback<R(Args...)> {
   // Since this method generates a callback that is a replacement for `this`,
   // `this` will be consumed and reset to a null callback to ensure the
   // originally-bound functor can be run at most once.
+  //
+  // Note that the |then| callback is still invoked even if the original
+  // callback is cancelled by the time of invoking the chained callback.
   template <typename ThenR, typename... ThenArgs>
   OnceCallback<ThenR(Args...)> Then(OnceCallback<ThenR(ThenArgs...)> then) && {
     CHECK(then);
@@ -255,7 +257,7 @@ class TRIVIAL_ABI OnceCallback<R(Args...)> {
   // NOLINTNEXTLINE(google-explicit-constructor)
   operator FunctionRef<Signature>() & {
     static_assert(
-        AlwaysFalse<Signature>,
+        false,
         "need to convert a base::OnceCallback to base::FunctionRef? "
         "Please bring up this use case on #cxx (Slack) or cxx@chromium.org.");
   }
@@ -264,7 +266,7 @@ class TRIVIAL_ABI OnceCallback<R(Args...)> {
   // NOLINTNEXTLINE(google-explicit-constructor)
   operator FunctionRef<Signature>() && {
     static_assert(
-        AlwaysFalse<Signature>,
+        false,
         "using base::BindOnce() is not necessary with base::FunctionRef; is it "
         "possible to use a capturing lambda directly? If not, please bring up "
         "this use case on #cxx (Slack) or cxx@chromium.org.");
@@ -452,7 +454,7 @@ class TRIVIAL_ABI RepeatingCallback<R(Args...)> {
     requires(std::is_void_v<R>)
   {
     *this = internal::ToDoNothingCallback<false, R, Args...>(std::move(tag));
-    return this;
+    return *this;
   }
 
   // Internal constructor for `base::BindRepeating()`.
@@ -463,7 +465,7 @@ class TRIVIAL_ABI RepeatingCallback<R(Args...)> {
   // NOLINTNEXTLINE(google-explicit-constructor)
   operator FunctionRef<Signature>() & {
     static_assert(
-        AlwaysFalse<Signature>,
+        false,
         "need to convert a base::RepeatingCallback to base::FunctionRef? "
         "Please bring up this use case on #cxx (Slack) or cxx@chromium.org.");
   }
@@ -472,7 +474,7 @@ class TRIVIAL_ABI RepeatingCallback<R(Args...)> {
   // NOLINTNEXTLINE(google-explicit-constructor)
   operator FunctionRef<Signature>() && {
     static_assert(
-        AlwaysFalse<Signature>,
+        false,
         "using base::BindRepeating() is not necessary with base::FunctionRef; "
         "is it possible to use a capturing lambda directly? If not, please "
         "bring up this use case on #cxx (Slack) or cxx@chromium.org.");
@@ -498,11 +500,12 @@ auto ToDoNothingCallback(
   return std::apply(
       [](auto&&... args) {
         if constexpr (is_once) {
-          return BindOnce([](TransformToUnwrappedType<is_once, BoundArgs>...,
-                             UnboundArgs...) {},
-                          std::move(args)...);
+          return base::BindOnce(
+              [](TransformToUnwrappedType<is_once, BoundArgs>...,
+                 UnboundArgs...) {},
+              std::move(args)...);
         } else {
-          return BindRepeating(
+          return base::BindRepeating(
               [](TransformToUnwrappedType<is_once, BoundArgs>...,
                  UnboundArgs...) {},
               std::move(args)...);

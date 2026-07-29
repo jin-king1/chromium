@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.offlinepages;
 import androidx.annotation.Nullable;
 
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 import org.junit.Assert;
 
@@ -55,14 +56,13 @@ public class OfflineTestUtil {
 
     // Gets all available offline pages.
     public static List<OfflinePageItem> getAllPages() throws TimeoutException {
-        final AtomicReference<List<OfflinePageItem>> result =
-                new AtomicReference<List<OfflinePageItem>>();
+        final AtomicReference<List<OfflinePageItem>> result = new AtomicReference<>();
         final CallbackHelper callbackHelper = new CallbackHelper();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     OfflineTestUtilJni.get()
                             .getAllPages(
-                                    new ArrayList<OfflinePageItem>(),
+                                    new ArrayList<>(),
                                     (List<OfflinePageItem> items) -> {
                                         result.set(items);
                                         callbackHelper.notifyCalled();
@@ -76,7 +76,7 @@ public class OfflineTestUtil {
     // For logging out to debug test failures.
     public static String dumpRequestCoordinatorState() throws TimeoutException {
         final CallbackHelper callbackHelper = new CallbackHelper();
-        final AtomicReference<String> result = new AtomicReference<String>();
+        final AtomicReference<String> result = new AtomicReference<>();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     OfflineTestUtilJni.get()
@@ -104,8 +104,7 @@ public class OfflineTestUtil {
     // Returns all OfflineItems provided by the OfflineContentProvider.
     public static List<OfflineItem> getOfflineItems() throws TimeoutException {
         CallbackHelper finished = new CallbackHelper();
-        final AtomicReference<ArrayList<OfflineItem>> result =
-                new AtomicReference<ArrayList<OfflineItem>>();
+        final AtomicReference<ArrayList<OfflineItem>> result = new AtomicReference<>();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     OfflineContentAggregatorFactory.get()
@@ -139,7 +138,7 @@ public class OfflineTestUtil {
     // Waits for the offline model to initialize and returns an OfflinePageBridge.
     public static OfflinePageBridge getOfflinePageBridge() throws TimeoutException {
         final CallbackHelper ready = new CallbackHelper();
-        final AtomicReference<OfflinePageBridge> result = new AtomicReference<OfflinePageBridge>();
+        final AtomicReference<OfflinePageBridge> result = new AtomicReference<>();
         PostTask.runOrPostTask(
                 TaskTraits.UI_DEFAULT,
                 () -> {
@@ -197,18 +196,21 @@ public class OfflineTestUtil {
         void getRequestsInQueue(Callback<SavePageRequest[]> callback);
 
         void getAllPages(
-                List<OfflinePageItem> offlinePages, final Callback<List<OfflinePageItem>> callback);
+                List<OfflinePageItem> offlinePages, Callback<List<OfflinePageItem>> callback);
 
         void getRawThumbnail(long offlineId, Callback<byte[]> callback);
 
         void startRequestCoordinatorProcessing();
 
-        void interceptWithOfflineError(String url, Runnable readyRunnable);
+        void interceptWithOfflineError(
+                @JniType("std::string") String url,
+                @JniType("base::OnceClosure") Runnable readyRunnable);
 
         void clearIntercepts();
 
         void dumpRequestCoordinatorState(Callback<String> callback);
 
-        void waitForConnectivityState(boolean connected, Runnable callback);
+        void waitForConnectivityState(
+                boolean connected, @JniType("base::OnceClosure") Runnable callback);
     }
 }

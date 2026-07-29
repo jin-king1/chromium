@@ -4,15 +4,11 @@
 
 #include "chrome/browser/ui/views/page_action/page_action_icon_loading_indicator_view.h"
 
-#include "base/location.h"
-#include "base/time/default_tick_clock.h"
-#include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/theme_provider.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/paint_throbber.h"
+#include "ui/views/property_effects.h"
 
 PageActionIconLoadingIndicatorView::PageActionIconLoadingIndicatorView(
     PageActionIconView* parent)
@@ -39,7 +35,7 @@ void PageActionIconLoadingIndicatorView::SetAnimating(bool animating) {
     throbber_start_time_.reset();
     animation_.Reset();
   }
-  OnPropertyChanged(&throbber_start_time_, views::kPropertyEffectsNone);
+  OnPropertyChanged(&throbber_start_time_, views::PropertyEffects::kNone);
 }
 
 bool PageActionIconLoadingIndicatorView::GetAnimating() const {

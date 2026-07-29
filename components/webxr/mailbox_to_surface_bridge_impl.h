@@ -9,11 +9,11 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
+#include "components/viz/common/resources/shared_image_format.h"
 #include "device/vr/android/mailbox_to_surface_bridge.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/common/sync_token.h"
 #include "gpu/ipc/common/surface_handle.h"
-#include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/gpu_fence.h"
 #include "ui/gl/android/scoped_java_surface.h"
 
@@ -53,25 +53,29 @@ class MailboxToSurfaceBridgeImpl : public device::MailboxToSurfaceBridge {
   // (except when marked otherwise).
   void GenSyncToken(gpu::SyncToken* out_sync_token) override;
 
+  void VerifySyncToken(gpu::SyncToken& out_sync_token) override;
+
   void WaitSyncToken(const gpu::SyncToken& sync_token) override;
 
   void WaitForClientGpuFence(gfx::GpuFence&) override;
 
-  void CreateGpuFence(const gpu::SyncToken& sync_token,
-                      base::OnceCallback<void(std::unique_ptr<gfx::GpuFence>)>
+  void CreateGpuFence(base::OnceCallback<void(std::unique_ptr<gfx::GpuFence>)>
                           callback) override;
 
   scoped_refptr<gpu::ClientSharedImage> CreateSharedImage(
       gfx::GpuMemoryBufferHandle buffer_handle,
-      gfx::BufferFormat buffer_format,
+      viz::SharedImageFormat format,
       const gfx::Size& size,
       const gfx::ColorSpace& color_space,
+      GrSurfaceOrigin surface_origin,
       gpu::SharedImageUsageSet usage,
       gpu::SyncToken& sync_token) override;
 
   void DestroySharedImage(
       const gpu::SyncToken& sync_token,
       scoped_refptr<gpu::ClientSharedImage> shared_image) override;
+
+  viz::ContextProvider* GetContextProvider() override;
 
  private:
   void BindContextProviderToCurrentThread();

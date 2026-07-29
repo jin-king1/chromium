@@ -4,7 +4,10 @@
 
 #include "components/optimization_guide/core/model_quality/model_quality_logs_uploader_service.h"
 
+#include <string>
+
 #include "base/command_line.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/trace_event/trace_event.h"
@@ -12,15 +15,15 @@
 #include "components/optimization_guide/core/feature_registry/mqls_feature_registry.h"
 #include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
-#include "components/optimization_guide/core/model_execution/model_execution_util.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/model_quality/model_quality_util.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
+#include "components/optimization_guide/optimization_guide_buildflags.h"
+#include "components/optimization_guide/proto/model_quality_metadata.pb.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/variations/net/variations_http_headers.h"
@@ -37,6 +40,9 @@ namespace optimization_guide {
 
 namespace {
 
+const char kOptimizationGuideServiceModelQualityDefaultURL[] =
+    "https://chromemodelquality-pa.googleapis.com/v1:LogAiData";
+
 void RecordUploadStatusHistogram(proto::LogAiDataRequest::FeatureCase feature,
                                  ModelQualityLogsUploadStatus status) {
   const MqlsFeatureMetadata* metadata =
@@ -47,17 +53,6 @@ void RecordUploadStatusHistogram(proto::LogAiDataRequest::FeatureCase feature,
           {"OptimizationGuide.ModelQualityLogsUploaderService.UploadStatus.",
            metadata->name()}),
       status);
-}
-
-// Returns the URL endpoint for the model quality service along with the needed
-// API key.
-GURL GetModelQualityLogsUploaderServiceURL() {
-  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(switches::kModelQualityServiceURL)) {
-    return GURL(
-        command_line->GetSwitchValueASCII(switches::kModelQualityServiceURL));
-  }
-  return GURL(kOptimizationGuideServiceModelQualtiyDefaultURL);
 }
 
 // Sets user feedback for the ModelExecutionFeature corresponding to the
@@ -79,16 +74,16 @@ void RecordUserFeedbackHistogram(proto::LogAiDataRequest* log_ai_data_request) {
 void OnURLLoadComplete(
     std::unique_ptr<network::SimpleURLLoader> active_url_loader,
     proto::LogAiDataRequest::FeatureCase feature,
-    std::unique_ptr<std::string> response_body) {
+    scoped_refptr<net::HttpResponseHeaders> headers) {
   CHECK(active_url_loader) << "loader shouldn't be null\n";
-  TRACE_EVENT1("browser", "ModelQualityLogsUploaderService::OnURLLoadComplete",
-               "feature", feature);
+  TRACE_EVENT("optimization_guide",
+              "ModelQualityLogsUploaderService::OnURLLoadComplete", "feature",
+              feature);
 
   auto net_error = active_url_loader->NetError();
   int response_code = -1;
-  if (active_url_loader->ResponseInfo() &&
-      active_url_loader->ResponseInfo()->headers) {
-    response_code = active_url_loader->ResponseInfo()->headers->response_code();
+  if (headers) {
+    response_code = headers->response_code();
 
     // Only record response code when there are headers.
     base::UmaHistogramSparse(
@@ -110,33 +105,16 @@ void OnURLLoadComplete(
                               ModelQualityLogsUploadStatus::kUploadSuccessful);
 }
 
-proto::PerformanceClass GetPerformanceClass(PrefService* local_state) {
-  int value = local_state->GetInteger(
-      model_execution::prefs::localstate::kOnDevicePerformanceClass);
-  OnDeviceModelPerformanceClass performance_class =
-      static_cast<OnDeviceModelPerformanceClass>(value);
-  switch (performance_class) {
-    case OnDeviceModelPerformanceClass::kVeryLow:
-      return proto::PERFORMANCE_CLASS_VERY_LOW;
-    case OnDeviceModelPerformanceClass::kLow:
-      return proto::PERFORMANCE_CLASS_LOW;
-    case OnDeviceModelPerformanceClass::kMedium:
-      return proto::PERFORMANCE_CLASS_MEDIUM;
-    case OnDeviceModelPerformanceClass::kHigh:
-      return proto::PERFORMANCE_CLASS_HIGH;
-    case OnDeviceModelPerformanceClass::kVeryHigh:
-      return proto::PERFORMANCE_CLASS_VERY_HIGH;
-    case OnDeviceModelPerformanceClass::kUnknown:
-    case OnDeviceModelPerformanceClass::kError:
-    case OnDeviceModelPerformanceClass::kServiceCrash:
-    case OnDeviceModelPerformanceClass::kGpuBlocked:
-    case OnDeviceModelPerformanceClass::kFailedToLoadLibrary:
-      return proto::PERFORMANCE_CLASS_UNSPECIFIED;
-  }
-  return proto::PERFORMANCE_CLASS_UNSPECIFIED;
-}
-
 }  // namespace
+
+GURL GetModelQualityLogsUploaderServiceURL() {
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(switches::kModelQualityServiceURL)) {
+    return GURL(
+        command_line->GetSwitchValueASCII(switches::kModelQualityServiceURL));
+  }
+  return GURL(kOptimizationGuideServiceModelQualityDefaultURL);
+}
 
 ModelQualityLogsUploaderService::ModelQualityLogsUploaderService(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
@@ -160,6 +138,10 @@ bool ModelQualityLogsUploaderService::CanUploadLogs(
 
 void ModelQualityLogsUploaderService::SetSystemMetadata(
     proto::LoggingMetadata* logging_metadata) {}
+
+proto::PerformanceClass ModelQualityLogsUploaderService::GetPerformanceClass() {
+  return proto::PERFORMANCE_CLASS_UNSPECIFIED;
+}
 
 void ModelQualityLogsUploaderService::SetUrlLoaderFactoryForTesting(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
@@ -200,7 +182,7 @@ void ModelQualityLogsUploaderService::UploadModelQualityLogs(
 
   SetSystemMetadata(logging_metadata);
 
-  proto::PerformanceClass perf_class = GetPerformanceClass(pref_service_);
+  proto::PerformanceClass perf_class = GetPerformanceClass();
   if (perf_class != proto::PERFORMANCE_CLASS_UNSPECIFIED) {
     logging_metadata->mutable_on_device_system_profile()->set_performance_class(
         perf_class);
@@ -294,10 +276,22 @@ void ModelQualityLogsUploaderService::UploadFinalizedLog(
                                            "application/x-protobuf");
 
   auto* active_url_loader_ptr = active_url_loader.get();
-  active_url_loader_ptr->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+  // Use `DownloadHeadersOnly()` here since we only need the response code and
+  // not the response body in `OnURLLoadComplete()`.
+  active_url_loader_ptr->DownloadHeadersOnly(
       url_loader_factory_.get(),
       base::BindOnce(&OnURLLoadComplete, std::move(active_url_loader),
                      feature));
+}
+
+void ModelQualityLogsUploaderService::SetMqlsLogForWebUI(
+    optimization_guide_internals::mojom::MqlsLogPtr log) {
+  mqls_logs_for_web_ui_.push_back(std::move(log));
+}
+
+std::vector<optimization_guide_internals::mojom::MqlsLogPtr>
+ModelQualityLogsUploaderService::GetMqlsLogsForWebUI() {
+  return std::move(mqls_logs_for_web_ui_);
 }
 
 }  // namespace optimization_guide

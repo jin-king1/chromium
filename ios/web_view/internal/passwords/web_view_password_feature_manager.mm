@@ -6,25 +6,22 @@
 
 #import "base/notreached.h"
 #import "components/password_manager/core/browser/features/password_manager_features_util.h"
-#import "components/prefs/pref_service.h"
 #import "components/sync/service/sync_service.h"
 
 namespace ios_web_view {
 WebViewPasswordFeatureManager::WebViewPasswordFeatureManager(
-    PrefService* pref_service,
     const syncer::SyncService* sync_service)
-    : pref_service_(pref_service), sync_service_(sync_service) {}
+    : sync_service_(sync_service) {}
 
 bool WebViewPasswordFeatureManager::IsGenerationEnabled() const {
   return true;
 }
 
-bool WebViewPasswordFeatureManager::IsAccountStorageEnabled() const {
+bool WebViewPasswordFeatureManager::IsAccountStorageActive() const {
   // Although ios/web_view will only write to the account store, this should
   // still be controlled on a per user basis to ensure that the logged out user
   // remains with account storage disabled.
-  return password_manager::features_util::IsAccountStorageEnabled(
-      pref_service_, sync_service_);
+  return password_manager::features_util::IsAccountStorageActive(sync_service_);
 }
 
 password_manager::features_util::PasswordAccountStorageUsageLevel

@@ -13,6 +13,7 @@
 #include "base/dcheck_is_on.h"
 #include "base/location.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/threading/scoped_thread_priority.h"
 #include "base/trace_event/trace_event.h"
@@ -82,6 +83,10 @@ base::TimeTicks CommonStartupMetricRecorder::MainEntryPointTicks() const {
   return chrome_main_entry_ticks_;
 }
 
+bool CommonStartupMetricRecorder::DidRecordPreRead() const {
+  return !preread_begin_ticks_.is_null();
+}
+
 base::TimeTicks CommonStartupMetricRecorder::StartupTimeToTimeTicks(
     base::Time time) {
   // First get a base which represents the same point in time in both units.
@@ -98,7 +103,7 @@ base::TimeTicks CommonStartupMetricRecorder::StartupTimeToTimeTicks(
   static bool statics_initialized = false;
   if (!statics_initialized) {
     statics_initialized = true;
-    scoped_boost_priority.emplace(base::ThreadType::kDisplayCritical);
+    scoped_boost_priority.emplace(base::ThreadType::kPresentation);
   }
 #endif  // !BUILDFLAG(IS_APPLE)
 
@@ -118,8 +123,8 @@ void CommonStartupMetricRecorder::AddStartupEventsForTelemetry() {
     return;
   }
 
-  TRACE_EVENT_INSTANT_WITH_TIMESTAMP0(
-      "startup", "Startup.BrowserMainEntryPoint", 0, chrome_main_entry_ticks_);
+  TRACE_EVENT_INSTANT("startup", "Startup.BrowserMainEntryPoint",
+                      chrome_main_entry_ticks_);
 }
 
 #if DCHECK_IS_ON()

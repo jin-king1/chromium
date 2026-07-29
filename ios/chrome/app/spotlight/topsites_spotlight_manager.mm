@@ -17,11 +17,11 @@
 #import "ios/chrome/app/spotlight/searchable_item_factory.h"
 #import "ios/chrome/app/spotlight/spotlight_interface.h"
 #import "ios/chrome/app/spotlight/spotlight_logger.h"
+#import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_large_icon_service_factory.h"
 #import "ios/chrome/browser/history/model/top_sites_factory.h"
 #import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
-#import "ios/chrome/browser/ui/content_suggestions/cells/most_visited_tiles_mediator.h"
 
 class SpotlightTopSitesBridge;
 class SpotlightTopSitesCallbackBridge;
@@ -177,7 +177,7 @@ class SpotlightTopSitesBridge : public history::TopSitesObserver {
 - (void)onMostVisitedURLsAvailable:
     (const history::MostVisitedURLList&)top_sites {
   NSUInteger sitesToIndex =
-      MIN(top_sites.size(), [MostVisitedTilesMediator maxSitesShown]);
+      MIN(top_sites.size(), kContentSuggestionsMostVisitedTilesMax);
   for (size_t i = 0; i < sitesToIndex; i++) {
     const GURL& URL = top_sites[i].url;
 

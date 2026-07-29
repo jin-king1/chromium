@@ -7,6 +7,8 @@
 
 #include <unicode/ubidi.h>
 
+#include <utility>
+
 #include "base/check_op.h"
 #include "base/dcheck_is_on.h"
 #include "base/memory/stack_allocated.h"
@@ -15,6 +17,7 @@
 #include "third_party/blink/renderer/core/layout/inline/fragment_item.h"
 #include "third_party/blink/renderer/core/layout/inline/fragment_items.h"
 #include "third_party/blink/renderer/core/layout/style_variant.h"
+#include "third_party/blink/renderer/platform/geometry/physical_offset.h"
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
@@ -28,15 +31,16 @@ class FragmentItems;
 class InlineBackwardCursor;
 class InlineBreakToken;
 class InlineCursor;
+class InlineItem;
 class InlinePaintContext;
 class LayoutBlockFlow;
 class LayoutInline;
 class LayoutObject;
+class LayoutText;
 class Node;
 class PhysicalBoxFragment;
 class ShapeResultView;
 struct LayoutSelectionStatus;
-struct PhysicalOffset;
 struct PhysicalRect;
 struct PhysicalSize;
 
@@ -58,9 +62,6 @@ class CORE_EXPORT InlineCursorPosition {
 
   bool operator==(const InlineCursorPosition& other) const {
     return item_ == other.item_;
-  }
-  bool operator!=(const InlineCursorPosition& other) const {
-    return !operator==(other);
   }
 
   // True if the current position is a text. It is error to call at end.
@@ -89,6 +90,9 @@ class CORE_EXPORT InlineCursorPosition {
   // True if the current position is an empty line box. It is error to call
   // other then line box.
   bool IsEmptyLineBox() const { return item_->IsEmptyLineBox(); }
+
+  // True if the current position is a ruby annotation line box.
+  bool IsRubyAnnotationLine() const { return item_->IsRubyAnnotationLine(); }
 
   // True if the current position is an inline box. It is error to call at end.
   bool IsInlineBox() const { return item_->IsInlineBox(); }
@@ -224,6 +228,13 @@ class CORE_EXPORT InlineCursorPosition {
   // True if current position is part of culled inline box |layout_inline|.
   bool IsPartOfCulledInlineBox(const LayoutInline& layout_inline) const;
 
+  // Returns the inline items associated with the given `LayoutText`.
+  // The second element of the pair is true if the items are first-line items,
+  // which are shared among multiple `LayoutText`s and need to be filtered
+  // by the layout object.
+  std::pair<base::span<const Member<InlineItem>>, bool> InlineItemsFor(
+      const LayoutText& layout_text) const;
+
   const FragmentItem* item_ = nullptr;
   ItemsSpan::iterator item_iter_;
 
@@ -255,9 +266,6 @@ class CORE_EXPORT InlineCursor {
   InlineCursor() = default;
 
   bool operator==(const InlineCursor& other) const;
-  bool operator!=(const InlineCursor& other) const {
-    return !operator==(other);
-  }
 
   // True if this cursor has the root to traverse. Only the default constructor
   // creates a cursor without the root.
@@ -317,9 +325,6 @@ class CORE_EXPORT InlineCursor {
 
   // |Current*| functions return an object for the current position.
   const FragmentItem* CurrentItem() const { return Current().Item(); }
-  LayoutObject* CurrentMutableLayoutObject() const {
-    return Current().GetMutableLayoutObject();
-  }
 
   // Returns text of the current position. It is error to call other than
   // text.
@@ -334,36 +339,11 @@ class CORE_EXPORT InlineCursor {
       const LayoutSelectionStatus& selection_status) const;
   PhysicalRect CurrentLocalSelectionRectForReplaced() const;
 
-  // Return a rectangle (or just an offset) relatively to containing
-  // LayoutBlockFlow, as if all the container fragments were stitched together
-  // in the block direction (aka. "flow thread coordinate space").
-  //
-  // Example:
-  // <div style="columns:2; orphans:1; widows:1; width:20px; line-height:20px;">
-  //   <div id="container">line1 line2 line3 line4 line5 line6</div>
-  // </div>
-  //
-  // The text will end up on six lines. The first three lines will end up in the
-  // first column, and the last three lines will end up in the second column. So
-  // we get two box fragments generated for #container - one for each column.
-  //
-  // The offsets returned from these methods will be
-  // (OffsetInContainerFragment() values in parentheses):
-  //
-  // line1: 0,0   (0,0)
-  // line2: 0,20  (0,20)
-  // line3: 0,40  (0,40)
-  // line4: 0,60  (0,0)
-  // line5: 0,80  (0,20)
-  // line6: 0,100 (0,40)
-  //
-  // We need this functionality, because we're still using the legacy layout
-  // engine to calculate offsets relatively to some ancestor.
-  PhysicalRect CurrentRectInBlockFlow() const;
-  PhysicalOffset CurrentOffsetInBlockFlow() const {
-    DCHECK_EQ(Current().OffsetInContainerFragment(),
-              Current().RectInContainerFragment().offset);
-    return CurrentRectInBlockFlow().offset;
+  // Return the rectangle of the current item, relatively to the first container
+  // fragment. Used by block fragmentation.
+  PhysicalRect CurrentRectInFirstContainerFragment() const;
+  PhysicalOffset CurrentOffsetInFirstContainerFragment() const {
+    return CurrentRectInFirstContainerFragment().offset;
   }
 
   // Returns inline position relative to current text fragment for
@@ -498,9 +478,6 @@ class CORE_EXPORT InlineCursor {
   // Returns true if the current position moves to first child.
   bool TryMoveToFirstChild();
 
-  // Returns true if the current position moves to first inline leaf child.
-  bool TryMoveToFirstInlineLeafChild();
-
   // Returns true if the current position moves to last child.
   bool TryMoveToLastChild();
 
@@ -595,7 +572,6 @@ class CORE_EXPORT InlineCursor {
 
   // Index conversions for |IsDescendantsCursor()|.
   wtf_size_t SpanBeginItemIndex() const;
-  wtf_size_t SpanIndexFromItemIndex(unsigned index) const;
 
   // Make the current position points nothing, e.g. cursor moves over start/end
   // fragment, cursor moves to first/last child to parent has no children.
@@ -670,6 +646,10 @@ class CORE_EXPORT InlineCursor {
   void ResetFragmentIndex();
   void DecrementFragmentIndex();
   void IncrementFragmentIndex();
+
+  wtf_size_t ToSpanIndex(const ItemsSpan::iterator& iter) const {
+    return base::checked_cast<wtf_size_t>(std::distance(items_.begin(), iter));
+  }
 
   InlineCursorPosition current_;
 

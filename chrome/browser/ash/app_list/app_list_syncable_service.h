@@ -30,6 +30,7 @@
 #include "components/sync/model/sync_change_processor.h"
 #include "components/sync/model/syncable_service.h"
 #include "components/sync/protocol/app_list_specifics.pb.h"
+#include "extensions/browser/extension_registrar.h"
 
 class AppListModelUpdater;
 class AppServiceAppModelBuilder;
@@ -301,6 +302,8 @@ class AppListSyncableService : public syncer::SyncableService,
       const base::Location& from_here,
       const syncer::SyncChangeList& change_list) override;
   base::WeakPtr<SyncableService> AsWeakPtr() override;
+  std::string GetClientTag(
+      const syncer::EntityData& entity_data) const override;
 
   // KeyedService
   void Shutdown() override;
@@ -479,6 +482,7 @@ class AppListSyncableService : public syncer::SyncableService,
   raw_ptr<Profile> profile_;
   raw_ptr<extensions::ExtensionSystem> extension_system_;
   raw_ptr<extensions::ExtensionRegistry> extension_registry_;
+  raw_ptr<extensions::ExtensionRegistrar> extension_registrar_;
   std::unique_ptr<AppListModelUpdater> model_updater_;
   std::unique_ptr<ModelUpdaterObserver> model_updater_observer_;
   std::unique_ptr<AppListSyncModelSanitizer> sync_model_sanitizer_;

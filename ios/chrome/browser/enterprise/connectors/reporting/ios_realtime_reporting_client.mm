@@ -6,14 +6,26 @@
 
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/escape.h"
+#import "base/timer/timer.h"
 #import "components/enterprise/browser/controller/browser_dm_token_storage.h"
+#import "components/enterprise/browser/controller/chrome_browser_cloud_management_controller.h"
+#import "components/enterprise/browser/identifiers/profile_id_service.h"
+#import "components/enterprise/connectors/core/content_area_user_provider.h"
+#import "components/policy/core/common/cloud/affiliation.h"
 #import "components/policy/core/common/cloud/cloud_policy_client.h"
+#import "components/policy/core/common/cloud/cloud_policy_constants.h"
+#import "components/policy/core/common/cloud/dm_token.h"
 #import "components/policy/core/common/cloud/reporting_job_configuration_base.h"
 #import "components/policy/core/common/cloud/user_cloud_policy_manager.h"
 #import "components/profile_metrics/browser_profile_type.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
+#import "ios/chrome/browser/enterprise/connectors/connectors_service.h"
+#import "ios/chrome/browser/enterprise/connectors/connectors_service_factory.h"
+#import "ios/chrome/browser/enterprise/connectors/connectors_util.h"
+#import "ios/chrome/browser/enterprise/identifiers/profile_id_service_factory_ios.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
+#import "ios/chrome/browser/policy/model/profile_policy_connector.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
@@ -35,6 +47,35 @@ IOSRealtimeReportingClient::IOSRealtimeReportingClient(ProfileIOS* profile)
 }
 
 IOSRealtimeReportingClient::~IOSRealtimeReportingClient() = default;
+
+void IOSRealtimeReportingClient::SetBrowserCloudPolicyClientForTesting(
+    policy::CloudPolicyClient* client) {
+  if (client == nullptr && browser_client_) {
+    browser_client_->RemoveObserver(this);
+  }
+
+  browser_client_ = client;
+  if (browser_client_) {
+    browser_client_->AddObserver(this);
+  }
+}
+
+void IOSRealtimeReportingClient::SetProfileCloudPolicyClientForTesting(
+    policy::CloudPolicyClient* client) {
+  if (client == nullptr && profile_client_) {
+    profile_client_->RemoveObserver(this);
+  }
+
+  profile_client_ = client;
+  if (profile_client_) {
+    profile_client_->AddObserver(this);
+  }
+}
+
+void IOSRealtimeReportingClient::SetIdentityManagerForTesting(
+    signin::IdentityManager* identity_manager) {
+  identity_manager_ = identity_manager;
+}
 
 std::pair<std::string, policy::CloudPolicyClient*>
 IOSRealtimeReportingClient::InitProfileReportingClient(
@@ -59,6 +100,31 @@ IOSRealtimeReportingClient::InitProfileReportingClient(
   return {GetProfilePolicyClientDescription(), client};
 }
 
+std::string IOSRealtimeReportingClient::GetContentAreaAccountEmail(
+    const GURL& url) {
+  return enterprise_connectors::GetActiveContentAreaUser(identity_manager_,
+                                                         url);
+}
+
+std::optional<ReportingSettings>
+IOSRealtimeReportingClient::GetReportingSettings() {
+  auto* service = ConnectorsServiceFactory::GetForProfile(profile_);
+  if (!service) {
+    return std::nullopt;
+  }
+
+  return service->GetReportingSettings();
+}
+
+void IOSRealtimeReportingClient::ReportRealtimeEvent(
+    const std::string& name,
+    const ReportingSettings& settings,
+    base::DictValue event) {
+  ReportEventWithTimestampDeprecated(name, settings, std::move(event),
+                                     base::Time::Now(),
+                                     /*include_profile_user_name=*/true);
+}
+
 std::string IOSRealtimeReportingClient::GetProfileUserName() {
   if (!username_.empty()) {
     return username_;
@@ -73,7 +139,14 @@ std::string IOSRealtimeReportingClient::GetProfileUserName() {
 }
 
 std::string IOSRealtimeReportingClient::GetProfileIdentifier() {
-  // TODO(crbug.com/394097677): Implement this.
+  if (profile_client_) {
+    auto* profile_id_service =
+        enterprise::ProfileIdServiceFactoryIOS::GetForProfile(profile_);
+    if (profile_id_service && profile_id_service->GetProfileId().has_value()) {
+      return profile_id_service->GetProfileId().value();
+    }
+    return std::string();
+  }
   return profile_->GetStatePath().AsUTF8Unsafe();
 }
 
@@ -82,49 +155,92 @@ std::string IOSRealtimeReportingClient::GetBrowserClientId() {
 }
 
 bool IOSRealtimeReportingClient::ShouldIncludeDeviceInfo(bool per_profile) {
-  // TODO(crbug.com/394097677): implement this.
-  if (!per_profile) {
-    return true;
-  }
-
-  return false;
+  return IncludeDeviceInfo(per_profile, IsProfileAffilicated(profile_));
 }
 
 void IOSRealtimeReportingClient::UploadCallbackDeprecated(
-    base::Value::Dict event_wrapper,
+    base::DictValue event_wrapper,
     bool per_profile,
     policy::CloudPolicyClient* client,
-    EnterpriseReportingEventType eventType,
-    policy::CloudPolicyClient::Result upload_result) {}
+    EnterpriseReportingEventType event_type,
+    base::TimeTicks upload_started_at,
+    policy::CloudPolicyClient::Result upload_result) {
+  // TODO(crbug.com/256553070): Do not crash if the client is unregistered.
+  CHECK(!upload_result.IsClientNotRegisteredError());
+
+  if (upload_result.IsSuccess()) {
+    base::UmaHistogramEnumeration("Enterprise.ReportingEventUploadSuccess",
+                                  event_type);
+    base::UmaHistogramCustomTimes(
+        GetSuccessfulUploadDurationUmaMetricName(event_type),
+        base::TimeTicks::Now() - upload_started_at, base::Milliseconds(1),
+        base::Minutes(5), 50);
+  } else {
+    base::UmaHistogramEnumeration("Enterprise.ReportingEventUploadFailure",
+                                  event_type);
+    base::UmaHistogramCustomTimes(
+        GetFailedUploadDurationUmaMetricName(event_type),
+        base::TimeTicks::Now() - upload_started_at, base::Milliseconds(1),
+        base::Minutes(5), 50);
+  }
+}
 
 void IOSRealtimeReportingClient::UploadCallback(
     ::chrome::cros::reporting::proto::UploadEventsRequest request,
     bool per_profile,
     policy::CloudPolicyClient* client,
-    EnterpriseReportingEventType eventType,
+    EnterpriseReportingEventType event_type,
+    base::TimeTicks upload_started_at,
     policy::CloudPolicyClient::Result upload_result) {
-  // TODO(crbug.com/394097677): Add report event to safe_browsing.
   if (upload_result.IsSuccess()) {
     base::UmaHistogramEnumeration("Enterprise.ReportingEventUploadSuccess",
-                                  eventType);
+                                  event_type);
+    base::UmaHistogramCustomTimes(
+        GetSuccessfulUploadDurationUmaMetricName(event_type),
+        base::TimeTicks::Now() - upload_started_at, base::Milliseconds(1),
+        base::Minutes(5), 50);
   } else {
     base::UmaHistogramEnumeration("Enterprise.ReportingEventUploadFailure",
-                                  eventType);
+                                  event_type);
+    base::UmaHistogramCustomTimes(
+        GetFailedUploadDurationUmaMetricName(event_type),
+        base::TimeTicks::Now() - upload_started_at, base::Milliseconds(1),
+        base::Minutes(5), 50);
   }
 }
 
-base::Value::Dict IOSRealtimeReportingClient::GetContext() {
-  // TODO(crbug.com/394097677): Implement this.
-  base::Value::Dict context;
-  return context;
+base::DictValue IOSRealtimeReportingClient::GetContext() {
+  return ::enterprise_connectors::GetContext(profile_);
 }
 
 ::chrome::cros::reporting::proto::UploadEventsRequest
 IOSRealtimeReportingClient::CreateUploadEventsRequest() {
-  ::chrome::cros::reporting::proto::UploadEventsRequest request;
+  return ::enterprise_connectors::CreateUploadEventsRequest(profile_);
+}
 
-  // TODO(crbug.com/394098919): Implement this before starting reporting events.
-  return request;
+void IOSRealtimeReportingClient::OnClientError(
+    policy::CloudPolicyClient* client) {
+  // This is the status set when the server returned 403, which is what the
+  // reporting server returns when the customer is not allowed to report events.
+  if (client->last_dm_status() ==
+      policy::DM_STATUS_SERVICE_MANAGEMENT_NOT_SUPPORTED) {
+    // This could happen if a second event was fired before the first one
+    // returned an error.
+    if (!rejected_dm_token_timers_.contains(client->dm_token())) {
+      rejected_dm_token_timers_[client->dm_token()] =
+          std::make_unique<base::OneShotTimer>();
+      rejected_dm_token_timers_[client->dm_token()]->Start(
+          FROM_HERE, base::Hours(24),
+          base::BindOnce(
+              &IOSRealtimeReportingClient::RemoveDmTokenFromRejectedSet,
+              AsWeakPtrImpl(), client->dm_token()));
+    }
+  }
+}
+
+void IOSRealtimeReportingClient::RemoveDmTokenFromRejectedSet(
+    const std::string& dm_token) {
+  rejected_dm_token_timers_.erase(dm_token);
 }
 
 base::WeakPtr<RealtimeReportingClientBase>

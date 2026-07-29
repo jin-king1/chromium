@@ -137,6 +137,10 @@ base::FilePath FakeDownloadTask::GenerateFileName() const {
   return generated_file_name_;
 }
 
+base::WeakPtr<DownloadTask> FakeDownloadTask::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
+}
+
 bool FakeDownloadTask::HasPerformedBackgroundDownload() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return has_performed_background_download_;
@@ -243,6 +247,11 @@ void FakeDownloadTask::SetOriginatingHost(NSString* originating_host) {
 void FakeDownloadTask::SetRedirectedURL(const GURL& redirected_url) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   redirected_url_ = redirected_url;
+}
+
+void FakeDownloadTask::SetIdentifier(NSString* identifier) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  identifier_ = [identifier copy];
 }
 
 void FakeDownloadTask::OnDownloadUpdated() {

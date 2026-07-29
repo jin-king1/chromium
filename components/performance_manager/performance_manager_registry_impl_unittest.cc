@@ -51,8 +51,8 @@ TEST_F(PerformanceManagerRegistryImplTest, ObserverWorks) {
 
   // Expect a tear down notification, and use it to unregister ourselves.
   EXPECT_CALL(observer, OnBeforePerformanceManagerDestroyed())
-      .WillOnce(testing::Invoke(
-          [&registry, &observer]() { registry->RemoveObserver(&observer); }));
+      .WillOnce(
+          [&registry, &observer]() { registry->RemoveObserver(&observer); });
   TearDownNow();
 }
 
@@ -113,7 +113,7 @@ TEST_F(PerformanceManagerRegistryImplDeathTest, BrowserChildProcessNodes) {
   // create two simultaneous copies.
   utility_process.SimulateLaunch();
   EXPECT_TRUE(registry->GetBrowserChildProcessNode(utility_process.GetId()));
-  EXPECT_DCHECK_DEATH(utility_process.SimulateLaunch());
+  EXPECT_CHECK_DEATH(utility_process.SimulateLaunch());
 
   // `gpu_node` still exists. It should be safely deleted during teardown.
 }

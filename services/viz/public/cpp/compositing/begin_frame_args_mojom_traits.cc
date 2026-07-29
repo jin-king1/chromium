@@ -4,6 +4,7 @@
 
 #include "services/viz/public/cpp/compositing/begin_frame_args_mojom_traits.h"
 
+#include "base/notreached.h"
 #include "mojo/public/cpp/base/time_mojom_traits.h"
 #include "services/viz/public/cpp/crash_keys.h"
 
@@ -26,22 +27,19 @@ EnumTraits<viz::mojom::BeginFrameArgsType,
 }
 
 // static
-bool EnumTraits<viz::mojom::BeginFrameArgsType,
-                viz::BeginFrameArgs::BeginFrameArgsType>::
-    FromMojom(viz::mojom::BeginFrameArgsType input,
-              viz::BeginFrameArgs::BeginFrameArgsType* out) {
+viz::BeginFrameArgs::BeginFrameArgsType
+EnumTraits<viz::mojom::BeginFrameArgsType,
+           viz::BeginFrameArgs::BeginFrameArgsType>::
+    FromMojom(viz::mojom::BeginFrameArgsType input) {
   switch (input) {
     case viz::mojom::BeginFrameArgsType::INVALID:
-      *out = viz::BeginFrameArgs::BeginFrameArgsType::INVALID;
-      return true;
+      return viz::BeginFrameArgs::BeginFrameArgsType::INVALID;
     case viz::mojom::BeginFrameArgsType::NORMAL:
-      *out = viz::BeginFrameArgs::BeginFrameArgsType::NORMAL;
-      return true;
+      return viz::BeginFrameArgs::BeginFrameArgsType::NORMAL;
     case viz::mojom::BeginFrameArgsType::MISSED:
-      *out = viz::BeginFrameArgs::BeginFrameArgsType::MISSED;
-      return true;
+      return viz::BeginFrameArgs::BeginFrameArgsType::MISSED;
   }
-  return false;
+  NOTREACHED();
 }
 
 // static
@@ -56,14 +54,20 @@ bool StructTraits<viz::mojom::BeginFrameIdDataView, viz::BeginFrameId>::Read(
 // static
 bool StructTraits<viz::mojom::BeginFrameArgsDataView, viz::BeginFrameArgs>::
     Read(viz::mojom::BeginFrameArgsDataView data, viz::BeginFrameArgs* out) {
+  std::optional<base::TimeDelta> unthrottled_interval;
   if (!data.ReadFrameTime(&out->frame_time) ||
       !data.ReadDeadline(&out->deadline) ||
       !data.ReadInterval(&out->interval) || !data.ReadFrameId(&out->frame_id) ||
       !data.ReadType(&out->type) ||
       !data.ReadDispatchTime(&out->dispatch_time) ||
-      !data.ReadClientArrivalTime(&out->client_arrival_time)) {
+      !data.ReadClientArrivalTime(&out->client_arrival_time) ||
+      !data.ReadUnthrottledInterval(&unthrottled_interval)) {
     return false;
   }
+
+  // If omitted, default to the regular interval.
+  out->unthrottled_interval = unthrottled_interval.value_or(out->interval);
+
   out->frames_throttled_since_last = data.frames_throttled_since_last();
   out->trace_id = data.trace_id();
   out->on_critical_path = data.on_critical_path();
@@ -84,16 +88,24 @@ bool StructTraits<viz::mojom::BeginFrameAckDataView, viz::BeginFrameAck>::Read(
   out->frame_id.sequence_number = data.sequence_number();
   out->trace_id = data.trace_id();
   out->has_damage = data.has_damage();
-
-  if (!data.ReadPreferredFrameInterval(&out->preferred_frame_interval)) {
-    return false;
-  }
-  // Preferred_frame_interval must be nullopt or non-negative.
-  if (out->preferred_frame_interval &&
-      out->preferred_frame_interval->is_negative()) {
-    return false;
-  }
   return true;
 }
+
+#if BUILDFLAG(IS_MAC)
+// static
+bool StructTraits<viz::mojom::CADisplayLinkParamsDataView,
+                  viz::CADisplayLinkParams>::
+    Read(viz::mojom::CADisplayLinkParamsDataView data,
+         viz::CADisplayLinkParams* out) {
+  if (!data.ReadTimestamp(&out->timestamp) ||
+      !data.ReadTargetTimestamp(&out->target_timestamp) ||
+      !data.ReadInterval(&out->interval) ||
+      !data.ReadIpcBeginTimestamp(&out->ipc_begin_timestamp)) {
+    return false;
+  }
+  out->display_id = data.display_id();
+  return true;
+}
+#endif
 
 }  // namespace mojo

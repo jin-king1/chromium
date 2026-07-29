@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <regstr.h>
+#include <sddl.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
@@ -29,7 +30,6 @@
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/system/sys_info.h"
@@ -37,15 +37,18 @@
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_expected_support.h"
+#include "base/test/gtest_util.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/platform_thread.h"
 #include "base/uuid.h"
-#include "base/win/atl.h"
+#include "base/win/access_token.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_com_initializer.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/scoped_localalloc.h"
+#include "base/win/security_descriptor.h"
+#include "base/win/sid.h"
 #include "base/win/win_util.h"
 #include "chrome/updater/test/integration_tests_impl.h"
 #include "chrome/updater/test/test_scope.h"
@@ -57,63 +60,84 @@
 #include "chrome/updater/win/test/test_executables.h"
 #include "chrome/updater/win/test/test_strings.h"
 #include "chrome/updater/win/win_constants.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace updater::test {
+
+using ::testing::EndsWith;
 
 namespace {
 
 constexpr char kTestAppID[] = "{D07D2B56-F583-4631-9E8E-9942F63765BE}";
 
+// Returns `sid` stringified by the SDDL writer used by
+// `SecurityDescriptor::ToSddl`, which substitutes well-known aliases (e.g. `LA`
+// for the built-in local Administrator) that `Sid::ToSddlString` does not.
+std::optional<std::wstring> SidInSddlForm(const base::win::Sid& sid) {
+  base::win::SecurityDescriptor sd;
+  sd.set_owner(sid);
+  std::optional<std::wstring> sddl = sd.ToSddl(OWNER_SECURITY_INFORMATION);
+  if (!sddl || !sddl->starts_with(L"O:")) {
+    return std::nullopt;
+  }
+  return sddl->substr(2);
+}
+
 }  // namespace
 
-TEST(WinUtil, GetServiceName) {
+class WinUtilServiceNameTest : public ::testing::TestWithParam<std::string> {
+ protected:
+  base::Version version() const { return base::Version(GetParam()); }
+};
+
+INSTANTIATE_TEST_SUITE_P(WinUtilServiceNameTestCases,
+                         WinUtilServiceNameTest,
+                         ::testing::Values(kUpdaterVersion,
+                                           "1.2.3.4",
+                                           "199.28537.11717"));
+
+TEST_P(WinUtilServiceNameTest, GetServiceName) {
   for (const bool is_internal_service : {true, false}) {
     EXPECT_EQ(base::StrCat({base::UTF8ToWide(PRODUCT_FULLNAME_STRING),
                             is_internal_service ? kWindowsInternalServiceName
                                                 : kWindowsServiceName,
-                            kUpdaterVersionUtf16}),
-              GetServiceName(is_internal_service));
+                            base::UTF8ToWide(version().GetString())}),
+              GetServiceName(is_internal_service, version()));
   }
 }
 
 TEST(WinUtil, BuildMsiCommandLine) {
-  EXPECT_STREQ(L"", BuildMsiCommandLine(std::wstring(L"arg1 arg2 arg3"), {},
-                                        base::FilePath(L"NotMsi.exe"))
-                        .c_str());
-  EXPECT_STREQ(
+  EXPECT_EQ(L"", BuildMsiCommandLine(std::wstring(L"arg1 arg2 arg3"), {},
+                                     base::FilePath(L"NotMsi.exe")));
+  EXPECT_EQ(
       L"msiexec arg1 arg2 arg3 REBOOT=ReallySuppress /qn /i \"c:\\my "
       L"path\\YesMsi.msi\" /log \"c:\\my path\\YesMsi.msi.log\"",
       BuildMsiCommandLine(std::wstring(L"arg1 arg2 arg3"), {},
-                          base::FilePath(L"c:\\my path\\YesMsi.msi"))
-          .c_str());
-  EXPECT_STREQ(
+                          base::FilePath(L"c:\\my path\\YesMsi.msi")));
+  EXPECT_EQ(
       L"msiexec arg1 arg2 arg3 INSTALLERDATA=\"c:\\my path\\installer data "
       L"file.dat\" REBOOT=ReallySuppress /qn /i \"c:\\my "
       L"path\\YesMsi.msi\" /log \"c:\\my path\\YesMsi.msi.log\"",
       BuildMsiCommandLine(
           std::wstring(L"arg1 arg2 arg3"),
           base::FilePath(L"c:\\my path\\installer data file.dat"),
-          base::FilePath(L"c:\\my path\\YesMsi.msi"))
-          .c_str());
+          base::FilePath(L"c:\\my path\\YesMsi.msi")));
 }
 
 TEST(WinUtil, BuildExeCommandLine) {
-  EXPECT_STREQ(L"", BuildExeCommandLine(std::wstring(L"arg1 arg2 arg3"), {},
-                                        base::FilePath(L"NotExe.msi"))
-                        .c_str());
-  EXPECT_STREQ(L"\"c:\\my path\\YesExe.exe\" arg1 arg2 arg3",
-               BuildExeCommandLine(std::wstring(L"arg1 arg2 arg3"), {},
-                                   base::FilePath(L"c:\\my path\\YesExe.exe"))
-                   .c_str());
-  EXPECT_STREQ(
+  EXPECT_EQ(L"", BuildExeCommandLine(std::wstring(L"arg1 arg2 arg3"), {},
+                                     base::FilePath(L"NotExe.msi")));
+  EXPECT_EQ(L"\"c:\\my path\\YesExe.exe\" arg1 arg2 arg3",
+            BuildExeCommandLine(std::wstring(L"arg1 arg2 arg3"), {},
+                                base::FilePath(L"c:\\my path\\YesExe.exe")));
+  EXPECT_EQ(
       L"\"c:\\my path\\YesExe.exe\" arg1 arg2 arg3 --installerdata=\"c:\\my "
       L"path\\installer data file.dat\"",
       BuildExeCommandLine(
           std::wstring(L"arg1 arg2 arg3"),
           base::FilePath(L"c:\\my path\\installer data file.dat"),
-          base::FilePath(L"c:\\my path\\YesExe.exe"))
-          .c_str());
+          base::FilePath(L"c:\\my path\\YesExe.exe")));
 }
 
 TEST(WinUtil, ShellExecuteAndWait) {
@@ -296,8 +320,17 @@ TEST(WinUtil, EnableProcessHeapMetadataProtection) {
 
 TEST(WinUtil, CreateSecureTempDir) {
   std::optional<base::ScopedTempDir> temp_dir = CreateSecureTempDir();
-  EXPECT_TRUE(temp_dir);
-  EXPECT_TRUE(temp_dir->IsValid());
+  ASSERT_TRUE(temp_dir);
+  ASSERT_TRUE(temp_dir->IsValid());
+
+  base::FilePath expected_parent;
+  if (::IsUserAnAdmin()) {
+    ASSERT_TRUE(
+        base::PathService::Get(base::DIR_SYSTEM_TEMP, &expected_parent));
+  } else {
+    ASSERT_TRUE(base::GetTempDir(&expected_parent));
+  }
+  EXPECT_TRUE(expected_parent.IsParent(temp_dir->GetPath()));
 }
 
 TEST(WinUtil, SignalShutdownEvent) {
@@ -352,7 +385,7 @@ TEST(WinUtil, StopProcessesUnderPath) {
     EXPECT_FALSE(process.IsRunning()) << process.Pid();
   }
 
-  EXPECT_TRUE(base::DeletePathRecursively(exe_dir));
+  EXPECT_TRUE(WaitFor([&] { return base::DeletePathRecursively(exe_dir); }));
 }
 
 TEST(WinUtil, IsGuid) {
@@ -380,7 +413,7 @@ TEST(WinUtil, IsGuid) {
 }
 
 TEST(WinUtil, ForEachRegistryRunValueWithPrefix) {
-  constexpr int kRunEntries = 6;
+  static constexpr int kRunEntries = 6;
   const std::wstring kRunEntryPrefix(base::UTF8ToWide(test::GetTestName()));
 
   base::win::RegKey key;
@@ -398,7 +431,7 @@ TEST(WinUtil, ForEachRegistryRunValueWithPrefix) {
   ForEachRegistryRunValueWithPrefix(
       kRunEntryPrefix,
       [&key, &count_entries, kRunEntryPrefix](const std::wstring& run_name) {
-        EXPECT_TRUE(base::StartsWith(run_name, kRunEntryPrefix));
+        EXPECT_TRUE(run_name.starts_with(kRunEntryPrefix));
         ++count_entries;
         EXPECT_EQ(key.DeleteValue(run_name.c_str()), ERROR_SUCCESS);
       });
@@ -406,7 +439,7 @@ TEST(WinUtil, ForEachRegistryRunValueWithPrefix) {
 }
 
 TEST(WinUtil, DeleteRegValue) {
-  constexpr int kRegValues = 6;
+  static constexpr int kRegValues = 6;
   const std::wstring kRegValuePrefix(base::UTF8ToWide(test::GetTestName()));
 
   base::win::RegKey key;
@@ -431,7 +464,7 @@ TEST(WinUtil, ForEachServiceWithPrefix) {
     return;
   }
 
-  constexpr int kNumServices = 6;
+  static constexpr int kNumServices = 6;
   const std::wstring kServiceNamePrefix(base::UTF8ToWide(test::GetTestName()));
 
   for (int count = 0; count < kNumServices; ++count) {
@@ -445,7 +478,7 @@ TEST(WinUtil, ForEachServiceWithPrefix) {
   ForEachServiceWithPrefix(
       kServiceNamePrefix, kServiceNamePrefix,
       [&count_entries, kServiceNamePrefix](const std::wstring& service_name) {
-        EXPECT_TRUE(base::StartsWith(service_name, kServiceNamePrefix));
+        EXPECT_TRUE(service_name.starts_with(kServiceNamePrefix));
         ++count_entries;
         EXPECT_TRUE(DeleteService(service_name));
       });
@@ -457,7 +490,7 @@ TEST(WinUtil, DeleteService) {
     return;
   }
 
-  constexpr int kNumServices = 6;
+  static constexpr int kNumServices = 6;
   const std::wstring kServiceNamePrefix(base::UTF8ToWide(test::GetTestName()));
 
   for (int count = 0; count < kNumServices; ++count) {
@@ -518,7 +551,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(WinUtilGetRegKeyContentsTest, TestCases) {
   std::optional<std::wstring> contents = GetRegKeyContents(GetParam().reg_key);
   ASSERT_TRUE(contents);
-  ASSERT_NE(contents->find(GetParam().expected_substring), std::wstring::npos);
+  ASSERT_TRUE(contents->contains(GetParam().expected_substring));
 }
 
 TEST(WinUtil, GetTextForSystemError) {
@@ -543,11 +576,11 @@ TEST(WinUtil, GetLoggedOnUserToken) {
   }
 
   ASSERT_TRUE(::IsUserAnAdmin());
-  HResultOr<ScopedKernelHANDLE> token = GetLoggedOnUserToken();
+  std::optional<base::win::AccessToken> token = GetLoggedOnUserToken();
   ASSERT_TRUE(token.has_value());
 
   ScopedImpersonation impersonate;
-  ASSERT_TRUE(SUCCEEDED(impersonate.Impersonate(token.value().get())));
+  ASSERT_TRUE(SUCCEEDED(impersonate.Impersonate(token->get())));
   ASSERT_FALSE(::IsUserAnAdmin());
 }
 
@@ -614,20 +647,6 @@ TEST(WinUtil, StringFromGuid) {
   EXPECT_EQ(base::win::WStringFromGUID(guid), StringFromGuid(guid));
 }
 
-TEST(WinUtil, GetUniqueTempFilePath) {
-  EXPECT_FALSE(GetUniqueTempFilePath({}));
-
-  std::optional<base::FilePath> p = GetUniqueTempFilePath(base::FilePath(
-      L"C:\\Program Files (x86)\\Google\\GoogleUpdater\\updater.log"));
-  ASSERT_TRUE(p);
-  std::wstring p_base = p->BaseName().value();
-  EXPECT_TRUE(base::StartsWith(p_base, L"updater"));
-  EXPECT_TRUE(base::EndsWith(p_base, L".log"));
-  base::ReplaceSubstringsAfterOffset(&p_base, 0, L"updater", {});
-  base::ReplaceSubstringsAfterOffset(&p_base, 0, L".log", {});
-  EXPECT_TRUE(base::Uuid::ParseLowercase(base::WideToUTF8(p_base)).is_valid());
-}
-
 TEST(WinUtil, SetEulaAccepted) {
   // This will set `eulaaccepted=0` in the registry.
   EXPECT_TRUE(
@@ -644,6 +663,212 @@ TEST(WinUtil, SetEulaAccepted) {
       SetEulaAccepted(GetUpdaterScopeForTesting(), /*eula_accepted=*/true));
   EXPECT_FALSE(base::win::RegKey(root, UPDATER_KEY, Wow6432(KEY_READ))
                    .HasValue(L"eulaaccepted"));
+}
+
+TEST(WinUtil, IsServicePresent_IsServiceEnabled) {
+  if (!::IsUserAnAdmin()) {
+    GTEST_SKIP();
+  }
+
+  GUID random_guid = {0};
+  EXPECT_HRESULT_SUCCEEDED(::CoCreateGuid(&random_guid));
+  const std::wstring service_name = base::StrCat(
+      {base::UTF8ToWide(test::GetTestName()), StringFromGuid(random_guid)});
+
+  EXPECT_FALSE(IsServicePresent(service_name));
+  EXPECT_FALSE(IsServiceEnabled(service_name));
+
+  ASSERT_TRUE(CreateService(service_name, service_name, L"C:\\temp\\temp.exe"));
+  EXPECT_TRUE(IsServicePresent(service_name));
+  EXPECT_TRUE(IsServiceEnabled(service_name));
+
+  EXPECT_TRUE(DisableService(service_name));
+  EXPECT_TRUE(IsServicePresent(service_name));
+  EXPECT_FALSE(IsServiceEnabled(service_name));
+
+  EXPECT_TRUE(DeleteService(service_name));
+  EXPECT_FALSE(IsServicePresent(service_name));
+  EXPECT_FALSE(IsServiceEnabled(service_name));
+}
+
+TEST(WinUtil, IsServicePresent_IsServiceEnabled_NonAdmin) {
+  EXPECT_TRUE(IsServicePresent(L"Schedule"));
+  EXPECT_TRUE(IsServiceEnabled(L"Schedule"));
+  EXPECT_FALSE(IsServicePresent(L"ScheduleFooBar"));
+  EXPECT_FALSE(IsServiceEnabled(L"ScheduleFooBar"));
+}
+
+TEST(WinUtil, GetCommandLineForPid) {
+  const HResultOr<std::wstring> cmd_line_for_pid =
+      GetCommandLineForPid(::GetCurrentProcessId());
+  ASSERT_TRUE(cmd_line_for_pid.has_value());
+  EXPECT_STREQ(cmd_line_for_pid->c_str(), ::GetCommandLine());
+}
+
+TEST(WinUtil, AddCurrentUserAllowedAce) {
+  std::optional<base::win::AccessToken> token =
+      base::win::AccessToken::FromCurrentProcess();
+  ASSERT_TRUE(token.has_value());
+  std::optional<std::wstring> sid_str = SidInSddlForm(token->User());
+  ASSERT_TRUE(sid_str.has_value());
+
+  // Empty SDDL should produce a DACL with the user's ACE.
+  std::optional<std::wstring> new_sddl =
+      AddCurrentUserAllowedAce(L"", GENERIC_ALL, 0);
+  ASSERT_TRUE(new_sddl);
+  EXPECT_TRUE(new_sddl->contains(L"D:"));
+  EXPECT_TRUE(new_sddl->contains(*sid_str));
+
+  // Adding to DACL with existing BA ACE should preserve both.
+  new_sddl = AddCurrentUserAllowedAce(L"D:(A;;GA;;;BA)", GENERIC_ALL, 0);
+  ASSERT_TRUE(new_sddl);
+  EXPECT_TRUE(new_sddl->contains(*sid_str));
+  EXPECT_TRUE(new_sddl->contains(L"BA)"));
+
+  // Owner and group should be preserved.
+  new_sddl =
+      AddCurrentUserAllowedAce(L"O:AOG:BAD:(A;;GA;;;S-1-0-0)", GENERIC_ALL, 0);
+  ASSERT_TRUE(new_sddl);
+  EXPECT_TRUE(new_sddl->contains(L"O:AO"));
+  EXPECT_TRUE(new_sddl->contains(L"G:BA"));
+  EXPECT_TRUE(new_sddl->contains(*sid_str));
+
+  // Complex SDDL with object ACEs and SACL.
+  new_sddl = AddCurrentUserAllowedAce(
+      L"O:BAG:BAD:(A;;RPWPCCDCLCRCWOWDSDSW;;;SY)(A;;RPWPCCDCLCRCWOWDSDSW;;;BA)("
+      L"OA;;CCDC;aaaaaaaa-0000-1111-2222-bbbbbbbbbbbb;;AO)(OA;;CCDC;bbbbbbbb-"
+      L"1111-2222-3333-cccccccccccc;;AO)(OA;;CCDC;cccccccc-2222-3333-4444-"
+      L"dddddddddddd;;AO)(OA;;CCDC;dddddddd-3333-4444-5555-eeeeeeeeeeee;;PO)(A;"
+      L";RPLCRC;;;AU)S:(AU;SAFA;WDWOSDWPCCDCSW;;;WD)",
+      GENERIC_ALL, 0);
+  ASSERT_TRUE(new_sddl);
+
+  // Verify key properties: owner, group, user SID, SACL all preserved.
+  EXPECT_TRUE(new_sddl->contains(L"O:BA"));
+  EXPECT_TRUE(new_sddl->contains(L"G:BA"));
+  EXPECT_TRUE(new_sddl->contains(*sid_str));
+  EXPECT_TRUE(new_sddl->contains(L"S:"));
+  // The result must be valid SDDL and parse back.
+  PSECURITY_DESCRIPTOR raw_sd = nullptr;
+  EXPECT_TRUE(::ConvertStringSecurityDescriptorToSecurityDescriptor(
+      new_sddl->c_str(), SDDL_REVISION_1, &raw_sd, nullptr));
+  base::win::ScopedLocalAlloc sd_holder(raw_sd);
+
+  // The SDDL must be stable/idempotent: repeated calls produce the same result.
+  const std::wstring stable_sddl = *new_sddl;
+  for (int i = 0; i < 100; ++i) {
+    new_sddl = AddCurrentUserAllowedAce(*new_sddl, GENERIC_ALL, 0);
+    ASSERT_TRUE(new_sddl);
+    EXPECT_EQ(*new_sddl, stable_sddl);
+  }
+}
+
+TEST(WinUtil, GetCurrentUserDefaultSecurityDescriptor) {
+  std::optional<std::wstring> sddl = GetCurrentUserDefaultSecurityDescriptor();
+  ASSERT_TRUE(sddl.has_value());
+  EXPECT_FALSE(sddl->empty());
+
+  // The SDDL must contain owner (O:), group (G:), and DACL (D:) sections.
+  EXPECT_TRUE(sddl->contains(L"O:"));
+  EXPECT_TRUE(sddl->contains(L"G:"));
+  EXPECT_TRUE(sddl->contains(L"D:"));
+
+  // The SDDL must contain the current user's SID.
+  auto token = base::win::AccessToken::FromCurrentProcess();
+  ASSERT_TRUE(token);
+  auto user_sddl = SidInSddlForm(token->User());
+  ASSERT_TRUE(user_sddl);
+  EXPECT_TRUE(sddl->contains(*user_sddl));
+
+  // The result must be a valid security descriptor.
+  PSECURITY_DESCRIPTOR raw_sd = nullptr;
+  EXPECT_TRUE(::ConvertStringSecurityDescriptorToSecurityDescriptor(
+      sddl->c_str(), SDDL_REVISION_1, &raw_sd, nullptr));
+  base::win::ScopedLocalAlloc sd_holder(raw_sd);
+}
+
+TEST(WinUtil, GetAdminDaclSecurityDescriptor) {
+  std::wstring sddl = GetAdminDaclSecurityDescriptor(GENERIC_ALL);
+  EXPECT_FALSE(sddl.empty());
+
+  // Must have owner (BA), group (BA), and DACL sections.
+  EXPECT_TRUE(sddl.contains(L"O:BA"));
+  EXPECT_TRUE(sddl.contains(L"G:BA"));
+  EXPECT_TRUE(sddl.contains(L"D:"));
+
+  // Must grant access to System (SY) and Admins (BA).
+  EXPECT_TRUE(sddl.contains(L";;;SY)"));
+  EXPECT_TRUE(sddl.contains(L";;;BA)"));
+
+  // The result must be a valid security descriptor.
+  PSECURITY_DESCRIPTOR raw_sd = nullptr;
+  EXPECT_TRUE(::ConvertStringSecurityDescriptorToSecurityDescriptor(
+      sddl.c_str(), SDDL_REVISION_1, &raw_sd, nullptr));
+  base::win::ScopedLocalAlloc sd_holder(raw_sd);
+
+  // Different access masks should produce different SDDLs.
+  std::wstring sddl2 = GetAdminDaclSecurityDescriptor(GENERIC_READ);
+  EXPECT_NE(sddl, sddl2);
+}
+
+TEST(WinUtil, NamedObjectAttributes_WithValidSddl) {
+  const std::wstring kName = L"TestObject";
+  NamedObjectAttributes attrs(kName, L"D:(A;;GA;;;BA)");
+
+  EXPECT_EQ(attrs.name, kName);
+  EXPECT_NE(attrs.sa.lpSecurityDescriptor, nullptr);
+  EXPECT_EQ(attrs.sa.nLength, sizeof(SECURITY_ATTRIBUTES));
+  EXPECT_FALSE(attrs.sa.bInheritHandle);
+}
+
+TEST(WinUtil, NamedObjectAttributes_WithEmptySddl) {
+  const std::wstring kName = L"TestObject";
+  NamedObjectAttributes attrs(kName, std::wstring());
+
+  EXPECT_EQ(attrs.name, kName);
+  EXPECT_EQ(attrs.sa.lpSecurityDescriptor, nullptr);
+}
+
+TEST(WinUtil, AddCurrentUserAllowedAce_InvalidSddl) {
+  // Invalid SDDL should return nullopt.
+  EXPECT_FALSE(
+      AddCurrentUserAllowedAce(L"INVALID_SDDL", GENERIC_ALL, 0).has_value());
+}
+
+TEST(WinUtil, AddCurrentUserAllowedAce_DenyBeforeAllow) {
+  // An SDDL with both deny and allow ACEs should maintain canonical ordering
+  // (deny before allow) after adding the current user's ACE.
+  std::optional<base::win::AccessToken> token =
+      base::win::AccessToken::FromCurrentProcess();
+  ASSERT_TRUE(token.has_value());
+  std::optional<std::wstring> sid_str = SidInSddlForm(token->User());
+  ASSERT_TRUE(sid_str.has_value());
+
+  std::optional<std::wstring> new_sddl = AddCurrentUserAllowedAce(
+      L"D:(D;;GA;;;S-1-0-0)(A;;GA;;;BA)", GENERIC_ALL, 0);
+  ASSERT_TRUE(new_sddl);
+
+  // The deny ACE (D;) should appear before any allow ACE (A;) in the result.
+  size_t deny_pos = new_sddl->find(L"(D;");
+  size_t allow_pos = new_sddl->find(L"(A;");
+  ASSERT_TRUE(new_sddl->contains(L"(D;"));
+  ASSERT_TRUE(new_sddl->contains(L"(A;"));
+  EXPECT_LT(deny_pos, allow_pos);
+
+  // The current user's ACE should be present.
+  EXPECT_TRUE(new_sddl->contains(*sid_str));
+
+  // The result must be a valid security descriptor.
+  PSECURITY_DESCRIPTOR raw_sd = nullptr;
+  EXPECT_TRUE(::ConvertStringSecurityDescriptorToSecurityDescriptor(
+      new_sddl->c_str(), SDDL_REVISION_1, &raw_sd, nullptr));
+  base::win::ScopedLocalAlloc sd_holder(raw_sd);
+}
+
+TEST(WinUtil, RegistryKeyHelpersSanitizeInvalidAppIds) {
+  EXPECT_THAT(GetAppClientsKey(L"a\\b"), EndsWith(L"a_b"));
+  EXPECT_THAT(GetAppClientStateKey(L"a\\b"), EndsWith(L"a_b"));
+  EXPECT_THAT(GetAppClientStateMediumKey(L"a\\b"), EndsWith(L"a_b"));
 }
 
 }  // namespace updater::test

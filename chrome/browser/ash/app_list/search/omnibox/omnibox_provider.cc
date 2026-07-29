@@ -10,6 +10,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "base/metrics/histogram_macros.h"
 #include "chrome/browser/ash/app_list/app_list_controller_delegate.h"
 #include "chrome/browser/ash/app_list/search/omnibox/omnibox_answer_result.h"
@@ -26,6 +27,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
+#include "components/omnibox/browser/autocomplete_controller_config.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/prefs/pref_service.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
@@ -51,10 +54,12 @@ bool IsAnswer(const AutocompleteMatch& match) {
 // answer cards results from Omnibox.
 OmniboxProvider::OmniboxProvider(Profile* profile,
                                  AppListControllerDelegate* list_controller,
+                                 TemplateURLService* template_url_service,
                                  int provider_types)
     : SearchProvider(SearchCategory::kOmnibox),
       profile_(profile),
       list_controller_(list_controller),
+      template_url_service_(CHECK_DEREF(template_url_service)),
       favicon_cache_(FaviconServiceFactory::GetForProfile(
                          profile,
                          ServiceAccessType::EXPLICIT_ACCESS),
@@ -63,7 +68,8 @@ OmniboxProvider::OmniboxProvider(Profile* profile,
                          ServiceAccessType::EXPLICIT_ACCESS)) {
   controller_ = std::make_unique<AutocompleteController>(
       std::make_unique<ChromeAutocompleteProviderClient>(profile),
-      provider_types, /*is_cros_launcher=*/true),
+      AutocompleteControllerConfig{.provider_types = provider_types,
+                                   .unscoped_open_tab_suggestions = true}),
   controller_->AddObserver(this);
 }
 
@@ -73,7 +79,7 @@ void OmniboxProvider::Start(const std::u16string& query) {
   last_query_ = query;
   last_tokenized_query_.emplace(query, TokenizedString::Mode::kCamelCase);
 
-  controller_->Stop(false);
+  controller_->Stop(AutocompleteStopReason::kInteraction);
   query_finished_ = false;
   // The new page classification value(CHROMEOS_APP_LIST) is introduced
   // to differentiate the suggest requests initiated by ChromeOS app_list from
@@ -91,7 +97,7 @@ void OmniboxProvider::StopQuery() {
   last_tokenized_query_.reset();
   query_finished_ = false;
 
-  controller_->Stop(true);
+  controller_->Stop(AutocompleteStopReason::kClobbered);
 }
 
 ash::AppListSearchResultType OmniboxProvider::ResultType() const {
@@ -122,30 +128,28 @@ void OmniboxProvider::PopulateFromACResult(const AutocompleteResult& result) {
     if (match.type == AutocompleteMatchType::OPEN_TAB) {
       // Filters out open tab results if web is disabled in launcher search
       // controls.
-      if (ash::features::IsLauncherSearchControlEnabled() &&
-          !IsControlCategoryEnabled(profile_, ControlCategory::kWeb)) {
+      if (!IsControlCategoryEnabled(profile_, ControlCategory::kWeb)) {
         continue;
       }
       DCHECK(last_tokenized_query_.has_value());
       new_results.emplace_back(std::make_unique<OpenTabResult>(
           profile_, list_controller_,
-          CreateResult(match, controller_.get(), &favicon_cache_,
+          CreateResult(match, controller_.get(),
                        BookmarkModelFactory::GetForBrowserContext(profile_),
                        input_),
-          last_tokenized_query_.value()));
+          last_tokenized_query_.value(), &favicon_cache_));
     } else if (!IsAnswer(match)) {
       // Filters out omnibox results if web is disabled in launcher search
       // controls.
-      if (ash::features::IsLauncherSearchControlEnabled() &&
-          !IsControlCategoryEnabled(profile_, ControlCategory::kWeb)) {
+      if (!IsControlCategoryEnabled(profile_, ControlCategory::kWeb)) {
         continue;
       }
       list_results.emplace_back(std::make_unique<OmniboxResult>(
-          profile_, list_controller_,
-          CreateResult(match, controller_.get(), &favicon_cache_,
+          profile_, list_controller_, &template_url_service_.get(),
+          CreateResult(match, controller_.get(),
                        BookmarkModelFactory::GetForBrowserContext(profile_),
                        input_),
-          last_query_));
+          last_query_, &favicon_cache_));
     } else {
       new_results.emplace_back(std::make_unique<OmniboxAnswerResult>(
           profile_, list_controller_,

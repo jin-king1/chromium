@@ -4,11 +4,14 @@
 
 #include "components/mirroring/service/video_capture_client.h"
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/read_only_shared_memory_region.h"
+#include "base/notimplemented.h"
 #include "base/task/bind_post_task.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "components/mirroring/service/mirroring_features.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_frame_pool.h"
 #include "media/capture/mojom/video_capture_buffer.mojom.h"
@@ -200,10 +203,9 @@ void VideoCaptureClient::OnBufferReady(media::mojom::ReadyBufferPtr buffer) {
   }
 
   // Used by chrome/browser/media/cast_mirroring_performance_browsertest.cc
-  TRACE_EVENT_INSTANT2("cast_perf_test", "OnBufferReceived",
-                       TRACE_EVENT_SCOPE_THREAD, "timestamp",
-                       (reference_time - base::TimeTicks()).InMicroseconds(),
-                       "time_delta", buffer->info->timestamp.InMicroseconds());
+  TRACE_EVENT_INSTANT("cast_perf_test", "OnBufferReceived", "timestamp",
+                      (reference_time - base::TimeTicks()).InMicroseconds(),
+                      "time_delta", buffer->info->timestamp.InMicroseconds());
 
   const auto& buffer_iter = client_buffers_.find(buffer->buffer_id);
   if (buffer_iter == client_buffers_.end()) {
@@ -234,8 +236,7 @@ void VideoCaptureClient::OnBufferReady(media::mojom::ReadyBufferPtr buffer) {
       frame = media::VideoFrame::WrapExternalData(
           buffer->info->pixel_format, buffer->info->coded_size,
           buffer->info->visible_rect, buffer->info->visible_rect.size(),
-          mapping.GetMemoryAs<uint8_t>(), frame_allocation_size,
-          buffer->info->timestamp);
+          mapping, buffer->info->timestamp);
     }
     buffer_finished_callback =
         base::BindPostTaskToCurrentDefault(base::BindOnce(
@@ -253,8 +254,7 @@ void VideoCaptureClient::OnBufferReady(media::mojom::ReadyBufferPtr buffer) {
       frame = media::VideoFrame::WrapExternalData(
           buffer->info->pixel_format, buffer->info->coded_size,
           buffer->info->visible_rect, buffer->info->visible_rect.size(),
-          mapping.GetMemoryAs<uint8_t>(), frame_allocation_size,
-          buffer->info->timestamp);
+          mapping, buffer->info->timestamp);
       if (frame) {
         frame->BackWithOwnedSharedMemory(std::move(shm_region),
                                          std::move(mapping));
@@ -279,23 +279,13 @@ void VideoCaptureClient::OnBufferReady(media::mojom::ReadyBufferPtr buffer) {
       base::BindOnce(&VideoCaptureClient::DidFinishConsumingFrame,
                      std::move(buffer_finished_callback)));
 
-  // Convert NV12 frames to I420, because NV12 is not supported by Cast
-  // Streaming.
-  // https://crbug.com/1206325
-  if (frame->format() == media::PIXEL_FORMAT_NV12) {
-    if (!nv12_to_i420_pool_) {
-      nv12_to_i420_pool_ = std::make_unique<media::VideoFramePool>();
-    }
-    scoped_refptr<media::VideoFrame> new_frame =
-        nv12_to_i420_pool_->CreateFrame(
-            media::PIXEL_FORMAT_I420, frame->coded_size(),
-            frame->visible_rect(), frame->natural_size(), frame->timestamp());
-    media::EncoderStatus status =
-        frame_converter_.ConvertAndScale(*frame, *new_frame);
-    if (!status.is_ok()) {
-      LOG(DFATAL) << "Unable to convert frame to I420.";
-      OnStateChanged(media::mojom::VideoCaptureResult::NewErrorCode(
-          media::VideoCaptureError::kDeviceClientTooManyFramesDroppedY16));
+  // Historically, we have been forced to convert NV12 frames to I420.
+  // TODO(crbug.com/321259270): remove conversion logic once the native NV12
+  // feature is tested and stable.
+  if (frame->format() == media::PIXEL_FORMAT_NV12 &&
+      !base::FeatureList::IsEnabled(features::kCastMirroringNativeNV12)) {
+    scoped_refptr<media::VideoFrame> new_frame = ConvertNv12FrameToI420(*frame);
+    if (!new_frame) {
       return;
     }
     frame = new_frame;
@@ -323,8 +313,8 @@ void VideoCaptureClient::OnBufferDestroyed(int32_t buffer_id) {
 void VideoCaptureClient::OnFrameDropped(
     media::VideoCaptureFrameDropReason reason) {}
 
-void VideoCaptureClient::OnNewSubCaptureTargetVersion(
-    uint32_t sub_capture_target_version) {}
+void VideoCaptureClient::OnNewCaptureVersion(
+    const media::CaptureVersion& capture_version) {}
 
 void VideoCaptureClient::OnClientBufferFinished(int buffer_id,
                                                 MappingKeepAlive mapping) {
@@ -338,6 +328,29 @@ void VideoCaptureClient::OnClientBufferFinished(int buffer_id,
 
   video_capture_host_->ReleaseBuffer(DeviceId(), buffer_id, feedback_);
   feedback_ = media::VideoCaptureFeedback();
+}
+
+scoped_refptr<media::VideoFrame> VideoCaptureClient::ConvertNv12FrameToI420(
+    const media::VideoFrame& frame) {
+  if (!nv12_to_i420_pool_) {
+    nv12_to_i420_pool_ = std::make_unique<media::VideoFramePool>();
+  }
+  if (!frame_converter_) {
+    frame_converter_ = std::make_unique<media::VideoFrameConverter>();
+  }
+  scoped_refptr<media::VideoFrame> new_frame = nv12_to_i420_pool_->CreateFrame(
+      media::PIXEL_FORMAT_I420, frame.coded_size(), frame.visible_rect(),
+      frame.natural_size(), frame.timestamp());
+  media::EncoderStatus status =
+      frame_converter_->ConvertAndScale(frame, *new_frame);
+  if (!status.is_ok()) {
+    LOG(DFATAL) << "Unable to convert frame to I420.";
+    OnStateChanged(media::mojom::VideoCaptureResult::NewErrorCode(
+        media::VideoCaptureError::kDeviceClientTooManyFramesDroppedY16));
+    return nullptr;
+  }
+
+  return new_frame;
 }
 
 // static

@@ -191,8 +191,9 @@ class FakeImageDownloader {
   bool RunCallbackManually() {
     if (!HasPendingManualCallback())
       return false;
-    for (auto& callback : std::move(manual_callbacks_))
+    for (auto& callback : manual_callbacks_) {
       std::move(callback).Run();
+    }
     return true;
   }
 
@@ -268,8 +269,9 @@ class FakeManifestDownloader {
   bool RunCallbackManually() {
     if (!HasPendingManualCallback())
       return false;
-    for (auto& callback : std::move(manual_callbacks_))
+    for (auto& callback : manual_callbacks_) {
       std::move(callback).Run();
+    }
     return true;
   }
 
@@ -1943,6 +1945,33 @@ TEST_F(FaviconHandlerManifestsEnabledTest,
   EXPECT_THAT(favicon_service_.fake()->db_requests(),
               ElementsAre(kPageURL, kManifestURL));
   EXPECT_THAT(delegate_.downloads(), IsEmpty());
+}
+
+TEST_F(FaviconHandlerManifestsEnabledTest,
+       GetFaviconFromManifestInHistoryInIncognito) {
+  ON_CALL(delegate_, IsOffTheRecord()).WillByDefault(Return(true));
+  favicon_service_.fake()->Store(
+      kPageURL, kManifestURL,
+      CreateRawBitmapResult(kManifestURL, kWebManifestIcon));
+
+  // OnFaviconUpdated should be called with the cached icon initially.
+  EXPECT_CALL(delegate_,
+              OnFaviconUpdated(_, FaviconDriverObserver::TOUCH_LARGEST,
+                               kManifestURL, _, _));
+
+  // Since the fake manifest downloader returns empty results by default, the
+  // handler will fall back to the candidate icon and download it (see below for
+  // more details about why a download is expected).
+  EXPECT_CALL(delegate_,
+              OnFaviconUpdated(_, FaviconDriverObserver::TOUCH_LARGEST,
+                               kIconURL12x12, _, _));
+
+  RunHandlerWithSimpleTouchIconCandidates({kIconURL12x12}, kManifestURL);
+
+  // The handler should have requested the manifest download, although the icon
+  // was cached, because the handler is in incognito mode and cached icons must
+  // be treated as expired to prevent side-channel attacks.
+  EXPECT_THAT(delegate_.downloads(), ElementsAre(kManifestURL, kIconURL12x12));
 }
 
 // Test that a favicon corresponding to a web manifest is reported when:

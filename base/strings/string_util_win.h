@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/strings/string_util.h"
 
@@ -31,13 +32,18 @@ inline int vsnprintf(char* buffer,
                      size_t size,
                      const char* format,
                      va_list arguments) {
-  int length = vsnprintf_s(buffer, size, size - 1, format, arguments);
+  int length =
+      UNSAFE_TODO(vsnprintf_s(buffer, size, size - 1, format, arguments));
   if (length < 0) {
     return _vscprintf(format, arguments);
   }
   return length;
 }
 
+// TODO(crbug.com/40284755): implement spanified version.
+// inline int vswprintf(base::span<wchar_t> buffer,
+//                      const wchar_t* format,
+//                      va_list arguments);
 inline int vswprintf(wchar_t* buffer,
                      size_t size,
                      const wchar_t* format,
@@ -97,11 +103,12 @@ inline const char16_t* as_u16cstr(std::wstring_view str) {
 
 // Utility functions to convert between std::wstring_view and
 // std::u16string_view.
-inline std::wstring_view AsWStringView(std::u16string_view str) {
+inline std::wstring_view AsWStringView(std::u16string_view str LIFETIME_BOUND) {
   return std::wstring_view(as_wcstr(str.data()), str.size());
 }
 
-inline std::u16string_view AsStringPiece16(std::wstring_view str) {
+inline std::u16string_view AsStringPiece16(
+    std::wstring_view str LIFETIME_BOUND) {
   return std::u16string_view(as_u16cstr(str.data()), str.size());
 }
 
@@ -116,6 +123,7 @@ inline std::u16string AsString16(std::wstring_view str) {
 // The following section contains overloads of the cross-platform APIs for
 // std::wstring and std::wstring_view.
 BASE_EXPORT bool IsStringASCII(std::wstring_view str);
+BASE_EXPORT size_t FindFirstNonASCII(std::wstring_view str);
 
 BASE_EXPORT std::wstring ToLowerASCII(std::wstring_view str);
 
@@ -150,7 +158,7 @@ BASE_EXPORT bool TrimString(std::wstring_view input,
                             std::wstring_view trim_chars,
                             std::wstring* output);
 
-BASE_EXPORT std::wstring_view TrimString(std::wstring_view input,
+BASE_EXPORT std::wstring_view TrimString(std::wstring_view input LIFETIME_BOUND,
                                          std::wstring_view trim_chars,
                                          TrimPositions positions);
 
@@ -158,7 +166,8 @@ BASE_EXPORT TrimPositions TrimWhitespace(std::wstring_view input,
                                          TrimPositions positions,
                                          std::wstring* output);
 
-BASE_EXPORT std::wstring_view TrimWhitespace(std::wstring_view input,
+BASE_EXPORT std::wstring_view TrimWhitespace(std::wstring_view input
+                                                 LIFETIME_BOUND,
                                              TrimPositions positions);
 
 BASE_EXPORT std::wstring CollapseWhitespace(
@@ -180,6 +189,11 @@ BASE_EXPORT bool EndsWith(
     std::wstring_view search_for,
     CompareCase case_sensitivity = CompareCase::SENSITIVE);
 
+BASE_EXPORT std::optional<std::wstring_view> RemovePrefix(
+    std::wstring_view string LIFETIME_BOUND,
+    std::wstring_view prefix,
+    CompareCase case_sensitivity = CompareCase::SENSITIVE);
+
 BASE_EXPORT void ReplaceFirstSubstringAfterOffset(
     std::wstring* str,
     size_t start_offset,
@@ -193,15 +207,21 @@ BASE_EXPORT void ReplaceSubstringsAfterOffset(std::wstring* str,
 
 BASE_EXPORT wchar_t* WriteInto(std::wstring* str, size_t length_with_null);
 
-BASE_EXPORT std::wstring JoinString(span<const std::wstring> parts,
-                                    std::wstring_view separator);
+constexpr std::wstring JoinString(span<const std::wstring> parts,
+                                  std::wstring_view separator) {
+  return strings_internal::JoinStringT(parts, separator);
+}
 
-BASE_EXPORT std::wstring JoinString(span<const std::wstring_view> parts,
-                                    std::wstring_view separator);
+constexpr std::wstring JoinString(span<const std::wstring_view> parts,
+                                  std::wstring_view separator) {
+  return strings_internal::JoinStringT(parts, separator);
+}
 
-BASE_EXPORT std::wstring JoinString(
+constexpr std::wstring JoinString(
     std::initializer_list<std::wstring_view> parts,
-    std::wstring_view separator);
+    std::wstring_view separator) {
+  return strings_internal::JoinStringT(parts, separator);
+}
 
 BASE_EXPORT std::wstring ReplaceStringPlaceholders(
     std::wstring_view format_string,

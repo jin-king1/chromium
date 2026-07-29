@@ -62,7 +62,11 @@
       "075FF17D52ED6E3C2E5EC4D99F188E7A25AF47EA",   // Beta DriveLock Smart Card Middleware
       // http://b/297940831
       "D95D50CDFE6F14769DA2D1E59DF853BFA56BFC3C",   // Net iD for Chrome OS
-      "5C825E850034490380BCB756D43ABB2CF537AA91"    // b/359290130
+      "5C825E850034490380BCB756D43ABB2CF537AA91",   // https://crbug.com/359290130
+      // https://crbug.com/383855830
+      "1FC31C9D42DF1B51EA7648F73DF26400322999A8",   // IDmelon Accesskey
+      // https://crbug.com/433867146
+      "4B7E9789426EBD1BB3F99D72690DAE303FC042DF"    // AuthX Secure for ChromeOS
     ]
   }, {
     // Explicitly allowlist extensions that should always be available
@@ -87,7 +91,10 @@
       "2FCBCE08B34CCA1728A85F1EFBD9A34DD2558B2E",  // Screen Reader
       "7910EAFDAF64B947E1CB31B333A9BD14CA556B6C",  // Feedback extension
       "75C7F4B720314B6CB1B5817CD86089DB95CD2461",  // ChromeVox
-      "0681F449CC5742B51148D9968C2C38B7396184A7"   // eSpeakNG
+      "0681F449CC5742B51148D9968C2C38B7396184A7",  // eSpeakNG
+      "DDF36D85CB9C1646841F433F8ABAA2798F47D849",  // Select-to-speak
+      "D715AF563195BCD1B11CD5764B3B1CEAF8929D73",  // Enhanced Network TTS
+      "371AC6869D2138CE58123741E69F67469206909F"   // Accessibility Common
     ]
   },
   // Extensions that are force-installed on the login screen through policy will

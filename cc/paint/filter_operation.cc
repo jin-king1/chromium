@@ -17,6 +17,7 @@
 #include "ui/gfx/animation/tween.h"
 #include "ui/gfx/geometry/outsets_f.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 
@@ -333,7 +334,7 @@ SkVector MapStdDeviation(float std_deviation, const SkMatrix* ctm) {
   // Corresponds to SpreadForStdDeviation in filter_operations.cc.
   SkVector sigma = SkVector::Make(std_deviation, std_deviation);
   if (ctm) {
-    ctm->mapVectors(&sigma, 1);
+    sigma = ctm->mapVector(sigma);
   }
   return sigma * SkIntToScalar(3);
 }
@@ -367,7 +368,7 @@ gfx::Rect MapRectInternal(const FilterOperation& op,
       SkVector mapped_drop_shadow_offset =
           SkVector::Make(op.offset().x(), op.offset().y());
       if (ctm) {
-        ctm->mapVectors(&mapped_drop_shadow_offset, 1);
+          mapped_drop_shadow_offset = ctm->mapVector(mapped_drop_shadow_offset);
       }
       if (direction == SkImageFilter::kReverse_MapDirection)
         mapped_drop_shadow_offset = -mapped_drop_shadow_offset;
@@ -385,7 +386,7 @@ gfx::Rect MapRectInternal(const FilterOperation& op,
     case FilterOperation::OFFSET: {
       SkVector mapped_offset = SkVector::Make(op.offset().x(), op.offset().y());
       if (ctm) {
-        ctm->mapVectors(&mapped_offset, 1);
+          mapped_offset = ctm->mapVector(mapped_offset);
       }
       if (direction == SkImageFilter::kReverse_MapDirection)
         mapped_offset = -mapped_offset;

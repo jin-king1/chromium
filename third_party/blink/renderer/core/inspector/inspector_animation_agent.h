@@ -11,7 +11,6 @@
 #include "third_party/blink/renderer/core/animation/keyframe_effect_model.h"
 #include "third_party/blink/renderer/core/animation/scroll_snapshot_timeline.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/css/css_keyframes_rule.h"
 #include "third_party/blink/renderer/core/inspector/inspector_base_agent.h"
 #include "third_party/blink/renderer/core/inspector/protocol/animation.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
@@ -29,9 +28,7 @@ class InspectorCSSAgent;
 class CORE_EXPORT InspectorAnimationAgent final
     : public InspectorBaseAgent<protocol::Animation::Metainfo> {
  public:
-  InspectorAnimationAgent(InspectedFrames*,
-                          InspectorCSSAgent*,
-                          v8_inspector::V8InspectorSession*);
+  InspectorAnimationAgent(InspectedFrames*, InspectorCSSAgent*);
   InspectorAnimationAgent(const InspectorAnimationAgent&) = delete;
   InspectorAnimationAgent& operator=(const InspectorAnimationAgent&) = delete;
 
@@ -115,13 +112,12 @@ class CORE_EXPORT InspectorAnimationAgent final
 
   Member<InspectedFrames> inspected_frames_;
   Member<InspectorCSSAgent> css_agent_;
-  v8_inspector::V8InspectorSession* v8_session_;
   // Keeps track of the snapshot of animations that are sent to the frontend.
   // The snapshots are used to check whether to send an `animationUpdated` event
   // when a blink::Animation instance is updated.
   HeapHashMap<String, Member<AnimationSnapshot>> id_to_animation_snapshot_;
   // Keeps track of the blink::Animation instances by their ids.
-  HeapHashMap<String, Member<blink::Animation>> id_to_animation_;
+  HeapHashMap<String, WeakMember<blink::Animation>> id_to_animation_;
   bool is_cloning_;
   HashSet<String> cleared_animations_;
   InspectorAgentState::Boolean enabled_;

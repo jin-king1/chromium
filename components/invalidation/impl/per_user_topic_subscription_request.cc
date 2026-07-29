@@ -5,13 +5,17 @@
 #include "components/invalidation/impl/per_user_topic_subscription_request.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "base/functional/bind.h"
+#include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
@@ -25,16 +29,6 @@ namespace {
 
 const char kPublicTopicNameKey[] = "publicTopicName";
 const char kPrivateTopicNameKey[] = "privateTopicName";
-
-const std::string* GetTopicName(const base::Value& value) {
-  if (!value.is_dict())
-    return nullptr;
-  const base::Value::Dict& dict = value.GetDict();
-  if (dict.FindBool("isPublic").value_or(false)) {
-    return dict.FindString(kPublicTopicNameKey);
-  }
-  return dict.FindString(kPrivateTopicNameKey);
-}
 
 bool IsNetworkError(int net_error) {
   // Note: ERR_HTTP_RESPONSE_CODE_FAILURE isn't a real network error - it
@@ -110,7 +104,7 @@ void PerUserTopicSubscriptionRequest::Start(
 }
 
 void PerUserTopicSubscriptionRequest::OnURLFetchComplete(
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   int response_code = 0;
   if (simple_loader_->ResponseInfo() &&
       simple_loader_->ResponseInfo()->headers) {
@@ -124,7 +118,7 @@ void PerUserTopicSubscriptionRequest::OnURLFetchComplete(
 void PerUserTopicSubscriptionRequest::OnURLFetchCompleteInternal(
     int net_error,
     int response_code,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   if (IsNetworkError(net_error)) {
     RecordRequestStatus(SubscriptionStatus::kNetworkFailure, type_, topic_,
                         net_error, response_code);
@@ -169,27 +163,32 @@ void PerUserTopicSubscriptionRequest::OnURLFetchCompleteInternal(
     return;
   }
 
-  data_decoder::DataDecoder::ParseJsonIsolated(
-      *response_body,
-      base::BindOnce(&PerUserTopicSubscriptionRequest::OnJsonParse,
-                     weak_ptr_factory_.GetWeakPtr()));
-}
-
-void PerUserTopicSubscriptionRequest::OnJsonParse(
-    data_decoder::DataDecoder::ValueOrError result) {
-  if (const auto topic_name = result.transform(GetTopicName);
-      topic_name.has_value() && *topic_name) {
-    RecordRequestStatus(SubscriptionStatus::kSuccess, type_, topic_);
-    RunCompletedCallbackAndMaybeDie(Status(StatusCode::SUCCESS, std::string()),
-                                    **topic_name);
+  std::optional<base::DictValue> response_dict =
+      base::JSONReader::ReadDict(*response_body, base::JSON_PARSE_RFC);
+  if (!response_dict) {
+    RecordRequestStatus(SubscriptionStatus::kParsingFailure, type_, topic_);
+    RunCompletedCallbackAndMaybeDie(
+        Status(StatusCode::FAILED, "Body parse error"), std::string());
     // Potentially dead after the above invocation; nothing to do except return.
     return;
   }
-  RecordRequestStatus(SubscriptionStatus::kParsingFailure, type_, topic_);
-  RunCompletedCallbackAndMaybeDie(
-      Status(StatusCode::FAILED,
-             result.has_value() ? "Missing topic name" : "Body parse error"),
-      std::string());
+
+  const std::string* topic_name =
+      response_dict->FindBool("isPublic").value_or(false)
+          ? response_dict->FindString(kPublicTopicNameKey)
+          : response_dict->FindString(kPrivateTopicNameKey);
+
+  if (!topic_name) {
+    RecordRequestStatus(SubscriptionStatus::kParsingFailure, type_, topic_);
+    RunCompletedCallbackAndMaybeDie(
+        Status(StatusCode::FAILED, "Missing topic name"), std::string());
+    // Potentially dead after the above invocation; nothing to do except return.
+    return;
+  }
+
+  RecordRequestStatus(SubscriptionStatus::kSuccess, type_, topic_);
+  RunCompletedCallbackAndMaybeDie(Status(StatusCode::SUCCESS, std::string()),
+                                  *topic_name);
   // Potentially dead after the above invocation; nothing to do except return.
 }
 
@@ -305,7 +304,7 @@ HttpRequestHeaders PerUserTopicSubscriptionRequest::Builder::BuildHeaders()
 }
 
 std::string PerUserTopicSubscriptionRequest::Builder::BuildBody() const {
-  base::Value::Dict request;
+  base::DictValue request;
 
   request.Set("public_topic_name", topic_);
   if (topic_is_public_)

@@ -16,9 +16,9 @@ import static org.chromium.chrome.browser.notifications.NotificationConstants.NO
 
 import android.content.res.Resources;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.base.ContextUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.browserservices.ui.TrustedWebActivityModel;
 import org.chromium.chrome.browser.browserservices.ui.trustedwebactivity.DisclosureAcceptanceBroadcastReceiver;
@@ -27,7 +27,8 @@ import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
 import org.chromium.chrome.browser.notifications.NotificationWrapperBuilderFactory;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
-import org.chromium.components.browser_ui.notifications.NotificationManagerProxyImpl;
+import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxy;
+import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.NotificationMetadata;
 import org.chromium.components.browser_ui.notifications.NotificationWrapper;
 import org.chromium.components.browser_ui.notifications.PendingIntentProvider;
@@ -39,11 +40,15 @@ import org.chromium.ui.modelutil.PropertyObservable;
  * Displays a notification when the user is on the verified domain. The first such notification (per
  * TWA) is urgent priority, subsequent ones are low priority.
  */
+@NullMarked
 public class DisclosureNotification
         implements PropertyObservable.PropertyObserver<PropertyKey>, StartStopWithNativeObserver {
     private final Resources mResources;
     private final TrustedWebActivityModel mModel;
-    private String mCurrentScope;
+    private final BaseNotificationManagerProxy mNotificationManagerProxy =
+            BaseNotificationManagerProxyFactory.create();
+
+    private @Nullable String mCurrentScope;
 
     public DisclosureNotification(
             Resources resources,
@@ -63,7 +68,8 @@ public class DisclosureNotification
 
         NotificationWrapper notification =
                 createNotification(firstTime, mCurrentScope, packageName);
-        NotificationManagerProxyImpl.getInstance().notify(notification);
+
+        mNotificationManagerProxy.notify(notification);
         NotificationUmaTracker.getInstance()
                 .onNotificationShown(
                         firstTime
@@ -77,10 +83,8 @@ public class DisclosureNotification
     }
 
     private void dismiss() {
-        NotificationManagerProxyImpl.getInstance()
-                .cancel(mCurrentScope, NOTIFICATION_ID_TWA_DISCLOSURE_INITIAL);
-        NotificationManagerProxyImpl.getInstance()
-                .cancel(mCurrentScope, NOTIFICATION_ID_TWA_DISCLOSURE_SUBSEQUENT);
+        mNotificationManagerProxy.cancel(mCurrentScope, NOTIFICATION_ID_TWA_DISCLOSURE_INITIAL);
+        mNotificationManagerProxy.cancel(mCurrentScope, NOTIFICATION_ID_TWA_DISCLOSURE_SUBSEQUENT);
         mCurrentScope = null;
     }
 

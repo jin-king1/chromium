@@ -48,13 +48,6 @@ content::BrowserContext* ContentBrowserContext::FromBrowserState(
 ContentBrowserContext::ContentBrowserContext(web::BrowserState* browser_state)
     : browser_state_(browser_state) {
   InitWhileIOAllowed();
-
-  // This should depend on browser_state_->GetStatePath(), but it is probably
-  // unsafe to do this right now. Instead, use a temp directory until this is
-  // refactored.
-  browser_path_ =
-      base::FilePath(base::SysNSStringToUTF8(NSTemporaryDirectory()))
-          .Append("Chromium");
 }
 
 ContentBrowserContext::~ContentBrowserContext() {
@@ -73,8 +66,8 @@ ContentBrowserContext::CreateZoomLevelDelegate(const base::FilePath&) {
   return nullptr;
 }
 
-base::FilePath ContentBrowserContext::GetPath() {
-  return browser_path_;
+base::FilePath ContentBrowserContext::GetPath() const {
+  return browser_state_->GetStatePath().Append("Content");
 }
 
 bool ContentBrowserContext::IsOffTheRecord() {
@@ -142,16 +135,6 @@ ContentBrowserContext::GetBrowsingDataRemoverDelegate() {
 
 content::ContentIndexProvider*
 ContentBrowserContext::GetContentIndexProvider() {
-  return nullptr;
-}
-
-content::FederatedIdentityApiPermissionContextDelegate*
-ContentBrowserContext::GetFederatedIdentityApiPermissionContext() {
-  return nullptr;
-}
-
-content::FederatedIdentityPermissionContextDelegate*
-ContentBrowserContext::GetFederatedIdentityPermissionContext() {
   return nullptr;
 }
 

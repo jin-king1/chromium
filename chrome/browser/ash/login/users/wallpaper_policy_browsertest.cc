@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <stdint.h>
 
 #include <memory>
@@ -33,7 +28,6 @@
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash_factory.h"
-#include "chrome/browser/ash/policy/core/device_policy_builder.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/policy/external_data/cloud_external_data_manager_base_test_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -48,6 +42,7 @@
 #include "chromeos/ash/components/dbus/session_manager/fake_session_manager_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
+#include "chromeos/ash/components/policy/device_policy/device_policy_builder.h"
 #include "chromeos/dbus/constants/dbus_paths.h"
 #include "components/ownership/mock_owner_key_util.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
@@ -60,7 +55,6 @@
 #include "components/user_manager/user_names.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "crypto/rsa_private_key.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -249,14 +243,11 @@ class WallpaperPolicyTest : public LoginManagerTest,
                                 &image_data)) {
       ADD_FAILURE();
     }
-    std::string policy;
-    base::JSONWriter::Write(policy::test::ConstructExternalDataReference(
-                                embedded_test_server()
-                                    ->GetURL(std::string("/") + relative_path)
-                                    .spec(),
-                                image_data),
-                            &policy);
-    return policy;
+    std::string path = std::string("/") + relative_path;
+    std::string url = embedded_test_server()->GetURL(path).spec();
+    return base::WriteJson(
+               policy::test::ConstructExternalDataReference(url, image_data))
+        .value_or("");
   }
 
   // Inject `filename` as wallpaper policy for test user `user_number`.  Set
@@ -266,7 +257,7 @@ class WallpaperPolicyTest : public LoginManagerTest,
     const AccountId& account_id =
         login_manager_.users()[user_number].account_id;
     policy::UserPolicyBuilder* builder =
-        user_policy_builders_[user_number].get();
+        UNSAFE_TODO(user_policy_builders_[user_number]).get();
     if (!filename.empty()) {
       builder->payload().mutable_wallpaperimage()->set_value(
           ConstructPolicy(filename));
@@ -276,7 +267,7 @@ class WallpaperPolicyTest : public LoginManagerTest,
     builder->Build();
     FakeSessionManagerClient::Get()->set_user_policy(
         cryptohome::CreateAccountIdentifierFromAccountId(account_id),
-        builder->GetBlob());
+        login_manager::POLICY_DOMAIN_CHROME, builder->GetBlob());
     const user_manager::User* user =
         user_manager::UserManager::Get()->FindUser(account_id);
     ASSERT_TRUE(user);
@@ -328,7 +319,7 @@ class WallpaperPolicyTest : public LoginManagerTest,
 // user.  Also verifies that after the policy has been cleared, the wallpaper
 // reverts to default.
 //
-// Disabled due to flakiness: https://crbug.com/873908.
+// Disabled due to flakiness: https://crbug.com/258749432.
 IN_PROC_BROWSER_TEST_F(WallpaperPolicyTest, DISABLED_SetResetClear) {
   SetSystemSalt();
   LoginUser(login_manager_.users()[0].account_id);

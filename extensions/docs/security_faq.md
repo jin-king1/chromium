@@ -421,10 +421,17 @@ enabled, this may be a security bug; please report any such bugs
 
 ### What privileges does the Debugger permission grant an extension? What privileges should it lack?
 
-The debugger permission should grant an extension the power to automate any
-website. This may extend to driving interactions with that site which are not
-possible using JavaScript on the site itself, but instead normally require
-user interaction with Chrome features.
+The debugger permission grants an extension with access to the Chrome DevTools
+Protocol, which is a powerful API surface that has many different capabilities.
+This allows an extension to automate or debug any website, and may extend to
+driving interactions with that site which are not possible using JavaScript on
+the site itself, but instead normally require user interaction with Chrome
+features.
+
+Through the use of certain methods in the Chrome DevTools Protocol, the
+debugger API *may* in some cases also sidestep other typical restrictions, such
+as host permissions or file access. This is the reason for the broad security
+warning associated with the debugger API.
 
 The debugger permission does not allow automating parts of the Chromium
 browser unrelated to websites. Automating WebUI or settings, installing
@@ -446,6 +453,19 @@ of the Chrome Web Store can easily use an arbitrary ID with the [`key`](https://
 field, and other binaries on a machine could launch the Native Messaging Host
 and communicate with it. Both of these are outside of Chrome's security model
 which [does not consider physically-local attacks to be security bugs][physically-local-attacks].
+
+### Are bugs that assume a compromised Chrome Web Store renderer considered security issues?
+
+In general, _no_, these are not be considered security bugs. The Chrome Web
+Store is process-isolated (meaning it won't share a process with other
+renderers), put in its own browsing instance, and runs trusted code. Similar to
+to other highly-privileged pages that still run HTML, CSS, and JS (like
+chrome://settings and other WebUI pages), these are not considered "inherently
+compromisable" in the same way that other web renderers are, and so issues that
+assume a compromise Chrome Web Store renderer are not typically considered
+security bugs. However, if you can trigger a renderer compromise in the Chrome
+Web Store renderer process, that may then be considered a security issue
+(subject to our other guidelines).
 
 ### What is your stance on click-jacking using extensions?
 

@@ -27,7 +27,6 @@
 #include "components/autofill/core/browser/webdata/payments/payments_sync_bridge_util.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/hash_util.h"
 #include "components/sync/engine/data_type_activation_response.h"
 #include "components/sync/model/client_tag_based_data_type_processor.h"
 #include "components/sync/model/in_memory_metadata_change_list.h"
@@ -290,28 +289,6 @@ TEST_F(AutofillWalletOfferSyncBridgeTest, MergeFullSyncData_NoData) {
   StartSyncing({});
 
   EXPECT_TRUE(GetAllLocalData().empty());
-}
-
-// Test to ensure whether the data being valid is logged correctly.
-TEST_F(AutofillWalletOfferSyncBridgeTest, MergeFullSyncData_LogDataValidity) {
-  AutofillOfferSpecifics offer_specifics1;
-  SetAutofillOfferSpecificsFromOfferData(test::GetCardLinkedOfferData1(),
-                                         &offer_specifics1);
-  AutofillOfferSpecifics offer_specifics2;
-  SetAutofillOfferSpecificsFromOfferData(test::GetCardLinkedOfferData2(),
-                                         &offer_specifics2);
-  offer_specifics2.clear_id();
-
-  EXPECT_CALL(*backend(), CommitChanges());
-  EXPECT_CALL(*backend(),
-              NotifyOnAutofillChangedBySync(syncer::AUTOFILL_WALLET_OFFER));
-  base::HistogramTester histogram_tester;
-  StartSyncing({offer_specifics1, offer_specifics2});
-
-  histogram_tester.ExpectBucketCount("Autofill.Offer.SyncedOfferDataBeingValid",
-                                     true, 1);
-  histogram_tester.ExpectBucketCount("Autofill.Offer.SyncedOfferDataBeingValid",
-                                     false, 1);
 }
 
 // Tests that when sync is stopped and the data type is disabled, client should

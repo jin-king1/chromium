@@ -179,7 +179,8 @@ class MessageCenterImplTest : public testing::Test {
     MessageCenter::Initialize(std::make_unique<FakeLockScreenController>());
     message_center_ = MessageCenter::Get();
     task_environment_ =
-        std::make_unique<base::test::SingleThreadTaskEnvironment>();
+        std::make_unique<base::test::SingleThreadTaskEnvironment>(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME);
     run_loop_ = std::make_unique<base::RunLoop>();
     closure_ = run_loop_->QuitClosure();
   }
@@ -268,7 +269,7 @@ class MessageCenterImplTest : public testing::Test {
         message_center_impl()->lock_screen_controller());
   }
 
- private:
+ protected:
   raw_ptr<MessageCenter> message_center_;
   std::unique_ptr<base::test::SingleThreadTaskEnvironment> task_environment_;
   std::unique_ptr<base::RunLoop> run_loop_;
@@ -499,14 +500,6 @@ TEST_F(MessageCenterImplTest, PopupTimersControllerStartMultipleTimers) {
 }
 
 TEST_F(MessageCenterImplTest, PopupTimersControllerRestartOnUpdate) {
-  scoped_refptr<base::SingleThreadTaskRunner> old_task_runner =
-      base::SingleThreadTaskRunner::GetCurrentDefault();
-
-  scoped_refptr<base::TestMockTimeTaskRunner> task_runner =
-      base::MakeRefCounted<base::TestMockTimeTaskRunner>(
-          base::Time::Now(), base::TimeTicks::Now());
-  base::CurrentThread::Get()->SetTaskRunner(task_runner);
-
   NotifierId notifier_id(GURL("https://example.com"));
 
   message_center()->AddNotification(std::make_unique<Notification>(
@@ -529,7 +522,7 @@ TEST_F(MessageCenterImplTest, PopupTimersControllerRestartOnUpdate) {
 
   // Fast forward the |task_runner| by one second less than the auto-close timer
   // frequency for Web Notifications. (As set by the |notifier_id|.)
-  task_runner->FastForwardBy(base::Seconds(dismiss_time - 1));
+  task_environment_->FastForwardBy(base::Seconds(dismiss_time - 1));
   ASSERT_EQ(popup_timers_controller->timer_finished(), 0);
 
   // Trigger a replacement of the notification in the timer controller.
@@ -537,15 +530,13 @@ TEST_F(MessageCenterImplTest, PopupTimersControllerRestartOnUpdate) {
 
   // Fast forward the |task_runner| by one second less than the auto-close timer
   // frequency for Web Notifications again. It should have been reset.
-  task_runner->FastForwardBy(base::Seconds(dismiss_time - 1));
+  task_environment_->FastForwardBy(base::Seconds(dismiss_time - 1));
   ASSERT_EQ(popup_timers_controller->timer_finished(), 0);
 
   // Now fast forward the |task_runner| by two seconds (to avoid flakiness),
   // after which the timer should have fired.
-  task_runner->FastForwardBy(base::Seconds(2));
+  task_environment_->FastForwardBy(base::Seconds(2));
   ASSERT_EQ(popup_timers_controller->timer_finished(), 1);
-
-  base::CurrentThread::Get()->SetTaskRunner(old_task_runner);
 }
 
 TEST_F(MessageCenterImplTest, Renotify) {
@@ -1601,6 +1592,23 @@ TEST_F(MessageCenterImplTest, ClickAndCancelOnLockScreen) {
   EXPECT_FALSE(lock_screen_controller()->IsScreenLocked());
 }
 
+TEST_F(MessageCenterImplTest,
+       AllowClickOnLockScreenIfNotificationAllowedOnLockScreen) {
+  lock_screen_controller()->set_is_screen_locked(true);
+  lock_screen_controller()->set_is_notification_allowed_on_lock_screen(true);
+
+  TestAddObserver observer(message_center());
+  std::string id("n");
+
+  std::unique_ptr<Notification> notification = CreateSimpleNotification(id);
+  message_center()->AddNotification(std::move(notification));
+  message_center()->ClickOnNotification(id);
+
+  EXPECT_EQ("Click_", GetDelegate(id)->log());
+  EXPECT_FALSE(lock_screen_controller()->HasPendingCallback());
+  EXPECT_TRUE(lock_screen_controller()->IsScreenLocked());
+}
+
 TEST_F(MessageCenterImplTest, ButtonClickOnLockScreen) {
   lock_screen_controller()->set_is_screen_locked(true);
 
@@ -1622,6 +1630,23 @@ TEST_F(MessageCenterImplTest, ButtonClickOnLockScreen) {
   EXPECT_FALSE(lock_screen_controller()->IsScreenLocked());
 }
 
+TEST_F(MessageCenterImplTest,
+       ButtonClickOnLockScreenIfNotificationAllowedOnLockScreen) {
+  lock_screen_controller()->set_is_screen_locked(true);
+  lock_screen_controller()->set_is_notification_allowed_on_lock_screen(true);
+
+  TestAddObserver observer(message_center());
+  std::string id("n");
+
+  std::unique_ptr<Notification> notification = CreateSimpleNotification(id);
+  message_center()->AddNotification(std::move(notification));
+  message_center()->ClickOnNotificationButton(id, 1);
+
+  EXPECT_EQ("ButtonClick_1_", GetDelegate(id)->log());
+  EXPECT_FALSE(lock_screen_controller()->HasPendingCallback());
+  EXPECT_TRUE(lock_screen_controller()->IsScreenLocked());
+}
+
 TEST_F(MessageCenterImplTest, ButtonClickWithReplyOnLockScreen) {
   lock_screen_controller()->set_is_screen_locked(true);
 
@@ -1641,6 +1666,23 @@ TEST_F(MessageCenterImplTest, ButtonClickWithReplyOnLockScreen) {
   EXPECT_EQ("ReplyButtonClick_1_REPLYTEXT_", GetDelegate(id)->log());
   EXPECT_FALSE(lock_screen_controller()->HasPendingCallback());
   EXPECT_FALSE(lock_screen_controller()->IsScreenLocked());
+}
+
+TEST_F(MessageCenterImplTest,
+       ButtonClickWithReplyOnLockIfNotificationAllowedOnLockScreen) {
+  lock_screen_controller()->set_is_screen_locked(true);
+  lock_screen_controller()->set_is_notification_allowed_on_lock_screen(true);
+
+  TestAddObserver observer(message_center());
+  std::string id("n");
+
+  std::unique_ptr<Notification> notification = CreateSimpleNotification(id);
+  message_center()->AddNotification(std::move(notification));
+  message_center()->ClickOnNotificationButtonWithReply(id, 1, u"REPLYTEXT");
+
+  EXPECT_EQ("ReplyButtonClick_1_REPLYTEXT_", GetDelegate(id)->log());
+  EXPECT_FALSE(lock_screen_controller()->HasPendingCallback());
+  EXPECT_TRUE(lock_screen_controller()->IsScreenLocked());
 }
 
 }  // namespace internal

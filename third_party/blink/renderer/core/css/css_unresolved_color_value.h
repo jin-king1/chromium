@@ -5,6 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_UNRESOLVED_COLOR_VALUE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_UNRESOLVED_COLOR_VALUE_H_
 
+#include <array>
+
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/css_value.h"
 #include "third_party/blink/renderer/core/css/properties/css_color_function_parser.h"
@@ -34,7 +36,7 @@ class CORE_EXPORT CSSUnresolvedColorValue : public CSSValue {
         alpha_(alpha),
         alpha_channel_type_(alpha_channel_type) {}
 
-  WTF::String CustomCSSText() const;
+  String CustomCSSText() const;
 
   void TraceAfterDispatch(blink::Visitor* visitor) const {
     visitor->Trace(channels_[0]);
@@ -47,6 +49,8 @@ class CORE_EXPORT CSSUnresolvedColorValue : public CSSValue {
   bool Equals(const CSSUnresolvedColorValue& other) const;
 
   Color Resolve(const CSSLengthResolver& resolver) const;
+
+  bool HasRandomFunctions() const;
 
  private:
   const Color::ColorSpace color_space_;

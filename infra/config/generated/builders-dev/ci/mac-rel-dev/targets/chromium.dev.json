@@ -5,11 +5,13 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//base:base_unittests/",
+        "module_scheme": "gtest",
         "name": "base_unittests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
-            "os": "Mac-14"
+            "os": "Mac-15"
           },
           "service_account": "chromium-tester-dev@chops-service-accounts.iam.gserviceaccount.com"
         },
@@ -20,11 +22,13 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//content/test:content_unittests/",
+        "module_scheme": "gtest",
         "name": "content_unittests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
-            "os": "Mac-14"
+            "os": "Mac-15"
           },
           "service_account": "chromium-tester-dev@chops-service-accounts.iam.gserviceaccount.com"
         },
@@ -35,11 +39,13 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//net:net_unittests/",
+        "module_scheme": "gtest",
         "name": "net_unittests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
-            "os": "Mac-14"
+            "os": "Mac-15"
           },
           "service_account": "chromium-tester-dev@chops-service-accounts.iam.gserviceaccount.com"
         },
@@ -50,11 +56,13 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//testing/rust_gtest_interop:rust_gtest_interop_unittests/",
+        "module_scheme": "gtest",
         "name": "rust_gtest_interop_unittests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
-            "os": "Mac-14"
+            "os": "Mac-15"
           },
           "service_account": "chromium-tester-dev@chops-service-accounts.iam.gserviceaccount.com"
         },
@@ -65,11 +73,13 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//chrome/test:unit_tests/",
+        "module_scheme": "gtest",
         "name": "unit_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
-            "os": "Mac-14"
+            "os": "Mac-15"
           },
           "service_account": "chromium-tester-dev@chops-service-accounts.iam.gserviceaccount.com"
         },

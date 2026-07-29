@@ -19,14 +19,12 @@ build_webui("build") {
     "shared_style.css",
   ]
 
-  non_web_component_files = [
+  ts_files = [
     "app.html.ts",
     "app.ts",
     "commerce_internals_api_proxy.ts",
     "eligibility_list.html.ts",
     "eligibility_list.ts",
-    "product_specifications_set_list.html.ts",
-    "product_specifications_set_list.ts",
     "product_viewer/app.html.ts",
     "product_viewer/app.ts",
     "subscription_list.html.ts",

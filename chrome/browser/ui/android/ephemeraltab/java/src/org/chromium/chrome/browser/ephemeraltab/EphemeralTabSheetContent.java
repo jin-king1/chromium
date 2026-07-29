@@ -16,24 +16,29 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import androidx.annotation.DrawableRes;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.ObservableSupplierImpl;
-import org.chromium.base.supplier.UnownedUserDataSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.build.annotations.EnsuresNonNull;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.ShareDelegateSupplier;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.widget.ChromeTransitionDrawable;
 import org.chromium.components.browser_ui.widget.FadingShadow;
 import org.chromium.components.browser_ui.widget.FadingShadowView;
+import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
 import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.components.thinwebview.ThinWebView;
+import org.chromium.components.thinwebview.ThinWebViewAttachParams;
 import org.chromium.components.thinwebview.ThinWebViewConstraints;
 import org.chromium.components.thinwebview.ThinWebViewFactory;
+import org.chromium.components.thinwebview.internal.ThinWebViewContextMenuItemDelegate;
 import org.chromium.components.url_formatter.SchemeDisplay;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.content_public.browser.RenderCoordinates;
@@ -46,6 +51,7 @@ import org.chromium.url.GURL;
 /**
  * Represents ephemeral tab content and the toolbar, which can be included inside the bottom sheet.
  */
+@NullMarked
 public class EphemeralTabSheetContent implements BottomSheetContent {
     /**
      * The base duration of the settling animation of the sheet. 218 ms is a spec for material
@@ -60,24 +66,24 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
     private final Runnable mOpenNewTabCallback;
     private final Runnable mToolbarClickCallback;
     private final Runnable mCloseButtonCallback;
-    private final UnownedUserDataSupplier<ShareDelegate> mShareDelegateSupplier =
-            new ShareDelegateSupplier();
-    private final ObservableSupplierImpl<Boolean> mBackPressStateChangedSupplier =
-            new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<ShareDelegate> mShareDelegateSupplier =
+            ObservableSuppliers.createMonotonic();
+    private final @Nullable ContextMenuPopulatorFactory mContextMenuPopulatorFactory;
     private final Callback<ViewGroup> mOnToolbarCreatedCallback;
 
     private ViewGroup mToolbarView;
     private ViewGroup mSheetContentView;
 
-    private WebContents mWebContents;
-    private ContentView mWebContentView;
+    private @Nullable WebContents mWebContents;
+    private @Nullable ContentView mWebContentView;
     private ThinWebView mThinWebView;
     private FadingShadowView mShadow;
-    private Drawable mCurrentFavicon;
+    private @Nullable Drawable mCurrentFavicon;
     private ImageView mFaviconView;
 
     /**
      * Constructor.
+     *
      * @param context An Android context.
      * @param openNewTabCallback Callback invoked to open a new tab.
      * @param toolbarClickCallback Callback invoked when user clicks on the toolbar.
@@ -85,6 +91,7 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
      * @param maxViewHeight The height of the sheet in full height position.
      * @param intentRequestTracker The {@link IntentRequestTracker} of the current activity.
      * @param onToolbarCreatedCallback Callback invoked to notify observers on toolbar creation.
+     * @param contextMenuPopulatorFactory The factory used to create the context menu populator.
      */
     public EphemeralTabSheetContent(
             Context context,
@@ -93,17 +100,17 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
             Runnable closeButtonCallback,
             int maxViewHeight,
             IntentRequestTracker intentRequestTracker,
-            Callback<ViewGroup> onToolbarCreatedCallback) {
+            Callback<ViewGroup> onToolbarCreatedCallback,
+            @Nullable ContextMenuPopulatorFactory contextMenuPopulatorFactory) {
         mContext = context;
         mOpenNewTabCallback = openNewTabCallback;
         mToolbarClickCallback = toolbarClickCallback;
         mCloseButtonCallback = closeButtonCallback;
         mOnToolbarCreatedCallback = onToolbarCreatedCallback;
+        mContextMenuPopulatorFactory = contextMenuPopulatorFactory;
 
         createThinWebView(getMaxSheetHeight(maxViewHeight), intentRequestTracker);
         createToolbarView(maxViewHeight);
-
-        mBackPressStateChangedSupplier.set(true);
     }
 
     /**
@@ -119,24 +126,40 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
         if (mWebContentView.getParent() != null) {
             ((ViewGroup) mWebContentView.getParent()).removeView(mWebContentView);
         }
-        mThinWebView.attachWebContents(mWebContents, mWebContentView, delegate);
+        if (mContextMenuPopulatorFactory != null) {
+            ThinWebViewContextMenuItemDelegate itemDelegate =
+                    new ThinWebViewContextMenuItemDelegate(webContents);
+            mContextMenuPopulatorFactory.setItemDelegate(itemDelegate);
+        }
+        mThinWebView.attachWebContents(
+                mWebContents,
+                mWebContentView,
+                new ThinWebViewAttachParams.Builder()
+                        .setWebContentsDelegate(delegate)
+                        .setContextMenuPopulatorFactory(mContextMenuPopulatorFactory)
+                        .setSupportTheming(true)
+                        .build());
 
         // Initialize the supplier of {@link ShareDelegate} for the WindowAndroid used by
         // ThinWebView.  The {@link ShareDelegate} itself is not set by design in order to leave
         // the share feature disabled on Preview Tab.
         WindowAndroid window = mWebContents.getTopLevelNativeWindow();
         assert window != null;
-        mShareDelegateSupplier.attach(window.getUnownedUserDataHost());
+        ShareDelegateSupplier.attach(window.getUnownedUserDataHost(), mShareDelegateSupplier);
     }
 
     /**
      * Create a ThinWebView, add it to the view hierarchy, which represents the contents of the
      * bottom sheet.
      */
+    @EnsuresNonNull({"mThinWebView", "mSheetContentView"})
     private void createThinWebView(int maxSheetHeight, IntentRequestTracker intentRequestTracker) {
         mThinWebView =
                 ThinWebViewFactory.create(
-                        mContext, new ThinWebViewConstraints(), intentRequestTracker);
+                        mContext,
+                        new ThinWebViewConstraints(),
+                        intentRequestTracker,
+                        /* enablePermissionRequests= */ false);
 
         mSheetContentView = new FrameLayout(mContext);
         mThinWebView
@@ -156,6 +179,9 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
         openInNewTabButton.setOnClickListener(view -> mOpenNewTabCallback.run());
 
         mToolbarView.setOnClickListener(view -> mToolbarClickCallback.run());
+
+        View dragHandlebar = mToolbarView.findViewById(R.id.drag_handlebar);
+        dragHandlebar.setOnClickListener(view -> mToolbarClickCallback.run());
 
         View closeButton = mToolbarView.findViewById(R.id.close);
         closeButton.setOnClickListener(view -> mCloseButtonCallback.run());
@@ -234,10 +260,15 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
     }
 
     /** Sets the ephemeral tab URL. */
-    public void updateURL(GURL url) {
+    public void updateURL(@Nullable GURL url) {
         TextView originView = mToolbarView.findViewById(R.id.origin);
-        originView.setText(
-                UrlFormatter.formatUrlForSecurityDisplay(url, SchemeDisplay.OMIT_HTTP_AND_HTTPS));
+        if (url == null) {
+            originView.setText("");
+        } else {
+            originView.setText(
+                    UrlFormatter.formatUrlForSecurityDisplay(
+                            url, SchemeDisplay.OMIT_HTTP_AND_HTTPS));
+        }
     }
 
     /** Sets the security icon. */
@@ -279,8 +310,8 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public Integer getBackgroundColor() {
-        return null;
+    public boolean hasSolidBackgroundColor() {
+        return false;
     }
 
     @Nullable
@@ -299,7 +330,7 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
     @Override
     public void destroy() {
         mThinWebView.destroy();
-        mShareDelegateSupplier.destroy();
+        ShareDelegateSupplier.destroy(mShareDelegateSupplier);
     }
 
     @Override
@@ -310,11 +341,6 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
     @Override
     public boolean swipeToDismissEnabled() {
         return true;
-    }
-
-    @Override
-    public int getPeekHeight() {
-        return HeightMode.DISABLED;
     }
 
     @Override
@@ -334,8 +360,8 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public ObservableSupplierImpl<Boolean> getBackPressStateChangedSupplier() {
-        return mBackPressStateChangedSupplier;
+    public NonNullObservableSupplier<Boolean> getBackPressStateChangedSupplier() {
+        return ObservableSuppliers.alwaysTrue();
     }
 
     @Override
@@ -344,7 +370,7 @@ public class EphemeralTabSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public @NonNull String getSheetContentDescription(Context context) {
+    public String getSheetContentDescription(Context context) {
         return context.getString(R.string.ephemeral_tab_sheet_description);
     }
 

@@ -15,7 +15,6 @@
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/trace_event/common/trace_event_common.h"
@@ -143,7 +142,7 @@ std::string GenerateConfigurationLogForController(
   DCHECK(!controllers_params.empty());
 
   base::flat_map<uint64_t, std::string> base_connectors_to_keys;
-  base::Value::Dict drm_device;
+  base::DictValue drm_device;
   std::string base_connector_key;
   for (const auto& param : controllers_params) {
     const int64_t next_base_connector = param.base_connector_id;
@@ -151,7 +150,7 @@ std::string GenerateConfigurationLogForController(
     if (it == base_connectors_to_keys.end()) {
       base_connector_key = base::StrCat(
           {"base_connector=", base::NumberToString(next_base_connector)});
-      drm_device.Set(base_connector_key, base::Value::List());
+      drm_device.Set(base_connector_key, base::ListValue());
 
       base_connectors_to_keys.insert(
           std::make_pair(next_base_connector, base_connector_key));
@@ -164,7 +163,9 @@ std::string GenerateConfigurationLogForController(
       const std::string size = ModeSize(*(param.mode.get())).ToString();
       const std::string refresh_rate =
           base::NumberToString(ModeRefreshRate(*param.mode));
-      mode = base::StrCat({size, "@", refresh_rate});
+      const char* scan_mode =
+          param.mode.get()->flags & DRM_MODE_FLAG_INTERLACE ? "i" : "p";
+      mode = base::StrCat({size, scan_mode, "@", refresh_rate});
     } else {
       mode = "Disabled";
     }
@@ -177,7 +178,7 @@ std::string GenerateConfigurationLogForController(
   }
   const std::string device_name =
       controllers_params.back().drm->device_path().BaseName().value();
-  base::Value::Dict drm_config;
+  base::DictValue drm_config;
   drm_config.Set(device_name, std::move(drm_device));
   std::string drm_config_log;
   const int json_writer_options = IsPrettyPrintDrmModesetConfigLogsEnabled()
@@ -316,10 +317,13 @@ void ScreenManager::RemoveDisplayControllers(
 
       bool is_mirrored = (*it)->IsMirrored();
 
-      std::unique_ptr<CrtcController> crtc = (*it)->RemoveCrtc(drm, crtc_id);
-      if (crtc->is_enabled()) {
-        commit_request.push_back(CrtcCommitRequest::DisableCrtcRequest(
-            crtc->crtc(), crtc->connector()));
+      if ((*it)->IsTiled()) {
+        // Disable all CRTCs/connectors for a tiled display if any CRTC is
+        // removed. DrmGpuDisplayManager will create a new controller if any of
+        // the connectors are still connected.
+        (*it)->RemoveAllCrtcs(&commit_request);
+      } else {
+        (*it)->RemoveCrtc(drm, crtc_id, &commit_request);
       }
 
       if (!is_mirrored) {
@@ -340,7 +344,7 @@ void ScreenManager::RemoveDisplayControllers(
 bool ScreenManager::ConfigureDisplayControllers(
     const std::vector<ControllerConfigParams>& controllers_params,
     display::ModesetFlags modeset_flags) {
-  TRACE_EVENT_BEGIN2(
+  TRACE_EVENT_BEGIN(
       "drm", "ScreenManager::ConfigureDisplayControllers", "params",
       ([modeset_flags,
         &controllers_params](perfetto::TracedValue context) -> void {
@@ -408,8 +412,7 @@ bool ScreenManager::ConfigureDisplayControllers(
   if (commit_modeset && config_success)
     UpdateControllerToWindowMapping();
 
-  TRACE_EVENT_END2("drm", "ScreenManager::ConfigureDisplayControllers", "after",
-                   this, "success", config_success);
+  TRACE_EVENT_END("drm", "after", this, "success", config_success);
   return config_success;
 }
 
@@ -425,7 +428,7 @@ bool ScreenManager::TestAndSetPreferredModifiers(
 
   for (const auto& params : controllers_params) {
     auto it = FindDisplayController(params.drm, params.crtc);
-    CHECK(controllers_.end() != it, base::NotFatalUntil::M130);
+    CHECK(controllers_.end() != it);
     HardwareDisplayController* controller = it->get();
 
     if (params.mode) {
@@ -477,7 +480,7 @@ bool ScreenManager::TestAndSetLinearModifier(
 
   for (const auto& params : controllers_params) {
     auto it = FindDisplayController(params.drm, params.crtc);
-    CHECK(controllers_.end() != it, base::NotFatalUntil::M130);
+    CHECK(controllers_.end() != it);
     HardwareDisplayController* controller = it->get();
 
     uint32_t fourcc_format = GetFourCCFormatForOpaqueFramebuffer(
@@ -554,7 +557,7 @@ bool ScreenManager::TestModesetWithOverlays(
   auto drm = controllers_params[0].drm;
   for (const auto& params : controllers_params) {
     auto it = FindDisplayController(params.drm, params.crtc);
-    CHECK(controllers_.end() != it, base::NotFatalUntil::M130);
+    CHECK(controllers_.end() != it);
     HardwareDisplayController* controller = it->get();
 
     if (params.mode) {
@@ -601,7 +604,7 @@ bool ScreenManager::Modeset(
   for (const auto& params : controllers_params) {
     if (params.mode) {
       auto it = FindDisplayController(params.drm, params.crtc);
-      CHECK(controllers_.end() != it, base::NotFatalUntil::M130);
+      CHECK(controllers_.end() != it);
       HardwareDisplayController* controller = it->get();
 
       uint32_t fourcc_format = GetFourCCFormatForOpaqueFramebuffer(
@@ -650,7 +653,7 @@ void ScreenManager::SetDisplayControllerForEnableAndGetProps(
     const DrmOverlayPlaneList& modeset_planes,
     bool enable_vrr) {
   HardwareDisplayControllers::iterator it = FindDisplayController(drm, crtc);
-  CHECK(controllers_.end() != it, base::NotFatalUntil::M130)
+  CHECK(controllers_.end() != it)
       << "Display controller (crtc=" << crtc << ") doesn't exist.";
 
   HardwareDisplayController* controller = it->get();

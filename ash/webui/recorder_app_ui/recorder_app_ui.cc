@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/webui/recorder_app_ui/recorder_app_ui.h"
 
 #include <algorithm>
@@ -15,19 +10,25 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/devicetype.h"
 #include "ash/webui/common/trusted_types_util.h"
-#include "ash/webui/metrics/structured_metrics_service_wrapper.h"
 #include "ash/webui/recorder_app_ui/model_constants.h"
 #include "ash/webui/recorder_app_ui/recorder_app_ui_delegate.h"
 #include "ash/webui/recorder_app_ui/resources.h"
 #include "ash/webui/recorder_app_ui/resources/grit/recorder_app_resources.h"
 #include "ash/webui/recorder_app_ui/resources/grit/recorder_app_resources_map.h"
 #include "ash/webui/recorder_app_ui/url_constants.h"
+#include "base/check_is_test.h"
 #include "base/feature_list.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/system/sys_info.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
 #include "chromeos/ash/components/mojo_service_manager/connection.h"
+#include "chromeos/constants/devicetype.h"
 #include "chromeos/services/machine_learning/public/cpp/service_connection.h"
 #include "components/media_device_salt/media_device_salt_service.h"
+#include "components/metrics/structured/event.h"
+#include "components/metrics/structured/structured_metrics_client.h"
 #include "components/soda/constants.h"
 #include "components/soda/soda_features.h"
 #include "components/soda/soda_installer.h"
@@ -58,6 +59,8 @@ namespace {
 // description.
 const uint32_t kFeedbackDescriptionTemplateMaxChars = 49000;  // 1000 + 4 * 12k
 
+constexpr char kDefaultDeviceTypeName[] = "Chromebook";
+
 std::string_view SodaInstallerErrorCodeToString(
     speech::SodaInstaller::ErrorCode error) {
   switch (error) {
@@ -65,6 +68,29 @@ std::string_view SodaInstallerErrorCodeToString(
       return "kNeedsReboot";
     case speech::SodaInstaller::ErrorCode::kUnspecifiedError:
       return "kUnspecifiedError";
+  }
+}
+
+recorder_app::mojom::ModelStateType SodaErrorCodeToModelStateType(
+    speech::SodaInstaller::ErrorCode error) {
+  switch (error) {
+    case speech::SodaInstaller::ErrorCode::kNeedsReboot:
+      return recorder_app::mojom::ModelStateType::kNeedsReboot;
+    case speech::SodaInstaller::ErrorCode::kUnspecifiedError:
+      return recorder_app::mojom::ModelStateType::kError;
+  }
+}
+
+recorder_app::mojom::ModelStateType LoadModelResultToModelStateType(
+    on_device_model::mojom::LoadModelResult result) {
+  switch (result) {
+    case on_device_model::mojom::LoadModelResult::kSuccess:
+      return recorder_app::mojom::ModelStateType::kInstalled;
+    case on_device_model::mojom::LoadModelResult::kGpuBlocked:
+    case on_device_model::mojom::LoadModelResult::kFailedToLoadLibrary:
+      return recorder_app::mojom::ModelStateType::kError;
+    case on_device_model::mojom::LoadModelResult::kCrosNeedReboot:
+      return recorder_app::mojom::ModelStateType::kNeedsReboot;
   }
 }
 
@@ -114,7 +140,59 @@ int GetResourceIdFromStringName(const std::string& name) {
   return iter->id;
 }
 
+std::string GetDeviceTypeString() {
+  std::string device_type = ash::DeviceTypeToString(chromeos::GetDeviceType());
+  return device_type.empty() ? kDefaultDeviceTypeName : device_type;
+}
+
 }  // namespace
+
+// static
+base::TimeDelta RecorderAppUI::ComputeEventUptimeForTesting(
+    base::TimeDelta system_uptime,
+    base::TimeDelta system_timestamp,
+    base::TimeDelta event_timestamp) {
+  CHECK_IS_TEST();
+  return ComputeEventUptime(system_uptime, system_timestamp, event_timestamp);
+}
+
+// static
+base::TimeDelta RecorderAppUI::ComputeEventUptime(
+    base::TimeDelta system_uptime,
+    base::TimeDelta system_timestamp,
+    base::TimeDelta event_timestamp) {
+  base::TimeDelta result =
+      system_uptime -
+      std::max(system_timestamp - event_timestamp, base::Seconds(0));
+  if (result.is_negative()) {
+    CHECK_IS_TEST();
+  }
+  return result;
+}
+
+// static
+void RecorderAppUI::RecordStructuredMetricsForTesting(
+    std::vector<::metrics::structured::Event> events) {
+  CHECK_IS_TEST();
+  RecordStructuredMetricsImpl(std::move(events));
+}
+
+// static
+void RecorderAppUI::RecordStructuredMetricsImpl(
+    std::vector<::metrics::structured::Event> events) {
+  for (auto& event : events) {
+    if (event.IsEventSequenceType()) {
+      event.SetRecordedTimeSinceBoot(ComputeEventUptime(
+          base::SysInfo::Uptime(),
+          base::Time::NowFromSystemTime() - base::Time::UnixEpoch(),
+          // if event does not have system uptime field populated, set it as the
+          // current system timestamp.
+          event.recorded_time_since_boot()));
+    }
+    ::metrics::structured::StructuredMetricsClient::Get()->Record(
+        std::move(event));
+  }
+}
 
 bool RecorderAppUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
@@ -143,7 +221,9 @@ RecorderAppUI::RecorderAppUI(content::WebUI* web_ui,
 
   source->AddResourcePaths(kRecorderAppResources);
 
-  source->AddResourcePath("", IDR_RECORDER_APP_INDEX_HTML);
+  source->SetDefaultResource(IDR_RECORDER_APP_INDEX_HTML);
+
+  source->AddString("deviceType", GetDeviceTypeString());
 
   source->AddLocalizedStrings(kLocalizedStrings);
 
@@ -157,8 +237,12 @@ RecorderAppUI::RecorderAppUI(content::WebUI* web_ui,
 
   if (speech::IsOnDeviceSpeechRecognitionSupported()) {
     speech::SodaInstaller::GetInstance()->AddObserver(this);
+    // TODO: b/401440675 - Remove `ConchLargeModel` from the condition after
+    // feature release so that we can use kill-switch to disable features on all
+    // devices.
     if (base::FeatureList::IsEnabled(
-            ash::features::kConchExpandTranscriptionLanguage)) {
+            ash::features::kConchExpandTranscriptionLanguage) ||
+        base::FeatureList::IsEnabled(ash::features::kConchLargeModel)) {
       auto language_list = speech::SodaInstaller::GetInstance()
                                ->GetLiveCaptionEnabledLanguages();
       for (auto language : language_list) {
@@ -205,25 +289,10 @@ RecorderAppUI::~RecorderAppUI() {
 }
 
 void RecorderAppUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
-}
-
-void RecorderAppUI::BindInterface(
     mojo::PendingReceiver<recorder_app::mojom::PageHandler> receiver) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   page_receivers_.Add(this, std::move(receiver));
-}
-
-void RecorderAppUI::BindInterface(
-    mojo::PendingReceiver<crosapi::mojom::StructuredMetricsService> receiver) {
-  structured_metrics_service_wrapper_ =
-      std::make_unique<ash::StructuredMetricsServiceWrapper>();
-  structured_metrics_service_wrapper_->BindReceiver(std::move(receiver));
 }
 
 void RecorderAppUI::EnsureOnDeviceModelService() {
@@ -255,6 +324,7 @@ void RecorderAppUI::AddModelMonitor(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!CanUseGenerativeAi()) {
+    LOG(WARNING) << "GenAI can't be used";
     // TODO(pihsun): Return a dedicate error when GenAI can't be used.
     std::move(callback).Run(recorder_app::mojom::ModelState{
         recorder_app::mojom::ModelStateType::kUnavailable, std::nullopt}
@@ -265,6 +335,7 @@ void RecorderAppUI::AddModelMonitor(
   EnsureOnDeviceModelService();
 
   if (!on_device_model_service_) {
+    LOG(WARNING) << "ChromeOS OnDeviceModelService is unavailable";
     std::move(callback).Run(recorder_app::mojom::ModelState{
         recorder_app::mojom::ModelStateType::kUnavailable, std::nullopt}
                                 .Clone());
@@ -342,15 +413,11 @@ void RecorderAppUI::LoadModelResultCallback(
     on_device_model::mojom::LoadModelResult result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // TODO: b/366335321 - Propagate need-reboot error from on-device model
-  // service to UI side.
   if (result != on_device_model::mojom::LoadModelResult::kSuccess) {
-    UpdateModelState(
-        model_id, {recorder_app::mojom::ModelStateType::kError, std::nullopt});
-  } else {
-    UpdateModelState(model_id, {recorder_app::mojom::ModelStateType::kInstalled,
-                                std::nullopt});
+    LOG(ERROR) << "Failed to load model: " << model_id << ", error: " << result;
   }
+  UpdateModelState(model_id,
+                   {LoadModelResultToModelStateType(result), std::nullopt});
   std::move(callback).Run(result);
 }
 
@@ -361,6 +428,7 @@ void RecorderAppUI::LoadModel(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!CanUseGenerativeAi()) {
+    LOG(ERROR) << "Could not load GenAI model when GenAI can't be used";
     // TODO(pihsun): Return a dedicate error when GenAI can't be used.
     std::move(callback).Run(
         on_device_model::mojom::LoadModelResult::kFailedToLoadLibrary);
@@ -370,6 +438,8 @@ void RecorderAppUI::LoadModel(
   EnsureOnDeviceModelService();
 
   if (!on_device_model_service_) {
+    LOG(ERROR) << "Could not load GenAI model when ChromeOS "
+                  "OnDeviceModelService is unavailable";
     std::move(callback).Run(
         on_device_model::mojom::LoadModelResult::kFailedToLoadLibrary);
   }
@@ -476,6 +546,8 @@ void RecorderAppUI::GetPlatformModelStateCallback(
     case on_device_model::mojom::PlatformModelState::kInvalidModelDescriptor:
     case on_device_model::mojom::PlatformModelState::
         kInvalidBaseModelDescriptor:
+      LOG(WARNING) << "GenAI model: " << model_id
+                   << " is unavailable. Model state: " << state;
       UpdateModelState(
           model_id,
           {recorder_app::mojom::ModelStateType::kUnavailable, std::nullopt});
@@ -543,27 +615,40 @@ void RecorderAppUI::GetAvailableLangPacks(
   std::move(callback).Run(std::move(lang_packs));
 }
 
+void RecorderAppUI::GetDefaultLanguage(GetDefaultLanguageCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto default_language = delegate_->GetDefaultTranscriptionLanguage();
+  if (IsSodaAvailable(speech::GetLanguageCode(default_language))) {
+    std::move(callback).Run(default_language);
+  } else {
+    std::move(callback).Run(speech::GetLanguageName(kDefaultLanguageCode));
+  }
+}
+
 recorder_app::mojom::ModelState RecorderAppUI::GetSodaState(
     const speech::LanguageCode& language_code) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!IsSodaAvailable(language_code)) {
+    return {recorder_app::mojom::ModelStateType::kUnavailable, std::nullopt};
+  }
+  auto* soda_installer = speech::SodaInstaller::GetInstance();
+  if (soda_installer->IsSodaInstalled(language_code)) {
+    return {recorder_app::mojom::ModelStateType::kInstalled, std::nullopt};
+  } else if (soda_installer->IsSodaDownloading(language_code)) {
+    // The download progress will be updated via `OnSodaProgress`.
+    return {recorder_app::mojom::ModelStateType::kInstalling, 0};
+  } else {
+    return {recorder_app::mojom::ModelStateType::kNotInstalled, std::nullopt};
+  }
+}
 
+recorder_app::mojom::ModelState RecorderAppUI::GetCachedSodaState(
+    const speech::LanguageCode& language_code) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   recorder_app::mojom::ModelState soda_state;
   auto soda_state_iter = soda_states_.find(language_code);
   if (soda_state_iter == soda_states_.end()) {
-    if (IsSodaAvailable(language_code)) {
-      if (speech::SodaInstaller::GetInstance()->IsSodaInstalled(
-              language_code)) {
-        soda_state = {recorder_app::mojom::ModelStateType::kInstalled,
-                      std::nullopt};
-      } else {
-        soda_state = {recorder_app::mojom::ModelStateType::kNotInstalled,
-                      std::nullopt};
-      }
-    } else {
-      soda_state = {recorder_app::mojom::ModelStateType::kUnavailable,
-                    std::nullopt};
-    }
-
+    soda_state = GetSodaState(language_code);
     soda_states_.insert({language_code, soda_state});
   } else {
     soda_state = soda_state_iter->second;
@@ -580,7 +665,8 @@ void RecorderAppUI::AddSodaMonitor(
   auto language_code = speech::GetLanguageCode(language);
   CHECK(language_code != speech::LanguageCode::kNone);
 
-  recorder_app::mojom::ModelState soda_state = GetSodaState(language_code);
+  recorder_app::mojom::ModelState soda_state =
+      GetCachedSodaState(language_code);
   soda_monitors_[language_code].Add(std::move(monitor));
   std::move(callback).Run(soda_state.Clone());
 }
@@ -592,20 +678,19 @@ void RecorderAppUI::InstallSoda(const std::string& language,
   auto language_code = speech::GetLanguageCode(language);
   CHECK(language_code != speech::LanguageCode::kNone);
 
-  if (IsSodaAvailable(language_code)) {
-    // Check Soda state directly from SodaInstaller in case the cached state is
-    // outdated.
-    // TODO: b/375306309 - Check the cached state instead when soda states are
-    // always consistent after having `OnSodaUninstalled` event.
-    auto* soda_installer = speech::SodaInstaller::GetInstance();
-    if (!soda_installer->IsSodaInstalled(language_code) &&
-        !soda_installer->IsSodaDownloading(language_code)) {
-      // Update SODA state to installing so the UI will show downloading
-      // immediately, since the DLC download might start later.
-      UpdateSodaState(language_code,
-                      {recorder_app::mojom::ModelStateType::kInstalling, 0});
-      delegate_->InstallSoda(language_code);
-    }
+  // Get SODA state directly from SodaInstaller in case the cached state is
+  // outdated.
+  auto soda_state = GetSodaState(language_code);
+  if (soda_state.type == recorder_app::mojom::ModelStateType::kNotInstalled ||
+      soda_state.type == recorder_app::mojom::ModelStateType::kError) {
+    // Update SODA state to installing so the UI will show downloading
+    // immediately, since the DLC download might start later.
+    UpdateSodaState(language_code,
+                    {recorder_app::mojom::ModelStateType::kInstalling, 0});
+    delegate_->InstallSoda(language_code);
+  } else if (soda_state != GetCachedSodaState(language_code)) {
+    // Update cached state when it's outdated.
+    UpdateSodaState(language_code, soda_state);
   }
   std::move(callback).Run();
 }
@@ -635,7 +720,7 @@ void RecorderAppUI::OnSodaInstallError(
   LOG(ERROR) << "Failed to install Soda library DLC with error "
              << SodaInstallerErrorCodeToString(error_code);
   UpdateSodaState(language_code,
-                  {recorder_app::mojom::ModelStateType::kError, std::nullopt});
+                  {SodaErrorCodeToModelStateType(error_code), std::nullopt});
 }
 
 void RecorderAppUI::OnSodaProgress(speech::LanguageCode language_code,
@@ -673,6 +758,8 @@ void RecorderAppUI::LoadSpeechRecognizer(
   CHECK(language_code != speech::LanguageCode::kNone);
 
   if (!IsSodaAvailable(language_code)) {
+    LOG(ERROR) << "Could not load recognizer for " << language
+               << " when SODA is not available";
     // TODO(pihsun): Returns different error when soda is not available.
     std::move(callback).Run(false);
     return;
@@ -680,6 +767,8 @@ void RecorderAppUI::LoadSpeechRecognizer(
 
   auto* soda_installer = speech::SodaInstaller::GetInstance();
   if (!soda_installer->IsSodaInstalled(language_code)) {
+    LOG(ERROR) << "Could not load recognizer for " << language
+               << " when SODA is not installed";
     // TODO(pihsun): Returns different error when soda is not installed.
     std::move(callback).Run(false);
     return;
@@ -817,6 +906,11 @@ void RecorderAppUI::CanCaptureSystemAudioWithLoopback(
   // Disallow audio loopback when capture system audio from microphone.
   std::move(callback).Run(
       !base::FeatureList::IsEnabled(ash::features::kConchSystemAudioFromMic));
+}
+
+void RecorderAppUI::RecordStructuredMetrics(
+    std::vector<::metrics::structured::Event> events) {
+  RecorderAppUI::RecordStructuredMetricsImpl(std::move(events));
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(RecorderAppUI)

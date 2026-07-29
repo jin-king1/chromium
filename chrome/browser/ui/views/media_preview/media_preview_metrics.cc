@@ -92,7 +92,11 @@ void UmaHistogramLinearCounts(const std::string& name,
 
 Context::Context(UiLocation ui_location, PreviewType preview_type)
     : ui_location(ui_location), preview_type(preview_type) {}
+
 Context::~Context() = default;
+
+Context::Context(const Context& other) = default;
+Context::Context(Context&& other) = default;
 
 void RecordPageInfoNumInUseDevices(const Context& context, int devices) {
   CHECK_EQ(context.ui_location, UiLocation::kPageInfo);
@@ -193,12 +197,6 @@ void RecordPreviewDelayTime(const Context& context,
       StrCat({kUiPrefix, kPreview, GetUiLocationString(context.ui_location),
               ".Video.Delay"});
   GetPreviewDelayTimeHistogram(metric_name)->Add(delta.InMilliseconds());
-}
-
-void RecordOriginTrialAllowed(UiLocation location, bool allowed) {
-  base::UmaHistogramBoolean(
-      StrCat({kUiPrefix, GetUiLocationString(location), ".OriginTrialAllowed"}),
-      allowed);
 }
 
 void RecordVideoCaptureError(const Context& context,

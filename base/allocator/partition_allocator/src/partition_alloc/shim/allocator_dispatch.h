@@ -7,17 +7,39 @@
 
 #include <cstddef>
 
+#include "partition_alloc/partition_alloc_base/types/strong_alias.h"
 #include "partition_alloc/partition_alloc_check.h"
 
 namespace allocator_shim {
 
+using AllocToken =
+    partition_alloc::internal::base::StrongAlias<class AllocTokenTag, size_t>;
+
 struct AllocatorDispatch {
-  using AllocFn = void*(size_t size, void* context);
-  using AllocUncheckedFn = void*(size_t size, void* context);
-  using AllocZeroInitializedFn = void*(size_t n, size_t size, void* context);
-  using AllocAlignedFn = void*(size_t alignment, size_t size, void* context);
-  using ReallocFn = void*(void* address, size_t size, void* context);
-  using ReallocUncheckedFn = void*(void* ptr, size_t size, void* context);
+  using AllocFn = void*(size_t size, AllocToken alloc_token, void* context);
+  using AllocUncheckedFn = void*(size_t size,
+                                 AllocToken alloc_token,
+                                 void* context);
+  using AllocZeroInitializedFn = void*(size_t n,
+                                       size_t size,
+                                       AllocToken alloc_token,
+                                       void* context);
+  using AllocZeroInitializedUncheckedFn = void*(size_t n,
+                                                size_t size,
+                                                AllocToken alloc_token,
+                                                void* context);
+  using AllocAlignedFn = void*(size_t alignment,
+                               size_t size,
+                               AllocToken alloc_token,
+                               void* context);
+  using ReallocFn = void*(void* address,
+                          size_t size,
+                          AllocToken alloc_token,
+                          void* context);
+  using ReallocUncheckedFn = void*(void* ptr,
+                                   size_t size,
+                                   AllocToken alloc_token,
+                                   void* context);
   using FreeFn = void(void* address, void* context);
   // Returns the allocated size of user data (not including heap overhead).
   // Can be larger than the requested size.
@@ -31,37 +53,51 @@ struct AllocatorDispatch {
   using BatchFreeFn = void(void** to_be_freed,
                            unsigned num_to_be_freed,
                            void* context);
-  using FreeDefiniteSizeFn = void(void* ptr, size_t size, void* context);
+  using FreeWithSizeFn = void(void* ptr, size_t size, void* context);
+  using FreeWithAlignmentFn = void(void* ptr, size_t alignment, void* context);
+  using FreeWithSizeAndAlignmentFn = void(void* ptr,
+                                          size_t size,
+                                          size_t alignment,
+                                          void* context);
   using TryFreeDefaultFn = void(void* ptr, void* context);
-  using AlignedMallocFn = void*(size_t size, size_t alignment, void* context);
+  using AlignedMallocFn = void*(size_t size,
+                                size_t alignment,
+                                AllocToken alloc_token,
+                                void* context);
   using AlignedMallocUncheckedFn = void*(size_t size,
                                          size_t alignment,
+                                         AllocToken alloc_token,
                                          void* context);
   using AlignedReallocFn = void*(void* address,
                                  size_t size,
                                  size_t alignment,
+                                 AllocToken alloc_token,
                                  void* context);
   using AlignedReallocUncheckedFn = void*(void* address,
                                           size_t size,
                                           size_t alignment,
+                                          AllocToken alloc_token,
                                           void* context);
   using AlignedFreeFn = void(void* address, void* context);
 
   AllocFn* alloc_function;
   AllocUncheckedFn* alloc_unchecked_function;
   AllocZeroInitializedFn* alloc_zero_initialized_function;
+  AllocZeroInitializedUncheckedFn* alloc_zero_initialized_unchecked_function;
   AllocAlignedFn* alloc_aligned_function;
   ReallocFn* realloc_function;
   ReallocUncheckedFn* realloc_unchecked_function;
   FreeFn* free_function;
+  FreeWithSizeFn* free_with_size_function;
+  FreeWithAlignmentFn* free_with_alignment_function;
+  FreeWithSizeAndAlignmentFn* free_with_size_and_alignment_function;
   GetSizeEstimateFn* get_size_estimate_function;
   GoodSizeFn* good_size_function;
-  // claimed_address, batch_malloc, batch_free, free_definite_size and
+  // claimed_address, batch_malloc, batch_free and
   // try_free_default are specific to the OSX and iOS allocators.
   ClaimedAddressFn* claimed_address_function;
   BatchMallocFn* batch_malloc_function;
   BatchFreeFn* batch_free_function;
-  FreeDefiniteSizeFn* free_definite_size_function;
   TryFreeDefaultFn* try_free_default_function;
   // _aligned_malloc, _aligned_realloc, and _aligned_free are specific to the
   // Windows allocator.
@@ -121,16 +157,19 @@ struct AllocatorDispatch {
     COPY_IF_NULLPTR(alloc_function);
     COPY_IF_NULLPTR(alloc_unchecked_function);
     COPY_IF_NULLPTR(alloc_zero_initialized_function);
+    COPY_IF_NULLPTR(alloc_zero_initialized_unchecked_function);
     COPY_IF_NULLPTR(alloc_aligned_function);
     COPY_IF_NULLPTR(realloc_function);
     COPY_IF_NULLPTR(realloc_unchecked_function);
     COPY_IF_NULLPTR(free_function);
+    COPY_IF_NULLPTR(free_with_size_function);
+    COPY_IF_NULLPTR(free_with_alignment_function);
+    COPY_IF_NULLPTR(free_with_size_and_alignment_function);
     COPY_IF_NULLPTR(get_size_estimate_function);
     COPY_IF_NULLPTR(good_size_function);
     COPY_IF_NULLPTR(claimed_address_function);
     COPY_IF_NULLPTR(batch_malloc_function);
     COPY_IF_NULLPTR(batch_free_function);
-    COPY_IF_NULLPTR(free_definite_size_function);
     COPY_IF_NULLPTR(try_free_default_function);
     COPY_IF_NULLPTR(aligned_malloc_function);
     COPY_IF_NULLPTR(aligned_malloc_unchecked_function);

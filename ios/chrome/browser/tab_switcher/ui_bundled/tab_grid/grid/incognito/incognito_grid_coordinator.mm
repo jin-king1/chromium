@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/incognito/incognito_grid_coordinator.h"
 
+#import "components/feature_engagement/public/tracker.h"
+#import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_mediator.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
@@ -12,22 +14,22 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/tab_grid_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_grid_toolbar_commands.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/disabled_grid_view_controller.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_container_view_controller.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_coordinator_audience.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_empty_state_view.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_theme.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/incognito/incognito_grid_mediator.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/incognito/incognito_grid_view_controller.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/incognito_grid_commands.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/tab_group_grid_view_controller.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid_coordinator_audience.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_context_menu/tab_context_menu_helper.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_view_controller.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_coordinator.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_view_controller.h"
 
-@interface IncognitoGridCoordinator ()
+@interface IncognitoGridCoordinator () <IncognitoGridCommands>
 
 // Redefined as readwrite.
 @property(nonatomic, readwrite, strong)
@@ -67,7 +69,7 @@
                            gridMediatorDelegate:delegate])) {
     _browser = browser->AsWeakPtr();
     _incognitoEnabled = !IsIncognitoModeDisabled(
-        self.browser->GetProfile()->GetOriginalProfile()->GetPrefs());
+        self.profile->GetOriginalProfile()->GetPrefs());
   }
   return self;
 }
@@ -96,14 +98,11 @@
   return _mediator;
 }
 
-#pragma mark - Superclass overrides
 
-- (LegacyGridTransitionLayout*)transitionLayout {
-  if (IsTabGroupInGridEnabled()) {
-    if (self.tabGroupCoordinator) {
-      return [self.tabGroupCoordinator.viewController
-                  .gridViewController transitionLayout];
-    }
+- (TabGridTransitionLayout*)transitionLayout {
+  if (self.tabGroupCoordinator) {
+    return [self.tabGroupCoordinator.viewController
+                .gridViewController transitionLayout];
   }
   return [self.gridViewController transitionLayout];
 }
@@ -116,17 +115,21 @@
   _reauthAgent =
       [IncognitoReauthSceneAgent agentFromScene:self.browser->GetSceneState()];
 
+  feature_engagement::Tracker* tracker =
+      feature_engagement::TrackerFactory::GetForProfile(self.profile);
+
   _mediator =
       [[IncognitoGridMediator alloc] initWithModeHolder:self.modeHolder];
   _mediator.incognitoDelegate = self;
-  _mediator.reauthSceneAgent = _reauthAgent;
+  _mediator.incognitoState = self.sceneState.incognitoState;
+  _mediator.tracker = tracker;
 
   GridContainerViewController* container =
       [[GridContainerViewController alloc] init];
   self.gridContainerViewController = container;
 
   _tabContextMenuHelper = [[TabContextMenuHelper alloc]
-             initWithProfile:self.browser->GetProfile()
+             initWithProfile:self.profile
       tabContextMenuDelegate:self.tabContextMenuDelegate];
 
   if (_incognitoEnabled) {
@@ -137,8 +140,8 @@
     container.containedViewController = self.disabledViewController;
   }
 
-  _incognitoAuthMediator =
-      [[IncognitoReauthMediator alloc] initWithReauthAgent:_reauthAgent];
+  _incognitoAuthMediator = [[IncognitoReauthMediator alloc]
+      initWithIncognitoState:self.sceneState.incognitoState];
   _incognitoAuthMediator.consumer = self.gridViewController;
 
   [super start];
@@ -163,15 +166,24 @@
   if (incognitoBrowser) {
     _browser = incognitoBrowser->AsWeakPtr();
     _tabContextMenuHelper.profile = incognitoBrowser->GetProfile();
-    [incognitoBrowser->GetCommandDispatcher()
-        startDispatchingToTarget:self
-                     forProtocol:@protocol(TabGroupsCommands)];
+
+    CommandDispatcher* dispatcher = incognitoBrowser->GetCommandDispatcher();
+    [dispatcher startDispatchingToTarget:self
+                             forProtocol:@protocol(TabGroupsCommands)];
     _mediator.tabGroupsHandler = self;
-    _mediator.tabGridHandler = HandlerForProtocol(
-        incognitoBrowser->GetCommandDispatcher(), TabGridCommands);
+    _mediator.tabGridHandler = HandlerForProtocol(dispatcher, TabGridCommands);
+
+    _gridViewController.tabGridHandler =
+        HandlerForProtocol(dispatcher, TabGridCommands);
   } else {
     _tabContextMenuHelper.profile = nullptr;
   }
+}
+
+#pragma mark - IncognitoGridCommands
+
+- (void)dismissIncognitoGridModals {
+  [self stopChildCoordinators];
 }
 
 #pragma mark - IncognitoGridMediatorDelegate
@@ -215,6 +227,8 @@
   gridViewController.mutator = _mediator;
   gridViewController.gridProvider = _mediator;
   gridViewController.gridHandler = _mediator;
+  gridViewController.snapshotAndfaviconDataSource = _mediator;
+  gridViewController.incognitoGridHandler = self;
   // TODO(crbug.com/40273478): Move the following lines to the grid itself when
   // specific grid file will be created.
   gridViewController.view.accessibilityIdentifier = kIncognitoTabGridIdentifier;
@@ -222,7 +236,7 @@
       [[TabGridEmptyStateView alloc] initWithPage:TabGridPageIncognitoTabs];
   gridViewController.emptyStateView.accessibilityIdentifier =
       kTabGridIncognitoTabsEmptyStateIdentifier;
-  gridViewController.theme = GridThemeDark;
+  gridViewController.theme = GridTheme::kDark;
 
   _mediator.consumer = gridViewController;
 

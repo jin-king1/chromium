@@ -5,13 +5,23 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_PERMISSIONS_PERMISSION_PROMPT_BASE_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_PERMISSIONS_PERMISSION_PROMPT_BASE_VIEW_H_
 
+#include <memory>
+
+#include "base/memory/safe_ref.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_occlusion_observer.h"
 #include "chrome/browser/picture_in_picture/scoped_picture_in_picture_occlusion_observation.h"
 #include "chrome/browser/ui/url_identity.h"
 #include "components/permissions/permission_prompt.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
-class Browser;
+namespace content {
+class WebContents;
+}
+
+class BrowserWindowInterface;
 
 // Base view that provide security-related functionality to permission prompts.
 // This class will:
@@ -21,12 +31,13 @@ class Browser;
 // * Ensure no button is selected by default to prevent unintended button
 // presses
 class PermissionPromptBaseView : public views::BubbleDialogDelegateView,
-                                 public PictureInPictureOcclusionObserver {
+                                 public PictureInPictureOcclusionObserver,
+                                 public content::WebContentsObserver {
   METADATA_HEADER(PermissionPromptBaseView, views::BubbleDialogDelegateView)
 
  public:
   PermissionPromptBaseView(
-      Browser* browser,
+      content::WebContents* web_contents,
       base::WeakPtr<permissions::PermissionPrompt::Delegate> delegate);
   ~PermissionPromptBaseView() override;
 
@@ -57,12 +68,24 @@ class PermissionPromptBaseView : public views::BubbleDialogDelegateView,
   const UrlIdentity& GetUrlIdentityObject() const { return url_identity_; }
 
   static UrlIdentity GetUrlIdentity(
-      Browser* browser,
+      content::WebContents* web_contents,
       permissions::PermissionPrompt::Delegate& delegate);
 
   static std::u16string GetAllowAlwaysText(
-      const std::vector<raw_ptr<permissions::PermissionRequest,
-                                VectorExperimental>>& visible_requests);
+      const std::vector<std::unique_ptr<permissions::PermissionRequest>>&
+          visible_requests);
+
+  static std::u16string GetAllowAlwaysText(
+      const std::vector<base::SafeRef<permissions::PermissionRequest>>&
+          visible_requests);
+
+  static std::u16string GetBlockText(
+      const std::vector<std::unique_ptr<permissions::PermissionRequest>>&
+          visible_requests);
+
+  static std::u16string GetBlockText(
+      const std::vector<base::SafeRef<permissions::PermissionRequest>>&
+          visible_requests);
 
   // Starts observing our widget for occlusion by a picture-in-picture window.
   // Subclasses must manually call this if they override `AddedToWidget()`
@@ -71,28 +94,46 @@ class PermissionPromptBaseView : public views::BubbleDialogDelegateView,
 
   void AnchorToPageInfoOrChip();
 
-  Browser* browser() const { return browser_; }
+  BrowserWindowInterface* GetBrowser();
+  const BrowserWindowInterface* GetBrowser() const;
+
+  // Gets the permission prompt's top-level NativeWindow.
+  gfx::NativeWindow GetNativeWindow();
+
+  bool record_host_always_active_value() const {
+    return record_host_always_active_value_;
+  }
+
+  permissions::RequestTypeForUma request_type() const { return request_type_; }
 
   std::vector<std::pair<size_t, size_t>> GetTitleBoldedRanges();
   void SetTitleBoldedRanges(
       std::vector<std::pair<size_t, size_t>> bolded_ranges);
 
  private:
+  void HostPaintAsActiveChanged();
+
+  // True if this permission prompt is for a picture-in-picture window. This
+  // means it will be in an always-on-top window, and needs to be tracked by the
+  // PictureInPictureOcclusionTracker.
+  bool IsForPictureInPictureWindow() const;
+
+  base::CallbackListSubscription host_paint_as_active_subscription_;
+
   const UrlIdentity url_identity_;
 
   ScopedPictureInPictureOcclusionObservation occlusion_observation_{this};
   bool occluded_by_picture_in_picture_ = false;
 
-  // True if this permission prompt is for a picture-in-picture window. This
-  // means it will be in an always-on-top window, and needs to be tracked by the
-  // PictureInPictureOcclusionTracker.
-  const bool is_for_picture_in_picture_window_;
-
-  const raw_ptr<Browser> browser_ = nullptr;
+  // Boolean value to track if the host was always active while the prompt was
+  // displayed.
+  bool record_host_always_active_value_ = true;
 
   // $ORIGIN in the title should be bolded, the ranges of the $ORIGINs are
   // gained while building the title string via `l10n_util::GetStringFUTF16()`.
   std::vector<std::pair<size_t, size_t>> title_bolded_ranges_ = {};
+
+  permissions::RequestTypeForUma request_type_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PERMISSIONS_PERMISSION_PROMPT_BASE_VIEW_H_

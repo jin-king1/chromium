@@ -6,6 +6,7 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
@@ -39,8 +40,8 @@ std::unique_ptr<VrDeviceT> EnableRuntime(
     device::mojom::IsolatedXRRuntimeProviderClient* client,
     base::OnceCallback<std::unique_ptr<VrDeviceT>()> create_device) {
   auto device = std::move(create_device).Run();
-  TRACE_EVENT_INSTANT1("xr", "HardwareAdded", TRACE_EVENT_SCOPE_THREAD, "id",
-                       static_cast<int>(device->GetId()));
+  TRACE_EVENT_INSTANT("xr", "HardwareAdded", "id",
+                      static_cast<int>(device->GetId()));
   // "Device" here refers to a runtime + hardware pair, not necessarily
   // a physical device.
   client->OnDeviceAdded(device->BindXRRuntime(), device->GetDeviceData(),
@@ -51,8 +52,8 @@ std::unique_ptr<VrDeviceT> EnableRuntime(
 template <typename VrDeviceT>
 void DisableRuntime(device::mojom::IsolatedXRRuntimeProviderClient* client,
                     std::unique_ptr<VrDeviceT> device) {
-  TRACE_EVENT_INSTANT1("xr", "HardwareRemoved", TRACE_EVENT_SCOPE_THREAD, "id",
-                       static_cast<int>(device->GetId()));
+  TRACE_EVENT_INSTANT("xr", "HardwareRemoved", "id",
+                      static_cast<int>(device->GetId()));
   // "Device" here refers to a runtime + hardware pair, not necessarily physical
   // device.
   client->OnDeviceRemoved(device->GetId());
@@ -192,13 +193,9 @@ void IsolatedXRRuntimeProvider::CreateContextProviderAsync(
   }
 
   scoped_refptr<viz::ContextProvider> context_provider =
-      base::MakeRefCounted<viz::ContextProviderCommandBuffer>(
+      viz::ContextProviderCommandBuffer::CreateForGL(
           viz_gpu_->GetGpuChannel(), content::kGpuStreamIdDefault,
-          content::kGpuStreamPriorityUI,
-          GURL(std::string("chrome://gpu/XrRuntime")),
-          false /* automatic flushes */, false /* support locking */,
-          gpu::SharedMemoryLimits::ForMailboxContext(),
-          gpu::ContextCreationAttribs(),
+          content::kGpuStreamPriorityUI, GURL("chrome://gpu/XrRuntime"),
           viz::command_buffer_metrics::ContextType::XR_COMPOSITING);
 
   std::move(viz_context_provider_callback).Run(context_provider);

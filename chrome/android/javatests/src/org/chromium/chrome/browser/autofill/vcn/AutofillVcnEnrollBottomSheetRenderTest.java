@@ -30,6 +30,7 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.Description;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.IssuerIcon;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.LegalMessages;
@@ -37,8 +38,8 @@ import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProp
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.VirtualCardEnrollmentLinkType;
@@ -63,11 +64,11 @@ public class AutofillVcnEnrollBottomSheetRenderTest {
      * org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.LinkOpener}'s
      * functional interface.
      */
-    private static final LinkOpener DO_NOTHING_LINK_OPENER = (unusedUrl, unusedLinkType) -> {};
+    private static final LinkOpener DO_NOTHING_LINK_OPENER = (_, _) -> {};
 
     @Rule
-    public final ChromeTabbedActivityTestRule mTabbedActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public final FreshCtaTransitTestRule mTabbedActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -85,7 +86,7 @@ public class AutofillVcnEnrollBottomSheetRenderTest {
     private final boolean mIsNightMode;
 
     @ClassParameter
-    private static List<ParameterSet> sClassParams =
+    private static final List<ParameterSet> sClassParams =
             ImmutableList.of(
                     new ParameterSet().value(false, false).name("LTR"),
                     new ParameterSet().value(true, false).name("RTL"),
@@ -103,7 +104,7 @@ public class AutofillVcnEnrollBottomSheetRenderTest {
         mRenderTestRule.setVariantPrefix((mIsRightToLeftLayout ? "RTL" : "LTR"));
         ChromeNightModeTestUtils.setUpNightModeForChromeActivity(mIsNightMode);
         mRenderTestRule.setNightModeEnabled(mIsNightMode);
-        mTabbedActivityTestRule.startMainActivityOnBlankPage();
+        mTabbedActivityTestRule.startOnBlankPage();
         mTabbedActivityTestRule.waitForActivityCompletelyLoaded();
         mBottomSheetController =
                 mTabbedActivityTestRule
@@ -122,7 +123,6 @@ public class AutofillVcnEnrollBottomSheetRenderTest {
                     }
                 });
         setRtlForTesting(false);
-        mTabbedActivityTestRule.finishActivity();
     }
 
     @Test

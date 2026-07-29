@@ -23,18 +23,16 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/wtf/text/string_hasher.h"
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/case_folding_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/convert_to_8bit_hash_reader.h"
 
-namespace WTF {
+namespace blink {
 
 namespace {
 
@@ -50,6 +48,14 @@ const UChar kTestBUChars[5] = {0x41, 0x95, 0xFFFF, 0x1080, 0x01};
 
 const uint64_t kTestAHash = 0xE9422771E0A5DDE6;
 const uint64_t kTestBHash = 0x4A2DA770EEA75C1E;
+
+bool EqualCaseFoldingHash(StringView a, StringView b) {
+  unsigned hash_a = a.Is8Bit() ? DeprecatedCaseFoldingHash::GetHash(a.Span8())
+                               : DeprecatedCaseFoldingHash::GetHash(a.Span16());
+  unsigned hash_b = b.Is8Bit() ? DeprecatedCaseFoldingHash::GetHash(b.Span8())
+                               : DeprecatedCaseFoldingHash::GetHash(b.Span16());
+  return hash_a == hash_b;
+}
 
 }  // anonymous namespace
 
@@ -81,60 +87,64 @@ TEST(StringHasherTest, StringHasher_ComputeHashAndMaskTop8Bits) {
 
   // Test a slightly longer case (including characters that fit in Latin1
   // but not in ASCII).
-  const char kStr[] = "A quick browñ föx jumps over thé lazy dog";
-  UChar kWideStr[sizeof(kStr)];
-  for (unsigned i = 0; i < sizeof(kStr); ++i) {
-    kWideStr[i] = static_cast<uint8_t>(kStr[i]);
-  }
-  EXPECT_EQ(StringHasher::ComputeHashAndMaskTop8Bits(kStr, strlen(kStr)),
-            StringHasher::ComputeHashAndMaskTop8Bits<ConvertTo8BitHashReader>(
-                (const char*)kWideStr, strlen(kStr)));
-  EXPECT_NE(StringHasher::ComputeHashAndMaskTop8Bits(kStr, strlen(kStr)),
-            StringHasher::ComputeHashAndMaskTop8Bits((const char*)kWideStr,
-                                                     strlen(kStr)));
-  EXPECT_NE(StringHasher::ComputeHashAndMaskTop8Bits(kStr, strlen(kStr)),
-            StringHasher::ComputeHashAndMaskTop8Bits((const char*)kWideStr,
-                                                     strlen(kStr) * 2));
+  constexpr base::span<const char> kStr =
+      base::span_from_cstring("A quick browñ föx jumps over thé lazy dog");
+  std::array<UChar, kStr.size()> wide_str;
+  std::ranges::copy(base::as_bytes(kStr), wide_str.begin());
+  auto wide_bytes = base::as_chars(base::as_byte_span(wide_str));
+  unsigned expected_hash =
+      StringHasher::ComputeHashAndMaskTop8Bits(kStr.data(), kStr.size());
+  using Reader = ConvertTo8BitHashReader;
+  EXPECT_EQ(expected_hash, StringHasher::ComputeHashAndMaskTop8Bits<Reader>(
+                               wide_bytes.data(),
+                               wide_bytes.size() / Reader::kCompressionFactor));
+  EXPECT_NE(expected_hash, StringHasher::ComputeHashAndMaskTop8Bits(
+                               wide_bytes.data(), wide_bytes.size() / 2));
+  EXPECT_NE(expected_hash, StringHasher::ComputeHashAndMaskTop8Bits(
+                               wide_bytes.data(), wide_bytes.size()));
 }
 
 TEST(StringHasherTest, StringHasher_HashMemory) {
-  EXPECT_EQ(kEmptyStringHash, StringHasher::HashMemory({}));
-  EXPECT_EQ(kEmptyStringHash, StringHasher::HashMemory(
+  EXPECT_EQ(kEmptyStringHash,
+            StringHasher::HashMemory64(base::span<const uint8_t>()));
+  EXPECT_EQ(kEmptyStringHash,
+            StringHasher::HashMemory64(base::span<const uint8_t, 0>()));
+  EXPECT_EQ(kEmptyStringHash, StringHasher::HashMemory64(
                                   base::as_byte_span(kNullUChars).first(0u)));
 
   EXPECT_EQ(
       kSingleNullCharacterHash,
-      StringHasher::HashMemory(base::as_byte_span(kNullUChars).first(1u)));
+      StringHasher::HashMemory64(base::as_byte_span(kNullUChars).first(1u)));
 
-  EXPECT_EQ(kTestAHash, StringHasher::HashMemory(kTestALChars));
+  EXPECT_EQ(kTestAHash, StringHasher::HashMemory64(kTestALChars));
   EXPECT_EQ(kTestBHash,
-            StringHasher::HashMemory(base::as_byte_span(kTestBUChars)));
+            StringHasher::HashMemory64(base::as_byte_span(kTestBUChars)));
 }
 
-TEST(StringHasherTest, CaseFoldingHash) {
-  EXPECT_NE(CaseFoldingHash::GetHash("foo"), CaseFoldingHash::GetHash("bar"));
-  EXPECT_EQ(CaseFoldingHash::GetHash("foo"), CaseFoldingHash::GetHash("FOO"));
-  EXPECT_EQ(CaseFoldingHash::GetHash("foo"), CaseFoldingHash::GetHash("Foo"));
-  EXPECT_EQ(CaseFoldingHash::GetHash("Longer string 123"),
-            CaseFoldingHash::GetHash("longEr String 123"));
-  EXPECT_EQ(CaseFoldingHash::GetHash(String::FromUTF8("Ünicode")),
-            CaseFoldingHash::GetHash(String::FromUTF8("ünicode")));
+TEST(StringHasherTest, DeprecatedCaseFoldingHash) {
+  EXPECT_FALSE(EqualCaseFoldingHash("foo", "bar"));
+  EXPECT_TRUE(EqualCaseFoldingHash("foo", "FOO"));
+  EXPECT_TRUE(EqualCaseFoldingHash("foo", "Foo"));
+  EXPECT_TRUE(EqualCaseFoldingHash("Longer string 123", "longEr String 123"));
+  EXPECT_TRUE(EqualCaseFoldingHash(String::FromUtf8("Ünicode"),
+                                   String::FromUtf8("ünicode")));
 }
 
 TEST(StringHasherTest, ContractionAndExpansion) {
-  // CaseFoldingHash is the only current reader using the expansion logic,
-  // so we use it to test that the expansion logic is correct for various sizes;
-  // we don't really use the case folding itself here. We make a string that's
-  // long enough that we will hit most of the paths.
+  // DeprecatedCaseFoldingHash is the only current reader using the expansion
+  // logic, so we use it to test that the expansion logic is correct for various
+  // sizes; we don't really use the case folding itself here. We make a string
+  // that's long enough that we will hit most of the paths.
   String str =
       "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_!?'$";
   for (unsigned i = 0; i < str.length(); ++i) {
-    String s8 = str.Substring(0, i);
+    String s8 = str.substr(0, i);
     String s16 = s8;
     s16.Ensure16Bit();
-    EXPECT_EQ(CaseFoldingHash::GetHash(s8), CaseFoldingHash::GetHash(s16));
-    EXPECT_EQ(WTF::GetHash(s8), WTF::GetHash(s16));
+    EXPECT_EQ(DeprecatedCaseFoldingHash::GetHash(s8),
+              DeprecatedCaseFoldingHash::GetHash(s16));
+    EXPECT_EQ(GetHash(s8), GetHash(s16));
   }
 }
 
-}  // namespace WTF
+}  // namespace blink

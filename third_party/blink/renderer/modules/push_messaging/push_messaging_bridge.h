@@ -38,7 +38,7 @@ class PushMessagingBridge final : public GarbageCollected<PushMessagingBridge>,
   PushMessagingBridge(const PushMessagingBridge&) = delete;
   PushMessagingBridge& operator=(const PushMessagingBridge&) = delete;
 
-  virtual ~PushMessagingBridge();
+  ~PushMessagingBridge();
 
   // Asynchronously determines the permission state for the current origin.
   ScriptPromise<V8PermissionState> GetPermissionState(
@@ -50,8 +50,9 @@ class PushMessagingBridge final : public GarbageCollected<PushMessagingBridge>,
  private:
   // Method to be invoked when the permission status has been retrieved from the
   // permission service. Will settle the given |resolver|.
-  void DidGetPermissionState(ScriptPromiseResolver<V8PermissionState>* resolver,
-                             mojom::blink::PermissionStatus status);
+  void DidGetPermissionState(
+      ScriptPromiseResolver<V8PermissionState>* resolver,
+      mojom::blink::PermissionStatusWithDetailsPtr result);
 
   HeapMojoRemote<mojom::blink::PermissionService> permission_service_;
 };

@@ -36,8 +36,7 @@ class Model(object):
   - |namespaces| a map of a namespace name to its model.Namespace
   """
 
-  def __init__(self, allow_inline_enums=True):
-    self._allow_inline_enums = allow_inline_enums
+  def __init__(self):
     self.namespaces = {}
 
   def AddNamespace(self,
@@ -50,8 +49,7 @@ class Model(object):
     namespace = Namespace(json,
                           source_file,
                           include_compiler_options=include_compiler_options,
-                          environment=environment,
-                          allow_inline_enums=self._allow_inline_enums)
+                          environment=environment)
     self.namespaces[namespace.name] = namespace
     return namespace
 
@@ -123,8 +121,7 @@ class Namespace(object):
                json,
                source_file,
                include_compiler_options=False,
-               environment=None,
-               allow_inline_enums=True):
+               environment=None):
     self.name = json['namespace']
     if 'description' not in json:
       # TODO(kalman): Go back to throwing an error here.
@@ -132,14 +129,13 @@ class Namespace(object):
             'on the API summary page.' % self.name)
       json['description'] = ''
     self.description = json['description']
-    self.nodoc = json.get('nodoc', False)
+    self.nodoc = _GetTypedProperty(self, json, 'nodoc', bool, False)
     self.deprecated = json.get('deprecated', None)
     self.unix_name = UnixName(self.name)
     self.source_file = source_file
     self.source_file_dir, self.source_file_filename = os.path.split(source_file)
     self.short_filename = os.path.basename(source_file).split('.')[0]
     self.parent = None
-    self.allow_inline_enums = allow_inline_enums
     self.platforms = _GetPlatforms(json)
     toplevel_origin = Origin(from_client=True, from_json=True)
 
@@ -217,7 +213,7 @@ class Type(object):
     self.simple_name = _StripNamespace(self.name, namespace)
     self.unix_name = UnixName(self.name)
     self.description = json.get('description', None)
-    self.nodoc = json.get('nodoc', False)
+    self.nodoc = _GetTypedProperty(self, json, 'nodoc', bool, False)
 
     # Copy the Origin and override the |from_manifest_keys| value as necessary.
     # We need to do this to ensure types reference by manifest types have the
@@ -251,14 +247,15 @@ class Type(object):
         namespace._manifest_referenced_types.add(self.ref_type)
 
     elif 'enum' in json and json_type == 'string':
-      if not namespace.allow_inline_enums and not isinstance(parent, Namespace):
+      if not isinstance(parent, Namespace):
         raise ParseException(
             self,
             'Inline enum "%s" found in namespace "%s". These are not allowed. '
             'See crbug.com/472279' % (name, namespace.name))
       self.property_type = PropertyType.ENUM
-      self.enum_values = [EnumValue(value, namespace) for value in json['enum']]
-      self.cpp_enum_prefix_override = json.get('cpp_enum_prefix_override', None)
+      self.enum_values = [
+          EnumValue(self, value, namespace) for value in json['enum']
+      ]
     elif json_type == 'any':
       self.property_type = PropertyType.ANY
     elif json_type == 'binary':
@@ -356,7 +353,7 @@ class Function(object):
     self.supports_listeners = options.get('supportsListeners', True)
     self.supports_rules = options.get('supportsRules', False)
     self.supports_dom = options.get('supportsDom', False)
-    self.nodoc = json.get('nodoc', False)
+    self.nodoc = _GetTypedProperty(self, json, 'nodoc', bool, False)
 
     def GeneratePropertyFromParam(p):
       return Property(self, p['name'], p, namespace, origin)
@@ -403,9 +400,11 @@ class ReturnsAsync(object):
   - |name| the name of the asynchronous return, generally 'callback'
   - |simple_name| the name of this ReturnsAsync without a namespace
   - |description| a description of the ReturnsAsync (if provided)
-  - |optional| whether specifying the ReturnsAsync is "optional" (in situations
-               where promises are supported, this will be ignored as promises
-               inheriently make a callback optional)
+  - |optional| whether specifying the ReturnsAsync is "optional". This is only
+               relevant for APIs that don't support promises and is otherwise
+               just set to True later on in the bindings when an APISignature is
+               created. However we also set it to true here for other consumers
+               of the model e.g. documentation and externs generation.
   - |params| a list of parameters supplied to the function in the case of using
              callbacks, or the list of properties on the returned object in the
              case of using promises
@@ -418,10 +417,13 @@ class ReturnsAsync(object):
     self.name = json.get('name')
     self.simple_name = _StripNamespace(self.name, namespace)
     self.description = json.get('description')
-    self.optional = _GetWithDefaultChecked(parent, json, 'optional', False)
     self.nocompile = json.get('nocompile')
     self.parent = parent
     self.can_return_promise = json.get('does_not_support_promises') is None
+    if (self.can_return_promise):
+      self.optional = True
+    else:
+      self.optional = _GetWithDefaultChecked(parent, json, 'optional', False)
 
     if json.get('returns') is not None:
       raise ValueError(
@@ -454,7 +456,7 @@ class Property(object):
   """A property of a type OR a parameter to a function.
   Properties:
   - |name| name of the property as in the json. This shouldn't change since
-    it is the key used to access Value::Dict
+    it is the key used to access base::DictValue
   - |unix_name| the unix_style_name of the property. Used as variable name
   - |optional| a boolean representing whether the property is optional
   - |description| a description of the property (if provided)
@@ -476,7 +478,7 @@ class Property(object):
     self.optional = json.get('optional', None)
     self.instance_of = json.get('isInstanceOf', None)
     self.deprecated = json.get('deprecated')
-    self.nodoc = json.get('nodoc', False)
+    self.nodoc = _GetTypedProperty(self, json, 'nodoc', bool, False)
 
     # HACK: only support very specific value types.
     is_allowed_value = ('$ref' not in json
@@ -494,7 +496,7 @@ class Property(object):
           json['type'] = 'integer'
         elif isinstance(self.value, float):
           json['type'] = 'double'
-        elif isinstance(self.value, basestring):
+        elif isinstance(self.value, str):
           json['type'] = 'string'
         else:
           # TODO(kalman): support more types as necessary.
@@ -534,13 +536,19 @@ class EnumValue(object):
   - |description| a description of the property (if provided)
   """
 
-  def __init__(self, json, namespace):
+  def __init__(self, parent, json, namespace):
+    # Note: We set the `parent` here for better error messaging from any
+    # potential ParseExceptions triggered when calling `_GetTypedProperty`,
+    # which rely on `parent` references when printing the hierarchy.
+    self.parent = parent
     if isinstance(json, dict):
       self.name = json['name']
       self.description = json.get('description')
+      self.nodoc = _GetTypedProperty(self, json, 'nodoc', bool, False)
     else:
       self.name = json
       self.description = None
+      self.nodoc = False
 
     # Using empty string values as enum key is only allowed in a few namespaces,
     # as an exception to the rule, and we should not add more.
@@ -844,8 +852,17 @@ def _GetManifestKeysType(self, json):
       'type': 'object',
       'properties': json['manifest_keys'],
   }
-  return Type(self, 'ManifestKeys', manifest_keys_type, self,
-              Origin(from_manifest_keys=True))
+
+  # Create a Type instance for the manifest keys object.
+  manifest_type = Type(self, 'ManifestKeys', manifest_keys_type, self,
+                       Origin(from_manifest_keys=True))
+
+  # Enforce that all the top-level manifest keys are optional.
+  for name, item in manifest_type.properties.items():
+    if not item.optional:
+      raise ParseException(self, 'Manifest key "%s" must be optional.' % name)
+
+  return manifest_type
 
 
 def _GetWithDefaultChecked(self, json, key, default):
@@ -867,7 +884,7 @@ class Platforms(object):
   """Enum of the possible platforms.
   """
   CHROMEOS = _PlatformInfo("chromeos")
-  FUCHSIA = _PlatformInfo("fuchsia")
+  DESKTOP_ANDROID = _PlatformInfo("desktop_android")
   LINUX = _PlatformInfo("linux")
   MAC = _PlatformInfo("mac")
   WIN = _PlatformInfo("win")
@@ -890,3 +907,12 @@ def _GetPlatforms(json):
       raise ValueError('Invalid platform specified: ' + platform_name)
     platforms.append(platform_enum)
   return platforms
+
+
+def _GetTypedProperty(parent, json, name, expected_type, default):
+  value = json.get(name, default)
+  if not isinstance(value, expected_type):
+    raise ParseException(
+        parent, 'The attribute "%s" must be specified as %s, but was '
+        'speficied as %s.' % (name, type(expected_type()), type(value)))
+  return value

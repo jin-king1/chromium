@@ -22,9 +22,9 @@ namespace base {
 // must be aware that all tests sharing a process will have the same state,
 // regardless of future ScopedFeatureList instances.
 
-BASE_FEATURE(kUseUtilityThreadGroup,
-             "UseUtilityThreadGroup",
-             FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUseUtilityThreadGroup, FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kUseHighPriorityThreadGroup, FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAddTaskLeewayFeature,
              "AddTaskLeeway",
@@ -39,34 +39,31 @@ BASE_FEATURE_PARAM(TimeDelta,
                    "max_precise_delay",
                    kDefaultMaxPreciseDelay);
 
-BASE_FEATURE(kAlignWakeUps, "AlignWakeUps", FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAlignWakeUps, FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kTimerSlackMac, "TimerSlackMac", FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kExplicitHighResolutionTimerWin,
-             "ExplicitHighResolutionTimerWin",
-             FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kUIPumpImprovementsWin,
-             "UIPumpImprovementsWin",
-             FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kPumpFastToSleepAndroid,
-             "PumpFastToSleepAndroid",
-             FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kTimerSlackMac, FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kRunTasksByBatches,
-             "RunTasksByBatches",
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
              FEATURE_ENABLED_BY_DEFAULT);
 #else
              FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
-BASE_FEATURE(kThreadPoolCap2, "ThreadPoolCap2", FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kThreadPoolForegroundBlockingTimeouts,
+             FEATURE_DISABLED_BY_DEFAULT);
 
-// Note: Do not use the prepared macro as of no need for a local cache.
-constinit const FeatureParam<int> kThreadPoolCapRestrictedCount{
-    &kThreadPoolCap2, "restricted_count", 3};
+BASE_FEATURE_PARAM(TimeDelta,
+                   kThreadPoolForegroundMayBlockThresholdParam,
+                   &kThreadPoolForegroundBlockingTimeouts,
+                   "MayBlockThreshold",
+                   Milliseconds(1000));
+BASE_FEATURE_PARAM(TimeDelta,
+                   kThreadPoolForegroundBlockedWorkersPollParam,
+                   &kThreadPoolForegroundBlockingTimeouts,
+                   "BlockedWorkersPoll",
+                   Milliseconds(1200));
+
+BASE_FEATURE(kInheritTaskImportanceByDefault, FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace base

@@ -11,6 +11,7 @@
 #include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/occlusion.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect_f.h"
 
 namespace cc {
@@ -33,8 +34,8 @@ std::unique_ptr<LayerImpl> UIResourceLayerImpl::CreateLayerImpl(
   return UIResourceLayerImpl::Create(tree_impl, id());
 }
 
-void UIResourceLayerImpl::PushPropertiesTo(LayerImpl* layer) {
-  LayerImpl::PushPropertiesTo(layer);
+void UIResourceLayerImpl::CopyPropertiesTo(LayerImpl* layer) const {
+  LayerImpl::CopyPropertiesTo(layer);
   UIResourceLayerImpl* layer_impl = static_cast<UIResourceLayerImpl*>(layer);
 
   layer_impl->SetUIResourceId(ui_resource_id_);
@@ -92,9 +93,8 @@ void UIResourceLayerImpl::AppendQuads(const AppendQuadsContext& context,
           ? layer_tree_impl()->ResourceIdForUIResource(ui_resource_id_)
           : viz::kInvalidResourceId;
   bool are_contents_opaque =
-      resource ? (layer_tree_impl()->IsUIResourceOpaque(ui_resource_id_) ||
-                  contents_opaque())
-               : false;
+      resource && (layer_tree_impl()->IsUIResourceOpaque(ui_resource_id_) ||
+                   contents_opaque());
   PopulateSharedQuadState(shared_quad_state, are_contents_opaque);
   AppendDebugBorderQuad(render_pass, gfx::Rect(bounds()), shared_quad_state,
                         append_quads_data);
@@ -103,21 +103,28 @@ void UIResourceLayerImpl::AppendQuads(const AppendQuadsContext& context,
     return;
 
   static const bool nearest_neighbor = false;
-  static const bool premultiplied_alpha = true;
 
   gfx::Rect quad_rect(bounds());
-  bool needs_blending = are_contents_opaque ? false : true;
+  bool needs_blending = !are_contents_opaque;
   gfx::Rect visible_quad_rect =
       draw_properties().occlusion_in_content_space.GetUnoccludedContentRect(
           quad_rect);
   if (visible_quad_rect.IsEmpty())
     return;
 
+  const gfx::Size resource_size =
+      layer_tree_impl()->GetUIResourceSize(ui_resource_id_);
+  const gfx::PointF top_left = gfx::ScalePoint(
+      uv_top_left_, resource_size.width(), resource_size.height());
+  const gfx::PointF bottom_right = gfx::ScalePoint(
+      uv_bottom_right_, resource_size.width(), resource_size.height());
+
   auto* quad = render_pass->CreateAndAppendDrawQuad<viz::TextureDrawQuad>();
   quad->SetNew(shared_quad_state, quad_rect, visible_quad_rect, needs_blending,
-               resource, premultiplied_alpha, uv_top_left_, uv_bottom_right_,
-               SkColors::kTransparent, nearest_neighbor,
-               /*secure_output_only=*/false, gfx::ProtectedVideoType::kClear);
+               resource, top_left, bottom_right, SkColors::kTransparent,
+               nearest_neighbor,
+               /*secure_output=*/false, gfx::ProtectedVideoType::kClear,
+               /*is_tex_coords_normalized=*/false);
   ValidateQuadResources(quad);
 }
 

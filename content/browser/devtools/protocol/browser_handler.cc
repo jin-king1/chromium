@@ -8,20 +8,28 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "base/command_line.h"
 #include "base/containers/map_util.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/immediate_crash.h"
 #include "base/metrics/histogram_base.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/types/expected_macros.h"
 #include "build/build_config.h"
+#include "build/util/chromium_git_revision.h"
 #include "components/download/public/common/download_item.h"
-#include "components/embedder_support/user_agent_utils.h"
 #include "content/browser/devtools/browser_devtools_agent_host.h"
+#include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/devtools_manager.h"
 #include "content/browser/devtools/protocol/devtools_download_manager_delegate.h"
 #include "content/browser/gpu/gpu_process_host.h"
@@ -43,6 +51,25 @@ using blink::PermissionType;
 namespace content {
 namespace protocol {
 
+namespace {
+
+base::expected<std::optional<url::Origin>, Response> ParseOriginString(
+    base::optional_ref<const std::string> origin_string) {
+  if (!origin_string.has_value()) {
+    return std::nullopt;
+  }
+
+  url::Origin origin = url::Origin::Create(GURL(origin_string.value()));
+  if (origin.opaque()) {
+    return base::unexpected(Response::InvalidParams(
+        "Permission can't be granted to opaque origins."));
+  }
+
+  return origin;
+}
+
+}  // namespace
+
 BrowserHandler::BrowserHandler(bool allow_set_download_behavior)
     : DevToolsDomainHandler(Browser::Metainfo::domainName),
       download_events_enabled_(false),
@@ -63,7 +90,7 @@ Response BrowserHandler::Disable() {
     if (browser_context) {
       PermissionControllerImpl* permission_controller =
           PermissionControllerImpl::FromBrowserContext(browser_context);
-      permission_controller->ResetOverridesForDevTools();
+      permission_controller->ResetPermissionOverrides(base::DoNothing());
     }
   }
   contexts_with_overridden_permissions_.clear();
@@ -104,7 +131,7 @@ Response BrowserHandler::GetVersion(std::string* protocol_version,
                                     std::string* user_agent,
                                     std::string* js_version) {
   *protocol_version = DevToolsAgentHost::GetProtocolVersion();
-  *revision = embedder_support::GetChromiumGitRevision();
+  *revision = CHROMIUM_GIT_REVISION;
   *product = GetContentClient()->browser()->GetProduct();
   *user_agent = GetContentClient()->browser()->GetUserAgent();
   *js_version = V8_VERSION_STRING;
@@ -137,7 +164,7 @@ Response PermissionDescriptorToPermissionType(
   } else if (name == "notifications") {
     *permission_type = PermissionType::NOTIFICATIONS;
   } else if (name == "persistent-storage") {
-    *permission_type = PermissionType::DURABLE_STORAGE;
+    *permission_type = PermissionType::PERSISTENT_STORAGE;
   } else if (name == "push") {
     if (!descriptor->GetUserVisibleOnly(false)) {
       return Response::InvalidParams(
@@ -202,6 +229,12 @@ Response PermissionDescriptorToPermissionType(
     *permission_type = PermissionType::AUTOMATIC_FULLSCREEN;
   } else if (name == "web-app-installation") {
     *permission_type = PermissionType::WEB_APP_INSTALLATION;
+  } else if (name == "local-network-access") {
+    *permission_type = PermissionType::LOCAL_NETWORK_ACCESS;
+  } else if (name == "local-network") {
+    *permission_type = PermissionType::LOCAL_NETWORK;
+  } else if (name == "loopback-network") {
+    *permission_type = PermissionType::LOOPBACK_NETWORK;
   } else {
     return Response::InvalidParams("Invalid PermissionDescriptor name: " +
                                    name);
@@ -227,7 +260,7 @@ Response FromProtocolPermissionType(
   } else if (type == protocol::Browser::PermissionTypeEnum::Midi) {
     *out_type = PermissionType::MIDI;
   } else if (type == protocol::Browser::PermissionTypeEnum::DurableStorage) {
-    *out_type = PermissionType::DURABLE_STORAGE;
+    *out_type = PermissionType::PERSISTENT_STORAGE;
   } else if (type == protocol::Browser::PermissionTypeEnum::AudioCapture) {
     *out_type = PermissionType::AUDIO_CAPTURE;
   } else if (type == protocol::Browser::PermissionTypeEnum::VideoCapture) {
@@ -295,6 +328,13 @@ Response FromProtocolPermissionType(
   } else if (type ==
              protocol::Browser::PermissionTypeEnum::WebAppInstallation) {
     *out_type = PermissionType::WEB_APP_INSTALLATION;
+  } else if (type ==
+             protocol::Browser::PermissionTypeEnum::LocalNetworkAccess) {
+    *out_type = PermissionType::LOCAL_NETWORK_ACCESS;
+  } else if (type == protocol::Browser::PermissionTypeEnum::LocalNetwork) {
+    *out_type = PermissionType::LOCAL_NETWORK;
+  } else if (type == protocol::Browser::PermissionTypeEnum::LoopbackNetwork) {
+    *out_type = PermissionType::LOOPBACK_NETWORK;
   } else {
     return Response::InvalidParams("Unknown permission type: " + type);
   }
@@ -353,67 +393,107 @@ std::vector<BrowserHandler*> BrowserHandler::ForAgentHost(
   return host->HandlersByName<BrowserHandler>(Browser::Metainfo::domainName);
 }
 
-Response BrowserHandler::SetPermission(
+void BrowserHandler::SetPermission(
     std::unique_ptr<protocol::Browser::PermissionDescriptor> permission,
     const protocol::Browser::PermissionSetting& setting,
     std::optional<std::string> origin,
-    std::optional<std::string> browser_context_id) {
+    std::optional<std::string> embedded_origin,
+    std::optional<std::string> browser_context_id,
+    std::unique_ptr<protocol::Browser::Backend::SetPermissionCallback>
+        callback) {
   BrowserContext* browser_context = nullptr;
   Response response = FindBrowserContext(browser_context_id, &browser_context);
-  if (!response.IsSuccess())
-    return response;
+  if (!response.IsSuccess()) {
+    callback->sendFailure(response);
+    return;
+  }
 
   PermissionType type;
   Response parse_response =
       PermissionDescriptorToPermissionType(std::move(permission), &type);
-  if (!parse_response.IsSuccess())
-    return parse_response;
+  if (!parse_response.IsSuccess()) {
+    callback->sendFailure(parse_response);
+    return;
+  }
 
   blink::mojom::PermissionStatus permission_status;
   Response setting_response =
       PermissionSettingToPermissionStatus(setting, &permission_status);
-  if (!setting_response.IsSuccess())
-    return setting_response;
+  if (!setting_response.IsSuccess()) {
+    callback->sendFailure(setting_response);
+    return;
+  }
 
   PermissionControllerImpl* permission_controller =
       PermissionControllerImpl::FromBrowserContext(browser_context);
 
-  std::optional<url::Origin> overridden_origin;
+  std::optional<url::Origin> overridden_embedding_origin;
+  std::optional<url::Origin> overridden_requesting_origin;
   if (origin.has_value()) {
-    overridden_origin = url::Origin::Create(GURL(origin.value()));
-    if (overridden_origin->opaque())
-      return Response::InvalidParams(
-          "Permission can't be granted to opaque origins.");
+    ASSIGN_OR_RETURN(
+        overridden_embedding_origin, ParseOriginString(origin),
+        [&callback](Response response) { callback->sendFailure(response); });
+
+    // Only consider `embedded_origin` if `origin` is valid and non-nullopt. Use
+    // `origin` as `overridden_requesting_origin`, if `embedded_origin` is
+    // nullopt.
+    ASSIGN_OR_RETURN(
+        overridden_requesting_origin, ParseOriginString(embedded_origin),
+        [&callback](Response response) { callback->sendFailure(response); });
+    if (!overridden_requesting_origin) {
+      overridden_requesting_origin = overridden_embedding_origin;
+    }
   }
-  PermissionControllerImpl::OverrideStatus status =
-      permission_controller->SetOverrideForDevTools(overridden_origin, type,
-                                                    permission_status);
-  if (status != PermissionControllerImpl::OverrideStatus::kOverrideSet) {
-    return Response::InvalidParams(
-        "Permission can't be granted in current context.");
-  }
-  contexts_with_overridden_permissions_.insert(
-      browser_context_id.value_or(std::string()));
-  return Response::Success();
+
+  permission_controller->SetPermissionOverride(
+      overridden_requesting_origin, overridden_embedding_origin, type,
+      permission_status,
+      base::BindOnce(
+          [](base::WeakPtr<BrowserHandler> browser_handler,
+             std::optional<std::string> browser_context_id,
+             std::unique_ptr<protocol::Browser::Backend::SetPermissionCallback>
+                 callback,
+             PermissionType type,
+             PermissionControllerImpl::OverrideStatus status) {
+            if (status ==
+                PermissionControllerImpl::OverrideStatus::kOverrideSet) {
+              if (browser_handler) {
+                browser_handler->UpdateContextsWithOverriddenPermissions(
+                    browser_context_id);
+              }
+              callback->sendSuccess();
+            } else {
+              callback->sendFailure(Response::InvalidParams(
+                  "Permission can't be granted in current context."));
+            }
+          },
+          weak_ptr_factory_.GetWeakPtr(), browser_context_id,
+          std::move(callback), type));
 }
 
-Response BrowserHandler::GrantPermissions(
+void BrowserHandler::GrantPermissions(
     std::unique_ptr<protocol::Array<protocol::Browser::PermissionType>>
         permissions,
     std::optional<std::string> origin,
-    std::optional<std::string> browser_context_id) {
+    std::optional<std::string> browser_context_id,
+    std::unique_ptr<protocol::Browser::Backend::GrantPermissionsCallback>
+        callback) {
   BrowserContext* browser_context = nullptr;
   Response response = FindBrowserContext(browser_context_id, &browser_context);
-  if (!response.IsSuccess())
-    return response;
+  if (!response.IsSuccess()) {
+    callback->sendFailure(response);
+    return;
+  }
 
   std::vector<PermissionType> internal_permissions;
   internal_permissions.reserve(permissions->size());
   for (const protocol::Browser::PermissionType& t : *permissions) {
     PermissionType type;
     Response type_response = FromProtocolPermissionType(t, &type);
-    if (!type_response.IsSuccess())
-      return type_response;
+    if (!type_response.IsSuccess()) {
+      callback->sendFailure(type_response);
+      return;
+    }
     internal_permissions.push_back(type);
   }
 
@@ -422,33 +502,59 @@ Response BrowserHandler::GrantPermissions(
   std::optional<url::Origin> overridden_origin;
   if (origin.has_value()) {
     overridden_origin = url::Origin::Create(GURL(origin.value()));
-    if (overridden_origin->opaque())
-      return Response::InvalidParams(
-          "Permission can't be granted to opaque origins.");
+    if (overridden_origin->opaque()) {
+      callback->sendFailure(Response::InvalidParams(
+          "Permission can't be granted to opaque origins."));
+      return;
+    }
   }
-  PermissionControllerImpl::OverrideStatus status =
-      permission_controller->GrantOverridesForDevTools(overridden_origin,
-                                                       internal_permissions);
 
-  if (status != PermissionControllerImpl::OverrideStatus::kOverrideSet) {
-    return Response::InvalidParams(
-        "Permissions can't be granted in current context.");
-  }
-  contexts_with_overridden_permissions_.insert(browser_context_id.value_or(""));
-  return Response::Success();
+  permission_controller->GrantPermissionOverrides(
+      overridden_origin, overridden_origin, internal_permissions,
+      base::BindOnce(
+          [](base::WeakPtr<BrowserHandler> browser_handler,
+             std::optional<std::string> browser_context_id,
+             std::unique_ptr<
+                 protocol::Browser::Backend::GrantPermissionsCallback> callback,
+             PermissionControllerImpl::OverrideStatus status) {
+            if (status ==
+                PermissionControllerImpl::OverrideStatus::kOverrideSet) {
+              if (browser_handler) {
+                browser_handler->UpdateContextsWithOverriddenPermissions(
+                    browser_context_id);
+              }
+              callback->sendSuccess();
+            } else {
+              callback->sendFailure(Response::InvalidParams(
+                  "Permission can't be granted in current context."));
+            }
+          },
+          weak_ptr_factory_.GetWeakPtr(), browser_context_id,
+          std::move(callback)));
 }
 
-Response BrowserHandler::ResetPermissions(
-    std::optional<std::string> browser_context_id) {
+void BrowserHandler::ResetPermissions(
+    std::optional<std::string> browser_context_id,
+    std::unique_ptr<protocol::Browser::Backend::ResetPermissionsCallback>
+        callback) {
   BrowserContext* browser_context = nullptr;
   Response response = FindBrowserContext(browser_context_id, &browser_context);
-  if (!response.IsSuccess())
-    return response;
+  if (!response.IsSuccess()) {
+    callback->sendFailure(response);
+    return;
+  }
   PermissionControllerImpl* permission_controller =
       PermissionControllerImpl::FromBrowserContext(browser_context);
-  permission_controller->ResetOverridesForDevTools();
+  permission_controller->ResetPermissionOverrides(base::BindOnce(
+      &protocol::Browser::Backend::ResetPermissionsCallback::sendSuccess,
+      std::move(callback)));
   contexts_with_overridden_permissions_.erase(browser_context_id.value_or(""));
-  return Response::Success();
+}
+
+void BrowserHandler::UpdateContextsWithOverriddenPermissions(
+    base::optional_ref<const std::string> browser_context_id) {
+  contexts_with_overridden_permissions_.insert(
+      browser_context_id.has_value() ? browser_context_id.value() : "");
 }
 
 Response BrowserHandler::SetDownloadBehavior(
@@ -464,6 +570,7 @@ Response BrowserHandler::SetDownloadBehavior(
                                    std::move(download_path));
   if (!response.IsSuccess())
     return response;
+
   SetDownloadEventsEnabled(events_enabled.value_or(false));
   return response;
 }
@@ -598,12 +705,24 @@ Response BrowserHandler::CrashGpuProcess() {
 
 void BrowserHandler::OnDownloadUpdated(download::DownloadItem* item) {
   std::string state;
+  std::optional<std::string> maybe_file_path;
   switch (item->GetState()) {
     case download::DownloadItem::IN_PROGRESS:
       state = Browser::DownloadProgress::StateEnum::InProgress;
       break;
     case download::DownloadItem::COMPLETE:
       state = Browser::DownloadProgress::StateEnum::Completed;
+      {
+        base::FilePath target_file_path = item->GetTargetFilePath();
+        if (!target_file_path.empty()) {
+#if BUILDFLAG(IS_WIN)
+          // On Windows, the target file path is a wide string.
+          maybe_file_path = base::WideToUTF8(target_file_path.value());
+#else
+          maybe_file_path = target_file_path.value();
+#endif
+        }
+      }
       break;
     case download::DownloadItem::CANCELLED:
     case download::DownloadItem::INTERRUPTED:
@@ -613,7 +732,7 @@ void BrowserHandler::OnDownloadUpdated(download::DownloadItem* item) {
       NOTREACHED();
   }
   frontend_->DownloadProgress(item->GetGuid(), item->GetTotalBytes(),
-                              item->GetReceivedBytes(), state);
+                              item->GetReceivedBytes(), state, maybe_file_path);
   if (state != Browser::DownloadProgress::StateEnum::InProgress) {
     item->RemoveObserver(this);
     pending_downloads_.erase(item);

@@ -7,6 +7,9 @@
 
 #import <Foundation/Foundation.h>
 
+class GaiaId;
+
+@class ConsistencyAccountChooserViewController;
 @class ConsistencyAccountChooserTableViewController;
 
 // Delegate protocol for ConsistencyAccountChooserTableViewController.
@@ -15,10 +18,15 @@
 // Invoked when the user selects an identity.
 - (void)consistencyAccountChooserTableViewController:
             (ConsistencyAccountChooserTableViewController*)viewController
-                         didSelectIdentityWithGaiaID:(NSString*)gaiaID;
+                         didSelectIdentityWithGaiaID:(const GaiaId&)gaiaID;
+
 // Invoked when the user taps on "Add account".
 - (void)consistencyAccountChooserTableViewControllerDidTapOnAddAccount:
     (ConsistencyAccountChooserTableViewController*)viewController;
+
+// Invoked when the user wants to go back to the previous view.
+- (void)consistencyAccountChooserTableViewControllerWantsToGoBack:
+    (ConsistencyAccountChooserViewController*)viewController;
 
 // Show management help page.
 - (void)showManagementHelpPage;

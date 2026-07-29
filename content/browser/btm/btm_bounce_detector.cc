@@ -9,12 +9,11 @@
 #include <ctime>
 #include <memory>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
-#include "base/functional/overloaded.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -30,7 +29,7 @@
 #include "content/browser/btm/btm_utils.h"
 #include "content/browser/btm/cookie_access_filter.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/btm_redirect_info.h"
+#include "content/public/browser/btm_redirect.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/cookie_access_details.h"
 #include "content/public/browser/navigation_handle.h"
@@ -42,9 +41,13 @@
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_access_result.h"
+#include "net/cookies/cookie_setting_override.h"
+#include "net/http/http_response_headers.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -77,12 +80,12 @@ inline void UmaHistogramTimeToBounce(base::TimeDelta sample) {
                           sample);
 }
 
-std::vector<BtmRedirectInfoPtr> CloneRedirects(
-    const std::vector<BtmRedirectInfoPtr>& redirects) {
-  std::vector<BtmRedirectInfoPtr> clones;
+std::vector<BtmRedirectPtr> CloneRedirects(
+    const std::vector<BtmRedirectPtr>& redirects) {
+  std::vector<BtmRedirectPtr> clones;
   clones.reserve(redirects.size());
   for (const auto& ptr : redirects) {
-    clones.push_back(std::make_unique<BtmRedirectInfo>(*ptr));
+    clones.push_back(std::make_unique<BtmRedirect>(*ptr));
   }
   return clones;
 }
@@ -131,7 +134,6 @@ BtmWebContentsObserver::~BtmWebContentsObserver() = default;
 RedirectChainDetector::RedirectChainDetector(WebContents* web_contents)
     : WebContentsObserver(web_contents),
       WebContentsUserData<RedirectChainDetector>(*web_contents),
-      short_visit_observer_(web_contents),
       detector_(this,
                 base::DefaultTickClock::GetInstance(),
                 base::DefaultClock::GetInstance()),
@@ -158,7 +160,11 @@ BtmBounceDetector::BtmBounceDetector(BtmBounceDetectorDelegate* delegate,
                               base::Unretained(delegate)),
           base::BindRepeating(&BtmBounceDetectorDelegate::ReportRedirectors,
                               base::Unretained(delegate)),
-          /*initial_url=*/UrlAndSourceId(),
+          base::BindRepeating(
+              &BtmBounceDetectorDelegate::Are3PcsGenerallyEnabled,
+              base::Unretained(delegate)),
+          /*initial_url=*/GURL(),
+          /*initial_source_id=*/ukm::kInvalidSourceId,
           /*redirect_prefix_count=*/0u),
       client_bounce_detection_timer_(
           FROM_HERE,
@@ -189,46 +195,64 @@ ukm::SourceId BtmNavigationHandle::MakeRedirectSourceId(const GURL& url) const {
       base::PassKey<BtmNavigationHandle>(), url);
 }
 
-BtmRedirectContext::BtmRedirectContext(BtmRedirectChainHandler handler,
-                                       BtmIssueHandler issue_handler,
-                                       const UrlAndSourceId& initial_url,
-                                       size_t redirect_prefix_count)
+BtmRedirectContext::BtmRedirectContext(
+    BtmRedirectChainHandler handler,
+    BtmIssueHandler issue_handler,
+    Btm3PcSettingsCallback are_3pcs_generally_enabled_callback,
+    const GURL& initial_url,
+    ukm::SourceId initial_source_id,
+    size_t redirect_prefix_count)
     : handler_(handler),
       issue_handler_(issue_handler),
+      are_3pcs_generally_enabled_callback_(are_3pcs_generally_enabled_callback),
       initial_url_(initial_url),
+      initial_source_id_(initial_source_id),
       redirect_prefix_count_(redirect_prefix_count) {}
 
 BtmRedirectContext::~BtmRedirectContext() = default;
 
-void BtmRedirectContext::AppendClientRedirect(
-    BtmRedirectInfoPtr client_redirect) {
+void BtmRedirectContext::AppendClientRedirect(BtmRedirectPtr client_redirect) {
   DCHECK_EQ(client_redirect->redirect_type, BtmRedirectType::kClient);
-  if (client_redirect->access_type > BtmDataAccessType::kRead) {
-    redirectors_.insert(client_redirect->site);
-  }
+  redirectors_.insert(client_redirect->site);
   redirects_.push_back(std::move(client_redirect));
-  TrimRedirectsFromFront();
+  MaybeTrimAndHandlePartialRedirectChain();
 }
 
 void BtmRedirectContext::AppendServerRedirects(
-    std::vector<BtmRedirectInfoPtr> server_redirects) {
+    std::vector<BtmRedirectPtr> server_redirects) {
   for (auto& redirect : server_redirects) {
     DCHECK_EQ(redirect->redirect_type, BtmRedirectType::kServer);
-    if (redirect->access_type > BtmDataAccessType::kRead) {
-      redirectors_.insert(redirect->site);
-    }
+    redirectors_.insert(redirect->site);
     redirects_.push_back(std::move(redirect));
   }
-  TrimRedirectsFromFront();
+  MaybeTrimAndHandlePartialRedirectChain();
 }
 
-void BtmRedirectContext::TrimRedirectsFromFront() {
+void BtmRedirectContext::MaybeTrimAndHandlePartialRedirectChain() {
   size_t trim_count = base::ClampSub(redirects_.size(), kBtmRedirectChainMax);
   if (trim_count == 0) {
     return;
   }
 
-  TrimAndHandleRedirects(trim_count);
+  DCHECK_GE(redirects_.size(), trim_count);
+
+  // Use an empty `final_url`. This processes the redirect as different from the
+  // final URL, which allows recording in the BTM database.
+  auto chain = std::make_unique<BtmRedirectChain>(
+      initial_url_, initial_source_id_,
+      /*final_url=*/GURL(),
+      /*final_source_id=*/ukm::kInvalidSourceId, GetRedirectChainLength(),
+      /*is_partial_chain=*/true, are_3pcs_generally_enabled_callback_.Run());
+
+  std::vector<BtmRedirectPtr> redirect_subchain;
+  for (size_t ind = 0; ind < trim_count; ind++) {
+    redirect_subchain.push_back(std::move(redirects_.at(ind)));
+  }
+
+  redirects_.erase(redirects_.begin(), redirects_.begin() + trim_count);
+  redirect_prefix_count_ += trim_count;
+
+  handler_.Run(std::move(redirect_subchain), std::move(chain));
 }
 
 void BtmRedirectContext::ReportIssue(const GURL& final_url) {
@@ -239,7 +263,7 @@ void BtmRedirectContext::ReportIssue(const GURL& final_url) {
   // necessarily be the end of the chain, if a client redirect happens. However,
   // this is better for developer experience than waiting until then, since
   // notifications come faster.
-  redirectors_.erase(GetSiteForBtm(initial_url_.url));
+  redirectors_.erase(GetSiteForBtm(initial_url_));
   redirectors_.erase(GetSiteForBtm(final_url));
 
   issue_handler_.Run(std::move(redirectors_));
@@ -247,7 +271,7 @@ void BtmRedirectContext::ReportIssue(const GURL& final_url) {
   redirectors_.clear();
 }
 
-std::optional<std::pair<size_t, BtmRedirectInfo*>>
+std::optional<std::pair<size_t, BtmRedirect*>>
 BtmRedirectContext::GetRedirectInfoFromChain(const std::string& site) const {
   // Iterate in reverse order to obtain the most recent occurrence of the site.
   for (int ind = redirects_.size() - 1; ind >= 0; ind--) {
@@ -260,8 +284,7 @@ BtmRedirectContext::GetRedirectInfoFromChain(const std::string& site) const {
 
 bool BtmRedirectContext::SiteHadUserActivationOrAuthn(
     const std::string& site) const {
-  if ((initial_url_had_interaction_) &&
-      site == GetSiteForBtm(initial_url_.url)) {
+  if ((initial_url_had_interaction_) && site == GetSiteForBtm(initial_url_)) {
     return true;
   }
 
@@ -281,7 +304,7 @@ std::set<std::string> BtmRedirectContext::AllSitesWithUserActivationOrAuthn()
   std::set<std::string> sites;
 
   if (initial_url_had_interaction_) {
-    sites.insert(GetSiteForBtm(initial_url_.url));
+    sites.insert(GetSiteForBtm(initial_url_));
   }
 
   for (const auto& redirect : redirects_) {
@@ -294,56 +317,11 @@ std::set<std::string> BtmRedirectContext::AllSitesWithUserActivationOrAuthn()
   return sites;
 }
 
-std::map<std::string, std::pair<GURL, bool>>
-BtmRedirectContext::GetRedirectHeuristicURLs(
-    const GURL& first_party_url,
-    base::optional_ref<std::set<std::string>> allowed_sites,
-    bool require_current_interaction) const {
-  std::map<std::string, std::pair<GURL, bool>>
-      sites_to_url_and_current_interaction;
-
-  std::set<std::string> sites_with_current_interaction =
-      AllSitesWithUserActivationOrAuthn();
-
-  const std::string& first_party_site = GetSiteForBtm(first_party_url);
-  for (const auto& redirect : redirects_) {
-    const GURL& url = redirect->redirecting_url.url;
-    const std::string& site = redirect->site;
-
-    // The redirect heuristic does not apply for first-party cookie access.
-    if (site == first_party_site) {
-      continue;
-    }
-
-    // Check the list of allowed sites, if provided.
-    if (allowed_sites.has_value() && !allowed_sites->contains(site)) {
-      continue;
-    }
-
-    // Check for a current interaction, if the flag requires it.
-    if (require_current_interaction &&
-        !sites_with_current_interaction.contains(site)) {
-      continue;
-    }
-
-    // Add the url to the map, but do not override a previous current
-    // interaction.
-    auto& [prev_url, had_current_interaction] =
-        sites_to_url_and_current_interaction[site];
-    if (prev_url.is_empty() || !had_current_interaction) {
-      prev_url = url;
-      had_current_interaction = sites_with_current_interaction.contains(site);
-    }
-  }
-
-  return sites_to_url_and_current_interaction;
-}
-
-base::span<const BtmRedirectInfoPtr>
+base::span<const BtmRedirectPtr>
 BtmRedirectContext::GetServerRedirectsSinceLastPrimaryPageChange() const {
   size_t index = size();
   for (; index > 0; --index) {
-    const BtmRedirectInfo& redirect = *redirects_.at(index - 1);
+    const BtmRedirect& redirect = *redirects_.at(index - 1);
     if (redirect.redirect_type != BtmRedirectType::kServer) {
       break;
     }
@@ -357,41 +335,49 @@ BtmRedirectContext::GetServerRedirectsSinceLastPrimaryPageChange() const {
 
 void BtmRedirectContext::HandleUncommitted(
     BtmNavigationStart navigation_start,
-    std::vector<BtmRedirectInfoPtr> server_redirects) {
+    std::vector<BtmRedirectPtr> server_redirects) {
   // Uncommitted navigations leave the user on the last-committed page; use that
   // for `final_url`.
-  absl::visit(  //
-      base::Overloaded{
-          [&](BtmRedirectInfoPtr client_redirect) {
+  std::visit(
+      absl::Overload{
+          [&](BtmRedirectPtr client_redirect) {
             // The uncommitted navigation began with a client redirect, so its
             // chain is considered an extension of *this*
             // `BtmRedirectContext`'s in-progress chain within the temp
             // `BtmRedirectContext`, whilst leaving *this*
             // `BtmRedirectContext`'s in-progress chain unchanged.
-            BtmRedirectContext temp_context(handler_, issue_handler_,
-                                            initial_url_,
-                                            GetRedirectChainLength());
-            // Copy the URL of `client_redirect` before moving it.
-            UrlAndSourceId final_url = client_redirect->redirecting_url;
+            BtmRedirectContext temp_context(
+                handler_, issue_handler_, are_3pcs_generally_enabled_callback_,
+                initial_url_, initial_source_id_, GetRedirectChainLength());
+            // Copy the URL and source id of `client_redirect` before moving it.
+            GURL final_url = client_redirect->redirector_url;
+            ukm::SourceId final_source_id =
+                client_redirect->redirector_source_id;
             temp_context.AppendClientRedirect(std::move(client_redirect));
             temp_context.AppendServerRedirects(std::move(server_redirects));
-            temp_context.ReportIssue(final_url.url);
-            temp_context.EndChain(std::move(final_url),
+            temp_context.ReportIssue(final_url);
+            temp_context.EndChain(std::move(final_url), final_source_id,
                                   /*current_page_has_interaction=*/false);
           },
-          [&](UrlAndSourceId previous_nav_last_committed_url) {
+          [&](std::pair<GURL, ukm::SourceId>
+                  previous_nav_last_committed_url_and_source_id) {
+            auto& [url, source_id] =
+                previous_nav_last_committed_url_and_source_id;
             // The uncommitted navigation began *without* a client redirect, so
             // a new redirect chain within a new `BtmRedirectContext` and
             // process it immediately (the in-progress chain in *this*
             // `BtmRedirectContext` is irrelevant).
-            BtmRedirectContext temp_context(handler_, issue_handler_,
-                                            previous_nav_last_committed_url,
-                                            /*redirect_prefix_count=*/0);
+            BtmRedirectContext temp_context(
+                handler_, issue_handler_, are_3pcs_generally_enabled_callback_,
+                url, source_id,
+                /*redirect_prefix_count=*/0);
             temp_context.AppendServerRedirects(std::move(server_redirects));
             temp_context.ReportIssue(
-                /*final_url=*/previous_nav_last_committed_url.url);
+                /*final_url=*/url);
             temp_context.EndChain(
-                /*final_url=*/std::move(previous_nav_last_committed_url),
+                /*final_url=*/url,
+                /*final_source_id=*/
+                source_id,
                 /*current_page_has_interaction=*/false);
           },
       },
@@ -400,61 +386,45 @@ void BtmRedirectContext::HandleUncommitted(
 
 void BtmRedirectContext::AppendCommitted(
     BtmNavigationStart navigation_start,
-    std::vector<BtmRedirectInfoPtr> server_redirects,
-    const UrlAndSourceId& final_url,
+    std::vector<BtmRedirectPtr> server_redirects,
+    const GURL& final_url,
+    ukm::SourceId final_source_id,
     bool current_page_has_interaction) {
   // If there was a client-side redirect before
   // `BtmBounceDetector::client_bounce_detection_timer_` timedout, grow the
   // chain. Otherwise, end it.
-  absl::visit(  //
-      base::Overloaded{
-          [this](BtmRedirectInfoPtr client_redirect) {
+  std::visit(  //
+      absl::Overload{
+          [this](BtmRedirectPtr client_redirect) {
             // The committed navigation began with a client redirect, so extend
             // the in-progress redirect chain.
             AppendClientRedirect(std::move(client_redirect));
           },
           [this, current_page_has_interaction](
-              UrlAndSourceId previous_nav_last_committed_url) {
+              std::pair<GURL, ukm::SourceId>
+                  previous_nav_last_committed_url_and_source_id) {
+            auto& [url, source_id] =
+                previous_nav_last_committed_url_and_source_id;
             // The committed navigation began *without* a client redirect, so
             // end the in-progress redirect chain and start a new one.
-            EndChain(previous_nav_last_committed_url,
-                     current_page_has_interaction);
+            EndChain(url, source_id, current_page_has_interaction);
           },
       },
       std::move(navigation_start));
 
   // Server-side redirects always grow the chain.
   AppendServerRedirects(std::move(server_redirects));
-  ReportIssue(final_url.url);
+  ReportIssue(final_url);
 }
 
-void BtmRedirectContext::TrimAndHandleRedirects(size_t trim_count) {
-  DCHECK_GE(redirects_.size(), trim_count);
-
-  // Use an empty final_URL. This processes the redirect as different from the
-  // final URL, which allows recording in the BTM database.
-  auto chain = std::make_unique<BtmRedirectChainInfo>(
-      initial_url_,
-      /*final_url=*/UrlAndSourceId(), GetRedirectChainLength(),
-      /*is_partial_chain=*/true);
-
-  std::vector<BtmRedirectInfoPtr> redirect_subchain;
-  for (size_t ind = 0; ind < trim_count; ind++) {
-    redirect_subchain.push_back(std::move(redirects_.at(ind)));
-  }
-
-  redirects_.erase(redirects_.begin(), redirects_.begin() + trim_count);
-  redirect_prefix_count_ += trim_count;
-
-  handler_.Run(std::move(redirect_subchain), std::move(chain));
-}
-
-void BtmRedirectContext::EndChain(UrlAndSourceId final_url,
+void BtmRedirectContext::EndChain(GURL final_url,
+                                  ukm::SourceId final_source_id,
                                   bool current_page_has_interaction) {
-  if (!initial_url_.url.is_empty()) {
-    auto chain = std::make_unique<BtmRedirectChainInfo>(
-        initial_url_, final_url, GetRedirectChainLength(),
-        /*is_partial_chain=*/false);
+  if (!initial_url_.is_empty()) {
+    auto chain = std::make_unique<BtmRedirectChain>(
+        initial_url_, initial_source_id_, final_url, final_source_id,
+        GetRedirectChainLength(),
+        /*is_partial_chain=*/false, are_3pcs_generally_enabled_callback_.Run());
     handler_.Run(std::move(redirects_), std::move(chain));
   }
 
@@ -464,14 +434,18 @@ void BtmRedirectContext::EndChain(UrlAndSourceId final_url,
 }
 
 namespace {
+// Attempts to attribute a late cookie access `op` to one of the most recent
+// redirects in `redirects` with URL `url`, starting from the most recent
+// redirect. Returns true if the cookie access was attributed to a redirect in
+// `redirects`, and false otherwise.
 bool AddLateCookieAccess(const GURL& url,
                          CookieOperation op,
-                         std::vector<BtmRedirectInfoPtr>& redirects) {
+                         std::vector<BtmRedirectPtr>& redirects) {
   const size_t kMaxLookback = 5;
   const size_t lookback = std::min(kMaxLookback, redirects.size());
   for (size_t i = 1; i <= lookback; i++) {
     const size_t offset = redirects.size() - i;
-    if (redirects[offset]->redirecting_url.url == url) {
+    if (redirects[offset]->redirector_url == url) {
       redirects[offset]->access_type |= ToBtmDataAccessType(op);
 
       // This cookie access might indicate a stateful bounce and ideally we'd
@@ -536,36 +510,37 @@ void BtmWebContentsObserver::RecordEvent(BtmRecordedEvent event,
                                          const GURL& url,
                                          const base::Time& time) {
   switch (event) {
-    case BtmRecordedEvent::kStorage: {
-      btm_service_->storage()
-          ->AsyncCall(&BtmStorage::RecordStorage)
-          .WithArgs(url, time, btm_service_->GetCookieMode());
-      return;
-    }
     case BtmRecordedEvent::kUserActivation: {
       btm_service_->storage()
           ->AsyncCall(&BtmStorage::RecordUserActivation)
-          .WithArgs(url, time, btm_service_->GetCookieMode());
+          .WithArgs(url, time);
       return;
     }
     case BtmRecordedEvent::kWebAuthnAssertion: {
       btm_service_->storage()
           ->AsyncCall(&BtmStorage::RecordWebAuthnAssertion)
-          .WithArgs(url, time, btm_service_->GetCookieMode());
+          .WithArgs(url, time);
       return;
     }
   }
 }
 
-UrlAndSourceId RedirectChainDetector::GetLastCommittedURL() const {
+bool RedirectChainDetector::Are3PcsGenerallyEnabled() const {
+  return btm::Are3PcsGenerallyEnabled(web_contents()->GetBrowserContext(),
+                                      web_contents());
+}
+
+GURL RedirectChainDetector::GetLastCommittedURL() const {
   // We can't use RenderFrameHost::GetLastCommittedURL() because that returns an
   // empty URL while the tab is closing (i.e. within
   // WebContentsObserver::WebContentsDestroyed)
-  return UrlAndSourceId(
-      WebContentsObserver::web_contents()->GetLastCommittedURL(),
-      WebContentsObserver::web_contents()
-          ->GetPrimaryMainFrame()
-          ->GetPageUkmSourceId());
+  return web_contents()->GetLastCommittedURL();
+}
+
+ukm::SourceId RedirectChainDetector::GetLastCommittedSourceId() const {
+  return WebContentsObserver::web_contents()
+      ->GetPrimaryMainFrame()
+      ->GetPageUkmSourceId();
 }
 
 namespace btm {
@@ -573,50 +548,68 @@ void Populate3PcExceptions(BrowserContext* browser_context,
                            WebContents* web_contents,
                            const GURL& initial_url,
                            const GURL& final_url,
-                           base::span<BtmRedirectInfoPtr> redirects) {
+                           base::span<BtmRedirectPtr> redirects) {
+  // For non-HTTP(S) URLs, we create a StorageKey with an empty URL. This
+  // prevents IsFullCookieAccessAllowed() from returning true because the
+  // initial or final URL has a non-HTTP(S) scheme. This is the desired behavior
+  // because we don't want to grant exceptions to a redirect because the initial
+  // or final URL of the redirect chain was non-HTTP(S).
   const blink::StorageKey initial_url_key =
-      blink::StorageKey::CreateFirstParty(url::Origin::Create(initial_url));
+      blink::StorageKey::CreateFirstParty(url::Origin::Create(
+          initial_url.SchemeIsHTTPOrHTTPS() ? initial_url : GURL()));
   const blink::StorageKey final_url_key =
-      blink::StorageKey::CreateFirstParty(url::Origin::Create(final_url));
+      blink::StorageKey::CreateFirstParty(url::Origin::Create(
+          final_url.SchemeIsHTTPOrHTTPS() ? final_url : GURL()));
+  net::CookieSettingOverrides overrides({
+      net::CookieSettingOverride::kStorageAccessGrantEligible,
+      net::CookieSettingOverride::kTopLevelStorageAccessGrantEligible,
+  });
+
   ContentBrowserClient* browser_client = GetContentClient()->browser();
-  for (BtmRedirectInfoPtr& redirect : redirects) {
+  for (BtmRedirectPtr& redirect : redirects) {
     redirect->has_3pc_exception =
         browser_client->IsFullCookieAccessAllowed(browser_context, web_contents,
-                                                  redirect->redirecting_url.url,
-                                                  initial_url_key) ||
+                                                  redirect->redirector_url,
+                                                  initial_url_key, overrides) ||
         browser_client->IsFullCookieAccessAllowed(browser_context, web_contents,
-                                                  redirect->redirecting_url.url,
-                                                  final_url_key);
+                                                  redirect->redirector_url,
+                                                  final_url_key, overrides);
   }
+}
+
+bool Are3PcsGenerallyEnabled(BrowserContext* browser_context,
+                             WebContents* web_contents) {
+  return GetContentClient()->browser()->AreThirdPartyCookiesGenerallyAllowed(
+      browser_context, web_contents);
 }
 }  // namespace btm
 
 void RedirectChainDetector::HandleRedirectChain(
-    std::vector<BtmRedirectInfoPtr> redirects,
-    BtmRedirectChainInfoPtr chain) {
+    std::vector<BtmRedirectPtr> redirects,
+    BtmRedirectChainPtr chain) {
   // We have to set `has_3pc_exception` on each redirect before passing them to
   // the BtmService, because calculating it depends on the WebContents.
   btm::Populate3PcExceptions(web_contents()->GetBrowserContext(),
-                             web_contents(), chain->initial_url.url,
-                             chain->final_url.url, redirects);
+                             web_contents(), chain->initial_url,
+                             chain->final_url, redirects);
   delayed_handler_.HandleRedirectChain(std::move(redirects), std::move(chain));
 }
 
 void RedirectChainDetector::NotifyOnRedirectChainEnded(
-    std::vector<BtmRedirectInfoPtr> redirects,
-    BtmRedirectChainInfoPtr chain) {
+    std::vector<BtmRedirectPtr> redirects,
+    BtmRedirectChainPtr chain) {
   for (auto& observer : observers_) {
     observer.OnRedirectChainEnded(redirects, *chain);
   }
 }
 
 void BtmWebContentsObserver::OnRedirectChainEnded(
-    const std::vector<BtmRedirectInfoPtr>& redirects,
-    const BtmRedirectChainInfo& chain) {
+    const std::vector<BtmRedirectPtr>& redirects,
+    const BtmRedirectChain& chain) {
   // We need to pass in a WeakPtr to BtmWebContentsObserver as it's not
   // guaranteed to outlive the call.
   btm_service_->HandleRedirectChain(
-      CloneRedirects(redirects), std::make_unique<BtmRedirectChainInfo>(chain),
+      CloneRedirects(redirects), std::make_unique<BtmRedirectChain>(chain),
       base::BindRepeating(&BtmWebContentsObserver::OnStatefulBounce,
                           weak_factory_.GetWeakPtr()));
 }
@@ -710,10 +703,11 @@ void BtmBounceDetector::DidStartNavigation(
   if (navigation_handle->HasUserGesture() || timedout ||
       !client_detection_state_.has_value()) {
     server_bounce_detection_state->navigation_start =
-        delegate_->GetLastCommittedURL().url.is_empty()
-            ? UrlAndSourceId(navigation_handle->GetInitiator(),
+        delegate_->GetLastCommittedURL().is_empty()
+            ? std::make_pair(navigation_handle->GetInitiator(),
                              ukm::kInvalidSourceId)
-            : delegate_->GetLastCommittedURL();
+            : std::make_pair(delegate_->GetLastCommittedURL(),
+                             delegate_->GetLastCommittedSourceId());
     return;
   }
 
@@ -730,8 +724,9 @@ void BtmBounceDetector::DidStartNavigation(
   // immediately, because we don't know if the navigation will commit. We must
   // wait until DidFinishNavigation() is triggered.
   server_bounce_detection_state->navigation_start =
-      BtmRedirectInfo::CreateForClient(
-          /*url=*/delegate_->GetLastCommittedURL(),
+      BtmRedirect::CreateForClient(
+          /*redirector_url=*/delegate_->GetLastCommittedURL(),
+          /*redirector_source_id=*/delegate_->GetLastCommittedSourceId(),
           /*access_type=*/client_detection_state_->site_data_access_type,
           /*time=*/clock_->Now(),
           /*client_bounce_delay=*/client_bounce_delay,
@@ -794,9 +789,9 @@ void RedirectChainDetector::PrimaryPageChanged(Page& page) {
 
 namespace btm {
 
-bool IsOrWasInPrimaryPage(RenderFrameHost* render_frame_host) {
+bool IsOrWasInPrimaryPage(RenderFrameHost& render_frame_host) {
   return IsInPrimaryPage(render_frame_host) ||
-         PrimaryPageMarker::GetForPage(render_frame_host->GetPage());
+         PrimaryPageMarker::GetForPage(render_frame_host.GetPage());
 }
 
 }  // namespace btm
@@ -808,7 +803,7 @@ void RedirectChainDetector::OnCookiesAccessed(
   // - From other page types like FencedFrames and Prerendered.
   // - Blocked by policies.
   if (details.blocked_by_policy ||
-      !btm::IsOrWasInPrimaryPage(render_frame_host)) {
+      !btm::IsOrWasInPrimaryPage(*render_frame_host)) {
     return;
   }
 
@@ -825,31 +820,13 @@ void RedirectChainDetector::OnCookiesAccessed(
 
   // Otherwise, attribute the client cookie access to the first party site of
   // the RFH.
-  const std::optional<GURL> fpu = GetFirstPartyURL(render_frame_host);
-  if (!fpu.has_value()) {
-    return;
-  }
+  const GURL& fpu = GetFirstPartyURL(*render_frame_host);
   if (!HasCHIPS(details.cookie_access_result_list) &&
-      !IsSameSiteForBtm(fpu.value(), details.url)) {
+      !IsSameSiteForBtm(fpu, details.url)) {
     return;
   }
 
-  detector_.OnClientSiteDataAccessed(fpu.value(), details.type);
-}
-
-void BtmWebContentsObserver::OnSiteStorageAccessed(const GURL& first_party_url,
-                                                   CookieOperation op,
-                                                   bool http_cookie) {
-  base::Time now = clock_->Now();
-
-  if (!http_cookie) {
-    // Throttle client-side storage timestamp updates.
-    if (!UpdateTimestamp(last_storage_timestamp_, now)) {
-      return;
-    }
-  }
-
-  RecordEvent(BtmRecordedEvent::kStorage, first_party_url, now);
+  detector_.OnClientSiteDataAccessed(fpu, details.type);
 }
 
 void RedirectChainDetector::OnCookiesAccessed(
@@ -858,24 +835,21 @@ void RedirectChainDetector::OnCookiesAccessed(
   // Discard all notifications that are:
   // - From other page types like FencedFrames and Prerendered.
   // - Blocked by policies.
-  if (!IsInPrimaryPage(navigation_handle) || details.blocked_by_policy) {
+  if (!IsInPrimaryPage(*navigation_handle) || details.blocked_by_policy) {
     return;
   }
 
   // All accesses within the primary page iframes are attributed to the URL of
   // the main frame (ie the first party URL).
-  if (IsInPrimaryPageIFrame(navigation_handle)) {
-    const std::optional<GURL> fpu = GetFirstPartyURL(navigation_handle);
-    if (!fpu.has_value()) {
-      return;
-    }
+  if (IsInPrimaryPageIFrame(*navigation_handle)) {
+    const GURL& fpu = GetFirstPartyURL(*navigation_handle);
 
     if (!HasCHIPS(details.cookie_access_result_list) &&
-        !IsSameSiteForBtm(fpu.value(), details.url)) {
+        !IsSameSiteForBtm(fpu, details.url)) {
       return;
     }
 
-    detector_.OnClientSiteDataAccessed(fpu.value(), details.type);
+    detector_.OnClientSiteDataAccessed(fpu, details.type);
     return;
   }
 
@@ -897,109 +871,17 @@ void BtmBounceDetector::OnClientSiteDataAccessed(const GURL& url,
       client_detection_state_->last_storage_time = now;
     }
   }
-
-  if (op == CookieOperation::kChange) {
-    delegate_->OnSiteStorageAccessed(url, op, /*http_cookie=*/false);
-  }
 }
 
 void BtmBounceDetector::OnServerCookiesAccessed(
     BtmNavigationHandle* navigation_handle,
     const GURL& url,
     CookieOperation op) {
-  if (op == CookieOperation::kChange) {
-    delegate_->OnSiteStorageAccessed(url, op, /*http_cookie=*/true);
-  }
-
   if (navigation_handle) {
     ServerBounceDetectionState* state = navigation_handle->GetServerState();
     if (state) {
       state->filter.AddAccess(url, op);
     }
-  }
-}
-
-void RedirectChainDetector::OnSiteStorageAccessed(const GURL& first_party_url,
-                                                  CookieOperation op,
-                                                  bool http_cookie) {
-  for (auto& observer : observers_) {
-    observer.OnSiteStorageAccessed(first_party_url, op, http_cookie);
-  }
-}
-
-void BtmWebContentsObserver::OnServiceWorkerAccessed(
-    RenderFrameHost* render_frame_host,
-    const GURL& scope,
-    AllowServiceWorkerResult allowed) {
-  if (!IsInPrimaryPage(render_frame_host) || !allowed) {
-    return;
-  }
-
-  const std::optional<GURL> fpu = GetFirstPartyURL(render_frame_host);
-  if (fpu.has_value()) {
-    // TODO: crbug.com/324585403 - This is not observed by RedirectChainDetector
-    // and so doesn't influence whether a bounce is stateful or not. Should it?
-    RecordEvent(BtmRecordedEvent::kStorage, fpu.value(), clock_->Now());
-  }
-}
-
-void BtmWebContentsObserver::OnServiceWorkerAccessed(
-    NavigationHandle* navigation_handle,
-    const GURL& scope,
-    AllowServiceWorkerResult allowed) {
-  if (!IsInPrimaryPage(navigation_handle) || !allowed) {
-    return;
-  }
-
-  const std::optional<GURL> fpu = GetFirstPartyURL(navigation_handle);
-  if (!fpu.has_value()) {
-    return;
-  }
-
-  // TODO: crbug.com/324585403 - This is not observed by RedirectChainDetector
-  // and so doesn't influence whether a bounce is stateful or not. Should it?
-  RecordEvent(BtmRecordedEvent::kStorage, fpu.value(), clock_->Now());
-}
-
-void BtmWebContentsObserver::OnClientAdded(
-    const blink::SharedWorkerToken& token,
-    GlobalRenderFrameHostId render_frame_host_id) {
-  RenderFrameHost* render_frame_host =
-      RenderFrameHost::FromID(render_frame_host_id);
-
-  if (!IsInPrimaryPage(render_frame_host)) {
-    return;
-  }
-
-  const std::optional<GURL> fpu = GetFirstPartyURL(render_frame_host);
-  if (fpu.has_value()) {
-    // TODO: crbug.com/324585403 - This is not observed by RedirectChainDetector
-    // and so doesn't influence whether a bounce is stateful or not. Should it?
-    RecordEvent(BtmRecordedEvent::kStorage, fpu.value(), clock_->Now());
-  }
-}
-
-void BtmWebContentsObserver::OnWorkerCreated(
-    const blink::DedicatedWorkerToken& worker_token,
-    int worker_process_id,
-    const url::Origin& security_origin,
-    DedicatedWorkerCreator creator) {
-  const GlobalRenderFrameHostId* const render_frame_host_id =
-      absl::get_if<GlobalRenderFrameHostId>(&creator);
-  if (!render_frame_host_id) {
-    return;
-  }
-
-  RenderFrameHost* render_frame_host =
-      RenderFrameHost::FromID(*render_frame_host_id);
-
-  if (!IsInPrimaryPage(render_frame_host)) {
-    return;
-  }
-
-  const std::optional<GURL> fpu = GetFirstPartyURL(render_frame_host);
-  if (fpu.has_value()) {
-    RecordEvent(BtmRecordedEvent::kStorage, fpu.value(), clock_->Now());
   }
 }
 
@@ -1068,8 +950,8 @@ void BtmBounceDetector::DidFinishNavigation(
     return;
   }
 
-  if (BtmRedirectInfoPtr* client_redirect =
-          absl::get_if<BtmRedirectInfoPtr>(&server_state->navigation_start)) {
+  if (BtmRedirectPtr* client_redirect =
+          std::get_if<BtmRedirectPtr>(&server_state->navigation_start)) {
     if (prev_page_access_type.has_value()) {
       // In case there were any late storage notifications, update the client
       // redirect info.
@@ -1077,10 +959,19 @@ void BtmBounceDetector::DidFinishNavigation(
     }
   }
 
-  std::vector<BtmRedirectInfoPtr> redirects;
+  std::vector<BtmRedirectPtr> redirects;
   std::vector<BtmDataAccessType> access_types;
-  server_state->filter.Filter(navigation_handle->GetRedirectChain(),
-                              &access_types);
+
+  // Cookie accesses can race each other causing order of navigations to not
+  // match the order of cookie accesses. When this happens Filter() will return
+  // false and assume all kUnknown accesses.
+  //
+  // TODO: crbug.com/407710083 - `CHECK` the result of `filter_.Filter` once
+  // the race is fixed.
+  const bool were_all_accesses_matched = server_state->filter.Filter(
+      navigation_handle->GetRedirectChain(), access_types);
+  base::UmaHistogramBoolean("Privacy.DIPS.BtmBounceDetector.AllAccessesMatched",
+                            were_all_accesses_matched);
 
   // The length of the redirect chain should be equal to the number of server
   // redirects observed by the `DidRedirectNavigation` handler (plus one
@@ -1093,7 +984,7 @@ void BtmBounceDetector::DidFinishNavigation(
   CHECK_GT(access_types.size(), server_state->server_redirects.size());
   // Use the length difference between the redirect chain and number of server
   // redirects to calculate an offset. When creating instances of
-  // `BtmRedirectInfo`, we avoid earlier entries within the redirect chain.
+  // `BtmRedirect`, we avoid earlier entries within the redirect chain.
   size_t offset =
       access_types.size() - (server_state->server_redirects.size() + 1);
   for (size_t i = 0; i < server_state->server_redirects.size(); i++) {
@@ -1104,10 +995,10 @@ void BtmBounceDetector::DidFinishNavigation(
     //
     // TODO(crbug.com/371802472): Add back the checks removed during
     // crrev.com/c/5912983 after investigating why the checks fail on Windows.
-    redirects.push_back(BtmRedirectInfo::CreateForServer(
-        /*url=*/UrlAndSourceId(
-            navigation_handle->GetRedirectChain()[i + offset],
-            navigation_handle->GetRedirectSourceId(i + offset)),
+    redirects.push_back(BtmRedirect::CreateForServer(
+        /*redirector_url=*/navigation_handle->GetRedirectChain()[i + offset],
+        /*redirector_source_id=*/
+        navigation_handle->GetRedirectSourceId(i + offset),
         /*access_type=*/access_types[i + offset],
         /*time=*/clock_->Now(),
         /*was_response_cached=*/
@@ -1120,17 +1011,18 @@ void BtmBounceDetector::DidFinishNavigation(
   if (navigation_handle->HasCommitted()) {
     committed_redirect_context_.AppendCommitted(
         std::move(server_state->navigation_start), std::move(redirects),
-        UrlAndSourceId(navigation_handle->GetURL(),
-                       navigation_handle->GetNextPageUkmSourceId()),
+        navigation_handle->GetURL(),
+        navigation_handle->GetNextPageUkmSourceId(),
         current_page_has_interaction);
   } else {
     // For uncommitted navigations, treat the last URL visited as a server
     // redirect, so it is considered a potential tracker.
     const size_t i = access_types.size() - 1;
     const GURL& last_url = navigation_handle->GetRedirectChain()[i];
-    redirects.push_back(BtmRedirectInfo::CreateForServer(
-        /*url=*/UrlAndSourceId(
-            last_url, navigation_handle->MakeRedirectSourceId(last_url)),
+    redirects.push_back(BtmRedirect::CreateForServer(
+        /*redirector_url=*/last_url,
+        /*redirector_source_id=*/
+        navigation_handle->MakeRedirectSourceId(last_url),
         /*access_type=*/access_types[i],
         /*time=*/clock_->Now(),
         /*was_response_cached=*/navigation_handle->WasResponseCached(),
@@ -1161,7 +1053,7 @@ void RedirectChainDetector::FrameReceivedUserActivation(
 }
 
 void BtmBounceDetector::OnUserActivation() {
-  GURL url = delegate_->GetLastCommittedURL().url;
+  GURL url = delegate_->GetLastCommittedURL();
   if (!url.SchemeIsHTTPOrHTTPS()) {
     return;
   }
@@ -1202,6 +1094,8 @@ void BtmBounceDetector::WebAuthnAssertionRequestSucceeded() {
 void RedirectChainDetector::WebAuthnAssertionRequestSucceeded(
     RenderFrameHost* render_frame_host) {
   if (!render_frame_host->IsInPrimaryMainFrame()) {
+    // TODO: crbug.com/448047352 - Investigate (and handle, if applicable) late
+    //   WAA notifications.
     return;
   }
 
@@ -1231,8 +1125,10 @@ void RedirectChainDetector::WebContentsDestroyed() {
 }
 
 void BtmBounceDetector::BeforeDestruction() {
-  committed_redirect_context_.EndChain(delegate_->GetLastCommittedURL(),
-                                       /*current_page_has_interaction=*/false);
+  committed_redirect_context_.EndChain(
+      delegate_->GetLastCommittedURL(),
+      /*final_source_id=*/delegate_->GetLastCommittedSourceId(),
+      /*current_page_has_interaction=*/false);
 }
 
 void BtmBounceDetector::OnClientBounceDetectionTimeout() {
@@ -1242,6 +1138,7 @@ void BtmBounceDetector::OnClientBounceDetectionTimeout() {
        client_detection_state_->last_successful_web_authn_assertion_time
            .has_value());
   committed_redirect_context_.EndChain(delegate_->GetLastCommittedURL(),
+                                       delegate_->GetLastCommittedSourceId(),
                                        current_page_has_interaction);
 }
 
@@ -1281,8 +1178,8 @@ DelayedChainHandler::DelayedChainHandler(BtmRedirectChainHandler handler)
 DelayedChainHandler::~DelayedChainHandler() = default;
 
 void DelayedChainHandler::HandleRedirectChain(
-    std::vector<BtmRedirectInfoPtr> redirects,
-    BtmRedirectChainInfoPtr chain) {
+    std::vector<BtmRedirectPtr> redirects,
+    BtmRedirectChainPtr chain) {
   HandlePreviousChainNow();
 
   prev_chain_pair_ = std::make_pair(std::move(redirects), std::move(chain));

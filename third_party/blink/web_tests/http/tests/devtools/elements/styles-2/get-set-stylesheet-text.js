@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
-import {ElementsTestRunner} from 'elements_test_runner';
-
 import * as SDK from 'devtools/core/sdk/sdk.js';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
+import {ElementsTestRunner} from 'elements_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(`Tests that WebInspector.CSSStyleSheet methods work as expected.\n`);
@@ -33,7 +33,7 @@ import * as SDK from 'devtools/core/sdk/sdk.js';
       const styleSheetHeader = styleSheetHeaders[i];
       if (styleSheetHeader.sourceURL.indexOf('get-set-stylesheet-text.css') >= 0) {
         foundStyleSheetHeader = styleSheetHeader;
-        foundStyleSheetHeader.requestContent().then(callback);
+        foundStyleSheetHeader.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(callback);
       }
       if (!foundStyleSheetHeader)
         TestRunner.cssModel.addEventListener(SDK.CSSModel.Events.StyleSheetAdded, styleSheetAdded);

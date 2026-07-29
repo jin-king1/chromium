@@ -17,6 +17,7 @@
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/http/http_status_code.h"
+#include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
@@ -39,9 +40,7 @@ class TestURLLoaderFactory : public mojom::URLLoaderFactory {
       FollowRedirectParams(FollowRedirectParams&& other);
       FollowRedirectParams& operator=(FollowRedirectParams&& other);
 
-      std::vector<std::string> removed_headers;
-      net::HttpRequestHeaders modified_headers;
-      net::HttpRequestHeaders modified_cors_exempt_headers;
+      network::HttpRequestHeadersUpdateParams headers_update_params;
       std::optional<GURL> new_url;
     };
 
@@ -54,9 +53,7 @@ class TestURLLoaderFactory : public mojom::URLLoaderFactory {
 
     // network::mojom::URLLoader overrides.
     void FollowRedirect(
-        const std::vector<std::string>& removed_headers,
-        const net::HttpRequestHeaders& modified_headers,
-        const net::HttpRequestHeaders& modified_cors_exempt_headers,
+        network::HttpRequestHeadersUpdateParams headers_update_params,
         const std::optional<GURL>& new_url) override;
     void SetPriority(net::RequestPriority priority,
                      int32_t intra_priority_value) override {}
@@ -159,7 +156,8 @@ class TestURLLoaderFactory : public mojom::URLLoaderFactory {
 
   // Waits until there's a PendingRequest for `url`. Note that PendingRequests
   // will not be made for requests handled by a previous AddResponse() call.
-  void WaitForRequest(const GURL& url);
+  void WaitForRequest(const GURL& url,
+                      ResponseMatchFlags flags = kMatchDefault);
 
   // Sends a response for the first (oldest) pending request with URL |url|.
   // Returns false if no such pending request exists.

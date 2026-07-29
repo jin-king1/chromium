@@ -31,7 +31,6 @@ static_library("device") {
     "//chrome/browser/ui/webui/ash/settings/pages/power",
     "//chrome/browser/ui/webui/ash/settings/pages/printing",
     "//chrome/browser/ui/webui/settings",
-    "//chromeos/crosapi/mojom",
     "//components/prefs",
     "//mojo/public/cpp/bindings",
     "//ui/base/ime/ash",
@@ -48,13 +47,15 @@ static_library("device") {
     "//chrome/browser/ash/arc",
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/ash/drive",
-    "//chrome/browser/ash/login/demo_mode",
     "//chrome/browser/ash/note_taking",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_manager",
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/browser/ui/webui/ash/settings/search",
     "//chrome/common",
     "//chrome/common:chrome_features",
+    "//chromeos/ash/components/demo_mode",
+    "//chromeos/ash/experiences/arc:arc_app_constants",
     "//chromeos/components/magic_boost/public/cpp",
     "//chromeos/constants",
     "//chromeos/strings",
@@ -82,7 +83,6 @@ source_set("unit_tests") {
   sources = [
     "device_keyboard_handler_unittest.cc",
     "device_section_unittest.cc",
-    "inputs_section_unittest.cc",
   ]
 
   deps = [

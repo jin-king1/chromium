@@ -2,19 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 // Fuzzer for content/renderer
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+
 #include <memory>
 #include <random>
 
+#include "base/compiler_specific.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
@@ -59,7 +56,7 @@ static size_t MutateString(std::string* str, size_t maxLen) {
   static std::vector<uint8_t> v;
   v.resize(maxLen);
   size_t inLen = std::min(maxLen, str->length());
-  memcpy(v.data(), str->data(), inLen);
+  UNSAFE_TODO(memcpy(v.data(), str->data(), inLen));
   size_t len =
       LLVMFuzzerMutate(reinterpret_cast<uint8_t*>(v.data()), inLen, maxLen);
   if (!len)
@@ -96,7 +93,7 @@ class Node {
   Node() {}
 
   virtual base::Value ToJson() = 0;
-  virtual void ParseJson(const base::Value::Dict& dict) = 0;
+  virtual void ParseJson(const base::DictValue& dict) = 0;
   virtual void WriteHtml(std::string* out) = 0;
 
  private:
@@ -122,7 +119,8 @@ class NodeList : public std::vector<std::unique_ptr<Node>> {
     auto nodes = std::make_unique<NodeList>();
 
     std::optional<base::Value> value(base::JSONReader::Read(
-        std::string(reinterpret_cast<const char*>(data), size)));
+        std::string(reinterpret_cast<const char*>(data), size),
+        base::JSON_PARSE_CHROMIUM_EXTENSIONS));
     if (value && value->is_list())
       nodes->ParseJsonList(value->GetList());
 
@@ -130,7 +128,7 @@ class NodeList : public std::vector<std::unique_ptr<Node>> {
   }
 
   base::Value ToJson() const {
-    base::Value::List result;
+    base::ListValue result;
     for (const auto& node : *this) {
       result.Append(node->ToJson());
     }
@@ -158,7 +156,7 @@ class NodeList : public std::vector<std::unique_ptr<Node>> {
 
   AttrPosition PickRandomAttribute(Random* rnd);
 
-  void ParseJsonList(const base::Value::List& list) {
+  void ParseJsonList(const base::ListValue& list) {
     for (const auto& item : list) {
       std::unique_ptr<Node> node(Node::FromValue(item));
       if (node) {
@@ -233,13 +231,13 @@ class Element : public Node {
   }
 
   base::Value ToJson() override {
-    base::Value::Dict dict;
+    base::DictValue dict;
 
     dict.Set("e", tag_name_);
     if (!children_.empty())
       dict.Set("c", children_.ToJson());
     if (!attrs_.empty()) {
-      base::Value::Dict attrs_dict;
+      base::DictValue attrs_dict;
       for (const auto& pair : attrs_) {
         attrs_dict.Set(pair.first, pair.second);
       }
@@ -250,7 +248,7 @@ class Element : public Node {
   }
 
  protected:
-  void ParseJson(const base::Value::Dict& dict) override {
+  void ParseJson(const base::DictValue& dict) override {
     const base::Value* e_value = dict.Find("e");
     CHECK(e_value);
     const std::string* e_str = e_value->GetIfString();
@@ -258,11 +256,11 @@ class Element : public Node {
       tag_name_ = *e_str;
     }
 
-    const base::Value::List* c_list = dict.FindList("c");
+    const base::ListValue* c_list = dict.FindList("c");
     if (c_list)
       children_.ParseJsonList(*c_list);
 
-    const base::Value::Dict* a_dict = dict.FindDict("a");
+    const base::DictValue* a_dict = dict.FindDict("a");
     if (a_dict) {
       for (const auto item : *a_dict) {
         if (item.second.is_string())
@@ -301,12 +299,12 @@ class Text : public Node {
   void WriteHtml(std::string* out) override { *out += text_; }
 
   base::Value ToJson() override {
-    base::Value::Dict result;
+    base::DictValue result;
     result.Set("t", text_);
     return base::Value(std::move(result));
   }
 
-  void ParseJson(const base::Value::Dict& dict) override {
+  void ParseJson(const base::DictValue& dict) override {
     const base::Value* t_value = dict.Find("t");
     CHECK(t_value);
     const std::string* t_str = t_value->GetIfString();
@@ -383,7 +381,7 @@ std::unique_ptr<Node> Node::FromValue(const base::Value& value) {
     return nullptr;
   }
 
-  const base::Value::Dict& dict = value.GetDict();
+  const base::DictValue& dict = value.GetDict();
   std::unique_ptr<Node> node;
   if (dict.Find("t")) {
     node.reset(new Text());
@@ -560,7 +558,7 @@ extern "C" size_t LLVMFuzzerCustomMutator(uint8_t* data,
     return 0;
   }
 
-  memcpy(data, result.data(), result.size());
+  UNSAFE_TODO(memcpy(data, result.data(), result.size()));
   return result.size();
 }
 

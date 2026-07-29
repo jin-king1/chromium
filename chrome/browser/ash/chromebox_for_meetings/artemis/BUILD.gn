@@ -3,13 +3,14 @@
 # found in the LICENSE file.
 
 import("//build/config/chromebox_for_meetings/buildflags.gni")
-import("//build/config/chromeos/ui_mode.gni")
 
 assert(is_chromeos)
 assert(is_cfm)
 
 static_library("artemis") {
   sources = [
+    "artemis_features.cc",
+    "artemis_features.h",
     "command_source.cc",
     "command_source.h",
     "data_aggregator_service.cc",
@@ -36,7 +37,7 @@ static_library("artemis") {
     "//chromeos/services/chromebox_for_meetings/public/proto",
     "//components/feedback/redaction_tool",
     "//mojo/public/cpp/bindings",
-    "//net:net",
+    "//net",
     "//third_party/re2",
   ]
 
@@ -49,10 +50,6 @@ source_set("unit_tests") {
   sources = [
     "local_data_source_unittest.cc",
     "log_source_unittest.cc",
-    "test_data_aggregator_service.cc",
-    "test_data_aggregator_service.h",
-    "test_watchdog.cc",
-    "test_watchdog.h",
   ]
 
   deps = [

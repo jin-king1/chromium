@@ -11,11 +11,13 @@ import android.widget.Button;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.MainThread;
-import androidx.annotation.Nullable;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.components.browser_ui.widget.FadingEdgeScrollView;
 import org.chromium.components.browser_ui.widget.RadioButtonLayout;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -28,6 +30,7 @@ import org.chromium.ui.modelutil.PropertyModel;
  * A dialog that forces the user to choose a default search engine. It can't be dismissed by back
  * press.
  */
+@NullMarked
 public class DefaultSearchEngineDialogCoordinator {
     private final ModalDialogManager mDialogManager;
     private final DefaultSearchEngineDialogHelper.Delegate mDelegate;
@@ -49,6 +52,9 @@ public class DefaultSearchEngineDialogCoordinator {
         View contentView =
                 LayoutInflater.from(activity)
                         .inflate(R.layout.default_search_engine_dialog_view, /* root= */ null);
+        FadingEdgeScrollView scrollView =
+                contentView.findViewById(R.id.search_engine_dialog_scroll_view);
+        scrollView.disableScrollbarOnTablet();
         Controller controller =
                 new Controller() {
                     @Override

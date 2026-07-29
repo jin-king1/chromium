@@ -14,6 +14,7 @@
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/inactive_tabs/inactive_tabs_constants.h"
 #import "ios/chrome/browser/tabs/model/inactive_tabs/features.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_configuration.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_view_controller.h"
@@ -69,8 +70,7 @@ UIImage* ConfirmationAlertImage() {
 
     // Draw the icon.
     [UIColor.whiteColor setFill];
-    UIImage* icon =
-        DefaultSymbolTemplateWithPointSize(kSquareOnSquareDashedSymbol, 0);
+    UIImage* icon = SymbolTemplateWithPointSize(SymbolSquareOnSquareDashed, 0);
     if (icon.size.width > icon.size.height) {
       CGFloat ratio = icon.size.height / icon.size.width;
       CGFloat drawingWidth = kTileSize - 2 * kIconPadding;
@@ -102,9 +102,16 @@ UIImage* ConfirmationAlertImage() {
 - (void)start {
   [super start];
 
-  PrefService* prefs = self.browser->GetProfile()->GetPrefs();
+  PrefService* prefs = self.profile->GetPrefs();
 
-  _confirmationAlert = [[ConfirmationAlertViewController alloc] init];
+  ButtonStackConfiguration* configuration =
+      [[ButtonStackConfiguration alloc] init];
+  configuration.primaryActionString =
+      l10n_util::GetNSString(IDS_IOS_INACTIVE_TABS_USER_EDU_DONE);
+  configuration.secondaryActionString =
+      l10n_util::GetNSString(IDS_IOS_INACTIVE_TABS_USER_EDU_GO_TO_SETTINGS);
+  _confirmationAlert = [[ConfirmationAlertViewController alloc]
+      initWithConfiguration:configuration];
   _confirmationAlert.titleString = base::SysUTF16ToNSString(
       base::i18n::MessageFormatter::FormatWithNumberedArgs(
           l10n_util::GetStringUTF16(IDS_IOS_INACTIVE_TABS_USER_EDU_TITLE),
@@ -112,18 +119,12 @@ UIImage* ConfirmationAlertImage() {
   _confirmationAlert.titleTextStyle = UIFontTextStyleTitle2;
   _confirmationAlert.subtitleString =
       l10n_util::GetNSString(IDS_IOS_INACTIVE_TABS_USER_EDU_SUBTITLE);
-  _confirmationAlert.primaryActionString =
-      l10n_util::GetNSString(IDS_IOS_INACTIVE_TABS_USER_EDU_DONE);
-  _confirmationAlert.secondaryActionString =
-      l10n_util::GetNSString(IDS_IOS_INACTIVE_TABS_USER_EDU_GO_TO_SETTINGS);
   _confirmationAlert.image = ConfirmationAlertImage();
   _confirmationAlert.imageHasFixedSize = YES;
-  _confirmationAlert.customSpacingBeforeImageIfNoNavigationBar =
-      kImageTopSpacing;
+  _confirmationAlert.customSpacingBeforeImage = kImageTopSpacing;
   _confirmationAlert.customSpacingAfterImage = kImageBottomSpacing;
   _confirmationAlert.customSpacing = kSpacing;
   _confirmationAlert.topAlignedLayout = YES;
-  _confirmationAlert.showDismissBarButton = NO;
   _confirmationAlert.actionHandler = self;
   _confirmationAlert.presentationController.delegate = self;
   _confirmationAlert.modalPresentationStyle = UIModalPresentationPageSheet;
@@ -131,8 +132,8 @@ UIImage* ConfirmationAlertImage() {
       _confirmationAlert.sheetPresentationController;
   presentationController.prefersEdgeAttachedInCompactHeight = YES;
   presentationController.detents = @[
-    UISheetPresentationControllerDetent.mediumDetent,
-    UISheetPresentationControllerDetent.largeDetent
+    [UISheetPresentationControllerDetent mediumDetent],
+    [UISheetPresentationControllerDetent largeDetent]
   ];
   presentationController.preferredCornerRadius = 20;
   _confirmationAlert.view.accessibilityIdentifier =

@@ -11,9 +11,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_multi_source_observation.h"
 #include "chrome/browser/task_manager/providers/task_provider.h"
-#include "content/public/browser/child_process_id.h"
 #include "content/public/browser/render_process_host_creation_observer.h"
 #include "content/public/browser/render_process_host_observer.h"
+#include "content/public/common/child_process_id.h"
 
 namespace task_manager {
 
@@ -37,7 +37,7 @@ class RenderProcessHostTaskProvider
   Task* GetTaskOfUrlRequest(int child_id, int route_id) override;
 
   // content::RenderProcessHostCreationObserver:
-  void OnRenderProcessHostCreated(content::RenderProcessHost* host) override;
+  void OnRenderProcessLaunched(content::RenderProcessHost* host) override;
 
   // content::RenderProcessHostObserver:
   void RenderProcessExited(

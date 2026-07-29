@@ -2,14 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "components/domain_reliability/util.h"
 
 #include <stddef.h>
+
+#include <array>
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
@@ -23,10 +21,11 @@ namespace domain_reliability {
 
 namespace {
 
-const struct NetErrorMapping {
+struct NetErrorMapping {
   int net_error;
   const char* beacon_status;
-} net_error_map[] = {
+};
+const auto net_error_map = std::to_array<NetErrorMapping>({
     {net::OK, "ok"},
     {net::ERR_ABORTED, "aborted"},
     {net::ERR_TIMED_OUT, "tcp.connection.timed_out"},
@@ -54,7 +53,12 @@ const struct NetErrorMapping {
     {net::ERR_HTTP2_PROTOCOL_ERROR, "spdy.protocol"},
     {net::ERR_QUIC_PROTOCOL_ERROR, "quic.protocol"},
     {net::ERR_DNS_MALFORMED_RESPONSE, "dns.protocol"},
-    {net::ERR_DNS_SERVER_FAILED, "dns.server"},
+    // The following were all historically mapped to "dns.server".
+    {net::ERR_DNS_FORMAT_ERROR, "dns.server"},
+    {net::ERR_DNS_SERVER_FAILURE, "dns.server"},
+    {net::ERR_DNS_NOT_IMPLEMENTED, "dns.server"},
+    {net::ERR_DNS_REFUSED, "dns.server"},
+    {net::ERR_DNS_OTHER_FAILURE, "dns.server"},
     {net::ERR_DNS_TIMED_OUT, "dns.timed_out"},
     {net::ERR_INSECURE_RESPONSE, "ssl"},
     {net::ERR_CONTENT_LENGTH_MISMATCH, "http.response.content_length_mismatch"},
@@ -72,7 +76,8 @@ const struct NetErrorMapping {
      "http.response.headers.multiple_content_disposition"},
     {net::ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_LENGTH,
      "http.response.headers.multiple_content_length"},
-    {net::ERR_SSL_UNRECOGNIZED_NAME_ALERT, "ssl.unrecognized_name_alert"}};
+    {net::ERR_SSL_UNRECOGNIZED_NAME_ALERT, "ssl.unrecognized_name_alert"},
+});
 
 bool CanReportFullBeaconURLToCollector(const GURL& beacon_url,
                                        const GURL& collector_url) {
@@ -155,7 +160,7 @@ GURL SanitizeURLForReport(
   if (CanReportFullBeaconURLToCollector(beacon_url, collector_url))
     return beacon_url.GetAsReferrer();
 
-  std::string path = beacon_url.path();
+  std::string path = beacon_url.GetPath();
   const std::string empty_path;
   const std::string* longest_path_prefix = &empty_path;
   for (const auto& path_prefix : path_prefixes) {

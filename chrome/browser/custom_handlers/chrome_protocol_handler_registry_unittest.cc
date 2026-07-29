@@ -51,7 +51,7 @@ class ChromeProtocolHandlerRegistryTest : public testing::Test {
   std::unique_ptr<ProtocolHandlerRegistry> registry_;
 };
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 TEST_F(ChromeProtocolHandlerRegistryTest, ExtensionHandler) {
   GURL chrome_extension_handler_url(
       "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/test.html");
@@ -68,21 +68,4 @@ TEST_F(ChromeProtocolHandlerRegistryTest, ExtensionHandler) {
       "news", chrome_extension_handler_url,
       blink::ProtocolHandlerSecurityLevel::kExtensionFeatures));
 }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
-
-// Isolated Web Apps test
-#if !BUILDFLAG(IS_ANDROID)
-TEST_F(ChromeProtocolHandlerRegistryTest, IsolatedWebApps) {
-  GURL isolated_web_apps_handler_url(
-      "isolated-app://aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaic/"
-      "test.html");
-
-  EXPECT_FALSE(ProtocolHandlerCanRegisterProtocol(
-      "news", isolated_web_apps_handler_url,
-      blink::ProtocolHandlerSecurityLevel::kStrict));
-
-  EXPECT_TRUE(ProtocolHandlerCanRegisterProtocol(
-      "news", isolated_web_apps_handler_url,
-      blink::ProtocolHandlerSecurityLevel::kSameOrigin));
-}
-#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)

@@ -10,7 +10,6 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.UserDataHost;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.navigation_controller.LoadURLType;
@@ -24,11 +23,11 @@ import org.chromium.url.Origin;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.LongSupplier;
 
 /**
- * Holds parameters for NavigationController.LoadUrl. Parameters should match
- * counterparts in NavigationController::LoadURLParams, including default
- * values.
+ * Holds parameters for NavigationController.LoadUrl. Parameters should match counterparts in
+ * NavigationController::LoadURLParams, including default values.
  */
 @JNINamespace("content")
 @NullMarked
@@ -55,8 +54,10 @@ public class LoadUrlParams {
     private boolean mHasUserGesture;
     private boolean mShouldClearHistoryList;
     private @Nullable AdditionalNavigationParams mAdditionalNavigationParams;
-    private @Nullable Supplier<Long> mNavigationUIDataSupplier;
+    private @Nullable LongSupplier mNavigationUIDataSupplier;
     private boolean mIsPdf;
+    private boolean mRemoveExtraHeadersOnCrossOriginRedirect;
+    private @Nullable String mInternalScrollToTextFragment;
 
     /**
      * Creates an instance with default page transition type.
@@ -133,6 +134,9 @@ public class LoadUrlParams {
         copy.mHasUserGesture = other.mHasUserGesture;
         copy.mShouldClearHistoryList = other.mShouldClearHistoryList;
         copy.mAdditionalNavigationParams = other.mAdditionalNavigationParams;
+        copy.mRemoveExtraHeadersOnCrossOriginRedirect =
+                other.mRemoveExtraHeadersOnCrossOriginRedirect;
+        copy.mInternalScrollToTextFragment = other.mInternalScrollToTextFragment;
         return copy;
     }
 
@@ -302,7 +306,7 @@ public class LoadUrlParams {
     }
 
     /** Sets the referrer of this load. */
-    public void setReferrer(Referrer referrer) {
+    public void setReferrer(@Nullable Referrer referrer) {
         mReferrer = referrer;
     }
 
@@ -387,10 +391,10 @@ public class LoadUrlParams {
     }
 
     /**
-     * Sets the verbatim extra headers string. This is an alternative to storing the headers in
-     * a map (setExtraHeaders()) for the embedders that use collapsed headers strings.
+     * Sets the verbatim extra headers string. This is an alternative to storing the headers in a
+     * map (setExtraHeaders()) for the embedders that use collapsed headers strings.
      */
-    public void setVerbatimHeaders(String headers) {
+    public void setVerbatimHeaders(@Nullable String headers) {
         mVerbatimHeaders = headers;
         verifyHeaders();
     }
@@ -605,7 +609,7 @@ public class LoadUrlParams {
      * @param additionalNavigationParams Additional navigation params associated with the load.
      */
     public void setAdditionalNavigationParams(
-            AdditionalNavigationParams additionalNavigationParams) {
+            @Nullable AdditionalNavigationParams additionalNavigationParams) {
         mAdditionalNavigationParams = additionalNavigationParams;
     }
 
@@ -626,12 +630,12 @@ public class LoadUrlParams {
     }
 
     /** Set the {@link NavigationUIData}. */
-    public void setNavigationUIDataSupplier(Supplier<Long> navigationUIDataSupplier) {
+    public void setNavigationUIDataSupplier(LongSupplier navigationUIDataSupplier) {
         mNavigationUIDataSupplier = navigationUIDataSupplier;
     }
 
     /** Returns the supplier for {@link NavigationUIData} or null. */
-    public @Nullable Supplier<Long> getNavigationUIDataSupplier() {
+    public @Nullable LongSupplier getNavigationUIDataSupplier() {
         return mNavigationUIDataSupplier;
     }
 
@@ -645,6 +649,40 @@ public class LoadUrlParams {
     /** Sets whether the URL is a pdf file. */
     public void setIsPdf(boolean isPdf) {
         mIsPdf = isPdf;
+    }
+
+    /** Sets whether extra headers are removed on cross-origin redirect. */
+    public void setRemoveExtraHeadersOnCrossOriginRedirect(boolean remove) {
+        mRemoveExtraHeadersOnCrossOriginRedirect = remove;
+    }
+
+    /**
+     * @return Whether extra headers are removed on cross-origin redirect.
+     */
+    public boolean getRemoveExtraHeadersOnCrossOriginRedirect() {
+        return mRemoveExtraHeadersOnCrossOriginRedirect;
+    }
+
+    /**
+     * @return The internal scroll-to-text fragment. This is a text fragment selector (using the
+     *     syntax defined in https://wicg.github.io/scroll-to-text-fragment/#syntax) that should be
+     *     scrolled into view without applying standard highlight styling. This is used for
+     *     cross-device scroll restoration and is expected to be set only for trusted navigations.
+     */
+    public @Nullable String getInternalScrollToTextFragment() {
+        return mInternalScrollToTextFragment;
+    }
+
+    /**
+     * Sets the internal scroll-to-text fragment.
+     *
+     * @param internalScrollToTextFragment The text fragment selector to scroll to without
+     *     highlighting (syntax defined in https://wicg.github.io/scroll-to-text-fragment/#syntax).
+     *     This is used for cross-device scroll restoration and is expected to be set only for
+     *     trusted navigations.
+     */
+    public void setInternalScrollToTextFragment(@Nullable String internalScrollToTextFragment) {
+        mInternalScrollToTextFragment = internalScrollToTextFragment;
     }
 
     @NativeMethods

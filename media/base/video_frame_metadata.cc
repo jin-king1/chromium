@@ -37,7 +37,7 @@ void VideoFrameMetadata::MergeMetadataFrom(
   MERGE_OPTIONAL_FIELD(capture_update_rect, metadata_source);
   MERGE_OPTIONAL_FIELD(source_size, metadata_source);
   MERGE_OPTIONAL_FIELD(region_capture_rect, metadata_source);
-  MERGE_VALUE_FIELD(sub_capture_target_version, metadata_source);
+  MERGE_VALUE_FIELD(capture_version, metadata_source);
   MERGE_OPTIONAL_FIELD(copy_required, metadata_source);
   MERGE_VALUE_FIELD(end_of_stream, metadata_source);
   MERGE_OPTIONAL_FIELD(frame_duration, metadata_source);
@@ -46,7 +46,7 @@ void VideoFrameMetadata::MergeMetadataFrom(
   MERGE_OPTIONAL_FIELD(reference_time, metadata_source);
   MERGE_VALUE_FIELD(read_lock_fences_enabled, metadata_source);
   MERGE_OPTIONAL_FIELD(transformation, metadata_source);
-  MERGE_VALUE_FIELD(texture_owner, metadata_source);
+  MERGE_VALUE_FIELD(in_surface_view, metadata_source);
   MERGE_VALUE_FIELD(wants_promotion_hint, metadata_source);
   MERGE_VALUE_FIELD(dcomp_surface, metadata_source);
   MERGE_VALUE_FIELD(protected_video, metadata_source);
@@ -73,6 +73,9 @@ void VideoFrameMetadata::MergeMetadataFrom(
   MERGE_OPTIONAL_FIELD(frame_sequence, metadata_source);
   MERGE_OPTIONAL_FIELD(source_id, metadata_source);
   MERGE_OPTIONAL_FIELD(background_blur, metadata_source);
+#if BUILDFLAG(IS_ANDROID)
+  MERGE_OPTIONAL_FIELD(ycbcr_info, metadata_source);
+#endif
 
 #undef MERGE_VALUE_FIELD
 #undef MERGE_OPTIONAL_FIELD

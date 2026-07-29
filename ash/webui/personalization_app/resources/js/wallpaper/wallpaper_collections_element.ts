@@ -17,7 +17,7 @@ import {WallpaperGridItemSelectedEvent} from 'chrome://resources/ash/common/pers
 import {isManagedSeaPenEnabled, isSeaPenEnabled, isSeaPenTextInputEnabled} from 'chrome://resources/ash/common/sea_pen/load_time_booleans.js';
 import {cleanUpSeaPenQueryStates} from 'chrome://resources/ash/common/sea_pen/sea_pen_controller.js';
 import {getSeaPenStore} from 'chrome://resources/ash/common/sea_pen/sea_pen_store.js';
-import {isImageDataUrl, isNonEmptyArray} from 'chrome://resources/ash/common/sea_pen/sea_pen_utils.js';
+import {isImageDataUrl, isNonEmptyArray, isUrl} from 'chrome://resources/ash/common/sea_pen/sea_pen_utils.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {FilePath} from 'chrome://resources/mojo/mojo/public/mojom/base/file_path.mojom-webui.js';
@@ -149,7 +149,7 @@ function getGooglePhotosTile(enablementState: GooglePhotosEnablementState):
     id: kGooglePhotosCollectionId,
     name: loadTimeData.getString('googlePhotosLabel'),
     type: TileType.IMAGE_GOOGLE_PHOTOS,
-    preview: [{url: 'chrome://personalization/images/google_photos.svg'}],
+    preview: ['chrome://personalization/images/google_photos.svg'],
   };
 }
 
@@ -163,7 +163,7 @@ function getImages(
   for (const image of localImages) {
     const key = getPathOrSymbol(image);
     const data = localImageData[key];
-    if (isImageDataUrl(data)) {
+    if (isUrl(data) && isImageDataUrl(data)) {
       result.push(data);
     }
     // Add at most |kMaximumLocalImagePreviews| thumbnail urls.
@@ -194,7 +194,7 @@ function getLocalTile(
       disabled: true,
       id: kLocalCollectionId,
       name: loadTimeData.getString('myImagesLabel'),
-      preview: [{url: 'chrome://personalization/images/no_images.svg'}],
+      preview: ['chrome://personalization/images/no_images.svg'],
       type: TileType.IMAGE_LOCAL,
     };
   }
@@ -204,7 +204,7 @@ function getLocalTile(
   // Count all images that failed to load and subtract them from "My Images"
   // count.
   const failureCount = Object.values(localImageData).reduce((result, next) => {
-    return !isImageDataUrl(next) ? result + 1 : result;
+    return (!isUrl(next) || !isImageDataUrl(next)) ? result + 1 : result;
   }, 0);
 
   const successCount = localImages.length - failureCount;
@@ -240,10 +240,9 @@ function getSeaPenPromptingTile(): SeaPenPromptingTile {
     id: kSeaPenPromptingId,
     name: 'Sea Pen Prompting',
     type: TileType.SEA_PEN_PROMPTING,
-    preview: [{
-      url:
-          'chrome://resources/ash/common/sea_pen/sea_pen_images/sea_pen_freeform.jpg',
-    }],
+    preview: [
+      'chrome://resources/ash/common/sea_pen/sea_pen_images/sea_pen_freeform.jpg',
+    ],
   };
 }
 
@@ -253,10 +252,9 @@ function getSeaPenTemplatesTile(): SeaPenTemplatesTile {
     id: kSeaPenId,
     name: 'Sea Pen',
     type: TileType.SEA_PEN_TEMPLATES,
-    preview: [{
-      url:
-          'chrome://resources/ash/common/sea_pen/sea_pen_images/sea_pen_tile.jpg',
-    }],
+    preview: [
+      'chrome://resources/ash/common/sea_pen/sea_pen_images/sea_pen_tile.jpg',
+    ],
   };
 }
 
@@ -418,20 +416,20 @@ export class WallpaperCollectionsElement extends WithPersonalizationStore {
     };
   }
 
-  override hidden: boolean;
-  private collections_: WallpaperCollection[]|null;
-  private splitCollections_: SplitCollections|null;
-  private images_: Record<string, WallpaperImage[]|null>;
-  private imagesLoading_: Record<string, boolean>;
-  private imageCounts_: Record<string, number|null>;
-  private googlePhotosEnabled_: GooglePhotosEnablementState|undefined;
-  private isSeaPenEnabled_: boolean;
-  private localImages_: Array<FilePath|DefaultImageSymbol>|null;
-  private localImagesLoading_: boolean;
-  private localImageData_: Record<string|DefaultImageSymbol, Url>;
-  private tiles_: Tile[];
-  private promotedTiles_: Tile[];
-  private hasError_: boolean;
+  declare hidden: boolean;
+  declare private collections_: WallpaperCollection[]|null;
+  declare private splitCollections_: SplitCollections|null;
+  declare private images_: Record<string, WallpaperImage[]|null>;
+  declare private imagesLoading_: Record<string, boolean>;
+  declare private imageCounts_: Record<string, number|null>;
+  declare private googlePhotosEnabled_: GooglePhotosEnablementState|undefined;
+  declare private isSeaPenEnabled_: boolean;
+  declare private localImages_: Array<FilePath|DefaultImageSymbol>|null;
+  declare private localImagesLoading_: boolean;
+  declare private localImageData_: Record<string|DefaultImageSymbol, Url>;
+  declare private tiles_: Tile[];
+  declare private promotedTiles_: Tile[];
+  declare private hasError_: boolean;
 
   static get observers() {
     return [

@@ -139,7 +139,7 @@ IN_PROC_BROWSER_TEST_F(MenuControllerUITest, DISABLED_TestMouseOverShownMenu) {
   params.bounds = {0, 0, 200, 200};
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC)
   params.native_widget = CreateNativeWidget(
-      NativeWidgetType::DESKTOP_NATIVE_WIDGET_AURA, &params, widget.get());
+      NativeWidgetType::kDesktopNativeWidgetAura, &params, widget.get());
 #endif
   widget->Init(std::move(params));
   widget->Show();
@@ -149,7 +149,7 @@ IN_PROC_BROWSER_TEST_F(MenuControllerUITest, DISABLED_TestMouseOverShownMenu) {
   // Create a focused test button, used to assert that it has accessibility
   // focus before and after menu item is active, but not during.
   TestButton button;
-  widget->GetContentsView()->AddChildView(&button);
+  widget->GetContentsView()->AddChildViewRaw(&button);
   FocusManager* focus_manager = widget->GetFocusManager();
   focus_manager->SetFocusedView(&button);
   EXPECT_TRUE(button.HasFocus());

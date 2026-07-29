@@ -17,15 +17,14 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
-#include "chrome/browser/web_applications/tabbed_mode_scope_matcher.h"
+#include "chrome/browser/web_applications/ui_manager/update_dialog_types.h"
 #include "chrome/browser/web_applications/web_app_icon_manager.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_install_manager_observer.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
+#include "chrome/browser/web_applications/web_app_registrar_observer.h"
 #include "components/services/app_service/public/cpp/icon_types.h"
 #include "components/webapps/common/web_app_id.h"
-#include "third_party/liburlpattern/options.h"
-#include "third_party/liburlpattern/pattern.h"
 #include "third_party/re2/src/re2/set.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/models/image_model.h"
@@ -47,6 +46,10 @@ namespace content_relationship_verification {
 class DigitalAssetLinksHandler;
 }
 
+namespace base {
+class TimeTicks;
+}  // namespace base
+
 namespace web_app {
 
 class WebAppRegistrar;
@@ -59,10 +62,11 @@ class WebAppProvider;
 // Note: Much of the functionality in HostedAppBrowserController
 // will move to this class.
 class WebAppBrowserController : public AppBrowserController,
-                                public WebAppInstallManagerObserver {
+                                public WebAppInstallManagerObserver,
+                                public WebAppRegistrarObserver {
  public:
   WebAppBrowserController(WebAppProvider& provider,
-                          Browser* browser,
+                          BrowserWindowInterface* browser,
                           webapps::AppId app_id,
 #if BUILDFLAG(IS_CHROMEOS)
                           const ash::SystemWebAppDelegate* system_app,
@@ -72,11 +76,16 @@ class WebAppBrowserController : public AppBrowserController,
   WebAppBrowserController& operator=(const WebAppBrowserController&) = delete;
   ~WebAppBrowserController() override;
 
+  // Returns the web app controller if `browser` is a web app and the controller
+  // is a WebAppBrowserController, otherwise null.
+  static WebAppBrowserController* From(BrowserWindowInterface* browser);
+
   // AppBrowserController:
   using HomeTabCallbackList = base::OnceCallbackList<void()>;
   bool HasMinimalUiButtons() const override;
   gfx::ImageSkia GetHomeTabIcon() const;
   gfx::ImageSkia GetFallbackHomeTabIcon() const;
+  gfx::ImageSkia GetAppMenuIcon() const;
   ui::ImageModel GetWindowAppIcon() const override;
   ui::ImageModel GetWindowIcon() const override;
   std::optional<SkColor> GetThemeColor() const override;
@@ -84,29 +93,38 @@ class WebAppBrowserController : public AppBrowserController,
   std::u16string GetTitle() const override;
   std::u16string GetAppShortName() const override;
   std::u16string GetFormattedUrlOrigin() const override;
-  GURL GetAppStartUrl() const override;
-  GURL GetAppNewTabUrl() const override;
+  const GURL& GetAppStartUrl() const override;
+  const GURL& GetAppNewTabUrl() const override;
+  content::WebContents* GetPinnedHomeTab() const override;
   bool ShouldHideNewTabButton() const override;
   bool IsUrlInHomeTabScope(const GURL& url) const override;
   bool ShouldShowAppIconOnTab(int index) const override;
   bool IsUrlInAppScope(const GURL& url) const override;
   WebAppBrowserController* AsWebAppBrowserController() override;
   bool CanUserUninstall() const override;
+  bool IsPreinstalledOnly() const override;
   void Uninstall(
       webapps::WebappUninstallSource webapp_uninstall_source) override;
   bool IsInstalled() const override;
-  bool IsHostedApp() const override;
+  bool IsFirstLaunchAfterInstall() const override;
   std::unique_ptr<TabMenuModelFactory> GetTabMenuModelFactory() const override;
   bool AppUsesWindowControlsOverlay() const override;
   bool AppUsesTabbed() const override;
   bool IsWindowControlsOverlayEnabled() const override;
   void ToggleWindowControlsOverlayEnabled(
       base::OnceClosure on_complete) override;
-  bool AppUsesBorderlessMode() const override;
+  bool AppUsesUnframedMode() const override;
+  bool UrlMatchesUnframedPattern(const GURL& url) const override;
   bool IsIsolatedWebApp() const override;
   void SetIsolatedWebAppTrueForTesting() override;
   gfx::Rect GetDefaultBounds() const override;
   bool HasReloadButton() const override;
+  bool HasPendingUpdate() const override;
+  bool HasPendingMigration() const override;
+  bool HasPendingUpdateNotIgnoredByUser() const override;
+  void TriggerAppUpdateOrMigrationDialog(
+      base::TimeTicks start_time) const override;
+  bool IsWindowCaptureHandleAllowed() const override;
 #if BUILDFLAG(IS_CHROMEOS)
   const ash::SystemWebAppDelegate* system_app() const override;
   bool ShouldShowCustomTabBar() const override;
@@ -127,6 +145,11 @@ class WebAppBrowserController : public AppBrowserController,
   void OnWebAppManifestUpdated(const webapps::AppId& app_id) override;
   void OnWebAppInstallManagerDestroyed() override;
 
+  // WebAppRegistrarObserver:
+  void OnWebAppEffectiveScopeChanged(const webapps::AppId& app_id,
+                                     const WebAppScope& new_scope) override;
+  void OnAppRegistrarDestroyed() override;
+
   base::CallbackListSubscription AddHomeTabIconLoadCallbackForTesting(
       const base::OnceClosure callback);
   static void SetIconLoadCallbackForTesting(base::OnceClosure callback);
@@ -139,6 +162,8 @@ class WebAppBrowserController : public AppBrowserController,
   void OnTabRemoved(content::WebContents* contents) override;
 
  private:
+  bool did_notify_first_tab_ = false;
+
   mutable HomeTabCallbackList home_tab_callback_list_;
   const WebAppRegistrar& registrar() const;
   const WebAppInstallManager& install_manager() const;
@@ -151,7 +176,22 @@ class WebAppBrowserController : public AppBrowserController,
 
   void OnReadHomeTabIcon(SkBitmap home_tab_icon_bitmap) const;
   void OnReadIcon(IconPurpose purpose, SkBitmap bitmap);
-  void PerformDigitalAssetLinkVerification(Browser* browser);
+  void PerformDigitalAssetLinkVerification(BrowserWindowInterface* browser);
+  void CreateMetadataAndTriggerAppUpdateDialog(
+      base::TimeTicks start_time) const;
+  void CreateMetadataAndTriggerAppMigrationDialog(
+      bool is_forced_migration_on_startup,
+      base::TimeTicks start_time) const;
+  void OnMetadataObtainedTriggerUpdateDialog(
+      base::TimeTicks start_time,
+      std::optional<WebAppIdentityUpdate> identity_update) const;
+  void OnMetadataObtainedTriggerMigrationDialog(
+      base::TimeTicks start_time,
+      std::optional<WebAppIdentityUpdate> identity_update) const;
+  void OnUpdateDialogResult(WebAppIdentityUpdateResult result) const;
+  void OnMigrationDialogResult(base::TimeTicks start_time,
+                               const WebAppIdentityUpdate& identity_update,
+                               WebAppIdentityUpdateResult result) const;
 
 #if BUILDFLAG(IS_CHROMEOS)
   void CheckDigitalAssetLinkRelationshipForAndroidApp(
@@ -174,9 +214,18 @@ class WebAppBrowserController : public AppBrowserController,
   bool is_isolated_web_app_for_testing_ = false;
 
 #if BUILDFLAG(IS_CHROMEOS)
-  raw_ptr<const ash::SystemWebAppDelegate> system_app_ = nullptr;
+  const raw_ptr<const ash::SystemWebAppDelegate> system_app_;
 #endif  // BUILDFLAG(IS_CHROMEOS)
   mutable std::optional<ui::ImageModel> app_icon_;
+
+  // Save this at launch time in case it changes with a manifest update while
+  // the window is open.
+  const bool has_pinned_home_tab_ = false;
+
+  // Per-window Window Controls Overlay enabled state.
+  // Allows each window of the same app to have independent WCO state.
+  // Initialized from the app-level default when the window is created.
+  bool per_window_wco_enabled_ = false;
 
 #if BUILDFLAG(IS_CHROMEOS)
   // The result of digital asset link verification of the web app.
@@ -189,6 +238,8 @@ class WebAppBrowserController : public AppBrowserController,
 
   base::ScopedObservation<WebAppInstallManager, WebAppInstallManagerObserver>
       install_manager_observation_{this};
+  base::ScopedObservation<WebAppRegistrar, WebAppRegistrarObserver>
+      registrar_observation_{this};
 
   mutable base::WeakPtrFactory<WebAppBrowserController> weak_ptr_factory_{this};
 };

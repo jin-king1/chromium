@@ -6,6 +6,7 @@
 
 #include <array>
 #include <ostream>
+#include <string_view>
 #include <vector>
 
 #include "ash/birch/birch_item.h"
@@ -20,7 +21,6 @@
 #include "ash/wm/overview/birch/coral_chip_button.h"
 #include "ash/wm/overview/overview_controller.h"
 #include "ash/wm/window_properties.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/time/time.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
@@ -31,7 +31,7 @@
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/transform_util.h"
 #include "ui/views/animation/animation_builder.h"
-#include "ui/views/metadata/view_factory_internal.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 
@@ -125,20 +125,20 @@ bool IsLoadingState(State state) {
 
 #if DCHECK_IS_ON()
 // Gets the string of given state.
-std::ostream& operator<<(std::ostream& stream, State state) {
+std::string_view ToString(State state) {
   switch (state) {
     case State::kLoading:
-      return stream << "loading";
+      return "loading";
     case State::kLoadingForInformedRestore:
-      return stream << "loading for informed restore";
+      return "loading for informed restore";
     case State::kLoadingByUser:
-      return stream << "loading by user";
+      return "loading by user";
     case State::kReloading:
-      return stream << "reloading";
+      return "reloading";
     case State::kShuttingDown:
-      return stream << "shutting down";
+      return "shutting down";
     case State::kNormal:
-      return stream << "normal";
+      return "normal";
   }
 }
 
@@ -227,8 +227,8 @@ void BirchBarView::SetState(State state) {
 
 #if DCHECK_IS_ON()
   if (!IsValidStateTransition(state_, state)) {
-    NOTREACHED() << "Transition from state " << state_ << " to state " << state
-                 << " is invalid.";
+    NOTREACHED() << "Transition from state " << ToString(state_) << " to state "
+                 << ToString(state) << " is invalid.";
   }
 #endif
 
@@ -473,9 +473,8 @@ void BirchBarView::Clear() {
 }
 
 gfx::Size BirchBarView::GetChipSize(aura::Window* root_window) const {
-  const gfx::Rect display_bounds = display::Screen::GetScreen()
-                                       ->GetDisplayNearestWindow(root_window)
-                                       .bounds();
+  const gfx::Rect display_bounds =
+      display::Screen::Get()->GetDisplayNearestWindow(root_window).bounds();
   // Always use the longest side of the display to calculate the chip width.
   const int max_display_dim =
       std::max(display_bounds.width(), display_bounds.height());

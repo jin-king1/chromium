@@ -13,6 +13,7 @@
 #include "ash/constants/ash_features.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/escape.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_base.h"
@@ -29,7 +30,6 @@
 #include "chrome/browser/ash/policy/dlp/dlp_files_controller_ash.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager_factory.h"
 #include "chrome/browser/chromeos/policy/dlp/test/mock_dlp_rules_manager.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -39,6 +39,7 @@
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user_type.h"
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/entry_info.h"
@@ -180,24 +181,24 @@ class AppServiceFileTasksTest : public testing::Test {
   void AddChromeApp() {
     extensions::ExtensionBuilder baz_app;
     baz_app.SetManifest(
-        base::Value::Dict()
+        base::DictValue()
             .Set("name", "Baz")
             .Set("version", "1.0.0")
             .Set("manifest_version", 2)
-            .Set("app", base::Value::Dict().Set(
-                            "background",
-                            base::Value::Dict().Set(
-                                "scripts",
-                                base::Value::List().Append("background.js"))))
+            .Set("app",
+                 base::DictValue().Set(
+                     "background",
+                     base::DictValue().Set(
+                         "scripts", base::ListValue().Append("background.js"))))
             .Set("file_handlers",
-                 base::Value::Dict()
+                 base::DictValue()
                      .Set("any",
-                          base::Value::Dict().Set(
+                          base::DictValue().Set(
                               "extensions",
-                              base::Value::List().Append("*").Append("bar")))
-                     .Set("image", base::Value::Dict().Set(
-                                       "types", base::Value::List().Append(
-                                                    "image/*")))));
+                              base::ListValue().Append("*").Append("bar")))
+                     .Set("image",
+                          base::DictValue().Set(
+                              "types", base::ListValue().Append("image/*")))));
     baz_app.SetID(kChromeAppId);
     auto filters =
         apps_util::CreateIntentFiltersForChromeApp(baz_app.Build().get());
@@ -209,48 +210,48 @@ class AppServiceFileTasksTest : public testing::Test {
   void AddChromeAppWithVerbs() {
     extensions::ExtensionBuilder foo_app;
     foo_app.SetManifest(
-        base::Value::Dict()
+        base::DictValue()
             .Set("name", "Foo")
             .Set("version", "1.0.0")
             .Set("manifest_version", 2)
-            .Set("app", base::Value::Dict().Set(
-                            "background",
-                            base::Value::Dict().Set(
-                                "scripts",
-                                base::Value::List().Append("background.js"))))
+            .Set("app",
+                 base::DictValue().Set(
+                     "background",
+                     base::DictValue().Set(
+                         "scripts", base::ListValue().Append("background.js"))))
             .Set("file_handlers",
-                 base::Value::Dict()
+                 base::DictValue()
                      .Set("any_with_directories",
-                          base::Value::Dict()
+                          base::DictValue()
                               .Set("include_directories", true)
-                              .Set("types", base::Value::List().Append("*"))
+                              .Set("types", base::ListValue().Append("*"))
                               .Set("verb", "open_with"))
                      .Set("html_handler",
-                          base::Value::Dict()
+                          base::DictValue()
                               .Set("title", "Html")
                               .Set("types",
-                                   base::Value::List().Append("text/html"))
+                                   base::ListValue().Append("text/html"))
                               .Set("verb", "open_with"))
                      .Set("plain_text",
-                          base::Value::Dict()
+                          base::DictValue()
                               .Set("title", "Plain")
                               .Set("types",
-                                   base::Value::List().Append("text/plain")))
+                                   base::ListValue().Append("text/plain")))
                      .Set("share_plain_text",
-                          base::Value::Dict()
+                          base::DictValue()
                               .Set("title", "Share Plain")
                               .Set("types",
-                                   base::Value::List().Append("text/plain"))
+                                   base::ListValue().Append("text/plain"))
                               .Set("verb", "share_with"))
                      .Set("any_pack",
-                          base::Value::Dict()
-                              .Set("types", base::Value::List().Append("*"))
+                          base::DictValue()
+                              .Set("types", base::ListValue().Append("*"))
                               .Set("verb", "pack_with"))
                      .Set("plain_text_add_to",
-                          base::Value::Dict()
+                          base::DictValue()
                               .Set("title", "Plain")
                               .Set("types",
-                                   base::Value::List().Append("text/plain"))
+                                   base::ListValue().Append("text/plain"))
                               .Set("verb", "add_to"))));
     foo_app.SetID(kChromeAppWithVerbsId);
     auto filters =
@@ -264,19 +265,18 @@ class AppServiceFileTasksTest : public testing::Test {
   void AddExtension() {
     extensions::ExtensionBuilder fbh_app;
     fbh_app.SetManifest(
-        base::Value::Dict()
+        base::DictValue()
             .Set("name", "Fbh")
             .Set("version", "1.0.0")
             .Set("manifest_version", 2)
-            .Set("permissions",
-                 base::Value::List().Append("fileBrowserHandler"))
+            .Set("permissions", base::ListValue().Append("fileBrowserHandler"))
             .Set("file_browser_handlers",
-                 base::Value::List().Append(
-                     base::Value::Dict()
+                 base::ListValue().Append(
+                     base::DictValue()
                          .Set("id", "open")
                          .Set("default_title", "open title")
-                         .Set("file_filters", base::Value::List().Append(
-                                                  "filesystem:*.txt")))));
+                         .Set("file_filters",
+                              base::ListValue().Append("filesystem:*.txt")))));
     fbh_app.SetID(kExtensionId);
     auto filters =
         apps_util::CreateIntentFiltersForExtension(fbh_app.Build().get());
@@ -626,20 +626,8 @@ TEST_F(AppServiceFileTasksTest, FindAppServiceArcAppWithExtensionMatching) {
   EXPECT_TRUE(tasks[0].is_file_extension_match);
 }
 
-// Enable MV3 File Handlers.
-class AppServiceFileHandlersTest : public AppServiceFileTasksTest {
- public:
-  AppServiceFileHandlersTest() {
-    feature_list_.InitAndEnableFeature(
-        extensions_features::kExtensionWebFileHandlers);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
 // Verify App Service tasks for extensions with MV3 File Handlers.
-TEST_F(AppServiceFileHandlersTest, FindAppServiceExtension) {
+TEST_F(AppServiceFileTasksTest, FileHandlersFindAppServiceExtension) {
   static constexpr char kAction[] = "/open.html";
   const std::string manifest = base::StringPrintf(R"(
     "version": "0.0.1",
@@ -941,13 +929,11 @@ class AppServiceFileTasksPolicyTest : public AppServiceFileTasksTest {
     AccountId account_id =
         AccountId::FromUserEmailGaiaId("test@example.com", GaiaId("12345"));
     profile_->SetIsNewProfile(true);
-    user_manager::User* user =
-        fake_user_manager_->AddUserWithAffiliationAndTypeAndProfile(
-            account_id, /*is_affiliated=*/false,
-            user_manager::UserType::kRegular, profile_.get());
-    fake_user_manager_->UserLoggedIn(account_id, user->username_hash(),
-                                     /*browser_restart=*/false,
-                                     /*is_child=*/false);
+    fake_user_manager_->AddUserWithAffiliationAndTypeAndProfile(
+        account_id, /*is_affiliated=*/false, user_manager::UserType::kRegular,
+        profile_.get());
+    fake_user_manager_->UserLoggedIn(
+        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
     fake_user_manager_->SimulateUserProfileLoad(account_id);
 
     policy::DlpRulesManagerFactory::GetInstance()->SetTestingFactory(

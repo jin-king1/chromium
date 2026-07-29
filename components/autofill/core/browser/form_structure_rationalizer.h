@@ -6,12 +6,13 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FORM_STRUCTURE_RATIONALIZER_H_
 
 #include <memory>
-#include <vector>
 
-#include "base/memory/raw_ref.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/memory/raw_span.h"
 #include "components/autofill/core/browser/autofill_field.h"
-#include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/common/form_field_data.h"
+#include "components/autofill/core/browser/country_type.h"
+#include "components/autofill/core/common/language_code.h"
 #include "url/origin.h"
 
 namespace autofill {
@@ -26,7 +27,7 @@ class FormStructureRationalizer {
   // `fields` must outlive the FormStructureRationalizer and must not be null.
   // The rationalizer only modifies elements of `fields`, not the vector itself.
   explicit FormStructureRationalizer(
-      std::vector<std::unique_ptr<AutofillField>>* fields);
+      base::span<const std::unique_ptr<AutofillField>> fields LIFETIME_BOUND);
   ~FormStructureRationalizer();
   FormStructureRationalizer(const FormStructureRationalizer&) = delete;
   FormStructureRationalizer& operator=(const FormStructureRationalizer&) =
@@ -93,10 +94,26 @@ class FormStructureRationalizer {
   // respectively, block of four digits.
   void RationalizeCreditCardNumberOffsets(LogManager* log_manager);
 
+  // Sets the format strings. For now, only date format strings such as
+  // "YYYY-MM-DD" are supported.
+  void RationalizeDateFormatStrings(LogManager* log_manager);
+
   // Rewrites two or three (not necessarily consecutive)
   // ADDRESS_HOME_STREET_ADDRESS fields in the same section into address line 1,
   // 2 and 3.
   void RationalizeRepeatedStreetAddressFields(LogManager* log_manager);
+
+  // Rewrites a sequence of exactly two consecutive visible (zip, zip) fields
+  // into (ADDRESS_HOME_ZIP_PREFIX, ADDRESS_HOME_ZIP_SUFFIX) if a small
+  // max_length value is set for both fields or the second zip field type is
+  // ADDRESS_HOME_ZIP_SUFFIX. If none of these conditions are met and the
+  // source of prediction for the second zip field is heuristic,
+  // rationalizes the second zip field to UNKNOWN_TYPE.
+  void RationalizeRepeatedZipCodeFields(LogManager* log_manager);
+
+  // Rewrites all ADDRESS_HOME_ZIP_SUFFIX fields into ADDRESS_HOME_ZIP
+  // if previous field is not ADDRESS_HOME_ZIP_PREFIX.
+  void RationalizeZipCodeSuffixFields(LogManager* log_manager);
 
   // Rewrites sequences of (street address, address_line2) into (address_line1,
   // address_line2) as server predictions sometimes introduce wrong street
@@ -132,7 +149,7 @@ class FormStructureRationalizer {
 
   // A vector of all the input fields in the form. The reference is const but
   // the fields are mutable by design.
-  const raw_ref<const std::vector<std::unique_ptr<AutofillField>>> fields_;
+  base::raw_span<const std::unique_ptr<AutofillField>> fields_;
 };
 
 }  // namespace autofill

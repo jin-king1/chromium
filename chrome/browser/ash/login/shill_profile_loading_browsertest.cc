@@ -8,7 +8,6 @@
 // login password has been saved to SessionManager (b/183084821).
 // This means that triggering the shill user profile load depends on user
 // policy having been processed (as user policy would mandate whether the login
-#include "google_apis/gaia/gaia_id.h"
 // password should be reused, and thus only after processing user network policy
 // does chrome decide if the password should be saved in SessionManager).
 //
@@ -16,15 +15,17 @@
 // unmanaged user case and the managed user with/without network policy cases.
 
 #include "ash/public/cpp/login_screen_test_api.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
-#include "base/functional/bind_internal.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/test/protobuf_matchers.h"
 #include "chrome/browser/ash/login/login_manager_test.h"
 #include "chrome/browser/ash/login/startup_utils.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/login/test/oobe_screens_utils.h"
 #include "chrome/browser/ash/login/test/user_policy_mixin.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
@@ -38,6 +39,7 @@
 #include "components/user_manager/test_helper.h"
 #include "components/user_manager/user_names.h"
 #include "content/public/test/browser_test.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -47,6 +49,7 @@ namespace {
 
 namespace em = ::enterprise_management;
 
+using base::test::EqualsProto;
 using ::testing::ElementsAre;
 
 constexpr char kUnmanagedUser[] = "unmanaged@gmail.com";
@@ -88,15 +91,6 @@ class LoadShillProfileWaiter {
   base::RunLoop run_loop_;
   std::vector<cryptohome::AccountIdentifier> invocations_;
 };
-
-MATCHER_P(EqualsProto,
-          message,
-          "Match a proto Message equal to the matcher's argument.") {
-  std::string expected_serialized, actual_serialized;
-  message.SerializeToString(&expected_serialized);
-  arg.SerializeToString(&actual_serialized);
-  return expected_serialized == actual_serialized;
-}
 
 }  // namespace
 
@@ -254,7 +248,7 @@ IN_PROC_BROWSER_TEST_F(ShillProfileLoadingGuestLoginTest, GuestLogin) {
 
   // The ToS screen is shown to guest users regardless of EULA being accepted
   // previously by the device owner.
-  StartupUtils::MarkEulaAccepted();
+  StartupUtils::MarkEulaAccepted(CHECK_DEREF(g_browser_process->local_state()));
   ASSERT_TRUE(LoginScreenTestApi::ClickGuestButton());
 
   // Accept guest ToS consent screen.

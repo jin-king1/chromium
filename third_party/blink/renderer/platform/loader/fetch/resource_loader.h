@@ -30,15 +30,13 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_LOADER_FETCH_RESOURCE_LOADER_H_
 
 #include <memory>
+#include <variant>
 
 #include "base/containers/span.h"
-#include "base/feature_list.h"
-#include "base/gtest_prod_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "services/network/public/mojom/fetch_api.mojom-blink-forward.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/mojom/blob/blob_registry.mojom-blink.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
@@ -146,7 +144,7 @@ class PLATFORM_EXPORT ResourceLoader final
                    uint64_t total_bytes_to_be_sent) override;
   void DidReceiveResponse(
       const WebURLResponse&,
-      absl::variant<mojo::ScopedDataPipeConsumerHandle, SegmentedBuffer>,
+      std::variant<mojo::ScopedDataPipeConsumerHandle, SegmentedBuffer>,
       std::optional<mojo_base::BigBuffer> cached_metadata) override;
   void DidReceiveDataForTesting(base::span<const char> data) override;
   void DidReceiveTransferSizeUpdate(int transfer_size_diff) override;
@@ -186,13 +184,13 @@ class PLATFORM_EXPORT ResourceLoader final
   void DidReceiveData(base::span<const char> data) override;
   void DidReceiveDecodedData(
       const String& data,
-      std::unique_ptr<ParkableStringImpl::SecureDigest> digest) override;
+      std::unique_ptr<SecureStringDigest> digest) override;
   void DidFinishLoadingBody() override;
   void DidFailLoadingBody() override;
   void DidCancelLoadingBody() override;
 
   void DidReceiveDataImpl(
-      absl::variant<SegmentedBuffer, base::span<const char>> data);
+      std::variant<SegmentedBuffer, base::span<const char>> data);
 
   bool ShouldFetchCodeCache();
   void StartFetch();

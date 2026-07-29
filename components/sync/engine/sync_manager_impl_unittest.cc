@@ -23,6 +23,7 @@
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "components/sync/base/client_tag_hash.h"
+#include "components/sync/base/custom_passphrase_bootstrap_token.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/extensions_activity.h"
 #include "components/sync/engine/cancelation_signal.h"
@@ -30,8 +31,8 @@
 #include "components/sync/engine/events/protocol_event.h"
 #include "components/sync/engine/net/http_post_provider.h"
 #include "components/sync/engine/net/http_post_provider_factory.h"
-#include "components/sync/engine/nigori/key_derivation_params.h"
 #include "components/sync/engine/polling_constants.h"
+#include "components/sync/engine/required_passphrase_verifier.h"
 #include "components/sync/engine/sync_scheduler.h"
 #include "components/sync/protocol/encryption.pb.h"
 #include "components/sync/protocol/proto_value_conversions.h"
@@ -47,6 +48,10 @@
 #include "third_party/protobuf/src/google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "url/gurl.h"
 
+namespace net {
+class HttpRequestHeaders;
+}  // namespace net
+
 using testing::_;
 using testing::SaveArg;
 using testing::Sequence;
@@ -58,7 +63,8 @@ namespace {
 
 class TestHttpPostProvider : public HttpPostProvider {
  public:
-  void SetExtraRequestHeaders(const char* headers) override {}
+  void SetExtraRequestHeaders(const net::HttpRequestHeaders& headers) override {
+  }
   void SetURL(const GURL& url) override {}
   void SetPostPayload(const char* content_type,
                       int content_length,
@@ -108,11 +114,16 @@ class SyncEncryptionHandlerObserverMock
  public:
   MOCK_METHOD(void,
               OnPassphraseRequired,
-              (const KeyDerivationParams&, const sync_pb::EncryptedData&),
+              (std::unique_ptr<RequiredPassphraseVerifier>),
               (override));
-  MOCK_METHOD(void, OnPassphraseAccepted, (), (override));
+  MOCK_METHOD(void,
+              OnPassphraseAccepted,
+              (const CustomPassphraseBootstrapToken&),
+              (override));
   MOCK_METHOD(void, OnTrustedVaultKeyRequired, (), (override));
   MOCK_METHOD(void, OnTrustedVaultKeyAccepted, (), (override));
+  MOCK_METHOD(void, OnKeystoreKeysRequired, (), (override));
+  MOCK_METHOD(void, OnKeystoreKeysAccepted, (), (override));
   MOCK_METHOD(void, OnEncryptedTypesChanged, (DataTypeSet, bool), (override));
   MOCK_METHOD(void,
               OnCryptographerStateChanged,
@@ -237,7 +248,7 @@ TEST_F(SyncManagerImplTest, BasicConfiguration) {
   EXPECT_CALL(ready_task, Run).Times(0);
 
   sync_manager()->ConfigureSyncer(
-      CONFIGURE_REASON_RECONFIGURATION, types_to_download,
+      ConfigureReason::kReconfiguration, types_to_download,
       SyncManager::SyncFeatureState::ON, ready_task.Get());
 }
 

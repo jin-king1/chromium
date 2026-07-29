@@ -13,7 +13,7 @@
 #include "base/test/mock_callback.h"
 #include "chrome/browser/ash/arc/fileapi/arc_select_files_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
+#include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/experiences/arc/mojom/file_system.mojom.h"
@@ -369,13 +369,13 @@ TEST_F(ArcSelectFilesHandlerTest, OnFileSelectorEvent) {
 
 TEST_F(ArcSelectFilesHandlerTest, GetFileSelectorElements) {
   EXPECT_CALL(*mock_dialog_holder_, ExecuteJavaScript(kScriptGetElements, _))
-      .WillOnce(testing::Invoke(
-          [](const std::string&, JavaScriptResultCallback callback) {
-            std::move(callback).Run(
-                base::JSONReader::Read("{\"dirNames\" :[\"dir1\", \"dir2\"],"
-                                       " \"fileNames\":[\"file1\",\"file2\"]}")
-                    .value());
-          }));
+      .WillOnce([](const std::string&, JavaScriptResultCallback callback) {
+        std::move(callback).Run(
+            base::JSONReader::Read("{\"dirNames\" :[\"dir1\", \"dir2\"],"
+                                   " \"fileNames\":[\"file1\",\"file2\"]}",
+                                   base::JSON_PARSE_CHROMIUM_EXTENSIONS)
+                .value());
+      });
 
   mojom::FileSelectorElementsPtr expectedElements =
       mojom::FileSelectorElements::New();

@@ -17,7 +17,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_content_setting_bubble_model_delegate.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/content_settings/fake_owner.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
@@ -72,14 +74,16 @@ class ContentSettingBubbleModelMediaStreamTest : public InProcessBrowserTest {
         ->OnMediaStreamPermissionSet(web_contents->GetLastCommittedURL(),
                                      state);
     return std::make_unique<ContentSettingMediaStreamBubbleModel>(
-        browser()->content_setting_bubble_model_delegate(), web_contents);
+        browser()->GetFeatures().content_setting_bubble_model_delegate(),
+        web_contents->GetPrimaryPage());
   }
 
   content::WebContents* GetActiveTab() {
     // First, we need to find the active browser window. It should be at
     // the same desktop as the browser in which we invoked the bubble.
-    Browser* active_browser = chrome::FindLastActive();
-    return active_browser->tab_strip_model()->GetActiveWebContents();
+    BrowserWindowInterface* active_browser =
+        GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
+    return active_browser->GetTabStripModel()->GetActiveWebContents();
   }
 
   content::WebContents* OpenTab() {
@@ -109,11 +113,10 @@ class ContentSettingBubbleModelMediaStreamTest : public InProcessBrowserTest {
           ContentSettingsPattern::Wildcard(),
           ContentSettingsPattern::Wildcard(), type,
           base::Value(ContentSetting::CONTENT_SETTING_BLOCK),
-          /*constraints=*/{},
-          content_settings::PartitionKey::GetDefaultForTesting());
+          /*constraints=*/{});
     }
     HostContentSettingsMap* map =
-        HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+        HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
     content_settings::TestUtils::OverrideProvider(
         map, std::move(provider),
         content_settings::ProviderType::kSupervisedProvider);
@@ -125,8 +128,8 @@ class ContentSettingBubbleModelMediaStreamTest : public InProcessBrowserTest {
 
 // Tests that clicking on the manage button in the media bubble opens the
 // correct section of the settings UI. This test sometimes leaks memory,
-// detected by linux_chromium_asan_rel_ng. See http://crbug/668693 for more
-// info.
+// detected by linux_chromium_asan_rel_ng. See http://crbug.com/41288110 for
+// more info.
 IN_PROC_BROWSER_TEST_F(ContentSettingBubbleModelMediaStreamTest,
                        DISABLED_ManageLink) {
   // For each of the three options, we click the manage button and check if the
@@ -160,13 +163,13 @@ IN_PROC_BROWSER_TEST_F(ContentSettingBubbleModelMediaStreamTest,
 
   content::RenderFrameHost* main_rfh =
       ui_test_utils::NavigateToURLBlockUntilNavigationsComplete(
-          browser(), GURL(chrome::kChromeUINewTabURL), 1);
+          browser(), chrome::ChromeUINewTabURLAsGURL(), 1);
   content::WebContents::FromRenderFrameHost(main_rfh)->Focus();
 
   ASSERT_TRUE(main_rfh);
-  EXPECT_EQ(GURL(chrome::kChromeUINewTabURL),
+  EXPECT_EQ(chrome::ChromeUINewTabURLAsGURL(),
             web_contents->GetLastCommittedURL());
-  EXPECT_EQ(GURL(chrome::kChromeUINewTabPageURL),
+  EXPECT_EQ(chrome::ChromeUINewTabPageURLAsGURL(),
             main_rfh->GetLastCommittedOrigin().GetURL());
 
   // Create a bubble with the given camera and microphone access state.
@@ -181,7 +184,8 @@ IN_PROC_BROWSER_TEST_F(ContentSettingBubbleModelMediaStreamTest,
           {PageSpecificContentSettings::kMicrophoneAccessed});
   std::unique_ptr<ContentSettingBubbleModel> mic_bubble =
       std::make_unique<ContentSettingMediaStreamBubbleModel>(
-          browser()->content_setting_bubble_model_delegate(), web_contents);
+          browser()->GetFeatures().content_setting_bubble_model_delegate(),
+          web_contents->GetPrimaryPage());
 
   EXPECT_TRUE(mic_bubble->bubble_content().is_user_modifiable);
 }
@@ -264,7 +268,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingBubbleModelMediaStreamTest,
   GURL url = web_contents->GetLastCommittedURL();
 
   // Do not grant camera PTZ permission to current tab.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(url, GURL(),
                                       ContentSettingsType::CAMERA_PAN_TILT_ZOOM,
                                       CONTENT_SETTING_ASK);
@@ -287,7 +291,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingBubbleModelMediaStreamTest,
                 url_formatter::FormatUrlForSecurityDisplay(url)));
 
   // Grant camera PTZ permission to current tab.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(url, GURL(),
                                       ContentSettingsType::CAMERA_PAN_TILT_ZOOM,
                                       CONTENT_SETTING_ALLOW);
@@ -339,8 +343,11 @@ IN_PROC_BROWSER_TEST_F(ContentSettingBubbleModelPopupTest, PopupsActionsCount) {
   // Creates the ContentSettingPopupBubbleModel in order to emulate clicks.
   std::unique_ptr<ContentSettingBubbleModel> model(
       ContentSettingBubbleModel::CreateContentSettingBubbleModel(
-          browser()->content_setting_bubble_model_delegate(),
-          browser()->tab_strip_model()->GetActiveWebContents(),
+          browser()->GetFeatures().content_setting_bubble_model_delegate(),
+          browser()
+              ->tab_strip_model()
+              ->GetActiveWebContents()
+              ->GetPrimaryPage(),
           ContentSettingsType::POPUPS));
   std::unique_ptr<FakeOwner> owner =
       FakeOwner::Create(*model, kDisallowButtonIndex);

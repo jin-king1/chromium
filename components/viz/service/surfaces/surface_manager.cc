@@ -14,9 +14,8 @@
 
 #include "base/containers/adapters.h"
 #include "base/containers/queue.h"
+#include "base/debug/crash_logging.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
 #include "base/observer_list.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/default_tick_clock.h"
@@ -28,9 +27,12 @@
 #include "components/viz/service/surfaces/surface_allocation_group.h"
 #include "components/viz/service/surfaces/surface_client.h"
 #include "components/viz/service/surfaces/surface_manager_delegate.h"
+#include "ui/latency/latency_info.h"
 
 #if DCHECK_IS_ON()
 #include <sstream>
+
+#include "base/time/time.h"
 #endif
 
 namespace viz {
@@ -116,7 +118,7 @@ void SurfaceManager::SetTickClockForTesting(const base::TickClock* tick_clock) {
   tick_clock_ = tick_clock;
 }
 
-Surface* SurfaceManager::CreateSurface(
+base::expected<Surface*, std::string> SurfaceManager::CreateSurface(
     base::WeakPtr<SurfaceClient> surface_client,
     const SurfaceInfo& surface_info,
     const SurfaceId& pending_copy_surface_id) {
@@ -126,15 +128,17 @@ Surface* SurfaceManager::CreateSurface(
 
   // We should not be asked to create a surface that already exists.
   auto it = surface_map_.find(surface_info.id());
-  if (it != surface_map_.end())
-    return nullptr;
+  if (it != surface_map_.end()) {
+    return base::unexpected("surface already exists");
+  }
 
   SurfaceAllocationGroup* allocation_group =
       GetOrCreateAllocationGroupForSurfaceId(surface_info.id());
   // GetOrCreateAllocationGroupForSurfaceId can fail if two FrameSinkIds use the
   // same embed token.
-  if (!allocation_group)
-    return nullptr;
+  if (!allocation_group) {
+    return base::unexpected("Cannot reuse embed token across frame sinks");
+  }
 
   std::unique_ptr<Surface> surface = std::make_unique<Surface>(
       surface_info, this, allocation_group, surface_client,
@@ -150,7 +154,7 @@ Surface* SurfaceManager::CreateSurface(
   // is received, is added to prevent this from happening.
   AddTemporaryReference(surface_info.id());
 
-  return surface_map_[surface_info.id()].get();
+  return base::ok(surface_map_[surface_info.id()].get());
 }
 
 void SurfaceManager::MarkSurfaceForDestruction(const SurfaceId& surface_id) {
@@ -164,7 +168,9 @@ void SurfaceManager::MarkSurfaceForDestruction(const SurfaceId& surface_id) {
 void SurfaceManager::InvalidateFrameSinkId(const FrameSinkId& frame_sink_id) {
   auto it = frame_sink_id_to_allocation_groups_.find(frame_sink_id);
   if (it != frame_sink_id_to_allocation_groups_.end()) {
-    for (SurfaceAllocationGroup* group : it->second) {
+    // Copy allocation group vector since it can be modified while iterating.
+    auto allocation_groups = it->second;
+    for (SurfaceAllocationGroup* group : allocation_groups) {
       group->WillNotRegisterNewSurfaces();
     }
   }
@@ -224,9 +230,6 @@ void SurfaceManager::GarbageCollectSurfaces() {
 
   // ~Surface() draw callback could modify |surfaces_to_destroy_|.
   for (const auto& iter : surfaces_to_delete) {
-    base::TimeDelta delta = base::TimeTicks::Now() - iter.second;
-    UMA_HISTOGRAM_TIMES(
-        "Compositing.SurfaceManager.MarkForDestructionToDestroy", delta);
     DestroySurfaceInternal(iter.first);
   }
 
@@ -501,14 +504,16 @@ Surface* SurfaceManager::GetSurfaceForId(const SurfaceId& surface_id) const {
 bool SurfaceManager::SurfaceModified(
     const SurfaceId& surface_id,
     const BeginFrameAck& ack,
-    SurfaceObserver::HandleInteraction handle_interaction) {
+    SurfaceObserver::HandleInteraction handle_interaction,
+    const std::vector<ui::LatencyInfo>& latency_info) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   bool changed = false;
   if (handle_interaction == SurfaceObserver::HandleInteraction::kYes) {
     last_interactive_frame_ = ack.frame_id;
   }
   for (auto& observer : observer_list_) {
-    changed |= observer.OnSurfaceDamaged(surface_id, ack, handle_interaction);
+    changed |= observer.OnSurfaceDamaged(surface_id, ack, handle_interaction,
+                                         latency_info);
   }
   return changed;
 }
@@ -529,9 +534,8 @@ void SurfaceManager::SurfaceActivated(Surface* surface) {
   // Trigger a display frame if necessary.
   const CompositorFrameMetadata& metadata = surface->GetActiveFrameMetadata();
   if (!SurfaceModified(surface->surface_id(), metadata.begin_frame_ack,
-                       GetHandleInteraction(metadata))) {
-    TRACE_EVENT_INSTANT0("viz", "Damage not visible.",
-                         TRACE_EVENT_SCOPE_THREAD);
+                       GetHandleInteraction(metadata), metadata.latency_info)) {
+    TRACE_EVENT_INSTANT("viz", "Damage not visible.");
     surface->SendAckToClient();
   } else if (HasBlockedEmbedder(surface->surface_id().frame_sink_id())) {
     // If the Surface is a part of a blocked embedding group, Ack even if it is
@@ -586,7 +590,7 @@ void SurfaceManager::SurfaceDamageExpected(const SurfaceId& surface_id,
 void SurfaceManager::DestroySurfaceInternal(const SurfaceId& surface_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   auto it = surface_map_.find(surface_id);
-  CHECK(it != surface_map_.end(), base::NotFatalUntil::M130);
+  CHECK(it != surface_map_.end());
   // Make sure that the surface is removed from the map before being actually
   // destroyed. An ack could be sent during the destruction of a surface which
   // could trigger a synchronous frame submission to a half-destroyed surface
@@ -732,8 +736,28 @@ void SurfaceManager::AggregatedFrameSinksChanged() {
     delegate_->AggregatedFrameSinksChanged();
 }
 
+void SurfaceManager::AddFrameSinkObserver(FrameSinkObserver* obs) {
+  if (delegate_) {
+    return delegate_->AddObserver(obs);
+  }
+}
+
+void SurfaceManager::RemoveFrameSinkObserver(FrameSinkObserver* obs) {
+  if (delegate_) {
+    return delegate_->RemoveObserver(obs);
+  }
+}
+
+bool SurfaceManager::FrameSinkManagerHasViewTransitionToken(
+    const blink::ViewTransitionToken& transition_token) {
+  if (delegate_) {
+    return delegate_->HasViewTransitionToken(transition_token);
+  }
+  return false;
+}
+
 void SurfaceManager::CommitFramesInRangeRecursively(
-    const SurfaceRange& range,
+    SurfaceRange range,
     const CommitPredicate& predicate) {
   // Technically we need only latest active surface, but because activation will
   // happen during commit, it's impossible to predict which one will be active,

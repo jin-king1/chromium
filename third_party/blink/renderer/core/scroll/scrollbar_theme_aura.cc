@@ -34,6 +34,7 @@
 #include "build/build_config.h"
 #include "cc/input/scrollbar.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme_fluent.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme_overlay.h"
@@ -84,47 +85,23 @@ bool operator==(const PartPaintingParams& a, const PartPaintingParams& b) {
              std::tie(b.should_paint, b.part, b.state);
 }
 
-bool operator!=(const PartPaintingParams& a, const PartPaintingParams& b) {
-  return !(a == b);
-}
-
 PartPaintingParams ButtonPartPaintingParams(const Scrollbar& scrollbar,
                                             float position,
                                             ScrollbarPart part) {
-  WebThemeEngine::Part paint_part;
-  WebThemeEngine::State state = WebThemeEngine::kStateNormal;
-  bool check_min = false;
-  bool check_max = false;
-
-  if (scrollbar.Orientation() == kHorizontalScrollbar) {
-    if (part == kBackButtonStartPart) {
-      paint_part = WebThemeEngine::kPartScrollbarLeftArrow;
-      check_min = true;
-    } else {
-      paint_part = WebThemeEngine::kPartScrollbarRightArrow;
-      check_max = true;
-    }
-  } else {
-    if (part == kBackButtonStartPart) {
-      paint_part = WebThemeEngine::kPartScrollbarUpArrow;
-      check_min = true;
-    } else {
-      paint_part = WebThemeEngine::kPartScrollbarDownArrow;
-      check_max = true;
-    }
+  const WebThemeEngine::State state = scrollbar.GetStateForPart(part);
+  if (part == kBackButtonStartPart) {
+    return PartPaintingParams(
+        (scrollbar.Orientation() == kHorizontalScrollbar)
+            ? WebThemeEngine::kPartScrollbarLeftArrow
+            : WebThemeEngine::kPartScrollbarUpArrow,
+        (position <= 0) ? WebThemeEngine::kStateDisabled : state);
   }
-
-  if ((check_min && (position <= 0)) ||
-      (check_max && position >= scrollbar.Maximum())) {
-    state = WebThemeEngine::kStateDisabled;
-  } else {
-    if (part == scrollbar.PressedPart())
-      state = WebThemeEngine::kStatePressed;
-    else if (part == scrollbar.HoveredPart())
-      state = WebThemeEngine::kStateHover;
-  }
-
-  return PartPaintingParams(paint_part, state);
+  return PartPaintingParams((scrollbar.Orientation() == kHorizontalScrollbar)
+                                ? WebThemeEngine::kPartScrollbarRightArrow
+                                : WebThemeEngine::kPartScrollbarDownArrow,
+                            (position >= scrollbar.Maximum())
+                                ? WebThemeEngine::kStateDisabled
+                                : state);
 }
 
 }  // namespace
@@ -227,9 +204,10 @@ int ScrollbarThemeAura::MinimumThumbLength(const Scrollbar& scrollbar) const {
 }
 
 void ScrollbarThemeAura::PaintTrackBackgroundAndButtons(
-    GraphicsContext& context,
+    const PaintInfo& paint_info,
     const Scrollbar& scrollbar,
     const gfx::Rect& rect) {
+  GraphicsContext& context = paint_info.context;
   if (rect.size() == scrollbar.FrameRect().size()) {
     // The non-nine-patch code path. The caller should use this code path if
     // - The nine-patch canvas is the same as the scrollbar rect;
@@ -237,7 +215,7 @@ void ScrollbarThemeAura::PaintTrackBackgroundAndButtons(
     // - There are tickmarks; OR
     // - Is painting non-composited scrollbars
     //   (from ScrollbarDisplayItem::Paint()).
-    ScrollbarTheme::PaintTrackBackgroundAndButtons(context, scrollbar, rect);
+    ScrollbarTheme::PaintTrackBackgroundAndButtons(paint_info, scrollbar, rect);
     return;
   }
 
@@ -259,11 +237,11 @@ void ScrollbarThemeAura::PaintTrackBackgroundAndButtons(
 
   gfx::Rect back_button_rect = BackButtonRect(scrollbar);
   if (back_button_rect.IsEmpty()) {
-    PaintTrackBackground(context, scrollbar, gfx::Rect(1, 1));
+    PaintTrackBackground(paint_info, scrollbar, gfx::Rect(1, 1));
     return;
   }
   back_button_rect.Offset(offset);
-  PaintButton(context, scrollbar, back_button_rect, kBackButtonStartPart);
+  PaintButton(paint_info, scrollbar, back_button_rect, kBackButtonStartPart);
 
   gfx::Rect forward_button_rect = back_button_rect;
   if (scrollbar.Orientation() == kVerticalScrollbar) {
@@ -273,7 +251,8 @@ void ScrollbarThemeAura::PaintTrackBackgroundAndButtons(
     forward_button_rect.Offset(back_button_rect.width() + aperture_track_space,
                                0);
   }
-  PaintButton(context, scrollbar, forward_button_rect, kForwardButtonEndPart);
+  PaintButton(paint_info, scrollbar, forward_button_rect,
+              kForwardButtonEndPart);
 
   gfx::Rect track_rect = back_button_rect;
   if (scrollbar.Orientation() == kVerticalScrollbar) {
@@ -283,12 +262,13 @@ void ScrollbarThemeAura::PaintTrackBackgroundAndButtons(
     track_rect.Offset(back_button_rect.width(), 0);
     track_rect.set_width(aperture_track_space);
   }
-  PaintTrackBackground(context, scrollbar, track_rect);
+  PaintTrackBackground(paint_info, scrollbar, track_rect);
 }
 
-void ScrollbarThemeAura::PaintTrackBackground(GraphicsContext& context,
+void ScrollbarThemeAura::PaintTrackBackground(const PaintInfo& paint_info,
                                               const Scrollbar& scrollbar,
                                               const gfx::Rect& rect) {
+  GraphicsContext& context = paint_info.context;
   if (rect.IsEmpty())
     return;
 
@@ -314,20 +294,22 @@ void ScrollbarThemeAura::PaintTrackBackground(GraphicsContext& context,
   }
 
   WebThemeEngine::ExtraParams extra_params(scrollbar_track);
-  mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
+  const mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
   WebThemeEngineHelper::GetNativeThemeEngine()->Paint(
       context.Canvas(),
       scrollbar.Orientation() == kHorizontalScrollbar
           ? WebThemeEngine::kPartScrollbarHorizontalTrack
           : WebThemeEngine::kPartScrollbarVerticalTrack,
-      state, rect, &extra_params, color_scheme, scrollbar.InForcedColorsMode(),
+      state, rect, &extra_params, scrollbar.InForcedColorsMode(), color_scheme,
+      scrollbar.GetPreferredContrast(),
       scrollbar.GetColorProvider(color_scheme));
 }
 
-void ScrollbarThemeAura::PaintButton(GraphicsContext& gc,
+void ScrollbarThemeAura::PaintButton(const PaintInfo& paint_info,
                                      const Scrollbar& scrollbar,
                                      const gfx::Rect& rect,
                                      ScrollbarPart part) {
+  GraphicsContext& gc = paint_info.context;
   PartPaintingParams params =
       ButtonPartPaintingParams(scrollbar, scrollbar.CurrentPos(), part);
   if (!params.should_paint)
@@ -348,39 +330,36 @@ void ScrollbarThemeAura::PaintButton(GraphicsContext& gc,
         scrollbar.ScrollbarTrackColor().value().toSkColor4f().toSkColor();
   }
   WebThemeEngine::ExtraParams extra_params(scrollbar_button);
-  mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
+  const mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
   WebThemeEngineHelper::GetNativeThemeEngine()->Paint(
-      gc.Canvas(), params.part, params.state, rect, &extra_params, color_scheme,
-      scrollbar.InForcedColorsMode(), scrollbar.GetColorProvider(color_scheme));
+      gc.Canvas(), params.part, params.state, rect, &extra_params,
+      scrollbar.InForcedColorsMode(), color_scheme,
+      scrollbar.GetPreferredContrast(),
+      scrollbar.GetColorProvider(color_scheme));
 }
 
-void ScrollbarThemeAura::PaintThumb(GraphicsContext& gc,
+void ScrollbarThemeAura::PaintThumb(const PaintInfo& paint_info,
                                     const Scrollbar& scrollbar,
                                     const gfx::Rect& rect) {
+  GraphicsContext& gc = paint_info.context;
   if (DrawingRecorder::UseCachedDrawingIfPossible(gc, scrollbar,
                                                   DisplayItem::kScrollbarThumb))
     return;
 
   DrawingRecorder recorder(gc, scrollbar, DisplayItem::kScrollbarThumb, rect);
 
-  WebThemeEngine::State state;
-  cc::PaintCanvas* canvas = gc.Canvas();
-  if (scrollbar.PressedPart() == kThumbPart) {
-    state = WebThemeEngine::kStatePressed;
-  } else if (scrollbar.HoveredPart() == kThumbPart) {
-    state = WebThemeEngine::kStateHover;
-  } else {
-    state = WebThemeEngine::kStateNormal;
-  }
+  const WebThemeEngine::Part part =
+      (scrollbar.Orientation() == kVerticalScrollbar)
+          ? WebThemeEngine::kPartScrollbarVerticalThumb
+          : WebThemeEngine::kPartScrollbarHorizontalThumb;
 
-  mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
   WebThemeEngine::ExtraParams params(BuildScrollbarThumbExtraParams(scrollbar));
+
+  const mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
   WebThemeEngineHelper::GetNativeThemeEngine()->Paint(
-      canvas,
-      scrollbar.Orientation() == kHorizontalScrollbar
-          ? WebThemeEngine::kPartScrollbarHorizontalThumb
-          : WebThemeEngine::kPartScrollbarVerticalThumb,
-      state, rect, &params, color_scheme, scrollbar.InForcedColorsMode(),
+      gc.Canvas(), part, scrollbar.GetStateForPart(kThumbPart), rect, &params,
+      scrollbar.InForcedColorsMode(), color_scheme,
+      scrollbar.GetPreferredContrast(),
       scrollbar.GetColorProvider(color_scheme));
 }
 
@@ -519,21 +498,14 @@ gfx::Insets ScrollbarThemeAura::SolidColorThumbInsets(
 
 SkColor4f ScrollbarThemeAura::ThumbColor(const Scrollbar& scrollbar) const {
   CHECK(UsesSolidColorThumb());
-  WebThemeEngine::State state;
-  if (scrollbar.PressedPart() == kThumbPart) {
-    state = WebThemeEngine::kStatePressed;
-  } else if (scrollbar.HoveredPart() == kThumbPart) {
-    state = WebThemeEngine::kStateHover;
-  } else {
-    state = WebThemeEngine::kStateNormal;
-  }
   WebThemeEngine::ExtraParams params(BuildScrollbarThumbExtraParams(scrollbar));
   return WebThemeEngineHelper::GetNativeThemeEngine()->GetScrollbarThumbColor(
-      state, &params, scrollbar.GetColorProvider(scrollbar.UsedColorScheme()));
+      scrollbar.GetStateForPart(kThumbPart), &params,
+      scrollbar.GetColorProvider(scrollbar.UsedColorScheme()));
 }
 
 bool ScrollbarThemeAura::UsesNinePatchTrackAndButtonsResource() const {
-  return RuntimeEnabledFeatures::AuraScrollbarUsesNinePatchTrackEnabled();
+  return true;
 }
 
 gfx::Size ScrollbarThemeAura::NinePatchTrackAndButtonsCanvasSize(
@@ -553,13 +525,13 @@ gfx::Size ScrollbarThemeAura::NinePatchTrackAndButtonsCanvasSize(
   const gfx::Size scrollbar_size = ScaleToCeiledSize(scrollbar.Size(), scale);
   if (scrollbar.Orientation() == kVerticalScrollbar) {
     return gfx::Size(
-        button_size.width(),
+        base::ClampFloor(button_size.width()),
         std::min(scrollbar_size.height(),
                  base::ClampCeil(button_size.height() * 2 + scale)));
   } else {
     return gfx::Size(std::min(scrollbar_size.width(),
                               base::ClampCeil(button_size.width() * 2 + scale)),
-                     button_size.height());
+                     base::ClampFloor(button_size.height()));
   }
 }
 

@@ -8,21 +8,20 @@
 #include <string>
 #include <vector>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/permissions/object_permission_context_base.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/webid/federated_identity_data_model.h"
-#include "content/public/browser/federated_identity_permission_context_delegate.h"
+#include "content/public/browser/webid/federated_identity_permission_context_delegate.h"
 #include "net/base/schemeful_site.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom-forward.h"
 
 namespace content {
 class BrowserContext;
-}
+}  // namespace content
 
 namespace blink::common::webid {
-struct LoginStatusAccount;
 struct LoginStatusOptions;
 }  // namespace blink::common::webid
 
@@ -80,8 +79,7 @@ class FederatedIdentityPermissionContext
       const std::string& account_id) override;
   std::optional<bool> GetIdpSigninStatus(
       const url::Origin& idp_origin) override;
-  std::vector<blink::common::webid::LoginStatusAccount> GetAccountProfiles(
-      const url::Origin& identity_provider) override;
+  base::ListValue GetAccounts(const url::Origin& identity_provider) override;
   void SetIdpSigninStatus(
       const url::Origin& idp_origin,
       bool idp_signin_status,

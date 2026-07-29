@@ -27,6 +27,7 @@
 #include "remoting/host/register_support_host_request.h"
 #include "remoting/protocol/errors.h"
 #include "remoting/protocol/validating_authenticator.h"
+#include "remoting/signaling/ftl_signal_strategy.h"
 #include "remoting/signaling/signal_strategy.h"
 
 namespace remoting {
@@ -38,16 +39,11 @@ class DesktopEnvironmentFactory;
 class FtlSignalingConnector;
 class HostEventLogger;
 class HostEventReporter;
-class HostStatusLogger;
 class HostStatusMonitor;
-class LogToServer;
 class OAuthTokenGetter;
 class RegisterSupportHostRequest;
 class RsaKeyPair;
 
-namespace protocol {
-struct IceConfig;
-}  // namespace protocol
 
 // Internal implementation of the plugin's It2Me host function.
 class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
@@ -57,9 +53,8 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
     DeferredConnectContext();
     ~DeferredConnectContext();
 
-    std::unique_ptr<LogToServer> log_to_server;
     std::unique_ptr<RegisterSupportHostRequest> register_request;
-    std::unique_ptr<SignalStrategy> signal_strategy;
+    std::unique_ptr<FtlSignalStrategy> signal_strategy;
 
     // `signaling_token_getter_` is used for signaling, which may require a
     // non-CRD token scope, while `api_token_getter_` is used for all other
@@ -70,18 +65,12 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
     std::unique_ptr<OAuthTokenGetter> signaling_token_getter;
     std::unique_ptr<OAuthTokenGetter> api_token_getter;
 
-    // Since the deferred context only provides an interface* for the signal
-    // strategy, we use this boolean to indicate whether the host process should
-    // own things like reconnecting signaling if there is a transient network
-    // error.
-    // TODO(joedow): Remove this field once delegated signaling has been
-    // deprecated and removed.
-    bool use_ftl_signaling = false;
     // Only set when FTL signaling is being used.
     std::string ftl_device_id;
 
-    // Use corp SessionAuthz auth instead of shared secret auth.
-    bool use_corp_session_authz = false;
+    // Indicates whether the user is a corp user and corp flows need to be used
+    // instead of the external ones.
+    bool is_corp_user = false;
   };
 
   using CreateDeferredConnectContext =
@@ -109,7 +98,8 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   It2MeHost& operator=(const It2MeHost&) = delete;
 
   // Session parameters provided by the remote command infrastructure when the
-  // session is started from the admin console for a managed Chrome OS device.
+  // session is started from the admin console or Class Tools (boca) for a
+  // managed Chrome OS device.
   void set_chrome_os_enterprise_params(ChromeOsEnterpriseParams params);
   // Callers should call is_enterprise_session() first to ensure the params are
   // present and retrievable.
@@ -120,6 +110,13 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   // for a managed Chrome OS device.
   bool is_enterprise_session() const {
     return chrome_os_enterprise_params_.has_value();
+  }
+  // Indicates whether this support session was initiated by Class tools
+  // for a managed Chrome OS device.
+  bool is_class_management_session() const {
+    return chrome_os_enterprise_params_.has_value() &&
+           chrome_os_enterprise_params_->request_origin ==
+               remoting::ChromeOsEnterpriseRequestOrigin::kClassManagement;
   }
 
   // If set, only |authorized_helper| will be allowed to connect to this host.
@@ -137,12 +134,11 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   // Creates It2Me host structures and starts the host.
   virtual void Connect(
       std::unique_ptr<ChromotingHostContext> context,
-      base::Value::Dict policies,
+      base::DictValue policies,
       std::unique_ptr<It2MeConfirmationDialogFactory> dialog_factory,
       base::WeakPtr<It2MeHost::Observer> observer,
       CreateDeferredConnectContext create_context,
-      const std::string& username,
-      const protocol::IceConfig& ice_config);
+      const std::string& username);
 
   // Disconnects and shuts down the host.
   virtual void Disconnect();
@@ -167,7 +163,7 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
 #endif
 
   // Called when initial policies are read and when they change.
-  void OnPolicyUpdate(base::Value::Dict policies);
+  void OnPolicyUpdate(base::DictValue policies);
 
  protected:
   friend class base::RefCountedThreadSafe<It2MeHost>;
@@ -195,7 +191,6 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
 
   // Task posted to the network thread from Connect().
   void ConnectOnNetworkThread(const std::string& username,
-                              const protocol::IceConfig& ice_config,
                               CreateDeferredConnectContext create_context);
 
   // Called when the support host registration completes.
@@ -214,7 +209,7 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   void UpdateHostDomainListPolicy(std::vector<std::string> host_domain_list);
   void UpdateClientDomainListPolicy(
       std::vector<std::string> client_domain_list);
-  void UpdateLocalSessionPolicies(const base::Value::Dict& platform_policies);
+  void UpdateLocalSessionPolicies(const base::DictValue& platform_policies);
 
   void DisconnectOnNetworkThread(
       protocol::ErrorCode error_code = protocol::ErrorCode::OK);
@@ -225,9 +220,8 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
       const std::string& remote_jid,
       protocol::ValidatingAuthenticator::ResultCallback result_callback);
 
-  // Determines the policy key used to determine whether the remote support
-  // connection is allowed. Enterprise connections use a separate policy.
-  const char* GetRemoteSupportPolicyKey() const;
+  // Determines if remote support connections are allowed by policy.
+  bool RemoteSupportConnectionsAllowed(const base::DictValue& policies);
 
   // Indicates whether the session allows a ChromeOS admin to reconnect.
   bool SessionSupportsReconnections() const;
@@ -239,9 +233,8 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   // Caller supplied fields.
   std::unique_ptr<ChromotingHostContext> host_context_;
   base::WeakPtr<It2MeHost::Observer> observer_;
-  std::unique_ptr<SignalStrategy> signal_strategy_;
+  std::unique_ptr<FtlSignalStrategy> signal_strategy_;
   std::unique_ptr<FtlSignalingConnector> ftl_signaling_connector_;
-  std::unique_ptr<LogToServer> log_to_server_;
   std::unique_ptr<OAuthTokenGetter> api_token_getter_;
 
   It2MeHostState state_ = It2MeHostState::kDisconnected;
@@ -256,7 +249,6 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   std::string ftl_device_id_;
   scoped_refptr<RsaKeyPair> host_key_pair_;
   std::unique_ptr<RegisterSupportHostRequest> register_request_;
-  std::unique_ptr<HostStatusLogger> host_status_logger_;
   std::unique_ptr<DesktopEnvironmentFactory> desktop_environment_factory_;
   std::unique_ptr<HostEventLogger> host_event_logger_;
   std::unique_ptr<LocalSessionPoliciesProvider>
@@ -291,7 +283,7 @@ class It2MeHost : public base::RefCountedThreadSafe<It2MeHost>,
   std::optional<bool> last_reported_relay_connections_allowed_ = false;
 
   // Set when the session was initiated for a managed Chrome OS device by an
-  // admin using the admin console.
+  // admin using the admin console or Class Tools (boca).
   std::optional<ChromeOsEnterpriseParams> chrome_os_enterprise_params_;
 
   // Only the username stored in |authorized_helper_| will be allowed to connect

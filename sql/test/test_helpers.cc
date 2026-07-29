@@ -24,6 +24,9 @@
 #include "base/numerics/byte_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/types/expected.h"
+#include "sql/database.h"
+#include "sql/internal_api_token.h"
 #include "sql/statement.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/sqlite/sqlite3.h"
@@ -85,7 +88,7 @@ std::optional<int> GetRootPage(sql::Database& db, std::string_view tree_name) {
   constexpr size_t kPageSizeOffset = 16;
   constexpr uint16_t kMinPageSize = 512;
   uint16_t raw_page_size =
-      base::numerics::U16FromBigEndian(header.subspan<kPageSizeOffset, 2u>());
+      base::U16FromBigEndian(header.subspan<kPageSizeOffset, 2u>());
   const int page_size = (raw_page_size == 1) ? 65536 : raw_page_size;
   // Sanity-check that the page size is valid.
   if (page_size < kMinPageSize || (page_size & (page_size - 1)) != 0)
@@ -98,7 +101,7 @@ std::optional<int> GetRootPage(sql::Database& db, std::string_view tree_name) {
   if (page_count > std::numeric_limits<uint32_t>::max())
     return false;
   header.subspan<kPageCountOffset, 4u>().copy_from(
-      base::numerics::U32ToBigEndian(static_cast<uint32_t>(page_count)));
+      base::U32ToBigEndian(static_cast<uint32_t>(page_count)));
 
   // Update change count so outstanding readers know the info changed.
   // See https://www.sqlite.org/fileformat2.html#file_change_counter
@@ -106,13 +109,13 @@ std::optional<int> GetRootPage(sql::Database& db, std::string_view tree_name) {
   // https://www.sqlite.org/fileformat2.html#write_library_version_number_and_version_valid_for_number
   constexpr size_t kFileChangeCountOffset = 24;
   constexpr size_t kVersionValidForOffset = 92;
-  uint32_t old_change_count = base::numerics::U32FromBigEndian(
-      header.subspan<kFileChangeCountOffset, 4u>());
+  uint32_t old_change_count =
+      base::U32FromBigEndian(header.subspan<kFileChangeCountOffset, 4u>());
   const uint32_t new_change_count = old_change_count + 1;
   header.subspan<kFileChangeCountOffset, 4u>().copy_from(
-      base::numerics::U32ToBigEndian(new_change_count));
+      base::U32ToBigEndian(new_change_count));
   header.subspan<kVersionValidForOffset, 4u>().copy_from(
-      base::numerics::U32ToBigEndian(new_change_count));
+      base::U32ToBigEndian(new_change_count));
   return true;
 }
 
@@ -128,8 +131,7 @@ std::optional<int> ReadDatabasePageSize(const base::FilePath& db_path) {
   if (!file.ReadAndCheck(kPageSizeOffset, raw_page_size_bytes))
     return std::nullopt;
 
-  uint16_t raw_page_size =
-      base::numerics::U16FromBigEndian(raw_page_size_bytes);
+  uint16_t raw_page_size = base::U16FromBigEndian(raw_page_size_bytes);
   // The SQLite database format initially allocated a 16 bits for storing the
   // page size. This worked out until SQLite wanted to support 64kb pages,
   // because 65536 (64kb) doesn't fit in a 16-bit unsigned integer.
@@ -322,7 +324,7 @@ std::string ExecuteWithResults(Database* db,
     for (int i = 0; i < s.ColumnCount(); ++i) {
       if (i > 0)
         ret += column_sep;
-      ret += s.ColumnString(i);
+      ret += s.ColumnStringView(i);
     }
   }
   return ret;
@@ -358,6 +360,18 @@ ColumnInfo ColumnInfo::Create(Database* db,
 
   return {std::string(data_type), std::string(collation_sequence),
           not_null != 0, primary_key != 0, auto_increment != 0};
+}
+
+base::expected<int, int> GetUncheckpointedFrameCount(const Database& db) {
+  int log_size = 0;      // Total number of frames in the log file.
+  int checkpointed = 0;  // Number of frames checkpointed.
+  int result = sqlite3_wal_checkpoint_v2(
+      db.db(InternalApiToken()), /*zDb=*/nullptr,
+      /*eMode=*/SQLITE_CHECKPOINT_NOOP, &log_size, &checkpointed);
+  if (result != SQLITE_OK) {
+    return base::unexpected(result);
+  }
+  return base::ok(log_size - checkpointed);
 }
 
 }  // namespace sql::test

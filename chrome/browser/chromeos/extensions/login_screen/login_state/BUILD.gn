@@ -18,7 +18,6 @@ static_library("login_state") {
   public_deps = [
     "//base",
     "//chrome/common/extensions/api",
-    "//chromeos/crosapi/mojom",
     "//extensions/browser",
     "//mojo/public/cpp/bindings",
   ]
@@ -26,6 +25,9 @@ static_library("login_state") {
   deps = [
     "//chrome/browser/profiles:profile",
     "//chrome/common:non_code_constants",
+    "//chromeos/ash/components/browser_context_helper",
+    "//components/session_manager:base",
+    "//components/session_manager/core",
     "//content/public/browser",
   ]
 }
@@ -42,7 +44,12 @@ source_set("browser_tests") {
 
   deps = [
     ":login_state",
+    "//chrome/browser/ash/extensions",
+    "//chrome/browser/ash/login/lock:test_support",
+    "//chrome/browser/policy:extension_force_install_mixin",
+    "//chrome/browser/profiles:profile",
     "//chrome/test:test_support",
+    "//chromeos/ash/components/browser_context_helper",
     "//components/session_manager:base",
     "//components/session_manager/core",
     "//content/test:test_support",
@@ -62,15 +69,14 @@ source_set("unit_tests") {
   deps = [
     ":login_state",
     "//base",
-    "//chrome/browser/ash/crosapi",
-    "//chrome/browser/ash/crosapi:test_support",
     "//chrome/common:non_code_constants",
     "//chrome/common/extensions/api",
     "//chrome/test:test_support",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/login/login_state",
-    "//chromeos/crosapi/mojom",
     "//components/session_manager:base",
     "//components/session_manager/core",
+    "//components/session_manager/core:test_support",
     "//content/test:test_support",
     "//extensions:test_support",
     "//extensions/browser",

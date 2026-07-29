@@ -33,6 +33,8 @@ class PdfInkBrush {
   PdfInkBrush& operator=(const PdfInkBrush&) = delete;
   ~PdfInkBrush();
 
+  std::optional<ink::Brush> CloneToPassthroughModelWithSize(float size) const;
+
   // Determine the area to invalidate encompassing a line between two
   // consecutive points where a brush is applied.  Values are in screen-based
   // coordinates.  The area to invalidated is correlated to the size of the
@@ -46,7 +48,7 @@ class PdfInkBrush {
 
   static std::string TypeToString(Type brush_type);
 
-  // Returns whether `size` is in range or not.
+  // Returns whether `size` is a valid drawing brush size or not.
   static bool IsToolSizeInRange(float size);
 
   const ink::Brush& ink_brush() const { return ink_brush_; }

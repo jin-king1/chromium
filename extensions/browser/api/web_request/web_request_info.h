@@ -16,16 +16,21 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/values.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/common/child_process_id.h"
 #include "extensions/browser/api/declarative_net_request/request_action.h"
-#include "extensions/browser/api/web_request/web_request_resource_type.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
-#include "ipc/ipc_message.h"
+#include "extensions/buildflags/buildflags.h"
+#include "extensions/common/api/web_request/web_request_resource_type.h"
+#include "ipc/constants.mojom-forward.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
+#include "net/ssl/ssl_info.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/url_response_head.mojom-forward.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -39,8 +44,7 @@ struct WebRequestInfoInitParams {
   // URLLoaderFactory interface.
   WebRequestInfoInitParams(
       uint64_t request_id,
-      int render_process_id,
-      int frame_routing_id,
+      content::GlobalRenderFrameHostId global_id,
       std::unique_ptr<ExtensionNavigationUIData> navigation_ui_data,
       const network::ResourceRequest& request,
       bool is_download,
@@ -58,19 +62,18 @@ struct WebRequestInfoInitParams {
 
   uint64_t id = 0;
   GURL url;
-  int render_process_id = -1;
-  int frame_routing_id = MSG_ROUTING_NONE;
+  content::GlobalRenderFrameHostId global_id;
   std::string method;
   bool is_navigation_request = false;
   std::optional<url::Origin> initiator;
   WebRequestResourceType web_request_type = WebRequestResourceType::OTHER;
   bool is_async = false;
   net::HttpRequestHeaders extra_request_headers;
-  std::optional<base::Value::Dict> request_body_data;
+  std::optional<base::DictValue> request_body_data;
   bool is_web_view = false;
   int web_view_instance_id = -1;
   int web_view_rules_registry_id = -1;
-  int web_view_embedder_process_id = -1;
+  content::ChildProcessId web_view_embedder_process_id;
   ExtensionApiFrameIdMap::FrameData frame_data;
   bool is_service_worker_script = false;
   std::optional<int64_t> navigation_id;
@@ -94,6 +97,8 @@ struct WebRequestInfo {
   // Fill in response data for this request.
   void AddResponseInfoFromResourceResponse(
       const network::mojom::URLResponseHead& response);
+
+  void AddSslInfo(const std::optional<net::SSLInfo>& ssl_info);
 
   // Erases all actions in `dnr_actions` that are associated with the given
   // `extension_id`.
@@ -122,13 +127,9 @@ struct WebRequestInfo {
   // The URL of the request.
   const GURL url;
 
-  // The ID of the render process which initiated the request, or -1 of not
-  // applicable (i.e. if initiated by the browser).
-  const int render_process_id;
-
-  // The frame routing ID of the frame which initiated this request, or
-  // MSG_ROUTING_NONE if the request was not initiated by a frame.
-  const int frame_routing_id = MSG_ROUTING_NONE;
+  // The ID and frame routing ID of the render process which initiated the
+  // request, or invalid if not applicable (i.e. if initiated by the browser).
+  const content::GlobalRenderFrameHostId global_id;
 
   // The HTTP method used for the request, if applicable.
   const std::string method;
@@ -169,17 +170,16 @@ struct WebRequestInfo {
   // A dictionary of request body data matching the format expected by
   // WebRequest API consumers. This may have a "formData" key and/or a "raw"
   // key. See WebRequest API documentation for more details.
-  std::optional<base::Value::Dict> request_body_data;
+  std::optional<base::DictValue> request_body_data;
 
   // Indicates whether this request was initiated by a <webview> instance.
   const bool is_web_view;
 
-  // If |is_web_view| is true, the instance ID, rules registry ID, and embedder
-  // process ID pertaining to the webview instance. Note that for browser-side
-  // navigation requests, |web_view_embedder_process_id| is always -1.
+  // If `is_web_view` is true, the instance ID, rules registry ID, and embedder
+  // process ID pertain to the webview instance.
   const int web_view_instance_id;
   const int web_view_rules_registry_id;
-  const int web_view_embedder_process_id;
+  const content::ChildProcessId web_view_embedder_process_id;
 
   // The Declarative Net Request (DNR) actions associated with this request that
   // are matched during the onBeforeRequest stage. Mutable since this is lazily
@@ -206,6 +206,9 @@ struct WebRequestInfo {
   // TODO(karandeepb, mcnee): For subresources, having "parent" in the name is
   // misleading. This should be renamed to indicate that this is the initiator.
   const content::GlobalRenderFrameHostId parent_routing_id;
+
+  // For SecurityInfo object.
+  std::optional<net::SSLInfo> ssl_info;
 };
 
 }  // namespace extensions

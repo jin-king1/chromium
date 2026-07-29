@@ -2,16 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "content/browser/browsing_data/clear_site_data_handler.h"
 
+#include <algorithm>
 #include <optional>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_split.h"
@@ -24,6 +19,7 @@
 #include "net/base/load_flags.h"
 #include "net/url_request/clear_site_data.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
 
 namespace content {
@@ -42,7 +38,9 @@ enum LoggableEventMask {
   CLEAR_SITE_DATA_CACHE = 1 << 2,
   CLEAR_SITE_DATA_BUCKETS = 1 << 3,
   CLEAR_SITE_DATA_CLIENT_HINTS = 1 << 4,
-  CLEAR_SITE_DATA_MAX_VALUE = 1 << 5,
+  CLEAR_SITE_DATA_PREFETCH_CACHE = 1 << 5,
+  CLEAR_SITE_DATA_PRERENDER_CACHE = 1 << 6,
+  CLEAR_SITE_DATA_MAX_VALUE = 1 << 7,
 };
 
 void LogEvent(int event) {
@@ -68,6 +66,12 @@ int ParametersMask(const ClearSiteDataTypeSet clear_site_data_types,
   }
   if (clear_site_data_types.Has(ClearSiteDataType::kClientHints)) {
     mask = mask | CLEAR_SITE_DATA_CLIENT_HINTS;
+  }
+  if (clear_site_data_types.Has(ClearSiteDataType::kPrefetchCache)) {
+    mask = mask | CLEAR_SITE_DATA_PREFETCH_CACHE;
+  }
+  if (clear_site_data_types.Has(ClearSiteDataType::kPrerenderCache)) {
+    mask = mask | CLEAR_SITE_DATA_PRERENDER_CACHE;
   }
   return mask;
 }
@@ -236,6 +240,17 @@ bool ClearSiteDataHandler::Run() {
     return false;
   }
 
+  // We can't clear the client hints cache outside of first-party contexts, but
+  // there's no reason to early return on an attempt. Instead, we alert here and
+  // bypass the data clearing in SiteDataClearer::RunAndDestroySelfWhenDone.
+  if (clear_site_data_types.Has(ClearSiteDataType::kClientHints) &&
+      (storage_key_ && storage_key_->IsThirdPartyContext())) {
+    delegate_->AddMessage(url_,
+                          "It's not possible to clear the client hints cache "
+                          "from a third-party context.",
+                          blink::mojom::ConsoleMessageLevel::kWarning);
+  }
+
   ExecuteClearingTask(
       origin, clear_site_data_types, storage_buckets_to_remove,
       base::BindOnce(&ClearSiteDataHandler::TaskFinished,
@@ -269,7 +284,7 @@ bool ClearSiteDataHandler::ParseHeader(
       net::ClearSiteDataHeaderContents(header);
   std::string output_types;
 
-  if (base::Contains(input_types, net::kDatatypeWildcard)) {
+  if (std::ranges::contains(input_types, net::kDatatypeWildcard)) {
     input_types.push_back(net::kDatatypeCookies);
     input_types.push_back(net::kDatatypeStorage);
     input_types.push_back(net::kDatatypeCache);
@@ -283,13 +298,13 @@ bool ClearSiteDataHandler::ParseHeader(
         base::EndsWith(input_type, net::kDatatypeStorageBucketSuffix)) {
       const int prefix_len = strlen(net::kDatatypeStorageBucketPrefix);
 
-      const std::string bucket_name = input_type.substr(
+      std::string bucket_name = input_type.substr(
           prefix_len,
           input_type.length() -
               (prefix_len + strlen(net::kDatatypeStorageBucketSuffix)));
 
       if (IsValidBucketName(bucket_name))
-        storage_buckets_to_remove->insert(bucket_name);
+        storage_buckets_to_remove->insert(std::move(bucket_name));
 
       // Exit the loop and continue since for buckets, there are no booleans
       // and the logic later would cause a crash.
@@ -305,6 +320,10 @@ bool ClearSiteDataHandler::ParseHeader(
       data_type = ClearSiteDataType::kCache;
     } else if (input_type == net::kDatatypeClientHints) {
       data_type = ClearSiteDataType::kClientHints;
+    } else if (input_type == net::kDatatypePrefetchCache) {
+      data_type = ClearSiteDataType::kPrefetchCache;
+    } else if (input_type == net::kDatatypePrerenderCache) {
+      data_type = ClearSiteDataType::kPrerenderCache;
     } else if (input_type == net::kDatatypeWildcard) {
       continue;
     } else {
@@ -313,6 +332,20 @@ bool ClearSiteDataHandler::ParseHeader(
           base::StringPrintf("Unrecognized type: %s.", input_type.c_str()),
           blink::mojom::ConsoleMessageLevel::kWarning);
       continue;
+    }
+
+    if (!base::FeatureList::IsEnabled(
+            blink::features::kClearSiteDataPrefetchPrerenderCache)) {
+      if (data_type == ClearSiteDataType::kPrefetchCache ||
+          data_type == ClearSiteDataType::kPrerenderCache) {
+        delegate->AddMessage(
+            current_url,
+            base::StringPrintf(
+                "prefetchCache and prerenderCache not enabled: %s.",
+                input_type.c_str()),
+            blink::mojom::ConsoleMessageLevel::kWarning);
+        continue;
+      }
     }
 
     DCHECK_NE(data_type, ClearSiteDataType::kUndefined);

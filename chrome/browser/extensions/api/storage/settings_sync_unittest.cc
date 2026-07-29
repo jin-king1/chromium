@@ -34,9 +34,12 @@
 #include "extensions/browser/event_router_factory.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/mock_extension_system.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/manifest.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using value_store::ValueStore;
 
@@ -87,7 +90,7 @@ testing::AssertionResult ValuesEq(
 // Logs when different.
 testing::AssertionResult SettingsEq(const char* _1,
                                     const char* _2,
-                                    const base::Value::Dict& expected,
+                                    const base::DictValue& expected,
                                     ValueStore::ReadResult actual) {
   if (!actual.status().ok()) {
     return testing::AssertionFailure()
@@ -111,7 +114,7 @@ class MockSyncChangeProcessor : public syncer::SyncChangeProcessor {
       const syncer::SyncChangeList& change_list) override {
     if (fail_all_requests_) {
       return syncer::ModelError(FROM_HERE,
-                                "MockSyncChangeProcessor: configured to fail");
+                                syncer::ModelError::Type::kGenericTestError);
     }
     for (const auto& sync_change : change_list) {
       changes_.push_back(std::make_unique<SettingSyncData>(sync_change));
@@ -137,8 +140,9 @@ class MockSyncChangeProcessor : public syncer::SyncChangeProcessor {
                                  const std::string& key) {
     std::vector<SettingSyncData*> matching_changes;
     for (const std::unique_ptr<SettingSyncData>& change : changes_) {
-      if (change->extension_id() == extension_id && change->key() == key)
+      if (change->extension_id() == extension_id && change->key() == key) {
         matching_changes.push_back(change.get());
+      }
     }
     if (matching_changes.empty()) {
       ADD_FAILURE() << "No matching changes for " << extension_id << "/" <<
@@ -240,8 +244,9 @@ class ExtensionSettingsSyncTest : public testing::Test {
       std::unique_ptr<SettingSyncData> sync_data(new SettingSyncData(data));
       std::unique_ptr<SettingSyncDataList>& list_for_extension =
           as_map[sync_data->extension_id()];
-      if (!list_for_extension)
+      if (!list_for_extension) {
         list_for_extension = std::make_unique<SettingSyncDataList>();
+      }
       list_for_extension->push_back(std::move(sync_data));
     }
     return as_map;
@@ -301,7 +306,7 @@ class ExtensionSettingsSyncTest : public testing::Test {
 
 TEST_F(ExtensionSettingsSyncTest, NoDataDoesNotInvokeSync) {
   syncer::DataType data_type = syncer::EXTENSION_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_EXTENSION;
+  Manifest::Type type = Manifest::Type::kExtension;
 
   PostOnBackendSequenceAndWait(FROM_HERE, [&, this]() {
     EXPECT_EQ(0u, GetAllSyncData(data_type).size());
@@ -331,7 +336,7 @@ TEST_F(ExtensionSettingsSyncTest, NoDataDoesNotInvokeSync) {
 
 TEST_F(ExtensionSettingsSyncTest, InSyncDataDoesNotInvokeSync) {
   syncer::DataType data_type = syncer::APP_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_LEGACY_PACKAGED_APP;
+  Manifest::Type type = Manifest::Type::kLegacyPackagedApp;
 
   base::Value value1("fooValue");
   base::Value value2(base::Value::Type::LIST);
@@ -380,7 +385,7 @@ TEST_F(ExtensionSettingsSyncTest, InSyncDataDoesNotInvokeSync) {
 
 TEST_F(ExtensionSettingsSyncTest, LocalDataWithNoSyncDataIsPushedToSync) {
   syncer::DataType data_type = syncer::EXTENSION_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_EXTENSION;
+  Manifest::Type type = Manifest::Type::kExtension;
 
   base::Value value1("fooValue");
   base::Value value2(base::Value::Type::LIST);
@@ -411,7 +416,7 @@ TEST_F(ExtensionSettingsSyncTest, LocalDataWithNoSyncDataIsPushedToSync) {
 
 TEST_F(ExtensionSettingsSyncTest, AnySyncDataOverwritesLocalData) {
   syncer::DataType data_type = syncer::APP_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_LEGACY_PACKAGED_APP;
+  Manifest::Type type = Manifest::Type::kLegacyPackagedApp;
 
   base::Value value1("fooValue");
   base::Value value2(base::Value::Type::LIST);
@@ -419,7 +424,7 @@ TEST_F(ExtensionSettingsSyncTest, AnySyncDataOverwritesLocalData) {
 
   // Maintain dictionaries mirrored to the expected values of the settings in
   // each storage area.
-  base::Value::Dict expected1, expected2;
+  base::DictValue expected1, expected2;
 
   // Pre-populate one of the storage areas.
   ValueStore* storage1 = AddExtensionAndGetStorage("s1", type);
@@ -454,7 +459,7 @@ TEST_F(ExtensionSettingsSyncTest, AnySyncDataOverwritesLocalData) {
 
 TEST_F(ExtensionSettingsSyncTest, ProcessSyncChanges) {
   syncer::DataType data_type = syncer::EXTENSION_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_EXTENSION;
+  Manifest::Type type = Manifest::Type::kExtension;
 
   base::Value value1("fooValue");
   base::Value value2(base::Value::Type::LIST);
@@ -467,7 +472,7 @@ TEST_F(ExtensionSettingsSyncTest, ProcessSyncChanges) {
   PostOnBackendSequenceAndWait(FROM_HERE, [&, this]() {
     // Maintain dictionaries mirrored to the expected values of the settings in
     // each storage area.
-    base::Value::Dict expected1, expected2;
+    base::DictValue expected1, expected2;
 
     storage1->Set(DEFAULTS, "foo", value1);
     expected1.Set("foo", value1.Clone());
@@ -527,7 +532,7 @@ TEST_F(ExtensionSettingsSyncTest, ProcessSyncChanges) {
 
 TEST_F(ExtensionSettingsSyncTest, PushToSync) {
   syncer::DataType data_type = syncer::APP_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_LEGACY_PACKAGED_APP;
+  Manifest::Type type = Manifest::Type::kLegacyPackagedApp;
 
   base::Value value1("fooValue");
   base::Value value2(base::Value::Type::LIST);
@@ -661,10 +666,10 @@ TEST_F(ExtensionSettingsSyncTest, ExtensionAndAppSettingsSyncSeparately) {
   value2.GetList().Append("barValue");
 
   // storage1 is an extension, storage2 is an app.
-  ValueStore* storage1 = AddExtensionAndGetStorage(
-      "s1", Manifest::TYPE_EXTENSION);
-  ValueStore* storage2 = AddExtensionAndGetStorage(
-      "s2", Manifest::TYPE_LEGACY_PACKAGED_APP);
+  ValueStore* storage1 =
+      AddExtensionAndGetStorage("s1", Manifest::Type::kExtension);
+  ValueStore* storage2 =
+      AddExtensionAndGetStorage("s2", Manifest::Type::kLegacyPackagedApp);
 
   PostOnBackendSequenceAndWait(FROM_HERE, [&, this]() {
     storage1->Set(DEFAULTS, "foo", value1);
@@ -712,7 +717,7 @@ TEST_F(ExtensionSettingsSyncTest, ExtensionAndAppSettingsSyncSeparately) {
 
 TEST_F(ExtensionSettingsSyncTest, FailingStartSyncingDisablesSync) {
   syncer::DataType data_type = syncer::EXTENSION_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_EXTENSION;
+  Manifest::Type type = Manifest::Type::kExtension;
 
   base::Value fooValue("fooValue");
   base::Value barValue("barValue");
@@ -739,12 +744,12 @@ TEST_F(ExtensionSettingsSyncTest, FailingStartSyncingDisablesSync) {
     GetExisting("bad", data_type)->set_status_code(ValueStore::OK);
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
 
@@ -758,13 +763,13 @@ TEST_F(ExtensionSettingsSyncTest, FailingStartSyncingDisablesSync) {
     EXPECT_EQ(1u, sync_processor_->changes().size());
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -783,13 +788,13 @@ TEST_F(ExtensionSettingsSyncTest, FailingStartSyncingDisablesSync) {
     }
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", barValue.Clone());
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -805,13 +810,13 @@ TEST_F(ExtensionSettingsSyncTest, FailingStartSyncingDisablesSync) {
     EXPECT_EQ(1u, sync_processor_->changes().size());
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", barValue.Clone());
       dict.Set("bar", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("bar", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -830,13 +835,13 @@ TEST_F(ExtensionSettingsSyncTest, FailingStartSyncingDisablesSync) {
     GetExisting("bad", data_type)->set_status_code(ValueStore::OK);
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       dict.Set("bar", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("bar", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -882,13 +887,13 @@ TEST_F(ExtensionSettingsSyncTest, FailingStartSyncingDisablesSync) {
     }
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       dict.Set("bar", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("bar", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -899,7 +904,7 @@ TEST_F(ExtensionSettingsSyncTest, FailingProcessChangesDisablesSync) {
   // The test above tests a failing ProcessSyncChanges too, but here test with
   // an initially passing MergeDataAndStartSyncing.
   syncer::DataType data_type = syncer::APP_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_LEGACY_PACKAGED_APP;
+  Manifest::Type type = Manifest::Type::kLegacyPackagedApp;
 
   base::Value fooValue("fooValue");
   base::Value barValue("barValue");
@@ -922,12 +927,12 @@ TEST_F(ExtensionSettingsSyncTest, FailingProcessChangesDisablesSync) {
     EXPECT_EQ(0u, sync_processor_->changes().size());
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -945,13 +950,13 @@ TEST_F(ExtensionSettingsSyncTest, FailingProcessChangesDisablesSync) {
     GetExisting("bad", data_type)->set_status_code(ValueStore::OK);
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -976,13 +981,13 @@ TEST_F(ExtensionSettingsSyncTest, FailingProcessChangesDisablesSync) {
     }
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -991,7 +996,7 @@ TEST_F(ExtensionSettingsSyncTest, FailingProcessChangesDisablesSync) {
 
 TEST_F(ExtensionSettingsSyncTest, FailingGetAllSyncDataDoesntStopSync) {
   syncer::DataType data_type = syncer::EXTENSION_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_EXTENSION;
+  Manifest::Type type = Manifest::Type::kExtension;
 
   base::Value fooValue("fooValue");
   base::Value barValue("barValue");
@@ -1039,7 +1044,7 @@ TEST_F(ExtensionSettingsSyncTest, FailingGetAllSyncDataDoesntStopSync) {
 
 TEST_F(ExtensionSettingsSyncTest, FailureToReadChangesToPushDisablesSync) {
   syncer::DataType data_type = syncer::APP_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_LEGACY_PACKAGED_APP;
+  Manifest::Type type = Manifest::Type::kLegacyPackagedApp;
 
   base::Value fooValue("fooValue");
   base::Value barValue("barValue");
@@ -1083,13 +1088,13 @@ TEST_F(ExtensionSettingsSyncTest, FailureToReadChangesToPushDisablesSync) {
     }
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", barValue.Clone());
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", fooValue.Clone());
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
@@ -1129,7 +1134,7 @@ TEST_F(ExtensionSettingsSyncTest, FailureToReadChangesToPushDisablesSync) {
 
 TEST_F(ExtensionSettingsSyncTest, FailureToPushLocalStateDisablesSync) {
   syncer::DataType data_type = syncer::EXTENSION_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_EXTENSION;
+  Manifest::Type type = Manifest::Type::kExtension;
 
   base::Value fooValue("fooValue");
   base::Value barValue("barValue");
@@ -1166,13 +1171,13 @@ TEST_F(ExtensionSettingsSyncTest, FailureToPushLocalStateDisablesSync) {
     }
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", barValue.Clone());
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -1208,7 +1213,7 @@ TEST_F(ExtensionSettingsSyncTest, FailureToPushLocalStateDisablesSync) {
 
 TEST_F(ExtensionSettingsSyncTest, FailureToPushLocalChangeDisablesSync) {
   syncer::DataType data_type = syncer::EXTENSION_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_EXTENSION;
+  Manifest::Type type = Manifest::Type::kExtension;
 
   base::Value fooValue("fooValue");
   base::Value barValue("barValue");
@@ -1250,13 +1255,13 @@ TEST_F(ExtensionSettingsSyncTest, FailureToPushLocalChangeDisablesSync) {
     }
 
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", barValue.Clone());
       dict.Set("bar", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, good->Get());
     }
     {
-      base::Value::Dict dict;
+      base::DictValue dict;
       dict.Set("foo", barValue.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, dict, bad->Get());
     }
@@ -1293,7 +1298,7 @@ TEST_F(ExtensionSettingsSyncTest, FailureToPushLocalChangeDisablesSync) {
 TEST_F(ExtensionSettingsSyncTest,
        LargeOutgoingChangeRejectedButIncomingAccepted) {
   syncer::DataType data_type = syncer::APP_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_LEGACY_PACKAGED_APP;
+  Manifest::Type type = Manifest::Type::kLegacyPackagedApp;
 
   // This value should be larger than the limit in sync_storage_backend.cc.
   base::Value large_value(std::string(10000, 'a'));
@@ -1325,7 +1330,7 @@ TEST_F(ExtensionSettingsSyncTest,
       GetSyncableService(data_type)->ProcessSyncChanges(FROM_HERE, change_list);
     }
     {
-      base::Value::Dict expected;
+      base::DictValue expected;
       expected.Set("large_value", large_value.Clone());
       EXPECT_PRED_FORMAT2(SettingsEq, expected, storage1->Get());
       EXPECT_PRED_FORMAT2(SettingsEq, expected, storage2->Get());
@@ -1337,7 +1342,7 @@ TEST_F(ExtensionSettingsSyncTest,
 
 TEST_F(ExtensionSettingsSyncTest, Dots) {
   syncer::DataType data_type = syncer::EXTENSION_SETTINGS;
-  Manifest::Type type = Manifest::TYPE_EXTENSION;
+  Manifest::Type type = Manifest::Type::kExtension;
 
   ValueStore* storage = AddExtensionAndGetStorage("ext", type);
 
@@ -1357,7 +1362,7 @@ TEST_F(ExtensionSettingsSyncTest, Dots) {
       ValueStore::ReadResult data = storage->Get();
       ASSERT_TRUE(data.status().ok());
 
-      base::Value::Dict expected_data;
+      base::DictValue expected_data;
       expected_data.Set("key.with.dot", base::Value("value"));
       EXPECT_EQ(expected_data, data.settings());
     }
@@ -1418,7 +1423,7 @@ TEST_F(ExtensionSettingsSyncTest, UnlimitedStorageForLocalButNotSync) {
   permissions.insert("unlimitedStorage");
   scoped_refptr<const Extension> extension =
       settings_test_util::AddExtensionWithIdAndPermissions(
-          profile_.get(), id, Manifest::TYPE_EXTENSION, permissions);
+          profile_.get(), id, Manifest::Type::kExtension, permissions);
 
   frontend_->RunWithStorage(extension, settings_namespace::SYNC,
                             base::BindOnce(&UnlimitedSyncStorageTestCallback));

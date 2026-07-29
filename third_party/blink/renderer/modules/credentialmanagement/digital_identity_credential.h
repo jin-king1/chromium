@@ -14,7 +14,7 @@ namespace blink {
 class Credential;
 class CredentialCreationOptions;
 class CredentialRequestOptions;
-class ExceptionState;
+class ExecutionContext;
 
 // Returns whether `CredentialRequestOptions options` contains a credential of
 // digital-identity type.
@@ -38,8 +38,7 @@ MODULES_EXPORT bool IsDigitalIdentityCredentialType(
 // communication with external sources.
 MODULES_EXPORT void DiscoverDigitalIdentityCredentialFromExternalSource(
     ScriptPromiseResolver<IDLNullable<Credential>>* resolver,
-    const CredentialRequestOptions& options,
-    ExceptionState& expection_state);
+    const CredentialRequestOptions& options);
 
 // Creates the digital-identity credential specified by `options`. Credentials
 // are stored in external wallets, and not stored in the browser. Therefore, the
@@ -47,8 +46,23 @@ MODULES_EXPORT void DiscoverDigitalIdentityCredentialFromExternalSource(
 // communication with external sources.
 MODULES_EXPORT void CreateDigitalIdentityCredentialInExternalSource(
     ScriptPromiseResolver<IDLNullable<Credential>>* resolver,
-    const CredentialCreationOptions& options,
-    ExceptionState& exception_state);
+    const CredentialCreationOptions& options);
+
+// What sort of digital credential operation is being performed.
+enum class DigitalCredentialExchangeType {
+  kPresentation,  // A get() request for presentation
+  kIssuance,      // A create() request for issuance
+  kQuery,         // Neither, just querying for support
+};
+
+// Returns true if the given protocol is supported by the Digital Credentials
+// API for the given request type. For presentation/issuance requests, it also
+// records a UseCounter for protocol usage and raises a deprecation warning for
+// unsupported protocols.
+MODULES_EXPORT bool CheckDigitalCredentialSupportedProtocol(
+    ExecutionContext* execution_context,
+    const String& protocol,
+    DigitalCredentialExchangeType type);
 
 }  // namespace blink
 

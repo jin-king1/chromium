@@ -4,6 +4,10 @@
 
 #include "gpu/command_buffer/client/shared_image_pool.h"
 
+#include <inttypes.h>
+
+#include "base/strings/stringprintf.h"
+#include "base/trace_event/process_memory_dump.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 
 namespace {
@@ -13,7 +17,8 @@ gpu::ImageInfo GetImageInfo(scoped_refptr<gpu::ClientImage> image) {
   return gpu::ImageInfo(
       shared_image->size(), shared_image->format(), shared_image->usage(),
       shared_image->color_space(), shared_image->surface_origin(),
-      shared_image->alpha_type(), shared_image->buffer_usage());
+      shared_image->alpha_type(), shared_image->buffer_usage(),
+      shared_image->is_software());
 }
 
 }  // namespace
@@ -29,7 +34,9 @@ ClientImage::ClientImage(scoped_refptr<ClientSharedImage> shared_image)
 
 ClientImage::~ClientImage() {
   CHECK(shared_image_);
-  shared_image_->UpdateDestructionSyncToken(std::move(sync_token_));
+  if (!subclass_manages_destruction_sync_token_) {
+    shared_image_->UpdateDestructionSyncToken(std::move(sync_token_));
+  }
 }
 
 const scoped_refptr<ClientSharedImage>& ClientImage::GetSharedImage() const {
@@ -48,14 +55,36 @@ const SharedImagePoolId& ClientImage::GetPoolIdForTesting() const {
   return pool_id_;
 }
 
+void ClientImage::OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
+                               const std::string& parent_path) const {
+  CHECK(shared_image_);
+  CHECK(!parent_path.empty());
+
+  std::string dump_name = base::StringPrintf(
+      "%s/shared_image_pool_%s/client_image_0x%" PRIXPTR, parent_path,
+      pool_id_.ToString(), reinterpret_cast<uintptr_t>(this));
+  auto* dump = pmd->CreateAllocatorDump(dump_name);
+  size_t memory_size =
+      shared_image_->format().EstimatedSizeInBytes(shared_image_->size());
+  dump->AddScalar(base::trace_event::MemoryAllocatorDump::kNameSize,
+                  base::trace_event::MemoryAllocatorDump::kUnitsBytes,
+                  memory_size);
+
+  shared_image_->OnMemoryDump(
+      pmd, dump->guid(),
+      static_cast<int>(gpu::TracingImportance::kClientOwner));
+}
+
 SharedImagePoolBase::SharedImagePoolBase(
     const SharedImagePoolId& pool_id,
     const ImageInfo& image_info,
+    std::string_view debug_label,
     const scoped_refptr<SharedImageInterface> sii,
     std::optional<uint8_t> max_pool_size,
     std::optional<base::TimeDelta> unused_resource_expiration_time)
     : pool_id_(pool_id),
       image_info_(image_info),
+      debug_label_(debug_label),
       sii_(std::move(sii)),
       max_pool_size_(std::move(max_pool_size)),
       unused_resource_expiration_time_(
@@ -76,7 +105,12 @@ bool SharedImagePoolBase::IsReclaimTimerRunningForTesting() const {
 scoped_refptr<ClientSharedImage>
 SharedImagePoolBase::CreateSharedImageInternal() {
   CHECK(sii_);
-  if (image_info_.buffer_usage.has_value()) {
+  if (image_info_.is_software) {
+    return sii_->CreateSharedImageForSoftwareCompositor(
+        {image_info_.format, image_info_.size, image_info_.color_space,
+         image_info_.surface_origin, image_info_.alpha_type, image_info_.usage,
+         debug_label_ + "Software"});
+  } else if (image_info_.buffer_usage.has_value()) {
     // Creates a Mappable shared image. Note that eventually when shared image
     // usage is merged with buffer usage, there will be only one method to
     // create both mappable and non-mappable shared image. These 2 paths will be
@@ -84,13 +118,13 @@ SharedImagePoolBase::CreateSharedImageInternal() {
     return sii_->CreateSharedImage(
         {image_info_.format, image_info_.size, image_info_.color_space,
          image_info_.surface_origin, image_info_.alpha_type, image_info_.usage,
-         "SharedImagePoolMappable"},
+         debug_label_ + "Mappable"},
         gpu::kNullSurfaceHandle, image_info_.buffer_usage.value());
   } else {
     return sii_->CreateSharedImage(
         {image_info_.format, image_info_.size, image_info_.color_space,
          image_info_.surface_origin, image_info_.alpha_type, image_info_.usage,
-         "SharedImagePool"},
+         debug_label_},
         gpu::kNullSurfaceHandle);
   }
 }
@@ -133,9 +167,9 @@ void SharedImagePoolBase::ReleaseImageInternal(
 void SharedImagePoolBase::ClearInternal() {
   image_pool_.clear();
   CHECK(sii_);
-  // A pool might contain several images. Hence Flush() to ensure that the
-  // deferred IPCs are sent to the GPU process and GPU memory is reclaimed.
-  sii_->Flush();
+  // ClientSharedImage destructor calls DestroySharedImage which in turn ensures
+  // that the deferred destroy request is flushed. Thus, clients don't need to
+  // call SharedImageInterface::Flush explicitly.
 }
 
 void SharedImagePoolBase::ReconfigureInternal(const ImageInfo& image_info) {
@@ -173,14 +207,11 @@ void SharedImagePoolBase::ClearOldUnusedResources() {
                               unused_resource_expiration_time_.value();
                      });
 
-  const bool cleared_resources = new_end != image_pool_.end();
-
   // Erase the "removed" elements from the vector.
   image_pool_.erase(new_end, image_pool_.end());
-
-  if (cleared_resources) {
-    sii_->Flush();
-  }
+  // ClientSharedImage destructor calls DestroySharedImage which in turn ensures
+  // that the deferred destroy request is flushed. Thus, clients don't need to
+  // call SharedImageInterface::Flush explicitly.
 
   // Reclaim unused resource again.
   MaybePostUnusedResourcesReclaimTask();

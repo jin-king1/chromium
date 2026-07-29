@@ -12,15 +12,13 @@
 #import "ios/chrome/browser/sharing/ui_bundled/qr_generator/qr_generator_view_controller.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_coordinator.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_params.h"
-#import "ios/chrome/browser/sharing/ui_bundled/sharing_positioner.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_scenario.h"
-#import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
 #import "ios/chrome/common/ui/elements/popover_label_view_controller.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "net/base/apple/url_conversions.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
-@interface QRGeneratorCoordinator () <ConfirmationAlertActionHandler> {
+@interface QRGeneratorCoordinator () <QRGeneratorViewControllerDelegate> {
   // URL of a page to generate a QR code for.
   GURL _URL;
 }
@@ -44,7 +42,9 @@
 
 @end
 
-@implementation QRGeneratorCoordinator
+@implementation QRGeneratorCoordinator {
+  UINavigationController* _navigationController;
+}
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
                                    browser:(Browser*)browser
@@ -67,17 +67,24 @@
       initWithTitle:self.title
             pageURL:net::NSURLWithGURL(_URL)];
 
-  [self.viewController setModalPresentationStyle:UIModalPresentationFormSheet];
-  [self.viewController setActionHandler:self];
+  self.viewController.delegate = self;
 
-  [self.baseViewController presentViewController:self.viewController
+  _navigationController = [[UINavigationController alloc]
+      initWithRootViewController:self.viewController];
+
+  [_navigationController
+      setModalPresentationStyle:UIModalPresentationFormSheet];
+
+  [self.baseViewController presentViewController:_navigationController
                                         animated:YES
                                       completion:nil];
   [super start];
 }
 
 - (void)stop {
-  [self.baseViewController dismissViewControllerAnimated:YES completion:nil];
+  [_navigationController.presentingViewController
+      dismissViewControllerAnimated:YES
+                         completion:nil];
   self.viewController = nil;
   self.learnMoreViewController = nil;
 
@@ -87,13 +94,15 @@
   [super stop];
 }
 
-#pragma mark - ConfirmationAlertActionHandler
+#pragma mark - QRGeneratorViewControllerDelegate
 
-- (void)confirmationAlertDismissAction {
+- (void)QRGeneratorViewControllerDidTapDismiss:
+    (QRGeneratorViewController*)generator {
   [self.handler hideQRCode];
 }
 
-- (void)confirmationAlertPrimaryAction {
+- (void)QRGeneratorViewControllerDidTapConfirm:
+    (QRGeneratorViewController*)generator {
   base::RecordAction(base::UserMetricsAction("MobileShareQRCode"));
 
   NSString* imageTitle = l10n_util::GetNSStringF(
@@ -104,15 +113,17 @@
                                      title:imageTitle
                                   scenario:SharingScenario::QRCodeImage];
   // Configure the image sharing scenario.
+  [self.sharingCoordinator stop];
   self.sharingCoordinator = [[SharingCoordinator alloc]
       initWithBaseViewController:self.viewController
                          browser:self.browser
                           params:params
-                      originView:self.viewController.primaryActionButton];
+                      sourceItem:self.viewController.primaryActionButton];
   [self.sharingCoordinator start];
 }
 
-- (void)confirmationAlertLearnMoreAction {
+- (void)QRGeneratorViewControllerDidTapLearnMore:
+    (QRGeneratorViewController*)generator {
   NSString* message =
       l10n_util::GetNSString(IDS_IOS_QR_CODE_LEARN_MORE_MESSAGE);
   self.learnMoreViewController =

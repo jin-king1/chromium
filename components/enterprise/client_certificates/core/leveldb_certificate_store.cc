@@ -13,6 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/pickle.h"
 #include "base/task/thread_pool.h"
+#include "components/enterprise/client_certificates/core/metrics_util.h"
 #include "components/enterprise/client_certificates/core/private_key.h"
 #include "components/enterprise/client_certificates/core/private_key_factory.h"
 #include "components/enterprise/client_certificates/proto/client_certificates_database.pb.h"
@@ -76,8 +77,7 @@ void SetCertificate(client_certificates_pb::ClientIdentity& proto_identity,
                     net::X509Certificate& certificate) {
   base::Pickle pickle;
   certificate.Persist(&pickle);
-  *proto_identity.mutable_certificate() =
-      std::string(pickle.data_as_char(), pickle.size());
+  *proto_identity.mutable_certificate() = pickle.AsStringView();
 }
 
 }  // namespace
@@ -170,7 +170,7 @@ void LevelDbCertificateStore::GetIdentity(
                                     std::move(callback)));
 }
 
-void LevelDbCertificateStore::InitializeDatabase() {
+void LevelDbCertificateStore::InitializeDatabase(bool retry_on_failure) {
   if (database_state_ != DatabaseState::kUninitialized) {
     return;
   }
@@ -178,14 +178,24 @@ void LevelDbCertificateStore::InitializeDatabase() {
   database_state_ = DatabaseState::kInitializing;
   database_->Init(
       base::BindOnce(&LevelDbCertificateStore::OnDatabaseInitialized,
-                     weak_factory_.GetWeakPtr()));
+                     weak_factory_.GetWeakPtr(), retry_on_failure));
 }
 
 void LevelDbCertificateStore::OnDatabaseInitialized(
+    bool retry_on_failure,
     leveldb_proto::Enums::InitStatus status) {
   database_state_ = status == leveldb_proto::Enums::InitStatus::kOK
                         ? DatabaseState::kInitialized
                         : DatabaseState::kUninitialized;
+
+  // Log the status. `retry_on_failure` is only true for the first call.
+  LogLevelDBInitStatus(status, /*with_retry=*/!retry_on_failure);
+
+  if (retry_on_failure && database_state_ == DatabaseState::kUninitialized) {
+    // Retry failed DB initialization at least once.
+    InitializeDatabase(/*retry_on_failure=*/false);
+    return;
+  }
 
   for (auto& operation : pending_operations_) {
     std::move(operation).Run();
@@ -233,6 +243,42 @@ void LevelDbCertificateStore::GetIdentityProto(
 
   database_->GetEntry(identity_name,
                       base::BindOnce(OnIdentityFetched, std::move(callback)));
+}
+
+void LevelDbCertificateStore::DeleteIdentities(
+    const std::vector<std::string>& identity_names,
+    base::OnceCallback<void(std::optional<StoreError>)> callback) {
+  for (const auto& identity_name : identity_names) {
+    if (identity_name.empty()) {
+      std::move(callback).Run(StoreError::kInvalidIdentityName);
+      return;
+    }
+  }
+
+  if (database_state_ != DatabaseState::kInitialized) {
+    pending_operations_.push_back(base::BindOnce(
+        &LevelDbCertificateStore::DeleteIdentities, weak_factory_.GetWeakPtr(),
+        identity_names, std::move(callback)));
+    InitializeDatabase();
+    return;
+  }
+
+  auto mod_keys = std::make_unique<std::vector<std::string>>(identity_names);
+
+  database_->UpdateEntries(
+      std::make_unique<leveldb_proto::ProtoDatabase<
+          client_certificates_pb::ClientIdentity>::KeyEntryVector>(),
+      std::move(mod_keys),
+      base::BindOnce(
+          [](base::OnceCallback<void(std::optional<StoreError>)> callback,
+             bool success) {
+            if (!success) {
+              std::move(callback).Run(StoreError::kDeleteIdentityFailed);
+              return;
+            }
+            std::move(callback).Run(std::nullopt);
+          },
+          std::move(callback)));
 }
 
 void LevelDbCertificateStore::CreatePrivateKeyInner(
@@ -404,9 +450,8 @@ void LevelDbCertificateStore::GetIdentityInner(
 
   scoped_refptr<net::X509Certificate> certificate = nullptr;
   if (local_proto_identity->has_certificate()) {
-    base::Pickle pickle = base::Pickle::WithUnownedBuffer(
+    base::PickleIterator iter = base::PickleIterator::WithData(
         base::as_byte_span(local_proto_identity->certificate()));
-    base::PickleIterator iter(pickle);
     certificate = net::X509Certificate::CreateFromPickle(&iter);
   }
 

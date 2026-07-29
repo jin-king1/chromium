@@ -14,8 +14,14 @@ namespace client_certificates {
 
 UnexportablePrivateKey::UnexportablePrivateKey(
     std::unique_ptr<crypto::UnexportableSigningKey> key)
-    : PrivateKey(PrivateKeySource::kUnexportableKey,
-                 SSLKeyConverter::Get()->ConvertUnexportableKeySlowly(*key)),
+    : UnexportablePrivateKey(std::move(key),
+                             PrivateKeySource::kUnexportableKey) {}
+
+UnexportablePrivateKey::UnexportablePrivateKey(
+    std::unique_ptr<crypto::UnexportableSigningKey> key,
+    PrivateKeySource key_source)
+    : PrivateKey(key_source,
+                 SSLPrivateKeyFromUnexportableSigningKeySlowly(*key)),
       key_(std::move(key)) {
   CHECK(key_);
 }
@@ -44,13 +50,19 @@ client_certificates_pb::PrivateKey UnexportablePrivateKey::ToProto() const {
   return private_key;
 }
 
-base::Value::Dict UnexportablePrivateKey::ToDict() const {
+base::DictValue UnexportablePrivateKey::ToDict() const {
   std::vector<uint8_t> wrapped = key_->GetWrappedKey();
-  if (wrapped.size() == 0) {
-    return base::Value::Dict();
+  if (wrapped.empty()) {
+    return base::DictValue();
   }
 
   return BuildSerializedPrivateKey(wrapped);
 }
+
+#if BUILDFLAG(IS_IOS)
+SecKeyRef UnexportablePrivateKey::GetSecKeyRef() const {
+  return key_->GetSecKeyRef();
+}
+#endif  // BUILDFLAG(IS_IOS)
 
 }  // namespace client_certificates

@@ -31,21 +31,6 @@ LayoutBlock* LayoutFieldset::FindAnonymousFieldsetContentBox() const {
 
 void LayoutFieldset::AddChild(LayoutObject* new_child,
                               LayoutObject* before_child) {
-  if (!new_child->IsText() && !new_child->IsAnonymous()) {
-    // Adding a child LayoutObject always causes reattach of <fieldset>. So
-    // |before_child| is always nullptr.
-    // See HTMLFieldSetElement::DidRecalcStyle().
-    DCHECK(!before_child);
-  } else if (before_child && before_child->IsRenderedLegend()) {
-    // Whitespace changes resulting from removed nodes are handled in
-    // MarkForWhitespaceReattachment(), and don't trigger
-    // HTMLFieldSetElement::DidRecalcStyle(). So the fieldset is not
-    // reattached. We adjust |before_child| instead.
-    Node* before_node =
-        LayoutTreeBuilderTraversal::NextLayoutSibling(*before_child->GetNode());
-    before_child = before_node ? before_node->GetLayoutObject() : nullptr;
-  }
-
   // https://html.spec.whatwg.org/C/#the-fieldset-and-legend-elements
   // > * If the element has a rendered legend, then that element is expected
   // >   to be the first child box.
@@ -53,11 +38,18 @@ void LayoutFieldset::AddChild(LayoutObject* new_child,
   // >   rendered legend and is expected to contain the content (including
   // >   the '::before' and '::after' pseudo-elements) of the fieldset
   // >   element except for the rendered legend, if there is one.
-
   if (new_child->IsRenderedLegendCandidate() && !FindInFlowLegend()) {
     LayoutBlockFlow::AddChild(new_child, FirstChild());
     return;
   }
+
+  // Adjust before_child so that it avoids the <legend>.
+  if (before_child && before_child->IsRenderedLegend()) {
+    const Node* before_node =
+        LayoutTreeBuilderTraversal::NextLayoutSibling(*before_child->GetNode());
+    before_child = before_node ? before_node->GetLayoutObject() : nullptr;
+  }
+
   LayoutBlock* fieldset_content = FindAnonymousFieldsetContentBox();
   DCHECK(fieldset_content);
   fieldset_content->AddChild(new_child, before_child);
@@ -87,6 +79,10 @@ void LayoutFieldset::InsertedIntoTree() {
     case EDisplay::kGrid:
     case EDisplay::kInlineGrid:
       display = EDisplay::kGrid;
+      break;
+    case EDisplay::kGridLanes:
+    case EDisplay::kInlineGridLanes:
+      display = EDisplay::kGridLanes;
       break;
     default:
       break;
@@ -132,25 +128,50 @@ void LayoutFieldset::UpdateAnonymousChildStyle(
   child_style_builder.SetBoxDecorationBreak(StyleRef().BoxDecorationBreak());
 
   if (StyleRef().SpecifiesColumns() && AllowsColumns()) {
-    child_style_builder.SetColumnCount(StyleRef().ColumnCount());
-    child_style_builder.SetColumnWidth(StyleRef().ColumnWidth());
-  } else {
-    child_style_builder.SetHasAutoColumnCount();
-    child_style_builder.SetHasAutoColumnWidth();
+    if (!StyleRef().HasAutoColumnCount()) {
+      child_style_builder.SetColumnCount(StyleRef().ColumnCount());
+    }
+    if (!StyleRef().HasAutoColumnWidth()) {
+      child_style_builder.SetColumnWidth(StyleRef().ColumnWidth());
+    }
+    if (!StyleRef().HasAutoColumnHeight()) {
+      child_style_builder.SetColumnHeight(StyleRef().ColumnHeight());
+    }
+    child_style_builder.SetColumnWrap(StyleRef().ColumnWrap());
   }
   child_style_builder.SetColumnGap(StyleRef().ColumnGap());
   child_style_builder.SetColumnFill(StyleRef().GetColumnFill());
-  child_style_builder.SetColumnRuleColor(
-      GapDataList<StyleColor>(StyleColor(LayoutObject::ResolveColor(
-          StyleRef(), GetCSSPropertyColumnRuleColor()))));
-  child_style_builder.SetRowRuleColor(GapDataList<StyleColor>(StyleColor(
-      LayoutObject::ResolveColor(StyleRef(), GetCSSPropertyRowRuleColor()))));
+  child_style_builder.SetColumnRuleColor(StyleRef().ColumnRuleColor());
+  child_style_builder.SetRowRuleColor(StyleRef().RowRuleColor());
   child_style_builder.SetColumnRuleStyle(StyleRef().ColumnRuleStyle());
   child_style_builder.SetRowRuleStyle(StyleRef().RowRuleStyle());
   child_style_builder.SetColumnRuleWidth(
       GapDataList<int>(StyleRef().ColumnRuleWidth()));
   child_style_builder.SetRowRuleWidth(
       GapDataList<int>(StyleRef().RowRuleWidth()));
+
+  child_style_builder.SetColumnRuleBreak(StyleRef().ColumnRuleBreak());
+  child_style_builder.SetRowRuleBreak(StyleRef().RowRuleBreak());
+  child_style_builder.SetRuleOverlap(StyleRef().RuleOverlap());
+  child_style_builder.SetColumnRuleVisibilityItems(
+      StyleRef().ColumnRuleVisibilityItems());
+  child_style_builder.SetRowRuleVisibilityItems(
+      StyleRef().RowRuleVisibilityItems());
+  child_style_builder.SetColumnRuleInsetCapStart(
+      StyleRef().ColumnRuleInsetCapStart());
+  child_style_builder.SetColumnRuleInsetCapEnd(
+      StyleRef().ColumnRuleInsetCapEnd());
+  child_style_builder.SetColumnRuleInsetJunctionStart(
+      StyleRef().ColumnRuleInsetJunctionStart());
+  child_style_builder.SetColumnRuleInsetJunctionEnd(
+      StyleRef().ColumnRuleInsetJunctionEnd());
+  child_style_builder.SetRowRuleInsetCapStart(
+      StyleRef().RowRuleInsetCapStart());
+  child_style_builder.SetRowRuleInsetCapEnd(StyleRef().RowRuleInsetCapEnd());
+  child_style_builder.SetRowRuleInsetJunctionStart(
+      StyleRef().RowRuleInsetJunctionStart());
+  child_style_builder.SetRowRuleInsetJunctionEnd(
+      StyleRef().RowRuleInsetJunctionEnd());
 
   child_style_builder.SetFlexDirection(StyleRef().FlexDirection());
   child_style_builder.SetFlexWrap(StyleRef().FlexWrap());
@@ -164,8 +185,10 @@ void LayoutFieldset::UpdateAnonymousChildStyle(
   child_style_builder.SetGridRowStart(StyleRef().GridRowStart());
 
   // grid-template-columns, grid-template-rows, grid-template-areas
-  child_style_builder.SetGridTemplateColumns(StyleRef().GridTemplateColumns());
-  child_style_builder.SetGridTemplateRows(StyleRef().GridTemplateRows());
+  child_style_builder.SetGridTemplateColumns(
+      StyleRef().SpecifiedGridTemplateColumns());
+  child_style_builder.SetGridTemplateRows(
+      StyleRef().SpecifiedGridTemplateRows());
   child_style_builder.SetGridTemplateAreas(StyleRef().GridTemplateAreas());
 
   child_style_builder.SetRowGap(StyleRef().RowGap());
@@ -174,11 +197,8 @@ void LayoutFieldset::UpdateAnonymousChildStyle(
   child_style_builder.SetJustifyItems(StyleRef().JustifyItems());
   child_style_builder.SetOverflowX(StyleRef().OverflowX());
   child_style_builder.SetOverflowY(StyleRef().OverflowY());
+  child_style_builder.SetScrollbarGutter(StyleRef().ScrollbarGutter());
   child_style_builder.SetUnicodeBidi(StyleRef().GetUnicodeBidi());
-
-  // scroll-start
-  child_style_builder.SetScrollStartX(StyleRef().ScrollStartX());
-  child_style_builder.SetScrollStartY(StyleRef().ScrollStartY());
 }
 
 void LayoutFieldset::InvalidatePaint(

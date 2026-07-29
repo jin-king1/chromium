@@ -144,7 +144,7 @@ struct AnimationKeyframeModel {
   // Optional ElementId override to select the target element for this model.
   // By default its enclosing AnimationKeyframeEffect determines the target
   // ElementId.
-  cc.mojom.ElementId? element_id;
+  cc.mojom.ElementId element_id;
 
   // Easing function to use by default between all keyframes.
   TimingFunction timing_function;
@@ -169,9 +169,12 @@ struct AnimationKeyframeModel {
   double iterations;
   double iteration_start;
 
-  // Offsets the start time, effectively skipping ahead to some desired point
-  // within the animation.
-  mojo_base.mojom.TimeDelta time_offset;
+  // The amount of time to wait after the start time before the animation
+  // actually begins to affect the element.
+  mojo_base.mojom.TimeDelta start_delay;
+
+  // If set, the animation is paused at this local time.
+  mojo_base.mojom.TimeDelta? hold_time;
 };
 
 // A collection of keyframe models associated with a specific ElementId. This
@@ -183,7 +186,7 @@ struct Animation {
 
   // Optionally identifies a target element for the animation, mapping it to a
   // layer or property tree node which shares the same ElementId.
-  cc.mojom.ElementId? element_id;
+  cc.mojom.ElementId element_id;
 
   // Keyframe models comprising the animation.
   array<AnimationKeyframeModel> keyframe_models;

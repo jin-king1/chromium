@@ -2,8 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/on_device_translation/service_controller_manager_factory.h"
 #include "chrome/browser/on_device_translation/test/test_util.h"
 #include "chrome/browser/policy/policy_test_utils.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -17,10 +19,8 @@ using on_device_translation::CreateFakeDictionaryData;
 using on_device_translation::LanguagePackKey;
 using on_device_translation::MockComponentManager;
 using on_device_translation::TestCreateTranslator;
-using on_device_translation::TestLanguagePairAvailable;
 using on_device_translation::TestSimpleTranslationWorks;
 using on_device_translation::TestTranslationAvailable;
-using on_device_translation::TestTranslatorCapabilitiesAvailable;
 
 namespace policy {
 
@@ -43,6 +43,9 @@ class TranslatorAPIPolicyTest : public PolicyTest {
 
     mock_component_manager_ =
         std::make_unique<MockComponentManager>(GetTempDir());
+    on_device_translation::ServiceControllerManagerFactory::GetInstance()
+        ->Get(browser()->GetProfile())
+        ->SetInstallerForTesting(&adapter_);
     // Install the mock TranslateKit component.
     mock_component_manager_->InstallMockTranslateKitComponent();
     // Install the mock language pack.
@@ -78,6 +81,7 @@ class TranslatorAPIPolicyTest : public PolicyTest {
   base::ScopedTempDir tmp_dir_;
   base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<MockComponentManager> mock_component_manager_;
+  on_device_translation::TestInstallerAdapter adapter_;
 };
 
 // Test that the default value of the policy is allowed.
@@ -85,8 +89,6 @@ IN_PROC_BROWSER_TEST_F(TranslatorAPIPolicyTest, DefaultAllowed) {
   NavigateToEmptyPage();
   TestSimpleTranslationWorks(browser(), "en", "ja");
   TestTranslationAvailable(browser(), "en", "ja", "available");
-  TestLanguagePairAvailable(browser(), "en", "ja", "readily");
-  TestTranslatorCapabilitiesAvailable(browser(), "readily");
 }
 
 // Test that set the policy to false will disallow the API.
@@ -97,8 +99,6 @@ IN_PROC_BROWSER_TEST_F(TranslatorAPIPolicyTest, Disallow) {
                        "NotSupportedError: Unable to create translator for the "
                        "given source and target language.");
   TestTranslationAvailable(browser(), "en", "ja", "unavailable");
-  TestLanguagePairAvailable(browser(), "en", "ja", "no");
-  TestTranslatorCapabilitiesAvailable(browser(), "no");
 }
 
 // Test that set the policy to true will allow the API.
@@ -107,8 +107,6 @@ IN_PROC_BROWSER_TEST_F(TranslatorAPIPolicyTest, Allow) {
   SetTranslatorAPIAllowedPolicy(true);
   TestSimpleTranslationWorks(browser(), "en", "ja");
   TestTranslationAvailable(browser(), "en", "ja", "available");
-  TestLanguagePairAvailable(browser(), "en", "ja", "readily");
-  TestTranslatorCapabilitiesAvailable(browser(), "readily");
 }
 
 // Test that the policy can be dynamically refreshed.
@@ -119,7 +117,7 @@ IN_PROC_BROWSER_TEST_F(TranslatorAPIPolicyTest,
   ASSERT_EQ(EvalJs(browser()->tab_strip_model()->GetActiveWebContents(), R"(
       (async () => {
         try {
-          window._translator = await ai.translator.create({
+          window._translator = await Translator.create({
               sourceLanguage: 'en',
               targetLanguage: 'ja',
             });

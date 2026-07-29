@@ -5,6 +5,7 @@
 #include "base/base_paths.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/autofill/content/renderer/autofill_renderer_test.h"
 #include "components/autofill/core/common/form_data.h"
@@ -63,7 +64,7 @@ TEST_F(AutofillRendererTest, SendForms) {
   LoadHTML(R"(<form method='POST'>
                 <input type='text' id='firstname'/>
                 <input type='text' id='middlename'/>
-                <input type='text' id='lastname' autoComplete='off'/>
+                <input type='text' id='lastname' autocomplete='off'/>
                 <input type='hidden' id='email'/>
                 <select id='state'/>
                   <option>?</option>
@@ -105,7 +106,7 @@ TEST_F(AutofillRendererTest, SendForms) {
   WaitForFormsSeen();
 }
 
-// Regression test for [ http://crbug.com/346010 ].
+// Regression test for [ http://crbug.com/41091063 ].
 // Shouldn't crash.
 TEST_F(AutofillRendererTest, DontCrashWhileAssociatingForms) {
   EXPECT_CALL(autofill_driver(), FormsSeen(_, _)).Times(0);

@@ -7,7 +7,7 @@
 PasskeyModelObserverBridge::PasskeyModelObserverBridge(
     id<PasskeyModelObserverDelegate> observer_delegate,
     webauthn::PasskeyModel* passkey_model)
-    : observer_(observer_delegate) {
+    : passkey_model_(passkey_model), observer_(observer_delegate) {
   DCHECK(observer_);
 
   scoped_observation_.Observe(passkey_model);
@@ -23,10 +23,13 @@ bool PasskeyModelObserverBridge::IsObserving(
 // webauthn::PasskeyModel::Observer:
 
 void PasskeyModelObserverBridge::OnPasskeysChanged(
-    const std::vector<webauthn::PasskeyModelChange>& changes) {}
+    const std::vector<webauthn::PasskeyModelChange>& changes) {
+  [observer_ passkeyModelDidChange];
+}
 
 void PasskeyModelObserverBridge::OnPasskeyModelShuttingDown() {
   scoped_observation_.Reset();
+  [observer_ passKeyModelShuttingDown:passkey_model_];
 }
 
 void PasskeyModelObserverBridge::OnPasskeyModelIsReady(bool is_ready) {

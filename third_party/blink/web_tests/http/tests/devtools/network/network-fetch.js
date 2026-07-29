@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import {NetworkTestRunner} from 'network_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(`Tests fetch network resource type and content.\n`);
@@ -18,7 +19,7 @@ import {NetworkTestRunner} from 'network_test_runner';
     TestRunner.addResult('resource.type: ' + request1.resourceType());
     TestRunner.assertTrue(!request1.failed, 'Resource loading failed.');
 
-    var { content, error, isEncoded } = await request1.requestContent();
+    var { content, error, isEncoded } = await request1.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent);
     TestRunner.addResult('resource.content after requesting content: ' + content);
     TestRunner.completeTest();
   }

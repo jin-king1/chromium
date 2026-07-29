@@ -97,17 +97,6 @@ export class SettingsDisplayAndMagnificationSubpageElement extends
       },
 
       /**
-       * Whether the always show scrollbars feature is enabled.
-       */
-      isAccessibilityAlwaysShowScrollbarsEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-            'isAccessibilityAlwaysShowScrollbarsEnabled');
-        },
-      },
-
-      /**
        * Whether the magnifier following ChromeVox focus feature is
        * enabled.
        */
@@ -145,36 +134,33 @@ export class SettingsDisplayAndMagnificationSubpageElement extends
           return loadTimeData.getBoolean('isKioskModeActive');
         },
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kAccessibilityMagnifierFollowsSts,
-          Setting.kColorCorrectionEnabled,
-          Setting.kColorCorrectionFilterType,
-          Setting.kColorCorrectionFilterAmount,
-          Setting.kDockedMagnifier,
-          Setting.kFullscreenMagnifier,
-          Setting.kFullscreenMagnifierMouseFollowingMode,
-          Setting.kFullscreenMagnifierFocusFollowing,
-          Setting.kMagnifierFollowsChromeVox,
-          Setting.kReducedAnimationsEnabled,
-          Setting.kAlwaysShowScrollbarsEnabled,
-        ]),
-      },
     };
   }
 
-  private isKioskModeActive_: boolean;
-  private screenMagnifierMouseFollowingModePrefValues_: {[key: string]: number};
-  private screenMagnifierZoomOptions_: Array<{value: number, name: string}>;
-  private isAccessibilityReducedAnimationsEnabled_: boolean;
-  private isAccessibilityAlwaysShowScrollbarsEnabled_: boolean;
-  private isAccessibilityMagnifierFollowsChromeVoxEnabled_: boolean;
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kAccessibilityMagnifierFollowsSts,
+    Setting.kColorCorrectionEnabled,
+    Setting.kColorCorrectionFilterType,
+    Setting.kColorCorrectionFilterAmount,
+    Setting.kDockedMagnifier,
+    Setting.kFullscreenMagnifier,
+    Setting.kFullscreenMagnifierMouseFollowingMode,
+    Setting.kFullscreenMagnifierFocusFollowing,
+    Setting.kMagnifierFollowsChromeVox,
+    Setting.kReducedAnimationsEnabled,
+    Setting.kAlwaysShowScrollbarsEnabled,
+  ]);
 
+  declare private readonly colorVisionDeficiencyTypeOptions_:
+      Array<{value: number, name: string}>;
+  declare private isKioskModeActive_: boolean;
+  declare private screenMagnifierMouseFollowingModePrefValues_:
+      {[key: string]: number};
+  declare private screenMagnifierZoomOptions_:
+      Array<{value: number, name: string}>;
+  declare private isAccessibilityReducedAnimationsEnabled_: boolean;
+  declare private isAccessibilityMagnifierFollowsChromeVoxEnabled_: boolean;
 
   constructor() {
     super();

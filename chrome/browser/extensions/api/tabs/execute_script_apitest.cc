@@ -9,7 +9,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/test/base/ui_test_utils.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/common/utils/content_script_utils.h"
@@ -78,7 +77,7 @@ INSTANTIATE_TEST_SUITE_P(ServiceWorker,
                          ExecuteScriptApiTest,
                          ::testing::Values(ContextType::kServiceWorkerMV2));
 
-// If failing, mark disabled and update http://crbug.com/92105.
+// If failing, mark disabled and update http://crbug.com/40609085.
 IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, ExecuteScriptBasic) {
   ASSERT_TRUE(RunExtensionTest("executescript/basic")) << message_;
 }
@@ -87,7 +86,11 @@ IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, ExecuteScriptBadEncoding) {
   ASSERT_TRUE(RunExtensionTest("executescript/bad_encoding")) << message_;
 }
 
-// If failing, mark disabled and update http://crbug.com/92105.
+IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, ExecuteScriptBadMimeType) {
+  ASSERT_TRUE(RunExtensionTest("executescript/bad_mime_type")) << message_;
+}
+
+// If failing, mark disabled and update http://crbug.com/40609085.
 IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, ExecuteScriptInFrame) {
   ASSERT_TRUE(RunExtensionTest("executescript/in_frame")) << message_;
 }
@@ -100,12 +103,12 @@ IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, ExecuteScriptPermissions) {
   ASSERT_TRUE(RunExtensionTest("executescript/permissions")) << message_;
 }
 
-// If failing, mark disabled and update http://crbug.com/84760.
+// If failing, mark disabled and update http://crbug.com/40578391.
 IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, ExecuteScriptFileAfterClose) {
   ASSERT_TRUE(RunExtensionTest("executescript/file_after_close")) << message_;
 }
 
-// If crashing, mark disabled and update http://crbug.com/67774.
+// If crashing, mark disabled and update http://crbug.com/41293217.
 IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, ExecuteScriptFragmentNavigation) {
   ASSERT_TRUE(RunExtensionTest("executescript/fragment")) << message_;
 }
@@ -114,7 +117,7 @@ IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, NavigationRaceExecuteScript) {
   ASSERT_TRUE(RunExtensionTest("executescript/navigation_race")) << message_;
 }
 
-// If failing, mark disabled and update http://crbug.com/92105.
+// If failing, mark disabled and update http://crbug.com/40609085.
 IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, ExecuteScriptFrameAfterLoad) {
   ASSERT_TRUE(RunExtensionTest("executescript/frame_after_load")) << message_;
 }
@@ -166,8 +169,8 @@ IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, InjectScriptInFileFrameAllowed) {
   // script into it.
   base::FilePath test_file =
       test_data_dir_.DirName().AppendASCII("test_file.txt");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
-                                           net::FilePathToFileURL(test_file)));
+  ASSERT_TRUE(
+      NavigateToURL(GetActiveWebContents(), net::FilePathToFileURL(test_file)));
 
   SetCustomArg("ALLOWED");
   ASSERT_TRUE(RunExtensionTest("executescript/file_access", {},
@@ -182,8 +185,8 @@ IN_PROC_BROWSER_TEST_P(ExecuteScriptApiTest, InjectScriptInFileFrameDenied) {
   // script into it.
   base::FilePath test_file =
       test_data_dir_.DirName().AppendASCII("test_file.txt");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
-                                           net::FilePathToFileURL(test_file)));
+  ASSERT_TRUE(
+      NavigateToURL(GetActiveWebContents(), net::FilePathToFileURL(test_file)));
 
   SetCustomArg("DENIED");
   ASSERT_TRUE(RunExtensionTest("executescript/file_access")) << message_;
@@ -251,7 +254,7 @@ class BackForwardCacheDisabledDestructiveScriptTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-// Flaky on ASAN and -dbg, and Linux CFI bots. crbug.com/1293865
+// Flaky on ASAN and -dbg, and Linux CFI bots. crbug.com/40820215
 #if defined(ADDRESS_SANITIZER) || !defined(NDEBUG) || \
     (BUILDFLAG(CFI_ICALL_CHECK) && BUILDFLAG(IS_LINUX))
 #define MAYBE_SynchronousRemoval DISABLED_SynchronousRemoval
@@ -264,7 +267,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheDisabledDestructiveScriptTest,
   ASSERT_TRUE(RunSubtest("synchronous")) << message_;
 }
 
-// Flaky on ASAN and -dbg and Linux CFI. crbug.com/1293865
+// Flaky on ASAN and -dbg and Linux CFI. crbug.com/40820215
 #if defined(ADDRESS_SANITIZER) || !defined(NDEBUG) || \
     (BUILDFLAG(CFI_ICALL_CHECK) && BUILDFLAG(IS_LINUX))
 #define MAYBE_MicrotaskRemoval DISABLED_MicrotaskRemoval
@@ -277,7 +280,7 @@ IN_PROC_BROWSER_TEST_P(BackForwardCacheDisabledDestructiveScriptTest,
   ASSERT_TRUE(RunSubtest("microtask")) << message_;
 }
 
-// TODO(http://crbug.com/1028308): Flaky on multiple platforms
+// TODO(http://crbug.com/40109090): Flaky on multiple platforms
 // Removes the frame at the frame's first scheduled macrotask.
 IN_PROC_BROWSER_TEST_P(DestructiveScriptTestWithoutOopifOverride,
                        DISABLED_MacrotaskRemoval) {

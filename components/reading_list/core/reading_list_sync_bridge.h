@@ -70,8 +70,6 @@ class ReadingListSyncBridge : public syncer::DataTypeSyncBridge {
 
   // Creates an object used to communicate changes in the sync metadata to the
   // data type store.
-  std::unique_ptr<syncer::MetadataChangeList> CreateMetadataChangeList()
-      override;
 
   // Perform the initial merge between local and sync data. This should only be
   // called when a data type is first enabled to start syncing, and there is no
@@ -146,7 +144,8 @@ class ReadingListSyncBridge : public syncer::DataTypeSyncBridge {
   // it is also used to verify the hash of remote data. If a data type was never
   // launched pre-USS, then method does not need to be different from
   // GetStorageKey().
-  std::string GetClientTag(const syncer::EntityData& entity_data) override;
+  std::string GetClientTag(
+      const syncer::EntityData& entity_data) const override;
 
   // Get or generate a storage key for |entity_data|. This will only ever be
   // called once when first encountering a remote entity. Local changes will
@@ -154,7 +153,10 @@ class ReadingListSyncBridge : public syncer::DataTypeSyncBridge {
   // Theoretically this function doesn't need to be stable across multiple calls
   // on the same or different clients, but to keep things simple, it probably
   // should be.
-  std::string GetStorageKey(const syncer::EntityData& entity_data) override;
+  std::string GetStorageKey(
+      const syncer::EntityData& entity_data) const override;
+  sync_pb::EntitySpecifics TrimAllSupportedFieldsFromRemoteSpecifics(
+      const sync_pb::EntitySpecifics& entity_specifics) const override;
 
   // Invoked when sync is permanently stopped.
   void ApplyDisableSyncChanges(std::unique_ptr<syncer::MetadataChangeList>

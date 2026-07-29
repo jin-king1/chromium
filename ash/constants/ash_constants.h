@@ -21,6 +21,9 @@ extern const base::FilePath::CharType kNssCertDbPath[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const base::FilePath::CharType kNssKeyDbPath[];
 
+inline constexpr base::FilePath::CharType kChromeOSAssetPath[] =
+    "/usr/share/chromeos-assets/";
+
 // The border thickness of keyboard focus for launcher items and system tray.
 constexpr int kFocusBorderThickness = 2;
 
@@ -33,6 +36,9 @@ constexpr int kShelfDisplayOffset = 1;
 constexpr int kDefaultLargeCursorSize = 64;
 constexpr int kMinLargeCursorSize = 25;
 constexpr int kMaxLargeCursorSize = 128;
+
+// A placeholder color value that indicates the cursor color should be inverted.
+constexpr SkColor kAccessibilityCursorColorInverted = 1;
 
 constexpr int kDefaultCaretBlinkIntervalMs = 500;
 
@@ -88,6 +94,8 @@ constexpr base::TimeDelta kDefaultKeyAutoRepeatInterval =
 // Constants for notification.
 const char kPrivacyIndicatorsNotificationIdPrefix[] = "privacy-indicators";
 const char kPrivacyIndicatorsNotifierId[] = "ash.privacy-indicators";
+const char kPrivacyIndicatorsMultiCaptureNotifierId[] =
+    "ash.multi-capture-active-privacy-indicators";
 
 // The default delay between last key release and accepting a new key press.
 inline constexpr base::TimeDelta kDefaultAccessibilityBounceKeysDelay =

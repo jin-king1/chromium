@@ -150,15 +150,15 @@ CORE_EXPORT std::optional<size_t> FindIndexInEnumStringTable(
 CORE_EXPORT void ReportInvalidEnumSetToAttribute(
     v8::Isolate* isolate,
     const String& value,
-    const String& enum_type_name,
+    const char* enum_type_name,
     ExceptionState& exception_state);
 
 CORE_EXPORT bool IsEsIterableObject(v8::Isolate* isolate,
                                     v8::Local<v8::Value> value,
                                     ExceptionState& exception_state);
 
-CORE_EXPORT Document* ToDocumentFromExecutionContext(
-    ExecutionContext* execution_context);
+CORE_EXPORT Document& ToDocumentFromExecutionContext(
+    ExecutionContext& execution_context);
 
 // This function is mostly used for EventTargets, and so this version is
 // inlined. The less commonly used overloads are defined in the .cc file.

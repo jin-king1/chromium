@@ -4,14 +4,18 @@
 
 #import "ui/accessibility/platform/ax_platform_node_cocoa.h"
 
+#include <ApplicationServices/ApplicationServices.h>
 #import <Cocoa/Cocoa.h>
-#include <Foundation/Foundation.h>
 
+#include <optional>
+
+#include "base/apple/bridging.h"
 #include "base/apple/foundation_util.h"
 #include "base/logging.h"
 #include "base/mac/mac_util.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/no_destructor.h"
+#include "base/notimplemented.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "skia/ext/skia_utils_mac.h"
@@ -23,6 +27,7 @@
 #include "ui/accessibility/platform/ax_platform_node_mac.h"
 #include "ui/accessibility/platform/ax_private_attributes_mac.h"
 #include "ui/accessibility/platform/ax_private_roles_mac.h"
+#include "ui/accessibility/platform/ax_private_webkit_constants_mac.h"
 #include "ui/accessibility/platform/ax_utils_mac.h"
 #include "ui/accessibility/platform/child_iterator.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -30,10 +35,7 @@
 #include "ui/strings/grit/ax_strings.h"
 
 using AXRange = ui::AXPlatformNodeDelegate::AXRange;
-
-// Not defined in current versions of library, but may be in the future:
-#define NSAccessibilityChildrenInNavigationOrderAttribute \
-  @"AXChildrenInNavigationOrder"
+using base::apple::CFToNSPtrCast;
 
 @interface AXAnnouncementSpec ()
 
@@ -54,79 +56,97 @@ using AXRange = ui::AXPlatformNodeDelegate::AXRange;
 namespace {
 
 // Same length as web content/WebKit.
-int kLiveRegionDebounceMillis = 20;
+constexpr int kLiveRegionDebounceMillis = 20;
 
 using RoleMap = std::map<ax::mojom::Role, NSString*>;
 using EventMap = std::map<ax::mojom::Event, NSString*>;
 
 RoleMap BuildSubroleMap() {
   const RoleMap::value_type subroles[] = {
-      {ax::mojom::Role::kAlert, @"AXApplicationAlert"},
-      {ax::mojom::Role::kAlertDialog, @"AXApplicationAlertDialog"},
-      {ax::mojom::Role::kApplication, @"AXWebApplication"},
-      {ax::mojom::Role::kArticle, @"AXDocumentArticle"},
-      {ax::mojom::Role::kBanner, @"AXLandmarkBanner"},
-      {ax::mojom::Role::kCode, @"AXCodeStyleGroup"},
-      {ax::mojom::Role::kComplementary, @"AXLandmarkComplementary"},
-      {ax::mojom::Role::kContentDeletion, @"AXDeleteStyleGroup"},
-      {ax::mojom::Role::kContentInsertion, @"AXInsertStyleGroup"},
-      {ax::mojom::Role::kContentInfo, @"AXLandmarkContentInfo"},
-      {ax::mojom::Role::kDefinition, @"AXDefinition"},
-      {ax::mojom::Role::kDialog, @"AXApplicationDialog"},
-      {ax::mojom::Role::kDocument, @"AXDocument"},
+      {ax::mojom::Role::kAlert, CFToNSPtrCast(kAXApplicationAlertSubrole)},
+      {ax::mojom::Role::kAlertDialog,
+       CFToNSPtrCast(kAXApplicationAlertDialogSubrole)},
+      {ax::mojom::Role::kApplication, CFToNSPtrCast(kAXWebApplicationSubrole)},
+      {ax::mojom::Role::kArticle, CFToNSPtrCast(kAXDocumentArticleSubrole)},
+      {ax::mojom::Role::kBanner, CFToNSPtrCast(kAXLandmarkBannerSubrole)},
+      {ax::mojom::Role::kCode, CFToNSPtrCast(kAXCodeStyleGroupSubrole)},
+      {ax::mojom::Role::kComplementary,
+       CFToNSPtrCast(kAXLandmarkComplementarySubrole)},
+      {ax::mojom::Role::kContentDeletion,
+       CFToNSPtrCast(kAXDeleteStyleGroupSubrole)},
+      {ax::mojom::Role::kContentInsertion,
+       CFToNSPtrCast(kAXInsertStyleGroupSubrole)},
+      {ax::mojom::Role::kContentInfo,
+       CFToNSPtrCast(kAXLandmarkContentInfoSubrole)},
+      {ax::mojom::Role::kDefinition, CFToNSPtrCast(kAXDefinitionSubrole)},
+      {ax::mojom::Role::kDialog, CFToNSPtrCast(kAXApplicationDialogSubrole)},
+      {ax::mojom::Role::kDocument, CFToNSPtrCast(kAXDocumentAttribute)},
       {ax::mojom::Role::kEmphasis, @"AXEmphasisStyleGroup"},
-      {ax::mojom::Role::kFeed, @"AXApplicationGroup"},
-      {ax::mojom::Role::kFooter, @"AXLandmarkContentInfo"},
+      {ax::mojom::Role::kFeed, CFToNSPtrCast(kAXApplicationGroupSubrole)},
+      {ax::mojom::Role::kFooter, CFToNSPtrCast(kAXLandmarkContentInfoSubrole)},
       {ax::mojom::Role::kForm, @"AXLandmarkForm"},
-      {ax::mojom::Role::kGraphicsDocument, @"AXDocument"},
-      {ax::mojom::Role::kGroup, @"AXApplicationGroup"},
-      {ax::mojom::Role::kHeader, @"AXLandmarkBanner"},
-      {ax::mojom::Role::kLog, @"AXApplicationLog"},
-      {ax::mojom::Role::kMain, @"AXLandmarkMain"},
-      {ax::mojom::Role::kMarquee, @"AXApplicationMarquee"},
+      {ax::mojom::Role::kGraphicsDocument, CFToNSPtrCast(kAXDocumentAttribute)},
+      {ax::mojom::Role::kGroup, CFToNSPtrCast(kAXApplicationGroupSubrole)},
+      {ax::mojom::Role::kHeader, CFToNSPtrCast(kAXLandmarkBannerSubrole)},
+      {ax::mojom::Role::kLog, CFToNSPtrCast(kAXApplicationLogSubrole)},
+      {ax::mojom::Role::kMain, CFToNSPtrCast(kAXLandmarkMainSubrole)},
+      {ax::mojom::Role::kMarquee, CFToNSPtrCast(kAXApplicationMarqueeSubrole)},
       // https://w3c.github.io/mathml-aam/#mathml-element-mappings
-      {ax::mojom::Role::kMath, @"AXDocumentMath"},
-      {ax::mojom::Role::kMathMLFraction, @"AXMathFraction"},
-      {ax::mojom::Role::kMathMLIdentifier, @"AXMathIdentifier"},
-      {ax::mojom::Role::kMathMLMath, @"AXDocumentMath"},
-      {ax::mojom::Role::kMathMLMultiscripts, @"AXMathMultiscript"},
-      {ax::mojom::Role::kMathMLNoneScript, @"AXMathRow"},
-      {ax::mojom::Role::kMathMLNumber, @"AXMathNumber"},
-      {ax::mojom::Role::kMathMLOperator, @"AXMathOperator"},
-      {ax::mojom::Role::kMathMLOver, @"AXMathUnderOver"},
-      {ax::mojom::Role::kMathMLPrescriptDelimiter, @"AXMathRow"},
-      {ax::mojom::Role::kMathMLRoot, @"AXMathRoot"},
-      {ax::mojom::Role::kMathMLRow, @"AXMathRow"},
-      {ax::mojom::Role::kMathMLSquareRoot, @"AXMathSquareRoot"},
-      {ax::mojom::Role::kMathMLSub, @"AXMathSubscriptSuperscript"},
-      {ax::mojom::Role::kMathMLSubSup, @"AXMathSubscriptSuperscript"},
-      {ax::mojom::Role::kMathMLSup, @"AXMathSubscriptSuperscript"},
-      {ax::mojom::Role::kMathMLTable, @"AXMathTable"},
-      {ax::mojom::Role::kMathMLTableCell, @"AXMathTableCell"},
-      {ax::mojom::Role::kMathMLTableRow, @"AXMathTableRow"},
-      {ax::mojom::Role::kMathMLText, @"AXMathText"},
-      {ax::mojom::Role::kMathMLUnder, @"AXMathUnderOver"},
-      {ax::mojom::Role::kMathMLUnderOver, @"AXMathUnderOver"},
-      {ax::mojom::Role::kMeter, @"AXMeter"},
-      {ax::mojom::Role::kNavigation, @"AXLandmarkNavigation"},
-      {ax::mojom::Role::kNote, @"AXDocumentNote"},
-      {ax::mojom::Role::kRegion, @"AXLandmarkRegion"},
-      {ax::mojom::Role::kSearch, @"AXLandmarkSearch"},
-      {ax::mojom::Role::kSearchBox, @"AXSearchField"},
+      {ax::mojom::Role::kMath, CFToNSPtrCast(kAXDocumentMathSubrole)},
+      {ax::mojom::Role::kMathMLFraction, CFToNSPtrCast(kAXMathFractionSubrole)},
+      {ax::mojom::Role::kMathMLIdentifier,
+       CFToNSPtrCast(kAXMathIdentifierSubrole)},
+      {ax::mojom::Role::kMathMLMath, CFToNSPtrCast(kAXDocumentMathSubrole)},
+      {ax::mojom::Role::kMathMLMultiscripts,
+       CFToNSPtrCast(kAXMathMultiscriptSubrole)},
+      {ax::mojom::Role::kMathMLNoneScript, CFToNSPtrCast(kAXMathRowSubrole)},
+      {ax::mojom::Role::kMathMLNumber, CFToNSPtrCast(kAXMathNumberSubrole)},
+      {ax::mojom::Role::kMathMLOperator, CFToNSPtrCast(kAXMathOperatorSubrole)},
+      {ax::mojom::Role::kMathMLOver, CFToNSPtrCast(kAXMathUnderOverSubrole)},
+      {ax::mojom::Role::kMathMLPrescriptDelimiter,
+       CFToNSPtrCast(kAXMathRowSubrole)},
+      {ax::mojom::Role::kMathMLRoot, CFToNSPtrCast(kAXMathRootSubrole)},
+      {ax::mojom::Role::kMathMLRow, CFToNSPtrCast(kAXMathRowSubrole)},
+      {ax::mojom::Role::kMathMLSquareRoot,
+       CFToNSPtrCast(kAXMathSquareRootSubrole)},
+      {ax::mojom::Role::kMathMLSub,
+       CFToNSPtrCast(kAXMathSubscriptSuperscriptSubrole)},
+      {ax::mojom::Role::kMathMLSubSup,
+       CFToNSPtrCast(kAXMathSubscriptSuperscriptSubrole)},
+      {ax::mojom::Role::kMathMLSup,
+       CFToNSPtrCast(kAXMathSubscriptSuperscriptSubrole)},
+      {ax::mojom::Role::kMathMLTable, CFToNSPtrCast(kAXMathTableSubrole)},
+      {ax::mojom::Role::kMathMLTableCell,
+       CFToNSPtrCast(kAXMathTableCellSubrole)},
+      {ax::mojom::Role::kMathMLTableRow, CFToNSPtrCast(kAXMathTableRowSubrole)},
+      {ax::mojom::Role::kMathMLText, CFToNSPtrCast(kAXMathTextSubrole)},
+      {ax::mojom::Role::kMathMLUnder, CFToNSPtrCast(kAXMathUnderOverSubrole)},
+      {ax::mojom::Role::kMathMLUnderOver,
+       CFToNSPtrCast(kAXMathUnderOverSubrole)},
+      {ax::mojom::Role::kMeter, CFToNSPtrCast(kAXMeterSubrole)},
+      {ax::mojom::Role::kNavigation,
+       CFToNSPtrCast(kAXLandmarkNavigationSubrole)},
+      {ax::mojom::Role::kNote, CFToNSPtrCast(kAXDocumentNoteSubrole)},
+      {ax::mojom::Role::kRegion, CFToNSPtrCast(kAXLandmarkRegionSubrole)},
+      {ax::mojom::Role::kSearch, CFToNSPtrCast(kAXLandmarkSearchSubrole)},
+      {ax::mojom::Role::kSearchBox, CFToNSPtrCast(kAXSearchFieldSubrole)},
       {ax::mojom::Role::kSectionFooter, @"AXSectionFooter"},
       {ax::mojom::Role::kSectionHeader, @"AXSectionHeader"},
-      {ax::mojom::Role::kStatus, @"AXApplicationStatus"},
+      {ax::mojom::Role::kStatus, CFToNSPtrCast(kAXApplicationStatusSubrole)},
       {ax::mojom::Role::kStrong, @"AXStrongStyleGroup"},
-      {ax::mojom::Role::kSubscript, @"AXSubscriptStyleGroup"},
-      {ax::mojom::Role::kSuperscript, @"AXSuperscriptStyleGroup"},
-      {ax::mojom::Role::kSwitch, @"AXSwitch"},
-      {ax::mojom::Role::kTab, @"AXTabButton"},
-      {ax::mojom::Role::kTabPanel, @"AXTabPanel"},
-      {ax::mojom::Role::kTerm, @"AXTerm"},
-      {ax::mojom::Role::kTime, @"AXTimeGroup"},
-      {ax::mojom::Role::kTimer, @"AXApplicationTimer"},
+      {ax::mojom::Role::kSubscript,
+       CFToNSPtrCast(kAXSubscriptStyleGroupSubrole)},
+      {ax::mojom::Role::kSuperscript,
+       CFToNSPtrCast(kAXSuperscriptStyleGroupSubrole)},
+      {ax::mojom::Role::kSwitch, CFToNSPtrCast(kAXSwitchSubrole)},
+      {ax::mojom::Role::kTab, NSAccessibilityTabButtonSubrole},
+      {ax::mojom::Role::kTabPanel, CFToNSPtrCast(kAXTabPanelSubrole)},
+      {ax::mojom::Role::kTerm, CFToNSPtrCast(kAXTermSubrole)},
+      {ax::mojom::Role::kTime, CFToNSPtrCast(kAXTimeGroupSubrole)},
+      {ax::mojom::Role::kTimer, CFToNSPtrCast(kAXApplicationTimerSubrole)},
       {ax::mojom::Role::kToggleButton, @"AXToggleButton"},
-      {ax::mojom::Role::kTooltip, @"AXUserInterfaceTooltip"},
+      {ax::mojom::Role::kTooltip,
+       CFToNSPtrCast(kAXUserInterfaceTooltipSubrole)},
       {ax::mojom::Role::kTreeItem, NSAccessibilityOutlineRowSubrole},
   };
 
@@ -139,16 +159,16 @@ EventMap BuildEventMap() {
        NSAccessibilityValueChangedNotification},
       {ax::mojom::Event::kFocus,
        NSAccessibilityFocusedUIElementChangedNotification},
-      {ax::mojom::Event::kFocusContext,
-       NSAccessibilityFocusedUIElementChangedNotification},
 
       // Do not map kMenuStart/End to the Mac's opened/closed notifications.
       // kMenuStart/End are fired at the start/end of menu interaction on the
       // container of the menu; not the menu itself. All newly-opened/closed
       // menus should fire kMenuPopupStart/End. See SubmenuView::ShowAt and
       // SubmenuView::Hide.
-      {ax::mojom::Event::kMenuPopupStart, (NSString*)kAXMenuOpenedNotification},
-      {ax::mojom::Event::kMenuPopupEnd, (NSString*)kAXMenuClosedNotification},
+      {ax::mojom::Event::kMenuPopupStart,
+       CFToNSPtrCast(kAXMenuOpenedNotification)},
+      {ax::mojom::Event::kMenuPopupEnd,
+       CFToNSPtrCast(kAXMenuClosedNotification)},
 
       {ax::mojom::Event::kTextChanged, NSAccessibilityTitleChangedNotification},
       {ax::mojom::Event::kValueChanged,
@@ -438,8 +458,13 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 }
 
 - (BOOL)conditionallyRespondsToSelector:(SEL)selector {
-  static base::NoDestructor<std::unordered_set<SEL>> methodSelectorsForActions(
-      { @selector(accessibilityPerformPress), });
+  static base::NoDestructor<std::unordered_set<SEL>> methodSelectorsForActions({
+    @selector(accessibilityPerformPress),
+        @selector(accessibilityPerformDecrement),
+        @selector(accessibilityPerformIncrement),
+        @selector(accessibilityPerformShowMenu),
+        @selector(accessibilityPerformConfirm)
+  });
 
   static base::NoDestructor<std::unordered_set<SEL>>
       methodSelectorsForParameterizedAttributes({
@@ -531,14 +556,6 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   return _node != nullptr;
 }
 
-- (BOOL)isIncludedInPlatformTree {
-  // TODO(accessibility): Do we really need to have invisible objects in
-  // the platform tree?
-  return [self instanceActive] &&
-         ![[self AXRole] isEqualToString:NSAccessibilityUnknownRole] &&
-         !_node->IsInvisibleOrIgnored();
-}
-
 - (id)titleUIElement {
   // True only if it's a control, if there's a single label, and the label has
   // nonempty text.
@@ -560,6 +577,12 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   if (!label)
     return nil;
 
+  // If the label itself gets its name from a source that we would normally
+  // expose as a description (like aria-label), don't create a titleUIElement
+  // link. The button should expose the name directly in its own title.
+  if (label->GetDelegate()->GetNameFrom() == ax::mojom::NameFrom::kAttribute)
+    return nil;
+
   // No title UI element if the label's name is empty.
   std::string labelName = label->GetDelegate()->GetName();
   if (labelName.empty())
@@ -573,7 +596,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   if (ui::IsRadio(role) || ui::IsCheckBox(role))
     return nil;
 
-  return label->GetNativeViewAccessible();
+  return label->GetNativeViewAccessible().Get();
 }
 
 - (BOOL)isNameFromLabel {
@@ -597,9 +620,9 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
   // No label for windows or native dialogs.
   ax::mojom::Role role = _node->GetRole();
-  if (ui::IsWindow(role) ||
-      (ui::IsDialog(role) && !_node->GetDelegate()->IsWebContent()))
+  if (ui::IsWindow(role) || (ui::IsDialog(role) && !_node->IsWebContent())) {
     return false;
+  }
 
   // VoiceOver computes the wrong description for a link.
   if (ui::IsLink(role))
@@ -667,7 +690,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   for (auto& attributeValue : attributeValues) {
     ui::AXPlatformNode* node = delegate->GetFromNodeID(attributeValue);
     if (node) {
-      [elements addObject:node->GetNativeViewAccessible()];
+      [elements addObject:node->GetNativeViewAccessible().Get()];
     }
   }
   return elements;
@@ -682,7 +705,9 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
       treeItemIds->push_back(childDelegate->GetId());
     }
     gfx::NativeViewAccessible child = childDelegate->GetNativeViewAccessible();
-    [child getTreeItemDescendantNodeIds:treeItemIds];
+    AXPlatformNodeCocoa* childCocoa =
+        base::apple::ObjCCastStrict<AXPlatformNodeCocoa>(child.Get());
+    [childCocoa getTreeItemDescendantNodeIds:treeItemIds];
   }
 }
 
@@ -827,10 +852,8 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
       return NSAccessibilityButtonRole;
     case ax::mojom::Role::kCanvas:
       return NSAccessibilityImageRole;
-    case ax::mojom::Role::kCaret:
-      return NSAccessibilityUnknownRole;
     case ax::mojom::Role::kCell:
-      return @"AXCell";
+      return CFToNSPtrCast(kAXCellRole);
     case ax::mojom::Role::kCheckBox:
       return NSAccessibilityCheckBoxRole;
     case ax::mojom::Role::kColorWell:
@@ -838,7 +861,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     case ax::mojom::Role::kColumn:
       return NSAccessibilityColumnRole;
     case ax::mojom::Role::kColumnHeader:
-      return @"AXCell";
+      return CFToNSPtrCast(kAXCellRole);
     case ax::mojom::Role::kComboBoxGrouping:
       return NSAccessibilityComboBoxRole;
     case ax::mojom::Role::kComboBoxMenuButton:
@@ -847,9 +870,9 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
       // TODO(crbug.com/40864556): Can this be NSAccessibilityComboBoxRole?
       return NSAccessibilityPopUpButtonRole;
     case ax::mojom::Role::kDate:
-      return @"AXDateField";
+      return CFToNSPtrCast(kAXDateFieldRole);
     case ax::mojom::Role::kDateTime:
-      return @"AXDateField";
+      return CFToNSPtrCast(kAXDateFieldRole);
     case ax::mojom::Role::kDescriptionList:
       return NSAccessibilityListRole;
     case ax::mojom::Role::kDisclosureTriangle:
@@ -871,7 +894,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     case ax::mojom::Role::kDocPageBreak:
       return NSAccessibilitySplitterRole;
     case ax::mojom::Role::kDocSubtitle:
-      return @"AXHeading";
+      return CFToNSPtrCast(kAXHeadingRole);
     case ax::mojom::Role::kGraphicsSymbol:
       return NSAccessibilityImageRole;
     case ax::mojom::Role::kGrid:
@@ -880,19 +903,15 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
       // crbug.com/753925
       return NSAccessibilityTableRole;
     case ax::mojom::Role::kGridCell:
-      return @"AXCell";
+      return CFToNSPtrCast(kAXCellRole);
     case ax::mojom::Role::kHeading:
-      return @"AXHeading";
+      return CFToNSPtrCast(kAXHeadingRole);
     case ax::mojom::Role::kImage:
       return NSAccessibilityImageRole;
-    case ax::mojom::Role::kImeCandidate:
-      return NSAccessibilityUnknownRole;
     case ax::mojom::Role::kInlineTextBox:
       return NSAccessibilityStaticTextRole;
     case ax::mojom::Role::kInputTime:
-      return @"AXTimeField";
-    case ax::mojom::Role::kKeyboard:
-      return NSAccessibilityUnknownRole;
+      return CFToNSPtrCast(kAXTimeFieldRole);
     case ax::mojom::Role::kLink:
       return NSAccessibilityLinkRole;
     case ax::mojom::Role::kList:
@@ -904,7 +923,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     case ax::mojom::Role::kListGrid:
       return NSAccessibilityTableRole;
     case ax::mojom::Role::kListMarker:
-      return @"AXListMarker";
+      return NSAccessibilityListMarkerRole;
     case ax::mojom::Role::kMenu:
       return NSAccessibilityMenuRole;
     case ax::mojom::Role::kMenuBar:
@@ -914,6 +933,8 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     case ax::mojom::Role::kMenuItemCheckBox:
       return NSAccessibilityMenuItemRole;
     case ax::mojom::Role::kMenuItemRadio:
+      return NSAccessibilityMenuItemRole;
+    case ax::mojom::Role::kMenuItemSeparator:
       return NSAccessibilityMenuItemRole;
     case ax::mojom::Role::kMenuListOption:
       return NSAccessibilityMenuItemRole;
@@ -936,9 +957,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     case ax::mojom::Role::kRow:
       return NSAccessibilityRowRole;
     case ax::mojom::Role::kRowHeader:
-      return @"AXCell";
-    case ax::mojom::Role::kRubyAnnotation:
-      return NSAccessibilityUnknownRole;
+      return CFToNSPtrCast(kAXCellRole);
     case ax::mojom::Role::kScrollBar:
       return NSAccessibilityScrollBarRole;
     case ax::mojom::Role::kScrollView:
@@ -978,19 +997,26 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     case ax::mojom::Role::kTreeItem:
       return NSAccessibilityRowRole;
     case ax::mojom::Role::kUnknown:
-      return NSAccessibilityUnknownRole;
+      // This occurs in the case where a View has no widget, and while this will
+      // not be exposed to users, it allows isAccessibilityElement() to have
+      // fewer rules.
+      return NSAccessibilityGroupRole;
     case ax::mojom::Role::kWindow:
       // Use the group role as the BrowserNativeWidgetWindow already provides
       // a kWindow role, and having extra window roles, which are treated
       // specially by screen readers, can break their ability to find the
       // content window. See http://crbug.com/875843 for more information.
       return NSAccessibilityGroupRole;
+    case ax::mojom::Role::kCaret:
     case ax::mojom::Role::kDescriptionListTermDeprecated:
     case ax::mojom::Role::kDescriptionListDetailDeprecated:
     case ax::mojom::Role::kDirectoryDeprecated:
+    case ax::mojom::Role::kImeCandidate:
+    case ax::mojom::Role::kKeyboard:
     case ax::mojom::Role::kPreDeprecated:
     case ax::mojom::Role::kPortalDeprecated:
-      NOTREACHED();
+    case ax::mojom::Role::kRubyAnnotation:
+      NOTREACHED() << "The following role should not be present: " << role;
   }
 }
 
@@ -1006,6 +1032,16 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   return it != event_map->end() ? it->second : nil;
 }
 
++ (NSString*)nativeNotificationForExpandedChangedWithRole:(ax::mojom::Role)role
+                                               isExpanded:(BOOL)isExpanded {
+  if (role == ax::mojom::Role::kRow ||
+      role == ax::mojom::Role::kTreeItem) {
+    return isExpanded ? NSAccessibilityRowExpandedNotification
+                      : NSAccessibilityRowCollapsedNotification;
+  }
+  return CFToNSPtrCast(kAXExpandedChangedNotification);
+}
+
 - (instancetype)initWithNode:(ui::AXPlatformNodeBase*)node {
   if ((self = [super init])) {
     _node = node;
@@ -1013,17 +1049,20 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   return self;
 }
 
-- (void)detach {
+- (void)detachAndNotifyDestroyed:(BOOL)shouldNotify {
   if (!_node)
     return;
   _node = nil;
-  NSAccessibilityPostNotification(
-      self, NSAccessibilityUIElementDestroyedNotification);
+  if (shouldNotify) {
+    NSAccessibilityPostNotification(
+        self, NSAccessibilityUIElementDestroyedNotification);
+  }
 }
 
 - (NSRect)boundsInScreen {
-  if (!_node || !_node->GetDelegate())
+  if (!_node) {
     return NSZeroRect;
+  }
   return gfx::ScreenRectToNSRect(_node->GetDelegate()->GetBoundsRect(
       ui::AXCoordinateSystem::kScreenDIPs, ui::AXClippingBehavior::kClipped));
 }
@@ -1037,23 +1076,19 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
 - (NSString*)getAXValueAsString {
   id value = [self AXValue];
-  return [value isKindOfClass:[NSString class]] ? value : nil;
+  return base::apple::ObjCCast<NSString>(value);
 }
 
 - (ax::mojom::Role)internalRole {
-  if ([self instanceActive]) {
-    ax::mojom::Role role = static_cast<ax::mojom::Role>(_node->GetRole());
-    // Make sure to use Role::kPopupButton instead of Role::kButton for all
-    // values of kHasPopup. This is normally already true, but the default
-    // implementation does not use kPopupButton if aria-haspopup="dialog".
-    if (role == ax::mojom::Role::kButton &&
-        _node->HasIntAttribute(ax::mojom::IntAttribute::kHasPopup)) {
-      return ax::mojom::Role::kPopUpButton;
-    }
-    return role;
+  ax::mojom::Role role = static_cast<ax::mojom::Role>(_node->GetRole());
+  // Make sure to use Role::kPopupButton instead of Role::kButton for all
+  // values of kHasPopup. This is normally already true, but the default
+  // implementation does not use kPopupButton if aria-haspopup="dialog".
+  if (role == ax::mojom::Role::kButton &&
+      _node->HasIntAttribute(ax::mojom::IntAttribute::kHasPopup)) {
+    return ax::mojom::Role::kPopUpButton;
   }
-
-  return ax::mojom::Role::kUnknown;
+  return role;
 }
 
 - (BOOL)hasAction:(ax::mojom::Action)action {
@@ -1073,8 +1108,10 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
 - (AXPlatformNodeCocoa*)fromNodeID:(ui::AXNodeID)id {
   ui::AXPlatformNode* cell = _node->GetDelegate()->GetFromNodeID(id);
-  if (cell)
-    return cell->GetNativeViewAccessible();
+  if (cell) {
+    return base::apple::ObjCCast<AXPlatformNodeCocoa>(
+        cell->GetNativeViewAccessible().Get());
+  }
   return nil;
 }
 
@@ -1082,8 +1119,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   bool has_image_semantics =
       ui::IsImage(_node->GetRole()) &&
       !_node->GetBoolAttribute(ax::mojom::BoolAttribute::kCanvasHasFallback) &&
-      !_node->GetChildCount() &&
-      _node->GetNameFrom() != ax::mojom::NameFrom::kAttributeExplicitlyEmpty;
+      !_node->GetChildCount();
 #if DCHECK_IS_ON()
   bool is_native_image =
       [[self accessibilityRole] isEqualToString:NSAccessibilityImageRole];
@@ -1125,57 +1161,117 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     ui::AXNode* anchor = leafTextRange.focus()->GetAnchor();
     DCHECK(anchor) << "A non-null position should have a non-null anchor node.";
 
+    // Document markers are stored on the static text parent of an inline text
+    // box. If this node is an inline text box, create equivalent positions in
+    // its parent static text node so that the markers can be retrieved.
+    AXRange markersTextRange(leafTextRange.anchor()->Clone(),
+                             leafTextRange.focus()->Clone());
+    ui::AXNode* markers_anchor = leafTextRange.anchor()->GetAnchor();
+    if (leafTextRange.focus()->GetAnchor()->GetRole() ==
+        ax::mojom::Role::kInlineTextBox) {
+      markersTextRange = AXRange(leafTextRange.anchor()->CreateParentPosition(),
+                                 leafTextRange.focus()->CreateParentPosition());
+      markers_anchor = markersTextRange.anchor()->GetAnchor();
+
+      DCHECK(markersTextRange.anchor()->GetAnchor() ==
+             markersTextRange.focus()->GetAnchor());
+      DCHECK(markers_anchor) << "Markers anchor should not be null.";
+      DCHECK(markers_anchor->GetRole() == ax::mojom::Role::kStaticText ||
+             markers_anchor->GetRole() == ax::mojom::Role::kLineBreak);
+    }
+
     // Add misspelling information
     const std::vector<int32_t>& markerTypes =
-        anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
-    const std::vector<int>& markerStarts =
-        anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerStarts);
-    const std::vector<int>& markerEnds =
-        anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
+        markers_anchor->GetIntListAttribute(
+            ax::mojom::IntListAttribute::kMarkerTypes);
+    const std::vector<int>& markerStarts = markers_anchor->GetIntListAttribute(
+        ax::mojom::IntListAttribute::kMarkerStarts);
+    const std::vector<int>& markerEnds = markers_anchor->GetIntListAttribute(
+        ax::mojom::IntListAttribute::kMarkerEnds);
+    const std::vector<int32_t>& highlightTypes =
+        markers_anchor->GetIntListAttribute(
+            ax::mojom::IntListAttribute::kHighlightTypes);
 
     DCHECK_EQ(markerTypes.size(), markerStarts.size());
     DCHECK_EQ(markerTypes.size(), markerEnds.size());
+    DCHECK_EQ(markerTypes.size(), highlightTypes.size());
 
     for (size_t i = 0; i < markerTypes.size(); ++i) {
-      if (!(markerTypes[i] &
-            static_cast<int32_t>(ax::mojom::MarkerType::kSpelling))) {
+      const bool is_spelling_marker =
+          (markerTypes[i] &
+           static_cast<int32_t>(ax::mojom::MarkerType::kSpelling)) ||
+          ((markerTypes[i] &
+            static_cast<int32_t>(ax::mojom::MarkerType::kHighlight)) &&
+           (highlightTypes[i] ==
+            static_cast<int32_t>(ax::mojom::HighlightType::kSpellingError)));
+
+      const bool is_custom_highlight_marker =
+          (markerTypes[i] &
+           static_cast<int32_t>(ax::mojom::MarkerType::kHighlight)) &&
+          (highlightTypes[i] ==
+           static_cast<int32_t>(ax::mojom::HighlightType::kHighlight));
+
+      NSString* attribute;
+      if (is_spelling_marker) {
+        attribute = NSAccessibilityMarkedMisspelledTextAttribute;
+      } else if (is_custom_highlight_marker) {
+        attribute = CFToNSPtrCast(kAXHighlightStringAttribute);
+      } else {
         continue;
       }
 
-      int misspellingStart = anchorStartOffset + markerStarts[i];
-      int misspellingEnd = anchorStartOffset + markerEnds[i];
-      int misspellingLength = misspellingEnd - misspellingStart;
-      DCHECK_LE(static_cast<unsigned long>(misspellingEnd),
-                [attributedString length]);
-      DCHECK_GT(misspellingLength, 0);
-      [attributedString
-          addAttribute:NSAccessibilityMarkedMisspelledTextAttribute
-                 value:@YES
-                 range:NSMakeRange(misspellingStart, misspellingLength)];
+      // Calculate the intersection of the marker range and the current text
+      // range. These offsets are relative to the static text node, not the leaf
+      // inline text.
+      int markerStartOffset =
+          std::max(markerStarts[i], markersTextRange.anchor()->text_offset());
+      int markerEndOffset =
+          std::min(markerEnds[i], markersTextRange.focus()->text_offset());
+      if (markerEndOffset <= markerStartOffset) {
+        continue;
+      }
+
+      // Convert the intersection so it's relative to the text range of the
+      // attributed string we're building.
+      int rangeStart = markerStartOffset -
+                       markersTextRange.anchor()->text_offset() +
+                       anchorStartOffset;
+      int rangeEnd = markerEndOffset -
+                     markersTextRange.anchor()->text_offset() +
+                     anchorStartOffset;
+      int rangeLength = rangeEnd - rangeStart;
+      [attributedString addAttribute:attribute
+                               value:@YES
+                               range:NSMakeRange(rangeStart, rangeLength)];
     }
 
     CollectAncestorRoles(*anchor, ancestor_roles);
 
     // Add annotation information
     if (ancestor_roles[anchor->id()].contains(ax::mojom::Role::kMark)) {
-      [attributedString addAttribute:@"AXHighlight" value:@YES range:leafRange];
-    }
-    if (ancestor_roles[anchor->id()].contains(ax::mojom::Role::kSuggestion)) {
-      [attributedString addAttribute:@"AXIsSuggestion"
+      [attributedString addAttribute:CFToNSPtrCast(kAXHighlightStringAttribute)
                                value:@YES
                                range:leafRange];
+    }
+    if (ancestor_roles[anchor->id()].contains(ax::mojom::Role::kSuggestion)) {
+      [attributedString
+          addAttribute:CFToNSPtrCast(kAXIsSuggestionStringAttribute)
+                 value:@YES
+                 range:leafRange];
     }
     if (ancestor_roles[anchor->id()].contains(
             ax::mojom::Role::kContentDeletion)) {
-      [attributedString addAttribute:@"AXIsSuggestedDeletion"
-                               value:@YES
-                               range:leafRange];
+      [attributedString
+          addAttribute:CFToNSPtrCast(kAXIsSuggestedDeletionStringAttribute)
+                 value:@YES
+                 range:leafRange];
     }
     if (ancestor_roles[anchor->id()].contains(
             ax::mojom::Role::kContentInsertion)) {
-      [attributedString addAttribute:@"AXIsSuggestedInsertion"
-                               value:@YES
-                               range:leafRange];
+      [attributedString
+          addAttribute:CFToNSPtrCast(kAXIsSuggestedInsertionStringAttribute)
+                 value:@YES
+                 range:leafRange];
     }
 
     ui::AXTextAttributes text_attrs =
@@ -1363,7 +1459,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 }
 
 - (id)accessibilityFocusedUIElement {
-  return _node ? _node->GetDelegate()->GetFocus() : nil;
+  return _node ? _node->GetDelegate()->GetFocus().Get() : nil;
 }
 
 // This function and accessibilityPerformAction:, while deprecated, are a) still
@@ -1384,6 +1480,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
               containsObject:evaluatedObject];
         }]];
   }
+
   return actions;
 }
 
@@ -1483,29 +1580,46 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 }
 
 - (NSMutableArray*)internalAccessibilityAttributeNames {
-  if (!_node)
+  if (!_node) {
     return [NSMutableArray array];
+  }
 
   // These attributes are required on all accessibility objects.
+  // clang-format off
   NSArray* const kAllRoleAttributes = @[
-    NSAccessibilityBlockQuoteLevelAttribute, NSAccessibilityChildrenAttribute,
-    NSAccessibilityDOMClassList, NSAccessibilityDOMIdentifierAttribute,
-    NSAccessibilityDescriptionAttribute, NSAccessibilityElementBusyAttribute,
-    NSAccessibilityParentAttribute, NSAccessibilityPositionAttribute,
-    NSAccessibilityRoleAttribute, NSAccessibilitySizeAttribute,
-    NSAccessibilitySelectedAttribute, NSAccessibilitySizeAttribute,
+    NSAccessibilityBlockQuoteLevelAttribute,
+    NSAccessibilityChildrenAttribute,
+    CFToNSPtrCast(kAXDOMClassListAttribute),
+    NSAccessibilityDescriptionAttribute,
+    CFToNSPtrCast(kAXDOMIdentifierAttribute),
+    CFToNSPtrCast(kAXElementBusyAttribute),
+    NSAccessibilityParentAttribute,
+    NSAccessibilityPositionAttribute,
+    NSAccessibilityRoleAttribute,
+    NSAccessibilitySelectedAttribute,
+    NSAccessibilitySizeAttribute,
     NSAccessibilitySubroleAttribute,
+
     // Title is required for most elements. Cocoa asks for the value even if it
     // is omitted here, but won't present it to accessibility APIs without this.
     NSAccessibilityTitleAttribute,
+
     // Attributes which are not required, but are general to all roles.
-    NSAccessibilityRoleDescriptionAttribute, NSAccessibilityEnabledAttribute,
-    NSAccessibilityFocusedAttribute, NSAccessibilityHelpAttribute,
-    NSAccessibilityTopLevelUIElementAttribute, NSAccessibilityVisitedAttribute,
-    NSAccessibilityWindowAttribute, NSAccessibilityChromeAXNodeIdAttribute
+    NSAccessibilityEnabledAttribute,
+    NSAccessibilityFocusedAttribute,
+    NSAccessibilityHelpAttribute,
+    NSAccessibilityRoleDescriptionAttribute,
+    NSAccessibilityTopLevelUIElementAttribute,
+    NSAccessibilityVisitedAttribute,
+    NSAccessibilityWindowAttribute,
+
+    // Always add the node ID for round-tripping.
+    NSAccessibilityChromeAXNodeIdAttribute
   ];
+
   // Attributes required for user-editable controls.
   NSArray* const kValueAttributes = @[ NSAccessibilityValueAttribute ];
+
   // Attributes required for unprotected textfields and labels.
   NSArray* const kUnprotectedTextAttributes = @[
     NSAccessibilityInsertionPointLineNumberAttribute,
@@ -1514,21 +1628,25 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     NSAccessibilitySelectedTextRangeAttribute,
     NSAccessibilityVisibleCharacterRangeAttribute
   ];
-  // Required for all text, including protected textfields.
-  NSString* const kTextAttributes = NSAccessibilityPlaceholderValueAttribute;
 
-  NSMutableArray* axAttributes =
-      [NSMutableArray arrayWithArray:kAllRoleAttributes];
+  // Required for all text, including protected textfields.
+  NSArray* const kTextAttributes = @[
+    NSAccessibilityPlaceholderValueAttribute
+  ];
+  // clang-format on
+
+  NSMutableArray* axAttributes = [kAllRoleAttributes mutableCopy];
   ax::mojom::Role role = _node->GetRole();
   switch (role) {
     case ax::mojom::Role::kTextField:
     case ax::mojom::Role::kTextFieldWithComboBox:
-      [axAttributes addObject:NSAccessibilityOwnsAttribute];
+      [axAttributes addObject:CFToNSPtrCast(kAXOwnsAttribute)];
       break;
     case ax::mojom::Role::kStaticText:
-      [axAttributes addObject:kTextAttributes];
-      if (!_node->HasState(ax::mojom::State::kProtected))
+      [axAttributes addObjectsFromArray:kTextAttributes];
+      if (!_node->HasState(ax::mojom::State::kProtected)) {
         [axAttributes addObjectsFromArray:kUnprotectedTextAttributes];
+      }
       [[fallthrough]];
     case ax::mojom::Role::kCheckBox:
     case ax::mojom::Role::kComboBoxMenuButton:
@@ -1542,120 +1660,146 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
       break;
     case ax::mojom::Role::kMathMLFraction:
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityMathFractionNumeratorAttribute,
-        NSAccessibilityMathFractionDenominatorAttribute
+        CFToNSPtrCast(kAXMathFractionNumeratorAttribute),
+        CFToNSPtrCast(kAXMathFractionDenominatorAttribute)
       ]];
       break;
     case ax::mojom::Role::kMathMLSquareRoot:
-      [axAttributes addObject:NSAccessibilityMathRootRadicandAttribute];
+      [axAttributes addObject:CFToNSPtrCast(kAXMathRootRadicandAttribute)];
       break;
     case ax::mojom::Role::kMathMLRoot:
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityMathRootRadicandAttribute,
-        NSAccessibilityMathRootIndexAttribute
+        CFToNSPtrCast(kAXMathRootIndexAttribute),
+        CFToNSPtrCast(kAXMathRootRadicandAttribute)
       ]];
       break;
     case ax::mojom::Role::kMathMLSub:
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityMathBaseAttribute, NSAccessibilityMathSubscriptAttribute
+        CFToNSPtrCast(kAXMathBaseAttribute),
+        CFToNSPtrCast(kAXMathSubscriptAttribute)
       ]];
       break;
     case ax::mojom::Role::kMathMLSup:
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityMathBaseAttribute,
-        NSAccessibilityMathSuperscriptAttribute
+        CFToNSPtrCast(kAXMathBaseAttribute),
+        CFToNSPtrCast(kAXMathSuperscriptAttribute)
       ]];
       break;
     case ax::mojom::Role::kMathMLSubSup:
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityMathBaseAttribute, NSAccessibilityMathSubscriptAttribute,
-        NSAccessibilityMathSuperscriptAttribute
+        CFToNSPtrCast(kAXMathBaseAttribute),
+        CFToNSPtrCast(kAXMathSubscriptAttribute),
+        CFToNSPtrCast(kAXMathSuperscriptAttribute)
       ]];
       break;
     case ax::mojom::Role::kMathMLUnder:
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityMathBaseAttribute, NSAccessibilityMathUnderAttribute
+        CFToNSPtrCast(kAXMathBaseAttribute),
+        CFToNSPtrCast(kAXMathUnderAttribute)
       ]];
       break;
     case ax::mojom::Role::kMathMLOver:
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityMathBaseAttribute, NSAccessibilityMathOverAttribute
+        CFToNSPtrCast(kAXMathBaseAttribute), CFToNSPtrCast(kAXMathOverAttribute)
       ]];
       break;
     case ax::mojom::Role::kMathMLUnderOver:
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityMathBaseAttribute, NSAccessibilityMathUnderAttribute,
-        NSAccessibilityMathOverAttribute
+        CFToNSPtrCast(kAXMathBaseAttribute),
+        CFToNSPtrCast(kAXMathOverAttribute),
+        CFToNSPtrCast(kAXMathUnderAttribute)
       ]];
       break;
     case ax::mojom::Role::kMathMLMultiscripts:
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityMathBaseAttribute,
-        NSAccessibilityMathPostscriptsAttribute,
-        NSAccessibilityMathPrescriptsAttribute
+        CFToNSPtrCast(kAXMathBaseAttribute),
+        CFToNSPtrCast(kAXMathPostscriptsAttribute),
+        CFToNSPtrCast(kAXMathPrescriptsAttribute)
       ]];
       break;
       // TODO(tapted): Add additional attributes based on role.
     default:
       break;
   }
-  if (ui::IsMenuItem(role))
-    [axAttributes addObject:@"AXMenuItemMarkChar"];
-  if (ui::IsItemLike(role))
-    [axAttributes addObjectsFromArray:@[ @"AXARIAPosInSet", @"AXARIASetSize" ]];
-  if (ui::IsSetLike(role))
-    [axAttributes addObject:@"AXARIASetSize"];
+  if (ui::IsMenuItem(role)) {
+    [axAttributes addObject:CFToNSPtrCast(kAXMenuItemMarkCharAttribute)];
+  }
+  // Only expose AXARIAPosInSet/AXARIASetSize when explicit ARIA attributes
+  // are present. Exposing computed values for plain HTML items (e.g. <li>)
+  // causes VoiceOver to use its ARIA code path instead of its native
+  // children-counting logic, which results in the position announcement
+  // being dropped for the last item in the list. WebKit/Safari only exposes
+  // these attributes when explicit aria-posinset/aria-setsize are set.
+  if (ui::IsItemLike(role)) {
+    if (_node->HasIntAttribute(ax::mojom::IntAttribute::kSetSize)) {
+      [axAttributes addObject:CFToNSPtrCast(kAXARIASetSizeAttribute)];
+    }
+
+    if (_node->HasIntAttribute(ax::mojom::IntAttribute::kPosInSet)) {
+      [axAttributes addObject:CFToNSPtrCast(kAXARIAPosInSetAttribute)];
+    }
+  }
 
   if ([[self accessibilityRole] isEqualToString:NSAccessibilityWebAreaRole]) {
     [axAttributes addObjectsFromArray:@[
-      NSAccessibilityLoadedAttribute, NSAccessibilityLoadingProgressAttribute
+      CFToNSPtrCast(kAXLoadedAttribute),
+      CFToNSPtrCast(kAXLoadingProgressAttribute)
     ]];
   }
 
   // Caret navigation and text selection attributes.
   if (!ui::IsPlatformDocument(_node->GetRole())) {
-    [axAttributes addObject:NSAccessibilityFocusableAncestorAttribute];
+    [axAttributes addObject:CFToNSPtrCast(kAXFocusableAncestorAttribute)];
 
     if (_node->HasState(ax::mojom::State::kEditable)) {
       [axAttributes addObjectsFromArray:@[
-        NSAccessibilityEditableAncestorAttribute,
-        NSAccessibilityHighestEditableAncestorAttribute
+        CFToNSPtrCast(kAXEditableAncestorAttribute),
+        CFToNSPtrCast(kAXHighestEditableAncestorAttribute)
       ]];
     }
   }
 
   // Live regions.
-  if (_node->HasStringAttribute(ax::mojom::StringAttribute::kLiveStatus))
-    [axAttributes addObject:NSAccessibilityARIALiveAttribute];
-  if (_node->HasStringAttribute(ax::mojom::StringAttribute::kLiveRelevant))
-    [axAttributes addObject:NSAccessibilityARIARelevantAttribute];
-  if (_node->HasBoolAttribute(ax::mojom::BoolAttribute::kLiveAtomic))
-    [axAttributes addObject:NSAccessibilityARIAAtomicAttribute];
-  if (_node->HasBoolAttribute(ax::mojom::BoolAttribute::kBusy))
+  if (_node->HasStringAttribute(ax::mojom::StringAttribute::kLiveStatus)) {
+    [axAttributes addObject:CFToNSPtrCast(kAXARIALiveAttribute)];
+  }
+  if (_node->HasStringAttribute(ax::mojom::StringAttribute::kLiveRelevant)) {
+    [axAttributes addObject:CFToNSPtrCast(kAXARIARelevantAttribute)];
+  }
+  if (_node->HasBoolAttribute(ax::mojom::BoolAttribute::kLiveAtomic)) {
+    [axAttributes addObject:CFToNSPtrCast(kAXARIAAtomicAttribute)];
+  }
+  if (_node->HasBoolAttribute(ax::mojom::BoolAttribute::kBusy)) {
     [axAttributes addObject:NSAccessibilityARIABusyAttribute];
-  if (_node->HasIntAttribute(ax::mojom::IntAttribute::kAriaCurrentState))
-    [axAttributes addObject:NSAccessibilityARIACurrentAttribute];
+  }
+  if (_node->HasIntAttribute(ax::mojom::IntAttribute::kAriaCurrentState)) {
+    [axAttributes addObject:CFToNSPtrCast(kAXARIACurrentAttribute)];
+  }
 
   // Control element.
   if (ui::IsControl(role)) {
     [axAttributes addObjectsFromArray:@[
-      NSAccessibilityAccessKeyAttribute,
-      NSAccessibilityInvalidAttribute,
+      CFToNSPtrCast(kAXAccessKeyAttribute),
+      CFToNSPtrCast(kAXInvalidAttribute),
     ]];
   }
 
   // Autocomplete.
-  if (_node->HasStringAttribute(ax::mojom::StringAttribute::kAutoComplete))
+  if (_node->HasStringAttribute(ax::mojom::StringAttribute::kAutoComplete)) {
     [axAttributes addObject:NSAccessibilityAutocompleteValueAttribute];
+  }
 
   // AriaBrailleLabel.
-  if (_node->HasStringAttribute(ax::mojom::StringAttribute::kAriaBrailleLabel))
-    [axAttributes addObject:NSAccessibilityBrailleLabelAttribute];
+  if (_node->HasStringAttribute(
+          ax::mojom::StringAttribute::kAriaBrailleLabel)) {
+    [axAttributes addObject:CFToNSPtrCast(kAXBrailleLabelAttribute)];
+  }
 
   // AriaBrailleRoleDescription.
   if (_node->HasStringAttribute(
-          ax::mojom::StringAttribute::kAriaBrailleRoleDescription))
-    [axAttributes addObject:NSAccessibilityBrailleRoleDescription];
+          ax::mojom::StringAttribute::kAriaBrailleRoleDescription)) {
+    [axAttributes addObject:CFToNSPtrCast(kAXBrailleRoleDescriptionAttribute)];
+  }
 
   // Details.
   if (_node->HasIntListAttribute(ax::mojom::IntListAttribute::kDetailsIds)) {
@@ -1665,7 +1809,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   // Error messages.
   if (_node->HasIntListAttribute(
           ax::mojom::IntListAttribute::kErrormessageIds)) {
-    [axAttributes addObject:NSAccessibilityErrorMessageElementsAttribute];
+    [axAttributes addObject:CFToNSPtrCast(kAXErrorMessageElementsAttribute)];
   }
 
   if (ui::SupportsRequired(role)) {
@@ -1673,21 +1817,22 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   }
 
   // Url: add the url attribute only if the object has a valid url.
-  if ([self accessibilityURL])
+  if ([self accessibilityURL]) {
     [axAttributes addObject:NSAccessibilityURLAttribute];
+  }
 
   // Table and grid.
   if (ui::IsTableLike(role)) {
     [axAttributes addObjectsFromArray:@[
       NSAccessibilityColumnHeaderUIElementsAttribute,
-      NSAccessibilityARIAColumnCountAttribute,
-      NSAccessibilityARIARowCountAttribute,
+      CFToNSPtrCast(kAXARIAColumnCountAttribute),
+      CFToNSPtrCast(kAXARIARowCountAttribute),
     ]];
   }
   if (ui::IsCellOrTableHeader(role)) {
     [axAttributes addObjectsFromArray:@[
-      NSAccessibilityARIAColumnIndexAttribute,
-      NSAccessibilityARIARowIndexAttribute,
+      CFToNSPtrCast(kAXARIAColumnIndexAttribute),
+      CFToNSPtrCast(kAXARIARowIndexAttribute),
     ]];
   }
   if (ui::IsCellOrTableHeader(role) && role != ax::mojom::Role::kColumnHeader) {
@@ -1695,23 +1840,26 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   }
 
   // Tree and grid (Outline role in Mac accessibility)
-  if (ui::IsGridLike(role))
+  if (ui::IsGridLike(role)) {
     [axAttributes addObject:NSAccessibilitySelectedRowsAttribute];
+  }
 
   // Popup
   if (_node->HasIntAttribute(ax::mojom::IntAttribute::kHasPopup)) {
     [axAttributes addObjectsFromArray:@[
-      NSAccessibilityHasPopupAttribute, NSAccessibilityPopupValueAttribute
+      CFToNSPtrCast(kAXHasPopupAttribute), CFToNSPtrCast(kAXPopupValueAttribute)
     ]];
   }
 
   // KeyShortcuts
-  if (_node->HasStringAttribute(ax::mojom::StringAttribute::kKeyShortcuts))
-    [axAttributes addObject:NSAccessibilityKeyShortcutsValueAttribute];
+  if (_node->HasStringAttribute(ax::mojom::StringAttribute::kKeyShortcuts)) {
+    [axAttributes addObject:CFToNSPtrCast(kAXKeyShortcutsAttribute)];
+  }
 
   // TitleUIElement
-  if ([self titleUIElement])
+  if ([self titleUIElement]) {
     [axAttributes addObject:NSAccessibilityTitleUIElementAttribute];
+  }
 
   return axAttributes;
 }
@@ -1722,6 +1870,21 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   TRACE_EVENT1("accessibility",
                "AXPlatformNodeCocoa::accessibilityAttributeNames",
                "role=", ui::ToString([self internalRole]));
+
+  if (![self instanceActive]) {
+    LOG(ERROR) << "Stale object in tree, no AXPlatformNode.";
+    return @[];
+  }
+
+  if (!_node->GetDelegate()) {
+    LOG(ERROR) << "Stale object in tree, no delegate.";
+    return @[];
+  }
+
+  // No need to compute attribute names for ignored nodes.
+  if (![self isAccessibilityElement]) {
+    return @[];
+  }
 
   // Exclude attributes available through the new accessibility API.
   NSMutableArray* attributes = [self internalAccessibilityAttributeNames];
@@ -1758,15 +1921,16 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 }
 
 - (NSMutableArray*)internalAccessibilityParameterizedAttributeNames {
+  NSMutableArray* attributeNames = [NSMutableArray array];
+
   if (![self instanceActive]) {
-    return [NSMutableArray array];
+    return attributeNames;
   }
 
   // General attributes.
-  NSMutableArray* attributeNames = [NSMutableArray
-      arrayWithObjects:
-          NSAccessibilityAttributedStringForTextMarkerRangeParameterizedAttribute,
-          nil];
+  [attributeNames addObjectsFromArray:@[
+    CFToNSPtrCast(kAXAttributedStringForTextMarkerRangeParameterizedAttribute)
+  ]];
 
   if (_node->HasState(ax::mojom::State::kEditable)) {
     [attributeNames addObjectsFromArray:@[
@@ -2057,7 +2221,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   ui::AXPlatformNodeBase* text_field_ancestor =
       _node->GetPlatformTextFieldAncestor();
   if (text_field_ancestor)
-    return text_field_ancestor->GetNativeViewAccessible();
+    return text_field_ancestor->GetNativeViewAccessible().Get();
   return nil;
 }
 
@@ -2122,6 +2286,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     case ax::mojom::InvalidState::kTrue:
       return @"true";
   }
+  NOTREACHED();
 }
 
 - (NSNumber*)AXIsMultiSelectable {
@@ -2161,7 +2326,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   if (!container)
     return nil;
 
-  return @[ container->GetNativeViewAccessible() ];
+  return @[ container->GetNativeViewAccessible().Get() ];
 }
 
 - (NSString*)AXPopupValue {
@@ -2184,6 +2349,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     case ax::mojom::HasPopup::kDialog:
       return @"dialog";
   }
+  NOTREACHED();
 }
 
 - (NSNumber*)AXRequired {
@@ -2212,6 +2378,13 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 - (NSString*)AXSubrole {
   ax::mojom::Role role = _node->GetRole();
   switch (role) {
+    case ax::mojom::Role::kForm:
+      // Per HTML-AAM and Core-AAM, unnamed forms should not be exposed as
+      // landmarks. Only named forms keep the AXLandmarkForm subrole.
+      if (!_node->HasStringAttribute(ax::mojom::StringAttribute::kName)) {
+        return nil;
+      }
+      break;
     case ax::mojom::Role::kTextField:
       if (_node->HasState(ax::mojom::State::kProtected))
         return NSAccessibilitySecureTextFieldSubrole;
@@ -2242,6 +2415,12 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   // -accessibilityCustomContent below), so if the description is from ARIA,
   // don't provide it as AXHelp, and return nothing.
   if ([self descriptionIsFromAriaDescription]) {
+    // VoiceOver does not announce AXCustomContent for fieldsets, so we fall
+    // back to exposing the ARIA description as AXHelp for them.
+    if ([[self getStringAttribute:ax::mojom::StringAttribute::kHtmlTag]
+            isEqualToString:@"fieldset"]) {
+      return [self getStringAttribute:ax::mojom::StringAttribute::kDescription];
+    }
     return nil;
   }
 
@@ -2264,12 +2443,21 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
         _node->GetIntAttribute(ax::mojom::IntAttribute::kCheckedState));
     return checkedState == ax::mojom::CheckedState::kTrue ? @1 : @0;
   }
+
+  // Must be kept in sync with BrowserAccessibilityCocoa::value.
+  if (_node->GetData().IsRangeValueSupported()) {
+    float floatValue;
+    if (_node->GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange,
+                                 &floatValue)) {
+      return @(floatValue);
+    }
+  }
+
   return base::SysUTF16ToNSString(_node->GetValueForControl());
 }
 
 - (NSNumber*)AXEnabled {
-  return
-      @(_node->GetData().GetRestriction() != ax::mojom::Restriction::kDisabled);
+  return @([self isAccessibilityEnabled]);
 }
 
 - (BOOL)isAccessibilityExpanded {
@@ -2307,13 +2495,13 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   // The assignment to ancestor may be null.
   if (!ancestor)
     return nil;
-  return ancestor->GetNativeViewAccessible();
+  return ancestor->GetNativeViewAccessible().Get();
 }
 
 - (id)AXParent {
   if (!_node)
     return nil;
-  return NSAccessibilityUnignoredAncestor(_node->GetParent());
+  return NSAccessibilityUnignoredAncestor(_node->GetParent().Get());
 }
 
 - (NSArray*)accessibilityChildren {
@@ -2325,14 +2513,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   for (auto child_iterator_ptr = _node->GetDelegate()->ChildrenBegin();
        *child_iterator_ptr != *_node->GetDelegate()->ChildrenEnd();
        ++(*child_iterator_ptr)) {
-    ui::AXPlatformNodeDelegate* child = child_iterator_ptr->get();
-    if (child && child->IsInvisibleOrIgnored()) {
-      [children
-          addObjectsFromArray:[child_iterator_ptr->GetNativeViewAccessible()
-                                  accessibilityChildren]];
-    } else {
-      [children addObject:child_iterator_ptr->GetNativeViewAccessible()];
-    }
+    [children addObject:child_iterator_ptr->GetNativeViewAccessible().Get()];
   }
   return NSAccessibilityUnignoredChildren(children);
 }
@@ -2343,7 +2524,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 }
 
 - (id)AXWindow {
-  return _node->GetDelegate()->GetNSWindow();
+  return _node->GetDelegate()->GetNSWindow().Get();
 }
 
 - (id)AXTopLevelUIElement {
@@ -2419,8 +2600,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
 // LINT.IfChange
 - (NSString*)AXSelectedText {
-  NSRange selectedTextRange;
-  [[self AXSelectedTextRange] getValue:&selectedTextRange];
+  NSRange selectedTextRange = [[self AXSelectedTextRange] rangeValue];
   return [[self getAXValueAsString] substringWithRange:selectedTextRange];
 }
 // LINT.ThenChange(accessibilitySelectedText)
@@ -2468,20 +2648,16 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     return nil;
   }
 
-  int lineIndex = [lineNumber intValue];
-  if (lineIndex != 0) {
-    return nil;
-  }
-
-  return [NSValue valueWithRange:[self accessibilityRangeForLine:lineIndex]];
+  return [NSValue
+      valueWithRange:[self accessibilityRangeForLine:[lineNumber intValue]]];
 }
 
 - (id)AXStringForRange:(id)parameter {
-  if (![parameter isKindOfClass:[NSValue class]] ||
-      (0 != strcmp([parameter objCType], @encode(NSRange))))
-    return nil;
+  if (std::optional<NSRange> range = ui::NSValueGetRange(parameter)) {
+    return [self accessibilityStringForRange:range.value()];
+  }
 
-  return [self accessibilityStringForRange:[parameter rangeValue]];
+  return nil;
 }
 
 - (id)AXRangeForPosition:(id)parameter {
@@ -2527,8 +2703,11 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 }
 
 - (id)AXAttributedStringForRange:(id)parameter {
-  if (![parameter isKindOfClass:[NSValue class]])
+  NSValue* value = base::apple::ObjCCast<NSValue>(parameter);
+  if (!value) {
     return nil;
+  }
+  NSRange range = value.rangeValue;
 
   // TODO(crbug.com/41456329): Finish implementation.
   // Currently, we only decorate the attributed string with misspelling
@@ -2537,17 +2716,24 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   // decorations, and BridgedContentView has a conversion function that creates
   // an NSAttributedString. Refactor things so they can be used here.
 
-  NSRange range = [(NSValue*)parameter rangeValue];
-  std::u16string textContent = _node->GetTextContentUTF16();
-  if (NSMaxRange(range) > textContent.length())
+  std::u16string textContent;
+  if (ui::IsNameExposedInAXValueForRole(_node->GetRole())) {
+    textContent = base::SysNSStringToUTF16([self getAXValueAsString]);
+  } else {
+    textContent = _node->GetTextContentUTF16();
+  }
+
+  if (NSMaxRange(range) > textContent.length()) {
     return nil;
+  }
 
   // We potentially need to add text attributes to the whole text content
   // because a spelling mistake might start or end outside the given range.
   NSMutableAttributedString* attributedTextContent =
       [[NSMutableAttributedString alloc]
           initWithString:base::SysUTF16ToNSString(textContent)];
-  if (!_node->IsText()) {
+  if (!_node->IsText() &&
+      !ui::IsNameExposedInAXValueForRole(_node->GetRole())) {
     AXRange axRange(_node->GetDelegate()->CreateTextPositionAt(0),
                     _node->GetDelegate()->CreateTextPositionAt(
                         static_cast<int>(textContent.length())));
@@ -2604,17 +2790,43 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
 // NSAccessibility: Configuring Accessibility.
 - (BOOL)isAccessibilityElement {
-  if (![self instanceActive])
+  if (!_node) {
     return NO;
+  }
+  DCHECK(_node->GetDelegate());
+  DCHECK([self instanceActive]);
 
-  return (![[[self class] nativeRoleFromAXRole:_node->GetRole()]
-              isEqualToString:NSAccessibilityUnknownRole] &&
-          !_node->GetDelegate()->IsIgnored());
+  // After ViewsAX lands, we should be able to add this DCHECK.
+  // DCHECK(!_node->GetDelegate()->IsIgnored())
+  //     << "Ignored nodes should be removed by PlatformGet*() methods:"
+  //     << _node->GetDelegate()->ToString();
+
+  if (_node->GetDelegate()->IsInvisibleOrIgnored()) {
+    return NO;
+  }
+
+  if ([self internalRole] == ax::mojom::Role::kImage &&
+      _node->GetData().GetNameFrom() ==
+          ax::mojom::NameFrom::kAttributeExplicitlyEmpty) {
+    return NO;
+  }
+
+  if ([self internalRole] == ax::mojom::Role::kLineBreak) {
+    return NO;
+  }
+
+  return YES;
 }
 
 - (BOOL)isAccessibilityEnabled {
   if (!_node)
     return NO;
+
+  // Native menus expose separators as disabled menu items. Chromium mirrors
+  // this behavior.
+  if (_node->GetRole() == ax::mojom::Role::kMenuItemSeparator) {
+    return NO;
+  }
 
   return _node->GetData().GetRestriction() != ax::mojom::Restriction::kDisabled;
 }
@@ -2632,16 +2844,34 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     return nil;
 
   // macOS wants static text exposed in AXValue.
-  if (ui::IsNameExposedInAXValueForRole([self internalRole]))
+  if (ui::IsNameExposedInAXValueForRole([self internalRole])) {
     return @"";
+  }
 
   // If we're exposing the title in TitleUIElement, don't also redundantly
   // expose it in accessibilityLabel.
   if ([self titleUIElement])
     return @"";
 
-  if (![self isNameFromLabel])
+  // For web dialogs whose name comes from aria-labelledby
+  // (NameFrom::kRelatedElement), additionally expose the name as
+  // AXDescription. accessibilityTitle still publishes it as AXTitle, so
+  // the dialog ends up with both attributes populated, matching Safari.
+  // Without AXDescription, VoiceOver does not announce the AXTitle of
+  // AXApplicationDialog or AXApplicationAlertDialog subroles, leaving
+  // dialogs labelled via aria-labelledby silent on focus. See
+  // https://issues.chromium.org/issues/41487406 and
+  // https://github.com/w3c/core-aam/issues/213.
+  ax::mojom::Role role = _node->GetRole();
+  bool isWebDialogLabelledBy =
+      (role == ax::mojom::Role::kDialog ||
+       role == ax::mojom::Role::kAlertDialog) &&
+      _node->IsWebContent() &&
+      _node->GetNameFrom() == ax::mojom::NameFrom::kRelatedElement;
+
+  if (![self isNameFromLabel] && !isWebDialogLabelledBy) {
     return @"";
+  }
 
   std::string name = _node->GetName();
 
@@ -2689,7 +2919,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
                                 &targetId)) {
     ui::AXPlatformNode* target = delegate->GetFromNodeID(targetId);
     if (target) {
-      [elements addObject:target->GetNativeViewAccessible()];
+      [elements addObject:target->GetNativeViewAccessible().Get()];
     }
   }
 
@@ -2705,8 +2935,9 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   if (![self instanceActive])
     return nil;
 
-  if (ui::IsNameExposedInAXValueForRole(_node->GetRole()))
+  if (ui::IsNameExposedInAXValueForRole(_node->GetRole())) {
     return @"";
+  }
 
   if ([self isNameFromLabel])
     return @"";
@@ -2749,13 +2980,13 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   data.action = _node->GetRole() == ax::mojom::Role::kTab
                     ? ax::mojom::Action::kSetSelection
                     : ax::mojom::Action::kSetValue;
-  if ([value isKindOfClass:[NSString class]]) {
-    data.value = base::SysNSStringToUTF8(value);
-  } else if ([value isKindOfClass:[NSValue class]]) {
+  if (NSString* stringValue = base::apple::ObjCCast<NSString>(value)) {
+    data.value = base::SysNSStringToUTF8(stringValue);
+  } else if (NSValue* valueValue = base::apple::ObjCCast<NSValue>(value)) {
     // TODO(crbug.com/41115917): Is this case actually needed? The
     // NSObject accessibility implementation supported this, but can it actually
     // occur?
-    NSRange range = [value rangeValue];
+    NSRange range = valueValue.rangeValue;
     data.anchor_offset = range.location;
     data.focus_offset = NSMaxRange(range);
   }
@@ -2945,7 +3176,6 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   }
 
   ui::AXPlatformNodeDelegate* delegate = _node->GetDelegate();
-  DCHECK(delegate);
 
   NSMutableArray* ret = [NSMutableArray array];
 
@@ -2978,7 +3208,6 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   }
 
   ui::AXPlatformNodeDelegate* tableDelegate = table->GetDelegate();
-  DCHECK(tableDelegate);
   for (ui::AXNodeID id : tableDelegate->GetColHeaderNodeIds(*column)) {
     AXPlatformNodeCocoa* colheader = [self fromNodeID:id];
     if (colheader) {
@@ -2996,7 +3225,6 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
   if (ui::IsTableLike(_node->GetRole())) {
     ui::AXPlatformNodeDelegate* delegate = _node->GetDelegate();
-    DCHECK(delegate);
     // The table header container is a special node in the accessibility tree
     // only used on macOS. It has all of the table headers as its children, even
     // though those cells are also children of rows in the table. Internally
@@ -3041,7 +3269,6 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   }
 
   ui::AXPlatformNodeDelegate* delegate = _node->GetDelegate();
-  DCHECK(delegate);
   std::optional<int> count = delegate->GetTableColCount();
   if (count.has_value()) {
     return *count;
@@ -3060,7 +3287,6 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   }
 
   ui::AXPlatformNodeDelegate* delegate = _node->GetDelegate();
-  DCHECK(delegate);
   std::optional<int> count = delegate->GetTableRowCount();
   if (count.has_value()) {
     return *count;
@@ -3095,9 +3321,6 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   }
 
   ui::AXPlatformNodeDelegate* tableDelegate = tableNode->GetDelegate();
-  if (!tableDelegate) {
-    return nil;
-  }
 
   // A table with no row headers.
   if (isTableLike && !tableDelegate->GetTableRowCount().has_value()) {
@@ -3124,7 +3347,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     for (int32_t headerId : headerIds) {
       ui::AXPlatformNode* cellNode = tableDelegate->GetFromNodeID(headerId);
       if (cellNode) {
-        [rowHeaders addObject:cellNode->GetNativeViewAccessible()];
+        [rowHeaders addObject:cellNode->GetNativeViewAccessible().Get()];
       }
     }
   } else {
@@ -3132,7 +3355,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     for (int32_t nodeId : delegate->GetRowHeaderNodeIds()) {
       ui::AXPlatformNode* cellNode = delegate->GetFromNodeID(nodeId);
       if (cellNode) {
-        [rowHeaders addObject:cellNode->GetNativeViewAccessible()];
+        [rowHeaders addObject:cellNode->GetNativeViewAccessible().Get()];
       }
     }
   }
@@ -3186,7 +3409,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   for (int32_t nodeId : nodeIds) {
     ui::AXPlatformNode* rowNode = delegate->GetFromNodeID(nodeId);
     if (rowNode) {
-      [rows addObject:rowNode->GetNativeViewAccessible()];
+      [rows addObject:rowNode->GetNativeViewAccessible().Get()];
     }
   }
 
@@ -3503,10 +3726,11 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     return nil;
 
   std::string url;
-  if ([[self accessibilityRole] isEqualToString:NSAccessibilityWebAreaRole])
+  if ([[self accessibilityRole] isEqualToString:NSAccessibilityWebAreaRole]) {
     url = _node->GetDelegate()->GetTreeData().url;
-  else
+  } else {
     url = _node->GetStringAttribute(ax::mojom::StringAttribute::kUrl);
+  }
 
   if (url.empty())
     return nil;
@@ -3559,7 +3783,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     if (auto* delegate = target->GetDelegate()) {
       if (delegate->GetRole() == ax::mojom::Role::kScrollBar &&
           delegate->HasState(state)) {
-        return target->GetNativeViewAccessible();
+        return target->GetNativeViewAccessible().Get();
       }
     }
   }
@@ -3603,7 +3827,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     return nil;
   }
 
-  return cell->GetNativeViewAccessible();
+  return cell->GetNativeViewAccessible().Get();
 }
 // LINT.ThenChange(ui/accessibility/platform/browser_accessibility_cocoa.mm:accessibilityCellForColumn)
 
@@ -3664,7 +3888,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   for (int32_t id : table->GetTableUniqueCellIds()) {
     ui::AXPlatformNode* cell = table->GetFromNodeID(id);
     if (cell) {
-      [cells addObject:cell->GetNativeViewAccessible()];
+      [cells addObject:cell->GetNativeViewAccessible().Get()];
     }
   }
   return cells;
@@ -3694,6 +3918,13 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   // Only descriptions originating from ARIA are returned as custom content.
   // (Non-ARIA descriptions are returned as AXHelp.)
   if (![self descriptionIsFromAriaDescription]) {
+    return nil;
+  }
+
+  // VoiceOver does not announce AXCustomContent for fieldsets, so we do not
+  // expose it here.
+  if ([[self getStringAttribute:ax::mojom::StringAttribute::kHtmlTag]
+          isEqualToString:@"fieldset"]) {
     return nil;
   }
 
@@ -3844,10 +4075,10 @@ NSDictionary* CreateMathSubSupScriptsPair(AXPlatformNodeCocoa* subscript,
                                           AXPlatformNodeCocoa* superscript) {
   NSMutableDictionary* dictionary = [NSMutableDictionary dictionary];
   if (subscript) {
-    dictionary[NSAccessibilityMathSubscriptAttribute] = subscript;
+    dictionary[CFToNSPtrCast(kAXMathSubscriptAttribute)] = subscript;
   }
   if (superscript) {
-    dictionary[NSAccessibilityMathSuperscriptAttribute] = superscript;
+    dictionary[CFToNSPtrCast(kAXMathSuperscriptAttribute)] = superscript;
   }
   return dictionary;
 }

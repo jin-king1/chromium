@@ -14,6 +14,8 @@
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
+#include "base/notimplemented.h"
 #include "base/run_loop.h"
 #include "base/test/gmock_move_support.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -88,31 +90,15 @@ const uint8_t kErroneousHeader = 5;
 const char kSmallMessage[] = "bb";
 const char kLargeMessage[] = "aaabbb";
 
-const Packet kConnectionRequest{kConnectionRequestHeader};
-const Packet kSmallConnectionResponse{kSmallConnectionResponseHeader};
-const Packet kLargeConnectionResponse{kLargeConnectionResponseHeader};
-const Packet kConnectionCloseSuccess{kConnectionCloseHeader,
-                                     ReasonForClose::CLOSE_WITHOUT_ERROR};
-const Packet kConnectionCloseUnknownError{kConnectionCloseHeader,
-                                          ReasonForClose::UNKNOWN_ERROR};
-const Packet kConnectionCloseApplicationError{
-    kConnectionCloseHeader, ReasonForClose::APPLICATION_ERROR};
-
-const Packet kSmallPackets0 = Packet{kDataHeader, 'b', 'b'};
-const Packet kLargePackets0 = Packet{kDataHeader, 'a', 'a', 'a'};
-const Packet kLargePackets1 = Packet{kDataHeader, 'b', 'b', 'b'};
-const Packet kErroneousPacket = Packet{kErroneousHeader};
-
-const std::vector<Packet> kSmallPackets{kSmallPackets0};
-const std::vector<Packet> kLargePackets{kLargePackets0, kLargePackets1};
-
 class MockBluetoothLowEnergyWeavePacketGenerator
     : public BluetoothLowEnergyWeavePacketGenerator {
  public:
   MockBluetoothLowEnergyWeavePacketGenerator()
       : max_packet_size_(kDefaultMaxPacketSize) {}
 
-  Packet CreateConnectionRequest() override { return kConnectionRequest; }
+  Packet CreateConnectionRequest() override {
+    return Packet{kConnectionRequestHeader};
+  }
 
   Packet CreateConnectionResponse() override {
     NOTIMPLEMENTED();
@@ -129,10 +115,11 @@ class MockBluetoothLowEnergyWeavePacketGenerator
   std::vector<Packet> EncodeDataMessage(std::string message) override {
     if (message == (std::string(kTestFeature) + "," + kSmallMessage) &&
         max_packet_size_ == kDefaultMaxPacketSize) {
-      return kSmallPackets;
+      return std::vector<Packet>{Packet{kDataHeader, 'b', 'b'}};
     } else if (message == (std::string(kTestFeature) + "," + kLargeMessage) &&
                max_packet_size_ == kLargeMaxPacketSize) {
-      return kLargePackets;
+      return std::vector<Packet>{Packet{kDataHeader, 'a', 'a', 'a'},
+                                 Packet{kDataHeader, 'b', 'b', 'b'}};
     } else {
       NOTREACHED();
     }
@@ -189,7 +176,8 @@ class MockBluetoothLowEnergyWeavePacketReceiver
         reason_for_close_ = static_cast<ReasonForClose>(packet[1]);
         break;
       case kDataHeader:
-        if (packet == kSmallPackets0 || packet == kLargePackets1) {
+        if (packet == Packet{kDataHeader, 'b', 'b'} ||
+            packet == Packet{kDataHeader, 'b', 'b', 'b'}) {
           state_ = ReceiverState::DATA_READY;
         } else {
           state_ = ReceiverState::RECEIVING_DATA;
@@ -449,7 +437,7 @@ class SecureChannelBluetoothLowEnergyWeaveClientConnectionTest
 
     // Preparing |connection| for a CreateGattConnection call.
     EXPECT_CALL(*mock_bluetooth_device_, CreateGattConnection(_, _))
-        .WillOnce(DoAll(MoveArg<0>(&create_gatt_connection_callback_)));
+        .WillOnce(MoveArg<0>(&create_gatt_connection_callback_));
 
     connection->Connect();
 
@@ -677,6 +665,24 @@ class SecureChannelBluetoothLowEnergyWeaveClientConnectionTest
   }
 
  protected:
+  const Packet kConnectionRequest{kConnectionRequestHeader};
+  const Packet kSmallConnectionResponse{kSmallConnectionResponseHeader};
+  const Packet kLargeConnectionResponse{kLargeConnectionResponseHeader};
+  const Packet kConnectionCloseSuccess{kConnectionCloseHeader,
+                                       ReasonForClose::CLOSE_WITHOUT_ERROR};
+  const Packet kConnectionCloseUnknownError{kConnectionCloseHeader,
+                                            ReasonForClose::UNKNOWN_ERROR};
+  const Packet kConnectionCloseApplicationError{
+      kConnectionCloseHeader, ReasonForClose::APPLICATION_ERROR};
+
+  const Packet kSmallPackets0 = Packet{kDataHeader, 'b', 'b'};
+  const Packet kLargePackets0 = Packet{kDataHeader, 'a', 'a', 'a'};
+  const Packet kLargePackets1 = Packet{kDataHeader, 'b', 'b', 'b'};
+  const Packet kErroneousPacket = Packet{kErroneousHeader};
+
+  const std::vector<Packet> kSmallPackets{kSmallPackets0};
+  const std::vector<Packet> kLargePackets{kLargePackets0, kLargePackets1};
+
   const multidevice::RemoteDeviceRef remote_device_;
   const device::BluetoothUUID service_uuid_;
   const device::BluetoothUUID tx_characteristic_uuid_;
@@ -1422,7 +1428,7 @@ TEST_F(SecureChannelBluetoothLowEnergyWeaveClientConnectionTest,
             connection_latency_error_callback_ = std::move(error_callback);
           }));
   EXPECT_CALL(*mock_bluetooth_device_, CreateGattConnection(_, _))
-      .WillOnce(DoAll(MoveArg<0>(&create_gatt_connection_callback_)));
+      .WillOnce(MoveArg<0>(&create_gatt_connection_callback_));
 
   // No GATT connection should be created before the delay.
   connection->Connect();
@@ -1483,7 +1489,7 @@ TEST_F(SecureChannelBluetoothLowEnergyWeaveClientConnectionTest,
   ASSERT_FALSE(connection_latency_error_callback_.is_null());
 
   EXPECT_CALL(*mock_bluetooth_device_, CreateGattConnection(_, _))
-      .WillOnce(DoAll(MoveArg<0>(&create_gatt_connection_callback_)));
+      .WillOnce(MoveArg<0>(&create_gatt_connection_callback_));
   std::move(connection_latency_error_callback_).Run();
   ASSERT_FALSE(create_gatt_connection_callback_.is_null());
 
@@ -1535,7 +1541,7 @@ TEST_F(SecureChannelBluetoothLowEnergyWeaveClientConnectionTest,
   ASSERT_FALSE(connection_latency_error_callback_.is_null());
 
   EXPECT_CALL(*mock_bluetooth_device_, CreateGattConnection(_, _))
-      .WillOnce(DoAll(MoveArg<0>(&create_gatt_connection_callback_)));
+      .WillOnce(MoveArg<0>(&create_gatt_connection_callback_));
 
   // Simulate a timeout.
   test_timer_->Fire();
@@ -1589,7 +1595,7 @@ TEST_F(SecureChannelBluetoothLowEnergyWeaveClientConnectionTest,
 
   // Preparing |connection| for a CreateGattConnection call.
   EXPECT_CALL(*mock_bluetooth_device_, CreateGattConnection(_, _))
-      .WillOnce(DoAll(MoveArg<0>(&create_gatt_connection_callback_)));
+      .WillOnce(MoveArg<0>(&create_gatt_connection_callback_));
 
   connection->Connect();
 

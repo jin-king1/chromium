@@ -4,20 +4,18 @@
 
 package org.chromium.chrome.browser.safety_hub;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.view.LayoutInflater;
 import android.view.ViewGroup;
 
-import androidx.annotation.NonNull;
-
-import org.chromium.base.BuildInfo;
 import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.Supplier;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.magic_stack.HomeModulesConfigManager;
-import org.chromium.chrome.browser.magic_stack.ModuleConfigChecker;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.magic_stack.ModuleProvider;
@@ -28,18 +26,21 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
+import java.util.function.Supplier;
+
 /** {@link ModuleProviderBuilder} that builds the Safety Hub Magic Stack module. */
-public class SafetyHubMagicStackBuilder implements ModuleProviderBuilder, ModuleConfigChecker {
+@NullMarked
+public class SafetyHubMagicStackBuilder implements ModuleProviderBuilder {
     private final Context mContext;
-    private final ObservableSupplier<Profile> mProfileSupplier;
+    private final MonotonicObservableSupplier<Profile> mProfileSupplier;
     private final TabModelSelector mTabModelSelector;
     private final Supplier<ModalDialogManager> mModalDialogManagerSupplier;
 
     public SafetyHubMagicStackBuilder(
-            @NonNull Context context,
-            @NonNull ObservableSupplier<Profile> profileSupplier,
-            @NonNull TabModelSelector tabModelSelector,
-            @NonNull Supplier<ModalDialogManager> modalDialogManagerSupplier) {
+            Context context,
+            MonotonicObservableSupplier<Profile> profileSupplier,
+            TabModelSelector tabModelSelector,
+            Supplier<ModalDialogManager> modalDialogManagerSupplier) {
         mContext = context;
         mProfileSupplier = profileSupplier;
         mTabModelSelector = tabModelSelector;
@@ -90,22 +91,17 @@ public class SafetyHubMagicStackBuilder implements ModuleProviderBuilder, Module
     @Override
     public boolean isEligible() {
         // The Safety Hub is not fully supported on Automotive.
-        if (BuildInfo.getInstance().isAutomotive) return false;
+        if (DeviceInfo.isAutomotive()) return false;
 
-        if (!mProfileSupplier.hasValue()) return false;
+        Profile profile = mProfileSupplier.get();
+        if (profile == null) return false;
 
-        if (!ChromeFeatureList.sSafetyHub.isEnabled()
-                && ChromeFeatureList.sSafetyHubAndroidSurvey.isEnabled()) {
-            SafetyHubHatsHelper.getForProfile(getRegularProfile())
-                    .triggerControlHatsSurvey(mTabModelSelector);
-        }
-        return ChromeFeatureList.sSafetyHub.isEnabled();
+        return true;
     }
 
     private Profile getRegularProfile() {
-        assert mProfileSupplier.hasValue();
-
         Profile profile = mProfileSupplier.get();
+        assumeNonNull(profile);
         // It is possible that an incognito profile is provided by the supplier. See b/326619334.
         return profile.isOffTheRecord() ? profile.getOriginalProfile() : profile;
     }

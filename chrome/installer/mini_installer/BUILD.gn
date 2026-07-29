@@ -3,7 +3,6 @@
 # found in the LICENSE file.
 
 import("//build/config/compiler/compiler.gni")
-import("//build/config/features.gni")
 import("//build/config/python.gni")
 import("//build/config/ui.gni")
 import("//build/timestamp.gni")
@@ -13,6 +12,7 @@ import("//third_party/ffmpeg/ffmpeg_options.gni")
 import("//third_party/icu/config.gni")
 import("//tools/v8_context_snapshot/v8_context_snapshot.gni")
 import("//ui/base/ui_features.gni")
+import("//ui/gl/features.gni")
 import("//v8/gni/v8.gni")
 
 declare_args() {
@@ -69,11 +69,17 @@ source_set("lib") {
     "write_to_disk.h",
   ]
 
-  deps = [ "//build:branding_buildflags" ]
+  deps = [
+    "//base:compiler_specific",
+    "//build:branding_buildflags",
+  ]
 
   # Initialization may insert unexpected memset calls.
   configs -= [ "//build/config/compiler:default_init_stack_vars" ]
   configs += [ ":mini_installer_compiler_flags" ]
+
+  # Because it changes the stack protector.
+  use_libcxx_modules = false
 }
 
 process_version_rc_template("version") {
@@ -129,7 +135,7 @@ packed_files_rc_file = "$target_gen_dir/mini_installer/packed_files.rc"
 # mini_installer, and therefore must be compressed.
 # The `enable_uncompressed_archive` arg is only intended for uncompressed
 # targets, so we assert that this flag is only set when not building for debug:
-# https://crbug.com/1408213.
+# https://crbug.com/40253437.
 assert(!is_debug || !enable_uncompressed_archive)
 
 if (enable_uncompressed_archive) {
@@ -144,6 +150,7 @@ action("mini_installer_archive") {
 
   inputs = [
     "$root_out_dir/chrome.dll",
+    "$root_out_dir/chrome_elf.dll",
     "$root_out_dir/chrome.exe",
     "$root_out_dir/locales/en-US.pak",
     "$root_out_dir/setup.exe",
@@ -177,11 +184,6 @@ action("mini_installer_archive") {
     "--build_time",
     build_timestamp,
 
-    # Optional arguments to generate diff installer.
-    #'--last_chrome_installer=C:/Temp/base',
-    #'--setup_exe_format=DIFF',
-    #'--diff_algorithm=ZUCCHINI',
-
     # Optional argument for verbose archiving output.
     #"--verbose",
   ]
@@ -192,6 +194,7 @@ action("mini_installer_archive") {
     "//chrome",
     "//chrome:chrome_dll",
     "//chrome/browser/extensions/default_extensions",
+    "//chrome/chrome_elf",
     "//chrome/common/win:eventlog_provider",
     "//chrome/installer/setup",
     "//third_party/icu:icudata",
@@ -208,6 +211,10 @@ action("mini_installer_archive") {
     args += [ "--component_ffmpeg_build=1" ]
   }
 
+  if (use_static_angle) {
+    args += [ "--use_static_angle=True" ]
+  }
+
   if (fast_archive_compression) {
     args += [ "--fast_archive_compression" ]
   }
@@ -222,8 +229,6 @@ action("mini_installer_archive") {
 
   if (icu_use_data_file) {
     inputs += [ "$root_out_dir/icudtl.dat" ]
-  } else {
-    inputs += [ "$root_out_dir/icudt.dll" ]
   }
 
   if (v8_use_external_startup_data) {
@@ -254,9 +259,13 @@ source_set("mini_installer_sources") {
   deps = [
     ":lib",
     "//base:clang_profiling_buildflags",
+    "//base:compiler_specific",
   ]
   configs -= [ "//build/config/compiler:default_init_stack_vars" ]
   configs += [ ":mini_installer_compiler_flags" ]
+
+  # Because it changes the stack protector.
+  use_libcxx_modules = false
 }
 
 copy("copy_signing") {
@@ -332,10 +341,11 @@ if (enable_uncompressed_archive) {
 
 # previous_version_mini_installer.exe can't be generated in an x86 Debug
 # component build because it requires too much memory.
-# TODO(thakis): Enable this in cross builds, https://crbug.com/799827
+# TODO(thakis): Enable this in cross builds, https://crbug.com/40557129
 if (!(is_component_build && is_debug && target_cpu == "x86") &&
     host_os == "win") {
   action("previous_version_mini_installer") {
+    pool = "//build/toolchain:link_pool($default_toolchain)"
     script = "generate_previous_version_mini_installer.py"
     testonly = true
     if (target_cpu == "arm64") {

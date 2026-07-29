@@ -2,15 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/media_router/common/providers/cast/channel/enum_table.h"
 
 #include <cstdlib>
 #include <string_view>
+
+#include "base/compiler_specific.h"
 
 namespace cast_util {
 
@@ -24,13 +21,11 @@ static_assert(sizeof(GenericEnumTableEntry) == 16,
 
 // static
 const GenericEnumTableEntry* GenericEnumTableEntry::FindByString(
-    const GenericEnumTableEntry data[],
-    std::size_t size,
+    base::span<const GenericEnumTableEntry> data,
     std::string_view str) {
-  for (std::size_t i = 0; i < size; i++) {
-    if (data[i].length == str.length() &&
-        std::memcmp(data[i].chars, str.data(), str.length()) == 0) {
-      return &data[i];
+  for (const auto& entry : data) {
+    if (entry.has_str() && entry.str() == str) {
+      return &entry;
     }
   }
   return nullptr;
@@ -38,12 +33,11 @@ const GenericEnumTableEntry* GenericEnumTableEntry::FindByString(
 
 // static
 std::optional<std::string_view> GenericEnumTableEntry::FindByValue(
-    const GenericEnumTableEntry data[],
-    std::size_t size,
+    base::span<const GenericEnumTableEntry> data,
     int value) {
-  for (std::size_t i = 0; i < size; i++) {
-    if (data[i].value == value && data[i].has_str()) {
-      return data[i].str();
+  for (const auto& entry : data) {
+    if (entry.value == value && entry.has_str()) {
+      return entry.str();
     }
   }
   return std::nullopt;

@@ -14,14 +14,16 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
-#include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "components/account_manager_core/account_manager_facade.h"
 #include "components/signin/public/base/signin_client.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/signin/public/identity_manager/scope_set.h"
 #include "google_apis/gaia/gaia_id.h"
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "components/signin/public/base/binding_key_registration_token_result.h"
+#endif
 
 class FakeProfileOAuth2TokenService;
 class IdentityTestEnvironmentBrowserStateAdaptor;
@@ -29,18 +31,12 @@ class IdentityTestEnvironmentProfileAdaptor;
 class PrefService;
 class TestSigninClient;
 
-#if BUILDFLAG(IS_CHROMEOS)
-namespace account_manager {
-class AccountManagerFacade;
-}
-
-namespace ash {
-class AccountManagerFactory;
-}
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
 namespace sync_preferences {
 class TestingPrefServiceSyncable;
+}
+
+namespace metrics {
+class ProfileMetricsService;
 }
 
 namespace network {
@@ -248,6 +244,13 @@ class IdentityTestEnvironment : public IdentityManager::DiagnosticsObserver,
   // an access token value of "access_token".
   void SetAutomaticIssueOfAccessTokens(bool grant);
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  void EnableTokenBindingRegistration();
+  void IssueTokenBindingRegistrationTokenForAuthCode(
+      std::string_view auth_code,
+      std::optional<signin::BindingKeyRegistrationTokenResult> result);
+#endif
+
   // Issues |token| in response to any access token request that either has (a)
   // already occurred and has not been matched by a previous call to this or
   // other WaitFor... method, or (b) will occur in the future. In the latter
@@ -291,6 +294,15 @@ class IdentityTestEnvironment : public IdentityManager::DiagnosticsObserver,
       const base::Time& expiration,
       const std::string& id_token,
       const ScopeSet& scopes);
+
+  // Similar to WaitForAccessTokenRequestIfNecessaryAndRespondWithToken above
+  // apart from the fact that it issues tokens for the scopes of a given
+  // OAuthConsumerId instead of issuing all tokens for all requests (the method
+  // variant above).
+  void WaitForAccessTokenRequestIfNecessaryAndRespondWithTokenForConsumerId(
+      const std::string& token,
+      const base::Time& expiration,
+      const OAuthConsumerId oauth_consumer_id);
 
   // Issues |error| in response to any access token request that either has (a)
   // already occurred and has not been matched by a previous call to this or
@@ -417,20 +429,15 @@ class IdentityTestEnvironment : public IdentityManager::DiagnosticsObserver,
   static std::unique_ptr<IdentityManager> BuildIdentityManagerForTests(
       SigninClient* signin_client,
       PrefService* pref_service,
-      base::FilePath user_data_dir
-#if BUILDFLAG(IS_CHROMEOS)
-      ,
-      ash::AccountManagerFactory* account_manager_factory,
-      account_manager::AccountManagerFacade* account_manager_facade
-#endif
-  );
+      metrics::ProfileMetricsService* profile_metrics_service,
+      base::FilePath user_data_dir);
 
   static std::unique_ptr<IdentityManager> FinishBuildIdentityManagerForTests(
       std::unique_ptr<AccountTrackerService> account_tracker_service,
       std::unique_ptr<ProfileOAuth2TokenService> token_service,
       SigninClient* signin_client,
       PrefService* pref_service,
-      base::FilePath user_data_dir
+      metrics::ProfileMetricsService* profile_metrics_service
 #if BUILDFLAG(IS_CHROMEOS)
       ,
       account_manager::AccountManagerFacade* account_manager_facade

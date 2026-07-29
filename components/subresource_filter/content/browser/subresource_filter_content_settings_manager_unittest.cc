@@ -66,8 +66,9 @@ class SubresourceFilterContentSettingsManagerTest : public testing::Test {
     for (const auto& it :
          GetSettingsMap()->GetSettingsForOneType(ContentSettingsType::ADS)) {
       // Need GURL conversion to get rid of unnecessary default ports.
-      if (GURL(it.primary_pattern.ToString()) == url_with_empty_path)
+      if (GURL(it.primary_pattern.ToString()) == url_with_empty_path) {
         return it.GetContentSetting();
+      }
     }
     return CONTENT_SETTING_DEFAULT;
   }
@@ -201,7 +202,7 @@ TEST_F(SubresourceFilterContentSettingsManagerTest,
        AdditionalMetadata_SetInMetadata) {
   GURL url("https://example.test/");
   const char kTestKey[] = "Test";
-  base::Value::Dict additional_metadata;
+  base::DictValue additional_metadata;
   additional_metadata.Set(kTestKey, true);
 
   // Set activation with additional metadata.
@@ -222,7 +223,7 @@ TEST_F(SubresourceFilterContentSettingsManagerTest,
        AdditionalMetadata_PersistedWithAdsIntervention) {
   GURL url("https://example.test/");
   const char kTestKey[] = "Test";
-  base::Value::Dict additional_metadata;
+  base::DictValue additional_metadata;
   additional_metadata.Set(kTestKey, true);
 
   // Set activation with additional metadata.
@@ -249,7 +250,7 @@ TEST_F(SubresourceFilterContentSettingsManagerTest,
 TEST_F(SubresourceFilterContentSettingsManagerTest,
        SiteMetadataWithoutActivationStatus_SiteActivationTrue) {
   GURL url("https://example.test/");
-  base::Value::Dict dict;
+  base::DictValue dict;
   settings_manager()->SetSiteMetadataForTesting(url, std::move(dict));
   EXPECT_TRUE(settings_manager()->GetSiteActivationFromMetadata(url));
 }

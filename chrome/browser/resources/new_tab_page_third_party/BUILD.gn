@@ -3,11 +3,14 @@
 # found in the LICENSE file.
 
 import("//ui/webui/resources/tools/build_webui.gni")
+import("//ui/webui/webui_features.gni")
+
+assert(enable_webui_ntp)
 
 build_webui("build") {
   grd_prefix = "new_tab_page_third_party"
   static_files = [ "new_tab_page_third_party.html" ]
-  non_web_component_files = [
+  ts_files = [
     "browser_proxy.ts",
     "new_tab_page_third_party.ts",
   ]

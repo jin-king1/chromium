@@ -9,7 +9,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import six
 
 # When py_utils from the catapult repo are not available (as is the case
 # on autorollers), import a small replacement.
@@ -68,7 +67,7 @@ def _GetHostOsName():
 
 
 def _GetHostArch():
-  uname_arch = six.ensure_str(subprocess.check_output(['uname', '-m']).strip())
+  uname_arch = subprocess.check_output(['uname', '-m'], text=True).strip()
   if uname_arch == 'armv7l':
     return 'arm'
   if uname_arch == 'aarch64':
@@ -77,7 +76,7 @@ def _GetHostArch():
 
 
 def _GetLinuxBinaryArch(binary_name):
-  file_output = six.ensure_str(subprocess.check_output(['file', binary_name]))
+  file_output = subprocess.check_output(['file', binary_name], text=True)
   file_arch = file_output.split(',')[1].strip()
   if file_arch == 'x86-64':
     return 'x86_64'
@@ -89,7 +88,7 @@ def _GetLinuxBinaryArch(binary_name):
 
 
 def _GetMacBinaryArch(binary_name):
-  file_output = six.ensure_str(subprocess.check_output(['file', binary_name]))
+  file_output = subprocess.check_output(['file', binary_name], text=True)
   return file_output.split()[-1].strip()
 
 
@@ -185,6 +184,8 @@ def GetLatestFullPathPerfetto(binary_name, platform):
   path_list = cloud_storage.ListFiles(PERFETTO_BINARY_BUCKET,
                                       path_wildcard,
                                       sort_by='time')
+  # Filter out the "latest" tag to only include actual versions.
+  path_list = [p for p in path_list if not p.startswith('/latest/')]
   if not path_list:
     raise RuntimeError('No pre-built binary found for platform %s.' % platform)
   return PERFETTO_BINARY_BUCKET + path_list[-1]
@@ -216,7 +217,7 @@ def SwitchBinaryToNewFullPath(binary_name, platform, new_full_path):
 
 
 def FetchHostBinary(binary_name):
-  """Download the binary from the cloud.
+  """Download the binary from the cloud if it doesn't exist or has wrong hash.
 
   This function fetches the binary for the host platform from the cloud.
   The cloud path is read from the config.
@@ -229,9 +230,11 @@ def FetchHostBinary(binary_name):
   expected_hash = config[binary_name][platform]['hash']
   filename = posixpath.basename(remote_path)
   local_path = os.path.join(LOCAL_STORAGE_FOLDER, filename)
-  cloud_storage.Get(bucket, remote_path, local_path)
-  if cloud_storage.CalculateHash(local_path) != expected_hash:
-    raise RuntimeError('The downloaded binary has wrong hash.')
+  if not os.path.exists(local_path) or cloud_storage.CalculateHash(
+      local_path) != expected_hash:
+    cloud_storage.Get(bucket, remote_path, local_path)
+    if cloud_storage.CalculateHash(local_path) != expected_hash:
+      raise RuntimeError('The downloaded binary has wrong hash.')
   mode = os.stat(local_path).st_mode
   os.chmod(local_path, mode | stat.S_IXUSR)
   return local_path

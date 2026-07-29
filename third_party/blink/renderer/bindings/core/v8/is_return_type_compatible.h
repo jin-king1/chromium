@@ -194,7 +194,7 @@ template <typename IDLKey,
           typename ReturnValue>
 inline constexpr bool
     IsReturnTypeCompatible<blink::IDLRecord<IDLKey, IDLValue>,
-                           WTF::Vector<std::pair<ReturnKey, ReturnValue>>> =
+                           Vector<std::pair<ReturnKey, ReturnValue>>> =
         IsReturnTypeCompatible<IDLKey, ReturnKey> &&
         IsReturnTypeCompatible<IDLValue, ReturnValue>;
 
@@ -221,11 +221,11 @@ inline constexpr bool IsReturnTypeCompatible<IDLObject, v8::Local<v8::Value>> =
 // Any IDL strings are compatible to any blink strings.
 template <typename IDLStringType>
   requires std::derived_from<IDLStringType, IDLStringTypeBase>
-inline constexpr bool IsReturnTypeCompatible<IDLStringType, WTF::String> = true;
+inline constexpr bool IsReturnTypeCompatible<IDLStringType, String> = true;
 
 template <typename IDLStringType>
   requires std::derived_from<IDLStringType, IDLStringTypeBase>
-inline constexpr bool IsReturnTypeCompatible<IDLStringType, WTF::AtomicString> =
+inline constexpr bool IsReturnTypeCompatible<IDLStringType, AtomicString> =
     true;
 
 // TODO(caseq): note we do not differentiate between double and float here. Not
@@ -252,6 +252,25 @@ inline constexpr bool
                            NativeIntType> =
         std::is_convertible<NativeIntType, IDLIntType>::value ||
         std::is_enum<NativeIntType>::value;
+
+// Accept return of a specific union member type instead of the union. This is
+// mostly relevant for properties that accept unions for setters by allowing
+// to return a more specific type for a getter and allows to minimize heap
+// allocations for short-lived objects.
+template <typename IDLType, typename ReturnType>
+  requires(std::derived_from<IDLType, UnionBase> &&
+           !std::is_same_v<IDLType, std::remove_pointer_t<ReturnType>> &&
+           std::is_constructible_v<IDLType, ReturnType>)
+inline constexpr bool IsReturnTypeCompatible<IDLType, ReturnType> = true;
+
+// A call that is expected to return a union may also return a special return
+// proxy class for such union, which avoids heap allocs and extra member type
+// dispatch.
+template <typename IDLType, typename ReturnType>
+  requires(std::derived_from<IDLType, UnionBase> &&
+           std::is_same_v<typename IDLType::Ret,
+                          std::remove_pointer_t<ReturnType>>)
+inline constexpr bool IsReturnTypeCompatible<IDLType, ReturnType> = true;
 
 // TODO(caseq): should we restrict KURLs to strings of particular type? Forbid
 // implicit conversion altogether?

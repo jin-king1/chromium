@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "components/dom_distiller/core/url_utils.h"
 
 #include <string>
@@ -35,7 +30,7 @@ const char kSeparator[] = "_";
 
 std::string SHA256InHex(std::string_view str) {
   std::string sha256 = crypto::SHA256HashString(str);
-  return base::ToLowerASCII(base::HexEncode(sha256));
+  return base::HexEncodeLower(sha256);
 }
 
 }  // namespace
@@ -69,12 +64,10 @@ GURL GetOriginalUrlFromDistillerUrl(const GURL& url) {
   net::GetValueForKeyInQuery(url, kUrlKey, &original_url_str);
 
   // Make sure kDomDistillerScheme is considered standard scheme for
-  // |GURL::host_piece()| to work correctly.
-  DCHECK(url::IsStandard(kDomDistillerScheme,
-                         url::Component(0, strlen(kDomDistillerScheme))));
-  std::vector<std::string_view> pieces =
-      base::SplitStringPiece(url.host_piece(), kSeparator,
-                             base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+  // |GURL::host()| to work correctly.
+  DCHECK(url::IsStandard(kDomDistillerScheme));
+  std::vector<std::string_view> pieces = base::SplitStringPiece(
+      url.host(), kSeparator, base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
   if (pieces.size() != 2)
     return GURL();
   if (SHA256InHex(original_url_str) != pieces[1])
@@ -140,7 +133,7 @@ bool IsDistilledPage(const GURL& url) {
 }
 
 bool IsUrlDistilledFormat(const GURL& url) {
-  return url.is_valid() && url.scheme() == kDomDistillerScheme;
+  return url.is_valid() && url.GetScheme() == kDomDistillerScheme;
 }
 
 }  // namespace url_utils

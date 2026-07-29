@@ -12,11 +12,10 @@
 
 #include "base/check.h"
 #include "base/debug/alias.h"
-#include "base/functional/callback.h"
+#include "base/functional/callback_forward.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
-#include "base/strings/string_util.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
@@ -42,10 +41,7 @@ class ProxyImplBase {
  public:
   // Releases `impl` on `task_runner_`.
   static void Destroy(scoped_refptr<Derived> impl) {
-    scoped_refptr<base::SequencedTaskRunner> task_runner = impl->task_runner_;
-    task_runner->PostTask(FROM_HERE,
-                          base::BindOnce([](scoped_refptr<Derived> /*impl*/) {},
-                                         std::move(impl)));
+    impl->task_runner_->ReleaseSoon(FROM_HERE, std::move(impl));
   }
 
  protected:
@@ -74,7 +70,7 @@ class ProxyImplBase {
     // normal operation and retrying on registration issues does not help.
     const auto create_server =
         [](REFCLSID clsid) -> HResultOr<Microsoft::WRL::ComPtr<IUnknown>> {
-      constexpr int kNumTries = 2;
+      static constexpr int kNumTries = 2;
       HRESULT hr = E_FAIL;
       for (int i = 0; i != kNumTries; ++i) {
         Microsoft::WRL::ComPtr<IUnknown> server;

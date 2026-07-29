@@ -13,6 +13,7 @@
 #include "base/logging.h"
 
 #include <errno.h>
+#include <sys/time.h>
 
 #include <iomanip>
 #include <string_view>
@@ -86,7 +87,7 @@ void LogMessage::InitWithSyslogPrefix(std::string_view filename,
     stream_ << "]";
   }
   stream_ << ": ";
-  stream_ << "[" << filename << "(" << line << ")] ";
+  stream_ << "[" << filename << ":" << line << "] ";
 }
 
 }  // namespace logging

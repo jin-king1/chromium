@@ -9,7 +9,7 @@
 #include <string>
 #include <utility>
 
-#include "base/android/build_info.h"
+#include "base/android/device_info.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
@@ -31,6 +31,7 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -421,22 +422,6 @@ TEST_F(AddToHomescreenDataFetcherTest, NoManifest) {
   CheckHistograms(histograms);
 }
 
-TEST_F(AddToHomescreenDataFetcherTest, NoManifestDesktopAndroid) {
-  if (!base::android::BuildInfo::GetInstance()->is_desktop()) {
-    GTEST_SKIP() << "Test runs only in desktop mode";
-  }
-  // Fake that `InstallableIconFetcher` generated the icon, which is the
-  // fallback behavior on desktop Android.
-  SetPrimaryIcon(GURL(kDefaultIconUrl));
-
-  ObserverWaiter waiter;
-  std::unique_ptr<AddToHomescreenDataFetcher> fetcher = BuildFetcher(&waiter);
-  RunFetcher(fetcher.get(), waiter, kWebAppInstallInfoTitle,
-             blink::mojom::DisplayMode::kStandalone,
-             AddToHomescreenParams::AppType::WEBAPK_DIY,
-             InstallableStatusCode::NO_MANIFEST);
-}
-
 TEST_F(AddToHomescreenDataFetcherTest, NoIconManifest) {
   // Test a manifest with no icons. This should use the short name and have
   // a generated icon (empty icon url).
@@ -667,7 +652,7 @@ TEST_F(AddToHomescreenDataFetcherTest,
 
   ObserverWaiter waiter;
   std::unique_ptr<AddToHomescreenDataFetcher> fetcher = BuildFetcher(&waiter);
-  if (base::android::BuildInfo::GetInstance()->is_desktop()) {
+  if (base::android::device_info::is_desktop()) {
     // Desktop Android expects a standalone DIY WebAPK.
     RunFetcher(fetcher.get(), waiter, kWebAppInstallInfoTitle,
                blink::mojom::DisplayMode::kStandalone,
@@ -686,6 +671,25 @@ TEST_F(AddToHomescreenDataFetcherTest,
   EXPECT_FALSE(fetcher->primary_icon().drawsNothing());
   EXPECT_EQ(fetcher->shortcut_info().best_primary_icon_url,
             GURL(kDefaultIconUrl));
+}
+
+TEST_F(AddToHomescreenDataFetcherTest, PendingNavigation) {
+  GURL committed_url("https://www.attacker.com/");
+  NavigateAndCommit(committed_url);
+
+  GURL pending_url("https://www.victim.com/");
+  std::unique_ptr<content::NavigationSimulator> navigation =
+      content::NavigationSimulator::CreateBrowserInitiated(pending_url,
+                                                           web_contents());
+  navigation->Start();
+
+  EXPECT_EQ(web_contents()->GetVisibleURL(), pending_url);
+  EXPECT_EQ(web_contents()->GetLastCommittedURL(), committed_url);
+
+  ObserverWaiter waiter;
+  std::unique_ptr<AddToHomescreenDataFetcher> fetcher = BuildFetcher(&waiter);
+
+  EXPECT_EQ(fetcher->shortcut_info().url, committed_url);
 }
 
 }  // namespace webapps

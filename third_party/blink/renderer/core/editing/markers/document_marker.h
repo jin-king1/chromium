@@ -49,6 +49,8 @@ class CORE_EXPORT DocumentMarker : public GarbageCollected<DocumentMarker> {
     kSuggestionMarkerIndex,
     kTextFragmentMarkerIndex,
     kCustomHighlightMarkerIndex,
+    kGlicMarkerIndex,
+    kPreviewStylusGestureMarkerIndex,
     kMarkerTypeIndexesCount
   };
 
@@ -60,7 +62,9 @@ class CORE_EXPORT DocumentMarker : public GarbageCollected<DocumentMarker> {
     kActiveSuggestion = 1 << kActiveSuggestionMarkerIndex,
     kSuggestion = 1 << kSuggestionMarkerIndex,
     kTextFragment = 1 << kTextFragmentMarkerIndex,
-    kCustomHighlight = 1 << kCustomHighlightMarkerIndex
+    kCustomHighlight = 1 << kCustomHighlightMarkerIndex,
+    kGlic = 1 << kGlicMarkerIndex,
+    kPreviewStylusGesture = 1 << kPreviewStylusGestureMarkerIndex,
   };
 
   class MarkerTypesIterator {
@@ -77,9 +81,6 @@ class CORE_EXPORT DocumentMarker : public GarbageCollected<DocumentMarker> {
 
     bool operator==(const MarkerTypesIterator& other) const {
       return remaining_types_ == other.remaining_types_;
-    }
-    bool operator!=(const MarkerTypesIterator& other) const {
-      return !operator==(other);
     }
 
     MarkerTypesIterator& operator++() {
@@ -131,6 +132,9 @@ class CORE_EXPORT DocumentMarker : public GarbageCollected<DocumentMarker> {
       return MarkerTypes(kActiveSuggestion);
     }
     static MarkerTypes Composition() { return MarkerTypes(kComposition); }
+    static MarkerTypes PreviewStylusGesture() {
+      return MarkerTypes(kPreviewStylusGesture);
+    }
     static MarkerTypes Grammar() { return MarkerTypes(kGrammar); }
     static MarkerTypes Misspelling() {
       return MarkerTypes(kSpelling | kGrammar);
@@ -142,6 +146,7 @@ class CORE_EXPORT DocumentMarker : public GarbageCollected<DocumentMarker> {
     static MarkerTypes CustomHighlight() {
       return MarkerTypes(kCustomHighlight);
     }
+    static MarkerTypes Glic() { return MarkerTypes(kGlic); }
 
     bool Contains(MarkerType type) const { return mask_ & type; }
     bool Intersects(const MarkerTypes& types) const {
@@ -177,33 +182,33 @@ class CORE_EXPORT DocumentMarker : public GarbageCollected<DocumentMarker> {
   virtual ~DocumentMarker();
 
   virtual MarkerType GetType() const = 0;
-  unsigned StartOffset() const { return start_offset_; }
-  unsigned EndOffset() const { return end_offset_; }
+  wtf_size_t StartOffset() const { return start_offset_; }
+  wtf_size_t EndOffset() const { return end_offset_; }
 
   struct MarkerOffsets {
-    unsigned start_offset;
-    unsigned end_offset;
+    wtf_size_t start_offset;
+    wtf_size_t end_offset;
   };
 
   std::optional<MarkerOffsets> ComputeOffsetsAfterShift(
-      unsigned offset,
-      unsigned old_length,
-      unsigned new_length) const;
+      wtf_size_t offset,
+      wtf_size_t old_length,
+      wtf_size_t new_length) const;
 
   // Offset modifications are done by DocumentMarkerController.
   // Other classes should not call following setters.
-  void SetStartOffset(unsigned offset) { start_offset_ = offset; }
-  void SetEndOffset(unsigned offset) { end_offset_ = offset; }
+  void SetStartOffset(wtf_size_t offset) { start_offset_ = offset; }
+  void SetEndOffset(wtf_size_t offset) { end_offset_ = offset; }
   void ShiftOffsets(int delta);
 
   virtual void Trace(Visitor* visitor) const {}
 
  protected:
-  DocumentMarker(unsigned start_offset, unsigned end_offset);
+  DocumentMarker(wtf_size_t start_offset, wtf_size_t end_offset);
 
  private:
-  unsigned start_offset_;
-  unsigned end_offset_;
+  wtf_size_t start_offset_;
+  wtf_size_t end_offset_;
 };
 
 using DocumentMarkerVector = HeapVector<Member<DocumentMarker>>;

@@ -119,6 +119,7 @@ void ReadableStreamGenericReader::GenericInitialize(
     ScriptState* script_state,
     ReadableStreamGenericReader* reader,
     ReadableStream* stream) {
+  CHECK_EQ(stream->wrapper_world_id_, script_state->World().GetWorldId());
   auto* isolate = script_state->GetIsolate();
 
   // https://streams.spec.whatwg.org/#readable-stream-reader-generic-initialize
@@ -134,6 +135,9 @@ void ReadableStreamGenericReader::GenericInitialize(
     // 3. If stream.[[state]] is "readable",
     case ReadableStream::kReadable:
       // a. Set reader.[[closedPromise]] to a new promise.
+      // If we're not resolving the promise right away, it may be GC'ed before
+      // being resolved, so suppress detach check.
+      reader->closed_resolver_->SuppressDetachCheck();
       break;
 
     // 4. Otherwise, if stream.[[state]] is "closed",

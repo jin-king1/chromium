@@ -7,8 +7,10 @@
 #include <optional>
 
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
+#include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/css_string_value.h"
 #include "third_party/blink/renderer/core/css/css_syntax_definition.h"
+#include "third_party/blink/renderer/core/css/parser/css_parser_local_context.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_save_point.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_token.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_token_stream.h"
@@ -28,8 +30,12 @@ std::optional<CSSPrimitiveValue::UnitType> ConsumeDimensionUnitType(
   if (type != kIdentToken) {
     return std::nullopt;
   }
-  CSSPrimitiveValue::UnitType unit =
-      CSSPrimitiveValue::StringToUnitType(stream.Peek().Value());
+  if (stream.Peek().Value() == "number") {
+    stream.Consume();
+    return CSSPrimitiveValue::UnitType::kNumber;
+  }
+  CSSPrimitiveValue::UnitType unit = CSSPrimitiveValue::StringToUnitType(
+      stream.ConsumeIncludingWhitespace().Value());
   // The <dimension-unit> production matches a literal "%"
   // character (that is, a <delim-token> with a value of "%")
   // or an ident whose value is any of the CSS units for
@@ -39,9 +45,8 @@ std::optional<CSSPrimitiveValue::UnitType> ConsumeDimensionUnitType(
       !CSSPrimitiveValue::IsFrequency(unit) &&
       !CSSPrimitiveValue::IsFlex(unit) &&
       !CSSPrimitiveValue::IsPercentage(unit)) {
-    return std::nullopt;
+    unit = CSSPrimitiveValue::UnitType::kUnknown;
   }
-  stream.Consume();
   return unit;
 }
 
@@ -49,7 +54,7 @@ std::optional<CSSPrimitiveValue::UnitType> ConsumeDimensionUnitType(
 
 std::optional<CSSAttrType> CSSAttrType::Consume(CSSParserTokenStream& stream) {
   if (stream.Peek().GetType() == kIdentToken &&
-      stream.Peek().Value() == "string") {
+      stream.Peek().Value() == "raw-string") {
     stream.Consume();
     return CSSAttrType();
   }
@@ -74,22 +79,25 @@ std::optional<CSSAttrType> CSSAttrType::Consume(CSSParserTokenStream& stream) {
 }
 
 const CSSValue* CSSAttrType::Parse(StringView text,
-                                   const CSSParserContext& context) const {
+                                   const CSSParserContext& context,
+                                   CSSParserLocalContext& local_context) const {
   if (IsString()) {
     return MakeGarbageCollected<CSSStringValue>(text.ToString());
   }
   if (IsDimensionUnit()) {
     CSSParserTokenStream stream(text);
     CSSPrimitiveValue* number_value = css_parsing_utils::ConsumeNumber(
-        stream, context, CSSPrimitiveValue::ValueRange::kAll);
-    if (!number_value) {
-      return nullptr;
+        stream, context, local_context, CSSPrimitiveValue::ValueRange::kAll);
+    CSSNumericLiteralValue* literal =
+        DynamicTo<CSSNumericLiteralValue>(number_value);
+    if (literal && dimension_unit_ != CSSPrimitiveValue::UnitType::kUnknown) {
+      return MakeGarbageCollected<CSSNumericLiteralValue>(
+          literal->ClampedDoubleValue(), *dimension_unit_);
     }
-    return MakeGarbageCollected<CSSNumericLiteralValue>(
-        number_value->GetDoubleValue(), *dimension_unit_);
+    return nullptr;
   }
   if (IsSyntax()) {
-    return syntax_->Parse(text, context, false);
+    return syntax_->Parse(text, context, local_context, false);
   }
   return nullptr;
 }

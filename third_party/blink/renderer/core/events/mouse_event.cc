@@ -45,6 +45,7 @@
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 
 namespace blink {
@@ -116,14 +117,15 @@ MouseEvent* MouseEvent::Create(ScriptState* script_state,
   }
   return MakeGarbageCollected<MouseEvent>(
       type, initializer, base::TimeTicks::Now(), kRealOrIndistinguishable,
-      kMenuSourceNone, fallback_dom_window);
+      ui::mojom::blink::MenuSourceType::kNone, fallback_dom_window);
 }
 
-MouseEvent* MouseEvent::Create(const AtomicString& event_type,
-                               const MouseEventInit* initializer,
-                               base::TimeTicks platform_time_stamp,
-                               SyntheticEventType synthetic_event_type,
-                               WebMenuSourceType menu_source_type) {
+MouseEvent* MouseEvent::Create(
+    const AtomicString& event_type,
+    const MouseEventInit* initializer,
+    base::TimeTicks platform_time_stamp,
+    SyntheticEventType synthetic_event_type,
+    ui::mojom::blink::MenuSourceType menu_source_type) {
   return MakeGarbageCollected<MouseEvent>(
       event_type, initializer, platform_time_stamp, synthetic_event_type,
       menu_source_type);
@@ -140,7 +142,7 @@ MouseEvent::MouseEvent(const AtomicString& event_type,
                        const MouseEventInit* initializer,
                        base::TimeTicks platform_time_stamp,
                        SyntheticEventType synthetic_event_type,
-                       WebMenuSourceType menu_source_type,
+                       ui::mojom::blink::MenuSourceType menu_source_type,
                        LocalDOMWindow* fallback_dom_window)
     : UIEventWithKeyState(event_type, initializer, platform_time_stamp),
       screen_x_(initializer->screenX()),
@@ -329,6 +331,14 @@ bool MouseEvent::IsMouseEvent() const {
   return true;
 }
 
+void MouseEvent::SetRelatedTarget(EventTarget* related_target) {
+  if ((IsWheelEvent() || IsDragEvent()) &&
+      !RuntimeEnabledFeatures::DontLeakShadowTreesInDragEventsEnabled()) {
+    return;
+  }
+  related_target_ = related_target;
+}
+
 int16_t MouseEvent::button() const {
   const AtomicString& event_name = type();
   if (button_ == -1 || event_name == event_type_names::kMousemove ||
@@ -343,6 +353,12 @@ int16_t MouseEvent::button() const {
 
 bool MouseEvent::IsLeftButton() const {
   return button() == static_cast<int16_t>(WebPointerProperties::Button::kLeft);
+}
+
+bool MouseEvent::IsLinkClickButton() const {
+  int16_t b = button();
+  return b == static_cast<int16_t>(WebPointerProperties::Button::kLeft) ||
+         b == static_cast<int16_t>(WebPointerProperties::Button::kMiddle);
 }
 
 unsigned MouseEvent::which() const {
@@ -361,7 +377,7 @@ Node* MouseEvent::toElement() const {
       type() == event_type_names::kMouseleave)
     return relatedTarget() ? relatedTarget()->ToNode() : nullptr;
 
-  return target() ? target()->ToNode() : nullptr;
+  return RawTarget() ? RawTarget()->ToNode() : nullptr;
 }
 
 Node* MouseEvent::fromElement() const {
@@ -371,7 +387,7 @@ Node* MouseEvent::fromElement() const {
       type() != event_type_names::kMouseleave)
     return relatedTarget() ? relatedTarget()->ToNode() : nullptr;
 
-  return target() ? target()->ToNode() : nullptr;
+  return RawTarget() ? RawTarget()->ToNode() : nullptr;
 }
 
 void MouseEvent::Trace(Visitor* visitor) const {
@@ -412,7 +428,7 @@ DispatchEventResult MouseEvent::DispatchEvent(EventDispatcher& dispatcher) {
     }
   }
 
-  DCHECK(!target() || target() != relatedTarget());
+  DCHECK(!RawTarget() || RawTarget() != relatedTarget());
 
   EventTarget* related_target = relatedTarget();
 
@@ -448,7 +464,7 @@ void MouseEvent::ReceivedTarget() {
 }
 
 void MouseEvent::ComputeRelativePosition() {
-  Node* target_node = target() ? target()->ToNode() : nullptr;
+  Node* target_node = RawTarget() ? RawTarget()->ToNode() : nullptr;
   if (!target_node)
     return;
 
@@ -484,7 +500,8 @@ void MouseEvent::ComputeRelativePosition() {
     // box.
     if (layout_object->IsBoxModelObject()) {
       const auto* layout_box = To<LayoutBoxModelObject>(layout_object);
-      local_pos.Offset(-layout_box->BorderLeft(), -layout_box->BorderTop());
+      const PhysicalOffset offset = layout_box->BorderOutsets().Offset();
+      local_pos.Offset(-offset.left, -offset.top);
     }
 
     offset_x_ = local_pos.x() * inverse_zoom_factor;
@@ -508,8 +525,7 @@ void MouseEvent::ComputeRelativePosition() {
     layer = layer->EnclosingSelfPaintingLayer();
 
     PhysicalOffset physical_offset =
-        layer->GetLayoutObject().LocalToAbsolutePoint(PhysicalOffset(),
-                                                      kIgnoreTransforms);
+        layer->GetLayoutObject().LocalToAbsolutePoint(PhysicalOffset(), 0);
     layer_location_ -= gfx::Vector2dF(physical_offset);
 
     layer_location_.Scale(inverse_zoom_factor);
@@ -519,7 +535,7 @@ void MouseEvent::ComputeRelativePosition() {
 }
 
 void MouseEvent::RecordLayerXYMetrics() {
-  Node* node = target() ? target()->ToNode() : nullptr;
+  Node* node = RawTarget() ? RawTarget()->ToNode() : nullptr;
   if (!node)
     return;
   // Using the target for these metrics is a heuristic for measuring the impact

@@ -7,11 +7,16 @@
 
 #include "base/containers/lru_cache.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/memory_pressure_listener.h"
 #include "base/memory/safe_ref.h"
+#include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "content/common/content_export.h"
+#include "ui/display/display_observer.h"
+
+namespace display {
+class Display;
+}
 
 namespace content {
 
@@ -24,14 +29,20 @@ class NavigationEntryScreenshotCacheEvictor;
 // `BrowserContext`. All primary `FrameTree`s sharing the same `BrowserContext`
 // share the same manager. The manager should only be accessed by the
 // `NavigationEntryScreenshotCache` and tests.
-class CONTENT_EXPORT NavigationEntryScreenshotManager {
+class CONTENT_EXPORT NavigationEntryScreenshotManager
+    : public display::DisplayObserver {
  public:
   NavigationEntryScreenshotManager();
   NavigationEntryScreenshotManager(const NavigationEntryScreenshotManager&) =
       delete;
   NavigationEntryScreenshotManager& operator=(
       const NavigationEntryScreenshotManager&) = delete;
-  ~NavigationEntryScreenshotManager();
+  ~NavigationEntryScreenshotManager() override;
+
+  void OnDisplayAdded(const display::Display&) override;
+  void OnDisplaysRemoved(const display::Displays&) override;
+  void OnDisplayMetricsChanged(const display::Display&,
+                               uint32_t metrics_changed) override;
 
   // Called when a screenshot is stashed into a `NavigationEntry`, or when a
   // screenshot is removed from the entry (for preview, or during the
@@ -56,6 +67,7 @@ class CONTENT_EXPORT NavigationEntryScreenshotManager {
   // Allow tests to customize memory budget.
   void SetMemoryBudgetForTesting(size_t size) {
     max_cache_size_in_bytes_ = size;
+    UpdateMaxCacheSizeCrashKey();
   }
   void SetUITaskRunnerForTesting(
       scoped_refptr<base::SequencedTaskRunner> task_runner) {
@@ -70,6 +82,8 @@ class CONTENT_EXPORT NavigationEntryScreenshotManager {
   }
 
  private:
+  void RecalculateCacheSize();
+
   // Called when the first screenshot is cached into `cache`, and when the last
   // screenshot is removed from `cache`.
   void Register(NavigationEntryScreenshotCacheEvictor* cache);
@@ -81,13 +95,6 @@ class CONTENT_EXPORT NavigationEntryScreenshotManager {
   // Called at the end of `OnScreenshotCached`.
   void EvictIfOutOfMemoryBudget();
 
-  // Used by `listener_`. When the system memory is under critical pressure, all
-  // screenshots under this `Profile` are purged.
-  void OnMemoryPressure(
-      base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level);
-  FRIEND_TEST_ALL_PREFIXES(NavigationEntryScreenshotCacheTest,
-                           OnMemoryPressureCritical);
-
   // Schedules recording the cache size in time intervals based on a Poisson
   // distribution.
   void RecordScreenshotCacheSizeAfterDelay();
@@ -97,13 +104,11 @@ class CONTENT_EXPORT NavigationEntryScreenshotManager {
   // periodically.
   void RecordScreenshotCacheSize();
 
+  void UpdateMaxCacheSizeCrashKey();
+  void UpdateCurrentCacheSizeCrashKey();
+
   size_t max_cache_size_in_bytes_;
   size_t current_cache_size_in_bytes_ = 0U;
-
-  // The `listener_` monitors the system memory pressure, and calls
-  // `NavigationEntryScreenshotManager::OnMemoryPressure` when the system
-  // memory pressure level changes.
-  std::unique_ptr<base::MemoryPressureListener> listener_;
 
   // The most recently used cache is stored at the front of the
   // `base::LRUCacheSet`. A limited interface to the tab's cache is used so that

@@ -19,7 +19,6 @@
 #include "ash/system/time/calendar_metrics.h"
 #include "ash/system/time/calendar_utils.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
@@ -34,6 +33,13 @@
 namespace {
 
 using ::google_apis::calendar::CalendarEvent;
+
+struct CmpEvent {
+  bool operator()(const CalendarEvent& event1,
+                  const CalendarEvent& event2) const {
+    return event1.start_time().date_time() < event2.start_time().date_time();
+  }
+};
 
 constexpr auto kAllowedEventStatuses =
     base::MakeFixedFlatSet<CalendarEvent::EventStatus>(
@@ -170,7 +176,7 @@ void CalendarModel::RemoveObserver(Observer* observer) {
 
 void CalendarModel::PromoteMonth(base::Time start_of_month) {
   // If this month is non-prunable, nothing to do.
-  if (base::Contains(non_prunable_months_, start_of_month)) {
+  if (non_prunable_months_.contains(start_of_month)) {
     return;
   }
 
@@ -193,7 +199,7 @@ void CalendarModel::PromoteMonth(base::Time start_of_month) {
 
 void CalendarModel::AddNonPrunableMonth(const base::Time& month) {
   // Early-return if `month` is present, to avoid the limits-check below.
-  if (base::Contains(non_prunable_months_, month)) {
+  if (non_prunable_months_.contains(month)) {
     return;
   }
 
@@ -247,7 +253,7 @@ void CalendarModel::ClearAllPrunableEvents() {
 }
 
 bool CalendarModel::MonthHasEvents(const base::Time start_of_month) {
-  if (base::Contains(event_months_, start_of_month)) {
+  if (event_months_.contains(start_of_month)) {
     for (auto it = event_months_[start_of_month].begin();
          it != event_months_[start_of_month].end(); it++) {
       if (!it->second.empty()) {
@@ -285,15 +291,15 @@ void CalendarModel::FetchEvents(base::Time start_of_month) {
   }
 
   // Bail out early if this is a prunable month that's already been fetched.
-  if (!base::Contains(non_prunable_months_, start_of_month) &&
-      base::Contains(months_fetched_, start_of_month)) {
+  if (!non_prunable_months_.contains(start_of_month) &&
+      months_fetched_.contains(start_of_month)) {
     PromoteMonth(start_of_month);
     return;
   }
 
   // Reset fetch helpers before the new fetch(es).
   fetch_error_codes_.erase(start_of_month);
-  if (base::Contains(non_prunable_months_, start_of_month)) {
+  if (non_prunable_months_.contains(start_of_month)) {
     events_have_fetched_.insert_or_assign(start_of_month, false);
   }
 
@@ -351,7 +357,7 @@ void CalendarModel::FetchPrimaryCalendarEvents(
 }
 
 void CalendarModel::CancelFetch(const base::Time& start_of_month) {
-  if (base::Contains(pending_fetches_, start_of_month)) {
+  if (pending_fetches_.contains(start_of_month)) {
     for (auto it = pending_fetches_[start_of_month].begin();
          it != pending_fetches_[start_of_month].end(); it++) {
       it->second->Cancel();
@@ -362,7 +368,7 @@ void CalendarModel::CancelFetch(const base::Time& start_of_month) {
     // This method might be called after some events have been fetched. For
     // prunable months, to prevent event storage from being partially populated
     // and displayed, we delete all stored events for the month.
-    if (!base::Contains(non_prunable_months_, start_of_month)) {
+    if (!non_prunable_months_.contains(start_of_month)) {
       event_months_.erase(start_of_month);
       months_fetched_.erase(start_of_month);
     }
@@ -434,7 +440,7 @@ void CalendarModel::OnEventsFetched(
   // If this is the first fetch that has returned for a non-prunable month,
   // clear pre-existing event storage and indicate that some new events have
   // fetched.
-  if (base::Contains(non_prunable_months_, start_of_month) &&
+  if (non_prunable_months_.contains(start_of_month) &&
       !events_have_fetched_[start_of_month]) {
     event_months_.erase(start_of_month);
     events_have_fetched_[start_of_month] = true;
@@ -444,7 +450,7 @@ void CalendarModel::OnEventsFetched(
   // the month does not yet exist, insert an empty map. Otherwise, we do
   // not want to overwrite events from previously fetched calendars.
   if ((!events || events->items().empty())) {
-    if (!base::Contains(event_months_, start_of_month)) {
+    if (!event_months_.contains(start_of_month)) {
       SingleMonthEventMap empty_event_map;
       event_months_.emplace(start_of_month, empty_event_map);
     }
@@ -497,9 +503,8 @@ bool CalendarModel::ShouldInsertEvent(const CalendarEvent* event) const {
     return false;
   }
 
-  return base::Contains(kAllowedEventStatuses, event->status()) &&
-         base::Contains(kAllowedResponseStatuses,
-                        event->self_response_status());
+  return kAllowedEventStatuses.contains(event->status()) &&
+         kAllowedResponseStatuses.contains(event->self_response_status());
 }
 
 void CalendarModel::InsertMultiDayEvent(

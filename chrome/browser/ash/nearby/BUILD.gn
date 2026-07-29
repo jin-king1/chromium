@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("nearby") {
@@ -32,8 +30,10 @@ static_library("nearby") {
     "//base",
     "//chrome/browser/ash/nearby/presence/credential_storage/",
     "//chrome/browser/ash/profiles",
+    "//chrome/browser/nearby_sharing",
     "//chrome/browser/nearby_sharing/common",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/signin",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/nearby/common/connections_manager",
     "//chromeos/ash/services/nearby/public/cpp",
@@ -120,7 +120,6 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/browser",
-    "//chrome/browser:browser_process",
     "//chrome/browser/ash/nearby/presence/credential_storage:unit_tests",
     "//chrome/browser/nearby_sharing/common",
     "//chrome/browser/profiles:profile_util",

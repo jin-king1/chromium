@@ -41,15 +41,13 @@ source_set("lib") {
   public_deps = [
     "//base",
     "//media",
-    "//media/capture:capture",
+    "//media/capture",
     "//media/capture/mojom:image_capture",
-    "//media/mojo/common:common",
+    "//media/mojo/common",
     "//mojo/public/cpp/system",
     "//services/video_capture/public/cpp",
     "//services/video_capture/public/mojom",
     "//services/video_capture/public/mojom:constants",
-    "//services/video_effects/buildflags",
-    "//services/video_effects/public/mojom:mojom",
     "//services/viz/public/cpp/gpu",
   ]
 
@@ -57,29 +55,6 @@ source_set("lib") {
     "//media/capture:capture_lib",
     "//media/capture:capture_switches",
   ]
-
-  if (is_chromeos) {
-    deps += [ "//chromeos/crosapi/mojom" ]
-  }
-
-  if (is_chromeos) {
-    sources += [
-      "ash/video_capture_device_ash.cc",
-      "ash/video_capture_device_ash.h",
-      "ash/video_capture_device_factory_ash.cc",
-      "ash/video_capture_device_factory_ash.h",
-      "ash/video_frame_handler_ash.cc",
-      "ash/video_frame_handler_ash.h",
-    ]
-
-    deps += [
-      "//base",
-      "//services/video_capture/public/cpp:cpp",
-      "//services/video_capture/public/mojom",
-    ]
-
-    public_deps += [ "//media/capture/video/chromeos/mojom:cros_camera" ]
-  }
 }
 
 source_set("tests") {
@@ -90,6 +65,7 @@ source_set("tests") {
     "device_media_to_mojo_adapter_unittest.cc",
     "devices_changed_notifier_unittest.cc",
     "gpu_memory_buffer_virtual_device_mojo_adapter_unittest.cc",
+    "shared_memory_virtual_device_mojo_adapter_unittest.cc",
     "test/fake_device_descriptor_test.cc",
     "test/fake_device_descriptor_test.h",
     "test/fake_video_capture_device_test.cc",
@@ -119,4 +95,8 @@ source_set("tests") {
     "//testing/gtest",
     "//ui/gfx:test_support",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

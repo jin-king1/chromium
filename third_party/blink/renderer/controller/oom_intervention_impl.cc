@@ -42,7 +42,7 @@ void NavigateLocalAdsFrames(LocalFrame* frame) {
     if (auto* child_local_frame = DynamicTo<LocalFrame>(child)) {
       if (child_local_frame->IsAdFrame()) {
         FrameLoadRequest request(frame->DomWindow(),
-                                 ResourceRequest(BlankURL()));
+                                 ResourceRequest(BlankUrl()));
         child_local_frame->Navigate(request, WebFrameLoadType::kStandard);
       }
     }
@@ -123,7 +123,12 @@ void OomInterventionImpl::Check(MemoryUsage usage) {
     base::debug::SetCrashKeyString(GetStateCrashKey(), "during");
 
     if (navigate_ads_enabled_ || purge_v8_memory_enabled_) {
-      for (const auto& page : Page::OrdinaryPages()) {
+      // Copy Page::OrdinaryPages() to avoid UAF. Synchronous JS
+      // execution during iteration can create new pages, which causes rehashing
+      // of the OrdinaryPages() set and invalidates the iterator.
+      // See crbug.com/502089411
+      Page::PageSet pages(Page::OrdinaryPages());
+      for (const auto& page : pages) {
         for (Frame* frame = page->MainFrame(); frame;
              frame = frame->Tree().TraverseNext()) {
           auto* local_frame = DynamicTo<LocalFrame>(frame);
@@ -146,7 +151,7 @@ void OomInterventionImpl::Check(MemoryUsage usage) {
     host_->OnHighMemoryUsage();
     MemoryUsageMonitorInstance().RemoveObserver(this);
     // Send memory pressure notification to trigger GC.
-    task_runner_->PostTask(FROM_HERE, WTF::BindOnce(&TriggerGC));
+    task_runner_->PostTask(FROM_HERE, BindOnce(&TriggerGC));
     // Notify V8GCForContextDispose that page navigation gc is needed when
     // intervention runs, as it indicates that memory usage is high.
     V8GCForContextDispose::Instance().SetForcePageNavigationGC();
@@ -157,9 +162,9 @@ void OomInterventionImpl::TriggerGC() {
   Thread::MainThread()
       ->Scheduler()
       ->ToMainThreadScheduler()
-      ->ForEachMainThreadIsolate(WTF::BindRepeating([](v8::Isolate* isolate) {
+      ->ForEachMainThreadIsolate([](v8::Isolate* isolate) {
         isolate->MemoryPressureNotification(v8::MemoryPressureLevel::kCritical);
-      }));
+      });
 }
 
 }  // namespace blink

@@ -10,12 +10,15 @@
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
 #include "components/browser_sync/sync_engine_factory_impl.h"
-#include "components/prefs/pref_change_registrar.h"
 #include "components/sync/service/sync_client.h"
 #include "extensions/buildflags/buildflags.h"
 
+namespace network_time {
+class NetworkTimeTracker;
+}  // namespace network_time
+
 namespace supervised_user {
-class SupervisedUserSettingsService;
+class FamilyLinkSettingsService;
 }  // namespace supervised_user
 
 namespace syncer {
@@ -41,8 +44,7 @@ class ChromeSyncClient : public syncer::SyncClient {
       syncer::SyncInvalidationsService* sync_invalidations_service,
       syncer::DeviceInfoSyncService* device_info_sync_service,
       syncer::DataTypeStoreService* data_type_store_service,
-      supervised_user::SupervisedUserSettingsService*
-          supervised_user_settings_service,
+      supervised_user::FamilyLinkSettingsService* family_link_settings_service,
       std::unique_ptr<ExtensionsActivityMonitor> extensions_activity_monitor);
 
   ChromeSyncClient(const ChromeSyncClient&) = delete;
@@ -53,18 +55,17 @@ class ChromeSyncClient : public syncer::SyncClient {
   // SyncClient implementation.
   PrefService* GetPrefService() override;
   signin::IdentityManager* GetIdentityManager() override;
+  network_time::NetworkTimeTracker* GetNetworkTimeTracker() override;
   base::FilePath GetLocalSyncBackendFolder() override;
   trusted_vault::TrustedVaultClient* GetTrustedVaultClient() override;
   syncer::SyncInvalidationsService* GetSyncInvalidationsService() override;
   scoped_refptr<syncer::ExtensionsActivity> GetExtensionsActivity() override;
   syncer::SyncEngineFactory* GetSyncEngineFactory() override;
   bool IsCustomPassphraseAllowed() override;
-  bool IsPasswordSyncAllowed() override;
-  void SetPasswordSyncAllowedChangeCb(
-      const base::RepeatingClosure& cb) override;
   void RegisterTrustedVaultAutoUpgradeSyntheticFieldTrial(
       const syncer::TrustedVaultAutoUpgradeSyntheticFieldTrialGroup& group)
       override;
+  bool IsMetricsAndCrashReportingEnabled() override;
 
  private:
   const base::FilePath profile_base_name_;
@@ -72,15 +73,10 @@ class ChromeSyncClient : public syncer::SyncClient {
   const raw_ptr<signin::IdentityManager> identity_manager_;
   const raw_ptr<trusted_vault::TrustedVaultService> trusted_vault_service_;
   const raw_ptr<syncer::SyncInvalidationsService> sync_invalidations_service_;
-  const raw_ptr<supervised_user::SupervisedUserSettingsService>
-      supervised_user_settings_service_;
+  const raw_ptr<supervised_user::FamilyLinkSettingsService>
+      family_link_settings_service_;
   const std::unique_ptr<ExtensionsActivityMonitor> extensions_activity_monitor_;
   SyncEngineFactoryImpl engine_factory_;
-
-#if BUILDFLAG(IS_ANDROID)
-  // Watches password_manager::prefs::kPasswordsUseUPMLocalAndSeparateStores.
-  PrefChangeRegistrar upm_pref_change_registrar_;
-#endif  // BUILDFLAG(IS_ANDROID)
 };
 
 }  // namespace browser_sync

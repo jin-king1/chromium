@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/formats/webm/webm_tracks_parser.h"
 
 #include <memory>
@@ -22,7 +17,7 @@
 namespace media {
 
 WebMTracksParser::WebMTracksParser(MediaLog* media_log)
-    : media_log_(media_log),
+    : media_log_(MediaLog::CloneSafely(media_log)),
       audio_client_(media_log),
       video_client_(media_log) {
   Reset();
@@ -77,14 +72,14 @@ void WebMTracksParser::ResetTrackEntry() {
   video_client_.Reset();
 }
 
-int WebMTracksParser::Parse(const uint8_t* buf, int size) {
+int WebMTracksParser::Parse(base::span<const uint8_t> buf) {
   if (reset_on_next_parse_)
     Reset();
 
   reset_on_next_parse_ = true;
 
   WebMListParser parser(kWebMIdTracks, this);
-  int result = parser.Parse(buf, size);
+  int result = parser.Parse(buf);
 
   if (result <= 0)
     return result;
@@ -109,11 +104,11 @@ WebMParserClient* WebMTracksParser::OnListStart(int id) {
   if (id == kWebMIdContentEncodings) {
     if (track_content_encodings_client_) {
       MEDIA_LOG(ERROR, media_log_) << "Multiple ContentEncodings lists";
-      return NULL;
+      return nullptr;
     }
 
     track_content_encodings_client_ =
-        std::make_unique<WebMContentEncodingsClient>(media_log_);
+        std::make_unique<WebMContentEncodingsClient>(media_log_.get());
     return track_content_encodings_client_->OnListStart(id);
   }
 
@@ -249,7 +244,7 @@ bool WebMTracksParser::OnListEnd(int id) {
 }
 
 bool WebMTracksParser::OnUInt(int id, int64_t val) {
-  int64_t* dst = NULL;
+  int64_t* dst = nullptr;
 
   switch (id) {
     case kWebMIdTrackNumber:
@@ -285,14 +280,14 @@ bool WebMTracksParser::OnFloat(int id, double val) {
   return true;
 }
 
-bool WebMTracksParser::OnBinary(int id, const uint8_t* data, int size) {
+bool WebMTracksParser::OnBinary(int id, base::span<const uint8_t> data) {
   if (id == kWebMIdCodecPrivate) {
     if (!codec_private_.empty()) {
       MEDIA_LOG(ERROR, media_log_)
           << "Multiple CodecPrivate fields in a track.";
       return false;
     }
-    codec_private_.assign(data, data + size);
+    codec_private_.assign(data.begin(), data.end());
     return true;
   }
   return true;

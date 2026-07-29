@@ -10,7 +10,6 @@
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_tokenizer.h"
@@ -19,47 +18,62 @@
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/extensions/chrome_app_sorting.h"
+#include "chrome/browser/extensions/blocklist_factory.h"
 #include "chrome/browser/extensions/chrome_content_verifier_delegate.h"
 #include "chrome/browser/extensions/chrome_extension_system_factory.h"
 #include "chrome/browser/extensions/component_loader.h"
-#include "chrome/browser/extensions/crx_installer.h"
-#include "chrome/browser/extensions/delayed_install_manager.h"
+#include "chrome/browser/extensions/extension_error_controller.h"
 #include "chrome/browser/extensions/extension_garbage_collector.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/extension_sync_service.h"
-#include "chrome/browser/extensions/install_verifier.h"
-#include "chrome/browser/extensions/load_error_reporter.h"
-#include "chrome/browser/extensions/shared_module_service.h"
-#include "chrome/browser/extensions/unpacked_installer.h"
-#include "chrome/browser/extensions/update_install_gate.h"
+#include "chrome/browser/extensions/install_verifier_factory.h"
+#include "chrome/browser/extensions/shared_module_service_factory.h"
+#include "chrome/browser/extensions/sync/extension_sync_service.h"
 #include "chrome/browser/notifications/notifier_state_tracker.h"
 #include "chrome/browser/notifications/notifier_state_tracker_factory.h"
+#include "chrome/browser/policy/cloud/extension_install_policy_service.h"
+#include "chrome/browser/policy/cloud/extension_install_policy_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
 #include "chrome/browser/ui/webui/extensions/extensions_internals_source.h"
 #include "chrome/common/chrome_switches.h"
+#include "components/policy/core/common/features.h"
 #include "components/value_store/value_store_factory_impl.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/url_data_source.h"
+#include "extensions/browser/app_sorting.h"
 #include "extensions/browser/content_verifier/content_verifier.h"
+#include "extensions/browser/crx_installer.h"
+#include "extensions/browser/delayed_install_manager.h"
 #include "extensions/browser/extension_pref_store.h"
 #include "extensions/browser/extension_pref_value_map.h"
 #include "extensions/browser/extension_pref_value_map_factory.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/install_verifier.h"
+#include "extensions/browser/load_error_reporter.h"
 #include "extensions/browser/quota_service.h"
 #include "extensions/browser/service_worker_manager.h"
+#include "extensions/browser/shared_module_service.h"
 #include "extensions/browser/state_store.h"
+#include "extensions/browser/unpacked_installer.h"
+#include "extensions/browser/update_install_gate.h"
 #include "extensions/browser/updater/uninstall_ping_sender.h"
 #include "extensions/browser/user_script_manager.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/features/feature_channel.h"
-#include "extensions/common/manifest_url_handlers.h"
+#include "extensions/common/manifest_handlers/manifest_url_handlers.h"
 #include "ui/message_center/public/cpp/notifier_id.h"
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/browser/extensions/chrome_app_sorting.h"
+#else
+#include "chrome/browser/extensions/chrome_extension_registrar_delegate.h"
+#include "extensions/browser/null_app_sorting.h"
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
@@ -70,10 +84,13 @@
 #include "chrome/browser/ash/extensions/signin_screen_policy_provider.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/components/mgs/managed_guest_session_utils.h"
 #include "components/user_manager/user_manager.h"
 #endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -144,9 +161,12 @@ void ChromeExtensionSystem::Shared::RegisterManagementPolicyProviders() {
           ->GetProviders());
 
 #if BUILDFLAG(IS_CHROMEOS)
-  // Lazy creation of SigninScreenPolicyProvider.
+  // Lazy creation of SigninScreenPolicyProvider. Both the sign-in profile and
+  // lock screen profile use this provider to enforce allowed login-screen
+  // extension restrictions.
   if (!signin_screen_policy_provider_) {
-    if (ash::ProfileHelper::IsSigninProfile(profile_)) {
+    if (ash::IsSigninBrowserContext(profile_) ||
+        ash::IsLockScreenBrowserContext(profile_)) {
       signin_screen_policy_provider_ =
           std::make_unique<chromeos::SigninScreenPolicyProvider>();
     }
@@ -161,21 +181,31 @@ void ChromeExtensionSystem::Shared::RegisterManagementPolicyProviders() {
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-  management_policy_->RegisterProvider(InstallVerifier::Get(profile_));
+  management_policy_->RegisterProvider(
+      InstallVerifierFactory::GetForBrowserContext(profile_));
+
+  if (auto* extension_install_policy_service =
+          policy::ExtensionInstallPolicyServiceFactory::GetForBrowserContext(
+              profile_)) {
+    CHECK(base::FeatureList::IsEnabled(
+        policy::features::kEnableExtensionInstallPolicyFetching));
+    management_policy_->RegisterProvider(extension_install_policy_service);
+  }
 }
 
 void ChromeExtensionSystem::Shared::InitInstallGates() {
   update_install_gate_ = std::make_unique<UpdateInstallGate>(profile_);
-  extension_service_->delayed_install_manager()->RegisterInstallGate(
+  auto* delayed_install_manager = DelayedInstallManager::Get(profile_);
+  delayed_install_manager->RegisterInstallGate(
       ExtensionPrefs::DelayReason::kWaitForIdle, update_install_gate_.get());
-  extension_service_->delayed_install_manager()->RegisterInstallGate(
+  delayed_install_manager->RegisterInstallGate(
       ExtensionPrefs::DelayReason::kWaitForImports,
-      extension_service_->shared_module_service());
+      SharedModuleServiceFactory::GetForBrowserContext(profile_));
 #if BUILDFLAG(IS_CHROMEOS)
   if (IsRunningInForcedAppMode()) {
     kiosk_app_update_install_gate_ =
         std::make_unique<ash::KioskAppUpdateInstallGate>(profile_);
-    extension_service_->delayed_install_manager()->RegisterInstallGate(
+    delayed_install_manager->RegisterInstallGate(
         ExtensionPrefs::DelayReason::kWaitForOsUpdate,
         kiosk_app_update_install_gate_.get());
   }
@@ -209,8 +239,10 @@ void ChromeExtensionSystem::Shared::Init(bool extensions_enabled) {
       profile_, base::CommandLine::ForCurrentProcess(),
       profile_->GetPath().AppendASCII(kInstallDirectoryName),
       profile_->GetPath().AppendASCII(kUnpackedInstallDirectoryName),
-      ExtensionPrefs::Get(profile_), Blocklist::Get(profile_),
-      autoupdate_enabled, extensions_enabled, &ready_);
+      ExtensionPrefs::Get(profile_),
+      BlocklistFactory::GetForBrowserContext(profile_),
+      ExtensionErrorController::Get(profile_), autoupdate_enabled,
+      extensions_enabled, &ready_);
 
   uninstall_ping_sender_ = std::make_unique<UninstallPingSender>(
       ExtensionRegistry::Get(profile_),
@@ -219,7 +251,7 @@ void ChromeExtensionSystem::Shared::Init(bool extensions_enabled) {
   // These services must be registered before the ExtensionService tries to
   // load any extensions.
   {
-    InstallVerifier::Get(profile_)->Init();
+    InstallVerifierFactory::GetForBrowserContext(profile_)->Init();
     ChromeContentVerifierDelegate::VerifyInfo::Mode mode =
         ChromeContentVerifierDelegate::GetDefaultMode();
 #if BUILDFLAG(IS_CHROMEOS)
@@ -239,6 +271,7 @@ void ChromeExtensionSystem::Shared::Init(bool extensions_enabled) {
     if (chromeos::IsManagedGuestSession()) {
       extensions_permissions_tracker_ =
           std::make_unique<ExtensionsPermissionsTracker>(
+              g_browser_process->local_state(),
               ExtensionRegistry::Get(profile_), profile_);
     }
 #endif
@@ -251,6 +284,7 @@ void ChromeExtensionSystem::Shared::Init(bool extensions_enabled) {
   quota_service_ = std::make_unique<QuotaService>();
 
   bool skip_session_extensions = false;
+  auto* component_loader = ComponentLoader::Get(profile_);
 #if BUILDFLAG(IS_CHROMEOS)
   // Skip loading session extensions if we are not in a user session or if the
   // profile is the sign-in or lock screen app profile, which don't correspond
@@ -258,18 +292,20 @@ void ChromeExtensionSystem::Shared::Init(bool extensions_enabled) {
   skip_session_extensions = !ash::LoginState::Get()->IsUserLoggedIn() ||
                             !ash::ProfileHelper::IsUserProfile(profile_);
   if (IsRunningInForcedAppMode()) {
-    extension_service_->component_loader()
-        ->AddDefaultComponentExtensionsForKioskMode(skip_session_extensions);
-  } else {
-    extension_service_->component_loader()->AddDefaultComponentExtensions(
+    component_loader->AddDefaultComponentExtensionsForKioskMode(
         skip_session_extensions);
+  } else {
+    component_loader->AddDefaultComponentExtensions(skip_session_extensions);
   }
 #else
-  extension_service_->component_loader()->AddDefaultComponentExtensions(
-      skip_session_extensions);
+  component_loader->AddDefaultComponentExtensions(skip_session_extensions);
 #endif
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   app_sorting_ = std::make_unique<ChromeAppSorting>(profile_);
+#else
+  app_sorting_ = std::make_unique<NullAppSorting>();
+#endif
 
   InitInstallGates();
 
@@ -422,12 +458,6 @@ ContentVerifier* ChromeExtensionSystem::content_verifier() {
   return shared_->content_verifier();
 }
 
-std::unique_ptr<ExtensionSet> ChromeExtensionSystem::GetDependentExtensions(
-    const Extension* extension) {
-  return extension_service()->shared_module_service()->GetDependentExtensions(
-      extension);
-}
-
 void ChromeExtensionSystem::InstallUpdate(
     const std::string& extension_id,
     const std::string& public_key,
@@ -436,10 +466,8 @@ void ChromeExtensionSystem::InstallUpdate(
     InstallUpdateCallback install_update_callback) {
   DCHECK(!install_update_callback.is_null());
 
-  ExtensionService* service = extension_service();
-  DCHECK(service);
-
-  scoped_refptr<CrxInstaller> installer = CrxInstaller::CreateSilent(service);
+  scoped_refptr<CrxInstaller> installer =
+      CrxInstaller::CreateSilent(profile_->GetOriginalProfile());
   installer->set_delete_source(true);
   installer->AddInstallerCallback(std::move(install_update_callback));
   installer->set_install_immediately(install_immediately);
@@ -449,19 +477,9 @@ void ChromeExtensionSystem::InstallUpdate(
 
 void ChromeExtensionSystem::PerformActionBasedOnOmahaAttributes(
     const std::string& extension_id,
-    const base::Value::Dict& attributes) {
+    const base::DictValue& attributes) {
   extension_service()->PerformActionBasedOnOmahaAttributes(extension_id,
                                                            attributes);
-}
-
-bool ChromeExtensionSystem::FinishDelayedInstallationIfReady(
-    const std::string& extension_id,
-    bool install_immediately) {
-  ExtensionService* service = extension_service();
-  DCHECK(service);
-  return service->GetPendingExtensionUpdate(extension_id) &&
-         service->FinishDelayedInstallationIfReady(extension_id,
-                                                   install_immediately);
 }
 
 }  // namespace extensions

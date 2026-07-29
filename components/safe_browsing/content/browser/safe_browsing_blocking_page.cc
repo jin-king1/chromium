@@ -59,7 +59,6 @@ SafeBrowsingBlockingPage::SafeBrowsingBlockingPage(
         security_interstitials::SecurityInterstitialControllerClient>
         controller_client,
     const BaseSafeBrowsingErrorUI::SBErrorDisplayOptions& display_options,
-    bool should_trigger_reporting,
     history::HistoryService* history_service,
     SafeBrowsingNavigationObserverManager* navigation_observer_manager,
     SafeBrowsingMetricsCollector* metrics_collector,
@@ -120,16 +119,14 @@ SafeBrowsingBlockingPage::SafeBrowsingBlockingPage(
                                : web_contents->GetBrowserContext()
                                      ->GetDefaultStoragePartition()
                                      ->GetURLLoaderFactoryForBrowserProcess();
-    if (should_trigger_reporting) {
-      threat_details_in_progress_ =
-          trigger_manager_->StartCollectingThreatDetails(
-              TriggerType::SECURITY_INTERSTITIAL, web_contents,
-              unsafe_resources[0], url_loader_factory, history_service_,
-              navigation_observer_manager_,
-              TriggerManager::DataCollectionPermissions(
-                  sb_error_ui()->get_error_display_options()));
-      warning_shown_ts_ = base::Time::Now().InMillisecondsSinceUnixEpoch();
-    }
+    threat_details_in_progress_ =
+        trigger_manager_->StartCollectingThreatDetails(
+            TriggerType::SECURITY_INTERSTITIAL, web_contents,
+            unsafe_resources[0], url_loader_factory, history_service_,
+            navigation_observer_manager_,
+            TriggerManager::DataCollectionPermissions(
+                sb_error_ui()->get_error_display_options()));
+    warning_shown_ts_ = base::Time::Now().InMillisecondsSinceUnixEpoch();
   }
 }
 
@@ -168,8 +165,6 @@ void SafeBrowsingBlockingPage::OnInterstitialClosing() {
   // If the user proceeded past a social engineering threat interstitial,
   // ignore the origin in future auto-revocation of abusive notifications.
   if (ignore_auto_revocation_notifications_trigger_) {
-    DCHECK(base::FeatureList::IsEnabled(
-        safe_browsing::kSafetyHubAbusiveNotificationRevocation));
     std::move(ignore_auto_revocation_notifications_trigger_)
         .Run(proceeded(), threat_type_);
   }

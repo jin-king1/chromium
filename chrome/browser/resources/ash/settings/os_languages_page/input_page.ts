@@ -100,13 +100,6 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
         value: false,
       },
 
-      languageSettingsJapaneseEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('systemJapanesePhysicalTyping');
-        },
-      },
-
       /**
        * Whether the shortcut reminder for the last used IME is currently
        * showing.
@@ -146,12 +139,6 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
 
       languagePacksInSettingsEnabled_: Boolean,
 
-      allowEmojiSuggestion_: Boolean,
-
-      allowOrca_: Boolean,
-
-      allowSuggestionSection_: Boolean,
-
       acceleratorFetcher: Object,
 
       isShortcutCustomizationEnabled_: Boolean,
@@ -164,12 +151,21 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
     };
   }
 
+  constructor() {
+    super();
+    this.isShortcutCustomizationEnabled_ =
+        loadTimeData.getBoolean('isShortcutCustomizationEnabled');
+    this.metaKey_ = MetaKey.kSearch;
+    this.languagePacksInSettingsEnabled_ =
+        loadTimeData.getBoolean('languagePacksInSettingsEnabled');
+  }
+
   // Public API: Bidirectional data flow.
   // override prefs: any;  // From PrefsMixin.
 
   // Public API: Downwards data flow.
-  languages: LanguagesModel|undefined;
-  languageHelper: LanguageHelper;
+  declare languages: LanguagesModel|undefined;
+  declare languageHelper: LanguageHelper;
 
   // API proxies.
   private languagesMetricsProxy_ = LanguagesMetricsProxyImpl.getInstance();
@@ -178,47 +174,35 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
   // From DeepLinkingMixin.
   override supportedSettingIds = new Set([
     Setting.kAddInputMethod,
-    Setting.kShowEmojiSuggestions,
     Setting.kShowInputOptionsInShelf,
-    Setting.kShowOrca,
     Setting.kSpellCheckOnOff,
   ]);
   // From RouteOriginMixin.
   override route = routes.OS_LANGUAGES_INPUT;
 
   // Internal state.
-  private showAddSpellcheckLanguagesDialog_: boolean;
-  private showAddInputMethodsDialog_: boolean;
+  declare private showAddSpellcheckLanguagesDialog_: boolean;
+  declare private showAddInputMethodsDialog_: boolean;
 
   // Accelerator fetcher properties.
   // TODO(yyhyyh@): Move these members to somewhere common.
-  acceleratorFetcher: AcceleratorFetcherInterface|null;
-  private isShortcutCustomizationEnabled_ =
-      loadTimeData.getBoolean('isShortcutCustomizationEnabled');
-  private lastUsedImeAccelerator_?: StandardAcceleratorProperties;
-  private nextImeAccelerator_?: StandardAcceleratorProperties;
+  declare acceleratorFetcher: AcceleratorFetcherInterface|null;
+  declare private isShortcutCustomizationEnabled_: boolean;
+  declare private lastUsedImeAccelerator_?: StandardAcceleratorProperties;
+  declare private nextImeAccelerator_?: StandardAcceleratorProperties;
   private acceleratorFetcherObserverReceiver_:
       AcceleratorFetcherObserverReceiver;
-  private metaKey_ = MetaKey.kSearch;
+  declare private metaKey_: MetaKey;
 
   // loadTimeData flags.
-  private onDeviceGrammarCheckEnabled_: boolean;
-  private languageSettingsJapaneseEnabled_: boolean;
-  private languagePacksInSettingsEnabled_ =
-      loadTimeData.getBoolean('languagePacksInSettingsEnabled');
-  private readonly allowEmojiSuggestion_: boolean =
-      loadTimeData.getBoolean('allowEmojiSuggestion');
-  private readonly allowOrca_: boolean = loadTimeData.getBoolean('allowOrca');
-  private readonly showOrcaReviewTermsBanner_: boolean =
-      loadTimeData.getBoolean('showOrcaReviewTermsBanner');
-  private readonly allowSuggestionSection_: boolean =
-      this.allowOrca_ || this.allowEmojiSuggestion_;
+  declare private onDeviceGrammarCheckEnabled_: boolean;
+  declare private languagePacksInSettingsEnabled_: boolean;
 
   // Computed properties.
-  private spellCheckLanguages_: SpellCheckLanguageState[]|undefined;
-  private showLastUsedImeShortcutReminder_: boolean;
-  private showNextImeShortcutReminder_: boolean;
-  private shortcutReminderBody_: TrustedHTML[];
+  declare private spellCheckLanguages_: SpellCheckLanguageState[]|undefined;
+  declare private showLastUsedImeShortcutReminder_: boolean;
+  declare private showNextImeShortcutReminder_: boolean;
+  declare private shortcutReminderBody_: TrustedHTML[];
 
   override ready(): void {
     super.ready();
@@ -307,13 +291,14 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
 
   private inputMethodsLimitedByPolicy_(): boolean {
     const allowedInputMethodsPref =
-        this.getPref('settings.language.allowed_input_methods');
-    return !!allowedInputMethodsPref && allowedInputMethodsPref.value.length;
+        this.getPref<string[]>('settings.language.allowed_input_methods');
+    return !!allowedInputMethodsPref &&
+        allowedInputMethodsPref.value.length > 0;
   }
 
   private inputMethodsEnabledByPolicy_(): boolean {
-    const allowedInputMethodsForceEnabled =
-        this.getPref('settings.language.allowed_input_methods_force_enabled');
+    const allowedInputMethodsForceEnabled = this.getPref<boolean>(
+        'settings.language.allowed_input_methods_force_enabled');
     return !!allowedInputMethodsForceEnabled &&
         allowedInputMethodsForceEnabled.value;
   }
@@ -390,10 +375,6 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
           loadTimeData.getBoolean('isPhysicalKeyboardAutocorrectAllowed'),
       isPhysicalKeyboardPredictiveWritingAllowed:
           loadTimeData.getBoolean('isPhysicalKeyboardPredictiveWritingAllowed'),
-      isJapaneseSettingsAllowed:
-          loadTimeData.getBoolean('systemJapanesePhysicalTyping'),
-      isVietnameseFirstPartyInputSettingsAllowed:
-          loadTimeData.getBoolean('allowFirstPartyVietnameseInput'),
     });
   }
 

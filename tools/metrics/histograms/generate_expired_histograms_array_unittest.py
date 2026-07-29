@@ -7,7 +7,9 @@ import datetime
 import unittest
 import xml.dom.minidom
 
-import generate_expired_histograms_array
+import setup_modules  # pylint: disable=unused-import
+
+import chromium_src.tools.metrics.histograms.generate_expired_histograms_array as generate_expired_histograms_array
 
 _EXPECTED_HEADER_FILE_CONTENT = (
 """// Generated from generate_expired_histograms_array.py. Do not edit!
@@ -55,7 +57,6 @@ class ExpiredHistogramsTest(unittest.TestCase):
         },
         "FourthHistogram": {},
         "FifthHistogram": {
-            "obsolete": "Has expired.",
             "expires_after": "2000-10-01"
         },
         "SixthHistogram": {
@@ -64,7 +65,7 @@ class ExpiredHistogramsTest(unittest.TestCase):
         "SeventhHistogram": {
             "expires_after": "M60"
         },
-        "EigthHistogram": {
+        "EighthHistogram": {
             "expires_after": "M65"
         },
     }
@@ -76,9 +77,10 @@ class ExpiredHistogramsTest(unittest.TestCase):
         generate_expired_histograms_array._GetExpiredHistograms(
             histograms, base_date, current_milestone))
 
-    self.assertEqual(2, len(expired_histograms_names))
+    self.assertEqual(3, len(expired_histograms_names))
     self.assertIn("FirstHistogram", expired_histograms_names)
     self.assertIn("SixthHistogram", expired_histograms_names)
+    self.assertIn("FifthHistogram", expired_histograms_names)
 
   def testBadExpiryDate(self):
     histograms = {
@@ -168,7 +170,7 @@ class ExpiredHistogramsTest(unittest.TestCase):
     This is a summary.
   </summary>
     </histogram>
-  <histogram name="ThirdHistogram" expires_after="M60" units="units">
+  <histogram name="ThirdHistogram" expires_after="M59" units="units">
     <owner>me@chromium.org</owner>
     <summary>
       This is a summary.

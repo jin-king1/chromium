@@ -9,7 +9,6 @@
 
 #include <optional>
 
-#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "mojo/public/cpp/bindings/struct_traits.h"
 #include "ui/display/display_export.h"
@@ -145,6 +144,33 @@ class DISPLAY_EXPORT Display final {
   float device_scale_factor() const { return device_scale_factor_; }
   void set_device_scale_factor(float scale) { device_scale_factor_ = scale; }
 
+  // Gets/Sets the display's text scale multiplier.
+  //
+  // For most users this is expected to be 1.0, but some platforms offer an
+  // accessibility option to increase the text size without increasing the size
+  // of other UI elements. When the user has selected such an option, this value
+  // is expected to match their selection.
+  //
+  // This value is also expected to be factored into the device_scale_factor.
+  // For example, if the user has selected a 1.5x text size, and the actual
+  // native device scale factor is 2.0x, then this value is expected to be 1.5,
+  // and the device_scale_factor is expected to be 1.5x2.0=3.0. This means views
+  // that only handle scaling everything by device_scale_factor will still
+  // provide the user with correctly sized text, while views that handle text
+  // scaling independently of overall device scale (like web pages that use
+  // text-scale) can factor out the text and device portions.
+  float text_scale_multiplier() const { return text_scale_multiplier_; }
+  void set_text_scale_multiplier(float scale) {
+    text_scale_multiplier_ = scale;
+  }
+
+  void set_pixels_per_inch(float pixels_per_inch_x, float pixels_per_inch_y) {
+    pixels_per_inch_x_ = pixels_per_inch_x;
+    pixels_per_inch_y_ = pixels_per_inch_y;
+  }
+  float GetPixelsPerInchX() const { return pixels_per_inch_x_; }
+  float GetPixelsPerInchY() const { return pixels_per_inch_y_; }
+
   Rotation rotation() const { return rotation_; }
   void set_rotation(Rotation rotation) { rotation_ = rotation; }
   int RotationAsDegree() const;
@@ -254,9 +280,7 @@ class DISPLAY_EXPORT Display final {
 
   // The number of bits per pixel. Used by media query APIs.
   int color_depth() const { return color_depth_; }
-  void set_color_depth(int color_depth) {
-    color_depth_ = color_depth;
-  }
+  void set_color_depth(int color_depth) { color_depth_ = color_depth; }
 
   // The number of bits per color component (all color components are assumed to
   // have the same number of bits). Used by media query APIs.
@@ -286,39 +310,16 @@ class DISPLAY_EXPORT Display final {
   void set_label(const std::string& label) { label_ = label; }
 
   bool operator==(const Display& rhs) const;
-  bool operator!=(const Display& rhs) const { return !(*this == rhs); }
   static bool EqualExceptForHdrHeadroom(const Display& lhs, const Display& rhs);
 
  private:
   friend struct mojo::StructTraits<mojom::DisplayDataView, Display>;
 
-  // A ref counted object to avoid copying DisplayColorSpaces.
-  class DisplayColorSpacesRef
-      : public base::RefCountedThreadSafe<DisplayColorSpacesRef> {
-   public:
-    DisplayColorSpacesRef() = default;
-    explicit DisplayColorSpacesRef(const gfx::DisplayColorSpaces& color_spaces)
-        : color_spaces_(color_spaces) {}
-    DisplayColorSpacesRef(const DisplayColorSpacesRef& color_spaces) = delete;
-    const DisplayColorSpacesRef& operator=(const DisplayColorSpacesRef) =
-        delete;
-
-    const gfx::DisplayColorSpaces& color_spaces() const {
-      return color_spaces_;
-    }
-
-   private:
-    friend class base::RefCountedThreadSafe<DisplayColorSpacesRef>;
-
-    ~DisplayColorSpacesRef() = default;
-    const gfx::DisplayColorSpaces color_spaces_;
-  };
-
   void SetDisplayColorSpacesRef(
-      scoped_refptr<const DisplayColorSpacesRef> color_spaces);
+      scoped_refptr<const gfx::DisplayColorSpacesRef> color_spaces);
 
   // Returns the default value of the DisplayColorSpaces.
-  static scoped_refptr<const DisplayColorSpacesRef>
+  static scoped_refptr<const gfx::DisplayColorSpacesRef>
   GetDefaultDisplayColorSpacesRef();
 
   int64_t id_ = kInvalidDisplayId;
@@ -328,15 +329,18 @@ class DISPLAY_EXPORT Display final {
   gfx::Size size_in_pixels_;
   gfx::Point native_origin_;
   gfx::Rect work_area_;
-  float device_scale_factor_;
+  float device_scale_factor_ = 1.0f;
+  float text_scale_multiplier_ = 1.0f;
+  float pixels_per_inch_x_ = 0.0f;
+  float pixels_per_inch_y_ = 0.0f;
   Rotation rotation_ = ROTATE_0;
   std::optional<Rotation> panel_rotation_;
   TouchSupport touch_support_ = TouchSupport::UNKNOWN;
   AccelerometerSupport accelerometer_support_ = AccelerometerSupport::UNKNOWN;
   gfx::Size maximum_cursor_size_;
-  scoped_refptr<const DisplayColorSpacesRef> color_spaces_;
-  int color_depth_;
-  int depth_per_component_;
+  scoped_refptr<const gfx::DisplayColorSpacesRef> color_spaces_;
+  int color_depth_ = kDefaultBitsPerPixel;
+  int depth_per_component_ = kDefaultBitsPerComponent;
   bool is_monochrome_ = false;
   bool detected_ = true;
   float display_frequency_ = 0;

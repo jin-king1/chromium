@@ -19,10 +19,12 @@ import android.os.Build;
 import android.os.PersistableBundle;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
@@ -39,15 +41,15 @@ import java.util.concurrent.TimeUnit;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE, sdk = Build.VERSION_CODES.S)
 public class BackgroundTaskJobServiceTest {
-    private static BackgroundTaskSchedulerJobService.Clock sClock = () -> 1415926535000L;
-    private static BackgroundTaskSchedulerJobService.Clock sZeroClock = () -> 0L;
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+    private static final BackgroundTaskSchedulerJobService.Clock sClock = () -> 1415926535000L;
+    private static final BackgroundTaskSchedulerJobService.Clock sZeroClock = () -> 0L;
     @Mock private BackgroundTaskSchedulerDelegate mDelegate;
     @Mock private BackgroundTaskSchedulerUma mBackgroundTaskSchedulerUma;
     @Mock private BackgroundTaskSchedulerImpl mBackgroundTaskSchedulerImpl;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         BackgroundTaskSchedulerFactoryInternal.setSchedulerForTesting(
                 new BackgroundTaskSchedulerImpl(mDelegate));
         BackgroundTaskSchedulerUma.setInstanceForTesting(mBackgroundTaskSchedulerUma);
@@ -256,13 +258,11 @@ public class BackgroundTaskJobServiceTest {
 
         verify(mBackgroundTaskSchedulerUma, times(1)).reportTaskStarted(eq(TaskIds.TEST));
         verify(mBackgroundTaskSchedulerUma, times(1))
-                .reportNotificationWasSet(eq(TaskIds.TEST), anyLong());
-        verify(mBackgroundTaskSchedulerUma, times(1))
                 .reportTaskFinished(eq(TaskIds.TEST), anyLong());
     }
 
     public static class FakeBackgroundTaskFactory implements BackgroundTaskFactory {
-        private BackgroundTask mFakeBackgroundTask;
+        private final BackgroundTask mFakeBackgroundTask;
 
         FakeBackgroundTaskFactory(BackgroundTask fakeBackgroundTask) {
             mFakeBackgroundTask = fakeBackgroundTask;

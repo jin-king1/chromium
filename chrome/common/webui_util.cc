@@ -13,8 +13,6 @@
 #include "content/public/common/url_utils.h"
 #include "url/gurl.h"
 
-namespace chrome {
-
 bool ShouldUseCodeCacheForWebUIUrl(const GURL& request_url) {
   DCHECK(content::HasWebUIScheme(request_url));
   if (base::FeatureList::IsEnabled(features::kRestrictedWebUICodeCache)) {
@@ -22,9 +20,7 @@ bool ShouldUseCodeCacheForWebUIUrl(const GURL& request_url) {
         unrestricted_resources(base::SplitString(
             features::kRestrictedWebUICodeCacheResources.Get(), ",",
             base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY));
-    return unrestricted_resources->contains(request_url.path());
+    return unrestricted_resources->contains(request_url.GetPath());
   }
   return true;
 }
-
-}  // namespace chrome

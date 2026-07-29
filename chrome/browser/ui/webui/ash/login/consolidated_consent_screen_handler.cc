@@ -6,11 +6,11 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "base/command_line.h"
 #include "base/values.h"
 #include "chrome/browser/ash/login/oobe_screen.h"
 #include "chrome/browser/ash/login/screens/consolidated_consent_screen.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/login/localized_values_builder.h"
 #include "ui/chromeos/devicetype_utils.h"
@@ -25,12 +25,16 @@ ConsolidatedConsentScreenHandler::~ConsolidatedConsentScreenHandler() = default;
 void ConsolidatedConsentScreenHandler::DeclareLocalizedValues(
     ::login::LocalizedValuesBuilder* builder) {
   builder->Add("consolidatedConsentHeader", IDS_CONSOLIDATED_CONSENT_HEADER);
+  builder->Add("consolidatedConsentHeaderDemoMode",
+               IDS_CONSOLIDATED_CONSENT_HEADER_DEMO_MODE);
   builder->Add("consolidatedConsentHeaderChild",
                IDS_CONSOLIDATED_CONSENT_HEADER_CHILD);
   builder->Add("consolidatedConsentHeaderManaged",
                IDS_CONSOLIDATED_CONSENT_HEADER_MANAGED);
   builder->Add("consolidatedConsentSubheader",
                IDS_CONSOLIDATED_CONSENT_SUBHEADER);
+  builder->Add("consolidatedConsentSubheaderDemoMode",
+               IDS_CONSOLIDATED_CONSENT_SUBHEADER_DEMO_MODE);
   builder->Add("consolidatedConsentSubheaderArcDisabled",
                IDS_CONSOLIDATED_CONSENT_SUBHEADER_ARC_DISABLED);
   builder->Add("consolidatedConsentTermsDescriptionTitle",
@@ -43,6 +47,8 @@ void ConsolidatedConsentScreenHandler::DeclareLocalizedValues(
                IDS_CONSOLIDATED_CONSENT_USAGE_OPT_IN_TITLE);
   builder->Add("consolidatedConsentUsageOptIn",
                IDS_CONSOLIDATED_CONSENT_USAGE_OPT_IN_OWNER);
+  builder->Add("consolidatedConsentUsageOptInDemoMode",
+               IDS_CONSOLIDATED_CONSENT_USAGE_OPT_IN_DEMO_MODE);
   builder->Add("consolidatedConsentUsageOptInLearnMoreLink",
                IDS_CONSOLIDATED_CONSENT_USAGE_OPT_IN_LEARN_MORE_LINK);
   builder->Add("consolidatedConsentBackupOptInTitle",
@@ -136,7 +142,7 @@ void ConsolidatedConsentScreenHandler::DeclareLocalizedValues(
                IDS_CONSOLIDATED_CONSENT_PRIVACY_POLICY_TITLE);
 }
 
-void ConsolidatedConsentScreenHandler::Show(base::Value::Dict data) {
+void ConsolidatedConsentScreenHandler::Show(base::DictValue data) {
   ShowInWebUI(std::move(data));
 }
 

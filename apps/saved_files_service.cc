@@ -16,7 +16,6 @@
 #include "apps/saved_files_service_factory.h"
 #include "base/json/values_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/not_fatal_until.h"
 #include "build/build_config.h"
 #include "content/public/browser/browser_context.h"
 #include "extensions/browser/api/file_system/saved_file_entry.h"
@@ -69,7 +68,7 @@ void AddSavedFileEntry(ExtensionPrefs* prefs,
   DCHECK(
       !file_entries->GetDictionaryWithoutPathExpansion(file_entry.id, nullptr));
 
-  base::Value::Dict file_entry_dict;
+  base::DictValue file_entry_dict;
   file_entry_dict.Set(kFileEntryPath, base::FilePathToValue(file_entry.path));
   file_entry_dict.Set(kFileEntryIsDirectory, file_entry.is_directory);
   file_entry_dict.Set(kFileEntrySequenceNumber, file_entry.sequence_number);
@@ -309,7 +308,7 @@ void SavedFilesService::SavedFiles::RegisterFileEntry(
 
 void SavedFilesService::SavedFiles::EnqueueFileEntry(const std::string& id) {
   auto id_it = registered_file_entries_.find(id);
-  CHECK(id_it != registered_file_entries_.end(), base::NotFatalUntil::M130);
+  CHECK(id_it != registered_file_entries_.end());
 
   SavedFileEntry* file_entry = id_it->second.get();
   int old_sequence_number = file_entry->sequence_number;

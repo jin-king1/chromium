@@ -9,20 +9,25 @@
 #include "base/barrier_closure.h"
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/json/json_writer.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/values.h"
 #include "chrome/browser/enterprise/connectors/device_trust/attestation/browser/attestation_switches.h"
 #include "chrome/browser/enterprise/connectors/device_trust/attestation/browser/crypto_utility.h"
-#include "chrome/browser/enterprise/connectors/device_trust/attestation/common/attestation_utils.h"
-#include "chrome/browser/enterprise/connectors/device_trust/attestation/common/proto/device_trust_attestation_ca.pb.h"
-#include "chrome/browser/enterprise/connectors/device_trust/common/common_types.h"
+#include "components/enterprise/device_trust/core/attestation/attestation_utils.h"
+#include "components/enterprise/device_trust/core/attestation/proto/device_trust_attestation_ca.pb.h"
+#include "components/enterprise/device_trust/core/common_types.h"
 #include "crypto/aes_cbc.h"
+#include "crypto/hash.h"
+#include "crypto/hmac.h"
+#include "crypto/keypair.h"
 #include "crypto/random.h"
-#include "third_party/boringssl/src/include/openssl/hmac.h"
-#include "third_party/boringssl/src/include/openssl/sha.h"
+#include "crypto/sign.h"
 
 namespace enterprise_connectors {
 
@@ -35,10 +40,17 @@ const size_t kChallengeResponseNonceBytesSize = 32;
 bool ChallengeComesFromVerifiedAccess(
     const SignedData& signed_challenge_data,
     const std::string& va_public_key_modulus_hex) {
-  // Verify challenge signature.
-  return CryptoUtility::VerifySignatureUsingHexKey(
-      va_public_key_modulus_hex, signed_challenge_data.data(),
-      signed_challenge_data.signature());
+  // 65537, as an OpenSSL bignum.
+  constexpr auto kWellKnownExponent =
+      std::to_array<uint8_t>({0x01, 0x00, 0x01});
+  std::vector<uint8_t> n_bytes;
+  CHECK(base::HexStringToBytes(va_public_key_modulus_hex, &n_bytes));
+  const auto key = crypto::keypair::PublicKey::FromRsaPublicKeyComponents(
+      n_bytes, kWellKnownExponent);
+  return crypto::sign::Verify(
+      crypto::sign::RSA_PKCS1_SHA256, *key,
+      base::as_byte_span(signed_challenge_data.data()),
+      base::as_byte_span(signed_challenge_data.signature()));
 }
 
 VAType GetVAType() {
@@ -50,18 +62,11 @@ VAType GetVAType() {
 }
 
 void FillHMAC(base::span<const uint8_t> key, EncryptedData* data) {
-  std::array<uint8_t, SHA512_DIGEST_LENGTH> hmac;
-  bssl::ScopedHMAC_CTX ctx;
-  CHECK(HMAC_Init_ex(ctx.get(), key.data(), key.size(), EVP_sha512(), nullptr));
-  {
-    auto iv = base::as_byte_span(data->iv());
-    CHECK(HMAC_Update(ctx.get(), iv.data(), iv.size()));
-  }
-  {
-    auto payload = base::as_byte_span(data->encrypted_data());
-    CHECK(HMAC_Update(ctx.get(), payload.data(), payload.size()));
-  }
-  CHECK(HMAC_Final(ctx.get(), hmac.data(), nullptr));
+  crypto::hmac::HmacSigner signer(crypto::hash::kSha512, key);
+  signer.Update(base::as_byte_span(data->iv()));
+  signer.Update(base::as_byte_span(data->encrypted_data()));
+  std::array<uint8_t, crypto::hash::kSha512Size> hmac;
+  signer.Finish(hmac);
   data->mutable_mac()->assign(base::as_string_view(hmac));
 }
 
@@ -117,8 +122,10 @@ std::optional<std::string> CreateChallengeResponseString(
 }  // namespace
 
 BrowserAttestationService::BrowserAttestationService(
-    std::vector<std::unique_ptr<Attester>> attesters)
+    std::vector<std::unique_ptr<Attester>> attesters,
+    VerifiedAccessFlow flow_type)
     : attesters_(std::move(attesters)),
+      flow_type_(flow_type),
       background_task_runner_(base::ThreadPool::CreateTaskRunner(
           {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
            base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})) {
@@ -135,7 +142,7 @@ BrowserAttestationService::~BrowserAttestationService() = default;
 // - Reply to callback.
 void BrowserAttestationService::BuildChallengeResponseForVAChallenge(
     const std::string& challenge,
-    base::Value::Dict signals,
+    base::DictValue signals,
     const std::set<DTCPolicyLevel>& levels,
     AttestationCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -160,7 +167,7 @@ void BrowserAttestationService::BuildChallengeResponseForVAChallenge(
 
 void BrowserAttestationService::OnChallengeValidated(
     const SignedData& signed_data,
-    base::Value::Dict signals,
+    base::DictValue signals,
     const std::set<DTCPolicyLevel>& levels,
     AttestationCallback callback,
     bool is_va_challenge) {
@@ -175,7 +182,7 @@ void BrowserAttestationService::OnChallengeValidated(
 
   // Fill `key_info` out for Chrome Browser.
   auto key_info = std::make_unique<KeyInfo>();
-  key_info->set_flow_type(CBCM);
+  key_info->set_flow_type(flow_type_);
   // VA should accept signals JSON string.
   std::string signals_json;
   if (!base::JSONWriter::Write(signals, &signals_json)) {

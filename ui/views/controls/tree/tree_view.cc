@@ -20,6 +20,7 @@
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/events/event.h"
@@ -67,6 +68,16 @@ static constexpr int kAuxiliaryTextLineEndPadding = 5;
 // How much children are indented from their parent.
 static constexpr int kIndent = 20;
 
+// The horizontal padding (10 pixels) of the Textfield is retrieved via
+// DISTANCE_TEXTFIELD_HORIZONTAL_TEXT_PADDING. This value is excessively large
+// when used in the tree view, resulting in layout overlap between the icon and
+// the Textfield. To resolve this overlap issue while ensuring the text inside
+// the Textfield remains fully aligned with the line text before editing, we
+// reduce the horizontal padding of the Textfield by 5 pixels and shift the
+// entire Textfield 5 pixels to the right.
+// See https://crbug.com/360815370
+static constexpr int kEditorHorizontalExtraInsets = -5;
+
 namespace {
 
 void PaintRowIcon(gfx::Canvas* canvas,
@@ -99,7 +110,10 @@ TreeView::TreeView()
   SetFocusBehavior(FocusBehavior::ALWAYS);
 
   folder_icon_ = ui::ImageModel::FromVectorIcon(
-      vector_icons::kFolderChromeRefreshIcon, ui::kColorIcon);
+      features::IsRoundedIconsEnabled()
+          ? vector_icons::kFolderFlippableIcon
+          : vector_icons::kFolderChromeRefreshOldIcon,
+      ui::kColorIcon);
 
   text_offset_ = folder_icon_.Size().width() + kImagePadding + kImagePadding +
                  kArrowRegionSize;
@@ -108,10 +122,6 @@ TreeView::TreeView()
 }
 
 TreeView::~TreeView() {
-  if (model_) {
-    model_->RemoveObserver(this);
-  }
-
   if (GetInputMethod() && selector_.get()) {
     // TreeView should have been blurred before destroy.
     DCHECK(selector_.get() != GetInputMethod()->GetTextInputClient());
@@ -135,9 +145,8 @@ void TreeView::SetModel(TreeModel* model) {
   if (model == model_) {
     return;
   }
-  if (model_) {
-    model_->RemoveObserver(this);
-  }
+
+  tree_model_observation_.Reset();
 
   CancelEdit();
 
@@ -150,7 +159,7 @@ void TreeView::SetModel(TreeModel* model) {
   GetViewAccessibility().RemoveAllVirtualChildViews();
 
   if (model_) {
-    model_->AddObserver(this);
+    tree_model_observation_.Observe(model_);
     model_->GetIcons(&icons_);
 
     ConfigureInternalNode(model_->GetRoot(), &root_);
@@ -202,6 +211,7 @@ void TreeView::StartEditing(TreeModelNode* node) {
     editor_->SetFontList(font_list_);
     empty_editor_size_ = editor_->GetPreferredSize({});
     editor_->set_controller(this);
+    editor_->SetExtraInsets(gfx::Insets::VH(0, kEditorHorizontalExtraInsets));
   }
   editor_->SetText(selected_node_->model_node()->GetTitle());
   // TODO(crbug.com/40853810): Investigate whether accessible name should stay
@@ -306,7 +316,6 @@ void TreeView::Collapse(ui::TreeModelNode* model_node) {
     DrawnNodesChanged();
     AXVirtualView* ax_view = node->accessibility_view();
     if (ax_view) {
-      ax_view->NotifyEvent(ax::mojom::Event::kExpandedChanged, true);
       ax_view->NotifyEvent(ax::mojom::Event::kRowCollapsed, true);
     }
     NotifyAccessibilityEventDeprecated(ax::mojom::Event::kRowCountChanged,
@@ -322,7 +331,6 @@ void TreeView::Expand(TreeModelNode* node) {
     AXVirtualView* ax_view =
         internal_node ? internal_node->accessibility_view() : nullptr;
     if (ax_view) {
-      ax_view->NotifyEvent(ax::mojom::Event::kExpandedChanged, true);
       ax_view->NotifyEvent(ax::mojom::Event::kRowExpanded, true);
     }
     NotifyAccessibilityEventDeprecated(ax::mojom::Event::kRowCountChanged,
@@ -349,7 +357,6 @@ void TreeView::ExpandAll(TreeModelNode* node) {
     AXVirtualView* ax_view =
         internal_node ? internal_node->accessibility_view() : nullptr;
     if (ax_view) {
-      ax_view->NotifyEvent(ax::mojom::Event::kExpandedChanged, true);
       ax_view->NotifyEvent(ax::mojom::Event::kRowExpanded, true);
     }
     NotifyAccessibilityEventDeprecated(ax::mojom::Event::kRowCountChanged,
@@ -393,12 +400,7 @@ void TreeView::SetRootShown(bool root_shown) {
     }
   }
 
-  AXVirtualView* ax_view = root_.accessibility_view();
-  // There should always be a virtual accessibility view for the root, unless
-  // someone calls this method before setting a model.
-  if (ax_view) {
-    ax_view->NotifyEvent(ax::mojom::Event::kStateChanged, true);
-  }
+  UpdateAccessiblePositionalPropertiesForNodeAndChildren(&root_);
   DrawnNodesChanged();
 }
 
@@ -879,14 +881,6 @@ void TreeView::UpdateSelection(TreeModelNode* model_node,
     active_node_ = node;
   }
 
-  if (selection_changed) {
-    SchedulePaintForNode(selected_node_);
-    SetAccessibleSelectionForNode(selected_node_, false);
-    selected_node_ = node;
-    SetAccessibleSelectionForNode(selected_node_, true);
-    SchedulePaintForNode(selected_node_);
-  }
-
   if (active_changed && node) {
     // GetForegroundBoundsForNode() returns RTL-flipped coordinates for paint.
     // Un-flip before passing to ScrollRectToVisible(), which uses layout
@@ -905,16 +899,22 @@ void TreeView::UpdateSelection(TreeModelNode* model_node,
     // Update |ViewAccessibility| so that focus lands directly on this node when
     // |FocusManager| gives focus to the tree view. This update also fires an
     // accessible focus event.
-    GetViewAccessibility().OverrideFocus(node ? node->accessibility_view()
-                                              : nullptr);
+    if (node && node->accessibility_view()) {
+      GetViewAccessibility().SetActiveDescendant(*node->accessibility_view());
+    } else {
+      GetViewAccessibility().ClearActiveDescendant();
+    }
   }
 
   if (selection_changed) {
+    SchedulePaintForNode(selected_node_);
+    SetAccessibleSelectionForNode(selected_node_, false);
+    selected_node_ = node;
+    SetAccessibleSelectionForNode(selected_node_, true);
+    SchedulePaintForNode(selected_node_);
     AXVirtualView* ax_selected_view =
         node ? node->accessibility_view() : nullptr;
-    if (ax_selected_view) {
-      ax_selected_view->NotifyEvent(ax::mojom::Event::kSelection, true);
-    } else {
+    if (!ax_selected_view) {
       NotifyAccessibilityEventDeprecated(ax::mojom::Event::kSelection, true);
     }
   }
@@ -1059,6 +1059,7 @@ std::unique_ptr<AXVirtualView> TreeView::CreateAndSetAccessibilityView(
   }
 
   node->set_accessibility_view(ax_view.get());
+  node->SetAccessibleIsExpanded(node->is_expanded());
   node->UpdateAccessibleName();
   return ax_view;
 }
@@ -1118,7 +1119,8 @@ void TreeView::LayoutEditor() {
   // flip it for the following calculations and ScrollRectToVisible().
   row_bounds.set_x(
       GetMirroredXWithWidthInView(row_bounds.x(), row_bounds.width()));
-  row_bounds.set_x(row_bounds.x() + text_offset_);
+  row_bounds.set_x(row_bounds.x() + text_offset_ +
+                   (-kEditorHorizontalExtraInsets));
   row_bounds.set_width(row_bounds.width() - text_offset_);
   row_bounds.Inset(
       gfx::Insets::VH(kTextVerticalPadding, kTextHorizontalPadding));
@@ -1250,7 +1252,8 @@ void TreeView::PaintExpandControl(gfx::Canvas* canvas,
                                   const gfx::Rect& node_bounds,
                                   bool expanded) {
   gfx::ImageSkia arrow = gfx::CreateVectorIcon(
-      vector_icons::kSubmenuArrowIcon,
+      features::IsRoundedIconsEnabled() ? vector_icons::kArrowRightFlippableIcon
+                                        : vector_icons::kSubmenuArrowOldIcon,
       color_utils::DeriveDefaultIconColor(
           drawing_provider()->GetTextColorForNode(this, nullptr)));
   if (expanded) {

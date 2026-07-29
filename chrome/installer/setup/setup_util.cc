@@ -4,19 +4,11 @@
 //
 // This file declares util functions for setup project.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/installer/setup/setup_util.h"
-
-#include <objbase.h>
 
 #include <windows.h>
 
 #include <stddef.h>
-#include <wtsapi32.h>
 
 #include <algorithm>
 #include <initializer_list>
@@ -30,6 +22,7 @@
 #include "base/base64.h"
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/cpu.h"
 #include "base/files/file.h"
 #include "base/files/file_enumerator.h"
@@ -37,7 +30,6 @@
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -64,7 +56,6 @@
 #include "chrome/installer/util/util_constants.h"
 #include "chrome/installer/util/work_item.h"
 #include "chrome/installer/util/work_item_list.h"
-#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 
 namespace installer {
 
@@ -73,26 +64,6 @@ namespace {
 // Event log providers registry location.
 constexpr wchar_t kEventLogProvidersRegPath[] =
     L"SYSTEM\\CurrentControlSet\\Services\\EventLog\\Application\\";
-
-// Remove the registration of the browser's DelegateExecute verb handler class.
-// This was once registered in support of "metro" mode on Windows 8.
-void RemoveLegacyIExecuteCommandKey(const InstallerState& installer_state) {
-  const std::wstring handler_class_uuid =
-      install_static::GetLegacyCommandExecuteImplClsid();
-
-  // No work to do if this mode of install never registered a DelegateExecute
-  // verb handler.
-  if (handler_class_uuid.empty())
-    return;
-
-  const HKEY root = installer_state.root_key();
-  std::wstring delegate_execute_path(L"Software\\Classes\\CLSID\\");
-  delegate_execute_path.append(handler_class_uuid);
-
-  // Delete both 64 and 32 keys to handle 32->64 or 64->32 migration.
-  for (REGSAM bitness : {KEY_WOW64_32KEY, KEY_WOW64_64KEY})
-    installer::DeleteRegistryKey(root, delegate_execute_path, bitness);
-}
 
 // "The binaries" once referred to the on-disk footprint of Chrome and/or Chrome
 // Frame when the products were configured to share such on-disk bits. Support
@@ -164,39 +135,6 @@ base::Version* GetMaxVersionFromArchiveDir(const base::FilePath& chrome_path) {
   return (version_found ? max_version.release() : nullptr);
 }
 
-base::FilePath FindArchiveToPatch(const InstallationState& original_state,
-                                  const InstallerState& installer_state,
-                                  const base::Version& desired_version) {
-  if (desired_version.IsValid()) {
-    base::FilePath archive(
-        installer_state.GetInstallerDirectory(desired_version)
-            .Append(kChromeArchive));
-    return base::PathExists(archive) ? archive : base::FilePath();
-  }
-
-  // Check based on the version number advertised to Google Update, since that
-  // is the value used to select a specific differential update. If an archive
-  // can't be found using that, fallback to using the newest version present.
-  base::FilePath patch_source;
-  const ProductState* product =
-      original_state.GetProductState(installer_state.system_install());
-  if (product) {
-    patch_source = installer_state.GetInstallerDirectory(product->version())
-                       .Append(installer::kChromeArchive);
-    if (base::PathExists(patch_source))
-      return patch_source;
-  }
-  std::unique_ptr<base::Version> version(
-      installer::GetMaxVersionFromArchiveDir(installer_state.target_path()));
-  if (version) {
-    patch_source = installer_state.GetInstallerDirectory(*version).Append(
-        installer::kChromeArchive);
-    if (base::PathExists(patch_source))
-      return patch_source;
-  }
-  return base::FilePath();
-}
-
 bool DeleteFileFromTempProcess(const base::FilePath& path,
                                uint32_t delay_before_delete_ms) {
   static const wchar_t kRunDll32Path[] =
@@ -261,7 +199,7 @@ bool AdjustThreadPriority() {
       priority_class == IDLE_PRIORITY_CLASS) {
     // Don't use SetPriorityClass with PROCESS_MODE_BACKGROUND_BEGIN because it
     // will cap the process working set to 32 MiB. See
-    // https://crbug.com/1475179.
+    // https://crbug.com/40927803.
     const BOOL result =
         ::SetThreadPriority(::GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
     PLOG_IF(WARNING, !result) << "Failed to enter background mode.";
@@ -300,8 +238,9 @@ bool ContainsUnsupportedSwitch(const base::CommandLine& cmd_line) {
       "app-launcher",
   };
   for (size_t i = 0; i < std::size(kLegacySwitches); ++i) {
-    if (cmd_line.HasSwitch(kLegacySwitches[i]))
+    if (cmd_line.HasSwitch(UNSAFE_TODO(kLegacySwitches[i]))) {
       return true;
+    }
   }
   return false;
 }
@@ -484,14 +423,8 @@ void RecordUnPackMetrics(UnPackStatus unpack_status, UnPackConsumer consumer) {
   std::string consumer_name;
 
   switch (consumer) {
-    case UnPackConsumer::CHROME_ARCHIVE_PATCH:
-      consumer_name = "ChromeArchivePatch";
-      break;
     case UnPackConsumer::COMPRESSED_CHROME_ARCHIVE:
       consumer_name = "CompressedChromeArchive";
-      break;
-    case UnPackConsumer::SETUP_EXE_PATCH:
-      consumer_name = "SetupExePatch";
       break;
     case UnPackConsumer::UNCOMPRESSED_CHROME_ARCHIVE:
       consumer_name = "UncompressedChromeArchive";
@@ -550,9 +483,9 @@ void DeRegisterEventLogProvider() {
   std::wstring reg_path(kEventLogProvidersRegPath);
   reg_path.append(install_static::InstallDetails::Get().install_full_name());
 
-  // TODO(http://crbug.com/668120): If the Event Viewer is open the provider dll
-  // will fail to get deleted. This doesn't fail the uninstallation altogether
-  // but leaves files behind.
+  // TODO(http://crbug.com/40495072): If the Event Viewer is open the provider
+  // dll will fail to get deleted. This doesn't fail the uninstallation
+  // altogether but leaves files behind.
   installer::DeleteRegistryKey(HKEY_LOCAL_MACHINE, reg_path,
                                WorkItem::kWow64Default);
 }
@@ -563,9 +496,6 @@ void DoLegacyCleanups(const InstallerState& installer_state,
   if (InstallUtil::GetInstallReturnCode(install_status))
     return;
 
-  // Cleanups that apply to any install mode.
-  RemoveLegacyIExecuteCommandKey(installer_state);
-
   // The cleanups below only apply to normal Chrome, not side-by-side (canary).
   if (!install_static::InstallDetails::Get().is_primary_mode())
     return;
@@ -573,30 +503,6 @@ void DoLegacyCleanups(const InstallerState& installer_state,
   RemoveBinariesVersionKey(installer_state);
   RemoveAppLauncherVersionKey(installer_state);
   RemoveLegacyChromeAppCommands(installer_state);
-}
-
-base::Time GetConsoleSessionStartTime() {
-  constexpr DWORD kInvalidSessionId = 0xFFFFFFFF;
-  DWORD console_session_id = ::WTSGetActiveConsoleSessionId();
-  if (console_session_id == kInvalidSessionId)
-    return base::Time();
-  wchar_t* buffer = nullptr;
-  DWORD buffer_size = 0;
-  if (!::WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE,
-                                    console_session_id, WTSSessionInfo, &buffer,
-                                    &buffer_size)) {
-    return base::Time();
-  }
-  absl::Cleanup wts_deleter = [buffer] { ::WTSFreeMemory(buffer); };
-
-  WTSINFO* wts_info = nullptr;
-  if (buffer_size < sizeof(*wts_info))
-    return base::Time();
-
-  wts_info = reinterpret_cast<WTSINFO*>(buffer);
-  FILETIME filetime = {wts_info->LogonTime.u.LowPart,
-                       static_cast<DWORD>(wts_info->LogonTime.u.HighPart)};
-  return base::Time::FromFileTime(filetime);
 }
 
 std::optional<std::string> DecodeDMTokenSwitchValue(

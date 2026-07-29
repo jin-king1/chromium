@@ -7,12 +7,10 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/test/base/testing_profile.h"
-#include "components/collaboration/internal/collaboration_service_impl.h"
 #include "components/collaboration/internal/empty_collaboration_service.h"
 #include "components/data_sharing/public/features.h"
 #include "components/sync/test/test_sync_service.h"
 #include "content/public/test/browser_task_environment.h"
-#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace collaboration {
@@ -30,13 +28,17 @@ class CollaborationServiceFactoryTest : public testing::Test {
   ~CollaborationServiceFactoryTest() override = default;
 
   void InitService(bool enable_feature) {
-    profile_ = TestingProfile::Builder()
-                   .AddTestingFactory(SyncServiceFactory::GetInstance(),
-                                      SyncServiceFactory::GetDefaultFactory())
-                   .Build();
+    TestingProfile::Builder builder;
+    // Set the testing factory for SyncService before building the profile.
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&TestingSyncFactoryFunction));
+
+    profile_ = builder.Build();
+
+    // Get the TestSyncService instance that was created by the factory.
     test_sync_service_ = static_cast<syncer::TestSyncService*>(
-        SyncServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-            profile_.get(), base::BindRepeating(&TestingSyncFactoryFunction)));
+        SyncServiceFactory::GetForProfile(profile_.get()));
+
     if (enable_feature) {
       scoped_feature_list_.InitWithFeaturesAndParameters(
           {{data_sharing::features::kDataSharingFeature, {}}}, {});

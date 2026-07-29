@@ -4,8 +4,10 @@
 
 #include "base/task/sequenced_task_runner.h"
 
+#include <array>
 #include <utility>
 
+#include "base/barrier_closure.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -16,6 +18,8 @@
 #include "base/run_loop.h"
 #include "base/sequence_checker_impl.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
@@ -215,6 +219,9 @@ class SequencedTaskRunnerCurrentDefaultHandleTest : public ::testing::Test {
   test::TaskEnvironment task_environment_;
 };
 
+using SequencedTaskRunnerCurrentDefaultHandleDeathTest =
+    SequencedTaskRunnerCurrentDefaultHandleTest;
+
 }  // namespace
 
 TEST_F(SequencedTaskRunnerCurrentDefaultHandleTest, FromTaskEnvironment) {
@@ -239,7 +246,7 @@ TEST_F(SequencedTaskRunnerCurrentDefaultHandleTest,
 
 // Verify that `CurrentDefaultHandle` can be used to set the current default
 // `SequencedTaskRunner` to null in a scope that already has a default.
-TEST_F(SequencedTaskRunnerCurrentDefaultHandleTest, OverrideWithNull) {
+TEST_F(SequencedTaskRunnerCurrentDefaultHandleDeathTest, OverrideWithNull) {
   EXPECT_TRUE(SequencedTaskRunner::HasCurrentDefault());
   auto tr1 = SequencedTaskRunner::GetCurrentDefault();
   EXPECT_TRUE(tr1);

@@ -4,6 +4,9 @@
 
 #include "chrome/browser/media/router/mojo/media_router_debugger_impl.h"
 
+#include <utility>
+
+#include "base/logging.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_feature.h"
@@ -50,9 +53,9 @@ MediaRouterDebugger* MediaRouterDebuggerImpl::GetForFrameTreeNode(
   return media_router ? &media_router->GetDebugger() : nullptr;
 }
 
-base::Value::Dict MediaRouterDebuggerImpl::GetMirroringStats() {
+base::DictValue MediaRouterDebuggerImpl::GetMirroringStats() {
   if (!ShouldFetchMirroringStats()) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
 
   return most_recent_mirroring_stats_.Clone();
@@ -90,10 +93,11 @@ void MediaRouterDebuggerImpl::ShouldFetchMirroringStats(
   std::move(callback).Run(ShouldFetchMirroringStats());
 }
 
-void MediaRouterDebuggerImpl::OnMirroringStats(const base::Value json_stats) {
+void MediaRouterDebuggerImpl::OnMirroringStats(base::Value json_stats) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  json_stats.is_dict() ? NotifyGetMirroringStats(json_stats.GetDict())
-                       : NotifyGetMirroringStats(base::Value::Dict());
+  json_stats.is_dict()
+      ? NotifyGetMirroringStats(std::move(json_stats).TakeDict())
+      : NotifyGetMirroringStats(base::DictValue());
 }
 
 void MediaRouterDebuggerImpl::BindReceiver(
@@ -103,7 +107,7 @@ void MediaRouterDebuggerImpl::BindReceiver(
 }
 
 void MediaRouterDebuggerImpl::NotifyGetMirroringStats(
-    const base::Value::Dict& json_logs) {
+    base::DictValue json_logs) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!ShouldFetchMirroringStats()) {
     return;
@@ -111,7 +115,7 @@ void MediaRouterDebuggerImpl::NotifyGetMirroringStats(
   for (MirroringStatsObserver& observer : observers_) {
     observer.OnMirroringStatsUpdated(json_logs);
   }
-  most_recent_mirroring_stats_ = json_logs.Clone();
+  most_recent_mirroring_stats_ = std::move(json_logs);
 }
 
 void MediaRouterDebuggerImpl::LogMirroringStats() {

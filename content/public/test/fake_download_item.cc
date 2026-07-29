@@ -286,6 +286,10 @@ void FakeDownloadItem::ValidateInsecureDownload() {
   NOTREACHED();
 }
 
+void FakeDownloadItem::ConfirmNonDangerousDownload() {
+  NOTREACHED();
+}
+
 void FakeDownloadItem::CopyDownload(AcquireFileCallback callback) {
   NOTREACHED();
 }
@@ -447,8 +451,8 @@ bool FakeDownloadItem::IsFromExternalApp() {
   return false;
 }
 
-bool FakeDownloadItem::IsMustDownload() {
-  return false;
+bool FakeDownloadItem::AllowAutoOpenAfterCompletion() {
+  return true;
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -458,6 +462,10 @@ bool FakeDownloadItem::IsDangerous() const {
 
 bool FakeDownloadItem::IsInsecure() const {
   return is_insecure_;
+}
+
+bool FakeDownloadItem::IsUserConfirmed() const {
+  NOTREACHED();
 }
 
 download::DownloadDangerType FakeDownloadItem::GetDangerType() const {

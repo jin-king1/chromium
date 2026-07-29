@@ -7,6 +7,8 @@
 #include <memory>
 #include <utility>
 
+#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_paths.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_path_watcher.h"
@@ -21,13 +23,8 @@
 #include "base/values.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/enrollment/auto_enrollment_type_checker.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/common/chrome_features.h"
-#include "chrome/common/chrome_paths.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
-#include "chromeos/ash/components/system/statistics_provider.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 
 namespace ash {
@@ -42,7 +39,7 @@ std::set<Mode> GetModesFromSetting(const base::Value* settings) {
     return modes;
   }
 
-  const base::Value::Dict& settings_dict = settings->GetDict();
+  const base::DictValue& settings_dict = settings->GetDict();
   std::optional<bool> allow_powerwash =
       settings_dict.FindBool(kSettingsKeyAllowPowerwash);
   if (allow_powerwash && *allow_powerwash) {
@@ -66,7 +63,7 @@ const char kSettingsKeyAutoUpdateMode[] = "auto-update-mode";
 
 base::Value DecodeSettingsProto(
     const enterprise_management::TPMFirmwareUpdateSettingsProto& settings) {
-  base::Value::Dict result;
+  base::DictValue result;
 
   if (settings.has_allow_user_initiated_powerwash()) {
     result.Set(kSettingsKeyAllowPowerwash,
@@ -135,9 +132,8 @@ class AvailabilityChecker {
  private:
   static base::FilePath GetUpdateLocationFilePath() {
     base::FilePath update_location_file;
-    CHECK(base::PathService::Get(
-        chrome::FILE_CHROME_OS_TPM_FIRMWARE_UPDATE_LOCATION,
-        &update_location_file));
+    CHECK(base::PathService::Get(ash::FILE_TPM_FIRMWARE_UPDATE_LOCATION,
+                                 &update_location_file));
     return update_location_file;
   }
 
@@ -151,7 +147,7 @@ class AvailabilityChecker {
     status->update_available = size.value() > 0;
     base::FilePath srk_vulnerable_roca_file;
     CHECK(base::PathService::Get(
-        chrome::FILE_CHROME_OS_TPM_FIRMWARE_UPDATE_SRK_VULNERABLE_ROCA,
+        ash::FILE_TPM_FIRMWARE_UPDATE_SRK_VULNERABLE_ROCA,
         &srk_vulnerable_roca_file));
     status->srk_vulnerable_roca = base::PathExists(srk_vulnerable_roca_file);
     return true;
@@ -218,15 +214,13 @@ class AvailabilityChecker {
 void GetAvailableUpdateModes(
     base::OnceCallback<void(const std::set<Mode>&)> completion,
     base::TimeDelta timeout) {
-  if (!base::FeatureList::IsEnabled(features::kTPMFirmwareUpdate)) {
+  if (!base::FeatureList::IsEnabled(ash::features::kTPMFirmwareUpdate)) {
     std::move(completion).Run(std::set<Mode>());
     return;
   }
 
   std::set<Mode> modes;
-  if (g_browser_process->platform_part()
-          ->browser_policy_connector_ash()
-          ->IsDeviceEnterpriseManaged()) {
+  if (InstallAttributes::Get()->IsEnterpriseManaged()) {
     // Split |completion| in two. This is necessary because of the
     // PrepareTrustedValues API, which for some return values invokes the
     // callback passed to it, and for others requires the code here to do so.
@@ -256,15 +250,12 @@ void GetAvailableUpdateModes(
   } else {
     // Consumer device or still in OOBE.
     if (!InstallAttributes::Get()->IsDeviceLocked()) {
-      // Device in OOBE. If FRE is required, enterprise enrollment might still
-      // be pending, in which case TPM firmware updates are disallowed until
-      // FRE determines that the device is not remotely managed or it does get
-      // enrolled and the admin allows TPM firmware updates.
-      const auto requirement =
-          policy::AutoEnrollmentTypeChecker::GetFRERequirementAccordingToVPD(
-              system::StatisticsProvider::GetInstance());
-      if (requirement == policy::AutoEnrollmentTypeChecker::FRERequirement::
-                             kExplicitlyRequired) {
+      // Device in OOBE. If enrollment check is required, enterprise enrollment
+      // might still be pending, in which case TPM firmware updates are
+      // disallowed until enrollment state determination determines that the
+      // device is not remotely managed or it does get enrolled and the admin
+      // allows TPM firmware updates.
+      if (policy::AutoEnrollmentTypeChecker::IsEnabled()) {
         std::move(completion).Run(std::set<Mode>());
         return;
       }

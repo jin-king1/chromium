@@ -9,20 +9,31 @@ import android.content.Context;
 import androidx.annotation.ColorInt;
 import androidx.annotation.ColorRes;
 
-import org.chromium.base.library_loader.LibraryLoader;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+import org.chromium.chrome.browser.omnibox.FuseboxSessionState;
 import org.chromium.chrome.browser.omnibox.LocationBarDataProvider;
 import org.chromium.chrome.browser.omnibox.NewTabPageDelegate;
 import org.chromium.chrome.browser.omnibox.UrlBarData;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityPreferencesManager;
 import org.chromium.components.browser_ui.styles.ChromeColors;
+import org.chromium.components.security_state.ConnectionMaliciousContentStatus;
 import org.chromium.components.security_state.ConnectionSecurityLevel;
 import org.chromium.url.GURL;
 
-class SearchBoxDataProvider implements LocationBarDataProvider {
+@NullMarked
+public class SearchBoxDataProvider implements LocationBarDataProvider {
+    private final NonNullObservableSupplier<@ControlsPosition Integer> mToolbarPosition =
+            ObservableSuppliers.createNonNull(ControlsPosition.TOP);
+    private final FuseboxSessionState mFuseboxSessionState = new FuseboxSessionState();
+
     private /* PageClassification */ int mPageClassification;
     private @ColorInt int mPrimaryColor;
-    private GURL mGurl;
+    private @Nullable GURL mGurl;
     private boolean mIsIncognito;
 
     /**
@@ -33,9 +44,13 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
      *
      * @param context current context
      */
-    /* package */ void initialize(Context context, boolean isIncognito) {
+    public void initialize(Context context, boolean isIncognito) {
         mPrimaryColor = ChromeColors.getPrimaryBackgroundColor(context, isIncognito);
         mIsIncognito = isIncognito;
+    }
+
+    public void destroy() {
+        mFuseboxSessionState.destroy();
     }
 
     @Override
@@ -69,13 +84,18 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
     }
 
     @Override
-    public Tab getTab() {
+    public @Nullable Tab getTab() {
         return null;
     }
 
     @Override
     public boolean hasTab() {
         return false;
+    }
+
+    @Override
+    public FuseboxSessionState getFuseboxSessionState() {
+        return mFuseboxSessionState;
     }
 
     @Override
@@ -102,7 +122,6 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
     @Override
     public GURL getCurrentGurl() {
         if (GURL.isEmptyOrInvalid(mGurl)) {
-            assert LibraryLoader.getInstance().isInitialized();
             mGurl = SearchActivityPreferencesManager.getCurrent().searchEngineUrl;
         }
 
@@ -120,7 +139,12 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
     }
 
     @Override
-    public int getPageClassification(boolean isPrefetch) {
+    public @ConnectionMaliciousContentStatus int getMaliciousContentStatus() {
+        return ConnectionMaliciousContentStatus.NONE;
+    }
+
+    @Override
+    public int getPageClassification(boolean prefetch) {
         return mPageClassification;
     }
 
@@ -139,11 +163,20 @@ class SearchBoxDataProvider implements LocationBarDataProvider {
         return 0;
     }
 
-    void setPageClassification(int pageClassification) {
+    public void setPageClassification(int pageClassification) {
         mPageClassification = pageClassification;
     }
 
-    void setCurrentUrl(GURL url) {
+    void setCurrentUrl(@Nullable GURL url) {
         mGurl = url;
+    }
+
+    void setIsIncognitoForTesting(boolean isIncognito) {
+        mIsIncognito = isIncognito;
+    }
+
+    @Override
+    public NonNullObservableSupplier<@ControlsPosition Integer> getToolbarPositionSupplier() {
+        return mToolbarPosition;
     }
 }

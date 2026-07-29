@@ -4,12 +4,16 @@
 
 #include "ash/accessibility/accessibility_controller.h"
 
+#include <array>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "ash/accelerators/accelerator_controller_impl.h"
 #include "ash/accessibility/a11y_feature_type.h"
 #include "ash/accessibility/accessibility_observer.h"
+#include "ash/accessibility/accessibility_prefs_custom_associator.h"
+#include "ash/accessibility/accessibility_sync_prefs_utils.h"
 #include "ash/accessibility/disable_touchpad_event_rewriter.h"
 #include "ash/accessibility/filter_keys_event_rewriter.h"
 #include "ash/accessibility/flash_screen_controller.h"
@@ -22,9 +26,12 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/display/cursor_window_controller.h"
+#include "ash/display/screen_ash.h"
 #include "ash/display/window_tree_host_manager.h"
 #include "ash/keyboard/ui/keyboard_util.h"
+#include "ash/public/cpp/ash_prefs.h"
 #include "ash/public/cpp/event_rewriter_controller.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "ash/public/cpp/test/test_system_tray_client.h"
 #include "ash/root_window_controller.h"
 #include "ash/session/session_controller_impl.h"
@@ -37,25 +44,35 @@
 #include "ash/test/ash_test_base.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "components/live_caption/pref_names.h"
+#include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/user_manager/user_names.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/aura/aura_window_properties.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/devices/device_data_manager_test_api.h"
 #include "ui/events/devices/touchpad_device.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_types.h"
 #include "ui/native_theme/features/native_theme_features.h"
 #include "ui/native_theme/native_theme.h"
+#include "ui/native_theme/os_settings_provider.h"
 
 using message_center::MessageCenter;
 
@@ -66,7 +83,7 @@ namespace {
 constexpr char kDictationLanguageUpgradedNudgeId[] =
     "dictation_language_upgraded.nudge_id";
 
-const std::string kAccessibilityToast = "AccessibilityToast";
+const char kAccessibilityToast[] = "AccessibilityToast";
 const int kDialogTimeoutSeconds = 30;
 const int kInternalTouchpadDeviceId = 30;
 const int kUsbMouseDeviceId = 20;
@@ -93,7 +110,9 @@ void SimulateExternalMouseConnected() {
 
 class TestAccessibilityObserver : public AccessibilityObserver {
  public:
-  TestAccessibilityObserver() = default;
+  TestAccessibilityObserver() {
+    scoped_observer_.Observe(Shell::Get()->accessibility_controller());
+  }
   TestAccessibilityObserver(const TestAccessibilityObserver&) = delete;
   TestAccessibilityObserver& operator=(const TestAccessibilityObserver&) =
       delete;
@@ -103,6 +122,10 @@ class TestAccessibilityObserver : public AccessibilityObserver {
   void OnAccessibilityStatusChanged() override { ++status_changed_count_; }
 
   int status_changed_count_ = 0;
+
+ private:
+  base::ScopedObservation<AccessibilityController, AccessibilityObserver>
+      scoped_observer_{this};
 };
 
 class AccessibilityControllerTestBase : public AshTestBase {
@@ -137,12 +160,12 @@ class AccessibilityControllerTest : public AccessibilityControllerTestBase {
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/{ash::features::kOnDeviceSpeechRecognition,
                               ::features::kAccessibilityAccelerator,
-                              ::features::kAccessibilityFaceGaze,
                               ::features::kAccessibilityMouseKeys,
-                              ::features::kAccessibilityFlashScreenFeature,
-                              ::features::kOverlayScrollbarsOSSetting},
-        /*disabled_features=*/{::features::kOverlayScrollbar});
+                              ::features::kAccessibilityFlashScreenFeature},
+        /*disabled_features=*/{});
     AccessibilityControllerTestBase::SetUp();
+    normal_duration_.emplace(
+        gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
   }
 
   void ExpectSessionDurationMetricCount(const std::string& feature_name,
@@ -191,6 +214,7 @@ class AccessibilityControllerTest : public AccessibilityControllerTestBase {
 
  private:
   base::HistogramTester histogram_tester_;
+  std::optional<gfx::ScopedAnimationDurationScaleMode> normal_duration_;
 };
 
 TEST_F(AccessibilityControllerTest, ChangingCursorSizePrefChangesCursorSize) {
@@ -363,7 +387,6 @@ TEST_F(AccessibilityControllerTest, SetAlwaysShowScrollbarEnabled) {
   EXPECT_FALSE(controller()->always_show_scrollbar().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->always_show_scrollbar().SetEnabled(true);
@@ -377,15 +400,12 @@ TEST_F(AccessibilityControllerTest, SetAlwaysShowScrollbarEnabled) {
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosAlwaysShowScrollbar", 1);
   EXPECT_TRUE(ui::NativeTheme::GetInstanceForWeb()->use_overlay_scrollbar());
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetAutoclickEnabled) {
   EXPECT_FALSE(controller()->autoclick().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->autoclick().SetEnabled(true);
@@ -397,15 +417,12 @@ TEST_F(AccessibilityControllerTest, SetAutoclickEnabled) {
   EXPECT_FALSE(controller()->autoclick().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosAutoclick", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetBounceKeysEnabled) {
   EXPECT_FALSE(controller()->bounce_keys().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->bounce_keys().SetEnabled(true);
@@ -417,15 +434,12 @@ TEST_F(AccessibilityControllerTest, SetBounceKeysEnabled) {
   EXPECT_FALSE(controller()->bounce_keys().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosBounceKeys", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetCaretHighlightEnabled) {
   EXPECT_FALSE(controller()->caret_highlight().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->caret_highlight().SetEnabled(true);
@@ -437,15 +451,12 @@ TEST_F(AccessibilityControllerTest, SetCaretHighlightEnabled) {
   EXPECT_FALSE(controller()->caret_highlight().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosCaretHighlight", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetColorCorrectionEnabled) {
   EXPECT_FALSE(controller()->color_correction().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   EXPECT_EQ(0, GetSystemTrayClient()->show_color_correction_settings_count());
@@ -475,15 +486,12 @@ TEST_F(AccessibilityControllerTest, SetColorCorrectionEnabled) {
   EXPECT_FALSE(controller()->color_correction().enabled());
   EXPECT_EQ(4, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosColorCorrection", 2);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetCursorHighlightEnabled) {
   EXPECT_FALSE(controller()->cursor_highlight().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->cursor_highlight().SetEnabled(true);
@@ -495,15 +503,12 @@ TEST_F(AccessibilityControllerTest, SetCursorHighlightEnabled) {
   EXPECT_FALSE(controller()->cursor_highlight().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosCursorHighlight", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetCursorColorEnabled) {
   EXPECT_FALSE(controller()->cursor_color().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->cursor_color().SetEnabled(true);
@@ -515,15 +520,12 @@ TEST_F(AccessibilityControllerTest, SetCursorColorEnabled) {
   EXPECT_FALSE(controller()->cursor_color().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosCursorColor", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetFaceGazeEnabled) {
   EXPECT_FALSE(controller()->face_gaze().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->face_gaze().SetEnabled(true);
@@ -535,8 +537,6 @@ TEST_F(AccessibilityControllerTest, SetFaceGazeEnabled) {
   EXPECT_FALSE(controller()->face_gaze().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosFaceGaze", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, FaceGazeTrayMenuVisibility) {
@@ -581,7 +581,6 @@ TEST_F(AccessibilityControllerTest, SetFocusHighlightEnabled) {
   EXPECT_FALSE(controller()->focus_highlight().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->focus_highlight().SetEnabled(true);
@@ -593,15 +592,12 @@ TEST_F(AccessibilityControllerTest, SetFocusHighlightEnabled) {
   EXPECT_FALSE(controller()->focus_highlight().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosFocusHighlight", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetHighContrastEnabled) {
   EXPECT_FALSE(controller()->high_contrast().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->high_contrast().SetEnabled(true);
@@ -613,15 +609,12 @@ TEST_F(AccessibilityControllerTest, SetHighContrastEnabled) {
   EXPECT_FALSE(controller()->high_contrast().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosHighContrast", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetLargeCursorEnabled) {
   EXPECT_FALSE(controller()->large_cursor().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->large_cursor().SetEnabled(true);
@@ -633,8 +626,6 @@ TEST_F(AccessibilityControllerTest, SetLargeCursorEnabled) {
   EXPECT_FALSE(controller()->large_cursor().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosLargeCursor", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, LargeCursorTrayMenuVisibility) {
@@ -678,7 +669,6 @@ TEST_F(AccessibilityControllerTest, SetLiveCaptionEnabled) {
   EXPECT_FALSE(controller()->live_caption().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->live_caption().SetEnabled(true);
@@ -690,8 +680,6 @@ TEST_F(AccessibilityControllerTest, SetLiveCaptionEnabled) {
   EXPECT_FALSE(controller()->live_caption().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosLiveCaption", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, LiveCaptionTrayMenuVisibility) {
@@ -802,7 +790,6 @@ TEST_F(AccessibilityControllerTest, SetMouseKeysEnabled) {
   EXPECT_FALSE(mouse_keys.enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   MouseKeysController* mouse_keys_controller =
@@ -819,8 +806,6 @@ TEST_F(AccessibilityControllerTest, SetMouseKeysEnabled) {
   EXPECT_FALSE(mouse_keys_controller->paused());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosMouseKeys", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, DictationTrayMenuVisibility) {
@@ -1373,6 +1358,16 @@ TEST_F(AccessibilityControllerTest, DisableLargeCursorDoesNotResetSize) {
             48);
 }
 
+TEST_F(AccessibilityControllerTest, CursorColorIsBlackInitially) {
+  EXPECT_EQ(0, prefs()->GetInteger(prefs::kAccessibilityCursorColor));
+  EXPECT_FALSE(prefs()->GetBoolean(prefs::kAccessibilityCursorColorEnabled));
+
+  CursorWindowController* cursor_window_controller =
+      Shell::Get()->window_tree_host_manager()->cursor_window_controller();
+  EXPECT_EQ(ui::kDefaultCursorColor,
+            cursor_window_controller->GetCursorColorForTest());
+}
+
 TEST_F(AccessibilityControllerTest, ChangingCursorColorPrefChangesCursorColor) {
   // Simulate using chrome settings webui to set cursor color, which also turns
   // on the cursor color enabled pref.
@@ -1392,6 +1387,20 @@ TEST_F(AccessibilityControllerTest, ChangingCursorColorPrefChangesCursorColor) {
   EXPECT_EQ(SK_ColorGREEN, cursor_window_controller->GetCursorColorForTest());
   ExpectSessionDurationMetricCount("CrosCursorColor", 0);
 
+  {
+    // Set cursor color pref to inverted.
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndEnableFeature(
+        ::features::kAccessibilityInvertedMouseCursor);
+
+    prefs()->SetBoolean(prefs::kAccessibilityCursorColorEnabled, true);
+    prefs()->SetInteger(prefs::kAccessibilityCursorColor,
+                        kAccessibilityCursorColorInverted);
+
+    // Expect cursor to be inverted.
+    EXPECT_TRUE(cursor_window_controller->IsCursorInvertedForTest());
+  }
+
   // Simulate using chrome settings webui to set cursor color to black, which
   // which also turns off the cursor color enabled pref.
   prefs()->SetInteger(prefs::kAccessibilityCursorColor, 0);
@@ -1405,7 +1414,6 @@ TEST_F(AccessibilityControllerTest, SetMonoAudioEnabled) {
   EXPECT_FALSE(controller()->mono_audio().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->mono_audio().SetEnabled(true);
@@ -1417,15 +1425,12 @@ TEST_F(AccessibilityControllerTest, SetMonoAudioEnabled) {
   EXPECT_FALSE(controller()->mono_audio().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosMonoAudio", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetSlowKeysEnabled) {
   EXPECT_FALSE(controller()->slow_keys().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->slow_keys().SetEnabled(true);
@@ -1437,15 +1442,12 @@ TEST_F(AccessibilityControllerTest, SetSlowKeysEnabled) {
   EXPECT_FALSE(controller()->slow_keys().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosSlowKeys", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetSpokenFeedbackEnabled) {
   EXPECT_FALSE(controller()->spoken_feedback().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->SetSpokenFeedbackEnabled(true, A11Y_NOTIFICATION_SHOW);
@@ -1457,8 +1459,6 @@ TEST_F(AccessibilityControllerTest, SetSpokenFeedbackEnabled) {
   EXPECT_FALSE(controller()->spoken_feedback().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosSpokenFeedback", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, FeaturesConflictingWithChromeVox) {
@@ -1502,7 +1502,6 @@ TEST_F(AccessibilityControllerTest, SetStickyKeysEnabled) {
   EXPECT_FALSE(controller()->sticky_keys().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   StickyKeysController* sticky_keys_controller =
@@ -1518,15 +1517,12 @@ TEST_F(AccessibilityControllerTest, SetStickyKeysEnabled) {
   EXPECT_FALSE(controller()->sticky_keys().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosStickyKeys", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest, SetVirtualKeyboardEnabled) {
   EXPECT_FALSE(controller()->virtual_keyboard().enabled());
 
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   controller()->virtual_keyboard().SetEnabled(true);
@@ -1540,8 +1536,6 @@ TEST_F(AccessibilityControllerTest, SetVirtualKeyboardEnabled) {
   EXPECT_FALSE(controller()->virtual_keyboard().enabled());
   EXPECT_EQ(2, observer.status_changed_count_);
   ExpectSessionDurationMetricCount("CrosVirtualKeyboard", 1);
-
-  controller()->RemoveObserver(&observer);
 }
 
 // The controller should get ShutdownSoundDuration from its client.
@@ -1641,7 +1635,6 @@ TEST_F(AccessibilityControllerTest,
 
 TEST_F(AccessibilityControllerTest, SelectToSpeakStateChanges) {
   TestAccessibilityObserver observer;
-  controller()->AddObserver(&observer);
 
   controller()->SetSelectToSpeakState(
       SelectToSpeakState::kSelectToSpeakStateSelecting);
@@ -1654,8 +1647,6 @@ TEST_F(AccessibilityControllerTest, SelectToSpeakStateChanges) {
   EXPECT_EQ(controller()->GetSelectToSpeakState(),
             SelectToSpeakState::kSelectToSpeakStateSpeaking);
   EXPECT_EQ(observer.status_changed_count_, 2);
-
-  controller()->RemoveObserver(&observer);
 }
 
 TEST_F(AccessibilityControllerTest,
@@ -1719,24 +1710,25 @@ TEST_F(AccessibilityControllerTest, VerifyFeatureData) {
 }
 
 TEST_F(AccessibilityControllerTest, ChangingPrefChangesCaretBlinkInterval) {
-  // Starts with default value.
-  EXPECT_EQ(prefs()->GetInteger(prefs::kAccessibilityCaretBlinkInterval), 500);
+  // The pref should contain the default value.
+  EXPECT_EQ(
+      prefs()->GetInteger(prefs::kAccessibilityCaretBlinkInterval),
+      ui::OsSettingsProvider::kDefaultCaretBlinkInterval.InMilliseconds());
 
-  auto* native_theme_dark = ui::NativeTheme::GetInstanceForDarkUI();
-  auto* native_theme_web = ui::NativeTheme::GetInstanceForWeb();
-  auto* native_theme = ui::NativeTheme::GetInstanceForNativeUi();
+  // All NativeThemes should start with the default value.
+  const auto* const native_theme = ui::NativeTheme::GetInstanceForNativeUi();
+  const auto* const native_theme_web = ui::NativeTheme::GetInstanceForWeb();
+  EXPECT_EQ(ui::OsSettingsProvider::kDefaultCaretBlinkInterval,
+            native_theme->caret_blink_interval());
+  EXPECT_EQ(ui::OsSettingsProvider::kDefaultCaretBlinkInterval,
+            native_theme_web->caret_blink_interval());
 
-  base::TimeDelta expected_interval = base::Milliseconds(500);
-  EXPECT_EQ(expected_interval, native_theme_dark->GetCaretBlinkInterval());
-  EXPECT_EQ(expected_interval, native_theme_web->GetCaretBlinkInterval());
-  EXPECT_EQ(expected_interval, native_theme->GetCaretBlinkInterval());
-
-  // Native Themes should be updated.
-  prefs()->SetInteger(prefs::kAccessibilityCaretBlinkInterval, 42);
-  expected_interval = base::Milliseconds(42);
-  EXPECT_EQ(expected_interval, native_theme_dark->GetCaretBlinkInterval());
-  EXPECT_EQ(expected_interval, native_theme_web->GetCaretBlinkInterval());
-  EXPECT_EQ(expected_interval, native_theme->GetCaretBlinkInterval());
+  // NativeThemes should be updated when the pref updates.
+  static constexpr auto kNewInterval = base::Milliseconds(42);
+  prefs()->SetInteger(prefs::kAccessibilityCaretBlinkInterval,
+                      kNewInterval.InMilliseconds());
+  EXPECT_EQ(kNewInterval, native_theme->caret_blink_interval());
+  EXPECT_EQ(kNewInterval, native_theme_web->caret_blink_interval());
 }
 
 TEST_F(AccessibilityControllerTest, FlashNotificationsWhenEnabled) {
@@ -1896,19 +1888,6 @@ TEST_F(AccessibilityControllerTest, LogsDurationAtShutdown) {
   ExpectSessionDurationMetricCount("CrosLargeCursor", 1);
 }
 
-TEST_F(AccessibilityControllerTest,
-       FilterKeysEventRewriterNotInitializedWhenBounceKeysFeatureDisabled) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      ::features::kAccessibilityBounceKeys);
-  // Initialize the EventRewriterController manually so that all EventRewriters
-  // get initialized.
-  EventRewriterController::Get()->Initialize(nullptr, nullptr);
-  // AccessibilityController shouldn't have a reference to the
-  // FilterKeysEventRewriter.
-  ASSERT_EQ(controller()->GetFilterKeysEventRewriterForTest(), nullptr);
-}
-
 TEST_F(AccessibilityControllerTest, FaceGazeNotifications) {
   ASSERT_FALSE(
       prefs()->GetBoolean(prefs::kFaceGazeDlcSuccessNotificationHasBeenShown));
@@ -1940,6 +1919,38 @@ TEST_F(AccessibilityControllerTest, FaceGazeNotifications) {
   controller()->ShowNotificationForFaceGaze(
       FaceGazeNotificationType::kDlcFailed);
   ASSERT_EQ(1u, MessageCenter::Get()->GetVisibleNotifications().size());
+}
+
+TEST_F(AccessibilityControllerTest, ShowNotificationOnFaceGaze) {
+  // Enabling FaceGaze should show a pinned notification.
+  controller()->face_gaze().SetEnabled(true);
+  message_center::NotificationList::Notifications notifications =
+      MessageCenter::Get()->GetVisibleNotifications();
+  ASSERT_EQ(1u, notifications.size());
+  EXPECT_EQ(u"Face control active", (*notifications.begin())->title());
+  ASSERT_TRUE((*notifications.begin())->pinned());
+
+  // Disabling FaceGaze should clear the notification.
+  controller()->face_gaze().SetEnabled(false);
+  notifications = MessageCenter::Get()->GetVisibleNotifications();
+  EXPECT_EQ(0u, notifications.size());
+}
+
+TEST_F(AccessibilityControllerTest, ClickNotification) {
+  // Enabling FaceGaze should show a notification.
+  controller()->face_gaze().SetEnabled(true);
+  message_center::NotificationList::Notifications notifications =
+      MessageCenter::Get()->GetVisibleNotifications();
+  ASSERT_EQ(1u, notifications.size());
+
+  // Clicking the notification will show a confirmation dialog.
+  base::RunLoop dialog_waiter;
+  controller()->AddFeatureDisableDialogCallbackForTesting(
+      base::BindLambdaForTesting([&dialog_waiter]() { dialog_waiter.Quit(); }));
+  (*notifications.begin())
+      ->delegate()
+      ->Click(/*button_index=*/1, /*reply=*/std::nullopt);
+  dialog_waiter.Run();
 }
 
 namespace {
@@ -2006,13 +2017,13 @@ TEST_P(AccessibilityControllerSigninTest, EnableOnLoginScreenAndLogin) {
   EXPECT_FALSE(accessibility->high_contrast().enabled());
   EXPECT_FALSE(accessibility->autoclick().enabled());
   EXPECT_FALSE(accessibility->mono_audio().enabled());
-  EXPECT_FALSE(accessibility->mouse_keys().enabled());
+  EXPECT_FALSE(accessibility->caret_highlight().enabled());
   EXPECT_FALSE(docked_magnifier->GetEnabled());
   using prefs::kAccessibilityAutoclickEnabled;
+  using prefs::kAccessibilityCaretHighlightEnabled;
   using prefs::kAccessibilityHighContrastEnabled;
   using prefs::kAccessibilityLargeCursorEnabled;
   using prefs::kAccessibilityMonoAudioEnabled;
-  using prefs::kAccessibilityMouseKeysEnabled;
   using prefs::kAccessibilitySpokenFeedbackEnabled;
   using prefs::kDockedMagnifierEnabled;
   PrefService* signin_prefs = session->GetSigninScreenPrefService();
@@ -2021,7 +2032,7 @@ TEST_P(AccessibilityControllerSigninTest, EnableOnLoginScreenAndLogin) {
   EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityHighContrastEnabled));
   EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityAutoclickEnabled));
   EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityMonoAudioEnabled));
-  EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityMouseKeysEnabled));
+  EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityCaretHighlightEnabled));
   EXPECT_FALSE(signin_prefs->GetBoolean(kDockedMagnifierEnabled));
 
   // Verify that toggling prefs at the signin screen changes the signin setting.
@@ -2030,7 +2041,7 @@ TEST_P(AccessibilityControllerSigninTest, EnableOnLoginScreenAndLogin) {
   accessibility->high_contrast().SetEnabled(true);
   accessibility->autoclick().SetEnabled(true);
   accessibility->mono_audio().SetEnabled(true);
-  accessibility->mouse_keys().SetEnabled(true);
+  accessibility->caret_highlight().SetEnabled(true);
   docked_magnifier->SetEnabled(true);
   docked_magnifier->SetScale(kMagnifierScale);
   // TODO(afakhry): Test the Fullscreen magnifier prefs once the
@@ -2041,7 +2052,7 @@ TEST_P(AccessibilityControllerSigninTest, EnableOnLoginScreenAndLogin) {
   EXPECT_TRUE(accessibility->high_contrast().enabled());
   EXPECT_TRUE(accessibility->autoclick().enabled());
   EXPECT_TRUE(accessibility->mono_audio().enabled());
-  EXPECT_TRUE(accessibility->mouse_keys().enabled());
+  EXPECT_TRUE(accessibility->caret_highlight().enabled());
   EXPECT_TRUE(docked_magnifier->GetEnabled());
   EXPECT_FLOAT_EQ(kMagnifierScale, docked_magnifier->GetScale());
   EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityLargeCursorEnabled));
@@ -2049,7 +2060,7 @@ TEST_P(AccessibilityControllerSigninTest, EnableOnLoginScreenAndLogin) {
   EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityHighContrastEnabled));
   EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityAutoclickEnabled));
   EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityMonoAudioEnabled));
-  EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityMouseKeysEnabled));
+  EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityCaretHighlightEnabled));
   EXPECT_TRUE(signin_prefs->GetBoolean(kDockedMagnifierEnabled));
 
   SimulateLogin();
@@ -2066,7 +2077,7 @@ TEST_P(AccessibilityControllerSigninTest, EnableOnLoginScreenAndLogin) {
     EXPECT_TRUE(accessibility->high_contrast().enabled());
     EXPECT_TRUE(accessibility->autoclick().enabled());
     EXPECT_TRUE(accessibility->mono_audio().enabled());
-    EXPECT_TRUE(accessibility->mouse_keys().enabled());
+    EXPECT_TRUE(accessibility->caret_highlight().enabled());
     EXPECT_TRUE(docked_magnifier->GetEnabled());
     EXPECT_FLOAT_EQ(kMagnifierScale, docked_magnifier->GetScale());
     EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityLargeCursorEnabled));
@@ -2074,7 +2085,7 @@ TEST_P(AccessibilityControllerSigninTest, EnableOnLoginScreenAndLogin) {
     EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityHighContrastEnabled));
     EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityAutoclickEnabled));
     EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityMonoAudioEnabled));
-    EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityMouseKeysEnabled));
+    EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityCaretHighlightEnabled));
     EXPECT_TRUE(user_prefs->GetBoolean(kDockedMagnifierEnabled));
   } else {
     EXPECT_FALSE(accessibility->large_cursor().enabled());
@@ -2082,7 +2093,7 @@ TEST_P(AccessibilityControllerSigninTest, EnableOnLoginScreenAndLogin) {
     EXPECT_FALSE(accessibility->high_contrast().enabled());
     EXPECT_FALSE(accessibility->autoclick().enabled());
     EXPECT_FALSE(accessibility->mono_audio().enabled());
-    EXPECT_FALSE(accessibility->mouse_keys().enabled());
+    EXPECT_FALSE(accessibility->caret_highlight().enabled());
     EXPECT_FALSE(docked_magnifier->GetEnabled());
     EXPECT_NE(kMagnifierScale, docked_magnifier->GetScale());
     EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityLargeCursorEnabled));
@@ -2090,7 +2101,7 @@ TEST_P(AccessibilityControllerSigninTest, EnableOnLoginScreenAndLogin) {
     EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityHighContrastEnabled));
     EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityAutoclickEnabled));
     EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityMonoAudioEnabled));
-    EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityMouseKeysEnabled));
+    EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityCaretHighlightEnabled));
     EXPECT_FALSE(user_prefs->GetBoolean(kDockedMagnifierEnabled));
   }
 }
@@ -2589,11 +2600,8 @@ TEST_F(AccessibilityControllerDisableTouchpadTest,
        DisableInternalTouchpadMetrics) {
   const std::string kDisableInternalTouchpadUmaMetric =
       "Accessibility.CrosDisableTouchpad.SessionDuration";
-  AccessibilityController* controller =
-      Shell::Get()->accessibility_controller();
 
   TestAccessibilityObserver observer;
-  controller->AddObserver(&observer);
   EXPECT_EQ(0, observer.status_changed_count_);
 
   prefs()->SetInteger(prefs::kAccessibilityDisableTrackpadMode,
@@ -2607,8 +2615,6 @@ TEST_F(AccessibilityControllerDisableTouchpadTest,
 
   EXPECT_EQ(2, observer.status_changed_count_);
   histogram_tester_.ExpectTotalCount(kDisableInternalTouchpadUmaMetric, 1);
-
-  controller->RemoveObserver(&observer);
 }
 
 class AccessibilityControllerBounceKeysTest
@@ -2622,9 +2628,6 @@ class AccessibilityControllerBounceKeysTest
   ~AccessibilityControllerBounceKeysTest() override = default;
 
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(
-        ::features::kAccessibilityBounceKeys);
-
     AccessibilityControllerTestBase::SetUp();
 
     EventRewriterController::Get()->Initialize(nullptr, nullptr);
@@ -2665,6 +2668,375 @@ TEST_F(AccessibilityControllerBounceKeysTest, UpdateBounceKeysDelayPref) {
   prefs()->SetInteger(prefs::kAccessibilityBounceKeysDelayMs,
                       expected_delta.InMilliseconds());
   EXPECT_EQ(filter_keys_event_rewriter()->GetBounceKeysDelay(), expected_delta);
+}
+
+class AccessibilityControllerRegisterProfilePrefsTest
+    : public AccessibilityControllerTestBase,
+      public testing::WithParamInterface<bool> {
+ public:
+  AccessibilityControllerRegisterProfilePrefsTest() {
+    if (GetParam()) {
+      scoped_feature_list_.InitWithFeatures(
+          {features::kOsSyncAccessibilitySettingsBatch1,
+           features::kOsSyncAccessibilitySettingsBatch2,
+           features::kOsSyncAccessibilitySettingsBatch3},
+          {});
+    } else {
+      scoped_feature_list_.InitWithFeatures(
+          {}, {features::kOsSyncAccessibilitySettingsBatch1,
+               features::kOsSyncAccessibilitySettingsBatch2,
+               features::kOsSyncAccessibilitySettingsBatch3});
+    }
+  }
+
+  ~AccessibilityControllerRegisterProfilePrefsTest() override = default;
+
+ protected:
+  void CheckPrefsSyncableFlags(
+      const std::vector<AccessibilityPrefBatchEntry>& batch) {
+    const bool expect_sync = GetParam();
+    for (const AccessibilityPrefBatchEntry& entry : batch) {
+      // Preferences with custom registration are registered elsewhere, not by
+      // the generic batch registration this test exercises, so their sync
+      // flags are not governed by the batch feature and are skipped here.
+      if (entry.has_custom_registration) {
+        continue;
+      }
+      const char* pref_name = entry.pref_name;
+      const auto* pref = prefs()->FindPreference(pref_name);
+      ASSERT_TRUE(pref) << pref_name;
+      const uint32_t flags = pref->registration_flags();
+      if (expect_sync) {
+        EXPECT_NE(0u,
+                  flags & user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF)
+            << pref_name;
+      } else {
+        EXPECT_EQ(0u,
+                  flags & user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF)
+            << pref_name;
+      }
+    }
+  }
+};
+
+TEST_P(AccessibilityControllerRegisterProfilePrefsTest,
+       RegistersVisualPrefsWithExpectedSyncFlags) {
+  CheckPrefsSyncableFlags(GetSyncableAccessibilityPrefsBatch1());
+  CheckPrefsSyncableFlags(GetSyncableAccessibilityPrefsBatch2());
+  CheckPrefsSyncableFlags(GetSyncableAccessibilityPrefsBatch3());
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         AccessibilityControllerRegisterProfilePrefsTest,
+                         ::testing::Values(true, false));
+
+class AccessibilityControllerSyncablePrefsOnSigninTest
+    : public testing::Test,
+      public SessionObserver,
+      public testing::WithParamInterface<TestUserLoginType> {
+ public:
+  AccessibilityControllerSyncablePrefsOnSigninTest() = default;
+
+  AccessibilityControllerSyncablePrefsOnSigninTest(
+      const AccessibilityControllerSyncablePrefsOnSigninTest&) = delete;
+  AccessibilityControllerSyncablePrefsOnSigninTest& operator=(
+      const AccessibilityControllerSyncablePrefsOnSigninTest&) = delete;
+
+  ~AccessibilityControllerSyncablePrefsOnSigninTest() {
+    ScreenAsh::DeleteScreenForShutdown();
+  }
+
+  void SetUp() override {
+    scoped_feature_list_.InitWithFeatures(
+        {features::kOsSyncAccessibilitySettingsBatch1,
+         features::kOsSyncAccessibilitySettingsBatch2,
+         features::kOsSyncAccessibilitySettingsBatch3},
+        {});
+
+    AshTestHelper::InitParams params;
+    params.start_session = false;
+    params.destroy_screen = false;
+    ash_test_helper_ = std::make_unique<AshTestHelper>();
+    ash_test_helper_->SetUp(std::move(params));
+
+    Shell::Get()->session_controller()->AddObserver(this);
+  }
+
+  void TearDown() override {
+    Shell::Get()->session_controller()->RemoveObserver(this);
+
+    ash_test_helper_->TearDown();
+    ash_test_helper_.reset();
+  }
+
+  // SessionObserver:
+  //
+  // We override this hook because at this point signin is performed, prefs are
+  // copied and the associator is active.
+  void OnFirstSessionStarted() override {
+    // Verify that prefs values are copied if they should.
+    SessionControllerImpl* session = Shell::Get()->session_controller();
+    AccessibilityController* accessibility =
+        Shell::Get()->accessibility_controller();
+    DockedMagnifierController* docked_magnifier =
+        Shell::Get()->docked_magnifier_controller();
+
+    PrefService* user_prefs = session->GetLastActiveUserPrefService();
+    PrefService* signin_prefs = session->GetSigninScreenPrefService();
+    EXPECT_NE(signin_prefs, user_prefs);
+
+    using prefs::kAccessibilityAutoclickEnabled;
+    using prefs::kAccessibilityCaretHighlightEnabled;
+    using prefs::kAccessibilityCursorHighlightEnabled;
+    using prefs::kAccessibilityHighContrastEnabled;
+    using prefs::kAccessibilityLargeCursorEnabled;
+    using prefs::kAccessibilityMonoAudioEnabled;
+    using prefs::kAccessibilitySpokenFeedbackEnabled;
+    using prefs::kDockedMagnifierEnabled;
+    using prefs::kDockedMagnifierScale;
+
+    const bool should_signin_prefs_be_copied =
+        GetParam() == TestUserLoginType::kNewUser ||
+        GetParam() == TestUserLoginType::kGuest;
+    if (should_signin_prefs_be_copied) {
+      EXPECT_TRUE(accessibility->large_cursor().enabled());
+      EXPECT_TRUE(accessibility->spoken_feedback().enabled());
+      EXPECT_TRUE(accessibility->high_contrast().enabled());
+      EXPECT_TRUE(accessibility->autoclick().enabled());
+      EXPECT_TRUE(accessibility->mono_audio().enabled());
+      EXPECT_TRUE(accessibility->caret_highlight().enabled());
+      EXPECT_TRUE(docked_magnifier->GetEnabled());
+      EXPECT_FLOAT_EQ(kMagnifierScale, docked_magnifier->GetScale());
+
+      EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityLargeCursorEnabled));
+      EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityHighContrastEnabled));
+      EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityCaretHighlightEnabled));
+      EXPECT_TRUE(user_prefs->GetBoolean(kDockedMagnifierEnabled));
+      EXPECT_FLOAT_EQ(kMagnifierScale,
+                      user_prefs->GetDouble(kDockedMagnifierScale));
+      EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilitySpokenFeedbackEnabled));
+      EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityAutoclickEnabled));
+      EXPECT_TRUE(user_prefs->GetBoolean(kAccessibilityMonoAudioEnabled));
+    } else {
+      EXPECT_FALSE(accessibility->large_cursor().enabled());
+      EXPECT_FALSE(accessibility->spoken_feedback().enabled());
+      EXPECT_FALSE(accessibility->high_contrast().enabled());
+      EXPECT_FALSE(accessibility->autoclick().enabled());
+      EXPECT_FALSE(accessibility->mono_audio().enabled());
+      EXPECT_FALSE(accessibility->caret_highlight().enabled());
+      EXPECT_FALSE(docked_magnifier->GetEnabled());
+      EXPECT_NE(kMagnifierScale, docked_magnifier->GetScale());
+      EXPECT_FALSE(accessibility->cursor_highlight().enabled());
+      EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityLargeCursorEnabled));
+      EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilitySpokenFeedbackEnabled));
+      EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityHighContrastEnabled));
+      EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityAutoclickEnabled));
+      EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityMonoAudioEnabled));
+      EXPECT_FALSE(user_prefs->GetBoolean(kAccessibilityCaretHighlightEnabled));
+      EXPECT_FALSE(user_prefs->GetBoolean(kDockedMagnifierEnabled));
+      EXPECT_NE(kMagnifierScale, user_prefs->GetDouble(kDockedMagnifierScale));
+      EXPECT_FALSE(
+          user_prefs->GetBoolean(kAccessibilityCursorHighlightEnabled));
+
+      // No associator should have been created.
+      EXPECT_EQ(nullptr, accessibility->prefs_custom_associator());
+    }
+
+    const bool should_signin_prefs_be_locked =
+        GetParam() == TestUserLoginType::kNewUser;
+    if (should_signin_prefs_be_locked) {
+      // Check locking of enabled syncable preferences.
+      EXPECT_NE(nullptr, accessibility->prefs_custom_associator());
+      EXPECT_TRUE(IsPrefLockedWithValueForTesting(
+          kAccessibilityLargeCursorEnabled, base::Value(true)));
+      EXPECT_TRUE(IsPrefLockedWithValueForTesting(
+          kAccessibilityHighContrastEnabled, base::Value(true)));
+      EXPECT_TRUE(IsPrefLockedWithValueForTesting(
+          kAccessibilityCaretHighlightEnabled, base::Value(true)));
+      EXPECT_TRUE(IsPrefLockedWithValueForTesting(kDockedMagnifierEnabled,
+                                                  base::Value(true)));
+      EXPECT_TRUE(IsPrefLockedWithValueForTesting(
+          kDockedMagnifierScale, base::Value(kMagnifierScale)));
+      EXPECT_FALSE(IsPrefLockedWithValueForTesting(
+          kAccessibilitySpokenFeedbackEnabled, std::nullopt));
+      EXPECT_FALSE(IsPrefLockedWithValueForTesting(
+          kAccessibilityAutoclickEnabled, std::nullopt));
+      EXPECT_FALSE(IsPrefLockedWithValueForTesting(
+          kAccessibilityMonoAudioEnabled, std::nullopt));
+
+      // This OOBE feature preference was not toggled on by the user, is
+      // syncable and should be locked.
+      EXPECT_FALSE(accessibility->cursor_highlight().enabled());
+      EXPECT_FALSE(
+          user_prefs->GetBoolean(kAccessibilityCursorHighlightEnabled));
+      EXPECT_TRUE(IsPrefLockedWithValueForTesting(
+          kAccessibilityCursorHighlightEnabled, base::Value(false)));
+      EXPECT_TRUE(
+          user_prefs->FindPreference(kAccessibilityCursorHighlightEnabled)
+              ->IsDefaultValue());
+    }
+  }
+
+  void SimulateLogin() {
+    constexpr char kUserEmail[] = "user1@test.com";
+    auto pref_service =
+        std::make_unique<sync_preferences::TestingPrefServiceSyncable>();
+    RegisterUserProfilePrefs(pref_service->registry(), /*country=*/"",
+                             /*for_test=*/true);
+
+    switch (GetParam()) {
+      case TestUserLoginType::kNewUser:
+        ash_test_helper_->SimulateUserLogin(
+            {.display_email = kUserEmail, .is_new_profile = true},
+            /*opt_account_id=*/std::nullopt, std::move(pref_service));
+        break;
+
+      case TestUserLoginType::kGuest:
+        ash_test_helper_->SimulateUserLogin(
+            {user_manager::kGuestUserName, user_manager::UserType::kGuest},
+            /*opt_account_id=*/std::nullopt, std::move(pref_service));
+        break;
+
+      case TestUserLoginType::kExistingUser:
+        ash_test_helper_->SimulateUserLogin({kUserEmail},
+                                            /*opt_account_id=*/std::nullopt,
+                                            std::move(pref_service));
+        break;
+    }
+  }
+
+ protected:
+  bool IsPrefLockedWithValueForTesting(
+      std::string_view pref_name,
+      std::optional<base::Value> locked_value) {
+    auto* associator =
+        Shell::Get()->accessibility_controller()->prefs_custom_associator();
+    const base::Value kServerValue;
+    std::optional<base::Value> merge_value =
+        associator->GetPreferredPrefMergeValue(pref_name, kServerValue);
+    return merge_value.has_value() && merge_value == locked_value;
+  }
+
+  static constexpr float kMagnifierScale = 4.3f;
+
+ private:
+  std::unique_ptr<AshTestHelper> ash_test_helper_;
+  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::MainThreadType::UI};
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         AccessibilityControllerSyncablePrefsOnSigninTest,
+                         ::testing::Values(TestUserLoginType::kNewUser,
+                                           TestUserLoginType::kGuest,
+                                           TestUserLoginType::kExistingUser));
+
+TEST_P(AccessibilityControllerSyncablePrefsOnSigninTest,
+       Signin_PrefCopyAndLock) {
+  AccessibilityController* accessibility =
+      Shell::Get()->accessibility_controller();
+  DockedMagnifierController* docked_magnifier =
+      Shell::Get()->docked_magnifier_controller();
+  SessionControllerImpl* session = Shell::Get()->session_controller();
+  PrefService* signin_prefs = session->GetSigninScreenPrefService();
+
+  using prefs::kAccessibilityAutoclickEnabled;
+  using prefs::kAccessibilityCaretHighlightEnabled;
+  using prefs::kAccessibilityCursorHighlightEnabled;
+  using prefs::kAccessibilityHighContrastEnabled;
+  using prefs::kAccessibilityLargeCursorEnabled;
+  using prefs::kAccessibilityMonoAudioEnabled;
+  using prefs::kAccessibilitySpokenFeedbackEnabled;
+  using prefs::kDockedMagnifierEnabled;
+
+  // Ensures accessibility prefs are disabled at the beginning of the signin
+  // process.
+  {
+    EXPECT_EQ(session_manager::SessionState::LOGIN_PRIMARY,
+              session->GetSessionState());
+    EXPECT_FALSE(accessibility->large_cursor().enabled());
+    EXPECT_FALSE(accessibility->live_caption().enabled());
+    EXPECT_FALSE(accessibility->spoken_feedback().enabled());
+    EXPECT_FALSE(accessibility->high_contrast().enabled());
+    EXPECT_FALSE(accessibility->autoclick().enabled());
+    EXPECT_FALSE(accessibility->mono_audio().enabled());
+    EXPECT_FALSE(accessibility->caret_highlight().enabled());
+    EXPECT_FALSE(docked_magnifier->GetEnabled());
+    EXPECT_FALSE(accessibility->cursor_highlight().enabled());
+
+    EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityLargeCursorEnabled));
+    EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilitySpokenFeedbackEnabled));
+    EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityHighContrastEnabled));
+    EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityAutoclickEnabled));
+    EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityMonoAudioEnabled));
+    EXPECT_FALSE(signin_prefs->GetBoolean(kAccessibilityCaretHighlightEnabled));
+    EXPECT_FALSE(signin_prefs->GetBoolean(kDockedMagnifierEnabled));
+    EXPECT_NE(kMagnifierScale, docked_magnifier->GetScale());
+    EXPECT_FALSE(
+        signin_prefs->GetBoolean(kAccessibilityCursorHighlightEnabled));
+  }
+
+  // Toggle accessibility prefs prior to the signin process.
+  {
+    accessibility->large_cursor().SetEnabled(true);
+    accessibility->SetSpokenFeedbackEnabled(true, A11Y_NOTIFICATION_NONE);
+    accessibility->high_contrast().SetEnabled(true);
+    accessibility->autoclick().SetEnabled(true);
+    accessibility->mono_audio().SetEnabled(true);
+    accessibility->caret_highlight().SetEnabled(true);
+    docked_magnifier->SetEnabled(true);
+    docked_magnifier->SetScale(kMagnifierScale);
+    // Intentionally, this test does not call
+    //
+    //   accessibility->cursor_highlight().SetEnabled(true);
+    //
+    // .. in order to keep this preference disabled and not *controlled* by the
+    // user. This allows us to exercise the case of a OOBE feature preference
+    // that isn't toggled by the user but is syncable also gets "locked".
+    EXPECT_FALSE(
+        signin_prefs->FindPreference(kAccessibilityCursorHighlightEnabled)
+            ->IsUserControlled());
+  }
+
+  // Verify that toggling prefs at the signin screen changes the signin setting.
+  {
+    EXPECT_TRUE(accessibility->large_cursor().enabled());
+    EXPECT_TRUE(accessibility->spoken_feedback().enabled());
+    EXPECT_TRUE(accessibility->high_contrast().enabled());
+    EXPECT_TRUE(accessibility->autoclick().enabled());
+    EXPECT_TRUE(accessibility->mono_audio().enabled());
+    EXPECT_TRUE(accessibility->caret_highlight().enabled());
+    EXPECT_TRUE(docked_magnifier->GetEnabled());
+    EXPECT_FLOAT_EQ(kMagnifierScale, docked_magnifier->GetScale());
+    EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityLargeCursorEnabled));
+    EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilitySpokenFeedbackEnabled));
+    EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityHighContrastEnabled));
+    EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityAutoclickEnabled));
+    EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityMonoAudioEnabled));
+    EXPECT_TRUE(signin_prefs->GetBoolean(kAccessibilityCaretHighlightEnabled));
+    EXPECT_TRUE(signin_prefs->GetBoolean(kDockedMagnifierEnabled));
+
+    // This preference isn't toggled intentionally (see comment above), and
+    // remain as is.
+    EXPECT_FALSE(accessibility->cursor_highlight().enabled());
+    EXPECT_FALSE(
+        signin_prefs->GetBoolean(kAccessibilityCursorHighlightEnabled));
+    EXPECT_FALSE(
+        signin_prefs->FindPreference(kAccessibilityCursorHighlightEnabled)
+            ->IsUserControlled());
+    EXPECT_TRUE(
+        signin_prefs->FindPreference(kAccessibilityCursorHighlightEnabled)
+            ->IsDefaultValue());
+  }
+
+  // The type of user (new or existing) will trigger the copying of
+  // accessibility prefs from the signin screen to the new user profile.
+  //
+  // In case of new users, prefs are copied, the associator is created and prefs
+  // are "locked". OTOH, for existing users, no copying takes place (as well as
+  // no associator is created, and no "locking") - see OnFirstSessionStarted().
+  SimulateLogin();
 }
 
 }  // namespace ash

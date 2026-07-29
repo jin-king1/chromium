@@ -25,8 +25,12 @@ enum class ReadingListSelectionState {
 
 // The selection state of the reading list view.
 @property(nonatomic, assign) ReadingListSelectionState selectionState;
+// Whether the reading list has any items.
+@property(nonatomic, assign) BOOL hasItems;
 // Whether the reading list has any read items.
 @property(nonatomic, assign) BOOL hasReadItems;
+// Whether everything is selected.
+@property(nonatomic, assign) BOOL allSelected;
 // Whether the reading list is being edited.
 @property(nonatomic, assign, getter=isEditing) BOOL editing;
 
@@ -41,6 +45,14 @@ enum class ReadingListSelectionState {
 // to `self.commandHandler`.
 - (NSArray<UIBarButtonItem*>*)buttonItems;
 
+// Returns a button that should be displayed at the top right for the current
+// state.
+- (UIBarButtonItem*)buttonTopRight;
+
+// Returns a button that should be displayed at the top left for the current
+// state.
+- (UIBarButtonItem*)buttonTopLeft;
+
 // Updates the title of the mark button based on the selection state. This
 // method isn't part of the update of the selection state to avoid updating it
 // too soon and messing with VoiceOver. See https://crbug.com/985744 .
@@ -52,6 +64,9 @@ enum class ReadingListSelectionState {
     markButtonConfirmationWithBaseViewController:
         (UIViewController*)viewController
                                          browser:(Browser*)browser;
+
+// Updates the buttons to adapt to the `readingListWidth`.
+- (void)updateForReadingListWidth:(CGFloat)readingListWidth;
 
 @end
 

@@ -17,15 +17,12 @@ struct InitialFlexLine {
   DISALLOW_NEW();
 
  public:
-  InitialFlexLine(base::span<FlexItem> line_items,
-                  LayoutUnit sum_flex_base_size,
+  InitialFlexLine(wtf_size_t count,
                   LayoutUnit sum_hypothetical_main_size)
-      : line_items(std::move(line_items)),
-        sum_flex_base_size(sum_flex_base_size),
+      : count(count),
         sum_hypothetical_main_size(sum_hypothetical_main_size) {}
 
-  base::span<FlexItem> line_items;
-  const LayoutUnit sum_flex_base_size;
+  const wtf_size_t count;
   const LayoutUnit sum_hypothetical_main_size;
 };
 
@@ -40,10 +37,35 @@ struct FlexLineBreakerResult {
   LayoutUnit max_sum_hypothetical_main_size;
 };
 
-FlexLineBreakerResult BreakFlexItemsIntoLines(base::span<FlexItem> all_items,
-                                              LayoutUnit line_break_size,
-                                              LayoutUnit gap_between_items,
-                                              bool is_multi_line);
+FlexLineBreakerResult BalanceBreakFlexItemsIntoLines(
+    base::span<FlexItem> all_items,
+    LayoutUnit line_break_size,
+    LayoutUnit gap_between_items,
+    wtf_size_t min_line_count);
+FlexLineBreakerResult GreedyBreakFlexItemsIntoLines(
+    base::span<FlexItem> all_items,
+    LayoutUnit line_break_size,
+    LayoutUnit gap_between_items,
+    bool is_multi_line);
+
+inline FlexLineBreakerResult BreakFlexItemsIntoLines(
+    base::span<FlexItem> all_items,
+    LayoutUnit line_break_size,
+    LayoutUnit gap_between_items,
+    bool is_multi_line,
+    std::optional<wtf_size_t> balance_min_line_count) {
+  if (all_items.empty()) {
+    return FlexLineBreakerResult();
+  }
+
+  if (balance_min_line_count) {
+    return BalanceBreakFlexItemsIntoLines(
+        all_items, line_break_size, gap_between_items, *balance_min_line_count);
+  }
+
+  return GreedyBreakFlexItemsIntoLines(all_items, line_break_size,
+                                       gap_between_items, is_multi_line);
+}
 
 }  // namespace blink
 

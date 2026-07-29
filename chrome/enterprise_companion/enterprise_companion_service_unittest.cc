@@ -10,12 +10,12 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/test/bind.h"
 #include "base/test/mock_callback.h"
 #include "base/test/task_environment.h"
 #include "chrome/enterprise_companion/dm_client.h"
 #include "chrome/enterprise_companion/enterprise_companion_status.h"
 #include "chrome/enterprise_companion/event_logger.h"
-#include "chrome/enterprise_companion/telemetry_logger/telemetry_logger.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/policy_types.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -70,34 +70,40 @@ TEST_F(EnterpriseCompanionServiceTest, Shutdown) {
   base::MockCallback<base::OnceClosure> shutdown_callback;
   base::RunLoop service_run_loop;
   std::unique_ptr<EnterpriseCompanionService> service =
-      CreateEnterpriseCompanionService(std::make_unique<MockDMClient>(),
-                                       base::MakeRefCounted<MockLogger>(),
-                                       service_run_loop.QuitClosure());
+      CreateEnterpriseCompanionService(
+          std::make_unique<MockDMClient>(),
+          /*before_each_request=*/base::DoNothing(),
+          base::MakeRefCounted<MockLogger>(), service_run_loop.QuitClosure());
 
-  EXPECT_CALL(shutdown_callback, Run()).Times(1);
+  EXPECT_CALL(shutdown_callback, Run());
   service->Shutdown(shutdown_callback.Get());
   service_run_loop.Run(FROM_HERE);
 }
 
 TEST_F(EnterpriseCompanionServiceTest, FetchPoliciesSuccess) {
+  bool before_each_request_called = false;
   std::unique_ptr<MockDMClient> mock_dm_client_ =
       std::make_unique<MockDMClient>();
   EXPECT_CALL(*mock_dm_client_, RegisterPolicyAgent)
-      .WillOnce([](scoped_refptr<EnterpriseCompanionEventLogger>,
-                   StatusCallback callback) {
+      .WillOnce([&](scoped_refptr<EnterpriseCompanionEventLogger>,
+                    StatusCallback callback) {
+        EXPECT_TRUE(before_each_request_called);
         std::move(callback).Run(EnterpriseCompanionStatus::Success());
       });
   EXPECT_CALL(*mock_dm_client_, FetchPolicies)
-      .WillOnce([](policy::PolicyFetchReason,
-                   scoped_refptr<EnterpriseCompanionEventLogger>,
-                   StatusCallback callback) {
+      .WillOnce([&](policy::PolicyFetchReason,
+                    scoped_refptr<EnterpriseCompanionEventLogger>,
+                    StatusCallback callback) {
+        EXPECT_TRUE(before_each_request_called);
         std::move(callback).Run(EnterpriseCompanionStatus::Success());
       });
 
   std::unique_ptr<EnterpriseCompanionService> service =
-      CreateEnterpriseCompanionService(std::move(mock_dm_client_),
-                                       base::MakeRefCounted<MockLogger>(),
-                                       base::DoNothing());
+      CreateEnterpriseCompanionService(
+          std::move(mock_dm_client_), base::BindLambdaForTesting([&]() {
+            before_each_request_called = true;
+          }),
+          base::MakeRefCounted<MockLogger>(), base::DoNothing());
 
   base::RunLoop run_loop;
   service->FetchPolicies(
@@ -121,9 +127,10 @@ TEST_F(EnterpriseCompanionServiceTest, FetchPoliciesRegistrationFail) {
   EXPECT_CALL(*mock_dm_client_, FetchPolicies).Times(0);
 
   std::unique_ptr<EnterpriseCompanionService> service =
-      CreateEnterpriseCompanionService(std::move(mock_dm_client_),
-                                       base::MakeRefCounted<MockLogger>(),
-                                       base::DoNothing());
+      CreateEnterpriseCompanionService(
+          std::move(mock_dm_client_),
+          /*before_each_request=*/base::DoNothing(),
+          base::MakeRefCounted<MockLogger>(), base::DoNothing());
 
   base::RunLoop run_loop;
   service->FetchPolicies(
@@ -153,9 +160,10 @@ TEST_F(EnterpriseCompanionServiceTest, FetchPoliciesFail) {
       });
 
   std::unique_ptr<EnterpriseCompanionService> service =
-      CreateEnterpriseCompanionService(std::move(mock_dm_client_),
-                                       base::MakeRefCounted<MockLogger>(),
-                                       base::DoNothing());
+      CreateEnterpriseCompanionService(
+          std::move(mock_dm_client_),
+          /*before_each_request=*/base::DoNothing(),
+          base::MakeRefCounted<MockLogger>(), base::DoNothing());
 
   base::RunLoop run_loop;
   service->FetchPolicies(

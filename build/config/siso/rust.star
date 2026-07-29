@@ -11,6 +11,7 @@ load("@builtin//struct.star", "module")
 load("./ar.star", "ar")
 load("./config.star", "config")
 load("./fuchsia.star", "fuchsia")
+load("./gn_logs.star", "gn_logs")
 load("./win_sdk.star", "win_sdk")
 
 def __filegroups(ctx):
@@ -18,17 +19,9 @@ def __filegroups(ctx):
         "third_party/rust-toolchain:toolchain": {
             "type": "glob",
             "includes": [
-                "bin/rustc",
                 "lib/*.so",
                 "lib/libclang.so.*",
-                "lib/rustlib/src/rust/library/std/src/lib.rs",
                 "lib/rustlib/x86_64-unknown-linux-gnu/lib/*",
-            ],
-        },
-        "third_party/rust:rustlib": {
-            "type": "glob",
-            "includes": [
-                "*.rs",
             ],
         },
         "build/linux/debian_bullseye_amd64-sysroot:rustlink": {
@@ -43,10 +36,12 @@ def __filegroups(ctx):
         "third_party/llvm-build/Release+Asserts:rustlink": {
             "type": "glob",
             "includes": [
+                "bin/*lld*",
                 "bin/clang",
                 "bin/clang++",
-                "bin/*lld*",
+                "lib/clang/*/share/cfi_ignorelist.txt",
                 "libclang*.a",
+                "*.lib",
             ],
         },
     }
@@ -86,9 +81,10 @@ def __rust_link_handler(ctx, cmd):
             linker = arg.removeprefix("-Clinker=")
             if linker.startswith("\""):
                 linker = linker[1:len(linker) - 1]
+            linker_base = path.dir(path.dir(linker))
 
             # TODO(crbug.com/380798907): expand input_deps, instead of using label?
-            inputs.append(ctx.fs.canonpath(linker) + ":link")
+            inputs.append(ctx.fs.canonpath(linker_base) + ":link")
     if use_android_toolchain and target:
         # e.g. target=aarch64-linux-android26
         android_ver = ""
@@ -161,103 +157,142 @@ __handlers = {
 def __step_config(ctx, step_config):
     platform_ref = "large"  # Rust actions run faster on large workers.
 
-    remote = True
-    if runtime.os != "linux":
-        remote = False
+    remote = config.get(ctx, "googlechrome")
+
+    remote_link = remote
     clang_inputs = [
-        "build/linux/debian_bullseye_amd64-sysroot:rustlink",
         "third_party/llvm-build/Release+Asserts:rustlink",
     ]
-    if win_sdk.enabled(ctx):
-        clang_inputs.append(win_sdk.toolchain_dir(ctx) + ":libs")
+    if runtime.os != "linux":
+        remote = False
+        remote_link = False
+    elif "args.gn" in ctx.metadata:
+        gn_args = gn.args(ctx)
+        target_os = gn_args.get("target_os")
+        if target_os in ('"mac"', '"ios"'):
+            remote = False
+            remote_link = False
+        elif target_os == '"win"':
+            remote_link = False
+            if win_sdk.enabled(ctx):
+                clang_inputs.append(win_sdk.toolchain_dir(ctx) + ":libs")
+            else:
+                remote = False
+        else:
+            if gn_args.get("target_cpu", "x64").strip('"') != "x64":
+                # TODO(crbug.com/434857701): fix link for non-x64 targets.
+                remote_link = False
+
+            # TODO(crbug.com/434857701): fix sysroot for target_arch="x86"
+            clang_inputs.append(
+                "build/linux/debian_bullseye_amd64-sysroot:rustlink",
+            )
 
     rust_toolchain = [
         # TODO(b/285225184): use precomputed subtree
         "third_party/rust-toolchain:toolchain",
     ]
-    rust_inputs = [
-        "build/action_helpers.py",
-        "build/gn_helpers.py",
-        "build/rust/rustc_wrapper.py",
-    ] + rust_toolchain
-    rust_indirect_inputs = {
+    rust_link_indirect_inputs = {
         "includes": [
-            "*.h",
-            "*.o",
+            # https://crbug.com/488158799#comment21 explains why `rustc` requires
+            # access to `.rlib`s of all transitive dependencies.  (It also
+            # explains that `.rmeta` may be a lighter-weight alternative to
+            # `.rlib` unless doing the final linking.)
             "*.rlib",
-            "*.rs",
+            # Proc-macros are compiled into dynamic libraries.  These are
+            # required to be present when compiling crates that depend on the
+            # proc-macros.  Host-platform-specific extensions below (for host
+            # platforms supported by Chromium) are mostly based on
+            # https://doc.rust-lang.org/std/env/consts/constant.DLL_EXTENSION.html
+            # `*.wasm` is present to future-proof this list against adoption of
+            # https://github.com/rust-lang/compiler-team/issues/876
             "*.so",
+            "*.dll",
+            "*.dylib",
+            "*.wasm",
+        ],
+    }
+    rust_compile_indirect_inputs = {
+        "includes": [
+            # `rustc` only needs `.rmeta` for compilation.
+            # `.rlib` is only required for final linking.
+            # See https://crbug.com/488158799#comment21
+            "*.rmeta",
+            # Proc-macros are compiled into dynamic libraries.  These are
+            # required to be present when compiling crates that depend on the
+            # proc-macros.  Host-platform-specific extensions below (for host
+            # platforms supported by Chromium) are mostly based on
+            # https://doc.rust-lang.org/std/env/consts/constant.DLL_EXTENSION.html
+            # `*.wasm` is present to future-proof this list against adoption of
+            # https://github.com/rust-lang/compiler-team/issues/876
+            "*.so",
+            "*.dll",
+            "*.dylib",
+            "*.wasm",
         ],
     }
     step_config["rules"].extend([
         {
             "name": "rust_bin",
             "action": "(.*_)?rust_bin",
-            "inputs": rust_inputs + clang_inputs,
-            "indirect_inputs": rust_indirect_inputs,
+            "inputs": rust_toolchain + clang_inputs,
+            "indirect_inputs": rust_link_indirect_inputs,
             "handler": "rust_link_handler",
             "deps": "none",  # disable gcc scandeps
-            "remote": remote,
-            # "canonicalize_dir": True,  # TODO(b/300352286)
+            "remote": remote_link,
             "timeout": "2m",
             "platform_ref": platform_ref,
         },
         {
             "name": "rust_cdylib",
             "action": "(.*_)?rust_cdylib",
-            "inputs": rust_inputs + clang_inputs,
-            "indirect_inputs": rust_indirect_inputs,
+            "inputs": rust_toolchain + clang_inputs,
+            "indirect_inputs": rust_link_indirect_inputs,
             "handler": "rust_link_handler",
             "deps": "none",  # disable gcc scandeps
-            "remote": remote,
-            # "canonicalize_dir": True,  # TODO(b/300352286)
+            "remote": remote_link,
             "timeout": "2m",
             "platform_ref": platform_ref,
         },
         {
             "name": "rust_macro",
             "action": "(.*_)?rust_macro",
-            "inputs": rust_inputs + clang_inputs,
-            "indirect_inputs": rust_indirect_inputs,
+            "inputs": rust_toolchain + clang_inputs,
+            "indirect_inputs": rust_link_indirect_inputs,
             "handler": "rust_link_handler",
             "deps": "none",  # disable gcc scandeps
-            # "canonicalize_dir": True,  # TODO(b/300352286)
-            "remote": remote,
+            "remote": remote_link,
             "timeout": "2m",
             "platform_ref": platform_ref,
         },
         {
             "name": "rust_rlib",
             "action": "(.*_)?rust_rlib",
-            "inputs": rust_inputs,
-            "indirect_inputs": rust_indirect_inputs,
+            "inputs": rust_toolchain,
+            "indirect_inputs": rust_compile_indirect_inputs,
             "deps": "none",  # disable gcc scandeps
             "remote": remote,
-            # "canonicalize_dir": True,  # TODO(b/300352286)
             "timeout": "2m",
             "platform_ref": platform_ref,
         },
         {
             "name": "rust_staticlib",
             "action": "(.*_)?rust_staticlib",
-            "inputs": rust_inputs,
-            "indirect_inputs": rust_indirect_inputs,
+            "inputs": rust_toolchain,
+            "indirect_inputs": rust_compile_indirect_inputs,
             "deps": "none",  # disable gcc scandeps
             "remote": remote,
-            # "canonicalize_dir": True,  # TODO(b/300352286)
             "timeout": "2m",
             "platform_ref": platform_ref,
         },
         {
             "name": "rust/run_build_script",
-            "command_prefix": "python3 ../../build/rust/run_build_script.py",
+            "command_prefix": "python3 ../../build/rust/gni_impl/run_build_script.py",
             "inputs": [
                 "third_party/rust-toolchain:toolchain",
-                "third_party/rust:rustlib",
             ],
             "handler": "rust_build_handler",
-            "remote": remote and config.get(ctx, "cog"),
-            "input_root_absolute_path": True,
+            "remote": (remote and config.get(ctx, "cog")) or config.get(ctx, "default-remote"),
             "timeout": "2m",
         },
         {
@@ -265,19 +300,43 @@ def __step_config(ctx, step_config):
             "command_prefix": "python3 ../../build/rust/std/find_std_rlibs.py",
             "inputs": [
                 "third_party/rust-toolchain:toolchain",
-                "third_party/rust-toolchain/lib/rustlib:rlib",
             ],
-            "remote": remote and config.get(ctx, "cog"),
-            "input_root_absolute_path": True,
+            "remote": (remote and config.get(ctx, "cog")) or config.get(ctx, "default-remote"),
             "timeout": "2m",
+        },
+        {
+            "name": "rust/clippy",
+            "command_prefix": "python3 ../../build/rust/gni_impl/clippy_wrapper.py",
+            "inputs": rust_toolchain,
+            "indirect_inputs": rust_link_indirect_inputs,
+            "remote": remote,
+            "timeout": "2m",
+            "platform_ref": platform_ref,
         },
         {
             # rust/bindgen fails remotely when *.d does not exist.
             # TODO(b/356496947): need to run scandeps?
             "name": "rust/bindgen",
-            "command_prefix": "python3 ../../build/rust/run_bindgen.py",
+            "command_prefix": "python3 ../../build/rust/gni_impl/run_bindgen.py",
             "inputs": rust_toolchain + clang_inputs,
             "remote": False,
+            "timeout": "2m",
+        },
+        {
+            "name": "rust/rustc_print_cfg",
+            "command_prefix": "python3 ../../build/rust/gni_impl/rustc_print_cfg.py",
+            "inputs": [
+                "third_party/rust-toolchain:toolchain",
+            ],
+            "remote": remote,
+            "timeout": "2m",
+        },
+        {
+            "name": "rust/cpp_api_from_rust",
+            "command_prefix": "python3 ../../build/rust/gni_impl/cpp_api_from_rust_wrapper.py",
+            "inputs": rust_toolchain + clang_inputs,
+            "indirect_inputs": rust_compile_indirect_inputs,
+            "remote": remote,
             "timeout": "2m",
         },
     ])

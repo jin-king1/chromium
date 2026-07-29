@@ -14,7 +14,6 @@
 #include "base/compiler_specific.h"
 #include "base/debug/alias.h"
 #include "base/feature_list.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "components/viz/common/features.h"
@@ -43,7 +42,6 @@
 
 namespace {
 BASE_FEATURE(kRestartReadAccessForConcurrentReadWrite,
-             "RestartReadAccessForConcurrentReadWrite",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 base::TimeTicks g_last_reshape_failure = base::TimeTicks();
@@ -141,12 +139,12 @@ SkiaOutputDeviceBufferQueue::SkiaOutputDeviceBufferQueue(
     std::unique_ptr<OutputPresenter> presenter,
     SkiaOutputSurfaceDependency* deps,
     gpu::SharedImageRepresentationFactory* representation_factory,
-    gpu::MemoryTracker* memory_tracker,
+    scoped_refptr<gpu::MemoryTracker> memory_tracker,
     const DidSwapBufferCompleteCallback& did_swap_buffer_complete_callback,
     const ReleaseOverlaysCallback& release_overlays_callback)
     : SkiaOutputDevice(deps->GetSharedContextState()->gr_context(),
-                       deps->GetSharedContextState()->graphite_context(),
-                       memory_tracker,
+                       deps->GetSharedContextState()->graphite_shared_context(),
+                       std::move(memory_tracker),
                        did_swap_buffer_complete_callback,
                        release_overlays_callback),
       presenter_(std::move(presenter)),
@@ -190,11 +188,7 @@ SkiaOutputDeviceBufferQueue::SkiaOutputDeviceBufferQueue(
   if (::features::IncreaseBufferCountForHighFrameRate() &&
       capabilities_.number_of_buffers == 5) {
     capabilities_.pending_swap_params.max_pending_swaps = 2;
-    if (::features::Use90HzSwapChainCountFor72fps()) {
-      capabilities_.pending_swap_params.max_pending_swaps_72hz = 3;
-    } else {
-       capabilities_.pending_swap_params.max_pending_swaps_72hz = 2;
-    }
+    capabilities_.pending_swap_params.max_pending_swaps_72hz = 3;
     capabilities_.pending_swap_params.max_pending_swaps_90hz = 3;
     capabilities_.pending_swap_params.max_pending_swaps_120hz = 4;
   }
@@ -352,7 +346,7 @@ void SkiaOutputDeviceBufferQueue::DoFinishSwapBuffers(
   // have been replaced.
   for (const auto& mailbox : overlay_mailboxes) {
     auto it = overlays_.find(mailbox);
-    CHECK(it != overlays_.end(), base::NotFatalUntil::M130);
+    CHECK(it != overlays_.end());
     it->Unref();
   }
 
@@ -507,11 +501,6 @@ bool SkiaOutputDeviceBufferQueue::Reshape(const ReshapeParams& params) {
   return true;
 }
 
-void SkiaOutputDeviceBufferQueue::SetViewportSize(
-    const gfx::Size& viewport_size) {
-  viewport_size_ = viewport_size;
-}
-
 SkSurface* SkiaOutputDeviceBufferQueue::BeginPaint(
     std::vector<GrBackendSemaphore>* end_semaphores) {
   NOTREACHED();
@@ -549,8 +538,9 @@ bool SkiaOutputDeviceBufferQueue::OverlayDataKeyEqual::operator()(
   return lhs == rhs.mailbox();
 }
 
-void SkiaOutputDeviceBufferQueue::SetVSyncDisplayID(int64_t display_id) {
-  presenter_->SetVSyncDisplayID(display_id);
+void SkiaOutputDeviceBufferQueue::SetVSyncDisplayID(int64_t display_id,
+                                                    bool force_update) {
+  presenter_->SetVSyncDisplayID(display_id, force_update);
 }
 
 }  // namespace viz

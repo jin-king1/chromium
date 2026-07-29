@@ -33,6 +33,7 @@
 #include "third_party/blink/public/common/service_worker/service_worker_router_rule.h"
 #include "third_party/blink/public/mojom/blob/blob.mojom.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_response.mojom.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_fetch_response_callback.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_stream_handle.mojom.h"
 
 namespace content {
@@ -115,8 +116,6 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
     // |receiver_| is bound and the fetch event is being dispatched to the
     // service worker.
     kStarted,
-    // The response head has been sent to |url_loader_client_|.
-    kSentHeader,
     // The data pipe for the response body has been sent to
     // |url_loader_client_|. The body is being written to the pipe.
     kSentBody,
@@ -135,6 +134,16 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
       blink::mojom::FetchAPIResponsePtr response,
       blink::mojom::ServiceWorkerStreamHandlePtr body_as_stream,
       blink::mojom::ServiceWorkerFetchEventTimingPtr timing,
+      blink::mojom::ServiceWorkerFetchHandlerErrorsPtr errors,
+      scoped_refptr<ServiceWorkerVersion> version);
+
+  void DidDispatchFetchEventForSyntheticResponse(
+      blink::ServiceWorkerStatusCode status,
+      ServiceWorkerFetchDispatcher::FetchEventResult fetch_result,
+      blink::mojom::FetchAPIResponsePtr response,
+      blink::mojom::ServiceWorkerStreamHandlePtr body_as_stream,
+      blink::mojom::ServiceWorkerFetchEventTimingPtr timing,
+      blink::mojom::ServiceWorkerFetchHandlerErrorsPtr errors,
       scoped_refptr<ServiceWorkerVersion> version);
 
   void StartResponse(blink::mojom::FetchAPIResponsePtr response,
@@ -142,10 +151,6 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
                      blink::mojom::ServiceWorkerStreamHandlePtr body_as_stream);
 
   // ServiceWorkerResourceLoader overrides:
-  // Calls url_loader_client_->OnReceiveResponse() with given |response_head|.
-  void CommitResponseHeaders(
-      const network::mojom::URLResponseHeadPtr& response_head) override;
-
   // Calls url_loader_client_->OnReceiveResponse() with
   // |response_head|, |response_body| and |cached_metadata|.
   void CommitResponseBody(
@@ -170,9 +175,7 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
 
   // network::mojom::URLLoader:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override;
   void SetPriority(net::RequestPriority priority,
                    int32_t intra_priority_value) override;
@@ -182,8 +185,18 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
   void SetCommitResponsibility(FetchResponseFrom fetch_response_from) override;
 
   void OnConnectionClosed();
-  void InvalidateAndDeleteIfNeeded();
-  void DeleteIfNeeded();
+
+  // Invalidates the loader's internal state (e.g. invalidates weak pointers,
+  // resets receivers and dispatchers) and completes the request with
+  // net::ERR_ABORTED if it's not yet completed. This should only be called when
+  // we are ready to clean up (i.e. ShouldDelayDeletion() is false) and the
+  // Mojo receiver is still bound.
+  void Invalidate();
+
+  // Evaluates the current state of the loader and triggers invalidation and/or
+  // self-deletion if the conditions are met. This is the centralized manager
+  // for the loader's lifecycle.
+  void CheckLifecycle();
 
   network::mojom::ServiceWorkerStatus ConvertToServiceWorkerStatus(
       blink::EmbeddedWorkerStatus embedded_status,
@@ -192,7 +205,7 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
 
   void Fallback(ResponseHeadUpdateParams response_header_params);
 
-  std::string GetInitialServiceWorkerStatusString();
+  std::string_view GetInitialServiceWorkerStatusString();
   std::string GetFrameTreeNodeTypeString();
   bool IsEligibleForRecordingTimingMetrics();
   void RecordFindRegistrationToCompletedTrace();
@@ -231,6 +244,9 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
   void RecordFetchEventHandlerMetrics(
       ServiceWorkerFetchDispatcher::FetchEventResult fetch_result);
 
+  void MaybeRecordFetchHandlerErrorUkm(
+      const blink::mojom::ServiceWorkerFetchHandlerErrorsPtr& errors);
+
   void RecordFindRegistrationTiming(bool is_fallback);
 
   void TransitionToStatus(Status new_status);
@@ -246,7 +262,8 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
   // The caller should run the regular path instead.
   bool StartRaceNetworkRequest(
       scoped_refptr<ServiceWorkerContextWrapper> context_wrapper,
-      scoped_refptr<ServiceWorkerVersion> version);
+      scoped_refptr<ServiceWorkerVersion> version,
+      base::OnceCallback<void()> clone_completed_for_fetch_handler_callback);
 
   // If the feature is enabled, invoke the preload network request.
   // See this doc for the high-level code flow in
@@ -278,8 +295,21 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
       network::mojom::URLResponseHeadPtr response_head,
       mojo::ScopedDataPipeConsumerHandle body);
 
+  void OnReceiveRedirectFromSyntheticNetworkRequest(
+      const net::RedirectInfo& redirect_info,
+      network::mojom::URLResponseHeadPtr response_head);
+
   void OnCompleteSyntheticNetworkRequest(
       const network::URLLoaderCompletionStatus& status);
+
+  void CreateAndRunCacheMatcher(
+      const std::optional<std::string>& cache_name,
+      scoped_refptr<ServiceWorkerVersion> active_worker);
+
+  // Returns true if `race-network-and-fetch-handler` router source is used, and
+  // the fetch event is not completed yet, or the data pipe for `fetch()` is not
+  // consumed yet. This is used to decide the timing of the object destruction.
+  bool ShouldDelayDeletion();
 
   NavigationLoaderInterceptor::FallbackCallback fallback_callback_;
 
@@ -316,7 +346,14 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
       initial_service_worker_status_;
   const bool is_browser_startup_completed_;
   const std::string frame_tree_node_type_;
+  // Set to true when DetachedFromRequest() is called, indicating that the
+  // navigation request handler (e.g. ServiceWorkerControlleeRequestHandler)
+  // has released this loader wrapper and no longer needs it.
   bool is_detached_ = false;
+  // Set to true when the Mojo connection to the client (URLLoaderClient) is
+  // closed. Used to defer invalidation/deletion if ShouldDelayDeletion() is
+  // true.
+  bool connection_closed_ = false;
 
   scoped_refptr<network::SharedURLLoaderFactory>
       race_network_request_url_loader_factory_;
@@ -334,7 +371,7 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoader
   // https://w3c.github.io/ServiceWorker/#fetch-event-clientid
   const std::string fetch_event_client_id_;
 
-  bool has_fetch_event_finished_ = false;
+  bool did_dispatch_event_ = false;
 
   bool is_synthetic_response_used_ = false;
 

@@ -7,8 +7,13 @@ package org.chromium.chrome.browser.price_tracking;
 import com.google.common.primitives.UnsignedLongs;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.CurrentTabObserver;
@@ -28,15 +33,17 @@ import org.chromium.url.GURL;
  * page by listening to navigations and tab changes, and it listens to ShoppingService for updates
  * within the same page.
  */
-public class CurrentTabPriceTrackingStateSupplier extends ObservableSupplierImpl<Boolean>
-        implements ObservableSupplier<Boolean> {
+@NullMarked
+public class CurrentTabPriceTrackingStateSupplier implements NonNullObservableSupplier<Boolean> {
 
     private CurrentTabObserver mCurrentTabObserver;
-    private CommerceSubscription mCurrentTabCommerceSubscription;
-    private ShoppingService mShoppingService;
+    private @Nullable CommerceSubscription mCurrentTabCommerceSubscription;
+    private @Nullable ShoppingService mShoppingService;
 
-    private final ObservableSupplier<Tab> mTabSupplier;
-    private final ObservableSupplier<Profile> mProfileSupplier;
+    private final SettableNonNullObservableSupplier<Boolean> mSupplier =
+            ObservableSuppliers.createNonNull(false);
+    private final NullableObservableSupplier<Tab> mTabSupplier;
+    private final MonotonicObservableSupplier<Profile> mProfileSupplier;
     private final Callback<Profile> mOnProfileUpdatedCallback = this::onProfileUpdated;
     private final SubscriptionsObserver mSubscriptionObserver =
             new SubscriptionsObserver() {
@@ -63,8 +70,8 @@ public class CurrentTabPriceTrackingStateSupplier extends ObservableSupplierImpl
      * @param profileSupplier Profile supplier, used to retrieve a ShoppingService from it.
      */
     public CurrentTabPriceTrackingStateSupplier(
-            ObservableSupplier<Tab> tabSupplier, ObservableSupplier<Profile> profileSupplier) {
-        super(false);
+            NullableObservableSupplier<Tab> tabSupplier,
+            MonotonicObservableSupplier<Profile> profileSupplier) {
         mTabSupplier = tabSupplier;
         mProfileSupplier = profileSupplier;
 
@@ -87,9 +94,10 @@ public class CurrentTabPriceTrackingStateSupplier extends ObservableSupplierImpl
 
         // Check for profile availability so we can create a ShoppingService which we'll use to keep
         // track of subscription changes in the current page.
-        mProfileSupplier.addObserver(mOnProfileUpdatedCallback);
+        mProfileSupplier.addSyncObserverAndPostIfNonNull(mOnProfileUpdatedCallback);
     }
 
+    @SuppressWarnings("NullAway")
     public void destroy() {
         mCurrentTabObserver.destroy();
         mCurrentTabObserver = null;
@@ -100,6 +108,7 @@ public class CurrentTabPriceTrackingStateSupplier extends ObservableSupplierImpl
             mShoppingService.removeSubscriptionsObserver(mSubscriptionObserver);
             mShoppingService = null;
         }
+        mSupplier.destroy();
     }
 
     private void onProfileUpdated(Profile profile) {
@@ -111,7 +120,7 @@ public class CurrentTabPriceTrackingStateSupplier extends ObservableSupplierImpl
     }
 
     private void refreshPriceTrackingState() {
-        if (!mTabSupplier.hasValue()
+        if (mTabSupplier.get() == null
                 || mTabSupplier.get().getUrl() == null
                 || mShoppingService == null) {
             return;
@@ -121,8 +130,10 @@ public class CurrentTabPriceTrackingStateSupplier extends ObservableSupplierImpl
                 mTabSupplier.get().getUrl(), this::onProductInfoRetrieved);
     }
 
-    private void onProductInfoRetrieved(GURL checkedUrl, ProductInfo productInfo) {
-        if (productInfo == null || !productInfo.productClusterId.isPresent()) {
+    private void onProductInfoRetrieved(GURL checkedUrl, @Nullable ProductInfo productInfo) {
+        if (productInfo == null
+                || productInfo.productClusterId == null
+                || mShoppingService == null) {
             mCurrentTabCommerceSubscription = null;
             updatePriceTrackingState(false);
             return;
@@ -134,7 +145,7 @@ public class CurrentTabPriceTrackingStateSupplier extends ObservableSupplierImpl
                 new CommerceSubscription(
                         SubscriptionType.PRICE_TRACK,
                         IdentifierType.PRODUCT_CLUSTER_ID,
-                        UnsignedLongs.toString(productInfo.productClusterId.get()),
+                        UnsignedLongs.toString(productInfo.productClusterId),
                         ManagementType.USER_MANAGED,
                         null);
 
@@ -143,9 +154,10 @@ public class CurrentTabPriceTrackingStateSupplier extends ObservableSupplierImpl
                 isCurrentTabPriceTracked -> {
                     // Get URL for current tab again, as the tab may have changed while loading this
                     // result.
-                    if (!mTabSupplier.hasValue()) return;
+                    var tab = mTabSupplier.get();
+                    if (tab == null) return;
 
-                    var currentUrl = mTabSupplier.get().getUrl();
+                    var currentUrl = tab.getUrl();
                     // Ensure we're still in the same tab.
                     if (!checkedUrl.equals(currentUrl)) {
                         return;
@@ -156,11 +168,26 @@ public class CurrentTabPriceTrackingStateSupplier extends ObservableSupplierImpl
     }
 
     private void updatePriceTrackingState(boolean isCurrentTabPriceTracked) {
-        super.set(isCurrentTabPriceTracked);
+        mSupplier.set(isCurrentTabPriceTracked);
     }
 
     @Override
-    public Boolean addObserver(Callback<Boolean> obs) {
-        return addSyncObserver(obs);
+    public Boolean get() {
+        return mSupplier.get();
+    }
+
+    @Override
+    public Boolean addObserver(Callback<Boolean> obs, int behavior) {
+        return mSupplier.addObserver(obs, behavior);
+    }
+
+    @Override
+    public void removeObserver(Callback<Boolean> obs) {
+        mSupplier.removeObserver(obs);
+    }
+
+    @Override
+    public int getObserverCount() {
+        return mSupplier.getObserverCount();
     }
 }

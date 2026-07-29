@@ -161,6 +161,8 @@ const lottiejs = (function(window) {
         g = p;
         b = q;
         break;
+      default:
+        break;
     }
     return [ r,
         g,
@@ -190,6 +192,8 @@ const lottiejs = (function(window) {
       case b:
         h = (r - g) + d * 4;
         h /= 6 * d;
+        break;
+      default:
         break;
     }
 
@@ -2824,6 +2828,8 @@ const lottiejs = (function(window) {
                   case 1:
                     p = new KeyframedMultidimensionalProperty(elem,data,mult, container);
                     break;
+                  default:
+                    break;
                 }
               }
               if (p.effectsSequence.length) {
@@ -3162,6 +3168,8 @@ const lottiejs = (function(window) {
         break;
       case 'o':
         arr = this.o;
+        break;
+      default:
         break;
     }
     if (!arr[pos] || (arr[pos] && !replace)) {
@@ -5125,6 +5133,8 @@ const lottiejs = (function(window) {
                     (totalLength - documentData.lineWidths[letters[i].line]) /
                     2;
                 break;
+              default:
+                break;
             }
             currentLine = letters[i].line;
           }
@@ -5470,6 +5480,8 @@ const lottiejs = (function(window) {
                        documentData.lineWidths[letters[i].line]) /
                           2,
                   0, 0);
+              break;
+            default:
               break;
           }
           matrixHelper.translate(0, -documentData.ls);
@@ -5859,6 +5871,8 @@ const lottiejs = (function(window) {
         case 'light':
         case 'thin':
           fWeight = '200';
+          break;
+        default:
           break;
       }
     }
@@ -6472,8 +6486,9 @@ const lottiejs = (function(window) {
         return this.createText(layer);
       case 13:
         return this.createCamera(layer);
+      default:
+        return this.createNull(layer);
     }
-    return this.createNull(layer);
   };
 
   BaseRenderer.prototype.createCamera = function() {
@@ -8384,6 +8399,8 @@ const lottiejs = (function(window) {
                 (documentData.boxWidth - documentData.lineWidths[lineNumber]) /
                     2,
             0, 0);
+        break;
+      default:
         break;
     }
     matrixHelper.translate(xPos, yPos, 0);
@@ -10934,6 +10951,8 @@ const lottiejs = (function(window) {
               case b:
                 h = (r - g) / d + 4;
                 break;
+              default:
+                break;
             }
             h /= 6;
           }
@@ -12681,6 +12700,8 @@ const lottiejs = (function(window) {
           case 'effects':
           case 'Effects':
             return _thisLayerFunction.effect;
+          default:
+            break;
         }
       }
       _thisLayerFunction.toWorld = toWorld;
@@ -12807,6 +12828,8 @@ const lottiejs = (function(window) {
               case 'Opacity':
               case 11:
                 return _thisFunction.opacity;
+              default:
+                break;
             }
         }
 
@@ -13317,6 +13340,8 @@ const lottiejs = (function(window) {
         case 'low':
           defaultCurveSegments = 10;
           break;
+        default:
+          break;
       }
     } else if (!isNaN(value) && value > 1) {
       defaultCurveSegments = value;
@@ -13362,6 +13387,12 @@ const lottiejs = (function(window) {
 let currentAnimation = null;
 
 /**
+ * The segments currently being played.
+ * @type {Array<number>|null}
+ */
+let currentSegments = null;
+
+/**
  * Events sent back to the parent thread.
  */
 const events = {
@@ -13371,6 +13402,7 @@ const events = {
   PLAYING: 'playing',          // Send when the animation started playing.
   PAUSED: 'paused',            // Sent when the animation has paused.
   STOPPED: 'stopped',          // Sent when the animation has stopped.
+  COMPLETED: 'completed',      // Sent when the animation has completed.
 };
 
 /**
@@ -13401,7 +13433,7 @@ function sendResizeEvent() {
  * Informs the parent thread that the animation is playing.
  */
 function sendPlayEvent() {
-  postMessage({name: events.PLAYING});
+  postMessage({name: events.PLAYING, segments: currentSegments});
 }
 
 /**
@@ -13416,6 +13448,13 @@ function sendPauseEvent() {
  */
 function sendStopEvent() {
   postMessage({name: events.STOPPED});
+}
+
+/**
+ * Informs the parent thread that the animation has completed.
+ */
+function sendCompletedEvent() {
+  postMessage({name: events.COMPLETED});
 }
 
 /**
@@ -13456,6 +13495,13 @@ function initAnimation(animationData, initParams, canvas) {
       clearCanvas: true,
     },
   });
+
+  // Listen for the 'complete' event and send it back to the parent thread.
+  // If the animation is set to loop, the 'complete' event would be sent after
+  // each loop repetition, so we only listen for it if looping is disabled.
+  if (!initParams.loop) {
+    currentAnimation.addEventListener('complete', sendCompletedEvent);
+  }
 
   sendInitializedEvent();
 
@@ -13501,6 +13547,18 @@ function updateCanvasSize(canvas, size) {
  */
 function updateAnimationState(control, canvas) {
   if (!control || !currentAnimation) {
+    return;
+  }
+
+  if (control.playSegments) {
+    currentSegments = control.playSegments;
+    const wasPaused = currentAnimation.isPaused;
+    currentAnimation.playSegments(control.playSegments, /* forceFlag= */ true);
+
+    // Send event only when playSegments unpauses the animation.
+    if (wasPaused) {
+      sendPlayEvent();
+    }
     return;
   }
 

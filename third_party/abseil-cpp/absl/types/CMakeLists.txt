@@ -29,6 +29,46 @@ absl_cc_library(
 
 absl_cc_library(
   NAME
+    any_span
+  HDRS
+    "any_span.h"
+  SRCS
+    "internal/any_span.h"
+  COPTS
+    ${ABSL_DEFAULT_COPTS}
+  DEPS
+    absl::config
+    absl::core_headers
+    absl::hardening
+    absl::nullability
+    absl::raw_logging_internal
+    absl::throw_delegate
+    absl::type_traits
+  PUBLIC
+)
+
+absl_cc_test(
+  NAME
+    any_span_test
+  SRCS
+    "any_span_test.cc"
+  COPTS
+    ${ABSL_TEST_COPTS}
+  DEPS
+    absl::config
+    absl::core_headers
+    absl::exception_testing
+    absl::hardening
+    absl::hash_testing
+    absl::raw_logging_internal
+    absl::span
+    absl::strings
+    absl::type_traits
+    GTest::gmock_main
+)
+
+absl_cc_library(
+  NAME
     span
   HDRS
     "span.h"
@@ -40,9 +80,11 @@ absl_cc_library(
     absl::algorithm
     absl::config
     absl::core_headers
+    absl::hardening
     absl::nullability
     absl::throw_delegate
     absl::type_traits
+    absl::weakly_mixed_integer
   PUBLIC
 )
 
@@ -60,6 +102,8 @@ absl_cc_test(
     absl::core_headers
     absl::exception_testing
     absl::fixed_array
+    absl::hardening
+    absl::hash
     absl::inlined_vector
     absl::hash_testing
     absl::strings
@@ -96,22 +140,8 @@ absl_cc_library(
     ${ABSL_DEFAULT_COPTS}
   DEPS
     absl::config
+    absl::core_headers
     absl::utility
-  PUBLIC
-)
-
-absl_cc_library(
-  NAME
-    bad_variant_access
-  HDRS
-    "bad_variant_access.h"
-  SRCS
-    "bad_variant_access.cc"
-  COPTS
-    ${ABSL_DEFAULT_COPTS}
-  DEPS
-    absl::config
-    absl::raw_logging_internal
   PUBLIC
 )
 
@@ -120,16 +150,11 @@ absl_cc_library(
     variant
   HDRS
     "variant.h"
-  SRCS
-    "internal/variant.h"
   COPTS
     ${ABSL_DEFAULT_COPTS}
   DEPS
-    absl::bad_variant_access
-    absl::base_internal
     absl::config
     absl::core_headers
-    absl::type_traits
     absl::utility
   PUBLIC
 )
@@ -143,11 +168,35 @@ absl_cc_test(
     ${ABSL_TEST_COPTS}
   DEPS
     absl::variant
+    GTest::gmock_main
+)
+
+absl_cc_library(
+  NAME
+    source_location
+  HDRS
+    "source_location.h"
+  SRCS
+    "source_location.cc"
+  COPTS
+    ${ABSL_DEFAULT_COPTS}
+  DEPS
     absl::config
     absl::core_headers
-    absl::memory
-    absl::type_traits
-    absl::strings
+    absl::nullability
+  PUBLIC
+)
+
+absl_cc_test(
+  NAME
+    source_location_test
+  SRCS
+    "source_location_test.cc"
+  COPTS
+    ${ABSL_TEST_COPTS}
+  DEPS
+    absl::config
+    absl::source_location
     GTest::gmock_main
 )
 
@@ -178,17 +227,55 @@ absl_cc_test(
     GTest::gmock_main
 )
 
+absl_cc_library(
+  NAME
+    internal_optional_ref
+  HDRS
+    "optional_ref.h"
+  COPTS
+    ${ABSL_DEFAULT_COPTS}
+  DEPS
+    absl::config
+    absl::core_headers
+    absl::hardening
+  PUBLIC
+)
+
 absl_cc_test(
   NAME
-    variant_exception_safety_test
+    optional_ref_test
   SRCS
-    "variant_exception_safety_test.cc"
+    "optional_ref_test.cc"
   COPTS
     ${ABSL_TEST_COPTS}
   DEPS
-    absl::variant
+    absl::base
     absl::config
-    absl::exception_safety_testing
-    absl::memory
+    absl::internal_optional_ref
+    absl::strings
     GTest::gmock_main
+)
+
+# Deprecated empty library.
+# Clients should remove this dependency.
+absl_cc_library(
+  NAME
+    bad_any_cast
+  PUBLIC
+)
+
+# Deprecated empty library.
+# Clients should remove this dependency.
+absl_cc_library(
+  NAME
+    bad_optional_access
+  PUBLIC
+)
+
+# Deprecated empty library.
+# Clients should remove this dependency.
+absl_cc_library(
+  NAME
+    bad_variant_access
+  PUBLIC
 )

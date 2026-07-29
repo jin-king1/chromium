@@ -19,6 +19,8 @@ namespace ash {
 class SyncErrorNotifier : public syncer::SyncServiceObserver,
                           public KeyedService {
  public:
+  static std::string GetDestinationSubpage(syncer::SyncService* sync_service);
+
   SyncErrorNotifier(syncer::SyncService* sync_service, Profile* profile);
 
   SyncErrorNotifier(const SyncErrorNotifier&) = delete;
@@ -31,6 +33,7 @@ class SyncErrorNotifier : public syncer::SyncServiceObserver,
 
   // syncer::SyncServiceObserver:
   void OnStateChanged(syncer::SyncService* service) override;
+  void OnSyncShutdown(syncer::SyncService* sync) override;
 
   const std::string& GetNotificationIdForTesting() const {
     return notification_id_;
@@ -41,7 +44,7 @@ class SyncErrorNotifier : public syncer::SyncServiceObserver,
   raw_ptr<syncer::SyncService> sync_service_ = nullptr;
 
   // The Profile this service belongs to.
-  const raw_ptr<Profile, DanglingUntriaged> profile_;
+  const raw_ptr<Profile> profile_;
 
   // Notification was added to NotificationUIManager. This flag is used to
   // prevent displaying passphrase notification to user if they already saw (and

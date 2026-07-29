@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#import "components/omnibox/browser/omnibox_pref_names.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -12,6 +13,11 @@
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 
+namespace {
+using ::chrome_test_util::PrimaryToolbar;
+using ::chrome_test_util::SecondaryToolbar;
+}  // namespace
+
 // Integration tests for side swipe.
 @interface SideSwipeTestCase : ChromeTestCase
 @end
@@ -20,7 +26,8 @@
 
 - (void)setUp {
   [super setUp];
-  [ChromeEarlGrey setBoolValue:NO forLocalStatePref:prefs::kBottomOmnibox];
+  [ChromeEarlGrey setBoolValue:NO
+             forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
 }
 
 #pragma mark - Tests
@@ -33,19 +40,23 @@
         @"present");
   }
 
-  [self checkSideSwipeOnToolbarClassName:@"SecondaryToolbarView"];
+  if ([ChromeEarlGrey isChromeNextEnabled]) {
+    [ChromeEarlGrey setBoolValue:YES
+               forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
+  }
+
+  [self checkSideSwipeOnToolbarMatcher:SecondaryToolbar()];
 }
 
 // Tests that swiping horizontally on the top toolbar is changing tab.
 - (void)testSideSwipeTopToolbar {
-  [self checkSideSwipeOnToolbarClassName:@"PrimaryToolbarView"];
+  [self checkSideSwipeOnToolbarMatcher:PrimaryToolbar()];
 }
 
 #pragma mark - Helpers
 
-// Checks that side swipe on an element of `className` is working to change
-// tab.
-- (void)checkSideSwipeOnToolbarClassName:(NSString*)className {
+// Checks that side swipe on `matcher` is working to change tab.
+- (void)checkSideSwipeOnToolbarMatcher:(id<GREYMatcher>)matcher {
   // Setup the server.
   net::test_server::RegisterDefaultHandlers(self.testServer);
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
@@ -62,7 +73,7 @@
   [ChromeEarlGrey waitForWebStateContainingText:"Default response"];
 
   // Side swipe on the toolbar.
-  [[EarlGrey selectElementWithMatcher:grey_kindOfClassName(className)]
+  [[EarlGrey selectElementWithMatcher:matcher]
       performAction:grey_swipeSlowInDirection(kGREYDirectionRight)];
 
   // Check that we swiped back to our web page.
@@ -81,7 +92,8 @@
 
 - (void)setUp {
   [super setUp];
-  [ChromeEarlGrey setBoolValue:YES forLocalStatePref:prefs::kBottomOmnibox];
+  [ChromeEarlGrey setBoolValue:YES
+             forLocalStatePref:omnibox::kIsOmniboxInBottomPosition];
 }
 
 // This is currently needed to prevent this test case from being ignored.

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "base/message_loop/message_pump_epoll.h"
 
 #include <sys/eventfd.h>
@@ -19,15 +14,19 @@
 
 #include "base/auto_reset.h"
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/message_loop/message_pump_wakeup_counter.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/heap_profiler.h"
+#include "base/trace_event/trace_event.h"
 
 #if DCHECK_IS_ON()
 #include <iomanip>
@@ -39,7 +38,6 @@ namespace {
 
 // Under this feature native work is batched.
 BASE_FEATURE(kBatchNativeEventsInMessagePumpEpoll,
-             "BatchNativeEventsInMessagePumpEpoll",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Caches the state of the "BatchNativeEventsInMessagePumpEpoll".
@@ -188,7 +186,7 @@ bool MessagePumpEpoll::WatchFileDescriptor(int fd,
       .one_shot = !persistent,
   };
 
-  auto [it, is_new_fd_entry] = entries_.emplace(fd, fd);
+  auto [it, is_new_fd_entry] = entries_.try_emplace(fd, fd);
   EpollEventEntry& entry = it->second;
   scoped_refptr<Interest> existing_interest = controller->interest();
   if (existing_interest && existing_interest->params().IsEqual(params)) {
@@ -421,12 +419,12 @@ void MessagePumpEpoll::UnregisterInterest(
 
   const int fd = interest->params().fd;
   auto entry_it = entries_.find(fd);
-  CHECK(entry_it != entries_.end(), base::NotFatalUntil::M125);
+  CHECK(entry_it != entries_.end());
 
   EpollEventEntry& entry = entry_it->second;
   auto& interests = entry.interests;
-  auto* it = std::ranges::find(interests, interest);
-  CHECK(it != interests.end(), base::NotFatalUntil::M125);
+  auto it = std::ranges::find(interests, interest);
+  CHECK(it != interests.end());
   interests.erase(it);
 
   if (interests.empty()) {
@@ -482,6 +480,10 @@ bool MessagePumpEpoll::WaitForEpollEvents(TimeDelta timeout) {
         span(epoll_events).first(base::checked_cast<size_t>(epoll_result));
   }
 
+  if (!ready_events.empty()) {
+    MessagePumpWakeupCounter::GetForCurrentThread().RecordWakeup();
+  }
+
   for (epoll_event& e : ready_events) {
     if (e.data.ptr == &wake_event_) {
       // Wake-up events are always safe to handle immediately. Unlike other
@@ -514,9 +516,9 @@ bool MessagePumpEpoll::WaitForEpollEvents(TimeDelta timeout) {
 }
 
 std::vector<struct pollfd>::iterator MessagePumpEpoll::FindPollEntry(int fd) {
-  return std::find_if(
-      pollfds_.begin(), pollfds_.end(),
-      [fd](const struct pollfd poll_entry) { return poll_entry.fd == fd; });
+  return std::ranges::find_if(pollfds_, [fd](const struct pollfd poll_entry) {
+    return poll_entry.fd == fd;
+  });
 }
 
 void MessagePumpEpoll::RemovePollEntry(int fd) {
@@ -541,8 +543,7 @@ bool MessagePumpEpoll::GetEventsPoll(int epoll_timeout,
       continue;
     }
 
-    epoll_event event;
-    memset(&event, 0, sizeof(event));
+    epoll_event event = {};
 
     if (pollfd_entry.fd == wake_event_.get()) {
       event.data.ptr = &wake_event_;

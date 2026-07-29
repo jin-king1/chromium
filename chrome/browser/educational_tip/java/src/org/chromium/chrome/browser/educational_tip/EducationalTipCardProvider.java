@@ -6,13 +6,19 @@ package org.chromium.chrome.browser.educational_tip;
 
 import androidx.annotation.DrawableRes;
 
+import org.chromium.build.annotations.NullMarked;
+
 /** The interface for a card which is shown in the educational tip module. */
+@NullMarked
 public interface EducationalTipCardProvider {
     /** Gets the title of the card. */
     String getCardTitle();
 
     /** Gets the description of the card. */
     String getCardDescription();
+
+    /** Gets the string for the button of the card. */
+    String getCardButtonText();
 
     /** Gets the image of the card. */
     @DrawableRes
@@ -23,4 +29,12 @@ public interface EducationalTipCardProvider {
 
     /** Called when the module is hidden. */
     default void destroy() {}
+
+    /** Called when the module view is created and visible on the magic stack. */
+    default void onViewCreated() {}
+
+    /** Returns whether to use transparent background for the icon image. */
+    default boolean useTransparentIconBackground() {
+        return false;
+    }
 }

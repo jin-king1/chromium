@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <utility>
+#include <variant>
 
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -26,6 +27,7 @@
 #include "ui/views/animation/ink_drop_ripple.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/highlight_path_generator.h"
+#include "ui/views/property_effects.h"
 #include "ui/views/window/hit_test_utils.h"
 
 namespace views {
@@ -131,18 +133,22 @@ float FrameCaptionButton::GetInactiveButtonColorAlphaRatio() {
 
 void FrameCaptionButton::SetImage(CaptionButtonIcon icon,
                                   Animate animate,
-                                  const gfx::VectorIcon& icon_definition) {
+                                  const gfx::VectorIcon& icon_definition,
+                                  std::optional<int> icon_size) {
   // If the button is not yet in a widget, OnThemeChanged() will call back
   // here once it is, updating the color as needed.
   SkColor icon_color = gfx::kPlaceholderColor;
-  if (absl::holds_alternative<SkColor>(color_)) {
-    icon_color = GetButtonColor(absl::get<SkColor>(color_));
+  if (std::holds_alternative<SkColor>(color_)) {
+    icon_color = GetButtonColor(std::get<SkColor>(color_));
   } else if (const auto* color_provider = GetColorProvider()) {
-    icon_color = color_provider->GetColor(absl::get<ui::ColorId>(color_));
+    icon_color = color_provider->GetColor(std::get<ui::ColorId>(color_));
   }
 
   gfx::ImageSkia new_icon_image =
-      gfx::CreateVectorIcon(icon_definition, icon_color);
+      icon_size.has_value()
+          ? gfx::CreateVectorIcon(icon_definition, icon_size.value(),
+                                  icon_color)
+          : gfx::CreateVectorIcon(icon_definition, icon_color);
 
   // The early return is dependent on |animate| because callers use SetImage()
   // with Animate::kNo to progress the crossfade animation to the end.
@@ -159,6 +165,7 @@ void FrameCaptionButton::SetImage(CaptionButtonIcon icon,
   icon_ = icon;
   icon_definition_ = &icon_definition;
   icon_image_ = new_icon_image;
+  icon_size_ = icon_size;
 
   if (animate == Animate::kYes) {
     swap_images_animation_->Reset(0);
@@ -215,8 +222,8 @@ views::PaintInfo::ScaleType FrameCaptionButton::GetPaintScaleType() const {
 }
 
 void FrameCaptionButton::SetBackgroundColor(SkColor background_color) {
-  if (absl::holds_alternative<SkColor>(color_) &&
-      absl::get<SkColor>(color_) == background_color) {
+  if (std::holds_alternative<SkColor>(color_) &&
+      std::get<SkColor>(color_) == background_color) {
     return;
   }
 
@@ -225,8 +232,8 @@ void FrameCaptionButton::SetBackgroundColor(SkColor background_color) {
 }
 
 void FrameCaptionButton::SetIconColorId(ui::ColorId icon_color_id) {
-  if (absl::holds_alternative<ui::ColorId>(color_) &&
-      absl::get<ui::ColorId>(color_) == icon_color_id) {
+  if (std::holds_alternative<ui::ColorId>(color_) &&
+      std::get<ui::ColorId>(color_) == icon_color_id) {
     return;
   }
 
@@ -235,14 +242,14 @@ void FrameCaptionButton::SetIconColorId(ui::ColorId icon_color_id) {
 }
 
 SkColor FrameCaptionButton::GetBackgroundColor() const {
-  return absl::get<SkColor>(color_);
+  return std::get<SkColor>(color_);
 }
 
 void FrameCaptionButton::SetInkDropCornerRadius(int ink_drop_corner_radius) {
   ink_drop_corner_radius_ = ink_drop_corner_radius;
   // Changes to |ink_drop_corner_radius| will affect the ink drop. Therefore
   // this effect is handled by the ink drop.
-  OnPropertyChanged(&ink_drop_corner_radius_, kPropertyEffectsNone);
+  OnPropertyChanged(&ink_drop_corner_radius_, PropertyEffects::kNone);
 }
 
 int FrameCaptionButton::GetInkDropCornerRadius() const {
@@ -260,7 +267,7 @@ void FrameCaptionButton::SetPaintAsActive(bool paint_as_active) {
     return;
   }
   paint_as_active_ = paint_as_active;
-  OnPropertyChanged(&paint_as_active_, kPropertyEffectsPaint);
+  OnPropertyChanged(&paint_as_active_, PropertyEffects::kPaint);
 }
 
 bool FrameCaptionButton::GetPaintAsActive() const {
@@ -297,7 +304,7 @@ void FrameCaptionButton::MaybeRefreshIconAndInkdropBaseColor() {
   }
 
   if (icon_definition_) {
-    SetImage(icon_, Animate::kNo, *icon_definition_);
+    SetImage(icon_, Animate::kNo, *icon_definition_, icon_size_);
   }
   UpdateInkDropBaseColor();
 }
@@ -400,9 +407,9 @@ void FrameCaptionButton::UpdateInkDropBaseColor() {
   // TODO(pkasting): It would likely be better to make the button glyph always
   // be an alpha-blended version of GetColorWithMaxContrast(background_color_).
   const SkColor button_color =
-      absl::holds_alternative<ui::ColorId>(color_)
-          ? GetColorProvider()->GetColor(absl::get<ui::ColorId>(color_))
-          : GetButtonColor(absl::get<SkColor>(color_));
+      std::holds_alternative<ui::ColorId>(color_)
+          ? GetColorProvider()->GetColor(std::get<ui::ColorId>(color_))
+          : GetButtonColor(std::get<SkColor>(color_));
 
   InkDrop::Get(this)->SetBaseColor(
       GetColorWithMaxContrast(GetColorWithMaxContrast(button_color)));

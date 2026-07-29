@@ -11,11 +11,14 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/test_browser_window.h"
+#include "components/tabs/public/tab_interface.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 using BrowserListTest = BrowserWithTestWindowTest;
 
@@ -23,14 +26,19 @@ namespace {
 
 // Helper function to iterate and count all the tabs.
 size_t CountAllTabs() {
-  return std::distance(AllTabContentses().begin(), AllTabContentses().end());
+  size_t count = 0;
+  tabs::ForEachTabInterface([&count](tabs::TabInterface* tab) {
+    ++count;
+    return true;
+  });
+  return count;
 }
 
 }  // namespace
 
 TEST_F(BrowserListTest, TabContentsIteratorVerifyCount) {
   // Make sure we have 1 window to start with.
-  EXPECT_EQ(1U, BrowserList::GetInstance()->size());
+  EXPECT_EQ(1U, GlobalBrowserCollection::GetInstance()->GetSize());
 
   EXPECT_EQ(0U, CountAllTabs());
 
@@ -47,7 +55,7 @@ TEST_F(BrowserListTest, TabContentsIteratorVerifyCount) {
       CreateBrowserWithTestWindowForParams(ash_params));
 
   // Sanity checks.
-  EXPECT_EQ(4U, BrowserList::GetInstance()->size());
+  EXPECT_EQ(4U, GlobalBrowserCollection::GetInstance()->GetSize());
   EXPECT_EQ(0, browser()->tab_strip_model()->count());
   EXPECT_EQ(0, browser2->tab_strip_model()->count());
   EXPECT_EQ(0, browser3->tab_strip_model()->count());
@@ -57,9 +65,9 @@ TEST_F(BrowserListTest, TabContentsIteratorVerifyCount) {
 
   // Add some tabs.
   for (size_t i = 0; i < 3; ++i) {
-    chrome::NewTab(browser2.get());
+    chrome::NewTab(browser2.get(), NewTabTypes::kNoUserAction);
   }
-  chrome::NewTab(browser3.get());
+  chrome::NewTab(browser3.get(), NewTabTypes::kNoUserAction);
 
   EXPECT_EQ(4U, CountAllTabs());
 
@@ -70,7 +78,7 @@ TEST_F(BrowserListTest, TabContentsIteratorVerifyCount) {
 
   // Add lots of tabs.
   for (size_t i = 0; i < 41; ++i) {
-    chrome::NewTab(browser());
+    chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   }
 
   EXPECT_EQ(42U, CountAllTabs());
@@ -80,7 +88,7 @@ TEST_F(BrowserListTest, TabContentsIteratorVerifyCount) {
 
 TEST_F(BrowserListTest, TabContentsIteratorVerifyBrowser) {
   // Make sure we have 1 window to start with.
-  EXPECT_EQ(1U, BrowserList::GetInstance()->size());
+  EXPECT_EQ(1U, GlobalBrowserCollection::GetInstance()->GetSize());
 
   // Create more browsers/windows.
   Browser::CreateParams native_params(profile(), true);
@@ -93,7 +101,7 @@ TEST_F(BrowserListTest, TabContentsIteratorVerifyBrowser) {
       CreateBrowserWithTestWindowForParams(ash_params));
 
   // Sanity checks.
-  EXPECT_EQ(3U, BrowserList::GetInstance()->size());
+  EXPECT_EQ(3U, GlobalBrowserCollection::GetInstance()->GetSize());
   EXPECT_EQ(0, browser()->tab_strip_model()->count());
   EXPECT_EQ(0, browser2->tab_strip_model()->count());
   EXPECT_EQ(0, browser3->tab_strip_model()->count());
@@ -102,58 +110,47 @@ TEST_F(BrowserListTest, TabContentsIteratorVerifyBrowser) {
 
   // Add some tabs.
   for (size_t i = 0; i < 3; ++i) {
-    chrome::NewTab(browser2.get());
+    chrome::NewTab(browser2.get(), NewTabTypes::kNoUserAction);
   }
   for (size_t i = 0; i < 2; ++i) {
-    chrome::NewTab(browser3.get());
+    chrome::NewTab(browser3.get(), NewTabTypes::kNoUserAction);
   }
 
-  size_t count = 0;
-  auto& all_tabs = AllTabContentses();
-  for (auto iterator = all_tabs.begin(), end = all_tabs.end(); iterator != end;
-       ++iterator, ++count) {
-    if (count < 3) {
-      EXPECT_EQ(browser2.get(), iterator.browser());
-    } else if (count < 5) {
-      EXPECT_EQ(browser3.get(), iterator.browser());
-    } else {
-      ADD_FAILURE();
-    }
-  }
+  absl::flat_hash_map<BrowserWindowInterface*, size_t> tab_counts;
+  tabs::ForEachTabInterface([&tab_counts](tabs::TabInterface* const tab) {
+    ++tab_counts[tab->GetBrowserWindowInterface()];
+    return true;
+  });
+  EXPECT_EQ(3u, tab_counts[browser2.get()]);
+  EXPECT_EQ(2u, tab_counts[browser3.get()]);
 
   // Close some tabs.
   browser2->tab_strip_model()->CloseAllTabs();
   // This is normally invoked when the tab strip is empty (specifically from
   // BrowserView::OnWindowCloseRequested).
-  browser2->OnWindowClosing();
-  EXPECT_TRUE(browser2->is_delete_scheduled());
+  UnloadController::From(browser2.get())->OnWindowClosing();
+  EXPECT_TRUE(browser2->IsDeleteScheduled());
   browser3->tab_strip_model()->CloseWebContentsAt(1, TabCloseTypes::CLOSE_NONE);
 
-  count = 0;
-  for (auto iterator = all_tabs.begin(), end = all_tabs.end(); iterator != end;
-       ++iterator, ++count) {
-    if (count == 0) {
-      EXPECT_EQ(browser3.get(), iterator.browser());
-    } else {
-      ADD_FAILURE();
-    }
-  }
+  tab_counts.clear();
+  tabs::ForEachTabInterface([&tab_counts](tabs::TabInterface* const tab) {
+    ++tab_counts[tab->GetBrowserWindowInterface()];
+    return true;
+  });
+  EXPECT_EQ(1u, tab_counts.size());
+  EXPECT_EQ(1u, tab_counts[browser3.get()]);
 
   // Add one tab back to browser.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
 
-  count = 0;
-  for (auto iterator = all_tabs.begin(), end = all_tabs.end(); iterator != end;
-       ++iterator, ++count) {
-    if (count == 0) {
-      EXPECT_EQ(browser(), iterator.browser());
-    } else if (count == 1) {
-      EXPECT_EQ(browser3.get(), iterator.browser());
-    } else {
-      ADD_FAILURE();
-    }
-  }
-  EXPECT_EQ(2u, count);
+  tab_counts.clear();
+  tabs::ForEachTabInterface([&tab_counts](tabs::TabInterface* const tab) {
+    ++tab_counts[tab->GetBrowserWindowInterface()];
+    return true;
+  });
+  EXPECT_EQ(2u, tab_counts.size());
+  EXPECT_EQ(1u, tab_counts[browser()]);
+  EXPECT_EQ(1u, tab_counts[browser3.get()]);
 
   // Close all remaining tabs to keep all the destructors happy.
   browser2->tab_strip_model()->CloseAllTabs();

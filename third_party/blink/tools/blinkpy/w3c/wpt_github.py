@@ -3,16 +3,17 @@
 # found in the LICENSE file.
 
 import base64
+import dataclasses
 import datetime
 import json
 import logging
 import re
-import six
+from typing import Any, Dict, List
+from urllib.parse import quote
 
 from collections import namedtuple
 from requests.exceptions import HTTPError
 from requests.exceptions import InvalidURL
-from six.moves.urllib.parse import quote
 
 from blinkpy.common.memoized import memoized
 from blinkpy.w3c.common import (
@@ -21,6 +22,8 @@ from blinkpy.w3c.common import (
     EXPORT_PR_LABEL,
     PROVISIONAL_PR_LABEL,
     LEGACY_MAIN_BRANCH_NAME,
+    CHANGE_ID_FOOTER,
+    LINK_FOOTER,
 )
 
 _log = logging.getLogger(__name__)
@@ -82,10 +85,7 @@ class GitHubRepo(object):
         assert path.startswith('/')
 
         if body:
-            if six.PY3:
-                body = json.dumps(body).encode("utf-8")
-            else:
-                body = json.dumps(body)
+            body = json.dumps(body).encode("utf-8")
 
         if accept_header:
             headers = {'Accept': accept_header}
@@ -244,7 +244,8 @@ class GitHubRepo(object):
                            body=item['body'],
                            state=item['state'],
                            node_id=item['node_id'],
-                           labels=labels)
+                           labels=labels,
+                           requested_teams=item.get('requested_teams', []))
 
     def recent_failing_chromium_exports(self):
         """Fetches open PRs with an export label, failing status, and updated
@@ -485,16 +486,35 @@ class GitHubRepo(object):
         """Returns a PR corresponding to the given ChromiumCommit, or None."""
         # We rely on Change-Id because Gerrit returns ToT+1 as the commit
         # positions for in-flight CLs, whereas Change-Id is permanent.
-        return self.pr_with_change_id(chromium_commit.change_id())
+        if change_id := chromium_commit.change_id():
+            return self.pr_with_change_id(change_id)
+        if link := chromium_commit.link():
+            return self.pr_with_link(link)
+        return None
 
     def pr_with_change_id(self, target_change_id):
+        if not target_change_id:
+            return None
         all_prs = self.all_pull_requests()
         for pull_request in all_prs:
             # Note: Search all 'Change-Id's so that we can manually put multiple
             # CLs in one PR. (The exporter always creates one PR for each CL.)
-            change_ids = self.extract_metadata(
-                'Change-Id: ', pull_request.body, all_matches=True)
-            if target_change_id in change_ids:
+            change_ids = self.extract_metadata(CHANGE_ID_FOOTER,
+                                               pull_request.body,
+                                               all_matches=True)
+            if change_ids and target_change_id in change_ids:
+                return pull_request
+        return None
+
+    def pr_with_link(self, target_link):
+        if not target_link:
+            return None
+        all_prs = self.all_pull_requests()
+        for pull_request in all_prs:
+            links = self.extract_metadata(LINK_FOOTER,
+                                          pull_request.body,
+                                          all_matches=True)
+            if links and target_link in links:
                 return pull_request
         return None
 
@@ -586,5 +606,14 @@ class MergeError(GitHubError):
         super(MergeError, self).__init__(200, 405, 'merge PR %d' % pr_number)
 
 
-PullRequest = namedtuple(
-    'PullRequest', ['title', 'number', 'body', 'state', 'node_id', 'labels'])
+@dataclasses.dataclass(frozen=True)
+class PullRequest:
+    """Represents a GitHub pull request."""
+    title: str
+    number: int
+    body: str
+    state: str
+    node_id: str
+    labels: List[str]
+    requested_teams: List[Dict[str, Any]] = dataclasses.field(
+        default_factory=list)

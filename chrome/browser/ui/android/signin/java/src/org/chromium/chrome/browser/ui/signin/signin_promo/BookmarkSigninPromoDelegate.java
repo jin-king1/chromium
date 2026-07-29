@@ -4,12 +4,16 @@
 
 package org.chromium.chrome.browser.ui.signin.signin_promo;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -20,8 +24,9 @@ import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.ui.signin.R;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
-import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
+import org.chromium.chrome.browser.ui.signin.SigninSurveyController;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.sync.SyncService;
@@ -32,6 +37,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.util.Set;
 
 /** {@link SigninPromoDelegate} for bookmark signin promo. */
+@NullMarked
 public class BookmarkSigninPromoDelegate extends SigninPromoDelegate {
 
     /** Indicates the type of content the should be shown in the visible promo. */
@@ -68,14 +74,23 @@ public class BookmarkSigninPromoDelegate extends SigninPromoDelegate {
         mPromoShowCountPreferenceName =
                 ChromePreferenceKeys.SYNC_PROMO_SHOW_COUNT.createKey(
                         SigninPreferencesManager.SigninPromoAccessPointId.BOOKMARKS);
+        // TODO(https://crbug.com/474294917): This navigation should be handled by the coordinator.
         mOnOpenSettingsClicked = onOpenSettingsClicked;
     }
 
     @Override
     String getTitle() {
+        @SigninFeatureMap.SeamlessSigninStringType
+        int seamlessSigninStringType = SigninFeatureMap.getInstance().getSeamlessSigninStringType();
         switch (mPromoState) {
             case PromoState.SIGNIN:
-                return mContext.getString(R.string.signin_promo_title_bookmarks);
+                if (seamlessSigninStringType
+                                == SigninFeatureMap.SeamlessSigninStringType.NON_SEAMLESS
+                        || seamlessSigninStringType
+                                == SigninFeatureMap.SeamlessSigninStringType.SIGNIN_BUTTON) {
+                    return mContext.getString(R.string.signin_promo_title_bookmarks);
+                }
+                return mContext.getString(R.string.signin_account_picker_bottom_sheet_title);
             case PromoState.ACCOUNT_SETTINGS:
                 return mContext.getString(R.string.sync_promo_title_bookmarks);
             case PromoState.NONE:
@@ -85,9 +100,39 @@ public class BookmarkSigninPromoDelegate extends SigninPromoDelegate {
     }
 
     @Override
-    String getDescription() {
+    String getDescription(@Nullable String accountEmail) {
+        @SigninFeatureMap.SeamlessSigninPromoType
+        int seamlessSigninPromoType = SigninFeatureMap.getInstance().getSeamlessSigninPromoType();
+        @SigninFeatureMap.SeamlessSigninStringType
+        int seamlessSigninStringType = SigninFeatureMap.getInstance().getSeamlessSigninStringType();
         switch (mPromoState) {
             case PromoState.SIGNIN:
+                if (accountEmail == null) {
+                    return mContext.getString(R.string.signin_promo_description_bookmarks);
+                }
+                if (seamlessSigninStringType
+                        == SigninFeatureMap.SeamlessSigninStringType.CONTINUE_BUTTON) {
+                    if (seamlessSigninPromoType
+                            == SigninFeatureMap.SeamlessSigninPromoType.TWO_BUTTONS) {
+                        return mContext.getString(
+                                R.string.signin_promo_description_bookmarks_group1, accountEmail);
+                    } else if (seamlessSigninPromoType
+                            == SigninFeatureMap.SeamlessSigninPromoType.COMPACT) {
+                        return mContext.getString(
+                                R.string.signin_promo_description_bookmarks_group2);
+                    }
+                } else if (seamlessSigninStringType
+                        == SigninFeatureMap.SeamlessSigninStringType.SIGNIN_BUTTON) {
+                    if (seamlessSigninPromoType
+                            == SigninFeatureMap.SeamlessSigninPromoType.TWO_BUTTONS) {
+                        return mContext.getString(
+                                R.string.signin_promo_description_bookmarks_group3, accountEmail);
+                    } else if (seamlessSigninPromoType
+                            == SigninFeatureMap.SeamlessSigninPromoType.COMPACT) {
+                        return mContext.getString(
+                                R.string.signin_promo_description_bookmarks_group4);
+                    }
+                }
                 return mContext.getString(R.string.signin_promo_description_bookmarks);
             case PromoState.ACCOUNT_SETTINGS:
                 return mContext.getString(R.string.account_settings_promo_description_bookmarks);
@@ -110,7 +155,7 @@ public class BookmarkSigninPromoDelegate extends SigninPromoDelegate {
     }
 
     @Override
-    void onDismissButtonClicked() {
+    void permanentlyDismissPromo() {
         ChromeSharedPreferences.getInstance()
                 .writeBoolean(ChromePreferenceKeys.SIGNIN_PROMO_BOOKMARKS_DECLINED, true);
     }
@@ -121,7 +166,7 @@ public class BookmarkSigninPromoDelegate extends SigninPromoDelegate {
     }
 
     @Override
-    boolean refreshPromoState(@Nullable CoreAccountInfo visibleAccount) {
+    boolean refreshPromoState(@Nullable DisplayableProfileData visibleAccount) {
         @PromoState int newState = computePromoState();
         boolean wasStateChanged = mPromoState != newState;
         mPromoState = newState;
@@ -161,15 +206,14 @@ public class BookmarkSigninPromoDelegate extends SigninPromoDelegate {
 
     @Override
     boolean isMaxImpressionsReached() {
-        return ChromeSharedPreferences.getInstance().readInt(mPromoShowCountPreferenceName)
-                >= MAX_IMPRESSIONS_BOOKMARKS;
+        return getPromoShownCount() >= MAX_IMPRESSIONS_BOOKMARKS;
     }
 
     @Override
-    void onPrimaryButtonClicked() {
+    void onPrimaryButtonClicked(@Nullable DisplayableProfileData visibleAccount) {
         switch (mPromoState) {
             case PromoState.SIGNIN:
-                super.onPrimaryButtonClicked();
+                super.onPrimaryButtonClicked(visibleAccount);
                 break;
             case PromoState.ACCOUNT_SETTINGS:
                 mOnOpenSettingsClicked.run();
@@ -180,6 +224,29 @@ public class BookmarkSigninPromoDelegate extends SigninPromoDelegate {
         }
     }
 
+    @Override
+    int getPromoShownCount() {
+        return ChromeSharedPreferences.getInstance().readInt(mPromoShowCountPreferenceName);
+    }
+
+    @Override
+    @Nullable
+    @SigninSurveyController.SigninSurveyType
+    Integer getSurveyTriggerType() {
+        return SigninSurveyController.SigninSurveyType.BOOKMARK_PROMO;
+    }
+
+    @Override
+    boolean shouldOverridePrimaryButtonClick() {
+        return !isSeamlessSigninAllowed() || mPromoState != PromoState.SIGNIN;
+    }
+
+    @Override
+    @ColorInt
+    int getAccountPickerBackgroundColor() {
+        return SemanticColorUtils.getColorSurface(mContext);
+    }
+
     private @PromoState int computePromoState() {
         if (wasPromoDeclined() || !canManuallyEnableSyncTypes()) {
             return PromoState.NONE;
@@ -187,11 +254,13 @@ public class BookmarkSigninPromoDelegate extends SigninPromoDelegate {
 
         IdentityManager identityManager =
                 IdentityServicesProvider.get().getIdentityManager(mProfile);
-        if (identityManager.hasPrimaryAccount(ConsentLevel.SIGNIN)) {
+        assumeNonNull(identityManager);
+        if (identityManager.hasPrimaryAccount()) {
             return PromoState.ACCOUNT_SETTINGS;
         }
 
         SigninManager signinManager = IdentityServicesProvider.get().getSigninManager(mProfile);
+        assumeNonNull(signinManager);
         return signinManager.isSigninAllowed() ? PromoState.SIGNIN : PromoState.NONE;
     }
 
@@ -202,16 +271,21 @@ public class BookmarkSigninPromoDelegate extends SigninPromoDelegate {
 
     private boolean canManuallyEnableSyncTypes() {
         SyncService syncService = SyncServiceFactory.getForProfile(mProfile);
-        boolean areTypesAlreadyEnabled =
-                syncService
-                        .getSelectedTypes()
-                        .containsAll(
-                                Set.of(
-                                        UserSelectableType.BOOKMARKS,
-                                        UserSelectableType.READING_LIST));
-        boolean areBookmarksManaged =
-                syncService.isTypeManagedByPolicy(UserSelectableType.BOOKMARKS);
+        assumeNonNull(syncService);
 
-        return !areTypesAlreadyEnabled && !areBookmarksManaged;
+        for (@UserSelectableType
+        int type : Set.of(UserSelectableType.BOOKMARKS, UserSelectableType.READING_LIST)) {
+            boolean isTypeEnabled = syncService.getSelectedTypes().contains(type);
+            boolean isTypeManaged = syncService.isTypeManagedByPolicy(type);
+            if (!isTypeEnabled && !isTypeManaged) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    boolean shouldDisplaySignedInLayout() {
+        return mPromoState == PromoState.ACCOUNT_SETTINGS;
     }
 }

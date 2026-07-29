@@ -18,10 +18,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-#include "components/os_crypt/sync/os_crypt_mocker.h"
-#endif
-
 #if BUILDFLAG(IS_ANDROID)
 #include "components/webauthn/android/cred_man_support.h"
 #include "components/webauthn/android/webauthn_cred_man_delegate.h"
@@ -56,10 +52,6 @@ class MockPasswordFormManagerObserver : public PasswordFormManagerObserver {
 class PasswordFormCacheTest : public testing::Test {
  public:
   PasswordFormCacheTest() {
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-    OSCryptMocker::SetUp();
-#endif
-
 #if BUILDFLAG(IS_ANDROID)
     webauthn::WebAuthnCredManDelegate::override_cred_man_support_for_testing(
         webauthn::CredManSupport::DISABLED);
@@ -260,7 +252,7 @@ TEST_F(PasswordFormCacheTest, GetFormManagers) {
 // Test that the cache adds observers to newly added managers.
 TEST_F(PasswordFormCacheTest, ObservationOnFormManager) {
   MockPasswordFormManagerObserver observer;
-  static_cast<PasswordFormCache*>(&cache())->SetObserver(observer.GetWeakPtr());
+  static_cast<PasswordFormCache*>(&cache())->AddObserver(&observer);
 
   auto form_manager = std::make_unique<PasswordFormManager>(
       &client(), driver().AsWeakPtr(), CreateTestPasswordFormData(),
@@ -272,6 +264,23 @@ TEST_F(PasswordFormCacheTest, ObservationOnFormManager) {
 
   EXPECT_CALL(observer, OnPasswordFormParsed(form_manager_ptr));
 
+  form_fetcher().NotifyFetchCompleted();
+  FastForwardUntilNoTasksRemain();
+}
+
+// Test that the cache adds observers to all existing managers.
+TEST_F(PasswordFormCacheTest, ObservationOnExistingFormManager) {
+  MockPasswordFormManagerObserver observer;
+
+  auto form_manager = std::make_unique<PasswordFormManager>(
+      &client(), driver().AsWeakPtr(), CreateTestPasswordFormData(),
+      &form_fetcher(), std::make_unique<PasswordSaveManagerImpl>(&client()),
+      /*metrics_recorder=*/nullptr);
+  auto* form_manager_ptr = form_manager.get();
+  cache().AddFormManager(std::move(form_manager));
+  static_cast<PasswordFormCache*>(&cache())->AddObserver(&observer);
+
+  EXPECT_CALL(observer, OnPasswordFormParsed(form_manager_ptr));
   form_fetcher().NotifyFetchCompleted();
   FastForwardUntilNoTasksRemain();
 }

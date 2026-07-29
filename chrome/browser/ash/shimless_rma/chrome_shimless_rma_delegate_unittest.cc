@@ -7,11 +7,13 @@
 #include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "base/check_deref.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
@@ -22,11 +24,14 @@
 #include "chrome/browser/extensions/extension_garbage_collector_factory.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
+#include "chrome/browser/extensions/external_provider_manager.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_install_source.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_storage_location.h"
+#include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
+#include "chrome/browser/web_applications/isolated_web_apps/iwa_permissions_policy_cache.h"
+#include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
+#include "chrome/browser/web_applications/test/web_app_test_utils.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/common/pref_names.h"
@@ -35,6 +40,9 @@
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "components/variations/scoped_variations_ids_provider.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
+#include "components/webapps/isolated_web_apps/types/iwa_origin.h"
+#include "components/webapps/isolated_web_apps/types/iwa_version.h"
+#include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/fake_service_worker_context.h"
 #include "extensions/common/constants.h"
@@ -118,7 +126,7 @@ class FakeWebAppCommandScheduler : public web_app::WebAppCommandScheduler {
   void InstallIsolatedWebApp(
       const web_app::IsolatedWebAppUrlInfo& url_info,
       const web_app::IsolatedWebAppInstallSource& install_source,
-      const std::optional<base::Version>& expected_version,
+      const std::optional<web_app::IwaVersion>& expected_version,
       std::unique_ptr<ScopedKeepAlive> keep_alive,
       std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive,
       web_app::WebAppCommandScheduler::InstallIsolatedWebAppCallback callback,
@@ -129,9 +137,24 @@ class FakeWebAppCommandScheduler : public web_app::WebAppCommandScheduler {
         FROM_HERE,
         base::BindOnce(std::move(callback),
                        web_app::InstallIsolatedWebAppCommandSuccess(
-                           url_info, base::Version{},
+                           url_info, *web_app::IwaVersion::Create("0"),
                            web_app::IwaStorageOwnedBundle{
                                "random_folder", /*dev_mode=*/false})));
+  }
+
+  void RemoveInstallManagementMaybeUninstall(
+      const webapps::AppId& app_id,
+      web_app::WebAppManagement::Type install_management,
+      webapps::WebappUninstallSource uninstall_source,
+      UninstallCallback callback,
+      const base::Location& location) override {
+    EXPECT_EQ(install_management,
+              web_app::WebAppManagement::Type::kIwaShimlessRma);
+    EXPECT_EQ(uninstall_source, webapps::WebappUninstallSource::kUnknown);
+
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback),
+                                  webapps::UninstallResultCode::kAppRemoved));
   }
 };
 
@@ -139,7 +162,11 @@ class FakeDiagnosticsAppProfileHelperDelegate
     : public DiagnosticsAppProfileHelperDelegate {
  public:
   explicit FakeDiagnosticsAppProfileHelperDelegate(Profile* profile)
-      : web_app_command_scheduler_(*profile) {}
+      : web_app_command_scheduler_(*profile) {
+    web_app_ = web_app::test::CreateWebApp(
+        GURL(base::StrCat({"isolated-app://", kDevIwaId})));
+    web_app_->SetName("App Name");
+  }
   FakeDiagnosticsAppProfileHelperDelegate(
       const DiagnosticsAppProfileHelperDelegate&) = delete;
   ~FakeDiagnosticsAppProfileHelperDelegate() override = default;
@@ -155,22 +182,22 @@ class FakeDiagnosticsAppProfileHelperDelegate
     return &web_app_command_scheduler_;
   }
 
-  const web_app::WebApp* GetWebAppById(
+  const web_app::WebApp* GetWebAppByIdUnsafe(
       const webapps::AppId& app_id,
       content::BrowserContext* browser_context) override {
-    return &web_app_;
+    return web_app_.get();
   }
 
   FakeServiceWorkerContext& fake_service_worker_context() {
     return fake_service_worker_context_;
   }
 
-  web_app::WebApp& web_app() { return web_app_; }
+  web_app::WebApp& web_app() { return CHECK_DEREF(web_app_); }
 
  protected:
   FakeServiceWorkerContext fake_service_worker_context_;
   FakeWebAppCommandScheduler web_app_command_scheduler_;
-  web_app::WebApp web_app_{/*AppId=*/""};
+  std::unique_ptr<web_app::WebApp> web_app_;
 };
 
 class ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest
@@ -186,23 +213,22 @@ class ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest
 
     feature_list_.InitWithFeatures(
         {
-            ash::features::kShimlessRMA3pDiagnostics,
             ash::features::kShimlessRMA3pDiagnosticsDevMode,
             ash::features::kShimlessRMA3pDiagnosticsAllowPermissionPolicy,
         },
         {});
-    ASSERT_TRUE(testing_profile_manager_.SetUp());
-    TestingProfile* profile = testing_profile_manager_.CreateTestingProfile(
+    profile_ = testing_profile_manager()->CreateTestingProfile(
         kShimlessRmaAppBrowserContextBaseName);
 
+    InitializeExtensionSystem(profile_);
+    ::web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_);
+
+    auto fake_diagnostics_app_profile_helper_delegate =
+        std::make_unique<FakeDiagnosticsAppProfileHelperDelegate>(profile_);
     fake_diagnostics_app_profile_helper_delegate_ =
-        std::make_unique<FakeDiagnosticsAppProfileHelperDelegate>(profile);
-
-    InitializeExtensionSystem(profile);
-
-    chrome_shimless_rma_delegate_
-        .SetDiagnosticsAppProfileHelperDelegateForTesting(
-            fake_diagnostics_app_profile_helper_delegate_.get());
+        fake_diagnostics_app_profile_helper_delegate.get();
+    chrome_shimless_rma_delegate_ = std::make_unique<ChromeShimlessRmaDelegate>(
+        std::move(fake_diagnostics_app_profile_helper_delegate));
   }
 
   void InitializeExtensionSystem(Profile* profile) {
@@ -223,7 +249,8 @@ class ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest
     // provider and if there is something already registered there then it will
     // interfere with the tests. Those tests that need an external provider
     // will register one specifically.
-    service->ClearProvidersForTesting();
+    extensions::ExternalProviderManager::Get(profile)
+        ->ClearProvidersForTesting();
 
     service->Init();
 
@@ -235,37 +262,37 @@ class ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest
                                     BuildInstanceFor));
   }
 
-  void TearDown() override { extensions::ExtensionServiceTestBase::TearDown(); }
+  void TearDown() override {
+    fake_diagnostics_app_profile_helper_delegate_ = nullptr;
+    chrome_shimless_rma_delegate_.reset();
+    profile_ = nullptr;
+    extensions::ExtensionServiceTestBase::TearDown();
+  }
 
-  using Result = base::expected<
+  using PrepareResult = base::expected<
       ChromeShimlessRmaDelegate::PrepareDiagnosticsAppBrowserContextResult,
       std::string>;
-  Result PrepareDiagnosticsAppBrowserContext(const base::FilePath& crx_path) {
-    base::test::TestFuture<Result> future;
-    chrome_shimless_rma_delegate_.PrepareDiagnosticsAppBrowserContext(
+
+  PrepareResult PrepareDiagnosticsAppBrowserContext(
+      const base::FilePath& crx_path) {
+    base::test::TestFuture<PrepareResult> future;
+    chrome_shimless_rma_delegate_->PrepareDiagnosticsAppBrowserContext(
         crx_path, base::FilePath{kFakeIwaPath}, future.GetCallback());
     return future.Get();
   }
 
  protected:
+  raw_ptr<TestingProfile> profile_;
   base::test::ScopedFeatureList feature_list_;
-  TestingProfileManager testing_profile_manager_{
-      TestingBrowserProcess::GetGlobal(), &testing_local_state_};
-  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+  variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
-  std::unique_ptr<FakeDiagnosticsAppProfileHelperDelegate>
+  raw_ptr<FakeDiagnosticsAppProfileHelperDelegate>
       fake_diagnostics_app_profile_helper_delegate_;
-  ChromeShimlessRmaDelegate chrome_shimless_rma_delegate_{nullptr};
+  std::unique_ptr<ChromeShimlessRmaDelegate> chrome_shimless_rma_delegate_;
 };
 
 // Verify the whole flow of `PrepareDiagnosticsAppProfile`.
 TEST_F(ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest, Success) {
-  const auto expected_url_origin =
-      url::Origin::Create(GURL(base::StrCat({"isolated-app://", kDevIwaId})));
-  fake_diagnostics_app_profile_helper_delegate_->web_app().SetName("App Name");
-  fake_diagnostics_app_profile_helper_delegate_->web_app().SetStartUrl(
-      expected_url_origin.GetURL());
-
   // Call this twice to verify that even if the profile has already been loaded
   // it still works.
   for (int i = 0; i < 2; ++i) {
@@ -327,16 +354,15 @@ TEST_F(ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest,
 // Verify that IWA with allowlisted permission policy will be installed.
 TEST_F(ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest,
        IWACanHaveAllowlistedPermissionsPolicy) {
-  fake_diagnostics_app_profile_helper_delegate_->web_app().SetPermissionsPolicy(
-      network::ParsedPermissionsPolicy{
-          {network::ParsedPermissionsPolicyDeclaration{
-               network::mojom::PermissionsPolicyFeature::kCamera},
-           network::ParsedPermissionsPolicyDeclaration{
-               network::mojom::PermissionsPolicyFeature::kFullscreen},
-           network::ParsedPermissionsPolicyDeclaration{
-               network::mojom::PermissionsPolicyFeature::kMicrophone},
-           network::ParsedPermissionsPolicyDeclaration{
-               network::mojom::PermissionsPolicyFeature::kHid}}});
+  web_app::IwaPermissionsPolicyCacheFactory::GetForProfile(profile_)
+      ->SetPolicyForTesting(
+          web_app::IwaOrigin::Create(
+              GURL(base::StrCat({"isolated-app://", kDevIwaId})))
+              .value(),
+          {{"camera", {}},
+           {"fullscreen", {}},
+           {"microphone", {}},
+           {"hid", {}}});
 
   auto result = PrepareDiagnosticsAppBrowserContext(
       base::PathService::CheckedGet(base::DIR_SRC_TEST_DATA_ROOT)
@@ -348,12 +374,12 @@ TEST_F(ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest,
 // Verify that IWA with not-allowlisted permission policy will be blocked.
 TEST_F(ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest,
        IWACannotHavePermissionsPolicyOutsideAllowlist) {
-  fake_diagnostics_app_profile_helper_delegate_->web_app().SetPermissionsPolicy(
-      network::ParsedPermissionsPolicy{
-          network::ParsedPermissionsPolicyDeclaration{
-              network::mojom::PermissionsPolicyFeature::kCamera},
-          {network::ParsedPermissionsPolicyDeclaration{
-              network::mojom::PermissionsPolicyFeature::kNotFound}}});
+  web_app::IwaPermissionsPolicyCacheFactory::GetForProfile(profile_)
+      ->SetPolicyForTesting(
+          web_app::IwaOrigin::Create(
+              GURL(base::StrCat({"isolated-app://", kDevIwaId})))
+              .value(),
+          {{"camera", {}}, {"unknown-feature", {}}});
 
   auto result = PrepareDiagnosticsAppBrowserContext(
       base::PathService::CheckedGet(base::DIR_SRC_TEST_DATA_ROOT)
@@ -371,10 +397,12 @@ TEST_F(ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest,
   scoped_list.InitAndDisableFeature(
       ash::features::kShimlessRMA3pDiagnosticsAllowPermissionPolicy);
 
-  fake_diagnostics_app_profile_helper_delegate_->web_app().SetPermissionsPolicy(
-      network::ParsedPermissionsPolicy{
-          {network::ParsedPermissionsPolicyDeclaration{
-              network::mojom::PermissionsPolicyFeature::kCamera}}});
+  web_app::IwaPermissionsPolicyCacheFactory::GetForProfile(profile_)
+      ->SetPolicyForTesting(
+          web_app::IwaOrigin::Create(
+              GURL(base::StrCat({"isolated-app://", kDevIwaId})))
+              .value(),
+          {{"camera", {}}});
 
   auto result = PrepareDiagnosticsAppBrowserContext(
       base::PathService::CheckedGet(base::DIR_SRC_TEST_DATA_ROOT)
@@ -388,15 +416,12 @@ TEST_F(ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest,
 // return the installed app origin.
 TEST_F(ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest,
        InstalledAppOriginNotSetAfterIwaInstallFailure) {
-  const auto expected_url_origin =
-      url::Origin::Create(GURL(base::StrCat({"isolated-app://", kDevIwaId})));
-  fake_diagnostics_app_profile_helper_delegate_->web_app().SetStartUrl(
-      expected_url_origin.GetURL());
-
-  fake_diagnostics_app_profile_helper_delegate_->web_app().SetPermissionsPolicy(
-      network::ParsedPermissionsPolicy{
-          {network::ParsedPermissionsPolicyDeclaration{
-              network::mojom::PermissionsPolicyFeature::kNotFound}}});
+  web_app::IwaPermissionsPolicyCacheFactory::GetForProfile(profile_)
+      ->SetPolicyForTesting(
+          web_app::IwaOrigin::Create(
+              GURL(base::StrCat({"isolated-app://", kDevIwaId})))
+              .value(),
+          {{"unknown-feature", {}}});
 
   auto result = PrepareDiagnosticsAppBrowserContext(
       base::PathService::CheckedGet(base::DIR_SRC_TEST_DATA_ROOT)

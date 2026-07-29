@@ -5,12 +5,13 @@
 package org.chromium.android_webview.test;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.view.ViewGroup;
 
 import org.chromium.android_webview.AwBrowserContext;
 import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.AwContentsClient;
-import org.chromium.android_webview.AwSettings;
+import org.chromium.android_webview.gfx.AwDrawFnImpl;
 
 import java.util.ArrayList;
 
@@ -31,26 +32,24 @@ public class TestAwContents extends AwContents {
         void onAwContentsDestroyed();
     }
 
-    private ArrayList<RenderProcessGoneObserver> mRenderProcessGoneObservers;
-    private RenderProcessGoneHelper mRenderProcessGoneHelper;
+    private final ArrayList<RenderProcessGoneObserver> mRenderProcessGoneObservers;
+    private final RenderProcessGoneHelper mRenderProcessGoneHelper;
 
     public TestAwContents(
             AwBrowserContext browserContext,
             ViewGroup containerView,
             Context context,
             InternalAccessDelegate internalAccessAdapter,
-            NativeDrawFunctorFactory nativeDrawFunctorFactory,
+            AwDrawFnImpl.DrawFnAccess drawFnAccess,
             AwContentsClient contentsClient,
-            AwSettings settings,
             DependencyFactory dependencyFactory) {
         super(
                 browserContext,
                 containerView,
                 context,
                 internalAccessAdapter,
-                nativeDrawFunctorFactory,
-                contentsClient,
-                settings,
+                drawFnAccess,
+                aw -> contentsClient,
                 dependencyFactory);
 
         mRenderProcessGoneHelper = new RenderProcessGoneHelper();
@@ -81,5 +80,9 @@ public class TestAwContents extends AwContents {
 
     public void setShouldBlockSpecialFileUrls(boolean shouldBlock) {
         getSettings().setBlockSpecialFileUrls(shouldBlock);
+    }
+
+    public void setFaviconForTesting(Bitmap bitmap) {
+        super.mFavicon = bitmap;
     }
 }

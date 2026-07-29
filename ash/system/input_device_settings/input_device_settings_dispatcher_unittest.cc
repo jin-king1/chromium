@@ -134,8 +134,7 @@ class InputDeviceSettingsDispatcherTest : public AshTestBase {
 
   // testing::Test:
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures({features::kInputDeviceSettingsSplit,
-                                           features::kPeripheralCustomization},
+    scoped_feature_list_.InitWithFeatures({features::kPeripheralCustomization},
                                           {});
 
     AshTestBase::SetUp();
@@ -145,9 +144,9 @@ class InputDeviceSettingsDispatcherTest : public AshTestBase {
         std::make_unique<InputDeviceSettingsDispatcher>(controller_.get());
 
     ON_CALL(*controller_, BlockModifiersOnDevices)
-        .WillByDefault(testing::Invoke([&](std::vector<int> device_ids) {
+        .WillByDefault([&](std::vector<int> device_ids) {
           device_ids_to_block_modifiers_ = std::move(device_ids);
-        }));
+        });
   }
 
   void TearDown() override {

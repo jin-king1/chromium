@@ -7,7 +7,11 @@
 #import <mach/mach.h>
 #import <sys/sysctl.h>
 
+#import <set>
+#import <vector>
+
 #import "base/functional/bind.h"
+#import "base/ios/device_util.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics_action.h"
@@ -17,12 +21,14 @@
 #import "build/branding_buildflags.h"
 #import "components/crash/core/common/crash_keys.h"
 #import "components/metrics/metrics_pref_names.h"
+#import "components/metrics/metrics_reporting_choice_service.h"
 #import "components/metrics/metrics_service.h"
 #import "components/metrics/metrics_switches.h"
 #import "components/prefs/pref_service.h"
 #import "components/previous_session_info/previous_session_info.h"
 #import "components/signin/public/identity_manager/tribool.h"
 #import "components/ukm/ios/ukm_reporting_ios_util.h"
+#import "crypto/apple/keychain_util.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/metric_kit_subscriber.h"
 #import "ios/chrome/app/application_delegate/startup_information.h"
@@ -30,9 +36,7 @@
 #import "ios/chrome/app/startup/ios_enable_sandbox_dump_buildflags.h"
 #import "ios/chrome/browser/crash_report/model/crash_helper.h"
 #import "ios/chrome/browser/default_browser/model/default_browser_interest_signals.h"
-#import "ios/chrome/browser/default_browser/model/utils.h"
 #import "ios/chrome/browser/metrics/model/first_user_action_recorder.h"
-#import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/connection_information.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -48,9 +52,11 @@
 #import "ios/chrome/browser/signin/model/signin_util.h"
 #import "ios/chrome/browser/tabs/model/inactive_tabs/metrics.h"
 #import "ios/chrome/browser/widget_kit/model/features.h"
+#import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/chrome/common/app_group/app_group_metrics.h"
 #import "ios/chrome/common/app_group/app_group_metrics_mainapp.h"
 #import "ios/chrome/common/credential_provider/constants.h"
+#import "ios/components/ui_util/dynamic_type_util.h"
 #import "ios/public/provider/chrome/browser/app_distribution/app_distribution_api.h"
 #import "ios/web/public/thread/web_task_traits.h"
 #import "ios/web/public/thread/web_thread.h"
@@ -236,28 +242,6 @@ void RecordWidgetUsage(base::span<const HistogramNameCountPair> histograms) {
 
   // Dictionary containing the respective metric for each NSUserDefault's key.
   NSDictionary<NSString*, NSString*>* keyMetric = @{
-    app_group::
-    kContentExtensionDisplayCount : @"IOS.ContentExtension.DisplayCount",
-    app_group::
-    kSearchExtensionDisplayCount : @"IOS.SearchExtension.DisplayCount",
-    app_group::
-    kCredentialExtensionDisplayCount : @"IOS.CredentialExtension.DisplayCount",
-    app_group::
-    kCredentialExtensionReauthCount : @"IOS.CredentialExtension.ReauthCount",
-    app_group::
-    kCredentialExtensionCopyURLCount : @"IOS.CredentialExtension.CopyURLCount",
-    app_group::kCredentialExtensionCopyUsernameCount :
-        @"IOS.CredentialExtension.CopyUsernameCount",
-    app_group::kCredentialExtensionCopyUserDisplayNameCount :
-        @"IOS.CredentialExtension.CopyUserDisplayNameCount",
-    app_group::kCredentialExtensionCopyCreationDateCount :
-        @"IOS.CredentialExtension.CopyCreationDateCount",
-    app_group::kCredentialExtensionCopyPasswordCount :
-        @"IOS.CredentialExtension.CopyPasswordCount",
-    app_group::kCredentialExtensionShowPasswordCount :
-        @"IOS.CredentialExtension.ShowPasswordCount",
-    app_group::
-    kCredentialExtensionSearchCount : @"IOS.CredentialExtension.SearchCount",
     app_group::kCredentialExtensionPasswordUseCount :
         @"IOS.CredentialExtension.PasswordUseCount",
     app_group::kCredentialExtensionPasskeyUseCount :
@@ -337,13 +321,6 @@ using metrics_mediator::kAppEnteredBackgroundDateKey;
 + (void)recordStartupTabsPerGroupCount:(int)tabsPerGroupCount;
 // Logs the number of tabs with UMAHistogramCount100 and allows testing.
 + (void)recordResumeTabCount:(int)tabCount;
-// Logs the number of NTP tabs with UMAHistogramCount100 and allows testing.
-+ (void)recordStartupNTPTabCount:(int)tabCount;
-// Logs the number of NTP tabs with UMAHistogramCount100 and allows testing.
-+ (void)recordResumeNTPTabCount:(int)tabCount;
-// Logs the number of live NTP tabs with UMAHistogramCount100 and allows
-// testing.
-+ (void)recordResumeLiveNTPTabCount:(int)tabCount;
 
 // Logs the number of old (inactive for more than 7 days) tabs with
 // UMAHistogramCount100 and allows testing.
@@ -421,8 +398,6 @@ BOOL _credentialExtensionWasUsed = NO;
   int tabCount = 0;
   int tabGroupCount = 0;
   int pinnedTabCount = 0;
-  int NTPTabCount = 0;
-  int liveNTPTabCount = 0;
   int oldTabCount = 0;
   int duplicatedTabCount = 0;
   int activeTabCount = 0;
@@ -435,7 +410,7 @@ BOOL _credentialExtensionWasUsed = NO;
   // Amount of time after which a tab is considered as absolutely inactive.
   constexpr base::TimeDelta kAbsoluteInactiveTabThreshold = base::Days(21);
 
-  NSMutableSet* uniqueURLs = [NSMutableSet set];
+  std::set<GURL> uniqueURLs;
   std::vector<base::TimeDelta> timesSinceCreation;
   const base::Time now = base::Time::Now();
 
@@ -447,12 +422,11 @@ BOOL _credentialExtensionWasUsed = NO;
       continue;
     }
 
-    const WebStateList* webStateList =
-        scene.browserProviderInterface.mainBrowserProvider.browser
-            ->GetWebStateList();
+    Browser* const mainbrowser =
+        scene.browserProviderInterface.mainBrowserProvider.browser;
+    const WebStateList* webStateList = mainbrowser->GetWebStateList();
     const WebStateList* inactiveWebStateList =
-        scene.browserProviderInterface.mainBrowserProvider.inactiveBrowser
-            ->GetWebStateList();
+        mainbrowser->GetInactiveBrowser()->GetWebStateList();
     const int webStateListCount = webStateList->count();
     const int inactiveWebStateListCount = inactiveWebStateList->count();
 
@@ -473,17 +447,11 @@ BOOL _credentialExtensionWasUsed = NO;
       const bool wasWebStateRealized = webState->IsRealized();
       const GURL& URL = webState->GetVisibleURL();
 
-      // Count NTPs.
-      if (IsURLNewTabPage(URL)) {
-        NTPTabCount++;
-      }
-
-      // Count duplicate URLs.
-      NSString* URLString = base::SysUTF8ToNSString(URL.GetWithoutRef().spec());
-      if ([uniqueURLs containsObject:URLString]) {
+      // Count duplicate URLs (if the URL is not inserted, then it is a
+      // duplicate, otherwise it is a new distinct URL).
+      auto [_, inserted] = uniqueURLs.insert(URL.GetWithoutRef());
+      if (!inserted) {
         duplicatedTabCount++;
-      } else {
-        [uniqueURLs addObject:URLString];
       }
 
       // Count old tabs.
@@ -526,17 +494,14 @@ BOOL _credentialExtensionWasUsed = NO;
     [self recordStartupPinnedTabCount:pinnedTabCount];
     [self recordStartupTabCount:tabCount];
     [self recordStartupTabGroupCount:tabGroupCount];
-    [self recordStartupNTPTabCount:NTPTabCount];
     [self recordStartupOldTabCount:oldTabCount];
     [self recordStartupDuplicatedTabCount:duplicatedTabCount];
     [self recordTabsAgeAtStartup:timesSinceCreation];
     [self recordAndResetWarmStartCount];
+    ui_util::RecordSystemFontSizeMetrics();
   } else {
     [[PreviousSessionInfo sharedInstance] incrementWarmStartCount];
     [self recordResumeTabCount:tabCount];
-    [self recordResumeNTPTabCount:NTPTabCount];
-    // Only log at resume since there are likely no live NTPs on startup.
-    [self recordResumeLiveNTPTabCount:liveNTPTabCount];
   }
 
   [self recordConnectedAndDisconnectedSceneCount:scenes.count];
@@ -548,7 +513,7 @@ BOOL _credentialExtensionWasUsed = NO;
 
 #if BUILDFLAG(ENABLE_WIDGET_KIT_EXTENSION)
   [WidgetMetricsUtil logInstalledWidgets];
-
+  [WidgetMetricsUtil logWidgetDeletedUiCount];
 #endif
 
   // Create the first user action recorder and schedule a task to expire it
@@ -588,11 +553,6 @@ BOOL _credentialExtensionWasUsed = NO;
     // Remove the value so it's not reused if the app crashes.
     [[NSUserDefaults standardUserDefaults]
         removeObjectForKey:kAppEnteredBackgroundDateKey];
-  }
-
-  // Log browser cold start for default browser promo experiment stats.
-  if (scenes.count != 0) {
-    LogBrowserLaunched(startupInformation.isColdStart);
   }
 
   if (!startupInformation.isColdStart) {
@@ -659,8 +619,9 @@ BOOL _credentialExtensionWasUsed = NO;
 // If this if-def changes, it needs to be changed in
 // IOSChromeMainParts::IsMetricsReportingEnabled and settings_egtest.mm.
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  BOOL optIn = GetApplicationContext()->GetLocalState()->GetBoolean(
-      metrics::prefs::kMetricsReportingEnabled);
+  BOOL optIn =
+      metrics::MetricsReportingChoiceService::IsBasicMetricsReportingEnabled(
+          GetApplicationContext()->GetLocalState());
 #else
   // If a startup crash has been requested, then pretend that metrics have been
   // enabled, so that the app will go into recovery mode.
@@ -762,13 +723,11 @@ BOOL _credentialExtensionWasUsed = NO;
 }
 
 + (void)logMemoryToUMA:(const std::string&)histogramName {
-  task_vm_info task_info_data;
-  mach_msg_type_number_t count = sizeof(task_vm_info) / sizeof(natural_t);
-  kern_return_t result =
-      task_info(mach_task_self(), TASK_VM_INFO,
-                reinterpret_cast<task_info_t>(&task_info_data), &count);
-  if (result == KERN_SUCCESS) {
-    mach_vm_size_t footprint_mb = task_info_data.phys_footprint / 1024 / 1024;
+  auto result = ios::device_util::GetTaskVMInfo();
+  if (result.has_value()) {
+    task_vm_info task_vm_info_data = result.value();
+    mach_vm_size_t footprint_mb =
+        task_vm_info_data.phys_footprint / 1024 / 1024;
     base::UmaHistogramMemoryLargeMB(histogramName, footprint_mb);
   }
 }
@@ -823,18 +782,6 @@ BOOL _credentialExtensionWasUsed = NO;
 
 + (void)recordResumeTabCount:(int)tabCount {
   base::UmaHistogramCounts1M("Tabs.CountAtResume2", tabCount);
-}
-
-+ (void)recordStartupNTPTabCount:(int)tabCount {
-  base::UmaHistogramCounts100("Tabs.NTPCountAtStartup", tabCount);
-}
-
-+ (void)recordResumeNTPTabCount:(int)tabCount {
-  base::UmaHistogramCounts100("Tabs.NTPCountAtResume", tabCount);
-}
-
-+ (void)recordResumeLiveNTPTabCount:(int)tabCount {
-  base::UmaHistogramCounts100("Tabs.LiveNTPCountAtResume", tabCount);
 }
 
 + (void)recordStartupOldTabCount:(int)tabCount {

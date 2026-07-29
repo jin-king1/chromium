@@ -2,22 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/image-decoders/webp/webp_image_decoder.h"
 
 #include <string.h>
 
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
-#include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "build/build_config.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkData.h"
@@ -37,7 +34,7 @@ inline void findBlendRangeAtRow(const gfx::Rect& src,
                                 int& width1,
                                 int& left2,
                                 int& width2) {
-  SECURITY_DCHECK(canvasY >= src.y() && canvasY < src.bottom());
+  SECURITY_CHECK(canvasY >= src.y() && canvasY < src.bottom());
   left1 = -1;
   width1 = 0;
   left2 = -1;
@@ -74,7 +71,7 @@ void alphaBlendPremultiplied(blink::ImageFrame& src,
   for (int x = 0; x < width; ++x) {
     int canvasX = left + x;
     blink::ImageFrame::PixelData* pixel = src.GetAddr(canvasX, canvasY);
-    if (SkGetPackedA32(*pixel) != 0xff) {
+    if (SkPMColorGetA(*pixel) != 0xff) {
       blink::ImageFrame::PixelData prevPixel = *dst.GetAddr(canvasX, canvasY);
       blink::ImageFrame::BlendSrcOverDstPremultiplied(pixel, prevPixel);
     }
@@ -89,7 +86,7 @@ void alphaBlendNonPremultiplied(blink::ImageFrame& src,
   for (int x = 0; x < width; ++x) {
     int canvasX = left + x;
     blink::ImageFrame::PixelData* pixel = src.GetAddr(canvasX, canvasY);
-    if (SkGetPackedA32(*pixel) != 0xff) {
+    if (SkPMColorGetA(*pixel) != 0xff) {
       blink::ImageFrame::PixelData prevPixel = *dst.GetAddr(canvasX, canvasY);
       blink::ImageFrame::BlendSrcOverDstRaw(pixel, prevPixel);
     }
@@ -114,19 +111,19 @@ enum class WebPFileFormat {
 //
 // TODO(crbug.com/1009237): consider combining this with the logic to detect
 // WebPs that can be decoded to YUV.
-bool IsSimpleLossyWebPImage(const sk_sp<SkData>& blob) {
+bool IsSimpleLossyWebPImage(const sk_sp<const SkData>& blob) {
   if (blob->size() < 20UL) {
     return false;
   }
   DCHECK(blob->bytes());
-  return !memcmp(blob->bytes(), "RIFF", 4) &&
-         !memcmp(blob->bytes() + 8UL, "WEBPVP8 ", 8);
+  return !UNSAFE_TODO(memcmp(blob->bytes(), "RIFF", 4)) &&
+         !UNSAFE_TODO(memcmp(blob->bytes() + 8UL, "WEBPVP8 ", 8));
 }
 
 // This method parses |blob|'s header and emits a UMA with the file format, as
 // defined by WebP, see WebPFileFormat.
-void UpdateWebPFileFormatUMA(const sk_sp<SkData>& blob) {
-  if (!IsMainThread()) {
+void UpdateWebPFileFormatUMA(const sk_sp<const SkData>& blob) {
+  if (!blink::IsMainThread()) {
     return;
   }
 
@@ -305,7 +302,7 @@ bool WEBPImageDecoder::UpdateDemuxer() {
   } else {
     buffer_.reserve(base::checked_cast<wtf_size_t>(data_->size()));
     while (buffer_.size() < data_->size()) {
-      buffer_.AppendSpan(data_->GetSomeData(buffer_.size()));
+      buffer_.append_range(data_->GetSomeData(buffer_.size()));
     }
     DCHECK_EQ(buffer_.size(), data_->size());
     consolidated_data_ =
@@ -372,14 +369,16 @@ bool WEBPImageDecoder::UpdateDemuxer() {
     // alpha.
     if (!(format_flags_ & (ANIMATION_FLAG | ALPHA_FLAG))) {
       WebPBitstreamFeatures features;
-      CHECK_EQ(WebPGetFeatures(consolidated_data_->bytes(),
-                               consolidated_data_->size(), &features),
-               VP8_STATUS_OK);
+      if (WebPGetFeatures(consolidated_data_->bytes(),
+                          consolidated_data_->size(),
+                          &features) != VP8_STATUS_OK) {
+        return SetFailed();
+      }
       if (features.format == CompressionFormat::kLossyFormat) {
         is_lossy_not_animated_no_alpha_ = true;
         static constexpr char kType[] = "WebP";
         update_bpp_histogram_callback_ =
-            base::BindOnce(&UpdateBppHistogram<kType>);
+            CrossThreadBindOnce(&UpdateBppHistogram<kType>);
       }
     }
   }
@@ -509,7 +508,7 @@ void WEBPImageDecoder::ReadColorProfile() {
       base::checked_cast<wtf_size_t>(chunk_iterator.chunk.size);
 
   if (auto profile = ColorProfile::Create(
-          base::span(chunk_iterator.chunk.bytes, profile_size))) {
+          UNSAFE_TODO(base::span(chunk_iterator.chunk.bytes, profile_size)))) {
     if (profile->GetProfile()->data_color_space == skcms_Signature_RGB) {
       SetEmbeddedColorProfile(std::move(profile));
     }
@@ -536,8 +535,8 @@ void WEBPImageDecoder::ApplyPostProcessing(wtf_size_t frame_index) {
   }
 
   const gfx::Rect& frame_rect = buffer.OriginalFrameRect();
-  SECURITY_DCHECK(width == frame_rect.width());
-  SECURITY_DCHECK(decoded_height <= frame_rect.height());
+  SECURITY_CHECK(width == frame_rect.width());
+  SECURITY_CHECK(decoded_height <= frame_rect.height());
   const int left = frame_rect.x();
   const int top = frame_rect.y();
 
@@ -560,10 +559,10 @@ void WEBPImageDecoder::ApplyPostProcessing(wtf_size_t frame_index) {
           alpha_format, xform->DstProfile(), width);
       DCHECK(color_conversion_successful);
       uint8_t* pixel = row;
-      for (int x = 0; x < width; ++x, pixel += 4) {
+      for (int x = 0; x < width; ++x, UNSAFE_TODO(pixel += 4)) {
         const int canvas_x = left + x;
-        buffer.SetRGBA(canvas_x, canvas_y, pixel[0], pixel[1], pixel[2],
-                       pixel[3]);
+        buffer.SetRGBA(canvas_x, canvas_y, pixel[0], UNSAFE_TODO(pixel[1]),
+                       UNSAFE_TODO(pixel[2]), UNSAFE_TODO(pixel[3]));
       }
     }
   }

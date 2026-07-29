@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
@@ -12,7 +13,6 @@
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/app_list/arc/arc_usb_host_permission_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -39,6 +39,16 @@ const int kArcAppIconSize = 64;
 const int kIconSourceSize = 48;
 
 using ArcAppConfirmCallback = base::OnceCallback<void(bool accept)>;
+
+std::unique_ptr<ArcAppListPrefs::AppInfo> GetArcAppInfo(
+    Profile* profile,
+    const std::string& app_id) {
+  ArcAppListPrefs* arc_prefs = ArcAppListPrefs::Get(profile);
+  DCHECK(arc_prefs);
+  return arc_prefs->GetApp(app_id);
+}
+
+}  // namespace
 
 class ArcAppDialogView : public views::DialogDelegateView,
                          public AppIconLoaderDelegate {
@@ -201,16 +211,6 @@ void ArcAppDialogView::OnAppImageUpdated(
 
 BEGIN_METADATA(ArcAppDialogView)
 END_METADATA
-
-std::unique_ptr<ArcAppListPrefs::AppInfo> GetArcAppInfo(
-    Profile* profile,
-    const std::string& app_id) {
-  ArcAppListPrefs* arc_prefs = ArcAppListPrefs::Get(profile);
-  DCHECK(arc_prefs);
-  return arc_prefs->GetApp(app_id);
-}
-
-}  // namespace
 
 void ShowUsbScanDeviceListPermissionDialog(Profile* profile,
                                            const std::string& app_id,

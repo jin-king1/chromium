@@ -5,6 +5,7 @@
 #include "chrome/browser/extensions/event_router_forwarder.h"
 
 #include <stddef.h>
+
 #include <memory>
 #include <utility>
 
@@ -17,7 +18,10 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/buildflags/buildflags.h"
 #include "url/gurl.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using content::BrowserThread;
 
@@ -30,7 +34,7 @@ EventRouterForwarder::~EventRouterForwarder() = default;
 void EventRouterForwarder::BroadcastEventToRenderers(
     events::HistogramValue histogram_value,
     const std::string& event_name,
-    base::Value::List event_args,
+    base::ListValue event_args,
     bool dispatch_to_off_the_record_profiles) {
   if (!BrowserThread::CurrentlyOn(BrowserThread::UI)) {
     content::GetUIThreadTaskRunner({})->PostTask(
@@ -79,7 +83,7 @@ void EventRouterForwarder::CallEventRouter(
     Profile* profile,
     events::HistogramValue histogram_value,
     const std::string& event_name,
-    base::Value::List event_args) {
+    base::ListValue event_args) {
   auto* event_router = extensions::EventRouter::Get(profile);
   // Extension does not exist for chromeos login.  This needs to be
   // removed once we have an extension service for login screen.

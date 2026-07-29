@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/modules/notifications/notification.h"
 #include "third_party/blink/renderer/modules/notifications/notification_metrics.h"
 #include "third_party/blink/renderer/modules/permissions/permission_utils.h"
+#include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
@@ -119,8 +120,8 @@ ScriptPromise<V8NotificationPermission> NotificationManager::RequestPermission(
         context,
         permission_service_.BindNewPipeAndPassReceiver(std::move(task_runner)));
     permission_service_.set_disconnect_handler(
-        WTF::BindOnce(&NotificationManager::OnPermissionServiceConnectionError,
-                      WrapWeakPersistent(this)));
+        BindOnce(&NotificationManager::OnPermissionServiceConnectionError,
+                 WrapWeakPersistent(this)));
   }
 
   auto* resolver =
@@ -128,13 +129,11 @@ ScriptPromise<V8NotificationPermission> NotificationManager::RequestPermission(
           script_state);
   auto promise = resolver->Promise();
 
-  LocalDOMWindow* win = To<LocalDOMWindow>(context);
   permission_service_->RequestPermission(
       CreatePermissionDescriptor(mojom::blink::PermissionName::NOTIFICATIONS),
-      LocalFrame::HasTransientUserActivation(win ? win->GetFrame() : nullptr),
-      WTF::BindOnce(&NotificationManager::OnPermissionRequestComplete,
-                    WrapPersistent(this), WrapPersistent(resolver),
-                    WrapPersistent(deprecated_callback)));
+      BindOnce(&NotificationManager::OnPermissionRequestComplete,
+               WrapPersistent(this), WrapPersistent(resolver),
+               WrapPersistent(deprecated_callback)));
 
   return promise;
 }
@@ -154,8 +153,8 @@ V8NotificationPermission PermissionStatusToEnum(
 void NotificationManager::OnPermissionRequestComplete(
     ScriptPromiseResolver<V8NotificationPermission>* resolver,
     V8NotificationPermissionCallback* deprecated_callback,
-    mojom::blink::PermissionStatus status) {
-  V8NotificationPermission permission = PermissionStatusToEnum(status);
+    mojom::blink::PermissionStatusWithDetailsPtr status) {
+  V8NotificationPermission permission = PermissionStatusToEnum(status->status);
   if (deprecated_callback) {
     deprecated_callback->InvokeAndReportException(nullptr, permission);
   }
@@ -218,15 +217,16 @@ void NotificationManager::DisplayPersistentNotification(
       mojom::blink::NotificationData::kMaximumDeveloperDataSize) {
     RecordPersistentNotificationDisplayResult(
         PersistentNotificationDisplayResult::kTooMuchData);
-    resolver->Reject();
+    resolver->RejectWithTypeError(
+        "The notification data exceeds the maximum allowed size.");
     return;
   }
 
   GetNotificationService()->DisplayPersistentNotification(
       service_worker_registration_id, std::move(notification_data),
       std::move(notification_resources),
-      WTF::BindOnce(&NotificationManager::DidDisplayPersistentNotification,
-                    WrapPersistent(this), WrapPersistent(resolver)));
+      BindOnce(&NotificationManager::DidDisplayPersistentNotification,
+               WrapPersistent(this), WrapPersistent(resolver)));
 }
 
 void NotificationManager::DidDisplayPersistentNotification(
@@ -238,16 +238,25 @@ void NotificationManager::DidDisplayPersistentNotification(
           PersistentNotificationDisplayResult::kOk);
       resolver->Resolve();
       return;
-    case mojom::blink::PersistentNotificationError::INTERNAL_ERROR:
+    case mojom::blink::PersistentNotificationError::
+        NOTIFICATION_SERVICE_NOT_FOUND:
       RecordPersistentNotificationDisplayResult(
           PersistentNotificationDisplayResult::kInternalError);
-      resolver->Reject();
+      resolver->RejectWithDOMException(DOMExceptionCode::kUnknownError,
+                                       "Notification service not found.");
+      return;
+    case mojom::blink::PersistentNotificationError::DATABASE_ERROR:
+      RecordPersistentNotificationDisplayResult(
+          PersistentNotificationDisplayResult::kInternalError);
+      resolver->RejectWithDOMException(
+          DOMExceptionCode::kUnknownError,
+          "Notification data could not be persisted.");
       return;
     case mojom::blink::PersistentNotificationError::PERMISSION_DENIED:
       RecordPersistentNotificationDisplayResult(
           PersistentNotificationDisplayResult::kPermissionDenied);
-      // TODO(https://crbug.com/832944): Throw a TypeError if permission denied.
-      resolver->Reject();
+      resolver->RejectWithTypeError(
+          "No notification permission has been granted for this origin.");
       return;
   }
   NOTREACHED();
@@ -265,8 +274,8 @@ void NotificationManager::GetNotifications(
     ScriptPromiseResolver<IDLSequence<Notification>>* resolver) {
   GetNotificationService()->GetNotifications(
       service_worker_registration_id, filter_tag, include_triggered,
-      WTF::BindOnce(&NotificationManager::DidGetNotifications,
-                    WrapPersistent(this), WrapPersistent(resolver)));
+      BindOnce(&NotificationManager::DidGetNotifications, WrapPersistent(this),
+               WrapPersistent(resolver)));
 }
 
 void NotificationManager::DidGetNotifications(
@@ -299,9 +308,9 @@ NotificationManager::GetNotificationService() {
     GetSupplementable()->GetBrowserInterfaceBroker().GetInterface(
         notification_service_.BindNewPipeAndPassReceiver(task_runner));
 
-    notification_service_.set_disconnect_handler(WTF::BindOnce(
-        &NotificationManager::OnNotificationServiceConnectionError,
-        WrapWeakPersistent(this)));
+    notification_service_.set_disconnect_handler(
+        BindOnce(&NotificationManager::OnNotificationServiceConnectionError,
+                 WrapWeakPersistent(this)));
   }
 
   return notification_service_.get();

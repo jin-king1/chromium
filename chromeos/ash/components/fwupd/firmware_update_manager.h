@@ -74,6 +74,7 @@ enum class MethodResult {
   kInvalidPatchFile = 9,
   kInstallFailedTimeout = 10,
   kFailedToGetFirmwareFilename = 11,
+  kUnknownDeviceId = 12,
 
   // All Install Errors returned by fwupd dbus signal
   // These errors are consistent with
@@ -417,7 +418,13 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_FWUPD) FirmwareUpdateManager
   mojo::Remote<firmware_update::mojom::UpdateProgressObserver>
       update_progress_observer_;
 
-  base::ObserverList<Observer> observer_list_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      Observer,
+      /*check_empty=*/false,
+      /*reentrancy=*/
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observer_list_;
 
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
 

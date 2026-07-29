@@ -16,7 +16,10 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/browser_context.h"
+#include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/gaia_id.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -33,7 +36,7 @@ ExtensionFunction::ResponseAction IdentityGetAccountsFunction::Run() {
   IdentityAPI* identity_api = IdentityAPI::GetFactoryInstance()->Get(profile);
   std::vector<CoreAccountInfo> accounts =
       identity_api->GetAccountsWithRefreshTokensForExtensions();
-  base::Value::List infos;
+  base::ListValue infos;
 
   if (accounts.empty()) {
     return RespondNow(WithArguments(std::move(infos)));
@@ -49,9 +52,9 @@ ExtensionFunction::ResponseAction IdentityGetAccountsFunction::Run() {
   // semantics isn't documented, the implementation has always ensured it and it
   // shouldn't be changed without determining that it is safe to do so.
   if (identity_manager->HasPrimaryAccountWithRefreshToken(
-          signin::ConsentLevel::kSync)) {
+          signin::ConsentLevel::kSignin)) {
     account_info.id =
-        identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSync)
+        identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
             .gaia.ToString();
     infos.Append(base::Value(account_info.ToValue()));
   }
@@ -60,9 +63,10 @@ ExtensionFunction::ResponseAction IdentityGetAccountsFunction::Run() {
   // well.
   if (!primary_account_only) {
     for (const auto& account : accounts) {
-      if (account.account_id ==
-          identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSync))
+      if (account.account_id == identity_manager->GetPrimaryAccountId(
+                                    signin::ConsentLevel::kSignin)) {
         continue;
+      }
       account_info.id = account.gaia.ToString();
       infos.Append(base::Value(account_info.ToValue()));
     }

@@ -5,6 +5,7 @@
 #include "chrome/services/speech/speech_recognition_recognizer_impl.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -14,8 +15,10 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/synchronization/lock.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_runner.h"
@@ -25,6 +28,7 @@
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/services/speech/soda/soda_client_impl.h"
+#include "chrome/services/speech/speech_timestamp_estimator.h"
 #include "components/soda/constants.h"
 #include "google_apis/google_api_keys.h"
 #include "media/base/audio_buffer.h"
@@ -60,6 +64,56 @@ constexpr char kLiveCaptionLanguageCountHistogramName[] =
 
 namespace {
 
+struct SodaCallbacks {
+  SpeechRecognitionRecognizerImpl::OnRecognitionEventCallback recognition;
+  SpeechRecognitionRecognizerImpl::OnLanguageIdentificationEventCallback lang;
+  SpeechRecognitionRecognizerImpl::OnSpeechRecognitionStoppedCallback stop;
+};
+
+class SodaClientRegistry {
+ public:
+  static SodaClientRegistry* GetInstance() {
+    static base::NoDestructor<SodaClientRegistry> instance;
+    return instance.get();
+  }
+
+  uint32_t Register(SpeechRecognitionRecognizerImpl* recognizer) {
+    base::AutoLock auto_lock(lock_);
+    uint32_t id = ++next_id_;
+    registry_.insert_or_assign(
+        id, SodaCallbacks{recognizer->recognition_event_callback(),
+                          recognizer->language_identification_event_callback(),
+                          recognizer->speech_recognition_stopped_callback()});
+    return id;
+  }
+
+  void Unregister(uint32_t id) {
+    base::AutoLock auto_lock(lock_);
+    registry_.erase(id);
+  }
+
+  bool GetCallbacks(uint32_t id, SodaCallbacks* out_callbacks) {
+    base::AutoLock auto_lock(lock_);
+    auto it = registry_.find(id);
+    if (it == registry_.end()) {
+      return false;
+    }
+    *out_callbacks = it->second;
+    return true;
+  }
+
+ private:
+  friend class base::NoDestructor<SodaClientRegistry>;
+  SodaClientRegistry() = default;
+
+  base::Lock lock_;
+  uint32_t next_id_ GUARDED_BY(lock_) = 0;
+  // A flat_map is used because the number of concurrent active SODA clients
+  // (N) is expected to be very small (typically just 1 or a few tabs).
+  // This provides better cache locality than std::map despite O(N) operations.
+  base::flat_map<uint32_t, SodaCallbacks> registry_ GUARDED_BY(lock_);
+};
+
 // Callback executed by the SODA library on a speech recognition event. The
 // callback handle is a void pointer to the SpeechRecognitionRecognizerImpl that
 // owns the SODA instance. SpeechRecognitionRecognizerImpl owns the SodaClient
@@ -76,15 +130,31 @@ void OnSodaResponse(const char* serialized_proto,
     return;
   }
 
+  SodaCallbacks callbacks;
+  uint32_t id =
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(callback_handle));
+  if (!SodaClientRegistry::GetInstance()->GetCallbacks(id, &callbacks)) {
+    return;
+  }
+
   if (response.soda_type() == soda::chrome::SodaResponse::RECOGNITION) {
-    soda::chrome::SodaRecognitionResult result = response.recognition_result();
+    const soda::chrome::SodaRecognitionResult& result =
+        response.recognition_result();
+
+    auto speech_recognition_result = media::SpeechRecognitionResult(
+        result.hypothesis(0),
+        result.result_type() == soda::chrome::SodaRecognitionResult::FINAL);
+
+    if (result.has_timing_metrics()) {
+      speech_recognition_result.timing_information = media::TimingInformation();
+      speech_recognition_result.timing_information->audio_start_time =
+          base::Microseconds(result.timing_metrics().audio_start_time_usec());
+      speech_recognition_result.timing_information->audio_end_time =
+          base::Microseconds(result.timing_metrics().event_end_time_usec());
+    }
+
     DCHECK(result.hypothesis_size());
-    static_cast<SpeechRecognitionRecognizerImpl*>(callback_handle)
-        ->recognition_event_callback()
-        .Run(media::SpeechRecognitionResult(
-            result.hypothesis(0),
-            result.result_type() ==
-                soda::chrome::SodaRecognitionResult::FINAL));
+    callbacks.recognition.Run(std::move(speech_recognition_result));
   }
 
   if (response.soda_type() == soda::chrome::SodaResponse::LANGID) {
@@ -101,19 +171,14 @@ void OnSodaResponse(const char* serialized_proto,
       return;
     }
 
-    static_cast<SpeechRecognitionRecognizerImpl*>(callback_handle)
-        ->language_identification_event_callback()
-        .Run(std::string(event.language()),
-             static_cast<media::mojom::ConfidenceLevel>(
-                 event.confidence_level()),
-             static_cast<media::mojom::AsrSwitchResult>(
-                 event.asr_switch_result()));
+    callbacks.lang.Run(
+        std::string(event.language()),
+        static_cast<media::mojom::ConfidenceLevel>(event.confidence_level()),
+        static_cast<media::mojom::AsrSwitchResult>(event.asr_switch_result()));
   }
 
   if (response.soda_type() == soda::chrome::SodaResponse::STOP) {
-    static_cast<SpeechRecognitionRecognizerImpl*>(callback_handle)
-        ->speech_recognition_stopped_callback()
-        .Run();
+    callbacks.stop.Run();
   }
 }
 
@@ -133,6 +198,10 @@ GetSodaSpeechRecognitionMode(
 }  // namespace
 
 SpeechRecognitionRecognizerImpl::~SpeechRecognitionRecognizerImpl() {
+  if (soda_client_id_ > 0) {
+    SodaClientRegistry::GetInstance()->Unregister(soda_client_id_);
+  }
+
   base::UmaHistogramBoolean(
       base::StrCat({"Accessibility.LiveCaption.", primary_language_name_,
                     ".SessionContainsRecognizedSpeech"}),
@@ -192,8 +261,42 @@ void SpeechRecognitionRecognizerImpl::OnRecognitionEvent(
     session_contains_speech_ = true;
   }
 
-  if (!client_remote_.is_bound())
+  if (!client_remote_.is_bound()) {
     return;
+  }
+
+  if (event.timing_information.has_value()) {
+    using SpeechTimestamp = SpeechTimestampEstimator::SpeechTimestamp;
+    auto& timing_info = event.timing_information.value();
+
+    // During ResetSoda(), we reset `timestamp_estimator_`, and the next few
+    // transcriptions might have missing or wrong timestamps, but they should
+    // quickly return to being consistent.
+    //
+    // Indeed, due to threading, there might be `OnRecognitionEvent()` calls in
+    // flight from a previous SODA session, which arrive after
+    // `timestamp_estimator_` is reset. If the `timing_info` passed to the new
+    // estimator is out of bounds, nothing happens and `media_timestamps` will
+    // be empty. If the `timing_info` is in bounds, `media_timestamps` will have
+    // the wrong timestamps, and those timestamps will also be missing from
+    // future transcriptions.
+    //
+    // Correctly handling this scenario would add a fair bit more complexity,
+    // which might not be warranted at this time.
+    std::vector<media::MediaTimestampRange> media_timestamps;
+    if (event.is_final) {
+      media_timestamps = timestamp_estimator_->TakeTimestampsInRange(
+          SpeechTimestamp(timing_info.audio_start_time),
+          SpeechTimestamp(timing_info.audio_end_time));
+    } else {
+      media_timestamps = timestamp_estimator_->PeekTimestampsInRange(
+          SpeechTimestamp(timing_info.audio_start_time),
+          SpeechTimestamp(timing_info.audio_end_time));
+    }
+    if (!media_timestamps.empty()) {
+      timing_info.originating_media_timestamps = std::move(media_timestamps);
+    }
+  }
 
   client_remote_->OnSpeechRecognitionRecognitionEvent(
       std::move(event),
@@ -237,6 +340,7 @@ SpeechRecognitionRecognizerImpl::SpeechRecognitionRecognizerImpl(
       config_paths_(config_paths),
       primary_language_name_(primary_language_name),
       mask_offensive_words_(mask_offensive_words),
+      timestamp_estimator_(std::make_unique<SpeechTimestampEstimator>()),
       speech_recognition_service_(speech_recognition_service) {
   recognition_event_callback_ = base::BindPostTaskToCurrentDefault(
       base::BindRepeating(&SpeechRecognitionRecognizerImpl::OnRecognitionEvent,
@@ -257,6 +361,8 @@ SpeechRecognitionRecognizerImpl::SpeechRecognitionRecognizerImpl(
   if (speech_recognition_service_) {
     speech_recognition_service_->AddObserver(this);
   }
+
+  soda_client_id_ = SodaClientRegistry::GetInstance()->Register(this);
 }
 
 void SpeechRecognitionRecognizerImpl::CreateSodaClient(
@@ -280,7 +386,8 @@ void SpeechRecognitionRecognizerImpl::OnClientHostDisconnected() {
 }
 
 void SpeechRecognitionRecognizerImpl::SendAudioToSpeechRecognitionService(
-    media::mojom::AudioDataS16Ptr buffer) {
+    media::mojom::AudioDataS16Ptr buffer,
+    std::optional<base::TimeDelta> media_start_pts) {
   int channel_count = buffer->channel_count;
   int frame_count = buffer->frame_count;
   int sample_rate = buffer->sample_rate;
@@ -289,7 +396,9 @@ void SpeechRecognitionRecognizerImpl::SendAudioToSpeechRecognitionService(
 
   // Update watch time durations.
   if (options_->recognizer_client_type ==
-      media::mojom::RecognizerClientType::kLiveCaption) {
+          media::mojom::RecognizerClientType::kLiveCaption ||
+      options_->recognizer_client_type ==
+          media::mojom::RecognizerClientType::kSchoolTools) {
     base::TimeDelta duration =
         media::AudioTimestampHelper::FramesToTime(frame_count, sample_rate);
     if (is_client_requesting_speech_recognition_) {
@@ -321,6 +430,10 @@ void SpeechRecognitionRecognizerImpl::SendAudioToSpeechRecognitionService(
     return;
   }
 
+  auto buffer_duration = SpeechTimestampEstimator::PlaybackDuration(
+      media::AudioTimestampHelper::FramesToTime(buffer->frame_count,
+                                                buffer->sample_rate));
+
   // Skip this buffer if there has been no nonzero data for several seconds.
   if (options_->skip_continuously_empty_audio) {
     const bool buffer_is_zero =
@@ -330,14 +443,31 @@ void SpeechRecognitionRecognizerImpl::SendAudioToSpeechRecognitionService(
     if (!buffer_is_zero) {
       last_non_empty_audio_time_ = now;
     }
-    if (now - last_non_empty_audio_time_ > base::Seconds(10)) {
+
+    // Brief periods of empty audio can be meaningful input to the speech
+    // recognition engine. Only drop `buffer` after 10s of silence to save on
+    // computations, once we're fairly sure the silence isn't meaningful.
+    constexpr base::TimeDelta kSilenceThreshold = base::Seconds(10);
+    if (now - last_non_empty_audio_time_ > kSilenceThreshold) {
       // No nonzero data for several seconds. Don't send this buffer of zeroes.
+
+      // Forward `media_start_pts` since we can seek into the middle of long
+      // stretches of silence.
+      AddMediaTimestampToEstimator(media_start_pts);
+
+      timestamp_estimator_->OnSilentMediaDropped(std::move(buffer_duration));
       return;
     }
   }
 
   // OK, everything is verified, let's send the audio.
   SendAudioToSpeechRecognitionServiceInternal(std::move(buffer));
+
+  // Update `timestamp_estimator_` after sending audio to SODA, since it might
+  // be reset along with SODA after audio parameter changes.
+  AddMediaTimestampToEstimator(media_start_pts);
+
+  timestamp_estimator_->AppendDuration(std::move(buffer_duration));
 }
 
 void SpeechRecognitionRecognizerImpl::OnSpeechRecognitionError() {
@@ -371,7 +501,7 @@ void SpeechRecognitionRecognizerImpl::UpdateRecognitionContext(
 
 void SpeechRecognitionRecognizerImpl::AddAudio(
     media::mojom::AudioDataS16Ptr buffer) {
-  SendAudioToSpeechRecognitionService(std::move(buffer));
+  SendAudioToSpeechRecognitionService(std::move(buffer), std::nullopt);
 }
 
 void SpeechRecognitionRecognizerImpl::OnAudioCaptureEnd() {
@@ -440,9 +570,10 @@ void SpeechRecognitionRecognizerImpl::OnLanguageChanged(
                                   base::PathExists(config_file_path));
           },
           language),
-      base::BindOnce(&SpeechRecognitionRecognizerImpl::ResetSodaWithNewLanguage,
-                     weak_factory_.GetWeakPtr(),
-                     language_component_config.value().language_name));
+      base::BindOnce(
+          &SpeechRecognitionRecognizerImpl::ResetSodaWithNewLanguage,
+          weak_factory_.GetWeakPtr(),
+          std::string(language_component_config.value().language_name)));
 }
 
 void SpeechRecognitionRecognizerImpl::OnMaskOffensiveWordsChanged(
@@ -488,8 +619,14 @@ void SpeechRecognitionRecognizerImpl::ResetSoda() {
   // to determine the appropriate language pack path. Note that
   // SodaInstaller::GetLanguagePath() is not implemented outside of Chrome OS,
   // and options_->language is not set for Live Caption.
+  std::optional<speech::SodaLanguagePackComponentConfig> language_config =
+      speech::GetLanguageComponentConfigMatchingLanguageSubtag(
+          primary_language_name_);
   std::string language_pack_directory =
-      config_paths_[primary_language_name_].AsUTF8Unsafe();
+      config_paths_[language_config.has_value()
+                        ? language_config.value().language_name
+                        : primary_language_name_]
+          .AsUTF8Unsafe();
 
   // Initialize the SODA instance with the serialized config.
   config_msg_ = soda::chrome::ExtendedSodaConfigMsg();
@@ -505,8 +642,7 @@ void SpeechRecognitionRecognizerImpl::ResetSoda() {
   config_msg_.set_enable_speaker_change_detection(
       base::FeatureList::IsEnabled(media::kSpeakerChangeDetection));
   config_msg_.set_mask_offensive_words(mask_offensive_words_);
-  if (base::FeatureList::IsEnabled(media::kLiveCaptionMultiLanguage) &&
-      config_paths_.size() > 0) {
+  if (config_paths_.size() > 0 && options_->allow_multi_language) {
     auto* multilang_config = config_msg_.mutable_multilang_config();
     multilang_config->set_rewind_when_switching_language(true);
     auto& multilang_language_pack_directory =
@@ -536,14 +672,27 @@ void SpeechRecognitionRecognizerImpl::ResetSoda() {
   config.soda_config = serialized.c_str();
   config.soda_config_size = serialized.size();
   config.callback = &OnSodaResponse;
-  config.callback_handle = this;
+  config.callback_handle =
+      reinterpret_cast<void*>(static_cast<uintptr_t>(soda_client_id_));
   CHECK(soda_client_);
   soda_client_->Reset(config, sample_rate_, channel_count_);
+
+  timestamp_estimator_ = std::make_unique<SpeechTimestampEstimator>();
 }
 
 soda::chrome::ExtendedSodaConfigMsg*
 SpeechRecognitionRecognizerImpl::GetExtendedSodaConfigMsgForTesting() {
   return &config_msg_;
+}
+
+void SpeechRecognitionRecognizerImpl::AddMediaTimestampToEstimator(
+    const std::optional<base::TimeDelta>& media_start_pts) {
+  if (!media_start_pts.has_value()) {
+    return;
+  }
+
+  timestamp_estimator_->AddPlaybackStart(
+      SpeechTimestampEstimator::MediaTimestamp(media_start_pts.value()));
 }
 
 }  // namespace speech

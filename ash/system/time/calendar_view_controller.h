@@ -5,7 +5,6 @@
 #ifndef ASH_SYSTEM_TIME_CALENDAR_VIEW_CONTROLLER_H_
 #define ASH_SYSTEM_TIME_CALENDAR_VIEW_CONTROLLER_H_
 
-#include <deque>
 #include <list>
 #include <map>
 #include <memory>
@@ -285,7 +284,12 @@ class ASH_EXPORT CalendarViewController {
   // The first date shown, used to record max distance browsed metrics.
   const base::Time first_shown_date_;
 
-  base::ObserverList<Observer> observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      Observer,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observers_;
 
   base::WeakPtrFactory<CalendarViewController> weak_factory_{this};
 };

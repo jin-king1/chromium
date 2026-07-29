@@ -134,14 +134,11 @@ leveldb::Status TransactionalLevelDBDatabase::Get(std::string_view key,
 leveldb::Status TransactionalLevelDBDatabase::Write(
     LevelDBWriteBatch* write_batch) {
   DCHECK(write_batch);
-  base::TimeTicks begin_time = base::TimeTicks::Now();
   leveldb::WriteOptions write_options;
   write_options.sync = kSyncWrites;
 
   const leveldb::Status s =
       db()->Write(write_options, write_batch->write_batch_.get());
-  UMA_HISTOGRAM_TIMES("WebCore.IndexedDB.LevelDB.WriteTime",
-                      base::TimeTicks::Now() - begin_time);
   EvictAllIterators();
   return s;
 }
@@ -222,7 +219,7 @@ bool TransactionalLevelDBDatabase::OnMemoryDump(
     return true;
 
   auto* db_dump = pmd->CreateAllocatorDump(
-      base::StringPrintf("site_storage/index_db/db_0x%" PRIXPTR,
+      base::StringPrintf("site_storage/indexed_db/database_engine_0x%" PRIXPTR,
                          reinterpret_cast<uintptr_t>(db())));
   db_dump->AddScalar(base::trace_event::MemoryAllocatorDump::kNameSize,
                      base::trace_event::MemoryAllocatorDump::kUnitsBytes,
@@ -234,7 +231,7 @@ bool TransactionalLevelDBDatabase::OnMemoryDump(
     // an edge to the existing env.
     auto* env_tracker_dump = DBTracker::GetOrCreateAllocatorDump(pmd, env());
     auto* env_dump = pmd->CreateAllocatorDump(
-        base::StringPrintf("site_storage/index_db/memenv_0x%" PRIXPTR,
+        base::StringPrintf("site_storage/indexed_db/memenv_0x%" PRIXPTR,
                            reinterpret_cast<uintptr_t>(env())));
     env_dump->AddScalar(base::trace_event::MemoryAllocatorDump::kNameSize,
                         base::trace_event::MemoryAllocatorDump::kUnitsBytes,

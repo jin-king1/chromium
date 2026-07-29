@@ -6,11 +6,14 @@
 
 #include <string_view>
 
+#include "base/strings/stringprintf.h"
+#include "base/strings/to_string.h"
 #include "base/test/bind.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/content_settings_utils.h"
 #include "content/browser/btm/btm_service_impl.h"
+#include "content/browser/renderer_host/navigation_request.h"
 #include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/btm_service.h"
 #include "content/public/browser/web_contents.h"
@@ -20,8 +23,10 @@
 #include "content/public/test/test_frame_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "net/base/schemeful_site.h"
+#include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-shared.h"
 
@@ -72,7 +77,8 @@ void AccessCookieViaJSIn(WebContents* web_contents, RenderFrameHost* frame) {
 [[nodiscard]] testing::AssertionResult ClientSideRedirectViaMetaTag(
     WebContents* web_contents,
     RenderFrameHost* frame,
-    const GURL& target_url) {
+    const GURL& target_url,
+    const std::optional<const GURL>& expected_commit_url) {
   TestFrameNavigationObserver nav_observer(frame);
   bool js_succeeded = ExecJs(frame,
                              JsReplace(
@@ -97,19 +103,22 @@ void AccessCookieViaJSIn(WebContents* web_contents, RenderFrameHost* frame) {
            << target_url;
   }
   nav_observer.Wait();
-  if (nav_observer.last_committed_url() == target_url) {
+  if (nav_observer.last_committed_url() ==
+      expected_commit_url.value_or(target_url)) {
     return testing::AssertionSuccess();
   } else {
     return testing::AssertionFailure()
-           << "Expected to arrive at " << target_url << " but URL was actually "
-           << nav_observer.last_committed_url();
+           << "Expected to arrive at "
+           << expected_commit_url.value_or(target_url)
+           << " but URL was actually " << nav_observer.last_committed_url();
   }
 }
 
 [[nodiscard]] testing::AssertionResult ClientSideRedirectViaJS(
     WebContents* web_contents,
     RenderFrameHost* frame,
-    const GURL& target_url) {
+    const GURL& target_url,
+    const std::optional<const GURL>& expected_commit_url) {
   TestFrameNavigationObserver nav_observer(frame);
   bool js_succeeded =
       ExecJs(frame, JsReplace(R"(window.location.replace($1);)", target_url),
@@ -120,12 +129,48 @@ void AccessCookieViaJSIn(WebContents* web_contents, RenderFrameHost* frame) {
            << target_url;
   }
   nav_observer.Wait();
-  if (nav_observer.last_committed_url() == target_url) {
+  if (nav_observer.last_committed_url() ==
+      expected_commit_url.value_or(target_url)) {
     return testing::AssertionSuccess();
   } else {
     return testing::AssertionFailure()
-           << "Expected to arrive at " << target_url << " but URL was actually "
-           << nav_observer.last_committed_url();
+           << "Expected to arrive at "
+           << expected_commit_url.value_or(target_url)
+           << " but URL was actually " << nav_observer.last_committed_url();
+  }
+}
+
+std::string StringifyBtmClientRedirectMethod(
+    BtmClientRedirectMethod client_redirect_method) {
+  switch (client_redirect_method) {
+    case BtmClientRedirectMethod::kMetaTag:
+      return "MetaTag";
+    case BtmClientRedirectMethod::kJsWindowLocationReplace:
+      return "JsWindowLocationReplace";
+    case BtmClientRedirectMethod::kRedirectLikeNavigation:
+      return "RedirectLikeNavigation";
+  }
+}
+
+[[nodiscard]] testing::AssertionResult PerformClientRedirect(
+    BtmClientRedirectMethod redirect_method,
+    WebContents* web_contents,
+    const GURL& redirect_url,
+    const std::optional<const GURL>& expected_commit_url) {
+  const GURL& commit_url = expected_commit_url.value_or(redirect_url);
+  switch (redirect_method) {
+    case BtmClientRedirectMethod::kMetaTag:
+      return ClientSideRedirectViaMetaTag(web_contents,
+                                          web_contents->GetPrimaryMainFrame(),
+                                          redirect_url, commit_url);
+    case BtmClientRedirectMethod::kJsWindowLocationReplace:
+      return ClientSideRedirectViaJS(web_contents,
+                                     web_contents->GetPrimaryMainFrame(),
+                                     redirect_url, commit_url);
+    case BtmClientRedirectMethod::kRedirectLikeNavigation:
+      return testing::AssertionResult(
+          NavigateToURLFromRendererWithoutUserGesture(
+              web_contents, redirect_url, commit_url));
   }
 }
 
@@ -167,11 +212,11 @@ void CreateImageAndWaitForCookieAccess(WebContents* web_contents,
   observer.Wait();
 }
 
-std::optional<StateValue> GetBtmState(BtmServiceImpl* dips_service,
+std::optional<StateValue> GetBtmState(BtmServiceImpl* btm_service,
                                       const GURL& url) {
   std::optional<StateValue> state;
 
-  auto* storage = dips_service->storage();
+  auto* storage = btm_service->storage();
   DCHECK(storage);
   storage->AsyncCall(&BtmStorage::Read)
       .WithArgs(url)
@@ -180,7 +225,7 @@ std::optional<StateValue> GetBtmState(BtmServiceImpl* dips_service,
           state = loaded_state.ToStateValue();
         }
       }));
-  WaitOnStorage(dips_service);
+  WaitOnStorage(btm_service);
 
   return state;
 }
@@ -197,7 +242,7 @@ void URLCookieAccessObserver::Wait() {
 void URLCookieAccessObserver::OnCookiesAccessed(
     RenderFrameHost* render_frame_host,
     const CookieAccessDetails& details) {
-  cookie_accessed_in_primary_page_ = IsInPrimaryPage(render_frame_host);
+  cookie_accessed_in_primary_page_ = IsInPrimaryPage(*render_frame_host);
 
   if (details.type == access_type_ && details.url == url_) {
     run_loop_.Quit();
@@ -207,7 +252,7 @@ void URLCookieAccessObserver::OnCookiesAccessed(
 void URLCookieAccessObserver::OnCookiesAccessed(
     NavigationHandle* navigation_handle,
     const CookieAccessDetails& details) {
-  cookie_accessed_in_primary_page_ = IsInPrimaryPage(navigation_handle);
+  cookie_accessed_in_primary_page_ = IsInPrimaryPage(*navigation_handle);
 
   if (details.type == access_type_ && details.url == url_) {
     run_loop_.Quit();
@@ -354,10 +399,6 @@ void SimulateMouseClickAndWait(WebContents* web_contents) {
   observer.Wait();
 }
 
-UrlAndSourceId MakeUrlAndId(std::string_view url) {
-  return UrlAndSourceId(GURL(url), ukm::AssignNewSourceId());
-}
-
 TpcBlockingBrowserClient::TpcBlockingBrowserClient() = default;
 TpcBlockingBrowserClient::~TpcBlockingBrowserClient() = default;
 
@@ -365,35 +406,20 @@ bool TpcBlockingBrowserClient::IsFullCookieAccessAllowed(
     BrowserContext* browser_context,
     WebContents* web_contents,
     const GURL& url,
-    const blink::StorageKey& storage_key) {
+    const blink::StorageKey& storage_key,
+    net::CookieSettingOverrides overrides) {
   return IsFullCookieAccessAllowed(url, storage_key.ToNetSiteForCookies(),
-                                   storage_key.origin(), /*overrides=*/{});
+                                   storage_key.origin(), overrides,
+                                   storage_key.ToCookiePartitionKey());
 }
 
-void TpcBlockingBrowserClient::GrantCookieAccessDueToHeuristic(
+bool TpcBlockingBrowserClient::AreThirdPartyCookiesGenerallyAllowed(
     BrowserContext* browser_context,
-    const net::SchemefulSite& top_frame_site,
-    const net::SchemefulSite& accessing_site,
-    base::TimeDelta ttl,
-    bool ignore_schemes) {
-  ContentSettingsPattern primary_pattern =
-      ContentSettingsPattern::FromURLToSchemefulSitePattern(
-          accessing_site.GetURL());
-  ContentSettingsPattern secondary_pattern =
-      ContentSettingsPattern::FromURLToSchemefulSitePattern(
-          top_frame_site.GetURL());
-  if (ignore_schemes) {
-    primary_pattern =
-        ContentSettingsPattern::ToHostOnlyPattern(primary_pattern);
-    secondary_pattern =
-        ContentSettingsPattern::ToHostOnlyPattern(secondary_pattern);
-  }
-  tpc_content_settings_.SetValue(primary_pattern, secondary_pattern,
-                                 base::Value(CONTENT_SETTING_ALLOW),
-                                 /*metadata=*/{});
+    WebContents* web_contents) {
+  return !block_3pcs_;
 }
 
-bool TpcBlockingBrowserClient::ShouldDipsDeleteInteractionRecords(
+bool TpcBlockingBrowserClient::ShouldBtmDeleteInteractionRecords(
     uint64_t remove_mask) {
   return remove_mask & TpcBlockingBrowserClient::DATA_TYPE_HISTORY;
 }
@@ -419,20 +445,22 @@ void TpcBlockingBrowserClient::BlockThirdPartyCookiesOnSite(const GURL& url) {
       base::Value(CONTENT_SETTING_BLOCK), /*metadata=*/{});
 }
 
-void TpcBlockingBrowserClient::BlockThirdPartyCookies(
+void TpcBlockingBrowserClient::SetThirdPartyCookieAccess(
     const GURL& url,
-    const GURL& first_party_url) {
+    const GURL& first_party_url,
+    ContentSetting setting) {
   tpc_content_settings_.SetValue(
       ContentSettingsPattern::FromURLToSchemefulSitePattern(url),
       ContentSettingsPattern::FromURLToSchemefulSitePattern(first_party_url),
-      base::Value(CONTENT_SETTING_BLOCK), /*metadata=*/{});
+      base::Value(setting), /*metadata=*/{});
 }
 
 // Overrides for content_settings::CookieSettingsBase
 
 bool TpcBlockingBrowserClient::ShouldIgnoreSameSiteRestrictions(
     const GURL& url,
-    const net::SiteForCookies& site_for_cookies) const {
+    const net::SiteForCookies& site_for_cookies,
+    const url::Origin& top_level_origin) const {
   return false;
 }
 
@@ -475,13 +503,46 @@ bool TpcBlockingBrowserClient::ShouldBlockThirdPartyCookies(
   return block_3pcs_;
 }
 
-bool TpcBlockingBrowserClient::MitigationsEnabledFor3pcd() const {
+bool TpcBlockingBrowserClient::IsThirdPartyCookiesAllowedScheme(
+    std::string_view scheme) const {
   return false;
 }
 
-bool TpcBlockingBrowserClient::IsThirdPartyCookiesAllowedScheme(
-    const std::string& scheme) const {
-  return false;
+PausedCookieAccessObservers::PausedCookieAccessObservers(
+    NotifyCookiesAccessedCallback callback,
+    PendingObserversWithContext observers)
+    : CookieAccessObservers(std::move(callback)),
+      pending_receivers_(std::move(observers)) {}
+
+PausedCookieAccessObservers::~PausedCookieAccessObservers() = default;
+
+void PausedCookieAccessObservers::Add(
+    mojo::PendingReceiver<network::mojom::CookieAccessObserver> receiver,
+    CookieAccessDetails::Source source) {
+  pending_receivers_.emplace_back(std::move(receiver), source);
+}
+
+PausedCookieAccessObservers::PendingObserversWithContext
+PausedCookieAccessObservers::TakeReceiversWithContext() {
+  return std::exchange(pending_receivers_, {});
+}
+
+CookieAccessInterceptor::CookieAccessInterceptor(WebContents& web_contents)
+    : WebContentsObserver(&web_contents) {}
+
+CookieAccessInterceptor::~CookieAccessInterceptor() = default;
+
+void CookieAccessInterceptor::DidStartNavigation(
+    NavigationHandle* navigation_handle) {
+  auto& request = *NavigationRequest::From(navigation_handle);
+
+  auto observers = std::make_unique<PausedCookieAccessObservers>(
+      base::BindRepeating(&NavigationRequest::NotifyCookiesAccessed,
+                          // Unretained is safe here because ownership of the
+                          // observers is passed to the request below.
+                          base::Unretained(&request)),
+      request.TakeCookieObservers());
+  request.SetCookieAccessObserversForTesting(std::move(observers));
 }
 
 }  // namespace content

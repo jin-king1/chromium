@@ -86,15 +86,11 @@ const AtomicString& SVGURIReference::LegacyHrefString(
   return element.getAttribute(xlink_names::kHrefAttr);
 }
 
-KURL SVGURIReference::LegacyHrefURL(const Document& document) const {
-  return document.CompleteURL(StripLeadingAndTrailingHTMLSpaces(HrefString()));
-}
-
 SVGURLReferenceResolver::SVGURLReferenceResolver(const String& url_string,
                                                  const Document& document)
     : relative_url_(url_string),
       document_(&document),
-      is_local_(url_string.StartsWith('#')) {}
+      is_local_(url_string.starts_with('#')) {}
 
 KURL SVGURLReferenceResolver::AbsoluteUrl() const {
   if (absolute_url_.IsNull())
@@ -110,8 +106,8 @@ bool SVGURLReferenceResolver::IsLocal() const {
 AtomicString SVGURLReferenceResolver::FragmentIdentifier() const {
   // Use KURL's FragmentIdentifier to ensure that we're handling the
   // fragment in a consistent manner.
-  return AtomicString(DecodeURLEscapeSequences(
-      AbsoluteUrl().FragmentIdentifier(), DecodeURLMode::kUTF8OrIsomorphic));
+  return AtomicString(DecodeUrlEscapeSequences(
+      AbsoluteUrl().FragmentIdentifier(), DecodeUrlMode::kUtf8OrIsomorphic));
 }
 
 AtomicString SVGURIReference::FragmentIdentifierFromIRIString(
@@ -145,10 +141,9 @@ Element* SVGURIReference::ObserveTarget(Member<IdTargetObserver>& observer,
                                         const String& href_string) {
   TreeScope& tree_scope = context_element.OriginatingTreeScope();
   AtomicString id = FragmentIdentifierFromIRIString(href_string, tree_scope);
-  return ObserveTarget(
-      observer, tree_scope, id,
-      WTF::BindRepeating(&SVGElement::BuildPendingResource,
-                         WrapWeakPersistent(&context_element)));
+  return ObserveTarget(observer, tree_scope, id,
+                       BindRepeating(&SVGElement::BuildPendingResource,
+                                     WrapWeakPersistent(&context_element)));
 }
 
 Element* SVGURIReference::ObserveTarget(Member<IdTargetObserver>& observer,

@@ -121,7 +121,6 @@ class TestSessionControllerClient final : public SessionControllerClient {
   void SwitchActiveUser(const AccountId& account_id) override;
   void CycleActiveUser(CycleUserDirection direction) override;
   void ShowMultiProfileLogin() override;
-  void EmitAshInitialized() override;
   PrefService* GetSigninScreenPrefService() override;
   PrefService* GetUserPrefService(const AccountId& account_id) override;
   base::FilePath GetProfilePath(const AccountId& account_id) override;
@@ -157,9 +156,6 @@ class TestSessionControllerClient final : public SessionControllerClient {
   // Notify first session ready if the notification has not sent, there
   // is at least one user session created, and session state is ACTIVE.
   void MaybeNotifyFirstSessionReady();
-
-  // Notify user prefs initialized if user session has started.
-  void NotifyUserPrefServiceInitialized(const AccountId& account_id);
 
   const raw_ptr<SessionControllerImpl, DanglingUntriaged> controller_;
   const raw_ptr<TestPrefServiceProvider> prefs_provider_;

@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/modules/storage_access/storage_access_handle.h"
 
+#include "base/byte_size.h"
 #include "base/types/pass_key.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_storage_estimate.h"
@@ -76,8 +77,8 @@ namespace {
 
 void EstimateImplAfterRemoteEstimate(
     ScriptPromiseResolver<StorageEstimate>* resolver,
-    int64_t current_usage,
-    int64_t current_quota,
+    base::ByteSize current_usage,
+    base::ByteSize current_quota,
     bool success) {
   ScriptState* script_state = resolver->GetScriptState();
   if (!script_state->ContextIsValid()) {
@@ -93,8 +94,8 @@ void EstimateImplAfterRemoteEstimate(
   }
 
   StorageEstimate* estimate = StorageEstimate::Create();
-  estimate->setUsage(current_usage);
-  estimate->setQuota(current_quota);
+  estimate->setUsage(current_usage.InBytes());
+  estimate->setQuota(current_quota.InBytes());
   estimate->setUsageDetails(StorageUsageDetails::Create());
   resolver->Resolve(estimate);
 }
@@ -321,8 +322,8 @@ ScriptPromise<FileSystemDirectoryHandle> StorageAccessHandle::getDirectory(
           kStorageAccessAPI_requestStorageAccess_BeyondCookies_getDirectory_Use);
   return StorageManagerFileSystemAccess::CheckStorageAccessIsAllowed(
       script_state, exception_state,
-      WTF::BindOnce(&StorageAccessHandle::GetDirectoryImpl,
-                    WrapWeakPersistent(this)));
+      BindOnce(&StorageAccessHandle::GetDirectoryImpl,
+               WrapWeakPersistent(this)));
 }
 
 void StorageAccessHandle::GetDirectoryImpl(
@@ -335,8 +336,8 @@ void StorageAccessHandle::GetDirectoryImpl(
     return;
   }
   remote->GetDirectory(
-      WTF::BindOnce(&StorageManagerFileSystemAccess::DidGetSandboxedFileSystem,
-                    WrapPersistent(resolver)));
+      BindOnce(&StorageManagerFileSystemAccess::DidGetSandboxedFileSystem,
+               WrapPersistent(resolver)));
 }
 
 ScriptPromise<StorageEstimate> StorageAccessHandle::estimate(
@@ -360,8 +361,8 @@ ScriptPromise<StorageEstimate> StorageAccessHandle::estimate(
         DOMExceptionCode::kInvalidStateError));
     return promise;
   }
-  remote->Estimate(WTF::BindOnce(&EstimateImplAfterRemoteEstimate,
-                                 WrapPersistent(resolver)));
+  remote->Estimate(blink::BindOnce(&EstimateImplAfterRemoteEstimate,
+                                   WrapPersistent(resolver)));
   return promise;
 }
 
@@ -404,7 +405,7 @@ void StorageAccessHandle::revokeObjectURL(
   GetSupplementable()->CountUse(
       WebFeature::
           kStorageAccessAPI_requestStorageAccess_BeyondCookies_revokeObjectURL_Use);
-  KURL resolved_url(NullURL(), url);
+  KURL resolved_url(NullUrl(), url);
   GetSupplementable()->GetExecutionContext()->RemoveURLFromMemoryCache(
       resolved_url);
   public_url_manager->Revoke(resolved_url);
@@ -435,9 +436,16 @@ BroadcastChannel* StorageAccessHandle::BroadcastChannel(
 
 blink::SharedWorker* StorageAccessHandle::SharedWorker(
     ExecutionContext* context,
-    const String& url,
+    const V8UnionTrustedScriptURLOrUSVString* url,
     const V8UnionSharedWorkerOptionsOrString* name_or_options,
     ExceptionState& exception_state) const {
+  String compliant_url = TrustedTypesCheckForScriptURL(
+      url, context, trusted_types_names::kStorageAccessHandle,
+      trusted_types_names::kSharedWorker, exception_state);
+  if (exception_state.HadException()) {
+    return nullptr;
+  }
+
   if (!storage_access_types_->all() && !storage_access_types_->sharedWorker()) {
     exception_state.ThrowSecurityError(kSharedWorkerNotRequested);
     return nullptr;
@@ -457,9 +465,9 @@ blink::SharedWorker* StorageAccessHandle::SharedWorker(
   GetSupplementable()->CountUse(
       WebFeature::
           kStorageAccessAPI_requestStorageAccess_BeyondCookies_SharedWorker_Use);
-  return SharedWorker::Create(PassKey(), context, url, name_or_options,
-                              exception_state, public_url_manager,
-                              &shared_worker_connector);
+  return SharedWorker::Create(PassKey(), context, compliant_url,
+                              name_or_options, exception_state,
+                              public_url_manager, &shared_worker_connector);
 }
 
 namespace bindings {

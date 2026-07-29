@@ -29,6 +29,8 @@
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
+#include "third_party/blink/renderer/core/layout/inline/caret_rect.h"
+#include "third_party/blink/renderer/platform/geometry/physical_offset.h"
 #include "third_party/blink/renderer/platform/graphics/paint/effect_paint_property_node.h"
 #include "third_party/blink/renderer/platform/graphics/paint_invalidation_reason.h"
 #include "third_party/blink/renderer/platform/heap/disallow_new_wrapper.h"
@@ -48,7 +50,6 @@ class LocalFrame;
 class PhysicalBoxFragment;
 class SelectionEditor;
 struct PaintInvalidatorContext;
-struct PhysicalOffset;
 
 class CORE_EXPORT FrameCaret final : public GarbageCollected<FrameCaret> {
  public:
@@ -73,6 +74,12 @@ class CORE_EXPORT FrameCaret final : public GarbageCollected<FrameCaret> {
   void SetCaretEnabled(bool);
   gfx::Rect AbsoluteCaretBounds() const;
 
+  // Fetch value of CaretShape, which is kBar, kBlock or kUnderscore.
+  CaretShape GetCaretShape() const;
+
+  // Exposed for FrameSelection block caret offset computation.
+  const PositionWithAffinity CaretPosition() const;
+
   // Paint invalidation methods delegating to DisplayItemClient.
   void LayoutBlockWillBeDestroyed(const LayoutBlock&);
   void UpdateStyleAndLayoutIfNeeded();
@@ -82,6 +89,7 @@ class CORE_EXPORT FrameCaret final : public GarbageCollected<FrameCaret> {
   bool ShouldPaintCaret(const LayoutBlock&) const;
   bool ShouldPaintCaret(const PhysicalBoxFragment&) const;
   void PaintCaret(GraphicsContext&, const PhysicalOffset&) const;
+  const LayoutBlock* GetCaretLayoutBlock() const;
 
   const EffectPaintPropertyNode& CaretEffectNode() const { return *effect_; }
 
@@ -97,7 +105,7 @@ class CORE_EXPORT FrameCaret final : public GarbageCollected<FrameCaret> {
   friend class FrameSelectionTest;
   friend class CaretDisplayItemClientTest;
 
-  using BitField = WTF::SingleThreadedBitField<uint8_t>;
+  using BitField = SingleThreadedBitField<uint8_t>;
   using CaretEnabledFlag = BitField::DefineFirstValue<bool, 1>;
   using ShouldShowCaretFlag = CaretEnabledFlag::DefineNextValue<bool, 1>;
   using CaretBlinkingSuspendedFlag =
@@ -108,8 +116,6 @@ class CORE_EXPORT FrameCaret final : public GarbageCollected<FrameCaret> {
   EffectPaintPropertyNode::State CaretEffectNodeState(
       bool visible,
       const TransformPaintPropertyNodeOrAlias& local_transform_space) const;
-
-  const PositionWithAffinity CaretPosition() const;
 
   bool IsCaretEnabled() const {
     return caret_status_bits_.get<CaretEnabledFlag>();

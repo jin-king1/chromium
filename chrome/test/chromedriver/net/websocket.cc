@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/354307328): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/test/chromedriver/net/websocket.h"
 
 #include <stddef.h>
@@ -26,6 +21,7 @@
 #include "base/json/json_writer.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -34,6 +30,7 @@
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/base/sys_addrinfo.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
@@ -50,8 +47,7 @@ namespace {
 bool ResolveHost(const std::string& host,
                  uint16_t port,
                  net::AddressList* address_list) {
-  struct addrinfo hints;
-  memset(&hints, 0, sizeof(hints));
+  struct addrinfo hints = {};
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
 
@@ -90,14 +86,14 @@ void WebSocket::Connect(net::CompletionOnceCallback callback) {
   net::IPAddress address;
   net::AddressList addresses;
   uint16_t port = static_cast<uint16_t>(url_.EffectiveIntPort());
-  if (ParseURLHostnameToAddress(url_.host(), &address)) {
+  if (ParseURLHostnameToAddress(url_.GetHost(), &address)) {
     addresses = net::AddressList::CreateFromIPAddress(address, port);
   } else {
     if (!ResolveHost(url_.HostNoBrackets(), port, &addresses)) {
       std::move(callback).Run(net::ERR_ADDRESS_UNREACHABLE);
       return;
     }
-    base::Value::List endpoints;
+    base::ListValue endpoints;
     for (auto endpoint : addresses)
       endpoints.Append(endpoint.ToStringWithoutPort());
     std::string json;
@@ -105,7 +101,7 @@ void WebSocket::Connect(net::CompletionOnceCallback callback) {
     VLOG(0) << "resolved " << url_.HostNoBracketsPiece() << " to " << json;
   }
 
-  if (url_.host() == "localhost") {
+  if (url_.GetHost() == "localhost") {
     // Ensure that both localhost addresses are included.
     // See https://bugs.chromium.org/p/chromedriver/issues/detail?id=3316.
     // Put IPv4 address at front, followed by IPv6 address, since that is
@@ -117,9 +113,15 @@ void WebSocket::Connect(net::CompletionOnceCallback callback) {
     addresses.Deduplicate();
   }
 
-  net::NetLogSource source;
-  socket_ = std::make_unique<net::TCPClientSocket>(addresses, nullptr, nullptr,
-                                                   nullptr, source);
+  socket_ = std::make_unique<net::TCPClientSocket>(
+      addresses,
+      /* socket_performance_watcher= */ nullptr,
+      /* network_quality_estimator= */ nullptr,
+      /* net_log= */ nullptr, net::NetLogSource(),
+      // This is used only for testing in scenarios that do not involve multiple
+      // networks. With that in mind, it's safe to always use the default
+      // network.
+      net::handles::kInvalidNetworkHandle);
 
   state_ = CONNECTING;
   connect_callback_ = std::move(callback);
@@ -177,9 +179,7 @@ void WebSocket::OnSocketConnect(int code) {
       "Pragma: no-cache\r\n"
       "Cache-Control: no-cache\r\n"
       "\r\n",
-      url_.path().c_str(),
-      url_.host().c_str(),
-      sec_key_.c_str());
+      url_.GetPath().c_str(), url_.GetHost().c_str(), sec_key_.c_str());
   VLOG(4) << "WebSocket::OnSocketConnect handshake\n" << handshake;
   Write(handshake);
   if (state_ == CLOSED) {
@@ -265,24 +265,27 @@ void WebSocket::OnRead(bool read_again, int code) {
     return;
   }
 
-  if (state_ == CONNECTING)
-    OnReadDuringHandshake(read_buffer_->data(), code);
-  else if (state_ == OPEN)
-    OnReadDuringOpen(read_buffer_->data(), code);
+  if (state_ == CONNECTING) {
+    OnReadDuringHandshake(
+        read_buffer_->first(base::checked_cast<size_t>(code)));
+  } else if (state_ == OPEN) {
+    OnReadDuringOpen(read_buffer_->first(base::checked_cast<size_t>(code)));
+  }
 
   // If we were called by the event loop due to arrival of data, call Read()
   // again to read more data. If we were called by Read(), however, simply
   // return to Read() and let it call socket_->Read() to read more data, and
   // potentially call OnRead() again. This is necessary to avoid mutual
   // recursion between Read and OnRead, which can cause stack overflow (e.g.,
-  // see https://crbug.com/877105).
+  // see https://crbug.com/40590674).
   if (read_again && state_ != CLOSED)
     Read();
 }
 
-void WebSocket::OnReadDuringHandshake(const char* data, int len) {
-  VLOG(4) << "WebSocket::OnReadDuringHandshake\n" << std::string(data, len);
-  handshake_response_ += std::string(data, len);
+void WebSocket::OnReadDuringHandshake(base::span<const uint8_t> data_span) {
+  VLOG(4) << "WebSocket::OnReadDuringHandshake\n"
+          << base::as_string_view(data_span);
+  handshake_response_ += base::as_string_view(data_span);
   size_t headers_end = net::HttpUtil::LocateEndOfHeaders(
       base::as_byte_span(handshake_response_), 0);
   if (headers_end == std::string::npos)
@@ -306,18 +309,13 @@ void WebSocket::OnReadDuringHandshake(const char* data, int len) {
   sec_key_.clear();
   state_ = OPEN;
   InvokeConnectCallback(net::OK);
-  if (!leftover_message.empty())
-    OnReadDuringOpen(leftover_message.data(), leftover_message.length());
+  if (!leftover_message.empty()) {
+    OnReadDuringOpen(base::as_writable_byte_span(leftover_message));
+  }
 }
 
-void WebSocket::OnReadDuringOpen(char* data, int len) {
+void WebSocket::OnReadDuringOpen(base::span<uint8_t> data_span) {
   std::vector<std::unique_ptr<net::WebSocketFrameChunk>> frame_chunks;
-
-  // TODO(crbug.com/354307328): It's not possible to construct
-  // this span soundedly here. OnReadDuringOpen() should
-  // receive a span instead of a pointer and length.
-  auto data_span = UNSAFE_BUFFERS(base::as_writable_byte_span(
-      base::span(data, base::checked_cast<size_t>(len))));
 
   // Call the parser's Decode method
   CHECK(parser_.Decode(data_span, &frame_chunks));

@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_BOOKMARKS_PERMANENT_FOLDER_ORDERING_TRACKER_H_
 #define CHROME_BROWSER_BOOKMARKS_PERMANENT_FOLDER_ORDERING_TRACKER_H_
 
+#include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "components/bookmarks/browser/bookmark_model_observer.h"
 #include "components/bookmarks/browser/bookmark_node.h"
@@ -25,11 +26,22 @@ class BookmarkNode;
 // the `BookmarkModel`.
 class PermanentFolderOrderingTracker : public bookmarks::BookmarkModelObserver {
  public:
+  class Delegate {
+   public:
+    // Called every time the ordering of the nodes in
+    // `PermanentFolderOrderingTracker` changes.
+    virtual void TrackedOrderingChanged() = 0;
+
+    virtual ~Delegate() = default;
+  };
+
   // `tracked_type` must reflect the type of the permanent node, it must be
   // one of the following: BOOKMARK_BAR, OTHER_NODE, MOBILE. Other node types
   // are invalid.
+  // `delegate` must not be null and must outlive this class.
   PermanentFolderOrderingTracker(bookmarks::BookmarkModel* model,
-                                 bookmarks::BookmarkNode::Type tracked_type);
+                                 bookmarks::BookmarkNode::Type tracked_type,
+                                 Delegate* delegate);
 
   ~PermanentFolderOrderingTracker() override;
 
@@ -37,6 +49,10 @@ class PermanentFolderOrderingTracker : public bookmarks::BookmarkModelObserver {
       delete;
   PermanentFolderOrderingTracker& operator=(
       const PermanentFolderOrderingTracker&) = delete;
+
+  // This function must be invoked, and ordering will only be tracked
+  // afterwards.
+  void Init(std::vector<int64_t> in_order_node_ids);
 
   // Returns underlying permanent nodes.
   // If the bookmark model is not loaded, it returns empty.
@@ -113,11 +129,8 @@ class PermanentFolderOrderingTracker : public bookmarks::BookmarkModelObserver {
   void BookmarkNodeChildrenReordered(
       const bookmarks::BookmarkNode* node) override;
 
-  // Public for testing.
-  void SetNodesOrderingForTesting(
-      std::vector<raw_ptr<const bookmarks::BookmarkNode>> ordering);
-
  private:
+  void NotifyTrackedOrderingChanged();
   void SetTrackedPermanentNodes();
   bool IsTrackedPermanentNode(const bookmarks::BookmarkNode* node) const;
   void ResetOrderingToDefault();
@@ -127,7 +140,6 @@ class PermanentFolderOrderingTracker : public bookmarks::BookmarkModelObserver {
       const;
 
   void RemoveBookmarkNodeIfTracked(const bookmarks::BookmarkNode* parent,
-                                   size_t old_index,
                                    const bookmarks::BookmarkNode* node);
 
   void AddBookmarkNodeIfTracked(const bookmarks::BookmarkNode* parent,
@@ -141,10 +153,20 @@ class PermanentFolderOrderingTracker : public bookmarks::BookmarkModelObserver {
   size_t GetInStorageBookmarkCountBeforeIndex(bool account_storage,
                                               size_t index) const;
 
+  void ReconcileLoadedNodeIds();
+
   const raw_ptr<bookmarks::BookmarkModel> model_;
   const bookmarks::BookmarkNode::Type tracked_type_;
+  const raw_ptr<Delegate> delegate_;
+
+  bool initialized_ = false;
+
   raw_ptr<const bookmarks::BookmarkNode> local_or_syncable_node_ = nullptr;
   raw_ptr<const bookmarks::BookmarkNode> account_node_ = nullptr;
+
+  // Loaded node Ids from disk.
+  // Only needed while the bookmark model is being loaded.
+  std::vector<int64_t> loaded_node_ids_during_model_load_;
 
   // Non-empty if both `local_or_syncable_node_` and
   // `account_node_` have children (`ShouldTrackOrdering()` returns true).

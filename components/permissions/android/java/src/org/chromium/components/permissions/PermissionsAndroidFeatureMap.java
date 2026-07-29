@@ -9,6 +9,8 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.base.FeatureMap;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.components.cached_flags.BooleanCachedFeatureParam;
+import org.chromium.components.cached_flags.IntCachedFeatureParam;
 
 /** Java accessor for base::Features listed in {@link PermissionsAndroidFeatureList} */
 @JNINamespace("permissions")
@@ -28,6 +30,30 @@ public final class PermissionsAndroidFeatureMap extends FeatureMap {
     /** Convenience method to call {@link #isEnabledInNative(String)} statically. */
     public static boolean isEnabled(String featureName) {
         return getInstance().isEnabledInNative(featureName);
+    }
+
+    public static BooleanCachedFeatureParam newBooleanCachedFeatureParam(
+            String featureName, String paramName, boolean defaultValue) {
+        var param =
+                new BooleanCachedFeatureParam(
+                        PermissionsAndroidFeatureMap.getInstance(),
+                        featureName,
+                        paramName,
+                        defaultValue);
+        PermissionsAndroidFeatureList.addCachedFeatureParam(param);
+        return param;
+    }
+
+    public static IntCachedFeatureParam newIntCachedFeatureParam(
+            String featureName, String paramName, int defaultValue) {
+        var param =
+                new IntCachedFeatureParam(
+                        PermissionsAndroidFeatureMap.getInstance(),
+                        featureName,
+                        paramName,
+                        defaultValue);
+        PermissionsAndroidFeatureList.addCachedFeatureParam(param);
+        return param;
     }
 
     @Override

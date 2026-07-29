@@ -2,13 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromeos/services/tts/tts_player.h"
+
 #include "base/task/single_thread_task_runner.h"
+#include "media/base/audio_bus.h"
 
 namespace chromeos {
 namespace tts {
@@ -16,10 +13,17 @@ namespace tts {
 TtsPlayer::TtsPlayer(
     mojo::PendingRemote<media::mojom::AudioStreamFactory> factory,
     const media::AudioParameters& params)
-    : output_device_(std::move(factory), params, this, std::string()),
+    : output_device_(
+          std::make_unique<audio::OutputDevice>(std::move(factory),
+                                                params,
+                                                this,
+                                                std::string())),
       task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()) {}
 
-TtsPlayer::~TtsPlayer() = default;
+TtsPlayer::~TtsPlayer() {
+  // Join the audio thread before any members it accesses are destroyed.
+  output_device_.reset();
+}
 
 void TtsPlayer::Play(
     base::OnceCallback<void(::mojo::PendingReceiver<mojom::TtsEventObserver>)>
@@ -28,7 +32,7 @@ void TtsPlayer::Play(
   auto pending_receiver = tts_event_observer_.BindNewPipeAndPassReceiver();
   std::move(callback).Run(std::move(pending_receiver));
 
-  output_device_.Play();
+  output_device_->Play();
 }
 
 void TtsPlayer::AddAudioBuffer(AudioBuffer buf) {
@@ -47,7 +51,7 @@ void TtsPlayer::Stop() {
 }
 
 void TtsPlayer::SetVolume(float volume) {
-  output_device_.SetVolume(volume);
+  output_device_->SetVolume(volume);
 }
 
 void TtsPlayer::Pause() {
@@ -56,7 +60,7 @@ void TtsPlayer::Pause() {
 }
 
 void TtsPlayer::Resume() {
-  output_device_.Play();
+  output_device_->Play();
 }
 
 int TtsPlayer::Render(base::TimeDelta delay,
@@ -70,7 +74,7 @@ int TtsPlayer::Render(base::TimeDelta delay,
     if (buffers_.empty())
       return 0;
 
-    float* channel = dest->channel(0);
+    auto channel = dest->channel(0);
 
     AudioBuffer* buffer = &buffers_.front();
     for (size_t output_index = 0; output_index < frame_count;
@@ -99,7 +103,7 @@ int TtsPlayer::Render(base::TimeDelta delay,
 void TtsPlayer::OnRenderError() {}
 
 void TtsPlayer::StopLocked(bool clear_buffers) {
-  output_device_.Pause();
+  output_device_->Pause();
   rendered_buffers_ = std::queue<AudioBuffer>();
   if (clear_buffers) {
     buffers_ = std::queue<AudioBuffer>();

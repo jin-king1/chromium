@@ -4,96 +4,126 @@
 
 #include "third_party/blink/renderer/core/layout/grid/layout_grid.h"
 
-#include "third_party/blink/renderer/core/layout/grid/subgrid_min_max_sizes_cache.h"
+#include "third_party/blink/renderer/core/layout/break_token_algorithm_data.h"
+#include "third_party/blink/renderer/core/layout/fragmentation_utils.h"
 #include "third_party/blink/renderer/core/layout/layout_result.h"
 
 namespace blink {
 
 LayoutGrid::LayoutGrid(Element* element) : LayoutBlock(element) {}
 
-void LayoutGrid::Trace(Visitor* visitor) const {
-  visitor->Trace(cached_subgrid_min_max_sizes_);
-  LayoutBlock::Trace(visitor);
+void LayoutGrid::MarkGridDirty() {
+  NOT_DESTROYED();
+  SetGridPlacementDirty(true);
 }
 
 void LayoutGrid::AddChild(LayoutObject* new_child, LayoutObject* before_child) {
   NOT_DESTROYED();
   LayoutBlock::AddChild(new_child, before_child);
 
-  // Out-of-flow grid items don't impact placement.
-  if (!new_child->IsOutOfFlowPositioned())
-    SetGridPlacementDirty(true);
+  // Counter-intuitively, adding/removing a "position:absolute" child or
+  // similar *can* make the placement dirty as the OOF may cause an anonymous
+  // child to be split (or merged).
+  MarkGridDirty();
 }
 
 void LayoutGrid::RemoveChild(LayoutObject* child) {
   NOT_DESTROYED();
   LayoutBlock::RemoveChild(child);
 
-  // Out-of-flow grid items don't impact placement.
-  if (!child->IsOutOfFlowPositioned())
-    SetGridPlacementDirty(true);
+  MarkGridDirty();
 }
 
 namespace {
 
-bool ExplicitGridDidResize(const ComputedStyle& new_style,
-                           const ComputedStyle& old_style) {
-  const auto& old_ng_columns_track_list =
-      old_style.GridTemplateColumns().track_list;
-  const auto& new_ng_columns_track_list =
-      new_style.GridTemplateColumns().track_list;
-  const auto& old_ng_rows_track_list = old_style.GridTemplateRows().track_list;
-  const auto& new_ng_rows_track_list = new_style.GridTemplateRows().track_list;
+// Returns true if the placement-affecting inputs for a single track direction
+// differ between `old_style` and `new_style`.
+bool GridPlacementInputsDidChangeInDirection(
+    const ComputedStyle& new_style,
+    const ComputedStyle& old_style,
+    const StyleDifference& diff,
+    GridTrackSizingDirection track_direction) {
+  const bool is_for_columns = (track_direction == kForColumns);
+  const auto& new_template = is_for_columns ? new_style.GridTemplateColumns()
+                                            : new_style.GridTemplateRows();
+  const auto& new_track_list = new_template.GetTrackList();
 
-  return old_ng_columns_track_list.TrackCountWithoutAutoRepeat() !=
-             new_ng_columns_track_list.TrackCountWithoutAutoRepeat() ||
-         old_ng_rows_track_list.TrackCountWithoutAutoRepeat() !=
-             new_ng_rows_track_list.TrackCountWithoutAutoRepeat() ||
-         old_ng_columns_track_list.AutoRepeatTrackCount() !=
-             new_ng_columns_track_list.AutoRepeatTrackCount() ||
-         old_ng_rows_track_list.AutoRepeatTrackCount() !=
-             new_ng_rows_track_list.AutoRepeatTrackCount();
-}
+  // A full layout may resolve a different number of `auto-fit`/`auto-fill`
+  // repetitions, which changes the explicit grid and therefore placement.
+  if (diff.NeedsFullLayout() && new_track_list.AutoRepeatTrackCount()) {
+    return true;
+  }
 
-bool NamedGridLinesDefinitionDidChange(const ComputedStyle& new_style,
-                                       const ComputedStyle& old_style) {
-  return new_style.GridTemplateRows().named_grid_lines !=
-             old_style.GridTemplateRows().named_grid_lines ||
-         new_style.GridTemplateColumns().named_grid_lines !=
-             old_style.GridTemplateColumns().named_grid_lines;
+  const auto& old_template = is_for_columns ? old_style.GridTemplateColumns()
+                                            : old_style.GridTemplateRows();
+  const auto& old_track_list = old_template.GetTrackList();
+
+  // A resize of the explicit grid or a change in the number of auto-repeat
+  // tracks changes how items are placed.
+  if (new_track_list.TrackCountWithoutAutoRepeat() !=
+          old_track_list.TrackCountWithoutAutoRepeat() ||
+      new_track_list.AutoRepeatTrackCount() !=
+          old_track_list.AutoRepeatTrackCount()) {
+    return true;
+  }
+
+  if (new_track_list != old_track_list) {
+    return true;
+  }
+
+  // Named lines provide targets that items can be placed against by name.
+  if (new_template.GetNamedGridLines() != old_template.GetNamedGridLines()) {
+    return true;
+  }
+
+  // The implicit (auto) track definitions can change how items are placed into
+  // the implicit grid.
+  const auto& new_auto_tracks =
+      is_for_columns ? new_style.GridAutoColumns() : new_style.GridAutoRows();
+  const auto& old_auto_tracks =
+      is_for_columns ? old_style.GridAutoColumns() : old_style.GridAutoRows();
+  return new_auto_tracks != old_auto_tracks;
 }
 
 }  // namespace
 
-void LayoutGrid::StyleDidChange(StyleDifference diff,
-                                const ComputedStyle* old_style) {
+// static
+bool LayoutGrid::GridPlacementInputsDidChange(
+    const ComputedStyle& new_style,
+    const ComputedStyle& old_style,
+    const StyleDifference& diff,
+    std::optional<GridTrackSizingDirection> track_direction) {
+  // The auto-placement flow and template areas can change how items are placed.
+  if (new_style.GetGridAutoFlow() != old_style.GetGridAutoFlow() ||
+      !base::ValuesEquivalent(new_style.GridTemplateAreas(),
+                              old_style.GridTemplateAreas())) {
+    return true;
+  }
+
+  // If no track direction is specified, check both directions.
+  if ((!track_direction || *track_direction == kForColumns) &&
+      GridPlacementInputsDidChangeInDirection(new_style, old_style, diff,
+                                              kForColumns)) {
+    return true;
+  }
+  if ((!track_direction || *track_direction == kForRows) &&
+      GridPlacementInputsDidChangeInDirection(new_style, old_style, diff,
+                                              kForRows)) {
+    return true;
+  }
+  return false;
+}
+
+void LayoutGrid::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutBlock::StyleDidChange(diff, old_style);
+  LayoutBlock::StyleDidChange(diff, old_style, style_change_context);
   if (!old_style)
     return;
 
-  const auto& new_style = StyleRef();
-  const auto& new_grid_columns_track_list =
-      new_style.GridTemplateColumns().track_list;
-  const auto& new_grid_rows_track_list =
-      new_style.GridTemplateRows().track_list;
-
-  if (new_grid_columns_track_list !=
-          old_style->GridTemplateColumns().track_list ||
-      new_grid_rows_track_list != old_style->GridTemplateRows().track_list ||
-      new_style.GridAutoColumns() != old_style->GridAutoColumns() ||
-      new_style.GridAutoRows() != old_style->GridAutoRows() ||
-      new_style.GetGridAutoFlow() != old_style->GetGridAutoFlow()) {
-    SetGridPlacementDirty(true);
-  }
-
-  if (ExplicitGridDidResize(new_style, *old_style) ||
-      NamedGridLinesDefinitionDidChange(new_style, *old_style) ||
-      !base::ValuesEquivalent(new_style.GridTemplateAreas(),
-                              old_style->GridTemplateAreas()) ||
-      (diff.NeedsLayout() &&
-       (new_grid_columns_track_list.AutoRepeatTrackCount() ||
-        new_grid_rows_track_list.AutoRepeatTrackCount()))) {
+  if (GridPlacementInputsDidChange(StyleRef(), *old_style, diff)) {
     SetGridPlacementDirty(true);
   }
 }
@@ -118,7 +148,7 @@ bool LayoutGrid::HasCachedSubgridMinMaxSizes() const {
 
 const MinMaxSizes& LayoutGrid::CachedSubgridMinMaxSizes() const {
   DCHECK(HasCachedSubgridMinMaxSizes());
-  return **cached_subgrid_min_max_sizes_;
+  return cached_subgrid_min_max_sizes_->CachedMinMaxSizes();
 }
 
 void LayoutGrid::SetSubgridMinMaxSizesCache(MinMaxSizes&& min_max_sizes,
@@ -135,12 +165,52 @@ bool LayoutGrid::ShouldInvalidateSubgridMinMaxSizesCacheFor(
 }
 
 const GridLayoutData* LayoutGrid::LayoutData() const {
+  return GetGridLayoutDataFromFragments(this);
+}
+
+wtf_size_t LayoutGrid::StitchedRowGapIndex(
+    const PhysicalBoxFragment& fragment,
+    wtf_size_t gap_index,
+    std::optional<wtf_size_t> line_index) const {
+  NOT_DESTROYED();
+  // This should only be reached when painting gap decorations in a fragmented
+  // context.
+  CHECK(!fragment.IsOnlyForNode());
+  const auto* previous_break_token = FindPreviousBreakToken(fragment);
+
+  // The first fragment has no previous break token, so the stitched index is
+  // just `gap_index`.
+  if (!previous_break_token) {
+    return gap_index;
+  }
+  return previous_break_token->TokenData()->GetFirstUnprocessedRowGapIndex(
+             line_index) +
+         gap_index;
+}
+
+// static
+const GridLayoutData* LayoutGrid::GetGridLayoutDataFromFragments(
+    const LayoutBlock* layout_block) {
+  CHECK(layout_block);
   // Retrieve the layout data from the last fragment as it has the most
   // up-to-date grid geometry.
-  const wtf_size_t fragment_count = PhysicalFragmentCount();
+  const wtf_size_t fragment_count = layout_block->PhysicalFragmentCount();
   if (fragment_count == 0)
     return nullptr;
-  return GetLayoutResult(fragment_count - 1)->GetGridLayoutData();
+  return layout_block->GetLayoutResult(fragment_count - 1)->GetGridLayoutData();
+}
+
+// static
+LayoutUnit LayoutGrid::ComputeGridGap(
+    const GridLayoutData* grid_layout_data,
+    GridTrackSizingDirection track_direction) {
+  if (!grid_layout_data) {
+    return LayoutUnit();
+  }
+
+  return (track_direction == kForColumns)
+             ? grid_layout_data->Columns().GutterSize()
+             : grid_layout_data->Rows().GutterSize();
 }
 
 wtf_size_t LayoutGrid::AutoRepeatCountForDirection(
@@ -172,13 +242,7 @@ wtf_size_t LayoutGrid::ExplicitGridEndForDirection(
 
 LayoutUnit LayoutGrid::GridGap(GridTrackSizingDirection track_direction) const {
   NOT_DESTROYED();
-  const auto* grid_layout_data = LayoutData();
-  if (!grid_layout_data)
-    return LayoutUnit();
-
-  return (track_direction == kForColumns)
-             ? grid_layout_data->Columns().GutterSize()
-             : grid_layout_data->Rows().GutterSize();
+  return ComputeGridGap(LayoutData(), track_direction);
 }
 
 LayoutUnit LayoutGrid::GridItemOffset(
@@ -191,8 +255,14 @@ LayoutUnit LayoutGrid::GridItemOffset(
 Vector<LayoutUnit, 1> LayoutGrid::TrackSizesForComputedStyle(
     GridTrackSizingDirection track_direction) const {
   NOT_DESTROYED();
+  return CollectTrackSizesForComputedStyle(LayoutData(), track_direction);
+}
+
+// static
+Vector<LayoutUnit, 1> LayoutGrid::CollectTrackSizesForComputedStyle(
+    const GridLayoutData* grid_layout_data,
+    GridTrackSizingDirection track_direction) {
   Vector<LayoutUnit, 1> track_sizes;
-  const auto* grid_layout_data = LayoutData();
   if (!grid_layout_data)
     return track_sizes;
 
@@ -223,14 +293,12 @@ Vector<LayoutUnit, 1> LayoutGrid::TrackSizesForComputedStyle(
   return track_sizes;
 }
 
-Vector<LayoutUnit> LayoutGrid::RowPositions() const {
+Vector<LayoutUnit> LayoutGrid::GridTrackPositions(
+    GridTrackSizingDirection track_direction) const {
   NOT_DESTROYED();
-  return ComputeExpandedPositions(LayoutData(), kForRows);
-}
-
-Vector<LayoutUnit> LayoutGrid::ColumnPositions() const {
-  NOT_DESTROYED();
-  return ComputeExpandedPositions(LayoutData(), kForColumns);
+  return ComputeExpandedPositions(track_direction == kForColumns
+                                      ? LayoutData()->Columns()
+                                      : LayoutData()->Rows());
 }
 
 // static
@@ -272,15 +340,8 @@ Vector<LayoutUnit> LayoutGrid::ComputeTrackSizeRepeaterForRange(
 
 // static
 Vector<LayoutUnit> LayoutGrid::ComputeExpandedPositions(
-    const GridLayoutData* grid_layout_data,
-    GridTrackSizingDirection track_direction) {
+    const GridLayoutTrackCollection& track_collection) {
   Vector<LayoutUnit> expanded_positions;
-  if (!grid_layout_data)
-    return expanded_positions;
-
-  const auto& track_collection = (track_direction == kForColumns)
-                                     ? grid_layout_data->Columns()
-                                     : grid_layout_data->Rows();
 
   // |EndLineOfImplicitGrid| is equivalent to the total track count.
   expanded_positions.ReserveInitialCapacity(std::min<wtf_size_t>(

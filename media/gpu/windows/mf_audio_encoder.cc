@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/windows/mf_audio_encoder.h"
 
 #include <codecapi.h>
@@ -19,8 +14,8 @@
 #include <algorithm>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
@@ -33,6 +28,7 @@
 #include "base/win/win_util.h"
 #include "media/base/audio_buffer.h"
 #include "media/base/audio_parameters.h"
+#include "media/base/audio_sample_types.h"
 #include "media/base/audio_timestamp_helper.h"
 #include "media/base/channel_layout.h"
 #include "media/base/encoder_status.h"
@@ -81,7 +77,7 @@ EncoderStatus::Codes ValidateInputOptions(const AudioEncoder::Options& options,
   if (options.codec != AudioCodec::kAAC)
     return EncoderStatus::Codes::kEncoderUnsupportedCodec;
 
-  if (!base::Contains(kSupportedSampleRates, options.sample_rate)) {
+  if (!std::ranges::contains(kSupportedSampleRates, options.sample_rate)) {
     return EncoderStatus::Codes::kEncoderUnsupportedConfig;
   }
 
@@ -100,7 +96,7 @@ EncoderStatus::Codes ValidateInputOptions(const AudioEncoder::Options& options,
   }
 
   *bitrate = options.bitrate.value_or(kDefaultBitrate);
-  if (!base::Contains(kSupportedBitrates, *bitrate)) {
+  if (!std::ranges::contains(kSupportedBitrates, *bitrate)) {
     return EncoderStatus::Codes::kEncoderUnsupportedConfig;
   }
 
@@ -120,17 +116,23 @@ HRESULT CreateMFEncoder(const IID& iid, void** out_encoder) {
   RETURN_IF_FAILED(MFTEnumEx(MFT_CATEGORY_AUDIO_ENCODER, flags, &input_type,
                              &output_type, &activates, &num_activates));
 
-  if (num_activates < 1)
+  if (num_activates < 1) {
     return ERROR_NOT_FOUND;
+  }
 
-  HRESULT hr = activates[0]->ActivateObject(iid, out_encoder);
+  // SAFETY: `MFTEnumEx` returns the actual size of `activates` buffer via
+  // `num_activates` out param.
+  auto activates_span =
+      UNSAFE_BUFFERS(base::span<IMFActivate*>(activates.get(), num_activates));
+  HRESULT hr = activates_span[0]->ActivateObject(iid, out_encoder);
 
   // According to Windows App Development doc,
   // https://docs.microsoft.com/en-us/windows/win32/api/mfapi/nf-mfapi-mftenumex
   // the caller must release the pointers before CoTaskMemFree function inside
   // base::win::ScopedCoMem.
-  for (UINT32 i = 0; i < num_activates; i++)
-    activates[i]->Release();
+  for (IMFActivate* activate : activates_span) {
+    activate->Release();
+  }
 
   return hr;
 }
@@ -292,8 +294,10 @@ HRESULT CreateMFSampleFromAudioBus(const AudioBus& audio_bus,
 
   // Convert data from `audio_bus` to interleaved signed int16_t data, as this
   // is the format required by the encoder.
-  audio_bus.ToInterleaved<SignedInt16SampleTypeTraits>(
-      audio_bus.frames(), reinterpret_cast<int16_t*>(dest_buffer_ptr));
+  // SAFETY: `dest_buffer_ptr` points to the `dest_buffer` we just allocated,
+  // which has at least `source_data_size` bytes (checked above).
+  audio_bus.ToInterleavedBytes<SignedInt16SampleTypeTraits>(
+      UNSAFE_BUFFERS(base::span<uint8_t>(dest_buffer_ptr, source_data_size)));
   RETURN_IF_FAILED(dest_buffer->Unlock());
   RETURN_IF_FAILED(dest_buffer->SetCurrentLength(source_data_size));
 
@@ -331,6 +335,9 @@ HRESULT GetSampleBuffer(const DWORD required_size,
   }
 
   if (need_buffer_allocation) {
+    if (buffer_count > 0) {
+      RETURN_IF_FAILED(sample->RemoveAllBuffers());
+    }
     RETURN_IF_FAILED(
         MFCreateAlignedMemoryBuffer(required_size, buffer_alignment, &buffer));
     RETURN_IF_FAILED(sample->AddBuffer(buffer.Get()));
@@ -898,12 +905,9 @@ HRESULT MFAudioEncoder::ProcessOutput(EncodedAudioBuffer& encoded_audio) {
   RETURN_IF_FAILED(output_sample_->GetTotalLength(&total_length));
 
   // Copy the data from `output_buffer` into `encoded_data`.
-  BYTE* output_buffer_ptr = nullptr;
-  RETURN_IF_FAILED(output_buffer->Lock(&output_buffer_ptr, 0, 0));
-
-  auto encoded_data =
-      base::HeapArray<uint8_t>::CopiedFrom({output_buffer_ptr, total_length});
-  RETURN_IF_FAILED(output_buffer->Unlock());
+  MediaBufferScopedPointer locked_output_buffer(output_buffer.Get());
+  auto encoded_data = base::HeapArray<uint8_t>::CopiedFrom(
+      locked_output_buffer.as_span().first(total_length));
 
   LONGLONG sample_duration = 0;
   RETURN_IF_FAILED(output_sample_->GetSampleDuration(&sample_duration));

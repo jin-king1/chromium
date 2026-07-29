@@ -6,6 +6,7 @@
 
 #import "base/notreached.h"
 #import "base/strings/utf_string_conversions.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/history/core/browser/history_service.h"
 #import "components/history/core/browser/top_sites.h"
 #import "components/keyed_service/core/service_access_type.h"
@@ -19,9 +20,12 @@
 #import "components/omnibox/browser/shortcuts_backend.h"
 #import "components/omnibox/common/omnibox_features.h"
 #import "components/prefs/pref_service.h"
+#import "components/saved_tab_groups/public/tab_group_sync_service.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/sync/service/sync_service.h"
 #import "components/unified_consent/url_keyed_data_collection_consent_helper.h"
+#import "ios/chrome/browser/aim/model/ios_chrome_aim_eligibility_service_factory.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_classifier_factory.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_scoring_model_service_factory.h"
 #import "ios/chrome/browser/autocomplete/model/in_memory_url_index_factory.h"
@@ -45,19 +49,10 @@
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/sync/model/session_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/components/webui/web_ui_url_constants.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
-
-namespace {
-
-// Killswitch, can be removed around December 2023. If enabled,
-// IsAuthenticated() will only return true for Sync-consented accounts.
-BASE_FEATURE(kIosAutocompleteProviderRequireSync,
-             "IosAutocompleteProviderRequireSync",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-}  // namespace
 
 AutocompleteProviderClientImpl::AutocompleteProviderClientImpl(
     ProfileIOS* profile)
@@ -65,6 +60,10 @@ AutocompleteProviderClientImpl::AutocompleteProviderClientImpl(
       url_consent_helper_(
           unified_consent::UrlKeyedDataCollectionConsentHelper::
               NewAnonymizedDataCollectionConsentHelper(profile_->GetPrefs())),
+      personalized_url_consent_helper_(
+          unified_consent::UrlKeyedDataCollectionConsentHelper::
+              NewPersonalizedDataCollectionConsentHelper(
+                  SyncServiceFactory::GetForProfile(profile_))),
       omnibox_triggered_feature_service_(
           std::make_unique<OmniboxTriggeredFeatureService>()),
       tab_matcher_(profile_) {
@@ -88,7 +87,7 @@ PrefService* AutocompleteProviderClientImpl::GetLocalState() {
 }
 
 std::string AutocompleteProviderClientImpl::GetApplicationLocale() const {
-  return GetApplicationContext()->GetApplicationLocale();
+  return GetApplicationContext()->GetApplicationLocaleStorage()->Get();
 }
 
 const AutocompleteSchemeClassifier&
@@ -197,6 +196,28 @@ ProviderStateService* AutocompleteProviderClientImpl::GetProviderStateService()
   return ios::ProviderStateServiceFactory::GetForProfile(profile_);
 }
 
+base::CallbackListSubscription
+AutocompleteProviderClientImpl::GetLensSuggestInputsWhenReady(
+    LensOverlaySuggestInputsCallback callback) const {
+  NOTREACHED()
+      << "GetLensSuggestInputsWhenReady is not implemented by default.";
+}
+
+tab_groups::TabGroupSyncService*
+AutocompleteProviderClientImpl::GetTabGroupSyncService() const {
+  return nullptr;
+}
+
+sync_sessions::SessionSyncService*
+AutocompleteProviderClientImpl::GetSessionSyncService() const {
+  return SessionSyncServiceFactory::GetForProfile(profile_);
+}
+
+AimEligibilityService*
+AutocompleteProviderClientImpl::GetAimEligibilityService() const {
+  return IOSChromeAimEligibilityServiceFactory::GetForProfile(profile_);
+}
+
 std::string AutocompleteProviderClientImpl::GetAcceptLanguages() const {
   return profile_->GetPrefs()->GetString(language::prefs::kAcceptLanguages);
 }
@@ -207,21 +228,19 @@ AutocompleteProviderClientImpl::GetEmbedderRepresentationOfAboutScheme() const {
 }
 
 std::vector<std::u16string> AutocompleteProviderClientImpl::GetBuiltinURLs() {
-  std::vector<std::string> chrome_builtins(
-      kChromeHostURLs, kChromeHostURLs + kNumberOfChromeHostURLs);
-  std::sort(chrome_builtins.begin(), chrome_builtins.end());
-
   std::vector<std::u16string> builtins;
-  for (auto& url : chrome_builtins) {
-    builtins.push_back(base::ASCIIToUTF16(url));
+  builtins.reserve(kChromeHostURLs.size());
+  for (const std::string_view host : kChromeHostURLs) {
+    builtins.push_back(base::UTF8ToUTF16(host));
   }
+  std::sort(builtins.begin(), builtins.end());
   return builtins;
 }
 
 std::vector<std::u16string>
 AutocompleteProviderClientImpl::GetBuiltinsToProvideAsUserTypes() {
-  return {base::ASCIIToUTF16(kChromeUIChromeURLsURL),
-          base::ASCIIToUTF16(kChromeUIVersionURL)};
+  return {base::ASCIIToUTF16(std::string_view(kChromeUIChromeURLsURL)),
+          base::ASCIIToUTF16(std::string_view(kChromeUIVersionURL))};
 }
 
 component_updater::ComponentUpdateService*
@@ -254,33 +273,27 @@ bool AutocompleteProviderClientImpl::IsUrlDataCollectionActive() const {
   return url_consent_helper_->IsEnabled();
 }
 
+bool AutocompleteProviderClientImpl::IsPersonalizedUrlDataCollectionActive()
+    const {
+  return personalized_url_consent_helper_->IsEnabled();
+}
+
 bool AutocompleteProviderClientImpl::IsAuthenticated() const {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile_);
-  signin::ConsentLevel level =
-      base::FeatureList::IsEnabled(kIosAutocompleteProviderRequireSync)
-          ? signin::ConsentLevel::kSync
-          : signin::ConsentLevel::kSignin;
-  return identity_manager && identity_manager->HasPrimaryAccount(level);
-}
-
-bool AutocompleteProviderClientImpl::IsSyncActive() const {
-  syncer::SyncService* sync = SyncServiceFactory::GetForProfile(profile_);
-  // TODO(crbug.com/40066949): Remove usage of IsSyncFeatureActive() after kSync
-  // users are migrated to kSignin in phase 3. See ConsentLevel::kSync
-  // documentation for details.
-  return sync && sync->IsSyncFeatureActive();
+  return identity_manager &&
+         identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
 }
 
 void AutocompleteProviderClientImpl::Classify(
     const std::u16string& text,
-    bool prefer_keyword,
+    bool in_keyword_mode,
     bool allow_exact_keyword_match,
     metrics::OmniboxEventProto::PageClassification page_classification,
     AutocompleteMatch* match,
     GURL* alternate_nav_url) {
   AutocompleteClassifier* classifier = GetAutocompleteClassifier();
-  classifier->Classify(text, prefer_keyword, allow_exact_keyword_match,
+  classifier->Classify(text, in_keyword_mode, allow_exact_keyword_match,
                        page_classification, match, alternate_nav_url);
 }
 
@@ -303,4 +316,9 @@ bool AutocompleteProviderClientImpl::in_background_state() const {
 void AutocompleteProviderClientImpl::set_in_background_state(
     bool in_background_state) {
   in_background_state_ = in_background_state;
+}
+
+base::WeakPtr<AutocompleteProviderClient>
+AutocompleteProviderClientImpl::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
 }

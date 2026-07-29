@@ -188,7 +188,7 @@ ChromeDlpRulesManager::GetAggregatedDestinations(
   }
 
   std::map<Level, std::set<std::string>> result;
-  for (auto it : destination_level_map) {
+  for (const auto& it : destination_level_map) {
     if (it.first == kWildCardMatching) {
       result[it.second] = {it.first};
     } else if (it.second >= wildcard_level &&
@@ -272,8 +272,8 @@ ChromeDlpRulesManager::GetMaxJoinRestrictionLevelAndRuleId(
   const std::map<RuleId, Level>& restriction_rules = restriction_it->second;
 
   Level max_level = Level::kNotSet;
-  std::optional<T> url_condition = std::nullopt;
-  std::optional<RuleId> matched_rule_id = std::nullopt;
+  std::optional<T> url_condition;
+  std::optional<RuleId> matched_rule_id;
 
   for (const auto& rule_pair : selected_rules) {
     const auto& restriction_rule_itr = restriction_rules.find(rule_pair.first);

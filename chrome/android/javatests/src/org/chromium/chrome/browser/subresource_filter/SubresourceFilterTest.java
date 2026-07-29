@@ -6,7 +6,6 @@ package org.chromium.chrome.browser.subresource_filter;
 
 import android.text.Spanned;
 import android.text.style.ClickableSpan;
-import android.view.View;
 import android.widget.TextView;
 
 import androidx.test.espresso.Espresso;
@@ -21,6 +20,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
@@ -34,8 +34,11 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.components.browser_ui.modaldialog.ModalDialogView;
 import org.chromium.components.browser_ui.modaldialog.TabModalPresenter;
 import org.chromium.components.messages.MessageBannerProperties;
 import org.chromium.components.messages.MessageDispatcher;
@@ -45,7 +48,6 @@ import org.chromium.components.messages.MessageStateHandler;
 import org.chromium.components.messages.MessagesTestHelper;
 import org.chromium.components.safe_browsing.SafeBrowsingApiBridge;
 import org.chromium.net.test.EmbeddedTestServer;
-import org.chromium.net.test.EmbeddedTestServerRule;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -63,11 +65,11 @@ import java.util.concurrent.TimeoutException;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Batch(Batch.PER_CLASS)
 public final class SubresourceFilterTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
-
-    @Rule public EmbeddedTestServerRule mTestServerRule = new EmbeddedTestServerRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private EmbeddedTestServer mTestServer;
 
@@ -79,6 +81,8 @@ public final class SubresourceFilterTest {
             "{\"matches\":[{\"threat_type\":\"13\",\"sf_bas\":\"\"}]}";
     private static final String METADATA_FOR_WARNING =
             "{\"matches\":[{\"threat_type\":\"13\",\"sf_bas\":\"warn\"}]}";
+    private static boolean sRulesetPublished;
+    private WebPageStation mPage;
 
     private void createAndPublishRulesetDisallowingSuffix(String suffix) {
         TestRulesetPublisher publisher = new TestRulesetPublisher();
@@ -94,12 +98,15 @@ public final class SubresourceFilterTest {
 
     @Before
     public void setUp() throws Exception {
-        mTestServer = mTestServerRule.getServer();
+        mTestServer = mActivityTestRule.getTestServer();
         SafeBrowsingApiBridge.setSafeBrowsingApiHandler(new MockSafeBrowsingApiHandler());
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
 
-        // Disallow all jpgs.
-        createAndPublishRulesetDisallowingSuffix(".jpg");
+        if (!sRulesetPublished) {
+            // Disallow all jpgs.
+            createAndPublishRulesetDisallowingSuffix(".jpg");
+            sRulesetPublished = true;
+        }
     }
 
     @After
@@ -130,7 +137,7 @@ public final class SubresourceFilterTest {
 
     @Test
     @LargeTest
-    @Restriction(DeviceFormFactor.TABLET)
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     public void resourceFilteredClickLearnMore_MessagesUi_ReshowDialogOnTabletOnBackPress()
             throws Exception {
         testResourceFilteredClickLearnMore_MessagesUiFlow();
@@ -196,14 +203,14 @@ public final class SubresourceFilterTest {
 
         // Trigger the Ads Blocked dialog and simulate the "Learn more" link click.
         createAdsBlockedDialog(message);
-        View dialogView =
+        ModalDialogView dialogView =
                 ((TabModalPresenter)
                                 mActivityTestRule
                                         .getActivity()
                                         .getModalDialogManager()
                                         .getCurrentPresenterForTest())
-                        .getDialogContainerForTest();
-        TextView messageView = dialogView.findViewById(R.id.message_paragraph_1);
+                        .getDialogViewForTest();
+        TextView messageView = dialogView.getMessageParagraphAtIndexForTesting(0);
         Spanned spannedMessage = (Spanned) messageView.getText();
         ClickableSpan[] spans =
                 spannedMessage.getSpans(0, spannedMessage.length(), ClickableSpan.class);
@@ -268,7 +275,7 @@ public final class SubresourceFilterTest {
     }
 
     private boolean verifyPageReloadedWithOriginalContent(String url) throws TimeoutException {
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         ChromeTabUtils.waitForTabPageLoaded(tab, url);
 
         verifyNoMessageShown();

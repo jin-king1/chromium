@@ -4,7 +4,6 @@
 
 #include "chrome/browser/task_manager/providers/worker_task_provider.h"
 
-#include "base/not_fatal_until.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/task_manager/providers/per_profile_worker_task_tracker.h"
@@ -25,7 +24,7 @@ void WorkerTaskProvider::OnProfileAdded(Profile* profile) {
 
   // It is possible for this method to be called multiple times for the same
   // profile, if the profile loads an extension during initialization which also
-  // triggers this logic path. https://crbug.com/1065798.
+  // triggers this logic path. https://crbug.com/40682007.
   if (observed_profiles_.IsObservingSource(profile))
     return;
 
@@ -56,8 +55,7 @@ void WorkerTaskProvider::OnProfileWillBeDestroyed(Profile* profile) {
   observed_profiles_.RemoveObservation(profile);
 
   auto it = per_profile_worker_task_trackers_.find(profile);
-  CHECK(it != per_profile_worker_task_trackers_.end(),
-        base::NotFatalUntil::M130);
+  CHECK(it != per_profile_worker_task_trackers_.end());
   per_profile_worker_task_trackers_.erase(it);
 }
 

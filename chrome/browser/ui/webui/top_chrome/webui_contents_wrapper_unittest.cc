@@ -82,7 +82,6 @@ class MockHost : public WebUIContentsWrapper::Host {
   int resize_due_to_auto_resize_called_ = 0;
   int draggable_regions_changed_called_ = 0;
   int add_new_contents_called_ = 0;
-
   base::WeakPtrFactory<MockHost> weak_ptr_factory_{this};
 };
 
@@ -120,7 +119,7 @@ class WebUIContentsWrapperTest : public ChromeViewsTestBase {
 
     scoped_refptr<content::SiteInstance> instance =
         content::SiteInstance::Create(profile_.get());
-    instance->GetOrCreateProcess()->Init();
+    instance->GetOrCreateProcessForTesting()->Init();
     auto test_contents = content::WebContentsTester::CreateTestWebContents(
         profile_.get(), std::move(instance));
 
@@ -282,6 +281,5 @@ TEST_F(WebUIContentsWrapperTest, HostNotifiedOnAddNewContents) {
       false /* user_gesture */, &blocked /* was_blocked */);
   EXPECT_EQ(1, host.add_new_contents_called());
 }
-
 }  // namespace test
 }  // namespace views

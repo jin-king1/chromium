@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/exo/data_source.h"
 
 #include <limits>
 #include <optional>
 #include <string_view>
 
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -63,7 +59,7 @@ std::optional<std::vector<uint8_t>> ReadDataOnWorkerThread(base::ScopedFD fd) {
     uint8_t chunk[kChunkSize];
     ssize_t bytes_read = HANDLE_EINTR(read(fd.get(), chunk, kChunkSize));
     if (bytes_read > 0) {
-      bytes.insert(bytes.end(), chunk, chunk + bytes_read);
+      bytes.insert(bytes.end(), chunk, UNSAFE_TODO(chunk + bytes_read));
       continue;
     }
     if (!bytes_read)
@@ -125,13 +121,15 @@ std::u16string CodepageToUTF16(const std::vector<uint8_t>& data,
   if (!ucnv_compareNames(charset, kUTF16Unspecified) &&
       data.size() >= kByteOrderMarkSize) {
     if (static_cast<uint8_t>(piece.data()[0]) == kByteOrderMark[0] &&
-        static_cast<uint8_t>(piece.data()[1]) == kByteOrderMark[1]) {
+        static_cast<uint8_t>(UNSAFE_TODO(piece.data()[1])) ==
+            kByteOrderMark[1]) {
       // BOM is in big endian format. Consume the BOM so it doesn't get
       // interpreted as a character.
       piece.remove_prefix(2);
       charset = kUTF16BigEndian;
     } else if (static_cast<uint8_t>(piece.data()[0]) == kByteOrderMark[1] &&
-               static_cast<uint8_t>(piece.data()[1]) == kByteOrderMark[0]) {
+               static_cast<uint8_t>(UNSAFE_TODO(piece.data()[1])) ==
+                   kByteOrderMark[0]) {
       // BOM is in little endian format. Consume the BOM so it doesn't get
       // interpreted as a character.
       piece.remove_prefix(2);
@@ -171,10 +169,12 @@ ScopedDataSource::~ScopedDataSource() {
 }
 
 DataSource::DataSource(DataSourceDelegate* delegate)
-    : delegate_(delegate), finished_(false) {}
+    : delegate_(delegate->GetWeakPtr()), finished_(false) {}
 
 DataSource::~DataSource() {
-  delegate_->OnDataSourceDestroying(this);
+  if (delegate_) {
+    delegate_->OnDataSourceDestroying(this);
+  }
   for (DataSourceObserver& observer : observers_) {
     observer.OnDataSourceDestroying(this);
   }
@@ -197,32 +197,45 @@ void DataSource::SetActions(const base::flat_set<DndAction>& dnd_actions) {
 }
 
 void DataSource::Target(const std::optional<std::string>& mime_type) {
-  delegate_->OnTarget(mime_type);
+  if (delegate_) {
+    delegate_->OnTarget(mime_type);
+  }
 }
 
 void DataSource::Action(DndAction action) {
-  delegate_->OnAction(action);
+  if (delegate_) {
+    delegate_->OnAction(action);
+  }
 }
 
 void DataSource::DndDropPerformed() {
-  delegate_->OnDndDropPerformed();
+  if (delegate_) {
+    delegate_->OnDndDropPerformed();
+  }
 }
 
 void DataSource::Cancelled() {
   finished_ = true;
   read_data_weak_ptr_factory_.InvalidateWeakPtrs();
-  delegate_->OnCancelled();
+  if (delegate_) {
+    delegate_->OnCancelled();
+  }
 }
 
 void DataSource::DndFinished() {
   finished_ = true;
   read_data_weak_ptr_factory_.InvalidateWeakPtrs();
-  delegate_->OnDndFinished();
+  if (delegate_) {
+    delegate_->OnDndFinished();
+  }
 }
 
 std::vector<ui::FileInfo> DataSource::GetFilenames(
     ui::EndpointType source,
     const std::vector<uint8_t>& data) const {
+  if (!delegate_) {
+    return {};
+  }
   return delegate_->GetSecurityDelegate()->GetFilenames(source, data);
 }
 
@@ -237,6 +250,11 @@ void DataSource::ReadData(const std::string& mime_type,
                           base::OnceClosure failure_callback) {
   // This DataSource does not contain the requested MIME type.
   if (mime_type.empty() || !mime_types_.count(mime_type) || finished_) {
+    std::move(failure_callback).Run();
+    return;
+  }
+
+  if (!delegate_) {
     std::move(failure_callback).Run();
     return;
   }
@@ -378,7 +396,7 @@ void DataSource::OnFileContentsRead(ReadFileContentsDataCallback callback,
 }
 
 bool DataSource::CanBeDataSourceForCopy(Surface* surface) const {
-  return delegate_->CanAcceptDataEventsForSurface(surface);
+  return delegate_ && delegate_->CanAcceptDataEventsForSurface(surface);
 }
 
 }  // namespace exo

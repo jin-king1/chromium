@@ -5,11 +5,12 @@
 package org.chromium.chrome.browser.contextualsearch;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Log;
-import org.chromium.chrome.browser.compositor.bottombar.OverlayPanel.StateChangeReason;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanel.StateChangeReason;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchSelectionController.SelectionType;
 
 import java.lang.annotation.Retention;
@@ -17,28 +18,33 @@ import java.lang.annotation.RetentionPolicy;
 
 /**
  * Controls the internal state of the Contextual Search Manager.
- * <p>
- * This class keeps track of the current internal state of the {@code ContextualSearchManager} and
- * helps it to transition between states and return to the idle state when work has been
+ *
+ * <p>This class keeps track of the current internal state of the {@code ContextualSearchManager}
+ * and helps it to transition between states and return to the idle state when work has been
  * interrupted or complete.
- * <p>
- * Usage: Call {@link #reset(StateChangeReason)} to reset to the {@code IDLE} state, which hides
+ *
+ * <p>Usage: Call {@link #reset(StateChangeReason)} to reset to the {@code IDLE} state, which hides
  * the UI.<br>
  * Call {@link #enter(InternalState)} to enter a start-state (when a user gesture is recognized).
- * When doing some work on a state, which may be done in an asynchronous manner:<ol>
- * <li>call {@link #notifyStartingWorkOn(InternalState)} to note that work is starting on that state
- * <li>call {@link #notifyFinishedWorkOn(InternalState)} when work is completed.
- * <li>If a handler of an async response needs to do additional work, such as updating the UI, it
- * should first call {@link #isStillWorkingOn(InternalState)} to check that work has not been
- * interrupted since the async operation was started.
- * </ol><p>
- * The {@link #notifyFinishedWorkOn(InternalState)} method will automatically start a transition to
- * the appropriate next state.
- * <p>
- * Policy decisions about state transitions should only be done in the private
- * {@link #transitionTo(InternalState)} method of this class (not within the
- * {@code ContextualSearchManager} itself).
+ * When doing some work on a state, which may be done in an asynchronous manner:
+ *
+ * <ol>
+ *   <li>call {@link #notifyStartingWorkOn(InternalState)} to note that work is starting on that
+ *       state
+ *   <li>call {@link #notifyFinishedWorkOn(InternalState)} when work is completed.
+ *   <li>If a handler of an async response needs to do additional work, such as updating the UI, it
+ *       should first call {@link #isStillWorkingOn(InternalState)} to check that work has not been
+ *       interrupted since the async operation was started.
+ * </ol>
+ *
+ * <p>The {@link #notifyFinishedWorkOn(InternalState)} method will automatically start a transition
+ * to the appropriate next state.
+ *
+ * <p>Policy decisions about state transitions should only be done in the private {@link
+ * #transitionTo(InternalState)} method of this class (not within the {@code
+ * ContextualSearchManager} itself).
  */
+@NullMarked
 class ContextualSearchInternalStateController {
     private static final String TAG = "ContextualSearch";
 
@@ -204,9 +210,10 @@ class ContextualSearchInternalStateController {
     }
 
     /**
-     * Enters the given starting state immediately.
-     * Note: This will synchronously complete the given state and process all subsequent
-     * non-asynchronous states before returning.  See https://crbug.com/1099383.
+     * Enters the given starting state immediately. Note: This will synchronously complete the given
+     * state and process all subsequent non-asynchronous states before returning. See
+     * https://crbug.com/40137460.
+     *
      * @param state The new starting {@link InternalState} we're now in.
      */
     void enter(@InternalState int state) {
@@ -253,9 +260,10 @@ class ContextualSearchInternalStateController {
 
     /**
      * Confirms that work has been finished on the given state, and will process all subsequent
-     * non-asynchronous states before returning.  See https://crbug.com/1099383.
-     * This should be called by every operation that waits for some kind of completion when it
-     * completes.  The operation's start must be flagged using {@link #notifyStartingWorkOn}.
+     * non-asynchronous states before returning. See https://crbug.com/40137460. This should be
+     * called by every operation that waits for some kind of completion when it completes. The
+     * operation's start must be flagged using {@link #notifyStartingWorkOn}.
+     *
      * @param state The {@link InternalState} that we've finished working on.
      */
     void notifyFinishedWorkOn(@InternalState int state) {
@@ -287,16 +295,17 @@ class ContextualSearchInternalStateController {
     }
 
     /**
-     * Establishes the given state by calling code that starts work on that state or simply
-     * displays the appropriate UX for that state.
+     * Establishes the given state by calling code that starts work on that state or simply displays
+     * the appropriate UX for that state.
+     *
      * @param state The new {@link InternalState} to establish.
-     * @param reason The reason we're starting this state, or {@code null} if not significant
-     *        or known.  Only needed when we enter the IDLE state.
+     * @param reason The reason we're starting this state, or {@code null} if not significant or
+     *     known. Only needed when we enter the IDLE state.
      */
     private void transitionTo(
             final @InternalState int state, final @Nullable @StateChangeReason Integer reason) {
         if (state == mState && !mPolicy.shouldRetryCurrentState(state)) return;
-        Log.v(TAG, "State transition " + String.valueOf(mState) + " => " + String.valueOf(state));
+        Log.v(TAG, "State transition %d => %d", mState, state);
 
         // This should be the only part of the code that changes the state (other than #enter)!
         mPreviousState = mState;

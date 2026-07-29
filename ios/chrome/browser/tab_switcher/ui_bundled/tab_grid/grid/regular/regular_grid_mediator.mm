@@ -4,32 +4,42 @@
 
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/regular/regular_grid_mediator.h"
 
+#import "base/apple/foundation_util.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/scoped_observation.h"
 #import "base/strings/sys_string_conversions.h"
-#import "components/collaboration/public/collaboration_service.h"
 #import "components/collaboration/public/messaging/message.h"
 #import "components/collaboration/public/messaging/messaging_backend_service.h"
 #import "components/saved_tab_groups/public/tab_group_sync_service.h"
 #import "components/sessions/core/tab_restore_service.h"
 #import "ios/chrome/browser/collaboration/model/features.h"
 #import "ios/chrome/browser/collaboration/model/messaging/messaging_backend_service_bridge.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/saved_tab_groups/model/ios_tab_group_sync_util.h"
-#import "ios/chrome/browser/share_kit/model/share_kit_face_pile_configuration.h"
+#import "ios/chrome/browser/saved_tab_groups/ui/tab_group_utils.h"
+#import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_tab_card_label_data.h"
 #import "ios/chrome/browser/share_kit/model/share_kit_service.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
+#import "ios/chrome/browser/shared/model/web_state_list/tab_utils.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
+#import "ios/chrome/browser/shared/public/commands/tab_grid_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/ui/util/color_palette/tab_group_color_palette.h"
+#import "ios/chrome/browser/snapshots/model/snapshot_browser_agent.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_collection_consumer.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/activity_label_data.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_consumer.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_item_identifier.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_toolbars_configuration_provider.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_toolbars_mutator.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/regular/regular_grid_mediator_delegate.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_idle_status_handler.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_metrics.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_mode_holder.h"
@@ -37,23 +47,23 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_sync_service_observer_bridge.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/tab_grid_toolbars_configuration.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_group_item.h"
-#import "ios/chrome/browser/tabs/model/tabs_closer.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/web_state_tab_switcher_item.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/web_state.h"
+#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
 // TODO(crbug.com/40273478): Needed for `TabPresentationDelegate`, should be
 // refactored.
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_view_controller.h"
 
+using collaboration::messaging::PersistentNotificationType;
+
 namespace {
 
 using ScopedTabGroupSyncObservation =
     base::ScopedObservation<tab_groups::TabGroupSyncService,
                             tab_groups::TabGroupSyncService::Observer>;
-
-// The preferred size in points for the avatar icons.
-constexpr CGFloat kFacePileAvatarSize = 16;
 
 }  // namespace
 
@@ -66,14 +76,9 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   raw_ptr<tab_groups::TabGroupSyncService> _tabGroupSyncService;
   // The share kit service.
   raw_ptr<ShareKitService> _shareKitService;
-  // The collaboration service.
-  raw_ptr<collaboration::CollaborationService> _collaborationService;
   // The bridge between the service C++ observer and this Objective-C class.
   std::unique_ptr<TabGroupSyncServiceObserverBridge> _syncServiceObserver;
   std::unique_ptr<ScopedTabGroupSyncObservation> _scopedSyncServiceObservation;
-  // TabsClosed used to implement the "close all tabs" operation with support
-  // for undoing the operation.
-  std::unique_ptr<TabsCloser> _tabsCloser;
   // Whether the current grid is selected.
   BOOL _selected;
   // A service to get activity messages for a shared tab group.
@@ -87,18 +92,14 @@ constexpr CGFloat kFacePileAvatarSize = 16;
 }
 
 - (instancetype)
-      initWithModeHolder:(TabGridModeHolder*)modeHolder
-     tabGroupSyncService:(tab_groups::TabGroupSyncService*)tabGroupSyncService
-         shareKitService:(ShareKitService*)shareKitService
-    collaborationService:
-        (collaboration::CollaborationService*)collaborationService
-        messagingService:(collaboration::messaging::MessagingBackendService*)
-                             messagingService {
+     initWithModeHolder:(TabGridModeHolder*)modeHolder
+    tabGroupSyncService:(tab_groups::TabGroupSyncService*)tabGroupSyncService
+        shareKitService:(ShareKitService*)shareKitService
+       messagingService:(collaboration::messaging::MessagingBackendService*)
+                            messagingService {
   if ((self = [super initWithModeHolder:modeHolder])) {
-    CHECK(collaborationService);
     _tabGroupSyncService = tabGroupSyncService;
     _shareKitService = shareKitService;
-    _collaborationService = collaborationService;
     _syncServiceObserver =
         std::make_unique<TabGroupSyncServiceObserverBridge>(self);
 
@@ -133,44 +134,31 @@ constexpr CGFloat kFacePileAvatarSize = 16;
 // TODO(crbug.com/40273478): Refactor the grid commands to have the same
 // function name to close all.
 - (void)closeAllItems {
-  NOTREACHED() << "Regular tabs should be saved before close all.";
-}
-
-- (void)saveAndCloseAllItems {
-  [self.inactiveTabsGridCommands saveAndCloseAllItems];
-  if (![self canCloseTabs]) {
-    return;
-  }
+  [self.inactiveTabsGridCommands closeAllItems];
   base::RecordAction(
       base::UserMetricsAction("MobileTabGridCloseAllRegularTabs"));
 
+  // Save tabs groups before closing.
   const int tabGroupCount = self.webStateList->GetGroups().size();
+  if (_tabGroupSyncService) {
+    for (const TabGroup* tab_group : self.webStateList->GetGroups()) {
+      tab_groups::TabGroupId local_id = tab_group->tab_group_id();
+      std::optional<tab_groups::SavedTabGroup> saved_group =
+          _tabGroupSyncService->GetGroup(local_id);
+      if (saved_group) {
+        _tabGroupSyncService->RemoveLocalTabGroupMapping(
+            local_id, tab_groups::ClosingSource::kCloseAllTabs);
+      }
+    }
+  }
 
-  const int closedTabs = _tabsCloser->CloseTabs();
-  RecordTabGridCloseTabsCount(closedTabs);
-
+  const int closedTabsCount =
+      self.webStateList->count() - self.webStateList->pinned_tabs_count();
+  RecordTabGridCloseTabsCount(closedTabsCount);
+  CloseAllNonPinnedWebStates(*self.webStateList,
+                             WebStateList::ClosingReason::kUserAction);
+  SnapshotBrowserAgent::FromBrowser(self.browser)->RemoveAllSnapshots();
   [self showTabGroupSnackbarOrIPH:tabGroupCount];
-}
-
-- (void)undoCloseAllItems {
-  [self.inactiveTabsGridCommands undoCloseAllItems];
-  if (![self canUndoCloseTabs]) {
-    return;
-  }
-
-  base::RecordAction(
-      base::UserMetricsAction("MobileTabGridUndoCloseAllRegularTabs"));
-
-  _tabsCloser->UndoCloseTabs();
-}
-
-- (void)discardSavedClosedItems {
-  [self.inactiveTabsGridCommands discardSavedClosedItems];
-  if (![self canUndoCloseTabs]) {
-    return;
-  }
-  _tabsCloser->ConfirmDeletion();
-  [self configureToolbarsButtons];
 }
 
 #pragma mark - TabGridPageMutator
@@ -186,33 +174,38 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   }
 }
 
-- (void)setPageAsActive {
-  [self.gridConsumer setActivePageFromPage:TabGridPageRegularTabs];
+- (void)setPageAsActiveWithBehavior:(TabGridScrollBehavior)behavior {
+  [self.gridConsumer setActivePageFromPage:TabGridPageRegularTabs
+                                  behavior:behavior];
 }
 
 #pragma mark - TabGridToolbarsGridDelegate
 
 - (void)closeAllButtonTapped:(id)sender {
-  // TODO(crbug.com/40273478): Clean this in order to have "Close All" and
-  // "Undo" separated actions. This was saved as a stack: first save the
-  // inactive tabs, then the active tabs. So undo in the reverse order: first
-  // undo the active tabs, then the inactive tabs.
-  if ([self canUndoCloseRegularOrInactiveTabs]) {
-    [self.consumer willUndoCloseAll];
-    [self undoCloseAllItems];
-    [self.consumer didUndoCloseAll];
-  } else {
-    [self.consumer willCloseAll];
-    [self saveAndCloseAllItems];
-    [self.consumer didCloseAll];
+  [self.regularDelegate showCloseAllConfirmationFromSourceView:sender];
+}
+
+- (void)closeOtherTabsButtonTapped:(id)sender {
+  int activeIndex = self.webStateList->active_index();
+  if (activeIndex == WebStateList::kInvalidIndex) {
+    return;
   }
-  // This is needed because configure button is called (web state list observer
-  // in base grid mediator) when regular tabs are modified but not when inactive
-  // tabs are modified.
-  [self configureToolbarsButtons];
+  RecordTabGridCloseOtherTabs(/*incognito=*/false);
+  int closedTabsCount = self.webStateList->regular_tabs_count();
+  // If the active tab is pinned, it is not part of the `regular_tabs_count()`,
+  // so all regular tabs will be closed. If it is regular, it is part of the
+  // count, so we subtract 1 to keep it.
+  if (!self.webStateList->IsWebStatePinnedAt(activeIndex)) {
+    closedTabsCount -= 1;
+  }
+  RecordTabGridCloseTabsCount(closedTabsCount);
+  CloseOtherWebStates(*(self.webStateList), activeIndex,
+                      WebStateList::ClosingReason::kUserAction);
 }
 
 - (void)newTabButtonTapped:(id)sender {
+  CHECK(!IsChromeNextIaEnabled() ||
+        ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET);
   // Ignore the tap if the current page is disabled for some reason, by policy
   // for instance. This is to avoid situations where the tap action from an
   // enabled page can make it to a disabled page by releasing the
@@ -237,6 +230,19 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   }
 }
 
+- (void)pageActionMenuEntrypointTapped:(id)sender {
+  CHECK(IsPageActionMenuEnabled() && IsSmartTabGroupingEnabled());
+  // Dispatch the command to show the Page Action Menu.
+  id<TabGridCommands> handler =
+      HandlerForProtocol(self.browser->GetCommandDispatcher(), TabGridCommands);
+  [handler showPageActionMenuFromTabGrid];
+}
+
+- (void)deleteBrowsingDataButtonTapped:(id)sender {
+  [self.quickDeleteCommandHandler
+      showQuickDeleteAndCanPerformRadialWipeAnimation:YES];
+}
+
 #pragma mark - Parent's function
 
 - (void)disconnect {
@@ -246,11 +252,9 @@ constexpr CGFloat kFacePileAvatarSize = 16;
     _messagingBackendServiceBridge.reset();
     _messagingService = nullptr;
   }
-  _tabsCloser.reset();
   _scopedSyncServiceObservation.reset();
   _syncServiceObserver.reset();
   _tabGroupSyncService = nullptr;
-  _collaborationService = nullptr;
   _shareKitService = nullptr;
   [super disconnect];
 }
@@ -274,31 +278,33 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   TabGridToolbarsConfiguration* toolbarsConfiguration =
       [[TabGridToolbarsConfiguration alloc]
           initWithPage:TabGridPageRegularTabs];
+  toolbarsConfiguration.overflowMenuButton = YES;
 
   if (self.modeHolder.mode == TabGridMode::kSelection) {
     [self configureButtonsInSelectionMode:toolbarsConfiguration];
   } else {
     toolbarsConfiguration.closeAllButton = [self canCloseRegularOrInactiveTabs];
-    toolbarsConfiguration.doneButton = !self.webStateList->empty();
+    toolbarsConfiguration.exitTabGridButton = !self.webStateList->empty();
     toolbarsConfiguration.newTabButton = YES;
     toolbarsConfiguration.searchButton = YES;
-    toolbarsConfiguration.selectTabsButton = [self hasRegularTabs];
-    toolbarsConfiguration.undoButton = [self canUndoCloseRegularOrInactiveTabs];
+    toolbarsConfiguration.selectTabsButton = [self canCloseTabs];
+    toolbarsConfiguration.closeOtherTabsButton = [self canCloseOtherTabs];
   }
+
+  BOOL showPageActionMenu = (self.modeHolder.mode == TabGridMode::kNormal) &&
+                            IsPageActionMenuEnabled() &&
+                            IsSmartTabGroupingEnabled();
+  toolbarsConfiguration.pageActionMenuButtonVisible = showPageActionMenu;
+  toolbarsConfiguration.pageActionMenuButtonEnabled = showPageActionMenu;
 
   [self.toolbarsMutator setToolbarConfiguration:toolbarsConfiguration];
 }
 
 - (void)displayActiveTab {
-  [self.gridConsumer setActivePageFromPage:TabGridPageRegularTabs];
+  [self.gridConsumer setActivePageFromPage:TabGridPageRegularTabs
+                                  behavior:TabGridScrollBehaviorAnimated];
   [self.tabPresentationDelegate showActiveTabInPage:TabGridPageRegularTabs
                                        focusOmnibox:NO];
-}
-
-- (void)updateForTabInserted {
-  if (!self.webStateList->empty()) {
-    [self discardSavedClosedItems];
-  }
 }
 
 // Overrides the parent to return the data used for showing a label if there is
@@ -311,6 +317,33 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   ActivityLabelData* data = [[ActivityLabelData alloc] init];
   data.labelString =
       l10n_util::GetNSString(IDS_IOS_TAB_GROUP_NEW_ACTIVITY_LABEL_TEXT);
+  return data;
+}
+
+- (ActivityLabelData*)activityLabelDataForItem:(GridItemIdentifier*)itemID {
+  if (itemID.type != GridItemType::kTab) {
+    return [super activityLabelDataForItem:itemID];
+  }
+  // TODO(crbug.com/488072250): Add ActivityLabelData as a property of
+  // GridItemIdentifier than exposing the WebState. Instead of lazy loading, it
+  // should be called systematically when creating the GridItemIdentifier-s, and
+  // the relevant service(s) observed to update the relevant item.
+  WebStateTabSwitcherItem* webStateItem =
+      base::apple::ObjCCast<WebStateTabSwitcherItem>(itemID.tabSwitcherItem);
+  web::WebState* webState = webStateItem ? webStateItem.webState : nullptr;
+  if (!webState) {
+    return nil;
+  }
+
+  // If the WebState has a valid Send Tab to Self label text (applicable for
+  // both realized and unrealized WebStates), return the formatted label.
+  NSString* labelText =
+      SendTabToSelfTabCardLabelData::GetLabelTextForWebState(webState);
+  if (!labelText) {
+    return nil;
+  }
+  ActivityLabelData* data = [[ActivityLabelData alloc] init];
+  data.labelString = labelText;
   return data;
 }
 
@@ -351,23 +384,29 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   }
 
   GridItemIdentifier* groupIdentifier =
-      [GridItemIdentifier groupIdentifier:localGroup
-                         withWebStateList:self.webStateList];
+      [GridItemIdentifier groupIdentifier:localGroup];
   [self.consumer replaceItem:groupIdentifier
          withReplacementItem:groupIdentifier];
 }
 
 // YES if there are regular tabs in the grid.
-- (BOOL)hasRegularTabs {
-  return [self canCloseTabs];
-}
-
 - (BOOL)canCloseTabs {
-  return _tabsCloser && _tabsCloser->CanCloseTabs();
+  return self.webStateList && self.webStateList->regular_tabs_count() != 0;
 }
 
-- (BOOL)canUndoCloseTabs {
-  return _tabsCloser && _tabsCloser->CanUndoCloseTabs();
+// Returns YES if "Close Other Tabs" should be enabled.
+- (BOOL)canCloseOtherTabs {
+  if (!self.webStateList) {
+    return NO;
+  }
+  int activeIndex = self.webStateList->active_index();
+  if (activeIndex == WebStateList::kInvalidIndex) {
+    return NO;
+  }
+  if (self.webStateList->IsWebStatePinnedAt(activeIndex)) {
+    return self.webStateList->regular_tabs_count() > 0;
+  }
+  return self.webStateList->regular_tabs_count() > 1;
 }
 
 - (BOOL)canCloseRegularOrInactiveTabs {
@@ -382,50 +421,64 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   return containedGridToolbarsConfiguration.closeAllButton;
 }
 
-- (BOOL)canUndoCloseRegularOrInactiveTabs {
-  if ([self canUndoCloseTabs]) {
-    return YES;
-  }
-
-  // This is an indirect way to check whether the inactive tabs can close
-  // tabs or undo a close tabs action.
-  TabGridToolbarsConfiguration* containedGridToolbarsConfiguration =
-      [self.containedGridToolbarsProvider toolbarsConfiguration];
-  return containedGridToolbarsConfiguration.undoButton;
-}
-
 // Gets messages to indicate that the shared tab group has changed and the user
 // has not seen it yet and keeps the necessary information from the messages.
 - (void)fetchMessagesForGroup {
-  if (!_messagingService || !_messagingService->IsInitialized()) {
+  if (!_messagingService || !_messagingService->IsInitialized() ||
+      !self.webStateList) {
     return;
   }
 
-  std::vector<collaboration::messaging::PersistentMessage> messages =
-      _messagingService->GetMessages(
-          collaboration::messaging::PersistentNotificationType::
-              DIRTY_TAB_GROUP);
-
-  for (auto& message : messages) {
-    if (!message.attribution.tab_group_metadata.has_value()) {
-      continue;
+  for (const TabGroup* tabGroup : self.webStateList->GetGroups()) {
+    tab_groups::LocalTabGroupID groupID = tabGroup->tab_group_id();
+    if ([self hasNotificationsForGroup:groupID]) {
+      _dirtyGroups.insert(groupID);
     }
-    collaboration::messaging::TabGroupMessageMetadata group_data =
-        message.attribution.tab_group_metadata.value();
-    if (!group_data.local_tab_group_id.has_value()) {
-      continue;
-    }
-    _dirtyGroups.insert(group_data.local_tab_group_id.value());
   }
+}
+
+// Returns whether there are notifications to be displayed for `groupID`.
+- (BOOL)hasNotificationsForGroup:(tab_groups::LocalTabGroupID)groupID {
+  std::vector<collaboration::messaging::PersistentMessage> messages =
+      _messagingService->GetMessagesForGroup(
+          groupID,
+          collaboration::messaging::PersistentNotificationType::DIRTY_TAB);
+
+  for (auto const& message : messages) {
+    if (!message.attribution.tab_metadata.has_value()) {
+      continue;
+    }
+
+    if (message.collaboration_event ==
+            collaboration::messaging::CollaborationEvent::TAB_ADDED ||
+        message.collaboration_event ==
+            collaboration::messaging::CollaborationEvent::TAB_UPDATED) {
+      return YES;
+    }
+  }
+
+  messages = _messagingService->GetMessagesForGroup(
+      groupID,
+      collaboration::messaging::PersistentNotificationType::TOMBSTONED);
+
+  for (auto const& message : messages) {
+    if (!message.attribution.tab_metadata.has_value()) {
+      continue;
+    }
+
+    if (message.collaboration_event ==
+        collaboration::messaging::CollaborationEvent::TAB_REMOVED) {
+      return YES;
+    }
+  }
+  return NO;
 }
 
 // Reconfigures a group cell specified by `localTabGroupID`.
 - (void)reconfigureGroup:(tab_groups::LocalTabGroupID)localTabGroupID {
   for (const TabGroup* group : self.webStateList->GetGroups()) {
     if (group->tab_group_id() == localTabGroupID) {
-      GridItemIdentifier* item =
-          [GridItemIdentifier groupIdentifier:group
-                             withWebStateList:self.webStateList];
+      GridItemIdentifier* item = [GridItemIdentifier groupIdentifier:group];
       [self.consumer replaceItem:item withReplacementItem:item];
       return;
     }
@@ -434,44 +487,35 @@ constexpr CGFloat kFacePileAvatarSize = 16;
 
 #pragma mark - Setters
 
-- (void)setBrowser:(Browser*)browser {
-  [super setBrowser:browser];
-  if (browser) {
-    _tabsCloser = std::make_unique<TabsCloser>(
-        browser, TabsCloser::ClosePolicy::kRegularTabs);
-  } else {
-    _tabsCloser.reset();
+- (void)setWebStateList:(WebStateList*)webStateList {
+  [super setWebStateList:webStateList];
+  if (webStateList) {
+    [self fetchMessagesForGroup];
   }
 }
 
 #pragma mark - BaseGridMediatorItemProvider
 
-- (UIViewController*)facePileViewControllerForItem:(GridItemIdentifier*)itemID {
+- (id<FacePileProviding>)facePileProviderForItem:(GridItemIdentifier*)itemID {
   CHECK(itemID.type == GridItemType::kGroup);
 
   const TabGroup* tabGroup = itemID.tabGroupItem.tabGroup;
 
   if (!_shareKitService || !_shareKitService->IsSupported() ||
-      !_collaborationService || !_tabGroupSyncService || !tabGroup) {
+      !_tabGroupSyncService || !tabGroup) {
     return nil;
   }
 
-  tab_groups::CollaborationId collaborationID =
+  syncer::CollaborationId collaborationID =
       tab_groups::utils::GetTabGroupCollabID(tabGroup, _tabGroupSyncService);
   if (collaborationID->empty()) {
     return nil;
   }
-  NSString* savedCollabID = base::SysUTF8ToNSString(collaborationID.value());
 
-  // Configure the face pile.
-  ShareKitFacePileConfiguration* config =
-      [[ShareKitFacePileConfiguration alloc] init];
-  config.collabID = savedCollabID;
-  config.backgroundColor = tabGroup->GetColor();
-  config.showsEmptyState = NO;
-  config.avatarSize = kFacePileAvatarSize;
-
-  return _shareKitService->FacePile(config);
+  UIColor* groupColor = [TabGroupColorPalette commonColor:tabGroup->GetColor()];
+  return
+      [self.regularDelegate facePileProviderForGroupID:collaborationID.value()
+                                            groupColor:groupColor];
 }
 
 #pragma mark - MessagingBackendServiceObserving
@@ -485,8 +529,7 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   CHECK(_messagingService);
   CHECK(_messagingService->IsInitialized());
 
-  if (message.type !=
-      collaboration::messaging::PersistentNotificationType::DIRTY_TAB_GROUP) {
+  if (message.type != PersistentNotificationType::DIRTY_TAB_GROUP) {
     return;
   }
   if (!message.attribution.tab_group_metadata.has_value()) {
@@ -519,7 +562,11 @@ constexpr CGFloat kFacePileAvatarSize = 16;
   }
   tab_groups::LocalTabGroupID localTabGroupID =
       group_data.local_tab_group_id.value();
-  _dirtyGroups.erase(localTabGroupID);
+  if ([self hasNotificationsForGroup:localTabGroupID]) {
+    _dirtyGroups.insert(localTabGroupID);
+  } else {
+    _dirtyGroups.erase(localTabGroupID);
+  }
 
   [self reconfigureGroup:localTabGroupID];
 }

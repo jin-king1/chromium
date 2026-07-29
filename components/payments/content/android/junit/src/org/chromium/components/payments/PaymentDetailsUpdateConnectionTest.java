@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import android.content.Context;
@@ -23,6 +24,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
@@ -30,6 +32,8 @@ import org.chromium.base.test.util.Feature;
 /** Tests for PaymentDetailsUpdateConnection. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class PaymentDetailsUpdateConnectionTest {
+    private static final int MAX_RETRY_NUMBER = 5;
+
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private IBinder mPaymentAppServiceBinder;
@@ -42,7 +46,8 @@ public class PaymentDetailsUpdateConnectionTest {
     public void testConnectionBindsToService() throws Throwable {
         Intent intent = new Intent();
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, intent, mBrowserService);
+                new PaymentDetailsUpdateConnection(
+                        mContext, intent, mBrowserService, MAX_RETRY_NUMBER);
 
         connection.connectToService();
 
@@ -54,15 +59,17 @@ public class PaymentDetailsUpdateConnectionTest {
     public void testConnectionSetsUpTheService() throws Throwable {
         Intent intent = new Intent();
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, intent, mBrowserService);
+                new PaymentDetailsUpdateConnection(
+                        mContext, intent, mBrowserService, MAX_RETRY_NUMBER);
         doReturn(mPaymentAppService).when(mPaymentAppServiceBinder).queryLocalInterface(any());
-        doAnswer((invocation) -> {
-            ((ServiceConnection) invocation.getArgument(1))
-                    .onServiceConnected(
-                            /* name= */ null,
-                            /* service= */ mPaymentAppServiceBinder);
-            return true;
-        })
+        doAnswer(
+                        (invocation) -> {
+                            ((ServiceConnection) invocation.getArgument(1))
+                                    .onServiceConnected(
+                                            /* name= */ null,
+                                            /* service= */ mPaymentAppServiceBinder);
+                            return true;
+                        })
                 .when(mContext)
                 .bindService(eq(intent), eq(connection), eq(Context.BIND_AUTO_CREATE));
 
@@ -76,8 +83,13 @@ public class PaymentDetailsUpdateConnectionTest {
     public void testNoPermissionToConnectUnbindsService() throws Throwable {
         Intent intent = new Intent();
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, intent, mBrowserService);
-        doAnswer(answerVoid((invocation) -> { throw new SecurityException("Permission denied"); }))
+                new PaymentDetailsUpdateConnection(
+                        mContext, intent, mBrowserService, MAX_RETRY_NUMBER);
+        doAnswer(
+                        answerVoid(
+                                (invocation) -> {
+                                    throw new SecurityException("Permission denied");
+                                }))
                 .when(mContext)
                 .bindService(eq(intent), eq(connection), eq(Context.BIND_AUTO_CREATE));
 
@@ -91,12 +103,14 @@ public class PaymentDetailsUpdateConnectionTest {
     public void testNullServiceUnbindsService() throws Throwable {
         Intent intent = new Intent();
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, intent, mBrowserService);
-        doAnswer((invocation) -> {
-            ((ServiceConnection) invocation.getArgument(1))
-                    .onServiceConnected(/* name= */ null, /* service= */ null);
-            return true;
-        })
+                new PaymentDetailsUpdateConnection(
+                        mContext, intent, mBrowserService, MAX_RETRY_NUMBER);
+        doAnswer(
+                        (invocation) -> {
+                            ((ServiceConnection) invocation.getArgument(1))
+                                    .onServiceConnected(/* name= */ null, /* service= */ null);
+                            return true;
+                        })
                 .when(mContext)
                 .bindService(eq(intent), eq(connection), eq(Context.BIND_AUTO_CREATE));
 
@@ -110,15 +124,17 @@ public class PaymentDetailsUpdateConnectionTest {
     public void testErrorsInPaymentAppsServiceUnbindsService() throws Throwable {
         Intent intent = new Intent();
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, intent, mBrowserService);
+                new PaymentDetailsUpdateConnection(
+                        mContext, intent, mBrowserService, MAX_RETRY_NUMBER);
         doReturn(mPaymentAppService).when(mPaymentAppServiceBinder).queryLocalInterface(any());
-        doAnswer((invocation) -> {
-            ((ServiceConnection) invocation.getArgument(1))
-                    .onServiceConnected(
-                            /* name= */ null,
-                            /* service= */ mPaymentAppServiceBinder);
-            return true;
-        })
+        doAnswer(
+                        (invocation) -> {
+                            ((ServiceConnection) invocation.getArgument(1))
+                                    .onServiceConnected(
+                                            /* name= */ null,
+                                            /* service= */ mPaymentAppServiceBinder);
+                            return true;
+                        })
                 .when(mContext)
                 .bindService(eq(intent), eq(connection), eq(Context.BIND_AUTO_CREATE));
         doAnswer((invocation) -> { throw new Exception("Internal error"); })
@@ -132,21 +148,28 @@ public class PaymentDetailsUpdateConnectionTest {
 
     @Test
     @Feature({"Payments"})
-    public void testServiceDisconnectUnbindsService() throws Throwable {
+    public void testServiceDisconnectUnbindsAndRebindsService() throws Throwable {
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, new Intent(), mBrowserService);
+                new PaymentDetailsUpdateConnection(
+                        mContext, new Intent(), mBrowserService, MAX_RETRY_NUMBER);
         connection.connectToService();
+        verify(mContext, times(1)).bindService(any(), eq(connection), eq(Context.BIND_AUTO_CREATE));
 
-        connection.onServiceDisconnected(/*name=*/null);
+        connection.onServiceDisconnected(/* name= */ null);
 
         verify(mContext).unbindService(eq(connection));
+
+        // Fast-forwards to the scheduled rebind task.
+        ShadowLooper.runMainLooperToNextTask();
+        verify(mContext, times(2)).bindService(any(), eq(connection), eq(Context.BIND_AUTO_CREATE));
     }
 
     @Test
     @Feature({"Payments"})
     public void testNullBindingUnbindsService() throws Throwable {
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, new Intent(), mBrowserService);
+                new PaymentDetailsUpdateConnection(
+                        mContext, new Intent(), mBrowserService, MAX_RETRY_NUMBER);
         connection.connectToService();
 
         connection.onNullBinding(/*name=*/null);
@@ -156,21 +179,47 @@ public class PaymentDetailsUpdateConnectionTest {
 
     @Test
     @Feature({"Payments"})
-    public void testDeadBindingUnbindsService() throws Throwable {
+    public void testDeadBindingUnbindsAndRebindsService() throws Throwable {
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, new Intent(), mBrowserService);
+                new PaymentDetailsUpdateConnection(
+                        mContext, new Intent(), mBrowserService, MAX_RETRY_NUMBER);
         connection.connectToService();
+        verify(mContext, times(1)).bindService(any(), eq(connection), eq(Context.BIND_AUTO_CREATE));
 
-        connection.onBindingDied(/*name=*/null);
+        connection.onBindingDied(/* name= */ null);
 
         verify(mContext).unbindService(eq(connection));
+
+        // Fast-forwards to the scheduled rebind task.
+        ShadowLooper.runMainLooperToNextTask();
+        verify(mContext, times(2)).bindService(any(), eq(connection), eq(Context.BIND_AUTO_CREATE));
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testDisconnectAndDeadBindingUnbindsAndRebindsServiceOnce() throws Throwable {
+        PaymentDetailsUpdateConnection connection =
+                new PaymentDetailsUpdateConnection(
+                        mContext, new Intent(), mBrowserService, MAX_RETRY_NUMBER);
+        connection.connectToService();
+        verify(mContext, times(1)).bindService(any(), eq(connection), eq(Context.BIND_AUTO_CREATE));
+
+        connection.onServiceDisconnected(/* name= */ null);
+        connection.onBindingDied(/* name= */ null);
+
+        verify(mContext, times(1)).unbindService(eq(connection));
+
+        // Fast-forwards to the scheduled rebind task.
+        ShadowLooper.runMainLooperToNextTask();
+        verify(mContext, times(2)).bindService(any(), eq(connection), eq(Context.BIND_AUTO_CREATE));
     }
 
     @Test
     @Feature({"Payments"})
     public void testTerminateConnectionUnbindsService() throws Throwable {
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, new Intent(), mBrowserService);
+                new PaymentDetailsUpdateConnection(
+                        mContext, new Intent(), mBrowserService, MAX_RETRY_NUMBER);
         connection.connectToService();
 
         connection.terminateConnection();
@@ -182,10 +231,26 @@ public class PaymentDetailsUpdateConnectionTest {
     @Feature({"Payments"})
     public void testTerminateConnectionNoOpWhenNotConnected() {
         PaymentDetailsUpdateConnection connection =
-                new PaymentDetailsUpdateConnection(mContext, new Intent(), mBrowserService);
+                new PaymentDetailsUpdateConnection(
+                        mContext, new Intent(), mBrowserService, MAX_RETRY_NUMBER);
 
         connection.terminateConnection();
 
         verify(mContext, never()).unbindService(any());
+    }
+
+    @Test
+    @Feature({"Payments"})
+    public void testTerminateConnectionNoOpAfterDisconnected() throws Throwable {
+        PaymentDetailsUpdateConnection connection =
+                new PaymentDetailsUpdateConnection(
+                        mContext, new Intent(), mBrowserService, MAX_RETRY_NUMBER);
+        connection.connectToService();
+
+        connection.onServiceDisconnected(/* name= */ null);
+        verify(mContext, times(1)).unbindService(eq(connection));
+
+        connection.terminateConnection();
+        verify(mContext, times(1)).unbindService(eq(connection));
     }
 }

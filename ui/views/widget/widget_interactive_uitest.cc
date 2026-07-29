@@ -10,6 +10,7 @@
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
@@ -18,6 +19,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/run_until.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
@@ -36,19 +38,19 @@
 #include "ui/events/event_processor.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/textfield/textfield_test_api.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/test/focus_manager_test.h"
 #include "ui/views/test/native_widget_factory.h"
+#include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/touchui/touch_selection_controller_impl.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/widget/widget_interactive_uitest_utils.h"
 #include "ui/views/widget/widget_utils.h"
 #include "ui/views/window/dialog_delegate.h"
 #include "ui/wm/public/activation_client.h"
@@ -64,6 +66,10 @@
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/views/win/hwnd_util.h"
+#endif
+
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
 #endif
 
 namespace views::test {
@@ -410,7 +416,9 @@ void DeactivateSync(Widget* widget) {
   // activating (and closing) a temporary widget.
   widget->widget_delegate()->SetCanActivate(false);
   Widget* stealer = new Widget;
-  stealer->Init(Widget::InitParams(Widget::InitParams::TYPE_WINDOW));
+  stealer->Init(
+      Widget::InitParams(Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET,
+                         Widget::InitParams::TYPE_WINDOW));
   ShowSync(stealer);
   stealer->CloseNow();
   widget->widget_delegate()->SetCanActivate(true);
@@ -524,8 +532,9 @@ TEST_F(DesktopWidgetTestInteractive, FocusChangesOnBubble) {
 
   // Show a bubble.
   auto owned_bubble_delegate_view =
-      std::make_unique<views::BubbleDialogDelegateView>(focusable_view,
-                                                        BubbleBorder::NONE);
+      std::make_unique<views::BubbleDialogDelegateView>(
+          BubbleDialogDelegateView::CreatePassKey(), focusable_view,
+          BubbleBorder::NONE);
   owned_bubble_delegate_view->SetFocusBehavior(View::FocusBehavior::ALWAYS);
   BubbleDialogDelegateView* bubble_delegate_view =
       owned_bubble_delegate_view.get();
@@ -623,7 +632,7 @@ TEST_F(WidgetTestInteractive, CheckResizeControllerEvents) {
   // |view| needs to be a particular size. Reset the LayoutManager so that
   // it doesn't get resized.
   toplevel->GetRootView()->SetLayoutManager(nullptr);
-  toplevel->GetRootView()->AddChildView(view);
+  toplevel->GetRootView()->AddChildViewRaw(view);
 
   toplevel->Show();
   RunPendingMessages();
@@ -1082,8 +1091,8 @@ TEST_F(WidgetTestInteractive, FullscreenMaximizedWindowBounds) {
 // Tests whether the focused window is set correctly when a modal window is
 // created and destroyed. When it is destroyed it should focus the owner window.
 TEST_F(DesktopWidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
-  TestWidgetFocusChangeListener focus_listener;
-  WidgetFocusManager::GetInstance()->AddFocusChangeListener(&focus_listener);
+  TestNativeViewFocusChangeListener focus_listener;
+  NativeViewFocusManager::GetInstance()->AddFocusChangeListener(&focus_listener);
   const std::vector<gfx::NativeView>& focus_changes =
       focus_listener.focus_changes();
 
@@ -1103,19 +1112,19 @@ TEST_F(DesktopWidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
   EXPECT_EQ(top_level_native_view, focus_changes[0]);
 
   // Create a modal dialog.
-  auto dialog_delegate = std::make_unique<DialogDelegateView>();
+  auto dialog_delegate =
+      std::make_unique<DialogDelegateView>(DialogDelegateView::CreatePassKey());
   dialog_delegate->SetModalType(ui::mojom::ModalType::kWindow);
 
   Widget* modal_dialog_widget = views::DialogDelegate::CreateDialogWidget(
-      dialog_delegate.release(), nullptr, top_level_widget->GetNativeView());
+      dialog_delegate.release(), gfx::NativeWindow(),
+      top_level_widget->GetNativeView());
   modal_dialog_widget->SetBounds(gfx::Rect(100, 100, 200, 200));
-
-  // Note the dialog widget doesn't need a ShowSync. Since it is modal, it gains
-  // active status synchronously, even on Mac.
   modal_dialog_widget->Show();
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return focus_changes.size() == 3u; }));
 
   gfx::NativeView modal_native_view = modal_dialog_widget->GetNativeView();
-  ASSERT_EQ(3u, focus_changes.size());
   EXPECT_EQ(gfx::NativeView(), focus_changes[1]);
   EXPECT_EQ(modal_native_view, focus_changes[2]);
 
@@ -1135,7 +1144,7 @@ TEST_F(DesktopWidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
   EXPECT_EQ(top_level_native_view, focus_changes[4]);
 
   top_level_widget->Close();
-  WidgetFocusManager::GetInstance()->RemoveFocusChangeListener(&focus_listener);
+  NativeViewFocusManager::GetInstance()->RemoveFocusChangeListener(&focus_listener);
 }
 #endif
 
@@ -1657,7 +1666,8 @@ TEST_F(DesktopWidgetTestInteractive,
 
   // Create a modal dialog.
   // This instance will be destroyed when the dialog is destroyed.
-  auto dialog_delegate = std::make_unique<DialogDelegateView>();
+  auto dialog_delegate =
+      std::make_unique<DialogDelegateView>(DialogDelegateView::CreatePassKey());
   dialog_delegate->SetModalType(ui::mojom::ModalType::kWindow);
   Widget* modal_dialog_widget = DialogDelegate::CreateDialogWidget(
       dialog_delegate.release(), nullptr, top_level->GetNativeView());
@@ -1685,6 +1695,16 @@ TEST_F(DesktopWidgetTestInteractive,
 }
 #endif  // (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) &&
         // BUILDFLAG(ENABLE_DESKTOP_AURA)
+
+// Asserts the Widget's NativeView remains valid after the Widget has been
+// closed but before the Widget is destroyed.
+TEST_F(WidgetTestInteractive, NativeViewRemainsValidPostClose) {
+  WidgetAutoclosePtr toplevel(CreateTopLevelPlatformWidget());
+  EXPECT_TRUE(toplevel->GetNativeView());
+  toplevel->Close();
+  EXPECT_TRUE(toplevel->IsClosed());
+  EXPECT_TRUE(toplevel->GetNativeView());
+}
 
 namespace {
 
@@ -1931,7 +1951,7 @@ TEST_F(WidgetCaptureTest, ResetCaptureOnGestureEnd) {
 
   MouseView* mouse = new MouseView;
   mouse->SetBounds(30, 0, 30, 30);
-  container->AddChildView(mouse);
+  container->AddChildViewRaw(mouse);
 
   toplevel->SetSize(gfx::Size(100, 100));
   toplevel->Show();
@@ -2105,8 +2125,8 @@ TEST_F(WidgetCaptureTest, GrabUngrab) {
 
 // Test that when opening a system-modal window, capture is released.
 TEST_F(WidgetCaptureTest, MAYBE_SystemModalWindowReleasesCapture) {
-  TestWidgetFocusChangeListener focus_listener;
-  WidgetFocusManager::GetInstance()->AddFocusChangeListener(&focus_listener);
+  TestNativeViewFocusChangeListener focus_listener;
+  NativeViewFocusManager::GetInstance()->AddFocusChangeListener(&focus_listener);
 
   // Create a top level widget.
   auto top_level_widget = std::make_unique<Widget>();
@@ -2127,16 +2147,18 @@ TEST_F(WidgetCaptureTest, MAYBE_SystemModalWindowReleasesCapture) {
   EXPECT_TRUE(top_level_widget->HasCapture());
 
   // Create a modal dialog.
-  auto dialog_delegate = std::make_unique<DialogDelegateView>();
+  auto dialog_delegate =
+      std::make_unique<DialogDelegateView>(DialogDelegateView::CreatePassKey());
   dialog_delegate->SetModalType(ui::mojom::ModalType::kSystem);
 
   Widget* modal_dialog_widget = views::DialogDelegate::CreateDialogWidget(
-      dialog_delegate.release(), nullptr, top_level_widget->GetNativeView());
+      dialog_delegate.release(), gfx::NativeWindow(),
+      top_level_widget->GetNativeView());
   modal_dialog_widget->SetBounds(gfx::Rect(100, 100, 200, 200));
   ShowSync(modal_dialog_widget);
 
   EXPECT_FALSE(top_level_widget->HasCapture());
-  WidgetFocusManager::GetInstance()->RemoveFocusChangeListener(&focus_listener);
+  NativeViewFocusManager::GetInstance()->RemoveFocusChangeListener(&focus_listener);
 }
 
 // Regression test for http://crbug.com/382421 (Linux-Aura issue).
@@ -2662,26 +2684,28 @@ class DesktopWidgetDragTestInteractive : public DesktopWidgetTestInteractive,
 
  private:
   // WidgetObserver:
-  void OnWidgetDragComplete(Widget* widget) override { drag_wait_loop_.Quit(); }
+  void OnWidgetDragDropCompleted(Widget* widget) override {
+    drag_wait_loop_.Quit();
+  }
 
   base::RunLoop drag_wait_loop_;
 };
 
-// Cancels a DnD session started by `RunShellDrag()`.
+// Cancels a DnD session started by `RunDragDropLoop()`.
 //
 // TODO(crbug.com/332944429): Re-enable on Windows AMR64.
 #if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_ARM64)
-#define MAYBE_CancelShellDrag DISABLED_CancelShellDrag
+#define MAYBE_CancelDragDropLoop DISABLED_CancelDragDropLoop
 #else
-#define MAYBE_CancelShellDrag CancelShellDrag
+#define MAYBE_CancelDragDropLoop CancelDragDropLoop
 #endif
-TEST_F(DesktopWidgetDragTestInteractive, MAYBE_CancelShellDrag) {
+TEST_F(DesktopWidgetDragTestInteractive, MAYBE_CancelDragDropLoop) {
   auto widget = std::make_unique<Widget>();
 
   auto cancel = [&]() {
     drag_entered_ = true;
 
-    widget->CancelShellDrag(widget->client_view());
+    widget->CancelDragDropLoop(widget->client_view());
 
 #if BUILDFLAG(IS_WIN)
     // On Windows we can't just cancel the drag when we want, only the next time
@@ -2714,17 +2738,16 @@ TEST_F(DesktopWidgetDragTestInteractive, MAYBE_CancelShellDrag) {
 
 // Tests that mouse movements made after a drag ends will be handled as
 // moves instead of drags.
-// TODO(crbug.com/375959961): On X11, the native widget's mouse button state is
-// not updated when the mouse button is released to end a drag.
-#if BUILDFLAG(IS_OZONE_X11)
-#define MAYBE_RunShellDragUpdatesMouseButtonState \
-  DISABLED_RunShellDragUpdatesMouseButtonState
-#else
-#define MAYBE_RunShellDragUpdatesMouseButtonState \
-  RunShellDragUpdatesMouseButtonState
-#endif
 TEST_F(DesktopWidgetDragTestInteractive,
-       MAYBE_RunShellDragUpdatesMouseButtonState) {
+       RunDragDropLoopUpdatesMouseButtonState) {
+#if BUILDFLAG(IS_OZONE)
+  if (::ui::OzonePlatform::RunningOnX11ForTest()) {
+    // TODO(crbug.com/375959961): On X11, the native widget's mouse button state
+    // is not updated when the mouse button is released to end a drag.
+    GTEST_SKIP() << "On X11, the native widget's mouse button state is not "
+                    "updated when the mouse button is released to end a drag.";
+  }
+#endif
 #if BUILDFLAG(IS_WIN)
   // The test base (views::ViewsTestBase) removes input state lookup.
   // Windows depends on it for getting the correct mouse button state during

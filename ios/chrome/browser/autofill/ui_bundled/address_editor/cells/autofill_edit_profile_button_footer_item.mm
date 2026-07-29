@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/cells/autofill_edit_profile_button_footer_item.h"
 
 #import "ios/chrome/common/ui/util/button_util.h"
+#import "ios/chrome/common/ui/util/chrome_button.h"
 
 @implementation AutofillEditProfileButtonFooterItem
 
@@ -12,15 +13,16 @@
   self = [super initWithType:type];
   if (self) {
     self.cellClass = [AutofillEditProfileButtonFooterCell class];
+    _enabled = YES;
   }
   return self;
 }
 
-- (void)configureHeaderFooterView:(AutofillEditProfileButtonFooterCell*)footer
-                       withStyler:(ChromeTableViewStyler*)styler {
-  [super configureHeaderFooterView:footer withStyler:styler];
+- (void)configureHeaderFooterView:(AutofillEditProfileButtonFooterCell*)footer {
+  [super configureHeaderFooterView:footer];
 
   SetConfigurationTitle(footer.button, self.buttonText);
+  footer.button.enabled = self.enabled;
 }
 
 @end
@@ -39,8 +41,7 @@
   self = [super initWithReuseIdentifier:reuseIdentifier];
   if (self) {
     // Create button.
-    self.button = PrimaryActionButton(/*pointer_interaction_enabled=*/YES);
-    UpdateButtonColorOnEnableDisable(self.button);
+    self.button = [[ChromeButton alloc] initWithStyle:ChromeButtonStylePrimary];
     [self.button addTarget:self
                     action:@selector(didTapButton)
           forControlEvents:UIControlEventTouchUpInside];
@@ -63,10 +64,6 @@
     ]];
   }
   return self;
-}
-
-- (void)updateButtonColorBasedOnStatus {
-  UpdateButtonColorOnEnableDisable(self.button);
 }
 
 - (void)didTapButton {

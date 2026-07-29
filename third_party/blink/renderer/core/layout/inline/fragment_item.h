@@ -26,19 +26,32 @@ namespace blink {
 class FragmentItems;
 class InlinePaintContext;
 class PhysicalBoxFragment;
+class UsedFont;
 struct LogicalLineItem;
+struct TextFitScale;
 struct TextFragmentPaintInfo;
 
-// Data for SVG text in addition to FragmentItem.
-struct SvgFragmentData : public GarbageCollected<SvgFragmentData> {
+// Structure of additional fields that are rarely used for a Text type
+// FragmentItem.
+//
+// * Each text items for SVG <text> has this instance.
+// * An item with ruby annotation has this instance.
+// * An item with `text-fit` has this instance.
+struct TextFragmentRareData : public GarbageCollected<TextFragmentRareData> {
  public:
-  void Trace(Visitor*) const {}
+  void Trace(Visitor* visitor) const { visitor->Trace(scaled_font); }
 
   gfx::RectF rect;
   float length_adjust_scale;
   float angle;
   float baseline_shift;
+  // `scaled_font` is not used for SVG text.
+  Member<Font> scaled_font;
   bool in_text_path;
+  // `annotation_metrics` is not used for SVG text.
+  FontHeight annotation_metrics;
+  // A flag whether SVG or not
+  bool is_svg;
 };
 
 // This class represents a text run or a box in an inline formatting context.
@@ -56,10 +69,10 @@ class CORE_EXPORT FragmentItem final {
    public:
     void Trace(Visitor* visitor) const {
       visitor->Trace(shape_result);
-      visitor->Trace(svg_data);
+      visitor->Trace(rare_data);
     }
     Member<const ShapeResultView> shape_result;
-    Member<const SvgFragmentData> svg_data;
+    Member<const TextFragmentRareData> rare_data;
     // TODO(kojii): |text_offset| should match to the offset in |shape_result|.
     // Consider if we should remove them, or if keeping them is easier.
     const TextOffsetRange text_offset;
@@ -69,8 +82,12 @@ class CORE_EXPORT FragmentItem final {
     DISALLOW_NEW();
 
    public:
-    void Trace(Visitor* visitor) const { visitor->Trace(shape_result); }
+    void Trace(Visitor* visitor) const {
+      visitor->Trace(shape_result);
+      visitor->Trace(rare_data);
+    }
     Member<const ShapeResultView> shape_result;
+    Member<const TextFragmentRareData> rare_data;
     String text;
   };
   // A start marker of a line box.
@@ -81,6 +98,7 @@ class CORE_EXPORT FragmentItem final {
     void Trace(Visitor* visitor) const { visitor->Trace(line_box_fragment); }
     Member<const PhysicalLineBoxFragment> line_box_fragment;
     wtf_size_t descendants_count;
+    float text_fit_scale = 1.0f;
   };
   // Represents a box fragment appeared in a line. This includes inline boxes
   // (e.g., <span>text</span>) and atomic inlines.
@@ -103,7 +121,15 @@ class CORE_EXPORT FragmentItem final {
 
   // Type of the item. The invalid type is needed to support
   // kCanClearUnusedSlotsWithMemset.
-  enum ItemType { kInvalid = 0, kText, kGeneratedText, kLine, kBox };
+  enum ItemType {
+    kInvalid = 0,
+    kText,
+    kGeneratedText,
+    kLine,
+    kBox,
+
+    kMaxValue = kBox
+  };
 
   // Create appropriate type for |line_item|.
   FragmentItem(LogicalLineItem&& line_item, WritingMode writing_mode);
@@ -134,9 +160,11 @@ class CORE_EXPORT FragmentItem final {
   bool IsHiddenForPaint() const { return is_hidden_for_paint_; }
   bool IsListMarker() const;
 
-  bool IsSvgText() const { return Type() == kText && text_.svg_data; }
+  bool IsSvgText() const {
+    return Type() == kText && text_.rare_data && text_.rare_data->is_svg;
+  }
 
-  void SetSvgFragmentData(const SvgFragmentData* data,
+  void SetSvgFragmentData(const TextFragmentRareData* data,
                           const PhysicalRect& unscaled_rect,
                           bool is_hidden);
   void SetSvgLineLocalRect(const PhysicalRect& unscaled_rect);
@@ -280,7 +308,6 @@ class CORE_EXPORT FragmentItem final {
   LayoutObject& BlockInInline() const;
 
   bool HasNonVisibleOverflow() const;
-  bool IsScrollContainer() const;
   bool HasSelfPaintingLayer() const;
 
   // TODO(kojii): Avoid using this function in outside of this class as much as
@@ -309,6 +336,9 @@ class CORE_EXPORT FragmentItem final {
     if (Type() == kLine)
       return static_cast<LineBoxType>(sub_type_);
     NOTREACHED() << this;
+  }
+  bool IsRubyAnnotationLine() const {
+    return Type() == kLine && GetLineBoxType() == LineBoxType::kRubyLineBox;
   }
 
   static PhysicalRect LocalVisualRectFor(const LayoutObject& layout_object);
@@ -482,6 +512,20 @@ class CORE_EXPORT FragmentItem final {
   // These functions are valid only if IsText() is true.
   bool HasOverAnnotation() const { return has_over_annotation_; }
   bool HasUnderAnnotation() const { return has_under_annotation_; }
+  // This function represents how far emphasis marks should be painted from
+  // this text.
+  //
+  // AnnotationMetrics().ascent is the distance from the line-over of this
+  // FragmentItem to the bottom edge of the over text-emphasis. This value
+  // can be negative for fonts with large internal leading.
+  //
+  // AnnotationMetrics().descent is the distance from the line-under of this
+  // FragmentItem to the top edge of the under text-emphasis. This value
+  // can be negative for fonts with large internal leading.
+  //
+  // This function returns a valid value only when it is a Text FragmentItem
+  // with text-emphasis enabled, otherwise it returns {0, 0}.
+  FontHeight AnnotationMetrics() const;
 
   // Whether this item was marked dirty for reuse or not.
   bool IsDirty() const { return is_dirty_; }
@@ -492,8 +536,13 @@ class CORE_EXPORT FragmentItem final {
 
   const FragmentItem* operator->() const { return this; }
 
-  const SvgFragmentData* GetSvgFragmentData() const {
-    return Type() == kText ? text_.svg_data.Get() : nullptr;
+  // Returns a TextFragmetnRareData only if it's for SVG text.
+  const TextFragmentRareData* GetSvgFragmentData() const {
+    if (Type() != kText) {
+      return nullptr;
+    }
+    const auto* data = text_.rare_data.Get();
+    return data && data->is_svg ? data : nullptr;
   }
   // Returns true if BuildSvgTransformForPaint() returns non-identity transform.
   bool HasSvgTransformForPaint() const;
@@ -521,6 +570,12 @@ class CORE_EXPORT FragmentItem final {
   // This returns Style().GetFont() for an FragmentItem not for
   // LayoutSVGInlineText.
   const Font& ScaledFont() const;
+  // Returns a used font for painting this item.
+  const UsedFont GetUsedFont() const;
+
+  // Returns a paint-time text scaling factor for text-fit property.
+  float GetTextFitScale() const;
+  void SetLineTextFitScale(float scale);
 
   // Get a description of |this| for the debug purposes.
   String ToString() const;
@@ -564,7 +619,6 @@ class CORE_EXPORT FragmentItem final {
   bool HasInkOverflow() const {
     return InkOverflowType() != InkOverflow::Type::kNone;
   }
-  const LayoutBox* InkOverflowOwnerBox() const;
   LayoutBox* MutableInkOverflowOwnerBox();
 
   void InvalidateInkOverflow();
@@ -580,6 +634,9 @@ class CORE_EXPORT FragmentItem final {
   AffineTransform BuildSvgTransformForTextPath(
       const AffineTransform& length_adjust) const;
   AffineTransform BuildSvgTransformForLengthAdjust() const;
+
+  void SetTextRareData(const TextFitScale* scale,
+                       FontHeight annotation_metrics = FontHeight());
 
   // TODO(kojii): We can make them sub-classes if we need to make the vector of
   // pointers. Sub-classing from DisplayItemClient prohibits copying and that we
@@ -603,10 +660,13 @@ class CORE_EXPORT FragmentItem final {
   // Item index delta to the next item for the same |LayoutObject|.
   mutable wtf_size_t delta_to_next_for_same_layout_object_ = 0;
 
+  static constexpr size_t kConstTypeBits = 3;
+  static constexpr size_t kSubTypeBits = 3;
+
   // Note: We should not add |bidi_level_| because it is used only for layout.
-  const unsigned const_type_ : 3;         // ItemType
-  unsigned sub_type_ : 3;                 // TextItemType or LineBoxType
-  unsigned style_variant_ : 2;            // StyleVariant
+  const unsigned const_type_ : kConstTypeBits;  // ItemType
+  unsigned sub_type_ : kSubTypeBits;            // TextItemType or LineBoxType
+  unsigned style_variant_ : 2;                  // StyleVariant
   unsigned is_hidden_for_paint_ : 1;
   // Note: For |TextItem| and |GeneratedTextItem|, |text_direction_| equals to
   // |ShapeResult::Direction()|.
@@ -633,17 +693,14 @@ inline bool FragmentItem::CanReuse() const {
 CORE_EXPORT std::ostream& operator<<(std::ostream&, const FragmentItem*);
 CORE_EXPORT std::ostream& operator<<(std::ostream&, const FragmentItem&);
 
-}  // namespace blink
-
-namespace WTF {
 template <>
-struct VectorTraits<blink::FragmentItem>
-    : VectorTraitsBase<blink::FragmentItem> {
+struct VectorTraits<FragmentItem> : VectorTraitsBase<FragmentItem> {
   static constexpr bool kCanClearUnusedSlotsWithMemset = true;
   // FragmentItem(FragmentItem&&) is safe to be replaced with memcpy. This
   // will enable Oilpan compaction as well.
   static constexpr bool kCanMoveWithMemcpy = true;
 };
-}  // namespace WTF
+
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_INLINE_FRAGMENT_ITEM_H_

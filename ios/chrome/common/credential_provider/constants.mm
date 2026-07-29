@@ -31,6 +31,11 @@ NSString* const kUserDefaultsCredentialProviderManagedUserID =
 NSString* const kUserDefaultsCredentialProviderUserID =
     @"kUserDefaultsCredentialProviderUserID";
 
+// Used to generate the key for the app group user defaults containing whether
+// multiple profiles are currently in use.
+NSString* const kUserDefaultsCredentialProviderMultiProfile =
+    @"kUserDefaultsCredentialProviderMultiProfile";
+
 // Used to generate the key for the app group user defaults containing the
 // current user id.
 NSString* const kUserDefaultsCredentialProviderUserEmail =
@@ -66,15 +71,12 @@ NSString* const kUserDefaultsCredentialProviderPasswordSyncSetting =
 NSString* const kUserDefaultsCredentialProviderAutomaticPasskeyUpgradeSetting =
     @"kUserDefaultsCredentialProviderAutomaticPasskeyUpgradeSetting";
 
-// Used to generate the key for the app group user defaults containing whether
-// passkey PRF support is currently enabled.
-NSString* const kUserDefaultsCredentialProviderPasskeyPRFSetting =
-    @"kUserDefaultsCredentialProviderPasskeyPRFSetting";
 
 // Used to generate the key for the app group user defaults containing whether
-// the passkeys M2 feature is currently enabled.
-NSString* const kUserDefaultsCredentialProviderPasskeysM2Enabled =
-    @"kUserDefaultsCredentialProviderPasskeysM2Enabled";
+// passkey Large Blob support is currently enabled.
+NSString* const kUserDefaultsCredentialProviderPasskeyLargeBlobSetting =
+    @"kUserDefaultsCredentialProviderPasskeyLargeBlobSetting";
+
 
 // Used to generate a unique AppGroupPrefix to differentiate between different
 // versions of Chrome running in the same device.
@@ -126,6 +128,11 @@ NSString* AppGroupUserDefaultsCredentialProviderUserID() {
       stringByAppendingString:kUserDefaultsCredentialProviderUserID];
 }
 
+NSString* AppGroupUserDefaultsCredentialProviderMultiProfileSetting() {
+  return [AppGroupPrefix()
+      stringByAppendingString:kUserDefaultsCredentialProviderMultiProfile];
+}
+
 NSString* AppGroupUserDefaultsCredentialProviderUserEmail() {
   return [AppGroupPrefix()
       stringByAppendingString:kUserDefaultsCredentialProviderUserEmail];
@@ -167,12 +174,9 @@ AppGroupUserDefaulsCredentialProviderAutomaticPasskeyUpgradeEnabled() {
           kUserDefaultsCredentialProviderAutomaticPasskeyUpgradeSetting];
 }
 
-NSString* AppGroupUserDefaulsCredentialProviderPasskeyPRFEnabled() {
-  return [AppGroupPrefix()
-      stringByAppendingString:kUserDefaultsCredentialProviderPasskeyPRFSetting];
-}
 
-NSString* AppGroupUserDefaultsCredentialProviderPasskeysM2Enabled() {
+NSString* AppGroupUserDefaulsCredentialProviderPasskeyLargeBlobEnabled() {
   return [AppGroupPrefix()
-      stringByAppendingString:kUserDefaultsCredentialProviderPasskeysM2Enabled];
+      stringByAppendingString:
+          kUserDefaultsCredentialProviderPasskeyLargeBlobSetting];
 }

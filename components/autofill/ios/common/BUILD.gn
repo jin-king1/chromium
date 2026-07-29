@@ -4,6 +4,7 @@
 
 source_set("common") {
   sources = [
+    "constants.h",
     "features.h",
     "features.mm",
     "field_data_manager_factory_ios.h",
@@ -17,5 +18,14 @@ source_set("common") {
     "//ios/web/public/js_messaging",
     "//ios/web/public/js_messaging:content_world_header",
   ]
+  configs += [ "//build/config/compiler:wexit_time_destructors" ]
+}
+
+source_set("autofill_optimization_features") {
+  sources = [
+    "autofill_optimization_features.cc",
+    "autofill_optimization_features.h",
+  ]
+  deps = [ "//base" ]
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }

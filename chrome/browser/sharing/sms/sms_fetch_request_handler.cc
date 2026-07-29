@@ -123,9 +123,10 @@ void SmsFetchRequestHandler::AskUserPermission(
       reinterpret_cast<intptr_t>(this));
 }
 
-void SmsFetchRequestHandler::OnConfirm(JNIEnv* env,
-                                       std::u16string top_origin,
-                                       jstring j_embedded_origin) {
+void SmsFetchRequestHandler::OnConfirm(
+    JNIEnv* env,
+    std::u16string top_origin,
+    const base::android::JavaRef<jstring>& j_embedded_origin) {
   std::vector<std::u16string> origins;
   if (j_embedded_origin) {
     std::u16string embedded_origin =
@@ -138,9 +139,10 @@ void SmsFetchRequestHandler::OnConfirm(JNIEnv* env,
   request->SendSuccessMessage();
 }
 
-void SmsFetchRequestHandler::OnDismiss(JNIEnv* env,
-                                       std::u16string top_origin,
-                                       jstring j_embedded_origin) {
+void SmsFetchRequestHandler::OnDismiss(
+    JNIEnv* env,
+    std::u16string top_origin,
+    const base::android::JavaRef<jstring>& j_embedded_origin) {
   std::vector<std::u16string> origins;
   if (j_embedded_origin) {
     std::u16string embedded_origin =
@@ -150,8 +152,6 @@ void SmsFetchRequestHandler::OnDismiss(JNIEnv* env,
   origins.push_back(top_origin);
   auto* request = GetRequest(origins);
   DCHECK(request);
-  // TODO(crbug.com/40103792): We should have a separate catergory for this type
-  // of failure.
   request->SendFailureMessage(FailureType::kPromptCancelled);
 }
 
@@ -233,3 +233,5 @@ void SmsFetchRequestHandler::Request::SendFailureMessage(
 void SmsFetchRequestHandler::Request::OnFailure(FailureType failure_type) {
   SendFailureMessage(failure_type);
 }
+
+DEFINE_JNI(SmsFetcherMessageHandler)

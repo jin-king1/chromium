@@ -48,27 +48,6 @@ export class SettingsSearchSubpageElement extends
 
   static get properties() {
     return {
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kPreferredSearchEngine,
-          Setting.kQuickAnswersOnOff,
-          Setting.kQuickAnswersDefinition,
-          Setting.kQuickAnswersTranslation,
-          Setting.kQuickAnswersUnitConversion,
-        ]),
-      },
-
-      quickAnswersTranslationDisabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('quickAnswersTranslationDisabled');
-        },
-      },
-
       quickAnswersSubToggleEnabled_: {
         type: Boolean,
         value() {
@@ -86,10 +65,18 @@ export class SettingsSearchSubpageElement extends
     };
   }
 
-  private quickAnswersSubLabel_: string;
-  private quickAnswersSubToggleEnabled_: boolean;
-  private quickAnswersTranslationDisabled_: boolean;
-  private translationSubLabel_: string;
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kPreferredSearchEngine,
+    Setting.kQuickAnswersOnOff,
+    Setting.kQuickAnswersDefinition,
+    Setting.kQuickAnswersTranslation,
+    Setting.kQuickAnswersUnitConversion,
+  ]);
+
+  declare private quickAnswersSubLabel_: string;
+  declare private quickAnswersSubToggleEnabled_: boolean;
+  declare private translationSubLabel_: string;
 
   constructor() {
     super();

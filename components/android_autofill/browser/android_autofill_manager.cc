@@ -9,16 +9,20 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/memory/ptr_util.h"
 #include "base/notreached.h"
 #include "components/android_autofill/browser/android_form_event_logger.h"
 #include "components/android_autofill/browser/autofill_provider.h"
+#include "components/android_autofill/browser/autofill_type_util.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
+#include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
+#include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace autofill {
 
@@ -46,6 +50,7 @@ void AndroidAutofillManager::OnFormSubmittedImpl(
     const FormData& form,
     mojom::SubmissionSource source) {
   address_logger_->OnWillSubmitForm();
+  loyalty_card_logger_->OnWillSubmitForm();
   payments_logger_->OnWillSubmitForm();
   password_logger_->OnWillSubmitForm();
   if (auto* provider = GetAutofillProvider())
@@ -65,8 +70,8 @@ void AndroidAutofillManager::OnTextFieldValueChangedImpl(
     return;
   }
 
-  // We cannot use `field` is_autofilled state because it has already been
-  // cleared by blink. Check `provider` cache.
+  // We cannot use `field.is_autofilled_according_to_renderer()` because it
+  // has already been cleared by blink. Check `provider` cache.
   bool cached_is_autofilled = provider->GetCachedIsAutofilled(*field);
 
   provider->OnTextFieldValueChanged(this, form, *field, timestamp);
@@ -93,7 +98,8 @@ void AndroidAutofillManager::OnAskForValuesToFillImpl(
     const FormData& form,
     const FieldGlobalId& field_id,
     const gfx::Rect& caret_bounds,
-    AutofillSuggestionTriggerSource trigger_source) {
+    AutofillSuggestionTriggerSource trigger_source,
+    std::optional<PasswordSuggestionRequest> password_request) {
   auto* provider = GetAutofillProvider();
   if (!provider) {
     return;
@@ -139,11 +145,9 @@ void AndroidAutofillManager::OnFocusOnNonFormFieldImpl() {
     provider->OnFocusOnNonFormField(this);
 }
 
-void AndroidAutofillManager::OnDidFillAutofillFormDataImpl(
-    const FormData& form,
-    const base::TimeTicks timestamp) {
+void AndroidAutofillManager::OnDidAutofillFormImpl(const FormData& form) {
   if (auto* provider = GetAutofillProvider())
-    provider->OnDidFillAutofillFormData(this, form, timestamp);
+    provider->OnDidAutofillForm(this, form);
 }
 
 void AndroidAutofillManager::OnHidePopupImpl() {
@@ -152,9 +156,9 @@ void AndroidAutofillManager::OnHidePopupImpl() {
 }
 
 void AndroidAutofillManager::OnFormProcessed(
-    const FormData& form,
     const FormStructure& form_structure) {
-  DenseSet<FormType> form_types = form_structure.GetFormTypes();
+  DenseSet<FormType> form_types =
+      form_structure.GetFormTypes(GetAcUnrecognizedBehavior(client()));
   for (FormType form_type : form_types) {
     if (auto* logger = GetEventFormLogger(form_type)) {
       logger->OnDidParseForm();
@@ -179,17 +183,22 @@ void AndroidAutofillManager::Reset() {
   StartNewLoggingSession();
 }
 
-void AndroidAutofillManager::OnFieldTypesDetermined(AutofillManager& manager,
-                                                    FormGlobalId form,
-                                                    FieldTypeSource source) {
+void AndroidAutofillManager::OnFieldTypesDetermined(
+    AutofillManager& manager,
+    FormGlobalId form,
+    FieldTypeSource source,
+    bool small_forms_were_parsed) {
   CHECK_EQ(&manager, this);
-  if (source != FieldTypeSource::kAutofillServer) {
-    return;
-  }
-
-  forms_with_server_predictions_.insert(form);
-  if (auto* provider = GetAutofillProvider()) {
-    provider->OnServerPredictionsAvailable(*this, form);
+  switch (source) {
+    case FieldTypeSource::kAutofillAiModel:
+    case FieldTypeSource::kAutofillServer:
+      forms_with_server_predictions_.insert(form);
+      if (auto* provider = GetAutofillProvider()) {
+        provider->OnServerPredictionsAvailable(*this, form);
+      }
+      break;
+    case FieldTypeSource::kHeuristicsOrAutocomplete:
+      break;
   }
 }
 
@@ -205,15 +214,23 @@ AutofillProvider* AndroidAutofillManager::GetAutofillProvider() {
   return nullptr;
 }
 
+CreditCardAccessManager* AndroidAutofillManager::GetCreditCardAccessManager() {
+  return nullptr;
+}
+
+const CreditCardAccessManager*
+AndroidAutofillManager::GetCreditCardAccessManager() const {
+  return nullptr;
+}
+
 FieldTypeGroup AndroidAutofillManager::ComputeFieldTypeGroupForField(
     const FormGlobalId& form_id,
     const FieldGlobalId& field_id) {
-  FormStructure* form_structure = nullptr;
-  AutofillField* autofill_field = nullptr;
-  return GetCachedFormAndField(form_id, field_id, &form_structure,
-                               &autofill_field)
-             ? autofill_field->Type().group()
-             : FieldTypeGroup::kNoGroup;
+  auto [form, field] = FindFormAndField(form_id, field_id);
+  if (!field) {
+    return FieldTypeGroup::kNoGroup;
+  }
+  return GroupTypeOfFieldType(GetMostRelevantFieldType(field->Type()));
 }
 
 void AndroidAutofillManager::FillOrPreviewForm(
@@ -227,11 +244,23 @@ void AndroidAutofillManager::FillOrPreviewForm(
   std::erase_if(fields, [&](const FormFieldData& field) {
     // The renderer doesn't fill such fields, and therefore they can be removed
     // from here to reduce IPC traffic and avoid accidental filling.
-    return !field.is_autofilled() || field.value().empty();
+    return !field.is_autofilled_according_to_renderer() ||
+           field.value().empty();
   });
 
+  absl::flat_hash_map<FieldGlobalId, FieldType> field_type_map;
+  field_type_map.reserve(fields.size());
+  for (const FormFieldData& field : fields) {
+    // The security policy is slightly weaker on WebView because it has no
+    // visibility on the types filled into the fields.
+    field_type_map.emplace(field.global_id(), UNKNOWN_TYPE);
+  }
+
   driver().ApplyFormAction(mojom::FormActionType::kFill, action_persistence,
-                           fields, triggered_origin, {});
+                           fields, FillId::Create(),
+                           /*supports_refill=*/false, triggered_origin,
+                           field_type_map,
+                           /*section_for_clear_form_on_ios=*/Section());
   // We do not call OnAutofillProfileOrCreditCardFormFilled() because WebView
   // doesn't have AutofillProfile or CreditCard.
   if (auto* logger = GetEventFormLogger(field_type_group)) {
@@ -239,8 +268,21 @@ void AndroidAutofillManager::FillOrPreviewForm(
   }
 }
 
+void AndroidAutofillManager::FillOrPreviewField(
+    mojom::ActionPersistence action_persistence,
+    mojom::FieldActionType action_type,
+    const FormGlobalId& form_id,
+    const FieldGlobalId& field_id,
+    const std::u16string& value,
+    FillingProduct filling_product,
+    std::optional<FieldType> field_type_used) {
+  driver().ApplyFieldAction(action_type, action_persistence, field_id, value);
+}
+
 void AndroidAutofillManager::StartNewLoggingSession() {
   address_logger_ = std::make_unique<AndroidFormEventLogger>("Address");
+  loyalty_card_logger_ =
+      std::make_unique<AndroidFormEventLogger>("LoyaltyCard");
   payments_logger_ = std::make_unique<AndroidFormEventLogger>("CreditCard");
   password_logger_ = std::make_unique<AndroidFormEventLogger>("Password");
 }
@@ -261,11 +303,15 @@ AndroidFormEventLogger* AndroidAutofillManager::GetEventFormLogger(
   switch (form_type) {
     case FormType::kAddressForm:
       return address_logger_.get();
+    case FormType::kLoyaltyCardForm:
+      return loyalty_card_logger_.get();
     case FormType::kCreditCardForm:
     case FormType::kStandaloneCvcForm:
       return payments_logger_.get();
     case FormType::kPasswordForm:
       return password_logger_.get();
+    // TODO(crbug.com/443693025): Add event logger for OTP fields
+    case FormType::kOneTimePasswordForm:
     case FormType::kUnknownFormType:
       return nullptr;
   }

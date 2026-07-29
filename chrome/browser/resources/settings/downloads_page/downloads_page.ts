@@ -8,93 +8,91 @@
  * settings.
  */
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
-import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import '../controls/controlled_button.js';
 import '../controls/settings_toggle_button.js';
-import '../settings_shared.css.js';
+import '../settings_page/settings_section.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
-import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
-import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {loadTimeData} from '../i18n_setup.js';
+import {getSearchManager} from '../search_settings.js';
+import {PrefServiceObserverMixinLit} from '../settings.js';
+import type {SettingsPlugin} from '../settings_main/settings_plugin.js';
 
 import type {DownloadsBrowserProxy} from './downloads_browser_proxy.js';
 import {DownloadsBrowserProxyImpl} from './downloads_browser_proxy.js';
-import {getTemplate} from './downloads_page.html.js';
+import {getCss} from './downloads_page.css.js';
+import {getHtml} from './downloads_page.html.js';
 
 const SettingsDownloadsPageElementBase =
-    WebUiListenerMixin(PrefsMixin(PolymerElement));
+    PrefServiceObserverMixinLit(WebUiListenerMixinLit(CrLitElement));
 
 export class SettingsDownloadsPageElement extends
-    SettingsDownloadsPageElementBase {
+    SettingsDownloadsPageElementBase implements SettingsPlugin {
   static get is() {
     return 'settings-downloads-page';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
-  static get properties() {
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
     return {
-      /**
-       * Preferences state.
-       */
-      prefs: {
-        type: Object,
-        notify: true,
-      },
+      autoOpenDownloads_: {type: Boolean},
 
-      autoOpenDownloads_: {
-        type: Boolean,
-        value: false,
-      },
+      downloadDefaultDirectoryPref_: {type: Object},
 
-      // <if expr="chromeos_ash">
+      // <if expr="is_chromeos">
       /**
        * The download location string that is suitable to display in the UI.
        */
-      downloadLocation_: String,
+      downloadLocation_: {type: String},
       // </if>
 
       /**
        * Whether the user can toggle the option to display downloads when
        * they're done.
        */
-      downloadBubblePartialViewControlledByPref_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-              'downloadBubblePartialViewControlledByPref');
-        },
-      },
+      downloadBubblePartialViewControlledByPref_: {type: Boolean},
     };
   }
 
-  // <if expr="chromeos_ash">
-  static get observers() {
-    return [
-      'handleDownloadLocationChanged_(prefs.download.default_directory.value)',
-    ];
-  }
+  protected accessor autoOpenDownloads_: boolean = false;
+  protected accessor downloadDefaultDirectoryPref_:
+      chrome.settingsPrivate.PrefObject<string>|undefined = undefined;
+
+  // <if expr="is_chromeos">
+  protected accessor downloadLocation_: string = '';
   // </if>
 
-
-  private autoOpenDownloads_: boolean;
-
-  // <if expr="chromeos_ash">
-  private downloadLocation_: string;
-  // </if>
-
-  private downloadBubblePartialViewControlledByPref_: boolean;
+  protected accessor downloadBubblePartialViewControlledByPref_: boolean =
+      loadTimeData.getBoolean('downloadBubblePartialViewControlledByPref');
 
   private browserProxy_: DownloadsBrowserProxy =
       DownloadsBrowserProxyImpl.getInstance();
 
-  override ready() {
-    super.ready();
+  override connectedCallback() {
+    super.connectedCallback();
 
+    this.mirrorPref(
+        'download.default_directory', 'downloadDefaultDirectoryPref_');
+
+    // <if expr="is_chromeos">
+    this.addPrefObserver<string>('download.default_directory', pref => {
+      this.browserProxy_.getDownloadLocationText(pref.value).then(text => {
+        this.downloadLocation_ = text;
+      });
+    });
+    // </if>
+  }
+
+  override firstUpdated() {
     this.addWebUiListener(
         'auto-open-downloads-changed', (autoOpen: boolean) => {
           this.autoOpenDownloads_ = autoOpen;
@@ -103,23 +101,18 @@ export class SettingsDownloadsPageElement extends
     this.browserProxy_.initializeDownloads();
   }
 
-  private selectDownloadLocation_() {
+  protected onChangeDownloadsPathClick_() {
     this.browserProxy_.selectDownloadLocation();
   }
 
-  // <if expr="chromeos_ash">
-  private handleDownloadLocationChanged_() {
-    this.browserProxy_
-        .getDownloadLocationText(
-            this.getPref<string>('download.default_directory').value)
-        .then(text => {
-          this.downloadLocation_ = text;
-        });
-  }
-  // </if>
-
-  private onClearAutoOpenFileTypesClick_() {
+  protected onClearAutoOpenFileTypesClick_() {
     this.browserProxy_.resetAutoOpenFileTypes();
+  }
+
+  // SettingsPlugin implementation
+  async searchContents(query: string) {
+    const searchRequest = await getSearchManager().search(query, this);
+    return searchRequest.getSearchResult();
   }
 }
 

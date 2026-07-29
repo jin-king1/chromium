@@ -4,28 +4,26 @@
 
 #include "components/autofill/core/browser/ui/addresses/autofill_address_util.h"
 
-#include <algorithm>
-#include <iterator>
-#include <memory>
-#include <utility>
+#include <stddef.h>
 
-#include "autofill_address_util.h"
+#include <algorithm>
+#include <array>
+#include <iterator>
+#include <string>
+#include <vector>
+
 #include "base/check.h"
 #include "base/containers/to_vector.h"
-#include "base/memory/ptr_util.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/values.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_comparator.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/address_i18n.h"
 #include "components/autofill/core/browser/geo/autofill_country.h"
-#include "components/autofill/core/browser/ui/country_combobox_model.h"
-#include "components/autofill/core/common/autofill_features.h"
-#include "components/strings/grit/components_strings.h"
+#include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_field.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_ui.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_ui_component.h"
 #include "third_party/re2/src/re2/re2.h"
@@ -51,6 +49,10 @@ AutofillAddressUIComponent::LengthHint ConvertLengthHint(
       return AutofillAddressUIComponent::LengthHint::HINT_SHORT;
   }
   NOTREACHED();
+}
+
+bool IsLiteral(const AutofillAddressUIComponent& component) {
+  return !component.literal.empty();
 }
 }  // namespace
 
@@ -205,7 +207,8 @@ std::u16string GetEnvelopeStyleAddress(const AutofillProfile& profile,
                                        bool include_recipient,
                                        bool include_country) {
   const std::u16string& country_code = profile.GetInfo(
-      AutofillType(HtmlFieldType::kCountryCode), ui_language_code);
+      AutofillType(ADDRESS_HOME_COUNTRY, /*is_country_code=*/true),
+      ui_language_code);
 
   std::string not_used;
   std::vector<AutofillAddressUIComponent> components =
@@ -214,37 +217,61 @@ std::u16string GetEnvelopeStyleAddress(const AutofillProfile& profile,
                            /*include_literals=*/true, not_used);
 
   DCHECK(!components.empty());
-  std::string address;
-  for (const AutofillAddressUIComponent& component : components) {
-    // Add string literals directly.
-    if (!component.literal.empty()) {
-      address += component.literal;
-      continue;
+  // Remove components that evaluate to an empty string.
+  std::erase_if(components, [&](const AutofillAddressUIComponent& component) {
+    if (IsLiteral(component)) {
+      return false;
     }
     if (!include_recipient && (component.field == NAME_FULL ||
                                component.field == ALTERNATIVE_FULL_NAME)) {
+      return true;
+    }
+    return profile.GetInfo(component.field, ui_language_code).empty();
+  });
+
+  // Remove delimiters from the beginning and the end.
+  while (!components.empty() && IsLiteral(components.front())) {
+    components.erase(components.begin());
+  }
+  while (!components.empty() && IsLiteral(components.back())) {
+    components.pop_back();
+  }
+
+  std::vector<std::u16string> pieces;
+  // Indicates if the previous field component was non-empty.
+  // Literals are only added if they are preceded by a non-empty field.
+  bool last_field_was_non_empty = false;
+  for (const AutofillAddressUIComponent& component : components) {
+    if (IsLiteral(component)) {
+      if (last_field_was_non_empty) {
+        pieces.push_back(base::UTF8ToUTF16(component.literal));
+        last_field_was_non_empty = false;
+      }
       continue;
     }
-    FieldType type = component.field;
-    address += base::UTF16ToUTF8(profile.GetInfo(type, ui_language_code));
+    std::u16string info = profile.GetInfo(component.field, ui_language_code);
+    pieces.push_back(info);
+    last_field_was_non_empty = true;
   }
+
   if (include_country) {
-    address += "\n";
-    address += base::UTF16ToUTF8(
-        profile.GetInfo(ADDRESS_HOME_COUNTRY, ui_language_code));
+    pieces.push_back(u"\n");
+    pieces.push_back(profile.GetInfo(ADDRESS_HOME_COUNTRY, ui_language_code));
   }
+
+  std::string address_utf8 = base::UTF16ToUTF8(base::StrCat(pieces));
 
   // Remove all white spaces and new lines from the beginning and the end of the
   // address.
-  base::TrimString(address, base::kWhitespaceASCII, &address);
+  base::TrimString(address_utf8, base::kWhitespaceASCII, &address_utf8);
 
   // Collapse new lines to remove empty lines.
-  re2::RE2::GlobalReplace(&address, re2::RE2("\\n+"), "\n");
+  re2::RE2::GlobalReplace(&address_utf8, re2::RE2("\\n+"), "\n");
 
   // Collapse white spaces.
-  re2::RE2::GlobalReplace(&address, re2::RE2("[ ]+"), " ");
+  re2::RE2::GlobalReplace(&address_utf8, re2::RE2("[ ]+"), " ");
 
-  return base::UTF8ToUTF16(address);
+  return base::UTF8ToUTF16(address_utf8);
 }
 
 std::u16string GetProfileDescription(const AutofillProfile& profile,
@@ -294,22 +321,18 @@ std::vector<ProfileValueDifference> GetProfileDifferenceForUi(
     differences_for_ui.push_back(
         {ADDRESS_HOME_ADDRESS, first_address, second_address});
   }
+  static constexpr auto kPriorityOrder =
+      std::to_array({NAME_FULL, ALTERNATIVE_FULL_NAME, ADDRESS_HOME_ADDRESS,
+                     EMAIL_ADDRESS, PHONE_HOME_WHOLE_NUMBER});
+
+  std::erase_if(differences_for_ui, [](const ProfileValueDifference& diff) {
+    return !std::ranges::contains(kPriorityOrder, diff.type);
+  });
 
   auto get_priority = [](FieldType type) -> size_t {
-    switch (type) {
-      case NAME_FULL:
-        return 0;
-      case ALTERNATIVE_FULL_NAME:
-        return 1;
-      case ADDRESS_HOME_ADDRESS:
-        return 2;
-      case EMAIL_ADDRESS:
-        return 3;
-      case PHONE_HOME_WHOLE_NUMBER:
-        return 4;
-      default:
-        NOTREACHED();
-    }
+    auto it = std::ranges::find(kPriorityOrder, type);
+    CHECK(it != kPriorityOrder.end());
+    return std::distance(kPriorityOrder.begin(), it);
   };
 
   std::ranges::sort(differences_for_ui,
@@ -335,6 +358,152 @@ std::u16string GetProfileSummaryForMigrationPrompt(
     }
   }
   return base::JoinString(values, u"\n");
+}
+
+AddressUIComponentIconType GetAddressUIComponentIconTypeForFieldType(
+    FieldType field_type) {
+  switch (field_type) {
+    case NAME_FULL:
+    case ALTERNATIVE_FULL_NAME:
+      return AddressUIComponentIconType::kName;
+    case ADDRESS_HOME_STREET_ADDRESS:
+    case ADDRESS_HOME_ADDRESS:
+      return AddressUIComponentIconType::kAddress;
+    case EMAIL_ADDRESS:
+      return AddressUIComponentIconType::kEmail;
+    case PHONE_HOME_WHOLE_NUMBER:
+      return AddressUIComponentIconType::kPhone;
+    case NAME_HONORIFIC_PREFIX:
+    case NAME_FIRST:
+    case NAME_MIDDLE:
+    case NAME_LAST:
+    case NAME_LAST_FIRST:
+    case NAME_LAST_CONJUNCTION:
+    case NAME_LAST_SECOND:
+    case NAME_MIDDLE_INITIAL:
+    case NAME_SUFFIX:
+    case ALTERNATIVE_GIVEN_NAME:
+    case ALTERNATIVE_FAMILY_NAME:
+    case USERNAME_AND_EMAIL_ADDRESS:
+    case PHONE_HOME_NUMBER:
+    case PHONE_HOME_NUMBER_PREFIX:
+    case PHONE_HOME_NUMBER_SUFFIX:
+    case PHONE_HOME_CITY_CODE:
+    case PHONE_HOME_CITY_CODE_WITH_TRUNK_PREFIX:
+    case PHONE_HOME_COUNTRY_CODE:
+    case PHONE_HOME_CITY_AND_NUMBER:
+    case PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX:
+    case PHONE_HOME_EXTENSION:
+    case CREDIT_CARD_NAME_FULL:
+    case CREDIT_CARD_NAME_FIRST:
+    case CREDIT_CARD_NAME_LAST:
+    case CREDIT_CARD_NUMBER:
+    case CREDIT_CARD_EXP_MONTH:
+    case CREDIT_CARD_EXP_2_DIGIT_YEAR:
+    case CREDIT_CARD_EXP_4_DIGIT_YEAR:
+    case CREDIT_CARD_EXP_DATE_2_DIGIT_YEAR:
+    case CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR:
+    case CREDIT_CARD_TYPE:
+    case CREDIT_CARD_VERIFICATION_CODE:
+    case CREDIT_CARD_STANDALONE_VERIFICATION_CODE:
+    case IBAN_VALUE:
+    case MERCHANT_PROMO_CODE:
+    case USERNAME:
+    case PASSWORD:
+    case ACCOUNT_CREATION_PASSWORD:
+    case CONFIRMATION_PASSWORD:
+    case SINGLE_USERNAME:
+    case SINGLE_USERNAME_FORGOT_PASSWORD:
+    case SINGLE_USERNAME_WITH_INTERMEDIATE_VALUES:
+    case NOT_PASSWORD:
+    case NOT_USERNAME:
+    case NOT_ACCOUNT_CREATION_PASSWORD:
+    case NEW_PASSWORD:
+    case PROBABLY_NEW_PASSWORD:
+    case NOT_NEW_PASSWORD:
+    case ONE_TIME_CODE:
+    case NO_SERVER_DATA:
+    case EMPTY_TYPE:
+    case AMBIGUOUS_TYPE:
+    case MERCHANT_EMAIL_SIGNUP:
+    case PRICE:
+    case NUMERIC_QUANTITY:
+    case SEARCH_TERM:
+    case PASSPORT_NUMBER:
+    case PASSPORT_ISSUING_COUNTRY:
+    case PASSPORT_EXPIRATION_DATE:
+    case PASSPORT_ISSUE_DATE:
+    case LOYALTY_MEMBERSHIP_PROGRAM:
+    case LOYALTY_MEMBERSHIP_PROVIDER:
+    case LOYALTY_MEMBERSHIP_ID:
+    case VEHICLE_LICENSE_PLATE:
+    case VEHICLE_VIN:
+    case VEHICLE_MAKE:
+    case VEHICLE_MODEL:
+    case VEHICLE_YEAR:
+    case VEHICLE_PLATE_STATE:
+    case DRIVERS_LICENSE_REGION:
+    case DRIVERS_LICENSE_NUMBER:
+    case DRIVERS_LICENSE_EXPIRATION_DATE:
+    case DRIVERS_LICENSE_ISSUE_DATE:
+    case NATIONAL_ID_CARD_NUMBER:
+    case NATIONAL_ID_CARD_EXPIRATION_DATE:
+    case NATIONAL_ID_CARD_ISSUE_DATE:
+    case NATIONAL_ID_CARD_ISSUING_COUNTRY:
+    case REDRESS_NUMBER:
+    case KNOWN_TRAVELER_NUMBER:
+    case KNOWN_TRAVELER_NUMBER_EXPIRATION_DATE:
+    case MAX_VALID_FIELD_TYPE:
+    case DELIVERY_INSTRUCTIONS:
+    case ADDRESS_HOME_SUBPREMISE:
+    case ADDRESS_HOME_OTHER_SUBUNIT:
+    case ADDRESS_HOME_ADDRESS_WITH_NAME:
+    case ADDRESS_HOME_FLOOR:
+    case ADDRESS_HOME_SORTING_CODE:
+    case UNKNOWN_TYPE:
+    case ADDRESS_HOME_LINE1:
+    case ADDRESS_HOME_LINE2:
+    case ADDRESS_HOME_LINE3:
+    case ADDRESS_HOME_APT_NUM:
+    case ADDRESS_HOME_APT:
+    case ADDRESS_HOME_APT_TYPE:
+    case ADDRESS_HOME_HOUSE_NUMBER_AND_APT:
+    case ADDRESS_HOME_CITY:
+    case ADDRESS_HOME_STATE:
+    case ADDRESS_HOME_ZIP:
+    case ADDRESS_HOME_ZIP_AND_CITY:
+    case ADDRESS_HOME_ZIP_PREFIX:
+    case ADDRESS_HOME_ZIP_SUFFIX:
+    case ADDRESS_HOME_COUNTRY:
+    case ADDRESS_HOME_DEPENDENT_LOCALITY:
+    case ADDRESS_HOME_STREET_NAME:
+    case ADDRESS_HOME_HOUSE_NUMBER:
+    case ADDRESS_HOME_STREET_LOCATION:
+    case ADDRESS_HOME_LANDMARK:
+    case ADDRESS_HOME_BETWEEN_STREETS:
+    case ADDRESS_HOME_BETWEEN_STREETS_1:
+    case ADDRESS_HOME_BETWEEN_STREETS_2:
+    case ADDRESS_HOME_ADMIN_LEVEL2:
+    case ADDRESS_HOME_OVERFLOW:
+    case ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK:
+    case ADDRESS_HOME_OVERFLOW_AND_LANDMARK:
+    case COMPANY_NAME:
+    case ADDRESS_HOME_STREET_LOCATION_AND_LOCALITY:
+    case ADDRESS_HOME_STREET_LOCATION_AND_LANDMARK:
+    case ADDRESS_HOME_DEPENDENT_LOCALITY_AND_LANDMARK:
+    case EMAIL_OR_LOYALTY_MEMBERSHIP_ID:
+    case FLIGHT_RESERVATION_FLIGHT_NUMBER:
+    case FLIGHT_RESERVATION_TICKET_NUMBER:
+    case FLIGHT_RESERVATION_CONFIRMATION_CODE:
+    case FLIGHT_RESERVATION_DEPARTURE_AIRPORT:
+    case FLIGHT_RESERVATION_ARRIVAL_AIRPORT:
+    case FLIGHT_RESERVATION_DEPARTURE_DATE:
+    case ORDER_ID:
+    case ORDER_DATE:
+    case ORDER_MERCHANT_NAME:
+    case SHIPMENT_TRACKING_NUMBER:
+      return AddressUIComponentIconType::kNoIcon;
+  }
 }
 
 }  // namespace autofill

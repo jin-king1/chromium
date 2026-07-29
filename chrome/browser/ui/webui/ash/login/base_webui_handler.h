@@ -18,7 +18,6 @@
 #include "components/login/base_screen_handler_utils.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_message_handler.h"
-#include "ui/gfx/native_widget_types.h"
 
 namespace login {
 class LocalizedValuesBuilder;
@@ -43,7 +42,7 @@ class BaseWebUIHandler : public content::WebUIMessageHandler {
   ~BaseWebUIHandler() override;
 
   // Gets localized strings to be used on the page.
-  void GetLocalizedStrings(base::Value::Dict* localized_strings);
+  void GetLocalizedStrings(base::DictValue* localized_strings);
 
   // WebUIMessageHandler implementation:
   void RegisterMessages() override;
@@ -60,7 +59,7 @@ class BaseWebUIHandler : public content::WebUIMessageHandler {
 
   // Subclasses can override these methods to pass additional parameters
   // to loadTimeData.
-  virtual void GetAdditionalParameters(base::Value::Dict* parameters);
+  virtual void GetAdditionalParameters(base::DictValue* parameters);
 
   // Can be overridden to do any initialization after javascript is ready.
   virtual void InitAfterJavascriptAllowed();

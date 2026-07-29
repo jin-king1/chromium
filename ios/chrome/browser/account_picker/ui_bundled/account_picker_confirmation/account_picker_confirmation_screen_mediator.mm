@@ -11,25 +11,28 @@
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "ios/chrome/browser/account_picker/ui_bundled/account_picker_configuration.h"
 #import "ios/chrome/browser/account_picker/ui_bundled/account_picker_confirmation/account_picker_confirmation_screen_consumer.h"
+#import "ios/chrome/browser/account_picker/ui_bundled/account_picker_confirmation/account_picker_confirmation_screen_mediator_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/enterprise/enterprise_utils.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/authentication_service.h"
+#import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
+#import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
+#import "ios/chrome/browser/signin/model/system_identity_util.h"
 
 @interface AccountPickerConfirmationScreenMediator () <
-    ChromeAccountManagerServiceObserver,
-    IdentityManagerObserverBridgeDelegate> {
+    AuthenticationServiceObserving,
+    IdentityManagerObserving> {
 }
 
 @end
 
 @implementation AccountPickerConfirmationScreenMediator {
-  // Account manager service with observer.
+  // Account manager service.
   raw_ptr<ChromeAccountManagerService> _accountManagerService;
-  std::unique_ptr<ChromeAccountManagerServiceObserverBridge>
-      _accountManagerServiceObserver;
   // Identity manager.
   raw_ptr<signin::IdentityManager> _identityManager;
   std::unique_ptr<signin::IdentityManagerObserverBridge>
@@ -38,48 +41,59 @@
   __strong AccountPickerConfiguration* _configuration;
   // Avatar of selected identity.
   __strong UIImage* _avatar;
+  raw_ptr<AuthenticationService> _authenticationService;
+  std::unique_ptr<AuthenticationServiceObserverBridge>
+      _authServiceObserverBridge;
 }
 
 - (instancetype)
     initWithAccountManagerService:
         (ChromeAccountManagerService*)accountManagerService
                   identityManager:(signin::IdentityManager*)identityManager
-                    configuration:(AccountPickerConfiguration*)configuration {
+                    configuration:(AccountPickerConfiguration*)configuration
+            authenticationService:
+                (AuthenticationService*)authenticationService {
   if ((self = [super init])) {
     CHECK(accountManagerService);
     CHECK(identityManager);
     _accountManagerService = accountManagerService;
-    _accountManagerServiceObserver =
-        std::make_unique<ChromeAccountManagerServiceObserverBridge>(
-            self, _accountManagerService);
     _identityManager = identityManager;
     _identityManagerObserver =
         std::make_unique<signin::IdentityManagerObserverBridge>(
             _identityManager, self);
     _configuration = configuration;
+    _authenticationService = authenticationService;
+    _authServiceObserverBridge =
+        std::make_unique<AuthenticationServiceObserverBridge>(
+            authenticationService, self);
+    CHECK(authenticationService->SigninEnabled(), base::NotFatalUntil::M152);
   }
   return self;
 }
 
 - (void)dealloc {
-  DCHECK(!_accountManagerService);
-  DCHECK(!_identityManager);
+  CHECK(!_accountManagerService, base::NotFatalUntil::M151);
+  CHECK(!_identityManager, base::NotFatalUntil::M151);
 }
+
+#pragma mark - AccountPickerConfirmationScreenMediator
 
 - (void)disconnect {
   _identityManager = nullptr;
   _identityManagerObserver.reset();
   _accountManagerService = nullptr;
-  _accountManagerServiceObserver.reset();
+  _authenticationService = nil;
+  _authServiceObserverBridge = nullptr;
 }
 
 #pragma mark - Properties
 
 - (void)setConsumer:(id<AccountPickerConfirmationScreenConsumer>)consumer {
   _consumer = consumer;
-  [self selectSelectedIdentity];
+  [self selectDefaultIdentity];
 }
 
+// Sets `self.selectedIdentity` and update the UI accordingly.
 - (void)setSelectedIdentity:(id<SystemIdentity>)identity {
   if ([_selectedIdentity isEqual:identity]) {
     return;
@@ -90,23 +104,23 @@
 
 #pragma mark - Private
 
-// Updates the default identity, or hide the default identity if there isn't
-// one present on the device.
-- (void)selectSelectedIdentity {
+// Selects the default identity to be either:
+// * the current primary identyt one if any
+// * the device default identity if any,
+// * otherwise nil.
+// Also updates the UI accordingly.
+- (void)selectDefaultIdentity {
   if (!_accountManagerService || !_identityManager) {
     return;
   }
 
-  id<SystemIdentity> identity = signin::GetDefaultIdentityOnDevice(
-      _identityManager, _accountManagerService);
-
-  // If the user is signed-in, present the signed-in account.
-  if (_identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
-    const CoreAccountInfo primaryAccountInfo =
-        _identityManager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
-    id<SystemIdentity> primaryAccount =
-        _accountManagerService->GetIdentityWithGaiaID(primaryAccountInfo.gaia);
-    identity = primaryAccount;
+  // If the user is signed-in, present the signed-in account, otherwise the
+  // default account on the device.
+  id<SystemIdentity> identity =
+      GetPrimarySystemIdentity(_identityManager, _accountManagerService);
+  if (!identity) {
+    identity = signin::GetDefaultIdentityOnDevice(_identityManager,
+                                                  _accountManagerService);
   }
 
   // Here, default identity may be nil.
@@ -122,18 +136,14 @@
   }
 
   id<SystemIdentity> selectedIdentity = _selectedIdentity;
-  UIImage* avatar = _accountManagerService->GetIdentityAvatarWithIdentity(
-      selectedIdentity, IdentityAvatarSize::TableViewIcon);
+  UIImage* avatar =
+      GetApplicationContext()->GetIdentityAvatarProvider()->GetIdentityAvatar(
+          selectedIdentity, IdentityAvatarSize::TableViewIcon);
   [_consumer showDefaultAccountWithFullName:selectedIdentity.userFullName
-                                  givenName:selectedIdentity.userGivenName
                                       email:selectedIdentity.userEmail
                                      avatar:avatar
                                     managed:[self isIdentityKnownToBeManaged:
                                                       selectedIdentity]];
-}
-
-- (void)handleIdentityListChanged {
-  [self selectSelectedIdentity];
 }
 
 - (void)handleIdentityUpdated:(id<SystemIdentity>)identity {
@@ -149,6 +159,7 @@
 // called asynchronously when the management status if retrieved and the
 // identity is managed.
 - (BOOL)isIdentityKnownToBeManaged:(id<SystemIdentity>)identity {
+  CHECK(identity, base::NotFatalUntil::M147);
   if (std::optional<BOOL> managed = IsIdentityManaged(identity);
       managed.has_value()) {
     return managed.value();
@@ -163,48 +174,27 @@
   return NO;
 }
 
-#pragma mark - ChromeAccountManagerServiceObserver
-
-- (void)identityListChanged {
-  if (IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `onAccountsOnDeviceChanged` instead.
-    return;
-  }
-  [self handleIdentityListChanged];
-}
-
-- (void)identityUpdated:(id<SystemIdentity>)identity {
-  if (IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `onExtendedAccountInfoUpdated` instead.
-    return;
-  }
-  [self handleIdentityUpdated:identity];
-}
-
-- (void)onChromeAccountManagerServiceShutdown:
-    (ChromeAccountManagerService*)accountManagerService {
-  // TODO(crbug.com/40284086): Remove `[self disconnect]`.
-  [self disconnect];
-}
-
 #pragma mark -  IdentityManagerObserver
 
-- (void)onAccountsOnDeviceChanged {
-  if (!IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `identityListChanged` instead.
-    return;
-  }
-  [self handleIdentityListChanged];
+- (void)accountsOnDeviceDidChange {
+  [self selectDefaultIdentity];
 }
 
-- (void)onExtendedAccountInfoUpdated:(const AccountInfo&)info {
-  if (!IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `identityUpdated` instead.
-    return;
-  }
+- (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
   id<SystemIdentity> identity =
       _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.gaia);
   [self handleIdentityUpdated:identity];
+}
+
+#pragma mark - AuthenticationServiceObserving
+
+- (void)onServiceStatusChanged {
+  if (!_authenticationService->SigninEnabled()) {
+    // Signin is now disabled, so the consistency default account must be
+    // stopped.
+    [self.delegate
+        accountPickerConfirmationScreenMediatorWantsToBeStopped:self];
+  }
 }
 
 @end

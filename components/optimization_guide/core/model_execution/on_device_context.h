@@ -8,11 +8,13 @@
 #include <memory>
 
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
+#include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_feature_adapter.h"
 #include "components/optimization_guide/core/model_execution/safety_checker.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/proto/model_quality_metadata.pb.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
 
@@ -33,7 +35,8 @@ struct OnDeviceOptions final {
     virtual bool ShouldUse() = 0;
     // Called to create a new empty session.
     virtual void StartSession(
-        mojo::PendingReceiver<on_device_model::mojom::Session> pending) = 0;
+        mojo::PendingReceiver<on_device_model::mojom::Session> pending,
+        on_device_model::mojom::SessionParamsPtr params) = 0;
     // Called to report a successful execution of the model.
     virtual void OnResponseCompleted() = 0;
   };
@@ -43,9 +46,9 @@ struct OnDeviceOptions final {
   scoped_refptr<const OnDeviceModelFeatureAdapter> adapter;
   std::unique_ptr<SafetyChecker> safety_checker;
   TokenLimits token_limits;
+  SessionConfigParams session_params;
 
   base::WeakPtr<OptimizationGuideLogger> logger;
-  base::WeakPtr<ModelQualityLogsUploaderService> log_uploader;
 
   // Returns true if the on-device model may be used.
   bool ShouldUse() const;
@@ -57,11 +60,12 @@ struct OnDeviceOptions final {
 // CloneSession() call is made.
 class OnDeviceContext : public on_device_model::mojom::ContextClient {
  public:
-  OnDeviceContext(OnDeviceOptions opts, ModelBasedCapabilityKey feature);
+  OnDeviceContext(OnDeviceOptions opts, mojom::OnDeviceFeature feature);
   ~OnDeviceContext() override;
 
   // Constructs the input context and begins processing it.
-  bool SetInput(MultimodalMessageReadView request);
+  bool SetInput(MultimodalMessageReadView request,
+                OnDeviceSession::SetInputCallback callback);
 
   // Get the session that we've sent the input to, creating it if does not
   // exist (e.g. due to a disconnect.)
@@ -74,7 +78,7 @@ class OnDeviceContext : public on_device_model::mojom::ContextClient {
       proto::OnDeviceModelServiceRequest* logged_request,
       bool ignore_context);
 
-  const OnDeviceOptions& opts() { return opts_; }
+  const OnDeviceOptions& opts() const { return opts_; }
 
   // Whether using this session is still allowed.
   // This should be checked before called any other public methods.
@@ -84,17 +88,25 @@ class OnDeviceContext : public on_device_model::mojom::ContextClient {
   // settings of the cloned object will match this one.
   std::unique_ptr<OnDeviceContext> Clone();
 
+  // Sets the priority of the underlying session.
+  void SetPriority(on_device_model::mojom::Priority priority);
+
  private:
-  void AddContext();
+  void Append(on_device_model::mojom::InputPtr input);
 
   // on_device_model::mojom::ContextClient:
   void OnComplete(uint32_t tokens_processed) override;
 
   OnDeviceOptions opts_;
-  ModelBasedCapabilityKey feature_;
+  mojom::OnDeviceFeature feature_;
   mojo::Remote<on_device_model::mojom::Session> session_;
-  on_device_model::mojom::InputPtr input_;
-  mojo::Receiver<on_device_model::mojom::ContextClient> client_{this};
+  on_device_model::mojom::InputPtr input_ =
+      on_device_model::mojom::Input::New();
+  uint32_t tokens_processed_ = 0;
+  on_device_model::mojom::Priority priority_ =
+      on_device_model::mojom::Priority::kForeground;
+  OnDeviceSession::SetInputCallback callback_;
+  mojo::ReceiverSet<on_device_model::mojom::ContextClient> clients_;
 };
 
 }  // namespace optimization_guide

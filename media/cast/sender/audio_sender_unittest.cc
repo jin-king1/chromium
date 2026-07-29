@@ -15,8 +15,8 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/test/test_future.h"
 #include "base/values.h"
-#include "components/openscreen_platform/task_runner.h"
 #include "media/base/audio_codecs.h"
 #include "media/base/fake_single_thread_task_runner.h"
 #include "media/base/media.h"
@@ -26,15 +26,11 @@
 #include "media/cast/constants.h"
 #include "media/cast/test/fake_openscreen_clock.h"
 #include "media/cast/test/mock_openscreen_environment.h"
+#include "media/cast/test/openscreen_test_helpers.h"
 #include "media/cast/test/test_with_cast_environment.h"
 #include "media/cast/test/utility/audio_utility.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/openscreen/src/cast/streaming/public/environment.h"
 #include "third_party/openscreen/src/cast/streaming/public/sender.h"
-#include "third_party/openscreen/src/cast/streaming/sender_packet_router.h"
-#include "third_party/openscreen/src/platform/api/time.h"
-#include "third_party/openscreen/src/platform/base/ip_address.h"
-#include "third_party/openscreen/src/platform/base/trivial_clock_traits.h"
 
 using testing::_;
 
@@ -42,28 +38,13 @@ namespace media::cast {
 
 namespace {
 
-void SaveOperationalStatus(OperationalStatus* out_status,
-                           OperationalStatus in_status) {
-  DVLOG(1) << "OperationalStatus transitioning from " << *out_status << " to "
-           << in_status;
-  *out_status = in_status;
-}
-
 }  // namespace
 
 class AudioSenderTest : public TestWithCastEnvironment {
  protected:
-  AudioSenderTest()
-      : openscreen_task_runner_(task_environment().GetMainThreadTaskRunner()) {
-    FakeOpenscreenClock::SetTickClock(GetMockTickClock());
+  AudioSenderTest() {
     InitializeMediaLibrary();
     AdvanceClock(base::TimeTicks::Now() - base::TimeTicks());
-
-    mock_openscreen_environment_ = std::make_unique<MockOpenscreenEnvironment>(
-        &FakeOpenscreenClock::now, openscreen_task_runner_);
-    openscreen_packet_router_ =
-        std::make_unique<openscreen::cast::SenderPacketRouter>(
-            *mock_openscreen_environment_);
 
     audio_config_.sender_ssrc = 35535;
     audio_config_.receiver_ssrc = 35536;
@@ -74,33 +55,23 @@ class AudioSenderTest : public TestWithCastEnvironment {
     audio_config_.channels = 2;
     audio_config_.max_bitrate = kDefaultAudioEncoderBitrate;
 
-    openscreen::cast::SessionConfig openscreen_audio_config =
-        ToOpenscreenSessionConfig(audio_config_, /* is_pli_enabled= */ true);
+    test_senders_ =
+        std::make_unique<OpenscreenTestSenders>(OpenscreenTestSenders::Config(
+            task_environment().GetMainThreadTaskRunner(), GetMockTickClock(),
+            openscreen::cast::RtpPayloadType::kAudioOpus, std::nullopt,
+            audio_config_));
+    openscreen_audio_sender_ = test_senders_->audio_sender.get();
 
-    auto openscreen_audio_sender = std::make_unique<openscreen::cast::Sender>(
-        *mock_openscreen_environment_, *openscreen_packet_router_,
-        openscreen_audio_config, openscreen::cast::RtpPayloadType::kAudioOpus);
-    openscreen_audio_sender_ = openscreen_audio_sender.get();
-
-    OperationalStatus operational_status = STATUS_UNINITIALIZED;
+    base::test::TestFuture<OperationalStatus> operational_status;
     audio_sender_ = std::make_unique<AudioSender>(
-        cast_environment(), audio_config_,
-        base::BindOnce(&SaveOperationalStatus, &operational_status),
-        std::move(openscreen_audio_sender));
-    RunUntilIdle();
-    CHECK_EQ(STATUS_INITIALIZED, operational_status);
+        cast_environment(), audio_config_, operational_status.GetCallback(),
+        std::move(test_senders_->audio_sender));
+    CHECK_EQ(STATUS_INITIALIZED, operational_status.Get());
   }
 
-  ~AudioSenderTest() override {
-    FakeOpenscreenClock::ClearTickClock();
-  }
+  ~AudioSenderTest() override = default;
 
-  // openscreen::Sender related classes.
-  openscreen_platform::TaskRunner openscreen_task_runner_;
-  std::unique_ptr<media::cast::MockOpenscreenEnvironment>
-      mock_openscreen_environment_;
-  std::unique_ptr<openscreen::cast::SenderPacketRouter>
-      openscreen_packet_router_;
+  std::unique_ptr<OpenscreenTestSenders> test_senders_;
   FrameSenderConfig audio_config_;
   std::unique_ptr<AudioSender> audio_sender_;
   // Unowned pointer to the openscreen::cast::Sender.
@@ -114,11 +85,48 @@ TEST_F(AudioSenderTest, Encode20ms) {
                           TestAudioBusFactory::kMiddleANoteFreq, 0.5f)
           .NextAudioBus(kDuration));
 
-  EXPECT_CALL(*mock_openscreen_environment_, SendPacket(_, _)).Times(3);
+  base::test::TestFuture<void> packets_future;
+  int packets_sent = 0;
+  EXPECT_CALL(*test_senders_->environment, SendPacket(_, _))
+      .Times(2)
+      .WillRepeatedly([&](openscreen::ByteView packet,
+                          openscreen::cast::PacketMetadata metadata) {
+        if (++packets_sent == 2) {
+          packets_future.SetValue();
+        }
+      });
 
   audio_sender_->InsertAudio(std::move(bus), NowTicks());
-  RunUntilIdle();
-  EXPECT_EQ(2, openscreen_audio_sender_->GetInFlightFrameCount());
+  ASSERT_TRUE(packets_future.Wait());
+  EXPECT_EQ(2u, openscreen_audio_sender_->GetInFlightFrameCount());
+}
+
+TEST_F(AudioSenderTest, GettersReturnValidValues) {
+  EXPECT_GE(audio_sender_->GetEncoderBitrate(), 0u);
+  EXPECT_GE(audio_sender_->GetFramesInserted(), 0);
+  EXPECT_GE(audio_sender_->GetFramesDropped(), 0);
+
+  const base::TimeDelta kDuration = base::Milliseconds(20);
+  std::unique_ptr<AudioBus> bus(
+      TestAudioBusFactory(audio_config_.channels, audio_config_.rtp_timebase,
+                          TestAudioBusFactory::kMiddleANoteFreq, 0.5f)
+          .NextAudioBus(kDuration));
+
+  base::test::TestFuture<void> packet_future;
+  int packets_sent = 0;
+  EXPECT_CALL(*test_senders_->environment, SendPacket(_, _))
+      .Times(2)
+      .WillRepeatedly([&](openscreen::ByteView packet,
+                          openscreen::cast::PacketMetadata metadata) {
+        if (++packets_sent == 2) {
+          packet_future.SetValue();
+        }
+      });
+
+  audio_sender_->InsertAudio(std::move(bus), NowTicks());
+  ASSERT_TRUE(packet_future.Wait());
+
+  EXPECT_EQ(audio_sender_->GetFramesInserted(), 1);
 }
 
 }  // namespace media::cast

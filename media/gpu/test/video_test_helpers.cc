@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/test/video_test_helpers.h"
 
 #include <array>
@@ -23,6 +18,7 @@
 #include "base/memory/shared_memory_mapping.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/stl_util.h"
+#include "base/types/to_address.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/client/test_shared_image_interface.h"
@@ -36,9 +32,11 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/libyuv/include/libyuv/planar_functions.h"
 
-#if BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
+// These includes are used for non-ChromeOS platforms as well.
+// TODO(crbug.com/414455717): Consider renaming them.
 #include "media/gpu/chromeos/platform_video_frame_utils.h"
-#endif  // BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#endif
 
 namespace media::test {
 
@@ -135,18 +133,18 @@ bool IvfWriter::WriteFileHeader(VideoCodec codec,
   return output_file_.WriteAtCurrentPosAndCheck(base::as_byte_span(ivf_header));
 }
 
-bool IvfWriter::WriteFrame(uint32_t data_size,
-                           uint64_t timestamp,
-                           const uint8_t* data) {
-  std::array<char, kIvfFrameHeaderSize> ivf_frame_header = {};
-  memcpy(&ivf_frame_header[0], &data_size, sizeof(data_size));
-  memcpy(&ivf_frame_header[4], &timestamp, sizeof(timestamp));
-  if (!output_file_.WriteAtCurrentPosAndCheck(
-          base::as_byte_span(ivf_frame_header))) {
+bool IvfWriter::WriteFrame(uint64_t timestamp,
+                           base::span<const uint8_t> data) {
+  std::array<uint8_t, kIvfFrameHeaderSize> ivf_frame_header = {};
+  auto writer = base::SpanWriter(base::span(ivf_frame_header));
+  writer.WriteU32LittleEndian(base::checked_cast<uint32_t>(data.size()));
+  writer.WriteU64LittleEndian(timestamp);
+  CHECK_EQ(writer.remaining(), 0u);
+
+  if (!output_file_.WriteAtCurrentPosAndCheck(ivf_frame_header)) {
     return false;
   }
-  auto data_span = UNSAFE_TODO(base::span(data, data_size));
-  return output_file_.WriteAtCurrentPosAndCheck(data_span);
+  return output_file_.WriteAtCurrentPosAndCheck(data);
 }
 
 // static
@@ -173,12 +171,11 @@ std::unique_ptr<EncodedDataHelper> EncodedDataHelper::Create(
 }
 
 // static
-bool EncodedDataHelper::HasConfigInfo(const uint8_t* data,
-                                      size_t size,
+bool EncodedDataHelper::HasConfigInfo(base::span<const uint8_t> data,
                                       VideoCodec codec) {
   CHECK(codec == media::VideoCodec::kH264 || codec == media::VideoCodec::kHEVC)
       << "Unsupported codec " << GetCodecName(codec);
-  return EncodedDataHelperH26x::HasConfigInfo(data, size, codec);
+  return EncodedDataHelperH26x::HasConfigInfo(data, codec);
 }
 
 EncodedDataHelper::EncodedDataHelper(base::span<const uint8_t> stream,
@@ -204,22 +201,23 @@ EncodedDataHelperH26x::EncodedDataHelperH26x(base::span<const uint8_t> stream,
     : EncodedDataHelper(std::move(stream), codec) {}
 
 // static
-bool EncodedDataHelperH26x::HasConfigInfo(const uint8_t* data,
-                                          size_t size,
+bool EncodedDataHelperH26x::HasConfigInfo(base::span<const uint8_t> data,
                                           VideoCodec codec) {
   // Check if this is an H264 SPS NALU w/ a kNALUReducedHeaderSize or
   // kNALUHeaderSize byte start code.
   if (codec == media::VideoCodec::kH264) {
-    return (size > kNALUReducedHeaderSize && data[0] == 0x0 && data[1] == 0x0 &&
-            data[2] == 0x1 && (data[kNALUReducedHeaderSize] & 0x1f) == 0x7) ||
-           (size > kNALUHeaderSize && data[0] == 0x0 && data[1] == 0x0 &&
+    return (data.size() > kNALUReducedHeaderSize && data[0] == 0x0 &&
+            data[1] == 0x0 && data[2] == 0x1 &&
+            (data[kNALUReducedHeaderSize] & 0x1f) == 0x7) ||
+           (data.size() > kNALUHeaderSize && data[0] == 0x0 && data[1] == 0x0 &&
             data[2] == 0x0 && data[3] == 0x1 &&
             (data[kNALUHeaderSize] & 0x1f) == 0x7);
   }
   CHECK_EQ(codec, media::VideoCodec::kHEVC);
-  return (size > kNALUReducedHeaderSize && data[0] == 0x0 && data[1] == 0x0 &&
-          data[2] == 0x1 && (data[kNALUReducedHeaderSize] & 0x7e) == 0x42) ||
-         (size > kNALUHeaderSize && data[0] == 0x0 && data[1] == 0x0 &&
+  return (data.size() > kNALUReducedHeaderSize && data[0] == 0x0 &&
+          data[1] == 0x0 && data[2] == 0x1 &&
+          (data[kNALUReducedHeaderSize] & 0x7e) == 0x42) ||
+         (data.size() > kNALUHeaderSize && data[0] == 0x0 && data[1] == 0x0 &&
           data[2] == 0x0 && data[3] == 0x1 &&
           (data[kNALUHeaderSize] & 0x7e) == 0x42);
 }
@@ -284,8 +282,7 @@ EncodedDataHelperH265::EncodedDataHelperH265(base::span<const uint8_t> stream,
                                              VideoCodec codec)
     : EncodedDataHelper(std::move(stream), codec),
       h265_parser_(std::make_unique<H265Parser>()) {
-  h265_parser_->SetStream(reinterpret_cast<uint8_t*>(data_.data()),
-                          data_.size());
+  h265_parser_->SetStream(base::as_byte_span(data_));
 }
 
 EncodedDataHelperH265::~EncodedDataHelperH265() = default;
@@ -327,17 +324,20 @@ scoped_refptr<DecoderBuffer> EncodedDataHelperH265::GetNextBuffer() {
       }
       CHECK_EQ(result, H265Parser::kOk);
     }
-    CHECK_LE(nalu.data,
-             reinterpret_cast<uint8_t*>(data_.data()) + data_.size());
-    CHECK_LE(nalu.data + nalu.size,
-             reinterpret_cast<uint8_t*>(data_.data()) + data_.size());
+    UNSAFE_TODO(
+        CHECK_LE(nalu.data.data(),
+                 reinterpret_cast<uint8_t*>(data_.data()) + data_.size()));
+    UNSAFE_TODO(
+        CHECK_LE(nalu.data.data() + nalu.data.size(),
+                 reinterpret_cast<uint8_t*>(data_.data()) + data_.size()));
 
     struct NALUMetadata nalu_metadata;
-    nalu_metadata.start_pointer =
-        reinterpret_cast<uint8_t*>(data_.data()) + next_pos_to_parse_;
+    nalu_metadata.start_pointer = UNSAFE_TODO(
+        reinterpret_cast<uint8_t*>(data_.data()) + next_pos_to_parse_);
     nalu_metadata.start_index = next_pos_to_parse_;
-    nalu_metadata.header_size = nalu.data - nalu_metadata.start_pointer;
-    nalu_metadata.size_with_header = nalu_metadata.header_size + nalu.size;
+    nalu_metadata.header_size = nalu.data.data() - nalu_metadata.start_pointer;
+    nalu_metadata.size_with_header =
+        nalu_metadata.header_size + nalu.data.size();
     VLOG(2) << "NALU (" << nalu.nal_unit_type << ") found " << nalu_metadata
             << " next_pos_to_parse_=" << next_pos_to_parse_;
 
@@ -437,8 +437,7 @@ bool EncodedDataHelperH265::ReachEndOfStream() const {
 
 void EncodedDataHelperH265::Rewind() {
   h265_parser_->Reset();
-  h265_parser_->SetStream(reinterpret_cast<uint8_t*>(data_.data()),
-                          data_.size());
+  h265_parser_->SetStream(base::as_byte_span(data_));
   previous_nalus_.clear();
   EncodedDataHelper::Rewind();
 }
@@ -471,9 +470,9 @@ scoped_refptr<DecoderBuffer> EncodedDataHelperIVF::GetNextBuffer() {
       LOG(ERROR) << "data is too small";
       return nullptr;
     }
-    auto ivf_header = GetIvfFileHeader(base::span<const uint8_t>(
-        reinterpret_cast<const uint8_t*>(&data_[0]), kIvfFileHeaderSize));
-    if (strncmp(ivf_header.signature, "DKIF", kNALUHeaderSize) != 0) {
+    auto ivf_header = GetIvfFileHeader(
+        base::as_byte_span(data_).first<kIvfFileHeaderSize>());
+    if (std::string_view(ivf_header.signature, kNALUHeaderSize) != "DKIF") {
       LOG(ERROR) << "Unexpected data encountered while parsing IVF header";
       return nullptr;
     }
@@ -518,9 +517,11 @@ scoped_refptr<DecoderBuffer> EncodedDataHelperIVF::GetNextBuffer() {
   // Standard stream case.
   if (ivf_frames.size() == 1) {
     return DecoderBuffer::CopyFrom(
+        // SAFETY: IvfFrame currently uses raw_ptr and size. We safely create a
+        // span from it.
         // TODO(crbug.com/40284755): spanify `IvfFrame`.
-        UNSAFE_TODO(base::span(ivf_frames[0].data.get(),
-                               ivf_frames[0].header.frame_size)));
+        UNSAFE_BUFFERS(base::span(ivf_frames[0].data.get(),
+                                  ivf_frames[0].header.frame_size)));
   }
 
   if (ivf_frames.size() > 3) {
@@ -551,8 +552,8 @@ std::optional<IvfFrameHeader> EncodedDataHelperIVF::GetNextIvfFrameHeader()
     LOG(ERROR) << "Unexpected data encountered while parsing IVF frame header";
     return std::nullopt;
   }
-  return GetIvfFrameHeader(base::span<const uint8_t>(
-      reinterpret_cast<const uint8_t*>(&data_[pos]), kIvfFrameHeaderSize));
+  return GetIvfFrameHeader(
+      base::as_byte_span(data_).subspan(pos, kIvfFrameHeaderSize));
 }
 
 std::optional<IvfFrame> EncodedDataHelperIVF::ReadNextIvfFrame() {
@@ -617,12 +618,13 @@ AlignedDataHelper::AlignedDataHelper(const RawVideo* video,
   // Otherwise timestamps will be generated when GetNextFrame() is called
   UpdateFrameRate(frame_rate);
 
-  if (storage_type_ == VideoFrame::STORAGE_GPU_MEMORY_BUFFER) {
-#if BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+  if (storage_type_ == VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE) {
+// TODO(crbug.com/414430336): Consider restricting to IS_CHROMEOS.
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
     layout_ = GetPlatformVideoFrameLayout(
         video_->PixelFormat(), aligned_coded_size,
         gfx::BufferUsage::VEA_READ_CAMERA_AND_CPU_READ_WRITE);
-#endif  // BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
   } else {
     layout_ = CreateVideoFrameLayout(video_->PixelFormat(), aligned_coded_size,
                                      kPlatformBufferAlignment);
@@ -695,7 +697,7 @@ scoped_refptr<VideoFrame> AlignedDataHelper::GetNextFrame() {
 scoped_refptr<VideoFrame> AlignedDataHelper::CreateVideoFrameFromVideoFrameData(
     const VideoFrameData& video_frame_data,
     base::TimeDelta frame_timestamp) const {
-  if (storage_type_ == VideoFrame::STORAGE_GPU_MEMORY_BUFFER) {
+  if (storage_type_ == VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE) {
     const auto& gmb_handle = video_frame_data.gmb_handle;
     auto dup_handle = gmb_handle.Clone();
     if (dup_handle.is_null()) {
@@ -703,9 +705,9 @@ scoped_refptr<VideoFrame> AlignedDataHelper::CreateVideoFrameFromVideoFrameData(
       return nullptr;
     }
 
-    std::optional<gfx::BufferFormat> buffer_format =
-        VideoPixelFormatToGfxBufferFormat(layout_->format());
-    if (!buffer_format) {
+    std::optional<viz::SharedImageFormat> si_format =
+        media::VideoPixelFormatToSharedImageFormat(layout_->format());
+    if (!si_format) {
       LOG(ERROR) << "Unexpected format: " << layout_->format();
       return nullptr;
     }
@@ -713,9 +715,8 @@ scoped_refptr<VideoFrame> AlignedDataHelper::CreateVideoFrameFromVideoFrameData(
     const auto si_usage = gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY |
                           gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
     auto shared_image = test_sii_->CreateSharedImage(
-        {viz::GetSharedImageFormat(*buffer_format), layout_->coded_size(),
-         gfx::ColorSpace(), gpu::SharedImageUsageSet(si_usage),
-         "AlignedDataHelper"},
+        {*si_format, layout_->coded_size(), gfx::ColorSpace(),
+         gpu::SharedImageUsageSet(si_usage), "AlignedDataHelper"},
         gpu::kNullSurfaceHandle,
         gfx::BufferUsage::VEA_READ_CAMERA_AND_CPU_READ_WRITE,
         std::move(dup_handle));
@@ -735,10 +736,15 @@ scoped_refptr<VideoFrame> AlignedDataHelper::CreateVideoFrameFromVideoFrameData(
     }
     base::ReadOnlySharedMemoryMapping mapping = shmem_region.Map();
     uint8_t* buf = const_cast<uint8_t*>(mapping.GetMemoryAs<uint8_t>());
-    std::array<uint8_t*, 3> data = {};
-    for (size_t i = 0; i < layout_->planes().size(); i++)
-      data[i] = buf + layout_->planes()[i].offset;
-
+    std::array<base::span<uint8_t>, VideoFrame::kMaxPlanes> data = {};
+    // SAFETY: buf points to the start of the shared memory mapping of size
+    // mapping.size(). We create a safe span covering the whole mapping first.
+    auto buf_span = UNSAFE_BUFFERS(base::span(buf, mapping.size()));
+    for (size_t i = 0; i < layout_->planes().size(); i++) {
+      // TODO(crbug.com/40285824): spanify this usage.
+      data[i] = buf_span.subspan(layout_->planes()[i].offset,
+                                 layout_->planes()[i].size);
+    }
     auto frame = media::VideoFrame::WrapExternalYuvDataWithLayout(
         *layout_, visible_rect_, natural_size_, data[0], data[1], data[2],
         frame_timestamp);
@@ -761,8 +767,9 @@ AlignedDataHelper::VideoFrameData AlignedDataHelper::CreateVideoFrameData(
          "source buffer resolution";
   const VideoPixelFormat pixel_format = src_layout.format();
   const gfx::Size& resolution = src_layout.coded_size();
-  if (storage_type == VideoFrame::STORAGE_GPU_MEMORY_BUFFER) {
-#if BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+  if (storage_type == VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE) {
+// TODO(crbug.com/414430336): Consider restricting to IS_CHROMEOS.
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
     // First write into on-memory frame.
     auto memory_frame =
         VideoFrame::CreateFrame(pixel_format, resolution, gfx::Rect(resolution),
@@ -775,12 +782,12 @@ AlignedDataHelper::VideoFrameData AlignedDataHelper::CreateVideoFrameData(
           VideoFrame::RowBytes(i, pixel_format, resolution.width()),
           VideoFrame::Rows(i, pixel_format, resolution.height()));
     }
-    // Create GpuMemoryBuffer VideoFrame from the on-memory VideoFrame.
+    // Create MappableSI-backed VideoFrame from the on-memory VideoFrame.
     auto frame =
         CloneVideoFrame(memory_frame.get(), dst_layout, test_sii,
-                        VideoFrame::STORAGE_GPU_MEMORY_BUFFER,
+                        VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE,
                         gfx::BufferUsage::VEA_READ_CAMERA_AND_CPU_READ_WRITE);
-    LOG_ASSERT(!!frame) << "Failed creating GpuMemoryBuffer VideoFrame";
+    LOG_ASSERT(!!frame) << "Failed creating MappableSharedImage VideoFrame";
 
     auto gmb_handle = CreateGpuMemoryBufferHandle(frame.get());
     LOG_ASSERT(!gmb_handle.is_null())
@@ -788,7 +795,7 @@ AlignedDataHelper::VideoFrameData AlignedDataHelper::CreateVideoFrameData(
     return VideoFrameData(std::move(gmb_handle));
 #else
     NOTREACHED();
-#endif  // BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
   } else {
     const size_t dst_video_frame_size =
         dst_layout.planes().back().offset + dst_layout.planes().back().size;
@@ -800,7 +807,7 @@ AlignedDataHelper::VideoFrameData AlignedDataHelper::CreateVideoFrameData(
     uint8_t* buffer = mapping.GetMemoryAs<uint8_t>();
     for (size_t i = 0; i < src_layout.planes().size(); i++) {
       auto dst_plane_layout = dst_layout.planes()[i];
-      uint8_t* dst_ptr = &buffer[dst_plane_layout.offset];
+      uint8_t* dst_ptr = UNSAFE_TODO(&buffer[dst_plane_layout.offset]);
       libyuv::CopyPlane(
           src_frame.plane_addrs[i], src_frame.strides[i], dst_ptr,
           dst_plane_layout.stride,
@@ -820,13 +827,16 @@ RawDataHelper::~RawDataHelper() = default;
 scoped_refptr<const VideoFrame> RawDataHelper::GetFrame(size_t index) const {
   uint32_t read_frame_index =
       GetReadFrameIndex(index, reverse_, video_->NumFrames());
-  std::array<uint8_t*, VideoFrame::kMaxPlanes> frame_data = {};
+  std::array<base::span<uint8_t>, VideoFrame::kMaxPlanes> frame_data = {};
   const size_t num_planes = VideoFrame::NumPlanes(video_->PixelFormat());
   RawVideo::FrameData src_frame = video_->GetFrame(read_frame_index);
   for (size_t i = 0; i < num_planes; ++i) {
     // The data is never modified but WrapExternalYuvDataWithLayout() only
-    // accepts non-const pointer.
-    frame_data[i] = const_cast<uint8_t*>(src_frame.plane_addrs[i]);
+    // accepts non-const span.
+    // TODO(crbug.com/40285824): spanify this usage.
+    frame_data[i] =
+        UNSAFE_TODO(base::span(const_cast<uint8_t*>(src_frame.plane_addrs[i]),
+                               video_->FrameLayout().planes()[i].size));
   }
 
   scoped_refptr<VideoFrame> video_frame =

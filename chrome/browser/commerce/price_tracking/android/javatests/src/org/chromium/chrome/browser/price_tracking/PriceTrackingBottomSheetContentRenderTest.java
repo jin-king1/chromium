@@ -4,7 +4,9 @@
 
 package org.chromium.chrome.browser.price_tracking;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 
 import static org.chromium.ui.test.util.RenderTestRule.Component.UI_BROWSER_SHOPPING;
@@ -22,13 +24,14 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.invocation.InvocationOnMock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Feature;
@@ -42,6 +45,8 @@ import org.chromium.components.browser_ui.notifications.NotificationFeatureMap;
 import org.chromium.components.commerce.core.CommerceFeatureUtils;
 import org.chromium.components.commerce.core.CommerceFeatureUtilsJni;
 import org.chromium.components.commerce.core.ShoppingService;
+import org.chromium.components.commerce.core.ShoppingService.ProductInfo;
+import org.chromium.components.commerce.core.ShoppingService.ProductInfoCallback;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.RenderTestRule;
@@ -57,8 +62,6 @@ public class PriceTrackingBottomSheetContentRenderTest {
     public static BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
-    private static Activity sActivity;
-
     @Rule
     public RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
@@ -72,41 +75,46 @@ public class PriceTrackingBottomSheetContentRenderTest {
     @Mock private Profile mMockProfile;
     @Mock private PriceInsightsDelegate mMockPriceInsightsDelegate;
     @Mock private Callback<PropertyModel> mMockCallback;
-    @Mock private ObservableSupplier<Boolean> mMockPriceTrackingStateSupplier;
     @Mock private CommerceFeatureUtils.Natives mCommerceFeatureUtilsJniMock;
     @Mock private ShoppingService mMockShoppingService;
 
     private static final String PRODUCT_TITLE = "Testing Sneaker";
+    private static final ProductInfo PRODUCT_INFO =
+            new ProductInfo(null, null, 12345L, null, null, 0, null, null);
 
+    private SettableNonNullObservableSupplier<Boolean> mPriceTrackingStateSupplier;
     private View mContentView;
     private PriceTrackingBottomSheetContentCoordinator mCoordinator;
 
     @BeforeClass
     public static void setupSuite() {
-        sActivity = sActivityTestRule.launchActivity(null);
+        sActivityTestRule.launchActivity(null);
     }
 
     @Before
     public void setUp() throws Exception {
-        MockitoAnnotations.initMocks(this);
-
-        doReturn(mMockProfile).when(mMockTab).getProfile();
-        doReturn(PRODUCT_TITLE).when(mMockTab).getTitle();
-        ShoppingServiceFactory.setShoppingServiceForTesting(mMockShoppingService);
-        CommerceFeatureUtilsJni.setInstanceForTesting(mCommerceFeatureUtilsJniMock);
-
-        doReturn(false).when(mMockPriceTrackingStateSupplier).get();
-        doReturn(mMockPriceTrackingStateSupplier)
-                .when(mMockPriceInsightsDelegate)
-                .getPriceTrackingStateSupplier(mMockTab);
-
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    Activity activity = sActivityTestRule.getActivity();
+                    mPriceTrackingStateSupplier = ObservableSuppliers.createNonNull(false);
+                    doReturn(mMockProfile).when(mMockTab).getProfile();
+                    doReturn(PRODUCT_TITLE).when(mMockTab).getTitle();
+                    ShoppingServiceFactory.setShoppingServiceForTesting(mMockShoppingService);
+                    CommerceFeatureUtilsJni.setInstanceForTesting(mCommerceFeatureUtilsJniMock);
+                    doReturn(true)
+                            .when(mCommerceFeatureUtilsJniMock)
+                            .isShoppingListEligible(anyLong());
+
+                    doReturn(mPriceTrackingStateSupplier)
+                            .when(mMockPriceInsightsDelegate)
+                            .getPriceTrackingStateSupplier(mMockTab);
+                    setUpGetPriceProductInfoForUrl();
+
                     mCoordinator =
                             new PriceTrackingBottomSheetContentCoordinator(
-                                    sActivity, () -> mMockTab, mMockPriceInsightsDelegate);
+                                    activity, () -> mMockTab, mMockPriceInsightsDelegate);
                     mContentView = mCoordinator.getContentViewForTesting();
-                    sActivity.setContentView(mContentView);
+                    activity.setContentView(mContentView);
                 });
     }
 
@@ -121,23 +129,10 @@ public class PriceTrackingBottomSheetContentRenderTest {
     @Test
     @SmallTest
     @Feature({"RenderTest"})
-    public void testPriceTrackingIneligible() throws IOException {
-        doReturn(false).when(mCommerceFeatureUtilsJniMock).isShoppingListEligible(anyLong());
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mCoordinator.requestContent(mMockCallback);
-                });
-        mRenderTestRule.render(mContentView, "price_tracking_ineligible");
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"RenderTest"})
     public void testPriceTrackingEnabled() throws IOException {
-        doReturn(true).when(mCommerceFeatureUtilsJniMock).isShoppingListEligible(anyLong());
-        doReturn(true).when(mMockPriceTrackingStateSupplier).get();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    mPriceTrackingStateSupplier.set(true);
                     mCoordinator.requestContent(mMockCallback);
                 });
         mRenderTestRule.render(mContentView, "price_tracking_enabled");
@@ -147,12 +142,21 @@ public class PriceTrackingBottomSheetContentRenderTest {
     @SmallTest
     @Feature({"RenderTest"})
     public void testPriceTrackingDisabled() throws IOException {
-        doReturn(true).when(mCommerceFeatureUtilsJniMock).isShoppingListEligible(anyLong());
-        doReturn(false).when(mMockPriceTrackingStateSupplier).get();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mCoordinator.requestContent(mMockCallback);
                 });
         mRenderTestRule.render(mContentView, "price_tracking_disabled");
+    }
+
+    private void setUpGetPriceProductInfoForUrl() {
+        doAnswer(
+                        (InvocationOnMock invocation) -> {
+                            ((ProductInfoCallback) invocation.getArgument(1))
+                                    .onResult(invocation.getArgument(0), PRODUCT_INFO);
+                            return null;
+                        })
+                .when(mMockShoppingService)
+                .getProductInfoForUrl(any(), any());
     }
 }

@@ -930,9 +930,6 @@ class WebGL2RenderingContextBase : public WebGLRenderingContextBase {
   void RestoreCurrentFramebuffer() override;
   void useProgram(WebGLProgram*) override;
 
-  /* Helpers */
-  GLint GetMaxTransformFeedbackSeparateAttribs() const;
-
   void Trace(Visitor*) const override;
 
  protected:
@@ -942,11 +939,12 @@ class WebGL2RenderingContextBase : public WebGLRenderingContextBase {
   WebGL2RenderingContextBase(
       CanvasRenderingContextHost*,
       std::unique_ptr<WebGraphicsContext3DProvider>,
-      const Platform::GraphicsInfo&,
+      const Platform::WebGLContextInfo&,
       const CanvasContextCreationAttributesCore& requested_attributes,
-      Platform::ContextType context_type);
+      Platform::WebGLContextType context_type);
 
   // DrawingBuffer::Client implementation.
+  void DrawingBufferClientRestoreRasterizerDiscard() override;
   void DrawingBufferClientRestorePixelUnpackBufferBinding() override;
   void DrawingBufferClientRestorePixelPackBufferBinding() override;
   void DrawingBufferClientRestorePixelPackParameters() override;
@@ -1091,11 +1089,6 @@ class WebGL2RenderingContextBase : public WebGLRenderingContextBase {
   GLint pack_skip_rows_;
   GLint unpack_image_height_;
   GLint unpack_skip_images_;
-
- private:
-  void RecordInternalFormatParameter(GLenum internalformat,
-                                     GLint* values,
-                                     GLint length);
 };
 
 }  // namespace blink

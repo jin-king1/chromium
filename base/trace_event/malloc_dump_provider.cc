@@ -2,19 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/trace_event/malloc_dump_provider.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <unordered_map>
 
 #include "base/allocator/buildflags.h"
+#include "base/compiler_specific.h"
 #include "base/debug/profiler.h"
+#include "base/feature_list.h"
 #include "base/format_macros.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
@@ -25,8 +23,8 @@
 #include "partition_alloc/buildflags.h"
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC)
-#include "partition_alloc/partition_alloc_config.h"   // nogncheck
-#include "partition_alloc/partition_bucket_lookup.h"  // nogncheck
+#include "partition_alloc/bucket_lookup.h"           // nogncheck
+#include "partition_alloc/partition_alloc_config.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(IS_APPLE)
@@ -43,6 +41,7 @@
 #endif
 
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/no_destructor.h"
 #include "partition_alloc/shim/allocator_shim_default_dispatch_to_partition_alloc.h"
 #endif
@@ -54,35 +53,61 @@
 namespace base::trace_event {
 
 namespace {
-#if BUILDFLAG(IS_WIN)
-// A structure containing some information about a given heap.
-struct WinHeapInfo {
-  size_t committed_size;
-  size_t uncommitted_size;
-  size_t allocated_size;
-  size_t block_count;
-};
 
-// NOTE: crbug.com/665516
-// Unfortunately, there is no safe way to collect information from secondary
-// heaps due to limitations and racy nature of this piece of WinAPI.
-void WinHeapMemoryDumpImpl(WinHeapInfo* crt_heap_info) {
-  // Iterate through whichever heap our CRT is using.
-  HANDLE crt_heap = reinterpret_cast<HANDLE>(_get_heap_handle());
-  ::HeapLock(crt_heap);
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+// Whether to populate "discardable bytes" in "light" stats reported via
+// `MallocDumpProvider::OnMemoryDump`. This involves traversing the free list
+// which is expensive.
+BASE_FEATURE(kMallocDumpProviderPopulateDiscardableBytes,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+
+#if BUILDFLAG(IS_WIN)
+internal::WinHeapInfo WinHeapInfoFromHandle(HANDLE heap_handle) {
+  internal::WinHeapInfo info;
+  ::HeapLock(heap_handle);
   PROCESS_HEAP_ENTRY heap_entry;
   heap_entry.lpData = nullptr;
-  // Walk over all the entries in the main heap.
-  while (::HeapWalk(crt_heap, &heap_entry) != FALSE) {
+
+  // HeapWalk emits a PROCESS_HEAP_REGION header before the blocks inside
+  // that region; large VirtualAlloc-backed allocations have no header and
+  // appear as orphan busy entries. See:
+  // https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-process_heap_entry
+  uintptr_t last_region_start = 0;
+  uintptr_t last_region_end = 0;
+
+  while (::HeapWalk(heap_handle, &heap_entry) != FALSE) {
+    const uintptr_t entry_addr = reinterpret_cast<uintptr_t>(heap_entry.lpData);
     if ((heap_entry.wFlags & PROCESS_HEAP_ENTRY_BUSY) != 0) {
-      crt_heap_info->allocated_size += heap_entry.cbData;
-      crt_heap_info->block_count++;
+      info.allocated_size += heap_entry.cbData;
+      info.block_count++;
+      if (entry_addr < last_region_start || entry_addr >= last_region_end) {
+        // Large allocations are returned by HeapWalk as orphan busy entries
+        // outside any PROCESS_HEAP_REGION. They are always committed since
+        // HeapAlloc never returns uncommitted memory.
+        info.committed_size +=
+            static_cast<size_t>(heap_entry.cbData) + heap_entry.cbOverhead;
+      }
     } else if ((heap_entry.wFlags & PROCESS_HEAP_REGION) != 0) {
-      crt_heap_info->committed_size += heap_entry.Region.dwCommittedSize;
-      crt_heap_info->uncommitted_size += heap_entry.Region.dwUnCommittedSize;
+      // dwCommittedSize / dwUnCommittedSize are documented as optional and
+      // reported as zero when unavailable. When their sum does not match
+      // cbData, fall back to treating the full reserved range as committed
+      // so the dump does not under-report.
+      if (heap_entry.Region.dwCommittedSize +
+              heap_entry.Region.dwUnCommittedSize ==
+          heap_entry.cbData) {
+        info.committed_size += heap_entry.Region.dwCommittedSize;
+        info.uncommitted_size += heap_entry.Region.dwUnCommittedSize;
+      } else {
+        info.committed_size += heap_entry.cbData;
+      }
+      last_region_start = entry_addr;
+      last_region_end = entry_addr + heap_entry.cbData;
     }
   }
-  CHECK(::HeapUnlock(crt_heap) == TRUE);
+  CHECK(::HeapUnlock(heap_handle) == TRUE);
+
+  return info;
 }
 
 void ReportWinHeapStats(MemoryDumpLevelOfDetail level_of_detail,
@@ -93,8 +118,12 @@ void ReportWinHeapStats(MemoryDumpLevelOfDetail level_of_detail,
                         size_t* allocated_objects_count) {
   // This is too expensive on Windows, crbug.com/780735.
   if (level_of_detail == MemoryDumpLevelOfDetail::kDetailed) {
-    WinHeapInfo main_heap_info = {};
-    WinHeapMemoryDumpImpl(&main_heap_info);
+    // NOTE: crbug.com/665516. Unfortunately, there is no safe way to collect
+    // information from secondary heaps due to limitations and racy nature of
+    // this piece of WinAPI. Walk only whichever heap our CRT is using.
+    auto main_heap_info =
+        WinHeapInfoFromHandle(reinterpret_cast<HANDLE>(_get_heap_handle()));
+
     *total_virtual_size +=
         main_heap_info.committed_size + main_heap_info.uncommitted_size;
     // Resident size is approximated with committed heap size. Note that it is
@@ -128,17 +157,30 @@ void ReportPartitionAllocStats(ProcessMemoryDump* pmd,
                                size_t* cumulative_brp_quarantined_count) {
   MemoryDumpPartitionStatsDumper partition_stats_dumper("malloc", pmd,
                                                         level_of_detail);
-  bool is_light_dump = level_of_detail == MemoryDumpLevelOfDetail::kBackground;
+  const bool is_light_dump =
+      level_of_detail == MemoryDumpLevelOfDetail::kBackground;
+  const bool populate_discardable_bytes =
+      !is_light_dump ||
+      base::FeatureList::IsEnabled(kMallocDumpProviderPopulateDiscardableBytes);
 
   auto* allocator = allocator_shim::internal::PartitionAllocMalloc::Allocator();
-  allocator->DumpStats("allocator", is_light_dump, &partition_stats_dumper);
+  allocator->DumpStats("allocator", is_light_dump, populate_discardable_bytes,
+                       &partition_stats_dumper);
 
   auto* original_allocator =
       allocator_shim::internal::PartitionAllocMalloc::OriginalAllocator();
   if (original_allocator) {
     original_allocator->DumpStats("original", is_light_dump,
+                                  populate_discardable_bytes,
                                   &partition_stats_dumper);
   }
+
+  // Obtain information from an allocator for leaked security object.
+  auto* leaked_security_object_allocator =
+      base::internal::LeakedSecurityObjectAllocator();
+  leaked_security_object_allocator->DumpStats("leaked", is_light_dump,
+                                              populate_discardable_bytes,
+                                              &partition_stats_dumper);
 
   *total_virtual_size += partition_stats_dumper.total_resident_bytes();
   *resident_size += partition_stats_dumper.total_resident_bytes();
@@ -151,6 +193,11 @@ void ReportPartitionAllocStats(ProcessMemoryDump* pmd,
   *cumulative_brp_quarantined_count +=
       partition_stats_dumper.cumulative_brp_quarantined_count();
 #endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+
+  if (!is_light_dump) {
+    partition_alloc::PartitionRoot::DumpIntendedLeakStats(
+        &partition_stats_dumper);
+  }
 }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 
@@ -252,13 +299,10 @@ void ReportPartitionAllocThreadCacheStats(
 
 #if PA_CONFIG(THREAD_CACHE_ALLOC_STATS)
   if (stats.alloc_count && detailed) {
-    partition_alloc::internal::BucketIndexLookup lookup{};
     std::string name = dump->absolute_name();
-    for (size_t i = 0; i < partition_alloc::kNumBuckets; i++) {
-      size_t bucket_size = lookup.bucket_sizes()[i];
-      if (bucket_size == partition_alloc::kInvalidBucketSize) {
-        continue;
-      }
+    for (uint16_t i = 0; i < partition_alloc::BucketIndexLookup::kNumBuckets;
+         i++) {
+      size_t bucket_size = partition_alloc::BucketIndexLookup::GetBucketSize(i);
       // Covers all normal buckets, that is up to ~1MiB, so 7 digits.
       std::string dump_name = base::StringPrintf(
           "%s/buckets_alloc/%07d", name.c_str(), static_cast<int>(bucket_size));
@@ -270,9 +314,9 @@ void ReportPartitionAllocThreadCacheStats(
 #endif  // PA_CONFIG(THREAD_CACHE_ALLOC_STATS)
 }
 
-void ReportPartitionAllocLightweightQuarantineStats(
+void ReportPartitionAllocSchedulerLoopQuarantineStats(
     MemoryAllocatorDump* dump,
-    const partition_alloc::LightweightQuarantineStats& stats) {
+    const partition_alloc::SchedulerLoopQuarantineStats& stats) {
   dump->AddScalar("count", MemoryAllocatorDump::kUnitsObjects, stats.count);
   dump->AddScalar("size_in_bytes", MemoryAllocatorDump::kUnitsBytes,
                   stats.size_in_bytes);
@@ -285,7 +329,34 @@ void ReportPartitionAllocLightweightQuarantineStats(
 }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC)
 
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+void ReportExtremeLightweightDetectorQuarantineStats(
+    MemoryAllocatorDump* dump,
+    const MallocDumpProvider::ExtremeLUDStats& stats) {
+  dump->AddScalar("count", MemoryAllocatorDump::kUnitsObjects, stats.count);
+  dump->AddScalar("size_in_bytes", MemoryAllocatorDump::kUnitsBytes,
+                  stats.size_in_bytes);
+  dump->AddScalar("cumulative_count", MemoryAllocatorDump::kUnitsObjects,
+                  stats.cumulative_count);
+  dump->AddScalar("cumulative_size_in_bytes", MemoryAllocatorDump::kUnitsBytes,
+                  stats.cumulative_size_in_bytes);
+  dump->AddScalar("quarantine_miss_count", MemoryAllocatorDump::kUnitsObjects,
+                  stats.quarantine_miss_count);
+}
+#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+
 }  // namespace
+
+#if BUILDFLAG(IS_WIN)
+namespace internal {
+
+WinHeapInfo WinHeapInfo::FromHandleForTesting(void* heap) {
+  HANDLE heap_handle = static_cast<HANDLE>(heap);
+  return WinHeapInfoFromHandle(heap_handle);
+}
+
+}  // namespace internal
+#endif  // BUILDFLAG(IS_WIN)
 
 // static
 const char MallocDumpProvider::kAllocatedObjects[] = "malloc/allocated_objects";
@@ -423,6 +494,9 @@ bool MallocDumpProvider::OnMemoryDump(const MemoryDumpArgs& args,
   ExtremeLUDStats elud_stats_for_large_objects;
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
   partitions_dump = pmd->CreateAllocatorDump("malloc/partitions");
+  partitions_dump->AddScalar("allocated_objects_size",
+                             MemoryAllocatorDump::kUnitsBytes,
+                             pa_only_allocated_objects_size);
   pmd->AddOwnershipEdge(inner_dump->guid(), partitions_dump->guid());
 
   auto& extreme_lud_get_stats_callback = GetExtremeLUDGetStatsCallback();
@@ -435,10 +509,10 @@ bool MallocDumpProvider::OnMemoryDump(const MemoryDumpArgs& args,
     const auto elud_stats_set = extreme_lud_get_stats_callback.Run();
     elud_stats_for_small_objects = elud_stats_set.for_small_objects;
     elud_stats_for_large_objects = elud_stats_set.for_large_objects;
-    ReportPartitionAllocLightweightQuarantineStats(
-        elud_dump_for_small_objects, elud_stats_for_small_objects.lq_stats);
-    ReportPartitionAllocLightweightQuarantineStats(
-        elud_dump_for_large_objects, elud_stats_for_large_objects.lq_stats);
+    ReportExtremeLightweightDetectorQuarantineStats(
+        elud_dump_for_small_objects, elud_stats_for_small_objects);
+    ReportExtremeLightweightDetectorQuarantineStats(
+        elud_dump_for_large_objects, elud_stats_for_large_objects);
   }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 
@@ -491,11 +565,11 @@ void MallocDumpProvider::ReportPerMinuteStats(
           const ExtremeLUDStats& elud_stats,
           CumulativeEludStats& last_cumulative_elud_stats,
           MemoryAllocatorDump* elud_dump) {
-        size_t bytes = elud_stats.lq_stats.cumulative_size_in_bytes -
+        size_t bytes = elud_stats.cumulative_size_in_bytes -
                        last_cumulative_elud_stats.quarantined_bytes;
-        size_t count = elud_stats.lq_stats.cumulative_count -
+        size_t count = elud_stats.cumulative_count -
                        last_cumulative_elud_stats.quarantined_count;
-        size_t miss_count = elud_stats.lq_stats.quarantine_miss_count -
+        size_t miss_count = elud_stats.quarantine_miss_count -
                             last_cumulative_elud_stats.miss_count;
         elud_dump->AddScalar("bytes_per_minute",
                              MemoryAllocatorDump::kUnitsBytes,
@@ -532,11 +606,11 @@ void MallocDumpProvider::ReportPerMinuteStats(
                   elud_stats.capacity_in_bytes / bytes);
         }
         last_cumulative_elud_stats.quarantined_bytes =
-            elud_stats.lq_stats.cumulative_size_in_bytes;
+            elud_stats.cumulative_size_in_bytes;
         last_cumulative_elud_stats.quarantined_count =
-            elud_stats.lq_stats.cumulative_count;
+            elud_stats.cumulative_count;
         last_cumulative_elud_stats.miss_count =
-            elud_stats.lq_stats.quarantine_miss_count;
+            elud_stats.quarantine_miss_count;
       };
   if (elud_dump_for_small_objects) {
     report_elud_per_minute_stats(elud_stats_for_small_objects,
@@ -595,10 +669,10 @@ void MemoryDumpPartitionStatsDumper::PartitionDumpTotals(
   auto total_active_bytes = memory_stats->total_active_bytes;
   size_t wasted = 0;
   // This should always be true, but only if our accounting of committed bytes
-  // is consistent, which it isn't. Indeed, with
-  // PartitionAllocFewerMemoryRegions, we may allocate a slot span before the
-  // feature state is known, in which case we commit less, then decommit it
-  // after, in which case we subtract the new commit unit, which is larger.
+  // is consistent, which it isn't. Indeed, with kUseFewerMemoryRegions, we may
+  // allocate a slot span before the feature state is known, in which case we
+  // commit less, then decommit it after, in which case we subtract the new
+  // commit unit, which is larger.
   //
   // Properly handling this would require remembering how much was committed,
   // which complicates bookkeeping, especially as metadata space is
@@ -673,10 +747,14 @@ void MemoryDumpPartitionStatsDumper::PartitionDumpTotals(
     MemoryAllocatorDump* quarantine_dump_total =
         memory_dump_->CreateAllocatorDump(dump_name +
                                           "/scheduler_loop_quarantine");
-    ReportPartitionAllocLightweightQuarantineStats(
+    ReportPartitionAllocSchedulerLoopQuarantineStats(
         quarantine_dump_total,
         memory_stats->scheduler_loop_quarantine_stats_total);
   }
+
+  allocator_dump->AddScalar("intended_leak_size",
+                            MemoryAllocatorDump::kUnitsBytes,
+                            memory_stats->total_intended_leak_bytes);
 }
 
 void MemoryDumpPartitionStatsDumper::PartitionsDumpBucketStats(
@@ -724,6 +802,16 @@ void MemoryDumpPartitionStatsDumper::PartitionsDumpBucketStats(
   allocator_dump->AddScalar("decommitted_slot_spans",
                             MemoryAllocatorDump::kUnitsObjects,
                             memory_stats->num_decommitted_slot_spans);
+}
+
+void MemoryDumpPartitionStatsDumper::DumpIntendedLeak(uint32_t type_id,
+                                                      size_t size) {
+  std::string dump_name = base::StringPrintf(
+      "%s/%s/leaked/LeakedSecurityObject/%08x", root_name_,
+      MemoryDumpPartitionStatsDumper::kPartitionsDumpName, type_id);
+  MemoryAllocatorDump* dump = memory_dump_->CreateAllocatorDump(dump_name);
+  dump->AddScalar(base::trace_event::MemoryAllocatorDump::kNameSize,
+                  base::trace_event::MemoryAllocatorDump::kUnitsBytes, size);
 }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC)
 

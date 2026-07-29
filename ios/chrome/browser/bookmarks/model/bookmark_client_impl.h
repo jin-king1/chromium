@@ -41,8 +41,6 @@ class BookmarkClientImpl : public power_bookmarks::BookmarkClientBase {
 
   ~BookmarkClientImpl() override;
 
-  void SetIsSyncFeatureEnabledIncludingBookmarksForTest();
-
   // bookmarks::BookmarkClient:
   void Init(bookmarks::BookmarkModel* model) override;
   void RequiredRecoveryToLoad(
@@ -59,6 +57,7 @@ class BookmarkClientImpl : public power_bookmarks::BookmarkClientBase {
   bool CanSetPermanentNodeTitle(
       const bookmarks::BookmarkNode* permanent_node) override;
   bool IsNodeManaged(const bookmarks::BookmarkNode* node) override;
+  bookmarks::BookmarkFormFactor GetBookmarkFormFactor() override;
   std::string EncodeLocalOrSyncableBookmarkSyncMetadata() override;
   std::string EncodeAccountBookmarkSyncMetadata() override;
   void DecodeLocalOrSyncableBookmarkSyncMetadata(
@@ -71,6 +70,11 @@ class BookmarkClientImpl : public power_bookmarks::BookmarkClientBase {
       const bookmarks::BookmarkNode* parent,
       size_t index,
       std::unique_ptr<bookmarks::BookmarkNode> node) override;
+  void SchedulePersistentTimerForDailyMetrics(
+      base::RepeatingClosure metrics_callback) override;
+  void GetEncryptor(base::OnceCallback<
+                    void(scoped_refptr<os_crypt_async::Encryptor> encryptor)>
+                        callback) override;
 
  private:
   // Pointer to the associated ProfileIOS. Must outlive
@@ -92,8 +96,6 @@ class BookmarkClientImpl : public power_bookmarks::BookmarkClientBase {
   const raw_ptr<BookmarkUndoService> bookmark_undo_service_;
 
   raw_ptr<bookmarks::BookmarkModel> model_ = nullptr;
-
-  bool is_sync_feature_enabled_including_bookmarks_for_test_ = false;
 };
 
 #endif  // IOS_CHROME_BROWSER_BOOKMARKS_MODEL_BOOKMARK_CLIENT_IMPL_H_

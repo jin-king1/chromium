@@ -13,6 +13,7 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_request.h"
@@ -132,9 +133,7 @@ class StreamingSearchPrefetchURLLoader
 
     // network::mojom::URLLoader implementation:
     void FollowRedirect(
-        const std::vector<std::string>& removed_headers,
-        const net::HttpRequestHeaders& modified_headers,
-        const net::HttpRequestHeaders& modified_cors_exempt_headers,
+        network::HttpRequestHeadersUpdateParams headers_update_params,
         const std::optional<GURL>& new_url) override;
     void SetPriority(net::RequestPriority priority,
                      int32_t intra_priority_value) override;
@@ -241,6 +240,9 @@ class StreamingSearchPrefetchURLLoader
   // on mojo channels closing or other errors occurring.
   void ClearOwnerPointer();
 
+  // Returns whether the resource response is available.
+  bool HasResourceResponse() const { return !!resource_response_; }
+
   void set_on_destruction_callback_for_testing(
       base::OnceClosure on_destruction_callback_for_testing) {
     on_destruction_callback_for_testing_ =
@@ -259,9 +261,7 @@ class StreamingSearchPrefetchURLLoader
 
   // network::mojom::URLLoader:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override;
   void SetPriority(net::RequestPriority priority,
                    int32_t intra_priority_value) override;
@@ -437,7 +437,12 @@ class StreamingSearchPrefetchURLLoader
   // Whether this loader is created specifically for a navigation prefetch.
   bool navigation_prefetch_;
 
-  // Whether this url loader was activated via the navigation stack.
+  // Whether the SearchPrefetchService selected to use this loader to serve a
+  // real navigation.
+  bool should_be_serving_to_activation_navigation_ = false;
+
+  // Whether this url loader was activated via the navigation stack. Set after
+  // the call to `SetUpForwardingClient`.
   bool is_activated_ = false;
 
   base::OnceClosure on_destruction_callback_for_testing_;

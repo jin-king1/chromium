@@ -17,9 +17,11 @@ import '//resources/cr_elements/cr_icon/cr_icon.js';
 import type {CrToggleElement} from '//resources/cr_elements/cr_toggle/cr_toggle.js';
 import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {SettingsBooleanControlMixin} from '/shared/settings/controls/settings_boolean_control_mixin.js';
+import {PrefService} from '/shared/settings/prefs2/pref_service.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {sanitizeInnerHtml} from 'chrome://resources/js/parse_html_subset.js';
 
+import {PrefKeyObserverMixin} from './pref_key_observer_mixin.js';
 import {getTemplate} from './settings_toggle_button.html.js';
 
 
@@ -31,7 +33,7 @@ export interface SettingsToggleButtonElement {
 }
 
 const SettingsToggleButtonElementBase =
-    SettingsBooleanControlMixin(PolymerElement);
+    PrefKeyObserverMixin(SettingsBooleanControlMixin(PolymerElement));
 
 export class SettingsToggleButtonElement extends
     SettingsToggleButtonElementBase {
@@ -87,6 +89,18 @@ export class SettingsToggleButtonElement extends
       icon: String,
 
       subLabelIcon: String,
+
+      /**
+       * If true, the host element does not get a click event handler and the
+       * client is responsible for determining their own click logic. Thus when
+       * true, clicking on the setting row does not toggle the setting pref.
+       * Note, this boolean is only used on ready() callback, and any changes
+       * after that have no effect.
+       */
+      noToggleOnHostClick: {
+        type: Boolean,
+        value: false,
+      },
     };
   }
 
@@ -96,23 +110,29 @@ export class SettingsToggleButtonElement extends
     ];
   }
 
-  override ariaLabel: string;
-  ariaShowLabel: boolean;
-  ariaShowSublabel: boolean;
-  elideLabel: boolean;
-  icon: string;
-  learnMoreAriaLabel: string;
-  learnMoreUrl: string;
-  subLabelWithLink: string;
-  subLabelIcon: string;
+  declare ariaLabel: string;
+  declare ariaShowLabel: boolean;
+  declare ariaShowSublabel: boolean;
+  declare elideLabel: boolean;
+  declare icon: string;
+  declare learnMoreAriaLabel: string;
+  declare learnMoreUrl: string;
+  declare subLabelWithLink: string;
+  declare subLabelIcon: string;
+  declare noToggleOnHostClick: boolean;
 
   override ready() {
     super.ready();
 
-    this.addEventListener('click', this.onHostClick_);
+    // If the settings toggle is noToggleOnHostClick then do not update the
+    // setting pref on click. Instead let parent code use a custom click
+    // handler as needed.
+    if (!this.noToggleOnHostClick) {
+      this.addEventListener('click', this.onHostClick_);
+    }
   }
 
-  private fire_(eventName: string, detail?: any) {
+  private fire_(eventName: string, detail?: unknown) {
     this.dispatchEvent(
         new CustomEvent(eventName, {detail, bubbles: true, composed: true}));
   }
@@ -156,6 +176,7 @@ export class SettingsToggleButtonElement extends
    * which don't bubble).
    */
   private onHostClick_(e: Event) {
+    assert(!this.noToggleOnHostClick);
     e.stopPropagation();
     if (this.controlDisabled()) {
       return;
@@ -171,8 +192,8 @@ export class SettingsToggleButtonElement extends
   /**
    * Set up the contents of sub label with link.
    */
-  private getSubLabelWithLinkContent_(contents: string) {
-    return sanitizeInnerHtml(contents, {
+  private getSubLabelWithLinkContent_(): TrustedHTML {
+    return sanitizeInnerHtml(this.subLabelWithLink, {
       attrs: [
         'id',
         'is',
@@ -205,6 +226,17 @@ export class SettingsToggleButtonElement extends
     this.checked = checked;
     this.notifyChangedByUserInteraction();
     this.fire_('change', this.checked);
+  }
+
+  override sendPrefChangeInternal(value: boolean|number) {
+    if (this.prefKey) {
+      PrefService.getInstance().setPrefValue(this.prefKey, value);
+      return;
+    }
+
+    // Fallback to the old 'prefs' mechanism if this element hasn't been
+    // migrated to use prefKey yet.
+    super.sendPrefChangeInternal(value);
   }
 }
 

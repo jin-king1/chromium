@@ -7,7 +7,7 @@
 #import "base/check.h"
 #import "base/check_op.h"
 #import "base/notreached.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -37,7 +37,7 @@ const StyleValues kDefaultStyle = {
 const StyleValues kSignInChooseryStyle = {
     24., /* avatarLeadingMargin */
     40., /* avatarSize */
-    0.,  /* managementIconTrailingMargin */
+    16., /* managementIconTrailingMargin */
     4.,  /* titleOffset */
     7.,  /* minimumTopMargin */
     7.,  /* minimumBottomMargin */
@@ -47,6 +47,24 @@ const StyleValues kConsistencyStyle = {
     16., /* avatarLeadingMargin */
     30., /* avatarSize */
     16., /* managementIconTrailingMargin */
+    0.,  /* titleOffset */
+    10., /* minimumTopMargin */
+    8.,  /* minimumBottomMargin */
+};
+
+const StyleValues kConsistencyContainedStyle = {
+    16., /* avatarLeadingMargin */
+    30., /* avatarSize */
+    4.,  /* managementIconTrailingMargin */
+    0.,  /* titleOffset */
+    10., /* minimumTopMargin */
+    8.,  /* minimumBottomMargin */
+};
+
+const StyleValues kConsistencyDefaultIdentityStyle = {
+    16., /* avatarLeadingMargin */
+    30., /* avatarSize */
+    0.,  /* managementIconTrailingMargin */
     0.,  /* titleOffset */
     10., /* minimumTopMargin */
     8.,  /* minimumBottomMargin */
@@ -83,7 +101,7 @@ constexpr CGFloat kEnterpriseIconPointSize = 20;
     NSArray<NSLayoutConstraint*>* avatarSizeConstraints;
 // Leading margin constraint for the avatar.
 @property(nonatomic, strong) NSLayoutConstraint* avatarLeadingMarginConstraint;
-// Leading margin constraint for the management icon.
+// Trailing margin constraint for the management icon.
 @property(nonatomic, strong)
     NSLayoutConstraint* managementIconTrailingMarginConstraint;
 
@@ -133,7 +151,7 @@ constexpr CGFloat kEnterpriseIconPointSize = 20;
     // Enterprise icon
     _managementIconView = [[UIImageView alloc] init];
     _managementIconView.image = SymbolWithPalette(
-        CustomSymbolWithPointSize(kEnterpriseSymbol, kEnterpriseIconPointSize),
+        SymbolWithPointSize(SymbolEnterprise, kEnterpriseIconPointSize),
         @[ [UIColor colorNamed:kStaticGrey600Color] ]);
     _managementIconView.translatesAutoresizingMaskIntoConstraints = NO;
     _managementIconView.clipsToBounds = YES;
@@ -253,8 +271,7 @@ constexpr CGFloat kEnterpriseIconPointSize = 20;
     self.subtitle.hidden = NO;
     self.subtitle.text = subtitle;
   }
-  self.managementIconView.hidden =
-      !AreSeparateProfilesForManagedAccountsEnabled() || !managed;
+  self.managementIconView.hidden = !managed;
   // Update the style to reflect the management icon changes.
   [self updateStyle];
 }
@@ -300,6 +317,10 @@ constexpr CGFloat kEnterpriseIconPointSize = 20;
       return &kSignInChooseryStyle;
     case IdentityViewStyleConsistency:
       return &kConsistencyStyle;
+    case IdentityViewStyleConsistencyContained:
+      return &kConsistencyContainedStyle;
+    case IdentityViewStyleConsistencyDefaultIdentity:
+      return &kConsistencyDefaultIdentityStyle;
   }
   NOTREACHED();
 }
@@ -321,6 +342,8 @@ constexpr CGFloat kEnterpriseIconPointSize = 20;
           [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
       break;
     case IdentityViewStyleConsistency:
+    case IdentityViewStyleConsistencyContained:
+    case IdentityViewStyleConsistencyDefaultIdentity:
       self.titleFont = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
       self.subtitleFont =
           [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];

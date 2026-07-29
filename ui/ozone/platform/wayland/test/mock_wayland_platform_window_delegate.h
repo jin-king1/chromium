@@ -16,7 +16,7 @@ struct PlatformWindowInitProperties;
 
 class MockWaylandPlatformWindowDelegate : public MockPlatformWindowDelegate {
  public:
-  MockWaylandPlatformWindowDelegate();
+  MockWaylandPlatformWindowDelegate(raw_ptr<WaylandConnection> connection);
   MockWaylandPlatformWindowDelegate(const MockWaylandPlatformWindowDelegate&) =
       delete;
   MockWaylandPlatformWindowDelegate operator=(
@@ -36,21 +36,23 @@ class MockWaylandPlatformWindowDelegate : public MockPlatformWindowDelegate {
   int64_t viz_seq() const { return viz_seq_; }
 
   // Callback called during OnStateUpdate. This can be used to simulate
-  // re-entrant client initiated requests.
-  void set_on_state_update_callback(base::RepeatingClosure cb) {
+  // re-entrant client initiated requests. Returning false will cause
+  // OnStateUpdate to return -1.
+  void set_on_state_update_callback(base::RepeatingCallback<bool()> cb) {
     on_state_update_callback_ = cb;
   }
 
  private:
-  raw_ptr<WaylandWindow, AcrossTasksDanglingUntriaged> wayland_window_ =
-      nullptr;
+  raw_ptr<WaylandConnection> connection_ = nullptr;
+
+  base::WeakPtr<WaylandWindow> wayland_window_;
 
   // |viz_seq_| is used to save an incrementing sequence point on each
   // call to InsertSequencePoint. Test code can check this value to know
   // what sequence point is required to advance to the latest state.
   int64_t viz_seq_ = 0;
 
-  base::RepeatingClosure on_state_update_callback_;
+  base::RepeatingCallback<bool()> on_state_update_callback_;
 };
 
 }  // namespace ui

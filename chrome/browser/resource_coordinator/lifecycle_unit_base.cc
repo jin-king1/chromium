@@ -38,6 +38,10 @@ base::TimeTicks LifecycleUnitBase::GetStateChangeTime() const {
   return state_change_time_;
 }
 
+base::Time LifecycleUnitBase::GetStateChangeWallTime() const {
+  return state_change_wall_time_;
+}
+
 size_t LifecycleUnitBase::GetDiscardCount() const {
   return discard_count_;
 }
@@ -54,8 +58,7 @@ void LifecycleUnitBase::SetDiscardCountForTesting(size_t discard_count) {
   discard_count_ = discard_count;
 }
 
-void LifecycleUnitBase::SetState(LifecycleUnitState state,
-                                 LifecycleUnitStateChangeReason reason) {
+void LifecycleUnitBase::SetState(LifecycleUnitState state) {
   if (state == state_)
     return;
 
@@ -66,14 +69,10 @@ void LifecycleUnitBase::SetState(LifecycleUnitState state,
   LifecycleUnitState last_state = state_;
   state_ = state;
   state_change_time_ = NowTicks();
-  OnLifecycleUnitStateChanged(last_state, reason);
+  state_change_wall_time_ = Now();
   for (auto& observer : observers_)
-    observer.OnLifecycleUnitStateChanged(this, last_state, reason);
+    observer.OnLifecycleUnitStateChanged(this, last_state);
 }
-
-void LifecycleUnitBase::OnLifecycleUnitStateChanged(
-    LifecycleUnitState last_state,
-    LifecycleUnitStateChangeReason reason) {}
 
 void LifecycleUnitBase::OnLifecycleUnitDestroyed() {
   for (auto& observer : observers_)

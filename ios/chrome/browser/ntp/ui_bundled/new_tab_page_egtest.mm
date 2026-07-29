@@ -5,21 +5,24 @@
 #import "base/strings/strcat.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/scoped_command_line.h"
+#import "components/omnibox/browser/aim_eligibility_service_features.h"
 #import "components/policy/core/common/policy_test_utils.h"
 #import "components/policy/policy_constants.h"
-#import "components/signin/public/base/signin_switches.h"
 #import "components/strings/grit/components_strings.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/authentication/account_menu/public/account_menu_constants.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/content_suggestions/public/ntp_home_constants.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_constants.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/policy/model/policy_earl_grey_utils.h"
-#import "ios/chrome/browser/settings/ui_bundled/google_services/manage_sync_settings_constants.h"
+#import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
+#import "ios/chrome/browser/settings/manage_sync/public/manage_sync_settings_constants.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
-#import "ios/chrome/browser/ui/content_suggestions/ntp_home_constant.h"
-#import "ios/chrome/browser/ui/popup_menu/popup_menu_constants.h"
+#import "ios/chrome/browser/signin/model/test_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
@@ -77,6 +80,16 @@ BOOL WaitForHistoryToDisappear() {
       waitWithTimeout:base::test::ios::kWaitForUIElementTimeout.InSecondsF()];
 }
 
+// The possible visibility states of quick actions.
+enum class QuickActionsVisibility {
+  // All three quick actions are fully visible.
+  kVisible = 0,
+  // Quick asctions are visible without incognito.
+  kVisibleWithoutIncognito = 1,
+  // Quick actions are not visible.
+  kNotVisible = 2,
+};
+
 }  // namespace
 
 @interface NewTabPageTestCase : ChromeTestCase
@@ -84,18 +97,6 @@ BOOL WaitForHistoryToDisappear() {
 @end
 
 @implementation NewTabPageTestCase
-
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-
-  if ([self isRunningTest:@selector(DISABLED_testErrorBadge)]) {
-    config.features_enabled.push_back(
-        switches::kEnableErrorBadgeOnIdentityDisc);
-    config.features_disabled.push_back(kIdentityDiscAccountMenu);
-  }
-
-  return config;
-}
 
 - (void)tearDownHelper {
   [self releaseHistogramTester];
@@ -169,6 +170,9 @@ BOOL WaitForHistoryToDisappear() {
   error = [MetricsAppInterface expectTotalCount:1
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:1
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [self releaseHistogramTester];
 
   // Open an incognito NTP and close it.
@@ -181,9 +185,12 @@ BOOL WaitForHistoryToDisappear() {
   [ChromeEarlGrey closeAllTabs];
   error = [MetricsAppInterface expectTotalCount:0
                                    forHistogram:@"NewTabPage.TimeSpent"];
+  chrome_test_util::GREYAssertErrorNil(error);
   error = [MetricsAppInterface expectTotalCount:0
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:0
+                                   forHistogram:@"IOS.Home.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
   [self releaseHistogramTester];
 
@@ -198,9 +205,12 @@ BOOL WaitForHistoryToDisappear() {
 
   error = [MetricsAppInterface expectTotalCount:1
                                    forHistogram:@"NewTabPage.TimeSpent"];
+  chrome_test_util::GREYAssertErrorNil(error);
   error = [MetricsAppInterface expectTotalCount:1
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:1
+                                   forHistogram:@"IOS.Home.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
   [self releaseHistogramTester];
 
@@ -217,9 +227,15 @@ BOOL WaitForHistoryToDisappear() {
   error = [MetricsAppInterface expectTotalCount:0
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:0
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [ChromeEarlGrey openNewTab];
   error = [MetricsAppInterface expectTotalCount:1
                                    forHistogram:@"IOS.NTP.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:1
+                                   forHistogram:@"IOS.Home.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
   [ChromeEarlGrey selectTabAtIndex:0];
   error = [MetricsAppInterface expectTotalCount:1
@@ -245,6 +261,9 @@ BOOL WaitForHistoryToDisappear() {
   error = [MetricsAppInterface expectTotalCount:0
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:0
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [ChromeEarlGrey openNewTab];
   [ChromeEarlGrey openNewTab];
   error = [MetricsAppInterface expectTotalCount:1
@@ -253,12 +272,19 @@ BOOL WaitForHistoryToDisappear() {
   error = [MetricsAppInterface expectTotalCount:2
                                    forHistogram:@"IOS.NTP.Impression"];
   chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:2
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [ChromeEarlGrey closeAllTabs];
   error = [MetricsAppInterface expectTotalCount:2
                                    forHistogram:@"NewTabPage.TimeSpent"];
   chrome_test_util::GREYAssertErrorNil(error);
   error = [MetricsAppInterface expectTotalCount:2
                                    forHistogram:@"IOS.NTP.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
+  error = [MetricsAppInterface expectTotalCount:2
+                                   forHistogram:@"IOS.Home.Impression"];
+  chrome_test_util::GREYAssertErrorNil(error);
   [self releaseHistogramTester];
 }
 
@@ -267,6 +293,16 @@ BOOL WaitForHistoryToDisappear() {
   [ChromeEarlGrey openNewIncognitoTab];
   GREYAssert(WaitForHistoryToDisappear(), @"History did not disappear.");
   [ChromeEarlGrey verifyAccessibilityForCurrentScreen];
+  [ChromeEarlGrey closeAllIncognitoTabs];
+}
+
+// Tests that the Incognito NTP title has the 'Heading' trait for VoiceOver.
+- (void)testIncognitoNTPHeadingTrait {
+  [ChromeEarlGrey openNewIncognitoTab];
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::HeaderWithAccessibilityLabelId(
+                                   IDS_NEW_TAB_OTR_TITLE)]
+      assertWithMatcher:grey_sufficientlyVisible()];
   [ChromeEarlGrey closeAllIncognitoTabs];
 }
 
@@ -337,11 +373,21 @@ BOOL WaitForHistoryToDisappear() {
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   [self validateNTPURL:expectedURL];
+
+  [ChromeEarlGrey removeUserDefaultsObjectForKey:@"NTPLocation"];
 }
 
 // Verifies opening a new tab from the New Tab button on the toolbar with the
 // correct policy's New Tab Page Location URL.
-- (void)testNewTabByNewTabButtonTapWithNTPLocation {
+// TODO(crbug.com/518881258): Flaky on simulator.
+#if TARGET_IPHONE_SIMULATOR
+#define MAYBE_testNewTabByNewTabButtonTapWithNTPLocation \
+  FLAKY_testNewTabByNewTabButtonTapWithNTPLocation
+#else
+#define MAYBE_testNewTabByNewTabButtonTapWithNTPLocation \
+  testNewTabByNewTabButtonTapWithNTPLocation
+#endif
+- (void)MAYBE_testNewTabByNewTabButtonTapWithNTPLocation {
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
   const GURL expectedURL = self.testServer->GetURL(kPageURL);
 
@@ -377,11 +423,18 @@ BOOL WaitForHistoryToDisappear() {
 // Verifies opening a new tab by long pressing the tab grid view and selecting
 // "New Tab" with the correct policy's New Tab Page Location URL.
 - (void)testNewTabByLongPressTabGridViewWithNTPLocation {
+  if ([ChromeEarlGrey isChromeNextEnabled] && [ChromeEarlGrey isIPadIdiom]) {
+    EARL_GREY_TEST_DISABLED(@"The button doesn't exist with Next.");
+  }
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
   const GURL expectedURL = self.testServer->GetURL(kPageURL);
 
   // Set the policy's NTP Location value at runtime.
   [self setNTPPolicyValue:expectedURL.spec()];
+
+  // Open a new incognito tab to expose the "New Tab" item in the long press
+  // menu.
+  [ChromeEarlGrey openNewIncognitoTab];
 
   // Open tab via the UI.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::ShowTabsButton()]
@@ -396,11 +449,21 @@ BOOL WaitForHistoryToDisappear() {
       performAction:grey_tap()];
 
   [self validateNTPURL:expectedURL];
+
+  [ChromeEarlGrey closeAllIncognitoTabs];
 }
 
 // Verifies opening a new tab from the tab grid view by tapping on the New Tab
 // button with the correct policy's New Tab Page Location URL.
-- (void)testNewTabFromTabGridViewWithNTPLocation {
+// TODO(crbug.com/518881258): Flaky on simulator.
+#if TARGET_IPHONE_SIMULATOR
+#define MAYBE_testNewTabFromTabGridViewWithNTPLocation \
+  FLAKY_testNewTabFromTabGridViewWithNTPLocation
+#else
+#define MAYBE_testNewTabFromTabGridViewWithNTPLocation \
+  testNewTabFromTabGridViewWithNTPLocation
+#endif
+- (void)MAYBE_testNewTabFromTabGridViewWithNTPLocation {
   GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
   const GURL expectedURL = self.testServer->GetURL(kPageURL);
 
@@ -417,9 +480,12 @@ BOOL WaitForHistoryToDisappear() {
 
 // Tests that the error badge is shown on top of the identity disc when the
 // primary account has a persistent error.
-- (void)DISABLED_testErrorBadge {
+- (void)testErrorBadge {
   [SigninEarlGrey signinWithFakeIdentity:kPrimaryIdentity];
-  [ChromeEarlGrey addBookmarkWithSyncPassphrase:kPassphrase];
+  [SigninEarlGrey
+      setPersistentAuthErrorForAccount:CoreAccountId::FromGaiaId(
+                                           kPrimaryIdentity.gaiaId)];
+  //[ChromeEarlGrey addBookmarkWithSyncPassphrase:kPassphrase];
   [ChromeEarlGreyUI waitForAppToIdle];
 
   // Wait for the error badge to appear.
@@ -436,30 +502,30 @@ BOOL WaitForHistoryToDisappear() {
                  base::test::ios::kWaitForUIElementTimeout, condition),
              @"Error badge didn't appear in the allotted time");
 
-  // Tap on the identity disc to open Settings.
+  // Tap on the identity disc to open the account menu.
   [[EarlGrey
       selectElementWithMatcher:grey_accessibilityID(kNTPFeedHeaderIdentityDisc)]
       performAction:grey_tap()];
-
-  // Open account settings.
-  [ChromeEarlGreyUI
-      tapSettingsMenuButton:chrome_test_util::SettingsAccountButton()];
-
-  // Verify the error section is showing.
+  // Ensure the Account Menu is displayed.
   [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(kSyncErrorButtonIdentifier)]
+      selectElementWithMatcher:grey_accessibilityID(kAccountMenuTableViewId)]
       assertWithMatcher:grey_sufficientlyVisible()];
 
-  // Tap "Enter Passphrase" button.
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(kSyncErrorButtonIdentifier)]
+  // Check the error button is displayed.
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kAccountMenuErrorActionButtonId)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  // Tap on it.
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kAccountMenuErrorActionButtonId)]
       performAction:grey_tap()];
 
-  // Enter the passphrase.
-  [SigninEarlGreyUI submitSyncPassphrase:kPassphrase];
-
-  // Dismiss settings.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::SettingsDoneButton()]
+  // Confirm the fake reauthentication dialog.
+  [[EarlGrey
+      selectElementWithMatcher:grey_allOf(
+                                   grey_accessibilityID(
+                                       kFakeAuthAddAccountButtonIdentifier),
+                                   grey_sufficientlyVisible(), nil)]
       performAction:grey_tap()];
 
   // Verify the error badge on the ADP disappears.

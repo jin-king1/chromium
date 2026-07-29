@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chromeos/ash/services/bluetooth_config/device_name_manager_impl.h"
 
@@ -159,7 +155,7 @@ void DeviceNameManagerImpl::MigrateExistingNicknames() {
 
   const re2::RE2 kFlossIdRegex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$");
 
-  const base::Value::Dict& existing_prefs =
+  const base::DictValue& existing_prefs =
       local_state_->GetDict(kDeviceIdToNicknameMapPrefNameLegacy);
 
   for (const auto [id, nickname] : existing_prefs) {

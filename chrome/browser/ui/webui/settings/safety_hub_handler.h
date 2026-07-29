@@ -14,9 +14,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/safety_hub/extensions_result.h"
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
-#include "chrome/browser/upgrade_detector/build_state_observer.h"
 #include "components/content_settings/core/common/content_settings_constraints.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "extensions/browser/extension_prefs_observer.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/extension_id.h"
@@ -27,17 +27,6 @@ class ExtensionPrefs;
 class ExtensionRegistry;
 }  // namespace extensions
 
-// The state of Safe Browsing settings.
-enum class SafeBrowsingState {
-  kEnabledEnhanced = 0,
-  kEnabledStandard = 1,
-  kDisabledByAdmin = 2,
-  kDisabledByExtension = 3,
-  kDisabledByUser = 4,
-  // New enum values must go above here.
-  kMaxValue = kDisabledByUser,
-};
-
 /**
  * This handler deals with the permission-related operations on the site
  * settings page.
@@ -45,8 +34,7 @@ enum class SafeBrowsingState {
 
 class SafetyHubHandler : public settings::SettingsPageUIHandler,
                          public extensions::ExtensionPrefsObserver,
-                         public extensions::ExtensionRegistryObserver,
-                         public BuildStateObserver {
+                         public extensions::ExtensionRegistryObserver {
  public:
   enum class SafetyHubModule {
     kExtensions,
@@ -70,8 +58,7 @@ class SafetyHubHandler : public settings::SettingsPageUIHandler,
 
  private:
   friend class SafetyHubHandlerTest;
-  friend class
-      SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest;
+  friend class SafetyHubHandlerUnusedPermissionRevocationDisabledTest;
   FRIEND_TEST_ALL_PREFIXES(SafetyHubHandlerTest,
                            PopulateUnusedSitePermissionsData);
   FRIEND_TEST_ALL_PREFIXES(SafetyHubHandlerTest,
@@ -109,19 +96,18 @@ class SafetyHubHandler : public settings::SettingsPageUIHandler,
   FRIEND_TEST_ALL_PREFIXES(SafetyHubHandlerParameterizedTest,
                            PasswordCardState);
   FRIEND_TEST_ALL_PREFIXES(SafetyHubHandlerTest, PasswordCardCheckTime);
-  FRIEND_TEST_ALL_PREFIXES(SafetyHubHandlerTest,
-                           VersionCardUpToDate_ThenOutOfDate);
+  FRIEND_TEST_ALL_PREFIXES(SafetyHubHandlerTest, VersionCardUpToDate);
   FRIEND_TEST_ALL_PREFIXES(SafetyHubHandlerTest, VersionCardOutOfDate);
   FRIEND_TEST_ALL_PREFIXES(SafetyHubHandlerTest,
                            ExtensionPrefAndInitialization);
   FRIEND_TEST_ALL_PREFIXES(
-      SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest,
+      SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
       PopulateSitePermissionsData);
   FRIEND_TEST_ALL_PREFIXES(
-      SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest,
+      SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
       HandleAllowPermissionsAgainForSite);
   FRIEND_TEST_ALL_PREFIXES(
-      SafetyHubHandlerEitherAbusiveOrUnusedPermissionRevocationDisabledTest,
+      SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
       HandleAcknowledgeRevokedSitePermissionsList);
 
   // SettingsPageUIHandler implementation.
@@ -133,95 +119,89 @@ class SafetyHubHandler : public settings::SettingsPageUIHandler,
 
   // Returns the list of revoked permissions to be used in
   // "Unused site permissions" module.
-  void HandleGetRevokedUnusedSitePermissionsList(const base::Value::List& args);
+  void HandleGetRevokedUnusedSitePermissionsList(const base::ListValue& args);
 
   // Re-grant the revoked permissions and remove the given origin from the
   // revoked permissions list.
-  void HandleAllowPermissionsAgainForUnusedSite(const base::Value::List& args);
+  void HandleAllowPermissionsAgainForUnusedSite(const base::ListValue& args);
 
   // Reverse the changes made by |HandleAllowPermissionsAgainForUnusedSite| for
   // the given |UnusedSitePermission| object.
   void HandleUndoAllowPermissionsAgainForUnusedSite(
-      const base::Value::List& args);
+      const base::ListValue& args);
 
   // Clear the list of revoked permissions so they are not shown again.
   // Permission settings themselves are not affected by this.
   void HandleAcknowledgeRevokedUnusedSitePermissionsList(
-      const base::Value::List& args);
+      const base::ListValue& args);
 
   // Reverse the changes made by
   // |HandleAcknowledgeRevokedUnusedSitePermissionsList| for the given list of
   // |UnusedSitePermission| objects. List of revoked
   // permissions is repopulated. Permission settings are not changed.
   void HandleUndoAcknowledgeRevokedUnusedSitePermissionsList(
-      const base::Value::List& args);
+      const base::ListValue& args);
 
   // Returns the list of revoked permissions that belongs to origins which
   // haven't been visited recently.
   // TODO(crbug.com/40267370): Get list of revoked permissions from the unused
   // site permission service instead.
-  base::Value::List PopulateUnusedSitePermissionsData();
+  base::ListValue PopulateUnusedSitePermissionsData();
 
   // Sends the list of unused site permissions to review to the WebUI.
   void SendUnusedSitePermissionsReviewList();
 
   // Returns the list of notification permissions that needs to be reviewed.
-  void HandleGetNotificationPermissionReviewList(const base::Value::List& args);
+  void HandleGetNotificationPermissionReviewList(const base::ListValue& args);
 
   // Handles ignoring origins for the review notification permissions feature.
   void HandleIgnoreOriginsForNotificationPermissionReview(
-      const base::Value::List& args);
+      const base::ListValue& args);
 
   // Handles resetting a notification permission for given origins.
-  void HandleResetNotificationPermissionForOrigins(
-      const base::Value::List& args);
+  void HandleResetNotificationPermissionForOrigins(const base::ListValue& args);
 
   // Handles blocking notification permissions for multiple origins.
-  void HandleBlockNotificationPermissionForOrigins(
-      const base::Value::List& args);
+  void HandleBlockNotificationPermissionForOrigins(const base::ListValue& args);
 
   // Handles allowing notification permissions for multiple origins.
-  void HandleAllowNotificationPermissionForOrigins(
-      const base::Value::List& args);
+  void HandleAllowNotificationPermissionForOrigins(const base::ListValue& args);
 
   // Handles reverting the action of ignoring origins for review notification
   // permissions feature by removing them from the notification permission
   // verification blocklist.
   void HandleUndoIgnoreOriginsForNotificationPermissionReview(
-      const base::Value::List& args);
+      const base::ListValue& args);
 
   // Handles dismissing the active menu notification for Safety Hub.
-  void HandleDismissActiveMenuNotification(const base::Value::List& args);
+  void HandleDismissActiveMenuNotification(const base::ListValue& args);
 
   // Handles dismissing the menu notifications for the password module.
-  void HandleDismissPasswordMenuNotification(const base::Value::List& args);
+  void HandleDismissPasswordMenuNotification(const base::ListValue& args);
 
   // Handles dismissing the menu notifications for the extensions module.
-  void HandleDismissExtensionsMenuNotification(const base::Value::List& args);
+  void HandleDismissExtensionsMenuNotification(const base::ListValue& args);
 
   // Returns the data for Safe Browsing card.
-  void HandleGetSafeBrowsingCardData(const base::Value::List& args);
+  void HandleGetSafeBrowsingCardData(const base::ListValue& args);
 
   // Returns the data for the password card.
-  void HandleGetPasswordCardData(const base::Value::List& args);
+  void HandleGetPasswordCardData(const base::ListValue& args);
 
   // Returns the data for the version card.
-  void HandleGetVersionCardData(const base::Value::List& args);
+  void HandleGetVersionCardData(const base::ListValue& args);
 
   // Fetches data for the version card to return data to the UI.
-  base::Value::Dict GetVersionCardData();
-
-  // BuildStateObserver implementation to track changes to Chrome version.
-  void OnUpdate(const BuildState* build_state) override;
+  base::DictValue GetVersionCardData();
 
   // Returns the data for Safety Hub entry point.
-  void HandleGetSafetyHubEntryPointData(const base::Value::List& args);
+  void HandleGetSafetyHubEntryPointData(const base::ListValue& args);
 
   // Returns true if Safety Hub has recommendations.
-  void HandleGetSafetyHubHasRecommendations(const base::Value::List& args);
+  void HandleGetSafetyHubHasRecommendations(const base::ListValue& args);
 
   // Returns the subheader for Safety Hub entry point in settings.
-  void HandleGetSafetyHubEntryPointSubheader(const base::Value::List& args);
+  void HandleGetSafetyHubEntryPointSubheader(const base::ListValue& args);
 
   // Sends the list of notification permissions to review to the WebUI.
   void SendNotificationPermissionReviewList();
@@ -235,7 +215,7 @@ class SafetyHubHandler : public settings::SettingsPageUIHandler,
 
   // Calculate the number of extensions that need to be reviewed by the
   // user.
-  void HandleGetNumberOfExtensionsThatNeedReview(const base::Value::List& args);
+  void HandleGetNumberOfExtensionsThatNeedReview(const base::ListValue& args);
 
   // Return the number of extensions that should be reviewed by the user.
   // There are currently three triggers the `SafetyHubHandler` tracks:
@@ -265,10 +245,14 @@ class SafetyHubHandler : public settings::SettingsPageUIHandler,
   void OnShutdown(extensions::ExtensionRegistry* registry) override;
 
   // Record a visit to the Safety Hub page.
-  void HandleRecordSafetyHubVisit(const base::Value::List& args);
+  void HandleRecordSafetyHubVisit(const base::ListValue& args);
 
   // Record an interaction with one of the Safety Hub modules.
-  void HandleRecordSafetyHubInteraction(const base::Value::List& args);
+  void HandleRecordSafetyHubInteraction(const base::ListValue& args);
+
+  // Called when value of the `kSafeBrowsingEnhanced` has changed. Callback for
+  // the PrefChangeRegistrar.
+  void OnSafeBrowsingEnhancedChanged();
 
   // The `extension_sh_result_` contains the needed information about how
   // many extensions should be reviewed by the user.
@@ -288,6 +272,9 @@ class SafetyHubHandler : public settings::SettingsPageUIHandler,
   base::ScopedObservation<extensions::ExtensionPrefs,
                           extensions::ExtensionPrefsObserver>
       prefs_observation_{this};
+
+  PrefChangeRegistrar pref_change_registrar_;
+
   base::WeakPtrFactory<SafetyHubHandler> weak_ptr_factory_{this};
 };
 

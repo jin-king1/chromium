@@ -9,9 +9,11 @@
 #include <string_view>
 #include <vector>
 
+#include "ash/ambient/ambient_constants.h"
 #include "ash/ambient/ambient_controller.h"
 #include "ash/ambient/ambient_ui_settings.h"
 #include "ash/ambient/test/ambient_ash_test_helper.h"
+#include "ash/ambient/util/time_of_day_utils.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/geolocation_access_level.h"
@@ -21,18 +23,20 @@
 #include "ash/public/cpp/personalization_app/time_of_day_test_utils.h"
 #include "ash/shell.h"
 #include "ash/system/privacy_hub/privacy_hub_controller.h"
-#include "ash/test/ash_test_base.h"
 #include "ash/wallpaper/test_wallpaper_controller_client.h"
 #include "ash/wallpaper/wallpaper_controller_impl.h"
 #include "ash/webui/personalization_app/mojom/personalization_app.mojom.h"
+#include "base/containers/flat_map.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/ambient_video_albums.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_metrics.h"
+#include "chrome/test/base/chrome_ash_test_base.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -70,6 +74,11 @@ class TestAmbientObserver
  public:
   void OnAmbientModeEnabledChanged(bool ambient_mode_enabled) override {
     ambient_mode_enabled_ = ambient_mode_enabled;
+  }
+
+  void OnAmbientThemePreviewImagesChanged(
+      const base::flat_map<mojom::AmbientTheme, ::GURL>& previews) override {
+    ambient_theme_preview_images_ = previews;
   }
 
   void OnAmbientThemeChanged(mojom::AmbientTheme ambient_theme) override {
@@ -125,6 +134,11 @@ class TestAmbientObserver
     return ambient_mode_enabled_;
   }
 
+  base::flat_map<mojom::AmbientTheme, GURL> ambient_theme_preview_images() {
+    ambient_observer_receiver_.FlushForTesting();
+    return ambient_theme_preview_images_;
+  }
+
   mojom::AmbientTheme ambient_theme() {
     ambient_observer_receiver_.FlushForTesting();
     return ambient_theme_;
@@ -173,6 +187,7 @@ class TestAmbientObserver
   bool ambient_mode_enabled_ = false;
 
   mojom::AmbientTheme ambient_theme_ = mojom::AmbientTheme::kSlideshow;
+  base::flat_map<mojom::AmbientTheme, GURL> ambient_theme_preview_images_;
   uint32_t duration_ = 10;
   mojom::TopicSource topic_source_ = mojom::TopicSource::kArtGallery;
   ash::AmbientModeTemperatureUnit temperature_unit_ =
@@ -187,12 +202,11 @@ class TestAmbientObserver
 
 }  // namespace
 
-class PersonalizationAppAmbientProviderImplTest : public ash::AshTestBase {
+class PersonalizationAppAmbientProviderImplTest : public ChromeAshTestBase {
  public:
   PersonalizationAppAmbientProviderImplTest()
-      : ash::AshTestBase(std::unique_ptr<base::test::TaskEnvironment>(
-            std::make_unique<content::BrowserTaskEnvironment>(
-                base::test::TaskEnvironment::TimeSource::MOCK_TIME))),
+      : ChromeAshTestBase(std::make_unique<content::BrowserTaskEnvironment>(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME)),
         profile_manager_(TestingBrowserProcess::GetGlobal()) {
     scoped_feature_list_.InitWithFeatures(
         personalization_app::GetTimeOfDayFeatures(), {});
@@ -206,9 +220,11 @@ class PersonalizationAppAmbientProviderImplTest : public ash::AshTestBase {
  protected:
   // testing::Test:
   void SetUp() override {
-    ash::AshTestBase::SetUp();
+    ChromeAshTestBase::SetUp();
 
     ASSERT_TRUE(profile_manager_.SetUp());
+    ash::ScopedAccountIdAnnotator annotator(profile_manager_.profile_manager(),
+                                            kFakeTestAccountId);
     profile_ = profile_manager_.CreateTestingProfile(kFakeTestEmail);
 
     ash::FakeChromeUserManager* user_manager =
@@ -239,9 +255,9 @@ class PersonalizationAppAmbientProviderImplTest : public ash::AshTestBase {
   void TearDown() override {
     // The PersonalizationAppAmbientProviderImpl holds a pointer to the
     // AmbientController the Shell owns (which is destructed in
-    // AshTestBase::Teardown), so reset it first.
+    // ChromeAshTestBase::Teardown), so reset it first.
     ambient_provider_.reset();
-    ash::AshTestBase::TearDown();
+    ChromeAshTestBase::TearDown();
   }
 
   TestingProfile* profile() { return profile_; }
@@ -265,6 +281,12 @@ class PersonalizationAppAmbientProviderImplTest : public ash::AshTestBase {
   bool ObservedAmbientModeEnabled() {
     ambient_provider_remote_.FlushForTesting();
     return test_ambient_observer_.is_ambient_mode_enabled();
+  }
+
+  base::flat_map<mojom::AmbientTheme, GURL>
+  ObservedAmbientThemePreviewImages() {
+    ambient_provider_remote_.FlushForTesting();
+    return test_ambient_observer_.ambient_theme_preview_images();
   }
 
   mojom::AmbientTheme ObservedAmbientTheme() {
@@ -545,7 +567,7 @@ TEST_F(PersonalizationAppAmbientProviderImplTest,
   histogram_tester().ExpectBucketCount(kAmbientModeAnimationThemeHistogramName,
                                        mojom::AmbientTheme::kVideo, 1);
   histogram_tester().ExpectBucketCount(kAmbientModeVideoHistogramName,
-                                       ash::kDefaultAmbientVideo, 1);
+                                       ash::GetDefaultAmbientVideo(), 1);
 
   SetAmbientObserver();
   FetchSettings();
@@ -564,7 +586,7 @@ TEST_F(PersonalizationAppAmbientProviderImplTest,
   histogram_tester().ExpectBucketCount(kAmbientModeAnimationThemeHistogramName,
                                        mojom::AmbientTheme::kVideo, 2);
   histogram_tester().ExpectBucketCount(kAmbientModeVideoHistogramName,
-                                       ash::kDefaultAmbientVideo, 2);
+                                       ash::GetDefaultAmbientVideo(), 2);
 }
 
 TEST_F(PersonalizationAppAmbientProviderImplTest,
@@ -621,7 +643,7 @@ TEST_F(PersonalizationAppAmbientProviderImplTest, ShouldCallOnAlbumsChanged) {
   ReplyFetchSettingsAndAlbums(/*success=*/true);
   // The fake albums are set in FakeAmbientBackendControllerImpl. Hidden setting
   // will be sent to JS side.
-  EXPECT_EQ(6u, ObservedAlbums().size());
+  EXPECT_EQ(7u, ObservedAlbums().size());
   EXPECT_FALSE(ObservedPreviews().empty());
 }
 
@@ -940,7 +962,7 @@ TEST_F(PersonalizationAppAmbientProviderImplTest,
 
   // The fake data has album '1' as selected.
   std::vector<std::string> selected_ids = SelectedAlbumIds();
-  EXPECT_TRUE(base::Contains(selected_ids, "1"));
+  EXPECT_TRUE(std::ranges::contains(selected_ids, "1"));
 
   ash::personalization_app::mojom::AmbientModeAlbumPtr album =
       ash::personalization_app::mojom::AmbientModeAlbum::New();
@@ -962,7 +984,7 @@ TEST_F(PersonalizationAppAmbientProviderImplTest,
 
   selected_ids = SelectedAlbumIds();
   EXPECT_EQ(1u, selected_ids.size());
-  EXPECT_TRUE(base::Contains(selected_ids, "1"));
+  EXPECT_TRUE(std::ranges::contains(selected_ids, "1"));
   EXPECT_EQ(mojom::TopicSource::kGooglePhotos, TopicSource());
 }
 
@@ -1187,11 +1209,6 @@ TEST_F(PersonalizationAppAmbientProviderImplTest,
        HideBannerForPolicyManagedUsers) {
   WallpaperControllerImpl* wallpaper_controller =
       Shell::Get()->wallpaper_controller();
-  base::ScopedTempDir user_wallpaper_dir;
-  ASSERT_TRUE(user_wallpaper_dir.CreateUniqueTempDir());
-  wallpaper_controller->Init(
-      user_wallpaper_dir.GetPath(), user_wallpaper_dir.GetPath(),
-      user_wallpaper_dir.GetPath(), user_wallpaper_dir.GetPath());
   TestWallpaperControllerClient client;
   wallpaper_controller->SetClient(&client);
   client.set_fake_files_id_for_account_id(kFakeTestAccountId,
@@ -1259,4 +1276,37 @@ TEST_F(PersonalizationAppAmbientProviderImplTest,
   EXPECT_EQ(ash::AmbientModeTemperatureUnit::kCelsius,
             ObservedTemperatureUnit());
 }
+
+TEST_F(PersonalizationAppAmbientProviderImplTest,
+       FetchAmbientThemePreviewImagesForNonNavi) {
+  SetAmbientObserver();
+
+  auto previews = ObservedAmbientThemePreviewImages();
+  EXPECT_TRUE(previews.contains(mojom::AmbientTheme::kSlideshow));
+  EXPECT_TRUE(previews.contains(mojom::AmbientTheme::kFeelTheBreeze));
+  EXPECT_TRUE(previews.contains(mojom::AmbientTheme::kFloatOnBy));
+  EXPECT_TRUE(previews.contains(mojom::AmbientTheme::kVideo));
+  EXPECT_EQ("chrome://personalization/time_of_day/thumbnails/new_mexico.jpg",
+            previews[mojom::AmbientTheme::kVideo]);
+}
+
+TEST_F(PersonalizationAppAmbientProviderImplTest,
+       FetchAmbientThemePreviewImagesForNavi) {
+  auto* fake_statistics_provider = static_cast<system::FakeStatisticsProvider*>(
+      system::StatisticsProvider::GetInstance());
+  fake_statistics_provider->ClearAllMachineStatistics();
+  fake_statistics_provider->SetMachineStatistic(
+      system::kCustomizationIdKey,
+      std::string(kJupiterScreensaverCustomizationId));
+  SetAmbientObserver();
+
+  auto previews = ObservedAmbientThemePreviewImages();
+  EXPECT_TRUE(previews.contains(mojom::AmbientTheme::kSlideshow));
+  EXPECT_TRUE(previews.contains(mojom::AmbientTheme::kFeelTheBreeze));
+  EXPECT_TRUE(previews.contains(mojom::AmbientTheme::kFloatOnBy));
+  EXPECT_TRUE(previews.contains(mojom::AmbientTheme::kVideo));
+  EXPECT_EQ("chrome://personalization/time_of_day/thumbnails/jupiter.jpg",
+            previews[mojom::AmbientTheme::kVideo]);
+}
+
 }  // namespace ash::personalization_app

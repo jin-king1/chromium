@@ -27,7 +27,9 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.base.ApkInfo;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.FakeTimeTestRule;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
@@ -35,25 +37,27 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UrlUtils;
+import org.chromium.chrome.R;
+import org.chromium.chrome.browser.back_press.BackPressMetrics;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.Tab.LoadUrlResult;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabUtils;
-import org.chromium.chrome.browser.tab.TabUtils.UseDesktopUserAgentCaller;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
 import org.chromium.chrome.test.util.browser.TabLoadObserver;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
@@ -67,7 +71,9 @@ import org.chromium.url.GURL;
 import org.chromium.url.Origin;
 
 import java.net.URL;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
@@ -76,16 +82,20 @@ import java.util.concurrent.TimeUnit;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class NavigateTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
+
+    @Rule public FakeTimeTestRule mFakeTime = new FakeTimeTestRule();
 
     private static final String HTTPS_SCHEME = "https://";
 
     private OmniboxTestUtils mOmnibox;
     private EmbeddedTestServer mTestServer;
+    private WebPageStation mStartingPage;
 
     @Before
     public void setUp() {
-        mActivityTestRule.startMainActivityWithURL(UrlConstants.NTP_URL);
+        mStartingPage = mActivityTestRule.startOnBlankPage();
         mTestServer =
                 EmbeddedTestServer.createAndStartHTTPSServer(
                         ApplicationProvider.getApplicationContext(), ServerCertificate.CERT_OK);
@@ -93,7 +103,7 @@ public class NavigateTest {
     }
 
     private void navigateAndObserve(final String url) throws Exception {
-        new TabLoadObserver(mActivityTestRule.getActivity().getActivityTab()).fullyLoadUrl(url);
+        new TabLoadObserver(mActivityTestRule.getActivityTab()).fullyLoadUrl(url);
 
         // Note: Omnibox does not present the scheme.
         mOmnibox.checkText(equalTo(expectedLocation(url)), null);
@@ -121,13 +131,12 @@ public class NavigateTest {
     private String typeInOmniboxAndNavigate(final String url, final String expectedTitle)
             throws Exception {
         mOmnibox.requestFocus();
-        mOmnibox.typeText(url, false);
+        mOmnibox.setText(url);
         mOmnibox.checkSuggestionsShown();
 
         // Loads the url.
         TabLoadObserver observer =
-                new TabLoadObserver(
-                        mActivityTestRule.getActivity().getActivityTab(), expectedTitle, null);
+                new TabLoadObserver(mActivityTestRule.getActivityTab(), expectedTitle, null);
         mOmnibox.sendKey(KeyEvent.KEYCODE_ENTER);
         observer.assertLoaded();
 
@@ -154,7 +163,7 @@ public class NavigateTest {
     }
 
     @Test
-    @Restriction(DeviceFormFactor.TABLET)
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     @MediumTest
     @Feature({"Navigation"})
     @DisabledTest(message = "Flaky. See crbug.com/380238040")
@@ -179,6 +188,7 @@ public class NavigateTest {
     @Test
     @MediumTest
     @Feature({"Navigation"})
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/526803990
     public void testNavigateLandscape() throws Exception {
         mActivityTestRule
                 .getActivity()
@@ -218,49 +228,37 @@ public class NavigateTest {
     @Test
     @MediumTest
     @Feature({"Navigation"})
-    @DisableIf.Device(DeviceFormFactor.TABLET) // https://crbug.com/339299609
-    public void testOpenLink() throws Exception {
+        @DisableIf.Device(DeviceFormFactor.TABLET_OR_DESKTOP) // https://crbug.com/339299609, https://crbug.com/376375165
+        public void testOpenLink() throws Exception {
         String url1 = mTestServer.getURL("/chrome/test/data/android/google.html");
         String url2 = mTestServer.getURL("/chrome/test/data/android/about.html");
 
         navigateAndObserve(url1);
         mActivityTestRule.assertWaitForPageScaleFactorMatch(0.5f);
 
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
 
         DOMUtils.clickNode(tab.getWebContents(), "aboutLink");
         ChromeTabUtils.waitForTabPageLoaded(tab, url2);
         Assert.assertEquals(
-                "Desired Link not open",
-                url2,
-                ChromeTabUtils.getUrlStringOnUiThread(
-                        mActivityTestRule.getActivity().getActivityTab()));
+                "Desired Link not open", url2, ChromeTabUtils.getUrlStringOnUiThread(tab));
     }
 
     /** Test 'Request Desktop Site' option properly affects UA client hints */
     @Test
     @MediumTest
     @Feature({"Navigation"})
-    @CommandLineFlags.Add({"enable-features=UserAgentClientHint"})
+    @CommandLineFlags.Add({
+        "enable-features=UserAgentClientHint",
+        "disable-features=AndroidDesktopUASpoofAsChromeOS,AndroidDesktopUAPlatform"
+    })
     // TODO(crbug.com/40612550) Remove switch when UA-CH-* launched.
     public void testRequestDesktopSiteClientHints() throws Exception {
-        String url1 =
-                mTestServer.getURL(
-                        "/set-header?Accept-CH: sec-ch-ua-arch,sec-ch-ua-platform,sec-ch-ua-model");
-        String url2 =
-                mTestServer.getURL(
-                        "/echoheader?sec-ch-ua-arch&sec-ch-ua-mobile&sec-ch-ua-model&sec-ch-ua-platform");
-        final Tab tab = mActivityTestRule.getActivity().getActivityTab();
-
-        navigateAndObserve(url1);
-        ChromeTabUtils.waitForTabPageLoaded(tab, url1);
-
-        navigateAndObserve(url2);
-        ThreadUtils.runOnUiThreadBlocking(
-                () ->
-                        TabUtils.switchUserAgent(
-                                tab, /* switchToDesktop= */ true, UseDesktopUserAgentCaller.OTHER));
-        ChromeTabUtils.waitForTabPageLoaded(tab, url2);
+        final Tab tab =
+                navigateUrlToEchoClientHintHeaders(
+                        "/set-header?Accept-CH: sec-ch-ua-arch,sec-ch-ua-platform,sec-ch-ua-model",
+                        "/echoheader?sec-ch-ua-arch&sec-ch-ua-mobile&sec-ch-ua-model&sec-ch-ua-platform",
+                        /* overrideUserAgent= */ true);
         String content =
                 JavaScriptUtils.executeJavaScriptAndWaitForResult(
                         tab.getWebContents(), "document.body.textContent");
@@ -271,22 +269,113 @@ public class NavigateTest {
                 content);
     }
 
+    /** Test 'Request Desktop Site' option properly affects UA client hints */
+    @Test
+    @MediumTest
+    @Feature({"Navigation"})
+    @CommandLineFlags.Add({
+        "enable-features=UserAgentClientHint",
+        "disable-features=AndroidDesktopUASpoofAsChromeOS,AndroidDesktopUAPlatform"
+    })
+    @Restriction(DeviceFormFactor.DESKTOP)
+    // TODO(crbug.com/40612550) Remove switch when UA-CH-* launched.
+    public void testRequestDesktopSiteClientHintsForDesktopAndroidFormFactor() throws Exception {
+        Map<String, String> clientHints = new HashMap<>();
+        String packageVersionName = ApkInfo.getPackageVersionName();
+        String[] versionNameParts = packageVersionName.split("\\.");
+        Assert.assertTrue(versionNameParts.length > 0);
+        String packageMajorVersionName = versionNameParts[0];
+        clientHints.put("sec-ch-ua-arch", "\\\"x86\\\"");
+        clientHints.put("sec-ch-ua-platform", "\\\"Linux\\\"");
+        clientHints.put("sec-ch-ua-platform-version", "\\\"\\\"");
+        clientHints.put("sec-ch-ua-model", "\\\"\\\"");
+        clientHints.put("sec-ch-ua-mobile", "?0");
+        clientHints.put("sec-ch-ua-bitness", "\\\"64\\\"");
+        clientHints.put("sec-ch-ua-wow64", "?0");
+        clientHints.put("sec-ch-ua-form-factors", "\\\"Desktop\\\"");
+        clientHints.put("sec-ch-ua-full-version", "\\\"" + packageVersionName + "\\\"");
+
+        // Testing one at a time since navigateAndObserve fails for long URLs (truncates)
+        for (String header : clientHints.keySet()) {
+            String response = "\"" + clientHints.get(header) + "\"";
+            final Tab tab =
+                    navigateUrlToEchoClientHintHeaders(
+                            "/set-header?Accept-CH: " + header,
+                            "/echoheader?" + header,
+                            /* overrideUserAgent= */ false);
+            String content =
+                    JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                            tab.getWebContents(), "document.body.textContent");
+            Assert.assertEquals("Proper headers for echoString: " + header, response, content);
+        }
+
+        String userAgentString =
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                        mActivityTestRule.getWebContents(), "window.navigator.userAgent");
+        Assert.assertEquals(
+                "Proper user agent: ",
+                String.format(
+                        "\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"
+                                + " Chrome/%s.0.0.0 Safari/537.36\"",
+                        packageMajorVersionName),
+                userAgentString);
+    }
+
+    /** Test 'AndroidDesktopUAPlatform' feature properly affects UA client hints */
+    @Test
+    @MediumTest
+    @Feature({"Navigation"})
+    @CommandLineFlags.Add({"enable-features=AndroidDesktopUAPlatform"})
+    @Restriction(DeviceFormFactor.DESKTOP)
+    public void testAndroidDesktopUAPlatformClientHint() throws Exception {
+        final Tab tab =
+                navigateUrlToEchoClientHintHeaders(
+                        "/set-header?Accept-CH: sec-ch-ua-platform,sec-ch-ua-platform-version",
+                        "/echoheader?sec-ch-ua-platform&sec-ch-ua-platform-version",
+                        /* overrideUserAgent= */ false);
+        String content =
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                        tab.getWebContents(), "document.body.textContent");
+        Assert.assertTrue("Proper platform header", content.startsWith("\"\\\"Android\\\"\\n\\\""));
+        Assert.assertFalse("Platform version should not be empty", content.endsWith("\\\"\\\"\""));
+    }
+
+    private Tab navigateUrlToEchoClientHintHeaders(
+            String setHeaderString, String echoHeaderString, boolean overrideUserAgent)
+            throws Exception {
+        String url1 = mTestServer.getURL(setHeaderString);
+        String url2 = mTestServer.getURL(echoHeaderString);
+        final Tab tab = mActivityTestRule.getActivityTab();
+
+        navigateAndObserve(url1);
+        ChromeTabUtils.waitForTabPageLoaded(tab, url1);
+
+        navigateAndObserve(url2);
+        if (overrideUserAgent) {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> TabUtils.switchUserAgent(tab, /* switchToDesktop= */ true));
+        }
+        ChromeTabUtils.waitForTabPageLoaded(tab, url2);
+        return tab;
+    }
+
     /** Test 'Request Desktop Site' option properly affects UA client hints with Critical-CH */
     @Test
     @MediumTest
     @Feature({"Navigation"})
-    @CommandLineFlags.Add({"enable-features=UserAgentClientHint, CriticalClientHint"})
+    @CommandLineFlags.Add({
+        "enable-features=UserAgentClientHint, CriticalClientHint",
+        "disable-features=AndroidDesktopUASpoofAsChromeOS,AndroidDesktopUAPlatform"
+    })
     // TODO(crbug.com/40612550) Remove switch when UA-CH-* launched.
     public void testRequestDesktopSiteCriticalClientHints() throws Exception {
         // TODO(crbug.com/40153192): Move EchoCriticalHeader request handler here when
         // implemented
         String url = mTestServer.getURL("/echocriticalheader");
-        final Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        final Tab tab = mActivityTestRule.getActivityTab();
         navigateAndObserve(url);
         ThreadUtils.runOnUiThreadBlocking(
-                () ->
-                        TabUtils.switchUserAgent(
-                                tab, /* switchToDesktop= */ true, UseDesktopUserAgentCaller.OTHER));
+                () -> TabUtils.switchUserAgent(tab, /* switchToDesktop= */ true));
 
         ChromeTabUtils.waitForTabPageLoaded(tab, url);
         String content =
@@ -302,7 +391,8 @@ public class NavigateTest {
     @Test
     @MediumTest
     @Feature({"Navigation"})
-    @DisableIf.Device(DeviceFormFactor.TABLET) // https://crbug.com/339299609
+    @DisableIf.Device(
+            DeviceFormFactor.TABLET_OR_DESKTOP) // https://crbug.com/339299609, https://crbug.com/376375165
     public void testTabObserverOnPageLoadStarted() throws Exception {
         final String url1 = mTestServer.getURL("/chrome/test/data/android/google.html");
         final String url2 = mTestServer.getURL("/chrome/test/data/android/about.html");
@@ -319,21 +409,21 @@ public class NavigateTest {
                         Assert.assertEquals(url2, newUrl.getSpec());
                     }
                 };
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         ThreadUtils.runOnUiThreadBlocking(() -> tab.addObserver(onPageLoadStartedObserver));
         DOMUtils.clickNode(tab.getWebContents(), "aboutLink");
         ChromeTabUtils.waitForTabPageLoaded(tab, url2);
         Assert.assertEquals(
                 "Desired Link not open",
                 url2,
-                ChromeTabUtils.getUrlStringOnUiThread(
-                        mActivityTestRule.getActivity().getActivityTab()));
+                ChromeTabUtils.getUrlStringOnUiThread(mActivityTestRule.getActivityTab()));
     }
 
     /** Test re-direct functionality for a web-page. */
     @Test
     @MediumTest
     @Feature({"Navigation"})
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/526803990
     public void testNavigateRedirect() throws Exception {
         final String initialUrl =
                 mTestServer.getURL("/chrome/test/data/android/redirect/about.html");
@@ -345,7 +435,7 @@ public class NavigateTest {
                 () -> {
                     Criteria.checkThat(
                             ChromeTabUtils.getUrlStringOnUiThread(
-                                    mActivityTestRule.getActivity().getActivityTab()),
+                                    mActivityTestRule.getActivityTab()),
                             Matchers.is(redirectedUrl));
                 });
     }
@@ -357,6 +447,7 @@ public class NavigateTest {
     @Test
     @MediumTest
     @Feature({"Navigation"})
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/526803990
     public void testIntentFallbackRedirection() throws Exception {
         final String fallbackUrl =
                 mTestServer.getURL("/chrome/test/data/android/redirect/about.html");
@@ -382,8 +473,7 @@ public class NavigateTest {
 
         // We should start on the homepage, which is something other than our test page.
         String originalUrl =
-                ChromeTabUtils.getUrlStringOnUiThread(
-                        mActivityTestRule.getActivity().getActivityTab());
+                ChromeTabUtils.getUrlStringOnUiThread(mActivityTestRule.getActivityTab());
         Criteria.checkThat(originalUrl, Matchers.not(targetUrl));
 
         typeInOmniboxAndNavigate(initialUrl, null);
@@ -393,7 +483,7 @@ public class NavigateTest {
                 () -> {
                     Criteria.checkThat(
                             ChromeTabUtils.getUrlStringOnUiThread(
-                                    mActivityTestRule.getActivity().getActivityTab()),
+                                    mActivityTestRule.getActivityTab()),
                             Matchers.is(targetUrl));
                 });
 
@@ -404,7 +494,6 @@ public class NavigateTest {
         // TODO(changwan): figure out why we cannot go back on this test.
         int index =
                 mActivityTestRule
-                        .getActivity()
                         .getActivityTab()
                         .getWebContents()
                         .getNavigationController()
@@ -412,7 +501,6 @@ public class NavigateTest {
         Assert.assertEquals(1, index);
         String previousNavigationUrl =
                 mActivityTestRule
-                        .getActivity()
                         .getActivityTab()
                         .getWebContents()
                         .getNavigationController()
@@ -427,6 +515,7 @@ public class NavigateTest {
     @Restriction(DeviceFormFactor.PHONE)
     @MediumTest
     @Feature({"Navigation"})
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/526803990
     public void testNavigateBack() throws Exception {
         final String[] urls = {
             mTestServer.getURL("/chrome/test/data/android/navigate/one.html"),
@@ -442,12 +531,9 @@ public class NavigateTest {
         final ToolbarManager toolbarManager = mActivityTestRule.getActivity().getToolbarManager();
 
         for (int i = 0; i < repeats; i++) {
-            Assert.assertNull(
-                    "Back button is invisible in phone toolbar",
-                    mActivityTestRule.getActivity().findViewById(R.id.back_button));
             Assert.assertEquals(
                     "Tab should be able to be navigated back",
-                    Boolean.TRUE,
+                    true,
                     toolbarManager.getHandleBackPressChangedSupplier().get());
             Assert.assertTrue(
                     "Tab has been navigated back",
@@ -456,16 +542,13 @@ public class NavigateTest {
         }
         Assert.assertEquals(
                 "Tab should be unable to be navigated back",
-                Boolean.FALSE,
+                false,
                 toolbarManager.getHandleBackPressChangedSupplier().get());
-        Assert.assertNull(
-                "Back button is invisible in phone toolbar",
-                mActivityTestRule.getActivity().findViewById(R.id.back_button));
     }
 
     /** Test back and forward buttons. */
     @Test
-    @Restriction(DeviceFormFactor.TABLET)
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     @MediumTest
     @Feature({"Navigation"})
     public void testNavigateBackAndForwardButtons() throws Exception {
@@ -485,7 +568,7 @@ public class NavigateTest {
             onView(withId(R.id.back_button)).check(matches(isEnabled()));
             Assert.assertEquals(
                     "Tab should be able to be navigated back",
-                    Boolean.TRUE,
+                    true,
                     toolbarManager.getHandleBackPressChangedSupplier().get());
             TouchCommon.singleClickView(
                     mActivityTestRule.getActivity().findViewById(R.id.back_button));
@@ -497,8 +580,7 @@ public class NavigateTest {
                                     + "%d.",
                             i),
                     urls[1],
-                    ChromeTabUtils.getUrlStringOnUiThread(
-                            mActivityTestRule.getActivity().getActivityTab()));
+                    ChromeTabUtils.getUrlStringOnUiThread(mActivityTestRule.getActivityTab()));
 
             TouchCommon.singleClickView(
                     mActivityTestRule.getActivity().findViewById(R.id.back_button));
@@ -510,8 +592,7 @@ public class NavigateTest {
                                     + "%d.",
                             i),
                     urls[0],
-                    ChromeTabUtils.getUrlStringOnUiThread(
-                            mActivityTestRule.getActivity().getActivityTab()));
+                    ChromeTabUtils.getUrlStringOnUiThread(mActivityTestRule.getActivityTab()));
 
             TouchCommon.singleClickView(
                     mActivityTestRule.getActivity().findViewById(R.id.forward_button));
@@ -523,8 +604,7 @@ public class NavigateTest {
                                     + "%d.",
                             i),
                     urls[1],
-                    ChromeTabUtils.getUrlStringOnUiThread(
-                            mActivityTestRule.getActivity().getActivityTab()));
+                    ChromeTabUtils.getUrlStringOnUiThread(mActivityTestRule.getActivityTab()));
 
             TouchCommon.singleClickView(
                     mActivityTestRule.getActivity().findViewById(R.id.forward_button));
@@ -536,15 +616,14 @@ public class NavigateTest {
                                     + "%d.",
                             i),
                     urls[2],
-                    ChromeTabUtils.getUrlStringOnUiThread(
-                            mActivityTestRule.getActivity().getActivityTab()));
+                    ChromeTabUtils.getUrlStringOnUiThread(mActivityTestRule.getActivityTab()));
         }
 
         for (int i = 0; i < repeats; i++) {
             onView(withId(R.id.back_button)).check(matches(isEnabled()));
             Assert.assertEquals(
                     "Tab should be able to be navigated back",
-                    Boolean.TRUE,
+                    true,
                     toolbarManager.getHandleBackPressChangedSupplier().get());
             TouchCommon.singleClickView(
                     mActivityTestRule.getActivity().findViewById(R.id.back_button));
@@ -552,17 +631,154 @@ public class NavigateTest {
         }
         Assert.assertEquals(
                 "Tab should be unable to be navigated back",
-                Boolean.FALSE,
+                false,
                 toolbarManager.getHandleBackPressChangedSupplier().get());
         onView(withId(R.id.back_button)).check(matches(Matchers.not(isEnabled())));
     }
 
+    /** Test the basic scenario in which the first navigation is triggered by gesture. */
     @Test
-    @DisableIf.Build(hardware_is = "sprout", message = "fails on android-one: crbug.com/540723")
     @MediumTest
     @Feature({"Navigation"})
+    public void testBackFalsing_basic() throws Exception {
+        final String[] urls = {
+            mTestServer.getURL("/chrome/test/data/android/navigate/one.html"),
+            mTestServer.getURL("/chrome/test/data/android/navigate/two.html"),
+        };
+        navigateAndObserve(urls[0]);
+
+        Tab tab = mActivityTestRule.getActivityTab();
+        // Record FORWARD if the first gesture triggered by gesture and second gesture is FORWARD.
+        navigateAndObserve(urls[1]);
+        ThreadUtils.runOnUiThreadBlocking(tab::goBack);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[0]);
+        HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.BackPress.Backfalsing2",
+                        BackPressMetrics.NavigationDirection.FORWARD);
+        ThreadUtils.runOnUiThreadBlocking(tab::goForward);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[1]);
+
+        watcher.assertExpected("Should record backfalsing histogram");
+
+        ThreadUtils.runOnUiThreadBlocking(tab::goBack);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[0]);
+
+        // Record BACKWARD if the first gesture triggered by gesture and second gesture is BACKWARD.
+        ThreadUtils.runOnUiThreadBlocking(tab::goForward);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[1]);
+        watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.BackPress.Backfalsing2",
+                        BackPressMetrics.NavigationDirection.BACKWARD);
+        ThreadUtils.runOnUiThreadBlocking(tab::goBack);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[0]);
+
+        watcher.assertExpected("Should record backfalsing histogram");
+    }
+
+    /**
+     * Test that the histogram is not recorded when two consecutive navigations happen over 3
+     * seconds.
+     */
+    @Test
+    @MediumTest
+    @Feature("Navigation")
+    public void testBackFalsing_timeOut() throws Exception {
+        final String[] urls = {
+            mTestServer.getURL("/chrome/test/data/android/navigate/one.html"),
+            mTestServer.getURL("/chrome/test/data/android/navigate/two.html"),
+        };
+        navigateAndObserve(urls[0]);
+
+        Tab tab = mActivityTestRule.getActivityTab();
+        // Record FORWARD if the first gesture triggered by gesture and second gesture is FORWARD.
+        navigateAndObserve(urls[1]);
+        ThreadUtils.runOnUiThreadBlocking(tab::goBack);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[0]);
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Android.BackPress.Backfalsing2",
+                                BackPressMetrics.NavigationDirection.FORWARD)
+                        .expectIntRecord(
+                                "Android.BackPress.StrictBackfalsing",
+                                BackPressMetrics.NavigationDirection.FORWARD)
+                        .build();
+        ThreadUtils.runOnUiThreadBlocking(tab::goForward);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[1]);
+
+        watcher.assertExpected("Should record backfalsing histogram");
+
+        ThreadUtils.runOnUiThreadBlocking(tab::goBack);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[0]);
+
+        // Record BACKWARD if the first gesture triggered by gesture and second gesture is BACKWARD.
+        ThreadUtils.runOnUiThreadBlocking(tab::goForward);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[1]);
+        watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Android.BackPress.Backfalsing2",
+                                BackPressMetrics.NavigationDirection.BACKWARD)
+                        .expectNoRecords("Android.BackPress.StrictBackfalsing")
+                        .build();
+        mFakeTime.advanceMillis(4 * 1000);
+        ThreadUtils.runOnUiThreadBlocking(tab::goBack);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[0]);
+
+        watcher.assertExpected(
+                "Should not record strict backfalsing histogram if navigations are over 3 seconds");
+    }
+
+    /** Test the histogram should not be recorded if the url does not change when navigating. */
+    @Test
+    @MediumTest
+    @Feature({"Navigation"})
+    public void testBackFalsing_allSameUrls() throws Exception {
+        String url = mTestServer.getURL("/chrome/test/data/android/navigate/one.html");
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.BackPress.Backfalsing2")
+                        .build();
+        navigateAndObserve(url);
+        navigateAndObserve(url);
+        navigateAndObserve(url);
+        watcher.assertExpected("No record if visiting the same urls");
+    }
+
+    /** Test the histogram should not recorded if the navigation is not triggered by gesture. */
+    @Test
+    @MediumTest
+    @Feature({"Navigation"})
+    public void testBackFalsing_clickOnLinks() throws Exception {
+        final String[] urls = {
+            mTestServer.getURL("/chrome/test/data/android/navigate/one.html"),
+            mTestServer.getURL("/chrome/test/data/android/navigate/two.html"),
+        };
+        navigateAndObserve(urls[0]);
+        Tab tab = mActivityTestRule.getActivityTab();
+
+        // Not record when the first navigation is not triggered by gesture.
+        HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.BackPress.Backfalsing2",
+                        BackPressMetrics.NavigationDirection.NEITHER);
+        navigateAndObserve(urls[1]);
+        ThreadUtils.runOnUiThreadBlocking(tab::goBack);
+        ChromeTabUtils.waitForTabPageLoaded(tab, urls[0]);
+        watcher.assertExpected("Neither if first transition is not triggered by gesture.");
+    }
+
+    @Test
+    @DisableIf.Build(hardware_is = "sprout", message = "fails on android-one: crbug.com/40439157")
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/376375165
+    @MediumTest
+    @Feature({"Navigation"})
+    @CommandLineFlags.Add({"ip-address-space-overrides=[::1]:0=public"})
     public void testWindowOpenUrlSpoof() throws Exception {
-        // TODO(jbudorick): Convert this from TestWebServer to EmbeddedTestServer.
+        // TODO(jbudorick): Convert this from TestWebServer to EmbeddedTestServer.  Once its
+        // converted, should be able to remove the ip-address-space-overrides command line flag
         TestWebServer webServer = TestWebServer.start();
         try {
             // Make sure that we start with one tab.
@@ -572,7 +788,9 @@ public class NavigateTest {
             final Semaphore urlServedSemaphore = new Semaphore(0);
             Runnable checkAction =
                     () -> {
-                        final Tab tab = TabModelUtils.getCurrentTab(model);
+                        final Tab tab =
+                                ThreadUtils.runOnUiThreadBlocking(
+                                        () -> TabModelUtils.getCurrentTab(model));
 
                         // Make sure that we are showing the spoofed data and a blank URL.
                         String url = getTabUrlOnUiThread(tab);
@@ -594,7 +812,7 @@ public class NavigateTest {
                             checkAction);
 
             // Navigate to the spoofable URL
-            mActivityTestRule.loadUrl(
+            mStartingPage.loadWebPageProgrammatically(
                     UrlUtils.encodeHtmlDataUri(
                             "<head>  <meta name=\"viewport\"     "
                                 + " content=\"initial-scale=0.5,maximum-scale=0.5,user-scalable=no\"></head><script>"
@@ -608,13 +826,14 @@ public class NavigateTest {
             mActivityTestRule.assertWaitForPageScaleFactorMatch(0.5f);
 
             // Click the page, which triggers the URL load.
-            DOMUtils.clickNode(mActivityTestRule.getActivity().getCurrentWebContents(), "body");
+            DOMUtils.clickNode(mActivityTestRule.getWebContents(), "body");
 
             // Wait for the proper URL to be served.
             Assert.assertTrue(urlServedSemaphore.tryAcquire(5, TimeUnit.SECONDS));
 
             // Wait for the url to change.
-            final Tab tab = TabModelUtils.getCurrentTab(model);
+            final Tab tab =
+                    ThreadUtils.runOnUiThreadBlocking(() -> TabModelUtils.getCurrentTab(model));
             mActivityTestRule.assertWaitForPageScaleFactorMatch(0.75f);
             CriteriaHelper.pollInstrumentationThread(
                     () -> {
@@ -637,7 +856,7 @@ public class NavigateTest {
     @Test
     @MediumTest
     @Feature({"Navigation"})
-    @DisabledTest(message = "crbug.com/1130419")
+    @DisabledTest(message = "crbug.com/40720772")
     public void testRendererInitiatedIntentNavigate() throws Exception {
         final String finalUrl =
                 mTestServer.getURL("/chrome/test/data/android/renderer_initiated/final.html");
@@ -696,7 +915,7 @@ public class NavigateTest {
                         }
                     }
                 };
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         ThreadUtils.runOnUiThreadBlocking(() -> tab.addObserver(onPageLoadStartedObserver));
         DOMUtils.clickNode(tab.getWebContents(), "rendererInitiated");
         ChromeTabUtils.waitForTabPageLoaded(tab, finalUrl);
@@ -711,8 +930,7 @@ public class NavigateTest {
             return JavaScriptUtils.executeJavaScriptAndWaitForResult(
                     tab.getWebContents(), "document.body.innerText");
         } catch (Exception ex) {
-            assert false : "Unexpected Exception";
+            throw new AssertionError(ex);
         }
-        return null;
     }
 }

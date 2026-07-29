@@ -5,7 +5,8 @@
 #ifndef COMPONENTS_CONTENT_SETTINGS_BROWSER_CONTENT_SETTINGS_MANAGER_IMPL_H_
 #define COMPONENTS_CONTENT_SETTINGS_BROWSER_CONTENT_SETTINGS_MANAGER_IMPL_H_
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/sequence_checker.h"
 #include "components/content_settings/common/content_settings_manager.mojom.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "content/public/browser/global_routing_id.h"
@@ -62,6 +63,10 @@ class ContentSettingsManagerImpl
   void Clone(
       mojo::PendingReceiver<content_settings::mojom::ContentSettingsManager>
           receiver) override;
+  void IsStorageAccessAllowed(const url::Origin& origin,
+                              const net::SiteForCookies& site_for_cookies,
+                              const url::Origin& top_frame_origin,
+                              base::OnceCallback<void(bool)> callback) override;
   void AllowStorageAccess(const blink::LocalFrameToken& frame_token,
                           StorageType storage_type,
                           const url::Origin& origin,
@@ -76,6 +81,10 @@ class ContentSettingsManagerImpl
                              std::unique_ptr<Delegate> delegate,
                              scoped_refptr<CookieSettings> cookie_settings);
   ContentSettingsManagerImpl(const ContentSettingsManagerImpl& other);
+  bool EvaluateStorageAccessPermission(
+      const url::Origin& origin,
+      const net::SiteForCookies& site_for_cookies,
+      const url::Origin& top_frame_origin);
 
   static void CreateOnThread(
       int render_process_id,

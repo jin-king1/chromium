@@ -27,9 +27,8 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.DoNotBatch;
-import org.chromium.base.test.util.Features;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.content_public.browser.test.util.ClickUtils;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
@@ -40,7 +39,6 @@ import java.util.concurrent.TimeoutException;
 /** Instrumentation tests for Auth Tab. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @DoNotBatch(reason = "Testing CCT start up behavior.")
-@Features.EnableFeatures(ChromeFeatureList.CCT_AUTH_TAB)
 public class AuthTabTest {
     private static final String TEST_PAGE = "/chrome/test/data/android/auth.html";
     private static final String SCHEME = "testscheme";
@@ -54,7 +52,7 @@ public class AuthTabTest {
     private String mTestPage;
     private EmbeddedTestServer mTestServer;
     private AuthTabIntent.AuthResult mLastAuthResult;
-    private CallbackHelper mAuthResultCallbackHelper = new CallbackHelper();
+    private final CallbackHelper mAuthResultCallbackHelper = new CallbackHelper();
 
     @Before
     public void setUp() {
@@ -79,8 +77,7 @@ public class AuthTabTest {
     public void testCustomSchemeSuccess() throws TimeoutException {
         launchAuthTab();
         JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                mCustomTabActivityTestRule.getActivity().getCurrentWebContents(),
-                JS_CLICK_AUTH_BUTTON);
+                mCustomTabActivityTestRule.getWebContents(), JS_CLICK_AUTH_BUTTON);
         mAuthResultCallbackHelper.waitForNext();
         assertEquals(AuthTabIntent.RESULT_OK, mLastAuthResult.resultCode);
         assertEquals("sometoken", mLastAuthResult.resultUri.getQueryParameter("token"));
@@ -91,9 +88,7 @@ public class AuthTabTest {
     public void testCustomSchemeCanceled() throws TimeoutException {
         launchAuthTab();
         ClickUtils.clickButton(
-                mCustomTabActivityTestRule
-                        .getActivity()
-                        .findViewById(org.chromium.chrome.test.R.id.close_button));
+                mCustomTabActivityTestRule.getActivity().findViewById(R.id.close_button));
         mAuthResultCallbackHelper.waitForNext();
         assertEquals(AuthTabIntent.RESULT_CANCELED, mLastAuthResult.resultCode);
         assertNull(mLastAuthResult.resultUri);

@@ -6,7 +6,6 @@
 #define SERVICES_NETWORK_TEST_TEST_NETWORK_CONTEXT_CLIENT_H_
 
 #include "build/build_config.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "services/network/public/cpp/network_service_buildflags.h"
 #include "services/network/public/mojom/network_context_client.mojom.h"
@@ -30,7 +29,7 @@ class TestNetworkContextClient : public network::mojom::NetworkContextClient {
     ignore_last_upload_file_ = ignore_last_upload_file;
   }
 
-  void OnFileUploadRequested(int32_t process_id,
+  void OnFileUploadRequested(const OriginatingProcessId& process_id,
                              bool async,
                              const std::vector<base::FilePath>& file_paths,
                              const GURL& destination_url,

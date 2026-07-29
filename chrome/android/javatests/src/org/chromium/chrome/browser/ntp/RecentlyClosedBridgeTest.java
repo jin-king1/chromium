@@ -4,9 +4,12 @@
 
 package org.chromium.chrome.browser.ntp;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.mockito.Mockito.when;
 
 import android.os.Build;
+import android.text.TextUtils;
 
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
@@ -14,7 +17,6 @@ import androidx.test.filters.MediumTest;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -27,9 +29,9 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.DisabledTest;
+import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
@@ -38,12 +40,11 @@ import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.chrome.browser.tab.TabStateExtractor;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.SyncService;
@@ -68,19 +69,14 @@ public class RecentlyClosedBridgeTest {
     private static final String TEST_PAGE_B = "/chrome/test/data/android/google.html";
     private static final String TEST_PAGE_C = "/chrome/test/data/android/simple.html";
 
-    @ClassRule
-    public static ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
-
     @Rule
-    public BlankCTATabInitialStateRule mBlankCTATabInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, true);
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.autoResetCtaActivityRule();
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     private ChromeTabbedActivity mActivity;
     private TabModelSelector mTabModelSelector;
-    private TabGroupModelFilter mTabGroupModelFilter;
     private TabModel mTabModel;
     private RecentlyClosedBridge mRecentlyClosedBridge;
     @Mock private SyncService mSyncService;
@@ -90,12 +86,12 @@ public class RecentlyClosedBridgeTest {
         when(mSyncService.getActiveDataTypes()).thenReturn(Set.of(DataType.SAVED_TAB_GROUP));
         SyncServiceFactory.setInstanceForTesting(mSyncService);
 
-        sActivityTestRule.waitForActivityNativeInitializationComplete();
+        mActivityTestRule.waitForActivityNativeInitializationComplete();
 
         // Disable snackbars from the {@link UndoBarController} which can break this test.
-        sActivityTestRule.getActivity().getSnackbarManager().disableForTesting();
+        mActivityTestRule.getActivity().getSnackbarManager().disableForTesting();
 
-        mActivity = sActivityTestRule.getActivity();
+        mActivity = mActivityTestRule.getActivity();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mRecentlyClosedBridge =
@@ -107,13 +103,10 @@ public class RecentlyClosedBridgeTest {
                             0,
                             mRecentlyClosedBridge.getRecentlyClosedEntries(MAX_ENTRY_COUNT).size());
                 });
-        mActivity = sActivityTestRule.getActivity();
+        mActivity = mActivityTestRule.getActivity();
         mTabModelSelector = mActivity.getTabModelSelectorSupplier().get();
         mTabModel = mTabModelSelector.getModel(false);
-        TabGroupModelFilter filter =
-                mTabModelSelector.getTabGroupModelFilterProvider().getTabGroupModelFilter(false);
-        mTabGroupModelFilter = filter;
-        final Tab tab = mActivity.getActivityTab();
+        final Tab tab = mActivityTestRule.getActivityTab();
         ChromeTabUtils.waitForInteractable(tab);
     }
 
@@ -132,10 +125,12 @@ public class RecentlyClosedBridgeTest {
     /** Tests opening the most recently closed tab in the foreground. */
     @Test
     @MediumTest
+    // Cast via wildcard-typed intermediate List is checked by javac as unchecked.
+    @SuppressWarnings("unchecked")
     public void testOpenMostRecentlyClosedEntry_Tab_InForeground() {
         final String[] urls = new String[] {getUrl(TEST_PAGE_A), getUrl(TEST_PAGE_B)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
@@ -183,12 +178,14 @@ public class RecentlyClosedBridgeTest {
     @DisableIf.Build(
             sdk_is_greater_than = Build.VERSION_CODES.TIRAMISU,
             message = "crbug.com/355058571")
-    public void testOpenRecentlyClosedTab_InCurrentTab() {
+    // Cast via wildcard-typed intermediate List is checked by javac as unchecked.
+    @SuppressWarnings("unchecked")
+    public void testOpenRecentlyClosedTab_CurrentTabDisposition() {
         final String[] urls = new String[] {getUrl(TEST_PAGE_A), getUrl(TEST_PAGE_B)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
         final Tab tabC =
-                sActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_C), /* incognito= */ false);
+                mActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_C), /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
@@ -223,33 +220,36 @@ public class RecentlyClosedBridgeTest {
         // 2. tabC - now TEST_PAGE_B.
         final List<Tab> tabs = getAllTabs();
         Assert.assertEquals(2, tabs.size());
-        // Restored onto tab B.
-        Assert.assertEquals(tabC, tabs.get(1));
-        Assert.assertEquals(titles[1], ChromeTabUtils.getTitleOnUiThread(tabC));
-        Assert.assertEquals(urls[1], ChromeTabUtils.getUrlOnUiThread(tabC).getSpec());
+        // Restored in same position as tabC.
+        Tab newTabC = tabs.get(1);
+        Assert.assertNotEquals(tabC, newTabC);
+        Assert.assertEquals(titles[1], ChromeTabUtils.getTitleOnUiThread(newTabC));
+        Assert.assertEquals(urls[1], ChromeTabUtils.getUrlOnUiThread(newTabC).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertNotNull(tabC.getWebContents());
+                    Assert.assertNotNull(newTabC.getWebContents());
                     // Should only have one navigation entry as it replaced TEST_PAGE_C.
                     Assert.assertEquals(
                             1,
-                            tabC.getWebContents()
+                            newTabC.getWebContents()
                                     .getNavigationController()
                                     .getNavigationHistory()
                                     .getEntryCount());
 
                     // Has renderer for foreground tab.
-                    Assert.assertNotNull(tabC.getWebContents().getRenderWidgetHostView());
+                    Assert.assertNotNull(newTabC.getWebContents().getRenderWidgetHostView());
                 });
     }
 
     /** Tests opening a specific closed {@link Tab} that was frozen as a new background tab. */
     @Test
     @MediumTest
+    // Cast via wildcard-typed intermediate List is checked by javac as unchecked.
+    @SuppressWarnings("unchecked")
     public void testOpenRecentlyClosedTab_Frozen_InBackground() {
         final String[] urls = new String[] {getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
-        sActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_B), /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        mActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_B), /* incognito= */ false);
         final Tab frozenTabA = freezeTab(tabA);
         // Clear the entry created by freezing the tab.
         ThreadUtils.runOnUiThreadBlocking(
@@ -284,12 +284,12 @@ public class RecentlyClosedBridgeTest {
         assertTabsAre(recentTabs, titles, urls);
 
         // 1. Blank Tab
-        // 2. tabB
-        // 3. tabA - restored.
+        // 2. tabA - restored (non-undoable tabs are restored to their previous position).
+        // 3. tabB.
         final List<Tab> tabs = getAllTabs();
         Assert.assertEquals(3, tabs.size());
-        Assert.assertEquals(titles[0], ChromeTabUtils.getTitleOnUiThread(tabs.get(2)));
-        Assert.assertEquals(urls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(2)).getSpec());
+        Assert.assertEquals(titles[0], ChromeTabUtils.getTitleOnUiThread(tabs.get(1)));
+        Assert.assertEquals(urls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(1)).getSpec());
     }
 
     /**
@@ -301,13 +301,17 @@ public class RecentlyClosedBridgeTest {
     public void testOpenRecentlyClosedTab_FromBulkClosure_InNewTab() {
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
-        final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        Tab tab0 = mActivityTestRule.getActivityTab();
+        String url0 = ThreadUtils.runOnUiThreadBlocking(() -> tab0.getUrl().getSpec());
+        final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A), url0};
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
-        final String[] titles = new String[2];
+        final String[] titles = new String[3];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    // about:blank is saved as empty string.
+                    titles[2] = "";
                     titles[1] = tabA.getTitle();
                     titles[0] = tabB.getTitle();
                     closeTabs(TabClosureParams.closeAllTabs().build());
@@ -344,20 +348,20 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedTab_FromGroupInBulkClosure_InBackgroundTab() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls =
                 new String[] {getUrl(TEST_PAGE_C), getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabC = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabC = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[3];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
                     titles[2] = tabA.getTitle();
                     titles[1] = tabB.getTitle();
                     titles[0] = tabC.getTitle();
@@ -399,7 +403,7 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(urls[1], ChromeTabUtils.getUrlOnUiThread(tabs.get(1)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(1)));
                 });
     }
 
@@ -412,18 +416,18 @@ public class RecentlyClosedBridgeTest {
     @DisableIf.Build(
             sdk_is_greater_than = Build.VERSION_CODES.TIRAMISU,
             message = "crbug.com/355058571")
-    public void testOpenRecentlyClosedTab_FromGroupClosure_InCurrentTab() {
-        if (mTabGroupModelFilter == null) return;
+    public void testOpenRecentlyClosedTab_FromGroupClosure_CurrentTabDisposition() {
+        if (mTabModel == null) return;
 
         // Tab order is inverted in when closing.
         final String[] urls = new String[] {getUrl(TEST_PAGE_A), getUrl(TEST_PAGE_B)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
                     titles[0] = tabA.getTitle();
                     titles[1] = tabB.getTitle();
                     closeTabs(
@@ -447,14 +451,14 @@ public class RecentlyClosedBridgeTest {
                             mTabModel, group.getTabs().get(1), WindowOpenDisposition.CURRENT_TAB);
                 });
 
-        // 1. tabA restored over blank tab.
+        // 1. tabA state replaced blank tab.
         final List<Tab> tabs = getAllTabs();
         Assert.assertEquals(1, tabs.size());
         Assert.assertEquals(titles[1], ChromeTabUtils.getTitleOnUiThread(tabs.get(0)));
         Assert.assertEquals(urls[1], ChromeTabUtils.getUrlOnUiThread(tabs.get(0)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(0)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(0)));
                 });
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -465,7 +469,7 @@ public class RecentlyClosedBridgeTest {
                             WindowOpenDisposition.NEW_BACKGROUND_TAB);
                 });
 
-        // 1. tabA restored over blank tab.
+        // 1. tabA state replaced blank tab.
         // 2. tabB restored.
         tabs.clear();
         tabs.addAll(getAllTabs());
@@ -474,7 +478,7 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(urls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(1)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(1)));
                 });
     }
 
@@ -482,18 +486,18 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_Tab_FromMultipleTabs_SingleTabGroup() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         final String[] urlA = new String[] {getUrl(TEST_PAGE_A)};
         final String[] urlB = new String[] {getUrl(TEST_PAGE_B)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urlA[0], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urlB[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urlA[0], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urlB[0], /* incognito= */ false);
 
         final String[] titleA = new String[1];
         final String[] titleB = new String[1];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
                     titleA[0] = tabA.getTitle();
                     titleB[0] = tabB.getTitle();
                     closeTabs(TabClosureParams.closeTab(tabB).build());
@@ -522,7 +526,7 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(urlB[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(1)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(1)));
                 });
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -540,7 +544,7 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(urlA[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(2)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(2)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(2)));
                 });
     }
 
@@ -552,18 +556,18 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_Tab_FromGroupClosure() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
                     titles[1] = tabA.getTitle();
                     titles[0] = tabB.getTitle();
                     closeTabs(
@@ -600,7 +604,7 @@ public class RecentlyClosedBridgeTest {
         // This behavior mirrors desktop.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
                 });
     }
 
@@ -608,18 +612,18 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_SingleRemainingTabInGroupAsGroup_FromGroupClosure() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
                     titles[1] = tabA.getTitle();
                     titles[0] = tabB.getTitle();
                     closeTabs(
@@ -655,7 +659,7 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(urls[1], ChromeTabUtils.getUrlOnUiThread(tabs.get(1)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
                 });
     }
 
@@ -663,19 +667,19 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_Group_FromGroupClosure() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Bar");
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Bar");
                     titles[1] = tabA.getTitle();
                     titles[0] = tabB.getTitle();
                     closeTabs(
@@ -714,11 +718,11 @@ public class RecentlyClosedBridgeTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Assert.assertEquals(
-                            "Bar", mTabGroupModelFilter.getTabGroupTitle(tabs.get(1).getId()));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
+                            "Bar", mTabModel.getTabGroupTitle(tabs.get(1).getTabGroupId()));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
                     Assert.assertEquals(
                             Arrays.asList(new Tab[] {tabs.get(1), tabs.get(2)}),
-                            mTabGroupModelFilter.getRelatedTabList(tabs.get(1).getId()));
+                            mTabModel.getRelatedTabList(tabs.get(1).getId()));
                 });
     }
 
@@ -726,22 +730,22 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_SubsetOfTabs_FromGroupSubsetClosure_NotUndoable() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls = new String[] {getUrl(TEST_PAGE_C), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
         final Tab tabB =
-                sActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_B), /* incognito= */ false);
-        final Tab tabC = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+                mActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_B), /* incognito= */ false);
+        final Tab tabC = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
-                    mTabGroupModelFilter.mergeTabsToGroup(tabC.getId(), tabA.getId());
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Bar");
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabC.getId(), tabA.getId());
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Bar");
                     titles[1] = tabA.getTitle();
                     titles[0] = tabC.getTitle();
                     closeTabs(
@@ -776,9 +780,9 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(urls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(3)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(2)));
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(3)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(2)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(3)));
                 });
     }
 
@@ -786,22 +790,22 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_SubsetOfTabs_FromGroupSubsetClosure_Undoable() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls = new String[] {getUrl(TEST_PAGE_C), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
         final Tab tabB =
-                sActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_B), /* incognito= */ false);
-        final Tab tabC = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+                mActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_B), /* incognito= */ false);
+        final Tab tabC = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
-                    mTabGroupModelFilter.mergeTabsToGroup(tabC.getId(), tabA.getId());
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Bar");
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabC.getId(), tabA.getId());
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Bar");
                     titles[1] = tabA.getTitle();
                     titles[0] = tabC.getTitle();
                     closeTabs(
@@ -837,9 +841,9 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(urls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(3)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(2)));
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(3)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(2)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(3)));
                 });
     }
 
@@ -847,20 +851,20 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_SingleTab_FromGroupSubsetClosure_Undoable() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls = new String[] {getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
         final Tab tabB =
-                sActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_B), /* incognito= */ false);
+                mActivityTestRule.loadUrlInNewTab(getUrl(TEST_PAGE_B), /* incognito= */ false);
 
         final String[] titles = new String[1];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Bar");
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Bar");
                     titles[0] = tabA.getTitle();
                     closeTabs(
                             TabClosureParams.closeTabs(List.of(tabA)).hideTabGroups(false).build());
@@ -888,8 +892,8 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(urls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(2)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(2)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(2)));
                 });
     }
 
@@ -897,16 +901,16 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_SingleTabGroupSupported_FromGroupClosure_NotUndoable() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         final String[] urls = new String[] {getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[1];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.createSingleTabGroup(tabA);
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Bar");
+                    mTabModel.createSingleTabGroup(tabA);
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Bar");
                     titles[0] = tabA.getTitle();
                     closeTabs(
                             TabClosureParams.closeTabs(List.of(tabA))
@@ -941,8 +945,8 @@ public class RecentlyClosedBridgeTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Assert.assertEquals(
-                            "Bar", mTabGroupModelFilter.getTabGroupTitle(tabs.get(1).getId()));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
+                            "Bar", mTabModel.getTabGroupTitle(tabs.get(1).getTabGroupId()));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
                 });
     }
 
@@ -950,16 +954,16 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_SingleTabGroupSupported_FromGroupClosure_Undoable() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         final String[] urls = new String[] {getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[1];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.createSingleTabGroup(tabA);
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Bar");
+                    mTabModel.createSingleTabGroup(tabA);
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Bar");
                     titles[0] = tabA.getTitle();
                     closeTabs(
                             TabClosureParams.closeTabs(List.of(tabA)).hideTabGroups(false).build());
@@ -992,26 +996,25 @@ public class RecentlyClosedBridgeTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Assert.assertEquals(
-                            "Bar", mTabGroupModelFilter.getTabGroupTitle(tabs.get(1).getId()));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
+                            "Bar", mTabModel.getTabGroupTitle(tabs.get(1).getTabGroupId()));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
                 });
     }
 
     /** Tests a hiding tab group is not saved when undoable. */
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.TAB_GROUP_SYNC_ANDROID})
     public void testNoRecentlyClosedEntry_ForHidingTabGroup_Undoable() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         final String[] urls = new String[] {getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[1];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.createSingleTabGroup(tabA);
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Bar");
+                    mTabModel.createSingleTabGroup(tabA);
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Bar");
                     titles[0] = tabA.getTitle();
                     closeTabs(
                             TabClosureParams.closeTabs(List.of(tabA)).hideTabGroups(true).build());
@@ -1027,18 +1030,17 @@ public class RecentlyClosedBridgeTest {
     /** Tests a hiding tab group is not saved when not undoable. */
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.TAB_GROUP_SYNC_ANDROID})
     public void testNoRecentlyClosedEntry_ForHidingTabGroup_NotUndoable() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         final String[] urls = new String[] {getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[1];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.createSingleTabGroup(tabA);
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Bar");
+                    mTabModel.createSingleTabGroup(tabA);
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Bar");
                     titles[0] = tabA.getTitle();
                     closeTabs(
                             TabClosureParams.closeTabs(List.of(tabA))
@@ -1056,23 +1058,25 @@ public class RecentlyClosedBridgeTest {
     /** Tests opening a specific closed group and that it persists across restarts. */
     @Test
     @LargeTest
+    @RequiresRestart
+    @DisabledTest(message = "Flaky, crbug.com/407607684")
     public void testOpenRecentlyClosedEntry_Group_FromGroupClosure_WithRestart() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls =
                 new String[] {getUrl(TEST_PAGE_C), getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabC = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabC = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[3];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
-                    mTabGroupModelFilter.mergeTabsToGroup(tabC.getId(), tabA.getId());
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Bar");
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabC.getId(), tabA.getId());
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Bar");
                     titles[2] = tabA.getTitle();
                     titles[1] = tabB.getTitle();
                     titles[0] = tabC.getTitle();
@@ -1105,7 +1109,7 @@ public class RecentlyClosedBridgeTest {
         // 3. tabB restored in new tab.
         // 4. tabC restored in new tab.
         final List<Tab> tabs = getAllTabs();
-        Assert.assertEquals(4, tabs.size());
+        Assert.assertEquals("Expected 4 tabs. Was " + tabsToString(tabs), 4, tabs.size());
         Assert.assertEquals(titles[2], ChromeTabUtils.getTitleOnUiThread(tabs.get(1)));
         Assert.assertEquals(urls[2], ChromeTabUtils.getUrlOnUiThread(tabs.get(1)).getSpec());
         Assert.assertEquals(titles[1], ChromeTabUtils.getTitleOnUiThread(tabs.get(2)));
@@ -1117,13 +1121,13 @@ public class RecentlyClosedBridgeTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Assert.assertEquals(
-                            "Bar", mTabGroupModelFilter.getTabGroupTitle(tabs.get(1).getId()));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(2)));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(3)));
+                            "Bar", mTabModel.getTabGroupTitle(tabs.get(1).getTabGroupId()));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(2)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(3)));
                     Assert.assertEquals(
                             Arrays.asList(new Tab[] {tabs.get(1), tabs.get(2), tabs.get(3)}),
-                            mTabGroupModelFilter.getRelatedTabList(tabs.get(1).getId()));
+                            mTabModel.getRelatedTabList(tabs.get(1).getId()));
                 });
 
         // Restart activity.
@@ -1145,13 +1149,13 @@ public class RecentlyClosedBridgeTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Assert.assertEquals(
-                            "Bar", mTabGroupModelFilter.getTabGroupTitle(tabs.get(1).getId()));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(2)));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(3)));
+                            "Bar", mTabModel.getTabGroupTitle(tabs.get(1).getTabGroupId()));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(2)));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(3)));
                     Assert.assertEquals(
                             Arrays.asList(new Tab[] {tabs.get(1), tabs.get(2), tabs.get(3)}),
-                            mTabGroupModelFilter.getRelatedTabList(tabs.get(1).getId()));
+                            mTabModel.getRelatedTabList(tabs.get(1).getId()));
                 });
     }
 
@@ -1159,20 +1163,20 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_Tab_FromBulkClosure() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls =
                 new String[] {getUrl(TEST_PAGE_C), getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabC = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabC = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[3];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
                     titles[2] = tabA.getTitle();
                     titles[1] = tabB.getTitle();
                     titles[0] = tabC.getTitle();
@@ -1216,21 +1220,21 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedEntry_Bulk_FromBulkClosure() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls =
                 new String[] {getUrl(TEST_PAGE_C), getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabC = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabC = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[3];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Foo");
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Foo");
                     titles[2] = tabA.getTitle();
                     titles[1] = tabB.getTitle();
                     titles[0] = tabC.getTitle();
@@ -1273,11 +1277,11 @@ public class RecentlyClosedBridgeTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Assert.assertEquals(
-                            "Foo", mTabGroupModelFilter.getTabGroupTitle(tabs.get(1).getId()));
+                            "Foo", mTabModel.getTabGroupTitle(tabs.get(1).getTabGroupId()));
                     Assert.assertEquals(
                             Arrays.asList(new Tab[] {tabs.get(1), tabs.get(2)}),
-                            mTabGroupModelFilter.getRelatedTabList(tabs.get(1).getId()));
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(3)));
+                            mTabModel.getRelatedTabList(tabs.get(1).getId()));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(3)));
                 });
     }
 
@@ -1285,21 +1289,21 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenMostRecentlyClosedEntry_Group() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] groupUrls = new String[] {getUrl(TEST_PAGE_C), getUrl(TEST_PAGE_B)};
         final String[] url = new String[] {getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(url[0], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(groupUrls[1], /* incognito= */ false);
-        final Tab tabC = sActivityTestRule.loadUrlInNewTab(groupUrls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(url[0], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(groupUrls[1], /* incognito= */ false);
+        final Tab tabC = mActivityTestRule.loadUrlInNewTab(groupUrls[0], /* incognito= */ false);
 
         final String[] groupTitles = new String[2];
         final String[] title = new String[1];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabC.getId(), tabB.getId());
+                    mTabModel.mergeTabsToGroup(tabC.getId(), tabB.getId());
                     title[0] = tabA.getTitle();
                     groupTitles[1] = tabB.getTitle();
                     groupTitles[0] = tabC.getTitle();
@@ -1341,11 +1345,13 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(groupUrls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(2)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertNull(mTabGroupModelFilter.getTabGroupTitle(tabs.get(1).getId()));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertTrue(
+                            TextUtils.isEmpty(
+                                    mTabModel.getTabGroupTitle(tabs.get(1).getTabGroupId())));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
                     Assert.assertEquals(
                             Arrays.asList(new Tab[] {tabs.get(1), tabs.get(2)}),
-                            mTabGroupModelFilter.getRelatedTabList(tabs.get(1).getId()));
+                            mTabModel.getRelatedTabList(tabs.get(1).getId()));
                 });
 
         tabCount = getRecentEntriesAndReturnActiveTabCount(recentEntries);
@@ -1368,7 +1374,7 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(url[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(3)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(3)));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(3)));
                 });
     }
 
@@ -1376,20 +1382,20 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenMostRecentlyClosedEntry_Bulk() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls =
                 new String[] {getUrl(TEST_PAGE_C), getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabC = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[2], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabC = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[3];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
                     titles[2] = tabA.getTitle();
                     titles[1] = tabB.getTitle();
                     titles[0] = tabC.getTitle();
@@ -1429,12 +1435,14 @@ public class RecentlyClosedBridgeTest {
         Assert.assertEquals(urls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(3)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
-                    Assert.assertNull(mTabGroupModelFilter.getTabGroupTitle(tabs.get(1).getId()));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
+                    Assert.assertTrue(
+                            TextUtils.isEmpty(
+                                    mTabModel.getTabGroupTitle(tabs.get(1).getTabGroupId())));
                     Assert.assertEquals(
                             Arrays.asList(new Tab[] {tabs.get(1), tabs.get(2)}),
-                            mTabGroupModelFilter.getRelatedTabList(tabs.get(1).getId()));
-                    Assert.assertFalse(mTabGroupModelFilter.isTabInTabGroup(tabs.get(3)));
+                            mTabModel.getRelatedTabList(tabs.get(1).getId()));
+                    Assert.assertFalse(mTabModel.isTabInTabGroup(tabs.get(3)));
                 });
     }
 
@@ -1443,8 +1451,8 @@ public class RecentlyClosedBridgeTest {
     @MediumTest
     public void testNoRecentlyClosedEntry_FromBulkClosure_Unrestorable() {
         final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
@@ -1470,16 +1478,16 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testNoRecentlyClosedEntry_FromGroupClosure_Unrestorable() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[2];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabB.getId(), tabA.getId());
+                    mTabModel.mergeTabsToGroup(tabB.getId(), tabA.getId());
                     titles[1] = tabA.getTitle();
                     titles[0] = tabB.getTitle();
                     closeTabs(
@@ -1499,9 +1507,11 @@ public class RecentlyClosedBridgeTest {
     /** Tests closing a tab will be saved as a TAB session entry in tab restore service. */
     @Test
     @MediumTest
+    // Cast via wildcard-typed intermediate List is checked by javac as unchecked.
+    @SuppressWarnings("unchecked")
     public void testCloseTabSaveAsTabSessionRestoreEntry() {
         final String[] urls = new String[] {getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[1];
         ThreadUtils.runOnUiThreadBlocking(
@@ -1510,7 +1520,7 @@ public class RecentlyClosedBridgeTest {
                     closeTabs(TabClosureParams.closeTab(tabA).build());
                     mTabModel.commitTabClosure(tabA.getId());
                 });
-        final List<RecentlyClosedEntry> recentEntries = new ArrayList();
+        final List<RecentlyClosedEntry> recentEntries = new ArrayList<>();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     recentEntries.addAll(
@@ -1534,13 +1544,17 @@ public class RecentlyClosedBridgeTest {
     public void testCloseAllTabsSaveAsWindowSessionRestoreEntry() {
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
-        final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        Tab tab0 = mActivityTestRule.getActivityTab();
+        String url0 = ThreadUtils.runOnUiThreadBlocking(() -> tab0.getUrl().getSpec());
+        final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A), url0};
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
-        final String[] titles = new String[2];
+        final String[] titles = new String[3];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    // about:blank is saved as empty string.
+                    titles[2] = "";
                     titles[1] = tabA.getTitle();
                     titles[0] = tabB.getTitle();
                     closeTabs(TabClosureParams.closeAllTabs().build());
@@ -1560,7 +1574,7 @@ public class RecentlyClosedBridgeTest {
         Assert.assertTrue(RecentlyClosedBulkEvent.class.isInstance(recentEntry));
         final RecentlyClosedBulkEvent event = (RecentlyClosedBulkEvent) recentEntry;
         final List<RecentlyClosedTab> recentTabs = event.getTabs();
-        Assert.assertEquals(2, recentTabs.size());
+        Assert.assertEquals(3, recentTabs.size());
         assertTabsAre(recentTabs, titles, urls);
     }
 
@@ -1573,8 +1587,8 @@ public class RecentlyClosedBridgeTest {
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] urls = new String[] {getUrl(TEST_PAGE_B), getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urls[1], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urls[0], /* incognito= */ false);
 
         final String[] titles = new String[2];
         final int[] tabCountBeforeClosingTabs = new int[1];
@@ -1609,24 +1623,24 @@ public class RecentlyClosedBridgeTest {
     @Test
     @MediumTest
     public void testOpenRecentlyClosedTabGroupEntryWhenHasPendingTabGroupClosure() {
-        if (mTabGroupModelFilter == null) return;
+        if (mTabModel == null) return;
 
         // Tab order is inverted in RecentlyClosedEntry as most recent comes first so log data in
         // reverse.
         final String[] group1Urls = new String[] {getUrl(TEST_PAGE_C), getUrl(TEST_PAGE_B)};
         final String[] group2Urls = new String[] {getUrl(TEST_PAGE_A)};
-        final Tab tabA = sActivityTestRule.loadUrlInNewTab(group2Urls[0], /* incognito= */ false);
-        final Tab tabB = sActivityTestRule.loadUrlInNewTab(group1Urls[1], /* incognito= */ false);
-        final Tab tabC = sActivityTestRule.loadUrlInNewTab(group1Urls[0], /* incognito= */ false);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(group2Urls[0], /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(group1Urls[1], /* incognito= */ false);
+        final Tab tabC = mActivityTestRule.loadUrlInNewTab(group1Urls[0], /* incognito= */ false);
 
         final String[] group1Titles = new String[2];
         final String[] group2Titles = new String[1];
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mTabGroupModelFilter.mergeTabsToGroup(tabC.getId(), tabB.getId());
-                    mTabGroupModelFilter.setTabGroupTitle(tabB.getId(), "Group 1");
-                    mTabGroupModelFilter.createSingleTabGroup(tabA);
-                    mTabGroupModelFilter.setTabGroupTitle(tabA.getId(), "Group 2");
+                    mTabModel.mergeTabsToGroup(tabC.getId(), tabB.getId());
+                    mTabModel.setTabGroupTitle(tabB.getTabGroupId(), "Group 1");
+                    mTabModel.createSingleTabGroup(tabA);
+                    mTabModel.setTabGroupTitle(tabA.getTabGroupId(), "Group 2");
                     group2Titles[0] = tabA.getTitle();
                     group1Titles[1] = tabB.getTitle();
                     group1Titles[0] = tabC.getTitle();
@@ -1656,40 +1670,33 @@ public class RecentlyClosedBridgeTest {
                 });
 
         // 1. Blank tab
-        // 2. Restored tabB
-        // 3. Restored tabC
+        // 2. Restored tabA (Group 2)
         final List<Tab> tabs = getAllTabs();
-        Assert.assertEquals(3, tabs.size());
-        Assert.assertEquals(group1Titles[1], ChromeTabUtils.getTitleOnUiThread(tabs.get(1)));
-        Assert.assertEquals(group1Urls[1], ChromeTabUtils.getUrlOnUiThread(tabs.get(1)).getSpec());
-        Assert.assertEquals(group1Titles[0], ChromeTabUtils.getTitleOnUiThread(tabs.get(2)));
-        Assert.assertEquals(group1Urls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(2)).getSpec());
+        Assert.assertEquals(2, tabs.size());
+        Assert.assertEquals(group2Titles[0], ChromeTabUtils.getTitleOnUiThread(tabs.get(1)));
+        Assert.assertEquals(group2Urls[0], ChromeTabUtils.getUrlOnUiThread(tabs.get(1)).getSpec());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     Assert.assertEquals(
-                            "Group 1", mTabGroupModelFilter.getTabGroupTitle(tabs.get(1).getId()));
-                    Assert.assertTrue(mTabGroupModelFilter.isTabInTabGroup(tabs.get(1)));
-                    Assert.assertEquals(
-                            Arrays.asList(new Tab[] {tabs.get(1), tabs.get(2)}),
-                            mTabGroupModelFilter.getRelatedTabList(tabs.get(1).getId()));
+                            "Group 2", mTabModel.getTabGroupTitle(tabs.get(1).getTabGroupId()));
+                    Assert.assertTrue(mTabModel.isTabInTabGroup(tabs.get(1)));
                 });
-
         tabCount = getRecentEntriesAndReturnActiveTabCount(recentEntries);
-        Assert.assertEquals(3, tabCount);
+        Assert.assertEquals(2, tabCount);
         Assert.assertEquals(1, recentEntries.size());
         assertEntryIs(
                 recentEntries.get(0),
                 RecentlyClosedGroup.class,
-                new String[] {"Group 2"},
-                group2Titles,
-                group2Urls);
+                new String[] {"Group 1"},
+                group1Titles,
+                group1Urls);
     }
 
     // TODO(crbug.com/40218713): Add a test a case where bulk closures remain in the native service,
     // but the flag state is flipped.
 
     private String getUrl(String relativeUrl) {
-        return sActivityTestRule.getTestServer().getURL(relativeUrl);
+        return mActivityTestRule.getTestServer().getURL(relativeUrl);
     }
 
     private Tab freezeTab(Tab tab) {
@@ -1705,7 +1712,7 @@ public class RecentlyClosedBridgeTest {
     }
 
     private void assertTabsAre(List<RecentlyClosedTab> tabs, String[] titles, String[] urls) {
-        assert titles.length == urls.length;
+        assertThat(titles.length).isEqualTo(urls.length);
         Assert.assertEquals("Unexpected number of tabs.", titles.length, tabs.size());
         for (int i = 0; i < titles.length; i++) {
             Assert.assertEquals("Tab " + i + " title mismatch.", titles[i], tabs.get(i).getTitle());
@@ -1720,18 +1727,19 @@ public class RecentlyClosedBridgeTest {
             String[] groupTitles,
             String[] titles,
             String[] urls) {
-        assert titles.length == urls.length;
-        Assert.assertTrue(cls.isInstance(entry));
+        assertThat(titles.length).isEqualTo(urls.length);
+        Assert.assertTrue(
+                "Entry was " + entry.getClass() + " wanted " + cls, cls.isInstance(entry));
 
         if (cls == RecentlyClosedTab.class) {
-            assert groupTitles.length == 0;
-            assert titles.length == 1;
+            assertThat(groupTitles.length).isEqualTo(0);
+            assertThat(titles.length).isEqualTo(1);
             RecentlyClosedTab tab = (RecentlyClosedTab) entry;
             assertTabsAre(Collections.singletonList(tab), titles, urls);
             return;
         }
         if (cls == RecentlyClosedGroup.class) {
-            assert groupTitles.length == 1;
+            assertThat(groupTitles.length).isEqualTo(1);
             RecentlyClosedGroup group = (RecentlyClosedGroup) entry;
             Assert.assertEquals(groupTitles[0], group.getTitle());
             assertTabsAre(group.getTabs(), titles, urls);
@@ -1746,6 +1754,62 @@ public class RecentlyClosedBridgeTest {
                 expectedTitles.containsAll(actualTitles)
                         && actualTitles.containsAll(expectedTitles));
         assertTabsAre(event.getTabs(), titles, urls);
+    }
+
+    @Test
+    @MediumTest
+    public void testOpenRecentlyClosedTab_CommitsPendingClosures() {
+        final String urlA = getUrl(TEST_PAGE_A);
+        final String urlB = getUrl(TEST_PAGE_B);
+        final Tab tabA = mActivityTestRule.loadUrlInNewTab(urlA, /* incognito= */ false);
+        final Tab tabB = mActivityTestRule.loadUrlInNewTab(urlB, /* incognito= */ false);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    // Close tabB without undo so it goes to recently closed.
+                    closeTabs(TabClosureParams.closeTab(tabB).allowUndo(false).build());
+                    // Close tabA with undo so it is pending.
+                    closeTabs(TabClosureParams.closeTab(tabA).allowUndo(true).build());
+                });
+
+        // Verify tabA closure is pending.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Assert.assertTrue(mTabModel.isClosurePending(tabA.getId()));
+                });
+
+        final List<RecentlyClosedEntry> recentEntries = new ArrayList<>();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    recentEntries.addAll(
+                            mRecentlyClosedBridge.getRecentlyClosedEntries(MAX_ENTRY_COUNT));
+                });
+
+        RecentlyClosedTab recentTabB = null;
+        for (RecentlyClosedEntry entry : recentEntries) {
+            if (entry instanceof RecentlyClosedTab) {
+                RecentlyClosedTab rt = (RecentlyClosedTab) entry;
+                if (rt.getUrl().getSpec().equals(urlB)) {
+                    recentTabB = rt;
+                    break;
+                }
+            }
+        }
+        Assert.assertNotNull(recentTabB);
+        final RecentlyClosedTab finalRecentTabB = recentTabB;
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    // Restore tabB. This should commit tabA's closure.
+                    mRecentlyClosedBridge.openRecentlyClosedTab(
+                            mTabModel, finalRecentTabB, WindowOpenDisposition.NEW_FOREGROUND_TAB);
+                });
+
+        // Verify tabA closure is no longer pending (it was committed).
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Assert.assertFalse(mTabModel.isClosurePending(tabA.getId()));
+                });
     }
 
     private List<Tab> getAllTabs() {
@@ -1772,16 +1836,29 @@ public class RecentlyClosedBridgeTest {
 
     private void restartActivity() {
         ThreadUtils.runOnUiThreadBlocking(mActivity::saveState);
-        sActivityTestRule.recreateActivity();
-        mActivity = sActivityTestRule.getActivity();
+        mActivityTestRule.recreateActivity();
+        mActivity = mActivityTestRule.getActivity();
         mTabModelSelector = mActivity.getTabModelSelectorSupplier().get();
         CriteriaHelper.pollUiThread(mTabModelSelector::isTabStateInitialized);
         mTabModel = mTabModelSelector.getModel(false);
-        mTabGroupModelFilter =
-                mTabModelSelector.getTabGroupModelFilterProvider().getTabGroupModelFilter(false);
+        mTabModel = mTabModelSelector.getModel(false);
     }
 
     private void closeTabs(TabClosureParams params) {
         mTabModel.getTabRemover().closeTabs(params, /* allowDialog= */ false);
+    }
+
+    private String tabsToString(List<Tab> tabs) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("[");
+        for (Tab tab : tabs) {
+            builder.append("Tab id: ");
+            builder.append(tab.getId());
+            builder.append(" url: ");
+            builder.append(tab.getUrl().getSpec());
+            builder.append(", ");
+        }
+        builder.append("]");
+        return builder.toString();
     }
 }

@@ -17,8 +17,8 @@
 namespace blink {
 
 struct WorkerMainScriptLoadParameters;
+struct WebPolicyContainer;
 
-// PlzDedicatedWorker:
 // WebDedicatedWorker is the interface to access blink::DedicatedWorker from
 // content::DedicatedWorkerHostFactoryClient.
 class WebDedicatedWorker {
@@ -41,6 +41,7 @@ class WebDedicatedWorker {
           worker_main_script_load_params,
       CrossVariantMojoRemote<mojom::BackForwardCacheControllerHostInterfaceBase>
           back_forward_cache_controller_host,
+      std::unique_ptr<WebPolicyContainer> policy_container,
       CrossVariantMojoReceiver<mojom::ReportingObserverInterfaceBase>
           coep_reporting_observer,
       CrossVariantMojoReceiver<mojom::ReportingObserverInterfaceBase>

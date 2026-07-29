@@ -10,6 +10,7 @@
 
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/metrics/model/constants.h"
@@ -21,13 +22,6 @@
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 
 namespace {
-
-// List of ConsentLevel in order of consideration when getting the gaia
-// id of the signed-in identity.
-constexpr signin::ConsentLevel kConsentLevels[] = {
-    signin::ConsentLevel::kSync,
-    signin::ConsentLevel::kSignin,
-};
 
 // Stores PushNotificationClientId and the associated histogram name for
 // use by the IOSPushNotificationsMetricsProvider.
@@ -69,6 +63,11 @@ constexpr PushNotificationReportInfo kPushNotificationReportInfos[] = {
         .client_id = PushNotificationClientId::kCommerce,
         .requires_signed_in_identity = true,
     },
+    {
+        .histogram_name = kRemindersClientStatusByProviderHistogram,
+        .client_id = PushNotificationClientId::kReminders,
+        .requires_signed_in_identity = false,
+    },
 };
 
 // Records for histogram for `info` for an user signed-in with `gaia_id`.
@@ -90,12 +89,10 @@ GaiaId GetSignedInGaiaId(ProfileIOS* profile) {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
 
-  for (signin::ConsentLevel consent_level : kConsentLevels) {
-    if (!identity_manager->HasPrimaryAccount(consent_level)) {
-      continue;
-    }
-
-    return identity_manager->GetPrimaryAccountInfo(consent_level).gaia;
+  if (identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
+    return identity_manager
+        ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+        .gaia;
   }
 
   return GaiaId();

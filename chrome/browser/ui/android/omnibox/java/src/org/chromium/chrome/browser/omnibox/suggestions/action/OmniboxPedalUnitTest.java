@@ -20,12 +20,15 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.omnibox.R;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.components.browser_ui.settings.SettingsNavigation.SettingsFragment;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.components.omnibox.action.ActionPresentationMode;
 import org.chromium.components.omnibox.action.OmniboxAction;
 import org.chromium.components.omnibox.action.OmniboxActionDelegate;
 import org.chromium.components.omnibox.action.OmniboxActionId;
 import org.chromium.components.omnibox.action.OmniboxPedalId;
+import org.chromium.ui.mojom.WindowOpenDisposition;
 
 import java.util.List;
 
@@ -35,7 +38,7 @@ import java.util.List;
 public class OmniboxPedalUnitTest {
     public @Rule MockitoRule mockitoRule = MockitoJUnit.rule();
     private @Mock OmniboxActionDelegate mDelegate;
-    private static List<Integer> sPedalsWithCustomIcons =
+    private static final List<Integer> sPedalsWithCustomIcons =
             List.of(OmniboxPedalId.PLAY_CHROME_DINO_GAME);
 
     @Test
@@ -82,24 +85,27 @@ public class OmniboxPedalUnitTest {
         assertThrows(
                 AssertionError.class,
                 () ->
-                        OmniboxPedal.from(
-                                new OmniboxAction(
-                                        OmniboxActionId.PEDAL,
-                                        0,
-                                        "",
-                                        "",
-                                        null,
-                                        R.style.TextAppearance_ChipText) {
-                                    @Override
-                                    public void execute(OmniboxActionDelegate d) {}
-                                }));
+                        new OmniboxAction(
+                                OmniboxActionId.PEDAL,
+                                0,
+                                "",
+                                "",
+                                null,
+                                R.style.TextAppearance_ChipText,
+                                ActionPresentationMode.CHIP,
+                                WindowOpenDisposition.CURRENT_TAB) {
+                            @Override
+                            public boolean execute(OmniboxActionDelegate d) {
+                                return true;
+                            }
+                        });
     }
 
     @Test
     public void safeCasting_successWithFactoryBuiltAction() {
         OmniboxPedal.from(
-                OmniboxActionFactoryImpl.get()
-                        .buildOmniboxPedal(0, "hint", "accessibility", OmniboxPedalId.NONE));
+                OmniboxActionFactory.buildOmniboxPedal(
+                        0, "hint", "accessibility", OmniboxPedalId.NONE));
     }
 
     @Test
@@ -162,7 +168,8 @@ public class OmniboxPedalUnitTest {
     @Test
     public void executePedal_viewChromeHistory() {
         new OmniboxPedal(0, "hint", "", OmniboxPedalId.VIEW_CHROME_HISTORY).execute(mDelegate);
-        verify(mDelegate, times(1)).loadPageInCurrentTab(UrlConstants.HISTORY_URL);
+        verify(mDelegate, times(1))
+                .loadPageInCurrentTab(UrlConstantResolver.getOriginalNativeHistoryUrl());
         verifyNoMoreInteractions(mDelegate);
     }
 

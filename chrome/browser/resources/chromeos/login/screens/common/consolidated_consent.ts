@@ -189,21 +189,21 @@ export class ConsolidatedConsent extends ConsolidatedConsentScreenElementBase {
     };
   }
 
-  private isPrivacyHubLocationEnabled: boolean;
-  private isArcEnabled: boolean;
-  private isDemo: boolean;
-  private isChildAccount: boolean;
-  private isTosHidden: boolean;
-  private usageManaged: boolean;
-  private usageOptinHidden: boolean;
-  private usageOptinHiddenLoading: boolean;
-  private backupManaged: boolean;
-  private locationManaged: boolean;
-  private usageChecked: boolean;
-  private backupChecked: boolean;
-  private locationChecked: boolean;
-  private recoveryVisible: boolean;
-  private recoveryChecked: boolean;
+  declare private isPrivacyHubLocationEnabled: boolean;
+  declare private isArcEnabled: boolean;
+  declare private isDemo: boolean;
+  declare private isChildAccount: boolean;
+  declare private isTosHidden: boolean;
+  declare private usageManaged: boolean;
+  declare private usageOptinHidden: boolean;
+  declare private usageOptinHiddenLoading: boolean;
+  declare private backupManaged: boolean;
+  declare private locationManaged: boolean;
+  declare private usageChecked: boolean;
+  declare private backupChecked: boolean;
+  declare private locationChecked: boolean;
+  declare private recoveryVisible: boolean;
+  declare private recoveryChecked: boolean;
 
   private areWebviewsInitialized: boolean;
   private configurationApplied: boolean;
@@ -527,10 +527,15 @@ export class ConsolidatedConsent extends ConsolidatedConsentScreenElementBase {
     arcTosLink.onclick = () => this.onArcTosLinkClick();
   }
 
-  private getSubtitleArcEnabled(locale: string): TrustedHTML {
+  private getSubtitleArcEnabled(locale: string, isDemo: boolean): TrustedHTML {
     const subtitle = document.createElement('div');
-    subtitle.innerHTML = this.i18nAdvancedDynamic(
-        locale, 'consolidatedConsentSubheader', {attrs: ['id']});
+    if (isDemo) {
+      subtitle.innerHTML = this.i18nAdvancedDynamic(
+          locale, 'consolidatedConsentSubheaderDemoMode', {attrs: ['id']});
+    } else {
+      subtitle.innerHTML = this.i18nAdvancedDynamic(
+          locale, 'consolidatedConsentSubheader', {attrs: ['id']});
+    }
 
     const privacyPolicyLink = subtitle.querySelector('#privacyPolicyLink');
     assert(privacyPolicyLink);
@@ -585,8 +590,14 @@ export class ConsolidatedConsent extends ConsolidatedConsentScreenElementBase {
         description.innerHTML, {tags: ['a'], attrs: ['id', 'is', 'class']});
   }
 
-  private getTitle(locale: string, isTosHidden: boolean,
-      isChildAccount: boolean): TrustedHTML {
+  private getTitle(
+      locale: string, isTosHidden: boolean, isChildAccount: boolean,
+      isDemo: boolean): TrustedHTML {
+    if (isDemo) {
+      return this.i18nAdvancedDynamic(
+          locale, 'consolidatedConsentHeaderDemoMode');
+    }
+
     if (isTosHidden) {
       return this.i18nAdvancedDynamic(
           locale, 'consolidatedConsentHeaderManaged');
@@ -597,6 +608,14 @@ export class ConsolidatedConsent extends ConsolidatedConsentScreenElementBase {
     }
 
     return this.i18nAdvancedDynamic(locale, 'consolidatedConsentHeader');
+  }
+
+  private getUsageOptIn(locale: string, isDemo: boolean): TrustedHTML {
+    if (isDemo) {
+      return this.i18nAdvancedDynamic(
+          locale, 'consolidatedConsentUsageOptInDemoMode');
+    }
+    return this.i18nAdvancedDynamic(locale, 'consolidatedConsentUsageOptIn');
   }
 
   private getUsageLearnMoreText(locale: string, isChildAccount: boolean,

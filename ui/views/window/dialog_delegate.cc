@@ -5,11 +5,11 @@
 #include "ui/views/window/dialog_delegate.h"
 
 #include <utility>
+#include <variant>
 
 #include "base/debug/alias.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -21,6 +21,8 @@
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/gfx/color_palette.h"
+#include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
@@ -63,11 +65,22 @@ class DialogWidget : public Widget {
 };
 
 bool HasCallback(
-    const absl::variant<base::OnceClosure, base::RepeatingCallback<bool()>>&
+    const std::variant<base::OnceClosure, base::RepeatingCallback<bool()>>&
         callback) {
-  return absl::visit(
+  return std::visit(
       [](const auto& variant) { return static_cast<bool>(variant); }, callback);
 }
+
+#if !BUILDFLAG(IS_APPLE)
+bool UseDesktopWidgetOverride(WidgetDelegate* delegate) {
+#if BUILDFLAG(IS_CHROMEOS)
+  return false;
+#else
+  return delegate->use_desktop_widget_override();
+#endif
+}
+
+#endif  // !BUILDFLAG(IS_APPLE)
 
 }  // namespace
 
@@ -80,7 +93,14 @@ DialogDelegate::Params::~Params() = default;
 // DialogDelegate:
 
 DialogDelegate::DialogDelegate() {
-  WidgetDelegate::RegisterWindowWillCloseCallback(
+  if (auto* const layout_provider = LayoutProvider::Get()) {
+    set_frame_margins({
+        .title = layout_provider->GetInsetsMetric(INSETS_DIALOG_TITLE),
+    });
+  }
+
+  RegisterWindowWillCloseCallback(
+      RegisterWillCloseCallbackPassKey(),
       base::BindOnce(&DialogDelegate::WindowWillClose, base::Unretained(this)));
 }
 
@@ -145,11 +165,16 @@ Widget::InitParams DialogDelegate::GetDialogWidgetInitParams(
 #if !BUILDFLAG(IS_APPLE)
   // Web-modal (ui::mojom::ModalType::kChild) dialogs with parents are marked as
   // child widgets to prevent top-level window behavior (independent movement,
-  // etc). On Mac, however, the parent may be a native window (not a
-  // views::Widget), and so the dialog must be considered top-level to gain
-  // focus and input method behaviors.
-  params.child =
-      parent && (delegate->GetModalType() == ui::mojom::ModalType::kChild);
+  // etc). However, on Mac or when forcing to use desktop widget, the
+  // dialog must be considered top-level to gain focus and input method
+  // behaviors.
+  // TODO(crbug.com/346974105): This might be wrong because it implies multiple
+  // focus managers in a widget tree. A widget tree should have a single focus
+  // manager, so that it is impossible for two widgets to have focus
+  // simultaneously.
+  params.child = parent &&
+                 (delegate->GetModalType() == ui::mojom::ModalType::kChild) &&
+                 !UseDesktopWidgetOverride(delegate);
 #endif
 
   if (BubbleDialogDelegate* bubble = delegate->AsBubbleDialogDelegate()) {
@@ -220,6 +245,10 @@ bool DialogDelegate::ShouldIgnoreButtonPressedEventHandling(
   return false;
 }
 
+bool DialogDelegate::ShouldAllowKeyEventsDuringInputProtection() const {
+  return true;
+}
+
 bool DialogDelegate::Cancel() {
   DCHECK(!already_started_close_);
   if (HasCallback(cancel_callback_)) {
@@ -237,18 +266,27 @@ bool DialogDelegate::Accept() {
 }
 
 bool DialogDelegate::RunCloseCallback(
-    absl::variant<base::OnceClosure, base::RepeatingCallback<bool()>>&
+    std::variant<base::OnceClosure, base::RepeatingCallback<bool()>>&
         callback) {
   DCHECK(!already_started_close_);
-  if (absl::holds_alternative<base::OnceClosure>(callback)) {
+  if (std::holds_alternative<base::OnceClosure>(callback)) {
     already_started_close_ = true;
-    absl::get<base::OnceClosure>(std::move(callback)).Run();
+    std::get<base::OnceClosure>(std::move(callback)).Run();
+    return true;
   } else {
-    already_started_close_ =
-        absl::get<base::RepeatingCallback<bool()>>(callback).Run();
+    base::WeakPtr<Widget> weak_ptr = GetWidget()->GetWeakPtr();
+    bool already_started_close =
+        std::get<base::RepeatingCallback<bool()>>(callback).Run();
+    // Widget may get destroyed after the callback is run, this will detect
+    // that condition.
+    if (!weak_ptr) {
+      return false;
+    }
+    already_started_close_ = already_started_close;
+    return already_started_close_;
   }
 
-  return already_started_close_;
+  NOTREACHED();
 }
 
 View* DialogDelegate::GetInitiallyFocusedView() {
@@ -286,10 +324,9 @@ ClientView* DialogDelegate::CreateClientView(Widget* widget) {
   return new DialogClientView(widget, TransferOwnershipOfContentsView());
 }
 
-std::unique_ptr<NonClientFrameView> DialogDelegate::CreateNonClientFrameView(
-    Widget* widget) {
+std::unique_ptr<FrameView> DialogDelegate::CreateFrameView(Widget* widget) {
   return use_custom_frame() ? CreateDialogFrameView(widget)
-                            : WidgetDelegate::CreateNonClientFrameView(widget);
+                            : WidgetDelegate::CreateFrameView(widget);
 }
 
 void DialogDelegate::WindowWillClose() {
@@ -305,7 +342,7 @@ void DialogDelegate::WindowWillClose() {
     // `RunCloseCallback` takes a non-const reference to this variant to support
     // the accept and cancel callbacks. It doesn't make sense to be storing a
     // variant for close callbacks, so we construct the variant here instead.
-    absl::variant<base::OnceClosure, base::RepeatingCallback<bool()>>
+    std::variant<base::OnceClosure, base::RepeatingCallback<bool()>>
         close_callback_wrapped(std::move(close_callback_));
     RunCloseCallback(close_callback_wrapped);
   }
@@ -325,25 +362,33 @@ bool DialogDelegate::EscShouldCancelDialog() const {
   // Use cancel as the Esc action if there's no defined "close" action. If the
   // delegate has either specified a closing action or a close-x they can expect
   // it to be called on Esc.
-  return !close_callback_ && !ShouldShowCloseButton();
+  return esc_should_cancel_dialog_override_.value_or(!close_callback_ &&
+                                                     !ShouldShowCloseButton());
 }
 
 // static
-std::unique_ptr<NonClientFrameView> DialogDelegate::CreateDialogFrameView(
+std::unique_ptr<FrameView> DialogDelegate::CreateDialogFrameView(
     Widget* widget) {
-  LayoutProvider* provider = LayoutProvider::Get();
-  auto frame = std::make_unique<BubbleFrameView>(
-      provider->GetInsetsMetric(INSETS_DIALOG_TITLE), gfx::Insets());
-
   const BubbleBorder::Shadow kShadow = BubbleBorder::DIALOG_SHADOW;
   std::unique_ptr<BubbleBorder> border =
       std::make_unique<BubbleBorder>(BubbleBorder::FLOAT, kShadow);
+
   DialogDelegate* delegate = widget->widget_delegate()->AsDialogDelegate();
+  std::unique_ptr<views::BubbleFrameView> frame;
+
   if (delegate) {
+    const FrameMargins& margins = delegate->frame_margins();
+    frame = std::make_unique<BubbleFrameView>(margins.title, gfx::Insets());
     if (delegate->GetParams().round_corners) {
-      border->SetCornerRadius(delegate->GetCornerRadius());
+      border->set_rounded_corners(
+          gfx::RoundedCornersF(delegate->GetCornerRadius()));
     }
+    frame->SetFootnoteMargins(margins.footnote);
     frame->SetFootnoteView(delegate->DisownFootnoteView());
+  } else {
+    LayoutProvider* provider = LayoutProvider::Get();
+    frame = std::make_unique<BubbleFrameView>(
+        provider->GetInsetsMetric(INSETS_DIALOG_TITLE), gfx::Insets());
   }
   frame->SetBubbleBorder(std::move(border));
   return frame;
@@ -394,7 +439,7 @@ views::View* DialogDelegate::GetFootnoteViewForTesting() const {
     return footnote_view_.get();
   }
 
-  NonClientFrameView* frame = GetWidget()->non_client_view()->frame_view();
+  FrameView* frame = GetWidget()->non_client_view()->frame_view();
 
   // CreateDialogFrameView above always uses BubbleFrameView. There are
   // subclasses that override CreateDialogFrameView, but none of them override
@@ -577,7 +622,7 @@ int DialogDelegate::GetCornerRadius() const {
     return 0;
   }
 #if BUILDFLAG(IS_MAC)
-  // TODO(crbug.com/40144839): On Mac MODAL_TYPE_WINDOW is implemented using
+  // TODO(crbug.com/40144839): On Mac ModalType::kWindow is implemented using
   // sheets which causes visual artifacts when corner radius is increased for
   // modal types. Remove this after this issue has been addressed.
   if (GetModalType() == ui::mojom::ModalType::kWindow) {
@@ -595,10 +640,20 @@ std::unique_ptr<View> DialogDelegate::DisownFootnoteView() {
   return std::move(footnote_view_);
 }
 
+void DialogDelegate::set_frame_margins(const FrameMarginsParams& margins) {
+  if (margins.contents) {
+    margins_.contents = margins.contents.value();
+  }
+  if (margins.title) {
+    margins_.title = margins.title.value();
+  }
+  if (margins.footnote) {
+    margins_.footnote = margins.footnote.value();
+  }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // DialogDelegateView:
-
-DialogDelegateView::DialogDelegateView() = default;
 
 DialogDelegateView::~DialogDelegateView() = default;
 
@@ -613,6 +668,8 @@ const Widget* DialogDelegateView::GetWidget() const {
 View* DialogDelegateView::GetContentsView() {
   return this;
 }
+
+DialogDelegateView::DialogDelegateView() = default;
 
 BEGIN_METADATA(DialogDelegateView)
 END_METADATA

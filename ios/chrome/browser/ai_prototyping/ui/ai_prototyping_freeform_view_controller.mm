@@ -6,13 +6,13 @@
 
 #import <UIKit/UIKit.h>
 
-#import "base/check.h"
 #import "base/logging.h"
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/optimization_guide/optimization_guide_buildflags.h"
 #import "components/optimization_guide/proto/features/bling_prototyping.pb.h"
 #import "components/optimization_guide/proto/string_value.pb.h"
+#import "ios/chrome/browser/ai_prototyping/features.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_mutator.h"
 #import "ios/chrome/browser/ai_prototyping/utils/ai_prototyping_constants.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -29,6 +29,9 @@ using optimization_guide::proto::BlingPrototypingRequest_ModelEnum_Name;
   UITextField* _systemInstructionsField;
   UITextField* _queryField;
   UISwitch* _includePageContextSwitch;
+  UISwitch* _richExtractionSwitch;
+  UISwitch* _uploadMQLSSwitch;
+  UISwitch* _storePageContextSwitch;
   UISlider* _temperatureSlider;
   UILabel* _temperatureLabel;
   UITextView* _responseContainer;
@@ -52,8 +55,8 @@ using optimization_guide::proto::BlingPrototypingRequest_ModelEnum_Name;
   [super viewDidLoad];
 
   self.sheetPresentationController.detents = @[
-    UISheetPresentationControllerDetent.mediumDetent,
-    UISheetPresentationControllerDetent.largeDetent,
+    [UISheetPresentationControllerDetent mediumDetent],
+    [UISheetPresentationControllerDetent largeDetent],
   ];
 
   // Title/header.
@@ -97,6 +100,78 @@ using optimization_guide::proto::BlingPrototypingRequest_ModelEnum_Name;
   switchContainer.axis = UILayoutConstraintAxisHorizontal;
   switchContainer.spacing = kButtonStackViewSpacing;
   switchContainer.alignment = UIStackViewAlignmentCenter;
+
+  // Rich extraction switch.
+  _richExtractionSwitch = [[UISwitch alloc] init];
+  _richExtractionSwitch.translatesAutoresizingMaskIntoConstraints = NO;
+  _richExtractionSwitch.on = YES;
+
+  UILabel* richExtractionSwitchLabel = [[UILabel alloc] init];
+  richExtractionSwitchLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  richExtractionSwitchLabel.numberOfLines = 0;
+  richExtractionSwitchLabel.text = @"Extract with APC v2";
+
+  UIStackView* richExtractionSwitchContainer =
+      [[UIStackView alloc] initWithArrangedSubviews:@[
+        _richExtractionSwitch, richExtractionSwitchLabel
+      ]];
+  richExtractionSwitchContainer.translatesAutoresizingMaskIntoConstraints = NO;
+  richExtractionSwitchContainer.axis = UILayoutConstraintAxisHorizontal;
+  richExtractionSwitchContainer.spacing = kButtonStackViewSpacing;
+  richExtractionSwitchContainer.alignment = UIStackViewAlignmentCenter;
+
+  // MQLS upload switch.
+  _uploadMQLSSwitch = [[UISwitch alloc] init];
+  _uploadMQLSSwitch.translatesAutoresizingMaskIntoConstraints = NO;
+  // Tester must set flag to enable upload to MQLS.
+  if (IsUploadBlingAIPrototypingDataEnabled()) {
+    _uploadMQLSSwitch.enabled = YES;
+    _uploadMQLSSwitch.on = YES;
+  } else {
+    _uploadMQLSSwitch.enabled = NO;
+    _uploadMQLSSwitch.on = NO;
+  }
+
+  UILabel* uploadMQLSSwitchLabel = [[UILabel alloc] init];
+  uploadMQLSSwitchLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  uploadMQLSSwitchLabel.numberOfLines = 0;
+  uploadMQLSSwitchLabel.text =
+      l10n_util::GetNSString(IDS_IOS_AI_PROTOTYPING_MQLS_SWITCH);
+
+  UIStackView* uploadMQLSSwitchContainer = [[UIStackView alloc]
+      initWithArrangedSubviews:@[ _uploadMQLSSwitch, uploadMQLSSwitchLabel ]];
+  uploadMQLSSwitchContainer.translatesAutoresizingMaskIntoConstraints = NO;
+  uploadMQLSSwitchContainer.axis = UILayoutConstraintAxisHorizontal;
+  uploadMQLSSwitchContainer.spacing = kButtonStackViewSpacing;
+  uploadMQLSSwitchContainer.alignment = UIStackViewAlignmentCenter;
+
+  // Store page context on device switch.
+  _storePageContextSwitch = [[UISwitch alloc] init];
+  _storePageContextSwitch.translatesAutoresizingMaskIntoConstraints = NO;
+  // Tester must set flag to enable storing page context locally.
+  if (IsStoreBlingAIPrototypingPageContextLocallyEnabled()) {
+    _storePageContextSwitch.enabled = YES;
+    _storePageContextSwitch.on = YES;
+  } else {
+    _storePageContextSwitch.enabled = NO;
+    _storePageContextSwitch.on = NO;
+  }
+
+  UILabel* storePageContextSwitchLabel = [[UILabel alloc] init];
+  storePageContextSwitchLabel.translatesAutoresizingMaskIntoConstraints = NO;
+  storePageContextSwitchLabel.numberOfLines = 0;
+  storePageContextSwitchLabel.text =
+      l10n_util::GetNSString(IDS_IOS_AI_PROTOTYPING_STORE_PAGE_CONTEXT_SWITCH);
+
+  UIStackView* storePageContextSwitchContainer =
+      [[UIStackView alloc] initWithArrangedSubviews:@[
+        _storePageContextSwitch, storePageContextSwitchLabel
+      ]];
+  storePageContextSwitchContainer.translatesAutoresizingMaskIntoConstraints =
+      NO;
+  storePageContextSwitchContainer.axis = UILayoutConstraintAxisHorizontal;
+  storePageContextSwitchContainer.spacing = kButtonStackViewSpacing;
+  storePageContextSwitchContainer.alignment = UIStackViewAlignmentCenter;
 
   // Temperature slider.
   _temperatureSlider = [[UISlider alloc] init];
@@ -193,8 +268,9 @@ using optimization_guide::proto::BlingPrototypingRequest_ModelEnum_Name;
 
   UIStackView* stackView = [[UIStackView alloc] initWithArrangedSubviews:@[
     label, systemInstructionsFieldContainer, queryFieldContainer,
-    _modelPickerButton, switchContainer, temperatureContainer, buttonStackView,
-    _responseContainer
+    _modelPickerButton, switchContainer, richExtractionSwitchContainer,
+    uploadMQLSSwitchContainer, storePageContextSwitchContainer,
+    temperatureContainer, buttonStackView, _responseContainer
   ]];
   stackView.translatesAutoresizingMaskIntoConstraints = NO;
   stackView.axis = UILayoutConstraintAxisVertical;
@@ -245,6 +321,9 @@ using optimization_guide::proto::BlingPrototypingRequest_ModelEnum_Name;
   [self.mutator executeFreeformServerQuery:_queryField.text
                         systemInstructions:_systemInstructionsField.text
                         includePageContext:_includePageContextSwitch.isOn
+                            richExtraction:_richExtractionSwitch.isOn
+                              uploadToMQLS:_uploadMQLSSwitch.isOn
+                          storePageContext:_storePageContextSwitch.isOn
                                temperature:_temperatureSlider.value
                                      model:_currentModelPicked];
 }
@@ -315,8 +394,10 @@ using optimization_guide::proto::BlingPrototypingRequest_ModelEnum_Name;
        i <= optimization_guide::proto::
                 BlingPrototypingRequest_ModelEnum_ModelEnum_MAX;
        ++i) {
-    CHECK(optimization_guide::proto::BlingPrototypingRequest_ModelEnum_IsValid(
-        i));
+    if (!optimization_guide::proto::BlingPrototypingRequest_ModelEnum_IsValid(
+            i)) {
+      continue;
+    }
 
     BlingPrototypingRequest_ModelEnum enum_value =
         static_cast<BlingPrototypingRequest_ModelEnum>(i);

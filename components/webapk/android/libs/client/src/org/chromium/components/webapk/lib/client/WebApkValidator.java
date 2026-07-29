@@ -43,8 +43,8 @@ import java.nio.channels.FileChannel;
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedList;
 import java.util.List;
 
 /**
@@ -176,6 +176,9 @@ public class WebApkValidator {
         List<ResolveInfo> infos = resolveInfosForUrlAndOptionalPackage(context, url, webApkPackage);
         for (ResolveInfo info : infos) {
             if (info.activityInfo != null) {
+                if (!info.activityInfo.packageName.equals(webApkPackage)) {
+                    continue;
+                }
                 @ValidationResult
                 int result = isValidWebApkInternal(context, info.activityInfo.packageName);
                 switch (result) {
@@ -233,7 +236,7 @@ public class WebApkValidator {
     private static List<ResolveInfo> resolveInfosForUrlAndOptionalPackage(
             Context context, String url, @Nullable String applicationPackage) {
         Intent intent = createWebApkIntentForUrlAndOptionalPackage(url, applicationPackage);
-        if (intent == null) return new LinkedList<>();
+        if (intent == null) return new ArrayList<>();
 
         // StrictMode is relaxed due to https://crbug.com/843092.
         StrictMode.ThreadPolicy policy = StrictMode.allowThreadDiskReads();
@@ -246,7 +249,7 @@ public class WebApkValidator {
             // We used to catch only java.util.MissingResourceException, but we need to catch
             // more exceptions to handle "Package manager has died" exception.
             // http://crbug.com/794363
-            return new LinkedList<>();
+            return new ArrayList<>();
         } finally {
             StrictMode.setThreadPolicy(policy);
         }
@@ -363,15 +366,10 @@ public class WebApkValidator {
         }
 
         intent.addCategory(Intent.CATEGORY_BROWSABLE);
+        intent.setComponent(null);
+        intent.setSelector(null);
         if (applicationPackage != null) {
             intent.setPackage(applicationPackage);
-        } else {
-            intent.setComponent(null);
-        }
-        Intent selector = intent.getSelector();
-        if (selector != null) {
-            selector.addCategory(Intent.CATEGORY_BROWSABLE);
-            selector.setComponent(null);
         }
         return intent;
     }
@@ -466,7 +464,7 @@ public class WebApkValidator {
 
             // TODO(scottkirkwood): remove this log once well tested.
             if (DEBUG) {
-                Log.d(TAG, "File " + packageFilename + ": " + result);
+                Log.d(TAG, "File %s: %d", packageFilename, result);
             }
             return result == WebApkVerifySignature.Error.OK;
         } catch (Exception e) {

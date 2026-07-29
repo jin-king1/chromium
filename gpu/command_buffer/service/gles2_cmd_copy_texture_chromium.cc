@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "gpu/command_buffer/service/gles2_cmd_copy_texture_chromium.h"
 
 #include <stddef.h>
@@ -14,7 +9,10 @@
 #include <algorithm>
 #include <unordered_map>
 
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
+#include "base/numerics/checked_math.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/gles2_cmd_copy_texture_chromium_utils.h"
 #include "gpu/command_buffer/service/context_state.h"
@@ -23,6 +21,7 @@
 #include "gpu/command_buffer/service/gles2_cmd_copy_tex_image.h"
 #include "gpu/command_buffer/service/shader_manager.h"
 #include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/command_buffer/service/transform_feedback_manager.h"
 #include "ui/gl/gl_enums.h"
 #include "ui/gl/gl_version_info.h"
 
@@ -33,7 +32,7 @@ namespace {
 
 enum {
   SAMPLER_2D,
-  SAMPLER_RECTANGLE_ARB,
+  SAMPLER_RECTANGLE_ANGLE,
   SAMPLER_EXTERNAL_OES,
   NUM_SAMPLERS
 };
@@ -132,8 +131,8 @@ ShaderId GetFragmentShaderId(unsigned glslVersion,
     case GL_TEXTURE_2D:
       targetIndex = SAMPLER_2D;
       break;
-    case GL_TEXTURE_RECTANGLE_ARB:
-      targetIndex = SAMPLER_RECTANGLE_ARB;
+    case GL_TEXTURE_RECTANGLE_ANGLE:
+      targetIndex = SAMPLER_RECTANGLE_ANGLE;
       break;
     case GL_TEXTURE_EXTERNAL_OES:
       targetIndex = SAMPLER_EXTERNAL_OES;
@@ -414,7 +413,7 @@ std::string GetFragmentShaderSource(unsigned glslVersion,
       case GL_TEXTURE_EXTERNAL_OES:
         source += "#define TextureLookup texture2D\n";
         break;
-      case GL_TEXTURE_RECTANGLE_ARB:
+      case GL_TEXTURE_RECTANGLE_ANGLE:
         source += "#define TextureLookup texture2DRect\n";
         break;
       default:
@@ -433,7 +432,7 @@ std::string GetFragmentShaderSource(unsigned glslVersion,
     case GL_TEXTURE_2D:
       source += "#define SamplerType sampler2D\n";
       break;
-    case GL_TEXTURE_RECTANGLE_ARB:
+    case GL_TEXTURE_RECTANGLE_ANGLE:
       source += "#define SamplerType sampler2DRect\n";
       break;
     case GL_TEXTURE_EXTERNAL_OES:
@@ -495,7 +494,8 @@ void DeleteShader(GLuint shader) {
     glDeleteShader(shader);
 }
 
-bool BindFramebufferTexture2D(GLenum target,
+bool BindFramebufferTexture2D(DecoderContext* decoder,
+                              GLenum target,
                               GLuint texture_id,
                               GLint level,
                               GLuint framebuffer) {
@@ -503,7 +503,7 @@ bool BindFramebufferTexture2D(GLenum target,
       gpu::gles2::GLES2Util::GLFaceTargetToTextureTarget(target);
 
   DCHECK(binding_target == GL_TEXTURE_2D ||
-         binding_target == GL_TEXTURE_RECTANGLE_ARB ||
+         binding_target == GL_TEXTURE_RECTANGLE_ANGLE ||
          binding_target == GL_TEXTURE_CUBE_MAP);
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(binding_target, texture_id);
@@ -515,7 +515,7 @@ bool BindFramebufferTexture2D(GLenum target,
   glTexParameterf(binding_target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glTexParameteri(binding_target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(binding_target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, framebuffer);
+  decoder->BindFramebuffer(GL_FRAMEBUFFER, framebuffer);
   glFramebufferTexture2DEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target,
                             texture_id, level);
 
@@ -549,7 +549,7 @@ void DoCopyTexImage2D(
   DCHECK(dest_binding_target == GL_TEXTURE_2D ||
          dest_binding_target == GL_TEXTURE_CUBE_MAP);
   DCHECK(source_level == 0 || decoder->GetFeatureInfo()->IsES3Capable());
-  if (BindFramebufferTexture2D(source_target, source_id, source_level,
+  if (BindFramebufferTexture2D(decoder, source_target, source_id, source_level,
                                framebuffer)) {
     glBindTexture(dest_binding_target, dest_id);
     glTexParameterf(dest_binding_target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -601,13 +601,13 @@ void DoCopyTexSubImage2D(
     GLuint framebuffer,
     gpu::gles2::CopyTexImageResourceManager* luma_emulation_blitter) {
   DCHECK(source_target == GL_TEXTURE_2D ||
-         source_target == GL_TEXTURE_RECTANGLE_ARB);
+         source_target == GL_TEXTURE_RECTANGLE_ANGLE);
   GLenum dest_binding_target =
       gpu::gles2::GLES2Util::GLFaceTargetToTextureTarget(dest_target);
   DCHECK(dest_binding_target == GL_TEXTURE_2D ||
          dest_binding_target == GL_TEXTURE_CUBE_MAP);
   DCHECK(source_level == 0 || decoder->GetFeatureInfo()->IsES3Capable());
-  if (BindFramebufferTexture2D(source_target, source_id, source_level,
+  if (BindFramebufferTexture2D(decoder, source_target, source_id, source_level,
                                framebuffer)) {
     glBindTexture(dest_binding_target, dest_id);
     glTexParameterf(dest_binding_target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -641,57 +641,74 @@ void DoCopyTexSubImage2D(
 }
 
 // Convert RGBA/UNSIGNED_BYTE source to RGB/UNSIGNED_BYTE destination.
-void convertToRGB(const uint8_t* source,
-                  uint8_t* destination,
-                  unsigned length) {
-  for (unsigned i = 0; i < length; ++i) {
-    destination[0] = source[0];
-    destination[1] = source[1];
-    destination[2] = source[2];
-    source += 4;
-    destination += 3;
+void convertToRGB(base::span<const uint8_t> source,
+                  base::span<uint8_t> destination, size_t length) {
+  for (size_t i = 0; i < length; ++i) {
+    size_t src_idx = i * 4;
+    size_t dest_idx = i * 3;
+    destination[dest_idx] = source[src_idx];
+    destination[dest_idx + 1] = source[src_idx + 1];
+    destination[dest_idx + 2] = source[src_idx + 2];
   }
 }
 
 // Convert RGBA/UNSIGNED_BYTE source to RGB/FLOAT destination.
-void convertToRGBFloat(const uint8_t* source,
-                       float* destination,
-                       unsigned length) {
+void convertToRGBFloat(base::span<const uint8_t> source,
+                       base::span<float> destination, size_t length) {
   const float scaleFactor = 1.0f / 255.0f;
-  for (unsigned i = 0; i < length; ++i) {
-    destination[0] = source[0] * scaleFactor;
-    destination[1] = source[1] * scaleFactor;
-    destination[2] = source[2] * scaleFactor;
-    source += 4;
-    destination += 3;
+  for (size_t i = 0; i < length; ++i) {
+    size_t src_idx = i * 4;
+    size_t dest_idx = i * 3;
+    destination[dest_idx] = source[src_idx] * scaleFactor;
+    destination[dest_idx + 1] = source[src_idx + 1] * scaleFactor;
+    destination[dest_idx + 2] = source[src_idx + 2] * scaleFactor;
   }
 }
 
 // Prepare the image data to be uploaded to a texture in pixel unpack buffer.
-void PrepareUnpackBuffer(GLuint buffer[2],
+bool PrepareUnpackBuffer(base::span<const GLuint> buffer,
                          GLenum format,
                          GLenum type,
                          GLsizei width,
                          GLsizei height) {
-  uint32_t pixel_num = width * height;
+  base::CheckedNumeric<uint32_t> checked_pixel_num = width;
+  checked_pixel_num *= height;
+  uint32_t pixel_num;
+  if (!checked_pixel_num.AssignIfValid(&pixel_num)) {
+    return false;
+  }
+
+  // We're about to read pixels, so we need to reset PACK params
+  glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
 
   // Result of glReadPixels with format == GL_RGB and type == GL_UNSIGNED_BYTE
-  // from read framebuffer in RGBA fromat is not correct on desktop core
+  // from read framebuffer in RGBA format is not correct on desktop core
   // profile on both Linux Mesa and Linux NVIDIA. This may be a driver bug.
   if (format == GL_RGBA && type == GL_UNSIGNED_BYTE) {
     uint32_t bytes_per_group =
         gpu::gles2::GLES2Util::ComputeImageGroupSize(format, type);
+    base::CheckedNumeric<uint32_t> checked_buf_size = checked_pixel_num;
+    checked_buf_size *= bytes_per_group;
+    uint32_t buf_size;
+    if (!checked_buf_size.AssignIfValid(&buf_size)) {
+      return false;
+    }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, buffer[0]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, pixel_num * bytes_per_group, 0,
-                 GL_STATIC_READ);
+    glBufferData(GL_PIXEL_PACK_BUFFER, buf_size, 0, GL_STATIC_READ);
     glReadPixels(0, 0, width, height, format, type, 0);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer[0]);
-    return;
+    return true;
   }
 
-  uint32_t bytes_per_group =
+  uint32_t rgba_bytes_per_group =
       gpu::gles2::GLES2Util::ComputeImageGroupSize(GL_RGBA, GL_UNSIGNED_BYTE);
-  uint32_t buf_size = pixel_num * bytes_per_group;
+  base::CheckedNumeric<uint32_t> checked_rgba_buf_size = checked_pixel_num;
+  checked_rgba_buf_size *= rgba_bytes_per_group;
+  uint32_t rgba_buf_size;
+  if (!checked_rgba_buf_size.AssignIfValid(&rgba_buf_size)) {
+    return false;
+  }
 
   if (format == GL_RGB && type == GL_FLOAT) {
 #if BUILDFLAG(IS_ANDROID)
@@ -699,48 +716,63 @@ void PrepareUnpackBuffer(GLuint buffer[2],
     // GLCopyTextureCHROMIUMES3Test.FormatCombinations in gl_tests. This is seen
     // on Nexus 5 but not Nexus 4. Read pixels to client memory, then upload to
     // pixel unpack buffer with glBufferData.
-    auto pixels = base::HeapArray<uint8_t>::Uninit(width * height * 4);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    auto pixels = base::HeapArray<uint8_t>::Uninit(pixel_num * 4);
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-    auto data = base::HeapArray<float>::Uninit(width * height * 3);
-    convertToRGBFloat(pixels.data(), data.data(), pixel_num);
-    bytes_per_group =
+    auto data = base::HeapArray<float>::Uninit(pixel_num * 3);
+    convertToRGBFloat(pixels, data, pixel_num);
+    uint32_t bytes_per_group =
         gpu::gles2::GLES2Util::ComputeImageGroupSize(format, type);
-    buf_size = pixel_num * bytes_per_group;
+    base::CheckedNumeric<uint32_t> checked_buf_size = checked_pixel_num;
+    checked_buf_size *= bytes_per_group;
+    uint32_t buf_size;
+    if (!checked_buf_size.AssignIfValid(&buf_size)) {
+      return false;
+    }
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer[1]);
     glBufferData(GL_PIXEL_UNPACK_BUFFER, buf_size, data.data(), GL_STATIC_DRAW);
 #else
     glBindBuffer(GL_PIXEL_PACK_BUFFER, buffer[0]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, buf_size, 0, GL_STATIC_READ);
+    glBufferData(GL_PIXEL_PACK_BUFFER, rgba_buf_size, 0, GL_STATIC_READ);
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-    void* pixels =
-        glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, buf_size, GL_MAP_READ_BIT);
+    void* pixels = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, rgba_buf_size,
+                                    GL_MAP_READ_BIT);
 
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer[1]);
-    bytes_per_group =
+    uint32_t bytes_per_group =
         gpu::gles2::GLES2Util::ComputeImageGroupSize(format, type);
-    buf_size = pixel_num * bytes_per_group;
+    base::CheckedNumeric<uint32_t> checked_buf_size = checked_pixel_num;
+    checked_buf_size *= bytes_per_group;
+    uint32_t buf_size;
+    if (!checked_buf_size.AssignIfValid(&buf_size)) {
+      glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+      return false;
+    }
     glBufferData(GL_PIXEL_UNPACK_BUFFER, buf_size, 0, GL_STATIC_DRAW);
     void* data =
         glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, buf_size, GL_MAP_WRITE_BIT);
-    convertToRGBFloat(static_cast<uint8_t*>(pixels), static_cast<float*>(data),
-                      pixel_num);
+    convertToRGBFloat(UNSAFE_BUFFERS(
+        base::span(static_cast<const uint8_t*>(pixels), pixel_num * 4),
+        base::span(static_cast<float*>(data), pixel_num * 3)), pixel_num);
     glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
     glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
 #endif
-    return;
+    return true;
   }
 
   if (format == GL_RGB && type == GL_UNSIGNED_BYTE) {
     glBindBuffer(GL_PIXEL_PACK_BUFFER, buffer[0]);
-    glBufferData(GL_PIXEL_PACK_BUFFER, buf_size, 0, GL_DYNAMIC_DRAW);
+    glBufferData(GL_PIXEL_PACK_BUFFER, rgba_buf_size, 0, GL_DYNAMIC_DRAW);
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-    void* pixels = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, buf_size,
+    void* pixels = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, rgba_buf_size,
                                     GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
     void* data = pixels;
-    convertToRGB((uint8_t*)pixels, (uint8_t*)data, pixel_num);
+    convertToRGB(UNSAFE_BUFFERS(
+        base::span(static_cast<const uint8_t*>(pixels), pixel_num * 4),
+        base::span(static_cast<uint8_t*>(data), pixel_num * 3)), pixel_num);
     glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer[0]);
-    return;
+    return true;
   }
 
   NOTREACHED();
@@ -771,7 +803,7 @@ void DoReadbackAndTexImage(TexImageCommandType command_type,
   DCHECK(dest_binding_target == GL_TEXTURE_2D ||
          dest_binding_target == GL_TEXTURE_CUBE_MAP);
   DCHECK(source_level == 0 || decoder->GetFeatureInfo()->IsES3Capable());
-  if (BindFramebufferTexture2D(source_target, source_id, source_level,
+  if (BindFramebufferTexture2D(decoder, source_target, source_id, source_level,
                                framebuffer)) {
     glBindTexture(dest_binding_target, dest_id);
     glTexParameterf(dest_binding_target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -805,7 +837,22 @@ void DoReadbackAndTexImage(TexImageCommandType command_type,
     uint32_t buffer_num = format == GL_RGB && type == GL_FLOAT ? 2 : 1;
     GLuint buffer[2] = {0u};
     glGenBuffersARB(buffer_num, buffer);
-    PrepareUnpackBuffer(buffer, format, type, width, height);
+    if (!PrepareUnpackBuffer(buffer, format, type, width, height)) {
+      glDeleteBuffersARB(buffer_num, buffer);
+      decoder->RestoreTextureState(source_id);
+      decoder->RestoreTextureState(dest_id);
+      decoder->RestoreTextureUnitBindings(0);
+      decoder->RestoreActiveTexture();
+      decoder->RestoreFramebufferBindings();
+      decoder->RestoreBufferBindings();
+      decoder->RestoreGlobalState();
+      return;
+    }
+
+    // Our buffer is tightly packed, so reset unpack params.
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     if (command_type == kTexImage) {
       glTexImage2D(dest_target, dest_level, dest_internal_format, width, height,
@@ -823,6 +870,7 @@ void DoReadbackAndTexImage(TexImageCommandType command_type,
   decoder->RestoreActiveTexture();
   decoder->RestoreFramebufferBindings();
   decoder->RestoreBufferBindings();
+  decoder->RestoreGlobalState();
 }
 
 class CopyTextureResourceManagerImpl
@@ -1071,7 +1119,11 @@ void CopyTextureResourceManagerImpl::DoCopySubTexture(
         adjusted_internal_format);
     GLenum type =
         TextureManager::ExtractTypeFromStorageFormat(adjusted_internal_format);
-
+    // Allocate from client memory, not from any currently bound unpack
+    // buffer. The binding is restored by the calls below.
+    if (decoder->GetFeatureInfo()->IsES3Capable()) {
+      glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    }
     glTexImage2D(dest_target, 0, adjusted_internal_format, width, height, 0,
                  format, type, nullptr);
     dest_texture = intermediate_texture;
@@ -1156,6 +1208,11 @@ void CopyTextureResourceManagerImpl::DoCopyTexture(
         adjusted_internal_format);
     GLenum type =
         TextureManager::ExtractTypeFromStorageFormat(adjusted_internal_format);
+    // Allocate from client memory, not from any currently bound unpack
+    // buffer. The binding is restored by the calls below.
+    if (decoder->GetFeatureInfo()->IsES3Capable()) {
+      glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    }
     glTexImage2D(dest_target, 0, adjusted_internal_format, width, height, 0,
                  format, type, nullptr);
     dest_texture = intermediate_texture;
@@ -1212,10 +1269,10 @@ void CopyTextureResourceManagerImpl::DoCopyTextureInternal(
     bool unpremultiply_alpha,
     gpu::gles2::CopyTexImageResourceManager* luma_emulation_blitter) {
   DCHECK(source_target == GL_TEXTURE_2D ||
-         source_target == GL_TEXTURE_RECTANGLE_ARB ||
+         source_target == GL_TEXTURE_RECTANGLE_ANGLE ||
          source_target == GL_TEXTURE_EXTERNAL_OES);
   DCHECK(dest_target == GL_TEXTURE_2D ||
-         dest_target == GL_TEXTURE_RECTANGLE_ARB ||
+         dest_target == GL_TEXTURE_RECTANGLE_ANGLE ||
          (dest_target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
           dest_target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z));
   DCHECK_GE(source_level, 0);
@@ -1235,6 +1292,16 @@ void CopyTextureResourceManagerImpl::DoCopyTextureInternal(
   }
   const gl::GLVersionInfo& gl_version_info =
       decoder->GetFeatureInfo()->gl_version_info();
+
+  // glUseProgram fails with INVALID_OPERATION if transform feedback is active
+  // and not paused, and on a GLES 3.2 driver the glDrawArrays(GL_TRIANGLE_FAN)
+  // below would then capture vertices with the user's program, advancing the
+  // driver's transform-feedback write cursor without the validating decoder
+  // updating its vertices_drawn_ counter. Pause TF for the duration of the
+  // internal blit. (Mirrors gles2_cmd_clear_framebuffer.cc.)
+  const ContextState* state = decoder->GetContextState();
+  ScopedPauseResumeTransformFeedback pause_transform_feedback(
+      state ? state->bound_transform_feedback.get() : nullptr);
 
   if (vertex_array_object_id_) {
     glBindVertexArrayOES(vertex_array_object_id_);
@@ -1306,7 +1373,7 @@ void CopyTextureResourceManagerImpl::DoCopyTextureInternal(
   // The target subrange in the source texture has coordinates [x, x + width].
   // The full source texture has range [0, source_width]. We need to transform
   // the subrange into texture space ([0, M]), assuming that [0, source_width]
-  // gets mapped to [0, M]. If source_target == GL_TEXTURE_RECTANGLE_ARB, M =
+  // gets mapped to [0, M]. If source_target == GL_TEXTURE_RECTANGLE_ANGLE, M =
   // source_width. Otherwise, M = 1.
   //
   // We want to find A and B such that:
@@ -1335,8 +1402,8 @@ void CopyTextureResourceManagerImpl::DoCopyTextureInternal(
   //   A = (-w/2) * M / source_width
   //
   // So everything is the same but the sign of A is flipped.
-  GLfloat m_x = source_target == GL_TEXTURE_RECTANGLE_ARB ? source_width : 1;
-  GLfloat m_y = source_target == GL_TEXTURE_RECTANGLE_ARB ? source_height : 1;
+  GLfloat m_x = source_target == GL_TEXTURE_RECTANGLE_ANGLE ? source_width : 1;
+  GLfloat m_y = source_target == GL_TEXTURE_RECTANGLE_ANGLE ? source_height : 1;
   GLfloat sign_a = flip_y ? -1 : 1;
   glUniform2f(info->vertex_source_mult_handle, width / 2.f * m_x / source_width,
               height / 2.f * m_y / source_height * sign_a);
@@ -1345,7 +1412,7 @@ void CopyTextureResourceManagerImpl::DoCopyTextureInternal(
               (y + height / 2.f) * m_y / source_height);
 
   DCHECK(dest_level == 0 || decoder->GetFeatureInfo()->IsES3Capable());
-  if (BindFramebufferTexture2D(dest_target, dest_id, dest_level,
+  if (BindFramebufferTexture2D(decoder, dest_target, dest_id, dest_level,
                                framebuffer_)) {
 #ifndef NDEBUG
     // glValidateProgram of MACOSX validates FBO unlike other platforms, so
@@ -1378,6 +1445,9 @@ void CopyTextureResourceManagerImpl::DoCopyTextureInternal(
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_FALSE);
     glDisable(GL_BLEND);
+    if (decoder->GetFeatureInfo()->IsWebGL2OrES3OrHigherContext()) {
+      glDisable(GL_RASTERIZER_DISCARD);
+    }
 
     bool need_scissor =
         xoffset || yoffset || width != dest_width || height != dest_height;

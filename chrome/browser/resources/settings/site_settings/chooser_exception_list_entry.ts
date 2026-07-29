@@ -16,7 +16,7 @@ import './site_list_entry.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {getTemplate} from './chooser_exception_list_entry.html.js';
-import type {ChooserException} from './site_settings_prefs_browser_proxy.js';
+import type {ChooserException} from './site_settings_browser_proxy.js';
 
 export interface ChooserExceptionListEntryElement {
   $: {
@@ -44,8 +44,8 @@ export class ChooserExceptionListEntryElement extends PolymerElement {
     };
   }
 
-  exception: ChooserException;
-  private lastFocused_: HTMLElement|null;
+  declare exception: ChooserException;
+  declare private lastFocused_: HTMLElement|null;
 }
 
 declare global {

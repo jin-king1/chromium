@@ -16,13 +16,10 @@
   height: 100%;
 }
 
-/* 'clean-css' tag is needed here because the html minifier will break the css
- * nesting parts. Check crbug.com/40943411 for more info.
- */
-/* clean-css ignore:start */
-
-:host([app-mode_="glic"]) {
-  background-color: #131314;
+:host([app-mode_='glic']) {
+  @media (prefers-color-scheme: dark) {
+    background-color: #131314;
+  }
 
   #banner-right,
   #banner-left {
@@ -31,19 +28,27 @@
   }
 
   #banner-right {
-    content: url(glic_banner_top_right.svg);
+    content: url(glic_banner_top_right_light.svg);
     right: 0;
     top: 0;
+
+    @media (prefers-color-scheme: dark) {
+      content: url(glic_banner_top_right.svg);
+    }
   }
 
   #banner-left {
-    content: url(glic_banner_bottom_left.svg);
+    content: url(glic_banner_bottom_left_light.svg);
     left: 0;
     bottom: 0;
+
+    @media (prefers-color-scheme: dark) {
+      content: url(glic_banner_bottom_left.svg);
+    }
   }
 }
 
-:host([app-mode_="regular"]) {
+:host([app-mode_='regular']) {
 
   #banner-right,
   #banner-left {
@@ -72,7 +77,21 @@
   }
 }
 
-/* clean-css ignore:end */
+:host([app-mode_='regular-refreshed']) {
+  #banner-right,
+  #banner-left {
+    display: none;
+  }
+
+  background-image: url(profile_picker_light_background.svg);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+
+  @media (prefers-color-scheme: dark) {
+    background-image: url(profile_picker_dark_background.svg);
+  }
+}
+
 
 cr-view-manager {
   display: flex;

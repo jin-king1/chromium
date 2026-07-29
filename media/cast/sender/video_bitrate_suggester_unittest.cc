@@ -16,6 +16,7 @@
 #include "media/cast/cast_config.h"
 #include "media/cast/cast_environment.h"
 #include "media/cast/common/openscreen_conversion_helpers.h"
+#include "media/cast/test/openscreen_test_helpers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -24,8 +25,6 @@ namespace {
 
 constexpr uint32_t kFirstSsrc = 35535;
 constexpr int kRtpTimebase = 9000;
-constexpr char kAesSecretKey[] = "65386FD9BCC30BC7FB6A4DD1D3B0FA5E";
-constexpr char kAesIvMask[] = "64A6AAC2821880145271BB15B0188821";
 
 static const FrameSenderConfig kVideoConfig{
     kFirstSsrc + 2,
@@ -37,20 +36,16 @@ static const FrameSenderConfig kVideoConfig{
     /* channels = */ 1,
     kDefaultMaxVideoBitrate,
     kDefaultMinVideoBitrate,
-    std::midpoint<int>(kDefaultMinVideoBitrate, kDefaultMaxVideoBitrate),
+    std::midpoint<uint32_t>(kDefaultMinVideoBitrate, kDefaultMaxVideoBitrate),
     kDefaultMaxFrameRate,
-    kAesSecretKey,
-    kAesIvMask,
     VideoCodecParams(VideoCodec::kVP8),
     std::nullopt};
-static const openscreen::cast::SessionConfig kOpenscreenVideoConfig =
-    ToOpenscreenSessionConfig(kVideoConfig, /* is_pli_enabled= */ true);
 
 }  // namespace
 
 class VideoBitrateSuggesterTest : public ::testing::Test {
  public:
-  int get_suggested_bitrate() { return suggested_bitrate_; }
+  uint32_t get_suggested_bitrate() { return suggested_bitrate_; }
 
  protected:
   VideoBitrateSuggesterTest() {
@@ -66,7 +61,7 @@ class VideoBitrateSuggesterTest : public ::testing::Test {
     suggester_->RecordShouldDropNextFrame(should_drop);
   }
 
-  void set_suggested_bitrate(int bitrate) { suggested_bitrate_ = bitrate; }
+  void set_suggested_bitrate(uint32_t bitrate) { suggested_bitrate_ = bitrate; }
 
   VideoBitrateSuggester& suggester() { return *suggester_; }
 
@@ -83,7 +78,7 @@ class VideoBitrateSuggesterTest : public ::testing::Test {
  private:
   std::unique_ptr<VideoBitrateSuggester> suggester_;
   base::test::ScopedFeatureList feature_list_;
-  int suggested_bitrate_ = 0;
+  uint32_t suggested_bitrate_ = 0;
 };
 
 TEST_F(VideoBitrateSuggesterTest, StaysWithinBounds) {
@@ -102,25 +97,26 @@ TEST_F(VideoBitrateSuggesterTest,
   set_suggested_bitrate(5000001);
   EXPECT_EQ(kDefaultMaxVideoBitrate, suggester().GetSuggestedBitrate());
 
-  // After a period with multiple frame drops, this should go down.
+  // In V2, we allow 1 drop per window. 2 drops should trigger a decrease.
   RecordShouldDropNextFrame(true);
   RecordShouldDropNextFrame(true);
-  for (int i = 0; i < 29; ++i) {
+  for (int i = 0; i < 28; ++i) {
     RecordShouldDropNextFrame(false);
   }
 
   // It should continue to go down to the minimum as long as frames are being
   // dropped.
-  int last_suggestion = suggester().GetSuggestedBitrate();
-  EXPECT_EQ(3500000, last_suggestion);
+  uint32_t last_suggestion = suggester().GetSuggestedBitrate();
+  EXPECT_EQ(4500000u, last_suggestion);  // 5,000,000 * 0.9 = 4,500,000
   while (last_suggestion > kDefaultMinVideoBitrate) {
     RecordShouldDropNextFrame(true);
-    for (int j = 0; j < 29; ++j) {
+    RecordShouldDropNextFrame(true);
+    for (int j = 0; j < 28; ++j) {
       RecordShouldDropNextFrame(false);
     }
 
     // It should drop every time.
-    const int suggestion = suggester().GetSuggestedBitrate();
+    const uint32_t suggestion = suggester().GetSuggestedBitrate();
     EXPECT_LT(suggestion, last_suggestion);
     last_suggestion = suggestion;
   }
@@ -134,17 +130,13 @@ TEST_F(VideoBitrateSuggesterTest,
     for (int j = 0; j < 30; ++j) {
       RecordShouldDropNextFrame(false);
     }
-    const int suggestion = suggester().GetSuggestedBitrate();
+    const uint32_t suggestion = suggester().GetSuggestedBitrate();
     EXPECT_GT(suggestion, last_suggestion);
     last_suggestion = suggestion;
   }
 
   // And stop at the maximum.
   EXPECT_EQ(kDefaultMaxVideoBitrate, suggester().GetSuggestedBitrate());
-
-  // Finally, it should cap at the bitrate suggested by Open Screen.
-  set_suggested_bitrate(4998374);
-  EXPECT_EQ(4998374, suggester().GetSuggestedBitrate());
 }
 
 TEST_F(VideoBitrateSuggesterTest,
@@ -155,27 +147,31 @@ TEST_F(VideoBitrateSuggesterTest,
   set_suggested_bitrate(5000001);
   EXPECT_EQ(kDefaultMaxVideoBitrate, suggester().GetSuggestedBitrate());
 
-  // After a period with multiple frame drops, this should go down.
+  // In improved linear, we allow up to 2 drops. 3 drops should trigger
+  // decrease.
   RecordShouldDropNextFrame(true);
   RecordShouldDropNextFrame(true);
-  for (int i = 0; i < 99; ++i) {
+  RecordShouldDropNextFrame(true);
+  for (int i = 0; i < 97; ++i) {
     RecordShouldDropNextFrame(false);
   }
 
   // It should now go down.
-  int last_suggestion = suggester().GetSuggestedBitrate();
-  EXPECT_EQ(4412500, last_suggestion);
+  uint32_t last_suggestion = suggester().GetSuggestedBitrate();
+  EXPECT_EQ(4412500u, last_suggestion);
 
   // It should continue to go down to the minimum as long as frames are being
   // dropped.
   while (last_suggestion > kDefaultMinVideoBitrate) {
     RecordShouldDropNextFrame(true);
-    for (int j = 0; j < 99; ++j) {
+    RecordShouldDropNextFrame(true);
+    RecordShouldDropNextFrame(true);
+    for (int j = 0; j < 97; ++j) {
       RecordShouldDropNextFrame(false);
     }
 
     // It should drop every time.
-    const int suggestion = suggester().GetSuggestedBitrate();
+    const uint32_t suggestion = suggester().GetSuggestedBitrate();
     EXPECT_LT(suggestion, last_suggestion);
     last_suggestion = suggestion;
   }
@@ -187,16 +183,33 @@ TEST_F(VideoBitrateSuggesterTest,
     for (int j = 0; j < 100; ++j) {
       RecordShouldDropNextFrame(false);
     }
-    const int suggestion = suggester().GetSuggestedBitrate();
+    const uint32_t suggestion = suggester().GetSuggestedBitrate();
     EXPECT_GT(suggestion, last_suggestion);
     last_suggestion = suggestion;
   }
 
   // And stop at the maximum.
   EXPECT_EQ(kDefaultMaxVideoBitrate, suggester().GetSuggestedBitrate());
+}
 
-  // Finally, it should cap at the bitrate suggested by Open Screen.
-  set_suggested_bitrate(4998374);
-  EXPECT_EQ(4998374, suggester().GetSuggestedBitrate());
+TEST_F(VideoBitrateSuggesterTest, LinearAlgorithmIsResilientToOnePercentLoss) {
+  UseLinearAlgorithm();
+
+  // We should start with the maximum video bitrate.
+  set_suggested_bitrate(10000000);
+  uint32_t initial_bitrate = suggester().GetSuggestedBitrate();
+  EXPECT_EQ(kDefaultMaxVideoBitrate, initial_bitrate);
+
+  // 1% loss means 1 drop every 100 frames.
+  // The linear algorithm window is 100 frames.
+  // So every window has 1 drop. This should NOT trigger a decrease anymore.
+  for (int window = 0; window < 10; ++window) {
+    RecordShouldDropNextFrame(true);  // 1 drop
+    for (int i = 0; i < 99; ++i) {
+      RecordShouldDropNextFrame(false);
+    }
+    // It should actually INCREASE if we were below max, or stay at max.
+    EXPECT_EQ(kDefaultMaxVideoBitrate, suggester().GetSuggestedBitrate());
+  }
 }
 }  // namespace media::cast

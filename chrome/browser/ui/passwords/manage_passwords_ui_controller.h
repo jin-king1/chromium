@@ -14,6 +14,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/ui/autofill/bubble_controller_base.h"
 #include "chrome/browser/ui/passwords/manage_passwords_state.h"
 #include "chrome/browser/ui/passwords/passwords_client_ui_delegate.h"
 #include "chrome/browser/ui/passwords/passwords_leak_dialog_delegate.h"
@@ -45,16 +46,22 @@ class PostSaveCompromisedHelper;
 }  // namespace password_manager
 
 namespace {
-constexpr int kMaxNumberOfTimesBiometricAuthForFillingPromoWillBeShown = 3;
+inline constexpr int kMaxNumberOfTimesBiometricAuthForFillingPromoWillBeShown =
+    3;
+}
+
+namespace actions {
+class ActionItem;
 }
 
 class AccountChooserPrompt;
 class AutoSigninFirstRunPrompt;
 class CredentialLeakPrompt;
-class ManagePasswordsIconView;
 class CredentialLeakDialogController;
 class CredentialManagerDialogController;
 class PasswordBaseDialogController;
+class ManagePasswordsPageActionController;
+class ManagePasswordsAutoSigninToastDelegate;
 
 // Per-tab class to control the Omnibox password icon and bubble.
 class ManagePasswordsUIController
@@ -63,19 +70,14 @@ class ManagePasswordsUIController
       public password_manager::PasswordStoreInterface::Observer,
       public PasswordsLeakDialogDelegate,
       public PasswordsModelDelegate,
-      public PasswordsClientUIDelegate {
+      public PasswordsClientUIDelegate,
+      public autofill::BubbleControllerBase {
  public:
   ManagePasswordsUIController(const ManagePasswordsUIController&) = delete;
   ManagePasswordsUIController& operator=(const ManagePasswordsUIController&) =
       delete;
 
   ~ManagePasswordsUIController() override;
-
-#if defined(UNIT_TEST)
-  static void set_save_fallback_timeout_in_seconds(int timeout) {
-    save_fallback_timeout_in_seconds_ = timeout;
-  }
-#endif
 
   // PasswordsClientUIDelegate:
   void OnPasswordSubmitted(
@@ -103,10 +105,11 @@ class ManagePasswordsUIController
   void OnAutomaticPasswordSave(
       std::unique_ptr<password_manager::PasswordFormManagerForUI> form_manager,
       bool is_update_confirmation) override;
+
   void OnPasswordAutofilled(
-      base::span<const password_manager::PasswordForm> password_forms,
+      base::span<const password_manager::StoredCredential> password_credentials,
       const url::Origin& origin,
-      base::span<const password_manager::PasswordForm> federated_matches)
+      base::span<const password_manager::StoredCredential> federated_matches)
       override;
   void OnCredentialLeak(
       password_manager::LeakedPasswordDetails details) override;
@@ -128,20 +131,16 @@ class ManagePasswordsUIController
   void OnPasskeyNotAccepted(std::string passkey_rp_id) override;
   void OnPasskeyUpgrade(std::string passkey_rp_id) override;
 
-  virtual void NotifyUnsyncedCredentialsWillBeDeleted(
-      std::vector<password_manager::PasswordForm> unsynced_credentials);
-
   // PasswordStoreInterface::Observer:
   void OnLoginsChanged(
       password_manager::PasswordStoreInterface* store,
       const password_manager::PasswordStoreChangeList& changes) override;
   void OnLoginsRetained(password_manager::PasswordStoreInterface* store,
-                        const std::vector<password_manager::PasswordForm>&
+                        const std::vector<password_manager::StoredCredential>&
                             retained_passwords) override;
-
-  // Set the state of the Omnibox icon, and possibly show the associated bubble
-  // without user interaction.
-  virtual void UpdateIconAndBubbleState(ManagePasswordsIconView* icon);
+  void OnErrorStateChanged(
+      password_manager::PasswordStoreInterface* store,
+      password_manager::ActionableError new_state) override;
 
   // Called if the password change flow finishes successfully. It ensures the
   // correct state after the flow.
@@ -151,6 +150,12 @@ class ManagePasswordsUIController
   bool IsAutomaticallyOpeningBubble() const {
     return bubble_status_ == BubbleStatus::SHOULD_POP_UP;
   }
+
+  // Calls the bubble manager to show the bubble if bubble manager is enabled.
+  // Otherwise just shows the bubble.
+  // `user_action` indicates whether the bubble is opened via user action or
+  // automatically.
+  void QueueOrShowBubble(bool user_action);
 
   // virtual to be overridden in tests.
   virtual base::WeakPtr<PasswordsModelDelegate> GetModelDelegateProxy();
@@ -164,8 +169,6 @@ class ManagePasswordsUIController
       override;
   password_manager::ui::State GetState() const override;
   const password_manager::PasswordForm& GetPendingPassword() const override;
-  const std::vector<password_manager::PasswordForm>& GetUnsyncedCredentials()
-      const override;
   password_manager::metrics_util::CredentialSourceType GetCredentialSource()
       const override;
   const std::vector<std::unique_ptr<password_manager::PasswordForm>>&
@@ -178,18 +181,17 @@ class ManagePasswordsUIController
   bool BubbleIsManualFallbackForSaving() const override;
   bool GpmPinCreatedDuringRecentPasskeyCreation() const override;
   const std::string& PasskeyRpId() const override;
+  const std::u16string& PasswordChangeUsername() const override;
+  const std::u16string& PasswordChangeNewPassword() const override;
   void OnBubbleShown() override;
   void OnBubbleHidden() override;
   void OnNoInteraction() override;
   void OnNopeUpdateClicked() override;
   void NeverSavePassword() override;
+  void OnNotNowClicked() override;
   void OnPasswordsRevealed() override;
   void SavePassword(const std::u16string& username,
                     const std::u16string& password) override;
-  void SaveUnsyncedCredentialsInProfileStore(
-      const std::vector<password_manager::PasswordForm>& selected_credentials)
-      override;
-  void DiscardUnsyncedCredentials() override;
   void MovePasswordToAccountStore() override;
   void MovePendingPasswordToAccountStoreUsingHelper(
       const password_manager::PasswordForm& form,
@@ -210,25 +212,51 @@ class ManagePasswordsUIController
   void MaybeShowIOSPasswordPromo() override;
   void RelaunchChrome() override;
   void NavigateToPasswordChangeSettings() override;
+  void OnMouseEntered() override;
+  void OnMouseExited() override;
+  // Returns true if the only blocking error is a trusted vault error.
+  bool IsSavingBlockedByTrustedVaultError() const override;
+  // Ensures that the password will be saved after resolution of the trusted
+  // vault error (or saves the password immediately if the trusted vault error
+  // is already resolved).
+  void SavePasswordAfterTrustedVaultErrorResolution() override;
+  // Starts the UI flow that allows to fix the trusted vault error.
+  void StartTrustedVaultErrorResolutionFlow() override;
   // Skips user os level authentication during the life time of the returned
   // object. To be used in tests of flows that require user authentication.
   [[nodiscard]] std::unique_ptr<base::AutoReset<bool>>
   BypassUserAuthtForTesting();
 #if defined(UNIT_TEST)
+  // Returns the dialog controller to check if there is a dialog open.
+  PasswordBaseDialogController* dialog_controller() {
+    return dialog_controller_.get();
+  }
+  static void set_save_fallback_timeout_in_seconds(int timeout) {
+    save_fallback_timeout_in_seconds_ = timeout;
+  }
   // Overwrites the client for |passwords_data_|.
   void set_client(password_manager::PasswordManagerClient* client) {
     passwords_data_.set_client(client);
   }
 #endif  // defined(UNIT_TEST)
 
-  // Hides/Shows the bubble if opened. Mocked in the tests.
-  virtual void HidePasswordBubble();
-  virtual void ShowChangePasswordBubble();
+  // BubbleControllerBase:
+  void ShowBubble() override;
+  void HideBubble(bool initiated_by_bubble_manager) override;
+  void OnBubbleDiscarded() override {}
+  bool CanBeReshown() const override;
+  bool ShouldReshowOnTabVisible() const override;
+  autofill::BubbleType GetBubbleType() const override;
+  bool IsShowingBubble() const override;
+  bool IsMouseHovered() const override;
+  base::WeakPtr<BubbleControllerBase> GetBubbleControllerBaseWeakPtr() override;
 
-  bool IsShowingBubble() const {
-    return bubble_status_ == BubbleStatus::SHOWN ||
-           bubble_status_ == BubbleStatus::SHOWN_PENDING_ICON_UPDATE;
-  }
+  // Opens change password bubble and passes `username` and `new_password` that
+  // should be displayed on it.
+  void ShowChangePasswordBubble(const std::u16string& username,
+                                const std::u16string& new_password);
+
+  void ShowAutoSignInToast();
 
  protected:
   explicit ManagePasswordsUIController(content::WebContents* web_contents);
@@ -238,8 +266,15 @@ class ManagePasswordsUIController
   // manage passwords icon and bubble.
   virtual void UpdateBubbleAndIconVisibility();
 
+  // Called when the manage passwords icon needs to be shown and it sets the
+  // state of the icon, and shows the associated bubble without user
+  // interaction.
+  void UpdatePasswordIconAndBubbleState(
+      ManagePasswordsPageActionController* controller,
+      actions::ActionItem* passwords_action_item);
+
   // Called to create the account chooser dialog. Mocked in tests.
-  virtual AccountChooserPrompt* CreateAccountChooser(
+  virtual std::unique_ptr<AccountChooserPrompt> CreateAccountChooser(
       CredentialManagerDialogController* controller);
 
   // Called to create the account chooser dialog. Mocked in tests.
@@ -295,12 +330,25 @@ class ManagePasswordsUIController
     SHOULD_POP_UP_WITH_FOCUS,
   };
 
+  // The status of the saving prompt.
+  enum class SavingPromptStatus {
+    // The prompt can show.
+    kCanShow,
+    // The current site is explicitly blocklisted.
+    kExplicitlyBlocklisted,
+    // The bubble for the current site is implicitly blocked.
+    kImplicitlyBlocked
+  };
+
   // Returns whether saving credentials prompts for the current form in
   // |passwords_data_| is blocked due to explicit action of the user asking to
   // never save passwords for this form, or because the user ignored the bubble
   // multiple times that the browser will automatically suppress further save
   // prompts.
-  bool IsSavingPromptBlockedExplicitlyOrImplicitly() const;
+  SavingPromptStatus GetSavingPromptStatus() const;
+
+  // Returns whether the current site is explicitly blocklisted.
+  bool IsExplicitlyBlocklisted() const;
 
   // Returns the timeout for the manual save fallback.
   static base::TimeDelta GetTimeoutForSaveFallback();
@@ -338,8 +386,28 @@ class ManagePasswordsUIController
   // Returns true if password changing is currently running.
   bool IsPasswordChangeOngoing() const;
 
+  // Invoked after a user accepted the update bubble. If the credentials were
+  // not manually modified and if `password` is the backup password of an
+  // existing credential, then records the end of the password recovery flow and
+  // attempts to display a hats survey. Has to be called before `SavePassword`
+  // because otherwise we cannot tell if the credentials were modified manually.
+  void HandlePasswordRecoveryFinished(
+      const std::u16string& username,
+      const std::u16string& password,
+      const std::u16string& password_backup) const;
+
+  // Returns true if there exists a password manager bubble yet to be shown in
+  // the `autofill::BubbleManager` queue.
+  bool BubbleManagerHasPasswordBubbleInQueue() const;
+
+  // Called when the auto sign-in toast is closed.
+  void OnAutoSignInToastClosed();
+
   // Timeout in seconds for the manual fallback for saving.
   static int save_fallback_timeout_in_seconds_;
+
+  std::unique_ptr<ManagePasswordsAutoSigninToastDelegate>
+      auto_signin_toast_delegate_;
 
   // The wrapper around current state and data.
   ManagePasswordsState passwords_data_;
@@ -368,6 +436,22 @@ class ManagePasswordsUIController
 
   // Used to bypass user authentication in integration tests.
   bool bypass_user_auth_for_testing_ = false;
+
+  password_manager::ui::State last_page_action_state_ =
+      password_manager::ui::INACTIVE_STATE;
+
+  // Whether the mouse is currently hovering over the bubble.
+  bool is_mouse_hovered_ = false;
+
+  // Bool to indicate that the bubble is shown by the user gesture. This value
+  // is cached when the bubble is requested to be shown.
+  bool user_action_ = false;
+
+  // The current class observes the changes of the password manager's storage
+  // error state. If this bool is true, we will save the password upon receiving
+  // the notification that the error state is fixed (and the trusted vault error
+  // is resolved).
+  bool save_password_after_trusted_vault_error_resolution_ = false;
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
   bool was_biometric_authentication_for_filling_promo_shown_ = false;

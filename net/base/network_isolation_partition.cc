@@ -15,7 +15,17 @@ std::string NetworkIsolationPartitionToDebugString(
       return "general partition";
     case NetworkIsolationPartition::kProtectedAudienceSellerWorklet:
       return "protected audience seller worklet partition";
+    case NetworkIsolationPartition::kFedCmUncredentialedRequests:
+      return "fedcm uncredentialed requests";
+    case NetworkIsolationPartition::kDnsOverHttps:
+      return "dns over https";
   }
+}
+
+bool NetworkIsolationPartitionAlwaysAllowEmptyPartition(
+    NetworkIsolationPartition network_isolation_partition) {
+  return network_isolation_partition ==
+         NetworkIsolationPartition::kDnsOverHttps;
 }
 
 }  // namespace net

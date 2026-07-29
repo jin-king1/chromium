@@ -9,9 +9,10 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/ui/autofill/autofill_field_promo_view.h"
-#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/views/autofill/popup/popup_view_views.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/test_with_browser_view.h"
+#include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/picture_in_picture_window_controller.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
@@ -39,7 +40,9 @@ class TestPictureInPictureWindowController
   content::WebContents* GetChildWebContents() override { return nullptr; }
   std::optional<url::Origin> GetOrigin() override { return std::nullopt; }
 
-  std::optional<gfx::Rect> GetWindowBounds() override { return bounds_; }
+  std::optional<gfx::Rect> GetWindowBoundsInScreen() override {
+    return bounds_;
+  }
   void SetWindowBounds(gfx::Rect bounds) { bounds_ = bounds; }
 
  private:
@@ -56,7 +59,7 @@ class AutofillFieldPromoViewImplTest : public TestWithBrowserView {
   void SetUp() override {
     TestWithBrowserView::SetUp();
     // Create the first tab so that `web_contents()` exists.
-    AddTab(browser(), GURL(chrome::kChromeUINewTabURL));
+    AddTab(browser(), chrome::ChromeUINewTabURLAsGURL());
   }
 
   void TearDown() override {
@@ -115,7 +118,7 @@ class AutofillFieldPromoViewImplTest : public TestWithBrowserView {
 
  private:
   const ui::ElementIdentifier test_promo_element_identifier_ =
-      kAutofillStandaloneCvcSuggestionElementId;
+      PopupViewViews::kAutofillStandaloneCvcSuggestionElementId;
   base::WeakPtr<AutofillFieldPromoView> view_;
 };
 
@@ -127,7 +130,7 @@ TEST_F(AutofillFieldPromoViewImplTest, BoundsAreCorrect) {
 #else
   web_contents()->GetNativeView()->SetBoundsInScreen(
       gfx::Rect(300, 300, 1000, 1000),
-      display::Screen::GetScreen()->GetDisplayForNewWindows());
+      display::Screen::Get()->GetDisplayForNewWindows());
 #endif  // BUILDFLAG(IS_MAC)
 
   // Element is within the boundaries of `web_contents()`.

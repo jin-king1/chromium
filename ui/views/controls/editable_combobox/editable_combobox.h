@@ -16,6 +16,7 @@
 #include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/models/combobox_model.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
@@ -34,7 +35,6 @@ class Range;
 }  // namespace gfx
 
 namespace ui {
-class ComboboxModel;
 class Event;
 class MenuModel;
 }  // namespace ui
@@ -187,6 +187,7 @@ class VIEWS_EXPORT EditableCombobox : public View,
 
   // Overridden from ViewObserver:
   void OnViewBlurred(View* observed_view) override;
+  void OnViewPreferredSizeChanged(View* observed_view) override;
 
   // Overridden from views::AnimatingLayoutManager::Observer:
   void OnLayoutIsAnimatingChanged(views::AnimatingLayoutManager* source,
@@ -232,6 +233,8 @@ class VIEWS_EXPORT EditableCombobox : public View,
   bool dropdown_blocked_for_animation_ = false;
 
   base::ScopedObservation<View, ViewObserver> observation_{this};
+  base::ScopedObservation<View, ViewObserver>
+      control_elements_container_observation_{this};
 };
 
 BEGIN_VIEW_BUILDER(VIEWS_EXPORT, EditableCombobox, View)

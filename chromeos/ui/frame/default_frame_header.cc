@@ -11,6 +11,7 @@
 #include "chromeos/ui/frame/caption_buttons/frame_caption_button_container_view.h"
 #include "chromeos/ui/wm/window_util.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/compositor/layer.h"
@@ -34,20 +35,18 @@ void TileRoundRect(gfx::Canvas* canvas,
                    int corner_radius) {
   SkRect rect = gfx::RectToSkRect(bounds);
   const SkScalar corner_radius_scalar = SkIntToScalar(corner_radius);
-  SkScalar radii[8] = {corner_radius_scalar,
-                       corner_radius_scalar,  // top-left
-                       corner_radius_scalar,
-                       corner_radius_scalar,  // top-right
-                       0,
-                       0,  // bottom-right
-                       0,
-                       0};  // bottom-left
+  const SkVector radii[4] = {
+      {corner_radius_scalar, corner_radius_scalar},  // top-left
+      {corner_radius_scalar, corner_radius_scalar},  // top-right
+      {0, 0},                                        // bottom-right
+      {0, 0},                                        // bottom-left
+  };
   // Antialiasing can result in blending a transparent pixel and
   // leave non opaque alpha between the frame and the client area.
   // Extend 1dp to make sure it's fully opaque.
   rect.fBottom += 1;
-  SkPath path;
-  path.addRoundRect(rect, radii, SkPathDirection::kCW);
+
+  const SkPath path = SkPath::RRect(SkRRect::MakeRectRadii(rect, radii));
   canvas->DrawPath(path, flags);
 }
 
@@ -72,12 +71,11 @@ DefaultFrameHeader::DefaultFrameHeader(
     : FrameHeader(target_widget, header_view) {
   DCHECK(caption_button_container);
   SetCaptionButtonContainer(caption_button_container);
-  InitializeFrameColorMetricsHelper();
 }
 
 DefaultFrameHeader::~DefaultFrameHeader() = default;
 
-void DefaultFrameHeader::SetWidthInPixels(int width_in_pixels) {
+void DefaultFrameHeader::SetWidthInPixels(std::optional<int> width_in_pixels) {
   if (width_in_pixels_ == width_in_pixels)
     return;
   width_in_pixels_ = width_in_pixels;
@@ -111,7 +109,6 @@ void DefaultFrameHeader::UpdateFrameColors() {
 
   if (updated) {
     StartTransitionAnimation(kDefaultFrameColorChangeAnimationDuration);
-    frame_color_metrics_helper_->UpdateFrameColorChangesCount();
   }
 
   if (ShouldApplyDynamicColor(GetTargetWindow())) {
@@ -139,14 +136,14 @@ void DefaultFrameHeader::DoPaintHeader(gfx::Canvas* canvas) {
 
   const int corner_radius = header_corner_radius();
   flags.setAntiAlias(corner_radius > 0);
-  if (width_in_pixels_ > 0) {
+  if (width_in_pixels_ && width_in_pixels_.value() > 0) {
     canvas->Save();
     float layer_scale =
         target_widget()->GetNativeWindow()->layer()->device_scale_factor();
     float canvas_scale = canvas->UndoDeviceScaleFactor();
     gfx::Rect rect =
         ScaleToEnclosingRect(GetPaintedBounds(), canvas_scale, canvas_scale);
-    rect.set_width(width_in_pixels_ * canvas_scale / layer_scale);
+    rect.set_width(width_in_pixels_.value() * canvas_scale / layer_scale);
     TileRoundRect(canvas, flags, rect,
                   static_cast<int>(corner_radius * canvas_scale));
     canvas->Restore();
@@ -182,13 +179,6 @@ aura::Window* DefaultFrameHeader::GetTargetWindow() {
 
 SkColor DefaultFrameHeader::GetCurrentFrameColor() const {
   return mode() == MODE_ACTIVE ? active_frame_color_ : inactive_frame_color_;
-}
-
-void DefaultFrameHeader::InitializeFrameColorMetricsHelper() {
-  aura::Window* window = GetTargetWindow();
-  CHECK(window);
-  frame_color_metrics_helper_ = std::make_unique<FrameColorMetricsHelper>(
-      window->GetProperty(chromeos::kAppTypeKey));
 }
 
 }  // namespace chromeos

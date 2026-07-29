@@ -9,12 +9,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/views/data_sharing/data_sharing_open_group_helper.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/views/data_sharing/data_sharing_utils.h"
 #include "chrome/browser/ui/webui/data_sharing/data_sharing_ui.h"
+#include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "google_apis/gaia/gaia_constants.h"
@@ -47,6 +47,10 @@ DataSharingPageHandler::DataSharingPageHandler(
 
 DataSharingPageHandler::~DataSharingPageHandler() = default;
 
+bool DataSharingPageHandler::IsApiInitialized() {
+  return api_initialized_;
+}
+
 void DataSharingPageHandler::ShowUI() {
   auto embedder = webui_controller_->embedder();
   if (embedder) {
@@ -70,6 +74,21 @@ void DataSharingPageHandler::ApiInitComplete() {
   webui_controller_->ApiInitComplete();
 }
 
+void DataSharingPageHandler::MakeTabGroupShared(
+    const std::string& tab_group_id,
+    const std::string& group_id,
+    const std::string& access_token,
+    MakeTabGroupSharedCallback callback) {
+  // This call is only allowed to call once per lifetime of this class.
+  // All subsequent calls should go through GetSharedLink instead.
+  // TODO(crbug.com/396133860): Replace CHECK with call to terminate the
+  // renderer instead.
+  CHECK(!has_made_tab_group_shared_);
+  has_made_tab_group_shared_ = true;
+  webui_controller_->OnShareLinkRequested(group_id, access_token,
+                                          std::move(callback));
+}
+
 void DataSharingPageHandler::GetShareLink(const std::string& group_id,
                                           const std::string& access_token,
                                           GetShareLinkCallback callback) {
@@ -85,19 +104,17 @@ void DataSharingPageHandler::GetTabGroupPreview(
                                    std::move(callback));
 }
 
-void DataSharingPageHandler::AssociateTabGroupWithGroupId(
-    const std::string& tab_group_id,
-    const std::string& group_id) {
-  data_sharing::AssociateTabGroupWithGroupId(tab_group_id, group_id,
-                                             GetProfile());
-}
-
 void DataSharingPageHandler::OpenTabGroup(const std::string& group_id) {
-  Browser* const browser = chrome::FindLastActiveWithProfile(GetProfile());
-  CHECK(browser);
-  browser->browser_window_features()
-      ->data_sharing_open_group_helper()
-      ->OpenTabGroupWhenAvailable(group_id);
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+          webui_controller_->web_ui()->GetWebContents());
+  if (!browser) {
+    return;
+  }
+
+  tab_groups::SavedTabGroupUtils::OpenSavedTabGroup(
+      browser, base::Uuid::ParseLowercase(group_id),
+      tab_groups::OpeningSource::kUnknown);
 }
 
 void DataSharingPageHandler::AboutToUnShareTabGroup(
@@ -128,10 +145,7 @@ void DataSharingPageHandler::RequestAccessToken() {
       identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   access_token_fetcher_ = identity_manager->CreateAccessTokenFetcherForAccount(
-      account_id, /*oauth_consumer_name=*/"data_sharing", /*scopes=*/
-      {GaiaConstants::kPeopleApiReadWriteOAuth2Scope,
-       GaiaConstants::kPeopleApiReadOnlyOAuth2Scope,
-       GaiaConstants::kClearCutOAuth2Scope},
+      account_id, signin::OAuthConsumerId::kDataSharing,
       base::BindOnce(&DataSharingPageHandler::OnAccessTokenFetched,
                      base::Unretained(this)),
       signin::AccessTokenFetcher::Mode::kImmediate);
@@ -144,7 +158,7 @@ void DataSharingPageHandler::RequestAccessToken() {
       base::BindOnce(
           &DataSharingPageHandler::OnAccessTokenFetched,
           weak_ptr_factory_.GetWeakPtr(),
-          GoogleServiceAuthError(GoogleServiceAuthError::NONE),
+          GoogleServiceAuthError::AuthErrorNone(),
           signin::AccessTokenInfo(
               "", base::Time::Now() + kDummyTokenExpirationDuration, "")));
 #endif
@@ -192,4 +206,17 @@ void DataSharingPageHandler::LeaveGroup(
     data_sharing::mojom::Page::LeaveGroupCallback callback) {
   CHECK(api_initialized_);
   page_->LeaveGroup(group_id, std::move(callback));
+}
+
+void DataSharingPageHandler::ReadGroupWithToken(
+    data_sharing::mojom::ReadGroupWithTokenParamPtr param,
+    data_sharing::mojom::Page::ReadGroupWithTokenCallback callback) {
+  CHECK(api_initialized_);
+  page_->ReadGroupWithToken(std::move(param), std::move(callback));
+}
+
+void DataSharingPageHandler::OnGroupAction(
+    data_sharing::mojom::GroupAction action,
+    data_sharing::mojom::GroupActionProgress progress) {
+  webui_controller_->OnGroupAction(action, progress);
 }

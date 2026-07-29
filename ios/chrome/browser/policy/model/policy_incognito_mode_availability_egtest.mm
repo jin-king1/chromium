@@ -9,9 +9,11 @@
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/policy/model/policy_app_interface.h"
 #import "ios/chrome/browser/policy/model/policy_earl_grey_matchers.h"
+#import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_metrics.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/public/toolbar_constants.h"
-#import "ios/chrome/browser/ui/popup_menu/popup_menu_constants.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
@@ -59,10 +61,16 @@ void SetIncognitoAvailabiliy(IncognitoAvailability availability) {
                          policy::key::kIncognitoModeAvailability)];
 }
 
-// Returns a matcher for the tab grid button.
-id<GREYMatcher> TabGridButton() {
+// Returns a matcher for the incognito search button in the tools menu.
+id<GREYMatcher> IncognitoSearchButton() {
   return chrome_test_util::ButtonWithAccessibilityLabelId(
-      IDS_IOS_TOOLBAR_SHOW_TABS);
+      IDS_IOS_TOOLS_MENU_NEW_INCOGNITO_SEARCH);
+}
+
+// Returns a matcher for the new tab button in incognito mode.
+id<GREYMatcher> IncognitoNewTabButton() {
+  return chrome_test_util::ButtonWithAccessibilityLabelId(
+      IDS_IOS_TOOLBAR_OPEN_NEW_TAB_INCOGNITO);
 }
 
 }  // namespace
@@ -82,7 +90,6 @@ id<GREYMatcher> TabGridButton() {
   // app, this policy data will appear under the
   // "com.apple.configuration.managed" key.
   AppLaunchConfiguration config;
-  config.relaunch_policy = NoForceRelaunchAndResetState;
   return config;
 }
 
@@ -113,6 +120,7 @@ id<GREYMatcher> TabGridButton() {
                                  @"key><integer>%d</integer></dict>",
                                  static_cast<int>(availability)]);
   config.additional_args.push_back(incognito_availability_arg);
+  config.relaunch_policy = NoForceRelaunchAndResetState;
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 }
 
@@ -152,7 +160,7 @@ id<GREYMatcher> TabGridButton() {
 - (void)testTabGridButtonLongPressMenuWhenIncognitoAvailable {
   SetIncognitoAvailabiliy(IncognitoAvailability::kAvailable);
   // Long press the tab grid button.
-  [[EarlGrey selectElementWithMatcher:TabGridButton()]
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::ShowTabsButton()]
       performAction:grey_longPress()];
 
   AssertContextMenuItemEnabled(IDS_IOS_TOOLS_MENU_NEW_TAB);
@@ -163,9 +171,9 @@ id<GREYMatcher> TabGridButton() {
 // Incognito Tab" item should be disabled in the popup menu triggered by
 // long-pressing the tab grid button.
 - (void)testTabGridButtonLongPressMenuWhenIncognitoDisabled {
-  SetIncognitoAvailabiliy(IncognitoAvailability::kDisabled);
+  [self restartWithIncognitoPolicy:IncognitoAvailability::kDisabled];
   // Long press the tab grid button.
-  [[EarlGrey selectElementWithMatcher:TabGridButton()]
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::ShowTabsButton()]
       performAction:grey_longPress()];
 
   AssertContextMenuItemEnabled(IDS_IOS_TOOLS_MENU_NEW_TAB);
@@ -176,9 +184,9 @@ id<GREYMatcher> TabGridButton() {
 // item should be disabled in the popup menu triggered by long-pressing the tab
 // grid button.
 - (void)testTabGridButtonLongPressMenuWhenIncognitoOnly {
-  SetIncognitoAvailabiliy(IncognitoAvailability::kOnly);
+  [self restartWithIncognitoPolicy:IncognitoAvailability::kOnly];
   // Long press the tab grid button.
-  [[EarlGrey selectElementWithMatcher:TabGridButton()]
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::ShowTabsButton()]
       performAction:grey_longPress()];
 
   AssertContextMenuItemDisabled(IDS_IOS_TOOLS_MENU_NEW_TAB);
@@ -262,8 +270,10 @@ id<GREYMatcher> TabGridButton() {
                                           kDisabledIncognitoTabGridMessage)]
       assertWithMatcher:grey_sufficientlyVisible()];
 
-  // Check that the edit button is disabled.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridEditButton()]
+  // Check that the overflow menu button is disabled.
+  [[EarlGrey selectElementWithMatcher:
+                 grey_allOf(chrome_test_util::TabGridOverflowMenuButton(),
+                            grey_sufficientlyVisible(), nil)]
       assertWithMatcher:grey_not(grey_enabled())];
 
   GREYAssertNil([MetricsAppInterface
@@ -333,7 +343,7 @@ id<GREYMatcher> TabGridButton() {
 // Tests that when the IncognitoModeAvailability policy is set to disabled, the
 // "New Incognito Tab" keyboard shortcut action is disabled and can't open a new
 // incognito tab. This doesn't verify the tab grid UI.
-- (void)testOpenNewTab_FromPhysicalKeyboard__DisabledIncognito {
+- (void)testOpenNewTab_FromPhysicalKeyboard_DisabledIncognito {
   [self restartWithIncognitoPolicy:IncognitoAvailability::kDisabled];
 
   // Use the `CMD + SHIFT + n` keyboard shorcut to try opening an incognito tab.
@@ -345,6 +355,58 @@ id<GREYMatcher> TabGridButton() {
                   @"should stay in regular mode");
 }
 
-// TODO(crbug.com/40163908): Add test to new tab long-press menu.
+// Tests that when the IncognitoModeAvailability policy is set to available,
+// long pressing the new tab, and then pressing incognito search button will
+// correctly open the search in incognito mode.
+- (void)testOpenNewTab_LongPressNewTab_AvailableIncognito {
+  // Opening the context menu by long pressing the new tab button only works on
+  // phones.
+  if ([ChromeEarlGrey isIPhoneIdiom]) {
+    [self restartWithIncognitoPolicy:IncognitoAvailability::kAvailable];
+
+    [[EarlGrey selectElementWithMatcher:chrome_test_util::NewTabButton()]
+        performAction:grey_longPress()];
+    [[EarlGrey selectElementWithMatcher:IncognitoSearchButton()]
+        performAction:grey_tap()];
+
+    GREYAssertTrue([ChromeEarlGrey isIncognitoMode],
+                   @"should be in incognito mode");
+  }
+}
+
+// Tests that when the IncognitoModeAvailability policy is set to forced, when
+// long pressing the new tab button, the new search button is disabled in tools
+// menu.
+- (void)testOpenNewTab_LongPressNewTab_ForcedIncognito {
+  // Opening the context menu by long pressing the new tab button only works on
+  // phones.
+  if ([ChromeEarlGrey isIPhoneIdiom]) {
+    [self restartWithIncognitoPolicy:IncognitoAvailability::kOnly];
+
+    id<GREYMatcher> matcher = [ChromeEarlGrey isChromeNextEnabled]
+                                  ? chrome_test_util::NewTabButton()
+                                  : IncognitoNewTabButton();
+    [[EarlGrey selectElementWithMatcher:matcher]
+        performAction:grey_longPress()];
+
+    AssertContextMenuItemDisabled(IDS_IOS_TOOLS_MENU_NEW_SEARCH);
+  }
+}
+
+// Tests that when the IncognitoModeAvailability policy is set to disabled, when
+// long pressing the new tab button, the incognito search button is disabled in
+// tools menu.
+- (void)testOpenNewTab_LongPressNewTab_DisabledIncognito {
+  // Opening the context menu by long pressing the new tab button only works on
+  // phones.
+  if ([ChromeEarlGrey isIPhoneIdiom]) {
+    [self restartWithIncognitoPolicy:IncognitoAvailability::kDisabled];
+
+    [[EarlGrey selectElementWithMatcher:chrome_test_util::NewTabButton()]
+        performAction:grey_longPress()];
+
+    AssertContextMenuItemDisabled(IDS_IOS_TOOLS_MENU_NEW_INCOGNITO_SEARCH);
+  }
+}
 
 @end

@@ -25,12 +25,17 @@
 #include "components/sync/base/unique_position.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 #include "components/sync/protocol/shared_tab_group_data_specifics.pb.h"
+#include "google_apis/common/base_requests.h"
+#include "net/base/url_util.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+
+using endpoint_fetcher::EndpointFetcher;
+using endpoint_fetcher::EndpointResponse;
 
 namespace data_sharing {
 namespace {
@@ -39,10 +44,6 @@ constexpr base::TimeDelta kTimeout = base::Milliseconds(5000);
 
 // Content type for network request.
 constexpr char kContentType[] = "application/json; charset=UTF-8";
-// OAuth name.
-constexpr char kOAuthName[] = "shared_data_preview";
-// OAuth scope of the server.
-constexpr char kOAuthScope[] = "https://www.googleapis.com/auth/chromesync";
 
 // Server addresses to get preview data.
 constexpr char kDefaultServiceBaseUrl[] =
@@ -76,6 +77,7 @@ constexpr char kSharedTabGroupGuidKey[] = "sharedTabGroupGuid";
 constexpr char kUniquePositionKey[] = "uniquePosition";
 constexpr char kCustomCompressedV1Key[] = "customCompressedV1";
 constexpr char kColorKey[] = "color";
+constexpr char kGroupVialoationError[] = "SAME_CUSTOMER_DASHER_POLICY_VIOLATED";
 
 struct TabData {
   std::string url;
@@ -126,7 +128,7 @@ constexpr net::NetworkTrafficAnnotationTag
 
 // Find a a value for a field from a child dictionary in json.
 std::optional<std::string> GetFieldValueFromChildDict(
-    const base::Value::Dict& parent_dict,
+    const base::DictValue& parent_dict,
     const std::string& child_dict_name,
     const std::string& field_name) {
   auto* child_dict = parent_dict.FindDict(child_dict_name);
@@ -141,17 +143,13 @@ std::optional<std::string> GetFieldValueFromChildDict(
 }
 
 // Parse the shared tab from the dict.
-std::optional<sync_pb::SharedTab> ParseSharedTab(
-    const base::Value::Dict& dict) {
+std::optional<sync_pb::SharedTab> ParseSharedTab(const base::DictValue& dict) {
   auto* url = dict.FindString(kUrlKey);
   if (!url) {
     return std::nullopt;
   }
 
   auto* title = dict.FindString(kTitleKey);
-  if (!title) {
-    return std::nullopt;
-  }
 
   auto* shared_tab_group_guid = dict.FindString(kSharedTabGroupGuidKey);
   if (!shared_tab_group_guid) {
@@ -164,7 +162,9 @@ std::optional<sync_pb::SharedTab> ParseSharedTab(
   std::optional<sync_pb::SharedTab> shared_tab =
       std::make_optional<sync_pb::SharedTab>();
   shared_tab->set_url(*url);
-  shared_tab->set_title(*title);
+  if (title) {
+    shared_tab->set_title(*title);
+  }
   shared_tab->set_shared_tab_group_guid(*shared_tab_group_guid);
   if (custom_compressed) {
     std::string decoded;
@@ -176,7 +176,7 @@ std::optional<sync_pb::SharedTab> ParseSharedTab(
 
 // Parse the entity specifics from the dict.
 std::optional<sync_pb::EntitySpecifics> ParseEntitySpecifics(
-    const base::Value::Dict& dict) {
+    const base::DictValue& dict) {
   auto* shared_tab_group_dict = dict.FindDict(kSharedGroupDataKey);
   if (!shared_tab_group_dict) {
     return std::nullopt;
@@ -237,7 +237,7 @@ std::optional<sync_pb::EntitySpecifics> Deserialize(const base::Value& value) {
     return std::nullopt;
   }
 
-  const base::Value::Dict& value_dict = value.GetDict();
+  const base::DictValue& value_dict = value.GetDict();
   // Check if entry is deleted.
   auto deleted = value_dict.FindBool(kDeletedKey);
   if (deleted.has_value() && deleted.value()) {
@@ -311,20 +311,10 @@ void PreviewServerProxy::GetSharedDataPreview(
   std::string url_str = GetPreviewServerURLString();
   url_str.append("/").append(shared_entities_preview_path);
   GURL url = GURL(url_str);
-
-  // Query string in the URL to get shared entnties preview. {token} needs to
-  // be replaced by the caller. {pageSize} can be configured through finch.
-  const std::string kQueryString =
-      "accessToken={token}&pageToken=&pageSize={pageSize}";
-  std::string query_str = kQueryString;
-  base::ReplaceFirstSubstringAfterOffset(&query_str, 0, "{token}",
-                                         group_token.access_token);
-  base::ReplaceFirstSubstringAfterOffset(
-      &query_str, 0, "{pageSize}",
-      base::NumberToString(kPreviewDataSize.Get()));
-  GURL::Replacements replacements;
-  replacements.SetQueryStr(query_str);
-  url = url.ReplaceComponents(replacements);
+  url = net::AppendQueryParameter(url, "accessToken", group_token.access_token);
+  url = net::AppendQueryParameter(url, "pageToken", "");
+  url = net::AppendQueryParameter(url, "pageSize",
+                                  base::NumberToString(kPreviewDataSize.Get()));
   auto fetcher = CreateEndpointFetcher(url);
   auto* const fetcher_ptr = fetcher.get();
 
@@ -336,10 +326,17 @@ void PreviewServerProxy::GetSharedDataPreview(
 std::unique_ptr<EndpointFetcher> PreviewServerProxy::CreateEndpointFetcher(
     const GURL& url) {
   return std::make_unique<EndpointFetcher>(
-      url_loader_factory_, kOAuthName, url, net::HttpRequestHeaders::kGetMethod,
-      kContentType, std::vector<std::string>{kOAuthScope}, kTimeout,
-      /* post_data= */ std::string(), kGetSharedDataPreviewTrafficAnnotation,
-      identity_manager_, signin::ConsentLevel::kSignin);
+      url_loader_factory_, identity_manager_,
+      EndpointFetcher::RequestParams::Builder(
+          endpoint_fetcher::HttpMethod::kGet,
+          kGetSharedDataPreviewTrafficAnnotation)
+          .SetAuthType(endpoint_fetcher::OAUTH)
+          .SetOAuthConsumerId(signin::OAuthConsumerId::kSharedDataPreview)
+          .SetConsentLevel(signin::ConsentLevel::kSignin)
+          .SetContentType(kContentType)
+          .SetTimeout(kTimeout)
+          .SetUrl(url)
+          .Build());
 }
 
 void PreviewServerProxy::HandleServerResponse(
@@ -356,24 +353,29 @@ void PreviewServerProxy::HandleServerResponse(
       failure = DataSharingService::DataPreviewActionFailure::kGroupFull;
     } else if (response->http_status_code == net::HTTP_FORBIDDEN) {
       failure = DataSharingService::DataPreviewActionFailure::kPermissionDenied;
+      std::optional<std::string> reason =
+          google_apis::MapJsonErrorToReason(response->response);
+      if (reason.has_value() && reason.value() == kGroupVialoationError) {
+        failure = DataSharingService::DataPreviewActionFailure::
+            kGroupClosedByOrganizationPolicy;
+      }
     }
     std::move(callback).Run(base::unexpected(failure));
     return;
   }
 
-  data_decoder::DataDecoder::ParseJsonIsolated(
-      response->response,
-      base::BindOnce(&PreviewServerProxy::OnResponseJsonParsed,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  std::optional<base::DictValue> parsed_response =
+      base::JSONReader::ReadDict(response->response, base::JSON_PARSE_RFC);
+  OnResponseJsonParsed(std::move(callback), std::move(parsed_response));
 }
 
 void PreviewServerProxy::OnResponseJsonParsed(
     base::OnceCallback<void(
         const DataSharingService::SharedDataPreviewOrFailureOutcome&)> callback,
-    data_decoder::DataDecoder::ValueOrError result) {
+    std::optional<base::DictValue> result) {
   SharedDataPreview preview;
-  if (result.has_value() && result->is_dict()) {
-    if (auto* response_json = result->GetDict().FindList(kSharedEntitiesKey)) {
+  if (result.has_value()) {
+    if (auto* response_json = result->FindList(kSharedEntitiesKey)) {
       std::optional<SharedTabGroupPreview> group_preview;
       std::vector<TabData> tab_data;
       for (const auto& shared_entity_json : *response_json) {

@@ -40,6 +40,7 @@ MultitaskMenu::MultitaskMenu(views::View* anchor,
   set_internal_name("MultitaskMenuBubbleWidget");
   set_margins(gfx::Insets());
   set_parent_window(parent_widget->GetNativeWindow());
+  SetBackgroundColor(ui::kColorSysSurface3);
   SetAnchorView(anchor);
   SetArrow(views::BubbleBorder::Arrow::TOP_CENTER);
   SetEnableArrowKeyTraversal(true);
@@ -113,7 +114,7 @@ void MultitaskMenu::OnDisplayMetricsChanged(const display::Display& display,
                                             uint32_t changed_metrics) {
   // Ignore changes to displays that aren't showing the menu.
   if (display.id() !=
-      display::Screen::GetScreen()
+      display::Screen::Get()
           ->GetDisplayNearestView(GetWidget()->GetNativeWindow())
           .id()) {
     return;

@@ -18,12 +18,16 @@ source_set("find_bar") {
     "//chrome/browser/profiles:profile",
     "//components/find_in_page",
     "//components/keyed_service/core",
+    "//ui/base/data_transfer_policy",
   ]
 
   if (!is_android) {
     sources += [ "find_bar_controller.h" ]
 
-    public_deps += [ "//content/public/browser" ]
+    public_deps += [
+      "//chrome/browser/ui/views/page_action",
+      "//content/public/browser",
+    ]
   }
 }
 
@@ -32,7 +36,11 @@ source_set("impl") {
     "find_bar_state.cc",
     "find_bar_state_factory.cc",
   ]
-  deps = [ ":find_bar" ]
+  deps = [
+    ":find_bar",
+    "//chrome/browser/enterprise",
+    "//content/public/browser",
+  ]
 
   if (!is_android) {
     sources += [
@@ -58,6 +66,7 @@ source_set("unit_tests") {
   deps = [
     ":find_bar",
     "//chrome/test:test_support",
+    "//components/enterprise/data_controls/core/browser:test_support",
   ]
 }
 
@@ -74,7 +83,9 @@ if (!is_android) {
 
     deps = [
       ":find_bar",
-      ":test_support",
+      "//chrome/browser/ui:chrome_pages",
+      "//chrome/browser/ui:ui_features",
+      "//chrome/browser/ui/browser_window",
       "//chrome/test:test_support",
     ]
 
@@ -94,6 +105,8 @@ if (!is_android && !is_chromeos_device) {
 
     deps = [
       ":find_bar",
+      "//chrome/browser/ui:view_ids",
+      "//chrome/browser/ui/browser_window",
       "//chrome/test:test_support",
     ]
 
@@ -101,10 +114,4 @@ if (!is_android && !is_chromeos_device) {
       sources += [ "find_bar_platform_helper_mac_interactive_uitest.mm" ]
     }
   }
-}
-
-source_set("test_support") {
-  testonly = true
-
-  sources = [ "find_bar_host_unittest_util.h" ]
 }

@@ -23,6 +23,14 @@ enum Resample2DAxes {
   kChannelsLast,
 };
 
+// Represents supported batchNormalization axis for this context.
+// kChannelsFirst means axis = 1.
+// kAny means any arbitrary axis.
+enum BatchNormalizationAxis {
+  kAny,
+  kChannelsFirst,
+};
+
 struct SupportedDataTypes {
   bool float32;
   bool float16;
@@ -51,27 +59,30 @@ struct SupportedTensors {
 // Keep the order as the same as build methods of `MLGraphBuilder`, for
 // operator with multiple parameters, maintain the parameter positions order.
 struct DataTypeLimits {
-  SupportedDataTypes input;
-  SupportedDataTypes constant;
+  SupportedTensors input;
+  SupportedTensors constant;
 
   // ArgMin/Max.
   SupportedTensors arg_min_max_input;
-  SupportedDataTypes arg_min_max_output;
+  SupportedTensors arg_min_max_output;
 
   SupportedTensors batch_normalization_input;
   // Also used to validate variance, scale and bias.
   SupportedTensors batch_normalization_mean;
   SupportedTensors cast_input;
   SupportedTensors clamp_input;
-  SupportedDataTypes concat_inputs;
-  SupportedDataTypes conv2d_input;
-  SupportedDataTypes conv_transpose2d_input;
+  SupportedTensors concat_inputs;
+  // Also used to validate filter.
+  SupportedTensors conv2d_input;
+  SupportedTensors conv2d_bias;
+  // Also used to validate filter.
+  SupportedTensors conv_transpose2d_input;
+  SupportedTensors conv_transpose2d_bias;
   SupportedTensors cumulative_sum_input;
 
   // DequantizeLinear.
   SupportedTensors dequantize_linear_input;
   SupportedTensors dequantize_linear_scale;
-  SupportedTensors dequantize_linear_zero_point;
 
   // Element-wise binary ops.
   SupportedTensors add_input;
@@ -93,6 +104,8 @@ struct DataTypeLimits {
   SupportedTensors logical_or_input;
   SupportedTensors logical_xor_input;
   SupportedTensors logical_not_input;
+  SupportedTensors is_nan_input;
+  SupportedTensors is_infinite_input;
   SupportedDataTypes logical_output;
 
   // Element-wise unary ops.
@@ -106,6 +119,7 @@ struct DataTypeLimits {
   SupportedTensors log_input;
   SupportedTensors neg_input;
   SupportedTensors reciprocal_input;
+  SupportedTensors round_even_input;
   SupportedTensors sign_input;
   SupportedTensors sin_input;
   SupportedTensors sqrt_input;
@@ -115,21 +129,30 @@ struct DataTypeLimits {
   SupportedTensors expand_input;
 
   // Gather.
-  SupportedDataTypes gather_input;
-  SupportedDataTypes gather_indices;
+  SupportedTensors gather_input;
+  SupportedTensors gather_indices;
 
   // GatherElements.
-  SupportedDataTypes gather_elements_input;
-  SupportedDataTypes gather_elements_indices;
+  SupportedTensors gather_elements_input;
+  SupportedTensors gather_elements_indices;
 
   // GatherND.
-  SupportedDataTypes gather_nd_input;
-  SupportedDataTypes gather_nd_indices;
+  SupportedTensors gather_nd_input;
+  SupportedTensors gather_nd_indices;
 
   SupportedTensors gelu_input;
-  SupportedDataTypes gemm_input;
-  SupportedDataTypes gru_input;
-  SupportedDataTypes gru_cell_input;
+  // Also used to validate b;
+  SupportedTensors gemm_a;
+  SupportedTensors gemm_c;
+  // Also used to validate weight, recurrentWeight and initialHiddenState.
+  SupportedTensors gru_input;
+  // Also used to validate recurrentBias.
+  SupportedTensors gru_bias;
+  SupportedTensors gru_output_sequence;
+  // Also used to validate weight, recurrentWeight and hiddenState.
+  SupportedTensors gru_cell_input;
+  // Also used to validate recurrentBias.
+  SupportedTensors gru_cell_bias;
   SupportedTensors hard_sigmoid_input;
   SupportedTensors hard_swish_input;
   SupportedTensors instance_normalization_input;
@@ -138,8 +161,16 @@ struct DataTypeLimits {
   SupportedTensors layer_normalization_input;
   SupportedTensors leaky_relu_input;
   SupportedTensors linear_input;
-  SupportedDataTypes lstm_input;
-  SupportedDataTypes lstm_cell_input;
+  // Also used to validate weight, recurrentWeight, initialHiddenState and
+  // initialCellState.
+  SupportedTensors lstm_input;
+  // Also used to validate recurrentBias and peepholeWeight.
+  SupportedTensors lstm_bias;
+  SupportedTensors lstm_output_sequence;
+  // Also used to validate weight, recurrentWeight, hiddenState and cellState.
+  SupportedTensors lstm_cell_input;
+  // Also used to validate recurrentBias and peepholeWeight.
+  SupportedTensors lstm_cell_bias;
   SupportedTensors matmul_input;
   SupportedTensors pad_input;
 
@@ -201,6 +232,7 @@ struct DataTypeLimits {
 struct ContextProperties {
   InputOperandLayout input_operand_layout;
   Resample2DAxes resample_2d_axes;
+  BatchNormalizationAxis batch_normalization_axis;
   // All tensors in graph will not exceed the byte length limit.
   uint64 tensor_byte_length_limit;
   DataTypeLimits data_type_limits;

@@ -12,7 +12,7 @@
 #include "base/containers/circular_deque.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "components/ownership/owner_settings_service.h"
@@ -20,6 +20,8 @@
 #include "components/policy/core/common/cloud/cloud_policy_validator.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/policy/proto/device_management_backend.pb.h"
+
+class PrefService;
 
 namespace ownership {
 class OwnerKeyUtil;
@@ -69,7 +71,8 @@ class DeviceSettingsService : public SessionManagerClient::Observer {
   // Status codes for Load() and Store().
   // These values are logged to UMA. Entries should not be renumbered and
   // numeric values should never be reused. Please keep in sync with
-  // "DeviceSettingsStatus" in src/tools/metrics/histograms/enums.xml.
+  // "DeviceSettingsStatus2" in
+  // tools/metrics/histograms/metadata/enterprise/enums.xml.
   enum Status {
     STORE_SUCCESS,
     STORE_KEY_UNAVAILABLE,   // Owner key not yet configured.
@@ -77,7 +80,11 @@ class DeviceSettingsService : public SessionManagerClient::Observer {
     STORE_NO_POLICY,         // No settings blob present.
     STORE_INVALID_POLICY,    // Invalid settings blob (proto parse failed).
     STORE_VALIDATION_ERROR,  // Policy validation failure.
-    kMaxValue = STORE_VALIDATION_ERROR,
+    STORE_KEY_UNAVAILABLE_NOT_INITIALIZED,  // Early in boot process.
+    STORE_KEY_UNAVAILABLE_NOT_LOCKED,       // Owner key not present, ownership
+                                            // not taken. Not an error.
+    STORE_KEY_UNAVAILABLE_MANAGED,  // Owner key not present for managed device.
+    kMaxValue = STORE_KEY_UNAVAILABLE_MANAGED,
   };
 
   // Observer interface.
@@ -116,12 +123,15 @@ class DeviceSettingsService : public SessionManagerClient::Observer {
   ~DeviceSettingsService() override;
 
   // To be called on startup once threads are initialized and D-Bus is ready.
-  void SetSessionManager(SessionManagerClient* session_manager_client,
-                         scoped_refptr<ownership::OwnerKeyUtil> owner_key_util);
+  // `local_state` must be valid until `StopProcessing()`. `local_state` may be
+  // null only in tests.
+  void StartProcessing(PrefService* local_state,
+                       SessionManagerClient* session_manager_client,
+                       scoped_refptr<ownership::OwnerKeyUtil> owner_key_util);
 
   // Prevents the service from making further calls to session_manager_client
   // and stops any pending operations.
-  void UnsetSessionManager();
+  void StopProcessing();
 
   // Must only be used with a |device_mode| that has been read and verified by
   // the InstallAttributes class.
@@ -187,13 +197,19 @@ class DeviceSettingsService : public SessionManagerClient::Observer {
   // hasn't been checked yet.
   OwnershipStatus GetOwnershipStatus();
 
-  // Determines the ownership status and reports the result to |callback|. This
-  // is guaranteed to never return OWNERSHIP_UNKNOWN.
+  // Determines the ownership status and reports the result to `callback`.
+  // This obtains the ownership status of the device by reading the public owner
+  // key.
+  // As a side effect, it also obtains device settings from the session manager,
+  // see SessionManagerOperation::StartLoading().
+  //
+  // May pass OWNERSHIP_UNKNOWN to `callback` if the public owner key file is
+  // invalid (empty), see also ash::SessionManagerOperation::LoadPublicKey().
   virtual void GetOwnershipStatusAsync(OwnershipStatusCallback callback);
 
   // Checks whether we have the private owner key.
   //
-  // DEPRECATED (ygorshenin@, crbug.com/433840): this method should
+  // DEPRECATED (ygorshenin@, crbug.com/41143265): this method should
   // not be used since private key is a profile-specific resource and
   // should be checked and used in a profile-aware manner, through
   // OwnerSettingsService.
@@ -202,7 +218,7 @@ class DeviceSettingsService : public SessionManagerClient::Observer {
   // Sets the identity of the user that's interacting with the service. This is
   // relevant only for writing settings through SignAndStore().
   //
-  // TODO (ygorshenin@, crbug.com/433840): get rid of the method when
+  // TODO (ygorshenin@, crbug.com/41143265): get rid of the method when
   // write path for device settings will be removed from
   // DeviceSettingsProvider and all existing clients will be switched
   // to OwnerSettingsServiceAsh.
@@ -283,6 +299,8 @@ class DeviceSettingsService : public SessionManagerClient::Observer {
   // Processes pending callbacks from GetOwnershipStatusAsync().
   void RunPendingOwnershipStatusCallbacks();
 
+  raw_ptr<PrefService> local_state_ = nullptr;
+
   raw_ptr<SessionManagerClient> session_manager_client_ = nullptr;
   scoped_refptr<ownership::OwnerKeyUtil> owner_key_util_;
 
@@ -325,20 +343,6 @@ class DeviceSettingsService : public SessionManagerClient::Observer {
 };
 
 std::ostream& operator<<(std::ostream&, DeviceSettingsService::OwnershipStatus);
-
-// Helper class for tests. Initializes the DeviceSettingsService singleton on
-// construction and tears it down again on destruction.
-class ScopedTestDeviceSettingsService {
- public:
-  ScopedTestDeviceSettingsService();
-
-  ScopedTestDeviceSettingsService(const ScopedTestDeviceSettingsService&) =
-      delete;
-  ScopedTestDeviceSettingsService& operator=(
-      const ScopedTestDeviceSettingsService&) = delete;
-
-  ~ScopedTestDeviceSettingsService();
-};
 
 }  // namespace ash
 

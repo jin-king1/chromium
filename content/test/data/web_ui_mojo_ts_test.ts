@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {TypeWithNestedEnumTypemap} from './web_ui_mojo_ts_test_converters.js';
 import {MappedOptionalContainer, StringDictType, TestNode} from './web_ui_mojo_ts_test_mapped_types.js';
-import {OptionalNumericsStruct, TestEnum, WebUITsMojoTestCache} from './web_ui_ts_test.test-mojom-webui.js';
+import {ExtensibleUnion, ExtensibleUnionFieldTags, MojoResultTestCallbackRouter, MojoResultTestReceiver, MojoResultTestRemote, OptionalNumericsStruct, Result, TestAssociatedClient, TestAssociatedClientReceiver, TestEnum, TestMoreTypemapCallbackRouter, TypeWithNestedEnum_Enum, Union, UnionFieldTags, WebUITsMojoTestCache, whichExtensibleUnion, whichUnion} from './web_ui_ts_test.test-mojom-webui.js';
 import {StringWrapper} from './web_ui_ts_test_types.test-mojom-webui.js';
 
 const TEST_DATA: Array<{url: string, contents: string}> = [
@@ -35,7 +36,7 @@ function assertObjectEquals(a: any, b: any, msg: string) {
 async function doTest(): Promise<boolean> {
   const cache = WebUITsMojoTestCache.getRemote();
   for (const entry of TEST_DATA) {
-    cache.put({ url: entry.url }, entry.contents);
+    cache.put(entry.url, entry.contents);
     let stringWrapper = StringWrapper.getRemote();
     stringWrapper.putString(entry.contents);
     cache.addStringWrapper(stringWrapper);
@@ -48,7 +49,7 @@ async function doTest(): Promise<boolean> {
 
   const entries: {[key: string]: string } = {};
   for (const item of items) {
-    entries[item.url.url] = item.contents;
+    entries[item.url] = item.contents;
   }
 
   for (const entry of TEST_DATA) {
@@ -247,10 +248,15 @@ async function doTest(): Promise<boolean> {
   }
 
   {
-    const result = await cache.echoTypemaps(new Date(12321));
+    const token = '0123456789ABCDEFBEEFDEADDEADBEEF';
+    const result = await cache.echoTypemaps(
+        new Date(12321),
+        token,
+    );
     assert(
         result.time.getTime() === new Date(12321).getTime(),
         `unexpected date received ${result.time.getTime()}`);
+    assert(result.token === token, `unexpected token ${token}`);
   }
 
   const assertTypemapContainerEquals =
@@ -286,6 +292,222 @@ async function doTest(): Promise<boolean> {
         `unexpected object ${JSON.stringify(result.result)}, expected: ${
             JSON.stringify(withValues)}`);
   }
+
+  // Loopback test for result types.
+  {
+    // Test general success case.
+    const listener = {
+      testResult:
+          (():
+               Promise<Result> => {
+                 return Promise.resolve({secretMessage: `it's all for naught`});
+               })
+    };
+    const service = new MojoResultTestReceiver(listener);
+    const client: MojoResultTestRemote = service.$.bindNewPipeAndPassRemote();
+
+    await client.testResult().then(result => {
+      assert(
+          result.secretMessage === `it's all for naught`,
+          `got unexpected msg: ${JSON.stringify(result)}`);
+    });
+  }
+
+  {
+    // Tests listener pattern.
+    const callbacks = new MojoResultTestCallbackRouter();
+    const client = callbacks.$.bindNewPipeAndPassRemote();
+    callbacks.testResult.addListener(
+        () => Promise.resolve({secretMessage: 'I listen'}));
+
+    await client.testResult().then(result => {
+      assert(
+          result.secretMessage === 'I listen',
+          `got unexpected msg: ${JSON.stringify(result)}`);
+    });
+  }
+
+  {
+    // Tests rejection.
+    const callbacks = new MojoResultTestCallbackRouter();
+    const client = callbacks.$.bindNewPipeAndPassRemote();
+    callbacks.testResult.addListener(
+        () => Promise.reject(new Error('cannot go on')));
+
+    await client.testResult()
+        .then(() => {
+          assert(false, 'should have failed');
+        })
+        .catch((error: Error) => {
+          assert(error.message === 'cannot go on', JSON.stringify(error));
+        });
+  }
+
+  {
+    // Tests loose js error encoding for JsError.
+    const callbacks = new MojoResultTestCallbackRouter();
+    const client = callbacks.$.bindNewPipeAndPassRemote();
+    callbacks.testResult.addListener(
+        () => Promise.reject({message: 'cannot go on'}));
+
+    await client.testResult()
+        .then(() => {
+          assert(false, 'should have failed');
+        })
+        .catch((error: Error) => {
+          assert(error.message === 'cannot go on', JSON.stringify(error));
+        });
+  }
+
+  {
+    // Tests throwing.
+    const callbacks = new MojoResultTestCallbackRouter();
+    const client = callbacks.$.bindNewPipeAndPassRemote();
+    callbacks.testResult.addListener(() => {
+      throw new Error('oh noes');
+    });
+
+    await client.testResult()
+        .then(() => {
+          assert(false, 'should have failed');
+        })
+        .catch((error: Error) => {
+          assert(error.message === 'oh noes', JSON.stringify(error));
+        });
+  }
+
+  {
+    // Tests unknown object to JsError mapping.
+    class Potato {}
+    const callbacks = new MojoResultTestCallbackRouter();
+    const client = callbacks.$.bindNewPipeAndPassRemote();
+    callbacks.testResult.addListener(() => {
+      throw new Potato();
+    });
+
+    await client.testResult()
+        .then(() => {
+          assert(false, 'should have failed');
+        })
+        .catch((error: Error) => {
+          assert(
+              error.message === 'unknown error has occured',
+              JSON.stringify(error));
+        });
+  }
+
+  {
+    const callbacks = new TestMoreTypemapCallbackRouter();
+    const client = callbacks.$.bindNewPipeAndPassRemote();
+    callbacks.testNestedEnum.addListener((req: TypeWithNestedEnumTypemap) => {
+      assert(
+          req.isNativeType,
+          'expected native type for request, this indicates that the type was '
+          + 'not properly typemapped');
+      return {res: req};
+    });
+
+    await client
+        .testNestedEnum(
+            new TypeWithNestedEnumTypemap(TypeWithNestedEnum_Enum.kToTest))
+        .then(resp => {
+          assert(
+              resp.res.isNativeType,
+              'expected native type for response, this indicates that the type '
+              + 'was not properly typemapped');
+          assert(
+              resp.res.value === TypeWithNestedEnum_Enum.kToTest,
+              `Expected kToTest, but got: ${resp.res.value}`);
+        });
+  }
+
+  {
+    const u: Union = {
+      one: 1,
+    };
+
+    assert(
+        whichUnion(u) === UnionFieldTags.ONE,
+        'unexpected result: ' + whichUnion(u));
+
+    const u3: Union = {
+      three: 'blahblahblah',
+    };
+
+    switch (whichUnion(u3)) {
+      case UnionFieldTags.ONE:
+        assert(false, 'wrongly one');
+        break;
+      case UnionFieldTags.TWO:
+        assert(false, 'wrongly two');
+        break;
+      case UnionFieldTags.THREE:
+        // Great success!
+        break;
+      default:
+        assert(false, 'wrongly default');
+        break;
+    }
+
+    try {
+      const badU: Union = {};
+      whichUnion(badU);
+    } catch (e) {
+      // Expected, passed.
+    }
+  }
+
+  {
+    const u: ExtensibleUnion = {
+      foo: 6,
+    };
+    assert(
+        whichExtensibleUnion(u) === ExtensibleUnionFieldTags.FOO,
+        'unexpected extensible union: ' + whichExtensibleUnion(u));
+
+    const u2: any = {
+      simulatingUnknownField: 9001,
+    };
+    // Should go to default.
+    assert(
+        whichExtensibleUnion(u2) === ExtensibleUnionFieldTags.FOO,
+        'unexpected extensible union: ' + whichExtensibleUnion(u2));
+  }
+
+  // Test associated interface blocks until client is bound.
+  {
+    // This setup is somewhat convoluted, but basically getAssociatedReceiver()
+    // will return an associated receiver that has a message enqueued on it
+    // immediately. Subsequent calls to the echo service should be blocked until
+    // we bind a client to the associated interface, at which point, all calls
+    // will resolve. The associated interface should preserve ordering. That is,
+    // the associated receiver method call should resolve first, followed by the
+    // latter call to the cache service.
+    const resp = await cache.getAssociatedReceiver();
+
+    const received: string[] = [];
+
+    cache.ping().then(() => {
+      received.push('ping');
+    });
+
+    class Client implements TestAssociatedClient {
+      blockUntilBound() {
+        received.push('blockUntilBound');
+      }
+    }
+
+    const receiver = new TestAssociatedClientReceiver(new Client());
+    receiver.$.bindHandle((resp.client as any).handle);
+
+    await cache.$.flushForTesting();
+
+    assert(
+        JSON.stringify(['blockUntilBound', 'ping']) ===
+            JSON.stringify(received),
+        'unexpected ordering: ' + JSON.stringify(received));
+  }
+
   return true;
 }
 

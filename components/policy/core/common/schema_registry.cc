@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "components/policy/core/common/schema_registry.h"
 
@@ -25,6 +21,7 @@ SchemaRegistry::SchemaRegistry() : schema_map_(new SchemaMap) {
     domains_ready_[i] = false;
 #if !BUILDFLAG(ENABLE_EXTENSIONS)
   SetExtensionsDomainsReady();
+  SetDomainReady(POLICY_DOMAIN_EXTENSION_INSTALL);
 #endif
 }
 
@@ -137,7 +134,13 @@ CombinedSchemaRegistry::CombinedSchemaRegistry()
   SetAllDomainsReady();
 }
 
-CombinedSchemaRegistry::~CombinedSchemaRegistry() = default;
+CombinedSchemaRegistry::~CombinedSchemaRegistry() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  for (auto registry : registries_) {
+    registry->RemoveObserver(this);
+    registry->RemoveInternalObserver(this);
+  }
+}
 
 void CombinedSchemaRegistry::Track(SchemaRegistry* registry) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);

@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #ifndef SANDBOX_WIN_SRC_POLICY_ENGINE_OPCODES_H_
 #define SANDBOX_WIN_SRC_POLICY_ENGINE_OPCODES_H_
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
 #include "base/numerics/safe_conversions.h"
 #include "sandbox/win/src/policy_engine_params.h"
@@ -64,19 +60,18 @@ enum EvalResult {
   EVAL_FALSE,  // Opcode condition evaluated false.
   EVAL_ERROR,  // Opcode condition generated an error while evaluating.
   // Action opcode values:
-  ASK_BROKER,   // The target must generate an IPC to the broker. On the broker
-                // side, this means grant access to the resource.
-  DENY_ACCESS,  // No access granted to the resource.
-  SIGNAL_ALARM,    // Unusual activity. Generate an alarm.
-  FAKE_SUCCESS,    // Do not call original function. Just return 'success'.
+  ASK_BROKER,    // The target must generate an IPC to the broker. On the broker
+                 // side, this means grant access to the resource.
+  DENY_ACCESS,   // No access granted to the resource.
+  SIGNAL_ALARM,  // Unusual activity. Generate an alarm.
+  FAKE_SUCCESS,  // Do not call original function. Just return 'success'.
   FAKE_ACCESS_DENIED,  // Do not call original function. Just return 'denied'
                        // and do not do IPC.
+  RETURN_CONST,        // Return a constant value.
 };
 
 // The following are the implemented opcodes. uint16_t purely to pack nicely.
 enum OpcodeID : uint16_t {
-  OP_ALWAYS_FALSE,        // Evaluates to false (EVAL_FALSE).
-  OP_ALWAYS_TRUE,         // Evaluates to true (EVAL_TRUE).
   OP_NUMBER_MATCH,        // Match a 32-bit integer as n == a.
   OP_NUMBER_AND_MATCH,    // Match using bitwise AND; as in: n & a != 0.
   OP_WSTRING_MATCH,       // Match a string for equality.
@@ -150,14 +145,15 @@ class PolicyOpcode {
   // sequence.
   EvalResult Evaluate(const ParameterSet* parameters,
                       size_t count,
-                      MatchContext* match);
+                      MatchContext* match) const;
 
   // Retrieves a stored argument by index. Valid index values are
   // from 0 to < kArgumentCount.
   template <typename T>
   void GetArgument(size_t index, T* argument) const {
     static_assert(sizeof(T) <= sizeof(arguments_[0]), "invalid size");
-    *argument = *reinterpret_cast<const T*>(&arguments_[index].mem);
+    *argument =
+        *reinterpret_cast<const T*>(&UNSAFE_TODO(arguments_[index]).mem);
   }
 
   // Sets a stored argument by index. Valid index values are
@@ -165,7 +161,7 @@ class PolicyOpcode {
   template <typename T>
   void SetArgument(size_t index, const T& argument) {
     static_assert(sizeof(T) <= sizeof(arguments_[0]), "invalid size");
-    *reinterpret_cast<T*>(&arguments_[index].mem) = argument;
+    *reinterpret_cast<T*>(&UNSAFE_TODO(arguments_[index]).mem) = argument;
   }
 
   // Retrieves the actual address of a string argument. When using
@@ -176,7 +172,8 @@ class PolicyOpcode {
   const wchar_t* GetRelativeString(size_t index) const {
     ptrdiff_t str_delta = 0;
     GetArgument(index, &str_delta);
-    const char* delta = reinterpret_cast<const char*>(this) + str_delta;
+    const char* delta =
+        UNSAFE_TODO(reinterpret_cast<const char*>(this) + str_delta);
     return reinterpret_cast<const wchar_t*>(delta);
   }
 
@@ -210,7 +207,7 @@ class PolicyOpcode {
   // Helper function to evaluate the opcode. The parameters have the same
   // meaning that in Evaluate().
   EvalResult EvaluateHelper(const ParameterSet* parameters,
-                            MatchContext* match);
+                            MatchContext* match) const;
   OpcodeID opcode_id_;
   // Used a boolean field but provided as a uint8_t to maintain packing.
   uint8_t has_param_;
@@ -267,14 +264,14 @@ class OpcodeFactory {
   // memory: base pointer to a chunk of memory where the opcodes are created.
   // memory_size: the size in bytes of the memory chunk.
   OpcodeFactory(char* memory, size_t memory_size) : memory_top_(memory) {
-    memory_bottom_ = &memory_top_[memory_size];
+    memory_bottom_ = &UNSAFE_TODO(memory_top_[memory_size]);
   }
 
   // policy: contains the raw memory where the opcodes are created.
   // memory_size: contains the actual size of the policy argument.
   OpcodeFactory(PolicyBuffer* policy, size_t memory_size) {
     memory_top_ = reinterpret_cast<char*>(&policy->opcodes[0]);
-    memory_bottom_ = &memory_top_[memory_size];
+    memory_bottom_ = &UNSAFE_TODO(memory_top_[memory_size]);
   }
 
   OpcodeFactory(const OpcodeFactory&) = delete;
@@ -283,15 +280,10 @@ class OpcodeFactory {
   // Returns the available memory to make opcodes.
   size_t memory_size() const;
 
-  // Creates an OpAlwaysFalse opcode.
-  PolicyOpcode* MakeOpAlwaysFalse(uint32_t options);
-
-  // Creates an OpAlwaysFalse opcode.
-  PolicyOpcode* MakeOpAlwaysTrue(uint32_t options);
-
   // Creates an OpAction opcode.
   // action: The action to return when Evaluate() is called.
-  PolicyOpcode* MakeOpAction(EvalResult action, uint32_t options);
+  // constant: The constant to return if action is RETURN_CONST.
+  PolicyOpcode* MakeOpAction(EvalResult action, uintptr_t constant);
 
   // Creates an OpNumberMatch opcode.
   // selected_param: index of the input argument. It must be a uint32_t or the
@@ -300,14 +292,6 @@ class OpcodeFactory {
   PolicyOpcode* MakeOpNumberMatch(uint8_t selected_param,
                                   uint32_t match,
                                   uint32_t options);
-
-  // Creates an OpNumberMatch opcode (void pointers are cast to numbers).
-  // selected_param: index of the input argument. It must be an void* or the
-  // evaluation result will generate a EVAL_ERROR.
-  // match: the pointer numeric value to compare against selected_param.
-  PolicyOpcode* MakeOpVoidPtrMatch(uint8_t selected_param,
-                                   const void* match,
-                                   uint32_t options);
 
   // Creates an OpWStringMatch opcode using the raw memory passed in the ctor.
   // selected_param: index of the input argument. It must be a wide string
@@ -322,7 +306,7 @@ class OpcodeFactory {
   // current implementation.
   // All comparisons are case-insensitive.
   PolicyOpcode* MakeOpWStringMatch(uint8_t selected_param,
-                                   const wchar_t* match_str,
+                                   std::wstring_view match_str,
                                    int start_position,
                                    uint32_t options,
                                    bool final_token);
@@ -343,9 +327,9 @@ class OpcodeFactory {
                          uint32_t options,
                          uint8_t selected_param);
 
-  // Allocates (and copies) a string (of size length) inside the buffer and
-  // returns the displacement with respect to start.
-  ptrdiff_t AllocRelative(void* start, const wchar_t* str, size_t length);
+  // Allocates (and copies) a string inside the buffer and returns the
+  // displacement with respect to start.
+  ptrdiff_t AllocRelative(void* start, std::wstring_view str);
 
   // Points to the lowest currently available address of the memory
   // used to make the opcodes. This pointer increments as opcodes are made.

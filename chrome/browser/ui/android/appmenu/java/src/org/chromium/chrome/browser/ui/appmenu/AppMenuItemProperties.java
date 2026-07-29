@@ -5,7 +5,9 @@
 package org.chromium.chrome.browser.ui.appmenu;
 
 import android.graphics.drawable.Drawable;
+import android.view.View;
 
+import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
@@ -27,6 +29,12 @@ public class AppMenuItemProperties {
     /** The title of the menu item. */
     public static final WritableObjectPropertyKey<CharSequence> TITLE =
             new WritableObjectPropertyKey<>("TITLE");
+
+    /**
+     * The unused title id of the menu item, to accommodate `HierarchicalMenuKeyProvider`.
+     * TODO(crbug.com/40738791): Remove this and use only {@link TITLE}.
+     */
+    public static final WritableIntPropertyKey TITLE_ID = new WritableIntPropertyKey("TITLE_ID");
 
     /**
      * The condensed title of the menu item. This is used for View#setContentDescription() for the
@@ -67,16 +75,35 @@ public class AppMenuItemProperties {
     public static final WritableBooleanPropertyKey ICON_SHOW_BADGE =
             new WritableBooleanPropertyKey("ICON_SHOW_BADGE");
 
+    /**
+     * * Whether to skip the default icon tinting. Set to true for items that provide their own
+     * full-color icons (e.g. Browser Promo).
+     */
+    public static final WritableBooleanPropertyKey ICON_NO_TINT =
+            new WritableBooleanPropertyKey("ICON_NO_TINT");
+
+    /** The supplier for the icon for the menu item. */
+    public static final WritableObjectPropertyKey<LazyOneshotSupplier<Drawable>> ICON_SUPPLIER =
+            new WritableObjectPropertyKey<>("ICON_SUPPLIER");
+
     /** The the menu item's position in the menu. */
     static final WritableIntPropertyKey POSITION = new WritableIntPropertyKey("POSITION");
-
-    /** Whether the menu item support enter animation when menu just opened. */
-    public static final WritableBooleanPropertyKey SUPPORT_ENTER_ANIMATION =
-            new WritableBooleanPropertyKey("SUPPORT_ENTER_ANIMATION");
 
     /** The click handler for the menu item. */
     public static final WritableObjectPropertyKey<@Nullable AppMenuClickHandler> CLICK_HANDLER =
             new WritableObjectPropertyKey<>(/* skipEquality= */ true, "CLICK_HANDLER");
+
+    /** The hover listener for menu items. */
+    public static final WritableObjectPropertyKey<View.@Nullable OnHoverListener> HOVER_LISTENER =
+            new WritableObjectPropertyKey<>("HOVER_LISTENER");
+
+    /** Whether the menu item has hover background. */
+    public static final WritableBooleanPropertyKey HAS_HOVER_BACKGROUND =
+            new WritableBooleanPropertyKey("HAS_HOVER_BACKGROUND");
+
+    /** The key listener for menu items. */
+    public static final WritableObjectPropertyKey<View.OnKeyListener> KEY_LISTENER =
+            new WritableObjectPropertyKey<>("KEY_LISTENER");
 
     /**
      * Whether the menu is shown from a menu icon positioned at start. This is used to determine the
@@ -86,19 +113,31 @@ public class AppMenuItemProperties {
             new WritableBooleanPropertyKey("MENU_ICON_AT_START");
 
     /**
-     * The sub menu for the menu item, this is used for the menu item which has sub menu items. ex.
-     * icon row. The {link ModelList} here do not need a view type since this diverges from other,
-     * non sub-menu-items that use AppMenuItemProperties.
-     *
-     * <p>A SUBMENU should not have a SUBMENU (don't support nesting).
+     * Additional icons associated with a particular menu item. Only certain menu item types support
+     * additional icons (e.g. icon rows). The number of supported icons also depends on the menu
+     * item type.
      */
-    public static final WritableObjectPropertyKey<ModelList> SUBMENU =
-            new WritableObjectPropertyKey<>("SUBMENU");
+    public static final WritableObjectPropertyKey<ModelList> ADDITIONAL_ICONS =
+            new WritableObjectPropertyKey<>("ADDITIONAL_ICONS");
+
+    public static final PropertyKey[] ALL_ICON_KEYS =
+            new PropertyKey[] {
+                MENU_ITEM_ID,
+                TITLE,
+                TITLE_CONDENSED,
+                CHECKABLE,
+                CHECKED,
+                ICON,
+                ENABLED,
+                HIGHLIGHTED,
+                CLICK_HANDLER
+            };
 
     public static final PropertyKey[] ALL_KEYS =
             new PropertyKey[] {
                 MENU_ITEM_ID,
                 TITLE,
+                TITLE_ID,
                 TITLE_CONDENSED,
                 ENABLED,
                 HIGHLIGHTED,
@@ -109,9 +148,13 @@ public class AppMenuItemProperties {
                 ICON_COLOR_RES,
                 ICON_SHOW_BADGE,
                 POSITION,
-                SUPPORT_ENTER_ANIMATION,
                 CLICK_HANDLER,
+                HOVER_LISTENER,
+                HAS_HOVER_BACKGROUND,
+                KEY_LISTENER,
                 MENU_ICON_AT_START,
-                SUBMENU
+                ADDITIONAL_ICONS,
+                ICON_NO_TINT,
+                ICON_SUPPLIER
             };
 }

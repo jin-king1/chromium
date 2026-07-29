@@ -15,8 +15,9 @@
 #import "components/send_tab_to_self/features.h"
 #import "components/sync_device_info/device_info_sync_service.h"
 #import "ios/chrome/browser/content_notification/model/content_notification_util.h"
+#import "ios/chrome/browser/content_suggestions/ui/content_suggestions_collection_utils.h"
+#import "ios/chrome/browser/push_notification/coordinator/notifications_opt_in_alert_coordinator.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client_id.h"
-#import "ios/chrome/browser/push_notification/ui_bundled/notifications_opt_in_alert_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/notifications/content_notifications/content_notifications_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/notifications/notifications_banner_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/notifications/notifications_mediator.h"
@@ -31,18 +32,17 @@
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/sync/model/device_info_sync_service_factory.h"
-#import "ios/chrome/browser/ui/content_suggestions/content_suggestions_collection_utils.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
 @interface NotificationsCoordinator () <
-    NotificationsNavigationCommands,
     ContentNotificationsCoordinatorDelegate,
-    TrackingPriceCoordinatorDelegate,
+    NotificationsBannerViewControllerPresentationDelegate,
+    NotificationsNavigationCommands,
     NotificationsOptInAlertCoordinatorDelegate,
-    NotificationsBannerViewControllerPresentationDelegate>
+    TrackingPriceCoordinatorDelegate>
 
 // View controller presented by coordinator.
 @property(nonatomic, strong) NotificationsBannerViewController* viewController;
@@ -80,20 +80,18 @@
 
 - (void)start {
   AuthenticationService* authService =
-      AuthenticationServiceFactory::GetForProfile(self.browser->GetProfile());
-  id<SystemIdentity> identity =
-      authService->GetPrimaryIdentity(signin::ConsentLevel::kSignin);
-  const GaiaId gaiaID(identity.gaiaID);
-  PrefService* prefService = self.browser->GetProfile()->GetPrefs();
+      AuthenticationServiceFactory::GetForProfile(self.profile);
+  id<SystemIdentity> identity = authService->GetPrimaryIdentity();
+  PrefService* prefService = self.profile->GetPrefs();
   syncer::DeviceInfoSyncService* deviceInfoSyncService =
-      DeviceInfoSyncServiceFactory::GetForProfile(self.browser->GetProfile());
+      DeviceInfoSyncServiceFactory::GetForProfile(self.profile);
   _notificationsObserver = [[NotificationsSettingsObserver alloc]
       initWithPrefService:prefService
                localState:GetApplicationContext()->GetLocalState()];
 
   self.mediator =
       [[NotificationsMediator alloc] initWithPrefService:prefService
-                                                  gaiaID:gaiaID
+                                                  gaiaID:identity.gaiaId
                                    deviceInfoSyncService:deviceInfoSyncService];
   self.mediator.handler = self;
   self.mediator.presenter = self;
@@ -103,24 +101,52 @@
   self.viewController.presentationDelegate = self;
   self.viewController.modelDelegate = self.mediator;
   self.viewController.isContentNotificationEnabled =
-      IsContentNotificationEnabled(self.browser->GetProfile());
+      IsContentNotificationEnabled(self.profile);
   self.mediator.consumer = self.viewController;
   [self.baseNavigationController pushViewController:self.viewController
                                            animated:YES];
 }
 
 - (void)stop {
+  [_trackingPriceCoordinator stop];
+  _trackingPriceCoordinator.delegate = nil;
+  _trackingPriceCoordinator = nil;
   _notificationsObserver.delegate = nil;
   [_notificationsObserver disconnect];
   _notificationsObserver = nil;
   [_optInAlertCoordinator stop];
 }
 
+- (void)highlightClient:(PushNotificationClientId)clientID {
+  self.viewController.highlightedItem = [self itemForClient:clientID];
+  [self.viewController reloadData];
+}
+
+// Returns the table view item identifier for the given `clientID`.
+- (NotificationsItemIdentifier)itemForClient:
+    (PushNotificationClientId)clientID {
+  switch (clientID) {
+    case PushNotificationClientId::kCommerce:
+      return ItemIdentifierPriceTracking;
+    case PushNotificationClientId::kContent:
+    case PushNotificationClientId::kSports:
+      return ItemIdentifierContent;
+    case PushNotificationClientId::kTips:
+      return ItemIdentifierTips;
+    case PushNotificationClientId::kSafetyCheck:
+      return ItemIdentifierSafetyCheck;
+    case PushNotificationClientId::kSendTab:
+    case PushNotificationClientId::kReminders:
+      return ItemIdentifierSendTab;
+    case PushNotificationClientId::kCrossPlatformPromos:
+      // TODO:(crbug.com/445662240): Add toggle for this feature.
+      NOTREACHED();
+  }
+}
+
 #pragma mark - NotificationsAlertPresenter
 
 - (void)presentPushNotificationPermissionAlert {
-  CHECK(IsIOSTipsNotificationsEnabled());
-
   [self resetOptInAlertCoordinator];
 
   // `kTips` is the only client currently included as it's the only feature
@@ -135,11 +161,6 @@
 
 - (void)presentPushNotificationPermissionAlertWithClientIds:
     (std::vector<PushNotificationClientId>)clientIds {
-  CHECK(IsIOSTipsNotificationsEnabled() ||
-        IsSafetyCheckNotificationsEnabled() ||
-        base::FeatureList::IsEnabled(
-            send_tab_to_self::kSendTabToSelfIOSPushNotifications));
-
   // Presents a push notification permission alert for the specified client in
   // `clientIds`. **For now, only ONE client ID should be provided in
   // `clientIds`**, as there exists no generic UI for opting into push

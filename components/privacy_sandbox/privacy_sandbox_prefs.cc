@@ -4,10 +4,11 @@
 
 #include "components/privacy_sandbox/privacy_sandbox_prefs.h"
 
+#include "base/time/time.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry_simple.h"
-#include "components/privacy_sandbox/privacy_sandbox_notice_storage.h"
-#include "components/privacy_sandbox/tracking_protection_prefs.h"
+#include "components/prefs/pref_service.h"
+#include "components/privacy_sandbox/privacy_sandbox_features.h"
 
 namespace privacy_sandbox {
 
@@ -52,11 +53,6 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterBooleanPref(
       prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, true,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterTimePref(
-      prefs::kPrivacySandboxFakeNoticePromptShownTimeSync, base::Time(),
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterTimePref(prefs::kPrivacySandboxFakeNoticePromptShownTime,
-                             base::Time());
 
   registry->RegisterBooleanPref(prefs::kPrivacySandboxTopicsConsentGiven,
                                 false);
@@ -67,21 +63,24 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
       static_cast<int>(TopicsConsentUpdateSource::kDefaultValue));
   registry->RegisterStringPref(
       prefs::kPrivacySandboxTopicsConsentTextAtLastUpdate, "");
-  registry->RegisterTimePref(prefs::kPrivacySandboxFakeNoticeFirstSignInTime,
-                             base::Time());
-  registry->RegisterTimePref(prefs::kPrivacySandboxFakeNoticeFirstSignOutTime,
-                             base::Time());
 
   registry->RegisterBooleanPref(
       prefs::kPrivacySandboxAllowNoticeFor3PCBlockedTrial, false);
-#if BUILDFLAG(IS_ANDROID)
-  registry->RegisterListPref(prefs::kPrivacySandboxActivityTypeRecord2);
-#endif
-  // Register prefs for tracking protection.
-  tracking_protection::RegisterProfilePrefs(registry);
+  // TODO: b/462419925 - Deprecate these prefs post-Mode B rollback.
+  registry->RegisterBooleanPref(prefs::kShowRollbackUiModeB, false);
+  registry->RegisterBooleanPref(
+      prefs::kBlockAll3pcToggleEnabled, false,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  registry->RegisterBooleanPref(prefs::kTrackingProtection3pcdEnabled, false);
+}
 
-  // Register prefs for the privacy sandbox notice storage system.
-  PrivacySandboxNoticeStorage::RegisterProfilePrefs(registry);
+void MaybeClearAdPrivacyPrefs(PrefService* prefs) {
+  if (!base::FeatureList::IsEnabled(kPrivacySandboxAdPrivacyUxDeprecation)) {
+    return;
+  }
+  prefs->ClearPref(prefs::kPrivacySandboxM1TopicsEnabled);
+  prefs->ClearPref(prefs::kPrivacySandboxM1FledgeEnabled);
+  prefs->ClearPref(prefs::kPrivacySandboxM1AdMeasurementEnabled);
 }
 
 }  // namespace privacy_sandbox

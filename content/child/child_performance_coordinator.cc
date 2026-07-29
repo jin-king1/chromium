@@ -29,7 +29,6 @@ ChildPerformanceCoordinator::InitializeAndPassReceiver() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   auto receiver = coordination_unit_.BindNewPipeAndPassReceiver();
   coordination_unit_->InitializeChildProcessCoordination(
-      perfetto::ProcessTrack::Current().uuid,
       base::BindOnce(
           &ChildPerformanceCoordinator::OnInitializeChildProcessCoordination,
           weak_factory_.GetWeakPtr()));

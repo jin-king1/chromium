@@ -73,9 +73,17 @@ class LoginBaseBubbleViewTest : public LoginTestBase {
     container_->AddChildViewRaw(bubble_.get());
   }
 
-  raw_ptr<LoginBaseBubbleView, DanglingUntriaged> bubble_;
-  raw_ptr<views::View, DanglingUntriaged> container_;
-  raw_ptr<AnchorView, DanglingUntriaged> anchor_;
+  // LoginTestBase:
+  void TearDown() override {
+    bubble_ = nullptr;
+    container_ = nullptr;
+    anchor_ = nullptr;
+    LoginTestBase::TearDown();
+  }
+
+  raw_ptr<LoginBaseBubbleView> bubble_;
+  raw_ptr<views::View> container_;
+  raw_ptr<AnchorView> anchor_;
 };
 
 TEST_F(LoginBaseBubbleViewTest, BasicProperties) {
@@ -85,9 +93,8 @@ TEST_F(LoginBaseBubbleViewTest, BasicProperties) {
   EXPECT_TRUE(bubble_->GetVisible());
 
   EXPECT_EQ(bubble_->width(), kBubbleTotalWidthDp);
-  SkColor background_color = bubble_->GetColorProvider()->GetColor(
-      cros_tokens::kCrosSysSystemBaseElevated);
-  EXPECT_EQ(bubble_->background()->get_color(), background_color);
+  EXPECT_EQ(bubble_->background()->color(),
+            cros_tokens::kCrosSysSystemBaseElevated);
 
   bubble_->Hide();
   EXPECT_FALSE(bubble_->GetVisible());

@@ -15,7 +15,6 @@
 #include "ash/system/diagnostics/diagnostics_log_controller.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/webui/shimless_rma/backend/fake_shimless_rma_delegate.h"
-#include "ash/webui/shimless_rma/mojom/shimless_rma.mojom-shared.h"
 #include "ash/webui/shimless_rma/mojom/shimless_rma.mojom.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
@@ -29,7 +28,6 @@
 #include "chromeos/ash/components/dbus/rmad/rmad_client.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine.pb.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
-#include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/network/managed_network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
@@ -40,8 +38,8 @@
 #include "chromeos/ash/services/network_config/public/cpp/cros_network_config_test_helper.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
-#include "components/user_manager/fake_user_manager.h"
-#include "components/user_manager/scoped_user_manager.h"
+#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/user_manager/user_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -125,28 +123,31 @@ class FakeDiagnosticsBrowserDelegate
 // tests requiring DiagnosticsLogController singleton.
 class ShimlessRmaServiceTest : public NoSessionAshTestBase {
  public:
-  ShimlessRmaServiceTest() {}
+  ShimlessRmaServiceTest() = default;
 
   ~ShimlessRmaServiceTest() override {}
 
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures({features::kShimlessRMAOsUpdate}, {});
+
     chromeos::PowerManagerClient::InitializeFake();
     // VersionUpdater depends on UpdateEngineClient.
     UpdateEngineClient::InitializeFake();
-
-    scoped_user_manager_ = std::make_unique<user_manager::ScopedUserManager>(
-        std::make_unique<user_manager::FakeUserManager>());
+    FakeRmadClientForTest::Initialize();
+    rmad_client_ = RmadClient::Get();
 
     ui::ResourceBundle::CleanupSharedInstance();
     AshTestSuite::LoadTestResources();
+
+    user_session_manager_ =
+        std::make_unique<ash::test::TestUserSessionManager>(local_state());
     NoSessionAshTestBase::SetUp();
+
     diagnostics::DiagnosticsLogController::Initialize(
         std::make_unique<FakeDiagnosticsBrowserDelegate>());
 
     SetupFakeNetwork();
-    FakeRmadClientForTest::Initialize();
-    rmad_client_ = RmadClient::Get();
+
     // ShimlessRmaService has to be created after RmadClient or there will be a
     // null ptr dereference in the service constructor.
     shimless_rma_provider_ = std::make_unique<ShimlessRmaService>(
@@ -162,16 +163,20 @@ class ShimlessRmaServiceTest : public NoSessionAshTestBase {
     base::RunLoop().RunUntilIdle();
     // ShimlessRmaService has to be shutdown before RmadClient or there will be
     // a null ptr dereference in the service destructor.
+    version_updater_ = nullptr;
     shimless_rma_provider_.reset();
-    RmadClient::Shutdown();
+
     NetworkHandler::Shutdown();
     cros_network_config_test_helper_.reset();
 
-    scoped_user_manager_.reset();
-    UpdateEngineClient::Shutdown();
-
     task_environment()->RunUntilIdle();
     NoSessionAshTestBase::TearDown();
+    user_session_manager_.reset();
+
+    rmad_client_ = nullptr;
+    RmadClient::Shutdown();
+    UpdateEngineClient::Shutdown();
+    chromeos::PowerManagerClient::Shutdown();
   }
 
   void SetupFakeNetwork() {
@@ -323,12 +328,11 @@ class ShimlessRmaServiceTest : public NoSessionAshTestBase {
   }
 
   std::unique_ptr<ShimlessRmaService> shimless_rma_provider_;
-  raw_ptr<RmadClient, DanglingUntriaged> rmad_client_ =
-      nullptr;  // Unowned convenience pointer.
-  raw_ptr<VersionUpdater, DanglingUntriaged> version_updater_ = nullptr;
+  raw_ptr<RmadClient> rmad_client_ = nullptr;  // Unowned convenience pointer.
+  raw_ptr<VersionUpdater> version_updater_ = nullptr;
 
  private:
-  std::unique_ptr<user_manager::ScopedUserManager> scoped_user_manager_;
+  std::unique_ptr<ash::test::TestUserSessionManager> user_session_manager_;
 
   std::unique_ptr<network_config::CrosNetworkConfigTestHelper>
       cros_network_config_test_helper_;
@@ -3746,16 +3750,14 @@ class FakeHardwareVerificationStatusObserver
     : public mojom::HardwareVerificationStatusObserver {
  public:
   struct Observation {
-    bool is_compliant;
-    std::string error_message;
+    mojom::HardwareVerificationResultPtr result;
   };
 
-  void OnHardwareVerificationResult(bool is_compliant,
-                                    const std::string& error_message) override {
+  void OnHardwareVerificationResult(
+      mojom::HardwareVerificationResultPtr result) override {
     Observation observation;
-    observation.is_compliant = is_compliant;
-    observation.error_message = error_message;
-    observations.push_back(observation);
+    observation.result = std::move(result);
+    observations.push_back(std::move(observation));
   }
 
   std::vector<Observation> observations;
@@ -3767,24 +3769,23 @@ TEST_F(ShimlessRmaServiceTest, ObserveHardwareVerification) {
   shimless_rma_provider_->ObserveHardwareVerificationStatus(
       fake_observer.receiver.BindNewPipeAndPassRemote());
   base::RunLoop run_loop;
-  fake_rmad_client_()->TriggerHardwareVerificationResultObservation(true, "ok");
+  fake_rmad_client_()->TriggerHardwareVerificationResultObservation(true, "",
+                                                                    false);
   run_loop.RunUntilIdle();
   EXPECT_EQ(fake_observer.observations.size(), 1UL);
-  EXPECT_EQ(fake_observer.observations[0].is_compliant, true);
-  EXPECT_EQ(fake_observer.observations[0].error_message, "ok");
+  EXPECT_TRUE(fake_observer.observations[0].result->is_pass_result());
 }
 
 TEST_F(ShimlessRmaServiceTest, ObserveHardwareVerificationAfterSignal) {
-  fake_rmad_client_()->TriggerHardwareVerificationResultObservation(true,
-                                                                    "also ok");
+  fake_rmad_client_()->TriggerHardwareVerificationResultObservation(true, "",
+                                                                    false);
   FakeHardwareVerificationStatusObserver fake_observer;
   shimless_rma_provider_->ObserveHardwareVerificationStatus(
       fake_observer.receiver.BindNewPipeAndPassRemote());
   base::RunLoop run_loop;
   run_loop.RunUntilIdle();
   EXPECT_EQ(fake_observer.observations.size(), 1UL);
-  EXPECT_EQ(fake_observer.observations[0].is_compliant, true);
-  EXPECT_EQ(fake_observer.observations[0].error_message, "also ok");
+  EXPECT_TRUE(fake_observer.observations[0].result->is_pass_result());
 }
 
 class FakeFinalizationObserver : public mojom::FinalizationObserver {

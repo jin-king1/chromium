@@ -21,17 +21,15 @@
 #include "base/functional/callback.h"
 #endif
 
-class AccountCapabilitiesFetcherFactory;
+class AccountFetcherFactory;
 class PrefService;
 class SigninClient;
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 class TokenWebData;
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 namespace unexportable_keys {
 class UnexportableKeyService;
-}
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+}  // namespace unexportable_keys
 #endif
 
 #if BUILDFLAG(IS_IOS)
@@ -40,11 +38,15 @@ class DeviceAccountsProvider;
 
 namespace image_fetcher {
 class ImageDecoder;
-}
+}  // namespace image_fetcher
+
+namespace metrics {
+class ProfileMetricsService;
+}  // namespace metrics
 
 namespace network {
 class NetworkConnectionTracker;
-}
+}  // namespace network
 
 #if BUILDFLAG(IS_CHROMEOS)
 namespace account_manager {
@@ -53,22 +55,19 @@ class AccountManagerFacade;
 #endif
 
 namespace signin {
-enum class AccountConsistencyMethod;
 
 struct IdentityManagerBuildParams {
   IdentityManagerBuildParams();
   ~IdentityManagerBuildParams();
 
-  AccountConsistencyMethod account_consistency =
-      AccountConsistencyMethod::kDisabled;
   std::unique_ptr<image_fetcher::ImageDecoder> image_decoder;
   raw_ptr<PrefService> local_state = nullptr;
   raw_ptr<network::NetworkConnectionTracker> network_connection_tracker;
   raw_ptr<PrefService> pref_service = nullptr;
   base::FilePath profile_path;
   raw_ptr<SigninClient> signin_client = nullptr;
-  std::unique_ptr<AccountCapabilitiesFetcherFactory>
-      account_capabilities_fetcher_factory;
+  raw_ptr<metrics::ProfileMetricsService> profile_metrics_service = nullptr;
+  std::unique_ptr<AccountFetcherFactory> account_fetcher_factory;
   std::unique_ptr<ProfileOAuth2TokenService> token_service;
   std::unique_ptr<AccountTrackerService> account_tracker_service;
 
@@ -78,10 +77,8 @@ struct IdentityManagerBuildParams {
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   scoped_refptr<TokenWebData> token_web_data;
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
   raw_ptr<unexportable_keys::UnexportableKeyService> unexportable_key_service =
       nullptr;
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -93,8 +90,6 @@ struct IdentityManagerBuildParams {
 #if BUILDFLAG(IS_IOS)
   std::unique_ptr<DeviceAccountsProvider> device_accounts_provider;
 #endif
-
-  bool require_sync_consent_for_scope_verification = true;
 
 #if BUILDFLAG(IS_WIN)
   base::RepeatingCallback<bool()> reauth_callback;

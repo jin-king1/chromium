@@ -7,7 +7,6 @@
 #include <memory>
 #include <set>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
@@ -16,6 +15,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 
@@ -89,7 +89,7 @@ void ExtensionTestNotificationObserver::NotificationSet::OnWebContentsCreated(
 
 void ExtensionTestNotificationObserver::NotificationSet::
     StartObservingWebContents(content::WebContents* web_contents) {
-  CHECK(!base::Contains(web_contents_observers_, web_contents));
+  CHECK(!web_contents_observers_.contains(web_contents));
   web_contents_observers_[web_contents] =
       std::make_unique<ForwardingWebContentsObserver>(web_contents, this);
 }
@@ -126,6 +126,30 @@ bool ExtensionTestNotificationObserver::WaitForExtensionViewsToLoad() {
       base::BindRepeating(&HaveAllExtensionRenderFrameHostsFinishedLoading,
                           manager),
       &notification_set);
+  return true;
+}
+
+bool ExtensionTestNotificationObserver::WaitForExtensionIdle(
+    const ExtensionId& extension_id) {
+  ProcessManager* manager = ProcessManager::Get(context_);
+  NotificationSet notification_set(manager);
+  WaitForCondition(
+      base::BindRepeating(&util::IsExtensionIdle, extension_id, context_),
+      &notification_set);
+  return true;
+}
+
+bool ExtensionTestNotificationObserver::WaitForExtensionNotIdle(
+    const ExtensionId& extension_id) {
+  ProcessManager* manager = ProcessManager::Get(context_);
+  NotificationSet notification_set(manager);
+  WaitForCondition(base::BindRepeating(
+                       [](const ExtensionId& extension_id,
+                          content::BrowserContext* context) -> bool {
+                         return !util::IsExtensionIdle(extension_id, context);
+                       },
+                       extension_id, context_),
+                   &notification_set);
   return true;
 }
 

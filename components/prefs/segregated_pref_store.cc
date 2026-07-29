@@ -9,7 +9,6 @@
 
 #include "base/barrier_closure.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/notreached.h"
 #include "base/observer_list.h"
 #include "base/values.h"
@@ -25,11 +24,11 @@ void SegregatedPrefStore::UnderlyingPrefStoreObserver::OnPrefValueChanged(
     std::string_view key) {
   // Notify Observers only after all underlying PrefStores of the outer
   // SegregatedPrefStore are initialized.
-  if (!outer_->IsInitializationComplete())
+  if (!outer_->IsInitializationComplete()) {
     return;
-
-  for (auto& observer : outer_->observers_)
-    observer.OnPrefValueChanged(key);
+  }
+  outer_->observers_.NotifyAllowReentrancy(
+      &PrefStore::Observer::OnPrefValueChanged, key);
 }
 
 void SegregatedPrefStore::UnderlyingPrefStoreObserver::
@@ -38,18 +37,21 @@ void SegregatedPrefStore::UnderlyingPrefStoreObserver::
 
   // Notify Observers only after all underlying PrefStores of the outer
   // SegregatedPrefStore are initialized.
-  if (!outer_->IsInitializationComplete())
+  if (!outer_->IsInitializationComplete()) {
     return;
+  }
 
   if (outer_->read_error_delegate_.has_value() &&
       outer_->read_error_delegate_.value()) {
     PersistentPrefStore::PrefReadError read_error = outer_->GetReadError();
-    if (read_error != PersistentPrefStore::PREF_READ_ERROR_NONE)
+    if (read_error != PersistentPrefStore::PREF_READ_ERROR_NONE) {
       outer_->read_error_delegate_.value()->OnError(read_error);
+    }
   }
 
-  for (auto& observer : outer_->observers_)
+  for (auto& observer : outer_->observers_) {
     observer.OnInitializationCompleted(outer_->IsInitializationSuccessful());
+  }
 }
 
 SegregatedPrefStore::SegregatedPrefStore(
@@ -92,9 +94,9 @@ bool SegregatedPrefStore::GetValue(std::string_view key,
   return StoreForKey(key)->GetValue(key, result);
 }
 
-base::Value::Dict SegregatedPrefStore::GetValues() const {
-  base::Value::Dict values = default_pref_store_->GetValues();
-  base::Value::Dict selected_pref_store_values =
+base::DictValue SegregatedPrefStore::GetValues() const {
+  base::DictValue values = default_pref_store_->GetValues();
+  base::DictValue selected_pref_store_values =
       selected_pref_store_->GetValues();
   for (const auto& key : selected_preference_names_) {
     if (base::Value* value = selected_pref_store_values.FindByDottedPath(key)) {
@@ -150,8 +152,9 @@ PersistentPrefStore::PrefReadError SegregatedPrefStore::GetReadError() const {
   if (read_error == PersistentPrefStore::PREF_READ_ERROR_NONE) {
     read_error = selected_pref_store_->GetReadError();
     // Ignore NO_FILE from selected_pref_store_.
-    if (read_error == PersistentPrefStore::PREF_READ_ERROR_NO_FILE)
+    if (read_error == PersistentPrefStore::PREF_READ_ERROR_NO_FILE) {
       read_error = PersistentPrefStore::PREF_READ_ERROR_NONE;
+    }
   }
   return read_error;
 }
@@ -215,18 +218,26 @@ SegregatedPrefStore::~SegregatedPrefStore() {
 }
 
 PersistentPrefStore* SegregatedPrefStore::StoreForKey(std::string_view key) {
-  return (base::Contains(selected_preference_names_, key) ? selected_pref_store_
-                                                          : default_pref_store_)
+  return (selected_preference_names_.contains(key) ? selected_pref_store_
+                                                   : default_pref_store_)
       .get();
 }
 
 const PersistentPrefStore* SegregatedPrefStore::StoreForKey(
     std::string_view key) const {
-  return (base::Contains(selected_preference_names_, key) ? selected_pref_store_
-                                                          : default_pref_store_)
+  return (selected_preference_names_.contains(key) ? selected_pref_store_
+                                                   : default_pref_store_)
       .get();
 }
 
 bool SegregatedPrefStore::HasReadErrorDelegate() const {
   return read_error_delegate_.has_value();
+}
+
+PrefFilter* SegregatedPrefStore::GetDefaultStoreFilter() {
+  return default_pref_store_->GetFilter();
+}
+
+PrefFilter* SegregatedPrefStore::GetSelectedStoreFilter() {
+  return selected_pref_store_ ? selected_pref_store_->GetFilter() : nullptr;
 }

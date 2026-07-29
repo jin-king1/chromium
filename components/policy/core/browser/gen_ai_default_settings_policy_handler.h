@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/values.h"
 #include "components/policy/core/browser/configuration_policy_handler.h"
 #include "components/policy/policy_export.h"
@@ -23,14 +24,33 @@ class PolicyMap;
 class POLICY_EXPORT GenAiDefaultSettingsPolicyHandler
     : public policy::TypeCheckingPolicyHandler {
  public:
+  using PolicyValueToPrefMap = base::flat_map<int, int>;
+
   // Struct containing the necessary info to set the default value of each
   // covered GenAI policy.
-  struct GenAiPolicyDetails {
-    GenAiPolicyDetails(std::string name, std::string pref_path)
-        : name(std::move(name)), pref_path(std::move(pref_path)) {}
+  struct POLICY_EXPORT GenAiPolicyDetails {
+    GenAiPolicyDetails(std::string name, std::string pref_path);
+    GenAiPolicyDetails(std::string name,
+                       std::string pref_path,
+                       PolicyValueToPrefMap policy_value_to_pref_map);
+    GenAiPolicyDetails(std::string name,
+                       std::string pref_path,
+                       std::string overridden_name,
+                       PolicyValueToPrefMap policy_value_to_pref_map);
+    GenAiPolicyDetails(const GenAiPolicyDetails& other);
+    ~GenAiPolicyDetails();
 
     std::string name;
     std::string pref_path;
+
+    // Another policy that can also set `pref_path` and has higher priority.
+    std::optional<std::string> overridden_name;
+
+    // Optional map to translate the integer value from `GenAiDefaultSettings`
+    // policy to a specific integer value for this policy's preference. If an
+    // entry for the `GenAiDefaultSettings` value doesn't exist in this map,
+    // the integer value itself will be used for the preference.
+    PolicyValueToPrefMap policy_value_to_pref_map;
   };
 
   explicit GenAiDefaultSettingsPolicyHandler(
@@ -42,15 +62,15 @@ class POLICY_EXPORT GenAiDefaultSettingsPolicyHandler
   ~GenAiDefaultSettingsPolicyHandler() override;
 
   // policy::TypeCheckingPolicyHandler:
-  bool CheckPolicySettings(const policy::PolicyMap& policies,
-                           policy::PolicyErrorMap* errors) override;
-  void ApplyPolicySettings(const policy::PolicyMap& policies,
+  bool CheckPolicySettings(const PolicyMap& policies,
+                           PolicyErrorMap* errors) override;
+  void ApplyPolicySettings(const PolicyMap& policies,
                            PrefValueMap* prefs) override;
 
  private:
   // Returns a list of covered GenAI policies to which the default value can be
   // applied.
-  std::vector<GenAiPolicyDetails> GetUnsetGenAiPolicies(
+  std::vector<GenAiPolicyDetails> GetControlledGenAiPolicies(
       const PolicyMap& policies);
 
   // GenAI policies for which the default should be applied when unset.

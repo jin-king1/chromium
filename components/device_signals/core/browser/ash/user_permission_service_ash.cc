@@ -42,4 +42,13 @@ UserPermission UserPermissionServiceAsh::CanCollectSignals() const {
   return UserPermission::kUnsupported;
 }
 
+UserPermission UserPermissionServiceAsh::CanCollectReportSignals() const {
+  if (IsDeviceCloudManaged() && user_delegate_->IsManagedUser() &&
+      user_delegate_->IsAffiliated()) {
+    return UserPermission::kGranted;
+  }
+
+  return UserPermission::kUnsupported;
+}
+
 }  // namespace device_signals

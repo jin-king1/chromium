@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_MANAGED_DEVICE_NAVIGATOR_MANAGED_DATA_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_MANAGED_DEVICE_NAVIGATOR_MANAGED_DATA_H_
 
+#include "base/types/expected.h"
 #include "third_party/blink/public/mojom/device/device.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
@@ -63,13 +64,19 @@ class MODULES_EXPORT NavigatorManagedData final
                                   kManagedconfigurationchange)
 
   // Device Attributes API:
-  ScriptPromise<IDLNullable<IDLString>> getDirectoryId(ScriptState*);
-  ScriptPromise<IDLNullable<IDLString>> getHostname(ScriptState*);
-  ScriptPromise<IDLNullable<IDLString>> getSerialNumber(ScriptState*);
-  ScriptPromise<IDLNullable<IDLString>> getAnnotatedAssetId(ScriptState*);
-  ScriptPromise<IDLNullable<IDLString>> getAnnotatedLocation(ScriptState*);
+  ScriptPromise<IDLNullable<IDLString>> getDirectoryId(ScriptState*,
+                                                       ExceptionState&);
+  ScriptPromise<IDLNullable<IDLString>> getHostname(ScriptState*,
+                                                    ExceptionState&);
+  ScriptPromise<IDLNullable<IDLString>> getSerialNumber(ScriptState*,
+                                                        ExceptionState&);
+  ScriptPromise<IDLNullable<IDLString>> getAnnotatedAssetId(ScriptState*,
+                                                            ExceptionState&);
+  ScriptPromise<IDLNullable<IDLString>> getAnnotatedLocation(ScriptState*,
+                                                             ExceptionState&);
 
  private:
+  bool CheckDeviceAttributesAllowed(ExceptionState&);
   // ManagedConfigurationObserver:
   void OnConfigurationChanged() override;
 
@@ -80,7 +87,7 @@ class MODULES_EXPORT NavigatorManagedData final
   void OnAttributeReceived(
       ScriptState* script_state,
       ScriptPromiseResolver<IDLNullable<IDLString>>* resolver,
-      mojom::blink::DeviceAttributeResultPtr result);
+      base::expected<mojom::blink::DeviceAttributeValuePtr, String> result);
 
   // Lazily binds mojo interface.
   mojom::blink::DeviceAPIService* GetService();

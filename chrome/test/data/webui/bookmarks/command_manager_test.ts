@@ -4,6 +4,7 @@
 
 import type {BookmarksFolderNodeElement, BookmarksItemElement, BookmarksListElement, SelectFolderAction, SelectItemsAction} from 'chrome://bookmarks/bookmarks.js';
 import {BookmarkManagerApiProxyImpl, BookmarksApiProxyImpl, BookmarksCommandManagerElement, Command, createBookmark, DialogFocusManager, getDisplayedList, MenuSource, selectFolder, setDebouncerForTesting} from 'chrome://bookmarks/bookmarks.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {isMac} from 'chrome://resources/js/platform.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {pressAndReleaseKeyOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
@@ -23,6 +24,11 @@ suite('<bookmarks-command-manager>', function() {
   let bookmarkManagerProxy: TestBookmarkManagerApiProxy;
 
   setup(function() {
+    loadTimeData.overrideValues({
+      splitViewEnabled: true,
+      menuSimplification: false,
+    });
+
     const bulkChildren = [];
     for (let i = 1; i <= 20; i++) {
       const id = '3' + i;
@@ -103,6 +109,112 @@ suite('<bookmarks-command-manager>', function() {
 
     assertTrue(commandHidden[Command.DELETE] !== undefined);
     assertFalse(commandHidden[Command.DELETE]);
+  });
+
+  test('simplified context menu for items', async () => {
+    loadTimeData.overrideValues({
+      menuSimplification: true,
+    });
+
+    store.data.prefs.canEdit = true;
+    store.data.selection.items = new Set(['13']);
+    store.notifyObservers();
+    await microtasksFinished();
+
+    commandManager.openCommandMenuAtPosition(0, 0, MenuSource.ITEM);
+    await microtasksFinished();
+
+    const dropdownItems =
+        commandManager.shadowRoot.querySelectorAll<HTMLElement>(
+            '.dropdown-item');
+
+    const visibleCommands: Command[] = [];
+    dropdownItems.forEach(element => {
+      if (!element.hidden) {
+        visibleCommands.push(Number(element.dataset['command']) as Command);
+      }
+    });
+
+    const expectedCommands = [
+      Command.EDIT,
+      Command.CUT,
+      Command.COPY,
+      Command.PASTE,
+      Command.DELETE,
+      Command.OPEN_NEW_TAB,
+      Command.OPEN_NEW_WINDOW,
+      Command.OPEN_SPLIT_VIEW,
+      Command.OPEN_NEW_GROUP,
+      Command.OPEN_INCOGNITO,
+    ];
+
+    assertDeepEquals(expectedCommands, visibleCommands);
+
+    dropdownItems.forEach(item => {
+      const command = Number(item.dataset['command']) as Command;
+      const hr = item.nextElementSibling as HTMLElement;
+      assertEquals('HR', hr.tagName);
+
+      const shouldHaveDivider =
+          [Command.EDIT, Command.PASTE, Command.DELETE].includes(command);
+      assertEquals(
+          !shouldHaveDivider, hr.hidden,
+          `Divider after command ${command} should be ${
+              shouldHaveDivider ? 'visible' : 'hidden'}`);
+    });
+  });
+
+  test('simplified context menu for tree', async () => {
+    loadTimeData.overrideValues({
+      menuSimplification: true,
+    });
+
+    store.data.prefs.canEdit = true;
+    store.data.selection.items = new Set(['11']);
+    store.notifyObservers();
+    await microtasksFinished();
+
+    commandManager.openCommandMenuAtPosition(0, 0, MenuSource.TREE);
+    await microtasksFinished();
+
+    const dropdownItems =
+        commandManager.shadowRoot.querySelectorAll<HTMLElement>(
+            '.dropdown-item');
+
+    const visibleCommands: Command[] = [];
+    dropdownItems.forEach(element => {
+      if (!element.hidden) {
+        visibleCommands.push(Number(element.dataset['command']) as Command);
+      }
+    });
+
+    const expectedCommands = [
+      Command.EDIT,
+      Command.CUT,
+      Command.COPY,
+      Command.PASTE,
+      Command.DELETE,
+      Command.OPEN_NEW_TAB,
+      Command.OPEN_NEW_WINDOW,
+      Command.OPEN_SPLIT_VIEW,
+      Command.OPEN_NEW_GROUP,
+      Command.OPEN_INCOGNITO,
+    ];
+
+    assertDeepEquals(expectedCommands, visibleCommands);
+
+    dropdownItems.forEach(item => {
+      const command = Number(item.dataset['command']) as Command;
+      const hr = item.nextElementSibling as HTMLElement;
+      assertEquals('HR', hr.tagName);
+
+      const shouldHaveDivider =
+          [Command.EDIT, Command.PASTE, Command.DELETE].includes(command);
+      assertEquals(
+          !shouldHaveDivider, hr.hidden,
+          `Divider after command ${command} should be ${
+              shouldHaveDivider ? 'visible' : 'hidden'}`);
+    });
   });
 
   test('edit shortcut triggers when valid', async () => {
@@ -309,6 +421,31 @@ suite('<bookmarks-command-manager>', function() {
     assertEquals(20, ids.length);
   });
 
+  test('"Open in Split View" passes correct args', async function() {
+    const items = new Set(['141']);
+    assertTrue(commandManager.canExecute(Command.OPEN_SPLIT_VIEW, items));
+
+    commandManager.handle(Command.OPEN_SPLIT_VIEW, items);
+    await microtasksFinished();
+
+    const [id, {active, split}] =
+        await bookmarkManagerProxy.whenCalled('openInNewTab');
+
+    assertEquals('141', id);
+    assertFalse(active);
+    assertTrue(split);
+  });
+
+  test('"Open in New Tab Group" does not expand nodes', async function() {
+    const items = new Set(['1']);
+    assertTrue(commandManager.canExecute(Command.OPEN_NEW_GROUP, items));
+    commandManager.handle(Command.OPEN_NEW_GROUP, items);
+    await microtasksFinished();
+
+    const [ids] = await bookmarkManagerProxy.whenCalled('openInNewTabGroup');
+    assertDeepEquals(['1'], ids);
+  });
+
   test(
       'cannot execute "Open in New Tab" on folders with no items', async () => {
         const items = new Set(['2']);
@@ -337,6 +474,14 @@ suite('<bookmarks-command-manager>', function() {
         assertTrue(!!commandItem[Command.OPEN_INCOGNITO]);
         assertTrue(commandItem[Command.OPEN_INCOGNITO].disabled);
         assertFalse(commandItem[Command.OPEN_INCOGNITO].hidden);
+
+        assertTrue(!!commandItem[Command.OPEN_SPLIT_VIEW]);
+        assertTrue(commandItem[Command.OPEN_SPLIT_VIEW].disabled);
+        assertFalse(commandItem[Command.OPEN_SPLIT_VIEW].hidden);
+
+        assertTrue(!!commandItem[Command.OPEN_NEW_GROUP]);
+        assertTrue(commandItem[Command.OPEN_NEW_GROUP].disabled);
+        assertFalse(commandItem[Command.OPEN_NEW_GROUP].hidden);
       });
 
   test('cannot execute editing commands when editing is disabled', async () => {
@@ -366,10 +511,12 @@ suite('<bookmarks-command-manager>', function() {
     store.data.selection.items = items;
     assertFalse(commandManager.canExecute(Command.EDIT, items));
     assertFalse(commandManager.canExecute(Command.DELETE, items));
+    assertFalse(commandManager.canExecute(Command.CUT, items));
 
     items = new Set(['4']);
     assertFalse(commandManager.canExecute(Command.EDIT, items));
     assertFalse(commandManager.canExecute(Command.DELETE, items));
+    assertFalse(commandManager.canExecute(Command.CUT, items));
 
     commandManager.openCommandMenuAtPosition(0, 0, MenuSource.ITEM);
     await microtasksFinished();
@@ -456,7 +603,7 @@ suite('<bookmarks-command-manager>', function() {
       url: 'https://www.example.com',
       title: 'example',
     };
-    store.dispatch(createBookmark(item1.id, item1));
+    store.dispatch(createBookmark(item1.parentId, item1.index, item1));
     assertFalse(commandManager.canExecute(Command.SORT, new Set()));
 
     const item2 = {
@@ -466,7 +613,7 @@ suite('<bookmarks-command-manager>', function() {
       url: 'https://www.example.com',
       title: 'example',
     };
-    store.dispatch(createBookmark(item2.id, item2));
+    store.dispatch(createBookmark(item2.parentId, item2.index, item2));
     assertTrue(commandManager.canExecute(Command.SORT, new Set()));
   });
 });
@@ -539,10 +686,12 @@ suite('<bookmarks-item> CommandManager integration', function() {
   test('double click opens items in foreground tab', async function() {
     simulateDoubleClick(items[1]!);
 
-    const [id, active] = await bookmarkManagerProxy.whenCalled('openInNewTab');
+    const [id, {active, split}] =
+        await bookmarkManagerProxy.whenCalled('openInNewTab');
 
     assertEquals('12', id);
     assertTrue(active);
+    assertFalse(split);
   });
 
   test('shift-double click opens full selection', function() {
@@ -593,10 +742,12 @@ suite('<bookmarks-item> CommandManager integration', function() {
     // Only the middle-clicked item is opened.
     simulateMiddleClick(item2);
 
-    const [id, active] = await bookmarkManagerProxy.whenCalled('openInNewTab');
+    const [id, {active, split}] =
+        await bookmarkManagerProxy.whenCalled('openInNewTab');
 
     assertEquals('13', id);
     assertFalse(active);
+    assertFalse(split);
   });
 
   test('middle-click does not open folders', function() {
@@ -614,10 +765,12 @@ suite('<bookmarks-item> CommandManager integration', function() {
     assertTrue(!!item);
 
     simulateMiddleClick(item, {shiftKey: true});
-    const [id, active] = await bookmarkManagerProxy.whenCalled('openInNewTab');
+    const [id, {active, split}] =
+        await bookmarkManagerProxy.whenCalled('openInNewTab');
 
     assertEquals('12', id);
     assertTrue(active);
+    assertFalse(split);
   });
 
   test(
@@ -626,6 +779,7 @@ suite('<bookmarks-item> CommandManager integration', function() {
         const modifier = isMac ? 'meta' : 'ctrl';
 
         store.data.selection.items = new Set(['12', '13']);
+        store.data.folderOpenState.set('1', true);
         store.notifyObservers();
         await microtasksFinished();
         const targetNode = findFolderNode(rootNode, '11');

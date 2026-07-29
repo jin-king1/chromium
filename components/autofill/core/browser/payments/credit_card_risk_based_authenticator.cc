@@ -4,16 +4,26 @@
 
 #include "components/autofill/core/browser/payments/credit_card_risk_based_authenticator.h"
 
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "base/check.h"
 #include "base/check_deref.h"
+#include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/metrics/payments/card_unmask_authentication_metrics.h"
 #include "components/autofill/core/browser/payments/autofill_error_dialog_context.h"
 #include "components/autofill/core/browser/payments/autofill_payments_feature_availability.h"
+#include "components/autofill/core/browser/payments/client_behavior_constants.h"
+#include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/payments_network_interface.h"
+#include "components/autofill/core/browser/payments/payments_request_details.h"
 #include "components/autofill/core/browser/payments/payments_util.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
 
 namespace autofill {
 namespace {
@@ -83,9 +93,7 @@ void CreditCardRiskBasedAuthenticator::Authenticate(
       payments::GetBillingCustomerId(
           autofill_client_->GetPersonalDataManager().payments_data_manager());
 
-  autofill_client_->GetPaymentsAutofillClient()
-      ->GetPaymentsNetworkInterface()
-      ->Prepare();
+  GetPaymentsNetworkInterface().Prepare();
   autofill_client_->GetPaymentsAutofillClient()->LoadRiskData(
       base::BindOnce(&CreditCardRiskBasedAuthenticator::OnDidGetUnmaskRiskData,
                      weak_ptr_factory_.GetWeakPtr()));
@@ -96,13 +104,11 @@ void CreditCardRiskBasedAuthenticator::OnDidGetUnmaskRiskData(
   unmask_request_details_->risk_data = risk_data;
   autofill_metrics::LogRiskBasedAuthAttempt(card_.record_type());
   unmask_card_request_timestamp_ = base::TimeTicks::Now();
-  autofill_client_->GetPaymentsAutofillClient()
-      ->GetPaymentsNetworkInterface()
-      ->UnmaskCard(
-          *unmask_request_details_,
-          base::BindOnce(
-              &CreditCardRiskBasedAuthenticator::OnUnmaskResponseReceived,
-              weak_ptr_factory_.GetWeakPtr()));
+  GetPaymentsNetworkInterface().UnmaskCard(
+      *unmask_request_details_,
+      base::BindOnce(
+          &CreditCardRiskBasedAuthenticator::OnUnmaskResponseReceived,
+          weak_ptr_factory_.GetWeakPtr()));
 }
 
 void CreditCardRiskBasedAuthenticator::OnUnmaskResponseReceived(
@@ -216,25 +222,24 @@ void CreditCardRiskBasedAuthenticator::OnUnmaskCancelled() {
   autofill_metrics::LogRiskBasedAuthResult(
       CreditCard::RecordType::kMaskedServerCard,
       autofill_metrics::RiskBasedAuthEvent::kAuthenticationCancelled);
-
-  requester_->OnRiskBasedAuthenticationResponseReceived(
-      RiskBasedAuthenticationResponse().with_result(
-          RiskBasedAuthenticationResponse::Result::kAuthenticationCancelled));
+  if (requester_) {
+    requester_->OnRiskBasedAuthenticationResponseReceived(
+        RiskBasedAuthenticationResponse().with_result(
+            RiskBasedAuthenticationResponse::Result::kAuthenticationCancelled));
+  }
   Reset();
 }
 
 bool CreditCardRiskBasedAuthenticator::ShouldUseServerProvidedCvc(
     const CreditCard card) {
-  return (card.record_type() == CreditCard::RecordType::kVirtualCard) ||
-         (card.card_info_retrieval_enrollment_state() ==
-          CreditCard::CardInfoRetrievalEnrollmentState::kRetrievalEnrolled);
+  return card.record_type() == CreditCard::RecordType::kVirtualCard ||
+         card.card_info_retrieval_enrollment_state() ==
+             CreditCard::CardInfoRetrievalEnrollmentState::kRetrievalEnrolled;
 }
 
 void CreditCardRiskBasedAuthenticator::Reset() {
   weak_ptr_factory_.InvalidateWeakPtrs();
-  autofill_client_->GetPaymentsAutofillClient()
-      ->GetPaymentsNetworkInterface()
-      ->CancelRequest();
+  GetPaymentsNetworkInterface().CancelRequest();
   unmask_request_details_.reset();
   requester_.reset();
   unmask_card_request_timestamp_.reset();

@@ -56,13 +56,6 @@ void LayoutSVGBlock::WillBeDestroyed() {
 void LayoutSVGBlock::InsertedIntoTree() {
   NOT_DESTROYED();
   LayoutBlockFlow::InsertedIntoTree();
-  if (!RuntimeEnabledFeatures::SvgViewportOptimizationEnabled()) {
-    // Ensure that the viewport dependency flag gets set on the ancestor chain.
-    if (SVGSelfOrDescendantHasViewportDependency()) {
-      ClearSVGSelfOrDescendantHasViewportDependency();
-      SetSVGSelfOrDescendantHasViewportDependency();
-    }
-  }
   LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this,
                                                                          false);
   if (StyleRef().HasSVGEffect())
@@ -76,12 +69,6 @@ void LayoutSVGBlock::WillBeRemovedFromTree() {
   if (StyleRef().HasSVGEffect())
     SetNeedsPaintPropertyUpdate();
   LayoutBlockFlow::WillBeRemovedFromTree();
-}
-
-void LayoutSVGBlock::UpdateFromStyle() {
-  NOT_DESTROYED();
-  LayoutBlockFlow::UpdateFromStyle();
-  SetFloating(false);
 }
 
 bool LayoutSVGBlock::CheckForImplicitTransformChange(
@@ -131,10 +118,12 @@ bool LayoutSVGBlock::UpdateTransformAfterLayout(
   return true;
 }
 
-void LayoutSVGBlock::StyleDidChange(StyleDifference diff,
-                                    const ComputedStyle* old_style) {
+void LayoutSVGBlock::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutBlockFlow::StyleDidChange(diff, old_style);
+  LayoutBlockFlow::StyleDidChange(diff, old_style, style_change_context);
 
   const ComputedStyle& style = StyleRef();
 
@@ -144,14 +133,12 @@ void LayoutSVGBlock::StyleDidChange(StyleDifference diff,
             style.HasTransformRelatedPropertyForSVG());
 
   TransformHelper::UpdateOffsetPath(*GetElement(), old_style);
-  transform_uses_reference_box_ =
-      RuntimeEnabledFeatures::SvgViewportOptimizationEnabled()
-          ? TransformHelper::DependsOnReferenceBox(style)
-          : TransformHelper::UpdateReferenceBoxDependency(*this);
+  transform_uses_reference_box_ = TransformHelper::DependsOnReferenceBox(style);
 
   if (diff.NeedsFullLayout()) {
-    if (diff.TransformChanged())
+    if (diff.transform_changed) {
       SetNeedsTransformUpdate();
+    }
   }
 
   SVGResources::UpdateEffects(*this, diff, old_style);
@@ -159,16 +146,18 @@ void LayoutSVGBlock::StyleDidChange(StyleDifference diff,
   if (!Parent())
     return;
 
-  if (diff.BlendModeChanged()) {
+  if (diff.blend_mode_changed) {
     DCHECK(IsBlendingAllowed());
     Parent()->DescendantIsolationRequirementsChanged(
         style.HasBlendMode() ? kDescendantIsolationRequired
                              : kDescendantIsolationNeedsUpdate);
   }
 
-  if (style.HasCurrentTransformRelatedAnimation() &&
-      !old_style->HasCurrentTransformRelatedAnimation()) {
-    Parent()->SetSVGDescendantMayHaveTransformRelatedAnimation();
+  if ((style.HasCurrentTransformRelatedAnimation() &&
+       !old_style->HasCurrentTransformRelatedAnimation()) ||
+      (style.HasNonIdentityTransformOperation() &&
+       !old_style->HasNonIdentityTransformOperation())) {
+    Parent()->SetSVGDescendantMayHaveTransformRelatedOperations();
   }
 
   if (diff.HasDifference())
@@ -204,7 +193,7 @@ void LayoutSVGBlock::MapAncestorToLocal(const LayoutBoxModelObject* ancestor,
 bool LayoutSVGBlock::MapToVisualRectInAncestorSpaceInternal(
     const LayoutBoxModelObject* ancestor,
     TransformState& transform_state,
-    VisualRectFlags) const {
+    VisualRectFlags visual_rect_flags) const {
   NOT_DESTROYED();
   transform_state.Flatten();
   PhysicalRect rect = PhysicalRect::FastAndLossyFromRectF(
@@ -213,7 +202,7 @@ bool LayoutSVGBlock::MapToVisualRectInAncestorSpaceInternal(
   rect.Move(PhysicalLocation());
   // Apply other mappings on local SVG coordinates.
   bool retval = SVGLayoutSupport::MapToVisualRectInAncestorSpace(
-      *this, ancestor, gfx::RectF(rect), rect);
+      *this, ancestor, gfx::RectF(rect), rect, visual_rect_flags);
   transform_state.SetQuad(gfx::QuadF(gfx::RectF(rect)));
   return retval;
 }

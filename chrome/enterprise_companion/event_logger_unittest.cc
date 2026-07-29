@@ -11,6 +11,7 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_file.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/strings/strcat.h"
 #include "base/task/bind_post_task.h"
 #include "base/test/task_environment.h"
 #include "base/threading/sequence_bound.h"
@@ -134,6 +135,25 @@ TEST_F(EventLoggerCookieHandlerTest, InitializesExistingLoggingCookie) {
       });
 
   ASSERT_TRUE(base::WriteFile(cookie_file_.path(), "123"));
+
+  InitCookieHandlerAndWait();
+}
+
+TEST_F(EventLoggerCookieHandlerTest, ResetsMalformedPersistedLoggingCookie) {
+  EXPECT_CALL(mock_cookie_manager_, SetCanonicalCookie)
+      .WillOnce([](const net::CanonicalCookie& cookie, const GURL& source_url,
+                   const net::CookieOptions&,
+                   MockCookieManager::SetCanonicalCookieCallback callback) {
+        ASSERT_TRUE(cookie.IsCanonical());
+        EXPECT_EQ(cookie.Name(), kLoggingCookieName);
+        EXPECT_EQ(cookie.Value(), kLoggingCookieDefaultValue);
+        EXPECT_EQ(source_url,
+                  GetGlobalConstants()->EnterpriseCompanionEventLoggingURL());
+        std::move(callback).Run(net::CookieAccessResult());
+      });
+
+  // Cookie values containing ASCII control characters will fail validation.
+  ASSERT_TRUE(base::WriteFile(cookie_file_.path(), "\6"));
 
   InitCookieHandlerAndWait();
 }

@@ -296,7 +296,7 @@
 //   // initialized `T`.
 //   MSAN_UNPOISON(ptr, sizeof(T));
 // ```
-#if defined(MEMORY_SANITIZER) && !BUILDFLAG(IS_NACL)
+#if defined(MEMORY_SANITIZER)
 #include <sanitizer/msan_interface.h>
 #define MSAN_UNPOISON(p, size) __msan_unpoison(p, size)
 #else
@@ -319,7 +319,7 @@
 //   // not point to an initialized `T`.
 //   MSAN_CHECK_MEM_IS_INITIALIZED(ptr, sizeof(T));
 // ```
-#if defined(MEMORY_SANITIZER) && !BUILDFLAG(IS_NACL)
+#if defined(MEMORY_SANITIZER)
 #define MSAN_CHECK_MEM_IS_INITIALIZED(p, size) \
   __msan_check_mem_is_initialized(p, size)
 #else
@@ -587,7 +587,7 @@ inline constexpr bool AnalyzerAssumeTrue(bool arg) {
 //
 // See also:
 //   https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2023/p1144r8.html
-//   https://clang.llvm.org/docs/LanguageExtensions.html#:~:text=__is_trivially_relocatable
+//   https://clang.llvm.org/docs/LanguageExtensions.html#:~:text=__builtin_is_cpp_trivially_relocatable
 //
 // Usage:
 // ```
@@ -595,7 +595,11 @@ inline constexpr bool AnalyzerAssumeTrue(bool arg) {
 //     // This block will only be executed if type `T` is trivially relocatable.
 //   }
 // ```
-#if HAS_BUILTIN(__is_trivially_relocatable)
+#if HAS_BUILTIN(__builtin_is_cpp_trivially_relocatable)
+#define IS_TRIVIALLY_RELOCATABLE(t) __builtin_is_cpp_trivially_relocatable(t)
+#elif HAS_BUILTIN(__is_trivially_relocatable)
+// TODO(crbug.com/416394845): This is deprecated. Remove once all toolchains
+// have __builtin_is_cpp_trivially_relocatable.
 #define IS_TRIVIALLY_RELOCATABLE(t) __is_trivially_relocatable(t)
 #else
 #define IS_TRIVIALLY_RELOCATABLE(t) false
@@ -737,12 +741,15 @@ inline constexpr bool AnalyzerAssumeTrue(bool arg) {
 
 // Annotates a pointer or reference parameter or return value for a member
 // function as having lifetime intertwined with the instance on which the
-// function is called. For parameters, the function is assumed to store the
-// value into the called-on object, so if the referred-to object is later
-// destroyed, the called-on object is also considered to be dangling. For return
-// values, the value is assumed to point into the called-on object, so if that
-// object is destroyed, the returned value is also considered to be dangling.
-// Useful to diagnose some cases of lifetime errors.
+// function is called. For function parameters, the function is assumed to store
+// the reference into the return value, so if the referred-to object is later
+// destroyed, the returned value is also considered to be dangling. For
+// constructor parameters, the constructor is assumed to store the reference
+// into the object, so if the referred-to object is later destroyed, the object
+// is considered to be dangling. For return values, the value is assumed to
+// point into the called-on object, so if that object is destroyed, the returned
+// value is also considered to be dangling. Useful to diagnose some cases of
+// lifetime errors.
 //
 // See also:
 //   https://clang.llvm.org/docs/AttributeReference.html#lifetimebound
@@ -752,6 +759,8 @@ inline constexpr bool AnalyzerAssumeTrue(bool arg) {
 //   struct S {
 //      S(int* p LIFETIME_BOUND);
 //      int* Get() LIFETIME_BOUND;
+//      std::string_view GetSubstring(
+//          const std::string& s LIFETIME_BOUND) const;
 //   };
 //   S Func1() {
 //     int i = 0;
@@ -764,11 +773,55 @@ inline constexpr bool AnalyzerAssumeTrue(bool arg) {
 //     // of a local temporary.
 //     return S(p).Get();
 //   }
+//   std::string_view Func3(const S& s) {
+//     // The following return will not compile; diagnosed as returning address
+//     // of a local temporary object.
+//     return s.GetSubstring(NumberToString(3));
+//   }
 // ```
 #if __has_cpp_attribute(clang::lifetimebound)
 #define LIFETIME_BOUND [[clang::lifetimebound]]
 #else
 #define LIFETIME_BOUND
+#endif
+
+// Annotates a parameter of a member function to indicate that the function
+// stores a reference to the parameter, and that the lifetime of the stored
+// reference is tied to the lifetime of the object on which the function is
+// called. If the referred-to object is later destroyed, the stored reference
+// is considered to be dangling. Useful to diagnose some cases of lifetime
+// errors.
+//
+// Note: LIFETIME_CAPTURE_BY(this) is deprecated; use LIFETIME_CAPTURE_BY_THIS.
+// See https://github.com/llvm/llvm-project/pull/196635
+//
+// See also
+//   https://clang.llvm.org/docs/AttributeReference.html#lifetime-capture-by
+//
+// Usage:
+// ```
+//   struct S {
+//     void Store(const int& p LIFETIME_CAPTURE_BY(this));
+//     const int* ptr_ = nullptr;
+//   };
+//   void Func1() {
+//     S s;
+//     // The following line will not compile; diagnosed as object whose
+//     // reference is captured by 's' will be destroyed at the end of the
+//     // full-expression
+//     s.Store(3);
+//   }
+// ```
+#if __has_cpp_attribute(clang::lifetime_capture_by)
+#define LIFETIME_CAPTURE_BY(x) [[clang::lifetime_capture_by(x)]]
+#else
+#define LIFETIME_CAPTURE_BY(x)
+#endif
+
+#if __has_cpp_attribute(clang::lifetime_capture_by_this)
+#define LIFETIME_CAPTURE_BY_THIS [[clang::lifetime_capture_by_this]]
+#else
+#define LIFETIME_CAPTURE_BY_THIS LIFETIME_CAPTURE_BY(this)
 #endif
 
 // Annotates a function or variable to indicate that it should have weak
@@ -962,8 +1015,11 @@ inline constexpr bool AnalyzerAssumeTrue(bool arg) {
 // For fields, this would be used to annotate both pointer and size fields that
 // have not yet been converted to a span.
 //
-// All functions or fields annotated with this macro should come with a `#
-// Safety` comment that explains what the caller must guarantee to prevent OOB.
+// All functions or fields annotated with this macro should come with a
+// `// PRECONDITIONS: ` comment that explains what the caller must guarantee
+// to ensure safe operation. Callers can then write `// SAFETY: ` comments
+// explaining why the specific preconditions have been met.
+//
 // Ideally, unsafe functions should also be paired with a safer version, e.g.
 // one that replaces pointer parameters with `span`s; otherwise, document safer
 // replacement coding patterns callers can migrate to.
@@ -1111,6 +1167,15 @@ inline constexpr bool AnalyzerAssumeTrue(bool arg) {
 #define ENABLE_IF_ATTR(cond, msg) __attribute__((enable_if(cond, msg)))
 #else
 #define ENABLE_IF_ATTR(cond, msg)
+#endif
+
+// Hints to the optimizer that `x` is always true. This is potentially unsafe,
+// since it can lead to otherwise load-bearing checks being optimized out. Use
+// sparingly with caution and only with demonstrated impact.
+#if defined(__clang__)
+#define UNSAFE_ASSUME(x) __builtin_assume(x)
+#else
+#define UNSAFE_ASSUME(x)
 #endif
 
 #endif  // BASE_COMPILER_SPECIFIC_H_

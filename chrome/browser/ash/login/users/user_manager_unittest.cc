@@ -14,7 +14,6 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
-#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
@@ -32,20 +31,19 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/fake_profile_manager.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 #include "chromeos/ash/components/dbus/userdataauth/fake_userdataauth_client.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
+#include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "components/account_id/account_id.h"
-#include "components/policy/core/common/device_local_account_type.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "components/prefs/testing_pref_service.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/test_helper.h"
@@ -147,10 +145,6 @@ class UserManagerTest : public testing::Test {
     // Instantiate ProfileHelper.
     ash::ProfileHelper::Get();
 
-    // Register an in-memory local settings instance.
-    local_state_ = std::make_unique<ScopedTestingLocalState>(
-        TestingBrowserProcess::GetGlobal());
-
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     TestingBrowserProcess::GetGlobal()->SetProfileManager(
         std::make_unique<FakeProfileManager>(temp_dir_.GetPath()));
@@ -166,12 +160,7 @@ class UserManagerTest : public testing::Test {
       user_manager_->Destroy();
     }
 
-    // Shut down the DeviceSettingsService.
-    DeviceSettingsService::Get()->UnsetSessionManager();
     TestingBrowserProcess::GetGlobal()->SetProfileManager(nullptr);
-
-    // Unregister the in-memory local settings instance.
-    local_state_.reset();
 
     base::RunLoop().RunUntilIdle();
     ConciergeClient::Shutdown();
@@ -205,14 +194,19 @@ class UserManagerTest : public testing::Test {
       user_manager_.reset();
     }
     user_manager_ = std::make_unique<user_manager::UserManagerImpl>(
-        std::make_unique<UserManagerDelegateImpl>(), local_state_->Get(),
-        CrosSettings::Get());
+        std::make_unique<UserManagerDelegateImpl>(),
+        TestingBrowserProcess::GetGlobal()->local_state());
     policy_user_manager_controller_ =
         std::make_unique<PolicyUserManagerController>(
             user_manager_.get(), ash::CrosSettings::Get(),
-            DeviceSettingsService::Get(), nullptr);
+            DeviceSettingsService::Get(),
+            /*minimum_version_policy_handler=*/nullptr,
+            /*device_local_account_policy_service=*/nullptr);
     user_image_manager_registry_ =
-        std::make_unique<ash::UserImageManagerRegistry>(user_manager_.get());
+        std::make_unique<ash::UserImageManagerRegistry>(
+            TestingBrowserProcess::GetGlobal()->local_state(),
+            TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+            user_manager_.get());
     // Initialize `UserManager` after `UserImageManagerRegistry` creation to
     // follow initialization order in
     // `BrowserProcessPlatformPart::InitializeUserManager()`
@@ -236,8 +230,8 @@ class UserManagerTest : public testing::Test {
       int type = static_cast<int>(policy::DeviceLocalAccountType::kKioskApp)) {
     settings_helper_.Set(
         kAccountsPrefDeviceLocalAccounts,
-        base::Value(base::Value::List().Append(
-            base::Value::Dict()
+        base::Value(base::ListValue().Append(
+            base::DictValue()
                 .Set(kAccountsPrefDeviceLocalAccountsKeyId, account_id)
                 .Set(kAccountsPrefDeviceLocalAccountsKeyType, type)
                 .Set(kAccountsPrefDeviceLocalAccountsKeyEphemeralMode,
@@ -252,8 +246,8 @@ class UserManagerTest : public testing::Test {
       policy::DeviceLocalAccount::EphemeralMode ephemeral_mode) {
     settings_helper_.Set(
         kAccountsPrefDeviceLocalAccounts,
-        base::Value(base::Value::List().Append(
-            base::Value::Dict()
+        base::Value(base::ListValue().Append(
+            base::DictValue()
                 .Set(kAccountsPrefDeviceLocalAccountsKeyId, account_id)
                 .Set(kAccountsPrefDeviceLocalAccountsKeyType,
                      static_cast<int>(type))
@@ -267,22 +261,24 @@ class UserManagerTest : public testing::Test {
 
     SetKioskAccountPrefs(policy::DeviceLocalAccount::EphemeralMode::kDisable,
                          /* account_id= */ email, /* type=kArcKiosk */ 2);
-    local_state_->Get()->Set(
+    TestingBrowserProcess::GetGlobal()->local_state()->Set(
         user_manager::prefs::kDeviceLocalAccountsWithSavedData,
-        base::Value(base::Value::List().Append(email)));
-    user_manager::KnownUser(local_state_->Get())
+        base::Value(base::ListValue().Append(email)));
+    user_manager::KnownUser(TestingBrowserProcess::GetGlobal()->local_state())
         .SaveKnownUser(
             AccountId::FromUserEmailGaiaId(email, GaiaId("fake_gaia_id")));
   }
 
   size_t GetArcKioskAccountsWithSavedDataCount() {
-    return local_state_->Get()
+    return TestingBrowserProcess::GetGlobal()
+        ->local_state()
         ->GetList(user_manager::prefs::kDeviceLocalAccountsWithSavedData)
         .size();
   }
 
   size_t GetKnownUsersCount() {
-    return user_manager::KnownUser(local_state_->Get())
+    return user_manager::KnownUser(
+               TestingBrowserProcess::GetGlobal()->local_state())
         .GetKnownAccountIds()
         .size();
   }
@@ -309,8 +305,6 @@ class UserManagerTest : public testing::Test {
   system::ScopedFakeStatisticsProvider fake_statistics_provider_;
 
   ScopedCrosSettingsTestHelper settings_helper_;
-  // local_state_ should be destructed after ProfileManager.
-  std::unique_ptr<ScopedTestingLocalState> local_state_;
 
   std::unique_ptr<user_manager::UserManagerImpl> user_manager_;
   std::unique_ptr<PolicyUserManagerController> policy_user_manager_controller_;
@@ -485,17 +479,17 @@ TEST_F(UserManagerTest, IsEphemeralAccountIdRespectsEnableEphemeralMode) {
 TEST_F(UserManagerTest, DoNotSaveKioskAccountsToKRegularUsersPref) {
   SetKioskAccountPrefs(policy::DeviceLocalAccount::EphemeralMode::kEnable);
   user_manager::UserManager::Get()->UserLoggedIn(
-      kKioskAccountId, kKioskAccountId.GetUserEmail(),
-      false /* browser_restart */, false /* is_child */);
+      kKioskAccountId,
+      user_manager::TestHelper::GetFakeUsernameHash(kKioskAccountId));
   ResetUserManager();
-  ASSERT_TRUE(user_manager::TestHelper(*user_manager::UserManager::Get())
+  ASSERT_TRUE(user_manager::TestHelper(user_manager::UserManager::Get())
                   .AddRegularUser(kAccountId0));
   user_manager::UserManager::Get()->UserLoggedIn(
-      kAccountId0, kAccountId0.GetUserEmail(), false /* browser_restart */,
-      false /* is_child */);
+      kAccountId0, user_manager::TestHelper::GetFakeUsernameHash(kAccountId0));
   ResetUserManager();
 
-  EXPECT_EQ(1U, local_state_->Get()
+  EXPECT_EQ(1U, TestingBrowserProcess::GetGlobal()
+                    ->local_state()
                     ->GetList(user_manager::prefs::kRegularUsersPref)
                     .size());
   EXPECT_EQ(2U, user_manager::UserManager::Get()->GetPersistedUsers().size());
@@ -505,7 +499,8 @@ TEST_F(UserManagerTest, DoNotSaveKioskAccountsToKRegularUsersPref) {
       /* owner= */ kOwnerAccountId.GetUserEmail());
   RetrieveTrustedDevicePolicies();
 
-  EXPECT_TRUE(local_state_->Get()
+  EXPECT_TRUE(TestingBrowserProcess::GetGlobal()
+                  ->local_state()
                   ->GetList(user_manager::prefs::kRegularUsersPref)
                   .empty());
   EXPECT_EQ(1U, user_manager::UserManager::Get()->GetPersistedUsers().size());
@@ -513,25 +508,24 @@ TEST_F(UserManagerTest, DoNotSaveKioskAccountsToKRegularUsersPref) {
 
 TEST_F(UserManagerTest, RemoveUser) {
   // Create owner account and login in.
-  ASSERT_TRUE(
-      user_manager::TestHelper(*user_manager_).AddRegularUser(kOwnerAccountId));
-  user_manager_->UserLoggedIn(kOwnerAccountId, kOwnerAccountId.GetUserEmail(),
-                              false /* browser_restart */,
-                              false /* is_child */);
+  ASSERT_TRUE(user_manager::TestHelper(user_manager_.get())
+                  .AddRegularUser(kOwnerAccountId));
+  user_manager_->UserLoggedIn(
+      kOwnerAccountId,
+      user_manager::TestHelper::GetFakeUsernameHash(kOwnerAccountId));
 
   // Recreate the user manager to log out all accounts.
   ResetUserManager();
 
   // Create non-owner account  and login in.
-  ASSERT_TRUE(
-      user_manager::TestHelper(*user_manager_).AddRegularUser(kAccountId0));
-  user_manager_->UserLoggedIn(kAccountId0, kAccountId0.GetUserEmail(),
-                              false /* browser_restart */,
-                              false /* is_child */);
+  ASSERT_TRUE(user_manager::TestHelper(user_manager_.get())
+                  .AddRegularUser(kAccountId0));
+  user_manager_->UserLoggedIn(
+      kAccountId0, user_manager::TestHelper::GetFakeUsernameHash(kAccountId0));
   // Log-in owner account.
-  user_manager_->UserLoggedIn(kOwnerAccountId, kOwnerAccountId.GetUserEmail(),
-                              false /* browser_restart */,
-                              false /* is_child */);
+  user_manager_->UserLoggedIn(
+      kOwnerAccountId,
+      user_manager::TestHelper::GetFakeUsernameHash(kOwnerAccountId));
 
   ASSERT_EQ(2U, user_manager_->GetPersistedUsers().size());
 
@@ -580,29 +574,27 @@ TEST_F(UserManagerTest, RemoveUser) {
 }
 
 TEST_F(UserManagerTest, RemoveRegularUsersExceptOwnerFromList) {
-  ASSERT_TRUE(user_manager::TestHelper(*user_manager::UserManager::Get())
+  ASSERT_TRUE(user_manager::TestHelper(user_manager::UserManager::Get())
                   .AddRegularUser(kOwnerAccountId));
   user_manager::UserManager::Get()->UserLoggedIn(
-      kOwnerAccountId, kOwnerAccountId.GetUserEmail(),
-      false /* browser_restart */, false /* is_child */);
+      kOwnerAccountId,
+      user_manager::TestHelper::GetFakeUsernameHash(kOwnerAccountId));
   ResetUserManager();
-  ASSERT_TRUE(user_manager::TestHelper(*user_manager::UserManager::Get())
+  ASSERT_TRUE(user_manager::TestHelper(user_manager::UserManager::Get())
                   .AddRegularUser(kAccountId0));
   user_manager::UserManager::Get()->UserLoggedIn(
-      kAccountId0, kAccountId0.GetUserEmail(), false /* browser_restart */,
-      false /* is_child */);
+      kAccountId0, user_manager::TestHelper::GetFakeUsernameHash(kAccountId0));
   ResetUserManager();
-  ASSERT_TRUE(user_manager::TestHelper(*user_manager::UserManager::Get())
+  ASSERT_TRUE(user_manager::TestHelper(user_manager::UserManager::Get())
                   .AddRegularUser(kAccountId1));
   user_manager::UserManager::Get()->UserLoggedIn(
-      kAccountId1, kAccountId1.GetUserEmail(), false /* browser_restart */,
-      false /* is_child */);
+      kAccountId1, user_manager::TestHelper::GetFakeUsernameHash(kAccountId1));
   ResetUserManager();
 
   SetKioskAccountPrefs(policy::DeviceLocalAccount::EphemeralMode::kEnable);
   user_manager::UserManager::Get()->UserLoggedIn(
-      kKioskAccountId, kKioskAccountId.GetUserEmail(),
-      false /* browser_restart */, false /* is_child */);
+      kKioskAccountId,
+      user_manager::TestHelper::GetFakeUsernameHash(kKioskAccountId));
   ResetUserManager();
 
   const user_manager::UserList* users =
@@ -631,17 +623,16 @@ TEST_F(UserManagerTest, RegularUserLoggedInAsEphemeral) {
       /* owner= */ kOwnerAccountId.GetUserEmail());
   RetrieveTrustedDevicePolicies();
 
-  ASSERT_TRUE(user_manager::TestHelper(*user_manager::UserManager::Get())
+  ASSERT_TRUE(user_manager::TestHelper(user_manager::UserManager::Get())
                   .AddRegularUser(kOwnerAccountId));
   user_manager::UserManager::Get()->UserLoggedIn(
-      kOwnerAccountId, kOwnerAccountId.GetUserEmail(),
-      false /* browser_restart */, false /* is_child */);
+      kOwnerAccountId,
+      user_manager::TestHelper::GetFakeUsernameHash(kOwnerAccountId));
   ResetUserManager();
-  ASSERT_TRUE(user_manager::TestHelper(*user_manager::UserManager::Get())
+  ASSERT_TRUE(user_manager::TestHelper(user_manager::UserManager::Get())
                   .AddRegularUser(kAccountId0));
   user_manager::UserManager::Get()->UserLoggedIn(
-      kAccountId0, kAccountId0.GetUserEmail(), false /* browser_restart */,
-      false /* is_child */);
+      kAccountId0, user_manager::TestHelper::GetFakeUsernameHash(kAccountId0));
   ResetUserManager();
 
   const user_manager::UserList* users =
@@ -652,11 +643,11 @@ TEST_F(UserManagerTest, RegularUserLoggedInAsEphemeral) {
 
 TEST_F(UserManagerTest, ScreenLockAvailability) {
   // Log in the user and create the profile.
-  ASSERT_TRUE(user_manager::TestHelper(*user_manager::UserManager::Get())
+  ASSERT_TRUE(user_manager::TestHelper(user_manager::UserManager::Get())
                   .AddRegularUser(kOwnerAccountId));
   user_manager::UserManager::Get()->UserLoggedIn(
-      kOwnerAccountId, kOwnerAccountId.GetUserEmail(),
-      false /* browser_restart */, false /* is_child */);
+      kOwnerAccountId,
+      user_manager::TestHelper::GetFakeUsernameHash(kOwnerAccountId));
 
   TestingPrefServiceSimple prefs;
   user_manager::UserManagerImpl::RegisterProfilePrefs(prefs.registry());
@@ -681,11 +672,13 @@ TEST_F(UserManagerTest, ScreenLockAvailability) {
 }
 
 TEST_F(UserManagerTest, ProfileRequiresPolicyUnknown) {
-  ASSERT_TRUE(user_manager::TestHelper(*user_manager::UserManager::Get())
+  ASSERT_TRUE(user_manager::TestHelper(user_manager::UserManager::Get())
                   .AddRegularUser(kOwnerAccountId));
   user_manager::UserManager::Get()->UserLoggedIn(
-      kOwnerAccountId, kOwnerAccountId.GetUserEmail(), false, false);
-  user_manager::KnownUser known_user(local_state_->Get());
+      kOwnerAccountId,
+      user_manager::TestHelper::GetFakeUsernameHash(kOwnerAccountId));
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   EXPECT_EQ(user_manager::ProfileRequiresPolicy::kUnknown,
             known_user.GetProfileRequiresPolicy(kOwnerAccountId));
   ResetUserManager();
@@ -751,11 +744,10 @@ TEST_F(UserManagerTest,
 // callback.
 TEST_F(UserManagerTest, ProfilePrefs) {
   // Simulates login.
-  ASSERT_TRUE(
-      user_manager::TestHelper(*user_manager_).AddRegularUser(kAccountId0));
-  user_manager_->UserLoggedIn(kAccountId0, kAccountId0.GetUserEmail(),
-                              /*browser_restart=*/false,
-                              /*is_child=*/false);
+  ASSERT_TRUE(user_manager::TestHelper(user_manager_.get())
+                  .AddRegularUser(kAccountId0));
+  user_manager_->UserLoggedIn(
+      kAccountId0, user_manager::TestHelper::GetFakeUsernameHash(kAccountId0));
 
   // Adds a profile created callback and verifies profile prefs is available
   // when the callback runs.

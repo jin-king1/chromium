@@ -4,6 +4,10 @@
 
 #include "components/autofill/core/browser/payments/autofill_payments_feature_availability.h"
 
+#include <optional>
+
+#include "base/feature_list.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
@@ -15,8 +19,7 @@ namespace autofill {
 bool ShouldShowCardMetadata(const CreditCard& card) {
   // The product name and the art image must both be valid.
   return !card.product_description().empty() &&
-         card.card_art_url().is_valid() &&
-         base::FeatureList::IsEnabled(features::kAutofillEnableCardProductName);
+         card.card_art_url().is_valid();
 }
 
 bool DidDisplayBenefitForCard(const CreditCard& card,
@@ -24,12 +27,11 @@ bool DidDisplayBenefitForCard(const CreditCard& card,
   const PaymentsDataManager& pay_dm =
       autofill_client.GetPersonalDataManager().payments_data_manager();
   return pay_dm.IsCardEligibleForBenefits(card) &&
-         !pay_dm
-              .GetApplicableBenefitDescriptionForCardAndOrigin(
-                  card,
-                  autofill_client.GetLastCommittedPrimaryMainFrameOrigin(),
-                  autofill_client.GetAutofillOptimizationGuide())
-              .empty();
+         pay_dm
+             .GetApplicableBenefitForCardAndOrigin(
+                 card, autofill_client.GetLastCommittedPrimaryMainFrameOrigin(),
+                 autofill_client.GetAutofillOptimizationGuideDecider())
+             .has_value();
 }
 
 bool IsVcn3dsEnabled() {

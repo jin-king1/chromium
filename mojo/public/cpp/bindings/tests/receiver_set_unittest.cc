@@ -12,6 +12,7 @@
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/tests/bindings_test_base.h"
 #include "mojo/public/cpp/bindings/unique_receiver_set.h"
 #include "mojo/public/cpp/system/functions.h"
@@ -130,8 +131,9 @@ class PingImpl : public PingService {
  private:
   // PingService:
   void Ping(PingCallback callback) override {
-    if (!ping_handler_.is_null())
+    if (!ping_handler_.is_null()) {
       ping_handler_.Run();
+    }
     std::move(callback).Run();
   }
 
@@ -431,14 +433,16 @@ class PingProviderImpl : public AssociatedPingProvider, public PingService {
   // AssociatedPingProvider:
   void GetPing(PendingAssociatedReceiver<PingService> receiver) override {
     ping_receivers_.Add(this, std::move(receiver), new_ping_context_);
-    if (!new_ping_handler_.is_null())
+    if (!new_ping_handler_.is_null()) {
       new_ping_handler_.Run();
+    }
   }
 
   // PingService:
   void Ping(PingCallback callback) override {
-    if (!ping_handler_.is_null())
+    if (!ping_handler_.is_null()) {
       ping_handler_.Run();
+    }
     std::move(callback).Run();
   }
 

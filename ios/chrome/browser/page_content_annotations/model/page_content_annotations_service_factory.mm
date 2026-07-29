@@ -9,6 +9,7 @@
 #import "base/task/sequenced_task_runner.h"
 #import "base/task/task_traits.h"
 #import "base/task/thread_pool.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/page_content_annotations/core/page_content_annotations_features.h"
 #import "components/page_content_annotations/core/page_content_annotations_service.h"
@@ -27,8 +28,7 @@
 namespace {
 
 std::unique_ptr<KeyedService> BuildPageContentAnnotationsService(
-    web::BrowserState* context) {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
+    ProfileIOS* profile) {
   DCHECK(profile);
   DCHECK(!profile->IsOffTheRecord());
   if (!page_content_annotations::features::
@@ -53,14 +53,14 @@ std::unique_ptr<KeyedService> BuildPageContentAnnotationsService(
 
   return std::make_unique<
       page_content_annotations::PageContentAnnotationsService>(
-      GetApplicationContext()->GetApplicationLocale(),
+      GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
       GetCurrentCountryCode(GetApplicationContext()->GetVariationsService()),
       optimization_guide_keyed_service, history_service,
       ios::TemplateURLServiceFactory::GetForProfile(profile),
       ios::ZeroSuggestCacheServiceFactory::GetForProfile(profile),
       proto_db_provider, profile_path,
       optimization_guide_keyed_service->GetOptimizationGuideLogger(),
-      optimization_guide_keyed_service,
+      optimization_guide_keyed_service, /*embedder_metadata_provider=*/nullptr,
       base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT}));
 }
@@ -97,13 +97,13 @@ PageContentAnnotationsServiceFactory::~PageContentAnnotationsServiceFactory() =
     default;
 
 // static
-BrowserStateKeyedServiceFactory::TestingFactory
+PageContentAnnotationsServiceFactory::TestingFactory
 PageContentAnnotationsServiceFactory::GetDefaultFactory() {
-  return base::BindRepeating(&BuildPageContentAnnotationsService);
+  return base::BindOnce(&BuildPageContentAnnotationsService);
 }
 
 std::unique_ptr<KeyedService>
 PageContentAnnotationsServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  return BuildPageContentAnnotationsService(context);
+    ProfileIOS* profile) const {
+  return BuildPageContentAnnotationsService(profile);
 }

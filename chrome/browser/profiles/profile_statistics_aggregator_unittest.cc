@@ -67,8 +67,7 @@ class ProfileStatisticsAggregatorTest : public testing::Test {
         base::CreateUniqueTempDirectoryScopedToTest(),
         /*download_interrupt_reason_none=*/0,
         /*download_interrupt_reason_crash=*/0, version_info::Channel::UNKNOWN));
-    profile_password_store_->Init(&pref_service_,
-                                  /*affiliated_match_helper=*/nullptr);
+    profile_password_store_->Init();
     autofill_web_data_service_->Init(base::DoNothing());
   }
 
@@ -79,8 +78,9 @@ class ProfileStatisticsAggregatorTest : public testing::Test {
   std::unique_ptr<ProfileStatisticsAggregator> CreateAggregator(
       base::OnceClosure done_callback) {
     return std::make_unique<ProfileStatisticsAggregator>(
-        autofill_web_data_service_, &personal_data_manager_, &bookmark_model_,
-        &history_service_, profile_password_store_, &pref_service_,
+        autofill_web_data_service_, &personal_data_manager_,
+        /*entity_data_manager=*/nullptr, &bookmark_model_, &history_service_,
+        profile_password_store_, &pref_service_,
         /*platform_credential_store=*/nullptr, std::move(done_callback));
   }
 

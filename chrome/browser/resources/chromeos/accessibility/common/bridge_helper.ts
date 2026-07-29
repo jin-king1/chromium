@@ -6,6 +6,8 @@
  * @fileoverview A collection of functions and behaviors helpful for message
  * passing between renderers.
  */
+import {TestImportManager} from './testing/test_import_manager.js';
+import {ExtensionUtil} from './extension_util.js';
 
 type MessageSender = chrome.runtime.MessageSender;
 type TargetHandlers = Record<string, Function>;
@@ -74,7 +76,10 @@ export class BridgeHelper {
 const handlers: Record<TargetType, TargetHandlers> = {};
 
 chrome.runtime.onMessage.addListener(
-    (message: any, _sender: MessageSender, respond: (value: any) => void) => {
+    (message: any, sender: MessageSender, respond: (value: any) => void) => {
+      if (!ExtensionUtil.isValidSender(sender)) {
+        return false;
+      }
       const targetHandlers = handlers[message.target];
       if (!targetHandlers || !targetHandlers[message.action]) {
         return false;
@@ -84,3 +89,5 @@ chrome.runtime.onMessage.addListener(
       Promise.resolve(handler(...message.args)).then(respond);
       return true; /** Wait for asynchronous response. */
     });
+
+TestImportManager.exportForTesting(BridgeHelper);

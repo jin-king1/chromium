@@ -13,8 +13,6 @@ import org.robolectric.TestLifecycle;
 import org.robolectric.internal.SandboxTestRunner;
 import org.robolectric.internal.bytecode.Sandbox;
 
-import org.chromium.base.test.util.DisabledTest;
-
 import java.lang.reflect.Method;
 
 /**
@@ -23,6 +21,12 @@ import java.lang.reflect.Method;
  * org.robolectric.RobolectricTestRunner} could be used directly.
  */
 public class BaseRobolectricTestRunner extends RobolectricTestRunner {
+    // These values must be kept in sync with local_machine_junit_test_run.py.
+    public static final int MIN_SDK = 29;
+    public static final int MAX_SDK = 36;
+
+    static final long PER_TEST_TIMEOUT_MS = 30000L;
+
     /** Tracks whether tests pass / fail for use in BaseTestLifecycle. */
     protected static class HelperTestRunner extends RobolectricTestRunner.HelperTestRunner {
         public static boolean sTestFailed;
@@ -34,20 +38,23 @@ public class BaseRobolectricTestRunner extends RobolectricTestRunner {
         @Override
         protected Statement methodBlock(final FrameworkMethod method) {
             Statement orig = super.methodBlock(method);
-            return new Statement() {
-                // Does not run the sandbox classloader.
-                // Called after Lifecycle.beforeTest(), and before Lifecycle.afterTest().
-                @Override
-                public void evaluate() throws Throwable {
-                    try {
-                        orig.evaluate();
-                    } catch (Throwable t) {
-                        sTestFailed = true;
-                        throw t;
-                    }
-                    sTestFailed = false;
-                }
-            };
+            Statement wrappedOrig =
+                    new Statement() {
+                        // Does not run the sandbox classloader.
+                        // Called after Lifecycle.beforeTest(), and before Lifecycle.afterTest().
+                        @Override
+                        public void evaluate() throws Throwable {
+                            try {
+                                orig.evaluate();
+                            } catch (Throwable t) {
+                                sTestFailed = true;
+                                throw t;
+                            }
+                            sTestFailed = false;
+                        }
+                    };
+
+            return new BaseTimeLimitedStatement(PER_TEST_TIMEOUT_MS, wrappedOrig);
         }
     }
 
@@ -103,10 +110,6 @@ public class BaseRobolectricTestRunner extends RobolectricTestRunner {
 
     @Override
     protected boolean isIgnored(FrameworkMethod method) {
-        if (super.isIgnored(method) || method.getAnnotation(DisabledTest.class) != null) {
-            return true;
-        }
-        Class<?> testSuiteClass = method.getDeclaringClass();
-        return testSuiteClass.getAnnotation(DisabledTest.class) != null;
+        return !BaseJvmTestRunner.shouldRun(method);
     }
 }

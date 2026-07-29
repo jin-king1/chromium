@@ -25,10 +25,21 @@
 #include "media/base/video_decoder.h"
 #include "media/filters/decoder_stream_traits.h"
 #include "media/filters/decrypting_demuxer_stream.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace media {
 
 namespace {
+
+perfetto::NamedTrack GetTracingTrack(
+    const DecoderSelector<DemuxerStream::VIDEO>* selector) {
+  return perfetto::NamedTrack::FromPointer("VideoDecoderSelector", selector);
+}
+
+perfetto::NamedTrack GetTracingTrack(
+    const DecoderSelector<DemuxerStream::AUDIO>* selector) {
+  return perfetto::NamedTrack::FromPointer("AudioDecoderSelector", selector);
+}
 
 constexpr char kSelectDecoderTrace[] = "DecoderSelector::SelectDecoder";
 
@@ -77,7 +88,7 @@ DecoderSelector<StreamType>::DecoderSelector(
     bool enable_priority_based_selection)
     : task_runner_(std::move(task_runner)),
       create_decoders_cb_(std::move(create_decoders_cb)),
-      media_log_(media_log),
+      media_log_(MediaLog::CloneSafely(media_log)),
       enable_priority_based_selection_(enable_priority_based_selection) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
@@ -118,9 +129,9 @@ void DecoderSelector<StreamType>::SelectDecoderInternal(
   output_cb_ = std::move(output_cb);
   config_ = traits_->GetDecoderConfig(stream_);
 
-  TRACE_EVENT_ASYNC_BEGIN2("media", kSelectDecoderTrace, this, "type",
-                           DemuxerStream::GetTypeName(StreamType), "config",
-                           config_.AsHumanReadableString());
+  TRACE_EVENT_BEGIN("media", kSelectDecoderTrace, GetTracingTrack(this), "type",
+                    DemuxerStream::GetTypeName(StreamType), "config",
+                    config_.AsHumanReadableString());
 
   if (!config_.IsValidConfig()) {
     DLOG(ERROR) << "Invalid stream config";
@@ -130,6 +141,7 @@ void DecoderSelector<StreamType>::SelectDecoderInternal(
 
   if (needs_new_decoders) {
     decode_failure_reinit_cause_ = std::nullopt;
+    ran_out_of_decoders_ = false;
     CreateDecoders();
   }
 
@@ -209,6 +221,8 @@ void DecoderSelector<StreamType>::GetAndInitializeNextDecoder() {
 
     if (decode_failure_reinit_cause_.has_value()) {
       ReturnSelectionError(std::move(*decode_failure_reinit_cause_));
+    } else if (ran_out_of_decoders_) {
+      ReturnSelectionError(DecoderStatus::Codes::kTooManyDecoders);
     } else {
       ReturnSelectionError(DecoderStatus::Codes::kUnsupportedConfig);
     }
@@ -218,8 +232,10 @@ void DecoderSelector<StreamType>::GetAndInitializeNextDecoder() {
   // Initialize the first decoder on the list.
   decoder_ = std::move(decoders_.front());
   decoders_.erase(decoders_.begin());
-  TRACE_EVENT_ASYNC_STEP_INTO0("media", kSelectDecoderTrace, this,
-                               GetDecoderName(decoder_->GetDecoderType()));
+  TRACE_EVENT_BEGIN(
+      "media",
+      perfetto::StaticString(GetDecoderName(decoder_->GetDecoderType())),
+      GetTracingTrack(this));
 
   DVLOG(2) << __func__ << ": initializing " << decoder_->GetDecoderType();
   const bool is_live = stream_->liveness() == StreamLiveness::kLive;
@@ -239,11 +255,16 @@ void DecoderSelector<StreamType>::OnDecoderInitializeDone(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (!status.is_ok()) {
+    if (status.code() == DecoderStatus::Codes::kTooManyDecoders) {
+      ran_out_of_decoders_ = true;
+    }
+
     // Note: Don't track this decode status, as it is the result of decoder
     // selection (initialization) failure.
     MEDIA_LOG(INFO, media_log_)
         << "Cannot select " << decoder_->GetDecoderType() << " for "
-        << DemuxerStream::GetTypeName(StreamType) << " decoding";
+        << DemuxerStream::GetTypeName(StreamType)
+        << " decoding. status=" << status;
 
     // Try the next decoder on the list.
     decoder_ = nullptr;
@@ -271,11 +292,10 @@ void DecoderSelector<StreamType>::InitializeDecryptingDemuxerStream() {
   DCHECK(decoders_.empty());
   DCHECK(config_.is_encrypted());
   DCHECK(cdm_context_);
-  TRACE_EVENT_ASYNC_STEP_INTO0("media", kSelectDecoderTrace, this,
-                               "DecryptingDemuxerStream");
+  TRACE_EVENT_BEGIN("media", "DecryptingDemuxerStream", GetTracingTrack(this));
 
   decrypting_demuxer_stream_ = std::make_unique<DecryptingDemuxerStream>(
-      task_runner_, media_log_, waiting_cb_);
+      task_runner_, media_log_.get(), waiting_cb_);
 
   decrypting_demuxer_stream_->Initialize(
       stream_, cdm_context_,
@@ -315,15 +335,17 @@ template <DemuxerStream::Type StreamType>
 void DecoderSelector<StreamType>::RunSelectDecoderCB(
     DecoderOrError decoder_or_error) {
   DCHECK(select_decoder_cb_);
-  TRACE_EVENT_ASYNC_END2(
-      "media", kSelectDecoderTrace, this, "type",
+  TRACE_EVENT_END(
+      "media", GetTracingTrack(this), "type",
       DemuxerStream::GetTypeName(StreamType), "decoder",
       base::StringPrintf(
           "%s (%s)",
           decoder_or_error.has_value()
-              ? GetDecoderName(decoder_or_error->GetDecoderType()).c_str()
+              ? GetDecoderName(decoder_or_error->GetDecoderType())
               : "null",
           decrypting_demuxer_stream_ ? "encrypted" : "unencrypted"));
+  TRACE_EVENT_END("media",
+                  /* kSelectDecoderTrace */ GetTracingTrack(this));
 
   task_runner_->PostTask(
       FROM_HERE,
@@ -345,7 +367,11 @@ void DecoderSelector<StreamType>::FilterAndSortAvailableDecoders() {
       continue;
     }
 
-    if (!enable_priority_based_selection_) {
+    // If the stream doesn't support config changes, prioritize decoder
+    // selection based on resolution. Experiments show this greatly improves
+    // rebuffering for src= playbacks without config changes, but doesn't help
+    // and may hurt Media Source based playbacks.
+    if (!enable_priority_based_selection_ || stream_->SupportsConfigChanges()) {
       decoders_.push_back(std::move(decoder));
       continue;
     }

@@ -4,29 +4,25 @@
 
 import 'chrome://shopping-insights-side-panel.top-chrome/app.js';
 
-import {PageCallbackRouter} from 'chrome://resources/cr_components/commerce/price_tracking.mojom-webui.js';
-import {PriceTrackingBrowserProxyImpl} from 'chrome://resources/cr_components/commerce/price_tracking_browser_proxy.js';
+import {browserProxyFactory as priceTrackingBrowserProxyFactory, PriceTrackingHandlerRemote} from 'chrome://resources/cr_components/commerce/price_tracking.mojom-webui.js';
 import type {ProductInfo} from 'chrome://resources/cr_components/commerce/shared.mojom-webui.js';
 import type {PriceInsightsInfo} from 'chrome://resources/cr_components/commerce/shopping_service.mojom-webui.js';
-import {PriceInsightsInfo_PriceBucket} from 'chrome://resources/cr_components/commerce/shopping_service.mojom-webui.js';
+import {PriceInsightsInfo_PriceBucket, ShoppingServiceHandlerRemote} from 'chrome://resources/cr_components/commerce/shopping_service.mojom-webui.js';
 import {ShoppingServiceBrowserProxyImpl} from 'chrome://resources/cr_components/commerce/shopping_service_browser_proxy.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {stringToMojoString16} from 'chrome://resources/js/mojo_type_util.js';
 import type {ShoppingInsightsAppElement} from 'chrome://shopping-insights-side-panel.top-chrome/app.js';
 import {PriceInsightsBrowserProxyImpl} from 'chrome://shopping-insights-side-panel.top-chrome/price_insights_browser_proxy.js';
-import type {PriceTrackingSection} from 'chrome://shopping-insights-side-panel.top-chrome/price_tracking_section.js';
+import type {PriceTrackingSectionElement} from 'chrome://shopping-insights-side-panel.top-chrome/price_tracking_section.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
-import {isVisible} from 'chrome://webui-test/test_util.js';
+import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 suite('ShoppingInsightsAppTest', () => {
   let shoppingInsightsApp: ShoppingInsightsAppElement;
-  const shoppingServiceApi =
-      TestMock.fromClass(ShoppingServiceBrowserProxyImpl);
-  const priceTrackingProxy = TestMock.fromClass(PriceTrackingBrowserProxyImpl);
+  const shoppingServiceApi = TestMock.fromClass(ShoppingServiceHandlerRemote);
+  const priceTrackingHandler = TestMock.fromClass(PriceTrackingHandlerRemote);
   const priceInsightsProxy = TestMock.fromClass(PriceInsightsBrowserProxyImpl);
   let metrics: MetricsTracker;
 
@@ -34,8 +30,8 @@ suite('ShoppingInsightsAppTest', () => {
     title: 'Product Foo',
     clusterTitle: 'Product Cluster Foo',
     domain: 'foo.com',
-    imageUrl: {url: 'https://foo.com/image'},
-    productUrl: {url: 'https://foo.com/product'},
+    imageUrl: 'https://foo.com/image',
+    productUrl: 'https://foo.com/product',
     currentPrice: '$12',
     previousPrice: '$34',
     clusterId: BigInt(12345),
@@ -47,7 +43,7 @@ suite('ShoppingInsightsAppTest', () => {
     typicalLowPrice: '$100',
     typicalHighPrice: '$200',
     catalogAttributes: 'Unlocked, 4GB',
-    jackpot: {url: 'https://foo.com/jackpot'},
+    jackpot: 'https://foo.com/jackpot',
     bucket: PriceInsightsInfo_PriceBucket.kLow,
     hasMultipleCatalogs: true,
     history: [{
@@ -63,7 +59,7 @@ suite('ShoppingInsightsAppTest', () => {
     typicalLowPrice: '$100',
     typicalHighPrice: '$100',
     catalogAttributes: 'Unlocked, 4GB',
-    jackpot: {url: 'https://foo.com/jackpot'},
+    jackpot: 'https://foo.com/jackpot',
     bucket: PriceInsightsInfo_PriceBucket.kLow,
     hasMultipleCatalogs: false,
     history: [],
@@ -75,7 +71,7 @@ suite('ShoppingInsightsAppTest', () => {
     typicalLowPrice: '',
     typicalHighPrice: '',
     catalogAttributes: 'Unlocked, 4GB',
-    jackpot: {url: 'https://foo.com/jackpot'},
+    jackpot: 'https://foo.com/jackpot',
     bucket: PriceInsightsInfo_PriceBucket.kHigh,
     hasMultipleCatalogs: false,
     history: [{
@@ -91,7 +87,7 @@ suite('ShoppingInsightsAppTest', () => {
     typicalLowPrice: '',
     typicalHighPrice: '',
     catalogAttributes: 'Unlocked, 4GB',
-    jackpot: {url: ''},
+    jackpot: '',
     bucket: PriceInsightsInfo_PriceBucket.kHigh,
     hasMultipleCatalogs: false,
     history: [{
@@ -115,12 +111,14 @@ suite('ShoppingInsightsAppTest', () => {
     shoppingServiceApi.setResultFor(
         'getPriceTrackingStatusForCurrentUrl',
         Promise.resolve({tracked: false}));
-    ShoppingServiceBrowserProxyImpl.setInstance(shoppingServiceApi);
+    ShoppingServiceBrowserProxyImpl.setInstance({
+      handler: shoppingServiceApi,
+    });
 
-    priceTrackingProxy.reset();
-    priceTrackingProxy.setResultFor(
-        'getCallbackRouter', new PageCallbackRouter());
-    PriceTrackingBrowserProxyImpl.setInstance(priceTrackingProxy);
+    priceTrackingHandler.reset();
+    const {instance} =
+        priceTrackingBrowserProxyFactory.createForTest(priceTrackingHandler);
+    priceTrackingBrowserProxyFactory.setInstance(instance);
 
     priceInsightsProxy.reset();
     PriceInsightsBrowserProxyImpl.setInstance(priceInsightsProxy);
@@ -138,28 +136,28 @@ suite('ShoppingInsightsAppTest', () => {
     document.body.appendChild(shoppingInsightsApp);
     await shoppingServiceApi.whenCalled('getProductInfoForCurrentUrl');
     await shoppingServiceApi.whenCalled('getPriceInsightsInfoForCurrentUrl');
-    await flushTasks();
+    await microtasksFinished();
 
     const panelTitle =
-        shoppingInsightsApp.shadowRoot!.querySelector('.panel-title');
+        shoppingInsightsApp.shadowRoot.querySelector('.panel-title');
     assertTrue(!!panelTitle);
-    assertEquals('Product Cluster Foo', panelTitle.textContent!.trim());
+    assertEquals('Product Cluster Foo', panelTitle.textContent.trim());
 
-    const range = shoppingInsightsApp.shadowRoot!.querySelector('#priceRange');
+    const range = shoppingInsightsApp.shadowRoot.querySelector('#priceRange');
     assertTrue(!!range);
     assertEquals(
         loadTimeData.getStringF('rangeMultipleOptions', '$100', '$200'),
-        range.textContent!.trim());
+        range.textContent.trim());
 
     const titleSection =
-        shoppingInsightsApp.shadowRoot!.querySelector('#titleSection');
+        shoppingInsightsApp.shadowRoot.querySelector('#titleSection');
     assertTrue(!!titleSection);
     assertFalse(
         isVisible(titleSection.querySelector('catalog-attributes-row')));
     assertFalse(isVisible(titleSection.querySelector('insights-comment-row')));
 
     const historySection =
-        shoppingInsightsApp.shadowRoot!.querySelector('#historySection');
+        shoppingInsightsApp.shadowRoot.querySelector('#historySection');
     assertTrue(!!historySection);
     assertTrue(isVisible(historySection));
 
@@ -168,27 +166,27 @@ suite('ShoppingInsightsAppTest', () => {
     assertTrue(isVisible(historyTitle));
     assertEquals(
         loadTimeData.getString('historyTitleMultipleOptions'),
-        historyTitle.textContent!.trim());
+        historyTitle.textContent.trim());
 
     const attributesRow =
         historySection.querySelector('catalog-attributes-row');
     assertTrue(!!attributesRow);
     assertTrue(isVisible(attributesRow));
 
-    const attributes = attributesRow.shadowRoot!.querySelector('.attributes');
+    const attributes = attributesRow.shadowRoot.querySelector('.attributes');
     assertTrue(!!attributes);
-    assertEquals('Unlocked, 4GB', attributes.textContent!.trim());
+    assertEquals('Unlocked, 4GB', attributes.textContent.trim());
 
-    const buyOption = attributesRow.shadowRoot!.querySelector('.link');
+    const buyOption = attributesRow.shadowRoot.querySelector('.link');
     assertTrue(!!buyOption);
     assertEquals(
-        loadTimeData.getString('buyOptions'), buyOption.textContent!.trim());
+        loadTimeData.getString('buyOptions'), buyOption.textContent.trim());
 
-    const button = attributesRow.shadowRoot!.querySelector('cr-icon');
+    const button = attributesRow.shadowRoot.querySelector('cr-icon');
     assertTrue(!!button);
     button.click();
     const url = await shoppingServiceApi.whenCalled('openUrlInNewTab');
-    assertEquals('https://foo.com/jackpot', url.url);
+    assertEquals('https://foo.com/jackpot', url);
     assertEquals(
         1,
         metrics.count(
@@ -199,23 +197,23 @@ suite('ShoppingInsightsAppTest', () => {
     assertTrue(!!commentRow);
     assertTrue(isVisible(commentRow));
 
-    const comment = commentRow.shadowRoot!.querySelector('#comment');
+    const comment = commentRow.shadowRoot.querySelector('#comment');
     assertTrue(!!comment);
     assertEquals(
         loadTimeData.getString('historyDescription'),
-        comment.textContent!.trim());
+        comment.textContent.trim());
 
     const feedbackButton =
-        commentRow.shadowRoot!.querySelector<HTMLElement>('.link');
+        commentRow.shadowRoot.querySelector<HTMLElement>('.link');
     assertTrue(!!feedbackButton);
     assertEquals(
-        loadTimeData.getString('feedback'), feedbackButton.textContent!.trim());
+        loadTimeData.getString('feedback'), feedbackButton.textContent.trim());
     feedbackButton.click();
     assertEquals(1, priceInsightsProxy.getCallCount('showFeedback'));
     assertEquals(
         1, metrics.count('Commerce.PriceInsights.InlineFeedbackLinkClicked'));
 
-    assertTrue(isVisible(shoppingInsightsApp.shadowRoot!.querySelector(
+    assertTrue(isVisible(shoppingInsightsApp.shadowRoot.querySelector(
         'shopping-insights-history-graph')));
   });
 
@@ -227,28 +225,28 @@ suite('ShoppingInsightsAppTest', () => {
     document.body.appendChild(shoppingInsightsApp);
     await shoppingServiceApi.whenCalled('getProductInfoForCurrentUrl');
     await shoppingServiceApi.whenCalled('getPriceInsightsInfoForCurrentUrl');
-    await flushTasks();
+    await microtasksFinished();
 
     const panelTitle =
-        shoppingInsightsApp.shadowRoot!.querySelector('.panel-title');
+        shoppingInsightsApp.shadowRoot.querySelector('.panel-title');
     assertTrue(!!panelTitle);
-    assertEquals('Product Cluster Foo', panelTitle.textContent!.trim());
+    assertEquals('Product Cluster Foo', panelTitle.textContent.trim());
 
-    const range = shoppingInsightsApp.shadowRoot!.querySelector('#priceRange');
+    const range = shoppingInsightsApp.shadowRoot.querySelector('#priceRange');
     assertTrue(!!range);
     assertEquals(
         loadTimeData.getStringF('rangeSingleOptionOnePrice', '$100'),
-        range.textContent!.trim());
+        range.textContent.trim());
 
     const titleSection =
-        shoppingInsightsApp.shadowRoot!.querySelector('#titleSection');
+        shoppingInsightsApp.shadowRoot.querySelector('#titleSection');
     assertTrue(!!titleSection);
     assertFalse(
         isVisible(titleSection.querySelector('catalog-attributes-row')));
     assertTrue(isVisible(titleSection.querySelector('insights-comment-row')));
 
     assertFalse(isVisible(
-        shoppingInsightsApp.shadowRoot!.querySelector('#historySection')));
+        shoppingInsightsApp.shadowRoot.querySelector('#historySection')));
   });
 
   test('HasHistoryOnlySingleOption', async () => {
@@ -259,33 +257,33 @@ suite('ShoppingInsightsAppTest', () => {
     document.body.appendChild(shoppingInsightsApp);
     await shoppingServiceApi.whenCalled('getProductInfoForCurrentUrl');
     await shoppingServiceApi.whenCalled('getPriceInsightsInfoForCurrentUrl');
-    await flushTasks();
+    await microtasksFinished();
 
     const panelTitle =
-        shoppingInsightsApp.shadowRoot!.querySelector('.panel-title');
+        shoppingInsightsApp.shadowRoot.querySelector('.panel-title');
     assertTrue(!!panelTitle);
-    assertEquals('Product Cluster Foo', panelTitle.textContent!.trim());
+    assertEquals('Product Cluster Foo', panelTitle.textContent.trim());
 
     assertFalse(isVisible(
-        shoppingInsightsApp.shadowRoot!.querySelector('#priceRange')));
+        shoppingInsightsApp.shadowRoot.querySelector('#priceRange')));
 
     const titleSection =
-        shoppingInsightsApp.shadowRoot!.querySelector('#titleSection');
+        shoppingInsightsApp.shadowRoot.querySelector('#titleSection');
     assertTrue(!!titleSection);
     const attributesRow = titleSection.querySelector('catalog-attributes-row');
     assertTrue(!!attributesRow);
     assertTrue(isVisible(attributesRow));
 
     assertFalse(
-        isVisible(attributesRow.shadowRoot!.querySelector('.attributes')));
+        isVisible(attributesRow.shadowRoot.querySelector('.attributes')));
     const buyOption =
-        attributesRow.shadowRoot!.querySelector<HTMLElement>('.link');
+        attributesRow.shadowRoot.querySelector<HTMLElement>('.link');
     assertTrue(!!buyOption);
     assertEquals(
-        loadTimeData.getString('buyOptions'), buyOption.textContent!.trim());
+        loadTimeData.getString('buyOptions'), buyOption.textContent.trim());
     buyOption.click();
     const url = await shoppingServiceApi.whenCalled('openUrlInNewTab');
-    assertEquals('https://foo.com/jackpot', url.url);
+    assertEquals('https://foo.com/jackpot', url);
     assertEquals(
         1,
         metrics.count(
@@ -295,22 +293,22 @@ suite('ShoppingInsightsAppTest', () => {
     assertFalse(isVisible(titleSection.querySelector('insights-comment-row')));
 
     const historySection =
-        shoppingInsightsApp.shadowRoot!.querySelector('#historySection');
+        shoppingInsightsApp.shadowRoot.querySelector('#historySection');
     assertTrue(!!historySection);
     assertTrue(isVisible(historySection));
 
     const historyTitle =
-        shoppingInsightsApp.shadowRoot!.querySelector('#historyTitle');
+        shoppingInsightsApp.shadowRoot.querySelector('#historyTitle');
     assertTrue(!!historyTitle);
     assertEquals(
         loadTimeData.getString('historyTitleSingleOption'),
-        historyTitle.textContent!.trim());
+        historyTitle.textContent.trim());
     assertFalse(
         isVisible(historySection.querySelector('catalog-attributes-row')));
 
     assertTrue(isVisible(historySection.querySelector('insights-comment-row')));
 
-    assertTrue(isVisible(shoppingInsightsApp.shadowRoot!.querySelector(
+    assertTrue(isVisible(shoppingInsightsApp.shadowRoot.querySelector(
         'shopping-insights-history-graph')));
   });
 
@@ -322,10 +320,10 @@ suite('ShoppingInsightsAppTest', () => {
     document.body.appendChild(shoppingInsightsApp);
     await shoppingServiceApi.whenCalled('getProductInfoForCurrentUrl');
     await shoppingServiceApi.whenCalled('getPriceInsightsInfoForCurrentUrl');
-    await flushTasks();
+    await microtasksFinished();
 
     const titleSection =
-        shoppingInsightsApp.shadowRoot!.querySelector('#titleSection');
+        shoppingInsightsApp.shadowRoot.querySelector('#titleSection');
     assertTrue(!!titleSection);
     const attributesRow = titleSection.querySelector('catalog-attributes-row');
     assertTrue(!!attributesRow);
@@ -333,7 +331,7 @@ suite('ShoppingInsightsAppTest', () => {
   });
 
   [true, false].forEach((eligible) => {
-    test('PriceTrackingSectionVisibility', async () => {
+    test('PriceTrackingSectionElementVisibility', async () => {
       shoppingServiceApi.setResultFor(
           'isShoppingListEligible', Promise.resolve({eligible: eligible}));
       shoppingServiceApi.setResultFor(
@@ -345,9 +343,9 @@ suite('ShoppingInsightsAppTest', () => {
       shoppingServiceApi.setResultFor(
           'getPriceTrackingStatusForCurrentUrl',
           Promise.resolve({tracked: true}));
-      priceTrackingProxy.setResultFor(
+      priceTrackingHandler.setResultFor(
           'getParentBookmarkFolderNameForCurrentUrl',
-          Promise.resolve({name: stringToMojoString16('Parent folder')}));
+          Promise.resolve({name: 'Parent folder'}));
 
       document.body.appendChild(shoppingInsightsApp);
       await shoppingServiceApi.whenCalled('getProductInfoForCurrentUrl');
@@ -355,11 +353,11 @@ suite('ShoppingInsightsAppTest', () => {
       await shoppingServiceApi.whenCalled('isShoppingListEligible');
       await shoppingServiceApi.whenCalled(
           'getPriceTrackingStatusForCurrentUrl');
-      await flushTasks();
+      await microtasksFinished();
 
-      const section =
-          shoppingInsightsApp.shadowRoot!.querySelector<PriceTrackingSection>(
-              '#priceTrackingSection');
+      const section = shoppingInsightsApp.shadowRoot
+                          .querySelector<PriceTrackingSectionElement>(
+                              '#priceTrackingSection');
       assertEquals(isVisible(section), eligible);
       if (eligible) {
         assertTrue(!!section);
@@ -378,9 +376,9 @@ suite('ShoppingInsightsAppTest', () => {
     shoppingServiceApi.setResultFor(
         'getPriceInsightsInfoForCurrentUrl',
         Promise.resolve({priceInsightsInfo: priceInsights1}));
-    priceTrackingProxy.setResultFor(
+    priceTrackingHandler.setResultFor(
         'getParentBookmarkFolderNameForCurrentUrl',
-        Promise.resolve({name: stringToMojoString16('Parent folder')}));
+        Promise.resolve({name: 'Parent folder'}));
 
     document.body.appendChild(shoppingInsightsApp);
     await shoppingServiceApi.whenCalled('getProductInfoForCurrentUrl');
@@ -389,17 +387,17 @@ suite('ShoppingInsightsAppTest', () => {
 
     // Price tracking section is not visible before
     // `getPriceTrackingStatusForCurrentUrl` returns.
-    let section =
-        shoppingInsightsApp.shadowRoot!.querySelector<PriceTrackingSection>(
-            '#priceTrackingSection');
+    let section = shoppingInsightsApp.shadowRoot
+                      .querySelector<PriceTrackingSectionElement>(
+                          '#priceTrackingSection');
     assertFalse(isVisible(section));
 
     await shoppingServiceApi.whenCalled('getPriceTrackingStatusForCurrentUrl');
-    await flushTasks();
+    await microtasksFinished();
 
-    section =
-        shoppingInsightsApp.shadowRoot!.querySelector<PriceTrackingSection>(
-            '#priceTrackingSection');
+    section = shoppingInsightsApp.shadowRoot
+                  .querySelector<PriceTrackingSectionElement>(
+                      '#priceTrackingSection');
     assertTrue(isVisible(section));
   });
 });

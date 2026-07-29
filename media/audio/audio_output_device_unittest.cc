@@ -2,15 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "media/audio/audio_output_device.h"
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -29,6 +25,7 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
+#include "media/base/audio_glitch_info.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -87,7 +84,7 @@ class MockAudioOutputIPC : public AudioOutputIPC {
   MOCK_METHOD1(SetVolume, void(double volume));
 };
 
-}  // namespace.
+}  // namespace
 
 class AudioOutputDeviceTest : public testing::Test {
  public:
@@ -133,6 +130,7 @@ class AudioOutputDeviceTest : public testing::Test {
 
  protected:
   scoped_refptr<AudioOutputDevice> audio_device_;
+  raw_ptr<media::AudioOutputBuffer> audio_output_buffer_;
 };
 
 AudioOutputDeviceTest::AudioOutputDeviceTest()
@@ -203,7 +201,11 @@ void AudioOutputDeviceTest::CallOnStreamCreated() {
   ASSERT_TRUE(shared_memory_region_.IsValid());
   shared_memory_mapping_ = shared_memory_region_.Map();
   ASSERT_TRUE(shared_memory_mapping_.IsValid());
-  memset(shared_memory_mapping_.memory(), 0xff, kMemorySize);
+  std::ranges::fill(shared_memory_mapping_.GetMemoryAsSpan<uint8_t>(), 0xff);
+  audio_output_buffer_ =
+      shared_memory_mapping_.GetMemoryAs<media::AudioOutputBuffer>();
+  audio_output_buffer_->params.cumulative_glitch_duration_us = 0;
+  audio_output_buffer_->params.cumulative_glitch_count = 0;
 
   ASSERT_TRUE(CancelableSyncSocket::CreatePair(&browser_socket_,
                                                &renderer_socket_));
@@ -295,6 +297,43 @@ TEST_F(AudioOutputDeviceTest, NoErrorForNormalShutdown) {
 
   Render();
   run_loop.Run();
+
+  StopAudioDevice();
+}
+
+TEST_F(AudioOutputDeviceTest, PropagatesGlitchInfo) {
+  StartAudioDevice();
+  CallOnStreamCreated();
+
+  {
+    media::AudioGlitchInfo glitch_info{.duration = base::Seconds(1),
+                                       .count = 234};
+    audio_output_buffer_->params.cumulative_glitch_duration_us +=
+        glitch_info.duration.InMicroseconds();
+    audio_output_buffer_->params.cumulative_glitch_count += glitch_info.count;
+
+    base::RunLoop run_loop;
+    EXPECT_CALL(callback_, Render(_, _, glitch_info, _))
+        .WillOnce(DoAll(base::test::RunClosure(run_loop.QuitWhenIdleClosure()),
+                        Return(0)));
+    Render();
+    run_loop.Run();
+  }
+
+  {
+    media::AudioGlitchInfo glitch_info{.duration = base::Seconds(5),
+                                       .count = 678};
+    audio_output_buffer_->params.cumulative_glitch_duration_us +=
+        glitch_info.duration.InMicroseconds();
+    audio_output_buffer_->params.cumulative_glitch_count += glitch_info.count;
+
+    base::RunLoop run_loop;
+    EXPECT_CALL(callback_, Render(_, _, glitch_info, _))
+        .WillOnce(DoAll(base::test::RunClosure(run_loop.QuitWhenIdleClosure()),
+                        Return(0)));
+    Render();
+    run_loop.Run();
+  }
 
   StopAudioDevice();
 }
@@ -462,4 +501,4 @@ TEST_F(AudioOutputDeviceTest, StreamIsFlushed) {
   StopAudioDevice();
 }
 
-}  // namespace media.
+}  // namespace media

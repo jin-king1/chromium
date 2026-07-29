@@ -5,19 +5,20 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_GRID_LAYOUT_GRID_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_GRID_LAYOUT_GRID_H_
 
+#include <optional>
+
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/layout/grid/grid_data.h"
+#include "third_party/blink/renderer/core/layout/grid/subgrid_min_max_sizes_cache.h"
 #include "third_party/blink/renderer/core/layout/layout_block.h"
 
 namespace blink {
 
-class SubgridMinMaxSizesCache;
+class PhysicalBoxFragment;
 
 class CORE_EXPORT LayoutGrid : public LayoutBlock {
  public:
   explicit LayoutGrid(Element* element);
-
-  void Trace(Visitor* visitor) const override;
 
   const char* GetName() const override {
     NOT_DESTROYED();
@@ -27,14 +28,31 @@ class CORE_EXPORT LayoutGrid : public LayoutBlock {
   }
 
   // Helper functions to help with getting expanded positions when needed.
-  // These helpers are currently used for DevTools, ComputedStyles and Gap
-  // Decorations.
+  // These helpers are currently used for DevTools, ComputedStyles, Grid Lanes
+  // and Gap Decorations.
   static Vector<LayoutUnit> ComputeTrackSizeRepeaterForRange(
       const GridLayoutTrackCollection& track_collection,
       wtf_size_t range_index);
+  // TODO(celestepan): Look into if it may be worth caching the results of this
+  // considering it is used in so many places.
   static Vector<LayoutUnit> ComputeExpandedPositions(
-      const GridLayoutData* grid_layout_data,
-      GridTrackSizingDirection track_direction);
+      const GridLayoutTrackCollection& track_collection);
+
+  // Helper functions shared between LayoutGrid and LayoutGridLanes.
+  static const GridLayoutData* GetGridLayoutDataFromFragments(
+      const LayoutBlock* layout_block);
+  static LayoutUnit ComputeGridGap(const GridLayoutData* grid_layout_data,
+                                   GridTrackSizingDirection track_direction);
+
+  // Returns true if the difference between `old_style` and `new_style` can
+  // change grid item placement. When `track_direction` is provided, only the
+  // placement inputs for that axis are considered. When it is `nullopt`, both
+  // axes are considered.
+  static bool GridPlacementInputsDidChange(
+      const ComputedStyle& new_style,
+      const ComputedStyle& old_style,
+      const StyleDifference& diff,
+      std::optional<GridTrackSizingDirection> track_direction = std::nullopt);
 
   bool HasCachedPlacementData() const;
   const GridPlacementData& CachedPlacementData() const;
@@ -57,11 +75,24 @@ class CORE_EXPORT LayoutGrid : public LayoutBlock {
   LayoutUnit GridItemOffset(GridTrackSizingDirection track_direction) const;
   Vector<LayoutUnit, 1> TrackSizesForComputedStyle(
       GridTrackSizingDirection track_direction) const;
+  static Vector<LayoutUnit, 1> CollectTrackSizesForComputedStyle(
+      const GridLayoutData* grid_layout_data,
+      GridTrackSizingDirection track_direction);
 
-  Vector<LayoutUnit> RowPositions() const;
-  Vector<LayoutUnit> ColumnPositions() const;
+  Vector<LayoutUnit> GridTrackPositions(
+      GridTrackSizingDirection track_direction) const;
 
   const GridLayoutData* LayoutData() const;
+
+  wtf_size_t StitchedRowGapIndex(
+      const PhysicalBoxFragment& fragment,
+      wtf_size_t gap_index,
+      std::optional<wtf_size_t> line_index) const override;
+
+  void Trace(Visitor* visitor) const override {
+    LayoutBlock::Trace(visitor);
+    visitor->Trace(cached_subgrid_min_max_sizes_);
+  }
 
  private:
   bool IsLayoutGrid() const final {
@@ -69,10 +100,13 @@ class CORE_EXPORT LayoutGrid : public LayoutBlock {
     return true;
   }
 
+  void MarkGridDirty();
+
   void AddChild(LayoutObject* new_child, LayoutObject* before_child) override;
   void RemoveChild(LayoutObject* child) override;
   void StyleDidChange(StyleDifference diff,
-                      const ComputedStyle* old_style) override;
+                      const ComputedStyle* old_style,
+                      const StyleChangeContext&) override;
 
   std::optional<GridPlacementData> cached_placement_data_;
   Member<const SubgridMinMaxSizesCache> cached_subgrid_min_max_sizes_;

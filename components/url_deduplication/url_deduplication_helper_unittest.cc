@@ -70,8 +70,7 @@ TEST_F(URLDeduplicationHelperTest, StripURLWithHandlers) {
   auto handler2 = std::make_unique<MockURLStripHandler>();
   EXPECT_CALL(*handler1, StripExtraParams(testing::_))
       .Times(1)
-      .WillOnce(testing::Invoke(
-          [](GURL url) { return GURL("http://google.com/search"); }));
+      .WillOnce([](GURL url) { return GURL("http://google.com/search"); });
   EXPECT_CALL(*handler2, StripExtraParams(testing::_)).Times(0);
   std::vector<std::unique_ptr<URLStripHandler>> handlers;
   handlers.push_back(std::move(handler1));
@@ -102,6 +101,24 @@ TEST_F(URLDeduplicationHelperTest, DeduplicateByDomainAndTitle) {
                 GURL(base::StrCat(
                     {kSampleBaseCalendarUrl, "calendar/u/0/r/week/2024/1/05"})),
                 kSampleCalendarPageTitle));
+}
+
+TEST_F(URLDeduplicationHelperTest, StripPrefix) {
+  GURL url_1 = GURL("https://accounts.google.com");
+  GURL url_2 = GURL("https://myaccount.google.com");
+  GURL url_3 = GURL("https://login.corp.google.com");
+  DeduplicationStrategy strategy;
+  strategy.excluded_prefixes = {"www.", "accounts.", "myaccount.",
+                                "login.corp."};
+  InitHelper({}, strategy);
+  std::string stripped_url_1 =
+      Helper()->ComputeURLDeduplicationKey(url_1, kSamplePageTitle);
+  std::string stripped_url_2 =
+      Helper()->ComputeURLDeduplicationKey(url_2, kSamplePageTitle);
+  std::string stripped_url_3 =
+      Helper()->ComputeURLDeduplicationKey(url_3, kSamplePageTitle);
+  ASSERT_EQ(stripped_url_1, stripped_url_2);
+  ASSERT_EQ(stripped_url_1, stripped_url_3);
 }
 
 }  // namespace url_deduplication

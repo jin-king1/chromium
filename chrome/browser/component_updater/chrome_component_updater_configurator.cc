@@ -35,6 +35,7 @@
 #include "components/services/patch/content/patch_service.h"
 #include "components/services/unzip/content/unzip_service.h"
 #include "components/update_client/activity_data_service.h"
+#include "components/update_client/crx_cache.h"
 #include "components/update_client/crx_downloader_factory.h"
 #include "components/update_client/net/network_chromium.h"
 #include "components/update_client/patch/patch_impl.h"
@@ -49,6 +50,10 @@
 #if BUILDFLAG(IS_WIN)
 #include "base/enterprise_util.h"
 #include "chrome/installer/util/google_update_settings.h"
+#endif
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+#include "chrome/browser/chrome_for_testing/config.h"
 #endif
 
 namespace component_updater {
@@ -88,7 +93,10 @@ class ChromeConfigurator : public update_client::Configurator {
   GetProtocolHandlerFactory() const override;
   std::optional<bool> IsMachineExternallyManaged() const override;
   update_client::UpdaterStateProvider GetUpdaterStateProvider() const override;
-  std::optional<base::FilePath> GetCrxCachePath() const override;
+  scoped_refptr<update_client::CrxCache> GetCrxCache() const override;
+#if BUILDFLAG(CHROME_FOR_TESTING)
+  std::vector<std::string> GetRequiredComponents() const override;
+#endif
   bool IsConnectionMetered() const override;
 
  private:
@@ -106,6 +114,7 @@ class ChromeConfigurator : public update_client::Configurator {
   scoped_refptr<update_client::CrxDownloaderFactory> crx_downloader_factory_;
   scoped_refptr<update_client::UnzipperFactory> unzip_factory_;
   scoped_refptr<update_client::PatcherFactory> patch_factory_;
+  scoped_refptr<update_client::CrxCache> crx_cache_;
 };
 
 // Allows the component updater to use non-encrypted communication with the
@@ -122,6 +131,12 @@ ChromeConfigurator::ChromeConfigurator(const base::CommandLine* cmdline,
               pref_service),
           nullptr)) {
   CHECK(pref_service_);
+  base::FilePath path;
+  bool result = base::PathService::Get(chrome::DIR_USER_DATA, &path);
+  crx_cache_ = base::MakeRefCounted<update_client::CrxCache>(
+      result ? std::optional<base::FilePath>(
+                   path.AppendASCII("component_crx_cache"))
+             : std::nullopt);
 }
 
 base::TimeDelta ChromeConfigurator::InitialDelay() const {
@@ -291,13 +306,9 @@ ChromeConfigurator::GetUpdaterStateProvider() const {
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 }
 
-std::optional<base::FilePath> ChromeConfigurator::GetCrxCachePath() const {
+scoped_refptr<update_client::CrxCache> ChromeConfigurator::GetCrxCache() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  base::FilePath path;
-  bool result = base::PathService::Get(chrome::DIR_USER_DATA, &path);
-  return result ? std::optional<base::FilePath>(
-                      path.AppendASCII("component_crx_cache"))
-                : std::nullopt;
+  return crx_cache_;
 }
 
 std::optional<base::FilePath> ChromeConfigurator::GetBackgroundDownloaderCache()
@@ -309,6 +320,13 @@ std::optional<base::FilePath> ChromeConfigurator::GetBackgroundDownloaderCache()
              ? std::optional<base::FilePath>(path.AppendASCII("download_cache"))
              : std::nullopt;
 }
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+std::vector<std::string> ChromeConfigurator::GetRequiredComponents() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return chrome_for_testing::GetRequiredComponents();
+}
+#endif
 
 bool ChromeConfigurator::IsConnectionMetered() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);

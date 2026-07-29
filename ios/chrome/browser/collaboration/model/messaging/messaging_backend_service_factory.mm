@@ -8,14 +8,16 @@
 
 #import "components/collaboration/internal/messaging/configuration.h"
 #import "components/collaboration/internal/messaging/data_sharing_change_notifier_impl.h"
-#import "components/collaboration/internal/messaging/empty_messaging_backend_service.h"
+#import "components/collaboration/internal/messaging/instant_message_processor_impl.h"
 #import "components/collaboration/internal/messaging/messaging_backend_service_impl.h"
 #import "components/collaboration/internal/messaging/storage/empty_messaging_backend_database.h"
 #import "components/collaboration/internal/messaging/storage/messaging_backend_database_impl.h"
 #import "components/collaboration/internal/messaging/storage/messaging_backend_store_impl.h"
 #import "components/collaboration/internal/messaging/tab_group_change_notifier_impl.h"
 #import "components/collaboration/public/features.h"
+#import "components/collaboration/public/messaging/empty_messaging_backend_service.h"
 #import "components/data_sharing/public/features.h"
+#import "ios/chrome/browser/collaboration/model/collaboration_service_factory.h"
 #import "ios/chrome/browser/collaboration/model/features.h"
 #import "ios/chrome/browser/collaboration/model/messaging/instant_messaging_service.h"
 #import "ios/chrome/browser/collaboration/model/messaging/instant_messaging_service_factory.h"
@@ -40,11 +42,11 @@ MessagingBackendServiceFactory* MessagingBackendServiceFactory::GetInstance() {
 }
 
 MessagingBackendServiceFactory::MessagingBackendServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("MessagingBackendService",
-                                    ProfileSelection::kNoInstanceInIncognito) {
+    : ProfileKeyedServiceFactoryIOS("MessagingBackendService") {
   DependsOn(tab_groups::TabGroupSyncServiceFactory::GetInstance());
   DependsOn(data_sharing::DataSharingServiceFactory::GetInstance());
   DependsOn(IdentityManagerFactory::GetInstance());
+  DependsOn(collaboration::CollaborationServiceFactory::GetInstance());
   DependsOn(
       collaboration::messaging::InstantMessagingServiceFactory::GetInstance());
 }
@@ -53,11 +55,12 @@ MessagingBackendServiceFactory::~MessagingBackendServiceFactory() = default;
 
 std::unique_ptr<KeyedService>
 MessagingBackendServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
+    ProfileIOS* profile) const {
   CHECK(!profile->IsOffTheRecord());
 
-  if (!IsSharedTabGroupsJoinEnabled(profile) ||
+  collaboration::CollaborationService* collaboration_service =
+      collaboration::CollaborationServiceFactory::GetForProfile(profile);
+  if (!IsSharedTabGroupsJoinEnabled(collaboration_service) ||
       !base::FeatureList::IsEnabled(
           collaboration::features::kCollaborationMessaging)) {
     return std::make_unique<EmptyMessagingBackendService>();
@@ -85,6 +88,8 @@ MessagingBackendServiceFactory::BuildServiceInstanceFor(
 
   auto messaging_backend_store = std::make_unique<MessagingBackendStoreImpl>(
       std::move(messaging_backend_database));
+  auto instant_message_processor =
+      std::make_unique<InstantMessageProcessorImpl>();
 
   // iOS does not need any specialized configuration.
   MessagingBackendConfiguration configuration;
@@ -93,7 +98,8 @@ MessagingBackendServiceFactory::BuildServiceInstanceFor(
       std::make_unique<MessagingBackendServiceImpl>(
           configuration, std::move(tab_group_change_notifier),
           std::move(data_sharing_change_notifier),
-          std::move(messaging_backend_store), tab_group_sync_service,
+          std::move(messaging_backend_store),
+          std::move(instant_message_processor), tab_group_sync_service,
           data_sharing_service, identity_manager);
 
   auto* instant_messaging_service =

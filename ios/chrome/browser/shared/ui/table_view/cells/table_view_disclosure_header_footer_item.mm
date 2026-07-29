@@ -6,7 +6,7 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/numerics/math_constants.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
+#import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -29,9 +29,8 @@ constexpr float kRotationNinetyCW = (90 / 180.0) * M_PI;
   return self;
 }
 
-- (void)configureHeaderFooterView:(UITableViewHeaderFooterView*)headerFooter
-                       withStyler:(ChromeTableViewStyler*)styler {
-  [super configureHeaderFooterView:headerFooter withStyler:styler];
+- (void)configureHeaderFooterView:(UITableViewHeaderFooterView*)headerFooter {
+  [super configureHeaderFooterView:headerFooter];
   TableViewDisclosureHeaderFooterView* header =
       base::apple::ObjCCastStrict<TableViewDisclosureHeaderFooterView>(
           headerFooter);
@@ -124,18 +123,14 @@ constexpr float kRotationNinetyCW = (90 / 180.0) * M_PI;
       topAnchorConstraint, bottomAnchorConstraint,
       [horizontalStack.leadingAnchor
           constraintEqualToAnchor:self.contentView.leadingAnchor
-                         constant:HorizontalPadding()],
+                         constant:ChromeTableViewHorizontalPadding()],
       [horizontalStack.trailingAnchor
           constraintEqualToAnchor:self.contentView.trailingAnchor
-                         constant:-HorizontalPadding()]
+                         constant:-ChromeTableViewHorizontalPadding()]
     ]];
 
-    if (@available(iOS 17, *)) {
-      NSArray<UITrait>* traits = TraitCollectionSetForTraits(
-          @[ UITraitPreferredContentSizeCategory.class ]);
-      [self registerForTraitChanges:traits
-                         withAction:@selector(updateFontOnTraitChange)];
-    }
+    [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+                       withAction:@selector(updateFontOnTraitChange)];
   }
   return self;
 }
@@ -149,20 +144,6 @@ constexpr float kRotationNinetyCW = (90 / 180.0) * M_PI;
     [self.cellAnimator stopAnimation:YES];
   }
 }
-
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-
-  if (previousTraitCollection.preferredContentSizeCategory !=
-      self.traitCollection.preferredContentSizeCategory) {
-    [self updateFontOnTraitChange];
-  }
-}
-#endif
 
 #pragma mark - public methods
 
@@ -252,7 +233,7 @@ constexpr float kRotationNinetyCW = (90 / 180.0) * M_PI;
                                                size:kUseDefaultFontSize];
 }
 
-#pragma mark - Accessibility
+#pragma mark - UIAccessibility
 
 - (NSString*)accessibilityLabel {
   // If no subtitleLabel text has been set only use the titleLabel text.

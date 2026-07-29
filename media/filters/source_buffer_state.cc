@@ -7,12 +7,12 @@
 #include <algorithm>
 #include <set>
 #include <string_view>
+#include <utility>
 
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "build/build_config.h"
 #include "media/base/media_switches.h"
 #include "media/base/media_track.h"
@@ -127,11 +127,12 @@ SourceBufferState::SourceBufferState(
     CreateDemuxerStreamCB create_demuxer_stream_cb,
     MediaLog* media_log)
     : timestamp_offset_during_append_(nullptr),
+      timestamp_offset_(base::TimeDelta()),
       parsing_media_segment_(false),
       stream_parser_(std::move(stream_parser)),
       frame_processor_(std::move(frame_processor)),
       create_demuxer_stream_cb_(std::move(create_demuxer_stream_cb)),
-      media_log_(media_log),
+      media_log_(MediaLog::CloneSafely(media_log)),
       state_(UNINITIALIZED) {
   DCHECK(create_demuxer_stream_cb_);
   DCHECK(frame_processor_);
@@ -179,6 +180,7 @@ void SourceBufferState::SetGroupStartTimestampIfInSequenceMode(
     base::TimeDelta timestamp_offset) {
   DCHECK(!parsing_media_segment_);
 
+  timestamp_offset_ = timestamp_offset;
   frame_processor_->SetGroupStartTimestampIfInSequenceMode(timestamp_offset);
 }
 
@@ -208,8 +210,11 @@ StreamParser::ParseStatus SourceBufferState::RunSegmentParserLoop(
   new_configs_possible_ = true;
   DCHECK(timestamp_offset);
   DCHECK(!timestamp_offset_during_append_);
+  timestamp_offset_ = *timestamp_offset;
   append_window_start_during_append_ = append_window_start;
   append_window_end_during_append_ = append_window_end;
+  append_window_start_ = append_window_start;
+  append_window_end_ = append_window_end;
   timestamp_offset_during_append_ = timestamp_offset;
 
   // TODO(wolenetz): Curry and pass a NewBuffersCB here bound with append window
@@ -238,8 +243,11 @@ bool SourceBufferState::AppendChunks(
   new_configs_possible_ = true;
   DCHECK(timestamp_offset);
   DCHECK(!timestamp_offset_during_append_);
+  timestamp_offset_ = *timestamp_offset;
   append_window_start_during_append_ = append_window_start;
   append_window_end_during_append_ = append_window_end;
+  append_window_start_ = append_window_start;
+  append_window_end_ = append_window_end;
   timestamp_offset_during_append_ = timestamp_offset;
 
   // TODO(wolenetz): Curry and pass a NewBuffersCB here bound with append window
@@ -260,9 +268,12 @@ void SourceBufferState::ResetParserState(base::TimeDelta append_window_start,
                                          base::TimeDelta* timestamp_offset) {
   DCHECK(timestamp_offset);
   DCHECK(!timestamp_offset_during_append_);
+  timestamp_offset_ = *timestamp_offset;
   timestamp_offset_during_append_ = timestamp_offset;
   append_window_start_during_append_ = append_window_start;
   append_window_end_during_append_ = append_window_end;
+  append_window_start_ = append_window_start;
+  append_window_end_ = append_window_end;
 
   stream_parser_->Flush();
   timestamp_offset_during_append_ = nullptr;
@@ -321,29 +332,6 @@ bool SourceBufferState::EvictCodedFrames(base::TimeDelta media_time,
 
   DVLOG(3) << __func__ << " success=" << success;
   return success;
-}
-
-void SourceBufferState::OnMemoryPressure(
-    base::TimeDelta media_time,
-    base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level,
-    bool force_instant_gc) {
-  // TODO(sebmarchand): Check if MEMORY_PRESSURE_LEVEL_MODERATE should also be
-  // ignored.
-  if (memory_pressure_level ==
-      base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE) {
-    return;
-  }
-
-  // Notify video streams about memory pressure first, since video typically
-  // takes up the most memory and that's where we can expect most savings.
-  for (const auto& it : video_streams_) {
-    it.second->OnMemoryPressure(media_time, memory_pressure_level,
-                                force_instant_gc);
-  }
-  for (const auto& it : audio_streams_) {
-    it.second->OnMemoryPressure(media_time, memory_pressure_level,
-                                force_instant_gc);
-  }
 }
 
 Ranges<base::TimeDelta> SourceBufferState::GetBufferedRanges(
@@ -456,7 +444,31 @@ void SourceBufferState::OnSetDuration(base::TimeDelta duration) {
   }
 }
 
+void SourceBufferState::SetAppendWindow(base::TimeDelta start,
+                                        base::TimeDelta end) {
+  append_window_start_ = start;
+  append_window_end_ = end;
+}
+
 void SourceBufferState::MarkEndOfStream() {
+  if (stream_parser_) {
+    base::TimeDelta temp_offset = timestamp_offset_;
+    timestamp_offset_during_append_ = &temp_offset;
+    append_window_start_during_append_ = append_window_start_;
+    append_window_end_during_append_ = append_window_end_;
+    bool old_parsing_media_segment = parsing_media_segment_;
+    parsing_media_segment_ = true;
+
+    DCHECK(!new_configs_possible_);
+    new_configs_possible_ = true;
+
+    stream_parser_->MarkEndOfStream();
+
+    new_configs_possible_ = false;
+    timestamp_offset_during_append_ = nullptr;
+    parsing_media_segment_ = old_parsing_media_segment;
+  }
+
   for (const auto& it : audio_streams_) {
     it.second->MarkEndOfStream();
   }
@@ -558,7 +570,7 @@ void SourceBufferState::InitializeParser(
                           base::Unretained(this)),
       base::BindRepeating(&SourceBufferState::OnEndOfMediaSegment,
                           base::Unretained(this)),
-      media_log_);
+      media_log_.get());
 }
 
 bool SourceBufferState::OnNewConfigs(std::unique_ptr<MediaTracks> tracks) {
@@ -653,7 +665,7 @@ bool SourceBufferState::OnNewConfigs(std::unique_ptr<MediaTracks> tracks) {
       track->set_id(stream->media_track_id());
       frame_processor_->OnPossibleAudioConfigUpdate(audio_config);
       success &= stream->UpdateAudioConfig(audio_config, allow_codec_changes,
-                                           media_log_);
+                                           media_log_.get());
     } else if (track->type() == MediaTrack::Type::kVideo) {
       VideoDecoderConfig video_config = tracks->getVideoConfig(track_id);
       DVLOG(1) << "Video track_id=" << track_id
@@ -737,10 +749,10 @@ bool SourceBufferState::OnNewConfigs(std::unique_ptr<MediaTracks> tracks) {
 
       track->set_id(stream->media_track_id());
       success &= stream->UpdateVideoConfig(video_config, allow_codec_changes,
-                                           media_log_);
+                                           media_log_.get());
     } else {
       MEDIA_LOG(ERROR, media_log_) << "Error: unsupported media track type "
-                                   << base::to_underlying(track->type());
+                                   << std::to_underlying(track->type());
       return false;
     }
   }
@@ -890,6 +902,8 @@ bool SourceBufferState::OnNewBuffers(
     // isn't dropped by append window trimming. See https://crbug.com/850316.
     *timestamp_offset_during_append_ = predicted_timestamp_offset;
   }
+
+  timestamp_offset_ = *timestamp_offset_during_append_;
 
   return true;
 }

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/http/http_auth_gssapi_posix.h"
 
 #include <memory>
@@ -14,6 +9,7 @@
 
 #include "base/base_paths.h"
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/native_library.h"
@@ -49,7 +45,7 @@ void SetBuffer(gss_buffer_t dest, const void* src, size_t length) {
   dest->length = length;
   if (length) {
     dest->value = new char[length];
-    memcpy(dest->value, src, length);
+    UNSAFE_TODO(memcpy(dest->value, src, length));
   }
 }
 
@@ -368,7 +364,8 @@ TEST(HttpAuthGSSAPITest, ParseChallenge_NonBase64EncodedToken) {
 
 TEST(HttpAuthGSSAPITest, OidToValue_NIL) {
   auto actual = OidToValue(GSS_C_NO_OID);
-  auto expected = base::JSONReader::Read(R"({ "oid": "<Empty OID>" })");
+  auto expected = base::JSONReader::Read(R"({ "oid": "<Empty OID>" })",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -383,7 +380,8 @@ TEST(HttpAuthGSSAPITest, OidToValue_Known) {
         "length": 6,
         "bytes" : "KwYBBQYD"
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -396,7 +394,8 @@ TEST(HttpAuthGSSAPITest, OidToValue_Unknown) {
         "length": 6,
         "bytes" : "KwYBBQYF"
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -413,7 +412,8 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_NoLibrary) {
           "status": 1
         }
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -433,7 +433,8 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_WithLibrary) {
           "message": [ "Value: 1, Type 2" ]
         }
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -462,7 +463,8 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_Multiline) {
           "status": 0
         }
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -494,7 +496,8 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_InfiniteLines) {
           "status": 0
         }
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -516,7 +519,8 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_Failure) {
           "status": 0
         }
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -538,7 +542,8 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_EmptyMessage) {
           "status": 0
         }
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -560,7 +565,8 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_Misbehave) {
           "status": 0
         }
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -582,7 +588,8 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_NotUtf8) {
           "status": 0
         }
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -623,7 +630,8 @@ TEST(HttpAuthGSSAPITest, GetContextStateAsValue_ValidContext) {
         },
         "open": false
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }
@@ -643,7 +651,8 @@ TEST(HttpAuthGSSAPITest, GetContextStateAsValue_NoContext) {
             }
          }
       }
-  )");
+  )",
+                                         base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
 }

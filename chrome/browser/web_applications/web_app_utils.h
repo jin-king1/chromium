@@ -9,16 +9,15 @@
 
 #include <set>
 #include <string>
+#include <string_view>
 #include <tuple>
-#include <vector>
 
-#include "build/build_config.h"
-#include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "components/services/app_service/public/cpp/file_handler.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/common/alternative_error_page_override_info.mojom-forward.h"
+#include "third_party/blink/public/common/safe_url_pattern.h"
 
 class GURL;
 class Profile;
@@ -39,19 +38,6 @@ class BrowserContext;
 
 namespace web_app {
 
-namespace error_page {
-// |alternative_error_page_params| dictionary key values in the
-// |AlternativeErrorPageOverrideInfo| mojom struct.
-const char kMessage[] = "web_app_error_page_message";
-const char kAppShortName[] = "app_short_name";
-const char kIconUrl[] = "icon_url";
-const char kSupplementaryIcon[] = "supplementary_icon";
-
-// This must match the HTML element id of the svg to show as a supplementary
-// icon on the default offline error page.
-const char16_t kOfflineIconId[] = u"offlineIcon";
-}  // namespace error_page
-
 // These functions return true if the WebAppProvider is allowed
 // for a given profile. This does not consider 'original' profiles. Returns
 // false if |profile| is off-the-record or nullptr.
@@ -61,8 +47,15 @@ const char16_t kOfflineIconId[] = u"offlineIcon";
 // hard-coded as OTR).
 bool AreWebAppsEnabled(Profile* profile);
 
+// Returns WebAppInstallByUserEnabled policy configuration. Returns true if this
+// policy is not set or enabled. Returns false if this policy is disabled.
+bool IsWebAppInstallByUserPolicyEnabled(Profile* profile);
+
 // Is user allowed to install web apps from UI:
 bool AreWebAppsUserInstallable(Profile* profile);
+
+// Returns if force installation of web apps is allowed
+bool AreWebAppsForceInstallable(Profile* profile);
 
 // Get BrowserContext to use for a WebApp KeyedService creation. This will
 // return a `nullptr` if `AreWebAppsEnabled` returns false for the given
@@ -104,7 +97,7 @@ base::FilePath GetWebAppsTempDirectory(
 // The return value (profile categories) are used to report metrics. They are
 // persisted to logs and should not be renamed. If new names are added, update
 // tool/metrics/histograms/histograms.xml: "SystemWebAppProfileCategory".
-std::string GetProfileCategoryForLogging(Profile* profile);
+std::string_view GetProfileCategoryForLogging(Profile* profile);
 
 // Returns true if the WebApp should have `WebAppChromeOsData()`.
 bool IsChromeOsDataMandatory();
@@ -166,23 +159,9 @@ enum class AppSettingsPageEntryPoint {
   kSubAppsInstallPrompt = 3,
   kNotificationSettingsButton = 4,
   kSiteDataDialog = 5,
-  kMaxValue = kSiteDataDialog,
+  kNavigationCapturingIphBubble = 6,
+  kMaxValue = kNavigationCapturingIphBubble,
 };
-
-// When user_display_mode indicates a user preference for opening in
-// a browser tab, we open in a browser tab. If the developer has specified
-// the app should utilize more advanced display modes and/or fallback chain,
-// attempt honor those preferences. Otherwise, we open in a standalone
-// window (for app_display_mode 'standalone' or 'fullscreen'), or a minimal-ui
-// window (for app_display_mode 'browser' or 'minimal-ui').
-//
-// |is_isolated| overrides browser display mode for Isolated Web Apps because
-// they can't be open as a tab.
-DisplayMode ResolveEffectiveDisplayMode(
-    DisplayMode app_display_mode,
-    const std::vector<DisplayMode>& app_display_mode_overrides,
-    mojom::UserDisplayMode user_display_mode,
-    bool is_isolated);
 
 apps::LaunchContainer ConvertDisplayModeToAppLaunchContainer(
     DisplayMode display_mode);

@@ -4,6 +4,12 @@
 
 package org.chromium.chrome.browser.download.home.list.mutator;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
+import android.util.Pair;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.download.home.DownloadManagerUiConfig;
 import org.chromium.chrome.browser.download.home.JustNowProvider;
 import org.chromium.chrome.browser.download.home.filter.Filters;
@@ -17,6 +23,7 @@ import java.util.List;
  * Controls the list mutation pipeline which includes the sorter, label adder, paginator, and
  * property setter.
  */
+@NullMarked
 public class ListMutationController {
     private final DownloadManagerUiConfig mUiConfig;
     private final ListItemModel mModel;
@@ -39,7 +46,10 @@ public class ListMutationController {
             new ListConsumer() {
                 @Override
                 public ListConsumer setListConsumer(ListConsumer nextConsumer) {
-                    return null;
+                    assert false
+                            : "Setting a downstream consumer for the current consumer is unexpected"
+                                    + " because this is the last in the chain of consumers.";
+                    return assumeNonNull(null);
                 }
 
                 @Override
@@ -106,9 +116,10 @@ public class ListMutationController {
 
     /**
      * Called to add more items in a group card.
+     *
      * @param dateAndDomain The date and domain corresponding to the card.
      */
-    public void loadMoreItemsOnCard(android.util.Pair<Date, String> dateAndDomain) {
+    public void loadMoreItemsOnCard(Pair<Date, String> dateAndDomain) {
         mCardPaginator.loadMore(dateAndDomain);
         mMutator.reload();
     }
@@ -128,7 +139,7 @@ public class ListMutationController {
     /** An empty implementation for {@link ListConsumer} and {@link ListPaginator}. */
     private static class NoopListConsumer
             implements ListConsumer, DateOrderedListMutator.ListPaginator {
-        private ListConsumer mListConsumer;
+        private @Nullable ListConsumer mListConsumer;
 
         @Override
         public void onListUpdated(List<ListItem> inputList) {

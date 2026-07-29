@@ -11,7 +11,7 @@
 #include "third_party/blink/public/common/common_export.h"
 #include "third_party/blink/public/common/safe_url_pattern.h"
 #include "third_party/blink/public/mojom/safe_url_pattern.mojom.h"
-#include "third_party/liburlpattern/pattern.h"
+#include "third_party/liburlpattern/part.h"
 
 namespace mojo {
 namespace internal {
@@ -39,8 +39,7 @@ struct BLINK_COMMON_EXPORT
     }
   }
 
-  static bool FromMojom(blink::mojom::Modifier data,
-                        ::liburlpattern::Modifier* out);
+  static ::liburlpattern::Modifier FromMojom(blink::mojom::Modifier data);
 };
 
 template <>

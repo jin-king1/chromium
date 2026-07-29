@@ -2,22 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
+// <if expr="not is_android">
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
-import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/cr_toolbar/cr_toolbar.js';
+// </if>
+import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/icons.html.js';
 import './icons.html.js';
+import './promotion_banner.js';
 import '/strings.m.js';
 
+// <if expr="not is_android">
+import {ColorChangeUpdater, COLORS_CSS_SELECTOR} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
+// </if>
 import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
 import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
-// <if expr="is_chromeos">
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+// <if expr="not is_android">
+import {assert} from 'chrome://resources/js/assert.js';
 // </if>
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {sanitizeInnerHtml} from 'chrome://resources/js/parse_html_subset.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-// clang-format off
 import type {Application, BrowserReportingResponse, Extension, ManagementBrowserProxy, ThreatProtectionInfo} from './management_browser_proxy.js';
 import { ManagementBrowserProxyImpl, ReportingType} from './management_browser_proxy.js';
 // <if expr="is_chromeos">
@@ -88,6 +95,11 @@ export class ManagementUiElement extends ManagementUiElementBase {
 
       managedWebsitesSubtitle_: {type: String},
 
+      /**
+       * Whether the promotion banner should be shown.
+       */
+      shouldShowPromotion_: {type: Boolean},
+
       // <if expr="is_chromeos">
       /**
        * List of messages related to device reporting.
@@ -111,11 +123,13 @@ export class ManagementUiElement extends ManagementUiElementBase {
       eolAdminMessage_: {type: String},
       eolMessage_: {type: String},
       showMonitoredNetworkPrivacyDisclosure_: {type: Boolean},
+      showWindowsNoticeForDeskSync_: {type: Boolean},
+      showCookiesNoticeForDeskSync_: {type: Boolean},
       // </if>
 
       subtitle_: {type: String},
 
-      // <if expr="not chromeos_ash">
+      // <if expr="not is_chromeos">
       managementNoticeHtml_: {type: String},
       // </if>
 
@@ -124,35 +138,40 @@ export class ManagementUiElement extends ManagementUiElementBase {
     };
   }
 
-  protected applications_: Application[]|null = null;
-  protected browserReportingInfo_: BrowserReportingData[]|null = null;
-  protected profileReportingInfo_: BrowserReportingData[]|null = null;
-  protected extensions_: Extension[]|null = null;
-  protected managedWebsites_: string[]|null = null;
-  protected managedWebsitesSubtitle_: string = '';
+  protected accessor applications_: Application[]|null = null;
+  protected accessor browserReportingInfo_: BrowserReportingData[]|null = null;
+  protected accessor profileReportingInfo_: BrowserReportingData[]|null = null;
+  protected accessor extensions_: Extension[]|null = null;
+  protected accessor managedWebsites_: string[]|null = null;
+  protected accessor managedWebsitesSubtitle_: string = '';
+  protected accessor shouldShowPromotion_: boolean = false;
 
   // <if expr="is_chromeos">
-  protected deviceReportingInfo_: DeviceReportingResponse[]|null = null;
-  protected localTrustRoots_: string = '';
-  protected filesUploadToCloud_: string = '';
-  protected customerLogo_: string = '';
-  protected managementOverview_: string = '';
-  protected pluginVmDataCollectionEnabled_: boolean = false;
-  protected eolAdminMessage_: string = '';
-  protected eolMessage_: string = '';
-  protected showMonitoredNetworkPrivacyDisclosure_: boolean = false;
+  protected accessor deviceReportingInfo_: DeviceReportingResponse[]|null =
+      null;
+  protected accessor localTrustRoots_: string = '';
+  protected accessor filesUploadToCloud_: string = '';
+  protected accessor customerLogo_: string = '';
+  protected accessor managementOverview_: string = '';
+  protected accessor pluginVmDataCollectionEnabled_: boolean = false;
+  protected accessor eolAdminMessage_: string = '';
+  protected accessor eolMessage_: string = '';
+  protected accessor showMonitoredNetworkPrivacyDisclosure_: boolean = false;
+  protected accessor showWindowsNoticeForDeskSync_: boolean = false;
+  protected accessor showCookiesNoticeForDeskSync_: boolean = false;
   // </if>
 
-  protected subtitle_: string = '';
+  protected accessor subtitle_: string = '';
 
-  // <if expr="not chromeos_ash">
-  protected managementNoticeHtml_: TrustedHTML = window.trustedTypes!.emptyHTML;
+  // <if expr="not is_chromeos">
+  protected accessor managementNoticeHtml_: TrustedHTML =
+      window.trustedTypes!.emptyHTML;
   // </if>
 
-  protected managed_: boolean = false;
-  protected applicationReportingSubtitle_: string = '';
-  protected extensionReportingSubtitle_: string = '';
-  protected threatProtectionInfo_: ThreatProtectionInfo|null = null;
+  protected accessor managed_: boolean = false;
+  protected accessor applicationReportingSubtitle_: string = '';
+  protected accessor extensionReportingSubtitle_: string = '';
+  protected accessor threatProtectionInfo_: ThreatProtectionInfo|null = null;
   private browserProxy_: ManagementBrowserProxy =
       ManagementBrowserProxyImpl.getInstance();
 
@@ -164,6 +183,15 @@ export class ManagementUiElement extends ManagementUiElementBase {
     this.updateManagedFields_();
     this.initReportingInfo_();
     this.getThreatProtectionInfo_();
+
+    // <if expr="not is_android">
+    const enableWebuiRefresh2026 =
+        loadTimeData.getString('webuiRefresh2026') !== '';
+    if (enableWebuiRefresh2026) {
+      this.addThemedColors_();
+      ColorChangeUpdater.forDocument().start();
+    }
+    // </if>
 
     this.addWebUiListener(
         'browser-reporting-info-updated',
@@ -192,6 +220,10 @@ export class ManagementUiElement extends ManagementUiElementBase {
     this.getExtensions_();
     this.getManagedWebsites_();
     this.getApplications_();
+    // Assign the promise result directly to the property
+    this.browserProxy_.shouldShowPromotion().then(shouldShowPromotion => {
+      this.shouldShowPromotion_ = shouldShowPromotion;
+    });
     // <if expr="is_chromeos">
     this.getDeviceReportingInfo_();
     this.getPluginVmDataCollectionStatus_();
@@ -207,8 +239,8 @@ export class ManagementUiElement extends ManagementUiElementBase {
         reportingInfo => this.onProfileReportingInfoReceived_(reportingInfo));
   }
 
-  private onBrowserReportingInfoReceived_(reportingInfo:
-                                              BrowserReportingResponse[]) {
+  private onBrowserReportingInfoReceived_(
+      reportingInfo: BrowserReportingResponse[]) {
     const reportingInfoMap = reportingInfo.reduce((info, response) => {
       info[response.reportingType] = info[response.reportingType] || {
         icon: this.getIconForReportingType_(response.reportingType),
@@ -236,8 +268,8 @@ export class ManagementUiElement extends ManagementUiElementBase {
   }
 
 
-  private onProfileReportingInfoReceived_(reportingInfo:
-                                              BrowserReportingResponse[]) {
+  private onProfileReportingInfoReceived_(
+      reportingInfo: BrowserReportingResponse[]) {
     this.profileReportingInfo_ =
         reportingInfo.map((info) => ({
                             messageIds: [info.messageId],
@@ -304,6 +336,14 @@ export class ManagementUiElement extends ManagementUiElementBase {
   }
 
   /**
+   * @return Whether Desk sync section should be shown.
+   */
+  protected showDeskSyncSection_(): boolean {
+    return this.showWindowsNoticeForDeskSync_ ||
+        this.showCookiesNoticeForDeskSync_;
+  }
+
+  /**
    * @return Whether there are device reporting info to show.
    */
   protected showDeviceReportingInfo_(): boolean {
@@ -326,45 +366,75 @@ export class ManagementUiElement extends ManagementUiElementBase {
       string {
     switch (reportingType) {
       case DeviceReportingType.SUPERVISED_USER:
-        return 'management:supervised-user';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:supervised-user-circle-filled' :
+            'management:supervised-user-old';
       case DeviceReportingType.DEVICE_ACTIVITY:
-        return 'management:timelapse';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:timelapse' :
+            'management:timelapse-old';
       case DeviceReportingType.STATISTIC:
-        return 'management:bar-chart';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:bar-chart' :
+            'management:bar-chart-old';
       case DeviceReportingType.DEVICE:
         return 'cr:computer';
       case DeviceReportingType.CRASH_REPORT:
-        return 'management:crash';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:release-alert' :
+            'management:crash-old';
       case DeviceReportingType.APP_INFO_AND_ACTIVITY:
-        return 'management:timelapse';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:timelapse' :
+            'management:timelapse-old';
       case DeviceReportingType.LOGS:
-        return 'management:report';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:report-filled' :
+            'management:report-old';
       case DeviceReportingType.PRINT:
         return 'cr:print';
       case DeviceReportingType.PRINT_JOBS:
         return 'cr:print';
       case DeviceReportingType.DLP_EVENTS:
-        return 'management:policy';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:policy-filled' :
+            'management:policy-old';
       case DeviceReportingType.CROSTINI:
-        return 'management:linux';
+        return 'management:linux-custom';
       case DeviceReportingType.USERNAME:
-        return 'management:account-circle';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:account-circle-filled' :
+            'management:account-circle-old';
       case DeviceReportingType.EXTENSION:
         return 'cr:extension';
       case DeviceReportingType.ANDROID_APPLICATION:
-        return 'management:play-store';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:play-prism-filled' :
+            'management:play-store-old';
       case DeviceReportingType.LOGIN_LOGOUT:
-        return 'management:timelapse';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:timelapse' :
+            'management:timelapse-old';
       case DeviceReportingType.CRD_SESSIONS:
-        return 'management:timelapse';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:timelapse' :
+            'management:timelapse-old';
       case DeviceReportingType.PERIPHERALS:
-        return 'management:usb';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:usb' :
+            'management:usb-old';
       case DeviceReportingType.LEGACY_TECH:
-        return 'management:legacy-tech';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:language' :
+            'management:legacy-tech-old';
       case DeviceReportingType.WEBSITE_INFO_AND_ACTIVITY:
-        return 'management:web';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:web' :
+            'management:web-old';
       case DeviceReportingType.FILE_EVENTS:
-        return 'management:policy';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:policy-filled' :
+            'management:policy-old';
       default:
         return 'cr:computer';
     }
@@ -415,7 +485,6 @@ export class ManagementUiElement extends ManagementUiElementBase {
     return !!this.managedWebsites_ && this.managedWebsites_.length > 0;
   }
 
-
   /**
    * @return The associated icon.
    */
@@ -428,18 +497,27 @@ export class ManagementUiElement extends ManagementUiElementBase {
       case ReportingType.EXTENSIONS:
         return 'cr:extension';
       case ReportingType.USER:
-        return 'management:account-circle';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:account-circle-filled' :
+            'management:account-circle-old';
       case ReportingType.USER_ACTIVITY:
-        return 'management:public';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:public' :
+            'management:public-old';
       case ReportingType.LEGACY_TECH:
-        return 'management:legacy-tech';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:language' :
+            'management:legacy-tech-old';
       case ReportingType.URL:
-        return 'management:link';
+        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+            'management:link' :
+            'management:link-old';
       default:
         return 'cr:security';
     }
   }
 
+  // <if expr="not is_android">
   /**
    * Handles the 'search-changed' event fired from the toolbar.
    * Redirects to the settings page initialized the the current
@@ -451,12 +529,17 @@ export class ManagementUiElement extends ManagementUiElementBase {
         `chrome://settings?search=${encodeURIComponent(query)}`;
   }
 
-  protected onTapBack_() {
+  protected onBackClick_() {
     if (history.length > 1) {
       history.back();
     } else {
       window.location.href = 'chrome://settings/help';
     }
+  }
+  // </if>
+
+  protected onPromotionDismissed_() {
+    this.shouldShowPromotion_ = false;
   }
 
   private updateManagedFields_() {
@@ -466,12 +549,14 @@ export class ManagementUiElement extends ManagementUiElementBase {
       this.managedWebsitesSubtitle_ = data.managedWebsitesSubtitle;
       this.applicationReportingSubtitle_ = data.applicationReportingSubtitle;
       this.subtitle_ = data.pageSubtitle;
-      // <if expr="chromeos_ash">
+      // <if expr="is_chromeos">
       this.customerLogo_ = data.customerLogo;
       this.managementOverview_ = data.overview;
       this.eolMessage_ = data.eolMessage;
       this.showMonitoredNetworkPrivacyDisclosure_ =
           data.showMonitoredNetworkPrivacyDisclosure;
+      this.showWindowsNoticeForDeskSync_ = data.showWindowsNoticeForDeskSync;
+      this.showCookiesNoticeForDeskSync_ = data.showCookiesNoticeForDeskSync;
       try {
         // Sanitizing the message could throw an error if it contains non
         // supported markup.
@@ -481,11 +566,27 @@ export class ManagementUiElement extends ManagementUiElementBase {
         this.eolAdminMessage_ = '';
       }
       // </if>
-      // <if expr="not chromeos_ash">
+      // <if expr="not is_chromeos">
       this.managementNoticeHtml_ = sanitizeInnerHtml(
           data.browserManagementNotice, {attrs: ['aria-label']});
       // </if>
     });
+  }
+
+  // <if expr="not is_android">
+  private addThemedColors_() {
+    assert(document.body.querySelector(COLORS_CSS_SELECTOR) === null);
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'chrome://theme/colors.css?sets=ui,chrome';
+    document.body.appendChild(link);
+  }
+  // </if>
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'management-ui': ManagementUiElement;
   }
 }
 

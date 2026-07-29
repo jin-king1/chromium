@@ -5,28 +5,44 @@
 package org.chromium.components.browser_ui.widget.scrim;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient.BOOKMARK_ACTIVITY;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient.CREATOR_COORDINATOR;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient.FUSEBOX_POPUP;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient.HISTORY_ACTIVITY;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient.NONE;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient.ROOT_UI_COORDINATOR;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient.SETTINGS_ACTIVITY;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient.SIGNIN_ACCOUNT_PICKER_COORDINATOR;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient.TABBED_ROOT_UI_COORDINATOR;
 
 import android.content.Context;
 import android.graphics.Color;
 import android.view.ViewGroup;
 
 import androidx.annotation.ColorInt;
+import androidx.annotation.IntDef;
 import androidx.core.graphics.ColorUtils;
 import androidx.core.util.Function;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.modelutil.PropertyModel;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Public interface to create/display/observer multiple simultaneous scrims. Clients should use
@@ -38,15 +54,46 @@ import java.util.Map;
  */
 @NullMarked
 public class ScrimManager {
-    private final ObservableSupplierImpl<Boolean> mScrimVisibilitySupplier =
-            new ObservableSupplierImpl<>(false);
-    private final ObservableSupplierImpl<Integer> mStatusBarColorSupplier =
-            new ObservableSupplierImpl<>(ScrimProperties.INVALID_COLOR);
-    private final ObservableSupplierImpl<Integer> mNavigationBarColorSupplier =
-            new ObservableSupplierImpl<>(ScrimProperties.INVALID_COLOR);
+    // These values are persisted to logs. Entries should not be renumbered and numeric values
+    // should never be reused.
+    // LINT.IfChange(ScrimClient)
+    @IntDef({
+        NONE,
+        CREATOR_COORDINATOR,
+        SIGNIN_ACCOUNT_PICKER_COORDINATOR,
+        ROOT_UI_COORDINATOR,
+        TABBED_ROOT_UI_COORDINATOR,
+        HISTORY_ACTIVITY,
+        SETTINGS_ACTIVITY,
+        BOOKMARK_ACTIVITY,
+        FUSEBOX_POPUP,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ScrimClient {
+        int NONE = 0;
+        int CREATOR_COORDINATOR = 1;
+        int SIGNIN_ACCOUNT_PICKER_COORDINATOR = 2;
+        int ROOT_UI_COORDINATOR = 3;
+        int TABBED_ROOT_UI_COORDINATOR = 4;
+        int HISTORY_ACTIVITY = 5;
+        int SETTINGS_ACTIVITY = 6;
+        int BOOKMARK_ACTIVITY = 7;
+        int FUSEBOX_POPUP = 8;
+        int COUNT = 9;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:ScrimClient)
+
+    private final SettableNonNullObservableSupplier<Boolean> mScrimVisibilitySupplier =
+            ObservableSuppliers.createNonNull(false);
+    private final SettableNonNullObservableSupplier<Integer> mStatusBarColorSupplier =
+            ObservableSuppliers.createNonNull(Color.TRANSPARENT);
+    private final SettableNonNullObservableSupplier<Integer> mNavigationBarColorSupplier =
+            ObservableSuppliers.createNonNull(Color.TRANSPARENT);
 
     private final Context mContext;
     private final ViewGroup mParent;
+    private final @ScrimClient int mClient;
     private final Map<PropertyModel, ScrimCoordinator> mModelToScrim = new HashMap<>();
     private final ScrimCoordinator.Observer mOnScrimVisibilityChanged = this::pruneHiddenScrims;
     private final Callback<Integer> mOnStatusBarColorChanged = this::updateStatusBarColor;
@@ -57,10 +104,12 @@ public class ScrimManager {
     /**
      * @param context An Android {@link Context} for creating the view.
      * @param parent The {@link ViewGroup} the scrim should exist in.
+     * @param client The client that's creating the scrim system, used for error reporting.
      */
-    public ScrimManager(Context context, ViewGroup parent) {
+    public ScrimManager(Context context, ViewGroup parent, @ScrimClient int client) {
         mContext = context;
         mParent = parent;
+        mClient = client;
     }
 
     /** Performs tear down. Removes outstanding scrims and resets suppliers. */
@@ -70,8 +119,8 @@ public class ScrimManager {
         }
         mModelToScrim.clear();
         mScrimVisibilitySupplier.set(false);
-        mStatusBarColorSupplier.set(ScrimProperties.INVALID_COLOR);
-        mNavigationBarColorSupplier.set(ScrimProperties.INVALID_COLOR);
+        mStatusBarColorSupplier.set(Color.TRANSPARENT);
+        mNavigationBarColorSupplier.set(Color.TRANSPARENT);
     }
 
     /** Temporary alternative to {@link #getScrimVisibilitySupplier()} to make migration easier. */
@@ -83,7 +132,7 @@ public class ScrimManager {
     /** Temporary alternative to {@link #getScrimVisibilitySupplier()} to make migration easier. */
     @Deprecated
     public void addObserver(ScrimCoordinator.Observer observer) {
-        mScrimVisibilitySupplier.addObserver(observer);
+        mScrimVisibilitySupplier.addSyncObserverAndPostIfNonNull(observer);
     }
 
     /** Temporary alternative to {@link #getScrimVisibilitySupplier()} to make migration easier. */
@@ -93,7 +142,7 @@ public class ScrimManager {
     }
 
     /** Returns observable visibility information about all scrims. */
-    public ObservableSupplier<Boolean> getScrimVisibilitySupplier() {
+    public NonNullObservableSupplier<Boolean> getScrimVisibilitySupplier() {
         return mScrimVisibilitySupplier;
     }
 
@@ -101,7 +150,7 @@ public class ScrimManager {
      * Returns observable composite color information that's the result of all scrims effecting the
      * status bar.
      */
-    public ObservableSupplier<Integer> getStatusBarColorSupplier() {
+    public MonotonicObservableSupplier<Integer> getStatusBarColorSupplier() {
         return mStatusBarColorSupplier;
     }
 
@@ -109,7 +158,7 @@ public class ScrimManager {
      * Returns observable composite color information that's the result of all scrims effecting the
      * navigation bar.
      */
-    public ObservableSupplier<Integer> getNavigationBarColorSupplier() {
+    public MonotonicObservableSupplier<Integer> getNavigationBarColorSupplier() {
         return mNavigationBarColorSupplier;
     }
 
@@ -120,14 +169,34 @@ public class ScrimManager {
      *     to this to subsequently interact with the resulting scrim.
      */
     public void showScrim(PropertyModel model) {
-        ScrimCoordinator coordinator = new ScrimCoordinator(mContext, mParent);
+        showScrim(model, true);
+    }
+
+    /**
+     * Shows a new scrim.
+     *
+     * @param model Contains information about the scrim to show. Callers should retain a reference
+     *     to this to subsequently interact with the resulting scrim.
+     * @param animate Whether the scrim should animate.
+     */
+    public void showScrim(PropertyModel model, boolean animate) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.Scrim.ShowRequest.Client", mClient, ScrimClient.COUNT);
+
+        ViewGroup customParent = model.get(ScrimProperties.CUSTOM_PARENT);
+        ViewGroup parent = customParent == null ? mParent : customParent;
+        ScrimCoordinator coordinator = new ScrimCoordinator(mContext, parent, mClient);
         mModelToScrim.put(model, coordinator);
         mScrimVisibilitySupplier.set(true);
-        coordinator.showScrim(model);
+        coordinator.showScrim(model, animate);
 
         coordinator.addObserver(mOnScrimVisibilityChanged);
-        coordinator.getStatusBarColorSupplier().addObserver(mOnStatusBarColorChanged);
-        coordinator.getNavigationBarColorSupplier().addObserver(mOnNavBarColorChanged);
+        coordinator
+                .getStatusBarColorSupplier()
+                .addSyncObserverAndPostIfNonNull(mOnStatusBarColorChanged);
+        coordinator
+                .getNavigationBarColorSupplier()
+                .addSyncObserverAndPostIfNonNull(mOnNavBarColorChanged);
 
         if (mDisableAnimationForTesting) {
             coordinator.disableAnimationForTesting(mDisableAnimationForTesting);
@@ -228,11 +297,11 @@ public class ScrimManager {
     }
 
     private void updateColorSupplier(
-            Function<ScrimCoordinator, ObservableSupplier<Integer>> unwrap,
-            ObservableSupplierImpl<Integer> targetSupplier) {
+            Function<ScrimCoordinator, Supplier<Integer>> unwrap,
+            SettableNonNullObservableSupplier<Integer> targetSupplier) {
         @ColorInt int color = Color.TRANSPARENT;
         for (ScrimCoordinator coordinator : orderedScrims()) {
-            ObservableSupplier<Integer> inputSupplier = unwrap.apply(coordinator);
+            Supplier<Integer> inputSupplier = unwrap.apply(coordinator);
             color = ColorUtils.compositeColors(inputSupplier.get(), color);
         }
         targetSupplier.set(color);
@@ -248,13 +317,32 @@ public class ScrimManager {
      */
     private List<ScrimCoordinator> orderedScrims() {
         List<ScrimCoordinator> list = new ArrayList<>(mModelToScrim.values());
-        Collections.sort(list, ScrimManager::compareScrimCoordinators);
+        Collections.sort(list, (c1, c2) -> ScrimManager.compareScrimCoordinators(mParent, c1, c2));
         return list;
     }
 
-    private static int compareScrimCoordinators(ScrimCoordinator c1, ScrimCoordinator c2) {
-        // Flip order to get ascending, as smaller indexes are drawn (and we should apply) first.
-        return Integer.compare(c1.getIndexInParent(), c2.getIndexInParent());
+    private static int compareScrimCoordinators(
+            ViewGroup root, ScrimCoordinator c1, ScrimCoordinator c2) {
+        // Because scrims may have different parents due to custom parent we recurse up the tree
+        // until we reach the root. Indices are listed in order from root down. We
+        // compare level-wise in the tree until the scrims have a clear relative ordering.
+        List<Integer> indicesC1 = c1.getIndicesRelativeTo(root);
+        List<Integer> indicesC2 = c2.getIndicesRelativeTo(root);
+        int indicesMinSize = Math.min(indicesC1.size(), indicesC2.size());
+        assert indicesMinSize > 0;
+        int compare = 0;
+        for (int i = 0; i < indicesMinSize; i++) {
+            compare = Integer.compare(indicesC1.get(i), indicesC2.get(i));
+
+            // Flip order to get ascending, as smaller indexes are drawn (and we should apply)
+            // first.
+            if (compare != 0) return compare;
+        }
+        // If we still have a tie one of the scrims is a child of the other this isn't a valid
+        // state.
+        assert compare != 0 : "Scrims have same index in tree.";
+        // This is effectively unreachable as we'd be in an invalid state.
+        return compare;
     }
 
     public @Nullable ScrimView getViewForTesting() {
@@ -266,7 +354,8 @@ public class ScrimManager {
         }
     }
 
-    public @Nullable ScrimView getViewForTesting(PropertyModel model) {
+    public @Nullable ScrimView getViewForTesting(@Nullable PropertyModel model) {
+        if (model == null) return null;
         @Nullable ScrimCoordinator coordinator = mModelToScrim.get(model);
         if (coordinator == null) return null;
         return coordinator.getViewForTesting();
@@ -279,7 +368,8 @@ public class ScrimManager {
         }
     }
 
-    public boolean areAnimationsRunningForTesting(PropertyModel model) {
+    public boolean areAnimationsRunningForTesting(@Nullable PropertyModel model) {
+        if (model == null) return false;
         @Nullable ScrimCoordinator coordinator = mModelToScrim.get(model);
         if (coordinator == null) return false;
         return coordinator.areAnimationsRunningForTesting();

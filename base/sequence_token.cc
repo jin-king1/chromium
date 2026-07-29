@@ -27,10 +27,6 @@ bool SequenceToken::operator==(const SequenceToken& other) const {
   return token_ == other.token_ && IsValid();
 }
 
-bool SequenceToken::operator!=(const SequenceToken& other) const {
-  return !(*this == other);
-}
-
 bool SequenceToken::IsValid() const {
   return token_ != kInvalidSequenceToken;
 }
@@ -51,6 +47,11 @@ SequenceToken SequenceToken::GetForCurrentThread() {
   return current_sequence_token;
 }
 
+void SequenceToken::SetForCurrentThread() {
+  CHECK(!current_sequence_token.IsValid());
+  current_sequence_token = *this;
+}
+
 bool TaskToken::operator==(const TaskToken& other) const {
   return token_ == other.token_ && IsValid();
 }
@@ -67,6 +68,7 @@ TaskToken TaskToken::Create() {
   return TaskToken(g_task_token_generator.GetNext());
 }
 
+// static
 TaskToken TaskToken::GetForCurrentThread() {
   return current_task_token;
 }

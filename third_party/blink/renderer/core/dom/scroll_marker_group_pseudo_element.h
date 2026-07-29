@@ -9,15 +9,21 @@
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/scroll_marker_group_data.h"
 #include "third_party/blink/renderer/core/dom/scroll_marker_pseudo_element.h"
+#include "third_party/blink/renderer/core/style/scroll_marker_group.h"
 
 namespace blink {
 
-// Represents ::scroll-marker-group pseudo element and manages
-// implicit focus group, formed by ::scroll-marker pseudo elements.
+class Element;
+
+// Represents ::scroll-marker-group pseudo-element and manages
+// implicit focus group, formed by ::scroll-marker pseudo-elements.
 // This focus group is needed to cycle through its element with
 // arrow keys.
 class ScrollMarkerGroupPseudoElement : public PseudoElement {
  public:
+  static mojom::blink::ScrollIntoViewParamsPtr
+  CreateScrollIntoViewParamsForScrollMarkerTarget(Element* scroll_target);
+
   // pseudo_id is needed, as ::scroll-marker-group can be after or before.
   ScrollMarkerGroupPseudoElement(Element* originating_element,
                                  PseudoId pseudo_id);
@@ -25,12 +31,16 @@ class ScrollMarkerGroupPseudoElement : public PseudoElement {
   bool IsScrollMarkerGroupPseudoElement() const final { return true; }
 
   void AddToFocusGroup(ScrollMarkerPseudoElement& scroll_marker);
-  void RemoveFromFocusGroup(const ScrollMarkerPseudoElement& scroll_marker);
-  void ClearFocusGroup();
+  void RemoveFromFocusGroup(ScrollMarkerPseudoElement& scroll_marker);
+  CORE_EXPORT void ClearFocusGroup();
   // Set selected scroll marker. Returns true if the selected marker changed.
-  CORE_EXPORT bool SetSelected(ScrollMarkerPseudoElement& scroll_marker,
+  CORE_EXPORT void SetSelected(ScrollMarkerPseudoElement& scroll_marker,
                                bool apply_snap_alignment = true);
-  ScrollMarkerPseudoElement* Selected() const;
+  CORE_EXPORT ScrollMarkerPseudoElement* Selected() const;
+
+  ScrollMarkerPseudoElement* First() const;
+  ScrollMarkerPseudoElement* Last() const;
+
   void ActivateNextScrollMarker();
   void ActivatePrevScrollMarker();
   CORE_EXPORT void ActivateScrollMarker(
@@ -41,7 +51,7 @@ class ScrollMarkerGroupPseudoElement : public PseudoElement {
   void Dispose() final;
   void Trace(Visitor* v) const final;
 
-  bool UpdateSelectedScrollMarker(const ScrollOffset& offset);
+  void UpdateSelectedScrollMarker();
 
   // When a "targeted" scroll occurs, we should consider the selected scroll
   // marker pinned until a non-targeted scroll occurs.
@@ -49,8 +59,13 @@ class ScrollMarkerGroupPseudoElement : public PseudoElement {
   void UnPinSelectedMarker();
   bool SelectedMarkerIsPinned() const;
 
- private:
+  void ScrollSelectedIntoView(bool apply_snap_alignment);
 
+  // Returns the mode of scroll-marker-group property of the originating
+  // element.
+  CORE_EXPORT ScrollMarkerGroup::ScrollMarkerMode ScrollMarkerGroupMode() const;
+
+ private:
   ScrollMarkerPseudoElement* FindNextScrollMarker(const Element* current);
   ScrollMarkerPseudoElement* FindPreviousScrollMarker(const Element* current);
 

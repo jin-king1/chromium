@@ -4,21 +4,22 @@
 
 #include "components/payments/content/service_worker_payment_app_factory.h"
 
+#include <algorithm>
 #include <map>
 #include <utility>
 
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "components/payments/content/developer_console_logger.h"
-#include "components/payments/content/payment_manifest_web_data_service.h"
 #include "components/payments/content/service_worker_payment_app.h"
 #include "components/payments/content/service_worker_payment_app_finder.h"
+#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/error_message_util.h"
 #include "components/payments/core/features.h"
 #include "components/payments/core/method_strings.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/stored_payment_app.h"
 #include "content/public/browser/supported_delegations.h"
 #include "content/public/browser/web_contents.h"
@@ -54,12 +55,14 @@ class ServiceWorkerPaymentAppCreator {
 
     base::RepeatingClosure show_processing_spinner = base::BindRepeating(
         &PaymentAppFactory::Delegate::ShowProcessingSpinner, delegate_);
+    base::RepeatingClosure show_loading_view = base::BindRepeating(
+        &PaymentAppFactory::Delegate::ShowLoadingView, delegate_);
     std::vector<std::string> skipped_app_names;
     for (auto& installed_app : apps) {
       std::vector<std::string> enabled_methods =
           installed_app.second->enabled_methods;
       bool has_app_store_billing_method =
-          base::Contains(enabled_methods, methods::kGooglePlayBilling);
+          std::ranges::contains(enabled_methods, methods::kGooglePlayBilling);
       if (ShouldSkipAppForPartialDelegation(
               installed_app.second->supported_delegations, delegate_,
               has_app_store_billing_method)) {
@@ -70,7 +73,8 @@ class ServiceWorkerPaymentAppCreator {
           delegate_->GetWebContents(), delegate_->GetTopOrigin(),
           delegate_->GetFrameOrigin(), delegate_->GetSpec(),
           std::move(installed_app.second), delegate_->IsOffTheRecord(),
-          show_processing_spinner);
+          delegate_->PrefsCanMakePayment(), show_processing_spinner,
+          show_loading_view);
       app->ValidateCanMakePayment(base::BindOnce(
           &ServiceWorkerPaymentAppCreator::OnSWPaymentAppValidated,
           weak_ptr_factory_.GetWeakPtr()));
@@ -89,10 +93,12 @@ class ServiceWorkerPaymentAppCreator {
         continue;
       }
       auto app = std::make_unique<ServiceWorkerPaymentApp>(
-          delegate_->GetWebContents(), delegate_->GetTopOrigin(),
+          delegate_->GetWebContents(),
+          delegate_->GetInitiatorRenderFrameHostId(), delegate_->GetTopOrigin(),
           delegate_->GetFrameOrigin(), delegate_->GetSpec(),
           std::move(installable_app.second), installable_app.first.spec(),
-          delegate_->IsOffTheRecord(), show_processing_spinner);
+          delegate_->IsOffTheRecord(), delegate_->PrefsCanMakePayment(),
+          show_processing_spinner, show_loading_view);
       app->ValidateCanMakePayment(base::BindOnce(
           &ServiceWorkerPaymentAppCreator::OnSWPaymentAppValidated,
           weak_ptr_factory_.GetWeakPtr()));
@@ -183,7 +189,7 @@ void ServiceWorkerPaymentAppFactory::Create(base::WeakPtr<Delegate> delegate) {
   ServiceWorkerPaymentAppFinder::GetOrCreateForCurrentDocument(rfh)
       ->GetAllPaymentApps(
           delegate->GetFrameSecurityOrigin(),
-          delegate->GetPaymentManifestWebDataService(),
+          delegate->GetWebPaymentsWebDataService(),
           mojo::Clone(delegate->GetMethodData()), delegate->GetCSPChecker(),
           base::BindOnce(&ServiceWorkerPaymentAppCreator::CreatePaymentApps,
                          creator_->GetWeakPtr()),

@@ -15,7 +15,7 @@ source_set("typing_session_manager") {
   ]
 
   public_deps = [
-    "//base:base",
+    "//base",
     "//third_party/abseil-cpp:absl",
   ]
 }
@@ -75,7 +75,6 @@ component("ash") {
     "//chromeos/ash/services/ime/public/mojom",
     "//services/metrics/public/cpp:ukm_builders",
     "//third_party/icu",
-    "//ui/base",
     "//ui/base",
     "//ui/chromeos/strings",
     "//ui/events:dom_keycode_converter",

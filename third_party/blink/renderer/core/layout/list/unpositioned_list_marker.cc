@@ -107,8 +107,14 @@ void UnpositionedListMarker::AddToBox(
     // push the content down.
     //
     // TODO(layout-dev): Adjusting block-offset "silently" without re-laying out
-    // is bad for block fragmentation.
-    *block_offset -= baseline_adjust;
+    // is bad for block fragmentation. In that case (`container_builder` is
+    // `nullptr`), it may be more correct not to push the content down.
+    if (container_builder && container_builder->ShouldTextBoxTrimNodeStart() &&
+        RuntimeEnabledFeatures::TextBoxTrimForNestedListEnabled()) {
+      marker_offset.block_offset += baseline_adjust;
+    } else {
+      *block_offset -= baseline_adjust;
+    }
   }
   marker_offset.inline_offset += ComputeIntrudedFloatOffset(
       space, container_builder, border_scrollbar_padding,
@@ -134,7 +140,7 @@ void UnpositionedListMarker::AddToBoxWithoutLineBoxes(
   // When there are no line boxes, marker is top-aligned to the list item.
   // https://github.com/w3c/csswg-drafts/issues/2417
   LogicalSize marker_size =
-      marker_physical_fragment.Size().ConvertToLogical(space.GetWritingMode());
+      ToLogicalSize(marker_physical_fragment.Size(), space.GetWritingMode());
   LogicalOffset offset(InlineOffset(marker_size.inline_size), LayoutUnit());
 
   DCHECK(container_builder);

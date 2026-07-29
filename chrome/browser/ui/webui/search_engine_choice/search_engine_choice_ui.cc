@@ -6,21 +6,21 @@
 
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/json/json_writer.h"
-#include "base/not_fatal_until.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/regional_capabilities/regional_capabilities_service_factory.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service_factory.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_service_factory.h"
-#include "chrome/browser/ui/webui/search_engine_choice/icon_utils.h"
 #include "chrome/browser/ui/webui/search_engine_choice/search_engine_choice_handler.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
 #include "chrome/grit/search_engine_choice_resources.h"
 #include "chrome/grit/search_engine_choice_resources_map.h"
 #include "chrome/grit/signin_resources.h"
+#include "components/regional_capabilities/regional_capabilities_service.h"
 #include "components/search_engines/search_engine_choice/search_engine_choice_service.h"
 #include "components/search_engines/search_engine_choice/search_engine_choice_utils.h"
 #include "components/search_engines/search_engines_switches.h"
@@ -33,33 +33,31 @@
 #include "ui/webui/webui_util.h"
 
 namespace {
+
+// LINT.IfChange
 std::string GetChoiceListJSON(
     SearchEngineChoiceDialogService& search_engine_choice_dialog_service) {
-  base::Value::List choice_value_list;
+  base::ListValue choice_value_list;
   const TemplateURL::TemplateURLVector choices =
       search_engine_choice_dialog_service.GetSearchEngines();
 
   for (const auto& choice : choices) {
-    base::Value::Dict choice_value;
+    base::DictValue choice_value;
 
-    std::string_view icon_path =
-        GetSearchEngineGeneratedIconPath(choice->keyword());
-    if (icon_path.empty()) {
-      icon_path = "chrome://theme/IDR_DEFAULT_FAVICON";
-    }
     choice_value.Set("prepopulateId", choice->prepopulate_id());
     choice_value.Set("name", choice->short_name());
-    choice_value.Set("iconPath", icon_path);
+    choice_value.Set(
+        "iconPath",
+        base::StrCat({"chrome://theme/", choice->GetBuiltinImageResourceId()}));
     choice_value.Set("url", choice->url());
-    choice_value.Set("marketingSnippet",
-                     search_engines::GetMarketingSnippetString(choice->data()));
+    choice_value.Set("marketingSnippet", choice->GetMarketingSnippet());
     choice_value.Set("showMarketingSnippet", false);
     choice_value_list.Append(std::move(choice_value));
   }
-  std::string json_choice_list;
-  base::JSONWriter::Write(choice_value_list, &json_choice_list);
-  return json_choice_list;
+  return base::WriteJson(choice_value_list).value_or("");
 }
+// LINT.ThenChange(/chrome/browser/resources/search_engine_choice/search_engine_choice.ts:SearchEngineChoice)
+
 }  // namespace
 
 bool SearchEngineChoiceUIConfig::IsWebUIEnabled(
@@ -75,14 +73,24 @@ SearchEngineChoiceUI::SearchEngineChoiceUI(content::WebUI* web_ui)
       web_ui->GetWebContents()->GetBrowserContext(),
       chrome::kChromeUISearchEngineChoiceHost);
 
-  source->AddLocalizedString("title", IDS_SEARCH_ENGINE_CHOICE_PAGE_TITLE);
+  regional_capabilities::RegionalCapabilitiesService*
+      regional_capabilities_service = regional_capabilities::
+          RegionalCapabilitiesServiceFactory::GetForProfile(&profile_.get());
+  const std::optional<
+      regional_capabilities::RegionalCapabilitiesService::ChoiceScreenDesign>
+      choice_screen_design =
+          regional_capabilities_service->GetChoiceScreenDesign();
+  CHECK(choice_screen_design.has_value());
+  source->AddLocalizedString("title", choice_screen_design->title_string_id);
   source->AddLocalizedString("subtitle",
-                             IDS_SEARCH_ENGINE_CHOICE_PAGE_SUBTITLE);
-  source->AddLocalizedString("subtitleInfoLink",
-                             IDS_SEARCH_ENGINE_CHOICE_PAGE_SUBTITLE_INFO_LINK);
+                             choice_screen_design->subtitle_1_string_id);
+  source->AddLocalizedString(
+      "subtitleInfoLink",
+      choice_screen_design->subtitle_1_learn_more_suffix_string_id);
   source->AddLocalizedString(
       "subtitleInfoLinkA11yLabel",
-      IDS_SEARCH_ENGINE_CHOICE_PAGE_SUBTITLE_INFO_LINK_A11Y_LABEL);
+      choice_screen_design->subtitle_1_learn_more_a11y_string_id);
+  CHECK(!choice_screen_design->subtitle_2_string_id.has_value());
   source->AddLocalizedString("submitButtonText",
                              IDS_SEARCH_ENGINE_CHOICE_BUTTON_TITLE);
   source->AddLocalizedString("infoDialogTitle",
@@ -129,11 +137,22 @@ SearchEngineChoiceUI::SearchEngineChoiceUI(content::WebUI* web_ui)
           &profile_.get());
   source->AddBoolean(
       "showGuestCheckbox",
-      search_engine_choice_service->IsProfileEligibleForDseGuestPropagation());
+      search_engine_choice_service->IsDsePropagationAllowedForGuest());
+
+  const bool is_first_run_desktop_refresh_enabled =
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+      switches::IsFirstRunDesktopRefreshEnabled(
+          CHECK_DEREF(regional_capabilities_service)
+              .IsInSearchEngineChoiceScreenRegion());
+#else
+      false;
+#endif
 
   webui::SetupWebUIDataSource(
       source, kSearchEngineChoiceResources,
-      IDR_SEARCH_ENGINE_CHOICE_SEARCH_ENGINE_CHOICE_HTML);
+      is_first_run_desktop_refresh_enabled
+          ? IDR_SEARCH_ENGINE_CHOICE_SEARCH_ENGINE_CHOICE_REFRESH_HTML
+          : IDR_SEARCH_ENGINE_CHOICE_SEARCH_ENGINE_CHOICE_HTML);
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(SearchEngineChoiceUI)
@@ -158,7 +177,7 @@ void SearchEngineChoiceUI::Initialize(
   if (entry_point_ != SearchEngineChoiceDialogService::EntryPoint::kDialog) {
     // This callback should always be populated.
     // TODO(b/344899110): Cleanup once the bug root cause is found.
-    CHECK(on_choice_made_callback_, base::NotFatalUntil::M131);
+    CHECK(on_choice_made_callback_);
   }
 }
 
@@ -170,7 +189,7 @@ void SearchEngineChoiceUI::HandleSearchEngineChoiceMade(
     // is a bug. (Or the initialization was skipped, but that would point to
     // users manually entering the URL, which is not supported)
     // TODO(b/344899110): Cleanup once the bug root cause is found.
-    CHECK(on_choice_made_callback_, base::NotFatalUntil::M131);
+    CHECK(on_choice_made_callback_);
   }
 
   SearchEngineChoiceDialogService* search_engine_choice_dialog_service =

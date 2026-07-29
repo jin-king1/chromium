@@ -10,9 +10,9 @@
 #include <iterator>
 
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -63,9 +63,10 @@ bool BrowserAccessibility::ignore_hovered_state_for_testing_ = false;
 // static
 BrowserAccessibility* BrowserAccessibility::FromAXPlatformNodeDelegate(
     AXPlatformNodeDelegate* delegate) {
-  if (!delegate || !delegate->IsWebContent())
+  if (!delegate) {
     return nullptr;
-  return static_cast<BrowserAccessibility*>(delegate);
+  }
+  return delegate->ToBrowserAccessibility();
 }
 
 BrowserAccessibility::BrowserAccessibility(BrowserAccessibilityManager* manager,
@@ -148,20 +149,15 @@ AXPlatformNode* BrowserAccessibility::GetAXPlatformNode() const {
 }
 
 size_t BrowserAccessibility::PlatformChildCount() const {
-  // We need to explicitly check for leafiness here instead of relying on
-  // `AXNode::IsLeaf()` because Android has a different notion of this concept.
-  if (IsLeaf()) {
-    return 0u;
+  size_t announcement_node_count = 0u;
+  // On some platforms, we rely on extra announcement nodes to support aria
+  // notify.
+  if (HasExtraAnnouncementNodes()) {
+    // The extra announcement nodes are not part of the internal tree, but they
+    // are part of the platform tree.
+    announcement_node_count = manager()->TreeExtraAnnouncementNodesCount();
   }
-  if (AXTreeManager::ForChildTree(*node())) {
-    // A child tree might not be connected yet, or might not be hosting platform
-    // objects.
-    return manager()->GetFromAXNode(
-               node()->GetFirstUnignoredChildCrossingTreeBoundary())
-               ? 1u
-               : 0u;
-  }
-  return node()->GetUnignoredChildCountCrossingTreeBoundary();
+  return announcement_node_count + PlatformChildCountWithoutAnnouncementNodes();
 }
 
 BrowserAccessibility* BrowserAccessibility::PlatformGetParent() const {
@@ -170,6 +166,15 @@ BrowserAccessibility* BrowserAccessibility::PlatformGetParent() const {
 }
 
 BrowserAccessibility* BrowserAccessibility::PlatformGetFirstChild() const {
+  // On some platforms, we rely on extra announcement nodes to support aria
+  // notify.
+  if (HasExtraAnnouncementNodes()) {
+    CHECK(manager()->GetExtraAnnouncementNodeFromNode(
+        this, ax::mojom::AriaNotificationPriority::kNormal));
+
+    return manager()->GetExtraAnnouncementNodeFromNode(
+        this, ax::mojom::AriaNotificationPriority::kNormal);
+  }
   // We need to explicitly check for leafiness here instead of relying on
   // `AXNode::IsLeaf()` because Android has a different notion of this concept.
   if (IsLeaf())
@@ -179,6 +184,16 @@ BrowserAccessibility* BrowserAccessibility::PlatformGetFirstChild() const {
 }
 
 BrowserAccessibility* BrowserAccessibility::PlatformGetLastChild() const {
+  // On some platforms, we rely on extra announcement nodes to support aria
+  // notify.
+  if (HasExtraAnnouncementNodes()) {
+    CHECK(manager()->GetExtraAnnouncementNodeFromNode(
+        this, ax::mojom::AriaNotificationPriority::kNormal));
+
+    return manager()->GetExtraAnnouncementNodeFromNode(
+        this, ax::mojom::AriaNotificationPriority::kNormal);
+  }
+
   // We need to explicitly check for leafiness here instead of relying on
   // `AXNode::IsLeaf()` because Android has a different notion of this concept.
   if (IsLeaf())
@@ -188,11 +203,44 @@ BrowserAccessibility* BrowserAccessibility::PlatformGetLastChild() const {
 }
 
 BrowserAccessibility* BrowserAccessibility::PlatformGetNextSibling() const {
-  return InternalGetNextSibling();
+  // On some platforms, we rely on extra announcement nodes to support aria
+  // notify.
+  BrowserAccessibility* parent = PlatformGetParent();
+  size_t next_child_index = node()->GetUnignoredIndexInParent() + 1;
+  if (!manager()->TreeHasExtraAnnouncementNodes() || !parent ||
+      next_child_index < parent->InternalChildCount()) {
+    return InternalGetNextSibling();
+  }
+
+  // The InternalChildCount() will not include extra announcement nodes, but
+  // the PlatformChildCount() will. Therefore if the next sibling is at one of
+  // the extra node indices, we'll need to get it via PlatformGetChild().
+  if (next_child_index < parent->PlatformChildCount()) {
+    return parent->PlatformGetChild(next_child_index);
+  }
+
+  return nullptr;
 }
 
 BrowserAccessibility* BrowserAccessibility::PlatformGetPreviousSibling() const {
-  return InternalGetPreviousSibling();
+  // On some platforms, we rely on extra announcement nodes to support aria
+  // notify.
+  BrowserAccessibility* parent = PlatformGetParent();
+  size_t child_index = node()->GetUnignoredIndexInParent();
+  if (!manager()->TreeHasExtraAnnouncementNodes() || !parent ||
+      child_index < parent->InternalChildCount()) {
+    return InternalGetPreviousSibling();
+  }
+
+  // The InternalChildCount() will not include extra announcement nodes, but
+  // the PlatformChildCount() will. Therefore if the previous sibling is at
+  // one of the extra node indices, we'll need to get it via
+  // PlatformGetChild().
+  if (child_index < parent->PlatformChildCount()) {
+    return parent->PlatformGetChild(child_index - 1);
+  }
+
+  return nullptr;
 }
 
 BrowserAccessibility::PlatformChildIterator
@@ -228,6 +276,29 @@ bool BrowserAccessibility::HasDefaultAction() const {
 
 BrowserAccessibility* BrowserAccessibility::PlatformGetChild(
     size_t child_index) const {
+  // On some platforms, we rely on extra announcement nodes to support aria
+  // notify.
+  if (HasExtraAnnouncementNodes() && child_index >= InternalChildCount()) {
+    if (child_index >= PlatformChildCount()) {
+      return nullptr;
+    }
+
+    BrowserAccessibility* high_priority_node =
+        manager()->GetExtraAnnouncementNodeFromNode(
+            this, ax::mojom::AriaNotificationPriority::kHigh);
+    CHECK(high_priority_node);
+    if (high_priority_node->GetIndexInParent() == child_index) {
+      return high_priority_node;
+    }
+    BrowserAccessibility* normal_priority_node =
+        manager()->GetExtraAnnouncementNodeFromNode(
+            this, ax::mojom::AriaNotificationPriority::kNormal);
+    CHECK(normal_priority_node);
+    if (normal_priority_node->GetIndexInParent() == child_index) {
+      return normal_priority_node;
+    }
+  }
+
   // We need to explicitly check for leafiness here instead of relying on
   // `AXNode::IsLeaf()` because Android has a different notion of this concept.
   if (IsLeaf())
@@ -268,6 +339,15 @@ BrowserAccessibility* BrowserAccessibility::PlatformDeepestFirstChild() const {
 }
 
 BrowserAccessibility* BrowserAccessibility::PlatformDeepestLastChild() const {
+  // On some platforms, we rely on extra announcement nodes to support aria
+  // notify.
+  if (HasExtraAnnouncementNodes()) {
+    CHECK(manager()->GetExtraAnnouncementNodeFromNode(
+        this, ax::mojom::AriaNotificationPriority::kNormal));
+
+    return manager()->GetExtraAnnouncementNodeFromNode(
+        this, ax::mojom::AriaNotificationPriority::kNormal);
+  }
   // We need to explicitly check for leafiness here instead of relying on
   // `AXNode::IsLeaf()` because Android has a different notion of this concept.
   if (IsLeaf())
@@ -790,7 +870,10 @@ gfx::Rect BrowserAccessibility::RelativeToAbsoluteBounds(
       }
     }
 
-    if (coordinate_system == AXCoordinateSystem::kFrame) {
+    // Only web content composes bounds across tree boundaries; other sources,
+    // such as Views, are anchored in screen coordinates by their own delegate.
+    if (coordinate_system == AXCoordinateSystem::kFrame ||
+        !manager->IsWebContentSource()) {
       break;
     }
 
@@ -846,12 +929,13 @@ bool BrowserAccessibility::IsWebContent() const {
 }
 
 bool BrowserAccessibility::HasVisibleCaretOrSelection() const {
-  // The caret should be visible if Caret Browsing is enabled.
+  // The caret should be visible if Caret Browsing is enabled, but only in the
+  // node which contains it.
   //
   // TODO(crbug.com/40674120): Caret Browsing should be looking at leaf text
   // nodes so it might not return expected results in this method.
   if (AXPlatform::GetInstance().IsCaretBrowsingEnabled()) {
-    return true;
+    return node()->HasSelectionFocusInSubtree();
   }
   return node()->HasVisibleCaretOrSelection();
 }
@@ -907,14 +991,8 @@ std::string BrowserAccessibility::SubtreeToStringHelper(size_t level) {
   return result;
 }
 
-// TODO(crbug.com/337737555): This extra hop seems redundant, but
-// unintuitively, this is the only override of NotifyAccessibilityApiUsage, so
-// the the other inheritors of AXPlatformNodeDelegate don't actually ever send
-// this notification. But, if this was refactored to be directly called, we end
-// up failing bots due to the fact that this can be called by our own API usage,
-// which is tracked by the linked bug.
-void BrowserAccessibility::NotifyAccessibilityApiUsage() const {
-  AXPlatform::GetInstance().NotifyAccessibilityApiUsage();
+BrowserAccessibility* BrowserAccessibility::ToBrowserAccessibility() {
+  return this;
 }
 
 const std::vector<gfx::NativeViewAccessible>
@@ -936,8 +1014,9 @@ gfx::NativeViewAccessible BrowserAccessibility::GetParent() const {
 
   AXPlatformTreeManagerDelegate* delegate =
       manager_->GetDelegateFromRootManager();
-  if (!delegate)
-    return nullptr;
+  if (!delegate) {
+    return gfx::NativeViewAccessible();
+  }
   return delegate->AccessibilityGetNativeViewAccessible();
 }
 
@@ -948,36 +1027,41 @@ size_t BrowserAccessibility::GetChildCount() const {
 gfx::NativeViewAccessible BrowserAccessibility::ChildAtIndex(
     size_t index) const {
   BrowserAccessibility* child = PlatformGetChild(index);
-  if (!child)
-    return nullptr;
+  if (!child) {
+    return gfx::NativeViewAccessible();
+  }
   return child->GetNativeViewAccessible();
 }
 
 gfx::NativeViewAccessible BrowserAccessibility::GetFirstChild() const {
   BrowserAccessibility* child = PlatformGetFirstChild();
-  if (!child)
-    return nullptr;
+  if (!child) {
+    return gfx::NativeViewAccessible();
+  }
   return child->GetNativeViewAccessible();
 }
 
 gfx::NativeViewAccessible BrowserAccessibility::GetLastChild() const {
   BrowserAccessibility* child = PlatformGetLastChild();
-  if (!child)
-    return nullptr;
+  if (!child) {
+    return gfx::NativeViewAccessible();
+  }
   return child->GetNativeViewAccessible();
 }
 
 gfx::NativeViewAccessible BrowserAccessibility::GetNextSibling() const {
   BrowserAccessibility* sibling = PlatformGetNextSibling();
-  if (!sibling)
-    return nullptr;
+  if (!sibling) {
+    return gfx::NativeViewAccessible();
+  }
   return sibling->GetNativeViewAccessible();
 }
 
 gfx::NativeViewAccessible BrowserAccessibility::GetPreviousSibling() const {
   BrowserAccessibility* sibling = PlatformGetPreviousSibling();
-  if (!sibling)
-    return nullptr;
+  if (!sibling) {
+    return gfx::NativeViewAccessible();
+  }
   return sibling->GetNativeViewAccessible();
 }
 
@@ -1010,7 +1094,16 @@ bool BrowserAccessibility::IsFocused() const {
 }
 
 bool BrowserAccessibility::IsPlatformDocument() const {
-  return ui::IsPlatformDocument(GetRole());
+  if (ui::IsPlatformDocument(GetRole())) {
+    return true;
+  }
+
+  AXPlatformTreeManagerDelegate* delegate =
+      manager()->GetDelegateFromRootManager();
+  return delegate &&
+         delegate->GetScopedAccessibilityMode().has_mode(
+             ui::AXMode::kNativeAdaptedWebContents) &&
+         manager()->GetBrowserAccessibilityRoot() == this;
 }
 
 gfx::NativeViewAccessible BrowserAccessibility::GetLowestPlatformAncestor()
@@ -1019,29 +1112,32 @@ gfx::NativeViewAccessible BrowserAccessibility::GetLowestPlatformAncestor()
       PlatformGetLowestPlatformAncestor();
   if (lowest_platform_ancestor)
     return lowest_platform_ancestor->GetNativeViewAccessible();
-  return nullptr;
+  return gfx::NativeViewAccessible();
 }
 
 gfx::NativeViewAccessible BrowserAccessibility::GetTextFieldAncestor() const {
   BrowserAccessibility* text_field_ancestor = PlatformGetTextFieldAncestor();
-  if (text_field_ancestor)
+  if (text_field_ancestor) {
     return text_field_ancestor->GetNativeViewAccessible();
-  return nullptr;
+  }
+  return gfx::NativeViewAccessible();
 }
 
 gfx::NativeViewAccessible BrowserAccessibility::GetSelectionContainer() const {
   BrowserAccessibility* selection_container = PlatformGetSelectionContainer();
-  if (selection_container)
+  if (selection_container) {
     return selection_container->GetNativeViewAccessible();
-  return nullptr;
+  }
+  return gfx::NativeViewAccessible();
 }
 
 gfx::NativeViewAccessible BrowserAccessibility::GetTableAncestor() const {
   BrowserAccessibility* table_ancestor =
       manager()->GetFromAXNode(node()->GetTableAncestor());
-  if (table_ancestor)
+  if (table_ancestor) {
     return table_ancestor->GetNativeViewAccessible();
-  return nullptr;
+  }
+  return gfx::NativeViewAccessible();
 }
 
 BrowserAccessibility::PlatformChildIterator::PlatformChildIterator(
@@ -1123,24 +1219,27 @@ gfx::NativeViewAccessible BrowserAccessibility::HitTestSync(
     int physical_pixel_y) const {
   BrowserAccessibility* accessible = manager_->CachingAsyncHitTest(
       gfx::Point(physical_pixel_x, physical_pixel_y));
-  if (!accessible)
-    return nullptr;
+  if (!accessible) {
+    return gfx::NativeViewAccessible();
+  }
 
   return accessible->GetNativeViewAccessible();
 }
 
 gfx::NativeViewAccessible BrowserAccessibility::GetFocus() const {
   BrowserAccessibility* focused = manager()->GetFocus();
-  if (!focused)
-    return nullptr;
+  if (!focused) {
+    return gfx::NativeViewAccessible();
+  }
 
   return focused->GetNativeViewAccessible();
 }
 
 AXPlatformNode* BrowserAccessibility::GetFromNodeID(int32_t id) {
   BrowserAccessibility* node = manager_->GetFromID(id);
-  if (!node)
+  if (!node) {
     return nullptr;
+  }
 
   return node->GetAXPlatformNode();
 }
@@ -1150,12 +1249,14 @@ AXPlatformNode* BrowserAccessibility::GetFromTreeIDAndNodeID(
     int32_t id) {
   BrowserAccessibilityManager* manager =
       BrowserAccessibilityManager::FromID(ax_tree_id);
-  if (!manager)
+  if (!manager) {
     return nullptr;
+  }
 
   BrowserAccessibility* node = manager->GetFromID(id);
-  if (!node)
+  if (!node) {
     return nullptr;
+  }
 
   return node->GetAXPlatformNode();
 }
@@ -1173,11 +1274,13 @@ std::optional<size_t> BrowserAccessibility::GetIndexInParent() const {
 
 gfx::AcceleratedWidget
 BrowserAccessibility::GetTargetForNativeAccessibilityEvent() {
-  AXPlatformTreeManagerDelegate* root_delegate =
-      manager()->GetDelegateFromRootManager();
-  if (!root_delegate)
+  AXPlatformTreeManagerDelegate* delegate =
+      manager()->GetDelegateForNativeView();
+  if (!delegate) {
     return gfx::kNullAcceleratedWidget;
-  return root_delegate->AccessibilityGetAcceleratedWidget();
+  }
+
+  return delegate->AccessibilityGetAcceleratedWidget();
 }
 
 AXPlatformNode* BrowserAccessibility::GetTableCaption() const {
@@ -1328,6 +1431,9 @@ bool BrowserAccessibility::AccessibilityPerformAction(
     case ax::mojom::Action::kScrollLeft:
     case ax::mojom::Action::kScrollRight:
       manager_->Scroll(*this, data.action);
+      return true;
+    case ax::mojom::Action::kRequestLayoutBasedAction:
+      manager_->RequestLayoutBasedAction(*this);
       return true;
     default:
       return false;
@@ -1592,7 +1698,6 @@ std::u16string BrowserAccessibility::GetLocalizedStringForRoleDescription()
     case ax::mojom::Role::kArticle:
       return GetLocalizedString(IDS_AX_ROLE_ARTICLE);
     case ax::mojom::Role::kAudio:
-      // Android returns IDS_AX_MEDIA_AUDIO_ELEMENT, but the string is the same.
       return GetLocalizedString(IDS_AX_ROLE_AUDIO);
     case ax::mojom::Role::kBanner:
       return GetLocalizedString(IDS_AX_ROLE_BANNER);
@@ -1699,6 +1804,8 @@ std::u16string BrowserAccessibility::GetLocalizedStringForRoleDescription()
     case ax::mojom::Role::kMenuItemCheckBox:
       return {};
     case ax::mojom::Role::kMenuItemRadio:
+      return {};
+    case ax::mojom::Role::kMenuItemSeparator:
       return {};
     case ax::mojom::Role::kMeter:
       return GetLocalizedString(IDS_AX_ROLE_METER);
@@ -1884,6 +1991,19 @@ TextAttributeList BrowserAccessibility::ComputeTextAttributes() const {
   return TextAttributeList();
 }
 
+BrowserAccessibility* BrowserAccessibility::GetExtraAnnouncementNode(
+    ax::mojom::AriaNotificationPriority priority_property) const {
+  if (!manager() || !manager()->GetBrowserAccessibilityRoot()) {
+    return nullptr;
+  }
+
+  // On some platforms, we rely on extra announcement nodes to support aria
+  // notify.
+  CHECK(manager_->ShouldExposeExtraAnnouncementNodes());
+  return manager()->GetExtraAnnouncementNodeFromNode(
+      manager()->GetBrowserAccessibilityRoot(), priority_property);
+}
+
 TextAttributeMap BrowserAccessibility::GetSpellingAndGrammarAttributes() const {
   // TODO(crbug.com/40672441): This is one of the few methods that won't be
   // moved to `AXNode` in the foreseeable future because the functionality it
@@ -1900,27 +2020,30 @@ TextAttributeMap BrowserAccessibility::GetSpellingAndGrammarAttributes() const {
     const std::vector<int>& marker_ends =
         GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
+    CHECK_EQ(marker_types.size(), highlight_types.size());
     CHECK_EQ(marker_types.size(), marker_starts.size());
     CHECK_EQ(marker_types.size(), marker_ends.size());
 
     for (size_t i = 0; i < marker_types.size(); ++i) {
-      bool is_spelling_error =
+      const bool is_highlight =
+          marker_types[i] &
+          static_cast<int32_t>(ax::mojom::MarkerType::kHighlight);
+      const bool is_spelling_error =
           (marker_types[i] &
            static_cast<int32_t>(ax::mojom::MarkerType::kSpelling)) ||
-          ((marker_types[i] &
-            static_cast<int32_t>(ax::mojom::MarkerType::kHighlight)) &&
+          (is_highlight &&
            highlight_types[i] ==
                static_cast<int32_t>(ax::mojom::HighlightType::kSpellingError));
-      bool is_grammar_error =
+      const bool is_grammar_error =
           (marker_types[i] &
            static_cast<int32_t>(ax::mojom::MarkerType::kGrammar)) ||
-          ((marker_types[i] &
-            static_cast<int32_t>(ax::mojom::MarkerType::kHighlight)) &&
+          (is_highlight &&
            highlight_types[i] ==
                static_cast<int32_t>(ax::mojom::HighlightType::kGrammarError));
 
-      if (!is_spelling_error && !is_grammar_error)
+      if (!is_spelling_error && !is_grammar_error && !is_highlight) {
         continue;
+      }
 
       TextAttributeList start_attributes;
       if (is_spelling_error && is_grammar_error)
@@ -1930,6 +2053,11 @@ TextAttributeMap BrowserAccessibility::GetSpellingAndGrammarAttributes() const {
         start_attributes.push_back(std::make_pair("invalid", "spelling"));
       else if (is_grammar_error)
         start_attributes.push_back(std::make_pair("invalid", "grammar"));
+      else if (is_highlight) {
+        // If there's a highlight with a different type (i.e. not spelling or
+        // grammar error), it's added as ("mark","true").
+        start_attributes.push_back(std::make_pair("mark", "true"));
+      }
 
       int start_offset = marker_starts[i];
       int end_offset = marker_ends[i];
@@ -1963,6 +2091,33 @@ TextAttributeMap BrowserAccessibility::GetSpellingAndGrammarAttributes() const {
   }
 
   return spelling_attributes;
+}
+
+bool BrowserAccessibility::HasExtraAnnouncementNodes() const {
+  CHECK(manager_);
+  if (!manager_->ShouldExposeExtraAnnouncementNodes()) {
+    return false;
+  }
+  return this == manager_->GetBrowserAccessibilityRoot() && node()->tree() &&
+         manager()->TreeHasExtraAnnouncementNodes();
+}
+
+size_t BrowserAccessibility::PlatformChildCountWithoutAnnouncementNodes()
+    const {
+  // We need to explicitly check for leafiness here instead of relying on
+  // `AXNode::IsLeaf()` because Android has a different notion of this concept.
+  if (IsLeaf()) {
+    return 0u;
+  }
+  if (AXTreeManager::ForChildTree(*node())) {
+    // A child tree might not be connected yet, or might not be hosting platform
+    // objects.
+    return manager()->GetFromAXNode(
+               node()->GetFirstUnignoredChildCrossingTreeBoundary())
+               ? 1u
+               : 0u;
+  }
+  return node()->GetUnignoredChildCountCrossingTreeBoundary();
 }
 
 // static
@@ -2051,7 +2206,7 @@ TextAttributeMap BrowserAccessibility::ComputeTextAttributeMap(
 // static
 bool BrowserAccessibility::HasInvalidAttribute(
     const TextAttributeList& attributes) {
-  return base::Contains(attributes, "invalid", &TextAttribute::first);
+  return std::ranges::contains(attributes, "invalid", &TextAttribute::first);
 }
 
 static bool HasListAncestor(const BrowserAccessibility* node) {

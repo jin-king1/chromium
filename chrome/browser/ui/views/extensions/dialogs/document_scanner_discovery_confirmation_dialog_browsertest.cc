@@ -8,6 +8,7 @@
 #include "chrome/browser/ui/extensions/extensions_dialogs.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "content/public/test/browser_test.h"
+#include "ui/gfx/image/image_skia.h"
 
 namespace {
 
@@ -22,7 +23,7 @@ class DocumentScanDiscoveryConfirmationDialogTest : public DialogBrowserTest {
 
   void ShowUi(const std::string& name) override {
     extensions::ShowDocumentScannerDiscoveryConfirmationDialog(
-        browser()->window()->GetNativeWindow(),
+        browser()->GetWindow()->GetNativeWindow(),
         "DocumentScanDiscoveryConfirmationDialogTest", u"Extension Name", {},
         base::DoNothing());
   }

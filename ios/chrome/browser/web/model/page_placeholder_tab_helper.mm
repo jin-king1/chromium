@@ -6,6 +6,7 @@
 
 #import "base/check_op.h"
 #import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
 #import "base/task/single_thread_task_runner.h"
 #import "base/time/time.h"
 #import "ios/chrome/browser/shared/ui/util/named_guide.h"
@@ -15,10 +16,10 @@
 
 namespace {
 // Placeholder will not be displayed longer than this time.
-constexpr base::TimeDelta kPlaceholderMaxDisplayTime = base::Seconds(1.5);
+constexpr base::TimeDelta kPlaceholderMaxTimeout = base::Seconds(1.5);
 
 // Placeholder removal will include a fade-out animation of this length.
-const NSTimeInterval kPlaceholderFadeOutAnimationLengthInSeconds = 0.5;
+constexpr base::TimeDelta kFadeOutAnimationDuration = base::Seconds(0.5);
 }  // namespace
 
 PagePlaceholderTabHelper::PagePlaceholderTabHelper(web::WebState* web_state)
@@ -31,10 +32,17 @@ PagePlaceholderTabHelper::~PagePlaceholderTabHelper() {
 }
 
 void PagePlaceholderTabHelper::AddPlaceholderForNextNavigation() {
-  add_placeholder_for_next_navigation_ = true;
+  if (!add_placeholder_for_next_navigation_) {
+    ++placeholder_request_id_;
+    cached_placeholder_image_ = nil;
+    add_placeholder_for_next_navigation_ = true;
+    FetchPlaceholderIfNecessary();
+  }
 }
 
 void PagePlaceholderTabHelper::CancelPlaceholderForNextNavigation() {
+  cached_placeholder_image_ = nil;
+  placeholder_fetch_in_progress_ = false;
   add_placeholder_for_next_navigation_ = false;
   if (displaying_placeholder_) {
     RemovePlaceholder();
@@ -43,7 +51,6 @@ void PagePlaceholderTabHelper::CancelPlaceholderForNextNavigation() {
 
 void PagePlaceholderTabHelper::WasShown(web::WebState* web_state) {
   if (add_placeholder_for_next_navigation_) {
-    add_placeholder_for_next_navigation_ = false;
     AddPlaceholder();
   }
 }
@@ -57,7 +64,6 @@ void PagePlaceholderTabHelper::DidStartNavigation(
     web::NavigationContext* navigation_context) {
   DCHECK_EQ(web_state_, web_state);
   if (add_placeholder_for_next_navigation_ && web_state->IsVisible()) {
-    add_placeholder_for_next_navigation_ = false;
     AddPlaceholder();
   }
 }
@@ -65,7 +71,7 @@ void PagePlaceholderTabHelper::DidStartNavigation(
 void PagePlaceholderTabHelper::PageLoaded(web::WebState* web_state,
                                           web::PageLoadCompletionStatus) {
   DCHECK_EQ(web_state_, web_state);
-  RemovePlaceholder();
+  CancelPlaceholderForNextNavigation();
 }
 
 void PagePlaceholderTabHelper::WebStateDestroyed(web::WebState* web_state) {
@@ -75,9 +81,15 @@ void PagePlaceholderTabHelper::WebStateDestroyed(web::WebState* web_state) {
   RemovePlaceholder();
 }
 
-void PagePlaceholderTabHelper::OnImageRetrieved(UIImage* image) {
-  if (displaying_placeholder()) {
-    DisplaySnapshotImage(image);
+void PagePlaceholderTabHelper::OnImageRetrieved(int request_id,
+                                                UIImage* image) {
+  if (request_id == placeholder_request_id_) {
+    placeholder_fetch_in_progress_ = false;
+    if (displaying_placeholder_) {
+      DisplaySnapshotImage(image);
+    } else if (add_placeholder_for_next_navigation_) {
+      cached_placeholder_image_ = image;
+    }
   }
 }
 
@@ -90,37 +102,18 @@ void PagePlaceholderTabHelper::AddPlaceholder() {
     return;
   }
 
+  add_placeholder_for_next_navigation_ = false;
   displaying_placeholder_ = true;
 
-  // Lazily create the placeholder view.
-  if (!placeholder_view_) {
-    placeholder_view_ = [[TopAlignedImageView alloc] init];
-    placeholder_view_.backgroundColor = [UIColor whiteColor];
-    placeholder_view_.translatesAutoresizingMaskIntoConstraints = NO;
-  }
-
   // Update placeholder view's image and display it on top of WebState's view.
-  SnapshotTabHelper* snapshotTabHelper =
-      SnapshotTabHelper::FromWebState(web_state_);
-  if (snapshotTabHelper) {
-    // Show grey snapshots only for the WebStates that haven't been loaded
-    if (web_state_->IsLoading()) {
-      snapshotTabHelper->RetrieveGreySnapshot(base::CallbackToBlock(
-          base::BindOnce(&PagePlaceholderTabHelper::OnImageRetrieved,
-                         weak_factory_.GetWeakPtr())));
-    } else {
-      snapshotTabHelper->RetrieveColorSnapshot(base::CallbackToBlock(
-          base::BindOnce(&PagePlaceholderTabHelper::OnImageRetrieved,
-                         weak_factory_.GetWeakPtr())));
-    }
-  }
+  FetchPlaceholderIfNecessary();
 
   // Remove placeholder if it takes too long to load the page.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&PagePlaceholderTabHelper::RemovePlaceholder,
                      weak_factory_.GetWeakPtr()),
-      kPlaceholderMaxDisplayTime);
+      kPlaceholderMaxTimeout);
 }
 
 void PagePlaceholderTabHelper::DisplaySnapshotImage(UIImage* snapshot) {
@@ -136,6 +129,14 @@ void PagePlaceholderTabHelper::DisplaySnapshotImage(UIImage* snapshot) {
     displaying_placeholder_ = false;
     return;
   }
+
+  // Lazily create the placeholder view.
+  if (!placeholder_view_) {
+    placeholder_view_ = [[TopAlignedImageView alloc] init];
+    placeholder_view_.backgroundColor = [UIColor whiteColor];
+    placeholder_view_.translatesAutoresizingMaskIntoConstraints = NO;
+  }
+
   placeholder_view_.image = snapshot;
   [web_state_view addSubview:placeholder_view_];
   AddSameConstraints(guide, placeholder_view_);
@@ -150,7 +151,7 @@ void PagePlaceholderTabHelper::RemovePlaceholder() {
 
   // Remove placeholder view with a fade-out animation.
   __weak UIView* weak_placeholder_view = placeholder_view_;
-  [UIView animateWithDuration:kPlaceholderFadeOutAnimationLengthInSeconds
+  [UIView animateWithDuration:kFadeOutAnimationDuration.InSecondsF()
       animations:^{
         weak_placeholder_view.alpha = 0.0f;
       }
@@ -160,4 +161,24 @@ void PagePlaceholderTabHelper::RemovePlaceholder() {
       }];
 }
 
-WEB_STATE_USER_DATA_KEY_IMPL(PagePlaceholderTabHelper)
+void PagePlaceholderTabHelper::FetchPlaceholderIfNecessary() {
+  if (placeholder_fetch_in_progress_) {
+    return;
+  }
+
+  if (cached_placeholder_image_) {
+    OnImageRetrieved(placeholder_request_id_, cached_placeholder_image_);
+    cached_placeholder_image_ = nil;
+    return;
+  }
+
+  auto* snapshot_tab_helper = SnapshotTabHelper::FromWebState(web_state_);
+  if (!snapshot_tab_helper) {
+    return;
+  }
+
+  placeholder_fetch_in_progress_ = true;
+  snapshot_tab_helper->RetrieveGreySnapshot(base::CallbackToBlock(
+      base::BindOnce(&PagePlaceholderTabHelper::OnImageRetrieved,
+                     weak_factory_.GetWeakPtr(), placeholder_request_id_)));
+}

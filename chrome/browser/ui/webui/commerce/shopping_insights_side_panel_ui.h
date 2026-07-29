@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "chrome/browser/ui/webui/commerce/price_tracking_handler.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
 #include "components/commerce/core/commerce_constants.h"
@@ -19,14 +18,10 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
-
-namespace ui {
-class ColorChangeHandler;
-}
 
 namespace commerce {
 class PriceInsightsHandler;
+class PriceTrackingHandler;
 class ShoppingServiceHandler;
 }  // namespace commerce
 
@@ -54,10 +49,6 @@ class ShoppingInsightsSidePanelUI
   ~ShoppingInsightsSidePanelUI() override;
 
   void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          pending_receiver);
-
-  void BindInterface(
       mojo::PendingReceiver<
           shopping_service::mojom::ShoppingServiceHandlerFactory> receiver);
 
@@ -71,7 +62,7 @@ class ShoppingInsightsSidePanelUI
           commerce::price_insights::mojom::PriceInsightsHandlerFactory>
           receiver);
 
-  static constexpr std::string GetWebUIName() {
+  static constexpr std::string_view GetWebUIName() {
     return "ShoppingInsightsSidePanel";
   }
 
@@ -94,7 +85,6 @@ class ShoppingInsightsSidePanelUI
           commerce::price_insights::mojom::PriceInsightsHandler> receiver)
       override;
 
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
   std::unique_ptr<commerce::ShoppingServiceHandler> shopping_service_handler_;
   mojo::Receiver<shopping_service::mojom::ShoppingServiceHandlerFactory>
       shopping_service_factory_receiver_{this};

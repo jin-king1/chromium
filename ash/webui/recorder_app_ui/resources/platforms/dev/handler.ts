@@ -12,45 +12,32 @@ import 'chrome://resources/cros_components/switch/switch.js';
 import '../../components/cra/cra-dropdown.js';
 import './error-view.js';
 
-import {
-  Switch as CrosSwitch,
-} from 'chrome://resources/cros_components/switch/switch.js';
-import {html, styleMap} from 'chrome://resources/mwc/lit/index.js';
+import {Switch as CrosSwitch} from 'chrome://resources/cros_components/switch/switch.js';
+import {html, map, styleMap} from 'chrome://resources/mwc/lit/index.js';
 
 import {CraDropdown} from '../../components/cra/cra-dropdown.js';
 import {SAMPLE_RATE} from '../../core/audio_constants.js';
-import {NoArgStringName} from '../../core/i18n.js';
-import {InternalMicInfo} from '../../core/microphone_manager.js';
-import {
-  Model,
-  ModelLoader,
-  ModelResponse,
-  ModelResponseError,
-  ModelState,
-} from '../../core/on_device_model/types.js';
+import type {NoArgStringName} from '../../core/i18n.js';
+import type {InternalMicInfo} from '../../core/microphone_manager.js';
+import type {LoadModelResult, Model, ModelResponse, ModelState} from '../../core/on_device_model/types.js';
+import {ModelExecutionError, ModelLoader, ModelLoadError} from '../../core/on_device_model/types.js';
 import {PerfLogger} from '../../core/perf.js';
-import {
-  PlatformHandler as PlatformHandlerBase,
-} from '../../core/platform_handler.js';
-import {computed, Signal, signal} from '../../core/reactive/signal.js';
-import {LangPackInfo, LanguageCode} from '../../core/soda/language_info.js';
-import {
-  HypothesisPart,
-  SodaEvent,
-  SodaSession,
-  TimeDelta,
-} from '../../core/soda/types.js';
+import {PlatformHandler as PlatformHandlerBase} from '../../core/platform_handler.js';
+import type {Signal} from '../../core/reactive/signal.js';
+import {computed, signal} from '../../core/reactive/signal.js';
+import type {LangPackInfo} from '../../core/soda/language_info.js';
+import {LanguageCode} from '../../core/soda/language_info.js';
+import type {HypothesisPart, SodaEvent, SodaSession, TimeDelta} from '../../core/soda/types.js';
 import {
   assert,
   assertEnumVariant,
+  assertExhaustive,
   assertExists,
   assertInstanceof,
+  checkEnumVariant,
 } from '../../core/utils/assert.js';
-import {
-  Observer,
-  ObserverList,
-  Unsubscribe,
-} from '../../core/utils/observer_list.js';
+import type {Observer, Unsubscribe} from '../../core/utils/observer_list.js';
+import {ObserverList} from '../../core/utils/observer_list.js';
 import {sleep} from '../../core/utils/utils.js';
 
 import {ErrorView} from './error-view.js';
@@ -67,7 +54,6 @@ class TitleSuggestionModelDev implements Model<string[]> {
       `Longer long title for "${words[1]}"`,
       `This is a very long long title that is too long for "${words[0]}"`,
     ];
-    // TODO(pihsun): Mock error state.
     return {kind: 'success', result};
   }
 
@@ -78,7 +64,6 @@ class SummaryModelDev implements Model<string> {
   async execute(content: string): Promise<ModelResponse<string>> {
     await sleep(3000);
     const result = `Summary for ${content.substring(0, 40)}...`;
-    // TODO(pihsun): Mock error state.
     return {kind: 'success', result};
   }
 
@@ -95,10 +80,29 @@ class ModelLoaderDev<T> extends ModelLoader<T> {
 
   override state = signal<ModelState>({kind: 'notInstalled'});
 
-  override async load(): Promise<Model<T>> {
-    console.log('model installation requested');
-    if (this.state.value.kind !== 'installed' &&
-        this.state.value.kind !== 'installing') {
+  private modelLoadErrorToModelState(loadError: ModelLoadError): ModelState {
+    switch (loadError) {
+      case ModelLoadError.LOAD_FAILURE:
+        return {kind: 'error'};
+      case ModelLoadError.NEEDS_REBOOT:
+        return {kind: 'needsReboot'};
+      default:
+        return assertExhaustive(loadError);
+    }
+  }
+
+  override async load(): Promise<LoadModelResult<T>> {
+    // The simulation in `load` is not reentrant, `load` should not be called
+    // again before the previous call completes.
+    // TODO(hsuanling): Make `load` reentrant by putting model loading
+    // simulation into an AsyncJobQueue so that multiple calls will wait for the
+    // one AsyncJob to resolve.
+    assert(
+      this.state.value.kind !== 'installing',
+      'Requested model installation when model is installing.',
+    );
+    console.info('model installation requested');
+    if (this.state.value.kind !== 'installed') {
       this.state.value = {kind: 'installing', progress: 0};
       // Simulate the loading of model.
       let progress = 0;
@@ -107,35 +111,52 @@ class ModelLoaderDev<T> extends ModelLoader<T> {
         // 4% per 200 ms -> simulate 5 seconds for the whole installation.
         progress += 4;
         if (progress >= 100) {
-          if (this.platformHandler.forceGenAiModelDownloadError.value) {
-            this.state.value = {kind: 'error'};
-          } else {
-            this.state.value = {kind: 'installed'};
-          }
           break;
         }
         this.state.value = {kind: 'installing', progress};
       }
+      this.state.value = {kind: 'installed'};
+      devSettings.mutate((s) => {
+        s.genAiInstalled = true;
+      });
     }
-    return this.model;
+    const loadError = this.platformHandler.forceGenAiModelLoadError.value;
+    // Changes model state if load error is specified.
+    if (loadError !== null) {
+      this.state.value = this.modelLoadErrorToModelState(loadError);
+      devSettings.mutate((s) => {
+        s.genAiInstalled = false;
+      });
+    }
+
+    if (this.state.value.kind !== 'installed') {
+      return {kind: 'error', error: loadError ?? ModelLoadError.LOAD_FAILURE};
+    }
+
+    // Returns model only if it is installed.
+    return {kind: 'success', model: this.model};
   }
 
   override async loadAndExecute(
     content: string,
     language: LanguageCode,
   ): Promise<ModelResponse<T>> {
-    // TODO: b/357526521 - Create and use `UNSUPPORTED_LANGUAGE` error.
     if (!this.platformHandler.getLangPackInfo(language).isGenAiSupported) {
-      return {kind: 'error', error: ModelResponseError.GENERAL};
+      return {kind: 'error', error: ModelExecutionError.UNSUPPORTED_LANGUAGE};
     }
-    const model = await this.load();
-    if (this.state.value.kind !== 'installed') {
-      return {kind: 'error', error: ModelResponseError.GENERAL};
+    const result = await this.load();
+    if (result.kind === 'error') {
+      return result;
+    }
+    const executionError =
+      this.platformHandler.forceGenAiModelExecutionError.value;
+    if (executionError !== null) {
+      return {kind: 'error', error: executionError};
     }
     try {
-      return await model.execute(content, language);
+      return await result.model.execute(content, language);
     } finally {
-      model.close();
+      result.model.close();
     }
   }
 }
@@ -232,8 +253,9 @@ class SodaSessionDev implements SodaSession {
     };
     // Speaker label starts from "1".
     const lineSpeakerLabel = (this.currentLineIdx % MAX_NUM_SPEAKER) + 1;
-    const hypothesisPart =
-      currentLine.slice(0, this.currentWordIdx + 1).map((w, i) => {
+    const hypothesisPart = currentLine
+      .slice(0, this.currentWordIdx + 1)
+      .map((w, i) => {
         let speakerLabel = lineSpeakerLabel;
         if (i === 0 && this.currentLineIdx > 0 && !finishLine) {
           // Change speaker label of first word of each line to "wrong" speaker
@@ -303,6 +325,8 @@ class SodaSessionDev implements SodaSession {
   }
 
   addAudio(samples: Float32Array): void {
+    // This is only used for dev server
+    // eslint-disable-next-line no-console
     console.debug(`Soda add audio of length ${samples.length}`);
 
     this.numSamples += samples.length;
@@ -377,6 +401,10 @@ export class PlatformHandler extends PlatformHandlerBase {
     return substituteI18nString(label, ...args);
   }
 
+  static override getDeviceType(): string {
+    return 'Chromebook';
+  }
+
   override readonly canCaptureSystemAudioWithLoopback = computed(
     () => devSettings.value.canCaptureSystemAudioWithLoopback,
   );
@@ -385,8 +413,12 @@ export class PlatformHandler extends PlatformHandlerBase {
     () => devSettings.value.forceLanguageSelection,
   );
 
-  readonly forceGenAiModelDownloadError = computed(
-    () => devSettings.value.forceGenAiModelDownloadError,
+  readonly forceGenAiModelExecutionError = computed(
+    () => devSettings.value.forceGenAiModelExecutionError,
+  );
+
+  readonly forceGenAiModelLoadError = computed(
+    () => devSettings.value.forceGenAiModelLoadError,
   );
 
   override init(): Promise<void> {
@@ -398,6 +430,12 @@ export class PlatformHandler extends PlatformHandlerBase {
       // TODO(pihsun): Remember the whole state in devSettings instead?
       sodaState.value = {kind: 'installed'};
     }
+    if (devSettings.value.genAiInstalled) {
+      this.summaryModelLoader.state = signal<ModelState>({kind: 'installed'});
+      this.titleSuggestionModelLoader.state = signal<ModelState>({
+        kind: 'installed',
+      });
+    }
     this.langPacks.set(LanguageCode.EN_US, {
       languageCode: LanguageCode.EN_US,
       displayName: 'English',
@@ -407,6 +445,10 @@ export class PlatformHandler extends PlatformHandlerBase {
 
     this.initPerfEventWatchers();
     return Promise.resolve();
+  }
+
+  override getDefaultLanguage(): LanguageCode {
+    return LanguageCode.EN_US;
   }
 
   override getLangPackList(): readonly LangPackInfo[] {
@@ -443,9 +485,10 @@ export class PlatformHandler extends PlatformHandlerBase {
   override perfLogger = new PerfLogger(this.eventsSender);
 
   override installSoda(language: LanguageCode): Promise<void> {
-    console.log(`SODA lang pack ${language} installation requested`);
+    console.info(`SODA lang pack ${language} installation requested`);
     const sodaState = this.getSodaState(language);
-    if (sodaState.value.kind === 'notInstalled') {
+    if (sodaState.value.kind !== 'installed' &&
+        sodaState.value.kind !== 'installing') {
       sodaState.value = {kind: 'installing', progress: 0};
       // Simulate the loading of SODA model.
       // Not awaiting the async block should be fine since this is only for
@@ -482,10 +525,27 @@ export class PlatformHandler extends PlatformHandlerBase {
     return Promise.resolve(new SodaSessionDev());
   }
 
-  override getMicrophoneInfo(
-    _deviceId: string,
-  ): Promise<InternalMicInfo> {
+  override getMicrophoneInfo(_deviceId: string): Promise<InternalMicInfo> {
     return Promise.resolve({isDefault: false, isInternal: false});
+  }
+
+  private renderGenAiErrorOptions<
+    T extends ModelExecutionError | ModelLoadError,
+  >(errorValues: T[], selectedError: T | null): RenderResult {
+    return html`
+      <cros-dropdown-option
+        headline="SUCCESS"
+        ?selected=${selectedError === null}
+      ></cros-dropdown-option>
+      ${map(errorValues, (errorValue) => {
+        return html`
+          <cros-dropdown-option
+            headline=${errorValue}
+            ?selected=${errorValue === selectedError}
+          ></cros-dropdown-option>
+        `;
+      })}
+    `;
   }
 
   override renderDevUi(): RenderResult {
@@ -515,10 +575,20 @@ export class PlatformHandler extends PlatformHandlerBase {
         s.forceLanguageSelection = target.selected;
       });
     }
-    function handleForceGenAiModelDownloadErrorChange(ev: Event) {
-      const target = assertInstanceof(ev.target, CrosSwitch);
+    function handleForceGenAiModelLoadErrorChange(ev: Event) {
       devSettings.mutate((s) => {
-        s.forceGenAiModelDownloadError = target.selected;
+        s.forceGenAiModelLoadError = checkEnumVariant(
+          ModelLoadError,
+          assertInstanceof(ev.target, CraDropdown).value,
+        );
+      });
+    }
+    function handleForceGenAiModelExecutionErrorChange(ev: Event) {
+      devSettings.mutate((s) => {
+        s.forceGenAiModelExecutionError = checkEnumVariant(
+          ModelExecutionError,
+          assertInstanceof(ev.target, CraDropdown).value,
+        );
       });
     }
     // TODO(pihsun): Move the dev toggle to a separate component, so we don't
@@ -528,6 +598,19 @@ export class PlatformHandler extends PlatformHandlerBase {
       flexFlow: 'row',
       alignItems: 'center',
     };
+    const loadErrorValues = Object.values(ModelLoadError);
+    const selectedLoadError = this.forceGenAiModelLoadError.value;
+    const loadErrorOptions = this.renderGenAiErrorOptions<ModelLoadError>(
+      loadErrorValues,
+      selectedLoadError,
+    );
+    const executionErrorValues = Object.values(ModelExecutionError);
+    const selectedExecutionError = this.forceGenAiModelExecutionError.value;
+    const executionErrorOptions =
+      this.renderGenAiErrorOptions<ModelExecutionError>(
+        executionErrorValues,
+        selectedExecutionError,
+      );
     return html`
       <div class="section">
         <label style=${styleMap(labelStyle)}>
@@ -592,15 +675,22 @@ export class PlatformHandler extends PlatformHandlerBase {
       </div>
       <div class="section">
         <label style=${styleMap(labelStyle)}>
-          <!--
-            TODO(hsuanling): Use select for model error enum.
-          -->
-          <cros-switch
-            @change=${handleForceGenAiModelDownloadErrorChange}
-            .selected=${this.forceGenAiModelDownloadError.value}
+          <cra-dropdown
+            label="GenAi model load error"
+            @change=${handleForceGenAiModelLoadErrorChange}
           >
-          </cros-switch>
-          Toggle to force GenAI model fail to install
+            ${loadErrorOptions}
+          </cra-dropdown>
+        </label>
+      </div>
+      <div class="section">
+        <label style=${styleMap(labelStyle)}>
+          <cra-dropdown
+            label="GenAi model execution error"
+            @change=${handleForceGenAiModelExecutionErrorChange}
+          >
+            ${executionErrorOptions}
+          </cra-dropdown>
         </label>
       </div>
     `;
@@ -611,7 +701,7 @@ export class PlatformHandler extends PlatformHandlerBase {
   }
 
   override showAiFeedbackDialog(description: string): void {
-    console.log('Feedback report dialog requested: ', description);
+    console.info('Feedback report dialog requested: ', description);
     window.prompt('fake AI feedback dialog', description);
   }
 

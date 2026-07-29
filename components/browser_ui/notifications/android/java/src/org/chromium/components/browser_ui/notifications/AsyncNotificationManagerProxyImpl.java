@@ -15,10 +15,11 @@ import org.chromium.base.Log;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.task.AsyncTask;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.NullUnmarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.components.browser_ui.notifications.NotificationProxyUtils.NotificationEvent;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.function.Function;
@@ -30,10 +31,28 @@ import java.util.function.Function;
 @NullMarked
 /* package */ class AsyncNotificationManagerProxyImpl implements BaseNotificationManagerProxy {
     private static final String TAG = "AsyncNotifManager";
-    private final NotificationManagerCompat mNotificationManager;
 
-    public AsyncNotificationManagerProxyImpl() {
-        mNotificationManager = NotificationManagerCompat.from(ContextUtils.getApplicationContext());
+    // This object is initialized and used on a background thread, and it should always be non
+    // null when used.
+    @SuppressWarnings("NullAway.Init")
+    private NotificationManagerCompat mNotificationManager;
+
+    private static @Nullable AsyncNotificationManagerProxyImpl sInstance;
+
+    public static AsyncNotificationManagerProxyImpl getInstance() {
+        if (sInstance == null) {
+            sInstance = new AsyncNotificationManagerProxyImpl();
+        }
+        return sInstance;
+    }
+
+    private AsyncNotificationManagerProxyImpl() {
+        runAsync(
+                "AsyncNotificationManagerProxyImpl()",
+                () -> {
+                    mNotificationManager =
+                            NotificationManagerCompat.from(ContextUtils.getApplicationContext());
+                });
     }
 
     @Override
@@ -44,7 +63,7 @@ import java.util.function.Function;
     }
 
     @Override
-    public void cancel(String tag, int id) {
+    public void cancel(@Nullable String tag, int id) {
         runAsync(
                 "AsyncNotificationManagerProxyImpl.cancel(tag, id)",
                 () -> mNotificationManager.cancel(tag, id));
@@ -76,7 +95,8 @@ import java.util.function.Function;
         runAsyncAndReply(
                 "AsyncNotificationManagerProxyImpl.getNotificationChannels",
                 () -> mNotificationManager.getNotificationChannels(),
-                callback);
+                callback,
+                Collections.emptyList());
     }
 
     @Override
@@ -84,7 +104,8 @@ import java.util.function.Function;
         runAsyncAndReply(
                 "AsyncNotificationManagerProxyImpl.getNotificationChannelGroups",
                 () -> mNotificationManager.getNotificationChannelGroups(),
-                callback);
+                callback,
+                Collections.emptyList());
     }
 
     @Override
@@ -131,7 +152,8 @@ import java.util.function.Function;
         runAsyncAndReply(
                 "AsyncNotificationManagerProxyImpl.getNotificationChannel",
                 () -> mNotificationManager.getNotificationChannel(channelId),
-                callback);
+                callback,
+                null);
     }
 
     @Override
@@ -153,7 +175,8 @@ import java.util.function.Function;
                     }
                     return result;
                 },
-                callback);
+                callback,
+                Collections.emptyList());
     }
 
     /** Helper method to run an runnable inside a scoped event in background. */
@@ -162,15 +185,9 @@ import java.util.function.Function;
         AsyncTask.SERIAL_EXECUTOR.execute(
                 () -> {
                     try (TraceEvent te = TraceEvent.scoped(eventName)) {
-                        NotificationProxyUtils.recordNotificationEventHistogram(
-                                NotificationEvent.NO_CALLBACK_START);
                         runnable.run();
-                        NotificationProxyUtils.recordNotificationEventHistogram(
-                                NotificationEvent.NO_CALLBACK_SUCCESS);
                     } catch (Exception e) {
                         Log.e(TAG, "unable to run a runnable.", e);
-                        NotificationProxyUtils.recordNotificationEventHistogram(
-                                NotificationEvent.NO_CALLBACK_FAILED);
                     }
                 });
     }
@@ -179,38 +196,24 @@ import java.util.function.Function;
      * Helper method to run an runnable inside a scoped event in background, and executes callback
      * on the ui thread.
      */
-    // https://github.com/uber/NullAway/issues/1126#issuecomment-2619949211
-    @SuppressWarnings({"NoDynamicStringsInTraceEventCheck", "NullAway"})
+    @SuppressWarnings("NoDynamicStringsInTraceEventCheck")
+    @NullUnmarked // https://github.com/uber/NullAway/issues/1075
     private <T extends @Nullable Object> void runAsyncAndReply(
-            String eventName, Callable<T> callable, Callback<T> callback) {
+            String eventName, Callable<T> callable, Callback<T> callback, T defaultValue) {
         new AsyncTask<@Nullable T>() {
-            boolean mSuccess = true;
-
             @Override
             protected @Nullable T doInBackground() {
                 try (TraceEvent te = TraceEvent.scoped(eventName)) {
-                    NotificationProxyUtils.recordNotificationEventHistogram(
-                            NotificationEvent.HAS_CALLBACK_START);
                     return callable.call();
                 } catch (Exception e) {
                     Log.e(TAG, "Unable to call method.", e);
-                    mSuccess = false;
-                    return null;
+                    return defaultValue;
                 }
             }
 
             @Override
             protected void onPostExecute(@Nullable T result) {
-                // TODO(crbug.com/388114708): currently the callback is not called on failure to
-                // match the behavior of NotificationManangerproxyImpl. But this should be changed
-                // to always call the callback as it might cause undesirable consequences.
-                if (mSuccess) {
-                    callback.onResult(result);
-                }
-                NotificationProxyUtils.recordNotificationEventHistogram(
-                        mSuccess
-                                ? NotificationEvent.HAS_CALLBACK_SUCCESS
-                                : NotificationEvent.HAS_CALLBACK_FAILED);
+                callback.onResult(result);
             }
         }.executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
     }

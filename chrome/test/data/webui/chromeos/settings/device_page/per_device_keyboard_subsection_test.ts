@@ -56,16 +56,6 @@ suite('<settings-per-device-keyboard-subsection>', () => {
   }
 
   /**
-   * Override enableKeyboardBacklightControlInSettings feature flag.
-   * @param {!boolean} isEnabled
-   */
-  function setKeyboardBacklightControlEnabled(isEnabled: boolean): void {
-    loadTimeData.overrideValues({
-      enableKeyboardBacklightControlInSettings: isEnabled,
-    });
-  }
-
-  /**
    * Changes the external state of the keyboard.
    */
   function changeIsExternalState(isExternal: boolean): Promise<void> {
@@ -218,7 +208,7 @@ suite('<settings-per-device-keyboard-subsection>', () => {
     assert(remapKeysRow);
     assertEquals(
         'Customize keyboard keys',
-        remapKeysRow.shadowRoot!.querySelector('#label')!.textContent!.trim());
+        remapKeysRow.shadowRoot!.querySelector('#label')!.textContent.trim());
 
     const remapKeysSubLabel =
         remapKeysRow.shadowRoot!.querySelector('#subLabel');
@@ -227,7 +217,7 @@ suite('<settings-per-device-keyboard-subsection>', () => {
         2,
         Object.keys(subsection.get('keyboard.settings.modifierRemappings'))
             .length);
-    assertEquals('2 customized keys', remapKeysSubLabel.textContent!.trim());
+    assertEquals('2 customized keys', remapKeysSubLabel.textContent.trim());
 
     subsection.set('keyboard', fakeKeyboards[2]);
     await flushTasks();
@@ -235,7 +225,7 @@ suite('<settings-per-device-keyboard-subsection>', () => {
         1,
         Object.keys(subsection.get('keyboard.settings.modifierRemappings'))
             .length);
-    assertEquals('1 customized key', remapKeysSubLabel.textContent!.trim());
+    assertEquals('1 customized key', remapKeysSubLabel.textContent.trim());
 
     subsection.set('keyboard', fakeKeyboards[1]);
     await flushTasks();
@@ -243,14 +233,14 @@ suite('<settings-per-device-keyboard-subsection>', () => {
         0,
         Object.keys(subsection.get('keyboard.settings.modifierRemappings'))
             .length);
-    assertEquals('No keys customized', remapKeysSubLabel.textContent!.trim());
+    assertEquals('No keys customized', remapKeysSubLabel.textContent.trim());
     loadTimeData.overrideValues({
       enableAltClickAndSixPackCustomization: true,
     });
     subsection.set('keyboard', fakeKeyboards[3]);
     await flushTasks();
     // Expect 3 remapped six pack key shortcuts and 2 remapped modifier keys.
-    assertEquals('5 customized keys', remapKeysSubLabel.textContent!.trim());
+    assertEquals('5 customized keys', remapKeysSubLabel.textContent.trim());
   });
 
   /**
@@ -379,33 +369,7 @@ suite('<settings-per-device-keyboard-subsection>', () => {
       });
 
   test(
-      'Verify keyboard backlight control elements visibility with flag',
-      async () => {
-        setKeyboardBacklightControlEnabled(true);
-        await changeIsExternalState(false);
-
-        // Initially, elements should be visible.
-        assertTrue(isVisible(getElement('#rgbKeyboardControlLink')));
-        assertTrue(isVisible(getElement('#keyboardAutoBrightnessToggle')));
-        assertTrue(isVisible(getElement('#keyboardBrightnessSlider')));
-
-        // Disable keyboard backlight control flag and reinitialize.
-        setKeyboardBacklightControlEnabled(false);
-        await initializePerDeviceKeyboardSubsection(
-            fakeKeyboards, /*rgbKeyboardSupported=*/ true,
-            /*hasKeyboardBacklight=*/ true,
-            /*hasAmbientLightSensor=*/ true);
-        await changeIsExternalState(false);
-
-        // Elements should be hidden after flag is disabled.
-        assertFalse(isVisible(getElement('#rgbKeyboardControlLink')));
-        assertFalse(isVisible(getElement('#keyboardAutoBrightnessToggle')));
-        assertFalse(isVisible(getElement('#keyboardBrightnessSlider')));
-      });
-
-  test(
       'Verify elements visibility with keyboard backlight status', async () => {
-        setKeyboardBacklightControlEnabled(true);
         await initializePerDeviceKeyboardSubsection(
             fakeKeyboards, /*rgbKeyboardSupported=*/ true,
             /*hasKeyboardBacklight=*/ true,
@@ -425,7 +389,6 @@ suite('<settings-per-device-keyboard-subsection>', () => {
       });
 
   test('Verify keyboard auto brightness toggle visibility', async () => {
-    setKeyboardBacklightControlEnabled(true);
     await initializePerDeviceKeyboardSubsection(
         fakeKeyboards, /*rgbKeyboardSupported=*/ true,
         /*hasKeyboardBacklight=*/ true,
@@ -443,7 +406,6 @@ suite('<settings-per-device-keyboard-subsection>', () => {
   });
 
   test('Verify rgb keyboard control link visiblity', async () => {
-    setKeyboardBacklightControlEnabled(true);
     await initializePerDeviceKeyboardSubsection(
         fakeKeyboards, /*rgbKeyboardSupported=*/ true,
         /*hasKeyboardBacklight=*/ true, /*hasAmbientLightSensor=*/ true);

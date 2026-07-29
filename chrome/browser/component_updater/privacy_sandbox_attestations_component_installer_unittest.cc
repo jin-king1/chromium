@@ -14,12 +14,10 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/path_service.h"
-#include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/repeating_test_future.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_path_override.h"
-#include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "base/version.h"
@@ -29,7 +27,9 @@
 #include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations_histograms.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 
 namespace component_updater {
 
@@ -41,7 +41,10 @@ class PrivacySandboxAttestationsInstallerTest : public testing::Test {
 
  protected:
   using Installer = PrivacySandboxAttestationsComponentInstallerPolicy;
-  base::test::TaskEnvironment env_;
+  // The assignment of the parsed attestation list has a check that it must
+  // take place on the UI thread. The test needs to set up the browser task
+  // environment, otherwise the check will fail.
+  content::BrowserTaskEnvironment env_;
   base::ScopedTempDir component_install_dir_;
 };
 
@@ -105,28 +108,28 @@ TEST_F(PrivacySandboxAttestationsInstallerFeatureEnabledTest,
        VerifyInstallation) {
   PrivacySandboxAttestationsComponentInstallerPolicy policy(base::DoNothing());
 
-  ASSERT_FALSE(policy.VerifyInstallation(base::Value::Dict(),
+  ASSERT_FALSE(policy.VerifyInstallation(base::DictValue(),
                                          component_install_dir_.GetPath()));
 
   ASSERT_TRUE(WritePrivacySandboxAttestationsFileForTesting(
       component_install_dir_.GetPath(), "Attestations list"));
 
-  EXPECT_TRUE(policy.VerifyInstallation(base::Value::Dict(),
+  EXPECT_TRUE(policy.VerifyInstallation(base::DictValue(),
                                         component_install_dir_.GetPath()));
 }
 
 TEST_F(PrivacySandboxAttestationsInstallerFeatureEnabledTest, OnCustomInstall) {
   PrivacySandboxAttestationsComponentInstallerPolicy policy(base::DoNothing());
 
-  EXPECT_EQ(policy.OnCustomInstall(base::Value::Dict(), base::FilePath())
-                .result.code_,
-            0);
+  EXPECT_EQ(
+      policy.OnCustomInstall(base::DictValue(), base::FilePath()).result.code,
+      0);
 }
 
 TEST_F(PrivacySandboxAttestationsInstallerFeatureEnabledTest,
        RegisterIfFeatureEnabled) {
   component_updater::MockComponentUpdateService mock_update_service;
-  EXPECT_CALL(mock_update_service, RegisterComponent(testing::_)).Times(1);
+  EXPECT_CALL(mock_update_service, RegisterComponent(testing::_));
   RegisterPrivacySandboxAttestationsComponent(&mock_update_service);
 
   env_.RunUntilIdle();
@@ -142,7 +145,7 @@ TEST_F(PrivacySandboxAttestationsInstallerFeatureEnabledTest,
   ASSERT_TRUE(WritePrivacySandboxAttestationsFileForTesting(
       component_install_dir_.GetPath(), "Attestations list"));
   policy.ComponentReadyForTesting(version, component_install_dir_.GetPath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   auto [loaded_version, loaded_path, is_pre_installed] = future.Take();
   EXPECT_TRUE(loaded_version.IsValid());
@@ -162,12 +165,12 @@ TEST_F(PrivacySandboxAttestationsInstallerFeatureEnabledTest,
   ASSERT_TRUE(WritePrivacySandboxAttestationsFileForTesting(
       component_install_dir_.GetPath(), "Attestations list"));
   policy.ComponentReadyForTesting(
-      base::Version(), component_install_dir_.GetPath(), base::Value::Dict());
+      base::Version(), component_install_dir_.GetPath(), base::DictValue());
 
   // Second call with a valid version.
   policy.ComponentReadyForTesting(base::Version("0.0.1"),
                                   component_install_dir_.GetPath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   // Only the second call succeeded.
   auto [loaded_version, loaded_path, is_pre_installed] = future.Take();
@@ -186,14 +189,14 @@ TEST_F(PrivacySandboxAttestationsInstallerFeatureEnabledTest,
 
   // First call with an empty path.
   policy.ComponentReadyForTesting(base::Version("0.0.1"), base::FilePath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   // Second call with a valid path.
   ASSERT_TRUE(WritePrivacySandboxAttestationsFileForTesting(
       component_install_dir_.GetPath(), "Attestations list"));
   policy.ComponentReadyForTesting(base::Version("0.0.1"),
                                   component_install_dir_.GetPath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   // Only the second call succeeded.
   auto [loaded_version, loaded_path, is_pre_installed] = future.Take();
@@ -224,7 +227,7 @@ TEST_F(PrivacySandboxAttestationsInstallerFeatureEnabledTest,
 
   const base::Version version_1 = base::Version("0.0.1");
   policy.ComponentReadyForTesting(version_1, dir_v1.GetPath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   auto [loaded_version_1, loaded_path_v1, is_pre_installed_v1] = future.Take();
   EXPECT_TRUE(loaded_version_1.IsValid());
@@ -239,7 +242,7 @@ TEST_F(PrivacySandboxAttestationsInstallerFeatureEnabledTest,
       dir_v2.GetPath(), "Attestations list 0.02"));
   const base::Version version_2 = base::Version("0.0.2");
   policy.ComponentReadyForTesting(version_2, dir_v2.GetPath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   auto [loaded_version_2, loaded_path_v2, is_pre_installed_v2] = future.Take();
   EXPECT_TRUE(loaded_version_2.IsValid());
@@ -249,7 +252,7 @@ TEST_F(PrivacySandboxAttestationsInstallerFeatureEnabledTest,
   // Load the initial version again, callback `on_attestations_ready_` should
   // still be invoked.
   policy.ComponentReadyForTesting(version_1, dir_v1.GetPath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   auto [loaded_version_3, loaded_path_v3, is_pre_installed_v3] = future.Take();
   EXPECT_TRUE(loaded_version_3.IsValid());
@@ -308,7 +311,7 @@ TEST_P(PrivacySandboxAttestationsHistogramsTest,
       dir_v1.CreateUniqueTempDirUnderPath(component_install_dir_.GetPath()));
   const base::Version version_1 = base::Version("0.0.1");
   policy.ComponentReadyForTesting(version_1, dir_v1.GetPath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   histogram_tester_.ExpectTotalCount(GetHistogram(), 1);
 }
@@ -323,7 +326,7 @@ TEST_P(PrivacySandboxAttestationsHistogramsTest,
       dir_v1.CreateUniqueTempDirUnderPath(component_install_dir_.GetPath()));
   const base::Version version_1 = base::Version("0.0.1");
   policy.ComponentReadyForTesting(version_1, dir_v1.GetPath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   histogram_tester_.ExpectTotalCount(GetHistogram(), 1);
 
@@ -333,7 +336,7 @@ TEST_P(PrivacySandboxAttestationsHistogramsTest,
       dir_v2.CreateUniqueTempDirUnderPath(component_install_dir_.GetPath()));
   const base::Version version_2 = base::Version("0.0.2");
   policy.ComponentReadyForTesting(version_2, dir_v2.GetPath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
 
   histogram_tester_.ExpectTotalCount(GetHistogram(), 1);
 }
@@ -344,12 +347,12 @@ TEST_P(PrivacySandboxAttestationsHistogramsTest,
 
   // Try loading with an empty path.
   policy.ComponentReadyForTesting(base::Version("0.0.1"), base::FilePath(),
-                                  base::Value::Dict());
+                                  base::DictValue());
   histogram_tester_.ExpectTotalCount(GetHistogram(), 0);
 
   // Try loading with an invalid version.
   policy.ComponentReadyForTesting(
-      base::Version(), component_install_dir_.GetPath(), base::Value::Dict());
+      base::Version(), component_install_dir_.GetPath(), base::DictValue());
   histogram_tester_.ExpectTotalCount(GetHistogram(), 0);
 }
 
@@ -358,7 +361,7 @@ INSTANTIATE_TEST_SUITE_P(
     PrivacySandboxAttestationsHistogramsTest,
     testing::Combine(testing::Bool(), testing::Bool()),
     [](const testing::TestParamInfo<std::tuple<bool, bool>>& info) {
-      return base::StringPrintf(
+      return absl::StrFormat(
           "%s_%s",
           std::get<0>(info.param) ? "NonBrowserUIDisplayed" : "NormalStart",
           std::get<1>(info.param) ? "BrowserWindowFirstPaintRecorded"

@@ -22,22 +22,26 @@
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/timer/mock_timer.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
 #include "chrome/browser/ash/login/demo_mode/demo_components.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/ash/wallpaper_handlers/test_wallpaper_fetcher_delegate.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/prefs/browser_prefs.h"
+#include "chrome/browser/ui/ash/session/session_controller_client_impl.h"
 #include "chrome/browser/ui/ash/wallpaper/test_wallpaper_controller.h"
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_controller_client_impl.h"
 #include "chrome/test/base/browser_process_platform_part_test_api_chromeos.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 #include "components/component_updater/ash/fake_component_manager_ash.h"
 #include "components/language/core/browser/pref_names.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/user_manager/scoped_user_manager.h"
@@ -77,12 +81,14 @@ class DemoSessionTest : public testing::Test {
     ConciergeClient::InitializeFake(/*fake_cicerone_client=*/nullptr);
     DemoSession::SetDemoConfigForTesting(DemoSession::DemoModeConfig::kOnline);
     InitializeComponentManager();
-    session_manager_ = std::make_unique<session_manager::SessionManager>();
+    session_manager_ = std::make_unique<session_manager::SessionManager>(
+        std::make_unique<session_manager::FakeSessionManagerDelegate>());
     wallpaper_controller_client_ = std::make_unique<
         WallpaperControllerClientImpl>(
         CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
         std::make_unique<wallpaper_handlers::TestWallpaperFetcherDelegate>());
     wallpaper_controller_client_->InitForTesting(&test_wallpaper_controller_);
+    browser_controller_ = std::make_unique<ash::BrowserControllerImpl>();
     // TODO(b/321321392): Test loading growth campaigns at session start.
     scoped_feature_list_.InitAndDisableFeature(
         ash::features::kGrowthCampaignsInDemoMode);
@@ -92,6 +98,7 @@ class DemoSessionTest : public testing::Test {
     DemoSession::ShutDownIfInitialized();
     DemoSession::ResetDemoConfigForTesting();
 
+    browser_controller_.reset();
     wallpaper_controller_client_.reset();
     ConciergeClient::Shutdown();
 
@@ -140,6 +147,17 @@ class DemoSessionTest : public testing::Test {
     return profile;
   }
 
+  DemoSession* StartDemoSessionIfInDemoMode() {
+    return DemoSession::StartIfInDemoMode(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()
+            ->GetFeatures()
+            ->application_locale_storage(),
+        TestingBrowserProcess::GetGlobal()
+            ->platform_part()
+            ->component_manager_ash());
+  }
+
   raw_ptr<FakeComponentManagerAsh> component_manager_ash_ = nullptr;
   content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<session_manager::SessionManager> session_manager_;
@@ -153,12 +171,13 @@ class DemoSessionTest : public testing::Test {
 
  private:
   BrowserProcessPlatformPartTestApi browser_process_platform_part_test_api_;
+  std::unique_ptr<BrowserControllerImpl> browser_controller_;
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(DemoSessionTest, StartForDeviceInDemoMode) {
   EXPECT_FALSE(DemoSession::Get());
-  DemoSession* demo_session = DemoSession::StartIfInDemoMode();
+  DemoSession* demo_session = StartDemoSessionIfInDemoMode();
   ASSERT_TRUE(demo_session);
   EXPECT_TRUE(demo_session->started());
   EXPECT_EQ(demo_session, DemoSession::Get());
@@ -167,21 +186,21 @@ TEST_F(DemoSessionTest, StartForDeviceInDemoMode) {
 TEST_F(DemoSessionTest, StartForDemoDeviceNotInDemoMode) {
   cros_settings_test_helper_.InstallAttributes()->SetConsumerOwned();
   EXPECT_FALSE(DemoSession::Get());
-  EXPECT_FALSE(DemoSession::StartIfInDemoMode());
+  EXPECT_FALSE(StartDemoSessionIfInDemoMode());
   EXPECT_FALSE(DemoSession::Get());
 
   EXPECT_FALSE(component_manager_ash_->HasPendingInstall(kResourcesComponent));
 }
 
 TEST_F(DemoSessionTest, ShutdownResetsInstance) {
-  ASSERT_TRUE(DemoSession::StartIfInDemoMode());
+  ASSERT_TRUE(StartDemoSessionIfInDemoMode());
   EXPECT_TRUE(DemoSession::Get());
   DemoSession::ShutDownIfInitialized();
   EXPECT_FALSE(DemoSession::Get());
 }
 
 TEST_F(DemoSessionTest, LoginDemoSession) {
-  DemoSession* demo_session = DemoSession::StartIfInDemoMode();
+  DemoSession* demo_session = StartDemoSessionIfInDemoMode();
   ASSERT_TRUE(demo_session);
   // There should be no user action DemoMode.DemoSessionStarts reported
   // before the user login
@@ -194,8 +213,14 @@ TEST_F(DemoSessionTest, LoginDemoSession) {
             user_action_tester_.GetActionCount("DemoMode.DemoSessionStarts"));
 }
 
+TEST_F(DemoSessionTest, CannotLockScreen) {
+  ASSERT_TRUE(StartDemoSessionIfInDemoMode());
+  EXPECT_TRUE(DemoSession::Get());
+  EXPECT_FALSE(SessionControllerClientImpl::CanLockScreen());
+}
+
 TEST_F(DemoSessionTest, ShowAndRemoveSplashScreen) {
-  DemoSession* demo_session = DemoSession::StartIfInDemoMode();
+  DemoSession* demo_session = StartDemoSessionIfInDemoMode();
   ASSERT_TRUE(demo_session);
 
   std::unique_ptr<base::MockOneShotTimer> timer =
@@ -245,7 +270,7 @@ TEST_F(DemoSessionTest, ShowAndRemoveSplashScreen) {
 }
 
 TEST_F(DemoSessionTest, RemoveSplashScreenWhenTimeout) {
-  DemoSession* demo_session = DemoSession::StartIfInDemoMode();
+  DemoSession* demo_session = StartDemoSessionIfInDemoMode();
   ASSERT_TRUE(demo_session);
 
   std::unique_ptr<base::MockOneShotTimer> timer =
@@ -298,7 +323,7 @@ TEST_F(DemoSessionTest, RemoveSplashScreenWhenTimeout) {
 using DemoSessionLocaleTest = DemoSessionTest;
 
 TEST_F(DemoSessionLocaleTest, InitializeDefaultLocale) {
-  DemoSession* demo_session = DemoSession::StartIfInDemoMode();
+  DemoSession* demo_session = StartDemoSessionIfInDemoMode();
   ASSERT_TRUE(demo_session);
 
   TestingProfile* profile = LoginDemoUser();
@@ -317,7 +342,7 @@ TEST_F(DemoSessionLocaleTest, InitializeDefaultLocale) {
 }
 
 TEST_F(DemoSessionLocaleTest, DefaultAndCurrentLocaleDifferent) {
-  DemoSession* demo_session = DemoSession::StartIfInDemoMode();
+  DemoSession* demo_session = StartDemoSessionIfInDemoMode();
   ASSERT_TRUE(demo_session);
 
   TestingProfile* profile = LoginDemoUser();
@@ -337,7 +362,7 @@ TEST_F(DemoSessionLocaleTest, DefaultAndCurrentLocaleDifferent) {
 }
 
 TEST_F(DemoSessionLocaleTest, DefaultAndCurrentLocaleIdentical) {
-  DemoSession* demo_session = DemoSession::StartIfInDemoMode();
+  DemoSession* demo_session = StartDemoSessionIfInDemoMode();
   ASSERT_TRUE(demo_session);
 
   TestingProfile* profile = LoginDemoUser();

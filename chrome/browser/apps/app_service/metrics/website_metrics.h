@@ -18,8 +18,9 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_list_observer.h"
 #include "chrome/browser/ui/browser_tab_strip_tracker.h"
+#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_service_observer.h"
@@ -33,6 +34,10 @@
 #include "ui/wm/public/activation_change_observer.h"
 #include "ui/wm/public/activation_client.h"
 #include "url/gurl.h"
+
+namespace base {
+class TickClock;
+}
 
 class Browser;
 class Profile;
@@ -54,7 +59,7 @@ extern const char kPromotableKey[];
 
 // WebsiteMetrics monitors creation/deletion of Browser and its
 // TabStripModel to record the website usage time metrics.
-class WebsiteMetrics : public BrowserListObserver,
+class WebsiteMetrics : public BrowserCollectionObserver,
                        public TabStripModelObserver,
                        public aura::WindowObserver,
                        public wm::ActivationChangeObserver,
@@ -96,15 +101,17 @@ class WebsiteMetrics : public BrowserListObserver,
     virtual void OnWebsiteMetricsDestroyed() {}
   };
 
-  WebsiteMetrics(Profile* profile, int user_type_by_device_type);
+  WebsiteMetrics(Profile* profile,
+                 int user_type_by_device_type,
+                 const base::TickClock& tick_clock);
 
   WebsiteMetrics(const WebsiteMetrics&) = delete;
   WebsiteMetrics& operator=(const WebsiteMetrics&) = delete;
 
   ~WebsiteMetrics() override;
 
-  // BrowserListObserver overrides:
-  void OnBrowserAdded(Browser* browser) override;
+  // BrowserCollectionObserver overrides:
+  void OnBrowserCreated(BrowserWindowInterface* browser) override;
 
   // TabStripModelObserver overrides:
   void OnTabStripModelChanged(
@@ -186,13 +193,13 @@ class WebsiteMetrics : public BrowserListObserver,
     bool is_activated = false;
     bool promotable = false;
 
-    // Converts the struct UsageTime to base::Value::Dict, e.g.:
+    // Converts the struct UsageTime to base::DictValue, e.g.:
     // {
     //    "time": "3600",
     //    "url_content": "scope",
     //    "promotable": "false",
     // }
-    base::Value::Dict ConvertToDict() const;
+    base::DictValue ConvertToDict() const;
   };
 
   // Observes the root window's activation client for the OnWindowActivated
@@ -262,6 +269,9 @@ class WebsiteMetrics : public BrowserListObserver,
 
   const raw_ptr<Profile> profile_;
 
+  base::ScopedObservation<ProfileBrowserCollection, BrowserCollectionObserver>
+      browser_collection_observation_{this};
+
   BrowserTabStripTracker browser_tab_strip_tracker_;
 
   // The map from the window to the active tab contents.
@@ -309,6 +319,8 @@ class WebsiteMetrics : public BrowserListObserver,
       history_observation_{this};
 
   base::ObserverList<Observer> observers_;
+
+  const raw_ref<const base::TickClock> tick_clock_;
 
   base::WeakPtrFactory<WebsiteMetrics> weak_factory_{this};
 };

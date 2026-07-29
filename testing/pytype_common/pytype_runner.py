@@ -47,14 +47,20 @@ def report_results(test_name: str,
     if output_file:
         report_json_results(output_file)
     if sink_client:
+        # Source comes from:
+        # luci/resultdb/sink/proto/v1/test_result.proto
+        struct_test_dict = {
+            'coarseName': None,  # Not used for single tests.
+            'fineName': None,  # Not used for single tests.
+            'caseNameComponents': ['*fixture'],
+        }
         sink_client.Post(test_id=test_name,
                          status=status,
                          duration=(duration * 1000),
                          test_log=log,
                          test_file=test_location,
-                         failure_reason=failure_reason)
-
-
+                         failure_reason=failure_reason,
+                         test_id_structured=struct_test_dict)
 # pylint: enable=too-many-arguments
 
 
@@ -82,9 +88,14 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def run_pytype(test_name: str, test_location: str,
-               files_to_check: typing.Iterable[str],
-               python_paths: typing.Iterable[str], cwd: str) -> int:
+def run_pytype(  # pylint: disable=too-many-arguments
+    test_name: str,
+    test_location: str,
+    files_to_check: typing.Iterable[str],
+    python_paths: typing.Iterable[str],
+    cwd: str,
+    files_to_exclude: typing.Optional[typing.Iterable[str]] = None,
+) -> int:
     """Runs pytype on a given list of files/directories.
 
     Args:
@@ -97,6 +108,7 @@ def run_pytype(test_name: str, test_location: str,
         python_paths: Any paths that should be set as PYTHONPATH when running
             pytype.
         cwd: The directory that pytype should be run from.
+        files_to_exclude: Files and directories to exclude from pytype analysis.
 
     Returns:
         0 on success, non-zero on failure.
@@ -140,6 +152,9 @@ def run_pytype(test_name: str, test_location: str,
         'auto',
     ]
     pytype_cmd.extend(files_to_check)
+    if files_to_exclude:
+        pytype_cmd.append('--exclude')
+        pytype_cmd.extend(files_to_exclude)
 
     if sink_client:
         stdout_handle = subprocess.PIPE

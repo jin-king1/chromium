@@ -89,27 +89,22 @@ export class SettingsKerberosAccountsSubpageElement extends
         type: String,
         value: '',
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kAddKerberosTicketV2,
-          Setting.kRemoveKerberosTicketV2,
-          Setting.kSetActiveKerberosTicketV2,
-        ]),
-      },
     };
   }
 
-  private accountToastText_: string;
-  private accounts_: KerberosAccount[];
-  private addAccountsAllowed_: boolean;
-  private isDarkModeActive_: boolean;
-  private selectedAccount_: KerberosAccount|null;
-  private showAddAccountDialog_: boolean;
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kAddKerberosTicketV2,
+    Setting.kRemoveKerberosTicketV2,
+    Setting.kSetActiveKerberosTicketV2,
+  ]);
+
+  declare private accountToastText_: string;
+  declare private accounts_: KerberosAccount[];
+  declare private addAccountsAllowed_: boolean;
+  declare private isDarkModeActive_: boolean;
+  declare private selectedAccount_: KerberosAccount|null;
+  declare private showAddAccountDialog_: boolean;
 
   private browserProxy_: KerberosAccountsBrowserProxy;
 

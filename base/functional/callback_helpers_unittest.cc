@@ -4,11 +4,11 @@
 
 #include "base/functional/callback_helpers.h"
 
-#include <functional>
 #include <type_traits>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ref.h"
 #include "base/test/gtest_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -101,33 +101,6 @@ NON_VOID_RETURN_CALLBACK_TAG_TEST(base::RepeatingCallback,
 
 #undef VOID_RETURN_CALLBACK_TAG_TEST
 #undef NON_VOID_RETURN_CALLBACK_TAG_TEST
-
-TEST(CallbackHelpersTest, IsBaseCallback) {
-  // Check that base::{Once,Repeating}Closures and references to them are
-  // considered base::{Once,Repeating}Callbacks.
-  static_assert(base::IsBaseCallback<base::OnceClosure>);
-  static_assert(base::IsBaseCallback<base::RepeatingClosure>);
-  static_assert(base::IsBaseCallback<base::OnceClosure&&>);
-  static_assert(base::IsBaseCallback<const base::RepeatingClosure&>);
-
-  // Check that base::{Once, Repeating}Callbacks with a given RunType and
-  // references to them are considered base::{Once, Repeating}Callbacks.
-  static_assert(base::IsBaseCallback<base::OnceCallback<int(int)>>);
-  static_assert(base::IsBaseCallback<base::RepeatingCallback<int(int)>>);
-  static_assert(base::IsBaseCallback<base::OnceCallback<int(int)>&&>);
-  static_assert(base::IsBaseCallback<const base::RepeatingCallback<int(int)>&>);
-
-  // Check that POD types are not considered base::{Once, Repeating}Callbacks.
-  static_assert(!base::IsBaseCallback<bool>);
-  static_assert(!base::IsBaseCallback<int>);
-  static_assert(!base::IsBaseCallback<double>);
-
-  // Check that the closely related std::function is not considered a
-  // base::{Once, Repeating}Callback.
-  static_assert(!base::IsBaseCallback<std::function<void()>>);
-  static_assert(!base::IsBaseCallback<const std::function<void()>&>);
-  static_assert(!base::IsBaseCallback<std::function<void()>&&>);
-}
 
 void Increment(int* value) {
   (*value)++;
@@ -262,9 +235,7 @@ TEST(CallbackHelpersTest, SplitOnceCallback_FirstCallback) {
   std::move(split.first).Run(&count);
   EXPECT_EQ(1, count);
 
-#if GTEST_HAS_DEATH_TEST
   EXPECT_CHECK_DEATH(std::move(split.second).Run(&count));
-#endif  // GTEST_HAS_DEATH_TEST
 }
 
 TEST(CallbackHelpersTest, SplitOnceCallback_SecondCallback) {
@@ -426,6 +397,68 @@ TEST(CallbackHelpersTest, ReturnValueOnce) {
   static_assert(std::is_same_v<decltype(unique_ptr_factory),
                                base::OnceCallback<std::unique_ptr<int>(void)>>);
   EXPECT_EQ(*std::move(unique_ptr_factory).Run(), 42);
+}
+
+TEST(CallbackHelpersTest, ReturnValueRepeating) {
+  // Check that copyable types are supported and the callback can be run
+  // multiple times.
+  auto string_factory = base::ReturnValueRepeating(std::string("test"));
+  static_assert(std::is_same_v<decltype(string_factory),
+                               base::RepeatingCallback<std::string(void)>>);
+  EXPECT_EQ(string_factory.Run(), "test");
+  EXPECT_EQ(string_factory.Run(), "test");
+}
+
+TEST(CallbackHelpersTest, DoNothingWithBoundArgs) {
+  class DestructionObserver {
+   public:
+    explicit DestructionObserver(bool& destroyed) : destroyed_(destroyed) {}
+
+    ~DestructionObserver() { *destroyed_ = true; }
+
+   private:
+    const raw_ref<bool> destroyed_;
+  };
+
+  // OnceCallback construction from DoNothingWithBoundArgs.
+  {
+    bool was_destroyed = false;
+    base::OnceCallback<void(int)> cb(
+        base::DoNothingWithBoundArgs(DestructionObserver(was_destroyed)));
+    ASSERT_TRUE(cb);
+    std::move(cb).Run(4);
+    EXPECT_TRUE(was_destroyed);
+  }
+
+  // OnceCallback assignment from DoNothingWithBoundArgs.
+  {
+    bool was_destroyed = false;
+    base::OnceCallback<void(int)> cb;
+    cb = base::DoNothingWithBoundArgs(DestructionObserver(was_destroyed));
+    ASSERT_TRUE(cb);
+    std::move(cb).Run(4);
+    EXPECT_TRUE(was_destroyed);
+  }
+
+  // RepeatingCallback construction from DoNothingWithBoundArgs.
+  {
+    bool was_destroyed = false;
+    base::RepeatingCallback<void(int)> cb(
+        base::DoNothingWithBoundArgs(DestructionObserver(was_destroyed)));
+    ASSERT_TRUE(cb);
+    cb.Run(4);
+    EXPECT_TRUE(was_destroyed);
+  }
+
+  // RepeatingCallback assignment from DoNothingWithBoundArgs.
+  {
+    bool was_destroyed = false;
+    base::RepeatingCallback<void(int)> cb;
+    cb = base::DoNothingWithBoundArgs(DestructionObserver(was_destroyed));
+    ASSERT_TRUE(cb);
+    cb.Run(4);
+    EXPECT_TRUE(was_destroyed);
+  }
 }
 
 }  // namespace

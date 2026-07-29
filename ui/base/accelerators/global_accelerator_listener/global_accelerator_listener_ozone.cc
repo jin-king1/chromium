@@ -4,16 +4,20 @@
 
 #include "ui/base/accelerators/global_accelerator_listener/global_accelerator_listener_ozone.h"
 
-#include "base/containers/contains.h"
 #include "base/memory/ptr_util.h"
 #include "base/no_destructor.h"
 #include "build/config/linux/dbus/buildflags.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/ozone/public/ozone_platform.h"
 
 #if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
+#include "base/environment.h"
 #include "base/feature_list.h"
+#include "base/nix/xdg_util.h"
+#include "base/version_info/nix/version_extra_utils.h"
+#include "build/branding_buildflags.h"
 #include "ui/base/accelerators/global_accelerator_listener/global_accelerator_listener_linux.h"
 #endif
 
@@ -21,10 +25,17 @@ using content::BrowserThread;
 
 namespace {
 #if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
-BASE_FEATURE(kGlobalShortcutsPortal,
-             "GlobalShortcutsPortal",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif
+BASE_FEATURE(kGlobalShortcutsPortal, base::FEATURE_ENABLED_BY_DEFAULT);
+
+constexpr char kSessionSuffix[] = "_global_shortcuts";
+
+std::string GetSessionName() {
+  // The session name must not ever change, otherwise user registered
+  // shortcuts will be lost.
+  auto env = base::Environment::Create();
+  return version_info::nix::GetSessionNamePrefix(*env) + kSessionSuffix;
+}
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
 }  // namespace
 
 namespace ui {
@@ -39,9 +50,20 @@ GlobalAcceleratorListener* GlobalAcceleratorListener::GetInstance() {
   }
 
 #if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
-  if (base::FeatureList::IsEnabled(kGlobalShortcutsPortal)) {
+  // ListShortcuts on GNOME will return an empty list when the session is
+  // created, making this class incorrectly believe it must rebind all
+  // shortcuts, leading to a dialog shown on every browser start.
+  // https://gitlab.gnome.org/GNOME/xdg-desktop-portal-gnome/-/issues/185
+  auto env = base::Environment::Create();
+  const bool is_gnome = base::nix::GetDesktopEnvironment(env.get()) ==
+                        base::nix::DESKTOP_ENVIRONMENT_GNOME;
+  const bool should_create_listener =
+      base::FeatureList::IsEnabled(kGlobalShortcutsPortal) &&
+      (!is_gnome || base::FeatureList::IsEnabled(
+                        features::kGlobalShortcutsPortalPreferredTrigger));
+  if (should_create_listener) {
     static GlobalAcceleratorListenerLinux* const linux_instance =
-        new GlobalAcceleratorListenerLinux(nullptr);
+        new GlobalAcceleratorListenerLinux(nullptr, GetSessionName());
     return linux_instance;
   }
 #endif
@@ -102,7 +124,7 @@ void GlobalAcceleratorListenerOzone::StopListening() {
 
 bool GlobalAcceleratorListenerOzone::StartListeningForAccelerator(
     const ui::Accelerator& accelerator) {
-  DCHECK(!base::Contains(registered_hot_keys_, accelerator));
+  DCHECK(!registered_hot_keys_.contains(accelerator));
 
   if (!platform_global_shortcut_listener_) {
     return false;
@@ -120,7 +142,7 @@ bool GlobalAcceleratorListenerOzone::StartListeningForAccelerator(
 
 void GlobalAcceleratorListenerOzone::StopListeningForAccelerator(
     const ui::Accelerator& accelerator) {
-  DCHECK(base::Contains(registered_hot_keys_, accelerator));
+  DCHECK(registered_hot_keys_.contains(accelerator));
   // Otherwise how could the accelerator be registered?
   DCHECK(platform_global_shortcut_listener_);
 

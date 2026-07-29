@@ -22,6 +22,7 @@
 #include "components/exo/display.h"
 #include "components/exo/shell_surface.h"
 #include "components/exo/test/exo_test_base.h"
+#include "components/exo/test/mock_security_delegate.h"
 #include "components/exo/test/shell_surface_builder.h"
 #include "components/exo/wayland/server_util.h"
 #include "ui/aura/window_delegate.h"
@@ -272,7 +273,7 @@ TEST_F(WaylandRemoteShellTest, DisplayZoom) {
   auto* surface = shell_surface->root_surface();
   auto* window = shell_surface->GetWidget()->GetNativeWindow();
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(window);
+      display::Screen::Get()->GetDisplayNearestWindow(window);
 
   ResetEventRecords();
   ash::Shell::Get()->display_manager()->ZoomDisplay(display.id(), /*up=*/true);
@@ -334,7 +335,7 @@ TEST_F(WaylandRemoteShellTest, DisplayRotation) {
   auto* surface = shell_surface->root_surface();
   auto* window = shell_surface->GetWidget()->GetNativeWindow();
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(window);
+      display::Screen::Get()->GetDisplayNearestWindow(window);
 
   ResetEventRecords();
   ash::Shell::Get()->display_manager()->SetDisplayRotation(
@@ -383,7 +384,7 @@ TEST_F(WaylandRemoteShellTest, DisplayRotation) {
   const auto bounds_change = remote_shell_requested_bounds_changes()[0];
   EXPECT_EQ(display.id(), bounds_change.display_id);
   const display::Display& rotated_display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(window);
+      display::Screen::Get()->GetDisplayNearestWindow(window);
   const int expected_x =
       rotated_display.bounds().right() - right_inset - kDefaultWindowLength;
   const int expected_y =
@@ -412,7 +413,7 @@ TEST_F(WaylandRemoteShellTest, DisplayRotationInTabletMode) {
   auto* const widget = shell_surface->GetWidget();
   auto* const window = widget->GetNativeWindow();
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(window);
+      display::Screen::Get()->GetDisplayNearestWindow(window);
 
   // Snap window.
   ash::WindowSnapWMEvent event(ash::WM_EVENT_SNAP_SECONDARY);
@@ -697,6 +698,36 @@ TEST_F(WaylandRemoteShellTest, DeviceScaleFactorChange) {
   EXPECT_EQ(window->GetBoundsInRootWindow(), bounds_in_dp);
   EXPECT_EQ(window->delegate()->GetMinimumSize(), min_size_in_dp);
   EXPECT_EQ(window->delegate()->GetMaximumSize(), max_size_in_dp);
+}
+
+TEST_F(WaylandRemoteShellTest, ActivateRespectsSecurityDelegate) {
+  wl_resource* v1_remote_surface =
+      wl_resource_create(wl_client(), &zcr_remote_surface_v1_interface, 1, 0);
+
+  test::MockSecurityDelegate mock_security_delegate;
+
+  auto shell_surface =
+      exo::test::ShellSurfaceBuilder({256, 256})
+          .SetDelegate(shell()->CreateShellSurfaceDelegate(v1_remote_surface))
+          .SetSecurityDelegate(&mock_security_delegate)
+          .BuildClientControlledShellSurface();
+
+  wl_resource_set_user_data(v1_remote_surface, shell_surface.get());
+
+  // Expect CanSelfActivate to be called once and return false.
+  EXPECT_CALL(mock_security_delegate, CanSelfActivate(testing::_))
+      .WillOnce(testing::Return(false));
+
+  shell_surface->GetWidget()->Deactivate();
+  EXPECT_FALSE(shell_surface->GetWidget()->IsActive());
+
+  zcr_remote_shell::remote_surface_activate(wl_client(), v1_remote_surface, 0);
+
+  // Verify that the window is NOT active.
+  EXPECT_FALSE(shell_surface->GetWidget()->IsActive());
+
+  shell_surface.reset();
+  wl_resource_destroy(v1_remote_surface);
 }
 
 }  // namespace wayland

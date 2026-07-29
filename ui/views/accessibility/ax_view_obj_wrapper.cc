@@ -57,15 +57,19 @@ void AXViewObjWrapper::GetChildren(
     return;
   }
 
+  const auto& virtual_children = view_accessibility.virtual_children();
+  if (!virtual_children.empty()) {
+    for (const auto& child : virtual_children) {
+      out_children->push_back(child->GetOrCreateWrapper(aura_obj_cache_));
+    }
+    return;
+  }
+
   // TODO(dtseng): Need to handle |Widget| child of |View|.
   for (View* child : view_->children()) {
     if (child->GetVisible()) {
       out_children->push_back(aura_obj_cache_->GetOrCreate(child));
     }
-  }
-
-  for (const auto& child : view_accessibility.virtual_children()) {
-    out_children->push_back(child->GetOrCreateWrapper(aura_obj_cache_));
   }
 }
 
@@ -97,6 +101,9 @@ ui::AXNodeID AXViewObjWrapper::GetUniqueId() const {
 }
 
 bool AXViewObjWrapper::HandleAccessibleAction(const ui::AXActionData& action) {
+  if (!view_->GetWidget()) {
+    return false;
+  }
   return view_->HandleAccessibleAction(action);
 }
 

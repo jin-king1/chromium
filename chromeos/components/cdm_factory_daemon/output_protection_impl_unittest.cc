@@ -2,17 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromeos/components/cdm_factory_daemon/output_protection_impl.h"
 
+#include <array>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "base/test/mock_callback.h"
 #include "chromeos/components/cdm_factory_daemon/mojom/output_protection.mojom.h"
 #include "content/public/test/browser_task_environment.h"
@@ -20,6 +18,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/display/manager/test/fake_display_snapshot.h"
+#include "ui/gfx/geometry/size.h"
 
 using chromeos::cdm::mojom::OutputProtection;
 using testing::_;
@@ -27,8 +26,13 @@ using testing::Return;
 using testing::ReturnRef;
 
 constexpr uint64_t kFakeClientId = 1;
-constexpr int64_t kDisplayIds[] = {123, 234, 345, 456};
-const display::DisplayMode kDisplayMode({1366, 768}, false, 60.0f);
+constexpr std::array<int64_t, 4> kDisplayIds = {123, 234, 345, 456};
+
+const display::DisplayMode& GetDisplayMode() {
+  static const base::NoDestructor<display::DisplayMode> val(
+      gfx::Size(1366, 768), false, 60.0f);
+  return *val;
+}
 
 namespace chromeos {
 
@@ -77,16 +81,16 @@ class OutputProtectionImplTest : public testing::Test {
         std::move(delegate));
     task_environment_.RunUntilIdle();
 
-    display::DisplayConnectionType conn_types[] = {
+    constexpr std::array conn_types = {
         display::DISPLAY_CONNECTION_TYPE_INTERNAL,
         display::DISPLAY_CONNECTION_TYPE_HDMI,
         display::DISPLAY_CONNECTION_TYPE_DISPLAYPORT,
         display::DISPLAY_CONNECTION_TYPE_VGA};
-    for (size_t i = 0; i < std::size(kDisplayIds); ++i) {
+    for (size_t i = 0; i < kDisplayIds.size(); ++i) {
       displays_[i] = display::FakeDisplaySnapshot::Builder()
                          .SetId(kDisplayIds[i])
                          .SetType(conn_types[i])
-                         .SetCurrentMode(kDisplayMode.Clone())
+                         .SetCurrentMode(GetDisplayMode().Clone())
                          .Build();
     }
 
@@ -97,7 +101,7 @@ class OutputProtectionImplTest : public testing::Test {
   }
 
   void UpdateDisplays(size_t count) {
-    ASSERT_LE(count, std::size(displays_));
+    ASSERT_LE(count, displays_.size());
 
     cached_displays_.clear();
     for (size_t i = 0; i < count; ++i)
@@ -141,7 +145,8 @@ class OutputProtectionImplTest : public testing::Test {
   mojo::Remote<OutputProtection> output_protection_mojo_;
   raw_ptr<MockDisplaySystemDelegate, AcrossTasksDanglingUntriaged>
       delegate_;  // Not owned.
-  std::unique_ptr<display::DisplaySnapshot> displays_[std::size(kDisplayIds)];
+  std::array<std::unique_ptr<display::DisplaySnapshot>, kDisplayIds.size()>
+      displays_;
   std::vector<raw_ptr<display::DisplaySnapshot, VectorExperimental>>
       cached_displays_;
 
@@ -198,16 +203,16 @@ TEST_F(OutputProtectionImplTest, ApplyDoesNotAggregateTypes) {
   UpdateDisplays(1);
   EXPECT_CALL(*delegate_, cached_displays())
       .WillOnce(ReturnRef(cached_displays_));
-  OutputProtection::ProtectionType applied_types[] = {
+  constexpr std::array applied_types = {
       OutputProtection::ProtectionType::HDCP_TYPE_0,
       OutputProtection::ProtectionType::HDCP_TYPE_1,
       OutputProtection::ProtectionType::NONE};
-  display::ContentProtectionMethod expected_types[] = {
+  constexpr std::array expected_types = {
       display::CONTENT_PROTECTION_METHOD_HDCP_TYPE_0,
       display::CONTENT_PROTECTION_METHOD_HDCP_TYPE_1,
       display::CONTENT_PROTECTION_METHOD_NONE};
 
-  for (size_t i = 0; i < std::size(applied_types); ++i) {
+  for (size_t i = 0; i < applied_types.size(); ++i) {
     ExpectProtectionCall(kDisplayIds[0], expected_types[i], true);
 
     base::MockCallback<OutputProtection::EnableProtectionCallback>

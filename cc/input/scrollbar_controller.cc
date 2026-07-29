@@ -90,22 +90,35 @@ InputHandlerPointerResult ScrollbarController::HandlePointerDown(
       GetScrollbarPartFromPointerDown(position_in_widget);
   const bool perform_jump_click_on_track =
       scrollbar->JumpOnTrackClick() != jump_key_modifier;
+
+  // IMPORTANT: Assign last_known_pointer_position_ BEFORE
+  // GetScrollDeltaForScrollbarPart. When the clicked part is a track
+  // (kBackTrack / kForwardTrack) AND perform_jump_click_on_track is true, the
+  // call chain reaches GetScrollDistanceForAbsoluteJump, which reads
+  // last_known_pointer_position_ to compute the pointer’s position relative to
+  // the scrollbar.
+  last_known_pointer_position_ = position_in_widget;
+
   scroll_result.scroll_delta = GetScrollDeltaForScrollbarPart(
       scrollbar_part, perform_jump_click_on_track);
-  last_known_pointer_position_ = position_in_widget;
+
   scrollbar_scroll_is_active_ = true;
   scroll_result.scroll_units =
       Granularity(scrollbar_part, perform_jump_click_on_track);
 
-  // Initialize drag state if either the scrollbar thumb is being dragged OR the
-  // user has initiated a jump click (since the thumb would have jumped under
-  // the pointer).
-  if (scrollbar_part == ScrollbarPart::kThumb || perform_jump_click_on_track) {
+  // Initialize drag state if either the scrollbar thumb is being dragged or the
+  // user has initiated a jump click on a track part.
+  const bool trigger_jump_click_on_track_part =
+      perform_jump_click_on_track &&
+      (scrollbar_part == ScrollbarPart::kBackTrack ||
+       scrollbar_part == ScrollbarPart::kForwardTrack);
+  if (scrollbar_part == ScrollbarPart::kThumb ||
+      trigger_jump_click_on_track_part) {
     drag_state_ = DragState();
     bool clipped = false;
 
     drag_state_->drag_origin =
-        perform_jump_click_on_track
+        trigger_jump_click_on_track_part
             ? DragOriginForJumpClick(scrollbar)
             : GetScrollbarRelativePosition(position_in_widget, &clipped);
 
@@ -154,8 +167,8 @@ gfx::PointF ScrollbarController::DragOriginForJumpClick(
   // as well as for snapping back to origin if the user moves their mouse away.
   gfx::Rect thumb = scrollbar->ComputeThumbQuadRect();
   return scrollbar->orientation() == ScrollbarOrientation::kHorizontal
-             ? gfx::PointF(thumb.x() + thumb.width() / 2, 0)
-             : gfx::PointF(0, thumb.y() + thumb.height() / 2);
+             ? gfx::PointF(thumb.x() + thumb.width() / 2.0f, 0)
+             : gfx::PointF(0, thumb.y() + thumb.height() / 2.0f);
 }
 
 bool ScrollbarController::SnapToDragOrigin(
@@ -229,8 +242,8 @@ ui::ScrollGranularity ScrollbarController::Granularity(
     return ui::ScrollGranularity::kScrollByPrecisePixel;
   }
 
-  // TODO(arakeri): This needs to be updated to kLine once cc implements
-  // handling it. crbug.com/959441
+  // TODO(crbug.com/41456637): This needs to be updated to kLine once cc
+  // implements handling it.
   return ui::ScrollGranularity::kScrollByPixel;
 }
 
@@ -644,7 +657,7 @@ InputHandlerPointerResult ScrollbarController::HandlePointerUp(
     scroll_result.type = PointerResultType::kScrollbarScroll;
   }
 
-  // TODO(arakeri): This needs to be moved to ScrollOffsetAnimationsImpl as it
+  // TODO(gastonr): This needs to be moved to ScrollOffsetAnimationsImpl as it
   // has knowledge about what type of animation is running. crbug.com/976353
   // Only abort the animation if it is an "autoscroll" animation.
   if (autoscroll_state_.has_value() &&
@@ -714,9 +727,22 @@ float ScrollbarController::GetScrollDistanceForScrollbarPart(
         scroll_delta = GetScrollDistanceForAbsoluteJump();
         break;
       }
-      // TODO(savella) Use snapport length instead of viewport length to match
-      // main thread behaviour. See https://crbug.com/1098383.
-      scroll_delta = GetViewportLength() * kMinFractionToStepWhenPaging;
+      int snapport_length = GetViewportLength();
+      const ScrollbarLayerImplBase* scrollbar = ScrollbarLayer();
+      const ScrollNode* target_node =
+          layer_tree_host_impl_->active_tree()
+              ->property_trees()
+              ->scroll_tree()
+              .FindNodeFromElementId(scrollbar->scroll_element_id());
+      if (target_node->snap_container_data) {
+        const gfx::RectF snapport =
+            target_node->snap_container_data.value().rect();
+        snapport_length =
+            scrollbar->orientation() == ScrollbarOrientation::kHorizontal
+                ? snapport.x()
+                : snapport.y();
+      }
+      scroll_delta = ScrollUtils::CalculatePageStep(snapport_length);
       break;
     }
     default:

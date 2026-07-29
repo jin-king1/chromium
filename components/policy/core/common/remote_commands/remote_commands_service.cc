@@ -10,16 +10,18 @@
 #include <utility>
 
 #include "base/check_is_test.h"
-#include "base/containers/contains.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
+#include "build/build_config.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/core/common/cloud/cloud_policy_validator.h"
 #include "components/policy/core/common/cloud/enterprise_metrics.h"
+#include "components/policy/core/common/features.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "components/policy/core/common/remote_commands/remote_commands_factory.h"
 #include "components/policy/core/common/remote_commands/remote_commands_fetch_reason.h"
@@ -72,6 +74,10 @@ RemoteCommandsService::MetricReceivedRemoteCommand RemoteCommandMetricFromType(
       return Metric::kFetchCrdAvailabilityInfo;
     case em::RemoteCommand_Type_FETCH_SUPPORT_PACKET:
       return Metric::kFetchSupportPacket;
+    case em::RemoteCommand_Type_QUERY_GEOLOCATION:
+      return Metric::kQueryGeolocation;
+    case em::RemoteCommand_Type_BROWSER_EXTENSION_UPDATE_CHECK:
+      return Metric::kBrowserExtensionUpdateCheck;
   }
 
   // None of possible types matched. May indicate that there is new unhandled
@@ -117,6 +123,10 @@ const char* RemoteCommandTypeToString(em::RemoteCommand_Type type) {
       return "FetchCrdAvailabilityInfo";
     case em::RemoteCommand_Type_FETCH_SUPPORT_PACKET:
       return "FetchSupportPacket";
+    case em::RemoteCommand_Type_QUERY_GEOLOCATION:
+      return "QueryGeolocation";
+    case em::RemoteCommand_Type_BROWSER_EXTENSION_UPDATE_CHECK:
+      return "BrowserExtensionUpdateCheck";
   }
 
   NOTREACHED() << "Unknown command type: " << type;
@@ -214,13 +224,7 @@ RemoteCommandsService::~RemoteCommandsService() = default;
 
 bool RemoteCommandsService::FetchRemoteCommands(
     RemoteCommandsFetchReason reason) {
-  if (!client_->is_registered()) {
-    LOG_POLICY(WARNING, REMOTE_COMMANDS) << "Client is not registered.";
-    return false;
-  }
-
-  if (command_fetch_in_progress_) {
-    has_enqueued_fetch_request_ = true;
+  if (!CanFetchRemoteCommands()) {
     return false;
   }
 
@@ -339,7 +343,7 @@ void RemoteCommandsService::EnqueueCommand(
   }
 
   // If the command is already fetched, ignore it.
-  if (base::Contains(fetched_command_ids_, command.command_id())) {
+  if (std::ranges::contains(fetched_command_ids_, command.command_id())) {
     RecordReceivedRemoteCommand(MetricReceivedRemoteCommand::kDuplicated);
     return;
   }
@@ -368,6 +372,42 @@ void RemoteCommandsService::EnqueueCommand(
   RecordReceivedRemoteCommand(RemoteCommandMetricFromType(command.type()));
 
   queue_.AddJob(std::move(job));
+}
+
+bool RemoteCommandsService::CanFetchRemoteCommands() {
+  if (!client_->is_registered()) {
+    LOG_POLICY(WARNING, REMOTE_COMMANDS) << "Client is not registered.";
+    return false;
+  }
+
+#if !BUILDFLAG(IS_CHROMEOS)
+  // We need to check if CEC is enabled.
+  if (scope_ == PolicyInvalidationScope::kUser) {
+    const em::PolicyData* policy = store_->policy();
+    if (!policy) {
+      LOG_POLICY(WARNING, REMOTE_COMMANDS) << "Policy is not available.";
+      return false;
+    }
+
+    if (base::FeatureList::IsEnabled(features::kUseCECFlagInPolicyData)) {
+      if (!policy->cec_enabled()) {
+        LOG_POLICY(WARNING, REMOTE_COMMANDS) << "CEC is not enabled.";
+        return false;
+      }
+    } else {
+      if (!policy->has_command_invalidation_topic() ||
+          policy->command_invalidation_topic().empty()) {
+        return false;
+      }
+    }
+  }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+  if (command_fetch_in_progress_) {
+    has_enqueued_fetch_request_ = true;
+    return false;
+  }
+  return true;
 }
 
 void RemoteCommandsService::OnJobStarted(RemoteCommandJob* command) {}
@@ -414,7 +454,8 @@ void RemoteCommandsService::OnRemoteCommandsFetched(
     std::move(on_command_acked_callback_).Run();
   }
 
-  // TODO(binjin): Add retrying on errors. See http://crbug.com/466572.
+  // No retry is implemented for errors. If you want to change that, please
+  // consider using exponential backoff.
   if (status == DM_STATUS_SUCCESS) {
     for (const auto& command : commands) {
       VerifyAndEnqueueSignedCommand(command);

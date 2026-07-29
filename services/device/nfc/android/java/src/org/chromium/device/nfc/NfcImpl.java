@@ -111,7 +111,7 @@ public class NfcImpl implements Nfc {
     private final List<Integer> mWatchIds = new ArrayList<Integer>();
 
     /** Vibrator. @see android.os.Vibrator */
-    private Vibrator mVibrator;
+    private final Vibrator mVibrator;
 
     /** Last time in milliseconds when a Tag was discovered. */
     private long mTagDiscoveredLastTimeMs = -1;
@@ -130,13 +130,7 @@ public class NfcImpl implements Nfc {
                 ContextUtils.getApplicationContext()
                         .checkPermission(Manifest.permission.NFC, Process.myPid(), Process.myUid());
         mHasPermission = permission == PackageManager.PERMISSION_GRANTED;
-        Callback<Activity> onActivityUpdatedCallback =
-                new Callback<Activity>() {
-                    @Override
-                    public void onResult(Activity activity) {
-                        setActivity(activity);
-                    }
-                };
+        Callback<@Nullable Activity> onActivityUpdatedCallback = this::setActivity;
 
         mDelegate.trackActivityForHost(mHostId, onActivityUpdatedCallback);
 
@@ -164,10 +158,10 @@ public class NfcImpl implements Nfc {
     }
 
     /**
-     * Sets Activity that is used to enable / disable NFC reader mode. When Activity is set,
-     * reader mode is disabled for old Activity and enabled for the new Activity.
+     * Sets Activity that is used to enable / disable NFC reader mode. When Activity is set, reader
+     * mode is disabled for old Activity and enabled for the new Activity.
      */
-    protected void setActivity(Activity activity) {
+    protected void setActivity(@Nullable Activity activity) {
         disableReaderMode();
         mActivity = activity;
         enableReaderModeIfNeeded();
@@ -216,6 +210,7 @@ public class NfcImpl implements Nfc {
                     createError(
                             NdefErrorType.OPERATION_CANCELLED,
                             "Cannot push the message because NFC operations are suspended."));
+            return;
         }
 
         if (!NdefMessageValidator.isValid(message)) {
@@ -265,6 +260,7 @@ public class NfcImpl implements Nfc {
                     createError(
                             NdefErrorType.OPERATION_CANCELLED,
                             "Cannot make read-only because NFC operations are suspended."));
+            return;
         }
 
         // If previous pending make read-only operation is not completed, cancel it.
@@ -330,7 +326,7 @@ public class NfcImpl implements Nfc {
     @Override
     public void cancelWatch(int id) {
         if (mWatchIds.contains(id)) {
-            mWatchIds.remove(mWatchIds.indexOf(id));
+            mWatchIds.remove(/* element */ Integer.valueOf(id));
             disableReaderModeIfNeeded();
         }
     }
@@ -531,7 +527,7 @@ public class NfcImpl implements Nfc {
      * exception calls pendingPushOperationCompleted() with appropriate error object.
      */
     private void processPendingPushOperation() {
-        if (mTagHandler == null || mPendingPushOperation == null) return;
+        if (mTagHandler == null || mPendingPushOperation == null || mOperationsSuspended) return;
 
         if (mTagHandler.isTagOutOfRange()) {
             mTagHandler = null;
@@ -597,7 +593,9 @@ public class NfcImpl implements Nfc {
      * of exception calls pendingMakeReadOnlyOperationCompleted() with appropriate error object.
      */
     private void processPendingMakeReadOnlyOperation() {
-        if (mTagHandler == null || mPendingMakeReadOnlyOperation == null) return;
+        if (mTagHandler == null || mPendingMakeReadOnlyOperation == null || mOperationsSuspended) {
+            return;
+        }
 
         if (mTagHandler.isTagOutOfRange()) {
             mTagHandler = null;

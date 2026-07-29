@@ -6,6 +6,7 @@
 
 #import "ios/chrome/browser/discover_feed/model/discover_feed_configuration.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_service.h"
+#import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/ntp/shared/metrics/feed_metrics_recorder.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -46,10 +47,7 @@ DiscoverFeedServiceFactory::DiscoverFeedServiceFactory()
 DiscoverFeedServiceFactory::~DiscoverFeedServiceFactory() = default;
 
 std::unique_ptr<KeyedService>
-DiscoverFeedServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
-
+DiscoverFeedServiceFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {
   DiscoverFeedConfiguration* configuration =
       [[DiscoverFeedConfiguration alloc] init];
   configuration.profilePrefService = profile->GetPrefs();
@@ -59,8 +57,10 @@ DiscoverFeedServiceFactory::BuildServiceInstanceFor(
       AuthenticationServiceFactory::GetForProfile(profile);
   configuration.identityManager =
       IdentityManagerFactory::GetForProfile(profile);
-  configuration.metricsRecorder =
-      [[FeedMetricsRecorder alloc] initWithPrefService:profile->GetPrefs()];
+  configuration.metricsRecorder = [[FeedMetricsRecorder alloc]
+           initWithPrefService:profile->GetPrefs()
+      featureEngagementTracker:feature_engagement::TrackerFactory::
+                                   GetForProfile(profile)];
   configuration.singleSignOnService =
       GetApplicationContext()->GetSingleSignOnService();
   configuration.templateURLService =

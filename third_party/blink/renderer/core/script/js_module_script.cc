@@ -33,9 +33,14 @@ JSModuleScript* JSModuleScript::Create(
 
   // <spec step="1">If scripting is disabled for settings's responsible browsing
   // context, then set source to the empty string.</spec>
+  //
+  // The `static_cast` is added to avoid copy construction. Without
+  // `static_cast`, we'd create an temporary object either
+  // `CopyWithClearedSourceText()` or a copy of `original_params`.
   const ModuleScriptCreationParams& params =
       modulator->IsScriptingDisabled()
-          ? original_params.CopyWithClearedSourceText()
+          ? static_cast<const ModuleScriptCreationParams&>(
+                original_params.CopyWithClearedSourceText())
           : original_params;
 
   // <spec step="2">Let script be a new module script that this algorithm will
@@ -90,7 +95,7 @@ JSModuleScript* JSModuleScript::Create(
     if (requested.HasInvalidImportAttributeKey(&failure_reason)) {
       // <spec step="9.1.1">Let error be a new SyntaxError exception.</spec>
       error = V8ThrowException::CreateSyntaxError(
-          isolate, "Invalid attribute key \"" + failure_reason + "\".");
+          isolate, StrCat({"Invalid attribute key \"", failure_reason, "\"."}));
 
       // <spec step="9.2">Resolve a module specifier given script and
       // requested.[[Specifier]], catching any exceptions.</spec>
@@ -99,8 +104,8 @@ JSModuleScript* JSModuleScript::Create(
                                              &failure_reason)
                     .IsValid()) {
       error = V8ThrowException::CreateTypeError(
-          isolate, "Failed to resolve module specifier \"" +
-                       requested.specifier + "\". " + failure_reason);
+          isolate, StrCat({"Failed to resolve module specifier \"",
+                           requested.specifier, "\". ", failure_reason}));
       // <spec step="9.4">Let moduleType be the result of running the module
       // type from module request steps given requested.</spec>
       //
@@ -110,8 +115,8 @@ JSModuleScript* JSModuleScript::Create(
                ModuleType::kInvalid) {
       // <spec step="9.5.1">Let error be a new TypeError exception.</spec>
       error = V8ThrowException::CreateTypeError(
-          isolate, "\"" + requested.GetModuleTypeString() +
-                       "\" is not a valid module type.");
+          isolate, StrCat({"\"", requested.GetModuleTypeString(),
+                           "\" is not a valid module type."}));
     }
 
     if (!error.IsEmpty()) {

@@ -80,6 +80,15 @@ inline constexpr char kTabDiscardingExceptionsWithTime[] =
 inline constexpr char kManagedTabDiscardingExceptions[] =
     "performance_tuning.tab_discarding.exceptions_managed";
 
+// The pref storing whether all tabs in the profile are forced to have
+// foreground priority.
+inline constexpr char kForceForegroundPriorityForAllTabs[] =
+    "performance_tuning.force_foreground_priority_for_all_tabs";
+
+// The list of URLs that should be forced to foreground priority.
+inline constexpr char kForceForegroundPriorityForUrls[] =
+    "performance_tuning.force_foreground_priority_for_urls";
+
 // The pref storing whether the discard ring treatment should appear around
 // favicons on tabs.
 inline constexpr char kDiscardRingTreatmentEnabled[] =
@@ -89,6 +98,22 @@ inline constexpr char kDiscardRingTreatmentEnabled[] =
 // shown.
 inline constexpr char kPerformanceInterventionNotificationEnabled[] =
     "performance_tuning.intervention_notification.enabled";
+
+// The pref storing when was the last time the performance intervention
+// notification was shown.
+inline constexpr char kPerformanceInterventionNotificationLastShown[] =
+    "performance_tuning.intervention_notification.last_shown";
+
+// The pref storing a boolean list which keeps track whether the user has
+// accepted performance intervention with a true value and false if the
+// intervention was rejected. This is the second version of this pref
+// because the first was deprecated for saving inaccurate entries.
+inline constexpr char kPerformanceInterventionNotificationAcceptHistory[] =
+    "performance_tuning.intervention_notification.accept_history2";
+
+// Returns whether all tabs in the profile are forced to have foreground
+// priority.
+bool IsForceForegroundPriorityForAllTabsEnabled(PrefService* pref_service);
 
 void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
 

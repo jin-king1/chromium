@@ -16,12 +16,15 @@
 class ApplicationBreadcrumbsLogger;
 class DiscoverFeedExperimentsTracker;
 class IOSChromeSyncClient;
-class IOSChromeVariationsServiceClient;
 class OptimizationGuideService;
 class CrashesDOMHandler;
 
 namespace segmentation_platform {
 class IOSFieldTrialRegisterImpl;
+}
+
+namespace subscription_eligibility {
+class IOSSubscriptionEligibilityMetricsProvider;
 }
 
 namespace tab_groups {
@@ -46,8 +49,6 @@ class IOSChromeMetricsServiceAccessor : public metrics::MetricsServiceAccessor {
 
  private:
   friend class IOSChromeMetricsServicesManagerClient;
-  friend class IOSChromeVariationsServiceClient;
-
   friend class ApplicationBreadcrumbsLogger;
   friend class CrashesDOMHandler;
   friend class DiscoverFeedExperimentsTracker;
@@ -56,6 +57,8 @@ class IOSChromeMetricsServiceAccessor : public metrics::MetricsServiceAccessor {
   friend class IOSChromeSyncClient;
   friend class OptimizationGuideService;
   friend class segmentation_platform::IOSFieldTrialRegisterImpl;
+  friend class subscription_eligibility::
+      IOSSubscriptionEligibilityMetricsProvider;
 
   FRIEND_TEST_ALL_PREFIXES(IOSChromeMetricsServiceAccessorTest,
                            MetricsReportingEnabled);

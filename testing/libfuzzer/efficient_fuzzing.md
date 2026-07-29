@@ -238,8 +238,7 @@ Add a fuzzer dictionary:
 1) Create a flat ASCII text file that lists one input token per line in the
    format `name="value"`. The value must appear in quotes with hex escaping
    (`\xNN`) applied to all non-printable, high-bit, or otherwise problematic
-   characters (`\` and `"` shorthands are recognized, too). This syntax is
-   similar to the one used by the [AFL] fuzzing engine (`-x` option).
+   characters (`\` and `"` shorthands are recognized, too).
 
    *** note
    **Note:** `name` can be omitted, but it is a convenient way to document the
@@ -283,8 +282,11 @@ Add a fuzzer dictionary:
 
 ### Custom build
 
-If you need to change the code being tested by your fuzz target, you can use an
-`#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION` macro in your target code.
+If you need to change the code being tested by your fuzz target, you can use
+conditional compilation as follows:
+
+* `#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION` in C/C++ code
+* `if cfg!(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) { ... }` in Rust code
 
 *** note
 **Note:** Patching target code is not a preferred way of improving the
@@ -294,7 +296,6 @@ the target code uses a random generator that affects the reproducibility of
 crashes).
 ***
 
-[AFL]: http://lcamtuf.coredump.cx/afl/
 [ClusterFuzz status]: libFuzzer_integration.md#Status-Links
 [Corpus GCS Bucket]: https://console.cloud.google.com/storage/clusterfuzz-corpus/libfuzzer
 [Getting Started Guide]: getting_started.md

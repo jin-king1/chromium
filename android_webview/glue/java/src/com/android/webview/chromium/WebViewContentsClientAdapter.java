@@ -24,6 +24,7 @@ import android.webkit.ClientCertRequest;
 import android.webkit.ConsoleMessage;
 import android.webkit.DownloadListener;
 import android.webkit.GeolocationPermissions;
+import android.webkit.HttpAuthHandler;
 import android.webkit.JsDialogHelper;
 import android.webkit.JsPromptResult;
 import android.webkit.JsResult;
@@ -38,12 +39,14 @@ import android.webkit.WebViewClient;
 import android.webkit.WebViewDelegate;
 
 import org.chromium.android_webview.AwConsoleMessage;
+import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.AwContentsClient;
 import org.chromium.android_webview.AwContentsClientBridge;
 import org.chromium.android_webview.AwGeolocationPermissions;
 import org.chromium.android_webview.AwHistogramRecorder;
 import org.chromium.android_webview.AwHttpAuthHandler;
 import org.chromium.android_webview.AwRenderProcessGoneDetail;
+import org.chromium.android_webview.AwWebResourceRequest;
 import org.chromium.android_webview.JsPromptResultReceiver;
 import org.chromium.android_webview.JsResultReceiver;
 import org.chromium.android_webview.R;
@@ -53,9 +56,7 @@ import org.chromium.android_webview.permission.Resource;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
-import org.chromium.base.PathUtils;
 import org.chromium.base.TraceEvent;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.ScopedSysTraceEvent;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
@@ -68,24 +69,21 @@ import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.WeakHashMap;
-import java.util.regex.Pattern;
 
 /**
- * An adapter class that forwards the callbacks from {@link ContentViewClient}
- * to the appropriate {@link WebViewClient} or {@link WebChromeClient}.
+ * An adapter class that forwards the callbacks from {@link ContentViewClient} to the appropriate
+ * {@link WebViewClient} or {@link WebChromeClient}.
  *
- * An instance of this class is associated with one {@link WebViewChromium}
- * instance. A WebViewChromium is a WebView implementation provider (that is
- * android.webkit.WebView delegates all functionality to it) and has exactly
- * one corresponding {@link ContentView} instance.
+ * <p>An instance of this class is associated with one {@link WebViewChromium} instance. A
+ * WebViewChromium is a WebView implementation provider (that is WebView delegates all functionality
+ * to it) and has exactly one corresponding {@link ContentView} instance.
  *
- * A {@link ContentViewClient} may be shared between multiple {@link ContentView}s,
- * and hence multiple WebViews. Many WebViewClient methods pass the source
- * WebView as an argument. This means that we either need to pass the
- * corresponding ContentView to the corresponding ContentViewClient methods,
- * or use an instance of ContentViewClientAdapter per WebViewChromium, to
- * allow the source WebView to be injected by ContentViewClientAdapter. We
- * choose the latter, because it makes for a cleaner design.
+ * <p>A {@link ContentViewClient} may be shared between multiple {@link ContentView}s, and hence
+ * multiple WebViews. Many WebViewClient methods pass the source WebView as an argument. This means
+ * that we either need to pass the corresponding ContentView to the corresponding ContentViewClient
+ * methods, or use an instance of ContentViewClientAdapter per WebViewChromium, to allow the source
+ * WebView to be injected by ContentViewClientAdapter. We choose the latter, because it makes for a
+ * cleaner design.
  */
 @Lifetime.WebView
 class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
@@ -100,17 +98,12 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
 
     private DownloadListener mDownloadListener;
 
-    private Handler mUiThreadHandler;
+    private final Handler mUiThreadHandler;
 
     private static final int NEW_WEBVIEW_CREATED = 100;
 
     private WeakHashMap<AwPermissionRequest, WeakReference<PermissionRequestAdapter>>
             mOngoingPermissionRequests;
-
-    // Pattern to match URLs that WebView internally handles as asset or
-    // resource lookups.
-    private static final Pattern FILE_ANDROID_ASSET_PATTERN =
-            Pattern.compile("^file:/*android_(asset|res).*");
 
     /**
      * Adapter constructor.
@@ -118,9 +111,8 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
      * @param webView the {@link WebView} instance that this adapter is serving.
      */
     @SuppressWarnings("HandlerLeak")
-    WebViewContentsClientAdapter(
-            WebView webView, Context context, WebViewDelegate webViewDelegate) {
-        super(webView, webViewDelegate, context);
+    WebViewContentsClientAdapter(AwContents awContents, WebViewDelegate webViewDelegate) {
+        super(awContents, webViewDelegate);
         try (ScopedSysTraceEvent event =
                 ScopedSysTraceEvent.scoped("WebView.APICallback.WebViewClient.constructor")) {
             // See //android_webview/docs/how-does-on-create-window-work.md for more details.
@@ -132,7 +124,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                                 case NEW_WEBVIEW_CREATED:
                                     WebView.WebViewTransport t = (WebView.WebViewTransport) msg.obj;
                                     WebView newWebView = t.getWebView();
-                                    if (newWebView == mWebView) {
+                                    if (newWebView == getWebView()) {
                                         throw new IllegalArgumentException(
                                                 "Parent WebView cannot host its own popup window."
                                                         + " Please use"
@@ -147,7 +139,8 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                                                         + " previously navigated.");
                                     }
 
-                                    WebViewChromium.completeWindowCreation(mWebView, newWebView);
+                                    WebViewChromium.completeWindowCreation(
+                                            getWebView(), newWebView);
                                     break;
                                 default:
                                     throw new IllegalStateException();
@@ -205,7 +198,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             AwHistogramRecorder.recordCallbackInvocation(
                     AwHistogramRecorder.WebViewCallbackType.DO_UPDATE_VISITED_HISTORY);
             if (TRACE) Log.i(TAG, "doUpdateVisitedHistory=" + url + " reload=" + isReload);
-            mWebViewClient.doUpdateVisitedHistory(mWebView, url, isReload);
+            mWebViewClient.doUpdateVisitedHistory(getWebView(), url, isReload);
         }
     }
 
@@ -218,22 +211,24 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                     AwHistogramRecorder.WebViewCallbackType.ON_PROGRESS_CHANGED);
             if (mWebChromeClient != null) {
                 if (TRACE) Log.i(TAG, "onProgressChanged=" + progress);
-                mWebChromeClient.onProgressChanged(mWebView, progress);
+                mWebChromeClient.onProgressChanged(getWebView(), progress);
             }
         }
     }
 
-    /** @see AwContentsClient#shouldInterceptRequest(java.lang.String) */
+    /**
+     * @see AwContentsClient#shouldInterceptRequest(String)
+     */
     @Override
     public WebResourceResponseInfo shouldInterceptRequest(AwWebResourceRequest request) {
         try (TraceEvent event =
                 TraceEvent.scoped("WebView.APICallback.WebViewClient.shouldInterceptRequest")) {
             AwHistogramRecorder.recordCallbackInvocation(
                     AwHistogramRecorder.WebViewCallbackType.SHOULD_INTERCEPT_REQUEST);
-            if (TRACE) Log.i(TAG, "shouldInterceptRequest=" + request.url);
+            if (TRACE) Log.i(TAG, "shouldInterceptRequest=" + request.getUrl());
             WebResourceResponse response =
                     mWebViewClient.shouldInterceptRequest(
-                            mWebView, new WebResourceRequestAdapter(request));
+                            getWebView(), new WebResourceRequestAdapter(request));
             if (response == null) return null;
 
             return new WebResourceResponseInfo(
@@ -246,7 +241,9 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
         }
     }
 
-    /** @see AwContentsClient#onUnhandledKeyEvent(android.view.KeyEvent) */
+    /**
+     * @see AwContentsClient#onUnhandledKeyEvent(KeyEvent)
+     */
     @Override
     public void onUnhandledKeyEvent(KeyEvent event) {
         try (TraceEvent traceEvent =
@@ -254,11 +251,13 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             AwHistogramRecorder.recordCallbackInvocation(
                     AwHistogramRecorder.WebViewCallbackType.ON_UNHANDLED_KEY_EVENT);
             if (TRACE) Log.i(TAG, "onUnhandledKeyEvent");
-            mWebViewClient.onUnhandledKeyEvent(mWebView, event);
+            mWebViewClient.onUnhandledKeyEvent(getWebView(), event);
         }
     }
 
-    /** @see AwContentsClient#onConsoleMessage(android.webkit.ConsoleMessage) */
+    /**
+     * @see AwContentsClient#onConsoleMessage(ConsoleMessage)
+     */
     @Override
     public boolean onConsoleMessage(AwConsoleMessage consoleMessage) {
         try (TraceEvent event =
@@ -297,7 +296,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                 TraceEvent.scoped("WebView.APICallback.WebViewClient.onNewPicture")) {
             if (mPictureListener == null) return;
             if (TRACE) Log.i(TAG, "onNewPicture");
-            mPictureListener.onNewPicture(mWebView, picture);
+            mPictureListener.onNewPicture(getWebView(), picture);
         }
     }
 
@@ -306,7 +305,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
         try (TraceEvent event =
                 TraceEvent.scoped("WebView.APICallback.WebViewClient.onLoadResource")) {
             if (TRACE) Log.i(TAG, "onLoadResource=" + url);
-            mWebViewClient.onLoadResource(mWebView, url);
+            mWebViewClient.onLoadResource(getWebView(), url);
 
             // Record UMA for onLoadResource.
             AwHistogramRecorder.recordCallbackInvocation(
@@ -322,11 +321,11 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                     AwHistogramRecorder.WebViewCallbackType.ON_CREATE_WINDOW);
             Message m =
                     mUiThreadHandler.obtainMessage(
-                            NEW_WEBVIEW_CREATED, mWebView.new WebViewTransport());
+                            NEW_WEBVIEW_CREATED, getWebView().new WebViewTransport());
             boolean result;
             if (mWebChromeClient != null) {
                 if (TRACE) Log.i(TAG, "onCreateWindow");
-                result = mWebChromeClient.onCreateWindow(mWebView, isDialog, isUserGesture, m);
+                result = mWebChromeClient.onCreateWindow(getWebView(), isDialog, isUserGesture, m);
             } else {
                 result = false;
             }
@@ -343,7 +342,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                     AwHistogramRecorder.WebViewCallbackType.ON_CLOSE_WINDOW);
             if (mWebChromeClient != null) {
                 if (TRACE) Log.i(TAG, "onCloseWindow");
-                mWebChromeClient.onCloseWindow(mWebView);
+                mWebChromeClient.onCloseWindow(getWebView());
             }
         }
     }
@@ -357,7 +356,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                     AwHistogramRecorder.WebViewCallbackType.ON_REQUEST_FOCUS);
             if (mWebChromeClient != null) {
                 if (TRACE) Log.i(TAG, "onRequestFocus");
-                mWebChromeClient.onRequestFocus(mWebView);
+                mWebChromeClient.onRequestFocus(getWebView());
             }
         }
     }
@@ -371,7 +370,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                     AwHistogramRecorder.WebViewCallbackType.ON_RECEIVED_TOUCH_ICON_URL);
             if (mWebChromeClient != null) {
                 if (TRACE) Log.i(TAG, "onReceivedTouchIconUrl=" + url);
-                mWebChromeClient.onReceivedTouchIconUrl(mWebView, url, precomposed);
+                mWebChromeClient.onReceivedTouchIconUrl(getWebView(), url, precomposed);
             }
         }
     }
@@ -385,7 +384,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                     AwHistogramRecorder.WebViewCallbackType.ON_RECEIVED_ICON);
             if (mWebChromeClient != null) {
                 if (TRACE) Log.i(TAG, "onReceivedIcon");
-                mWebChromeClient.onReceivedIcon(mWebView, bitmap);
+                mWebChromeClient.onReceivedIcon(getWebView(), bitmap);
             }
         }
     }
@@ -396,7 +395,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
         try (TraceEvent event =
                 TraceEvent.scoped("WebView.APICallback.WebViewClient.onPageStarted")) {
             if (TRACE) Log.i(TAG, "onPageStarted=" + url);
-            mWebViewClient.onPageStarted(mWebView, url, mWebView.getFavicon());
+            mWebViewClient.onPageStarted(getWebView(), url, getWebView().getFavicon());
 
             // Record UMA for onPageStarted.
             AwHistogramRecorder.recordCallbackInvocation(
@@ -410,7 +409,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
         try (TraceEvent event =
                 TraceEvent.scoped("WebView.APICallback.WebViewClient.onPageFinished")) {
             if (TRACE) Log.i(TAG, "onPageFinished=" + url);
-            mWebViewClient.onPageFinished(mWebView, url);
+            mWebViewClient.onPageFinished(getWebView(), url);
 
             // Record UMA for onPageFinished.
             AwHistogramRecorder.recordCallbackInvocation(
@@ -435,7 +434,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                                     Log.i(TAG, "onNewPicture - from onPageFinished workaround.");
                                 }
                                 mPictureListener.onNewPicture(
-                                        mWebView,
+                                        getWebView(),
                                         mPictureListenerInvalidateOnly ? null : new Picture());
                             }
                         },
@@ -453,7 +452,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                     AwHistogramRecorder.WebViewCallbackType.ON_RECEIVED_TITLE);
             if (mWebChromeClient != null) {
                 if (TRACE) Log.i(TAG, "onReceivedTitle=\"" + title + "\"");
-                mWebChromeClient.onReceivedTitle(mWebView, title);
+                mWebChromeClient.onReceivedTitle(getWebView(), title);
             }
         }
     }
@@ -466,7 +465,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             AwHistogramRecorder.recordCallbackInvocation(
                     AwHistogramRecorder.WebViewCallbackType.SHOULD_OVERRIDE_KEY_EVENT);
             if (TRACE) Log.i(TAG, "shouldOverrideKeyEvent");
-            return mWebViewClient.shouldOverrideKeyEvent(mWebView, event);
+            return mWebViewClient.shouldOverrideKeyEvent(getWebView(), event);
         }
     }
 
@@ -513,30 +512,11 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                 return;
             }
             if (TRACE) Log.i(TAG, "onGeolocationPermissionsShowPrompt");
-            final long requestStartTime = System.currentTimeMillis();
-            GeolocationPermissions.Callback callbackWrapper =
-                    (callbackOrigin, allow, retain) -> {
-                        long durationMs = System.currentTimeMillis() - requestStartTime;
-                        RecordHistogram.recordTimesHistogram(
-                                "Android.WebView.OnGeolocationPermissionsShowPrompt.ResponseTime",
-                                durationMs);
-                        RecordHistogram.recordBooleanHistogram(
-                                "Android.WebView.OnGeolocationPermissionsShowPrompt.Granted",
-                                allow);
-                        RecordHistogram.recordBooleanHistogram(
-                                "Android.WebView.OnGeolocationPermissionsShowPrompt.Retain",
-                                retain);
-
-                        if (retain) {
-                            RecordHistogram.recordTimesHistogram(
-                                    "Android.WebView.GeolocationRetained.ResponseTime", durationMs);
-                            RecordHistogram.recordBooleanHistogram(
-                                    "Android.WebView.GeolocationRetained.Granted", allow);
-                        }
-                        callback.invoke(callbackOrigin, allow, retain);
-                    };
-            mWebChromeClient.onGeolocationPermissionsShowPrompt(
-                    origin, callback == null ? null : callbackWrapper);
+            if (callback == null) {
+                mWebChromeClient.onGeolocationPermissionsShowPrompt(origin, null);
+            } else {
+                mWebChromeClient.onGeolocationPermissionsShowPrompt(origin, callback::invoke);
+            }
         }
     }
 
@@ -644,7 +624,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                 final JsPromptResult res =
                         new JsPromptResultReceiverAdapter(receiver).getPromptResult();
                 if (TRACE) Log.i(TAG, "onJsAlert");
-                if (!mWebChromeClient.onJsAlert(mWebView, url, message, res)) {
+                if (!mWebChromeClient.onJsAlert(getWebView(), url, message, res)) {
                     if (!showDefaultJsDialog(res, JsDialogHelper.ALERT, null, message, url)) {
                         receiver.cancel();
                     }
@@ -665,7 +645,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                 final JsPromptResult res =
                         new JsPromptResultReceiverAdapter(receiver).getPromptResult();
                 if (TRACE) Log.i(TAG, "onJsBeforeUnload");
-                if (!mWebChromeClient.onJsBeforeUnload(mWebView, url, message, res)) {
+                if (!mWebChromeClient.onJsBeforeUnload(getWebView(), url, message, res)) {
                     if (!showDefaultJsDialog(res, JsDialogHelper.UNLOAD, null, message, url)) {
                         receiver.cancel();
                     }
@@ -686,7 +666,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                 final JsPromptResult res =
                         new JsPromptResultReceiverAdapter(receiver).getPromptResult();
                 if (TRACE) Log.i(TAG, "onJsConfirm");
-                if (!mWebChromeClient.onJsConfirm(mWebView, url, message, res)) {
+                if (!mWebChromeClient.onJsConfirm(getWebView(), url, message, res)) {
                     if (!showDefaultJsDialog(res, JsDialogHelper.CONFIRM, null, message, url)) {
                         receiver.cancel();
                     }
@@ -708,7 +688,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                 final JsPromptResult res =
                         new JsPromptResultReceiverAdapter(receiver).getPromptResult();
                 if (TRACE) Log.i(TAG, "onJsPrompt");
-                if (!mWebChromeClient.onJsPrompt(mWebView, url, message, defaultValue, res)) {
+                if (!mWebChromeClient.onJsPrompt(getWebView(), url, message, defaultValue, res)) {
                     if (!showDefaultJsDialog(
                             res, JsDialogHelper.PROMPT, defaultValue, message, url)) {
                         receiver.cancel();
@@ -725,7 +705,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             JsPromptResult res, int jsDialogType, String defaultValue, String message, String url) {
         // Note we must unwrap the Context here due to JsDialogHelper only using instanceof to
         // check if a Context is an Activity.
-        Context activityContext = ContextUtils.activityFromContext(mContext);
+        Context activityContext = ContextUtils.activityFromContext(getContext());
         if (activityContext == null) {
             Log.w(TAG, "Unable to create JsDialog without an Activity");
             return false;
@@ -752,7 +732,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                     AwHistogramRecorder.WebViewCallbackType.ON_RECEIVED_HTTP_AUTH_REQUEST);
             if (TRACE) Log.i(TAG, "onReceivedHttpAuthRequest=" + host);
             mWebViewClient.onReceivedHttpAuthRequest(
-                    mWebView, new AwHttpAuthHandlerAdapter(handler), host, realm);
+                    getWebView(), new AwHttpAuthHandlerAdapter(handler), host, realm);
         }
     }
 
@@ -776,7 +756,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                         }
                     };
             if (TRACE) Log.i(TAG, "onReceivedSslError");
-            mWebViewClient.onReceivedSslError(mWebView, handler, error);
+            mWebViewClient.onReceivedSslError(getWebView(), handler, error);
         }
     }
 
@@ -853,7 +833,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                     AwHistogramRecorder.WebViewCallbackType.ON_RECEIVED_CLIENT_CERT_REQUEST);
             final ClientCertRequestImpl request =
                     new ClientCertRequestImpl(callback, keyTypes, principals, host, port);
-            mWebViewClient.onReceivedClientCertRequest(mWebView, request);
+            mWebViewClient.onReceivedClientCertRequest(getWebView(), request);
         }
     }
 
@@ -864,7 +844,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             AwHistogramRecorder.recordCallbackInvocation(
                     AwHistogramRecorder.WebViewCallbackType.ON_RECEIVED_LOGIN_REQUEST);
             if (TRACE) Log.i(TAG, "onReceivedLoginRequest=" + realm);
-            mWebViewClient.onReceivedLoginRequest(mWebView, realm, account, args);
+            mWebViewClient.onReceivedLoginRequest(getWebView(), realm, account, args);
         }
     }
 
@@ -875,7 +855,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             AwHistogramRecorder.recordCallbackInvocation(
                     AwHistogramRecorder.WebViewCallbackType.ON_FORM_RESUBMISSION);
             if (TRACE) Log.i(TAG, "onFormResubmission");
-            mWebViewClient.onFormResubmission(mWebView, dontResend, resend);
+            mWebViewClient.onFormResubmission(getWebView(), dontResend, resend);
         }
     }
 
@@ -923,16 +903,6 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
                                 s = new String[uriList.length];
                                 for (int i = 0; i < uriList.length; i++) {
                                     s[i] = uriList[i].toString();
-                                    if ("file".equals(uriList[i].getScheme())
-                                            && !FILE_ANDROID_ASSET_PATTERN
-                                                    .matcher(s[i])
-                                                    .matches()) {
-                                        RecordHistogram.recordBooleanHistogram(
-                                                "Android.WebView.FileChooserResultOutsideAppDataDir",
-                                                PathUtils.isPathUnderAppDir(
-                                                        uriList[i].getSchemeSpecificPart(),
-                                                        mContext));
-                                    }
                                 }
                             }
                             uploadFileCallback.onResult(s);
@@ -942,13 +912,14 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             // Invoke the new callback introduced in Lollipop. If the app handles
             // it, we're done here.
             if (mWebChromeClient.onShowFileChooser(
-                    mWebView, callbackAdapter, fromAwFileChooserParams(fileChooserParams))) {
+                    getWebView(), callbackAdapter, fromAwFileChooserParams(fileChooserParams))) {
                 return;
             }
 
             // If the app did not handle it and we are running on Lollipop or newer, then
             // abort.
-            if (mContext.getApplicationInfo().targetSdkVersion >= Build.VERSION_CODES.LOLLIPOP) {
+            if (getContext().getApplicationInfo().targetSdkVersion
+                    >= Build.VERSION_CODES.LOLLIPOP) {
                 uploadFileCallback.onResult(null);
                 return;
             }
@@ -985,7 +956,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             AwHistogramRecorder.recordCallbackInvocation(
                     AwHistogramRecorder.WebViewCallbackType.ON_SCALE_CHANGED);
             if (TRACE) Log.i(TAG, " onScaleChangedScaled");
-            mWebViewClient.onScaleChanged(mWebView, oldScale, newScale);
+            mWebViewClient.onScaleChanged(getWebView(), oldScale, newScale);
         }
     }
 
@@ -1046,7 +1017,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             if (result == null) {
                 Bitmap poster =
                         BitmapFactory.decodeResource(
-                                mContext.getResources(),
+                                getContext().getResources(),
                                 R.drawable.ic_play_circle_outline_black_48dp);
 
                 // WebView relies on the application's resources from the context we have.
@@ -1083,7 +1054,7 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             AwHistogramRecorder.recordCallbackInvocation(
                     AwHistogramRecorder.WebViewCallbackType.ON_RENDER_PROCESS_GONE);
             return mWebViewClient.onRenderProcessGone(
-                    mWebView,
+                    getWebView(),
                     new RenderProcessGoneDetail() {
                         @Override
                         public boolean didCrash() {
@@ -1099,8 +1070,8 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
         }
     }
 
-    private static class AwHttpAuthHandlerAdapter extends android.webkit.HttpAuthHandler {
-        private AwHttpAuthHandler mAwHandler;
+    private static class AwHttpAuthHandlerAdapter extends HttpAuthHandler {
+        private final AwHttpAuthHandler mAwHandler;
 
         public AwHttpAuthHandlerAdapter(AwHttpAuthHandler awHandler) {
             mAwHandler = awHandler;
@@ -1162,27 +1133,17 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
             if ((resources & Resource.MIDI_SYSEX) != 0) {
                 result.add(PermissionRequest.RESOURCE_MIDI_SYSEX);
             }
-            String[] resource_array = new String[result.size()];
-            return result.toArray(resource_array);
+            String[] resourceArray = new String[result.size()];
+            return result.toArray(resourceArray);
         }
 
-        private AwPermissionRequest mAwPermissionRequest;
+        private final AwPermissionRequest mAwPermissionRequest;
         private final String[] mResources;
-
-        private final long mCreationTime;
 
         public PermissionRequestAdapter(AwPermissionRequest awPermissionRequest) {
             assert awPermissionRequest != null;
             mAwPermissionRequest = awPermissionRequest;
             mResources = toPermissionResources(mAwPermissionRequest.getResources());
-            mCreationTime = System.currentTimeMillis();
-            RecordHistogram.recordCount100Histogram(
-                    "Android.WebView.OnPermissionRequest.RequestedResourceCount",
-                    mResources.length);
-            // The resources result is a bitmask of size 2^5 (32 distinct values).
-            RecordHistogram.recordSparseHistogram(
-                    "Android.WebView.OnPermissionRequest.RequestedResources",
-                    (int) mAwPermissionRequest.getResources());
         }
 
         @Override
@@ -1197,34 +1158,17 @@ class WebViewContentsClientAdapter extends SharedWebViewContentsClientAdapter {
 
         @Override
         public void grant(String[] resources) {
-            recordResponseTime();
             long requestedResource = mAwPermissionRequest.getResources();
             if ((requestedResource & toAwPermissionResources(resources)) == requestedResource) {
-                recordPermissionResult(true);
                 mAwPermissionRequest.grant();
             } else {
-                recordPermissionResult(false);
                 mAwPermissionRequest.deny();
             }
         }
 
         @Override
         public void deny() {
-            recordResponseTime();
-            recordPermissionResult(false);
             mAwPermissionRequest.deny();
-        }
-
-        private void recordPermissionResult(boolean granted) {
-            RecordHistogram.recordBooleanHistogram(
-                    "Android.WebView.OnPermissionRequest.Granted", granted);
-        }
-
-        /** Record the response time from the app to a histogram. */
-        private void recordResponseTime() {
-            long duration = System.currentTimeMillis() - mCreationTime;
-            RecordHistogram.recordTimesHistogram(
-                    "Android.WebView.OnPermissionRequest.ResponseTime", duration);
         }
     }
 

@@ -10,19 +10,26 @@ import type {CrButtonElement, SettingsToggleButtonElement} from 'chrome://settin
 import {CvcDeletionUserAction, loadTimeData, MetricsBrowserProxyImpl, OpenWindowProxyImpl, PrivacyElementInteractions} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
+// <if expr="not is_chromeos">
 import type {TestPaymentsManager} from './autofill_fake_data.js';
+// </if>
 import {createCreditCardEntry} from './autofill_fake_data.js';
-import {createPaymentsSection, getLocalAndServerCreditCardListItems, getDefaultExpectations, getCardRowShadowRoot} from './payments_section_utils.js';
+import {createPaymentsSection, getLocalAndServerCreditCardListItems, getDefaultExpectations, getCardRowShadowRoot, verifyBooleanHistogramRecorded, verifyBooleanHistogramNotRecorded} from './payments_section_utils.js';
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 
 import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
 import {eventToPromise, isVisible, whenAttributeIs} from 'chrome://webui-test/test_util.js';
 
+// <if expr="is_chromeos">
+import {TestPaymentsManager} from './autofill_fake_data.js';
+
+import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
+// </if>
 
 // clang-format on
 
 suite('PaymentSectionUiTest', function() {
-  test('testAutofillExtensionIndicator', function() {
+  test('AutofillExtensionIndicator', function() {
     // Initializing with fake prefs
     const section = document.createElement('settings-payments-section');
     section.prefs = {
@@ -50,12 +57,42 @@ suite('PaymentsSection', function() {
       migrationEnabled: true,
       showIbansSettings: true,
       deviceAuthAvailable: true,
+      mandatoryReauthFeatureFlagEnabled: true,
     });
   });
 
-  test('verifyNoCreditCards', async function() {
+  test('ManagePaymentMethodsLink_RecordsMetrics', async function() {
+    const testMetricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
+
     const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[], {credit_card_enabled: {value: true}});
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[],
+        /*prefValues=*/ {});
+
+    const manageAnchor = section.$.manageLink.querySelector('a');
+    assertTrue(!!manageAnchor);
+
+    // To avoid opening a new tab in the test (which ends up breaking the other
+    // tests), make the anchor basically non-operable before clicking it.
+    manageAnchor.href = '#';
+    manageAnchor.target = '';
+
+    manageAnchor.click();
+    const recordedAction =
+        await testMetricsBrowserProxy.whenCalled('recordAction');
+
+    assertEquals(
+        'Autofill.PaymentMethodsSettingsPage.ManagePaymentMethodsLinkClicked',
+        recordedAction);
+  });
+
+  test('verifyNoCreditCards', async function() {
+    const testMetricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
+
+    const section = await createPaymentsSection(
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[],
+        {credit_card_enabled: {value: true}});
 
     const creditCardList = section.$.paymentsList;
     assertTrue(!!creditCardList);
@@ -74,14 +111,22 @@ suite('PaymentsSection', function() {
             '#addPaymentMethods');
     assertTrue(!!addPaymentMethodsButton);
     assertFalse(addPaymentMethodsButton.disabled);
+
+    await verifyBooleanHistogramRecorded(
+        testMetricsBrowserProxy,
+        'Autofill.PaymentMethodsSettingsPage.CardsViewedWithoutExistingCards',
+        true);
   });
 
   test('verifyCreditCardsDisabled', async function() {
+    const testMetricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
+
     loadTimeData.overrideValues({
       showIbansSettings: false,
     });
     const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[],
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[],
         {credit_card_enabled: {value: false}});
 
     assertFalse(section.$.autofillCreditCardToggle.disabled);
@@ -89,9 +134,18 @@ suite('PaymentsSection', function() {
         section.shadowRoot!.querySelector<CrButtonElement>('#addCreditCard');
     assertTrue(!!addCreditCardButton);
     assertTrue(addCreditCardButton.hidden);
+
+    // This metric should only be recorded when autofilling of credit cards is
+    // enabled.
+    await verifyBooleanHistogramNotRecorded(
+        testMetricsBrowserProxy,
+        'Autofill.PaymentMethodsSettingsPage.CardsViewedWithoutExistingCards');
   });
 
   test('verifyCreditCardCount', async function() {
+    const testMetricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
+
     const creditCards = [
       createCreditCardEntry(),
       createCreditCardEntry(),
@@ -102,7 +156,8 @@ suite('PaymentsSection', function() {
     ];
 
     const section = await createPaymentsSection(
-        creditCards, /*ibans=*/[], {credit_card_enabled: {value: true}});
+        creditCards, /*ibans=*/[], /*payOverTimeIssuers=*/[],
+        {credit_card_enabled: {value: true}});
     const creditCardList = section.$.paymentsList;
     assertTrue(!!creditCardList);
     assertEquals(
@@ -121,51 +176,11 @@ suite('PaymentsSection', function() {
             '#addPaymentMethods');
     assertTrue(!!addPaymentMethodsButton);
     assertFalse(addPaymentMethodsButton.disabled);
-  });
 
-  test('verifyMigrationButtonNotShownIfMigrationNotEnabled', async function() {
-    // Mock prerequisites are not met.
-    loadTimeData.overrideValues({migrationEnabled: false});
-
-    // Add one migratable credit card.
-    const creditCard = createCreditCardEntry();
-    creditCard.metadata!.isMigratable = true;
-    const section = await createPaymentsSection(
-        [creditCard], /*ibans=*/[], {credit_card_enabled: {value: true}});
-
-    assertTrue(section.$.migrateCreditCards.hidden);
-  });
-
-  test('verifyMigrationButtonNotShownIfCreditCardDisabled', async function() {
-    // Add one migratable credit card.
-    const creditCard = createCreditCardEntry();
-    creditCard.metadata!.isMigratable = true;
-    // Mock credit card save toggle is turned off by users.
-    const section = await createPaymentsSection(
-        [creditCard], /*ibans=*/[], {credit_card_enabled: {value: false}});
-
-    assertTrue(section.$.migrateCreditCards.hidden);
-  });
-
-  test('verifyMigrationButtonNotShownIfNoCardIsMigratable', async function() {
-    // Add one migratable credit card.
-    const creditCard = createCreditCardEntry();
-    // Mock credit card is not valid.
-    creditCard.metadata!.isMigratable = false;
-    const section = await createPaymentsSection(
-        [creditCard], /*ibans=*/[], {credit_card_enabled: {value: true}});
-
-    assertTrue(section.$.migrateCreditCards.hidden);
-  });
-
-  test('verifyMigrationButtonShown', async function() {
-    // Add one migratable credit card.
-    const creditCard = createCreditCardEntry();
-    creditCard.metadata!.isMigratable = true;
-    const section = await createPaymentsSection(
-        [creditCard], /*ibans=*/[], {credit_card_enabled: {value: true}});
-
-    assertFalse(section.$.migrateCreditCards.hidden);
+    await verifyBooleanHistogramRecorded(
+        testMetricsBrowserProxy,
+        'Autofill.PaymentMethodsSettingsPage.CardsViewedWithoutExistingCards',
+        false);
   });
 
   test('CanMakePaymentToggle_RecordsMetrics', async function() {
@@ -173,7 +188,8 @@ suite('PaymentsSection', function() {
     MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
 
     const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[], /*prefValues=*/ {});
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[],
+        /*prefValues=*/ {});
 
     section.$.canMakePaymentToggle.click();
     const result =
@@ -185,7 +201,7 @@ suite('PaymentsSection', function() {
   test(
       'verifyNoAddPaymentMethodsButtonIfPaymentPrefDisabled', async function() {
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[],
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[],
             {credit_card_enabled: {value: false}});
 
         const addPaymentMethodsButton =
@@ -213,7 +229,7 @@ suite('PaymentsSection', function() {
         loadTimeData.overrideValues({deviceAuthAvailable: true});
 
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: true},
               payment_methods_mandatory_reauth: {value: false},
             });
@@ -222,11 +238,11 @@ suite('PaymentsSection', function() {
             section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
                 '#mandatoryAuthToggle');
 
-        // <if expr="is_win or is_macosx">
+        // <if expr="is_win or is_macosx or is_chromeos">
         assertTrue(!!mandatoryAuthToggle);
         assertFalse(mandatoryAuthToggle.checked);
         // </if>
-        // <if expr="not is_win and not is_macosx">
+        // <if expr="not is_win and not is_macosx and not is_chromeos">
         assertFalse(!!mandatoryAuthToggle);
         // </if>
       });
@@ -237,7 +253,7 @@ suite('PaymentsSection', function() {
         loadTimeData.overrideValues({deviceAuthAvailable: true});
 
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: true},
               payment_methods_mandatory_reauth: {value: true},
             });
@@ -245,11 +261,11 @@ suite('PaymentsSection', function() {
         const mandatoryAuthToggle =
             section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
                 '#mandatoryAuthToggle');
-        // <if expr="is_win or is_macosx">
+        // <if expr="is_win or is_macosx or is_chromeos">
         assertTrue(!!mandatoryAuthToggle);
         assertTrue(mandatoryAuthToggle.checked);
         // </if>
-        // <if expr="not is_win and not is_macosx">
+        // <if expr="not is_win and not is_macosx and not is_chromeos">
         assertFalse(!!mandatoryAuthToggle);
         // </if>
       });
@@ -260,7 +276,7 @@ suite('PaymentsSection', function() {
         loadTimeData.overrideValues({deviceAuthAvailable: false});
 
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: true},
               payment_methods_mandatory_reauth: {value: true},
             });
@@ -269,12 +285,12 @@ suite('PaymentsSection', function() {
             section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
                 '#mandatoryAuthToggle');
 
-        // <if expr="is_win or is_macosx">
+        // <if expr="is_win or is_macosx or is_chromeos">
         assertTrue(!!mandatoryAuthToggle);
         assertTrue(mandatoryAuthToggle.disabled);
         assertTrue(mandatoryAuthToggle.checked);
         // </if>
-        // <if expr="not is_win and not is_macosx">
+        // <if expr="not is_win and not is_macosx and not is_chromeos">
         assertFalse(!!mandatoryAuthToggle);
         // </if>
       });
@@ -285,7 +301,7 @@ suite('PaymentsSection', function() {
         loadTimeData.overrideValues({deviceAuthAvailable: false});
 
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: true},
               payment_methods_mandatory_reauth: {value: false},
             });
@@ -294,12 +310,12 @@ suite('PaymentsSection', function() {
             section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
                 '#mandatoryAuthToggle');
 
-        // <if expr="is_win or is_macosx">
+        // <if expr="is_win or is_macosx or is_chromeos">
         assertTrue(!!mandatoryAuthToggle);
         assertTrue(mandatoryAuthToggle.disabled);
         assertFalse(mandatoryAuthToggle.checked);
         // </if>
-        // <if expr="not is_win and not is_macosx">
+        // <if expr="not is_win and not is_macosx and not is_chromeos">
         assertFalse(!!mandatoryAuthToggle);
         // </if>
       });
@@ -310,7 +326,7 @@ suite('PaymentsSection', function() {
         loadTimeData.overrideValues({deviceAuthAvailable: true});
 
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: false},
               payment_methods_mandatory_reauth: {value: true},
             });
@@ -319,11 +335,11 @@ suite('PaymentsSection', function() {
             section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
                 '#mandatoryAuthToggle');
 
-        // <if expr="is_win or is_macosx">
+        // <if expr="is_win or is_macosx or is_chromeos">
         assertTrue(!!mandatoryAuthToggle);
         assertTrue(mandatoryAuthToggle.disabled);
         // </if>
-        // <if expr="not is_win and not is_macosx">
+        // <if expr="not is_win and not is_macosx and not is_chromeos">
         assertFalse(!!mandatoryAuthToggle);
         // </if>
       });
@@ -334,7 +350,7 @@ suite('PaymentsSection', function() {
         loadTimeData.overrideValues({deviceAuthAvailable: true});
 
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: false},
               payment_methods_mandatory_reauth: {value: false},
             });
@@ -344,21 +360,22 @@ suite('PaymentsSection', function() {
             section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
                 '#mandatoryAuthToggle');
 
-        // <if expr="is_win or is_macosx">
+        // <if expr="is_win or is_macosx or is_chromeos">
         assertTrue(!!mandatoryAuthToggle);
         assertTrue(mandatoryAuthToggle.disabled);
         // </if>
-        // <if expr="not is_win and not is_macosx">
+        // <if expr="not is_win and not is_macosx and not is_chromeos">
         assertFalse(!!mandatoryAuthToggle);
         // </if>
       });
 
+  // <if expr="not is_chromeos">
   test(
       'verifyReauthDoesTriggerUserAuthWhenClicked', async function() {
         loadTimeData.overrideValues({deviceAuthAvailable: true});
 
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: true},
               payment_methods_mandatory_reauth: {value: false},
             });
@@ -379,13 +396,41 @@ suite('PaymentsSection', function() {
         assertFalse(!!mandatoryAuthToggle);
         // </if>
       });
+  // </if>
+
+  // <if expr="is_chromeos">
+  test('verifyReauthDoesTriggerUserAuthWhenClicked', async function() {
+    const paymentsManager = new TestPaymentsManager();
+    paymentsManager.checkIfDeviceAuthAvailable = () => Promise.resolve(true);
+    PaymentsManagerImpl.setInstance(paymentsManager);
+
+    const section = document.createElement('settings-payments-section');
+    section.prefs = {
+      autofill: {
+        credit_card_enabled: {value: true},
+        payment_methods_mandatory_reauth: {value: false},
+      },
+    };
+    document.body.appendChild(section);
+    await flushTasks();
+    const mandatoryAuthToggle =
+        section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
+            '#mandatoryAuthToggle');
+
+    const expectations = getDefaultExpectations();
+    assertTrue(!!mandatoryAuthToggle);
+    mandatoryAuthToggle.click();
+    expectations.authenticateUserAndFlipMandatoryAuthToggle = 1;
+    paymentsManager.assertExpectations(expectations);
+  });
+  // </if>
 
   test(
       'verifyReauthDoesNotTriggersUserAuthWhenNotClicked', async function() {
         loadTimeData.overrideValues({deviceAuthAvailable: true});
 
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: true},
               payment_methods_mandatory_reauth: {value: false},
             });
@@ -397,10 +442,10 @@ suite('PaymentsSection', function() {
             PaymentsManagerImpl.getInstance() as TestPaymentsManager;
         const expectations = getDefaultExpectations();
 
-        // <if expr="is_win or is_macosx">
+        // <if expr="is_win or is_macosx or is_chromeos">
         assertTrue(!!mandatoryAuthToggle);
         // </if>
-        // <if expr="not is_win and not is_macosx">
+        // <if expr="not is_win and not is_macosx and not is_chromeos">
         assertFalse(!!mandatoryAuthToggle);
         // </if>
         paymentsManagerProxy.assertExpectations(expectations);
@@ -409,8 +454,8 @@ suite('PaymentsSection', function() {
   test('verifyEditLocalCardTriggersUserAuth', async function() {
     loadTimeData.overrideValues({deviceAuthAvailable: true});
 
-    const section =
-        await createPaymentsSection([createCreditCardEntry()], /*ibans=*/[], {
+    const section = await createPaymentsSection(
+        [createCreditCardEntry()], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
           credit_card_enabled: {value: true},
           payment_methods_mandatory_reauth: {value: true},
         });
@@ -438,6 +483,66 @@ suite('PaymentsSection', function() {
     paymentsManagerProxy.assertExpectations(expectations);
   });
 
+  // Regression test for https://crbug.com/442105451, to make sure that the
+  // mandatory auth pref is only updated via payment_section.ts and not the
+  // general settings pref code.
+  test('verifyMandatoryAuthToggleHasNoSetPref', async function() {
+    loadTimeData.overrideValues({deviceAuthAvailable: true});
+
+    const section = await createPaymentsSection(
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
+          credit_card_enabled: {value: true},
+          payment_methods_mandatory_reauth: {value: false},
+        });
+
+    const mandatoryAuthToggle =
+        section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
+            '#mandatoryAuthToggle');
+
+    // <if expr="is_win or is_macosx or is_chromeos">
+    assertTrue(!!mandatoryAuthToggle);
+    assertTrue(mandatoryAuthToggle.hasAttribute('no-set-pref'));
+    // </if>
+    // <if expr="not is_win and not is_macosx and not is_chromeos">
+    assertFalse(!!mandatoryAuthToggle);
+    // </if>
+  });
+
+  //<if expr="is_chromeos">
+  test('verifyMandatoryAuthToggleShownWhenFlagEnabled', async function() {
+    loadTimeData.overrideValues({
+      deviceAuthAvailable: true,
+      mandatoryReauthFeatureFlagEnabled: true,
+    });
+
+    const section = await createPaymentsSection(
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
+          credit_card_enabled: {value: true},
+          payment_methods_mandatory_reauth: {value: true},
+        });
+
+    const mandatoryAuthToggle =
+        section.shadowRoot!.querySelector('#mandatoryAuthToggle');
+    assertTrue(!!mandatoryAuthToggle);
+  });
+
+  test('verifyMandatoryAuthToggleHiddenWhenFlagDisabled', async function() {
+    loadTimeData.overrideValues({
+      deviceAuthAvailable: true,
+      mandatoryReauthFeatureFlagEnabled: false,
+    });
+
+    const section = await createPaymentsSection(
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
+          credit_card_enabled: {value: true},
+          payment_methods_mandatory_reauth: {value: true},
+        });
+
+    const mandatoryAuthToggle =
+        section.shadowRoot!.querySelector('#mandatoryAuthToggle');
+    assertFalse(!!mandatoryAuthToggle);
+  });
+  //</if>
   // --------- End of Reauth Tests ---------
 
   test('verifyCvcStorageToggleIsShown', async function() {
@@ -446,7 +551,7 @@ suite('PaymentsSection', function() {
     });
 
     const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[], {
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
           credit_card_enabled: {value: true},
         });
     const cvcStorageToggle =
@@ -456,7 +561,7 @@ suite('PaymentsSection', function() {
     assertTrue(!!cvcStorageToggle);
     assertEquals(
         loadTimeData.getString('enableCvcStorageSublabel'),
-        cvcStorageToggle.subLabelWithLink.toString());
+        cvcStorageToggle.subLabelWithLink);
     assertEquals(
         loadTimeData.getString('enableCvcStorageAriaLabelForNoCvcSaved'),
         cvcStorageToggle.ariaLabel);
@@ -470,7 +575,7 @@ suite('PaymentsSection', function() {
     const creditCard = createCreditCardEntry();
     creditCard.cvc = '•••';
     const section = await createPaymentsSection(
-        /*creditCards=*/[creditCard], /*ibans=*/[], {
+        /*creditCards=*/[creditCard], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
           credit_card_enabled: {value: true},
         });
     const cvcStorageToggle =
@@ -480,7 +585,7 @@ suite('PaymentsSection', function() {
     assertTrue(!!cvcStorageToggle);
     assertEquals(
         loadTimeData.getString('enableCvcStorageDeleteDataSublabel'),
-        cvcStorageToggle.subLabelWithLink.toString());
+        cvcStorageToggle.subLabelWithLink);
     assertEquals(
         loadTimeData.getString('enableCvcStorageLabel'),
         cvcStorageToggle.ariaLabel);
@@ -494,7 +599,8 @@ suite('PaymentsSection', function() {
 
         const creditCard = createCreditCardEntry();
         const section = await createPaymentsSection(
-            /*creditCards=*/[creditCard], /*ibans=*/[], {
+            /*creditCards=*/[creditCard], /*ibans=*/[],
+            /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: true},
             });
         const cvcStorageToggle =
@@ -504,7 +610,7 @@ suite('PaymentsSection', function() {
         assertTrue(!!cvcStorageToggle);
         assertEquals(
             loadTimeData.getString('enableCvcStorageSublabel'),
-            cvcStorageToggle.subLabelWithLink.toString());
+            cvcStorageToggle.subLabelWithLink);
       });
 
   // Test to verify if bulk delete is triggered or not based on how user
@@ -522,7 +628,8 @@ suite('PaymentsSection', function() {
           const creditCard = createCreditCardEntry();
           creditCard.cvc = '•••';
           const section = await createPaymentsSection(
-              /*creditCards=*/[creditCard], /*ibans=*/[], {
+              /*creditCards=*/[creditCard], /*ibans=*/[],
+              /*payOverTimeIssuers=*/[], {
                 credit_card_enabled: {value: true},
               });
 
@@ -532,7 +639,7 @@ suite('PaymentsSection', function() {
           assertTrue(!!cvcStorageToggle);
           assertEquals(
               loadTimeData.getString('enableCvcStorageDeleteDataSublabel'),
-              cvcStorageToggle.subLabelWithLink.toString());
+              cvcStorageToggle.subLabelWithLink);
 
           const cvcStorageToggleSublabelLink =
               cvcStorageToggle.$.labelWrapper
@@ -587,7 +694,7 @@ suite('PaymentsSection', function() {
     });
 
     const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[], {
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
           credit_card_enabled: {value: true},
         });
     const cardBenefitsToggle =
@@ -596,27 +703,11 @@ suite('PaymentsSection', function() {
 
     assertTrue(!!cardBenefitsToggle);
     assertEquals(
-        loadTimeData.getString('cardBenefitsLabel'),
-        cardBenefitsToggle.label.toString());
+        loadTimeData.getString('cardBenefitsLabel'), cardBenefitsToggle.label);
     assertEquals(
         loadTimeData.getString('cardBenefitsToggleSublabel'),
-        cardBenefitsToggle.subLabelWithLink.toString());
+        cardBenefitsToggle.subLabelWithLink);
   });
-
-  test(
-      'verifyCardBenefitsToggleIsNotShownWhenCardBenefitsFlagIsOff',
-      async function() {
-        loadTimeData.overrideValues({
-          autofillCardBenefitsAvailable: false,
-        });
-
-        const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
-              credit_card_enabled: {value: true},
-            });
-
-        assertFalse(!!section.shadowRoot!.querySelector('#cardBenefitsToggle'));
-      });
 
   test(
       'verifyCardBenefitsToggleIsDisabledWhenCreditCardEnabledIsOff',
@@ -626,7 +717,7 @@ suite('PaymentsSection', function() {
         });
 
         const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
+            /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
               credit_card_enabled: {value: false},
             });
         const cardBenefitsToggle =
@@ -643,7 +734,7 @@ suite('PaymentsSection', function() {
     });
 
     const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[], {
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
           credit_card_enabled: {value: true},
         });
     const cardBenefitsToggle =
@@ -665,7 +756,7 @@ suite('PaymentsSection', function() {
     });
 
     const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[], {
+        /*creditCards=*/[], /*ibans=*/[], /*payOverTimeIssuers=*/[], {
           credit_card_enabled: {value: true},
           payment_card_benefits: {value: true},
         });
@@ -679,106 +770,5 @@ suite('PaymentsSection', function() {
 
     assertFalse(cardBenefitsToggle.checked);
     assertFalse(cardBenefitsToggle.pref!.value);
-  });
-
-  test('verifyPayOverTimeToggleIsShown', async function() {
-    loadTimeData.overrideValues({
-      shouldShowPayOverTimeSettings: true,
-    });
-
-    const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[], {
-          credit_card_enabled: {value: true},
-        });
-    const payOverTimeToggle =
-        section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
-            '#payOverTimeToggle');
-
-    assertTrue(!!payOverTimeToggle);
-    assertEquals(
-        loadTimeData.getString('autofillPayOverTimeSettingsLabel'),
-        payOverTimeToggle.label.toString());
-    assertEquals(
-        loadTimeData.getString('autofillPayOverTimeSettingsSublabel'),
-        payOverTimeToggle.subLabelWithLink.toString());
-  });
-
-  test(
-      'verifyPayOverTimeToggleIsNotShownWhenShouldShowPayOverTimeSettingsIsFalse',
-      async function() {
-        loadTimeData.overrideValues({
-          shouldShowPayOverTimeSettings: false,
-        });
-
-        const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
-              credit_card_enabled: {value: true},
-            });
-
-        assertFalse(!!section.shadowRoot!.querySelector('#payOverTimeToggle'));
-      });
-
-  test(
-      'verifyPayOverTimeToggleIsDisabledWhenCreditCardEnabledIsOff',
-      async function() {
-        loadTimeData.overrideValues({
-          shouldShowPayOverTimeSettings: true,
-        });
-
-        const section = await createPaymentsSection(
-            /*creditCards=*/[], /*ibans=*/[], {
-              credit_card_enabled: {value: false},
-            });
-        const payOverTimeToggle =
-            section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
-                '#payOverTimeToggle');
-
-        assertTrue(!!payOverTimeToggle);
-        assertTrue(payOverTimeToggle.disabled);
-      });
-
-  test('verifyPayOverTimeToggleSublabelLinkClickOpensUrl', async function() {
-    loadTimeData.overrideValues({
-      shouldShowPayOverTimeSettings: true,
-    });
-
-    const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[], {
-          credit_card_enabled: {value: true},
-        });
-    const payOverTimeToggle =
-        section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
-            '#payOverTimeToggle');
-    assertTrue(!!payOverTimeToggle);
-
-    const link = payOverTimeToggle.shadowRoot!.querySelector('a');
-    assertTrue(!!link);
-    link.click();
-
-    const url = await openWindowProxy.whenCalled('openUrl');
-    assertEquals(
-        loadTimeData.getString('autofillPayOverTimeSettingsLearnMoreUrl'), url);
-  });
-
-  test('verifyPayOverTimePrefIsFalseWhenToggleIsOff', async function() {
-    loadTimeData.overrideValues({
-      shouldShowPayOverTimeSettings: true,
-    });
-
-    const section = await createPaymentsSection(
-        /*creditCards=*/[], /*ibans=*/[], {
-          credit_card_enabled: {value: true},
-          bnpl_enabled: {value: true},
-        });
-    const payOverTimeToggle =
-        section.shadowRoot!.querySelector<SettingsToggleButtonElement>(
-            '#payOverTimeToggle');
-    assertTrue(!!payOverTimeToggle);
-    assertTrue(payOverTimeToggle.checked);
-
-    payOverTimeToggle.click();
-
-    assertFalse(payOverTimeToggle.checked);
-    assertFalse(payOverTimeToggle.pref!.value);
   });
 });

@@ -6,30 +6,33 @@
 
 #include <memory>
 #include <optional>
-#include <ostream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "base/debug/crash_logging.h"
+#include "base/feature_list.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/not_fatal_until.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/signin_manager.h"
 #include "chrome/browser/supervised_user/child_accounts/child_account_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_browser_utils.h"
 #include "chrome/browser/supervised_user/supervised_user_navigation_observer.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
+#include "chrome/browser/supervised_user/supervised_user_url_filtering_service_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_verification_page.h"
 #include "components/signin/public/identity_manager/tribool.h"
 #include "components/supervised_user/core/browser/child_account_service.h"
 #include "components/supervised_user/core/browser/family_link_user_capabilities.h"
 #include "components/supervised_user/core/browser/supervised_user_interstitial.h"
-#include "components/supervised_user/core/browser/supervised_user_preferences.h"
 #include "components/supervised_user/core/browser/supervised_user_service.h"
-#include "components/supervised_user/core/browser/supervised_user_url_filter.h"
+#include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"
 #include "components/supervised_user/core/browser/supervised_user_utils.h"
+#include "components/supervised_user/core/common/features.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle.h"
@@ -37,36 +40,7 @@
 #include "url/gurl.h"
 
 namespace supervised_user {
-
 namespace {
-std::ostream& operator<<(std::ostream& stream,
-                         ClassifyUrlThrottleStatus status) {
-  switch (status) {
-    case ClassifyUrlThrottleStatus::kContinue:
-      stream << "Continue";
-      return stream;
-    case ClassifyUrlThrottleStatus::kProceed:
-      stream << "Proceed";
-      return stream;
-    case ClassifyUrlThrottleStatus::kDefer:
-      stream << "Defer";
-      return stream;
-    case ClassifyUrlThrottleStatus::kDeferAndScheduleInterstitial:
-      stream << "DeferAndScheduleInterstitial";
-      return stream;
-    case ClassifyUrlThrottleStatus::kCancel:
-      stream << "Cancel";
-      return stream;
-    case ClassifyUrlThrottleStatus::kResume:
-      stream << "Resume";
-      return stream;
-    case ClassifyUrlThrottleStatus::kCancelDeferredNavigation:
-      stream << "CancelDeferredNavigation";
-      return stream;
-    default:
-      NOTREACHED();
-  }
-}
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 bool ShouldShowReAuthInterstitial(
@@ -79,14 +53,23 @@ bool ShouldShowReAuthInterstitial(
 }
 #endif
 
+WebFilterMetricsOptions GetWebFilterMetricsOptions(
+    content::NavigationHandle& navigation_handle) {
+  return {
+      .transition_type = navigation_handle.GetPageTransition(),
+      .filtering_context = FilteringContext::kNavigationThrottle,
+  };
+}
+
 }  // namespace
 
 ClassifyUrlNavigationThrottle::ThrottleCheckResult
 ClassifyUrlNavigationThrottle::WillProcessRequest() {
   // We do not yet support prerendering for supervised users.
   if (navigation_handle()->IsInPrerenderedMainFrame()) {
-    return *NextNavigationState(ClassifyUrlThrottleStatus::kCancel);
+    return CANCEL;
   }
+
   CheckURL();
 
   // It is possible that check was synchronous. If that's the case,
@@ -97,7 +80,7 @@ ClassifyUrlNavigationThrottle::WillProcessRequest() {
     return DeferAndScheduleInterstitial(*result);
   }
 
-  return *NextNavigationState(ClassifyUrlThrottleStatus::kContinue);
+  return PROCEED;
 }
 
 ClassifyUrlNavigationThrottle::ThrottleCheckResult
@@ -117,7 +100,8 @@ ClassifyUrlNavigationThrottle::WillProcessResponse() {
   if (!list_.IsDecided()) {
     // Defer navigation until checks are conclusive
     waiting_for_decision_.emplace();
-    return *NextNavigationState(ClassifyUrlThrottleStatus::kDefer);
+    deferred_ = true;
+    return DEFER;
   }
 
   if (auto result = list_.GetBlockingResult(); result.has_value()) {
@@ -129,7 +113,9 @@ ClassifyUrlNavigationThrottle::WillProcessResponse() {
   base::UmaHistogramTimes(kClassifiedEarlierThanContentResponseHistogramName,
                           list_.ElapsedSinceDecided());
   VLOG(1) << "Decision was ready ahead of time:" << list_.ElapsedSinceDecided();
-  return *NextNavigationState(ClassifyUrlThrottleStatus::kProceed);
+  base::UmaHistogramEnumeration(kClassifyUrlThrottleFinalStatusHistogramName,
+                                ClassifyUrlThrottleFinalStatus::kAllowed);
+  return PROCEED;
 }
 
 void ClassifyUrlNavigationThrottle::CheckURL() {
@@ -137,27 +123,25 @@ void ClassifyUrlNavigationThrottle::CheckURL() {
   ClassifyUrlCheckList::Key key = list_.NewCheck();
 
   if (navigation_handle()->IsInPrimaryMainFrame()) {
-    url_filter_->GetFilteringBehaviorWithAsyncChecks(
+    url_filtering_service()->GetFilteringBehavior(
         url,
-        base::BindOnce(&ClassifyUrlNavigationThrottle::OnURLCheckDone,
-                       weak_ptr_factory_.GetWeakPtr(), key),
         ShouldContentSkipParentAllowlistFiltering(
             navigation_handle()->GetWebContents()->GetOutermostWebContents()),
-        FilteringContext::kNavigationThrottle,
-        navigation_handle()->GetPageTransition());
+        base::BindOnce(&ClassifyUrlNavigationThrottle::OnURLCheckDone,
+                       weak_ptr_factory_.GetWeakPtr(), key),
+        GetWebFilterMetricsOptions(*navigation_handle()));
   } else {
-    url_filter_->GetFilteringBehaviorForSubFrameWithAsyncChecks(
+    url_filtering_service()->GetFilteringBehaviorForSubFrame(
         url, navigation_handle()->GetWebContents()->GetVisibleURL(),
         base::BindOnce(&ClassifyUrlNavigationThrottle::OnURLCheckDone,
                        weak_ptr_factory_.GetWeakPtr(), key),
-        FilteringContext::kNavigationThrottle,
-        navigation_handle()->GetPageTransition());
+        GetWebFilterMetricsOptions(*navigation_handle()));
   }
 }
 
 void ClassifyUrlNavigationThrottle::OnURLCheckDone(
     ClassifyUrlCheckList::Key key,
-    SupervisedUserURLFilter::Result filtering_result) {
+    WebFilteringResult filtering_result) {
   if (list_.IsDecided()) {
     // If the verdict is already determined there's no point in processing the
     // check. This will reduce noise in metrics, but side-effects might apply
@@ -191,12 +175,14 @@ void ClassifyUrlNavigationThrottle::OnURLCheckDone(
     base::UmaHistogramTimes(kClassifiedLaterThanContentResponseHistogramName,
                             waiting_for_decision_->Elapsed());
     VLOG(1) << "Had to delay decision:" << waiting_for_decision_->Elapsed();
-    NextNavigationState(ClassifyUrlThrottleStatus::kResume);
+    base::UmaHistogramEnumeration(kClassifyUrlThrottleFinalStatusHistogramName,
+                                  ClassifyUrlThrottleFinalStatus::kAllowed);
+    Resume();
   }
 }
 
 void ClassifyUrlNavigationThrottle::ScheduleInterstitial(
-    SupervisedUserURLFilter::Result result) {
+    WebFilteringResult result) {
   // Don't show interstitial synchronously - it doesn't seem like a good idea to
   // show an interstitial right in the middle of a call into a
   // NavigationThrottle. This also lets OnInterstitialResult to be invoked
@@ -209,9 +195,9 @@ void ClassifyUrlNavigationThrottle::ScheduleInterstitial(
 }
 
 void ClassifyUrlNavigationThrottle::ShowInterstitial(
-    SupervisedUserURLFilter::Result result) {
+    WebFilteringResult result) {
   SupervisedUserNavigationObserver::OnRequestBlocked(
-      navigation_handle()->GetWebContents(), result.url, result.reason,
+      navigation_handle()->GetWebContents(), result,
       navigation_handle()->GetNavigationId(),
       navigation_handle()->GetFrameTreeNodeId(),
       base::BindRepeating(&ClassifyUrlNavigationThrottle::OnInterstitialResult,
@@ -219,7 +205,7 @@ void ClassifyUrlNavigationThrottle::ShowInterstitial(
 }
 
 void ClassifyUrlNavigationThrottle::OnInterstitialResult(
-    SupervisedUserURLFilter::Result result,
+    WebFilteringResult result,
     InterstitialResultCallbackActions action,
     bool already_sent_request,
     bool is_main_frame) {
@@ -240,116 +226,117 @@ void ClassifyUrlNavigationThrottle::OnInterstitialResult(
             content::NavigationThrottle::ThrottleCheckResult(
                 CANCEL, net::ERR_BLOCKED_BY_CLIENT,
                 CreateReauthenticationInterstitialForBlockedSites(
-                    *navigation_handle(), result.reason)));
+                    *navigation_handle())));
         return;
       }
 #endif
-      Profile* profile = Profile::FromBrowserContext(
-          navigation_handle()->GetWebContents()->GetBrowserContext());
-      std::string interstitial_html =
-          SupervisedUserInterstitial::GetHTMLContents(
-              SupervisedUserServiceFactory::GetForProfile(profile),
-              profile->GetPrefs(), result.reason, already_sent_request,
-              is_main_frame, g_browser_process->GetApplicationLocale());
       CancelDeferredNavigation(content::NavigationThrottle::ThrottleCheckResult(
-          CANCEL, net::ERR_BLOCKED_BY_CLIENT, std::move(interstitial_html)));
+          CANCEL, net::ERR_BLOCKED_BY_CLIENT,
+          GetInterstitialHTML(result, already_sent_request, is_main_frame)));
+
       break;
     }
   }
+}
+
+std::string ClassifyUrlNavigationThrottle::GetInterstitialHTML(
+    WebFilteringResult result,
+    bool already_sent_request,
+    bool is_main_frame) const {
+#if BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(kSupervisedUserUseUrlFilteringService)) {
+    switch (result.interstitial_mode) {
+      case InterstitialMode::kLearnMoreInterstitial:
+        return SupervisedUserInterstitial::GetHTMLContentsWithoutApprovals(
+            result.url, g_browser_process->GetApplicationLocale());
+      case InterstitialMode::kParentalReviewInterstitial:
+        return SupervisedUserInterstitial::GetHTMLContentsWithApprovals(
+            supervised_user_service(), result.reason, already_sent_request,
+            is_main_frame, g_browser_process->GetApplicationLocale());
+      default:
+        NOTREACHED();
+    }
+  } else {
+    Profile* profile = Profile::FromBrowserContext(
+        navigation_handle()->GetWebContents()->GetBrowserContext());
+
+    // Family link supervised users should not see local supervision
+    // interstitials. Other users can see these interstitials if they have local
+    // supervision enabled.
+    if (!IsSubjectToParentalControls(*profile->GetPrefs()) &&
+        g_browser_process->device_parental_controls().IsWebFilteringEnabled()) {
+      return SupervisedUserInterstitial::GetHTMLContentsWithoutApprovals(
+          result.url, g_browser_process->GetApplicationLocale());
+    }
+  }
+
+#endif
+  SCOPED_CRASH_KEY_BOOL(
+      "SupervisedUser", "dpc_web_filter_enabled",
+      g_browser_process->device_parental_controls().IsWebFilteringEnabled());
+  CHECK(
+      result.interstitial_mode == InterstitialMode::kParentalReviewInterstitial,
+      base::NotFatalUntil::M155)
+      << "Non-android platforms should not produce other interstitials than "
+         "parental review.";
+  return SupervisedUserInterstitial::GetHTMLContentsWithApprovals(
+      supervised_user_service(), result.reason, already_sent_request,
+      is_main_frame, g_browser_process->GetApplicationLocale());
 }
 
 const GURL& ClassifyUrlNavigationThrottle::currently_navigated_url() const {
   return navigation_handle()->GetURL();
 }
 
-std::unique_ptr<content::NavigationThrottle>
-MaybeCreateClassifyUrlNavigationThrottleFor(
-    content::NavigationHandle* navigation_handle) {
-  Profile* profile = Profile::FromBrowserContext(
-      navigation_handle->GetWebContents()->GetBrowserContext());
-  CHECK(profile);
-  if (!profile->IsChild()) {
-    return nullptr;
-  }
-
-  SupervisedUserURLFilter* filter =
-      SupervisedUserServiceFactory::GetForProfile(profile)->GetURLFilter();
-  CHECK(filter) << "profile->IsChild() implies SupervisedUserService, which "
-                   "implies SupervisedUserURLFilter";
-
-  return ClassifyUrlNavigationThrottle::MakeUnique(navigation_handle, filter);
+SupervisedUserService* ClassifyUrlNavigationThrottle::supervised_user_service()
+    const {
+  return SupervisedUserServiceFactory::GetForProfile(
+      Profile::FromBrowserContext(
+          navigation_handle()->GetWebContents()->GetBrowserContext()));
 }
 
-std::optional<ClassifyUrlNavigationThrottle::ThrottleCheckResult>
-ClassifyUrlNavigationThrottle::NextNavigationState(
-    ClassifyUrlThrottleStatus status) {
-  VLOG(1) << status;
-  base::UmaHistogramEnumeration(kClassifyUrlThrottleStatusHistogramName,
-                                status);
+SupervisedUserUrlFilteringService*
+ClassifyUrlNavigationThrottle::url_filtering_service() const {
+  return SupervisedUserUrlFilteringServiceFactory::GetForProfile(
+      Profile::FromBrowserContext(
+          navigation_handle()->GetWebContents()->GetBrowserContext()));
+}
 
-  // Final states: Proceed/Resume, CancelDeferredNavigation
-  switch (status) {
-    case ClassifyUrlThrottleStatus::kProceed:
-    case ClassifyUrlThrottleStatus::kResume:
-      base::UmaHistogramEnumeration(
-          kClassifyUrlThrottleFinalStatusHistogramName,
-          ClassifyUrlThrottleFinalStatus::kAllowed);
-      break;
-    case ClassifyUrlThrottleStatus::kCancelDeferredNavigation:
-      base::UmaHistogramEnumeration(
-          kClassifyUrlThrottleFinalStatusHistogramName,
-          ClassifyUrlThrottleFinalStatus::kBlocked);
-      break;
-    case ClassifyUrlThrottleStatus::kContinue:
-    case ClassifyUrlThrottleStatus::kDefer:
-    case ClassifyUrlThrottleStatus::kDeferAndScheduleInterstitial:
-      // Don't handle intermediate states.
-    case ClassifyUrlThrottleStatus::kCancel:
-      // Currently, Cancel is not reachable: the
-      // SupervisedUserGoogleAuthNavigationThrottle class is handling it first.
-      break;
+void ClassifyUrlNavigationThrottle::MaybeCreateAndAdd(
+    content::NavigationThrottleRegistry& registry) {
+  Profile* profile = Profile::FromBrowserContext(
+      registry.GetNavigationHandle().GetWebContents()->GetBrowserContext());
+
+  // Off the record profiles don't have the infrastructure to support the
+  // ClassifyUrlNavigationThrottle, so we should not add it.
+  if (profile->IsOffTheRecord()) {
+    return;
   }
 
-  switch (status) {
-    case ClassifyUrlThrottleStatus::kContinue:
-    case ClassifyUrlThrottleStatus::kProceed:
-      return NavigationThrottle::PROCEED;
-    case ClassifyUrlThrottleStatus::kDefer:
-    case ClassifyUrlThrottleStatus::kDeferAndScheduleInterstitial:
-      deferred_ = true;
-      return NavigationThrottle::DEFER;
-    case ClassifyUrlThrottleStatus::kCancel:
-      // Currently, Cancel is not reachable: the
-      // SupervisedUserGoogleAuthNavigationThrottle class is handling it first.
-      return NavigationThrottle::CANCEL;
-    case ClassifyUrlThrottleStatus::kResume:
-      Resume();
-      return std::nullopt;
-    case ClassifyUrlThrottleStatus::kCancelDeferredNavigation:
-      return std::nullopt;
+  // This check is not making logical difference as the throttle would allow
+  // this navigation anyway, but in this case no metrics will be recorded.
+  if (SupervisedUserUrlFilteringServiceFactory::GetForProfile(profile)
+          ->GetWebFilterType() == WebFilterType::kDisabled) {
+    return;
   }
+
+  registry.AddThrottle(
+      base::WrapUnique(new ClassifyUrlNavigationThrottle(registry)));
 }
 
 ClassifyUrlNavigationThrottle::ThrottleCheckResult
 ClassifyUrlNavigationThrottle::DeferAndScheduleInterstitial(
-    SupervisedUserURLFilter::Result result) {
+    WebFilteringResult result) {
   ScheduleInterstitial(result);
-  return *NextNavigationState(
-      ClassifyUrlThrottleStatus::kDeferAndScheduleInterstitial);
+  deferred_ = true;
+  return DEFER;
 }
 
 void ClassifyUrlNavigationThrottle::CancelDeferredNavigation(
     ThrottleCheckResult result) {
+  base::UmaHistogramEnumeration(kClassifyUrlThrottleFinalStatusHistogramName,
+                                ClassifyUrlThrottleFinalStatus::kBlocked);
   content::NavigationThrottle::CancelDeferredNavigation(result);
-  NextNavigationState(ClassifyUrlThrottleStatus::kCancelDeferredNavigation);
-}
-
-std::unique_ptr<ClassifyUrlNavigationThrottle>
-ClassifyUrlNavigationThrottle::MakeUnique(
-    content::NavigationHandle* navigation_handle,
-    SupervisedUserURLFilter* url_filter) {
-  return base::WrapUnique(
-      new ClassifyUrlNavigationThrottle(navigation_handle, url_filter));
 }
 
 const char* ClassifyUrlNavigationThrottle::GetNameForLogging() {
@@ -357,9 +344,8 @@ const char* ClassifyUrlNavigationThrottle::GetNameForLogging() {
 }
 
 ClassifyUrlNavigationThrottle::ClassifyUrlNavigationThrottle(
-    content::NavigationHandle* navigation_handle,
-    SupervisedUserURLFilter* url_filter)
-    : content::NavigationThrottle(navigation_handle), url_filter_(url_filter) {}
+    content::NavigationThrottleRegistry& registry)
+    : content::NavigationThrottle(registry) {}
 ClassifyUrlNavigationThrottle::~ClassifyUrlNavigationThrottle() = default;
 
 ClassifyUrlNavigationThrottle::ClassifyUrlCheckList::ClassifyUrlCheckList() =
@@ -382,7 +368,7 @@ ClassifyUrlNavigationThrottle::ClassifyUrlCheckList::NewCheck() {
 
 void ClassifyUrlNavigationThrottle::ClassifyUrlCheckList::UpdateCheck(
     Key key,
-    SupervisedUserURLFilter::Result result) {
+    WebFilteringResult result) {
   // Every time a check is completed update the timer, so that it only measures
   // elapsed time from the last meaningful check to when the verdict was needed.
   elapsed_.emplace();
@@ -395,7 +381,7 @@ ClassifyUrlNavigationThrottle::ClassifyUrlCheckList::ElapsedSinceDecided()
   return elapsed_->Elapsed();
 }
 
-std::optional<SupervisedUserURLFilter::Result>
+std::optional<WebFilteringResult>
 ClassifyUrlNavigationThrottle::ClassifyUrlCheckList::GetBlockingResult() const {
   for (const auto& result : results_) {
     if (!result.has_value()) {

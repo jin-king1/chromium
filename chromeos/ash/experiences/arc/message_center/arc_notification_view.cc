@@ -13,6 +13,7 @@
 #include "ash/system/notification_center/message_center_constants.h"
 #include "ash/system/notification_center/message_center_utils.h"
 #include "ash/system/notification_center/notification_grouping_controller.h"
+#include "base/functional/callback_helpers.h"
 #include "base/time/time.h"
 #include "chromeos/ash/experiences/arc/message_center/arc_notification_content_view.h"
 #include "chromeos/ash/experiences/arc/message_center/arc_notification_item.h"
@@ -35,8 +36,10 @@
 #include "ui/views/animation/animation_builder.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/button/image_button.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_utils.h"
 
 DEFINE_UI_CLASS_PROPERTY_TYPE(ash::ArcNotificationView*)
@@ -99,7 +102,7 @@ ArcNotificationView::ArcNotificationView(
 
   SetProperty(kArcNotificationViewPropertyKey, this);
 
-  item_->AddObserver(this);
+  item_observation_.Observe(item_);
 
   AddChildViewRaw(content_view_.get());
 
@@ -114,6 +117,7 @@ ArcNotificationView::ArcNotificationView(
     layer()->SetRoundedCornerRadius(
         gfx::RoundedCornersF{kMessagePopupCornerRadius});
     if (chromeos::features::IsSystemBlurEnabled()) {
+      layer()->SetFillsBoundsOpaquely(false);
       layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
       layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
     }
@@ -139,11 +143,7 @@ ArcNotificationView::ArcNotificationView(
   GetViewAccessibility().SetIsIgnored(true);
 }
 
-ArcNotificationView::~ArcNotificationView() {
-  if (item_) {
-    item_->RemoveObserver(this);
-  }
-}
+ArcNotificationView::~ArcNotificationView() = default;
 
 void ArcNotificationView::OnContentFocused() {
   SchedulePaint();
@@ -439,18 +439,9 @@ bool ArcNotificationView::HandleAccessibleAction(
   return false;
 }
 
-void ArcNotificationView::OnThemeChanged() {
-  message_center::MessageView::OnThemeChanged();
-
-  if (content_view_->background()) {
-    background()->SetNativeControlColor(
-        GetColorProvider()->GetColor(cros_tokens::kCrosSysSystemBaseElevated));
-  }
-}
-
 void ArcNotificationView::OnItemDestroying() {
   DCHECK(item_);
-  item_->RemoveObserver(this);
+  item_observation_.Reset();
   item_ = nullptr;
 }
 

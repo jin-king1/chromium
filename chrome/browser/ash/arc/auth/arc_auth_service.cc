@@ -10,11 +10,12 @@
 
 #include "ash/constants/ash_switches.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
-#include "base/memory/singleton.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/account_manager/account_apps_availability_factory.h"
@@ -28,14 +29,13 @@
 #include "chrome/browser/ash/arc/session/arc_provisioning_result.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/signin_ui_util.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
-#include "chrome/browser/ui/webui/signin/ash/inline_login_dialog.h"
-#include "chrome/common/webui_url_constants.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator.h"
+#include "chrome/browser/ui/ash/account_manager/account_manager_dialog_coordinator_factory.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
@@ -44,9 +44,12 @@
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_management_transition.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
-#include "components/account_manager_core/account_manager_facade.h"
-#include "components/account_manager_core/chromeos/account_manager_facade_factory.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
+#include "components/account_manager_core/account_addition_options.h"
+#include "components/account_manager_core/account_manager_metrics.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_context.h"
@@ -73,17 +76,33 @@ class ArcAuthServiceFactory
   static constexpr const char* kName = "ArcAuthServiceFactory";
 
   static ArcAuthServiceFactory* GetInstance() {
-    return base::Singleton<ArcAuthServiceFactory>::get();
+    static base::NoDestructor<ArcAuthServiceFactory> instance;
+    return instance.get();
   }
 
  private:
-  friend struct base::DefaultSingletonTraits<ArcAuthServiceFactory>;
+  friend base::NoDestructor<ArcAuthServiceFactory>;
 
   ArcAuthServiceFactory() {
     DependsOn(IdentityManagerFactory::GetInstance());
     DependsOn(ash::AccountAppsAvailabilityFactory::GetInstance());
+    DependsOn(ash::AccountManagerDialogCoordinatorFactory::GetInstance());
   }
   ~ArcAuthServiceFactory() override = default;
+};
+
+class ArcAuthServiceDelegateImpl : public ArcAuthService::Delegate {
+ public:
+  explicit ArcAuthServiceDelegateImpl(user_manager::User* user)
+      : user_(CHECK_DEREF(user)) {}
+
+  void OpenSettingsAppWithPeopleSection() override {
+    ash::SettingsAppManager::Get()->Open(
+        *user_, {.sub_page = chromeos::settings::mojom::kPeopleSectionPath});
+  }
+
+ private:
+  const raw_ref<user_manager::User> user_;
 };
 
 mojom::ChromeAccountType GetAccountType(const Profile* profile) {
@@ -134,22 +153,26 @@ mojom::AccountInfoPtr CreateAccountInfo(bool is_enforced,
 }
 
 bool IsPrimaryGaiaAccount(const GaiaId& gaia_id) {
-  // |GetPrimaryUser| is fine because ARC is only available on the first
+  // |GetPrimarySession| is fine because ARC is only available on the first
   // (Primary) account that participates in multi-signin.
-  const user_manager::User* user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
-  DCHECK(user);
-  return user->GetAccountId().GetAccountType() == AccountType::GOOGLE &&
-         user->GetAccountId().GetGaiaId() == gaia_id;
+  const auto* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  DCHECK(primary_session);
+  return primary_session->account_id().GetAccountType() ==
+             AccountType::GOOGLE &&
+         primary_session->account_id().GetGaiaId() == gaia_id;
 }
 
 bool IsPrimaryOrDeviceLocalAccount(
     const signin::IdentityManager* identity_manager,
     const std::string& account_name) {
-  // |GetPrimaryUser| is fine because ARC is only available on the first
+  // |GetPrimarySession| is fine because ARC is only available on the first
   // (Primary) account that participates in multi-signin.
+  const auto* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  DCHECK(primary_session);
   const user_manager::User* user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
+      user_manager::UserManager::Get()->FindUser(primary_session->account_id());
   DCHECK(user);
 
   // There is no Gaia user for device local accounts, but in this case there is
@@ -178,8 +201,8 @@ std::string GetAccountName(Profile* profile) {
       // IdentityManager::GetPrimaryAccountInfo(
       //    signin::ConsentLevel::kSignin).email might be more appropriate
       // here, but this is what we have done historically.
-      return ash::ProfileHelper::Get()
-          ->GetUserByProfile(profile)
+      return ash::BrowserContextHelper::Get()
+          ->GetUserByBrowserContext(profile)
           ->GetDisplayEmail();
     case mojom::ChromeAccountType::ROBOT_ACCOUNT:
       [[fallthrough]];
@@ -232,7 +255,16 @@ ArcAuthService* ArcAuthService::GetForBrowserContext(
 
 ArcAuthService::ArcAuthService(content::BrowserContext* browser_context,
                                ArcBridgeService* arc_bridge_service)
-    : profile_(Profile::FromBrowserContext(browser_context)),
+    :  // TODO(crbug.com/404130092): Inject PrefService via constructor.
+      local_state_(CHECK_DEREF(g_browser_process->local_state())),
+      system_url_loader_factory_(
+          g_browser_process->shared_url_loader_factory()),
+      browser_policy_connector_ash_(
+          g_browser_process->platform_part()->browser_policy_connector_ash()),
+      delegate_(std::make_unique<ArcAuthServiceDelegateImpl>(
+          ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
+              browser_context))),
+      profile_(Profile::FromBrowserContext(browser_context)),
       identity_manager_(IdentityManagerFactory::GetForProfile(profile_)),
       arc_bridge_service_(arc_bridge_service),
       url_loader_factory_(profile_->GetDefaultStoragePartition()
@@ -473,11 +505,12 @@ void ArcAuthService::FetchPrimaryAccountInfo(
   if (account_type == mojom::ChromeAccountType::ROBOT_ACCOUNT) {
     // For robot accounts, which are used in kiosk and public session mode
     // (which includes online demo sessions), use Robot auth code fetching.
-    auth_code_fetcher = std::make_unique<ArcRobotAuthCodeFetcher>();
-    if (url_loader_factory_for_testing_set_) {
-      static_cast<ArcRobotAuthCodeFetcher*>(auth_code_fetcher.get())
-          ->SetURLLoaderFactoryForTesting(url_loader_factory_);
-    }
+    // TODO(crbug.com/522071107): Refactor testing injection.
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
+        url_loader_factory_for_testing_set_ ? url_loader_factory_
+                                            : system_url_loader_factory_;
+    auth_code_fetcher = std::make_unique<ArcRobotAuthCodeFetcher>(
+        std::move(url_loader_factory), browser_policy_connector_ash_);
   } else {
     // Optionally retrieve auth code in silent mode. Use the "unconsented"
     // primary account because this class doesn't care about browser sync
@@ -507,25 +540,30 @@ void ArcAuthService::IsAccountManagerAvailable(
 void ArcAuthService::HandleAddAccountRequest() {
   DCHECK(ash::IsAccountManagerAvailable(profile_));
 
-  ::GetAccountManagerFacade(profile_->GetPath().value())
-      ->ShowAddAccountDialog(
-          account_manager::AccountManagerFacade::AccountAdditionSource::kArc);
+  account_manager::AccountAdditionOptions options;
+  options.is_available_in_arc = true;
+  options.show_arc_availability_picker = true;
+
+  ash::AccountManagerDialogCoordinatorFactory::GetForProfile(profile_)
+      ->ShowAddAccountDialog(account_manager::AccountAdditionSource::kArc,
+                             std::move(options), base::DoNothing());
 }
 
 void ArcAuthService::HandleRemoveAccountRequest(const std::string& email) {
   DCHECK(ash::IsAccountManagerAvailable(profile_));
-
-  chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      profile_, chromeos::settings::mojom::kPeopleSectionPath);
+  delegate_->OpenSettingsAppWithPeopleSection();
 }
 
 void ArcAuthService::HandleUpdateCredentialsRequest(const std::string& email) {
   DCHECK(ash::IsAccountManagerAvailable(profile_));
 
-  ::GetAccountManagerFacade(profile_->GetPath().value())
-      ->ShowReauthAccountDialog(
-          account_manager::AccountManagerFacade::AccountAdditionSource::kArc,
-          email, base::DoNothing());
+  ash::AccountManagerDialogCoordinatorFactory::GetForProfile(profile_)
+      ->ShowReauthAccountDialog(account_manager::AccountAdditionSource::kArc,
+                                email, base::DoNothing());
+}
+
+void ArcAuthService::SetDelegateForTesting(std::unique_ptr<Delegate> delegate) {
+  delegate_ = std::move(delegate);
 }
 
 void ArcAuthService::OnRefreshTokenUpdatedForAccount(
@@ -735,7 +773,7 @@ void ArcAuthService::OnSecondaryAccountAuthCodeFetched(
                           nullptr /* account_info */, true);
 }
 
-void ArcAuthService::DeletePendingTokenRequest(ArcFetcherBase* fetcher) {
+void ArcAuthService::DeletePendingTokenRequest(ArcAuthCodeFetcher* fetcher) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   for (auto it = pending_token_requests_.begin();
@@ -778,8 +816,8 @@ ArcAuthService::CreateArcBackgroundAuthCodeFetcher(
       identity_manager_->FindExtendedAccountInfoByAccountId(account_id);
   DCHECK(!account_info.IsEmpty());
   auto fetcher = std::make_unique<ArcBackgroundAuthCodeFetcher>(
-      url_loader_factory_, profile_, account_id, initial_signin,
-      IsPrimaryGaiaAccount(account_info.gaia));
+      &local_state_.get(), url_loader_factory_, profile_, account_id,
+      initial_signin, IsPrimaryGaiaAccount(account_info.gaia));
 
   return fetcher;
 }

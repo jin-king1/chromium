@@ -15,44 +15,48 @@
 #include "components/signin/public/base/signin_buildflags.h"
 
 struct CoreAccountInfo;
+class Browser;
 class Profile;
-class ProfilePickerSignedInFlowController;
+class ProfilePickerPostSignInAdapter;
 class ForceSigninUIError;
+
+namespace signin {
+enum class DeviceSignalsDisclaimerResult;
+}
 
 class ProfilePickerFlowController : public ProfileManagementFlowControllerImpl {
  public:
   ProfilePickerFlowController(ProfilePickerWebContentsHost* host,
                               ClearHostClosure clear_host_callback,
                               ProfilePicker::EntryPoint entry_point,
-                              const GURL& selected_profile_target_url);
+                              const GURL& selected_profile_target_url,
+                              const std::string& initial_email = std::string());
   ~ProfilePickerFlowController() override;
 
   void Init() override;
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  void SwitchToDiceSignIn(ProfilePicker::ProfileInfo profile_info,
-                          StepSwitchFinishedCallback switch_finished_callback);
+  void SwitchToSignIn(ProfilePicker::ProfileInfo profile_info,
+                      StepSwitchFinishedCallback switch_finished_callback);
 
   void SwitchToReauth(
       Profile* profile,
+      StepSwitchFinishedCallback switch_finished_callback,
       base::OnceCallback<void(const ForceSigninUIError&)> on_error_callback);
-#endif
 
-  void CancelPostSignInFlow() override;
+  void CancelSigninFlow() override;
 
   std::u16string GetFallbackAccessibleWindowTitle() const override;
 
-  base::FilePath GetSwitchProfilePathOrEmpty() const;
-
   // Switch to the flow that is shown when the user decides to create a profile
   // without signing in.
-  void SwitchToSignedOutPostIdentityFlow(
-      Profile* profile,
-      StepSwitchFinishedCallback step_switch_finished_callback);
+  void SwitchToSignedOutPostIdentityFlow(Profile* profile);
 
   // ProfileManagementFlowControllerImpl:
-  void PickProfile(const base::FilePath& profile_path,
-                   ProfilePicker::ProfilePickingArgs args) override;
+  void ShowSigninError(Profile* profile, const SigninUIError& error) override;
+  void PickProfile(
+      const base::FilePath& profile_path,
+      ProfilePicker::ProfilePickingArgs args,
+      base::OnceCallback<void(bool)> pick_profile_complete_callback) override;
 
  protected:
   // ProfileManagementFlowControllerImpl
@@ -60,7 +64,6 @@ class ProfilePickerFlowController : public ProfileManagementFlowControllerImpl {
       PostHostClearedCallback post_host_cleared_callback) override;
 
  private:
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
   void OnReauthCompleted(
       Profile* profile,
       base::OnceCallback<void(const ForceSigninUIError&)> on_error_callback,
@@ -71,16 +74,30 @@ class ProfilePickerFlowController : public ProfileManagementFlowControllerImpl {
       base::OnceCallback<void(const ForceSigninUIError&)> on_error_callback,
       const ForceSigninUIError& error,
       bool switch_step_success);
-#endif
 
-  std::unique_ptr<ProfilePickerSignedInFlowController>
-  CreateSignedInFlowController(
+  std::unique_ptr<ProfilePickerPostSignInAdapter> CreatePostSignInAdapter(
       Profile* signed_in_profile,
       const CoreAccountInfo& account_info,
       std::unique_ptr<content::WebContents> contents) override;
 
-  // Callback after loading a profile and opening a browser.
-  void OnSwitchToProfileComplete(bool open_settings, Browser* browser);
+  // Callback after loading the profile but before opening the browser.
+  void OnProfileLoadedForPicking(
+      bool open_command_line_urls,
+      base::OnceCallback<void(Browser*)> pick_profile_complete_callback,
+      Profile* profile);
+
+  // Callback after loading the profile and opening the browser.
+  void OnSwitchToProfileComplete(
+      bool open_settings,
+      bool exit_flow_after_profile_picked,
+      base::OnceCallback<void(bool)> pick_profile_complete_callback,
+      Browser* browser);
+
+  void OnDeviceSignalsDisclaimerResult(
+      Profile* profile,
+      bool open_command_line_urls,
+      base::OnceCallback<void(Browser*)> pick_profile_complete_callback,
+      signin::DeviceSignalsDisclaimerResult result);
 
   const ProfilePicker::EntryPoint entry_point_;
   const GURL selected_profile_target_url_;
@@ -92,18 +109,18 @@ class ProfilePickerFlowController : public ProfileManagementFlowControllerImpl {
   // color choice that the user would be able to override.
   std::optional<SkColor> suggested_profile_color_;
 
-  // TODO(crbug.com/40237338): To be refactored out.
-  // This is used for `ProfilePicker::GetSwitchProfilePath()`. The information
-  // should ideally be provided to the handler of the profile switch page once
-  // its controller is created instead of relying on static calls.
-  base::WeakPtr<ProfilePickerSignedInFlowController>
-      weak_signed_in_flow_controller_;
+  // TODO(crbug.com/40942098): To be refactored out.
+  // This is used to get the web contents that is used in this structure.
+  base::WeakPtr<ProfilePickerPostSignInAdapter> weak_post_sign_in_adapter_;
 
   base::WeakPtr<Profile> created_profile_;
 
   // Time when the user picked a profile to open, to measure browser startup
   // performance. Only set when the picker is shown on startup.
   base::TimeTicks profile_picked_time_on_startup_;
+
+  // Email to be prefilled in the profile creation flow.
+  std::string initial_email_;
 
   base::WeakPtrFactory<ProfilePickerFlowController> weak_ptr_factory_{this};
 };

@@ -8,9 +8,10 @@
 
 #import "base/functional/bind.h"
 #import "base/memory/ptr_util.h"
-#import "base/types/cxx23_to_underlying.h"
 #import "components/infobars/core/infobar.h"
 #import "components/signin/public/base/signin_metrics.h"
+#import "components/signin/public/base/signin_pref_names.h"
+#import "components/sync/test/test_sync_service.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin_presenter.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
@@ -27,6 +28,8 @@
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -46,6 +49,8 @@ class ReSignInInfoBarDelegateTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
     auto fake_web_state = std::make_unique<web::FakeWebState>();
@@ -58,7 +63,7 @@ class ReSignInInfoBarDelegateTest : public PlatformTest {
   }
 
   ~ReSignInInfoBarDelegateTest() override {
-    EXPECT_OCMOCK_VERIFY((id)signin_presenter_);
+    EXPECT_OCMOCK_VERIFY((id)resignin_presenter_);
   }
 
   void SetUpMainProfileIOSWithSignedInUser() {
@@ -81,8 +86,8 @@ class ReSignInInfoBarDelegateTest : public PlatformTest {
     return IdentityManagerFactory::GetForProfile(profile_.get());
   }
 
-  OCMockObject<SigninPresenter>* signin_presenter() {
-    return signin_presenter_;
+  OCMockObject<ReSigninPresenter>* resignin_presenter() {
+    return resignin_presenter_;
   }
 
   web::WebState* web_state() {
@@ -95,8 +100,8 @@ class ReSignInInfoBarDelegateTest : public PlatformTest {
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestBrowser> browser_;
   std::unique_ptr<web::NavigationManager> test_navigation_manager_;
-  OCMockObject<SigninPresenter>* signin_presenter_ =
-      OCMProtocolMock(@protocol(SigninPresenter));
+  OCMockObject<ReSigninPresenter>* resignin_presenter_ =
+      OCMProtocolMock(@protocol(ReSigninPresenter));
 };
 
 TEST_F(ReSignInInfoBarDelegateTest, TestCreateWhenNotPrompting) {
@@ -104,7 +109,7 @@ TEST_F(ReSignInInfoBarDelegateTest, TestCreateWhenNotPrompting) {
   authentication_service()->ResetReauthPromptForSignInAndSync();
   std::unique_ptr<ReSignInInfoBarDelegate> infobar_delegate =
       ReSignInInfoBarDelegate::Create(authentication_service(),
-                                      identity_manager(), signin_presenter());
+                                      identity_manager(), resignin_presenter());
   // Infobar delegate should not be created.
   EXPECT_FALSE(infobar_delegate);
   EXPECT_FALSE(authentication_service()->ShouldReauthPromptForSignInAndSync());
@@ -115,7 +120,7 @@ TEST_F(ReSignInInfoBarDelegateTest, TestCreateWhenNotSignedIn) {
   authentication_service()->SetReauthPromptForSignInAndSync();
   std::unique_ptr<ReSignInInfoBarDelegate> infobar_delegate =
       ReSignInInfoBarDelegate::Create(authentication_service(),
-                                      identity_manager(), signin_presenter());
+                                      identity_manager(), resignin_presenter());
   // Infobar delegate should be created.
   EXPECT_TRUE(infobar_delegate);
   EXPECT_TRUE(authentication_service()->ShouldReauthPromptForSignInAndSync());
@@ -127,7 +132,7 @@ TEST_F(ReSignInInfoBarDelegateTest, TestCreateWhenAlreadySignedIn) {
   authentication_service()->SetReauthPromptForSignInAndSync();
   std::unique_ptr<ReSignInInfoBarDelegate> infobar_delegate =
       ReSignInInfoBarDelegate::Create(authentication_service(),
-                                      identity_manager(), signin_presenter());
+                                      identity_manager(), resignin_presenter());
   // Infobar delegate should not be created.
   EXPECT_FALSE(infobar_delegate);
   EXPECT_FALSE(authentication_service()->ShouldReauthPromptForSignInAndSync());
@@ -139,7 +144,7 @@ TEST_F(ReSignInInfoBarDelegateTest, TestCreateWhenIncognito) {
   std::unique_ptr<ReSignInInfoBarDelegate> infobar_delegate =
       ReSignInInfoBarDelegate::Create(/*authentication_service=*/nullptr,
                                       /*identity_manager=*/nullptr,
-                                      signin_presenter());
+                                      resignin_presenter());
   // Infobar delegate should not be created.
   EXPECT_FALSE(infobar_delegate);
   EXPECT_TRUE(authentication_service()->ShouldReauthPromptForSignInAndSync());
@@ -149,7 +154,7 @@ TEST_F(ReSignInInfoBarDelegateTest, TestMessages) {
   authentication_service()->SetReauthPromptForSignInAndSync();
   std::unique_ptr<ReSignInInfoBarDelegate> delegate =
       ReSignInInfoBarDelegate::Create(authentication_service(),
-                                      identity_manager(), signin_presenter());
+                                      identity_manager(), resignin_presenter());
   EXPECT_EQ(ConfirmInfoBarDelegate::BUTTON_OK, delegate->GetButtons());
   std::u16string message_text = delegate->GetMessageText();
   EXPECT_GT(message_text.length(), 0U);
@@ -161,17 +166,11 @@ TEST_F(ReSignInInfoBarDelegateTest, TestMessages) {
 TEST_F(ReSignInInfoBarDelegateTest, TestAccept) {
   authentication_service()->SetReauthPromptForSignInAndSync();
 
-  [[signin_presenter() expect]
-      showSignin:[OCMArg checkWithBlock:^BOOL(id command) {
-        EXPECT_TRUE([command isKindOfClass:[ShowSigninCommand class]]);
-        EXPECT_EQ(AuthenticationOperation::kResignin,
-                  static_cast<ShowSigninCommand*>(command).operation);
-        return YES;
-      }]];
+  [[resignin_presenter() expect] showReSignin];
 
   std::unique_ptr<ReSignInInfoBarDelegate> delegate =
       ReSignInInfoBarDelegate::Create(authentication_service(),
-                                      identity_manager(), signin_presenter());
+                                      identity_manager(), resignin_presenter());
   EXPECT_TRUE(delegate->Accept());
   EXPECT_FALSE(authentication_service()->ShouldReauthPromptForSignInAndSync());
 }
@@ -179,11 +178,11 @@ TEST_F(ReSignInInfoBarDelegateTest, TestAccept) {
 TEST_F(ReSignInInfoBarDelegateTest, TestInfoBarDismissed) {
   authentication_service()->SetReauthPromptForSignInAndSync();
 
-  [[signin_presenter() reject] showSignin:[OCMArg any]];
+  [[resignin_presenter() reject] showReSignin];
 
   std::unique_ptr<ReSignInInfoBarDelegate> delegate =
       ReSignInInfoBarDelegate::Create(authentication_service(),
-                                      identity_manager(), signin_presenter());
+                                      identity_manager(), resignin_presenter());
   delegate->InfoBarDismissed();
   EXPECT_FALSE(authentication_service()->ShouldReauthPromptForSignInAndSync());
 }
@@ -192,11 +191,11 @@ TEST_F(ReSignInInfoBarDelegateTest, TestInfoBarDismissed) {
 TEST_F(ReSignInInfoBarDelegateTest, TestInfoBarDismissedBySignin) {
   authentication_service()->SetReauthPromptForSignInAndSync();
 
-  [[signin_presenter() reject] showSignin:[OCMArg any]];
+  [[resignin_presenter() reject] showReSignin];
 
   std::unique_ptr<ReSignInInfoBarDelegate> delegate =
       ReSignInInfoBarDelegate::Create(authentication_service(),
-                                      identity_manager(), signin_presenter());
+                                      identity_manager(), resignin_presenter());
   std::unique_ptr<InfoBarIOS> info_bar_ios = std::make_unique<InfoBarIOS>(
       InfobarType::kInfobarTypeConfirm, std::move(delegate));
   InfoBarManagerImpl::FromWebState(web_state())
@@ -212,6 +211,30 @@ TEST_F(ReSignInInfoBarDelegateTest, TestInfoBarDismissedBySignin) {
   system_identity_manager->AddIdentity(chrome_identity);
   authentication_service()->SignIn(
       chrome_identity, signin_metrics::AccessPoint::kNtpSignedOutIcon);
+  // Test that the info bar has been removed.
+  EXPECT_EQ(InfoBarManagerImpl::FromWebState(web_state())->infobars().size(),
+            0u);
+}
+
+// Tests that the infobar is removed as soon as sign-in becomes disabled.
+TEST_F(ReSignInInfoBarDelegateTest, TestInfoBarDismissedBySigninDisabled) {
+  authentication_service()->SetReauthPromptForSignInAndSync();
+
+  [[resignin_presenter() reject] showReSignin];
+
+  std::unique_ptr<ReSignInInfoBarDelegate> delegate =
+      ReSignInInfoBarDelegate::Create(authentication_service(),
+                                      identity_manager(), resignin_presenter());
+  std::unique_ptr<InfoBarIOS> info_bar_ios = std::make_unique<InfoBarIOS>(
+      InfobarType::kInfobarTypeConfirm, std::move(delegate));
+  InfoBarManagerImpl::FromWebState(web_state())
+      ->AddInfoBar(std::move(info_bar_ios));
+  // Test that the info bar was added.
+  EXPECT_EQ(InfoBarManagerImpl::FromWebState(web_state())->infobars().size(),
+            1u);
+  // Disable sign-in.
+  GetApplicationContext()->GetLocalState()->SetBoolean(
+      prefs::kSigninAllowedOnDevice, false);
   // Test that the info bar has been removed.
   EXPECT_EQ(InfoBarManagerImpl::FromWebState(web_state())->infobars().size(),
             0u);

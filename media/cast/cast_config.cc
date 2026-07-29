@@ -25,12 +25,10 @@ FrameSenderConfig::FrameSenderConfig(
     bool use_hardware_encoder,
     int rtp_timebase,
     int channels,
-    int max_bitrate,
-    int min_bitrate,
-    int start_bitrate,
+    uint32_t max_bitrate,
+    uint32_t min_bitrate,
+    uint32_t start_bitrate,
     double max_frame_rate,
-    std::string aes_key,
-    std::string aes_iv_mask,
     std::optional<VideoCodecParams> video_codec_params,
     std::optional<AudioCodecParams> audio_codec_params)
     : sender_ssrc(sender_ssrc),
@@ -44,8 +42,6 @@ FrameSenderConfig::FrameSenderConfig(
       min_bitrate(min_bitrate),
       start_bitrate(start_bitrate),
       max_frame_rate(max_frame_rate),
-      aes_key(aes_key),
-      aes_iv_mask(aes_iv_mask),
       video_codec_params(video_codec_params),
       audio_codec_params(audio_codec_params) {
   CHECK(video_codec_params || audio_codec_params);

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromeos/ash/components/dbus/audio/cras_audio_client.h"
 
 #include <memory>
@@ -14,8 +9,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
@@ -41,92 +37,16 @@ namespace {
 // Audio nodes for GetNodes unit test.
 const uint64_t kInternalSpeakerId = 10001;
 const uint64_t kInternalMicId = 20001;
-const uint64_t kNbsMicId = 30001;
 
 const uint32_t kInputMaxSupportedChannels = 1;
 const uint32_t kOutputMaxSupportedChannels = 2;
 
 const uint32_t kInputAudioEffect = cras::EFFECT_TYPE_NOISE_CANCELLATION;
-const uint32_t kNbsMicAudioEffect = cras::EFFECT_TYPE_HFP_MIC_SR;
 const uint32_t kOutputAudioEffect = 0;
 
 const int32_t kInputNumberOfVolumeSteps = 0;
 const int32_t kOutputNumberOfVolumeSteps = 25;
 
-const AudioNode kInternalSpeaker(false,
-                                 kInternalSpeakerId,
-                                 false /* has_v2_stable_device_id */,
-                                 kInternalSpeakerId /* stable_device_id_v1 */,
-                                 0 /* stable_device_id_v2 */,
-                                 "Fake Speaker",
-                                 "INTERNAL_SPEAKER",
-                                 "Speaker",
-                                 false,
-                                 0,
-                                 kOutputMaxSupportedChannels,
-                                 kOutputAudioEffect,
-                                 kOutputNumberOfVolumeSteps);
-
-const AudioNode kInternalMic(true,
-                             kInternalMicId,
-                             false /* has_v2_stable_device_id */,
-                             kInternalMicId /* stable_device_id_v1*/,
-                             0 /* stable_device_id_v2 */,
-                             "Fake Mic",
-                             "INTERNAL_MIC",
-                             "Internal Mic",
-                             false,
-                             0,
-                             kInputMaxSupportedChannels,
-                             kInputAudioEffect,
-                             kInputNumberOfVolumeSteps);
-
-const AudioNode kInternalSpeakerV2(
-    false,
-    kInternalSpeakerId,
-    true /* has_v2_stable_device_id */,
-    kInternalSpeakerId /* stable_device_id_v1 */,
-    // stable_device_id_v2: XOR to make sure the
-    // ID is different from |stable_device_id_v1|.
-    kInternalSpeakerId ^ 0xFF,
-    "Fake Speaker",
-    "INTERNAL_SPEAKER",
-    "Speaker",
-    false,
-    0,
-    kOutputMaxSupportedChannels,
-    kOutputAudioEffect,
-    kOutputNumberOfVolumeSteps);
-
-const AudioNode kInternalMicV2(true,
-                               kInternalMicId,
-                               true /* has_v2_stable_device_id */,
-                               kInternalMicId /* stable_device_id_v1 */,
-                               // XOR to make sure the ID is different from
-                               // |stable_device_id_v1|.
-                               kInternalMicId ^ 0xFF /* stable_device_id_v2 */,
-                               "Fake Mic",
-                               "INTERNAL_MIC",
-                               "Internal Mic",
-                               false,
-                               0,
-                               kInputMaxSupportedChannels,
-                               kInputAudioEffect,
-                               kInputNumberOfVolumeSteps);
-
-const AudioNode kNbsMic(true,
-                        kNbsMicId,
-                        false /* has_v2_stable_device_id */,
-                        kNbsMicId /* stable_device_id_v1*/,
-                        0 /* stable_device_id_v2 */,
-                        "Fake Nbs Mic",
-                        "BLUETOOTH_NB_MIC",
-                        "Bluetooth Nb Mic",
-                        false,
-                        0,
-                        kInputMaxSupportedChannels,
-                        kNbsMicAudioEffect,
-                        kInputNumberOfVolumeSteps);
 
 // A mock CrasAudioClient Observer.
 class MockObserver : public CrasAudioClient::Observer {
@@ -173,13 +93,9 @@ void ExpectInt32AndArrayOfDoublesArguments(
   int32_t value;
   ASSERT_TRUE(reader->PopInt32(&value));
   EXPECT_EQ(expected_value, value);
-  const double* doubles = nullptr;
-  size_t size = 0;
-  ASSERT_TRUE(reader->PopArrayOfDoubles(&doubles, &size));
-  EXPECT_EQ(expected_doubles.size(), size);
-  for (size_t i = 0; i < size; ++i) {
-    EXPECT_EQ(expected_doubles[i], doubles[i]);
-  }
+  base::span<const double> doubles;
+  ASSERT_TRUE(reader->PopArrayOfDoubles(&doubles));
+  EXPECT_EQ(base::span(expected_doubles), doubles);
   EXPECT_FALSE(reader->HasMoreData());
 }
 
@@ -403,7 +319,7 @@ class CrasAudioClientTest : public testing::Test {
     // Create a mock bus.
     dbus::Bus::Options options;
     options.bus_type = dbus::Bus::SYSTEM;
-    mock_bus_ = new dbus::MockBus(options);
+    mock_bus_ = new dbus::MockBus(std::move(options));
 
     // Create a mock cras proxy.
     mock_cras_proxy_ =
@@ -412,47 +328,45 @@ class CrasAudioClientTest : public testing::Test {
 
     // Set an expectation so mock_cras_proxy's CallMethod() will use
     // OnCallMethod() to return responses.
-    EXPECT_CALL(*mock_cras_proxy_.get(), DoCallMethod(_, _, _))
+    EXPECT_CALL(*mock_cras_proxy_.get(), CallMethod(_, _, _))
         .WillRepeatedly(Invoke(this, &CrasAudioClientTest::OnCallMethod));
 
-    // Set an expectation so mock_cras_proxy's CallMethodWithErrorCallback()
+    // Set an expectation so mock_cras_proxy's CallMethodWithErrorResponse()
     // will use OnCallMethodWithErrorCallback() to return responses.
-    EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoCallMethodWithErrorCallback(_, _, _, _))
+    EXPECT_CALL(*mock_cras_proxy_.get(), CallMethodWithErrorResponse(_, _, _))
         .WillRepeatedly(
-            Invoke(this, &CrasAudioClientTest::OnCallMethodWithErrorCallback));
+            Invoke(this, &CrasAudioClientTest::OnCallMethodWithErrorResponse));
 
     // Set an expectation so mock_cras_proxy's monitoring OutputMuteChanged
     // ConnectToSignal will use OnConnectToOutputMuteChanged() to run the
     // callback.
     EXPECT_CALL(
         *mock_cras_proxy_.get(),
-        DoConnectToSignal(interface_name_, cras::kOutputMuteChanged, _, _))
+        ConnectToSignal(interface_name_, cras::kOutputMuteChanged, _, _))
         .WillRepeatedly(
             Invoke(this, &CrasAudioClientTest::OnConnectToOutputMuteChanged));
 
     // Set an expectation so mock_cras_proxy's monitoring InputMuteChanged
     // ConnectToSignal will use OnConnectToInputMuteChanged() to run the
     // callback.
-    EXPECT_CALL(
-        *mock_cras_proxy_.get(),
-        DoConnectToSignal(interface_name_, cras::kInputMuteChanged, _, _))
+    EXPECT_CALL(*mock_cras_proxy_.get(),
+                ConnectToSignal(interface_name_, cras::kInputMuteChanged, _, _))
         .WillRepeatedly(
             Invoke(this, &CrasAudioClientTest::OnConnectToInputMuteChanged));
 
     // Set an expectation so mock_cras_proxy's monitoring NodesChanged
     // ConnectToSignal will use OnConnectToNodesChanged() to run the callback.
     EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_, cras::kNodesChanged, _, _))
+                ConnectToSignal(interface_name_, cras::kNodesChanged, _, _))
         .WillRepeatedly(
             Invoke(this, &CrasAudioClientTest::OnConnectToNodesChanged));
 
     // Set an expectation so mock_cras_proxy's monitoring
     // ActiveOutputNodeChanged ConnectToSignal will use
     // OnConnectToActiveOutputNodeChanged() to run the callback.
-    EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_,
-                                  cras::kActiveOutputNodeChanged, _, _))
+    EXPECT_CALL(
+        *mock_cras_proxy_.get(),
+        ConnectToSignal(interface_name_, cras::kActiveOutputNodeChanged, _, _))
         .WillRepeatedly(Invoke(
             this, &CrasAudioClientTest::OnConnectToActiveOutputNodeChanged));
 
@@ -461,16 +375,16 @@ class CrasAudioClientTest : public testing::Test {
     // OnConnectToActiveInputNodeChanged() to run the callback.
     EXPECT_CALL(
         *mock_cras_proxy_.get(),
-        DoConnectToSignal(interface_name_, cras::kActiveInputNodeChanged, _, _))
+        ConnectToSignal(interface_name_, cras::kActiveInputNodeChanged, _, _))
         .WillRepeatedly(Invoke(
             this, &CrasAudioClientTest::OnConnectToActiveInputNodeChanged));
 
     // Set an expectation so mock_cras_proxy's monitoring
     // OutputNodeVolumeChanged ConnectToSignal will use
     // OnConnectToOutputNodeVolumeChanged() to run the callback.
-    EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_,
-                                  cras::kOutputNodeVolumeChanged, _, _))
+    EXPECT_CALL(
+        *mock_cras_proxy_.get(),
+        ConnectToSignal(interface_name_, cras::kOutputNodeVolumeChanged, _, _))
         .WillRepeatedly(Invoke(
             this, &CrasAudioClientTest::OnConnectToOutputNodeVolumeChanged));
 
@@ -479,34 +393,33 @@ class CrasAudioClientTest : public testing::Test {
     // OnConnectToInputNodeGainChanged() to run the callback.
     EXPECT_CALL(
         *mock_cras_proxy_.get(),
-        DoConnectToSignal(interface_name_, cras::kInputNodeGainChanged, _, _))
+        ConnectToSignal(interface_name_, cras::kInputNodeGainChanged, _, _))
         .WillRepeatedly(Invoke(
             this, &CrasAudioClientTest::OnConnectToInputNodeGainChanged));
 
     // Set an expectation so mock_cras_proxy's monitoring
     // HotwordTriggered ConnectToSignal will use OnHotwordTriggered() to
     // run the callback.
-    EXPECT_CALL(
-        *mock_cras_proxy_.get(),
-        DoConnectToSignal(interface_name_, cras::kHotwordTriggered, _, _))
+    EXPECT_CALL(*mock_cras_proxy_.get(),
+                ConnectToSignal(interface_name_, cras::kHotwordTriggered, _, _))
         .WillRepeatedly(Invoke(this, &CrasAudioClientTest::OnHotwordTriggered));
 
     // Set an expectation so mock_cras_proxy's monitoring
     // NumberOfActiveStreamsChanged ConnectToSignal will use
     // OnNumberOfActiveStreamsChanged() to run the callback.
     EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_,
-                                  cras::kNumberOfActiveStreamsChanged, _, _))
+                ConnectToSignal(interface_name_,
+                                cras::kNumberOfActiveStreamsChanged, _, _))
         .WillRepeatedly(
             Invoke(this, &CrasAudioClientTest::OnNumberOfActiveStreamsChanged));
 
     // Set and expectation so mock_cras_proxy's monitoring
     // NumberOfInputStreamsWithPermissionChanged ConnectToSignal will use
     // OnNumberOfInputStreamsWithPermissionChanged to run the callback.
-    EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(
-                    interface_name_,
-                    cras::kNumberOfInputStreamsWithPermissionChanged, _, _))
+    EXPECT_CALL(
+        *mock_cras_proxy_.get(),
+        ConnectToSignal(interface_name_,
+                        cras::kNumberOfInputStreamsWithPermissionChanged, _, _))
         .WillRepeatedly(Invoke(
             this,
             &CrasAudioClientTest::OnNumberOfInputStreamsWithPermissionChanged));
@@ -514,9 +427,9 @@ class CrasAudioClientTest : public testing::Test {
     // Set an expectation so mock_cras_proxy's monitoring
     // BluetoothBatteryChanged ConnectToSignal will use
     // OnBluetoothBatteryChanged() to run the callback.
-    EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_,
-                                  cras::kBluetoothBatteryChanged, _, _))
+    EXPECT_CALL(
+        *mock_cras_proxy_.get(),
+        ConnectToSignal(interface_name_, cras::kBluetoothBatteryChanged, _, _))
         .WillRepeatedly(
             Invoke(this, &CrasAudioClientTest::OnBluetoothBatteryChanged));
 
@@ -524,7 +437,7 @@ class CrasAudioClientTest : public testing::Test {
     // SurveyTrigger ConnectToSignal will use
     // OnSurveyTriggered() to run the callback.
     EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_, cras::kSurveyTrigger, _, _))
+                ConnectToSignal(interface_name_, cras::kSurveyTrigger, _, _))
         .WillRepeatedly(Invoke(this, &CrasAudioClientTest::OnSurveyTriggered));
 
     // Set an expectation so mock_cras_proxy's monitoring
@@ -532,8 +445,8 @@ class CrasAudioClientTest : public testing::Test {
     // OnSpeakOnMuteDetected() to run the callback.
     EXPECT_CALL(
         *mock_cras_proxy_.get(),
-        DoConnectToSignal(interface_name_,
-                          cras::kNumberOfNonChromeOutputStreamsChanged, _, _))
+        ConnectToSignal(interface_name_,
+                        cras::kNumberOfNonChromeOutputStreamsChanged, _, _))
         .WillRepeatedly(Invoke(
             this,
             &CrasAudioClientTest::OnNumberOfNonChromeOutputStreamsChanged));
@@ -543,7 +456,7 @@ class CrasAudioClientTest : public testing::Test {
     // OnSpeakOnMuteDetected() to run the callback.
     EXPECT_CALL(
         *mock_cras_proxy_.get(),
-        DoConnectToSignal(interface_name_, cras::kSpeakOnMuteDetected, _, _))
+        ConnectToSignal(interface_name_, cras::kSpeakOnMuteDetected, _, _))
         .WillRepeatedly(
             Invoke(this, &CrasAudioClientTest::OnSpeakOnMuteDetected));
 
@@ -551,7 +464,7 @@ class CrasAudioClientTest : public testing::Test {
     // EwmaPowerReported ConnectToSignal will use
     // OnEwmaPowerReported() to run the callback.
     EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_, "EwmaPowerReported", _, _))
+                ConnectToSignal(interface_name_, "EwmaPowerReported", _, _))
         .WillRepeatedly(
             Invoke(this, &CrasAudioClientTest::OnEwmaPowerReported));
 
@@ -559,8 +472,8 @@ class CrasAudioClientTest : public testing::Test {
     // SurveyTrigger ConnectToSignal will use
     // OnNumStreamIgnoreUiGains() to run the callback.
     EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_,
-                                  cras::kNumStreamIgnoreUiGainsChanged, _, _))
+                ConnectToSignal(interface_name_,
+                                cras::kNumStreamIgnoreUiGainsChanged, _, _))
         .WillRepeatedly(Invoke(
             this, &CrasAudioClientTest::OnNumStreamIgnoreUiGainsChanged));
 
@@ -568,8 +481,8 @@ class CrasAudioClientTest : public testing::Test {
     // NumberOfArcStreamsChanged ConnectToSignal will use
     // OnNumberOfArcStreamsChanged() to run the callback.
     EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_,
-                                  cras::kNumberOfArcStreamsChanged, _, _))
+                ConnectToSignal(interface_name_,
+                                cras::kNumberOfArcStreamsChanged, _, _))
         .WillRepeatedly(
             Invoke(this, &CrasAudioClientTest::OnNumberOfArcStreamsChanged));
 
@@ -578,7 +491,7 @@ class CrasAudioClientTest : public testing::Test {
     // OnSidetoneSupportedChanged() to run the callback.
     EXPECT_CALL(
         *mock_cras_proxy_.get(),
-        DoConnectToSignal(interface_name_, "SidetoneSupportedChanged", _, _))
+        ConnectToSignal(interface_name_, "SidetoneSupportedChanged", _, _))
         .WillRepeatedly(
             Invoke(this, &CrasAudioClientTest::OnSidetoneSupportedChanged));
 
@@ -586,8 +499,8 @@ class CrasAudioClientTest : public testing::Test {
     // AudioEffectUIAppearance ConnectToSignal will use
     // OnAudioEffectUIAppearanceChanged() to run the callback.
     EXPECT_CALL(*mock_cras_proxy_.get(),
-                DoConnectToSignal(interface_name_,
-                                  "AudioEffectUIAppearanceChanged", _, _))
+                ConnectToSignal(interface_name_,
+                                "AudioEffectUIAppearanceChanged", _, _))
         .WillRepeatedly(Invoke(
             this, &CrasAudioClientTest::OnAudioEffectUIAppearanceChanged));
 
@@ -811,11 +724,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     output_mute_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -825,11 +738,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     input_mute_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -839,11 +752,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     nodes_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -853,11 +766,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     active_output_node_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -867,11 +780,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     active_input_node_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -881,11 +794,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     output_node_volume_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -895,11 +808,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     input_node_gain_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -909,11 +822,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     hotword_triggered_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -923,11 +836,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     number_of_active_streams_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -935,11 +848,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     number_of_input_streams_with_permission_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -949,11 +862,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     bluetooth_battery_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -963,11 +876,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     survey_trigger_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -975,11 +888,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     number_of_non_chrome_output_streams_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
   // Checks the requested interface name and signal name.
@@ -988,11 +901,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     speak_on_mute_detected_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -1002,11 +915,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     ewma_power_reported_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -1016,11 +929,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     num_stream_ignore_ui_gains_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -1030,11 +943,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     number_of_arc_streams_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -1044,11 +957,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     sidetone_supported_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -1058,11 +971,11 @@ class CrasAudioClientTest : public testing::Test {
       const std::string& interface_name,
       const std::string& signal_name,
       const dbus::ObjectProxy::SignalCallback& signal_callback,
-      dbus::ObjectProxy::OnConnectedCallback* on_connected_callback) {
+      dbus::ObjectProxy::OnConnectedCallback on_connected_callback) {
     audio_effect_ui_appearance_changed_handler_ = signal_callback;
     constexpr bool success = true;
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*on_connected_callback),
+        FROM_HERE, base::BindOnce(std::move(on_connected_callback),
                                   interface_name, signal_name, success));
   }
 
@@ -1070,23 +983,29 @@ class CrasAudioClientTest : public testing::Test {
   // Used to implement the mock cras proxy.
   void OnCallMethod(dbus::MethodCall* method_call,
                     int timeout_ms,
-                    dbus::ObjectProxy::ResponseCallback* response) {
+                    dbus::ObjectProxy::ResponseCallback response) {
     EXPECT_EQ(interface_name_, method_call->GetInterface());
     EXPECT_EQ(expected_method_name_, method_call->GetMember());
     dbus::MessageReader reader(method_call);
     argument_checker_.Run(&reader);
     task_environment_.GetMainThreadTaskRunner()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(*response), response_));
+        FROM_HERE, base::BindOnce(std::move(response), response_.get()));
   }
 
   // Checks the content of the method call and returns the response.
   // Used to implement the mock cras proxy.
-  void OnCallMethodWithErrorCallback(
+  void OnCallMethodWithErrorResponse(
       dbus::MethodCall* method_call,
       int timeout_ms,
-      dbus::ObjectProxy::ResponseCallback* response_callback,
-      dbus::ObjectProxy::ErrorCallback* error_callback) {
-    OnCallMethod(method_call, timeout_ms, response_callback);
+      dbus::ObjectProxy::ResponseOrErrorCallback response_callback) {
+    // Adapt the ResponseOrErrorCallback to a ResponseCallback.
+    auto callback = base::BindOnce(
+        [](dbus::ObjectProxy::ResponseOrErrorCallback response_callback,
+           dbus::Response* response) {
+          std::move(response_callback).Run(response, nullptr);
+        },
+        std::move(response_callback));
+    OnCallMethod(method_call, timeout_ms, std::move(callback));
   }
 };
 
@@ -1584,7 +1503,18 @@ TEST_F(CrasAudioClientTest, InputNodeGainChanged) {
 
 TEST_F(CrasAudioClientTest, GetNodes) {
   // Create the expected value.
-  AudioNodeList expected_node_list{kInternalSpeaker, kInternalMic};
+  const AudioNode internal_speaker(
+      false, kInternalSpeakerId, false /* has_v2_stable_device_id */,
+      kInternalSpeakerId /* stable_device_id_v1 */, 0 /* stable_device_id_v2 */,
+      "Fake Speaker", "INTERNAL_SPEAKER", "Speaker", false, 0,
+      kOutputMaxSupportedChannels, kOutputAudioEffect,
+      kOutputNumberOfVolumeSteps);
+  const AudioNode internal_mic(
+      true, kInternalMicId, false /* has_v2_stable_device_id */,
+      kInternalMicId /* stable_device_id_v1*/, 0 /* stable_device_id_v2 */,
+      "Fake Mic", "INTERNAL_MIC", "Internal Mic", false, 0,
+      kInputMaxSupportedChannels, kInputAudioEffect, kInputNumberOfVolumeSteps);
+  AudioNodeList expected_node_list{internal_speaker, internal_mic};
 
   // Create response.
   std::unique_ptr<dbus::Response> response(dbus::Response::CreateEmpty());
@@ -1605,7 +1535,23 @@ TEST_F(CrasAudioClientTest, GetNodes) {
 
 TEST_F(CrasAudioClientTest, GetNodesV2) {
   // Create the expected value.
-  AudioNodeList expected_node_list{kInternalSpeakerV2, kInternalMicV2};
+  const AudioNode internal_speaker_v2(
+      false, kInternalSpeakerId, true /* has_v2_stable_device_id */,
+      kInternalSpeakerId /* stable_device_id_v1 */,
+      // stable_device_id_v2: XOR to make sure the
+      // ID is different from |stable_device_id_v1|.
+      kInternalSpeakerId ^ 0xFF, "Fake Speaker", "INTERNAL_SPEAKER", "Speaker",
+      false, 0, kOutputMaxSupportedChannels, kOutputAudioEffect,
+      kOutputNumberOfVolumeSteps);
+  const AudioNode internal_mic_v2(
+      true, kInternalMicId, true /* has_v2_stable_device_id */,
+      kInternalMicId /* stable_device_id_v1 */,
+      // XOR to make sure the ID is different from
+      // |stable_device_id_v1|.
+      kInternalMicId ^ 0xFF /* stable_device_id_v2 */, "Fake Mic",
+      "INTERNAL_MIC", "Internal Mic", false, 0, kInputMaxSupportedChannels,
+      kInputAudioEffect, kInputNumberOfVolumeSteps);
+  AudioNodeList expected_node_list{internal_speaker_v2, internal_mic_v2};
 
   // Create response.
   std::unique_ptr<dbus::Response> response(dbus::Response::CreateEmpty());

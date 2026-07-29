@@ -11,9 +11,11 @@
 namespace blink {
 
 String BoxStrut::ToString() const {
-  return String::Format("Inline: (%d %d) Block: (%d %d)", inline_start.ToInt(),
-                        inline_end.ToInt(), block_start.ToInt(),
-                        block_end.ToInt());
+  return String::Format("Inline: (%s %s) Block: (%s %s)",
+                        inline_start.ToString().Ascii().c_str(),
+                        inline_end.ToString().Ascii().c_str(),
+                        block_start.ToString().Ascii().c_str(),
+                        block_end.ToString().Ascii().c_str());
 }
 
 std::ostream& operator<<(std::ostream& stream, const BoxStrut& value) {
@@ -35,6 +37,14 @@ BoxStrut::BoxStrut(const LogicalSize& outer_size, const LogicalRect& inner_rect)
       inline_end(outer_size.inline_size - inner_rect.InlineEndOffset()),
       block_start(inner_rect.offset.block_offset),
       block_end(outer_size.block_size - inner_rect.BlockEndOffset()) {}
+
+BoxStrut::BoxStrut(const LogicalRect& outer_rect, const LogicalRect& inner_rect)
+    : inline_start(inner_rect.offset.inline_offset -
+                   outer_rect.offset.inline_offset),
+      inline_end(outer_rect.InlineEndOffset() - inner_rect.InlineEndOffset()),
+      block_start(inner_rect.offset.block_offset -
+                  outer_rect.offset.block_offset),
+      block_end(outer_rect.BlockEndOffset() - inner_rect.BlockEndOffset()) {}
 
 BoxStrut& BoxStrut::Intersect(const BoxStrut& other) {
   inline_start = std::min(inline_start, other.inline_start);

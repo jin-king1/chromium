@@ -70,16 +70,17 @@ void WebContentsNSViewBridge::ResetParentNSView() {
   [ns_view_ removeFromSuperview];
 }
 
-void WebContentsNSViewBridge::SetBounds(const gfx::Rect& bounds_in_window) {
-  NSWindow* window = [ns_view_ window];
-  NSRect window_content_rect = [window contentRectForFrameRect:[window frame]];
-  NSRect ns_bounds_in_window =
-      NSMakeRect(bounds_in_window.x(),
-                 window_content_rect.size.height - bounds_in_window.y() -
-                     bounds_in_window.height(),
-                 bounds_in_window.width(), bounds_in_window.height());
-  NSRect ns_bounds_in_superview =
-      [[ns_view_ superview] convertRect:ns_bounds_in_window fromView:nil];
+void WebContentsNSViewBridge::SetBounds(const gfx::Rect& bounds_in_superview,
+                                        int32_t superview_height) {
+  // superview.bounds can be stale during setFrameSize update, so use
+  // `superview_height` (from the host's content rect) for Y flipping instead.
+  NSView* superview = [ns_view_ superview];
+  NSRect ns_bounds_in_superview = NSMakeRect(
+      bounds_in_superview.x(),
+      [superview isFlipped] ? bounds_in_superview.y()
+                            : superview_height - bounds_in_superview.y() -
+                                  bounds_in_superview.height(),
+      bounds_in_superview.width(), bounds_in_superview.height());
   [ns_view_ setFrame:ns_bounds_in_superview];
 }
 
@@ -122,25 +123,25 @@ void WebContentsNSViewBridge::TakeFocus(bool reverse) {
     [[ns_view_ window] selectNextKeyView:ns_view_];
 }
 
-void WebContentsNSViewBridge::StartDrag(const content::DropData& drop_data,
-                                        const url::Origin& source_origin,
-                                        uint32_t operation_mask,
-                                        const gfx::ImageSkia& image,
-                                        const gfx::Vector2d& image_offset,
-                                        bool is_privileged) {
-  NSPoint offset = NSPointFromCGPoint(
-      gfx::PointAtOffsetFromOrigin(image_offset).ToCGPoint());
+void WebContentsNSViewBridge::StartDrag(
+    content::ChildProcessId render_process_id,
+    const blink::DocumentToken& document_token,
+    const url::Origin& source_origin,
+    const content::DropData& drop_data,
+    uint32_t operation_mask,
+    const gfx::ImageSkia& image,
+    const gfx::Vector2d& image_offset,
+    bool is_privileged) {
+  NSPoint offset = gfx::PointAtOffsetFromOrigin(image_offset).ToCGPoint();
+  // TODO(dcheng): Check if is_privileged still needs to be passed here.
   [ns_view_ startDragWithDropData:drop_data
+                  renderProcessId:render_process_id
+                    documentToken:document_token
                      sourceOrigin:source_origin
                 dragOperationMask:operation_mask
                             image:gfx::NSImageFromImageSkia(image)
                            offset:offset
                      isPrivileged:is_privileged];
-}
-
-void WebContentsNSViewBridge::UpdateWindowControlsOverlay(
-    const gfx::Rect& bounding_rect) {
-  [ns_view_ updateWindowControlsOverlay:bounding_rect];
 }
 
 }  // namespace remote_cocoa

@@ -27,7 +27,6 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chromeos/ash/experiences/arc/mojom/app.mojom.h"
 #include "chromeos/ash/experiences/arc/test/arc_util_test_support.h"
@@ -40,8 +39,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace ash {
-namespace app_time {
+namespace ash::app_time {
 
 namespace {
 
@@ -88,8 +86,8 @@ class AppTimeTest : public MixinBasedInProcessBrowserTest {
     ASSERT_TRUE(embedded_test_server()->Started());
     logged_in_user_mixin_.LogInUser();
 
-    arc::SetArcPlayStoreEnabledForProfile(browser()->profile(), true);
-    arc_app_list_prefs_ = ArcAppListPrefs::Get(browser()->profile());
+    arc::SetArcPlayStoreEnabledForProfile(browser()->GetProfile(), true);
+    arc_app_list_prefs_ = ArcAppListPrefs::Get(browser()->GetProfile());
     EXPECT_TRUE(arc_app_list_prefs_);
 
     base::RunLoop run_loop;
@@ -112,9 +110,8 @@ class AppTimeTest : public MixinBasedInProcessBrowserTest {
     arc::ArcSessionManager::Get()->Shutdown();
   }
 
-  void UpdatePerAppTimeLimitsPolicy(const base::Value::Dict& policy) {
-    std::string policy_value;
-    base::JSONWriter::Write(policy, &policy_value);
+  void UpdatePerAppTimeLimitsPolicy(const base::DictValue& policy) {
+    std::string policy_value = base::WriteJson(policy).value_or("");
 
     logged_in_user_mixin_.GetUserPolicyMixin()
         ->RequestPolicyUpdate()
@@ -300,5 +297,4 @@ IN_PROC_BROWSER_TEST_F(AppTimeTest, PerAppTimeLimitsPolicyMultipleEntries) {
             app_registry_test.GetAppLimit(app4)->restriction());
 }
 
-}  // namespace app_time
-}  // namespace ash
+}  // namespace ash::app_time

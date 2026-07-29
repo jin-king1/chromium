@@ -12,10 +12,10 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/enterprise/groups/enterprise_groups_handler_factory.h"
 #include "chrome/browser/enterprise/remote_commands/user_remote_commands_service.h"
 #include "chrome/browser/enterprise/remote_commands/user_remote_commands_service_factory.h"
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
-#include "chrome/browser/policy/cloud/user_policy_signin_service_internal.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
@@ -27,6 +27,7 @@
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/common/chrome_content_client.h"
 #include "chrome/common/pref_names.h"
+#include "components/enterprise/browser/groups/enterprise_groups_handler.h"
 #include "components/policy/core/browser/cloud/user_policy_signin_service_util.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_manager.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -40,9 +41,6 @@
 #include "user_policy_signin_service.h"
 
 namespace policy {
-namespace internal {
-bool g_force_prohibit_signout_for_tests = false;
-}
 
 ProfileManagerObserverBridge::ProfileManagerObserverBridge(
     UserPolicySigninService* user_policy_signin_service)
@@ -91,14 +89,15 @@ UserPolicySigninService::~UserPolicySigninService() = default;
 
 void UserPolicySigninService::OnPrimaryAccountChanged(
     const signin::PrimaryAccountChangeEvent& event) {
-  ProfileManager* profile_manager = g_browser_process->profile_manager();
-  if (profile_manager && IsSignoutEvent(event)) {
-    UpdateProfileAttributesWhenSignout(profile_, profile_manager);
-    ShutdownCloudPolicyManager();
-  } else if (IsTurnOffSyncEvent(event) &&
-             !CanApplyPolicies(/*check_for_refresh_token=*/true)) {
+  if (IsSignoutEvent(event)) {
+    if (ProfileManager* profile_manager =
+            g_browser_process->profile_manager()) {
+      // `ProfileManager` may be null in tests.
+      UpdateProfileAttributesWhenSignout(profile_, profile_manager);
+    }
     ShutdownCloudPolicyManager();
   }
+
   if (!IsAnySigninEvent(event))
     return;
 
@@ -159,7 +158,12 @@ void UserPolicySigninService::InitializeCloudPolicyManager(
   if (remote_command_service) {
     remote_command_service->Init();
   }
-  ProhibitSignoutIfNeeded();
+  auto* enterprise_groups_handler =
+      enterprise_groups::EnterpriseGroupsProfileHandlerFactory::GetForProfile(
+          profile_);
+  if (enterprise_groups_handler) {
+    enterprise_groups_handler->Init();
+  }
 }
 
 void UserPolicySigninService::Shutdown() {
@@ -176,6 +180,12 @@ void UserPolicySigninService::ShutdownCloudPolicyManager() {
   if (remote_command_service) {
     remote_command_service->Shutdown();
   }
+  auto* enterprise_groups_handler =
+      enterprise_groups::EnterpriseGroupsProfileHandlerFactory::GetForProfile(
+          profile_);
+  if (enterprise_groups_handler) {
+    enterprise_groups_handler->ResetAndClearGroups();
+  }
   UserPolicySigninServiceBase::ShutdownCloudPolicyManager();
 }
 
@@ -183,35 +193,6 @@ void UserPolicySigninService::OnProfileUserManagementAcceptanceChanged(
     const base::FilePath& profile_path) {
   if (CanApplyPolicies(/*check_for_refresh_token=*/true))
     TryInitializeForSignedInUser();
-}
-
-void UserPolicySigninService::ProhibitSignoutIfNeeded() {
-  if ((!policy_manager() || !policy_manager()->IsClientRegistered()) &&
-      !internal::g_force_prohibit_signout_for_tests) {
-    return;
-  }
-
-  DVLOG(1) << "User is registered for policy - prohibiting signout";
-  bool has_sync_account =
-      identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSync);
-
-  if (!enterprise_util::UserAcceptedAccountManagement(profile_) &&
-      has_sync_account) {
-    // Ensure user accepted management bit is set.
-    enterprise_util::SetUserAcceptedAccountManagement(profile_, true);
-  }
-
-#if DCHECK_IS_ON()
-  // Setting the user accepted management bit should be enough to prohibit
-  // signout.
-  // The user accepted management bit is set in the profile storage. If there
-  // is no profile storage, the bit will not be set.
-  if (enterprise_util::UserAcceptedAccountManagement(profile_)) {
-    auto* sigin_client = ChromeSigninClientFactory::GetForProfile(profile_);
-    DCHECK(sigin_client->IsRevokeSyncConsentAllowed());
-    DCHECK(!sigin_client->IsClearPrimaryAccountAllowed(has_sync_account));
-  }
-#endif
 }
 
 void UserPolicySigninService::OnProfileReady(Profile* profile) {
@@ -236,7 +217,7 @@ void UserPolicySigninService::InitializeOnProfileReady(Profile* profile) {
   // Shutdown the CloudPolicyManager when the user signs out. We start
   // observing the IdentityManager here because we don't want to get signout
   // notifications until after the profile has started initializing
-  // (http://crbug.com/316229).
+  // (http://crbug.com/40340335).
   identity_manager()->AddObserver(this);
 
   AccountId account_id = AccountIdFromAccountInfo(

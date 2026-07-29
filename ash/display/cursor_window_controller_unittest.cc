@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include "ash/display/cursor_window_controller.h"
-#include "base/memory/raw_ptr.h"
 
 #include <cmath>
 #include <utility>
@@ -13,16 +12,19 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/display/display_util.h"
 #include "ash/display/window_tree_host_manager.h"
+#include "ash/host/ash_window_tree_host.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "base/command_line.h"
+#include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/prefs/pref_service.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/aura/client/cursor_shape_client.h"
+#include "ui/aura/test/aura_test_utils.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/cursor/cursor.h"
@@ -30,6 +32,7 @@
 #include "ui/base/resource/mock_resource_bundle_delegate.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/resource/resource_scale_factor.h"
+#include "ui/compositor/test/draw_waiter_for_test.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/display/test/display_manager_test_api.h"
@@ -112,6 +115,13 @@ class CursorWindowControllerTest : public AshTestBase {
     return cursor_window_controller()->display_.id();
   }
 
+  void SeparateCursorBitmap(const SkBitmap& original,
+                            SkBitmap* mask,
+                            SkBitmap* overlay) const {
+    cursor_window_controller()->SeparateCursorBitmapForTest(original, mask,
+                                                            overlay);
+  }
+
   void SetCursorCompositionEnabled(bool enabled) {
     // Cursor compositing will be enabled when high contrast mode is turned on.
     // Cursor compositing will be disabled when high contrast mode is the only
@@ -142,8 +152,6 @@ TEST_F(CursorWindowControllerTest, MoveToDifferentDisplay) {
           .id();
   aura::Window* primary_root =
       window_tree_host_manager->GetRootWindowForDisplayId(primary_display_id);
-  aura::Window* secondary_root =
-      window_tree_host_manager->GetRootWindowForDisplayId(secondary_display_id);
 
   ui::test::EventGenerator primary_generator(primary_root);
   primary_generator.MoveMouseToInHost(20, 50);
@@ -152,33 +160,34 @@ TEST_F(CursorWindowControllerTest, MoveToDifferentDisplay) {
   EXPECT_EQ(primary_display_id, GetCursorDisplayId());
   EXPECT_EQ(CursorType::kNull, GetCursorType());
   gfx::Point hot_point = GetCursorHotPoint();
-  EXPECT_EQ(gfx::Point(4, 4), hot_point);
+  EXPECT_EQ(gfx::Point(6, 4), hot_point);
   gfx::Rect cursor_bounds = GetCursorBounds();
   EXPECT_EQ(20, cursor_bounds.x() + hot_point.x());
   EXPECT_EQ(50, cursor_bounds.y() + hot_point.y());
 
-  // The cursor can only be moved between displays via
-  // WindowTreeHost::MoveCursorTo(). EventGenerator uses a hack to move the
-  // cursor between displays.
-  // Screen location: 220, 50
-  // Root location: 20, 50
-  secondary_root->MoveCursorTo(gfx::Point(20, 50));
+  // Move to secondary.
+  AshWindowTreeHost* secondary_ash_wth =
+      window_tree_host_manager->GetAshWindowTreeHostForDisplayId(
+          secondary_display_id);
+  auto* secondary_wth = secondary_ash_wth->AsWindowTreeHost();
+  auto* secondary_root = secondary_wth->window();
 
-  // Chrome relies on WindowTreeHost::MoveCursorTo() dispatching a mouse move
-  // asynchronously. This is implemented in a platform specific way. Generate a
-  // fake mouse move instead of waiting.
-  gfx::Point new_cursor_position_in_host(20, 50);
-  secondary_root->GetHost()->ConvertDIPToPixels(&new_cursor_position_in_host);
+  MoveCursorTo(secondary_ash_wth, gfx::Point(299, 50), true);
+
+  // Chrome relies on WindowTreeHost::MoveCursorToInternal() dispatching a mouse
+  // move asynchronously. This is implemented in a platform specific way.
+  // Generate a fake mouse move instead of waiting.
+  auto& pos = aura::test::QueryLatestMousePositionRequestInHost(secondary_wth);
   ui::test::EventGenerator secondary_generator(secondary_root);
-  secondary_generator.MoveMouseToInHost(new_cursor_position_in_host);
+  secondary_generator.MoveMouseToInHost(pos);
 
   EXPECT_TRUE(secondary_root->Contains(GetCursorHostWindow()));
   EXPECT_EQ(secondary_display_id, GetCursorDisplayId());
   EXPECT_EQ(CursorType::kNull, GetCursorType());
   hot_point = GetCursorHotPoint();
-  EXPECT_EQ(gfx::Point(3, 3), hot_point);
+  EXPECT_EQ(gfx::Point(6, 4), hot_point);
   cursor_bounds = GetCursorBounds();
-  EXPECT_EQ(320, cursor_bounds.x() + hot_point.x());
+  EXPECT_EQ(300, cursor_bounds.x() + hot_point.x());
   EXPECT_EQ(50, cursor_bounds.y() + hot_point.y());
 }
 
@@ -214,77 +223,6 @@ TEST_F(CursorWindowControllerTest, VisibilityTest) {
   EXPECT_TRUE(GetCursorHostWindow()->IsVisible());
 }
 
-namespace {
-
-// Emulates the behavior of BitmapImageSource used in ResourceBundle.
-class TestCursorImageSource : public gfx::ImageSkiaSource {
- public:
-  TestCursorImageSource() = default;
-  TestCursorImageSource(const TestCursorImageSource&) = delete;
-  TestCursorImageSource operator=(const TestCursorImageSource&) = delete;
-  ~TestCursorImageSource() override = default;
-
-  // gfx::ImageSkiaSource:
-  gfx::ImageSkiaRep GetImageForScale(float scale) override {
-    float resource_scale = ui::GetSupportedResourceScaleFactor(scale);
-    if (resource_scale == 1.f) {
-      return rep_1x_;
-    } else if (resource_scale == 2.f) {
-      return rep_2x_;
-    }
-    NOTREACHED();
-  }
-
- private:
-  gfx::ImageSkiaRep rep_1x_ =
-      gfx::ImageSkiaRep(gfx::test::CreateBitmap(/*size=*/25, SK_ColorBLACK),
-                        1.f);
-  gfx::ImageSkiaRep rep_2x_ =
-      gfx::ImageSkiaRep(gfx::test::CreateBitmap(/*size=*/50, SK_ColorWHITE),
-                        2.f);
-};
-
-}  // namespace
-
-// Make sure that composition cursor uses correct assets with various scales.
-TEST_F(CursorWindowControllerTest, ScaleUsesCorrectAssets) {
-  testing::NiceMock<ui::MockResourceBundleDelegate> mock_delegate;
-  gfx::ImageSkia image_skia(std::make_unique<TestCursorImageSource>(),
-                            gfx::Size(25, 25));
-
-  auto get_pixel_value = [&](float scale) {
-    // TODO(b/318592117): don't need to update display when
-    // wm::GetCursorData uses ImageSkia instead of SkBitmap.
-    // Trigger regeneration of the cursor image.
-    UpdateDisplay(base::StringPrintf("300x200*%f", scale));
-
-    uint32_t* data = static_cast<uint32_t*>(
-        GetCursorImage().GetRepresentation(scale).GetBitmap().getPixels());
-    return data[0];
-  };
-
-  EXPECT_CALL(mock_delegate, GetImageNamed(testing::_))
-      .WillOnce(testing::Return(gfx::Image(image_skia)));
-
-  ui::ResourceBundle test_bundle(&mock_delegate);
-  auto* original =
-      ui::ResourceBundle::SwapSharedInstanceForTesting(&test_bundle);
-  // Force re-create composited cursor.
-  SetCursorCompositionEnabled(false);
-  SetCursorCompositionEnabled(true);
-
-  // The cursor should use 2x resources when dsf > 1.2.
-  EXPECT_EQ(SK_ColorWHITE, get_pixel_value(2.4f));
-  EXPECT_EQ(SK_ColorWHITE, get_pixel_value(2.f));
-  EXPECT_EQ(SK_ColorWHITE, get_pixel_value(1.25f));
-  EXPECT_EQ(SK_ColorBLACK, get_pixel_value(1.20f));
-  EXPECT_EQ(SK_ColorBLACK, get_pixel_value(1.15f));
-  EXPECT_EQ(SK_ColorBLACK, get_pixel_value(1.f));
-  EXPECT_EQ(SK_ColorBLACK, get_pixel_value(0.8f));
-
-  ui::ResourceBundle::SwapSharedInstanceForTesting(original);
-}
-
 // Test different properties of the composited cursor with different device
 // scale factors and zoom levels.
 TEST_F(CursorWindowControllerTest, DSF) {
@@ -292,7 +230,7 @@ TEST_F(CursorWindowControllerTest, DSF) {
 
   auto cursor_test = [&](ui::Cursor cursor, float large_cursor_size_in_dip) {
     const float dsf =
-        display::Screen::GetScreen()->GetPrimaryDisplay().device_scale_factor();
+        display::Screen::Get()->GetPrimaryDisplay().device_scale_factor();
     SCOPED_TRACE(testing::Message()
                  << cursor.type() << " at scale " << dsf << " and size "
                  << large_cursor_size_in_dip);
@@ -354,9 +292,8 @@ TEST_F(CursorWindowControllerTest, DSF) {
     for (const float zoom : {0.8f, 1.0f, 1.25f}) {
       UpdateDisplay(
           base::StringPrintf("1000x500*%f@%f", device_scale_factor, zoom));
-      const float dsf = display::Screen::GetScreen()
-                            ->GetPrimaryDisplay()
-                            .device_scale_factor();
+      const float dsf =
+          display::Screen::Get()->GetPrimaryDisplay().device_scale_factor();
 
       for (const int large_cursor_size_in_dip : {0, 32, 64, 128}) {
         cursor_manager->SetCursorSize(large_cursor_size_in_dip == 0
@@ -382,7 +319,7 @@ TEST_F(CursorWindowControllerTest, DSF) {
 TEST_F(CursorWindowControllerTest, ShouldEnableCursorCompositing) {
   PrefService* prefs =
       Shell::Get()->session_controller()->GetActivePrefService();
-  display::Display display = display::Screen::GetScreen()->GetPrimaryDisplay();
+  display::Display display = display::Screen::Get()->GetPrimaryDisplay();
   const float dsf = 2.0f;
   display.set_device_scale_factor(dsf);
   display.set_maximum_cursor_size(gfx::Size(128, 128));
@@ -446,35 +383,41 @@ TEST_F(CursorWindowControllerTest, LargeCursorColoringSpotCheck) {
     SkColor cursor_color;  // Set the cursor to this color.
     SkColor not_found;     // Spot-check: This color shouldn't be in the cursor.
     SkColor found;         // Spot-check: This color should be in the cursor.
-    gfx::NativeCursor cursor;
-  } kTestCases[] = {
-      // Cursors should still have white.
-      {SK_ColorMAGENTA, SK_ColorBLUE, SK_ColorWHITE, CursorType::kHand},
-      {SK_ColorBLUE, SK_ColorMAGENTA, SK_ColorWHITE, CursorType::kCell},
-      {SK_ColorGREEN, SK_ColorBLUE, SK_ColorWHITE, CursorType::kNoDrop},
+    CursorType cursor_type;
+  } kColorTestCases[] = {
+      // Cursors should not have black because the black cursor body should be
+      // replaced by other colors.
+      {SK_ColorRED, SK_ColorBLACK, SK_ColorWHITE, CursorType::kPointer},
+      {SK_ColorRED, SK_ColorBLACK, SK_ColorWHITE, CursorType::kCell},
+
+      // Cursors should not have white because the white cursor body should be
+      // replaced by other colors.
+      {SK_ColorMAGENTA, SK_ColorWHITE, SK_ColorBLACK, CursorType::kHand},
+
       // Also cursors should still have transparent.
       {SK_ColorRED, SK_ColorGREEN, SK_ColorTRANSPARENT, CursorType::kPointer},
+
       // The no drop cursor has red in it, check it's still there:
-      // Most of the cursor should be colored, but the red part shouldn't be
+      // Cursor body should be colored, but the red part shouldn't be
       // re-colored.
-      {SK_ColorBLUE, SK_ColorGREEN, SkColorSetRGB(172, 0, 0),
+      {SK_ColorBLUE, SK_ColorGREEN, SkColorSetRGB(181, 70, 72),
        CursorType::kNoDrop},
-      // Similarly, the copy cursor has green in it.
-      {SK_ColorBLUE, SK_ColorRED, SkColorSetRGB(25, 140, 22),
+
+      // Similarly, the copy cursor has a green part in it which should not be
+      // re-colored.
+      {SK_ColorBLUE, SK_ColorRED, SkColorSetRGB(57, 149, 88),
        CursorType::kCopy},
   };
 
-  for (const auto& test : kTestCases) {
+  for (const auto& test : kColorTestCases) {
     cursor_window_controller()->SetCursorColor(test.cursor_color);
-    cursor_window_controller()->SetCursor(test.cursor);
+    cursor_window_controller()->SetCursor(test.cursor_type);
     const SkBitmap* bitmap = GetCursorImage().bitmap();
-    // We should find |cursor_color| pixels in the cursor, but no black or
-    // |not_found| color pixels. All black pixels are recolored.
-    // We should also find |found| color.
+    // We should find `cursor_color` and `found` color pixels in the cursor, but
+    // no |not_found| color pixels.
     bool has_color = false;
     bool has_not_found_color = false;
     bool has_found_color = false;
-    bool has_black = false;
     for (int x = 0; x < bitmap->width(); ++x) {
       for (int y = 0; y < bitmap->height(); ++y) {
         SkColor color = bitmap->getColor(x, y);
@@ -484,8 +427,6 @@ TEST_F(CursorWindowControllerTest, LargeCursorColoringSpotCheck) {
           has_not_found_color = true;
         else if (color == test.found)
           has_found_color = true;
-        else if (color == SK_ColorBLACK)
-          has_black = true;
       }
     }
     EXPECT_TRUE(has_color) << color_utils::SkColorToRgbaString(
@@ -494,12 +435,143 @@ TEST_F(CursorWindowControllerTest, LargeCursorColoringSpotCheck) {
         << color_utils::SkColorToRgbaString(test.found);
     EXPECT_FALSE(has_not_found_color)
         << color_utils::SkColorToRgbaString(test.not_found);
-    EXPECT_FALSE(has_black);
   }
 
   // Set back to the default color and ensure cursor compositing is disabled.
   prefs->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, false);
   SetCursorCompositionEnabled(false);
+}
+
+TEST_F(CursorWindowControllerTest, RefreshRateChangeUpdatesMaxUpdateRates) {
+  const int64_t display_id =
+      display::test::DisplayManagerTestApi(display_manager())
+          .SetFirstDisplayAsInternalDisplay();
+
+  display::Display display = display::Screen::Get()->GetPrimaryDisplay();
+  auto display_bounds = display.bounds();
+
+  // Default refresh rate is 60.
+  EXPECT_NEAR(cursor_window_controller()->max_update_rate_ms(), 11.11, 0.01f);
+
+  // Change refresh rate to 30.
+  float refresh_rate = 30.f;
+  display::ManagedDisplayInfo info =
+      display::CreateDisplayInfo(display_id, display_bounds);
+  info.set_refresh_rate(refresh_rate);
+  display::ManagedDisplayMode mode(display_bounds.size(), refresh_rate,
+                                   /*is_interlaced=*/false,
+                                   /*native=*/true);
+  info.SetManagedDisplayModes({mode});
+
+  std::vector<display::ManagedDisplayInfo> display_info_list;
+  display_info_list.push_back(info);
+  display_manager()->OnNativeDisplaysChanged(display_info_list);
+  EXPECT_NEAR(cursor_window_controller()->max_update_rate_ms(), 22.22, 0.01f);
+}
+
+class InvertedCursorWindowControllerTest : public CursorWindowControllerTest {
+ public:
+  InvertedCursorWindowControllerTest() {
+    feature_list_.InitAndEnableFeature(
+        ::features::kAccessibilityInvertedMouseCursor);
+  }
+  ~InvertedCursorWindowControllerTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(InvertedCursorWindowControllerTest, InvertedCursorLayers) {
+  SetCursorCompositionEnabled(true);
+  cursor_window_controller()->SetCursorInverted(true);
+  cursor_window_controller()->SetCursor(CursorType::kPointer);
+
+  aura::Window* cursor_window =
+      const_cast<aura::Window*>(GetCursorHostWindow());
+  ASSERT_TRUE(cursor_window);
+  ui::Layer* root_layer = cursor_window->layer();
+  ASSERT_TRUE(root_layer);
+
+  // The root layer should have two children: invert_layer and overlay_layer.
+  ASSERT_EQ(2u, root_layer->children().size());
+
+  ui::Layer* invert_layer = root_layer->children()[0];
+  ui::Layer* overlay_layer = root_layer->children()[1];
+
+  EXPECT_TRUE(invert_layer->background_inverted());
+  EXPECT_FALSE(overlay_layer->background_inverted());
+
+  // invert_layer should have a mask layer.
+  EXPECT_TRUE(invert_layer->layer_mask_layer());
+}
+
+TEST_F(InvertedCursorWindowControllerTest, SeparateCursorBitmap_PureColors) {
+  SkBitmap original;
+  original.allocN32Pixels(4, 1);
+  original.eraseColor(SK_ColorTRANSPARENT);
+
+  // Create a 4-pixel bitmap: Red, Blue, Magenta, White
+  // Note: SkPreMultiplyARGB is used because SeparateCursorBitmap expects
+  // premultiplied bitmaps.
+  *original.getAddr32(0, 0) = SkPreMultiplyARGB(255, 255, 0, 0);      // Red
+  *original.getAddr32(1, 0) = SkPreMultiplyARGB(255, 0, 0, 255);      // Blue
+  *original.getAddr32(2, 0) = SkPreMultiplyARGB(255, 255, 0, 255);    // Magenta
+  *original.getAddr32(3, 0) = SkPreMultiplyARGB(255, 255, 255, 255);  // White
+
+  SkBitmap mask, overlay;
+  SeparateCursorBitmap(original, &mask, &overlay);
+
+  // 1. Pure Red pixel: Should be ignored by the mask and kept as pure red in
+  // the overlay.
+  EXPECT_EQ(SK_ColorTRANSPARENT, mask.getColor(0, 0));
+  EXPECT_EQ(SK_ColorRED, overlay.getColor(0, 0));
+
+  // 2. Pure Blue pixel: Should be ignored by the mask and kept as pure blue in
+  // the overlay.
+  EXPECT_EQ(SK_ColorTRANSPARENT, mask.getColor(1, 0));
+  EXPECT_EQ(SK_ColorBLUE, overlay.getColor(1, 0));
+
+  // 3. Pure Magenta pixel: Should be entirely captured by the mask as a black
+  // pixel (inversion mask).
+  EXPECT_EQ(SK_ColorBLACK, mask.getColor(2, 0));
+  EXPECT_EQ(SK_ColorTRANSPARENT, overlay.getColor(2, 0));
+
+  // 4. Pure White pixel: Should be ignored by the mask and kept as pure white
+  // in the overlay.
+  EXPECT_EQ(SK_ColorTRANSPARENT, mask.getColor(3, 0));
+  EXPECT_EQ(SK_ColorWHITE, overlay.getColor(3, 0));
+}
+
+TEST_F(InvertedCursorWindowControllerTest, InvertedCursorOutlineColor) {
+  cursor_window_controller()->SetCursorInverted(true);
+  SetCursorCompositionEnabled(true);
+
+  auto test_cursor_outline = [&](CursorType type) {
+    cursor_window_controller()->SetCursor(type);
+    const SkBitmap* original = GetCursorImage().bitmap();
+    SkBitmap mask, overlay;
+    SeparateCursorBitmap(*original, &mask, &overlay);
+
+    // Look through the overlay for white pixels, showing that the outline
+    // remains white. Also ensure there are no black pixels in the outline
+    // (expected for these pointer types).
+    // TODO(b:509950328) - Improve test after labeling other strokes /
+    // parts of the cursor. While this works for hand and arrow, it would
+    // not work for the copy cursor, for example.
+    bool found_outline = false;
+    for (int y = 0; y < overlay.height(); ++y) {
+      for (int x = 0; x < overlay.width(); ++x) {
+        ASSERT_NE(overlay.getColor(x, y), SK_ColorBLACK);
+        if (overlay.getColor(x, y) == SK_ColorWHITE) {
+          found_outline = true;
+        }
+      }
+    }
+    EXPECT_TRUE(found_outline);
+  };
+
+  test_cursor_outline(CursorType::kPointer);
+  test_cursor_outline(CursorType::kHand);
 }
 
 }  // namespace ash

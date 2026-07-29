@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "gpu/vulkan/vulkan_device_queue.h"
 
 #include <algorithm>
@@ -17,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
@@ -25,39 +21,28 @@
 #include "base/trace_event/process_memory_dump.h"
 #include "build/build_config.h"
 #include "gpu/config/gpu_info.h"  // nogncheck
-#include "gpu/config/vulkan_info.h"
 #include "gpu/vulkan/vulkan_command_pool.h"
 #include "gpu/vulkan/vulkan_crash_keys.h"
 #include "gpu/vulkan/vulkan_fence_helper.h"
 #include "gpu/vulkan/vulkan_function_pointers.h"
+#include "gpu/vulkan/vulkan_info.h"
 #include "gpu/vulkan/vulkan_util.h"
 #include "ui/gl/gl_angle_util_vulkan.h"
-
-namespace features {
-// Based on Finch experiment results, the VMA block size does not significantly
-// affect performance.  Too small sizes (such as 4KB) result in instability,
-// likely due to running out of allowed allocations (the
-// |maxMemoryAllocationCount| Vulkan limit).  Too large sizes (such as 4MB)
-// result in significant memory waste due to fragmentation.  Finch results
-// have shown that with a block size of 64KB and below, the amount of
-// fragmentation is ~1MB in the 99th percentile.  For 128KB and higher block
-// sizes, the amount of fragmentation exponentially increases (with 2MB for
-// 128KB block size, 4MB for 256KB, etc).
-BASE_FEATURE(kVulkanVMALargeHeapBlockSizeExperiment,
-             "VulkanVMALargeHeapBlockSizeExperiment",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-constexpr base::FeatureParam<int> kVulkanVMALargeHeapBlockSize{
-    &kVulkanVMALargeHeapBlockSizeExperiment, "VulkanVMALargeHeapBlockSize",
-    64 * 1024};
-}  // namespace features
 
 namespace gpu {
 namespace {
 VkDeviceSize GetPreferredVMALargeHeapBlockSize() {
-  const VkDeviceSize block_size =
-      ::features::kVulkanVMALargeHeapBlockSize.Get();
-  DCHECK(std::has_single_bit(block_size));
-  return block_size;
+  // Based on Finch experiment results, the VMA block size does not
+  // significantly affect performance.  Too small sizes (such as 4KB) result in
+  // instability, likely due to running out of allowed allocations (the
+  // |maxMemoryAllocationCount| Vulkan limit).  Too large sizes (such as 4MB)
+  // result in significant memory waste due to fragmentation.  Finch results
+  // have shown that with a block size of 64KB and below, the amount of
+  // fragmentation is ~1MB in the 99th percentile.  For 128KB and higher block
+  // sizes, the amount of fragmentation exponentially increases (with 2MB for
+  // 128KB block size, 4MB for 256KB, etc).
+  constexpr VkDeviceSize kVulkanVMALargeHeapBlockSize = 64 * 1024;
+  return kVulkanVMALargeHeapBlockSize;
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -75,9 +60,9 @@ class VulkanMetric final
   }
 
  private:
-  std::optional<uint64_t> Measure() const override {
+  std::optional<base::ByteSize> Measure() const override {
     auto allocated_used = vma::GetTotalAllocatedAndUsedMemory(vma_allocator_);
-    return allocated_used.first;
+    return base::ByteSize(allocated_used.first);
   }
   VmaAllocator vma_allocator_;
 };
@@ -233,8 +218,8 @@ bool VulkanDeviceQueue::Initialize(
   for (const char* extension : required_extensions) {
     if (std::ranges::none_of(physical_device_info.extensions,
                              [extension](const VkExtensionProperties& p) {
-                               return std::strcmp(extension, p.extensionName) ==
-                                      0;
+                               return UNSAFE_TODO(std::strcmp(
+                                          extension, p.extensionName)) == 0;
                              })) {
       // On Fuchsia, some device extensions are provided by layers.
       // TODO(penghuang): checking extensions against layer device extensions
@@ -251,8 +236,8 @@ bool VulkanDeviceQueue::Initialize(
   for (const char* extension : optional_extensions) {
     if (std::ranges::none_of(physical_device_info.extensions,
                              [extension](const VkExtensionProperties& p) {
-                               return std::strcmp(extension, p.extensionName) ==
-                                      0;
+                               return UNSAFE_TODO(std::strcmp(
+                                          extension, p.extensionName)) == 0;
                              })) {
       DLOG(ERROR) << "Optional Vulkan extension " << extension
                   << " is not supported.";
@@ -335,6 +320,23 @@ bool VulkanDeviceQueue::Initialize(
     enabled_device_features_2_.pNext = &protected_memory_features_;
   }
 
+  // Add Skia features to query
+  instance_->skia_features().addFeaturesToQuery(
+      physical_device_info.extensions.data(),
+      physical_device_info.extensions.size(), enabled_device_features_2_);
+
+  // Query the physical device features.
+  vkGetPhysicalDeviceFeatures2(vk_physical_device_,
+                               &enabled_device_features_2_);
+
+  // TODO(syoussefi): feature_sampler_ycbcr_conversion and
+  // feature_protected_memory can be removed from physical_device_info and
+  // checked after the vkGetPhysicalDeviceFeatures2 query here.
+
+  // Enable Skia extensions and features
+  instance_->skia_features().addFeaturesToEnable(enabled_extensions,
+                                                 enabled_device_features_2_);
+
   VkDeviceCreateInfo device_create_info = {
       VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   device_create_info.pNext = enabled_device_features_2_.pNext;
@@ -383,6 +385,9 @@ bool VulkanDeviceQueue::Initialize(
                        &owned_vma_allocator_);
   vma_allocator_ = owned_vma_allocator_;
 
+  skia_vk_memory_allocator_ =
+      sk_make_sp<gpu::SkiaVulkanMemoryAllocator>(vma_allocator_);
+
   cleanup_helper_ = std::make_unique<VulkanFenceHelper>(this);
 
   allow_protected_memory_ = allow_protected_memory;
@@ -405,7 +410,8 @@ bool VulkanDeviceQueue::InitCommon(VkPhysicalDevice vk_physical_device,
                                    VkDevice vk_device,
                                    VkQueue vk_queue,
                                    uint32_t vk_queue_index,
-                                   gfx::ExtensionSet enabled_extensions) {
+                                   gfx::ExtensionSet enabled_extensions,
+                                   const bool is_thread_safe) {
   DCHECK_EQ(static_cast<VkPhysicalDevice>(VK_NULL_HANDLE), vk_physical_device_);
   DCHECK_EQ(static_cast<VkDevice>(VK_NULL_HANDLE), owned_vk_device_);
   DCHECK_EQ(static_cast<VkDevice>(VK_NULL_HANDLE), vk_device_);
@@ -419,11 +425,11 @@ bool VulkanDeviceQueue::InitCommon(VkPhysicalDevice vk_physical_device,
   enabled_extensions_ = std::move(enabled_extensions);
 
   if (vma_allocator_ == VK_NULL_HANDLE) {
-    vma::CreateAllocator(vk_physical_device_, vk_device_, vk_instance_,
-                         enabled_extensions_,
-                         GetPreferredVMALargeHeapBlockSize(),
-                         /*heap_size_limit=*/nullptr,
-                         /*is_thread_safe =*/false, &owned_vma_allocator_);
+    vma::CreateAllocator(
+        vk_physical_device_, vk_device_, vk_instance_, enabled_extensions_,
+        GetPreferredVMALargeHeapBlockSize(),
+        /*heap_size_limit=*/nullptr,
+        /*is_thread_safe =*/is_thread_safe, &owned_vma_allocator_);
     vma_allocator_ = owned_vma_allocator_;
 #if BUILDFLAG(IS_ANDROID)
     if (!metric_) {
@@ -431,6 +437,9 @@ bool VulkanDeviceQueue::InitCommon(VkPhysicalDevice vk_physical_device,
     }
 #endif  // BUILDFLAG(IS_ANDROID)
   }
+
+  skia_vk_memory_allocator_ =
+      sk_make_sp<gpu::SkiaVulkanMemoryAllocator>(vma_allocator_);
 
   cleanup_helper_ = std::make_unique<VulkanFenceHelper>(this);
 
@@ -441,7 +450,7 @@ bool VulkanDeviceQueue::InitCommon(VkPhysicalDevice vk_physical_device,
   return true;
 }
 
-bool VulkanDeviceQueue::InitializeFromANGLE() {
+bool VulkanDeviceQueue::InitializeFromANGLE(const bool is_thread_safe) {
   const VulkanInfo& info = instance_->vulkan_info();
   VkPhysicalDevice vk_physical_device = gl::QueryVkPhysicalDeviceFromANGLE();
   if (vk_physical_device == VK_NULL_HANDLE)
@@ -482,7 +491,7 @@ bool VulkanDeviceQueue::InitializeFromANGLE() {
 
   angle_display_ = gl::QueryDisplayFromANGLE();
   return InitCommon(vk_physical_device, vk_device, vk_queue, vk_queue_index,
-                    enabled_extensions);
+                    enabled_extensions, is_thread_safe);
 }
 
 bool VulkanDeviceQueue::InitializeForWebView(
@@ -491,8 +500,10 @@ bool VulkanDeviceQueue::InitializeForWebView(
     VkQueue vk_queue,
     uint32_t vk_queue_index,
     gfx::ExtensionSet enabled_extensions) {
+  // VulkanDeviceQueue for compositing on WebView is used on a single
+  // thread (Android RenderThread), so it doesn't need to be thread-safe.
   return InitCommon(vk_physical_device, vk_device, vk_queue, vk_queue_index,
-                    enabled_extensions);
+                    enabled_extensions, /*is_thread_safe =*/false);
 }
 
 bool VulkanDeviceQueue::InitializeForCompositorGpuThread(
@@ -524,8 +535,10 @@ bool VulkanDeviceQueue::InitializeForCompositorGpuThread(
 
   // Note that CompositorGpuThread uses same vma allocator as gpu main thread.
   vma_allocator_ = vma_allocator;
+  // is_thread_safe here likely does nothing since the VMA is already
+  // allocated.
   return InitCommon(vk_physical_device, vk_device, vk_queue, vk_queue_index,
-                    enabled_extensions);
+                    enabled_extensions, /*is_thread_safe =*/true);
 }
 
 void VulkanDeviceQueue::Destroy() {
@@ -589,12 +602,19 @@ bool VulkanDeviceQueue::OnMemoryDump(
 
   auto* dump = pmd->CreateAllocatorDump(path);
   auto allocated_used = vma::GetTotalAllocatedAndUsedMemory(vma_allocator());
+  uint32_t lazy_allocated_size =
+      skia_vk_memory_allocator_->totalLazyAllocatedMemory();
   // `allocated_size` is memory allocated from the device, used is what is
-  // actually used.
-  dump->AddScalar("allocated_size", "bytes", allocated_used.first);
-  dump->AddScalar("used_size", "bytes", allocated_used.second);
+  // actually used. `lazy_allocated_size` is transient memory that is lazily
+  // allocated by the driver.
+  dump->AddScalar("allocated_size", "bytes",
+                  allocated_used.first - lazy_allocated_size);
+  dump->AddScalar("used_size", "bytes",
+                  allocated_used.second - lazy_allocated_size);
   dump->AddScalar("fragmentation_size", "bytes",
                   allocated_used.first - allocated_used.second);
+  dump->AddScalar("lazy_allocated_size", "bytes", lazy_allocated_size);
+  dump->AddScalar("lazy_used_size", "bytes", lazy_allocated_size);
   return true;
 }
 

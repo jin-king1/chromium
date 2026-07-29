@@ -6,6 +6,7 @@
 #define COMPONENTS_SERVICES_STORAGE_INDEXED_DB_SCOPES_LEVELDB_SCOPE_H_
 
 #include <stdint.h>
+
 #include <limits>
 #include <string>
 #include <utility>
@@ -15,7 +16,7 @@
 #include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/numerics/checked_math.h"
 #include "base/sequence_checker.h"
 #include "components/services/storage/indexed_db/leveldb/leveldb_state.h"
@@ -102,11 +103,6 @@ class LevelDBScope {
     return buffer_batch_.ApproximateSize();
   }
 
-  uint64_t GetApproximateBytesWritten() const {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    return approximate_bytes_written_.ValueOrDie();
-  }
-
  private:
   friend class LevelDBScopes;
   class UndoLogWriter;
@@ -181,7 +177,6 @@ class LevelDBScope {
 
   leveldb::WriteBatch buffer_batch_;
   bool buffer_batch_empty_ = true;
-  base::CheckedNumeric<uint64_t> approximate_bytes_written_ = 0;
   bool has_written_to_disk_ = false;
   bool committed_ = false;
 

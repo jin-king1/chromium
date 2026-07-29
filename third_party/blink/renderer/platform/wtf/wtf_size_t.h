@@ -8,7 +8,11 @@
 #include <limits.h>
 #include <stdint.h>
 
-namespace WTF {
+#include <iterator>
+
+#include "base/numerics/safe_conversions.h"
+
+namespace blink {
 
 // TLDR: size_t != wtf_size_t
 //
@@ -20,8 +24,8 @@ namespace WTF {
 // Matching the external API to match the internal API have a number of
 // required properties:
 //  - Internal storage for Vector and String are all uint32_t based.
-//  - Max heap allocation size is kMaxHeapObjectSize (much less than UINTMAX).
-//  - Consumers of APIs such as WTF::Vector may store their indices in some
+//  - Max heap allocation size is kMaxHeapObjectSize (much less than UINT_MAX).
+//  - Consumers of APIs such as blink::Vector may store their indices in some
 //    other storage and using size_t consumes extra data.
 //  - Checked_casts are too slow to use internally.
 //  - Conversion from wtf_size_t to size_t is always safe and static_casts
@@ -35,9 +39,15 @@ namespace WTF {
 using wtf_size_t = uint32_t;
 const wtf_size_t kNotFound = UINT_MAX;
 
-}  // namespace WTF
+// The size type for Blink string classes.
+// The name is lower_snake_case for consistency with wtf_size_t.
+using string_size_t = wtf_size_t;
 
-using WTF::kNotFound;
-using WTF::wtf_size_t;
+template <typename Iter>
+inline wtf_size_t CheckedDistance(Iter begin, Iter end) {
+  return base::checked_cast<wtf_size_t>(std::distance(begin, end));
+}
+
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_WTF_SIZE_T_H_

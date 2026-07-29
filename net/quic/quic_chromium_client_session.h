@@ -31,10 +31,12 @@
 #include "base/values.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/connection_migration_information.h"
+#include "net/base/ech_mode.h"
 #include "net/base/load_timing_info.h"
 #include "net/base/net_error_details.h"
 #include "net/base/net_export.h"
 #include "net/base/network_handle.h"
+#include "net/dns/public/resolution_details.h"
 #include "net/log/net_log_with_source.h"
 #include "net/net_buildflags.h"
 #include "net/quic/quic_chromium_client_stream.h"
@@ -172,6 +174,20 @@ enum class EcnPermutations {
   kMaxValue = kNotEctEct1Ect0Ce,
 };
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(MTCResult)
+enum class MTCResult {
+  kValidMTC = 0,
+  kInvalidMTC = 1,
+  kClassicalCertExpectedMTC = 2,
+  kClassicalCertOldClient = 3,
+  kClassicalCertUnknownLandmarkDelta = 4,
+  kMaxValue = kClassicalCertUnknownLandmarkDelta,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:MTCResult)
+
 class NET_EXPORT_PRIVATE QuicChromiumClientSession
     : public quic::QuicSpdyClientSessionBase,
       public MultiplexedSession,
@@ -264,6 +280,10 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
 
     // Returns the connection timing for the handshake of this session.
     const LoadTimingInfo::ConnectTiming& GetConnectTiming();
+
+    // Returns the resolution details for the DNS resolution that established
+    // this session. Returns nullopt when no resolution was performed.
+    std::optional<ResolutionDetails> GetResolutionDetails() const;
 
     // Returns true if |other| is a handle to the same session as this handle.
     bool SharesSameSession(const Handle& other) const;
@@ -620,8 +640,6 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // connection), the `dns_resolution_*_time` arguments should be equal and
   // the current time, and `endpoint_result` should be an empty value, with an
   // empty address list.
-  // TODO(crbug.com/332924003): Delete the |report_ecn| argument when the
-  // feature is deprecated.
   QuicChromiumClientSession(
       quic::QuicConnection* connection,
       std::unique_ptr<DatagramClientSocket> socket,
@@ -652,11 +670,11 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
       const char* const connection_description,
       base::TimeTicks dns_resolution_start_time,
       base::TimeTicks dns_resolution_end_time,
+      std::optional<ResolutionDetails> resolution_details,
       const base::TickClock* tick_clock,
       base::SequencedTaskRunner* task_runner,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       const ConnectionEndpointMetadata& metadata,
-      bool report_ecn,
       bool enable_origin_frame,
       bool allow_server_preferred_address,
       MultiplexedSessionCreationInitiator session_creation_initiator,
@@ -678,6 +696,10 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
 
   // Returns the session's connection migration mode.
   ConnectionMigrationMode connection_migration_mode() const;
+
+  // Returns true if the connection was ever used to create a stream,
+  // including cases where the stream creation failed.
+  bool was_ever_used_to_create_streams() const;
 
   // Waits for the handshake to be confirmed and invokes |callback| when
   // that happens. If the handshake has already been confirmed, returns OK.
@@ -748,11 +770,11 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
 
   // quic::QuicSession methods:
   QuicChromiumClientStream* CreateOutgoingBidirectionalStream() override;
-  QuicChromiumClientStream* CreateOutgoingUnidirectionalStream() override;
   const quic::QuicCryptoClientStream* GetCryptoStream() const override;
   quic::QuicCryptoClientStream* GetMutableCryptoStream() override;
   void SetDefaultEncryptionLevel(quic::EncryptionLevel level) override;
   void OnTlsHandshakeComplete() override;
+  void OnTlsHandshakeConfirmed() override;
   void OnNewEncryptionKeyAvailable(
       quic::EncryptionLevel level,
       std::unique_ptr<quic::QuicEncrypter> encrypter) override;
@@ -763,6 +785,7 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   void OnGoAway(const quic::QuicGoAwayFrame& frame) override;
   void OnCanCreateNewOutgoingStream(bool unidirectional) override;
   quic::QuicSSLConfig GetSSLConfig() const override;
+  void OnConfigNegotiated() override;
 
   // QuicSpdyClientSessionBase methods:
   void OnProofValid(
@@ -777,6 +800,7 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
       const quic::ParsedQuicVersion& version) override;
   void OnPathDegrading() override;
   void OnForwardProgressMadeAfterPathDegrading() override;
+  void SendRetireConnectionId(uint64_t sequence_number) override;
   void OnKeyUpdate(quic::KeyUpdateReason reason) override;
   void CreateContextForMultiPortPath(
       std::unique_ptr<quic::MultiPortPathContextObserver> context_observer)
@@ -790,6 +814,7 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
                 const quic::QuicSocketAddress& local_address,
                 const quic::QuicSocketAddress& peer_address) override;
   void OnStreamClosed(quic::QuicStreamId stream_id) override;
+  bool ShouldKeepConnectionAlive() const override;
 
   // MultiplexedSession methods:
   int GetRemoteEndpoint(IPEndPoint* endpoint) override;
@@ -827,7 +852,7 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
                                 quic::QuicErrorCode quic_error,
                                 quic::ConnectionCloseBehavior behavior);
 
-  base::Value::Dict GetInfoAsValue(const std::set<HostPortPair>& aliases);
+  base::DictValue GetInfoAsValue(const std::set<HostPortPair>& aliases);
 
   const NetLogWithSource& net_log() const { return net_log_; }
 
@@ -951,7 +976,12 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
 
   const LoadTimingInfo::ConnectTiming& GetConnectTiming();
 
+  std::optional<ResolutionDetails> GetResolutionDetails() const;
+
   quic::ParsedQuicVersion GetQuicVersion() const;
+
+  // Send a ping frame to the peer to check the liveness of the connection.
+  void SendPing();
 
   bool require_confirmation() const { return require_confirmation_; }
 
@@ -966,22 +996,27 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
     return received_origins_;
   }
 
+  void SetPeriodicConnectionKeepAlive(bool enable_periodic_ping) {
+    enable_periodic_ping_ = enable_periodic_ping;
+  }
+
   void SetGoingAwayForTesting(bool going_away) { going_away_ = going_away; }
   void SetConnectionMigrationInformationForTesting(
       net::ConnectionMigrationInformation migration_info) {
     migration_info_ = migration_info;
   }
 
+  quic::QuicTagVector& received_connection_options() {
+    return received_connection_options_;
+  }
+
  protected:
   // quic::QuicSession methods:
   bool ShouldCreateIncomingStream(quic::QuicStreamId id) override;
   bool ShouldCreateOutgoingBidirectionalStream() override;
-  bool ShouldCreateOutgoingUnidirectionalStream() override;
 
   QuicChromiumClientStream* CreateIncomingStream(
       quic::QuicStreamId id) override;
-  QuicChromiumClientStream* CreateIncomingStream(
-      quic::PendingStream* pending) override;
 
  private:
   friend class test::QuicChromiumClientSessionPeer;
@@ -992,7 +1027,8 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   bool WasConnectionEverUsed();
 
   QuicChromiumClientStream* CreateOutgoingReliableStreamImpl(
-      const NetworkTrafficAnnotationTag& traffic_annotation);
+      const NetworkTrafficAnnotationTag& traffic_annotation,
+      base::TimeDelta max_stream_limit_pending_delay);
   QuicChromiumClientStream* CreateIncomingReliableStreamImpl(
       quic::QuicStreamId id,
       const NetworkTrafficAnnotationTag& traffic_annotation);
@@ -1017,6 +1053,8 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
 
   // Helper to finish network probe once socket has been opened. Always called
   // asynchronously.
+  // TODO(crbug.com/518753285): Stop accepting a `network` parameter. Instead,
+  // require `probing_socket` to have already been bound at creation time.
   void FinishStartProbing(ProbingCallback probing_callback,
                           std::unique_ptr<DatagramClientSocket> probing_socket,
                           handles::NetworkHandle network,
@@ -1107,6 +1145,30 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
       StreamRequest* stream_request);
 #endif  // BUILDFLAG(ENABLE_WEBSOCKETS)
 
+  // Register a QUIC connection close payload to the Android system service.
+  // The payload will be registered with the socket currently used by the QUIC
+  // connection. If the app loses network access, the system server will destroy
+  // the registered socket and send the registered UDP payload to the server.
+  // This method must be called when:
+  // 1. the QUIC connection is established.
+  // 2. the QUIC connection has migrated to a new path and started using a new
+  //    socket.
+  // 3. the QUIC connection retires sever connection ID
+  virtual void RegisterQuicConnectionClosePayload();
+
+  // Unregister the payload associated with the socket currently used by the
+  // QUIC connection.
+  // This method is a no-op if the socket and the payload were not previously
+  // registered by RegisterQuicConnectionClosePayload
+  // This method must be called when:
+  // 1. the QUIC connection is closed
+  // 2. the QUIC connection will migrate to a new path and stop using the
+  //    socket currently in use.
+  // Note: Unregistration is not required when only the connection ID is
+  // updated. As long as the connection continues to use the same socket,
+  // registering a new payload replace the previously registered one.
+  virtual void UnregisterQuicConnectionClosePayload();
+
   const QuicSessionAliasKey session_alias_key_;
   QuicSessionKey session_key_;
   bool require_confirmation_;
@@ -1153,7 +1215,6 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   std::unique_ptr<CertVerifyResult> cert_verify_result_;
   bool pkp_bypassed_ = false;
   bool is_fatal_cert_error_ = false;
-  bool report_ecn_;
   const bool enable_origin_frame_;
   HandleSet handles_;
   StreamRequestQueue stream_requests_;
@@ -1163,6 +1224,8 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   raw_ptr<base::SequencedTaskRunner> task_runner_;
   NetLogWithSource net_log_;
   LoadTimingInfo::ConnectTiming connect_timing_;
+
+  std::optional<ResolutionDetails> resolution_details_;
   std::unique_ptr<QuicConnectionLogger> logger_;
   std::unique_ptr<QuicHttp3Logger> http3_logger_;
   // True when the session is going away, and streams may no longer be created
@@ -1218,22 +1281,36 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
 
   std::vector<uint8_t> ech_config_list_;
 
-  // Bitmap of incoming IP ECN marks observed on this session. Bit 0 = Not-ECT,
-  // Bit 1 = ECT(1), Bit 2 = ECT(0), Bit 3 = CE. Reported to metrics at the
-  // end of the session.
-  uint8_t observed_incoming_ecn_ = 0;
+  // The EchMode for the session's host.
+  // Must be declared after `session_key_`, as its initialization depends on it.
+  const EchMode ech_mode_;
 
-  // The number of incoming packets in this session before it observes a change
-  // in the incoming packet ECN marking.
-  uint64_t incoming_packets_before_ecn_transition_ = 0;
-
-  // When true, the session has observed a transition and can stop incrementing
-  // incoming_packets_before_ecn_transition_.
-  bool observed_ecn_transition_ = false;
+  // The list of TLS Trust Anchor IDs, each in binary representation, advertised
+  // by the server in DNS.
+  std::vector<std::vector<uint8_t>> trust_anchor_ids_;
 
   const bool allow_server_preferred_address_;
 
   const MultiplexedSessionCreationInitiator session_creation_initiator_;
+
+  quic::QuicTagVector received_connection_options_;
+
+  bool connection_migration_disabled_ = false;
+
+  // Enable periodic ping to keep the connection alive even when the session
+  // does not have any outstanding requests.
+  bool enable_periodic_ping_ = false;
+
+  bool crypto_handshake_complete_ = false;
+
+  // If the server supports MTCs, this is set to true in
+  // OnProofVerifyDetailsAvailable. A server is considered to support MTCs if
+  // either it sends an MTC in its Certificate message or if its trust_anchors
+  // extension (in EncryptedExtensions) contains a trust anchor ID corresponding
+  // to a known Merkle Tree Certificate CA.
+  //
+  // This is only used for metrics.
+  bool server_supports_mtc_tai_ = false;
 
   base::WeakPtrFactory<QuicChromiumClientSession> weak_factory_{this};
 };
@@ -1244,6 +1321,10 @@ namespace features {
 // when there is an ongoing migration with probing.
 NET_EXPORT BASE_DECLARE_FEATURE(
     kQuicMigrationIgnoreDisconnectSignalDuringProbing);
+
+// When enabled, QuicChromiumClientSession registers and unregisters QUIC
+// connection close payloads with the Android system service.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicRegisterConnectionClosePayload);
 
 }  // namespace features
 

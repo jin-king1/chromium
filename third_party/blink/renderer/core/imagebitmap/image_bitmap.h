@@ -97,7 +97,7 @@ class CORE_EXPORT ImageBitmap final : public ScriptWrappable,
   bool OriginClean() const { return image_->OriginClean(); }
   bool IsPremultiplied() const { return image_->IsPremultiplied(); }
   ImageOrientationEnum ImageOrientation() const {
-    return image_->CurrentFrameOrientation().Orientation();
+    return image_->Orientation().Orientation();
   }
   scoped_refptr<StaticBitmapImage> Transfer();
   void close();
@@ -105,11 +105,8 @@ class CORE_EXPORT ImageBitmap final : public ScriptWrappable,
   ~ImageBitmap() override;
 
   // CanvasImageSource implementation
-  scoped_refptr<Image> GetSourceImageForCanvas(
-      FlushReason,
-      SourceImageStatus*,
-      const gfx::SizeF&,
-      const AlphaDisposition alpha_disposition) override;
+  scoped_refptr<Image> GetSourceImageForCanvas(SourceImageStatus*,
+                                               const gfx::SizeF&) override;
   bool WouldTaintOrigin() const override {
     return image_ && !image_->OriginClean();
   }
@@ -134,7 +131,6 @@ class CORE_EXPORT ImageBitmap final : public ScriptWrappable,
     // to be removed.
     bool should_scale_input = false;
     bool has_color_space_conversion = false;
-    bool source_is_unpremul = false;
     bool orientation_from_image = true;
     // TODO(crbug.com/40773069): The value of `resize_width`, `resize_height`,
     // and `crop_rect` are computed incorrectly. Remove this when all code that
@@ -180,8 +176,8 @@ class CORE_EXPORT ImageBitmap final : public ScriptWrappable,
       PaintRecord,
       const gfx::Rect&,
       scoped_refptr<base::SequencedTaskRunner>,
-      WTF::CrossThreadOnceFunction<void(sk_sp<SkImage>,
-                                        const ImageOrientationEnum)> callback);
+      CrossThreadOnceFunction<void(sk_sp<SkImage>, const ImageOrientationEnum)>
+          callback);
   scoped_refptr<StaticBitmapImage> image_;
   bool is_neutered_ = false;
   int32_t memory_usage_ = 0;

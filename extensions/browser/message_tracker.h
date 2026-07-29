@@ -7,6 +7,7 @@
 
 #include <map>
 
+#include "base/memory/raw_ptr.h"
 #include "base/memory/singleton.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -63,8 +64,9 @@ class MessageTracker : public KeyedService {
     kOnOpenChannelSourceInvalid = 15,
     kOnOpenChannelOpenerPortInvalid = 16,
     kOnOpenChannelExtensionNotEnabled = 17,
+    kOpenChannelFailIncompatibleMessageSerializationFormat = 18,
 
-    kMaxValue = kOnOpenChannelExtensionNotEnabled,
+    kMaxValue = kOpenChannelFailIncompatibleMessageSerializationFormat,
   };
 
   class TestObserver {

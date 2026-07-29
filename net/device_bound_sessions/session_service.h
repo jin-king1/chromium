@@ -7,31 +7,63 @@
 
 #include <memory>
 
+#include "base/callback_list.h"
 #include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ref.h"
 #include "net/base/net_export.h"
+#include "net/device_bound_sessions/cookie_access_check_params.h"
+#include "net/device_bound_sessions/deletion_reason.h"
 #include "net/device_bound_sessions/registration_fetcher_param.h"
 #include "net/device_bound_sessions/session.h"
 #include "net/device_bound_sessions/session_access.h"
 #include "net/device_bound_sessions/session_challenge_param.h"
+#include "net/device_bound_sessions/session_display.h"
+#include "net/device_bound_sessions/session_event.h"
 #include "net/device_bound_sessions/session_key.h"
 #include "net/log/net_log_with_source.h"
 
 namespace net {
 class FirstPartySetMetadata;
 class IsolationInfo;
-class URLRequest;
 class URLRequestContext;
-}
+class HttpRequestHeaders;
+class SSLCertRequestInfo;
+class X509Certificate;
+class SSLPrivateKey;
+}  // namespace net
 
 namespace net::device_bound_sessions {
+
+// Callback invoked when a client certificate selection has finished.
+// `cert` and `key` are the selected certificate and its private key. Both are
+// null if no certificate was selected or the request was cancelled.
+// `cancel` is true if the request should be aborted (e.g. user cancelled the
+// prompt), or false if it should continue (either with a certificate or without
+// one).
+using SelectClientCertificateCallback =
+    base::OnceCallback<void(scoped_refptr<X509Certificate> cert,
+                            scoped_refptr<SSLPrivateKey> key,
+                            bool cancel)>;
+
+// Handler invoked by the SessionService to select a client certificate for a
+// Device Bound session request (registration or refresh).
+// When the certificate selection is complete, the handler must run the
+// provided `callback`.
+using SelectClientCertificateHandler =
+    base::RepeatingCallback<void(const GURL& url,
+                                 scoped_refptr<SSLCertRequestInfo> cert_info,
+                                 SelectClientCertificateCallback callback)>;
 
 // Main class for Device Bound Session Credentials (DBSC).
 // Full information can be found at https://github.com/WICG/dbsc
 class NET_EXPORT SessionService {
  public:
-  using RefreshCompleteCallback = base::OnceClosure;
   using OnAccessCallback = base::RepeatingCallback<void(const SessionAccess&)>;
+  using OnEventCallback = base::RepeatingCallback<void(const SessionEvent&)>;
+  using RefreshCompleteCallback = base::OnceCallback<void(RefreshResult)>;
+  using CookieAccessCallback =
+      base::RepeatingCallback<bool(const CookieAccessCheckParams&)>;
 
   // Indicates the reason for deferring. Exactly one of
   // `is_pending_initialization` or `session_id` will be truthy.
@@ -57,27 +89,40 @@ class NET_EXPORT SessionService {
     std::optional<Session::Id> session_id;
   };
 
+  // Stores a signed refresh challenge as well as the inputs used for the
+  // signing. This is an optimization to avoid redundant resigning, which is
+  // slow + resource-intensive, and could also cause issues like triggering the
+  // signing quota unnecessarily.
+  struct NET_EXPORT SignedRefreshChallenge {
+    // The signed challenge that was cached.
+    std::string signed_challenge;
+    // The challenge used to generate `signed_challenge`.
+    std::string challenge;
+    // The key_id used to generate `signed_challenge`.
+    unexportable_keys::UnexportableSigningKeyId key_id;
+  };
+
   // Returns nullptr if unexportable key provider is not supported by the
   // platform or the device.
   static std::unique_ptr<SessionService> Create(
-      const URLRequestContext* request_context);
+      const URLRequestContext* request_context,
+      const std::vector<SchemefulSite>& restricted_sites,
+      SelectClientCertificateHandler client_cert_handler,
+      CookieAccessCallback has_cookie_access_cb = base::NullCallback());
 
   SessionService(const SessionService&) = delete;
   SessionService& operator=(const SessionService&) = delete;
 
   virtual ~SessionService() = default;
 
-  // Called to register a new session after getting a Sec-Session-Registration
-  // header.
-  // Registration parameters to be used for creating the registration
-  // request.
-  // Isolation info to be used for registration request, this should be the
-  // same as was used for the response with the Sec-Session-Registration
-  // header.
-  // `net_log` is the log corresponding to the request receiving the
-  // Sec-Session-Registration header.
-  // 'original_request_initiator` was the initiator for the request that
-  // received the Sec-Session-Registration header.
+  // Called to register a new session after getting a
+  // Secure-Session-Registration header. Registration parameters to be used for
+  // creating the registration request. Isolation info to be used for
+  // registration request, this should be the same as was used for the response
+  // with the Secure-Session-Registration header. `net_log` is the log
+  // corresponding to the request receiving the Secure-Session-Registration
+  // header. 'original_request_initiator` was the initiator for the request that
+  // received the Secure-Session-Registration header.
   virtual void RegisterBoundSession(
       OnAccessCallback on_access_callback,
       RegistrationFetcherParam registration_params,
@@ -95,30 +140,30 @@ class NET_EXPORT SessionService {
   // `DeferralParams` containing the session id if the request should be
   // deferred due to a session, and returns std::nullopt if the request
   // does not need to be deferred.
+  // If sessions are skipped without deferring, they will be added to
+  // the Secure-Session-Skipped header in `extra_headers`.
   virtual std::optional<DeferralParams> ShouldDefer(
-      URLRequest* request,
+      DbscRequest& request,
+      HttpRequestHeaders* extra_headers,
       const FirstPartySetMetadata& first_party_set_metadata) = 0;
 
   // Defer a request and maybe refresh the corresponding session.
   // `deferral` is either the identifier of the session that is required to be
-  // refreshed, or indicates the session is not completely initialized.
+  // refreshed, or indicates the service is not completely initialized.
   // This will refresh the corresponding session if: another deferred request
   // has not already kicked off refresh, the session can be found, and the
   // associated unexportable key id is valid.
-  // Provides two callbacks, will always call one of them:
-  // - `restart_callback` queries for cookies for the requests again.
-  // - `continue_callback` sends the request without query for cookies again.
-  virtual void DeferRequestForRefresh(
-      URLRequest* request,
-      DeferralParams deferral,
-      RefreshCompleteCallback restart_callback,
-      RefreshCompleteCallback continue_callback) = 0;
+  // On completion, calls `callback`.
+  virtual void DeferRequestForRefresh(DbscRequest& request,
+                                      DeferralParams deferral,
+                                      RefreshCompleteCallback callback) = 0;
 
   // Set the challenge for a bound session after getting a
-  // Sec-Session-Challenge header.
+  // Secure-Session-Challenge header.
   virtual void SetChallengeForBoundSession(
       OnAccessCallback on_access_callback,
-      const GURL& request_url,
+      DbscRequest& request,
+      const FirstPartySetMetadata& first_party_set_metadata,
       const SessionChallengeParam& param) = 0;
 
   // Get all sessions. If sessions have not yet been loaded from disk,
@@ -126,16 +171,23 @@ class NET_EXPORT SessionService {
   virtual void GetAllSessionsAsync(
       base::OnceCallback<void(const std::vector<SessionKey>&)> callback) = 0;
 
-  // Delete the session on `site` with `id`, notifying
+  // Get all sessions and return a list of display sessions. If sessions
+  // have not yet been loaded from disk, defer until completely initialized.
+  virtual void GetAllSessionDisplaysAsync(
+      base::OnceCallback<void(const std::vector<SessionDisplay>&)>
+          callback) = 0;
+
+  // Delete the session matching `session_key`, notifying
   // `per_request_callback` about any deletions.
   virtual void DeleteSessionAndNotify(
-      const SchemefulSite& site,
-      const Session::Id& id,
+      DeletionReason reason,
+      const SessionKey& session_key,
       SessionService::OnAccessCallback per_request_callback) = 0;
 
   // Delete all sessions that match the filtering arguments. See
   // `device_bound_sessions.mojom` for details on the filtering logic.
   virtual void DeleteAllSessions(
+      DeletionReason reason,
       std::optional<base::Time> created_after_time,
       std::optional<base::Time> created_before_time,
       base::RepeatingCallback<bool(const url::Origin&,
@@ -149,6 +201,50 @@ class NET_EXPORT SessionService {
   virtual base::ScopedClosureRunner AddObserver(
       const GURL& url,
       base::RepeatingCallback<void(const SessionAccess&)> callback) = 0;
+
+  // Add an observer for DBSC events. This is used for DevTools.
+  virtual base::CallbackListSubscription AddEventObserver(
+      OnEventCallback callback) = 0;
+
+  // Get a session by key, or `nullptr` if no such session exists.
+  virtual const Session* GetSession(const SessionKey& session_key) const = 0;
+
+  // Adds a session to the service for the site `site` and with session
+  // config from `params`. `params.key_id` is ignored in favor of
+  // importing `wrapped_key`. Calls `callback` when complete with a a
+  // `SessionError` indicating whether session addition was successful.
+  virtual void AddSession(
+      const SchemefulSite& site,
+      SessionParams params,
+      base::span<const uint8_t> wrapped_key,
+      base::OnceCallback<void(SessionError::ErrorType)> callback) = 0;
+
+  // Finds the latest signed refresh challenge and relevant signing context for
+  // the `session_key`. If no challenge is found, returns nullptr.
+  virtual const SignedRefreshChallenge* GetLatestSignedRefreshChallenge(
+      const SessionKey& session_key) = 0;
+  // Sets the latest signed refresh challenge and relevant signing context for
+  // the `session_key`.
+  virtual void SetLatestSignedRefreshChallenge(
+      SessionKey session_key,
+      SignedRefreshChallenge signed_refresh_challenge) = 0;
+
+  // Whether the `site` has exceeded its signing quota.
+  virtual bool SigningQuotaExceeded(const SchemefulSite& site) = 0;
+  // Increments signing usage for this `site`.
+  virtual void AddSigningOccurrence(const SchemefulSite& site) = 0;
+
+  // Helper function to handle the registration and challenge headers provided
+  // in `headers` on the response to `request`.
+  virtual void HandleResponseHeaders(
+      DbscRequest& request,
+      HttpResponseHeaders* headers,
+      const FirstPartySetMetadata& first_party_set_metadata) = 0;
+
+  virtual void SelectClientCertificate(
+      const GURL& url,
+      scoped_refptr<SSLCertRequestInfo> cert_info,
+      SelectClientCertificateCallback callback) = 0;
 
  protected:
   SessionService() = default;

@@ -6,16 +6,11 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FORM_PARSING_ADDRESS_FIELD_PARSER_H_
 
 #include <memory>
-#include <string>
-#include <vector>
+#include <optional>
 
-#include "base/compiler_specific.h"
-#include "base/gtest_prod_util.h"
-#include "base/memory/raw_ptr.h"
-#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/country_type.h"
+#include "components/autofill/core/browser/form_parsing/field_candidates.h"
 #include "components/autofill/core/browser/form_parsing/form_field_parser.h"
-#include "components/autofill/core/common/language_code.h"
 
 namespace autofill {
 
@@ -24,7 +19,7 @@ class AutofillScanner;
 class AddressFieldParser : public FormFieldParser {
  public:
   static std::unique_ptr<FormFieldParser> Parse(ParsingContext& context,
-                                                AutofillScanner* scanner);
+                                                AutofillScanner& scanner);
 
   // Returns whether a stand-alone zip field is supported for `client_country`.
   // In some countries that's a prevalent UI (the user is first asked to enter
@@ -35,7 +30,7 @@ class AddressFieldParser : public FormFieldParser {
 
   static std::unique_ptr<FormFieldParser> ParseStandaloneZip(
       ParsingContext& context,
-      AutofillScanner* scanner);
+      AutofillScanner& scanner);
 
   ~AddressFieldParser() override;
 
@@ -48,65 +43,82 @@ class AddressFieldParser : public FormFieldParser {
  private:
   // When parsing a field's label and name separately with a given pattern:
   enum ParseNameLabelResult {
-    RESULT_MATCH_NONE,       // No match with the label or name.
-    RESULT_MATCH_LABEL,      // Only the label matches the pattern.
-    RESULT_MATCH_NAME,       // Only the name matches the pattern.
-    RESULT_MATCH_NAME_LABEL  // Name and label both match the pattern.
+    // No match with the label or name.
+    RESULT_MATCH_NONE,
+
+    // Only the high quality label matches the pattern.
+    RESULT_MATCH_HIGH_QUALITY_LABEL,
+    RESULT_MATCH_LOW_QUALITY_LABEL,
+
+    // Only the name matches the pattern.
+    RESULT_MATCH_NAME,
+
+    // Name and label both match the pattern.
+    // `RESULT_MATCH_NAME_LABEL` doesn't distinguish between low and high label
+    // matches, because a match in the name alone is considered high quality.
+    RESULT_MATCH_NAME_LABEL,
   };
 
   AddressFieldParser();
 
-  bool ParseCompany(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseCompany(ParsingContext& context, AutofillScanner& scanner);
 
-  bool ParseAddress(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseAddress(ParsingContext& context, AutofillScanner& scanner);
 
   bool ParseAddressFieldSequence(ParsingContext& context,
-                                 AutofillScanner* scanner);
+                                 AutofillScanner& scanner);
 
-  bool ParseAddressLines(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseAddressLines(ParsingContext& context, AutofillScanner& scanner);
 
-  bool ParseZipCode(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseZipCode(ParsingContext& context, AutofillScanner& scanner);
 
-  bool ParseCity(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseZipCodeSuffix(ParsingContext& context, AutofillScanner& scanner);
 
-  bool ParseState(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseCity(ParsingContext& context, AutofillScanner& scanner);
 
-  bool ParseStreetLocation(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseState(ParsingContext& context, AutofillScanner& scanner);
 
-  bool ParseStreetName(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseStreetLocation(ParsingContext& context, AutofillScanner& scanner);
 
-  bool ParseHouseNumber(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseDependentLocality(ParsingContext& context,
+                              AutofillScanner& scanner);
 
-  bool ParseApartmentNumber(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseLandmark(ParsingContext& context, AutofillScanner& scanner);
+
+  bool ParseStreetName(ParsingContext& context, AutofillScanner& scanner);
+
+  bool ParseHouseNumber(ParsingContext& context, AutofillScanner& scanner);
+
+  bool ParseApartmentNumber(ParsingContext& context, AutofillScanner& scanner);
 
   bool ParseBetweenStreetsOrLandmark(ParsingContext& context,
-                                     AutofillScanner* scanner);
+                                     AutofillScanner& scanner);
 
   bool ParseOverflowAndLandmark(ParsingContext& context,
-                                AutofillScanner* scanner);
+                                AutofillScanner& scanner);
 
-  bool ParseOverflow(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseOverflow(ParsingContext& context, AutofillScanner& scanner);
 
   bool ParseBetweenStreetsFields(ParsingContext& context,
-                                 AutofillScanner* scanner);
+                                 AutofillScanner& scanner);
 
   // Parses the current field pointed to by `scanner`, if it exists, and tries
   // to determine if the field's type corresponds to one of the following:
   // dependent locality, city, state, country, zip, landmark, between streets,
   // admin level 2 or none of those.
-  bool ParseAddressField(ParsingContext& context, AutofillScanner* scanner);
+  bool ParseAddressField(ParsingContext& context, AutofillScanner& scanner);
 
   // Starting from the current field pointed to by `scanner`, tries to parse
   // sequence of house number followed by either a street name, an apartment
   // number, or both. Rewind the cursor if the sequence could not be parsed. It
   // is currently only supported in NL.
   bool ParseHouseNumAptNumStreetNameSequence(ParsingContext& context,
-                                             AutofillScanner* scanner);
+                                             AutofillScanner& scanner);
 
   // Parses the current field pointed to by `scanner`, if it exists, and tries
   // to match house_number_and_apt field type.
   bool ParseFieldSpecificsForHouseNumberAndApt(ParsingContext& context,
-                                               AutofillScanner* scanner);
+                                               AutofillScanner& scanner);
 
   // Like ParseField(), but applies pattern named with `regex_name` against the
   // name and label of the current field separately. If the return value is
@@ -115,66 +127,80 @@ class AddressFieldParser : public FormFieldParser {
   // change.
   static ParseNameLabelResult ParseNameAndLabelSeparately(
       ParsingContext& context,
-      AutofillScanner* scanner,
+      AutofillScanner& scanner,
       const char* regex_name,
       std::optional<FieldAndMatchInfo>* match);
 
+  // The following applies to all `ParseNameAndLabelForX()` functions:
   // Run matches on the name and label separately. If the return result is
   // RESULT_MATCH_NAME_LABEL, then `scanner` advances and the field is set.
   // Otherwise `scanner` rewinds and the field is cleared.
   ParseNameLabelResult ParseNameAndLabelForZipCode(ParsingContext& context,
-                                                   AutofillScanner* scanner);
+                                                   AutofillScanner& scanner);
+
+  ParseNameLabelResult ParseNameAndLabelForZipCodeSuffix(
+      ParsingContext& context,
+      AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForDependentLocality(
       ParsingContext& context,
-      AutofillScanner* scanner);
+      AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForCity(ParsingContext& context,
-                                                AutofillScanner* scanner);
+                                                AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForCountry(ParsingContext& context,
-                                                   AutofillScanner* scanner);
+                                                   AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForLandmark(ParsingContext& context,
-                                                    AutofillScanner* scanner);
+                                                    AutofillScanner& scanner);
+
+  // Used in `ParseAddressField()` to parse `ADDRESS_HOME_STREET_LOCATION`
+  // field. Currently only supported in India. Uses India specific regex
+  // patterns.
+  ParseNameLabelResult ParseNameAndLabelForStreetLocation(
+      ParsingContext& context,
+      AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForBetweenStreets(
       ParsingContext& context,
-      AutofillScanner* scanner);
+      AutofillScanner& scanner);
 
   // Run matches on the name and label for a field and sets
   // `between_streets_line_1_` and `between_streets_line_2_` respectively if a
   // match is found.
   ParseNameLabelResult ParseNameAndLabelForBetweenStreetsLines12(
       ParsingContext& context,
-      AutofillScanner* scanner);
+      AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForAdminLevel2(
       ParsingContext& context,
-      AutofillScanner* scanner);
+      AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForBetweenStreetsOrLandmark(
       ParsingContext& context,
-      AutofillScanner* scanner);
+      AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForOverflowAndLandmark(
       ParsingContext& context,
-      AutofillScanner* scanner);
+      AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForOverflow(ParsingContext& context,
-                                                    AutofillScanner* scanner);
+                                                    AutofillScanner& scanner);
 
   ParseNameLabelResult ParseNameAndLabelForState(ParsingContext& context,
-                                                 AutofillScanner* scanner);
+                                                 AutofillScanner& scanner);
 
   bool SetFieldAndAdvanceCursor(
-      AutofillScanner* scanner,
+      AutofillScanner& scanner,
       ParseNameLabelResult parse_result,
       std::optional<FormFieldParser::FieldAndMatchInfo>* match);
 
   // Return true if the form being parsed shows an indication of being a
-  // structured address form.
-  bool PossiblyAStructuredAddressForm() const;
+  // structured address form. `country_code` is currently only used for India
+  // where the `street_location_`, `dependent_locality_` and `landmark_` fields
+  // are required.
+  bool PossiblyAStructuredAddressForm(GeoIpCountryCode country_code) const;
 
   std::optional<FieldAndMatchInfo> company_;
   std::optional<FieldAndMatchInfo> street_location_;
@@ -189,7 +215,7 @@ class AddressFieldParser : public FormFieldParser {
   std::optional<FieldAndMatchInfo> city_;
   std::optional<FieldAndMatchInfo> state_;
   std::optional<FieldAndMatchInfo> zip_;
-  std::optional<FieldAndMatchInfo> zip4_;  // Classified but not filled
+  std::optional<FieldAndMatchInfo> zip_suffix_;
   std::optional<FieldAndMatchInfo> country_;
   std::optional<FieldAndMatchInfo> landmark_;
   std::optional<FieldAndMatchInfo> between_streets_;

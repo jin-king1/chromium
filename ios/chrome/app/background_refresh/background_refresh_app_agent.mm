@@ -29,7 +29,62 @@
 @property(nonatomic) NSMutableSet<AppRefreshProvider*>* providers;
 // The subset of `providers` that are currently running refresh tasks.
 @property(nonatomic) NSMutableSet<AppRefreshProvider*>* activeProviders;
+// The total count of providers run for the current refresh task.
+@property(nonatomic) NSInteger providerCount;
 @end
+
+// Debugging notes:
+//
+// Important: BACKGROUND REFRESH REQUIRES A DEVICE. It doesn't work
+// on simulators at all. You will need to be debugging on a device for any of
+// these procedures to work.
+//
+// You will also need to set #app-backgrund-refresh-ios to 'Enabled' in
+// `chrome://flags` in the Chrome install you are debugging.
+//
+// To trigger task execution by iOS's background task scheduler while the
+// debugger is attached, the task needs to be scheduled first, and then a
+// private debugging method needs to be called.
+//
+// To do this with a *warm* start (that is, when Chrome has already launched,
+// and the refresh task executing when it is backgrounded):
+//   (1) Build and launch Chrome as usual.
+//   (2) After Chrome has fully launched, and without halting the debugger,
+//       background Chrome. This will trigger `requestAppRefresh`.
+//   (3) Pause Chrome using the debugger.
+//   (4) Execute this command in the debugger:
+//         e -l objc -- (void)[[BGTaskScheduler sharedScheduler]
+//           _simulateLaunchForTaskWithIdentifier:@"chrome.app.refresh"]
+//   (5) Resume Chrome using the debugger. The background task will execute and
+//       can be debugged.
+//
+// To do this with a *cold* start, where Chrome launches in the background and
+// then executes the refresh task without ever foregrounding:
+//   (1) Build and launch Chrome as usual.
+//   (2) After Chrome has fully launched, background Chrome. This will cause the
+//       refresh task to be scheduled.
+//   (3) Stop Chrome in XCode while it is in the background (don't pause in the
+//       debugger, stop Chrome running).
+//   (4) Launch Chrome again with the "Launch due to a background fetch event"
+//       option checked (under Scheme > Run > Options). This will launch Chrome
+//       without foregrounding it.
+//   (5) After a few seconds, pause Chrome using the debugger.
+//   (6) Execute this command in the debugger:
+//         e -l objc -- (void)[[BGTaskScheduler sharedScheduler]
+//           _simulateLaunchForTaskWithIdentifier:@"chrome.app.refresh"]
+//   (7) Resume Chrome using the debugger. The background task will execute and
+//       can be debugged.
+//
+// To trigger the expiration handler (that is, to forcibly expire the task while
+// it's running):
+//   (1) Set a breakpoint in `-handleExecutionForTask:`, after the for-loop that
+//       calls all of the providers.
+//   (2) Make sure this method is called by triggering the task as described
+//       above.
+//   (3) When the app is paused, run the following command in the debugger:
+//         e -l objc -- (void)[[BGTaskScheduler sharedScheduler]
+//         _simulateExpirationForTaskWithIdentifier:@"chrome.app.refresh"]
+//   (4) Resume execution. The task expiration code path can be debugged.
 
 // General note on threading: the IOS task scheduler invokes the configured
 // blocks on a non-main thread. This class's primary job is to route background
@@ -39,7 +94,7 @@
 // thread. The methods that handle that work are thus main-sequence affine, and
 // are guarded by a sequence checker. The configured methods that handle task
 // execution and cancellation, which are called directly by the iOS scheduler on
-// a non-main thread, must therefore only consist of dispacthing to a
+// a non-main thread, must therefore only consist of dispatching to a
 // corresponding main-thread method.
 //
 // For clarity, the methods expected to be only called from the task scheduler
@@ -47,7 +102,15 @@
 // corresponding main-thread methods have names beginning with `handle`.
 
 @implementation BackgroundRefreshAppAgent {
+  // Start time when iOS called the task.
+  // *set* once on a non-main thread.
+  // *read* after that point only.
+  base::TimeTicks _taskStart;
+  // Start time when main thread execution of the providers started.
+  base::TimeTicks _executionStart;
   BGTask* _pendingTask;
+  base::TimeDelta _startupWaitDuration;
+  BOOL _hasStartupWaitDuration;
   SEQUENCE_CHECKER(_sequenceChecker);
 }
 
@@ -55,7 +118,8 @@
   if ((self = [super init])) {
     _providers = [NSMutableSet set];
     _activeProviders = [NSMutableSet set];
-    [self registerBackgroundRefreshTask];
+    _startupWaitDuration = base::TimeDelta();
+    _hasStartupWaitDuration = NO;
   }
   return self;
 }
@@ -74,8 +138,11 @@
 
 - (void)appState:(AppState*)appState
     willTransitionToInitStage:(AppInitStage)nextInitStage {
-  if (nextInitStage > AppInitStage::kBrowserObjectsForBackgroundHandlers &&
-      _pendingTask) {
+  if (nextInitStage == AppInitStage::kStart) {
+    [self registerBackgroundRefreshTask];
+  } else if (nextInitStage >
+                 AppInitStage::kBrowserObjectsForBackgroundHandlers &&
+             _pendingTask) {
     [self executeProvidersForTask:_pendingTask];
   }
 }
@@ -97,39 +164,15 @@
                       launchHandler:handler];
 }
 
-// Debugging note: To induce the scheduler to call this task, you should
-// uncomment the debug code at the end of -requestAppRefresh, or:
-//   (1) Set a breakpoint sometime after `-registerBaskgroundRefreshTask` is
-//       called.
-//   (2) When the app is paused, run the following command in the debugger:
-//         e -l objc -- (void)[[BGTaskScheduler sharedScheduler]
-//         _simulateLaunchForTaskWithIdentifier:@"chrome.app.refresh"]
-//   (3) Resume execution.
-//
-// To trigger the expiration handler (that is, to forcibly expire the task):
-//   (1) Set a breakpoint in -handleExecutionForTask:, after the for-loop that
-//       calls all of the providers.
-//   (2) Make sure this method is called by triggering the task as described
-//       above.
-//   (3) When the app is paused, run the following command in the debugger:
-//         e -l objc -- (void)[[BGTaskScheduler sharedScheduler]
-//         _simulateExpirationForTaskWithIdentifier:@"chrome.app.refresh"]
-//   (4) Resume execution.
-//
-//   Remember also that BACKGROUND REFRESH REQUIRES A DEVICE. It doesn't work
-//   on simulators at all.
-
 // Handle background refresh. This is called by the (OS) background task
 // scheduler and is **not called on the main thread**.
 - (void)systemTriggeredExecutionForTask:(BGTask*)task {
   // TODO(crbug.com/354919106): This is still an incomplete implementation. Some
   // of the things that must be implemented for this to work correctly:
   //  - No processing if this is a safe mode launch.
-  //  - Update the app state for both starting and ending refresh work; this
-  //    must hapopen on the main thread, and further processing should wait on
-  //    it. There are hooks (-refreshStarted and -refreshComplete) for this but
-  //    they are no-ops.
 
+  // Set start time for the task.
+  _taskStart = base::TimeTicks::Now();
   __weak __typeof(self) weakSelf = self;
   __weak __typeof(task) weakTask = task;
   [task setExpirationHandler:^{
@@ -145,6 +188,10 @@
 // Handle task expiration. This is called by the (OS) background task scheduler
 // shortly before the task expires; it is **not called on the main thread**.
 - (void)systemTriggeredExpirationForTask:(BGTask*)task {
+  // Log the time iOS gave the task.
+  base::UmaHistogramMediumTimes(kTaskDurationTimeoutHistogram,
+                                base::TimeTicks::Now() - _taskStart);
+
   // Hop to main thread to cancel tasks.
   __weak __typeof(self) weakSelf = self;
   dispatch_async(dispatch_get_main_queue(), ^{
@@ -152,7 +199,7 @@
   });
 }
 
-// Main-threrad handler for task execution.
+// Main-thread handler for task execution.
 // Records metrics for backgroud refresh invocation.
 // If the app is ready, triggers provider execution.
 // If not, caches the task for later executuion.
@@ -177,6 +224,10 @@
   base::UmaHistogramEnumeration(kLaunchTypeForBackgroundRefreshHistogram,
                                 launchType);
 
+  // Reset startup wait duration.
+  _startupWaitDuration = base::TimeDelta();
+  _hasStartupWaitDuration = NO;
+
   // Schedule another refresh.
   [self requestAppRefresh];
 
@@ -192,13 +243,24 @@
 - (void)executeProvidersForTask:(BGTask*)task {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
 
+  // Set the start time of actual task execution.
+  base::TimeTicks start = base::TimeTicks::Now();
+  _executionStart = start;
+
+  if (_pendingTask) {
+    _startupWaitDuration = start - _taskStart;
+    _hasStartupWaitDuration = YES;
+  }
+
   // Remove any pending task.
   _pendingTask = nil;
 
   [self refreshStarted];
+  self.providerCount = 0;
   for (AppRefreshProvider* provider in self.providers) {
     // Only execute due tasks.
     if ([provider isDue]) {
+      self.providerCount++;
       // Track running providers. The completion handler will remove tasks as
       // they complete.
       [self.activeProviders addObject:provider];
@@ -213,6 +275,17 @@
   // If none of the providers were due, mark the refresh complete.
   if (self.activeProviders.count == 0) {
     [task setTaskCompletedWithSuccess:YES];
+    base::TimeTicks finish = base::TimeTicks::Now();
+    // Log the time since iOS triggered the task.
+    base::UmaHistogramMediumTimes(kTaskDurationHistogram, finish - _taskStart);
+    // Log the (very small) actual execution time.
+    base::UmaHistogramMediumTimes(kExecutionDurationNoOpHistogram,
+                                  finish - _executionStart);
+    if (_hasStartupWaitDuration) {
+      // If there was a startup wait, log its duration.
+      base::UmaHistogramMediumTimes(kStartupWaitDurationCompletedHistogram,
+                                    _startupWaitDuration);
+    }
     [self refreshComplete];
   }
 }
@@ -224,6 +297,28 @@
   // expiration, there's no mechanism for looging or informing the app as a
   // whole that this has happened.
 
+  base::TimeTicks expiration = base::TimeTicks::Now();
+
+  base::UmaHistogramMediumTimes(kExecutionDurationTimeoutHistogram,
+                                expiration - _executionStart);
+  base::UmaHistogramCounts100(kActiveProviderCountAtTimeoutHistogram,
+                              self.activeProviders.count);
+  base::UmaHistogramCounts100(kTotalProviderCountAtTimeoutHistogram,
+                              self.providerCount);
+
+  // If the task is still pending, then the refresh has timed out before startup
+  // finished kBrowserObjectsForBackgroundHandlers, and thus
+  // -executeProvidersForTask was never called. Record the
+  // "NeverStarted" delay time, since _startupWaitDuration won't have been
+  // computed yet.
+  if (_pendingTask) {
+    base::UmaHistogramMediumTimes(kStartupWaitDurationNeverStartedHistogram,
+                                  expiration - _taskStart);
+  } else if (_hasStartupWaitDuration) {
+    base::UmaHistogramMediumTimes(kStartupWaitDurationTimeoutHistogram,
+                                  _startupWaitDuration);
+  }
+
   // Remove any pending task.
   _pendingTask = nil;
 
@@ -233,6 +328,7 @@
   }
   // Stop tracking all remaining providers.
   [self.activeProviders removeAllObjects];
+  self.providerCount = 0;
   // Mark the task unsuccessful.
   [task setTaskCompletedWithSuccess:NO];
   // Signal that the refresh is complete.
@@ -244,9 +340,28 @@
 - (void)handleCompletedProvider:(AppRefreshProvider*)provider
                         forTask:(BGTask*)task {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
+  // If the provider is not in the active set, it means it was cancelled (e.g.
+  // due to timeout) and we should ignore this completion to avoid
+  // double-counting or double-completing the refresh task.
+  if (![self.activeProviders containsObject:provider]) {
+    return;
+  }
+
   [self.activeProviders removeObject:provider];
   if (self.activeProviders.count == 0) {
+    self.providerCount = 0;
     [task setTaskCompletedWithSuccess:YES];
+    // Log the time since iOS triggered the task.
+    base::UmaHistogramMediumTimes(kTaskDurationHistogram,
+                                  base::TimeTicks::Now() - _taskStart);
+    // Log the time since execution started.
+    base::UmaHistogramMediumTimes(kExecutionDurationHistogram,
+                                  base::TimeTicks::Now() - _executionStart);
+    if (_hasStartupWaitDuration) {
+      // If there was a startup wait, log its duration.
+      base::UmaHistogramMediumTimes(kStartupWaitDurationCompletedHistogram,
+                                    _startupWaitDuration);
+    }
     [self refreshComplete];
   }
 }
@@ -279,14 +394,12 @@
     // No provider provided a usable refresh interval.
     return;
   }
-  NSTimeInterval delayInSeconds = delay.InSecondsF();
 
   // TODO(crbug.com/354918222): coalesce multiple requests so there's only ever
   // a single scheduled refresh pending.
   BGAppRefreshTaskRequest* request = [[BGAppRefreshTaskRequest alloc]
       initWithIdentifier:kAppBackgroundRefreshTaskIdentifier];
-  request.earliestBeginDate =
-      [NSDate dateWithTimeIntervalSinceNow:delayInSeconds];
+  request.earliestBeginDate = (base::Time::Now() + delay).ToNSDate();
   NSError* error = nil;
   [BGTaskScheduler.sharedScheduler submitTaskRequest:request error:&error];
   BGTaskSchedulerErrorActions action = BGTaskSchedulerErrorActions::kUnknown;
@@ -303,17 +416,15 @@
         action =
             BGTaskSchedulerErrorActions::kErrorCodeTooManyPendingTaskRequests;
         break;
+      case BGTaskSchedulerErrorCodeImmediateRunIneligible:
+        action = BGTaskSchedulerErrorActions::kErrorCodeImmediateRunIneligible;
+        break;
     }
   } else {
     action = BGTaskSchedulerErrorActions::kSuccess;
   }
 
   base::UmaHistogramEnumeration(kBGTaskSchedulerErrorHistogram, action);
-
-  // Time-saving debug mode; uncomment this to immediately trigger the refresh
-  // task. Please do not delete the commented code!
-  // [[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:
-  //                                      kAppBackgroundRefreshTaskIdentifier];
 }
 
 @end

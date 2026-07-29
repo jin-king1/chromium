@@ -8,8 +8,10 @@
 #import <vector>
 
 #import "base/apple/foundation_util.h"
+#import "base/check.h"
 #import "base/memory/scoped_refptr.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/time/time.h"
 #import "components/password_manager/core/browser/password_manager_client.h"
 #import "components/password_manager/core/browser/ui/affiliated_group.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
@@ -32,8 +34,8 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/password_sharing_first_run_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/password_sharing_first_run_coordinator_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/password_sharing_metrics.h"
-#import "ios/chrome/browser/settings/ui_bundled/password/reauthentication/reauthentication_coordinator.h"
-#import "ios/chrome/browser/settings/ui_bundled/utils/password_utils.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/password_utils.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/reauthentication/local_reauthentication_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/alert/alert_coordinator.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
@@ -42,23 +44,22 @@
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
-const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
+constexpr base::TimeDelta kShareSpinnerMinTime = base::Seconds(0.5);
 }  // namespace
 
 @interface PasswordDetailsCoordinator () <
+    LocalReauthenticationCoordinatorDelegate,
     PasswordDetailsHandler,
     PasswordDetailsMediatorDelegate,
-    ReauthenticationCoordinatorDelegate,
     PasswordSharingCoordinatorDelegate,
     PasswordSharingFirstRunCoordinatorDelegate>
 
@@ -67,12 +68,6 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
 
 // Main mediator for this coordinator.
 @property(nonatomic, strong) PasswordDetailsMediator* mediator;
-
-// Module containing the reauthentication mechanism for viewing and copying
-// passwords.
-// Has to be strong for password bottom sheet feature or else it becomes nil.
-@property(nonatomic, strong) id<ReauthenticationProtocol>
-    reauthenticationModule;
 
 // Modal alert for interactions with password.
 @property(nonatomic, strong) AlertCoordinator* alertCoordinator;
@@ -90,7 +85,8 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
 
 // Coordinator for blocking password details until Local Authentication is
 // successful.
-@property(nonatomic, strong) ReauthenticationCoordinator* reauthCoordinator;
+@property(nonatomic, strong)
+    LocalReauthenticationCoordinator* reauthCoordinator;
 
 @end
 
@@ -122,7 +118,6 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
                           credential:
                               (const password_manager::CredentialUIEntry&)
                                   credential
-                        reauthModule:(id<ReauthenticationProtocol>)reauthModule
                              context:(DetailsContext)context {
   self = [super initWithBaseViewController:navigationController
                                    browser:browser];
@@ -131,7 +126,6 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
 
     _baseNavigationController = navigationController;
     _credential = credential;
-    _reauthenticationModule = reauthModule;
     _context = context;
   }
   return self;
@@ -143,7 +137,6 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
                              browser:(Browser*)browser
                      affiliatedGroup:(const password_manager::AffiliatedGroup&)
                                          affiliatedGroup
-                        reauthModule:(id<ReauthenticationProtocol>)reauthModule
                              context:(DetailsContext)context {
   self = [super initWithBaseViewController:navigationController
                                    browser:browser];
@@ -152,7 +145,6 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
 
     _baseNavigationController = navigationController;
     _affiliatedGroup = affiliatedGroup;
-    _reauthenticationModule = reauthModule;
     _context = context;
   }
   return self;
@@ -173,7 +165,7 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
     credentials.push_back(_credential);
   }
 
-  ProfileIOS* profile = self.browser->GetProfile();
+  ProfileIOS* profile = self.profile;
   self.mediator = [[PasswordDetailsMediator alloc]
          initWithPasswords:credentials
                displayName:displayName
@@ -187,11 +179,11 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
   self.mediator.consumer = self.viewController;
   self.viewController.handler = self;
   self.viewController.delegate = self.mediator;
-  self.viewController.applicationCommandsHandler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), ApplicationCommands);
-  self.viewController.snackbarCommandsHandler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), SnackbarCommands);
-  self.viewController.reauthModule = self.reauthenticationModule;
+  CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
+  self.viewController.sceneHandler =
+      HandlerForProtocol(dispatcher, SceneCommands);
+  self.viewController.snackbarHandler =
+      HandlerForProtocol(dispatcher, SnackbarCommands);
   if (self.openInEditMode) {
     [self.viewController editButtonPressed];
   }
@@ -376,7 +368,7 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
   LogPasswordSharingInteraction(
       PasswordSharingInteraction::kPasswordDetailsShareButtonClicked);
 
-  if (self.browser->GetProfile()->GetPrefs()->GetBoolean(
+  if (self.profile->GetPrefs()->GetBoolean(
           prefs::kPasswordSharingFlowHasBeenEntered)) {
     [self startPasswordSharingCoordinator];
   } else {
@@ -429,11 +421,10 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
 }
 
 - (void)updateFormManagers {
-  ProfileIOS* profile = self.browser->GetProfile();
-  BrowserList* browserList = BrowserListFactory::GetForProfile(profile);
+  BrowserList* browserList = BrowserListFactory::GetForProfile(self.profile);
 
-  for (Browser* browser :
-       browserList->BrowsersOfType(BrowserList::BrowserType::kAll)) {
+  for (Browser* browser : browserList->BrowsersOfType(
+           BrowserList::BrowserType::kRegularAndIncognito)) {
     [self updateFormManagersForBrowser:browser];
   }
 }
@@ -443,15 +434,15 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
   [self stopPasswordSharingFirstRunCoordinatorWithCompletion:nil];
 }
 
-#pragma mark - ReauthenticationCoordinatorDelegate
+#pragma mark - LocalReauthenticationCoordinatorDelegate
 
 - (void)successfulReauthenticationWithCoordinator:
-    (ReauthenticationCoordinator*)coordinator {
+    (LocalReauthenticationCoordinator*)coordinator {
   [_visitsRecorder maybeRecordVisitMetric];
 }
 
 - (void)dismissUIAfterFailedReauthenticationWithCoordinator:
-    (ReauthenticationCoordinator*)coordinator {
+    (LocalReauthenticationCoordinator*)coordinator {
   CHECK_EQ(_reauthCoordinator, coordinator);
 
   [_delegate dismissPasswordManagerAfterFailedReauthentication];
@@ -491,7 +482,7 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
 
 - (void)passwordSharingFirstRunCoordinatorDidAccept:
     (PasswordSharingFirstRunCoordinator*)coordinator {
-  self.browser->GetProfile()->GetPrefs()->SetBoolean(
+  self.profile->GetPrefs()->SetBoolean(
       prefs::kPasswordSharingFlowHasBeenEntered, true);
 
   if (self.passwordSharingFirstRunCoordinator == coordinator) {
@@ -511,6 +502,8 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
 #pragma mark - Private
 
 - (void)dismissActionSheetCoordinator {
+  UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification,
+                                  self.viewController.customLeftBarButtonItem);
   [self.actionSheetCoordinator stop];
   self.actionSheetCoordinator = nil;
 }
@@ -526,10 +519,9 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
 // when the scene is backgrounded and then foregrounded while Password Details
 // is opened.
 - (void)startReauthCoordinator {
-  _reauthCoordinator = [[ReauthenticationCoordinator alloc]
+  _reauthCoordinator = [[LocalReauthenticationCoordinator alloc]
       initWithBaseNavigationController:_baseNavigationController
                                browser:self.browser
-                reauthenticationModule:_reauthenticationModule
                            authOnStart:[self shouldRequireAuthOnStart]];
   _reauthCoordinator.delegate = self;
   [_reauthCoordinator start];
@@ -542,7 +534,7 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
 - (void)startPasswordSharingCoordinator {
   [self.viewController showSpinnerOnRightNavigationBar];
   _shareSpinnerTimer =
-      [NSTimer scheduledTimerWithTimeInterval:kShareSpinnerMinTimeInSeconds
+      [NSTimer scheduledTimerWithTimeInterval:kShareSpinnerMinTime.InSecondsF()
                                        target:self
                                      selector:@selector(shareSpinnerTimerFired)
                                      userInfo:nil
@@ -597,6 +589,7 @@ const CGFloat kShareSpinnerMinTimeInSeconds = 0.5;
   if (!webState) {
     return;
   }
+  CHECK(webState->IsRealized(), base::NotFatalUntil::M150);
   password_manager::PasswordManagerClient* passwordManagerClient =
       PasswordTabHelper::FromWebState(webState)->GetPasswordManagerClient();
   passwordManagerClient->UpdateFormManagers();

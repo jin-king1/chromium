@@ -43,7 +43,7 @@ void WebApkDatabase::OpenDatabase(RegistryOpenedCallback callback) {
       data_type_store_service_->GetStoreFactory();
 
   std::move(store_factory)
-      .Run(syncer::WEB_APPS,
+      .Run(syncer::WEB_APKS,
            base::BindOnce(&WebApkDatabase::OnDatabaseOpened,
                           weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
@@ -55,12 +55,10 @@ void WebApkDatabase::Write(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(opened_);
 
-  std::unique_ptr<syncer::DataTypeStore::WriteBatch> write_batch =
-      store_->CreateWriteBatch();
-
   // |update_data| can be empty here but we should write |metadata_change_list|
   // anyway.
-  write_batch->TakeMetadataChangesFrom(std::move(metadata_change_list));
+  std::unique_ptr<syncer::DataTypeStore::WriteBatch> write_batch =
+      store_->CreateWriteBatch(std::move(metadata_change_list));
 
   for (const std::unique_ptr<WebApkProto>& webapk :
        update_data.apps_to_create) {
@@ -80,9 +78,11 @@ void WebApkDatabase::Write(
 }
 
 void WebApkDatabase::DeleteAllDataAndMetadata(
+    std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
     syncer::DataTypeStore::CallbackWithResult callback) {
   CHECK(store_);
-  store_->DeleteAllDataAndMetadata(std::move(callback));
+  store_->DeleteAllDataAndMetadata(std::move(metadata_change_list),
+                                   std::move(callback));
 }
 
 void WebApkDatabase::OnDatabaseOpened(

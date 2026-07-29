@@ -31,9 +31,12 @@ enum class ManagePasswordsReferrer {
   // Corresponds to the bubble shown when clicking the key icon after a password
   // was generated.
   kPasswordGenerationConfirmation = 4,
+
   // Corresponds to the profile chooser next to the omnibar ("Autofill Home").
   // Only used on desktop.
-  kProfileChooser = 5,
+  // Deprecated as part of the Profile Menu revamping.
+  // kProfileChooser = 5,
+
   // Corresponds to the passwords accessory sheet on Android, triggered by
   // tapping on the key icon above in the keyboard accessory bar.
   kPasswordsAccessorySheet = 6,
@@ -108,7 +111,7 @@ enum class ManagePasswordsReferrer {
 
   // The warning (Android only) informs the user that they may loose access to
   // their passwords because the transition to UPM has not happened.
-  kAccessLossWarning = 27,
+  // Deprecated: kAccessLossWarning = 27,
 
   // The bubble that notifies the user that a passkey was created automatically
   // in GPM to upgrade an existing, matching password credential.
@@ -118,10 +121,13 @@ enum class ManagePasswordsReferrer {
   // clicking on the omnibox icon while the password change is running).
   kPasswordChangeInfoBubble = 29,
 
+  // Corresponds to the Autofill and passwords settings page on mobile.
+  kChromeSettingsAutofillAndPasswords = 30,
+
   // NOTE: When adding a new value to this enum that applies or could apply to
   // Android, make sure it is correctly handled by the internal credential
   // manager launcher java implementation.
-  kMaxValue = kPasswordChangeInfoBubble,
+  kMaxValue = kChromeSettingsAutofillAndPasswords,
 };
 
 }  // namespace password_manager

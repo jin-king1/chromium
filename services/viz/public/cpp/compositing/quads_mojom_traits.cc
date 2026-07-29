@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "services/viz/public/cpp/compositing/quads_mojom_traits.h"
 
@@ -102,7 +98,6 @@ bool StructTraits<
       !data.ReadMaskTextureSize(&quad->mask_texture_size) ||
       !data.ReadFiltersScale(&quad->filters_scale) ||
       !data.ReadFiltersOrigin(&quad->filters_origin) ||
-      !data.ReadTexCoordRect(&quad->tex_coord_rect) ||
       !data.ReadRenderPassId(&quad->render_pass_id) ||
       !data.ReadMaskResourceId(&quad->resource_id)) {
     return false;
@@ -159,23 +154,27 @@ bool StructTraits<viz::mojom::TextureQuadStateDataView, viz::DrawQuad>::Read(
     viz::DrawQuad* out) {
   auto* quad = static_cast<viz::TextureDrawQuad*>(out);
 
-  if (!data.ReadResourceId(&quad->resource_id) ||
-      !data.ReadResourceSizeInPixels(&quad->overlay_resources.size_in_pixels)) {
+  if (!data.ReadResourceId(&quad->resource_id)) {
     return false;
   }
 
-  quad->premultiplied_alpha = data.premultiplied_alpha();
   gfx::ProtectedVideoType protected_video_type =
       gfx::ProtectedVideoType::kClear;
   viz::OverlayPriority overlay_priority_hint = viz::OverlayPriority::kLow;
-  if (!data.ReadUvTopLeft(&quad->uv_top_left) ||
-      !data.ReadUvBottomRight(&quad->uv_bottom_right) ||
+  if (!data.ReadTexCoordRect(&quad->tex_coord_rect_) ||
       !data.ReadProtectedVideoType(&protected_video_type) ||
       !data.ReadOverlayPriorityHint(&overlay_priority_hint) ||
       !data.ReadRoundedDisplayMasksInfo(&quad->rounded_display_masks_info) ||
       !data.ReadDynamicRangeLimit(&quad->dynamic_range_limit)) {
     return false;
   }
+
+  // The texture coordinate rect must have non-negative width and height.
+  if (quad->tex_coord_rect_.width() < 0 || quad->tex_coord_rect_.height() < 0) {
+    viz::SetDeserializationCrashKeyString("Draw quad invalid tex coord rect");
+    return false;
+  }
+
   quad->protected_video_type = protected_video_type;
   quad->overlay_priority_hint = overlay_priority_hint;
   if (!data.ReadBackgroundColor(&quad->background_color))
@@ -183,9 +182,21 @@ bool StructTraits<viz::mojom::TextureQuadStateDataView, viz::DrawQuad>::Read(
 
   quad->nearest_neighbor = data.nearest_neighbor();
   quad->secure_output_only = data.secure_output_only();
-  quad->is_stream_video = data.is_stream_video();
   quad->is_video_frame = data.is_video_frame();
   quad->force_rgbx = data.force_rgbx();
+  quad->is_normalized_coords = data.is_normalized_coords();
+  if (quad->is_normalized_coords) {
+    // If the texture coordinates are normalized, they must be in the range
+    // [0, 1], we've already checked above zero above.
+    const bool is_tex_coord_rect_in_range =
+        quad->tex_coord_rect_.width() <= 1.0f &&
+        quad->tex_coord_rect_.height() <= 1.0f;
+    if (!is_tex_coord_rect_in_range) {
+      viz::SetDeserializationCrashKeyString(
+          "Draw quad invalid normalized tex coord rect");
+      return false;
+    }
+  }
 
   if (!data.ReadDamageRect(&quad->damage_rect))
     return false;
@@ -199,12 +210,10 @@ bool StructTraits<viz::mojom::TileQuadStateDataView, viz::DrawQuad>::Read(
     viz::DrawQuad* out) {
   viz::TileDrawQuad* quad = static_cast<viz::TileDrawQuad*>(out);
   if (!data.ReadTexCoordRect(&quad->tex_coord_rect) ||
-      !data.ReadTextureSize(&quad->texture_size) ||
       !data.ReadResourceId(&quad->resource_id)) {
     return false;
   }
 
-  quad->is_premultiplied = data.is_premultiplied();
   quad->nearest_neighbor = data.nearest_neighbor();
   quad->force_anti_aliasing_off = data.force_anti_aliasing_off();
   return true;

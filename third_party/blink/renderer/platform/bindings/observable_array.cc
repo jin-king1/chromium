@@ -21,13 +21,15 @@ namespace {
 const V8PrivateProperty::SymbolKey kV8ProxyTargetToV8WrapperKey;
 
 const WrapperTypeInfo kWrapperTypeInfoBody{
-    gin::kEmbedderBlink,
+    {gin::kEmbedderBlink},
     /*install_interface_template_func=*/nullptr,
     /*install_context_dependent_props_func=*/nullptr,
     "ObservableArrayExoticObject",
     /*parent_class=*/nullptr,
-    kDOMWrappersTag,
-    kDOMWrappersTag,
+    static_cast<v8::CppHeapPointerTag>(
+        ScriptWrappableArrayTag::kObservableArrayExoticObjectTag),
+    static_cast<v8::CppHeapPointerTag>(
+        ScriptWrappableArrayTag::kV8ObservableArraySpeechRecognitionPhraseTag),
     WrapperTypeInfo::kWrapperTypeNoPrototype,
     // v8::Proxy (without an internal field) is used as a (pseudo) wrapper.
     WrapperTypeInfo::kNoInternalFieldClassId,

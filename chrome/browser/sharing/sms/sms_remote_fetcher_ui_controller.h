@@ -17,7 +17,6 @@
 #include "components/sharing_message/sharing_metrics.h"
 #include "components/sharing_message/sharing_service.h"
 #include "content/public/browser/web_contents_user_data.h"
-#include "url/gurl.h"
 #include "url/origin.h"
 
 namespace content {
@@ -44,9 +43,7 @@ class SmsRemoteFetcherUiController
   ~SmsRemoteFetcherUiController() override;
 
   // Overridden from SharingUiController:
-  PageActionIconType GetIconType() override;
-  sync_pb::SharingSpecificFields::EnabledFeatures GetRequiredFeature()
-      const override;
+  syncer::DeviceInfo::SharingFeature GetRequiredFeature() const override;
   void OnDeviceChosen(const SharingTargetDeviceInfo& device) override;
   void OnAppChosen(const SharingApp& app) override;
   std::u16string GetContentType() const override;

@@ -6,14 +6,21 @@
 
 #include "base/check.h"
 #include "base/threading/hang_watcher.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/interned_args_helper.h"
+#include "base/trace_event/typed_macros.h"
 #include "build/build_config.h"
 
 namespace base {
 
 BooleanWithOptionalStack::BooleanWithOptionalStack(bool value) : value_(value) {
 #if CAPTURE_THREAD_RESTRICTIONS_STACK_TRACES()
-  stack_.emplace();
+  // The most useful stack traces are captured when `value` is true. If `value`
+  // is false we are in a SyncAllow primitive and the asserts that dcheck for
+  // allowing blocking calls will pass so there is no need to capture a stack
+  // trace. See https://crbug.com/404645680.
+  if (value) {
+    stack_.emplace();
+  }
 #endif  // CAPTURE_THREAD_RESTRICTIONS_STACK_TRACES()
 }
 
@@ -238,7 +245,7 @@ ScopedAllowBlocking::ScopedAllowBlocking(const Location& from_here)
 }
 
 ScopedAllowBlocking::~ScopedAllowBlocking() {
-  TRACE_EVENT_END0("base", "ScopedAllowBlocking");
+  TRACE_EVENT_END("base");
 
   DCHECK(!tls_blocking_disallowed)
       << "~ScopedAllowBlocking() running while surprisingly already no longer "
@@ -265,7 +272,7 @@ ScopedAllowBaseSyncPrimitivesOutsideBlockingScope::
 
 ScopedAllowBaseSyncPrimitivesOutsideBlockingScope::
     ~ScopedAllowBaseSyncPrimitivesOutsideBlockingScope() {
-  TRACE_EVENT_END0("base", "ScopedAllowBaseSyncPrimitivesOutsideBlockingScope");
+  TRACE_EVENT_END("base");
 
   DCHECK(!tls_base_sync_primitives_disallowed)
       << "~ScopedAllowBaseSyncPrimitivesOutsideBlockingScope() running while "

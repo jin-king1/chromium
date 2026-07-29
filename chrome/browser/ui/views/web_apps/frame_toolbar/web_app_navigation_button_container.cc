@@ -9,7 +9,6 @@
 
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -18,6 +17,7 @@
 #include "chrome/browser/ui/views/toolbar/back_forward_button.h"
 #include "chrome/browser/ui/views/toolbar/reload_button.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_utils.h"
+#include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -65,29 +65,16 @@ WebAppNavigationButtonContainer::WebAppNavigationButtonContainer(
           browser_),
       browser_));
   back_button_->set_tag(IDC_BACK);
-#if BUILDFLAG(IS_WIN)
-  back_button_->SetVectorIcons(kBackArrowWindowsIcon,
-                               kBackArrowWindowsTouchIcon);
-#endif
-
   ConfigureWebAppToolbarButton(back_button_, toolbar_button_provider);
   views::SetHitTestComponent(back_button_, static_cast<int>(HTCLIENT));
   chrome::AddCommandObserver(browser_, IDC_BACK, this);
 
-  const auto* app_controller = browser_->app_controller();
+  const auto* app_controller = web_app::AppBrowserController::From(browser_);
   if (app_controller->HasReloadButton()) {
-    reload_button_ = AddChildView(
-        std::make_unique<ReloadButton>(browser_->command_controller()));
+    reload_button_ = AddChildView(std::make_unique<ReloadButton>(
+        browser_->GetProfile(), browser_->command_controller(),
+        InitialWebUIWindowMetricsManager::From(browser_)));
     reload_button_->set_tag(IDC_RELOAD);
-#if BUILDFLAG(IS_WIN)
-    reload_button_->SetVectorIconsForMode(ReloadButton::Mode::kReload,
-                                          kReloadWindowsIcon,
-                                          kReloadWindowsTouchIcon);
-    reload_button_->SetVectorIconsForMode(ReloadButton::Mode::kStop,
-                                          kNavigateStopWindowsIcon,
-                                          kNavigateStopWindowsTouchIcon);
-#endif
-
     ConfigureWebAppToolbarButton(reload_button_, toolbar_button_provider);
     views::SetHitTestComponent(reload_button_, static_cast<int>(HTCLIENT));
     chrome::AddCommandObserver(browser_, IDC_RELOAD, this);

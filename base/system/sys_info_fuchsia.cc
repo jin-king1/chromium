@@ -11,6 +11,7 @@
 
 #include <string>
 
+#include "base/byte_size.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_util.h"
 #include "base/fuchsia/fuchsia_logging.h"
@@ -94,15 +95,15 @@ int64_t GetAmountOfTotalDiskSpaceAndVolumePath(const FilePath& path,
 }  // namespace
 
 // static
-uint64_t SysInfo::AmountOfPhysicalMemoryImpl() {
-  return zx_system_get_physmem();
+ByteSize SysInfo::AmountOfTotalPhysicalMemoryImpl() {
+  return ByteSize(zx_system_get_physmem());
 }
 
 // static
-uint64_t SysInfo::AmountOfAvailablePhysicalMemoryImpl() {
+ByteSize SysInfo::AmountOfAvailablePhysicalMemoryImpl() {
   // TODO(crbug.com/42050649): Implement this when Fuchsia supports it.
   NOTIMPLEMENTED_LOG_ONCE();
-  return 0;
+  return ByteSize(0);
 }
 
 // static
@@ -111,10 +112,10 @@ int SysInfo::NumberOfProcessors() {
 }
 
 // static
-uint64_t SysInfo::AmountOfVirtualMemory() {
+ByteSize SysInfo::AmountOfVirtualMemory() {
   // Fuchsia does not provide this type of information.
   // Return zero to indicate that there is unlimited available virtual memory.
-  return 0;
+  return ByteSize(0);
 }
 
 // static
@@ -123,7 +124,7 @@ std::string SysInfo::OperatingSystemName() {
 }
 
 // static
-int64_t SysInfo::AmountOfFreeDiskSpace(const FilePath& path) {
+std::optional<int64_t> SysInfo::AmountOfFreeDiskSpace(const FilePath& path) {
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
 
   // First check whether there is a soft-quota that applies to |path|.
@@ -139,18 +140,19 @@ int64_t SysInfo::AmountOfFreeDiskSpace(const FilePath& path) {
   // Report the actual amount of free space in |path|'s filesystem.
   int64_t available;
   if (GetDiskSpaceInfo(path, &available, nullptr)) {
+    CHECK(available >= 0, base::NotFatalUntil::M150);
     return available;
   }
 
-  return -1;
+  return std::nullopt;
 }
 
 // static
-int64_t SysInfo::AmountOfTotalDiskSpace(const FilePath& path) {
+std::optional<int64_t> SysInfo::AmountOfTotalDiskSpace(const FilePath& path) {
   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
 
   if (path.empty()) {
-    return -1;
+    return std::nullopt;
   }
 
   // Return the soft-quota that applies to |path|, if one is configured.
@@ -161,10 +163,43 @@ int64_t SysInfo::AmountOfTotalDiskSpace(const FilePath& path) {
 
   // Report the actual space in |path|'s filesystem.
   if (GetDiskSpaceInfo(path, nullptr, &total_space)) {
+    CHECK(total_space >= 0, base::NotFatalUntil::M150);
     return total_space;
   }
 
-  return -1;
+  return std::nullopt;
+}
+
+// static
+std::optional<SysInfo::DiskSpaceInfo> SysInfo::AmountOfDiskSpace(
+    const FilePath& path) {
+  ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+
+  if (path.empty()) {
+    return std::nullopt;
+  }
+
+  // First check whether there is a soft-quota that applies to `path`.
+  FilePath volume_path;
+  const int64_t soft_quota =
+      GetAmountOfTotalDiskSpaceAndVolumePath(path, &volume_path);
+  if (soft_quota >= 0) {
+    // TODO(crbug.com/42050202): Replace this with an efficient implementation.
+    const int64_t used_space = ComputeDirectorySize(volume_path);
+    int64_t available = std::max(0L, soft_quota - used_space);
+    return DiskSpaceInfo{
+        .total = ByteSize(static_cast<uint64_t>(soft_quota)),
+        .available = ByteSize(static_cast<uint64_t>(available))};
+  }
+
+  // Report the actual space in `path`'s filesystem.
+  int64_t available;
+  int64_t total;
+  if (!GetDiskSpaceInfo(path, &available, &total)) {
+    return std::nullopt;
+  }
+  return DiskSpaceInfo{.total = ByteSize(static_cast<uint64_t>(total)),
+                       .available = ByteSize(static_cast<uint64_t>(available))};
 }
 
 // static

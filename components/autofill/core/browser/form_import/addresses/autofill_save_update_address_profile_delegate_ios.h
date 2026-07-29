@@ -5,13 +5,16 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_FORM_IMPORT_ADDRESSES_AUTOFILL_SAVE_UPDATE_ADDRESS_PROFILE_DELEGATE_IOS_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FORM_IMPORT_ADDRESSES_AUTOFILL_SAVE_UPDATE_ADDRESS_PROFILE_DELEGATE_IOS_H_
 
-#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
-#include "base/functional/callback.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_comparator.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
+#include "components/infobars/core/infobar_delegate.h"
 
 namespace autofill {
 
@@ -65,6 +68,10 @@ class AutofillSaveUpdateAddressProfileDelegateIOS
   // Returns the profile difference map between |profile_| and
   // |original_profile_|.
   std::vector<ProfileValueDifference> GetProfileDiff() const;
+
+  // Returns whether the update prompt is for home/work profile.
+  bool IsOriginalProfileHomeProfile() const;
+  bool IsOriginalProfileWorkProfile() const;
 
   virtual void EditAccepted();
   void EditDeclined();

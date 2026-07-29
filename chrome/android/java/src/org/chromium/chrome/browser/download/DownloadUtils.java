@@ -4,9 +4,13 @@
 
 package org.chromium.chrome.browser.download;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 import android.app.DownloadManager;
 import android.content.ActivityNotFoundException;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
@@ -19,22 +23,25 @@ import android.text.SpannableString;
 import android.text.TextUtils;
 import android.text.style.ClickableSpan;
 import android.text.style.StyleSpan;
+import android.webkit.MimeTypeMap;
 
 import androidx.annotation.MainThread;
-import androidx.annotation.Nullable;
-import androidx.browser.customtabs.CustomTabsIntent;
+import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ApplicationStatus;
-import org.chromium.base.BuildInfo;
 import org.chromium.base.ContentUriUtils;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.FileUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
+import org.chromium.build.annotations.Contract;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.IntentHandler;
@@ -56,6 +63,7 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.document.ChromeAsyncTabLauncher;
+import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
 import org.chromium.components.background_task_scheduler.TaskIds;
 import org.chromium.components.download.DownloadState;
@@ -77,8 +85,10 @@ import org.chromium.ui.widget.Toast;
 import org.chromium.url.GURL;
 
 import java.io.File;
+import java.util.Locale;
 
 /** A class containing some utility static methods. */
+@NullMarked
 public class DownloadUtils {
     private static final String TAG = "download";
 
@@ -86,7 +96,7 @@ public class DownloadUtils {
             "org.chromium.chrome.browser.download.OTR_PROFILE_ID";
     private static final String MIME_TYPE_ZIP = "application/zip";
     private static final String DOCUMENTS_UI_PACKAGE_NAME = "com.android.documentsui";
-    private static Boolean sIsDownloadRestrictedByPolicyForTesting;
+    private static @Nullable Boolean sIsDownloadRestrictedByPolicyForTesting;
 
     /**
      * Displays the download manager UI. Note the UI is different on tablets and on phones.
@@ -146,32 +156,16 @@ public class DownloadUtils {
         // If the profile is off-the-record and it does not exist, then do not start the activity.
         if (OtrProfileId.isOffTheRecord(otrProfileId)
                 && !ProfileManager.getLastUsedRegularProfile()
-                        .hasOffTheRecordProfile(otrProfileId)) {
+                        .hasOffTheRecordProfile(assertNonNull(otrProfileId))) {
             return false;
         }
 
         if (isTablet) {
-            // Download Home shows up as a tab on tablets.
             LoadUrlParams params = new LoadUrlParams(UrlConstants.DOWNLOADS_URL);
-            if (tab == null || !tab.isInitialized()) {
-                // Open a new tab, which pops Chrome into the foreground.
-                ChromeAsyncTabLauncher delegate = new ChromeAsyncTabLauncher(false);
-                delegate.launchNewTab(params, TabLaunchType.FROM_CHROME_UI, null);
-            } else {
-                // Download Home shows up inside an existing tab, but only if the last Activity was
-                // the ChromeTabbedActivity.
-                tab.loadUrl(params);
-
-                // Bring Chrome to the foreground, if possible. Unless Chrome is already in the
-                // foreground, this request is most likely coming from a notification.
-                Intent intent =
-                        IntentHandler.createTrustedBringTabToFrontIntent(
-                                tab.getId(), IntentHandler.BringToFrontSource.NOTIFICATION);
-                if (intent != null) {
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    IntentUtils.safeStartActivity(appContext, intent);
-                }
-            }
+            ChromeAsyncTabLauncher delegate =
+                    new ChromeAsyncTabLauncher(
+                            /* incognito= */ OtrProfileId.isOffTheRecord(otrProfileId));
+            delegate.launchNewTab(params, TabLaunchType.FROM_CHROME_UI, /* parent= */ tab);
         } else {
             DownloadActivityLauncher.getInstance()
                     .showDownloadActivity(activity, otrProfileId, showPrefetchedContent);
@@ -184,6 +178,7 @@ public class DownloadUtils {
                             : ProfileManager.getLastUsedRegularProfile()
                                     .getOffTheRecordProfile(
                                             otrProfileId, /* createIfNeeded= */ true);
+            assert profile != null;
             Tracker tracker = TrackerFactory.getTrackerForProfile(profile);
             tracker.notifyEvent(EventConstants.DOWNLOAD_HOME_OPENED);
         }
@@ -195,8 +190,8 @@ public class DownloadUtils {
      * @param intent An {@link Intent} instance.
      * @return The {@link OtrProfileId} that is attached to the given intent.
      */
-    public static OtrProfileId getOtrProfileIdFromIntent(Intent intent) {
-        String serializedId = IntentUtils.safeGetString(intent.getExtras(), EXTRA_OTR_PROFILE_ID);
+    public static @Nullable OtrProfileId getOtrProfileIdFromIntent(Intent intent) {
+        String serializedId = IntentUtils.safeGetStringExtra(intent, EXTRA_OTR_PROFILE_ID);
         return OtrProfileId.deserialize(serializedId);
     }
 
@@ -210,7 +205,7 @@ public class DownloadUtils {
             return false;
         }
 
-        String serializedId = IntentUtils.safeGetString(intent.getExtras(), EXTRA_OTR_PROFILE_ID);
+        String serializedId = IntentUtils.safeGetStringExtra(intent, EXTRA_OTR_PROFILE_ID);
         OtrProfileId otrProfileId = OtrProfileId.deserializeWithoutVerify(serializedId);
 
         return otrProfileId == null
@@ -261,18 +256,25 @@ public class DownloadUtils {
      *
      * @param context Context to pull resources from.
      * @param tab Tab triggering the download.
+     * @param fromAppMenu Whether the download is started from the app menu.
      */
-    public static void downloadOfflinePage(Context context, Tab tab) {
-        if (tab.isNativePage() && tab.getNativePage().isPdf()) {
+    public static void downloadOfflinePage(Context context, Tab tab, boolean fromAppMenu) {
+        Tracker tracker = TrackerFactory.getTrackerForProfile(tab.getProfile());
+        NativePage nativePage = tab.getNativePage();
+        if (nativePage != null && nativePage.isPdf()) {
             DownloadController.downloadUrl(tab.getUrl().getSpec(), tab);
+            if (fromAppMenu) {
+                tracker.notifyEvent(EventConstants.APP_MENU_PDF_PAGE_DOWNLOADED);
+            }
             return;
         }
         OfflinePageOrigin origin = new OfflinePageOrigin(context, tab);
 
-        if (tab.isShowingErrorPage()) {
+        if (tab.isShowingErrorPage() && !tab.isIncognito()) {
             // The download needs to be scheduled to happen at later time due to current network
-            // error.
+            // error. This is not available in incognito mode.
             final OfflinePageBridge bridge = OfflinePageBridge.getForProfile(tab.getProfile());
+            assumeNonNull(bridge);
             bridge.scheduleDownload(
                     tab.getWebContents(),
                     OfflinePageBridge.ASYNC_NAMESPACE,
@@ -283,22 +285,28 @@ public class DownloadUtils {
             // Otherwise, the download can be started immediately.
             OfflinePageDownloadBridge.startDownload(tab, origin);
         }
-        Tracker tracker = TrackerFactory.getTrackerForProfile(tab.getProfile());
         tracker.notifyEvent(EventConstants.DOWNLOAD_PAGE_STARTED);
     }
 
     /**
      * Whether the user should be allowed to download the current page.
+     *
      * @param tab Tab displaying the page that will be downloaded.
-     * @return    Whether the "Download Page" button should be enabled.
+     * @return Whether the "Download Page" button should be enabled.
      */
-    public static boolean isAllowedToDownloadPage(Tab tab) {
+    @Contract("null -> false")
+    public static boolean isAllowedToDownloadPage(@Nullable Tab tab) {
         if (tab == null) return false;
 
-        // Offline pages isn't supported in Incognito. This should be checked before calling
-        // OfflinePageBridge.getForProfile because OfflinePageBridge instance will not be found
-        // for incognito profile.
-        if (tab.isIncognito()) return false;
+        if (tab.isIncognito()
+                && !ChromeFeatureList.isEnabled(
+                        ChromeFeatureList.ENABLE_SAVE_PACKAGE_FOR_OFF_THE_RECORD)) {
+            return false;
+        }
+
+        if (isDownloadRestrictedByPolicy(tab.getProfile().getOriginalProfile())) {
+            return false;
+        }
 
         // Check if the page url is supported for saving. Only HTTP and HTTPS pages are allowed.
         if (!OfflinePageBridge.canSavePage(tab.getUrl())) return false;
@@ -306,6 +314,7 @@ public class DownloadUtils {
         // Download will only be allowed for the error page if download button is shown in the page.
         if (tab.isShowingErrorPage()) {
             final OfflinePageBridge bridge = OfflinePageBridge.getForProfile(tab.getProfile());
+            if (bridge == null) return false;
             return bridge.isShowingDownloadButtonInErrorPage(tab.getWebContents());
         }
 
@@ -362,8 +371,8 @@ public class DownloadUtils {
      * @param source The location from which the download was opened.
      */
     public static void openItem(
-            OfflineItem offlineItem,
-            OtrProfileId otrProfileId,
+            @Nullable OfflineItem offlineItem,
+            @Nullable OtrProfileId otrProfileId,
             @DownloadOpenSource int source,
             Context context) {
         if (offlineItem == null) {
@@ -375,14 +384,15 @@ public class DownloadUtils {
                     .startActivity(
                             new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)
                                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-        } else if (source == DownloadOpenSource.DOWNLOAD_PROGRESS_MESSAGE
-                && offlineItem.mimeType.equals(MimeTypeUtils.PDF_MIME_TYPE)
+        } else if (!PdfUtils.isInlinePdfV2Enabled()
+                && source == DownloadOpenSource.DOWNLOAD_PROGRESS_MESSAGE
+                && MimeTypeUtils.PDF_MIME_TYPE.equals(offlineItem.mimeType)
                 && PdfUtils.shouldOpenPdfInline(OtrProfileId.isOffTheRecord(otrProfileId))) {
             if (!openFileWithExternalApps(
-                    offlineItem.filePath,
+                    assertNonNull(offlineItem.filePath),
                     offlineItem.mimeType,
-                    offlineItem.originalUrl.getSpec(),
-                    offlineItem.referrerUrl.getSpec(),
+                    assumeNonNull(offlineItem.originalUrl).getSpec(),
+                    assumeNonNull(offlineItem.referrerUrl).getSpec(),
                     context == null ? ContextUtils.getApplicationContext() : context,
                     OpenWithExternalAppsSource.DOWNLOAD_PROGRESS_MESSAGE)) {
                 DownloadUtils.showDownloadManager(null, null, otrProfileId, source);
@@ -390,48 +400,73 @@ public class DownloadUtils {
         } else {
             OpenParams openParams = new OpenParams(LaunchLocation.PROGRESS_BAR);
             openParams.openInIncognito = OtrProfileId.isOffTheRecord(otrProfileId);
-            OfflineContentAggregatorFactory.get().openItem(openParams, offlineItem.id);
+            OfflineContentAggregatorFactory.get()
+                    .openItem(openParams, assertNonNull(offlineItem.id));
         }
     }
 
     /**
-     * Opens a file in Chrome or in another app if appropriate.
+     * Opens a file using a {@link DownloadOpenRequest}. Attempts the provided MIME type,
+     * then falls back to one inferred from the file extension.
      *
-     * @param filePath Path to the file to open, can be a content Uri.
-     * @param mimeType mime type of the file.
-     * @param downloadGuid The associated download GUID.
-     * @param otrProfileId The {@link OtrProfileId} of the download. Null if in regular mode.
-     * @param originalUrl The original url of the downloaded file.
-     * @param referrer Referrer of the downloaded file.
-     * @param source The source that tries to open the download file.
-     * @return whether the file could successfully be opened.
+     * @param req The {@link DownloadOpenRequest} containing file path, MIME, GUID,
+     *         profile, URLs, source, and context.
      */
-    public static boolean openFile(
-            String filePath,
-            String mimeType,
-            String downloadGuid,
-            OtrProfileId otrProfileId,
-            String originalUrl,
-            String referrer,
-            @DownloadOpenSource int source,
-            Context context) {
-        DownloadMetrics.recordDownloadOpen(source, mimeType);
+    public static boolean openFile(DownloadOpenRequest req) {
+        DownloadMetrics.recordDownloadOpen(req.mSource, req.mMimeType);
+
+        boolean canOpen = doOpenFile(req);
+        if (!canOpen) {
+            String inferred =
+                    inferMimeTypeFromExtension(req.mFileName, req.mFilePath, req.mMimeType);
+            if (inferred != null) {
+                DownloadOpenRequest inferredReq =
+                    DownloadOpenRequest.builder(req.mContext, req.mFilePath)
+                        .mimeType(inferred)
+                        .downloadGuid(req.mDownloadGuid)
+                        .otrProfileId(req.mOtrProfileId)
+                        .originalUrl(req.mOriginalUrl)
+                        .referrer(req.mReferrer)
+                        .source(req.mSource)
+                        .fileName(req.mFileName)
+                        .build();
+                canOpen = doOpenFile(inferredReq);
+            }
+        }
+
+        if (!canOpen
+                && req.mSource != DownloadOpenSource.DOWNLOAD_PROGRESS_INFO_BAR) {
+            Toast.makeText(
+                            req.mContext,
+                            req.mContext.getString(R.string.download_cant_open_file),
+                            Toast.LENGTH_SHORT)
+                    .show();
+        }
+        return canOpen;
+    }
+
+    /**
+     * Core implementation for opening files. Does not show failure toasts.
+     *
+     * @param req The {@link DownloadOpenRequest} with all open-file parameters.
+     */
+    private static boolean doOpenFile(DownloadOpenRequest req) {
         DownloadManagerService service = DownloadManagerService.getDownloadManagerService();
 
         // Check if Chrome should open the file itself.
-        if (service.isDownloadOpenableInBrowser(mimeType)) {
+        if (service.isDownloadOpenableInBrowser(req.mMimeType)) {
             // Share URIs use the content:// scheme when able, which looks bad when displayed
             // in the URL bar.
-            Uri contentUri = getUriForItem(filePath);
+            Uri contentUri = getUriForItem(req.mFilePath);
             Uri fileUri = contentUri;
-            if (!ContentUriUtils.isContentUri(filePath)) {
-                File file = new File(filePath);
+            if (!ContentUriUtils.isContentUri(req.mFilePath)) {
+                File file = new File(req.mFilePath);
                 fileUri = Uri.fromFile(file);
             }
-            String normalizedMimeType = Intent.normalizeMimeType(mimeType);
+            String normalizedMimeType = Intent.normalizeMimeType(req.mMimeType);
 
             // Sharing for media files is disabled on automotive.
-            boolean isAutomotive = BuildInfo.getInstance().isAutomotive;
+            boolean isAutomotive = DeviceInfo.isAutomotive();
             Intent intent =
                     MediaViewerUtils.getMediaViewerIntent(
                             /* displayUri= */ fileUri,
@@ -439,54 +474,76 @@ public class DownloadUtils {
                             normalizedMimeType,
                             !isAutomotive,
                             !isAutomotive,
-                            context);
-            intent.putExtra(
-                    CustomTabsIntent.EXTRA_ENABLE_EPHEMERAL_BROWSING,
-                    ChromeFeatureList.sCCTEphemeralMediaViewerExperiment.isEnabled());
-            IntentHandler.startActivityForTrustedIntent(context, intent);
-            service.updateLastAccessTime(downloadGuid, otrProfileId);
+                            req.mContext);
+            IntentHandler.startActivityForTrustedIntent(req.mContext, intent);
+            service.updateLastAccessTime(req.mDownloadGuid, req.mOtrProfileId);
             return true;
         }
 
         // Check if any apps can open the file.
         if (openFileWithExternalApps(
-                filePath,
-                mimeType,
-                originalUrl,
-                referrer,
-                context,
+                req.mFilePath,
+                req.mMimeType,
+                req.mOriginalUrl,
+                req.mReferrer,
+                req.mContext,
                 OpenWithExternalAppsSource.OPEN_FILE)) {
-            service.updateLastAccessTime(downloadGuid, otrProfileId);
+            service.updateLastAccessTime(req.mDownloadGuid, req.mOtrProfileId);
             return true;
         }
 
         // If this is a zip file, check if Android Files app exists.
-        if (MIME_TYPE_ZIP.equals(mimeType)) {
+        if (MIME_TYPE_ZIP.equals(req.mMimeType)) {
+            // Use files app to open zip file if openDownloadInFilesAppIfNoHandlerFound() is
+            // true.
+            if (openDownloadInFilesAppIfNoHandlerFound()) {
+                return false;
+            }
             try {
                 PackageInfo packageInfo =
-                        context.getPackageManager()
+                        req.mContext
+                                .getPackageManager()
                                 .getPackageInfo(
                                         DOCUMENTS_UI_PACKAGE_NAME, PackageManager.GET_ACTIVITIES);
                 if (packageInfo != null) {
                     Intent viewDownloadsIntent = new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS);
                     viewDownloadsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     viewDownloadsIntent.setPackage(DOCUMENTS_UI_PACKAGE_NAME);
-                    context.startActivity(viewDownloadsIntent);
+                    req.mContext.startActivity(viewDownloadsIntent);
                     return true;
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Cannot find files app for openning zip files", e);
             }
         }
-        // Can't launch the Intent.
-        if (source != DownloadOpenSource.DOWNLOAD_PROGRESS_INFO_BAR) {
-            Toast.makeText(
-                            context,
-                            context.getString(R.string.download_cant_open_file),
-                            Toast.LENGTH_SHORT)
-                    .show();
-        }
         return false;
+    }
+
+    /**
+     * Infers the MIME type from the file name or file path when the original MIME type
+     * might be incorrect. This is used as a fallback when opening files fails with the
+     * original MIME type.
+     *
+     * @param fileName The file name (preferred) to extract extension from.
+     * @param filePath The file path to use if fileName is empty.
+     * @param originalMimeType The original MIME type to compare against.
+     * @return The inferred MIME type if it differs from the original, or null if no
+     *         different MIME type can be inferred.
+     */
+    @VisibleForTesting
+    public static @Nullable String inferMimeTypeFromExtension(
+            @Nullable String fileName, String filePath, @Nullable String originalMimeType) {
+        String nameForExt = !TextUtils.isEmpty(fileName) ? fileName : filePath;
+        String ext = FileUtils.getExtension(nameForExt);
+        if (TextUtils.isEmpty(ext)) {
+            return null;
+        }
+        String inferred =
+                MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.toLowerCase(Locale.ROOT));
+        if (!TextUtils.isEmpty(inferred) && !TextUtils.equals(inferred, originalMimeType)) {
+            return inferred;
+        }
+        return null;
     }
 
     /**
@@ -499,16 +556,18 @@ public class DownloadUtils {
      * @param originalUrl URL which initially triggered the download itself.
      * @param referer URL of the page which redirected to the download URL.
      * @param source Where this download was initiated from.
+     * @param fileName File name of the downloaded item.
      */
     @CalledByNative
     public static void openDownload(
             @JniType("std::string") String filePath,
-            @JniType("std::string") String mimeType,
-            @JniType("std::string") String downloadGuid,
+            @JniType("std::string") @Nullable String mimeType,
+            @JniType("std::string") @Nullable String downloadGuid,
             OtrProfileId otrProfileId,
-            @JniType("std::string") String originalUrl,
-            @JniType("std::string") String referer,
-            @DownloadOpenSource int source) {
+            @JniType("std::string") @Nullable String originalUrl,
+            @JniType("std::string") @Nullable String referer,
+            @DownloadOpenSource int source,
+            @Nullable String fileName) {
         // Mapping generic MIME type to android openable type based on URL and file extension.
         String newMimeType = MimeUtils.remapGenericMimeType(mimeType, originalUrl, filePath);
         Activity activity = ApplicationStatus.getLastTrackedFocusedActivity();
@@ -519,6 +578,7 @@ public class DownloadUtils {
                         new GURL(originalUrl), downloadGuid)) {
             return;
         }
+
         Tab tab = null;
         if (activity instanceof ChromeTabbedActivity chromeActivity) {
             // TODO(crbug.com/356713476): Stop using the deprecated method.
@@ -532,22 +592,29 @@ public class DownloadUtils {
         if (PdfUtils.shouldOpenPdfInline(isIncognito)
                 && newMimeType.equals(MimeTypeUtils.PDF_MIME_TYPE)) {
             String fileUri = getUriForItem(filePath).toString();
-            LoadUrlParams params = new LoadUrlParams(PdfUtils.encodePdfPageUrl(fileUri));
+            String encodedPdfUrl = PdfUtils.encodePdfPageUrl(fileUri);
+            assertNonNull(encodedPdfUrl);
+            LoadUrlParams params = new LoadUrlParams(encodedPdfUrl);
             ChromeAsyncTabLauncher delegate = new ChromeAsyncTabLauncher(isIncognito);
             delegate.launchNewTab(params, TabLaunchType.FROM_CHROME_UI, /* parent= */ null);
             return;
         }
-        boolean canOpen =
-                DownloadUtils.openFile(
-                        filePath,
-                        newMimeType,
-                        downloadGuid,
-                        otrProfileId,
-                        originalUrl,
-                        referer,
-                        source,
-                        activity == null ? ContextUtils.getApplicationContext() : activity);
+        Context context = activity != null ? activity : ContextUtils.getApplicationContext();
+        DownloadOpenRequest req =
+                DownloadOpenRequest.builder(context, filePath)
+                        .mimeType(newMimeType)
+                        .downloadGuid(downloadGuid)
+                        .otrProfileId(otrProfileId)
+                        .originalUrl(originalUrl)
+                        .referrer(referer)
+                        .source(source)
+                        .fileName(fileName)
+                        .build();
+        boolean canOpen = DownloadUtils.openFile(req);
         if (!canOpen) {
+            if (openDownloadInFilesAppIfNoHandlerFound() && showDownloadInFilesApp(filePath)) {
+                return;
+            }
             DownloadUtils.showDownloadManager(null, null, otrProfileId, source);
         }
     }
@@ -570,15 +637,14 @@ public class DownloadUtils {
         } catch (ActivityNotFoundException ex) {
             Log.d(
                     TAG,
-                    "Activity not found for "
-                            + intent.getType()
-                            + " over "
-                            + intent.getData().getScheme(),
+                    "Activity not found for %s over %s",
+                    intent.getType(),
+                    assumeNonNull(intent.getData()).getScheme(),
                     ex);
         } catch (SecurityException ex) {
-            Log.d(TAG, "cannot open intent: " + intent, ex);
+            Log.d(TAG, "cannot open intent: %s", intent, ex);
         } catch (Exception ex) {
-            Log.d(TAG, "cannot open intent: " + intent, ex);
+            Log.d(TAG, "cannot open intent: %s", intent, ex);
         }
 
         return false;
@@ -617,7 +683,7 @@ public class DownloadUtils {
             return !entry.isAutoResumable;
         } else {
             // Only the native downloads backend knows about the download.
-            if (item.getDownloadInfo().state() == DownloadState.IN_PROGRESS) {
+            if (assumeNonNull(item.getDownloadInfo()).state() == DownloadState.IN_PROGRESS) {
                 return item.getDownloadInfo().isPaused();
             } else {
                 return item.getDownloadInfo().state() == DownloadState.INTERRUPTED;
@@ -636,7 +702,7 @@ public class DownloadUtils {
         DownloadSharedPreferenceEntry entry =
                 helper.getDownloadSharedPreferenceEntry(item.getContentId());
         return entry != null
-                && item.getDownloadInfo().state() == DownloadState.INTERRUPTED
+                && assumeNonNull(item.getDownloadInfo()).state() == DownloadState.INTERRUPTED
                 && entry.isAutoResumable;
     }
 
@@ -683,8 +749,8 @@ public class DownloadUtils {
         String template =
                 context.getString(
                         duplicateRequestExists
-                                ? R.string.duplicate_download_request_infobar_text
-                                : R.string.duplicate_download_infobar_text);
+                                ? R.string.duplicate_download_request_prompt_text
+                                : R.string.duplicate_download_prompt_text);
         return getMessageText(
                 template,
                 filePath,
@@ -770,9 +836,9 @@ public class DownloadUtils {
 
     public static boolean openFileWithExternalApps(
             String filePath,
-            String mimeType,
-            String originalUrl,
-            String referrer,
+            @Nullable String mimeType,
+            @Nullable String originalUrl,
+            @Nullable String referrer,
             Context context,
             @OpenWithExternalAppsSource int source) {
         try {
@@ -790,6 +856,41 @@ public class DownloadUtils {
             Log.e(TAG, "Cannot start activity to open file", e);
             return false;
         }
+    }
+
+    /**
+     * Show the download in the Files app .
+     *
+     * @param filePath The path to the file to open.
+     */
+    private static boolean showDownloadInFilesApp(String filePath) {
+        try {
+            Uri uri = Uri.parse(filePath);
+            String scheme = uri.getScheme();
+
+            // If it is a Content URI, open the system Downloads folder. Passing file path may cause
+            // FileUriExposedException unless we have a file provider.
+            // TODO(b/503083696): handle the case if the content URI points to external SD card.
+            if (ContentResolver.SCHEME_CONTENT.equals(scheme)) {
+                Intent intent = new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                // Ensure the device has an app that can handle the Downloads intent
+                if (intent.resolveActivity(ContextUtils.getApplicationContext().getPackageManager())
+                        != null) {
+                    ContextUtils.getApplicationContext().startActivity(intent);
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Cannot open download with system files app", e);
+        }
+        return false;
+    }
+
+    private static boolean openDownloadInFilesAppIfNoHandlerFound() {
+        return ChromeFeatureList.isEnabled(
+                ChromeFeatureList.OPEN_DOWNLOAD_IN_FILES_APP_IF_NO_HANDLER_FOUND);
     }
 
     @NativeMethods

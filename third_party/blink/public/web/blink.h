@@ -96,13 +96,9 @@ BLINK_EXPORT void SetFontAntialiasingEnabledForTest(bool);
 BLINK_EXPORT bool FontAntialiasingEnabledForTest();
 
 // Purge the plugin list cache. This can cause a web-visible and out-of-spec
-// change to |navigator.plugins| if the plugin list has changed (see
-// https://crbug.com/735854). |reloadPages| is unsupported and must be false.
-BLINK_EXPORT void ResetPluginCache(bool reload_pages = false);
-
-// The embedder should call this periodically in an attempt to balance overall
-// performance and memory usage.
-BLINK_EXPORT void DecommitFreeableMemory();
+// change to `navigator.plugins` if the plugin list has changed (see
+// https://crbug.com/735854).
+BLINK_EXPORT void ResetPluginCache();
 
 // Send memory pressure notification to isolates.
 // This should be use as last resort only to prevent an OOM. Avoid using this
@@ -131,15 +127,6 @@ BLINK_EXPORT void ForceNextWebGLContextCreationToFailForTest();
 // Force the drawing buffer used by webgl contexts to fail so that the webgl
 // context's ability to deal with that failure gracefully can be tested.
 BLINK_EXPORT void ForceNextDrawingBufferCreationToFailForTest();
-
-// Set whether this renderer process is "cross-origin isolated". This
-// corresponds to agent cluster's "cross-origin isolated" concept.
-// TODO(yhirano): Have the spec URL.
-// This property is process global because we ensure that a renderer process
-// host only cross-origin isolated agents or only non-cross-origin isolated
-// agents, not both.
-// This is called at most once. This is called earlier than any frame commit.
-BLINK_EXPORT void SetIsCrossOriginIsolated(bool value);
 
 // Allows disabling web security. One example of this is that it enables APIs
 // that would otherwise require cross-origin-isolated contexts.

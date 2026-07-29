@@ -12,7 +12,6 @@
 #include <string>
 
 #include "base/functional/callback_forward.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-forward.h"
@@ -86,6 +85,10 @@ class WaylandWindowDragController : public WaylandDataDevice::DragDelegate,
   // drag controller.
   bool IsDragInProgress() const;
 
+  // Returns true iff there is an active drag session and `window` is the
+  // current window being dragged.
+  bool IsDraggingWindow(WaylandToplevelWindow* window) const;
+
   // Tells if any of the window drag protocol (ie: zcr-extended-drag-v1 or
   // xdg-toplevel-drag-v1) is available. May also return true in tests if
   // `window_drag_protocol_available_for_testing_` is set.
@@ -125,9 +128,10 @@ class WaylandWindowDragController : public WaylandDataDevice::DragDelegate,
   void OnDataSourceFinish(WaylandDataSource* source,
                           base::TimeTicks timestamp,
                           bool completed) override;
-  void OnDataSourceSend(WaylandDataSource* source,
-                        const std::string& mime_type,
-                        std::string* contents) override;
+  void OnDataSourceSend(
+      WaylandDataSource* source,
+      const std::string& mime_type,
+      WaylandDataSource::Delegate::ContentCallback callback) override;
 
   // PlatformEventDispatcher
   bool CanDispatchEvent(const PlatformEvent& event) override;
@@ -136,6 +140,8 @@ class WaylandWindowDragController : public WaylandDataDevice::DragDelegate,
   // WaylandWindowObserver:
   void OnWindowRemoved(WaylandWindow* window) override;
 
+  // Asks the Wayland compositor to cancel the drag session, if any.
+  void CancelDragSession();
   // Handles drag/move mouse |event|, while in |kDetached| mode, forwarding it
   // as a bounds change event to the upper layer handlers.
   void HandleMotionEvent(LocatedEvent* event);
@@ -195,7 +201,9 @@ class WaylandWindowDragController : public WaylandDataDevice::DragDelegate,
   // pointer focus when the session was initiated.
   raw_ptr<WaylandWindow> origin_window_ = nullptr;
 
-  raw_ptr<WaylandWindow, DanglingUntriaged> drag_target_window_ = nullptr;
+  // The window the pointer last entered. Null if we received a leave event,
+  // and no new enter event yet.
+  raw_ptr<WaylandWindow> drag_target_window_ = nullptr;
 
   // The |origin_window_| can be destroyed during the DND session. If this
   // happens, |origin_surface_| takes ownership of its surface and ensure it

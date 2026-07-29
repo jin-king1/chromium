@@ -17,7 +17,10 @@
 #include "components/sync/model/syncable_service.h"
 #include "components/value_store/value_store.h"
 #include "extensions/browser/api/storage/settings_observer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace syncer {
 class ModelError;
@@ -53,8 +56,7 @@ class SyncableSettingsStorage : public value_store::ValueStore {
   WriteResult Set(WriteOptions options,
                   const std::string& key,
                   const base::Value& value) override;
-  WriteResult Set(WriteOptions options,
-                  const base::Value::Dict& values) override;
+  WriteResult Set(WriteOptions options, const base::DictValue& values) override;
   WriteResult Remove(const std::string& key) override;
   WriteResult Remove(const std::vector<std::string>& keys) override;
   WriteResult Clear() override;
@@ -65,11 +67,11 @@ class SyncableSettingsStorage : public value_store::ValueStore {
 
   // Starts syncing this storage area. Must only be called if sync isn't
   // already active.
-  // |sync_state| is the current state of the extension settings in sync.
-  // |sync_processor| is used to write out any changes.
+  // `sync_state` is the current state of the extension settings in sync.
+  // `sync_processor` is used to write out any changes.
   // Returns any error when trying to sync, or std::nullopt on success.
   std::optional<syncer::ModelError> StartSyncing(
-      base::Value::Dict sync_state,
+      base::DictValue sync_state,
       std::unique_ptr<SettingsSyncProcessor> sync_processor);
 
   // Stops syncing this storage area. May be called at any time (idempotent).
@@ -82,7 +84,7 @@ class SyncableSettingsStorage : public value_store::ValueStore {
       std::unique_ptr<SettingSyncDataList> sync_changes);
 
  private:
-  // Sends the changes from |result| to sync if it's enabled.
+  // Sends the changes from `result` to sync if it's enabled.
   void SyncResultIfEnabled(const value_store::ValueStore::WriteResult& result);
 
   // Analyze the result returned by a call to the delegate, and take appropriate
@@ -94,13 +96,13 @@ class SyncableSettingsStorage : public value_store::ValueStore {
   // in sync yet.
   // Returns any error when trying to sync, or std::nullopt on success.
   std::optional<syncer::ModelError> SendLocalSettingsToSync(
-      base::Value::Dict local_state);
+      base::DictValue local_state);
 
   // Overwrites local state with sync state.
   // Returns any error when trying to sync, or std::nullopt on success.
   std::optional<syncer::ModelError> OverwriteLocalSettingsWithSync(
-      base::Value::Dict sync_state,
-      base::Value::Dict local_state);
+      base::DictValue sync_state,
+      base::DictValue local_state);
 
   // Called when an Add/Update/Remove comes from sync.
   std::optional<syncer::ModelError> OnSyncAdd(

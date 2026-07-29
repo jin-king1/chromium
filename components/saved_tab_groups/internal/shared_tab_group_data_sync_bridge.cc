@@ -39,7 +39,6 @@
 #include "components/sync/base/unique_position.h"
 #include "components/sync/model/data_type_local_change_processor.h"
 #include "components/sync/model/entity_change.h"
-#include "components/sync/model/in_memory_metadata_change_list.h"
 #include "components/sync/model/metadata_batch.h"
 #include "components/sync/model/metadata_change_list.h"
 #include "components/sync/model/model_error.h"
@@ -113,30 +112,11 @@ base::Time TimeFromWindowsEpochMicros(int64_t time_windows_epoch_micros) {
       base::Microseconds(time_windows_epoch_micros));
 }
 
-sync_pb::SharedTabGroupDataSpecifics SharedTabGroupToSpecifics(
-    const SavedTabGroup& group) {
-  CHECK(group.is_shared_tab_group());
-  sync_pb::SharedTabGroupDataSpecifics pb_specifics;
-  pb_specifics.set_guid(group.saved_guid().AsLowercaseString());
-  pb_specifics.set_update_time_windows_epoch_micros(
-      group.update_time_windows_epoch_micros()
-          .ToDeltaSinceWindowsEpoch()
-          .InMicroseconds());
-
-  sync_pb::SharedTabGroup* pb_group = pb_specifics.mutable_tab_group();
-  pb_group->set_color(TabGroupColorToSyncColor(group.color()));
-  pb_group->set_title(base::UTF16ToUTF8(group.title()));
-  if (group.originating_tab_group_guid().has_value()) {
-    pb_group->set_originating_tab_group_guid(
-        group.originating_tab_group_guid().value().AsLowercaseString());
-  }
-  return pb_specifics;
-}
-
 SavedTabGroup SpecificsToSharedTabGroup(
     const sync_pb::SharedTabGroupDataSpecifics& specifics,
     const syncer::CollaborationMetadata& collaboration_metadata,
-    base::Time creation_time) {
+    base::Time creation_time,
+    bool use_originating_tab_group_guid) {
   CHECK(specifics.has_tab_group());
   CHECK(!collaboration_metadata.collaboration_id()->empty());
 
@@ -163,16 +143,17 @@ SavedTabGroup SpecificsToSharedTabGroup(
                       /*created_before_syncing_tab_groups=*/false,
                       creation_time);
   group.SetCollaborationId(
-      CollaborationId(collaboration_metadata.collaboration_id()));
+      syncer::CollaborationId(collaboration_metadata.collaboration_id()));
   group.SetCreatedByAttribution(collaboration_metadata.created_by());
   group.SetUpdatedByAttribution(collaboration_metadata.last_updated_by());
   if (originating_tab_group_guid.is_valid()) {
-    group.SetOriginatingTabGroupGuid(std::move(originating_tab_group_guid));
+    group.SetOriginatingTabGroupGuid(std::move(originating_tab_group_guid),
+                                     use_originating_tab_group_guid);
   }
 
   // Set the remote update time explicitly because the setters above could have
   // updated it.
-  group.SetUpdateTimeWindowsEpochMicros(update_time);
+  group.SetUpdateTime(update_time);
   return group;
 }
 
@@ -181,6 +162,7 @@ SavedTabGroupTab SpecificsToSharedTabGroupTab(
     const syncer::CollaborationMetadata& collaboration_metadata,
     size_t position,
     base::Time creation_time,
+    base::Time modification_time,
     bool sanitize_url_and_title) {
   CHECK(specifics.has_tab());
 
@@ -206,27 +188,9 @@ SavedTabGroupTab SpecificsToSharedTabGroupTab(
       /*last_updater_cache_guid=*/std::nullopt, creation_time);
   tab.SetCreatedByAttribution(collaboration_metadata.created_by());
   tab.SetUpdatedByAttribution(collaboration_metadata.last_updated_by());
-  tab.SetUpdateTimeWindowsEpochMicros(update_time);
+  tab.SetUpdateTime(update_time);
+  tab.SetNavigationTime(modification_time);
   return tab;
-}
-
-sync_pb::SharedTabGroupDataSpecifics SharedTabGroupTabToSpecifics(
-    const SavedTabGroupTab& tab,
-    sync_pb::UniquePosition unique_position) {
-  sync_pb::SharedTabGroupDataSpecifics specifics;
-
-  specifics.set_guid(tab.saved_tab_guid().AsLowercaseString());
-  specifics.set_update_time_windows_epoch_micros(
-      tab.update_time_windows_epoch_micros()
-          .ToDeltaSinceWindowsEpoch()
-          .InMicroseconds());
-
-  sync_pb::SharedTab* pb_tab = specifics.mutable_tab();
-  pb_tab->set_url(tab.url().spec());
-  pb_tab->set_shared_tab_group_guid(tab.saved_group_guid().AsLowercaseString());
-  pb_tab->set_title(base::UTF16ToUTF8(tab.title()));
-  *pb_tab->mutable_unique_position() = std::move(unique_position);
-  return specifics;
 }
 
 std::unique_ptr<syncer::EntityData> CreateEntityData(
@@ -257,7 +221,7 @@ std::unique_ptr<syncer::EntityData> CreateEntityData(
 
 void AddEntryToBatch(syncer::MutableDataBatch* batch,
                      sync_pb::SharedTabGroupDataSpecifics specifics,
-                     const CollaborationId& collaboration_id,
+                     const syncer::CollaborationId& collaboration_id,
                      base::Time creation_time,
                      const GaiaId& changed_by) {
   std::unique_ptr<syncer::EntityData> entity_data =
@@ -309,6 +273,17 @@ base::Time ExtractCreationTimeFromMetadata(
   return syncer::ProtoTimeToTime(it->second->creation_time());
 }
 
+base::Time ExtractModificationTimeFromMetadata(
+    const syncer::EntityMetadataMap& sync_metadata,
+    const std::string& storage_key) {
+  auto it = sync_metadata.find(storage_key);
+  if (it == sync_metadata.end()) {
+    return base::Time();
+  }
+
+  return syncer::ProtoTimeToTime(it->second->modification_time());
+}
+
 // Sorts stored entries by their unique position. The resulting order is:
 // 1. Tabs with valid unique positions, ordered by their unique position.
 // 2. Tabs with invalid unique positions, ordered by their update time.
@@ -352,10 +327,14 @@ void SortStoredEntriesByUniquePosition(
 }
 
 // Parses stored entries and populates the result to the `on_load_callback`.
-std::vector<sync_pb::SharedTabGroupDataSpecifics> LoadStoredEntries(
-    std::vector<proto::SharedTabGroupData> stored_entries,
-    SyncBridgeTabGroupModelWrapper* model_wrapper,
-    const syncer::EntityMetadataMap& sync_metadata) {
+// Returns tabs missing groups.
+std::vector<std::tuple<sync_pb::SharedTabGroupDataSpecifics,
+                       syncer::CollaborationMetadata,
+                       base::Time,
+                       base::Time>>
+LoadStoredEntries(std::vector<proto::SharedTabGroupData> stored_entries,
+                  SyncBridgeTabGroupModelWrapper* model_wrapper,
+                  const syncer::EntityMetadataMap& sync_metadata) {
   DVLOG(2) << "Loading SharedTabGroupData entries from the disk: "
            << stored_entries.size();
 
@@ -381,7 +360,8 @@ std::vector<sync_pb::SharedTabGroupDataSpecifics> LoadStoredEntries(
     }
     SavedTabGroup group = SpecificsToSharedTabGroup(
         specifics, collaboration_metadata,
-        ExtractCreationTimeFromMetadata(sync_metadata, storage_key));
+        ExtractCreationTimeFromMetadata(sync_metadata, storage_key),
+        proto.local_group_data().use_originating_tab_group_guid());
     // Load remaining local-only fields.
     if (AreLocalIdsPersisted() &&
         proto.local_group_data().has_local_group_id()) {
@@ -395,6 +375,8 @@ std::vector<sync_pb::SharedTabGroupDataSpecifics> LoadStoredEntries(
     if (proto.local_group_data().has_is_group_hidden()) {
       group.SetIsHidden(proto.local_group_data().is_group_hidden());
     }
+    stats::RecordSharedTabGroupDataLoadFromDiskResult(
+        stats::SharedTabGroupDataLoadFromDiskResult::kSuccess);
     groups.emplace_back(std::move(group));
 
     // There should not be duplicate group GUIDs because they are used as
@@ -409,7 +391,9 @@ std::vector<sync_pb::SharedTabGroupDataSpecifics> LoadStoredEntries(
 
   // Parse tabs and find tabs missing groups. This code relies on the order of
   // the tab entries to calculate tab positions.
-  std::vector<sync_pb::SharedTabGroupDataSpecifics> tabs_missing_groups;
+  std::vector<std::tuple<sync_pb::SharedTabGroupDataSpecifics,
+                         syncer::CollaborationMetadata, base::Time, base::Time>>
+      tabs_missing_groups;
   std::vector<SavedTabGroupTab> tabs;
   for (const proto::SharedTabGroupData& proto : stored_entries) {
     const sync_pb::SharedTabGroupDataSpecifics& specifics = proto.specifics();
@@ -424,20 +408,28 @@ std::vector<sync_pb::SharedTabGroupDataSpecifics> LoadStoredEntries(
           stats::SharedTabGroupDataLoadFromDiskResult::kMissingCollaborationId);
       continue;
     }
-    if (group_guid_to_next_tab_position.contains(
+    stats::RecordSharedTabGroupDataLoadFromDiskResult(
+        stats::SharedTabGroupDataLoadFromDiskResult::kSuccess);
+
+    base::Time creation_time =
+        ExtractCreationTimeFromMetadata(sync_metadata, storage_key);
+    base::Time modification_time =
+        ExtractModificationTimeFromMetadata(sync_metadata, storage_key);
+    if (!group_guid_to_next_tab_position.contains(
             specifics.tab().shared_tab_group_guid())) {
-      size_t tab_position =
-          group_guid_to_next_tab_position[specifics.tab()
-                                              .shared_tab_group_guid()];
-      tabs.emplace_back(SpecificsToSharedTabGroupTab(
-          specifics, collaboration_metadata, tab_position,
-          ExtractCreationTimeFromMetadata(sync_metadata, storage_key),
-          /*sanitize_url_and_title=*/false));
-      group_guid_to_next_tab_position[specifics.tab()
-                                          .shared_tab_group_guid()]++;
+      tabs_missing_groups.emplace_back(specifics, collaboration_metadata,
+                                       creation_time, modification_time);
       continue;
     }
-    tabs_missing_groups.push_back(specifics);
+
+    size_t tab_position =
+        group_guid_to_next_tab_position[specifics.tab()
+                                            .shared_tab_group_guid()];
+    tabs.emplace_back(SpecificsToSharedTabGroupTab(
+        specifics, collaboration_metadata, tab_position, creation_time,
+        modification_time,
+        /*sanitize_url_and_title=*/false));
+    group_guid_to_next_tab_position[specifics.tab().shared_tab_group_guid()]++;
   }
 
   model_wrapper->Initialize(std::move(groups), std::move(tabs));
@@ -450,6 +442,14 @@ void StoreSharedTab(syncer::DataTypeStore::WriteBatch& write_batch,
     // Unique position is stored in the sync metadata, so it should not be
     // stored in specifics on the disk.
     specifics.mutable_tab()->clear_unique_position();
+
+    // Enforce defense-in-depth by sanitizing the URL and title centrally before
+    // disk write.
+    GURL url(specifics.tab().url());
+    if (!IsURLValidForSavedTabGroups(url)) {
+      specifics.mutable_tab()->set_url(kChromeSavedTabGroupUnsupportedURL);
+      specifics.mutable_tab()->clear_title();
+    }
   }
   std::string storage_key = specifics.guid();
   proto::SharedTabGroupData local_proto;
@@ -477,6 +477,8 @@ proto::LocalSharedTabGroupData GroupToLocalOnlyData(
   local_group_data.set_is_transitioning_to_saved(
       group.is_transitioning_to_saved());
   local_group_data.set_is_group_hidden(group.is_hidden());
+  local_group_data.set_use_originating_tab_group_guid(
+      group.use_originating_tab_group_guid());
   return local_group_data;
 }
 
@@ -574,12 +576,6 @@ SharedTabGroupDataSyncBridge::~SharedTabGroupDataSyncBridge() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
-std::unique_ptr<syncer::MetadataChangeList>
-SharedTabGroupDataSyncBridge::CreateMetadataChangeList() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return std::make_unique<syncer::InMemoryMetadataChangeList>();
-}
-
 std::optional<syncer::ModelError>
 SharedTabGroupDataSyncBridge::MergeFullSyncData(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
@@ -594,7 +590,7 @@ SharedTabGroupDataSyncBridge::MergeFullSyncData(
       std::move(metadata_change_list), std::move(entity_data));
 
   model_wrapper_->OnSyncBridgeUpdateTypeChanged(
-      SyncBridgeUpdateType::kDefaultState);
+      SyncBridgeUpdateType::kCompletedInitialMergeThisSession);
   return result;
 }
 
@@ -611,7 +607,8 @@ SharedTabGroupDataSyncBridge::ApplyIncrementalSyncChanges(
   CHECK(!ongoing_write_batch_);
   base::ScopedClosureRunner write_batch_scoped_destroy_closure =
       CreateWriteBatchWithDestroyClosure(
-          /*store_write_batch_on_destroy=*/false);
+          /*store_write_batch_on_destroy=*/false,
+          std::move(metadata_change_list));
   CHECK(ongoing_write_batch_);
 
   std::vector<std::unique_ptr<syncer::EntityChange>> delete_changes;
@@ -630,7 +627,8 @@ SharedTabGroupDataSyncBridge::ApplyIncrementalSyncChanges(
           if (std::optional<syncer::ModelError> error = AddGroupToLocalStorage(
                   change->data().specifics.shared_tab_group_data(),
                   change->data().collaboration_metadata.value(),
-                  change->data().creation_time, metadata_change_list.get(),
+                  change->data().creation_time,
+                  ongoing_write_batch_->GetMetadataChangeList(),
                   *ongoing_write_batch_)) {
             return error;
           }
@@ -646,14 +644,15 @@ SharedTabGroupDataSyncBridge::ApplyIncrementalSyncChanges(
 
   // Process group and tab deletions first.
   for (const std::unique_ptr<syncer::EntityChange>& change : delete_changes) {
-    GaiaId last_updated_by;
-    if (change->data().collaboration_metadata) {
-      last_updated_by =
-          change->data().collaboration_metadata->last_updated_by();
+    if (!change->data().collaboration_metadata.has_value()) {
+      // This should never happen. Skip deletion in this case for safety.
+      continue;
     }
-    DeleteDataFromLocalStorage(change->storage_key(),
-                               std::move(last_updated_by),
-                               *ongoing_write_batch_);
+    GaiaId last_updated_by =
+        change->data().collaboration_metadata->last_updated_by();
+    DeleteDataFromLocalStorage(
+        change->storage_key(), *change->data().collaboration_metadata,
+        std::move(last_updated_by), *ongoing_write_batch_);
   }
 
   // Sort tab updates and creations in the reversed order. This is required to
@@ -676,8 +675,7 @@ SharedTabGroupDataSyncBridge::ApplyIncrementalSyncChanges(
       // Hence, duplicate GUIDs must have different collaboration IDs which
       // should never happen.
       return syncer::ModelError(
-          FROM_HERE,
-          "Received duplicate tab GUID with different collaboration IDs.");
+          FROM_HERE, syncer::ModelError::Type::kSharedTabGroupDuplicateTabGuid);
     }
   }
 
@@ -686,10 +684,10 @@ SharedTabGroupDataSyncBridge::ApplyIncrementalSyncChanges(
   for (const std::unique_ptr<syncer::EntityChange>& change : tab_updates) {
     if (std::optional<syncer::ModelError> error = ApplyRemoteTabUpdate(
             change->data().specifics.shared_tab_group_data(),
-            metadata_change_list.get(), *ongoing_write_batch_,
-            tab_ids_with_pending_model_update,
+            ongoing_write_batch_->GetMetadataChangeList(),
+            *ongoing_write_batch_, tab_ids_with_pending_model_update,
             change->data().collaboration_metadata.value(),
-            change->data().creation_time)) {
+            change->data().creation_time, change->data().modification_time)) {
       return error;
     }
 
@@ -698,11 +696,12 @@ SharedTabGroupDataSyncBridge::ApplyIncrementalSyncChanges(
         change->data().specifics.shared_tab_group_data().guid()));
   }
 
-  // TODO(crbug.com/370719750): resolve and handle tabs missing groups later.
-  // ResolveTabsMissingGroups(write_batch.get());
-
-  ongoing_write_batch_->TakeMetadataChangesFrom(
-      std::move(metadata_change_list));
+  // Note that ResolveTabsMissingGroups() must be called after all the tab
+  // updates are applied to the model to correctly handle unique positions.
+  if (std::optional<syncer::ModelError> error = ResolveTabsMissingGroups(
+          *ongoing_write_batch_->GetMetadataChangeList())) {
+    return error;
+  }
 
   // Successfully applied all the changes. Explicitly destroy the write batch
   // and store data to the store.
@@ -733,8 +732,7 @@ SharedTabGroupDataSyncBridge::GetDataForCommit(StorageKeyList storage_keys) {
 
     if (parsed_guids.contains(group->saved_guid())) {
       AddEntryToBatch(batch.get(), SharedTabGroupToSpecifics(*group),
-                      group->collaboration_id().value(),
-                      group->creation_time_windows_epoch_micros(),
+                      group->collaboration_id().value(), group->creation_time(),
                       group->shared_attribution().updated_by);
     }
     for (const SavedTabGroupTab& tab : group->saved_tabs()) {
@@ -744,8 +742,7 @@ SharedTabGroupDataSyncBridge::GetDataForCommit(StorageKeyList storage_keys) {
             SharedTabGroupTabToSpecifics(
                 tab, change_processor()->GetUniquePositionForStorageKey(
                          StorageKeyForTab(tab))),
-            group->collaboration_id().value(),
-            group->creation_time_windows_epoch_micros(),
+            group->collaboration_id().value(), group->creation_time(),
             tab.shared_attribution().updated_by);
       }
     }
@@ -760,8 +757,7 @@ SharedTabGroupDataSyncBridge::GetAllDataForDebugging() {
   for (const SavedTabGroup* group : model_wrapper_->GetTabGroups()) {
     CHECK(group->collaboration_id().has_value());
     AddEntryToBatch(batch.get(), SharedTabGroupToSpecifics(*group),
-                    group->collaboration_id().value(),
-                    group->creation_time_windows_epoch_micros(),
+                    group->collaboration_id().value(), group->creation_time(),
                     group->shared_attribution().updated_by);
     for (const SavedTabGroupTab& tab : group->saved_tabs()) {
       AddEntryToBatch(
@@ -769,23 +765,29 @@ SharedTabGroupDataSyncBridge::GetAllDataForDebugging() {
           SharedTabGroupTabToSpecifics(
               tab, change_processor()->GetUniquePositionForStorageKey(
                        StorageKeyForTab(tab))),
-          group->collaboration_id().value(),
-          group->creation_time_windows_epoch_micros(),
+          group->collaboration_id().value(), group->creation_time(),
           tab.shared_attribution().updated_by);
     }
+  }
+
+  for (const auto& [tab_guid, tab_missing_group] : tabs_missing_groups_) {
+    AddEntryToBatch(batch.get(), tab_missing_group.specifics,
+                    tab_missing_group.collaboration_metadata.collaboration_id(),
+                    tab_missing_group.creation_time,
+                    tab_missing_group.collaboration_metadata.last_updated_by());
   }
   return batch;
 }
 
 std::string SharedTabGroupDataSyncBridge::GetClientTag(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   CHECK(entity_data.collaboration_metadata.has_value());
   return entity_data.specifics.shared_tab_group_data().guid() + "|" +
          entity_data.collaboration_metadata->collaboration_id().value();
 }
 
 std::string SharedTabGroupDataSyncBridge::GetStorageKey(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return entity_data.specifics.shared_tab_group_data().guid();
 }
@@ -867,19 +869,55 @@ void SharedTabGroupDataSyncBridge::ApplyDisableSyncChanges(
   // Delete all shared tabs and sync metadata from the store.
   // `delete_metadata_change_list` is not used because all the metadata is
   // deleted anyway.
-  store_->DeleteAllDataAndMetadata(base::DoNothing());
+  store_->DeleteAllDataAndMetadata(std::move(delete_metadata_change_list),
+                                   base::DoNothing());
 
   model_wrapper_->OnSyncBridgeUpdateTypeChanged(
-      SyncBridgeUpdateType::kDefaultState);
+      SyncBridgeUpdateType::kCompletedDisableSyncThisSession);
 }
 
 sync_pb::EntitySpecifics
 SharedTabGroupDataSyncBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
     const sync_pb::EntitySpecifics& entity_specifics) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  NOTIMPLEMENTED();
-  return DataTypeSyncBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
-      entity_specifics);
+
+  // LINT.IfChange(TrimAllSupportedFieldsFromRemoteSpecifics)
+  sync_pb::SharedTabGroupDataSpecifics trimmed_specifics =
+      entity_specifics.shared_tab_group_data();
+  trimmed_specifics.clear_guid();
+  trimmed_specifics.clear_update_time_windows_epoch_micros();
+  trimmed_specifics.clear_version();
+
+  if (trimmed_specifics.has_tab()) {
+    sync_pb::SharedTab* tab = trimmed_specifics.mutable_tab();
+    tab->clear_url();
+    tab->clear_title();
+    tab->clear_shared_tab_group_guid();
+    tab->clear_unique_position();
+
+    if (tab->ByteSizeLong() == 0) {
+      trimmed_specifics.clear_tab();
+    }
+  }
+
+  if (trimmed_specifics.has_tab_group()) {
+    sync_pb::SharedTabGroup* tab_group = trimmed_specifics.mutable_tab_group();
+    tab_group->clear_title();
+    tab_group->clear_color();
+    tab_group->clear_originating_tab_group_guid();
+
+    if (tab_group->ByteSizeLong() == 0) {
+      trimmed_specifics.clear_tab_group();
+    }
+  }
+  // LINT.ThenChange(//components/sync/protocol/shared_tab_group_data_specifics.proto:SharedTabGroupDataSpecifics)
+
+  sync_pb::EntitySpecifics trimmed_entity_specifics;
+  if (trimmed_specifics.ByteSizeLong() > 0) {
+    *trimmed_entity_specifics.mutable_shared_tab_group_data() =
+        std::move(trimmed_specifics);
+  }
+  return trimmed_entity_specifics;
 }
 
 bool SharedTabGroupDataSyncBridge::IsEntityDataValid(
@@ -915,7 +953,8 @@ void SharedTabGroupDataSyncBridge::SavedTabGroupAddedLocally(
   CHECK(group->is_shared_tab_group());
 
   base::ScopedClosureRunner write_batch_scoped_destroy_closure =
-      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true);
+      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true,
+                                         /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
   CHECK(group->collaboration_id().has_value());
 
@@ -927,7 +966,7 @@ void SharedTabGroupDataSyncBridge::SavedTabGroupAddedLocally(
              syncer::CollaborationMetadata::ForLocalChange(
                  group->shared_attribution().updated_by,
                  group->collaboration_id().value()),
-             group->creation_time_windows_epoch_micros(),
+             group->creation_time(),
              ongoing_write_batch_->GetMetadataChangeList());
   for (size_t i = 0; i < group->saved_tabs().size(); ++i) {
     const SavedTabGroupTab& tab = group->saved_tabs()[i];
@@ -948,7 +987,7 @@ void SharedTabGroupDataSyncBridge::SavedTabGroupAddedLocally(
                syncer::CollaborationMetadata::ForLocalChange(
                    tab.shared_attribution().updated_by,
                    group->collaboration_id().value()),
-               tab.creation_time_windows_epoch_micros(),
+               tab.creation_time(),
                ongoing_write_batch_->GetMetadataChangeList());
   }
 
@@ -975,7 +1014,8 @@ void SharedTabGroupDataSyncBridge::SavedTabGroupUpdatedLocally(
   CHECK(group->is_shared_tab_group());
 
   base::ScopedClosureRunner write_batch_scoped_destroy_closure =
-      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true);
+      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true,
+                                         /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
   if (tab_guid.has_value()) {
     // The tab has been updated, added or removed.
@@ -990,7 +1030,7 @@ void SharedTabGroupDataSyncBridge::SavedTabGroupUpdatedLocally(
                syncer::CollaborationMetadata::ForLocalChange(
                    group->shared_attribution().updated_by,
                    group->collaboration_id().value()),
-               group->creation_time_windows_epoch_micros(),
+               group->creation_time(),
                ongoing_write_batch_->GetMetadataChangeList());
   }
 }
@@ -1001,26 +1041,23 @@ void SharedTabGroupDataSyncBridge::SavedTabGroupRemovedLocally(
   if (!IsReadyToSync()) {
     // Ignore any changes before the model is successfully initialized.
     DVLOG(2) << "SavedTabGroupRemovedLocally called while not initialized";
+    std::erase(tab_groups_waiting_for_commit_, removed_group.saved_guid());
     return;
   }
 
   CHECK(removed_group.is_shared_tab_group());
 
   base::ScopedClosureRunner write_batch_scoped_destroy_closure =
-      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true);
+      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true,
+                                         /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
-  // Intentionally only remove the group (creating orphaned tabs in the
-  // process), so other devices with the group open in the Tabstrip can react to
-  // the deletion appropriately (i.e. We do not have to determine if a tab
-  // deletion was part of a group deletion).
-  // TODO(crbug.com/372210380): consider if this is required for shared tab
-  // groups.
   RemoveEntitySpecifics(removed_group.saved_guid(), *ongoing_write_batch_);
+  for (const SavedTabGroupTab& tab : removed_group.saved_tabs()) {
+    RemoveEntitySpecifics(tab.saved_tab_guid(), *ongoing_write_batch_);
+  }
 
   std::erase(tab_groups_waiting_for_commit_, removed_group.saved_guid());
-
-  // TODO(crbug.com/370719750): handle tabs missing groups.
 }
 
 void SharedTabGroupDataSyncBridge::ProcessTabGroupLocalIdChanged(
@@ -1033,7 +1070,8 @@ void SharedTabGroupDataSyncBridge::ProcessTabGroupLocalIdChanged(
   }
 
   base::ScopedClosureRunner write_batch_scoped_destroy_closure =
-      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true);
+      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true,
+                                         /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
   const SavedTabGroup* const group = model_wrapper_->GetGroup(group_guid);
@@ -1045,6 +1083,11 @@ void SharedTabGroupDataSyncBridge::ProcessTabGroupLocalIdChanged(
 
 void SharedTabGroupDataSyncBridge::UntrackEntitiesForCollaboration(
     const syncer::CollaborationId& collaboration_id) {
+  base::ScopedClosureRunner write_batch_scoped_destroy_closure =
+      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true,
+                                         /*metadata_change_list=*/nullptr);
+  CHECK(ongoing_write_batch_);
+
   for (const SavedTabGroup* group : model_wrapper_->GetTabGroups()) {
     if (!group->collaboration_id().has_value()) {
       continue;
@@ -1055,9 +1098,13 @@ void SharedTabGroupDataSyncBridge::UntrackEntitiesForCollaboration(
     }
 
     for (const SavedTabGroupTab& tab : group->saved_tabs()) {
-      change_processor()->UntrackEntityForStorageKey(StorageKeyForTab(tab));
+      std::string storage_key = StorageKeyForTab(tab);
+      ongoing_write_batch_->GetMetadataChangeList()->ClearMetadata(storage_key);
+      change_processor()->UntrackEntityForStorageKey(storage_key);
     }
-    change_processor()->UntrackEntityForStorageKey(StorageKeyForGroup(*group));
+    std::string storage_key = StorageKeyForGroup(*group);
+    ongoing_write_batch_->GetMetadataChangeList()->ClearMetadata(storage_key);
+    change_processor()->UntrackEntityForStorageKey(storage_key);
   }
 }
 
@@ -1114,9 +1161,21 @@ void SharedTabGroupDataSyncBridge::OnReadAllDataAndMetadata(
     FixLocalTabGroupIDsForSharedGroupsDuringFeatureEnabling(stored_entries);
   }
 
-  // TODO(crbug.com/370719750): Handle tabs missing groups.
-  LoadStoredEntries(std::move(stored_entries), model_wrapper_,
-                    metadata_batch->GetAllMetadata());
+  std::vector<std::tuple<sync_pb::SharedTabGroupDataSpecifics,
+                         syncer::CollaborationMetadata, base::Time, base::Time>>
+      loaded_tabs_missing_groups =
+          LoadStoredEntries(std::move(stored_entries), model_wrapper_,
+                            metadata_batch->GetAllMetadata());
+  for (auto& [specifics, collaboration_metadata, creation_time,
+              modification_time] : loaded_tabs_missing_groups) {
+    base::Uuid tab_guid = base::Uuid::ParseLowercase(specifics.guid());
+    CHECK(tab_guid.is_valid());
+    tabs_missing_groups_.insert_or_assign(
+        std::move(tab_guid),
+        TabMissingGroup(std::move(specifics), std::move(collaboration_metadata),
+                        creation_time, modification_time));
+  }
+
   change_processor()->ModelReadyToSync(std::move(metadata_batch));
 }
 
@@ -1124,7 +1183,8 @@ void SharedTabGroupDataSyncBridge::
     FixLocalTabGroupIDsForSharedGroupsDuringFeatureEnabling(
         std::vector<proto::SharedTabGroupData>& stored_entries) {
   base::ScopedClosureRunner write_batch_scoped_destroy_closure =
-      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true);
+      CreateWriteBatchWithDestroyClosure(/*store_write_batch_on_destroy=*/true,
+                                         /*metadata_change_list=*/nullptr);
   CHECK(ongoing_write_batch_);
 
   for (proto::SharedTabGroupData& proto : stored_entries) {
@@ -1151,7 +1211,9 @@ void SharedTabGroupDataSyncBridge::
 void SharedTabGroupDataSyncBridge::OnDatabaseSave(
     const std::optional<syncer::ModelError>& error) {
   if (error) {
-    change_processor()->ReportError({FROM_HERE, "Failed to store data."});
+    change_processor()->ReportError(
+        {FROM_HERE,
+         syncer::ModelError::Type::kSharedTabGroupDataDatabaseSaveFailed});
   }
 }
 
@@ -1170,37 +1232,39 @@ SharedTabGroupDataSyncBridge::AddGroupToLocalStorage(
 
   CHECK(specifics.has_tab_group());
 
-  if (!model_wrapper_->GetGroup(group_guid)) {
+  const SavedTabGroup* existing_group = model_wrapper_->GetGroup(group_guid);
+  if (!existing_group) {
     // This is a new remotely created group. Add the group from sync into local
     // storage. Note that on some platforms new remote groups may open in the
     // tab strip, and associate its local group ID. This is currently prevented
     // by delaying observer calls in the TabGroupSyncService.
     StoreSharedGroup(write_batch, specifics, proto::LocalSharedTabGroupData());
+    bool use_originating_tab_group_guid = collaboration_metadata.created_by() ==
+                                          change_processor()->TrackedGaiaId();
     model_wrapper_->AddGroup(SpecificsToSharedTabGroup(
-        specifics, collaboration_metadata, creation_time));
+        specifics, collaboration_metadata, creation_time,
+        use_originating_tab_group_guid));
     return std::nullopt;
   }
 
-  // Update the existing group with remote data.
-  const SavedTabGroup* existing_group =
-      model_wrapper_->MergeRemoteGroupMetadata(
-          group_guid, base::UTF8ToUTF16(specifics.tab_group().title()),
-          SyncColorToTabGroupColor(specifics.tab_group().color()),
-          /*position=*/std::nullopt,
-          /*creator_cache_guid=*/std::nullopt,
-          /*last_updater_cache_guid=*/std::nullopt,
-          TimeFromWindowsEpochMicros(
-              specifics.update_time_windows_epoch_micros()),
-          collaboration_metadata.last_updated_by());
-  CHECK(existing_group);
-
-  // TODO(crbug.com/381540386): move this check before the merge.
   if (existing_group->collaboration_id() !=
       collaboration_metadata.collaboration_id()) {
     // Shared tab groups should never change collaboration IDs.
     return syncer::ModelError(
-        FROM_HERE, "Unexpected collaboration ID for a remote group.");
+        FROM_HERE, syncer::ModelError::Type::
+                       kSharedTabGroupUnexpectedCollaborationIdForGroup);
   }
+
+  // Update the existing group with remote data.
+  existing_group = model_wrapper_->MergeRemoteGroupMetadata(
+      group_guid, base::UTF8ToUTF16(specifics.tab_group().title()),
+      SyncColorToTabGroupColor(specifics.tab_group().color()),
+      /*position=*/std::nullopt,
+      /*creator_cache_guid=*/std::nullopt,
+      /*last_updater_cache_guid=*/std::nullopt,
+      TimeFromWindowsEpochMicros(specifics.update_time_windows_epoch_micros()),
+      collaboration_metadata.last_updated_by());
+  CHECK(existing_group);
 
   // Create new specifics in case some fields were merged.
   sync_pb::SharedTabGroupDataSpecifics updated_specifics =
@@ -1219,7 +1283,8 @@ SharedTabGroupDataSyncBridge::ApplyRemoteTabUpdate(
     syncer::DataTypeStore::WriteBatch& write_batch,
     const std::set<base::Uuid>& tab_ids_with_pending_model_update,
     const syncer::CollaborationMetadata& collaboration_metadata,
-    base::Time creation_time) {
+    base::Time creation_time,
+    base::Time modification_time) {
   CHECK(specifics.has_tab());
 
   base::Uuid tab_guid = base::Uuid::ParseLowercase(specifics.guid());
@@ -1236,15 +1301,19 @@ SharedTabGroupDataSyncBridge::ApplyRemoteTabUpdate(
     // The tab does not have a corresponding group. This can happen when sync
     // sends the tab data before the group data. In this case, the tab is stored
     // in case the group comes in later.
-    // TODO(crbug.com/370719750): keep tabs with no groups.
+    tabs_missing_groups_.insert_or_assign(
+        tab_guid, TabMissingGroup(specifics, collaboration_metadata,
+                                  creation_time, modification_time));
+    StoreSharedTab(write_batch, specifics);
     return std::nullopt;
   }
 
   if (existing_group->collaboration_id() !=
-      CollaborationId(collaboration_metadata.collaboration_id())) {
+      syncer::CollaborationId(collaboration_metadata.collaboration_id())) {
     // Shared tabs must have the same collaboration ID as their group.
-    return syncer::ModelError(FROM_HERE,
-                              "Unexpected collaboration ID for a remote tab.");
+    return syncer::ModelError(
+        FROM_HERE, syncer::ModelError::Type::
+                       kSharedTabGroupUnexpectedCollaborationIdForTab);
   }
 
   if (existing_group->ContainsTab(tab_guid)) {
@@ -1260,7 +1329,7 @@ SharedTabGroupDataSyncBridge::ApplyRemoteTabUpdate(
             specifics, collaboration_metadata,
             AdjustPreferredTabIndex(position_insert_before,
                                     current_tab_index.value()),
-            creation_time,
+            creation_time, modification_time,
             /*sanitize_url_and_title=*/true));
 
     // Unique positions are stored by sync in sync metadata.
@@ -1285,7 +1354,7 @@ SharedTabGroupDataSyncBridge::ApplyRemoteTabUpdate(
           PositionToInsertRemoteTab(specifics.tab().unique_position(),
                                     *existing_group,
                                     tab_ids_with_pending_model_update),
-          creation_time,
+          creation_time, modification_time,
           /*sanitize_url_and_title=*/true));
 
   return std::nullopt;
@@ -1293,10 +1362,9 @@ SharedTabGroupDataSyncBridge::ApplyRemoteTabUpdate(
 
 void SharedTabGroupDataSyncBridge::DeleteDataFromLocalStorage(
     const std::string& storage_key,
+    const syncer::CollaborationMetadata& collaboration_metadata,
     GaiaId removed_by,
     syncer::DataTypeStore::WriteBatch& write_batch) {
-  write_batch.DeleteData(storage_key);
-
   base::Uuid guid = base::Uuid::ParseLowercase(storage_key);
   if (!guid.is_valid()) {
     return;
@@ -1304,7 +1372,13 @@ void SharedTabGroupDataSyncBridge::DeleteDataFromLocalStorage(
 
   // Check if the model contains the group guid. If so, remove that group and
   // all of its tabs.
-  if (model_wrapper_->GetGroup(guid)) {
+  if (const SavedTabGroup* group = model_wrapper_->GetGroup(guid)) {
+    if (group->collaboration_id() !=
+        collaboration_metadata.collaboration_id()) {
+      DVLOG(1) << "Ignoring deletion of group from a different collaboration";
+      return;
+    }
+    write_batch.DeleteData(storage_key);
     std::erase(tab_groups_waiting_for_commit_, guid);
     model_wrapper_->RemoveGroup(guid);
     return;
@@ -1312,9 +1386,31 @@ void SharedTabGroupDataSyncBridge::DeleteDataFromLocalStorage(
 
   if (const SavedTabGroup* group_containing_tab =
           model_wrapper_->GetGroupContainingTab(guid)) {
+    if (group_containing_tab->collaboration_id() !=
+        collaboration_metadata.collaboration_id()) {
+      DVLOG(1) << "Ignoring deletion of tab from a different collaboration";
+      return;
+    }
+    write_batch.DeleteData(storage_key);
     model_wrapper_->RemoveTabFromGroup(group_containing_tab->saved_guid(), guid,
                                        std::move(removed_by));
+    return;
   }
+
+  auto it = tabs_missing_groups_.find(guid);
+  if (it != tabs_missing_groups_.end()) {
+    if (it->second.collaboration_metadata.collaboration_id() !=
+        collaboration_metadata.collaboration_id()) {
+      DVLOG(1) << "Ignoring deletion of tab missing group from a different "
+                  "collaboration";
+      return;
+    }
+    write_batch.DeleteData(storage_key);
+    tabs_missing_groups_.erase(it);
+    return;
+  }
+
+  write_batch.DeleteData(storage_key);
 }
 
 void SharedTabGroupDataSyncBridge::SendToSync(
@@ -1365,8 +1461,7 @@ void SharedTabGroupDataSyncBridge::ProcessTabLocalChange(
              syncer::CollaborationMetadata::ForLocalChange(
                  tab.shared_attribution().updated_by,
                  group.collaboration_id().value()),
-             tab.creation_time_windows_epoch_micros(),
-             write_batch.GetMetadataChangeList());
+             tab.creation_time(), write_batch.GetMetadataChangeList());
 }
 
 void SharedTabGroupDataSyncBridge::RemoveEntitySpecifics(
@@ -1461,16 +1556,23 @@ size_t SharedTabGroupDataSyncBridge::PositionToInsertRemoteTab(
 
 base::ScopedClosureRunner
 SharedTabGroupDataSyncBridge::CreateWriteBatchWithDestroyClosure(
-    bool store_write_batch_on_destroy) {
+    bool store_write_batch_on_destroy,
+    std::unique_ptr<syncer::MetadataChangeList> metadata_change_list) {
   if (ongoing_write_batch_) {
     // There is an ongoing write batch, hence do not create a new one and do not
     // destroy the existing one in the current scope.
+
+    if (metadata_change_list) {
+      ongoing_write_batch_->TakeMetadataChangesFrom(
+          std::move(metadata_change_list));
+    }
     return base::ScopedClosureRunner(base::DoNothing());
   }
 
   // This is not a reentrant call, create a new write batch and return a scoped
   // closure runner that will destroy it when it goes out of scope.
-  ongoing_write_batch_ = store_->CreateWriteBatch();
+  ongoing_write_batch_ =
+      store_->CreateWriteBatch(std::move(metadata_change_list));
   return base::ScopedClosureRunner(base::BindOnce(
       &SharedTabGroupDataSyncBridge::DestroyOngoingWriteBatch,
       weak_ptr_factory_.GetWeakPtr(), store_write_batch_on_destroy));
@@ -1503,7 +1605,13 @@ bool SharedTabGroupDataSyncBridge::IsReadyToSync() const {
 void SharedTabGroupDataSyncBridge::ProcessCommittedTabGroups() {
   for (const base::Uuid& group_guid : tab_groups_waiting_for_commit_) {
     const SavedTabGroup* group = model_wrapper_->GetGroup(group_guid);
-    CHECK(group);
+    if (!group) {
+      // The group is somehow erased. Cleanup from other relevant in-memory
+      // lists.
+      std::erase(tab_groups_waiting_for_commit_, group_guid);
+      continue;
+    }
+
     CHECK(group->is_shared_tab_group());
 
     if (change_processor()->IsEntityUnsynced(StorageKeyForGroup(*group))) {
@@ -1522,5 +1630,131 @@ void SharedTabGroupDataSyncBridge::ProcessCommittedTabGroups() {
     std::erase(tab_groups_waiting_for_commit_, group_guid);
   }
 }
+
+std::optional<syncer::ModelError>
+SharedTabGroupDataSyncBridge::ResolveTabsMissingGroups(
+    syncer::MetadataChangeList& metadata_change_list) {
+  // This method should only be called when there is an ongoing write batch,
+  // for example during a remote update.
+  CHECK(ongoing_write_batch_);
+  auto it = tabs_missing_groups_.begin();
+  while (it != tabs_missing_groups_.end()) {
+    const auto& [tab_guid, tab_missing_group] = *it;
+    base::Uuid group_guid = base::Uuid::ParseLowercase(
+        tab_missing_group.specifics.tab().shared_tab_group_guid());
+    const SavedTabGroup* group = model_wrapper_->GetGroup(group_guid);
+    if (!group) {
+      ++it;
+      continue;
+    }
+
+    // The group exists in the model, simulate a remote update for the tab. Note
+    // that `tab_ids_with_pending_model_update` is empty because all the tabs in
+    // the model are already updated (and other tabs missing groups are still
+    // not in the model).
+    if (std::optional<syncer::ModelError> error =
+            ApplyRemoteTabUpdate(tab_missing_group.specifics,
+                                 &metadata_change_list, *ongoing_write_batch_,
+                                 /*tab_ids_with_pending_model_update=*/{},
+                                 tab_missing_group.collaboration_metadata,
+                                 tab_missing_group.creation_time,
+                                 tab_missing_group.modification_time)) {
+      return error;
+    }
+
+    // Cleanup tabs so subsequent calls to ResolveTabsMissingGroups does not add
+    // stale data.
+    it = tabs_missing_groups_.erase(it);
+  }
+  return std::nullopt;
+}
+
+sync_pb::SharedTabGroupDataSpecifics
+SharedTabGroupDataSyncBridge::SharedTabGroupToSpecifics(
+    const SavedTabGroup& group) const {
+  CHECK(group.is_shared_tab_group());
+  // WARNING: all fields need to be set or cleared explicitly.
+  // WARNING: if you are adding support for new `SharedTabGroupDataSpecifics`
+  // fields, you need to update the following functions accordingly:
+  // `TrimAllSupportedFieldsFromRemoteSpecifics`.
+  sync_pb::SharedTabGroupDataSpecifics pb_specifics =
+      change_processor()
+          ->GetPossiblyTrimmedRemoteSpecifics(StorageKeyForGroup(group))
+          .shared_tab_group_data();
+  pb_specifics.set_guid(group.saved_guid().AsLowercaseString());
+  pb_specifics.set_update_time_windows_epoch_micros(
+      group.update_time().ToDeltaSinceWindowsEpoch().InMicroseconds());
+
+  sync_pb::SharedTabGroup* pb_group = pb_specifics.mutable_tab_group();
+  pb_group->set_color(TabGroupColorToSyncColor(group.color()));
+  pb_group->set_title(base::UTF16ToUTF8(group.title()));
+
+  // Force returning originating tab group GUID for specifics (both local and
+  // network).
+  if (group.GetOriginatingTabGroupGuid(/*for_sync=*/true).has_value()) {
+    pb_group->set_originating_tab_group_guid(
+        group.GetOriginatingTabGroupGuid(/*for_sync=*/true)
+            .value()
+            .AsLowercaseString());
+  } else {
+    pb_group->clear_originating_tab_group_guid();
+  }
+
+  pb_specifics.set_version(kCurrentSharedTabGroupDataSpecificsProtoVersion);
+  return pb_specifics;
+}
+
+sync_pb::SharedTabGroupDataSpecifics
+SharedTabGroupDataSyncBridge::SharedTabGroupTabToSpecifics(
+    const SavedTabGroupTab& tab,
+    sync_pb::UniquePosition unique_position) const {
+  // WARNING: all fields need to be set or cleared explicitly.
+  // WARNING: if you are adding support for new `SharedTabGroupDataSpecifics`
+  // fields, you need to update the following functions accordingly:
+  // `TrimAllSupportedFieldsFromRemoteSpecifics`.
+  sync_pb::SharedTabGroupDataSpecifics specifics =
+      change_processor()
+          ->GetPossiblyTrimmedRemoteSpecifics(StorageKeyForTab(tab))
+          .shared_tab_group_data();
+
+  specifics.set_guid(tab.saved_tab_guid().AsLowercaseString());
+  specifics.set_update_time_windows_epoch_micros(
+      tab.update_time().ToDeltaSinceWindowsEpoch().InMicroseconds());
+
+  sync_pb::SharedTab* pb_tab = specifics.mutable_tab();
+  pb_tab->set_url(tab.url().spec());
+  pb_tab->set_shared_tab_group_guid(tab.saved_group_guid().AsLowercaseString());
+  pb_tab->set_title(base::UTF16ToUTF8(tab.title()));
+  *pb_tab->mutable_unique_position() = std::move(unique_position);
+
+  specifics.set_version(kCurrentSharedTabGroupDataSpecificsProtoVersion);
+  return specifics;
+}
+
+SharedTabGroupDataSyncBridge::TabMissingGroup::TabMissingGroup(
+    sync_pb::SharedTabGroupDataSpecifics specifics,
+    syncer::CollaborationMetadata collaboration_metadata,
+    base::Time creation_time,
+    base::Time modification_time)
+    : specifics(std::move(specifics)),
+      collaboration_metadata(std::move(collaboration_metadata)),
+      creation_time(creation_time),
+      modification_time(modification_time) {}
+
+SharedTabGroupDataSyncBridge::TabMissingGroup::TabMissingGroup(
+    const TabMissingGroup& other) = default;
+
+SharedTabGroupDataSyncBridge::TabMissingGroup&
+SharedTabGroupDataSyncBridge::TabMissingGroup::operator=(
+    const TabMissingGroup& other) = default;
+
+SharedTabGroupDataSyncBridge::TabMissingGroup::TabMissingGroup(
+    TabMissingGroup&& other) = default;
+
+SharedTabGroupDataSyncBridge::TabMissingGroup&
+SharedTabGroupDataSyncBridge::TabMissingGroup::operator=(
+    TabMissingGroup&& other) = default;
+
+SharedTabGroupDataSyncBridge::TabMissingGroup::~TabMissingGroup() = default;
 
 }  // namespace tab_groups

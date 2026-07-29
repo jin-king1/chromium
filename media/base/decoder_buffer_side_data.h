@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include "base/containers/heap_array.h"
@@ -15,7 +16,7 @@
 #include "media/base/audio_decoder_config.h"
 #include "media/base/media_export.h"
 #include "media/base/video_decoder_config.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "ui/gfx/hdr_metadata.h"
 
 namespace media {
 
@@ -39,6 +40,9 @@ struct MEDIA_EXPORT DecoderBufferSideData {
   std::vector<uint32_t> spatial_layers;
   base::HeapArray<uint8_t> alpha_data;
 
+  // Container-level HDR metadata.
+  gfx::HDRMetadata hdr_metadata;
+
   // Secure buffer handle corresponding to the decrypted contents of the
   // associated DecoderBuffer. A non-zero value indicates this was set.
   //
@@ -57,7 +61,7 @@ struct MEDIA_EXPORT DecoderBufferSideData {
   // If set, it signals that the current end of stream buffer is for a config
   // change. The upcoming config may be used by the decoder to make more optimal
   // decisions around reallocation and flushing. Only set on EOS buffers.
-  using ConfigVariant = absl::variant<AudioDecoderConfig, VideoDecoderConfig>;
+  using ConfigVariant = std::variant<AudioDecoderConfig, VideoDecoderConfig>;
   std::optional<ConfigVariant> next_config;
 };
 

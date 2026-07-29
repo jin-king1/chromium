@@ -42,16 +42,6 @@ if (
   os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
 
 
-depot_tools_path = os.path.normpath(
-    os.path.join(src_path, 'third_party', 'depot_tools'))
-sys.path.insert(0, depot_tools_path)
-
-import upload_to_google_storage
-import download_from_google_storage
-import gclient_utils
-
-sys.path.remove(depot_tools_path)
-
 # Translation expectations file for the clank repo.
 INTERNAL_TRANSLATION_EXPECTATIONS_PATH = os.path.join(
     'clank', 'tools', 'translation_expectations.pyl')
@@ -157,7 +147,24 @@ def find_screenshots(repo_root, translation_expectations, is_cog):
   return screenshots
 
 
+def maybe_add_files_to_cl(signatures, is_cog):
+  if is_cog:
+    return
+
+  # Always ask if the .sha1 files should be added to the CL, even if they are
+  # already part of the CL. If the files are not modified, adding again is a
+  # no-op.
+  if not query_yes_no('Do you want to add these files to your CL?',
+                      default='yes'):
+    return
+
+  git_helper.git_add(signatures, src_path)
+
+
 def main():
+  default_depot_tools_path = os.path.normpath(
+      os.path.join(src_path, 'third_party', 'depot_tools'))
+
   parser = argparse.ArgumentParser(
       description='Upload translation screenshots to Google Cloud Storage')
   parser.add_argument(
@@ -170,8 +177,31 @@ def main():
       '--clank_internal',
       action='store_true',
       help='Upload screenshots for strings in the downstream clank directory')
+  parser.add_argument(
+      '--depot_tools_path',
+      default=default_depot_tools_path,
+      help='Path to the depot_tools directory.')
   args = parser.parse_args()
+
+  # Temporarily add the depot tools path to our system path, so that we can
+  # import the appropriate modules, since its location is user-dependent.
+  sys.path.insert(0, args.depot_tools_path)
+  # pylint: disable=import-outside-toplevel
+  import upload_to_google_storage
+  import download_from_google_storage
+  import gclient_utils
+  # pylint: enable=import-outside-toplevel
+  sys.path.remove(args.depot_tools_path)
+
   is_cog = gclient_utils.IsEnvCog()
+  if is_cog and args.depot_tools_path == default_depot_tools_path:
+    if not query_yes_no(
+        "WARNING: uploading screenshots with third_party/depot_tools "
+        "in a cog environment may add extraneous files to the cog workspace. "
+        "You can specify a local depot_tools version with "
+        "`--depot_tools_path`. Continue anyway?"):
+      sys.exit(1)
+
   if args.clank_internal:
     screenshots = find_screenshots(
         os.path.join(src_path, "clank"),
@@ -202,7 +232,8 @@ def main():
 
   # Creating a standard gsutil object, assuming there are depot_tools
   # and everything related is set up already.
-  gsutil_path = os.path.abspath(os.path.join(depot_tools_path, 'gsutil.py'))
+  gsutil_path = os.path.abspath(os.path.join(args.depot_tools_path,
+                                             'gsutil.py'))
   gsutil = download_from_google_storage.Gsutil(gsutil_path, boto_path=None)
 
   if not args.dry_run:
@@ -227,15 +258,8 @@ def main():
     print('  %s' % s)
   print()
 
-  # Always ask if the .sha1 files should be added to the CL, even if they are
-  # already part of the CL. If the files are not modified, adding again is a
-  # no-op.
-  if not query_yes_no('Do you want to add these files to your CL?',
-                      default='yes'):
-    sys.exit(0)
-
   if not args.dry_run:
-    git_helper.git_add(signatures, src_path)
+    maybe_add_files_to_cl(signatures, is_cog)
 
   print('DONE.')
 

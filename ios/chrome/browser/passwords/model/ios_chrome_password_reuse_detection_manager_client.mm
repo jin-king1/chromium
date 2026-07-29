@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_reuse_detection_manager_client.h"
 
+#import <UIKit/UIKit.h>
+
 #import <memory>
 #import <utility>
 
@@ -14,13 +16,17 @@
 #import "components/autofill/core/browser/logging/log_manager.h"
 #import "components/autofill/core/browser/logging/log_router.h"
 #import "components/password_manager/core/browser/password_manager_client.h"
+#import "components/password_manager/core/browser/password_manager_interface.h"
 #import "components/password_manager/core/browser/password_sync_util.h"
+#import "components/signin/public/base/consent_level.h"
+#import "components/sync/base/user_selectable_type.h"
+#import "components/sync/service/sync_service.h"
+#import "components/sync/service/sync_user_settings.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_reuse_manager_factory.h"
 #import "ios/chrome/browser/passwords/model/password_manager_log_router_factory.h"
 #import "ios/chrome/browser/passwords/model/password_tab_helper.h"
 #import "ios/chrome/browser/safe_browsing/model/chrome_password_protection_service.h"
 #import "ios/chrome/browser/safe_browsing/model/chrome_password_protection_service_factory.h"
-#import "ios/chrome/browser/safe_browsing/model/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
@@ -36,11 +42,9 @@ IOSChromePasswordReuseDetectionManagerClient::
       password_reuse_detection_manager_(this),
       log_router_(ios::PasswordManagerLogRouterFactory::GetForProfile(
           bridge_.profile)) {
-  if (IsPasswordReuseDetectionEnabled()) {
-    web_state_observation_.Observe(bridge_.webState);
-    input_event_observation_.Observe(
-        PasswordProtectionJavaScriptFeature::GetInstance());
-  }
+  web_state_observation_.Observe(bridge_.webState);
+  input_event_observation_.Observe(
+      PasswordProtectionJavaScriptFeature::GetInstance());
 }
 
 IOSChromePasswordReuseDetectionManagerClient::
@@ -76,8 +80,8 @@ bool IOSChromePasswordReuseDetectionManagerClient::IsHistorySyncAccountEmail(
   // Password reuse detection is tied to history sync.
   syncer::SyncService* sync_service =
       SyncServiceFactory::GetForProfile(bridge_.profile);
-  if (!sync_service || !sync_service->GetPreferredDataTypes().Has(
-                           syncer::HISTORY_DELETE_DIRECTIVES)) {
+  if (!sync_service || !sync_service->GetUserSettings()->GetSelectedTypes().Has(
+                           syncer::UserSelectableType::kHistory)) {
     return false;
   }
   return password_manager::sync_util::IsSyncAccountEmail(
@@ -144,6 +148,10 @@ void IOSChromePasswordReuseDetectionManagerClient::
 void IOSChromePasswordReuseDetectionManagerClient::DidFinishNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
+  // Instantiate the PasswordReuseManager to start populating the password hash
+  // cache from the database now. This ensures that password hashes
+  // are already in memory before the user makes any inputs.
+  GetPasswordReuseManager();
   password_reuse_detection_manager_.DidNavigateMainFrame(GetLastCommittedURL());
 }
 
@@ -156,6 +164,23 @@ void IOSChromePasswordReuseDetectionManagerClient::OnKeyPressed(
 void IOSChromePasswordReuseDetectionManagerClient::OnPaste(
     const std::string text) {
   password_reuse_detection_manager_.OnPaste(base::UTF8ToUTF16(text));
+}
+
+void IOSChromePasswordReuseDetectionManagerClient::OnPasteKeyDetected() {
+  UIPasteboard* const pasteboard = [UIPasteboard generalPasteboard];
+  if ([pasteboard hasStrings]) {
+    NSString* pasted_text = pasteboard.string;
+    if (pasted_text.length > 0) {
+      // Slicing to a generous suffix prevents expensive UTF16 conversions on
+      // huge clipboards while preserving actionable data.
+      if (pasted_text.length > 1000) {
+        pasted_text =
+            [pasted_text substringFromIndex:pasted_text.length - 1000];
+      }
+      password_reuse_detection_manager_.OnPaste(
+          base::SysNSStringToUTF16(pasted_text));
+    }
+  }
 }
 
 web::WebState* IOSChromePasswordReuseDetectionManagerClient::web_state() const {

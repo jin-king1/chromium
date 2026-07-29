@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -17,11 +16,11 @@
 #include "base/i18n/file_util_icu.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/not_fatal_until.h"
 #include "base/rand_util.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -56,7 +55,6 @@
 #include "content/public/browser/download_manager_delegate.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/resource_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/mhtml_generation_params.h"
 #include "content/public/common/referrer_type_converters.h"
@@ -89,11 +87,13 @@ const char kDefaultSaveName[] = "saved_resource";
 // name-conflict files which has same base file name.
 const int32_t kMaxFileOrdinalNumber = 9999;
 
+#if BUILDFLAG(IS_WIN)
 // Maximum length for file path. Since Windows have MAX_PATH limitation for
 // file path, we need to make sure length of file path of every saved file
-// is less than MAX_PATH
-#if BUILDFLAG(IS_WIN)
+// is less than MAX_PATH.
 const uint32_t kMaxFilePathLength = MAX_PATH - 1;
+// Maximum component length for NTFS/FAT32 compatibility.
+const uint32_t kMaxComponentLength = 255;
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 const uint32_t kMaxFilePathLength = PATH_MAX - 1;
 #endif
@@ -227,6 +227,11 @@ SavePackage::SavePackage(PageImpl& page,
          saved_main_file_path_.value().length() <= kMaxFilePathLength);
   DCHECK(!saved_main_directory_path_.empty() &&
          saved_main_directory_path_.value().length() < kMaxFilePathLength);
+
+  // Ensure that the main path has a reasonable and useful extension.
+  net::GenerateSafeFileName(GetMimeTypeForSaveType(save_type),
+                            /*ignore_extension=*/true, &saved_main_file_path_);
+
   InternalInit();
 }
 
@@ -335,7 +340,8 @@ bool SavePackage::Init(
 
   RenderFrameHost& frame_host = page_->GetMainDocument();
   download_manager_->CreateSavePackageDownloadItem(
-      saved_main_file_path_, page_url_, GetMimeTypeForSaveType(save_type_),
+      saved_main_file_path_, saved_main_file_display_name_, page_url_,
+      GetMimeTypeForSaveType(save_type_),
       frame_host.GetProcess()->GetDeprecatedID(), frame_host.GetRoutingID(),
       base::BindOnce(&CancelSavePackage, weak_ptr_factory_.GetWeakPtr()),
       base::BindOnce(&SavePackage::InitWithDownloadItem,
@@ -404,18 +410,45 @@ void SavePackage::OnMHTMLGenerated(int64_t size) {
   }
 }
 
-// On POSIX, the length of |base_name| + |file_name_ext| is further
-// restricted by NAME_MAX. The maximum allowed path looks like:
-// '/path/to/save_dir' + '/' + NAME_MAX.
-uint32_t SavePackage::GetMaxPathLengthForDirectory(
+// static
+uint32_t SavePackage::ComputeMaxPathLengthForDirectory(
     const base::FilePath& base_dir) {
+  // Query runtime filesystem constraints.
+  int runtime_max = base::GetMaximumPathComponentLength(base_dir);
+  uint32_t max_component_length;
+
+  if (runtime_max > 0) {
+    max_component_length = static_cast<uint32_t>(runtime_max);
+  } else {
+    // Fall back to platform defaults if query fails.
 #if BUILDFLAG(IS_WIN)
-  return kMaxFilePathLength;
+    // NTFS/FAT32 compatible.
+    max_component_length = kMaxComponentLength;
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+    // Standard POSIX limit.
+    max_component_length = NAME_MAX;
+#endif
+  }
+
+  return std::min(kMaxFilePathLength,
+                  static_cast<uint32_t>(base_dir.value().length() + 1 +
+                                        max_component_length));
+}
+
+uint32_t SavePackage::GetMaxPathLengthForDirectory() const {
+  // Use platform defaults to avoid blocking I/O during save operations.
+  uint32_t max_component_length;
+
+#if BUILDFLAG(IS_WIN)
+  max_component_length = kMaxComponentLength;
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+  max_component_length = NAME_MAX;
+#endif
+
   return std::min(
       kMaxFilePathLength,
-      static_cast<uint32_t>(base_dir.value().length()) + NAME_MAX + 1);
-#endif
+      static_cast<uint32_t>(saved_main_directory_path_.value().length() + 1 +
+                            max_component_length));
 }
 
 // static
@@ -436,9 +469,33 @@ bool SavePackage::TruncateBaseNameToFitPathConstraints(
   if (static_cast<int>(base_name->length()) <= available_length)
     return true;
 
-  // Limited room. Truncate |base_name| to fit.
+  // Limited room. Truncate |base_name| to fit, respecting character boundaries.
   if (available_length > 0) {
-    *base_name = base_name->substr(0, available_length);
+#if BUILDFLAG(IS_WIN)
+    // On Windows, FilePath uses UTF-16, so truncate at UTF-16 code unit
+    // boundaries.
+    if (static_cast<size_t>(available_length) < base_name->length()) {
+      *base_name = base_name->substr(0, available_length);
+    }
+#else
+    // On POSIX, FilePath uses native encoding (usually UTF-8)
+    // Convert to UTF-8, truncate safely, then convert back.
+    std::string utf8_name = base::FilePath(*base_name).AsUTF8Unsafe();
+    std::string truncated_utf8;
+    base::TruncateUTF8ToByteSize(utf8_name, available_length, &truncated_utf8);
+
+    // Convert back to native string, but handle potential encoding issues.
+    base::FilePath temp_path = base::FilePath::FromUTF8Unsafe(truncated_utf8);
+    *base_name = temp_path.value();
+
+    // Double-check that the result fits - if conversion caused expansion,
+    // retry.
+    if (static_cast<int>(base_name->length()) > available_length) {
+      // If UTF-8 conversion caused size increase, use simple byte truncation
+      // as a last resort (this should be rare).
+      *base_name = base_name->substr(0, available_length);
+    }
+#endif
     return true;
   }
 
@@ -476,8 +533,8 @@ bool SavePackage::GenerateFileName(const std::string& disposition,
       file_path.RemoveExtension().BaseName().value();
   base::FilePath::StringType file_name_ext = file_path.Extension();
 
-  // Need to make sure the suggested file name is not too long.
-  uint32_t max_path = GetMaxPathLengthForDirectory(saved_main_directory_path_);
+  // Get path length constraints for truncation.
+  uint32_t max_path = GetMaxPathLengthForDirectory();
 
   // Get safe pure file name.
   if (!TruncateBaseNameToFitPathConstraints(
@@ -538,7 +595,7 @@ bool SavePackage::GenerateFileName(const std::string& disposition,
                              base::StrCat({"(", base::NumberToString(i), ")"}))
                          .AddExtension(file_name_ext);
       base::FilePath::StringType new_name = new_filepath.value();
-      if (!base::Contains(file_name_set_, new_name)) {
+      if (!file_name_set_.contains(new_name)) {
         // Resolved name conflict.
         file_name = new_name;
         file_name_count_map_[base_file_name] = ++i;
@@ -639,14 +696,14 @@ SaveItem* SavePackage::LookupInProgressSaveItem(SaveItemId save_item_id) {
 void SavePackage::PutInProgressItemToSavedMap(SaveItem* save_item) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   auto it = in_progress_items_.find(save_item->id());
-  CHECK(it != in_progress_items_.end(), base::NotFatalUntil::M130);
+  CHECK(it != in_progress_items_.end());
   DCHECK_EQ(save_item, it->second.get());
   std::unique_ptr<SaveItem> owned_item = std::move(it->second);
   in_progress_items_.erase(it);
 
   SaveItemIdMap& map = save_item->success() ?
       saved_success_items_ : saved_failed_items_;
-  DCHECK(!base::Contains(map, save_item->id()));
+  DCHECK(!map.contains(save_item->id()));
   map[save_item->id()] = std::move(owned_item);
 }
 
@@ -908,7 +965,7 @@ void SavePackage::SaveNextFile(bool process_all_remaining_items) {
     waiting_item_queue_.pop_front();
 
     // Add the item to |in_progress_items_|.
-    DCHECK(!base::Contains(in_progress_items_, save_item->id()));
+    DCHECK(!in_progress_items_.contains(save_item->id()));
     in_progress_items_[save_item_ptr->id()] = std::move(save_item);
     save_item_ptr->Start();
 
@@ -1166,7 +1223,7 @@ void SavePackage::OnDidReceiveSerializedHtmlData(
       }
     }
 
-    if (base::Contains(saved_failed_items_, save_item->id()))
+    if (saved_failed_items_.contains(save_item->id()))
       wrote_to_failed_file_ = true;
 
     return;
@@ -1457,8 +1514,8 @@ base::FilePath SavePackage::CreateDirectoryOnFileThread(
       suggested_filename.RemoveExtension().BaseName().value();
   base::FilePath::StringType file_name_ext = suggested_filename.Extension();
 
-  // Need to make sure the suggested file name is not too long.
-  uint32_t max_path = GetMaxPathLengthForDirectory(save_dir);
+  // Get path length constraints for truncation.
+  uint32_t max_path = SavePackage::ComputeMaxPathLengthForDirectory(save_dir);
 
   if (TruncateBaseNameToFitPathConstraints(save_dir, file_name_ext, max_path,
                                            &base_name)) {
@@ -1504,6 +1561,15 @@ void SavePackage::OnPathPicked(
     return;
   // Ensure the filename is safe.
   saved_main_file_path_ = params.file_path;
+
+#if BUILDFLAG(IS_ANDROID)
+  if (saved_main_file_path_.IsContentUri()) {
+    save_type_ = SAVE_PAGE_TYPE_AS_MHTML;
+    saved_main_file_display_name_ = params.display_name;
+    Init(std::move(download_created_callback));
+    return;
+  }
+#endif
   // TODO(asanka): This call may block on IO and shouldn't be made
   // from the UI thread.  See http://crbug.com/61827.
   std::string mime_type =

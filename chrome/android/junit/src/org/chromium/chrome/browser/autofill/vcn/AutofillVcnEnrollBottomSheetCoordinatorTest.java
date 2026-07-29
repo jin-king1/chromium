@@ -30,26 +30,26 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.autofill.AutofillUiUtils.CardIconSpecs;
-import org.chromium.chrome.browser.autofill.PersonalDataManager;
-import org.chromium.chrome.browser.autofill.PersonalDataManagerFactory;
+import org.chromium.chrome.browser.autofill.AutofillImageFetcher;
+import org.chromium.chrome.browser.autofill.AutofillImageFetcherFactory;
+import org.chromium.chrome.browser.autofill.AutofillUiUtils.IconSpecs;
+import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinator;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.ImageSize;
+import org.chromium.components.autofill.ImageType;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
-import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerFactory;
 import org.chromium.components.browser_ui.bottomsheet.ManagedBottomSheetController;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
-
-import java.util.Optional;
 
 /** Unit test for {@link AutofillVcnEnrollBottomSheetCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -59,11 +59,13 @@ public final class AutofillVcnEnrollBottomSheetCoordinatorTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private ManagedBottomSheetController mBottomSheetController;
+    @Mock private AnchoredDialogCoordinator mAnchoredDialogCoordinator;
     @Mock private LayoutStateProvider mLayoutStateProvider;
-    @Mock private ObservableSupplier<TabModelSelector> mTabModelSelectorSupplier;
     @Mock private Profile mProfile;
-    @Mock private PersonalDataManager mPersonalDataManager;
+    @Mock private AutofillImageFetcher mImageFetcher;
 
+    private final MonotonicObservableSupplier<TabModelSelector> mTabModelSelectorSupplier =
+            ObservableSuppliers.alwaysNull();
     private WindowAndroid mWindow;
     private AutofillVcnEnrollBottomSheetCoordinator mCoordinator;
     private boolean mAcceptClicked;
@@ -71,16 +73,18 @@ public final class AutofillVcnEnrollBottomSheetCoordinatorTest {
 
     @Before
     public void setUp() {
+        when(mBottomSheetController.requestShowContent(any(), anyBoolean())).thenReturn(true);
         when(mLayoutStateProvider.isLayoutVisible(LayoutType.BROWSING)).thenReturn(true);
 
-        PersonalDataManagerFactory.setInstanceForTesting(mPersonalDataManager);
+        AutofillImageFetcherFactory.setInstanceForTesting(mImageFetcher);
         Activity activity = buildActivity(Activity.class).create().get();
-        mWindow = new WindowAndroid(activity, /* trackOcclusion= */ true);
-        BottomSheetControllerFactory.attach(mWindow, mBottomSheetController);
+        mWindow = new WindowAndroid(activity, /* occlusionTrackingAllowed= */ true);
         setUpCreditCardWithCardArtUrl();
         mCoordinator =
                 new AutofillVcnEnrollBottomSheetCoordinator(
                         mWindow.getContext().get(),
+                        mBottomSheetController,
+                        mAnchoredDialogCoordinator,
                         mProfile,
                         new PropertyModel.Builder(AutofillVcnEnrollBottomSheetProperties.ALL_KEYS),
                         mLayoutStateProvider,
@@ -104,26 +108,27 @@ public final class AutofillVcnEnrollBottomSheetCoordinatorTest {
     private void setUpCreditCardWithCardArtUrl() {
         String cardArtUrl = "http://example.test/card.png";
         Bitmap bitmap = Bitmap.createBitmap(/* width= */ 5, /* height= */ 5, Config.ARGB_8888);
-        when(mPersonalDataManager.getCustomImageForAutofillSuggestionIfAvailable(
+        when(mImageFetcher.getImageIfAvailable(
                         new GURL(cardArtUrl),
-                        CardIconSpecs.create(mWindow.getContext().get(), ImageSize.SMALL)))
-                .thenReturn(Optional.of(bitmap));
-        when(mPersonalDataManager.getCustomImageForAutofillSuggestionIfAvailable(
-                        /* customImageUrl= */ any(), /* cardIconSpecs= */ any()))
-                .thenReturn(Optional.empty());
+                        IconSpecs.create(
+                                mWindow.getContext().get(),
+                                ImageType.CREDIT_CARD_ART_IMAGE,
+                                ImageSize.SMALL)))
+                .thenReturn(bitmap);
+        when(mImageFetcher.getImageIfAvailable(/* url= */ any(), /* iconSpecs= */ any()))
+                .thenReturn(null);
     }
 
     @After
     public void tearDown() {
         mAcceptClicked = false;
         mCancelClicked = false;
-        BottomSheetControllerFactory.detach(mBottomSheetController);
         mWindow.destroy();
     }
 
     @Test
     public void testShow() {
-        mCoordinator.requestShowContent(mWindow);
+        mCoordinator.requestShowContent();
 
         verify(mBottomSheetController)
                 .requestShowContent(
@@ -135,14 +140,14 @@ public final class AutofillVcnEnrollBottomSheetCoordinatorTest {
         // E.g., when in tab overview layout type.
         when(mLayoutStateProvider.isLayoutVisible(LayoutType.BROWSING)).thenReturn(false);
 
-        mCoordinator.requestShowContent(mWindow);
+        mCoordinator.requestShowContent();
 
         verifyNoInteractions(mBottomSheetController);
     }
 
     @Test
     public void testHideAfterShow() {
-        mCoordinator.requestShowContent(mWindow);
+        mCoordinator.requestShowContent();
         mCoordinator.hide();
 
         verify(mBottomSheetController)
@@ -161,7 +166,7 @@ public final class AutofillVcnEnrollBottomSheetCoordinatorTest {
 
     @Test
     public void testClickAccept_enablesLoadingStateAndDoesNotDismissTheBottomSheet() {
-        mCoordinator.requestShowContent(mWindow);
+        mCoordinator.requestShowContent();
         mCoordinator.getAutofillVcnEnrollBottomSheetViewForTesting().mAcceptButton.performClick();
 
         assertTrue(mAcceptClicked);
@@ -174,7 +179,7 @@ public final class AutofillVcnEnrollBottomSheetCoordinatorTest {
 
     @Test
     public void testClickCancelDismissesTheBottomSheet() {
-        mCoordinator.requestShowContent(mWindow);
+        mCoordinator.requestShowContent();
 
         mCoordinator.getAutofillVcnEnrollBottomSheetViewForTesting().mCancelButton.performClick();
 

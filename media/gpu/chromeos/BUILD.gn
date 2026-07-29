@@ -7,10 +7,7 @@ import("//media/gpu/args.gni")
 import("//testing/test.gni")
 import("//third_party/protobuf/proto_library.gni")
 
-# V4L2 and VAAPI for video acceleration should not be enabled simultaneously.
-assert(!(use_v4l2_codec && use_vaapi))
-
-assert(use_v4l2_codec || use_vaapi)
+assert(use_linux_video_acceleration)
 
 # V4L2 or Vaapi imply the OS is Linux or ChromeOS
 assert(is_linux || is_chromeos)
@@ -35,7 +32,7 @@ source_set("chromeos") {
     "//media/gpu:buildflags",
     "//media/gpu:command_buffer_helper",
     "//media/gpu:common",
-    "//media/mojo/common:common",
+    "//media/mojo/common",
   ]
 
   if (use_vaapi) {
@@ -60,8 +57,8 @@ source_set("common") {
   defines = [ "MEDIA_GPU_IMPLEMENTATION" ]
   sources = [
     "chromeos_status.h",
-    "default_video_frame_converter.cc",
-    "default_video_frame_converter.h",
+    "dmabuf_video_frame_converter.cc",
+    "dmabuf_video_frame_converter.h",
     "dmabuf_video_frame_pool.cc",
     "dmabuf_video_frame_pool.h",
     "frame_registry.cc",
@@ -91,6 +88,8 @@ source_set("common") {
     "registered_frame_converter.cc",
     "registered_frame_converter.h",
     "shaders/shaders.h",
+    "simple_video_frame_converter.cc",
+    "simple_video_frame_converter.h",
     "vd_video_decode_accelerator.cc",
     "vd_video_decode_accelerator.h",
     "vda_video_frame_pool.cc",
@@ -104,7 +103,7 @@ source_set("common") {
     ":video_frame_resource",
     ":video_frame_utils",
     "//gpu/ipc/service",
-    "//media/mojo/mojom/stable:stable_video_decoder",
+    "//media/mojo/mojom",
     "//ui/ozone",
   ]
 
@@ -112,7 +111,7 @@ source_set("common") {
     ":fourcc",
     "//base",
     "//build/config/linux/libdrm",
-    "//gpu/ipc/common:common",
+    "//gpu/ipc/common",
     "//media",
     "//media/gpu:buffer_validation",
     "//media/gpu:buildflags",
@@ -135,7 +134,7 @@ source_set("common") {
     ]
     deps += [
       "//gpu/command_buffer/service:gles2",
-      "//gpu/vulkan/init:init",
+      "//gpu/vulkan/init",
     ]
   }
 
@@ -152,7 +151,7 @@ source_set("common") {
 }
 
 # Although fourcc is platform-agnostic; however, it is restricted by the above
-# assert(use_v4l2_codec || use_vaapi).
+# assert(use_linux_video_acceleration).
 source_set("fourcc") {
   defines = [ "MEDIA_GPU_IMPLEMENTATION" ]
   sources = [
@@ -195,7 +194,8 @@ source_set("video_frame_utils") {
   deps = [
     "//base",
     "//build/config/linux/libdrm",
-    "//gpu/ipc/common:common",
+    "//components/viz/common/resources:shared_image_format",
+    "//gpu/ipc/common",
     "//media",
     "//media/gpu:buffer_validation",
     "//media/gpu:common",
@@ -213,8 +213,8 @@ source_set("video_frame_mapper") {
   sources = [
     "generic_dmabuf_video_frame_mapper.cc",
     "generic_dmabuf_video_frame_mapper.h",
-    "gpu_memory_buffer_video_frame_mapper.cc",
-    "gpu_memory_buffer_video_frame_mapper.h",
+    "mappable_si_video_frame_mapper.cc",
+    "mappable_si_video_frame_mapper.h",
   ]
 
   deps = [
@@ -239,11 +239,12 @@ source_set("unit_tests") {
   testonly = true
   deps = [
     ":common",
+    ":video_frame_mapper",
     "//base",
     "//base/test:test_support",
     "//build/config/linux/libdrm",
     "//gpu:test_support",
-    "//gpu/ipc/service:service",
+    "//gpu/ipc/service",
     "//media",
     "//media:test_support",
     "//media/gpu:buildflags",
@@ -255,8 +256,9 @@ source_set("unit_tests") {
     "//ui/gfx/geometry",
   ]
   sources = [
-    "fourcc_unittests.cc",
+    "fourcc_unittest.cc",
     "frame_registry_unittest.cc",
+    "generic_dmabuf_video_frame_mapper_unittest.cc",
     "mailbox_video_frame_converter_unittest.cc",
     "mock_native_pixmap_dmabuf.cc",
     "mock_native_pixmap_dmabuf.h",
@@ -292,6 +294,7 @@ test("image_processor_test") {
   deps = [
     ":chromeos",
     "//base/test:test_support",
+    "//gpu:test_support",
     "//media:test_support",
     "//media/gpu:buildflags",
     "//media/gpu:video_frame_mapper_common",
@@ -307,7 +310,7 @@ test("image_processor_test") {
     "//ui/gl:test_support",
   ]
   if (use_vaapi) {
-    deps += [ "//media/gpu/vaapi:vaapi" ]
+    deps += [ "//media/gpu/vaapi" ]
   }
   if (use_v4l2_codec) {
     deps += [ "//media/gpu/v4l2" ]
@@ -349,6 +352,7 @@ if (use_v4l2_codec && enable_vulkan) {
       ":chromeos",
       ":perf_test_utils",
       "//base/test:test_support",
+      "//gpu:test_support",
       "//gpu/command_buffer/service:gles2",
       "//media:test_support",
       "//media/gpu:video_frame_mapper_common",

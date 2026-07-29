@@ -26,7 +26,6 @@
 #include "base/time/time.h"
 #include "google_apis/gcm/base/encryptor.h"
 #include "google_apis/gcm/base/gcm_constants.h"
-#include "google_apis/gcm/base/gcm_features.h"
 #include "google_apis/gcm/base/mcs_message.h"
 #include "google_apis/gcm/base/mcs_util.h"
 #include "google_apis/gcm/protocol/mcs.pb.h"
@@ -620,10 +619,7 @@ void GCMStoreImpl::Backend::RemoveOutgoingMessages(
     // Skip the initial tag byte and parse the rest to extract the message.
     if (data_message.ParseFromString(outgoing_message.substr(1))) {
       DCHECK(!data_message.category().empty());
-      if (removed_message_counts.count(data_message.category()) != 0)
-        removed_message_counts[data_message.category()]++;
-      else
-        removed_message_counts[data_message.category()] = 1;
+      ++removed_message_counts[data_message.category()];
     }
     DVLOG(1) << "Removing outgoing message with id " << *iter;
     s = db_->Delete(write_options, MakeSlice(key));
@@ -1013,14 +1009,7 @@ bool GCMStoreImpl::Backend::LoadIncomingMessages(
         expired_incoming_messages.push_back(std::move(persistent_id));
       }
     } else {
-      if (base::FeatureList::IsEnabled(
-              features::kGCMDeleteIncomingMessagesWithoutTTL)) {
-        // No expiration time can be found from |data|. The messeage should be
-        // added with the legacy non-TTL path. Treat it as expired.
-        expired_incoming_messages.push_back(std::move(data));
-      } else {
-        incoming_messages->push_back(std::move(data));
-      }
+      incoming_messages->push_back(std::move(data));
     }
   }
   if (!expired_incoming_messages.empty()) {
@@ -1299,10 +1288,9 @@ bool GCMStoreImpl::AddOutgoingMessage(const std::string& persistent_id,
   std::string app_id = reinterpret_cast<const mcs_proto::DataMessageStanza*>(
                            &message.GetProtobuf())->category();
   DCHECK(!app_id.empty());
-  if (app_message_counts_.count(app_id) == 0)
-    app_message_counts_[app_id] = 0;
-  if (app_message_counts_[app_id] < kMessagesPerAppLimit) {
-    app_message_counts_[app_id]++;
+  auto [it, inserted] = app_message_counts_.try_emplace(app_id, 0);
+  if (it->second < kMessagesPerAppLimit) {
+    it->second++;
 
     blocking_task_runner_->PostTask(
         FROM_HERE,
@@ -1433,10 +1421,7 @@ void GCMStoreImpl::LoadContinuation(LoadCallback callback,
     const mcs_proto::DataMessageStanza* data_message =
         reinterpret_cast<mcs_proto::DataMessageStanza*>(iter->second.get());
     DCHECK(!data_message->category().empty());
-    if (app_message_counts_.count(data_message->category()) == 0)
-      app_message_counts_[data_message->category()] = 1;
-    else
-      app_message_counts_[data_message->category()]++;
+    ++app_message_counts_[data_message->category()];
   }
   std::move(callback).Run(std::move(result));
 }

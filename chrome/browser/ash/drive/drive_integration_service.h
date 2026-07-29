@@ -7,13 +7,13 @@
 
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/singleton.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
@@ -21,7 +21,6 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_keyed_service_factory.h"
 #include "chromeos/ash/components/drivefs/drivefs_host.h"
 #include "chromeos/ash/components/drivefs/drivefs_pinning_manager.h"
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
@@ -36,7 +35,6 @@
 #include "components/prefs/pref_change_registrar.h"
 #include "google_apis/common/api_error_codes.h"
 #include "google_apis/common/auth_service_interface.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 class PrefService;
 
@@ -75,11 +73,6 @@ enum class DriveMountStatus {
   kMaxValue = kTimeout,
 };
 
-struct QuickAccessItem {
-  base::FilePath path;
-  double confidence;
-};
-
 // Notifications/Errors coming from DriveFs side which we need to persist in
 // the Chrome side.
 struct PersistedMessage {
@@ -91,8 +84,8 @@ struct PersistedMessage {
   Source source;
 
   // DriveFs Notification/Error types which require persistence.
-  using Type = absl::variant<drivefs::mojom::DriveFsNotification::Tag,
-                             drivefs::mojom::MirrorSyncError::Type>;
+  using Type = std::variant<drivefs::mojom::DriveFsNotification::Tag,
+                            drivefs::mojom::MirrorSyncError::Type>;
   Type type;
 
   base::FilePath path;
@@ -115,8 +108,6 @@ class DriveIntegrationService : public KeyedService,
  public:
   using DriveFsMojoListenerFactory = base::RepeatingCallback<
       std::unique_ptr<drivefs::DriveFsBootstrapListener>()>;
-  using GetQuickAccessItemsCallback =
-      base::OnceCallback<void(FileError, std::vector<QuickAccessItem>)>;
   using SearchDriveByFileNameCallback =
       drivefs::mojom::SearchQuery::GetNextPageCallback;
   using GetThumbnailCallback =
@@ -129,7 +120,9 @@ class DriveIntegrationService : public KeyedService,
   // test_drivefs_mojo_listener_factory are used by tests to inject customized
   // instances.
   // Pass NULL or the empty value when not interested.
+  // `local_state` must be non-null and must outlive `this`.
   DriveIntegrationService(
+      PrefService* local_state,
       Profile* profile,
       const std::string& test_mount_point_name,
       const base::FilePath& test_cache_root,
@@ -175,7 +168,7 @@ class DriveIntegrationService : public KeyedService,
   // DriveIntegrationService. All events are notified on the UI thread.
   class Observer : public base::CheckedObserver {
    public:
-    ~Observer() override;
+    ~Observer() override = default;
 
     // Triggered when the `DriveIntegrationService` is being destroyed.
     virtual void OnDriveIntegrationServiceDestroyed() {}
@@ -207,19 +200,12 @@ class DriveIntegrationService : public KeyedService,
     virtual void OnDriveConnectionStatusChanged(util::ConnectionStatus status) {
     }
 
-    // Starts observing the given service.
-    void Observe(DriveIntegrationService* service);
-
-    // Stops observing the service.
-    void Reset();
-
-    // Gets a pointer to the service being observed.
-    DriveIntegrationService* GetService() const { return service_; }
-
-   private:
-    // The service being observed.
-    raw_ptr<DriveIntegrationService> service_ = nullptr;
+    // Triggered when the DriveIntegrationService is being disabled soon.
+    virtual void OnDriveWillBeDisabled() {}
   };
+
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
 
   // MountObserver implementation.
   void OnMounted(const base::FilePath& mount_path) override;
@@ -249,9 +235,6 @@ class DriveIntegrationService : public KeyedService,
   // Returns the mojo interface to the DriveFs daemon if it is enabled and
   // connected.
   drivefs::mojom::DriveFs* GetDriveFsInterface() const;
-
-  void GetQuickAccessItems(int max_number,
-                           GetQuickAccessItemsCallback callback);
 
   void SearchDriveByFileName(
       std::string query,
@@ -458,12 +441,6 @@ class DriveIntegrationService : public KeyedService,
   // the metadata initialization is successful.
   void InitializeAfterMetadataInitialized(FileError error);
 
-  // Change the download directory to the local "Downloads" if the download
-  // destination is set under Drive. This must be called when disabling Drive.
-  void AvoidDriveAsDownloadDirectoryPreference();
-
-  bool DownloadDirectoryPreferenceIsInDrive();
-
   // Migrate pinned files from the old Drive integration to DriveFS.
   void MigratePinnedFiles();
 
@@ -490,11 +467,6 @@ class DriveIntegrationService : public KeyedService,
       FileError error,
       std::optional<std::vector<drivefs::mojom::QueryItemPtr>> results);
 
-  void OnGetQuickAccessItems(
-      GetQuickAccessItemsCallback callback,
-      FileError error,
-      std::optional<std::vector<drivefs::mojom::QueryItemPtr>> items);
-
   void OnSearchDriveByFileName(
       SearchDriveByFileNameCallback callback,
       FileError error,
@@ -513,7 +485,7 @@ class DriveIntegrationService : public KeyedService,
       drive::FileError status,
       const std::vector<base::FilePath>& paths);
 
-  // Toggle syncing for |path| if the the directory exists.
+  // Toggle syncing for |path| if the directory exists.
   void ToggleSyncForPathIfDirectoryExists(
       const base::FilePath& path,
       drivefs::mojom::DriveFs::ToggleSyncForPathCallback callback,
@@ -560,7 +532,12 @@ class DriveIntegrationService : public KeyedService,
   std::unique_ptr<internal::ResourceMetadataStorage, util::DestroyHelper>
       metadata_storage_;
 
-  base::ObserverList<Observer, true> observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      Observer,
+      true,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observers_;
 
   std::unique_ptr<DriveFsHolder> drivefs_holder_;
 
@@ -588,51 +565,6 @@ class DriveIntegrationService : public KeyedService,
   base::WeakPtrFactory<DriveIntegrationService> weak_ptr_factory_{this};
 
   FRIEND_TEST_ALL_PREFIXES(DriveIntegrationServiceTest, EnsureDirectoryExists);
-};
-
-// Singleton that owns all instances of DriveIntegrationService and
-// associates them with Profiles.
-class DriveIntegrationServiceFactory : public ProfileKeyedServiceFactory {
- public:
-  // Factory function used by tests.
-  using FactoryCallback =
-      base::RepeatingCallback<DriveIntegrationService*(Profile* profile)>;
-
-  // Sets and resets a factory function for tests. See below for why we can't
-  // use BrowserContextKeyedServiceFactory::SetTestingFactory().
-  class ScopedFactoryForTest {
-   public:
-    explicit ScopedFactoryForTest(FactoryCallback* factory_for_test);
-    ~ScopedFactoryForTest();
-  };
-
-  // Returns the DriveIntegrationService for |profile|, creating it if it is
-  // not yet created.
-  static DriveIntegrationService* GetForProfile(Profile* profile);
-
-  // Returns the DriveIntegrationService that is already associated with
-  // |profile|, if it is not yet created it will return NULL.
-  static DriveIntegrationService* FindForProfile(Profile* profile);
-
-  // Returns the DriveIntegrationServiceFactory instance.
-  static DriveIntegrationServiceFactory* GetInstance();
-
- private:
-  friend struct base::DefaultSingletonTraits<DriveIntegrationServiceFactory>;
-
-  DriveIntegrationServiceFactory();
-  ~DriveIntegrationServiceFactory() override;
-
-  // BrowserContextKeyedServiceFactory overrides.
-  std::unique_ptr<KeyedService> BuildServiceInstanceForBrowserContext(
-      content::BrowserContext* context) const override;
-
-  // This is static so it can be set without instantiating the factory. This
-  // allows factory creation to be delayed until it normally happens (on profile
-  // creation) rather than when tests are set up. DriveIntegrationServiceFactory
-  // transitively depends on ChromeExtensionSystemFactory which crashes if
-  // created too soon (i.e. before the BrowserProcess exists).
-  static FactoryCallback* factory_for_test_;
 };
 
 }  // namespace drive

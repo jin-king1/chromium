@@ -35,6 +35,7 @@ union IwaDevModeLocation {
 
 struct IwaDevModeAppInfo {
   string app_id;
+  string web_bundle_id;
   string name;
   IwaDevModeLocation location;
   string installed_version;
@@ -62,6 +63,15 @@ union ParseUpdateManifestFromUrlResult {
 struct InstallFromBundleUrlParams {
   url.mojom.Url web_bundle_url;
   UpdateInfo update_info;
+};
+
+// Factory ensures that the handler interface is created with the WebUI page
+// without requiring an initialization call from the WebUI to the handler.
+interface PageHandlerFactory {
+  // Creates the `handler` to be used for communication between the Browser and
+  // the Renderer.
+  CreateWebAppInternalsHandler(
+      pending_receiver<WebAppInternalsHandler> handler);
 };
 
 // Handles requests from chrome://web-app-internals.
@@ -101,6 +111,10 @@ interface WebAppInternalsHandler {
   // Returns a string containing a success or error message.
   UpdateManifestInstalledIsolatedWebApp(string app_id) => (string result);
 
+  // Deletes the IWA.
+  // Returns a boolean indicating success or failure of delete operation.
+  DeleteIsolatedWebApp(string app_id) => (bool success);
+
   // Sets `web_app.isolation_data.update_channel` to `update_channel` for this
   // `app_id`.
   SetUpdateChannelForIsolatedWebApp(string app_id, string update_channel)
@@ -122,8 +136,4 @@ interface WebAppInternalsHandler {
 
   // Returns information about installed dev mode IWAs.
   GetIsolatedWebAppDevModeAppInfo() => (array<IwaDevModeAppInfo> apps);
-
-  // Rotates the key for `web_bundle_id` to `rotated_key` and informs all
-  // observers that a key rotation has taken place.
-  RotateKey(string web_bundle_id, array<uint8>? rotated_key);
 };

@@ -12,11 +12,8 @@
 #include "chrome/browser/profiles/profile_key.h"
 #include "components/download/public/background_service/background_download_service.h"
 #include "components/download/public/background_service/download_params.h"
-#include "components/policy/content/policy_blocklist_service.h"
 #include "content/public/browser/web_ui.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-
-using policy::URLBlocklist;
 
 namespace download_internals {
 
@@ -53,7 +50,7 @@ void DownloadInternalsUIMessageHandler::RegisterMessages() {
 }
 
 void DownloadInternalsUIMessageHandler::OnServiceStatusChanged(
-    const base::Value::Dict& service_status) {
+    const base::DictValue& service_status) {
   if (!IsJavascriptAllowed()) {
     return;
   }
@@ -62,7 +59,7 @@ void DownloadInternalsUIMessageHandler::OnServiceStatusChanged(
 }
 
 void DownloadInternalsUIMessageHandler::OnServiceDownloadsAvailable(
-    const base::Value::List& service_downloads) {
+    const base::ListValue& service_downloads) {
   if (!IsJavascriptAllowed()) {
     return;
   }
@@ -71,7 +68,7 @@ void DownloadInternalsUIMessageHandler::OnServiceDownloadsAvailable(
 }
 
 void DownloadInternalsUIMessageHandler::OnServiceDownloadChanged(
-    const base::Value::Dict& service_download) {
+    const base::DictValue& service_download) {
   if (!IsJavascriptAllowed()) {
     return;
   }
@@ -80,7 +77,7 @@ void DownloadInternalsUIMessageHandler::OnServiceDownloadChanged(
 }
 
 void DownloadInternalsUIMessageHandler::OnServiceDownloadFailed(
-    const base::Value::Dict& service_download) {
+    const base::DictValue& service_download) {
   if (!IsJavascriptAllowed()) {
     return;
   }
@@ -89,7 +86,7 @@ void DownloadInternalsUIMessageHandler::OnServiceDownloadFailed(
 }
 
 void DownloadInternalsUIMessageHandler::OnServiceRequestMade(
-    const base::Value::Dict& service_request) {
+    const base::DictValue& service_request) {
   if (!IsJavascriptAllowed()) {
     return;
   }
@@ -98,7 +95,7 @@ void DownloadInternalsUIMessageHandler::OnServiceRequestMade(
 }
 
 void DownloadInternalsUIMessageHandler::HandleGetServiceStatus(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   const base::Value& callback_id = args[0];
   ResolveJavascriptCallback(callback_id,
@@ -106,7 +103,7 @@ void DownloadInternalsUIMessageHandler::HandleGetServiceStatus(
 }
 
 void DownloadInternalsUIMessageHandler::HandleGetServiceDownloads(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   const base::Value& callback_id = args[0];
   ResolveJavascriptCallback(
@@ -114,21 +111,11 @@ void DownloadInternalsUIMessageHandler::HandleGetServiceDownloads(
 }
 
 void DownloadInternalsUIMessageHandler::HandleStartDownload(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   CHECK_GT(args.size(), 1u) << "Missing argument download URL.";
   GURL url = GURL(args[1].GetString());
   if (!url.is_valid()) {
     LOG(WARNING) << "Can't parse download URL, try to enter a valid URL.";
-    return;
-  }
-
-  Profile* profile = Profile::FromWebUI(web_ui());
-  PolicyBlocklistService* service =
-      PolicyBlocklistFactory::GetForBrowserContext(profile);
-  URLBlocklist::URLBlocklistState blocklist_state =
-      service->GetURLBlocklistState(url);
-  if (blocklist_state == URLBlocklist::URLBlocklistState::URL_IN_BLOCKLIST) {
-    LOG(WARNING) << "URL is blocked by a policy.";
     return;
   }
 

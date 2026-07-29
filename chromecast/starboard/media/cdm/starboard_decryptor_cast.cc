@@ -4,21 +4,21 @@
 
 #include "chromecast/starboard/media/cdm/starboard_decryptor_cast.h"
 
-#include <cast_starboard_api_adapter.h>
-
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <utility>
 
 #include "base/check_op.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/hash/hash.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "chromecast/media/base/decrypt_context_impl.h"
+#include "chromecast/starboard/chromecast/starboard_adapter/public/cast_starboard_api_adapter.h"
 #include "chromecast/starboard/media/cdm/starboard_drm_key_tracker.h"
 #include "chromecast/starboard/media/media/starboard_api_wrapper.h"
 #include "google_apis/google_api_keys.h"
@@ -141,18 +141,10 @@ StarboardDecryptorCast::StarboardDecryptorCast(
     ::media::CreateFetcherCB create_provision_fetcher_cb,
     MediaResourceTracker* media_resource_tracker)
     : CastCdm(media_resource_tracker),
-      create_provision_fetcher_cb_(std::move(create_provision_fetcher_cb)),
-      callback_handler_{
-          this,
-          &CallOnSessionUpdateRequest,
-          &CallOnSessionUpdated,
-          &CallOnKeyStatusesChanged,
-          &CallOnCertificateUpdated,
-          &CallOnSessionClosed,
-      },
-      starboard_(GetStarboardApiWrapper()) {
+      create_provision_fetcher_cb_(std::move(create_provision_fetcher_cb)) {
   CHECK(base::SequencedTaskRunner::HasCurrentDefault());
   task_runner_ = base::SequencedTaskRunner::GetCurrentDefault();
+  LOG(INFO) << "StarboardDecryptorCast constructor, this=" << this;
 }
 
 void StarboardDecryptorCast::CreateSessionAndGenerateRequest(
@@ -190,7 +182,6 @@ void StarboardDecryptorCast::HandleCreateSessionAndGenerateRequest(
     std::unique_ptr<::media::NewSessionCdmPromise> promise) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(!pending_session_setup_);
-  DCHECK(drm_system_);
 
   pending_session_setup_ = true;
   std::string init_type;
@@ -215,9 +206,8 @@ void StarboardDecryptorCast::HandleCreateSessionAndGenerateRequest(
 
   const int ticket = current_ticket_++;
   ticket_to_new_session_promise_[ticket] = std::move(promise);
-  starboard_->DrmGenerateSessionUpdateRequest(
-      drm_system_, ticket, init_type.c_str(), init_data.data(),
-      init_data.size());
+  StarboardDrmWrapper::GetInstance().GenerateSessionUpdateRequest(
+      this, ticket, init_type, init_data);
 }
 
 void StarboardDecryptorCast::LoadSession(
@@ -236,7 +226,6 @@ void StarboardDecryptorCast::UpdateSession(
     const std::vector<uint8_t>& response,
     std::unique_ptr<::media::SimpleCdmPromise> promise) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(drm_system_);
 
   LOG(INFO) << "StarboardDecryptorCast::UpdateSession, web session id = "
             << web_session_id;
@@ -244,19 +233,26 @@ void StarboardDecryptorCast::UpdateSession(
   const int ticket = current_ticket_++;
   ticket_to_simple_cdm_promise_[ticket] = std::move(promise);
   // This will eventually call OnSessionUpdated.
-  starboard_->DrmUpdateSession(drm_system_, ticket, response.data(),
-                               response.size(), web_session_id.c_str(),
-                               web_session_id.size());
+  StarboardDrmWrapper::GetInstance().UpdateSession(this, ticket, web_session_id,
+                                                   response);
 }
 
 void StarboardDecryptorCast::CloseSession(
     const std::string& web_session_id,
     std::unique_ptr<::media::SimpleCdmPromise> promise) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(drm_system_);
 
   LOG(INFO) << "StarboardDecryptorCast::CloseSession, web session id = "
             << web_session_id;
+
+  if (!session_ids_.contains(web_session_id)) {
+    LOG(INFO) << "StarboardDecryptorCast::CloseSession did not find session ID "
+              << web_session_id
+              << ". It is possible this session was already closed; resolving "
+                 "promise.";
+    promise->resolve();
+    return;
+  }
 
   std::vector<std::unique_ptr<::media::SimpleCdmPromise>>& promises =
       session_id_to_simple_cdm_promises_[web_session_id];
@@ -266,10 +262,9 @@ void StarboardDecryptorCast::CloseSession(
     // This is the first request to close the session; mark the session as
     // removed and call starboard to perform the close logic
     StarboardDrmKeyTracker::GetInstance().RemoveKeysForSession(web_session_id);
-    starboard_->DrmCloseSession(drm_system_, web_session_id.c_str(),
-                                web_session_id.size());
+    StarboardDrmWrapper::GetInstance().CloseSession(this, web_session_id);
   } else {
-    LOG(INFO) << "Session is already closing.";
+    LOG(INFO) << "Session " << web_session_id << " is currently closing.";
   }
 }
 
@@ -277,7 +272,6 @@ void StarboardDecryptorCast::RemoveSession(
     const std::string& session_id,
     std::unique_ptr<::media::SimpleCdmPromise> promise) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(drm_system_);
 
   LOG(INFO)
       << "StarboardDecryptorCast::RemoveSession (implemented as CloseSession), "
@@ -290,7 +284,6 @@ void StarboardDecryptorCast::SetServerCertificate(
     const std::vector<uint8_t>& certificate_data,
     std::unique_ptr<::media::SimpleCdmPromise> promise) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(drm_system_);
 
   LOG(INFO) << "StarboardDecryptorCast::SetServerCertificate";
 
@@ -304,8 +297,8 @@ void StarboardDecryptorCast::SetServerCertificate(
 
   const int ticket = current_ticket_++;
   ticket_to_simple_cdm_promise_[ticket] = std::move(promise);
-  starboard_->DrmUpdateServerCertificate(
-      drm_system_, ticket, certificate_data.data(), certificate_data.size());
+  StarboardDrmWrapper::GetInstance().UpdateServerCertificate(this, ticket,
+                                                             certificate_data);
 }
 
 std::unique_ptr<DecryptContextImpl> StarboardDecryptorCast::GetDecryptContext(
@@ -330,36 +323,18 @@ void StarboardDecryptorCast::SetVideoResolution(int width, int height) {
 StarboardDecryptorCast::~StarboardDecryptorCast() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
-  if (drm_system_) {
-    LOG(INFO) << "Destroying DRM system with address " << drm_system_;
-    // Once this call returns, all DRM-related callbacks from Starboard are
-    // guaranteed to be finished.
-    starboard_->DrmDestroySystem(drm_system_);
-
-    for (const std::string& session_id : session_ids_) {
-      StarboardDrmKeyTracker::GetInstance().RemoveKeysForSession(session_id);
-    }
+  LOG(INFO) << "StarboardDecryptorCast destructor, this=" << this;
+  for (const std::string& session_id : session_ids_) {
+    StarboardDrmKeyTracker::GetInstance().RemoveKeysForSession(session_id);
   }
-
   RejectPendingPromises();
 }
 
 void StarboardDecryptorCast::InitializeInternal() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
-  // This just calls EnsureStarboardInitialized in production, but in tests the
-  // behavior can be overridden to prevent relying on a real Starboard
-  // implementation.
-  starboard_->EnsureInitialized();
-
-  drm_system_ = starboard_->CreateDrmSystem(
-      /*key_system=*/"com.widevine.alpha",
-      /*callback_handler=*/&callback_handler_);
-  CHECK(drm_system_) << "Failed to create an SbDrmSystem";
-  LOG(INFO) << "Created DRM system with address " << drm_system_;
-
   server_certificate_updatable_ =
-      starboard_->DrmIsServerCertificateUpdatable(drm_system_);
+      StarboardDrmWrapper::GetInstance().IsServerCertificateUpdatable();
 }
 
 void StarboardDecryptorCast::RejectPendingPromises() {
@@ -419,7 +394,6 @@ void StarboardDecryptorCast::ProcessQueuedSessionRequests() {
 }
 
 void StarboardDecryptorCast::OnSessionUpdateRequest(
-    void* drm_system,
     int ticket,
     StarboardDrmStatus status,
     StarboardDrmSessionRequestType type,
@@ -474,6 +448,7 @@ void StarboardDecryptorCast::OnSessionUpdateRequest(
     // Success case.
     LOG(INFO) << "Created session id " << session_id << " for ticket "
               << it->first;
+    session_ids_.insert(session_id);
     it->second->resolve(session_id);
   }
   ticket_to_new_session_promise_.erase(it);
@@ -485,10 +460,12 @@ void StarboardDecryptorCast::OnSessionUpdateRequest(
     // Note that, per the documentation of
     // ContentDecryptionModule::CreateSessionAndGenerateRequest, this must be
     // called AFTER the promise has been resolved.
-    OnSessionMessage(
-        session_id,
-        std::vector<uint8_t>(content_span.begin(), content_span.end()),
-        ToCdmMessageType(type));
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&StarboardDecryptorCast::OnSessionMessage,
+                                  weak_factory_.GetWeakPtr(), session_id,
+                                  std::vector<uint8_t>(content_span.begin(),
+                                                       content_span.end()),
+                                  ToCdmMessageType(type)));
   }
 }
 
@@ -511,7 +488,8 @@ void StarboardDecryptorCast::OnProvisionResponse(int ticket,
 
   LOG(INFO) << "Provisioning succeeded. Updating session in starboard.";
   std::vector<uint8_t> response_vec(response.size());
-  memcpy(response_vec.data(), response.c_str(), response.size());
+  base::span<uint8_t>(response_vec)
+      .copy_from_nonoverlapping(base::as_byte_span(response));
 
   // This will be called if we successfully update the session.
   auto success_cb =
@@ -559,8 +537,7 @@ void StarboardDecryptorCast::OnProvisionResponse(int ticket,
 
 // Called by starboard (via CallOnSessionUpdated) once a session has been
 // updated.
-void StarboardDecryptorCast::OnSessionUpdated(void* drm_system,
-                                              int ticket,
+void StarboardDecryptorCast::OnSessionUpdated(int ticket,
                                               StarboardDrmStatus status,
                                               std::string error_message,
                                               std::string session_id) {
@@ -601,7 +578,6 @@ void StarboardDecryptorCast::OnSessionUpdated(void* drm_system,
 // Called by starboard (via CallOnKeyStatusesChanged) when the status of keys
 // change.
 void StarboardDecryptorCast::OnKeyStatusesChanged(
-    void* drm_system,
     std::string session_id,
     std::vector<StarboardDrmKeyId> key_ids,
     std::vector<StarboardDrmKeyStatus> key_statuses) {
@@ -630,8 +606,7 @@ void StarboardDecryptorCast::OnKeyStatusesChanged(
             .first(static_cast<size_t>(key_id.identifier_size));
     const size_t key_hash = base::FastHash(identifier_span);
     LOG(INFO) << "DRM key (hash) " << key_hash << " changed status to "
-              << DrmKeyStatusToString(status) << " for DRM system with address "
-              << drm_system << ", for session " << session_id;
+              << DrmKeyStatusToString(status) << ", for session " << session_id;
 
     auto key_info = std::make_unique<::media::CdmKeyInformation>();
     key_info->key_id.assign(identifier_span.begin(), identifier_span.end());
@@ -662,19 +637,12 @@ void StarboardDecryptorCast::OnKeyStatusesChanged(
     }
   }
 
-  if (usable_keys_exist) {
-    // At least one key is available for the session, so we need to track the
-    // session to clean it up on destruction.
-    session_ids_.insert(session_id);
-  }
-
   OnSessionKeysChange(session_id, usable_keys_exist, std::move(keys_info));
 }
 
 // Called by starboard (via CallOnCertificateUpdated) when a certificate has
 // been updated.
-void StarboardDecryptorCast::OnCertificateUpdated(void* drm_system,
-                                                  int ticket,
+void StarboardDecryptorCast::OnCertificateUpdated(int ticket,
                                                   StarboardDrmStatus status,
                                                   std::string error_message) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
@@ -702,12 +670,32 @@ void StarboardDecryptorCast::OnCertificateUpdated(void* drm_system,
 }
 
 // Called by starboard (via CallOnSessionClosed) when a session has closed.
-void StarboardDecryptorCast::OnSessionClosed(void* drm_system,
-                                             std::string session_id) {
+void StarboardDecryptorCast::OnSessionClosed(std::string session_id) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   LOG(INFO) << "StarboardDecryptorCast::OnSessionClosed, session_id: "
             << session_id;
+
+  // This must be called before any promises run. If the promise is resolved
+  // before OnSessionClosed runs, MediaKeySession::Dispose gets called before
+  // CdmSessionAdapter::OnSessionClosed runs, so the session is no longer
+  // recognized and the JS is not notified that the session closed (in JS, the
+  // MediaKeySession.closed promise is never resolved).
+  //
+  // In production a MojoCdm is used. Since mojo does not guarantee ordering
+  // between different interfaces (ContentDecryptionModule.CloseSession and
+  // ContentDecryptionModuleClient.OnSessionClosed), technically there is not a
+  // guarantee that the OnSessionClosed callback will run before the promises
+  // are resolved. However, in practice posting the callbacks to a separate task
+  // seems to work.
+  //
+  // See crbug.com/402489622 and
+  // https://w3c.github.io/encrypted-media/#dom-mediakeysession-close for more
+  // info.
+  CastCdm::OnSessionClosed(session_id, ::media::CdmSessionClosedReason::kClose);
+  session_ids_.erase(session_id);
+  StarboardDrmKeyTracker::GetInstance().RemoveKeysForSession(session_id);
+
   auto it = session_id_to_simple_cdm_promises_.find(session_id);
   if (it == session_id_to_simple_cdm_promises_.end()) {
     LOG(ERROR)
@@ -716,102 +704,19 @@ void StarboardDecryptorCast::OnSessionClosed(void* drm_system,
     return;
   }
 
-  for (std::unique_ptr<::media::SimpleCdmPromise>& promise : it->second) {
-    promise->resolve();
-  }
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](std::vector<std::unique_ptr<::media::SimpleCdmPromise>> promises) {
+            LOG(INFO) << "Resolving OnSessionClosed promises";
+            for (std::unique_ptr<::media::SimpleCdmPromise>& promise :
+                 promises) {
+              promise->resolve();
+            }
+          },
+          std::move(it->second)));
+
   session_id_to_simple_cdm_promises_.erase(it);
-
-  CastCdm::OnSessionClosed(session_id, ::media::CdmSessionClosedReason::kClose);
-}
-
-void StarboardDecryptorCast::CallOnSessionUpdateRequest(
-    void* drm_system,
-    void* context,
-    int ticket,
-    StarboardDrmStatus status,
-    StarboardDrmSessionRequestType type,
-    std::string error_message,
-    std::string session_id,
-    std::vector<uint8_t> content,
-    std::string url) {
-  if (!url.empty()) {
-    LOG(ERROR)
-        << "Non-empty URL was specified in SessionUpdateRequest callback: "
-        << url;
-  }
-
-  auto* decryptor = reinterpret_cast<StarboardDecryptorCast*>(context);
-  decryptor->task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&StarboardDecryptorCast::OnSessionUpdateRequest,
-                     decryptor->weak_factory_.GetWeakPtr(), drm_system, ticket,
-                     status, type, std::move(error_message),
-                     std::move(session_id), std::move(content)));
-}
-
-void StarboardDecryptorCast::CallOnSessionUpdated(void* drm_system,
-                                                  void* context,
-                                                  int ticket,
-                                                  StarboardDrmStatus status,
-                                                  std::string error_message,
-                                                  std::string session_id) {
-  auto* decryptor = reinterpret_cast<StarboardDecryptorCast*>(context);
-  decryptor->task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&StarboardDecryptorCast::OnSessionUpdated,
-                     decryptor->weak_factory_.GetWeakPtr(), drm_system, ticket,
-                     status, std::move(error_message), std::move(session_id)));
-}
-
-void StarboardDecryptorCast::CallOnKeyStatusesChanged(
-    void* drm_system,
-    void* context,
-    std::string session_id,
-    std::vector<StarboardDrmKeyId> key_ids,
-    std::vector<StarboardDrmKeyStatus> key_statuses) {
-  if (session_id.empty()) {
-    LOG(ERROR) << "StarboardDecryptorCast::CallOnKeyStatusesChanged was called "
-                  "by starboard with an empty session_id. Ignoring the call.";
-    return;
-  }
-
-  auto* decryptor = reinterpret_cast<StarboardDecryptorCast*>(context);
-  decryptor->task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(&StarboardDecryptorCast::OnKeyStatusesChanged,
-                                decryptor->weak_factory_.GetWeakPtr(),
-                                drm_system, std::move(session_id),
-                                std::move(key_ids), std::move(key_statuses)));
-}
-
-void StarboardDecryptorCast::CallOnCertificateUpdated(
-    void* drm_system,
-    void* context,
-    int ticket,
-    StarboardDrmStatus status,
-    std::string error_message) {
-  auto* decryptor = reinterpret_cast<StarboardDecryptorCast*>(context);
-  decryptor->task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&StarboardDecryptorCast::OnCertificateUpdated,
-                     decryptor->weak_factory_.GetWeakPtr(), drm_system, ticket,
-                     status, std::move(error_message)));
-}
-
-void StarboardDecryptorCast::CallOnSessionClosed(void* drm_system,
-                                                 void* context,
-                                                 std::string session_id) {
-  auto* decryptor = reinterpret_cast<StarboardDecryptorCast*>(context);
-  decryptor->task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(&StarboardDecryptorCast::OnSessionClosed,
-                                decryptor->weak_factory_.GetWeakPtr(),
-                                drm_system, std::move(session_id)));
-}
-
-void StarboardDecryptorCast::SetStarboardApiWrapperForTest(
-    std::unique_ptr<StarboardApiWrapper> starboard) {
-  LOG(INFO) << "Replacing the StarboardApiWrapper used by "
-               "StarboardDecryptorCast. This should only happen in tests.";
-  starboard_ = std::move(starboard);
 }
 
 }  // namespace media

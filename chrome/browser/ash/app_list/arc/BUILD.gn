@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("arc") {
@@ -13,8 +11,6 @@ static_library("arc") {
     "arc_app_icon.h",
     "arc_app_icon_descriptor.cc",
     "arc_app_icon_descriptor.h",
-    "arc_app_icon_factory.cc",
-    "arc_app_icon_factory.h",
     "arc_app_launcher.cc",
     "arc_app_launcher.h",
     "arc_app_list_prefs.cc",
@@ -63,25 +59,30 @@ static_library("arc") {
   deps = [
     "//ash",
     "//ash/constants",
+    "//ash/strings",
     "//base",
-    "//chrome/app:generated_resources",
-    "//chrome/browser:browser_process",
     "//chrome/browser/ash/app_list",
     "//chrome/browser/ash/app_list/search/ranking",
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/ash/arc/boot_phase_monitor",
-    "//chrome/browser/image_decoder",
+    "//chrome/browser/notifications",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_manager",
     "//chrome/browser/resources:component_extension_resources",
     "//chrome/common:chrome_features",
     "//chrome/common:constants",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/demo_mode",
     "//chromeos/ash/experiences/arc",
     "//chromeos/ash/experiences/arc:arc_app_constants",
+    "//chromeos/ash/experiences/arc/intent_helper",
     "//chromeos/ash/experiences/arc/intent_helper:arc_intent_helper_constants",
     "//chromeos/ash/experiences/arc/mojom",
     "//chromeos/ash/experiences/arc/session",
     "//chromeos/ash/experiences/arc/session:connection_holder",
+    "//chromeos/components/kiosk",
     "//components/app_restore",
+    "//components/application_locale_storage",
     "//components/crx_file",
     "//components/keyed_service/core",
     "//components/language/core/browser",
@@ -136,6 +137,7 @@ source_set("unit_tests") {
     "//chrome/browser/apps/app_service",
     "//chrome/browser/apps/app_service/app_icon",
     "//chrome/browser/apps/app_service/app_icon:util",
+    "//chrome/browser/apps/app_service/publishers",
     "//chrome/browser/ash/app_list",
     "//chrome/browser/ash/app_list:test_support",
     "//chrome/browser/ash/app_list/app_service",
@@ -143,6 +145,7 @@ source_set("unit_tests") {
     "//chrome/browser/ash/arc",
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/ash/arc/session",
+    "//chrome/browser/ash/browser_delegate:impl",
     "//chrome/browser/extensions",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/sync:factories",
@@ -152,6 +155,7 @@ source_set("unit_tests") {
     "//chrome/common:constants",
     "//chrome/test:test_support",
     "//chromeos/ash/components/dbus/concierge",
+    "//chromeos/ash/components/login/session",
     "//chromeos/ash/experiences/arc:arc_app_constants",
     "//chromeos/ash/experiences/arc:arc_base_utils",
     "//chromeos/ash/experiences/arc:arc_features",
@@ -228,9 +232,11 @@ static_library("test_support") {
     ":arc",
     "//base",
     "//chrome/browser/ash/login/users:test_support",
+    "//chrome/browser/ash/settings:test_support",
     "//chrome/browser/ui",
     "//chromeos/ash/experiences/arc/mojom",
     "//components/session_manager/core",
+    "//components/session_manager/core:test_support",
     "//components/user_manager",
     "//testing/gmock",
   ]
@@ -238,13 +244,18 @@ static_library("test_support") {
   deps = [
     "//ash/constants",
     "//chrome/browser/apps/app_service",
+    "//chrome/browser/apps/app_service/publishers",
     "//chrome/browser/ash/arc",
     "//chrome/browser/ash/arc:arc_util",
+    "//chrome/browser/ash/arc/privacy_items",
     "//chrome/browser/ash/arc/session",
     "//chrome/browser/ash/arc/test:arc_test_support",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile",
+    "//chrome/test:test_support",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus/concierge",
+    "//chromeos/ash/experiences/arc",
     "//chromeos/ash/experiences/arc:arc_base_utils",
     "//chromeos/ash/experiences/arc:arc_test_support",
     "//chromeos/ash/experiences/arc:notification_test_support",
@@ -253,4 +264,8 @@ static_library("test_support") {
     "//chromeos/ash/experiences/arc/session",
     "//testing/gtest",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

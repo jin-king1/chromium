@@ -10,8 +10,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
-#include "chrome/browser/ash/eol/eol_incentive_util.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
 #include "third_party/cros_system_api/dbus/update_engine/dbus-constants.h"
 #include "ui/message_center/public/cpp/notification.h"
@@ -19,6 +17,10 @@
 namespace base {
 class Clock;
 }  // namespace base
+
+namespace user_manager {
+class User;
+}  // namespace user_manager
 
 namespace ash {
 
@@ -29,7 +31,7 @@ class EolNotification final : public message_center::NotificationObserver {
   // Returns true if the eol notification needs to be displayed.
   static bool ShouldShowEolNotification();
 
-  explicit EolNotification(Profile* profile);
+  explicit EolNotification(user_manager::User* user);
 
   EolNotification(const EolNotification&) = delete;
   EolNotification& operator=(const EolNotification&) = delete;
@@ -71,26 +73,14 @@ class EolNotification final : public message_center::NotificationObserver {
   // Conditionally shows the appropriate EOL notification.
   void MaybeShowEolNotification(base::Time eol_date);
 
-  // Shows the EOL incentive notification when the correct criteria are met. If
-  // the final EOL incentive date has passed and the final incenteve was not
-  // shown, then a normal EOL notification is shown.
-  void MaybeShowEolIncentiveNotification(
-      base::Time eol_date,
-      eol_incentive_util::EolIncentiveType incentive_type);
-
-  // Creates the EOL incentive notification.
-  void ShowIncentiveNotification(
-      base::Time eol_date,
-      eol_incentive_util::EolIncentiveType incentive_type);
-
   // Resets all notification dismissed prefs back to false.
   void ResetDismissedPrefs();
 
   // Overridden for testing pending EOL notifications.
   raw_ptr<base::Clock, DanglingUntriaged> clock_;
 
-  // Profile which is associated with the EndOfLife notification.
-  const raw_ptr<Profile, DanglingUntriaged> profile_;
+  // user which is associated with the EndOfLife notification.
+  const raw_ptr<user_manager::User, DanglingUntriaged> user_;
 
   // Pref which determines which warning should be displayed to the user.
   std::optional<std::string> dismiss_pref_;

@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/platform/testing/find_cc_layer.h"
 #include "third_party/blink/renderer/platform/testing/picture_matchers.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 
@@ -59,8 +60,10 @@ class CaretDisplayItemClientTest : public PaintAndRasterInvalidationTest {
     return GetCaretDisplayItemClient().local_rect_;
   }
 
-  PhysicalRect ComputeCaretRect(const PositionWithAffinity& position) const {
-    return CaretDisplayItemClient::ComputeCaretRectAndPainterBlock(position)
+  PhysicalRect ComputeCaretRect(const PositionWithAffinity& position,
+                                CaretShape caret_shape) const {
+    return CaretDisplayItemClient::ComputeCaretRectAndPainterBlock(position,
+                                                                   caret_shape)
         .caret_rect;
   }
 
@@ -74,6 +77,11 @@ class CaretDisplayItemClientTest : public PaintAndRasterInvalidationTest {
 
   const PhysicalBoxFragment* CaretBoxFragment() {
     return GetCaretDisplayItemClient().box_fragment_.Get();
+  }
+
+  // The text node tracked as the block-caret anchor.
+  Node* BlockCaretAnchor() {
+    return GetCaretDisplayItemClient().block_caret_anchor_.Get();
   }
 
   bool ShouldPaintCursorCaret(const LayoutBlock& block) {
@@ -147,7 +155,7 @@ TEST_P(CaretDisplayItemClientTest, CaretPaintInvalidation) {
   // Move the caret to the end of the text. Should invalidate both the old and
   // new carets.
   Selection().SetSelection(
-      SelectionInDOMTree::Builder().Collapse(Position(text, 5)).Build(),
+      SelectionInDomTree::Builder().Collapse(Position(text, 5)).Build(),
       SetSelectionOptions());
 
   EXPECT_TRUE(GetCaretDisplayItemClient().IsValid());
@@ -164,7 +172,7 @@ TEST_P(CaretDisplayItemClientTest, CaretPaintInvalidation) {
   ASSERT_CARET_LAYER();
 
   // Remove selection. Should invalidate the old caret.
-  Selection().SetSelection(SelectionInDOMTree(), SetSelectionOptions());
+  Selection().SetSelection(SelectionInDomTree(), SetSelectionOptions());
 
   EXPECT_TRUE(GetCaretDisplayItemClient().IsValid());
   UpdateAllLifecyclePhasesExceptPaint();
@@ -202,7 +210,7 @@ TEST_P(CaretDisplayItemClientTest, CaretMovesBetweenBlocks) {
   EXPECT_FALSE(ShouldPaintCursorCaret(*block2));
 
   // Move the caret into block2. Should invalidate both the old and new carets.
-  Selection().SetSelection(SelectionInDOMTree::Builder()
+  Selection().SetSelection(SelectionInDomTree::Builder()
                                .Collapse(Position(block_element2, 0))
                                .Build(),
                            SetSelectionOptions());
@@ -221,7 +229,7 @@ TEST_P(CaretDisplayItemClientTest, CaretMovesBetweenBlocks) {
   ASSERT_CARET_LAYER();
 
   // Move the caret back into block1.
-  Selection().SetSelection(SelectionInDOMTree::Builder()
+  Selection().SetSelection(SelectionInDomTree::Builder()
                                .Collapse(Position(block_element1, 0))
                                .Build(),
                            SetSelectionOptions());
@@ -252,7 +260,7 @@ TEST_P(CaretDisplayItemClientTest, UpdatePreviousLayoutBlock) {
 
   // Set caret into block2.
   GetDocument().body()->Focus();
-  Selection().SetSelection(SelectionInDOMTree::Builder()
+  Selection().SetSelection(SelectionInDomTree::Builder()
                                .Collapse(Position(block_element2, 0))
                                .Build(),
                            SetSelectionOptions());
@@ -264,7 +272,7 @@ TEST_P(CaretDisplayItemClientTest, UpdatePreviousLayoutBlock) {
   EXPECT_FALSE(PreviousCaretLayoutBlock());
 
   // Move caret into block1. Should set PreviousCaretLayoutBlock to block2.
-  Selection().SetSelection(SelectionInDOMTree::Builder()
+  Selection().SetSelection(SelectionInDomTree::Builder()
                                .Collapse(Position(block_element1, 0))
                                .Build(),
                            SetSelectionOptions());
@@ -277,7 +285,7 @@ TEST_P(CaretDisplayItemClientTest, UpdatePreviousLayoutBlock) {
 
   // Move caret into block2. Partial update should not change
   // PreviousCaretLayoutBlock.
-  Selection().SetSelection(SelectionInDOMTree::Builder()
+  Selection().SetSelection(SelectionInDomTree::Builder()
                                .Collapse(Position(block_element2, 0))
                                .Build(),
                            SetSelectionOptions());
@@ -294,13 +302,13 @@ TEST_P(CaretDisplayItemClientTest, UpdatePreviousLayoutBlock) {
   EXPECT_FALSE(PreviousCaretLayoutBlock());
 
   // Set caret into block1.
-  Selection().SetSelection(SelectionInDOMTree::Builder()
+  Selection().SetSelection(SelectionInDomTree::Builder()
                                .Collapse(Position(block_element1, 0))
                                .Build(),
                            SetSelectionOptions());
   UpdateAllLifecyclePhasesForCaretTest();
   // Remove selection.
-  Selection().SetSelection(SelectionInDOMTree(), SetSelectionOptions());
+  Selection().SetSelection(SelectionInDomTree(), SetSelectionOptions());
   GetDocument().View()->UpdateLifecycleToLayoutClean(
       DocumentUpdateReason::kTest);
   EXPECT_EQ(block1, PreviousCaretLayoutBlock());
@@ -344,7 +352,7 @@ TEST_P(CaretDisplayItemClientTest, EnsureInvalidatePreviousLayoutBlock) {
   // Set caret into p1.
   GetDocument().body()->Focus();
   Selection().SetSelection(
-      SelectionInDOMTree::Builder().Collapse(Position(p1, 0)).Build(),
+      SelectionInDomTree::Builder().Collapse(Position(p1, 0)).Build(),
       SetSelectionOptions());
 
   GetDocument().View()->UpdateLifecycleToLayoutClean(
@@ -361,7 +369,7 @@ TEST_P(CaretDisplayItemClientTest, EnsureInvalidatePreviousLayoutBlock) {
   auto* p3 = GetDocument().getElementById(AtomicString("p3"));
   // Set caret into p3. Should set PreviousCaretLayoutBlock to p1.
   Selection().SetSelection(
-      SelectionInDOMTree::Builder().Collapse(Position(p3, 0)).Build(),
+      SelectionInDomTree::Builder().Collapse(Position(p3, 0)).Build(),
       SetSelectionOptions());
   GetDocument().View()->UpdateLifecycleToLayoutClean(
       DocumentUpdateReason::kTest);
@@ -387,7 +395,7 @@ TEST_P(CaretDisplayItemClientTest, CaretHideMoveAndShow) {
   Selection().SetCaretEnabled(false);
   // Move the caret to the end of the text.
   Selection().SetSelection(
-      SelectionInDOMTree::Builder().Collapse(Position(text, 5)).Build(),
+      SelectionInDomTree::Builder().Collapse(Position(text, 5)).Build(),
       SetSelectionOptions());
   // Simulate that the cursor blinking is restarted.
   Selection().SetCaretEnabled(true);
@@ -444,7 +452,7 @@ TEST_P(CaretDisplayItemClientTest, CompositingChange) {
   auto* editor = GetDocument().getElementById(AtomicString("editor"));
   auto* editor_block = To<LayoutBlock>(editor->GetLayoutObject());
   Selection().SetSelection(
-      SelectionInDOMTree::Builder().Collapse(Position(editor, 0)).Build(),
+      SelectionInDomTree::Builder().Collapse(Position(editor, 0)).Build(),
       SetSelectionOptions());
 
   UpdateAllLifecyclePhasesExceptPaint();
@@ -484,15 +492,15 @@ TEST_P(CaretDisplayItemClientTest, PlainTextRTLCaretPosition) {
   auto* regular_text_node = regular->firstChild();
   const Position& regular_position =
       Position::FirstPositionInNode(*regular_text_node);
-  const PhysicalRect regular_caret_rect =
-      ComputeCaretRect(PositionWithAffinity(regular_position));
+  const PhysicalRect regular_caret_rect = ComputeCaretRect(
+      PositionWithAffinity(regular_position), CaretShape::kBar);
 
   auto* plaintext = GetDocument().getElementById(AtomicString("plaintext"));
   auto* plaintext_text_node = plaintext->firstChild();
   const Position& plaintext_position =
       Position::FirstPositionInNode(*plaintext_text_node);
-  const PhysicalRect plaintext_caret_rect =
-      ComputeCaretRect(PositionWithAffinity(plaintext_position));
+  const PhysicalRect plaintext_caret_rect = ComputeCaretRect(
+      PositionWithAffinity(plaintext_position), CaretShape::kBar);
 
   EXPECT_EQ(regular_caret_rect, plaintext_caret_rect);
 }
@@ -523,12 +531,12 @@ TEST_P(CaretDisplayItemClientTest, MAYBE_InsertSpaceToWhiteSpacePreWrapRTL) {
   auto* text_node = editor->firstChild();
   const Position& position = Position::LastPositionInNode(*text_node);
   const PhysicalRect& caret_from_position =
-      ComputeCaretRect(PositionWithAffinity(position));
+      ComputeCaretRect(PositionWithAffinity(position), CaretShape::kBar);
 
   GetDocument().GetPage()->GetFocusController().SetActive(true);
   GetDocument().GetPage()->GetFocusController().SetFocused(true);
   Selection().SetSelection(
-      SelectionInDOMTree::Builder().Collapse(position).Build(),
+      SelectionInDomTree::Builder().Collapse(position).Build(),
       SetSelectionOptions());
 
   UpdateAllLifecyclePhasesExceptPaint();
@@ -578,7 +586,8 @@ TEST_P(CaretDisplayItemClientTest, InsertSpaceToWhiteSpacePreWrap) {
   auto* editor_block = To<LayoutBlock>(editor->GetLayoutObject());
   auto* text_node = editor->firstChild();
   const Position position = Position::LastPositionInNode(*text_node);
-  const PhysicalRect& rect = ComputeCaretRect(PositionWithAffinity(position));
+  const PhysicalRect& rect =
+      ComputeCaretRect(PositionWithAffinity(position), CaretShape::kBar);
   // The 5 characters of arabic text rendered using the NotoArabic font has a
   // width of 20px and a height of 17px
   EXPECT_EQ(PhysicalRect(50, 0, 1, 10), rect);
@@ -586,7 +595,7 @@ TEST_P(CaretDisplayItemClientTest, InsertSpaceToWhiteSpacePreWrap) {
   GetDocument().GetPage()->GetFocusController().SetActive(true);
   GetDocument().GetPage()->GetFocusController().SetFocused(true);
   Selection().SetSelection(
-      SelectionInDOMTree::Builder().Collapse(position).Build(),
+      SelectionInDomTree::Builder().Collapse(position).Build(),
       SetSelectionOptions());
 
   UpdateAllLifecyclePhasesExceptPaint();
@@ -617,9 +626,10 @@ TEST_P(CaretDisplayItemClientTest, CaretAtStartInWhiteSpacePreWrapRTL) {
       "<div dir=rtl contenteditable>&#1575;&#1582;&#1578;&#1576;&#1585; "
       "</div>");
 
-  const Element& div = *GetDocument().QuerySelector(AtomicString("div"));
+  const Element& div = *QuerySelector("div");
   const Position& position = Position::FirstPositionInNode(div);
-  const PhysicalRect& rect = ComputeCaretRect(PositionWithAffinity(position));
+  const PhysicalRect& rect =
+      ComputeCaretRect(PositionWithAffinity(position), CaretShape::kBar);
   EXPECT_EQ(94, rect.X());
 }
 
@@ -635,8 +645,7 @@ TEST_P(CaretDisplayItemClientTest, CaretAtEdgeOfInlineBlock) {
       "<span contenteditable=false>foo</span>"
       "</div>");
 
-  const Element& editable =
-      *GetDocument().QuerySelector(AtomicString("#editable"));
+  const Element& editable = *QuerySelector("#editable");
   const LayoutBlock* editable_block =
       To<LayoutBlock>(editable.GetLayoutObject());
 
@@ -646,7 +655,7 @@ TEST_P(CaretDisplayItemClientTest, CaretAtEdgeOfInlineBlock) {
   auto test = [this, editable_block](const Position& position,
                                      const PhysicalRect& expected_rect) {
     Selection().SetSelection(
-        SelectionInDOMTree::Builder().Collapse(position).Build(),
+        SelectionInDomTree::Builder().Collapse(position).Build(),
         SetSelectionOptions());
 
     UpdateAllLifecyclePhasesExceptPaint();
@@ -672,8 +681,10 @@ class ComputeCaretRectTest : public EditingTestBase {
   ComputeCaretRectTest() = default;
 
  protected:
-  PhysicalRect ComputeCaretRect(const PositionWithAffinity& position) const {
-    return CaretDisplayItemClient::ComputeCaretRectAndPainterBlock(position)
+  PhysicalRect ComputeCaretRect(const PositionWithAffinity& position,
+                                CaretShape caret_shape) const {
+    return CaretDisplayItemClient::ComputeCaretRectAndPainterBlock(position,
+                                                                   caret_shape)
         .caret_rect;
   }
   HitTestResult HitTestResultAtLocation(const HitTestLocation& location) {
@@ -721,7 +732,7 @@ TEST_F(ComputeCaretRectTest, CaretRectAfterEllipsisNoCrash) {
   const Node* text = GetElementById("target")->firstChild();
   const Position position = Position::LastPositionInNode(*text);
   // Shouldn't crash inside. The actual result doesn't matter and may change.
-  ComputeCaretRect(PositionWithAffinity(position));
+  ComputeCaretRect(PositionWithAffinity(position), CaretShape::kBar);
 }
 
 TEST_F(ComputeCaretRectTest, CaretRectAvoidNonEditable) {
@@ -735,13 +746,141 @@ TEST_F(ComputeCaretRectTest, CaretRectAvoidNonEditable) {
 
   const PositionWithAffinity& caret_position1 =
       HitTestResultAtLocation(20, 5).GetPosition();
-  const PhysicalRect& rect1 = ComputeCaretRect(caret_position1);
+  const PhysicalRect& rect1 =
+      ComputeCaretRect(caret_position1, CaretShape::kBar);
   EXPECT_EQ(PhysicalRect(10, 0, 1, 10), rect1);
 
   const PositionWithAffinity& caret_position2 =
       HitTestResultAtLocation(60, 5).GetPosition();
-  const PhysicalRect& rect2 = ComputeCaretRect(caret_position2);
+  const PhysicalRect& rect2 =
+      ComputeCaretRect(caret_position2, CaretShape::kBar);
   EXPECT_EQ(PhysicalRect(69, 0, 1, 10), rect2);
+}
+
+// caret-color with the second value and caret-shape: block on a focused
+// editable make block_caret_anchor_ to be set to the editable's text node.
+TEST_P(CaretDisplayItemClientTest, BlockCaretAnchorSetForTwoValueCaretColor) {
+  ScopedCSSCaretColorWithOptionalSecondValueForTest scoped(true);
+  GetFocusController().SetActive(true);
+  GetFocusController().SetFocused(true);
+  SetBodyInnerHTML(R"HTML(
+    <div id='target' contenteditable
+         style='font: 16px monospace; caret-color: black white;
+                caret-shape: block; caret-animation: manual'>abc</div>
+  )HTML");
+  auto* target = GetElementById("target");
+  target->Focus();
+  UpdateAllLifecyclePhasesForCaretTest();
+
+  EXPECT_EQ(BlockCaretAnchor(), target->firstChild());
+}
+
+// When runtime flag is OFF, block_caret_anchor_ stays null.
+TEST_P(CaretDisplayItemClientTest, BlockCaretAnchorNotSetWhenFlagDisabled) {
+  ScopedCSSCaretColorWithOptionalSecondValueForTest scoped(false);
+  GetFocusController().SetActive(true);
+  GetFocusController().SetFocused(true);
+  SetBodyInnerHTML(R"HTML(
+    <div id='target' contenteditable
+         style='font: 16px monospace; caret-color: black;
+                caret-shape: block; caret-animation: manual'>abc</div>
+  )HTML");
+  auto* target = GetElementById("target");
+  target->Focus();
+  UpdateAllLifecyclePhasesForCaretTest();
+
+  EXPECT_EQ(BlockCaretAnchor(), nullptr);
+}
+
+// When caret-shape is not block, block_caret_anchor_ stays null.
+TEST_P(CaretDisplayItemClientTest, BlockCaretAnchorNotSetForBarShape) {
+  ScopedCSSCaretColorWithOptionalSecondValueForTest scoped(true);
+  GetFocusController().SetActive(true);
+  GetFocusController().SetFocused(true);
+  SetBodyInnerHTML(R"HTML(
+    <div id='target' contenteditable
+         style='font: 16px monospace; caret-color: black white;
+                caret-shape: bar; caret-animation: manual'>abc</div>
+  )HTML");
+  GetElementById("target")->Focus();
+  UpdateAllLifecyclePhasesForCaretTest();
+
+  EXPECT_EQ(BlockCaretAnchor(), nullptr);
+}
+
+// When the second value of caret-color is auto, block_caret_anchor_ stays null.
+TEST_P(CaretDisplayItemClientTest, BlockCaretAnchorNotSetForAutoSecondValue) {
+  ScopedCSSCaretColorWithOptionalSecondValueForTest scoped(true);
+  GetFocusController().SetActive(true);
+  GetFocusController().SetFocused(true);
+  SetBodyInnerHTML(R"HTML(
+    <div id='target' contenteditable
+         style='font: 16px monospace; caret-color: black auto;
+                caret-shape: block; caret-animation: manual'>abc</div>
+  )HTML");
+  GetElementById("target")->Focus();
+  UpdateAllLifecyclePhasesForCaretTest();
+
+  EXPECT_EQ(BlockCaretAnchor(), nullptr);
+}
+
+// Switching from caret-shape:block to other caret shape (e.g. caret-shape:bar)
+// at runtime clears block_caret_anchor_ .
+TEST_P(CaretDisplayItemClientTest, BlockCaretAnchorClearsOnShapeChange) {
+  ScopedCSSCaretColorWithOptionalSecondValueForTest scoped(true);
+  GetFocusController().SetActive(true);
+  GetFocusController().SetFocused(true);
+  SetBodyInnerHTML(R"HTML(
+    <div id='target' contenteditable
+         style='font: 16px monospace; caret-color: black white;
+                caret-shape: block; caret-animation: manual'>abc</div>
+  )HTML");
+  auto* target = GetElementById("target");
+  target->Focus();
+  UpdateAllLifecyclePhasesForCaretTest();
+  ASSERT_EQ(BlockCaretAnchor(), target->firstChild());
+
+  target->setAttribute(
+      html_names::kStyleAttr,
+      AtomicString("font: 16px monospace; caret-color: black white; "
+                   "caret-shape: bar; caret-animation: manual"));
+  UpdateAllLifecyclePhasesForCaretTest();
+
+  EXPECT_EQ(BlockCaretAnchor(), nullptr);
+}
+
+// Anchor follows the caret's move.
+TEST_P(CaretDisplayItemClientTest, BlockCaretAnchorFollowsCaretAcrossNodes) {
+  ScopedCSSCaretColorWithOptionalSecondValueForTest scoped(true);
+  GetFocusController().SetActive(true);
+  GetFocusController().SetFocused(true);
+  SetBodyInnerHTML(R"HTML(
+    <div id='target' contenteditable
+         style='font: 16px monospace; caret-color: black white;
+                caret-shape: block; caret-animation: manual'
+       ><span id='a'>ab</span><span id='b'>cd</span></div>
+  )HTML");
+  auto* target = GetElementById("target");
+  target->Focus();
+  Element* span_a = GetElementById("a");
+  Element* span_b = GetElementById("b");
+  Text* text_a = To<Text>(span_a->firstChild());
+  Text* text_b = To<Text>(span_b->firstChild());
+
+  // Place the caret in span 'a' first.
+  Selection().SetSelection(
+      SelectionInDomTree::Builder().Collapse(Position(text_a, 0)).Build(),
+      SetSelectionOptions());
+  UpdateAllLifecyclePhasesForCaretTest();
+  ASSERT_EQ(BlockCaretAnchor(), text_a);
+
+  // Move it into span 'b' at offset 1.
+  Selection().SetSelection(
+      SelectionInDomTree::Builder().Collapse(Position(text_b, 1)).Build(),
+      SetSelectionOptions());
+  UpdateAllLifecyclePhasesForCaretTest();
+
+  EXPECT_EQ(BlockCaretAnchor(), text_b);
 }
 
 }  // namespace blink

@@ -11,7 +11,7 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/UrlFilterBridge_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 
 UrlFilterBridge::UrlFilterBridge(
     const base::RepeatingCallback<bool(const GURL&)>& url_filter)
@@ -22,14 +22,14 @@ UrlFilterBridge::UrlFilterBridge(
 
 UrlFilterBridge::~UrlFilterBridge() = default;
 
-void UrlFilterBridge::Destroy(JNIEnv* env,
-                              const JavaParamRef<jobject>& obj) {
+void UrlFilterBridge::Destroy(JNIEnv* env) {
   delete this;
 }
 
 bool UrlFilterBridge::MatchesUrl(JNIEnv* env,
-                                 const JavaParamRef<jobject>& obj,
-                                 std::string& url_spec) const {
+                                 const std::string& url_spec) const {
   GURL url(url_spec);
   return url_filter_.Run(url);
 }
+
+DEFINE_JNI(UrlFilterBridge)

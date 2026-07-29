@@ -10,7 +10,7 @@
 #import "components/lens/lens_overlay_dismissal_source.h"
 #import "components/lens/lens_overlay_first_interaction_type.h"
 #import "components/lens/lens_overlay_metrics.h"
-#import "ios/chrome/browser/lens_overlay/model/lens_overlay_entrypoint.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_entrypoint.h"
 
 namespace web {
 class WebState;
@@ -53,11 +53,29 @@ class WebState;
 
 /// Records metrics on lens overlay dismissal.
 - (void)recordDismissalMetricsWithSource:
-            (lens::LensOverlayDismissalSource)dismissalSource
-                       generatedTabCount:(NSInteger)generatedTabCount;
+    (lens::LensOverlayDismissalSource)dismissalSource;
 
 /// Records "Search with Camera" overflow menu entry tapped.
 - (void)recordSearchWithCameraTapped;
+
+/// Records that a new Lens Result was generated.
+- (void)recordResultsPageOmniboxFocus;
+
+/// Records that the user requested a back navigation in the results page.
+- (void)recordResultsPageBack;
+
+/// Records that a new lens result was generated.
+- (void)recordNewLensResultGenerated;
+
+/// Records that a new tab was generated with the given source.
+- (void)recordNewTabGeneratedWithSource:
+    (lens::LensOverlayNewTabSource)newTabSource;
+
+// Begins timing the search request.
+- (void)startTimingLensSearchRequest;
+
+// Stops timing the search request and records the elpased time.
+- (void)recordLensSearchRequestElapsedTime;
 
 @end
 

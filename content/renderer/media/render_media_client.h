@@ -7,6 +7,7 @@
 
 #include <vector>
 
+#include "base/sequence_checker.h"
 #include "base/synchronization/waitable_event.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/decoder.h"
@@ -16,7 +17,6 @@
 #include "media/base/supported_video_decoder_config.h"
 #include "media/mojo/mojom/audio_decoder.mojom.h"
 #include "media/mojo/mojom/interface_factory.mojom.h"
-#include "media/mojo/mojom/stable/stable_video_decoder.mojom.h"
 #include "media/mojo/mojom/video_decoder.mojom.h"
 #include "media/mojo/mojom/video_encode_accelerator.mojom.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -36,17 +36,22 @@ class RenderMediaClient : public media::MediaClient {
   // is not exposed because no content code needs to directly access it.
   static void Initialize();
 
+  // Called by RenderThreadImpl when gpu feature info may have changed.
+  static void SetGpuFeatureInfo(const gpu::GpuFeatureInfo& gpu_feature_info);
+
   // MediaClient implementation.
   bool IsDecoderSupportedAudioType(const media::AudioType& type) final;
   bool IsDecoderSupportedVideoType(const media::VideoType& type) final;
   bool IsEncoderSupportedVideoType(const media::VideoType& type) final;
   bool IsSupportedBitstreamAudioCodec(media::AudioCodec codec) final;
+  bool ShouldSuppressAudioTracks() final;
   std::optional<::media::AudioRendererAlgorithmParameters>
   GetAudioRendererAlgorithmParameters(
       media::AudioParameters audio_parameters) final;
   media::ExternalMemoryAllocator* GetMediaAllocator() final;
 
  private:
+  friend class base::NoDestructor<RenderMediaClient>;
   RenderMediaClient();
   ~RenderMediaClient() override;
 
@@ -65,6 +70,9 @@ class RenderMediaClient : public media::MediaClient {
       media::VideoDecoderType type);
   void OnGetSupportedVideoEncoderConfigs(
       const media::VideoEncodeAccelerator::SupportedProfiles& configs);
+
+  // Checks if features have changed and clears supported profiles if needed.
+  void SetGpuFeatureInfoInternal(const gpu::GpuFeatureInfo& gpu_feature_info);
 
   const scoped_refptr<base::SingleThreadTaskRunner> main_task_runner_;
   SEQUENCE_CHECKER(main_thread_sequence_checker_);
@@ -91,9 +99,7 @@ class RenderMediaClient : public media::MediaClient {
   [[maybe_unused]] mojo::Remote<viz::mojom::Gpu> gpu_for_supported_profiles_
       GUARDED_BY_CONTEXT(main_thread_sequence_checker_);
 
-  [[maybe_unused]] absl::variant<
-      mojo::SharedRemote<media::mojom::VideoDecoder>,
-      mojo::SharedRemote<media::stable::mojom::StableVideoDecoder>>
+  [[maybe_unused]] mojo::SharedRemote<media::mojom::VideoDecoder>
       video_decoder_for_supported_profiles_
           GUARDED_BY_CONTEXT(main_thread_sequence_checker_);
 

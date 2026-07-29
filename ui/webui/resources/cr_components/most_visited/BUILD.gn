@@ -4,12 +4,14 @@
 
 import("//mojo/public/tools/bindings/mojom.gni")
 import("//ui/webui/resources/tools/build_webui.gni")
+import("//ui/webui/webui_features.gni")
 
-assert(!is_android && !is_ios)
+assert((!is_android && !is_ios) || is_desktop_android)
 
 mojom("mojom") {
   sources = [ "most_visited.mojom" ]
   public_deps = [
+    "//components/ntp_tiles:mojo_bindings",
     "//mojo/public/mojom/base",
     "//skia/public/mojom",
     "//url/mojom:url_mojom_gurl",
@@ -20,16 +22,26 @@ mojom("mojom") {
 build_webui("build") {
   grd_prefix = "cr_components_most_visited"
 
-  non_web_component_files = [
-    "browser_proxy.ts",
+  ts_files = [
     "most_visited.html.ts",
     "most_visited.ts",
     "window_proxy.ts",
   ]
   css_files = [ "most_visited.css" ]
 
-  mojo_files_deps = [ ":mojom_ts__generator" ]
-  mojo_files = [ "$target_gen_dir/most_visited.mojom-webui.ts" ]
+  static_files = [
+    "collapse_content.svg",
+    "expand_content.svg",
+  ]
+
+  mojo_files_deps = [
+    ":mojom_ts__generator",
+    "//components/ntp_tiles:mojo_bindings_ts__generator",
+  ]
+  mojo_files = [
+    "$root_gen_dir/components/ntp_tiles/tile_source.mojom-webui.ts",
+    "$target_gen_dir/most_visited.mojom-webui.ts",
+  ]
 
   ts_out_dir = "$root_gen_dir/ui/webui/resources/tsc/cr_components/most_visited"
   ts_composite = true

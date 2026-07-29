@@ -9,8 +9,8 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/customize_chrome/side_panel_controller.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_entry_observer.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_enums.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry_observer.h"
+#include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_chrome_section.h"
 #include "content/public/browser/web_contents_observer.h"
 
@@ -43,6 +43,8 @@ class SidePanelControllerViews : public SidePanelController,
   // SidePanelEntryObserver:
   void OnEntryShown(SidePanelEntry* entry) override;
   void OnEntryHidden(SidePanelEntry* entry) override;
+  void OnEntryWillHide(SidePanelEntry* entry,
+                       SidePanelEntryHideReason reason) override;
 
   // SidePanelController:
   bool IsCustomizeChromeEntryAvailable() const override;
@@ -62,6 +64,9 @@ class SidePanelControllerViews : public SidePanelController,
   // Returns whether the SidePanel should be allowed to show on a given URL.
   // Currently this limits to the New Tab Page only.
   bool CanShowOnURL(const GURL& url) const;
+
+  // Returns true for 1P NTP or extension NTP, otherwise returns false.
+  bool ShouldEnableEditTheme(const GURL& url) const;
 
   // Generates the view for the SidePanel contents. This is the WebUI for the
   // SidePanel. Used by the SidepanelRegistry to create the view.

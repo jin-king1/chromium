@@ -6,9 +6,12 @@
 
 #include <memory>
 
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model_factory.h"
 #include "chrome/browser/ui/toolbar/toolbar_pref_names.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_profile.h"
@@ -50,18 +53,18 @@ class PinnedToolbarActionsModelTestObserver
 
  private:
   // PinnedToolbarActionsModel::Observer:
-  void OnActionAddedLocally(const actions::ActionId& action_id) override {
+  void OnActionAddedLocally(actions::ActionId action_id) override {
     ++inserted_count_;
     last_changed_action_ = action_id;
   }
 
-  void OnActionRemovedLocally(const actions::ActionId& action_id) override {
+  void OnActionRemovedLocally(actions::ActionId action_id) override {
     ++removed_count_;
     last_changed_action_ = action_id;
   }
 
   // Signals that the given action with `id` has been moved in the model.
-  void OnActionMovedLocally(const actions::ActionId& id,
+  void OnActionMovedLocally(actions::ActionId id,
                             int from_index,
                             int to_index) override {
     moved_to_index_ = to_index;
@@ -96,8 +99,8 @@ class PinnedToolbarActionsModelBrowserTest : public InProcessBrowserTest {
  protected:
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
-    model_ =
-        PinnedToolbarActionsModelFactory::GetForProfile(browser()->profile());
+    model_ = PinnedToolbarActionsModelFactory::GetForProfile(
+        browser()->GetProfile());
     model_observer_ =
         std::make_unique<PinnedToolbarActionsModelTestObserver>(model_);
   }
@@ -142,11 +145,10 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest, PinActions) {
 
   // Verify all actions ids were added to the model and that the prefs object
   // maintains insertion order.
-  const base::Value::List& list =
-      browser()->profile()->GetPrefs()->GetList(prefs::kPinnedActions);
+  const base::ListValue& list =
+      browser()->GetProfile()->GetPrefs()->GetList(prefs::kPinnedActions);
 
   ASSERT_EQ(4u, list.size());
-
   ASSERT_EQ("kActionShowChromeLabs", list[0].GetString());
   EXPECT_EQ("kActionSidePanelShowBookmarks", list[1].GetString());
   EXPECT_EQ("kActionSidePanelShowReadingList", list[2].GetString());
@@ -164,16 +166,16 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest, UnpinActions) {
   model()->UpdatePinnedState(kActionSidePanelShowHistoryCluster,
                              /*should_pin=*/true);
 
-  // Expect unpinning the second ActionId will remove it from the model and the
-  // prefs object.
+  // Expect unpinning the reading list ActionId will remove it from the model
+  // and the prefs object.
   model()->UpdatePinnedState(kActionSidePanelShowReadingList,
                              /*should_pin=*/false);
   EXPECT_EQ(1, observer()->removed_count());
   EXPECT_EQ(3, observer()->inserted_count());
 
-  // Verify only the second ActionId was removed.
-  const base::Value::List& list =
-      browser()->profile()->GetPrefs()->GetList(prefs::kPinnedActions);
+  // Verify only the reading list ActionId was removed.
+  const base::ListValue& list =
+      browser()->GetProfile()->GetPrefs()->GetList(prefs::kPinnedActions);
   ASSERT_EQ(3u, list.size());
   ASSERT_EQ("kActionShowChromeLabs", list[0].GetString());
   EXPECT_EQ("kActionSidePanelShowBookmarks", list[1].GetString());
@@ -200,8 +202,8 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
 
   // Verify kActionCopy was moved to the end of the list which should be
   // index 2.
-  const base::Value::List& list_1 =
-      browser()->profile()->GetPrefs()->GetList(prefs::kPinnedActions);
+  const base::ListValue& list_1 =
+      browser()->GetProfile()->GetPrefs()->GetList(prefs::kPinnedActions);
   ASSERT_EQ(4u, list_1.size());
   ASSERT_EQ("kActionShowChromeLabs", list_1[0].GetString());
   EXPECT_EQ("kActionSidePanelShowBookmarks", list_1[1].GetString());
@@ -215,8 +217,8 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
   EXPECT_EQ(2, observer()->moved_to_index());
 
   // kActionSidePanelShowBookmarks was move to the end.
-  const base::Value::List& list_2 =
-      browser()->profile()->GetPrefs()->GetList(prefs::kPinnedActions);
+  const base::ListValue& list_2 =
+      browser()->GetProfile()->GetPrefs()->GetList(prefs::kPinnedActions);
   ASSERT_EQ(4u, list_2.size());
   ASSERT_EQ("kActionShowChromeLabs", list_2[0].GetString());
   EXPECT_EQ("kActionSidePanelShowHistoryCluster", list_2[1].GetString());
@@ -231,8 +233,8 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
   EXPECT_EQ(1, observer()->moved_to_index());
 
   // Verify kActionCopy was moved to index 0.
-  const base::Value::List& list_3 =
-      browser()->profile()->GetPrefs()->GetList(prefs::kPinnedActions);
+  const base::ListValue& list_3 =
+      browser()->GetProfile()->GetPrefs()->GetList(prefs::kPinnedActions);
   ASSERT_EQ(4u, list_3.size());
   ASSERT_EQ("kActionShowChromeLabs", list_3[0].GetString());
   EXPECT_EQ("kActionSidePanelShowReadingList", list_3[1].GetString());
@@ -259,8 +261,8 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
   EXPECT_EQ(-1, observer()->moved_to_index());
 
   // Verify the action did not move.
-  const base::Value::List& list_1 =
-      browser()->profile()->GetPrefs()->GetList(prefs::kPinnedActions);
+  const base::ListValue& list_1 =
+      browser()->GetProfile()->GetPrefs()->GetList(prefs::kPinnedActions);
   ASSERT_EQ(4u, list_1.size());
   ASSERT_EQ("kActionShowChromeLabs", list_1[0].GetString());
   EXPECT_EQ("kActionSidePanelShowBookmarks", list_1[1].GetString());
@@ -274,10 +276,9 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
   EXPECT_EQ(-1, observer()->moved_to_index());
 
   // Verify the action did not move.
-  const base::Value::List& list_2 =
-      browser()->profile()->GetPrefs()->GetList(prefs::kPinnedActions);
+  const base::ListValue& list_2 =
+      browser()->GetProfile()->GetPrefs()->GetList(prefs::kPinnedActions);
   ASSERT_EQ(4u, list_2.size());
-
   ASSERT_EQ("kActionShowChromeLabs", list_2[0].GetString());
   EXPECT_EQ("kActionSidePanelShowBookmarks", list_2[1].GetString());
   EXPECT_EQ("kActionSidePanelShowReadingList", list_2[2].GetString());
@@ -300,8 +301,8 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
   EXPECT_EQ(-1, observer()->moved_to_index());
 
   // Verify nothing changed.
-  const base::Value::List& list_1 =
-      browser()->profile()->GetPrefs()->GetList(prefs::kPinnedActions);
+  const base::ListValue& list_1 =
+      browser()->GetProfile()->GetPrefs()->GetList(prefs::kPinnedActions);
   ASSERT_EQ(3u, list_1.size());
   ASSERT_EQ("kActionShowChromeLabs", list_1[0].GetString());
   EXPECT_EQ("kActionSidePanelShowBookmarks", list_1[1].GetString());
@@ -326,8 +327,8 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
   EXPECT_EQ(-1, observer()->moved_to_index());
 
   // Verify no action moved.
-  const base::Value::List& list_1 =
-      browser()->profile()->GetPrefs()->GetList(prefs::kPinnedActions);
+  const base::ListValue& list_1 =
+      browser()->GetProfile()->GetPrefs()->GetList(prefs::kPinnedActions);
   ASSERT_EQ(4u, list_1.size());
   ASSERT_EQ("kActionShowChromeLabs", list_1[0].GetString());
   EXPECT_EQ("kActionSidePanelShowBookmarks", list_1[1].GetString());
@@ -340,7 +341,6 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
   EXPECT_TRUE(model()->IsDefault());
   EXPECT_FALSE(model()->Contains(kActionSidePanelShowBookmarks));
   EXPECT_TRUE(model()->Contains(kActionShowChromeLabs));
-
   model()->UpdatePinnedState(kActionShowChromeLabs, false);
   model()->UpdatePinnedState(kActionSidePanelShowBookmarks, true);
 
@@ -353,6 +353,48 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
   EXPECT_TRUE(model()->IsDefault());
   EXPECT_FALSE(model()->Contains(kActionSidePanelShowBookmarks));
   EXPECT_TRUE(model()->Contains(kActionShowChromeLabs));
+}
+
+class PinnedToolbarActionsModelWithTabsFromOtherDevicesPinnedBrowserTest
+    : public PinnedToolbarActionsModelBrowserTest {
+  base::test::ScopedFeatureList scoped_feature_list_{
+      features::kTabsFromOtherDevicesSidePanelPinnedByDefault};
+};
+
+IN_PROC_BROWSER_TEST_F(
+    PinnedToolbarActionsModelWithTabsFromOtherDevicesPinnedBrowserTest,
+    PinActionByDefault) {
+  EXPECT_TRUE(model()->IsDefault());
+  EXPECT_TRUE(model()->Contains(kActionSidePanelShowTabsFromOtherDevices));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    PinnedToolbarActionsModelWithTabsFromOtherDevicesPinnedBrowserTest,
+    MigrateActionForExistingProfile) {
+  // Simulate an existing profile by unpinning the action and resetting the
+  // migration pref.
+  model()->UpdatePinnedState(kActionSidePanelShowTabsFromOtherDevices, false);
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
+      prefs::kTabsFromOtherDevicesAutoPinnedMigration, false);
+
+  EXPECT_FALSE(model()->Contains(kActionSidePanelShowTabsFromOtherDevices));
+
+  // Run the migration.
+  model()->MaybeMigrateExistingPinnedStates();
+
+  // Verify it is pinned now.
+  EXPECT_TRUE(model()->Contains(kActionSidePanelShowTabsFromOtherDevices));
+  EXPECT_TRUE(browser()->GetProfile()->GetPrefs()->GetBoolean(
+      prefs::kTabsFromOtherDevicesAutoPinnedMigration));
+
+  // Simulate the user un-pinning the action.
+  model()->UpdatePinnedState(kActionSidePanelShowTabsFromOtherDevices, false);
+
+  // Run the migration a second time.
+  model()->MaybeMigrateExistingPinnedStates();
+
+  // Verify that it did *not* get auto-pinned again.
+  EXPECT_FALSE(model()->Contains(kActionSidePanelShowTabsFromOtherDevices));
 }
 
 // TODO(dljames): Write tests for guest and incognito mode profile that check

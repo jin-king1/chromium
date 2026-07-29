@@ -13,7 +13,7 @@
 #include "base/path_service.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
-#include "chrome/browser/ash/settings/token_encryptor.h"
+#include "chrome/browser/device_identity/chromeos/token_encryptor.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/cryptohome/system_salt_getter.h"
@@ -40,9 +40,7 @@ std::string LoadRefreshTokenV3() {
 
 namespace chromeos {
 
-BASE_FEATURE(kRefreshTokenV3Feature,
-             "RefreshTokenV3Feature",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kRefreshTokenV3Feature, base::FEATURE_ENABLED_BY_DEFAULT);
 
 DeviceOAuth2TokenStoreChromeOS::DeviceOAuth2TokenStoreChromeOS(
     PrefService* local_state)

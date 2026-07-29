@@ -71,7 +71,7 @@ class MODULES_EXPORT RTCDataChannel final
   static void EnsureThreadWrappersForWorkerThread();
 
   RTCDataChannel(ExecutionContext*,
-                 rtc::scoped_refptr<webrtc::DataChannelInterface> channel);
+                 webrtc::scoped_refptr<webrtc::DataChannelInterface> channel);
   ~RTCDataChannel() override;
 
   String label() const;
@@ -99,7 +99,7 @@ class MODULES_EXPORT RTCDataChannel final
   // Functions called from RTCPeerConnection's DidAddRemoteDataChannel
   // in order to make things happen in the specified order when announcing
   // a remote channel.
-  void SetStateToOpenWithoutEvent();
+  void SetStateToOpenWithoutEvent(int max_message_size);
   void DispatchOpenEvent();
 
   void send(const String&, ExceptionState&);
@@ -110,7 +110,8 @@ class MODULES_EXPORT RTCDataChannel final
   void close();
 
   bool IsTransferable();
-  rtc::scoped_refptr<webrtc::DataChannelInterface> TransferUnderlyingChannel();
+  webrtc::scoped_refptr<webrtc::DataChannelInterface>
+  TransferUnderlyingChannel();
 
   DEFINE_ATTRIBUTE_EVENT_LISTENER(open, kOpen)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(bufferedamountlow, kBufferedamountlow)
@@ -141,18 +142,18 @@ class MODULES_EXPORT RTCDataChannel final
   // narrower than the |webrtc_channel_|, the observer is reference counted to
   // make sure all callbacks have a valid pointer but won't do anything if the
   // |blink_channel_| has gone away.
-  class Observer : public WTF::ThreadSafeRefCounted<RTCDataChannel::Observer>,
+  class Observer : public ThreadSafeRefCounted<RTCDataChannel::Observer>,
                    public webrtc::DataChannelObserver {
    public:
     Observer(scoped_refptr<base::SingleThreadTaskRunner> main_thread,
              RTCDataChannel* blink_channel,
-             rtc::scoped_refptr<webrtc::DataChannelInterface> channel);
+             webrtc::scoped_refptr<webrtc::DataChannelInterface> channel);
     ~Observer() override;
 
     // Returns a reference to |webrtc_channel_|. Typically called from the main
     // thread except for on observer registration, done in a synchronous call to
     // the signaling thread (safe because the call is synchronous).
-    const rtc::scoped_refptr<webrtc::DataChannelInterface>& channel() const;
+    const webrtc::scoped_refptr<webrtc::DataChannelInterface>& channel() const;
 
     // Returns true if a valid `blink_channel_` is held and `Unregister()`
     // hasn't been called. A return value of false indicates that the `Observer`
@@ -167,6 +168,7 @@ class MODULES_EXPORT RTCDataChannel final
     // webrtc::DataChannelObserver implementation, called from signaling thread.
     void OnStateChange() override;
     void OnBufferedAmountChange(uint64_t sent_data_size) override;
+    void OnMaxMessageSize(int max_message_size) override;
     void OnMessage(const webrtc::DataBuffer& buffer) override;
     bool IsOkToCallOnTheNetworkThread() override;
 
@@ -174,22 +176,24 @@ class MODULES_EXPORT RTCDataChannel final
     // webrtc::DataChannelObserver implementation on the main thread.
     void OnStateChangeImpl(webrtc::DataChannelInterface::DataState state);
     void OnBufferedAmountChangeImpl(unsigned sent_data_size);
+    void OnMaxMessageSizeImpl(int max_message_size);
     void OnMessageImpl(webrtc::DataBuffer buffer);
 
     const scoped_refptr<base::SingleThreadTaskRunner> main_thread_;
     WeakPersistent<RTCDataChannel> blink_channel_;
-    const rtc::scoped_refptr<webrtc::DataChannelInterface> webrtc_channel_;
+    const webrtc::scoped_refptr<webrtc::DataChannelInterface> webrtc_channel_;
   };
 
   void RegisterObserver();
 
   void OnStateChange(webrtc::DataChannelInterface::DataState state);
   void OnBufferedAmountChange(unsigned previous_amount);
+  void OnMaxMessageSizeChange(int max_message_size);
   void OnMessage(webrtc::DataBuffer buffer);
 
   void Dispose();
 
-  const rtc::scoped_refptr<webrtc::DataChannelInterface>& channel() const;
+  const webrtc::scoped_refptr<webrtc::DataChannelInterface>& channel() const;
   bool ValidateSendLength(uint64_t length, ExceptionState& exception_state);
   void SendRawData(const char* data, size_t length);
   void SendDataBuffer(webrtc::DataBuffer data_buffer);
@@ -220,6 +224,7 @@ class MODULES_EXPORT RTCDataChannel final
   mutable std::optional<uint16_t> id_;
   unsigned buffered_amount_low_threshold_ = 0u;
   unsigned buffered_amount_ = 0u;
+  std::optional<int> max_message_size_;
   bool stopped_ = false;
   bool closed_from_owner_ = false;
 

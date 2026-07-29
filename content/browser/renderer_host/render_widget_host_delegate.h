@@ -15,20 +15,21 @@
 #include "build/build_config.h"
 #include "components/input/render_input_router.mojom.h"
 #include "components/viz/common/vertical_scroll_direction.h"
-#include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/common/drop_data.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/page/drag_operation.h"
-#include "third_party/blink/public/mojom/device_posture/device_posture_provider.mojom.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom-shared.h"
+#include "third_party/blink/public/mojom/manifest/application_context.mojom.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/ui_base_types.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/mojom/delegated_ink_point_renderer.mojom.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace blink {
 class WebMouseEvent;
@@ -56,9 +57,12 @@ namespace content {
 
 class RenderFrameProxyHost;
 class RenderWidgetHostImpl;
+class DevicePostureProviderImpl;
+class RenderWidgetHostViewBase;
 class RenderViewHostDelegateView;
 class TextInputManager;
 class VisibleTimeRequestTrigger;
+class WebContents;
 enum class KeyboardEventProcessingResult;
 
 //
@@ -102,12 +106,6 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   virtual void ResizeDueToAutoResize(RenderWidgetHostImpl* render_widget_host,
                                      const gfx::Size& new_size) {}
 
-  // Callback to give the browser a chance to handle the specified mouse
-  // event before sending it to the renderer. Returns true if the event was
-  // handled, false otherwise. A true value means no more processing should
-  // happen on the event. The default return value is false.
-  virtual bool PreHandleMouseEvent(const blink::WebMouseEvent& event);
-
   // Callback to give the browser a chance to handle the specified keyboard
   // event before sending it to the renderer. See enum for details on return
   // value.
@@ -133,6 +131,11 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // widget.
   virtual void DidReceiveInputEvent(RenderWidgetHostImpl* render_widget_host,
                                     const blink::WebInputEvent& event) {}
+
+  // Method that exposes a way to manually trigger a user interaction
+  // notification without the need for a real InputEvent.
+  virtual void SimulateUserInteraction(RenderWidgetHostImpl* render_widget_host,
+                                       const blink::WebInputEvent& event) {}
 
   // Asks whether the page is in a state of ignoring input events.
   virtual bool ShouldIgnoreWebInputEvents(const blink::WebInputEvent& event);
@@ -197,7 +200,12 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // in rendering a page, yet keyboard events all arrive at the main frame's
   // RenderWidgetHostView.  When a main frame's RenderWidgetHost is passed in,
   // the function returns the focused frame that should consume keyboard
-  // events. In all other cases, the function returns back |receiving_widget|.
+  // events.
+  // Returns nullptr if the focused frame's renderer process has crashed or
+  // the focused frame is outside of this WebContents that is embedded via
+  // SurfaceEmbed (e.g. this is an inner WebContents and the focused frame
+  // is in the outer WebContents).
+  // In all other cases, the function returns back |receiving_widget|.
   virtual RenderWidgetHostImpl* GetFocusedRenderWidgetHost(
       RenderWidgetHostImpl* receiving_widget);
 
@@ -215,12 +223,10 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
 
   // Requests to lock the mouse. Once the request is approved or rejected,
   // GotResponseToLockPointerRequest() will be called on the requesting render
-  // widget host. |privileged| means that the request is always granted, used
-  // for Pepper Flash.
+  // widget host.
   virtual void RequestToLockPointer(RenderWidgetHostImpl* render_widget_host,
                                     bool user_gesture,
-                                    bool last_unlocked_by_target,
-                                    bool privileged) {}
+                                    bool last_unlocked_by_target) {}
 
   virtual void UnlockPointer(RenderWidgetHostImpl* render_widget_host) {}
 
@@ -236,11 +242,16 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // to frame-based widgets. Other widgets are always kBrowser.
   virtual blink::mojom::DisplayMode GetDisplayMode() const;
 
+  // Returns how the top-level browsing context is presented to the user (a
+  // standalone web application window vs ordinary browser UI). Only applies to
+  // frame-based widgets; other widgets are always kNone.
+  virtual blink::mojom::ApplicationContext GetApplicationContext() const;
+
   // Returns the window show state.
   virtual ui::mojom::WindowShowState GetWindowShowState();
 
   // Returns the device posture provider tracking the device posture.
-  virtual blink::mojom::DevicePostureProvider* GetDevicePostureProvider();
+  virtual DevicePostureProviderImpl* GetDevicePostureProvider();
 
   // Returns whether the window can be resized or not. Defaults to true for
   // desktopOSs and false for mobileOSs.
@@ -259,6 +270,17 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // Returns the widget that holds the pointer lock or nullptr if the mouse
   // pointer isn't locked.
   virtual RenderWidgetHostImpl* GetPointerLockWidget();
+
+  // Returns true if the owning frame of |render_widget_host| is sandboxed
+  // with the kPointerLock flag, meaning the pointer lock request should be
+  // denied. It is ok to only check the top-most frame of the widget, because
+  // any subframes within the widget will be at least as restrictive as it.
+  // Any additional restrictions imposed on subframes of the widget cannot be
+  // enforced by the browser process, because they share a renderer process
+  // with the top-most frame of the widget.
+  // Note: crbug.com/492211919
+  virtual bool IsPointerLockSandboxedForWidget(
+      RenderWidgetHostImpl* render_widget_host);
 
   // Returns true if we are waiting for the user to make a selection on the
   // pointer lock permission request dialog.
@@ -309,6 +331,14 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // the WebContents.
   virtual VisibleTimeRequestTrigger& GetVisibleTimeRequestTrigger() = 0;
 
+  // Notifies the delegate that a drag has started.
+  virtual void OnStartDragging(
+      DropData* drop_data,
+      const GlobalRenderFrameHostToken& source_rfh_token) {}
+
+  // Notifies the delegate that a drag source has ended.
+  virtual void OnDragSourceEnded() {}
+
   // Returns the delegated ink point renderer associated with this WebContents
   // for dispatching delegated ink points to viz. This also attempts to setup
   // mojo connection using |compositor|, if the DelegatedInkPointRenderer
@@ -324,6 +354,9 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // Get the RenderWidgetHost that should receive page level focus events. This
   // will be the widget that is rendering the main frame of the currently
   // focused WebContents.
+  // Returns nullptr if the focused frame is outside of this WebContents that is
+  // embedded via SurfaceEmbed (e.g. this is an inner WebContents and the
+  // focused frame is in the outer WebContents).
   virtual RenderWidgetHostImpl* GetRenderWidgetHostWithPageFocus();
 
   // In cases with multiple RenderWidgetHosts involved in rendering a page, only
@@ -356,7 +389,7 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
 
   // Show the newly created widget with the specified bounds.
   // The widget is identified by the route_id passed to CreateNewWidget.
-  virtual void ShowCreatedWidget(int process_id,
+  virtual void ShowCreatedWidget(ChildProcessId process_id,
                                  int widget_route_id,
                                  const gfx::Rect& initial_rect_in_dips,
                                  const gfx::Rect& initial_anchor_rect_in_dips) {
@@ -371,12 +404,11 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // shouldn't be used to improve typing suggestions for the user.
   virtual bool ShouldDoLearning();
 
-  // Notifies when an input event is ignored.
-  virtual void OnInputIgnored(const blink::WebInputEvent& event) {}
-
-  // Get remote for making calls to RenderInputRouterDelegate interface.
-  virtual input::mojom::RenderInputRouterDelegate*
-  GetRenderInputRouterDelegateRemote();
+#if BUILDFLAG(IS_ANDROID)
+  // Get the offset for the current touch sequence. e.g. visible top controls or
+  // side UI will result in a nonzero offset being added to touch events.
+  virtual gfx::PointF GetCurrentTouchSequenceOffset();
+#endif
 
  protected:
   virtual ~RenderWidgetHostDelegate() {}

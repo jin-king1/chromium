@@ -27,7 +27,14 @@ OpenXrPlatformHelperAndroid::~OpenXrPlatformHelperAndroid() = default;
 
 std::unique_ptr<device::OpenXrGraphicsBinding>
 OpenXrPlatformHelperAndroid::GetGraphicsBinding() {
-  return std::make_unique<device::OpenXrGraphicsBindingOpenGLES>();
+  auto graphics_binding =
+      std::make_unique<device::OpenXrGraphicsBindingOpenGLES>(
+          GetExtensionEnumeration());
+  if (graphics_binding->InitializeGl()) {
+    return graphics_binding;
+  }
+
+  return nullptr;
 }
 
 void OpenXrPlatformHelperAndroid::GetPlatformCreateInfo(
@@ -50,7 +57,7 @@ void OpenXrPlatformHelperAndroid::PrepareForSessionShutdown(
 
 void OpenXrPlatformHelperAndroid::OnXrActivityReady(
     PlatformCreateInfoReadyCallback callback,
-    const base::android::JavaParamRef<jobject>& activity) {
+    const base::android::JavaRef<jobject>& activity) {
   activity_ = activity;
 
   create_info_.next = nullptr;
@@ -90,10 +97,6 @@ bool OpenXrPlatformHelperAndroid::Initialize() {
 
 bool OpenXrPlatformHelperAndroid::CheckHardwareSupport(
     content::WebContents* web_contents) {
-  if (!device::features::IsOpenXrArEnabled()) {
-    return true;
-  }
-
   XrInstance instance = XR_NULL_HANDLE;
   if (!XR_SUCCEEDED(CreateTemporaryInstance(&instance, web_contents))) {
     return false;

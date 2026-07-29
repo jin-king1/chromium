@@ -15,9 +15,10 @@ BOOL IsAutomaticPasskeyUpgradeEnabled() {
       boolValue];
 }
 
-BOOL IsPasskeyPRFEnabled() {
+BOOL IsPasskeyLargeBlobEnabled() {
   return [[app_group::GetGroupUserDefaults()
-      objectForKey:AppGroupUserDefaulsCredentialProviderPasskeyPRFEnabled()]
+      objectForKey:
+          AppGroupUserDefaulsCredentialProviderPasskeyLargeBlobEnabled()]
       boolValue];
 }
 
@@ -41,15 +42,12 @@ BOOL IsPasswordSyncEnabled() {
       boolValue];
 }
 
-BOOL IsPasskeyCreationAllowedByPolicy() {
-  return [[app_group::GetGroupUserDefaults()
+std::optional<bool> GetPasskeyCreationPolicy() {
+  id passkeyCreationPolicy = [app_group::GetGroupUserDefaults()
       objectForKey:
-          AppGroupUserDefaultsCredentialProviderSavingPasskeysEnabled()]
-      boolValue];
-}
-
-BOOL IsPasskeysM2Enabled() {
-  return [[app_group::GetGroupUserDefaults()
-      objectForKey:AppGroupUserDefaultsCredentialProviderPasskeysM2Enabled()]
-      boolValue];
+          AppGroupUserDefaultsCredentialProviderSavingPasskeysEnabled()];
+  if (!passkeyCreationPolicy) {
+    return std::nullopt;
+  }
+  return [passkeyCreationPolicy boolValue];
 }

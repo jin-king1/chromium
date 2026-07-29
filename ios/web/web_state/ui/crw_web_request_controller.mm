@@ -33,21 +33,6 @@
 using web::wk_navigation_util::kReferrerHeaderName;
 using web::wk_navigation_util::URLNeedsUserAgentType;
 
-namespace {
-// Values for the histogram that counts slow/fast back/forward navigations.
-enum class BackForwardNavigationType {
-  // Fast back navigation through WKWebView back-forward list.
-  FAST_BACK = 0,
-  // Slow back navigation when back-forward list navigation is not possible.
-  SLOW_BACK = 1,
-  // Fast forward navigation through WKWebView back-forward list.
-  FAST_FORWARD = 2,
-  // Slow forward navigation when back-forward list navigation is not possible.
-  SLOW_FORWARD = 3,
-  BACK_FORWARD_NAVIGATION_TYPE_COUNT
-};
-}  // namespace
-
 @interface CRWWebRequestController ()
 
 @property(nonatomic, readonly) web::WebStateImpl* webState;
@@ -84,8 +69,10 @@ enum class BackForwardNavigationType {
       web::GetWebClient()->IsAppSpecificURL(currentURL);
   // If it's a chrome URL, but not a native one, create the WebUI instance.
   if (isCurrentURLAppSpecific) {
-    if (!(item->GetTransitionType() & ui::PAGE_TRANSITION_TYPED ||
-          item->GetTransitionType() & ui::PAGE_TRANSITION_AUTO_BOOKMARK) &&
+    ui::PageTransition transition = item->GetTransitionType();
+    if (!(ui::PageTransitionCoreTypeIs(transition, ui::PAGE_TRANSITION_TYPED) ||
+          ui::PageTransitionCoreTypeIs(transition,
+                                       ui::PAGE_TRANSITION_AUTO_BOOKMARK)) &&
         self.hasOpener) {
       // WebUI URLs can not be opened by DOM to prevent cross-site scripting as
       // they have increased power. WebUI URLs may only be opened when the user
@@ -475,6 +462,26 @@ enum class BackForwardNavigationType {
     return;
   }
 
+  if (item && navigationURL.SchemeIsFile() &&
+      web::GetWebClient()->IsAppSpecificURL(virtualURL)) {
+    // file:// URL navigations are allowed for app-specific URLs, which
+    // already have elevated privileges.
+    self.securityScopedResourceURL = request.URL;
+    [request.URL startAccessingSecurityScopedResource];
+    if (!item->GetSecurityScopedFileResource()) {
+      NSError* error = nil;
+      NSData* data =
+          [request.URL bookmarkDataWithOptions:
+                           NSURLBookmarkCreationSuitableForBookmarkFile
+                includingResourceValuesForKeys:nil
+                                 relativeToURL:nil
+                                         error:&error];
+      if (!error) {
+        item->SetSecurityScopedFileResource(data);
+      }
+    }
+  }
+
   // Set `item` to nullptr here to avoid any use-after-free issues, as it can
   // be cleared by the call to -registerLoadRequestForURL below.
   item = nullptr;
@@ -491,14 +498,12 @@ enum class BackForwardNavigationType {
     request.attribution = NSURLRequestAttributionUser;
   }
 
-  if (navigationURL.SchemeIsFile() &&
+  // Ensure the URL is valid and has a non-empty path.
+  NSURL* requestURL = request.URL;
+  if (requestURL.path.length > 0 && navigationURL.SchemeIsFile() &&
       web::GetWebClient()->IsAppSpecificURL(virtualURL)) {
-    // file:// URL navigations are allowed for app-specific URLs, which
-    // already have elevated privileges.
-    self.securityScopedResourceURL = request.URL;
-    [request.URL startAccessingSecurityScopedResource];
     navigation = [self.webView loadFileRequest:request
-                       allowingReadAccessToURL:request.URL];
+                       allowingReadAccessToURL:requestURL];
   } else {
     navigation = [self.webView loadRequest:request];
   }

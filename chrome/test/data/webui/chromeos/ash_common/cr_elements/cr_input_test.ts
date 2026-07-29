@@ -58,6 +58,12 @@ suite('cr-input', function() {
         });
   });
 
+  test('autofocus PropertyPropagation', () => {
+    assertFalse(input.autofocus);
+    crInput.autofocus = true;
+    assertTrue(input.autofocus);
+  });
+
   test('UnsupportedInputTabindex', () => {
     assertThrows(() => {
       crInput.inputTabindex = 2;
@@ -94,7 +100,7 @@ suite('cr-input', function() {
     assertEquals('none', getComputedStyle(crInput.$.label).display);
     crInput.label = 'foobar';
     assertEquals('block', getComputedStyle(crInput.$.label).display);
-    assertEquals('foobar', label.textContent!.trim());
+    assertEquals('foobar', label.textContent.trim());
   });
 
   test('valueSetCorrectly', function() {

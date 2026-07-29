@@ -8,14 +8,19 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNtpUrl;
+
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.UserDataHost;
@@ -31,7 +36,6 @@ import org.chromium.chrome.browser.tabmodel.AsyncTabParamsManagerFactory;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabReparentingParams;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.url.GURL;
@@ -62,11 +66,12 @@ public class TabReparentingControllerTest {
 
         @Override
         public boolean isNtpUrl(GURL url) {
-            return UrlConstants.NTP_NON_NATIVE_URL.equals(url.getSpec())
-                    || UrlConstants.NTP_URL.equals(url.getSpec());
+            return getOriginalNtpUrl().equals(url.getSpec())
+                    || getOriginalNativeNtpUrl().equals(url.getSpec());
         }
     }
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock ReparentingTask mTask;
     @Mock Profile mProfile;
     @Mock Profile mIncognitoProfile;
@@ -82,7 +87,6 @@ public class TabReparentingControllerTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         Mockito.when(mIncognitoProfile.isOffTheRecord()).thenReturn(true);
 
         mTabModel = new MockTabModel(mProfile, null);

@@ -10,19 +10,25 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/engine/nigori/key_derivation_params.h"
 #include "components/sync/engine/sync_encryption_handler.h"
 #include "components/sync/engine/sync_engine.h"
-#include "components/sync/protocol/encryption.pb.h"
 #include "components/sync/service/data_type_encryption_handler.h"
 #include "components/trusted_vault/trusted_vault_client.h"
 
+namespace os_crypt_async {
+class Encryptor;
+}  // namespace os_crypt_async
+
 namespace syncer {
+
+class CustomPassphraseBootstrapToken;
+class RequiredPassphraseVerifier;
 
 // This class functions as mostly independent component of SyncService that
 // handles things related to encryption, including holding lots of state and
@@ -40,8 +46,10 @@ class SyncServiceCrypto : public SyncEncryptionHandler::Observer,
     virtual void PassphraseTypeChanged(PassphraseType passphrase_type) = 0;
     virtual std::optional<PassphraseType> GetPassphraseType() const = 0;
     virtual void SetEncryptionBootstrapToken(
-        const std::string& bootstrap_token) = 0;
-    virtual std::string GetEncryptionBootstrapToken() const = 0;
+        const CustomPassphraseBootstrapToken& bootstrap_token,
+        const os_crypt_async::Encryptor& encryptor) = 0;
+    virtual CustomPassphraseBootstrapToken GetEncryptionBootstrapToken(
+        const os_crypt_async::Encryptor& encryptor) const = 0;
   };
 
   // `delegate` and `trusted_vault_client` must not be null and must outlive
@@ -61,12 +69,14 @@ class SyncServiceCrypto : public SyncEncryptionHandler::Observer,
   base::Time GetExplicitPassphraseTime() const;
   bool IsPassphraseRequired() const;
   bool IsTrustedVaultKeyRequired() const;
+  bool IsKeystoreKeyRequired() const;
   bool IsTrustedVaultRecoverabilityDegraded() const;
   bool IsEncryptEverythingEnabled() const;
+
+  // The following methods may only be called if the sync engine is initialized.
   void SetEncryptionPassphrase(const std::string& passphrase);
   bool SetDecryptionPassphrase(const std::string& passphrase);
-  void SetExplicitPassphraseDecryptionNigoriKey(std::unique_ptr<Nigori> nigori);
-  std::unique_ptr<Nigori> GetExplicitPassphraseDecryptionNigoriKey() const;
+
 
   // Returns whether it's already possible to determine whether trusted vault
   // key required (e.g. engine didn't start yet or silent fetch attempt is in
@@ -81,16 +91,23 @@ class SyncServiceCrypto : public SyncEncryptionHandler::Observer,
   // second time, unless Reset() is called first.
   void SetSyncEngine(const CoreAccountInfo& account_info, SyncEngine* engine);
 
+  // Must be called once an encryptor is available, before any method that
+  // encrypts/decrypts is called. `encryptor` must not be null.
+  void SetEncryptor(scoped_refptr<os_crypt_async::Encryptor> encryptor);
+  const scoped_refptr<os_crypt_async::Encryptor>& GetEncryptor() const;
+
   // Creates a proxy observer object that will post calls to this thread.
   std::unique_ptr<SyncEncryptionHandler::Observer> GetEncryptionObserverProxy();
 
   // SyncEncryptionHandler::Observer implementation.
   void OnPassphraseRequired(
-      const KeyDerivationParams& key_derivation_params,
-      const sync_pb::EncryptedData& pending_keys) override;
-  void OnPassphraseAccepted() override;
+      std::unique_ptr<RequiredPassphraseVerifier> verifier) override;
+  void OnPassphraseAccepted(
+      const CustomPassphraseBootstrapToken& bootstrap_token) override;
   void OnTrustedVaultKeyRequired() override;
   void OnTrustedVaultKeyAccepted() override;
+  void OnKeystoreKeysRequired() override;
+  void OnKeystoreKeysAccepted() override;
   void OnEncryptedTypesChanged(DataTypeSet encrypted_types,
                                bool encrypt_everything) override;
   void OnCryptographerStateChanged(Cryptographer* cryptographer,
@@ -103,7 +120,9 @@ class SyncServiceCrypto : public SyncEncryptionHandler::Observer,
   DataTypeSet GetAllEncryptedDataTypes() const override;
 
   // TrustedVaultClient::Observer implementation.
-  void OnTrustedVaultKeysChanged() override;
+  void OnTrustedVaultKeysChanged(
+      std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA> trigger)
+      override;
   void OnTrustedVaultRecoverabilityChanged() override;
 
  private:
@@ -124,10 +143,16 @@ class SyncServiceCrypto : public SyncEncryptionHandler::Observer,
     // No keys are required locally but user action is recommended to improve
     // recoverability.
     kTrustedVaultRecoverabilityDegraded,
+    // Keystore keys are required to decrypt pending keys, but this is not a
+    // user-actionable error.
+    kKeystoreKeysRequired,
   };
 
   // Reads trusted vault keys from the client and feeds them to the sync engine.
-  void FetchTrustedVaultKeys(bool is_second_fetch_attempt);
+  void FetchTrustedVaultKeys(
+      bool is_second_fetch_attempt,
+      std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA>
+          trigger);
 
   // Called at various stages of asynchronously fetching and processing trusted
   // vault encryption keys. `is_second_fetch_attempt` is useful for the case
@@ -135,10 +160,19 @@ class SyncServiceCrypto : public SyncEncryptionHandler::Observer,
   // client.
   void TrustedVaultKeysFetchedFromClient(
       bool is_second_fetch_attempt,
+      std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA> trigger,
       const std::vector<std::vector<uint8_t>>& keys);
-  void TrustedVaultKeysAdded(bool is_second_fetch_attempt);
-  void TrustedVaultKeysMarkedAsStale(bool is_second_fetch_attempt, bool result);
-  void FetchTrustedVaultKeysCompletedButInsufficient();
+  void TrustedVaultKeysAdded(
+      bool is_second_fetch_attempt,
+      std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA>
+          trigger);
+  void TrustedVaultKeysMarkedAsStale(
+      bool is_second_fetch_attempt,
+      std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA> trigger,
+      bool result);
+  void FetchTrustedVaultKeysCompletedButInsufficient(
+      std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA>
+          trigger);
 
   // Updates required user action and notifies observers via
   // `notify_required_user_action_changed_`.
@@ -152,22 +186,22 @@ class SyncServiceCrypto : public SyncEncryptionHandler::Observer,
   // TrustedVaultClient::GetIsRecoverabilityDegraded().
   void GetIsRecoverabilityDegradedCompleted(bool is_recoverability_degraded);
 
-  // Attempts decryption of `cached_pending_keys` with a `nigori` and, if
-  // successful, resolves the kPassphraseRequired state and populates the
-  // `nigori` to engine. Should never be called when there is no cached pending
-  // keys. Returns true if successful. Doesn't update bootstrap token.
-  bool SetDecryptionKeyWithoutUpdatingBootstrapToken(
-      std::unique_ptr<Nigori> nigori);
-
-  // Similar to SetDecryptionPassphrase(), but uses bootstrap token instead of
-  // user provided passphrase. Resolves the kPassphraseRequired state on
-  // successful attempt.
+  // Resolves the kPassphraseRequired state from bootstrap token on successful
+  // attempt.
   void MaybeSetDecryptionKeyFromBootstrapToken();
+
+  // Called when a passphrase successfully resolves pending keys. Clears cached
+  // pending keys, transitions required user action to kNone, and triggers
+  // data type reconfiguration.
+  void ResolvePendingKeysRequiredState();
 
   const raw_ptr<Delegate> delegate_;
 
   // Never null and guaranteed to outlive us.
   const raw_ptr<trusted_vault::TrustedVaultClient> trusted_vault_client_;
+
+  // May be null if OSCryptAsync is not used.
+  scoped_refptr<os_crypt_async::Encryptor> encryptor_;
 
   // All the mutable state is wrapped in a struct so that it can be easily
   // reset to its default values.
@@ -195,24 +229,12 @@ class SyncServiceCrypto : public SyncEncryptionHandler::Observer,
     // Whether we want to encrypt everything.
     bool encrypt_everything = false;
 
-    // We cache the cryptographer's pending keys whenever
-    // NotifyPassphraseRequired is called. This way, before the UI calls
-    // SetDecryptionPassphrase on the syncer, it can avoid the overhead of an
-    // asynchronous decryption call and give the user immediate feedback about
-    // the passphrase entered by first trying to decrypt the cached pending keys
-    // on the UI thread. Note that SetDecryptionPassphrase can still fail after
-    // the cached pending keys are successfully decrypted if the pending keys
-    // have changed since the time they were cached.
-    sync_pb::EncryptedData cached_pending_keys;
-
-    // The key derivation params for the passphrase. We save them when we
-    // receive a passphrase required event, as they are a necessary piece of
-    // information to be able to properly perform a decryption attempt, and we
-    // want to be able to synchronously do that from the UI thread. For
-    // passphrase types other than CUSTOM_PASSPHRASE, their key derivation
-    // method will always be PBKDF2.
-    KeyDerivationParams passphrase_key_derivation_params =
-        KeyDerivationParams::CreateForPbkdf2();
+    // Caches the verifier whenever OnPassphraseRequired is called. This way,
+    // before the UI calls SetDecryptionPassphrase on the syncer, it can avoid
+    // the overhead of an asynchronous decryption call and give the user
+    // immediate feedback about the passphrase entered by first trying to
+    // decrypt the pending keys on the UI thread.
+    std::unique_ptr<RequiredPassphraseVerifier> required_passphrase_verifier;
 
     // If an explicit passphrase is in use, the time at which the passphrase was
     // first set (if available).

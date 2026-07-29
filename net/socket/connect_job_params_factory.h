@@ -7,10 +7,12 @@
 
 #include <memory>
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include "net/base/host_port_pair.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
 #include "net/base/privacy_mode.h"
 #include "net/base/request_priority.h"
 #include "net/dns/public/secure_dns_policy.h"
@@ -21,7 +23,6 @@
 #include "net/socket/socks_connect_job.h"
 #include "net/socket/ssl_connect_job.h"
 #include "net/socket/transport_connect_job.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace net {
 
@@ -43,7 +44,8 @@ NET_EXPORT_PRIVATE ConnectJobParams ConstructConnectJobParams(
     SecureDnsPolicy secure_dns_policy,
     bool disable_cert_network_fetches,
     const CommonConnectJobParams* common_connect_job_params,
-    const NetworkAnonymizationKey& proxy_dns_network_anonymization_key);
+    const NetworkAnonymizationKey& proxy_dns_network_anonymization_key,
+    handles::NetworkHandle target_network);
 
 }  // namespace net
 

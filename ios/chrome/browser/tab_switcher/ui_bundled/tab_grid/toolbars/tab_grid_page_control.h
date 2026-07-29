@@ -10,6 +10,8 @@
 
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_paging.h"
 
+@class LayoutGuideCenter;
+
 // Custom control events for the actions on the TabGridPageControl.
 extern UIControlEvents TabGridPageChangeByTapEvent;
 extern UIControlEvents TabGridPageChangeByDragEvent;
@@ -51,13 +53,11 @@ extern UIControlEvents TabGridPageChangeByDragEvent;
 // Numbers greater than 99 are displayed as ':-)'.
 @property(nonatomic, assign) NSUInteger tabCount;
 
-// Create and return a new instance of this control. This is the preferred way
-// to create instances of this class.
-+ (instancetype)pageControl;
-
 // Designated initializer.
-- (instancetype)init NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithLayoutGuideCenter:(LayoutGuideCenter*)layoutGuideCenter
+    NS_DESIGNATED_INITIALIZER;
 
+- (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithFrame:(CGRect)frame NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder*)aDecoder NS_UNAVAILABLE;
 
@@ -69,9 +69,10 @@ extern UIControlEvents TabGridPageChangeByDragEvent;
 // is `scrolledToEdge` or not.
 - (void)setScrollViewScrolledToEdge:(BOOL)scrolledToEdge;
 
-// Highlights (put a blue background) the last element of the page control.
-- (void)highlightLastPageControl;
-// Removes the highlight on the last page control, if there is one.
+// Highlights (put a blue background) the `page`.
+- (void)highlightPageControlItem:(TabGridPage)page;
+
+// Removes the last highlighted page of the page control, if there is one.
 - (void)resetLastPageControlHighlight;
 
 // Returns the frame of the last segment, in window coordinates.

@@ -16,6 +16,7 @@
 #include "ash/public/cpp/session/session_observer.h"
 #include "ash/session/test_session_controller_client.h"
 #include "ash/shell.h"
+#include "ash/system/privacy/screen_switch_check_controller.h"
 #include "ash/system/tray/system_tray_notifier.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/window_state.h"
@@ -135,7 +136,6 @@ class FakeSessionControllerClient : public SessionControllerClient {
   void SwitchActiveUser(const AccountId& account_id) override {}
   void CycleActiveUser(CycleUserDirection direction) override {}
   void ShowMultiProfileLogin() override {}
-  void EmitAshInitialized() override {}
   PrefService* GetSigninScreenPrefService() override { return nullptr; }
   PrefService* GetUserPrefService(const AccountId& account_id) override {
     return &pref_service_;
@@ -230,13 +230,14 @@ class SessionControllerImplWithShellTest : public AshTestBase {
   }
 
   void TearDown() override {
+    window_state_ = nullptr;
     controller()->RemoveObserver(&observer_);
     window_.reset();
     AshTestBase::TearDown();
   }
 
   void CreateFullscreenWindow() {
-    window_ = CreateTestWindow();
+    window_ = CreateWindowWithAppType();
     window_->SetProperty(aura::client::kShowStateKey,
                          ui::mojom::WindowShowState::kFullscreen);
     window_state_ = WindowState::Get(window_.get());
@@ -248,7 +249,7 @@ class SessionControllerImplWithShellTest : public AshTestBase {
   const TestSessionObserver* observer() const { return &observer_; }
 
  protected:
-  raw_ptr<WindowState, DanglingUntriaged> window_state_ = nullptr;
+  raw_ptr<WindowState> window_state_ = nullptr;
 
  private:
   TestSessionObserver observer_;
@@ -410,10 +411,9 @@ TEST_F(SessionControllerImplTest, GetLoginStateForActiveSession) {
       {user_manager::UserType::kRegular, LoginStatus::USER},
       {user_manager::UserType::kGuest, LoginStatus::GUEST},
       {user_manager::UserType::kPublicAccount, LoginStatus::PUBLIC},
-      {user_manager::UserType::kKioskApp, LoginStatus::KIOSK_APP},
+      {user_manager::UserType::kKioskChromeApp, LoginStatus::KIOSK_APP},
       {user_manager::UserType::kChild, LoginStatus::CHILD},
-      {user_manager::UserType::kWebKioskApp, LoginStatus::KIOSK_APP}
-  };
+      {user_manager::UserType::kKioskWebApp, LoginStatus::KIOSK_APP}};
 
   for (const auto& test_case : kTestCases) {
     UserSession session;
@@ -664,7 +664,7 @@ TEST_F(SessionControllerImplPrefsTest, SetsTimeOfLastSessionActivation) {
            SessionState::RMA}) {
     // Set session state and expect observers to be notified of the event.
     EXPECT_CALL(mock_session_observer, OnSessionStateChanged)
-        .WillOnce(testing::Invoke([&](SessionState session_state) {
+        .WillOnce([&](SessionState session_state) {
           EXPECT_EQ(session_state, expected_session_state);
 
           auto* const time_of_last_session_activation =
@@ -679,7 +679,7 @@ TEST_F(SessionControllerImplPrefsTest, SetsTimeOfLastSessionActivation) {
           EXPECT_EQ(
               *base::ValueToTime(time_of_last_session_activation->GetValue()),
               expected_time_of_last_session_activation);
-        }));
+        });
     session->SetSessionState(expected_session_state);
     testing::Mock::VerifyAndClearExpectations(&mock_session_observer);
 
@@ -727,7 +727,7 @@ TEST_F(SessionControllerImplPrefsTest, SetsTimeOfLastSessionActivation) {
 
   // Switch active user and expect observers to be notified of the event.
   EXPECT_CALL(mock_session_observer, OnActiveUserSessionChanged)
-      .WillOnce(testing::Invoke([&](const AccountId& account_id) {
+      .WillOnce([&](const AccountId& account_id) {
         EXPECT_EQ(account_id, kUser2AccountId);
 
         auto* const time_of_last_session_activation =
@@ -742,7 +742,7 @@ TEST_F(SessionControllerImplPrefsTest, SetsTimeOfLastSessionActivation) {
         EXPECT_EQ(
             *base::ValueToTime(time_of_last_session_activation->GetValue()),
             expected_time_of_last_session_activation);
-      }));
+      });
   SimulateUserLogin({kUser2Email});
   testing::Mock::VerifyAndClearExpectations(&mock_session_observer);
 
@@ -860,6 +860,25 @@ class CanSwitchUserTest : public AshTestBase {
 
   ~CanSwitchUserTest() override = default;
 
+  void SetUp() override {
+    AshTestBase::SetUp();
+    auto account1 = Shell::Get()
+                        ->session_controller()
+                        ->GetUserSessions()[0]
+                        ->user_info.account_id;
+    SimulateUserLogin(AccountId::FromUserEmail("user2@test.com"));
+
+    // Switch back to the first user so that SwitchCallback actually triggers a
+    // change.
+    Shell::Get()
+        ->screen_switch_check_controller()
+        ->set_skip_cancel_dialog_for_testing(true);
+    GetSessionControllerClient()->SwitchActiveUser(account1);
+    Shell::Get()
+        ->screen_switch_check_controller()
+        ->set_skip_cancel_dialog_for_testing(false);
+  }
+
   void TearDown() override {
     base::RunLoop().RunUntilIdle();
     AshTestBase::TearDown();
@@ -911,8 +930,17 @@ class CanSwitchUserTest : public AshTestBase {
 
   // Called when the user will get actually switched.
   void SwitchCallback(bool switch_user) {
-    if (switch_user)
+    if (switch_user) {
       switch_callback_hit_count_++;
+      Shell::Get()
+          ->screen_switch_check_controller()
+          ->set_skip_cancel_dialog_for_testing(true);
+      GetSessionControllerClient()->SwitchActiveUser(
+          AccountId::FromUserEmail("user2@test.com"));
+      Shell::Get()
+          ->screen_switch_check_controller()
+          ->set_skip_cancel_dialog_for_testing(false);
+    }
   }
 
   // Various counter accessors.

@@ -8,6 +8,7 @@
 #include <string>
 
 #include "ash/constants/ash_paths.h"
+#include "ash/constants/ash_pref_names.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -29,13 +30,14 @@
 #include "base/values.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/system/automatic_reboot_manager_observer.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/dbus/update_engine/fake_update_engine_client.h"
+#include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
 #include "components/user_manager/fake_user_manager.h"
@@ -224,10 +226,12 @@ class AutomaticRebootManagerBasicTest : public testing::Test {
   base::SingleThreadTaskRunner::CurrentHandleOverrideForTesting
       single_thread_task_runner_current_default_handle_override_;
 
-  TestingPrefServiceSimple local_state_;
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       user_manager_;
-  session_manager::SessionManager session_manager_;
+  session_manager::SessionManager session_manager_{
+      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
+
+  ash::SessionTerminationManager session_termination_manager_;
 
   raw_ptr<FakeUpdateEngineClient, DanglingUntriaged> update_engine_client_ =
       nullptr;  // Not owned.
@@ -343,9 +347,6 @@ void AutomaticRebootManagerBasicTest::SetUp() {
                                        /*is_absolute=*/false,
                                        /*create=*/false);
 
-  TestingBrowserProcess::GetGlobal()->SetLocalState(&local_state_);
-  AutomaticRebootManager::RegisterPrefs(local_state_.registry());
-
   update_engine_client_ = UpdateEngineClient::InitializeFakeForTest();
   chromeos::PowerManagerClient::InitializeFake();
 }
@@ -365,7 +366,6 @@ void AutomaticRebootManagerBasicTest::TearDown() {
 
   chromeos::PowerManagerClient::Shutdown();
   UpdateEngineClient::Shutdown();
-  TestingBrowserProcess::GetGlobal()->SetLocalState(nullptr);
 }
 
 void AutomaticRebootManagerBasicTest::SetUpdateRebootNeededUptime(
@@ -378,8 +378,8 @@ void AutomaticRebootManagerBasicTest::SetRebootAfterUpdate(
     bool reboot_after_update,
     bool expect_reboot) {
   reboot_after_update_ = reboot_after_update;
-  local_state_.SetManagedPref(
-      prefs::kRebootAfterUpdate,
+  TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetManagedPref(
+      ash::prefs::kRebootAfterUpdate,
       std::make_unique<base::Value>(reboot_after_update));
   task_runner_->RunUntilIdle();
   EXPECT_EQ(
@@ -392,10 +392,12 @@ void AutomaticRebootManagerBasicTest::SetUptimeLimit(
     bool expect_reboot) {
   uptime_limit_ = limit;
   if (limit.is_zero()) {
-    local_state_.RemoveManagedPref(prefs::kUptimeLimit);
+    TestingBrowserProcess::GetGlobal()
+        ->GetTestingLocalState()
+        ->RemoveManagedPref(ash::prefs::kUptimeLimit);
   } else {
-    local_state_.SetManagedPref(
-        prefs::kUptimeLimit,
+    TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetManagedPref(
+        ash::prefs::kUptimeLimit,
         std::make_unique<base::Value>(static_cast<int>(limit.InSeconds())));
   }
   task_runner_->RunUntilIdle();
@@ -478,6 +480,7 @@ void AutomaticRebootManagerBasicTest::ExpectNoRebootRequest() {
 void AutomaticRebootManagerBasicTest::CreateAutomaticRebootManager(
     bool expect_reboot) {
   automatic_reboot_manager_ = std::make_unique<AutomaticRebootManager>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       task_runner_->GetMockClock(), task_runner_->GetMockTickClock());
   automatic_reboot_manager_observer_.Init(automatic_reboot_manager_.get());
   task_runner_->RunUntilIdle();
@@ -614,7 +617,7 @@ void AutomaticRebootManagerTest::SetUp() {
           session_manager::SessionState::LOGIN_PRIMARY);
       break;
     case AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_KIOSK_APP_SESSION:
-      LogIn(user_manager_->AddKioskAppUser(account_id_));
+      LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
       break;
     case AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_NON_KIOSK_APP_SESSION:
       LogIn(user_manager_->AddUser(account_id_));
@@ -635,7 +638,7 @@ TEST_F(AutomaticRebootManagerBasicTest, LoginStopsIdleTimer) {
   VerifyNoRebootRequested();
 
   // Notify that a kiosk app session has been started.
-  LogIn(user_manager_->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
 
   // Verify that the login screen idle timer is stopped.
   VerifyLoginScreenIdleTimerIsStopped();
@@ -707,7 +710,7 @@ TEST_F(AutomaticRebootManagerBasicTest, UserActivityResetsIdleTimer) {
 // Verifies that when the device is suspended and then resumes, it does not
 // immediately reboot.
 TEST_F(AutomaticRebootManagerBasicTest, ResumeNoPolicy) {
-  LogIn(user_manager_->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
   uptime_provider()->SetUptime(base::Days(10));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -781,7 +784,7 @@ TEST_F(AutomaticRebootManagerBasicTest, LoginScreenResumeNoPolicy) {
 // Verifies that when the device is suspended and then resumes, it does not
 // immediately reboot.
 TEST_F(AutomaticRebootManagerBasicTest, ResumeBeforeGracePeriod) {
-  LogIn(user_manager_->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
   uptime_provider()->SetUptime(base::Hours(12));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -872,7 +875,7 @@ TEST_F(AutomaticRebootManagerBasicTest, LoginScreenResumeBeforeGracePeriod) {
 // Verifies that when the device is suspended and then resumes, it reboots
 // shortly after.
 TEST_F(AutomaticRebootManagerBasicTest, ResumeInGracePeriod) {
-  LogIn(user_manager_->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
   uptime_provider()->SetUptime(base::Hours(12));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -930,7 +933,7 @@ TEST_F(AutomaticRebootManagerBasicTest, NonKioskResumeInGracePeriod) {
 // Verifies that when the device is suspended and then resumes, it immediately
 // reboots.
 TEST_F(AutomaticRebootManagerBasicTest, ResumeAfterGracePeriod) {
-  LogIn(user_manager_->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
   uptime_provider()->SetUptime(base::Hours(29) + base::Minutes(30));
 
   // Verify that no reboot is requested and the device does not reboot

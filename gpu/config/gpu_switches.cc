@@ -32,6 +32,9 @@ const char kGpuPreferences[] = "gpu-preferences";
 // Ignores GPU blocklist.
 const char kIgnoreGpuBlocklist[] = "ignore-gpu-blocklist";
 
+// Disables the GPU shader on disk cache.
+const char kDisableGpuShaderDiskCache[] = "disable-gpu-shader-disk-cache";
+
 // Allows explicitly specifying the shader disk cache size for embedded devices.
 // Default value is 6MB. On Android, 2MB is default and 128KB for low-end
 // devices.
@@ -40,6 +43,11 @@ const char kGpuDiskCacheSizeKB[] = "gpu-disk-cache-size-kb";
 // Disables the non-sandboxed GPU process for DX12 info collection
 const char kDisableGpuProcessForDX12InfoCollection[] =
     "disable-gpu-process-for-dx12-info-collection";
+
+// Enables WebGL draft extensions (not yet approved by the
+// community). This has side-effects in the GPU process, so the flag
+// is here so that code in both gpu/ and content/ can access it.
+const char kEnableWebGLDraftExtensions[] = "enable-webgl-draft-extensions";
 
 const char kEnableUnsafeWebGPU[] = "enable-unsafe-webgpu";
 
@@ -54,11 +62,10 @@ const char kEnableWebGPUDeveloperFeatures[] =
 const char kEnableDawnBackendValidation[] = "enable-dawn-backend-validation";
 
 // The adapter to use for WebGPU content.
-GPU_EXPORT extern const char kUseWebGPUAdapter[] = "use-webgpu-adapter";
+extern const char kUseWebGPUAdapter[] = "use-webgpu-adapter";
 
 // The adapter selecting strategy related to GPUPowerPreference.
-GPU_EXPORT extern const char kUseWebGPUPowerPreference[] =
-    "use-webgpu-power-preference";
+extern const char kUseWebGPUPowerPreference[] = "use-webgpu-power-preference";
 
 // Force all WebGPU content to run in WebGPU Compatibility mode.
 const char kForceWebGPUCompat[] = "force-webgpu-compat";
@@ -134,16 +141,14 @@ const char kGpuWatchdogTimeoutSeconds[] = "gpu-watchdog-timeout-seconds";
 const char kForceSeparateEGLDisplayForWebGLTesting[] =
     "force-separate-egl-display-for-webgl-testing";
 
-// Specify which backend to use for Skia Graphite - "dawn" (default) or "metal"
-// (only allowed on non-official developer builds).
-const char kSkiaGraphiteBackend[] = "skia-graphite-backend";
-const char kSkiaGraphiteBackendDawn[] = "dawn";
-const char kSkiaGraphiteBackendDawnD3D11[] = "dawn-d3d11";
-const char kSkiaGraphiteBackendDawnD3D12[] = "dawn-d3d12";
-const char kSkiaGraphiteBackendDawnMetal[] = "dawn-metal";
-const char kSkiaGraphiteBackendDawnSwiftshader[] = "dawn-swiftshader";
-const char kSkiaGraphiteBackendDawnVulkan[] = "dawn-vulkan";
-const char kSkiaGraphiteBackendMetal[] = "metal";
+// Specify which Dawn backend to use for Skia Graphite.
+const char kSkiaGraphiteDawnBackend[] = "skia-graphite-dawn-backend";
+const char kSkiaGraphiteDawnBackendD3D11[] = "d3d11";
+const char kSkiaGraphiteDawnBackendD3D12[] = "d3d12";
+const char kSkiaGraphiteDawnBackendMetal[] = "metal";
+const char kSkiaGraphiteDawnBackendOpenGLES[] = "opengles";
+const char kSkiaGraphiteDawnBackendSwiftshader[] = "swiftshader";
+const char kSkiaGraphiteDawnBackendVulkan[] = "vulkan";
 
 // Force disabling/enabling Skia Graphite. Disabling will take precedence over
 // enabling if both are specified.
@@ -156,14 +161,6 @@ const char kDisableSkiaGraphitePrecompilation[] =
     "disable-skia-graphite-precompilation";
 const char kEnableSkiaGraphitePrecompilation[] =
     "enable-skia-graphite-precompilation";
-
-const char kShaderCachePath[] = "shader-cache-path";
-
-// Try to use a redistributable DirectML.dll. Used for testing WebNN
-// against newer DirectML release before it is integrated into Windows OS.
-// Please see more info about DirectML releases at:
-// https://learn.microsoft.com/en-us/windows/ai/directml/dml-version-history
-const char kUseRedistributableDirectML[] = "use-redist-dml";
 
 // Enables ThreadControllerWithMessagePumpImpl's TimeKeeper UMA metrics using
 // CrGpuMain as suffix.

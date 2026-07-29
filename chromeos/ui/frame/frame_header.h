@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/component_export.h"
-#include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -40,8 +39,7 @@ class LayerTreeOwner;
 namespace views {
 enum class CaptionButtonLayoutSize;
 class FrameCaptionButton;
-class NonClientFrameView;
-class View;
+class FrameView;
 class Widget;
 }  // namespace views
 
@@ -98,7 +96,7 @@ class COMPONENT_EXPORT(CHROMEOS_UI_FRAME) FrameHeader
   // frame animator view to still be at the bottom of the z-order while also
   // keeping the rest of the frame view's children on top of the client view.
   static views::View::Views GetAdjustedChildrenInZOrder(
-      views::NonClientFrameView* frame_view);
+      views::FrameView* frame_view);
 
   FrameHeader(const FrameHeader&) = delete;
   FrameHeader& operator=(const FrameHeader&) = delete;
@@ -157,12 +155,12 @@ class COMPONENT_EXPORT(CHROMEOS_UI_FRAME) FrameHeader
   // change in mode.
   virtual void UpdateFrameColors() = 0;
 
-  // Returns window mask for the rounded corner of the frame header.
-  virtual SkPath GetWindowMaskForFrameHeader(const gfx::Size& size);
-
   // Sets text to display in place of the window's title. This will be shown
   // regardless of what ShouldShowWindowTitle() returns.
   void SetFrameTextOverride(const std::u16string& frame_text_override);
+
+  // Sets whether the native frame header should paint the window title text.
+  void SetPaintTitleBar(bool paint_title_bar);
 
   void UpdateFrameHeaderKey();
 
@@ -183,6 +181,8 @@ class COMPONENT_EXPORT(CHROMEOS_UI_FRAME) FrameHeader
   chromeos::FrameCaptionButtonContainerView* caption_button_container() {
     return caption_button_container_;
   }
+
+  gfx::Rect GetTitleBoundsForTesting() const { return GetTitleBounds(); }
 
   // ui::LayerOwner::Observer overrides:
   void OnLayerRecreated(ui::Layer* old_layer) override;
@@ -261,6 +261,7 @@ class COMPONENT_EXPORT(CHROMEOS_UI_FRAME) FrameHeader
   int corner_radius_ = 0;
 
   std::u16string frame_text_override_;
+  bool paint_title_bar_ = true;
 };
 
 }  // namespace chromeos

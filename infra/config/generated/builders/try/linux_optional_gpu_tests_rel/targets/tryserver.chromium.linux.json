@@ -20,6 +20,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "info_collection_tests GTX 1660",
         "resultdb": {
           "enable": true,
@@ -27,8 +29,9 @@
         },
         "swarming": {
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -57,6 +60,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "info_collection_tests UHD 630",
         "resultdb": {
           "enable": true,
@@ -64,6 +69,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -90,6 +96,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "trace_test GTX 1660",
         "resultdb": {
           "enable": true,
@@ -97,8 +105,9 @@
         },
         "swarming": {
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -123,6 +132,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "trace_test UHD 630",
         "resultdb": {
           "enable": true,
@@ -130,6 +141,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -156,6 +168,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webcodecs_tests GTX 1660",
         "resultdb": {
           "enable": true,
@@ -163,8 +177,9 @@
         },
         "swarming": {
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -189,6 +204,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webcodecs_tests UHD 630",
         "resultdb": {
           "enable": true,
@@ -196,6 +213,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -224,6 +242,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl2_conformance_gl_passthrough_tests GTX 1660",
         "resultdb": {
           "enable": true,
@@ -231,8 +251,9 @@
         },
         "swarming": {
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -260,6 +281,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl2_conformance_gl_passthrough_tests UHD 630",
         "resultdb": {
           "enable": true,
@@ -267,6 +290,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -295,6 +319,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gl_passthrough_tests GTX 1660",
         "resultdb": {
           "enable": true,
@@ -302,8 +328,9 @@
         },
         "swarming": {
           "dimensions": {
-            "gpu": "10de:2184-440.100",
-            "os": "Ubuntu-18.04.5|Ubuntu-18.04.6",
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -330,6 +357,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gl_passthrough_tests UHD 630",
         "resultdb": {
           "enable": true,
@@ -337,6 +366,7 @@
         },
         "swarming": {
           "dimensions": {
+            "display_server": "x11",
             "gpu": "8086:9bc5-23.2.1",
             "os": "Ubuntu-22.04",
             "pool": "chromium.tests.gpu"
@@ -344,6 +374,78 @@
           "idempotent": false,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 2
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
+        "variant_id": "UHD 630"
+      },
+      {
+        "args": [
+          "webrtc",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webrtc_tests GTX 1660",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "10de:2184-535.183.01",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "idempotent": false,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",
+        "variant_id": "GTX 1660"
+      },
+      {
+        "args": [
+          "webrtc",
+          "--show-stdout",
+          "--browser=release",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=4"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test",
+        "module_scheme": "flat",
+        "name": "webrtc_tests UHD 630",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "dimensions": {
+            "display_server": "x11",
+            "gpu": "8086:9bc5-23.2.1",
+            "os": "Ubuntu-22.04",
+            "pool": "chromium.tests.gpu"
+          },
+          "idempotent": false,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "telemetry_gpu_integration_test",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test/",

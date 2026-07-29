@@ -9,7 +9,6 @@
 #import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_translate_language_selection_delegate.h"
 #import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_translate_modal_constants.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 
@@ -51,7 +50,6 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.backgroundColor = [UIColor colorNamed:kBackgroundColor];
-  self.styler.cellBackgroundColor = [UIColor colorNamed:kBackgroundColor];
   self.tableView.sectionHeaderHeight = 0;
   [self.tableView
       setSeparatorInset:UIEdgeInsetsMake(0, kTableViewHorizontalSpacing, 0, 0)];
@@ -85,6 +83,7 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   UITableViewCell* cell = [super tableView:tableView
                      cellForRowAtIndexPath:indexPath];
+  cell.backgroundColor = [UIColor colorNamed:kBackgroundColor];
   // All items should be a TableViewTextItem and of just one type
   // kItemTypeEnumZero. They are populated in the mediator with this assumption.
   TableViewTextItem* item = static_cast<TableViewTextItem*>(

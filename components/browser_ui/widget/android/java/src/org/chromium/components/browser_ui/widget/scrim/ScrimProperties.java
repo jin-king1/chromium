@@ -4,11 +4,9 @@
 
 package org.chromium.components.browser_ui.widget.scrim;
 
-import android.graphics.Color;
 import android.view.GestureDetector;
 import android.view.View;
-
-import androidx.annotation.ColorInt;
+import android.view.ViewGroup;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
@@ -25,12 +23,6 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 @NullMarked
 public class ScrimProperties {
     /**
-     * An invalid color that can be specified for {@link #BACKGROUND_COLOR}. This will trigger the
-     * use of the default color set when the {@link ScrimManager} was constructed.
-     */
-    public static final @ColorInt int INVALID_COLOR = Color.TRANSPARENT;
-
-    /**
      * The top margin of the scrim. This can be used to shrink the scrim to show items at the top of
      * the screen.
      */
@@ -46,13 +38,17 @@ public class ScrimProperties {
     public static final ReadableBooleanPropertyKey AFFECTS_STATUS_BAR =
             new ReadableBooleanPropertyKey();
 
-    /** The view that the scrim is using to place itself in the hierarchy. */
+    /** The view that the scrim is using to place itself relative to in the hierarchy. */
     public static final ReadableObjectPropertyKey<View> ANCHOR_VIEW =
             new ReadableObjectPropertyKey<>();
 
     /** Whether the scrim should show in front of the anchor view. */
     public static final ReadableBooleanPropertyKey SHOW_IN_FRONT_OF_ANCHOR_VIEW =
             new ReadableBooleanPropertyKey();
+
+    /** A custom parent for the scrim to use, must be a child of the scrim manager's parent view. */
+    public static final ReadableObjectPropertyKey<ViewGroup> CUSTOM_PARENT =
+            new ReadableObjectPropertyKey<>();
 
     /** A callback for updates to the scrim's visibility. */
     public static final ReadableObjectPropertyKey<Callback<Boolean>> VISIBILITY_CALLBACK =
@@ -68,9 +64,11 @@ public class ScrimProperties {
     /* package */ static final WritableFloatPropertyKey ALPHA = new WritableFloatPropertyKey();
 
     /**
-     * The background color for the scrim. If not set a default color will be set as the background.
+     * A @ColorInt for the background color for the scrim. If not set or null then a default color
+     * for the scrim will be used instead.
      */
-    public static final WritableIntPropertyKey BACKGROUND_COLOR = new WritableIntPropertyKey();
+    public static final WritableObjectPropertyKey<Integer> BACKGROUND_COLOR =
+            new WritableObjectPropertyKey<>();
 
     /**
      * A filter for touch event that happen on this view.
@@ -97,6 +95,7 @@ public class ScrimProperties {
                 AFFECTS_STATUS_BAR,
                 ANCHOR_VIEW,
                 SHOW_IN_FRONT_OF_ANCHOR_VIEW,
+                CUSTOM_PARENT,
                 VISIBILITY_CALLBACK,
                 CLICK_DELEGATE,
                 ALPHA,

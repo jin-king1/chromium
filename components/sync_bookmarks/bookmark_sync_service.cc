@@ -17,7 +17,7 @@ BookmarkSyncService::BookmarkSyncService(
 
 BookmarkSyncService::~BookmarkSyncService() = default;
 
-std::string BookmarkSyncService::EncodeBookmarkSyncMetadata() {
+std::string BookmarkSyncService::EncodeBookmarkSyncMetadata() const {
   return bookmark_data_type_processor_.EncodeSyncMetadata();
 }
 
@@ -43,7 +43,8 @@ bool BookmarkSyncService::IsTrackingMetadata() const {
          is_tracking_metadata_for_testing_;
 }
 
-sync_bookmarks::BookmarkModelView* BookmarkSyncService::bookmark_model_view() {
+sync_bookmarks::BookmarkModelView* BookmarkSyncService::bookmark_model_view()
+    const {
   return bookmark_model_view_.get();
 }
 
@@ -51,10 +52,9 @@ void BookmarkSyncService::SetIsTrackingMetadataForTesting() {
   is_tracking_metadata_for_testing_ = true;
 }
 
-void BookmarkSyncService::SetBookmarksLimitForTesting(size_t limit) {
-  bookmark_data_type_processor_
-      .SetMaxBookmarksTillSyncEnabledForTest(  // IN-TEST
-          limit);
+void BookmarkSyncService::SetLocalBookmarksLimitForTesting(size_t limit) {
+  bookmark_data_type_processor_.SetLocalBookmarksLimitForTesting(  // IN-TEST
+      limit);
 }
 
 }  // namespace sync_bookmarks

@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_CHROMEOS_EXTENSIONS_SMART_CARD_PROVIDER_PRIVATE_SMART_CARD_PROVIDER_PRIVATE_API_H_
 #define CHROME_BROWSER_CHROMEOS_EXTENSIONS_SMART_CARD_PROVIDER_PRIVATE_SMART_CARD_PROVIDER_PRIVATE_API_H_
 
+#include <variant>
+
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
@@ -257,7 +259,8 @@ class SmartCardProviderPrivateAPI
 
   void RunNextRequestForContext(ContextId scard_context);
 
-  std::string GetListenerExtensionId(const extensions::Event& event);
+  std::optional<std::string> GetListenerExtensionId(
+      const extensions::Event& event);
 
   void OnEstablishContextTimeout(const std::string& provider_extension_id,
                                  RequestId request_id);
@@ -297,7 +300,7 @@ class SmartCardProviderPrivateAPI
       base::OnceCallback<void(ResultPtr)> callback,
       void (SmartCardProviderPrivateAPI::*OnTimeout)(const std::string&,
                                                      RequestId),
-      base::Value::List event_arguments = base::Value::List(),
+      base::ListValue event_arguments = base::ListValue(),
       std::optional<base::TimeDelta> timeout = std::nullopt);
 
   device::mojom::SmartCardConnectResultPtr CreateSmartCardConnection(
@@ -328,7 +331,7 @@ class SmartCardProviderPrivateAPI
 
   // The watcher connection closes - thus, the pipe fall is leveraged to kill
   // the connection.
-  void OnMojoWatcherPipeClosed(mojo::ReceiverId connection_id);
+  void OnMojoWatcherPipeClosed(mojo::RemoteSetElementId watcher_id);
 
   // This may only be called only when processing a received method call on
   // SmartCardConnection().
@@ -362,6 +365,9 @@ class SmartCardProviderPrivateAPI
 
   std::map<mojo::ReceiverId, mojo::RemoteSetElementId>
       connection_watchers_per_receiver_;
+
+  std::map<mojo::RemoteSetElementId, mojo::ReceiverId>
+      connection_receivers_per_watcher_;
 
   mojo::AssociatedReceiverSet<device::mojom::SmartCardTransaction,
                               std::tuple<ContextId, Handle>>

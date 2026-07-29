@@ -5,11 +5,12 @@
 #include "sandbox/win/src/service_resolver.h"
 
 #include <windows.h>
+#include <winternl.h>
 
 #include <ntstatus.h>
 #include <stddef.h>
-#include <winternl.h>
 
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 
 namespace {
@@ -116,7 +117,7 @@ bool IsFunctionAService32(HANDLE process, void* target, void* local_thunk) {
   }
 
   // Save the verified code
-  memcpy(local_thunk, &function_code, sizeof(function_code));
+  UNSAFE_TODO(memcpy(local_thunk, &function_code, sizeof(function_code)));
 
   return true;
 }
@@ -138,7 +139,7 @@ bool IsFunctionAServiceWow64(HANDLE process, void* target, void* local_thunk) {
   }
 
   // Save the verified code
-  memcpy(local_thunk, &function_code, sizeof(function_code));
+  UNSAFE_TODO(memcpy(local_thunk, &function_code, sizeof(function_code)));
   return true;
 }
 
@@ -147,16 +148,13 @@ bool IsFunctionAServiceWow64(HANDLE process, void* target, void* local_thunk) {
 namespace sandbox {
 
 NTSTATUS ServiceResolverThunk::Setup(const void* target_module,
-                                     const void* interceptor_module,
                                      const char* target_name,
-                                     const char* interceptor_name,
                                      const void* interceptor_entry_point,
                                      void* thunk_storage,
                                      size_t storage_bytes,
                                      size_t* storage_used) {
-  NTSTATUS ret =
-      Init(target_module, interceptor_module, target_name, interceptor_name,
-           interceptor_entry_point, thunk_storage, storage_bytes);
+  NTSTATUS ret = Init(target_module, target_name, interceptor_entry_point,
+                      thunk_storage, storage_bytes);
   if (!NT_SUCCESS(ret))
     return ret;
 
@@ -226,8 +224,8 @@ NTSTATUS ServiceResolverThunk::PerformPatch(void* local_thunk,
       reinterpret_cast<ServiceFullThunk*>(remote_thunk);
 
   // patch the original code
-  memcpy(&intercepted_code, &full_local_thunk->original,
-         sizeof(intercepted_code));
+  UNSAFE_TODO(memcpy(&intercepted_code, &full_local_thunk->original,
+                     sizeof(intercepted_code)));
   intercepted_code.mov_eax = kMovEax;
   intercepted_code.service_id = full_local_thunk->original.service_id;
   intercepted_code.mov_edx = kMovEdx;
@@ -306,7 +304,7 @@ bool ServiceResolverThunk::SaveOriginalFunction(void* local_thunk,
   }
 
   // Save the verified code
-  memcpy(local_thunk, &function_code, sizeof(function_code));
+  UNSAFE_TODO(memcpy(local_thunk, &function_code, sizeof(function_code)));
 
   return true;
 }

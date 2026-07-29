@@ -34,6 +34,13 @@
 //   running registered error handlers.
 // * The `DFATAL` pseudo-severity level is defined as `FATAL` in debug mode and
 //   as `ERROR` otherwise.
+// * The `DO_NOT_SUBMIT` pseudo-severity level is an alias for `ERROR`, and is
+//   intended for debugging statements that won't be submitted.  The name is
+//   chosen to be easy to spot in review and with tools in order to ensure that
+//   such statements aren't inadvertently checked in.
+//   The contract is that **it may not be checked in**, meaning that no
+//   in-contract uses will be affected if we decide in the future to remove it
+//   or change what it does.
 // Some preprocessor shenanigans are used to ensure that e.g. `LOG(INFO)` has
 // the same meaning even if a local symbol or preprocessor macro named `INFO` is
 // defined.  To specify a severity level using an expression instead of a
@@ -194,6 +201,8 @@
 //   LOG(INFO) << std::hex << 0xdeadbeef;  // logs "0xdeadbeef"
 //   LOG(INFO) << 0xdeadbeef;              // logs "3735928559"
 
+// SKIP_ABSL_INLINE_NAMESPACE_CHECK
+
 #ifndef ABSL_LOG_LOG_H_
 #define ABSL_LOG_LOG_H_
 
@@ -238,11 +247,11 @@
 // However, simply testing whether verbose logging is enabled can be expensive.
 // If you don't intend to enable verbose logging in non-debug builds, consider
 // using `DVLOG` instead.
-#define VLOG(severity) ABSL_LOG_INTERNAL_VLOG_IMPL(severity)
+#define VLOG(verbose_level) ABSL_LOG_INTERNAL_VLOG_IMPL(verbose_level)
 
 // `DVLOG` behaves like `VLOG` in debug mode (i.e. `#ifndef NDEBUG`).
 // Otherwise, it compiles away and does nothing.
-#define DVLOG(severity) ABSL_LOG_INTERNAL_DVLOG_IMPL(severity)
+#define DVLOG(verbose_level) ABSL_LOG_INTERNAL_DVLOG_IMPL(verbose_level)
 
 // `LOG_IF` and friends add a second argument which specifies a condition.  If
 // the condition is false, nothing is logged.

@@ -18,7 +18,7 @@ export function getHtml(this: AppElement) {
         <h2 slot="heading">$i18n{appearanceHeader}</h2>
       </sp-heading>
       <customize-chrome-appearance @edit-theme-click="${this.onEditThemeClick_}"
-          @wallpaper-search-click="${this.onWallpaperSearchSelect_}"
+          @wallpaper-search-click="${this.onWallpaperSearchClick_}"
           id="appearanceElement">
       </customize-chrome-appearance>
     </div>
@@ -33,14 +33,24 @@ export function getHtml(this: AppElement) {
       </sp-heading>
       <cr-icon icon="cr:chevron-right" slot="suffix-icon"></cr-icon>
     </cr-button>
-     ${this.isSourceTabFirstPartyNtp_ ? html`<hr class="sp-cards-separator">
+    ${this.ntpNextFeaturesEnabled_ && this.ntpNextDisablementEnabled_
+      && this.aimPolicyEnabled_ && this.isSourceTabFirstPartyNtp_() ? html`
+      <hr class="sp-cards-separator">
+      <div id="tools" class="section sp-card">
+        <sp-heading hide-back-button>
+          <h2 slot="heading">$i18n{toolsHeader}</h2>
+        </sp-heading>
+        <customize-chrome-tools></customize-chrome-tools>
+      </div>
+    ` : ''}
+     ${this.isSourceTabFirstPartyNtp_() ? html`<hr class="sp-cards-separator">
     <div id="shortcuts" class="section sp-card">
       <sp-heading hide-back-button>
         <h2 slot="heading">$i18n{shortcutsHeader}</h2>
       </sp-heading>
       <customize-chrome-shortcuts></customize-chrome-shortcuts>
     </div>`: ''}
-    ${(this.modulesEnabled_ && this.isSourceTabFirstPartyNtp_) ? html`
+    ${(this.modulesEnabled_ && this.isSourceTabFirstPartyNtp_()) ? html`
       <hr class="sp-cards-separator">
       <div id="modules" class="section sp-card">
         <sp-heading hide-back-button>
@@ -77,19 +87,28 @@ export function getHtml(this: AppElement) {
         </div>
       </div>
     ` : ''}
+    ${this.showFooter_ ? html`
+      <hr class="sp-cards-separator">
+      <div id="footer" class="section sp-card">
+        <sp-heading hide-back-button>
+          <h2 slot="heading">$i18n{footerHeader}</h2>
+        </sp-heading>
+        <customize-chrome-footer></customize-chrome-footer>
+      </div>
+    `: ''}
   </div>
-  ${(this.isSourceTabFirstPartyNtp_) ? html`
+  ${(this.showEditTheme_) ? html`
   <customize-chrome-categories @back-click="${this.onBackClick_}"
       @collection-select="${this.onCollectionSelect_}" page-name="categories"
       id="categoriesPage" @local-image-upload="${this.onLocalImageUpload_}"
       @wallpaper-search-select="${this.onWallpaperSearchSelect_}">
   </customize-chrome-categories>`: ''}
-  ${(this.isSourceTabFirstPartyNtp_) ? html`
+  ${(this.showEditTheme_) ? html`
   <customize-chrome-themes @back-click="${this.onBackClick_}"
       page-name="themes" id="themesPage"
       .selectedCollection="${this.selectedCollection_}">
   </customize-chrome-themes>`: ''}
-  ${(this.wallpaperSearchEnabled_ && this.isSourceTabFirstPartyNtp_) ? html`
+  ${(this.wallpaperSearchEnabled_ && this.showEditTheme_) ? html`
     <customize-chrome-wallpaper-search @back-click="${this.onBackClick_}"
         page-name="wallpaper-search" id="wallpaperSearchPage">
     </customize-chrome-wallpaper-search>

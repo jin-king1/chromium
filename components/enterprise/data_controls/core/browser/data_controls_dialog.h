@@ -42,6 +42,11 @@ class DataControlsDialog {
     kClipboardPasteWarn,
     kClipboardCopyBlock,
     kClipboardCopyWarn,
+    kClipboardShareBlock,
+    kClipboardShareWarn,
+    kClipboardActionBlock,
+    kClipboardActionWarn,
+    kClipboardDragBlock
   };
 
   ~DataControlsDialog();
@@ -58,7 +63,8 @@ class DataControlsDialog {
   // should cleanup any reference to this dialog.
   virtual void Show(base::OnceClosure on_destructed) = 0;
 
-  friend DataControlsDialogFactory;
+  friend class DataControlsDialogFactory;
+  friend class DesktopDataControlsDialogTestHelper;
 
   DataControlsDialog(Type type,
                      base::OnceCallback<void(bool bypassed)> callback);

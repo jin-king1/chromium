@@ -6,6 +6,7 @@
 
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_groups_constants.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_configuration.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_view_controller.h"
@@ -64,7 +65,7 @@ UIImage* TabGroupImage(UITraitCollection* trait_collection) {
     // Draw the icon.
     [[[UIColor colorNamed:kSolidWhiteColor]
         resolvedColorWithTraitCollection:trait_collection] setFill];
-    UIImage* icon = DefaultSymbolTemplateWithPointSize(kTabGroupsSymbol, 0);
+    UIImage* icon = SymbolTemplateWithPointSize(SymbolTabGroups, 0);
     CGFloat ratio = icon.size.height / icon.size.width;
     CGFloat drawingWidth = kTileSize - 2 * kIconPadding;
     CGFloat drawingHeight = drawingWidth * ratio;
@@ -86,19 +87,20 @@ UIImage* TabGroupImage(UITraitCollection* trait_collection) {
 }
 
 - (void)start {
+  ButtonStackConfiguration* configuration =
+      [[ButtonStackConfiguration alloc] init];
+  configuration.primaryActionString =
+      l10n_util::GetNSString(IDS_IOS_SHARED_GROUP_USER_EDUCATION_SHEET_GOT_IT);
   ConfirmationAlertViewController* confirmationAlert =
-      [[ConfirmationAlertViewController alloc] init];
+      [[ConfirmationAlertViewController alloc]
+          initWithConfiguration:configuration];
   confirmationAlert.titleString =
       l10n_util::GetNSString(IDS_IOS_SHARED_GROUP_USER_EDUCATION_SHEET_TITLE);
   confirmationAlert.subtitleString = l10n_util::GetNSString(
       IDS_IOS_SHARED_GROUP_USER_EDUCATION_SHEET_SUBTITLE);
-  confirmationAlert.primaryActionString =
-      l10n_util::GetNSString(IDS_IOS_SHARED_GROUP_USER_EDUCATION_SHEET_GOT_IT);
-  confirmationAlert.showDismissBarButton = NO;
   confirmationAlert.image = TabGroupImage(confirmationAlert.traitCollection);
   confirmationAlert.imageHasFixedSize = YES;
-  confirmationAlert.customSpacingBeforeImageIfNoNavigationBar =
-      kImageTopSpacing;
+  confirmationAlert.customSpacingBeforeImage = kImageTopSpacing;
   confirmationAlert.customSpacingAfterImage = kImageBottomSpacing;
   confirmationAlert.customSpacing = kSpacing;
   confirmationAlert.topAlignedLayout = YES;
@@ -111,23 +113,20 @@ UIImage* TabGroupImage(UITraitCollection* trait_collection) {
       confirmationAlert.sheetPresentationController;
   presentationController.prefersEdgeAttachedInCompactHeight = YES;
   presentationController.detents = @[
-    UISheetPresentationControllerDetent.mediumDetent,
-    UISheetPresentationControllerDetent.largeDetent
+    [UISheetPresentationControllerDetent mediumDetent],
+    [UISheetPresentationControllerDetent largeDetent]
   ];
   presentationController.preferredCornerRadius = 20;
   confirmationAlert.view.accessibilityIdentifier =
       kSharedTabGroupUserEducationAccessibilityIdentifier;
 
-  if (@available(iOS 17, *)) {
-    __weak ConfirmationAlertViewController* weakAlert = confirmationAlert;
-    [confirmationAlert
-        registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
-                    withHandler:^(id<UITraitEnvironment> traitEnvironment,
-                                  UITraitCollection* previousCollection) {
-                      weakAlert.image =
-                          TabGroupImage(weakAlert.traitCollection);
-                    }];
-  }
+  __weak ConfirmationAlertViewController* weakAlert = confirmationAlert;
+  [confirmationAlert
+      registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
+                  withHandler:^(id<UITraitEnvironment> traitEnvironment,
+                                UITraitCollection* previousCollection) {
+                    weakAlert.image = TabGroupImage(weakAlert.traitCollection);
+                  }];
 
   _viewController = confirmationAlert;
 

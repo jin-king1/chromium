@@ -10,7 +10,6 @@
 #include <string>
 #include <string_view>
 
-#include "base/metrics/histogram_base.h"
 #include "base/sequence_checker.h"
 #include "components/metrics/log_store.h"
 #include "components/metrics/metrics_log.h"
@@ -70,8 +69,6 @@ class MetricsLogStore : public LogStore {
 
   // Saves |log_data| as the given |log_type|. Before being stored, the data
   // will be compressed, and a hash and signature will be computed.
-  // TODO(crbug.com/40119012): Remove this function, and use StoreLogInfo()
-  // everywhere instead.
   void StoreLog(const std::string& log_data,
                 MetricsLog::LogType log_type,
                 const LogMetadata& log_metadata,
@@ -127,7 +124,11 @@ class MetricsLogStore : public LogStore {
   std::optional<uint64_t> staged_log_user_id() const override;
   const LogMetadata staged_log_metadata() const override;
   void StageNextLog() override;
-  void DiscardStagedLog(std::string_view reason = "") override;
+
+ protected:
+  void DiscardStagedLogImpl(std::string_view reason) override;
+
+ public:
   void MarkStagedLogAsSent() override;
   void TrimAndPersistUnsentLogs(bool overwrite_in_memory_store) override;
   void LoadPersistedUnsentLogs() override;
@@ -153,7 +154,7 @@ class MetricsLogStore : public LogStore {
   UnsentLogStore* GetLogStoreForLogType(MetricsLog::LogType log_type);
 
   // Tracks whether unsent logs (if any) have been loaded from the serializer.
-  bool unsent_logs_loaded_;
+  bool unsent_logs_loaded_ = false;
 
   // Event manager to notify observers of log events.
   const raw_ptr<MetricsLogsEventManager> logs_event_manager_;

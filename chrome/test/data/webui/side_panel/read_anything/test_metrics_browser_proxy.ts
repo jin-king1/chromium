@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {MetricsBrowserProxy, ReadAloudSettingsChange, ReadAnythingSettingsChange, ReadAnythingSpeechError, ReadAnythingVoiceType} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import type {MetricsBrowserProxy, ReadAloudSettingsChange, ReadAnythingSettingsAction, ReadAnythingSettingsChange, ReadAnythingSpeechError, ReadAnythingVoiceType} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {TestBrowserProxy} from 'chrome-untrusted://webui-test/test_browser_proxy.js';
 
 // Test version of the BrowserProxy used in connecting Reading Mode to the color
@@ -13,24 +13,46 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
   constructor() {
     super([
       'incrementMetricCount',
+      'recordEmptyState',
+      'recordExtensionState',
       'recordHighlightOff',
       'recordHighlightOn',
       'recordHighlightGranularity',
       'recordLanguage',
+      'recordLineFocusSession',
+      'recordLineFocusToggled',
       'recordNewPage',
       'recordNewPageWithSpeech',
       'recordSpeechError',
       'recordSpeechPlaybackLength',
+      'recordSpeechPlaybackLengthLegacy',
       'recordSpeechSettingsChange',
+      'recordSpeechStopSource',
+      'recordSettingsAction',
       'recordTextSettingsChange',
       'recordTime',
       'recordVoiceSpeed',
       'recordVoiceType',
+      'recordVoiceLanguageChange',
+      'recordCount',
+      'recordBoolean',
     ]);
   }
 
   incrementMetricCount(umaName: string) {
     this.methodCalled('incrementMetricCount', umaName);
+  }
+
+  recordEmptyState() {
+    this.methodCalled('recordEmptyState');
+  }
+
+  recordLineFocusSession() {
+    this.methodCalled('recordLineFocusSession');
+  }
+
+  recordLineFocusToggled(enabled: boolean) {
+    this.methodCalled('recordLineFocusToggled', enabled);
   }
 
   recordNewPage() {
@@ -57,8 +79,16 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
     this.methodCalled('recordVoiceType', voiceType);
   }
 
+  recordVoiceLanguageChange() {
+    this.methodCalled('recordVoiceLanguageChange');
+  }
+
   recordLanguage(lang: string) {
     this.methodCalled('recordLanguage', lang);
+  }
+
+  recordSettingsAction(settingsAction: ReadAnythingSettingsAction) {
+    this.methodCalled('recordSettingsAction', settingsAction);
   }
 
   recordTextSettingsChange(settingsChange: ReadAnythingSettingsChange) {
@@ -67,6 +97,10 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
 
   recordSpeechSettingsChange(settingsChange: ReadAloudSettingsChange) {
     this.methodCalled('recordSpeechSettingsChange', settingsChange);
+  }
+
+  recordSpeechStopSource(source: number) {
+    this.methodCalled('recordSpeechStopSource', source);
   }
 
   recordVoiceSpeed(index: number) {
@@ -81,7 +115,23 @@ export class TestMetricsBrowserProxy extends TestBrowserProxy implements
     this.methodCalled('recordTime', umaName, time);
   }
 
-  recordSpeechPlaybackLength(time: number) {
-    this.methodCalled('recordSpeechPlaybackLength', time);
+  recordSpeechPlaybackLength(umaName: string, time: number) {
+    this.methodCalled('recordSpeechPlaybackLength', umaName, time);
+  }
+
+  recordSpeechPlaybackLengthLegacy(time: number) {
+    this.methodCalled('recordSpeechPlaybackLengthLegacy', time);
+  }
+
+  recordExtensionState() {
+    this.methodCalled('recordExtensionState');
+  }
+
+  recordCount(umaName: string, count: number) {
+    this.methodCalled('recordCount', umaName, count);
+  }
+
+  recordBoolean(umaName: string, value: boolean) {
+    this.methodCalled('recordBoolean', umaName, value);
   }
 }

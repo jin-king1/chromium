@@ -11,6 +11,7 @@
 #include "components/exo/buffer.h"
 #include "components/exo/shell_surface.h"
 #include "components/exo/surface.h"
+#include "components/exo/window_occlusion_manager.h"
 #include "components/exo/wm_helper.h"
 #include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
 #include "components/viz/service/surfaces/surface_manager.h"
@@ -51,7 +52,12 @@ ExoTestBase::ExoTestBase() = default;
 ExoTestBase::~ExoTestBase() = default;
 
 void ExoTestBase::SetUp() {
-  SetUp(nullptr);
+  AshTestBase::SetUp();
+  wm_helper_ = std::make_unique<WMHelper>();
+  wm_helper_->RegisterAppPropertyResolver(
+      base::WrapUnique(new TestPropertyResolver()));
+
+  window_occlusion_manager_ = std::make_unique<WindowOcclusionManager>();
 
   if (task_environment()->UsesMockTime()) {
     // Reduce the refresh rate to save cost for fast forwarding when mock time
@@ -61,16 +67,9 @@ void ExoTestBase::SetUp() {
 }
 
 void ExoTestBase::TearDown() {
+  window_occlusion_manager_.reset();
   wm_helper_.reset();
   AshTestBase::TearDown();
-}
-
-void ExoTestBase::SetUp(
-    std::unique_ptr<ash::TestShellDelegate> shell_delegate) {
-  AshTestBase::SetUp(std::move(shell_delegate));
-  wm_helper_ = std::make_unique<WMHelper>();
-  wm_helper_->RegisterAppPropertyResolver(
-      base::WrapUnique(new TestPropertyResolver()));
 }
 
 viz::SurfaceManager* ExoTestBase::GetSurfaceManager() {

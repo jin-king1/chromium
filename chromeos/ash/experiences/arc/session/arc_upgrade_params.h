@@ -45,7 +45,7 @@ struct UpgradeParams {
   std::string account_id;
 
   // Whether the account is managed.
-  bool is_account_managed;
+  bool is_account_managed = false;
 
   // Whether adb sideloading is allowed when the account and/or the device is
   // managed.
@@ -54,10 +54,6 @@ struct UpgradeParams {
   // Whether adb sideloading is enabled or not.
   // This parameter is used only for ARCVM.
   bool is_adb_sideloading_enabled = false;
-
-  // Option to disable ACTION_BOOT_COMPLETED broadcast for 3rd party apps.
-  // The constructor automatically populates this from command-line.
-  bool skip_boot_completed_broadcast;
 
   // Optional mode for packages cache tests.
   // The constructor automatically populates this from command-line.
@@ -98,17 +94,6 @@ struct UpgradeParams {
 
   // Flag to enable ARC Nearby Share support.
   bool enable_arc_nearby_share = true;
-
-  // Flag to enable a delay for killing high priority app under memory pressure.
-  bool enable_priority_app_lmk_delay = false;
-
-  // Delay time in second until a high priority app can be considered to be
-  // killed.
-  uint32_t priority_app_lmk_delay_second = 0;
-
-  // Comma separated list of high priority apps that would have a delay before
-  // considered to be killed.
-  std::string priority_app_lmk_delay_list;
 
   // Flag to enable update for minimum Android process state to be considered to
   // be killed under perceptible memory pressure

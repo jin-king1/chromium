@@ -26,7 +26,6 @@
 #include "third_party/blink/public/web/web_autofill_state.h"
 #include "third_party/blink/public/web/web_element_collection.h"
 #include "third_party/blink/public/web/web_form_control_element.h"
-#include "ui/gfx/geometry/rect_f.h"
 
 class GURL;
 
@@ -65,39 +64,37 @@ namespace form_util {
 // heuristics for a given form element.
 using ButtonTitlesCache = base::flat_map<FormRendererId, ButtonTitleList>;
 
-// A bit field mask to extract data from WebFormControlElement.
-// Copied to components/autofill/ios/browser/resources/autofill_controller.js.
-enum class ExtractOption {
-  kBounds,    // Extract bounds from WebFormControlElement, could
-              // trigger layout if needed.
-  kDatalist,  // Extract datalist from WebFormControlElement, the total
-              // number of options is up to kMaxListSize and each option
-              // has as far as kMaxDataLength.
-  kMinValue = kBounds,
-  kMaxValue = kDatalist,
-};
-
 // Extract FormData from `form_element` or the unowned form if
 // `form_element.IsNull()`.
+//
+// The document must be the one we want to extract fields from. In other words:
+// Do not blindly pass "some" WebDocument for `document`! If `form_element` is
+// non-null, `document` must obviously be `form_element`'s document. As a rule
+// of thumb, avoid passing "the current frame's document" but instead, whenever
+// possible, pass WebForm[Control]Element::GetDocument() of the form or of the
+// field whose form that we want to extract.
 std::optional<FormData> ExtractFormData(
     const blink::WebDocument& document,
     const blink::WebFormElement& form_element,
     const FieldDataManager& field_data_manager,
     const CallTimerState& timer_state,
-    DenseSet<ExtractOption> extract_options = {});
+    ButtonTitlesCache* button_titles_cache);
 
 // Helper function to assist in getting the canonical form of the action and
 // origin. The action will properly take into account <BASE>, and both will
 // strip unnecessary data (e.g. query params and HTTP credentials).
 GURL GetCanonicalActionForForm(const blink::WebFormElement& form);
 
-// Returns true if |element| is a textarea element.
+// Returns true if `element` is a textarea element.
 bool IsTextAreaElement(const blink::WebFormControlElement& element);
 
 // Returns true if `element` is a textarea element or a text input element.
 bool IsTextAreaElementOrTextInput(const blink::WebFormControlElement& element);
 
-// Returns true if |element| is one of the element types that can be autofilled.
+// Returns true if `element` is connected and not in a user-agent tree.
+bool IsAccessible(const blink::WebNode& node);
+
+// Returns true if `element` is one of the element types that can be autofilled.
 // {Text, Radiobutton, Checkbox, Select, TextArea}.
 // TODO(crbug.com/40100455): IsAutofillableElement() are currently used
 // inconsistently. Investigate where these checks are necessary.
@@ -144,7 +141,7 @@ FindFormAndFieldForFormControlElement(
     const blink::WebFormControlElement& element,
     const FieldDataManager& field_data_manager,
     const CallTimerState& timer_state,
-    DenseSet<ExtractOption> extract_options,
+    form_util::ButtonTitlesCache* button_titles_cache,
     const SynchronousFormCache& form_cache);
 
 // Creates a FormData containing a single field out of a contenteditable
@@ -179,6 +176,16 @@ ApplyFieldsAction(const blink::WebDocument& document,
                   mojom::FormActionType action_type,
                   mojom::ActionPersistence action_persistence,
                   FieldDataManager& field_data_manager);
+
+// Dispatches an autofill event on the document before filling form fields.
+// This allows web pages to prepare forms before autofill fills them.
+// The `fill_id` is passed to the event so that refill requests can be
+// associated with the original fill operation.
+// If `supports_refill` is false, the event's refill() method will be null.
+void DispatchAutofillEvent(blink::WebDocument document,
+                           base::span<const FormFieldData::FillData> fields,
+                           const FillId& fill_id,
+                           bool supports_refill);
 
 // Clears the suggested values in `previewed_elements`.
 // `initiating_element` is the element that initiated the preview operation.
@@ -345,7 +352,6 @@ void WebFormControlElementToFormFieldForTesting(
     const blink::WebFormElement& form_element,
     const blink::WebFormControlElement& element,
     const FieldDataManager* field_data_manager,
-    DenseSet<ExtractOption> extract_options,
     FormFieldData* field);
 
 }  // namespace form_util

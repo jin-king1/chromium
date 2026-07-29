@@ -96,6 +96,7 @@ class DynamicModuleResolverTestModulator final : public DummyModulator {
                  const ScriptFetchOptions&,
                  ModuleScriptCustomFetchType custom_fetch_type,
                  ModuleTreeClient* client,
+                 ModuleImportPhase import_phase,
                  String) final {
     EXPECT_EQ(expected_fetch_tree_url_, url);
     EXPECT_EQ(expected_fetch_tree_module_type_, module_type);
@@ -111,7 +112,7 @@ class DynamicModuleResolverTestModulator final : public DummyModulator {
   Member<ScriptState> script_state_;
   Member<ModuleTreeClient> pending_client_;
   KURL expected_fetch_tree_url_;
-  ModuleType expected_fetch_tree_module_type_ = ModuleType::kJavaScript;
+  ModuleType expected_fetch_tree_module_type_ = ModuleType::kJavaScriptOrWasm;
   bool fetch_tree_was_called_ = false;
 };
 
@@ -124,7 +125,7 @@ void DynamicModuleResolverTestModulator::Trace(Visitor* visitor) const {
 // CaptureExportedStringFunction implements a javascript function
 // with a single argument of type module namespace.
 // CaptureExportedStringFunction captures the exported string value
-// from the module namespace as a WTF::String, exposed via CapturedValue().
+// from the module namespace as a blink::String, exposed via CapturedValue().
 class CaptureExportedStringFunction final
     : public ThenCallable<IDLAny, CaptureExportedStringFunction> {
  public:
@@ -298,7 +299,7 @@ TEST_F(DynamicModuleResolverTest, ResolveSpecifierFailure) {
   scope.PerformMicrotaskCheckpoint();
   EXPECT_TRUE(capture->WasCalled());
   EXPECT_EQ("TypeError", capture->Name());
-  EXPECT_TRUE(capture->Message().StartsWith("Failed to resolve"));
+  EXPECT_TRUE(capture->Message().starts_with("Failed to resolve"));
 }
 
 TEST_F(DynamicModuleResolverTest, ResolveModuleTypeFailure) {
@@ -359,7 +360,7 @@ TEST_F(DynamicModuleResolverTest, FetchFailure) {
   scope.PerformMicrotaskCheckpoint();
   EXPECT_TRUE(capture->WasCalled());
   EXPECT_EQ("TypeError", capture->Name());
-  EXPECT_TRUE(capture->Message().StartsWith("Failed to fetch"));
+  EXPECT_TRUE(capture->Message().starts_with("Failed to fetch"));
 }
 
 TEST_F(DynamicModuleResolverTest, ExceptionThrown) {

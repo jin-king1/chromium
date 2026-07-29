@@ -29,7 +29,7 @@
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -113,6 +113,9 @@ class StackSamplingProfiler::SamplingThread : public Thread {
     // task will believe that a new collection has been added since it was
     // posted.
     static void ShutdownAssumingIdle(bool simulate_intervening_add);
+
+    // Returns whether the sampling thread is currently running or not.
+    static bool IsSamplingThreadRunning();
 
    private:
     // Calls the sampling threads ShutdownTask and then signals an event.
@@ -376,11 +379,22 @@ void StackSamplingProfiler::SamplingThread::TestPeer::
   event->Signal();
 }
 
+// static
+bool StackSamplingProfiler::SamplingThread::TestPeer::
+    IsSamplingThreadRunning() {
+  SamplingThread* sampler = SamplingThread::GetInstance();
+  if (!sampler->IsRunning()) {
+    return false;
+  }
+  AutoLock lock(sampler->thread_execution_state_lock_);
+  return sampler->thread_execution_state_ == RUNNING;
+}
+
 AtomicSequenceNumber StackSamplingProfiler::SamplingThread::CollectionContext::
     next_collection_id;
 
 StackSamplingProfiler::SamplingThread::SamplingThread()
-    : Thread("StackSamplingProfiler") {}
+    : Thread("StackSamplingProfiler", Thread::Restartable{}) {}
 
 StackSamplingProfiler::SamplingThread::~SamplingThread() = default;
 
@@ -489,7 +503,7 @@ StackSamplingProfiler::SamplingThread::GetOrCreateTaskRunnerForAdd() {
 
   if (thread_execution_state_ == EXITING) {
     // StopSoon() was previously called to shut down the thread
-    // asynchonously. Stop() must now be called before calling Start() again to
+    // asynchronously. Stop() must now be called before calling Start() again to
     // reset the thread state.
     //
     // We must allow blocking here to satisfy the Thread implementation, but in
@@ -812,7 +826,7 @@ void StackSamplingProfiler::TestPeer::Reset() {
 
 // static
 bool StackSamplingProfiler::TestPeer::IsSamplingThreadRunning() {
-  return SamplingThread::GetInstance()->IsRunning();
+  return SamplingThread::TestPeer::IsSamplingThreadRunning();
 }
 
 // static
@@ -876,7 +890,7 @@ StackSamplingProfiler::StackSamplingProfiler(
       params_(params),
       sampler_(StackSampler::Create(
           thread_token,
-          std::make_unique<StackUnwindData>(std::move(profile_builder)),
+          base::MakeRefCounted<StackUnwindData>(std::move(profile_builder)),
           std::move(core_unwinders_factory),
           std::move(record_sample_callback),
           test_delegate)),

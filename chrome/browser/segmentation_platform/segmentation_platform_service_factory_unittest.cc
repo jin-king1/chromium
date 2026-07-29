@@ -19,8 +19,10 @@
 #include "components/commerce/core/mock_shopping_service.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "components/prefs/pref_observer.h"
+#include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "components/prefs/testing_pref_service.h"
+#include "components/segmentation_platform/embedder/default_model/chrome_user_engagement.h"
 #include "components/segmentation_platform/embedder/default_model/contextual_page_actions_model.h"
 #include "components/segmentation_platform/embedder/default_model/metrics_clustering.h"
 #include "components/segmentation_platform/embedder/default_model/most_visited_tiles_user.h"
@@ -34,6 +36,7 @@
 #include "components/segmentation_platform/public/result.h"
 #include "components/segmentation_platform/public/segmentation_platform_service.h"
 #include "components/segmentation_platform/public/service_proxy.h"
+#include "components/segmentation_platform/public/types/processed_value.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "components/visited_url_ranking/public/test_support.h"
 #include "components/visited_url_ranking/public/url_visit_schema.h"
@@ -114,7 +117,6 @@ class SegmentationPlatformServiceFactoryTest : public testing::Test {
         {{optimization_guide::features::kOptimizationTargetPrediction, {}},
          {features::kSegmentationPlatformFeature, {}},
          {features::kSegmentationPlatformUkmEngine, {}},
-         {features::kContextualPageActionShareModel, {}},
          {features::kSegmentationPlatformTimeDelaySampling,
           {{"SamplingRate", "1"}}},
          {features::kSegmentationPlatformTabResumptionRanker, {}},
@@ -122,7 +124,9 @@ class SegmentationPlatformServiceFactoryTest : public testing::Test {
          {features::kSegmentationPlatformURLVisitResumptionRanker, {}},
          {features::kSegmentationPlatformEphemeralCardRanker, {}},
          {features::kSegmentationSurveyPage, {}},
-         {features::kSegmentationPlatformFedCmUser, {}}},
+         {features::kSegmentationPlatformFedCmUser, {}},
+         {features::kAndroidTipsNotifications, {}},
+         {features::kNewTabPageCustomizationV2, {{"show_promo", "true"}}}},
         {});
 
     // Creating profile and initialising segmentation service.
@@ -422,6 +426,19 @@ TEST_F(SegmentationPlatformServiceFactoryTest, TestLowUserEngagementModel) {
       std::vector<std::string>(1, kChromeLowUserEngagementUmaName));
 }
 
+TEST_F(SegmentationPlatformServiceFactoryTest, TestChromeUserEngagementModel) {
+  InitServiceAndCacheResults(ChromeUserEngagement::kChromeUserEngagementKey);
+
+  PredictionOptions prediction_options;
+
+  ExpectGetClassificationResult(
+      ChromeUserEngagement::kChromeUserEngagementKey, prediction_options,
+      nullptr,
+      /*expected_status=*/PredictionStatus::kSucceeded,
+      /*expected_labels=*/
+      std::vector<std::string>(1, "None"));
+}
+
 TEST_F(SegmentationPlatformServiceFactoryTest, TestCrossDeviceModel) {
   InitServiceAndCacheResults(segmentation_platform::kCrossDeviceUserKey);
   segmentation_platform::PredictionOptions prediction_options;
@@ -523,42 +540,6 @@ TEST_F(SegmentationPlatformServiceFactoryTest,
       std::vector<std::string>(1, kTabletProductivityUserModelLabelNone));
 }
 
-TEST_F(SegmentationPlatformServiceFactoryTest, TestContextualPageActionsShare) {
-  InitService();
-
-  PredictionOptions prediction_options;
-  prediction_options.on_demand_execution = true;
-
-  auto input_context = base::MakeRefCounted<InputContext>();
-  input_context->metadata_args.emplace(
-      segmentation_platform::kContextualPageActionModelInputDiscounts,
-      segmentation_platform::processing::ProcessedValue::FromFloat(1));
-  input_context->metadata_args.emplace(
-      segmentation_platform::kContextualPageActionModelInputPriceInsights,
-      segmentation_platform::processing::ProcessedValue::FromFloat(0));
-  input_context->metadata_args.emplace(
-      segmentation_platform::kContextualPageActionModelInputPriceTracking,
-      segmentation_platform::processing::ProcessedValue::FromFloat(0));
-  input_context->metadata_args.emplace(
-      segmentation_platform::kContextualPageActionModelInputReaderMode,
-      segmentation_platform::processing::ProcessedValue::FromFloat(0));
-
-  ExpectGetClassificationResult(
-      kContextualPageActionsKey, prediction_options, input_context,
-      /*expected_status=*/PredictionStatus::kSucceeded,
-      /*expected_labels=*/
-      std::vector<std::string>(1, kContextualPageActionModelLabelDiscounts));
-  clock()->Advance(base::Seconds(
-      ContextualPageActionsModel::kShareOutputCollectionDelayInSec));
-
-  // TODO(crbug.com/40254472): Clean this up.
-  WaitAndCheckUkmRecord(
-      proto::OPTIMIZATION_TARGET_CONTEXTUAL_PAGE_ACTION_PRICE_TRACKING,
-      /*inputs=*/
-      {SegmentationUkmHelper::FloatToInt64(1.f), 0, 0, 0, 0, 0, 0, 0},
-      /*outputs=*/{0, 0, 0, 0, 0, 0});
-}
-
 TEST_F(SegmentationPlatformServiceFactoryTest, TestFrequentFeatureModel) {
   InitServiceAndCacheResults(kFrequentFeatureUserKey);
 
@@ -634,14 +615,10 @@ TEST_F(SegmentationPlatformServiceFactoryTest, TestAndroidHomeModuleRanker) {
       segmentation_platform::kPriceChangeFreshness,
       segmentation_platform::processing::ProcessedValue::FromFloat(-1));
   input_context->metadata_args.emplace(
-      segmentation_platform::kTabResumptionForAndroidHomeFreshness,
-      segmentation_platform::processing::ProcessedValue::FromFloat(-1));
-  input_context->metadata_args.emplace(
       segmentation_platform::kSafetyHubFreshness,
       segmentation_platform::processing::ProcessedValue::FromFloat(-1));
 
-  std::vector<std::string> result = {kPriceChange, kSingleTab,
-                                     kTabResumptionForAndroidHome, kSafetyHub};
+  std::vector<std::string> result = {kPriceChange, kSingleTab, kSafetyHub};
   ExpectGetClassificationResult(
       segmentation_platform::kAndroidHomeModuleRankerKey, prediction_options,
       input_context,
@@ -651,27 +628,61 @@ TEST_F(SegmentationPlatformServiceFactoryTest, TestAndroidHomeModuleRanker) {
 
 #endif  // BUILDFLAG(IS_ANDROID)
 
-TEST_F(SegmentationPlatformServiceFactoryTest, EphemeralHomeMdouleBackend) {
+TEST_F(SegmentationPlatformServiceFactoryTest, EphemeralHomeModuleBackend) {
   InitService();
 
   home_modules::HomeModulesCardRegistry* registry =
       SegmentationPlatformServiceFactory::GetHomeModulesCardRegistry(
           profile_->profile.get());
+
+#if BUILDFLAG(IS_ANDROID)
   ASSERT_TRUE(registry);
   // Update this test when adding new cards with inputs.
   // Each card's feature flag should be enabled by test framework for this
   // integration test.
-  EXPECT_TRUE(registry->get_all_cards_by_priority().empty());
+  ASSERT_EQ(7u, registry->get_all_cards_by_priority().size());
 
   PredictionOptions prediction_options;
   prediction_options.on_demand_execution = true;
 
   auto input_context = base::MakeRefCounted<InputContext>();
+  input_context->metadata_args.emplace(
+      "auxiliary_search_available", processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "support_customized_ntp_theme",
+      processing::ProcessedValue::FromFloat(1.0));
+  input_context->metadata_args.emplace(
+      "has_customized_ntp_background",
+      processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "has_theme_tip_bottom_sheet_been_shown",
+      processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "is_user_signed_in", processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "should_show_non_role_manager_default_browser_promo",
+      processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "has_default_browser_promo_shown_in_other_surface",
+      processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "tab_group_exists", processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "number_of_tabs", processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "synced_tab_group_exists", processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "is_eligible_to_history_opt_in",
+      processing::ProcessedValue::FromFloat(0));
 
   // No cards are added, the model fetches no results and fails.
   ExpectGetAnnotatedNumericResult(
       kEphemeralHomeModuleBackendKey, prediction_options, input_context,
       /*expected_status=*/segmentation_platform::PredictionStatus::kSucceeded);
+#else
+  // Desktop platforms do not support HomeModulesCardRegistry.
+  EXPECT_FALSE(registry);
+#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 TEST_F(SegmentationPlatformServiceFactoryTest, TestFedCmUserModel) {
@@ -684,6 +695,48 @@ TEST_F(SegmentationPlatformServiceFactoryTest, TestFedCmUserModel) {
       /*expected_status=*/PredictionStatus::kSucceeded,
       /*expected_labels=*/
       std::vector<std::string>(1, "FedCmUserLoud"));
+}
+
+TEST_F(SegmentationPlatformServiceFactoryTest, TestTipsNotificationsRanker) {
+  InitService();
+  PredictionOptions prediction_options;
+  prediction_options.on_demand_execution = true;
+
+  auto input_context = base::MakeRefCounted<InputContext>();
+  input_context->metadata_args.emplace(
+      kEnhancedSafeBrowsingStatus, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kQuickDeleteUsage, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kBottomOmniboxStatus, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kBottomOmniboxUsage, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kEnhancedSafeBrowsingTipShown, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kQuickDeleteTipShown, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kGoogleLensTipShown, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kBottomOmniboxTipShown, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kTipsIsUserSignedIn, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kPasswordAutofillTipShown, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kSigninTipShown, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kCreateTabGroupsTipShown, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kCustomizeMVTTipShown, processing::ProcessedValue::FromFloat(1));
+  input_context->metadata_args.emplace(
+      kRecentTabsTipShown, processing::ProcessedValue::FromFloat(1));
+
+  ExpectGetClassificationResult(
+      segmentation_platform::kTipsNotificationsRankerKey, prediction_options,
+      input_context,
+      /*expected_status=*/PredictionStatus::kSucceeded,
+      /*expected_labels=*/std::nullopt);
 }
 
 }  // namespace

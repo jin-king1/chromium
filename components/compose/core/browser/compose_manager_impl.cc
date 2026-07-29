@@ -51,8 +51,8 @@ void FillTextWithAutofill(base::WeakPtr<autofill::AutofillManager> manager,
   static_cast<autofill::BrowserAutofillManager*>(manager.get())
       ->FillOrPreviewField(autofill::mojom::ActionPersistence::kFill,
                            autofill::mojom::FieldActionType::kReplaceSelection,
-                           form, field, trimmed_text,
-                           SuggestionType::kComposeResumeNudge,
+                           form.global_id(), field.global_id(), trimmed_text,
+                           autofill::FillingProduct::kCompose,
                            /*field_type_used=*/std::nullopt);
 }
 
@@ -64,15 +64,14 @@ ComposeManagerImpl::ComposeManagerImpl(ComposeClient* client)
 ComposeManagerImpl::~ComposeManagerImpl() = default;
 
 void ComposeManagerImpl::OpenCompose(AutofillDriver& driver,
-                                     FormGlobalId form_id,
                                      FieldGlobalId field_id,
                                      UiEntryPoint entry_point) {
   if (entry_point == UiEntryPoint::kContextMenu) {
     client_->GetPageUkmTracker()->MenuItemClicked();
     LogComposeContextMenuCtr(ComposeContextMenuCtrEvent::kMenuItemClicked);
   }
-  driver.ExtractForm(
-      form_id,
+  driver.ExtractFormWithField(
+      field_id,
       base::BindOnce(&ComposeManagerImpl::OpenComposeWithUpdatedSelection,
                      weak_ptr_factory_.GetWeakPtr(), field_id, entry_point));
 }
@@ -105,9 +104,9 @@ void ComposeManagerImpl::OpenComposeWithUpdatedSelection(
                              autofill::mojom::ActionPersistence::kFill,
                              field_id, u"");
 
-    // Calling `driver->ExtractForm()` here does not always pick up the newly
-    // selected text when the form is in an IFRAME. Instead, just edit form data
-    // manually to reflect the newly selected text.
+    // Calling `driver->ExtractFormWithField()` here does not always pick up the
+    // newly selected text when the form is in an IFRAME. Instead, just edit
+    // form data manually to reflect the newly selected text.
     std::optional<autofill::FormData> updated_form_data = form_data;
     std::vector<autofill::FormFieldData> fields =
         updated_form_data->ExtractFields();
@@ -154,29 +153,27 @@ void ComposeManagerImpl::OpenComposeWithFormData(
                      form_data.value(), *form_field_data);
 
   OpenComposeWithFormFieldData(ui_entry_point, *form_field_data,
-                               manager.client().GetPopupScreenLocation(),
                                std::move(compose_callback));
 }
 
 void ComposeManagerImpl::OpenComposeWithFormFieldData(
     UiEntryPoint ui_entry_point,
     const autofill::FormFieldData& trigger_field,
-    std::optional<PopupScreenLocation> popup_screen_location,
     ComposeCallback callback) {
   client_->ShowComposeDialog(ui_entry_point, trigger_field,
-                             popup_screen_location, std::move(callback));
+                             std::move(callback));
 }
 
-std::optional<Suggestion> ComposeManagerImpl::GetSuggestion(
+Suggestion ComposeManagerImpl::GetSuggestion(
     const autofill::FormData& form,
     const autofill::FormFieldData& field,
-    AutofillSuggestionTriggerSource trigger_source) {
-  if (!client_->ShouldTriggerPopup(form, field, trigger_source)) {
-    return std::nullopt;
-  }
+    AutofillSuggestionTriggerSource trigger_source) const {
   std::u16string suggestion_text;
   std::u16string label_text;
-  Suggestion suggestion;
+  Suggestion suggestion(
+      trigger_source == AutofillSuggestionTriggerSource::kComposeDialogLostFocus
+          ? SuggestionType::kComposeSavedStateNotification
+          : SuggestionType::kComposeResumeNudge);
   // State is saved as a `ComposeSession` in the `ComposeClient`. A user can
   // resume where they left off in a field if the `ComposeClient` has a
   // `ComposeSession` for that field.
@@ -188,11 +185,6 @@ std::optional<Suggestion> ComposeManagerImpl::GetSuggestion(
         l10n_util::GetStringUTF16(IDS_COMPOSE_SUGGESTION_SAVED_TEXT),
         Suggestion::Text::IsPrimary(true));
     label_text = l10n_util::GetStringUTF16(IDS_COMPOSE_SUGGESTION_SAVED_LABEL);
-    suggestion.type =
-        trigger_source ==
-                AutofillSuggestionTriggerSource::kComposeDialogLostFocus
-            ? SuggestionType::kComposeSavedStateNotification
-            : SuggestionType::kComposeResumeNudge;
     suggestion.feature_for_new_badge = &features::kEnableComposeSavedStateNudge;
   } else {
     // Text for a new Compose session.
@@ -229,6 +221,13 @@ std::optional<Suggestion> ComposeManagerImpl::GetSuggestion(
   }
 
   return suggestion;
+}
+
+bool ComposeManagerImpl::ShouldTriggerComposePopup(
+    const autofill::FormData& form,
+    const autofill::FormFieldData& field,
+    AutofillSuggestionTriggerSource trigger_source) const {
+  return client_->ShouldTriggerPopup(form, field, trigger_source);
 }
 
 void ComposeManagerImpl::NeverShowComposeForOrigin(const url::Origin& origin) {

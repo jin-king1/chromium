@@ -30,11 +30,8 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.Features;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.preferences.Pref;
@@ -48,6 +45,8 @@ import org.chromium.components.prefs.PrefChangeRegistrar.PrefObserver;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
+
+import java.util.function.Supplier;
 
 /** Tests for the Safety Hub Magic Stack mediator. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -65,7 +64,6 @@ public class SafetyHubMagicStackMediatorTest {
     @Mock private PrefChangeRegistrar mPrefChangeRegistrar;
     @Mock private Supplier<ModalDialogManager> mModalDialogManagerSupplier;
     @Mock private View mView;
-    @Mock private SafetyHubHatsHelper mSafetyHubHatsHelper;
 
     private Context mContext;
     private Profile mProfile;
@@ -93,8 +91,7 @@ public class SafetyHubMagicStackMediatorTest {
                         mTabModelSelector,
                         mModuleDelegate,
                         mPrefChangeRegistrar,
-                        mModalDialogManagerSupplier,
-                        mSafetyHubHatsHelper);
+                        mModalDialogManagerSupplier);
         SettingsNavigationFactory.setInstanceForTesting(mSettingsNavigation);
 
         mModalDialogManager =
@@ -133,12 +130,12 @@ public class SafetyHubMagicStackMediatorTest {
                 mModel.get(SafetyHubMagicStackViewProperties.BUTTON_TEXT),
                 mContext.getString(R.string.safety_hub_magic_stack_safe_browsing_button_text));
         assertEquals(
+                mModel.get(SafetyHubMagicStackViewProperties.BUTTON_CONTENT_DESCRIPTION),
+                mContext.getString(R.string.safety_hub_magic_stack_safe_browsing_button_text));
+        assertEquals(
                 shadowOf(mModel.get(SafetyHubMagicStackViewProperties.ICON_DRAWABLE))
                         .getCreatedFromResId(),
-                R.drawable.ic_gshield_24);
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardShown(
-                        mTabModelSelector, MagicStackEntry.ModuleType.SAFE_BROWSING);
+                R.drawable.secured_by_brand_shield_24);
 
         OnClickListener onClickListener =
                 mModel.get(SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER);
@@ -147,9 +144,6 @@ public class SafetyHubMagicStackMediatorTest {
                 .startSettings(eq(mContext), eq(SafeBrowsingSettingsFragment.class));
         verify(mModuleDelegate, times(1)).removeModule(ModuleType.SAFETY_HUB);
         verify(mMagicStackBridge, times(1)).dismissSafeBrowsingModule();
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardTapped(
-                        mTabModelSelector, MagicStackEntry.ModuleType.SAFE_BROWSING);
     }
 
     @Test
@@ -169,20 +163,18 @@ public class SafetyHubMagicStackMediatorTest {
                 mModel.get(SafetyHubMagicStackViewProperties.BUTTON_TEXT),
                 mContext.getString(R.string.safety_hub_magic_stack_safe_state_button_text));
         assertEquals(
+                mModel.get(SafetyHubMagicStackViewProperties.BUTTON_CONTENT_DESCRIPTION),
+                mContext.getString(
+                        R.string.safety_hub_magic_stack_safe_state_button_content_description));
+        assertEquals(
                 shadowOf(mModel.get(SafetyHubMagicStackViewProperties.ICON_DRAWABLE))
                         .getCreatedFromResId(),
                 R.drawable.ic_check_circle_filled_green_24dp);
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardShown(
-                        mTabModelSelector, MagicStackEntry.ModuleType.REVOKED_PERMISSIONS);
 
         OnClickListener onClickListener =
                 mModel.get(SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER);
         onClickListener.onClick(mView);
         verify(mSettingsNavigation).startSettings(eq(mContext), eq(SafetyHubFragment.class));
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardTapped(
-                        mTabModelSelector, MagicStackEntry.ModuleType.REVOKED_PERMISSIONS);
     }
 
     @Test
@@ -205,68 +197,23 @@ public class SafetyHubMagicStackMediatorTest {
                 mModel.get(SafetyHubMagicStackViewProperties.BUTTON_TEXT),
                 mContext.getString(R.string.safety_hub_magic_stack_safe_state_button_text));
         assertEquals(
+                mModel.get(SafetyHubMagicStackViewProperties.BUTTON_CONTENT_DESCRIPTION),
+                mContext.getString(
+                        R.string.safety_hub_magic_stack_safe_state_button_content_description));
+        assertEquals(
                 shadowOf(mModel.get(SafetyHubMagicStackViewProperties.ICON_DRAWABLE))
                         .getCreatedFromResId(),
                 R.drawable.safety_hub_notifications_icon);
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardShown(
-                        mTabModelSelector, MagicStackEntry.ModuleType.NOTIFICATION_PERMISSIONS);
 
         OnClickListener onClickListener =
                 mModel.get(SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER);
         onClickListener.onClick(mView);
         verify(mSettingsNavigation).startSettings(eq(mContext), eq(SafetyHubFragment.class));
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardTapped(
-                        mTabModelSelector, MagicStackEntry.ModuleType.NOTIFICATION_PERMISSIONS);
     }
 
     @Test
-    @Features.DisableFeatures(ChromeFeatureList.LOGIN_DB_DEPRECATION_ANDROID)
-    public void testCompromisedPasswordsDisplayed_preLoginDbDeprecation()
-            throws PendingIntent.CanceledException {
-        mSafetyHubTestRule.setPasswordManagerAvailable(
-                true, ChromeFeatureList.isEnabled(ChromeFeatureList.LOGIN_DB_DEPRECATION_ANDROID));
-        MagicStackEntry entry =
-                MagicStackEntry.create(DESCRIPTION, MagicStackEntry.ModuleType.PASSWORDS);
-        doReturn(entry).when(mMagicStackBridge).getModuleToShow();
-        mMediator.showModule();
-
-        verify(mModuleDelegate).onDataReady(eq(ModuleType.SAFETY_HUB), eq(mModel));
-        assertEquals(
-                mModel.get(SafetyHubMagicStackViewProperties.HEADER),
-                mContext.getString(R.string.safety_hub_magic_stack_module_name));
-        assertEquals(
-                mModel.get(SafetyHubMagicStackViewProperties.TITLE),
-                mContext.getString(R.string.safety_hub_magic_stack_compromised_passwords_title));
-        assertEquals(DESCRIPTION, mModel.get(SafetyHubMagicStackViewProperties.SUMMARY));
-        assertEquals(
-                mModel.get(SafetyHubMagicStackViewProperties.BUTTON_TEXT),
-                mContext.getString(R.string.safety_hub_magic_stack_compromised_passwords_title));
-        assertEquals(
-                shadowOf(mModel.get(SafetyHubMagicStackViewProperties.ICON_DRAWABLE))
-                        .getCreatedFromResId(),
-                R.drawable.ic_password_manager_key);
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardShown(
-                        mTabModelSelector, MagicStackEntry.ModuleType.PASSWORDS);
-
-        OnClickListener onClickListener =
-                mModel.get(SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER);
-        onClickListener.onClick(mView);
-        verify(mPasswordCheckIntentForAccountCheckup, times(1)).send();
-        verify(mModuleDelegate, times(1)).removeModule(ModuleType.SAFETY_HUB);
-        verify(mMagicStackBridge, times(1)).dismissCompromisedPasswordsModule();
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardTapped(
-                        mTabModelSelector, MagicStackEntry.ModuleType.PASSWORDS);
-    }
-
-    @Test
-    @Features.EnableFeatures(ChromeFeatureList.LOGIN_DB_DEPRECATION_ANDROID)
     public void testCompromisedPasswordsDisplayed() throws PendingIntent.CanceledException {
-        mSafetyHubTestRule.setPasswordManagerAvailable(
-                true, ChromeFeatureList.isEnabled(ChromeFeatureList.LOGIN_DB_DEPRECATION_ANDROID));
+        mSafetyHubTestRule.setPasswordManagerAvailable(true);
         MagicStackEntry entry =
                 MagicStackEntry.create(DESCRIPTION, MagicStackEntry.ModuleType.PASSWORDS);
         doReturn(entry).when(mMagicStackBridge).getModuleToShow();
@@ -284,12 +231,12 @@ public class SafetyHubMagicStackMediatorTest {
                 mModel.get(SafetyHubMagicStackViewProperties.BUTTON_TEXT),
                 mContext.getString(R.string.safety_hub_magic_stack_compromised_passwords_title));
         assertEquals(
+                mModel.get(SafetyHubMagicStackViewProperties.BUTTON_CONTENT_DESCRIPTION),
+                mContext.getString(R.string.safety_hub_magic_stack_compromised_passwords_title));
+        assertEquals(
                 shadowOf(mModel.get(SafetyHubMagicStackViewProperties.ICON_DRAWABLE))
                         .getCreatedFromResId(),
                 R.drawable.ic_password_manager_key);
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardShown(
-                        mTabModelSelector, MagicStackEntry.ModuleType.PASSWORDS);
 
         OnClickListener onClickListener =
                 mModel.get(SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER);
@@ -297,9 +244,6 @@ public class SafetyHubMagicStackMediatorTest {
         verify(mPasswordCheckIntentForAccountCheckup, times(1)).send();
         verify(mModuleDelegate, times(1)).removeModule(ModuleType.SAFETY_HUB);
         verify(mMagicStackBridge, times(1)).dismissCompromisedPasswordsModule();
-        verify(mSafetyHubHatsHelper, times(1))
-                .triggerProactiveHatsSurveyWhenCardTapped(
-                        mTabModelSelector, MagicStackEntry.ModuleType.PASSWORDS);
     }
 
     @Test

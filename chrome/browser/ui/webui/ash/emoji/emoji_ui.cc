@@ -8,19 +8,19 @@
 
 #include "ash/ash_element_identifiers.h"
 #include "ash/constants/ash_features.h"
+#include "ash/constants/webui_url_constants.h"
+#include "ash/public/cpp/shell_window_ids.h"
+#include "ash/shell.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/views/bubble/webui_bubble_dialog_view.h"
 #include "chrome/browser/ui/webui/ash/emoji/bubble_utils.h"
-#include "chrome/browser/ui/webui/ash/emoji/seal_utils.h"
-#include "chrome/browser/ui/webui/sanitized_image_source.h"
+#include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
-#include "chrome/common/url_constants.h"
 #include "chrome/grit/emoji_picker_resources.h"
 #include "chrome/grit/emoji_picker_resources_map.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/grit/seal_resources.h"
-#include "chrome/grit/seal_resources_map.h"
 #include "chromeos/ash/components/emoji/grit/emoji_map.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui.h"
@@ -31,7 +31,6 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/display/screen.h"
 #include "ui/views/view_class_properties.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/webui_util.h"
 
 namespace {
@@ -52,7 +51,17 @@ class EmojiBubbleDialogView : public WebUIBubbleDialogView {
                               /*autosize=*/false),
         contents_wrapper_(std::move(contents_wrapper)),
         caret_bounds_(caret_bounds) {
-    set_has_parent(false);
+    // Place the emoji bubble in the float container to ensure it appears above
+    // float and PIP windows for example. See crbug.com/402617739 for more
+    // details.
+    display::Display display =
+        display::Screen::Get()->GetDisplayMatching(caret_bounds);
+    aura::Window* root_window =
+        ash::Shell::GetRootWindowForDisplayId(display.id());
+    CHECK(root_window);
+    set_parent_window(ash::Shell::GetContainer(
+        root_window, ash::kShellWindowId_FloatContainer));
+
     set_corner_radius(20);
     SetProperty(views::kElementIdentifierKey, ash::kEmojiPickerElementId);
   }
@@ -96,7 +105,7 @@ namespace ash {
 
 EmojiUIConfig::EmojiUIConfig()
     : DefaultTopChromeWebUIConfig(content::kChromeUIScheme,
-                                  chrome::kChromeUIEmojiPickerHost) {}
+                                  ash::kChromeUIEmojiPickerHost) {}
 
 bool EmojiUIConfig::ShouldAutoResizeHost() {
   return true;
@@ -108,30 +117,17 @@ EmojiUI::EmojiUI(content::WebUI* web_ui)
       initial_category_(emoji_picker::mojom::Category::kEmojis) {
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
       web_ui->GetWebContents()->GetBrowserContext(),
-      chrome::kChromeUIEmojiPickerHost);
+      ash::kChromeUIEmojiPickerHost);
 
   // Add required resources.
   webui::SetupWebUIDataSource(source, kEmojiPickerResources,
                               IDR_EMOJI_PICKER_INDEX_HTML);
   source->AddResourcePaths(kEmoji);
 
-  // Add seal extra resources.
-  if (SealUtils::ShouldEnable()) {
-    source->AddResourcePaths(kSealResources);
-  }
-
-  // Some web components defined in seal extra resources are based on lit; so
-  // we override content security policy here to make them work.
-  source->OverrideContentSecurityPolicy(
-      network::mojom::CSPDirectiveName::TrustedTypes,
-      "trusted-types goog#html parse-html-subset sanitize-inner-html "
-      "static-types lit-html lottie-worker-script-loader webui-test-script "
-      "webui-test-html print-preview-plugin-loader polymer-html-literal "
-      "polymer-template-event-attribute-policy;");
-
   Profile* profile = Profile::FromWebUI(web_ui);
   content::URLDataSource::Add(profile,
                               std::make_unique<SanitizedImageSource>(profile));
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 }
 
 EmojiUI::~EmojiUI() = default;
@@ -149,7 +145,7 @@ bool EmojiUI::ShouldShow(const ui::TextInputClient* input_client,
 void EmojiUI::Show(ui::EmojiPickerCategory category,
                    ui::EmojiPickerFocusBehavior focus_behavior,
                    const std::string& initial_query) {
-  if (display::Screen::GetScreen()->InTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     ui::ShowTabletModeEmojiPanel();
     return;
   }
@@ -199,7 +195,7 @@ void EmojiUI::Show(ui::EmojiPickerCategory category,
   // here to reduce code duplication.
 
   auto contents_wrapper = std::make_unique<WebUIContentsWrapperT<EmojiUI>>(
-      GURL(chrome::kChromeUIEmojiPickerURL), profile, IDS_ACCNAME_EMOJI_PICKER);
+      GURL(ash::kChromeUIEmojiPickerURL), profile, IDS_ACCNAME_EMOJI_PICKER);
   // Need to reload the web contents here because the view isn't visible unless
   // ShowUI is called from the JS side.  By reloading, we trigger the JS to
   // eventually call ShowUI().
@@ -219,12 +215,6 @@ void EmojiUI::Show(ui::EmojiPickerCategory category,
 WEB_UI_CONTROLLER_TYPE_IMPL(EmojiUI)
 
 void EmojiUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
-}
-
-void EmojiUI::BindInterface(
     mojo::PendingReceiver<emoji_search::mojom::EmojiSearch> receiver) {
   emoji_search_ = std::make_unique<EmojiSearchProxy>(std::move(receiver));
 }
@@ -239,18 +229,6 @@ void EmojiUI::BindInterface(
     mojo::PendingReceiver<new_window_proxy::mojom::NewWindowProxy> receiver) {
   new_window_proxy_ =
       std::make_unique<ash::NewWindowProxy>(std::move(receiver));
-}
-
-void EmojiUI::BindInterface(
-    mojo::PendingReceiver<seal::mojom::SealService> receiver) {
-  if (SealUtils::ShouldEnable()) {
-    Profile* profile = Profile::FromWebUI(web_ui());
-    manta::MantaService* manta_service =
-        manta::MantaServiceFactory::GetForProfile(profile);
-    seal_service_ = std::make_unique<SealService>(
-        /*receiver=*/std::move(receiver),
-        /*snapper_provider=*/manta_service->CreateSnapperProvider());
-  }
 }
 
 void EmojiUI::CreatePageHandler(

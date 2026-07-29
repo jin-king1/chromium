@@ -12,6 +12,7 @@
 
 #include "base/android/requires_api.h"
 #include "base/containers/circular_deque.h"
+#include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/thread_annotations.h"
 #include "media/gpu/media_gpu_export.h"
@@ -81,6 +82,7 @@ class REQUIRES_ANDROID_API(NDK_MEDIA_CODEC_MIN_API)
   // Note: Before calling Start(), `media_codec_` should have already been
   //      configured using AMediaCodec_configure() and the codec() accessor.
   // Note: Stop() must be called before calling Start() again.
+  // Note: Stop() must be called before destruction if Start() was called.
   media_status_t Start();
   void Stop();
 
@@ -103,7 +105,14 @@ class REQUIRES_ANDROID_API(NDK_MEDIA_CODEC_MIN_API)
   //      tearing down the underlying async callbacks.
   AMediaCodec* codec() { return media_codec_.get(); }
 
- private:
+  // Safe wrapper around AMediaCodec_getInputBuffer().
+  base::span<uint8_t> GetInputBuffer(size_t idx);
+
+  // Safe wrapper around AMediaCodec_getOutputBuffer(). The buffer still needs
+  // to be manually released by calling AMediaCodec_releaseOutputBuffer().
+  base::span<uint8_t> GetOutputBuffer(const OutputInfo& info);
+
+ protected:
   friend class NdkMediaCodecWrapperTest;
 
   using MediaCodecPtr = std::unique_ptr<AMediaCodec, AMediaCodecDeleter>;

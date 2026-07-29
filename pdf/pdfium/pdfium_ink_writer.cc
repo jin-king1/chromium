@@ -9,11 +9,12 @@
 
 #include "base/check.h"
 #include "base/containers/span.h"
-#include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/raw_span.h"
 #include "pdf/pdf_ink_constants.h"
 #include "pdf/pdf_ink_conversions.h"
-#include "pdf/pdf_ink_transform.h"
+#include "pdf/pdf_transform.h"
+#include "pdf/pdfium/pdfium_ink_transform.h"
 #include "third_party/ink/src/ink/brush/brush_coat.h"
 #include "third_party/ink/src/ink/brush/brush_tip.h"
 #include "third_party/ink/src/ink/geometry/mesh.h"
@@ -22,8 +23,8 @@
 #include "third_party/ink/src/ink/strokes/stroke.h"
 #include "third_party/pdfium/public/cpp/fpdf_scopers.h"
 #include "third_party/pdfium/public/fpdf_edit.h"
-#include "ui/gfx/geometry/axis_transform2d.h"
 #include "ui/gfx/geometry/point_f.h"
+#include "ui/gfx/geometry/transform.h"
 
 namespace chrome_pdf {
 
@@ -35,10 +36,8 @@ class ModeledShapeOutlinesIterator {
  public:
   struct OutlineData {
     uint32_t group_index;
-    // Guaranteeded to be non-empty.
-    // TODO(367764863) Rewrite to base::raw_span.
-    RAW_PTR_EXCLUSION base::span<const ink::PartitionedMesh::VertexIndexPair>
-        outline;
+    // Guaranteed to be non-empty.
+    base::raw_span<const ink::VertexIndexPair> outline;
   };
 
   explicit ModeledShapeOutlinesIterator(const ink::PartitionedMesh& shape)
@@ -67,9 +66,8 @@ class ModeledShapeOutlinesIterator {
   uint32_t outline_index_ = 0;
 };
 
-gfx::PointF GetVertexPosition(
-    base::span<const ink::Mesh> meshes,
-    const ink::PartitionedMesh::VertexIndexPair& vertex_index_pair) {
+gfx::PointF GetVertexPosition(base::span<const ink::Mesh> meshes,
+                              const ink::VertexIndexPair& vertex_index_pair) {
   ink::Point vertex_position =
       meshes[vertex_index_pair.mesh_index].VertexPosition(
           vertex_index_pair.vertex_index);
@@ -85,7 +83,7 @@ ScopedFPDFPageObject CreatePathFromOutlineData(
     FPDF_PAGE page,
     const ink::PartitionedMesh& shape,
     const ModeledShapeOutlinesIterator::OutlineData& outline_data,
-    const gfx::AxisTransform2d& transform) {
+    const gfx::Transform& transform) {
   CHECK(page);
 
   base::span<const ink::Mesh> meshes =
@@ -123,9 +121,7 @@ std::vector<ScopedFPDFPageObject> WriteShapeToNewPathsOnPage(
     FPDF_PAGE page) {
   CHECK(page);
 
-  const gfx::AxisTransform2d transform =
-      GetCanonicalToPdfTransform(FPDF_GetPageHeightF(page));
-
+  const gfx::Transform transform = GetCanonicalToPdfTransformForPage(page);
   std::vector<ScopedFPDFPageObject> results;
   ModeledShapeOutlinesIterator it(shape);
   for (std::optional<ModeledShapeOutlinesIterator::OutlineData> outline_data =
@@ -142,27 +138,23 @@ void SetBrushPropertiesForPath(const ink::Brush& brush, FPDF_PAGEOBJECT path) {
   const SkColor color = GetSkColorFromInkBrush(brush);
   CHECK_EQ(SkColorGetA(color), SK_AlphaOPAQUE);
 
-  CHECK_EQ(brush.CoatCount(), 1u);
-  const ink::BrushCoat& coat = brush.GetCoats()[0];
-  CHECK_EQ(coat.tips.size(), 1u);
-  // third_party/ink/src/ink/brush/brush_tip.h says this can have a value up to
-  // 2.0f, but that should never be the case, as //pdf code never sets it that
-  // high.
-  CHECK_LE(coat.tips[0].opacity_multiplier, 1.0f);
+  // Ink says this can have a value up to 2.0f, but that should never be the
+  // case, as //pdf code never sets it that high.
+  const float opacity_multiplier = GetOpacityMultiplierFromBrush(brush);
+  CHECK_LE(opacity_multiplier, 1.0f);
 
-  bool result = FPDFPageObj_SetFillColor(path, SkColorGetR(color),
-                                         SkColorGetG(color), SkColorGetB(color),
-                                         coat.tips[0].opacity_multiplier * 255);
+  bool result =
+      FPDFPageObj_SetFillColor(path, SkColorGetR(color), SkColorGetG(color),
+                               SkColorGetB(color), opacity_multiplier * 255);
   CHECK(result);
 }
 
 }  // namespace
 
-std::vector<FPDF_PAGEOBJECT> WriteStrokeToPage(FPDF_DOCUMENT document,
-                                               FPDF_PAGE page,
+std::vector<FPDF_PAGEOBJECT> WriteStrokeToPage(FPDF_PAGE page,
                                                const ink::Stroke& stroke) {
   std::vector<FPDF_PAGEOBJECT> results;
-  if (!document || !page) {
+  if (!page) {
     return results;
   }
 

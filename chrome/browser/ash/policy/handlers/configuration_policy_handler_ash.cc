@@ -17,7 +17,6 @@
 #include "ash/constants/geolocation_access_level.h"
 #include "ash/system/privacy_hub/privacy_hub_controller.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/functional/callback.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -29,7 +28,9 @@
 #include "chrome/browser/apps/app_service/policy_util.h"
 #include "chrome/browser/ash/accessibility/magnifier_type.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_prefs.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/web_applications/policy/app_service_web_app_policy.h"
+#include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
+#include "chrome/browser/web_applications/web_app_utils.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/components/onc/onc_signature.h"
 #include "chromeos/components/onc/onc_utils.h"
@@ -60,7 +61,7 @@ constexpr char kPolicyEntryFileExtensionsKey[] = "file_extensions";
 constexpr char kSubkeyURL[] = "url";
 constexpr char kSubkeyHash[] = "hash";
 
-std::optional<std::string> GetSubkeyString(const base::Value::Dict& dict,
+std::optional<std::string> GetSubkeyString(const base::DictValue& dict,
                                            PolicyErrorMap* errors,
                                            const std::string& policy,
                                            const std::string& subkey) {
@@ -153,12 +154,13 @@ base::Value CalculateIdleActionValue(const base::Value* idle_action_value,
 }
 
 bool IsSupportedAppTypePolicyId(std::string_view policy_id) {
-  return apps_util::IsChromeAppPolicyId(policy_id) ||
-         apps_util::IsArcAppPolicyId(policy_id) ||
-         apps_util::IsSystemWebAppPolicyId(policy_id) ||
-         apps_util::IsWebAppPolicyId(policy_id) ||
-         apps_util::IsPreinstalledWebAppPolicyId(policy_id) ||
-         apps_util::IsIsolatedWebAppPolicyId(policy_id);
+  return web_app::WebAppPolicyManager::IsChromeAppPolicyId(policy_id) ||
+         web_app::IsArcAppPolicyId(policy_id) ||
+         web_app::IsSystemWebAppPolicyId(policy_id) ||
+         web_app::WebAppPolicyManager::IsWebAppPolicyId(policy_id) ||
+         web_app::WebAppPolicyManager::IsPreinstalledWebAppPolicyId(
+             policy_id) ||
+         web_app::WebAppPolicyManager::IsIsolatedWebAppPolicyId(policy_id);
 }
 
 }  // namespace
@@ -189,7 +191,7 @@ bool ExternalDataPolicyHandler::CheckPolicySettings(
 
   const base::Value* value = entry->value(base::Value::Type::DICT);
   DCHECK(value);
-  const base::Value::Dict& dict = value->GetDict();
+  const base::DictValue& dict = value->GetDict();
   std::optional<std::string> url_string =
       GetSubkeyString(dict, errors, policy, kSubkeyURL);
   std::optional<std::string> hash_string =
@@ -250,7 +252,7 @@ bool NetworkConfigurationPolicyHandler::CheckPolicySettings(
     return true;
   }
 
-  std::optional<base::Value::Dict> root_dict =
+  std::optional<base::DictValue> root_dict =
       chromeos::onc::ReadDictionaryFromJson(value->GetString());
   if (!root_dict.has_value()) {
     errors->AddError(policy_name(), IDS_POLICY_NETWORK_CONFIG_PARSE_FAILED);
@@ -305,9 +307,9 @@ void NetworkConfigurationPolicyHandler::ApplyPolicySettings(
 
   const std::string& onc_blob = value->GetString();
 
-  base::Value::List network_configs;
-  base::Value::List certificates;
-  base::Value::Dict global_network_config;
+  base::ListValue network_configs;
+  base::ListValue certificates;
+  base::DictValue global_network_config;
   chromeos::onc::ParseAndValidateOncForImport(
       onc_blob, onc_source_, &network_configs, &global_network_config,
       &certificates);
@@ -350,7 +352,7 @@ NetworkConfigurationPolicyHandler::SanitizeNetworkConfig(
     return std::nullopt;
   }
 
-  std::optional<base::Value::Dict> config_dict =
+  std::optional<base::DictValue> config_dict =
       chromeos::onc::ReadDictionaryFromJson(config->GetString());
   if (!config_dict.has_value()) {
     return std::nullopt;
@@ -359,7 +361,7 @@ NetworkConfigurationPolicyHandler::SanitizeNetworkConfig(
   // Placeholder to insert in place of the filtered setting.
   const char kPlaceholder[] = "********";
 
-  base::Value::Dict toplevel_dict = chromeos::onc::MaskCredentialsInOncObject(
+  base::DictValue toplevel_dict = chromeos::onc::MaskCredentialsInOncObject(
       chromeos::onc::kToplevelConfigurationSignature, config_dict.value(),
       kPlaceholder);
 
@@ -379,15 +381,15 @@ bool PinnedLauncherAppsPolicyHandler::CheckListEntry(const base::Value& value) {
   return IsSupportedAppTypePolicyId(policy_id);
 }
 
-void PinnedLauncherAppsPolicyHandler::ApplyList(base::Value::List filtered_list,
+void PinnedLauncherAppsPolicyHandler::ApplyList(base::ListValue filtered_list,
                                                 PrefValueMap* prefs) {
-  base::Value::List pinned_apps_list;
+  base::ListValue pinned_apps_list;
   for (base::Value& entry : filtered_list) {
-    auto app_dict = base::Value::Dict().Set(
+    auto app_dict = base::DictValue().Set(
         ChromeShelfPrefs::kPinnedAppsPrefAppIDKey, std::move(entry));
     pinned_apps_list.Append(std::move(app_dict));
   }
-  prefs->SetValue(prefs::kPolicyPinnedLauncherApps,
+  prefs->SetValue(ash::prefs::kPolicyPinnedLauncherApps,
                   base::Value(std::move(pinned_apps_list)));
 }
 
@@ -450,15 +452,15 @@ bool DefaultHandlersForFileExtensionsPolicyHandler::CheckPolicySettings(
   return true;
 }
 
-// Applies an inverse mapping to `prefs::kDefaultHandlersForFileExtensions`:
-// file_extension -> id.
+// Applies an inverse mapping to
+// `ash::prefs::kDefaultHandlersForFileExtensions`: file_extension -> id.
 void DefaultHandlersForFileExtensionsPolicyHandler::ApplyPolicySettings(
     const PolicyMap& policies,
     PrefValueMap* prefs) {
   std::unique_ptr<base::Value> policy_value;
   CheckAndGetValue(policies, nullptr, &policy_value);
 
-  base::Value::Dict pref_mapping;
+  base::DictValue pref_mapping;
   for (const auto& policy_entry : policy_value->GetList()) {
     const auto& policy_entry_dict = policy_entry.GetDict();
 
@@ -477,7 +479,7 @@ void DefaultHandlersForFileExtensionsPolicyHandler::ApplyPolicySettings(
     }
   }
 
-  prefs->SetValue(prefs::kDefaultHandlersForFileExtensions,
+  prefs->SetValue(ash::prefs::kDefaultHandlersForFileExtensions,
                   base::Value(std::move(pref_mapping)));
 }
 
@@ -566,7 +568,7 @@ void PowerManagementIdleSettingsPolicyHandler::ApplyPolicySettings(
   if (!CheckAndGetValue(policies, nullptr, &policy_value) || !policy_value) {
     return;
   }
-  const base::Value::Dict& policy_value_dict = policy_value->GetDict();
+  const base::DictValue& policy_value_dict = policy_value->GetDict();
 
   SetPrefValueIfNotNull(prefs, ash::prefs::kPowerAcScreenDimDelayMs,
                         policy_value_dict.FindByDottedPath(kScreenDimDelayAC));
@@ -628,7 +630,7 @@ void ScreenLockDelayPolicyHandler::ApplyPolicySettings(
   if (!CheckAndGetValue(policies, nullptr, &policy_value) || !policy_value) {
     return;
   }
-  const base::Value::Dict& policy_value_dict = policy_value->GetDict();
+  const base::DictValue& policy_value_dict = policy_value->GetDict();
 
   SetPrefValueIfNotNull(prefs, ash::prefs::kPowerAcScreenLockDelayMs,
                         policy_value_dict.Find(kScreenLockDelayAC));
@@ -653,7 +655,7 @@ void ScreenBrightnessPercentPolicyHandler::ApplyPolicySettings(
   if (!CheckAndGetValue(policies, nullptr, &policy_value) || !policy_value) {
     return;
   }
-  const base::Value::Dict& policy_value_dict = policy_value->GetDict();
+  const base::DictValue& policy_value_dict = policy_value->GetDict();
 
   SetPrefValueIfNotNull(prefs, ash::prefs::kPowerAcScreenBrightnessPercent,
                         policy_value_dict.Find(kScreenBrightnessPercentAC));

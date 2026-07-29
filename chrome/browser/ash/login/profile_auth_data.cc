@@ -6,6 +6,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/barrier_closure.h"
+#include "base/dcheck_is_on.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/unguessable_token.h"
@@ -79,7 +80,11 @@ void ImportCookies(base::RepeatingClosure completion_callback,
     // Assume secure_source - since the cookies are being restored from
     // another store, they have already gone through the strict secure check.
     // Likewise for permitting same-site marked cookies.
-    DCHECK(cookie.IsCanonical());
+    if constexpr (DCHECK_IS_ON()) {
+      net::CanonicalCookie::CanonicalizationResult result =
+          cookie.IsCanonical();
+      DCHECK(result) << result;
+    }
     net::CookieOptions options;
     options.set_include_httponly();
     options.set_same_site_cookie_context(
@@ -128,7 +133,7 @@ void OnCookiesToTransferRetrieved(base::RepeatingClosure completion_callback,
 
 // Callback that receives the content of `to_profile`'s cookie jar. Checks
 // whether this is the user's first login, based on the state of the cookie
-// jar, and starts retrieval of the data that should be transfered.
+// jar, and starts retrieval of the data that should be transferred.
 void OnTargetCookieJarContentsRetrieved(
     base::RepeatingClosure completion_callback,
     content::StoragePartition* from_partition,

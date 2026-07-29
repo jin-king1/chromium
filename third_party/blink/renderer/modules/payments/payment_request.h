@@ -5,7 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PAYMENTS_PAYMENT_REQUEST_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PAYMENTS_PAYMENT_REQUEST_H_
 
-#include "base/memory/scoped_refptr.h"
 #include "components/payments/mojom/payment_request_data.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/payments/payment_request.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
@@ -39,6 +38,7 @@ class PaymentDetailsUpdate;
 class PaymentRequestUpdateEvent;
 class PaymentResponse;
 class ScriptState;
+class V8SecurePaymentConfirmationAvailability;
 
 class MODULES_EXPORT PaymentRequest final
     : public EventTarget,
@@ -52,8 +52,11 @@ class MODULES_EXPORT PaymentRequest final
   USING_PRE_FINALIZER(PaymentRequest, ClearResolversAndCloseMojoConnection);
 
  public:
-  static ScriptPromise<IDLBoolean> isSecurePaymentConfirmationAvailable(
-      ScriptState* script_state);
+  static ScriptPromise<V8SecurePaymentConfirmationAvailability>
+  securePaymentConfirmationAvailability(ScriptState* script_state);
+
+  static ScriptPromise<IDLRecord<IDLString, IDLBoolean>>
+  getSecurePaymentConfirmationCapabilities(ScriptState* script_state);
 
   static PaymentRequest* Create(ExecutionContext*,
                                 const HeapVector<Member<PaymentMethodData>>&,

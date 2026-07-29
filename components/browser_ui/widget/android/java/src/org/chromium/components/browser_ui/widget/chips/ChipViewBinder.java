@@ -34,11 +34,12 @@ public class ChipViewBinder {
                 boolean isSelected =
                         model.getAllSetProperties().contains(ChipProperties.SELECTED)
                                 && model.get(ChipProperties.SELECTED);
-                chip.setIcon(
+                chip.setIconWithTint(
                         isSelected ? R.drawable.ic_check_googblue_24dp : iconId,
                         model.get(ChipProperties.APPLY_ICON_TINT));
             } else {
-                chip.setIcon(ChipProperties.INVALID_ICON_ID, false);
+                chip.setIconWithTint(
+                        ChipProperties.INVALID_ICON_ID, /* tintWithTextColor= */ false);
             }
 
         } else if (ChipProperties.ID == key) {
@@ -49,6 +50,8 @@ public class ChipViewBinder {
                     .setTextAppearance(model.get(ChipProperties.PRIMARY_TEXT_APPEARANCE));
         } else if (ChipProperties.SELECTED == key) {
             chip.setSelected(model.get(ChipProperties.SELECTED));
+        } else if (ChipProperties.SELECT_HANDLER == key) {
+            chip.setSelectHandler(model.get(ChipProperties.SELECT_HANDLER));
         } else if (ChipProperties.TEXT == key) {
             chip.getPrimaryTextView().setText(model.get(ChipProperties.TEXT));
         } else if (ChipProperties.TEXT_MAX_WIDTH_PX == key) {

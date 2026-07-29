@@ -13,9 +13,8 @@ import {CrDialogElement} from 'chrome://resources/ash/common/cr_elements/cr_dial
 import {loadTimeData} from 'chrome://resources/ash/common/load_time_data.m.js';
 import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict_query.js';
 import {assert} from 'chrome://resources/js/assert.js';
-import {mojoString16ToString} from 'chrome://resources/js/mojo_type_util.js';
 import type {PaperProgressElement} from 'chrome://resources/polymer/v3_0/paper-progress/paper-progress.js';
-import {assertEquals, assertFalse, assertThrows, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {isVisible} from 'chrome://webui-test/test_util.js';
 
@@ -221,8 +220,7 @@ suite('FirmwareUpdateDialogTest', () => {
     assertEquals(
         getTextContent('#updateDialogTitle'),
         loadTimeData.getStringF(
-            'restartingTitleText',
-            mojoString16ToString(updateDialogElement.update!.deviceName)));
+            'restartingTitleText', updateDialogElement.update!.deviceName));
     assertEquals(
         getTextContent('#updateDialogBody'),
         loadTimeData.getString('restartingBodyText'));
@@ -254,8 +252,7 @@ suite('FirmwareUpdateDialogTest', () => {
     assertEquals(
         getTextContent('#updateDialogTitle'),
         loadTimeData.getStringF(
-            'updating',
-            mojoString16ToString(updateDialogElement.update!.deviceName)));
+            'updating', updateDialogElement.update!.deviceName));
     assertEquals(
         getTextContent('#updateDialogBody'),
         loadTimeData.getString('updatingInfo'));
@@ -274,8 +271,7 @@ suite('FirmwareUpdateDialogTest', () => {
     assertEquals(
         getTextContent('#updateDialogTitle'),
         loadTimeData.getStringF(
-            'restartingTitleText',
-            mojoString16ToString(updateDialogElement.update!.deviceName)));
+            'restartingTitleText', updateDialogElement.update!.deviceName));
     assertEquals(
         getTextContent('#updateDialogBody'),
         loadTimeData.getString('restartingBodyText'));
@@ -310,8 +306,7 @@ suite('FirmwareUpdateDialogTest', () => {
         '#indeterminateProgressBar')));
   });
 
-  test('UpdateDialogContent_WaitingForUser_V2Disabled', async () => {
-    loadTimeData.overrideValues({isFirmwareUpdateUIV2Enabled: false});
+  test('UpdateDialogContent_WaitingForUser_ShowUpdate', async () => {
     createUpdateDialogElement();
     assert(updateDialogElement?.shadowRoot);
 
@@ -323,75 +318,12 @@ suite('FirmwareUpdateDialogTest', () => {
     await setInstallationProgress(70, UpdateState.kWaitingForUser);
     assertTrue(getUpdateDialog().open);
 
-    // If the v2 flag is disabled, the dialog should indicate that it's
-    // restarting when the state is kWaitingForUser.
+    // If the status is kWaitingForUser, but the element hasn't received the
+    // onDeviceRequest call yet, it should just show the normal update dialog.
     assertEquals(
         getTextContent('#updateDialogTitle'),
         loadTimeData.getStringF(
-            'restartingTitleText',
-            mojoString16ToString(updateDialogElement.update!.deviceName)));
-    assertEquals(
-        getTextContent('#updateDialogBody'),
-        loadTimeData.getString('restartingBodyText'));
-    // Body text should not have an aria-live value for non-requests.
-    assertEquals(
-        strictQuery(
-            '#updateDialogBody', updateDialogElement.shadowRoot, HTMLDivElement)
-            .ariaLive,
-        '');
-    assertEquals(
-        getTextContent('#progress'),
-        loadTimeData.getString('restartingFooterText'));
-    // Check that the indeterminate progress is shown.
-    assertTrue(isVisible(updateDialogElement.shadowRoot.querySelector(
-        '#indeterminateProgressBar')));
-    // No percentage progress bar.
-    assertFalse(isVisible(
-        updateDialogElement.shadowRoot.querySelector('#updateProgressBar')));
-  });
-
-  test('UpdateDialogContent_DeviceRequest_V2Disabled', async () => {
-    loadTimeData.overrideValues({isFirmwareUpdateUIV2Enabled: false});
-    createUpdateDialogElement();
-
-    // Start update.
-    await setInstallationProgress(/*percentage*/ 1, UpdateState.kUpdating);
-    assertTrue(getUpdateDialog().open);
-
-    // Dialog remains open while the device is waiting for user action.
-    await setInstallationProgress(70, UpdateState.kWaitingForUser);
-    assertTrue(getUpdateDialog().open);
-
-    // Device requests are not expected when the flag is disabled, so
-    // throw an error.
-    assertThrows(
-        () => updateDialogElement?.onDeviceRequest(createDeviceRequest(
-            DeviceRequestId.kDoNotPowerOff,
-            DeviceRequestKind.kImmediate,
-            )));
-  });
-
-  test('UpdateDialogContent_WaitingForUser_V2Enabled_ShowUpdate', async () => {
-    loadTimeData.overrideValues({isFirmwareUpdateUIV2Enabled: true});
-    createUpdateDialogElement();
-    assert(updateDialogElement?.shadowRoot);
-
-    // Start update.
-    await setInstallationProgress(/*percentage*/ 1, UpdateState.kUpdating);
-    assertTrue(getUpdateDialog().open);
-
-    // Dialog remains open while the device is waiting for user action.
-    await setInstallationProgress(70, UpdateState.kWaitingForUser);
-    assertTrue(getUpdateDialog().open);
-
-    // If the v2 flag is enabled, and the status is kWaitingForUser, but the
-    // element hasn't received the onDeviceRequest call yet, it should just
-    // show the normal update dialog.
-    assertEquals(
-        getTextContent('#updateDialogTitle'),
-        loadTimeData.getStringF(
-            'updating',
-            mojoString16ToString(updateDialogElement.update!.deviceName)));
+            'updating', updateDialogElement.update!.deviceName));
     assertEquals(
         getTextContent('#updateDialogBody'),
         loadTimeData.getString('updatingInfo'));
@@ -404,9 +336,7 @@ suite('FirmwareUpdateDialogTest', () => {
   });
 
   test(
-      'UpdateDialogContent_DeviceRequest_V2Enabled_IgnoreNonImmediate',
-      async () => {
-        loadTimeData.overrideValues({isFirmwareUpdateUIV2Enabled: true});
+      'UpdateDialogContent_DeviceRequest_IgnoreNonImmediate', async () => {
         createUpdateDialogElement();
         assert(updateDialogElement?.shadowRoot);
 
@@ -426,8 +356,7 @@ suite('FirmwareUpdateDialogTest', () => {
         assertEquals(
             getTextContent('#updateDialogTitle'),
             loadTimeData.getStringF(
-                'updating',
-                mojoString16ToString(updateDialogElement.update!.deviceName)));
+                'updating', updateDialogElement.update!.deviceName));
         assertEquals(
             getTextContent('#updateDialogBody'),
             loadTimeData.getString('updatingInfo'));
@@ -447,8 +376,7 @@ suite('FirmwareUpdateDialogTest', () => {
         assertEquals(
             getTextContent('#updateDialogTitle'),
             loadTimeData.getStringF(
-                'updating',
-                mojoString16ToString(updateDialogElement.update!.deviceName)));
+                'updating', updateDialogElement.update!.deviceName));
         assertEquals(
             getTextContent('#updateDialogBody'),
             loadTimeData.getString('updatingInfo'));
@@ -460,8 +388,7 @@ suite('FirmwareUpdateDialogTest', () => {
         assertEquals(70, percentBarStatus);
       });
 
-  test('UpdateDialogContent_DeviceRequest_V2Enabled', async () => {
-    loadTimeData.overrideValues({isFirmwareUpdateUIV2Enabled: true});
+  test('UpdateDialogContent_DeviceRequest', async () => {
     createUpdateDialogElement();
     assert(updateDialogElement?.shadowRoot);
 
@@ -473,8 +400,8 @@ suite('FirmwareUpdateDialogTest', () => {
     await setInstallationProgress(70, UpdateState.kWaitingForUser);
     assertTrue(getUpdateDialog().open);
 
-    // If the v2 flag is enabled, the dialog should show the associated string
-    // for the given device request.
+    // The dialog should show the associated string for the given device
+    // request.
     const idToExpectedString: Map<DeviceRequestId, string> = new Map([
       [DeviceRequestId.kRemoveReplug, 'requestIdRemoveReplug'],
       [DeviceRequestId.kInsertUSBCable, 'requestIdInsertUsbCable'],
@@ -484,8 +411,7 @@ suite('FirmwareUpdateDialogTest', () => {
       [DeviceRequestId.kReplugInstall, 'requestIdReplugInstall'],
     ]);
 
-    const deviceName =
-        mojoString16ToString(updateDialogElement.update!.deviceName);
+    const deviceName = updateDialogElement.update!.deviceName;
 
     for (const [deviceRequestID, expectedString] of idToExpectedString
              .entries()) {
@@ -529,8 +455,8 @@ suite('FirmwareUpdateDialogTest', () => {
       assertTrue(isVisible(
           updateDialogElement.shadowRoot.querySelector('#updateProgressBar')));
       assertTrue(
-          !!updateDialogElement.shadowRoot.querySelector('#updateProgressBar')!
-                .hasAttribute('disabled'));
+          updateDialogElement.shadowRoot.querySelector('#updateProgressBar')!
+              .hasAttribute('disabled'));
       // Indeterminate progress should not be shown.
       assertFalse(isVisible(updateDialogElement.shadowRoot.querySelector(
           '#indeterminateProgressBar')));

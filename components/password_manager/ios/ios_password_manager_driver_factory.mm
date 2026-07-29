@@ -4,8 +4,8 @@
 
 #import "components/password_manager/ios/ios_password_manager_driver_factory.h"
 
-#include "components/password_manager/core/browser/password_manager.h"
-#include "third_party/abseil-cpp/absl/memory/memory.h"
+#import "components/password_manager/core/browser/password_manager.h"
+#import "third_party/abseil-cpp/absl/memory/memory.h"
 
 // static
 IOSPasswordManagerDriver*
@@ -22,7 +22,8 @@ IOSPasswordManagerDriverFactory::IOSPasswordManagerDriver(
     web::WebFrame* web_frame,
     web::WebState* web_state) {
   IOSPasswordManagerWebFrameDriverHelper::CreateForWebFrame(
-      web_state, bridge_, password_manager_, web_frame, next_free_id++);
+      web_state, bridge_, password_manager_, web_frame,
+      id_generator_.GenerateNextId());
   return !web_frame
              ? nullptr
              : IOSPasswordManagerWebFrameDriverHelper::FromWebFrame(web_frame)
@@ -49,15 +50,13 @@ IOSPasswordManagerDriverFactory::GetRetainableDriver(web::WebState* web_state,
       ->RetainableDriver();
 }
 
-WEB_STATE_USER_DATA_KEY_IMPL(IOSPasswordManagerDriverFactory)
-
 // static
 void IOSPasswordManagerWebFrameDriverHelper::CreateForWebFrame(
     web::WebState* web_state,
     id<PasswordManagerDriverBridge> bridge,
     password_manager::PasswordManagerInterface* password_manager,
     web::WebFrame* web_frame,
-    int driver_id) {
+    password_manager::DriverId driver_id) {
   if (!web_frame || FromWebFrame(web_frame) || !web_state) {
     return;
   }
@@ -73,7 +72,7 @@ IOSPasswordManagerWebFrameDriverHelper::IOSPasswordManagerWebFrameDriverHelper(
     id<PasswordManagerDriverBridge> bridge,
     password_manager::PasswordManagerInterface* password_manager,
     web::WebFrame* web_frame,
-    int driver_id)
+    password_manager::DriverId driver_id)
     : driver_(
           base::WrapRefCounted(new IOSPasswordManagerDriver(web_state,
                                                             bridge,

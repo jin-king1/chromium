@@ -54,9 +54,14 @@ class DesktopNativeCursorManager;
 class DesktopWindowTreeHost;
 class FocusManagerEventHandler;
 class TooltipManagerAura;
+namespace legacy {
+class WindowReorderer;
+}
 class WindowReorderer;
 
-// DesktopNativeWidgetAura handles top-level widgets on Windows and Linux.
+// DesktopNativeWidgetAura is a NativeWidgetPrivate implementation that owns
+// a platform-specific window (x11::Window, HWND, etc). A widget that uses a
+// DesktopNativeWidgetAura is called a desktop widget.
 class VIEWS_EXPORT DesktopNativeWidgetAura
     : public internal::NativeWidgetPrivate,
       public aura::WindowDelegate,
@@ -115,6 +120,10 @@ class VIEWS_EXPORT DesktopNativeWidgetAura
   // DesktopWindowTreeHost's transparency.
   void UpdateWindowTransparency();
 
+  // Gets child Widgets with an ownership relationship established at the
+  // platform window level. Does not include the views::Widget for this.
+  Widget::Widgets GetOwnedDesktopWidgets();
+
   base::WeakPtr<internal::NativeWidgetPrivate> GetWeakPtr() override;
 
  protected:
@@ -122,7 +131,7 @@ class VIEWS_EXPORT DesktopNativeWidgetAura
   void InitNativeWidget(Widget::InitParams params) override;
   void OnWidgetInitDone() override;
   void ReparentNativeViewImpl(gfx::NativeView new_parent) override;
-  std::unique_ptr<NonClientFrameView> CreateNonClientFrameView() override;
+  std::unique_ptr<FrameView> CreateFrameView() override;
   bool ShouldUseNativeFrame() const override;
   bool ShouldWindowContentsBeTransparent() const override;
   void FrameTypeChanged() override;
@@ -134,6 +143,7 @@ class VIEWS_EXPORT DesktopNativeWidgetAura
   const ui::Layer* GetLayer() const override;
   void ReorderNativeViews() override;
   void ViewRemoved(View* view) override;
+  void ClientDestroyedWidget() override;
   void SetNativeWindowProperty(const char* name, void* value) override;
   void* GetNativeWindowProperty(const char* name) const override;
   TooltipManager* GetTooltipManager() const override;
@@ -148,7 +158,7 @@ class VIEWS_EXPORT DesktopNativeWidgetAura
   void SetWindowIcons(const gfx::ImageSkia& window_icon,
                       const gfx::ImageSkia& app_icon) override;
   void InitModalType(ui::mojom::ModalType modal_type) override;
-  void SetColorMode(ui::ColorProviderKey::ColorMode color_mode) override;
+  void SetBackgroundColor(SkColor background_color) override;
   gfx::Rect GetWindowBoundsInScreen() const override;
   gfx::Rect GetClientAreaBoundsInScreen() const override;
   gfx::Rect GetRestoredBounds() const override;
@@ -166,6 +176,7 @@ class VIEWS_EXPORT DesktopNativeWidgetAura
             const gfx::Rect& restore_bounds) override;
   void Hide() override;
   bool IsVisible() const override;
+  bool IsVisibleOnScreen() const override;
   void Activate() override;
   void Deactivate() override;
   bool IsActive() const override;
@@ -189,11 +200,11 @@ class VIEWS_EXPORT DesktopNativeWidgetAura
   void SetAspectRatio(const gfx::SizeF& aspect_ratio,
                       const gfx::Size& excluded_margin) override;
   void FlashFrame(bool flash_frame) override;
-  void RunShellDrag(std::unique_ptr<ui::OSExchangeData> data,
-                    const gfx::Point& location,
-                    int operation,
-                    ui::mojom::DragEventSource source) override;
-  void CancelShellDrag(View* view) override;
+  void RunDragDropLoop(std::unique_ptr<ui::OSExchangeData> data,
+                       const gfx::Point& location,
+                       int operation,
+                       ui::mojom::DragEventSource source) override;
+  void CancelDragDropLoop(View* view) override;
   void SchedulePaintInRect(const gfx::Rect& rect) override;
   void ScheduleLayout() override;
   void SetCursor(const ui::Cursor& cursor) override;
@@ -218,6 +229,10 @@ class VIEWS_EXPORT DesktopNativeWidgetAura
   void OnNativeViewHierarchyChanged() override;
   bool SetAllowScreenshots(bool allow) override;
   bool AreScreenshotsAllowed() override;
+#if BUILDFLAG(IS_WIN)
+  void SetExcludeFromScreenCapture(bool exclude) override;
+#endif
+  bool IsDesktopNativeWidget() const override;
   std::string GetName() const override;
 
   // aura::WindowDelegate:
@@ -355,6 +370,7 @@ class VIEWS_EXPORT DesktopNativeWidgetAura
 
   // Reorders child windows of |window_| associated with a view based on the
   // order of the associated views in the widget's view hierarchy.
+  std::unique_ptr<legacy::WindowReorderer> legacy_window_reorderer_;
   std::unique_ptr<WindowReorderer> window_reorderer_;
 
   // See class documentation for Widget in widget.h for a note about type.

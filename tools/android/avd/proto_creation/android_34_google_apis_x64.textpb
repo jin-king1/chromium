@@ -5,8 +5,8 @@
 # Configuration for an Android-14 (U, API 34) AVD on google_apis on x86_64
 
 emulator_package {
-  package_name: "chromium/third_party/android_sdk/public/emulator"
-  version: "abxH5kvB9WO4Xg_EHEiIjAl1rqmM2hQRhU5e4_9AFboC"  # 35.3.11 (Stable)
+  package_name: "chromium/third_party/android_sdk/public/emulator/linux-amd64"
+  version: "QgDCxG9OzoQx04LpwnENgTz3gby5-Kyx6Rsv5yl91p4C"  # 36.4.9 (Stable)
 }
 
 system_image_package {
@@ -55,5 +55,9 @@ avd_variants {
 min_sdk: 34
 additional_apk {
   package_name: "chrome_internal/third_party/google3/apks/gmscore/x86_64"
-  version: "5mF806AbGnsm29dfwLgz7FkLBXv2l2POLvQ2nojUlhgC" # 24.26.32
+  version: "7mVKXdcmxohe1QaWUiYV47oHeioRAWJ6_s_LxYbd9I0C" # 25.07.33
+}
+
+avd_launch_settings {
+  gpu_mode: "swangle_indirect"
 }

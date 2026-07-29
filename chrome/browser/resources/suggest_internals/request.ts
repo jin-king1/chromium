@@ -7,60 +7,75 @@ import '//resources/cr_elements/cr_collapse/cr_collapse.js';
 import '//resources/cr_elements/cr_expand_button/cr_expand_button.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
-import '//resources/cr_elements/cr_shared_style.css.js';
-import '//resources/cr_elements/cr_shared_vars.css.js';
 import '//resources/cr_elements/icons.html.js';
 import '//resources/cr_elements/cr_chip/cr_chip.js';
 
+import {assert} from '//resources/js/assert.js';
+import {loadTimeData} from '//resources/js/load_time_data.js';
 import {sanitizeInnerHtml} from '//resources/js/parse_html_subset.js';
-import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {PageClassification} from './omnibox.mojom-webui.js';
-import {getTemplate} from './request.html.js';
+import {getCss} from './request.css.js';
+import {getHtml} from './request.html.js';
 import type {Request} from './suggest_internals.mojom-webui.js';
 import {RequestStatus} from './suggest_internals.mojom-webui.js';
 
 // Displays a suggest request and its response.
-export class SuggestRequestElement extends PolymerElement {
+export class SuggestRequestElement extends CrLitElement {
   static get is() {
     return 'suggest-request';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
-  static get properties() {
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
     return {
-      request: Object,
-
-      requestDataJson_: {
-        type: String,
-        computed: `computeRquestDataJson_(request.data)`,
-      },
-
-      responseJson_: {
-        type: String,
-        computed: `computeResponseJson_(request.response)`,
-      },
-
-      pgcl_: {
-        type: String,
-        computed: `computePageClassification_(request.url)`,
-      },
+      request: {type: Object},
+      requestDataJson_: {type: String},
+      responseJson_: {type: String},
+      pgcl_: {type: String},
+      expanded_: {type: Boolean},
+      webuiRoundedIconsEnabled_: {type: Boolean},
     };
   }
 
-  request: Request;
-  private requestDataJson_: string = '';
-  private responseJson_: string = '';
-  private pgcl_: string = '';
+  accessor request: Request|null = null;
+  protected accessor requestDataJson_: string = '';
+  protected accessor responseJson_: string = '';
+  private accessor pgcl_: string = '';
+  protected accessor expanded_: boolean = false;
+  protected accessor webuiRoundedIconsEnabled_: boolean =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled');
 
-  private computeRquestDataJson_(): string {
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+
+    if (this.request === null) {
+      this.requestDataJson_ = '';
+      this.responseJson_ = '';
+      this.pgcl_ = '';
+      return;
+    }
+
+    this.requestDataJson_ = this.computeRequestDataJson_();
+    this.responseJson_ = this.computeResponseJson_();
+    this.pgcl_ = this.computePageClassification_();
+  }
+
+  private computeRequestDataJson_(): string {
+    assert(this.request);
     try {
       // Try to parse the request body, if any.
       this.request.data['Request-Body'] =
-          JSON.parse(this.request.data['Request-Body']);
+          JSON.parse(this.request.data['Request-Body']!);
     } finally {
       // Pretty-print the parsed JSON.
       return JSON.stringify(this.request.data, null, 2);
@@ -68,6 +83,7 @@ export class SuggestRequestElement extends PolymerElement {
   }
 
   private computeResponseJson_(): string {
+    assert(this.request);
     try {
       // Remove the magic XSSI guard prefix, if any, to get a valid JSON.
       const validJson = this.request.response.replace(')]}\'', '').trim();
@@ -81,19 +97,27 @@ export class SuggestRequestElement extends PolymerElement {
   }
 
   private computePageClassification_(): string {
-    if (!this.request.url.url) {
+    assert(this.request);
+
+    if (!this.request.url) {
       return '';
     }
     // Find pgcl value in request url.
-    const url = new URL(this.request.url.url);
+    const url = new URL(this.request.url);
     const queryMatches = url.search.match(/pgcl=(?<pgcl>[^&]*)/);
     // If no pgcl value in request, set pgcl to empty
-    const pgcl = queryMatches?.groups ? queryMatches?.groups['pgcl'] : '';
-    return pgcl;
+    if (queryMatches === null || !queryMatches.groups) {
+      return '';
+    }
+
+    return queryMatches.groups['pgcl'] || '';
   }
 
-  private getPageClassificationLabel_(): string {
-    return PageClassification[parseInt(this.pgcl_)];
+  protected getPageClassificationLabel_(): string {
+    if (!this.pgcl_) {
+      return 'No Page Classification';
+    }
+    return PageClassification[parseInt(this.pgcl_)]!;
   }
 
   private insertTextProtoLinks_(stringJSON: string): string {
@@ -116,6 +140,9 @@ export class SuggestRequestElement extends PolymerElement {
               break;
             case 'X-Client-Data':
               urlType = 'webserver.gws.ClientDataHeader';
+              break;
+            default:
+              break;
           }
           return `"${
               groups
@@ -124,14 +151,18 @@ export class SuggestRequestElement extends PolymerElement {
         });
   }
 
-  private getRequestDataHtml_(): TrustedHTML {
+  protected getRequestDataHtml_(): TrustedHTML {
     const htmlJSON = this.insertTextProtoLinks_(this.requestDataJson_);
     return sanitizeInnerHtml(htmlJSON);
   }
 
-  private getRequestPath_(): string {
+  protected getRequestPath_(): string {
+    if (this.request === null) {
+      return '';
+    }
+
     try {
-      const url = new URL(this.request.url.url);
+      const url = new URL(this.request.url);
       const queryMatches = url.search.match(/(q|delq)=[^&]*/);
       return url.pathname + '?' + (queryMatches ? queryMatches[0] : '');
     } catch (e) {
@@ -139,15 +170,16 @@ export class SuggestRequestElement extends PolymerElement {
     }
   }
 
-  private getResponseHtml_(): TrustedHTML {
+  protected getResponseHtml_(): TrustedHTML {
     const htmlJSON = this.insertTextProtoLinks_(this.responseJson_);
     return sanitizeInnerHtml(htmlJSON);
   }
 
-  private getStatusIcon_(): string {
-    switch (this.request.status) {
+  protected getStatusIcon_(): string {
+    switch (this.request?.status) {
       case RequestStatus.kHardcoded:
-        return 'suggest:lock';
+        return this.webuiRoundedIconsEnabled_ ? 'suggest:lock-filled' :
+                                                'suggest:lock-old';
       case RequestStatus.kCreated:
         return 'cr:create';
       case RequestStatus.kSent:
@@ -161,8 +193,8 @@ export class SuggestRequestElement extends PolymerElement {
     }
   }
 
-  private getStatusTitle_(): string {
-    switch (this.request.status) {
+  protected getStatusTitle_(): string {
+    switch (this.request?.status) {
       case RequestStatus.kHardcoded:
         return 'hardcoded';
       case RequestStatus.kCreated:
@@ -180,7 +212,11 @@ export class SuggestRequestElement extends PolymerElement {
     }
   }
 
-  private getTimestamp_(): string {
+  protected getTimestamp_(): string {
+    if (this.request === null) {
+      return '';
+    }
+
     // The JS Date() is based off of the number of milliseconds since the
     // UNIX epoch (1970-01-01 00::00:00 UTC), while |internalValue| of the
     // base::Time (represented in mojom.Time) represents the number of
@@ -189,56 +225,47 @@ export class SuggestRequestElement extends PolymerElement {
     // conversion from microseconds to milliseconds.
     const windowsEpoch = Date.UTC(1601, 0, 1, 0, 0, 0, 0);
     const unixEpoch = Date.UTC(1970, 0, 1, 0, 0, 0, 0);
-    // |epochDeltaMs| is equivalent to base::Time::kTimeTToMicrosecondsOffset.
+    // |epochDeltaMs| is equivalent to
+    // base::Time::kMicrosecondsFromWindowsToUnixEpoch.
     const epochDeltaMs = unixEpoch - windowsEpoch;
     const startTimeMs = Number(this.request.startTime.internalValue) / 1000;
     return (new Date(startTimeMs - epochDeltaMs)).toLocaleTimeString();
   }
 
-  private onCopyRequestClick_() {
+  protected onCopyRequestClick_() {
     navigator.clipboard.writeText(this.requestDataJson_);
 
-    this.dispatchEvent(new CustomEvent('show-toast', {
-      bubbles: true,
-      composed: true,
-      detail: 'Request Copied to Clipboard',
-    }));
+    this.fire('show-toast', 'Request Copied to Clipboard');
   }
 
-  private onCopyResponseClick_() {
+  protected onCopyResponseClick_() {
     navigator.clipboard.writeText(this.responseJson_);
 
-    this.dispatchEvent(new CustomEvent('show-toast', {
-      bubbles: true,
-      composed: true,
-      detail: 'Response Copied to Clipboard',
-    }));
+    this.fire('show-toast', 'Response Copied to Clipboard');
   }
 
-  private onHardcodeResponseClick_() {
-    this.dispatchEvent(new CustomEvent('open-hardcode-response-dialog', {
-      bubbles: true,
-      composed: true,
-      detail: this.responseJson_,
-    }));
+  protected onHardcodeResponseClick_() {
+    this.fire('open-hardcode-response-dialog', this.responseJson_);
   }
 
-  private onChipClick_(e: CustomEvent<string>) {
-    this.dispatchEvent(new CustomEvent('chip-click', {
-      bubbles: true,
-      composed: true,
-      detail: this.pgcl_,
-    }));
+  protected onChipClick_(e: CustomEvent<string>) {
+    this.fire('chip-click', this.pgcl_);
     // Allow chip to be found with aria label (originally hidden).
     const button =
-        this.shadowRoot!.querySelector<HTMLElement>('cr-expand-button')!;
+        this.shadowRoot.querySelector<HTMLElement>('cr-expand-button')!;
     const label = button.shadowRoot!.querySelector<HTMLElement>('#label')!;
     label.ariaHidden = 'false';
     // Prevent cr-expand-button from being clicked when chip is clicked.
     e.stopPropagation();
     e.preventDefault();
   }
+
+  protected onExpandedChanged_(e: CustomEvent<{value: boolean}>) {
+    this.expanded_ = e.detail.value;
+  }
 }
+
+export type RequestElement = SuggestRequestElement;
 
 declare global {
   interface HTMLElementTagNameMap {

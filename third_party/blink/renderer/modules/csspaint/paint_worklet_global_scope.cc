@@ -27,7 +27,6 @@
 #include "third_party/blink/renderer/modules/csspaint/paint_worklet.h"
 #include "third_party/blink/renderer/modules/csspaint/paint_worklet_proxy_client.h"
 #include "third_party/blink/renderer/platform/bindings/callback_method_retriever.h"
-#include "third_party/blink/renderer/platform/bindings/v8_binding_macros.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 
@@ -39,7 +38,7 @@ bool ParseInputArguments(v8::Local<v8::Context> context,
                          v8::Local<v8::Object> constructor,
                          Vector<CSSSyntaxDefinition>* input_argument_types,
                          ExceptionState& exception_state) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   TryRethrowScope rethrow_scope(isolate, exception_state);
 
   if (RuntimeEnabledFeatures::CSSPaintAPIArgumentsEnabled()) {
@@ -76,7 +75,7 @@ PaintRenderingContext2DSettings* ParsePaintRenderingContext2DSettings(
     v8::Local<v8::Context> context,
     v8::Local<v8::Object> constructor,
     ExceptionState& exception_state) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   TryRethrowScope rethrow_scope(isolate, exception_state);
 
   v8::Local<v8::Value> context_settings_value;
@@ -102,7 +101,7 @@ PaintWorkletGlobalScope* PaintWorkletGlobalScope::Create(
     WorkerReportingProxy& reporting_proxy) {
   auto* global_scope = MakeGarbageCollected<PaintWorkletGlobalScope>(
       frame, std::move(creation_params), reporting_proxy);
-  global_scope->ScriptController()->Initialize(NullURL());
+  global_scope->ScriptController()->Initialize(NullUrl());
   MainThreadDebugger::Instance(global_scope->GetIsolate())
       ->ContextCreated(global_scope->ScriptController()->GetScriptState(),
                        global_scope->GetFrame(),
@@ -114,7 +113,6 @@ PaintWorkletGlobalScope* PaintWorkletGlobalScope::Create(
 PaintWorkletGlobalScope* PaintWorkletGlobalScope::Create(
     std::unique_ptr<GlobalScopeCreationParams> creation_params,
     WorkerThread* thread) {
-  DCHECK(RuntimeEnabledFeatures::OffMainThreadCSSPaintEnabled());
   return MakeGarbageCollected<PaintWorkletGlobalScope>(
       std::move(creation_params), thread);
 }
@@ -136,7 +134,7 @@ PaintWorkletGlobalScope::~PaintWorkletGlobalScope() = default;
 
 void PaintWorkletGlobalScope::Dispose() {
   DCHECK(IsContextThread());
-  if (!WTF::IsMainThread()) {
+  if (!IsMainThread()) {
     if (PaintWorkletProxyClient* proxy_client =
             PaintWorkletProxyClient::From(Clients()))
       proxy_client->Dispose();
@@ -146,7 +144,7 @@ void PaintWorkletGlobalScope::Dispose() {
   }
   WorkletGlobalScope::Dispose();
 
-  if (WTF::IsMainThread()) {
+  if (IsMainThread()) {
     // For off-the-main-thread paint worklet, this will be called in
     // WorkerThread::PrepareForShutdownOnWorkerThread().
     NotifyContextDestroyed();
@@ -169,7 +167,7 @@ void PaintWorkletGlobalScope::registerPaint(const ScriptState* script_state,
   if (paint_definitions_.Contains(name)) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidModificationError,
-        "A class with name:'" + name + "' is already registered.");
+        StrCat({"A class with name:'", name, "' is already registered."}));
     return;
   }
 
@@ -228,7 +226,7 @@ void PaintWorkletGlobalScope::registerPaint(const ScriptState* script_state,
       input_argument_types, context_settings, this);
   paint_definitions_.Set(name, definition);
 
-  if (!WTF::IsMainThread()) {
+  if (!IsMainThread()) {
     PaintWorkletProxyClient* proxy_client =
         PaintWorkletProxyClient::From(Clients());
     proxy_client->RegisterCSSPaintDefinition(name, definition, exception_state);
@@ -247,7 +245,7 @@ CSSPaintDefinition* PaintWorkletGlobalScope::FindDefinition(
 }
 
 double PaintWorkletGlobalScope::devicePixelRatio() const {
-  return WTF::IsMainThread()
+  return IsMainThread()
              ? GetFrame()->DevicePixelRatio()
              : PaintWorkletProxyClient::From(Clients())->DevicePixelRatio();
 }
@@ -258,8 +256,9 @@ void PaintWorkletGlobalScope::Trace(Visitor* visitor) const {
 }
 
 void PaintWorkletGlobalScope::RegisterWithProxyClientIfNeeded() {
-  if (registered_ || WTF::IsMainThread())
+  if (registered_ || IsMainThread()) {
     return;
+  }
 
   if (PaintWorkletProxyClient* proxy_client =
           PaintWorkletProxyClient::From(Clients())) {

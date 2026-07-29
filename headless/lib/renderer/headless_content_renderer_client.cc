@@ -11,6 +11,7 @@
 #include "base/strings/string_util.h"
 #include "content/public/common/web_identity.h"
 #include "content/public/renderer/render_thread.h"
+#include "headless/lib/common/headless_features.h"
 #include "headless/public/switches.h"
 #include "media/base/video_codecs.h"
 #include "printing/buildflags/buildflags.h"
@@ -55,16 +56,17 @@ class HeadlessContentRendererUrlLoaderThrottleProvider
               [](const blink::LocalFrameToken& token,
                  const scoped_refptr<base::SequencedTaskRunner>
                      main_thread_task_runner,
-                 const url::Origin& origin,
+                 const std::optional<url::Origin>& initiator,
+                 const url::Origin& idp_origin,
                  blink::mojom::IdpSigninStatus status) {
                 if (content::RenderThread::IsMainThread()) {
-                  blink::SetIdpSigninStatus(token, origin, status);
+                  blink::SetIdpSigninStatus(token, idp_origin, status);
                   return;
                 }
                 if (main_thread_task_runner) {
                   main_thread_task_runner->PostTask(
                       FROM_HERE, base::BindOnce(&blink::SetIdpSigninStatus,
-                                                token, origin, status));
+                                                token, idp_origin, status));
                 }
               },
               local_frame_token.value(), main_thread_task_runner_));
@@ -118,6 +120,10 @@ bool HeadlessContentRendererClient::IsDecoderSupportedVideoType(
   // Besides being _allowed_, the codec actually has to be _supported_.
   return allowed_by_flags &&
          ContentRendererClient::IsDecoderSupportedVideoType(type);
+}
+
+bool HeadlessContentRendererClient::ShouldSuppressAudioTracks() {
+  return base::FeatureList::IsEnabled(headless::features::kVirtualTime);
 }
 
 std::unique_ptr<blink::URLLoaderThrottleProvider>

@@ -17,7 +17,7 @@ namespace media {
 
 FuchsiaDecryptor::FuchsiaDecryptor(FuchsiaCdmContext* cdm_context)
     : cdm_context_(cdm_context) {
-  DCHECK(cdm_context_);
+  CHECK(cdm_context_);
 }
 
 FuchsiaDecryptor::~FuchsiaDecryptor() {}

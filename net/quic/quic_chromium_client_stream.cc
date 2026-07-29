@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/quic/quic_chromium_client_stream.h"
 
 #include <string_view>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -19,7 +15,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
+#include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
@@ -52,12 +48,22 @@ class ScopedBoolSaver {
 };
 }  // namespace
 
-QuicChromiumClientStream::Handle::Handle(QuicChromiumClientStream* stream)
-    : stream_(stream), net_log_(stream->net_log()) {
+QuicChromiumClientStream::Handle::Handle(
+    QuicChromiumClientStream* stream,
+    base::TimeDelta max_stream_limit_pending_delay)
+    : stream_(stream),
+      net_log_(stream->net_log()),
+      max_stream_limit_pending_delay_(max_stream_limit_pending_delay) {
   SaveState();
 }
 
+base::TimeDelta
+QuicChromiumClientStream::Handle::max_stream_limit_pending_delay() const {
+  return max_stream_limit_pending_delay_;
+}
+
 QuicChromiumClientStream::Handle::~Handle() {
+  UnregisterHttp3DatagramVisitor();
   if (stream_) {
     stream_->ClearHandle();
     // TODO(rch): If stream_ is still valid, it should probably be Reset()
@@ -151,6 +157,7 @@ void QuicChromiumClientStream::Handle::OnClose() {
 
 void QuicChromiumClientStream::Handle::OnError(int error) {
   net_error_ = error;
+  UnregisterHttp3DatagramVisitor();
   if (stream_)
     SaveState();
   stream_ = nullptr;
@@ -314,18 +321,16 @@ int QuicChromiumClientStream::Handle::WriteConnectUdpPayload(
   // Set Context ID to zero as per RFC 9298
   // (https://datatracker.ietf.org/doc/html/rfc9298#name-http-datagram-payload-forma)
   // and copy packet data.
-  std::string http_payload;
-  http_payload.resize(1 + packet.size());
-  http_payload[0] = 0;
-  memcpy(&http_payload[1], packet.data(), packet.size());
+  std::string http_payload = base::StrCat({std::string(1, '\0'), packet});
 
   // Attempt to send the HTTP payload as a datagram over the stream.
-  quic::MessageStatus message_status = stream_->SendHttp3Datagram(http_payload);
+  quic::DatagramStatus message_status =
+      stream_->SendHttp3Datagram(http_payload);
 
   // If the attempt was successful or blocked (e.g., due to buffer
   // constraints), proceed to handle the I/O completion with an OK status.
-  if (message_status == quic::MessageStatus::MESSAGE_STATUS_SUCCESS ||
-      message_status == quic::MessageStatus::MESSAGE_STATUS_BLOCKED) {
+  if (message_status == quic::DatagramStatus::DATAGRAM_STATUS_SUCCESS ||
+      message_status == quic::DatagramStatus::DATAGRAM_STATUS_BLOCKED) {
     return HandleIOComplete(OK);
   }
   // If the attempt failed due to a unsupported feature, internal error, or
@@ -334,8 +339,8 @@ int QuicChromiumClientStream::Handle::WriteConnectUdpPayload(
   else {
     // These two errors should not be possible here.
     DCHECK(message_status !=
-           quic::MessageStatus::MESSAGE_STATUS_ENCRYPTION_NOT_ESTABLISHED);
-    DCHECK(message_status != quic::MessageStatus::MESSAGE_STATUS_TOO_LARGE);
+           quic::DatagramStatus::DATAGRAM_STATUS_ENCRYPTION_NOT_ESTABLISHED);
+    DCHECK(message_status != quic::DatagramStatus::DATAGRAM_STATUS_TOO_LARGE);
     DLOG(ERROR) << "Failed to send Http3 Datagram on " << stream_->id();
     stream_->Reset(quic::QUIC_STREAM_CANCELLED);
     return ERR_CONNECTION_CLOSED;
@@ -369,6 +374,7 @@ void QuicChromiumClientStream::Handle::SetPriority(
 
 void QuicChromiumClientStream::Handle::Reset(
     quic::QuicRstStreamErrorCode error_code) {
+  UnregisterHttp3DatagramVisitor();
   if (stream_)
     stream_->Reset(error_code);
 }
@@ -377,12 +383,14 @@ void QuicChromiumClientStream::Handle::RegisterHttp3DatagramVisitor(
     Http3DatagramVisitor* visitor) {
   if (stream_) {
     stream_->RegisterHttp3DatagramVisitor(visitor);
+    datagram_visitor_registered_ = true;
   }
 }
 
 void QuicChromiumClientStream::Handle::UnregisterHttp3DatagramVisitor() {
-  if (stream_) {
+  if (stream_ && datagram_visitor_registered_) {
     stream_->UnregisterHttp3DatagramVisitor();
+    datagram_visitor_registered_ = false;
   }
 }
 
@@ -473,7 +481,7 @@ bool QuicChromiumClientStream::Handle::IsFirstStream() const {
 bool QuicChromiumClientStream::Handle::can_migrate_to_cellular_network() {
   if (!stream_)
     return false;
-  return stream_->can_migrate_to_cellular_network();
+  return stream_->CanMigrateToCellularNetwork();
 }
 
 const NetLogWithSource& QuicChromiumClientStream::Handle::net_log() const {
@@ -554,24 +562,14 @@ QuicChromiumClientStream::QuicChromiumClientStream(
     quic::QuicServerId server_id,
     quic::StreamType type,
     const NetLogWithSource& net_log,
-    const NetworkTrafficAnnotationTag& traffic_annotation)
-    : quic::QuicSpdyStream(id, session, type),
+    const NetworkTrafficAnnotationTag& traffic_annotation,
+    std::optional<base::TimeDelta> max_stream_limit_pending_delay)
+    : QuicChromiumClientStreamBase(id, session, type),
       net_log_(net_log),
       session_(session),
       server_id_(std::move(server_id)),
-      quic_version_(session->connection()->transport_version()) {}
-
-QuicChromiumClientStream::QuicChromiumClientStream(
-    quic::PendingStream* pending,
-    quic::QuicSpdyClientSessionBase* session,
-    quic::QuicServerId server_id,
-    const NetLogWithSource& net_log,
-    const NetworkTrafficAnnotationTag& traffic_annotation)
-    : quic::QuicSpdyStream(pending, session),
-      net_log_(net_log),
-      session_(session),
-      server_id_(std::move(server_id)),
-      quic_version_(session->connection()->transport_version()) {}
+      quic_version_(session->connection()->transport_version()),
+      max_stream_limit_pending_delay_(max_stream_limit_pending_delay) {}
 
 QuicChromiumClientStream::~QuicChromiumClientStream() {
   if (handle_)
@@ -704,7 +702,7 @@ size_t QuicChromiumClientStream::WriteHeaders(
         ack_listener) {
   if (!session()->OneRttKeysAvailable()) {
     auto entry = header_block.find(":method");
-    CHECK(entry != header_block.end(), base::NotFatalUntil::M130);
+    CHECK(entry != header_block.end());
     DCHECK(
         entry->second != "POST" ||
         (handle_ != nullptr && handle_->GetRequestIdempotency() == IDEMPOTENT));
@@ -744,7 +742,12 @@ bool QuicChromiumClientStream::WritevStreamData(
 std::unique_ptr<QuicChromiumClientStream::Handle>
 QuicChromiumClientStream::CreateHandle() {
   DCHECK(!handle_);
-  auto handle = base::WrapUnique(new QuicChromiumClientStream::Handle(this));
+  // We only create a handle for outgoing streams, which should have a
+  // max_stream_limit_pending_delay set.
+  CHECK(max_stream_limit_pending_delay_.has_value());
+
+  auto handle = base::WrapUnique(new QuicChromiumClientStream::Handle(
+      this, *max_stream_limit_pending_delay_));
   handle_ = handle.get();
 
   // Should this perhaps be via PostTask to make reasoning simpler?
@@ -761,8 +764,7 @@ void QuicChromiumClientStream::ClearHandle() {
 
 void QuicChromiumClientStream::OnError(int error) {
   if (handle_) {
-    QuicChromiumClientStream::Handle* handle = handle_;
-    handle_ = nullptr;
+    auto handle = std::exchange(handle_, nullptr);
     handle->OnError(error);
   }
 }
@@ -918,7 +920,7 @@ void QuicChromiumClientStream::NotifyHandleOfDataAvailable() {
 }
 
 void QuicChromiumClientStream::DisableConnectionMigrationToCellularNetwork() {
-  can_migrate_to_cellular_network_ = false;
+  set_can_migrate_to_cellular_network(false);
 }
 
 quic::QuicPacketLength
@@ -926,7 +928,7 @@ QuicChromiumClientStream::GetGuaranteedLargestMessagePayload() const {
   if (!session()) {
     return 0;
   }
-  return session()->GetGuaranteedLargestMessagePayload();
+  return session()->GetGuaranteedLargestDatagramPayload();
 }
 
 bool QuicChromiumClientStream::IsFirstStream() {

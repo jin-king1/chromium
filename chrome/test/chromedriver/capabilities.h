@@ -43,13 +43,15 @@ class Switches {
   void SetSwitch(const std::string& name, const std::string& value);
   void SetSwitch(const std::string& name, const base::FilePath& value);
 
-  void SetMultivaluedSwitch(const std::string& name, const std::string& value);
+  void SetMultivaluedSwitch(const std::string& name,
+                            const std::string& value,
+                            const std::string_view& delimiter);
 
   // In case of same key, |switches| will override.
   void SetFromSwitches(const Switches& switches);
 
   // Sets a switch from the capabilities, of the form [--]name[=value].
-  void SetUnparsedSwitch(const std::string& unparsed_switch);
+  void SetUnparsedSwitch(std::string_view unparsed_switch);
 
   void RemoveSwitch(const std::string& name);
 
@@ -102,8 +104,7 @@ struct Capabilities {
 
   // Accepts all W3C defined capabilities
   // and all ChromeDriver-specific extensions.
-  Status Parse(const base::Value::Dict& desired_caps,
-               bool w3c_compliant = true);
+  Status Parse(const base::DictValue& desired_caps, bool w3c_compliant = true);
 
   // Migrate capabilities to maintain backward compatibility.
   Status MigrateCapabilities();
@@ -180,7 +181,7 @@ struct Capabilities {
   // Time to wait for extension background page to appear. If 0, no waiting.
   base::TimeDelta extension_load_timeout;
 
-  std::unique_ptr<base::Value::Dict> local_state;
+  std::unique_ptr<base::DictValue> local_state;
 
   std::string log_path;
 
@@ -195,7 +196,7 @@ struct Capabilities {
 
   base::Value devtools_events_logging_prefs;
 
-  std::unique_ptr<base::Value::Dict> prefs;
+  std::unique_ptr<base::DictValue> prefs;
 
   Switches switches;
 
@@ -204,7 +205,7 @@ struct Capabilities {
   bool web_socket_url = false;
 };
 
-bool GetChromeOptionsDictionary(const base::Value::Dict& params,
-                                const base::Value::Dict** out);
+bool GetChromeOptionsDictionary(const base::DictValue& params,
+                                const base::DictValue** out);
 
 #endif  // CHROME_TEST_CHROMEDRIVER_CAPABILITIES_H_

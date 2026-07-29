@@ -8,6 +8,7 @@
 #import "base/functional/bind.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/task/sequenced_task_runner.h"
+#import "base/trace_event/trace_event.h"
 #import "components/tab_groups/tab_group_id.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -15,11 +16,10 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_item_identifier.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/group_grid_cell.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/regular/inactive_tabs_button_cell.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/regular/tabs_closure_animation.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/inactive_tabs/inactive_tabs_preamble_header.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_group_item.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_switcher_item.h"
 #import "ios/chrome/browser/tabs/model/inactive_tabs/features.h"
+#import "ios/chrome/common/ui/animations/radial_wipe_animation.h"
 #import "ios/web/public/web_state_id.h"
 
 using base::apple::ObjCCast;
@@ -34,12 +34,15 @@ namespace {
 // inside the group view that correspond to the tabs to be closed.
 NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
     GroupGridCell* group_grid_cell,
-    std::set<int> indexes_in_group_to_close) {
+    std::set<int> indexes_in_group_to_close,
+    BOOL is_shared_group) {
   CHECK(!indexes_in_group_to_close.empty());
 
   // If the entire group is going to be closed, then animate the entire grid
-  // cell.
-  if ((long)indexes_in_group_to_close.size() == group_grid_cell.tabsCount) {
+  // cell. Do not animate the entire grid if the group is shared as a new tab
+  // page will be added to avoid group closure.
+  if (!is_shared_group &&
+      (long)indexes_in_group_to_close.size() == group_grid_cell.tabsCount) {
     return @[ group_grid_cell ];
   }
 
@@ -94,7 +97,7 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
   UICollectionViewCellRegistration* _inactiveTabsButtonCellRegistration;
 
   // The object responsible for animating the tabs closure.
-  TabsClosureAnimation* _tabsClosureAnimation;
+  RadialWipeAnimation* _radialWipeAnimation;
 }
 
 #pragma mark - Public
@@ -103,10 +106,11 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
                            groups:
                                (std::map<tab_groups::TabGroupId, std::set<int>>)
                                    groupsWithTabsToClose
+                     sharedGroups:(std::set<tab_groups::TabGroupId>)sharedGroups
                   allInactiveTabs:(BOOL)animateAllInactiveTabs
                 completionHandler:(ProceduralBlock)completionHandler {
   base::Time startTime = base::Time::Now();
-  NSMutableArray<UIView*>* gridCells = [[NSMutableArray alloc] init];
+  NSMutableArray<UIView*>* targetViews = [[NSMutableArray alloc] init];
 
   for (NSIndexPath* path in self.collectionView.indexPathsForVisibleItems) {
     GridItemIdentifier* item =
@@ -117,22 +121,25 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
     switch (item.type) {
       case GridItemType::kTab:
         if (tabsToClose.contains(item.tabSwitcherItem.identifier)) {
-          [gridCells addObject:collectionViewCell];
+          [targetViews addObject:collectionViewCell];
         }
         break;
       case GridItemType::kGroup:
         if (groupsWithTabsToClose.contains(
                 item.tabGroupItem.tabGroup->tab_group_id())) {
-          [gridCells addObjectsFromArray:
-                         GetTabGroupViewsToAnimateClosure(
-                             ObjCCastStrict<GroupGridCell>(collectionViewCell),
-                             groupsWithTabsToClose[item.tabGroupItem.tabGroup
-                                                       ->tab_group_id()])];
+          [targetViews
+              addObjectsFromArray:
+                  GetTabGroupViewsToAnimateClosure(
+                      ObjCCastStrict<GroupGridCell>(collectionViewCell),
+                      groupsWithTabsToClose[item.tabGroupItem.tabGroup
+                                                ->tab_group_id()],
+                      sharedGroups.contains(
+                          item.tabGroupItem.tabGroup->tab_group_id()))];
         }
         break;
       case GridItemType::kInactiveTabsButton:
         if (animateAllInactiveTabs) {
-          [gridCells addObject:collectionViewCell];
+          [targetViews addObject:collectionViewCell];
         }
         break;
       case GridItemType::kSuggestedActions:
@@ -145,22 +152,17 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
   }
 
   __weak RegularGridViewController* weakSelf = self;
-  _tabsClosureAnimation =
-      [[TabsClosureAnimation alloc] initWithWindow:self.view.window
-                                         gridCells:gridCells];
+  _radialWipeAnimation =
+      [[RadialWipeAnimation alloc] initWithWindow:self.view.window
+                                      targetViews:targetViews];
 
-  [_tabsClosureAnimation animateWithCompletion:^{
+  [_radialWipeAnimation animateWithCompletion:^{
     [weakSelf onTabsClosureAnimationEndWithCompletion:completionHandler];
     base::TimeDelta delta = base::Time::Now() - startTime;
     base::UmaHistogramMicrosecondsTimes(
         "Privacy.DeleteBrowsingData.Duration.TabsClosureAnimationDuration",
         delta);
   }];
-
-  base::TimeDelta delta = base::Time::Now() - startTime;
-  base::UmaHistogramMicrosecondsTimes(
-      "Privacy.DeleteBrowsingData.Duration.TabsClosureAnimationStartDelay",
-      delta);
 }
 
 #pragma mark - Parent's functions
@@ -172,6 +174,9 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
 - (UICollectionViewCell*)cellForItemAtIndexPath:(NSIndexPath*)indexPath
                                  itemIdentifier:
                                      (GridItemIdentifier*)itemIdentifier {
+  TRACE_EVENT(
+      "ui",
+      "-[RegularGridViewController cellForItemAtIndexPath:itemIdentifier:]");
   if (itemIdentifier.type == GridItemType::kInactiveTabsButton) {
     UICollectionViewCellRegistration* registration =
         _inactiveTabsButtonCellRegistration;
@@ -189,7 +194,7 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
   // Register InactiveTabsButtonCell.
   auto configureInactiveTabsButtonCell =
       ^(InactiveTabsButtonCell* cell, NSIndexPath* indexPath, id item) {
-        [weakSelf configureInativeTabsButtonCell:cell];
+        [weakSelf configureInactiveTabsButtonCell:cell];
       };
   _inactiveTabsButtonCellRegistration = [UICollectionViewCellRegistration
       registrationWithCellClass:InactiveTabsButtonCell.class
@@ -216,6 +221,7 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
 
   GridSnapshot* snapshot = [self.diffableDataSource snapshot];
   [self updateInactiveTabsButtonInSnapshot:snapshot];
+  [self.diffableDataSource applySnapshot:snapshot animatingDifferences:YES];
 }
 
 - (void)updateInactiveTabsDaysThreshold:(NSInteger)daysThreshold {
@@ -226,11 +232,12 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
 
   GridSnapshot* snapshot = [self.diffableDataSource snapshot];
   [self updateInactiveTabsButtonInSnapshot:snapshot];
+  [self.diffableDataSource applySnapshot:snapshot animatingDifferences:YES];
 }
 
 #pragma mark - Private
 
-// Callback of `_tabsClosureAnimation` when the animation has been completed.
+// Callback of `_radialWipeAnimation` when the animation has been completed.
 // Closes the actual tabs in `tabsToClose`.
 - (void)onTabsClosureAnimationEndWithCompletion:
     (ProceduralBlock)closeSelectedTabsOnCompletion {
@@ -239,16 +246,12 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
   // hidden by the animation.
   closeSelectedTabsOnCompletion();
 
-  _tabsClosureAnimation = nil;
+  _radialWipeAnimation = nil;
 }
 
 // Updates the inactive tabs button (reconfigure, show or remove) based on its
 // visible state.
 - (void)updateInactiveTabsButtonInSnapshot:(GridSnapshot*)snapshot {
-  if (!IsInactiveTabsAvailable()) {
-    return;
-  }
-
   BOOL isEnabled = _inactiveTabsDaysThreshold != kInactiveTabsDisabledByUser;
   BOOL hasInactiveTabs = _inactiveTabsCount != 0;
   BOOL isInNormalMode = self.mode == TabGridMode::kNormal;
@@ -276,7 +279,6 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
       ]];
     }
   }
-  [self.diffableDataSource applySnapshot:snapshot animatingDifferences:YES];
 }
 
 // Adds the inactive tabs button to `snapshot` if it is not there yet.
@@ -299,7 +301,7 @@ NSArray<UIView*>* GetTabGroupViewsToAnimateClosure(
 }
 
 // Configures `cell` according to the current state.
-- (void)configureInativeTabsButtonCell:(InactiveTabsButtonCell*)cell {
+- (void)configureInactiveTabsButtonCell:(InactiveTabsButtonCell*)cell {
   cell.count = _inactiveTabsCount;
   cell.daysThreshold = _inactiveTabsDaysThreshold;
 }

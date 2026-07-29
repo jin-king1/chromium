@@ -46,6 +46,10 @@ FrameSinkHolder::~FrameSinkHolder() {
   }
 }
 
+cc::LayerTreeFrameSink* FrameSinkHolder::layer_tree_frame_sink_for_test() {
+  return frame_sink_.get();
+}
+
 // static.
 bool FrameSinkHolder::DeleteWhenLastResourceHasBeenReclaimed(
     std::unique_ptr<FrameSinkHolder> frame_sink_holder,
@@ -150,7 +154,7 @@ void FrameSinkHolder::SubmitCompositorFrame(bool synchronous_draw) {
   // compositor asks for the first frame therefore we fall to asynchronous
   // drawing till signaled.
   if (!synchronous_draw || pending_compositor_frame_ack_ ||
-      !first_frame_requested_) {
+      !first_frame_requested()) {
     pending_compositor_frame_ = true;
     return;
   }
@@ -193,9 +197,8 @@ bool FrameSinkHolder::OnBeginFrameDerivedImpl(const viz::BeginFrameArgs& args) {
     return false;
   }
 
-  if (!first_frame_requested_) {
-    first_frame_requested_ = true;
-    on_first_frame_requested_callback_.Run();
+  if (!first_frame_requested()) {
+    std::move(on_first_frame_requested_callback_).Run();
   }
 
   viz::BeginFrameAck current_begin_frame_ack(args, false);

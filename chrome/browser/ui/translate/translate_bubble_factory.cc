@@ -6,7 +6,6 @@
 
 #include <string>
 
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "components/translate/core/browser/translate_step.h"
 
@@ -21,7 +20,7 @@ ShowTranslateBubbleResult ShowDefault(BrowserWindow* window,
                                       bool is_user_gesture) {
   // |window| might be null when testing.
   if (!window) {
-    return ShowTranslateBubbleResult::BROWSER_WINDOW_NOT_VALID;
+    return ShowTranslateBubbleResult::kBrowserWindowNotValid;
   }
   return window->ShowTranslateBubble(web_contents, step, source_language,
                                      target_language, error_type,

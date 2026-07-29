@@ -42,7 +42,7 @@ void PrintUsage() {
       "  -u  Specifies the device udid to use. Will use -d, -s values to get "
       "devices if not specified.\n"
       "  -d  Specifies the device (must be one of the values from the iOS "
-      "Simulator's Hardware -> Device menu. Defaults to 'iPhone 6s'.\n"
+      "Simulator's Hardware -> Device menu. Defaults to 'iPhone 13'.\n"
       "  -s  Specifies the SDK version to use (e.g '9.3'). Will use system "
       "default if not specified.\n"
       "  -x  Specifies the desired platform for simulator selection: ios or "
@@ -52,6 +52,14 @@ void PrintUsage() {
 // Exit status codes.
 const int kExitSuccess = EXIT_SUCCESS;
 const int kExitInvalidArguments = 2;
+
+// As of Xcode 16.2, passing --console causes `xcode simctl launch` to block
+// indefinitely if there is stderr output longer than 8192 bytes (e.g. a long
+// stack trace if a (D)CHECK is hit).
+// Apple's documentation is very vague about the differences between --console
+// and --console-pty, but the latter seems to work fine including in the case
+// above.
+constexpr NSString* kSimCtlLaunchConsoleArg = @"--console-pty";
 
 void LogError(NSString* format, ...) {
   va_list list;
@@ -380,7 +388,7 @@ int RunWebTest(NSString* app_path,
   NSMutableArray* arguments = [NSMutableArray array];
   [arguments addObject:@"simctl"];
   [arguments addObject:@"launch"];
-  [arguments addObject:@"--console"];
+  [arguments addObject:kSimCtlLaunchConsoleArg];
   [arguments addObject:@"--terminate-running-process"];
   [arguments addObject:udid];
   [arguments addObject:GetBundleIdentifierFromPath(app_path)];
@@ -436,7 +444,8 @@ int SimpleRunApplication(NSString* app_path,
   RunSimCtl(@[ @"install", udid, app_path ], verbose);
 
   NSArray* command = [@[
-    @"launch", @"--console", @"--terminate-running-process", udid, bundle_id
+    @"launch", kSimCtlLaunchConsoleArg, @"--terminate-running-process", udid,
+    bundle_id
   ] arrayByAddingObjectsFromArray:cmd_args];
   return RunSimCtl(command, verbose);
 }
@@ -561,7 +570,7 @@ int main(int argc, char* const argv[]) {
   NSString* app_path = nil;
   NSString* xctest_path = nil;
   NSString* udid = nil;
-  NSString* device_name = @"iPhone 6s";
+  NSString* device_name = @"iPhone 13";
   bool wants_wipe = false;
   bool wants_print_home = false;
   bool wants_print_supported_devices = false;
@@ -672,11 +681,18 @@ int main(int argc, char* const argv[]) {
   }
 
   if (!sdk_version) {
-    float sdk = 0;
+    NSString* highest_sdk = @"0";
+
     for (NSDictionary* runtime in Runtimes(simctl_list, platform_type)) {
-      sdk = fmax(sdk, [runtime[@"version"] floatValue]);
+      NSString* runtime_version = runtime[@"version"];
+      if (!highest_sdk ||
+          [runtime_version compare:highest_sdk
+                           options:NSNumericSearch] == NSOrderedDescending) {
+        highest_sdk = runtime_version;
+      }
     }
-    sdk_version = [NSString stringWithFormat:@"%0.1f", sdk];
+
+    sdk_version = highest_sdk;
   }
 
   NSRange range;

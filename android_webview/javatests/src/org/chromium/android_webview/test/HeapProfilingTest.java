@@ -9,7 +9,6 @@ import static org.chromium.android_webview.test.OnlyRunIn.ProcessMode.MULTI_PROC
 import androidx.test.filters.MediumTest;
 
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -31,12 +30,9 @@ public class HeapProfilingTest extends AwParameterizedTest {
         this.mActivityTestRule = new AwActivityTestRule(param.getMutation());
     }
 
-    @Before
-    public void setUp() {}
-
     @Test
     @MediumTest
-    @DisabledTest(message = "https://crbug.com/1163744")
+    @DisabledTest(message = "https://crbug.com/40729214")
     @CommandLineFlags.Add({
         "memlog=browser",
         "memlog-stack-mode=native-include-thread-names",
@@ -57,7 +53,7 @@ public class HeapProfilingTest extends AwParameterizedTest {
 
     @Test
     @MediumTest
-    @DisabledTest(message = "https://crbug.com/1173304")
+    @DisabledTest(message = "https://crbug.com/40729214")
     public void testModeBrowserDynamicPseudoSampleEverything() {
         HeapProfilingTestShim shim = new HeapProfilingTestShim();
         Assert.assertTrue(shim.runTestForMode("browser", true, "pseudo", true, true));

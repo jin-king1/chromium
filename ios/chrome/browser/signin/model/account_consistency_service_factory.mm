@@ -39,9 +39,7 @@ AccountConsistencyServiceFactory::GetInstance() {
 
 std::unique_ptr<KeyedService>
 AccountConsistencyServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
-
+    ProfileIOS* profile) const {
   // The base::Unretained(profile) is safe since the callback is only called
   // from the returned AccountConsistencyService instance which is owned by
   // the Profile object (as it is a KeyedService).
@@ -51,7 +49,7 @@ AccountConsistencyServiceFactory::BuildServiceInstanceFor(
   return std::make_unique<AccountConsistencyService>(
       std::move(cookie_manager_callback),
       ios::AccountReconcilorFactory::GetForProfile(profile),
-      IdentityManagerFactory::GetForProfile(profile));
+      IdentityManagerFactory::GetForProfile(profile), profile->GetPrefs());
 }
 
 }  // namespace ios

@@ -2,16 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromecast/media/cdm/cast_cdm.h"
 
+#include <array>
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/task/single_thread_task_runner.h"
@@ -165,13 +162,15 @@ void CastCdm::OnSessionKeysChange(const std::string& session_id,
                                   ::media::CdmKeysInfo keys_info) {
   logging::LogMessage log_message(__FILE__, __LINE__, logging::LOGGING_INFO);
   log_message.stream() << "keystatuseschange ";
-  int status_count[kKeyStatusCount] = {};
+  std::array<int, kKeyStatusCount> status_count = {};
   for (const auto& key_info : keys_info) {
-    status_count[key_info->status]++;
+    size_t status_idx = static_cast<size_t>(key_info->status);
+    status_count[status_idx]++;
   }
-  for (int i = 0; i != ::media::CdmKeyInformation::KEY_STATUS_MAX; ++i) {
-    if (status_count[i] == 0)
+  for (size_t i = 0; i < status_count.size(); ++i) {
+    if (status_count[i] == 0) {
       continue;
+    }
     log_message.stream() << status_count[i] << " " << static_cast<KeyStatus>(i)
                          << " ";
   }

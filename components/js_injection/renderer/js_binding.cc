@@ -2,38 +2,39 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/js_injection/renderer/js_binding.h"
 
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/contains.h"
-#include "base/functional/overloaded.h"
+#include "base/compiler_specific.h"
 #include "base/strings/string_util.h"
-#include "components/js_injection/common/interfaces.mojom-forward.h"
+#include "components/js_injection/common/interfaces.mojom.h"
 #include "components/js_injection/renderer/js_communication.h"
+#include "content/public/common/isolated_world_ids.h"
 #include "content/public/renderer/render_frame.h"
 #include "gin/converter.h"
 #include "gin/data_object_builder.h"
-#include "gin/handle.h"
 #include "gin/object_template_builder.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/messaging/message_port_channel.h"
 #include "third_party/blink/public/common/messaging/string_message_codec.h"
+#include "third_party/blink/public/mojom/script/script_evaluation_params.mojom.h"
 #include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
 #include "third_party/blink/public/platform/web_security_origin.h"
+#include "third_party/blink/public/platform/web_string.h"
+#include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_frame.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_message_port_converter.h"
+#include "third_party/blink/public/web/web_script_source.h"
+#include "v8/include/cppgc/allocation.h"
+#include "v8/include/v8-cppgc.h"
 #include "v8/include/v8.h"
 
 namespace {
@@ -60,32 +61,43 @@ class V8ArrayBufferPayload : public blink::WebMessageArrayBufferPayload {
 
   std::optional<base::span<const uint8_t>> GetAsSpanIfPossible()
       const override {
-    return base::span(static_cast<const uint8_t*>(array_buffer_->Data()),
-                      array_buffer_->ByteLength());
+    return UNSAFE_TODO(
+        base::span(static_cast<const uint8_t*>(array_buffer_->Data()),
+                   array_buffer_->ByteLength()));
   }
 
   void CopyInto(base::span<uint8_t> dest) const override {
     CHECK_GE(dest.size(), array_buffer_->ByteLength());
-    memcpy(dest.data(), array_buffer_->Data(), array_buffer_->ByteLength());
+    UNSAFE_TODO(memcpy(dest.data(), array_buffer_->Data(),
+                       array_buffer_->ByteLength()));
   }
 
  private:
   v8::Local<v8::ArrayBuffer> array_buffer_;
 };
 
+v8::Local<v8::Context> GetScriptContext(blink::WebLocalFrame* web_frame,
+                                        int32_t world_id) {
+  v8::Isolate* isolate = web_frame->GetAgentGroupScheduler()->Isolate();
+  if (world_id != content::ISOLATED_WORLD_ID_GLOBAL) {
+    return web_frame->GetScriptContextFromWorldId(isolate, world_id);
+  } else {
+    return web_frame->MainWorldScriptContext();
+  }
+}
+
 }  // namespace
 
 namespace js_injection {
 
-gin::WrapperInfo JsBinding::kWrapperInfo = {gin::kEmbedderNativeGin};
-
 // static
-base::WeakPtr<JsBinding> JsBinding::Install(
+cppgc::WeakPersistent<JsBinding> JsBinding::Install(
     content::RenderFrame* render_frame,
     const std::u16string& js_object_name,
     base::WeakPtr<JsCommunication> js_communication,
     v8::Isolate* isolate,
-    v8::Local<v8::Context> context) {
+    v8::Local<v8::Context> context,
+    int32_t world_id) {
   CHECK(!js_object_name.empty())
       << "JavaScript wrapper name shouldn't be empty";
 
@@ -96,40 +108,36 @@ base::WeakPtr<JsBinding> JsBinding::Install(
     blink::WebLocalFrame* web_frame = render_frame->GetWebFrame();
     isolate = web_frame->GetAgentGroupScheduler()->Isolate();
     handle_scope.emplace(isolate);
-    context = web_frame->MainWorldScriptContext();
+    context = GetScriptContext(web_frame, world_id);
     if (context.IsEmpty()) {
       return nullptr;
     }
 
     context_scope.emplace(context);
   }
-  // The call to CreateHandle() takes ownership of `js_binding` (but only on
-  // success).
-  JsBinding* js_binding =
-      new JsBinding(render_frame, js_object_name, js_communication);
-  gin::Handle<JsBinding> bindings = gin::CreateHandle(isolate, js_binding);
-  if (bindings.IsEmpty()) {
-    delete js_binding;
+  JsBinding* js_binding = cppgc::MakeGarbageCollected<JsBinding>(
+      isolate->GetCppHeap()->GetAllocationHandle(), js_object_name,
+      js_communication, world_id);
+  v8::Local<v8::Object> wrapper;
+  if (!js_binding->GetWrapper(isolate).ToLocal(&wrapper)) {
     return nullptr;
   }
 
   v8::Local<v8::Object> global = context->Global();
   global
-      ->CreateDataProperty(context,
-                           gin::StringToSymbol(isolate, js_object_name),
-                           bindings.ToV8())
+      ->CreateDataProperty(
+          context, gin::StringToSymbol(isolate, js_object_name), wrapper)
       .Check();
 
-  return js_binding->weak_ptr_factory_.GetWeakPtr();
+  return js_binding;
 }
 
-JsBinding::JsBinding(content::RenderFrame* render_frame,
-                     const std::u16string& js_object_name,
-                     base::WeakPtr<JsCommunication> js_communication)
-    : render_frame_(render_frame),
-      js_object_name_(js_object_name),
-      js_communication_(js_communication) {
-}
+JsBinding::JsBinding(const std::u16string& js_object_name,
+                     base::WeakPtr<JsCommunication> js_communication,
+                     int32_t world_id)
+    : js_object_name_(js_object_name),
+      world_id_(world_id),
+      js_communication_(js_communication) {}
 
 JsBinding::~JsBinding() = default;
 
@@ -138,13 +146,17 @@ void JsBinding::OnPostMessage(blink::WebMessagePayload message) {
   if (!js_communication_)
     return;
 
-  blink::WebLocalFrame* web_frame = render_frame_->GetWebFrame();
+  content::RenderFrame* render_frame = js_communication_->render_frame();
+  if (!render_frame) {
+    return;
+  }
+  blink::WebLocalFrame* web_frame = render_frame->GetWebFrame();
   if (!web_frame)
     return;
   v8::Isolate* isolate = web_frame->GetAgentGroupScheduler()->Isolate();
   v8::HandleScope handle_scope(isolate);
 
-  v8::Local<v8::Context> context = web_frame->MainWorldScriptContext();
+  v8::Local<v8::Context> context = GetScriptContext(web_frame, world_id_);
   if (context.IsEmpty())
     return;
 
@@ -154,8 +166,8 @@ void JsBinding::OnPostMessage(blink::WebMessagePayload message) {
   v8::TryCatch try_catch(isolate);
   try_catch.SetVerbose(true);
 
-  v8::Local<v8::Value> v8_message = absl::visit(
-      base::Overloaded{
+  v8::Local<v8::Value> v8_message = std::visit(
+      absl::Overload{
           [isolate](std::u16string& string_value) -> v8::Local<v8::Value> {
             return gin::ConvertToV8(isolate, std::move(string_value));
           },
@@ -165,9 +177,9 @@ void JsBinding::OnPostMessage(blink::WebMessagePayload message) {
                 isolate, array_buffer_value->GetLength());
             CHECK(backing_store->ByteLength() ==
                   array_buffer_value->GetLength());
-            array_buffer_value->CopyInto(
+            array_buffer_value->CopyInto(UNSAFE_TODO(
                 base::span(static_cast<uint8_t*>(backing_store->Data()),
-                           backing_store->ByteLength()));
+                           backing_store->ByteLength())));
             return v8::ArrayBuffer::New(isolate, std::move(backing_store));
           }},
       message);
@@ -199,6 +211,69 @@ void JsBinding::OnPostMessage(blink::WebMessagePayload message) {
   }
 }
 
+void JsBinding::OnExecuteJavaScript(const std::u16string& javascript,
+                                    bool wants_result,
+                                    OnExecuteJavaScriptCallback callback) {
+  // If `js_communication_` is null, this object will soon be destroyed.
+  if (!js_communication_) {
+    if (wants_result) {
+      std::move(callback).Run(
+          base::unexpected(mojom::JavaScriptExecutionError::kFrameDestroyed));
+    }
+    return;
+  }
+
+  content::RenderFrame* render_frame = js_communication_->render_frame();
+  if (!render_frame) {
+    if (wants_result) {
+      std::move(callback).Run(
+          base::unexpected(mojom::JavaScriptExecutionError::kFrameDestroyed));
+    }
+    return;
+  }
+  blink::WebLocalFrame* web_frame = render_frame->GetWebFrame();
+  if (!web_frame) {
+    if (wants_result) {
+      std::move(callback).Run(
+          base::unexpected(mojom::JavaScriptExecutionError::kFrameDestroyed));
+    }
+    return;
+  }
+  v8::Isolate* isolate = web_frame->GetAgentGroupScheduler()->Isolate();
+  v8::HandleScope handle_scope(isolate);
+
+  v8::Local<v8::Context> context = GetScriptContext(web_frame, world_id_);
+  if (context.IsEmpty()) {
+    if (wants_result) {
+      std::move(callback).Run(
+          base::unexpected(mojom::JavaScriptExecutionError::kFrameDestroyed));
+    }
+    return;
+  }
+
+  blink::WebScriptSource web_script_source(
+      blink::WebString::FromUtf16(javascript));
+  web_frame->RequestExecuteScript(
+      world_id_, base::span_from_ref(web_script_source),
+      blink::mojom::UserActivationOption::kDoNotActivate,
+      blink::mojom::EvaluationTiming::kSynchronous,
+      blink::mojom::LoadEventBlockingOption::kDoNotBlock,
+      base::BindOnce(
+          [](bool wants_result, OnExecuteJavaScriptCallback callback,
+             std::optional<base::Value> value, base::TimeTicks start_time) {
+            if (wants_result) {
+              std::move(callback).Run(value ? std::move(*value)
+                                            : base::Value());
+            }
+          },
+          wants_result, std::move(callback)),
+      blink::BackForwardCacheAware::kAllow,
+      wants_result
+          ? blink::mojom::WantResultOption::kWantResultDateAndRegExpAllowed
+          : blink::mojom::WantResultOption::kNoResult,
+      blink::mojom::PromiseResultOption::kDoNotWait);
+}
+
 void JsBinding::ReleaseV8GlobalObjects() {
   listeners_.clear();
   on_message_.Reset();
@@ -208,6 +283,13 @@ void JsBinding::Bind(
     mojo::PendingAssociatedReceiver<mojom::BrowserToJsMessaging> receiver) {
   receiver_.reset();
   return receiver_.Bind(std::move(receiver));
+}
+
+void JsBinding::Dispose() {
+  // Explicitly reset the receiver to prevent IPC messages from being dispatched
+  // to this object while it is awaiting lazy sweeping. This prevents a UAF if
+  // synchronous JS execution triggers a nested GC. See crbug.com/503889643.
+  receiver_.reset();
 }
 
 gin::ObjectTemplateBuilder JsBinding::GetObjectTemplateBuilder(
@@ -262,8 +344,9 @@ void JsBinding::PostMessage(gin::Arguments* args) {
   }
 
   mojom::JsToBrowserMessaging* js_to_java_messaging =
-      js_communication_ ? js_communication_->GetJsToJavaMessage(js_object_name_)
-                        : nullptr;
+      js_communication_
+          ? js_communication_->GetJsToJavaMessage(js_object_name_, world_id_)
+          : nullptr;
   if (js_to_java_messaging) {
     js_to_java_messaging->PostMessage(
         std::move(message_payload),
@@ -299,9 +382,8 @@ void JsBinding::AddEventListener(gin::Arguments* args) {
     return;
   }
 
-  v8::Local<v8::Context> context = args->GetHolderCreationContext();
   listeners_.push_back(
-      v8::Global<v8::Function>(context->GetIsolate(), listener));
+      v8::Global<v8::Function>(v8::Isolate::GetCurrent(), listener));
 }
 
 // RemoveEventListener() needs to match EventTarget's RemoveEventListener() in
@@ -342,6 +424,10 @@ void JsBinding::SetOnMessage(v8::Isolate* isolate, v8::Local<v8::Value> value) {
     on_message_.Reset(isolate, value.As<v8::Function>());
   else
     on_message_.Reset();
+}
+
+const gin::WrapperInfo* JsBinding::wrapper_info() const {
+  return &kWrapperInfo;
 }
 
 }  // namespace js_injection

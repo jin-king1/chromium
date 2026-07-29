@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "base/test/bind.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "components/android_autofill/browser/android_autofill_bridge_factory.h"
 #include "components/android_autofill/browser/form_field_data_android.h"
 #include "components/android_autofill/browser/mock_form_data_android_bridge.h"
@@ -29,11 +28,12 @@
 namespace autofill {
 namespace {
 
-using ::autofill::test::DeepEqualsFormData;
+using ::autofill::test::FormDataEq;
 using ::testing::_;
 using ::testing::Eq;
 using ::testing::InSequence;
 using ::testing::MockFunction;
+using ::testing::Not;
 using ::testing::Pointwise;
 using ::testing::SizeIs;
 
@@ -124,10 +124,10 @@ TEST_F(FormDataAndroidTest, Form) {
   FormData form = CreateTestForm();
   FormDataAndroid form_android(form, kSampleSessionId);
 
-  EXPECT_TRUE(FormData::DeepEqual(form, form_android.form()));
+  EXPECT_THAT(form_android.form(), FormDataEq(form));
 
   form.set_name(form.name() + u"x");
-  EXPECT_FALSE(FormData::DeepEqual(form, form_android.form()));
+  EXPECT_THAT(form_android.form(), Not(FormDataEq(form)));
 }
 
 // Tests that form similarity checks include name, name_attribute, id_attribute,
@@ -196,21 +196,6 @@ TEST_F(FormDataAndroidTest, SimilarFormAs_Fields) {
   f = af.form();
   test_api(f).field(0).set_name(f.fields().front().name() + u"x");
   EXPECT_FALSE(af.SimilarFormAs(f));
-}
-
-TEST_F(FormDataAndroidTest, GetFieldIndex) {
-  FormData f = CreateTestForm();
-  f.set_fields({CreateTestField(u"name1"), CreateTestField(u"name2")});
-  FormDataAndroid af(f, kSampleSessionId);
-
-  size_t index = 100;
-  EXPECT_TRUE(af.GetFieldIndex(f.fields()[1], &index));
-  EXPECT_EQ(index, 1u);
-
-  // As updates in `f` are not propagated to the Android version `af`, the
-  // lookup fails.
-  test_api(f).field(1).set_name(u"name3");
-  EXPECT_FALSE(af.GetFieldIndex(f.fields()[1], &index));
 }
 
 // Tests that `GetSimilarFieldIndex` only checks field similarity.
@@ -339,9 +324,9 @@ TEST_F(FormDataAndroidTest, UpdateFieldVisibilities) {
   form.set_fields({CreateTestField(), CreateTestField(), CreateTestField()});
   test_api(form).field(0).set_role(FormFieldData::RoleAttribute::kPresentation);
   test_api(form).field(1).set_is_focusable(false);
-  EXPECT_FALSE(form.fields()[0].IsFocusable());
-  EXPECT_FALSE(form.fields()[1].IsFocusable());
-  EXPECT_TRUE(form.fields()[2].IsFocusable());
+  EXPECT_TRUE(form.fields()[0].is_focusable());
+  EXPECT_FALSE(form.fields()[1].is_focusable());
+  EXPECT_TRUE(form.fields()[2].is_focusable());
   FormDataAndroid form_android(form, kSampleSessionId);
 
   ASSERT_THAT(field_bridges(), SizeIs(3));
@@ -351,18 +336,17 @@ TEST_F(FormDataAndroidTest, UpdateFieldVisibilities) {
 
   // `form_android` created a copy of `form` - therefore modifying the fields
   // here does not change the values inside `form_android`.
-  test_api(form).field(0).set_role(FormFieldData::RoleAttribute::kOther);
   test_api(form).field(1).set_is_focusable(true);
-  EXPECT_TRUE(form.fields()[0].IsFocusable());
-  EXPECT_TRUE(form.fields()[1].IsFocusable());
-  EXPECT_TRUE(form.fields()[2].IsFocusable());
+  EXPECT_TRUE(form.fields()[0].is_focusable());
+  EXPECT_TRUE(form.fields()[1].is_focusable());
+  EXPECT_TRUE(form.fields()[2].is_focusable());
 
-  EXPECT_CALL(*field_bridges()[0], UpdateVisible(true));
-  EXPECT_CALL(*field_bridges()[1], UpdateVisible(true));
-  EXPECT_CALL(*field_bridges()[2], UpdateVisible).Times(0);
+  EXPECT_CALL(*field_bridges()[0], UpdateFocusable).Times(0);
+  EXPECT_CALL(*field_bridges()[1], UpdateFocusable(true));
+  EXPECT_CALL(*field_bridges()[2], UpdateFocusable).Times(0);
   form_android.UpdateFieldVisibilities(form);
 
-  EXPECT_TRUE(FormData::DeepEqual(form, form_android.form()));
+  EXPECT_THAT(form_android.form(), FormDataEq(form));
 }
 
 // Tests that `GetJavaPeer` passes the correct `FormData`, `SessionId` and
@@ -371,7 +355,7 @@ TEST_F(FormDataAndroidTest, GetJavaPeer) {
   FormData form = CreateTestForm();
   FormDataAndroid af(form, kSampleSessionId);
   EXPECT_CALL(form_bridge(),
-              GetOrCreateJavaPeer(DeepEqualsFormData(form), kSampleSessionId,
+              GetOrCreateJavaPeer(Eq(form), kSampleSessionId,
                                   Pointwise(SimilarFieldAs(), form.fields())));
   af.GetJavaPeer();
 }

@@ -1,26 +1,51 @@
 {
-  "comments": true,
-  "dataAttributes": true,
   "removeElements": [
+    {
+      "namespace": "http://www.w3.org/1999/xhtml",
+      "name": "embed"
+    },
+    {
+      "namespace": "http://www.w3.org/1999/xhtml",
+      "name": "frame"
+    },
+    {
+      "namespace": "http://www.w3.org/1999/xhtml",
+      "name": "iframe"
+    },
+    {
+      "namespace": "http://www.w3.org/1999/xhtml",
+      "name": "object"
+    },
     {
       "namespace": "http://www.w3.org/1999/xhtml",
       "name": "script"
     },
     {
+      "namespace": "http://www.w3.org/1999/xhtml",
+      "name": "base"
+    },
+    {
       "namespace": "http://www.w3.org/2000/svg",
       "name": "script"
+    },
+    {
+      "namespace": "http://www.w3.org/2000/svg",
+      "name": "use"
     }
   ],
   "removeAttributes": [
     "onabort",
     "onactivate",
     "onafterprint",
+    "onanimationcancel",
     "onanimationend",
     "onanimationiteration",
     "onanimationstart",
+    "onautofill",
     "onauxclick",
     "onbeforecopy",
     "onbeforecut",
+    "onbeforefilter",
     "onbeforeinput",
     "onbeforepaste",
     "onbeforeprint",
@@ -63,6 +88,7 @@
     "ongotpointercapture",
     "onhashchange",
     "oninput",
+    "oninstallresult",
     "oninvalid",
     "onkeydown",
     "onkeypress",
@@ -72,6 +98,7 @@
     "onloadeddata",
     "onloadedmetadata",
     "onloadstart",
+    "onlocation",
     "onlostpointercapture",
     "onmessage",
     "onmessageerror",
@@ -87,7 +114,6 @@
     "onoffline",
     "ononline",
     "onorientationchange",
-    "onoverscroll",
     "onpagehide",
     "onpageshow",
     "onpaste",
@@ -105,6 +131,8 @@
     "onpointerup",
     "onpopstate",
     "onprogress",
+    "onpromptaction",
+    "onpromptdismiss",
     "onratechange",
     "onrepeat",
     "onreset",
@@ -124,6 +152,7 @@
     "onshow",
     "onslotchange",
     "onstalled",
+    "onstream",
     "onstorage",
     "onsubmit",
     "onsuspend",
@@ -146,5 +175,6 @@
     "onwebkitfullscreenerror",
     "onwebkittransitionend",
     "onwheel"
-  ]
+  ],
+  "removeProcessingInstructions": []
 }

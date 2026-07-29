@@ -9,38 +9,55 @@
 #include <string>
 
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 
+namespace policy {
+class CloudPolicyClient;
+}  // namespace policy
+
 namespace signin {
-
 class IdentityManager;
-
 }  // namespace signin
 
 namespace enterprise_promotion {
 
 class PromotionEligibilityChecker {
  public:
-  explicit PromotionEligibilityChecker(
-      signin::IdentityManager* identity_manager);
+  using PromotionEligibilityCallback = base::OnceCallback<void(
+      enterprise_management::GetUserEligiblePromotionsResponse)>;
+
+  PromotionEligibilityChecker(const std::string& profile_id,
+                              policy::CloudPolicyClient* client,
+                              signin::IdentityManager* identity_manager,
+                              std::string locale,
+                              bool dismissed_banner_pref);
 
   PromotionEligibilityChecker(const PromotionEligibilityChecker&) = delete;
   PromotionEligibilityChecker& operator=(const PromotionEligibilityChecker&) =
       delete;
 
-  ~PromotionEligibilityChecker();
+  virtual ~PromotionEligibilityChecker();
 
-  void FetchAccessToken(const CoreAccountId account_id);
+  virtual void MaybeCheckPromotionEligibility(
+      PromotionEligibilityChecker::PromotionEligibilityCallback callback);
 
   void OnAuthTokenFetched(GoogleServiceAuthError error,
                           signin::AccessTokenInfo token_info);
 
-  std::string GetFetchedTokenForTesting();
+  void SetCloudPolicyClientForTesting(
+      std::unique_ptr<policy::CloudPolicyClient> testing_client);
+
+  void CheckPromotionEligibilityWithAuthToken(std::string oauth_token);
 
  private:
   std::unique_ptr<signin::AccessTokenFetcher> access_token_fetcher_;
   std::string oauth_token_;
   raw_ptr<signin::IdentityManager> identity_manager_;
+  std::unique_ptr<policy::CloudPolicyClient> promotion_query_client_;
+  PromotionEligibilityCallback callback_;
   base::WeakPtrFactory<PromotionEligibilityChecker> weak_factory_{this};
 };
 }  // namespace enterprise_promotion

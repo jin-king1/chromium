@@ -9,8 +9,10 @@
 
 #include "base/component_export.h"
 #include "chromeos/ui/base/app_types.h"
+#include "chromeos/ui/base/chromeos_ui_constants.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/class_property.h"
+#include "ui/gfx/geometry/insets.h"
 
 namespace gfx {
 class Rect;
@@ -56,6 +58,16 @@ extern const ui::ClassProperty<bool>* const kNoExitFullscreenOnLock;
 // Borealis apps set this since they do not handle window size changes.
 COMPONENT_EXPORT(CHROMEOS_UI_BASE)
 extern const ui::ClassProperty<bool>* const kUseOverviewToExitFullscreen;
+
+struct COMPONENT_EXPORT(CHROMEOS_UI_BASE) ResizeBorderInsets {
+  gfx::Insets for_mouse = gfx::Insets(chromeos::kResizeInsideBoundsSize);
+  gfx::Insets for_touch = gfx::Insets(chromeos::kResizeInsideBoundsSize);
+};
+
+// A property defining the the boundary inside of the window which can start a
+// drag resize for mouse/touch event.
+COMPONENT_EXPORT(CHROMEOS_UI_BASE)
+extern const ui::ClassProperty<ResizeBorderInsets*>* const kResizeBorderInsets;
 
 // If true, Exo clients may request pointer lock for this window.
 // When the lock activates, users will be notified to use Overview to exit
@@ -126,6 +138,10 @@ extern const ui::ClassProperty<bool>* const kShouldHaveHighlightBorderOverlay;
 COMPONENT_EXPORT(CHROMEOS_UI_BASE)
 extern const ui::ClassProperty<bool>* const kSupportsFloatedStateKey;
 
+// Whether trusted-pinned window should use immersive frame.
+COMPONENT_EXPORT(CHROMEOS_UI_BASE)
+extern const ui::ClassProperty<bool>* const kUseImmersiveInTrustedPinned;
+
 // A property key to tell if the window's opacity should be managed by WM.
 COMPONENT_EXPORT(CHROMEOS_UI_BASE)
 extern const ui::ClassProperty<bool>* const kWindowManagerManagesOpacityKey;
@@ -138,6 +154,12 @@ extern const ui::ClassProperty<WindowStateType>* const kWindowStateTypeKey;
 // is set, the window's title is used.
 COMPONENT_EXPORT(CHROMEOS_UI_BASE)
 extern const ui::ClassProperty<std::u16string*>* const kWindowOverviewTitleKey;
+
+// A property key to indicate if a window should have rounded corners. On
+// ChromeOS, window corner styles (rounded or square) can vary depending on the
+// window's current state.
+COMPONENT_EXPORT(CHROMEOS_UI_BASE)
+extern const ui::ClassProperty<bool>* const kWindowHasRoundedCornersKey;
 
 }  // namespace chromeos
 

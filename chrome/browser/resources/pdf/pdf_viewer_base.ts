@@ -2,9 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
+import {PdfHelpBubbleProxyImpl} from 'chrome://resources/cr_components/help_bubble/pdf_help_bubble_proxy.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {EventTracker} from 'chrome://resources/js/event_tracker.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import type {LoadTimeDataRaw} from 'chrome://resources/js/load_time_data.js';
 import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
@@ -12,16 +15,43 @@ import type {BrowserApi} from './browser_api.js';
 import {ZoomBehavior} from './browser_api.js';
 import type {Point} from './constants.js';
 import {FittingType} from './constants.js';
-import type {ContentController, MessageData} from './controller.js';
+import type {ContentController, MessageData, SelectedTextData} from './controller.js';
 import {PluginController, PluginControllerEventType} from './controller.js';
 import {record, recordFitTo, UserAction} from './metrics.js';
 import type {OpenPdfParams} from './open_pdf_params_parser.js';
 import {OpenPdfParamsParser} from './open_pdf_params_parser.js';
-import type {SerializedKeyEvent} from './pdf_scripting_api.js';
 import {LoadState} from './pdf_scripting_api.js';
+import type {SerializedKeyEvent} from './pdf_scripting_api.js';
 import type {DocumentDimensionsMessageData} from './pdf_viewer_utils.js';
 import {Viewport} from './viewport.js';
 import {ZoomManager} from './zoom_manager.js';
+
+interface DocumentLoadedScriptingMessage {
+  type: 'documentLoaded';
+  load_state: LoadState;
+}
+
+interface ViewportScriptingMessage {
+  type: 'viewport';
+  pageX: number;
+  pageY: number;
+  pageWidth: number;
+  viewportWidth: number;
+  viewportHeight: number;
+}
+
+interface SendKeyEventScriptingMessage {
+  type: 'sendKeyEvent';
+  keyEvent: SerializedKeyEvent;
+}
+
+interface SimpleScriptingMessage {
+  type: 'passwordPrompted'|'touchSelectionOccurred';
+}
+
+export type ScriptingMessage =
+    DocumentLoadedScriptingMessage|ViewportScriptingMessage|
+    SendKeyEventScriptingMessage|SimpleScriptingMessage|SelectedTextData;
 
 /** @return Width of a scrollbar in pixels */
 function getScrollbarWidth(): number {
@@ -37,12 +67,11 @@ function getScrollbarWidth(): number {
   return result;
 }
 
-export type KeyEventData = MessageData&{keyEvent: SerializedKeyEvent};
+const HelpBubbleCrLitElementBase = HelpBubbleMixinLit(CrLitElement);
 
-export abstract class PdfViewerBaseElement extends CrLitElement {
+export abstract class PdfViewerBaseElement extends HelpBubbleCrLitElementBase {
   static override get properties() {
     return {
-      pdfCr23Enabled: {type: Boolean},
       showErrorDialog: {type: Boolean},
       strings: {type: Object},
     };
@@ -55,10 +84,9 @@ export abstract class PdfViewerBaseElement extends CrLitElement {
   protected lastViewportPosition: Point|null = null;
   protected originalUrl: string = '';
   protected paramsParser: OpenPdfParamsParser|null = null;
-  protected pdfCr23Enabled: boolean = false;
   protected pdfOopifEnabled: boolean = false;
-  showErrorDialog: boolean = false;
-  protected strings?: {[key: string]: string};
+  accessor showErrorDialog: boolean = false;
+  protected accessor strings: LoadTimeDataRaw|undefined;
   protected tracker: EventTracker = new EventTracker();
   private delayedScriptingMessages_: MessageEvent[] = [];
   private initialLoadComplete_: boolean = false;
@@ -77,6 +105,10 @@ export abstract class PdfViewerBaseElement extends CrLitElement {
 
   protected abstract setPluginSrc(plugin: HTMLEmbedElement): void;
 
+  override createHelpBubbleProxy() {
+    return PdfHelpBubbleProxyImpl.getInstance();
+  }
+
   /** Whether to enable the new UI. */
   protected isNewUiEnabled(): boolean {
     return true;
@@ -90,12 +122,11 @@ export abstract class PdfViewerBaseElement extends CrLitElement {
     // fill the entire window and is set to be fixed positioning, acting as a
     // viewport. The plugin renders into this viewport according to the scroll
     // position of the window.
+    //
+    // LINT.IfChange(CreateEmbed)
     const plugin = document.createElement('embed');
+    // LINT.ThenChange(//chrome/renderer/printing/chrome_print_render_frame_helper_delegate.cc:GetPdfElement)
 
-    // NOTE: The plugin's 'id' field must be set to 'plugin' since
-    // ChromePrintRenderFrameHelperDeleage::GetPdfElement() in
-    // chrome/renderer/printing/chrome_print_render_frame_helper_delegate.cc
-    // actually references it.
     plugin.id = 'plugin';
     plugin.type = 'application/x-google-chrome-pdf';
 
@@ -153,8 +184,6 @@ export abstract class PdfViewerBaseElement extends CrLitElement {
       content: HTMLElement) {
     this.browserApi = browserApi;
     this.originalUrl = this.browserApi.getStreamInfo().originalUrl;
-    this.pdfCr23Enabled =
-        document.documentElement.hasAttribute('pdfCr23Enabled');
     this.pdfOopifEnabled =
         document.documentElement.hasAttribute('pdfOopifEnabled');
 
@@ -191,8 +220,7 @@ export abstract class PdfViewerBaseElement extends CrLitElement {
 
     const pluginController = PluginController.getInstance();
     pluginController.init(
-        this.plugin_, this.viewport_, () => this.isUserInitiatedEvent,
-        () => this.loaded);
+        this.plugin_, this.viewport_, () => this.isUserInitiatedEvent);
     pluginController.isActive = true;
     this.currentController = pluginController;
 
@@ -427,7 +455,7 @@ export abstract class PdfViewerBaseElement extends CrLitElement {
    * chrome.resourcesPrivate.
    * @param strings Dictionary of translated strings
    */
-  protected handleStrings(strings?: {[key: string]: string}) {
+  protected handleStrings(strings?: LoadTimeDataRaw) {
     if (!strings) {
       return;
     }
@@ -494,7 +522,7 @@ export abstract class PdfViewerBaseElement extends CrLitElement {
    * Send a scripting message outside the extension (typically to
    * PdfScriptingApi in a page containing the extension).
    */
-  protected sendScriptingMessage(message: any) {
+  protected sendScriptingMessage(message: ScriptingMessage) {
     if (this.parentWindow_ && this.parentOrigin_) {
       let targetOrigin;
       // Only send data back to the embedder if it is from the same origin,
@@ -504,8 +532,9 @@ export abstract class PdfViewerBaseElement extends CrLitElement {
       if (this.parentOrigin_ === window.location.origin) {
         targetOrigin = this.parentOrigin_;
       } else if (
-          message.type === 'documentLoaded' ||
-          message.type === 'passwordPrompted') {
+          'type' in message &&
+          (message.type === 'documentLoaded' ||
+           message.type === 'passwordPrompted')) {
         targetOrigin = '*';
       } else {
         targetOrigin = this.originalUrl;
@@ -541,7 +570,7 @@ export abstract class PdfViewerBaseElement extends CrLitElement {
   }
 
   /** Handles a selected text reply from the current controller. */
-  protected handleSelectedTextReply(message: {selectedText: string}) {
+  protected handleSelectedTextReply(message: SelectedTextData) {
     if (this.overrideSendScriptingMessageForTest_) {
       this.overrideSendScriptingMessageForTest_ = false;
       try {

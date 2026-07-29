@@ -63,7 +63,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkServiceNetworkDelegate
       const net::HttpResponseHeaders* original_response_headers,
       scoped_refptr<net::HttpResponseHeaders>* override_response_headers,
       const net::IPEndPoint& endpoint,
-      std::optional<GURL>* preserve_fragment_on_redirect_url) override;
+      std::optional<GURL>* preserve_fragment_on_redirect_url,
+      const std::optional<net::SSLInfo>& ssl_info) override;
   void OnBeforeRedirect(net::URLRequest* request,
                         const GURL& new_location) override;
   void OnResponseStarted(net::URLRequest* request, int net_error) override;
@@ -74,8 +75,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkServiceNetworkDelegate
   std::optional<net::cookie_util::StorageAccessStatus> OnGetStorageAccessStatus(
       const net::URLRequest& request,
       base::optional_ref<const net::RedirectInfo> redirect_info) const override;
-  bool OnIsStorageAccessHeaderEnabled(const url::Origin* top_frame_origin,
-                                      const GURL& url) const override;
   bool OnAnnotateAndMoveUserBlockedCookies(
       const net::URLRequest& request,
       const net::FirstPartySetMetadata& first_party_set_metadata,
@@ -87,6 +86,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkServiceNetworkDelegate
       net::CookieOptions* options,
       const net::FirstPartySetMetadata& first_party_set_metadata,
       net::CookieInclusionStatus* inclusion_status) override;
+  bool OnShouldForceIgnoreSiteForCookies(
+      const net::URLRequest& request) override;
   net::NetworkDelegate::PrivacySetting OnForcePrivacyMode(
       const net::URLRequest& request) const override;
   bool OnCancelURLRequestWithPolicyViolatingReferrerHeader(

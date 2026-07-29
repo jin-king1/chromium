@@ -9,12 +9,17 @@ import android.graphics.drawable.Drawable;
 
 import androidx.annotation.IntDef;
 
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** Interface for the Safety Hub modules' mediators. */
+@NullMarked
 interface SafetyHubModuleMediator {
     /**
      * Order reflects state severity. Lowest being the most severe state and highest being the
@@ -28,7 +33,7 @@ interface SafetyHubModuleMediator {
         ModuleState.SAFE
     })
     @Retention(RetentionPolicy.SOURCE)
-    public @interface ModuleState {
+    @interface ModuleState {
         int WARNING = 0;
         int UNAVAILABLE = 1;
         int INFO = 2;
@@ -46,34 +51,63 @@ interface SafetyHubModuleMediator {
         ModuleOption.UPDATE_CHECK,
         ModuleOption.ACCOUNT_PASSWORDS,
         ModuleOption.LOCAL_PASSWORDS,
+        ModuleOption.UNIFIED_PASSWORDS,
         ModuleOption.SAFE_BROWSING,
         ModuleOption.UNUSED_PERMISSIONS,
         ModuleOption.NOTIFICATION_REVIEW,
     })
     @Retention(RetentionPolicy.SOURCE)
-    public @interface ModuleOption {
+    @interface ModuleOption {
         int UPDATE_CHECK = 0;
         int ACCOUNT_PASSWORDS = 1;
         int LOCAL_PASSWORDS = 2;
-        int SAFE_BROWSING = 3;
-        int UNUSED_PERMISSIONS = 4;
-        int NOTIFICATION_REVIEW = 5;
-        int NUM_ENTRIES = 6;
+        int UNIFIED_PASSWORDS = 3;
+        int SAFE_BROWSING = 4;
+        int UNUSED_PERMISSIONS = 5;
+        int NOTIFICATION_REVIEW = 6;
+        int NUM_ENTRIES = 7;
     }
 
-    public void setUpModule();
+    /**
+     * State machine for the loading indicator.
+     *
+     * <p>On idle, no indicator is being shown. On showing indicator, the loading indicator is being
+     * shown and cannot be removed from the UI, to avoid flashing. On waiting for results, the
+     * loading indicator is being shown but can be removed as soon as a state change occurs.
+     */
+    @IntDef({
+        IndicatorState.IDLE,
+        IndicatorState.SHOWING_INDICATOR,
+        IndicatorState.WAITING_FOR_RESULTS
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface IndicatorState {
+        int IDLE = 0;
+        int SHOWING_INDICATOR = 1;
+        int WAITING_FOR_RESULTS = 2;
+    }
 
-    public void updateModule();
+    int LOADING_MIN_TIME_MS = 1000;
 
-    public @ModuleState int getModuleState();
+    int DEFAULT_LOADING_MAX_TIME_MS = 10000;
+    String LOADING_MAX_TIME_PARAM_NAME = "safety-hub-local-passwords-module-loading-timeout-ms";
 
-    public @ModuleOption int getOption();
+    @Initializer
+    void setUpModule();
 
-    public boolean isManaged();
+    void updateModule();
 
-    public void destroy();
+    @ModuleState
+    int getModuleState();
 
-    public void setExpandState(boolean expanded);
+    @ModuleOption
+    int getOption();
+
+    boolean isManaged();
+
+    void destroy();
+
+    void setExpandState(boolean expanded);
 
     default void setModuleExpandState(boolean noOtherNonManagedWarningState) {
         switch (getModuleState()) {
@@ -95,7 +129,7 @@ interface SafetyHubModuleMediator {
         }
     }
 
-    default Drawable getIcon(Context context) {
+    default @Nullable Drawable getIcon(Context context) {
         switch (getModuleState()) {
             case ModuleState.SAFE:
                 return SettingsUtils.getTintedIcon(
@@ -147,5 +181,13 @@ interface SafetyHubModuleMediator {
 
     default boolean isLoading() {
         return getModuleState() == ModuleState.LOADING;
+    }
+
+    // Returns the max loading time in milliseconds.
+    default int getLoadingMaxTime() {
+        return ChromeFeatureList.getFieldTrialParamByFeatureAsInt(
+                ChromeFeatureList.SAFETY_HUB_LOCAL_PASSWORDS_MODULE,
+                LOADING_MAX_TIME_PARAM_NAME,
+                DEFAULT_LOADING_MAX_TIME_MS);
     }
 }

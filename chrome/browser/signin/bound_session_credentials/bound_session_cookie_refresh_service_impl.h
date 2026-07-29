@@ -14,7 +14,9 @@
 #include "base/containers/queue.h"
 #include "base/containers/span.h"
 #include "base/containers/unique_ptr_adapters.h"
+#include "base/feature_list.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_cookie_controller.h"
@@ -24,6 +26,7 @@
 #include "chrome/browser/signin/bound_session_credentials/bound_session_refresh_cookie_fetcher.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_registration_fetcher.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_registration_fetcher_param.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/storage_partition.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "services/network/public/cpp/network_connection_tracker.h"
@@ -39,6 +42,10 @@ class StoragePartition;
 class GURL;
 class BoundSessionParamsStorage;
 
+// Enables the maintenance of bound sessions stored on disk even after the main
+// `switches::kBoundSessionCredentialsEnabled` feature gets disabled.
+BASE_DECLARE_FEATURE(kEnableBoundSessionCredentialsContinuity);
+
 class BoundSessionCookieRefreshServiceImpl
     : public BoundSessionCookieRefreshService,
       public BoundSessionCookieController::Delegate,
@@ -51,7 +58,8 @@ class BoundSessionCookieRefreshServiceImpl
     kCookiesCleared = 1,
     kSessionTerminationHeader = 2,
     kSessionOverride = 3,
-    kMaxValue = kSessionOverride,
+    kRotationStoppedTimeout = 4,
+    kMaxValue = kRotationStoppedTimeout,
   };
 
   BoundSessionCookieRefreshServiceImpl(
@@ -59,6 +67,7 @@ class BoundSessionCookieRefreshServiceImpl
       std::unique_ptr<BoundSessionParamsStorage> session_params_storage,
       content::StoragePartition* storage_partition,
       network::NetworkConnectionTracker* network_connection_tracker,
+      const PrefService* profile_prefs,
       bool is_off_the_record_profile);
 
   ~BoundSessionCookieRefreshServiceImpl() override;
@@ -71,11 +80,13 @@ class BoundSessionCookieRefreshServiceImpl
                              const net::HttpResponseHeaders* headers) override;
   std::vector<chrome::mojom::BoundSessionThrottlerParamsPtr>
   GetBoundSessionThrottlerParams() const override;
+  std::vector<BoundSessionKey> GetAllSessions() const override;
   void AddBoundSessionRequestThrottledHandlerReceiver(
       mojo::PendingReceiver<chrome::mojom::BoundSessionRequestThrottledHandler>
           receiver) override;
   void CreateRegistrationRequest(
       BoundSessionRegistrationFetcherParam registration_params) override;
+  void StopCookieRotation(const BoundSessionKey& key) override;
   base::WeakPtr<BoundSessionCookieRefreshService> GetWeakPtr() override;
   void AddObserver(
       BoundSessionCookieRefreshService::Observer* observer) override;
@@ -149,6 +160,8 @@ class BoundSessionCookieRefreshServiceImpl
   void OnPersistentErrorEncountered(
       BoundSessionCookieController* controller,
       BoundSessionRefreshCookieFetcher::Result refresh_error) override;
+  void OnCookieRotationStoppedTimeout(
+      BoundSessionCookieController* controller) override;
 
   // StoragePartition::DataRemovalObserver:
   void OnStorageKeyDataCleared(
@@ -162,8 +175,8 @@ class BoundSessionCookieRefreshServiceImpl
       const bound_session_credentials::BoundSessionParams& bound_session_params,
       bool is_off_the_record_profile);
   void InitializeBoundSession(
-      const bound_session_credentials::BoundSessionParams&
-          bound_session_params);
+      const bound_session_credentials::BoundSessionParams& bound_session_params,
+      bool is_new_session);
 
   void UpdateAllRenderers();
 
@@ -173,7 +186,6 @@ class BoundSessionCookieRefreshServiceImpl
                         SessionTerminationTrigger trigger,
                         std::optional<BoundSessionRefreshCookieFetcher::Result>
                             refresh_error = std::nullopt);
-  void RecordSessionTerminationTrigger(SessionTerminationTrigger trigger);
   void NotifyBoundSessionTerminated(
       const GURL& site,
       const base::flat_set<std::string>& bound_cookie_names);
@@ -191,6 +203,7 @@ class BoundSessionCookieRefreshServiceImpl
   const std::unique_ptr<BoundSessionParamsStorage> session_params_storage_;
   const raw_ptr<content::StoragePartition> storage_partition_;
   const raw_ptr<network::NetworkConnectionTracker> network_connection_tracker_;
+  const raw_ptr<const PrefService> profile_prefs_;
   // Required to attach X-Client-Data header to session registration and cookie
   // rotation requests for GWS-visible Finch experiment.
   const bool is_off_the_record_profile_;

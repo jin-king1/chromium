@@ -10,22 +10,19 @@
 #include "base/unguessable_token.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/frame_tree_node_id.h"
-#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/weak_document_ptr.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/referrer.h"
 #include "net/base/isolation_info.h"
 #include "net/filter/source_stream_type.h"
-#include "net/http/http_request_headers.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/client_security_state.mojom-forward.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom-forward.h"
-#include "url/gurl.h"
 #include "url/origin.h"
 
 namespace content {
 
-class PrefetchServingPageMetricsContainer;
 
 // A struct to hold the parameters needed to start a navigation request in
 // ResourceDispatcherHost. It is initialized on the UI thread, and then passed
@@ -46,20 +43,15 @@ struct CONTENT_EXPORT NavigationRequestInfo {
       std::unique_ptr<network::PendingSharedURLLoaderFactory>
           blob_url_loader_factory,
       const base::UnguessableToken& devtools_navigation_token,
-      const base::UnguessableToken& devtools_frame_token,
-      net::HttpRequestHeaders cors_exempt_headers,
+      const base::UnguessableToken& devtools_throttling_token,
       network::mojom::ClientSecurityStatePtr client_security_state,
       const std::optional<std::vector<net::SourceStreamType>>&
           devtools_accepted_stream_types,
       bool is_pdf,
-      int initiator_process_id,
+      ChildProcessId initiator_process_id,
       std::optional<blink::DocumentToken> initiator_document_token,
-      const GlobalRenderFrameHostId& previous_render_frame_host_id,
-      base::WeakPtr<PrefetchServingPageMetricsContainer>
-          prefetch_serving_page_metrics_container,
       bool allow_cookies_from_browser,
       int64_t navigation_id,
-      bool shared_storage_writable,
       bool is_ad_tagged,
       bool force_no_https_upgrade);
   NavigationRequestInfo(const NavigationRequestInfo& other) = delete;
@@ -122,9 +114,11 @@ struct CONTENT_EXPORT NavigationRequestInfo {
 
   const base::UnguessableToken devtools_navigation_token;
 
-  const base::UnguessableToken devtools_frame_token;
-
-  const net::HttpRequestHeaders cors_exempt_headers;
+  // Token used by DevTools to apply throttling to this navigation.
+  // This token should identify the Chrome DevTools Protocol (CDP) target that
+  // is controlling the throttling. For frames, it has to be token of the local
+  // frame root that matches the CDP target.
+  const base::UnguessableToken devtools_throttling_token;
 
   // Specifies the security state applying to the navigation. For iframes, this
   // is the security state of their parent. Nullptr otherwise.
@@ -143,17 +137,8 @@ struct CONTENT_EXPORT NavigationRequestInfo {
   const bool is_pdf;
 
   // The initiator document's token and its process ID.
-  const int initiator_process_id;
+  const ChildProcessId initiator_process_id;
   const std::optional<blink::DocumentToken> initiator_document_token;
-
-  // The previous document's RenderFrameHostId, used for speculation rules
-  // prefetch.
-  // This corresponds to `NavigationRequest::GetPreviousRenderFrameHostId()`.
-  const GlobalRenderFrameHostId previous_render_frame_host_id;
-
-  // For per-navigation metrics of speculation rules prefetch.
-  base::WeakPtr<PrefetchServingPageMetricsContainer>
-      prefetch_serving_page_metrics_container;
 
   // Whether a Cookie header added to this request should not be overwritten by
   // the network service.
@@ -161,11 +146,6 @@ struct CONTENT_EXPORT NavigationRequestInfo {
 
   // Unique id that identifies the navigation.
   const int64_t navigation_id;
-
-  // Whether or not the request is eligible to write to shared storage from
-  // response headers. See
-  // https://github.com/WICG/shared-storage#from-response-headers.
-  bool shared_storage_writable_eligible;
 
   // Whether the embedder indicated this navigation is being used for
   // advertising purposes.

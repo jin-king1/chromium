@@ -16,7 +16,6 @@ import android.widget.OverScroller;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.UnguessableToken;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.paintpreview.player.OverscrollHandler;
@@ -27,15 +26,16 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /** Sets up the view and the logic behind it for a Paint Preview frame. */
 @NullMarked
 public class PlayerFrameCoordinator {
-    private PlayerFrameMediator mMediator;
+    private final PlayerFrameMediator mMediator;
     private @Nullable PlayerFrameScaleController mScaleController;
-    private PlayerFrameScrollController mScrollController;
-    private PlayerFrameView mView;
-    private List<PlayerFrameCoordinator> mSubFrames = new ArrayList<>();
+    private final PlayerFrameScrollController mScrollController;
+    private final PlayerFrameView mView;
+    private final List<PlayerFrameCoordinator> mSubFrames = new ArrayList<>();
 
     /**
      * Creates a {@link PlayerFrameMediator} and {@link PlayerFrameView} for this component and

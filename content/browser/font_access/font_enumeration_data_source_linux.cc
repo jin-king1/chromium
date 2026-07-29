@@ -2,19 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/browser/font_access/font_enumeration_data_source_linux.h"
 
 #include <fontconfig/fontconfig.h>
 
 #include <memory>
-#include <set>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/location.h"
 #include "base/notreached.h"
 #include "base/sequence_checker.h"
@@ -22,6 +17,7 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/blink/public/common/font_access/font_enumeration_table.pb.h"
 
 namespace content {
@@ -51,7 +47,7 @@ FcFontSet* ListFonts(FcObjectSet* object_set) {
         FcFontList(nullptr, format_pattern.get(), object_set),
         FcFontSetDestroy);
     for (int j = 0; j < fontset->nfont; ++j) {
-      FcPattern* font = fontset->fonts[j];
+      FcPattern* font = UNSAFE_TODO(fontset->fonts[j]);
       // Increments the refcount for the font.
       FcPatternReference(font);
       FcBool result = FcFontSetAdd(output, font);
@@ -89,19 +85,19 @@ blink::FontEnumerationTable FontEnumerationDataSourceLinux::GetFonts(
       ListFonts(object_set.get()), FcFontSetDestroy);
 
   // Used to filter duplicates.
-  std::set<std::string> fonts_seen;
+  absl::flat_hash_set<std::string> fonts_seen;
 
   for (int i = 0; i < fontset->nfont; ++i) {
     char* postscript_name = nullptr;
-    if (FcPatternGetString(fontset->fonts[i], FC_POSTSCRIPT_NAME, 0,
-                           reinterpret_cast<FcChar8**>(&postscript_name)) !=
+    if (FcPatternGetString(UNSAFE_TODO(fontset->fonts[i]), FC_POSTSCRIPT_NAME,
+                           0, reinterpret_cast<FcChar8**>(&postscript_name)) !=
         FcResultMatch) {
       // Skip incomplete or malformed font.
       continue;
     }
 
     char* full_name = nullptr;
-    if (FcPatternGetString(fontset->fonts[i], FC_FULLNAME, 0,
+    if (FcPatternGetString(UNSAFE_TODO(fontset->fonts[i]), FC_FULLNAME, 0,
                            reinterpret_cast<FcChar8**>(&full_name)) !=
         FcResultMatch) {
       // Skip incomplete or malformed font.
@@ -109,7 +105,7 @@ blink::FontEnumerationTable FontEnumerationDataSourceLinux::GetFonts(
     }
 
     char* family = nullptr;
-    if (FcPatternGetString(fontset->fonts[i], FC_FAMILY, 0,
+    if (FcPatternGetString(UNSAFE_TODO(fontset->fonts[i]), FC_FAMILY, 0,
                            reinterpret_cast<FcChar8**>(&family)) !=
         FcResultMatch) {
       // Skip incomplete or malformed font.
@@ -117,15 +113,14 @@ blink::FontEnumerationTable FontEnumerationDataSourceLinux::GetFonts(
     }
 
     char* style = nullptr;
-    if (FcPatternGetString(fontset->fonts[i], FC_STYLE, 0,
+    if (FcPatternGetString(UNSAFE_TODO(fontset->fonts[i]), FC_STYLE, 0,
                            reinterpret_cast<FcChar8**>(&style)) !=
         FcResultMatch) {
       // Skip incomplete or malformed font.
       continue;
     }
 
-    auto it_and_success = fonts_seen.emplace(postscript_name);
-    if (!it_and_success.second) {
+    if (auto [it, success] = fonts_seen.emplace(postscript_name); !success) {
       // Skip duplicate.
       continue;
     }

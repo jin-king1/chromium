@@ -20,7 +20,6 @@
 #include "chrome/browser/chromeos/app_mode/kiosk_web_app_install_util.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
@@ -36,6 +35,7 @@ using kiosk::test::InstalledChromeAppVersion;
 using kiosk::test::OfflineEnabledChromeAppV1;
 using kiosk::test::OfflineEnabledChromeAppV2RequiresVersion1234;
 using kiosk::test::TheKioskChromeApp;
+using kiosk::test::WaitKioskLaunched;
 
 namespace {
 
@@ -80,7 +80,7 @@ IN_PROC_BROWSER_TEST_F(RequiredPlatformVersionTest,
   ServeAppOnFakeCws(kiosk_.fake_cws(),
                     OfflineEnabledChromeAppV2RequiresVersion1234());
 
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
 
   // Since there is no "good" version of the app pre-installed, Kiosk will
   // install it the first time even if the OS version does not meet
@@ -95,7 +95,7 @@ IN_PROC_BROWSER_TEST_F(RequiredPlatformVersionTest,
 IN_PROC_BROWSER_TEST_F(RequiredPlatformVersionTest,
                        PRE_DoesNotUpdateToNonCompliantRequiredPlatformVersion) {
   ServeAppOnFakeCws(kiosk_.fake_cws(), OfflineEnabledChromeAppV1());
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
 
   EXPECT_EQ(CachedChromeAppVersion(TheKioskChromeApp()),
             OfflineEnabledChromeAppV1().crx_version);
@@ -114,7 +114,7 @@ IN_PROC_BROWSER_TEST_F(RequiredPlatformVersionTest,
   ServeAppOnFakeCws(kiosk_.fake_cws(),
                     OfflineEnabledChromeAppV2RequiresVersion1234());
 
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
 
   EXPECT_EQ(CachedChromeAppVersion(TheKioskChromeApp()),
             OfflineEnabledChromeAppV2RequiresVersion1234().crx_version);
@@ -126,7 +126,7 @@ IN_PROC_BROWSER_TEST_F(RequiredPlatformVersionTest,
 IN_PROC_BROWSER_TEST_F(RequiredPlatformVersionTest,
                        PRE_UpdatesToCompliantRequiredPlatformVersion) {
   ServeAppOnFakeCws(kiosk_.fake_cws(), OfflineEnabledChromeAppV1());
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
 
   EXPECT_EQ(CachedChromeAppVersion(TheKioskChromeApp()),
             OfflineEnabledChromeAppV1().crx_version);
@@ -145,7 +145,7 @@ IN_PROC_BROWSER_TEST_F(RequiredPlatformVersionTest,
   ServeAppOnFakeCws(kiosk_.fake_cws(),
                     OfflineEnabledChromeAppV2RequiresVersion1234());
 
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
   EXPECT_EQ(CachedChromeAppVersion(TheKioskChromeApp()),
             OfflineEnabledChromeAppV2RequiresVersion1234().crx_version);
   EXPECT_EQ(InstalledChromeAppVersion(CurrentProfile(), TheKioskChromeApp()),

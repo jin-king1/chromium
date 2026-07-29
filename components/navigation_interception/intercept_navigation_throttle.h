@@ -7,13 +7,14 @@
 
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "content/public/browser/navigation_throttle.h"
 
 namespace content {
 class NavigationHandle;
+class NavigationThrottleRegistry;
 }
 
 namespace navigation_interception {
@@ -39,7 +40,7 @@ class InterceptNavigationThrottle : public content::NavigationThrottle {
       CheckCallback;
 
   InterceptNavigationThrottle(
-      content::NavigationHandle* navigation_handle,
+      content::NavigationThrottleRegistry& registry,
       CheckCallback should_ignore_callback,
       SynchronyMode async_mode,
       std::optional<base::RepeatingClosure> request_finish_async_work_callback);

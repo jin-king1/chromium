@@ -8,9 +8,11 @@
 
 #include <string>
 
+#include "base/strings/utf_ostream_operators.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
+#include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/strings/grit/components_strings.h"
@@ -39,12 +41,14 @@ const IntExpirationDate kValidCreditCardIntExpirationDate[] = {
     {2013, 5},   // Valid month in current year.
     {2014, 1},   // Any month in next year.
     {2014, 12},  // Edge condition.
+    {28, 12},    // Valid 2-digit year.
 };
 const IntExpirationDate kInvalidCreditCardIntExpirationDate[] = {
     {2013, 4},   // Previous month in current year.
     {2012, 12},  // Any month in previous year.
     {2015, 13},  // Not a real month.
     {2015, 0},   // Zero is legal in the CC class but is not a valid date.
+    {13, 4}      // Previous month in current year in 2-digit format.
 };
 const SecurityCodeCardTypePair kValidSecurityCodeCardTypePairs[] = {
     {u"323", kGenericCard},           // 3-digit CSC.
@@ -276,6 +280,96 @@ TEST_P(AutofillIsInternationalBankAccountNumber,
   EXPECT_FALSE(IsInternationalBankAccountNumber(
       GetParam() + u"0000000000000000000000000000000000000"));
 }
+
+TEST(AutofillValidation, IsValidAchRoutingTransitNumber) {
+  // Must be 9 digits, cannot have text:
+  EXPECT_FALSE(IsAchRoutingTransitNumber(u"12345678"));
+  EXPECT_FALSE(IsAchRoutingTransitNumber(u"1234567890"));
+  EXPECT_FALSE(IsAchRoutingTransitNumber(u"12345678x"));
+  EXPECT_FALSE(IsAchRoutingTransitNumber(u"x23456789"));
+  // Passes checksum:
+  EXPECT_TRUE(IsAchRoutingTransitNumber(u"111000025"));
+  EXPECT_TRUE(IsAchRoutingTransitNumber(u"321177722"));
+  EXPECT_TRUE(IsAchRoutingTransitNumber(u"323177720"));
+  EXPECT_FALSE(IsAchRoutingTransitNumber(u"321177721"));
+  EXPECT_FALSE(IsAchRoutingTransitNumber(u"321177723"));
+}
+
+TEST(AutofillValidation, IsValidNameOnCard) {
+  const char16_t* const kValidNamesOnCard[] = {
+      u"JOHN DOE",
+      u"Jane R. Doe",
+      u"Mr. John Smith-Jones",
+      u"O'Connor",
+  };
+  for (const char16_t* name : kValidNamesOnCard) {
+    SCOPED_TRACE(base::UTF16ToUTF8(name));
+    EXPECT_TRUE(IsValidNameOnCard(name));
+  }
+
+  const char16_t* const kInvalidNamesOnCard[] = {
+      u"John D0E",   u"Jane@Doe",
+      u"John#Smith", u"Maria$V",
+      u"Test^Name",  u"Name*Here",
+      u"John(Doe)",  u"Jane[Doe]",
+      u"Maria{V}",   u"Test=Name",
+      u"Name?Here",  u"|Doe",
+      u"•Name",      u"This name is way too long for a card",
+  };
+  for (const char16_t* name : kInvalidNamesOnCard) {
+    SCOPED_TRACE(base::UTF16ToUTF8(name));
+    EXPECT_FALSE(IsValidNameOnCard(name));
+  }
+}
+
+struct ZipCodeTestCase {
+  bool extended_validation;
+  std::u16string text;
+  std::string country_code;
+  bool is_valid;
+};
+
+class AutofillIsValidZipTest : public testing::TestWithParam<ZipCodeTestCase> {
+};
+
+TEST_P(AutofillIsValidZipTest, IsValidZip) {
+  const ZipCodeTestCase& test_case = GetParam();
+  EXPECT_EQ(
+      IsValidZip(test_case.text, AddressCountryCode(test_case.country_code),
+                 test_case.extended_validation),
+      test_case.is_valid);
+}
+
+INSTANTIATE_TEST_SUITE_P(ValidZip,
+                         AutofillIsValidZipTest,
+                         testing::Values(
+                             // Not extended validation.
+                             ZipCodeTestCase{false, u"90210", "US", true},
+                             ZipCodeTestCase{false, u"90210-1234", "US", true},
+                             ZipCodeTestCase{false, u"ABCDE", "US", false},
+                             ZipCodeTestCase{false, u"any string", "PL", true},
+                             ZipCodeTestCase{false, u"123", "GB", true},
+
+                             // Extended validation.
+                             ZipCodeTestCase{true, u"00-950", "PL", true},
+                             ZipCodeTestCase{true, u"00950", "PL", true},
+                             ZipCodeTestCase{true, u"00", "PL", false},
+                             ZipCodeTestCase{true, u"K1A 0B1", "CA", true},
+                             ZipCodeTestCase{true, u"K1A0B1", "CA", true},
+                             ZipCodeTestCase{true, u"K1A", "CA", false},
+                             ZipCodeTestCase{true, u"12345", "DE", true},
+                             ZipCodeTestCase{true, u"〒１００－８７９９", "JP",
+                                             true},
+                             ZipCodeTestCase{true, u"100-8799", "JP", true},
+                             ZipCodeTestCase{true, u"100", "JP", false},
+                             ZipCodeTestCase{true, u"AB-100-8799", "JP", false},
+                             ZipCodeTestCase{true, u"٥٥١١١١٤٣٩٩", "IR", true},
+                             ZipCodeTestCase{true, u"01310-000", "BR", true},
+                             ZipCodeTestCase{true, u"01.310-000", "BR", true},
+                             ZipCodeTestCase{true, u"ABC-123", "BR", false},
+                             ZipCodeTestCase{true, u"ABC-123", "XX", true},
+                             ZipCodeTestCase{true, u"ABC_123", "XX", true},
+                             ZipCodeTestCase{true, u"any string", "XX", true}));
 
 }  // namespace
 }  // namespace autofill

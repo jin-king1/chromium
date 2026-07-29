@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.autofill.iban;
 
 import android.view.View.OnClickListener;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.autofill.payments.LegalMessageLine;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableIntPropertyKey;
@@ -14,6 +15,7 @@ import org.chromium.ui.modelutil.PropertyModel.ReadableObjectPropertyKey;
 import java.util.List;
 import java.util.function.Consumer;
 
+@NullMarked
 /*package*/ class AutofillSaveIbanBottomSheetProperties {
     /** Legal messages. */
     static class LegalMessage {
@@ -37,17 +39,17 @@ import java.util.function.Consumer;
 
     static final ReadableIntPropertyKey LOGO_ICON = new ReadableIntPropertyKey();
 
-    static final ReadableObjectPropertyKey<String> TITLE = new ReadableObjectPropertyKey();
+    static final ReadableObjectPropertyKey<String> TITLE = new ReadableObjectPropertyKey<>();
 
-    static final ReadableObjectPropertyKey<String> DESCRIPTION = new ReadableObjectPropertyKey();
+    static final ReadableObjectPropertyKey<String> DESCRIPTION = new ReadableObjectPropertyKey<>();
 
-    static final ReadableObjectPropertyKey<String> IBAN_VALUE = new ReadableObjectPropertyKey();
+    static final ReadableObjectPropertyKey<String> IBAN_VALUE = new ReadableObjectPropertyKey<>();
 
     static final ReadableObjectPropertyKey<String> ACCEPT_BUTTON_LABEL =
-            new ReadableObjectPropertyKey();
+            new ReadableObjectPropertyKey<>();
 
     static final ReadableObjectPropertyKey<String> CANCEL_BUTTON_LABEL =
-            new ReadableObjectPropertyKey();
+            new ReadableObjectPropertyKey<>();
 
     static final ReadableObjectPropertyKey<OnClickListener> ON_ACCEPT_BUTTON_CLICK_ACTION =
             new ReadableObjectPropertyKey<>();

@@ -8,15 +8,15 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <variant>
 #include <vector>
 
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/webauthn/authenticator_request_dialog_model.h"
-#include "device/fido/fido_constants.h"
-#include "device/fido/fido_types.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_types.h"
 #include "ui/gfx/vector_icon_types.h"
 
 namespace webauthn::user_actions {
@@ -37,6 +37,7 @@ constexpr std::string_view kGpmOnly = "GpmOnly";
 constexpr std::string_view kICloudOnly = "ICloudOnly";
 constexpr std::string_view kWinOnly = "WinOnly";
 constexpr std::string_view kProfileOnly = "ProfileOnly";
+constexpr std::string_view kPasswordOnly = "PasswordOnly";
 
 constexpr std::string_view kOthers = "Others";
 
@@ -45,12 +46,13 @@ enum class AuthenticatorCategory {
   kICloud,
   kWindows,
   kProfile,
+  kPassword,
   kOther,
 };
 
 AuthenticatorCategory CategoryFromMechanism(const Mechanism& mechanism) {
-  if (absl::holds_alternative<Mechanism::Credential>(mechanism.type)) {
-    switch (absl::get<Mechanism::Credential>(mechanism.type)->source) {
+  if (std::holds_alternative<Mechanism::Credential>(mechanism.type)) {
+    switch (std::get<Mechanism::Credential>(mechanism.type)->source) {
       case AuthenticatorType::kEnclave:
         return AuthenticatorCategory::kGpm;
       case AuthenticatorType::kTouchID:
@@ -64,11 +66,13 @@ AuthenticatorCategory CategoryFromMechanism(const Mechanism& mechanism) {
       case AuthenticatorType::kOther:
         return AuthenticatorCategory::kOther;
     }
-  } else if (absl::holds_alternative<Mechanism::Enclave>(mechanism.type)) {
+  } else if (std::holds_alternative<Mechanism::Password>(mechanism.type)) {
+    return AuthenticatorCategory::kPassword;
+  } else if (std::holds_alternative<Mechanism::Enclave>(mechanism.type)) {
     return AuthenticatorCategory::kGpm;
-  } else if (absl::holds_alternative<Mechanism::WindowsAPI>(mechanism.type)) {
+  } else if (std::holds_alternative<Mechanism::WindowsAPI>(mechanism.type)) {
     return AuthenticatorCategory::kWindows;
-  } else if (absl::holds_alternative<Mechanism::ICloudKeychain>(
+  } else if (std::holds_alternative<Mechanism::ICloudKeychain>(
                  mechanism.type)) {
     return AuthenticatorCategory::kICloud;
   }
@@ -97,6 +101,7 @@ std::tuple<bool, bool, bool, bool> AuthenticatorsAvailable(
       case AuthenticatorCategory::kWindows:
         has_win = true;
         break;
+      case AuthenticatorCategory::kPassword:
       case AuthenticatorCategory::kOther:
         break;
     }
@@ -167,6 +172,7 @@ void RecordPriorityOptionShown(const Mechanism& mechanism) {
     case AuthenticatorCategory::kWindows:
       metric_to_emit = kWinOnly;
       break;
+    case AuthenticatorCategory::kPassword:
     case AuthenticatorCategory::kOther:
       break;
   }
@@ -177,6 +183,11 @@ void RecordPriorityOptionShown(const Mechanism& mechanism) {
             {"WebAuthn.GetAssertion.PriorityOptionShown.", *metric_to_emit})
             .c_str()));
   }
+}
+
+void RecordCombinedSelectorShown() {
+  base::RecordAction(
+      base::UserMetricsAction("WebAuthn.GetAssertion.CombinedSelectorShown"));
 }
 
 void RecordHybridAndSecurityKeyDialogShown(
@@ -220,6 +231,9 @@ void RecordMechanismClick(const Mechanism& mech) {
       break;
     case AuthenticatorCategory::kWindows:
       metric_to_emit = kWinOnly;
+      break;
+    case AuthenticatorCategory::kPassword:
+      metric_to_emit = kPasswordOnly;
       break;
     case AuthenticatorCategory::kOther:
       metric_to_emit = kOthers;

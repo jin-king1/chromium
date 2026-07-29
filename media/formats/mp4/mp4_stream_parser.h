@@ -8,13 +8,13 @@
 #include <stdint.h>
 
 #include <memory>
-#include <set>
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "media/base/demuxer_stream.h"
 #include "media/base/media_export.h"
 #include "media/base/stream_parser.h"
 #include "media/formats/common/offset_byte_queue.h"
@@ -31,6 +31,7 @@ struct Movie;
 struct MovieHeader;
 struct TrackHeader;
 class BoxReader;
+class HdrMetadataTrack;
 
 class MEDIA_EXPORT MP4StreamParser : public StreamParser {
  public:
@@ -72,8 +73,8 @@ class MEDIA_EXPORT MP4StreamParser : public StreamParser {
   };
 
   // Wrappers of `queue_` that observe constraint of `max_parse_offset_`.
-  void ModulatedPeek(const uint8_t** buf, int* size);
-  void ModulatedPeekAt(int64_t offset, const uint8_t** buf, int* size);
+  base::span<const uint8_t> ModulatedPeek();
+  base::span<const uint8_t> ModulatedPeekAt(int64_t offset);
   bool ModulatedTrim(int64_t max_offset);
 
   ParseResult ParseBox();
@@ -97,7 +98,8 @@ class MEDIA_EXPORT MP4StreamParser : public StreamParser {
 
   bool EmitConfigs();
   ParseResult EnqueueSample(BufferQueueMap* buffers);
-  bool SendAndFlushSamples(BufferQueueMap* buffers);
+  bool SendAndFlushSamples(BufferQueueMap* buffers,
+                           bool all_samples_in_segment_received);
 
   void Reset();
 
@@ -117,7 +119,7 @@ class MEDIA_EXPORT MP4StreamParser : public StreamParser {
   EncryptedMediaInitDataCB encrypted_media_init_data_cb_;
   NewMediaSegmentCB new_segment_cb_;
   EndMediaSegmentCB end_of_segment_cb_;
-  raw_ptr<MediaLog> media_log_;
+  std::unique_ptr<MediaLog> media_log_;
 
   // Bytes of the mp4 stream.
   // `max_parse_offset_` tracks the point in `queue_` beyond which no data may
@@ -154,8 +156,10 @@ class MEDIA_EXPORT MP4StreamParser : public StreamParser {
 
   bool has_audio_;
   bool has_video_;
-  std::set<uint32_t> audio_track_ids_;
-  std::set<uint32_t> video_track_ids_;
+
+  // Used to prevent reused track IDs.
+  base::flat_map<uint32_t, DemuxerStream::Type> track_ids_;
+  base::flat_map<uint32_t, std::unique_ptr<HdrMetadataTrack>> metadata_tracks_;
 
   // The object types allowed for audio tracks. For FLAC indication, use
   // |has_flac_|. If this is a nullopt, then strict object type assertion will
@@ -180,6 +184,9 @@ class MEDIA_EXPORT MP4StreamParser : public StreamParser {
 
   // Tracks the number of MEDIA_LOGS for video keyframe MP4<->frame mismatch.
   int num_video_keyframe_mismatches_;
+
+  // Tracks the number of MEDIA_LOGS for SEI recovery point keyframe promotions.
+  int num_sei_recovery_point_promotions_;
 };
 
 }  // namespace media::mp4

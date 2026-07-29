@@ -13,8 +13,7 @@
 #include "base/values.h"
 #include "chrome/browser/ash/child_accounts/time_limits/app_types.h"
 
-namespace ash {
-namespace app_time {
+namespace ash::app_time {
 namespace policy {
 
 const char kUrlList[] = "url_list";
@@ -32,30 +31,40 @@ const char kMinInt[] = "minute";
 const char kActivityReportingEnabled[] = "activity_reporting_enabled";
 
 apps::AppType PolicyStringToAppType(const std::string& app_type) {
-  if (app_type == "ARC")
+  if (app_type == "ARC") {
     return apps::AppType::kArc;
-  if (app_type == "BOREALIS")
+  }
+  if (app_type == "BOREALIS") {
     return apps::AppType::kBorealis;
+  }
   // After the splitting of kChromeApp from the kExtension type in which
   // the original kExtension was renamed to kChromeApp (crrev.com/c/3314469),
   // the subsequent kExtension type refers to Chrome browser extensions only.
   // The legacy kChromeApp policy string remains unchanged.
-  if (app_type == "BROWSER-EXTENSION")
+  if (app_type == "BROWSER-EXTENSION") {
     return apps::AppType::kExtension;
-  if (app_type == "BRUSCHETTA")
+  }
+  if (app_type == "BRUSCHETTA") {
     return apps::AppType::kBruschetta;
-  if (app_type == "CROSTINI")
+  }
+  if (app_type == "CROSTINI") {
     return apps::AppType::kCrostini;
-  if (app_type == "EXTENSION")
+  }
+  if (app_type == "EXTENSION") {
     return apps::AppType::kChromeApp;
-  if (app_type == "PLUGIN-VM")
+  }
+  if (app_type == "PLUGIN-VM") {
     return apps::AppType::kPluginVm;
-  if (app_type == "REMOTE")
+  }
+  if (app_type == "REMOTE") {
     return apps::AppType::kRemote;
-  if (app_type == "SYSTEM-WEB")
+  }
+  if (app_type == "SYSTEM-WEB") {
     return apps::AppType::kSystemWeb;
-  if (app_type == "WEB")
+  }
+  if (app_type == "WEB") {
     return apps::AppType::kWeb;
+  }
   // TODO(crbug.com/373972275): remove LACROS-BROWSER, BUILT-IN,
   // LACROS-CHROME-APP and LACROS-EXTENSION once it's guaranteed that old
   // LACROS-CHROME-APP and LACROS-EXTENSION entries got purged as it looks like
@@ -98,10 +107,12 @@ std::string AppTypeToPolicyString(apps::AppType app_type) {
 }
 
 AppRestriction PolicyStringToAppRestriction(const std::string& restriction) {
-  if (restriction == "BLOCK")
+  if (restriction == "BLOCK") {
     return AppRestriction::kBlocked;
-  if (restriction == "TIME_LIMIT")
+  }
+  if (restriction == "TIME_LIMIT") {
     return AppRestriction::kTimeLimit;
+  }
 
   NOTREACHED();
 }
@@ -117,7 +128,7 @@ std::string AppRestrictionToPolicyString(const AppRestriction& restriction) {
   }
 }
 
-std::optional<AppId> AppIdFromDict(const base::Value::Dict* dict) {
+std::optional<AppId> AppIdFromDict(const base::DictValue* dict) {
   if (!dict) {
     return std::nullopt;
   }
@@ -137,20 +148,20 @@ std::optional<AppId> AppIdFromDict(const base::Value::Dict* dict) {
   return AppId(PolicyStringToAppType(*type_string), *id);
 }
 
-base::Value::Dict AppIdToDict(const AppId& app_id) {
-  base::Value::Dict dict;
+base::DictValue AppIdToDict(const AppId& app_id) {
+  base::DictValue dict;
   dict.Set(kAppId, base::Value(app_id.app_id()));
   dict.Set(kAppType, base::Value(AppTypeToPolicyString(app_id.app_type())));
 
   return dict;
 }
 
-std::optional<AppId> AppIdFromAppInfoDict(const base::Value::Dict* dict) {
+std::optional<AppId> AppIdFromAppInfoDict(const base::DictValue* dict) {
   if (!dict) {
     return std::nullopt;
   }
 
-  const base::Value::Dict* app_info = dict->FindDict(kAppInfoDict);
+  const base::DictValue* app_info = dict->FindDict(kAppInfoDict);
   if (!app_info) {
     DLOG(ERROR) << "Invalid app info dictionary.";
     return std::nullopt;
@@ -158,7 +169,7 @@ std::optional<AppId> AppIdFromAppInfoDict(const base::Value::Dict* dict) {
   return AppIdFromDict(app_info);
 }
 
-std::optional<AppLimit> AppLimitFromDict(const base::Value::Dict& dict) {
+std::optional<AppLimit> AppLimitFromDict(const base::DictValue& dict) {
   const std::string* restriction_string = dict.FindString(kRestrictionEnum);
   if (!restriction_string || restriction_string->empty()) {
     DLOG(ERROR) << "Invalid restriction.";
@@ -198,12 +209,13 @@ std::optional<AppLimit> AppLimitFromDict(const base::Value::Dict& dict) {
   return AppLimit(restriction, daily_limit, last_updated);
 }
 
-base::Value::Dict AppLimitToDict(const AppLimit& limit) {
-  base::Value::Dict dict;
+base::DictValue AppLimitToDict(const AppLimit& limit) {
+  base::DictValue dict;
   dict.Set(kRestrictionEnum,
            base::Value(AppRestrictionToPolicyString(limit.restriction())));
-  if (limit.daily_limit())
+  if (limit.daily_limit()) {
     dict.Set(kDailyLimitInt, base::Value(limit.daily_limit()->InMinutes()));
+  }
   const std::string last_updated_string = base::NumberToString(
       (limit.last_updated() - base::Time::UnixEpoch()).InMilliseconds());
   dict.Set(kLastUpdatedString, base::Value(last_updated_string));
@@ -211,8 +223,7 @@ base::Value::Dict AppLimitToDict(const AppLimit& limit) {
   return dict;
 }
 
-std::optional<base::TimeDelta> ResetTimeFromDict(
-    const base::Value::Dict& dict) {
+std::optional<base::TimeDelta> ResetTimeFromDict(const base::DictValue& dict) {
   const base::Value* reset_dict = dict.Find(kResetAtDict);
   if (!reset_dict || !reset_dict->is_dict()) {
     DLOG(ERROR) << "Invalid reset time dictionary.";
@@ -235,8 +246,8 @@ std::optional<base::TimeDelta> ResetTimeFromDict(
   return base::Minutes(hour.value() * hour_in_mins + minutes.value());
 }
 
-base::Value::Dict ResetTimeToDict(int hour, int minutes) {
-  base::Value::Dict dict;
+base::DictValue ResetTimeToDict(int hour, int minutes) {
+  base::DictValue dict;
   dict.Set(kHourInt, base::Value(hour));
   dict.Set(kMinInt, base::Value(minutes));
 
@@ -244,14 +255,14 @@ base::Value::Dict ResetTimeToDict(int hour, int minutes) {
 }
 
 std::optional<bool> ActivityReportingEnabledFromDict(
-    const base::Value::Dict& dict) {
+    const base::DictValue& dict) {
   return dict.FindBool(kActivityReportingEnabled);
 }
 
-std::map<AppId, AppLimit> AppLimitsFromDict(const base::Value::Dict& dict) {
+std::map<AppId, AppLimit> AppLimitsFromDict(const base::DictValue& dict) {
   std::map<AppId, AppLimit> app_limits;
 
-  const base::Value::List* limits_array = dict.FindList(kAppLimitsArray);
+  const base::ListValue* limits_array = dict.FindList(kAppLimitsArray);
   if (!limits_array) {
     DLOG(ERROR) << "Invalid app limits list.";
     return app_limits;
@@ -284,5 +295,4 @@ std::map<AppId, AppLimit> AppLimitsFromDict(const base::Value::Dict& dict) {
 }
 
 }  // namespace policy
-}  // namespace app_time
-}  // namespace ash
+}  // namespace ash::app_time

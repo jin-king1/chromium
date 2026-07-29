@@ -4,12 +4,13 @@
 
 package org.chromium.chrome.browser.permissions;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.net.Uri;
+import android.view.View;
 
-import androidx.annotation.CallSuper;
 import androidx.test.filters.MediumTest;
 import androidx.test.runner.lifecycle.Stage;
 
@@ -17,6 +18,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ContextUtils;
@@ -27,17 +29,20 @@ import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.util.browser.LocationSettingsTestUtil;
-import org.chromium.components.permissions.PermissionsAndroidFeatureList;
 import org.chromium.content_public.common.ContentSwitches;
 import org.chromium.device.geolocation.LocationProviderOverrider;
 import org.chromium.device.geolocation.MockLocationProvider;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.NightModeTestUtils;
 import org.chromium.ui.test.util.RenderTestRule;
 
@@ -54,19 +59,26 @@ import java.util.concurrent.TimeoutException;
 })
 public class PermissionPromptRenderTest {
     @ParameterAnnotations.ClassParameter
-    private static List<ParameterSet> sClassParams =
+    private static final List<ParameterSet> sClassParams =
             new NightModeTestUtils.NightModeParams().getParameters();
 
     private static final String TEST_FILE = "/content/test/data/android/geolocation.html";
     private static final int TEST_PORT = 12345;
 
-    private boolean mNightModeEnabled;
-    @Rule public PermissionTestRule mPermissionRule = new PermissionTestRule();
+    private final boolean mNightModeEnabled;
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.autoResetCtaActivityRule();
+    public PermissionTestRule mPermissionRule =
+            new PermissionTestRule(
+                    mActivityTestRule.getActivityTestRule(), /* useHttpsServer= */ true);
+
+    @Rule
+    public RuleChain mRuleChain = RuleChain.outerRule(mActivityTestRule).around(mPermissionRule);
 
     @Rule
     public RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(1)
+                    .setRevision(4)
                     .setBugComponent(RenderTestRule.Component.UI_BROWSER_MOBILE_MESSAGES)
                     .build();
 
@@ -76,7 +88,7 @@ public class PermissionPromptRenderTest {
      */
     public static class PermissionTestActivity extends ChromeTabbedActivity {
         @Override
-        @CallSuper
+        @SuppressLint("CheckResult")
         protected boolean applyOverrides(Context baseContext, Configuration overrideConfig) {
             super.applyOverrides(baseContext, overrideConfig);
             overrideConfig.densityDpi = 1300;
@@ -109,83 +121,150 @@ public class PermissionPromptRenderTest {
                 "initiate_getCurrentPosition()");
 
         mPermissionRule.waitForDialogShownState(true);
+        View modalDialogView = mPermissionRule.getActivity().findViewById(R.id.modal_dialog_view);
+        RenderTestRule.sanitize(modalDialogView);
 
-        mRenderTestRule.render(
-                mPermissionRule.getActivity().findViewById(R.id.modal_dialog_view), goldenViewId);
+        mRenderTestRule.render(modalDialogView, goldenViewId);
     }
 
     @Test
     @MediumTest
+    @Restriction(DeviceFormFactor.PHONE)
     @Feature({"Prompt", "RenderTest"})
-    @Features.DisableFeatures(PermissionsAndroidFeatureList.ONE_TIME_PERMISSION)
-    public void testGeolocationRegularPrompt() throws Exception {
-        LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
-        LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
-
-        mPermissionRule.loadUrl(mPermissionRule.getURL(TEST_FILE));
-
-        testPrompt(/* goldenViewId= */ "regularPrompt");
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"Prompt", "RenderTest"})
-    @Features.EnableFeatures(PermissionsAndroidFeatureList.ONE_TIME_PERMISSION)
     public void testGeolocationOneTimePrompt() throws Exception {
+        testGeolocationOneTimePromptInternal(/* goldenViewId= */ "oneTimePrompt");
+    }
+
+    @Test
+    @MediumTest
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @Feature({"Prompt", "RenderTest"})
+    public void testGeolocationOneTimePrompt_Tablet() throws Exception {
+        testGeolocationOneTimePromptInternal(/* goldenViewId= */ "oneTimePrompt_tablet");
+    }
+
+    private void testGeolocationOneTimePromptInternal(String goldenViewId) throws Exception {
         LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
         LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
         mPermissionRule.setUpUrl(TEST_FILE);
-        testPrompt(/* goldenViewId= */ "oneTimePrompt");
+        testPrompt(goldenViewId);
     }
 
     @Test
     @MediumTest
     @Feature({"Prompt", "RenderTest"})
-    @Features.EnableFeatures(
-            PermissionsAndroidFeatureList.ONE_TIME_PERMISSION
-                    + ":show_allow_always_as_first_button/true")
+    @Restriction(DeviceFormFactor.PHONE)
+    @EnableFeatures("ApproximateGeolocationPermission")
+    public void testGeolocationOneTimePromptWithRadioButtons() throws Exception {
+        testGeolocationOneTimePromptWithRadioButtonsInternal(
+                /* goldenViewId= */ "oneTimeWithRadioButtonsPrompt");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"Prompt", "RenderTest"})
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @EnableFeatures("ApproximateGeolocationPermission")
+    public void testGeolocationOneTimePromptWithRadioButtons_Tablet() throws Exception {
+        testGeolocationOneTimePromptWithRadioButtonsInternal(
+                /* goldenViewId= */ "oneTimeWithRadioButtonsPrompt_tablet");
+    }
+
+    private void testGeolocationOneTimePromptWithRadioButtonsInternal(String goldenViewId)
+            throws Exception {
+        LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
+        LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
+        mPermissionRule.setUpUrl(TEST_FILE);
+        testPrompt(goldenViewId);
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"Prompt", "RenderTest"})
+    @Restriction(DeviceFormFactor.PHONE)
     public void testGeolocationOneTimePromptWithAllowAlwaysFirst() throws Exception {
-        LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
-        LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
-        mPermissionRule.setUpUrl(TEST_FILE);
-        testPrompt(/* goldenViewId= */ "oneTimePromptAllowAlwaysAsFirstButton");
+        testGeolocationOneTimePromptWithAllowAlwaysFirstInternal(
+                /* goldenViewId= */ "oneTimePromptAllowAlwaysAsFirstButton");
     }
 
     @Test
     @MediumTest
     @Feature({"Prompt", "RenderTest"})
-    @Features.EnableFeatures(
-            PermissionsAndroidFeatureList.ONE_TIME_PERMISSION
-                    + ":show_allow_always_as_first_button/true"
-                    + "/use_stronger_prompt_language/true"
-                    + "/use_while_visiting_language/true")
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    public void testGeolocationOneTimePromptWithAllowAlwaysFirst_Tablet() throws Exception {
+        testGeolocationOneTimePromptWithAllowAlwaysFirstInternal(
+                /* goldenViewId= */ "oneTimePromptAllowAlwaysAsFirstButton_tablet");
+    }
+
+    private void testGeolocationOneTimePromptWithAllowAlwaysFirstInternal(String goldenViewId)
+            throws Exception {
+        LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
+        LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
+        mPermissionRule.setUpUrl(TEST_FILE);
+        testPrompt(goldenViewId);
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"Prompt", "RenderTest"})
+    @Restriction(DeviceFormFactor.PHONE)
     public void testGeolocationOneTimePromptWithAllowWhileVisitingFirst() throws Exception {
-        LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
-        LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
-        mPermissionRule.setUpUrl(TEST_FILE);
-        testPrompt(/* goldenViewId= */ "oneTimePromptAllowWhileVisitingAsFirstButton");
+        testGeolocationOneTimePromptWithAllowWhileVisitingFirstInternal(
+                /* goldenViewId= */ "oneTimePromptAllowWhileVisitingAsFirstButton");
     }
 
     @Test
     @MediumTest
     @Feature({"Prompt", "RenderTest"})
-    @Features.EnableFeatures(PermissionsAndroidFeatureList.ONE_TIME_PERMISSION)
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    public void testGeolocationOneTimePromptWithAllowWhileVisitingFirst_Tablet() throws Exception {
+        testGeolocationOneTimePromptWithAllowWhileVisitingFirstInternal(
+                /* goldenViewId= */ "oneTimePromptAllowWhileVisitingAsFirstButton_tablet");
+    }
+
+    private void testGeolocationOneTimePromptWithAllowWhileVisitingFirstInternal(
+            String goldenViewId) throws Exception {
+        LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
+        LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
+        mPermissionRule.setUpUrl(TEST_FILE);
+        testPrompt(goldenViewId);
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"Prompt", "RenderTest"})
+    @Restriction(DeviceFormFactor.PHONE)
     public void testGeolocationOneTimePromptLongOriginWrapsToNextLineAndIsNotElided()
             throws Exception {
+        testGeolocationOneTimePromptLongOriginWrapsToNextLineAndIsNotElidedInternal(
+                /* goldenViewId= */ "oneTimePromptLongOrigin");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"Prompt", "RenderTest"})
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    public void testGeolocationOneTimePromptLongOriginWrapsToNextLineAndIsNotElided_Tablet()
+            throws Exception {
+        testGeolocationOneTimePromptLongOriginWrapsToNextLineAndIsNotElidedInternal(
+                /* goldenViewId= */ "oneTimePromptLongOrigin_tablet");
+    }
+
+    private void testGeolocationOneTimePromptLongOriginWrapsToNextLineAndIsNotElidedInternal(
+            String goldenViewId) throws Exception {
         LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
         LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
 
         mPermissionRule.setupUrlWithHostName(
                 "unelided.long.wrapping.hostname.with.subdomains.com", TEST_FILE);
 
-        testPrompt(/* goldenViewId= */ "oneTimePromptLongOrigin");
+        testPrompt(goldenViewId);
     }
 
     @Test
     @MediumTest
     @Feature({"Prompt", "RenderTest"})
     @DisabledTest(message = "crbug.com/385114151")
-    @Features.EnableFeatures(PermissionsAndroidFeatureList.ONE_TIME_PERMISSION)
     public void testNegativeButtonOutOfScreen() throws Exception {
         LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
         LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());

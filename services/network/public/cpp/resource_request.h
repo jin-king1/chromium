@@ -14,7 +14,6 @@
 #include "base/debug/crash_logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/unguessable_token.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/isolation_info.h"
 #include "net/base/request_priority.h"
 #include "net/cookies/site_for_cookies.h"
@@ -23,11 +22,13 @@
 #include "net/log/net_log_source.h"
 #include "net/socket/socket_tag.h"
 #include "net/storage_access_api/status.h"
+#include "net/url_request/redirect_info.h"
 #include "net/url_request/referrer_policy.h"
+#include "services/network/public/cpp/fetch_retry_options.h"
 #include "services/network/public/cpp/optional_trust_token_params.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/public/mojom/accept_ch_frame_observer.mojom.h"
-#include "services/network/public/mojom/attribution.mojom.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
 #include "services/network/public/mojom/cookie_access_observer.mojom-forward.h"
 #include "services/network/public/mojom/cors.mojom-shared.h"
@@ -41,18 +42,35 @@
 #include "services/network/public/mojom/trust_tokens.mojom.h"
 #include "services/network/public/mojom/url_loader_network_service_observer.mojom.h"
 #include "services/network/public/mojom/url_request.mojom-forward.h"
+#include "services/network/public/mojom/url_response_head.mojom-forward.h"
 #include "services/network/public/mojom/web_bundle_handle.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+#include "url/origin_debug.h"
 
 namespace network {
+class ResourceRequestBody;
+
+// A reference-counted wrapper for a Mojo data pipe producer handle. This
+// allows the handle to be effectively copyable when stored in ResourceRequest,
+// ensuring it survives intermediate copies in the browser process.
+class COMPONENT_EXPORT(NETWORK_CPP_BASE) SharedDataPipeProducerHandle
+    : public base::RefCountedThreadSafe<SharedDataPipeProducerHandle> {
+ public:
+  explicit SharedDataPipeProducerHandle(
+      mojo::ScopedDataPipeProducerHandle pipe);
+
+  mojo::ScopedDataPipeProducerHandle pipe;
+
+ private:
+  friend class base::RefCountedThreadSafe<SharedDataPipeProducerHandle>;
+  ~SharedDataPipeProducerHandle();
+};
 
 // Typemapped to network.mojom.URLRequest in url_request.mojom.
 //
 // Note: Please revise EqualsForTesting accordingly on any updates to this
 // struct.
-//
-// LINT.IfChange(ResourceRequest)
 struct COMPONENT_EXPORT(NETWORK_CPP_BASE) ResourceRequest {
   // Typemapped to network.mojom.TrustedUrlRequestParams, see comments there
   // for details of each field.
@@ -60,6 +78,28 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE) ResourceRequest {
   // TODO(mmenke):  There are likely other fields that should be moved into this
   // class.
   struct COMPONENT_EXPORT(NETWORK_CPP_BASE) TrustedParams {
+    // Typemapped to network.mojom.EnabledClientHints, see comments there for
+    // details of each field.
+    struct COMPONENT_EXPORT(NETWORK_CPP_BASE) EnabledClientHints {
+      EnabledClientHints();
+      ~EnabledClientHints();
+      EnabledClientHints(const EnabledClientHints&);
+      EnabledClientHints& operator=(const EnabledClientHints&);
+      bool operator==(const EnabledClientHints& other) const;
+
+      url::Origin origin;
+      bool is_outermost_main_frame = false;
+      // The set of client hints that are enabled for the origin and currently
+      // allowed to be attached to the request (e.g., by Feature Policy).
+      std::vector<network::mojom::WebClientHintsType> hints;
+      // The set of client hints that are persisted for the origin but are
+      // currently not allowed to be attached to the request (e.g., blocked by
+      // Feature Policy). This is used in the network service to avoid an
+      // unnecessary IPC to the browser process when an ACCEPT_CH frame contains
+      // such hints.
+      std::vector<network::mojom::WebClientHintsType> not_allowed_hints;
+    };
+
     TrustedParams();
     ~TrustedParams();
     // TODO(crbug.com/332706093): Make this move-only to avoid cloning mojo
@@ -76,6 +116,7 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE) ResourceRequest {
     bool has_user_activation = false;
     bool allow_cookies_from_browser = false;
     bool include_request_cookies_with_response = false;
+    std::optional<EnabledClientHints> enabled_client_hints;
     mojo::PendingRemote<mojom::CookieAccessObserver> cookie_observer;
     mojo::PendingRemote<mojom::TrustTokenAccessObserver> trust_token_observer;
     mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>
@@ -87,6 +128,18 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE) ResourceRequest {
     mojo::PendingRemote<mojom::AcceptCHFrameObserver> accept_ch_frame_observer;
     mojo::PendingRemote<mojom::SharedDictionaryAccessObserver>
         shared_dictionary_observer;
+    // TODO(crbug.com/447039330): Consider refactoring this into a Mojo
+    // interface with TakeStream() and Clone() methods, similar to the
+    // PendingRemotes above, to make ownership and copying semantics more
+    // explicit. But scoped_refptr was initially used for simplicity to share
+    // ownership of the underlying Mojo handle.
+    scoped_refptr<SharedDataPipeProducerHandle> response_body_stream;
+    scoped_refptr<net::HttpResponseHeaders>
+        expected_response_headers_for_synthetic_response;
+
+    // No new consumers should use this. It will be removed once the deprecated
+    // Protected Audiences code is removed.
+    bool is_ad_auction_trusted_signals_request = false;
   };
 
   // Typemapped to network.mojom.WebBundleTokenParams, see comments there
@@ -133,8 +186,17 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE) ResourceRequest {
   bool SendsCookies() const;
   bool SavesCookies() const;
 
+  // Updates `*this` upon a redirect. This method is to deduplicate the common
+  // `ResourceRequest` modification code based on `RedirectInfo`.
+  // TODO(crbug.com/434292502): Unify more call sites. For example, there are
+  // code locations that do the same thing except for calling
+  // `CreateForRedirect()`. Perhaps such code locations are mergeable, because
+  // `CreateForRedirect()` is no-op when for `RequestType::kOther`.
+  void UpdateOnRedirect(const net::RedirectInfo& redirect_info);
+
   // See comments in network.mojom.URLRequest in url_request.mojom for details
   // of each field.
+  // LINT.IfChange(ResourceRequestFields)
   std::string method = net::HttpRequestHeaders::kGetMethod;
   GURL url;
   net::SiteForCookies site_for_cookies;
@@ -180,27 +242,24 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE) ResourceRequest {
   std::string fetch_integrity;
   // Used to populate `Accept-Signatures`
   // https://www.rfc-editor.org/rfc/rfc9421.html#name-the-accept-signature-field
-  std::vector<std::string> expected_signatures;
+  std::vector<std::vector<uint8_t>> expected_public_keys;
   mojom::RequestDestination destination = mojom::RequestDestination::kEmpty;
   mojom::RequestDestination original_destination =
       mojom::RequestDestination::kEmpty;
   scoped_refptr<ResourceRequestBody> request_body;
   bool keepalive = false;
   bool browsing_topics = false;
-  bool ad_auction_headers = false;
-  bool shared_storage_writable_eligible = false;
   bool has_user_gesture = false;
   bool enable_load_timing = false;
   bool enable_upload_progress = false;
   bool do_not_prompt_for_login = false;
   bool is_outermost_main_frame = false;
   int transition_type = 0;
+  bool is_reload_navigation = false;
   int previews_state = 0;
   bool upgrade_if_insecure = false;
   bool is_revalidating = false;
   std::optional<base::UnguessableToken> throttling_profile_id;
-  net::HttpRequestHeaders custom_proxy_pre_cache_headers;
-  net::HttpRequestHeaders custom_proxy_post_cache_headers;
   std::optional<base::UnguessableToken> fetch_window_id;
   std::optional<std::string> devtools_request_id;
   std::optional<std::string> devtools_stack_id;
@@ -222,40 +281,35 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE) ResourceRequest {
   std::optional<net::NetLogSource> net_log_create_info;
   std::optional<net::NetLogSource> net_log_reference_info;
 
-  // Used internally by the network service. Should not be modified by external
-  // callers, which should pass in address space of the request initiator via
-  // the ClientSecurityState includde either in URLLoaderFactoryParams or
-  // ResourceRequest::TrustedParams.
-  //
-  // See
-  // https://source.chromium.org/chromium/chromium/src/+/main:services/network/public/mojom/url_request.mojom
-  // for more details.
-  mojom::IPAddressSpace target_ip_address_space =
-      mojom::IPAddressSpace::kUnknown;
-
   net::StorageAccessApiStatus storage_access_api_status =
       net::StorageAccessApiStatus::kNone;
-  network::mojom::AttributionSupport attribution_reporting_support =
-      network::mojom::AttributionSupport::kUnset;
-  mojom::AttributionReportingEligibility attribution_reporting_eligibility =
-      mojom::AttributionReportingEligibility::kUnset;
   bool shared_dictionary_writer_enabled = false;
-  std::optional<base::UnguessableToken> attribution_reporting_src_token;
   std::optional<base::UnguessableToken> keepalive_token;
   bool is_ad_tagged = false;
+  bool client_side_content_decoding_enabled = false;
   std::optional<base::UnguessableToken> prefetch_token;
   net::SocketTag socket_tag;
-  // Whether this request is allowed to register device bound sessions
-  // or accept challenges for device bound sessions (e.g. due to an
-  // origin trial).
-  bool allows_device_bound_sessions = false;
+
+  // Whether this request is allowed to belong to a device bound session. This
+  // includes registering a new session, accepting challenges, or deferring the
+  // request until a session is refreshed.
+  bool allows_device_bound_sessions = true;
+
+  std::optional<network::PermissionsPolicy> permissions_policy;
+
+  std::optional<network::FetchRetryOptions> fetch_retry_options;
+  // LINT.ThenChange(//services/network/prefetch_matches.cc)
 };
-// LINT.ThenChange(//services/network/prefetch_matches.cc)
 
 // This does not accept |kDefault| referrer policy.
 COMPONENT_EXPORT(NETWORK_CPP_BASE)
 net::ReferrerPolicy ReferrerPolicyForUrlRequest(
     mojom::ReferrerPolicy referrer_policy);
+
+// Returns a bitmask of net::LOAD_* flags that are allowed for requests from
+// untrusted processes.
+COMPONENT_EXPORT(NETWORK_CPP_BASE)
+int GetAllowedLoadFlagsForUntrustedRequests();
 
 namespace debug {
 

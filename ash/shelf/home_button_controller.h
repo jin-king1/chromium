@@ -7,10 +7,8 @@
 
 #include <memory>
 
-#include "ash/assistant/model/assistant_ui_model_observer.h"
 #include "ash/capture_mode/sunfish_scanner_feature_watcher.h"
 #include "ash/public/cpp/app_list/app_list_controller_observer.h"
-#include "ash/public/cpp/assistant/assistant_state.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "ui/display/display_observer.h"
@@ -33,8 +31,6 @@ class HomeButton;
 // Behavior is tested indirectly in HomeButtonTest and ShelfViewInkDropTest.
 class HomeButtonController : public AppListControllerObserver,
                              public display::DisplayObserver,
-                             public AssistantStateObserver,
-                             public AssistantUiModelObserver,
                              public SunfishScannerFeatureWatcher::Observer {
  public:
   explicit HomeButtonController(HomeButton* button);
@@ -49,11 +45,9 @@ class HomeButtonController : public AppListControllerObserver,
   // should pass the event along to Button to consume.
   bool MaybeHandleGestureEvent(ui::GestureEvent* event);
 
-  // Whether the Assistant is available via long-press.
-  bool IsAssistantAvailable();
-
-  // Whether the Assistant UI currently showing.
-  bool IsAssistantVisible();
+  // Whether long-pressing the home button will perform an action, such as
+  // opening the Assistant UI or opening a Sunfish-behavior capture session.
+  bool IsLongPressActionAvailable();
 
  private:
   // Whether Sunfish or Scanner's UI can be shown.
@@ -64,18 +58,6 @@ class HomeButtonController : public AppListControllerObserver,
 
   // display::DisplayObserver:
   void OnDisplayTabletStateChanged(display::TabletState state) override;
-
-  // AssistantStateObserver:
-  void OnAssistantFeatureAllowedChanged(
-      assistant::AssistantAllowedState) override;
-  void OnAssistantSettingsEnabled(bool enabled) override;
-
-  // AssistantUiModelObserver:
-  void OnUiVisibilityChanged(
-      AssistantVisibility new_visibility,
-      AssistantVisibility old_visibility,
-      std::optional<AssistantEntryPoint> entry_point,
-      std::optional<AssistantExitPoint> exit_point) override;
 
   // SunfishScannerFeatureWatcher::Observer:
   void OnSunfishScannerFeatureStatesChanged(

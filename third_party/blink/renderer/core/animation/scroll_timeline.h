@@ -10,15 +10,19 @@
 #include "cc/animation/scroll_timeline.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_scroll_axis.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
+#include "third_party/blink/renderer/core/animation/animation_trigger.h"
 #include "third_party/blink/renderer/core/animation/scroll_snapshot_timeline.h"
 #include "third_party/blink/renderer/core/animation/timing.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/scroll/scroll_types.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
+#include "third_party/blink/renderer/platform/text/writing_direction_mode.h"
 
 namespace blink {
 
 class Element;
+class LayoutObject;
 class PaintLayerScrollableArea;
 class ScrollTimelineOptions;
 
@@ -77,37 +81,62 @@ class CORE_EXPORT ScrollTimeline : public ScrollSnapshotTimeline {
   void AnimationAttached(Animation*) override;
   void AnimationDetached(Animation*) override;
 
+  std::optional<double> GetCurrentScrollPosition() const;
+
+  static PhysicalAxis ResolvePhysicalAxis(ScrollAxis, WritingDirectionMode);
+
+  Node* ComputeResolvedSource() const;
+
   void Trace(Visitor*) const override;
 
+  TimelineState ComputeTimelineState() const override;
+
+  // ScrollTimelines may be created with reference to an element,
+  // which, in combination with ReferenceType, defines the source [1]
+  // (for scroll timelines) or subject [2] (for view timelines).
+  //
+  // For timelines created from CSS, the reference element is always present,
+  // and it is always the element that produced the timeline.
+  //
+  // [1] https://drafts.csswg.org/scroll-animations-1/#dom-scrolltimeline-source
+  // [2] https://drafts.csswg.org/scroll-animations-1/#dom-viewtimeline-subject
+  Element* GetReferenceElement() const { return reference_element_.Get(); }
+
  protected:
-  Node* ComputeResolvedSource() const;
 
   // Scroll offsets corresponding to 0% and 100% progress. By default, these
   // correspond to the scroll range of the container.
   virtual void CalculateOffsets(PaintLayerScrollableArea* scrollable_area,
-                                ScrollOrientation physical_orientation,
+                                PhysicalAxis physical_orientation,
                                 TimelineState* state) const;
 
   // Determines the source for the scroll timeline. It may be the reference
-  // element or its nearest scrollable ancestor, depending on |reference_type_|.
+  // element or its nearest scrollable ancestor for the timeline's axis,
+  // depending on |reference_type_|.
   Element* ComputeSource() const;
   // This version does not force a style update and is therefore safe to call
   // during lifecycle update.
   Element* ComputeSourceNoLayout() const;
 
-  Element* GetReferenceElement() const { return reference_element_.Get(); }
+  void AddTrigger(TimelineTrigger* trigger) override;
+  void RemoveTrigger(TimelineTrigger* trigger) override;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(ScrollTimelineTest, MultipleScrollOffsetsClamping);
   FRIEND_TEST_ALL_PREFIXES(ScrollTimelineTest, ResolveScrollOffsets);
+
+  // Finds the layout object the timeline uses to determine source. It may be
+  // the reference element or its nearest scrollable ancestor for the given
+  // scrollable axes, depending on |reference_type_|.
+  const LayoutObject* ComputeLayoutObjectNoLayout(
+      PhysicalAxes scrollable_axes) const;
+  std::optional<WritingDirectionMode> ComputeWritingDirectionNoLayout() const;
 
   // The retaining element is the element responsible for keeping
   // the timeline alive while animations are attached.
   //
   // See Node::[Un]RegisterScrollTimeline.
   Element* RetainingElement() const;
-
-  TimelineState ComputeTimelineState() const override;
 
   ReferenceType reference_type_;
   Member<Element> reference_element_;

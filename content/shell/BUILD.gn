@@ -3,18 +3,17 @@
 # found in the LICENSE file.
 
 import("//build/config/cast.gni")
-import("//build/config/chromeos/ui_mode.gni")
-import("//build/config/features.gni")
 import("//build/config/ozone.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build/config/ui.gni")
 import("//build/config/win/console_app.gni")
 import("//build/config/win/manifest.gni")
+import("//build/rust/rust_static_library.gni")
+import("//content/public/common/features.gni")
 import("//device/vr/buildflags/buildflags.gni")
 import("//gpu/vulkan/features.gni")
 import("//media/media_options.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
-import("//ppapi/buildflags/buildflags.gni")
 import("//third_party/inspector_protocol/inspector_protocol.gni")
 import("//tools/grit/grit_rule.gni")
 import("//tools/grit/repack.gni")
@@ -35,11 +34,15 @@ if (is_android) {
 } else if (is_ios) {
   import("//build/config/apple/mobile_config.gni")
   import("//build/config/apple/swift_source_set.gni")
-  import("//content/shell/app/ios/extensions.gni")
+  import("//build/config/ios/ios_app_ipa.gni")
+
+  if (target_platform == "iphoneos") {
+    import("//content/shell/app/ios/extensions.gni")
+  }
 }
 
-# TODO(crbug.com/1336055, spang): Investigate using shell_views with cast builds as
-# true.
+# TODO(crbug.com/1336055, spang): Investigate using shell_views with cast builds
+# as true.
 shell_use_toolkit_views = toolkit_views && !is_castos
 
 declare_args() {
@@ -49,9 +52,9 @@ declare_args() {
 }
 
 config("content_shell_lib_warnings") {
-  if (is_clang) {
-    # TODO(thakis): Remove this once http://crbug.com/383820 is figured out
-    cflags = [ "-Wno-nonnull" ]
+  if (is_clang && is_mac) {
+    # TODO(thakis): Remove this once http://crbug.com/40370188 is figured out
+    cflags_objcc = [ "-Wno-nonnull" ]
   }
 }
 
@@ -99,6 +102,7 @@ static_library("content_shell_app") {
       "//content/web_test:web_test_browser",
       "//content/web_test:web_test_common",
       "//content/web_test:web_test_renderer",
+      "//ui/native_theme",
     ]
   }
   if (!is_fuchsia) {
@@ -109,8 +113,8 @@ static_library("content_shell_app") {
   }
   if (is_apple) {
     sources += [
-      "app/paths_mac.h",
-      "app/paths_mac.mm",
+      "app/paths_apple.h",
+      "app/paths_apple.mm",
     ]
   }
   if (is_mac) {
@@ -126,6 +130,17 @@ static_library("content_shell_app") {
       "app/ios/web_tests_support_ios.h",
       "app/ios/web_tests_support_ios.mm",
     ]
+
+    if (target_platform == "tvos") {
+      sources += [
+        "app/ios/shell_app_scene_delegate_tvos.h",
+        "app/ios/shell_app_scene_delegate_tvos.mm",
+      ]
+    }
+
+    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+    # enable the diagnostic by removing this line.
+    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
   defines = [
     "CONTENT_SHELL_VERSION=\"$content_shell_version\"",
@@ -188,8 +203,6 @@ static_library("content_shell_lib") {
     "browser/shell_javascript_dialog.h",
     "browser/shell_javascript_dialog_manager.cc",
     "browser/shell_javascript_dialog_manager.h",
-    "browser/shell_paths.cc",
-    "browser/shell_paths.h",
     "browser/shell_permission_manager.cc",
     "browser/shell_permission_manager.h",
     "browser/shell_platform_data_aura.cc",
@@ -208,10 +221,14 @@ static_library("content_shell_lib") {
     "common/shell_content_client.h",
     "common/shell_origin_trial_policy.cc",
     "common/shell_origin_trial_policy.h",
+    "common/shell_paths.cc",
+    "common/shell_paths.h",
     "common/shell_switches.cc",
     "common/shell_switches.h",
     "gpu/shell_content_gpu_client.cc",
     "gpu/shell_content_gpu_client.h",
+    "renderer/memory_coordinator/memory_coordinator_test_impl.cc",
+    "renderer/memory_coordinator/memory_coordinator_test_impl.h",
     "renderer/render_frame_test_helper.cc",
     "renderer/render_frame_test_helper.h",
     "renderer/shell_content_renderer_client.cc",
@@ -308,10 +325,12 @@ static_library("content_shell_lib") {
     ":content_browsertests_mojom",
     ":protocol_sources",
     ":resources",
+    ":rust_test_mojom",
+    ":rust_test_mojom_js",
+    ":rust_test_service_ffi",
     ":shell_controller_mojom",
     "//base",
     "//base:base_static",
-    "//cc/base",
     "//components/cdm/renderer",
     "//components/custom_handlers",
     "//components/custom_handlers:test_support",
@@ -319,10 +338,8 @@ static_library("content_shell_lib") {
     "//components/embedder_support:user_agent",
     "//components/input",
     "//components/keyed_service/content",
-    "//components/metrics",
     "//components/metrics:net",
-    "//components/metrics:test_support",
-    "//components/network_hints/browser:browser",
+    "//components/network_hints/browser",
     "//components/network_hints/renderer",
     "//components/network_session_configurator/common",
     "//components/origin_trials:browser",
@@ -331,8 +348,8 @@ static_library("content_shell_lib") {
     "//components/permissions",
     "//components/prefs",
     "//components/services/storage/test_api",
+    "//components/surface_embed/renderer",
     "//components/url_formatter",
-    "//components/variations",
     "//components/variations/service",
     "//components/web_cache/renderer",
     "//content:content_resources",
@@ -346,7 +363,6 @@ static_library("content_shell_lib") {
     "//media/mojo/services",
     "//net",
     "//net:net_resources",
-    "//ppapi/buildflags",
     "//services/device/public/cpp:test_support",
     "//services/network/public/cpp",
     "//services/test/echo:lib",
@@ -412,7 +428,8 @@ static_library("content_shell_lib") {
       "//components/permissions",
       "//components/strings:components_strings",
       "//services/tracing/public/cpp",
-      "//services/tracing/public/mojom:mojom",
+      "//services/tracing/public/mojom",
+      "//ui/accessibility:ax_base",
       "//ui/shell_dialogs",
     ]
   }
@@ -451,7 +468,6 @@ static_library("content_shell_lib") {
       public_deps += [ "//ui/base/mojom:ui_base_types" ]
       deps += [
         "//ui/color:color_headers",
-        "//ui/native_theme",
         "//ui/resources",
         "//ui/views:test_support",
         "//ui/views/controls/webview",
@@ -474,13 +490,13 @@ static_library("content_shell_lib") {
     deps += [ "//chromeos/ash/components/dbus" ]
   }
 
-  if (is_linux || is_chromeos) {
-    deps += [ "//build/config/freetype" ]
-  }
-
   if (use_ozone) {
     deps += [ "//ui/ozone" ]
   }
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 grit("content_shell_resources_grit") {
@@ -516,13 +532,11 @@ repack("pak") {
   sources = [
     "$root_gen_dir/base/tracing/protos/tracing_proto_resources.pak",
     "$root_gen_dir/components/ukm_resources.pak",
-    "$root_gen_dir/content/attribution_internals_resources.pak",
     "$root_gen_dir/content/browser/resources/media/media_internals_resources.pak",
     "$root_gen_dir/content/browser/webrtc/resources/webrtc_internals_resources.pak",
     "$root_gen_dir/content/content_resources.pak",
     "$root_gen_dir/content/gpu_resources.pak",
     "$root_gen_dir/content/histograms_resources.pak",
-    "$root_gen_dir/content/private_aggregation_internals_resources.pak",
     "$root_gen_dir/content/process_resources.pak",
     "$root_gen_dir/content/quota_internals_resources.pak",
     "$root_gen_dir/content/service_worker_resources.pak",
@@ -536,6 +550,7 @@ repack("pak") {
     "$root_gen_dir/third_party/blink/public/strings/blink_strings_en-US.pak",
     "$root_gen_dir/third_party/blink/public/strings/permission_element_generated_strings.pak",
     "$root_gen_dir/third_party/blink/public/strings/permission_element_strings_en-US.pak",
+    "$root_gen_dir/ui/resources/ui_lottie_resources.pak",
     "$root_gen_dir/ui/resources/ui_resources_100_percent.pak",
     "$root_gen_dir/ui/strings/app_locale_settings_en-US.pak",
     "$root_gen_dir/ui/strings/auto_image_annotation_strings_en-US.pak",
@@ -549,7 +564,7 @@ repack("pak") {
     "//base/tracing/protos:chrome_track_event_resources",
     "//components/ukm/debug:resources",
     "//content:content_resources",
-    "//content/browser/resources:resources",
+    "//content/browser/resources",
     "//content/browser/resources/media:resources",
     "//content/browser/webrtc/resources",
     "//content/test:web_ui_mojo_test_resources",
@@ -644,14 +659,19 @@ if (is_android) {
   }
 } else if (is_ios) {
   declare_args() {
-    # The bundle identifier. Overriding this will affect the provisioning profile
-    # used, and hence will affect the app's capabilities.
+    # The bundle identifier. Overriding this will affect the provisioning
+    # profile used, and hence will affect the app's capabilities.
     ios_content_shell_bundle_identifier = shared_bundle_id_for_test_apps
 
     # Path to an entitlements file used in ios_content_shell. Can be overridden
     # to provide an alternative.
-    ios_content_shell_entitlements_path =
-        "//content/app/ios/appex/app.entitlements"
+    if (target_platform == "iphoneos") {
+      ios_content_shell_entitlements_path =
+          "//content/app/ios/appex/app.entitlements"
+    } else {
+      ios_content_shell_entitlements_path =
+          "//build/config/ios/entitlements.plist"
+    }
   }
 
   declare_args() {
@@ -669,12 +689,16 @@ if (is_android) {
 
     sources = [ "app/ios/shell_main_trampoline.cc" ]
 
-    deps = [
-      ":content_process_bundle",
-      ":content_shell_framework+link",
-      ":gpu_process_bundle",
-      ":network_process_bundle",
-    ]
+    deps = [ ":content_shell_framework+link" ]
+
+    if (target_platform == "iphoneos") {
+      deps += [
+        ":content_process_bundle",
+        ":gpu_process_bundle",
+        ":network_process_bundle",
+      ]
+    }
+
     bundle_deps = [
       ":content_shell_framework+bundle",
       ":content_shell_framework_resources",
@@ -682,6 +706,11 @@ if (is_android) {
     ]
     entitlements_path = ios_content_shell_entitlements_path
     bundle_identifier = ios_content_shell_bundle_identifier
+  }
+
+  ios_app_ipa("content_shell_ipa") {
+    testonly = true
+    bundle_target = ":content_shell"
   }
 
   ios_framework_bundle("content_shell_framework") {
@@ -694,27 +723,31 @@ if (is_android) {
     deps = [
       ":content_shell_app",
       ":content_shell_lib",
-      "//content/app/ios/appex:child_process_bridge",
       "//content/public/app",
       "//content/public/common",
       "//third_party/icu:icudata",
     ]
+    if (target_platform == "iphoneos") {
+      deps += [ "//content/app/ios/appex:child_process_bridge" ]
+    }
     info_plist = "app/ios/ios-app.plist"
   }
 
-  browserkit_extension("gpu_process") {
-    testonly = true
-    bundle_identifier = ios_gpu_process_bundle_identifier
-  }
+  if (target_platform == "iphoneos") {
+    browserkit_extension("gpu_process") {
+      testonly = true
+      bundle_identifier = ios_gpu_process_bundle_identifier
+    }
 
-  browserkit_extension("network_process") {
-    testonly = true
-    bundle_identifier = ios_network_process_bundle_identifier
-  }
+    browserkit_extension("network_process") {
+      testonly = true
+      bundle_identifier = ios_network_process_bundle_identifier
+    }
 
-  browserkit_extension("content_process") {
-    testonly = true
-    bundle_identifier = ios_content_process_bundle_identifier
+    browserkit_extension("content_process") {
+      testonly = true
+      bundle_identifier = ios_content_process_bundle_identifier
+    }
   }
 } else {
   executable("content_shell") {
@@ -739,7 +772,7 @@ if (is_android) {
 
     data_deps = [
       ":pak",
-      "//tools/v8_context_snapshot:v8_context_snapshot",
+      "//tools/v8_context_snapshot",
     ]
 
     if (is_win) {
@@ -771,7 +804,6 @@ if (is_android) {
     }
 
     if ((is_linux || is_chromeos) && !is_component_build) {
-      # Set rpath to find our own libfreetype even in a non-component build.
       configs += [ "//build/config/gcc:rpath_for_built_shared_libraries" ]
     }
   }
@@ -834,22 +866,6 @@ if (is_apple) {
 }
 
 if (is_mac) {
-  if (enable_ppapi) {
-    bundle_data("content_shell_framework_plugins") {
-      sources = [
-        "$root_out_dir/blink_deprecated_test_plugin.plugin",
-        "$root_out_dir/blink_test_plugin.plugin",
-      ]
-
-      outputs = [ "{{bundle_contents_dir}}/{{source_file_part}}" ]
-
-      public_deps = [
-        "//ppapi:blink_deprecated_test_plugin",
-        "//ppapi:blink_test_plugin",
-      ]
-    }
-  }
-
   content_shell_framework_name = "$content_shell_product_name Framework"
   content_shell_helper_name = "$content_shell_product_name Helper"
 
@@ -899,22 +915,22 @@ if (is_mac) {
     ]
 
     deps = [
-      ":content_shell_angle_binaries",
       ":content_shell_app",
       "//content/public/app",
       "//content/public/common",
       "//third_party/icu:icudata",
     ]
 
+    if (!use_static_angle) {
+      deps += [ ":content_shell_angle_binaries" ]
+    }
+
     bundle_deps = [
       ":content_shell_framework_helpers",
       ":content_shell_framework_resources",
       ":content_shell_swiftshader_binaries",
     ]
-
-    if (enable_ppapi) {
-      deps += [ ":content_shell_framework_plugins" ]
-    }
+    bundle_deps += [ ":content_shell_vulkan_binaries" ]
 
     if (!is_component_build) {
       # Specify a sensible install_name for static builds. The library is
@@ -932,9 +948,10 @@ if (is_mac) {
           [ "-Wl,-install_name,@rpath/$output_name.framework/$output_name" ]
 
       # Set up the rpath for the framework so that it can find dylibs in the
-      # root output directory. The framework is at
-      # Content Shell.app/Contents/Frameworks/Content Shell Framework.framework/Versions/C/Content Shell Framework
-      # so use loader_path to go back to the root output directory.
+      # root output directory. The framework is at Content
+      # Shell.app/Contents/Frameworks/Content Shell
+      # Framework.framework/Versions/C/Content Shell Framework so use
+      # loader_path to go back to the root output directory.
       ldflags += [ "-Wl,-rpath,@loader_path/../../../../../.." ]
     }
 
@@ -980,14 +997,18 @@ if (is_mac) {
 
       if (is_component_build) {
         ldflags = [
-          # The helper is in Content Shell.app/Contents/Frameworks/
-          #     Content Shell Framework.framework/Versions/C/Helpers/
-          #     Content Shell Helper.app/Contents/MacOS/
-          # so set rpath up to the base.
-          "-Wl,-rpath,@executable_path/../../../../../../../../../..",
+          # The helper is in Content Shell.app/Contents/Frameworks/Content Shell
+          # Framework.framework/Versions/C/Helpers/Content Shell
+          # Helper.app/Contents/MacOS
 
-          # ... and up to Contents/Frameworks.
+          # Set up an rpath to the Contents/Frameworks/ directory so that
+          # Content Shell Framework.framework will be found there. This matches
+          # the path that app_shell_main.cc uses with `dlopen` and avoids
+          # loading the framework into memory twice.
           "-Wl,-rpath,@executable_path/../../../../../../..",
+
+          # Add an rpath up to the base for all other libraries.
+          "-Wl,-rpath,@executable_path/../../../../../../../../../..",
         ]
 
         # In a component build, the framework is directly linked to the
@@ -1028,14 +1049,16 @@ if (is_mac) {
     outputs = [ "{{bundle_resources_dir}}/{{source_file_part}}" ]
   }
 
-  # Add the ANGLE .dylibs in the Libraries directory of the Framework.
-  bundle_data("content_shell_angle_binaries") {
-    sources = [
-      "$root_out_dir/egl_intermediates/libEGL.dylib",
-      "$root_out_dir/egl_intermediates/libGLESv2.dylib",
-    ]
-    outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
-    public_deps = [ "//ui/gl:angle_library_copy" ]
+  if (!use_static_angle) {
+    # Add the ANGLE .dylibs in the Libraries directory of the Framework.
+    bundle_data("content_shell_angle_binaries") {
+      sources = [
+        "$root_out_dir/egl_intermediates/libEGL.dylib",
+        "$root_out_dir/egl_intermediates/libGLESv2.dylib",
+      ]
+      outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
+      public_deps = [ "//ui/gl:angle_library_copy" ]
+    }
   }
 
   # Add the SwiftShader .dylibs in the Libraries directory of the Framework.
@@ -1047,19 +1070,47 @@ if (is_mac) {
     outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
     public_deps = [ "//ui/gl:swiftshader_vk_library_copy" ]
   }
+
+  # Add the Vulkan loader .dylib in the Libraries directory of the Framework.
+  bundle_data("content_shell_vulkan_binaries") {
+    sources = [ "$root_out_dir/vulkan_intermediates/libvulkan.dylib" ]
+    outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
+    public_deps = [ "//ui/gl:vulkan_loader_library_copy" ]
+  }
 }
 
 mojom("content_browsertests_mojom") {
+  cpp_only = true
   sources = [
     "common/main_frame_counter_test.mojom",
+    "common/memory_coordinator/memory_coordinator_test.mojom",
     "common/power_monitor_test.mojom",
     "common/render_frame_test_helper.mojom",
   ]
   public_deps = [
+    "//content/common/memory_coordinator/mojom",
     "//mojo/public/mojom/base",
     "//sandbox/policy/mojom",
+    "//third_party/blink/public/mojom/fingerprinting_protection",
     "//third_party/blink/public/mojom/tokens",
   ]
+}
+
+if (is_android) {
+  group("content_shell_freeze_test") {
+    testonly = true
+    data = [
+      "//content/shell/tools/aaudio_freezer_integration_test.py",
+      "//content/test/data/media/",
+    ]
+    data_deps = [
+      ":content_shell",
+      "//build/android:devil_chromium_py",
+      "//build/android:test_runner_py",
+      "//testing:test_scripts_shared",
+      "//tools/android/forwarder2",
+    ]
+  }
 }
 
 group("content_shell_crash_test") {
@@ -1069,6 +1120,14 @@ group("content_shell_crash_test") {
     "//testing:test_scripts_shared",
     "//third_party/angle:includes",
   ]
+  if (is_fuchsia) {
+    data_deps += [
+      ":content_shell_pkg",
+      ":content_shell_pkg__archive-manifest",
+      ":content_shell_script_meta",
+      "//build/config/fuchsia:deployment_resources",
+    ]
+  }
   data = [
     "//content/shell/tools/breakpad_integration_test.py",
     "//testing/scripts/content_shell_crash_test.py",
@@ -1115,4 +1174,37 @@ mojom("shell_controller_mojom") {
   testonly = true
   sources = [ "common/shell_controller.test-mojom" ]
   public_deps = [ "//mojo/public/mojom/base" ]
+}
+
+mojom("rust_test_mojom") {
+  testonly = true
+  sources = [ "common/rust_test.test-mojom" ]
+  generate_rust = true
+}
+
+rust_static_library("rust_test_service") {
+  testonly = true
+  crate_root = "browser/rust_test_service.rs"
+  sources = [ "browser/rust_test_service.rs" ]
+  deps = [
+    ":rust_test_mojom_rust",
+    "//base:command_line",
+    "//base:feature",
+    "//mojo/public/rust/bindings",
+  ]
+}
+
+rust_static_library("rust_test_service_ffi") {
+  testonly = true
+  allow_unsafe = true
+  crate_root = "browser/rust_test_service_ffi.rs"
+  sources = [ "browser/rust_test_service_ffi.rs" ]
+  cxx_bindings = [ "browser/rust_test_service_ffi.rs" ]
+  deps = [
+    ":rust_test_mojom_rust",
+    ":rust_test_service",
+    "//base",
+    "//mojo/public/rust/bindings",
+    "//mojo/public/rust/system",
+  ]
 }

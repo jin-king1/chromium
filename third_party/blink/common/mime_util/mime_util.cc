@@ -9,13 +9,14 @@
 #include <string_view>
 #include <unordered_set>
 
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_set.h"
+#include "base/feature_list.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "media/media_buildflags.h"
 #include "net/base/mime_util.h"
 #include "third_party/blink/public/common/buildflags.h"
+#include "third_party/blink/public/common/features.h"
 
 #if !BUILDFLAG(IS_IOS)
 // iOS doesn't use and must not depend on //media
@@ -41,7 +42,7 @@ constexpr auto kSupportedImageTypes = base::MakeFixedFlatSet<std::string_view>({
     "image/x-icon",              // ico
     "image/x-xbitmap",           // xbm
     "image/x-png",
-#if BUILDFLAG(ENABLE_AV1_DECODER)
+#if BUILDFLAG(ENABLE_DAV1D_DECODER)
     "image/avif",
 #endif
 });
@@ -119,7 +120,13 @@ constexpr auto kSupportedNonImageTypes =
 }  // namespace
 
 bool IsSupportedImageMimeType(std::string_view mime_type) {
-  return kSupportedImageTypes.contains(base::ToLowerASCII(mime_type));
+  std::string mime_lower = base::ToLowerASCII(mime_type);
+#if BUILDFLAG(ENABLE_JXL_DECODER)
+  if (mime_lower == "image/jxl") {
+    return base::FeatureList::IsEnabled(features::kJXLImageFormat);
+  }
+#endif
+  return kSupportedImageTypes.contains(mime_lower);
 }
 
 bool IsSupportedNonImageMimeType(std::string_view mime_type) {
@@ -143,12 +150,19 @@ bool IsSupportedJavascriptMimeType(std::string_view mime_type) {
   return kSupportedJavascriptTypes.contains(mime_type);
 }
 
-// TODO(crbug.com/362282752): Allow non-application `*/*+json` MIME types.
+bool IsWasmMIMEType(std::string_view mime_type) {
+  return net::MatchesMimeType("application/wasm", mime_type);
+}
+
 // https://mimesniff.spec.whatwg.org/#json-mime-type
 bool IsJSONMimeType(std::string_view mime_type) {
-  return net::MatchesMimeType("application/json", mime_type) ||
-         net::MatchesMimeType("text/json", mime_type) ||
-         net::MatchesMimeType("application/*+json", mime_type);
+  if (net::MatchesMimeType("application/json", mime_type) ||
+      net::MatchesMimeType("text/json", mime_type)) {
+    return true;
+  }
+  return net::MatchesMimeType(
+      "*+json", mime_type,
+      net::MimeTypeValidationLevel::kWildcardSlashAndTokens);
 }
 
 // TODO(crbug.com/362282752): Allow other `*/*+xml` MIME types.

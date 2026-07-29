@@ -14,16 +14,20 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/process/process.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/multiprocess_test.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_timeouts.h"
+#include "base/types/expected.h"
 #include "base/win/elevation_util.h"
 #include "base/win/scoped_com_initializer.h"
 #include "base/win/win_util.h"
 #include "chrome/windows_services/elevated_tracing_service/system_tracing_session.h"
 #include "chrome/windows_services/elevated_tracing_service/tracing_service_idl.h"
+#include "chrome/windows_services/elevated_tracing_service/with_child_test.h"
 #include "chrome/windows_services/service_program/test_support/scoped_medium_integrity.h"
 #include "chrome/windows_services/service_program/test_support/service_environment.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -33,12 +37,11 @@
 #include "mojo/public/cpp/system/simple_watcher.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/multiprocess_func_list.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 
 namespace {
 
 void TestGetServiceProcessHandle() {
-  base::test::SingleThreadTaskEnvironment task_environment;
-
   Microsoft::WRL::ComPtr<IUnknown> unknown;
   ASSERT_HRESULT_SUCCEEDED(::CoCreateInstance(
       elevated_tracing_service::kTestSystemTracingSessionClsid, nullptr,
@@ -206,6 +209,8 @@ MULTIPROCESS_TEST_MAIN(GetServiceProcessHandleInChild) {
     return 1;
   }
 
+  base::test::SingleThreadTaskEnvironment task_environment;
+
   TestGetServiceProcessHandle();
 
   return ::testing::Test::HasFailure() ? 1 : 0;
@@ -239,7 +244,8 @@ MULTIPROCESS_TEST_MAIN(OnlyOneSessionInChild) {
 
 // Relaunches the test process de-elevated; using the multi-process test
 // facilitied to run the named function.
-base::Process RunInChildDeElevated(std::string_view function_name) {
+base::expected<base::Process, DWORD> RunInChildDeElevated(
+    std::string_view function_name) {
   base::CommandLine command_line =
       base::GetMultiProcessTestChildBaseCommandLine();
   command_line.AppendSwitchASCII(switches::kTestChildProcess, function_name);
@@ -251,7 +257,7 @@ base::Process RunInChildDeElevated(std::string_view function_name) {
 
 // A test harness that installs the tracing service so that tests can call into
 // it. The service's log output is redirected to the test process's stderr.
-class TracingServiceTest : public ::testing::Test {
+class TracingServiceTest : public elevated_tracing_service::WithChildTest {
  protected:
   static void SetUpTestSuite() {
     if (!::IsUserAnAdmin()) {
@@ -260,7 +266,9 @@ class TracingServiceTest : public ::testing::Test {
     service_environment_ = new ServiceEnvironment(
         L"Test Tracing Service",
         FILE_PATH_LITERAL("elevated_tracing_service.exe"),
-        elevated_tracing_service::switches::kSystemTracingClsIdForTestingSwitch,
+        base::span_from_ref(
+            std::string_view(elevated_tracing_service::switches::
+                                 kSystemTracingClsIdForTestingSwitch)),
         elevated_tracing_service::kTestSystemTracingSessionClsid,
         __uuidof(ISystemTraceSession));
     ASSERT_TRUE(service_environment_->is_valid());
@@ -268,6 +276,12 @@ class TracingServiceTest : public ::testing::Test {
 
   static void TearDownTestSuite() {
     delete std::exchange(service_environment_, nullptr);
+  }
+
+  // Returns a handle to the service process if it is running, or an invalid
+  // process otherwise.
+  base::Process GetRunningService() {
+    return service_environment_->GetRunningService();
   }
 
  private:
@@ -320,13 +334,13 @@ TEST_F(TracingServiceTest, GetServiceProcessHandleInChild) {
   // base::debug::WaitForDebugger(30, /*silent=*/false); in
   // `GetServiceProcessHandleInChild()` to more easily debug in the child
   // process.
-  auto child = RunInChildDeElevated("GetServiceProcessHandleInChild");
+  auto child_or_error = RunInChildDeElevated("GetServiceProcessHandleInChild");
 
-  if (!child.IsValid()) {
+  if (!child_or_error.has_value()) {
     GTEST_SKIP() << "Cannot de-elevate when UAC is disabled.";
   }
   int exit_code;
-  ASSERT_TRUE(child.WaitForExit(&exit_code));
+  ASSERT_TRUE(child_or_error->WaitForExit(&exit_code));
   ASSERT_EQ(exit_code, 0);
 }
 
@@ -337,13 +351,13 @@ TEST_F(TracingServiceTest, OnlyOneInvitationInChild) {
   // base::debug::WaitForDebugger(30, /*silent=*/false); in
   // `GetServiceProcessHandleInChild()` to more easily debug in the child
   // process.
-  auto child = RunInChildDeElevated("OnlyOneInvitationInChild");
+  auto child_or_error = RunInChildDeElevated("OnlyOneInvitationInChild");
 
-  if (!child.IsValid()) {
+  if (!child_or_error.has_value()) {
     GTEST_SKIP() << "Cannot de-elevate when UAC is disabled.";
   }
   int exit_code;
-  ASSERT_TRUE(child.WaitForExit(&exit_code));
+  ASSERT_TRUE(child_or_error->WaitForExit(&exit_code));
   ASSERT_EQ(exit_code, 0);
 }
 
@@ -354,12 +368,85 @@ TEST_F(TracingServiceTest, OnlyOneSessionInChild) {
   // base::debug::WaitForDebugger(30, /*silent=*/false); in
   // `GetServiceProcessHandleInChild()` to more easily debug in the child
   // process.
-  auto child = RunInChildDeElevated("OnlyOneSessionInChild");
+  auto child_or_error = RunInChildDeElevated("OnlyOneSessionInChild");
 
-  if (!child.IsValid()) {
+  if (!child_or_error.has_value()) {
     GTEST_SKIP() << "Cannot de-elevate when UAC is disabled.";
   }
   int exit_code;
-  ASSERT_TRUE(child.WaitForExit(&exit_code));
+  ASSERT_TRUE(child_or_error->WaitForExit(&exit_code));
   ASSERT_EQ(exit_code, 0);
+}
+
+MULTIPROCESS_TEST_MAIN(ConnectToServiceAndTerminateInChild) {
+  base::win::ScopedCOMInitializer com_initializer;
+  if (!com_initializer.Succeeded()) {
+    return 1;
+  }
+
+  // Create a session and activate it by sending an invitation.
+  Microsoft::WRL::ComPtr<IUnknown> unknown;
+  CHECK(SUCCEEDED(::CoCreateInstance(
+      elevated_tracing_service::kTestSystemTracingSessionClsid, nullptr,
+      CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&unknown))));
+
+  Microsoft::WRL::ComPtr<ISystemTraceSession> trace_session;
+  CHECK(SUCCEEDED(unknown.As(&trace_session)));
+  unknown.Reset();
+
+  CHECK(SUCCEEDED(::CoSetProxyBlanket(
+      trace_session.Get(), RPC_C_AUTHN_DEFAULT, RPC_C_AUTHZ_DEFAULT,
+      COLE_DEFAULT_PRINCIPAL, RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
+      RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_DYNAMIC_CLOAKING)));
+
+  mojo::ScopedMessagePipeHandle pipe;
+  {
+    mojo::NamedPlatformChannel channel(mojo::NamedPlatformChannel::Options{});
+    mojo::OutgoingInvitation invitation;
+    invitation.set_extra_flags(MOJO_SEND_INVITATION_FLAG_ELEVATED);
+    pipe = invitation.AttachMessagePipe(/*name=*/0);
+
+    DWORD pid = base::kNullProcessId;
+    CHECK(SUCCEEDED(trace_session->AcceptInvitation(
+        channel.GetServerName().c_str(), &pid)));
+    CHECK_NE(pid, base::kNullProcessId);
+
+    mojo::OutgoingInvitation::Send(std::move(invitation),
+                                   /*target_process=*/base::kNullProcessHandle,
+                                   channel.TakeServerEndpoint());
+  }
+
+  // A session is now active. Tell the test that the child has started. The test
+  // will monitor the service and then release the child.
+  elevated_tracing_service::WithChildTest::SignalChildStart();
+
+  // Wait for the test to release the child for termination.
+  elevated_tracing_service::WithChildTest::WaitForChildTermination();
+
+  base::Process::TerminateCurrentProcessImmediately(1);
+}
+
+// Tests that the service terminates promptly when the child process terminates
+// while holding a session.
+TEST_F(TracingServiceTest, ServiceTerminatesOnChildTermination) {
+  auto child =
+      SpawnChildWithEventHandles("ConnectToServiceAndTerminateInChild");
+  ASSERT_TRUE(child.IsValid());
+  absl::Cleanup child_stopper = [this] { SignalChildTermination(); };
+
+  // Wait for the child to attach to the service.
+  WaitForChildStart();
+
+  // Get a handle to the service process.
+  auto service_process = GetRunningService();
+  ASSERT_TRUE(service_process.IsValid());
+
+  // Tell the child to terminate.
+  std::move(child_stopper).Invoke();
+
+  // Wait for the service to terminate.
+  ASSERT_EQ(::WaitForSingleObject(
+                service_process.Handle(),
+                TestTimeouts::action_max_timeout().InMilliseconds()),
+            WAIT_OBJECT_0);
 }

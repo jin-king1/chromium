@@ -9,19 +9,18 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_number_conversions.h"
 #include "chrome/browser/signin/signin_promo.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "components/grit/components_resources.h"
 #include "components/security_interstitials/content/security_interstitial_controller_client.h"
 #include "components/security_interstitials/core/common_string_util.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "services/metrics/public/cpp/metrics_utils.h"
-#include "services/metrics/public/cpp/ukm_builders.h"
-#include "services/metrics/public/cpp/ukm_recorder.h"
 #include "ui/base/l10n/l10n_util.h"
 
 // static
@@ -44,22 +43,6 @@ bool SupervisedUserVerificationPage::ShouldShowPage(
       // In the transient case, an update to AUTHENTICATED state may shortly
       // follow, which will trigger this interstitial to be refreshed.
       return true;
-  }
-}
-
-// static
-FamilyLinkUserReauthenticationInterstitialState
-SupervisedUserVerificationPage::GetReauthenticationInterstitialStateFromStatus(
-    Status status) {
-  switch (status) {
-    case Status::SHOWN:
-      return FamilyLinkUserReauthenticationInterstitialState::kInterstitialShown;
-    case Status::REAUTH_STARTED:
-      return FamilyLinkUserReauthenticationInterstitialState::kReauthenticationStarted;
-    case Status::REAUTH_COMPLETED:
-      return FamilyLinkUserReauthenticationInterstitialState::kReauthenticationCompleted;
-    default:
-      NOTREACHED();
   }
 }
 
@@ -119,17 +102,14 @@ void SupervisedUserVerificationPage::CloseSignInTabs() {
     }
     tab_interface->Close();
   }
-
-  // TODO(b/364546097): Ideally focus the last visited tab (before the sign-in
-  // page), before closing the sign-in tabs.
 }
 
 bool SupervisedUserVerificationPage::IsSignInUrl(const GURL& url) {
   if (!url.is_valid()) {
     return false;
   }
-  return url.host_piece() == reauth_url_.host_piece() ||
-         url.host_piece() == sign_in_continue_url_.host_piece();
+  return url.host() == reauth_url_.host() ||
+         url.host() == sign_in_continue_url_.host();
 }
 
 void SupervisedUserVerificationPage::OnGoogleAuthStateUpdate() {
@@ -156,12 +136,9 @@ int SupervisedUserVerificationPage::GetHTMLTemplateId() {
 }
 
 void SupervisedUserVerificationPage::PopulateCommonStrings(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   load_time_data.Set("overridable", false);
   load_time_data.Set("hide_primary_button", false);
-  load_time_data.Set("show_recurrent_error_paragraph", false);
-
-  load_time_data.Set("recurrentErrorParagraph", "");
   load_time_data.Set("openDetails", "");
   load_time_data.Set("explanationParagraph", "");
   load_time_data.Set("finalParagraph", "");
@@ -189,7 +166,6 @@ void SupervisedUserVerificationPage::CommandReceived(
 
   switch (cmd) {
     case security_interstitials::CMD_OPEN_LOGIN: {
-      RecordReauthStatusMetrics(Status::REAUTH_STARTED);
       content::OpenURLParams params(reauth_url_, content::Referrer(),
                                     WindowOpenDisposition::NEW_FOREGROUND_TAB,
                                     ui::PAGE_TRANSITION_LINK, false);

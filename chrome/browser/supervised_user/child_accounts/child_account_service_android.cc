@@ -19,14 +19,13 @@
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
 using base::android::JavaRef;
 using base::android::RunBooleanCallbackAndroid;
 using base::android::ScopedJavaGlobalRef;
 
 void ReauthenticateChildAccount(
     content::WebContents* web_contents,
-    const std::string& email,
+    const CoreAccountInfo& accountInfo,
     const base::RepeatingCallback<void()>& on_failure_callback) {
   ui::WindowAndroid* window_android =
       web_contents->GetNativeView()->GetWindowAndroid();
@@ -41,15 +40,18 @@ void ReauthenticateChildAccount(
 
   JNIEnv* env = AttachCurrentThread();
   Java_ChildAccountService_reauthenticateChildAccount(
-      env, window_android->GetJavaObject(), email,
-      reinterpret_cast<jlong>(callback_copy.release()));
+      env, window_android->GetJavaObject(), accountInfo,
+      reinterpret_cast<int64_t>(callback_copy.release()));
 }
 
-void JNI_ChildAccountService_OnReauthenticationFailed(JNIEnv* env,
-                                                      jlong jcallbackPtr) {
+static void JNI_ChildAccountService_OnReauthenticationFailed(
+    JNIEnv* env,
+    int64_t jcallbackPtr) {
   // Cast the pointer value back to a Callback and take ownership of it.
   std::unique_ptr<base::RepeatingCallback<void()>> callback(
       reinterpret_cast<base::RepeatingCallback<void()>*>(jcallbackPtr));
 
   callback->Run();
 }
+
+DEFINE_JNI(ChildAccountService)

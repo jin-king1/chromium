@@ -9,10 +9,9 @@ assert(is_win || is_mac || is_linux)
 build_webui("build") {
   grd_prefix = "on_device_translation_internals"
   static_files = [ "on_device_translation_internals.html" ]
-  non_web_component_files = [
+  ts_files = [
     "app.html.ts",
     "app.ts",
-    "browser_proxy.ts",
   ]
   mojo_files_deps = [ "//chrome/browser/ui/webui/on_device_translation_internals:mojo_bindings_ts__generator" ]
   mojo_files = [ "$root_gen_dir/chrome/browser/ui/webui/on_device_translation_internals/on_device_translation_internals.mojom-webui.ts" ]

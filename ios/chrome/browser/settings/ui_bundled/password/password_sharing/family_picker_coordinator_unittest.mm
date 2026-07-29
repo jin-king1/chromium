@@ -5,7 +5,6 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/family_picker_coordinator.h"
 
 #import "base/test/metrics/histogram_tester.h"
-#import "base/test/task_environment.h"
 #import "components/password_manager/core/browser/sharing/recipients_fetcher.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/family_picker_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/family_picker_view_controller_presentation_delegate.h"
@@ -13,11 +12,12 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_sharing/recipient_info.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/test/fakes/fake_ui_navigation_controller.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
@@ -46,11 +46,10 @@ class FamilyPickerCoordinatorTest : public PlatformTest {
     view_controller_ = [[FamilyPickerViewController alloc]
         initWithStyle:UITableViewStylePlain];
 
-    mock_application_commands_handler_ =
-        OCMStrictProtocolMock(@protocol(ApplicationCommands));
+    mock_scene_handler_ = OCMStrictProtocolMock(@protocol(SceneCommands));
     [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_application_commands_handler_
-                     forProtocol:@protocol(ApplicationCommands)];
+        startDispatchingToTarget:mock_scene_handler_
+                     forProtocol:@protocol(SceneCommands)];
     mock_settings_commands_handler_ =
         OCMStrictProtocolMock(@protocol(SettingsCommands));
     [browser_->GetCommandDispatcher()
@@ -67,12 +66,12 @@ class FamilyPickerCoordinatorTest : public PlatformTest {
             @protocol(FamilyPickerViewControllerPresentationDelegate)]);
   }
 
-  base::test::TaskEnvironment task_environment_;
+  web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestBrowser> browser_;
   FamilyPickerCoordinator* coordinator_;
   FamilyPickerViewController* view_controller_;
 
-  id mock_application_commands_handler_;
+  id mock_scene_handler_;
   id mock_settings_commands_handler_;
 };
 
@@ -103,7 +102,7 @@ TEST_F(FamilyPickerCoordinatorTest, LogsMetricsOnMultipleRecipientsSelected) {
 TEST_F(FamilyPickerCoordinatorTest, OpensHelpCenterOnLearnMoreTap) {
   base::HistogramTester histogram_tester;
 
-  OCMExpect([mock_application_commands_handler_
+  OCMExpect([mock_scene_handler_
       closePresentedViewsAndOpenURL:[OCMArg checkWithBlock:^BOOL(
                                                 OpenNewTabCommand* command) {
         return command.URL ==
@@ -111,7 +110,7 @@ TEST_F(FamilyPickerCoordinatorTest, OpensHelpCenterOnLearnMoreTap) {
       }]]);
   [(id<FamilyPickerViewControllerPresentationDelegate>)
           coordinator_ learnMoreLinkWasTapped];
-  EXPECT_OCMOCK_VERIFY(mock_application_commands_handler_);
+  EXPECT_OCMOCK_VERIFY(mock_scene_handler_);
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordSharingIOS.UserAction",

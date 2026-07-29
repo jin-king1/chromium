@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <array>
 
 // This file contains intentional memory errors, some of which may lead to
@@ -15,8 +10,10 @@
 
 #include <stddef.h>
 
-#include "base/atomicops.h"
+#include <atomic>
+
 #include "base/cfi_buildflags.h"
+#include "base/compiler_specific.h"
 #include "base/debug/asan_invalid_access.h"
 #include "base/debug/profiler.h"
 #include "base/logging.h"
@@ -24,6 +21,7 @@
 #include "base/notreached.h"
 #include "base/sanitizer_buildflags.h"
 #include "base/threading/thread.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/base/dynamic_annotations.h"
@@ -38,7 +36,7 @@ namespace base {
 
 namespace {
 
-const base::subtle::Atomic32 kMagicValue = 42;
+const uint32_t kMagicValue = 42;
 
 // Helper for memory accesses that can potentially corrupt memory or cause a
 // crash during a native run.
@@ -65,7 +63,7 @@ void DoReadUninitializedValue(volatile char* ptr) {
   }
 }
 
-void ReadUninitializedValue(volatile char* ptr) {
+NOOPT void ReadUninitializedValue(volatile char* ptr) {
 #if defined(MEMORY_SANITIZER)
   EXPECT_DEATH(DoReadUninitializedValue(ptr), "use-of-uninitialized-value");
 #else
@@ -75,25 +73,25 @@ void ReadUninitializedValue(volatile char* ptr) {
 
 #ifndef HARMFUL_ACCESS_IS_NOOP
 void ReadValueOutOfArrayBoundsLeft(char* ptr) {
-  char c = ptr[-2];
+  char c = UNSAFE_TODO(ptr[-2]);
   VLOG(1) << "Reading a byte out of bounds: " << c;
 }
 
 void ReadValueOutOfArrayBoundsRight(char* ptr, size_t size) {
-  char c = ptr[size + 1];
+  char c = UNSAFE_TODO(ptr[size + 1]);
   VLOG(1) << "Reading a byte out of bounds: " << c;
 }
 
 void WriteValueOutOfArrayBoundsLeft(char* ptr) {
-  ptr[-1] = kMagicValue;
+  UNSAFE_TODO(ptr[-1] = kMagicValue);
 }
 
 void WriteValueOutOfArrayBoundsRight(char* ptr, size_t size) {
-  ptr[size] = kMagicValue;
+  UNSAFE_TODO(ptr[size] = kMagicValue);
 }
 #endif  // HARMFUL_ACCESS_IS_NOOP
 
-void MakeSomeErrors(char* ptr, size_t size) {
+NOOPT void MakeSomeErrors(char* ptr, size_t size) {
   ReadUninitializedValue(ptr);
 
   HARMFUL_ACCESS(ReadValueOutOfArrayBoundsLeft(ptr), "2 bytes before");
@@ -142,7 +140,7 @@ TEST(ToolsSanityTest, MAYBE_LinksSanitizerOptions) {
 TEST(ToolsSanityTest, MemoryLeak) {
   // Without the |volatile|, clang optimizes away the next two lines.
   int* volatile leak = new int[256];  // Leak some memory intentionally.
-  leak[4] = 1;                        // Make sure the allocated memory is used.
+  UNSAFE_TODO(leak[4] = 1);           // Make sure the allocated memory is used.
 }
 
 TEST(ToolsSanityTest, AccessesToNewMemory) {
@@ -150,7 +148,7 @@ TEST(ToolsSanityTest, AccessesToNewMemory) {
   MakeSomeErrors(foo, 16);
   delete[] foo;
   // Use after delete.
-  HARMFUL_ACCESS(foo[5] = 0, "heap-use-after-free");
+  HARMFUL_ACCESS(UNSAFE_TODO(foo[5] = 0), "heap-use-after-free");
 }
 
 TEST(ToolsSanityTest, AccessesToMallocMemory) {
@@ -158,7 +156,7 @@ TEST(ToolsSanityTest, AccessesToMallocMemory) {
   MakeSomeErrors(foo, 16);
   free(foo);
   // Use after free.
-  HARMFUL_ACCESS(foo[5] = 0, "heap-use-after-free");
+  HARMFUL_ACCESS(UNSAFE_TODO(foo[5] = 0), "heap-use-after-free");
 }
 
 TEST(ToolsSanityTest, AccessesToStack) {
@@ -237,7 +235,7 @@ TEST(ToolsSanityTest, DISABLED_AddressSanitizerLocalOOBCrashTest) {
   // This test should not be run on bots.
   int array[5];  // Must not use std::array, lest hardening catch this first.
   // Work around the OOB warning reported by Clang.
-  int* volatile access = &array[5];
+  int* volatile access = UNSAFE_TODO(&array[5]);
   *access = 43;
 }
 
@@ -251,7 +249,7 @@ TEST(ToolsSanityTest, DISABLED_AddressSanitizerGlobalOOBCrashTest) {
   // This test should not be ran on bots.
 
   // Work around the OOB warning reported by Clang.
-  int* volatile access = g_asan_test_global_array - 1;
+  int* volatile access = UNSAFE_TODO(g_asan_test_global_array - 1);
   *access = 43;
 }
 
@@ -306,10 +304,10 @@ class TOOLS_SANITY_TEST_CONCURRENT_THREAD : public PlatformThread::Delegate {
 
 class ReleaseStoreThread : public PlatformThread::Delegate {
  public:
-  explicit ReleaseStoreThread(base::subtle::Atomic32* value) : value_(value) {}
+  explicit ReleaseStoreThread(std::atomic<uint32_t> *value) : value_(value) {}
   ~ReleaseStoreThread() override = default;
   void ThreadMain() override {
-    base::subtle::Release_Store(value_, kMagicValue);
+    value_->store(kMagicValue, std::memory_order_release);
 
     // Sleep for a few milliseconds so the two threads are more likely to live
     // simultaneously. Otherwise we may miss the report due to mutex
@@ -318,21 +316,21 @@ class ReleaseStoreThread : public PlatformThread::Delegate {
   }
 
  private:
-  raw_ptr<base::subtle::Atomic32> value_;
+  raw_ptr<std::atomic<uint32_t>> value_;
 };
 
 class AcquireLoadThread : public PlatformThread::Delegate {
  public:
-  explicit AcquireLoadThread(base::subtle::Atomic32* value) : value_(value) {}
+  explicit AcquireLoadThread(std::atomic<uint32_t> *value) : value_(value) {}
   ~AcquireLoadThread() override = default;
   void ThreadMain() override {
     // Wait for the other thread to make Release_Store
     PlatformThread::Sleep(Milliseconds(100));
-    base::subtle::Acquire_Load(value_);
+    std::ignore = value_->load(std::memory_order_acquire);
   }
 
  private:
-  raw_ptr<base::subtle::Atomic32> value_;
+  raw_ptr<std::atomic<uint32_t>> value_;
 };
 
 void RunInParallel(PlatformThread::Delegate* d1, PlatformThread::Delegate* d2) {
@@ -376,7 +374,7 @@ TEST(ToolsSanityTest, AnnotateBenignRace) {
 }
 
 TEST(ToolsSanityTest, AtomicsAreIgnored) {
-  base::subtle::Atomic32 shared = 0;
+  std::atomic<uint32_t> shared = 0;
   ReleaseStoreThread thread1(&shared);
   AcquireLoadThread thread2(&shared);
   RunInParallel(&thread1, &thread2);

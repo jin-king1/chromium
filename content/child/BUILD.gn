@@ -2,10 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/features.gni")
 import("//build/config/ui.gni")
 import("//device/vr/buildflags/buildflags.gni")
-import("//ppapi/buildflags/buildflags.gni")
 import("//third_party/blink/public/public_features.gni")
 if (is_android) {
   import("//build/config/android/config.gni")
@@ -24,11 +22,9 @@ target(link_target_type, "child") {
   visibility = [
     ":*",
     "//content/gpu/*",
-    "//content/ppapi_plugin/*",
     "//content/public/child:child_sources",
     "//content/renderer/*",
     "//content/utility/*",
-    "//tools/ipc_fuzzer/*",
   ]
   if (is_android) {
     # See comment in content/app/BUILD.gn above content_app_deps.
@@ -51,7 +47,13 @@ target(link_target_type, "child") {
     "child_thread_impl.h",
     "field_trial.cc",
     "field_trial.h",
+    "host_receiver_batcher.cc",
+    "host_receiver_batcher.h",
     "image_decoder_utils.cc",
+    "memory_coordinator/browser_memory_coordinator_bridge.cc",
+    "memory_coordinator/browser_memory_coordinator_bridge.h",
+    "memory_coordinator/child_memory_coordinator.cc",
+    "memory_coordinator/child_memory_coordinator.h",
     "runtime_features.cc",
     "runtime_features.h",
     "scoped_child_process_reference.cc",
@@ -61,7 +63,7 @@ target(link_target_type, "child") {
   configs += [ "//build/config:precompiled_headers" ]
 
   public_deps = [
-    "//gpu/ipc/client:client",
+    "//gpu/ipc/client",
     "//ipc",
     "//services/service_manager/public/mojom:mojom_blink",
     "//ui/base/mojom:ui_base_types",
@@ -71,17 +73,19 @@ target(link_target_type, "child") {
     "//base",
     "//build/config/compiler:compiler_buildflags",
     "//cc/paint",
+    "//components/attribution_reporting:features",
     "//components/discardable_memory/client",
     "//components/discardable_memory/public/mojom",
     "//components/metrics",
     "//components/performance_manager/public/mojom",
     "//components/performance_manager/scenario_api",
     "//components/permissions:permissions_common",
-    "//components/tracing:startup_tracing",
+    "//components/tracing:tracing_config",
     "//components/variations",
     "//components/webcrypto",
     "//content/common",
     "//content/common:mojo_bindings",
+    "//content/common/memory_coordinator/mojom",
     "//content/public/common:common_sources",
     "//device/base",
     "//device/gamepad/public/cpp:switches",
@@ -98,7 +102,7 @@ target(link_target_type, "child") {
     "//services/service_manager/public/mojom",
     "//services/tracing/public/cpp",
     "//services/tracing/public/cpp:traced_process",
-    "//services/tracing/public/cpp/background_tracing:background_tracing",
+    "//services/tracing/public/cpp/background_tracing",
     "//services/webnn/public/mojom",
     "//skia",
     "//storage/common",
@@ -153,21 +157,23 @@ target(link_target_type, "child") {
     libs = [ "dwrite.lib" ]
   }
 
+  if (is_win || is_linux || is_chromeos) {
+    sources += [
+      "font_data/font_data_manager.cc",
+      "font_data/font_data_manager.h",
+      "font_integration_init.cc",
+    ]
+    deps += [
+      # For font_data_manager
+      "//components/services/font_data/public/mojom",
+      "//third_party:freetype_buildflags",
+    ]
+  }
+
   if (is_mac) {
     sources += [
       "child_process_sandbox_support_impl_mac.cc",
       "child_process_sandbox_support_impl_mac.h",
-    ]
-  }
-
-  if (enable_ppapi) {
-    deps += [
-      "//ppapi/proxy",
-      "//ppapi/shared_impl",
-    ]
-    sources += [
-      "browser_font_resource_trusted.cc",
-      "browser_font_resource_trusted.h",
     ]
   }
 

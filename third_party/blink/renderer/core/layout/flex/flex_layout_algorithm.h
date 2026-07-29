@@ -15,6 +15,7 @@ namespace blink {
 
 class BlockBreakToken;
 class BlockNode;
+class FlexGapAccumulator;
 struct DevtoolsFlexInfo;
 struct FlexItemData;
 
@@ -34,11 +35,12 @@ class CORE_EXPORT FlexLayoutAlgorithm
  private:
   const LayoutResult* LayoutInternal();
 
-  void PlaceFlexItems(
-      HeapVector<FlexLine>* flex_lines,
-      HeapVector<Member<LayoutBox>>* oof_children,
-      LayoutUnit* total_intrinsic_block_size,
-      bool is_computing_multiline_column_intrinsic_size = false);
+  enum class Phase { kLayout, kRowIntrinsicSize, kColumnWrapIntrinsicSize };
+
+  void PlaceFlexItems(Phase phase,
+                      FlexLineVector* flex_lines,
+                      HeapVector<Member<LayoutBox>>* oof_children = nullptr,
+                      LayoutUnit* total_intrinsic_block_size_out = nullptr);
 
   bool DoesItemComputedCrossSizeHaveAuto(const BlockNode& child) const;
   bool DoesItemStretch(const BlockNode& child, ItemPosition alignment) const;
@@ -50,47 +52,68 @@ class CORE_EXPORT FlexLayoutAlgorithm
 
   bool IsContainerCrossSizeDefinite() const;
 
-  enum class Phase { kLayout, kRowIntrinsicSize, kColumnWrapIntrinsicSize };
   ConstraintSpace BuildSpaceForIntrinsicInlineSize(
       const BlockNode& flex_item,
       ItemPosition alignment) const;
   ConstraintSpace BuildSpaceForFlexBasis(const BlockNode& flex_item) const;
-  ConstraintSpace BuildSpaceForIntrinsicBlockSize(
-      const BlockNode& flex_item,
+  const ConstraintSpace BuildSpaceForLayout(
+      const BlockNode& node,
       ItemPosition alignment,
-      std::optional<LayoutUnit> override_inline_size) const;
-  // |line_cross_size_for_stretch| should only be set when running the final
-  // layout pass for stretch, when the line cross size is definite.
-  // |block_offset_for_fragmentation| should only be set when running the final
-  // layout pass for fragmentation. Both may be set at the same time.
-  ConstraintSpace BuildSpaceForLayout(
-      const BlockNode& flex_item_node,
-      ItemPosition alignment,
-      LayoutUnit item_main_axis_final_size,
       bool is_initial_block_size_indefinite,
       std::optional<LayoutUnit> override_inline_size = std::nullopt,
-      std::optional<LayoutUnit> line_cross_size_for_stretch = std::nullopt,
+      std::optional<LayoutUnit> main_axis_final_size = std::nullopt,
+      std::optional<LayoutUnit> line_cross_size = std::nullopt,
       std::optional<LayoutUnit> block_offset_for_fragmentation = std::nullopt,
       bool min_block_size_should_encompass_intrinsic_size = false) const;
 
   void ConstructAndAppendFlexItems(
       Phase phase,
       HeapVector<Member<LayoutBox>>* oof_children = nullptr);
-  void ApplyReversals(HeapVector<FlexLine>* flex_lines);
+  void ApplyReversals(FlexLineVector* flex_lines);
+  // `effective_gap_between_lines` is an out parameter that receives the
+  // effective gap (base gap + content distribution). `total_row_gap_count` is
+  // an out parameter that receives the unfragmented row gap count: for row flex
+  // containers, it is the number of gaps between flex lines while for column
+  // flex containers, it is the sum of the gaps within each flex line.
   LayoutResult::EStatus GiveItemsFinalPositionAndSize(
-      HeapVector<FlexLine>* flex_lines,
-      Vector<EBreakBetween>* row_break_between_outputs);
+      FlexLineVector* flex_lines,
+      Vector<EBreakBetween>* row_break_between_outputs,
+      std::optional<FlexGapAccumulator>& gap_accumulator,
+      LayoutUnit& effective_gap_between_lines,
+      wtf_size_t* total_row_gap_count);
   LayoutResult::EStatus GiveItemsFinalPositionAndSizeForFragmentation(
-      HeapVector<FlexLine>* flex_lines,
+      FlexLineVector* flex_lines,
       Vector<EBreakBetween>* row_break_between_outputs,
       FlexBreakTokenData::FlexBreakBeforeRow* break_before_row,
-      LayoutUnit* total_intrinsic_block_size);
+      LayoutUnit* total_intrinsic_block_size,
+      std::optional<FlexGapAccumulator>& gap_accumulator,
+      LayoutUnit effective_gap_between_lines,
+      const FlexGapBreakTokenData* previous_gap_data);
   LayoutResult::EStatus PropagateFlexItemInfo(
       const FlexItem&,
       const PhysicalBoxFragment&,
       const PhysicalBoxStrut& physical_margins,
       wtf_size_t flex_line_idx,
       LogicalOffset offset);
+
+  // Computes and updates the adjustment for `flex_line` to account for gap
+  // suppression during fragmentation. `gap` represents the effective gap, which
+  // includes both the base CSS gap value and any additional spacing from
+  // content distribution (e.g., space-between, space-around). In column-based
+  // flex containers, `gap` represents the effective item gap. In row-based flex
+  // containers, it represents the effective row gap. The
+  // `previous_content_block_end` indicates the end offset of the previous item
+  // (in column flex) or the previous row/line (in row flex). The previous row
+  // block end accounts for any additional space available before a gap due to
+  // alignment.
+  //
+  // When an item or row overflows the current fragmentainer, this function
+  // calculates and suppresses the gap that would otherwise appear at the top of
+  // the next fragmentainer.
+  void UpdateOffsetAdjustmentForSuppressedRowGap(
+      LayoutUnit gap,
+      LayoutUnit previous_content_block_end,
+      FlexLine* flex_line) const;
 
   StyleContentAlignmentData ResolvedJustifyContent() const;
 
@@ -99,10 +122,12 @@ class CORE_EXPORT FlexLayoutAlgorithm
 
   // This is same method as FlexItem but we need that logic before FlexItem is
   // constructed.
-  LayoutUnit MainAxisContentExtent(LayoutUnit sum_hypothetical_main_size) const;
+  LayoutUnit MainAxisContentExtent(
+      LayoutUnit sum_hypothetical_main_size = kIndefiniteSize) const;
 
   // Returns the position of the baseline, given a physical fragment.
   LayoutUnit BaselineAscent(const FlexItem&, const PhysicalBoxFragment&) const;
+  LayoutUnit SynthesizedBaselineAscent(const FlexItem&, const LayoutUnit) const;
 
   // If we should apply the automatic minimum size, see:
   // See: https://drafts.csswg.org/css-flexbox/#min-size-auto
@@ -113,9 +138,9 @@ class CORE_EXPORT FlexLayoutAlgorithm
       HeapVector<Member<LayoutBox>>& oof_children);
 
   // Set reading flow so they can be accessed by LayoutBox.
-  void SetReadingFlowNodes(const HeapVector<FlexLine>& flex_lines);
+  void SetReadingFlowNodes(const FlexLineVector& flex_lines);
 
-  MinMaxSizesResult ComputeMinMaxSizeOfRowContainerV3();
+  MinMaxSizesResult ComputeMinMaxSizeOfRowContainer();
   MinMaxSizesResult ComputeMinMaxSizeOfMultilineColumnContainer();
 
   // Return the amount of block space available in the current fragmentainer
@@ -139,7 +164,7 @@ class CORE_EXPORT FlexLayoutAlgorithm
       bool is_row_item,
       FlexColumnBreakInfo* flex_column_break_info) {
     return ::blink::BreakBeforeChildIfNeeded(
-        GetConstraintSpace(), child, layout_result, fragmentainer_block_offset,
+        child, layout_result, fragmentainer_block_offset,
         FragmentainerCapacityForChildren(), has_container_separation,
         &container_builder_, is_row_item, flex_column_break_info);
   }
@@ -177,7 +202,7 @@ class CORE_EXPORT FlexLayoutAlgorithm
 
   // Add the amount an item expanded by to the item offset adjustment of the
   // flex line at the index directly after |flex_line_idx|, if there is one.
-  void AdjustOffsetForNextLine(HeapVector<FlexLine>* flex_lines,
+  void AdjustOffsetForNextLine(FlexLineVector* flex_lines,
                                wtf_size_t flex_line_idx,
                                LayoutUnit item_expansion) const;
 
@@ -203,6 +228,7 @@ class CORE_EXPORT FlexLayoutAlgorithm
   const bool is_multi_line_;
   const bool is_horizontal_flow_;
   const bool is_cross_size_definite_;
+  const std::optional<wtf_size_t> balance_min_line_count_;
   const LogicalSize child_percentage_size_;
 
   const LayoutUnit gap_between_items_;
@@ -220,7 +246,7 @@ class CORE_EXPORT FlexLayoutAlgorithm
   // within a row flex container.
   bool has_processed_first_line_ = false;
 
-  std::unique_ptr<DevtoolsFlexInfo> layout_info_for_devtools_;
+  DevtoolsFlexInfo* layout_info_for_devtools_ = nullptr;
 
   // The block size of the entire flex container (ignoring any fragmentation).
   LayoutUnit total_block_size_;

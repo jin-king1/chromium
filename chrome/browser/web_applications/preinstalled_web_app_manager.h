@@ -18,10 +18,13 @@
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "base/values.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/web_applications/external_install_options.h"
 #include "chrome/browser/web_applications/externally_managed_app_manager.h"
 #include "chrome/browser/web_applications/file_utils_wrapper.h"
 #include "chrome/browser/web_applications/preinstalled_web_apps/preinstalled_web_apps.h"
+#include "components/webapps/common/manifest_id_constants.h"
+#include "components/webapps/common/web_app_id.h"
 #include "url/gurl.h"
 
 namespace user_prefs {
@@ -38,6 +41,19 @@ struct ParsedConfigs;
 }  // namespace
 
 class WebAppProvider;
+
+struct PreinstalledAppForUpdating {
+  PreinstalledAppForUpdating(webapps::ManifestId manifest_id,
+                             GURL install_url);
+  ~PreinstalledAppForUpdating();
+  PreinstalledAppForUpdating(const PreinstalledAppForUpdating& other);
+  PreinstalledAppForUpdating& operator=(
+      const PreinstalledAppForUpdating& other);
+  PreinstalledAppForUpdating(PreinstalledAppForUpdating&& other);
+  PreinstalledAppForUpdating& operator=(PreinstalledAppForUpdating&& other);
+  webapps::ManifestId manifest_id;
+  GURL install_url;
+};
 
 // Installs web apps to be preinstalled on the device (AKA default apps) during
 // start up. Will keep the apps installed on the device in sync with the set of
@@ -87,8 +103,10 @@ class PreinstalledWebAppManager {
   static base::AutoReset<bool> BypassAwaitingDependenciesForTesting();
   static base::AutoReset<bool> BypassOfflineManifestRequirementForTesting();
   static base::AutoReset<bool> OverridePreviousUserUninstallConfigForTesting();
-  static base::AutoReset<const base::Value::List*> SetConfigsForTesting(
-      const base::Value::List* configs);
+  static base::AutoReset<const base::ListValue*> SetConfigsForTesting(
+      const base::ListValue* configs);
+  static base::AutoReset<std::vector<ExternalInstallOptions>>
+  SetParsedConfigsForTesting(std::vector<ExternalInstallOptions> configs);
   static base::AutoReset<FileUtilsWrapper*> SetFileUtilsForTesting(
       FileUtilsWrapper* file_utils);
 
@@ -132,6 +150,17 @@ class PreinstalledWebAppManager {
     std::map<InstallUrl, webapps::UninstallResultCode> uninstall_results;
   };
   const DebugInfo* debug_info() const { return debug_info_.get(); }
+
+  // This is a preinstalled app configuration that will be attempted to be
+  // updated on startup via install_url and a background web contents after
+  // initial navigations in the app window.
+  const std::optional<PreinstalledAppForUpdating>&
+  preinstalled_app_for_updating() const {
+    return preinstalled_app_for_updating_;
+  }
+
+  void SetPreinstalledAppForUpdatingForTesting(
+      PreinstalledAppForUpdating preinstalled_app_for_updating);
 
  private:
   // Helper to delay a task until device information is fully initialized in
@@ -184,6 +213,16 @@ class PreinstalledWebAppManager {
 
   // TODO(http://b/333583704): Revert CL which added this field after migration.
   std::optional<DeviceInfo> device_info_;
+
+  std::optional<PreinstalledAppForUpdating> preinstalled_app_for_updating_
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+      = PreinstalledAppForUpdating{
+        webapps::ManifestId::Create(GURL(webapps::kMailGoogleChatManifestId))
+            .value(),
+          GURL(webapps::kMailGoogleChatInstallUrl)};
+#else
+      = std::nullopt;
+#endif
 
   base::ObserverList<PreinstalledWebAppManager::Observer, /*check_empty=*/true>
       observers_;

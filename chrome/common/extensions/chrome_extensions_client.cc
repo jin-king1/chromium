@@ -9,8 +9,8 @@
 #include <string>
 
 #include "base/command_line.h"
+#include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "chrome/common/chrome_resource_request_blocked_reason.h"
@@ -33,6 +33,7 @@
 #include "extensions/common/manifest_handlers/icons_handler.h"
 #include "extensions/common/permissions/api_permission_set.h"
 #include "extensions/common/permissions/permissions_data.h"
+#include "extensions/common/switches.h"
 #include "extensions/common/url_pattern.h"
 #include "extensions/common/url_pattern_set.h"
 #include "services/network/public/mojom/cors_origin_pattern.mojom.h"
@@ -52,8 +53,8 @@ const char kExtensionBlocklistHttpsUrlPrefix[] =
 }  // namespace
 
 ChromeExtensionsClient::ChromeExtensionsClient() {
-  AddAPIProvider(std::make_unique<ChromeExtensionsAPIProvider>());
   AddAPIProvider(std::make_unique<CoreExtensionsAPIProvider>());
+  AddAPIProvider(std::make_unique<ChromeExtensionsAPIProvider>());
 }
 
 ChromeExtensionsClient::~ChromeExtensionsClient() = default;
@@ -63,8 +64,8 @@ void ChromeExtensionsClient::Initialize() {
   // Allowlist ChromeVox, an accessibility extension from Google that needs
   // the ability to script webui pages. This is temporary and is not
   // meant to be a general solution.
-  // TODO(dmazzoni): remove this once we have an extension API that
-  // allows any extension to request read-only access to webui pages.
+  // TODO(crbug.com/412291638): Remove this once an extension API can allow any
+  // extension to request read-only access to WebUI pages.
   scripting_allowlist_.push_back(extension_misc::kChromeVoxExtensionId);
   InitializeWebStoreUrls(base::CommandLine::ForCurrentProcess());
 }
@@ -80,9 +81,9 @@ void ChromeExtensionsClient::InitializeWebStoreUrls(
     webstore_base_url_ = GURL(extension_urls::kChromeWebstoreBaseURL);
     new_webstore_base_url_ = GURL(extension_urls::kNewChromeWebstoreBaseURL);
   }
-  if (command_line->HasSwitch(switches::kAppsGalleryUpdateURL)) {
+  if (command_line->HasSwitch(::switches::kAppsGalleryUpdateURL)) {
     webstore_update_url_ = GURL(
-        command_line->GetSwitchValueASCII(switches::kAppsGalleryUpdateURL));
+        command_line->GetSwitchValueASCII(::switches::kAppsGalleryUpdateURL));
   } else {
     webstore_update_url_ = GURL(extension_urls::GetDefaultWebstoreUpdateUrl());
   }
@@ -107,8 +108,9 @@ void ChromeExtensionsClient::FilterHostPermissions(
       // chrome://favicon is the only URL for chrome:// scheme that we
       // want to support. We want to deprecate the "chrome" scheme.
       // We should not add any additional "host" here.
-      if (GURL(chrome::kChromeUIFaviconURL).host() != i->host())
+      if (GURL(chrome::kChromeUIFaviconURL).GetHost() != i->host()) {
         continue;
+      }
       permissions->insert(mojom::APIPermissionID::kFavicon);
     } else {
       new_hosts->AddPattern(*i);
@@ -127,29 +129,31 @@ ChromeExtensionsClient::GetScriptingAllowlist() const {
 }
 
 URLPatternSet ChromeExtensionsClient::GetPermittedChromeSchemeHosts(
-      const Extension* extension,
-      const APIPermissionSet& api_permissions) const {
+    const Extension* extension,
+    const APIPermissionSet& api_permissions) const {
   URLPatternSet hosts;
 
   // Do not allow any chrome-scheme hosts in MV3+ extensions.
-  if (extension->manifest_version() >= 3)
+  if (extension->manifest_version() >= 3) {
     return hosts;
+  }
 
   // Regular extensions are only allowed access to chrome://favicon.
-  hosts.AddPattern(URLPattern(URLPattern::SCHEME_CHROMEUI,
-                              chrome::kChromeUIFaviconURL));
+  hosts.AddPattern(
+      URLPattern(URLPattern::SCHEME_CHROMEUI, chrome::kChromeUIFaviconURL));
 
   return hosts;
 }
 
-bool ChromeExtensionsClient::IsScriptableURL(
-    const GURL& url, std::string* error) const {
+bool ChromeExtensionsClient::IsScriptableURL(const GURL& url,
+                                             std::string* error) const {
   // The gallery is special-cased as a restricted URL for scripting to prevent
   // access to special JS bindings we expose to the gallery (and avoid things
   // like extensions removing the "report abuse" link).
   if (extension_urls::IsWebstoreDomain(url)) {
-    if (error)
+    if (error) {
       *error = manifest_errors::kCannotScriptGallery;
+    }
     return false;
   }
   return true;
@@ -185,18 +189,20 @@ std::set<base::FilePath> ChromeExtensionsClient::GetBrowserImagePaths(
   std::set<base::FilePath> image_paths =
       ExtensionsClient::GetBrowserImagePaths(extension);
 
-  // Theme images
-  const base::Value::Dict* theme_images = ThemeInfo::GetImages(extension);
+  // Theme images.
+  const ThemeInfo::ThemeImages* theme_images = ThemeInfo::GetImages(extension);
   if (theme_images) {
-    for (const auto [key, value] : *theme_images) {
-      if (value.is_string())
-        image_paths.insert(base::FilePath::FromUTF8Unsafe(value.GetString()));
+    for (const auto& [theme_image_name, theme_resources] : *theme_images) {
+      for (const auto& theme_resource : theme_resources) {
+        image_paths.insert(theme_resource.resource.relative_path());
+      }
     }
   }
 
   const ActionInfo* action = ActionInfo::GetExtensionActionInfo(extension);
-  if (action && !action->default_icon.empty())
+  if (action && !action->default_icon.empty()) {
     action->default_icon.GetPaths(&image_paths);
+  }
 
   return image_paths;
 }

@@ -11,7 +11,6 @@ import android.content.ContentUris;
 import android.content.ContentValues;
 import android.database.Cursor;
 import android.net.Uri;
-import android.os.Build;
 import android.os.FileUtils;
 import android.os.ParcelFileDescriptor;
 import android.provider.BaseColumns;
@@ -21,10 +20,9 @@ import android.provider.MediaStore.MediaColumns;
 import android.text.TextUtils;
 import android.text.format.DateUtils;
 
-import androidx.annotation.RequiresApi;
-
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
@@ -71,13 +69,13 @@ public class DownloadCollectionBridge {
             mDisplayName = displayName;
         }
 
-        @CalledByNative("DisplayNameInfo")
-        private String getDownloadUri() {
+        @CalledByNative
+        private @JniType("std::string") String getDownloadUri() {
             return mUri;
         }
 
-        @CalledByNative("DisplayNameInfo")
-        private String getDisplayName() {
+        @CalledByNative
+        private @JniType("std::string") String getDisplayName() {
             return mDisplayName;
         }
     }
@@ -107,11 +105,11 @@ public class DownloadCollectionBridge {
      * @param referrer Referrer of the download.
      */
     @CalledByNative
-    public static @Nullable String createIntermediateUriForPublish(
-            final String fileName,
-            final String mimeType,
-            final String originalUrl,
-            final String referrer) {
+    public static @Nullable @JniType("std::string") String createIntermediateUriForPublish(
+            @JniType("std::string") String fileName,
+            @JniType("std::string") String mimeType,
+            @JniType("std::string") String originalUrl,
+            @JniType("std::string") String referrer) {
         Uri uri = createPendingSessionInternal(fileName, mimeType, originalUrl, referrer);
         if (uri != null) return uri.toString();
 
@@ -131,29 +129,28 @@ public class DownloadCollectionBridge {
 
     /**
      * Returns whether a download needs to be published.
+     *
      * @param filePath File path of the download.
      * @return True if the download needs to be published, or false otherwise.
      */
     @CalledByNative
-    public static boolean shouldPublishDownload(final String filePath) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (filePath == null) return false;
-            // Only need to publish downloads that are on primary storage.
-            return !sDownloadDelegate.isDownloadOnSDCard(filePath);
-        }
-        return false;
+    public static boolean shouldPublishDownload(@JniType("std::string") String filePath) {
+        if (filePath == null) return false;
+        // Only need to publish downloads that are on primary storage.
+        return !sDownloadDelegate.isDownloadOnSDCard(filePath);
     }
 
     /**
      * Copies file content from a source file to the destination Uri.
+     *
      * @param sourcePath File content to be copied from.
      * @param destinationUri Destination Uri to be copied to.
      * @return True on success, or false otherwise.
      */
     @CalledByNative
-    @RequiresApi(29)
     public static boolean copyFileToIntermediateUri(
-            final String sourcePath, final String destinationUri) {
+            @JniType("std::string") String sourcePath,
+            @JniType("std::string") String destinationUri) {
         try {
             PendingSession session = openPendingUri(destinationUri);
             OutputStream out = session.openOutputStream();
@@ -171,21 +168,24 @@ public class DownloadCollectionBridge {
 
     /**
      * Deletes the intermediate Uri.
+     *
      * @param uri Intermediate Uri that is going to be deleted.
      */
     @CalledByNative
-    public static void deleteIntermediateUri(final String uri) {
+    public static void deleteIntermediateUri(@JniType("std::string") String uri) {
         PendingSession session = openPendingUri(uri);
         session.abandon();
     }
 
     /**
      * Publishes the completed download to public download collection.
+     *
      * @param intermediateUri Intermediate Uri that is going to be published.
      * @return Uri of the published file.
      */
     @CalledByNative
-    public static String publishDownload(final String intermediateUri) {
+    public static @JniType("std::string") String publishDownload(
+            @JniType("std::string") String intermediateUri) {
         // Android Q's MediaStore.Downloads has an issue that the custom mime type which is not
         // supported by MimeTypeMap is overridden to "application/octet-stream" when publishing.
         // To deal with this issue we set the mime type again after publishing.
@@ -232,7 +232,7 @@ public class DownloadCollectionBridge {
      */
     @CalledByNative
     @SuppressWarnings("NullAway") // NPE caught by broad catch handler.
-    private static int openIntermediateUri(final String intermediateUri) {
+    private static int openIntermediateUri(@JniType("std::string") String intermediateUri) {
         try {
             ContentResolver resolver = ContextUtils.getApplicationContext().getContentResolver();
             ParcelFileDescriptor pfd =
@@ -251,22 +251,26 @@ public class DownloadCollectionBridge {
 
     /**
      * Check if a download with the same name already exists.
+     *
      * @param fileName The name of the file to check.
      * @return whether a download with the file name exists.
      */
     @CalledByNative
-    private static boolean fileNameExists(final String fileName) {
+    private static boolean fileNameExists(@JniType("std::string") String fileName) {
         return getDownloadUriForFileName(fileName) != null;
     }
 
     /**
      * Renames a download Uri with a display name.
+     *
      * @param downloadUri Uri of the download.
      * @param displayName New display name for the download.
      * @return whether rename was successful.
      */
     @CalledByNative
-    private static boolean renameDownloadUri(final String downloadUri, final String displayName) {
+    private static boolean renameDownloadUri(
+            @JniType("std::string") String downloadUri,
+            @JniType("std::string") String displayName) {
         final ContentValues updateValues = new ContentValues();
         Uri uri = Uri.parse(downloadUri);
         updateValues.put(MediaColumns.DISPLAY_NAME, displayName);
@@ -282,7 +286,6 @@ public class DownloadCollectionBridge {
      * @return an array of download Uri and display name pair.
      */
     @CalledByNative
-    @RequiresApi(29)
     private static DisplayNameInfo @Nullable [] getDisplayNamesForDownloads() {
         ContentResolver resolver = ContextUtils.getApplicationContext().getContentResolver();
         Cursor cursor = null;
@@ -314,18 +317,12 @@ public class DownloadCollectionBridge {
         return null;
     }
 
-    /** @return whether download collection is supported. */
-    public static boolean supportsDownloadCollection() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
-    }
-
     /**
      * Gets the content URI of the download that has the given file name.
      *
      * @param fileName name of the file.
      * @return Uri of the download with the given display name.
      */
-    @RequiresApi(29)
     public static @Nullable Uri getDownloadUriForFileName(String fileName) {
         Cursor cursor = null;
         try {
@@ -384,13 +381,13 @@ public class DownloadCollectionBridge {
 
     /**
      * Helper method to create PendingParams needed for PendingSession creation.
+     *
      * @param fileName Name of the file.
      * @param mimeType Mime type of the file.
      * @param originalUrl Originating URL of the download.
      * @param referrer Referrer of the download.
      * @return PendingParams needed for creating the PendingSession.
      */
-    @RequiresApi(29)
     private static PendingParams createPendingParams(
             final String fileName,
             final String mimeType,
@@ -454,7 +451,8 @@ public class DownloadCollectionBridge {
      * @return the display name of the download.
      */
     @CalledByNative
-    private static @Nullable String getDisplayName(final String downloadUri) {
+    private static @Nullable @JniType("std::string") String getDisplayName(
+            @JniType("std::string") String downloadUri) {
         ContentResolver resolver = ContextUtils.getApplicationContext().getContentResolver();
         Cursor cursor = null;
         try {

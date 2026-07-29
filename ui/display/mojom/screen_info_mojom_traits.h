@@ -19,12 +19,20 @@ struct COMPONENT_EXPORT(DISPLAY_SHARED_MOJOM_TRAITS)
     return r.device_scale_factor;
   }
 
+  static float text_scale_multiplier(const display::ScreenInfo& r) {
+    return r.text_scale_multiplier;
+  }
+
   static const gfx::DisplayColorSpaces& display_color_spaces(
       const display::ScreenInfo& r) {
     return r.display_color_spaces;
   }
 
   static int depth(const display::ScreenInfo& r) { return r.depth; }
+
+  static int handwriting_radius(const display::ScreenInfo& r) {
+    return r.handwriting_radius;
+  }
 
   static int depth_per_component(const display::ScreenInfo& r) {
     return r.depth_per_component;
@@ -61,6 +69,10 @@ struct COMPONENT_EXPORT(DISPLAY_SHARED_MOJOM_TRAITS)
 
   static const std::string& label(const display::ScreenInfo& r) {
     return r.label;
+  }
+
+  static float display_frequency(const display::ScreenInfo& r) {
+    return r.display_frequency;
   }
 
   static int64_t display_id(const display::ScreenInfo& r) {

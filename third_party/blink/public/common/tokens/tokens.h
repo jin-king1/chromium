@@ -103,10 +103,6 @@ using ShadowRealmToken = base::TokenType<class ShadowRealmTokenTypeMarker>;
 // their own section, in alphabetical order. If adding a new token here, please
 // keep the following list in alphabetic order.
 
-// Identifies an attributionsrc request made by the Attribution Reporting API.
-using AttributionSrcToken =
-    base::TokenType<class AttributionSrcTokenTypeMarker>;
-
 // Identifies a unique clipboard state.
 using ClipboardSequenceNumberToken = ui::ClipboardSequenceNumberToken;
 
@@ -148,6 +144,7 @@ using WebNNContextToken = base::TokenType<class WebNNContextTokenTypeMarker>;
 using WebNNPendingConstantToken =
     base::TokenType<class WebNNPendingConstantTokenTypeMarker>;
 using WebNNTensorToken = base::TokenType<class WebNNTensorTokenTypeMarker>;
+using WebNNGraphToken = base::TokenType<class WebNNGraphTokenTypeMarker>;
 
 }  // namespace blink
 

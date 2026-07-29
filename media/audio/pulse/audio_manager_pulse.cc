@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/audio/pulse/audio_manager_pulse.h"
 
 #include <algorithm>
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/environment.h"
 #include "base/logging.h"
 #include "base/nix/xdg_util.h"
@@ -77,8 +73,9 @@ bool AudioManagerPulse::HasAudioInputDevices() {
   return !devices.empty();
 }
 
-void AudioManagerPulse::GetAudioDeviceNames(
-    bool input, media::AudioDeviceNames* device_names) {
+bool AudioManagerPulse::GetAudioDeviceNames(
+    bool input,
+    media::AudioDeviceNames* device_names) {
   DCHECK(device_names->empty());
   DCHECK(input_mainloop_);
   DCHECK(input_context_);
@@ -92,21 +89,24 @@ void AudioManagerPulse::GetAudioDeviceNames(
     operation = pa_context_get_sink_info_list(
         input_context_, OutputDevicesInfoCallback, this);
   }
-  WaitForOperationCompletion(input_mainloop_, operation, input_context_);
+  bool success =
+      WaitForOperationCompletion(input_mainloop_, operation, input_context_);
 
   // Prepend the default device if the list is not empty.
   if (!device_names->empty())
     device_names->push_front(AudioDeviceName::CreateDefault());
+
+  return success;
 }
 
-void AudioManagerPulse::GetAudioInputDeviceNames(
+bool AudioManagerPulse::GetAudioInputDeviceNames(
     AudioDeviceNames* device_names) {
-  GetAudioDeviceNames(true, device_names);
+  return GetAudioDeviceNames(true, device_names);
 }
 
-void AudioManagerPulse::GetAudioOutputDeviceNames(
+bool AudioManagerPulse::GetAudioOutputDeviceNames(
     AudioDeviceNames* device_names) {
-  GetAudioDeviceNames(false, device_names);
+  return GetAudioDeviceNames(false, device_names);
 }
 
 AudioParameters AudioManagerPulse::GetInputStreamParameters(
@@ -139,7 +139,7 @@ AudioParameters AudioManagerPulse::GetInputStreamParameters(
                          buffer_size);
 }
 
-const char* AudioManagerPulse::GetName() {
+const std::string_view AudioManagerPulse::GetName() {
   return "PulseAudio";
 }
 
@@ -318,16 +318,21 @@ void AudioManagerPulse::InputDevicesInfoCallback(pa_context* context,
 
   // If the device has ports, but none of them are available, skip it.
   if (info->n_ports > 0) {
-    uint32_t port = 0;
-    for (; port != info->n_ports; ++port) {
-      if (info->ports[port]->available != PA_PORT_AVAILABLE_NO)
-        break;
-    }
-    if (port == info->n_ports)
+    // SAFETY:
+    // https://freedesktop.org/software/pulseaudio/doxygen/structpa__source__info.html#a97efff6db2851bc811a31384981a1b0b
+    // The documentation says that `info->ports` represents an array of
+    // available ports. The number is stored in `info->n_ports`.
+    UNSAFE_BUFFERS(
+        base::span<pa_source_port_info*> ports(info->ports, info->n_ports));
+    bool no_ports_available = std::ranges::all_of(ports, [](auto* port) {
+      return port->available == PA_PORT_AVAILABLE_NO;
+    });
+    if (no_ports_available) {
       return;
+    }
   }
 
-  manager->devices_->push_back(AudioDeviceName(info->description, info->name));
+  manager->devices_->emplace_back(info->description, info->name);
 }
 
 void AudioManagerPulse::OutputDevicesInfoCallback(pa_context* context,

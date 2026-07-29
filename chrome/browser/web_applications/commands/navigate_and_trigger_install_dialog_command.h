@@ -12,6 +12,7 @@
 #include "base/values.h"
 #include "chrome/browser/web_applications/commands/web_app_command.h"
 #include "chrome/browser/web_applications/locks/noop_lock.h"
+#include "chrome/browser/web_applications/scheduler/navigate_and_trigger_install_dialog_result.h"
 #include "components/webapps/browser/installable/installable_logging.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/common/web_app_id.h"
@@ -35,24 +36,11 @@ class AppLock;
 class WebAppDataRetriever;
 class WebAppUiManager;
 
-enum class NavigateAndTriggerInstallDialogCommandResult {
-  kFailure,
-  kAlreadyInstalled,
-  kDialogShown,
-  kShutdown
-};
-
-// The navigation will always succeed. The `result` indicates whether the
-// command was able to trigger the install dialog.
-using NavigateAndTriggerInstallDialogCommandCallback = base::OnceCallback<void(
-    NavigateAndTriggerInstallDialogCommandResult result)>;
-
 // This command navigates to the specified install url and waits for the web app
 // manifest to load. If there is an installable web app that the user has not
 // installed, the command will automatically trigger the install dialog.
 class NavigateAndTriggerInstallDialogCommand
-    : public WebAppCommand<NoopLock,
-                           NavigateAndTriggerInstallDialogCommandResult> {
+    : public WebAppCommand<NoopLock, NavigateAndTriggerInstallDialogResult> {
  public:
   NavigateAndTriggerInstallDialogCommand(
       const GURL& install_url,

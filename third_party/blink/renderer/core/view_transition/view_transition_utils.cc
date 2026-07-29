@@ -6,6 +6,8 @@
 
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
@@ -14,65 +16,88 @@
 #include "third_party/blink/renderer/core/view_transition/view_transition.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_supplement.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_transition_element.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
 // static
-void ViewTransitionUtils::ForEachTransitionPseudo(Document& document,
-                                                  PseudoFunctor func) {
-  if (!document.documentElement()) {
+void ViewTransitionUtils::ForEachTransitionPseudo(const Element& element,
+                                                  PseudoFunctor func,
+                                                  Filter filter) {
+  if (!element.IsPseudoElement()) {
+    if (PseudoElement* transition_element =
+            element.GetPseudoElement(kPseudoIdViewTransition)) {
+      func(transition_element);
+      if (filter == Filter::kDescendants) {
+        ForEachTransitionPseudo(*transition_element, func, filter);
+      }
+    }
     return;
   }
 
-  auto* transition_pseudo =
-      document.documentElement()->GetPseudoElement(kPseudoIdViewTransition);
-  if (!transition_pseudo) {
+  if (!IsTransitionPseudoElement(element.GetPseudoId())) {
     return;
   }
 
-  func(transition_pseudo);
+  const ViewTransitionPseudoElementBase& transition_pseudo =
+      To<ViewTransitionPseudoElementBase>(element);
+  const AtomicString& self_name = transition_pseudo.view_transition_name();
 
-  for (const auto& view_transition_name :
-       document.GetStyleEngine().ViewTransitionTags()) {
-    auto* container_pseudo =
-        To<ViewTransitionTransitionElement>(transition_pseudo)
-            ->FindViewTransitionGroupPseudoElement(view_transition_name);
-    if (!container_pseudo) {
-      continue;
-    }
+  switch (transition_pseudo.GetPseudoId()) {
+    case kPseudoIdViewTransition:
+    case kPseudoIdViewTransitionGroupChildren:
+      for (const AtomicString& name :
+           transition_pseudo.GetViewTransitionNames()) {
+        if (PseudoElement* group = transition_pseudo.GetPseudoElement(
+                kPseudoIdViewTransitionGroup, name)) {
+          func(group);
+          if (filter == Filter::kDescendants) {
+            ForEachTransitionPseudo(*group, func, filter);
+          }
+        }
+      }
+      break;
 
-    func(container_pseudo);
+    case kPseudoIdViewTransitionGroup:
+      if (PseudoElement* image_pair = transition_pseudo.GetPseudoElement(
+              kPseudoIdViewTransitionImagePair, self_name)) {
+        func(image_pair);
+        if (filter == Filter::kDescendants) {
+          ForEachTransitionPseudo(*image_pair, func, filter);
+        }
+      }
+      if (PseudoElement* group_children = transition_pseudo.GetPseudoElement(
+              kPseudoIdViewTransitionGroupChildren, self_name)) {
+        func(group_children);
+        if (filter == Filter::kDescendants) {
+          ForEachTransitionPseudo(*group_children, func, filter);
+        }
+      }
+      break;
 
-    auto* wrapper_pseudo = container_pseudo->GetPseudoElement(
-        kPseudoIdViewTransitionImagePair, view_transition_name);
-    if (!wrapper_pseudo) {
-      continue;
-    }
+    case kPseudoIdViewTransitionImagePair:
+      if (PseudoElement* old_image = transition_pseudo.GetPseudoElement(
+              kPseudoIdViewTransitionOld, self_name)) {
+        func(old_image);
+      }
+      if (PseudoElement* new_image = transition_pseudo.GetPseudoElement(
+              kPseudoIdViewTransitionNew, self_name)) {
+        func(new_image);
+      }
+      break;
 
-    func(wrapper_pseudo);
+    case kPseudoIdViewTransitionOld:
+    case kPseudoIdViewTransitionNew:
+      break;
 
-    if (auto* content = wrapper_pseudo->GetPseudoElement(
-            kPseudoIdViewTransitionOld, view_transition_name)) {
-      func(content);
-    }
-
-    if (auto* content = wrapper_pseudo->GetPseudoElement(
-            kPseudoIdViewTransitionNew, view_transition_name)) {
-      func(content);
-    }
+    default:
+      NOTREACHED();
   }
 }
 
 // static
-PseudoElement* ViewTransitionUtils::FindPseudoIf(const Document& document,
+PseudoElement* ViewTransitionUtils::FindPseudoIf(const Element& element,
                                                  PseudoPredicate condition) {
-  if (!document.documentElement()) {
-    return nullptr;
-  }
-
-  auto* transition_pseudo =
-      document.documentElement()->GetPseudoElement(kPseudoIdViewTransition);
+  auto* transition_pseudo = element.GetPseudoElement(kPseudoIdViewTransition);
   if (!transition_pseudo) {
     return nullptr;
   }
@@ -81,7 +106,8 @@ PseudoElement* ViewTransitionUtils::FindPseudoIf(const Document& document,
   }
 
   for (const auto& view_transition_name :
-       document.GetStyleEngine().ViewTransitionTags()) {
+       To<ViewTransitionPseudoElementBase>(transition_pseudo)
+           ->GetViewTransitionNames()) {
     auto* container_pseudo =
         To<ViewTransitionTransitionElement>(transition_pseudo)
             ->FindViewTransitionGroupPseudoElement(view_transition_name);
@@ -90,6 +116,12 @@ PseudoElement* ViewTransitionUtils::FindPseudoIf(const Document& document,
     }
     if (condition(container_pseudo)) {
       return container_pseudo;
+    }
+
+    if (auto* nested_groups = container_pseudo->GetPseudoElement(
+            kPseudoIdViewTransitionGroupChildren, view_transition_name);
+        nested_groups && condition(nested_groups)) {
+      return nested_groups;
     }
 
     auto* wrapper_pseudo = container_pseudo->GetPseudoElement(
@@ -118,56 +150,8 @@ PseudoElement* ViewTransitionUtils::FindPseudoIf(const Document& document,
 }
 
 // static
-void ViewTransitionUtils::ForEachDirectTransitionPseudo(const Element* element,
-                                                        PseudoFunctor func) {
-  if (element->IsDocumentElement()) {
-    if (auto* pseudo = element->GetPseudoElement(kPseudoIdViewTransition)) {
-      func(pseudo);
-    }
-    return;
-  }
-
-  if (!IsTransitionPseudoElement(element->GetPseudoId())) {
-    return;
-  }
-
-  switch (element->GetPseudoId()) {
-    case kPseudoIdViewTransition:
-      for (auto name :
-           element->GetDocument().GetStyleEngine().ViewTransitionTags()) {
-        if (auto* pseudo =
-                element->GetPseudoElement(kPseudoIdViewTransitionGroup, name)) {
-          func(pseudo);
-        }
-      }
-      break;
-    case kPseudoIdViewTransitionGroup:
-      if (auto* pseudo =
-              element->GetPseudoElement(kPseudoIdViewTransitionImagePair)) {
-        func(pseudo);
-      }
-      break;
-    case kPseudoIdViewTransitionImagePair:
-      if (auto* pseudo =
-              element->GetPseudoElement(kPseudoIdViewTransitionOld)) {
-        func(pseudo);
-      }
-      if (auto* pseudo =
-              element->GetPseudoElement(kPseudoIdViewTransitionNew)) {
-        func(pseudo);
-      }
-      break;
-    case kPseudoIdViewTransitionOld:
-    case kPseudoIdViewTransitionNew:
-      break;
-    default:
-      NOTREACHED();
-  }
-}
-
-// static
 ViewTransition* ViewTransitionUtils::GetTransition(const Document& document) {
-  auto* supplement = ViewTransitionSupplement::FromIfExists(document);
+  auto* supplement = document.GetViewTransitionsIfExists();
   if (!supplement) {
     return nullptr;
   }
@@ -179,10 +163,56 @@ ViewTransition* ViewTransitionUtils::GetTransition(const Document& document) {
 }
 
 // static
+ViewTransition* ViewTransitionUtils::GetTransition(const Element& element) {
+  auto* supplement = element.GetDocument().GetViewTransitionsIfExists();
+  if (!supplement) {
+    return nullptr;
+  }
+  ViewTransition* transition = supplement->GetTransition(element);
+  if (!transition || transition->IsDone()) {
+    return nullptr;
+  }
+  return transition;
+}
+
+ViewTransition* ViewTransitionUtils::GetTransition(const Node& node) {
+  if (node.IsElementNode()) {
+    return GetTransition(To<Element>(node));
+  }
+  return GetTransition(node.GetDocument());
+}
+
+ViewTransition* ViewTransitionUtils::TransitionForParticipant(
+    const Element& element) {
+  ViewTransition* result = nullptr;
+  ForEachTransition(element.GetDocument(), [&](ViewTransition& transition) {
+    if (transition.IsTransitionElementExcludingRoot(element)) {
+      result = &transition;
+    }
+  });
+  return result;
+}
+
+ViewTransition* ViewTransitionUtils::TransitionForParticipantOrScope(
+    const LayoutObject& layout_object) {
+  ViewTransition* result = nullptr;
+  // Note: an element can't participate in more than one transition at the same
+  // time. There may be skipped transitions still waiting for the DOM callback
+  // to run, but those should return false from NeedsViewTransitionEffectNode.
+  ForEachTransition(
+      layout_object.GetDocument(), [&](ViewTransition& transition) {
+        if (transition.NeedsViewTransitionEffectNode(layout_object)) {
+          result = &transition;
+        }
+      });
+  return result;
+}
+
+// static
 void ViewTransitionUtils::ForEachTransition(
     const Document& document,
     base::FunctionRef<void(ViewTransition&)> function) {
-  if (auto* supplement = ViewTransitionSupplement::FromIfExists(document)) {
+  if (auto* supplement = document.GetViewTransitionsIfExists()) {
     supplement->ForEachTransition(function);
   }
 }
@@ -208,33 +238,9 @@ ViewTransition* ViewTransitionUtils::GetOutgoingCrossDocumentTransition(
 }
 
 // static
-DOMViewTransition* ViewTransitionUtils::GetTransitionScriptDelegate(
-    const Document& document) {
-  ViewTransition* view_transition =
-      ViewTransitionUtils::GetTransition(document);
-  if (!view_transition) {
-    return nullptr;
-  }
-
-  return view_transition->GetScriptDelegate();
-}
-
-// static
-PseudoElement* ViewTransitionUtils::GetRootPseudo(const Document& document) {
-  if (!document.documentElement()) {
-    return nullptr;
-  }
-
-  PseudoElement* view_transition_pseudo =
-      document.documentElement()->GetPseudoElement(kPseudoIdViewTransition);
-  DCHECK(!view_transition_pseudo || GetTransition(document));
-  return view_transition_pseudo;
-}
-
-// static
 VectorOf<std::unique_ptr<ViewTransitionRequest>>
 ViewTransitionUtils::GetPendingRequests(const Document& document) {
-  auto* supplement = ViewTransitionSupplement::FromIfExists(document);
+  auto* supplement = document.GetViewTransitionsIfExists();
   if (supplement) {
     return supplement->TakePendingRequests();
   }
@@ -259,6 +265,54 @@ bool ViewTransitionUtils::IsViewTransitionParticipantFromSupplement(
     const LayoutObject& object) {
   ViewTransition* transition = GetTransition(object.GetDocument());
   return transition && transition->IsRepresentedViaPseudoElements(object);
+}
+
+ViewTransitionUtils::GetPropertyCSSValueScope::GetPropertyCSSValueScope(
+    Document& document,
+    PseudoId pseudo_id)
+    : document_(document), pseudo_id_(pseudo_id) {
+  if (!IsTransitionPseudoElement(pseudo_id_)) {
+    return;
+  }
+
+  if (auto* supplement = document_.GetViewTransitionsIfExists()) {
+    supplement->WillEnterGetComputedStyleScope();
+  }
+}
+
+ViewTransitionUtils::GetPropertyCSSValueScope::~GetPropertyCSSValueScope() {
+  if (!IsTransitionPseudoElement(pseudo_id_)) {
+    return;
+  }
+
+  if (auto* supplement = document_.GetViewTransitionsIfExists()) {
+    supplement->WillExitGetComputedStyleScope();
+  }
+}
+
+void ViewTransitionUtils::WillUpdateStyleAndLayoutTree(Document& document) {
+  if (auto* supplement = document.GetViewTransitionsIfExists()) {
+    supplement->WillUpdateStyleAndLayoutTree();
+  }
+}
+
+// static
+PseudoId ViewTransitionUtils::ParentViewTransitionPseudoId(PseudoId pseudo_id) {
+  switch (pseudo_id) {
+    case kPseudoIdViewTransitionNew:
+    case kPseudoIdViewTransitionOld:
+      return kPseudoIdViewTransitionImagePair;
+
+    case kPseudoIdViewTransitionImagePair:
+    case kPseudoIdViewTransitionGroupChildren:
+      return kPseudoIdViewTransitionGroup;
+
+    case kPseudoIdViewTransitionGroup:
+      return kPseudoIdViewTransition;
+
+    default:
+      return kPseudoIdNone;
+  }
 }
 
 }  // namespace blink

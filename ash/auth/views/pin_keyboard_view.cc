@@ -18,6 +18,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -66,9 +67,11 @@ views::Button* PinKeyboardView::TestApi::backspace_button() {
 }
 
 views::Button* PinKeyboardView::TestApi::digit_button(int digit) {
-  CHECK(view_->digit_buttons_.contains(digit));
-  CHECK(view_->digit_buttons_[digit]);
-  return view_->digit_buttons_[digit];
+  auto it = view_->digit_buttons_.find(digit);
+  CHECK(it != view_->digit_buttons_.end());
+  views::Button* button = it->second;
+  CHECK(button);
+  return button;
 }
 
 bool PinKeyboardView::TestApi::GetEnabled() {

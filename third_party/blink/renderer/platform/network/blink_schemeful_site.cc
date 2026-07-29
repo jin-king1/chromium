@@ -8,6 +8,7 @@
 #include <string>
 
 #include "net/base/schemeful_site.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "url/url_canon.h"
 
 namespace blink {
@@ -18,7 +19,7 @@ BlinkSchemefulSite::BlinkSchemefulSite() {
 
 BlinkSchemefulSite::BlinkSchemefulSite(
     scoped_refptr<const SecurityOrigin> origin)
-    : BlinkSchemefulSite(net::SchemefulSite(origin->ToUrlOrigin())) {}
+    : BlinkSchemefulSite(origin->GetSchemefulSite()) {}
 
 BlinkSchemefulSite::BlinkSchemefulSite(const url::Origin& origin)
     : BlinkSchemefulSite(net::SchemefulSite(origin)) {}
@@ -40,7 +41,7 @@ BlinkSchemefulSite::BlinkSchemefulSite(const net::SchemefulSite& site) {
 }
 
 BlinkSchemefulSite::operator net::SchemefulSite() const {
-  return net::SchemefulSite(site_as_origin_->ToUrlOrigin());
+  return site_as_origin_->GetSchemefulSite();
 }
 
 String BlinkSchemefulSite::Serialize() const {
@@ -49,7 +50,7 @@ String BlinkSchemefulSite::Serialize() const {
 
 String BlinkSchemefulSite::GetDebugString() const {
   DCHECK(site_as_origin_);
-  return "{ origin_as_site: " + Serialize() + " }";
+  return StrCat({"{ origin_as_site: ", Serialize(), " }"});
 }
 
 // static

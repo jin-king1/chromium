@@ -4,15 +4,19 @@
 
 package org.chromium.chrome.browser.ui.hats;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.res.Resources;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.ResettersForTesting;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
 import org.chromium.components.messages.MessageDispatcherProvider;
 import org.chromium.components.messages.MessageWrapper;
@@ -21,14 +25,22 @@ import org.chromium.ui.modelutil.PropertyModel;
 
 /** Glue code between C++ and Java for passing SurveyUiDelegate. */
 @JNINamespace("hats")
+@NullMarked
 class SurveyUiDelegateBridge implements SurveyUiDelegate {
+    private static @Nullable SurveyUiDelegate sDelegateForTesting;
+
     private final @Nullable SurveyUiDelegate mDelegate;
     private final long mNativePointer;
+
+    static void setDelegateForTesting(SurveyUiDelegate delegate) {
+        sDelegateForTesting = delegate;
+        ResettersForTesting.register(() -> sDelegateForTesting = null);
+    }
 
     /** Called from C++ to create a new SurveyUiDelegate using a message. */
     @CalledByNative
     @VisibleForTesting
-    static SurveyUiDelegateBridge createFromMessage(
+    static @Nullable SurveyUiDelegateBridge createFromMessage(
             long nativePointer, MessageWrapper messageWrapper, WindowAndroid windowAndroid) {
         if (windowAndroid == null || SurveyClientFactory.getInstance() == null) return null;
 
@@ -39,12 +51,17 @@ class SurveyUiDelegateBridge implements SurveyUiDelegate {
         if (tabModelSelector == null) return null;
 
         populateDefaultValuesForMessageWrapper(messageWrapper, windowAndroid);
-        MessageSurveyUiDelegate delegate =
-                new MessageSurveyUiDelegate(
-                        messageWrapper.getMessageProperties(),
-                        messageDispatcher,
-                        tabModelSelector,
-                        SurveyClientFactory.getInstance().getCrashUploadPermissionSupplier());
+        // TODO(crbug.com/453007852): When ObservableSupplier<E> extends Supplier<@Nullable E>,
+        // remove cast to Supplier<@Nullable Boolean>,
+        SurveyUiDelegate delegate = sDelegateForTesting;
+        if (delegate == null) {
+            delegate =
+                    new MessageSurveyUiDelegate(
+                            messageWrapper.getMessageProperties(),
+                            messageDispatcher,
+                            tabModelSelector,
+                            SurveyClientFactory.getInstance().getCrashUploadPermissionSupplier());
+        }
 
         return new SurveyUiDelegateBridge(nativePointer, delegate);
     }
@@ -59,7 +76,7 @@ class SurveyUiDelegateBridge implements SurveyUiDelegate {
     @VisibleForTesting
     private static void populateDefaultValuesForMessageWrapper(
             MessageWrapper input, WindowAndroid windowAndroid) {
-        Resources res = windowAndroid.getContext().get().getResources();
+        Resources res = assumeNonNull(windowAndroid.getContext().get()).getResources();
         PropertyModel model = input.getMessageProperties();
         MessageSurveyUiDelegate.populateDefaultValuesForSurveyMessage(res, model);
     }
@@ -96,8 +113,7 @@ class SurveyUiDelegateBridge implements SurveyUiDelegate {
         SurveyUiDelegateBridgeJni.get().dismiss(mNativePointer);
     }
 
-    @Nullable
-    SurveyUiDelegate getDelegateForTesting() {
+    @Nullable SurveyUiDelegate getDelegateForTesting() {
         return mDelegate;
     }
 

@@ -57,13 +57,15 @@ from pylib.utils import test_filter
 from py_utils import contextlib_ext
 
 from lib.proto import exception_recorder
+from lib.proto import measures
 from lib.results import result_sink
 
 _DEVIL_STATIC_CONFIG_FILE = os.path.abspath(os.path.join(
     host_paths.DIR_SOURCE_ROOT, 'build', 'android', 'devil_config.json'))
 
 _RERUN_FAILED_TESTS_FILE = 'rerun_failed_tests.filter'
-
+# A dictionary of a test suite and a flat test name to overwrite.
+_REWRITE_SCHEME = {'components_perftests': 'components_perftests'}
 
 def _RealPath(arg):
   if arg.startswith('//'):
@@ -150,6 +152,10 @@ def AddTracingOptions(parser):
 
 def AddCommonOptions(parser):
   """Adds all common options to |parser|."""
+  parser.add_argument("-q",
+                      "--quiet",
+                      action="store_true",
+                      help="Minimize output.")
 
   default_build_type = os.environ.get('BUILDTYPE', 'Debug')
 
@@ -191,6 +197,12 @@ def AddCommonOptions(parser):
       action='store_true',
       help='Whether to archive test output locally and generate '
            'a local results detail page.')
+  # This is being added here so that autotest.py can pass the flag without
+  # knowing if it's a robolectric test.
+  parser.add_argument(
+      '--single-variant',
+      action='store_true',
+      help='Run only a single SDK variant of Robolectric tests.')
 
   parser.add_argument('--list-tests',
                       action='store_true',
@@ -209,16 +221,14 @@ def AddCommonOptions(parser):
       namespace.local_output = True
       namespace.num_retries = 0
       namespace.skip_clear_data = True
-      namespace.use_persistent_shell = True
 
-  parser.add_argument(
-      '--fast-local-dev',
-      type=bool,
-      nargs=0,
-      action=FastLocalDevAction,
-      help='Alias for: --num-retries=0 --enable-device-cache '
-      '--enable-concurrent-adb --skip-clear-data '
-      '--extract-test-list-from-filter --use-persistent-shell --local-output')
+  parser.add_argument('--fast-local-dev',
+                      type=bool,
+                      nargs=0,
+                      action=FastLocalDevAction,
+                      help='Alias for: --num-retries=0 --enable-device-cache '
+                      '--enable-concurrent-adb --skip-clear-data '
+                      '--extract-test-list-from-filter --local-output')
 
   # TODO(jbudorick): Remove this once downstream bots have switched to
   # api.test_results.
@@ -247,24 +257,19 @@ def AddCommonOptions(parser):
       dest='repeat', type=int, default=0,
       help='Number of times to repeat the specified set of tests.')
 
-  # Not useful for junit tests.
+  # There may be steps that involve setting up a new emulator or device
+  # resets that may not interact well with a persistent shell connection.
   parser.add_argument(
-      '--use-persistent-shell',
+      '--disable-persistent-shell',
       action='store_true',
-      help='Uses a persistent shell connection for the adb connection.')
+      help='Use a non-persistent shell connection for the adb connection.')
 
-  parser.add_argument('--disable-test-server',
+  parser.add_argument('--run-disabled',
+                      '--gtest_also_run_disabled_tests',
+                      '--gtest-also-run-disabled-tests',
+                      '--isolated-script-test-also-run-disabled-tests',
                       action='store_true',
-                      help='Disables SpawnedTestServer which doesn'
-                      't work with remote adb. '
-                      'WARNING: Will break tests which require the server.')
-
-  # This is currently only implemented for gtests and instrumentation tests.
-  parser.add_argument(
-      '--gtest_also_run_disabled_tests', '--gtest-also-run-disabled-tests',
-      '--isolated-script-test-also-run-disabled-tests',
-      dest='run_disabled', action='store_true',
-      help='Also run disabled tests if applicable.')
+                      help='Also run disabled tests if applicable.')
 
   # These are currently only implemented for gtests.
   parser.add_argument('--isolated-script-test-output',
@@ -281,10 +286,11 @@ def AddCommonOptions(parser):
 def ProcessCommonOptions(args):
   """Processes and handles all common options."""
   run_tests_helper.SetLogLevel(args.verbose_count, add_handler=False)
-  if args.verbose_count > 0:
-    handler = logging_utils.ColorStreamHandler()
-  else:
-    handler = logging.StreamHandler(sys.stdout)
+  # Color warnings only when showing INFO logs (otherwise they do not need to
+  # be distinguished).
+  color_warnings = args.verbose_count > 0
+  logging_utils.InitColorama()
+  handler = logging_utils.ColorStreamHandler(color_warnings=color_warnings)
   handler.setFormatter(run_tests_helper.CustomFormatter())
   logging.getLogger().addHandler(handler)
 
@@ -361,10 +367,10 @@ def AddDeviceOptions(parser):
       'secondary user, e.g. Android Automotive OS.')
 
   parser.add_argument(
-      '--connect-over-ethernet',
+      '--connect-over-network',
       action='store_true',
-      help='Connect to devices over the network using "adb connect". Only '
-      'supported when running on chromeos-swarming')
+      help='Connect to devices over the network using "adb connect". Must '
+      'specify device hostnames/IPs via "-d"/"--device" args.')
 
 
 def AddEmulatorOptions(parser):
@@ -445,6 +451,10 @@ def AddGTestOptions(parser):
       help=('If present, test artifacts will be uploaded to this Google '
             'Storage bucket.'))
   parser.add_argument(
+      '--proguard-mapping-path',
+      help='.mapping file to use to Deobfuscate java stack traces in test '
+      'output and logcat.')
+  parser.add_argument(
       '--render-test-output-dir',
       help='If present, store rendering artifacts in this path.')
   parser.add_argument(
@@ -459,6 +469,15 @@ def AddGTestOptions(parser):
       '--store-tombstones',
       dest='store_tombstones', action='store_true',
       help='Add tombstones in results if crash.')
+  parser.add_argument(
+      '--do-not-store-tombstones',
+      dest='store_tombstones',
+      action='store_false',
+      help=('Do not add tombstones in results if a crash occurs. This is the '
+            'default behavior, but is available via an explicit flag for '
+            'cases such as crbug.com/419062315 where tombstones should not '
+            'be stored and --store-tombstones cannot be removed from the '
+            'command line.'))
   parser.add_argument(
       '-s', '--suite',
       dest='suite_name', nargs='+', metavar='SUITE_NAME', required=True,
@@ -487,12 +506,12 @@ def AddGTestOptions(parser):
       help='Do not push new files to the device, instead using existing APK '
       'and test data. Only use when running the same test for multiple '
       'iterations.')
-  # This is currently only implemented for gtests tests.
-  parser.add_argument('--gtest_also_run_pre_tests',
-                      '--gtest-also-run-pre-tests',
+  parser.add_argument('--gtest_skip_pre_tests',
+                      '--gtest-skip-pre-tests',
                       dest='run_pre_tests',
-                      action='store_true',
-                      help='Also run PRE_ tests if applicable.')
+                      action='store_false',
+                      default=True,
+                      help='Do not run PRE_ tests if applicable.')
 
 
 def AddInstrumentationTestOptions(parser):
@@ -560,6 +579,11 @@ def AddInstrumentationTestOptions(parser):
       dest='additional_locales',
       help='Specify locales in addition to the device locale to install splits '
       'for when --apk-under-test is an Android App Bundle.')
+  parser.add_argument('--device-data-filter',
+                      action='append',
+                      dest='device_data_filters',
+                      default=[],
+                      help='Device data filter (e.g. +//chrome/test/data/*)')
   parser.add_argument(
       '--coverage-dir',
       type=os.path.realpath,
@@ -646,6 +670,15 @@ def AddInstrumentationTestOptions(parser):
       '--store-tombstones',
       action='store_true', dest='store_tombstones',
       help='Add tombstones in results if crash.')
+  parser.add_argument(
+      '--do-not-store-tombstones',
+      dest='store_tombstones',
+      action='store_false',
+      help=('Do not add tombstones in results if a crash occurs. This is the '
+            'default behavior, but is available via an explicit flag for '
+            'cases such as crbug.com/419062315 where tombstones should not '
+            'be stored and --store-tombstones cannot be removed from the '
+            'command line.'))
   parser.add_argument(
       '--strict-mode',
       dest='strict_mode', default='testing',
@@ -766,6 +799,12 @@ def AddSkiaGoldTestOptions(parser):
       help='Bypass all interaction with Skia Gold, effectively disabling the '
       'image comparison portion of any tests that use Gold. Only meant to be '
       'used in case a Gold outage occurs and cannot be fixed quickly.')
+  parser.add_argument(
+      '--skia-gold-consider-unsupported',
+      action='store_true',
+      help='Considers the configuration unsupported for Skia Gold, even if the '
+      'Device + SDK Level is considered supported, which will avoid failing '
+      'the test if there is a mismatch with goldens.')
 
 
 def AddHostsideTestOptions(parser):
@@ -872,7 +911,6 @@ def AddJUnitTestOptions(parser):
                       help='Path to search for native libraries.')
   parser.add_argument(
       '--resource-apk',
-      required=True,
       help='Path to .ap_ containing binary resources for Robolectric.')
   parser.add_argument('--shadows-allowlist',
                       help='Path to Allowlist file for Shadows.')
@@ -1003,12 +1041,14 @@ def RunTestsCommand(args, result_sink_client=None):
   raise Exception('Unknown test type.')
 
 
-def _SinkTestResult(test_result, test_file_name, result_sink_client):
+def _SinkTestResult(test_result, test_file_name, test_instance,
+                    result_sink_client):
   """Upload test result to result_sink.
 
   Args:
     test_result: A BaseTestResult object
     test_file_name: A string representing the file location of the test
+    test_instance: A TestInstance object.
     result_sink_client: A ResultSinkClient object
 
   Returns:
@@ -1030,14 +1070,122 @@ def _SinkTestResult(test_result, test_file_name, result_sink_client):
                    link_url, test_result.GetName())
   if https_artifacts:
     html_artifact += '<ul>%s</ul>' % '\n'.join(https_artifacts)
+
   result_sink_client.Post(test_result.GetNameForResultSink(),
                           test_result.GetType(),
                           test_result.GetDuration(),
                           log_decoded,
                           test_file_name,
+                          test_id_structured=_CreateStructuredTestDict(
+                              test_instance, test_result),
                           variant=test_result.GetVariantForResultSink(),
                           failure_reason=test_result.GetFailureReason(),
                           html_artifact=html_artifact)
+
+
+def _CreateStructuredTestDict(test_instance, test_result):
+  """Fills in fields for the structured_test_dict.
+
+  Args:
+    test_instance: A test instance object.
+    test_result: A test result object.
+
+  Returns:
+    A dictionary containing strucuted test id fields.
+  """
+  # Source comes from:
+  # infra/go/src/go.chromium.org/luci/resultdb/sink/proto/v1/test_result.proto
+  struct_test_dict = {
+      'coarseName': '',
+      'fineName': '',
+      'caseNameComponents': [''],
+  }
+
+  test_id = test_result.GetNameForResultSink()
+
+  if test_instance.TestType() in ['hostside', 'instrumentation', 'junit']:
+    re_match = re.search(r'(.*)\.(\w+\$?\w+)#(.*)', test_id)
+    if not re_match:
+      logging.error(
+          'Test id did not match known format, so could not be parsed.')
+      return None
+    struct_test_dict['coarseName'] = re_match.group(1)
+    struct_test_dict['fineName'] = re_match.group(2)
+    # The proto requires a list.
+    struct_test_dict['caseNameComponents'] = [re_match.group(3)]
+  elif test_instance.TestType() == 'gtest':
+    suite = None
+    name = None
+    instantiation = None
+    case_id = None
+
+    # Attempt to parse gtests based on:
+    #     infra/go/src/infra/tools/result_adapter/gtest.go
+    # Type-parameterised test (e.g. MyInstantiation/FooTest/MyType.DoesBar)
+    re_match = re.search(r'^((\w+)/)?(\w+)/(\w+)\.(\w+)$', test_id)
+    if re_match:
+      suite = re_match.group(3)
+      name = re_match.group(5)
+      instantiation = re_match.group(2)
+      case_id = re_match.group(4)
+
+    # Value-parameterised test (e.g. MyInstantiation/FooTest.DoesBar/TestValue)
+    if not suite:
+      re_match = re.search(r'^((\w+)/)?(\w+)\.(\w+)/(\w+)$', test_id)
+      if re_match:
+        suite = re_match.group(3)
+        name = re_match.group(4)
+        instantiation = re_match.group(2)
+        case_id = re_match.group(5)
+
+    # Neither type nor value-parameterised (e.g. FooTest.DoesBar)
+    if not suite:
+      re_match = re.search(r'^(\w+)\.(\w+)$', test_id)
+      if re_match:
+        suite = re_match.group(1)
+        name = re_match.group(2)
+        instantiation = ''
+        case_id = ''
+
+    # Synthetic tests
+    # (e.g. GoogleTestVerification.UninstantiatedParameterizedTestSuite<Foo>)
+    if not suite:
+      re_match = re.search(
+          r'^GoogleTestVerification\.'
+          r'Uninstantiated(?:Type)?ParameterizedTestSuite<(\w+)>$', test_id)
+      if re_match:
+        suite = 'GoogleTestVerification'
+        name = test_id[len('GoogleTestVerification.'):]
+        instantiation = ''
+        case_id = ''
+
+    # Fail loudly so unparsable tests can be caught
+    if not suite:
+      raise ValueError(f'Test id {test_id} did not match known format, '
+                       'so could not be parsed.')
+
+    # Some android gtests are incompatible with the upload scheme on other
+    # test runners.
+    if test_instance.suite in _REWRITE_SCHEME:
+      struct_test_dict['caseNameComponents'] = [
+          _REWRITE_SCHEME.get(test_instance.suite)
+      ]
+      return struct_test_dict
+
+    struct_test_dict['coarseName'] = None  # Not used.
+    struct_test_dict['fineName'] = suite
+    if not case_id:
+      struct_test_dict['caseNameComponents'] = [name]
+    elif not instantiation:
+      struct_test_dict['caseNameComponents'] = ['%s/%s' % (name, case_id)]
+    else:
+      struct_test_dict['caseNameComponents'] = [
+          '%s/%s.%s' % (name, instantiation, case_id)
+      ]
+  else:
+    return None
+
+  return struct_test_dict
 
 
 _SUPPORTED_IN_PLATFORM_MODE = [
@@ -1051,36 +1199,51 @@ _SUPPORTED_IN_PLATFORM_MODE = [
 ]
 
 
-def UploadExceptions(result_sink_client, exc_recorder):
-  if not result_sink_client or not exc_recorder.size():
+def UploadTestScriptRecords(result_sink_client, exc_recorder, mm_recorder):
+  '''Upload test script data, i.e. exceptions and metrics to ResultDB.
+
+  Args:
+    result_sink_client: A ResultSinkClient object
+    exc_recorder: The module to create and manage exception records.
+    mm_recorder: The module to create and manage measure records.
+  '''
+  if not result_sink_client:
+    return
+  if not exc_recorder.size() and not mm_recorder.size():
     return
 
   try_count_max = 3
   for try_count in range(1, try_count_max + 1):
-    logging.info('Uploading exception records to RDB. (TRY %d/%d)', try_count,
+    logging.info('Uploading test script records to RDB. (TRY %d/%d)', try_count,
                  try_count_max)
     try:
-      record_dict = exc_recorder.to_dict()
-      result_sink_client.UpdateInvocationExtendedProperties(
-          {exc_recorder.EXCEPTION_OCCURRENCES_KEY: record_dict})
+      records = {}
+      if exc_recorder.size():
+        records[exc_recorder.EXCEPTION_OCCURRENCES_KEY] = exc_recorder.to_dict()
+      if mm_recorder.size():
+        records[mm_recorder.TEST_SCRIPT_METRICS_KEY] = mm_recorder.to_dict()
+      result_sink_client.UpdateInvocationExtendedProperties(records)
       exc_recorder.clear()
+      mm_recorder.clear()
       break
     except Exception as e:  # pylint: disable=W0703
-      logging.error("Got error %s when uploading exception records.", e)
+      logging.error("Got error %s when uploading test script records.", e)
       # Upload can fail due to record size being too big.
       # In this case, let's try to reduce the size.
       if try_count == try_count_max - 2:
         # Clear all the stackstrace to reduce size.
         exc_recorder.clear_stacktrace()
       elif try_count == try_count_max - 1:
-        # Clear all the records and just report the upload failure.
+        # For the exception recorder, clear all the records and just report
+        # the upload failure.
         exc_recorder.clear()
         exc_recorder.register(e)
       elif try_count == try_count_max:
-        # Swallow the exception if the upload fails again and hit the max
+        # Swallow all the records if the upload fails again and hit the max
         # try so that it won't fail the test task (and it shouldn't).
         exc_recorder.clear()
-        logging.error("Hit max retry. Skip uploading exception records.")
+        mm_recorder.clear()
+        logging.error("Hit max retry. Skip uploading test script records.")
 
 
 def RunTestsInPlatformMode(args, result_sink_client=None):
@@ -1182,7 +1345,12 @@ def RunTestsInPlatformMode(args, result_sink_client=None):
               match = re.search(r'^(.+\..+)#', r.GetName())
               test_file_name = test_class_to_file_name_dict.get(
                   match.group(1)) if match else None
-              _SinkTestResult(r, test_file_name, result_sink_client)
+              _SinkTestResult(
+                  r,
+                  test_file_name or r.GetTestFile(),
+                  test_instance,
+                  result_sink_client,
+              )
 
   @contextlib.contextmanager
   def upload_logcats_file():
@@ -1211,11 +1379,11 @@ def RunTestsInPlatformMode(args, result_sink_client=None):
                            ) and not args.isolated_script_test_output
 
   @contextlib.contextmanager
-  def exceptions_uploader():
+  def test_script_records_uploader():
     try:
       yield
     finally:
-      UploadExceptions(result_sink_client, exception_recorder)
+      UploadTestScriptRecords(result_sink_client, exception_recorder, measures)
 
   ### Set up test objects.
 
@@ -1246,8 +1414,16 @@ def RunTestsInPlatformMode(args, result_sink_client=None):
       data_deps = test_run.GetDataDepsForListing()
 
     print('There are {} data files:'.format(len(data_deps)))
-    for d in data_deps:
-      print(d)
+    total_bytes = 0
+    for h, d in data_deps:
+      size = 0
+      try:
+        size = os.path.getsize(h)
+        total_bytes += size
+      except OSError as e:
+        sys.stderr.write(f'Warning: could not get size for {h}: {e}\n')
+      print(f'{size} {d} <- {os.path.relpath(h)}')
+    print('Total: {} files, {} bytes'.format(len(data_deps), total_bytes))
     return 0
 
   ### Run.
@@ -1255,7 +1431,7 @@ def RunTestsInPlatformMode(args, result_sink_client=None):
     # |raw_logs_fh| is only used by Robolectric tests.
     raw_logs_fh = io.StringIO() if save_detailed_results else None
 
-    with json_writer(), exceptions_uploader(), logcats_uploader, \
+    with json_writer(), test_script_records_uploader(), logcats_uploader, \
          env, test_instance, test_run:
 
       repetitions = (range(args.repeat +
@@ -1285,17 +1461,17 @@ def RunTestsInPlatformMode(args, result_sink_client=None):
         for r in iteration_results.GetAll():
           result_counts[r.GetName()][r.GetType()] += 1
 
-        report_results.LogFull(
-            results=iteration_results,
-            test_type=test_instance.TestType(),
-            test_package=test_run.TestPackage(),
-            annotation=getattr(args, 'annotations', None),
-            flakiness_server=getattr(args, 'flakiness_dashboard_server',
-                                     None))
+        report_results.LogFull(results=iteration_results,
+                               test_type=test_instance.TestType(),
+                               test_package=test_run.TestPackage(),
+                               annotation=getattr(args, 'annotations', None),
+                               flakiness_server=getattr(
+                                   args, 'flakiness_dashboard_server', None),
+                               quiet=args.quiet)
 
         failed_tests = (iteration_results.GetNotPass() -
                         iteration_results.GetSkip())
-        if failed_tests:
+        if failed_tests and not args.quiet:
           _LogRerunStatement(failed_tests, args.wrapper_script_args)
 
         if args.break_on_failure and not iteration_results.DidRunPass():
@@ -1431,6 +1607,11 @@ def DumpThreadStacks(_signal, _frame):
 
 def main():
   signal.signal(signal.SIGUSR1, DumpThreadStacks)
+  if os.environ.get('GEMINI_CLI') == '1':
+    if not any(arg in ('--quiet', '-q') for arg in sys.argv):
+      print('Adding --quiet because we\'re running under gemini-cli ('
+            'GEMINI_CLI=1)')
+      sys.argv.append('--quiet')
 
   parser = argparse.ArgumentParser()
   command_parsers = parser.add_subparsers(
@@ -1516,13 +1697,26 @@ def main():
           'Ignoring --enable-concurrent-adb due to --use-webview-provider')
       args.enable_concurrent_adb = False
 
-  if (getattr(args, 'coverage_on_the_fly', False)
-      and not getattr(args, 'coverage_dir', '')):
+  coverage_dir = getattr(args, 'coverage_dir', '')
+  if coverage_dir:
+    isolated_outdir = os.environ.get('ISOLATED_OUTDIR')
+    if isolated_outdir and not coverage_dir.startswith(isolated_outdir):
+      replacement = os.path.join(isolated_outdir, 'coverage')
+      logging.warning(
+          'Detected bot environment. Replacing explicit val of --coverage-dir '
+          '(%s) with magic bot val (%s).', coverage_dir, replacement)
+      args.coverage_dir = replacement
+  elif getattr(args, 'coverage_on_the_fly', False):
     parser.error('--coverage-on-the-fly requires --coverage-dir')
 
   if (getattr(args, 'debug_socket', None)
       or getattr(args, 'wait_for_java_debugger', None)):
     args.num_retries = 0
+
+  if (getattr(args, 'connect_over_network', False)
+      and len(getattr(args, 'test_devices', [])) != 1):
+    parser.error('Need to specify a single device (via "--device") when using '
+                 '--connect-over-network.')
 
   # Result-sink may not exist in the environment if rdb stream is not enabled.
   result_sink_client = result_sink.TryInitClient()

@@ -17,7 +17,7 @@
 #import "ios/chrome/browser/download/model/safari_download_tab_helper_delegate.h"
 #import "ios/chrome/browser/shared/coordinator/alert/alert_coordinator.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/web_state_list/model/web_state_dependency_installer_bridge.h"
+#import "ios/chrome/browser/tabs/model/tabs_dependency_installer_bridge.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/web_state_observer_bridge.h"
@@ -52,42 +52,38 @@ const char kUmaDownloadMobileConfigFileUI[] =
 const char kUmaDownloadAppleWalletOrderFileUI[] =
     "Download.IOSDownloadAppleWalletOrderFileUI";
 
-@interface SafariDownloadCoordinator () <DependencyInstalling,
-                                         SafariDownloadTabHelperDelegate,
-                                         SFSafariViewControllerDelegate> {
-  // Bridge which observes WebStateList and alerts this coordinator when this
-  // needs to register the Mediator with a new WebState.
-  std::unique_ptr<WebStateDependencyInstallerBridge> _dependencyInstallerBridge;
-}
-
-// Coordinator used to display modal alerts to the user.
-@property(nonatomic, strong) AlertCoordinator* alertCoordinator;
+@interface SafariDownloadCoordinator () <SafariDownloadTabHelperDelegate,
+                                         SFSafariViewControllerDelegate,
+                                         TabsDependencyInstalling>
 
 // SFSafariViewController used to download files.
 @property(nonatomic, strong) SFSafariViewController* safariViewController;
 
 @end
 
-@implementation SafariDownloadCoordinator
+@implementation SafariDownloadCoordinator {
+  // Bridge which observes WebStateList and alerts this coordinator when this
+  // needs to register the Mediator with a new WebState.
+  TabsDependencyInstallerBridge _dependencyInstallerBridge;
+  // AlertController used to display modal alerts to the user.
+  UIAlertController* _alertController;
+}
 
 - (instancetype)initWithBaseViewController:(UIViewController*)baseViewController
                                    browser:(Browser*)browser {
   if ((self = [super initWithBaseViewController:baseViewController
                                         browser:browser])) {
-    _dependencyInstallerBridge =
-        std::make_unique<WebStateDependencyInstallerBridge>(
-            self, browser->GetWebStateList());
+    _dependencyInstallerBridge.StartObserving(self, browser);
   }
   return self;
 }
 
 - (void)stop {
-  // Reset this observer manually. We want this to go out of scope now, to
-  // ensure it detaches before `browser` and its WebStateList get destroyed.
-  _dependencyInstallerBridge.reset();
+  // Stop observing the WebStateList before destroying the bridge object.
+  _dependencyInstallerBridge.StopObserving();
 
   self.safariViewController = nil;
-  [self dismissAlertCoordinator];
+  [self dismissAlert];
 }
 
 #pragma mark - Private
@@ -105,10 +101,11 @@ const char kUmaDownloadAppleWalletOrderFileUI[] =
                                       completion:nil];
 }
 
-// Dismisses the alert coordinator.
-- (void)dismissAlertCoordinator {
-  [self.alertCoordinator stop];
-  self.alertCoordinator = nil;
+// Dismisses the alert.
+- (void)dismissAlert {
+  [_alertController.presentingViewController dismissViewControllerAnimated:YES
+                                                                completion:nil];
+  _alertController = nil;
 }
 
 // Presents SFSafariViewController in order to download the file and then
@@ -120,7 +117,7 @@ const char kUmaDownloadAppleWalletOrderFileUI[] =
   base::UmaHistogramEnumeration(GetHistogramForDownloadType(downloadType),
                                 SafariDownloadFileUI::kSFSafariViewIsPresented);
   [self presentSFSafariViewController:fileURL];
-  [self dismissAlertCoordinator];
+  [self dismissAlert];
 }
 
 // Dismisses the alert coordinator and records the appropriate histogram for
@@ -129,17 +126,26 @@ const char kUmaDownloadAppleWalletOrderFileUI[] =
 - (void)cancelDownloadType:(SafariDownloadType)downloadType {
   base::UmaHistogramEnumeration(GetHistogramForDownloadType(downloadType),
                                 SafariDownloadFileUI::kWarningAlertIsDismissed);
-  [self dismissAlertCoordinator];
+  [self dismissAlert];
 }
 
-#pragma mark - DependencyInstalling methods
+#pragma mark - TabsDependencyInstalling methods
 
-- (void)installDependencyForWebState:(web::WebState*)webState {
+- (void)webStateInserted:(web::WebState*)webState {
   SafariDownloadTabHelper::FromWebState(webState)->set_delegate(self);
 }
 
-- (void)uninstallDependencyForWebState:(web::WebState*)webState {
+- (void)webStateRemoved:(web::WebState*)webState {
   SafariDownloadTabHelper::FromWebState(webState)->set_delegate(nil);
+}
+
+- (void)webStateDeleted:(web::WebState*)webState {
+  // Nothing to do.
+}
+
+- (void)newWebStateActivated:(web::WebState*)newActive
+           oldActiveWebState:(web::WebState*)oldActive {
+  // Nothing to do.
 }
 
 #pragma mark - SafariDownloadTabHelperDelegate
@@ -152,37 +158,39 @@ const char kUmaDownloadAppleWalletOrderFileUI[] =
   base::UmaHistogramEnumeration(kUmaDownloadMobileConfigFileUI,
                                 SafariDownloadFileUI::kWarningAlertIsPresented);
 
-  self.alertCoordinator = [[AlertCoordinator alloc]
-      initWithBaseViewController:self.baseViewController
-                         browser:self.browser
-                           title:
-                               l10n_util::GetNSString(
-                                   IDS_IOS_DOWNLOAD_MOBILECONFIG_FILE_WARNING_TITLE)
-                         message:
-                             l10n_util::GetNSStringF(
-                                 IDS_IOS_DOWNLOAD_MOBILECONFIG_FILE_WARNING_MESSAGE,
-                                 base::SysNSStringToUTF16(fileURL.host))];
+  NSString* const title =
+      l10n_util::GetNSString(IDS_IOS_DOWNLOAD_MOBILECONFIG_FILE_WARNING_TITLE);
+  NSString* const message = l10n_util::GetNSStringF(
+      IDS_IOS_DOWNLOAD_MOBILECONFIG_FILE_WARNING_MESSAGE,
+      base::SysNSStringToUTF16(fileURL.host));
+  _alertController =
+      [UIAlertController alertControllerWithTitle:title
+                                          message:message
+                                   preferredStyle:UIAlertControllerStyleAlert];
 
   __weak SafariDownloadCoordinator* weakSelf = self;
-  [self.alertCoordinator
-      addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
-                action:^{
-                  [weakSelf
-                      cancelDownloadType:SafariDownloadType::kMobileConfig];
-                }
-                 style:UIAlertActionStyleCancel];
 
-  [self.alertCoordinator
-      addItemWithTitle:l10n_util::GetNSString(
-                           IDS_IOS_DOWNLOAD_MOBILECONFIG_CONTINUE)
-                action:^{
-                  [weakSelf
-                      confirmDownloadType:SafariDownloadType::kMobileConfig
-                               forFileURL:fileURL];
-                }
-                 style:UIAlertActionStyleDefault];
+  UIAlertAction* accept = [UIAlertAction
+      actionWithTitle:l10n_util::GetNSString(
+                          IDS_IOS_DOWNLOAD_MOBILECONFIG_CONTINUE)
+                style:UIAlertActionStyleDefault
+              handler:^(UIAlertAction*) {
+                [weakSelf confirmDownloadType:SafariDownloadType::kMobileConfig
+                                   forFileURL:fileURL];
+              }];
+  [_alertController addAction:accept];
 
-  [self.alertCoordinator start];
+  UIAlertAction* cancel = [UIAlertAction
+      actionWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                style:UIAlertActionStyleCancel
+              handler:^(UIAlertAction*) {
+                [weakSelf cancelDownloadType:SafariDownloadType::kMobileConfig];
+              }];
+  [_alertController addAction:cancel];
+
+  [self.baseViewController presentViewController:_alertController
+                                        animated:YES
+                                      completion:nil];
 }
 
 - (void)presentCalendarAlertFromURL:(NSURL*)fileURL {
@@ -193,34 +201,38 @@ const char kUmaDownloadAppleWalletOrderFileUI[] =
   base::UmaHistogramEnumeration(kUmaDownloadCalendarFileUI,
                                 SafariDownloadFileUI::kWarningAlertIsPresented);
 
-  self.alertCoordinator = [[AlertCoordinator alloc]
-      initWithBaseViewController:self.baseViewController
-                         browser:self.browser
-                           title:
-                               l10n_util::GetNSString(
-                                   IDS_IOS_DOWNLOAD_CALENDAR_FILE_WARNING_TITLE)
-                         message:
-                             l10n_util::GetNSString(
-                                 IDS_IOS_DOWNLOAD_CALENDAR_FILE_WARNING_MESSAGE)];
+  NSString* const title =
+      l10n_util::GetNSString(IDS_IOS_DOWNLOAD_CALENDAR_FILE_WARNING_TITLE);
+  NSString* const message =
+      l10n_util::GetNSString(IDS_IOS_DOWNLOAD_CALENDAR_FILE_WARNING_MESSAGE);
+  _alertController =
+      [UIAlertController alertControllerWithTitle:title
+                                          message:message
+                                   preferredStyle:UIAlertControllerStyleAlert];
 
   __weak SafariDownloadCoordinator* weakSelf = self;
-  [self.alertCoordinator
-      addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
-                action:^{
-                  [weakSelf cancelDownloadType:SafariDownloadType::kCalendar];
-                }
-                 style:UIAlertActionStyleCancel];
 
-  [self.alertCoordinator
-      addItemWithTitle:l10n_util::GetNSString(
-                           IDS_IOS_DOWNLOAD_MOBILECONFIG_CONTINUE)
-                action:^{
-                  [weakSelf confirmDownloadType:SafariDownloadType::kCalendar
-                                     forFileURL:fileURL];
-                }
-                 style:UIAlertActionStyleDefault];
+  UIAlertAction* accept = [UIAlertAction
+      actionWithTitle:l10n_util::GetNSString(
+                          IDS_IOS_DOWNLOAD_MOBILECONFIG_CONTINUE)
+                style:UIAlertActionStyleDefault
+              handler:^(UIAlertAction*) {
+                [weakSelf confirmDownloadType:SafariDownloadType::kCalendar
+                                   forFileURL:fileURL];
+              }];
+  [_alertController addAction:accept];
 
-  [self.alertCoordinator start];
+  UIAlertAction* cancel = [UIAlertAction
+      actionWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                style:UIAlertActionStyleCancel
+              handler:^(UIAlertAction*) {
+                [weakSelf cancelDownloadType:SafariDownloadType::kCalendar];
+              }];
+  [_alertController addAction:cancel];
+
+  [self.baseViewController presentViewController:_alertController
+                                        animated:YES
+                                      completion:nil];
 }
 
 - (void)presentAppleWalletOrderAlertFromURL:(NSURL*)fileURL {
@@ -234,32 +246,35 @@ const char kUmaDownloadAppleWalletOrderFileUI[] =
       l10n_util::GetNSString(IDS_IOS_DOWNLOAD_WALLET_ORDER_FILE_WARNING_TITLE);
   NSString* const message = l10n_util::GetNSString(
       IDS_IOS_DOWNLOAD_WALLET_ORDER_FILE_WARNING_MESSAGE);
-  self.alertCoordinator = [[AlertCoordinator alloc]
-      initWithBaseViewController:self.baseViewController
-                         browser:self.browser
-                           title:title
-                         message:message];
+  _alertController =
+      [UIAlertController alertControllerWithTitle:title
+                                          message:message
+                                   preferredStyle:UIAlertControllerStyleAlert];
 
   __weak SafariDownloadCoordinator* weakSelf = self;
-  [self.alertCoordinator
-      addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
-                action:^{
-                  [weakSelf
-                      cancelDownloadType:SafariDownloadType::kAppleWalletOrder];
-                }
-                 style:UIAlertActionStyleCancel];
 
-  [self.alertCoordinator
-      addItemWithTitle:l10n_util::GetNSString(
-                           IDS_IOS_DOWNLOAD_WALLET_ORDER_OPEN)
-                action:^{
-                  [weakSelf
-                      confirmDownloadType:SafariDownloadType::kAppleWalletOrder
-                               forFileURL:fileURL];
-                }
-                 style:UIAlertActionStyleDefault];
+  UIAlertAction* accept = [UIAlertAction
+      actionWithTitle:l10n_util::GetNSString(IDS_IOS_DOWNLOAD_WALLET_ORDER_OPEN)
+                style:UIAlertActionStyleDefault
+              handler:^(UIAlertAction*) {
+                [weakSelf
+                    confirmDownloadType:SafariDownloadType::kAppleWalletOrder
+                             forFileURL:fileURL];
+              }];
+  [_alertController addAction:accept];
 
-  [self.alertCoordinator start];
+  UIAlertAction* cancel = [UIAlertAction
+      actionWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                style:UIAlertActionStyleCancel
+              handler:^(UIAlertAction*) {
+                [weakSelf
+                    cancelDownloadType:SafariDownloadType::kAppleWalletOrder];
+              }];
+  [_alertController addAction:cancel];
+
+  [self.baseViewController presentViewController:_alertController
+                                        animated:YES
+                                      completion:nil];
 }
 
 #pragma mark - SFSafariViewControllerDelegate

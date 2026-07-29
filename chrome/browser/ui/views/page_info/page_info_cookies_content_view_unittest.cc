@@ -7,22 +7,20 @@
 #include <memory>
 #include <string_view>
 
+#include "base/strings/string_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/page_info/chrome_page_info_delegate.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/test_with_browser_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_view_factory.h"
-#include "components/content_settings/core/common/cookie_blocking_3pcd_status.h"
-#include "components/content_settings/core/common/features.h"
+#include "components/content_settings/core/common/cookie_controls_state.h"
 #include "components/page_info/page_info.h"
-#include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/strings/grit/privacy_sandbox_strings.h"
 #include "components/vector_icons/vector_icons.h"
-#include "content/public/browser/web_contents.h"
-#include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/vector_icons.h"
 
@@ -32,9 +30,6 @@
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace {
-
-using Status = ::content_settings::TrackingProtectionBlockingStatus;
-using FeatureType = ::content_settings::TrackingProtectionFeatureType;
 
 std::u16string_view GetManageButtonSubtitle(views::View* content_view) {
   auto* manage_button = content_view->GetViewByID(
@@ -47,22 +42,17 @@ const char* GetVectorIconName(views::ImageView* image_view) {
   return image_view->GetImageModel().GetVectorIcon().vector_icon()->name;
 }
 
-PageInfoCookiesContentView::CookiesNewInfo DefaultCookieInfoForTests(
+PageInfoCookiesContentView::CookiesInfo DefaultCookieInfoForTests(
     int days_to_expiration = 0) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info;
+  PageInfoCookiesContentView::CookiesInfo cookie_info;
   cookie_info.allowed_sites_count = 10;
   // base::Time() represents a null when used as an expiration.
   cookie_info.expiration =
       days_to_expiration ? base::Time::Now() + base::Days(days_to_expiration)
                          : base::Time();
-  cookie_info.controls_visible = true;
-  cookie_info.protections_on = true;
+  cookie_info.controls_state = CookieControlsState::kBlocked3pc;
   cookie_info.enforcement = CookieControlsEnforcement::kNoEnforcement;
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kNotIn3pcd;
   cookie_info.is_incognito = false;
-  cookie_info.features = {{FeatureType::kThirdPartyCookies,
-                           CookieControlsEnforcement::kNoEnforcement,
-                           Status::kAllowed}};
   return cookie_info;
 }
 
@@ -113,6 +103,10 @@ class PageInfoCookiesContentViewBaseTestClass : public TestWithBrowserView {
     return content_view_->cookies_description_label_;
   }
 
+  views::View* third_party_cookies_description_wrapper() {
+    return content_view_->cookies_description_wrapper_;
+  }
+
   views::BoxLayoutView* third_party_cookies_container() {
     return content_view_->third_party_cookies_container_;
   }
@@ -147,22 +141,8 @@ class PageInfoCookiesContentViewBaseTestClass : public TestWithBrowserView {
 
   ui::ImageModel GetImageModel(const gfx::VectorIcon& icon) {
     return ui::ImageModel::FromVectorIcon(
-        icon, ui::kColorIcon, GetLayoutConstant(PAGE_INFO_ICON_SIZE));
-  }
-
-  std::vector<content_settings::TrackingProtectionFeature>
-  GetTrackingProtectionFeatures(
-      PageInfoCookiesContentView::CookiesNewInfo& cookie_info) {
-    if (!cookie_info.protections_on) {
-      return {{FeatureType::kThirdPartyCookies, cookie_info.enforcement,
-               Status::kAllowed}};
-    }
-    if (cookie_info.blocking_status == CookieBlocking3pcdStatus::kLimited) {
-      return {{FeatureType::kThirdPartyCookies, cookie_info.enforcement,
-               Status::kLimited}};
-    }
-    return {{FeatureType::kThirdPartyCookies, cookie_info.enforcement,
-             Status::kBlocked}};
+        icon, ui::kColorIcon,
+        GetLayoutConstant(LayoutConstant::kPageInfoIconSize));
   }
 
   virtual std::vector<base::test::FeatureRefAndParams> EnabledFeatures() {
@@ -174,24 +154,22 @@ class PageInfoCookiesContentViewBaseTestClass : public TestWithBrowserView {
   std::unique_ptr<PageInfoCookiesContentView> content_view_;
 };
 
-class PageInfoCookiesContentViewPre3pcdTest
-    : public PageInfoCookiesContentViewBaseTestClass {
-  std::vector<base::test::FeatureRefAndParams> EnabledFeatures() override {
-    return {
-        {content_settings::features::kUserBypassUI, {{"expiration", "30d"}}}};
-  }
-};
+class PageInfoCookiesContentViewTest
+    : public PageInfoCookiesContentViewBaseTestClass {};
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest,
-       ThirdPartyCookiesAllowedByDefault) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesAllowedByDefault) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
-  cookie_info.controls_visible = false;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
+  cookie_info.controls_state = CookieControlsState::kHidden;
   content_view()->SetCookieInfo(cookie_info);
 
   // Third-party cookies section:
   EXPECT_FALSE(third_party_cookies_container()->GetVisible());
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
 
   // Manage cookies button:
   auto subtitle = GetManageButtonSubtitle(content_view());
@@ -200,26 +178,28 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                           cookie_info.allowed_sites_count));
 }
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest, ThirdPartyCookiesBlocked) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesBlocked) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
-
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
   content_view()->SetCookieInfo(cookie_info);
 
-  // Third-party cookies section:
   EXPECT_TRUE(third_party_cookies_container()->GetVisible());
-
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
   EXPECT_EQ(
       third_party_cookies_title()->GetText(),
       l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SITE_NOT_WORKING_TITLE));
-  EXPECT_EQ(
-      third_party_cookies_description()->GetText(),
-      l10n_util::GetStringUTF16(
-          IDS_PAGE_INFO_TRACKING_PROTECTION_SITE_NOT_WORKING_DESCRIPTION_TEMPORARY));
+  EXPECT_EQ(third_party_cookies_description()->GetText(),
+            l10n_util::GetStringUTF16(
+                IDS_PAGE_INFO_COOKIES_SITE_NOT_WORKING_DESCRIPTION_PERMANENT));
   EXPECT_TRUE(third_party_cookies_label_wrapper()->GetVisible());
   EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeCrossedRefreshIcon));
+            GetImageModel(features::IsRoundedIconsEnabled()
+                              ? views::kVisibilityOffIcon
+                              : views::kEyeCrossedRefreshOldIcon));
   EXPECT_TRUE(third_party_cookies_toggle()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetIsOn());
   EXPECT_FALSE(third_party_cookies_enforced_icon()->GetVisible());
@@ -235,18 +215,18 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest, ThirdPartyCookiesBlocked) {
                 cookie_info.allowed_sites_count));
 }
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest,
-       ThirdPartyCookiesAllowedPermanent) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesAllowedPermanent) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
-  cookie_info.protections_on = false;
-
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
+  cookie_info.controls_state = CookieControlsState::kAllowed3pc;
   content_view()->SetCookieInfo(cookie_info);
 
-  // Third-party cookies section:
   EXPECT_TRUE(third_party_cookies_container()->GetVisible());
-
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
   EXPECT_EQ(third_party_cookies_title()->GetText(),
             l10n_util::GetStringUTF16(
                 IDS_PAGE_INFO_TRACKING_PROTECTION_PERMANENT_ALLOWED_TITLE));
@@ -256,7 +236,9 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
           IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_PERMANENT_ALLOWED_DESCRIPTION));
   EXPECT_TRUE(third_party_cookies_label_wrapper()->GetVisible());
   EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
+            GetImageModel(features::IsRoundedIconsEnabled()
+                              ? views::kVisibilityIcon
+                              : views::kEyeRefreshOldIcon));
   EXPECT_TRUE(third_party_cookies_toggle()->GetVisible());
   EXPECT_TRUE(third_party_cookies_toggle()->GetIsOn());
   EXPECT_FALSE(third_party_cookies_enforced_icon()->GetVisible());
@@ -272,18 +254,18 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                 cookie_info.allowed_sites_count));
 }
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest,
-       ThirdPartyCookiesAllowedTemporary) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesAllowedTemporary) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests(kDaysToExpiration);
-  cookie_info.protections_on = false;
-
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
+  cookie_info.controls_state = CookieControlsState::kAllowed3pc;
   content_view()->SetCookieInfo(cookie_info);
 
-  // Third-party cookies section:
   EXPECT_TRUE(third_party_cookies_container()->GetVisible());
-
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
   EXPECT_EQ(third_party_cookies_title()->GetText(),
             l10n_util::GetPluralStringFUTF16(
                 IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_BLOCKED_RESTART_TITLE,
@@ -293,7 +275,9 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                 IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_RESTART_DESCRIPTION));
   EXPECT_TRUE(third_party_cookies_label_wrapper()->GetVisible());
   EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
+            GetImageModel(features::IsRoundedIconsEnabled()
+                              ? views::kVisibilityIcon
+                              : views::kEyeRefreshOldIcon));
   EXPECT_TRUE(third_party_cookies_toggle()->GetVisible());
   EXPECT_TRUE(third_party_cookies_toggle()->GetIsOn());
   EXPECT_FALSE(third_party_cookies_enforced_icon()->GetVisible());
@@ -309,19 +293,22 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                 cookie_info.allowed_sites_count));
 }
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest,
-       ThirdPartyCookiesBlockedByPolicy) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesBlockedByPolicy) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
   cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByPolicy;
-
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
   content_view()->SetCookieInfo(cookie_info);
 
-  // Third-party cookies section:
   EXPECT_TRUE(third_party_cookies_container()->GetVisible());
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
   EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeCrossedRefreshIcon));
+            GetImageModel(features::IsRoundedIconsEnabled()
+                              ? views::kVisibilityOffIcon
+                              : views::kEyeCrossedRefreshOldIcon));
   EXPECT_FALSE(third_party_cookies_label_wrapper()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetIsOn());
@@ -332,7 +319,9 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
 
   EXPECT_TRUE(third_party_cookies_enforced_icon()->GetVisible());
   EXPECT_STREQ(GetVectorIconName(third_party_cookies_enforced_icon()),
-               vector_icons::kBusinessChromeRefreshIcon.name);
+               features::IsRoundedIconsEnabled()
+                   ? vector_icons::kDomainIcon.name
+                   : vector_icons::kBusinessChromeRefreshOldIcon.name);
   EXPECT_EQ(
       third_party_cookies_enforced_icon()->GetTooltipText(),
       l10n_util::GetStringUTF16(IDS_PAGE_INFO_PERMISSION_MANAGED_BY_POLICY));
@@ -344,20 +333,23 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                 cookie_info.allowed_sites_count));
 }
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest,
-       ThirdPartyCookiesAllowedByPolicy) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesAllowedByPolicy) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
-  cookie_info.protections_on = false;
+  cookie_info.controls_state = CookieControlsState::kAllowed3pc;
   cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByPolicy;
-
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
   content_view()->SetCookieInfo(cookie_info);
 
-  // Third-party cookies section:
   EXPECT_TRUE(third_party_cookies_container()->GetVisible());
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
   EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
+            GetImageModel(features::IsRoundedIconsEnabled()
+                              ? views::kVisibilityIcon
+                              : views::kEyeRefreshOldIcon));
   EXPECT_FALSE(third_party_cookies_label_wrapper()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetVisible());
   EXPECT_TRUE(third_party_cookies_toggle()->GetIsOn());
@@ -368,7 +360,9 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
 
   EXPECT_TRUE(third_party_cookies_enforced_icon()->GetVisible());
   EXPECT_STREQ(GetVectorIconName(third_party_cookies_enforced_icon()),
-               vector_icons::kBusinessChromeRefreshIcon.name);
+               features::IsRoundedIconsEnabled()
+                   ? vector_icons::kDomainIcon.name
+                   : vector_icons::kBusinessChromeRefreshOldIcon.name);
   EXPECT_EQ(
       third_party_cookies_enforced_icon()->GetTooltipText(),
       l10n_util::GetStringUTF16(IDS_PAGE_INFO_PERMISSION_MANAGED_BY_POLICY));
@@ -380,19 +374,22 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                 cookie_info.allowed_sites_count));
 }
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest,
-       ThirdPartyCookiesBlockedByExtension) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesBlockedByExtension) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
   cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByExtension;
-
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
   content_view()->SetCookieInfo(cookie_info);
 
-  // Third-party cookies section:
   EXPECT_TRUE(third_party_cookies_container()->GetVisible());
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
   EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeCrossedRefreshIcon));
+            GetImageModel(features::IsRoundedIconsEnabled()
+                              ? views::kVisibilityOffIcon
+                              : views::kEyeCrossedRefreshOldIcon));
   EXPECT_FALSE(third_party_cookies_label_wrapper()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetIsOn());
@@ -403,7 +400,9 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
 
   EXPECT_TRUE(third_party_cookies_enforced_icon()->GetVisible());
   EXPECT_STREQ(GetVectorIconName(third_party_cookies_enforced_icon()),
-               vector_icons::kExtensionChromeRefreshIcon.name);
+               features::IsRoundedIconsEnabled()
+                   ? vector_icons::kChromeExtensionIcon.name
+                   : vector_icons::kExtensionChromeRefreshOldIcon.name);
   EXPECT_EQ(
       third_party_cookies_enforced_icon()->GetTooltipText(),
       l10n_util::GetStringUTF16(IDS_PAGE_INFO_PERMISSION_MANAGED_BY_EXTENSION));
@@ -415,20 +414,23 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                 cookie_info.allowed_sites_count));
 }
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest,
-       ThirdPartyCookiesAllowedByExtension) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesAllowedByExtension) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
-  cookie_info.protections_on = false;
+  cookie_info.controls_state = CookieControlsState::kAllowed3pc;
   cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByExtension;
-
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
   content_view()->SetCookieInfo(cookie_info);
 
-  // Third-party cookies section:
   EXPECT_TRUE(third_party_cookies_container()->GetVisible());
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
   EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
+            GetImageModel(features::IsRoundedIconsEnabled()
+                              ? views::kVisibilityIcon
+                              : views::kEyeRefreshOldIcon));
   EXPECT_FALSE(third_party_cookies_label_wrapper()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetVisible());
   EXPECT_TRUE(third_party_cookies_toggle()->GetIsOn());
@@ -439,7 +441,9 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
 
   EXPECT_TRUE(third_party_cookies_enforced_icon()->GetVisible());
   EXPECT_STREQ(GetVectorIconName(third_party_cookies_enforced_icon()),
-               vector_icons::kExtensionChromeRefreshIcon.name);
+               features::IsRoundedIconsEnabled()
+                   ? vector_icons::kChromeExtensionIcon.name
+                   : vector_icons::kExtensionChromeRefreshOldIcon.name);
   EXPECT_EQ(
       third_party_cookies_enforced_icon()->GetTooltipText(),
       l10n_util::GetStringUTF16(IDS_PAGE_INFO_PERMISSION_MANAGED_BY_EXTENSION));
@@ -451,21 +455,24 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                 cookie_info.allowed_sites_count));
 }
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest,
-       ThirdPartyCookiesBlockedBySetting) {
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesBlockedBySetting) {
   // This is not be possible, but the UI still should be able to handle this
   // state correctly.
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
   cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByCookieSetting;
-
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
   content_view()->SetCookieInfo(cookie_info);
 
-  // Third-party cookies section:
   EXPECT_TRUE(third_party_cookies_container()->GetVisible());
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
   EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeCrossedRefreshIcon));
+            GetImageModel(features::IsRoundedIconsEnabled()
+                              ? views::kVisibilityOffIcon
+                              : views::kEyeCrossedRefreshOldIcon));
   EXPECT_FALSE(third_party_cookies_label_wrapper()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetIsOn());
@@ -476,7 +483,9 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
 
   EXPECT_TRUE(third_party_cookies_enforced_icon()->GetVisible());
   EXPECT_STREQ(GetVectorIconName(third_party_cookies_enforced_icon()),
-               vector_icons::kSettingsChromeRefreshIcon.name);
+               features::IsRoundedIconsEnabled()
+                   ? vector_icons::kSettingsIcon.name
+                   : vector_icons::kSettingsChromeRefreshOldIcon.name);
   EXPECT_EQ(
       third_party_cookies_enforced_icon()->GetTooltipText(),
       l10n_util::GetStringUTF16(
@@ -489,20 +498,23 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                 cookie_info.allowed_sites_count));
 }
 
-TEST_F(PageInfoCookiesContentViewPre3pcdTest,
-       ThirdPartyCookiesAllowedBySetting) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+TEST_F(PageInfoCookiesContentViewTest, ThirdPartyCookiesAllowedBySetting) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
-  cookie_info.protections_on = false;
+  cookie_info.controls_state = CookieControlsState::kAllowed3pc;
   cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByCookieSetting;
-
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
   content_view()->SetCookieInfo(cookie_info);
 
-  // Third-party cookies section:
   EXPECT_TRUE(third_party_cookies_container()->GetVisible());
+  EXPECT_EQ(
+      third_party_cookies_description_label()->GetText(),
+      l10n_util::GetStringFUTF16(
+          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
   EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
+            GetImageModel(features::IsRoundedIconsEnabled()
+                              ? views::kVisibilityIcon
+                              : views::kEyeRefreshOldIcon));
   EXPECT_FALSE(third_party_cookies_label_wrapper()->GetVisible());
   EXPECT_FALSE(third_party_cookies_toggle()->GetVisible());
   EXPECT_TRUE(third_party_cookies_toggle()->GetIsOn());
@@ -513,7 +525,9 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
 
   EXPECT_TRUE(third_party_cookies_enforced_icon()->GetVisible());
   EXPECT_STREQ(GetVectorIconName(third_party_cookies_enforced_icon()),
-               vector_icons::kSettingsChromeRefreshIcon.name);
+               features::IsRoundedIconsEnabled()
+                   ? vector_icons::kSettingsIcon.name
+                   : vector_icons::kSettingsChromeRefreshOldIcon.name);
   EXPECT_EQ(
       third_party_cookies_enforced_icon()->GetTooltipText(),
       l10n_util::GetStringUTF16(
@@ -526,393 +540,36 @@ TEST_F(PageInfoCookiesContentViewPre3pcdTest,
                 cookie_info.allowed_sites_count));
 }
 
-class PageInfoCookiesContentView3pcdTitleAndDescriptionTest
-    : public PageInfoCookiesContentViewBaseTestClass,
-      public testing::WithParamInterface<CookieBlocking3pcdStatus> {};
-
-TEST_F(PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-       DisplaysTitleAndDescriptionWhenCookiesLimitedWithTemporaryException) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests(kDaysToExpiration);
-  cookie_info.protections_on = false;
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kLimited;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_EQ(third_party_cookies_title()->GetText(),
-            l10n_util::GetPluralStringFUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_LIMITED_RESTART_TITLE,
-                kDaysToExpiration));
-  EXPECT_EQ(third_party_cookies_description()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_RESTART_DESCRIPTION));
-}
-
-TEST_F(PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-       DisplaysTitleAndDescriptionWhenCookiesBlockedWithTemporaryException) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests(kDaysToExpiration);
-  cookie_info.protections_on = false;
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kAll;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_EQ(third_party_cookies_title()->GetText(),
-            l10n_util::GetPluralStringFUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_BLOCKED_RESTART_TITLE,
-                kDaysToExpiration));
-  EXPECT_EQ(third_party_cookies_description()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_RESTART_DESCRIPTION));
-}
-
-TEST_F(PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-       DisplaysBubbleDescriptionLabelWhenCookiesLimited) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kLimited;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_EQ(third_party_cookies_description_label()->GetText(),
-            l10n_util::GetStringFUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_DESCRIPTION,
-                l10n_util::GetStringUTF16(
-                    IDS_PAGE_INFO_TRACKING_PROTECTION_SETTINGS_LINK)));
-}
-
-TEST_F(PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-       DisplaysBubbleDescriptionLabelWhenCookiesBlocked) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kAll;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_EQ(third_party_cookies_description_label()->GetText(),
-            l10n_util::GetStringFUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_BLOCKED_COOKIES_DESCRIPTION,
-                l10n_util::GetStringUTF16(
-                    IDS_PAGE_INFO_TRACKING_PROTECTION_SETTINGS_LINK)));
-}
-
-TEST_F(PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-       DisplaysLabelsWhenCookiesBlockedInIncognitoMode) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kAll;
-  cookie_info.is_incognito = true;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_EQ(
-      third_party_cookies_title()->GetText(),
-      l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SITE_NOT_WORKING_TITLE));
-  EXPECT_EQ(
-      third_party_cookies_description()->GetText(),
-      l10n_util::GetStringUTF16(
-          IDS_PAGE_INFO_TRACKING_PROTECTION_SITE_NOT_WORKING_DESCRIPTION_TEMPORARY));
-  EXPECT_EQ(
-      third_party_cookies_description_label()->GetText(),
-      l10n_util::GetStringFUTF16(
-          IDS_PAGE_INFO_TRACKING_PROTECTION_INCOGNITO_BLOCKED_COOKIES_DESCRIPTION,
-          l10n_util::GetStringUTF16(
-              IDS_PAGE_INFO_TRACKING_PROTECTION_SETTINGS_LINK)));
-}
-
-TEST_F(PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-       DisplaysLabelsWhenCookiesAllowedInIncognitoMode) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.protections_on = false;
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kAll;
-  cookie_info.is_incognito = true;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_EQ(third_party_cookies_title()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_PERMANENT_ALLOWED_TITLE));
-  EXPECT_EQ(
-      third_party_cookies_description()->GetText(),
-      l10n_util::GetStringUTF16(
-          IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_PERMANENT_ALLOWED_DESCRIPTION));
-  EXPECT_EQ(
-      third_party_cookies_description_label()->GetText(),
-      l10n_util::GetStringFUTF16(
-          IDS_PAGE_INFO_TRACKING_PROTECTION_INCOGNITO_BLOCKED_COOKIES_DESCRIPTION,
-          l10n_util::GetStringUTF16(
-              IDS_PAGE_INFO_TRACKING_PROTECTION_SETTINGS_LINK)));
-}
-
-TEST_F(PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-       DisplaysDescriptionWhenCookiesAllowedEnforcedByTpcdGrant) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.protections_on = false;
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kLimited;
-  cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByTpcdGrant;
-  cookie_info.controls_visible = false;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_EQ(third_party_cookies_description_label()->GetText(),
-            l10n_util::GetStringFUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_SITE_GRANT_DESCRIPTION,
-                l10n_util::GetStringUTF16(
-                    IDS_PAGE_INFO_TRACKING_PROTECTION_SETTINGS_LINK)));
-}
-
-TEST_P(PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-       DisplaysTitleAndDescriptionWhenCookiesBlocked) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests(kDaysToExpiration);
-  cookie_info.blocking_status = GetParam();
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_EQ(
-      third_party_cookies_title()->GetText(),
-      l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SITE_NOT_WORKING_TITLE));
-  EXPECT_EQ(
-      third_party_cookies_description()->GetText(),
-      l10n_util::GetStringUTF16(
-          IDS_PAGE_INFO_TRACKING_PROTECTION_SITE_NOT_WORKING_DESCRIPTION_TEMPORARY));
-}
-
-TEST_P(PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-       DisplaysTitleAndDescriptionWhenCookiesAllowedWithPermanentException) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.protections_on = false;
-  cookie_info.blocking_status = GetParam();
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_EQ(third_party_cookies_title()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_PERMANENT_ALLOWED_TITLE));
-  EXPECT_EQ(
-      third_party_cookies_description()->GetText(),
-      l10n_util::GetStringUTF16(
-          IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_PERMANENT_ALLOWED_DESCRIPTION));
-}
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         PageInfoCookiesContentView3pcdTitleAndDescriptionTest,
-                         testing::Values(CookieBlocking3pcdStatus::kLimited,
-                                         CookieBlocking3pcdStatus::kAll));
-
-class PageInfoCookiesContentViewAlwaysBlock3pcsIncognito
-    : public PageInfoCookiesContentViewBaseTestClass {
-  std::vector<base::test::FeatureRefAndParams> EnabledFeatures() override {
-    return {{privacy_sandbox::kAlwaysBlock3pcsIncognito, {}}};
-  }
+struct ThirdPartyCookiesA11yParam {
+  CookieControlsState state;
+  int subtitle_id;
 };
 
-TEST_F(PageInfoCookiesContentViewAlwaysBlock3pcsIncognito,
-       DisplaysIncognitoDescriptionWhenInIncognito) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
+class PageInfoCookiesContentViewA11yNameTest
+    : public PageInfoCookiesContentViewTest,
+      public testing::WithParamInterface<ThirdPartyCookiesA11yParam> {};
+
+TEST_P(PageInfoCookiesContentViewA11yNameTest,
+       ThirdPartyCookiesToggleA11yName) {
+  PageInfoCookiesContentView::CookiesInfo cookie_info =
       DefaultCookieInfoForTests();
-  cookie_info.is_incognito = true;
+  cookie_info.controls_state = GetParam().state;
   content_view()->SetCookieInfo(cookie_info);
   EXPECT_EQ(
-      third_party_cookies_description_label()->GetText(),
-      l10n_util::GetStringFUTF16(
-          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
-          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
+      third_party_cookies_toggle()->GetViewAccessibility().GetCachedName(),
+      base::JoinString({l10n_util::GetStringUTF16(
+                            IDS_PAGE_INFO_COOKIES_THIRD_PARTY_COOKIES_LABEL),
+                        l10n_util::GetStringUTF16(GetParam().subtitle_id)},
+                       u"\n"));
 }
 
-TEST_F(PageInfoCookiesContentViewAlwaysBlock3pcsIncognito,
-       DisplaysStandardDescriptionWhenInRegularMode) {
-  EXPECT_EQ(
-      third_party_cookies_description_label()->GetText(),
-      l10n_util::GetStringFUTF16(
-          IDS_PAGE_INFO_COOKIES_DESCRIPTION,
-          l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_SETTINGS_LINK)));
-}
-
-class PageInfoCookiesContentView3pcdCookieToggleTest
-    : public PageInfoCookiesContentViewBaseTestClass,
-      public testing::WithParamInterface<CookieBlocking3pcdStatus> {};
-
-TEST_F(PageInfoCookiesContentView3pcdCookieToggleTest,
-       DisplaysOffToggleWhenCookiesLimited) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kLimited;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_TRUE(third_party_cookies_label_wrapper()->GetVisible());
-  EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeCrossedRefreshIcon));
-  EXPECT_TRUE(third_party_cookies_toggle()->GetVisible());
-  EXPECT_FALSE(third_party_cookies_toggle()->GetIsOn());
-  EXPECT_FALSE(third_party_cookies_enforced_icon()->GetVisible());
-
-  EXPECT_EQ(third_party_cookies_toggle_subtitle()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_TRACKING_PROTECTION_BUBBLE_3PC_LIMITED_SUBTITLE));
-}
-
-TEST_F(PageInfoCookiesContentView3pcdCookieToggleTest,
-       DisplaysOffToggleWhenCookiesBlocked) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kAll;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_TRUE(third_party_cookies_label_wrapper()->GetVisible());
-  EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeCrossedRefreshIcon));
-  EXPECT_TRUE(third_party_cookies_toggle()->GetVisible());
-  EXPECT_FALSE(third_party_cookies_toggle()->GetIsOn());
-  EXPECT_FALSE(third_party_cookies_enforced_icon()->GetVisible());
-
-  EXPECT_EQ(third_party_cookies_toggle_subtitle()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_TRACKING_PROTECTION_BUBBLE_3PC_BLOCKED_SUBTITLE));
-}
-
-TEST_F(PageInfoCookiesContentView3pcdCookieToggleTest,
-       DisplaysOffToggleWhenCookiesBlockedInIncognitoMode) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kAll;
-  cookie_info.is_incognito = true;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_TRUE(third_party_cookies_label_wrapper()->GetVisible());
-  EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeCrossedRefreshIcon));
-  EXPECT_TRUE(third_party_cookies_toggle()->GetVisible());
-  EXPECT_FALSE(third_party_cookies_toggle()->GetIsOn());
-  EXPECT_FALSE(third_party_cookies_enforced_icon()->GetVisible());
-
-  EXPECT_EQ(third_party_cookies_toggle_subtitle()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_TRACKING_PROTECTION_BUBBLE_3PC_BLOCKED_SUBTITLE));
-}
-
-TEST_F(PageInfoCookiesContentView3pcdCookieToggleTest,
-       DisplaysOnToggleWhenCookiesAllowedInIncognitoMode) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.protections_on = false;
-  cookie_info.blocking_status = CookieBlocking3pcdStatus::kAll;
-  cookie_info.is_incognito = true;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_TRUE(third_party_cookies_label_wrapper()->GetVisible());
-  EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
-  EXPECT_TRUE(third_party_cookies_toggle()->GetVisible());
-  EXPECT_TRUE(third_party_cookies_toggle()->GetIsOn());
-  EXPECT_FALSE(third_party_cookies_enforced_icon()->GetVisible());
-
-  EXPECT_EQ(third_party_cookies_toggle_subtitle()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_TRACKING_PROTECTION_BUBBLE_3PC_ALLOWED_SUBTITLE));
-}
-
-TEST_P(PageInfoCookiesContentView3pcdCookieToggleTest,
-       DisplaysOnToggleWhenCookiesAllowed) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.blocking_status = GetParam();
-  cookie_info.protections_on = false;
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_TRUE(third_party_cookies_label_wrapper()->GetVisible());
-  EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
-  EXPECT_TRUE(third_party_cookies_toggle()->GetVisible());
-  EXPECT_TRUE(third_party_cookies_toggle()->GetIsOn());
-  EXPECT_FALSE(third_party_cookies_enforced_icon()->GetVisible());
-
-  EXPECT_EQ(third_party_cookies_toggle_subtitle()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_TRACKING_PROTECTION_BUBBLE_3PC_ALLOWED_SUBTITLE));
-}
-
-TEST_P(PageInfoCookiesContentView3pcdCookieToggleTest,
-       LabelAndEnforcementShownWhenCookiesAllowedEnforcedBySetting) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByCookieSetting;
-  cookie_info.protections_on = false;
-  cookie_info.blocking_status = GetParam();
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_TRUE(third_party_cookies_label_wrapper()->GetVisible());
-  EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
-  EXPECT_FALSE(third_party_cookies_toggle()->GetVisible());
-  EXPECT_TRUE(third_party_cookies_enforced_icon()->GetVisible());
-
-  EXPECT_EQ(third_party_cookies_title()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_PAGE_INFO_TRACKING_PROTECTION_PERMANENT_ALLOWED_TITLE));
-  EXPECT_EQ(
-      third_party_cookies_description()->GetText(),
-      l10n_util::GetStringUTF16(
-          IDS_PAGE_INFO_TRACKING_PROTECTION_COOKIES_PERMANENT_ALLOWED_DESCRIPTION));
-  EXPECT_EQ(third_party_cookies_toggle_subtitle()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_TRACKING_PROTECTION_BUBBLE_3PC_ALLOWED_SUBTITLE));
-}
-
-TEST_P(PageInfoCookiesContentView3pcdCookieToggleTest,
-       LabelHiddenAndEnforcementShownWhenCookiesAllowedEnforcedByPolicy) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByPolicy;
-  cookie_info.protections_on = false;
-  cookie_info.blocking_status = GetParam();
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_FALSE(third_party_cookies_label_wrapper()->GetVisible());
-  EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
-  EXPECT_FALSE(third_party_cookies_toggle()->GetVisible());
-  EXPECT_TRUE(third_party_cookies_enforced_icon()->GetVisible());
-
-  EXPECT_EQ(third_party_cookies_toggle_subtitle()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_TRACKING_PROTECTION_BUBBLE_3PC_ALLOWED_SUBTITLE));
-}
-
-TEST_P(PageInfoCookiesContentView3pcdCookieToggleTest,
-       LabelHiddenAndEnforcementShownWhenCookiesAllowedEnforcedByExtension) {
-  PageInfoCookiesContentView::CookiesNewInfo cookie_info =
-      DefaultCookieInfoForTests();
-  cookie_info.enforcement = CookieControlsEnforcement::kEnforcedByExtension;
-  cookie_info.protections_on = false;
-  cookie_info.blocking_status = GetParam();
-  cookie_info.features = GetTrackingProtectionFeatures(cookie_info);
-  content_view()->SetCookieInfo(cookie_info);
-
-  EXPECT_FALSE(third_party_cookies_label_wrapper()->GetVisible());
-  EXPECT_EQ(third_party_cookies_row()->GetIconForTesting(),
-            GetImageModel(views::kEyeRefreshIcon));
-  EXPECT_FALSE(third_party_cookies_toggle()->GetVisible());
-  EXPECT_TRUE(third_party_cookies_enforced_icon()->GetVisible());
-
-  EXPECT_EQ(third_party_cookies_toggle_subtitle()->GetText(),
-            l10n_util::GetStringUTF16(
-                IDS_TRACKING_PROTECTION_BUBBLE_3PC_ALLOWED_SUBTITLE));
-}
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         PageInfoCookiesContentView3pcdCookieToggleTest,
-                         testing::Values(CookieBlocking3pcdStatus::kLimited,
-                                         CookieBlocking3pcdStatus::kAll));
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    PageInfoCookiesContentViewA11yNameTest,
+    testing::Values(
+        ThirdPartyCookiesA11yParam{
+            CookieControlsState::kBlocked3pc,
+            IDS_TRACKING_PROTECTION_BUBBLE_3PC_BLOCKED_SUBTITLE},
+        ThirdPartyCookiesA11yParam{
+            CookieControlsState::kAllowed3pc,
+            IDS_TRACKING_PROTECTION_BUBBLE_3PC_ALLOWED_SUBTITLE}));

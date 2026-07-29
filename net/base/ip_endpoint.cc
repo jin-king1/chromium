@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/base/ip_endpoint.h"
 
 #include <string.h>
@@ -26,6 +21,7 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "net/base/ip_address.h"
+#include "net/base/ip_address_util.h"
 #include "net/base/sys_addrinfo.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -67,34 +63,35 @@ void IPEndPoint::SetIndexToNameFuncForTesting(IndexToNameFunc func) {
 }
 
 // static
-std::optional<uint32_t> IPEndPoint::ScopeIdFromDict(
-    const base::Value::Dict& dict) {
-  const std::string* name = dict.FindString(kInterfaceName);
-  if (!name) {
+std::optional<uint32_t> IPEndPoint::ScopeIdFromInterfaceName(
+    const base::Value* value) {
+  if (!value || !value->is_string()) {
     return std::nullopt;
   }
 
+  const std::string& name = value->GetString();
   unsigned int index = 0;
   if (name_to_index_func_for_testing_) {
-    index = name_to_index_func_for_testing_(name->c_str());
+    index = name_to_index_func_for_testing_(name.c_str());
   } else {
-    index = if_nametoindex(name->c_str());
+    index = if_nametoindex(name.c_str());
   }
 
   return index;
 }
 
 // static
-base::Value IPEndPoint::ScopeIdToValue(std::optional<uint32_t> scope_id) {
+base::Value IPEndPoint::ScopeIdToInterfaceNameValue(
+    std::optional<uint32_t> scope_id) {
   if (!scope_id.has_value()) {
     return base::Value();
   }
 
   char* name = nullptr;
-  char buf[IF_NAMESIZE + 1];
-  memset(buf, 0, sizeof(buf));
+  char buf[IF_NAMESIZE + 1] = {0};
   if (index_to_name_func_for_testing_) {
-    name = index_to_name_func_for_testing_(scope_id.value(), buf);
+    name = index_to_name_func_for_testing_(scope_id.value(),
+                                           base::span<char>(buf));
   } else {
     name = if_indextoname(scope_id.value(), buf);
   }
@@ -108,7 +105,7 @@ base::Value IPEndPoint::ScopeIdToValue(std::optional<uint32_t> scope_id) {
 
 // static
 std::optional<IPEndPoint> IPEndPoint::FromValue(const base::Value& value) {
-  const base::Value::Dict* dict = value.GetIfDict();
+  const base::DictValue* dict = value.GetIfDict();
   if (!dict)
     return std::nullopt;
 
@@ -130,7 +127,8 @@ std::optional<IPEndPoint> IPEndPoint::FromValue(const base::Value& value) {
   IPEndPoint endpoint(address.value(),
                       base::checked_cast<uint16_t>(port.value()));
 
-  std::optional<uint32_t> scope_id = ScopeIdFromDict(*dict);
+  std::optional<uint32_t> scope_id =
+      ScopeIdFromInterfaceName(dict->Find(kInterfaceName));
   if (scope_id.has_value()) {
     if (scope_id.value() == 0 || !endpoint.IsIPv6LinkLocal() ||
         !base::IsValueInRangeForNumericType<uint32_t>(scope_id.value())) {
@@ -158,6 +156,13 @@ uint16_t IPEndPoint::port() const {
   DCHECK_NE(address_.size(), kBluetoothAddressSize);
 #endif
   return port_;
+}
+
+IPEndPoint IPEndPoint::CopyWithPort(uint16_t port) const {
+#if BUILDFLAG(IS_WIN)
+  DCHECK_NE(address_.size(), kBluetoothAddressSize);
+#endif
+  return IPEndPoint(address_, port, scope_id_);
 }
 
 AddressFamily IPEndPoint::GetFamily() const {
@@ -198,11 +203,11 @@ bool IPEndPoint::ToSockAddr(struct sockaddr* address,
         return false;
       *address_length = kSockaddrInSize;
       struct sockaddr_in* addr = reinterpret_cast<struct sockaddr_in*>(address);
-      memset(addr, 0, sizeof(struct sockaddr_in));
+      // Zero out address struct.
+      *addr = {};
       addr->sin_family = AF_INET;
       addr->sin_port = base::HostToNet16(port_);
-      memcpy(&addr->sin_addr, address_.bytes().data(),
-             IPAddress::kIPv4AddressSize);
+      addr->sin_addr = ToInAddr(address_);
       break;
     }
     case IPAddress::kIPv6AddressSize: {
@@ -211,11 +216,11 @@ bool IPEndPoint::ToSockAddr(struct sockaddr* address,
       *address_length = kSockaddrIn6Size;
       struct sockaddr_in6* addr6 =
           reinterpret_cast<struct sockaddr_in6*>(address);
-      memset(addr6, 0, sizeof(struct sockaddr_in6));
+      // Zero out address struct.
+      *addr6 = {};
       addr6->sin6_family = AF_INET6;
       addr6->sin6_port = base::HostToNet16(port_);
-      memcpy(&addr6->sin6_addr, address_.bytes().data(),
-             IPAddress::kIPv6AddressSize);
+      addr6->sin6_addr = ToIn6Addr(address_);
       if (IsIPv6LinkLocal() && scope_id_) {
         addr6->sin6_scope_id = *scope_id_;
       }
@@ -297,23 +302,14 @@ bool IPEndPoint::operator<(const IPEndPoint& other) const {
          std::tie(other.address_, other.port_, other.scope_id_);
 }
 
-bool IPEndPoint::operator==(const IPEndPoint& other) const {
-  return address_ == other.address_ && port_ == other.port_ &&
-         scope_id_ == other.scope_id_;
-}
-
-bool IPEndPoint::operator!=(const IPEndPoint& that) const {
-  return !(*this == that);
-}
-
 base::Value IPEndPoint::ToValue() const {
-  base::Value::Dict dict;
+  base::DictValue dict;
 
   DCHECK(address_.IsValid());
   dict.Set(kValueAddressKey, address_.ToValue());
   dict.Set(kValuePortKey, port_);
 
-  base::Value interface_name = ScopeIdToValue(scope_id_);
+  base::Value interface_name = ScopeIdToInterfaceNameValue(scope_id_);
   if (!interface_name.is_none()) {
     DCHECK(IsIPv6LinkLocal());
     dict.Set(kInterfaceName, std::move(interface_name));

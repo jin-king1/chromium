@@ -10,6 +10,9 @@
 // Presentation delegate for `PasswordManagerViewController`.
 @protocol PasswordManagerViewControllerPresentationDelegate
 
+// Called to present the Level Up walkthrough IPH step.
+- (void)showLevelUpWalkthroughIPH;
+
 // Called when `PasswordManagerViewController` is dismissed.
 - (void)PasswordManagerViewControllerDismissed;
 
@@ -21,6 +24,10 @@
 // Manager widget promo. This method presents the instruction view associated
 // with that promo.
 - (void)showPasswordManagerWidgetPromoInstructions;
+
+// Called when the user has accepted the Trusted Vault Password Manager widget
+// promo. This method presents the Trusted Vault Reauthentication UI.
+- (void)performReauthenticationForRetrievingTrustedVaultKey;
 
 @end
 

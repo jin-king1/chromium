@@ -6,7 +6,6 @@
 
 #include "base/functional/bind.h"
 #include "base/location.h"
-#include "base/not_fatal_until.h"
 #include "base/rand_util.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/web_pointer_properties.h"
@@ -42,7 +41,7 @@ bool ShouldHaveAnchorElementMetricsSender(Document& document) {
       base::FeatureList::IsEnabled(features::kNavigationPredictor);
   const KURL& url = document.Url();
   return is_feature_enabled && document.IsInOutermostMainFrame() &&
-         url.IsValid() && url.ProtocolIsInHTTPFamily() &&
+         url.IsValid() && url.ProtocolIsInHttpFamily() &&
          document.GetExecutionContext() &&
          document.GetExecutionContext()->IsSecureContext();
 }
@@ -120,9 +119,9 @@ void AnchorElementMetricsSender::MaybeReportClickedMetricsOnClick(
   DCHECK(base::FeatureList::IsEnabled(features::kNavigationPredictor));
   Document* top_document = GetSupplementable();
   CHECK(top_document);
-  if (!anchor_element.Href().ProtocolIsInHTTPFamily() ||
-      !top_document->Url().ProtocolIsInHTTPFamily() ||
-      !anchor_element.GetDocument().Url().ProtocolIsInHTTPFamily()) {
+  if (!anchor_element.Href().ProtocolIsInHttpFamily() ||
+      !top_document->Url().ProtocolIsInHttpFamily() ||
+      !anchor_element.GetDocument().Url().ProtocolIsInHttpFamily()) {
     return;
   }
   if (!AssociateInterface()) {
@@ -233,8 +232,8 @@ bool AnchorElementMetricsSender::AssociateInterface() {
               TaskType::kInternalDefault)));
 
   metrics_host_->ShouldSkipUpdateDelays(
-      WTF::BindOnce(&AnchorElementMetricsSender::SetShouldSkipUpdateDelays,
-                    WrapWeakPersistent(this)));
+      BindOnce(&AnchorElementMetricsSender::SetShouldSkipUpdateDelays,
+               WrapWeakPersistent(this)));
 
   return true;
 }
@@ -249,7 +248,12 @@ AnchorElementMetricsSender::AnchorElementMetricsSender(Document& document)
       random_anchor_sampling_period_(base::GetFieldTrialParamByFeatureAsInt(
           blink::features::kNavigationPredictor,
           "random_anchor_sampling_period",
-          100)),
+#if BUILDFLAG(IS_ANDROID)
+          1
+#else
+          100
+#endif
+          )),
       clock_(base::DefaultTickClock::GetInstance()) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(document.IsInOutermostMainFrame());
@@ -379,7 +383,7 @@ void AnchorElementMetricsSender::EnqueueLeftViewport(
     const HTMLAnchorElementBase& element) {
   const auto anchor_id = AnchorElementId(element);
   auto it = anchor_elements_timing_stats_.find(anchor_id);
-  CHECK(it != anchor_elements_timing_stats_.end(), base::NotFatalUntil::M130);
+  CHECK(it != anchor_elements_timing_stats_.end());
   AnchorElementTimingStats& timing_stats = it->value;
   timing_stats.entered_viewport_should_be_enqueued_ = true;
   std::optional<base::TimeTicks>& entered_viewport =
@@ -400,7 +404,7 @@ void AnchorElementMetricsSender::EnqueueEnteredViewport(
     const HTMLAnchorElementBase& element) {
   const auto anchor_id = AnchorElementId(element);
   auto it = anchor_elements_timing_stats_.find(anchor_id);
-  CHECK(it != anchor_elements_timing_stats_.end(), base::NotFatalUntil::M130);
+  CHECK(it != anchor_elements_timing_stats_.end());
   AnchorElementTimingStats& timing_stats = it->value;
   timing_stats.viewport_entry_time_ = clock_->NowTicks();
   if (!timing_stats.entered_viewport_should_be_enqueued_) {
@@ -452,7 +456,7 @@ void AnchorElementMetricsSender::DidFinishLifecycleUpdate(
       continue;
     }
 
-    int random = base::RandInt(1, random_anchor_sampling_period_);
+    int random = base::RandIntInclusive(1, random_anchor_sampling_period_);
     if (random == 1) {
       // This anchor element is sampled in.
       if (viewport_position_tracker) {
@@ -477,7 +481,7 @@ void AnchorElementMetricsSender::DidFinishLifecycleUpdate(
   // into the DOM later or if they enter the viewport.
   anchor_elements_to_report_.clear();
 
-  metrics_removed_anchors_.AppendVector(removed_anchors_to_report_);
+  metrics_removed_anchors_.append_range(removed_anchors_to_report_);
   removed_anchors_to_report_.clear();
 
   if (!metrics_.empty() || !metrics_removed_anchors_.empty()) {
@@ -542,8 +546,8 @@ void AnchorElementMetricsSender::UpdateMetrics(TimerBase* /*timer*/) {
     // additions of the first lifecycle update, then the removals of the second
     // lifecycle update, then the additions of the second lifecycle update, and
     // so on.
-    WTF::HashMap<AnchorId, bool> present;
-    WTF::HashMap<AnchorId, bool> newly_removed;
+    HashMap<AnchorId, bool> present;
+    HashMap<AnchorId, bool> newly_removed;
     wtf_size_t insert_idx = 0;
     wtf_size_t remove_idx = 0;
     for (const auto& [insert_end, remove_end] : metrics_partitions_) {
@@ -562,15 +566,13 @@ void AnchorElementMetricsSender::UpdateMetrics(TimerBase* /*timer*/) {
       insert_idx = insert_end;
       remove_idx = remove_end;
     }
-    WTF::EraseIf(
-        metrics_,
-        [&present](const mojom::blink::AnchorElementMetricsPtr& metric) {
-          return !present.at(metric->anchor_id);
-        });
-    WTF::EraseIf(metrics_removed_anchors_,
-                 [&present, &newly_removed](AnchorId id) {
-                   return !newly_removed.at(id) || present.at(id);
-                 });
+    EraseIf(metrics_,
+            [&present](const mojom::blink::AnchorElementMetricsPtr& metric) {
+              return !present.at(metric->anchor_id);
+            });
+    EraseIf(metrics_removed_anchors_, [&present, &newly_removed](AnchorId id) {
+      return !newly_removed.at(id) || present.at(id);
+    });
 
     metrics_host_->ReportNewAnchorElements(std::move(metrics_),
                                            std::move(metrics_removed_anchors_));

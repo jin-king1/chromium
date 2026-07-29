@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.intents;
 
-import android.app.Activity;
 import android.content.Intent;
 import android.os.SystemClock;
 
@@ -25,29 +24,45 @@ public class BrowserIntentUtils {
     public static final String CHROME_LAUNCHER_ACTIVITY_CLASS_NAME =
             "com.google.android.apps.chrome.IntentDispatcher";
 
+    /** Class name for LauncherShortcutActivity. */
+    public static final String LAUNCHER_SHORTCUT_ACTIVITY_CLASS_NAME =
+            "org.chromium.chrome.browser.LauncherShortcutActivity";
+
+    public static final String EXTRA_PREFER_NEW = "com.android.chrome.prefer_new";
+    public static final String EXTRA_OPEN_NEW_INCOGNITO_TAB =
+            "com.google.android.apps.chrome.EXTRA_OPEN_NEW_INCOGNITO_TAB";
+    public static final String EXTRA_OPEN_NEW_INCOGNITO_WINDOW =
+            "com.google.android.apps.chrome.EXTRA_OPEN_NEW_INCOGNITO_WINDOW";
+    public static final String EXTRA_TAB_LAUNCH_TYPE =
+            "org.chromium.chrome.browser.tab_launch_type";
+
     /**
-     * Adds two timestamps to an intent, as returned by {@link SystemClock#elapsedRealtime()}.
+     * Adds the current realtime and uptime timestamps to an intent.
      *
-     * To track page load time, this needs to be called as close as possible to
-     * the entry point (in {@link Activity#onCreate()} for instance).
+     * <p>To track page load time, this needs to be called as close as possible to the entry point
+     * in a launcher Activity.
+     *
+     * <p>If these timestamps are not present, it means the intent was sent directly to the target
+     * Activity. In this case, if measuring relative to Activity startup, consider using
+     * AsyncInitializationActivity#getOnCreateTimestampMs().
      */
-    public static void addStartupTimestampsToIntent(Intent intent) {
+    public static void addLauncherTimestampsToIntent(Intent intent) {
         intent.putExtra(EXTRA_STARTUP_REALTIME_MS, SystemClock.elapsedRealtime());
         intent.putExtra(EXTRA_STARTUP_UPTIME_MS, SystemClock.uptimeMillis());
     }
 
     /**
      * @return the startup timestamp associated with an intent in the elapsedRealtime timebase, or
-     *         -1.
+     *     -1.
      */
-    public static long getStartupRealtimeMillis(Intent intent) {
+    public static long getLaunchedRealtimeMillis(Intent intent) {
         return intent.getLongExtra(EXTRA_STARTUP_REALTIME_MS, -1);
     }
 
     /**
      * @return the startup timestamp associated with an intent in the uptimeMillis timebase, or -1.
      */
-    public static long getStartupUptimeMillis(Intent intent) {
+    public static long getLaunchedUptimeMillis(Intent intent) {
         return intent.getLongExtra(EXTRA_STARTUP_UPTIME_MS, -1);
     }
 }

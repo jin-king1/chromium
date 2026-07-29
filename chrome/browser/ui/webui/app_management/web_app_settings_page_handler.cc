@@ -13,7 +13,9 @@
 #include "chrome/browser/web_applications/link_capturing_features.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom-shared.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
+#include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_scope.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/chrome_features.h"
@@ -33,24 +35,42 @@
 
 namespace {
 
+std::string FormatScope(const GURL& scope_url) {
+  std::string scope_str(scope_url.host());
+  if (scope_url.has_port()) {
+    scope_str += ":";
+    scope_str += scope_url.port();
+  }
+  scope_str += scope_url.path().empty() ? "/" : scope_url.path();
+  scope_str += "*";
+  return scope_str;
+}
+
 std::vector<std::string> GetSupportedLinks(const std::string& app_id,
                                            web_app::WebAppProvider& provider) {
-  GURL app_scope = provider.registrar_unsafe().GetAppScope(app_id);
-  if (!web_app::IsValidScopeForLinkCapturing(app_scope)) {
-    return std::vector<std::string>();
+  std::optional<web_app::WebAppScope> effective_scope =
+      provider.registrar_unsafe().GetEffectiveScope(app_id);
+  if (!effective_scope) {
+    return {};
   }
 
-  std::string scope_str(app_scope.host());
-  if (app_scope.has_port()) {
-    scope_str += ":" + app_scope.port();
+  std::vector<std::string> supported_links;
+  for (const auto& scope_extension :
+       effective_scope->validated_scope_extensions()) {
+    std::string formatted_scope = FormatScope(scope_extension.scope);
+    supported_links.push_back(formatted_scope);
+    if (scope_extension.has_origin_wildcard) {
+      supported_links.push_back("*." + formatted_scope);
+    }
   }
-  scope_str += app_scope.path();
-  if (scope_str.back() == '/') {
-    scope_str = scope_str + "*";
-  } else {
-    scope_str = scope_str + "/*";
+
+  GURL app_scope = effective_scope->scope();
+  if (!web_app::IsValidScopeForLinkCapturing(app_scope)) {
+    return supported_links;
   }
-  return {scope_str};
+
+  supported_links.push_back(FormatScope(app_scope));
+  return supported_links;
 }
 
 std::string GetFormattedOrigin(const webapps::AppId& app_id,
@@ -182,7 +202,7 @@ void WebAppSettingsPageHandler::GetOverlappingPreferredApps(
       web_app::AllAppsLockDescription(),
       base::BindOnce(
           [](const webapps::AppId& app_id, web_app::AllAppsLock& all_apps_lock,
-             base::Value::Dict& debug_value) {
+             base::DictValue& debug_value) {
             return all_apps_lock.registrar().GetOverlappingAppsMatchingScope(
                 app_id);
           },
@@ -192,8 +212,11 @@ void WebAppSettingsPageHandler::GetOverlappingPreferredApps(
 
 void WebAppSettingsPageHandler::SetWindowMode(const std::string& app_id,
                                               apps::WindowMode window_mode) {
-  // Changing window mode is not allowed for isolated web apps.
-  if (provider().registrar_unsafe().IsIsolated(app_id)) {
+  // Changing window mode is not allowed for isolated web apps and isolated sub
+  // apps.
+  if (provider().registrar_unsafe().AppMatches(
+          app_id, web_app::WebAppFilter::IsIsolatedApp() |
+                      web_app::WebAppFilter::IsIsolatedSubApp())) {
     return;
   }
 
@@ -275,11 +298,12 @@ app_management::mojom::AppPtr WebAppSettingsPageHandler::CreateApp(
     app->scope_extensions = GetScopeExtensions(app->id, provider());
   }
 
-  app->hide_window_mode = provider().registrar_unsafe().IsIsolated(app->id);
+  app->hide_window_mode = provider().registrar_unsafe().AppMatches(
+      app->id, web_app::WebAppFilter::IsIsolatedApp());
 
   app->show_system_notifications_settings_link = false;
 #if BUILDFLAG(IS_MAC)
-  if (base::FeatureList::IsEnabled(features::kAppShimNotificationAttribution)) {
+  if (web_app::UseNotificationAttributionForWebAppShims()) {
     auto system_permission_status =
         AppShimRegistry::Get()->GetNotificationPermissionStatusForApp(app->id);
     app->show_system_notifications_settings_link =
@@ -290,9 +314,12 @@ app_management::mojom::AppPtr WebAppSettingsPageHandler::CreateApp(
   }
 #endif
 
-  // On non-ChromeOS platforms, navigation capturing is allowed even if PWAs
-  // open in a new browser tab.
-  app->disable_user_choice_navigation_capturing = false;
+  if (!base::FeatureList::IsEnabled(
+          apps::features::kUpdateAppStringsOnSettings)) {
+    // On non-ChromeOS platforms, navigation capturing is allowed even if PWAs
+    // open in a new browser tab when the feature is disabled.
+    app->disable_user_choice_navigation_capturing = false;
+  }
 
   return app;
 }

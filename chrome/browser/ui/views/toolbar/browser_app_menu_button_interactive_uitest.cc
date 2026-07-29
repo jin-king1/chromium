@@ -8,6 +8,7 @@
 #include "base/logging.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/accelerator_utils.h"
 #include "chrome/browser/ui/browser.h"
@@ -15,6 +16,8 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/toolbar/bookmark_sub_menu_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/browser_app_menu_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/user_education/user_education_service.h"
@@ -27,12 +30,14 @@
 #include "chrome/test/interaction/webcontents_interaction_test_util.h"
 #include "chrome/test/user_education/interactive_feature_promo_test.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
+#include "components/user_education/views/help_bubble_view.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/interaction_sequence.h"
+#include "ui/views/interaction/element_tracker_views.h"
 
 using ::testing::_;
 using ::testing::AnyNumber;
@@ -48,7 +53,6 @@ namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kPrimaryTabPageElementId);
 
 BASE_FEATURE(kMenuPromoTestFeature,
-             "MenuPromoTestFeature",
              base::FEATURE_ENABLED_BY_DEFAULT);
 }  // namespace
 
@@ -76,9 +80,11 @@ class BrowserAppMenuButtonInteractiveTest : public InteractiveFeaturePromoTest {
 
   auto CheckAlertStatus(ui::ElementIdentifier element_id, bool is_alerted) {
     return Check([this, element_id, is_alerted]() mutable {
-      auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
-      auto* toolbar = browser_view->toolbar();
-      auto* button = toolbar->app_menu_button();
+      auto* button = views::AsViewClass<BrowserAppMenuButton>(
+          views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+              kToolbarAppMenuButtonElementId,
+              BrowserView::GetBrowserViewForBrowser(browser())
+                  ->GetElementContext()));
       auto* model = button->app_menu_model();
       EXPECT_EQ(model->IsElementIdAlerted(element_id), is_alerted);
       return true;
@@ -87,9 +93,11 @@ class BrowserAppMenuButtonInteractiveTest : public InteractiveFeaturePromoTest {
 
   auto CloseMenu() {
     return Do([this]() mutable {
-      auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
-      auto* toolbar = browser_view->toolbar();
-      auto* button = toolbar->app_menu_button();
+      auto* button = views::AsViewClass<BrowserAppMenuButton>(
+          views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+              kToolbarAppMenuButtonElementId,
+              BrowserView::GetBrowserViewForBrowser(browser())
+                  ->GetElementContext()));
       button->CloseMenu();
     });
   }
@@ -97,7 +105,7 @@ class BrowserAppMenuButtonInteractiveTest : public InteractiveFeaturePromoTest {
  private:
   UserEducationService* factory() {
     return UserEducationServiceFactory::GetForBrowserContext(
-        browser()->profile());
+        browser()->GetProfile());
   }
 
   FeaturePromoRegistry* registry() {
@@ -110,11 +118,28 @@ IN_PROC_BROWSER_TEST_F(BrowserAppMenuButtonInteractiveTest,
   RunTestSequence(
       InstrumentTab(kPrimaryTabPageElementId),
       MaybeShowPromo(kMenuPromoTestFeature),
+      // Open the menu with the IPH. This should close the bubble.
+      PressButton(kToolbarAppMenuButtonElementId),
+      WaitForHide(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
+      // Verify that the promo is still active and the item is highlighted.
+      CheckPromoActive(kMenuPromoTestFeature, true),
+      CheckAlertStatus(BookmarkSubMenuModel::kShowBookmarkSidePanelItem, true),
+      CloseMenu(),
+      // Open the menu again, this time without the IPH.
       PressButton(kToolbarAppMenuButtonElementId),
       SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
-      CheckAlertStatus(BookmarkSubMenuModel::kShowBookmarkSidePanelItem, true),
-      CloseMenu(), PressButton(kToolbarAppMenuButtonElementId),
-      SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
+      // Verify that the promo is not still active and the item is not
+      // highlighted.
+      CheckPromoActive(kMenuPromoTestFeature, false),
       CheckAlertStatus(BookmarkSubMenuModel::kShowBookmarkSidePanelItem,
                        false));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserAppMenuButtonInteractiveTest, AnimationDisabled) {
+  RunTestSequence(CheckView(kToolbarAppMenuButtonElementId,
+                            [](BrowserAppMenuButton* button) {
+                              return !button->GetAnimateOnStateChange();
+                            }));
 }

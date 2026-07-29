@@ -13,20 +13,22 @@
 #import "components/infobars/core/confirm_infobar_delegate.h"
 #import "components/infobars/core/infobar.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
+#import "ios/chrome/browser/signin/model/authentication_service_observer.h"
 #import "ui/gfx/image/image.h"
 
 class AuthenticationService;
-@protocol SigninPresenter;
+@protocol ReSigninPresenter;
 
 // A confirmation infobar prompting user to bring up the sign-in screen.
 class ReSignInInfoBarDelegate : public ConfirmInfoBarDelegate,
-                                public signin::IdentityManager::Observer {
+                                public signin::IdentityManager::Observer,
+                                public AuthenticationServiceObserver {
  public:
   // Returns nullptr if the infobar must not be shown.
   static std::unique_ptr<ReSignInInfoBarDelegate> Create(
       AuthenticationService* authentication_service,
       signin::IdentityManager* identity_manager,
-      id<SigninPresenter> signin_presenter);
+      id<ReSigninPresenter> signin_presenter_);
 
   ReSignInInfoBarDelegate(const ReSignInInfoBarDelegate&) = delete;
   ReSignInInfoBarDelegate& operator=(const ReSignInInfoBarDelegate&) = delete;
@@ -49,17 +51,24 @@ class ReSignInInfoBarDelegate : public ConfirmInfoBarDelegate,
   // IdentityManager::Observer.
   void OnPrimaryAccountChanged(
       const signin::PrimaryAccountChangeEvent& event) override;
+  void OnIdentityManagerShutdown(
+      signin::IdentityManager* identity_manager) override;
+
+  // AuthenticationServiceObserver.
+  void OnServiceStatusChanged() override;
 
  private:
   ReSignInInfoBarDelegate(AuthenticationService* authentication_service,
                           signin::IdentityManager* identity_manager,
-                          id<SigninPresenter> signin_presenter);
+                          id<ReSigninPresenter> signin_presenter_);
 
   const raw_ptr<AuthenticationService> authentication_service_;
-  const id<SigninPresenter> signin_presenter_;
+  const id<ReSigninPresenter> resignin_presenter_;
   base::ScopedObservation<signin::IdentityManager,
                           signin::IdentityManager::Observer>
       identity_manager_observer_{this};
+  base::ScopedObservation<AuthenticationService, AuthenticationServiceObserver>
+      auth_service_observation_{this};
 };
 
 #endif  // IOS_CHROME_BROWSER_AUTHENTICATION_UI_BUNDLED_RE_SIGNIN_INFOBAR_DELEGATE_H_

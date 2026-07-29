@@ -8,10 +8,14 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/extensions/extension_keybinding_registry.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
+#include "extensions/buildflags/buildflags.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/accelerators/global_accelerator_listener/global_accelerator_listener.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace content {
 class BrowserContext;
@@ -59,9 +63,13 @@ class ExtensionCommandsGlobalRegistry
     registry_for_active_window_ = registry;
   }
 
-  // Returns whether |accelerator| is registered on the registry for the active
+  // Returns whether `accelerator` is registered on the registry for the active
   // window or on the global registry.
   bool IsRegistered(const ui::Accelerator& accelerator);
+
+ protected:
+  // Overridable in tests to inject a fake global accelerator listener.
+  virtual ui::GlobalAcceleratorListener* GetGlobalAcceleratorListener() const;
 
  private:
   friend class BrowserContextKeyedAPIFactory<ExtensionCommandsGlobalRegistry>;
@@ -73,10 +81,12 @@ class ExtensionCommandsGlobalRegistry
   static const bool kServiceRedirectedInIncognito = true;
 
   // Overridden from ExtensionKeybindingRegistry:
-  void AddExtensionKeybindings(const Extension* extension,
-                               const std::string& command_name) override;
-  void RemoveExtensionKeybindingImpl(const ui::Accelerator& accelerator,
-                                     const std::string& command_name) override;
+  bool PopulateCommands(const Extension* extension,
+                        ui::CommandMap* commands) override;
+  bool RegisterAccelerator(const ui::Accelerator& accelerator,
+                           const ExtensionId& extension_id,
+                           const std::string& command_name) override;
+  void UnregisterAccelerator(const ui::Accelerator& accelerator) override;
   void OnShortcutHandlingSuspended(bool suspended) override;
 
   // Called by the GlobalShortcutListener object when a shortcut this class has
@@ -91,9 +101,11 @@ class ExtensionCommandsGlobalRegistry
   // The global commands registry not only keeps track of global commands
   // registered, but also of which non-global command registry is active
   // (belonging to the currently active window). Only valid for TOOLKIT_VIEWS
-  // and
-  // NULL otherwise.
+  // and NULL otherwise.
   raw_ptr<ExtensionKeybindingRegistry> registry_for_active_window_;
+
+  // Must be last.
+  base::WeakPtrFactory<ExtensionCommandsGlobalRegistry> weak_ptr_factory_{this};
 };
 
 }  // namespace extensions

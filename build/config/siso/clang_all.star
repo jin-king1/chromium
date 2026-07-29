@@ -4,67 +4,69 @@
 # found in the LICENSE file.
 """Siso configuration for clang."""
 
+load("@builtin//lib/gn.star", "gn")
 load("@builtin//path.star", "path")
 load("@builtin//struct.star", "module")
 load("./ar.star", "ar")
 load("./config.star", "config")
+load("./gn_logs.star", "gn_logs")
 load("./mac_sdk.star", "mac_sdk")
 load("./win_sdk.star", "win_sdk")
+load("./clang_code_coverage_wrapper.star", "clang_code_coverage_wrapper")
+
+def __check_crash_diagnostics(ctx, args):
+    # If multiple -fcrash-diagnostics-dir flags are provided, clang uses the last one.
+    crash_dir = None
+    skip = False
+    for i, arg in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if arg.startswith("-fcrash-diagnostics-dir="):
+            crash_dir = arg.removeprefix("-fcrash-diagnostics-dir=")
+        elif arg == "-fcrash-diagnostics-dir" and i + 1 < len(args):
+            crash_dir = args[i + 1]
+            skip = True
+
+    if crash_dir:
+        if path.isabs(crash_dir):
+            # RBE requires relative paths for output directories.
+            # If the crash dir is absolute (e.g. /tmp/...), we can't capture it easily.
+            # For now, just skip it to avoid build failures.
+            return
+        crash_dir = ctx.fs.canonpath(crash_dir)
+        ctx.actions.fix(auxiliary_log_output_dirs = [crash_dir])
 
 def __filegroups(ctx):
+    gn_logs_data = gn_logs.read(ctx)
+
+    # source_root is absolute path of chromium source top directory ("//"),
+    # set only for CrOS's chroot builds that use rbe_exec_root="/".
+    root = gn_logs_data.get("source_root", "")
+
     fg = {
-        "third_party/libc++/src/include:headers": {
+        path.join(root, "third_party/libc++/src/include") + ":headers": {
             "type": "glob",
             "includes": ["*"],
             # can't use "*.h", because c++ headers have no extension.
         },
-        "third_party/libc++abi/src/include:headers": {
+        path.join(root, "third_party/libc++abi/src/include") + ":headers": {
             "type": "glob",
             "includes": ["*.h"],
         },
-        # vendor provided headers for libc++.
-        "buildtools/third_party/libc++:headers": {
-            "type": "glob",
-            "includes": [
-                "__*",
-            ],
-        },
-
         # toolchain root
         # :headers for compiling
-        "third_party/llvm-build/Release+Asserts:headers": {
+        path.join(root, "third_party/llvm-build/Release+Asserts") + ":headers": {
             "type": "glob",
             "includes": [
                 "*.h",
+                "*.modulemap",
                 "bin/clang",
                 "bin/clang++",
                 "bin/clang-*",  # clang-cl, clang-<ver>
                 "*_ignorelist.txt",
                 # https://crbug.com/335997052
                 "clang_rt.profile*.lib",
-            ],
-        },
-        "third_party/cronet_android_mainline_clang/linux-amd64:headers": {
-            "type": "glob",
-            "includes": [
-                "*.h",
-                "bin/clang*",
-            ],
-        },
-        "third_party/cronet_android_mainline_clang/linux-amd64:link": {
-            "type": "glob",
-            "includes": [
-                "bin/clang*",
-                "bin/ld.lld",
-                "bin/lld",
-                "bin/llvm-nm",
-                "bin/llvm-objcopy",
-                "bin/llvm-readelf",
-                "bin/llvm-readobj",
-                "bin/llvm-strip",
-                "*.so",
-                "*.so.*",
-                "*.a",
             ],
         },
     }
@@ -74,81 +76,84 @@ def __filegroups(ctx):
         fg.update(mac_sdk.filegroups(ctx))
     return fg
 
-__input_deps = {
-    # need this because we use
-    # third_party/libc++/src/include:headers,
-    # but scandeps doesn't scan `__config` file, which uses
-    # `#include <__config_site>`
-    # also need `__assertion_handler`. b/321171148
-    "third_party/libc++/src/include": [
-        "buildtools/third_party/libc++:headers",
-    ],
-    "third_party/llvm-build/Release+Asserts/bin/clang": [
-        "build/config/unsafe_buffers_paths.txt",
-    ],
-    "third_party/llvm-build/Release+Asserts/bin/clang++": [
-        "build/config/unsafe_buffers_paths.txt",
-    ],
-    "third_party/llvm-build/Release+Asserts/bin/clang-cl": [
-        "build/config/unsafe_buffers_paths.txt",
-    ],
-    "third_party/llvm-build/Release+Asserts/bin/clang-cl.exe": [
-        "build/config/unsafe_buffers_paths.txt",
-    ],
-    "third_party/llvm-build/Release+Asserts/bin/lld-link": [
-        "build/config/c++/libc++.natvis",
-        "build/win/as_invoker.manifest",
-        "build/win/common_controls.manifest",
-        "build/win/compatibility.manifest",
-        "build/win/require_administrator.manifest",
-        "build/win/segment_heap.manifest",
-        "remoting/host/win/dpi_aware.manifest",
-        "third_party/llvm-build/Release+Asserts/bin/lld",
-        "tools/win/DebugVisualizers/blink.natvis",
-        "tools/win/DebugVisualizers/chrome.natvis",
-    ],
-    "third_party/llvm-build/Release+Asserts/bin/lld-link.exe": [
-        "build/config/c++/libc++.natvis",
-        "build/win/as_invoker.manifest",
-        "build/win/common_controls.manifest",
-        "build/win/compatibility.manifest",
-        "build/win/require_administrator.manifest",
-        "build/win/segment_heap.manifest",
-        "remoting/host/win/dpi_aware.manifest",
-        "third_party/llvm-build/Release+Asserts/bin/lld.exe",
-        "tools/win/DebugVisualizers/blink.natvis",
-        "tools/win/DebugVisualizers/chrome.natvis",
-    ],
-    "build/toolchain/gcc_solink_wrapper.py": [
-        "build/toolchain/whole_archive.py",
-        "build/toolchain/wrapper_utils.py",
-    ],
-    "build/toolchain/gcc_solink_wrapper.py:link": [
-        "build/toolchain/gcc_solink_wrapper.py",
-        "build/toolchain/whole_archive.py",
-        "build/toolchain/wrapper_utils.py",
-    ],
-    "build/toolchain/gcc_link_wrapper.py": [
-        "build/toolchain/whole_archive.py",
-        "build/toolchain/wrapper_utils.py",
-    ],
-    "build/toolchain/gcc_link_wrapper.py:link": [
-        "build/toolchain/gcc_link_wrapper.py",
-        "build/toolchain/whole_archive.py",
-        "build/toolchain/wrapper_utils.py",
-    ],
-    "build/toolchain/apple/linker_driver.py:link": [
-        "build/toolchain/apple/linker_driver.py",
-        "build/toolchain/whole_archive.py",
-    ],
-    "build/toolchain/apple/solink_driver.py:link": [
-        "build/toolchain/apple/linker_driver.py",
-        "build/toolchain/apple/solink_driver.py",
-        "build/toolchain/whole_archive.py",
-    ],
-}
+def __input_deps(ctx):
+    build_dir = ctx.fs.canonpath(".")
+
+    libcxx_inputs = [
+        "buildtools/third_party/libc++/__assertion_handler",
+        "buildtools/third_party/libc++/__config_site",
+    ]
+
+    return {
+        "third_party/llvm-build/Release+Asserts/bin/clang++": libcxx_inputs,
+        "third_party/llvm-build/Release+Asserts/bin/clang++.exe": libcxx_inputs,
+        "third_party/llvm-build/Release+Asserts/bin/clang-cl": libcxx_inputs,
+        "third_party/llvm-build/Release+Asserts/bin/clang-cl.exe": libcxx_inputs,
+        "third_party/llvm-build/Release+Asserts/bin/lld-link": [
+            "build/config/c++/libc++.natvis",
+            "build/win/as_invoker.manifest",
+            "build/win/common_controls.manifest",
+            "build/win/compatibility.manifest",
+            "build/win/require_administrator.manifest",
+            "build/win/segment_heap.manifest",
+            "remoting/host/win/dpi_aware.manifest",
+            "third_party/llvm-build/Release+Asserts/bin/lld",
+            "tools/win/DebugVisualizers/absl.natvis",
+            "tools/win/DebugVisualizers/blink.natvis",
+            "tools/win/DebugVisualizers/cc-component-build.natvis",
+            "tools/win/DebugVisualizers/cc-non-component-build.natvis",
+            "tools/win/DebugVisualizers/cc.natvis",
+            "tools/win/DebugVisualizers/chrome.natvis",
+        ],
+        "third_party/llvm-build/Release+Asserts/bin/lld-link.exe": [
+            "build/config/c++/libc++.natvis",
+            "build/win/as_invoker.manifest",
+            "build/win/common_controls.manifest",
+            "build/win/compatibility.manifest",
+            "build/win/require_administrator.manifest",
+            "build/win/segment_heap.manifest",
+            "remoting/host/win/dpi_aware.manifest",
+            "third_party/llvm-build/Release+Asserts/bin/lld.exe",
+            "tools/win/DebugVisualizers/absl.natvis",
+            "tools/win/DebugVisualizers/blink.natvis",
+            "tools/win/DebugVisualizers/cc-component-build.natvis",
+            "tools/win/DebugVisualizers/cc-non-component-build.natvis",
+            "tools/win/DebugVisualizers/cc.natvis",
+            "tools/win/DebugVisualizers/chrome.natvis",
+        ],
+        "build/toolchain/gcc_solink_wrapper.py": [
+            "build/toolchain/whole_archive.py",
+            "build/toolchain/wrapper_utils.py",
+        ],
+        "build/toolchain/gcc_solink_wrapper.py:link": [
+            "build/toolchain/gcc_solink_wrapper.py",
+            "build/toolchain/whole_archive.py",
+            "build/toolchain/wrapper_utils.py",
+        ],
+        "build/toolchain/gcc_link_wrapper.py": [
+            "build/toolchain/whole_archive.py",
+            "build/toolchain/wrapper_utils.py",
+        ],
+        "build/toolchain/gcc_link_wrapper.py:link": [
+            "build/toolchain/gcc_link_wrapper.py",
+            "build/toolchain/whole_archive.py",
+            "build/toolchain/wrapper_utils.py",
+        ],
+        "build/toolchain/apple/linker_driver.py:link": [
+            "build/toolchain/apple/linker_driver.py",
+            "build/toolchain/whole_archive.py",
+        ],
+        "build/toolchain/apple/solink_driver.py:link": [
+            "build/toolchain/apple/linker_driver.py",
+            "build/toolchain/apple/solink_driver.py",
+            "build/toolchain/whole_archive.py",
+        ],
+    }
 
 def __lld_link(ctx, cmd):
+    if not (config.get(ctx, "remote-link") or config.get(ctx, "default-remote")):
+        return
+
     # Replace thin archives with /start-lib ... /end-lib in rsp file.
     new_lines = []
     for line in str(cmd.rspfile_content).split("\n"):
@@ -186,7 +191,7 @@ def __lld_link(ctx, cmd):
 
 def __thin_archive(ctx, cmd):
     # TODO: This handler can be used despite remote linking?
-    if not config.get(ctx, "remote-link"):
+    if not (config.get(ctx, "remote-link") or config.get(ctx, "default-remote")):
         return
     if "lld-link" in cmd.args[0]:
         if not "/llvmlibthin" in cmd.args:
@@ -209,7 +214,17 @@ def __thin_archive(ctx, cmd):
     ctx.actions.write(cmd.outputs[0], data)
     ctx.actions.exit(exit_status = 0)
 
+def __compile(ctx, cmd):
+    __check_crash_diagnostics(ctx, cmd.args)
+
+def __compile_coverage(ctx, cmd):
+    clang_command = clang_code_coverage_wrapper.run(ctx, list(cmd.args))
+    __check_crash_diagnostics(ctx, clang_command)
+    ctx.actions.fix(args = clang_command)
+
 __handlers = {
+    "clang_compile": __compile,
+    "clang_compile_coverage": __compile_coverage,
     "lld_link": __lld_link,
     "lld_thin_archive": __thin_archive,
 }

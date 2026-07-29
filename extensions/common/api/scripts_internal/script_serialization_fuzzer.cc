@@ -33,7 +33,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
   // Generate input parameters for the call.
   std::optional<base::Value> serialized_script_value =
-      base::JSONReader::Read(provider.ConsumeRandomLengthString());
+      base::JSONReader::Read(provider.ConsumeRandomLengthString(),
+                             base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!serialized_script_value.has_value()) {
     return 0;
   }
@@ -47,7 +48,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   parse_options.can_execute_script_everywhere = provider.ConsumeBool();
   parse_options.all_urls_includes_chrome_urls = provider.ConsumeBool();
   scoped_refptr<const Extension> extension =
-      ExtensionBuilder().SetManifest(base::Value::Dict()).Build();
+      ExtensionBuilder().SetManifest(base::DictValue()).Build();
 
   // Run code-under-test.
   std::u16string error;

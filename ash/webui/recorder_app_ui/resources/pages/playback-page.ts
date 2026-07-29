@@ -24,6 +24,7 @@ import '../components/time-duration.js';
 import {
   Slider as CrosSlider,
 } from 'chrome://resources/cros_components/slider/slider.js';
+import type {PropertyDeclarations} from 'chrome://resources/mwc/lit/index.js';
 import {
   classMap,
   createRef,
@@ -31,21 +32,21 @@ import {
   html,
   live,
   nothing,
-  PropertyDeclarations,
   ref,
 } from 'chrome://resources/mwc/lit/index.js';
 
-import {CraIconButton} from '../components/cra/cra-icon-button.js';
-import {CraMenu} from '../components/cra/cra-menu.js';
-import {DeleteRecordingDialog} from '../components/delete-recording-dialog.js';
+import type {CraIconButton} from '../components/cra/cra-icon-button.js';
+import type {CraMenu} from '../components/cra/cra-menu.js';
+import type {DeleteRecordingDialog} from '../components/delete-recording-dialog.js';
 import {withTooltip} from '../components/directives/with-tooltip.js';
-import {ExportDialog} from '../components/export-dialog.js';
-import {RecordingInfoDialog} from '../components/recording-info-dialog.js';
-import {RecordingTitle} from '../components/recording-title.js';
-import {SummarizationView} from '../components/summarization-view.js';
+import type {ExportDialog} from '../components/export-dialog.js';
+import type {RecordingInfoDialog} from '../components/recording-info-dialog.js';
+import type {RecordingTitle} from '../components/recording-title.js';
+import type {SummarizationView} from '../components/summarization-view.js';
+import {SAMPLE_RATE, SAMPLES_PER_POWER_BAR} from '../core/audio_constants.js';
+import type {ReactiveAudio} from '../core/audio_player_controller.js';
 import {
   AudioPlayerController,
-  ReactiveAudio,
 } from '../core/audio_player_controller.js';
 import {i18n} from '../core/i18n.js';
 import {
@@ -109,6 +110,8 @@ export function setInitialAudio(audio: ReactiveAudio|null): void {
 export class PlaybackPage extends ReactiveLitElement {
   static override styles = css`
     :host {
+      --header-padding: 8px;
+
       background-color: var(--cros-sys-app_base_shaded);
       box-sizing: border-box;
       display: flex;
@@ -116,6 +119,10 @@ export class PlaybackPage extends ReactiveLitElement {
       height: 100%;
       padding: 16px;
       width: 100%;
+
+      @container style(--small-viewport: 1) {
+        --header-padding: 2px;
+      }
     }
 
     #main-area {
@@ -138,11 +145,7 @@ export class PlaybackPage extends ReactiveLitElement {
       align-items: center;
       display: flex;
       flex-flow: row;
-      padding: 8px;
-
-      @container style(--small-viewport: 1) {
-        padding: 2px;
-      }
+      padding: var(--header-padding);
 
       & > recording-title {
         margin: 0 auto 0 -4px;
@@ -417,14 +420,32 @@ export class PlaybackPage extends ReactiveLitElement {
     );
   });
 
-  private readonly powers = new ScopedAsyncComputed(this, async () => {
+  private readonly audioPowers = new ScopedAsyncComputed(this, async () => {
     if (this.recordingIdSignal.value === null) {
       return null;
     }
-    const {powers} = await this.recordingDataManager.getAudioPower(
-      this.recordingIdSignal.value,
-    );
-    return powers;
+    const {powers, samplesPerDataPoint} =
+      await this.recordingDataManager.getAudioPower(
+        this.recordingIdSignal.value,
+      );
+    // The target playing speed is POWER_BARS_PER_SECOND.
+    // Under same SAMPLE_RATE, smaller samples per data point will lead to
+    // higher speed, and we can do the down sampling to slow down playing speed.
+    const downSampleStep =
+      Math.round(SAMPLES_PER_POWER_BAR / samplesPerDataPoint);
+    if (downSampleStep <= 1) {
+      // We don't do the up sampling, and play at the lower speed.
+      return {powers, samplesPerDataPoint};
+    }
+    const downSamplePower: number[] = [];
+    for (let i = 0; i < powers.length; i += downSampleStep) {
+      downSamplePower.push(assertExists(powers[i]));
+    }
+
+    return {
+      powers: downSamplePower,
+      samplesPerDataPoint: SAMPLES_PER_POWER_BAR,
+    };
   });
 
   private readonly showTranscription = signal(false);
@@ -502,20 +523,23 @@ export class PlaybackPage extends ReactiveLitElement {
   }
 
   private renderAudioWaveform() {
-    if (this.powers.value === null) {
+    if (this.audioPowers.value === null) {
       return nothing;
     }
     const currentTime = this.audioPlayer.currentTime.value;
     const duration = {seconds: currentTime};
+    const barsPerSecond =
+      SAMPLE_RATE / this.audioPowers.value.samplesPerDataPoint;
     return html`
       <time-duration
         digits=1
         .duration=${duration}
       ></time-duration>
       <audio-waveform
-        .values=${new InteriorMutableArray(this.powers.value)}
+        .values=${new InteriorMutableArray(this.audioPowers.value.powers)}
         .currentTime=${currentTime}
         .transcription=${this.transcription.value}
+        .barsPerSecond=${barsPerSecond}
       >
       </audio-waveform>
     `;
@@ -615,7 +639,6 @@ export class PlaybackPage extends ReactiveLitElement {
   }
 
   private renderMenu() {
-    // TODO: b/344789992 - Implements show detail.
     return html`
       <cra-menu ${ref(this.menu)} anchor="show-menu" id="menu">
         <cra-menu-item

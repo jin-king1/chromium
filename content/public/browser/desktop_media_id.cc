@@ -41,22 +41,6 @@ gfx::NativeWindow DesktopMediaID::GetNativeWindowById(
 }
 #endif
 
-bool DesktopMediaID::operator<(const DesktopMediaID& other) const {
-  return std::tie(type, id, window_id, web_contents_id, audio_share) <
-         std::tie(other.type, other.id, other.window_id, other.web_contents_id,
-                  other.audio_share);
-}
-
-bool DesktopMediaID::operator==(const DesktopMediaID& other) const {
-  return type == other.type && id == other.id && window_id == other.window_id &&
-         web_contents_id == other.web_contents_id &&
-         audio_share == other.audio_share;
-}
-
-bool DesktopMediaID::operator!=(const DesktopMediaID& other) const {
-  return !(*this == other);
-}
-
 // static
 // Input string should in format:
 // - For WebContents:
@@ -74,8 +58,9 @@ DesktopMediaID DesktopMediaID::Parse(const std::string& str) {
   std::vector<std::string> parts = base::SplitString(
       str, ":", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
 
-  if (parts.size() != 3)
+  if (parts.size() != 3 && parts.size() != 4) {
     return DesktopMediaID();
+  }
 
   Type type = TYPE_NONE;
   if (parts[0] == kScreenPrefix) {
@@ -87,15 +72,25 @@ DesktopMediaID DesktopMediaID::Parse(const std::string& str) {
   }
 
   int64_t id;
-  if (!base::StringToInt64(parts[1], &id))
+  if (!base::StringToInt64(parts[1], &id)) {
     return DesktopMediaID();
+  }
 
   DesktopMediaID media_id(type, id);
 
   int64_t window_id;
-  if (!base::StringToInt64(parts[2], &window_id))
+  if (!base::StringToInt64(parts[2], &window_id)) {
     return DesktopMediaID();
+  }
   media_id.window_id = window_id;
+
+  if (parts.size() == 4) {
+    if (parts[3] == "s") {
+      media_id.id_type = IdType::kNativePickerSession;
+    } else {
+      return DesktopMediaID();
+    }
+  }
 
   return media_id;
 }
@@ -122,6 +117,10 @@ std::string DesktopMediaID::ToString() const {
 
   prefix.append(":");
   prefix.append(base::NumberToString(window_id));
+
+  if (id_type == IdType::kNativePickerSession) {
+    prefix.append(":s");
+  }
 
   return prefix;
 }

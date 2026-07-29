@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "extensions/common/permissions/permissions_data.h"
+
 #include <stdint.h>
 
 #include <string>
@@ -19,6 +21,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "components/crx_file/id_util.h"
 #include "content/public/common/socket_permission_request.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension.h"
@@ -30,7 +33,6 @@
 #include "extensions/common/permissions/api_permission.h"
 #include "extensions/common/permissions/permission_message_test_util.h"
 #include "extensions/common/permissions/permission_set.h"
-#include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/permissions/socket_permission.h"
 #include "extensions/common/switches.h"
 #include "extensions/common/url_pattern_set.h"
@@ -38,6 +40,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using base::UTF16ToUTF8;
 using content::SocketPermissionRequest;
@@ -61,6 +65,8 @@ GURL GetFaviconURL(const char* path) {
   return GURL(chrome::kChromeUIFaviconURL).ReplaceComponents(replace_path);
 }
 
+// Android does not support the socket API or its permission.
+#if !BUILDFLAG(IS_ANDROID)
 bool CheckSocketPermission(scoped_refptr<Extension> extension,
                            SocketPermissionRequest::OperationType type,
                            const char* host,
@@ -69,6 +75,7 @@ bool CheckSocketPermission(scoped_refptr<Extension> extension,
   return extension->permissions_data()->CheckAPIPermissionWithParam(
       APIPermissionID::kSocket, &param);
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 // Creates and returns an extension with the given |id|, |host_permissions|, and
 // manifest |location|.
@@ -76,12 +83,12 @@ scoped_refptr<const Extension> GetExtensionWithHostPermission(
     const std::string& id,
     const std::string& host_permissions,
     ManifestLocation location) {
-  base::Value::List permissions;
+  base::ListValue permissions;
   if (!host_permissions.empty())
     permissions.Append(host_permissions);
 
   return ExtensionBuilder()
-      .SetManifest(base::Value::Dict()
+      .SetManifest(base::DictValue()
                        .Set("name", id)
                        .Set("description", "an extension")
                        .Set("manifest_version", 2)
@@ -294,6 +301,8 @@ TEST(PermissionsDataTest, EffectiveHostPermissions) {
           tab_url));
 }
 
+#if !BUILDFLAG(IS_ANDROID)
+// Desktop Android does not support the sockets API nor its permission.
 TEST(PermissionsDataTest, SocketPermissions) {
   std::string error;
 
@@ -326,6 +335,7 @@ TEST(PermissionsDataTest, SocketPermissions) {
                                     SocketPermissionRequest::UDP_SEND_TO,
                                     "239.255.255.250", 1900));
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST(PermissionsDataTest, IsRestrictedUrl) {
   scoped_refptr<const Extension> extension = GetExtensionWithHostPermission(
@@ -855,7 +865,7 @@ TEST_F(ExtensionScriptAndCaptureVisibleTest, TabSpecific) {
 }
 
 // Test that activeTab is required for capturing chrome:// urls with
-// tabs.captureVisibleTab. https://crbug.com/810220.
+// tabs.captureVisibleTab. https://crbug.com/40090425.
 TEST_F(ExtensionScriptAndCaptureVisibleTest, CaptureChromeURLs) {
   const int kTabId = 42;
   scoped_refptr<const Extension> all_urls =
@@ -1548,11 +1558,11 @@ TEST_F(CaptureVisiblePageTest, URLsCapturableOnlyWithActiveTab) {
       GURL("chrome-extension://cccccccccccccccccccccccccccccccc/foo.html"),
 
       // filesystem: urls behave like the underlying origin.
-      // https://crbug.com/853392: filesystem: URLs don't work with activeTab.
+      // https://crbug.com/40581025: filesystem: URLs don't work with activeTab.
       // GURL("filesystem:chrome-extension://cccccccccccccccccccccccccccccccc/foo"),
 
       // blob: urls behave like the underlying origin.
-      // https://crbug.com/853392: blob: URLs don't work with activeTab.
+      // https://crbug.com/40581025: blob: URLs don't work with activeTab.
       // GURL("blob:chrome-extension://cccccccccccccccccccccccccccccccc/bar"),
 
       // data: urls have no associated origin, so are more restricted.
@@ -1562,7 +1572,7 @@ TEST_F(CaptureVisiblePageTest, URLsCapturableOnlyWithActiveTab) {
       GURL(chrome::kChromeUISettingsURL),
 
       // The NTP.
-      GURL(chrome::kChromeUINewTabURL),
+      chrome::ChromeUINewTabURLAsGURL(),
 
       // The Chrome Web Store URL.
       ExtensionsClient::Get()->GetWebstoreBaseURL(),
@@ -1664,9 +1674,9 @@ TEST_F(CaptureVisiblePageTest, SelfExtensionURLs) {
 
   const GURL active_tab_extension_urls[] = {
       active_tab().GetResourceURL("foo.html"),
-      // https://crbug.com/853392: filesystem: URLs don't work with activeTab.
+      // https://crbug.com/40581025: filesystem: URLs don't work with activeTab.
       // get_filesystem_url_for_extension(active_tab()),
-      // https://crbug.com/853392: blob: URLs don't work with activeTab.
+      // https://crbug.com/40581025: blob: URLs don't work with activeTab.
       // get_blob_url_for_extension(active_tab()),
   };
 
@@ -1685,6 +1695,7 @@ TEST_F(CaptureVisiblePageTest, SelfExtensionURLs) {
         CanCapture(active_tab(), url,
                    extensions::CaptureRequirement::kActiveTabOrAllUrls));
   }
+
   const GURL page_capture_extension_urls[] = {
       page_capture().GetResourceURL("foo.html"),
   };
@@ -1756,6 +1767,29 @@ TEST_F(CaptureVisiblePageTest, PolicyBlockedURLs) {
     EXPECT_FALSE(CanCapture(page_capture(), url,
                             extensions::CaptureRequirement::kPageCapture));
   }
+}
+
+TEST_F(CaptureVisiblePageTest, PageCapture_UserBlockedURLs) {
+  // Allow per-host user restrictions.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      extensions_features::kExtensionsMenuAccessControl);
+
+  // Apply a user host restriction.
+  URLPattern blocked_url(URLPattern::SCHEME_ALL, "https://blocked.com/*");
+  int context_id = 8;
+  URLPatternSet blocked_patterns({blocked_url});
+  PermissionsData::SetUserHostRestrictions(
+      context_id, std::move(blocked_patterns), URLPatternSet());
+  page_capture().permissions_data()->SetContextId(context_id);
+
+  // The user restricted URL can't be captured.
+  EXPECT_FALSE(CanCapture(page_capture(), GURL("https://blocked.com"),
+                          extensions::CaptureRequirement::kPageCapture));
+
+  // An arbitrary URL can be captured.
+  EXPECT_TRUE(CanCapture(page_capture(), GURL("https://allowed.com/"),
+                         extensions::CaptureRequirement::kPageCapture));
 }
 
 }  // namespace extensions

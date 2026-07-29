@@ -22,7 +22,7 @@ DecryptingRenderer::DecryptingRenderer(
     MediaLog* media_log,
     const scoped_refptr<base::SequencedTaskRunner> media_task_runner)
     : renderer_(std::move(renderer)),
-      media_log_(media_log),
+      media_log_(MediaLog::CloneSafely(media_log)),
       media_task_runner_(media_task_runner),
       client_(nullptr),
       media_resource_(nullptr),
@@ -48,9 +48,6 @@ void DecryptingRenderer::Initialize(MediaResource* media_resource,
   DCHECK(media_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(media_resource);
   DCHECK(client);
-
-  // Using |this| with a MediaResource::Type::URL will result in a crash.
-  DCHECK_EQ(media_resource->GetType(), MediaResource::Type::kStream);
 
   media_resource_ = media_resource;
   client_ = client;
@@ -142,18 +139,12 @@ base::TimeDelta DecryptingRenderer::GetMediaTime() {
   return renderer_->GetMediaTime();
 }
 
-void DecryptingRenderer::OnSelectedVideoTracksChanged(
-    const std::vector<DemuxerStream*>& enabled_tracks,
+void DecryptingRenderer::OnTracksChanged(
+    DemuxerStream::Type track_type,
+    DemuxerStream* enabled_track,
     base::OnceClosure change_completed_cb) {
-  renderer_->OnSelectedVideoTracksChanged(enabled_tracks,
-                                          std::move(change_completed_cb));
-}
-
-void DecryptingRenderer::OnEnabledAudioTracksChanged(
-    const std::vector<DemuxerStream*>& enabled_tracks,
-    base::OnceClosure change_completed_cb) {
-  renderer_->OnEnabledAudioTracksChanged(enabled_tracks,
-                                         std::move(change_completed_cb));
+  renderer_->OnTracksChanged(track_type, enabled_track,
+                             std::move(change_completed_cb));
 }
 
 RendererType DecryptingRenderer::GetRendererType() {
@@ -166,7 +157,7 @@ void DecryptingRenderer::CreateAndInitializeDecryptingMediaResource() {
   DCHECK(init_cb_);
 
   decrypting_media_resource_ = std::make_unique<DecryptingMediaResource>(
-      media_resource_, cdm_context_, media_log_, media_task_runner_);
+      media_resource_, cdm_context_, media_log_.get(), media_task_runner_);
   decrypting_media_resource_->Initialize(
       base::BindOnce(&DecryptingRenderer::InitializeRenderer,
                      weak_factory_.GetWeakPtr()),

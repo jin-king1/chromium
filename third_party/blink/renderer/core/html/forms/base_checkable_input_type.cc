@@ -40,6 +40,7 @@
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/keywords.h"
+#include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
@@ -51,6 +52,16 @@ void BaseCheckableInputType::Trace(Visitor* visitor) const {
 
 InputTypeView* BaseCheckableInputType::CreateView() {
   return this;
+}
+
+LayoutObject* BaseCheckableInputType::CreateLayoutObject(
+    const ComputedStyle& style) const {
+  // Use InputTypeView layout when displayed as a list item
+  if (!RuntimeEnabledFeatures::CheckableInputTypeLayoutInlineEnabled() ||
+      style.IsDisplayListItem()) {
+    return InputTypeView::CreateLayoutObject(style);
+  }
+  return LayoutObject::CreateObject(&GetElement(), style);
 }
 
 FormControlState BaseCheckableInputType::SaveFormControlState() const {
@@ -86,14 +97,6 @@ void BaseCheckableInputType::HandleKeypressEvent(KeyboardEvent& event) {
 
 bool BaseCheckableInputType::CanSetStringValue() const {
   return false;
-}
-
-// FIXME: Could share this with KeyboardClickableInputTypeView and
-// RangeInputType if we had a common base class.
-void BaseCheckableInputType::AccessKeyAction(
-    SimulatedClickCreationScope creation_scope) {
-  InputTypeView::AccessKeyAction(creation_scope);
-  GetElement().DispatchSimulatedClick(nullptr, creation_scope);
 }
 
 bool BaseCheckableInputType::MatchesDefaultPseudoClass() {

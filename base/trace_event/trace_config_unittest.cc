@@ -303,7 +303,7 @@ TEST(TraceConfigTest, ConstructDefaultTraceConfig) {
   CheckDefaultTraceConfigBehavior(tc_empty_json_string);
 
   // Constructor from dictionary value.
-  TraceConfig tc_dict(Value::Dict{});
+  TraceConfig tc_dict(DictValue{});
   EXPECT_STREQ("", tc_dict.ToCategoryFilterString().c_str());
   EXPECT_STREQ(kDefaultTraceConfigString, tc_dict.ToString().c_str());
   CheckDefaultTraceConfigBehavior(tc_dict);
@@ -351,7 +351,7 @@ TEST(TraceConfigTest, DisabledByDefaultCategoryFilterString) {
 
 TEST(TraceConfigTest, TraceConfigFromDict) {
   // Passing in empty dictionary will result in default trace config.
-  TraceConfig tc(Value::Dict{});
+  TraceConfig tc(DictValue{});
   EXPECT_STREQ(kDefaultTraceConfigString, tc.ToString().c_str());
   EXPECT_EQ(RECORD_UNTIL_FULL, tc.GetTraceRecordMode());
   EXPECT_FALSE(tc.IsSystraceEnabled());
@@ -359,8 +359,8 @@ TEST(TraceConfigTest, TraceConfigFromDict) {
   EXPECT_FALSE(tc.IsEventPackageNameFilterEnabled());
   EXPECT_STREQ("", tc.ToCategoryFilterString().c_str());
 
-  std::optional<Value> default_value =
-      JSONReader::Read(kDefaultTraceConfigString);
+  std::optional<Value> default_value = JSONReader::Read(
+      kDefaultTraceConfigString, JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(default_value);
   ASSERT_TRUE(default_value->is_dict());
   TraceConfig default_tc(default_value->GetDict());
@@ -371,8 +371,8 @@ TEST(TraceConfigTest, TraceConfigFromDict) {
   EXPECT_FALSE(default_tc.IsArgumentFilterEnabled());
   EXPECT_STREQ("", default_tc.ToCategoryFilterString().c_str());
 
-  std::optional<Value> custom_value =
-      JSONReader::Read(kCustomTraceConfigString);
+  std::optional<Value> custom_value = JSONReader::Read(
+      kCustomTraceConfigString, JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(custom_value);
   ASSERT_TRUE(custom_value->is_dict());
   TraceConfig custom_tc(custom_value->GetDict());
@@ -459,8 +459,8 @@ TEST(TraceConfigTest, TraceConfigFromValidString) {
                event_filter.category_filter().excluded_categories()[0].c_str());
   EXPECT_FALSE(event_filter.filter_args().empty());
 
-  std::string json_out;
-  base::JSONWriter::Write(event_filter.filter_args(), &json_out);
+  std::string json_out =
+      base::WriteJson(event_filter.filter_args()).value_or("");
   EXPECT_STREQ(json_out.c_str(),
                "{\"event_name_allowlist\":[\"a snake\",\"a dog\"]}");
   std::unordered_set<std::string> filter_values;

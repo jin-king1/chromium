@@ -7,6 +7,7 @@
 
 #include "third_party/blink/public/mojom/speculation_rules/speculation_rules.mojom-blink.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/speculation_rules/speculation_rule.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/weborigin/referrer.h"
@@ -33,8 +34,10 @@ class CORE_EXPORT SpeculationCandidate
                        mojom::blink::SpeculationEagerness eagerness,
                        network::mojom::blink::NoVarySearchPtr no_vary_search,
                        mojom::blink::SpeculationInjectionType injection_type,
+                       Vector<String> tags,
                        SpeculationRuleSet* rule_set,
-                       HTMLAnchorElementBase* anchor);
+                       HTMLAnchorElementBase* anchor,
+                       SpeculationRule::FormSubmission form_submission);
   virtual ~SpeculationCandidate() = default;
 
   void Trace(Visitor* visitor) const;
@@ -46,11 +49,19 @@ class CORE_EXPORT SpeculationCandidate
   mojom::blink::SpeculationTargetHint target_hint() const {
     return target_hint_;
   }
+  bool form_submission() const { return form_submission_; }
   mojom::blink::SpeculationEagerness eagerness() const { return eagerness_; }
   SpeculationRuleSet* rule_set() const { return rule_set_.Get(); }
   // Only set for candidates derived from a document rule (is null for
   // candidates derived from list rules).
   HTMLAnchorElementBase* anchor() const { return anchor_.Get(); }
+  const Vector<String>& tags() const { return tags_; }
+
+  // Returns true if the two candidates are similar from the author's
+  // perspective. This means that the two candidates are for the same URL and
+  // have the same action, and the other properties are similar enough that
+  // the author would consider them to be the same candidate.
+  bool IsSimilarFromAuthorPerspective(const SpeculationCandidate& other) const;
 
  private:
   const KURL url_;
@@ -61,8 +72,10 @@ class CORE_EXPORT SpeculationCandidate
   const mojom::blink::SpeculationEagerness eagerness_;
   const network::mojom::blink::NoVarySearchPtr no_vary_search_;
   const mojom::blink::SpeculationInjectionType injection_type_;
+  const Vector<String> tags_;
   const Member<SpeculationRuleSet> rule_set_;
   const Member<HTMLAnchorElementBase> anchor_;
+  const bool form_submission_;
 };
 
 }  // namespace blink

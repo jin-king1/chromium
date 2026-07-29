@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/core/layout/inline/fragment_items_builder.h"
 
-#include "base/not_fatal_until.h"
 #include "third_party/blink/renderer/core/layout/box_fragment_builder.h"
 #include "third_party/blink/renderer/core/layout/geometry/writing_mode_converter.h"
 #include "third_party/blink/renderer/core/layout/inline/fragment_items.h"
@@ -180,6 +179,7 @@ void FragmentItemsBuilder::AddLine(const PhysicalLineBoxFragment& line_fragment,
   const wtf_size_t item_count = items_.size() - line_start_index;
   DCHECK_EQ(line_item.DescendantsCount(), 1u);
   line_item.SetDescendantsCount(item_count);
+  line_item.SetLineTextFitScale(line_container->TextFitScale());
 
   // Keep children's offsets relative to |line|. They will be adjusted later in
   // |ConvertToPhysical()|.
@@ -315,7 +315,7 @@ FragmentItemsBuilder::AddPreviousItems(const PhysicalBoxFragment& container,
 
     last_break_token = break_token;
     container_builder->AddChild(*line_fragment, item_offset);
-    used_block_size += item.Size().ConvertToLogical(writing_mode).block_size;
+    used_block_size += ToLogicalSize(item.Size(), writing_mode).block_size;
 
     items_.emplace_back(item_offset, item);
     const PhysicalRect line_box_bounds = item.RectInContainerFragment();
@@ -385,10 +385,11 @@ void FragmentItemsBuilder::ConvertToPhysical(const PhysicalSize& outer_size) {
   WritingModeConverter line_converter(
       {ToLineWritingMode(GetWritingMode()), TextDirection::kLtr});
 
-  // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-  for (auto iter = items_.begin(); iter != items_.end(); UNSAFE_TODO(++iter)) {
-    FragmentItem* item = &iter->item;
-    item->SetOffset(converter.ToPhysical(iter->offset, item->Size()));
+  for (wtf_size_t i = 0; i < items_.size(); ++i) {
+    ItemWithOffset& item_with_offset = items_[i];
+    FragmentItem* item = &item_with_offset.item;
+    item->SetOffset(
+        converter.ToPhysical(item_with_offset.offset, item->Size()));
 
     // Transform children of lines separately from children of the block,
     // because they may have different directions from the block. To do
@@ -400,12 +401,13 @@ void FragmentItemsBuilder::ConvertToPhysical(const PhysicalSize& outer_size) {
         const PhysicalRect line_box_bounds = item->RectInContainerFragment();
         line_converter.SetOuterSize(line_box_bounds.size);
         while (--descendants_count) {
-          // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-          UNSAFE_TODO(++iter);
-          CHECK_NE(iter, items_.end(), base::NotFatalUntil::M130);
-          item = &iter->item;
+          ++i;
+          CHECK_NE(i, items_.size());
+          ItemWithOffset& descendant_item_with_offset = items_[i];
+          item = &descendant_item_with_offset.item;
           item->SetOffset(
-              line_converter.ToPhysical(iter->offset, item->Size()) +
+              line_converter.ToPhysical(descendant_item_with_offset.offset,
+                                        item->Size()) +
               line_box_bounds.offset);
         }
       }
@@ -415,17 +417,27 @@ void FragmentItemsBuilder::ConvertToPhysical(const PhysicalSize& outer_size) {
   is_converted_to_physical_ = true;
 }
 
-void FragmentItemsBuilder::MoveChildrenInBlockDirection(LayoutUnit delta) {
+void FragmentItemsBuilder::MoveChildrenInDirection(LayoutUnit offset,
+                                                   bool is_block_direction) {
   DCHECK(!is_converted_to_physical_);
-  // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-  for (auto iter = items_.begin(); iter != items_.end(); UNSAFE_TODO(++iter)) {
-    if (iter->item->Type() == FragmentItem::kLine) {
-      iter->offset.block_offset += delta;
-      std::advance(iter, iter->item->DescendantsCount() - 1);
-      DCHECK_LE(iter, items_.end());
+  for (wtf_size_t i = 0; i < items_.size(); ++i) {
+    ItemWithOffset& item_with_offset = items_[i];
+    FragmentItem* item = &item_with_offset.item;
+    if (item->Type() == FragmentItem::kLine) {
+      if (is_block_direction) {
+        item_with_offset.offset.block_offset += offset;
+      } else {
+        item_with_offset.offset.inline_offset += offset;
+      }
+      i += item->DescendantsCount() - 1;
+      DCHECK_LE(i, items_.size());
       continue;
     }
-    iter->offset.block_offset += delta;
+    if (is_block_direction) {
+      item_with_offset.offset.block_offset += offset;
+    } else {
+      item_with_offset.offset.inline_offset += offset;
+    }
   }
 }
 
@@ -436,8 +448,8 @@ std::optional<PhysicalSize> FragmentItemsBuilder::ToFragmentItems(
   ConvertToPhysical(outer_size);
   std::optional<PhysicalSize> new_size;
   if (node_.IsSvgText()) {
-    new_size = SvgTextLayoutAlgorithm(node_, GetWritingMode())
-                   .Layout(TextContent(false), items_);
+    new_size =
+        SvgTextLayoutAlgorithm(node_, GetWritingMode()).Layout(*this, items_);
   }
   new (data) FragmentItems(this);
   return new_size;

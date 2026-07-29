@@ -29,6 +29,7 @@ class BrowserAccessibilityAuraLinux : public BrowserAccessibility {
 
   // BrowserAccessibility methods.
   void OnDataChanged() override;
+
   AXPlatformNode* GetAXPlatformNode() const override;
   std::u16string GetHypertext() const override;
 
@@ -40,6 +41,7 @@ class BrowserAccessibilityAuraLinux : public BrowserAccessibility {
   bool IsPrimaryWebContentsForWindow() const override;
 
  private:
+
   AXPlatformNode::Pointer platform_node_;
 };
 

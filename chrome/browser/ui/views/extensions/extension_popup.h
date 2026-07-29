@@ -20,8 +20,8 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/widget/widget_observer.h"
-#include "url/gurl.h"
 
+class BrowserWindowInterface;
 class ExtensionViewViews;
 
 namespace content {
@@ -53,15 +53,16 @@ class ExtensionPopup : public views::BubbleDialogDelegateView,
   static constexpr gfx::Size kMaxSize = {800, 600};
 
   // Creates and shows a popup with the given |host| positioned adjacent to
-  // |anchor_view|.
+  // |anchor|.
   // The positioning of the pop-up is determined by |arrow| according to the
   // following logic: The popup is anchored so that the corner indicated by the
   // value of |arrow| remains fixed during popup resizes.  If |arrow| is
   // BOTTOM_*, then the popup 'pops up', otherwise the popup 'drops down'.
   // The actual display of the popup is delayed until the page contents
   // finish loading in order to minimize UI flashing and resizing.
-  static void ShowPopup(std::unique_ptr<extensions::ExtensionViewHost> host,
-                        views::View* anchor_view,
+  static void ShowPopup(BrowserWindowInterface* browser,
+                        std::unique_ptr<extensions::ExtensionViewHost> host,
+                        views::BubbleAnchor anchor,
                         views::BubbleBorder::Arrow arrow,
                         PopupShowAction show_action,
                         ShowPopupCallback callback);
@@ -118,8 +119,9 @@ class ExtensionPopup : public views::BubbleDialogDelegateView,
  private:
   class ScopedDevToolsAgentHostObservation;
 
-  ExtensionPopup(std::unique_ptr<extensions::ExtensionViewHost> host,
-                 views::View* anchor_view,
+  ExtensionPopup(BrowserWindowInterface* browser,
+                 std::unique_ptr<extensions::ExtensionViewHost> host,
+                 views::BubbleAnchor anchor,
                  views::BubbleBorder::Arrow arrow,
                  PopupShowAction show_action,
                  ShowPopupCallback callback);
@@ -135,10 +137,12 @@ class ExtensionPopup : public views::BubbleDialogDelegateView,
   // Handles a signal from the extension host to close.
   void HandleCloseExtensionHost(extensions::ExtensionHost* host);
 
+  raw_ptr<BrowserWindowInterface> browser_;
+
   // The contained host for the view.
   std::unique_ptr<extensions::ExtensionViewHost> host_;
 
-  raw_ptr<ExtensionViewViews, DanglingUntriaged> extension_view_;
+  raw_ptr<ExtensionViewViews> extension_view_;
 
   base::ScopedObservation<extensions::ExtensionRegistry,
                           extensions::ExtensionRegistryObserver>

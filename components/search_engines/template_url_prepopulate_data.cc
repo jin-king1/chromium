@@ -10,8 +10,9 @@
 #include <vector>
 
 #include "base/check_is_test.h"
-#include "base/containers/contains.h"
+#include "base/containers/span.h"
 #include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/not_fatal_until.h"
@@ -20,12 +21,12 @@
 #include "components/country_codes/country_codes.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
-#include "components/regional_capabilities/eea_countries_ids.h"
+#include "components/regional_capabilities/program_settings.h"
 #include "components/regional_capabilities/regional_capabilities_utils.h"
 #include "components/search_engines/search_engines_pref_names.h"
+#include "components/search_engines/search_engines_switches.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_data_util.h"
-#include "components/version_info/version_info.h"
 #include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
 
 namespace TemplateURLPrepopulateData {
@@ -34,73 +35,9 @@ namespace TemplateURLPrepopulateData {
 
 namespace {
 
-#include "components/search_engines/search_engine_countries-inc.cc"
-
-std::vector<std::unique_ptr<TemplateURLData>>
-GetPrepopulatedEnginesForEeaRegionCountries(CountryID country_id,
-                                            PrefService& prefs) {
-  CHECK(regional_capabilities::IsEeaCountry(country_id));
-
-  uint64_t profile_seed = prefs.GetInt64(
-      prefs::kDefaultSearchProviderChoiceScreenRandomShuffleSeed);
-  int seed_version_number = prefs.GetInteger(
-      prefs::kDefaultSearchProviderChoiceScreenShuffleMilestone);
-  int current_version_number = version_info::GetMajorVersionNumberAsInt();
-  // Ensure that the generated seed is not 0 to avoid accidental re-seeding
-  // and re-shuffle on every chrome update.
-  while (profile_seed == 0 || current_version_number != seed_version_number) {
-    profile_seed = base::RandUint64();
-    prefs.SetInt64(prefs::kDefaultSearchProviderChoiceScreenRandomShuffleSeed,
-                   profile_seed);
-    prefs.SetInteger(prefs::kDefaultSearchProviderChoiceScreenShuffleMilestone,
-                     current_version_number);
-    seed_version_number = current_version_number;
-  }
-
-  std::vector<std::unique_ptr<TemplateURLData>> t_urls = base::ToVector(
-      GetPrepopulationSetFromCountryID(country_id),
-      [](const EngineAndTier& entry) {
-        return TemplateURLDataFromPrepopulatedEngine(*entry.search_engine);
-      });
-
-  std::default_random_engine generator;
-  generator.seed(profile_seed);
-  std::shuffle(t_urls.begin(), t_urls.end(), generator);
-
-  CHECK_LE(t_urls.size(), kMaxEeaPrepopulatedEngines);
-  return t_urls;
-}
-
-std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedTemplateURLData(
-    CountryID country_id,
-    PrefService& prefs) {
-  if (regional_capabilities::HasSearchEngineCountryListOverride()) {
-    auto country_override =
-        std::get<regional_capabilities::SearchEngineCountryListOverride>(
-            regional_capabilities::GetSearchEngineCountryOverride().value());
-
-    switch (country_override) {
-      case regional_capabilities::SearchEngineCountryListOverride::kEeaAll:
-        return GetAllEeaRegionPrepopulatedEngines();
-      case regional_capabilities::SearchEngineCountryListOverride::kEeaDefault:
-        return GetDefaultPrepopulatedEngines();
-    }
-  }
-
-  if (regional_capabilities::IsEeaCountry(country_id)) {
-    return GetPrepopulatedEnginesForEeaRegionCountries(country_id, prefs);
-  }
-
-  std::vector<std::unique_ptr<TemplateURLData>> t_urls;
-  std::vector<EngineAndTier> engines =
-      GetPrepopulationSetFromCountryID(country_id);
-  for (const EngineAndTier& engine : engines) {
-    if (engine.tier == SearchEngineTier::kTopEngines) {
-      t_urls.push_back(
-          TemplateURLDataFromPrepopulatedEngine(*engine.search_engine));
-    }
-  }
-  return t_urls;
+inline std::unique_ptr<TemplateURLData> PrepopulatedEngineToTemplateURLData(
+    const PrepopulatedEngine* engine) {
+  return TemplateURLDataFromPrepopulatedEngine(*engine);
 }
 
 // These values are persisted to logs. Entries should not be renumbered and
@@ -117,49 +54,59 @@ enum class SearchProviderOverrideStatus {
   // template URL(s).
   kPrefHasValidUrls = 2,
 
-  kMaxValue = kPrefHasValidUrls
+  // The feature `kIgnoreSearchProviderOverrides` is enabled and the pref
+  // `kSearchProviderOverrides` is present.
+  kIgnoredPref = 3,
+
+  kMaxValue = kIgnoredPref
 };
 
 std::vector<std::unique_ptr<TemplateURLData>> GetOverriddenTemplateURLData(
     PrefService& prefs) {
   std::vector<std::unique_ptr<TemplateURLData>> t_urls;
 
-  const base::Value::List& list =
-      prefs.GetList(prefs::kSearchProviderOverrides);
+  const bool ignore_overrides =
+      base::FeatureList::IsEnabled(switches::kIgnoreSearchProviderOverrides);
+  if (!ignore_overrides) {
+    const base::ListValue& list =
+        prefs.GetList(prefs::kSearchProviderOverrides);
 
-  for (const base::Value& engine : list) {
-    if (engine.is_dict()) {
-      auto t_url = TemplateURLDataFromOverrideDictionary(engine.GetDict());
-      if (t_url) {
-        t_urls.push_back(std::move(t_url));
+    for (const base::Value& engine : list) {
+      if (engine.is_dict()) {
+        auto t_url = TemplateURLDataFromOverrideDictionary(engine.GetDict());
+        if (t_url) {
+          t_urls.push_back(std::move(t_url));
+        }
       }
     }
   }
 
-  base::UmaHistogramEnumeration(
-      "Search.SearchProviderOverrideStatus",
-      !t_urls.empty() ? SearchProviderOverrideStatus::kPrefHasValidUrls
-                      : (prefs.HasPrefPath(prefs::kSearchProviderOverrides)
-                             ? SearchProviderOverrideStatus::kEmptyPref
-                             : SearchProviderOverrideStatus::kNoPref));
+  const bool has_pref = prefs.HasPrefPath(prefs::kSearchProviderOverrides);
+
+  SearchProviderOverrideStatus status = SearchProviderOverrideStatus::kNoPref;
+  if (ignore_overrides && has_pref) {
+    status = SearchProviderOverrideStatus::kIgnoredPref;
+  } else if (!t_urls.empty()) {
+    status = SearchProviderOverrideStatus::kPrefHasValidUrls;
+  } else if (has_pref) {
+    status = SearchProviderOverrideStatus::kEmptyPref;
+  }
+
+  base::UmaHistogramEnumeration("Search.SearchProviderOverrideStatus", status);
 
   return t_urls;
 }
 
 std::unique_ptr<TemplateURLData> FindPrepopulatedEngineInternal(
     PrefService& prefs,
-    CountryID country_id,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
     int prepopulated_id,
     bool use_first_as_fallback) {
   // This could be more efficient. We load all URLs but keep only one.
   std::vector<std::unique_ptr<TemplateURLData>> prepopulated_engines =
-      GetPrepopulatedEngines(prefs, country_id);
-  if (prepopulated_engines.empty()) {
-    // Not expected to be a real possibility, branch to be removed when this is
-    // verified.
-    NOTREACHED(base::NotFatalUntil::M132);
-    return nullptr;
-  }
+      GetPrepopulatedEngines(prefs, regional_prepopulated_engines);
+  CHECK(!prepopulated_engines.empty());
 
   for (auto& engine : prepopulated_engines) {
     if (engine->prepopulate_id == prepopulated_id) {
@@ -174,30 +121,62 @@ std::unique_ptr<TemplateURLData> FindPrepopulatedEngineInternal(
   return nullptr;
 }
 
+// Returns the first prepopulated search engine matching `engine_matcher` from
+// the full list of known prepopulated search engines, or `nullptr` if it's not
+// known there.
+//
+// - `engine_matcher` is a predicate accepting a `const PrepopulatedEngine*` and
+//   returning `bool`, that will be passed to `std::ranges::find_if()`.
+// - `regional_prepopulated_engines` is optional, and when present, is used to
+//   ensure we prioritise returning a search engine relevant for the given
+//   country, for cases where the matcher could be associated with multiple
+//   country-specific variants.
+template <typename EngineMatcher>
+constexpr const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInDataImpl(
+    EngineMatcher engine_matcher,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines) {
+  // Locate region-specific search engine first to avoid more thorough
+  // scanning. In most cases this should offer the correct match.
+  if (auto iter =
+          std::ranges::find_if(regional_prepopulated_engines, engine_matcher);
+      iter != regional_prepopulated_engines.end()) {
+    return *iter;
+  }
+
+  // Fallback: just grab the first matching entry from the complete list.
+  // This is fine as keywords are unique.
+  const auto& all_engines = regional_capabilities::GetAllPrepopulatedEngines();
+  if (auto iter = std::ranges::find_if(all_engines, engine_matcher);
+      iter != all_engines.end()) {
+    return *iter;
+  }
+
+  return nullptr;
+}
+
 }  // namespace
 
 // Global functions -----------------------------------------------------------
 
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
-  country_codes::RegisterProfilePrefs(registry);
   registry->RegisterListPref(prefs::kSearchProviderOverrides);
   registry->RegisterIntegerPref(prefs::kSearchProviderOverridesVersion, -1);
-  registry->RegisterInt64Pref(
-      prefs::kDefaultSearchProviderChoiceScreenRandomShuffleSeed, 0);
-  registry->RegisterIntegerPref(
-      prefs::kDefaultSearchProviderChoiceScreenShuffleMilestone, 0);
 }
 
 int GetDataVersion(PrefService* prefs) {
-  // Allow tests to override the local version.
-  return (prefs && prefs->HasPrefPath(prefs::kSearchProviderOverridesVersion)) ?
-      prefs->GetInteger(prefs::kSearchProviderOverridesVersion) :
-      kCurrentDataVersion;
+  if (!base::FeatureList::IsEnabled(switches::kIgnoreSearchProviderOverrides) &&
+      prefs && prefs->HasPrefPath(prefs::kSearchProviderOverridesVersion)) {
+    return prefs->GetInteger(prefs::kSearchProviderOverridesVersion);
+  }
+
+  return kCurrentDataVersion;
 }
 
 std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedEngines(
     PrefService& prefs,
-    CountryID country_id) {
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines) {
   // If there is a set of search engines in the preferences file, it overrides
   // the built-in set.
   std::vector<std::unique_ptr<TemplateURLData>> t_urls =
@@ -206,13 +185,17 @@ std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedEngines(
     return t_urls;
   }
 
-  return GetPrepopulatedTemplateURLData(country_id, prefs);
+  return base::ToVector(regional_prepopulated_engines,
+                        &PrepopulatedEngineToTemplateURLData);
 }
 
-std::unique_ptr<TemplateURLData> GetPrepopulatedEngine(PrefService& prefs,
-                                                       CountryID country_id,
-                                                       int prepopulated_id) {
-  return FindPrepopulatedEngineInternal(prefs, country_id, prepopulated_id,
+std::unique_ptr<TemplateURLData> GetPrepopulatedEngine(
+    PrefService& prefs,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
+    int prepopulated_id) {
+  return FindPrepopulatedEngineInternal(prefs, regional_prepopulated_engines,
+                                        prepopulated_id,
                                         /*use_first_as_fallback=*/false);
 }
 
@@ -221,20 +204,46 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngine(PrefService& prefs,
 std::vector<std::unique_ptr<TemplateURLData>> GetLocalPrepopulatedEngines(
     const std::string& country_code,
     PrefService& prefs) {
-  CountryID country_id = country_codes::CountryStringToCountryID(country_code);
-  if (country_id == country_codes::kCountryIDUnknown) {
+  country_codes::CountryId country_id(country_code);
+  if (!country_id.IsValid()) {
     LOG(ERROR) << "Unknown country code specified: " << country_code;
     return std::vector<std::unique_ptr<TemplateURLData>>();
   }
 
-  return GetPrepopulatedTemplateURLData(country_id, prefs);
+  return base::ToVector(regional_capabilities::GetPrepopulatedEngines(
+                            country_id, prefs,
+                            regional_capabilities::SearchEngineListType::kTopN),
+                        &PrepopulatedEngineToTemplateURLData);
 }
 
 #endif
 
+const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
+    int prepopulated_id,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines) {
+  return GetPrepopulatedEngineFromBuiltInDataImpl(
+      [prepopulated_id](const PrepopulatedEngine* engine) {
+        return engine->id == prepopulated_id;
+      },
+      regional_prepopulated_engines);
+}
+
+const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
+    std::u16string_view keyword,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines) {
+  return GetPrepopulatedEngineFromBuiltInDataImpl(
+      [keyword](const PrepopulatedEngine* engine) {
+        return keyword == engine->keyword;
+      },
+      regional_prepopulated_engines);
+}
+
 std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
     PrefService& prefs,
-    CountryID country_id,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
     int prepopulated_id) {
   // TODO(crbug.com/40940777): Refactor to better share code with
   // `GetPrepopulatedEngine()`.
@@ -248,28 +257,13 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
     }
   }
 
-  // We look in the profile country's prepopulated set first. This is intended
-  // to help using the right entry for the case where we have multiple ones in
-  // the full list that share a same prepopulated id.
-  for (const EngineAndTier& engine_and_tier :
-       GetPrepopulationSetFromCountryID(country_id)) {
-    if (engine_and_tier.search_engine->id == prepopulated_id) {
-      return TemplateURLDataFromPrepopulatedEngine(
-          *engine_and_tier.search_engine);
-    }
+  if (auto* matched_engine = GetPrepopulatedEngineFromBuiltInData(
+          prepopulated_id, regional_prepopulated_engines);
+      matched_engine) {
+    return PrepopulatedEngineToTemplateURLData(matched_engine);
   }
 
-  // Fallback: just grab the first matching entry from the complete list. In
-  // case of IDs shared across multiple entries, we might be returning the
-  // wrong one for the profile country. We can look into better heuristics in
-  // future work.
-  for (const PrepopulatedEngine* engine : kAllEngines) {
-    if (engine->id == prepopulated_id) {
-      return TemplateURLDataFromPrepopulatedEngine(*engine);
-    }
-  }
-
-  return nullptr;
+  return {};
 }
 
 void ClearPrepopulatedEnginesInPrefs(PrefService* prefs) {
@@ -282,50 +276,11 @@ void ClearPrepopulatedEnginesInPrefs(PrefService* prefs) {
 
 std::unique_ptr<TemplateURLData> GetPrepopulatedFallbackSearch(
     PrefService& prefs,
-    CountryID country_id) {
-  return FindPrepopulatedEngineInternal(prefs, country_id, google.id,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines) {
+  return FindPrepopulatedEngineInternal(prefs, regional_prepopulated_engines,
+                                        google.id,
                                         /*use_first_as_fallback=*/true);
 }
 
-const base::span<const PrepopulatedEngine* const> GetAllPrepopulatedEngines() {
-  return kAllEngines;
-}
-
-std::vector<std::unique_ptr<TemplateURLData>>
-GetAllEeaRegionPrepopulatedEngines() {
-  std::vector<std::unique_ptr<TemplateURLData>> result;
-
-  // We use a `flat_set` to filter out engines that have the same prepopulated
-  // id. For example, `yahoo_fr` and `yahoo_de` have the same prepopulated id
-  // because they point to the same search engine so we only want to record one
-  // instance.
-  base::flat_set<int> used_engines;
-  for (int eea_country_id : regional_capabilities::kEeaChoiceCountriesIds) {
-    std::vector<EngineAndTier> country_engines =
-        GetPrepopulationSetFromCountryID(eea_country_id);
-    for (const EngineAndTier& engine : country_engines) {
-      raw_ptr<const PrepopulatedEngine> search_engine = engine.search_engine;
-      if (!base::Contains(used_engines, search_engine->id)) {
-        result.push_back(TemplateURLDataFromPrepopulatedEngine(*search_engine));
-        used_engines.emplace(search_engine->id);
-      }
-    }
-  }
-
-  return result;
-}
-
-std::vector<std::unique_ptr<TemplateURLData>> GetDefaultPrepopulatedEngines() {
-  return base::ToVector(engines_default, [](const EngineAndTier& entry) {
-    return TemplateURLDataFromPrepopulatedEngine(*entry.search_engine);
-  });
-}
-
-// Test Utilities -------------------------------------------------------------
-
-const std::vector<raw_ptr<const PrepopulatedEngine>>
-GetPrepopulationSetFromCountryIDForTesting(CountryID country_id) {
-  return base::ToVector(GetPrepopulationSetFromCountryID(country_id),
-                        &EngineAndTier::search_engine);
-}
 }  // namespace TemplateURLPrepopulateData

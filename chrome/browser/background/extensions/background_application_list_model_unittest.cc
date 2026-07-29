@@ -19,11 +19,12 @@
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
-#include "chrome/browser/extensions/permissions/permissions_updater.h"
 #include "chrome/test/base/testing_profile.h"
 #include "extensions/browser/extension_prefs.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/browser/permissions/permissions_updater.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/browser/uninstall_reason.h"
 #include "extensions/common/extension.h"
@@ -39,6 +40,7 @@
 
 using extensions::APIPermission;
 using extensions::Extension;
+using extensions::ExtensionRegistrar;
 using extensions::ExtensionRegistry;
 using extensions::ExtensionSystem;
 using extensions::mojom::APIPermissionID;
@@ -58,12 +60,18 @@ class BackgroundApplicationListModelTest
  protected:
   // extensions::ExtensionServiceTestBase:
   void SetUp() override {
+    extensions::ExtensionServiceTestBase::SetUp();
     InitializeEmptyExtensionService();
-    model_ = std::make_unique<BackgroundApplicationListModel>(profile_.get());
+    model_ = std::make_unique<BackgroundApplicationListModel>(profile());
+  }
+
+  void TearDown() override {
+    model_.reset();
+    extensions::ExtensionServiceTestBase::TearDown();
   }
 
   bool IsBackgroundApp(const Extension& app) {
-    return BackgroundApplicationListModel::IsBackgroundApp(app, profile_.get());
+    return BackgroundApplicationListModel::IsBackgroundApp(app, profile());
   }
 
   BackgroundApplicationListModel* model() const { return model_.get(); }
@@ -83,17 +91,17 @@ enum PushMessagingOption {
 // |background_permission| is true.
 static scoped_refptr<Extension> CreateExtension(const std::string& name,
                                                 bool background_permission) {
-  base::Value::Dict manifest;
+  base::DictValue manifest;
   manifest.Set(extensions::manifest_keys::kVersion, "1.0.0.0");
   manifest.Set(extensions::manifest_keys::kManifestVersion, 3);
   manifest.Set(extensions::manifest_keys::kName, name);
-  base::Value::List permissions;
+  base::ListValue permissions;
   if (background_permission) {
     permissions.Append("background");
   }
   manifest.Set(extensions::manifest_keys::kPermissions, std::move(permissions));
 
-  std::string error;
+  std::u16string error;
   scoped_refptr<Extension> extension = Extension::Create(
       bogus_file_pathname(name), extensions::mojom::ManifestLocation::kInternal,
       manifest, Extension::NO_FLAGS, &error);
@@ -140,8 +148,8 @@ void RemoveBackgroundPermission(extensions::ExtensionService* service,
 }  // namespace
 
 // Crashes on Mac trybots.
-// http://crbug.com/165458
-// Also crashes on Windows under Dr. Memory (https://crbug.com/606779),
+// http://crbug.com/40957323
+// Also crashes on Windows under Dr. Memory (https://crbug.com/40466773),
 // presumably broken on all platforms.
 // With minimal test logic, verifies behavior over an explicit set of
 // extensions, of which some are Background Apps and others are not.
@@ -167,50 +175,50 @@ TEST_F(BackgroundApplicationListModelTest, DISABLED_ExplicitTest) {
 
   // Add alternating Extensions and Background Apps
   ASSERT_FALSE(IsBackgroundApp(*ext1.get()));
-  service()->AddExtension(ext1.get());
+  registrar()->AddExtension(ext1.get());
   ASSERT_EQ(1U, registry()->enabled_extensions().size());
   ASSERT_EQ(0U, model()->size());
   ASSERT_TRUE(IsBackgroundApp(*bgapp1.get()));
-  service()->AddExtension(bgapp1.get());
+  registrar()->AddExtension(bgapp1.get());
   ASSERT_EQ(2U, registry()->enabled_extensions().size());
   ASSERT_EQ(1U, model()->size());
   ASSERT_FALSE(IsBackgroundApp(*ext2.get()));
-  service()->AddExtension(ext2.get());
+  registrar()->AddExtension(ext2.get());
   ASSERT_EQ(3U, registry()->enabled_extensions().size());
   ASSERT_EQ(1U, model()->size());
   ASSERT_TRUE(IsBackgroundApp(*bgapp2.get()));
-  service()->AddExtension(bgapp2.get());
+  registrar()->AddExtension(bgapp2.get());
   ASSERT_EQ(4U, registry()->enabled_extensions().size());
   ASSERT_EQ(2U, model()->size());
   ASSERT_FALSE(IsBackgroundApp(*ext3.get()));
-  service()->AddExtension(ext3.get());
+  registrar()->AddExtension(ext3.get());
   ASSERT_EQ(5U, registry()->enabled_extensions().size());
   ASSERT_EQ(2U, model()->size());
 
   // Remove in FIFO order.
   ASSERT_FALSE(IsBackgroundApp(*ext1.get()));
-  service()->UninstallExtension(ext1->id(),
-                                extensions::UNINSTALL_REASON_FOR_TESTING, NULL);
+  registrar()->UninstallExtension(
+      ext1->id(), extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
   ASSERT_EQ(4U, registry()->enabled_extensions().size());
   ASSERT_EQ(2U, model()->size());
   ASSERT_TRUE(IsBackgroundApp(*bgapp1.get()));
-  service()->UninstallExtension(bgapp1->id(),
-                                extensions::UNINSTALL_REASON_FOR_TESTING, NULL);
+  registrar()->UninstallExtension(
+      bgapp1->id(), extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
   ASSERT_EQ(3U, registry()->enabled_extensions().size());
   ASSERT_EQ(1U, model()->size());
   ASSERT_FALSE(IsBackgroundApp(*ext2.get()));
-  service()->UninstallExtension(ext2->id(),
-                                extensions::UNINSTALL_REASON_FOR_TESTING, NULL);
+  registrar()->UninstallExtension(
+      ext2->id(), extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
   ASSERT_EQ(2U, registry()->enabled_extensions().size());
   ASSERT_EQ(1U, model()->size());
   ASSERT_TRUE(IsBackgroundApp(*bgapp2.get()));
-  service()->UninstallExtension(bgapp2->id(),
-                                extensions::UNINSTALL_REASON_FOR_TESTING, NULL);
+  registrar()->UninstallExtension(
+      bgapp2->id(), extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
   ASSERT_EQ(1U, registry()->enabled_extensions().size());
   ASSERT_EQ(0U, model()->size());
   ASSERT_FALSE(IsBackgroundApp(*ext3.get()));
-  service()->UninstallExtension(ext3->id(),
-                                extensions::UNINSTALL_REASON_FOR_TESTING, NULL);
+  registrar()->UninstallExtension(
+      ext3->id(), extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
   ASSERT_EQ(0U, registry()->enabled_extensions().size());
   ASSERT_EQ(0U, model()->size());
 }
@@ -234,11 +242,11 @@ TEST_F(BackgroundApplicationListModelTest, AddRemovePermissionsTest) {
 
   // Add one (non-background) extension and one background application
   ASSERT_FALSE(IsBackgroundApp(*ext.get()));
-  service()->AddExtension(ext.get());
+  registrar()->AddExtension(ext.get());
   ASSERT_EQ(1U, registry()->enabled_extensions().size());
   ASSERT_EQ(0U, model()->size());
   ASSERT_TRUE(IsBackgroundApp(*bgapp.get()));
-  service()->AddExtension(bgapp.get());
+  registrar()->AddExtension(bgapp.get());
   ASSERT_EQ(2U, registry()->enabled_extensions().size());
   ASSERT_EQ(1U, model()->size());
 
@@ -277,14 +285,14 @@ TEST_F(BackgroundApplicationListModelTest, ExtensionLoadAndUnload) {
   ASSERT_EQ(0U, model()->size());
 
   extensions::TestExtensionRegistryObserver load_observer(registry());
-  service()->AddExtension(bgapp.get());
+  registrar()->AddExtension(bgapp.get());
   load_observer.WaitForExtensionLoaded();
   ASSERT_EQ(1U, registry()->enabled_extensions().size());
   ASSERT_EQ(1U, model()->size());
 
   extensions::TestExtensionRegistryObserver unload_observer(registry());
-  service()->UnloadExtension(bgapp->id(),
-                             extensions::UnloadedExtensionReason::UNINSTALL);
+  registrar()->RemoveExtension(bgapp->id(),
+                               extensions::UnloadedExtensionReason::UNINSTALL);
   unload_observer.WaitForExtensionUnloaded();
   ASSERT_TRUE(registry()->enabled_extensions().empty());
   EXPECT_EQ(0U, model()->size());
@@ -307,7 +315,7 @@ TEST_F(BackgroundApplicationListModelTest, LateExtensionSystemReady) {
 
   extensions::TestExtensionRegistryObserver load_observer(registry());
   // extensions can be loaded before ExtensionSystem::ready() is dispatched.
-  service()->AddExtension(bgapp.get());
+  registrar()->AddExtension(bgapp.get());
   load_observer.WaitForExtensionLoaded();
   EXPECT_EQ(1U, registry()->enabled_extensions().size());
   // Model still has 0 items since OnExtensionSystemReady is not called yet.
@@ -323,12 +331,13 @@ TEST_F(BackgroundApplicationListModelTest, LateExtensionSystemReady) {
 typedef std::set<scoped_refptr<Extension>> ExtensionCollection;
 
 namespace {
-void AddExtension(extensions::ExtensionService* service,
+void AddExtension(Profile* profile,
                   ExtensionCollection* extensions,
                   BackgroundApplicationListModel* model,
                   size_t* expected,
                   size_t* count) {
-  ExtensionRegistry* registry = ExtensionRegistry::Get(service->profile());
+  ExtensionRegistrar* registrar = ExtensionRegistrar::Get(profile);
+  ExtensionRegistry* registry = ExtensionRegistry::Get(profile);
   bool create_background = false;
   if (rand() % 2) {
     create_background = true;
@@ -337,17 +346,18 @@ void AddExtension(extensions::ExtensionService* service,
   scoped_refptr<Extension> extension =
       CreateExtension(GenerateUniqueExtensionName(), create_background);
   ASSERT_EQ(BackgroundApplicationListModel::IsBackgroundApp(*extension.get(),
-                                                            service->profile()),
+                                                            profile),
             create_background);
   extensions->insert(extension);
   ++*count;
   ASSERT_EQ(*count, extensions->size());
-  service->AddExtension(extension.get());
+  registrar->AddExtension(extension);
   ASSERT_EQ(*count, registry->enabled_extensions().size());
   ASSERT_EQ(*expected, model->size());
 }
 
 void RemoveExtension(extensions::ExtensionService* service,
+                     extensions::ExtensionRegistrar* registrar,
                      ExtensionCollection* extensions,
                      BackgroundApplicationListModel* model,
                      size_t* expected,
@@ -377,8 +387,8 @@ void RemoveExtension(extensions::ExtensionService* service,
     extensions->erase(cursor);
     --*count;
     ASSERT_EQ(*count, extensions->size());
-    service->UninstallExtension(extension->id(),
-                                extensions::UNINSTALL_REASON_FOR_TESTING, NULL);
+    registrar->UninstallExtension(
+        extension->id(), extensions::UNINSTALL_REASON_FOR_TESTING, nullptr);
     ASSERT_EQ(*count, registry->enabled_extensions().size());
     ASSERT_EQ(*expected, model->size());
   }
@@ -442,10 +452,11 @@ TEST_F(BackgroundApplicationListModelTest, RandomTest) {
   for (int index = 0; index < kIterations; ++index) {
     switch (rand() % 3) {
       case 0:
-        AddExtension(service(), &extensions, model(), &expected, &count);
+        AddExtension(profile(), &extensions, model(), &expected, &count);
         break;
       case 1:
-        RemoveExtension(service(), &extensions, model(), &expected, &count);
+        RemoveExtension(service(), registrar(), &extensions, model(), &expected,
+                        &count);
         break;
       case 2:
         TogglePermission(service(), &extensions, model(), &expected, &count);

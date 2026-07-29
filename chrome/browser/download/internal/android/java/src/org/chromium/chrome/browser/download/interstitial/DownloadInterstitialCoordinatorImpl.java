@@ -7,7 +7,8 @@ package org.chromium.chrome.browser.download.interstitial;
 import android.content.Context;
 import android.view.View;
 
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.browser_ui.modaldialog.AppModalPresenter;
 import org.chromium.components.offline_items_collection.OfflineContentProvider;
@@ -15,11 +16,14 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
+import java.util.function.Supplier;
+
 /**
  * Implementation of a {@link DownloadInterstitialCoordinator} that sets up a download interstitial.
- * The interstitial displays the progress of the most recent download and provides utilities
- * for the download once completed.
+ * The interstitial displays the progress of the most recent download and provides utilities for the
+ * download once completed.
  */
+@NullMarked
 public class DownloadInterstitialCoordinatorImpl implements DownloadInterstitialCoordinator {
     private final DownloadInterstitialView mView;
     private final DownloadInterstitialMediator mMediator;
@@ -39,7 +43,7 @@ public class DownloadInterstitialCoordinatorImpl implements DownloadInterstitial
             String downloadUrl,
             OfflineContentProvider provider,
             ModalDialogManager modalDialogManager,
-            SnackbarManager snackbarManager,
+            @Nullable SnackbarManager snackbarManager,
             Runnable reloadCallback) {
         mView = DownloadInterstitialView.create(contextSupplier.get());
         PropertyModel model =

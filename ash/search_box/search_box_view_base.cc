@@ -8,16 +8,16 @@
 #include <memory>
 #include <vector>
 
-#include "ash/assistant/ui/main_stage/launcher_search_iph_view.h"
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/ash_typography.h"
 #include "ash/public/cpp/style/color_provider.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/ime/text_input_flags.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -111,8 +111,10 @@ void SetupLabelView(views::Label* label,
 // border.
 class SearchBoxBackground : public views::Background {
  public:
-  explicit SearchBoxBackground(int corner_radius)
-      : corner_radius_(corner_radius) {}
+  SearchBoxBackground(SkColor color, int corner_radius)
+      : corner_radius_(corner_radius) {
+    SetColor(color);
+  }
 
   SearchBoxBackground(const SearchBoxBackground&) = delete;
   SearchBoxBackground& operator=(const SearchBoxBackground&) = delete;
@@ -128,7 +130,7 @@ class SearchBoxBackground : public views::Background {
 
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    flags.setColor(get_color());
+    flags.setColor(color().ResolveToSkColor(view->GetColorProvider()));
     canvas->DrawRoundRect(bounds, corner_radius_, flags);
   }
 
@@ -452,8 +454,6 @@ SearchBoxViewBase::SearchBoxViewBase()
       std::make_unique<views::FillLayout>());
   content_container_->SetFlexForView(search_box_button_container_, 0,
                                      /*use_min_size=*/true);
-
-  UpdateSearchTextfieldAccessibleActiveDescendantId();
 }
 
 SearchBoxViewBase::~SearchBoxViewBase() = default;
@@ -465,8 +465,8 @@ void SearchBoxViewBase::Init(const InitParams& params) {
   layer()->SetFillsBoundsOpaquely(false);
   layer()->SetMasksToBounds(true);
   if (params.create_background) {
-    SetBackground(
-        std::make_unique<SearchBoxBackground>(kSearchBoxBorderCornerRadius));
+    SetBackground(std::make_unique<SearchBoxBackground>(
+        gfx::kPlaceholderColor, kSearchBoxBorderCornerRadius));
   }
 
   if (params.increase_child_view_padding) {
@@ -525,14 +525,14 @@ views::ImageButton* SearchBoxViewBase::CreateAssistantButton(
   return assistant_button_;
 }
 
-views::ImageButton* SearchBoxViewBase::CreateAssistantNewEntryPointButton(
+views::ImageButton* SearchBoxViewBase::CreateGeminiButton(
     const base::RepeatingClosure& button_callback) {
   CHECK(end_button_container_);
-  CHECK(!assistant_new_entry_point_button_);
+  CHECK(!gemini_button_);
 
-  assistant_new_entry_point_button_ = end_button_container_->AddChildView(
+  gemini_button_ = end_button_container_->AddChildView(
       std::make_unique<SearchBoxImageButton>(button_callback));
-  return assistant_new_entry_point_button_;
+  return gemini_button_;
 }
 
 views::ImageButton* SearchBoxViewBase::CreateFilterButton(
@@ -563,8 +563,8 @@ views::ImageButton* SearchBoxViewBase::assistant_button() {
   return assistant_button_;
 }
 
-views::ImageButton* SearchBoxViewBase::assistant_new_entry_point_button() {
-  return assistant_new_entry_point_button_;
+views::ImageButton* SearchBoxViewBase::gemini_button() {
+  return gemini_button_;
 }
 
 views::ImageButton* SearchBoxViewBase::sunfish_button() {
@@ -589,32 +589,6 @@ views::View* SearchBoxViewBase::filter_and_close_button_container() {
 
 views::ImageView* SearchBoxViewBase::search_icon() {
   return search_icon_;
-}
-
-void SearchBoxViewBase::SetIphView(
-    std::unique_ptr<LauncherSearchIphView> view) {
-  if (GetIphView()) {
-    DCHECK(false) << "SetIphView gets called with an IPH view being shown.";
-
-    DeleteIphView();
-  }
-
-  iph_view_tracker_.SetView(main_container_->AddChildView(std::move(view)));
-}
-
-LauncherSearchIphView* SearchBoxViewBase::GetIphView() {
-  views::View* view = iph_view_tracker_.view();
-  if (!view) {
-    return nullptr;
-  }
-
-  CHECK(views::IsViewClass<LauncherSearchIphView>(view))
-      << "Only LaunchserSearchIph view is supported now";
-  return static_cast<LauncherSearchIphView*>(view);
-}
-
-void SearchBoxViewBase::DeleteIphView() {
-  main_container_->RemoveChildViewT(GetIphView());
 }
 
 void SearchBoxViewBase::TriggerSearch() {
@@ -708,8 +682,8 @@ void SearchBoxViewBase::OnEnabledChanged() {
   if (sunfish_button_) {
     sunfish_button_->SetEnabled(enabled);
   }
-  if (assistant_new_entry_point_button_) {
-    assistant_new_entry_point_button_->SetEnabled(enabled);
+  if (gemini_button_) {
+    gemini_button_->SetEnabled(enabled);
   }
   if (filter_button_) {
     filter_button_->SetEnabled(enabled);
@@ -726,8 +700,7 @@ void SearchBoxViewBase::OnMouseEvent(ui::MouseEvent* event) {
 
 void SearchBoxViewBase::OnThemeChanged() {
   views::View::OnThemeChanged();
-  search_box_->SetSelectionBackgroundColor(
-      GetWidget()->GetColorProvider()->GetColor(kColorAshFocusAuraColor));
+  search_box_->SetSelectionBackgroundColorId(kColorAshFocusAuraColor);
   UpdatePlaceholderTextStyle();
 }
 
@@ -748,8 +721,6 @@ bool SearchBoxViewBase::IsSearchBoxTrimmedQueryEmpty() const {
                        &trimmed_query);
   return trimmed_query.empty();
 }
-
-void SearchBoxViewBase::UpdateSearchTextfieldAccessibleActiveDescendantId() {}
 
 void SearchBoxViewBase::ClearSearch() {
   search_box_->SetText(std::u16string());
@@ -777,7 +748,7 @@ void SearchBoxViewBase::SetPreferredStyleForAutocompleteText(
 void SearchBoxViewBase::SetPreferredStyleForSearchboxText(
     const gfx::FontList& font_list,
     ui::ColorId text_color_id) {
-  search_box_->SetTextColor(text_color_id);
+  search_box_->SetTextColorId(text_color_id);
   search_box_->SetFontList(font_list);
 }
 
@@ -795,9 +766,8 @@ void SearchBoxViewBase::UpdateButtonsVisibility() {
   }
 
   if (end_button_container_ && !end_button_container_->children().empty()) {
-    const bool any_edge_button_shown = show_assistant_button_ ||
-                                       show_assistant_new_entry_point_button_ ||
-                                       show_sunfish_button_;
+    const bool any_edge_button_shown =
+        show_assistant_button_ || show_gemini_button_ || show_sunfish_button_;
     const bool should_show_edge_buttons =
         any_edge_button_shown && !should_show_close_button;
 
@@ -886,19 +856,10 @@ void SearchBoxViewBase::SetSearchIconImage(gfx::ImageSkia image) {
   search_icon_->SetSearchIconImage(image);
 }
 
-void SearchBoxViewBase::SetShowAssistantButton(bool show) {
-  DCHECK(assistant_button_);
-  show_assistant_button_ = show;
-  assistant_button_->SetVisible(show);
-  UpdateButtonsVisibility();
-}
-
-void SearchBoxViewBase::SetShowAssistantNewEntryPointButton(bool show) {
-  if (show) {
-    CHECK(assistant_new_entry_point_button_);
-    show_assistant_new_entry_point_button_ = show;
-    assistant_new_entry_point_button_->SetVisible(show);
-  }
+void SearchBoxViewBase::SetShowGeminiButton(bool show) {
+  CHECK(gemini_button_);
+  show_gemini_button_ = show;
+  gemini_button_->SetVisible(show);
 
   UpdateButtonsVisibility();
 }
@@ -935,7 +896,7 @@ void SearchBoxViewBase::HandleSearchBoxEvent(ui::LocatedEvent* located_event) {
 void SearchBoxViewBase::UpdateBackgroundColor(SkColor color) {
   auto* search_box_background = background();
   if (search_box_background)
-    search_box_background->SetNativeControlColor(color);
+    search_box_background->SetColor(color);
   if (close_button_)
     close_button_->UpdateInkDropColorAndOpacity(color);
   if (assistant_button_)

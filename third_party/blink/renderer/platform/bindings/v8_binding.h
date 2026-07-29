@@ -29,15 +29,9 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_V8_BINDING_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_V8_BINDING_H_
 
-#include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/to_blink_string.h"
 #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
 #include "third_party/blink/renderer/platform/bindings/v8_value_cache.h"
@@ -63,7 +57,7 @@ namespace blink {
 // to core/ or bindings/core. For core-specific helper functions, see
 // bindings/core/v8/v8_binding_for_core.h.
 
-// Convert v8::String to a WTF::String. If the V8 string is not already
+// Convert v8::String to a blink::String. If the V8 string is not already
 // an external string then it is transformed into an external string at this
 // point to avoid repeated conversions.
 inline String ToCoreString(v8::Isolate* isolate, v8::Local<v8::String> value) {
@@ -104,8 +98,8 @@ inline AtomicString ToCoreAtomicString(v8::Isolate* isolate,
 
 // This method will return a null String if the v8::Value does not contain a
 // v8::String.  It will not call ToString() on the v8::Value. If you want
-// ToString() to be called, please use the TONATIVE_FOR_V8STRINGRESOURCE_*()
-// macros instead.
+// ToString() to be called, please use value->ToString() and
+// ToBlinkString<String>() instead.
 inline String ToCoreStringWithUndefinedOrNullCheck(v8::Isolate* isolate,
                                                    v8::Local<v8::Value> value) {
   if (value.IsEmpty() || !value->IsString())
@@ -139,14 +133,15 @@ inline v8::Local<v8::String> V8String(v8::Isolate* isolate,
         isolate, impl);
   }
   if (string.Is8Bit()) {
-    return v8::String::NewFromOneByte(
-               isolate, reinterpret_cast<const uint8_t*>(string.Characters8()),
-               v8::NewStringType::kNormal, static_cast<int>(string.length()))
+    base::span<const LChar> chars = string.Span8();
+    return v8::String::NewFromOneByte(isolate, chars.data(),
+                                      v8::NewStringType::kNormal,
+                                      static_cast<int>(chars.size()))
         .ToLocalChecked();
   }
-  return v8::String::NewFromTwoByte(
-             isolate, reinterpret_cast<const uint16_t*>(string.Characters16()),
-             v8::NewStringType::kNormal, static_cast<int>(string.length()))
+  return v8::String::NewFromTwoByte(isolate, string.SpanUint16().data(),
+                                    v8::NewStringType::kNormal,
+                                    static_cast<int>(string.length()))
       .ToLocalChecked();
 }
 
@@ -175,16 +170,15 @@ inline v8::Local<v8::String> V8AtomicString(v8::Isolate* isolate,
                                             const StringView& string) {
   DCHECK(isolate);
   if (string.Is8Bit()) {
-    return v8::String::NewFromOneByte(
-               isolate, reinterpret_cast<const uint8_t*>(string.Characters8()),
-               v8::NewStringType::kInternalized,
-               static_cast<int>(string.length()))
+    base::span<const LChar> chars = string.Span8();
+    return v8::String::NewFromOneByte(isolate, chars.data(),
+                                      v8::NewStringType::kInternalized,
+                                      static_cast<int>(chars.size()))
         .ToLocalChecked();
   }
-  return v8::String::NewFromTwoByte(
-             isolate, reinterpret_cast<const uint16_t*>(string.Characters16()),
-             v8::NewStringType::kInternalized,
-             static_cast<int>(string.length()))
+  return v8::String::NewFromTwoByte(isolate, string.SpanUint16().data(),
+                                    v8::NewStringType::kInternalized,
+                                    static_cast<int>(string.length()))
       .ToLocalChecked();
 }
 

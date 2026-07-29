@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/functional/bind.h"
 #include "base/i18n/number_formatting.h"
 #include "base/strings/utf_string_conversions.h"
@@ -16,12 +17,12 @@
 #include "chrome/browser/ui/ash/input_method/colors.h"
 #include "chrome/browser/ui/ash/input_method/completion_suggestion_view.h"
 #include "chrome/browser/ui/ash/input_method/suggestion_details.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -79,10 +80,10 @@ SuggestionWindowView* SuggestionWindowView::Create(gfx::NativeView parent,
   return view;
 }
 
-std::unique_ptr<views::NonClientFrameView>
-SuggestionWindowView::CreateNonClientFrameView(views::Widget* widget) {
-  std::unique_ptr<views::NonClientFrameView> frame =
-      views::BubbleDialogDelegateView::CreateNonClientFrameView(widget);
+std::unique_ptr<views::FrameView> SuggestionWindowView::CreateFrameView(
+    views::Widget* widget) {
+  std::unique_ptr<views::FrameView> frame =
+      views::BubbleDialogDelegateView::CreateFrameView(widget);
   static_cast<views::BubbleFrameView*>(frame.get())
       ->SetBubbleBorder(GetBorderForWindow(WindowBorderType::Suggestion));
   return frame;
@@ -113,9 +114,7 @@ void SuggestionWindowView::ShowMultipleCandidates(
   Reorient(orientation, /*extra_padding_on_right=*/
            properties.type !=
                ash::ime::AssistiveWindowType::kLongpressDiacriticsSuggestion);
-  ResizeCandidateArea(
-      candidates,
-      properties.type == ash::ime::AssistiveWindowType::kEmojiSuggestion);
+  ResizeCandidateArea(candidates);
   learn_more_button_->SetVisible(properties.show_setting_link);
   type_ = properties.type;
   // Ensure colours are correct.
@@ -182,8 +181,11 @@ void SuggestionWindowView::OnThemeChanged() {
   // TODO(crbug.com/1099044): Update and use cros colors.
   learn_more_button_->SetImageModel(
       views::Button::ButtonState::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(vector_icons::kSettingsOutlineIcon,
-                                     ui::kColorIconSecondary));
+      ui::ImageModel::FromVectorIcon(
+          features::IsRoundedIconsEnabled()
+              ? vector_icons::kSettingsIcon
+              : vector_icons::kSettingsOutlineOldIcon,
+          ui::kColorIconSecondary));
 }
 
 SuggestionWindowView::SuggestionWindowView(gfx::NativeView parent,
@@ -260,8 +262,7 @@ raw_ptr<views::ImageButton> SuggestionWindowView::getLearnMoreButton() {
 }
 
 void SuggestionWindowView::ResizeCandidateArea(
-    const std::vector<std::u16string>& new_candidates,
-    bool use_legacy_candidate) {
+    const std::vector<std::u16string>& new_candidates) {
   const views::View::Views& candidates = multiple_candidate_area_->children();
   while (candidates.size()) {
     subscriptions_.erase(
@@ -278,8 +279,7 @@ void SuggestionWindowView::ResizeCandidateArea(
                                       .suggestion_index = index}),
             /* candidate_text=*/new_candidates[index],
             // Label indexes start from "1", hence we increment index by one.
-            /* index_text=*/base::FormatNumber(index + 1),
-            use_legacy_candidate));
+            /* index_text=*/base::FormatNumber(index + 1)));
     // TODO(crbug.com/40232718): See View::SetLayoutManagerUseConstrainedSpace.
     candidate->SetLayoutManagerUseConstrainedSpace(false);
 

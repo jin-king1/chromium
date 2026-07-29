@@ -19,7 +19,6 @@
 
 #include "base/auto_reset.h"
 #include "base/base_paths.h"
-#include "base/files/file_util.h"
 #include "base/fuchsia/file_utils.h"
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/fuchsia/mem_buffer_util.h"
@@ -592,7 +591,7 @@ TEST_F(CastRunnerIntegrationTest, RemoteDebugging) {
   component.StartCastComponentWithQueryApi();
 
   // Connect to the debug service and ensure we get the proper response.
-  base::Value::List devtools_list =
+  base::ListValue devtools_list =
       GetDevToolsListFromPort(CastRunner::kRemoteDebuggingPort);
   EXPECT_EQ(devtools_list.size(), 1u);
 
@@ -924,7 +923,7 @@ TEST_F(CastRunnerIntegrationTest, InitialMinConsoleLogSeverity_DEBUG) {
       FakeApplicationConfigManager::CreateConfig(kTestAppId, app_url);
 
   *app_config.mutable_initial_min_console_log_severity() =
-      fuchsia::diagnostics::Severity::DEBUG;
+      fuchsia::diagnostics::types::Severity::DEBUG;
   app_config_manager().AddAppConfig(std::move(app_config));
 
   component.StartCastComponentWithQueryApi();
@@ -1056,7 +1055,7 @@ TEST_F(CastRunnerIntegrationTest, FrameHostDebugging) {
   dev_tools_listener.RunUntilNumberOfPortsIs(1);
   uint16_t remote_debugging_port = *(dev_tools_listener.debug_ports().begin());
 
-  base::Value::List devtools_list =
+  base::ListValue devtools_list =
       GetDevToolsListFromPort(remote_debugging_port);
   EXPECT_EQ(devtools_list.size(), 1u);
   {

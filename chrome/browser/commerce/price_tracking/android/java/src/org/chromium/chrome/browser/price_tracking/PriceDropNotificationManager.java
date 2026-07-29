@@ -10,6 +10,7 @@ import android.content.Intent;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
@@ -25,14 +26,18 @@ public interface PriceDropNotificationManager {
     boolean isEnabled();
 
     /**
-     * @return Whether price drop notifications can be posted.
+     * Check whether price drop notifications can be posted.
+     *
+     * @param callback Callback to be invoked on whether notification can be posted.
      */
-    boolean canPostNotification();
+    void canPostNotification(Callback<Boolean> callback);
 
     /**
-     * @return Whether price drop notifications can be posted and record user opt-in metrics.
+     * Check whether price drop notifications can be posted and record user opt-in metrics.
+     *
+     * @param callback Callback to be invoked on the result of the check.
      */
-    boolean canPostNotificationWithMetricsRecorded();
+    void canPostNotificationWithMetricsRecorded(Callback<Boolean> callback);
 
     /**
      * Record UMAs after posting price drop notifications.
@@ -69,12 +74,12 @@ public interface PriceDropNotificationManager {
      * @param offerId the id of the offer associated with this notification.
      * @param clusterId The id of the cluster associated with the product notification.
      * @param recordMetrics Whether to record metrics using {@link NotificationUmaTracker}. Only
-     *         Chime notification code path should set this to true.
+     *     Chime notification code path should set this to true.
      */
     void onNotificationActionClicked(
             String actionId,
             String url,
-            @Nullable String offerId,
+            String offerId,
             @Nullable String clusterId,
             boolean recordMetrics);
 
@@ -107,7 +112,11 @@ public interface PriceDropNotificationManager {
      * @param notificationId the notification id.
      */
     Intent getNotificationActionClickIntent(
-            String actionId, String url, String offerId, String clusterId, int notificationId);
+            String actionId,
+            String url,
+            String offerId,
+            @Nullable String clusterId,
+            int notificationId);
 
     /**
      * @return Whether app notifications are enabled.
@@ -127,10 +136,13 @@ public interface PriceDropNotificationManager {
     Intent getNotificationSettingsIntent();
 
     /**
-     * @return The price drop notification channel.
+     * Gets the price drop notification channel.
+     *
+     * @param callback Callback to be invoked with the notification channel if available, or null
+     *     otherwise.
      */
     @VisibleForTesting
-    NotificationChannel getNotificationChannel();
+    void getNotificationChannel(Callback<NotificationChannel> callback);
 
     /** Delete price drop notification channel for testing. */
     void deleteChannelForTesting();

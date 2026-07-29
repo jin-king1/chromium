@@ -14,6 +14,8 @@
 
 #include "base/containers/to_vector.h"
 #include "base/logging.h"
+#include "base/memory/memory_pressure_listener_registry.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/mock_log.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/test_future.h"
@@ -27,12 +29,16 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
+#include "services/network/public/cpp/constants.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/ip_address_space_util.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/navigation/preloading_headers.h"
 #include "url/gurl.h"
 
 namespace predictors {
@@ -50,6 +56,7 @@ using ::testing::AnyOf;
 using ::testing::ExplainMatchResult;
 using ::testing::HasSubstr;
 using ::testing::IsSupersetOf;
+using ::testing::Not;
 using ::testing::Pair;
 using ::testing::StartsWith;
 using ::testing::StrCaseEq;
@@ -59,17 +66,16 @@ constexpr std::string_view kPagePath = "/page";
 constexpr std::string_view kResourcePath = "/nocontent";
 constexpr std::string_view kHostname = "a.test";
 
-class PerformNetworkContextPrefetchRecorderTest : public ::testing::Test {
+class PerformNetworkContextPrefetchRecorderTest : public testing::Test {
  public:
   PerformNetworkContextPrefetchRecorderTest() {
-    features_.InitWithFeatures(
-        /*enabled_features=*/
-        {
-            network::features::kNetworkContextPrefetch,
-            features::kLoadingPredictorPrefetch,
-            features::kPrefetchManagerUseNetworkContextPrefetch,
-        },
-        /*disabled_features=*/{});
+    std::vector<base::test::FeatureRef> enabled_features = {
+        network::features::kNetworkContextPrefetch,
+        features::kLoadingPredictorPrefetch,
+        features::kPrefetchManagerUseNetworkContextPrefetch,
+    };
+
+    features_.InitWithFeatures(enabled_features, {});
     profile_ = std::make_unique<TestingProfile>();
   }
 
@@ -83,10 +89,21 @@ class PerformNetworkContextPrefetchRecorderTest : public ::testing::Test {
     test_server_handle_ = test_server_.StartAndReturnHandle();
     ASSERT_TRUE(test_server_handle_);
     // Treat 127.0.0.1 as "public" to avoid being blocked by local network
-    // access.
+    // access. Port number 0 is a wildcard. Each test case will use a different
+    // port number, but the command-line is only parsed once, so we need to make
+    // it work for all ports.
     command_line_.GetProcessCommandLine()->AppendSwitchASCII(
-        network::switches::kIpAddressSpaceOverrides,
-        base::StringPrintf("127.0.0.1:%d=public", test_server_.port()));
+        network::switches::kIpAddressSpaceOverrides, "127.0.0.1:0=public");
+    // The parse is cached process-wide, but this switch is only set for the
+    // current test, so an earlier test can cache an empty override that then
+    // blocks our loopback prefetch. Reset so the switch is re-parsed here.
+    network::IPAddressSpaceOverrides::GetInstance().ResetForTesting();
+  }
+
+  void TearDown() override {
+    // Reset again so a later test in this process re-parses instead of
+    // inheriting this test's override.
+    network::IPAddressSpaceOverrides::GetInstance().ResetForTesting();
   }
 
   GURL PageURL(std::string_view hostname = kHostname) const {
@@ -115,7 +132,8 @@ class PerformNetworkContextPrefetchRecorderTest : public ::testing::Test {
                     const std::vector<GURL>& resources) {
     const net::SchemefulSite site(page_url);
     auto requests = base::ToVector(resources, [&](const GURL& resource_url) {
-      return PrefetchRequest(resource_url, destination);
+      return PrefetchRequest(resource_url, destination,
+                             network::GetTestNetworkRestrictionsId());
     });
     PerformNetworkContextPrefetch(profile_.get(), page_url,
                                   std::move(requests));
@@ -145,7 +163,10 @@ class PerformNetworkContextPrefetchRecorderTest : public ::testing::Test {
   // IO_MAINLOOP is needed for the EmbeddedTestServer.
   content::BrowserTaskEnvironment task_environment_{
       content::BrowserTaskEnvironment::IO_MAINLOOP};
-  variations::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+  // Silences warnings about a missing registry, which impedes tests using
+  // MockLog.
+  base::MemoryPressureListenerRegistry memory_pressure_listener_registry_;
+  variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
   std::unique_ptr<TestingProfile> profile_;
   base::test::TestFuture<const HttpRequest&> request_future_;
@@ -173,7 +194,11 @@ TEST_F(PerformNetworkContextPrefetchRecorderTest, Script) {
   // changes there shouldn't require changing this test.
   EXPECT_THAT(request.headers, HasHeader("Accept", "*/*"));
   EXPECT_THAT(request.headers, HasHeader("Accept-Language", "en"));
-  EXPECT_THAT(request.headers, HasHeader("Purpose", "prefetch"));
+
+  // Sec-Purpose header should always be present.
+  EXPECT_THAT(request.headers,
+              HasHeader(blink::kSecPurposeHeaderName,
+                        blink::kSecPurposePrefetchHeaderValue));
   EXPECT_THAT(request.headers, HasHeader("Referer", PageURL().spec()));
   EXPECT_THAT(request.headers, HasHeader("sec-ch-ua", HasSubstr("v=")));
   EXPECT_THAT(request.headers,
@@ -183,7 +208,6 @@ TEST_F(PerformNetworkContextPrefetchRecorderTest, Script) {
   EXPECT_THAT(request.headers, HasHeader("Sec-Fetch-Dest", "script"));
   EXPECT_THAT(request.headers, HasHeader("Sec-Fetch-Mode", "no-cors"));
   EXPECT_THAT(request.headers, HasHeader("Sec-Fetch-Site", "same-origin"));
-  EXPECT_THAT(request.headers, HasHeader("Sec-Purpose", "prefetch"));
   EXPECT_THAT(request.headers,
               HasHeader("User-Agent", StartsWith("Mozilla/5.0 ")));
 

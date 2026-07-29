@@ -5,7 +5,6 @@
 #include <stddef.h>
 
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "cc/layers/content_layer_client.h"
 #include "cc/layers/picture_layer.h"
 #include "cc/paint/display_item_list.h"
@@ -227,9 +226,6 @@ std::vector<RasterTestConfig> const kTestCases = {
 #endif  // BUILDFLAG(ENABLE_VULKAN_BACKEND_TESTS)
 #if BUILDFLAG(ENABLE_SKIA_GRAPHITE_TESTS)
     {viz::RendererType::kSkiaGraphiteDawn, TestRasterType::kGpu},
-#if BUILDFLAG(IS_IOS)
-    {viz::RendererType::kSkiaGraphiteMetal, TestRasterType::kGpu},
-#endif  // BUILDFLAG(IS_IOS)
 #endif  // BUILDFLAG(ENABLE_SKIA_GRAPHITE_TESTS)
 };
 
@@ -238,7 +234,7 @@ INSTANTIATE_TEST_SUITE_P(All,
                          ::testing::ValuesIn(kTestCases),
                          ::testing::PrintToStringParamName());
 
-#if BUILDFLAG(IS_CHROMEOS_ASH) || defined(MEMORY_SANITIZER) || \
+#if BUILDFLAG(IS_CHROMEOS) || defined(MEMORY_SANITIZER) || \
     defined(ADDRESS_SANITIZER)
 // TODO(crbug.com/40116070): Flakes on all slower bots.
 #define MAYBE_PartialRaster DISABLED_PartialRaster
@@ -276,9 +272,6 @@ std::vector<RasterTestConfig> const kTestCasesMultiThread = {
 #endif  // BUILDFLAG(ENABLE_VULKAN_BACKEND_TESTS)
 #if BUILDFLAG(ENABLE_SKIA_GRAPHITE_TESTS)
     {viz::RendererType::kSkiaGraphiteDawn, TestRasterType::kGpu},
-#if BUILDFLAG(IS_IOS)
-    {viz::RendererType::kSkiaGraphiteMetal, TestRasterType::kGpu},
-#endif  // BUILDFLAG(IS_IOS)
 #endif  // BUILDFLAG(ENABLE_SKIA_GRAPHITE_TESTS)
 };
 
@@ -297,7 +290,7 @@ GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(
 #if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && defined(THREAD_SANITIZER)
 // Flaky on Linux TSAN. https://crbug.com/707711
 #define MAYBE_PartialRaster DISABLED_PartialRaster
-#elif BUILDFLAG(IS_CHROMEOS_ASH) || defined(MEMORY_SANITIZER) || \
+#elif BUILDFLAG(IS_CHROMEOS) || defined(MEMORY_SANITIZER) || \
     defined(ADDRESS_SANITIZER)
 // TODO(crbug.com/40116070): Flakes on all slower bots.
 #define MAYBE_PartialRaster DISABLED_PartialRaster
@@ -391,8 +384,7 @@ class LayerTreeHostTilesTestPartialInvalidationLowBitDepth
  protected:
   void InitializeSettings(LayerTreeSettings* settings) override {
     LayerTreeHostTilesPixelTest::InitializeSettings(settings);
-    settings->use_rgba_4444 = true;
-    settings->unpremultiply_and_dither_low_bit_depth_tiles = true;
+    settings->prefer_rgba_4444 = true;
   }
 };
 

@@ -9,6 +9,7 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileKeyedMap;
 import org.chromium.components.dom_distiller.core.DomDistillerService;
@@ -19,11 +20,12 @@ import org.chromium.components.dom_distiller.core.DomDistillerService;
  * already exist, it will be created on the first access.
  */
 @JNINamespace("dom_distiller::android")
+@NullMarked
 public class DomDistillerServiceFactory {
     private static final ProfileKeyedMap<DomDistillerService> sServiceMap =
             new ProfileKeyedMap<>(
                     ProfileKeyedMap.ProfileSelection.REDIRECTED_TO_ORIGINAL,
-                    ProfileKeyedMap.NO_REQUIRED_CLEANUP_ACTION);
+                    ProfileKeyedMap.noRequiredCleanupAction());
 
     /** Returns Java DomDistillerService for given Profile. */
     public static DomDistillerService getForProfile(Profile profile) {

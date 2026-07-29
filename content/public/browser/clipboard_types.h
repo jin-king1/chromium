@@ -6,13 +6,15 @@
 #define CONTENT_PUBLIC_BROWSER_CLIPBOARD_TYPES_H_
 
 #include "base/containers/flat_map.h"
-#include "base/functional/callback_helpers.h"
+#include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/types/optional_ref.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/global_routing_id.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/base/clipboard/clipboard_buffer.h"
 #include "ui/base/clipboard/clipboard_format_type.h"
-#include "ui/base/clipboard/clipboard_sequence_number_token.h"
+#include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
 
 namespace base {
@@ -85,6 +87,13 @@ class CONTENT_EXPORT ClipboardEndpoint {
                                  data_transfer_endpoint);
 
   // This constructor should be called when the endpoint represents a Chrome tab
+  // that has yet to be loaded (i.e., has no render frame host or web contents,
+  // but may have a URL or profile).
+  ClipboardEndpoint(
+      base::optional_ref<const ui::DataTransferEndpoint> data_transfer_endpoint,
+      base::RepeatingCallback<BrowserContext*()> browser_context_fetcher);
+
+  // This constructor should be called when the endpoint represents a Chrome tab
   // that is still alive.
   ClipboardEndpoint(
       base::optional_ref<const ui::DataTransferEndpoint> data_transfer_endpoint,
@@ -114,6 +123,11 @@ class CONTENT_EXPORT ClipboardEndpoint {
   // the tab has been closed.
   WebContents* web_contents() const;
 
+  // RenderFrameHost that initiated the clipboard interaction when it
+  // corresponds to a browser tab. This can be null if the endpoint is not a
+  // Chrome tab, or if the frame has since been destroyed.
+  RenderFrameHost* render_frame_host() const;
+
  private:
   // The `ui::DataTransferEndpoint` corresponding to the clipboard interaction.
   // An empty value represents a copy from Chrome's omnibox, a copy from a
@@ -128,25 +142,44 @@ class CONTENT_EXPORT ClipboardEndpoint {
 
   // null if the endpoint has no associated WebContents, or if it's been closed.
   base::WeakPtr<WebContents> web_contents_;
-};
 
-// Struct that holds metadata for data being copied or pasted that is relevant
-// to evaluating enterprise policies.
-struct ClipboardMetadata {
-  // Size of the clipboard data. null when files are copied.
-  std::optional<size_t> size;
-
-  // Format type of clipboard data.
-  ui::ClipboardFormatType format_type;
-
-  // Sequence number of the clipboard interaction.
-  ui::ClipboardSequenceNumberToken seqno;
+  // ID of the RenderFrameHost that initiated the clipboard interaction.
+  // Defaults to an invalid ID when the endpoint has no associated frame.
+  GlobalRenderFrameHostId render_frame_host_id_;
 };
 
 // Chromium-only type to associate clipboard data to the RFH it originated from.
 // This should only be used internally by the browser process to retrieve RFHs,
 // renderers should never have access to a serialized token.
 const ui::ClipboardFormatType& SourceRFHTokenType();
+
+// Returns a representation of the last source ClipboardEndpoint. This will
+// either match the last clipboard write if there is an RFH token in the
+// clipboard, or an endpoint built from `Clipboard::GetSource()` called with
+// `clipboard_buffer` otherwise.
+//
+// //content maintains additional metadata on top of what the //ui layer already
+// tracks about clipboard data's source, e.g. the WebContents that provided the
+// data. This function allows retrieving both the //ui metadata and the
+// //content metadata in a single call.
+CONTENT_EXPORT void GetSourceClipboardEndpoint(
+    const ui::DataTransferEndpoint* data_dst,
+    ui::ClipboardBuffer clipboard_buffer,
+    base::OnceCallback<void(ClipboardEndpoint)> callback);
+
+// Adds source-tracking metadata to `clipboard_writer` to mark its data as
+// originating from `rfh`.
+CONTENT_EXPORT void AddSourceDataToClipboardWriter(
+    ui::ScopedClipboardWriter& clipboard_writer,
+    content::RenderFrameHost& rfh);
+
+// Creates a `ui::DataTransferEndpoint` representing the last committed URL.
+CONTENT_EXPORT std::optional<ui::DataTransferEndpoint> CreateDataEndpoint(
+    content::RenderFrameHost& rfh);
+
+// Creates a `content::ClipboardEndpoint` representing the last committed URL.
+CONTENT_EXPORT ClipboardEndpoint
+CreateClipboardEndpoint(content::RenderFrameHost& rfh);
 
 }  // namespace content
 

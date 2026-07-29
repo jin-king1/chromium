@@ -69,7 +69,6 @@
 #include <concepts>
 #include <iosfwd>
 #include <limits>
-#include <ostream>
 #include <type_traits>
 
 #include "base/base_export.h"
@@ -78,9 +77,6 @@
 #include "base/compiler_specific.h"
 #include "base/numerics/clamped_math.h"
 #include "build/build_config.h"
-// TODO(crbug.com/354842935): Remove this include once other modules don't
-// accidentally (transitively) depend on it anymore.
-#include "build/chromeos_buildflags.h"
 
 #if BUILDFLAG(IS_FUCHSIA)
 #include <zircon/types.h>
@@ -103,7 +99,8 @@
 #endif
 
 #if BUILDFLAG(IS_WIN)
-#include "base/gtest_prod_util.h"
+#include <string>
+
 #include "base/win/windows_types.h"
 
 namespace ABI {
@@ -119,6 +116,7 @@ struct TimeSpan;
 namespace base {
 
 #if BUILDFLAG(IS_WIN)
+class CommandLine;
 class PlatformThreadHandle;
 #endif
 class TimeDelta;
@@ -128,8 +126,8 @@ constexpr TimeDelta Microseconds(T n);
 
 namespace {
 
-// TODO: Replace usage of this with std::isnan() once Chromium uses C++23,
-// where that is constexpr.
+// TODO: Replace usage of this with std::isnan() once the Windows toolchain
+// supports that being constexpr (other toolchains already do).
 constexpr bool isnan(double d) {
   return d != d;
 }
@@ -213,6 +211,10 @@ class BASE_EXPORT TimeDelta {
   constexpr bool is_inf() const { return is_min() || is_max(); }
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+  // According to https://en.cppreference.com/w/c/chrono/timespec, negative
+  // timespecs are invalid, so this function clamps negative TimeDeltas to 0.
+  // In addition, this function clamps the upper bound of TimeDelta values to
+  // what a `time_t` can hold.
   struct timespec ToTimeSpec() const;
 #endif
 #if BUILDFLAG(IS_FUCHSIA)
@@ -421,8 +423,6 @@ class TimeBase {
   static constexpr int64_t kNanosecondsPerSecond =
       kNanosecondsPerMicrosecond * kMicrosecondsPerSecond;
 
-  // TODO(crbug.com/40247732): Remove concept of "null" from base::Time.
-  //
   // Warning: Be careful when writing code that performs math on time values,
   // since it's possible to produce a valid "zero" result that should not be
   // interpreted as a "null" value. If you find yourself using this method or
@@ -461,12 +461,28 @@ class TimeBase {
   // the other subclasses can vary each time the application is restarted.
   constexpr TimeDelta since_origin() const;
 
+  // Returns |this| snapped to the next tick, given a |tick_phase| and
+  // repeating |tick_interval| in both directions. |this| may be before,
+  // after, or equal to the |tick_phase|.
+  constexpr TimeClass SnappedToNextTick(TimeClass tick_phase,
+                                        TimeDelta tick_interval) const {
+    // |interval_offset| is the offset from |this| to the next multiple of
+    // |tick_interval| after |tick_phase|, possibly negative if in the past.
+    TimeDelta interval_offset = (tick_phase - *this) % tick_interval;
+    // If |this| is exactly on the interval (i.e. offset==0), don't adjust.
+    // Otherwise, if |tick_phase| was in the past, adjust forward to the next
+    // tick after |this|.
+    if (!interval_offset.is_zero() && tick_phase < *this) {
+      interval_offset += tick_interval;
+    }
+    return *this + interval_offset;
+  }
+
   // Compute the difference between two times.
 #if !defined(__aarch64__) && BUILDFLAG(IS_ANDROID)
   NOINLINE  // https://crbug.com/1369775
 #endif
-      constexpr TimeDelta
-      operator-(const TimeBase<TimeClass>& other) const;
+      constexpr TimeDelta operator-(const TimeBase<TimeClass>& other) const;
 
   // Return a new time modified by some delta.
   constexpr TimeClass operator+(TimeDelta delta) const;
@@ -526,7 +542,7 @@ class BASE_EXPORT Time : public time_internal::TimeBase<Time> {
   // following: ((1970-1601)*365+89)*24*60*60*1000*1000, where 89 is the number
   // of leap year days between 1601 and 1970: (1970-1601)/4 excluding 1700,
   // 1800, and 1900.
-  static constexpr int64_t kTimeTToMicrosecondsOffset =
+  static constexpr int64_t kMicrosecondsFromWindowsToUnixEpoch =
       INT64_C(11644473600000000);
 
 #if BUILDFLAG(IS_WIN)
@@ -597,8 +613,6 @@ class BASE_EXPORT Time : public time_internal::TimeBase<Time> {
     bool HasValidValues() const;
   };
 
-  // TODO(crbug.com/40247732): Remove concept of "null" from base::Time.
-  //
   // Warning: Be careful when writing code that performs math on time values,
   // since it's possible to produce a valid "zero" result that should not be
   // interpreted as a "null" value. If you find yourself using this constructor
@@ -609,7 +623,9 @@ class BASE_EXPORT Time : public time_internal::TimeBase<Time> {
   constexpr Time() : TimeBase(0) {}
 
   // Returns the time for epoch in Unix-like system (Jan 1, 1970).
-  static constexpr Time UnixEpoch() { return Time(kTimeTToMicrosecondsOffset); }
+  static constexpr Time UnixEpoch() {
+    return Time(kMicrosecondsFromWindowsToUnixEpoch);
+  }
 
   // Returns the current time. Watch out, the system might adjust its clock
   // in which case time will actually go backwards. We don't guarantee that
@@ -740,18 +756,6 @@ class BASE_EXPORT Time : public time_internal::TimeBase<Time> {
   // This is provided for testing only, and is not tracked in a thread-safe
   // way.
   static bool IsHighResolutionTimerInUse();
-
-  // The following two functions are used to report the fraction of elapsed time
-  // that the high resolution timer is activated.
-  // ResetHighResolutionTimerUsage() resets the cumulative usage and starts the
-  // measurement interval and GetHighResolutionTimerUsage() returns the
-  // percentage of time since the reset that the high resolution timer was
-  // activated.
-  // ResetHighResolutionTimerUsage() must be called at least once before calling
-  // GetHighResolutionTimerUsage(); otherwise the usage result would be
-  // undefined.
-  static void ResetHighResolutionTimerUsage();
-  static double GetHighResolutionTimerUsage();
 #endif  // BUILDFLAG(IS_WIN)
 
   // Converts an exploded structure representing either the local time or UTC
@@ -887,42 +891,42 @@ class BASE_EXPORT Time : public time_internal::TimeBase<Time> {
 
 template <typename T>
 constexpr TimeDelta Days(T n) {
-  return TimeDelta::FromInternalValue(MakeClampedNum(n) *
+  return TimeDelta::FromInternalValue(ClampedNumeric(n) *
                                       Time::kMicrosecondsPerDay);
 }
 template <typename T>
 constexpr TimeDelta Hours(T n) {
-  return TimeDelta::FromInternalValue(MakeClampedNum(n) *
+  return TimeDelta::FromInternalValue(ClampedNumeric(n) *
                                       Time::kMicrosecondsPerHour);
 }
 template <typename T>
 constexpr TimeDelta Minutes(T n) {
-  return TimeDelta::FromInternalValue(MakeClampedNum(n) *
+  return TimeDelta::FromInternalValue(ClampedNumeric(n) *
                                       Time::kMicrosecondsPerMinute);
 }
 template <typename T>
 constexpr TimeDelta Seconds(T n) {
-  return TimeDelta::FromInternalValue(MakeClampedNum(n) *
+  return TimeDelta::FromInternalValue(ClampedNumeric(n) *
                                       Time::kMicrosecondsPerSecond);
 }
 template <typename T>
 constexpr TimeDelta Milliseconds(T n) {
-  return TimeDelta::FromInternalValue(MakeClampedNum(n) *
+  return TimeDelta::FromInternalValue(ClampedNumeric(n) *
                                       Time::kMicrosecondsPerMillisecond);
 }
 template <typename T>
 constexpr TimeDelta Microseconds(T n) {
-  return TimeDelta::FromInternalValue(MakeClampedNum(n));
+  return TimeDelta::FromInternalValue(ClampedNumeric(n));
 }
 template <typename T>
 constexpr TimeDelta Nanoseconds(T n) {
-  return TimeDelta::FromInternalValue(MakeClampedNum(n) /
+  return TimeDelta::FromInternalValue(ClampedNumeric(n) /
                                       Time::kNanosecondsPerMicrosecond);
 }
 template <typename T>
 constexpr TimeDelta Hertz(T n) {
   return n ? TimeDelta::FromInternalValue(Time::kMicrosecondsPerSecond /
-                                          MakeClampedNum(n))
+                                          ClampedNumeric(n))
            : TimeDelta::Max();
 }
 
@@ -1228,6 +1232,18 @@ class BASE_EXPORT TimeTicks : public time_internal::TimeBase<TimeTicks> {
   // value has the same origin as Now(). Do NOT attempt to use this if
   // IsHighResolution() returns false.
   static TimeTicks FromQPCValue(LONGLONG qpc_value);
+
+  // If this device doesn't have an invariant TSC, it may be added to the
+  // client-side trial to try to use QPC anyway. This function returns true for
+  // all devices in the trial (which is all the devices without an invariant
+  // TSC), and populates `trial_name` and `group_name` for them. `group_name`
+  // can be "Enabled" and "Control", as well as "Excluded" for devices where
+  // QueryPerformanceFrequency returns 0 (which shouldn't happen, but the
+  // assertion to validate this is new).
+  static bool GetHighResolutionTimeTicksFieldTrial(std::string* trial_name,
+                                                   std::string* group_name);
+
+  static void MaybeAddHighResolutionTimeTicksSwitch(CommandLine* command_line);
 #endif
 
 #if BUILDFLAG(IS_APPLE)
@@ -1257,7 +1273,7 @@ class BASE_EXPORT TimeTicks : public time_internal::TimeBase<TimeTicks> {
 
   // Truncates the TimeTicks value to the precision of SystemClock#uptimeMillis.
   // Note that the clocks already share the same monotonic clock source.
-  jlong ToUptimeMillis() const;
+  int64_t ToUptimeMillis() const;
 
   // Returns the TimeTicks value as microseconds in the timebase of
   // SystemClock#uptimeMillis.
@@ -1266,35 +1282,9 @@ class BASE_EXPORT TimeTicks : public time_internal::TimeBase<TimeTicks> {
   // System.nanoTime() may be used to get sub-millisecond precision in Java code
   // and may be compared against this value as the two share the same clock
   // source (though be sure to convert nanos to micros).
-  jlong ToUptimeMicros() const;
+  int64_t ToUptimeMicros() const;
 
 #endif  // BUILDFLAG(IS_ANDROID)
-
-  // Get an estimate of the TimeTick value at the time of the UnixEpoch. Because
-  // Time and TimeTicks respond differently to user-set time and NTP
-  // adjustments, this number is only an estimate. Nevertheless, this can be
-  // useful when you need to relate the value of TimeTicks to a real time and
-  // date. Note: Upon first invocation, this function takes a snapshot of the
-  // realtime clock to establish a reference point.  This function will return
-  // the same value for the duration of the application, but will be different
-  // in future application runs.
-  // DEPRECATED:
-  // Because TimeTicks increments can get suspended on some platforms (e.g. Mac)
-  // and because this function returns a static value, this value will not get
-  // suspension time into account on those platforms.
-  // As TimeTicks is intended to be used to track a process duration and not an
-  // absolute time, if you plan to use this function, please consider using a
-  // Time instead.
-  // TODO(crbug.com/355423207): Remove function.
-  static TimeTicks UnixEpoch();
-
-  static void SetSharedUnixEpoch(TimeTicks);
-
-  // Returns |this| snapped to the next tick, given a |tick_phase| and
-  // repeating |tick_interval| in both directions. |this| may be before,
-  // after, or equal to the |tick_phase|.
-  TimeTicks SnappedToNextTick(TimeTicks tick_phase,
-                              TimeDelta tick_interval) const;
 
   // Returns an enum indicating the underlying clock being used to generate
   // TimeTicks timestamps. This function should only be used for debugging and
@@ -1406,6 +1396,8 @@ class BASE_EXPORT ThreadTicks : public time_internal::TimeBase<ThreadTicks> {
   // Similar to Now() above except this returns thread-specific CPU time for an
   // arbitrary thread. All comments for Now() method above apply apply to this
   // method as well.
+  // TODO(crbug.com/420681350): Migrate the only use of this to
+  // PlatformThreadMetrics, to minimize the platform differences in base::Time.
   static ThreadTicks GetForThread(const PlatformThreadHandle& thread_handle);
 #endif
 

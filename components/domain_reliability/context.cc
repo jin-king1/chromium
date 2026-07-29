@@ -11,10 +11,9 @@
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/sparse_histogram.h"
-#include "base/not_fatal_until.h"
 #include "base/rand_util.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "components/domain_reliability/dispatcher.h"
 #include "components/domain_reliability/uploader.h"
@@ -187,7 +186,7 @@ base::Value DomainReliabilityContext::CreateReport(base::TimeTicks upload_time,
 
   int max_upload_depth = 0;
 
-  base::Value::List beacons_value;
+  base::ListValue beacons_value;
   for (const auto& beacon : beacons_) {
     // Only include beacons with a matching NetworkIsolationKey in the report.
     if (beacon->isolation_info.network_isolation_key() !=
@@ -205,7 +204,7 @@ base::Value DomainReliabilityContext::CreateReport(base::TimeTicks upload_time,
 
   DCHECK_GT(uploading_beacons_size_, 0u);
 
-  base::Value::Dict report_value;
+  base::DictValue report_value;
   report_value.Set("reporter", *upload_reporter_string_);
   report_value.Set("entries", std::move(beacons_value));
 
@@ -216,7 +215,7 @@ base::Value DomainReliabilityContext::CreateReport(base::TimeTicks upload_time,
 void DomainReliabilityContext::CommitUpload() {
   auto current = beacons_.begin();
   while (uploading_beacons_size_ > 0) {
-    CHECK(current != beacons_.end(), base::NotFatalUntil::M130);
+    CHECK(current != beacons_.end());
 
     auto last = current;
     ++current;

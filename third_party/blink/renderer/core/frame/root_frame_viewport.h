@@ -52,25 +52,18 @@ class CORE_EXPORT RootFrameViewport final
 
   void RestoreToAnchor(const ScrollOffset&);
 
-  // Callback whenever the visual viewport changes scroll position or scale.
-  void DidUpdateVisualViewport();
-
   // ScrollableArea Implementation
+  void DidUpdateVisualViewport() override;
   PhysicalOffset LocalToScrollOriginOffset() const final;
   bool IsRootFrameViewport() const override { return true; }
-  bool SetScrollOffset(const ScrollOffset&,
-                       mojom::blink::ScrollType,
-                       mojom::blink::ScrollBehavior,
-                       ScrollCallback on_finish,
-                       bool targeted_scroll = false) override;
   PhysicalRect ScrollIntoView(
       const PhysicalRect&,
       const PhysicalBoxStrut& scroll_margin,
-      const mojom::blink::ScrollIntoViewParamsPtr&) override;
-  gfx::Rect VisibleContentRect(
-      IncludeScrollbarsInRect = kExcludeScrollbars) const override;
+      const mojom::blink::ScrollIntoViewParamsPtr&,
+      std::unique_ptr<ScrollPromiseResolver::ActiveScrollTracker>) override;
+  gfx::Rect VisibleContentRect(IncludeScrollbarsInRect) const override;
   PhysicalRect VisibleScrollSnapportRect(
-      IncludeScrollbarsInRect = kExcludeScrollbars) const override;
+      IncludeScrollbarsInRect) const override;
   bool ShouldUseIntegerScrollOffset() const override;
   bool IsThrottled() const override {
     // RootFrameViewport is always in the main frame, so the frame does not get
@@ -82,7 +75,8 @@ class CORE_EXPORT RootFrameViewport final
   bool IsScrollCornerVisible() const override;
   gfx::Rect ScrollCornerRect() const override;
   void UpdateScrollOffset(const ScrollOffset&,
-                          mojom::blink::ScrollType) override;
+                          mojom::blink::ScrollType,
+                          cc::ScrollSourceType) override;
   gfx::PointF ScrollOffsetToPosition(const ScrollOffset& offset) const override;
   ScrollOffset ScrollPositionToOffset(
       const gfx::PointF& position) const override;
@@ -105,9 +99,11 @@ class CORE_EXPORT RootFrameViewport final
                                     kIgnoreOverlayScrollbarSize) const override;
   int VerticalScrollbarWidth(OverlayScrollbarClipBehavior =
                                  kIgnoreOverlayScrollbarSize) const override;
-  ScrollResult UserScroll(ui::ScrollGranularity,
-                          const ScrollOffset&,
-                          ScrollableArea::ScrollCallback on_finish) override;
+  ScrollConsumption UserScroll(
+      ui::ScrollGranularity,
+      const ScrollOffset&,
+      cc::ScrollSourceType,
+      ScrollableArea::ScrollCallback on_finish) override;
   CompositorElementId GetScrollElementId() const override;
   CompositorElementId GetScrollbarElementId(
       ScrollbarOrientation orientation) override;
@@ -180,6 +176,16 @@ class CORE_EXPORT RootFrameViewport final
 
   void DropCompositorScrollDeltaNextCommit() override;
 
+ protected:
+  // ScrollableArea implementation
+  bool SetScrollOffsetInternal(
+      const ScrollOffset&,
+      mojom::blink::ScrollType,
+      cc::ScrollSourceType,
+      mojom::blink::ScrollBehavior,
+      bool targeted_scroll,
+      std::unique_ptr<ScrollPromiseResolver::ActiveScrollTracker>) override;
+
  private:
   FRIEND_TEST_ALL_PREFIXES(RootFrameViewportTest, DistributeScrollOrder);
 
@@ -187,12 +193,11 @@ class CORE_EXPORT RootFrameViewport final
 
   ScrollOffset ScrollOffsetFromScrollAnimators() const;
 
-  bool DistributeScrollBetweenViewports(
-      const ScrollOffset&,
-      mojom::blink::ScrollType,
-      mojom::blink::ScrollBehavior,
-      ViewportToScrollFirst,
-      ScrollCallback on_finish = ScrollCallback());
+  bool DistributeScrollBetweenViewports(const ScrollOffset&,
+                                        mojom::blink::ScrollType,
+                                        cc::ScrollSourceType,
+                                        mojom::blink::ScrollBehavior,
+                                        ViewportToScrollFirst);
 
   // If either of the layout or visual viewports are scrolled explicitly (i.e.
   // not through this class), their updated offset will not be reflected in this

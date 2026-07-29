@@ -12,11 +12,15 @@
 #import "ios/chrome/app/application_delegate/tab_opening.h"
 #import "ios/chrome/app/application_delegate/url_opener_params.h"
 #import "ios/chrome/app/startup/chrome_app_startup_parameters.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/connection_information.h"
+#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/url/url_util.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
+#import "ios/components/webui/web_ui_url_constants.h"
 #import "url/gurl.h"
 
 namespace {
@@ -66,6 +70,10 @@ const char* const kUMAShowDefaultPromoFromAppsHistogram =
 
   MobileSessionCallerApp callerApp = [params callerApp];
 
+  if (prefService && params.postOpeningAction == TRIGGER_GEMINI_PROMO) {
+    prefService->SetBoolean(prefs::kAppStoreGeminiPromoTriggered, YES);
+  }
+
   UMA_HISTOGRAM_ENUMERATION(kUMAMobileSessionStartFromAppsHistogram, callerApp,
                             MOBILE_SESSION_CALLER_APP_COUNT);
 
@@ -90,6 +98,11 @@ const char* const kUMAShowDefaultPromoFromAppsHistogram =
       // connectionInformation.startupParamters can be not nil and what to do in
       // that case.
       [connectionInformation setStartupParameters:params];
+      if (params.openedViaShareExtensionScheme &&
+          (params.textQuery || params.imageSearchData)) {
+        return YES;
+      }
+
       ProceduralBlock tabOpenedCompletion = ^{
         [connectionInformation setStartupParameters:nil];
       };
@@ -109,26 +122,19 @@ const char* const kUMAShowDefaultPromoFromAppsHistogram =
         gurl = [params externalURL];
       }
       UrlLoadParams urlLoadParams = UrlLoadParams::InNewTab(gurl, virtualURL);
-      BOOL dismissOmnibox = [params postOpeningAction] != FOCUS_OMNIBOX;
+      urlLoadParams.from_widget_or_siri =
+          params.openedViaWidgetScheme || params.openedViaSiriShortcut;
 
-      if (base::FeatureList::IsEnabled(kChromeStartupParametersAsync)) {
-        [params requestApplicationModeWithBlock:^(
-                    ApplicationModeForTabOpening applicationMode) {
-          [URLOpener handleUrlLoadParams:urlLoadParams
-                               tabOpener:tabOpener
-                               callerApp:callerApp
-                                 appMode:applicationMode
-                          dismissOmnibox:dismissOmnibox
-                              completion:tabOpenedCompletion];
-        }];
-      } else {
+      BOOL dismissOmnibox = [params postOpeningAction] != FOCUS_OMNIBOX;
+      [params fetchAppSwitcherParamsWithBlock:^(
+                  ApplicationModeForTabOpening applicationMode) {
         [URLOpener handleUrlLoadParams:urlLoadParams
                              tabOpener:tabOpener
                              callerApp:callerApp
-                               appMode:[params applicationMode]
+                               appMode:applicationMode
                         dismissOmnibox:dismissOmnibox
                             completion:tabOpenedCompletion];
-      }
+      }];
       return YES;
     }
     return NO;
@@ -175,10 +181,6 @@ const char* const kUMAShowDefaultPromoFromAppsHistogram =
     targetMode = ApplicationModeForTabOpening::CURRENT;
   }
 
-  if (targetMode != ApplicationModeForTabOpening::INCOGNITO &&
-      [tabOpener URLIsOpenedInRegularMode:urlLoadParams.web_params.url]) {
-    // Record metric.
-  }
   [tabOpener dismissModalsAndMaybeOpenSelectedTabInMode:targetMode
                                       withUrlLoadParams:urlLoadParams
                                          dismissOmnibox:dismissOmnibox

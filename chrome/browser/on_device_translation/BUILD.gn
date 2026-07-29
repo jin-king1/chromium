@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//components/services/on_device_translation/buildflags/features.gni")
+import("//components/on_device_translation/buildflags/features.gni")
 
 assert(enable_on_device_translation)
 
@@ -12,86 +12,39 @@ source_set("on_device_translation") {
     "../component_updater/translate_kit_component_installer.h",
     "../component_updater/translate_kit_language_pack_component_installer.cc",
     "../component_updater/translate_kit_language_pack_component_installer.h",
-    "component_manager.cc",
-    "component_manager.h",
-    "file_operation_proxy_impl.cc",
-    "file_operation_proxy_impl.h",
-    "service_controller.cc",
-    "service_controller.h",
-    "service_controller_manager.cc",
-    "service_controller_manager.h",
+    "installer_impl.cc",
+    "installer_impl.h",
     "service_controller_manager_factory.cc",
     "service_controller_manager_factory.h",
     "translation_manager_impl.cc",
     "translation_manager_impl.h",
-    "translator.cc",
-    "translator.h",
   ]
   public_deps = [
-    "//chrome/browser/on_device_translation:constants",
-    "//chrome/browser/on_device_translation:language_pack_util",
-    "//chrome/browser/on_device_translation:prefs",
-    "//chrome/browser/on_device_translation:translation_metrics",
+    "//chrome/browser:browser_public_dependencies",
+    "//components/on_device_translation:public",
+    "//components/on_device_translation/service:service_launcher",
   ]
   deps = [
+    "//base",
     "//chrome/browser:browser_process",
-    "//chrome/browser/profiles:profile",
-    "//components/component_updater:component_updater",
-    "//components/crx_file:crx_file",
+    "//chrome/browser/content_settings",
+    "//chrome/browser/content_settings:content_settings_factory",
+    "//components/component_updater",
+    "//components/content_settings/core/browser",
     "//components/keyed_service/content",
-    "//components/language/core/browser",
-    "//components/prefs:prefs",
-    "//components/services/on_device_translation:on_device_translation_service",
-    "//components/update_client:update_client",
+    "//components/on_device_translation",
+    "//components/on_device_translation:metrics",
+    "//components/on_device_translation/public/mojom",
+    "//components/on_device_translation/service:on_device_translation_service",
+    "//components/permissions",
+    "//components/prefs",
+    "//components/update_client",
     "//content/public/browser",
   ]
-}
-
-source_set("prefs") {
-  sources = [
-    "pref_names.cc",
-    "pref_names.h",
-  ]
-
-  deps = [
-    ":language_pack_util",
-    "//components/prefs",
-  ]
-
+  if (is_chromeos) {
+    deps += [ "//chromeos/ash/components/dbus/image_loader" ]
+  }
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
-}
-
-source_set("constants") {
-  sources = [
-    "constants.cc",
-    "constants.h",
-  ]
-
-  deps = [
-    "//base",
-    "//components/component_updater:component_updater_paths",
-  ]
-}
-
-source_set("translation_metrics") {
-  sources = [
-    "translation_metrics.cc",
-    "translation_metrics.h",
-  ]
-
-  deps = [
-    ":language_pack_util",
-    "//base",
-  ]
-}
-
-source_set("language_pack_util") {
-  sources = [
-    "language_pack_util.cc",
-    "language_pack_util.h",
-  ]
-
-  deps = [ "//base" ]
 }
 
 source_set("unit_tests") {
@@ -99,28 +52,30 @@ source_set("unit_tests") {
   sources = [
     "../component_updater/translate_kit_component_installer_unittest.cc",
     "../component_updater/translate_kit_language_pack_component_installer_unittest.cc",
-    "file_operation_proxy_impl_unittest.cc",
-    "language_pack_util_unittest.cc",
-    "translation_manager_impl_unittest.cc",
-    "translation_metrics_unittest.cc",
+    "installer_impl_unittest.cc",
   ]
   deps = [
-    ":language_pack_util",
-    ":prefs",
-    ":translation_metrics",
+    ":on_device_translation",
     "//base",
     "//base/test:test_support",
     "//chrome/browser",
-    "//chrome/browser/on_device_translation:on_device_translation",
+    "//chrome/test:test_support",
     "//components/component_updater:test_support",
     "//components/crx_file",
+    "//components/language/core/browser",
+    "//components/on_device_translation",
+    "//components/on_device_translation:public",
+    "//components/on_device_translation/public/mojom",
+    "//components/on_device_translation/service/:test_support",
     "//components/prefs",
-    "//components/services/on_device_translation/:test_support",
-    "//components/services/on_device_translation/public/cpp",
-    "//components/services/on_device_translation/public/mojom",
+    "//components/prefs:test_support",
     "//components/sync_preferences:test_support",
+    "//components/update_client",
     "//content/test:test_support",
   ]
+  if (is_chromeos) {
+    deps += [ "//chromeos/ash/components/dbus/image_loader" ]
+  }
 }
 
 source_set("test_support") {
@@ -129,15 +84,16 @@ source_set("test_support") {
     "test/test_util.cc",
     "test/test_util.h",
   ]
+  public_deps = [ "//components/on_device_translation:public" ]
   deps = [
-    ":language_pack_util",
-    ":prefs",
+    ":on_device_translation",
     "//base",
     "//base/test:test_support",
     "//chrome/browser",
     "//chrome/browser:browser_process",
-    "//chrome/browser/on_device_translation:on_device_translation",
-    "//components/services/on_device_translation/:test_support",
+    "//chrome/browser/ui",
+    "//components/on_device_translation",
+    "//components/on_device_translation/service:test_support",
     "//content/test:test_support",
   ]
 }

@@ -4,6 +4,7 @@
 
 #include <vector>
 
+#include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -15,7 +16,9 @@
 #include "chrome/browser/ssl/https_upgrades_util.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/page_load_metrics/browser/features.h"
 #include "components/page_load_metrics/browser/observers/abandoned_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/page_load_metrics_test_waiter.h"
 #include "components/page_load_metrics/browser/page_load_metrics_util.h"
@@ -26,12 +29,15 @@
 #include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_navigation_throttle.h"
 #include "content/public/test/test_navigation_throttle_inserter.h"
+#include "net/dns/mock_host_resolver.h"
+#include "net/test/embedded_test_server/default_handlers.h"
 #include "net/test/embedded_test_server/request_handler_util.h"
 #include "services/network/public/cpp/network_quality_tracker.h"
 
@@ -57,6 +63,12 @@ class FromGwsAbandonedPageLoadMetricsObserverBrowserTest
     return url;
   }
 
+  GURL url_non_srp_error() {
+    GURL url(current_test_server()->GetURL("a.test", "/error"));
+    EXPECT_FALSE(page_load_metrics::IsGoogleSearchResultUrl(url));
+    return url;
+  }
+
   GURL GetTargetURLForMilestone(NavigationMilestone milestone) override {
     if (milestone ==
         NavigationMilestone::kFirstRedirectResponseLoaderCallback) {
@@ -74,6 +86,14 @@ class FromGwsAbandonedPageLoadMetricsObserverBrowserTest
     return http_response;
   }
 
+  std::unique_ptr<net::test_server::HttpResponse> DefaultNetErrorHandler(
+      const net::test_server::HttpRequest& request) {
+    auto http_response =
+        std::make_unique<net::test_server::BasicHttpResponse>();
+    http_response->set_code(net::HttpStatusCode::HTTP_INTERNAL_SERVER_ERROR);
+    return http_response;
+  }
+
   void SetUpOnMainThread() override {
     current_test_server()->RegisterDefaultHandler(
         base::BindRepeating(&net::test_server::HandlePrefixedRequest, "/search",
@@ -83,6 +103,12 @@ class FromGwsAbandonedPageLoadMetricsObserverBrowserTest
         base::BindRepeating(
             &FromGwsAbandonedPageLoadMetricsObserverBrowserTest::
                 DefaultRedirectHandler,
+            base::Unretained(this))));
+    current_test_server()->RegisterDefaultHandler(base::BindRepeating(
+        &net::test_server::HandlePrefixedRequest, "/error",
+        base::BindRepeating(
+            &FromGwsAbandonedPageLoadMetricsObserverBrowserTest::
+                DefaultNetErrorHandler,
             base::Unretained(this))));
     GWSAbandonedPageLoadMetricsObserverBrowserTest::SetUpOnMainThread();
   }
@@ -97,6 +123,80 @@ class FromGwsAbandonedPageLoadMetricsObserverBrowserTest
         "Navigation.FromGoogleSearch.Abandoned", "LastMilestoneBeforeAbandon");
     for (auto milestone : milestones) {
       EXPECT_GE(milestone, static_cast<int>(NavigationMilestone::kDidCommit));
+    }
+  }
+
+  void CheckTimingInformationMetrics(
+      ukm::TestAutoSetUkmRecorder& ukm_recorder,
+      NavigationMilestone abandon_milestone,
+      GURL target_url,
+      std::optional<GURL> recorded_url = std::nullopt,
+      std::optional<std::string> impression_name = std::nullopt,
+      int entry_index = 0,
+      std::optional<uint32_t> category_id = std::nullopt) {
+    bool has_redirect = (target_url == url_non_srp_redirect());
+    // There should be UKM entries corresponding to the navigation.
+    auto ukm_entries = ukm_recorder.GetEntriesByName(
+        "Navigation.FromGoogleSearch.TimingInformation");
+
+    if (!recorded_url.has_value()) {
+      recorded_url = url_non_srp_2();
+    }
+    const ukm::mojom::UkmEntry* ukm_entry = ukm_entries[entry_index].get();
+    ukm_recorder.ExpectEntrySourceHasUrl(ukm_entry, recorded_url.value());
+
+    bool post_commit =
+        (abandon_milestone >= NavigationMilestone::kDidCommit &&
+         abandon_milestone <= NavigationMilestone::kLastEssentialLoadingEvent);
+    ukm_recorder.ExpectEntryMetric(ukm_entry, "IsCommitted", post_commit);
+
+    if (category_id.has_value()) {
+      ukm_recorder.ExpectEntryMetric(ukm_entry, "Category",
+                                     category_id.value());
+    } else {
+      EXPECT_FALSE(ukm_recorder.EntryHasMetric(ukm_entry, "Category"));
+    }
+
+    int expected_redirects = 0;
+    if (has_redirect) {
+      if (abandon_milestone >
+          NavigationMilestone::kFirstRedirectResponseLoaderCallback) {
+        expected_redirects = 1;
+      }
+      // TODO(crbug.com/390216631): Add second redirect milestone checks.
+    }
+    ukm_recorder.ExpectEntryMetric(ukm_entry, "RedirectCount",
+                                   expected_redirects);
+
+    for (auto milestone : all_milestones()) {
+      if (abandon_milestone < milestone ||
+          (!has_redirect &&
+           milestone == NavigationMilestone::kFirstRedirectedRequestStart)) {
+        EXPECT_FALSE(ukm_recorder.EntryHasMetric(
+            ukm_entry,
+            AbandonedPageLoadMetricsObserver::NavigationMilestoneToString(
+                milestone) +
+                "Time"));
+      } else if (milestone ==
+                     NavigationMilestone::kFirstRedirectResponseStart ||
+                 milestone == NavigationMilestone::
+                                  kFirstRedirectResponseLoaderCallback) {
+        ukm_recorder.ExpectEntryMetric(
+            ukm_entry, "FirstRedirectResponseReceived", has_redirect);
+      } else if (milestone == NavigationMilestone::kNonRedirectResponseStart ||
+                 milestone ==
+                     NavigationMilestone::kNonRedirectResponseLoaderCallback) {
+        EXPECT_TRUE(ukm_recorder.EntryHasMetric(ukm_entry,
+                                                "NonRedirectResponseReceived"));
+      } else {
+        EXPECT_EQ(
+            milestone != NavigationMilestone::kNavigationStart,
+            ukm_recorder.EntryHasMetric(
+                ukm_entry,
+                AbandonedPageLoadMetricsObserver::NavigationMilestoneToString(
+                    milestone) +
+                    "Time"));
+      }
     }
   }
 
@@ -168,9 +268,24 @@ class FromGwsAbandonedPageLoadMetricsObserverBrowserTest
     EXPECT_TRUE(content::NavigateToURL(
         browser()->tab_strip_model()->GetActiveWebContents(), url_non_srp()));
 
-    // There should be UKM entries corresponding to the navigation.
     auto ukm_entries =
         ukm_recorder.GetEntriesByName("Navigation.FromGoogleSearch.Abandoned");
+    // Remove any irrelevant entries from the list of UKM entries by filtering
+    // with the URL. This is required to avoid the flakiness when abandoning
+    // the navigation with reload on early milestone such as NavigationStart.
+    // It seems to be triggering a timing bug which when navigating from
+    // a.com to b.com, the early stage reload winds back to a.com even though
+    // the navigation to b.com has started.
+    ukm_entries.erase(
+        std::remove_if(ukm_entries.begin(), ukm_entries.end(),
+                       [&ukm_recorder, this](auto entry) {
+                         auto* src = ukm_recorder.GetSourceForSourceId(
+                             entry->source_id);
+                         return !src || src->url() != url_non_srp_2();
+                       }),
+        ukm_entries.end());
+
+    // There should be UKM entries corresponding to the navigation.
     const ukm::mojom::UkmEntry* ukm_entry = ukm_entries[0].get();
     ukm_recorder.ExpectEntrySourceHasUrl(ukm_entry, url_non_srp_2());
     ukm_recorder.ExpectEntryMetric(ukm_entry, "AbandonReason",
@@ -209,6 +324,8 @@ class FromGwsAbandonedPageLoadMetricsObserverBrowserTest
           static_cast<int>(
               NavigationMilestone::kNonRedirectResponseLoaderCallback));
     }
+    // Finally check the on finish metrics.
+    CheckTimingInformationMetrics(ukm_recorder, abandon_milestone, target_url);
   }
 };
 
@@ -219,13 +336,18 @@ IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
   EXPECT_TRUE(content::NavigateToURL(web_contents(), url_srp()));
 
   ukm::TestAutoSetUkmRecorder ukm_recorder;
-  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_non_srp_2()));
+
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url_non_srp_2()));
 
   // Navigate to a new page to flush the metrics.
   EXPECT_TRUE(content::NavigateToURL(web_contents(), url_non_srp()));
 
   // There should be no new entry for the navigation abandonment metrics.
   ExpectEmptyAbandonedHistogramUntilCommit(ukm_recorder);
+
+  CheckTimingInformationMetrics(ukm_recorder,
+                                NavigationMilestone::kLastEssentialLoadingEvent,
+                                url_non_srp_2());
 }
 
 // Test that a successful navigation from a non-SRP page will not log any
@@ -262,15 +384,8 @@ IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
 // milestones for this test since the new navigation might take a while to
 // arrive on the browser side, and the oldnavigation might have advanced if
 // it's not actually paused.
-// TODO(crbug.com/400273873): flaky on Linux with bfcache disabled builds. This
-// will be fixed in https://crrev.com/c/6268599.
-#if BUILDFLAG(IS_LINUX)
-#define MAYBE_CancelledByNewNavigation DISABLED_CancelledByNewNavigation
-#else
-#define MAYBE_CancelledByNewNavigation CancelledByNewNavigation
-#endif
 IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
-                       MAYBE_CancelledByNewNavigation) {
+                       CancelledByNewNavigation) {
   for (NavigationMilestone milestone : all_throttleable_milestones()) {
     for (AbandonReason reason :
          {AbandonReason::kNewReloadNavigation,
@@ -408,6 +523,138 @@ IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
           web_contents()));
 }
 
+// Test that if the non-terminal abandonment will record the TimingInformation
+// metrics, and the `OnComplete` will record them again.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_TabHiddenBeforeCommitAndFinishNavigation \
+  DISABLED_TabHiddenBeforeCommitAndFinishNavigation
+#else
+#define MAYBE_TabHiddenBeforeCommitAndFinishNavigation \
+  TabHiddenBeforeCommitAndFinishNavigation
+#endif
+IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
+                       MAYBE_TabHiddenBeforeCommitAndFinishNavigation) {
+  // Make sure the WebContents is currently shown, before hiding it later.
+  web_contents()->WasShown();
+
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  // Navigate to a non-SRP page, to ensure we have a previous page. This is
+  // important for testing hiding the WebContents or crashing the process.
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_non_srp()));
+
+  // Navigate to SRP so that we kick off the `FromGws` PLMOs.
+  EXPECT_TRUE(content::NavigateToURL(
+      browser()->tab_strip_model()->GetActiveWebContents(), url_srp()));
+
+  // Purge the previous ukms so that we have a clean record.
+  ukm_recorder.Purge();
+
+  // Navigate to a non-SRP, but pause it just after we reach the desired
+  // milestone.
+  content::TestNavigationManager navigation(web_contents(), url_non_srp_2());
+
+  web_contents()->GetController().LoadURL(url_non_srp_2(), content::Referrer(),
+                                          ui::PAGE_TRANSITION_LINK,
+                                          std::string());
+
+  EXPECT_TRUE(navigation.WaitForRequestStart());
+
+  // Hide the content.
+  web_contents()->WasHidden();
+
+  // We expect to record the timing information on non-terminal abandonment.
+  EXPECT_EQ(
+      ukm_recorder
+          .GetEntriesByName("Navigation.FromGoogleSearch.TimingInformation")
+          .size(),
+      1u);
+
+  // Wait until the navigation finishes.
+  EXPECT_TRUE(navigation.WaitForNavigationFinished());
+  EXPECT_TRUE(navigation.was_committed());
+
+  // Delay checking the Timing Information metrics until post commit since the
+  // TestUkmRecorder does not tie the source id to a url until we have
+  // committed and finalized the url.
+  CheckTimingInformationMetrics(
+      ukm_recorder, NavigationMilestone::kNavigationStart, url_non_srp_2());
+
+  EXPECT_TRUE(content::NavigateToURL(
+      browser()->tab_strip_model()->GetActiveWebContents(), url_non_srp()));
+
+  // We expect to record the timing information on terminal abandonment as well.
+  EXPECT_EQ(
+      ukm_recorder
+          .GetEntriesByName("Navigation.FromGoogleSearch.TimingInformation")
+          .size(),
+      2u);
+
+  // Check if the second timing information entry has all the loading
+  // milestones.
+  CheckTimingInformationMetrics(
+      ukm_recorder, NavigationMilestone::kLastEssentialLoadingEvent,
+      url_non_srp_2(), std::nullopt, std::nullopt, /* entry_index = */ 1);
+}
+
+// Test that if the `OnComplete` will record the TimingInformation
+// metrics, even if it is on Tab close.
+IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
+                       TabCloseAfterFinish) {
+  // Make sure the WebContents is currently shown, before hiding it later.
+  web_contents()->WasShown();
+
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  // Navigate to a non-SRP page, to ensure we have a previous page. This is
+  // important for testing hiding the WebContents or crashing the process.
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_non_srp()));
+
+  // Navigate to SRP so that we kick off the `FromGws` PLMOs.
+  EXPECT_TRUE(content::NavigateToURL(
+      browser()->tab_strip_model()->GetActiveWebContents(), url_srp()));
+
+  // Purge the previous ukms so that we have a clean record.
+  ukm_recorder.Purge();
+
+  // Navigate to a non-SRP, and wait until the navigation is finished.
+  content::TestNavigationManager navigation(web_contents(), url_non_srp_2());
+
+  web_contents()->GetController().LoadURL(url_non_srp_2(), content::Referrer(),
+                                          ui::PAGE_TRANSITION_LINK,
+                                          std::string());
+
+  // Wait until the navigation finishes.
+  EXPECT_TRUE(navigation.WaitForNavigationFinished());
+  EXPECT_TRUE(navigation.was_committed());
+
+  // We do not expect to see any timing information here, since there are no
+  // abandonment, and we have not navigated away yet.
+  EXPECT_EQ(
+      ukm_recorder
+          .GetEntriesByName("Navigation.FromGoogleSearch.TimingInformation")
+          .size(),
+      0u);
+
+  // Close the tab here so that the timing information would be recorded.
+  EXPECT_TRUE(ExecJs(web_contents(), "window.close();"));
+
+  // Navigate to a non-SRP page, to flush the metrics.
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_non_srp()));
+
+  // We expect to record the timing information on `OnComplete`.
+  EXPECT_GE(
+      ukm_recorder
+          .GetEntriesByName("Navigation.FromGoogleSearch.TimingInformation")
+          .size(),
+      1u);
+
+  // Check if the timing information entry has all the loading milestones.
+  CheckTimingInformationMetrics(ukm_recorder,
+                                NavigationMilestone::kLastEssentialLoadingEvent,
+                                url_non_srp_2());
+}
+
 // Test navigations that are cancelled by closing the WebContents at various
 // points during the navigation. Note we are only testing with throttleable
 // milestones for this teset since the close notification might take a while to
@@ -457,12 +704,12 @@ IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
       for (NavigationMilestone milestone : all_throttleable_milestones()) {
         content::TestNavigationThrottleInserter throttle_inserter(
             web_contents(),
-            base::BindLambdaForTesting([&](content::NavigationHandle* handle)
-                                           -> std::unique_ptr<
-                                               content::NavigationThrottle> {
-              if (handle->GetURL() != url_non_srp_2() &&
-                  handle->GetURL() != url_non_srp_redirect()) {
-                return nullptr;
+            base::BindLambdaForTesting([&](content::NavigationThrottleRegistry&
+                                               registry) -> void {
+              auto& handle = registry.GetNavigationHandle();
+              if (handle.GetURL() != url_non_srp_2() &&
+                  handle.GetURL() != url_non_srp_redirect()) {
+                return;
               }
               content::TestNavigationThrottle::ThrottleMethod method =
                   content::TestNavigationThrottle::WILL_START_REQUEST;
@@ -474,9 +721,9 @@ IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
                 method = content::TestNavigationThrottle::WILL_PROCESS_RESPONSE;
               }
               auto throttle =
-                  std::make_unique<content::TestNavigationThrottle>(handle);
+                  std::make_unique<content::TestNavigationThrottle>(registry);
               throttle->SetResponse(method, synchrony, action);
-              return throttle;
+              registry.AddThrottle(std::move(throttle));
             }));
         TestNavigationAbandonment(
             AbandonReason::kInternalCancellation, milestone,
@@ -503,12 +750,12 @@ IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
   for (NavigationMilestone milestone : all_throttleable_milestones()) {
     content::TestNavigationThrottleInserter throttle_inserter(
         web_contents(),
-        base::BindLambdaForTesting([&](content::NavigationHandle* handle)
-                                       -> std::unique_ptr<
-                                           content::NavigationThrottle> {
-          if (handle->GetURL() != url_non_srp_2() &&
-              handle->GetURL() != url_non_srp_redirect()) {
-            return nullptr;
+        base::BindLambdaForTesting([&](content::NavigationThrottleRegistry&
+                                           registry) -> void {
+          auto& handle = registry.GetNavigationHandle();
+          if (handle.GetURL() != url_non_srp_2() &&
+              handle.GetURL() != url_non_srp_redirect()) {
+            return;
           }
           content::TestNavigationThrottle::ThrottleMethod method =
               content::TestNavigationThrottle::WILL_START_REQUEST;
@@ -520,14 +767,14 @@ IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
             method = content::TestNavigationThrottle::WILL_PROCESS_RESPONSE;
           }
           auto throttle =
-              std::make_unique<content::TestNavigationThrottle>(handle);
+              std::make_unique<content::TestNavigationThrottle>(registry);
           throttle->SetResponse(
               method, content::TestNavigationThrottle::SYNCHRONOUS,
               milestone ==
                       NavigationMilestone::kNonRedirectResponseLoaderCallback
                   ? content::NavigationThrottle::BLOCK_RESPONSE
                   : content::NavigationThrottle::BLOCK_REQUEST);
-          return throttle;
+          registry.AddThrottle(std::move(throttle));
         }));
     TestNavigationAbandonment(
         AbandonReason::kErrorPage, milestone,
@@ -567,4 +814,150 @@ IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
           },
           web_contents()),
       std::nullopt, base::OnceCallback<void()>());
+}
+
+// Test navigations that are cancelled because of the server error. We should
+// record the net::Error if the cancelation is from the network error.
+IN_PROC_BROWSER_TEST_F(FromGwsAbandonedPageLoadMetricsObserverBrowserTest,
+                       CancelledByServerError) {
+  // Navigate to SRP page.
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_srp()));
+
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+  // Navigate to a redirected non-SRP page.
+  EXPECT_FALSE(content::NavigateToURL(web_contents(), url_non_srp_error()));
+
+  // Navigate to a non-SRP page to flush.
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_non_srp()));
+
+  auto ukm_entries =
+      ukm_recorder.GetEntriesByName("Navigation.FromGoogleSearch.Abandoned");
+  const ukm::mojom::UkmEntry* ukm_entry = ukm_entries[0].get();
+  ukm_recorder.ExpectEntrySourceHasUrl(ukm_entry, url_non_srp_error());
+
+  ukm_recorder.ExpectEntryMetric(ukm_entry, "Net.ErrorCode",
+                                 -net::ERR_HTTP_RESPONSE_CODE_FAILURE);
+
+  ukm_recorder.ExpectEntryMetric(ukm_entry, "AbandonReason",
+                                 static_cast<int>(AbandonReason::kErrorPage));
+  ukm_recorder.ExpectEntryMetric(
+      ukm_entry, "LastMilestoneBeforeAbandon",
+      static_cast<int>(
+          NavigationMilestone::kNonRedirectResponseLoaderCallback));
+
+  CheckTimingInformationMetrics(
+      ukm_recorder, NavigationMilestone::kNonRedirectResponseLoaderCallback,
+      url_non_srp_error(), url_non_srp_error());
+}
+
+class FromGwsAbandonedPageLoadMetricsObserverWithCategoryBrowserTest
+    : public FromGwsAbandonedPageLoadMetricsObserverBrowserTest {
+ public:
+  static constexpr std::string_view kCategoryPrefix = "category:";
+  FromGwsAbandonedPageLoadMetricsObserverWithCategoryBrowserTest() {
+    std::map<std::string, std::string> params;
+    params["category_prefix"] = kCategoryPrefix;
+
+    feature_list_.InitAndEnableFeatureWithParameters(
+        page_load_metrics::features::kBeaconLeakageLogging, params);
+  }
+  ~FromGwsAbandonedPageLoadMetricsObserverWithCategoryBrowserTest() override =
+      default;
+
+  GURL url_non_srp_with_category(const std::string& category) {
+    GURL target = url_non_srp_2();
+    auto new_path = base::StrCat({target.GetPath(), "?category=", category});
+
+    GURL url(current_test_server()->GetURL(target.GetHost(), new_path));
+    EXPECT_FALSE(page_load_metrics::IsGoogleSearchResultUrl(url));
+    return url;
+  }
+
+ protected:
+  void SetUpOnMainThread() override {
+    FromGwsAbandonedPageLoadMetricsObserverBrowserTest::SetUpOnMainThread();
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Test that a successful navigation from SRP will log all the navigation
+// milestones metrics and none of the abandonment metrics, with a valid
+// category.
+IN_PROC_BROWSER_TEST_F(
+    FromGwsAbandonedPageLoadMetricsObserverWithCategoryBrowserTest,
+    FromSearch) {
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_srp()));
+
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  auto target = url_non_srp_with_category(base::StrCat({kCategoryPrefix, "1"}));
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), target));
+
+  // Navigate to a new page to flush the metrics.
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_non_srp()));
+
+  // There should be no new entry for the navigation abandonment metrics.
+  ExpectEmptyAbandonedHistogramUntilCommit(ukm_recorder);
+
+  CheckTimingInformationMetrics(ukm_recorder,
+                                NavigationMilestone::kLastEssentialLoadingEvent,
+                                target, target, std::nullopt, /*entry_index*/ 0,
+                                /*category_id=*/1);
+}
+
+// Test that a successful navigation from SRP will log all the navigation
+// milestones metrics and none of the abandonment metrics with an invalid
+// category id.
+IN_PROC_BROWSER_TEST_F(
+    FromGwsAbandonedPageLoadMetricsObserverWithCategoryBrowserTest,
+    FromSearchInvalidCategoryId) {
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_srp()));
+
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  auto target =
+      url_non_srp_with_category(base::StrCat({kCategoryPrefix, "Invalid"}));
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), target));
+
+  // Navigate to a new page to flush the metrics.
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_non_srp()));
+
+  // There should be no new entry for the navigation abandonment metrics.
+  ExpectEmptyAbandonedHistogramUntilCommit(ukm_recorder);
+
+  // Since this is an invalid category id, we should not record the category
+  // metric.
+  CheckTimingInformationMetrics(ukm_recorder,
+                                NavigationMilestone::kLastEssentialLoadingEvent,
+                                target, target, std::nullopt, /*entry_index*/ 0,
+                                /*category_id=*/std::nullopt);
+}
+
+// Test that a successful navigation from SRP will log all the navigation
+// milestones metrics and none of the abandonment metrics, with no category
+// prefix specified.
+IN_PROC_BROWSER_TEST_F(
+    FromGwsAbandonedPageLoadMetricsObserverWithCategoryBrowserTest,
+    FromSearchInvalidCategoryPrefix) {
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_srp()));
+
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  auto target = url_non_srp_with_category("Invalid");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), target));
+
+  // Navigate to a new page to flush the metrics.
+  EXPECT_TRUE(content::NavigateToURL(web_contents(), url_non_srp()));
+
+  // There should be no new entry for the navigation abandonment metrics.
+  ExpectEmptyAbandonedHistogramUntilCommit(ukm_recorder);
+
+  // Since this is an invalid category prefix, we should not record the category
+  // metric.
+  CheckTimingInformationMetrics(ukm_recorder,
+                                NavigationMilestone::kLastEssentialLoadingEvent,
+                                target, target, std::nullopt, /*entry_index*/ 0,
+                                /*category_id=*/std::nullopt);
 }

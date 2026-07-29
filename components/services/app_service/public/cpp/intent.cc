@@ -17,17 +17,6 @@ IntentFile::IntentFile(const GURL& url) : url(url) {}
 
 IntentFile::~IntentFile() = default;
 
-bool IntentFile::operator==(const IntentFile& other) const {
-  return url == other.url && mime_type == other.mime_type &&
-         file_name == other.file_name && file_size == other.file_size &&
-         is_directory == other.is_directory &&
-         dlp_source_url == other.dlp_source_url;
-}
-
-bool IntentFile::operator!=(const IntentFile& other) const {
-  return !(*this == other);
-}
-
 std::unique_ptr<IntentFile> IntentFile::Clone() const {
   auto intent_file = std::make_unique<IntentFile>(url);
   if (mime_type.has_value()) {
@@ -101,10 +90,6 @@ bool Intent::operator==(const Intent& other) const {
          extras == other.extras;
 }
 
-bool Intent::operator!=(const Intent& other) const {
-  return !(*this == other);
-}
-
 std::unique_ptr<Intent> Intent::Clone() const {
   auto intent = std::make_unique<Intent>(action);
 
@@ -152,11 +137,11 @@ std::optional<std::string> Intent::GetIntentConditionValueByType(
       return action;
     }
     case ConditionType::kScheme: {
-      return url.has_value() ? std::optional<std::string>(url->scheme())
+      return url.has_value() ? std::optional<std::string>(url->GetScheme())
                              : std::nullopt;
     }
     case ConditionType::kPath: {
-      return url.has_value() ? std::optional<std::string>(url->path())
+      return url.has_value() ? std::optional<std::string>(url->GetPath())
                              : std::nullopt;
     }
     case ConditionType::kMimeType: {
@@ -185,7 +170,7 @@ bool Intent::MatchAuthorityCondition(const ConditionPtr& condition) {
       [this, &port](const ConditionValuePtr& condition_value) {
         apps_util::AuthorityView match_authority =
             apps_util::AuthorityView::Decode(condition_value->value);
-        if (!apps_util::PatternMatchValue(url->host(),
+        if (!apps_util::PatternMatchValue(url->GetHost(),
                                           condition_value->match_type,
                                           match_authority.host)) {
           return false;

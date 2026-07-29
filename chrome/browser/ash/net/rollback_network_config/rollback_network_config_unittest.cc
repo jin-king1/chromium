@@ -15,10 +15,9 @@
 #include "chrome/browser/ash/net/rollback_network_config/rollback_onc_util.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash_factory.h"
-#include "chrome/browser/ash/policy/core/device_policy_builder.h"
 #include "chrome/browser/ash/settings/cros_settings_holder.h"
-#include "chrome/browser/ash/settings/device_settings_cache.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
+#include "chrome/browser/ash/settings/scoped_test_device_settings_service.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -29,6 +28,8 @@
 #include "chromeos/ash/components/network/network_handler_test_helper.h"
 #include "chromeos/ash/components/network/network_state.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
+#include "chromeos/ash/components/policy/device_policy/device_policy_builder.h"
+#include "chromeos/ash/components/settings/device_settings_cache.h"
 #include "components/onc/onc_constants.h"
 #include "components/onc/onc_pref_names.h"
 #include "components/ownership/mock_owner_key_util.h"
@@ -148,11 +149,6 @@ static const char kPeapWiFiRecommendedUserPart[] = R"({
   }
 })";
 
-TestingPrefServiceSimple* RegisterPrefs(TestingPrefServiceSimple* local_state) {
-  device_settings_cache::RegisterPrefs(local_state->registry());
-  return local_state;
-}
-
 void PrintErrorAndFail(const std::string& error_name) {
   LOG(ERROR) << error_name;
   FAIL();
@@ -213,27 +209,27 @@ void SetPropertiesForExistingNetwork(const std::string& guid,
   ASSERT_TRUE(signal.Wait()) << "Failed to set " << config << " for " << guid;
 }
 
-base::Value::Dict GetProperties(const std::string userhash,
-                                const std::string& guid) {
-  base::test::TestFuture<const std::string&, std::optional<base::Value::Dict>,
+base::DictValue GetProperties(const std::string userhash,
+                              const std::string& guid) {
+  base::test::TestFuture<const std::string&, std::optional<base::DictValue>,
                          std::optional<std::string>>
       result;
   managed_network_configuration_handler()->GetProperties(
       userhash, GetServicePath(guid), result.GetCallback());
-  std::optional<base::Value::Dict> properties = std::get<1>(result.Take());
+  std::optional<base::DictValue> properties = std::get<1>(result.Take());
   EXPECT_TRUE(properties.has_value());
   return std::move(properties.value());
 }
 
-base::Value::Dict GetManagedProperties(const std::string userhash,
-                                       const std::string& guid) {
-  base::test::TestFuture<const std::string&, std::optional<base::Value::Dict>,
+base::DictValue GetManagedProperties(const std::string userhash,
+                                     const std::string& guid) {
+  base::test::TestFuture<const std::string&, std::optional<base::DictValue>,
                          std::optional<std::string>>
       result;
   managed_network_configuration_handler()->GetManagedProperties(
       userhash, GetServicePath(guid), result.GetCallback());
 
-  std::optional<base::Value::Dict> properties = std::get<1>(result.Take());
+  std::optional<base::DictValue> properties = std::get<1>(result.Take());
   EXPECT_TRUE(properties.has_value());
   return std::move(properties.value());
 }
@@ -282,11 +278,10 @@ class RollbackNetworkConfigTest : public testing::Test {
 
   void RegisterAndSetUpPrefs() {
     PrefProxyConfigTrackerImpl::RegisterProfilePrefs(user_prefs_.registry());
-    PrefProxyConfigTrackerImpl::RegisterPrefs(local_state_.registry());
-    network_handler_test_helper_.RegisterPrefs(user_prefs_.registry(),
-                                               local_state_.registry());
+    network_handler_test_helper_.RegisterPrefs(user_prefs_.registry(), nullptr);
 
-    network_handler_test_helper_.InitializePrefs(&user_prefs_, &local_state_);
+    network_handler_test_helper_.InitializePrefs(
+        &user_prefs_, TestingBrowserProcess::GetGlobal()->local_state());
   }
 
   void SetUp() override { SetEmptyDevicePolicy(); }
@@ -294,14 +289,14 @@ class RollbackNetworkConfigTest : public testing::Test {
   void SetEmptyDevicePolicy() {
     managed_network_configuration_handler()->SetPolicy(
         ::onc::ONC_SOURCE_DEVICE_POLICY, kDeviceUserHash,
-        /*network_configs_onc=*/base::Value::List(),
-        /*global_network_config=*/base::Value::Dict());
+        /*network_configs_onc=*/base::ListValue(),
+        /*global_network_config=*/base::DictValue());
     task_environment_.RunUntilIdle();
   }
 
   void SetUpDevicePolicyNetworkConfig(const base::Value& network_config) {
-    base::Value::List network_configs_onc;
-    base::Value::Dict global_network_config;
+    base::ListValue network_configs_onc;
+    base::DictValue global_network_config;
     network_configs_onc.Append(network_config.Clone());
     managed_network_configuration_handler()->SetPolicy(
         onc::ONC_SOURCE_DEVICE_POLICY, kDeviceUserHash, network_configs_onc,
@@ -348,22 +343,23 @@ class RollbackNetworkConfigTest : public testing::Test {
   scoped_refptr<ownership::MockOwnerKeyUtil> owner_keys_{
       base::MakeRefCounted<ownership::MockOwnerKeyUtil>()};
 
-  TestingPrefServiceSimple local_state_;
   sync_preferences::TestingPrefServiceSyncable user_prefs_;
   content::BrowserTaskEnvironment task_environment_{
       content::BrowserTaskEnvironment::IO_MAINLOOP};
   NetworkHandlerTestHelper network_handler_test_helper_;
   ScopedStubInstallAttributes scoped_stub_install_attributes_;
   ScopedTestDeviceSettingsService scoped_device_settings_;
-  CrosSettingsHolder cros_settings_holder_{ash::DeviceSettingsService::Get(),
-                                           RegisterPrefs(&local_state_)};
+  CrosSettingsHolder cros_settings_holder_{
+      ash::DeviceSettingsService::Get(),
+      TestingBrowserProcess::GetGlobal()->local_state()};
   policy::DevicePolicyBuilder device_policy_;
 
   std::unique_ptr<RollbackNetworkConfig> rollback_network_config_;
 };
 
 TEST_F(RollbackNetworkConfigTest, OpenWiFiIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -371,7 +367,7 @@ TEST_F(RollbackNetworkConfigTest, OpenWiFiIsPreserved) {
   SimulateRollback();
 
   ASSERT_TRUE(NetworkExists(guid));
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kSecurityNone);
@@ -380,7 +376,8 @@ TEST_F(RollbackNetworkConfigTest, OpenWiFiIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, PolicyOpenWiFiIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -392,7 +389,7 @@ TEST_F(RollbackNetworkConfigTest, PolicyOpenWiFiIsPreserved) {
   SetUpDevicePolicyNetworkConfig(network);
 
   ASSERT_TRUE(NetworkExists(guid));
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kSecurityNone);
@@ -401,7 +398,8 @@ TEST_F(RollbackNetworkConfigTest, PolicyOpenWiFiIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, WpaPskWiFiIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kWpaPskWiFi);
+  base::Value network = *base::JSONReader::Read(
+      kWpaPskWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -412,7 +410,7 @@ TEST_F(RollbackNetworkConfigTest, WpaPskWiFiIsPreserved) {
 
   EXPECT_EQ(GetPskPassphrase(guid), OncWiFiGetPassword(network.GetDict()));
 
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kWPA_PSK);
@@ -421,7 +419,8 @@ TEST_F(RollbackNetworkConfigTest, WpaPskWiFiIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, WpaPskWiFiWithoutPasswordIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kWpaPskWiFiNoPass);
+  base::Value network = *base::JSONReader::Read(
+      kWpaPskWiFiNoPass, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -432,7 +431,7 @@ TEST_F(RollbackNetworkConfigTest, WpaPskWiFiWithoutPasswordIsPreserved) {
 
   EXPECT_EQ(GetPskPassphrase(guid), OncWiFiGetPassword(network.GetDict()));
 
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kWPA_PSK);
@@ -441,7 +440,8 @@ TEST_F(RollbackNetworkConfigTest, WpaPskWiFiWithoutPasswordIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, PolicyWpaPskWiFiIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kWpaPskWiFi);
+  base::Value network = *base::JSONReader::Read(
+      kWpaPskWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -455,7 +455,7 @@ TEST_F(RollbackNetworkConfigTest, PolicyWpaPskWiFiIsPreserved) {
 
   EXPECT_EQ(GetPskPassphrase(guid), OncWiFiGetPassword(network.GetDict()));
 
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kWPA_PSK);
@@ -464,7 +464,8 @@ TEST_F(RollbackNetworkConfigTest, PolicyWpaPskWiFiIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, WepPskWiFiIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kWepPskWiFi);
+  base::Value network = *base::JSONReader::Read(
+      kWepPskWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -472,7 +473,7 @@ TEST_F(RollbackNetworkConfigTest, WepPskWiFiIsPreserved) {
   SimulateRollback();
 
   ASSERT_TRUE(NetworkExists(guid));
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kWEP_PSK);
@@ -482,7 +483,8 @@ TEST_F(RollbackNetworkConfigTest, WepPskWiFiIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, PolicyWepPskWiFiIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kWepPskWiFi);
+  base::Value network = *base::JSONReader::Read(
+      kWepPskWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -495,7 +497,7 @@ TEST_F(RollbackNetworkConfigTest, PolicyWepPskWiFiIsPreserved) {
   SetUpDevicePolicyNetworkConfig(network);
 
   ASSERT_TRUE(NetworkExists(guid));
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kWEP_PSK);
@@ -505,7 +507,8 @@ TEST_F(RollbackNetworkConfigTest, PolicyWepPskWiFiIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, PeapWiFiIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kPeapWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kPeapWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -516,7 +519,7 @@ TEST_F(RollbackNetworkConfigTest, PeapWiFiIsPreserved) {
 
   EXPECT_EQ(GetEapPassphrase(guid), OncGetEapPassword(network.GetDict()));
 
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kWPA_EAP);
@@ -530,7 +533,8 @@ TEST_F(RollbackNetworkConfigTest, PeapWiFiIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, PolicyPeapWiFiIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kPeapWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kPeapWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -546,7 +550,7 @@ TEST_F(RollbackNetworkConfigTest, PolicyPeapWiFiIsPreserved) {
 
   EXPECT_EQ(GetEapPassphrase(guid), OncGetEapPassword(network.GetDict()));
 
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kWPA_EAP);
@@ -562,7 +566,8 @@ TEST_F(RollbackNetworkConfigTest, PolicyPeapWiFiIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, OpenEthernetIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kOpenEthernet);
+  base::Value network = *base::JSONReader::Read(
+      kOpenEthernet, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -571,14 +576,15 @@ TEST_F(RollbackNetworkConfigTest, OpenEthernetIsPreserved) {
 
   ASSERT_TRUE(NetworkExists(guid));
 
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kEthernet);
   EXPECT_TRUE(OncHasNoSecurity(properties));
 }
 
 TEST_F(RollbackNetworkConfigTest, PolicyOpenEthernetIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kOpenEthernet);
+  base::Value network = *base::JSONReader::Read(
+      kOpenEthernet, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -592,7 +598,7 @@ TEST_F(RollbackNetworkConfigTest, PolicyOpenEthernetIsPreserved) {
 
   ASSERT_TRUE(NetworkExists(guid));
 
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kEthernet);
   EXPECT_TRUE(OncHasNoSecurity(properties));
@@ -601,7 +607,8 @@ TEST_F(RollbackNetworkConfigTest, PolicyOpenEthernetIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, PeapEthernetIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kPeapEthernet);
+  base::Value network = *base::JSONReader::Read(
+      kPeapEthernet, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -612,7 +619,7 @@ TEST_F(RollbackNetworkConfigTest, PeapEthernetIsPreserved) {
 
   EXPECT_EQ(GetEapPassphrase(guid), OncGetEapPassword(network.GetDict()));
 
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kEthernet);
   EXPECT_EQ(OncEthernetGetAuthentication(properties), onc::ethernet::k8021X);
@@ -626,7 +633,8 @@ TEST_F(RollbackNetworkConfigTest, PeapEthernetIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, PolicyPeapEthernetIsPreserved) {
-  base::Value network = *base::JSONReader::Read(kPeapEthernet);
+  base::Value network = *base::JSONReader::Read(
+      kPeapEthernet, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   SimulateRollback();
   const std::string& guid =
@@ -641,7 +649,7 @@ TEST_F(RollbackNetworkConfigTest, PolicyPeapEthernetIsPreserved) {
 
   EXPECT_EQ(GetEapPassphrase(guid), OncGetEapPassword(network.GetDict()));
 
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kEthernet);
   EXPECT_EQ(OncEthernetGetAuthentication(properties), onc::ethernet::k8021X);
@@ -657,7 +665,8 @@ TEST_F(RollbackNetworkConfigTest, PolicyPeapEthernetIsPreserved) {
 }
 
 TEST_F(RollbackNetworkConfigTest, ConsumerOwnershipKeepsDeviceNetworks) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -666,7 +675,7 @@ TEST_F(RollbackNetworkConfigTest, ConsumerOwnershipKeepsDeviceNetworks) {
   TakeOwnershipAsConsumer();
 
   ASSERT_TRUE(NetworkExists(guid));
-  base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+  base::DictValue properties = GetProperties(kDeviceUserHash, guid);
   ASSERT_EQ(GetStringValue(properties, onc::network_config::kType),
             onc::network_type::kWiFi);
   EXPECT_EQ(OncWiFiGetSecurity(properties), onc::wifi::kSecurityNone);
@@ -675,7 +684,8 @@ TEST_F(RollbackNetworkConfigTest, ConsumerOwnershipKeepsDeviceNetworks) {
 }
 
 TEST_F(RollbackNetworkConfigTest, ConsumerOwnershipDeletesPolicyNetworksWiFi) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -689,7 +699,8 @@ TEST_F(RollbackNetworkConfigTest, ConsumerOwnershipDeletesPolicyNetworksWiFi) {
 
 TEST_F(RollbackNetworkConfigTest,
        ConsumerOwnershipDeletesPolicyNetworksEthernet) {
-  base::Value network = *base::JSONReader::Read(kPeapEthernet);
+  base::Value network = *base::JSONReader::Read(
+      kPeapEthernet, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -702,7 +713,7 @@ TEST_F(RollbackNetworkConfigTest,
   // Essential properties of the configuration may be kept, but at least
   // identity and password should be deleted.
   if (NetworkExists(guid)) {
-    base::Value::Dict properties = GetProperties(kDeviceUserHash, guid);
+    base::DictValue properties = GetProperties(kDeviceUserHash, guid);
     // Shill may only delete the eap part and keep the authentication type, that
     // is okay as well.
     if (OncIsEap(properties) && OncHasEapConfiguration(properties)) {
@@ -713,7 +724,8 @@ TEST_F(RollbackNetworkConfigTest,
 }
 
 TEST_F(RollbackNetworkConfigTest, EnrollmentToSameKeepsPolicyNetworks) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -731,7 +743,8 @@ TEST_F(RollbackNetworkConfigTest, EnrollmentToSameKeepsPolicyNetworks) {
 }
 
 TEST_F(RollbackNetworkConfigTest, EnrollmentToDifferentDeletesPolicyNetworks) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -750,7 +763,8 @@ TEST_F(RollbackNetworkConfigTest, EnrollmentToDifferentDeletesPolicyNetworks) {
 // early. See b/270355500.
 TEST_F(RollbackNetworkConfigTest,
        PolicyApplicationWithoutOwnershipDoesNotDeleteNetworks) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -764,10 +778,10 @@ TEST_F(RollbackNetworkConfigTest,
 }
 
 TEST_F(RollbackNetworkConfigTest, ExactlyRecommendedValuesPreserved) {
-  base::Value policy_config =
-      *base::JSONReader::Read(kPeapWiFiRecommendedPolicyPart);
-  base::Value user_config =
-      *base::JSONReader::Read(kPeapWiFiRecommendedUserPart);
+  base::Value policy_config = *base::JSONReader::Read(
+      kPeapWiFiRecommendedPolicyPart, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  base::Value user_config = *base::JSONReader::Read(
+      kPeapWiFiRecommendedUserPart, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   const std::string& guid =
       GetStringValue(policy_config.GetDict(), onc::network_config::kGUID);
 
@@ -785,10 +799,10 @@ TEST_F(RollbackNetworkConfigTest, ExactlyRecommendedValuesPreserved) {
 
 TEST_F(RollbackNetworkConfigTest,
        ConsumerOwnershipDeletesPolicyNetworkWithRecommendFields) {
-  base::Value policy_config =
-      *base::JSONReader::Read(kPeapWiFiRecommendedPolicyPart);
-  base::Value user_config =
-      *base::JSONReader::Read(kPeapWiFiRecommendedUserPart);
+  base::Value policy_config = *base::JSONReader::Read(
+      kPeapWiFiRecommendedPolicyPart, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  base::Value user_config = *base::JSONReader::Read(
+      kPeapWiFiRecommendedUserPart, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   const std::string& guid =
       GetStringValue(policy_config.GetDict(), onc::network_config::kGUID);
 
@@ -802,7 +816,8 @@ TEST_F(RollbackNetworkConfigTest,
 
 TEST_F(RollbackNetworkConfigTest,
        DeleteDeviceNetworkBetweenImportAndConsumerOwnership) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -817,7 +832,8 @@ TEST_F(RollbackNetworkConfigTest,
 
 TEST_F(RollbackNetworkConfigTest,
        DeleteDeviceNetworkBetweenImportAndEnrollment) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -832,7 +848,8 @@ TEST_F(RollbackNetworkConfigTest,
 
 TEST_F(RollbackNetworkConfigTest,
        DeletePolicyNetworkBetweenImportAndConsumerOwnership) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -850,7 +867,8 @@ TEST_F(RollbackNetworkConfigTest,
 
 TEST_F(RollbackNetworkConfigTest,
        DeletePolicyNetworkBetweenImportAndEnrollment) {
-  base::Value network = *base::JSONReader::Read(kOpenWiFi);
+  base::Value network =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDevicePolicyNetworkConfig(network);
   const std::string& guid =
       GetStringValue(network.GetDict(), onc::network_config::kGUID);
@@ -877,17 +895,20 @@ TEST_F(RollbackNetworkConfigTest, EmptyExport) {
 }
 
 TEST_F(RollbackNetworkConfigTest, MultipleNetworks) {
-  base::Value peap_wifi = *base::JSONReader::Read(kPeapWiFi);
+  base::Value peap_wifi =
+      *base::JSONReader::Read(kPeapWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(peap_wifi);
   const std::string& peap_wifi_guid =
       GetStringValue(peap_wifi.GetDict(), onc::network_config::kGUID);
 
-  base::Value open_wifi = *base::JSONReader::Read(kOpenWiFi);
+  base::Value open_wifi =
+      *base::JSONReader::Read(kOpenWiFi, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(open_wifi);
   const std::string& open_wifi_guid =
       GetStringValue(open_wifi.GetDict(), onc::network_config::kGUID);
 
-  base::Value eap_ethernet = *base::JSONReader::Read(kPeapEthernet);
+  base::Value eap_ethernet = *base::JSONReader::Read(
+      kPeapEthernet, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   SetUpDeviceWideNetworkConfig(eap_ethernet);
   const std::string& eap_ethernet_guid =
       GetStringValue(eap_ethernet.GetDict(), onc::network_config::kGUID);

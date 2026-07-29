@@ -10,14 +10,15 @@
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "content/child/child_thread_impl.h"
 #include "content/child/scoped_child_process_reference.h"
 #include "content/common/features.h"
 #include "content/public/common/content_client.h"
+#include "content/public/renderer/content_renderer_client.h"
 #include "content/renderer/policy_container_util.h"
 #include "content/renderer/service_worker/service_worker_context_client.h"
 #include "content/renderer/worker/fetch_client_settings_object_helpers.h"
@@ -33,13 +34,6 @@
 #include "third_party/blink/public/web/web_embedded_worker_start_data.h"
 
 namespace content {
-
-// A kill switch for the DumpWithoutCrashing code in the ServiceWorker startup.
-// This is introduced to investigate if `cors_exempt_header_list` is
-// successfully initialized.
-BASE_FEATURE(kServiceWorkerDebugCorsExemptHeaderList,
-             "ServiceWorkerDebugCorsExemptHeaderList",
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // static
 void EmbeddedWorkerInstanceClientImpl::Create(
@@ -79,31 +73,6 @@ void EmbeddedWorkerInstanceClientImpl::StartWorker(
     // fake empty list is set to `cors_exempt_header_list_` here, so override it
     // with the actual list which is from mojom::EmbeddedWorkerStartParams.
     cors_exempt_header_list_ = std::move(params->cors_exempt_header_list);
-  } else {
-    // When the feature is not enabled, `cors_exempt_header_list_` and
-    // `params->cors_exempt_header_list` should have same list of headers.
-    //
-    // TODO(crbug.com/40753993): The length of `cors_exempt_header_list_` is
-    // often zero. We expect the header list is successfully passed from the
-    // storage partition. After investigating when the empty list is passed and
-    // what the intended behavior is, add CHECK(cors_exempt_header_list_ ==
-    // params->cors_exempt_header_list) here if it's suitable.
-    //
-    // In other words, if the header length is different but
-    // `cors_exempt_header_list_` is not empty, that is an unexpected case.
-    if (cors_exempt_header_list_ != params->cors_exempt_header_list &&
-        cors_exempt_header_list_.size() > 0 &&
-        base::FeatureList::IsEnabled(kServiceWorkerDebugCorsExemptHeaderList)) {
-      static bool has_dumped_without_crashing = false;
-      if (!has_dumped_without_crashing) {
-        has_dumped_without_crashing = true;
-        SCOPED_CRASH_KEY_NUMBER("SWInit", "header_list_size",
-                                cors_exempt_header_list_.size());
-        SCOPED_CRASH_KEY_NUMBER("SWInit", "header_list_size_via_mojo",
-                                params->cors_exempt_header_list.size());
-        base::debug::DumpWithoutCrashing();
-      }
-    }
   }
 
   std::unique_ptr<blink::WebEmbeddedWorkerStartData> start_data =
@@ -127,9 +96,7 @@ void EmbeddedWorkerInstanceClientImpl::StartWorker(
   start_data->policy_container =
       ToWebPolicyContainer(std::move(params->policy_container));
 
-  for (const auto& feature : params->forced_enabled_runtime_features) {
-    blink::WebRuntimeFeatures::EnableFeatureFromString(feature, true);
-  }
+  start_data->is_cross_origin_isolated = params->cross_origin_isolated;
 
   // `cache_storage` may be null if COEP is not enabled, we cannot bind
   // eagerly in that case.
@@ -227,7 +194,7 @@ EmbeddedWorkerInstanceClientImpl::BuildStartData(
           params.outside_fetch_client_settings_object));
 
   start_data->script_url = params.script_url;
-  start_data->user_agent = blink::WebString::FromUTF8(params.user_agent);
+  start_data->user_agent = blink::WebString::FromUtf8(params.user_agent);
   start_data->ua_metadata = params.ua_metadata;
   start_data->script_type = params.script_type;
   start_data->wait_for_debugger_mode =

@@ -49,9 +49,10 @@ bool ShouldDeleteNextCharacter(const Node& marker_text_node,
       PlainText(next_character_range, TextIteratorBehavior::Builder().Build());
   const UChar next_character = next_character_str[0];
   // Character immediately following the range is not a space
-  if (next_character != kSpaceCharacter &&
-      next_character != kNoBreakSpaceCharacter)
+  if (next_character != uchar::kSpace &&
+      next_character != uchar::kNoBreakSpace) {
     return false;
+  }
 
   // First case: we're deleting at the beginning of the editable text
   if (marker.StartOffset() == 0)
@@ -70,8 +71,8 @@ bool ShouldDeleteNextCharacter(const Node& marker_text_node,
   // Return true if the character immediately before the range is a space, false
   // otherwise
   const UChar prev_character = prev_character_str[0];
-  return prev_character == kSpaceCharacter ||
-         prev_character == kNoBreakSpaceCharacter;
+  return prev_character == uchar::kSpace ||
+         prev_character == uchar::kNoBreakSpace;
 }
 
 EphemeralRangeInFlatTree ComputeRangeSurroundingCaret(
@@ -106,6 +107,7 @@ struct SuggestionInfosWithNodeAndHighlightColor {
   Persistent<const Text> text_node;
   Color highlight_color;
   Vector<TextSuggestionInfo> suggestion_infos;
+  bool should_hide_suggestion_menu = true;
 };
 
 SuggestionInfosWithNodeAndHighlightColor ComputeSuggestionInfos(
@@ -150,7 +152,7 @@ SuggestionInfosWithNodeAndHighlightColor ComputeSuggestionInfos(
   suggestion_infos_with_node_and_highlight_color.highlight_color =
       (first_suggestion_marker->SuggestionHighlightColor() ==
        Color::kTransparent)
-          ? LayoutTheme::TapHighlightColor()
+          ? LayoutTheme::GetTheme().TapHighlightColor()
           : first_suggestion_marker->SuggestionHighlightColor();
 
   Vector<TextSuggestionInfo>& suggestion_infos =
@@ -166,6 +168,13 @@ SuggestionInfosWithNodeAndHighlightColor ComputeSuggestionInfos(
 
     const auto* marker = To<SuggestionMarker>(node_marker_pair.second.Get());
     const Vector<String>& marker_suggestions = marker->Suggestions();
+
+    // Only hide the suggestion menu if every marker hides it.
+    suggestion_infos_with_node_and_highlight_color.should_hide_suggestion_menu =
+        suggestion_infos_with_node_and_highlight_color
+            .should_hide_suggestion_menu &&
+        marker->ShouldHideSuggestionMenu();
+
     for (wtf_size_t suggestion_index = 0;
          suggestion_index < marker_suggestions.size(); ++suggestion_index) {
       const String& suggestion = marker_suggestions[suggestion_index];
@@ -412,6 +421,9 @@ void TextSuggestionController::ShowSpellCheckMenu(
     const std::pair<const Text*, DocumentMarker*>& node_spelling_marker_pair) {
   const Text* const marker_text_node = node_spelling_marker_pair.first;
   auto* const marker = To<SpellCheckMarker>(node_spelling_marker_pair.second);
+  if (marker->ShouldHideSuggestionMenu()) {
+    return;
+  }
 
   const EphemeralRange active_suggestion_range =
       EphemeralRange(Position(marker_text_node, marker->StartOffset()),
@@ -427,8 +439,7 @@ void TextSuggestionController::ShowSpellCheckMenu(
       ui::mojom::ImeTextSpanUnderlineStyle::kSolid, Color::kTransparent,
       LayoutTheme::GetTheme().PlatformActiveSpellingMarkerHighlightColor());
 
-  Vector<String> suggestions;
-  description.Split('\n', suggestions);
+  Vector<String> suggestions = description.SplitSkippingEmpty('\n');
 
   Vector<mojom::blink::SpellCheckSuggestionPtr> suggestion_ptrs;
   for (const String& suggestion : suggestions) {
@@ -462,6 +473,10 @@ void TextSuggestionController::ShowSuggestionMenu(
   SuggestionInfosWithNodeAndHighlightColor
       suggestion_infos_with_node_and_highlight_color = ComputeSuggestionInfos(
           node_suggestion_marker_pairs, max_number_of_suggestions);
+  if (suggestion_infos_with_node_and_highlight_color
+          .should_hide_suggestion_menu) {
+    return;
+  }
 
   Vector<TextSuggestionInfo>& suggestion_infos =
       suggestion_infos_with_node_and_highlight_color.suggestion_infos;
@@ -619,7 +634,7 @@ void TextSuggestionController::AttemptToDeleteActiveSuggestionRange() {
 void TextSuggestionController::ReplaceRangeWithText(const EphemeralRange& range,
                                                     const String& replacement) {
   GetFrame().Selection().SetSelectionAndEndTyping(
-      SelectionInDOMTree::Builder().SetBaseAndExtent(range).Build());
+      SelectionInDomTree::Builder().SetBaseAndExtent(range).Build());
 
   InsertTextAndSendInputEventsOfTypeInsertReplacementText(GetFrame(),
                                                           replacement);

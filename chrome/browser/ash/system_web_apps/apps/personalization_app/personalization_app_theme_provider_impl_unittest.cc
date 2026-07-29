@@ -42,16 +42,6 @@ constexpr GaiaId::Literal kTestGaiaId("1234567890");
 AccountId kAccountId =
     AccountId::FromUserEmailGaiaId(kFakeTestEmail, kTestGaiaId);
 
-void AddAndLoginUser() {
-  ash::FakeChromeUserManager* user_manager =
-      static_cast<ash::FakeChromeUserManager*>(
-          user_manager::UserManager::Get());
-
-  user_manager->AddUser(kAccountId);
-  user_manager->LoginUser(kAccountId);
-  user_manager->SwitchActiveUser(kAccountId);
-}
-
 class TestThemeObserver
     : public ash::personalization_app::mojom::ThemeObserver {
  public:
@@ -152,7 +142,7 @@ class TestThemeObserver
   bool is_geolocation_user_modifiable_ = true;
   ash::style::mojom::ColorScheme color_scheme_ =
       ash::style::mojom::ColorScheme::kTonalSpot;
-  std::optional<::SkColor> static_color_ = std::nullopt;
+  std::optional<::SkColor> static_color_;
   std::vector<ash::SampleColorScheme> sample_color_schemes_;
 };
 
@@ -356,7 +346,7 @@ TEST_F(PersonalizationAppThemeProviderImplTest,
 class PersonalizationAppThemeProviderImplJellyTest
     : public PersonalizationAppThemeProviderImplTest {
  public:
-  PersonalizationAppThemeProviderImplJellyTest() = default;
+  PersonalizationAppThemeProviderImplJellyTest() { set_start_session(false); }
 
   PersonalizationAppThemeProviderImplJellyTest(
       const PersonalizationAppThemeProviderImplJellyTest&) = delete;
@@ -365,8 +355,14 @@ class PersonalizationAppThemeProviderImplJellyTest
 
   void SetUp() override {
     PersonalizationAppThemeProviderImplTest::SetUp();
-    AddAndLoginUser();
-    GetSessionControllerClient()->AddUserSession({kFakeTestEmail}, kAccountId);
+    ash::FakeChromeUserManager* user_manager =
+        static_cast<ash::FakeChromeUserManager*>(
+            user_manager::UserManager::Get());
+
+    user_manager->AddUser(kAccountId);
+    user_manager->LoginUser(kAccountId);
+    SimulateUserLogin({kFakeTestEmail}, kAccountId);
+    user_manager->SwitchActiveUser(kAccountId);
   }
 
  protected:

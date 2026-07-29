@@ -18,10 +18,12 @@
 
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
+#include "base/compiler_specific.h"
 #include "base/containers/buffer_iterator.h"
 #include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/numerics/ostream_operators.h"
 #include "base/numerics/safe_math.h"
@@ -786,7 +788,7 @@ off_t UDIFBlockChunkReadStream::Seek(off_t offset, int whence) {
 bool UDIFBlockChunkReadStream::CopyOutZeros(base::span<uint8_t> buf,
                                             size_t* bytes_read) {
   *bytes_read = std::min(buf.size(), length_in_bytes_ - offset_);
-  bzero(buf.data(), *bytes_read);
+  std::ranges::fill(buf.first(*bytes_read), 0);
   offset_ += *bytes_read;
   return true;
 }

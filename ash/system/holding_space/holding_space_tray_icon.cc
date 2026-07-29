@@ -11,7 +11,6 @@
 #include "ash/public/cpp/holding_space/holding_space_metrics.h"
 #include "ash/public/cpp/holding_space/holding_space_prefs.h"
 #include "ash/public/cpp/shelf_config.h"
-#include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
@@ -19,19 +18,19 @@
 #include "ash/system/tray/tray_constants.h"
 #include "base/barrier_closure.h"
 #include "base/containers/adapters.h"
-#include "base/containers/contains.h"
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/animation/animation_delegate_views.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/widget/widget.h"
@@ -85,7 +84,7 @@ class HoldingSpaceTrayIcon::ResizeAnimation
                 ->RequestNewCompositorMetricsTracker()) {
     animation_.SetTweenType(gfx::Tween::FAST_OUT_SLOW_IN);
     animation_.SetSlideDuration(
-        ui::ScopedAnimationDurationScaleMode::duration_multiplier() *
+        gfx::ScopedAnimationDurationScaleMode::duration_multiplier() *
         base::Milliseconds(250));
   }
   ResizeAnimation(const ResizeAnimation&) = delete;
@@ -263,7 +262,7 @@ void HoldingSpaceTrayIcon::UpdatePreviews(
 
   // Go over the new item list, create previews for new items, and assign new
   // indices to existing items.
-  std::set<std::string> item_ids;
+  absl::flat_hash_set<std::string> item_ids;
   for (size_t index = 0; index < items.size(); ++index) {
     const HoldingSpaceItem* item = items[index];
     DCHECK(item->IsInitialized());
@@ -286,7 +285,7 @@ void HoldingSpaceTrayIcon::UpdatePreviews(
   // Collect the list of items that should be removed.
   std::vector<std::string> items_to_remove;
   for (const auto& preview_pair : previews_by_id_) {
-    if (!base::Contains(item_ids, preview_pair.first))
+    if (!item_ids.contains(preview_pair.first))
       items_to_remove.push_back(preview_pair.first);
   }
 

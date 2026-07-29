@@ -9,6 +9,7 @@
 #include "base/check.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/identifiers/profile_id_delegate_impl.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
@@ -88,7 +89,7 @@ void ManagedProfileCreator::OnProfileCreationStarted(Profile* profile) {
     return;
   }
 
-  enterprise::PresetProfileManagmentData::Get(profile)->SetGuid(preset_guid_);
+  enterprise::PresetProfileManagementData::Get(profile)->SetGuid(preset_guid_);
   profile_manager_observer_.Reset();
 }
 

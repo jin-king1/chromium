@@ -2,20 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "gpu/command_buffer/service/copy_shared_image_helper.h"
 
+#include <array>
 #include <memory>
 #include <vector>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/service/graphite_shared_context.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
@@ -97,13 +95,13 @@ sk_sp<SkSurface> CreateSkSurfaceWrappingGLTexture(
     GLenum type,
     GLsizei width,
     GLsizei height,
-    GLboolean flip_y) {
+    GrSurfaceOrigin dst_origin) {
   CHECK_NE(texture_id, 0u);
   CHECK(shared_context_state->GrContextIsGL());
   GrGLTextureInfo texture_info;
   texture_info.fID = texture_id;
   texture_info.fTarget = target;
-  // Get the surface color format similar to that in VideoFrameYUVConverter.
+  // Get the surface color format similar to that in PaintCanvasVideoRenderer.
   texture_info.fFormat = GetSurfaceColorFormat(internal_format, type);
   auto backend_texture = GrBackendTextures::MakeGL(
       width, height, skgpu::Mipmapped::kNo, texture_info);
@@ -112,9 +110,7 @@ sk_sp<SkSurface> CreateSkSurfaceWrappingGLTexture(
   GrDirectContext* direct_context = shared_context_state->gr_context();
   CHECK(direct_context);
   return SkSurfaces::WrapBackendTexture(
-      direct_context, backend_texture,
-      flip_y ? GrSurfaceOrigin::kBottomLeft_GrSurfaceOrigin
-             : GrSurfaceOrigin::kTopLeft_GrSurfaceOrigin,
+      direct_context, backend_texture, dst_origin,
       /*sampleCnt=*/1, GetCompatibleSurfaceColorType(texture_info.fFormat),
       dest_color_space, nullptr);
 }
@@ -134,6 +130,26 @@ bool CopyPixelsToTexture(
     SharedContextState* shared_context_state,
     const std::vector<GrBackendSemaphore>& begin_semaphores,
     std::vector<GrBackendSemaphore>& end_semaphores) {
+  // We have implemented CompoundImageBacking::ProduceMemory() which can lead
+  // to a performance regression when it's underlying GPU backing holds the
+  // latest data. Previously, an unimplemented
+  // CompoundImageBacking::ProduceMemory() would return nullptr below,
+  // triggering a more efficient GPU-GPU copy fallback in
+  // CopySharedImageHelper::CopySharedImage(). With
+  // CompoundImageBacking::ProduceMemory() implementation, a GPU->CPU copy
+  // occurs internally in CompoundImageBacking first, followed by a CPU->GPU
+  // upload in this method, which is less performant than a direct GPU->GPU
+  // transfer.
+  // For cases where the underlying GPU backing has stale data compared to its
+  // shm backing, CompoundImageBacking::ProduceMemory() actually results in perf
+  // improvements as compared to GPU->GPU fallback since the fallback will now
+  // trigger a readback (from CSI's shm backing to its GPU backing) before
+  // actual GPU->GPU copy happens.
+  // TODO(crbug.com/470101115): Ideally SharedImageCopyManager will replace
+  // all copy operation here. But if perf regression is reported before that
+  // happens, we will need to fix this issue by adding some temporary
+  // workaround like querying CompoundImageBacking if its gpu backing has the
+  // latest data or not and choose copy path accordingly.
   auto source_shared_image =
       representation_factory->ProduceMemory(source_mailbox);
   if (!source_shared_image) {
@@ -172,12 +188,12 @@ bool CopyPixelsToTexture(
 
   dest_scoped_access->surface()->writePixels(subset, xoffset, yoffset);
 
-  shared_context_state->FlushWriteAccess(dest_scoped_access);
+  bool success = shared_context_state->FlushWriteAccess(dest_scoped_access);
   shared_context_state->SubmitIfNecessary(
       std::move(end_semaphores),
       dest_scoped_access->NeedGraphiteContextSubmit());
 
-  if (!dest_shared_image->IsCleared()) {
+  if (success && !dest_shared_image->IsCleared()) {
     dest_shared_image->SetClearedRect(dest_cleared_rect);
   }
 
@@ -219,21 +235,23 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
     GLint yoffset,
     GLint x,
     GLint y,
-    GLsizei width,
-    GLsizei height,
+    GLsizei src_width,
+    GLsizei src_height,
+    GLsizei dst_width,
+    GLsizei dst_height,
     const volatile GLbyte* mailboxes) {
   Mailbox source_mailbox = Mailbox::FromVolatile(
       reinterpret_cast<const volatile Mailbox*>(mailboxes)[0]);
   DLOG_IF(ERROR, !source_mailbox.Verify())
-      << "CopySubTexture was passed an invalid mailbox";
+      << "CopySharedImage was passed an invalid mailbox";
   Mailbox dest_mailbox = Mailbox::FromVolatile(
-      reinterpret_cast<const volatile Mailbox*>(mailboxes)[1]);
+      UNSAFE_TODO(reinterpret_cast<const volatile Mailbox*>(mailboxes)[1]));
   DLOG_IF(ERROR, !dest_mailbox.Verify())
-      << "CopySubTexture was passed an invalid mailbox";
+      << "CopySharedImage was passed an invalid mailbox";
 
   if (source_mailbox == dest_mailbox) {
     return base::unexpected(
-        GLError(GL_INVALID_OPERATION, "glCopySubTexture",
+        GLError(GL_INVALID_OPERATION, "CopySharedImage",
                 "source and destination mailboxes are the same"));
   }
 
@@ -242,20 +260,20 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
       scoped_refptr<gpu::SharedContextState>(shared_context_state_));
   if (!dest_shared_image) {
     return base::unexpected(
-        GLError(GL_INVALID_VALUE, "glCopySubTexture", "unknown mailbox"));
+        GLError(GL_INVALID_VALUE, "CopySharedImage", "unknown mailbox"));
   }
 
   auto dest_format = dest_shared_image->format();
   // Destination shared image cannot prefer external sampler.
   if (dest_format.PrefersExternalSampler()) {
     return base::unexpected(
-        GLError(GL_INVALID_VALUE, "glCopySubTexture", "unexpected format"));
+        GLError(GL_INVALID_VALUE, "CopySharedImage", "unexpected format"));
   }
 
   gfx::Size dest_size = dest_shared_image->size();
-  gfx::Rect dest_rect(xoffset, yoffset, width, height);
+  gfx::Rect dest_rect(xoffset, yoffset, dst_width, dst_height);
   if (!gfx::Rect(dest_size).Contains(dest_rect)) {
-    return base::unexpected(GLError(GL_INVALID_VALUE, "glCopySubTexture",
+    return base::unexpected(GLError(GL_INVALID_VALUE, "CopySharedImage",
                                     "destination texture bad dimensions."));
   }
 
@@ -268,32 +286,40 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
           &begin_semaphores, &end_semaphores,
           SharedImageRepresentation::AllowUnclearedAccess::kYes);
   if (!dest_scoped_access) {
-    return base::unexpected(GLError(GL_INVALID_VALUE, "glCopySubTexture",
+    return base::unexpected(GLError(GL_INVALID_VALUE, "CopySharedImage",
                                     "Dest shared image is not writable"));
   }
 
   bool need_graphite_submit = dest_scoped_access->NeedGraphiteContextSubmit();
+  bool update_cleared_rect = false;
+  gfx::Rect new_cleared_rect;
+
   // Flush dest surface and submit if necessary before exiting.
   absl::Cleanup cleanup = [&]() {
-    shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
+    bool success =
+        shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
     shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
                                              need_graphite_submit);
+    if (success && update_cleared_rect) {
+      dest_shared_image->SetClearedRect(new_cleared_rect);
+    }
   };
 
-  gfx::Rect new_cleared_rect;
   gfx::Rect old_cleared_rect = dest_shared_image->ClearedRect();
   if (!gles2::TextureManager::CombineAdjacentRects(old_cleared_rect, dest_rect,
                                                    &new_cleared_rect)) {
     // No users of RasterDecoder leverage this functionality. Clearing uncleared
     // regions could be added here if needed.
-    return base::unexpected(GLError(GL_INVALID_VALUE, "glCopySubTexture",
+    return base::unexpected(GLError(GL_INVALID_VALUE, "CopySharedImage",
                                     "Cannot clear non-combineable rects."));
   }
   DCHECK(old_cleared_rect.IsEmpty() ||
          new_cleared_rect.Contains(old_cleared_rect));
 
   // Attempt to upload directly from CPU shared memory to destination texture.
-  if (CopyPixelsToTexture(xoffset, yoffset, x, y, width, height,
+  // Only do this if no scaling is happening.
+  if (src_width == dst_width && src_height == dst_height &&
+      CopyPixelsToTexture(xoffset, yoffset, x, y, src_width, src_height,
                           new_cleared_rect, source_mailbox,
                           dest_shared_image.get(), dest_scoped_access.get(),
                           representation_factory_, shared_context_state_,
@@ -313,26 +339,46 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
   // uncleared destination later, we do clear destination rect with black
   // color.
   if (!source_shared_image) {
-    auto* canvas = dest_scoped_access->surface()->getCanvas();
+    if (dest_format.is_single_plane()) {
+      auto* canvas = dest_scoped_access->surface()->getCanvas();
+      SkAutoCanvasRestore autoRestore(canvas, /*doSave=*/true);
+      canvas->clipRect(gfx::RectToSkRect(dest_rect));
+      canvas->clear(SkColors::kBlack);
+    } else {
+      std::array<SkSurface*, SkYUVAInfo::kMaxPlanes> yuva_sk_surfaces = {};
+      for (int plane_index = 0; plane_index < dest_format.NumberOfPlanes();
+           plane_index++) {
+        // Get surface per plane from destination scoped write access.
+        yuva_sk_surfaces[plane_index] =
+            dest_scoped_access->surface(plane_index);
+      }
 
-    SkAutoCanvasRestore autoRestore(canvas, /*doSave=*/true);
-    canvas->clipRect(gfx::RectToSkRect(dest_rect));
-    canvas->clear(SkColors::kBlack);
+      // TODO(crbug.com/41380578): This should really default to rec709.
+      SkYUVColorSpace yuv_color_space = kRec601_SkYUVColorSpace;
+      dest_shared_image->color_space().ToSkYUVColorSpace(
+          dest_format.MultiplanarBitDepth(), &yuv_color_space);
+
+      SkYUVAInfo yuva_info(gfx::SizeToSkISize(dest_shared_image->size()),
+                           ToSkYUVAPlaneConfig(dest_format),
+                           ToSkYUVASubsampling(dest_format), yuv_color_space);
+      skia::BlitRGBAToYUVA(/*src_image=*/nullptr, yuva_sk_surfaces, yuva_info,
+                           gfx::RectToSkRect(dest_rect));
+    }
 
     if (!dest_shared_image->IsCleared()) {
-      dest_shared_image->SetClearedRect(new_cleared_rect);
+      update_cleared_rect = true;
     }
 
     // Note, that we still generate error for the client to indicate there was
     // problem.
-    return base::unexpected(GLError(GL_INVALID_VALUE, "glCopySubTexture",
+    return base::unexpected(GLError(GL_INVALID_VALUE, "CopySharedImage",
                                     "unknown source image mailbox."));
   }
 
   gfx::Size source_size = source_shared_image->size();
-  gfx::Rect source_rect(x, y, width, height);
+  gfx::Rect source_rect(x, y, src_width, src_height);
   if (!gfx::Rect(source_size).Contains(source_rect)) {
-    return base::unexpected(GLError(GL_INVALID_VALUE, "glCopySubTexture",
+    return base::unexpected(GLError(GL_INVALID_VALUE, "CopySharedImage",
                                     "source texture bad dimensions."));
   }
 
@@ -347,7 +393,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
     DCHECK(ret);
   }
   if (!source_scoped_access) {
-    return base::unexpected(GLError(GL_INVALID_VALUE, "glCopySubTexture",
+    return base::unexpected(GLError(GL_INVALID_VALUE, "CopySharedImage",
                                     "Source shared image is not accessable"));
   }
 
@@ -359,7 +405,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
       source_scoped_access->CreateSkImage(shared_context_state_);
   if (!source_image) {
     result = base::unexpected(
-        GLError(GL_INVALID_VALUE, "glCopySubTexture",
+        GLError(GL_INVALID_VALUE, "CopySharedImage",
                 "Couldn't create SkImage from source shared image."));
   } else {
     if (dest_format.is_single_plane()) {
@@ -381,7 +427,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
                             gfx::RectToSkRect(dest_rect), SkSamplingOptions(),
                             &paint, SkCanvas::kStrict_SrcRectConstraint);
     } else {
-      SkSurface* yuva_sk_surfaces[SkYUVAInfo::kMaxPlanes] = {};
+      std::array<SkSurface*, SkYUVAInfo::kMaxPlanes> yuva_sk_surfaces = {};
       for (int plane_index = 0; plane_index < dest_format.NumberOfPlanes();
            plane_index++) {
         // Get surface per plane from destination scoped write access.
@@ -408,21 +454,32 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
       // (non-multiplanar SI) behavior in RenderableGMBVideoFramePool, so it is
       // not a regression. Nonetheless, this behavior should
       // ideally be changed to that described above for correctness.
-      skia::BlitRGBAToYUVA(source_image.get(), yuva_sk_surfaces, yuva_info);
-      dest_shared_image->SetCleared();
+      if (dst_width != dest_size.width() || dst_height != dest_size.height()) {
+        dest_rect = gfx::Rect(dest_size);
+      }
+      skia::BlitRGBAToYUVA(source_image.get(), yuva_sk_surfaces, yuva_info,
+                           gfx::RectToSkRect(dest_rect), false,
+                           gfx::RectToSkRect(source_rect));
+      new_cleared_rect = gfx::Rect(dest_shared_image->size());
+      update_cleared_rect = true;
     }
 
     if (!dest_shared_image->IsCleared()) {
-      dest_shared_image->SetClearedRect(new_cleared_rect);
+      update_cleared_rect = true;
     }
   }
 
   // Cancel cleanup as the cleanup order is different here.
   std::move(cleanup).Cancel();
-  shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
+  bool success =
+      shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
   source_scoped_access->ApplyBackendSurfaceEndState();
   shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
                                            need_graphite_submit);
+
+  if (success && update_cleared_rect) {
+    dest_shared_image->SetClearedRect(new_cleared_rect);
+  }
   return result;
 }
 
@@ -435,7 +492,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImageToGLTexture(
     GLint src_y,
     GLsizei width,
     GLsizei height,
-    GLboolean flip_y,
+    GrSurfaceOrigin dst_origin,
     const volatile GLbyte* src_mailbox) {
   Mailbox source_mailbox = Mailbox::FromVolatile(
       reinterpret_cast<const volatile Mailbox*>(src_mailbox)[0]);
@@ -447,11 +504,11 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImageToGLTexture(
 
   sk_sp<SkSurface> dest_surface = CreateSkSurfaceWrappingGLTexture(
       shared_context_state_, dest_texture_id, target, internal_format, type,
-      width, height, flip_y);
+      width, height, dst_origin);
 
   if (!dest_surface) {
     return base::unexpected<GLError>(
-        GLError(GL_INVALID_VALUE, "glCopySharedImageToTexture",
+        GLError(GL_INVALID_VALUE, "CopySharedImageToGLTexture",
                 "Cannot create destination surface"));
   }
 
@@ -480,7 +537,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImageToGLTexture(
     // Note, that we still generate error for the client to indicate there was
     // problem.
     return base::unexpected<GLError>(GLError(GL_INVALID_VALUE,
-                                             "glCopySharedImageToTexture",
+                                             "CopySharedImageToGLTexture",
                                              "unknown source image mailbox."));
   }
 
@@ -488,7 +545,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImageToGLTexture(
   gfx::Rect source_rect(src_x, src_y, width, height);
   if (!gfx::Rect(source_size).Contains(source_rect)) {
     return base::unexpected<GLError>(GLError(GL_INVALID_VALUE,
-                                             "glCopySharedImageToTexture",
+                                             "CopySharedImageToGLTexture",
                                              "source texture bad dimensions."));
   }
 
@@ -510,7 +567,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImageToGLTexture(
                                              /*need_graphite_submit=*/false);
 
     return base::unexpected<GLError>(
-        GLError(GL_INVALID_VALUE, "glCopySharedImageToTexture",
+        GLError(GL_INVALID_VALUE, "CopySharedImageToGLTexture",
                 "Source shared image is not accessable"));
   }
 
@@ -519,7 +576,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImageToGLTexture(
       source_scoped_access->CreateSkImage(shared_context_state_);
   if (!source_image) {
     result = base::unexpected<GLError>(
-        GLError(GL_INVALID_VALUE, "glCopySharedImageToTexture",
+        GLError(GL_INVALID_VALUE, "CopySharedImageToGLTexture",
                 "Couldn't create SkImage from source shared image."));
   } else {
     auto* canvas = dest_surface->getCanvas();
@@ -545,6 +602,117 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImageToGLTexture(
   return result;
 }
 
+namespace {
+
+// Graphite only supports asynchronous reads, and the asynchronous reads require
+// that the src rect is contained within the image. This function automatically
+// adjusts the parameters to match the permissiveness of Ganesh's
+// SkImage::readPixels and makes it synchronous.
+bool GraphiteImageReadPixels(GraphiteSharedContext* graphite_shared_context,
+                             sk_sp<SkImage> sk_image,
+                             GrSurfaceOrigin src_surface_origin,
+                             int src_x,
+                             int src_y,
+                             const SkImageInfo& dst_info,
+                             void* pixel_address,
+                             size_t row_bytes) {
+  gfx::Rect src_rect(src_x, src_y, dst_info.width(), dst_info.height());
+  gfx::Rect src_image_bounds(sk_image->width(), sk_image->height());
+
+  // TODO(crbug.com/40942998): Once all src rects are required to be contained
+  // in the image, the !Contains branch can be removed.
+  if (!src_image_bounds.Contains(src_rect)) {
+    src_rect.Intersect(src_image_bounds);
+    if (src_rect.IsEmpty()) {
+      // NOTE: This is consistent with SkImage::readPixels on a Ganesh image,
+      // which permits src_rect to not be fully contained, but can't be disjoint
+      return false;
+    }
+
+    // Adjust the pixel address to account for any intersection, so that the
+    // available content remains aligned with the intended dst pixel data.
+    // When `src_rect` was originally contained in the src image bounds, this
+    // is equal to the original `pixel_address`.
+    uint8_t* subset_pixel_addr =
+        UNSAFE_TODO(static_cast<uint8_t*>(pixel_address) +
+                    (src_rect.y() - src_y) * row_bytes +
+                    (src_rect.x() - src_x) * dst_info.bytesPerPixel());
+    SkImageInfo subset_dst_info =
+        dst_info.makeWH(src_rect.width(), src_rect.height());
+
+    // src_rect.Intersect(src_image_bounds) should ensure this call skips the
+    // !Contains branch and actually reads the pixels. Check here to prevent
+    // infinite recursion.
+    CHECK(src_image_bounds.Contains(src_rect));
+    return GraphiteImageReadPixels(graphite_shared_context, std::move(sk_image),
+                                   src_surface_origin, src_rect.x(),
+                                   src_rect.y(), subset_dst_info,
+                                   subset_pixel_addr, row_bytes);
+  }
+
+  // Now that `src_rect` meets the requirements of the asyncRead API, call the
+  // async function, then submit and block until it's completed.
+  CHECK(graphite_shared_context);
+  ReadPixelsContext context;
+
+#if !defined(SK_GRAPHITE_READ_PIXELS_SUPPORTS_BOTTOM_LEFT)
+  // Make the `src_rect` relative to the bottom left origin if needed. This
+  // works around lack of support for bottom-left origin data during readback in
+  // Graphite. Graphite correctly handles bottom-left origins when rendering, so
+  // if asyncRescaleAndReadPixels() were to render `sk_image` for any reason,
+  // this adjustment won't work. But this call isn't scaling and is presumably
+  // for a shared image that has copy-src usage, so it shouldn't happen. This is
+  // also a no-op when the src rect is the entire image, regardless of origin.
+  if (src_surface_origin == kBottomLeft_GrSurfaceOrigin) {
+    src_y = src_image_bounds.height() - src_rect.y() - src_rect.height();
+    src_rect = gfx::Rect(
+        src_rect.x(), src_y, src_rect.width(), src_rect.height());
+    // This adjustment should not change the fact that src_rect is still valid
+    CHECK(src_image_bounds.Contains(src_rect));
+  }
+#endif
+
+  // We don't need to insert a recording since asyncRescaleAndReadPixels is a
+  // context operation that inserts its own recording internally.
+  if (!graphite_shared_context->asyncRescaleAndReadPixelsAndSubmit(
+          sk_image.get(), dst_info, RectToSkIRect(src_rect),
+          SkImage::RescaleGamma::kSrc, SkImage::RescaleMode::kRepeatedLinear,
+          base::BindOnce(&OnReadPixelsDone), &context)) {
+    return false;
+  }
+
+  if (!context.finished && graphite_shared_context->IsContextLost()) {
+    return false;
+  }
+
+  CHECK(context.finished);
+  if (!context.async_result) {
+    return false;
+  }
+
+#if !defined(SK_GRAPHITE_READ_PIXELS_SUPPORTS_BOTTOM_LEFT)
+  // Use CopyPlane to flip as Graphite doesn't support bottom left origin
+  // images. Using a negative height causes CopyPlane to flip while copying.
+  // TODO(crbug.com/40269891): Remove this if Graphite performs the flip
+  // once it supports bottom left origin images.
+  const int height = src_surface_origin == kTopLeft_GrSurfaceOrigin
+                         ? dst_info.height()
+                         : -dst_info.height();
+#else
+  // Must copy the async results (often a GPU-mapped buffer) to the CPU
+  // pixel_address.
+  const int height = dst_info.height();
+#endif
+  libyuv::CopyPlane(static_cast<const uint8_t*>(context.async_result->data(0)),
+                    context.async_result->rowBytes(0),
+                    static_cast<uint8_t*>(pixel_address), row_bytes,
+                    dst_info.width() * dst_info.bytesPerPixel(), height);
+
+  return true;
+}
+
+}  // anonymous namespace
+
 base::expected<void, GLError> CopySharedImageHelper::ReadPixels(
     GLint src_x,
     GLint src_y,
@@ -560,7 +728,7 @@ base::expected<void, GLError> CopySharedImageHelper::ReadPixels(
           &begin_semaphores, &end_semaphores);
 
   if (!source_scoped_access) {
-    return base::unexpected(GLError(GL_INVALID_VALUE, "glReadbackImagePixels",
+    return base::unexpected(GLError(GL_INVALID_VALUE, "ReadPixels",
                                     "Source shared image is not accessible"));
   }
 
@@ -590,8 +758,7 @@ base::expected<void, GLError> CopySharedImageHelper::ReadPixels(
     shared_context_state_->SubmitIfNecessary(
         std::move(end_semaphores),
         source_scoped_access->NeedGraphiteContextSubmit());
-    return base::unexpected(GLError(GL_INVALID_OPERATION,
-                                    "glReadbackImagePixels",
+    return base::unexpected(GLError(GL_INVALID_OPERATION, "ReadPixels",
                                     "Couldn't create SkImage for reading."));
   }
 
@@ -603,42 +770,18 @@ base::expected<void, GLError> CopySharedImageHelper::ReadPixels(
                                    row_bytes, src_x, src_y);
     source_scoped_access->ApplyBackendSurfaceEndState();
     shared_context_state_->SubmitIfNecessary(
-        std::move(end_semaphores), /*need_graphite_context_submit==*/false);
+        std::move(end_semaphores),
+        /*need_graphite_shared_context_submit==*/false);
   } else {
-    auto* graphite_context = shared_context_state_->graphite_context();
-    CHECK(graphite_context);
-    ReadPixelsContext context;
-    gfx::Rect src_rect(src_x, src_y, dst_info.width(), dst_info.height());
-    graphite_context->asyncRescaleAndReadPixels(
-        sk_image.get(), dst_info, RectToSkIRect(src_rect),
-        SkImage::RescaleGamma::kSrc, SkImage::RescaleMode::kRepeatedLinear,
-        &OnReadPixelsDone, &context);
-    // We don't need to insert a recording since asyncRescaleAndReadPixels is a
-    // context operation that inserts its own recording internally.
-    graphite_context->submit(skgpu::graphite::SyncToCpu::kYes);
-    CHECK(context.finished);
-    if (context.async_result) {
-      success = true;
-      // Use CopyPlane to flip as Graphite doesn't support bottom left origin
-      // images. Using a negative height causes CopyPlane to flip while copying.
-      // TODO(crbug.com/40269891): Remove this if Graphite performs the flip
-      // once it supports bottom left origin images.
-      const int height =
-          source_shared_image->surface_origin() == kTopLeft_GrSurfaceOrigin
-              ? dst_info.height()
-              : -dst_info.height();
-      libyuv::CopyPlane(
-          static_cast<const uint8_t*>(context.async_result->data(0)),
-          context.async_result->rowBytes(0),
-          static_cast<uint8_t*>(pixel_address), row_bytes,
-          dst_info.width() * dst_info.bytesPerPixel(), height);
-    } else {
-      success = false;
-    }
+    auto* graphite_shared_context =
+        shared_context_state_->graphite_shared_context();
+    success =
+        GraphiteImageReadPixels(graphite_shared_context, std::move(sk_image),
+                                source_shared_image->surface_origin(), src_x,
+                                src_y, dst_info, pixel_address, row_bytes);
   }
   if (!success) {
-    return base::unexpected(GLError(GL_INVALID_OPERATION,
-                                    "glReadbackImagePixels",
+    return base::unexpected(GLError(GL_INVALID_OPERATION, "ReadPixels",
                                     "Failed to read pixels from SkImage"));
   }
   return base::ok();
@@ -668,7 +811,7 @@ base::expected<void, GLError> CopySharedImageHelper::WritePixelsYUV(
           &pixmaps[plane], /*numLevels=*/1, dest_shared_image->surface_origin(),
           /*finishedProc=*/nullptr, /*finishedContext=*/nullptr);
     } else {
-      CHECK(shared_context_state_->graphite_context());
+      CHECK(shared_context_state_->graphite_shared_context());
       auto graphite_texture_ref =
           dest_scoped_access->graphite_texture_holder(plane);
       auto* graphite_texture_ptr = graphite_texture_ref.release();
@@ -686,16 +829,17 @@ base::expected<void, GLError> CopySharedImageHelper::WritePixelsYUV(
       shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
                                                need_graphite_submit);
       return base::unexpected(
-          GLError(GL_INVALID_OPERATION, "glWritePixelsYUV",
+          GLError(GL_INVALID_OPERATION, "WritePixelsYUV",
                   "Failed to upload pixels to dest shared image"));
     }
   }
 
-  shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
+  bool success =
+      shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
   shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
                                            need_graphite_submit);
 
-  if (!dest_shared_image->IsCleared()) {
+  if (success && !dest_shared_image->IsCleared()) {
     dest_shared_image->SetClearedRect(gfx::Rect(src_width, src_height));
   }
   return base::ok();

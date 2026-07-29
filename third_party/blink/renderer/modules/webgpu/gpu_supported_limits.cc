@@ -48,7 +48,8 @@
   X(maxStorageBuffersInFragmentStage)          \
   X(maxStorageTexturesInFragmentStage)         \
   X(maxStorageBuffersInVertexStage)            \
-  X(maxStorageTexturesInVertexStage)
+  X(maxStorageTexturesInVertexStage)           \
+  X(maxImmediateSize)
 
 namespace blink {
 
@@ -67,21 +68,15 @@ constexpr uint64_t UndefinedLimitValue<uint64_t>() {
 }
 }  // namespace
 
-GPUSupportedLimits::GPUSupportedLimits(const wgpu::Limits& limits)
-    : limits_(limits) {
-  DCHECK_EQ(limits.nextInChain, nullptr);
-}
+// GPUSupportedLimits
 
-// static
-void GPUSupportedLimits::MakeUndefined(wgpu::Limits* out) {
-#define X(name) out->name = UndefinedLimitValue<decltype(wgpu::Limits::name)>();
-  SUPPORTED_LIMITS(X)
-#undef X
+GPUSupportedLimits::GPUSupportedLimits(const ComboLimits& limits) {
+  limits.UnlinkedCopyTo(&limits_);
 }
 
 // static
 bool GPUSupportedLimits::Populate(
-    wgpu::Limits* out,
+    ComboLimits* out,
     const HeapVector<
         std::pair<String,
                   Member<V8UnionUndefinedOrUnsignedLongLongEnforceRange>>>& in,
@@ -93,7 +88,7 @@ bool GPUSupportedLimits::Populate(
   for (const auto& [limitName, limitRawValue] : in) {
 #define X(name)                                                               \
   if (limitName == #name) {                                                   \
-    using T = decltype(wgpu::Limits::name);                                   \
+    using T = decltype(GPUSupportedLimits::ComboLimits::name);                \
     if (limitRawValue->IsUndefined()) {                                       \
       continue;                                                               \
     }                                                                         \
@@ -103,9 +98,10 @@ bool GPUSupportedLimits::Populate(
     if (!value.IsValid() || value.ValueOrDie() == UndefinedLimitValue<T>()) { \
       resolver->RejectWithDOMException(                                       \
           DOMExceptionCode::kOperationError,                                  \
-          "Required " #name " limit (" +                                      \
-              String::Number(limitRawIntegerValue) +                          \
-              ") exceeds the maximum representable value for its type.");     \
+          StrCat(                                                             \
+              {"Required " #name " limit (",                                  \
+               String::Number(limitRawIntegerValue),                          \
+               ") exceeds the maximum representable value for its type."}));  \
       return false;                                                           \
     }                                                                         \
     out->name = value.ValueOrDie();                                           \
@@ -117,24 +113,44 @@ bool GPUSupportedLimits::Populate(
       auto* console_message = MakeGarbageCollected<ConsoleMessage>(
           mojom::blink::ConsoleMessageSource::kRendering,
           mojom::blink::ConsoleMessageLevel::kWarning,
-          "The limit \"" + limitName + "\" is not recognized.");
+          StrCat({"The limit \"", limitName, "\" is not recognized."}));
       context->AddConsoleMessage(console_message);
     } else {
       resolver->RejectWithDOMException(
           DOMExceptionCode::kOperationError,
-          "The limit \"" + limitName +
-              "\" with a non-undefined value is not recognized.");
+          StrCat({"The limit \"", limitName,
+                  "\" with a non-undefined value is not recognized."}));
       return false;
     }
   }
   return true;
 }
 
-#define X(name)                                                   \
-  decltype(wgpu::Limits::name) GPUSupportedLimits::name() const { \
-    return limits_.name;                                          \
+#define X(name)                                                              \
+  decltype(GPUSupportedLimits::ComboLimits::name) GPUSupportedLimits::name() \
+      const {                                                                \
+    return limits_.name;                                                     \
   }
 SUPPORTED_LIMITS(X)
 #undef X
+
+// GPUSupportedLimits::ComboLimits
+
+GPUSupportedLimits::ComboLimits::ComboLimits() = default;
+
+void GPUSupportedLimits::ComboLimits::UnlinkedCopyTo(
+    GPUSupportedLimits::ComboLimits* o) const {
+  *static_cast<wgpu::Limits*>(o) = *this;
+  o->wgpu::Limits::nextInChain = nullptr;
+  *static_cast<wgpu::CompatibilityModeLimits*>(o) = *this;
+  o->wgpu::CompatibilityModeLimits::nextInChain = nullptr;
+}
+
+wgpu::Limits* GPUSupportedLimits::ComboLimits::GetLinked() {
+  this->wgpu::Limits::nextInChain =
+      static_cast<wgpu::CompatibilityModeLimits*>(this);
+  this->wgpu::CompatibilityModeLimits::nextInChain = nullptr;
+  return this;
+}
 
 }  // namespace blink

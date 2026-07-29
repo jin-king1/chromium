@@ -138,7 +138,7 @@ void SetWidgetBoundsAndMaybeAnimateTransform(
   gfx::RectF previous_bounds = gfx::RectF(window->GetBoundsInScreen());
   window->SetBoundsInScreen(
       new_bounds_in_screen,
-      display::Screen::GetScreen()->GetDisplayNearestWindow(window));
+      display::Screen::Get()->GetDisplayNearestWindow(window));
   if (animation_type == OVERVIEW_ANIMATION_NONE ||
       animation_type == OVERVIEW_ANIMATION_ENTER_FROM_HOME_LAUNCHER ||
       previous_bounds.IsEmpty()) {
@@ -234,7 +234,7 @@ void OverviewItem::UpdateRoundedCorners() {
   // non-minimized windows after the continuous scroll has ended.
   bool show_rounded_corners_for_start_animation = false;
   if (features::IsContinuousOverviewScrollAnimationEnabled() &&
-      !display::Screen::GetScreen()->InTabletMode()) {
+      !display::Screen::Get()->InTabletMode()) {
     show_rounded_corners_for_start_animation =
         transform_window_.IsMinimizedOrTucked() ||
         !IsContinuousScrollInProgress();
@@ -383,7 +383,8 @@ OverviewItem* OverviewItem::GetLeafItemForWindow(aura::Window* window) {
 void OverviewItem::SetBounds(const gfx::RectF& target_bounds,
                              OverviewAnimationType animation_type) {
   if (in_bounds_update_ || transform_window_.is_restoring() ||
-      !OverviewController::Get()->InOverviewSession()) {
+      !OverviewController::Get()->InOverviewSession() ||
+      GetWindow()->is_destroying()) {
     return;
   }
 
@@ -572,11 +573,14 @@ gfx::Transform OverviewItem::ComputeTargetTransform(
 
 void OverviewItem::RestoreWindow(bool reset_transform, bool animate) {
   TRACE_EVENT0("ui", "OverviewItem::RestoreWindow");
+  if (GetWindow()->is_destroying()) {
+    return;
+  }
 
   // TODO(oshima): SplitViewController has its own logic to adjust the
   // target state in `SplitViewController::OnOverviewModeEnding`.
   // Unify the mechanism to control it and remove ifs.
-  if (display::Screen::GetScreen()->InTabletMode() &&
+  if (display::Screen::Get()->InTabletMode() &&
       !SplitViewController::Get(root_window_)->InSplitViewMode() &&
       reset_transform) {
     MaximizeIfSnapped(GetWindow());
@@ -700,10 +704,6 @@ float OverviewItem::GetOpacity() const {
 }
 
 void OverviewItem::PrepareForOverview() {
-  // Forced overview items to be visible if they won't have a snapshot.
-  if (!Shell::Get()->overview_controller()->windows_have_snapshot()) {
-    scoped_force_visible_.emplace(GetWindow());
-  }
   transform_window_.PrepareForOverview();
   prepared_for_overview_ = true;
 }
@@ -755,6 +755,7 @@ void OverviewItem::StartDrag() {
 
 void OverviewItem::OnOverviewItemDragStarted() {
   GetOrCreateOverviewItemView().SetCloseButtonVisible(false);
+  transform_window_.OnDragStarted();
 }
 
 void OverviewItem::OnOverviewItemDragEnded(bool snap) {
@@ -765,6 +766,8 @@ void OverviewItem::OnOverviewItemDragEnded(bool snap) {
   } else {
     GetOrCreateOverviewItemView().SetCloseButtonVisible(true);
   }
+
+  transform_window_.OnDragEnded();
 }
 
 void OverviewItem::OnOverviewItemContinuousScroll(
@@ -772,7 +775,7 @@ void OverviewItem::OnOverviewItemContinuousScroll(
     float scroll_ratio) {
   auto* window = GetWindow();
 
-  // TODO(sammiequon): This should use
+  // TODO: This should use
   // `ScopedOverviewTransformWindow::IsMinimizedOrTucked()` since tucked
   // windows behave like minimized windows in overview, even if continuous
   // scroll and tucked windows will not be supported together.
@@ -970,6 +973,9 @@ void OverviewItem::OnWindowParentChanged(aura::Window* window,
   }
 
   if (root_window_ != window->GetRootWindow()) {
+    // Restore Window to reset the transform and the clip before adding new
+    // OverviewItem.
+    RestoreWindow(/*reset_transform=*/true, /*animate=*/false);
     overview_session_->AddItemInMruOrder(
         window, /*reposition=*/false, /*animate=*/true,
         /*restack=*/true, /*use_spawn_animation=*/true);
@@ -1299,7 +1305,7 @@ void OverviewItem::SetItemBounds(const gfx::RectF& target_bounds,
     clip_rect = gfx::Rect(window->bounds().size());
     // We add 1 to the `top_inset`, because in some cases, the header is not
     // clipped fully due to what seems to be a rounding error.
-    // TODO(afakhry|sammiequon): Investigate a proper fix for this.
+    // TODO: Investigate a proper fix for this.
     const int top_inset = GetTopInset();
     if (top_inset > 0 && !clip_rect.IsEmpty()) {
       clip_rect.Inset(gfx::Insets::TLBR(top_inset + 1, 0, 0, 0));
@@ -1405,7 +1411,7 @@ OverviewItem::GetExitOverviewAnimationTypeForMinimizedWindow(
   // Fade out the minimized window without animation if switch from tablet mode
   // to clamshell mode.
   if (type == OverviewEnterExitType::kFadeOutExit) {
-    return display::Screen::GetScreen()->InTabletMode()
+    return display::Screen::Get()->InTabletMode()
                ? OVERVIEW_ANIMATION_EXIT_TO_HOME_LAUNCHER
                : OVERVIEW_ANIMATION_NONE;
   }
@@ -1438,7 +1444,7 @@ void OverviewItem::AnimateOpacity(float opacity,
 void OverviewItem::CloseButtonPressed() {
   base::RecordAction(
       base::UserMetricsAction("WindowSelector_OverviewCloseButton"));
-  if (display::Screen::GetScreen()->InTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     base::RecordAction(
         base::UserMetricsAction("Tablet_WindowCloseFromOverviewButton"));
   }

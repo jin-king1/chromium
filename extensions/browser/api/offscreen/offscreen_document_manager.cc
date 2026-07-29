@@ -5,9 +5,7 @@
 #include "extensions/browser/api/offscreen/offscreen_document_manager.h"
 
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/dcheck_is_on.h"
-#include "base/not_fatal_until.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "content/public/browser/browser_context.h"
@@ -18,8 +16,6 @@
 #include "extensions/browser/extension_util.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/offscreen_document_host.h"
-#include "extensions/browser/process_manager.h"
-#include "extensions/browser/process_manager_factory.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -54,7 +50,6 @@ OffscreenDocumentManagerFactory::OffscreenDocumentManagerFactory()
           "OffscreenDocumentManager",
           BrowserContextDependencyManager::GetInstance()) {
   DependsOn(ExtensionRegistryFactory::GetInstance());
-  DependsOn(ProcessManagerFactory::GetInstance());
   // Indirectly depends on ExtensionService via ChromeExtensionSystem.
   DependsOn(ExtensionsBrowserClient::Get()->GetExtensionSystemFactory());
 }
@@ -92,8 +87,7 @@ OffscreenDocumentManager::OffscreenDocumentData::OffscreenDocumentData(
 // OffscreenDocumentManager:
 OffscreenDocumentManager::OffscreenDocumentManager(
     content::BrowserContext* browser_context)
-    : browser_context_(browser_context),
-      process_manager_(ProcessManager::Get(browser_context_)) {
+    : browser_context_(browser_context) {
   registry_observation_.Observe(ExtensionRegistry::Get(browser_context_));
 }
 
@@ -119,8 +113,8 @@ OffscreenDocumentHost* OffscreenDocumentManager::CreateOffscreenDocument(
   DCHECK_EQ(url::Origin::Create(url), extension.origin());
   // Currently only a single offscreen document is supported per extension.
   DCHECK_EQ(nullptr, GetOffscreenDocumentForExtension(extension));
-  DCHECK(!base::Contains(offscreen_documents_, extension.id()));
-  CHECK(!base::Contains(reasons, api::offscreen::Reason::kNone));
+  DCHECK(!offscreen_documents_.contains(extension.id()));
+  CHECK(!reasons.contains(api::offscreen::Reason::kNone));
 #if DCHECK_IS_ON()
   // This should only be for an off-the-record context if the extension is both
   // enabled in incognito *and* runs in split mode. For spanning mode
@@ -134,10 +128,8 @@ OffscreenDocumentHost* OffscreenDocumentManager::CreateOffscreenDocument(
 
   OffscreenDocumentData& data = offscreen_documents_[extension.id()];
 
-  scoped_refptr<content::SiteInstance> site_instance =
-      process_manager_->GetSiteInstanceForURL(url);
-  data.host = std::make_unique<OffscreenDocumentHost>(
-      extension, site_instance.get(), browser_context_, url);
+  data.host =
+      std::make_unique<OffscreenDocumentHost>(extension, browser_context_, url);
   OffscreenDocumentHost* host = data.host.get();
 
   // The following Unretained()s are safe because this class owns the offscreen
@@ -180,13 +172,13 @@ void OffscreenDocumentManager::CloseOffscreenDocumentForExtension(
 
 void OffscreenDocumentManager::CloseOffscreenDocumentForExtensionId(
     const ExtensionId& extension_id) {
-  DCHECK(base::Contains(offscreen_documents_, extension_id));
+  DCHECK(offscreen_documents_.contains(extension_id));
   offscreen_documents_.erase(extension_id);
 }
 
 void OffscreenDocumentManager::OnOffscreenDocumentActivityChanged(
     const ExtensionId& extension_id) {
-  DCHECK(base::Contains(offscreen_documents_, extension_id));
+  DCHECK(offscreen_documents_.contains(extension_id));
   OffscreenDocumentData& data = offscreen_documents_[extension_id];
   DCHECK(data.host);
 
@@ -221,7 +213,7 @@ void OffscreenDocumentManager::Shutdown() {
 void OffscreenDocumentManager::CloseOffscreenDocument(
     ExtensionHost* offscreen_document) {
   auto iter = offscreen_documents_.find(offscreen_document->extension_id());
-  CHECK(iter != offscreen_documents_.end(), base::NotFatalUntil::M130);
+  CHECK(iter != offscreen_documents_.end());
   DCHECK_EQ(iter->second.host.get(), offscreen_document);
   offscreen_documents_.erase(iter);
 }

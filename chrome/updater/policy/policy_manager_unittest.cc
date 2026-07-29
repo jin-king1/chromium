@@ -10,10 +10,11 @@
 #include <utility>
 #include <vector>
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/strcat.h"
+#include "base/time/time.h"
 #include "base/values.h"
-#include "chrome/updater/updater_scope.h"
+#include "chrome/updater/get_updater_scope.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace updater {
@@ -30,7 +31,7 @@ TEST_F(PolicyManagerTests, NoPolicies) {
 }
 
 TEST_F(PolicyManagerTests, InvalidPolicies) {
-  base::Value::Dict policies;
+  base::DictValue policies;
   policies.Set("autoupdatecheckperiodminutes", "NotAnInteger");
 
   scoped_refptr<PolicyManagerInterface> policy_manager =
@@ -69,7 +70,7 @@ TEST_F(PolicyManagerTests, InvalidPolicies) {
 }
 
 TEST_F(PolicyManagerTests, PolicyRead) {
-  base::Value::Dict policies;
+  base::DictValue policies;
 
   policies.Set("autoupdatecheckperiodminutes", 480);
   policies.Set("updatessuppressedstarthour", 2);
@@ -93,6 +94,8 @@ TEST_F(PolicyManagerTests, PolicyRead) {
   policies.Set(base::StrCat({"rollbacktotargetversion", kTestAppID}), 1);
   policies.Set(base::StrCat({"install", kTestAppIDForceInstall}),
                kPolicyForceInstallUser);
+  policies.Set(base::StrCat({"majorversionrollout", kTestAppID}), 1);
+  policies.Set(base::StrCat({"minorversionrollout", kTestAppID}), 2);
 
   scoped_refptr<PolicyManagerInterface> policy_manager =
       CreateDictPolicyManager(std::move(policies));
@@ -139,6 +142,11 @@ TEST_F(PolicyManagerTests, PolicyRead) {
   EXPECT_FALSE(
       policy_manager->IsRollbackToTargetVersionAllowed("non-exist-app"));
 
+  EXPECT_EQ(policy_manager->GetMajorVersionRolloutPolicy(kTestAppID), 1);
+  EXPECT_EQ(policy_manager->GetMinorVersionRolloutPolicy(kTestAppID), 2);
+  EXPECT_FALSE(policy_manager->GetMajorVersionRolloutPolicy("non-exist-app"));
+  EXPECT_FALSE(policy_manager->GetMajorVersionRolloutPolicy("non-exist-app"));
+
   std::optional<std::vector<std::string>> force_install_apps =
       policy_manager->GetForceInstallApps();
   ASSERT_EQ(force_install_apps.has_value(), !IsSystemInstall());
@@ -150,7 +158,7 @@ TEST_F(PolicyManagerTests, PolicyRead) {
 }
 
 TEST_F(PolicyManagerTests, WrongPolicyValueType) {
-  base::Value::Dict policies;
+  base::DictValue policies;
 
   // Set global policies.
   policies.Set("autoupdatecheckperiodminutes", "NotAnInteger");

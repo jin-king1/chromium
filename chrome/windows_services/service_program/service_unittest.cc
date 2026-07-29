@@ -40,7 +40,7 @@
 #include "base/types/expected.h"
 #include "base/win/scoped_bstr.h"
 #include "base/win/scoped_com_initializer.h"
-#include "base/win/win_util.h"
+#include "base/win/windows_handle_util.h"
 #include "chrome/common/env_vars.h"
 #include "chrome/windows_services/service_program/test_service_idl.h"
 #include "chrome/windows_services/service_program/test_support/service_environment.h"
@@ -170,7 +170,7 @@ class ServiceTest : public testing::Test {
   }
 
  private:
-  static ServiceEnvironment* service_environment_;
+  static inline ServiceEnvironment* service_environment_ = nullptr;
 
   // The main thread is an STA thread, so it must run a UI message loop.
   base::test::TaskEnvironment task_environment_{
@@ -178,9 +178,6 @@ class ServiceTest : public testing::Test {
   base::win::ScopedCOMInitializer com_initializer_;
   LogCollector log_collector_{*service_environment_};
 };
-
-// static
-ServiceEnvironment* ServiceTest::service_environment_ = nullptr;
 
 namespace {
 

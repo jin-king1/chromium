@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "net/disk_cache/disk_cache.h"
+
 #include <utility>
 
 #include "base/barrier_closure.h"
@@ -9,25 +11,44 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
+#include "build/buildflag.h"
 #include "net/base/cache_type.h"
+#include "net/base/features.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/backend_cleanup_tracker.h"
+#include "net/disk_cache/basic_cache_file.h"
 #include "net/disk_cache/blockfile/backend_impl.h"
+#include "net/disk_cache/buildflags.h"
+#include "net/disk_cache/cache_encryption_delegate.h"
 #include "net/disk_cache/cache_util.h"
 #include "net/disk_cache/disk_cache.h"
 #include "net/disk_cache/memory/mem_backend_impl.h"
 #include "net/disk_cache/simple/simple_backend_impl.h"
 #include "net/disk_cache/simple/simple_file_enumerator.h"
 #include "net/disk_cache/simple/simple_util.h"
+#include "net/disk_cache/trivial_cache_entry_hasher.h"
+
+#if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
+#include "net/disk_cache/sql/sql_backend_impl.h"
+#endif  // ENABLE_DISK_CACHE_SQL_BACKEND
 
 namespace {
+
+void RecordDiskCacheInitTime(base::TimeDelta time) {
+#if !BUILDFLAG(IS_FUCHSIA)
+  base::UmaHistogramTimes("HttpCache.TimeToInitDiskCache", time);
+#endif  // !BUILDFLAG(IS_FUCHSIA)
+}
 
 using FileEnumerator = disk_cache::BackendFileOperations::FileEnumerator;
 using ApplicationStatusListenerGetter =
@@ -49,6 +70,7 @@ class CacheCreator {
                ApplicationStatusListenerGetter app_status_listener_getter,
 #endif
                net::NetLog* net_log,
+               net::CacheEncryptionDelegate* cache_encryption_delegate,
                base::OnceClosure post_cleanup_callback,
                disk_cache::BackendResultCallback callback);
 
@@ -59,18 +81,23 @@ class CacheCreator {
   // attempt to create a new one. This is always asynchronous.
   void TryCreateCleanupTrackerAndRun();
 
-  // Creates the backend, the cleanup context for it having been already
-  // established... or purposefully left as null. This is always asynchronous.
-  void Run();
-
   // Queues an asynchronous failure.
   void FailAttempt();
+
+  // Special entry point for DISK_CACHE that initializes encryption
+  // but skips the cleanup tracker.
+  void InitEncryptionAndRun();
 
  private:
   ~CacheCreator();
 
+  // Creates the backend, the cleanup context for it having been already
+  // established... or purposefully left as null. This is always asynchronous.
+  void Run();
+
   void DoCallback(int result);
 
+  void OnEncryptionInitComplete(net::Error result);
   void OnIOComplete(int result);
   void OnCacheCleanupComplete(int original_error, bool cleanup_result);
 
@@ -91,6 +118,8 @@ class CacheCreator {
   std::unique_ptr<disk_cache::Backend> created_cache_;
   raw_ptr<net::NetLog> net_log_;
   scoped_refptr<disk_cache::BackendCleanupTracker> cleanup_tracker_;
+  raw_ptr<net::CacheEncryptionDelegate> cache_encryption_delegate_;
+  base::TimeTicks init_start_time_;
 };
 
 CacheCreator::CacheCreator(
@@ -104,6 +133,7 @@ CacheCreator::CacheCreator(
     ApplicationStatusListenerGetter app_status_listener_getter,
 #endif
     net::NetLog* net_log,
+    net::CacheEncryptionDelegate* cache_encryption_delegate,
     base::OnceClosure post_cleanup_callback,
     disk_cache::BackendResultCallback callback)
     : path_(path),
@@ -117,7 +147,9 @@ CacheCreator::CacheCreator(
 #endif
       post_cleanup_callback_(std::move(post_cleanup_callback)),
       callback_(std::move(callback)),
-      net_log_(net_log) {
+      net_log_(net_log),
+      cache_encryption_delegate_(cache_encryption_delegate),
+      init_start_time_(base::TimeTicks::Now()) {
 }
 
 CacheCreator::~CacheCreator() = default;
@@ -137,9 +169,21 @@ void CacheCreator::Run() {
   if (backend_type_ == net::CACHE_BACKEND_SIMPLE ||
       (backend_type_ == net::CACHE_BACKEND_DEFAULT &&
        kSimpleBackendIsDefault)) {
+    std::unique_ptr<disk_cache::CacheEntryHasher> cache_entry_hasher;
+    if (cache_encryption_delegate_) {
+      cache_entry_hasher = cache_encryption_delegate_->GetCacheEntryHasher();
+      if (!cache_entry_hasher) {
+        FailAttempt();
+        return;
+      }
+    } else {
+      cache_entry_hasher =
+          std::make_unique<disk_cache::TrivialCacheEntryHasher>();
+    }
     auto cache = std::make_unique<disk_cache::SimpleBackendImpl>(
         file_operations_factory_, path_, cleanup_tracker_.get(),
-        /* file_tracker = */ nullptr, max_bytes_, type_, net_log_);
+        /* file_tracker = */ nullptr, max_bytes_, type_,
+        std::move(cache_entry_hasher), net_log_);
     disk_cache::SimpleBackendImpl* simple_cache = cache.get();
     created_cache_ = std::move(cache);
 #if BUILDFLAG(IS_ANDROID)
@@ -151,6 +195,18 @@ void CacheCreator::Run() {
         base::BindOnce(&CacheCreator::OnIOComplete, base::Unretained(this)));
     return;
   }
+
+#if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
+  if (backend_type_ == net::CACHE_BACKEND_EXPERIMENTAL_SQL) {
+    auto sql_cache = std::make_unique<disk_cache::SqlBackendImpl>(
+        path_, max_bytes_, type_, cleanup_tracker_);
+    auto* sql_cache_ptr = sql_cache.get();
+    created_cache_ = std::move(sql_cache);
+    sql_cache_ptr->Init(
+        base::BindOnce(&CacheCreator::OnIOComplete, base::Unretained(this)));
+    return;
+  }
+#endif  // ENABLE_DISK_CACHE_SQL_BACKEND
 
 // Avoid references to blockfile functions on Android to reduce binary size.
 #if BUILDFLAG(IS_ANDROID)
@@ -176,13 +232,22 @@ void CacheCreator::FailAttempt() {
                                 base::Unretained(this), net::ERR_FAILED));
 }
 
+void CacheCreator::InitEncryptionAndRun() {
+  if (cache_encryption_delegate_) {
+    cache_encryption_delegate_->Init(base::BindOnce(
+        &CacheCreator::OnEncryptionInitComplete, base::Unretained(this)));
+    return;
+  }
+  Run();
+}
+
 void CacheCreator::TryCreateCleanupTrackerAndRun() {
   // Before creating a cache Backend, a BackendCleanupTracker object is needed
   // so there is a place to keep track of outstanding I/O even after the backend
   // object itself is destroyed, so that further use of the directory
   // doesn't race with those outstanding disk I/O ops.
 
-  // This method's purpose it to grab exlusive ownership of a fresh
+  // This method's purpose it to grab exclusive ownership of a fresh
   // BackendCleanupTracker for the cache path, and then move on to Run(),
   // which will take care of creating the actual cache backend. It's possible
   // that something else is currently making use of the directory, in which
@@ -202,15 +267,24 @@ void CacheCreator::TryCreateCleanupTrackerAndRun() {
   if (!cleanup_tracker_) {
     return;
   }
-  if (!post_cleanup_callback_.is_null())
+  if (!post_cleanup_callback_.is_null()) {
     cleanup_tracker_->AddPostCleanupCallback(std::move(post_cleanup_callback_));
-  Run();
+  }
+
+  if (type_ == net::DISK_CACHE) {
+    InitEncryptionAndRun();
+  } else {
+    Run();
+  }
 }
 
 void CacheCreator::DoCallback(int net_error) {
   DCHECK_NE(net::ERR_IO_PENDING, net_error);
   disk_cache::BackendResult result;
   if (net_error == net::OK) {
+    if (created_cache_->GetCacheType() == net::DISK_CACHE) {
+      RecordDiskCacheInitTime(base::TimeTicks::Now() - init_start_time_);
+    }
     result = disk_cache::BackendResult::Make(std::move(created_cache_));
   } else {
     LOG(ERROR) << "Unable to create cache";
@@ -224,6 +298,25 @@ void CacheCreator::DoCallback(int net_error) {
 
 // If the initialization of the cache fails, and |reset_handling| isn't set to
 // kNeverReset, we will discard the whole cache and create a new one.
+void CacheCreator::OnEncryptionInitComplete(net::Error result) {
+  if (result == net::OK) {
+    disk_cache::BackendFileOperationsFactory*
+        encrypted_file_operations_factory =
+            cache_encryption_delegate_->GetEncryptionFileOperationsFactory(
+                file_operations_factory_);
+    if (encrypted_file_operations_factory) {
+      file_operations_factory_ = encrypted_file_operations_factory;
+      Run();
+    } else {
+      // TODO: crbug.com/478916662 - introduce a new error code or log to UMA
+      // here.
+      DoCallback(net::ERR_FAILED);
+    }
+  } else {
+    DoCallback(result);
+  }
+}
+
 void CacheCreator::OnIOComplete(int result) {
   DCHECK_NE(result, net::ERR_IO_PENDING);
   if (result == net::OK ||
@@ -328,6 +421,7 @@ BackendResult CreateCacheBackendImpl(
     ApplicationStatusListenerGetter app_status_listener_getter,
 #endif
     net::NetLog* net_log,
+    net::CacheEncryptionDelegate* cache_encryption_delegate,
     base::OnceClosure post_cleanup_callback,
     BackendResultCallback callback) {
   DCHECK(!callback.is_null());
@@ -340,24 +434,32 @@ BackendResult CreateCacheBackendImpl(
           std::move(post_cleanup_callback));
       return BackendResult::Make(std::move(mem_backend_impl));
     } else {
-      if (!post_cleanup_callback.is_null())
+      if (!post_cleanup_callback.is_null()) {
         base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
             FROM_HERE, std::move(post_cleanup_callback));
+      }
       return BackendResult::MakeError(net::ERR_FAILED);
     }
   }
 
   bool had_post_cleanup_callback = !post_cleanup_callback.is_null();
-  CacheCreator* creator = new CacheCreator(
-      path, reset_handling, max_bytes, type, backend_type,
-      std::move(file_operations),
+  // As document in disk_cache.h, `had_post_cleanup_callback` is not supported
+  // for net::DISK_CACHE. Note: When kEnableBackendCleanupTrackerOnHttpCache is
+  // enabled, we can support it jutt by removing this CHECK().
+  CHECK(!((type == net::DISK_CACHE) && had_post_cleanup_callback));
+
+  CacheCreator* creator =
+      new CacheCreator(path, reset_handling, max_bytes, type, backend_type,
+                       std::move(file_operations),
 #if BUILDFLAG(IS_ANDROID)
-      std::move(app_status_listener_getter),
+                       std::move(app_status_listener_getter),
 #endif
-      net_log, std::move(post_cleanup_callback), std::move(callback));
-  if (type == net::DISK_CACHE) {
-    DCHECK(!had_post_cleanup_callback);
-    creator->Run();
+                       net_log, std::move(cache_encryption_delegate),
+                       std::move(post_cleanup_callback), std::move(callback));
+  if (type == net::DISK_CACHE &&
+      !base::FeatureList::IsEnabled(
+          net::features::kEnableBackendCleanupTrackerOnHttpCache)) {
+    creator->InitEncryptionAndRun();
   } else {
     creator->TryCreateCleanupTrackerAndRun();
   }
@@ -372,14 +474,15 @@ BackendResult CreateCacheBackend(
     int64_t max_bytes,
     ResetHandling reset_handling,
     net::NetLog* net_log,
+    net::CacheEncryptionDelegate* cache_encryption_delegate,
     BackendResultCallback callback) {
   return CreateCacheBackendImpl(type, backend_type, std::move(file_operations),
                                 path, max_bytes, reset_handling,
 #if BUILDFLAG(IS_ANDROID)
                                 ApplicationStatusListenerGetter(),
 #endif
-                                net_log, base::OnceClosure(),
-                                std::move(callback));
+                                net_log, std::move(cache_encryption_delegate),
+                                base::OnceClosure(), std::move(callback));
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -391,11 +494,13 @@ CreateCacheBackend(net::CacheType type,
                    int64_t max_bytes,
                    ResetHandling reset_handling,
                    net::NetLog* net_log,
+                   net::CacheEncryptionDelegate* cache_encryption_delegate,
                    BackendResultCallback callback,
                    ApplicationStatusListenerGetter app_status_listener_getter) {
   return CreateCacheBackendImpl(type, backend_type, std::move(file_operations),
                                 path, max_bytes, reset_handling,
                                 std::move(app_status_listener_getter), net_log,
+                                cache_encryption_delegate,
                                 base::OnceClosure(), std::move(callback));
 }
 #endif
@@ -408,6 +513,7 @@ BackendResult CreateCacheBackend(
     int64_t max_bytes,
     ResetHandling reset_handling,
     net::NetLog* net_log,
+    net::CacheEncryptionDelegate* cache_encryption_delegate,
     base::OnceClosure post_cleanup_callback,
     BackendResultCallback callback) {
   return CreateCacheBackendImpl(type, backend_type, std::move(file_operations),
@@ -415,7 +521,8 @@ BackendResult CreateCacheBackend(
 #if BUILDFLAG(IS_ANDROID)
                                 ApplicationStatusListenerGetter(),
 #endif
-                                net_log, std::move(post_cleanup_callback),
+                                net_log, cache_encryption_delegate,
+                                std::move(post_cleanup_callback),
                                 std::move(callback));
 }
 
@@ -438,6 +545,20 @@ void FlushCacheThreadAsynchronouslyForTesting(base::OnceClosure callback) {
   BackendImpl::FlushAsynchronouslyForTesting(repeating_callback);
 }
 
+void WaitForBackendCleanupForTesting(const base::FilePath& path,  // IN-TEST
+                                     base::OnceClosure callback) {
+  auto [callback_1, callback_2] = base::SplitOnceCallback(std::move(callback));
+  // TryCreate will return an instance only if there is no active tracker. In
+  // this case, `callback_1` will not be run and no extra waiting is necessary,
+  // so post `callback_2` to the current sequence to run soon. Otherwise, if
+  // `TryCreate` returns null, `callback_1` has been added to its list of
+  // callbacks to run when cleanup completes.
+  if (BackendCleanupTracker::TryCreate(path, std::move(callback_1))) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, std::move(callback_2));
+  }
+}
+
 int64_t Backend::CalculateSizeOfEntriesBetween(
     base::Time initial_time,
     base::Time end_time,
@@ -449,7 +570,9 @@ uint8_t Backend::GetEntryInMemoryData(const std::string& key) {
   return 0;
 }
 
-void Backend::SetEntryInMemoryData(const std::string& key, uint8_t data) {}
+void Backend::OnBrowserIdle() {}
+
+void Entry::SetEntryInMemoryData(uint8_t data) {}
 
 EntryResult::EntryResult() = default;
 EntryResult::~EntryResult() = default;
@@ -564,8 +687,9 @@ bool TrivialFileOperations::DirectoryExists(const base::FilePath& path) {
   return result;
 }
 
-base::File TrivialFileOperations::OpenFile(const base::FilePath& path,
-                                           uint32_t flags) {
+std::unique_ptr<CacheFile> TrivialFileOperations::OpenFile(
+    const base::FilePath& path,
+    uint32_t flags) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(path.IsAbsolute());
 #if DCHECK_IS_ON()
@@ -573,7 +697,7 @@ base::File TrivialFileOperations::OpenFile(const base::FilePath& path,
 #endif
 
   base::File file(path, flags);
-  return file;
+  return std::make_unique<BasicCacheFile>(std::move(file));
 }
 
 bool TrivialFileOperations::DeleteFile(const base::FilePath& path,
@@ -660,6 +784,10 @@ std::unique_ptr<UnboundBackendFileOperations> TrivialFileOperations::Unbind() {
   bound_ = false;
 #endif
   return std::make_unique<UnboundTrivialFileOperations>();
+}
+
+bool TrivialFileOperations::IsEncrypted() const {
+  return false;
 }
 
 TrivialFileOperationsFactory::TrivialFileOperationsFactory() = default;

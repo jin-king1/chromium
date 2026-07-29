@@ -18,6 +18,7 @@
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/observer_list.h"
 #include "build/blink_buildflags.h"
 #include "build/build_config.h"
 #include "components/autofill/core/browser/autofill_type.h"
@@ -49,16 +50,17 @@ class PrefRegistrySyncable;
 }
 
 namespace autofill {
+struct AutofillServerPrediction;
 class FormData;
 }  // namespace autofill
 
 namespace password_manager {
 
+class BrowserSavePasswordProgressLogger;
 class PasswordManagerClient;
 class PasswordManagerDriver;
 class PasswordFormManagerForUI;
 class PasswordFormManager;
-class PasswordManagerMetricsRecorder;
 struct PasswordForm;
 struct PossibleUsernameData;
 
@@ -79,6 +81,21 @@ constexpr void operator|=(PasswordVsOtpFormType& lhs,
   lhs = static_cast<PasswordVsOtpFormType>(static_cast<int>(lhs) |
                                            static_cast<int>(rhs));
 }
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(LogInWithChangedPasswordOutcome)
+enum class LogInWithChangedPasswordOutcome {
+  kPrimaryPasswordFailed = 0,
+  kPrimaryPasswordSucceeded = 1,
+  kBackupPasswordFailed = 2,
+  kBackupPasswordSucceeded = 3,
+  kUnknownPasswordFailed = 4,
+  kUnknownPasswordSucceeded = 5,
+  kMaxValue = kUnknownPasswordSucceeded
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/password/enums.xml:LogInWithChangedPasswordOutcome)
 
 // Per-tab password manager. Handles creation and management of UI elements,
 // receiving password form data from the renderer and managing the password
@@ -120,10 +137,10 @@ class PasswordManager : public PasswordManagerInterface {
       const autofill::FormData& form,
       const std::u16string& generated_password) override;
   void ProcessAutofillPredictions(
-      PasswordManagerDriver* driver,
+      PasswordManagerDriver& driver,
       const autofill::FormData& form,
       const base::flat_map<autofill::FieldGlobalId,
-                           autofill::AutofillType::ServerPrediction>&
+                           autofill::AutofillServerPrediction>&
           field_predictions) override;
   void ProcessClassificationModelPredictions(
       PasswordManagerDriver* driver,
@@ -133,6 +150,7 @@ class PasswordManager : public PasswordManagerInterface {
   bool HaveFormManagersReceivedData(
       const PasswordManagerDriver* driver) const override;
 
+  void OnResourceLoadingFailed(PasswordManagerDriver* driver, const GURL& url);
   PasswordManagerClient* GetClient() override;
 #if BUILDFLAG(IS_IOS)
   void OnSubframeFormSubmission(PasswordManagerDriver* driver,
@@ -199,6 +217,9 @@ class PasswordManager : public PasswordManagerInterface {
   // Returns true if password element is detected on the current page.
   bool IsPasswordFieldDetectedOnPage() const override;
 
+  void AddObserver(Observer* observer) override;
+  void RemoveObserver(Observer* observer) override;
+
 #if BUILDFLAG(USE_BLINK)
   // Reports the success from the renderer's PasswordAutofillAgent to fill
   // credentials into a site. This may be called multiple times, but only
@@ -210,6 +231,9 @@ class PasswordManager : public PasswordManagerInterface {
 
   // Notifies that Credential Management API function store() is called.
   void NotifyStorePasswordCalled() override;
+
+  // Notifies that a non-password login was detected (e.g. FedCM or OAuth).
+  void OnNonPasswordLoginDetected();
 
   // Returns form cache containing information about parsed password forms on
   // the web page.
@@ -236,7 +260,7 @@ class PasswordManager : public PasswordManagerInterface {
   // Returns the best matches from the manager which manages |form_id|. |driver|
   // is needed to determine the match. Returns nullptr when no matched manager
   // is found.
-  base::span<const PasswordForm> GetBestMatches(
+  base::span<const StoredCredential> GetBestMatches(
       PasswordManagerDriver* driver,
       autofill::FormRendererId form_id);
 
@@ -249,7 +273,7 @@ class PasswordManager : public PasswordManagerInterface {
     return GetSubmittedManager();
   }
 
-  const std::map<autofill::FormSignature, FormPredictions>&
+  const std::map<std::pair<autofill::FormSignature, DriverId>, FormPredictions>&
   GetServerPredictionsForTesting() const {
     return server_predictions_;
   }
@@ -305,7 +329,13 @@ class PasswordManager : public PasswordManagerInterface {
 
   // Called when the login was considered unsuccessful. Takes care of logging
   // and reporting metrics and resets the submitted manager data.
-  void OnLoginFailed(BrowserSavePasswordProgressLogger* logger);
+  void OnLoginFailed(PasswordManagerDriver* driver,
+                     BrowserSavePasswordProgressLogger* logger);
+
+  // Similar to OnLoginFailed() but doesn't report metrics and doesn't reset the
+  // submitted manager data.
+  void OnLoginPotentiallyFailed(PasswordManagerDriver* driver,
+                                BrowserSavePasswordProgressLogger* logger);
 
   // Checks for every form in |forms_data| whether |pending_login_managers_|
   // already contain a manager for that form. If not, adds a manager for each
@@ -321,7 +351,9 @@ class PasswordManager : public PasswordManagerInterface {
 
   // Create PasswordFormManager for |form|, adds the newly created one to
   // |form_managers_| and returns it.
-  PasswordFormManager* CreateFormManager(PasswordManagerDriver* driver,
+  // Returns nullptr if the manager should not be created for a form (e.g. when
+  // filling is disabled).
+  PasswordFormManager* CreateFormManager(PasswordManagerDriver& driver,
                                          const autofill::FormData& form);
 
   // Passes |form| to PasswordFormManager that manages it for using it after
@@ -353,12 +385,6 @@ class PasswordManager : public PasswordManagerInterface {
   // gone.
   std::unique_ptr<PasswordFormManagerForUI> MoveOwnedSubmittedManager();
 
-  // Records provisional save failure using current |client_| and
-  // |main_frame_url_|.
-  void RecordProvisionalSaveFailure(
-      PasswordManagerMetricsRecorder::ProvisionalSaveFailure failure,
-      const GURL& form_origin);
-
   // Returns the manager which manages |form_id|. |driver| is needed to
   // determine the match. Returns nullptr when no matched manager is found.
   PasswordFormManager* GetMatchedManagerForForm(
@@ -376,7 +402,7 @@ class PasswordManager : public PasswordManagerInterface {
   // `field_id` and `driver_id`.
   std::optional<FormPredictions> FindServerPredictionsForField(
       autofill::FieldRendererId field_id,
-      int driver_id);
+      DriverId driver_id);
 
   //  If `possible_username_.form_predictions` is missing, this functions tries
   //  to find predictions for the forms which contains `possible_usernames_` in
@@ -460,14 +486,9 @@ class PasswordManager : public PasswordManagerInterface {
 
   const base::CallbackListSubscription account_store_cb_list_subscription_;
 
-  // Records all visible forms seen during a page load, in all frames of the
-  // page. When the page stops loading, the password manager checks if one of
-  // the recorded forms matches the login form from the previous page
-  // (to see if the login was a failure), and clears the vector.
-  std::vector<autofill::FormData> visible_forms_data_;
-
   // Server predictions for the forms on the page.
-  std::map<autofill::FormSignature, FormPredictions> server_predictions_;
+  std::map<std::pair<autofill::FormSignature, DriverId>, FormPredictions>
+      server_predictions_;
 
   // Classification model predictions for the forms on the page, keyed by
   // the combination of the driver and the renderer id of the form, that allow
@@ -492,6 +513,8 @@ class PasswordManager : public PasswordManagerInterface {
       possible_usernames_ =
           base::LRUCache<PossibleUsernameFieldIdentifier, PossibleUsernameData>(
               kMaxSingleUsernameFieldsToStore);
+
+  base::ObserverList<Observer> observers_;
 };
 
 }  // namespace password_manager

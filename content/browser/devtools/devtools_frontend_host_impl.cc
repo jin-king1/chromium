@@ -10,8 +10,10 @@
 #include <string>
 
 #include "base/feature_list.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "content/browser/bad_message.h"
@@ -47,7 +49,7 @@ std::string RedactURL(const GURL& url) {
   if (!redacted_url.empty() && redacted_url.back() == '/') {
     redacted_url.pop_back();
   }
-  base::StrAppend(&redacted_url, {url.path_piece()});
+  base::StrAppend(&redacted_url, {url.path()});
   return redacted_url;
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -84,7 +86,7 @@ void DevToolsFrontendHost::SetupExtensionsAPI(
 
 // static
 scoped_refptr<base::RefCountedMemory>
-DevToolsFrontendHost::GetFrontendResourceBytes(const std::string& path) {
+DevToolsFrontendHost::GetFrontendResourceBytes(std::string_view path) {
   for (const auto& [resource_path, id, filepath] : kDevtoolsResources) {
     if (path == resource_path) {
       return GetContentClient()->GetDataResourceBytes(id);
@@ -94,7 +96,7 @@ DevToolsFrontendHost::GetFrontendResourceBytes(const std::string& path) {
 }
 
 // static
-std::string DevToolsFrontendHost::GetFrontendResource(const std::string& path) {
+std::string DevToolsFrontendHost::GetFrontendResource(std::string_view path) {
   scoped_refptr<base::RefCountedMemory> bytes = GetFrontendResourceBytes(path);
   if (!bytes)
     return std::string();
@@ -104,16 +106,13 @@ std::string DevToolsFrontendHost::GetFrontendResource(const std::string& path) {
 DevToolsFrontendHostImpl::DevToolsFrontendHostImpl(
     RenderFrameHost* frame_host,
     const HandleMessageCallback& handle_message_callback)
-    : web_contents_(WebContents::FromRenderFrameHost(frame_host)),
+    : WebContentsObserver(WebContents::FromRenderFrameHost(frame_host)),
       handle_message_callback_(handle_message_callback) {
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-  Observe(web_contents_);
-#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   mojo::AssociatedRemote<blink::mojom::DevToolsFrontend> frontend;
   frame_host->GetRemoteAssociatedInterfaces()->GetInterface(&frontend);
   std::string api_script =
-      content::DevToolsFrontendHost::GetFrontendResource(kCompatibilityScript) +
-      kCompatibilityScriptSourceURL;
+      base::StrCat({GetFrontendResource(kCompatibilityScript),
+                    kCompatibilityScriptSourceURL});
   frontend->SetupDevToolsFrontend(api_script,
                                   receiver_.BindNewEndpointAndPassRemote());
 }
@@ -121,13 +120,17 @@ DevToolsFrontendHostImpl::DevToolsFrontendHostImpl(
 DevToolsFrontendHostImpl::~DevToolsFrontendHostImpl() = default;
 
 void DevToolsFrontendHostImpl::BadMessageReceived() {
+  if (!web_contents()) {
+    return;
+  }
+
   bad_message::ReceivedBadMessage(
-      web_contents_->GetPrimaryMainFrame()->GetProcess(),
+      web_contents()->GetPrimaryMainFrame()->GetProcess(),
       bad_message::DFH_BAD_EMBEDDER_MESSAGE);
 }
 
 void DevToolsFrontendHostImpl::DispatchEmbedderMessage(
-    base::Value::Dict message) {
+    base::DictValue message) {
   handle_message_callback_.Run(std::move(message));
 }
 

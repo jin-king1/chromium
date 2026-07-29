@@ -14,13 +14,12 @@
 #include "base/metrics/user_metrics.h"
 #include "base/strings/strcat.h"
 #include "components/commerce/core/proto/merchant_trust.pb.h"
-#include "components/optimization_guide/core/hints_processing_util.h"
-#include "components/optimization_guide/core/optimization_guide_decider.h"
+#include "components/optimization_guide/core/hints/hints_processing_util.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/page_info/core/features.h"
 #include "components/page_info/core/merchant_trust_validation.h"
 #include "components/page_info/core/page_info_types.h"
-#include "components/page_info/core/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "net/base/url_util.h"
@@ -43,8 +42,6 @@ std::string GetUserActionString(
       return "BubbleClosed";
     case page_info::MerchantTrustInteraction::kSidePanelClosed:
       return "SidePanelClosed";
-    case page_info::MerchantTrustInteraction::kBubbleOpenedFromLocationBarChip:
-      return "BubbleOpenedFromLocationBarChip";
     case page_info::MerchantTrustInteraction::
         kSidePanelOpenedOnSameTabNavigation:
       return "SidePanelOpenedOnSameTabNavigation";
@@ -84,15 +81,6 @@ std::optional<page_info::MerchantData> GetSampleData() {
 }
 }  // namespace
 
-// static
-void MerchantTrustService::RegisterProfilePrefs(
-    user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterTimePref(prefs::kMerchantTrustUiLastInteractionTime,
-                             base::Time());
-  registry->RegisterTimePref(prefs::kMerchantTrustPageInfoLastOpenTime,
-                             base::Time());
-}
-
 MerchantTrustService::MerchantTrustService(
     std::unique_ptr<Delegate> delegate,
     optimization_guide::OptimizationGuideDecider* optimization_guide_decider,
@@ -126,12 +114,6 @@ void MerchantTrustService::GetMerchantTrustInfo(
       url, optimization_guide::proto::MERCHANT_TRUST_SIGNALS_V2,
       base::BindOnce(&MerchantTrustService::OnCanApplyOptimizationComplete,
                      weak_ptr_factory_.GetWeakPtr(), url, std::move(callback)));
-}
-
-void MerchantTrustService::MaybeShowEvaluationSurvey() {
-  if (CanShowEvaluationSurvey()) {
-    delegate_->ShowEvaluationSurvey();
-  }
 }
 
 void MerchantTrustService::OnCanApplyOptimizationComplete(
@@ -202,34 +184,6 @@ MerchantTrustService::GetMerchantDataFromProto(
   return merchant_data;
 }
 
-bool MerchantTrustService::CanShowEvaluationSurvey() {
-  if (base::FeatureList::IsEnabled(
-          page_info::kMerchantTrustEvaluationControlSurvey)) {
-    base::Time last_shown =
-        prefs_->GetTime(prefs::kMerchantTrustPageInfoLastOpenTime);
-
-    base::TimeDelta last_shown_delta = clock_->Now() - last_shown;
-    return last_shown_delta >=
-               kMerchantTrustEvaluationControlMinTimeToShowSurvey.Get() &&
-           last_shown_delta <=
-               kMerchantTrustEvaluationControlMaxTimeToShowSurvey.Get();
-  }
-
-  if (base::FeatureList::IsEnabled(
-          page_info::kMerchantTrustEvaluationExperimentSurvey)) {
-    base::Time last_shown =
-        prefs_->GetTime(prefs::kMerchantTrustUiLastInteractionTime);
-
-    base::TimeDelta last_shown_delta = clock_->Now() - last_shown;
-    return last_shown_delta >=
-               kMerchantTrustEvaluationExperimentMinTimeToShowSurvey.Get() &&
-           last_shown_delta <=
-               kMerchantTrustEvaluationExperimentMaxTimeToShowSurvey.Get();
-  }
-
-  return false;
-}
-
 void MerchantTrustService::RecordMerchantTrustInteraction(
     const GURL& url,
     MerchantTrustInteraction interaction) const {
@@ -265,7 +219,6 @@ void MerchantTrustService::RecordMerchantTrustUkm(
           .Record(ukm::UkmRecorder::Get());
       break;
     case MerchantTrustInteraction::kBubbleOpenedFromPageInfo:
-    case MerchantTrustInteraction::kBubbleOpenedFromLocationBarChip:
       ukm::builders::Shopping_MerchantTrust_BubbleOpened(source_id)
           .SetHasOccurred(true)
           .Record(ukm::UkmRecorder::Get());
@@ -294,7 +247,6 @@ void MerchantTrustService::RecordEngagementScore(
           engagement_score);
       break;
     case MerchantTrustInteraction::kBubbleOpenedFromPageInfo:
-    case MerchantTrustInteraction::kBubbleOpenedFromLocationBarChip:
       UMA_HISTOGRAM_COUNTS_100(
           "Security.PageInfo.MerchantTrustEngagement.BubbleOpened",
           engagement_score);

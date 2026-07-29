@@ -5,13 +5,10 @@
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 
 #include "base/check_op.h"
-#include "base/functional/callback_forward.h"
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/privacy_sandbox/tracking_protection_settings_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profiles_state.h"
-#include "chrome/browser/tpcd/metadata/manager_factory.h"
 #include "chrome/browser/webid/federated_identity_account_keyed_permission_context.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/content_settings/core/common/pref_names.h"
@@ -22,7 +19,7 @@
 #include "extensions/buildflags/buildflags.h"
 #include "third_party/blink/public/common/features_generated.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/common/constants.h"
 #endif
 
@@ -57,7 +54,6 @@ CookieSettingsFactory::CookieSettingsFactory()
               .WithAshInternals(ProfileSelection::kOwnInstance)
               .Build()) {
   DependsOn(HostContentSettingsMapFactory::GetInstance());
-  DependsOn(TrackingProtectionSettingsFactory::GetInstance());
 }
 
 CookieSettingsFactory::~CookieSettingsFactory() = default;
@@ -80,7 +76,7 @@ CookieSettingsFactory::BuildServiceInstanceFor(
   }
 
   const char* extension_scheme =
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
       extensions::kExtensionScheme;
 #else
       content_settings::kDummyExtensionScheme;
@@ -90,30 +86,22 @@ CookieSettingsFactory::BuildServiceInstanceFor(
       HostContentSettingsMapFactory::GetForProfile(profile);
 
   content_settings::CookieSettings::ComputeFedCmSharingPermissionsCallback
-      compute_fedcm_sharing_permissions =
-          base::FeatureList::IsEnabled(
-              blink::features::kFedCmWithStorageAccessAPI)
-              ? base::BindRepeating(
-                    [](Profile* profile, scoped_refptr<HostContentSettingsMap>
-                                             host_content_settings_map)
-                        -> ContentSettingsForOneType {
-                      // This is called by the CookieSettings ctor, and
-                      // FederatedIdentityPermissionContextFactory
-                      // (transitively) depends on CookieSettingsFactory so we
-                      // cannot depend on
-                      // FederatedIdentityPermissionContextFactory here.
+      compute_fedcm_sharing_permissions = base::BindRepeating(
+          [](Profile* profile,
+             scoped_refptr<HostContentSettingsMap> host_content_settings_map)
+              -> ContentSettingsForOneType {
+            // This is called by the CookieSettings ctor, and
+            // FederatedIdentityPermissionContextFactory (transitively) depends
+            // on CookieSettingsFactory so we cannot depend on
+            // FederatedIdentityPermissionContextFactory here.
 
-                      return FederatedIdentityAccountKeyedPermissionContext(
-                                 profile, host_content_settings_map.get())
-                          .GetSharingPermissionGrantsAsContentSettings();
-                    },
-                    profile, scoped_refptr(host_content_settings_map))
-              : content_settings::CookieSettings::
-                    NoFedCmSharingPermissionsCallback();
+            return FederatedIdentityAccountKeyedPermissionContext(
+                       profile, host_content_settings_map.get())
+                .GetSharingPermissionGrantsAsContentSettings();
+          },
+          profile, scoped_refptr(host_content_settings_map));
 
   return new content_settings::CookieSettings(
-      host_content_settings_map, prefs,
-      TrackingProtectionSettingsFactory::GetForProfile(profile),
-      profile->IsIncognitoProfile(), compute_fedcm_sharing_permissions,
-      tpcd::metadata::ManagerFactory::GetForProfile(profile), extension_scheme);
+      host_content_settings_map, prefs, profile->IsIncognitoProfile(),
+      compute_fedcm_sharing_permissions, extension_scheme);
 }

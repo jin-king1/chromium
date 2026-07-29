@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/config/features.gni")
+import("//build/nocompile.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 
 source_set("tests") {
@@ -29,6 +30,9 @@ source_set("tests") {
     "equals_unittest.cc",
     "extra_cpp_template_unittest.cc",
     "feature_unittest.cc",
+    "fixed_array_size_unittest.cc",
+    "fixed_array_size_unittest_mojom_traits.cc",
+    "fixed_array_size_unittest_mojom_traits.h",
     "flush_async_unittest.cc",
     "handle_passing_unittest.cc",
     "hash_unittest.cc",
@@ -42,15 +46,20 @@ source_set("tests") {
     "native_struct_unittest.cc",
     "new_endpoint_types_unittest.cc",
     "nullable_value_types_unittest.cc",
+    "race_condition_scheduler.cc",
+    "race_condition_scheduler.h",
     "receiver_callback_unittest.cc",
     "receiver_set_unittest.cc",
     "receiver_unittest.cc",
     "remote_unittest.cc",
     "report_bad_message_unittest.cc",
     "request_response_unittest.cc",
+    "result_response_unittest.cc",
+    "result_response_unittest_mojom_traits.h",
     "router_test_util.cc",
     "router_test_util.h",
     "sample_service_unittest.cc",
+    "serialization_death_unittest.cc",
     "serialization_warning_unittest.cc",
     "service_factory_unittest.cc",
     "struct_headers_unittest.cc",
@@ -59,6 +68,8 @@ source_set("tests") {
     "sync_handle_registry_unittest.cc",
     "sync_method_unittest.cc",
     "test_helpers_unittest.cc",
+    "testable_multiplex_router.cc",
+    "testable_multiplex_router.h",
     "type_conversion_unittest.cc",
     "union_unittest.cc",
     "validation_context_unittest.cc",
@@ -87,7 +98,7 @@ source_set("tests") {
     "//mojo/public/interfaces/bindings/tests:test_interfaces_for_containers_of_optionals",
     "//mojo/public/interfaces/bindings/tests:test_struct_traits_interfaces",
     "//testing/gtest",
-    "//third_party/ipcz/src:ipcz_test_support_chromium",
+    "//third_party/ipcz/src:ipcz_test_support",
   ]
 
   if (is_ios) {
@@ -111,6 +122,24 @@ source_set("tests") {
       "//mojo/public/interfaces/bindings/tests:test_interfaces_blink",
     ]
     defines = [ "BLINK_MOJO_IMPL=1" ]
+  }
+
+  if (enable_nocompile_tests) {
+    deps += [ ":bindings_nocompile_tests" ]
+  }
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+}
+
+if (enable_nocompile_tests) {
+  nocompile_source_set("bindings_nocompile_tests") {
+    sources = [ "binder_map_nocompile.nc" ]
+    deps = [
+      ":test_mojom",
+      "//mojo/public/cpp/bindings",
+    ]
   }
 }
 
@@ -146,6 +175,10 @@ if (use_blink) {
       "//mojo/public/interfaces/bindings/tests:test_wtf_types_blink",
       "//testing/gtest",
     ]
+
+    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+    # enable the diagnostic by removing this line.
+    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 }
 
@@ -157,7 +190,7 @@ source_set("struct_with_traits_impl") {
 
   deps = [
     "//base",
-    "//mojo/public/cpp/system:system",
+    "//mojo/public/cpp/system",
   ]
 }
 
@@ -181,11 +214,14 @@ mojom("test_mojom") {
     "enum_headers_unittest.test-mojom",
     "feature_unittest.test-mojom",
     "feature_unittest_other.test-mojom",
+    "fixed_array_size_unittest.test-mojom",
     "flush_async_unittest.test-mojom",
     "idle_tracking_unittest.test-mojom",
     "interface_unittest.test-mojom",
     "receiver_unittest.test-mojom",
     "remote_unittest.test-mojom",
+    "result_response.test-mojom",
+    "serialization_death.test-mojom",
     "service_factory_unittest.test-mojom",
     "struct_headers_unittest.test-mojom",
     "supports_urgent_attribute_unittest.test-mojom",
@@ -210,6 +246,28 @@ mojom("test_mojom") {
         },
       ]
       traits_headers = [ "default_construct_unittest_mojom_traits.h" ]
+    },
+    {
+      types = [
+        {
+          mojom = "mojo.test.fixed_array_size_unittest.mojom.Struct3"
+          cpp = "::mojo::test::fixed_array_size_unittest::TypemappedStruct3"
+        },
+      ]
+      traits_headers = [ "fixed_array_size_unittest_mojom_traits.h" ]
+    },
+    {
+      types = [
+        {
+          mojom = "mojo.test.mojom.ResultValue"
+          cpp = "::mojo::test::MappedResultValue"
+        },
+        {
+          mojom = "mojo.test.mojom.ResultError"
+          cpp = "::mojo::test::MappedResultError"
+        },
+      ]
+      traits_headers = [ "result_response_unittest_mojom_traits.h" ]
     },
   ]
 }

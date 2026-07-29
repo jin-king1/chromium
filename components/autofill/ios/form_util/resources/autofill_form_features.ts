@@ -2,134 +2,163 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
+import {CrWebApi, gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
 
 /**
  * @fileoverview Contains feature flag state for behavior relating to Autofill
  *     form extraction and filling. Each entry should correspond to a
- *     base::Feature in C++ land.
+ *     base::Feature in C++ and a placeholder that is dynamically replaced by
+ *     C++ at script injection time.
  */
+
+declare const gCrWebPlaceholderAutofillAcrossIframesEnabled: boolean;
+declare const gCrWebPlaceholderAutofillAcrossIframesThrottling: boolean;
+declare const gCrWebPlaceholderAutofillDisallowMoreHyphenLikeLabels: boolean;
+declare const gCrWebPlaceholderAutofillIgnoreCheckableElements: boolean;
+declare const gCrWebPlaceholderAutofillSupportDateInput: boolean;
+declare const gCrWebPlaceholderAutofillCorrectUserEditedBitInParsedField:
+    boolean;
+declare const gCrWebPlaceholderAutofillAllowDefaultPreventedSubmission: boolean;
+declare const gCrWebPlaceholderAutofillDedupeFormSubmission: boolean;
+declare const gCrWebPlaceholderAutofillEmailVerification: boolean;
+declare const gCrWebPlaceholderAutofillReportFormSubmissionErrors: boolean;
+declare const gCrWebPlaceholderAutofillCountFormSubmissionInRenderer: boolean;
 
 // LINT.IfChange(autofill_across_iframes_ios)
 /**
  * Whether or not to register and return child frame IDs when extracting forms.
- * Corresponds to autofill::feature::AutofillAcrossIframesIos.
+ * Corresponds to autofill::features::kAutofillAcrossIframesIos.
  */
-let autofillAcrossIframes: boolean = false;
+function isAutofillAcrossIframesEnabled(): boolean {
+  return gCrWebPlaceholderAutofillAcrossIframesEnabled;
+}
 
 /**
  * True if the throttling of child frames for autofill across iframes is
  * enabled.
  */
-let autofillAcrossIframesThrottling: boolean = false;
+function isAutofillAcrossIframesThrottlingEnabled(): boolean {
+  return gCrWebPlaceholderAutofillAcrossIframesThrottling;
+}
 // LINT.ThenChange(//components/autofill/core/common/autofill_features.cc:autofill_across_iframes_ios)
 
-// LINT.IfChange(autofill_isolated_content_world)
+// LINT.IfChange(autofill_disallow_more_hyphen_like_labels)
 /**
- Enables the logic necessary for Autofill to work from an isolated content world
- without breaking the features that need to be in the page content world.
+ * When true, labels that only contain em dashes, minuses, fullwidth hyphens
+ * and other special characters are disallowed.
  */
-let autofillIsolatedContentWorld: boolean = false;
-// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_isolated_content_world)
+function isAutofillDisallowMoreHyphenLikeLabelsEnabled(): boolean {
+  return gCrWebPlaceholderAutofillDisallowMoreHyphenLikeLabels;
+}
+// LINT.ThenChange(//components/autofill/core/common/autofill_features.cc:autofill_disallow_more_hyphen_like_labels)
 
-// LINT.IfChange(autofill_fix_post_filling_payment_sheet)
+// LINT.IfChange(autofill_ignore_checkable_elements)
 /**
-Enables fixing the issue where the payment sheet spams after dismissing a
-modal dialog that was triggered from the KA (e.g. filling a suggestion).
+ * If true, checkboxes and radio buttons aren't extracted anymore.
  */
-let autofillFixPaymentSheetSpam: boolean = false;
-// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_fix_post_filling_payment_sheet)
+function isAutofillIgnoreCheckableElementsEnabled(): boolean {
+  return gCrWebPlaceholderAutofillIgnoreCheckableElements;
+}
+// LINT.ThenChange(//components/autofill/core/common/autofill_features.cc:autofill_ignore_checkable_elements)
 
+// LINT.IfChange(autofill_support_date_input)
+/**
+ * If true, support for <input type="date"> fields is enabled.
+ */
+function isAutofillSupportDateInputEnabled(): boolean {
+  return gCrWebPlaceholderAutofillSupportDateInput;
+}
+// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_support_date_input)
 
 // LINT.IfChange(autofill_correct_user_edited_bit_in_parsed_field)
 /**
-Enables correctly setting the is_user_edited bit in the parsed form fields
-instead of using true by default.
- */
-let autofillCorrectUserEditedBitInParsedField: boolean = false;
-// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_correct_user_edited_bit_in_parsed_field)
-
-/**
- * @see autofillAcrossIframes
- */
-function setAutofillAcrossIframes(enabled: boolean): void {
-  autofillAcrossIframes = enabled;
-}
-
-/**
- * @see autofillAcrossIframes
- */
-function isAutofillAcrossIframesEnabled(): boolean {
-  return autofillAcrossIframes;
-}
-
-/**
- * @see autofillAcrossIframesThrottling
- */
-function setAutofillAcrossIframesThrottling(enabled: boolean): void {
-  autofillAcrossIframesThrottling = enabled;
-}
-
-/**
- * @see setAutofillAcrossIframesThrottling
- */
-function isAutofillAcrossIframesThrottlingEnabled(): boolean {
-  return autofillAcrossIframesThrottling;
-}
-
-/**
- * @see autofillIsolatedContentWorld
- */
-function setAutofillIsolatedContentWorld(enabled: boolean): void {
-  autofillIsolatedContentWorld = enabled;
-}
-
-/**
- * @see autofillIsolatedContentWorld
- */
-function isAutofillIsolatedContentWorldEnabled(): boolean {
-  return autofillIsolatedContentWorld;
-}
-
-/**
- * @see autofillFixPaymentSheetSpam
- */
-function setAutofillFixPaymentSheetSpam(enabled: boolean): void {
-  autofillFixPaymentSheetSpam = enabled;
-}
-
-/**
- * @see autofillFixPaymentSheetSpam
- */
-function isAutofillFixPaymentSheetSpamEnabled(): boolean {
-  return autofillFixPaymentSheetSpam;
-}
-
-/**
- * @see autofillCorrectUserEditedBitInParsedField
- */
-function setAutofillCorrectUserEditedBitInParsedField(enabled: boolean): void {
-  autofillCorrectUserEditedBitInParsedField = enabled;
-}
-
-/**
- * @see autofillCorrectUserEditedBitInParsedField
+ * Enables correctly setting the is_user_edited_deprecated bit in the parsed
+ * form fields instead of using true by default.
  */
 function isAutofillCorrectUserEditedBitInParsedField(): boolean {
-  return autofillCorrectUserEditedBitInParsedField;
+  return gCrWebPlaceholderAutofillCorrectUserEditedBitInParsedField;
 }
+// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_correct_user_edited_bit_in_parsed_field)
 
-// Expose globally via `gCrWeb` instead of `export` to ensure state (feature
-// on/off) is maintained across imports.
-gCrWeb.autofill_form_features = {
-  setAutofillAcrossIframes,
-  isAutofillAcrossIframesEnabled,
-  setAutofillAcrossIframesThrottling,
-  isAutofillAcrossIframesThrottlingEnabled,
-  setAutofillIsolatedContentWorld,
-  isAutofillIsolatedContentWorldEnabled,
-  setAutofillFixPaymentSheetSpam,
-  isAutofillFixPaymentSheetSpamEnabled,
-  setAutofillCorrectUserEditedBitInParsedField,
-  isAutofillCorrectUserEditedBitInParsedField,
-};
+// LINT.IfChange(autofill_allow_default_prevented_submission)
+/**
+ * Allows detecting form submissions that are `defaultPrevented` by the page
+ * content.
+ */
+function isAutofillAllowDefaultPreventedSubmission(): boolean {
+  return gCrWebPlaceholderAutofillAllowDefaultPreventedSubmission;
+}
+// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_allow_default_prevented_submission)
+
+// LINT.IfChange(autofill_dedupe_form_submission)
+/**
+ * Dedupes form submission by only allowing one submission per form.
+ */
+function isAutofillDedupeFormSubmissionEnabled(): boolean {
+  return gCrWebPlaceholderAutofillDedupeFormSubmission;
+}
+// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_dedupe_form_submission)
+
+// LINT.IfChange(autofill_email_verification)
+/**
+ * Whether or not the Email Verification Protocol is enabled.
+ */
+function isAutofillEmailVerificationEnabled(): boolean {
+  return gCrWebPlaceholderAutofillEmailVerification;
+}
+// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_email_verification)
+
+// LINT.IfChange(autofill_report_form_submission_errors)
+/**
+ * Reports JS errors that occur upon handling form submission in the renderer.
+ */
+function isAutofillReportFormSubmissionErrorsEnabled(): boolean {
+  return gCrWebPlaceholderAutofillReportFormSubmissionErrors;
+}
+// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_report_form_submission_errors)
+
+// LINT.IfChange(autofill_count_form_submission_in_renderer)
+/**
+ * Record form submissions events that are detected in the renderer before they
+ * are processed.
+ */
+function isAutofillCountFormSubmissionInRendererEnabled(): boolean {
+  return gCrWebPlaceholderAutofillCountFormSubmissionInRenderer;
+}
+// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_count_form_submission_in_renderer)
+
+// Expose globally via `gCrWeb` under the 'autofill_form_features' API name.
+const autofillFormFeatures = new CrWebApi('autofill_form_features');
+
+autofillFormFeatures.addFunction(
+    'isAutofillAcrossIframesEnabled', isAutofillAcrossIframesEnabled);
+autofillFormFeatures.addFunction(
+    'isAutofillAcrossIframesThrottlingEnabled',
+    isAutofillAcrossIframesThrottlingEnabled);
+autofillFormFeatures.addFunction(
+    'isAutofillDisallowMoreHyphenLikeLabelsEnabled',
+    isAutofillDisallowMoreHyphenLikeLabelsEnabled);
+autofillFormFeatures.addFunction(
+    'isAutofillIgnoreCheckableElementsEnabled',
+    isAutofillIgnoreCheckableElementsEnabled);
+autofillFormFeatures.addFunction(
+    'isAutofillSupportDateInputEnabled', isAutofillSupportDateInputEnabled);
+autofillFormFeatures.addFunction(
+    'isAutofillCorrectUserEditedBitInParsedField',
+    isAutofillCorrectUserEditedBitInParsedField);
+autofillFormFeatures.addFunction(
+    'isAutofillAllowDefaultPreventedSubmission',
+    isAutofillAllowDefaultPreventedSubmission);
+autofillFormFeatures.addFunction(
+    'isAutofillDedupeFormSubmissionEnabled',
+    isAutofillDedupeFormSubmissionEnabled);
+autofillFormFeatures.addFunction(
+    'isAutofillEmailVerificationEnabled', isAutofillEmailVerificationEnabled);
+autofillFormFeatures.addFunction(
+    'isAutofillReportFormSubmissionErrorsEnabled',
+    isAutofillReportFormSubmissionErrorsEnabled);
+autofillFormFeatures.addFunction(
+    'isAutofillCountFormSubmissionInRendererEnabled',
+    isAutofillCountFormSubmissionInRendererEnabled);
+
+gCrWeb.registerApi(autofillFormFeatures);

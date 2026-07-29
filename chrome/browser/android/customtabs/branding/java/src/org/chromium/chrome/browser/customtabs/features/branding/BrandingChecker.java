@@ -4,13 +4,13 @@
 
 package org.chromium.chrome.browser.customtabs.features.branding;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.os.SystemClock;
 import android.text.TextUtils;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.MainThread;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import androidx.annotation.WorkerThread;
 
@@ -18,8 +18,11 @@ import org.chromium.base.Callback;
 import org.chromium.base.PackageUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.AsyncTask;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 /** Class that maintain the data for the client app id -> last time branding is shown. */
+@NullMarked
 class BrandingChecker extends AsyncTask<BrandingInfo> {
     public static final int BRANDING_TIME_NOT_FOUND = -1;
 
@@ -83,8 +86,7 @@ class BrandingChecker extends AsyncTask<BrandingInfo> {
          * @return {@link MismatchNotificationData} object.
          */
         @WorkerThread
-        @Nullable
-        MismatchNotificationData getMimData();
+        @Nullable MismatchNotificationData getMimData();
 
         /**
          * Record the account mismatch notification data. Putting empty or null data is no-op since
@@ -96,7 +98,7 @@ class BrandingChecker extends AsyncTask<BrandingInfo> {
         void putMimData(MismatchNotificationData data);
     }
 
-    private final String mAppId;
+    private final @Nullable String mAppId;
     private final long mBrandingCadence;
     private final Callback<BrandingInfo> mBrandingCheckCallback;
     @BrandingDecision private final int mDefaultBrandingDecision;
@@ -114,9 +116,9 @@ class BrandingChecker extends AsyncTask<BrandingInfo> {
      * @param defaultBrandingDecision Default branding decision when task is canceled.
      */
     BrandingChecker(
-            String appId,
+            @Nullable String appId,
             BrandingLaunchTimeStorage storage,
-            @NonNull Callback<BrandingInfo> brandingCheckCallback,
+            Callback<BrandingInfo> brandingCheckCallback,
             long brandingCadence,
             @BrandingDecision int defaultBrandingDecision) {
         mAppId = appId;
@@ -142,9 +144,6 @@ class BrandingChecker extends AsyncTask<BrandingInfo> {
         }
         BrandingInfo info = new BrandingInfo(brandingDecision, lastShowTimeGlobal, mimData);
         @BrandingAppIdType int appIdType = getAppIdType(mAppId);
-        RecordHistogram.recordTimesHistogram(
-                "CustomTabs.Branding.BrandingCheckDuration",
-                SystemClock.elapsedRealtime() - startTime);
         RecordHistogram.recordEnumeratedHistogram(
                 "CustomTabs.Branding.AppIdType", appIdType, BrandingAppIdType.NUM_ENTRIES);
 
@@ -164,7 +163,7 @@ class BrandingChecker extends AsyncTask<BrandingInfo> {
     }
 
     @VisibleForTesting
-    static @BrandingAppIdType int getAppIdType(String appId) {
+    static @BrandingAppIdType int getAppIdType(@Nullable String appId) {
         if (TextUtils.isEmpty(appId)) return BrandingAppIdType.INVALID;
         if (PackageUtils.isPackageInstalled(appId)) return BrandingAppIdType.PACKAGE_NAME;
         return BrandingAppIdType.REFERRER;
@@ -188,11 +187,13 @@ class BrandingChecker extends AsyncTask<BrandingInfo> {
 
         // Note: Branding decision can be altered to MIM when mismatch notification UI overrides it
         // later, but this still counts as 'shown' to the respect global rate-limiting policy.
-        if (info.getDecision() != BrandingDecision.NONE && !TextUtils.isEmpty(mAppId)) {
+        if (assumeNonNull(info.getDecision()) != BrandingDecision.NONE
+                && !TextUtils.isEmpty(mAppId)) {
             mStorage.put(mAppId, taskFinishedTime);
         }
 
         // Remove the storage from reference.
-        mStorage = null;
+        // Setting non-nullable to null because object is no longer usable afterwards.
+        mStorage = assumeNonNull(null);
     }
 }

@@ -2,26 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
-
-static_library("display") {
-  sources = [
-    "quirks_manager_delegate_impl.cc",
-    "quirks_manager_delegate_impl.h",
-  ]
-
-  public_deps = [ "//components/quirks" ]
-
-  deps = [
-    "//ash/constants",
-    "//base",
-    "//chrome/common:constants",
-    "//chromeos/ash/components/settings",
-    "//google_apis",
-  ]
-}
 
 source_set("browser_tests") {
   testonly = true
@@ -40,8 +21,6 @@ source_set("browser_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/browser:browser_process",
-    "//chrome/browser/ui:browser_navigator_params_headers",
-    "//chrome/browser/ui:ui",
     "//chrome/test:test_support_ui",
     "//components/prefs",
     "//components/quirks",

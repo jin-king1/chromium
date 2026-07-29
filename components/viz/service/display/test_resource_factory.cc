@@ -12,6 +12,7 @@
 #include "components/viz/service/display/display_resource_provider_skia.h"
 #include "components/viz/test/fake_skia_output_surface.h"
 #include "components/viz/test/test_context_provider.h"
+#include "gpu/command_buffer/client/client_shared_image.h"
 
 namespace viz {
 namespace {
@@ -19,11 +20,21 @@ namespace {
 static ResourceId CreateResourceInLayerTree(
     ClientResourceProvider* child_resource_provider,
     const gfx::Size& size,
-    bool is_overlay_candidate,
+    const TestResourceFactory::TestResourceContext& resource_context,
     SharedImageFormat format) {
-  auto resource = TransferableResource::MakeGpu(
-      gpu::Mailbox::Generate(), GL_TEXTURE_2D, gpu::SyncToken(), size, format,
-      is_overlay_candidate);
+  gpu::SharedImageUsageSet usage = gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
+  if (resource_context.is_overlay_candidate) {
+    usage |= gpu::SHARED_IMAGE_USAGE_SCANOUT;
+  }
+  if (resource_context.is_low_latency_rendering) {
+    usage |= gpu::SHARED_IMAGE_USAGE_CONCURRENT_READ_WRITE;
+  }
+  auto resource = TransferableResource::Make(
+      gpu::ClientSharedImage::CreateForTesting(
+          {format, size, gfx::ColorSpace(), kTopLeft_GrSurfaceOrigin,
+           kPremul_SkAlphaType, usage},
+          GL_TEXTURE_2D),
+      TransferableResource::ResourceSource::kTest, gpu::SyncToken());
 
   ResourceId resource_id =
       child_resource_provider->ImportResource(resource, base::DoNothing());
@@ -41,7 +52,7 @@ TestResourceFactory::TestResourceFactory() {
   lock_set_for_external_use_.emplace(display_resource_provider_.get(),
                                      output_surface_.get());
 
-  client_context_provider_ = TestContextProvider::Create();
+  client_context_provider_ = TestContextProvider::CreateGLES();
   client_context_provider_->BindToCurrentSequence();
   client_resource_provider_ = std::make_unique<ClientResourceProvider>();
 }
@@ -55,12 +66,13 @@ TestResourceFactory::~TestResourceFactory() {
   output_surface_ = nullptr;
 }
 
-ResourceId TestResourceFactory::CreateResource(const gfx::Size& size,
-                                               bool is_overlay_candidate,
-                                               SharedImageFormat format,
-                                               SurfaceId test_surface_id) {
+ResourceId TestResourceFactory::CreateResource(
+    const gfx::Size& size,
+    const TestResourceContext& resource_context,
+    SharedImageFormat format,
+    SurfaceId test_surface_id) {
   ResourceId resource_id = CreateResourceInLayerTree(
-      client_resource_provider_.get(), size, is_overlay_candidate, format);
+      client_resource_provider_.get(), size, resource_context, format);
 
   const int child_id = display_resource_provider_->CreateChild(
       base::DoNothing(), test_surface_id);
@@ -70,8 +82,10 @@ ResourceId TestResourceFactory::CreateResource(const gfx::Size& size,
   resource_ids_to_transfer.push_back(resource_id);
   std::vector<TransferableResource> list;
 
+  CHECK(client_context_provider_);
   client_resource_provider_->PrepareSendToParent(
-      resource_ids_to_transfer, &list, client_context_provider_.get());
+      resource_ids_to_transfer, &list,
+      client_context_provider_->SharedImageInterface());
   display_resource_provider_->ReceiveFromChild(child_id, list);
 
   // Delete it in the child so it won't be leaked, and will be released once

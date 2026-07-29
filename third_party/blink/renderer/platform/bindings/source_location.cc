@@ -4,17 +4,11 @@
 
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
 
-#include <memory>
-
-#include "base/memory/ptr_util.h"
 #include "base/tracing/protos/chrome_track_event.pbzero.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/bindings/thread_debugger.h"
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
-#include "third_party/blink/renderer/platform/bindings/v8_binding_macros.h"
-#include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/traced_value.h"
-#include "third_party/perfetto/include/perfetto/tracing/traced_proto.h"
 #include "v8/include/v8-inspector-protocol.h"
 
 namespace blink {
@@ -25,13 +19,14 @@ String ToPlatformString(const v8_inspector::StringView& string) {
   if (string.is8Bit()) {
     // SAFETY: v8_inspector::StringView guarantees characters8() and length()
     // are safe.
-    return String(
-        UNSAFE_BUFFERS(base::span(string.characters8(), string.length())));
+    return String(UNSAFE_BUFFERS(
+        base::span(base::unchecked, string.characters8(), string.length())));
   }
   // SAFETY: v8_inspector::StringView guarantees characters16() and length()
   // are safe.
   return String(UNSAFE_BUFFERS(base::span(
-      reinterpret_cast<const UChar*>(string.characters16()), string.length())));
+      base::unchecked, reinterpret_cast<const UChar*>(string.characters16()),
+      string.length())));
 }
 
 String ToPlatformString(std::unique_ptr<v8_inspector::StringBuffer> buffer) {
@@ -43,13 +38,14 @@ String ToPlatformString(std::unique_ptr<v8_inspector::StringBuffer> buffer) {
 }  // namespace
 
 // static
-std::unique_ptr<SourceLocation> SourceLocation::CaptureWithFullStackTrace() {
+SourceLocation* SourceLocation::CaptureWithFullStackTrace() {
   std::unique_ptr<v8_inspector::V8StackTrace> stack_trace =
       CaptureStackTraceInternal(true);
   if (stack_trace && !stack_trace->isEmpty()) {
     return CreateFromNonEmptyV8StackTraceInternal(std::move(stack_trace));
   }
-  return std::make_unique<SourceLocation>(String(), String(), 0, 0, nullptr, 0);
+  return MakeGarbageCollected<SourceLocation>(String(), String(), 0, 0, nullptr,
+                                              0);
 }
 
 // static
@@ -64,8 +60,7 @@ SourceLocation::CaptureStackTraceInternal(bool full) {
 }
 
 // static
-std::unique_ptr<SourceLocation>
-SourceLocation::CreateFromNonEmptyV8StackTraceInternal(
+SourceLocation* SourceLocation::CreateFromNonEmptyV8StackTraceInternal(
     std::unique_ptr<v8_inspector::V8StackTrace> stack_trace) {
   // Retrieve the data before passing the ownership to SourceLocation.
   String url = ToPlatformString(stack_trace->topSourceURL());
@@ -73,9 +68,9 @@ SourceLocation::CreateFromNonEmptyV8StackTraceInternal(
   unsigned line_number = stack_trace->topLineNumber();
   unsigned column_number = stack_trace->topColumnNumber();
   int script_id = stack_trace->topScriptId();
-  return base::WrapUnique(
-      new SourceLocation(url, function, line_number, column_number,
-                         std::move(stack_trace), script_id));
+  return MakeGarbageCollected<SourceLocation>(
+      url, function, line_number, column_number, std::move(stack_trace),
+      script_id);
 }
 
 SourceLocation::SourceLocation(const String& url, int char_position)
@@ -112,39 +107,10 @@ SourceLocation::SourceLocation(
 
 SourceLocation::~SourceLocation() = default;
 
-std::unique_ptr<SourceLocation> SourceLocation::Clone() const {
-  return base::WrapUnique(new SourceLocation(
+SourceLocation* SourceLocation::Clone() const {
+  return MakeGarbageCollected<SourceLocation>(
       url_, function_, line_number_, column_number_,
-      stack_trace_ ? stack_trace_->clone() : nullptr, script_id_));
-}
-
-void SourceLocation::WriteIntoTrace(
-    perfetto::TracedProto<SourceLocation::Proto> proto) const {
-  if (!stack_trace_ || stack_trace_->isEmpty()) {
-    return;
-  }
-
-  proto->set_function_name(
-      ToPlatformString(stack_trace_->topFunctionName()).Utf8());
-  proto->set_script_id(stack_trace_->topScriptId());
-  proto->set_url(ToPlatformString(stack_trace_->topSourceURL()).Utf8());
-  proto->set_line_number(stack_trace_->topLineNumber());
-  proto->set_column_number(stack_trace_->topColumnNumber());
-  proto->set_stack_trace(ToString().Utf8());
-
-  // TODO(https://crbug.com/1396277): This should be a WriteIntoTrace function
-  // once v8 has support for perfetto tracing (which is currently missing for v8
-  // chromium).
-  for (const auto& frame : stack_trace_->frames()) {
-    auto& stack_trace_pb = *(proto->add_stack_frames());
-    stack_trace_pb.set_function_name(
-        ToPlatformString(frame.functionName).Utf8());
-
-    auto& script_location = *(stack_trace_pb.set_script_location());
-    script_location.set_source_url(ToPlatformString(frame.sourceURL).Utf8());
-    script_location.set_line_number(frame.lineNumber);
-    script_location.set_column_number(frame.columnNumber);
-  }
+      stack_trace_ ? stack_trace_->clone() : nullptr, script_id_);
 }
 
 void SourceLocation::WriteIntoTrace(perfetto::TracedValue context) const {
@@ -212,20 +178,20 @@ SourceLocation::BuildInspectorObject(int max_async_depth) const {
                       : nullptr;
 }
 
-std::unique_ptr<SourceLocation> CaptureSourceLocation(const String& url,
-                                                      unsigned line_number,
-                                                      unsigned column_number) {
+SourceLocation* CaptureSourceLocation(const String& url,
+                                      unsigned line_number,
+                                      unsigned column_number) {
   std::unique_ptr<v8_inspector::V8StackTrace> stack_trace =
       SourceLocation::CaptureStackTraceInternal(false);
   if (stack_trace && !stack_trace->isEmpty()) {
     return SourceLocation::CreateFromNonEmptyV8StackTraceInternal(
         std::move(stack_trace));
   }
-  return std::make_unique<SourceLocation>(
+  return MakeGarbageCollected<SourceLocation>(
       url, String(), line_number, column_number, std::move(stack_trace));
 }
 
-std::unique_ptr<SourceLocation> CaptureSourceLocation() {
+SourceLocation* CaptureSourceLocation() {
   std::unique_ptr<v8_inspector::V8StackTrace> stack_trace =
       SourceLocation::CaptureStackTraceInternal(false);
   if (stack_trace && !stack_trace->isEmpty()) {
@@ -233,23 +199,23 @@ std::unique_ptr<SourceLocation> CaptureSourceLocation() {
         std::move(stack_trace));
   }
 
-  return std::make_unique<SourceLocation>(String(), String(), 0, 0,
-                                          std::move(stack_trace));
+  return MakeGarbageCollected<SourceLocation>(String(), String(), 0, 0,
+                                              std::move(stack_trace));
 }
 
-std::unique_ptr<SourceLocation> CaptureSourceLocation(
-    v8::Isolate* isolate,
-    v8::Local<v8::Function> function) {
+SourceLocation* CaptureSourceLocation(v8::Isolate* isolate,
+                                      v8::Local<v8::Function> function) {
   if (!function.IsEmpty()) {
     v8::Location location = function->GetScriptLocation();
-    return std::make_unique<SourceLocation>(
+    return MakeGarbageCollected<SourceLocation>(
         ToCoreStringWithUndefinedOrNullCheck(
             isolate, function->GetScriptOrigin().ResourceName()),
         ToCoreStringWithUndefinedOrNullCheck(isolate, function->GetName()),
         location.GetLineNumber() + 1, location.GetColumnNumber() + 1, nullptr,
         function->ScriptId());
   }
-  return std::make_unique<SourceLocation>(String(), String(), 0, 0, nullptr, 0);
+  return MakeGarbageCollected<SourceLocation>(String(), String(), 0, 0, nullptr,
+                                              0);
 }
 
 }  // namespace blink

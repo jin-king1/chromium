@@ -30,7 +30,7 @@ class FakePictureLayerImpl : public PictureLayerImpl {
 
   std::unique_ptr<LayerImpl> CreateLayerImpl(
       LayerTreeImpl* tree_impl) const override;
-  void PushPropertiesTo(LayerImpl* layer_impl) override;
+  void CopyPropertiesTo(LayerImpl* layer_impl) const override;
   void AppendQuads(const AppendQuadsContext& context,
                    viz::CompositorRenderPass* render_pass,
                    AppendQuadsData* append_quads_data) override;
@@ -57,26 +57,23 @@ class FakePictureLayerImpl : public PictureLayerImpl {
   using PictureLayerImpl::CleanUpTilingsOnActiveLayer;
   using PictureLayerImpl::IsDirectlyCompositedImage;
   using PictureLayerImpl::MinimumContentsScale;
-  using PictureLayerImpl::SanityCheckTilingState;
   using PictureLayerImpl::UpdateDirectlyCompositedImageFromRasterSource;
-  using PictureLayerImpl::UpdateRasterSource;
 
   using PictureLayerImpl::MaximumTilingContentsScale;
   using PictureLayerImpl::UpdateIdealScales;
 
   void AddTilingUntilNextDraw(float scale) {
-    last_append_quads_tilings_.push_back(
-        AddTiling(gfx::AxisTransform2d(scale, gfx::Vector2dF())));
+    AddTiling(gfx::AxisTransform2d(scale, gfx::Vector2dF()));
+    GetLastAppendQuadsScalesForTesting().push_back(scale);
   }
 
   float raster_page_scale() const { return raster_page_scale_; }
   void set_raster_page_scale(float scale) { raster_page_scale_ = scale; }
 
-  using PictureLayerImpl::ideal_contents_scale_key;
+  using PictureLayerImpl::GetIdealContentsScaleKey;
   using PictureLayerImpl::raster_contents_scale_key;
 
   PictureLayerTiling* HighResTiling() const;
-  PictureLayerTiling* LowResTiling() const;
   size_t num_tilings() const { return tilings_->num_tilings(); }
 
   size_t GetNumberOfTilesWithResources() const;
@@ -112,14 +109,17 @@ class FakePictureLayerImpl : public PictureLayerImpl {
   void SetAllTilesReady();
   void SetAllTilesReadyInTiling(PictureLayerTiling* tiling);
   void SetTileReady(Tile* tile);
+  void InitializeTileWithResourceSize(Tile* tile,
+                                      const gfx::Size& resource_size);
   PictureLayerTilingSet* GetTilings() { return tilings_.get(); }
 
   // Add the given tiling as a "used" tiling during AppendQuads. This ensures
   // that future calls to UpdateTiles don't delete the tiling.
   void MarkAllTilingsUsed() {
-    last_append_quads_tilings_.clear();
+    GetLastAppendQuadsScalesForTesting().clear();
     for (size_t i = 0; i < tilings_->num_tilings(); ++i)
-      last_append_quads_tilings_.push_back(tilings_->tiling_at(i));
+      GetLastAppendQuadsScalesForTesting().push_back(
+          tilings_->tiling_at(i)->contents_scale_key());
   }
 
   size_t release_resources_count() const { return release_resources_count_; }
@@ -129,10 +129,6 @@ class FakePictureLayerImpl : public PictureLayerImpl {
 
   void ReleaseResources() override;
   void ReleaseTileResources() override;
-
-  bool only_used_low_res_last_append_quads() const {
-    return only_used_low_res_last_append_quads_;
-  }
 
   scoped_refptr<const DiscardableImageMap> discardable_image_map() const {
     return discardable_image_map_;

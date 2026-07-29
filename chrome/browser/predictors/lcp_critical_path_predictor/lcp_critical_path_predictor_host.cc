@@ -30,6 +30,11 @@ void LCPCriticalPathPredictorHost::Create(
     content::RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<blink::mojom::LCPCriticalPathPredictorHost>
         receiver) {
+  // Only valid for the main frame.
+  if (render_frame_host->GetParentOrOuterDocument()) {
+    return;
+  }
+
   // The object is bound to the lifetime of the |render_frame_host| and the mojo
   // connection. See DocumentService for details.
   new LCPCriticalPathPredictorHost(*render_frame_host, std::move(receiver));
@@ -39,7 +44,7 @@ LCPCriticalPathPredictorHost::~LCPCriticalPathPredictorHost() = default;
 
 LcpCriticalPathPredictorPageLoadMetricsObserver* LCPCriticalPathPredictorHost::
     GetLcpCriticalPathPredictorPageLoadMetricsObserver() const {
-  // Due to an unresolved bug (crbug.com/1335845), GetForPage can return
+  // Due to an unresolved bug (crbug.com/40847334), GetForPage can return
   // nullptr.
   if (auto* page_data =
           LcpCriticalPathPredictorPageLoadMetricsObserver::PageData::GetForPage(
@@ -53,12 +58,25 @@ LcpCriticalPathPredictorPageLoadMetricsObserver* LCPCriticalPathPredictorHost::
 }
 
 void LCPCriticalPathPredictorHost::OnLcpUpdated(
-    const std::optional<std::string>& lcp_element_locator,
-    bool is_image_element,
-    std::optional<uint32_t> predicted_lcp_index) {
+    blink::mojom::LcpElementPtr lcp_element) {
+  if (lcp_element->locator &&
+      lcp_element->locator->size() >
+          blink::features::kLCPCriticalPathPredictorMaxElementLocatorLength
+              .Get()) {
+    ReportBadMessageAndDeleteThis(
+        std::string("element_locator_string must be less than ") +
+        blink::features::kLCPCriticalPathPredictorMaxElementLocatorLength.name);
+    return;
+  }
   if (auto* plmo = GetLcpCriticalPathPredictorPageLoadMetricsObserver()) {
-    plmo->OnLcpUpdated(lcp_element_locator, is_image_element,
-                       predicted_lcp_index);
+    plmo->OnLcpUpdated(std::move(lcp_element));
+  }
+}
+
+void LCPCriticalPathPredictorHost::OnLcpTimingPredictedForTesting(
+    const std::optional<std::string>& element_locator) {
+  if (auto* plmo = GetLcpCriticalPathPredictorPageLoadMetricsObserver()) {
+    plmo->OnLcpTimingPredictedForTesting(element_locator);
   }
 }
 
@@ -72,14 +90,14 @@ void LCPCriticalPathPredictorHost::SetLcpInfluencerScriptUrls(
   }
 }
 
-void LCPCriticalPathPredictorHost::SetPreconnectOrigins(
-    const std::vector<GURL>& origins) {
+void LCPCriticalPathPredictorHost::AddPreconnectOrigin(
+    const url::Origin& origin) {
   if (!base::FeatureList::IsEnabled(
           blink::features::kLCPPAutoPreconnectLcpOrigin)) {
     return;
   }
   if (auto* plmo = GetLcpCriticalPathPredictorPageLoadMetricsObserver()) {
-    plmo->SetPreconnectOrigins(origins);
+    plmo->AddPreconnectOrigin(origin);
   }
 }
 

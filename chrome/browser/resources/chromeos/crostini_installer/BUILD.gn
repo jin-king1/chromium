@@ -9,12 +9,12 @@ build_webui("build") {
 
   static_files = [ "index.html" ]
 
-  web_component_files = [ "app.js" ]
-  non_web_component_files = [ "browser_proxy.js" ]
+  web_component_files = [ "app.ts" ]
+  ts_files = [ "browser_proxy.ts" ]
 
   mojo_files = [
-    "${root_gen_dir}\chrome\browser\ui\webui\ash\crostini_installer\crostini_installer.mojom-webui.ts",
     "${root_gen_dir}\chrome\browser\ash\crostini\crostini_types.mojom-webui.ts",
+    "${root_gen_dir}\chrome\browser\ui\webui\ash\crostini_installer\crostini_installer.mojom-webui.ts",
   ]
   mojo_files_deps = [
     "//chrome/browser/ash/crostini:crostini_installer_types_mojom_ts__generator",
@@ -22,9 +22,9 @@ build_webui("build") {
   ]
 
   webui_context_type = "trusted"
-  html_to_wrapper_template = "polymer"
 
   ts_deps = [
+    "//ash/webui/common/resources:build_ts",
     "//ash/webui/common/resources/cr_elements:build_ts",
     "//third_party/polymer/v3_0:library",
     "//ui/webui/resources/mojo:build_ts",

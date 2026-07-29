@@ -2,22 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "content/browser/speech/soda_speech_recognition_engine_impl.h"
 
-#include <string.h>
-
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/sequence_checker.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/task/bind_post_task.h"
 #include "content/browser/speech/speech_recognition_engine.h"
 #include "content/browser/speech/speech_recognition_manager_impl.h"
 #include "content/public/browser/speech_recognition_manager_delegate.h"
 #include "content/public/browser/speech_recognition_session_config.h"
+#include "media/base/audio_timestamp_helper.h"
 #include "media/mojo/mojom/audio_data.mojom.h"
 #include "media/mojo/mojom/media_types.mojom.h"
 #include "media/mojo/mojom/speech_recognition.mojom.h"
@@ -30,6 +29,9 @@ namespace {
 // Duration of each audio packet.
 constexpr int kAudioPacketIntervalMs = 100;
 constexpr float kSpeechRecognitionConfidence = 1.0f;
+
+constexpr char kWebSpeechSodaDuration[] =
+    "Accessibility.WebSpeech.SODA.Duration";
 
 // Substitute the real instances in browser and unit tests.
 SpeechRecognitionManagerDelegate* speech_recognition_mgr_delegate_for_tests =
@@ -79,7 +81,7 @@ bool SodaSpeechRecognitionEngineImpl::Initialize() {
   media::mojom::SpeechRecognitionOptionsPtr options =
       media::mojom::SpeechRecognitionOptions::New();
   options->recognition_mode = media::mojom::SpeechRecognitionMode::kCaption;
-  options->enable_formatting = false;
+  options->enable_formatting = config_.unspoken_punctuation;
   options->recognizer_client_type =
       media::mojom::RecognizerClientType::kLiveCaption;
   options->skip_continuously_empty_audio = true;
@@ -95,7 +97,8 @@ bool SodaSpeechRecognitionEngineImpl::Initialize() {
                          weak_factory_.GetWeakPtr())));
 
   speech_recognition_mgr_delegate->BindSpeechRecognitionContext(
-      std::move(speech_recognition_context_receiver));
+      std::move(speech_recognition_context_receiver), config_.language,
+      config_.initial_context.global_id);
 
   speech_recognition_context_.set_disconnect_handler(
       base::BindPostTaskToCurrentDefault(base::BindOnce(
@@ -108,6 +111,7 @@ void SodaSpeechRecognitionEngineImpl::StartRecognition() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
 
   is_start_recognition_ = true;
+  audio_duration_ = base::TimeDelta();
 }
 
 void SodaSpeechRecognitionEngineImpl::UpdateRecognitionContext(
@@ -121,6 +125,7 @@ void SodaSpeechRecognitionEngineImpl::UpdateRecognitionContext(
 void SodaSpeechRecognitionEngineImpl::EndRecognition() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
   is_start_recognition_ = false;
+  base::UmaHistogramLongTimes100(kWebSpeechSodaDuration, audio_duration_);
 }
 
 void SodaSpeechRecognitionEngineImpl::TakeAudioChunk(const AudioChunk& data) {
@@ -129,6 +134,9 @@ void SodaSpeechRecognitionEngineImpl::TakeAudioChunk(const AudioChunk& data) {
     Abort(media::mojom::SpeechRecognitionErrorCode::kNotAllowed);
     return;
   }
+
+  audio_duration_ += media::AudioTimestampHelper::FramesToTime(
+      data.NumSamples(), audio_parameters_.sample_rate());
 
   send_audio_callback_.Run(ConvertToAudioDataS16(data));
 }
@@ -218,7 +226,7 @@ void SodaSpeechRecognitionEngineImpl::SendAudioToSpeechRecognitionService(
   DCHECK(audio_data);
   if (speech_recognition_recognizer_.is_bound()) {
     speech_recognition_recognizer_->SendAudioToSpeechRecognitionService(
-        std::move(audio_data));
+        std::move(audio_data), std::nullopt);
   }
 }
 
@@ -254,9 +262,10 @@ SodaSpeechRecognitionEngineImpl::ConvertToAudioDataS16(
   signed_buffer->data.resize(audio_data.NumSamples() *
                              audio_parameters_.channels());
 
-  size_t audio_byte_size =
-      audio_data.NumSamples() * audio_data.bytes_per_sample();
-  memcpy(&signed_buffer->data[0], audio_data.SamplesData16(), audio_byte_size);
+  auto source_bytes = audio_data.data();
+  auto dest_bytes = base::as_writable_bytes(base::span(signed_buffer->data));
+  CHECK_EQ(source_bytes.size(), dest_bytes.size());
+  dest_bytes.copy_from(source_bytes);
 
   return signed_buffer;
 }

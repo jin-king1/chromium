@@ -8,13 +8,11 @@
 #include <iterator>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/sequence_checker.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
@@ -47,10 +45,6 @@ enum class PreferredAppsUpdateAction {
   kMaxValue = kUpgraded,
 };
 
-void LogPreferredAppEntryCount(int entry_count) {
-  base::UmaHistogramCounts10000("Apps.PreferredApps.EntryCount", entry_count);
-}
-
 // Performs blocking I/O. Called on another thread.
 void WriteDataBlocking(const base::FilePath& preferred_apps_file,
                        const std::string& preferred_apps) {
@@ -80,6 +74,7 @@ PreferredAppsImpl::PreferredAppsImpl(
     base::OnceClosure read_completed_for_testing,
     base::OnceClosure write_completed_for_testing)
     : host_(host),
+      preferred_apps_list_(this),
       profile_dir_(profile_dir),
       task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
@@ -92,6 +87,20 @@ PreferredAppsImpl::PreferredAppsImpl(
 
 PreferredAppsImpl::~PreferredAppsImpl() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+}
+
+bool PreferredAppsImpl::QueryConflict(const std::string& first_app_id,
+                                      const IntentFilterPtr& first_filter,
+                                      const std::string& second_app_id,
+                                      const IntentFilterPtr& second_filter) {
+  return host_->QueryConflict(first_app_id, first_filter, second_app_id,
+                              second_filter);
+}
+
+bool PreferredAppsImpl::IsWebAppInExtendedScope(
+    const GURL& url,
+    const std::string& app_id) const {
+  return host_->IsWebAppInExtendedScope(url, app_id);
 }
 
 void PreferredAppsImpl::RemovePreferredApp(const std::string& app_id) {
@@ -107,6 +116,25 @@ void PreferredAppsImpl::SetSupportedLinksPreference(
       &PreferredAppsImpl::SetSupportedLinksPreferenceImpl,
       weak_ptr_factory_.GetWeakPtr(), app_id, std::move(all_link_filters)));
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+void PreferredAppsImpl::SetProtocolLinkPreference(
+    const std::string& app_id,
+    IntentFilterPtr protocol_link_filter) {
+  RunAfterPreferredAppsReady(base::BindOnce(
+      &PreferredAppsImpl::SetProtocolLinkPreferenceImpl,
+      weak_ptr_factory_.GetWeakPtr(), app_id, std::move(protocol_link_filter)));
+}
+
+void PreferredAppsImpl::RemoveProtocolLinkFilters(
+    const std::string& app_id,
+    IntentFilters protocol_link_filters) {
+  RunAfterPreferredAppsReady(
+      base::BindOnce(&PreferredAppsImpl::RemoveProtocolLinkFiltersImpl,
+                     weak_ptr_factory_.GetWeakPtr(), app_id,
+                     std::move(protocol_link_filters)));
+}
+#endif
 
 void PreferredAppsImpl::RemoveSupportedLinksPreference(
     const std::string& app_id) {
@@ -204,8 +232,6 @@ void PreferredAppsImpl::ReadCompleted(std::string preferred_apps_string) {
     WriteToJSON(profile_dir_, preferred_apps_list_);
   }
 
-  LogPreferredAppEntryCount(preferred_apps_list_.GetEntrySize());
-
   while (!pending_preferred_apps_tasks_.empty()) {
     std::move(pending_preferred_apps_tasks_.front()).Run();
     pending_preferred_apps_tasks_.pop();
@@ -237,6 +263,7 @@ void PreferredAppsImpl::SetSupportedLinksPreferenceImpl(
   base::flat_map<std::string, IntentFilters> removed;
 
   for (auto& filter : all_link_filters) {
+    CHECK(apps_util::IsSupportedLinkForApp(app_id, filter));
     auto replaced_apps = preferred_apps_list_.AddPreferredApp(app_id, filter);
 
     // If we removed overlapping supported links when adding the new app, those
@@ -246,7 +273,7 @@ void PreferredAppsImpl::SetSupportedLinksPreferenceImpl(
     // can be notified correctly.
     for (auto& replaced_app_and_filters : replaced_apps) {
       const std::string& removed_app_id = replaced_app_and_filters.first;
-      bool first_removal_for_app = !base::Contains(removed, app_id);
+      bool first_removal_for_app = !removed.contains(app_id);
       bool did_replace_supported_link = std::ranges::any_of(
           replaced_app_and_filters.second,
           [&removed_app_id](const auto& filter) {
@@ -282,6 +309,36 @@ void PreferredAppsImpl::SetSupportedLinksPreferenceImpl(
                                              /*open_in_app=*/false);
   }
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+void PreferredAppsImpl::SetProtocolLinkPreferenceImpl(
+    const std::string& app_id,
+    IntentFilterPtr protocol_link_filter) {
+  CHECK(!apps_util::IsSupportedLinkForApp(app_id, protocol_link_filter));
+  preferred_apps_list_.AddPreferredApp(app_id, protocol_link_filter);
+  WriteToJSON(profile_dir_, preferred_apps_list_);
+
+  // We don't dispatch any events to observers as protocol links are not equal
+  // to supported links.
+}
+
+void PreferredAppsImpl::RemoveProtocolLinkFiltersImpl(
+    const std::string& app_id,
+    IntentFilters protocol_link_filters) {
+  bool needs_write = false;
+  for (const auto& filter : protocol_link_filters) {
+    CHECK(!apps_util::IsSupportedLinkForApp(app_id, filter));
+    needs_write |=
+        !preferred_apps_list_.DeletePreferredApp(app_id, filter).empty();
+  }
+  if (needs_write) {
+    WriteToJSON(profile_dir_, preferred_apps_list_);
+  }
+
+  // We don't dispatch any events to observers as protocol links are not equal
+  // to supported links.
+}
+#endif
 
 void PreferredAppsImpl::RemoveSupportedLinksPreferenceImpl(
     const std::string& app_id) {

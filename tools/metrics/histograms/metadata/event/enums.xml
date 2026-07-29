@@ -243,6 +243,36 @@ chromium-metrics-reviews@google.com.
              is system apps and dialogs"/>
 </enum>
 
+<!-- LINT.IfChange(DragAndDropSurface) -->
+
+<enum name="DragAndDropSurface">
+  <summary>The surface in which a drag and drop started and finished.</summary>
+  <int value="0" label="kDragBrowserDropSamePage"/>
+  <int value="1" label="kDragBrowserDropOutOfPage"/>
+  <int value="2" label="kDragSystemDropBrowser"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/browser/web_contents/web_contents_view_aura.cc:DragAndDropSurface) -->
+
+<!-- LINT.IfChange(DragAndDropToolType) -->
+
+<enum name="DragAndDropToolType">
+  <summary>The type of tool that can trigger a drag and drop.</summary>
+  <int value="0" label="Unknown">
+    The tool is unknown. (Usually for drags that started outside the browser)
+  </int>
+  <int value="1" label="Mouse">The tool is a mouse or trackpad.</int>
+  <int value="2" label="Finger">The tool is a finger (touch).</int>
+  <int value="3" label="StylusViaGesture">
+    The tool is a stylus and the drag was initiated via press gesture.
+  </int>
+  <int value="4" label="StylusViaButton">
+    The tool is a stylus and the drag was initiated via button press.
+  </int>
+</enum>
+
+<!-- LINT.ThenChange(//third_party/blink/renderer/core/input/mouse_event_manager.h:DragAndDropToolType) -->
+
 <enum name="EventResultType">
   <int value="0" label="Passive"/>
   <int value="1" label="Uncancelable"/>
@@ -253,6 +283,31 @@ chromium-metrics-reviews@google.com.
   <int value="6"
       label="Forced Non-Blocking Due to Unresponsive Main Thread (deprecated)"/>
 </enum>
+
+<!-- LINT.IfChange(FrameStageScrollIdBasedCalculationIssues) -->
+
+<enum name="FrameStageScrollIdBasedCalculationIssues">
+  <summary>
+    The issues encountered by the scroll-ID-based implementation of
+    `cc::ScrollJankV4FrameStageCalculator` when processing scroll events in a
+    single frame. Only emitted for frames which contain at least one GSU.
+  </summary>
+  <int value="0" label="No issues">
+    The frame only contained eligible scroll updates from at most one scroll.
+  </int>
+  <int value="1" label="Overlapping scrolls">
+    The frame contained eligible scroll updates from more than one scroll.
+  </int>
+  <int value="2" label="Late update">
+    The frame contained scroll updates that the calculator ignored because they
+    arrived after the corresponding scroll has already ended.
+  </int>
+  <int value="3" label="Overlapping scrolls and late update">
+    The frame contained both overlapping scrolls and late updates.
+  </int>
+</enum>
+
+<!-- LINT.ThenChange(//cc/metrics/scroll_jank_v4_frame_stage_calculator.h:ScrollIdBasedCalculationIssues) -->
 
 <enum name="MotionEventToolType">
   <summary>The type of tool that triggers a pointer-type MotionEvent.</summary>

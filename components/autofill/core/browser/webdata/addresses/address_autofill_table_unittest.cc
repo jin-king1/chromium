@@ -10,13 +10,13 @@
 #include <string_view>
 #include <utility>
 
-#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "components/autofill/core/browser/country_type.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_quality/addresses/profile_token_quality.h"
 #include "components/autofill/core/browser/data_quality/addresses/profile_token_quality_test_api.h"
@@ -57,8 +57,9 @@ class AddressAutofillTableProfileTest
   AutofillProfile::RecordType record_type() const { return GetParam(); }
 
   // Creates an `AutofillProfile` of `record_type()`.
-  AutofillProfile CreateAutofillProfile() const {
-    return AutofillProfile(record_type(), AddressCountryCode("ES"));
+  AutofillProfile CreateAutofillProfile(
+      AddressCountryCode country_code = AddressCountryCode("ES")) const {
+    return AutofillProfile(record_type(), country_code);
   }
 };
 
@@ -71,10 +72,6 @@ INSTANTIATE_TEST_SUITE_P(
 // Tests reading/writing name, email, company, address and phone number
 // information.
 TEST_P(AddressAutofillTableProfileTest, AutofillProfile) {
-  base::test::ScopedFeatureList features;
-  features.InitWithFeatures({features::kAutofillSupportPhoneticNameForJP,
-                             features::kAutofillSupportLastNamePrefix},
-                            {});
   AutofillProfile home_profile = CreateAutofillProfile();
 
   home_profile.SetRawInfoWithVerificationStatus(NAME_FIRST, u"John",
@@ -82,12 +79,6 @@ TEST_P(AddressAutofillTableProfileTest, AutofillProfile) {
 
   home_profile.SetRawInfoWithVerificationStatus(NAME_MIDDLE, u"Q.",
                                                 VerificationStatus::kObserved);
-
-  home_profile.SetRawInfoWithVerificationStatus(
-      NAME_LAST_CORE, u"Agent 007 Smith", VerificationStatus::kParsed);
-
-  home_profile.SetRawInfoWithVerificationStatus(NAME_LAST_PREFIX, u"von",
-                                                VerificationStatus::kParsed);
 
   home_profile.SetRawInfoWithVerificationStatus(NAME_LAST_FIRST, u"Agent",
                                                 VerificationStatus::kParsed);
@@ -98,11 +89,11 @@ TEST_P(AddressAutofillTableProfileTest, AutofillProfile) {
   home_profile.SetRawInfoWithVerificationStatus(NAME_LAST_SECOND, u"Smith",
                                                 VerificationStatus::kParsed);
 
-  home_profile.SetRawInfoWithVerificationStatus(
-      NAME_LAST, u"von Agent 007 Smith", VerificationStatus::kParsed);
+  home_profile.SetRawInfoWithVerificationStatus(NAME_LAST, u"Agent 007 Smith",
+                                                VerificationStatus::kParsed);
 
   home_profile.SetRawInfoWithVerificationStatus(
-      NAME_FULL, u"John Q. von Agent 007 Smith", VerificationStatus::kObserved);
+      NAME_FULL, u"John Q. Agent 007 Smith", VerificationStatus::kObserved);
 
   // Phonetic names in Hiragana. They should be saved and later returned without
   // any changes.
@@ -279,46 +270,12 @@ TEST_P(AddressAutofillTableProfileTest, ProfileTokenQuality) {
                            ProfileTokenQualityTestApi::FormSignatureHash(21)));
 }
 
-// Tests that last use dates are persisted, if present.
-TEST_P(AddressAutofillTableProfileTest, UseDates) {
-  AutofillProfile profile = CreateAutofillProfile();
-  // Since the table stores time_ts, microseconds get lost in conversion.
-  const base::Time initial_use_date =
-      base::Time::FromTimeT(profile.usage_history().use_date().ToTimeT());
-  ASSERT_FALSE(profile.usage_history().use_date(2).has_value());
-  ASSERT_FALSE(profile.usage_history().use_date(3).has_value());
-
-  table_.AddAutofillProfile(profile);
-  profile = *table_.GetAutofillProfile(profile.guid());
-  EXPECT_EQ(profile.usage_history().use_date(1), initial_use_date);
-  EXPECT_FALSE(profile.usage_history().use_date(2).has_value());
-  EXPECT_FALSE(profile.usage_history().use_date(3).has_value());
-
-  profile.usage_history().RecordUseDate(initial_use_date + base::Days(1));
-  profile.usage_history().RecordUseDate(initial_use_date + base::Days(2));
-  table_.UpdateAutofillProfile(profile);
-  profile = *table_.GetAutofillProfile(profile.guid());
-  EXPECT_EQ(profile.usage_history().use_date(1),
-            initial_use_date + base::Days(2));
-  EXPECT_EQ(profile.usage_history().use_date(2),
-            initial_use_date + base::Days(1));
-  EXPECT_EQ(profile.usage_history().use_date(3), initial_use_date);
-}
-
 TEST_P(AddressAutofillTableProfileTest, UpdateAutofillProfile) {
-  base::test::ScopedFeatureList features;
-  features.InitWithFeatures({features::kAutofillSupportPhoneticNameForJP,
-                             features::kAutofillSupportLastNamePrefix},
-                            {});
   // Add a profile to the db.
   AutofillProfile profile = CreateAutofillProfile();
   profile.SetRawInfo(NAME_FIRST, u"John");
   profile.SetRawInfo(NAME_MIDDLE, u"Q.");
-  profile.SetRawInfo(NAME_LAST_PREFIX, u"von");
-  profile.SetRawInfo(NAME_LAST_CORE, u"Agent 007 Smith");
-  profile.SetRawInfo(NAME_LAST_FIRST, u"Agent");
-  profile.SetRawInfo(NAME_LAST_CONJUNCTION, u"007");
-  profile.SetRawInfo(NAME_LAST_SECOND, u"Smith");
+  profile.SetRawInfo(NAME_LAST, u"Smith");
   profile.SetRawInfo(EMAIL_ADDRESS, u"js@example.com");
   profile.SetRawInfo(COMPANY_NAME, u"Google");
   profile.SetRawInfo(ADDRESS_HOME_LINE1, u"1234 Apple Way");
@@ -357,9 +314,7 @@ TEST_P(AddressAutofillTableProfileTest, UpdateAutofillProfile) {
 
 TEST_P(AddressAutofillTableProfileTest,
        AutofillJpProfileWithAlternativeNameConversion) {
-  base::test::ScopedFeatureList features{
-      features::kAutofillSupportPhoneticNameForJP};
-  AutofillProfile profile = CreateAutofillProfile();
+  AutofillProfile profile = CreateAutofillProfile(AddressCountryCode("JP"));
 
   // Phonetic names in Katakana. They should be saved and later returned in
   // Hiragana.

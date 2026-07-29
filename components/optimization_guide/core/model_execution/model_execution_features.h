@@ -19,9 +19,10 @@ namespace optimization_guide::features::internal {
 // to the user. Should only be enabled for experimental features that have not
 // graduated yet.
 BASE_DECLARE_FEATURE(kComposeSettingsVisibility);
-BASE_DECLARE_FEATURE(kTabOrganizationSettingsVisibility);
 BASE_DECLARE_FEATURE(kWallpaperSearchSettingsVisibility);
 BASE_DECLARE_FEATURE(kHistorySearchSettingsVisibility);
+BASE_DECLARE_FEATURE(kFindsSettingsVisibility);
+BASE_DECLARE_FEATURE(kContextualCueingSettingsVisibility);
 
 // Comma-separated list of performance classes (e.g. "3,4,5") accepted by
 // History Search. Use "*" if there is no performance class requirement.
@@ -32,18 +33,14 @@ extern const base::FeatureParam<std::string>
 // should not be enabled at the same time as their respective settings
 // visibility features.
 BASE_DECLARE_FEATURE(kComposeGraduated);
-BASE_DECLARE_FEATURE(kTabOrganizationGraduated);
 BASE_DECLARE_FEATURE(kWallpaperSearchGraduated);
-
-// Feature for controlling the users who are eligible to see the IPH promo for
-// experimental AI.
-BASE_DECLARE_FEATURE(kExperimentalAIIPHPromoRampUp);
+BASE_DECLARE_FEATURE(kFindsGraduated);
 
 // Feature for disabling the model execution user account capability check.
 BASE_DECLARE_FEATURE(kModelExecutionCapabilityDisable);
 
-// Allow on-device model support for Test feature, to be used in tests.
-BASE_DECLARE_FEATURE(kOnDeviceModelTestFeature);
+// Feature flag to populate PrivateExecuteRequest instead of ExecuteRequest.
+BASE_DECLARE_FEATURE(kPrivateExecuteRequest);
 
 // Checks if the provided `feature` is graduated from experimental AI settings.
 bool IsGraduatedFeature(UserVisibleFeatureKey feature);
@@ -57,11 +54,6 @@ base::flat_set<UserVisibleFeatureKey> GetAllowedFeaturesForUnsignedUser();
 
 // Returns whether the `feature` should get enabled, when the main toggle is on.
 bool ShouldEnableFeatureWhenMainToggleOn(UserVisibleFeatureKey feature);
-
-// Returns the opt target to use for on-device configuration for `feature`.
-// Returns nullopt for features where on-device execution is not enabled.
-std::optional<proto::OptimizationTarget> GetOptimizationTargetForCapability(
-    ModelBasedCapabilityKey feature);
 
 }  // namespace optimization_guide::features::internal
 

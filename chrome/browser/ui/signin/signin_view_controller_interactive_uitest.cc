@@ -8,17 +8,20 @@
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/task/current_thread.h"
 #include "base/test/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/reauth_result.h"
+#include "chrome/browser/signin/signin_browser_test_base.h"
 #include "chrome/browser/signin/web_signin_interceptor.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/signin/dice_web_signin_interceptor_delegate.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/signin/signin_view_controller_delegate.h"
@@ -35,8 +38,11 @@
 #include "chrome/test/interaction/webcontents_interaction_test_util.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/sync/base/features.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -45,7 +51,6 @@
 #include "google_apis/gaia/core_account_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/interaction/element_identifier.h"
-#include "ui/base/interaction/element_tracker.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/interaction/interactive_views_test.h"
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -66,7 +71,7 @@ class SyncConfirmationClosedObserver : public LoginUIService::Observer {
       : browser_(browser) {
     DCHECK(browser_);
     login_ui_service_observation_.Observe(
-        LoginUIServiceFactory::GetForProfile(browser_->profile()));
+        LoginUIServiceFactory::GetForProfile(browser_->GetProfile()));
   }
 
   LoginUIService::SyncConfirmationUIClosedResult WaitForConfirmationClosed() {
@@ -80,7 +85,7 @@ class SyncConfirmationClosedObserver : public LoginUIService::Observer {
       LoginUIService::SyncConfirmationUIClosedResult result) override {
     login_ui_service_observation_.Reset();
     result_ = result;
-    browser_->signin_view_controller()->CloseModalSignin();
+    browser_->GetFeatures().signin_view_controller()->CloseModalSignin();
     run_loop_.Quit();
   }
 
@@ -101,17 +106,17 @@ class SignInViewControllerBrowserTest : public InProcessBrowserTest {
     // also why this test must be an interactive_ui_test rather than a browser
     // test.
     ASSERT_TRUE(ui_test_utils::ShowAndFocusNativeWindow(
-        browser()->window()->GetNativeWindow()));
+        browser()->GetWindow()->GetNativeWindow()));
   }
 
   signin::IdentityManager* GetIdentityManager() {
-    return IdentityManagerFactory::GetForProfile(browser()->profile());
+    return IdentityManagerFactory::GetForProfile(browser()->GetProfile());
   }
 };
 
 IN_PROC_BROWSER_TEST_F(SignInViewControllerBrowserTest, Accelerators) {
   ASSERT_EQ(1, browser()->tab_strip_model()->count());
-  browser()->signin_view_controller()->ShowSignin(
+  browser()->GetFeatures().signin_view_controller()->ShowSignin(
       signin_metrics::AccessPoint::kSettings);
 
   ui_test_utils::TabAddedWaiter wait_for_new_tab(browser());
@@ -131,33 +136,6 @@ IN_PROC_BROWSER_TEST_F(SignInViewControllerBrowserTest, Accelerators) {
   EXPECT_EQ(2, browser()->tab_strip_model()->count());
 }
 
-// Tests that the confirm button is focused by default in the sync confirmation
-// dialog.
-IN_PROC_BROWSER_TEST_F(SignInViewControllerBrowserTest,
-                       // TODO(crbug.com/40927355): Re-enable this test
-                       DISABLED_SyncConfirmationDefaultFocus) {
-  signin::MakePrimaryAccountAvailable(GetIdentityManager(), "alice@gmail.com",
-                                      signin::ConsentLevel::kSync);
-  content::TestNavigationObserver content_observer(
-      GURL("chrome://sync-confirmation/"));
-  content_observer.StartWatchingNewWebContents();
-  browser()->signin_view_controller()->ShowModalSyncConfirmationDialog(
-      /*is_signin_intercept=*/false, /*is_sync_promo=*/false);
-  EXPECT_TRUE(browser()->signin_view_controller()->ShowsModalDialog());
-  content_observer.Wait();
-
-  SyncConfirmationClosedObserver sync_confirmation_observer(browser());
-  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_RETURN,
-                                              /*control=*/false,
-                                              /*shift=*/false, /*alt=*/false,
-                                              /*command=*/false));
-
-  LoginUIService::SyncConfirmationUIClosedResult result =
-      sync_confirmation_observer.WaitForConfirmationClosed();
-  EXPECT_EQ(result, LoginUIService::SYNC_WITH_DEFAULT_SETTINGS);
-  EXPECT_FALSE(browser()->signin_view_controller()->ShowsModalDialog());
-}
-
 class SignInViewControllerInteractiveBrowserTest
     : public InteractiveBrowserTest {
  public:
@@ -173,12 +151,9 @@ class SignInViewControllerInteractiveBrowserTest
 
   void SendCustomEvent(ui::ElementIdentifier element,
                        ui::CustomElementEventType event_type) {
-    auto* const target =
-        ui::ElementTracker::GetElementTracker()->GetUniqueElement(
-            element, browser()->window()->GetElementContext());
-    ASSERT_NE(nullptr, target);
-    ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(target,
-                                                                  event_type);
+    const bool result =
+        BrowserElements::From(browser())->NotifyEvent(element, event_type);
+    CHECK(result);
   }
 };
 
@@ -195,7 +170,8 @@ IN_PROC_BROWSER_TEST_F(SignInViewControllerInteractiveBrowserTest,
       // Show the dialog and verify that it has shown.
       Do([&] {
         browser()
-            ->signin_view_controller()
+            ->GetFeatures()
+            .signin_view_controller()
             ->ShowModalSigninEmailConfirmationDialog(
                 "alice@gmail.com", "bob@gmail.com",
                 base::BindLambdaForTesting(
@@ -206,7 +182,10 @@ IN_PROC_BROWSER_TEST_F(SignInViewControllerInteractiveBrowserTest,
                     }));
       }),
       WaitForShow(kConstrainedDialogWebViewElementId), Check([&] {
-        return browser()->signin_view_controller()->ShowsModalDialog();
+        return browser()
+            ->GetFeatures()
+            .signin_view_controller()
+            ->ShowsModalDialog();
       }),
 
       // Confirm the dialog.
@@ -233,7 +212,8 @@ IN_PROC_BROWSER_TEST_F(SignInViewControllerInteractiveBrowserTest,
                          CheckResult(
                              [&] {
                                return browser()
-                                   ->signin_view_controller()
+                                   ->GetFeatures()
+                                   .signin_view_controller()
                                    ->ShowsModalDialog();
                              },
                              false))));
@@ -246,71 +226,154 @@ IN_PROC_BROWSER_TEST_F(SignInViewControllerBrowserTest,
   content::TestNavigationObserver content_observer(
       GURL("chrome://signin-error/"));
   content_observer.StartWatchingNewWebContents();
-  browser()->signin_view_controller()->ShowModalSigninErrorDialog();
-  EXPECT_TRUE(browser()->signin_view_controller()->ShowsModalDialog());
+  auto* signin_view_controller =
+      browser()->GetFeatures().signin_view_controller();
+  signin_view_controller->ShowModalSigninErrorDialog();
+  EXPECT_TRUE(signin_view_controller->ShowsModalDialog());
   content_observer.Wait();
 
+  // Wait for the modal dialog sheet window to be presented and receive focus.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    auto* web_contents =
+        signin_view_controller->GetModalDialogWebContentsForTesting();
+    return web_contents && web_contents->GetRenderWidgetHostView() &&
+           web_contents->GetRenderWidgetHostView()->HasFocus();
+  }));
+
   content::WebContentsDestroyedWatcher dialog_destroyed_watcher(
-      browser()
-          ->signin_view_controller()
-          ->GetModalDialogWebContentsForTesting());
+      signin_view_controller->GetModalDialogWebContentsForTesting());
+
+  // Before sending key events, make sure paint-holding does not drop input
+  // events.
+  content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(
+      signin_view_controller->GetModalDialogWebContentsForTesting());
+
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_RETURN,
                                               /*control=*/false,
                                               /*shift=*/false, /*alt=*/false,
                                               /*command=*/false));
   // Default action simply closes the dialog.
   dialog_destroyed_watcher.Wait();
-  EXPECT_FALSE(browser()->signin_view_controller()->ShowsModalDialog());
+  EXPECT_FALSE(signin_view_controller->ShowsModalDialog());
 }
 
-// Tests that the confirm button is focused by default in the enterprise
-// interception dialog.
-// TODO(crbug.com/40943548): Enable the flaky test.
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_EnterpriseConfirmationDefaultFocus \
-  DISABLED_EnterpriseConfirmationDefaultFocus
-#else
-#define MAYBE_EnterpriseConfirmationDefaultFocus \
-  EnterpriseConfirmationDefaultFocus
-#endif
-IN_PROC_BROWSER_TEST_F(SignInViewControllerBrowserTest,
-                       MAYBE_EnterpriseConfirmationDefaultFocus) {
-  if (base::FeatureList::IsEnabled(
-          features::kEnterpriseUpdatedProfileCreationScreen)) {
-    GTEST_SKIP() << "EnterpriseUpdatedProfileCreationScreen feature replaces "
-                    "this dialog with a new one";
+enum class DialogButtonEnableState : int {
+  kDisabled = 0,
+  kEnabled = 1,
+};
+
+enum class ButtonToClick : int {
+  kAcceptButton = 0,
+  kRejectButton = 1,
+};
+
+class HistorySyncOptinViewControllerInteractiveBrowserTest
+    : public SigninBrowserTestBaseT<InteractiveBrowserTest>,
+      public testing::WithParamInterface<ButtonToClick> {
+ protected:
+  const char* kIsDisabledFn = "(e) => { return e.disabled; }";
+
+  const InteractiveBrowserTest::DeepQuery& GetHistoryOptinAcceptButtonQuery() {
+    if (base::FeatureList::IsEnabled(switches::kFirstRunDesktopRefresh)) {
+      static const base::NoDestructor<InteractiveBrowserTest::DeepQuery> kQuery(
+          {"history-sync-optin-app-refresh", "#acceptButton"});
+      return *kQuery;
+    } else {
+      static const base::NoDestructor<InteractiveBrowserTest::DeepQuery> kQuery(
+          {"history-sync-optin-app", "#acceptButton"});
+      return *kQuery;
+    }
   }
-  auto account_info = signin::MakePrimaryAccountAvailable(
-      GetIdentityManager(), "alice@gmail.com", signin::ConsentLevel::kSync);
-  content::TestNavigationObserver content_observer(
-      (GURL(chrome::kChromeUIManagedUserProfileNoticeUrl)));
-  content_observer.StartWatchingNewWebContents();
-  signin::SigninChoice result;
-  browser()->signin_view_controller()->ShowModalManagedUserNoticeDialog(
-      std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
-          account_info, /*is_oidc_account=*/false,
-          /*turn_sync_on_signed_profile=*/false, /*force_new_profile=*/true,
-          /*show_link_data_option=*/true,
-          /*process_user_choice_callback=*/
-          base::BindOnce([](signin::SigninChoice* result,
-                            signin::SigninChoice choice) { *result = choice; },
-                         &result),
-          /*done_callback=*/
-          base::BindOnce(&SigninViewController::CloseModalSignin,
-                         browser()->signin_view_controller()->AsWeakPtr())));
-  EXPECT_TRUE(browser()->signin_view_controller()->ShowsModalDialog());
-  content_observer.Wait();
 
-  content::WebContentsDestroyedWatcher dialog_destroyed_watcher(
-      browser()
-          ->signin_view_controller()
-          ->GetModalDialogWebContentsForTesting());
-  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_RETURN,
-                                              /*control=*/false,
-                                              /*shift=*/false, /*alt=*/false,
-                                              /*command=*/false));
+  const InteractiveBrowserTest::DeepQuery& GetHistoryOptinRejectButtonQuery() {
+    if (base::FeatureList::IsEnabled(switches::kFirstRunDesktopRefresh)) {
+      static const base::NoDestructor<InteractiveBrowserTest::DeepQuery> kQuery(
+          {"history-sync-optin-app-refresh", "#rejectButton"});
+      return *kQuery;
+    } else {
+      static const base::NoDestructor<InteractiveBrowserTest::DeepQuery> kQuery(
+          {"history-sync-optin-app", "#rejectButton"});
+      return *kQuery;
+    }
+  }
 
-  dialog_destroyed_watcher.Wait();
-  EXPECT_EQ(result, signin::SigninChoice::SIGNIN_CHOICE_NEW_PROFILE);
-  EXPECT_FALSE(browser()->signin_view_controller()->ShowsModalDialog());
+  auto ClickButton(ui::ElementIdentifier parent_element_id,
+                   DeepQuery button_query) {
+    return Steps(
+        ExecuteJsAt(parent_element_id, button_query, "e => e.click()"));
+  }
+
+  auto CheckButtonsState(ui::ElementIdentifier parent_element_id,
+                         DialogButtonEnableState state) {
+    bool is_disabled = state == DialogButtonEnableState::kDisabled;
+    return Steps(
+        CheckJsResultAt(parent_element_id, GetHistoryOptinAcceptButtonQuery(),
+                        kIsDisabledFn, is_disabled),
+        CheckJsResultAt(parent_element_id, GetHistoryOptinRejectButtonQuery(),
+                        kIsDisabledFn, is_disabled));
+  }
+
+  const InteractiveBrowserTest::DeepQuery& GetButtonToClick() {
+    switch (GetParam()) {
+      case ButtonToClick::kAcceptButton:
+        return GetHistoryOptinAcceptButtonQuery();
+      case ButtonToClick::kRejectButton:
+        return GetHistoryOptinRejectButtonQuery();
+    }
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_{
+      syncer::kReplaceSyncPromosWithSignInPromos};
+};
+
+IN_PROC_BROWSER_TEST_P(HistorySyncOptinViewControllerInteractiveBrowserTest,
+                       HistorySyncOptinViewDisablesButtonsAfterClick) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kHistorySyncOptinDialogContentsId);
+
+  // Sign-in the user.
+  AccountInfo account_info = identity_test_env()->MakePrimaryAccountAvailable(
+      "alice@gmail.com", signin::ConsentLevel::kSignin);
+
+  int callback_execution_count = 0;
+  HistorySyncOptinHelper::FlowCompletedCallback
+      history_optin_completed_callback =
+          HistorySyncOptinHelper::FlowCompletedCallback(
+              base::IgnoreArgs<HistorySyncOptinHelper::ScreenChoiceResult>(
+                  base::BindLambdaForTesting([&callback_execution_count]() {
+                    callback_execution_count += 1;
+                  })));
+  bool should_close_modal_dialog = false;
+
+  RunTestSequence(
+      // Show the dialog and verify that it has shown.
+      Do([&] {
+        browser()
+            ->GetFeatures()
+            .signin_view_controller()
+            ->ShowModalHistorySyncOptInDialog(
+                should_close_modal_dialog,
+                std::move(history_optin_completed_callback));
+      }),
+      WaitForShow(SigninViewController::kHistorySyncOptinViewId),
+      InstrumentNonTabWebView(kHistorySyncOptinDialogContentsId,
+                              SigninViewController::kHistorySyncOptinViewId),
+      CheckButtonsState(kHistorySyncOptinDialogContentsId,
+                        DialogButtonEnableState::kEnabled),
+      ClickButton(kHistorySyncOptinDialogContentsId, GetButtonToClick()),
+      // The buttons should become disabled.
+      CheckButtonsState(kHistorySyncOptinDialogContentsId,
+                        DialogButtonEnableState::kDisabled),
+      // Regression check for crbug.com/449140137: Clicking again on the button
+      // has no effect. In production the button is not even clickable, but here
+      // JS manipulation allows us to click again.
+      ClickButton(kHistorySyncOptinDialogContentsId, GetButtonToClick()),
+      Do([&callback_execution_count]() {
+        EXPECT_EQ(1, callback_execution_count);
+      }));
 }
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         HistorySyncOptinViewControllerInteractiveBrowserTest,
+                         ::testing::Values(ButtonToClick::kAcceptButton,
+                                           ButtonToClick::kRejectButton));

@@ -11,7 +11,6 @@
 #include "base/containers/circular_deque.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/queue.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
@@ -149,7 +148,6 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) CellularESimUninstallHandler
   void TransitionToUninstallState(UninstallState next_state);
   void CompleteCurrentRequest(UninstallESimResult result);
 
-  std::string GetIdForCurrentRequest() const;
   const NetworkState* GetNetworkStateForCurrentRequest() const;
 
   void CheckActiveNetworkState();

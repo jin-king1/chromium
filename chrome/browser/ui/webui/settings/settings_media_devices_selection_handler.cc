@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/media/prefs/capture_device_ranking.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/generated_resources.h"
@@ -87,6 +88,8 @@ void MediaDevicesSelectionHandler::OnAudioDevicesChanged(
   PrefService* prefs = profile_->GetPrefs();
   audio_device_infos_ =
       devices.value_or(std::vector<media::AudioDeviceDescription>{});
+  media::AudioDeviceDescription::LocalizeDeviceDescriptions(
+      &audio_device_infos_);
   media_prefs::PreferenceRankAudioDeviceInfos(*prefs, audio_device_infos_);
   UpdateDevicesMenu(audio_device_infos_);
 }
@@ -105,7 +108,7 @@ void MediaDevicesSelectionHandler::SetWebUiForTest(content::WebUI* web_ui) {
 }
 
 void MediaDevicesSelectionHandler::InitializeCaptureDevices(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   DCHECK_EQ(1U, args.size());
   if (!args[0].is_string()) {
     NOTREACHED();
@@ -123,7 +126,7 @@ void MediaDevicesSelectionHandler::InitializeCaptureDevices(
 }
 
 void MediaDevicesSelectionHandler::SetPreferredCaptureDevice(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   CHECK_EQ(2U, args.size());
   if (!args[0].is_string() || !args[1].is_string()) {
     NOTREACHED();
@@ -158,7 +161,7 @@ void MediaDevicesSelectionHandler::UpdateDevicesMenu(
 
   std::string selected_device_id;
   // Build the list of devices to send to JS.
-  base::Value::List device_list;
+  base::ListValue device_list;
   for (const auto& device : devices) {
     if (real_default_device_id.has_value() &&
         media::AudioDeviceDescription::IsDefaultDevice(device.unique_id)) {
@@ -167,7 +170,7 @@ void MediaDevicesSelectionHandler::UpdateDevicesMenu(
     if (selected_device_id.empty()) {
       selected_device_id = device.unique_id;
     }
-    base::Value::Dict entry;
+    base::DictValue entry;
     entry.Set("name", GetDeviceDisplayName(device));
     entry.Set("id", device.unique_id);
     device_list.Append(std::move(entry));
@@ -185,9 +188,9 @@ void MediaDevicesSelectionHandler::UpdateDevicesMenu(
   AllowJavascript();
 
   // Build the list of devices to send to JS.
-  base::Value::List device_list;
+  base::ListValue device_list;
   for (const auto& device : devices) {
-    base::Value::Dict entry;
+    base::DictValue entry;
     entry.Set("name", GetDeviceDisplayName(device));
     entry.Set("id", device.descriptor.device_id);
     device_list.Append(std::move(entry));

@@ -6,7 +6,7 @@
 
 #include "base/version_info/channel.h"
 #include "components/data_sharing/public/features.h"
-#include "components/optimization_guide/core/optimization_guide_decider.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "components/saved_tab_groups/delegate/tab_group_sync_delegate.h"
 #include "components/saved_tab_groups/internal/saved_tab_group_model.h"
 #include "components/saved_tab_groups/internal/sync_data_type_configuration.h"
@@ -16,6 +16,7 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/base/collaboration_id.h"
 #include "components/sync/base/data_type.h"
+#include "components/sync/base/features.h"
 #include "components/sync/base/report_unrecoverable_error.h"
 #include "components/sync/model/client_tag_based_data_type_processor.h"
 #include "components/sync/model/data_type_local_change_processor.h"
@@ -39,18 +40,29 @@ std::unique_ptr<SyncDataTypeConfiguration>
 MaybeCreateSharedTabGroupDataTypeConfiguration(
     version_info::Channel channel,
     syncer::DataTypeStoreService* data_type_store_service) {
-  bool data_sharing_enabled =
-      base::FeatureList::IsEnabled(
-          data_sharing::features::kDataSharingFeature) ||
-      base::FeatureList::IsEnabled(
-          data_sharing::features::kDataSharingJoinOnly);
-  if (!data_sharing_enabled) {
+  if (!data_sharing::features::IsDataSharingFunctionalityEnabled()) {
     return nullptr;
   }
 
   return std::make_unique<SyncDataTypeConfiguration>(
       std::make_unique<syncer::ClientTagBasedDataTypeProcessor>(
           syncer::SHARED_TAB_GROUP_DATA,
+          base::BindRepeating(&syncer::ReportUnrecoverableError, channel)),
+      data_type_store_service->GetStoreFactory());
+}
+
+std::unique_ptr<SyncDataTypeConfiguration>
+MaybeCreateSharedTabGroupAccountDataTypeConfiguration(
+    version_info::Channel channel,
+    syncer::DataTypeStoreService* data_type_store_service) {
+  if (!data_sharing::features::IsDataSharingFunctionalityEnabled() ||
+      !base::FeatureList::IsEnabled(syncer::kSyncSharedTabGroupAccountData)) {
+    return nullptr;
+  }
+
+  return std::make_unique<SyncDataTypeConfiguration>(
+      std::make_unique<syncer::ClientTagBasedDataTypeProcessor>(
+          syncer::SHARED_TAB_GROUP_ACCOUNT_DATA,
           base::BindRepeating(&syncer::ReportUnrecoverableError, channel)),
       data_type_store_service->GetStoreFactory());
 }
@@ -99,8 +111,12 @@ std::unique_ptr<TabGroupSyncService> CreateTabGroupSyncService(
 
   return std::make_unique<TabGroupSyncServiceImpl>(
       std::move(model), std::move(saved_config), std::move(shared_config),
+      MaybeCreateSharedTabGroupAccountDataTypeConfiguration(
+          channel, data_type_store_service),
       pref_service, std::move(metrics_logger), optimization_guide,
-      identity_manager, std::move(collaboration_finder), /*logger=*/nullptr);
+      identity_manager, /*personal_collaboration_data_service=*/nullptr,
+      std::move(collaboration_finder),
+      /*logger=*/nullptr);
 }
 
 }  // namespace tab_groups::test

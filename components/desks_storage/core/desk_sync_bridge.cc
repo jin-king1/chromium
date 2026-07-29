@@ -4,13 +4,13 @@
 
 #include "components/desks_storage/core/desk_sync_bridge.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/desk_template.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_writer.h"
@@ -112,8 +112,7 @@ std::optional<syncer::ModelError> ParseDeskTemplatesOnBackendSequence(
       if (!uuid.is_valid()) {
         return syncer::ModelError(
             FROM_HERE,
-            base::StringPrintf("Failed to parse WorkspaceDeskSpecifics uuid %s",
-                               specifics->uuid().c_str()));
+            syncer::ModelError::Type::kWorkspaceDeskFailedToParseUuid);
       }
 
       std::unique_ptr<ash::DeskTemplate> entry =
@@ -124,7 +123,8 @@ std::optional<syncer::ModelError> ParseDeskTemplatesOnBackendSequence(
       (*desk_templates)[uuid] = std::move(entry);
     } else {
       return syncer::ModelError(
-          FROM_HERE, "Failed to deserialize WorkspaceDeskSpecifics.");
+          FROM_HERE,
+          syncer::ModelError::Type::kWorkspaceDeskFailedToDeserializeSpecifics);
     }
   }
 
@@ -148,10 +148,6 @@ DeskSyncBridge::DeskSyncBridge(
 
 DeskSyncBridge::~DeskSyncBridge() = default;
 
-std::unique_ptr<syncer::MetadataChangeList>
-DeskSyncBridge::CreateMetadataChangeList() {
-  return DataTypeStore::WriteBatch::CreateMetadataChangeList();
-}
 
 std::optional<syncer::ModelError> DeskSyncBridge::MergeFullSyncData(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
@@ -169,8 +165,10 @@ std::optional<syncer::ModelError> DeskSyncBridge::MergeFullSyncData(
   // TODO(yzd) We will add a template update timestamp and update this logic to
   // be: for templates that exist on both local and server side, we will keep
   // the one with later update timestamp.
-  return ApplyIncrementalSyncChanges(std::move(metadata_change_list),
-                                     std::move(entity_data));
+  std::optional<syncer::ModelError> result = ApplyIncrementalSyncChanges(
+      std::move(metadata_change_list), std::move(entity_data));
+  OnMergeFullSyncDataFinished();
+  return result;
 }
 
 std::optional<syncer::ModelError> DeskSyncBridge::ApplyIncrementalSyncChanges(
@@ -178,7 +176,8 @@ std::optional<syncer::ModelError> DeskSyncBridge::ApplyIncrementalSyncChanges(
     syncer::EntityChangeList entity_changes) {
   std::vector<raw_ptr<const DeskTemplate, VectorExperimental>> added_or_updated;
   std::vector<base::Uuid> removed;
-  std::unique_ptr<DataTypeStore::WriteBatch> batch = store_->CreateWriteBatch();
+  std::unique_ptr<DataTypeStore::WriteBatch> batch =
+      store_->CreateWriteBatch(std::move(metadata_change_list));
 
   for (const std::unique_ptr<syncer::EntityChange>& change : entity_changes) {
     const base::Uuid uuid =
@@ -222,8 +221,6 @@ std::optional<syncer::ModelError> DeskSyncBridge::ApplyIncrementalSyncChanges(
       }
     }
   }
-
-  batch->TakeMetadataChangesFrom(std::move(metadata_change_list));
   Commit(std::move(batch));
 
   NotifyRemoteDeskTemplateAddedOrUpdated(added_or_updated);
@@ -263,13 +260,27 @@ std::unique_ptr<syncer::DataBatch> DeskSyncBridge::GetAllDataForDebugging() {
 }
 
 std::string DeskSyncBridge::GetClientTag(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   return GetStorageKey(entity_data);
 }
 
 std::string DeskSyncBridge::GetStorageKey(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   return entity_data.specifics.workspace_desk().uuid();
+}
+
+sync_pb::EntitySpecifics
+DeskSyncBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
+    const sync_pb::EntitySpecifics& entity_specifics) const {
+  // Clears all fields by default to avoid the memory and I/O overhead of an
+  // additional copy of the data.
+  return sync_pb::EntitySpecifics();
+}
+
+bool DeskSyncBridge::IsEntityDataValid(
+    const syncer::EntityData& entity_data) const {
+  return desk_template_conversion::FromSyncProto(
+             entity_data.specifics.workspace_desk()) != nullptr;
 }
 
 DeskModel::GetAllEntriesResult DeskSyncBridge::GetAllEntries() {
@@ -461,8 +472,8 @@ size_t DeskSyncBridge::GetSaveAndRecallDeskEntryCount() const {
 }
 
 size_t DeskSyncBridge::GetDeskTemplateEntryCount() const {
-  size_t template_count = std::count_if(
-      desk_template_entries_.begin(), desk_template_entries_.end(),
+  size_t template_count = std::ranges::count_if(
+      desk_template_entries_,
       [](const std::pair<base::Uuid, std::unique_ptr<ash::DeskTemplate>>&
              entry) {
         return entry.second->type() == ash::DeskTemplateType::kTemplate;
@@ -648,18 +659,34 @@ void DeskSyncBridge::UploadLocalOnlyData(
 }
 
 bool DeskSyncBridge::HasUserTemplateWithName(const std::u16string& name) {
-  return base::Contains(desk_template_entries_, name,
-                        [](const DeskEntries::value_type& entry) {
-                          return entry.second->template_name();
-                        });
+  return std::ranges::contains(desk_template_entries_, name,
+                               [](const DeskEntries::value_type& entry) {
+                                 return entry.second->template_name();
+                               });
 }
 
 bool DeskSyncBridge::HasUuid(const base::Uuid& uuid) const {
-  return uuid.is_valid() && base::Contains(desk_template_entries_, uuid);
+  return uuid.is_valid() && desk_template_entries_.contains(uuid);
 }
 
 std::string DeskSyncBridge::GetCacheGuid() {
   return change_processor()->TrackedCacheGuid();
+}
+
+void DeskSyncBridge::SetOnMergeFullSyncDataCallback(
+    base::OnceClosure callback) {
+  if (merge_full_sync_data_finished_) {
+    std::move(callback).Run();
+    return;
+  }
+  on_merge_full_sync_data_callback_ = std::move(callback);
+}
+
+void DeskSyncBridge::OnMergeFullSyncDataFinished() {
+  if (on_merge_full_sync_data_callback_) {
+    std::move(on_merge_full_sync_data_callback_).Run();
+  }
+  merge_full_sync_data_finished_ = true;
 }
 
 }  // namespace desks_storage

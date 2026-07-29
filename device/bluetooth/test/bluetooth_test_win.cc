@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "device/bluetooth/test/bluetooth_test_win.h"
 
 #include <windows.devices.bluetooth.h>
@@ -19,12 +14,14 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/containers/circular_deque.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
@@ -218,15 +215,13 @@ class TestBluetoothAdapterWinrt : public BluetoothAdapterWinrt {
 
 BLUETOOTH_ADDRESS
 CanonicalStringToBLUETOOTH_ADDRESS(std::string device_address) {
-  BLUETOOTH_ADDRESS win_addr;
-  unsigned int data[6];
-  int result =
-      sscanf_s(device_address.c_str(), "%02X:%02X:%02X:%02X:%02X:%02X",
-               &data[5], &data[4], &data[3], &data[2], &data[1], &data[0]);
-  CHECK_EQ(6, result);
-  for (int i = 0; i < 6; i++) {
-    win_addr.rgBytes[i] = data[i];
-  }
+  BLUETOOTH_ADDRESS win_addr = {};
+  std::erase(device_address, ':');
+  std::vector<uint8_t> bytes;
+  CHECK(base::HexStringToBytes(device_address, &bytes));
+  auto rgBytes_span = base::span(win_addr.rgBytes);
+  CHECK_EQ(bytes.size(), rgBytes_span.size());
+  std::reverse_copy(bytes.begin(), bytes.end(), rgBytes_span.begin());
   return win_addr;
 }
 
@@ -237,10 +232,6 @@ BluetoothTestWin::BluetoothTestWin()
       bluetooth_task_runner_(new base::TestSimpleTaskRunner()) {}
 
 BluetoothTestWin::~BluetoothTestWin() = default;
-
-bool BluetoothTestWin::PlatformSupportsLowEnergy() {
-  return false;
-}
 
 void BluetoothTestWin::InitWithDefaultAdapter() {
   auto adapter = base::WrapRefCounted(new BluetoothAdapterWin());
@@ -409,6 +400,23 @@ BluetoothTestWinrt::~BluetoothTestWinrt() {
   notify_sessions_.clear();
 }
 
+void BluetoothTestWinrt::TearDown() {
+  for (const auto& device : fake_ble_devices_) {
+    if (device) {
+      device->ClearBluetoothTestWinrt();
+    }
+  }
+  fake_ble_devices_.clear();
+  for (const auto& statics : fake_ble_device_statics_) {
+    if (statics) {
+      statics->ClearBluetoothTestWinrt();
+    }
+  }
+  fake_ble_device_statics_.clear();
+  remembered_ble_device_.Reset();
+  BluetoothTestWin::TearDown();
+}
+
 bool BluetoothTestWinrt::UsesNewGattSessionHandling() const {
   return GetParam().new_gatt_session_handling_enabled &&
          base::win::GetVersion() >= base::win::Version::WIN10_RS3;
@@ -416,10 +424,6 @@ bool BluetoothTestWinrt::UsesNewGattSessionHandling() const {
 
 bool BluetoothTestWinrt::UncachedGattDiscoveryForGattConnection() const {
   return GetParam().uncached_gatt_discovery_for_gatt_connection;
-}
-
-bool BluetoothTestWinrt::PlatformSupportsLowEnergy() {
-  return true;
 }
 
 void BluetoothTestWinrt::InitWithDefaultAdapter() {
@@ -538,6 +542,14 @@ void BluetoothTestWinrt::SimulateLowEnergyDiscoveryFailure() {
 
   // Spin until the WatcherStopped event fires.
   base::RunLoop().RunUntilIdle();
+}
+
+void BluetoothTestWinrt::RememberDeviceForSubsequentAction(
+    BluetoothDevice* device) {
+  auto* const ble_device =
+      static_cast<TestBluetoothDeviceWinrt*>(device)->ble_device();
+  DCHECK(ble_device);
+  remembered_ble_device_ = ble_device;
 }
 
 void BluetoothTestWinrt::SimulateDevicePaired(BluetoothDevice* device,
@@ -676,7 +688,8 @@ void BluetoothTestWinrt::SimulateGattServicesDiscovered(
     const std::vector<std::string>& uuids,
     const std::vector<std::string>& blocked_uuids) {
   auto* const ble_device =
-      static_cast<TestBluetoothDeviceWinrt*>(device)->ble_device();
+      device ? static_cast<TestBluetoothDeviceWinrt*>(device)->ble_device()
+             : remembered_ble_device_.Get();
   DCHECK(ble_device);
   ble_device->SimulateGattServicesDiscovered(uuids, blocked_uuids);
 }
@@ -700,7 +713,8 @@ void BluetoothTestWinrt::SimulateGattServiceRemoved(
 void BluetoothTestWinrt::SimulateGattServicesDiscoveryError(
     BluetoothDevice* device) {
   auto* const ble_device =
-      static_cast<TestBluetoothDeviceWinrt*>(device)->ble_device();
+      device ? static_cast<TestBluetoothDeviceWinrt*>(device)->ble_device()
+             : remembered_ble_device_.Get();
   DCHECK(ble_device);
   ble_device->SimulateGattServicesDiscoveryError();
 }
@@ -888,6 +902,30 @@ void BluetoothTestWinrt::OnFakeBluetoothDescriptorWriteValue(
     std::vector<uint8_t> value) {
   last_write_value_ = std::move(value);
   ++gatt_write_descriptor_attempts_;
+}
+
+void BluetoothTestWinrt::RegisterFakeDevice(
+    FakeBluetoothLEDeviceWinrt* device) {
+  fake_ble_devices_.push_back(device);
+}
+
+void BluetoothTestWinrt::UnregisterFakeDevice(
+    FakeBluetoothLEDeviceWinrt* device) {
+  auto it =
+      std::remove(fake_ble_devices_.begin(), fake_ble_devices_.end(), device);
+  fake_ble_devices_.erase(it, fake_ble_devices_.end());
+}
+
+void BluetoothTestWinrt::RegisterFakeDeviceStatics(
+    FakeBluetoothLEDeviceStaticsWinrt* statics) {
+  fake_ble_device_statics_.push_back(statics);
+}
+
+void BluetoothTestWinrt::UnregisterFakeDeviceStatics(
+    FakeBluetoothLEDeviceStaticsWinrt* statics) {
+  auto it = std::remove(fake_ble_device_statics_.begin(),
+                        fake_ble_device_statics_.end(), statics);
+  fake_ble_device_statics_.erase(it, fake_ble_device_statics_.end());
 }
 
 }  // namespace device

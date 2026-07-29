@@ -1,6 +1,6 @@
 geofflang@chromium.org
 kbr@chromium.org
-sunnyps@chromium.org
+vasilyt@chromium.org
 zmo@chromium.org
 
 per-file *gl_image*=dcastagna@chromium.org
@@ -12,6 +12,7 @@ magchen@chromium.org
 
 # D3D, dcomp, Windows platform integration, etc.
 rafael.cintron@microsoft.com
+tangm@microsoft.com
 
 # for EU coverage of straightforward changes
 blundell@chromium.org

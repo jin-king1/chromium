@@ -21,6 +21,8 @@
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_constants.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"
+#include "chrome/browser/file_system_access/file_system_access_permission_context_factory.h"
 #include "chrome/browser/google/google_brand.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profile_resetter/brandcode_config_fetcher.h"
@@ -29,7 +31,8 @@
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/new_tab_page/new_tab_page_ui.h"
 #include "chrome/common/pref_names.h"
@@ -54,14 +57,15 @@
 #include "extensions/common/extension_id.h"
 #include "extensions/common/manifest.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_pref_names.h"
 #include "chrome/browser/ash/input_method/input_method_manager_impl.h"
 #include "chromeos/ash/components/network/managed_network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/proxy_config/proxy_config_pref_names.h"
 #include "components/spellcheck/browser/pref_names.h"
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN)
 #include "base/base_paths.h"
@@ -113,7 +117,7 @@ ProfileResetter::ProfileResetter(Profile* profile)
 }
 
 void ProfileResetter::OnDefaultSettingsFetched() {
-  CHECK(config_fetcher_, base::NotFatalUntil::M135);
+  CHECK(config_fetcher_);
   DCHECK(!config_fetcher_->IsActive());
 }
 
@@ -200,11 +204,11 @@ void ProfileResetter::ResetSettingsImpl(
       {SHORTCUTS, &ProfileResetter::ResetShortcuts},
       {NTP_CUSTOMIZATIONS, &ProfileResetter::ResetNtpCustomizations},
       {LANGUAGES, &ProfileResetter::ResetLanguages},
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
       {DNS_CONFIGURATIONS, &ProfileResetter::ResetDnsConfigurations},
       {PROXY_SETTINGS, &ProfileResetter::ResetProxySettings},
       {KEYBOARD_SETTINGS, &ProfileResetter::ResetKeyboardInputSettings},
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
   });
 
   ResettableFlags reset_triggered_for_flags = 0;
@@ -249,7 +253,7 @@ void ProfileResetter::ResetDefaultSearchEngine() {
     DCHECK(prefs);
     TemplateURLPrepopulateData::ClearPrepopulatedEnginesInPrefs(
         profile_->GetPrefs());
-    std::optional<base::Value::List> search_engines(
+    std::optional<base::ListValue> search_engines(
         master_settings_->GetSearchProviderOverrides());
     if (search_engines.has_value()) {
       // This Chrome distribution channel provides a custom search engine. We
@@ -311,6 +315,15 @@ void ProfileResetter::ResetContentSettings() {
     map->SetDefaultContentSetting(info->website_settings_info()->type(),
                                   CONTENT_SETTING_DEFAULT);
   }
+
+  // Active File System Access grants are kept in memory by the permission
+  // context rather than in HostContentSettingsMap, so they need to be revoked
+  // explicitly.
+  if (auto* permission_context =
+          FileSystemAccessPermissionContextFactory::GetForProfile(profile_)) {
+    permission_context->RevokeAllActiveGrants();
+  }
+
   MarkAsDone(CONTENT_SETTINGS);
 }
 
@@ -356,8 +369,9 @@ void ProfileResetter::ResetExtensions() {
         extensions::mojom::ManifestLocation::kExternalComponent)
       extension_ids_to_reenable.push_back(extension->id());
   }
+  auto* extension_registrar = extensions::ExtensionRegistrar::Get(profile_);
   for (const auto& extension_id : extension_ids_to_reenable) {
-    extension_service->EnableExtension(extension_id);
+    extension_registrar->EnableExtension(extension_id);
   }
 
   MarkAsDone(EXTENSIONS);
@@ -367,7 +381,7 @@ void ProfileResetter::ResetStartupPages() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   PrefService* prefs = profile_->GetPrefs();
   DCHECK(prefs);
-  std::optional<base::Value::List> url_list(
+  std::optional<base::ListValue> url_list(
       master_settings_->GetUrlsToRestoreOnStartup());
   if (url_list.has_value()) {
     prefs->SetList(prefs::kURLsToRestoreOnStartup, std::move(url_list).value());
@@ -384,18 +398,22 @@ void ProfileResetter::ResetStartupPages() {
 
 void ProfileResetter::ResetPinnedTabs() {
   // Unpin all the tabs.
-  for (Browser* browser : *BrowserList::GetInstance()) {
-    if (browser->is_type_normal() && browser->profile() == profile_) {
-      TabStripModel* tab_model = browser->tab_strip_model();
-      // Here we assume that indexof(any mini tab) < indexof(any normal tab).
-      // If we unpin the tab, it can be moved to the right. Thus traversing in
-      // reverse direction is correct.
-      for (int i = tab_model->count() - 1; i >= 0; --i) {
-        if (tab_model->IsTabPinned(i))
-          tab_model->SetTabPinned(i, false);
-      }
-    }
-  }
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [this](BrowserWindowInterface* browser) {
+        if (browser->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+            browser->GetProfile() == profile_) {
+          TabStripModel* const tab_model = browser->GetTabStripModel();
+          // Here we assume that indexof(any mini tab) < indexof(any normal
+          // tab). If we unpin the tab, it can be moved to the right. Thus
+          // traversing in reverse direction is correct.
+          for (int i = tab_model->count() - 1; i >= 0; --i) {
+            if (tab_model->IsTabPinned(i)) {
+              tab_model->SetTabPinned(i, false);
+            }
+          }
+        }
+        return true;
+      });
   MarkAsDone(PINNED_TABS);
 }
 
@@ -446,7 +464,7 @@ void ProfileResetter::OnBrowsingDataRemoverDone(uint64_t failed_data_types) {
   MarkAsDone(COOKIES_AND_SITE_DATA);
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 void ProfileResetter::ResetDnsConfigurations() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Since certain extensions can modify DNS configurations we want
@@ -541,20 +559,20 @@ void ProfileResetter::ResetKeyboardInputSettings() {
     manager->GetInputMethodUtil()->GetInputMethodIdsFromLanguageCode(
         locale, ash::input_method::kAllInputMethods, &input_method_ids);
     // Save the input method in the user's preference kLanguagePreloadEngines.
-    prefs->SetString(prefs::kLanguagePreloadEngines, input_method_ids.empty()
-                                                         ? std::string()
-                                                         : input_method_ids[0]);
+    prefs->SetString(
+        ash::prefs::kLanguagePreloadEngines,
+        input_method_ids.empty() ? std::string() : input_method_ids[0]);
   }
 
   // 2. Call to reset spell check languages, matching the default language and
   // clearing the other options.
   prefs->SetList(spellcheck::prefs::kSpellCheckDictionaries,
-                 base::Value::List().Append(
+                 base::ListValue().Append(
                      prefs->GetString(language::prefs::kPreferredLanguages)));
 
   MarkAsDone(KEYBOARD_SETTINGS);
 }
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN)
 std::vector<ShortcutCommand> GetChromeLaunchShortcuts(

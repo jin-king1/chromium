@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/safe_browsing/phishy_interaction_tracker.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
@@ -104,7 +105,8 @@ class ChromePasswordReuseDetectionManagerClient
 
   // content::RenderWidgetHost::InputEventObserver overrides.
   void OnInputEvent(const content::RenderWidgetHost& widget,
-                    const blink::WebInputEvent&) override;
+                    const blink::WebInputEvent& event,
+                    input::InputEventSource source) override;
 
   // Implements signin::IdentityManager::Observer.
   void OnPrimaryAccountChanged(
@@ -114,6 +116,8 @@ class ChromePasswordReuseDetectionManagerClient
   void InternalOnPrimaryAccountChanged(
       password_manager::PasswordManagerClient* password_manager_client,
       const signin::PrimaryAccountChangeEvent& event_details);
+
+  void OnTextRead(std::u16string text);
 
   safe_browsing::PasswordReuseDetectionManager
       password_reuse_detection_manager_;
@@ -133,6 +137,9 @@ class ChromePasswordReuseDetectionManagerClient
   // reset when ime finish composing text event is triggered.
   std::u16string last_composing_text_;
 #endif  // BUILDFLAG(IS_ANDROID)
+
+  base::WeakPtrFactory<ChromePasswordReuseDetectionManagerClient> weak_factory_{
+      this};
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 };

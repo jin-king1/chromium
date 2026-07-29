@@ -60,7 +60,7 @@ class SimpleNoticeSheetView implements BottomSheetContent {
     void setButtonAction(Runnable runnable) {
         Button button = mContentView.findViewById(R.id.confirmation_button);
         button.setOnClickListener(
-                (unusedView) -> {
+                _ -> {
                     runnable.run();
                 });
     }
@@ -126,10 +126,5 @@ class SimpleNoticeSheetView implements BottomSheetContent {
     @Override
     public float getFullHeightRatio() {
         return HeightMode.WRAP_CONTENT;
-    }
-
-    @Override
-    public int getPeekHeight() {
-        return HeightMode.DISABLED;
     }
 }

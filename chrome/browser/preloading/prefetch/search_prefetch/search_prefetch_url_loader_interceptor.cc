@@ -28,10 +28,10 @@
 #include "services/network/public/cpp/single_request_url_loader_factory.h"
 #include "services/network/public/cpp/url_loader_factory_builder.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "extensions/browser/api/web_request/web_request_api.h"
-#include "extensions/browser/browser_context_keyed_api_factory.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "extensions/browser/api/web_request/web_request_api.h"    // nogncheck
+#include "extensions/browser/browser_context_keyed_api_factory.h"  // nogncheck
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 namespace {
 
@@ -67,7 +67,7 @@ SearchPrefetchURLLoaderInterceptor::SearchPrefetchURLLoaderInterceptor(
     int64_t navigation_id,
     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner)
     : frame_tree_node_id_(frame_tree_node_id) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   navigation_id_ = navigation_id;
   navigation_response_task_runner_ = navigation_response_task_runner;
 #else
@@ -128,7 +128,8 @@ SearchPrefetchURLLoaderInterceptor::MaybeCreateLoaderForRequest(
   if (handler) {
     return handler;
   }
-  if (IsNoVarySearchDiskCacheEnabled()) {
+  if (IsNoVarySearchDiskCacheEnabled() &&
+      !CacheAliasLoaderDryRunModeEnabled()) {
     return {};
   }
   if (tentative_resource_request.load_flags & net::LOAD_SKIP_CACHE_VALIDATION) {
@@ -143,8 +144,9 @@ SearchPrefetchURLLoaderInterceptor::MaybeProxyRequestHandler(
     content::BrowserContext* browser_context,
     SearchPrefetchURLLoader::RequestHandler prefetched_loader_handler) {
   network::URLLoaderFactoryBuilder factory_builder;
-
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+  TRACE_EVENT("loading",
+              "SearchPrefetchURLLoaderInterceptor::MaybeProxyRequestHandler");
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   content::WebContents* web_contents =
       content::WebContents::FromFrameTreeNodeId(frame_tree_node_id_);
   CHECK(web_contents);
@@ -163,7 +165,7 @@ SearchPrefetchURLLoaderInterceptor::MaybeProxyRequestHandler(
         /*header_client=*/nullptr, navigation_response_task_runner_,
         /*request_initiator=*/url::Origin());
   }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   return base::BindOnce(
       &SearchPrefetchRequestHandler,

@@ -14,8 +14,11 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/task/common/task_annotator.h"
 #include "base/test/task_environment.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_config.h"
+#include "base/trace_event/trace_log.h"
 #include "base/trace_event/traced_value.h"
 #include "perf_test_helpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -97,6 +100,7 @@ class TraceEventPerfTest : public ::testing::Test {
 
  private:
   base::test::SingleThreadTaskEnvironment task_environment;
+  base::test::TracingEnvironment tracing_environment_;
 };
 
 TEST_F(TraceEventPerfTest, Submit_10000_TRACE_EVENT0) {
@@ -136,8 +140,8 @@ TEST_F(TraceEventPerfTest, Submit_10000_TRACE_EVENT_with_TracedValue) {
   IterableStopwatch trace_sw(kMetricEventSubmitTimeMs);
   for (int lap = 0; lap < kNumRuns; lap++) {
     for (int i = 0; i < 10000; i++) {
-      TRACE_EVENT_INSTANT1("test_category", "event_with_value",
-          TRACE_EVENT_SCOPE_THREAD, "value", MakeTracedValue(i));
+      TRACE_EVENT_INSTANT("test_category", "event_with_value", "value",
+                          MakeTracedValue(i));
     }
     trace_sw.NextLap();
   }

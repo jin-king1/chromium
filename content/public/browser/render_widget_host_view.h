@@ -10,16 +10,16 @@
 
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/types/expected.h"
 #include "build/build_config.h"
 #include "content/common/content_export.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/mojom/input/pointer_lock_result.mojom.h"
-#include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/ime/mojom/virtual_keyboard_types.mojom-forward.h"
 #include "ui/display/screen_infos.h"
 #include "ui/gfx/geometry/point_conversions.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/range/range.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -40,9 +40,29 @@ class TextInputClient;
 
 namespace viz {
 class ClientFrameSinkVideoCapturer;
+struct CopyOutputBitmapWithMetadata;
 }  // namespace viz
 
 namespace content {
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(CopyFromSurfaceError)
+enum class CopyFromSurfaceError {
+  kUnknown = 0,
+  kNotImplemented = 1,
+  kFrameGone = 2,
+  kTimeout = 3,
+  kEmbeddingTokenChanged = 4,
+  kVizSentEmptyBitmap = 5,
+  kUnknownVizError = 6,
+  kMaxValue = kUnknownVizError,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:CopyFromSurfaceError)
+
+using CopyFromSurfaceResult =
+    base::expected<viz::CopyOutputBitmapWithMetadata, CopyFromSurfaceError>;
 
 class RenderWidgetHost;
 class TouchSelectionControllerClientManager;
@@ -101,6 +121,13 @@ class CONTENT_EXPORT RenderWidgetHostView {
         TransformPointToRootCoordSpaceF(gfx::PointF(point)));
   }
 
+  // Coordinate points received from root frame need to be transformed
+  // to the renderer frame's coordinate space. For same site renderer frame this
+  // is a no-op; however, coordinate in an out-of-process iframe renderer
+  // process require transformation.
+  virtual gfx::PointF TransformRootPointToViewCoordSpace(
+      const gfx::PointF& point) = 0;
+
   // Retrieves the native view used to contain plugins and identify the
   // renderer in IPC messages.
   virtual gfx::NativeView GetNativeView() = 0;
@@ -118,19 +145,8 @@ class CONTENT_EXPORT RenderWidgetHostView {
   // Returns true if the View currently has the focus.
   virtual bool HasFocus() = 0;
 
-  // Shows/hides the view.  These must always be called together in pairs.
-  // It is not legal to call Hide() multiple times in a row.
-  virtual void Show() = 0;
-  virtual void Hide() = 0;
-
   // Whether the view is showing.
   virtual bool IsShowing() = 0;
-
-  // Indicates if the view is currently occluded (e.g, not visible because it's
-  // covered up by other windows), and as a result the view's renderer may be
-  // suspended. Calling Show()/Hide() overrides the state set by these methods.
-  virtual void WasUnOccluded() = 0;
-  virtual void WasOccluded() = 0;
 
   // Retrieve the bounds of the View, in screen coordinates.
   virtual gfx::Rect GetViewBounds() = 0;
@@ -218,6 +234,10 @@ class CONTENT_EXPORT RenderWidgetHostView {
   // bitmap's size may not be the same as `src_rect.size()` due to the pixel
   // scale used by the underlying device.
   //
+  // `timeout` is the maximum amount of time once viz has received the message
+  // for a result to be produced. This will result in a timeout error being
+  // produced as the result.
+  //
   // `callback` is guaranteed to be run, either synchronously or at some point
   // in the future (depending on the platform implementation and the current
   // state of the Surface). If the copy failed, the bitmap's `drawsNothing()`
@@ -229,11 +249,9 @@ class CONTENT_EXPORT RenderWidgetHostView {
   virtual void CopyFromSurface(
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
-      base::OnceCallback<void(const SkBitmap&)> callback) = 0;
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const CopyFromSurfaceResult&)> callback) = 0;
 
-  // Ensures that all surfaces are synchronized for the next call to
-  // CopyFromSurface. This is used by web tests.
-  virtual void EnsureSurfaceSynchronizedForWebTest() = 0;
 
   // Creates a video capturer, which will allow the caller to receive a stream
   // of media::VideoFrames captured from this view. The capturer is configured
@@ -281,7 +299,7 @@ class CONTENT_EXPORT RenderWidgetHostView {
   virtual void ShowSharePicker(
       const std::string& title,
       const std::string& text,
-      const std::string& url,
+      const GURL& url,
       const std::vector<std::string>& file_paths,
       blink::mojom::ShareService::ShareCallback callback) = 0;
 
@@ -300,8 +318,28 @@ class CONTENT_EXPORT RenderWidgetHostView {
   virtual void NotifyVirtualKeyboardOverlayRect(
       const gfx::Rect& keyboard_rect) = 0;
 
+  virtual void ShowInterestInElement(int) = 0;
+
   // Returns true if this widget is a HTML popup, e.g. a <select> menu.
   virtual bool IsHTMLFormPopup() const = 0;
+
+  // Returns true if this view has a saved compositor frame.
+  virtual bool HasSavedCompositorFrame() const = 0;
+
+  // Tells the View if it should use default deadline policy when resizing.
+  virtual void SetShouldUseDefaultDeadlineOnResize(bool enable) = 0;
+
+  // Forces a specified deadline for the next surface embedding. If the optional
+  // has a value, overrides the embedding deadline to the specified duration
+  // (unit: frames). If set to std::nullopt, clears any active override and
+  // restores default resize deadline policies.
+  virtual void SetForceSpecifiedDeadline(
+      std::optional<uint32_t> deadline_in_frames) {}
+
+  // Set whether macOS "AutoFill" is allowed for this view.
+  virtual void SetSupportsAutoFill(bool supports) {}
+
+  virtual std::optional<uint32_t> GetForceSpecifiedDeadlineForTesting();
 };
 
 }  // namespace content

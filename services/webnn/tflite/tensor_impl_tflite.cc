@@ -9,22 +9,24 @@
 #include "base/compiler_specific.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/notimplemented.h"
 #include "services/webnn/public/cpp/webnn_trace.h"
 #include "services/webnn/public/mojom/webnn_tensor.mojom.h"
 #include "services/webnn/queueable_resource_state.h"
 #include "services/webnn/queueable_resource_state_base.h"
 #include "services/webnn/resource_task.h"
 #include "services/webnn/tflite/buffer_content_tflite.h"
+#include "services/webnn/webnn_context_impl.h"
 #include "services/webnn/webnn_utils.h"
 #include "third_party/tflite/src/tensorflow/lite/util.h"
 
 namespace webnn::tflite {
 
 // static
-base::expected<std::unique_ptr<WebNNTensorImpl>, mojom::ErrorPtr>
+base::expected<scoped_refptr<WebNNTensorImpl>, mojom::ErrorPtr>
 TensorImplTflite::Create(
     mojo::PendingAssociatedReceiver<mojom::WebNNTensor> receiver,
-    WebNNContextImpl* context,
+    WebNNContextImpl& context,
     mojom::TensorInfoPtr tensor_info) {
   size_t size = tensor_info->descriptor.PackedByteLength();
   // Invalid values are rejected in GraphBuilder.
@@ -34,23 +36,21 @@ TensorImplTflite::Create(
   auto buffer_state =
       base::MakeRefCounted<QueueableResourceState<BufferContent>>(
           std::move(buffer_content));
-  return std::make_unique<TensorImplTflite>(
+  return base::MakeRefCounted<TensorImplTflite>(
       std::move(receiver), context, std::move(tensor_info),
       std::move(buffer_state), base::PassKey<TensorImplTflite>());
 }
 
 TensorImplTflite::TensorImplTflite(
     mojo::PendingAssociatedReceiver<mojom::WebNNTensor> receiver,
-    WebNNContextImpl* context,
+    WebNNContextImpl& context,
     mojom::TensorInfoPtr tensor_info,
     scoped_refptr<QueueableResourceState<BufferContent>> buffer_state,
     base::PassKey<TensorImplTflite>)
     : WebNNTensorImpl(std::move(receiver), context, std::move(tensor_info)),
       buffer_state_(std::move(buffer_state)) {}
 
-TensorImplTflite::~TensorImplTflite() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-}
+TensorImplTflite::~TensorImplTflite() = default;
 
 const scoped_refptr<QueueableResourceState<BufferContent>>&
 TensorImplTflite::GetBufferState() const {
@@ -73,21 +73,25 @@ void TensorImplTflite::ReadTensorImpl(ReadTensorCallback callback) {
       /*exclusive_resources=*/
       std::vector<scoped_refptr<QueueableResourceStateBase>>(),
       base::BindOnce(
-          [](scoped_refptr<QueueableResourceState<BufferContent>>
+          [](base::WeakPtr<WebNNContextImpl> context,
+             scoped_refptr<QueueableResourceState<BufferContent>>
                  content_handle,
              ReadTensorCallback callback, ScopedTrace scoped_trace,
              base::OnceClosure completion_closure) {
-            scoped_trace.AddStep("Begin read");
-            // Memory copies are fast, avoid the overhead of posting a task
-            // to the thread pool and do the work synchronously.
-            std::move(callback).Run(
-                mojom::ReadTensorResult::NewBuffer(mojo_base::BigBuffer(
-                    content_handle->GetSharedLockedResource().AsSpan())));
+            if (context) {
+              scoped_trace.AddStep("Begin read");
+              // Memory copies are fast, avoid the overhead of posting a task
+              // to the thread pool and do the work synchronously.
+              std::move(callback).Run(mojom::ReadTensorResult::NewBuffer(
+                  context->WriteDataToDataPipeOrBigBuffer(
+                      content_handle->GetSharedLockedResource().AsSpan())));
 
-            scoped_trace.AddStep("End read");
+              scoped_trace.AddStep("End read");
+            }
             std::move(completion_closure).Run();
           },
-          buffer_state_, std::move(callback), std::move(scoped_trace)));
+          context_->AsWeakPtr(), buffer_state_, std::move(callback),
+          std::move(scoped_trace)));
   task->Enqueue();
 }
 
@@ -106,22 +110,35 @@ void TensorImplTflite::WriteTensorImpl(mojo_base::BigBuffer src_buffer) {
           scoped_refptr<QueueableResourceStateBase>>(),
       /*exclusive_resources=*/std::move(exclusive_resources),
       base::BindOnce(
-          [](scoped_refptr<QueueableResourceState<BufferContent>>
+          [](base::WeakPtr<WebNNContextImpl> context,
+             scoped_refptr<QueueableResourceState<BufferContent>>
                  content_handle,
              mojo_base::BigBuffer src_buffer, ScopedTrace scoped_trace,
              base::OnceClosure completion_closure) {
-            scoped_trace.AddStep("Begin write");
-            // Memory copies are fast, avoid the overhead of posting a task to
-            // the thread pool and do the work synchronously.
-            content_handle->GetExclusivelyLockedResource()
-                ->AsSpan()
-                .copy_prefix_from(src_buffer);
+            if (context) {
+              scoped_trace.AddStep("Begin write");
+              // Memory copies are fast, avoid the overhead of posting a task to
+              // the thread pool and do the work synchronously.
+              context->ReadDataFromBigBufferOrDataPipe(
+                  std::move(src_buffer),
+                  content_handle->GetExclusivelyLockedResource()->AsSpan());
 
-            scoped_trace.AddStep("End write");
+              scoped_trace.AddStep("End write");
+            }
             std::move(completion_closure).Run();
           },
-          buffer_state_, std::move(src_buffer), std::move(scoped_trace)));
+          context_->AsWeakPtr(), buffer_state_, std::move(src_buffer),
+          std::move(scoped_trace)));
   task->Enqueue();
+}
+
+bool TensorImplTflite::ImportTensorImpl(ScopedAccessPtr access) {
+  NOTIMPLEMENTED();
+  return false;
+}
+
+void TensorImplTflite::ExportTensorImpl(ScopedAccessPtr access) {
+  NOTIMPLEMENTED();
 }
 
 }  // namespace webnn::tflite

@@ -16,6 +16,10 @@
 #include "base/no_destructor.h"
 #include "content/common/content_export.h"
 
+namespace aura {
+class Window;
+}  // namespace aura
+
 namespace base {
 class ScopedClosureRunner;
 }
@@ -27,11 +31,11 @@ class Size;
 
 namespace ui {
 struct StylusHandwritingPropertiesWin;
-class TextInputClient;
 }  // namespace ui
 
 namespace content {
 
+class RenderWidgetHostViewBase;
 class StylusHandwritingCallbackSinkWin;
 
 // Encapsulates the Shell Handwriting API. Receives signals from the application
@@ -56,6 +60,10 @@ class CONTENT_EXPORT StylusHandwritingControllerWin {
   // have been successfully set up.
   static bool IsHandwritingAPIAvailable();
 
+  // Checks if we're on a build which supports handwriting. Needed to work
+  // around crbug.com/372506009.
+  static bool StylusHandwritingSupportedOnBuild();
+
   // Initializes the controller singleton instance.
   static void Initialize();
 
@@ -75,23 +83,44 @@ class CONTENT_EXPORT StylusHandwritingControllerWin {
   Microsoft::WRL::ComPtr<StylusHandwritingCallbackSinkWin>
   GetCallbackSinkForTesting() const;
 
+  // Used for testing instance initialization on builds that support handwriting
+  // without having to deal with the hassel of mocking handwriting APIs or the
+  // ThreadManager.
+  static bool BindInterfacesCalledForTesting();
+
+  // The maximum distance in DIPs outside an element's bounding box which a
+  // stylus input may be considered for the purposes of starting handwriting.
+  int GetStylusHandwritingToleranceInDips(aura::Window& window) const;
+
   // Notify the Shell Handwriting API about the intent to write. At this point,
   // we delegate the input processing to the API which starts inking. After
   // intent is confirmed, the API will request that focus is updated by calling
-  // ITfHandwritingSink::FocusHandwritingTarget.
+  // ITfHandwritingSink::FocusHandwritingTarget. `view` is the view that
+  // initiated this handwriting session (i.e. the one that will deliver the
+  // focus result); it is tracked so the session can be failed if that specific
+  // view is destroyed while a focus result is pending.
   void OnStartStylusWriting(
+      RenderWidgetHostViewBase* view,
       OnFocusHandwritingTargetCallback callback,
-      const ui::StylusHandwritingPropertiesWin& properties,
-      ui::TextInputClient& text_input_client);
+      const ui::StylusHandwritingPropertiesWin& properties);
 
   // Signal the Handwriting API whether focus has been updated successfully and
   // may begin committing edits or collect character bounds for evaluating
   // gesture recognition using TSF/IME APIs.
-  void OnFocusHandled(ui::TextInputClient& text_input_client);
+  void OnFocusHandled();
 
   // Signal the Handwriting API that focus was not updated successfully and must
   // cancel the inking session.
-  void OnFocusFailed(ui::TextInputClient& text_input_client);
+  void OnFocusFailed();
+
+  // Called when a view is being destroyed. If `view` is the view that started
+  // the in-flight handwriting session, cancels that session so the Shell
+  // Handwriting API is not left awaiting a response.
+  void OnHandwritingViewDestroyed(RenderWidgetHostViewBase* view);
+
+  // Returns true if TSF has called FocusHandwritingTarget and we are waiting
+  // for the renderer to respond via OnFocusHandled()/OnFocusFailed().
+  bool IsWaitingForFocusResult() const;
 
  private:
   friend class base::NoDestructor<StylusHandwritingControllerWin>;
@@ -103,13 +132,16 @@ class CONTENT_EXPORT StylusHandwritingControllerWin {
   // Binds required API interfaces if available.
   void BindInterfaces();
 
+  // API reference:
+  // https://learn.microsoft.com/en-us/windows/win32/api/shellhandwriting/nn-shellhandwriting-itfhandwritingsink
   Microsoft::WRL::ComPtr<StylusHandwritingCallbackSinkWin>
       handwriting_callback_sink_;
+
+  // API reference:
+  // https://learn.microsoft.com/en-us/windows/win32/api/shellhandwriting/nn-shellhandwriting-itfhandwriting
   Microsoft::WRL::ComPtr<::ITfHandwriting> handwriting_;
-  // Stores the current text input client where handwriting was initiated. Used
-  // to filter out calls that come from other clients, e.g., when the focused
-  // window changes after the stylus writing has started.
-  base::WeakPtr<ui::TextInputClient> current_text_input_client_;
+
+  base::WeakPtr<RenderWidgetHostViewBase> current_handwriting_view_;
 };
 
 }  // namespace content

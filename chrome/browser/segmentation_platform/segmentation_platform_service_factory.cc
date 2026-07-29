@@ -10,14 +10,16 @@
 #include "base/files/file_path.h"
 #include "base/hash/hash.h"
 #include "base/no_destructor.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/time/default_clock.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/commerce/shopping_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
+#include "chrome/browser/optimization_guide/model_execution/optimization_guide_global_state.h"
+#include "chrome/browser/optimization_guide/optimization_guide_global_state_holder_keyed_service.h"
+#include "chrome/browser/optimization_guide/optimization_guide_global_state_holder_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/segmentation_platform/client_util/local_tab_handler.h"
 #include "chrome/browser/segmentation_platform/segmentation_platform_config.h"
@@ -47,10 +49,6 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
-
-#if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/segmentation_platform/client_util/tab_data_collection_util.h"
-#endif
 
 namespace segmentation_platform {
 namespace {
@@ -91,17 +89,6 @@ void InitTabDataCollection(
     std::unique_ptr<TabFetcher> tab_fetcher) {
   auto rank_dispatcher = std::make_unique<TabRankDispatcher>(
       service, session_sync_service, std::move(tab_fetcher));
-#if BUILDFLAG(IS_ANDROID)
-  if (base::FeatureList::IsEnabled(
-          features::kSegmentationPlatformCollectTabRankData)) {
-    const char kSegmentationTabDataCollectionUtilUserDataKey[] =
-        "segmentation_tab_tab_data_collection_util";
-    auto tab_collection_util =
-        std::make_unique<TabDataCollectionUtil>(service, rank_dispatcher.get());
-    service->SetUserData(kSegmentationTabDataCollectionUtilUserDataKey,
-                         std::move(tab_collection_util));
-  }
-#endif
   service->SetUserData(kSegmentationTabRankDispatcherUserDataKey,
                        std::move(rank_dispatcher));
 }
@@ -144,7 +131,8 @@ SegmentationPlatformServiceFactory::SegmentationPlatformServiceFactory()
               // Ash Internals.
               .WithAshInternals(ProfileSelection::kOriginalOnly)
               .Build()) {
-  DependsOn(OptimizationGuideKeyedServiceFactory::GetInstance());
+  DependsOn(
+      OptimizationGuideGlobalStateHolderKeyedServiceFactory::GetInstance());
   DependsOn(HistoryServiceFactory::GetInstance());
   DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
   DependsOn(SyncServiceFactory::GetInstance());
@@ -169,15 +157,20 @@ SegmentationPlatformServiceFactory::BuildServiceInstanceForBrowserContext(
     return std::make_unique<DummySegmentationPlatformService>();
 
   Profile* profile = Profile::FromBrowserContext(context);
-  OptimizationGuideKeyedService* optimization_guide =
-      OptimizationGuideKeyedServiceFactory::GetForProfile(profile);
+  auto* global_state_holder =
+      OptimizationGuideGlobalStateHolderKeyedServiceFactory::GetForProfile(
+          profile);
+  optimization_guide::OptimizationGuideModelProvider* optimization_guide =
+      global_state_holder
+          ? &global_state_holder->GetGlobalState().model_provider()
+          : nullptr;
   sync_sessions::SessionSyncService* session_sync_service =
       SessionSyncServiceFactory::GetForProfile(profile);
   auto tab_fetcher = std::make_unique<processing::LocalTabHandler>(
       session_sync_service, profile);
   auto home_modules_card_registry =
-      std::make_unique<home_modules::HomeModulesCardRegistry>(
-          profile->GetPrefs());
+      home_modules::HomeModulesCardRegistry::Create(
+          profile->GetPrefs(), g_browser_process->local_state());
 
   InitializeUkmDatabaseIfNeeded(profile);
 
@@ -187,12 +180,8 @@ SegmentationPlatformServiceFactory::BuildServiceInstanceForBrowserContext(
       base::PersistentHash(base::as_byte_span(profile_path)));
   params->history_service = HistoryServiceFactory::GetForProfile(
       profile, ServiceAccessType::IMPLICIT_ACCESS);
-  base::TaskPriority priority = base::TaskPriority::BEST_EFFORT;
-  if (base::FeatureList::IsEnabled(features::kSegmentationPlatformUserVisibleTaskRunner)) {
-    priority = base::TaskPriority::USER_VISIBLE;
-  }
   params->task_runner = base::ThreadPool::CreateSequencedTaskRunner(
-      {base::MayBlock(), priority});
+      {base::MayBlock(), base::TaskPriority::USER_VISIBLE});
   params->storage_dir =
       profile->GetPath().Append(chrome::kSegmentationPlatformStorageDirName);
   params->db_provider =

@@ -18,10 +18,13 @@
 #include "extensions/browser/api/content_settings/content_settings_service.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_prefs_helper.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/types.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using base::Value;
 using extensions::api::types::ChromeSettingScope;
@@ -76,8 +79,7 @@ class ExtensionControlledPrefsTest : public PrefsPrepopulatedTestBase {
 };
 
 ExtensionControlledPrefsTest::ExtensionControlledPrefsTest()
-    : PrefsPrepopulatedTestBase(),
-      content_settings_(ContentSettingsService::Get(&profile_)),
+    : content_settings_(ContentSettingsService::Get(&profile_)),
       prefs_helper_(prefs_.prefs(), prefs_.extension_pref_value_map()) {
   content_settings_->OnExtensionPrefsAvailable(prefs_.prefs());
 }
@@ -402,8 +404,7 @@ TEST_F(ControlledPrefsSetExtensionControlledPref,
 // extension controlled preferences from being enacted.
 class ControlledPrefsDisableExtensions : public ExtensionControlledPrefsTest {
  public:
-  ControlledPrefsDisableExtensions()
-      : iteration_(0) {}
+  ControlledPrefsDisableExtensions() = default;
   ~ControlledPrefsDisableExtensions() override = default;
   void Initialize() override {
     InstallExtensionControlledPref(internal_extension(), kPref1,
@@ -428,15 +429,15 @@ class ControlledPrefsDisableExtensions : public ExtensionControlledPrefsTest {
     }
 
     // External extensions are loaded even when extensions are disabled (though
-    // they likely shouldn't be, see https://crbug.com/833540). Because of this,
+    // they likely shouldn't be, see crbug.com/41383647). Because of this,
     // the preference should still be controlled by the external extension.
-    // Regression test for https://crbug.com/828295.
+    // Regression test for https://crbug.com/41380408.
     std::string pref2_actual = prefs()->pref_service()->GetString(kPref2);
     EXPECT_EQ("external extension value", pref2_actual);
   }
 
  private:
-  int iteration_;
+  int iteration_ = 0;
 };
 TEST_F(ControlledPrefsDisableExtensions, ControlledPrefsDisableExtensions) { }
 

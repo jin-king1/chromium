@@ -33,8 +33,6 @@ inline constexpr char kAndroidAppScheme[] = "android-app";
 // both interesting and dangerous.
 inline constexpr char kGoogleChromeScheme[] = "googlechrome";
 
-inline constexpr char kChromeUIAttributionInternalsHost[] =
-    "attribution-internals";
 inline constexpr char kChromeUIBlobInternalsHost[] = "blob-internals";
 inline constexpr char kChromeUIBrowserCrashHost[] =
     "inducebrowsercrashforrealz";
@@ -53,7 +51,9 @@ inline constexpr char kChromeUIQuotaInternalsHost[] = "quota-internals";
 inline constexpr char kChromeUIResourcesHost[] = "resources";
 inline constexpr char kChromeUIServiceWorkerInternalsHost[] =
     "serviceworker-internals";
-inline constexpr char kChromeUITracesInternalsHost[] = "traces-internals";
+inline constexpr char kChromeUIThemeHost[] = "theme";
+inline constexpr char kChromeUITracesHost[] = "traces";
+inline constexpr char kLegacyChromeUITracesInternalsHost[] = "traces-internals";
 inline constexpr char kChromeUITracingHost[] = "tracing";
 inline constexpr char kChromeUIUkmHost[] = "ukm";
 inline constexpr char kChromeUIUntrustedResourcesURL[] =

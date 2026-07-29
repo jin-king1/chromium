@@ -11,25 +11,28 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
+#include <utility>
+#include <variant>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_span.h"
 #include "media/base/media_export.h"
 #include "media/base/ranges.h"
 #include "media/base/video_codecs.h"
 #include "media/base/video_color_space.h"
 #include "media/base/video_types.h"
 #include "media/parsers/h264_bit_reader.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "media/parsers/h26x_parser.h"
 
 namespace gfx {
 class Rect;
 class Size;
-struct HdrMetadataSmpteSt2086;
-struct HdrMetadataCta861_3;
 }  // namespace gfx
 
 namespace media {
@@ -67,8 +70,7 @@ struct MEDIA_EXPORT H264NALU {
 
   // After (without) start code; we don't own the underlying memory
   // and a shallow copy should be made when copying this struct.
-  raw_ptr<const uint8_t, AllowPtrArithmetic | DanglingUntriaged> data = nullptr;
-  off_t size = 0;  // From after start code to start code of next NALU (or EOS).
+  base::raw_span<const uint8_t, DanglingUntriaged> data;
 
   int nal_ref_idc = 0;
   int nal_unit_type = 0;
@@ -155,8 +157,10 @@ struct MEDIA_EXPORT H264SPS {
   bool qpprime_y_zero_transform_bypass_flag = false;
 
   bool seq_scaling_matrix_present_flag = false;
-  uint8_t scaling_list4x4[6][kH264ScalingList4x4Length] = {};
-  uint8_t scaling_list8x8[6][kH264ScalingList8x8Length] = {};
+  std::array<std::array<uint8_t, kH264ScalingList4x4Length>, 6>
+      scaling_list4x4 = {};
+  std::array<std::array<uint8_t, kH264ScalingList8x8Length>, 6>
+      scaling_list8x8 = {};
 
   int log2_max_frame_num_minus4 = 0;
   int pic_order_cnt_type = 0;
@@ -166,7 +170,7 @@ struct MEDIA_EXPORT H264SPS {
   int offset_for_top_to_bottom_field = 0;
   int num_ref_frames_in_pic_order_cnt_cycle = 0;
   int expected_delta_per_pic_order_cnt_cycle = 0;  // calculated
-  int offset_for_ref_frame[255] = {};
+  std::array<int, 255> offset_for_ref_frame = {};
   int max_num_ref_frames = 0;
   bool gaps_in_frame_num_value_allowed_flag = false;
   int pic_width_in_mbs_minus1 = 0;
@@ -204,9 +208,9 @@ struct MEDIA_EXPORT H264SPS {
   int cpb_cnt_minus1 = 0;
   int bit_rate_scale = 0;
   int cpb_size_scale = 0;
-  int bit_rate_value_minus1[32] = {};
-  int cpb_size_value_minus1[32] = {};
-  bool cbr_flag[32] = {};
+  std::array<int, 32> bit_rate_value_minus1 = {};
+  std::array<int, 32> cpb_size_value_minus1 = {};
+  std::array<bool, 32> cbr_flag = {};
   int initial_cpb_removal_delay_length_minus_1 = 0;
   int cpb_removal_delay_length_minus1 = 0;
   int dpb_output_delay_length_minus1 = 0;
@@ -268,8 +272,10 @@ struct MEDIA_EXPORT H264PPS {
   bool transform_8x8_mode_flag = false;
 
   bool pic_scaling_matrix_present_flag = false;
-  uint8_t scaling_list4x4[6][kH264ScalingList4x4Length] = {};
-  uint8_t scaling_list8x8[6][kH264ScalingList8x8Length] = {};
+  std::array<std::array<uint8_t, kH264ScalingList4x4Length>, 6>
+      scaling_list4x4 = {};
+  std::array<std::array<uint8_t, kH264ScalingList8x8Length>, 6>
+      scaling_list8x8 = {};
 
   int second_chroma_qp_index_offset = 0;
 };
@@ -285,10 +291,10 @@ struct MEDIA_EXPORT H264ModificationOfPicNum {
 struct MEDIA_EXPORT H264WeightingFactors {
   bool luma_weight_flag = false;
   bool chroma_weight_flag = false;
-  int luma_weight[32] = {};
-  int luma_offset[32] = {};
-  int chroma_weight[32][2] = {};
-  int chroma_offset[32][2] = {};
+  std::array<int, 32> luma_weight = {};
+  std::array<int, 32> luma_offset = {};
+  std::array<std::array<int, 2>, 32> chroma_weight = {};
+  std::array<std::array<int, 2>, 32> chroma_offset = {};
 };
 
 struct MEDIA_EXPORT H264DecRefPicMarking {
@@ -349,8 +355,10 @@ struct MEDIA_EXPORT H264SliceHeader {
   int num_ref_idx_l1_active_minus1 = 0;
   bool ref_pic_list_modification_flag_l0 = false;
   bool ref_pic_list_modification_flag_l1 = false;
-  H264ModificationOfPicNum ref_list_l0_modifications[kRefListModSize];
-  H264ModificationOfPicNum ref_list_l1_modifications[kRefListModSize];
+  std::array<H264ModificationOfPicNum, kRefListModSize>
+      ref_list_l0_modifications;
+  std::array<H264ModificationOfPicNum, kRefListModSize>
+      ref_list_l1_modifications;
 
   int luma_log2_weight_denom = 0;
   int chroma_log2_weight_denom = 0;
@@ -367,7 +375,7 @@ struct MEDIA_EXPORT H264SliceHeader {
   bool long_term_reference_flag = false;
 
   bool adaptive_ref_pic_marking_mode_flag = false;
-  H264DecRefPicMarking ref_pic_marking[kRefListSize];
+  std::array<H264DecRefPicMarking, kRefListSize> ref_pic_marking;
 
   int cabac_init_idc = 0;
   int slice_qp_delta = 0;
@@ -398,32 +406,11 @@ struct MEDIA_EXPORT H264SEIRecoveryPoint {
   int changing_slice_group_idc = 0;
 };
 
-struct MEDIA_EXPORT H264SEIMasteringDisplayInfo {
-  enum {
-    kNumDisplayPrimaries = 3,
-    kDisplayPrimaryComponents = 2,
-  };
-
-  uint16_t display_primaries[kNumDisplayPrimaries][kDisplayPrimaryComponents] =
-      {};
-  uint16_t white_points[2] = {};
-  uint32_t max_luminance = 0;
-  uint32_t min_luminance = 0;
-
-  gfx::HdrMetadataSmpteSt2086 ToGfx() const;
-};
-
-struct MEDIA_EXPORT H264SEIContentLightLevelInfo {
-  uint16_t max_content_light_level = 0;
-  uint16_t max_picture_average_light_level = 0;
-
-  gfx::HdrMetadataCta861_3 ToGfx() const;
-};
-
-using H264SEIMessage = absl::variant<absl::monostate,
-                                     H264SEIRecoveryPoint,
-                                     H264SEIMasteringDisplayInfo,
-                                     H264SEIContentLightLevelInfo>;
+using H264SEIMessage = std::variant<std::monostate,
+                                    H264SEIRecoveryPoint,
+                                    H26xSEIMasteringDisplayInfo,
+                                    H26xSEIContentLightLevelInfo,
+                                    H26xSEIUserDataRegisteredT35>;
 
 struct MEDIA_EXPORT H264SEI {
   H264SEI();
@@ -454,14 +441,21 @@ class MEDIA_EXPORT H264Parser {
   // - |*offset| is between 0 and |data_size| included.
   //   It is strictly less than |data_size| if |data_size| > 0.
   // - |*start_code_size| is either 0, 3 or 4.
-  static bool FindStartCode(const uint8_t* data,
-                            off_t data_size,
-                            off_t* offset,
-                            off_t* start_code_size);
+  static bool FindStartCode(base::span<const uint8_t> data,
+                            size_t* offset,
+                            size_t* start_code_size);
 
   // Wrapper for FindStartCode() that skips over start codes that
   // may appear inside of |encrypted_ranges_|.
   // Returns true if a start code was found. Otherwise returns false.
+  static bool FindStartCodeInClearRanges(base::span<const uint8_t> data,
+                                         const Ranges<const uint8_t*>& ranges,
+                                         size_t* offset,
+                                         size_t* start_code_size);
+
+  // DEPRECATED: Use the above `base::span` variant to avoid unsafe buffer
+  // usage.
+  // TODO(https://crbug.com/40284755): Remove this once the callers are gone.
   static bool FindStartCodeInClearRanges(const uint8_t* data,
                                          off_t data_size,
                                          const Ranges<const uint8_t*>& ranges,
@@ -472,8 +466,7 @@ class MEDIA_EXPORT H264Parser {
 
   // Parses the input stream and returns all the NALUs through |nalus|. Returns
   // false if the stream is invalid.
-  static bool ParseNALUs(const uint8_t* stream,
-                         size_t stream_size,
+  static bool ParseNALUs(base::span<const uint8_t> stream,
                          std::vector<H264NALU>* nalus);
 
   H264Parser();
@@ -488,9 +481,14 @@ class MEDIA_EXPORT H264Parser {
   // |stream| owned by caller.
   // |subsamples| contains information about what parts of |stream| are
   // encrypted.
+  void SetStream(base::span<const uint8_t> stream);
+
+  // DEPRECATED: Use the above `base::span` variant to avoid unsafe buffer
+  // usage.
+  // TODO(https://crbug.com/40284755): Remove this once the callers are gone.
   void SetStream(const uint8_t* stream, off_t stream_size);
-  void SetEncryptedStream(const uint8_t* stream,
-                          off_t stream_size,
+
+  void SetEncryptedStream(base::span<const uint8_t> stream,
                           const std::vector<SubsampleEntry>& subsamples);
 
   // Read the stream to find the next NALU, identify it and return
@@ -552,10 +550,10 @@ class MEDIA_EXPORT H264Parser {
   // - its size in bytes is returned in |*nalu_size| and includes
   //   the start code as well as the trailing zero bits.
   // - the size in bytes of the start code is returned in |*start_code_size|.
-  bool LocateNALU(off_t* nalu_size, off_t* start_code_size);
+  bool LocateNALU(size_t* nalu_size, size_t* start_code_size);
 
   // Parse scaling lists (see spec).
-  Result ParseScalingList(int size, uint8_t* scaling_list, bool* use_default);
+  Result ParseScalingList(base::span<uint8_t> scaling_list, bool* use_default);
   Result ParseSPSScalingLists(H264SPS* sps);
   Result ParsePPSScalingLists(const H264SPS& sps, H264PPS* pps);
 
@@ -583,10 +581,7 @@ class MEDIA_EXPORT H264Parser {
   Result ParseDecRefPicMarking(H264SliceHeader* shdr);
 
   // Pointer to the current NALU in the stream.
-  raw_ptr<const uint8_t, AllowPtrArithmetic | DanglingUntriaged> stream_;
-
-  // Bytes left in the stream after the current NALU.
-  off_t bytes_left_;
+  base::raw_span<const uint8_t, DanglingUntriaged> stream_;
 
   H264BitReader br_;
 
@@ -601,6 +596,9 @@ class MEDIA_EXPORT H264Parser {
   // This contains the range of the previous NALU found in
   // AdvanceToNextNalu(). Holds exactly one range.
   Ranges<const uint8_t*> previous_nalu_range_;
+
+  // Cached value of kExtendedVideoBitstreamValidation feature.
+  const bool validate_extended_bitstream_;
 };
 
 }  // namespace media

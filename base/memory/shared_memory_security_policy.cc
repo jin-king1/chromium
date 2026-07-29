@@ -10,17 +10,15 @@
 #include <optional>
 
 #include "base/bits.h"
-#include "base/memory/page_size.h"
 #include "base/numerics/checked_math.h"
+#include "base/system/sys_info.h"
 #include "build/build_config.h"
 
 namespace base {
 
 namespace {
 
-// Note: pointers are 32 bits on all architectures in NaCl. See
-// https://bugs.chromium.org/p/nativeclient/issues/detail?id=1162
-#if defined(ARCH_CPU_32_BITS) || BUILDFLAG(IS_NACL)
+#if defined(ARCH_CPU_32_BITS)
 // No effective limit on 32-bit, since there simply isn't enough address space
 // for ASLR to be particularly effective.
 constexpr size_t kTotalMappedSizeLimit = std::numeric_limits<size_t>::max();
@@ -32,15 +30,17 @@ constexpr size_t kTotalMappedSizeLimit = 32ULL * 1024 * 1024 * 1024;
 static std::atomic_size_t total_mapped_size_;
 
 std::optional<size_t> AlignWithPageSize(size_t size) {
-#if BUILDFLAG(IS_WIN)
-  // TODO(crbug.com/40307662): Matches alignment requirements defined in
-  // platform_shared_memory_region_win.cc:PlatformSharedMemoryRegion::Create.
-  // Remove this when NaCl is gone.
-  static const size_t kSectionSize = 65536;
-  const size_t page_size = std::max(kSectionSize, GetPageSize());
-#else
-  const size_t page_size = GetPageSize();
-#endif  // BUILDFLAG(IS_WIN)
+  // Note that the function name says "page size", but on Windows, the
+  // allocation granularity is distinct from the page size: on typical systems,
+  // the allocation granularity is 64KB but the page size is 4KB.  In practice,
+  // `MapViewOfFile()` returns addresses that are aligned to the allocation
+  // granularity, so every mapping on Windows costs at least 64KB.
+  //
+  // TODO(crbug.com/440123090): Windows 10 version 1803 and later provide
+  // `VirtualAlloc2()` and `MapViewOfFile3()` to relax the alignment to page
+  // granularity. This will also require sorting out the alignment checks in V8,
+  // which largely use allocation granularity instead of page size.
+  const size_t page_size = SysInfo::VMAllocationGranularity();
   size_t rounded_size = bits::AlignUp(size, page_size);
 
   // Fail on overflow.

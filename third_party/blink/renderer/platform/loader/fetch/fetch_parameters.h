@@ -106,7 +106,7 @@ class PLATFORM_EXPORT FetchParameters {
       TextResourceDecoderOptions::ContentType content_type) {
     decoder_options_.OverrideContentType(content_type);
   }
-  void SetCharset(const WTF::TextEncoding& charset) {
+  void SetCharset(const TextEncoding& charset) {
     SetDecoderOptions(TextResourceDecoderOptions(
         TextResourceDecoderOptions::kPlainTextContent, charset));
   }
@@ -136,6 +136,10 @@ class PLATFORM_EXPORT FetchParameters {
     options_.initiator_info.is_link_preload = is_link_preload;
   }
 
+  CrossOriginAttributeValue GetCrossOriginAttributeValue() const {
+    return cross_origin_attribute_value_;
+  }
+
   bool IsStaleRevalidation() const { return is_stale_revalidation_; }
   void SetStaleRevalidation(bool is_stale_revalidation) {
     is_stale_revalidation_ = is_stale_revalidation;
@@ -153,7 +157,7 @@ class PLATFORM_EXPORT FetchParameters {
   // credentials mode.
   void SetCrossOriginAccessControl(const SecurityOrigin*,
                                    network::mojom::CredentialsMode);
-  const IntegrityMetadataSet IntegrityMetadata() const {
+  const IntegrityMetadataSet GetIntegrityMetadata() const {
     return options_.integrity_metadata;
   }
   void SetIntegrityMetadata(const IntegrityMetadataSet& metadata) {
@@ -221,14 +225,6 @@ class PLATFORM_EXPORT FetchParameters {
     return is_potentially_lcp_influencer_;
   }
 
-  void SetHasPreloadedResponseCandidate(bool flag) {
-    has_preloaded_response_candidate_ = flag;
-  }
-
-  bool HasPreloadedResponseCandidate() const {
-    return has_preloaded_response_candidate_;
-  }
-
   void Trace(Visitor* visitor) const { visitor->Trace(options_); }
 
  private:
@@ -246,12 +242,13 @@ class PLATFORM_EXPORT FetchParameters {
   ImageRequestBehavior image_request_behavior_ = ImageRequestBehavior::kNone;
   mojom::blink::ScriptType script_type_ = mojom::blink::ScriptType::kClassic;
   bool is_stale_revalidation_ = false;
+  CrossOriginAttributeValue cross_origin_attribute_value_ =
+      kCrossOriginAttributeNotSet;
   bool is_from_origin_dirty_style_sheet_ = false;
   RenderBlockingBehavior render_blocking_behavior_ =
       RenderBlockingBehavior::kUnset;
   bool is_potentially_lcp_element_ = false;
   bool is_potentially_lcp_influencer_ = false;
-  bool has_preloaded_response_candidate_ = false;
 };
 
 }  // namespace blink

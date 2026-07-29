@@ -8,22 +8,29 @@
 
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssnumericvalue_double.h"
 #include "third_party/blink/renderer/core/animation/scroll_timeline_util.h"
+#include "third_party/blink/renderer/core/animation/timeline_trigger.h"
 #include "third_party/blink/renderer/core/css/cssom/css_unit_values.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/layout/forms/layout_fieldset.h"
+#include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
+#include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
+#include "third_party/blink/renderer/platform/geometry/physical_direction.h"
+#include "third_party/blink/renderer/platform/text/writing_direction_mode.h"
 
 namespace blink {
 
 ScrollSnapshotTimeline::ScrollSnapshotTimeline(Document* document)
-    : AnimationTimeline(document), ScrollSnapshotClient(document->GetFrame()) {}
+    : AnimationTimeline(document),
+      PostLayoutSnapshotClient(document->GetFrame()) {}
 
 bool ScrollSnapshotTimeline::IsResolved() const {
-  return ScrollContainer();
+  std::optional<PhysicalDirection> direction = GetResolvedScrollDirection();
+  return direction && ScrollContainer(ToPhysicalAxis(*direction));
 }
 
 bool ScrollSnapshotTimeline::IsActive() const {
-  return timeline_state_snapshotted_.phase != TimelinePhase::kInactive;
+  return timeline_state_snapshotted_.current_time.has_value();
 }
 
 std::optional<ScrollOffsets> ScrollSnapshotTimeline::GetResolvedScrollOffsets()
@@ -36,12 +43,13 @@ ScrollSnapshotTimeline::GetResolvedViewOffsets() const {
   return timeline_state_snapshotted_.view_offsets;
 }
 
-// TODO(crbug.com/1336260): Since phase can only be kActive or kInactive and
-// currentTime  can only be null if phase is inactive or before the first
-// snapshot we can probably drop phase.
-AnimationTimeline::PhaseAndTime ScrollSnapshotTimeline::CurrentPhaseAndTime() {
-  return {timeline_state_snapshotted_.phase,
-          timeline_state_snapshotted_.current_time};
+std::optional<ScrollOffsets> ScrollSnapshotTimeline::GetResolvedScrollLimits()
+    const {
+  return timeline_state_snapshotted_.scroll_limits;
+}
+
+std::optional<base::TimeDelta> ScrollSnapshotTimeline::CurrentTimeInternal() {
+  return timeline_state_snapshotted_.current_time;
 }
 
 V8CSSNumberish* ScrollSnapshotTimeline::ConvertTimeToProgress(
@@ -116,24 +124,23 @@ AnimationTimeDelta ScrollSnapshotTimeline::CalculateIntrinsicIterationDuration(
 
 TimelineRange ScrollSnapshotTimeline::GetTimelineRange() const {
   std::optional<ScrollOffsets> scroll_offsets = GetResolvedScrollOffsets();
+  std::optional<ScrollOffsets> scroll_limits = GetResolvedScrollLimits();
 
-  if (!scroll_offsets.has_value()) {
+  if (!scroll_offsets.has_value() || !scroll_limits.has_value()) {
     return TimelineRange();
   }
 
   std::optional<ViewOffsets> view_offsets = GetResolvedViewOffsets();
 
-  return TimelineRange(scroll_offsets.value(), view_offsets.has_value()
-                                                   ? view_offsets.value()
-                                                   : ViewOffsets());
+  return TimelineRange(
+      scroll_limits.value(), scroll_offsets.value(),
+      view_offsets.has_value() ? view_offsets.value() : ViewOffsets());
 }
 
 void ScrollSnapshotTimeline::ServiceAnimations(TimingUpdateReason reason) {
   // When scroll timeline goes from inactive to active the animations may need
   // to be started and possibly composited.
-  bool was_active =
-      last_current_phase_and_time_ &&
-      last_current_phase_and_time_.value().phase == TimelinePhase::kActive;
+  bool was_active = last_current_time_ && last_current_time_.has_value();
   if (!was_active && IsActive()) {
     MarkAnimationsCompositorPending();
   }
@@ -147,8 +154,8 @@ bool ScrollSnapshotTimeline::ShouldScheduleNextService() {
   }
 
   auto state = ComputeTimelineState();
-  PhaseAndTime current_phase_and_time{state.phase, state.current_time};
-  return current_phase_and_time != last_current_phase_and_time_;
+  std::optional<base::TimeDelta> current_time = state.current_time;
+  return current_time != last_current_time_;
 }
 
 void ScrollSnapshotTimeline::ScheduleNextService() {
@@ -156,48 +163,26 @@ void ScrollSnapshotTimeline::ScheduleNextService() {
   NOTREACHED();
 }
 
-void ScrollSnapshotTimeline::UpdateSnapshot() {
-  auto state = ComputeTimelineState();
-  bool layout_changed = !state.HasConsistentLayout(timeline_state_snapshotted_);
-  timeline_state_snapshotted_ = state;
-
-  if (layout_changed) {
-    // Force recalculation of an auto-aligned start time, and invalidate
-    // normalized timing.
-    for (Animation* animation : GetAnimations()) {
-      // Avoid setting a deferred start time during the update snapshot phase.
-      // Instead wait for the validation phase post layout.
-      if (!animation->CurrentTimeInternal()) {
-        continue;
-      }
-      animation->OnValidateSnapshot(layout_changed);
-    }
-  }
-  ResolveTimelineOffsets();
-}
 
 LayoutBox* ScrollSnapshotTimeline::ComputeScrollContainer(
-    Node* resolved_source) {
-  if (!resolved_source) {
-    return nullptr;
+    Node* resolved_source,
+    PhysicalAxis physical_axis) {
+  auto* container_node = DynamicTo<ContainerNode>(resolved_source);
+  auto* box =
+      container_node ? container_node->GetLayoutBoxForScrolling() : nullptr;
+  const PhysicalAxes axes = physical_axis == PhysicalAxis::kHorizontal
+                                ? kPhysicalAxesHorizontal
+                                : kPhysicalAxesVertical;
+  if (box && (box->GetScrollableArea()->ScrollableAxes() & axes)) {
+    return box;
   }
-
-  LayoutBox* layout_box = resolved_source->GetLayoutBox();
-  if (!layout_box) {
-    return nullptr;
-  }
-
-  if (auto* field_set = DynamicTo<LayoutFieldset>(layout_box)) {
-    layout_box = field_set->FindAnonymousFieldsetContentBox();
-  }
-
-  return layout_box->IsScrollContainer() ? layout_box : nullptr;
+  return nullptr;
 }
 
 void ScrollSnapshotTimeline::Trace(Visitor* visitor) const {
   visitor->Trace(timeline_state_snapshotted_);
   AnimationTimeline::Trace(visitor);
-  ScrollSnapshotClient::Trace(visitor);
+  PostLayoutSnapshotClient::Trace(visitor);
 }
 
 void ScrollSnapshotTimeline::InvalidateEffectTargetStyle() const {
@@ -206,24 +191,82 @@ void ScrollSnapshotTimeline::InvalidateEffectTargetStyle() const {
   }
 }
 
-bool ScrollSnapshotTimeline::ValidateSnapshot() {
+bool ScrollSnapshotTimeline::UpdateSnapshot() {
+  return UpdateSnapshotInternal(/*service_animations=*/false);
+}
+
+void ScrollSnapshotTimeline::UpdateSnapshotForServiceAnimations() {
+  if (!RuntimeEnabledFeatures::SnapshotScrollTimelinesPostLayoutEnabled()) {
+    UpdateSnapshotInternal(/*service_animations=*/true);
+  }
+}
+
+bool ScrollSnapshotTimeline::UpdateSnapshotInternal(bool service_animations) {
   TimelineState new_state = ComputeTimelineState();
-  bool is_valid = timeline_state_snapshotted_ == new_state;
-  bool state_changed =
+  bool snapshot_changed = timeline_state_snapshotted_ != new_state;
+  bool layout_changed =
       !timeline_state_snapshotted_.HasConsistentLayout(new_state);
   // Note that `timeline_state_snapshotted_` must be updated before
   // ResolveTimelineOffsets is called.
   timeline_state_snapshotted_ = new_state;
-  if (state_changed) {
-    ResolveTimelineOffsets();
+  ResolveTimelineOffsets();
+
+  if (snapshot_changed) {
+    SetHasPendingCompositorUpdate(true);
   }
 
-  for (Animation* animation : GetAnimations()) {
+  const HeapHashSet<WeakMember<Animation>>& animations = GetAnimations();
+
+  auto should_skip_validation = [service_animations](Animation* animation) {
+    // For scroll-driven aimations, we should avoid setting a deferred start
+    // time during the update snapshot phase. Instead wait for the validation
+    // phase post layout. Skipping OnValidateSnapshot here is necessary for not
+    // firing too many animation events. See: https://crbug.com/40925697
+    bool is_scroll_driven = animation->timeline() &&
+                            animation->timeline()->IsScrollSnapshotTimeline();
+    return service_animations && is_scroll_driven &&
+           !animation->CurrentTimeInternal();
+  };
+
+  if (RuntimeEnabledFeatures::TimelineTriggerEnabled() &&
+      (snapshot_changed || update_triggers_)) {
+    for (TimelineTrigger* trigger : GetTriggers()) {
+      bool trigger_changed = !trigger->Update();
+      if (trigger_changed) {
+        for (auto& [animation, behaviors] : trigger->BehaviorMap()) {
+          // A time-driven animation triggered by a TimelineTrigger should not
+          // be idle (it should have a resolved current time) because triggers
+          // should not remain attached to idle animations.
+          // scroll-driven animations pick up their start times post-layout
+          // and may not yet have resolved current times.
+          if (animation->timeline() &&
+              animation->timeline()->IsMonotonicallyIncreasing()) {
+            DCHECK(animation->CurrentTimeInternal());
+          }
+          // Avoid superfluous snapshot validation, by skipping the call if it
+          // will be invoked in the loop below.
+          if (!animations.Contains(animation)) {
+            if (should_skip_validation(animation)) {
+              continue;
+            }
+            animation->OnValidateSnapshot(true);
+          }
+        }
+      }
+      snapshot_changed |= trigger_changed;
+    }
+    update_triggers_ = false;
+  }
+
+  for (Animation* animation : animations) {
+    if (should_skip_validation(animation)) {
+      continue;
+    }
     // Compute deferred start times and update animation timing if required.
-    is_valid &= animation->OnValidateSnapshot(state_changed);
+    snapshot_changed |= !animation->OnValidateSnapshot(layout_changed);
   }
 
-  return is_valid;
+  return snapshot_changed;
 }
 
 cc::AnimationTimeline* ScrollSnapshotTimeline::EnsureCompositorTimeline() {
@@ -240,10 +283,26 @@ void ScrollSnapshotTimeline::UpdateCompositorTimeline() {
     return;
   }
 
+  has_pending_compositor_update_ = false;
+
   ToScrollTimeline(compositor_timeline_.get())
       ->UpdateScrollerIdAndScrollOffsets(
           scroll_timeline_util::GetCompositorScrollElementId(ResolvedSource()),
+          scroll_timeline_util::ToCompositorScrollDirection(
+              GetResolvedScrollDirection()),
           GetResolvedScrollOffsets());
+}
+
+void ScrollSnapshotTimeline::CalculateScrollLimits(
+    PaintLayerScrollableArea* scrollable_area,
+    PhysicalAxis physical_orientation,
+    TimelineState* state) const {
+  ScrollOffset scroll_dimensions = scrollable_area->MaximumScrollOffset() -
+                                   scrollable_area->MinimumScrollOffset();
+  double end_offset = physical_orientation == PhysicalAxis::kHorizontal
+                          ? scroll_dimensions.x()
+                          : scroll_dimensions.y();
+  state->scroll_limits = std::make_optional<ScrollOffsets>(0, end_offset);
 }
 
 }  // namespace blink

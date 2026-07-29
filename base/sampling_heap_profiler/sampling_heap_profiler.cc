@@ -10,6 +10,7 @@
 
 #include "base/allocator/dispatcher/tls.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/containers/to_vector.h"
 #include "base/debug/stack_trace.h"
 #include "base/functional/bind.h"
@@ -81,12 +82,12 @@ const char* GetAndLeakThreadName() {
   // enabled.
   int err = prctl(PR_GET_NAME, name);
   if (!err) {
-    return strdup(name);
+    return UNSAFE_TODO(strdup(name));
   }
 #elif BUILDFLAG(IS_APPLE)
   int err = pthread_getname_np(pthread_self(), name, kBufferLen);
   if (err == 0 && *name != '\0') {
-    return strdup(name);
+    return UNSAFE_TODO(strdup(name));
   }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
         // BUILDFLAG(IS_ANDROID)
@@ -94,7 +95,7 @@ const char* GetAndLeakThreadName() {
   // Use tid if we don't have a thread name.
   snprintf(name, sizeof(name), "Thread %lu",
            static_cast<unsigned long>(base::PlatformThread::CurrentId().raw()));
-  return strdup(name);
+  return UNSAFE_TODO(strdup(name));
 }
 
 const char* UpdateAndGetThreadName(const char* name) {
@@ -297,7 +298,7 @@ std::vector<SamplingHeapProfiler::Sample> SamplingHeapProfiler::GetSamples(
 std::vector<const char*> SamplingHeapProfiler::GetStrings() {
   PoissonAllocationSampler::ScopedMuteThreadSamples no_samples_scope;
   AutoLock lock(mutex_);
-  return std::vector<const char*>(strings_.begin(), strings_.end());
+  return std::vector<const char*>(std::from_range, strings_);
 }
 
 // static

@@ -18,13 +18,14 @@ void UpdateSupervisionStatusForAccount(
     signin::IdentityManager* identity_manager,
     bool is_subject_to_parental_controls) {
   CHECK(identity_manager);
-  AccountCapabilitiesTestMutator mutator(&account.capabilities);
+  AccountCapabilitiesTestMutator mutator(&account);
   mutator.set_is_subject_to_parental_controls(is_subject_to_parental_controls);
   // Update child status preference, which is backed by capability state.
   // This action will not be performed by the fake account capability fetcher.
-  account.is_child_account = is_subject_to_parental_controls
-                                 ? signin::Tribool::kTrue
-                                 : signin::Tribool::kFalse;
+  account = AccountInfo::Builder(account)
+                .SetIsChildAccount(
+                    signin::TriboolFromBool(is_subject_to_parental_controls))
+                .Build();
   signin::UpdateAccountInfoForAccount(identity_manager, account);
 }
 

@@ -2,14 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "cc/paint/paint_op.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <type_traits>
@@ -43,6 +40,8 @@
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkMatrix.h"
+#include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkRegion.h"
 #include "third_party/skia/include/core/SkSerialProcs.h"
@@ -50,6 +49,7 @@
 #include "third_party/skia/include/core/SkTiledImageUtils.h"
 #include "third_party/skia/include/core/SkVertices.h"
 #include "third_party/skia/include/docs/SkPDFDocument.h"
+#include "third_party/skia/include/effects/SkImageFilters.h"
 #include "third_party/skia/include/private/chromium/Slug.h"
 #include "third_party/skia/src/core/SkCanvasPriv.h"
 #include "ui/gfx/geometry/skia_conversions.h"
@@ -57,9 +57,7 @@
 namespace cc {
 namespace {
 
-BASE_FEATURE(kUseLitePaintOps,
-             "UseLitePaintOps",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kUseLitePaintOps, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // In a future CL, convert DrawImage to explicitly take sampling instead of
 // quality
@@ -284,12 +282,11 @@ constexpr std::array<SerializeFunction, kNumOpTypes> g_serialize_functions = {
 #undef M
 
 using DeserializeFunction = PaintOp* (*)(PaintOpReader& reader,
-                                         void* output,
-                                         size_t output_size);
+                                         base::span<uint8_t> output);
 template <typename T>
-PaintOp* Deserialize(PaintOpReader& reader, void* output, size_t output_size) {
-  DCHECK_GE(output_size, sizeof(T));
-  T* op = static_cast<T*>(T::Deserialize(reader, output));
+PaintOp* Deserialize(PaintOpReader& reader, base::span<uint8_t> output) {
+  DCHECK_GE(output.size(), sizeof(T));
+  T* op = static_cast<T*>(T::Deserialize(reader, output.data()));
   if (!op) {
     return nullptr;
   }
@@ -791,7 +788,9 @@ void SaveLayerFiltersOp::Serialize(PaintOpWriter& writer,
                                    const SkM44& current_ctm,
                                    const SkM44& original_ctm) const {
   writer.Write(*flags_to_serialize, current_ctm);
+  writer.Write(bounds);
   writer.Write(filters, current_ctm);
+  writer.Write(backdrop_filter, current_ctm);
 }
 
 void ScaleOp::Serialize(PaintOpWriter& writer,
@@ -888,7 +887,7 @@ PaintOp* DrawImageOp::Deserialize(PaintOpReader& reader, void* output) {
   DrawImageOp* op = new (output) DrawImageOp;
   reader.Read(&op->flags);
 
-  reader.Read(&op->image, op->flags.getDynamicRangeLimit());
+  reader.Read(&op->image);
   reader.Read(&op->scale_adjustment.fWidth);
   reader.Read(&op->scale_adjustment.fHeight);
 
@@ -903,7 +902,7 @@ PaintOp* DrawImageRectOp::Deserialize(PaintOpReader& reader, void* output) {
   DrawImageRectOp* op = new (output) DrawImageRectOp;
   reader.Read(&op->flags);
 
-  reader.Read(&op->image, op->flags.getDynamicRangeLimit());
+  reader.Read(&op->image);
   reader.Read(&op->scale_adjustment.fWidth);
   reader.Read(&op->scale_adjustment.fHeight);
 
@@ -973,7 +972,11 @@ PaintOp* DrawPathOp::Deserialize(PaintOpReader& reader, void* output) {
   reader.Read(&op->flags);
   reader.Read(&op->path);
   reader.Read(&op->sk_path_fill_type);
-  op->path.setFillType(static_cast<SkPathFillType>(op->sk_path_fill_type));
+  if (reader.valid()) {
+    // Only apply successfully-deserialized fill types, as SkPath has
+    // self-validation asserts that trip on invalid fill type values.
+    op->path.setFillType(op->sk_path_fill_type);
+  }
   return op;
 }
 
@@ -1060,8 +1063,7 @@ bool DeserializeSkottieMap(
 
 SkottieFrameData DeserializeSkottieFrameData(PaintOpReader& reader) {
   SkottieFrameData frame_data;
-  reader.Read(&frame_data.image, PaintFlags::DynamicRangeLimitMixture(
-                                     PaintFlags::DynamicRangeLimit::kHigh));
+  reader.Read(&frame_data.image);
   reader.Read(&frame_data.quality);
   return frame_data;
 }
@@ -1177,7 +1179,9 @@ PaintOp* SaveLayerAlphaOp::Deserialize(PaintOpReader& reader, void* output) {
 PaintOp* SaveLayerFiltersOp::Deserialize(PaintOpReader& reader, void* output) {
   SaveLayerFiltersOp* op = new (output) SaveLayerFiltersOp;
   reader.Read(&op->flags);
+  reader.Read(&op->bounds);
   reader.Read(op->filters);
+  reader.Read(&op->backdrop_filter);
   return op;
 }
 
@@ -1272,6 +1276,24 @@ void DrawDRRectOp::RasterWithFlags(const DrawDRRectOp* op,
   });
 }
 
+static float ComputeEffectiveHdrHeadroom(const PaintFlags* flags,
+                                         const PlaybackParams& params) {
+  if (!flags) {
+    return params.destination_hdr_headroom;
+  }
+  // The effective HDR headroom should not be computed when doing no tone
+  // mapping.
+  DCHECK_NE(flags->getTargetedHdrHeadroom(),
+            PaintFlags::TargetedHdrHeadroom::kDisableEverything);
+  const float targeted_hdr_headroom =
+      flags->getTargetedHdrHeadroom() ==
+              PaintFlags::TargetedHdrHeadroom::kFromPlaybackParams
+          ? params.destination_hdr_headroom
+          : flags->getTargetedHdrHeadroom();
+  return flags->getDynamicRangeLimit().ComputeEffectiveHdrHeadroom(
+      targeted_hdr_headroom);
+}
+
 void DrawImageOp::RasterWithFlags(const DrawImageOp* op,
                                   const PaintFlags* flags,
                                   SkCanvas* canvas,
@@ -1279,47 +1301,7 @@ void DrawImageOp::RasterWithFlags(const DrawImageOp* op,
   DCHECK(!op->image.IsPaintWorklet());
   SkPaint paint = flags ? flags->ToSkPaint() : SkPaint();
 
-  if (!params.image_provider) {
-    const bool needs_scale = !IsScaleAdjustmentIdentity(op->scale_adjustment);
-    SkAutoCanvasRestore save_restore(canvas, needs_scale);
-    if (needs_scale) {
-      canvas->scale(1.f / op->scale_adjustment.width(),
-                    1.f / op->scale_adjustment.height());
-    }
-    sk_sp<SkImage> sk_image;
-    if (op->image.IsTextureBacked()) {
-      sk_image = op->image.GetAcceleratedSkImage();
-      DCHECK(sk_image || !canvas->recordingContext());
-    }
-    if (!sk_image)
-      sk_image = op->image.GetSwSkImage();
-    if (!sk_image) {
-      return;
-    }
-
-    // If this uses a gainmap shader, then replace DrawImage with a shader.
-    if (ToneMapUtil::UseGainmapShader(op->image)) {
-      skia::DrawGainmapImage(
-          canvas, op->image.cached_sk_image_, op->image.gainmap_sk_image_,
-          op->image.gainmap_info_.value(), op->image.target_hdr_headroom_,
-          op->left, op->top, op->sampling, paint);
-      return;
-    }
-
-    // Add a tone mapping filter to `paint` if needed.
-    if (ToneMapUtil::UseGlobalToneMapFilter(op->image)) {
-      auto dst_color_space = canvas->imageInfo().refColorSpace();
-      ToneMapUtil::AddGlobalToneMapFilterToPaint(paint, op->image,
-                                                 dst_color_space);
-      sk_image = sk_image->reinterpretColorSpace(dst_color_space);
-    }
-
-    SkTiledImageUtils::DrawImage(canvas, sk_image.get(), op->left, op->top,
-                                 op->sampling, &paint);
-    return;
-  }
-
-  if (op->image.IsDeferredPaintRecord()) {
+  if (params.image_provider && op->image.IsDeferredPaintRecord()) {
     ImageProvider::ScopedResult result =
         params.image_provider->GetRasterContent(DrawImage(op->image));
 
@@ -1342,36 +1324,84 @@ void DrawImageOp::RasterWithFlags(const DrawImageOp* op,
     return;
   }
 
-  // Dark mode is applied only for OOP raster during serialization.
-  DrawImage draw_image(op->image, false,
-                       SkIRect::MakeWH(op->image.width(), op->image.height()),
-                       op->GetImageQuality(), canvas->getLocalToDevice());
-  auto scoped_result = params.image_provider->GetRasterContent(draw_image);
-  if (!scoped_result)
-    return;
+  // Retrieve the SkImages and sampling.
+  sk_sp<SkImage> sk_image;
+  sk_sp<SkImage> gainmap_sk_image;
+  SkSamplingOptions sampling = op->sampling;
+  // If the SkImages are from an ImageProvider, keep them in scope.
+  ImageProvider::ScopedResult scoped_result;
+  // If scaling is performed, then this will be set to restore after the draw.
+  std::optional<SkAutoCanvasRestore> save_restore;
+  if (params.image_provider) {
+    DrawImage draw_image(op->image, false,
+                         SkIRect::MakeWH(op->image.width(), op->image.height()),
+                         op->GetImageQuality(), canvas->getLocalToDevice());
+    scoped_result = params.image_provider->GetRasterContent(draw_image);
+    if (!scoped_result) {
+      return;
+    }
+    const auto& decoded_image = scoped_result.decoded_image();
+    DCHECK(decoded_image.image());
+    DCHECK_EQ(0, static_cast<int>(decoded_image.src_rect_offset().width()));
+    DCHECK_EQ(0, static_cast<int>(decoded_image.src_rect_offset().height()));
 
-  const auto& decoded_image = scoped_result.decoded_image();
-  DCHECK(decoded_image.image());
-
-  DCHECK_EQ(0, static_cast<int>(decoded_image.src_rect_offset().width()));
-  DCHECK_EQ(0, static_cast<int>(decoded_image.src_rect_offset().height()));
-  SkSize scale_adjustment = SkSize::Make(
-      op->scale_adjustment.width() * decoded_image.scale_adjustment().width(),
-      op->scale_adjustment.height() *
-          decoded_image.scale_adjustment().height());
-  const bool needs_scale = !IsScaleAdjustmentIdentity(scale_adjustment);
-  SkAutoCanvasRestore save_restore(canvas, needs_scale);
-  if (needs_scale) {
-    canvas->scale(1.f / scale_adjustment.width(),
-                  1.f / scale_adjustment.height());
+    sk_image = decoded_image.image();
+    gainmap_sk_image = decoded_image.gainmap_image();
+    SkSize scale_adjustment = SkSize::Make(
+        op->scale_adjustment.width() * decoded_image.scale_adjustment().width(),
+        op->scale_adjustment.height() *
+            decoded_image.scale_adjustment().height());
+    if (!IsScaleAdjustmentIdentity(scale_adjustment)) {
+      save_restore.emplace(canvas, /*doSave=*/true);
+      canvas->scale(1.f / scale_adjustment.width(),
+                    1.f / scale_adjustment.height());
+    }
+    sampling = PaintFlags::FilterQualityToSkSamplingOptions(
+        decoded_image.filter_quality(),
+        MatrixToScalingOperation(canvas->getLocalToDeviceAs3x3()));
+  } else {
+    if (op->image.IsTextureBacked()) {
+      sk_image = op->image.GetAcceleratedSkImage();
+      DCHECK(sk_image || !canvas->recordingContext());
+    }
+    if (!sk_image) {
+      sk_image = op->image.GetSwSkImage();
+    }
+    gainmap_sk_image = op->image.gainmap_sk_image_;
+    if (!IsScaleAdjustmentIdentity(op->scale_adjustment)) {
+      save_restore.emplace(canvas, /*doSave=*/true);
+      canvas->scale(1.f / op->scale_adjustment.width(),
+                    1.f / op->scale_adjustment.height());
+    }
   }
-  PaintFlags::ScalingOperation scale =
-      MatrixToScalingOperation(canvas->getLocalToDeviceAs3x3());
-  SkTiledImageUtils::DrawImage(canvas, decoded_image.image().get(), op->left,
-                               op->top,
-                               PaintFlags::FilterQualityToSkSamplingOptions(
-                                   decoded_image.filter_quality(), scale),
-                               &paint);
+  if (!sk_image) {
+    return;
+  }
+
+  const bool disable_tone_mapping =
+      flags && flags->getTargetedHdrHeadroom() ==
+                   PaintFlags::TargetedHdrHeadroom::kDisableEverything;
+  if (!disable_tone_mapping) {
+    // If this uses a gainmap shader, then replace DrawImage with a shader.
+    if (op->image.HasGainmapInfo() && gainmap_sk_image) {
+      skia::DrawGainmapImage(
+          canvas, sk_image, gainmap_sk_image, op->image.gainmap_info_.value(),
+          std::exp2(ComputeEffectiveHdrHeadroom(flags, params)), op->left,
+          op->top, sampling, paint);
+      return;
+    }
+
+    // Add a tone mapping filter to `paint` if needed.
+    if (ToneMapUtil::UseGlobalToneMapFilter(sk_image.get(),
+                                            op->image.hdr_metadata_,
+                                            canvas->imageInfo().colorSpace())) {
+      ToneMapUtil::AddGlobalToneMapFilterToPaint(
+          paint, sk_image.get(), op->image.hdr_metadata_,
+          ComputeEffectiveHdrHeadroom(flags, params));
+    }
+  }
+  SkTiledImageUtils::DrawImage(canvas, sk_image.get(), op->left, op->top,
+                               sampling, &paint);
 }
 
 void DrawImageRectOp::RasterWithFlags(const DrawImageRectOp* op,
@@ -1415,89 +1445,100 @@ void DrawImageRectOp::RasterWithFlags(const DrawImageRectOp* op,
     return;
   }
 
-  if (!params.image_provider) {
-    SkRect adjusted_src = AdjustSrcRectForScale(op->src, op->scale_adjustment);
+  // Retrieve the SkImages, adjusted source rect, and sampling.
+  sk_sp<SkImage> sk_image;
+  sk_sp<SkImage> gainmap_sk_image;
+  SkRect adjusted_src;
+  SkSamplingOptions sampling;
+  // If the SkImages are from an ImageProvider, keep them in scope.
+  ImageProvider::ScopedResult scoped_result;
+  if (params.image_provider) {
+    SkM44 matrix = canvas->getLocalToDevice() *
+                   SkM44(SkMatrix::RectToRect(op->src, op->dst));
+
+    SkIRect int_src_rect;
+    op->src.roundOut(&int_src_rect);
+
+    // Dark mode is applied only for GPU raster during serialization.
+    DrawImage draw_image(op->image, false, int_src_rect, op->GetImageQuality(),
+                         matrix);
+    scoped_result = params.image_provider->GetRasterContent(draw_image);
+    if (!scoped_result) {
+      return;
+    }
+
+    const auto& decoded_image = scoped_result.decoded_image();
+    DCHECK(decoded_image.image());
+
+    SkSize scale_adjustment = SkSize::Make(
+        op->scale_adjustment.width() * decoded_image.scale_adjustment().width(),
+        op->scale_adjustment.height() *
+            decoded_image.scale_adjustment().height());
+    adjusted_src = op->src.makeOffset(decoded_image.src_rect_offset().width(),
+                                      decoded_image.src_rect_offset().height());
+    adjusted_src = AdjustSrcRectForScale(adjusted_src, scale_adjustment);
+    PaintFlags::ScalingOperation scale =
+        MatrixToScalingOperation(matrix.asM33());
+    sampling = PaintFlags::FilterQualityToSkSamplingOptions(
+        decoded_image.filter_quality(), scale);
+    sk_image = decoded_image.image();
+    gainmap_sk_image = decoded_image.gainmap_image();
+  } else {
+    adjusted_src = AdjustSrcRectForScale(op->src, op->scale_adjustment);
     SkM44 matrix = canvas->getLocalToDevice() *
                    SkM44(SkMatrix::RectToRect(adjusted_src, op->dst));
     PaintFlags::ScalingOperation scale =
         MatrixToScalingOperation(matrix.asM33());
     PaintFlags::FilterQuality quality = sampling_to_quality(op->sampling);
-    SkSamplingOptions sampling =
-        PaintFlags::FilterQualityToSkSamplingOptions(quality, scale);
-    flags->DrawToSk(canvas, [op, adjusted_src, sampling](SkCanvas* c,
-                                                         const SkPaint& p) {
-      sk_sp<SkImage> sk_image;
-      if (op->image.IsTextureBacked()) {
-        sk_image = op->image.GetAcceleratedSkImage();
-        DCHECK(sk_image || !c->recordingContext());
-      }
-      if (!sk_image)
-        sk_image = op->image.GetSwSkImage();
-      if (!sk_image) {
-        return;
-      }
+    sampling = PaintFlags::FilterQualityToSkSamplingOptions(quality, scale);
 
-      // If the PaintImage uses a gainmap shader, then replace DrawImage with a
-      // shader.
-      if (ToneMapUtil::UseGainmapShader(op->image)) {
+    if (op->image.IsTextureBacked()) {
+      sk_image = op->image.GetAcceleratedSkImage();
+    }
+    if (!sk_image) {
+      sk_image = op->image.GetSwSkImage();
+    }
+    gainmap_sk_image = op->image.gainmap_sk_image_;
+  }
+  if (!sk_image) {
+    return;
+  }
+
+  auto draw_proc = [op, adjusted_src, sampling, sk_image, gainmap_sk_image,
+                    flags, params](SkCanvas* c, const SkPaint& p) {
+    const bool disable_tone_mapping =
+        flags && flags->getTargetedHdrHeadroom() ==
+                     PaintFlags::TargetedHdrHeadroom::kDisableEverything;
+    if (!disable_tone_mapping) {
+      // If the PaintImage uses a gainmap shader, then replace DrawImage with
+      // a shader.
+      if (op->image.HasGainmapInfo() && gainmap_sk_image) {
         skia::DrawGainmapImageRect(
-            c, op->image.cached_sk_image_, op->image.gainmap_sk_image_,
-            op->image.gainmap_info_.value(), op->image.target_hdr_headroom_,
-            adjusted_src, op->dst, sampling, p);
+            c, sk_image, gainmap_sk_image, op->image.gainmap_info_.value(),
+            std::exp2(ComputeEffectiveHdrHeadroom(flags, params)), adjusted_src,
+            op->dst, sampling, p);
         return;
       }
 
       // If this uses a global tone map filter, then incorporate that filter
       // into the paint.
-      if (ToneMapUtil::UseGlobalToneMapFilter(op->image)) {
+      if (ToneMapUtil::UseGlobalToneMapFilter(sk_image.get(),
+                                              op->image.hdr_metadata_,
+                                              c->imageInfo().colorSpace())) {
         SkPaint tonemap_paint = p;
         ToneMapUtil::AddGlobalToneMapFilterToPaint(
-            tonemap_paint, op->image, c->imageInfo().refColorSpace());
-        sk_image =
-            sk_image->reinterpretColorSpace(c->imageInfo().refColorSpace());
+            tonemap_paint, sk_image.get(), op->image.hdr_metadata_,
+            ComputeEffectiveHdrHeadroom(flags, params));
         DrawImageRect(c, sk_image.get(), adjusted_src, op->dst, sampling,
                       &tonemap_paint, op->constraint);
         return;
       }
+    }
 
-      DrawImageRect(c, sk_image.get(), adjusted_src, op->dst, sampling, &p,
-                    op->constraint);
-    });
-    return;
-  }
-
-  SkM44 matrix = canvas->getLocalToDevice() *
-                 SkM44(SkMatrix::RectToRect(op->src, op->dst));
-
-  SkIRect int_src_rect;
-  op->src.roundOut(&int_src_rect);
-
-  // Dark mode is applied only for OOP raster during serialization.
-  DrawImage draw_image(op->image, false, int_src_rect, op->GetImageQuality(),
-                       matrix);
-  auto scoped_result = params.image_provider->GetRasterContent(draw_image);
-  if (!scoped_result)
-    return;
-
-  const auto& decoded_image = scoped_result.decoded_image();
-  DCHECK(decoded_image.image());
-
-  SkSize scale_adjustment = SkSize::Make(
-      op->scale_adjustment.width() * decoded_image.scale_adjustment().width(),
-      op->scale_adjustment.height() *
-          decoded_image.scale_adjustment().height());
-  SkRect adjusted_src =
-      op->src.makeOffset(decoded_image.src_rect_offset().width(),
-                         decoded_image.src_rect_offset().height());
-  adjusted_src = AdjustSrcRectForScale(adjusted_src, scale_adjustment);
-  PaintFlags::ScalingOperation scale = MatrixToScalingOperation(matrix.asM33());
-  SkSamplingOptions sampling = PaintFlags::FilterQualityToSkSamplingOptions(
-      decoded_image.filter_quality(), scale);
-  flags->DrawToSk(canvas, [op, &decoded_image, adjusted_src, sampling](
-                              SkCanvas* c, const SkPaint& p) {
-    DrawImageRect(c, decoded_image.image().get(), adjusted_src, op->dst,
-                  sampling, &p, op->constraint);
-  });
+    DrawImageRect(c, sk_image.get(), adjusted_src, op->dst, sampling, &p,
+                  op->constraint);
+  };
+  flags->DrawToSk(canvas, draw_proc);
 }
 
 void DrawIRectOp::RasterWithFlags(const DrawIRectOp* op,
@@ -1515,10 +1556,7 @@ void DrawLineOp::RasterWithFlags(const DrawLineOp* op,
                                  const PlaybackParams& params) {
   flags->DrawToSk(canvas, [op](SkCanvas* c, const SkPaint& p) {
     if (op->draw_as_path) {
-      SkPath path;
-      path.moveTo(op->x0, op->y0);
-      path.lineTo(op->x1, op->y1);
-      c->drawPath(path, p);
+      c->drawPath(SkPath::Line({op->x0, op->y0}, {op->x1, op->y1}), p);
     } else {
       c->drawLine(op->x0, op->y0, op->x1, op->y1, p);
     }
@@ -1552,9 +1590,11 @@ void DrawArcImpl(SkCanvas* canvas,
     canvas->drawOval(oval, paint);
   } else {
     // Closed partial arcs -> general SkPath.
-    SkPath path;
-    path.arcTo(oval, start_angle_degrees, sweep_angle_degrees, false);
-    path.close();
+    const SkPath path =
+        SkPathBuilder()
+            .arcTo(oval, start_angle_degrees, sweep_angle_degrees, false)
+            .close()
+            .detach();
     canvas->drawPath(path, paint);
   }
 }
@@ -1816,9 +1856,23 @@ void SaveLayerFiltersOp::RasterWithFlags(const SaveLayerFiltersOp* op,
                                          SkCanvas* canvas,
                                          const PlaybackParams& params) {
   SkPaint paint = flags->ToSkPaint();
+
+  // Backdrop filter is the only thing using `op->bounds`, but Skia does not use
+  // the bounds when a backdrop filter is present. Instead, clip the filter to
+  // the bounds.
+  PaintFilter* backdrop_filter = op->backdrop_filter.get();
+  sk_sp<SkImageFilter> sk_backdrop_filter =
+      PaintFilter::GetSkFilter(backdrop_filter);
+  if (sk_backdrop_filter && !backdrop_filter->GetCropRect() &&
+      op->bounds.left() != SK_ScalarInfinity) {
+    sk_backdrop_filter =
+        SkImageFilters::Crop(op->bounds, std::move(sk_backdrop_filter));
+  }
+
   canvas->saveLayer(SkCanvasPriv::ScaledBackdropLayer(
-      /*bounds=*/nullptr, &paint, /*backdrop=*/nullptr, /*backdropScale=*/1.0f,
-      /*saveLayerFlags=*/0, PaintFilter::ToSkImageFilters(op->filters)));
+      /* bounds */ nullptr, &paint, sk_backdrop_filter.get(),
+      /*backdropScale=*/1.0f, /*saveLayerFlags=*/0,
+      PaintFilter::ToSkImageFilters(op->filters)));
 }
 
 void ScaleOp::Raster(const ScaleOp* op,
@@ -2017,6 +2071,7 @@ bool SaveLayerAlphaOp::EqualsForTesting(const SaveLayerAlphaOp& other) const {
 bool SaveLayerFiltersOp::EqualsForTesting(
     const SaveLayerFiltersOp& other) const {
   return flags.EqualsForTesting(other.flags) &&  // IN-TEST
+         bounds == other.bounds &&
          std::ranges::equal(
              filters, other.filters,
              [](const sk_sp<PaintFilter>& lhs, const sk_sp<PaintFilter>& rhs) {
@@ -2024,7 +2079,12 @@ bool SaveLayerFiltersOp::EqualsForTesting(
                    lhs, rhs, [](const PaintFilter& x, const PaintFilter& y) {
                      return x.EqualsForTesting(y);  // IN-TEST
                    });
-             });
+             }) &&
+         ((!backdrop_filter && !other.backdrop_filter) ||
+          ((backdrop_filter && other.backdrop_filter) &&
+           backdrop_filter->EqualsForTesting(  // IN-TEST
+               *other.backdrop_filter)));
+  ;
 }
 
 bool ScaleOp::EqualsForTesting(const ScaleOp& other) const {
@@ -2058,18 +2118,17 @@ void PaintOp::Raster(SkCanvas* canvas, const PlaybackParams& params) const {
   g_raster_functions[type](this, canvas, params);
 }
 
-size_t PaintOp::Serialize(void* memory,
-                          size_t size,
+size_t PaintOp::Serialize(base::span<uint8_t> memory,
                           const SerializeOptions& options,
                           const PaintFlags* flags_to_serialize,
                           const SkM44& current_ctm,
                           const SkM44& original_ctm) const {
   // Need at least enough room for the header.
-  if (size < PaintOpWriter::kHeaderBytes) {
+  if (memory.size() < PaintOpWriter::kHeaderBytes) {
     return 0u;
   }
 
-  PaintOpWriter writer(memory, size, options);
+  PaintOpWriter writer(memory, options);
   writer.ReserveOpHeader();
   g_serialize_functions[type](*this, writer, flags_to_serialize, current_ctm,
                               original_ctm);
@@ -2081,37 +2140,34 @@ size_t PaintOp::Serialize(void* memory,
   return writer.FinishOp(type);
 }
 
-PaintOp* PaintOp::Deserialize(const volatile void* input,
-                              size_t input_size,
-                              void* output,
-                              size_t output_size,
+PaintOp* PaintOp::Deserialize(base::span<const volatile uint8_t> input,
+                              base::span<uint8_t> output,
                               size_t* read_bytes,
                               const DeserializeOptions& options) {
-  DCHECK_GE(output_size, kLargestPaintOpAlignedSize);
+  DCHECK_GE(output.size(), kLargestPaintOpAlignedSize);
 
   uint8_t type;
-  PaintOpReader reader(input, input_size, options);
+  PaintOpReader reader(input, options);
   if (!reader.ReadAndValidateOpHeader(&type, read_bytes)) {
     return nullptr;
   }
-  return g_deserialize_functions[type](reader, output, output_size);
+  return g_deserialize_functions[type](reader, output);
 }
 
 PaintOp* PaintOp::DeserializeIntoPaintOpBuffer(
-    const volatile void* input,
-    size_t input_size,
+    base::span<const volatile uint8_t> input,
     PaintOpBuffer* buffer,
     size_t* read_bytes,
     const DeserializeOptions& options) {
   uint8_t type;
-  PaintOpReader reader(input, input_size, options);
+  PaintOpReader reader(input, options);
   if (!reader.ReadAndValidateOpHeader(&type, read_bytes)) {
     return nullptr;
   }
 
   uint16_t op_aligned_size = g_type_to_aligned_size[type];
-  if (auto* op = g_deserialize_functions[type](
-          reader, buffer->AllocatePaintOp(op_aligned_size), op_aligned_size)) {
+  base::span<uint8_t> output = buffer->AllocatePaintOp(op_aligned_size);
+  if (auto* op = g_deserialize_functions[type](reader, output)) {
     g_analyze_op_functions[type](buffer, op);
     return op;
   }
@@ -2238,9 +2294,7 @@ bool PaintOp::GetBounds(const PaintOp& op, SkRect* rect) {
     }
     case PaintOpType::kDrawVertices: {
       const auto& vertices_op = static_cast<const DrawVerticesOp&>(op);
-      rect->setBounds(
-          vertices_op.vertices->data().data(),
-          base::checked_cast<int>(vertices_op.vertices->data().size()));
+      rect->setBounds(vertices_op.vertices->data());
       return true;
     }
     case PaintOpType::kNoop:
@@ -2597,8 +2651,8 @@ DrawVerticesOp::DrawVerticesOp(
     scoped_refptr<RefCountedBuffer<SkPoint>> vertices,
     scoped_refptr<RefCountedBuffer<SkPoint>> uvs,
     scoped_refptr<RefCountedBuffer<uint16_t>> indices,
-    const PaintFlags& flags)
-    : PaintOpWithFlagsBaseInternal(kType, flags),
+    const PaintFlags& paint_flags)
+    : PaintOpWithFlagsBaseInternal(kType, paint_flags),
       vertices(std::move(vertices)),
       uvs(std::move(uvs)),
       indices(std::move(indices)) {}
@@ -2642,8 +2696,8 @@ DrawTextBlobOp::DrawTextBlobOp() : PaintOpWithFlagsBaseInternal(kType) {}
 DrawTextBlobOp::DrawTextBlobOp(sk_sp<SkTextBlob> blob,
                                SkScalar x,
                                SkScalar y,
-                               const PaintFlags& flags)
-    : PaintOpWithFlagsBaseInternal(kType, flags),
+                               const PaintFlags& paint_flags)
+    : PaintOpWithFlagsBaseInternal(kType, paint_flags),
       blob(std::move(blob)),
       x(x),
       y(y) {}
@@ -2652,8 +2706,8 @@ DrawTextBlobOp::DrawTextBlobOp(sk_sp<SkTextBlob> blob,
                                SkScalar x,
                                SkScalar y,
                                NodeId node_id,
-                               const PaintFlags& flags)
-    : PaintOpWithFlagsBaseInternal(kType, flags),
+                               const PaintFlags& paint_flags)
+    : PaintOpWithFlagsBaseInternal(kType, paint_flags),
       blob(std::move(blob)),
       x(x),
       y(y),
@@ -2663,19 +2717,33 @@ DrawTextBlobOp::~DrawTextBlobOp() = default;
 
 DrawSlugOp::DrawSlugOp() : PaintOpWithFlagsBaseInternal(kType) {}
 
-DrawSlugOp::DrawSlugOp(sk_sp<sktext::gpu::Slug> slug, const PaintFlags& flags)
-    : PaintOpWithFlagsBaseInternal(kType, flags), slug(std::move(slug)) {}
+DrawSlugOp::DrawSlugOp(sk_sp<sktext::gpu::Slug> slug,
+                       const PaintFlags& paint_flags)
+    : PaintOpWithFlagsBaseInternal(kType, paint_flags), slug(std::move(slug)) {}
 
 DrawSlugOp::~DrawSlugOp() = default;
 
 SaveLayerFiltersOp::SaveLayerFiltersOp(
     base::span<const sk_sp<PaintFilter>> filters,
-    const PaintFlags& flags)
-    : PaintOpWithFlagsBaseInternal(kType, flags),
-      filters(filters.begin(), filters.end()) {}
+    const sk_sp<PaintFilter> backdrop_filter,
+    const PaintFlags& paint_flags)
+    : PaintOpWithFlagsBaseInternal(kType, paint_flags),
+      bounds(kUnsetRect),
+      filters(filters.begin(), filters.end()),
+      backdrop_filter(backdrop_filter) {}
+
+SaveLayerFiltersOp::SaveLayerFiltersOp(
+    const SkRect& bounds,
+    base::span<const sk_sp<PaintFilter>> filters,
+    const sk_sp<PaintFilter> backdrop_filter,
+    const PaintFlags& paint_flags)
+    : PaintOpWithFlagsBaseInternal(kType, paint_flags),
+      bounds(bounds),
+      filters(filters.begin(), filters.end()),
+      backdrop_filter(backdrop_filter) {}
 
 SaveLayerFiltersOp::SaveLayerFiltersOp()
-    : PaintOpWithFlagsBaseInternal(kType) {}
+    : PaintOpWithFlagsBaseInternal(kType), bounds(kUnsetRect) {}
 
 SaveLayerFiltersOp::~SaveLayerFiltersOp() = default;
 

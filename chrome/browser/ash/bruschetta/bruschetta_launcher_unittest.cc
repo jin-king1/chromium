@@ -8,7 +8,6 @@
 #include <optional>
 
 #include "base/files/file.h"
-#include "base/files/file_util.h"
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
@@ -23,6 +22,7 @@
 #include "chrome/browser/ash/guest_os/guest_os_session_tracker.h"
 #include "chrome/browser/ash/guest_os/guest_os_session_tracker_factory.h"
 #include "chrome/browser/ash/guest_os/public/types.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/dbus/concierge/fake_concierge_client.h"
 #include "chromeos/ash/components/dbus/dlcservice/dlcservice.pb.h"
@@ -82,13 +82,13 @@ class BruschettaLauncherTest : public testing::Test,
     BruschettaServiceFactory::GetForProfile(&profile_)->RegisterInPrefs(
         MakeBruschettaId(kTestVmName), kTestVmConfig);
 
-    base::Value::Dict pref;
-    base::Value::Dict config;
+    base::DictValue pref;
+    base::DictValue config;
     config.Set(prefs::kPolicyEnabledKey,
                static_cast<int>(prefs::PolicyEnabledState::RUN_ALLOWED));
     config.Set(prefs::kPolicyNameKey, "Display Name");
 
-    base::Value::Dict vtpm;
+    base::DictValue vtpm;
     vtpm.Set(prefs::kPolicyVTPMEnabledKey, true);
     vtpm.Set(prefs::kPolicyVTPMUpdateActionKey,
              static_cast<int>(

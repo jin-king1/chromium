@@ -75,11 +75,14 @@ class WebStateID;
 - (void)closeTabWithIdentifier:(web::WebStateID)identifier
                      incognito:(BOOL)incognito;
 
-// Tells the delegate to delete the group. `incognito` tracks the incognito
-// state of the group. `sourceView` is the view that the delete action
-// originated from.
+// Tells the delegate to close all tabs except the one with `identifier`.
+// `incognito` tracks the incognito state of the tab.
+- (void)closeTabsExceptIdentifier:(web::WebStateID)identifier
+                        incognito:(BOOL)incognito;
+
+// Tells the delegate to delete the group. `sourceView` is the view that the
+// delete action originated from.
 - (void)deleteTabGroup:(base::WeakPtr<const TabGroup>)group
-             incognito:(BOOL)incognito
             sourceView:(UIView*)sourceView;
 
 // Tells the delegate to leave the shared group. `sourceView` is the view that
@@ -112,6 +115,9 @@ class WebStateID;
 
 // Tells the delegate to show the recent activity for the shared group.
 - (void)showRecentActivityForTabGroup:(base::WeakPtr<const TabGroup>)tabGroup;
+
+// Tells the delegate to open the device picker to send a tab to other devices.
+- (void)sendTabToSelfWithIdentifier:(web::WebStateID)identifier;
 
 @end
 

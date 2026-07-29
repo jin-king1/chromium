@@ -9,7 +9,9 @@
 #include "third_party/blink/renderer/modules/webgpu/gpu_compute_pipeline.h"
 #include "third_party/blink/renderer/modules/webgpu/gpu_device.h"
 #include "third_party/blink/renderer/modules/webgpu/gpu_query_set.h"
+#include "third_party/blink/renderer/modules/webgpu/gpu_resource_table.h"
 #include "third_party/blink/renderer/modules/webgpu/gpu_supported_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -52,18 +54,85 @@ void GPUComputePassEncoder::setBindGroup(
       data_span.size(), data_span.data());
 }
 
+void GPUComputePassEncoder::setImmediates(uint32_t range_offset,
+                                          const DOMArrayBufferBase* data,
+                                          uint64_t data_offset,
+                                          ExceptionState& exception_state) {
+  base::span<const uint8_t> data_span;
+  if (!ValidateSetImmediatesAndSubSpan(
+          exception_state, &data_span, range_offset,
+          data->ByteSpanMaybeShared(), 1, data_offset)) {
+    return;
+  }
+
+  GetHandle().SetImmediates(range_offset, data_span.data(), data_span.size());
+}
+
+void GPUComputePassEncoder::setImmediates(uint32_t range_offset,
+                                          const DOMArrayBufferBase* data,
+                                          uint64_t data_offset,
+                                          uint64_t size,
+                                          ExceptionState& exception_state) {
+  base::span<const uint8_t> data_span;
+  if (!ValidateSetImmediatesAndSubSpan(
+          exception_state, &data_span, range_offset,
+          data->ByteSpanMaybeShared(), 1, data_offset, size)) {
+    return;
+  }
+
+  GetHandle().SetImmediates(range_offset, data_span.data(), data_span.size());
+}
+
+void GPUComputePassEncoder::setImmediates(
+    uint32_t range_offset,
+    const MaybeShared<DOMArrayBufferView>& data,
+    uint64_t data_offset,
+    ExceptionState& exception_state) {
+  base::span<const uint8_t> data_span;
+  if (!ValidateSetImmediatesAndSubSpan(
+          exception_state, &data_span, range_offset,
+          data->ByteSpanMaybeShared(), data->TypeSize(), data_offset)) {
+    return;
+  }
+
+  GetHandle().SetImmediates(range_offset, data_span.data(), data_span.size());
+}
+
+void GPUComputePassEncoder::setImmediates(
+    uint32_t range_offset,
+    const MaybeShared<DOMArrayBufferView>& data,
+    uint64_t data_offset,
+    uint64_t size,
+    ExceptionState& exception_state) {
+  base::span<const uint8_t> data_span;
+  if (!ValidateSetImmediatesAndSubSpan(
+          exception_state, &data_span, range_offset,
+          data->ByteSpanMaybeShared(), data->TypeSize(), data_offset, size)) {
+    return;
+  }
+
+  GetHandle().SetImmediates(range_offset, data_span.data(), data_span.size());
+}
+
+void GPUComputePassEncoder::setResourceTable(const GPUResourceTable* table) {
+  if (table != nullptr) {
+    GetHandle().SetResourceTable(table->GetHandle());
+  } else {
+    GetHandle().SetResourceTable(nullptr);
+  }
+}
+
 void GPUComputePassEncoder::writeTimestamp(
     const DawnObject<wgpu::QuerySet>* querySet,
     uint32_t queryIndex,
     ExceptionState& exception_state) {
-  V8GPUFeatureName::Enum requiredFeatureEnum =
+  constexpr auto kRequiredFeatureEnum =
       V8GPUFeatureName::Enum::kChromiumExperimentalTimestampQueryInsidePasses;
-  if (!device_->features()->has(requiredFeatureEnum)) {
-    exception_state.ThrowTypeError(String::Format(
-        "Use of the writeTimestamp() method on compute pass requires the '%s' "
-        "feature to be enabled on %s.",
-        V8GPUFeatureName(requiredFeatureEnum).AsCStr(),
-        device_->formattedLabel().c_str()));
+  if (!device_->features()->Has(kRequiredFeatureEnum)) {
+    exception_state.ThrowTypeError(StrCat(
+        {"Use of the writeTimestamp() method on compute pass requires the '",
+         V8GPUFeatureName(kRequiredFeatureEnum).AsStringView(),
+         "' feature to be enabled on ", device_->GetFormattedLabel(), "."}));
     return;
   }
   GetHandle().WriteTimestamp(querySet->GetHandle(), queryIndex);

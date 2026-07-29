@@ -12,9 +12,8 @@ export function getHtml(this: MdSelectDemoElement) {
 <div class="demos">
   <div class="row center">
     <label id="label">Select an option</label>
-    <select id="select" class="md-select" value="${this.selectedOption_}"
-        @change="${this.onSelectValueChanged_}"
-        aria-labelledby="label">
+    <select id="select" class="md-select" .value="${this.selectedOption_}"
+        @change="${this.onSelectValueChange_}" aria-labelledby="label">
       <option value="one">Option 1</option>
       <option value="two">Option 2</option>
       <option value="three">Option 3</option>

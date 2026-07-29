@@ -30,7 +30,7 @@ public class FakeCookieControlsBridge implements CookieControlsBridge.Natives {
             boolean isIncognitoBranded) {}
 
     @Override
-    public void destroy(long nativeCookieControlsBridge, CookieControlsBridge caller) {}
+    public void destroy(long nativeCookieControlsBridge) {}
 
     @Override
     public void setThirdPartyCookieBlockingEnabledForSite(
@@ -38,9 +38,6 @@ public class FakeCookieControlsBridge implements CookieControlsBridge.Natives {
 
     @Override
     public void onUiClosing(long nativeCookieControlsBridge) {}
-
-    @Override
-    public void onEntryPointAnimated(long nativeCookieControlsBridge) {}
 
     @Override
     public boolean isCookieControlsEnabled(BrowserContextHandle browserContextHandle) {

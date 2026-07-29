@@ -7,6 +7,7 @@
 
 #include <optional>
 
+#include "base/component_export.h"
 #include "base/files/file_path.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
@@ -17,12 +18,15 @@
 
 namespace net {
 
+COMPONENT_EXPORT(SERVER_CERTIFICATE_DATABASE)
+extern const base::FilePath::CharType kServerCertificateDatabaseName[];
+
 // Wraps the SQLite database that provides on-disk storage for user-configured
 // TLS certificates. This class is expected to be created and accessed on a
 // backend sequence.
-class ServerCertificateDatabase {
+class COMPONENT_EXPORT(SERVER_CERTIFICATE_DATABASE) ServerCertificateDatabase {
  public:
-  struct CertInformation {
+  struct COMPONENT_EXPORT(SERVER_CERTIFICATE_DATABASE) CertInformation {
     // Initializes a CertInformation object with the `der_cert` and calculates
     // the `sha256hash_hex` from the supplied cert.
     explicit CertInformation(base::span<const uint8_t> cert);
@@ -52,7 +56,7 @@ class ServerCertificateDatabase {
   // Insert new certificates into the database, or if some of the certificates
   // are already present (as indicated by cert_info.sha256hash_hex), update the
   // entry in the database.
-  bool InsertOrUpdateCerts(const std::vector<CertInformation>& cert_infos);
+  bool InsertOrUpdateCerts(std::vector<CertInformation> cert_infos);
 
   // Retrieve all of the certificates from the database.
   std::vector<CertInformation> RetrieveAllCertificates();

@@ -8,7 +8,6 @@
  * settings for each device in system settings.
  */
 
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import 'chrome://resources/ash/common/cr_elements/localized_link/localized_link.js';
 import 'chrome://resources/ash/common/cr_elements/cr_radio_button/cr_radio_button.js';
@@ -26,6 +25,7 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 
 import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
 import {RouteObserverMixin} from '../common/route_observer_mixin.js';
+import type {PrefsState} from '../common/types.js';
 import type {KeyboardPolicies} from '../mojom-webui/input_device_settings.mojom-webui.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
 import type {Route} from '../router.js';
@@ -90,25 +90,21 @@ export class SettingsPerDeviceKeyboardElement extends
         value: [2000, 1000, 500, 300, 200, 100, 50, 30, 20],
         readOnly: true,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kKeyboardAutoRepeat,
-          Setting.kKeyboardShortcuts,
-        ]),
-      },
     };
   }
 
-  protected keyboards: Keyboard[];
-  protected keyboardPolicies: KeyboardPolicies;
-  private prefs: chrome.settingsPrivate.PrefObject;
-  private autoRepeatDelays: number[];
-  private autoRepeatIntervals: number[];
+  declare prefs: PrefsState;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kKeyboardAutoRepeat,
+    Setting.kKeyboardShortcuts,
+  ]);
+
+  declare protected keyboards: Keyboard[];
+  declare protected keyboardPolicies: KeyboardPolicies;
+  declare private autoRepeatDelays: number[];
+  declare private autoRepeatIntervals: number[];
   private browserProxy: DevicePageBrowserProxy =
       DevicePageBrowserProxyImpl.getInstance();
 

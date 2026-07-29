@@ -76,8 +76,6 @@ void AddNativeChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorBookmarkBarSeparator] = {kColorToolbarSeparatorDefault};
   mixer[kColorBookmarkButtonIcon] = {kColorToolbarButtonIconDefault};
   mixer[kColorBookmarkFavicon] = {kColorToolbarButtonIcon};
-  mixer[kColorDownloadShelfContentAreaSeparator] = {
-      kColorToolbarContentAreaSeparator};
   mixer[kColorInfoBarForeground] = {ui::kColorNativeLabelForeground};
   mixer[kColorInfoBarContentAreaSeparator] = {
       kColorToolbarContentAreaSeparator};
@@ -86,7 +84,7 @@ void AddNativeChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorNewTabButtonBackgroundFrameActive] = {SK_ColorTRANSPARENT};
   mixer[kColorNewTabButtonBackgroundFrameInactive] = {SK_ColorTRANSPARENT};
   mixer[kColorNewTabPageBackground] = {ui::kColorTextfieldBackground};
-  mixer[kColorNewTabPageHeader] = {ui::kColorNativeButtonBorder};
+  mixer[kColorNewTabPageHeader] = {ui::kColorNativeBoxFrameBorder};
   mixer[kColorNewTabPageLink] = {ui::kColorTextfieldSelectionBackground};
   mixer[kColorNewTabPageText] = {ui::kColorTextfieldForeground};
   mixer[kColorOmniboxText] = {ui::kColorTextfieldForeground};
@@ -96,6 +94,22 @@ void AddNativeChromeColorMixer(ui::ColorProvider* provider,
       ui::kColorNativeTabForegroundInactiveFrameActive};
   mixer[kColorTabForegroundInactiveFrameInactive] = {
       ui::kColorNativeTabForegroundInactiveFrameInactive};
+  mixer[kColorTabBackgroundInactiveHoverFrameActive] = {
+      ui::kColorSysStateHeaderHover};
+  mixer[kColorTabBackgroundInactiveHoverFrameInactive] = {
+      ui::kColorSysStateHeaderHoverInactive};
+  mixer[kColorTabBackgroundSelectedFrameActive] = {ui::GetResultingPaintColor(
+      ui::SetAlpha(ui::kColorAccent, 0x80),
+      kColorTabBackgroundInactiveFrameActive)};
+  mixer[kColorTabBackgroundSelectedFrameInactive] = {ui::GetResultingPaintColor(
+      ui::SetAlpha(ui::kColorAccent, 0x80),
+      kColorTabBackgroundInactiveFrameInactive)};
+  mixer[kColorTabBackgroundSelectedHoverFrameActive] = {
+      ui::GetResultingPaintColor(ui::kColorSysStateHoverDimBlendProtection,
+                                 kColorTabBackgroundSelectedFrameActive)};
+  mixer[kColorTabBackgroundSelectedHoverFrameInactive] = {
+      ui::GetResultingPaintColor(ui::kColorSysStateHoverDimBlendProtection,
+                                 kColorTabBackgroundSelectedFrameInactive)};
   mixer[kColorTabStrokeFrameActive] = {kColorToolbarTopSeparatorFrameActive};
   mixer[kColorTabStrokeFrameInactive] = {
       kColorToolbarTopSeparatorFrameInactive};
@@ -103,7 +117,7 @@ void AddNativeChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorToolbarButtonIcon] = {kColorToolbarText};
   mixer[kColorToolbarButtonIconHovered] = {kColorToolbarButtonIcon};
   mixer[kColorToolbarContentAreaSeparator] = {kColorToolbarSeparator};
-  mixer[kColorToolbarSeparator] = {ui::kColorNativeButtonBorder};
+  mixer[kColorToolbarSeparator] = {ui::kColorNativeBoxFrameBorder};
   mixer[kColorToolbarText] = {ui::kColorNativeLabelForeground};
   mixer[kColorToolbarTextDisabled] =
       ui::SetAlpha(kColorToolbarText, gfx::kDisabledControlAlpha);

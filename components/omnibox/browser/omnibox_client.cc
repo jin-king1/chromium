@@ -4,10 +4,19 @@
 
 #include "components/omnibox/browser/omnibox_client.h"
 
-#include <memory>
+#include <optional>
+#include <string>
 
+#include "base/functional/callback.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "ui/gfx/image/image.h"
+#include "url/gurl.h"
+
+bool OmniboxClient::IsChromeOmniboxClient() const {
+  return false;
+}
 
 bool OmniboxClient::CurrentPageExists() const {
   return true;
@@ -45,11 +54,25 @@ bookmarks::BookmarkModel* OmniboxClient::GetBookmarkModel() {
   return nullptr;
 }
 
+bool OmniboxClient::ShowConfirmationDialogIfDefaultSearchExtensionControlled(
+    const GURL& url,
+    base::OnceCallback<void(ExtensionControlledDialogResult)> callback) {
+  return false;
+}
+
 TemplateURLService* OmniboxClient::GetTemplateURLService() {
   return nullptr;
 }
 
+AiModeButtonService* OmniboxClient::GetAiModeButtonService() {
+  return nullptr;
+}
+
 AutocompleteClassifier* OmniboxClient::GetAutocompleteClassifier() {
+  return nullptr;
+}
+
+omnibox::OmniboxPopupCloser* OmniboxClient::GetOmniboxPopupCloser() {
   return nullptr;
 }
 
@@ -59,6 +82,19 @@ bool OmniboxClient::ShouldDefaultTypedNavigationsToHttps() const {
 
 int OmniboxClient::GetHttpsPortForTesting() const {
   return 0;
+}
+
+bool OmniboxClient::IsContextualTasksPage() const {
+  return false;
+}
+
+GURL OmniboxClient::GetContextualTasksInnerFrameURL() const {
+  return GURL();
+}
+
+metrics::OmniboxEventProto::PageClassification
+OmniboxClient::GetOmniboxComposeboxPageClassification() const {
+  return metrics::OmniboxEventProto::INVALID_SPEC;
 }
 
 bool OmniboxClient::IsUsingFakeHttpsForHttpsUpgradeTesting() const {
@@ -88,6 +124,11 @@ OmniboxClient::GetLensOverlaySuggestInputs() const {
   return std::nullopt;
 }
 
+std::optional<lens::ContextualInputData> OmniboxClient::GetContextualInputData()
+    const {
+  return std::nullopt;
+}
+
 void OmniboxClient::ProcessExtensionMatch(const std::u16string& text,
                                           const TemplateURL* template_url,
                                           const AutocompleteMatch& match,
@@ -112,6 +153,38 @@ gfx::Image OmniboxClient::GetFaviconForKeywordSearchProvider(
   return gfx::Image();
 }
 
+gfx::Image OmniboxClient::GetFaviconForIconUrl(
+    const GURL& icon_url,
+    FaviconFetchedCallback on_favicon_fetched,
+    bool notify_on_empty) {
+  return gfx::Image();
+}
+
 bool OmniboxClient::IsHistoryEmbeddingsEnabled() const {
   return false;
+}
+
+bool OmniboxClient::IsAimPopupEnabled() const {
+  return false;
+}
+
+omnibox::InputState OmniboxClient::GetInputState() const {
+  return omnibox::InputState();
+}
+
+void OmniboxClient::ExecuteAction(OmniboxAction* action,
+                                  WindowOpenDisposition disposition,
+                                  base::TimeTicks match_selection_timestamp,
+                                  OmniboxAction::Client& action_client) {
+  if (!action) {
+    return;
+  }
+  OmniboxAction::ExecutionContext context(
+      action_client,
+      base::BindOnce(&OmniboxClient::OnAutocompleteAccept, AsWeakPtr()),
+      match_selection_timestamp, disposition);
+  base::UmaHistogramMicrosecondsTimes(
+      "Omnibox.InputToExecuteAction",
+      base::TimeTicks::Now() - match_selection_timestamp);
+  action->Execute(context);
 }

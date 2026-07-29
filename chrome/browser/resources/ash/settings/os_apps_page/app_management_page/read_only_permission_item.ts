@@ -11,7 +11,6 @@ import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js
 import type {App} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
 import type {PermissionTypeIndex} from 'chrome://resources/cr_components/app_management/permission_constants.js';
 import {getPermission} from 'chrome://resources/cr_components/app_management/util.js';
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {MediaDevicesProxy} from '../../common/media_devices_proxy.js';
@@ -77,13 +76,13 @@ export class AppManagementReadOnlyPermissionItemElement extends
     };
   }
 
-  app: App;
-  permissionLabel: string;
-  permissionType: PermissionTypeIndex;
-  icon: string;
-  private available_: boolean;
-  private sensorAvailable_: boolean;
-  private showAllowSensorAccessDialog_: boolean;
+  declare app: App;
+  declare permissionLabel: string;
+  declare permissionType: PermissionTypeIndex;
+  declare icon: string;
+  declare private available_: boolean;
+  declare private sensorAvailable_: boolean;
+  declare private showAllowSensorAccessDialog_: boolean;
 
   override ready(): void {
     super.ready();
@@ -111,9 +110,7 @@ export class AppManagementReadOnlyPermissionItemElement extends
   private getPermissionDescriptionString_(
       app: App|undefined,
       permissionType: PermissionTypeIndex|undefined): string {
-    const isSensorBlocked =
-        loadTimeData.getBoolean('privacyHubAppPermissionsV2Enabled') &&
-        this.isSensorBlocked(permissionType);
+    const isSensorBlocked = this.isSensorBlocked(permissionType);
     return getPermissionDescriptionString(
         app, permissionType, this.sensorAvailable_, isSensorBlocked,
         this.microphoneHardwareToggleActive,

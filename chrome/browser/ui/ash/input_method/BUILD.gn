@@ -46,7 +46,6 @@ static_library("input_method") {
   public_deps = [
     "//ash/public/cpp",
     "//base",
-    "//base",
     "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ash/input_method",
     "//chromeos/ash/services/ime/public/cpp:structs",
@@ -54,6 +53,7 @@ static_library("input_method") {
     "//ui/base/ime:ime_types",
     "//ui/base/ime/ash",
     "//ui/chromeos/styles:cros_styles_views",
+    "//ui/chromeos/styles:cros_tokens_color_mappings",
     "//ui/gfx",
     "//ui/views",
   ]
@@ -62,8 +62,8 @@ static_library("input_method") {
     "//ash",
     "//ash/constants",
     "//ash/public/cpp",
+    "//ash/strings",
     "//base:i18n",
-    "//chrome/app:generated_resources",
     "//chrome/app/vector_icons",
     "//components/strings:components_strings",
     "//ui/accessibility:ax_enums_mojo",
@@ -80,6 +80,10 @@ static_library("input_method") {
   ]
 
   allow_circular_includes_from = [ "//chrome/browser/ash/input_method" ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("unit_tests") {

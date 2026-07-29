@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <deque>
+#include <stdexcept> // For std::length_error.
 #include <memory> // For automatic pointers.
 #include <algorithm>
 
@@ -56,6 +57,10 @@
 #pragma comment(lib, "Shlwapi.lib")
 #include <PowrProf.h>
 #pragma comment(lib, "PowrProf.lib")
+#include <psapi.h>
+#if !defined(CHROMIUM_UNRAR)
+#pragma comment(lib, "Psapi.lib") // For GetProcessMemoryInfo().
+#endif  // !defined(CHROMIUM_UNRAR)
 #include <shellapi.h>
 #include <shlobj.h>
 #include <winioctl.h>
@@ -143,6 +148,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <stddef.h> // Needed for ptrdiff_t in some UnRAR source builds.
 #include <string.h>
 #include <ctype.h>
 #include <fcntl.h>

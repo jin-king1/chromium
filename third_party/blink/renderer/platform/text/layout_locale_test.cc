@@ -39,6 +39,7 @@ struct LocaleTestData {
   UScriptCode script;
   const char* sk_font_mgr = nullptr;
   std::optional<UScriptCode> script_for_han;
+  bool is_macrolanguage_chinese = false;
 } locale_test_data[] = {
     // Country is not relevant to |SkFontMgr|.
     {"en-US", USCRIPT_LATIN, "en"},
@@ -65,31 +66,31 @@ struct LocaleTestData {
   USCRIPT_TRADITIONAL_HAN, "zh-Hant", USCRIPT_TRADITIONAL_HAN
     {"ja-JP", EXPECT_JAPANESE},
     {"ko-KR", EXPECT_KOREAN},
-    {"zh", EXPECT_SIMPLIFIED_CHINESE},
-    {"zh-CN", EXPECT_SIMPLIFIED_CHINESE},
-    {"zh-HK", EXPECT_TRADITIONAL_CHINESE},
-    {"zh-MO", EXPECT_TRADITIONAL_CHINESE},
-    {"zh-SG", EXPECT_SIMPLIFIED_CHINESE},
-    {"zh-TW", EXPECT_TRADITIONAL_CHINESE},
+    {"zh", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"zh-CN", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"zh-HK", EXPECT_TRADITIONAL_CHINESE, true},
+    {"zh-MO", EXPECT_TRADITIONAL_CHINESE, true},
+    {"zh-SG", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"zh-TW", EXPECT_TRADITIONAL_CHINESE, true},
 
     // Encompassed languages within the Chinese macrolanguage.
     // Both "lang" and "lang-extlang" should work.
-    {"nan", EXPECT_TRADITIONAL_CHINESE},
-    {"wuu", EXPECT_SIMPLIFIED_CHINESE},
-    {"yue", EXPECT_TRADITIONAL_CHINESE},
-    {"zh-nan", EXPECT_TRADITIONAL_CHINESE},
-    {"zh-wuu", EXPECT_SIMPLIFIED_CHINESE},
-    {"zh-yue", EXPECT_TRADITIONAL_CHINESE},
+    {"nan", EXPECT_TRADITIONAL_CHINESE, true},
+    {"wuu", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"yue", EXPECT_TRADITIONAL_CHINESE, true},
+    {"zh-nan", EXPECT_TRADITIONAL_CHINESE, true},
+    {"zh-wuu", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"zh-yue", EXPECT_TRADITIONAL_CHINESE, true},
 
     // Specified scripts is honored.
-    {"zh-Hans", EXPECT_SIMPLIFIED_CHINESE},
-    {"zh-Hant", EXPECT_TRADITIONAL_CHINESE},
+    {"zh-Hans", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"zh-Hant", EXPECT_TRADITIONAL_CHINESE, true},
 
     // Lowercase scripts should be capitalized.
     // |SkFontMgr_Android| uses case-sensitive match, and `fonts.xml` has
     // capitalized script names.
-    {"zh-hans", EXPECT_SIMPLIFIED_CHINESE},
-    {"zh-hant", EXPECT_TRADITIONAL_CHINESE},
+    {"zh-hans", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"zh-hant", EXPECT_TRADITIONAL_CHINESE, true},
 
     // Script has priority over other subtags.
     {"en-Hans", EXPECT_SIMPLIFIED_CHINESE},
@@ -98,10 +99,10 @@ struct LocaleTestData {
     {"en-Hant-CN", EXPECT_TRADITIONAL_CHINESE},
     {"en-TW-Hans", EXPECT_SIMPLIFIED_CHINESE},
     {"en-CN-Hant", EXPECT_TRADITIONAL_CHINESE},
-    {"wuu-Hant", EXPECT_TRADITIONAL_CHINESE},
-    {"yue-Hans", EXPECT_SIMPLIFIED_CHINESE},
-    {"zh-wuu-Hant", EXPECT_TRADITIONAL_CHINESE},
-    {"zh-yue-Hans", EXPECT_SIMPLIFIED_CHINESE},
+    {"wuu-Hant", EXPECT_TRADITIONAL_CHINESE, true},
+    {"yue-Hans", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"zh-wuu-Hant", EXPECT_TRADITIONAL_CHINESE, true},
+    {"zh-yue-Hans", EXPECT_SIMPLIFIED_CHINESE, true},
 
     // Lang has priority over region.
     // icu::Locale::getDefault() returns other combinations if, for instance,
@@ -110,10 +111,10 @@ struct LocaleTestData {
     {"ja-US", EXPECT_JAPANESE},
     {"ko", EXPECT_KOREAN},
     {"ko-US", EXPECT_KOREAN},
-    {"wuu-TW", EXPECT_SIMPLIFIED_CHINESE},
-    {"yue-CN", EXPECT_TRADITIONAL_CHINESE},
-    {"zh-wuu-TW", EXPECT_SIMPLIFIED_CHINESE},
-    {"zh-yue-CN", EXPECT_TRADITIONAL_CHINESE},
+    {"wuu-TW", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"yue-CN", EXPECT_TRADITIONAL_CHINESE, true},
+    {"zh-wuu-TW", EXPECT_SIMPLIFIED_CHINESE, true},
+    {"zh-yue-CN", EXPECT_TRADITIONAL_CHINESE, true},
 
     // Region should not affect script, but it can influence scriptForHan.
     {"en-CN", USCRIPT_LATIN, "en"},
@@ -154,6 +155,7 @@ TEST_P(LocaleTestDataFixture, Script) {
   } else {
     EXPECT_EQ(USCRIPT_SIMPLIFIED_HAN, locale->GetScriptForHan()) << test.locale;
   }
+  EXPECT_EQ(test.is_macrolanguage_chinese, locale->IsMacrolanguageChinese());
   if (test.sk_font_mgr)
     EXPECT_STREQ(test.sk_font_mgr, locale->LocaleForSkFontMgr()) << test.locale;
 }
@@ -183,14 +185,16 @@ TEST(LayoutLocaleTest, BreakKeyword) {
         LayoutLocale::CreateForTesting(AtomicString(test.locale));
     EXPECT_EQ(test.expected,
               locale->LocaleWithBreakKeyword(test.strictness, test.use_phrase))
-        << String::Format("'%s' with line-break %d, phrase=%d should be '%s'",
-                          test.locale, static_cast<int>(test.strictness),
-                          static_cast<int>(test.use_phrase), test.expected);
+        << "'" << (test.locale ? test.locale : "(null)") << "' with line-break "
+        << static_cast<int>(test.strictness)
+        << ", phrase=" << static_cast<int>(test.use_phrase) << " should be '"
+        << (test.expected ? test.expected : "(null)") << "'";
   }
 }
 
 TEST(LayoutLocaleTest, GetQuotesData) {
   auto enQuotes = (QuotesData::Create(0x201c, 0x201d, 0x2018, 0x2019));
+  auto deQuotes = (QuotesData::Create(0x201e, 0x201c, 0x201a, 0x2018));
   auto frQuotes = (QuotesData::Create(0xab, 0xbb, 0xab, 0xbb));
   auto frCAQuotes = (QuotesData::Create(0xab, 0xbb, 0x201d, 0x201c));
   struct {
@@ -199,8 +203,9 @@ TEST(LayoutLocaleTest, GetQuotesData) {
   } tests[] = {
       {nullptr, nullptr},    // no match
       {"loc-DNE", nullptr},  // no match
-      {"en", enQuotes},      {"fr", frQuotes},
-      {"fr-CA", frCAQuotes}, {"fr-DNE", frQuotes},  // use fr
+      {"en", enQuotes},         {"fr", frQuotes},
+      {"fr-CA", frCAQuotes},    {"fr-DNE", frQuotes},  // use fr
+      {"DE-LATN-DE", deQuotes},
   };
   for (const auto& test : tests) {
     scoped_refptr<LayoutLocale> locale =

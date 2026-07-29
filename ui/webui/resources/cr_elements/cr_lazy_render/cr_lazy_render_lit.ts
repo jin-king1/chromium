@@ -31,22 +31,6 @@ export class CrLazyRenderLitElement<T extends HTMLElement> extends
     return 'cr-lazy-render-lit';
   }
 
-  static override get properties() {
-    return {
-      template: {type: Object},
-
-      rendered_: {
-        type: Boolean,
-        state: true,
-      },
-    };
-  }
-
-  private rendered_: boolean = false;
-
-  template: () => TemplateResult = () => html``;
-  private child_: T|null = null;
-
   override render() {
     if (this.rendered_) {
       // Render items into the parent's DOM using the client provided template.
@@ -60,6 +44,22 @@ export class CrLazyRenderLitElement<T extends HTMLElement> extends
 
     return html``;
   }
+
+  static override get properties() {
+    return {
+      template: {type: Object},
+
+      rendered_: {
+        type: Boolean,
+        state: true,
+      },
+    };
+  }
+
+  private accessor rendered_: boolean = false;
+
+  accessor template: () => TemplateResult = () => html``;
+  private child_: T|null = null;
 
   /**
    * Stamp the template into the DOM tree synchronously

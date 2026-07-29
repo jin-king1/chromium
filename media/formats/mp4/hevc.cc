@@ -2,40 +2,35 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/formats/mp4/hevc.h"
 
 #include <algorithm>
 #include <memory>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/containers/span.h"
 #include "base/containers/span_writer.h"
-#include "base/functional/overloaded.h"
 #include "base/logging.h"
+#include "media/base/agtm.h"
 #include "media/base/decrypt_config.h"
 #include "media/base/media_util.h"
 #include "media/base/video_decoder_config.h"
 #include "media/formats/mp4/avc.h"
 #include "media/formats/mp4/box_definitions.h"
 #include "media/formats/mp4/box_reader.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
 #include "media/parsers/h265_parser.h"
+#include "media/parsers/h26x_parser.h"
 #else
 #include "media/parsers/h265_nalu_parser.h"
 #endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
-namespace media {
-namespace mp4 {
+namespace media::mp4 {
 
-static constexpr uint8_t kAnnexBStartCode[] = {0, 0, 0, 1};
-static constexpr int kAnnexBStartCodeSize = 4;
+static constexpr auto kAnnexBStartCode = std::to_array<uint8_t>({0, 0, 0, 1});
 
 HEVCDecoderConfigurationRecord::HEVCDecoderConfigurationRecord()
     : configurationVersion(0),
@@ -157,8 +152,8 @@ bool HEVCDecoderConfigurationRecord::Serialize(
   return result;
 }
 
-bool HEVCDecoderConfigurationRecord::Parse(const uint8_t* data, int data_size) {
-  BufferReader reader(data, data_size);
+bool HEVCDecoderConfigurationRecord::Parse(base::span<const uint8_t> data) {
+  BufferReader reader(data);
   // TODO(wolenetz): Questionable MediaLog usage, http://crbug.com/712310
   NullMediaLog media_log;
   return ParseInternal(&reader, &media_log);
@@ -209,7 +204,7 @@ bool HEVCDecoderConfigurationRecord::ParseInternal(BufferReader* reader,
   temporalIdNested = (misc >> 2) & 1;
   lengthSizeMinusOne = misc & 3;
 
-  DVLOG(2) << __func__ << " numOfArrays=" << (int)numOfArrays;
+  DVLOG(2) << __func__ << " numOfArrays=" << static_cast<int>(numOfArrays);
   arrays.resize(numOfArrays);
   for (uint32_t j = 0; j < numOfArrays; j++) {
     RCHECK(reader->Read1(&arrays[j].first_byte));
@@ -220,7 +215,7 @@ bool HEVCDecoderConfigurationRecord::ParseInternal(BufferReader* reader,
       uint16_t naluLength = 0;
       RCHECK(reader->Read2(&naluLength) &&
              reader->ReadVec(&arrays[j].units[i], naluLength));
-      DVLOG(4) << __func__ << " naluType=" << (int)(arrays[j].first_byte & 0x3f)
+      DVLOG(4) << __func__ << " naluType=" << (arrays[j].first_byte & 0x3f)
                << " size=" << arrays[j].units[i].size();
     }
   }
@@ -239,7 +234,7 @@ bool HEVCDecoderConfigurationRecord::ParseInternal(BufferReader* reader,
   }
   H265Parser parser;
   H265NALU nalu;
-  parser.SetStream(param_sets.data(), param_sets.size());
+  parser.SetStream(param_sets);
   while (true) {
     H265Parser::Result result = parser.AdvanceToNextNALU(&nalu);
     if (result != H265Parser::kOk) {
@@ -286,17 +281,21 @@ bool HEVCDecoderConfigurationRecord::ParseInternal(BufferReader* reader,
           break;
         }
         for (const auto& sei_msg : sei.msgs) {
-          absl::visit(base::Overloaded{
-                          [](const H265SEIAlphaChannelInfo& info) {},
-                          [&](const H265SEIContentLightLevelInfo& info) {
-                            hdr_metadata.cta_861_3 = info.ToGfx();
-                          },
-                          [&](const H265SEIMasteringDisplayInfo& info) {
-                            hdr_metadata.smpte_st_2086 = info.ToGfx();
-                          },
-                          [](absl::monostate) {},
-                      },
-                      sei_msg);
+          std::visit(absl::Overload{
+                         [](const H265SEIAlphaChannelInfo& info) {},
+                         [&](const H26xSEIContentLightLevelInfo& info) {
+                           hdr_metadata.SetCLLI(info.ToSkHdr());
+                         },
+                         [&](const H26xSEIMasteringDisplayInfo& info) {
+                           hdr_metadata.SetMDCV(info.ToSkHdr());
+                         },
+                         [&](const H26xSEIUserDataRegisteredT35& info) {
+                           SetAgtmFromT35WithCountryCode(
+                               hdr_metadata, info.country_code, info.payload);
+                         },
+                         [](std::monostate) {},
+                     },
+                     sei_msg);
         }
         break;
       }
@@ -362,48 +361,43 @@ bool HEVC::InsertParamSetsAnnexB(
     const HEVCDecoderConfigurationRecord& hevc_config,
     std::vector<uint8_t>* buffer,
     std::vector<SubsampleEntry>* subsamples) {
-  DCHECK(HEVC::AnalyzeAnnexB(buffer->data(), buffer->size(), *subsamples)
-             .is_conformant.value_or(true));
-
   std::unique_ptr<H265NaluParser> parser(new H265NaluParser());
   const uint8_t* start = buffer->data();
-  parser->SetEncryptedStream(start, buffer->size(), *subsamples);
+  parser->SetEncryptedStream(*buffer, *subsamples);
 
   H265NALU nalu;
-  if (parser->AdvanceToNextNALU(&nalu) != H265NaluParser::kOk)
+  if (parser->AdvanceToNextNALU(&nalu) != H265NaluParser::kOk) {
     return false;
+  }
 
   std::vector<uint8_t>::iterator config_insert_point = buffer->begin();
 
   if (nalu.nal_unit_type == H265NALU::AUD_NUT) {
     // Move insert point to just after the AUD.
-    config_insert_point +=
-        (nalu.data + base::checked_cast<size_t>(nalu.size)) - start;
+    config_insert_point += base::to_address(nalu.data.end()) - start;
   }
 
   // Clear |parser| and |start| since they aren't needed anymore and
   // will hold stale pointers once the insert happens.
   parser.reset();
-  start = NULL;
+  start = nullptr;
 
   std::vector<uint8_t> param_sets;
   HEVC::ConvertConfigToAnnexB(hevc_config, &param_sets);
   DVLOG(4) << __func__ << " converted hvcC to AnnexB "
            << " size=" << param_sets.size() << " inserted at "
-           << (int)(config_insert_point - buffer->begin());
+           << static_cast<int>(config_insert_point - buffer->begin());
 
   if (subsamples && !subsamples->empty()) {
-    int subsample_index = AVC::FindSubsampleIndex(*buffer, subsamples,
-                                                  &(*config_insert_point));
-    // Update the size of the subsample where VPS/SPS/PPS is to be inserted.
+    int subsample_index =
+        AVC::FindSubsampleIndex(*buffer, *subsamples, &(*config_insert_point));
+    // Update the size of the subsample where VPS/SPS/PPS and SEI messages are
+    // to be inserted.
     (*subsamples)[subsample_index].clear_bytes += param_sets.size();
   }
 
   buffer->insert(config_insert_point,
                  param_sets.begin(), param_sets.end());
-
-  DCHECK(HEVC::AnalyzeAnnexB(buffer->data(), buffer->size(), *subsamples)
-             .is_conformant.value_or(true));
   return true;
 }
 
@@ -414,36 +408,36 @@ void HEVC::ConvertConfigToAnnexB(
   DCHECK(buffer->empty());
   buffer->clear();
 
-  for (size_t j = 0; j < hevc_config.arrays.size(); j++) {
-    uint8_t naluType = hevc_config.arrays[j].first_byte & 0x3f;
-    for (size_t i = 0; i < hevc_config.arrays[j].units.size(); ++i) {
-      DVLOG(3) << __func__ << " naluType=" << (int)naluType
-               << " size=" << hevc_config.arrays[j].units[i].size();
-      buffer->insert(buffer->end(), kAnnexBStartCode,
-                     kAnnexBStartCode + kAnnexBStartCodeSize);
-      buffer->insert(buffer->end(), hevc_config.arrays[j].units[i].begin(),
-                     hevc_config.arrays[j].units[i].end());
+  for (const auto& array : hevc_config.arrays) {
+    const uint8_t naluType = array.first_byte & 0x3f;
+    for (const auto& unit : array.units) {
+      DVLOG(3) << __func__ << " naluType=" << static_cast<int>(naluType)
+               << " size=" << unit.size();
+      buffer->insert(buffer->end(), kAnnexBStartCode.begin(),
+                     kAnnexBStartCode.end());
+      buffer->insert(buffer->end(), unit.begin(), unit.end());
     }
   }
 }
 
 // static
 BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
-    const uint8_t* buffer,
-    size_t size,
+    base::span<const uint8_t> buffer,
     const std::vector<SubsampleEntry>& subsamples) {
   DVLOG(3) << __func__;
 
   BitstreamConverter::AnalysisResult result;
   result.is_conformant = false;  // Will change if needed before return.
 
-  if (size == 0) {
+  bool had_unexpected_nalu = false;
+
+  if (buffer.empty()) {
     result.is_conformant = true;
     return result;
   }
 
   H265NaluParser parser;
-  parser.SetEncryptedStream(buffer, size, subsamples);
+  parser.SetEncryptedStream(buffer, subsamples);
 
   enum NALUOrderState {
     kAUDAllowed,
@@ -477,13 +471,13 @@ BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
 
     if (order_state == kNoMoreDataAllowed) {
       DVLOG(1) << "No more data is allowed after EOB_NUT.";
-      return result;
+      had_unexpected_nalu = true;
     }
 
     if (order_state == kEOBitstreamAllowed &&
         nalu.nal_unit_type != H265NALU::EOB_NUT) {
       DVLOG(1) << "Only EOB_NUT is allowed after EOS_NUT.";
-      return result;
+      had_unexpected_nalu = true;
     }
 
     switch (nalu.nal_unit_type) {
@@ -493,9 +487,11 @@ BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
       case H265NALU::AUD_NUT:
         if (order_state > kAUDAllowed) {
           DVLOG(1) << "Unexpected AUD in order_state " << order_state;
-          return result;
+          had_unexpected_nalu = true;
         }
-        order_state = kBeforeFirstVCL;
+        if (order_state < kBeforeFirstVCL) {
+          order_state = kBeforeFirstVCL;
+        }
         break;
 
       // When any VPS NAL units, SPS NAL units, PPS NAL units, prefix SEI NAL
@@ -522,9 +518,11 @@ BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
         if (order_state > kBeforeFirstVCL) {
           DVLOG(1) << "Unexpected NALU type " << nalu.nal_unit_type
                    << " in order_state " << order_state;
-          return result;
+          had_unexpected_nalu = true;
         }
-        order_state = kBeforeFirstVCL;
+        if (order_state < kBeforeFirstVCL) {
+          order_state = kBeforeFirstVCL;
+        }
         break;
 
       // NAL units having nal_unit_type equal to FD_NUT or SUFFIX_SEI_NUT or in
@@ -546,7 +544,7 @@ BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
         if (order_state < kAfterFirstVCL) {
           DVLOG(1) << "Unexpected NALU type " << nalu.nal_unit_type
                    << " in order_state " << order_state;
-          return result;
+          had_unexpected_nalu = true;
         }
         break;
 
@@ -556,9 +554,11 @@ BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
       case H265NALU::EOS_NUT:
         if (order_state != kAfterFirstVCL) {
           DVLOG(1) << "Unexpected EOS in order_state " << order_state;
-          return result;
+          had_unexpected_nalu = true;
         }
-        order_state = kEOBitstreamAllowed;
+        if (order_state < kEOBitstreamAllowed) {
+          order_state = kEOBitstreamAllowed;
+        }
         break;
 
       // When an end of bitstream NAL unit is present, it shall be the last NAL
@@ -566,9 +566,11 @@ BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
       case H265NALU::EOB_NUT:
         if (order_state < kAfterFirstVCL) {
           DVLOG(1) << "Unexpected EOB in order_state " << order_state;
-          return result;
+          had_unexpected_nalu = true;
         }
-        order_state = kNoMoreDataAllowed;
+        if (order_state < kNoMoreDataAllowed) {
+          order_state = kNoMoreDataAllowed;
+        }
         break;
 
       // VCL, non-IRAP
@@ -598,13 +600,15 @@ BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
       case H265NALU::RSV_VCL31:
         if (order_state > kAfterFirstVCL) {
           DVLOG(1) << "Unexpected VCL in order_state " << order_state;
-          return result;
+          had_unexpected_nalu = true;
         }
 
         if (!result.is_keyframe.has_value())
           result.is_keyframe = false;
 
-        order_state = kAfterFirstVCL;
+        if (order_state < kAfterFirstVCL) {
+          order_state = kAfterFirstVCL;
+        }
         break;
 
       // VCL, IRAP
@@ -618,13 +622,15 @@ BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
       case H265NALU::RSV_IRAP_VCL23:
         if (order_state > kAfterFirstVCL) {
           DVLOG(1) << "Unexpected VCL in order_state " << order_state;
-          return result;
+          had_unexpected_nalu = true;
         }
 
         if (!result.is_keyframe.has_value())
           result.is_keyframe = true;
 
-        order_state = kAfterFirstVCL;
+        if (order_state < kAfterFirstVCL) {
+          order_state = kAfterFirstVCL;
+        }
         break;
 
       default:
@@ -632,11 +638,11 @@ BitstreamConverter::AnalysisResult HEVC::AnalyzeAnnexB(
     }
   }
 
-  if (order_state < kAfterFirstVCL)
+  if (!result.is_keyframe.has_value()) {
     return result;
+  }
 
-  result.is_conformant = true;
-  DCHECK(result.is_keyframe.has_value());
+  result.is_conformant = !had_unexpected_nalu;
   return result;
 }
 
@@ -660,7 +666,7 @@ bool HEVCBitstreamConverter::ConvertAndAnalyzeFrame(
   // keyframe. |is_keyframe| will be used if the analysis is inconclusive.
   // Also, provide the analysis result to the caller via out parameter
   // |analysis_result|.
-  *analysis_result = Analyze(frame_buf, subsamples);
+  *analysis_result = Analyze(*frame_buf, subsamples);
 
   if (analysis_result->is_keyframe.value_or(is_keyframe)) {
     // If this is a keyframe, we (re-)inject HEVC params headers at the start of
@@ -673,10 +679,9 @@ bool HEVCBitstreamConverter::ConvertAndAnalyzeFrame(
 }
 
 BitstreamConverter::AnalysisResult HEVCBitstreamConverter::Analyze(
-    std::vector<uint8_t>* frame_buf,
+    base::span<const uint8_t> frame_buf,
     std::vector<SubsampleEntry>* subsamples) const {
-  return HEVC::AnalyzeAnnexB(frame_buf->data(), frame_buf->size(), *subsamples);
+  return HEVC::AnalyzeAnnexB(frame_buf, *subsamples);
 }
 
-}  // namespace mp4
-}  // namespace media
+}  // namespace media::mp4

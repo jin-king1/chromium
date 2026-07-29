@@ -21,7 +21,7 @@
 using base::android::ConvertJavaStringToUTF16;
 using base::android::ConvertUTF16ToJavaString;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using base::android::TokenAndroid;
 
@@ -29,13 +29,13 @@ namespace tab_groups {
 namespace {
 
 // Unspecified tab position is represented as -1 in Java.
-int kInvalidTabPosition = -1;
+constexpr int kInvalidTabPosition = -1;
 
 // Converts collaboration group ID to Java. If the collaboration group ID is
 // not present, null is returned.
 ScopedJavaLocalRef<jstring> ToJavaCollaborationId(
     JNIEnv* env,
-    const std::optional<CollaborationId>& collaboration_id) {
+    const std::optional<syncer::CollaborationId>& collaboration_id) {
   return collaboration_id.has_value()
              ? ConvertUTF8ToJavaString(env, collaboration_id->value())
              : ScopedJavaLocalRef<jstring>();
@@ -43,7 +43,7 @@ ScopedJavaLocalRef<jstring> ToJavaCollaborationId(
 
 // Helper method to create a Java SavedTabGroupTab, and optionally add it to
 // a group if a non-null |j_tab_group| is specified.
-ScopedJavaLocalRef<jobject>
+static ScopedJavaLocalRef<jobject>
 JNI_TabGroupSyncConversionsBridge_createTabAndMaybeAddToGroup(
     JNIEnv* env,
     const SavedTabGroupTab& tab,
@@ -61,15 +61,15 @@ JNI_TabGroupSyncConversionsBridge_createTabAndMaybeAddToGroup(
       env, j_sync_tab_id, j_local_tab_id, j_sync_group_id,
       static_cast<int32_t>(tab.position().value_or(kInvalidTabPosition)), j_url,
       ConvertUTF16ToJavaString(env, tab.title()),
-      tab.creation_time_windows_epoch_micros().InMillisecondsSinceUnixEpoch(),
-      tab.update_time_windows_epoch_micros().InMillisecondsSinceUnixEpoch(),
-      j_creator_cache_guid, j_last_updater_cache_guid, j_tab_group);
+      tab.creation_time().InMillisecondsSinceUnixEpoch(),
+      tab.update_time().InMillisecondsSinceUnixEpoch(), j_creator_cache_guid,
+      j_last_updater_cache_guid, j_tab_group);
 }
 
 // Helper method to create a Java SavedTabGroup. This doesn't include the tabs.
-ScopedJavaLocalRef<jobject> JNI_TabGroupSyncConversionsBridge_createGroup(
-    JNIEnv* env,
-    const SavedTabGroup& group) {
+static ScopedJavaLocalRef<jobject>
+JNI_TabGroupSyncConversionsBridge_createGroup(JNIEnv* env,
+                                              const SavedTabGroup& group) {
   auto j_sync_id = UuidToJavaString(env, group.saved_guid());
   auto j_local_id = TabGroupSyncConversionsBridge::ToJavaTabGroupId(
       env, group.local_group_id());
@@ -79,13 +79,17 @@ ScopedJavaLocalRef<jobject> JNI_TabGroupSyncConversionsBridge_createGroup(
       env, group.last_updater_cache_guid().value_or(std::string()));
   auto j_collaboration_id =
       ToJavaCollaborationId(env, group.collaboration_id());
+  auto j_archival_time =
+      group.archival_time().has_value()
+          ? group.archival_time().value().InMillisecondsSinceUnixEpoch()
+          : -1;
 
   return Java_TabGroupSyncConversionsBridge_createGroup(
       env, j_sync_id, j_local_id, ConvertUTF16ToJavaString(env, group.title()),
       static_cast<int32_t>(group.color()),
-      group.creation_time_windows_epoch_micros().InMillisecondsSinceUnixEpoch(),
-      group.update_time_windows_epoch_micros().InMillisecondsSinceUnixEpoch(),
-      j_creator_cache_guid, j_last_updater_cache_guid, j_collaboration_id);
+      group.creation_time().InMillisecondsSinceUnixEpoch(),
+      group.update_time().InMillisecondsSinceUnixEpoch(), j_creator_cache_guid,
+      j_last_updater_cache_guid, j_collaboration_id, j_archival_time);
 }
 
 }  // namespace
@@ -93,12 +97,12 @@ ScopedJavaLocalRef<jobject> JNI_TabGroupSyncConversionsBridge_createGroup(
 // Java-to-native conversion helper methods.
 
 // static
-void JNI_TabGroupSyncConversionsBridge_UpdateVisualData(
+static void JNI_TabGroupSyncConversionsBridge_UpdateVisualData(
     JNIEnv* env,
-    jlong j_group_ptr,
-    const JavaParamRef<jobject>& j_group_id,
-    const JavaParamRef<jstring>& j_title,
-    jint j_color) {
+    int64_t j_group_ptr,
+    const JavaRef<jobject>& j_group_id,
+    const JavaRef<jstring>& j_title,
+    int32_t j_color) {
   // Set visuals on the given SavedTabGroup.
   SavedTabGroup* group = reinterpret_cast<SavedTabGroup*>(j_group_ptr);
   if (j_group_id) {
@@ -113,12 +117,12 @@ void JNI_TabGroupSyncConversionsBridge_UpdateVisualData(
 }
 
 // static
-void JNI_TabGroupSyncConversionsBridge_AddTab(
+static void JNI_TabGroupSyncConversionsBridge_AddTab(
     JNIEnv* env,
-    jlong j_group_ptr,
-    jint j_tab_id,
-    const JavaParamRef<jstring>& j_title,
-    const JavaParamRef<jobject>& j_url) {
+    int64_t j_group_ptr,
+    int32_t j_tab_id,
+    const JavaRef<jstring>& j_title,
+    const JavaRef<jobject>& j_url) {
   SavedTabGroup* group = reinterpret_cast<SavedTabGroup*>(j_group_ptr);
 
   // Add a tab to the given SavedTabGroup.
@@ -151,7 +155,7 @@ ScopedJavaLocalRef<jobject> TabGroupSyncConversionsBridge::CreateGroup(
 // static
 LocalTabGroupID TabGroupSyncConversionsBridge::FromJavaTabGroupId(
     JNIEnv* env,
-    const JavaParamRef<jobject>& j_group_id) {
+    const JavaRef<jobject>& j_group_id) {
   auto j_token =
       Java_TabGroupSyncConversionsBridge_getNativeTabGroupId(env, j_group_id);
   return TokenAndroid::FromJavaToken(env, j_token);
@@ -170,10 +174,12 @@ ScopedJavaLocalRef<jobject> TabGroupSyncConversionsBridge::ToJavaTabGroupId(
 // static
 void TabGroupSyncConversionsBridge::FillNativeSavedTabGroup(
     JNIEnv* env,
-    const jlong native_saved_tab_group_ptr,
-    const JavaParamRef<jobject>& j_saved_tab_group) {
+    const int64_t native_saved_tab_group_ptr,
+    const JavaRef<jobject>& j_saved_tab_group) {
   Java_TabGroupSyncConversionsBridge_toNativeSavedTabGroup(
       env, native_saved_tab_group_ptr, j_saved_tab_group);
 }
 
 }  // namespace tab_groups
+
+DEFINE_JNI(TabGroupSyncConversionsBridge)

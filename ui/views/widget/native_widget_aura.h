@@ -39,8 +39,18 @@ namespace views {
 class DropHelper;
 class FocusManagerEventHandler;
 class TooltipManagerAura;
+namespace legacy {
+class WindowReorderer;
+}
 class WindowReorderer;
 
+// NativeWidgetAura is a NativeWidgetPrivate implementation that does not own
+// a platform-specific window (x11::Window, HWND, etc).
+// Such a widget is called a non-desktop widget, as in contrast to a desktop
+// widget that uses DesktopNativeWidgetAura.
+// On non-CrOS platforms, a non-desktop widget must be a descendant of a
+// desktop widget and is clipped to that desktop widget's bounds.
+// On CrOS, everything is a non-desktop widget.
 class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
                                       public aura::WindowDelegate,
                                       public aura::WindowObserver,
@@ -80,7 +90,7 @@ class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
   void InitNativeWidget(Widget::InitParams params) override;
   void OnWidgetInitDone() override;
   void ReparentNativeViewImpl(gfx::NativeView new_parent) override;
-  std::unique_ptr<NonClientFrameView> CreateNonClientFrameView() override;
+  std::unique_ptr<FrameView> CreateFrameView() override;
   bool ShouldUseNativeFrame() const override;
   bool ShouldWindowContentsBeTransparent() const override;
   void FrameTypeChanged() override;
@@ -107,7 +117,7 @@ class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
   void SetWindowIcons(const gfx::ImageSkia& window_icon,
                       const gfx::ImageSkia& app_icon) override;
   void InitModalType(ui::mojom::ModalType modal_type) override;
-  void SetColorMode(ui::ColorProviderKey::ColorMode color_mode) override;
+  void SetBackgroundColor(SkColor background_color) override;
   gfx::Rect GetWindowBoundsInScreen() const override;
   gfx::Rect GetClientAreaBoundsInScreen() const override;
   gfx::Rect GetRestoredBounds() const override;
@@ -125,6 +135,7 @@ class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
             const gfx::Rect& restore_bounds) override;
   void Hide() override;
   bool IsVisible() const override;
+  bool IsVisibleOnScreen() const override;
   void Activate() override;
   void Deactivate() override;
   bool IsActive() const override;
@@ -145,11 +156,11 @@ class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
   void SetAspectRatio(const gfx::SizeF& aspect_ratio,
                       const gfx::Size& excluded_margin) override;
   void FlashFrame(bool flash_frame) override;
-  void RunShellDrag(std::unique_ptr<ui::OSExchangeData> data,
-                    const gfx::Point& location,
-                    int operation,
-                    ui::mojom::DragEventSource source) override;
-  void CancelShellDrag(View* view) override;
+  void RunDragDropLoop(std::unique_ptr<ui::OSExchangeData> data,
+                       const gfx::Point& location,
+                       int operation,
+                       ui::mojom::DragEventSource source) override;
+  void CancelDragDropLoop(View* view) override;
   void SchedulePaintInRect(const gfx::Rect& rect) override;
   void ScheduleLayout() override;
   void SetCursor(const ui::Cursor& cursor) override;
@@ -171,8 +182,12 @@ class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
   void OnSizeConstraintsChanged() override;
   void OnNativeViewHierarchyWillChange() override;
   void OnNativeViewHierarchyChanged() override;
+#if BUILDFLAG(IS_WIN)
+  void SetExcludeFromScreenCapture(bool exclude) override;
+#endif
   bool SetAllowScreenshots(bool allow) override;
   bool AreScreenshotsAllowed() override;
+  bool IsDesktopNativeWidget() const override;
   std::string GetName() const override;
   base::WeakPtr<internal::NativeWidgetPrivate> GetWeakPtr() override;
 
@@ -204,6 +219,8 @@ class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
                                intptr_t old) override;
   void OnResizeLoopStarted(aura::Window* window) override;
   void OnResizeLoopEnded(aura::Window* window) override;
+  void OnMoveLoopStarted(aura::Window* window) override;
+  void OnMoveLoopEnded(aura::Window* window) override;
   void OnWindowAddedToRootWindow(aura::Window* window) override;
   void OnWindowRemovingFromRootWindow(aura::Window* window,
                                       aura::Window* new_root) override;
@@ -270,6 +287,7 @@ class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
 
   // Reorders child windows of |window_| associated with a view based on the
   // order of the associated views in the widget's view hierarchy.
+  std::unique_ptr<legacy::WindowReorderer> legacy_window_reorderer_;
   std::unique_ptr<WindowReorderer> window_reorderer_;
 
   std::unique_ptr<DropHelper> drop_helper_;

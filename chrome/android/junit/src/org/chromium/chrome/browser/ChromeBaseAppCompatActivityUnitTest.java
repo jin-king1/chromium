@@ -5,15 +5,20 @@ package org.chromium.chrome.browser;
 
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
 import android.content.res.Configuration;
+import android.graphics.Insets;
+import android.os.Build;
 import android.util.DisplayMetrics;
 import android.view.Display;
+import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.WindowMetrics;
 
 import androidx.test.filters.MediumTest;
 
@@ -22,13 +27,14 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.chrome.test.AutomotiveContextWrapperTestRule;
+import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.ui.display.DisplayUtil;
-import org.chromium.ui.util.XrUtils;
 
 /** Unit tests for {@link ChromeBaseAppCompatActivity}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -38,21 +44,29 @@ public class ChromeBaseAppCompatActivityUnitTest {
     private static final int MOCK_REAL_DISPLAY_WIDTH_PIXELS = 600;
     private static final int MOCK_REAL_DISPLAY_HEIGHT_PIXELS = 300;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
-    public AutomotiveContextWrapperTestRule mAutomotiveContextWrapperTestRule =
-            new AutomotiveContextWrapperTestRule();
+    public OverrideContextWrapperTestRule mAutomotiveContextWrapperTestRule =
+            new OverrideContextWrapperTestRule();
 
     @Mock private Context mContext;
     @Mock private WindowManager mWindowManager;
     @Mock private Display mDisplay;
+    @Mock private WindowMetrics mWindowMetrics;
+    @Mock private WindowInsets mWindowInsets;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         when(mContext.getSystemService(eq(Context.WINDOW_SERVICE))).thenReturn(mWindowManager);
         when(mContext.getResources())
                 .thenReturn(ContextUtils.getApplicationContext().getResources());
         when(mWindowManager.getDefaultDisplay()).thenReturn(mDisplay);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            when(mWindowManager.getCurrentWindowMetrics()).thenReturn(mWindowMetrics);
+            when(mWindowMetrics.getWindowInsets()).thenReturn(mWindowInsets);
+            when(mWindowInsets.getInsets(anyInt())).thenReturn(Insets.NONE);
+        }
         doAnswer(
                         (invocation) -> {
                             DisplayMetrics realDisplayMetrics = invocation.getArgument(0);
@@ -66,9 +80,13 @@ public class ChromeBaseAppCompatActivityUnitTest {
                 .getRealMetrics(any());
     }
 
+    // Verifies that Clank's internal scaling works.
     @Test
     @MediumTest
     public void testApplyOverridesForAutomotive_onAutomotiveDevice_scaleUpUi() {
+        DisplayUtil.setCarmaPhase1Version2ComplianceForTesting(true);
+        DisplayUtil.setIsDisplayCompatAppForTesting(false);
+
         mAutomotiveContextWrapperTestRule.setIsAutomotive(true);
 
         Configuration config = new Configuration();
@@ -140,9 +158,8 @@ public class ChromeBaseAppCompatActivityUnitTest {
         config.smallestScreenWidthDp = 0;
 
         // Set XR environment.
-        XrUtils.setXrDeviceForTesting(true);
+        DeviceInfo.setIsXrForTesting(true);
         ChromeBaseAppCompatActivity.applyOverridesForXr(mContext, config);
-        XrUtils.resetXrDeviceForTesting();
 
         float xrScaleUpFactor =
                 (float) DisplayUtil.getUiDensityForXr(mContext, MOCK_REAL_DISPLAY_DENSITY_DPI)
@@ -177,10 +194,9 @@ public class ChromeBaseAppCompatActivityUnitTest {
         config.screenHeightDp = MOCK_REAL_DISPLAY_HEIGHT_PIXELS;
         config.smallestScreenWidthDp = 0;
 
-        // Set XR environment.
-        XrUtils.setXrDeviceForTesting(false);
+        // Set non-XR environment.
+        DeviceInfo.setIsXrForTesting(false);
         ChromeBaseAppCompatActivity.applyOverridesForXr(mContext, config);
-        XrUtils.resetXrDeviceForTesting();
 
         assertEquals(
                 "Density dpi should not be scaled up from the real display metric "

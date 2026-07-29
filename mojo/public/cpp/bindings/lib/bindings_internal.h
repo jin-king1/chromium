@@ -2,25 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #ifndef MOJO_PUBLIC_CPP_BINDINGS_LIB_BINDINGS_INTERNAL_H_
 #define MOJO_PUBLIC_CPP_BINDINGS_LIB_BINDINGS_INTERNAL_H_
 
 #include <stdint.h>
 
+#include <concepts>
 #include <functional>
 #include <optional>
 #include <type_traits>
 #include <utility>
 
-#include "base/logging.h"
+#include "base/check.h"
+#include "base/compiler_specific.h"
 #include "mojo/public/cpp/bindings/enum_traits.h"
-#include "mojo/public/cpp/bindings/interface_id.h"
-#include "mojo/public/cpp/bindings/lib/template_util.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
 #include "mojo/public/cpp/system/handle.h"
 
@@ -95,9 +90,10 @@ inline void EncodePointer(const void* ptr, uint64_t* offset) {
 
 // Note: This function doesn't validate the encoded pointer value.
 inline const void* DecodePointer(const uint64_t* offset) {
-  if (!*offset)
+  if (!*offset) {
     return nullptr;
-  return reinterpret_cast<const char*>(offset) + *offset;
+  }
+  return UNSAFE_TODO(reinterpret_cast<const char*>(offset) + *offset);
 }
 
 #pragma pack(push, 1)
@@ -349,28 +345,36 @@ struct EnumHashImpl {
 };
 
 template <typename MojomType, typename T>
-T ConvertEnumValue(MojomType input) {
-  T output;
-  bool result = EnumTraits<MojomType, T>::FromMojom(input, &output);
-  DCHECK(result);
-  return output;
+  requires(requires(MojomType in) {
+    { EnumTraits<MojomType, T>::FromMojom(in) } -> std::same_as<T>;
+  })
+T ConvertEnumValue(MojomType in) {
+  return EnumTraits<MojomType, T>::FromMojom(in);
 }
 
-template <typename MojomType, typename SFINAE = void>
-struct EnumKnownValueTraits {
-  static MojomType ToKnownValue(MojomType in) { return in; }
-};
+template <typename MojomType, typename T>
+  requires(requires(MojomType in) {
+    {
+      EnumTraits<MojomType, T>::FromMojom(in)
+    } -> std::same_as<std::optional<T>>;
+  })
+T ConvertEnumValue(MojomType in) {
+  std::optional<T> out = EnumTraits<MojomType, T>::FromMojom(in);
+  DCHECK(out.has_value());
+  return *out;
+}
 
 template <typename MojomType>
-struct EnumKnownValueTraits<
-    MojomType,
-    std::void_t<decltype(ToKnownEnumValue(std::declval<MojomType>()))>> {
-  static MojomType ToKnownValue(MojomType in) { return ToKnownEnumValue(in); }
-};
+  requires(requires(MojomType in) {
+    { ToKnownEnumValue(in) } -> std::same_as<MojomType>;
+  })
+MojomType ToKnownEnumValueHelper(MojomType in) {
+  return ToKnownEnumValue(in);
+}
 
 template <typename MojomType>
 MojomType ToKnownEnumValueHelper(MojomType in) {
-  return EnumKnownValueTraits<MojomType>::ToKnownValue(in);
+  return in;
 }
 
 }  // namespace internal

@@ -12,25 +12,33 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/rand_util.h"
 #include "base/scoped_observation.h"
+#include "base/strings/escape.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/gmock_move_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/time/time.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
 #include "components/affiliations/core/browser/mock_affiliation_service.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/passkey_credential.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/fake_password_store_backend.h"
 #include "components/password_manager/core/browser/password_store/mock_password_store_interface.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
+#include "components/sync/test/test_sync_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -95,11 +103,34 @@ CredentialUIEntry AsCredentialUIEntry(
 }
 #endif
 
+#if !BUILDFLAG(IS_ANDROID)
+constexpr char kDefaultFallbackIconUrl[] = "https://t1.gstatic.com/faviconV2";
+constexpr char kFallbackIconQueryParams[] =
+    "client=PASSWORD_MANAGER&type=FAVICON&fallback_opts=TYPE,SIZE,URL,"
+    "TOP_DOMAIN&size=32&url=";
+constexpr char kDefaultAndroidIcon[] =
+    "https://www.gstatic.com/images/branding/product/1x/play_apps_32dp.png";
+#endif
+
+GURL CreateFaviconUrl(GURL url) {
+#if BUILDFLAG(IS_ANDROID)
+  return url;
+#else
+  GURL::Replacements replacements;
+  std::string query = kFallbackIconQueryParams +
+                      base::EscapeQueryParamValue(url.spec(),
+                                                  /*use_plus=*/false);
+  replacements.SetQueryStr(query);
+  return GURL(kDefaultFallbackIconUrl).ReplaceComponents(replacements);
+#endif
+}
+
 class SavedPasswordsPresenterTest : public testing::Test {
  protected:
   void SetUp() override {
-    store_->Init(/*prefs=*/nullptr, /*affiliated_match_helper=*/nullptr);
+    store_->Init();
     presenter_.Init();
+    GetSyncService()->SetSignedIn(signin::ConsentLevel::kSync);
     task_env_.RunUntilIdle();
   }
 
@@ -117,6 +148,8 @@ class SavedPasswordsPresenterTest : public testing::Test {
   void RunUntilIdle() { task_env_.RunUntilIdle(); }
   void AdvanceClock(base::TimeDelta time) { task_env_.AdvanceClock(time); }
 
+  syncer::TestSyncService* GetSyncService() { return &test_sync_service_; }
+
   constexpr bool IsGroupingEnabled() {
 #if BUILDFLAG(IS_ANDROID)
     return false;
@@ -131,6 +164,7 @@ class SavedPasswordsPresenterTest : public testing::Test {
   scoped_refptr<TestPasswordStore> store_ =
       base::MakeRefCounted<TestPasswordStore>();
   FakeAffiliationService affiliation_service_;
+  syncer::TestSyncService test_sync_service_;
 #if !BUILDFLAG(IS_ANDROID)
   webauthn::TestPasskeyModel test_passkey_store_;
   SavedPasswordsPresenter presenter_{&affiliation_service_, store_,
@@ -142,9 +176,7 @@ class SavedPasswordsPresenterTest : public testing::Test {
 #endif
 };
 
-password_manager::PasswordForm CreateTestPasswordForm(
-    password_manager::PasswordForm::Store store,
-    int index = 0) {
+PasswordForm CreateTestPasswordForm(PasswordForm::Store store, int index = 0) {
   PasswordForm form;
   form.url = GURL("https://test" + base::NumberToString(index) + ".com");
   form.signon_realm = form.url.spec();
@@ -154,9 +186,8 @@ password_manager::PasswordForm CreateTestPasswordForm(
   return form;
 }
 
-password_manager::PasswordForm CreateTestBlockedSiteForm(
-    password_manager::PasswordForm::Store store,
-    int index = 0) {
+PasswordForm CreateTestBlockedSiteForm(PasswordForm::Store store,
+                                       int index = 0) {
   PasswordForm form;
   form.url = GURL("https://blockedsite" + base::NumberToString(index) + ".com");
   form.blocked_by_user = true;
@@ -176,22 +207,22 @@ TEST_F(SavedPasswordsPresenterTest, NotifyObservers) {
   // Adding a credential should notify observers. Furthermore, the credential
   // should be present of the list that is passed along.
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
-  EXPECT_FALSE(store().IsEmpty());
+  EXPECT_FALSE(GetAllLoginsSync(&store()).empty());
 
   // Remove should notify, and observers should be passed an empty list.
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  store().RemoveLogin(FROM_HERE, form);
+  store().RemoveLogin(FROM_HERE, FromPasswordForm(form));
   RunUntilIdle();
-  EXPECT_TRUE(store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&store()).empty());
 
   // After an observer is removed it should no longer receive notifications.
   presenter().RemoveObserver(&observer);
   EXPECT_CALL(observer, OnSavedPasswordsChanged).Times(0);
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
-  EXPECT_FALSE(store().IsEmpty());
+  EXPECT_FALSE(GetAllLoginsSync(&store()).empty());
 }
 
 // Tests whether adding federated credentials doesn't inform the observers.
@@ -206,13 +237,13 @@ TEST_F(SavedPasswordsPresenterTest, IgnoredCredentials) {
   // Adding a credential should notify observers. However, since federated
   // credentials should be ignored it should not be passed a long.
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  store().AddLogin(federated_form);
+  store().AddLogin(FromPasswordForm(federated_form));
   RunUntilIdle();
 
   PasswordForm blocked_form;
   blocked_form.blocked_by_user = true;
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  store().AddLogin(blocked_form);
+  store().AddLogin(FromPasswordForm(blocked_form));
   RunUntilIdle();
 
   presenter().RemoveObserver(&observer);
@@ -229,13 +260,13 @@ TEST_F(SavedPasswordsPresenterTest, AddPasswordFailWhenInvalidUrl) {
   EXPECT_CALL(observer, OnSavedPasswordsChanged).Times(0);
   EXPECT_FALSE(presenter().AddCredential(CredentialUIEntry(form)));
   RunUntilIdle();
-  EXPECT_TRUE(store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&store()).empty());
 
   form.url = GURL("withoutscheme.com");
   EXPECT_CALL(observer, OnSavedPasswordsChanged).Times(0);
   EXPECT_FALSE(presenter().AddCredential(CredentialUIEntry(form)));
   RunUntilIdle();
-  EXPECT_TRUE(store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&store()).empty());
 
   presenter().RemoveObserver(&observer);
 }
@@ -251,7 +282,7 @@ TEST_F(SavedPasswordsPresenterTest, AddPasswordFailWhenEmptyPassword) {
   EXPECT_CALL(observer, OnSavedPasswordsChanged).Times(0);
   EXPECT_FALSE(presenter().AddCredential(CredentialUIEntry(form)));
   RunUntilIdle();
-  EXPECT_TRUE(store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&store()).empty());
 
   presenter().RemoveObserver(&observer);
 }
@@ -259,7 +290,7 @@ TEST_F(SavedPasswordsPresenterTest, AddPasswordFailWhenEmptyPassword) {
 TEST_F(SavedPasswordsPresenterTest, AddPasswordUnblocklistsOrigin) {
   PasswordForm form_to_add =
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
-  form_to_add.type = password_manager::PasswordForm::Type::kManuallyAdded;
+  form_to_add.type = PasswordForm::Type::kManuallyAdded;
   form_to_add.date_created = base::Time::Now();
   form_to_add.date_password_modified = base::Time::Now();
 
@@ -268,7 +299,7 @@ TEST_F(SavedPasswordsPresenterTest, AddPasswordUnblocklistsOrigin) {
   blocked_form.signon_realm = form_to_add.signon_realm;
   blocked_form.in_store = PasswordForm::Store::kProfileStore;
   // Blocklist some origin.
-  store().AddLogin(blocked_form);
+  store().AddLogin(FromPasswordForm(blocked_form));
   RunUntilIdle();
 
   if (IsGroupingEnabled()) {
@@ -285,7 +316,7 @@ TEST_F(SavedPasswordsPresenterTest, AddPasswordUnblocklistsOrigin) {
 
   // The entry should be added despite the origin was blocklisted.
   EXPECT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       ElementsAre(Pair(form_to_add.signon_realm, ElementsAre(form_to_add))));
   // The origin should be no longer blocklisted.
   EXPECT_THAT(presenter().GetSavedCredentials(),
@@ -308,9 +339,9 @@ TEST_F(SavedPasswordsPresenterTest, EditPassword) {
   presenter().AddObserver(&observer);
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
-  EXPECT_FALSE(store().IsEmpty());
+  EXPECT_FALSE(GetAllLoginsSync(&store()).empty());
 
   const std::u16string new_password = u"new_password";
 
@@ -329,7 +360,7 @@ TEST_F(SavedPasswordsPresenterTest, EditPassword) {
             presenter().EditSavedCredentials(CredentialUIEntry(form),
                                              updated_credential));
   RunUntilIdle();
-  EXPECT_THAT(store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&store()),
               ElementsAre(Pair(updated.signon_realm, ElementsAre(updated))));
 
   // Verify that editing a password that does not exist does not triggers
@@ -359,9 +390,9 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyUsername) {
   presenter().AddObserver(&observer);
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
-  EXPECT_FALSE(store().IsEmpty());
+  EXPECT_FALSE(GetAllLoginsSync(&store()).empty());
 
   const std::u16string new_username = u"new_username";
   // The result of the update should have a new username and no password
@@ -383,7 +414,7 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyUsername) {
                                              credential_to_edit));
   RunUntilIdle();
   EXPECT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       ElementsAre(Pair(form.signon_realm, ElementsAre(updated_username))));
 
   presenter().RemoveObserver(&observer);
@@ -412,9 +443,9 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyUsernameClearsPartialIssues) {
   presenter().AddObserver(&observer);
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
-  EXPECT_FALSE(store().IsEmpty());
+  EXPECT_FALSE(GetAllLoginsSync(&store()).empty());
 
   std::vector<PasswordForm> forms = {form};
 
@@ -441,7 +472,7 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyUsernameClearsPartialIssues) {
                                              credential_to_edit));
   RunUntilIdle();
   EXPECT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       ElementsAre(Pair(form.signon_realm, ElementsAre(updated_username))));
 
   presenter().RemoveObserver(&observer);
@@ -461,9 +492,9 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyPassword) {
   presenter().AddObserver(&observer);
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
-  EXPECT_FALSE(store().IsEmpty());
+  EXPECT_FALSE(GetAllLoginsSync(&store()).empty());
 
   const std::u16string new_password = u"new_password";
   PasswordForm updated_password = form;
@@ -485,7 +516,7 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyPassword) {
                                              credential_to_edit));
   RunUntilIdle();
   EXPECT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       ElementsAre(Pair(form.signon_realm, ElementsAre(updated_password))));
 
   presenter().RemoveObserver(&observer);
@@ -498,7 +529,7 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyNoteFirstTime) {
                           /*date_created=*/base::Time::Now(),
                           /*hide_by_default=*/true);
 
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
 
   const std::u16string kNewNoteValue = u"new note";
@@ -518,7 +549,7 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyNoteFirstTime) {
   expected_updated_form.notes.emplace_back(kNewNoteValue,
                                            /*date_created=*/base::Time::Now());
   EXPECT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       ElementsAre(Pair(form.signon_realm, ElementsAre(expected_updated_form))));
 }
 
@@ -531,7 +562,7 @@ TEST_F(SavedPasswordsPresenterTest, EditingNotesShouldNotResetPasswordIssues) {
        InsecurityMetadata(base::Time(), IsMuted(false),
                           TriggerBackendNotification(true))});
 
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
 
   const std::u16string kNewNoteValue = u"new note";
@@ -548,7 +579,7 @@ TEST_F(SavedPasswordsPresenterTest, EditingNotesShouldNotResetPasswordIssues) {
   expected_updated_form.notes = {
       PasswordNote(kNewNoteValue, base::Time::Now())};
   EXPECT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       ElementsAre(Pair(form.signon_realm, ElementsAre(expected_updated_form))));
 }
 
@@ -559,7 +590,7 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyNoteSecondTime) {
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
   form.notes = {kExistingNote};
 
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
   std::vector<PasswordForm> forms = {form};
 
@@ -577,7 +608,7 @@ TEST_F(SavedPasswordsPresenterTest, EditOnlyNoteSecondTime) {
   PasswordForm expected_updated_form = form;
   expected_updated_form.notes[0].value = kNewNoteValue;
   EXPECT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       ElementsAre(Pair(form.signon_realm, ElementsAre(expected_updated_form))));
 }
 
@@ -587,7 +618,7 @@ TEST_F(SavedPasswordsPresenterTest, EditNoteAsEmpty) {
   form.notes = {PasswordNote(u"existing note", base::Time::Now())};
   std::vector<PasswordForm> forms = {form};
 
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
 
   CredentialUIEntry credential_to_edit(form);
@@ -603,7 +634,7 @@ TEST_F(SavedPasswordsPresenterTest, EditNoteAsEmpty) {
   PasswordForm expected_updated_form = form;
   expected_updated_form.notes[0].value = u"";
   EXPECT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       ElementsAre(Pair(form.signon_realm, ElementsAre(expected_updated_form))));
 }
 
@@ -620,7 +651,7 @@ TEST_F(SavedPasswordsPresenterTest,
                           /*hide_by_default=*/true);
   form.notes.emplace_back(kNoteWithEmptyDisplayName, base::Time::Now());
 
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
 
   // The expect credential UI entry should contain only the note with that empty
@@ -645,9 +676,9 @@ TEST_F(SavedPasswordsPresenterTest, EditUsernameAndPassword) {
   presenter().AddObserver(&observer);
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
-  EXPECT_FALSE(store().IsEmpty());
+  EXPECT_FALSE(GetAllLoginsSync(&store()).empty());
 
   const std::u16string new_username = u"new_username";
   const std::u16string new_password = u"new_password";
@@ -672,7 +703,7 @@ TEST_F(SavedPasswordsPresenterTest, EditUsernameAndPassword) {
             presenter().EditSavedCredentials(CredentialUIEntry(form),
                                              credential_to_edit));
   RunUntilIdle();
-  EXPECT_THAT(store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&store()),
               ElementsAre(Pair(form.signon_realm, ElementsAre(updated_both))));
 
   presenter().RemoveObserver(&observer);
@@ -685,10 +716,10 @@ TEST_F(SavedPasswordsPresenterTest, EditPasswordFails) {
   PasswordForm form2 = form1;
   form2.username_value = u"test2@gmail.com";
 
-  store().AddLogin(form1);
-  store().AddLogin(form2);
+  store().AddLogin(FromPasswordForm(form1));
+  store().AddLogin(FromPasswordForm(form2));
   RunUntilIdle();
-  EXPECT_FALSE(store().IsEmpty());
+  EXPECT_FALSE(GetAllLoginsSync(&store()).empty());
 
   CredentialUIEntry credential_to_edit(form1);
   credential_to_edit.username = form2.username_value;
@@ -698,7 +729,7 @@ TEST_F(SavedPasswordsPresenterTest, EditPasswordFails) {
             presenter().EditSavedCredentials(CredentialUIEntry(form1),
                                              credential_to_edit));
   RunUntilIdle();
-  EXPECT_THAT(store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&store()),
               ElementsAre(Pair(form1.signon_realm, ElementsAre(form1, form2))));
 
   credential_to_edit = CredentialUIEntry(form1);
@@ -708,7 +739,7 @@ TEST_F(SavedPasswordsPresenterTest, EditPasswordFails) {
             presenter().EditSavedCredentials(CredentialUIEntry(form1),
                                              credential_to_edit));
   RunUntilIdle();
-  EXPECT_THAT(store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&store()),
               ElementsAre(Pair(form1.signon_realm, ElementsAre(form1, form2))));
 }
 
@@ -720,13 +751,13 @@ TEST_F(SavedPasswordsPresenterTest, EditPasswordWithoutChanges) {
        InsecurityMetadata(base::Time::FromTimeT(1), IsMuted(false),
                           TriggerBackendNotification(false))}};
 
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
 
   RunUntilIdle();
   StrictMockSavedPasswordsPresenterObserver observer;
   presenter().AddObserver(&observer);
 
-  EXPECT_FALSE(store().IsEmpty());
+  EXPECT_FALSE(GetAllLoginsSync(&store()).empty());
   // Verify that editing a form without changing the username or password does
   // not triggers notifications.
   base::HistogramTester histogram_tester;
@@ -760,11 +791,11 @@ TEST_F(SavedPasswordsPresenterTest, EditUpdatesDuplicates) {
   PasswordForm duplicate_form(form);
   duplicate_form.signon_realm = "https://m.example.com";
 
-  store().AddLogin(form);
-  store().AddLogin(duplicate_form);
+  store().AddLogin(FromPasswordForm(form));
+  store().AddLogin(FromPasswordForm(duplicate_form));
 
   RunUntilIdle();
-  ASSERT_FALSE(store().IsEmpty());
+  ASSERT_FALSE(GetAllLoginsSync(&store()).empty());
 
   StrictMockSavedPasswordsPresenterObserver observer;
   presenter().AddObserver(&observer);
@@ -795,7 +826,7 @@ TEST_F(SavedPasswordsPresenterTest, EditUpdatesDuplicates) {
             presenter().EditSavedCredentials(CredentialUIEntry(form),
                                              updated_credential));
   RunUntilIdle();
-  EXPECT_THAT(store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&store()),
               ElementsAre(Pair(form.signon_realm, ElementsAre(updated_form)),
                           Pair(duplicate_form.signon_realm,
                                ElementsAre(updated_duplicate_form))));
@@ -819,13 +850,13 @@ TEST_F(SavedPasswordsPresenterTest,
       url::SchemeHostPort(GURL(u"federatedOrigin.com"));
   federated_form.in_store = PasswordForm::Store::kProfileStore;
 
-  store().AddLogin(form);
-  store().AddLogin(blocked_form);
-  store().AddLogin(federated_form);
+  store().AddLogin(FromPasswordForm(form));
+  store().AddLogin(FromPasswordForm(blocked_form));
+  store().AddLogin(FromPasswordForm(federated_form));
   RunUntilIdle();
 
   ASSERT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       UnorderedElementsAre(
           Pair(form.signon_realm, UnorderedElementsAre(form, blocked_form)),
           Pair(federated_form.signon_realm, ElementsAre(federated_form))));
@@ -869,13 +900,13 @@ TEST_F(SavedPasswordsPresenterTest, GetSavedCredentialsWithPasskeys) {
   sync_pb::WebauthnCredentialSpecifics passkey = CreateTestPasskey();
   passkey_store().AddNewPasskeyForTesting(passkey);
 
-  store().AddLogin(form);
-  store().AddLogin(blocked_form);
-  store().AddLogin(federated_form);
+  store().AddLogin(FromPasswordForm(form));
+  store().AddLogin(FromPasswordForm(blocked_form));
+  store().AddLogin(FromPasswordForm(federated_form));
   RunUntilIdle();
 
   ASSERT_THAT(
-      store().stored_passwords(),
+      GetAllLoginsSync(&store()),
       UnorderedElementsAre(
           Pair(form.signon_realm, UnorderedElementsAre(form, blocked_form)),
           Pair(federated_form.signon_realm, ElementsAre(federated_form))));
@@ -909,9 +940,9 @@ TEST_F(SavedPasswordsPresenterTest, GetAffiliatedGroupsWithPasskeys) {
   sync_pb::WebauthnCredentialSpecifics passkey = CreateTestPasskey();
   passkey_store().AddNewPasskeyForTesting(passkey);
 
-  store().AddLogin(form1);
-  store().AddLogin(form2);
-  store().AddLogin(form3);
+  store().AddLogin(FromPasswordForm(form1));
+  store().AddLogin(FromPasswordForm(form2));
+  store().AddLogin(FromPasswordForm(form3));
 
   std::vector<affiliations::GroupedFacets> grouped_facets(2);
   grouped_facets[0].facets = {
@@ -1074,15 +1105,35 @@ TEST_F(SavedPasswordsPresenterTest, DeleteAllDataWithPasskey) {
   PasswordForm blocked_form =
       CreateTestBlockedSiteForm(PasswordForm::Store::kProfileStore);
 
-  store().AddLogins({form, blocked_form});
+  std::vector<StoredCredential> credentials;
+  credentials.push_back(FromPasswordForm(form));
+  credentials.push_back(FromPasswordForm(blocked_form));
+  store().AddLogins(std::move(credentials));
   RunUntilIdle();
 
   base::MockCallback<base::OnceCallback<void(bool)>> completion_callback;
   EXPECT_CALL(completion_callback, Run(true)).Times(1);
   presenter().DeleteAllData(completion_callback.Get());
   RunUntilIdle();
-  EXPECT_TRUE(passkey_store().GetAllPasskeys().empty());
-  EXPECT_TRUE(store().IsEmpty());
+  EXPECT_TRUE(
+      passkey_store()
+          .GetPasskeys(webauthn::PasskeyModel::AnyRp(),
+                       webauthn::PasskeyModel::ShadowedCredentials::kInclude)
+          .empty());
+  EXPECT_TRUE(GetAllLoginsSync(&store()).empty());
+}
+
+TEST_F(SavedPasswordsPresenterTest, DeleteAllDataWithPasskeyNotReady) {
+  // Password grouping is required for passkey support.
+  if (!IsGroupingEnabled()) {
+    return;
+  }
+
+  passkey_store().SetReady(false);
+
+  base::test::TestFuture<bool> future;
+  presenter().DeleteAllData(future.GetCallback());
+  EXPECT_FALSE(future.Get());
 }
 
 #endif
@@ -1090,7 +1141,7 @@ TEST_F(SavedPasswordsPresenterTest, DeleteAllDataWithPasskey) {
 TEST_F(SavedPasswordsPresenterTest, UndoRemoval) {
   PasswordForm form =
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
-  store().AddLogin(form);
+  store().AddLogin(FromPasswordForm(form));
   RunUntilIdle();
 
   CredentialUIEntry credential = CredentialUIEntry(form);
@@ -1106,22 +1157,49 @@ TEST_F(SavedPasswordsPresenterTest, UndoRemoval) {
   EXPECT_THAT(presenter().GetSavedCredentials(), ElementsAre(credential));
 }
 
+TEST_F(SavedPasswordsPresenterTest, UndoBackupRemoval) {
+  PasswordForm form =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
+  CredentialUIEntry credential_without_backup = CredentialUIEntry(form);
+  form.SetPasswordBackupNote(u"backup");
+  store().AddLogin(FromPasswordForm(form));
+  RunUntilIdle();
+
+  CredentialUIEntry credential_with_backup = CredentialUIEntry(form);
+
+  ASSERT_THAT(presenter().GetSavedCredentials(),
+              ElementsAre(credential_with_backup));
+
+  presenter().RemoveBackupPassword(credential_with_backup);
+  RunUntilIdle();
+  EXPECT_THAT(presenter().GetSavedCredentials(),
+              ElementsAre(credential_without_backup));
+
+  presenter().UndoLastRemoval();
+  RunUntilIdle();
+  EXPECT_THAT(presenter().GetSavedCredentials(),
+              ElementsAre(credential_with_backup));
+}
+
 TEST_F(SavedPasswordsPresenterTest, DeleteAllData) {
   PasswordForm form =
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
   PasswordForm blocked_form =
       CreateTestBlockedSiteForm(PasswordForm::Store::kProfileStore);
 
-  store().AddLogins({form, blocked_form});
+  std::vector<StoredCredential> credentials;
+  credentials.push_back(FromPasswordForm(form));
+  credentials.push_back(FromPasswordForm(blocked_form));
+  store().AddLogins(std::move(credentials));
   RunUntilIdle();
 
-  EXPECT_EQ(store().stored_passwords().size(), 2u);
+  EXPECT_EQ(GetAllLoginsSync(&store()).size(), 2u);
 
   base::MockCallback<base::OnceCallback<void(bool)>> completion_callback;
   EXPECT_CALL(completion_callback, Run(true)).Times(1);
   presenter().DeleteAllData(completion_callback.Get());
   RunUntilIdle();
-  EXPECT_TRUE(store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&store()).empty());
 }
 
 TEST_F(SavedPasswordsPresenterTest, DeleteAllDataEmpty) {
@@ -1129,7 +1207,7 @@ TEST_F(SavedPasswordsPresenterTest, DeleteAllDataEmpty) {
   EXPECT_CALL(completion_callback, Run(true)).Times(1);
   presenter().DeleteAllData(completion_callback.Get());
   RunUntilIdle();
-  EXPECT_TRUE(store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&store()).empty());
 }
 
 namespace {
@@ -1137,10 +1215,8 @@ namespace {
 class SavedPasswordsPresenterWithTwoStoresTest : public testing::Test {
  protected:
   void SetUp() override {
-    profile_store_->Init(/*prefs=*/nullptr,
-                         /*affiliated_match_helper=*/nullptr);
-    account_store_->Init(/*prefs=*/nullptr,
-                         /*affiliated_match_helper=*/nullptr);
+    profile_store_->Init();
+    account_store_->Init();
     presenter_.Init();
     RunUntilIdle();
   }
@@ -1185,8 +1261,8 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   EXPECT_CALL(completion_callback, Run(true)).Times(1);
   presenter().DeleteAllData(completion_callback.Get());
   RunUntilIdle();
-  EXPECT_TRUE(account_store().IsEmpty());
-  EXPECT_TRUE(profile_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
+  EXPECT_TRUE(GetAllLoginsSync(&profile_store()).empty());
 }
 
 TEST_F(SavedPasswordsPresenterWithTwoStoresTest, DeleteAllDataFromTwoStores) {
@@ -1198,19 +1274,25 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, DeleteAllDataFromTwoStores) {
   PasswordForm account_store_form =
       CreateTestPasswordForm(PasswordForm::Store::kAccountStore, 2);
 
-  profile_store().AddLogins({profile_store_form, blocked_form});
-  account_store().AddLogins({account_store_form});
+  std::vector<StoredCredential> profile_credentials;
+  profile_credentials.push_back(FromPasswordForm(profile_store_form));
+  profile_credentials.push_back(FromPasswordForm(blocked_form));
+  profile_store().AddLogins(std::move(profile_credentials));
+
+  std::vector<StoredCredential> account_credentials;
+  account_credentials.push_back(FromPasswordForm(account_store_form));
+  account_store().AddLogins(std::move(account_credentials));
   RunUntilIdle();
 
-  EXPECT_EQ(profile_store().stored_passwords().size(), 2u);
-  EXPECT_EQ(account_store().stored_passwords().size(), 1u);
+  EXPECT_EQ(GetAllLoginsSync(&profile_store()).size(), 2u);
+  EXPECT_EQ(GetAllLoginsSync(&account_store()).size(), 1u);
 
   base::MockCallback<base::OnceCallback<void(bool)>> completion_callback;
   EXPECT_CALL(completion_callback, Run(true)).Times(1);
   presenter().DeleteAllData(completion_callback.Get());
   RunUntilIdle();
-  EXPECT_TRUE(account_store().IsEmpty());
-  EXPECT_TRUE(profile_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
+  EXPECT_TRUE(GetAllLoginsSync(&profile_store()).empty());
 }
 
 TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
@@ -1220,17 +1302,20 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   PasswordForm blocked_form =
       CreateTestBlockedSiteForm(PasswordForm::Store::kAccountStore);
 
-  account_store().AddLogins({account_store_form, blocked_form});
+  std::vector<StoredCredential> account_credentials;
+  account_credentials.push_back(FromPasswordForm(account_store_form));
+  account_credentials.push_back(FromPasswordForm(blocked_form));
+  account_store().AddLogins(std::move(account_credentials));
   RunUntilIdle();
 
-  EXPECT_EQ(account_store().stored_passwords().size(), 2u);
+  EXPECT_EQ(GetAllLoginsSync(&account_store()).size(), 2u);
 
   base::MockCallback<base::OnceCallback<void(bool)>> completion_callback;
   EXPECT_CALL(completion_callback, Run(true)).Times(1);
   presenter().DeleteAllData(completion_callback.Get());
   RunUntilIdle();
-  EXPECT_TRUE(account_store().IsEmpty());
-  EXPECT_TRUE(profile_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
+  EXPECT_TRUE(GetAllLoginsSync(&profile_store()).empty());
 }
 
 TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
@@ -1240,17 +1325,20 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   PasswordForm blocked_form =
       CreateTestBlockedSiteForm(PasswordForm::Store::kProfileStore);
 
-  profile_store().AddLogins({profile_store_form, blocked_form});
+  std::vector<StoredCredential> profile_credentials;
+  profile_credentials.push_back(FromPasswordForm(profile_store_form));
+  profile_credentials.push_back(FromPasswordForm(blocked_form));
+  profile_store().AddLogins(std::move(profile_credentials));
   RunUntilIdle();
 
-  EXPECT_EQ(profile_store().stored_passwords().size(), 2u);
+  EXPECT_EQ(GetAllLoginsSync(&profile_store()).size(), 2u);
 
   base::MockCallback<base::OnceCallback<void(bool)>> completion_callback;
   EXPECT_CALL(completion_callback, Run(true)).Times(1);
   presenter().DeleteAllData(completion_callback.Get());
   RunUntilIdle();
-  EXPECT_TRUE(account_store().IsEmpty());
-  EXPECT_TRUE(profile_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
+  EXPECT_TRUE(GetAllLoginsSync(&profile_store()).empty());
 }
 
 // Tests whether adding credentials to profile or account store notifies
@@ -1269,23 +1357,23 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, AddCredentialsToBothStores) {
   presenter().AddObserver(&observer);
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  profile_store().AddLogin(profile_store_form);
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
   RunUntilIdle();
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  account_store().AddLogin(account_store_form1);
+  account_store().AddLogin(FromPasswordForm(account_store_form1));
   RunUntilIdle();
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  account_store().AddLogin(account_store_form2);
+  account_store().AddLogin(FromPasswordForm(account_store_form2));
   RunUntilIdle();
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  profile_store().RemoveLogin(FROM_HERE, profile_store_form);
+  profile_store().RemoveLogin(FROM_HERE, FromPasswordForm(profile_store_form));
   RunUntilIdle();
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
-  profile_store().AddLogin(profile_store_form);
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
   RunUntilIdle();
 
   presenter().RemoveObserver(&observer);
@@ -1295,8 +1383,7 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, AddCredentialsToBothStores) {
 TEST_F(SavedPasswordsPresenterTest, AddCredentialsListEmpty) {
   base::MockCallback<SavedPasswordsPresenter::AddCredentialsCallback>
       completion_callback;
-  presenter().AddCredentials({},
-                             password_manager::PasswordForm::Type::kImported,
+  presenter().AddCredentials({}, PasswordForm::Type::kImported,
                              completion_callback.Get());
   EXPECT_CALL(completion_callback, Run).Times(1);
   RunUntilIdle();
@@ -1312,8 +1399,7 @@ TEST_F(SavedPasswordsPresenterTest, AddCredentialsListEmpty) {
 TEST_F(SavedPasswordsPresenterTest, AddCredentialsListOnePassword) {
   PasswordForm profile_store_form =
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore, /*index=*/0);
-  profile_store_form.type =
-      password_manager::PasswordForm::Type::kManuallyAdded;
+  profile_store_form.type = PasswordForm::Type::kManuallyAdded;
   profile_store_form.date_created = base::Time::Now();
   profile_store_form.date_password_modified = base::Time::Now();
 
@@ -1325,10 +1411,9 @@ TEST_F(SavedPasswordsPresenterTest, AddCredentialsListOnePassword) {
   base::MockCallback<SavedPasswordsPresenter::AddCredentialsCallback>
       completion_callback;
   CredentialUIEntry profile_store_cred(profile_store_form);
-  presenter().AddCredentials(
-      {profile_store_cred},
-      password_manager::PasswordForm::Type::kManuallyAdded,
-      completion_callback.Get());
+  presenter().AddCredentials({profile_store_cred},
+                             PasswordForm::Type::kManuallyAdded,
+                             completion_callback.Get());
   EXPECT_CALL(completion_callback, Run).Times(1);
   RunUntilIdle();
   presenter().RemoveObserver(&observer);
@@ -1340,13 +1425,13 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
        AddCredentialsListPasswordAccountStore) {
   PasswordForm account_store_form_1 =
       CreateTestPasswordForm(PasswordForm::Store::kAccountStore, /*index=*/0);
-  account_store_form_1.type = password_manager::PasswordForm::Type::kImported;
+  account_store_form_1.type = PasswordForm::Type::kImported;
   account_store_form_1.date_created = base::Time::Now();
   account_store_form_1.date_password_modified = base::Time::Now();
 
   PasswordForm account_store_form_2 =
       CreateTestPasswordForm(PasswordForm::Store::kAccountStore, /*index=*/1);
-  account_store_form_2.type = password_manager::PasswordForm::Type::kImported;
+  account_store_form_2.type = PasswordForm::Type::kImported;
   account_store_form_2.date_created = base::Time::Now();
   account_store_form_2.date_password_modified = base::Time::Now();
 
@@ -1362,7 +1447,7 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   CredentialUIEntry account_store_cred_2(account_store_form_2);
 
   presenter().AddCredentials({account_store_cred_1, account_store_cred_2},
-                             password_manager::PasswordForm::Type::kImported,
+                             PasswordForm::Type::kImported,
                              completion_callback.Get());
   EXPECT_CALL(completion_callback, Run).Times(1);
   RunUntilIdle();
@@ -1386,34 +1471,32 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   // store.
   PasswordForm profile_store_form =
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore, /*index=*/0);
-  profile_store_form.type =
-      password_manager::PasswordForm::Type::kManuallyAdded;
+  profile_store_form.type = PasswordForm::Type::kManuallyAdded;
   profile_store_form.date_created = base::Time::Now();
   profile_store_form.date_password_modified = base::Time::Now();
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
   EXPECT_TRUE(presenter().AddCredential(CredentialUIEntry(profile_store_form)));
   RunUntilIdle();
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form))));
-  EXPECT_TRUE(account_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
 
   // Now add a password to the account store, check it's added only there too.
   PasswordForm account_store_form =
       CreateTestPasswordForm(PasswordForm::Store::kAccountStore, /*index=*/1);
-  account_store_form.type =
-      password_manager::PasswordForm::Type::kManuallyAdded;
+  account_store_form.type = PasswordForm::Type::kManuallyAdded;
   account_store_form.date_created = base::Time::Now();
   account_store_form.date_password_modified = base::Time::Now();
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
   EXPECT_TRUE(presenter().AddCredential(CredentialUIEntry(account_store_form)));
   RunUntilIdle();
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form))));
-  EXPECT_THAT(account_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&account_store()),
               ElementsAre(Pair(account_store_form.signon_realm,
                                ElementsAre(account_store_form))));
 
@@ -1429,13 +1512,13 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   // Add a password without a note.
   PasswordForm form =
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore, /*index=*/0);
-  form.type = password_manager::PasswordForm::Type::kManuallyAdded;
+  form.type = PasswordForm::Type::kManuallyAdded;
   form.date_created = base::Time::Now();
   form.date_password_modified = base::Time::Now();
 
   PasswordForm form2 =
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore, /*index=*/1);
-  form2.type = password_manager::PasswordForm::Type::kManuallyAdded;
+  form2.type = PasswordForm::Type::kManuallyAdded;
   form2.date_created = base::Time::Now();
   form2.date_password_modified = base::Time::Now();
   form2.notes = {PasswordNote(u"new note", base::Time::Now())};
@@ -1444,7 +1527,7 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
   EXPECT_TRUE(presenter().AddCredential(CredentialUIEntry(form)));
   RunUntilIdle();
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(form.signon_realm, ElementsAre(form))));
 
   // Add a password with note.
@@ -1452,7 +1535,7 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   EXPECT_TRUE(presenter().AddCredential(CredentialUIEntry(form2)));
   RunUntilIdle();
   EXPECT_THAT(
-      profile_store().stored_passwords(),
+      GetAllLoginsSync(&profile_store()),
       UnorderedElementsAre(Pair(form.signon_realm, ElementsAre(form)),
                            Pair(form2.signon_realm, ElementsAre(form2))));
 
@@ -1466,16 +1549,16 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
 
   PasswordForm form =
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
-  form.type = password_manager::PasswordForm::Type::kManuallyAdded;
+  form.type = PasswordForm::Type::kManuallyAdded;
   form.date_created = base::Time::Now();
   form.date_password_modified = base::Time::Now();
 
   EXPECT_CALL(observer, OnSavedPasswordsChanged);
   EXPECT_TRUE(presenter().AddCredential(CredentialUIEntry(form)));
   RunUntilIdle();
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(form.signon_realm, ElementsAre(form))));
-  EXPECT_TRUE(account_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
 
   // Adding password for the same url/username to the same store should fail.
   PasswordForm similar_form = form;
@@ -1483,9 +1566,9 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   EXPECT_CALL(observer, OnSavedPasswordsChanged).Times(0);
   EXPECT_FALSE(presenter().AddCredential(CredentialUIEntry(similar_form)));
   RunUntilIdle();
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(form.signon_realm, ElementsAre(form))));
-  EXPECT_TRUE(account_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
 
   // Adding password for the same url/username to another store should also
   // fail.
@@ -1493,9 +1576,9 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   EXPECT_CALL(observer, OnSavedPasswordsChanged).Times(0);
   EXPECT_FALSE(presenter().AddCredential(CredentialUIEntry(similar_form)));
   RunUntilIdle();
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(form.signon_realm, ElementsAre(form))));
-  EXPECT_TRUE(account_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
 
   presenter().RemoveObserver(&observer);
 }
@@ -1510,8 +1593,7 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, UpdatePasswordForms) {
       CredentialUIEntry(account_store_form_1),
       CredentialUIEntry(account_store_form_2)};
 
-  presenter().AddCredentials(credentials_to_add,
-                             password_manager::PasswordForm::Type::kImported,
+  presenter().AddCredentials(credentials_to_add, PasswordForm::Type::kImported,
                              base::DoNothing());
 
   RunUntilIdle();
@@ -1533,7 +1615,7 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
        AddPasswordUnblocklistsOriginInDifferentStore) {
   PasswordForm form_to_add =
       CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
-  form_to_add.type = password_manager::PasswordForm::Type::kManuallyAdded;
+  form_to_add.type = PasswordForm::Type::kManuallyAdded;
   form_to_add.date_created = base::Time::Now();
   form_to_add.date_password_modified = base::Time::Now();
 
@@ -1542,7 +1624,7 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   blocked_form.signon_realm = form_to_add.signon_realm;
   blocked_form.in_store = PasswordForm::Store::kAccountStore;
   // Blocklist some origin in the account store.
-  account_store().AddLogin(blocked_form);
+  account_store().AddLogin(FromPasswordForm(blocked_form));
   RunUntilIdle();
 
   if (IsGroupingEnabled()) {
@@ -1559,7 +1641,7 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
 
   // The entry should be added despite the origin was blocklisted.
   EXPECT_THAT(
-      profile_store().stored_passwords(),
+      GetAllLoginsSync(&profile_store()),
       ElementsAre(Pair(form_to_add.signon_realm, ElementsAre(form_to_add))));
   // The origin should be no longer blocklisted irrespective of which store the
   // form was added to.
@@ -1583,11 +1665,11 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, EditUsername) {
   PasswordForm account_store_form =
       CreateTestPasswordForm(PasswordForm::Store::kAccountStore, /*index=*/1);
 
-  profile_store().AddLogin(profile_store_form);
-  account_store().AddLogin(account_store_form);
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
+  account_store().AddLogin(FromPasswordForm(account_store_form));
   RunUntilIdle();
 
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form))));
 
@@ -1602,7 +1684,7 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, EditUsername) {
   RunUntilIdle();
   profile_store_form.username_value = new_username;
   profile_store_form.password_issues.clear();
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form))));
 }
@@ -1620,8 +1702,8 @@ TEST_F(SavedPasswordsPresenterTest, EditPasswordsInCredentialGroup) {
   form2.url = GURL("https://m.test0.com");
   form2.signon_realm = form2.url.spec();
 
-  store().AddLogin(form);
-  store().AddLogin(form2);
+  store().AddLogin(FromPasswordForm(form));
+  store().AddLogin(FromPasswordForm(form2));
 
   RunUntilIdle();
 
@@ -1648,7 +1730,7 @@ TEST_F(SavedPasswordsPresenterTest, EditPasswordsInCredentialGroup) {
   updated2.password_value = new_password;
   updated2.date_password_modified = date_password_modified;
 
-  EXPECT_THAT(store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&store()),
               UnorderedElementsAre(
                   Pair(form.signon_realm, UnorderedElementsAre(updated1)),
                   Pair(form2.signon_realm, ElementsAre(updated2))));
@@ -1667,8 +1749,8 @@ TEST_F(SavedPasswordsPresenterTest, DeletePasswordsInCredentialGroup) {
   form2.url = GURL("https://m.test0.com");
   form2.signon_realm = form2.url.spec();
 
-  store().AddLogin(form);
-  store().AddLogin(form2);
+  store().AddLogin(FromPasswordForm(form));
+  store().AddLogin(FromPasswordForm(form2));
 
   RunUntilIdle();
 
@@ -1678,7 +1760,7 @@ TEST_F(SavedPasswordsPresenterTest, DeletePasswordsInCredentialGroup) {
   presenter().RemoveCredential(CredentialUIEntry({form, form2}));
   RunUntilIdle();
 
-  EXPECT_TRUE(store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&store()).empty());
 }
 
 // Tests that duplicates of credentials are removed only from the store that
@@ -1694,25 +1776,25 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, DeleteCredentialProfileStore) {
   PasswordForm account_store_form = profile_store_form;
   account_store_form.in_store = PasswordForm::Store::kAccountStore;
 
-  profile_store().AddLogin(profile_store_form);
-  profile_store().AddLogin(duplicate_profile_store_form);
-  account_store().AddLogin(account_store_form);
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
+  profile_store().AddLogin(FromPasswordForm(duplicate_profile_store_form));
+  account_store().AddLogin(FromPasswordForm(account_store_form));
   RunUntilIdle();
 
-  ASSERT_THAT(profile_store().stored_passwords(),
+  ASSERT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form)),
                           Pair(duplicate_profile_store_form.signon_realm,
                                ElementsAre(duplicate_profile_store_form))));
-  ASSERT_THAT(account_store().stored_passwords(),
+  ASSERT_THAT(GetAllLoginsSync(&account_store()),
               ElementsAre(Pair(account_store_form.signon_realm,
                                ElementsAre(account_store_form))));
 
   presenter().RemoveCredential(CredentialUIEntry(profile_store_form));
   RunUntilIdle();
 
-  EXPECT_TRUE(profile_store().IsEmpty());
-  EXPECT_THAT(account_store().stored_passwords(),
+  EXPECT_TRUE(GetAllLoginsSync(&profile_store()).empty());
+  EXPECT_THAT(GetAllLoginsSync(&account_store()),
               ElementsAre(Pair(account_store_form.signon_realm,
                                ElementsAre(account_store_form))));
 }
@@ -1728,15 +1810,15 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, DeleteCredentialAccountStore) {
   PasswordForm duplicate_account_store_form = account_store_form;
   duplicate_account_store_form.signon_realm = "https://m.example.com";
 
-  profile_store().AddLogin(profile_store_form);
-  account_store().AddLogin(account_store_form);
-  account_store().AddLogin(duplicate_account_store_form);
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
+  account_store().AddLogin(FromPasswordForm(account_store_form));
+  account_store().AddLogin(FromPasswordForm(duplicate_account_store_form));
   RunUntilIdle();
 
-  ASSERT_THAT(profile_store().stored_passwords(),
+  ASSERT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form))));
-  ASSERT_THAT(account_store().stored_passwords(),
+  ASSERT_THAT(GetAllLoginsSync(&account_store()),
               ElementsAre(Pair(account_store_form.signon_realm,
                                ElementsAre(account_store_form)),
                           Pair(duplicate_account_store_form.signon_realm,
@@ -1745,10 +1827,10 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, DeleteCredentialAccountStore) {
   presenter().RemoveCredential(CredentialUIEntry(account_store_form));
   RunUntilIdle();
 
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form))));
-  EXPECT_TRUE(account_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
 }
 
 TEST_F(SavedPasswordsPresenterWithTwoStoresTest, DeleteCredentialBothStores) {
@@ -1762,15 +1844,15 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, DeleteCredentialBothStores) {
   PasswordForm mobile_account_store_form = account_store_form;
   mobile_account_store_form.signon_realm = "https://mobile.example.com";
 
-  profile_store().AddLogin(profile_store_form);
-  account_store().AddLogin(account_store_form);
-  account_store().AddLogin(mobile_account_store_form);
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
+  account_store().AddLogin(FromPasswordForm(account_store_form));
+  account_store().AddLogin(FromPasswordForm(mobile_account_store_form));
   RunUntilIdle();
 
-  ASSERT_THAT(profile_store().stored_passwords(),
+  ASSERT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form))));
-  ASSERT_THAT(account_store().stored_passwords(),
+  ASSERT_THAT(GetAllLoginsSync(&account_store()),
               ElementsAre(Pair(account_store_form.signon_realm,
                                ElementsAre(account_store_form)),
                           Pair(mobile_account_store_form.signon_realm,
@@ -1785,8 +1867,8 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, DeleteCredentialBothStores) {
 
   // All credentials which are considered duplicates of a 'form_to_delete'
   // should have been deleted from both stores.
-  EXPECT_TRUE(profile_store().IsEmpty());
-  EXPECT_TRUE(account_store().IsEmpty());
+  EXPECT_TRUE(GetAllLoginsSync(&profile_store()).empty());
+  EXPECT_TRUE(GetAllLoginsSync(&account_store()).empty());
 }
 
 TEST_F(SavedPasswordsPresenterWithTwoStoresTest, GetSavedCredentials) {
@@ -1796,14 +1878,14 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, GetSavedCredentials) {
   PasswordForm account_store_form = profile_store_form;
   account_store_form.in_store = PasswordForm::Store::kAccountStore;
 
-  profile_store().AddLogin(profile_store_form);
-  account_store().AddLogin(account_store_form);
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
+  account_store().AddLogin(FromPasswordForm(account_store_form));
   RunUntilIdle();
 
-  ASSERT_THAT(profile_store().stored_passwords(),
+  ASSERT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form))));
-  ASSERT_THAT(account_store().stored_passwords(),
+  ASSERT_THAT(GetAllLoginsSync(&account_store()),
               ElementsAre(Pair(account_store_form.signon_realm,
                                ElementsAre(account_store_form))));
 
@@ -1839,7 +1921,12 @@ TEST_F(SavedPasswordsPresenterTest, GetAffiliatedGroups) {
   blocked_form.blocked_by_user = true;
   blocked_form.in_store = PasswordForm::Store::kProfileStore;
 
-  store().AddLogins({form1, form2, form3, blocked_form});
+  std::vector<StoredCredential> credentials;
+  credentials.push_back(FromPasswordForm(form1));
+  credentials.push_back(FromPasswordForm(form2));
+  credentials.push_back(FromPasswordForm(form3));
+  credentials.push_back(FromPasswordForm(blocked_form));
+  store().AddLogins(std::move(credentials));
 
   std::vector<affiliations::GroupedFacets> grouped_facets(2);
   grouped_facets[0].facets = {
@@ -1877,6 +1964,211 @@ TEST_F(SavedPasswordsPresenterTest, GetAffiliatedGroups) {
       "PasswordManager.PasswordsGrouping.Time", base::Milliseconds(kDelay), 1);
 }
 
+TEST_F(SavedPasswordsPresenterTest, GetAllowedActorLoginSites_SingleSite) {
+  PasswordForm form_1 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore, 1);
+  form_1.actor_login_approved = true;
+
+  PasswordForm form_2 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore, 2);
+
+  std::vector<StoredCredential> credentials;
+  credentials.push_back(FromPasswordForm(form_1));
+  credentials.push_back(FromPasswordForm(form_2));
+  store().AddLogins(std::move(credentials));
+  RunUntilIdle();
+
+  EXPECT_THAT(presenter().GetActorLoginPermissions(GetSyncService()),
+              UnorderedElementsAre(ActorLoginPermission{
+                  .domain_info = {.name = "test1.com",
+                                  .url = form_1.url,
+                                  .signon_realm = form_1.signon_realm},
+                  .username = form_1.username_value,
+                  .favicon_url = CreateFaviconUrl(form_1.url)}));
+}
+
+TEST_F(SavedPasswordsPresenterTest, GetAllowedActorLoginSites_Deduplicates) {
+  PasswordForm form_1 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
+  form_1.actor_login_approved = true;
+
+  PasswordForm form_2 = form_1;
+  std::vector<StoredCredential> credentials;
+  credentials.push_back(FromPasswordForm(form_1));
+  credentials.push_back(FromPasswordForm(form_2));
+  store().AddLogins(std::move(credentials));
+  RunUntilIdle();
+
+  EXPECT_THAT(presenter().GetActorLoginPermissions(GetSyncService()),
+              UnorderedElementsAre(ActorLoginPermission{
+                  .domain_info = {.name = "test0.com",
+                                  .url = form_1.url,
+                                  .signon_realm = form_1.signon_realm},
+                  .username = form_1.username_value,
+                  .favicon_url = CreateFaviconUrl(form_1.url)}));
+}
+
+TEST_F(SavedPasswordsPresenterTest,
+       GetAllowedActorLoginSites_SiteAndAppDifferentCredentials) {
+  PasswordForm form_1 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
+  form_1.actor_login_approved = true;
+
+  PasswordForm form_2 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore, 1);
+  form_2.signon_realm = "android://hash@com.app.name/";
+  form_2.url = GURL();
+  form_2.app_display_name = "App Name";
+  form_2.actor_login_approved = true;
+  std::vector<StoredCredential> credentials;
+  credentials.push_back(FromPasswordForm(form_1));
+  credentials.push_back(FromPasswordForm(form_2));
+  store().AddLogins(std::move(credentials));
+  RunUntilIdle();
+
+  EXPECT_THAT(
+      presenter().GetActorLoginPermissions(GetSyncService()),
+      UnorderedElementsAre(
+          ActorLoginPermission{
+              .domain_info = {.name = "test0.com",
+                              .url = form_1.url,
+                              .signon_realm = form_1.signon_realm},
+              .username = form_1.username_value,
+              .favicon_url = CreateFaviconUrl(form_1.url)},
+          ActorLoginPermission{
+              .domain_info = {.name = "App Name",
+                              .url = GURL("https://play.google.com/store/apps/"
+                                          "details?id=com.app.name"),
+                              .signon_realm = form_2.signon_realm},
+              .username = form_2.username_value,
+#if BUILDFLAG(IS_ANDROID)
+              .favicon_url = GURL()
+#else
+              .favicon_url = GURL(kDefaultAndroidIcon)
+#endif
+          }));
+}
+
+TEST_F(SavedPasswordsPresenterTest,
+       GetAllowedActorLoginSites_SameUsernameDifferentURLs) {
+  PasswordForm form_1 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
+  form_1.actor_login_approved = true;
+  form_1.username_value = u"shared_user";
+
+  PasswordForm form_2 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore, 1);
+  form_2.actor_login_approved = true;
+  form_2.username_value = u"shared_user";
+  std::vector<StoredCredential> credentials;
+  credentials.push_back(FromPasswordForm(form_1));
+  credentials.push_back(FromPasswordForm(form_2));
+  store().AddLogins(std::move(credentials));
+  RunUntilIdle();
+
+  EXPECT_THAT(presenter().GetActorLoginPermissions(GetSyncService()),
+              UnorderedElementsAre(
+                  ActorLoginPermission{
+                      .domain_info = {.name = "test0.com",
+                                      .url = form_1.url,
+                                      .signon_realm = form_1.signon_realm},
+                      .username = form_1.username_value,
+                      .favicon_url = CreateFaviconUrl(form_1.url)},
+                  ActorLoginPermission{
+                      .domain_info = {.name = "test1.com",
+                                      .url = form_2.url,
+                                      .signon_realm = form_2.signon_realm},
+                      .username = form_2.username_value,
+                      .favicon_url = CreateFaviconUrl(form_2.url)}));
+}
+
+TEST_F(SavedPasswordsPresenterTest, RevokeActorLoginPermission) {
+  PasswordForm form =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
+  form.actor_login_approved = true;
+  store().AddLogin(FromPasswordForm(form));
+  RunUntilIdle();
+
+  presenter().RevokeActorLoginPermission(
+      form.signon_realm, base::UTF16ToUTF8(form.username_value));
+  RunUntilIdle();
+
+  form.actor_login_approved = false;
+  EXPECT_THAT(GetAllLoginsSync(&store()),
+              ElementsAre(Pair(form.signon_realm, ElementsAre(form))));
+}
+
+TEST_F(SavedPasswordsPresenterTest,
+       RevokeActorLoginPermissionFiltersByUsername) {
+  PasswordForm form_1 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
+  form_1.actor_login_approved = true;
+  form_1.username_value = u"user_1";
+
+  PasswordForm form_2 = form_1;
+  form_2.username_value = u"user_2";
+  form_2.actor_login_approved = true;
+
+  std::vector<StoredCredential> credentials;
+  credentials.push_back(FromPasswordForm(form_1));
+  credentials.push_back(FromPasswordForm(form_2));
+  store().AddLogins(std::move(credentials));
+  RunUntilIdle();
+
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_EQ(2u, presenter().GetActorLoginPermissions(GetSyncService()).size());
+#endif
+
+  presenter().RevokeActorLoginPermission(form_1.signon_realm, "user_1");
+  RunUntilIdle();
+
+  form_1.actor_login_approved = false;
+  EXPECT_THAT(GetAllLoginsSync(&store()),
+              ElementsAre(Pair(form_1.signon_realm,
+                               UnorderedElementsAre(form_1, form_2))));
+}
+
+TEST_F(SavedPasswordsPresenterTest,
+       RevokeActorLoginPermissionHandlesDuplicates) {
+  PasswordForm form_1 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
+  form_1.actor_login_approved = true;
+  form_1.password_element = u"pwd1";
+  PasswordForm form_2 = form_1;
+  form_2.password_element = u"pwd2";
+  store().AddLogin(FromPasswordForm(form_1));
+  store().AddLogin(FromPasswordForm(form_2));
+  RunUntilIdle();
+
+  presenter().RevokeActorLoginPermission(
+      form_1.signon_realm, base::UTF16ToUTF8(form_1.username_value));
+  RunUntilIdle();
+
+  form_1.actor_login_approved = false;
+  form_2.actor_login_approved = false;
+  EXPECT_THAT(
+      GetAllLoginsSync(&store()),
+      ElementsAre(Pair(form_1.signon_realm, ElementsAre(form_1, form_2))));
+}
+TEST_F(SavedPasswordsPresenterTest,
+       RevokeActorLoginPermissionHandlesAndroidApps) {
+  PasswordForm form_1 =
+      CreateTestPasswordForm(PasswordForm::Store::kProfileStore);
+  form_1.signon_realm = "android://cert=@app.name";
+  form_1.url = GURL();
+  form_1.app_display_name = "App Name";
+  store().AddLogin(FromPasswordForm(form_1));
+  RunUntilIdle();
+
+  presenter().RevokeActorLoginPermission(
+      form_1.signon_realm, base::UTF16ToUTF8(form_1.username_value));
+  RunUntilIdle();
+
+  form_1.actor_login_approved = false;
+  EXPECT_THAT(GetAllLoginsSync(&store()),
+              ElementsAre(Pair(form_1.signon_realm, ElementsAre(form_1))));
+}
+
 // Prefixes like [m, mobile, www] are considered as "same-site".
 TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
        GetSavedCredentialsGroupsSameSites) {
@@ -1891,19 +2183,19 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest,
   account_form_with_www.signon_realm = "https://www.example.com";
   account_form_with_www.in_store = PasswordForm::Store::kAccountStore;
 
-  profile_store().AddLogin(mobile_profile_store_form);
-  profile_store().AddLogin(profile_store_form);
-  account_store().AddLogin(account_form_with_www);
+  profile_store().AddLogin(FromPasswordForm(mobile_profile_store_form));
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
+  account_store().AddLogin(FromPasswordForm(account_form_with_www));
 
   RunUntilIdle();
 
   ASSERT_THAT(
-      profile_store().stored_passwords(),
+      GetAllLoginsSync(&profile_store()),
       UnorderedElementsAre(Pair(profile_store_form.signon_realm,
                                 ElementsAre(profile_store_form)),
                            Pair(mobile_profile_store_form.signon_realm,
                                 ElementsAre(mobile_profile_store_form))));
-  ASSERT_THAT(account_store().stored_passwords(),
+  ASSERT_THAT(GetAllLoginsSync(&account_store()),
               ElementsAre(Pair(account_form_with_www.signon_realm,
                                ElementsAre(account_form_with_www))));
 
@@ -1937,11 +2229,11 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, EditPasswordBothStores) {
   PasswordForm account_store_form = profile_store_form;
   account_store_form.in_store = PasswordForm::Store::kAccountStore;
 
-  profile_store().AddLogin(profile_store_form);
-  account_store().AddLogin(account_store_form);
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
+  account_store().AddLogin(FromPasswordForm(account_store_form));
   RunUntilIdle();
 
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(profile_store_form))));
 
@@ -1968,10 +2260,10 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, EditPasswordBothStores) {
   PasswordForm expected_account_store_form = expected_profile_store_form;
   expected_account_store_form.in_store = PasswordForm::Store::kAccountStore;
 
-  EXPECT_THAT(profile_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&profile_store()),
               ElementsAre(Pair(profile_store_form.signon_realm,
                                ElementsAre(expected_profile_store_form))));
-  EXPECT_THAT(account_store().stored_passwords(),
+  EXPECT_THAT(GetAllLoginsSync(&account_store()),
               ElementsAre(Pair(account_store_form.signon_realm,
                                ElementsAre(expected_account_store_form))));
 }
@@ -1983,8 +2275,8 @@ TEST_F(SavedPasswordsPresenterWithTwoStoresTest, UndoRemoval) {
   PasswordForm account_store_form = profile_store_form;
   account_store_form.in_store = PasswordForm::Store::kAccountStore;
 
-  profile_store().AddLogin(profile_store_form);
-  account_store().AddLogin(account_store_form);
+  profile_store().AddLogin(FromPasswordForm(profile_store_form));
+  account_store().AddLogin(FromPasswordForm(account_store_form));
   RunUntilIdle();
 
   ASSERT_EQ(1u, presenter().GetSavedCredentials().size());
@@ -2008,14 +2300,12 @@ class SavedPasswordsPresenterInitializationTest : public ::testing::Test {
     profile_store_ = base::MakeRefCounted<PasswordStore>(
         std::make_unique<FakePasswordStoreBackend>(
             IsAccountStore(false), profile_store_backend_runner()));
-    profile_store_->Init(/*prefs=*/nullptr,
-                         /*affiliated_match_helper=*/nullptr);
+    profile_store_->Init();
 
     account_store_ = base::MakeRefCounted<PasswordStore>(
         std::make_unique<FakePasswordStoreBackend>(
             IsAccountStore(true), account_store_backend_runner()));
-    account_store_->Init(/*prefs=*/nullptr,
-                         /*affiliated_match_helper=*/nullptr);
+    account_store_->Init();
   }
 
   ~SavedPasswordsPresenterInitializationTest() override {
@@ -2152,19 +2442,18 @@ TEST_F(SavedPasswordsPresenterMoveToAccountTest, MovesToAccount) {
 
   presenter().Init();
   static_cast<PasswordStoreConsumer*>(&presenter())
-      ->OnGetPasswordStoreResultsOrErrorFrom(profile_store(), std::move(forms));
+      ->OnGetPasswordStoreResultsOrErrorFrom(
+          profile_store(), FromPasswordForms(std::move(forms)));
   static_cast<PasswordStoreConsumer*>(&presenter())
       ->OnGetPasswordStoreResultsOrErrorFrom(account_store(), {});
   RunUntilIdle();
 
-  EXPECT_CALL(*account_store(), AddLogin(form_1, _));
-  EXPECT_CALL(*account_store(), AddLogin(form_2, _));
-  EXPECT_CALL(*profile_store(), RemoveLogin(_, form_1));
-  EXPECT_CALL(*profile_store(), RemoveLogin(_, form_2));
+  EXPECT_CALL(*account_store(), AddLogin(EqStoredCredential(form_1), _));
+  EXPECT_CALL(*account_store(), AddLogin(EqStoredCredential(form_2), _));
+  EXPECT_CALL(*profile_store(), RemoveLogin(_, EqStoredCredential(form_1)));
+  EXPECT_CALL(*profile_store(), RemoveLogin(_, EqStoredCredential(form_2)));
 
-  presenter().MoveCredentialsToAccount(
-      credentials,
-      metrics_util::MoveToAccountStoreTrigger::kExplicitlyTriggeredInSettings);
+  presenter().MoveCredentialsToAccount(credentials);
 }
 
 TEST_F(SavedPasswordsPresenterMoveToAccountTest,
@@ -2186,20 +2475,19 @@ TEST_F(SavedPasswordsPresenterMoveToAccountTest,
 
   presenter().Init();
   static_cast<PasswordStoreConsumer*>(&presenter())
-      ->OnGetPasswordStoreResultsOrErrorFrom(profile_store(),
-                                             std::move(forms_from_profile));
+      ->OnGetPasswordStoreResultsOrErrorFrom(
+          profile_store(), FromPasswordForms(std::move(forms_from_profile)));
   RunUntilIdle();
   static_cast<PasswordStoreConsumer*>(&presenter())
-      ->OnGetPasswordStoreResultsOrErrorFrom(account_store(),
-                                             std::move(forms_from_account));
+      ->OnGetPasswordStoreResultsOrErrorFrom(
+          account_store(), FromPasswordForms(std::move(forms_from_account)));
   RunUntilIdle();
 
   EXPECT_CALL(*account_store(), AddLogin).Times(0);
-  EXPECT_CALL(*profile_store(), RemoveLogin(_, form_profile));
+  EXPECT_CALL(*profile_store(),
+              RemoveLogin(_, EqStoredCredential(form_profile)));
 
-  presenter().MoveCredentialsToAccount(
-      credentials,
-      metrics_util::MoveToAccountStoreTrigger::kExplicitlyTriggeredInSettings);
+  presenter().MoveCredentialsToAccount(credentials);
 }
 
 }  // namespace password_manager

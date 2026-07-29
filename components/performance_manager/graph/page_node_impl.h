@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 
+#include "base/byte_size.h"
 #include "base/containers/enum_set.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
@@ -16,20 +17,21 @@
 #include "base/time/time.h"
 #include "base/types/pass_key.h"
 #include "base/types/token_type.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "components/performance_manager/decorators/page_aggregator_data.h"
 #include "components/performance_manager/decorators/page_load_tracker_decorator_data.h"
+#include "components/performance_manager/decorators/site_data_node_data.h"
 #include "components/performance_manager/freezing/frozen_data.h"
 #include "components/performance_manager/graph/node_attached_data_storage.h"
 #include "components/performance_manager/graph/node_base.h"
 #include "components/performance_manager/public/graph/page_node.h"
 #include "components/performance_manager/resource_attribution/cpu_measurement_data.h"
 #include "components/performance_manager/scenarios/loading_scenario_data.h"
+#include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/mojom/favicon/favicon_url.mojom.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "url/gurl.h"
-
-#if !BUILDFLAG(IS_ANDROID)
-#include "components/performance_manager/decorators/site_data_node_data.h"
-#endif
 
 namespace performance_manager {
 
@@ -54,9 +56,7 @@ class PageNodeImpl
       public SupportsNodeInlineData<
           PageLoadTrackerDecoratorData,
           PageAggregatorData,
-#if !BUILDFLAG(IS_ANDROID)
           SiteDataNodeData,
-#endif
           FrozenData,
           LoadingScenarioPageFrameCounts,
           resource_attribution::SharedCPUTimeResultData,
@@ -65,19 +65,15 @@ class PageNodeImpl
  public:
   using PassKey = base::PassKey<PageNodeImpl>;
 
-  // A unique token to identify the PageNode and its associated WebContents for
-  // the lifetime of the browser. Most node types use an existing unique
-  // identifier for this (eg. FrameNode uses content::GlobalRenderFrameHostId,
-  // WorkerNode uses blink::WorkerToken) but WebContents has no id to use.
-  using PageToken = base::TokenType<class PageTokenTag>;
-
   using TypedNodeBase<PageNodeImpl, PageNode, PageNodeObserver>::FromNode;
 
   PageNodeImpl(base::WeakPtr<content::WebContents> web_contents,
-               const std::string& browser_context_id,
+               const content::WebContents::UniqueToken& page_token,
+               const base::UnguessableToken& browser_context_id,
                const GURL& visible_url,
                PagePropertyFlags initial_properties,
-               base::TimeTicks visibility_change_time);
+               base::TimeTicks visibility_change_time,
+               const perfetto::Track& tracing_track);
 
   PageNodeImpl(const PageNodeImpl&) = delete;
   PageNodeImpl& operator=(const PageNodeImpl&) = delete;
@@ -85,13 +81,12 @@ class PageNodeImpl
   ~PageNodeImpl() override;
 
   // Partial PageNode implementation:
-  const std::string& GetBrowserContextID() const override;
+  const base::UnguessableToken& GetBrowserContextID() const override;
   resource_attribution::PageContext GetResourceContext() const override;
-  EmbeddingType GetEmbeddingType() const override;
   PageType GetType() const override;
   bool IsFocused() const override;
   bool IsVisible() const override;
-  base::TimeDelta GetTimeSinceLastVisibilityChange() const override;
+  base::TimeTicks GetLastVisibilityChangeTime() const override;
   bool IsAudible() const override;
   std::optional<base::TimeDelta> GetTimeSinceLastAudibleChange() const override;
   bool HasPictureInPicture() const override;
@@ -109,25 +104,31 @@ class PageNodeImpl
   GetNotificationPermissionStatus() const override;
   base::TimeDelta GetTimeSinceLastNavigation() const override;
   const GURL& GetMainFrameUrl() const override;
-  uint64_t EstimateMainFramePrivateFootprintSize() const override;
+  base::ByteSize EstimateMainFramePrivateFootprintSize() const override;
   bool HadFormInteraction() const override;
   bool HadUserEdits() const override;
   base::WeakPtr<content::WebContents> GetWebContents() const override;
-  uint64_t EstimateResidentSetSize() const override;
-  uint64_t EstimatePrivateFootprintSize() const override;
+  base::ByteSize EstimateResidentSetSize() const override;
+  base::ByteSize EstimatePrivateFootprintSize() const override;
+  base::WeakPtr<PageNode> GetWeakPtr() override;
+  base::WeakPtr<const PageNode> GetWeakPtr() const override;
 
   // Returns the unique token for the page node. This function can be called
   // from any thread.
-  const PageToken& page_token() const { return page_token_; }
+  const content::WebContents::UniqueToken& page_token() const {
+    return page_token_;
+  }
 
+  // Initializes the page type. The current type must be kUnknown.
   void SetType(PageType type);
+
   void SetIsFocused(bool is_focused);
   void SetIsVisible(bool is_visible);
   void SetIsAudible(bool is_audible);
   void SetHasPictureInPicture(bool has_picture_in_picture);
   void SetLoadingState(LoadingState loading_state);
   void SetUkmSourceId(ukm::SourceId ukm_source_id);
-  void OnFaviconUpdated();
+  void OnFaviconUpdated(blink::mojom::FaviconUpdateReason reason);
   void OnTitleUpdated();
   void OnAboutToBeDiscarded(base::WeakPtr<PageNode> new_page_node);
   // Set main frame information of a restored page before the first navigation
@@ -161,9 +162,8 @@ class PageNodeImpl
   void ClearOpenerFrameNode();
 
   // Invoked to set/clear the embedder of this page.
-  void SetEmbedderFrameNodeAndEmbeddingType(FrameNodeImpl* embedder,
-                                            EmbeddingType embedder_type);
-  void ClearEmbedderFrameNodeAndEmbeddingType();
+  void SetEmbedderFrameNode(FrameNodeImpl* embedder);
+  void ClearEmbedderFrameNode();
 
   void set_has_nonempty_beforeunload(bool has_nonempty_beforeunload);
 
@@ -195,10 +195,9 @@ class PageNodeImpl
     SetHadUserEdits(had_user_edits);
   }
 
-  base::WeakPtr<PageNodeImpl> GetWeakPtr();
-
   // Functions meant to be called by a FrameNodeImpl:
   void AddFrame(base::PassKey<FrameNodeImpl>, FrameNodeImpl* frame_node);
+  void TraceFrame(base::PassKey<FrameNodeImpl>, FrameNodeImpl* frame_node);
   void RemoveFrame(base::PassKey<FrameNodeImpl>, FrameNodeImpl* frame_node);
 
   // Function meant to be called by FrozenFrameAggregator.
@@ -257,11 +256,20 @@ class PageNodeImpl
   void SetHadUserEdits(bool had_user_edits);
   void SetHasFreezingOriginTrialOptOut(bool has_freezing_origin_trial_opt_out);
 
+  // Emits an instant event recording when the main frame url changed to `url`.
+  // Also includes `navigation_id` if it's not nullopt.
+  void EmitMainFrameUrlChangedEvent(
+      const GURL& url,
+      std::optional<int64_t> navigation_id = std::nullopt) const;
+
   // The WebContents associated with this page.
   const base::WeakPtr<content::WebContents> web_contents_;
 
   // The unique token that identifies this PageNode for the life of the browser.
-  const PageToken page_token_;
+  const content::WebContents::UniqueToken page_token_;
+
+  // Perfetto track that can record trace events for the page.
+  const perfetto::NamedTrack frames_track_;
 
   // The main frame nodes of this page. There can be more than one main frame
   // in a page, among other reasons because during main frame navigation, the
@@ -309,12 +317,11 @@ class PageNodeImpl
   // navigation.
   ObservedProperty::NotifiesOnlyOnChangesWithPreviousValue<
       std::optional<blink::mojom::PermissionStatus>,
-      std::optional<blink::mojom::PermissionStatus>,
       &PageNodeObserver::OnPageNotificationPermissionStatusChange>
       notification_permission_status_ GUARDED_BY_CONTEXT(sequence_checker_);
 
   // The unique ID of the browser context that this page belongs to.
-  const std::string browser_context_id_;
+  const base::UnguessableToken browser_context_id_;
 
   // The opener of this page, if there is one.
   raw_ptr<FrameNodeImpl> opener_frame_node_
@@ -324,31 +331,29 @@ class PageNodeImpl
   raw_ptr<FrameNodeImpl> embedder_frame_node_
       GUARDED_BY_CONTEXT(sequence_checker_) = nullptr;
 
-  // The way in which this page was embedded, if it was embedded.
-  EmbeddingType embedding_type_ GUARDED_BY_CONTEXT(sequence_checker_) =
-      EmbeddingType::kInvalid;
-
   // The type of the page.
   ObservedProperty::NotifiesOnlyOnChangesWithPreviousValue<
-      PageType,
       PageType,
       &PageNodeObserver::OnTypeChanged>
       type_ GUARDED_BY_CONTEXT(sequence_checker_){PageType::kUnknown};
 
   // Whether or not the page is focused. Driven by browser instrumentation.
   ObservedProperty::NotifiesOnlyOnChanges<bool,
-                                          &PageNodeObserver::OnIsFocusedChanged>
-      is_focused_ GUARDED_BY_CONTEXT(sequence_checker_){false};
+                                          &PageNodeObserver::OnIsFocusedChanged,
+                                          TracedWrapper<bool>>
+      is_focused_ GUARDED_BY_CONTEXT(sequence_checker_);
   // Whether or not the page is visible. Driven by browser instrumentation.
   // Initialized on construction.
   ObservedProperty::NotifiesOnlyOnChanges<bool,
-                                          &PageNodeObserver::OnIsVisibleChanged>
-      is_visible_ GUARDED_BY_CONTEXT(sequence_checker_){false};
+                                          &PageNodeObserver::OnIsVisibleChanged,
+                                          TracedWrapper<bool>>
+      is_visible_ GUARDED_BY_CONTEXT(sequence_checker_);
   // Whether or not the page is audible. Driven by browser instrumentation.
   // Initialized on construction.
   ObservedProperty::NotifiesOnlyOnChanges<bool,
-                                          &PageNodeObserver::OnIsAudibleChanged>
-      is_audible_ GUARDED_BY_CONTEXT(sequence_checker_){false};
+                                          &PageNodeObserver::OnIsAudibleChanged,
+                                          TracedWrapper<bool>>
+      is_audible_ GUARDED_BY_CONTEXT(sequence_checker_);
   // Whether or not the page is displaying content in picture-in-picture. Driven
   // by browser instrumentation. Initialized on construction.
   ObservedProperty::NotifiesOnlyOnChanges<
@@ -369,10 +374,9 @@ class PageNodeImpl
   // process.
   ObservedProperty::NotifiesOnlyOnChangesWithPreviousValue<
       LoadingState,
-      LoadingState,
-      &PageNodeObserver::OnLoadingStateChanged>
-      loading_state_ GUARDED_BY_CONTEXT(sequence_checker_){
-          LoadingState::kLoadingNotStarted};
+      &PageNodeObserver::OnLoadingStateChanged,
+      TracedWrapper<LoadingState>>
+      loading_state_ GUARDED_BY_CONTEXT(sequence_checker_);
   // The UKM source ID associated with the URL of the main frame of this page.
   ObservedProperty::NotifiesOnlyOnChanges<
       ukm::SourceId,

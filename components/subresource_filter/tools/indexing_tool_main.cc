@@ -2,21 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
+#include <iostream>
 
 #include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/strings/string_number_conversions.h"
 #include "components/subresource_filter/tools/indexing_tool.h"
 
 const char kHelpMsg[] = R"(
   subresource_indexing_tool <unindexed_ruleset_file> <output_file>
   [--version_output=<version_output> --content_version=<content_version>]
+  [--ruleset_id=<ruleset_id>]
 
   subresource_indexing_tool will open the |unindexed_ruleset_file| and output
   an indexed version in |output_file|.
@@ -27,9 +26,10 @@ const char kHelpMsg[] = R"(
 
 const char kSwitchVersionOutput[] = "version_output";
 const char kSwitchContentVersion[] = "content_version";
+const char kSwitchRulesetId[] = "ruleset_id";
 
 void PrintHelp() {
-  printf("%s\n\n", kHelpMsg);
+  std::cout << kHelpMsg << "\n\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -46,9 +46,21 @@ int main(int argc, char* argv[]) {
   base::FilePath unindexed_path(args[0]);
   base::FilePath indexed_path(args[1]);
 
+  std::optional<uint64_t> ruleset_id;
+  if (command_line.HasSwitch(kSwitchRulesetId)) {
+    std::string id_str = command_line.GetSwitchValueASCII(kSwitchRulesetId);
+    uint64_t id = 0;
+    if (base::StringToUint64(id_str, &id)) {
+      ruleset_id = id;
+    } else {
+      LOG(ERROR) << "Invalid ruleset_id: " << id_str;
+      return 1;
+    }
+  }
+
   int checksum = 0;
   if (!subresource_filter::IndexAndWriteRuleset(unindexed_path, indexed_path,
-                                                &checksum)) {
+                                                &checksum, ruleset_id)) {
     LOG(ERROR) << "There was an error. Be sure that the first argument points "
                   "to a valid unindexed file and that the second argument is "
                   "in an existing directory.";
@@ -57,8 +69,9 @@ int main(int argc, char* argv[]) {
 
   CHECK_NE(0, checksum);
 
-  if (!command_line.HasSwitch(kSwitchVersionOutput))
+  if (!command_line.HasSwitch(kSwitchVersionOutput)) {
     return 0;
+  }
 
   LOG_IF(FATAL, !command_line.HasSwitch(kSwitchContentVersion))
       << "content_version must be present if version_output is";

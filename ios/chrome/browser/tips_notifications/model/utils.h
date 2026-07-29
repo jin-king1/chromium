@@ -8,6 +8,7 @@
 #import <UserNotifications/UserNotifications.h>
 
 #import <optional>
+#import <string_view>
 #import <vector>
 
 namespace base {
@@ -15,6 +16,7 @@ class TimeDelta;
 }
 
 enum class NotificationType;
+class PrefService;
 
 // Identifier for the tips notification.
 extern NSString* const kTipsNotificationId;
@@ -47,7 +49,7 @@ extern const char kReactivationNotificationsCanceledCount[];
 // The type of Tips Notification, for an individual notification.
 // Always keep this enum in sync with
 // the corresponding IOSTipsNotificationType in enums.xml.
-// LINT.IfChange
+// LINT.IfChange(TipsNotificationType)
 enum class TipsNotificationType {
   kDefaultBrowser = 0,
   kWhatsNew = 1,
@@ -58,50 +60,81 @@ enum class TipsNotificationType {
   kOmniboxPosition = 6,
   kLens = 7,
   kEnhancedSafeBrowsing = 8,
-  kMaxValue = kEnhancedSafeBrowsing,
+  kLensOverlay = 9,
+  kCPE = 10,
+  kIncognitoLock = 11,
+  kTrustedVaultKeyRetrieval = 12,
+  kTabGroups = 13,
+  kPriceTracking = 14,
+  kMaxValue = kPriceTracking,
 };
-// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml)
+// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSTipsNotificationType)
 
 // An enum to store a classification of Tips Notification users.
-// LINT.IfChange
+// LINT.IfChange(TipsNotificationUserType)
 enum class TipsNotificationUserType {
   kUnknown = 0,
   kLessEngaged = 1,
   kActiveSeeker = 2,
   kMaxValue = kActiveSeeker,
 };
-// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml)
+// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSTipsNotificationUserType)
+
+// Enum for the IOS.PasswordManager.TrustedVaultNotification.Events
+// histogram.
+// LINT.IfChange(TrustedVaultNotificationEvents)
+enum class TrustedVaultNotificationEvents {
+  kKeyRetrievalFlowStarted = 0,  // Trusted Vault key retrieval flow started.
+  kTrustedVaultKeyAlreadyAvailable =
+      1,  // Key retrieval flow did not start. Trusted Vault key is already
+          // avialble.
+  kSyncServiceDoesNotExistForProfile =
+      2,  // Key retrieval flow did not start. Sync service does not exist for
+          // profile.
+  kMaxValue = kSyncServiceDoesNotExistForProfile,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:TrustedVaultNotificationEvents)
+
+// Enum for Tips Notification Promo Actions.
+// LINT.IfChange(TipsNotificationPromoAction)
+enum class TipsNotificationPromoAction {
+  kPrimary = 0,
+  kSecondary = 1,
+  kMaxValue = kSecondary,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSTipsNotificationPromoAction)
+
+// Logs the promo action for a given notification type.
+void LogTipsNotificationPromoAction(TipsNotificationType type,
+                                    TipsNotificationPromoAction action);
 
 // Returns true if the given `notification` is a Tips notification.
 bool IsTipsNotification(UNNotificationRequest* request);
 
+// Returns true if the given `notification` is a Proactive Tips
+// (AKA Reactivation) notification.
+bool IsProactiveTipsNotification(UNNotificationRequest* request);
+
 // Returns a userInfo dictionary pre-filled with the notification `type`.
-NSDictionary* UserInfoForTipsNotificationType(TipsNotificationType type);
+NSDictionary* UserInfoForTipsNotificationType(TipsNotificationType type,
+                                              bool for_reactivation,
+                                              std::string_view profile_name);
 
 // Returns the notification type found in a notification's userInfo dictionary.
 std::optional<TipsNotificationType> ParseTipsNotificationType(
     UNNotificationRequest* request);
 
-// Returns a newly generated notification request, with the given type and
-// a trigger appropriate for a Tips notification.
-UNNotificationRequest* TipsNotificationRequest(
-    TipsNotificationType type,
-    bool for_reactivation,
-    TipsNotificationUserType user_type);
-
 // Returns the notification content for a given Tips notification type.
 UNNotificationContent* ContentForTipsNotificationType(
-    TipsNotificationType type);
+    TipsNotificationType type,
+    bool for_reactivation,
+    std::string_view profile_name);
 
 // Returns the time delta used to trigger Tips notifications.
 base::TimeDelta TipsNotificationTriggerDelta(
     bool for_reactivation,
-    TipsNotificationUserType user_type);
-
-// Returns a trigger to be used when requesting a Tips notification.
-UNNotificationTrigger* TipsNotificationTrigger(
-    bool for_reactivation,
-    TipsNotificationUserType user_type);
+    TipsNotificationUserType user_type,
+    std::optional<TipsNotificationType> notification_type = std::nullopt);
 
 // Returns a bitfield indicating which types of notifications should be
 // enabled. Bits are assigned based on the enum `TipsNotificationType`.
@@ -113,13 +146,23 @@ int TipsNotificationsEnabledBitfield();
 std::vector<TipsNotificationType> TipsNotificationsTypesOrder(
     bool for_reactivation);
 
-// Returns the dismiss limit. If the user dismisses this number of Tips
-// notifications in a row, no more Tips notifications will be sent. Zero
-// indicates there should be no limit.
-int TipsNotificationsDismissLimit();
-
 // Returns the matching NotificationType for the TipsNotificationType `type`.
 NotificationType NotificationTypeForTipsNotificationType(
     TipsNotificationType type);
+
+// Returns the type of Tips Notification that is forced to be sent, via
+// experimental settings.
+std::optional<TipsNotificationType> ForcedTipsNotificationType();
+
+// Returns the trigger time (in seconds) that was set in Experimental Settings.
+// Returns 0 if it was not set.
+int TipsNotificationTriggerExperimentalSetting();
+
+// Returns the type indicating how the user was classified.
+TipsNotificationUserType GetTipsNotificationUserType(PrefService* local_state);
+
+// Sets the user's classification in local state prefs.
+void SetTipsNotificationUserType(PrefService* local_state,
+                                 TipsNotificationUserType user_type);
 
 #endif  // IOS_CHROME_BROWSER_TIPS_NOTIFICATIONS_MODEL_UTILS_H_

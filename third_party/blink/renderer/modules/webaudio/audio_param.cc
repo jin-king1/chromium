@@ -37,6 +37,7 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -44,7 +45,7 @@ AudioParam::AudioParam(BaseAudioContext& context,
                        const String& parent_uuid,
                        AudioParamHandler::AudioParamType param_type,
                        double default_value,
-                       AudioParamHandler::AutomationRate rate,
+                       V8AutomationRate::Enum rate,
                        AudioParamHandler::AutomationRateMode rate_mode,
                        float min_value,
                        float max_value)
@@ -63,7 +64,7 @@ AudioParam* AudioParam::Create(BaseAudioContext& context,
                                const String& parent_uuid,
                                AudioParamHandler::AudioParamType param_type,
                                double default_value,
-                               AudioParamHandler::AutomationRate rate,
+                               V8AutomationRate::Enum rate,
                                AudioParamHandler::AutomationRateMode rate_mode,
                                float min_value,
                                float max_value) {
@@ -100,10 +101,10 @@ void AudioParam::WarnIfOutsideRange(const String& param_method, float value) {
         MakeGarbageCollected<ConsoleMessage>(
             mojom::ConsoleMessageSource::kJavaScript,
             mojom::ConsoleMessageLevel::kWarning,
-            Handler().GetParamName() + "." + param_method + " " +
-                String::Number(value) + " outside nominal range [" +
-                String::Number(minValue()) + ", " + String::Number(maxValue()) +
-                "]; value will be clamped."));
+            StrCat({Handler().GetParamName(), ".", param_method, " ",
+                    String::Number(value), " outside nominal range [",
+                    String::Number(minValue()), ", ",
+                    String::Number(maxValue()), "]; value will be clamped."})));
   }
 }
 
@@ -138,22 +139,12 @@ float AudioParam::maxValue() const {
   return Handler().MaxValue();
 }
 
-void AudioParam::SetParamType(AudioParamHandler::AudioParamType param_type) {
-  Handler().SetParamType(param_type);
-}
-
 void AudioParam::SetCustomParamName(const String name) {
   Handler().SetCustomParamName(name);
 }
 
 V8AutomationRate AudioParam::automationRate() const {
-  switch (Handler().GetAutomationRate()) {
-    case AudioParamHandler::AutomationRate::kAudio:
-      return V8AutomationRate(V8AutomationRate::Enum::kARate);
-    case AudioParamHandler::AutomationRate::kControl:
-      return V8AutomationRate(V8AutomationRate::Enum::kKRate);
-  }
-  NOTREACHED();
+  return V8AutomationRate(Handler().GetAutomationRate());
 }
 
 void AudioParam::setAutomationRate(const V8AutomationRate& rate,
@@ -161,28 +152,20 @@ void AudioParam::setAutomationRate(const V8AutomationRate& rate,
   if (Handler().IsAutomationRateFixed()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidStateError,
-        Handler().GetParamName() +
-            ".automationRate is fixed and cannot be changed to \"" +
-            rate.AsString() + "\"");
+        StrCat({Handler().GetParamName(),
+                ".automationRate is fixed and cannot be changed to \"",
+                rate.AsStringView(), "\""}));
     return;
   }
 
-  switch (rate.AsEnum()) {
-    case V8AutomationRate::Enum::kARate:
-      Handler().SetAutomationRate(AudioParamHandler::AutomationRate::kAudio);
-      return;
-    case V8AutomationRate::Enum::kKRate:
-      Handler().SetAutomationRate(AudioParamHandler::AutomationRate::kControl);
-      return;
-  }
-  NOTREACHED();
+  Handler().SetAutomationRate(rate.AsEnum());
 }
 
 AudioParam* AudioParam::setValueAtTime(float value,
                                        double time,
                                        ExceptionState& exception_state) {
   WarnIfOutsideRange("setValueAtTime value", value);
-  Handler().Timeline().SetValueAtTime(value, time, exception_state);
+  Handler().SetValueAtTime(value, time, exception_state);
   return this;
 }
 
@@ -191,9 +174,8 @@ AudioParam* AudioParam::linearRampToValueAtTime(
     double time,
     ExceptionState& exception_state) {
   WarnIfOutsideRange("linearRampToValueAtTime value", value);
-  Handler().Timeline().LinearRampToValueAtTime(
-      value, time, Handler().IntrinsicValue(), Context()->currentTime(),
-      exception_state);
+  Handler().LinearRampToValueAtTime(value, time, Handler().IntrinsicValue(),
+                                    Context()->currentTime(), exception_state);
 
   return this;
 }
@@ -203,7 +185,7 @@ AudioParam* AudioParam::exponentialRampToValueAtTime(
     double time,
     ExceptionState& exception_state) {
   WarnIfOutsideRange("exponentialRampToValue value", value);
-  Handler().Timeline().ExponentialRampToValueAtTime(
+  Handler().ExponentialRampToValueAtTime(
       value, time, Handler().IntrinsicValue(), Context()->currentTime(),
       exception_state);
 
@@ -215,8 +197,7 @@ AudioParam* AudioParam::setTargetAtTime(float target,
                                         double time_constant,
                                         ExceptionState& exception_state) {
   WarnIfOutsideRange("setTargetAtTime value", target);
-  Handler().Timeline().SetTargetAtTime(target, time, time_constant,
-                                       exception_state);
+  Handler().SetTargetAtTime(target, time, time_constant, exception_state);
   return this;
 }
 
@@ -237,20 +218,19 @@ AudioParam* AudioParam::setValueCurveAtTime(const Vector<float>& curve,
     }
   }
 
-  Handler().Timeline().SetValueCurveAtTime(curve, time, duration,
-                                           exception_state);
+  Handler().SetValueCurveAtTime(curve, time, duration, exception_state);
   return this;
 }
 
 AudioParam* AudioParam::cancelScheduledValues(double start_time,
                                               ExceptionState& exception_state) {
-  Handler().Timeline().CancelScheduledValues(start_time, exception_state);
+  Handler().CancelScheduledValues(start_time, exception_state);
   return this;
 }
 
 AudioParam* AudioParam::cancelAndHoldAtTime(double start_time,
                                             ExceptionState& exception_state) {
-  Handler().Timeline().CancelAndHoldAtTime(start_time, exception_state);
+  Handler().CancelAndHoldAtTime(start_time, exception_state);
   return this;
 }
 

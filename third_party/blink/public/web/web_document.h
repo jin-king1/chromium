@@ -31,8 +31,11 @@
 #ifndef THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_DOCUMENT_H_
 #define THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_DOCUMENT_H_
 
+#include <optional>
 #include <vector>
 
+#include "base/types/expected.h"
+#include "base/unguessable_token.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/storage_access_api/status.h"
 #include "net/url_request/referrer_policy.h"
@@ -43,11 +46,22 @@
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/web_common.h"
 #include "third_party/blink/public/platform/web_security_origin.h"
+#include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_css_origin.h"
 #include "third_party/blink/public/web/web_draggable_region.h"
-#include "third_party/blink/public/web/web_frame.h"
 #include "third_party/blink/public/web/web_node.h"
+#include "third_party/blink/public/web/web_script_tool_types.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/accessibility/ax_error_types.h"
+
+namespace base {
+class UnguessableToken;
+}
+
+namespace ui {
+struct AXTreeUpdate;
+class AXMode;
+}  // namespace ui
 
 namespace blink {
 
@@ -56,7 +70,7 @@ class WebElement;
 class WebFormElement;
 class WebFormControlElement;
 class WebElementCollection;
-class WebString;
+class WebLocalFrame;
 class WebURL;
 struct WebDistillabilityFeatures;
 
@@ -72,7 +86,9 @@ enum class BackForwardCacheAware { kAllow, kPossiblyDisallow };
 // Provides readonly access to some properties of a DOM document.
 class BLINK_EXPORT WebDocument : public WebNode {
  public:
-  WebDocument() = default;
+  explicit WebDocument(
+      cppgc::SourceLocation loc = BLINK_WEB_NODE_LOCATION_FROM_HERE)
+      : WebNode(loc) {}
   WebDocument(const WebDocument& e) = default;
 
   WebDocument& operator=(const WebDocument& e) {
@@ -101,6 +117,7 @@ class BLINK_EXPORT WebDocument : public WebNode {
   bool IsHTMLDocument() const;
   bool IsXHTMLDocument() const;
   bool IsPluginDocument() const;
+  bool IsActive() const;
   WebURL BaseURL() const;
   ukm::SourceId GetUkmSourceId() const;
 
@@ -123,6 +140,7 @@ class BLINK_EXPORT WebDocument : public WebNode {
   WebString ContentAsTextForTesting() const;
   WebElementCollection All() const;
   std::vector<WebFormElement> Forms() const;
+  WebElement ScrollingElement();
 
   // Returns all form elements that have no shadow-tree including ancestor that
   // is also a form element. This includes form elements inside shadow trees.
@@ -184,10 +202,54 @@ class BLINK_EXPORT WebDocument : public WebNode {
   // Returns the referrer for this document.
   WebString OutgoingReferrer() const;
 
-  // (Experimental) Initiates Link Preview for `url`.
+  void SnapshotAccessibilityTree(
+      size_t max_nodes,
+      base::TimeDelta timeout,
+      ui::AXTreeUpdate* response,
+      ui::AXMode mode,
+      std::set<ui::AXSerializationErrorFlag>* out_error);
+
+  // Returns the number of active resource requests that are being loaded by the
+  // document's ResourceFetcher.
+  size_t ActiveResourceRequestCount() const;
+
+  // Returns the number of times the document's cookies have been modified.
+  uint64_t CookieModificationCount() const;
+
+  // Executes a script tool with the given `name` and `input_arguments`.
   //
-  // It is intended to be used in WebLinkPreviewTriggerer.
-  void InitiatePreview(const WebURL& url);
+  // The associated callback is invoked once the async execution of the tool is
+  // finished along with the result of the execution and the tool declaration.
+  // Returns true for success.
+  bool ExecuteScriptTool(const base::UnguessableToken& invocation_id,
+                         const WebString& name,
+                         const WebString& input_arguments,
+                         WebScriptToolResultCallback tool_result_cb);
+
+  // Provides the result of a script tool execution initiated on an old
+  // Document.
+  using CrossDocumentScriptToolResultCallback =
+      base::OnceCallback<void(WebString)>;
+  void GetCrossDocumentScriptToolResult(
+      const base::UnguessableToken& invocation_id,
+      CrossDocumentScriptToolResultCallback result_callback);
+
+  // Cancels a script tool with the given execution ID.
+  void CancelScriptTool(const base::UnguessableToken& invocation_id);
+
+  // Returns whether the AutofillEvent runtime feature is enabled for this
+  // document's execution context (including origin trial tokens).
+  bool IsAutofillEventEnabled() const;
+
+  // Dispatches an autofill event on the document with the given field data.
+  // This is called by the autofill agent before filling form fields.
+  // The `fill_id` is passed so that refill requests can be associated with
+  // the original fill operation. If `supports_refill` is false, the event's
+  // refill() method will be null.
+  void DispatchAutofillEvent(
+      std::vector<std::pair<WebFormControlElement, WebString>> autofill_values,
+      const base::UnguessableToken& fill_id,
+      bool supports_refill);
 
 #if INSIDE_BLINK
   WebDocument(Document*);

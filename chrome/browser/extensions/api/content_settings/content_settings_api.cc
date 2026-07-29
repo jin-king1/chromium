@@ -10,7 +10,6 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
@@ -48,10 +47,11 @@ namespace {
 
 using extensions::api::types::ChromeSettingScope;
 
-bool RemoveContentType(base::Value::List& args,
+bool RemoveContentType(base::ListValue& args,
                        ContentSettingsType* content_type) {
-  if (args.empty() || !args[0].is_string())
+  if (args.empty() || !args[0].is_string()) {
     return false;
+  }
 
   // Not a ref since we remove the underlying value after.
   std::string content_type_str = args[0].GetString();
@@ -80,7 +80,8 @@ namespace extensions {
 ExtensionFunction::ResponseAction
 ContentSettingsContentSettingClearFunction::Run() {
   ContentSettingsType content_type;
-  EXTENSION_FUNCTION_VALIDATE(RemoveContentType(mutable_args(), &content_type));
+  EXTENSION_FUNCTION_VALIDATE(
+      RemoveContentType(GetMutableArgs(), &content_type));
 
   std::optional<Clear::Params> params = Clear::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
@@ -117,7 +118,8 @@ ContentSettingsContentSettingClearFunction::Run() {
 ExtensionFunction::ResponseAction
 ContentSettingsContentSettingGetFunction::Run() {
   ContentSettingsType content_type;
-  EXTENSION_FUNCTION_VALIDATE(RemoveContentType(mutable_args(), &content_type));
+  EXTENSION_FUNCTION_VALIDATE(
+      RemoveContentType(GetMutableArgs(), &content_type));
 
   std::optional<Get::Params> params = Get::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
@@ -141,10 +143,12 @@ ContentSettingsContentSettingGetFunction::Run() {
   }
 
   bool incognito = false;
-  if (params->details.incognito)
+  if (params->details.incognito) {
     incognito = *params->details.incognito;
-  if (incognito && !include_incognito_information())
+  }
+  if (incognito && !include_incognito_information()) {
     return RespondNow(Error(extension_misc::kIncognitoErrorMessage));
+  }
 
   HostContentSettingsMap* map;
   scoped_refptr<content_settings::CookieSettings> cookie_settings;
@@ -177,7 +181,7 @@ ContentSettingsContentSettingGetFunction::Run() {
                 net::CookieSettingOverrides(), nullptr)
           : map->GetContentSetting(primary_url, secondary_url, content_type);
 
-  base::Value::Dict result;
+  base::DictValue result;
   std::string setting_string =
       content_settings::ContentSettingToString(setting);
   DCHECK(!setting_string.empty());
@@ -189,7 +193,8 @@ ContentSettingsContentSettingGetFunction::Run() {
 ExtensionFunction::ResponseAction
 ContentSettingsContentSettingSetFunction::Run() {
   ContentSettingsType content_type;
-  EXTENSION_FUNCTION_VALIDATE(RemoveContentType(mutable_args(), &content_type));
+  EXTENSION_FUNCTION_VALIDATE(
+      RemoveContentType(GetMutableArgs(), &content_type));
 
   std::optional<Set::Params> params = Set::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
@@ -202,16 +207,18 @@ ContentSettingsContentSettingSetFunction::Run() {
   ContentSettingsPattern primary_pattern =
       content_settings_helpers::ParseExtensionPattern(
           params->details.primary_pattern, &primary_error);
-  if (!primary_pattern.IsValid())
+  if (!primary_pattern.IsValid()) {
     return RespondNow(Error(primary_error));
+  }
 
   ContentSettingsPattern secondary_pattern = ContentSettingsPattern::Wildcard();
   if (params->details.secondary_pattern) {
     std::string secondary_error;
     secondary_pattern = content_settings_helpers::ParseExtensionPattern(
         *params->details.secondary_pattern, &secondary_error);
-    if (!secondary_pattern.IsValid())
+    if (!secondary_pattern.IsValid()) {
       return RespondNow(Error(secondary_error));
+    }
   }
 
   EXTENSION_FUNCTION_VALIDATE(params->details.setting.is_string());
@@ -303,8 +310,9 @@ ContentSettingsContentSettingSetFunction::Run() {
   } else {
     // Incognito profiles can't access regular mode ever, they only exist in
     // split mode.
-    if (browser_context()->IsOffTheRecord())
+    if (browser_context()->IsOffTheRecord()) {
       return RespondNow(Error(kIncognitoContextError));
+    }
   }
 
   if (scope == ChromeSettingScope::kIncognitoSessionOnly &&

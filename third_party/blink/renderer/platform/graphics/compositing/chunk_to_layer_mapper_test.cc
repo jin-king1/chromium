@@ -37,9 +37,9 @@ class ChunkToLayerMapperTest : public testing::Test {
       layer_clip_ =
           CreateClip(c0(), *layer_transform_, FloatRoundedRect(12, 34, 56, 78));
       layer_effect_ = EffectPaintPropertyNode::Create(
-          e0(), EffectPaintPropertyNode::State{
-                    layer_transform_, layer_clip_, CompositorFilterOperations(),
-                    nullptr, 0.789f, SkBlendMode::kSrcIn});
+          e0(),
+          EffectPaintPropertyNode::State{layer_transform_, layer_clip_, nullptr,
+                                         nullptr, 0.789f, SkBlendMode::kSrcIn});
     }
     return PropertyTreeState(*layer_transform_, *layer_clip_, *layer_effect_);
   }
@@ -195,7 +195,7 @@ TEST_F(ChunkToLayerMapperTest, SlowPath) {
   EXPECT_TRUE(mapper.ClipRect().IsInfinite());
   EXPECT_EQ(gfx::Rect(-40, -50, 208, 219),
             mapper.MapVisualRect(gfx::Rect(30, 30, 88, 99)));
-  EXPECT_EQ(gfx::Rect(), mapper.MapVisualRect(gfx::Rect()));
+  EXPECT_EQ(gfx::Rect(-70, -80, 120, 120), mapper.MapVisualRect(gfx::Rect()));
 
   mapper.SwitchToChunk(chunk3);
   EXPECT_TRUE(HasFilterThatMovesPixels(mapper));
@@ -203,7 +203,7 @@ TEST_F(ChunkToLayerMapperTest, SlowPath) {
   EXPECT_TRUE(mapper.ClipRect().IsInfinite());
   EXPECT_EQ(gfx::Rect(-40, -50, 208, 219),
             mapper.MapVisualRect(gfx::Rect(30, 30, 88, 99)));
-  EXPECT_EQ(gfx::Rect(), mapper.MapVisualRect(gfx::Rect()));
+  EXPECT_EQ(gfx::Rect(-70, -80, 120, 120), mapper.MapVisualRect(gfx::Rect()));
 
   mapper.SwitchToChunk(chunk4);
   EXPECT_FALSE(HasFilterThatMovesPixels(mapper));

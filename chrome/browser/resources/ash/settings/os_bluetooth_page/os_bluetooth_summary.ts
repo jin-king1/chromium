@@ -69,7 +69,7 @@ export class SettingsBluetoothSummaryElement extends
         observer: 'onIsBluetoothToggleOnChanged_',
       },
 
-      LabelType: {
+      LabelTypeEnum_: {
         type: Object,
         value: LabelType,
       },
@@ -99,13 +99,11 @@ export class SettingsBluetoothSummaryElement extends
     };
   }
 
-  /* eslint-disable-next-line @typescript-eslint/naming-convention */
-  LabelType: LabelType;
-  systemProperties: BluetoothSystemProperties;
+  declare systemProperties: BluetoothSystemProperties;
   private browserProxy_: OsBluetoothDevicesSubpageBrowserProxy;
-  private isBluetoothToggleOn_: boolean;
-  private isSecondaryUser_: boolean;
-  private primaryUserEmail_: string;
+  declare private isBluetoothToggleOn_: boolean;
+  declare private isSecondaryUser_: boolean;
+  declare private primaryUserEmail_: string;
 
   constructor() {
     super();

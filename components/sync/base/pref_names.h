@@ -18,6 +18,12 @@ inline constexpr char kEnableLocalSyncBackend[] =
 // flag is present.
 inline constexpr char kLocalSyncBackendDir[] = "sync.local_sync_backend_dir";
 
+// This is set during the Sync-to-Signin migration  and indicates that the stats
+// table should be cleared from the account password store. This pref is
+// consumed by the password manager code.
+inline constexpr char kCleanUpStatsTableFromAccountPasswordStore[] =
+    "sync.clean_up_stats_table_from_account_password_store";
+
 // NOTE: All the "internal" prefs should not be used directly by non-sync code,
 // but should rather always be accessed via SyncUserSettings.
 // TODO(crbug.com/40265119): Clean up/replace any existing references to these
@@ -81,7 +87,6 @@ inline constexpr char kSyncPreferences[] = "sync.preferences";
 inline constexpr char kSyncProductComparison[] = "sync.product_comparison";
 inline constexpr char kSyncReadingList[] = "sync.reading_list";
 inline constexpr char kSyncSavedTabGroups[] = "sync.saved_tab_groups";
-inline constexpr char kSyncSharedTabGroupData[] = "sync.shared_tab_group_data";
 inline constexpr char kSyncTabs[] = "sync.tabs";
 inline constexpr char kSyncThemes[] = "sync.themes";
 
@@ -135,6 +140,12 @@ inline constexpr char kSyncDataTypeStatusForSyncToSigninMigrationPrefix[] =
 inline constexpr char kMigrateReadingListFromLocalToAccount[] =
     "sync.migrate_reading_list_from_local_to_account";
 
+inline constexpr char kMigrateExtensionsFromLocalToAccount[] =
+    "sync.migrate_extensions_from_local_to_account";
+
+inline constexpr char kMigrateThemeFromLocalToAccount[] =
+    "sync.migrate_theme_from_local_to_account";
+
 // State of SyncPrefs::MaybeMigratePrefsForSyncToSigninPart1() and
 // MaybeMigratePrefsForSyncToSigninPart2(). Should be cleaned up after those
 // migration methods are gone.
@@ -149,13 +160,6 @@ inline constexpr char kSyncToSigninMigrationState[] =
 // sync-the-feature disabled.
 inline constexpr char kFirstTimeTriedToMigrateSyncFeaturePausedToSignin[] =
     "sync.first_time_tried_to_migrate_sync_feature_paused_to_signin";
-
-#if BUILDFLAG(IS_ANDROID)
-// Name of a boolean pref recording whether the WEB_APK data went through a
-// one-off wipe to fix crbug.com/361771496.
-inline constexpr char kWipedWebAPkDataForMigration[] =
-    "sync.wiped_web_apk_data_for_migration";
-#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace internal
 }  // namespace syncer::prefs

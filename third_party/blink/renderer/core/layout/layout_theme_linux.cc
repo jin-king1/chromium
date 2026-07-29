@@ -20,14 +20,9 @@ LayoutTheme& LayoutTheme::NativeTheme() {
 }
 
 String LayoutThemeLinux::ExtraDefaultStyleSheet() {
-  String stylesheet =
-      LayoutThemeDefault::ExtraDefaultStyleSheet() +
-      UncompressResourceAsASCIIString(IDR_UASTYLE_THEME_CHROMIUM_LINUX_CSS);
-  // This can't check for origin trials, unfortunately.
-  if (HTMLSelectElement::CustomizableSelectEnabledNoDocument()) {
-    stylesheet = stylesheet + UncompressResourceAsASCIIString(
-                                  IDR_UASTYLE_CUSTOMIZABLE_SELECT_LINUX_CSS);
-  }
+  String stylesheet = StrCat(
+      {LayoutThemeDefault::ExtraDefaultStyleSheet(),
+       UncompressResourceAsASCIIString(IDR_UASTYLE_THEME_CHROMIUM_LINUX_CSS)});
   return stylesheet;
 }
 

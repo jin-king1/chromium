@@ -23,7 +23,7 @@ class Profile;
 namespace autofill {
 
 class CreditCard;
-enum class BubbleType;
+enum class PaymentsBubbleType;
 
 // Interface that exposes controller functionality to save card bubbles.
 class SaveCardBubbleController {
@@ -38,11 +38,6 @@ class SaveCardBubbleController {
   // controller from the |web_contents| then return the reference.
   static SaveCardBubbleController* GetOrCreate(
       content::WebContents* web_contents);
-
-  // Returns a reference to the SaveCardBubbleController associated with the
-  // given |web_contents|. If controller does not exist, this will return
-  // nullptr.
-  static SaveCardBubbleController* Get(content::WebContents* web_contents);
 
   // Returns the title that should be displayed in the bubble.
   virtual std::u16string GetWindowTitle() const = 0;
@@ -106,7 +101,7 @@ class SaveCardBubbleController {
   // Returns true iff is showing or has showed bubble for upload save.
   virtual bool IsUploadSave() const = 0;
   // Returns the current state of the bubble.
-  virtual BubbleType GetBubbleType() const = 0;
+  virtual PaymentsBubbleType GetPaymentsBubbleType() const = 0;
   // Returns true if the user is signed in and sync transport is active for
   // Wallet data, without having turned on sync-the-feature.
   virtual bool IsPaymentsSyncTransportEnabledWithoutSyncFeature() const = 0;

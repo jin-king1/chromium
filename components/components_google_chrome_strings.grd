@@ -238,12 +238,12 @@
           the Chrome menu &gt;
           <ph name="SETTINGS_TITLE">&lt;span&gt;$1&lt;/span&gt;<ex>Settings</ex></ph>
           &gt;
-          <ph name="ADVANCED_TITLE">&lt;span&gt;$2&lt;/span&gt;<ex>Under the Hood</ex></ph>
+          <ph name="SYSTEM_TITLE">&lt;span&gt;$2&lt;/span&gt;<ex>System</ex></ph>
           &gt;
-          <ph name="PROXIES_TITLE">&lt;span&gt;$3&lt;/span&gt;<ex>Change proxy settings...</ex></ph>
+          <ph name="PROXIES_TITLE">&lt;span&gt;$3&lt;/span&gt;<ex>Open your computer's proxy settings</ex></ph>
           &gt;
-          LAN Settings
-          and deselect &quot;Use a proxy server for your LAN&quot;.
+          Network &amp; internet &gt; Proxy
+          and deselect &quot;Automatically detect settings&quot;.
         </message>
         <message name="IDS_PAYMENTS_AUTOFILL_MANDATORY_REAUTH_PROMPT" desc="Message to be displayed to the user in the device authentication prompt when they click on the mandatory auth toggle on the Payments settings page, irrespective to enable or disable it. When mandatory auth toggle is enabled, we would authenticate the user before autofilling in the payment details.">
           Google Chrome is trying to modify settings for filling payment methods.
@@ -254,12 +254,12 @@
       </if>
 
       <!-- About Flags UI -->
-      <if expr="not chromeos_ash">
+      <if expr="not is_chromeos">
         <message name="IDS_FLAGS_UI_RELAUNCH_NOTICE" desc="Notifies the user that they need to relaunch Chrome. Shown next to a button that says 'Relaunch Now'.">
           Your changes will take effect the next time you relaunch Chrome.
         </message>
       </if>
-      <if expr="chromeos_ash">
+      <if expr="is_chromeos">
         <message name="IDS_FLAGS_UI_RELAUNCH_NOTICE" desc="Notifies the user that they need to restart ChromeOS. Shown next to a button that says 'Restart Now'.">
           Your changes will take effect the next time you restart your device.
         </message>
@@ -276,10 +276,10 @@
       </message>
 
       <message name="IDS_VERSION_UI_LICENSE" desc="The label below the copyright message, containing the URLs.">
-        Chrome is made possible by the <ph name="BEGIN_LINK_CHROMIUM">&lt;a target="_blank" href="$1"&gt;</ph>Chromium<ph name="END_LINK_CHROMIUM">&lt;/a&gt;</ph> open source project and other <ph name="BEGIN_LINK_OSS">&lt;a target="_blank" href="$2"&gt;</ph>open source software<ph name="END_LINK_OSS">&lt;/a&gt;</ph>.
+        Chrome is made possible by the <ph name="BEGIN_LINK_CHROMIUM">&lt;a target="_blank" href="$1" aria-description="$3"&gt;</ph>Chromium<ph name="END_LINK_CHROMIUM">&lt;/a&gt;</ph> open source project and other <ph name="BEGIN_LINK_OSS">&lt;a target="_blank" href="$2" aria-description="$3"&gt;</ph>open source software<ph name="END_LINK_OSS">&lt;/a&gt;</ph>.
       </message>
 
-      <if expr="chromeos_ash">
+      <if expr="is_chromeos">
         <message name="IDS_VERSION_UI_LICENSE_CHROMIUM" desc="The label below the copyright message, containing the link to the Chromium project.">
           Chrome is made possible by the <ph name="BEGIN_LINK_CHROMIUM">&lt;a target="_blank" href="$1"&gt;</ph>Chromium<ph name="END_LINK_CHROMIUM">&lt;/a&gt;</ph> open source project.
         </message>
@@ -307,6 +307,17 @@
       <!-- Internal debug pages disabled interstitial. -->
       <message name="IDS_INTERNAL_DEBUG_PAGES_DISABLED_BODY" desc="This is the text, with a link, that appears below the heading for the page that appears when the user attempts to load an internal developer debugging page when such pages are disabled by a pref. It instructs the user on how to enable the pref if they wish.">
         These pages are intended for use by Chrome developers, and may not be actively maintained or tested. To enable them, navigate to <ph name="BEGIN_LINK">&lt;a href="$1"&gt;</ph>chrome://chrome-urls<ph name="LINK_END">&lt;/a&gt;</ph>, click the button to enable debug pages, and then navigate to this page again.
+      </message>
+
+      <!-- Desktop-to-Mobile Promo Notifications -->
+      <message name="IDS_IOS_DESKTOP_PASSWORD_PROMO_NOTIFICATION_TITLE" desc="The title for the iOS desktop Password promo notification.">
+        Chrome Tip: Save Passwords
+      </message>
+      <message name="IDS_IOS_DESKTOP_SAFE_BROWSING_PROMO_NOTIFICATION_TITLE" desc="The title for the iOS desktop Enhanced Safe Browsing promo notification.">
+        Chrome Tip: Enhanced Safe Browsing
+      </message>
+      <message name="IDS_IOS_DESKTOP_LENS_PROMO_NOTIFICATION_TITLE" desc="The title for the iOS desktop Lens promo notification.">
+        Chrome Tip: Search With Lens
       </message>
     </messages>
   </release>

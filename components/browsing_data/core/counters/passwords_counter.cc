@@ -14,6 +14,7 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/browsing_data/core/pref_names.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "components/password_manager/core/browser/password_store/password_store_change.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
@@ -24,10 +25,6 @@
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "url/gurl.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#include "components/password_manager/core/browser/split_stores_and_local_upm.h"
-#endif  // BUILDFLAG(IS_ANDROID)
-
 namespace browsing_data {
 namespace {
 
@@ -35,21 +32,9 @@ namespace {
 bool IsProfilePasswordSyncEnabled(PrefService* pref_service,
                                   const syncer::SyncService* sync_service) {
 #if BUILDFLAG(IS_ANDROID)
-  // If UsesSplitStoresAndUPMForLocal() is true, the profile store is never
-  // synced, only the account store is.
-  if (password_manager::UsesSplitStoresAndUPMForLocal(pref_service)) {
-    return false;
-  }
-
-  // TODO(crbug.com/344640768): The IsGmsCoreUpdateRequired() check isn't
-  // perfect, it causes the string to say "synced" in cases when it shouldn't.
-  if (password_manager::IsGmsCoreUpdateRequired(pref_service, sync_service)) {
-    return false;
-  }
-
-  return sync_service &&
-         sync_service->GetUserSettings()->GetSelectedTypes().Has(
-             syncer::UserSelectableType::kPasswords);
+  // After login db deprecation there won't be any more users syncing passwords
+  // from the profile store. All users will have split stores.
+  return false;
 #else
   // TODO(crbug.com/40067058): Clean this up once Sync-the-feature is gone on
   // all platforms.
@@ -75,9 +60,9 @@ class PasswordStoreFetcher
              base::Time end,
              base::OnceClosure fetch_complete);
 
-  void OnGetPasswordStoreResults(
-      std::vector<std::unique_ptr<password_manager::PasswordForm>> results)
-      override;
+  void OnGetPasswordStoreResultsOrErrorFrom(
+      password_manager::PasswordStoreInterface* store,
+      password_manager::LoginsResultOrError results_or_error) override;
 
   // Called when the contents of the password store change. Triggers new
   // counting.
@@ -86,7 +71,7 @@ class PasswordStoreFetcher
       password_manager::PasswordStoreInterface* store,
       const password_manager::PasswordStoreChangeList& changes) override;
   void OnLoginsRetained(password_manager::PasswordStoreInterface* store,
-                        const std::vector<password_manager::PasswordForm>&
+                        const std::vector<password_manager::StoredCredential>&
                             retained_passwords) override;
 
   int num_passwords() { return num_passwords_; }
@@ -129,7 +114,8 @@ void PasswordStoreFetcher::OnLoginsChanged(
 
 void PasswordStoreFetcher::OnLoginsRetained(
     password_manager::PasswordStoreInterface* /*store*/,
-    const std::vector<password_manager::PasswordForm>& /*retained_passwords*/) {
+    const std::vector<
+        password_manager::StoredCredential>& /*retained_passwords*/) {
   logins_changed_closure_.Run();
 }
 
@@ -148,29 +134,37 @@ void PasswordStoreFetcher::Fetch(base::Time start,
   }
 }
 
-void PasswordStoreFetcher::OnGetPasswordStoreResults(
-    std::vector<std::unique_ptr<password_manager::PasswordForm>> results) {
+void PasswordStoreFetcher::OnGetPasswordStoreResultsOrErrorFrom(
+    password_manager::PasswordStoreInterface* store,
+    password_manager::LoginsResultOrError results_or_error) {
   domain_examples_.clear();
 
+  if (std::holds_alternative<password_manager::PasswordStoreBackendError>(
+          results_or_error)) {
+    std::move(fetch_complete_).Run();
+    return;
+  }
+  auto results =
+      std::get<password_manager::LoginsResult>(std::move(results_or_error));
+
   std::erase_if(
-      results,
-      [this](const std::unique_ptr<password_manager::PasswordForm>& form) {
-        return (form->date_created < start_ || form->date_created >= end_);
+      results, [this](const password_manager::StoredCredential& form) {
+        return (form.date_created < start_ || form.date_created >= end_);
       });
   num_passwords_ = results.size();
   std::sort(results.begin(), results.end(),
-            [](const std::unique_ptr<password_manager::PasswordForm>& a,
-               const std::unique_ptr<password_manager::PasswordForm>& b) {
-              return a->times_used_in_html_form > b->times_used_in_html_form;
+            [](const password_manager::StoredCredential& a,
+               const password_manager::StoredCredential& b) {
+              return a.times_used_in_html_form > b.times_used_in_html_form;
             });
 
   std::vector<std::string> sorted_domains;
   for (const auto& result : results) {
     std::string domain = net::registry_controlled_domains::GetDomainAndRegistry(
-        result->url,
+        result.url,
         net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
     if (domain.empty())
-      domain = result->url.host();
+      domain = result.url.GetHost();
     sorted_domains.emplace_back(domain);
   }
   // Only consecutive duplicates are removed below. Since we're only listing two

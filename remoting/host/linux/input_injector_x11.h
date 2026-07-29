@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <set>
@@ -17,6 +18,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -131,7 +133,7 @@ class InputInjectorX11 : public InputInjector {
     // Left, Right, Middle, VScroll Up/Down, HScroll Left/Right, back, forward.
     static const int kNumPointerButtons = 9;
 
-    int pointer_button_map_[kNumPointerButtons];
+    std::array<int, kNumPointerButtons> pointer_button_map_;
 #if BUILDFLAG(IS_CHROMEOS)
     PointTransformer point_transformer_;
 #endif

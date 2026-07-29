@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
 import {ApplicationTestRunner} from 'application_test_runner';
-
 import * as Common from 'devtools/core/common/common.js';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(
@@ -22,7 +22,7 @@ import * as Common from 'devtools/core/common/common.js';
   TestRunner.assertEquals(
       cssResource.resourceType(), Common.ResourceType.resourceTypes.Stylesheet, 'Resource type should be Stylesheet.');
   TestRunner.assertTrue(!cssResource.failed, 'Resource loading failed.');
-  const {isEncoded} = await cssResource.requestContent();
+  const {isEncoded} = await cssResource.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent);
 
   var content = isEncoded ? window.atob(cssResource.content) : cssResource.content;
   TestRunner.addResult('Resource.content: ' + content);

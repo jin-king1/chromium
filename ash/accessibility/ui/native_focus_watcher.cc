@@ -5,6 +5,8 @@
 #include "ash/accessibility/ui/native_focus_watcher.h"
 
 #include "ash/wm/window_util.h"
+#include "ui/views/controls/button/label_button.h"
+
 namespace ash {
 
 NativeFocusWatcher::NativeFocusWatcher() = default;
@@ -20,13 +22,14 @@ void NativeFocusWatcher::SetEnabled(bool enabled) {
   }
   enabled_ = enabled;
   if (enabled_) {
-    views::WidgetFocusManager::GetInstance()->AddFocusChangeListener(this);
+    views::NativeViewFocusManager::GetInstance()->AddFocusChangeListener(this);
     aura::Window* active_window = window_util::GetActiveWindow();
     if (active_window) {
       SetWidget(views::Widget::GetWidgetForNativeWindow(active_window));
     }
   } else {
-    views::WidgetFocusManager::GetInstance()->RemoveFocusChangeListener(this);
+    views::NativeViewFocusManager::GetInstance()->RemoveFocusChangeListener(
+        this);
     SetWidget(nullptr);
   }
 }
@@ -111,9 +114,6 @@ void NativeFocusWatcher::OnNativeFocusChanged(gfx::NativeView focused_now) {
       focused_now ? views::Widget::GetWidgetForNativeWindow(focused_now) : NULL;
   SetWidget(widget);
 }
-
-void NativeFocusWatcher::OnWillChangeFocus(views::View* focused_before,
-                                           views::View* focused_now) {}
 
 void NativeFocusWatcher::OnDidChangeFocus(views::View* focused_before,
                                           views::View* focused_now) {

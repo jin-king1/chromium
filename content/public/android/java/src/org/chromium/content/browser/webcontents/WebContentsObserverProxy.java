@@ -4,8 +4,11 @@
 
 package org.chromium.content.browser.webcontents;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ObserverList;
@@ -21,6 +24,7 @@ import org.chromium.content_public.browser.MediaSession;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.Page;
 import org.chromium.content_public.browser.Visibility;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.mojom.VirtualKeyboardMode;
@@ -35,21 +39,21 @@ import java.util.Iterator;
 @JNINamespace("content")
 @NullMarked
 class WebContentsObserverProxy extends WebContentsObserver {
-    private long mNativeWebContentsObserverProxy;
     private final ObserverList<WebContentsObserver> mObservers;
+
+    private long mNativeWebContentsObserverProxy;
     private int mObserverCallsCurrentlyHandling;
 
     /**
-     * Constructs a new WebContentsObserverProxy for a given WebContents
-     * instance. A native WebContentsObserver instance will be created, which
-     * will observe the native counterpart to the provided WebContents.
+     * Constructs a new WebContentsObserverProxy for a given WebContents instance. A native
+     * WebContentsObserver instance will be created, which will observe the native counterpart to
+     * the provided WebContents.
      *
      * @param webContents The WebContents instance to observe.
      */
-    public WebContentsObserverProxy(WebContentsImpl webContents) {
+    public WebContentsObserverProxy(WebContents webContents) {
         ThreadUtils.assertOnUiThread();
-        mNativeWebContentsObserverProxy =
-                WebContentsObserverProxyJni.get().init(WebContentsObserverProxy.this, webContents);
+        mNativeWebContentsObserverProxy = WebContentsObserverProxyJni.get().init(webContents);
         mObservers = new ObserverList<WebContentsObserver>();
         mObserverCallsCurrentlyHandling = 0;
     }
@@ -341,17 +345,6 @@ class WebContentsObserverProxy extends WebContentsObserver {
         finishObserverCall();
     }
 
-    @CalledByNative
-    @Override
-    public void firstContentfulPaintInPrimaryMainFrame(Page page) {
-        handleObserverCall();
-        Iterator<WebContentsObserver> observersIterator = mObservers.iterator();
-        for (; observersIterator.hasNext(); ) {
-            observersIterator.next().firstContentfulPaintInPrimaryMainFrame(page);
-        }
-        finishObserverCall();
-    }
-
     @Override
     @CalledByNative
     public void navigationEntryCommitted(LoadCommittedDetails details) {
@@ -421,22 +414,22 @@ class WebContentsObserverProxy extends WebContentsObserver {
 
     @Override
     @CalledByNative
-    public void mediaStartedPlaying() {
+    public void mediaStartedPlaying(int id, boolean hasAudio, boolean hasVideo) {
         handleObserverCall();
         Iterator<WebContentsObserver> observersIterator = mObservers.iterator();
         for (; observersIterator.hasNext(); ) {
-            observersIterator.next().mediaStartedPlaying();
+            observersIterator.next().mediaStartedPlaying(id, hasAudio, hasVideo);
         }
         finishObserverCall();
     }
 
     @Override
     @CalledByNative
-    public void mediaStoppedPlaying() {
+    public void mediaStoppedPlaying(int id) {
         handleObserverCall();
         Iterator<WebContentsObserver> observersIterator = mObservers.iterator();
         for (; observersIterator.hasNext(); ) {
-            observersIterator.next().mediaStoppedPlaying();
+            observersIterator.next().mediaStoppedPlaying(id);
         }
         finishObserverCall();
     }
@@ -480,8 +473,8 @@ class WebContentsObserverProxy extends WebContentsObserver {
     @CalledByNative
     public void safeAreaConstraintChanged(boolean hasConstraint) {
         handleObserverCall();
-        for (WebContentsObserver mObserver : mObservers) {
-            mObserver.safeAreaConstraintChanged(hasConstraint);
+        for (WebContentsObserver observer : mObservers) {
+            observer.safeAreaConstraintChanged(hasConstraint);
         }
         finishObserverCall();
     }
@@ -542,6 +535,17 @@ class WebContentsObserverProxy extends WebContentsObserver {
 
     @Override
     @CalledByNative
+    public void wasDiscarded() {
+        handleObserverCall();
+        Iterator<WebContentsObserver> observersIterator = mObservers.iterator();
+        for (; observersIterator.hasNext(); ) {
+            observersIterator.next().wasDiscarded();
+        }
+        finishObserverCall();
+    }
+
+    @Override
+    @CalledByNative
     public void webContentsDestroyed() {
         ThreadUtils.assertOnUiThread();
         RewindableIterator<WebContentsObserver> observersIterator = mObservers.rewindableIterator();
@@ -561,16 +565,21 @@ class WebContentsObserverProxy extends WebContentsObserver {
         mObservers.clear();
 
         if (mNativeWebContentsObserverProxy != 0) {
-            WebContentsObserverProxyJni.get()
-                    .destroy(mNativeWebContentsObserverProxy, WebContentsObserverProxy.this);
+            WebContentsObserverProxyJni.get().destroy(mNativeWebContentsObserverProxy);
             mNativeWebContentsObserverProxy = 0;
         }
     }
 
+    @CalledByNative
+    private static WebContentsObserverProxy getFromWebContents(
+            @JniType("content::WebContents*") WebContents webContents) {
+        return assertNonNull(((WebContentsImpl) webContents).getWebContentsObserverProxy());
+    }
+
     @NativeMethods
     interface Natives {
-        long init(WebContentsObserverProxy caller, WebContentsImpl webContents);
+        long init(@JniType("content::WebContents*") WebContents webContents);
 
-        void destroy(long nativeWebContentsObserverProxy, WebContentsObserverProxy caller);
+        void destroy(long nativeWebContentsObserverProxy);
     }
 }

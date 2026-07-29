@@ -9,7 +9,6 @@
 #include "ash/test/ash_test_base.h"
 #include "ash/test/pixel/ash_pixel_differ.h"
 #include "ash/test/pixel/ash_pixel_test_init_params.h"
-#include "base/test/scoped_feature_list.h"
 #include "components/user_manager/user_type.h"
 
 namespace ash {
@@ -17,9 +16,7 @@ namespace ash {
 // Pixel tests for the quick settings footer.
 class QuickSettingsFooterPixelTest : public AshTestBase {
  public:
-  QuickSettingsFooterPixelTest() {
-    feature_list_.InitAndDisableFeature(features::kAdaptiveCharging);
-  }
+  QuickSettingsFooterPixelTest() = default;
 
   // AshTestBase:
   std::optional<pixel_test::InitParams> CreatePixelTestInitParams()
@@ -33,6 +30,7 @@ class QuickSettingsFooterPixelTest : public AshTestBase {
   }
 
   void TearDown() override {
+    footer_ = nullptr;
     AshTestBase::TearDown();
     chromeos::PowerManagerClient::Shutdown();
   }
@@ -51,23 +49,24 @@ class QuickSettingsFooterPixelTest : public AshTestBase {
         system_tray->bubble()->quick_settings_view()->footer_for_testing();
   }
 
-  void CloseBubble() { GetPrimaryUnifiedSystemTray()->CloseBubble(); }
+  void CloseBubble() {
+    footer_ = nullptr;
+    GetPrimaryUnifiedSystemTray()->CloseBubble();
+  }
 
  protected:
   QuickSettingsFooter* GetFooter() { return footer_; }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
-
   // Owned by view hierarchy.
-  raw_ptr<QuickSettingsFooter, DanglingUntriaged> footer_ = nullptr;
+  raw_ptr<QuickSettingsFooter> footer_ = nullptr;
 };
 
 TEST_F(QuickSettingsFooterPixelTest, FooterShouldBeRenderedCorrectly) {
   InitPowerStatusAndOpenBubble();
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "with_no_extra_button",
-      /*revision_number=*/7, GetFooter()));
+      /*revision_number=*/8, GetFooter()));
   CloseBubble();
 
   // Regression test for b/293484037: The settings button is missing when
@@ -76,7 +75,7 @@ TEST_F(QuickSettingsFooterPixelTest, FooterShouldBeRenderedCorrectly) {
   InitPowerStatusAndOpenBubble();
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "with_exit_button",
-      /*revision_number=*/7, GetFooter()));
+      /*revision_number=*/8, GetFooter()));
   CloseBubble();
 }
 

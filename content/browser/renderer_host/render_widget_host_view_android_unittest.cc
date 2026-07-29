@@ -9,6 +9,7 @@
 #include "base/memory/raw_ptr.h"
 #include "cc/layers/deadline_policy.h"
 #include "cc/slim/layer.h"
+#include "components/input/render_input_router.mojom.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/surfaces/local_surface_id.h"
 #include "content/browser/renderer_host/frame_tree.h"
@@ -24,11 +25,14 @@
 #include "content/test/test_web_contents.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "ui/android/test_view_android_delegate.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
+#include "ui/events/android/motion_event_android_factory.h"
 #include "ui/events/android/motion_event_android_java.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/events/motionevent_jni_headers/MotionEvent_jni.h"
 
 namespace content {
 
@@ -94,10 +98,52 @@ std::string PostTestCaseName(const ::testing::TestParamInfo<bool>& info) {
 
 class MockInputTransferHandler : public InputTransferHandlerAndroid {
  public:
+  bool OnTouchEvent(const ui::MotionEventAndroid& event,
+                    bool is_ignoring_input_events = false) override {
+    return OnTouchEventImpl(event, is_ignoring_input_events);
+  }
+
   MOCK_METHOD(bool,
-              OnTouchEvent,
-              (const ui::MotionEventAndroid& event),
-              (override));
+              OnTouchEventImpl,
+              (const ui::MotionEventAndroid& event,
+               bool is_ignoring_input_events));
+
+  MOCK_METHOD(bool,
+              IsTouchSequencePotentiallyActiveOnViz,
+              (),
+              (const, override));
+};
+
+class MockMojoRenderInputRouterDelegate
+    : public input::mojom::RenderInputRouterDelegate {
+ public:
+  MockMojoRenderInputRouterDelegate() = default;
+  ~MockMojoRenderInputRouterDelegate() override = default;
+
+  mojo::PendingAssociatedRemote<input::mojom::RenderInputRouterDelegate>
+  GetPendingRemote() {
+    return receiver_.BindNewEndpointAndPassDedicatedRemote();
+  }
+
+  MOCK_METHOD1(StateOnTouchTransfer,
+               void(input::mojom::TouchTransferStatePtr state));
+  MOCK_METHOD2(NotifySiteIsMobileOptimized,
+               void(bool is_mobile_optimized,
+                    const viz::FrameSinkId& frame_sink_id));
+  MOCK_METHOD2(ForceEnableZoomStateChanged,
+               void(bool force_enable_zoom,
+                    const viz::FrameSinkId& frame_sink_id));
+  MOCK_METHOD1(StopFlingingOnViz, void(const viz::FrameSinkId& frame_sink_id));
+  MOCK_METHOD1(RestartInputEventAckTimeoutIfNecessary,
+               void(const viz::FrameSinkId& frame_sink_id));
+  MOCK_METHOD2(NotifyVisibilityChanged,
+               void(const viz::FrameSinkId& frame_sink_id, bool is_hidden));
+  MOCK_METHOD1(ResetGestureDetection,
+               void(const viz::FrameSinkId& frame_sink_id));
+
+ private:
+  mojo::AssociatedReceiver<input::mojom::RenderInputRouterDelegate> receiver_{
+      this};
 };
 
 class RenderWidgetHostViewAndroidTest : public RenderViewHostImplTestHarness {
@@ -232,7 +278,10 @@ void RenderWidgetHostViewAndroidTest::SetUp() {
   host_ = mock_host.get();
   render_view_host_ = new TestRenderViewHost(
       &contents()->GetPrimaryFrameTree(), site_instance_group_.get(),
-      contents()->GetSiteInstance()->GetStoragePartitionConfig(),
+      contents()
+          ->GetSiteInstance()
+          ->GetSecurityPrincipal()
+          .GetStoragePartitionConfig(),
       std::move(mock_host), contents(), process_->GetNextRoutingID(),
       process_->GetNextRoutingID(), nullptr,
       CreateRenderViewHostCase::kDefault);
@@ -278,6 +327,28 @@ TEST_F(RenderWidgetHostViewAndroidTest, NoSurfaceSynchronizationWhileEvicted) {
       cc::DeadlinePolicy::UseDefaultDeadline(), initial_local_surface_id));
 }
 
+TEST_F(RenderWidgetHostViewAndroidTest,
+       OcclusionStateTransitionWithThumbnailCapture) {
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+  EXPECT_TRUE(rwhva->IsShowing());
+
+  // 1. Occlude the view.
+  rwhva->WasOccluded();
+  EXPECT_FALSE(rwhva->IsShowing());
+
+  // 2. Trigger thumbnail capture (kHiddenButPainting).
+  rwhva->ShowWithVisibility(
+      blink::mojom::PageVisibilityState::kHiddenButPainting);
+
+  // The view must NOT be considered visible/showing to the user, preventing
+  // clobbering the occlusion state.
+  EXPECT_FALSE(rwhva->IsShowing());
+
+  // 3. Transition back to hidden/occluded (capture finishes).
+  rwhva->WasOccluded();
+  EXPECT_FALSE(rwhva->IsShowing());
+}
+
 // Tests insetting the Visual Viewport.
 TEST_F(RenderWidgetHostViewAndroidTest, InsetVisualViewport) {
   ui::TestViewAndroidDelegate test_view_android_delegate;
@@ -299,14 +370,14 @@ TEST_F(RenderWidgetHostViewAndroidTest, InsetVisualViewport) {
   // known to our ViewAndroid.
   test_view_android_delegate.InsetViewportBottom(100);
   EXPECT_EQ(100, rwhva->GetNativeView()->GetViewportInsetBottom());
-  rwhva->OnViewportInsetBottomChanged(env, nullptr);
+  rwhva->OnViewportInsetBottomChanged(env);
   viz::LocalSurfaceId inset_surface = rwhva->GetLocalSurfaceId();
   EXPECT_TRUE(inset_surface.IsNewerThan(original_local_surface_id));
 
   // Reset the bottom; should go back to the original inset and have a new
   // surface.
   test_view_android_delegate.InsetViewportBottom(0);
-  rwhva->OnViewportInsetBottomChanged(env, nullptr);
+  rwhva->OnViewportInsetBottomChanged(env);
   EXPECT_EQ(0, rwhva->GetNativeView()->GetViewportInsetBottom());
   EXPECT_TRUE(rwhva->GetLocalSurfaceId().IsNewerThan(inset_surface));
 }
@@ -323,7 +394,7 @@ TEST_F(RenderWidgetHostViewAndroidTest, HideWindowRemoveViewAddViewShowWindow) {
                    ->hide_layer_and_subtree());
 
   // Hiding the window should and removing the view should hide the layer.
-  window->get()->OnVisibilityChanged(nullptr, nullptr, false);
+  window->get()->OnVisibilityChanged(nullptr, false);
   GetParentView()->RemoveFromParent();
   EXPECT_TRUE(render_widget_host_view_android()->IsShowing());
   EXPECT_TRUE(render_widget_host_view_android()
@@ -334,7 +405,7 @@ TEST_F(RenderWidgetHostViewAndroidTest, HideWindowRemoveViewAddViewShowWindow) {
   // Adding the view back to a window and notifying the window is visible should
   // make the layer visible again.
   window->get()->AddChild(GetParentView());
-  window->get()->OnVisibilityChanged(nullptr, nullptr, true);
+  window->get()->OnVisibilityChanged(nullptr, true);
   EXPECT_TRUE(render_widget_host_view_android()->IsShowing());
   EXPECT_FALSE(render_widget_host_view_android()
                    ->GetNativeView()
@@ -423,29 +494,362 @@ TEST_F(RenderWidgetHostViewAndroidTest,
        EventsPassedToInputTransferHandlerBeforedGestureProvider) {
   RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
 
+  MockMojoRenderInputRouterDelegate rir_delegate;
+  rwhva->host()
+      ->mojo_rir_delegate()
+      ->SetRenderInputRouterDelegateRemoteForTesting(
+          rir_delegate.GetPendingRemote());
+
   MockInputTransferHandler* handler = new MockInputTransferHandler();
   rwhva->SetInputTransferHandlerForTesting(handler);
 
-  auto& gesture_provider = rwhva->GetGestureProvider();
+  auto gesture_provider = rwhva->GetGestureProvider();
 
   gfx::Point point(/*x=*/100, /*y=*/100);
-  ui::MotionEventAndroid::Pointer p(0, point.x(), point.y(), 10, 0, 0, 0, 0);
+  ui::MotionEventAndroid::Pointer p(0, point.x(), point.y(), 10, 0, 0, 0, 0, 0);
   JNIEnv* env = base::android::AttachCurrentThread();
   auto time_ns = (ui::EventTimeForNow() - base::TimeTicks()).InNanoseconds();
   auto action = ui::MotionEvent::Action::DOWN;
-  ui::MotionEventAndroidJava touch_down(
-      env, nullptr, 1.f, 0, 0, 0, base::TimeTicks::FromJavaNanoTime(time_ns),
-      ui::MotionEventAndroid::GetAndroidAction(action), 1, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, false, &p, nullptr);
 
-  EXPECT_CALL(*handler, OnTouchEvent(_)).WillOnce(Return(true));
-  EXPECT_EQ(gesture_provider.GetCurrentDownEvent(), nullptr);
-  rwhva->OnTouchEvent(touch_down);
-  EXPECT_EQ(gesture_provider.GetCurrentDownEvent(), nullptr);
+  base::android::ScopedJavaLocalRef<jobject> obj =
+      JNI_MotionEvent::Java_MotionEvent_obtain(
+          env, /*downTime=*/0, /*eventTime=*/0, /*action=*/0, /*x=*/0, /*y=*/0,
+          /*metaState=*/0);
+  auto touch_down = ui::MotionEventAndroidFactory::CreateFromJava(
+      env, obj,
+      /*pix_to_dip=*/1.f,
+      /*ticks_x=*/0,
+      /*ticks_y=*/0,
+      /*tick_multiplier=*/0,
+      /*oldest_event_time=*/base::TimeTicks::FromJavaNanoTime(time_ns),
+      /*android_action=*/ui::MotionEventAndroid::GetAndroidAction(action),
+      /*pointer_count=*/1,
+      /*history_size=*/0,
+      /*action_index=*/0,
+      /*android_action_button=*/0,
+      /*android_gesture_classification=*/0,
+      /*android_button_state=*/0,
+      /*raw_offset_x_pixels=*/0,
+      /*raw_offset_y_pixels=*/0,
+      /*for_touch_handle=*/false,
+      /*pointer0=*/&p,
+      /*pointer1=*/nullptr);
 
-  EXPECT_CALL(*handler, OnTouchEvent(_)).WillOnce(Return(false));
-  rwhva->OnTouchEvent(touch_down);
-  EXPECT_NE(gesture_provider.GetCurrentDownEvent(), nullptr);
+  EXPECT_CALL(*handler, OnTouchEventImpl(_, _)).WillOnce(Return(true));
+  EXPECT_EQ(gesture_provider->GetCurrentDownEvent(), nullptr);
+  rwhva->OnTouchEvent(*touch_down);
+  EXPECT_EQ(gesture_provider->GetCurrentDownEvent(), nullptr);
+
+  EXPECT_CALL(*handler, OnTouchEventImpl(_, _)).WillOnce(Return(false));
+  rwhva->OnTouchEvent(*touch_down);
+  EXPECT_NE(gesture_provider->GetCurrentDownEvent(), nullptr);
+}
+
+TEST_F(RenderWidgetHostViewAndroidTest, ResetGestureDetectionGeneratesCancel) {
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+
+  MockMojoRenderInputRouterDelegate rir_delegate;
+  rwhva->host()
+      ->mojo_rir_delegate()
+      ->SetRenderInputRouterDelegateRemoteForTesting(
+          rir_delegate.GetPendingRemote());
+
+  gfx::Point point(/*x=*/100, /*y=*/100);
+  ui::MotionEventAndroid::Pointer p(0, point.x(), point.y(), 10, 0, 0, 0, 0, 0);
+  JNIEnv* env = base::android::AttachCurrentThread();
+  auto time_ns = (ui::EventTimeForNow() - base::TimeTicks()).InNanoseconds();
+  auto action = ui::MotionEvent::Action::DOWN;
+
+  base::android::ScopedJavaLocalRef<jobject> obj =
+      JNI_MotionEvent::Java_MotionEvent_obtain(
+          env, /*downTime=*/time_ns / 1000000, /*eventTime=*/0, /*action=*/0,
+          /*x=*/0, /*y=*/0,
+          /*metaState=*/0);
+  auto touch_down = ui::MotionEventAndroidFactory::CreateFromJava(
+      env, obj,
+      /*pix_to_dip=*/1.f,
+      /*ticks_x=*/0,
+      /*ticks_y=*/0,
+      /*tick_multiplier=*/0,
+      /*oldest_event_time=*/base::TimeTicks::FromJavaNanoTime(time_ns),
+      /*latest_event_time=*/base::TimeTicks::FromJavaNanoTime(time_ns),
+      /*down_time_ms=*/base::TimeTicks::FromJavaNanoTime(time_ns),
+      /*android_action=*/ui::MotionEventAndroid::GetAndroidAction(action),
+      /*pointer_count=*/1,
+      /*history_size=*/0,
+      /*action_index=*/0,
+      /*android_action_button=*/0,
+      /*android_gesture_classification=*/0,
+      /*android_button_state=*/0,
+      /*raw_offset_x_pixels=*/0,
+      /*raw_offset_y_pixels=*/0,
+      /*for_touch_handle=*/false,
+      /*pointer0=*/&p,
+      /*pointer1=*/nullptr,
+      /*is_latest_event_time_resampled=*/false);
+  rwhva->OnTouchEvent(*touch_down);
+
+  auto gesture_provider = rwhva->GetGestureProvider();
+  EXPECT_NE(gesture_provider->GetCurrentDownEvent(), nullptr);
+
+  rwhva->ResetGestureDetection();
+
+  // The current down should have been reset as a result of processing cancel
+  // generated from `ResetGestureDetection` call.
+  EXPECT_EQ(gesture_provider->GetCurrentDownEvent(), nullptr);
+
+  MockRenderWidgetHost* mock_widget =
+      static_cast<MockRenderWidgetHost*>(rwhva->host());
+  std::optional<blink::WebTouchEvent> touch_event =
+      mock_widget->mock_render_input_router()
+          ->GetAndResetLastForwardedTouchEvent();
+  CHECK(touch_event.has_value());
+  CHECK_EQ(touch_event->GetType(), blink::WebInputEvent::Type::kTouchCancel);
+}
+
+TEST_F(RenderWidgetHostViewAndroidTest, ResetGestureDetectionOnViz) {
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+
+  MockInputTransferHandler* handler = new MockInputTransferHandler();
+  rwhva->SetInputTransferHandlerForTesting(handler);
+
+  MockMojoRenderInputRouterDelegate rir_delegate;
+  rwhva->host()
+      ->mojo_rir_delegate()
+      ->SetRenderInputRouterDelegateRemoteForTesting(
+          rir_delegate.GetPendingRemote());
+
+  EXPECT_CALL(*handler, IsTouchSequencePotentiallyActiveOnViz())
+      .WillOnce(Return(true));
+  EXPECT_CALL(rir_delegate, ResetGestureDetection).Times(1);
+
+  rwhva->ResetGestureDetection();
+
+  base::RunLoop().RunUntilIdle();
+}
+
+// Tests that when an input sequence is handled on browser with InputVizard,
+// browser sends a StopFlingingOnViz mojo call to VizCompositorThread.
+TEST_F(RenderWidgetHostViewAndroidTest, StopFlingingOnViz) {
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+
+  MockInputTransferHandler* handler = new MockInputTransferHandler();
+  rwhva->SetInputTransferHandlerForTesting(handler);
+
+  MockMojoRenderInputRouterDelegate rir_delegate;
+  rwhva->host()
+      ->mojo_rir_delegate()
+      ->SetRenderInputRouterDelegateRemoteForTesting(
+          rir_delegate.GetPendingRemote());
+
+  gfx::Point point(/*x=*/100, /*y=*/100);
+  ui::MotionEventAndroid::Pointer p(0, point.x(), point.y(), 10, 0, 0, 0, 0, 0);
+  JNIEnv* env = base::android::AttachCurrentThread();
+  auto time_ns = (ui::EventTimeForNow() - base::TimeTicks()).InNanoseconds();
+  auto action = ui::MotionEvent::Action::DOWN;
+
+  base::android::ScopedJavaLocalRef<jobject> obj1 =
+      JNI_MotionEvent::Java_MotionEvent_obtain(
+          env, /*downTime=*/0, /*eventTime=*/0, /*action=*/0, /*x=*/0, /*y=*/0,
+          /*metaState=*/0);
+  auto touch_down1 = ui::MotionEventAndroidFactory::CreateFromJava(
+      env, obj1,
+      /*pix_to_dip=*/1.f,
+      /*ticks_x=*/0,
+      /*ticks_y=*/0,
+      /*tick_multiplier=*/0,
+      /*oldest_event_time=*/base::TimeTicks::FromJavaNanoTime(time_ns),
+      /*android_action=*/ui::MotionEventAndroid::GetAndroidAction(action),
+      /*pointer_count=*/1,
+      /*history_size=*/0,
+      /*action_index=*/0,
+      /*android_action_button=*/0,
+      /*android_gesture_classification=*/0,
+      /*android_button_state=*/0,
+      /*raw_offset_x_pixels=*/0,
+      /*raw_offset_y_pixels=*/0,
+      /*for_touch_handle=*/false,
+      /*pointer0=*/&p,
+      /*pointer1=*/nullptr);
+
+  EXPECT_CALL(*handler, OnTouchEventImpl(_, _)).WillOnce(Return(true));
+  rwhva->OnTouchEvent(*touch_down1);
+
+  time_ns = (ui::EventTimeForNow() - base::TimeTicks()).InNanoseconds();
+
+  base::android::ScopedJavaLocalRef<jobject> obj2 =
+      JNI_MotionEvent::Java_MotionEvent_obtain(
+          env, /*downTime=*/0, /*eventTime=*/0, /*action=*/0, /*x=*/0, /*y=*/0,
+          /*metaState=*/0);
+  auto touch_down2 = ui::MotionEventAndroidFactory::CreateFromJava(
+      env, obj2,
+      /*pix_to_dip=*/1.f,
+      /*ticks_x=*/0,
+      /*ticks_y=*/0,
+      /*tick_multiplier=*/0,
+      /*oldest_event_time=*/base::TimeTicks::FromJavaNanoTime(time_ns),
+      /*android_action=*/ui::MotionEventAndroid::GetAndroidAction(action),
+      /*pointer_count=*/1,
+      /*history_size=*/0,
+      /*action_index=*/0,
+      /*android_action_button=*/0,
+      /*android_gesture_classification=*/0,
+      /*android_button_state=*/0,
+      /*raw_offset_x_pixels=*/0,
+      /*raw_offset_y_pixels=*/0,
+      /*for_touch_handle=*/false,
+      /*pointer0=*/&p,
+      /*pointer1=*/nullptr);
+
+  EXPECT_CALL(*handler, OnTouchEventImpl(_, _)).WillOnce(Return(false));
+  rwhva->OnTouchEvent(*touch_down2);
+  // Expect a call to StopFlingingOnViz mojo method if the input sequence hasn't
+  // been transferred to VizCompositorThread for handling.
+  EXPECT_CALL(rir_delegate, StopFlingingOnViz).Times(1);
+  base::RunLoop().RunUntilIdle();
+}
+
+TEST_F(RenderWidgetHostViewAndroidTest, UpdateControls) {
+  float dip_scale = 1.0f;
+  float top_height = 90.f;
+  float top_ratio = 1.f;
+  float top_min_height = 0.f;
+  float bottom_height = 50.f;
+  float bottom_ratio = 1.f;
+  float bottom_min_height = 0.f;
+
+  // Get the test view instance from the fixture.
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+
+  // 1. First call should return true as controls are uninitialized.
+  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, top_height, top_ratio,
+                                    top_min_height, bottom_height, bottom_ratio,
+                                    bottom_min_height));
+
+  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, top_height, top_ratio,
+                                     top_min_height, bottom_height,
+                                     bottom_ratio, bottom_min_height));
+
+  // 3. Change top_controls_height.
+  float new_top_height = 100.f;
+  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, top_ratio,
+                                    top_min_height, bottom_height, bottom_ratio,
+                                    bottom_min_height));
+  // Call again with same values, should return false.
+  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, top_ratio,
+                                     top_min_height, bottom_height,
+                                     bottom_ratio, bottom_min_height));
+
+  // 4. Change top_controls_shown_ratio.
+  float new_top_ratio = 0.5f;
+  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                    top_min_height, bottom_height, bottom_ratio,
+                                    bottom_min_height));
+  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                     top_min_height, bottom_height,
+                                     bottom_ratio, bottom_min_height));
+
+  // 5. Change top_controls_min_height_offset.
+  float new_top_min_height = 10.f;
+  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                    new_top_min_height, bottom_height,
+                                    bottom_ratio, bottom_min_height));
+  // Call again with same values, should return false.
+  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                     new_top_min_height, bottom_height,
+                                     bottom_ratio, bottom_min_height));
+
+  // 6. Change bottom_controls_shown_ratio.
+  float new_bottom_ratio = 0.0f;
+  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                    new_top_min_height, bottom_height,
+                                    new_bottom_ratio, bottom_min_height));
+
+  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                     new_top_min_height, bottom_height,
+                                     new_bottom_ratio, bottom_min_height));
+
+  // 7. Change bottom_controls_height while at 0% shown ratio.
+  float new_bottom_height = 60.f;
+  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                    new_top_min_height, new_bottom_height,
+                                    new_bottom_ratio, bottom_min_height));
+  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                     new_top_min_height, new_bottom_height,
+                                     new_bottom_ratio, bottom_min_height));
+
+  // 8. Change bottom_controls_min_height_offset.
+  float new_bottom_min_height = 10.f;
+  EXPECT_TRUE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                    new_top_min_height, new_bottom_height,
+                                    new_bottom_ratio, new_bottom_min_height));
+  EXPECT_FALSE(rwhva->UpdateControls(dip_scale, new_top_height, new_top_ratio,
+                                     new_top_min_height, new_bottom_height,
+                                     new_bottom_ratio, new_bottom_min_height));
+}
+
+// Test for scaling.
+class RenderWidgetHostViewAndroidScalingTest
+    : public RenderWidgetHostViewAndroidTest {
+ public:
+  RenderWidgetHostViewAndroidScalingTest() = default;
+  ~RenderWidgetHostViewAndroidScalingTest() override = default;
+
+  void SetScreenInfo(display::ScreenInfo screen_info) {
+    static_cast<CustomScreenInfoRenderWidgetHostViewAndroid*>(
+        render_widget_host_view_android())
+        ->SetScreenInfo(screen_info);
+  }
+
+  void OnPhysicalBackingSizeChanged(const gfx::Size& size) {
+    render_widget_host_view_android()
+        ->GetNativeView()
+        ->OnPhysicalBackingSizeChanged(size);
+  }
+
+  void OnVisibleViewportSizeChanged(int width, int height) {
+    GetParentView()->OnSizeChanged(width, height);
+  }
+
+ protected:
+  RenderWidgetHostViewAndroid* CreateRenderWidgetHostViewAndroid(
+      RenderWidgetHostImpl* widget_host) override {
+    return new CustomScreenInfoRenderWidgetHostViewAndroid(
+        widget_host, GetParentView(), GetParentLayer());
+  }
+};
+
+TEST_F(RenderWidgetHostViewAndroidScalingTest, UpdateOverrideScale) {
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+  ui::ViewAndroid* view = rwhva->GetNativeView();
+
+  const gfx::Size view_size_dip(100, 200);
+  const gfx::Size view_size_px =
+      ScaleToFlooredSize(view_size_dip, view->GetDipScale());
+  OnVisibleViewportSizeChanged(view_size_dip.width(), view_size_dip.height());
+
+  const gfx::Size backing_size_px(200, 400);
+  OnPhysicalBackingSizeChanged(backing_size_px);
+  EXPECT_EQ(backing_size_px, rwhva->GetCompositorViewportPixelSize());
+  EXPECT_EQ(view_size_dip, rwhva->GetRequestedRendererSize());
+  EXPECT_EQ(view_size_px, rwhva->GetRequestedRendererSizeDevicePx());
+  EXPECT_EQ(view_size_dip, rwhva->GetVisibleViewportSize());
+  EXPECT_EQ(view_size_px, rwhva->GetVisibleViewportSizeDevicePx());
+
+  display::ScreenInfo screen_info;
+  screen_info.device_scale_factor = 3.0f;
+  SetScreenInfo(screen_info);
+  EXPECT_EQ(3.0f, rwhva->GetDeviceScaleFactor());
+
+  const gfx::Size scaled_view_size_px = ScaleToFlooredSize(
+      view_size_dip, view->GetDipScale() * screen_info.device_scale_factor);
+  const gfx::Size scaled_backing_size_px =
+      ScaleToFlooredSize(backing_size_px, screen_info.device_scale_factor);
+  EXPECT_EQ(scaled_backing_size_px, rwhva->GetCompositorViewportPixelSize());
+  EXPECT_EQ(view_size_dip, rwhva->GetRequestedRendererSize());
+  EXPECT_EQ(scaled_view_size_px, rwhva->GetRequestedRendererSizeDevicePx());
+  EXPECT_EQ(view_size_dip, rwhva->GetVisibleViewportSize());
+  EXPECT_EQ(scaled_view_size_px, rwhva->GetVisibleViewportSizeDevicePx());
 }
 
 // Tests rotation and fullscreen cases that are supported by visual properties
@@ -962,7 +1366,7 @@ TEST_F(RenderWidgetHostViewAndroidRotationTest, PictureInPictureCloses) {
           post_physical_backing_local_surface_id);
 
   // No throttling when showing again, nor for completing the hidden rotation
-  rwhva->Show();
+  rwhva->ShowWithVisibility(PageVisibilityState::kVisible);
   EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
   OnPhysicalBackingSizeChanged(portrait_physical_backing);
   EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
@@ -1025,7 +1429,7 @@ TEST_F(RenderWidgetHostViewAndroidRotationTest, FakeVisibilityScreenRotation) {
   // When turning off the screen some versions of Android lie. They set us
   // visible even with the screen off, and rotate the ScreenInfo, but nothing
   // else. Followed up by hiding us again.
-  rwhva->Show();
+  rwhva->ShowWithVisibility(PageVisibilityState::kVisible);
   EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
   SetPortraitScreenInfo(/*rotation=*/true);
   EXPECT_FALSE(rwhva->CanSynchronizeVisualProperties());
@@ -1048,7 +1452,7 @@ TEST_F(RenderWidgetHostViewAndroidRotationTest, FakeVisibilityScreenRotation) {
 
   // When becoming visible we should have the correct layout already and not
   // need to advance the viz::LocalSurfaceId. We should also not be throttling.
-  rwhva->Show();
+  rwhva->ShowWithVisibility(PageVisibilityState::kVisible);
   auto post_show_local_surface_id = rwhva->GetLocalSurfaceId();
   EXPECT_EQ(post_show_local_surface_id, post_hidden_rotation_local_surface_id);
   EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
@@ -1083,6 +1487,30 @@ TEST_F(RenderWidgetHostViewAndroidRotationTest, ToggleFullscreenWithoutResize) {
   FireFullscreenTimeout();
   EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
   GetLocalSurfaceIdAndConfirmNewerThan(post_fullscreen_local_surface_id);
+}
+
+TEST_F(RenderWidgetHostViewAndroidRotationTest,
+       FullscreenEvictionWithoutAnySizeChanged) {
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+  // When we are evicted while hidden, the viz::LocalSurfaceId should be
+  // invalidated, and we should no longer throttle synchronizing.
+  rwhva->Hide();
+  rwhva->WasEvicted();
+  EXPECT_FALSE(rwhva->GetLocalSurfaceId().is_valid());
+  EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
+
+  EnterFullscreenMode();
+  // Entering fullscreen mode without `any_non_rotation_size_changed` blocks
+  // synchronizing.
+  EXPECT_FALSE(rwhva->CanSynchronizeVisualProperties());
+
+  // Here we have web page in background and in fullscreen
+  // with invalid surface and without ability to synchronizing.
+  // This shouldn't crash. And should generate new surface to bring web in
+  // visible state.
+  rwhva->ShowWithVisibility(blink::mojom::PageVisibilityState::kVisible);
+  EXPECT_TRUE(rwhva->GetLocalSurfaceId().is_valid());
+  EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
 }
 
 // Tests rotation and fullscreen cases that are supported by both the visual
@@ -1147,7 +1575,7 @@ TEST_P(RenderWidgetHostViewAndroidRotationKillswitchTest,
   // However we do not want to delay showing content until Android tells us of
   // the final state. So we advance the viz::LocalSurfaceId to have the newest
   // possible content ready.
-  rwhva->Show();
+  rwhva->ShowWithVisibility(PageVisibilityState::kVisible);
   GetLocalSurfaceIdAndConfirmNewerThan(initial_local_surface_id);
   // We do not block synchronization, as there is no platform consistency in
   // resize messages when becoming visible.
@@ -1188,7 +1616,7 @@ TEST_P(RenderWidgetHostViewAndroidRotationKillswitchTest,
   // OnPhysicalBackingSizeChanged. Due to this we advance the
   // viz::LocalSurfaceId upon becoming visible, to send all visual updates to
   // the Renderer.
-  rwhva->Show();
+  rwhva->ShowWithVisibility(PageVisibilityState::kVisible);
   GetLocalSurfaceIdAndConfirmNewerThan(initial_local_surface_id);
   // We do not block synchronization, as there is no platform consistency in
   // resize messages when becoming visible.
@@ -1386,6 +1814,34 @@ TEST_F(RenderWidgetHostViewAndroidMixedOrientationStartupTest,
   OnPhysicalBackingSizeChanged(fullscreen_portrait_physical_backing);
   EXPECT_TRUE(rwhva->CanSynchronizeVisualProperties());
   GetLocalSurfaceIdAndConfirmNewerThan(initial_local_surface_id);
+}
+
+TEST_F(RenderWidgetHostViewAndroidTest, LockUnlockPointer) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(blink::features::kPointerLockOnAndroid);
+  RenderWidgetHostViewAndroid* rwhva = render_widget_host_view_android();
+
+  // Create a window and attach, so that GetWindowAndroid() doesn't return
+  // null.
+  auto window = ui::WindowAndroid::CreateForTesting();
+  window->get()->AddChild(GetParentView());
+
+  ui::TestViewAndroidDelegate test_view_android_delegate;
+  test_view_android_delegate.SetupTestDelegate(rwhva->GetNativeView());
+  rwhva->Focus();
+
+  EXPECT_FALSE(rwhva->IsPointerLocked());
+
+  EXPECT_EQ(rwhva->LockPointer(false),
+            blink::mojom::PointerLockResult::kSuccess);
+  EXPECT_TRUE(rwhva->IsPointerLocked());
+
+  EXPECT_EQ(rwhva->ChangePointerLock(false),
+            blink::mojom::PointerLockResult::kSuccess);
+  EXPECT_TRUE(rwhva->IsPointerLocked());
+
+  rwhva->UnlockPointer();
+  EXPECT_FALSE(rwhva->IsPointerLocked());
 }
 
 }  // namespace content

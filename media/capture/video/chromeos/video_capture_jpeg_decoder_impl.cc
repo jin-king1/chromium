@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/task/sequenced_task_runner.h"
@@ -100,7 +101,7 @@ void VideoCaptureJpegDecoderImpl::DecodeCapturedData(
       return;
     }
   }
-  memcpy(in_shared_mapping_.memory(), data, in_buffer_size);
+  UNSAFE_TODO(memcpy(in_shared_mapping_.memory(), data, in_buffer_size));
 
   // No need to lock for |task_id_| since IsDecoding_Locked() is false.
   task_id_ = next_task_id_;
@@ -129,6 +130,7 @@ void VideoCaptureJpegDecoderImpl::DecodeCapturedData(
   out_frame_info->pixel_format = media::PIXEL_FORMAT_I420;
   out_frame_info->coded_size = dimensions;
   out_frame_info->visible_rect = gfx::Rect(dimensions);
+  out_frame_info->natural_size = dimensions;
   out_frame_info->metadata = VideoFrameMetadata();
   out_frame_info->metadata.frame_rate = frame_format.frame_rate;
   out_frame_info->metadata.reference_time = reference_time;

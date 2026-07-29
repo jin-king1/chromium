@@ -4,13 +4,16 @@
 
 #include "content/browser/indexed_db/instance/index_writer.h"
 
-#include <stddef.h>
-
+#include <cstdint>
+#include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
-#include "base/strings/utf_string_conversions.h"
-#include "content/browser/indexed_db/instance/backing_store.h"
+#include "base/strings/strcat.h"
+#include "base/types/expected_macros.h"
 #include "content/browser/indexed_db/instance/transaction.h"
+#include "content/browser/indexed_db/status.h"
 #include "third_party/blink/public/common/indexeddb/indexeddb_metadata.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom.h"
 
@@ -21,112 +24,77 @@ using blink::IndexedDBObjectStoreMetadata;
 
 namespace content::indexed_db {
 
-IndexWriter::IndexWriter(const IndexedDBIndexMetadata& index_metadata)
-    : index_metadata_(index_metadata) {}
+using Type = IndexWriterError::Type;
 
 IndexWriter::IndexWriter(const IndexedDBIndexMetadata& index_metadata,
-                         const std::vector<IndexedDBKey>& keys)
-    : index_metadata_(index_metadata), keys_(keys) {}
+                         std::vector<IndexedDBKey> keys)
+    : index_metadata_(index_metadata), keys_(std::move(keys)) {}
 
-IndexWriter::~IndexWriter() {}
+IndexWriter::~IndexWriter() = default;
 
-bool IndexWriter::VerifyIndexKeys(BackingStore* backing_store,
-                                  BackingStore::Transaction* transaction,
-                                  int64_t database_id,
-                                  int64_t object_store_id,
-                                  int64_t index_id,
-                                  bool* can_add_keys,
-                                  const IndexedDBKey& primary_key,
-                                  std::string* error_message) const {
-  *can_add_keys = false;
-  for (const auto& key : keys_) {
-    bool ok = AddingKeyAllowed(backing_store, transaction, database_id,
-                               object_store_id, index_id, key, primary_key,
-                               can_add_keys);
-    if (!ok) {
-      return false;
+base::expected<void, IndexWriterError> IndexWriter::VerifyIndexKeys(
+    BackingStore::Transaction* transaction,
+    int64_t object_store_id,
+    int64_t index_id,
+    const IndexedDBKey& primary_key) const {
+  for (const IndexedDBKey& key : keys_) {
+    if (!key.IsValid()) {
+      return base::unexpected(IndexWriterError{Type::kInvalidKey});
     }
-    if (!*can_add_keys) {
-      if (error_message) {
-        *error_message = "Unable to add key to index '" +
-                         base::UTF16ToUTF8(index_metadata_.name) +
-                         "': at least one key does not satisfy the uniqueness "
-                         "requirements.";
-      }
-      return true;
+    ASSIGN_OR_RETURN(
+        bool can_add_key,
+        AddingKeyAllowed(transaction, object_store_id, index_id, key,
+                         primary_key),
+        [](Status) { return IndexWriterError{Type::kBackingStoreError}; });
+    if (!can_add_key) {
+      return base::unexpected(IndexWriterError{
+          Type::kConstraintError,
+          base::StrCat({u"Unable to add key to index '", index_metadata_.name,
+                        u"': at least one key does not satisfy the uniqueness "
+                        u"requirements."})});
     }
   }
-  *can_add_keys = true;
-  return true;
+  return {};
 }
 
 Status IndexWriter::WriteIndexKeys(
     const BackingStore::RecordIdentifier& record_identifier,
-    BackingStore* backing_store,
     BackingStore::Transaction* transaction,
-    int64_t database_id,
     int64_t object_store_id) const {
   int64_t index_id = index_metadata_.id;
-  for (const auto& key : keys_) {
-    Status s = backing_store->PutIndexDataForRecord(transaction, database_id,
-                                                    object_store_id, index_id,
-                                                    key, record_identifier);
-    if (!s.ok()) {
-      return s;
-    }
+  for (const IndexedDBKey& key : keys_) {
+    IDB_RETURN_IF_ERROR(transaction->PutIndexDataForRecord(
+        object_store_id, index_id, key, record_identifier));
   }
   return Status::OK();
 }
 
-bool IndexWriter::AddingKeyAllowed(BackingStore* backing_store,
-                                   BackingStore::Transaction* transaction,
-                                   int64_t database_id,
-                                   int64_t object_store_id,
-                                   int64_t index_id,
-                                   const IndexedDBKey& index_key,
-                                   const IndexedDBKey& primary_key,
-                                   bool* allowed) const {
-  *allowed = false;
+StatusOr<bool> IndexWriter::AddingKeyAllowed(
+    BackingStore::Transaction* transaction,
+    int64_t object_store_id,
+    int64_t index_id,
+    const IndexedDBKey& index_key,
+    const IndexedDBKey& primary_key) const {
   if (!index_metadata_.unique) {
-    *allowed = true;
     return true;
   }
-
-  std::unique_ptr<IndexedDBKey> found_primary_key;
-  bool found = false;
-  Status s = backing_store->KeyExistsInIndex(
-      transaction, database_id, object_store_id, index_id, index_key,
-      &found_primary_key, &found);
-  if (!s.ok()) {
-    return false;
-  }
-  if (!found ||
-      (primary_key.IsValid() && found_primary_key->Equals(primary_key))) {
-    *allowed = true;
-  }
-  return true;
+  ASSIGN_OR_RETURN(IndexedDBKey found_primary_key,
+                   transaction->GetFirstPrimaryKeyForIndexKey(
+                       object_store_id, index_id, index_key));
+  return !found_primary_key.IsValid() ||
+         (primary_key.IsValid() && found_primary_key.Equals(primary_key));
 }
 
-bool MakeIndexWriters(Transaction* transaction,
-                      BackingStore* backing_store,
-                      int64_t database_id,
-                      const IndexedDBObjectStoreMetadata& object_store,
-                      const IndexedDBKey& primary_key,  // makes a copy
-                      bool key_was_generated,
-                      const std::vector<IndexedDBIndexKeys>& index_keys,
-                      std::vector<std::unique_ptr<IndexWriter>>* index_writers,
-                      std::string* error_message,
-                      bool* completed) {
-  *completed = false;
+base::expected<std::vector<std::unique_ptr<IndexWriter>>, IndexWriterError>
+MakeIndexWriters(Transaction* transaction,
+                 const IndexedDBObjectStoreMetadata& object_store,
+                 const IndexedDBKey& primary_key,
+                 bool key_was_generated,
+                 std::vector<IndexedDBIndexKeys> index_keys) {
+  std::vector<std::unique_ptr<IndexWriter>> index_writers;
 
-  for (const auto& it : index_keys) {
-    auto found = object_store.indexes.find(it.id);
-    if (found == object_store.indexes.end()) {
-      continue;
-    }
-    const IndexedDBIndexMetadata& index = found->second;
-    // A copy is made because additional keys may be added.
-    std::vector<IndexedDBKey> keys = it.keys;
+  for (IndexedDBIndexKeys& it : index_keys) {
+    const IndexedDBIndexMetadata& index = object_store.indexes.at(it.id);
 
     // If the object_store is using a key generator to produce the primary key,
     // and the store uses in-line keys, index key paths may reference it.
@@ -134,38 +102,28 @@ bool MakeIndexWriters(Transaction* transaction,
       if (index.key_path == object_store.key_path) {
         // The index key path is the same as the store's key path - no index key
         // will have been sent by the front end, so synthesize one here.
-        keys.push_back(primary_key);
-
+        it.keys.emplace_back(primary_key.Clone());
       } else if (index.key_path.type() == blink::mojom::IDBKeyPathType::Array) {
         // An index with compound keys for a store with a key generator and
         // in-line keys may need subkeys filled in. These are represented as
         // "holes", which are not otherwise allowed.
-        for (size_t i = 0; i < keys.size(); ++i) {
-          if (keys[i].HasHoles()) {
-            keys[i] = keys[i].FillHoles(primary_key);
+        for (IndexedDBKey& key : it.keys) {
+          if (key.HasHoles()) {
+            key = key.FillHoles(primary_key);
           }
         }
       }
     }
 
-    std::unique_ptr<IndexWriter> index_writer(
-        std::make_unique<IndexWriter>(index, std::move(keys)));
-    bool can_add_keys = false;
-    bool backing_store_success = index_writer->VerifyIndexKeys(
-        backing_store, transaction->BackingStoreTransaction(), database_id,
-        object_store.id, index.id, &can_add_keys, primary_key, error_message);
-    if (!backing_store_success) {
-      return false;
-    }
-    if (!can_add_keys) {
-      return true;
-    }
-
-    index_writers->push_back(std::move(index_writer));
+    auto index_writer =
+        std::make_unique<IndexWriter>(index, std::move(it.keys));
+    RETURN_IF_ERROR(
+        index_writer->VerifyIndexKeys(transaction->BackingStoreTransaction(),
+                                      object_store.id, index.id, primary_key));
+    index_writers.emplace_back(std::move(index_writer));
   }
 
-  *completed = true;
-  return true;
+  return index_writers;
 }
 
 }  // namespace content::indexed_db

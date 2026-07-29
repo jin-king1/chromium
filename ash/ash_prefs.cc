@@ -4,6 +4,8 @@
 
 #include "ash/public/cpp/ash_prefs.h"
 
+#include <utility>
+
 #include "ash/accelerators/accelerator_prefs.h"
 #include "ash/accelerators/ash_accelerator_configuration.h"
 #include "ash/accelerators/system_shortcut_behavior_policy.h"
@@ -13,7 +15,6 @@
 #include "ash/ambient/managed/screensaver_images_policy_handler.h"
 #include "ash/app_list/app_list_controller_impl.h"
 #include "ash/app_list/views/app_list_nudge_controller.h"
-#include "ash/assistant/assistant_controller_impl.h"
 #include "ash/birch/birch_coral_provider.h"
 #include "ash/birch/birch_item.h"
 #include "ash/birch/birch_model.h"
@@ -63,7 +64,6 @@
 #include "ash/system/input_device_settings/input_device_settings_metadata_manager.h"
 #include "ash/system/input_device_settings/input_device_settings_notification_controller.h"
 #include "ash/system/input_device_settings/input_device_tracker.h"
-#include "ash/system/input_device_settings/keyboard_modifier_metrics_recorder.h"
 #include "ash/system/keyboard_brightness/keyboard_backlight_color_controller.h"
 #include "ash/system/keyboard_brightness/keyboard_brightness_controller.h"
 #include "ash/system/mahi/mahi_nudge_controller.h"
@@ -102,11 +102,11 @@
 #include "ash/wm/overview/birch/birch_bar_controller.h"
 #include "ash/wm/overview/birch/birch_privacy_nudge_controller.h"
 #include "ash/wm/window_cycle/window_cycle_controller.h"
+#include "ash/wm/window_restore/window_restore_util.h"
 #include "ash/wm/window_util.h"
 #include "chromeos/ash/components/boca/boca_role_util.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/editor_enterprise_policy_enums.h"
 #include "chromeos/ash/components/growth/campaigns_manager.h"
-#include "chromeos/ash/services/assistant/public/cpp/assistant_prefs.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_prefs.h"
 #include "chromeos/ui/frame/multitask_menu/multitask_menu_nudge_controller.h"
@@ -129,7 +129,6 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry,
   AppListControllerImpl::RegisterProfilePrefs(registry);
   AppListNudgeController::RegisterProfilePrefs(registry);
   AshAcceleratorConfiguration::RegisterProfilePrefs(registry);
-  AssistantControllerImpl::RegisterProfilePrefs(registry);
   AutozoomControllerImpl::RegisterProfilePrefs(registry);
   AutozoomNudgeController::RegisterProfilePrefs(registry);
   AmbientController::RegisterProfilePrefs(registry);
@@ -156,6 +155,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry,
   DockedMagnifierController::RegisterProfilePrefs(registry);
   FeatureDiscoveryDurationReporterImpl::RegisterProfilePrefs(registry);
   FocusModeController::RegisterProfilePrefs(registry);
+  RegisterProfilePrefsFullRestore(registry);
   FullscreenController::RegisterProfilePrefs(registry);
   GameDashboardController::RegisterProfilePrefs(registry);
   GeolocationController::RegisterProfilePrefs(registry);
@@ -172,7 +172,6 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry,
   LogoutConfirmationController::RegisterProfilePrefs(registry);
   KeyboardBacklightColorController::RegisterPrefs(registry);
   KeyboardControllerImpl::RegisterProfilePrefs(registry, country);
-  KeyboardModifierMetricsRecorder::RegisterProfilePrefs(registry, for_test);
   MahiNudgeController::RegisterProfilePrefs(registry);
   MediaControllerImpl::RegisterProfilePrefs(registry);
   MessageCenterController::RegisterProfilePrefs(registry);
@@ -208,7 +207,6 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry,
 
   // Provide prefs registered in the browser for ash_unittests.
   if (for_test) {
-    assistant::prefs::RegisterProfilePrefs(registry);
     quick_answers::prefs::RegisterProfilePrefs(registry);
     registry->RegisterBooleanPref(prefs::kMouseReverseScroll, false);
     registry->RegisterBooleanPref(prefs::kSendFunctionKeys, false);
@@ -221,14 +219,14 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry,
             mahi_utils::HmrEnterprisePolicy::kAllowedWithModelImprovement));
     registry->RegisterIntegerPref(
         prefs::kHmwManagedSettings,
-        base::to_underlying(chromeos::editor_menu::EditorEnterprisePolicy::
-                                kAllowedWithModelImprovement));
+        std::to_underlying(chromeos::editor_menu::EditorEnterprisePolicy::
+                               kAllowedWithModelImprovement));
     registry->RegisterBooleanPref(prefs::kOrcaEnabled, true);
     registry->RegisterBooleanPref(prefs::kOrcaFeedbackEnabled, true);
     registry->RegisterBooleanPref(prefs::kLobsterEnabled, true);
     registry->RegisterIntegerPref(
         prefs::kLobsterEnterprisePolicySettings,
-        base::to_underlying(
+        std::to_underlying(
             ash::LobsterEnterprisePolicyValue::kAllowedWithModelImprovement));
     registry->RegisterBooleanPref(::prefs::kLiveCaptionEnabled, false);
     registry->RegisterListPref(
@@ -242,7 +240,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry,
     registry->RegisterIntegerPref(prefs::kAltEventRemappedToRightClick, 0);
     registry->RegisterIntegerPref(
         prefs::kHMRConsentStatus,
-        base::to_underlying(chromeos::HMRConsentStatus::kUnset));
+        std::to_underlying(chromeos::HMRConsentStatus::kUnset));
     registry->RegisterIntegerPref(prefs::kHMRConsentWindowDismissCount, 0);
     registry->RegisterIntegerPref(prefs::kSearchEventRemappedToRightClick, 0);
     registry->RegisterIntegerPref(prefs::kKeyEventRemappedToSixPackDelete, 0);
@@ -250,14 +248,10 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry,
     registry->RegisterIntegerPref(prefs::kKeyEventRemappedToSixPackHome, 0);
     registry->RegisterIntegerPref(prefs::kKeyEventRemappedToSixPackPageUp, 0);
     registry->RegisterIntegerPref(prefs::kKeyEventRemappedToSixPackPageDown, 0);
-    registry->RegisterBooleanPref(prefs::kShowInformedRestoreOnboarding, false);
-    registry->RegisterIntegerPref(prefs::kInformedRestoreNudgeShownCount, 0);
-    registry->RegisterTimePref(prefs::kInformedRestoreNudgeLastShown,
-                               base::Time());
     registry->RegisterDictionaryPref(prefs::kEmojiPickerHistory);
     registry->RegisterIntegerPref(
         prefs::kGenAISmartGroupingSettings,
-        base::to_underlying(coral_util::GenAISmartGroupingSettings::kAllowed));
+        std::to_underlying(coral_util::GenAISmartGroupingSettings::kAllowed));
   }
 }
 

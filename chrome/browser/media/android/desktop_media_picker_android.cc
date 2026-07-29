@@ -4,7 +4,7 @@
 
 #include "chrome/browser/media/android/desktop_media_picker_android.h"
 
-#include "chrome/browser/media/android/media_capture_picker_dialog_bridge.h"
+#include "chrome/browser/media/android/media_capture_picker_manager_bridge.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_manager.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
@@ -24,13 +24,12 @@ void DesktopMediaPickerAndroid::Show(
 
   // We outlive `dialog_bridge_` so it can take a raw pointer to us.
   dialog_bridge_.Show(
-      params.web_contents, params.app_name, params.request_audio,
-      base::BindOnce(&DesktopMediaPickerAndroid::NotifyDialogResult,
-                     base::Unretained(this)));
+      params, base::BindOnce(&DesktopMediaPickerAndroid::NotifyDialogResult,
+                             base::Unretained(this)));
 }
 
 void DesktopMediaPickerAndroid::NotifyDialogResult(
-    const content::DesktopMediaID& source) {
+    DoneCallbackArgumentType source) {
   auto callback = std::move(callback_);
   DesktopMediaPickerManager::Get()->OnHideDialog();
 
@@ -41,7 +40,7 @@ void DesktopMediaPickerAndroid::NotifyDialogResult(
   // Notify the |callback_| asynchronously because it may need to destroy
   // DesktopMediaPicker.
   content::GetUIThreadTaskRunner({})->PostTask(
-      FROM_HERE, base::BindOnce(std::move(callback), source));
+      FROM_HERE, base::BindOnce(std::move(callback), std::move(source)));
 }
 
 // static

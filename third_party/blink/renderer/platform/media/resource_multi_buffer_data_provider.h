@@ -16,7 +16,6 @@
 #include "third_party/blink/public/platform/web_url_request.h"
 #include "third_party/blink/public/web/web_associated_url_loader_client.h"
 #include "third_party/blink/public/web/web_frame.h"
-#include "third_party/blink/renderer/platform/allow_discouraged_type.h"
 #include "third_party/blink/renderer/platform/media/multi_buffer.h"
 #include "third_party/blink/renderer/platform/media/url_index.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
@@ -63,7 +62,6 @@ class PLATFORM_EXPORT ResourceMultiBufferDataProvider
   void DidReceiveData(base::span<const char> data_length) override;
   void DidFinishLoading() override;
   void DidFail(const WebURLError&) override;
-  void Invalidate() override;
 
   // Use protected instead of private for testing purposes.
  protected:
@@ -128,7 +126,7 @@ class PLATFORM_EXPORT ResourceMultiBufferDataProvider
   // Is the client an audio element?
   bool is_client_audio_element_ = false;
 
-  bool invalidated_ = false;
+  size_t total_bytes_received_ = 0;
 
   const scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
 

@@ -71,9 +71,9 @@ export class CellularRoamingToggleButtonElement extends
     ];
   }
 
-  disabled: boolean;
-  managedProperties: ManagedProperties|undefined;
-  private isRoamingAllowedForNetwork_: boolean;
+  declare disabled: boolean;
+  declare managedProperties: ManagedProperties|undefined;
+  declare private isRoamingAllowedForNetwork_: boolean;
   private networkConfig_: CrosNetworkConfigInterface;
 
   constructor() {
@@ -97,8 +97,7 @@ export class CellularRoamingToggleButtonElement extends
         !this.managedProperties.typeProperties.cellular!.allowRoaming) {
       return;
     }
-    const config =
-        OncMojo.getDefaultConfigProperties(this.managedProperties.type);
+    const config = OncMojo.getBaselineConfigProperties(this.managedProperties);
     config.typeConfig.cellular = {
       roaming: {
         allowRoaming: this.isRoamingAllowedForNetwork_,

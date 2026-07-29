@@ -10,8 +10,10 @@
 #include <sys/resource.h>
 #include <sys/wait.h>
 
+#include <algorithm>
 #include <utility>
 
+#include "base/check_op.h"
 #include "base/clang_profiling_buildflags.h"
 #include "base/files/scoped_file.h"
 #include "base/logging.h"
@@ -20,7 +22,7 @@
 #include "base/process/kill.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -41,6 +43,8 @@ namespace {
 bool WaitpidWithTimeout(base::ProcessHandle handle,
                         int* status,
                         base::TimeDelta wait) {
+  DCHECK_GE(wait, base::TimeDelta());
+
   // This POSIX version of this function only guarantees that we wait no less
   // than |wait| for the process to exit.  The child process may
   // exit sometime before the timeout has ended but we may still block for up
@@ -107,6 +111,7 @@ bool WaitpidWithTimeout(base::ProcessHandle handle,
 bool WaitForSingleNonChildProcess(base::ProcessHandle handle,
                                   base::TimeDelta wait) {
   DCHECK_GT(handle, 0);
+  DCHECK_GE(wait, base::TimeDelta());
 
   base::ScopedFD kq(kqueue());
   if (!kq.is_valid()) {
@@ -195,9 +200,6 @@ namespace base {
 Process::Process(ProcessHandle handle) : process_(handle) {}
 
 Process::Process(Process&& other) : process_(other.process_) {
-#if BUILDFLAG(IS_CHROMEOS)
-  unique_token_ = std::move(other.unique_token_);
-#endif
 #if BUILDFLAG(IS_IOS) && BUILDFLAG(USE_BLINK) && TARGET_OS_SIMULATOR
   content_process_ = other.content_process_;
 #endif
@@ -207,9 +209,6 @@ Process::Process(Process&& other) : process_(other.process_) {
 
 Process& Process::operator=(Process&& other) {
   process_ = other.process_;
-#if BUILDFLAG(IS_CHROMEOS)
-  unique_token_ = std::move(other.unique_token_);
-#endif
 #if BUILDFLAG(IS_IOS) && BUILDFLAG(USE_BLINK) && TARGET_OS_SIMULATOR
   content_process_ = other.content_process_;
 #endif
@@ -262,9 +261,7 @@ Process Process::Duplicate() const {
   }
 
   Process duplicate = Process(process_);
-#if BUILDFLAG(IS_CHROMEOS)
-  duplicate.unique_token_ = unique_token_;
-#elif BUILDFLAG(IS_IOS) && BUILDFLAG(USE_BLINK) && TARGET_OS_SIMULATOR
+#if BUILDFLAG(IS_IOS) && BUILDFLAG(USE_BLINK) && TARGET_OS_SIMULATOR
   duplicate.content_process_ = content_process_;
 #endif
   return duplicate;
@@ -301,17 +298,12 @@ bool Process::Terminate(int exit_code, bool wait) const {
 
 #if !BUILDFLAG(IS_IOS) || (BUILDFLAG(USE_BLINK) && TARGET_OS_SIMULATOR)
 bool Process::TerminateInternal(int exit_code, bool wait) const {
-  // RESULT_CODE_KILLED_BAD_MESSAGE == 3, but layering prevents its use.
   // |wait| is always false when terminating badly-behaved processes.
-  const bool maybe_compromised = !wait && exit_code == 3;
+  const bool maybe_compromised =
+      !wait && exit_code == Process::kResultCodeKilledBadMessage;
   if (maybe_compromised) {
     // Forcibly terminate the process immediately.
-    const bool was_killed = kill(process_, SIGKILL) != 0;
-#if BUILDFLAG(IS_CHROMEOS)
-    if (was_killed) {
-      CleanUpProcessAsync();
-    }
-#endif
+    const bool was_killed = kill(process_, SIGKILL) == 0;
     DPLOG_IF(ERROR, !was_killed) << "Unable to terminate process " << process_;
     return was_killed;
   }
@@ -321,10 +313,6 @@ bool Process::TerminateInternal(int exit_code, bool wait) const {
     DPLOG(ERROR) << "Unable to terminate process " << process_;
     return false;
   }
-
-#if BUILDFLAG(IS_CHROMEOS)
-  CleanUpProcessAsync();
-#endif
 
   if (!wait || WaitForExitWithTimeout(Seconds(60), nullptr)) {
     return true;
@@ -343,6 +331,7 @@ bool Process::WaitForExit(int* exit_code) const {
 
 #if !BUILDFLAG(IS_IOS)
 bool Process::WaitForExitWithTimeout(TimeDelta timeout, int* exit_code) const {
+  timeout = std::max(timeout, TimeDelta());
   if (!timeout.is_zero()) {
     // Assert that this thread is allowed to wait below. This intentionally
     // doesn't use ScopedBlockingCallWithBaseSyncPrimitives because the process
@@ -367,6 +356,8 @@ bool Process::WaitForExitWithTimeout(TimeDelta timeout, int* exit_code) const {
 bool Process::WaitForExitWithTimeoutImpl(base::ProcessHandle handle,
                                          int* exit_code,
                                          base::TimeDelta timeout) const {
+  DCHECK_GE(timeout, TimeDelta());
+
   const base::ProcessHandle our_pid = base::GetCurrentProcessHandle();
   if (handle == our_pid) {
     // We won't be able to wait for ourselves to exit.
@@ -408,11 +399,7 @@ bool Process::WaitForExitWithTimeoutImpl(base::ProcessHandle handle,
 }
 #endif
 
-void Process::Exited(int exit_code) const {
-#if BUILDFLAG(IS_CHROMEOS)
-  CleanUpProcessAsync();
-#endif
-}
+void Process::Exited(int exit_code) const {}
 
 int Process::GetOSPriority() const {
   DCHECK(IsValid());

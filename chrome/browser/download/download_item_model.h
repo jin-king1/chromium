@@ -28,7 +28,8 @@ class DownloadItemModel : public DownloadUIModel,
                           public download::DownloadItem::Observer {
  public:
 #if !BUILDFLAG(IS_ANDROID)
-  // How long an ephemeral warning is displayed on the download bubble.
+  // How long an ephemeral warning is displayed on the download bubble on
+  // Desktop.
   static constexpr base::TimeDelta kEphemeralWarningLifetimeOnBubble =
       base::Minutes(5);
 #endif
@@ -41,6 +42,8 @@ class DownloadItemModel : public DownloadUIModel,
 
   // Constructs a DownloadItemModel. The caller must ensure that |download|
   // outlives this object.
+  // TODO(crbug.com/401528883): Make all usages explicitly specify which strings
+  // are desired by providing a StatusTextBuilderBase instance.
   explicit DownloadItemModel(download::DownloadItem* download);
 
   DownloadItemModel(download::DownloadItem* download,
@@ -64,10 +67,7 @@ class DownloadItemModel : public DownloadUIModel,
   bool MightBeMalicious() const override;
   bool IsMalicious() const override;
   bool IsInsecure() const override;
-  bool ShouldRemoveFromShelfWhenComplete() const override;
   bool ShouldShowDownloadStartedAnimation() const override;
-  bool ShouldShowInShelf() const override;
-  void SetShouldShowInShelf(bool should_show) override;
   bool ShouldNotifyUI() const override;
   bool WasUINotified() const override;
   void SetWasUINotified(bool should_notify) override;
@@ -129,9 +129,12 @@ class DownloadItemModel : public DownloadUIModel,
                       DownloadCommands::Command command) override;
   TailoredWarningType GetTailoredWarningType() const override;
   DangerUiPattern GetDangerUiPattern() const override;
+  bool ShouldShowInUi() const override;
+  void SetShouldShowInUi(bool should_show) override;
   bool ShouldShowInBubble() const override;
-  bool IsEphemeralWarning() const override;
 #endif
+
+  bool IsEphemeralWarning() const override;
 
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
   void CompleteSafeBrowsingScan() override;

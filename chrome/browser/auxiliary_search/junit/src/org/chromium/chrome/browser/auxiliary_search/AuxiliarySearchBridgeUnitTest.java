@@ -8,7 +8,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -18,7 +17,6 @@ import static org.mockito.Mockito.when;
 
 import androidx.test.filters.SmallTest;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -32,11 +30,9 @@ import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.ui.test.util.MockitoHelper;
 import org.chromium.url.JUnitTestGURLs;
 
 import java.util.ArrayList;
@@ -45,11 +41,12 @@ import java.util.List;
 /** Unit tests for {@link AuxiliarySearchBridge} */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@EnableFeatures({ChromeFeatureList.ANDROID_APP_INTEGRATION})
 public final class AuxiliarySearchBridgeUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     private static final int TAB_ID_1 = 1;
+    // Arbitrary non-0 value.
+    private static final long NATIVE_BRIDGE = 10L;
 
     @Mock private AuxiliarySearchBridge.Natives mMockAuxiliarySearchBridgeJni;
     @Mock private Profile mProfile;
@@ -60,27 +57,16 @@ public final class AuxiliarySearchBridgeUnitTest {
     @Before
     public void setUp() {
         AuxiliarySearchBridgeJni.setInstanceForTesting(mMockAuxiliarySearchBridgeJni);
-        when(mMockAuxiliarySearchBridgeJni.getForProfile(mProfile)).thenReturn(10L);
+        when(mMockAuxiliarySearchBridgeJni.getForProfile(mProfile)).thenReturn(NATIVE_BRIDGE);
 
         doReturn(false).when(mProfile).isOffTheRecord();
         mBridge = new AuxiliarySearchBridge(mProfile);
         assertNotNull(mBridge);
     }
 
-    @After
-    public void tearDown() {}
-
     @Test
     @SmallTest
     public void getForProfileTest() {
-        verify(mMockAuxiliarySearchBridgeJni).getForProfile(mProfile);
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures(ChromeFeatureList.ANDROID_APP_INTEGRATION)
-    @EnableFeatures(ChromeFeatureList.ANDROID_APP_INTEGRATION_V2)
-    public void getForProfileTestV2() {
         verify(mMockAuxiliarySearchBridgeJni).getForProfile(mProfile);
     }
 
@@ -93,38 +79,21 @@ public final class AuxiliarySearchBridgeUnitTest {
         Tab tab = mock(Tab.class);
         List<Tab> tabList = new ArrayList<>();
         tabList.add(tab);
-        Callback callback = mock(Callback.class);
+        Callback<List<Tab>> callback = MockitoHelper.mockCallback();
         ThreadUtils.runOnUiThreadBlocking(() -> mBridge.getNonSensitiveTabs(tabList, callback));
 
         verify(callback).onResult(eq(null));
+        // JNI getNonSensitiveTabs takes Callback<Object[]> and the public
+        // method wraps our Callback<List<Tab>> before calling it, so eq(callback)
+        // would never match. Since this is a verify(..., never()), any() is fine.
         verify(mMockAuxiliarySearchBridgeJni, never())
-                .getNonSensitiveTabs(anyLong(), any(), eq(callback));
+                .getNonSensitiveTabs(eq(NATIVE_BRIDGE), any(), any());
     }
 
     @Test
     @SmallTest
     public void testAddDataEntry() {
-        List<AuxiliarySearchDataEntry> entryList = new ArrayList<>();
-
-        mDataEntry1 =
-                new AuxiliarySearchDataEntry(
-                        /* type= */ AuxiliarySearchEntryType.TAB,
-                        /* url= */ JUnitTestGURLs.URL_1,
-                        /* title= */ "Title 1",
-                        /* lastActiveTime= */ TimeUtils.uptimeMillis(),
-                        /* tabId= */ TAB_ID_1,
-                        /* appId= */ null,
-                        /* visitId= */ -1);
-
-        mBridge.addDataEntry(
-                mDataEntry1.type,
-                mDataEntry1.url,
-                mDataEntry1.title,
-                mDataEntry1.lastActiveTime,
-                mDataEntry1.tabId,
-                mDataEntry1.appId,
-                mDataEntry1.visitId,
-                entryList);
+        List<AuxiliarySearchDataEntry> entryList = createEntryList();
 
         assertEquals(1, entryList.size());
 
@@ -137,20 +106,20 @@ public final class AuxiliarySearchBridgeUnitTest {
     @SmallTest
     public void testOnDataReady() {
         List<AuxiliarySearchDataEntry> entryList = new ArrayList<>();
-        Callback callback = mock(Callback.class);
+        Callback<List<AuxiliarySearchDataEntry>> callback = MockitoHelper.mockCallback();
 
-        mBridge.onDataReady(entryList, callback);
+        AuxiliarySearchBridge.onDataReady(entryList, callback);
         verify(callback).onResult(eq(entryList));
     }
 
     @Test
     @SmallTest
     public void testGetNonSensitiveHistoryData() {
-        Callback callback = mock(Callback.class);
+        Callback<List<AuxiliarySearchDataEntry>> callback = MockitoHelper.mockCallback();
         ThreadUtils.runOnUiThreadBlocking(() -> mBridge.getNonSensitiveHistoryData(callback));
 
         verify(mMockAuxiliarySearchBridgeJni)
-                .getNonSensitiveHistoryData(anyLong(), eq(mBridge), any(), eq(callback));
+                .getNonSensitiveHistoryData(eq(NATIVE_BRIDGE), eq(callback));
     }
 
     @Test
@@ -159,11 +128,38 @@ public final class AuxiliarySearchBridgeUnitTest {
         when(mProfile.isOffTheRecord()).thenReturn(true);
         mBridge = new AuxiliarySearchBridge(mProfile);
 
-        Callback callback = mock(Callback.class);
+        Callback<List<AuxiliarySearchDataEntry>> callback = MockitoHelper.mockCallback();
         ThreadUtils.runOnUiThreadBlocking(() -> mBridge.getNonSensitiveHistoryData(callback));
 
         verify(callback).onResult(eq(null));
         verify(mMockAuxiliarySearchBridgeJni, never())
-                .getNonSensitiveHistoryData(anyLong(), eq(mBridge), any(), eq(callback));
+                .getNonSensitiveHistoryData(eq(NATIVE_BRIDGE), eq(callback));
+    }
+
+    List<AuxiliarySearchDataEntry> createEntryList() {
+        List<AuxiliarySearchDataEntry> entryList = new ArrayList<>();
+
+        mDataEntry1 =
+                new AuxiliarySearchDataEntry(
+                        /* type= */ AuxiliarySearchEntryType.TAB,
+                        /* url= */ JUnitTestGURLs.URL_1,
+                        /* title= */ "Title 1",
+                        /* lastActiveTime= */ TimeUtils.uptimeMillis(),
+                        /* tabId= */ TAB_ID_1,
+                        /* appId= */ null,
+                        /* visitId= */ -1,
+                        /* score= */ 0);
+
+        entryList.add(
+                new AuxiliarySearchDataEntry(
+                        mDataEntry1.type,
+                        mDataEntry1.url,
+                        mDataEntry1.title,
+                        mDataEntry1.lastActiveTime,
+                        mDataEntry1.tabId,
+                        mDataEntry1.appId,
+                        mDataEntry1.visitId,
+                        mDataEntry1.score));
+        return entryList;
     }
 }

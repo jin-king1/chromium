@@ -5,27 +5,15 @@
 #ifndef CHROME_BROWSER_UI_STARTUP_DEFAULT_BROWSER_PROMPT_DEFAULT_BROWSER_PROMPT_MANAGER_H_
 #define CHROME_BROWSER_UI_STARTUP_DEFAULT_BROWSER_PROMPT_DEFAULT_BROWSER_PROMPT_MANAGER_H_
 
-#include <map>
+#include <memory>
 
-#include "base/memory/raw_ptr.h"
 #include "base/memory/singleton.h"
-#include "base/timer/timer.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_list_observer.h"
-#include "chrome/browser/ui/browser_tab_strip_tracker.h"
-#include "chrome/browser/ui/browser_tab_strip_tracker_delegate.h"
-#include "chrome/browser/ui/tabs/tab_model.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
-#include "components/infobars/core/confirm_infobar_delegate.h"
-#include "components/infobars/core/infobar.h"
-#include "components/infobars/core/infobar_manager.h"
-#include "content/public/browser/web_contents.h"
+#include "chrome/browser/ui/startup/default_browser_prompt/default_browser_surface_manager.h"
 
-class DefaultBrowserPromptManager : public BrowserTabStripTrackerDelegate,
-                                    public TabStripModelObserver,
-                                    public infobars::InfoBarManager::Observer,
-                                    public ConfirmInfoBarDelegate::Observer {
+// DefaultBrowserPromptManager is a Global singleton class that is responsible
+// for owning and displaying prompts that nudge user to set Chrome as their
+// default browser.
+class DefaultBrowserPromptManager {
  public:
   DefaultBrowserPromptManager(const DefaultBrowserPromptManager&) = delete;
   DefaultBrowserPromptManager& operator=(const DefaultBrowserPromptManager&) =
@@ -38,48 +26,34 @@ class DefaultBrowserPromptManager : public BrowserTabStripTrackerDelegate,
 
   static DefaultBrowserPromptManager* GetInstance();
 
-  bool get_show_app_menu_item() const { return show_app_menu_item_; }
+  bool show_app_menu_item() const { return show_app_menu_item_; }
 
-  void MaybeShowPrompt();
+  // Returns true if the prompt was shown, false if not.
+  bool MaybeShowPrompt();
 
+  DefaultBrowserSurfaceManager* GetPromptSurfaceManager() {
+    return prompt_surface_manager_.get();
+  }
+
+  void ShowPrompts(bool can_pin_to_taskbar);
   void CloseAllPrompts(CloseReason close_reason);
 
  private:
   friend struct base::DefaultSingletonTraits<DefaultBrowserPromptManager>;
 
   DefaultBrowserPromptManager();
-  ~DefaultBrowserPromptManager() override;
+  ~DefaultBrowserPromptManager();
 
-  void CreateInfoBarForWebContents(content::WebContents* contents,
-                                   Profile* profile);
-
-  void CloseAllInfoBars();
+  // This will trigger the showing of the info bar.
+  void OnCanPinToTaskbarResult(bool should_offer_to_pin);
 
   void SetAppMenuItemVisibility(bool show);
 
-  // BrowserTabStripTrackerDelegate
-  bool ShouldTrackBrowser(Browser* browser) override;
-
-  // TabStripModelObserver:
-  void OnTabStripModelChanged(
-      TabStripModel* tab_strip_model,
-      const TabStripModelChange& change,
-      const TabStripSelectionChange& selection) override;
-
-  // InfoBarManager::Observer:
-  void OnInfoBarRemoved(infobars::InfoBar* infobar, bool animate) override;
-
-  // ConfirmInfoBarDelegate::Observer
-  void OnAccept() override;
-  void OnDismiss() override;
-
-  std::unique_ptr<BrowserTabStripTracker> browser_tab_strip_tracker_;
-  std::map<content::WebContents*, raw_ptr<infobars::InfoBar, CtnExperimental>>
-      infobars_;
-
-  std::optional<CloseReason> user_initiated_info_bar_close_pending_;
-
   bool show_app_menu_item_ = false;
+
+  // The manager responsible for the UI surface of the default browser prompt.
+  // This can vary (e.g., Infobar vs. Bubble) based on configuration.
+  std::unique_ptr<DefaultBrowserSurfaceManager> prompt_surface_manager_;
 };
 
 #endif  // CHROME_BROWSER_UI_STARTUP_DEFAULT_BROWSER_PROMPT_DEFAULT_BROWSER_PROMPT_MANAGER_H_

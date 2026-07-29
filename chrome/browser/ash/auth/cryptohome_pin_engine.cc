@@ -4,14 +4,16 @@
 
 #include "chrome/browser/ash/auth/cryptohome_pin_engine.h"
 
+#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
+#include "base/memory/raw_ref.h"
 #include "chrome/browser/ash/login/users/chrome_user_manager_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/login/auth/auth_performer.h"
+#include "chromeos/ash/components/osauth/public/auth_policy_utils.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/known_user.h"
@@ -26,7 +28,7 @@ constexpr char kFactorsOptionPin[] = "PIN";
 bool HasPolicyValue(const PrefService& pref_service,
                     CryptohomePinEngine::Purpose purpose,
                     const char* value) {
-  const base::Value::List* factors = nullptr;
+  const base::ListValue* factors = nullptr;
   switch (purpose) {
     case CryptohomePinEngine::Purpose::kUnlock:
       factors = &pref_service.GetList(prefs::kQuickUnlockModeAllowlist);
@@ -37,9 +39,8 @@ bool HasPolicyValue(const PrefService& pref_service,
     default:
       return false;
   }
-  return base::Contains(*factors, base::Value(value));
+  return factors->contains(value);
 }
-
 // Check if pin is disabled for a specific purpose (so not including
 // kAny) by reading the policy value.
 bool IsPinDisabledByPolicySinglePurpose(const PrefService& pref_service,
@@ -47,13 +48,16 @@ bool IsPinDisabledByPolicySinglePurpose(const PrefService& pref_service,
   DCHECK_NE(purpose, CryptohomePinEngine::Purpose::kAny);
   const bool enabled =
       HasPolicyValue(pref_service, purpose, kFactorsOptionAll) ||
-      HasPolicyValue(pref_service, purpose, kFactorsOptionPin);
+      HasPolicyValue(pref_service, purpose, kFactorsOptionPin) ||
+      (features::IsManagedLocalPinAndPasswordEnabled() &&
+       purpose == CryptohomePinEngine::Purpose::kUnlock &&
+       IsPinEnabledAsMainFactorByPolicy(&pref_service));
   return !enabled;
 }
 
 // Read the salt from local state.
-std::string GetUserSalt(const AccountId& account_id) {
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+std::string GetUserSalt(PrefService& local_state, const AccountId& account_id) {
+  user_manager::KnownUser known_user(&local_state);
   if (const std::string* salt =
           known_user.FindStringPath(account_id, prefs::kQuickUnlockPinSalt)) {
     return *salt;
@@ -63,8 +67,10 @@ std::string GetUserSalt(const AccountId& account_id) {
 
 }  // namespace
 
-CryptohomePinEngine::CryptohomePinEngine(ash::AuthPerformer* auth_performer)
-    : auth_performer_(auth_performer),
+CryptohomePinEngine::CryptohomePinEngine(PrefService* local_state,
+                                         ash::AuthPerformer* auth_performer)
+    : local_state_(CHECK_DEREF(local_state)),
+      auth_performer_(auth_performer),
       auth_factor_editor_(ash::UserDataAuthClient::Get()) {}
 
 CryptohomePinEngine::~CryptohomePinEngine() = default;
@@ -121,7 +127,7 @@ void CryptohomePinEngine::Authenticate(
     const cryptohome::RawPin& pin,
     std::unique_ptr<UserContext> user_context,
     AuthOperationCallback callback) {
-  auto salt = GetUserSalt(user_context->GetAccountId());
+  auto salt = GetUserSalt(local_state_.get(), user_context->GetAccountId());
   auth_performer_->AuthenticateWithPin(*pin, salt, std::move(user_context),
                                        std::move(callback));
 }

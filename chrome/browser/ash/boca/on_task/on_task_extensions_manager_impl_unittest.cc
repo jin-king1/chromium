@@ -53,12 +53,13 @@ class OnTaskExtensionsManagerImplTest : public ::testing::Test {
       ManifestLocation location = ManifestLocation::kUnpacked) {
     scoped_refptr<const Extension> extension =
         extensions::ExtensionBuilder("Extension").SetLocation(location).Build();
-    extension_environment_.GetExtensionService()->AddExtension(extension.get());
+    extension_environment_.GetExtensionRegistrar()->AddExtension(
+        extension.get());
     return extension.get();
   }
 
   void UninstallExtension(const std::string& extension_id) {
-    extension_environment_.GetExtensionService()->UnloadExtension(
+    extension_environment_.GetExtensionRegistrar()->RemoveExtension(
         extension_id, UnloadedExtensionReason::UNINSTALL);
   }
 
@@ -236,6 +237,40 @@ TEST_F(OnTaskExtensionsManagerImplTest,
   // Re-enable extensions and verify the extension is not enabled.
   on_task_extensions_manager.ReEnableExtensions();
   EXPECT_FALSE(extension_registrar->IsExtensionEnabled(extension_id));
+}
+
+TEST_F(OnTaskExtensionsManagerImplTest,
+       ShouldNotClearOtherDisableReasonsOnReEnable) {
+  const Extension* const extension = AddExtension();
+  ExtensionRegistrar* const extension_registrar =
+      ExtensionRegistrar::Get(profile());
+
+  // Allow all extension modifications by policy.
+  TestManagementPolicyProvider provider(
+      TestManagementPolicyProvider::ALLOW_ALL);
+  ManagementPolicy* const policy =
+      extension_environment_.GetExtensionSystem()->management_policy();
+  policy->RegisterProvider(&provider);
+
+  // Disable extensions.
+  OnTaskExtensionsManagerImpl on_task_extensions_manager(profile());
+  on_task_extensions_manager.DisableExtensions();
+  ASSERT_FALSE(extension_registrar->IsExtensionEnabled(extension->id()));
+
+  // Add an additional disable reason to the extension (e.g., permissions
+  // increase).
+  extension_registrar->DisableExtension(
+      extension->id(),
+      {extensions::disable_reason::DISABLE_PERMISSIONS_INCREASE});
+
+  // Re-enable extensions (simulate OnTask session end).
+  on_task_extensions_manager.ReEnableExtensions();
+
+  // Verify the extension remains disabled because of the other reason.
+  EXPECT_FALSE(extension_registrar->IsExtensionEnabled(extension->id()));
+  EXPECT_TRUE(extensions::ExtensionPrefs::Get(profile())->HasDisableReason(
+      extension->id(),
+      extensions::disable_reason::DISABLE_PERMISSIONS_INCREASE));
 }
 
 }  // namespace

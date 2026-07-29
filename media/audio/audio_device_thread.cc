@@ -70,8 +70,14 @@ AudioDeviceThread::AudioDeviceThread(Callback* callback,
 }
 
 AudioDeviceThread::~AudioDeviceThread() {
-  in_shutdown_.Set();
+  in_shutdown_ = true;
+#if BUILDFLAG(IS_IOS)
+  // shutdown() does not reliably unblock Receive() on iOS. See
+  // crbug.com/361250560.
+  socket_.Close();
+#else
   socket_.Shutdown();
+#endif  // BUILDFLAG(IS_IOS)
   if (thread_handle_.is_null())
     return;
   base::PlatformThread::Join(thread_handle_);
@@ -89,21 +95,24 @@ void AudioDeviceThread::ThreadMain() {
 
   uint32_t buffer_index = 0;
   while (true) {
+    if (in_shutdown_.load()) {
+      break;
+    }
     uint32_t pending_data = 0;
     size_t bytes_read = socket_.Receive(base::byte_span_from_ref(pending_data));
     if (bytes_read != sizeof(pending_data))
       break;
 
-    // std::numeric_limits<uint32_t>::max() is a special signal which is
-    // returned after the browser stops the output device in response to a
-    // renderer side request.
-    //
-    // Avoid running Process() for the paused signal, we still need to update
-    // the buffer index for synchronized buffers though.
-    //
-    // See comments in AudioOutputController::DoPause() for details on why.
-    if (pending_data != std::numeric_limits<uint32_t>::max())
-      callback_->Process(pending_data);
+    // std::numeric_limits<uint32_t>::max() - 1 is a special signal that
+    // tells us that the writer is done and will be closing the connection.
+    // Nothing that happens after that is considered an error.
+    constexpr uint32_t kExitSignal = std::numeric_limits<uint32_t>::max() - 1;
+    if (pending_data == kExitSignal) {
+      in_shutdown_ = true;
+      break;
+    }
+
+    callback_->Process(pending_data);
 
     // If `send_socket_messages_` is false, the socket messages are replaced by
     // a flag in shared memory which is handled in `callback_->Process()`.
@@ -127,9 +136,9 @@ void AudioDeviceThread::ThreadMain() {
     }
   }
 
-  if (!in_shutdown_.IsSet()) {
+  if (!in_shutdown_.load()) {
     callback_->OnSocketError();
   }
 }
 
-}  // namespace media.
+}  // namespace media

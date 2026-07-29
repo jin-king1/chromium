@@ -282,13 +282,15 @@ void TestGpuServiceHolder::ScheduleCompositorGpuTask(
 }
 
 void TestGpuServiceHolder::InitializeOnGpuThread(
-    const gpu::GpuPreferences& gpu_preferences,
+    const gpu::GpuPreferences& original_gpu_preferences,
     base::WaitableEvent* completion) {
   DCHECK(gpu_main_thread_.task_runner()->BelongsToCurrentThread());
 
 #if BUILDFLAG(IS_OZONE) && !BUILDFLAG(IS_FUCHSIA)
   ui::OzonePlatform::GetInstance()->AddInterfaces(&binders_);
 #endif
+
+  gpu::GpuPreferences gpu_preferences = original_gpu_preferences;
 
   if (gpu_preferences.use_vulkan != gpu::VulkanImplementationName::kNone) {
 #if BUILDFLAG(ENABLE_VULKAN)
@@ -312,6 +314,9 @@ void TestGpuServiceHolder::InitializeOnGpuThread(
   gpu::GpuFeatureInfo gpu_feature_info = gpu::ComputeGpuFeatureInfo(
       gpu_info, gpu_preferences, base::CommandLine::ForCurrentProcess(),
       /*needs_more_info=*/nullptr);
+  CHECK(gpu::TryFallbackGrContextTypesIfNeeded(
+      gpu_feature_info, gpu_preferences, gpu_info,
+      base::CommandLine::ForCurrentProcess()));
   gpu_feature_info.status_values[gpu::GPU_FEATURE_TYPE_GPU_TILE_RASTERIZATION] =
       gpu::kGpuFeatureStatusEnabled;
 
@@ -323,10 +328,8 @@ void TestGpuServiceHolder::InitializeOnGpuThread(
 
   if (gpu_preferences.gr_context_type == gpu::GrContextType::kGraphiteDawn) {
 #if BUILDFLAG(SKIA_USE_DAWN)
-    init_params.dawn_context_provider = gpu::DawnContextProvider::Create(
-        gpu_preferences, gpu::DawnContextProvider::DefaultValidateAdapterFn,
-        gpu::GpuDriverBugWorkarounds(
-            gpu_feature_info.enabled_gpu_driver_bug_workarounds));
+    init_params.dawn_context_provider =
+        gpu::DawnContextProvider::Create(gpu_preferences, gpu_feature_info);
     CHECK(init_params.dawn_context_provider);
 #else
     NOTREACHED();

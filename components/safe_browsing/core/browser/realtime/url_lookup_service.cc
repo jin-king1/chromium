@@ -6,17 +6,15 @@
 
 #include "base/base64url.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/rand_util.h"
-#include "base/strings/strcat.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/realtime/policy_engine.h"
 #include "components/safe_browsing/core/browser/referrer_chain_provider.h"
 #include "components/safe_browsing/core/browser/safe_browsing_token_fetcher.h"
@@ -41,8 +39,6 @@ constexpr int kDefaultRealTimeUrlLookupReferrerLength = 2;
 // Probability for sending protego requests for urls on the allowlist
 const float kProbabilityForSendingSampledRequests = 0.01;
 
-constexpr char kCookieHistogramPrefix[] = "SafeBrowsing.RT.Request.HadCookie";
-
 GURL* GetRealTimeLookupUrlTestOverride() {
   static base::NoDestructor<GURL> test_override;
   return test_override.get();
@@ -66,59 +62,25 @@ RealTimeUrlLookupService::RealTimeUrlLookupService(
     base::RepeatingCallback<base::Time()>
         min_allowed_timestamp_for_referrer_chains_getter,
     ReferrerChainProvider* referrer_chain_provider,
-    WebUIDelegate* delegate)
+    WebUIDelegate* delegate,
+    IntelligentScanDelegate* intelligent_scan_delegate,
+    base::RepeatingCallback<network::mojom::NetworkContext*()>
+        network_context_getter)
     : RealTimeUrlLookupServiceBase(url_loader_factory,
                                    cache_manager,
                                    get_user_population_callback,
                                    referrer_chain_provider,
+                                   std::move(token_fetcher),
                                    pref_service,
-                                   delegate),
+                                   delegate,
+                                   intelligent_scan_delegate,
+                                   std::move(network_context_getter)),
       pref_service_(pref_service),
-      token_fetcher_(std::move(token_fetcher)),
       client_token_config_callback_(client_token_config_callback),
       is_off_the_record_(is_off_the_record),
       variations_service_getter_(variations_service_getter),
       min_allowed_timestamp_for_referrer_chains_getter_(
           min_allowed_timestamp_for_referrer_chains_getter) {}
-
-void RealTimeUrlLookupService::GetAccessToken(
-    const GURL& url,
-    RTLookupResponseCallback response_callback,
-    scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
-    SessionID tab_id,
-    std::optional<internal::ReferringAppInfo> referring_app_info) {
-  token_fetcher_->Start(base::BindOnce(
-      &RealTimeUrlLookupService::OnGetAccessToken, weak_factory_.GetWeakPtr(),
-      url, std::move(response_callback), std::move(callback_task_runner),
-      base::TimeTicks::Now(), tab_id, std::move(referring_app_info)));
-}
-
-void RealTimeUrlLookupService::OnGetAccessToken(
-    const GURL& url,
-    RTLookupResponseCallback response_callback,
-    scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
-    base::TimeTicks get_token_start_time,
-    SessionID tab_id,
-    std::optional<internal::ReferringAppInfo> referring_app_info,
-    const std::string& access_token) {
-  if (shutting_down()) {
-    return;
-  }
-
-  base::UmaHistogramTimes("SafeBrowsing.RT.GetToken.Time",
-                          base::TimeTicks::Now() - get_token_start_time);
-  base::UmaHistogramBoolean("SafeBrowsing.RT.HasTokenFromFetcher",
-                            !access_token.empty());
-  MaybeSendRequest(url, access_token, std::move(response_callback),
-                   std::move(callback_task_runner),
-                   /* is_sampled_report */ false, tab_id,
-                   std::move(referring_app_info));
-}
-
-void RealTimeUrlLookupService::OnResponseUnauthorized(
-    const std::string& invalid_access_token) {
-  token_fetcher_->OnInvalidAccessToken(invalid_access_token);
-}
 
 RealTimeUrlLookupService::~RealTimeUrlLookupService() = default;
 
@@ -182,12 +144,16 @@ RealTimeUrlLookupService::GetClientMetadata() const {
   return nullptr;
 }
 
+std::string RealTimeUrlLookupService::GetContentAreaAccountEmail(
+    const GURL& tab_url) const {
+  return "";
+}
+
 void RealTimeUrlLookupService::Shutdown() {
   RealTimeUrlLookupServiceBase::Shutdown();
 
   // Clear state that was potentially bound to the lifetime of other
   // KeyedServices by the embedder.
-  token_fetcher_.reset();
   client_token_config_callback_ = ClientConfiguredForTokenFetchesCallback();
 }
 
@@ -246,6 +212,11 @@ std::string RealTimeUrlLookupService::GetMetricSuffix() const {
   return ".Consumer";
 }
 
+bool RealTimeUrlLookupService::ShouldOverrideKnownSafeUrlDecision(
+    const GURL& url) const {
+  return false;
+}
+
 bool RealTimeUrlLookupService::CanCheckUrl(const GURL& url) {
   if (VerdictCacheManager::has_artificial_cached_url()) {
     return true;
@@ -277,23 +248,6 @@ void RealTimeUrlLookupService::MaybeLogLastProtegoPingTimeToPrefs(
             ? prefs::kSafeBrowsingEsbProtegoPingWithTokenLastLogTime
             : prefs::kSafeBrowsingEsbProtegoPingWithoutTokenLastLogTime,
         base::Time::Now());
-  }
-}
-
-void RealTimeUrlLookupService::MaybeLogProtegoPingCookieHistograms(
-    bool request_had_cookie,
-    bool was_first_request,
-    bool sent_with_token) {
-  std::string histogram_name = kCookieHistogramPrefix;
-  base::StrAppend(&histogram_name,
-                  {was_first_request ? ".FirstRequest" : ".SubsequentRequest"});
-  base::UmaHistogramBoolean(histogram_name, request_had_cookie);
-  // `pref_service_` can be null in tests.
-  // This histogram variant is only logged for signed-out ESB users.
-  if (!sent_with_token && pref_service_ &&
-      IsEnhancedProtectionEnabled(*pref_service_)) {
-    base::StrAppend(&histogram_name, {".SignedOutEsbUser"});
-    base::UmaHistogramBoolean(histogram_name, request_had_cookie);
   }
 }
 

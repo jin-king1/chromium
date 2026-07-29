@@ -11,7 +11,6 @@ import 'chrome://resources/ash/common/personalization/personalization_shared_ico
 
 import {isNonEmptyArray} from 'chrome://resources/ash/common/sea_pen/sea_pen_utils.js';
 import {assert} from 'chrome://resources/js/assert.js';
-import {mojoString16ToString} from 'chrome://resources/js/mojo_type_util.js';
 import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
 
 import type {DefaultUserImage, UserImage} from '../../personalization_app.mojom-webui.js';
@@ -127,14 +126,14 @@ export class AvatarListElement extends WithPersonalizationStore {
     ];
   }
 
-  private defaultUserImages_: DefaultUserImage[]|null;
-  private profileImage_: Url|null;
-  private isCameraPresent_: boolean;
-  private isCustomizationSelectorsEnabled_: boolean;
-  private cameraMode_: AvatarCameraMode|null;
-  private image_: UserImage|null;
-  private lastExternalUserImageUrl_: Url|null;
-  private options_: Option[];
+  declare private defaultUserImages_: DefaultUserImage[]|null;
+  declare private profileImage_: Url|null;
+  declare private isCameraPresent_: boolean;
+  declare private isCustomizationSelectorsEnabled_: boolean;
+  declare private cameraMode_: AvatarCameraMode|null;
+  declare private image_: UserImage|null;
+  declare private lastExternalUserImageUrl_: Url|null;
+  declare private options_: Option[];
 
   override connectedCallback() {
     super.connectedCallback();
@@ -189,11 +188,11 @@ export class AvatarListElement extends WithPersonalizationStore {
         icon: 'personalization:folder',
         title: this.i18n('chooseAFile'),
       });
-      if (profileImage && profileImage.url) {
+      if (profileImage) {
         options.push({
           id: OptionId.PROFILE_IMAGE,
           class: 'image-container',
-          imgSrc: profileImage.url,
+          imgSrc: profileImage,
           icon: 'personalization-shared:circle-checkmark',
           title: this.i18n('googleProfilePhoto'),
         });
@@ -202,7 +201,7 @@ export class AvatarListElement extends WithPersonalizationStore {
         options.push({
           id: OptionId.LAST_EXTERNAL_IMAGE,
           class: 'image-container',
-          imgSrc: lastExternalUserImageUrl.url,
+          imgSrc: lastExternalUserImageUrl,
           icon: 'personalization-shared:circle-checkmark',
           title: this.i18n('lastExternalImageTitle'),
         });
@@ -213,9 +212,9 @@ export class AvatarListElement extends WithPersonalizationStore {
         options.push({
           id: `defaultUserImage-${defaultImage.index}`,
           class: 'image-container',
-          imgSrc: defaultImage.url.url,
+          imgSrc: defaultImage.url,
           icon: 'personalization-shared:circle-checkmark',
-          title: mojoString16ToString(defaultImage.title),
+          title: defaultImage.title,
           defaultImageIndex: defaultImage.index,
         });
       });
@@ -248,8 +247,8 @@ export class AvatarListElement extends WithPersonalizationStore {
   }
 
   private onLastExternalUserImageUrlChanged_(_: Url|null, old: Url|null) {
-    if (old && old.url && old.url.startsWith('blob:')) {
-      URL.revokeObjectURL(old.url);
+    if (old && old.startsWith('blob:')) {
+      URL.revokeObjectURL(old);
     }
   }
 

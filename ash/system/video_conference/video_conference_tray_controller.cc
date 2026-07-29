@@ -2,13 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/system/video_conference/video_conference_tray_controller.h"
 
+#include <array>
 #include <string>
 
 #include "ash/constants/ash_features.h"
@@ -39,8 +35,6 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
-#include "chromeos/crosapi/mojom/video_conference.mojom-forward.h"
-#include "chromeos/crosapi/mojom/video_conference.mojom.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/session_manager_types.h"
 #include "media/capture/video/chromeos/camera_hal_dispatcher_impl.h"
@@ -88,7 +82,7 @@ constexpr char kShowCreateWithAiButtonAnimation[] =
 
 // VC nudge ids vector that is iterated whenever `CloseAllVcNudges()` is
 // called. Please keep in sync whenever adding/removing/updating a nudge id.
-const char* const kNudgeIds[] = {
+constexpr std::array<const char*, 6> kNudgeIds = {
     kVideoConferenceTraySpeakOnMuteOptInNudgeId,
     kVideoConferenceTraySpeakOnMuteDetectedNudgeId,
     kVideoConferenceTrayMicrophoneUseWhileHWDisabledNudgeId,
@@ -484,11 +478,6 @@ bool VideoConferenceTrayController::GetMicrophoneMuted() {
          !pref_service->GetBoolean(prefs::kUserMicrophoneAllowed);
 }
 
-void VideoConferenceTrayController::StopAllScreenShare() {
-  CHECK(video_conference_manager_);
-  video_conference_manager_->StopAllScreenShare();
-}
-
 void VideoConferenceTrayController::GetMediaApps(
     base::OnceCallback<void(MediaApps)> ui_callback) {
   CHECK(video_conference_manager_);
@@ -511,8 +500,8 @@ void VideoConferenceTrayController::OnCameraHWPrivacySwitchStateChanged(
 
   if (video_conference_manager_) {
     video_conference_manager_->SetSystemMediaDeviceStatus(
-        crosapi::mojom::VideoConferenceMediaDevice::kCamera,
-        /*disabled=*/GetCameraMuted());
+        VideoConferenceMediaDevice::kCamera,
+        /*enabled=*/!GetCameraMuted());
   }
 
   // Attempt recording "Use while disabled" nudge action when camera is unmuted.
@@ -538,8 +527,8 @@ void VideoConferenceTrayController::OnCameraSWPrivacySwitchStateChanged(
 
   if (video_conference_manager_) {
     video_conference_manager_->SetSystemMediaDeviceStatus(
-        crosapi::mojom::VideoConferenceMediaDevice::kCamera,
-        /*disabled=*/GetCameraMuted());
+        VideoConferenceMediaDevice::kCamera,
+        /*enabled=*/!GetCameraMuted());
   }
 
   // Attempt recording "Use while disabled" nudge action when camera is unmuted.
@@ -574,8 +563,8 @@ void VideoConferenceTrayController::OnInputMuteChanged(
 
   if (video_conference_manager_) {
     video_conference_manager_->SetSystemMediaDeviceStatus(
-        crosapi::mojom::VideoConferenceMediaDevice::kMicrophone,
-        /*disabled=*/mute_on);
+        VideoConferenceMediaDevice::kMicrophone,
+        /*enabled=*/!mute_on);
   }
 
   microphone_muted_by_hardware_switch_ =
@@ -677,13 +666,12 @@ void VideoConferenceTrayController::OnShellDestroying() {
 }
 
 void VideoConferenceTrayController::HandleClientUpdate(
-    crosapi::mojom::VideoConferenceClientUpdatePtr update) {
+    VideoConferenceClientUpdate update) {
   // Use `HandleClientUpdate()` to detect apps being
   // added because this function is guaranteed to be called when an app is
   // added, even if the `VideoConferecenMediaState` does not change.
 
-  if (update->added_or_removed_app ==
-      crosapi::mojom::VideoConferenceAppUpdate::kAppAdded) {
+  if (update.added_or_removed_app == VideoConferenceAppUpdate::kAppAdded) {
     OnAppAdded();
   }
 }
@@ -787,12 +775,6 @@ void VideoConferenceTrayController::UpdateWithMediaState(
     }
   }
 
-  if (state_.is_capturing_screen != old_state.is_capturing_screen) {
-    for (auto& observer : observer_list_) {
-      observer.OnScreenSharingStateChange(state_.is_capturing_screen);
-    }
-  }
-
   if (state_.has_media_app) {
     return;
   }
@@ -815,12 +797,8 @@ bool VideoConferenceTrayController::HasMicrophonePermission() const {
 }
 
 void VideoConferenceTrayController::HandleDeviceUsedWhileDisabled(
-    crosapi::mojom::VideoConferenceMediaDevice device,
+    VideoConferenceMediaDevice device,
     const std::u16string& app_name) {
-  if (device == crosapi::mojom::VideoConferenceMediaDevice::kUnusedDefault) {
-    return;
-  }
-
   UsedWhileDisabledNudgeType type = GetUsedWhileDisabledNudgeType(device);
 
   if (!use_while_disabled_signal_waiter_.IsRunning()) {
@@ -950,15 +928,13 @@ void VideoConferenceTrayController::DisplayUsedWhileDisabledNudge(
 
 VideoConferenceTrayController::UsedWhileDisabledNudgeType
 VideoConferenceTrayController::GetUsedWhileDisabledNudgeType(
-    crosapi::mojom::VideoConferenceMediaDevice device) {
-  DCHECK_NE(device, crosapi::mojom::VideoConferenceMediaDevice::kUnusedDefault);
-
+    VideoConferenceMediaDevice device) {
   VideoConferenceTrayController::UsedWhileDisabledNudgeType type;
   switch (device) {
-    case crosapi::mojom::VideoConferenceMediaDevice::kCamera:
+    case VideoConferenceMediaDevice::kCamera:
       type = VideoConferenceTrayController::UsedWhileDisabledNudgeType::kCamera;
       break;
-    case crosapi::mojom::VideoConferenceMediaDevice::kMicrophone:
+    case VideoConferenceMediaDevice::kMicrophone:
       type = VideoConferenceTrayController::UsedWhileDisabledNudgeType::
           kMicrophone;
       break;

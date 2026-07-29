@@ -97,7 +97,7 @@ MockMotionEvent::MockMotionEvent(const MockMotionEvent& other)
 MockMotionEvent::~MockMotionEvent() {
 }
 
-base::TimeTicks MockMotionEvent::GetDownTime() const {
+base::TimeTicks MockMotionEvent::GetRawDownTime() const {
   return cached_down_time_;
 }
 
@@ -215,6 +215,10 @@ MockMotionEvent& MockMotionEvent::SetPrimaryPointerId(int id) {
 
 MotionEvent::Classification MockMotionEvent::GetClassification() const {
   return gesture_classification_;
+}
+
+bool MockMotionEvent::IsLatestEventTimeResampled() const {
+  return is_latest_event_time_resampled_;
 }
 
 std::string ToString(const MotionEvent& event) {

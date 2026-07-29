@@ -33,24 +33,40 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
   registry->RegisterStringPref(kLastUploadVersion, std::string());
   registry->RegisterTimeDeltaPref(kCloudReportingUploadFrequency,
                                   kDefaultReportFrequency);
+  registry->RegisterListPref(kSaasUsageDomainUrlsForBrowser);
+  registry->RegisterDictionaryPref(kSaasUsageReport);
+  registry->RegisterTimePref(kSaasUsageReportLastTriggerTime, base::Time());
 }
 
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterBooleanPref(kCloudProfileReportingEnabled, false);
   registry->RegisterTimePref(kLastUploadTimestamp, base::Time());
   registry->RegisterTimePref(kLastUploadSucceededTimestamp, base::Time());
+  registry->RegisterTimePref(kLastSignalsUploadAttemptTimestamp, base::Time());
+  registry->RegisterTimePref(kLastSignalsUploadSucceededTimestamp,
+                             base::Time());
+  registry->RegisterStringPref(kLastSignalsUploadSucceededConfig,
+                               std::string());
   registry->RegisterStringPref(kLastUploadVersion, std::string());
-  // TODO(crbug.com/40215470): We reuse the report frequency pref for profile
-  // reporting for now. This might need to be changed in the future.
   registry->RegisterTimeDeltaPref(kCloudReportingUploadFrequency,
                                   kDefaultReportFrequency);
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-  registry->RegisterBooleanPref(prefs::kCloudExtensionRequestEnabled, false);
-  registry->RegisterDictionaryPref(prefs::kCloudExtensionRequestIds);
+  registry->RegisterBooleanPref(kUserSecuritySignalsReporting, false);
+  registry->RegisterBooleanPref(kUserSecurityAuthenticatedReporting, false);
+  registry->RegisterListPref(kSecuritySignalsClientCertificatesSelectors);
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  registry->RegisterBooleanPref(
+      enterprise_reporting::kCloudExtensionRequestEnabled, false);
+  registry->RegisterDictionaryPref(
+      enterprise_reporting::kCloudExtensionRequestIds);
+  registry->RegisterBooleanPref(prefs::kExtensionDOMActivityLoggingEnabled,
+                                false);
   registry->RegisterDictionaryPref(kCloudExtensionRequestUploadedIds);
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   registry->RegisterListPref(kCloudLegacyTechReportAllowlist);
+  registry->RegisterListPref(kSaasUsageDomainUrlsForProfile);
+  registry->RegisterDictionaryPref(kSaasUsageReport);
+  registry->RegisterTimePref(kSaasUsageReportLastTriggerTime, base::Time());
 }
 
 }  // namespace enterprise_reporting

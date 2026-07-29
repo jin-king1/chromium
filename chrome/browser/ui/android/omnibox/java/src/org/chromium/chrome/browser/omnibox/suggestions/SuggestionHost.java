@@ -25,16 +25,18 @@ public interface SuggestionHost {
      * @param suggestion User-selected Suggestion.
      * @param position The position of the suggestion on the list.
      * @param url The specific URL associated with the suggestion to navigate to.
+     * @param modifiers The modifier keys pressed during click/activation (metaState).
      */
-    void onSuggestionClicked(AutocompleteMatch suggestion, int position, GURL url);
+    void onSuggestionClicked(AutocompleteMatch suggestion, int position, GURL url, int modifiers);
 
     /**
      * Triggered when the user touches down on a suggestion. Only called for search suggestions.
      *
      * @param suggestion Touch-downed Suggestion.
      * @param position The position of the suggestion on the list.
+     * @param eventTime Uptime of the touch down event in milliseconds.
      */
-    void onSuggestionTouchDown(AutocompleteMatch suggestion, int position);
+    void onSuggestionTouchDown(AutocompleteMatch suggestion, int position, long eventTime);
 
     /**
      * Triggered when the user clicks one of the OmniboxActions attached to Suggestion.
@@ -45,13 +47,26 @@ public interface SuggestionHost {
     void onOmniboxActionClicked(OmniboxAction action, int position);
 
     /**
-     * Triggered when the user long presses the omnibox suggestion. Deletes the entire
-     * AutocompleteMatch. Execution of this method implies removal of the AutocompleteMatch.
+     * Triggered when the user long presses the omnibox suggestion. A delete confirmation dialog
+     * will be shown.
      *
-     * @param suggestion Long-pressed Suggestion.
-     * @param titleText The title to display in the delete dialog.
+     * <p>Deletes the entire AutocompleteMatch. Execution of this method implies removal of the
+     * AutocompleteMatch.
+     *
+     * @param suggestion The Suggestion to delete.
+     * @param titleText The title to display in the delete dialog. Delete the match
      */
-    void onDeleteMatch(AutocompleteMatch suggestion, String titleText);
+    void confirmDeleteMatch(AutocompleteMatch suggestion, String titleText);
+
+    /**
+     * Triggered when the user clicks on the remove button to delete the suggestion immediately.
+     *
+     * <p>Deletes the entire AutocompleteMatch. Execution of this method implies removal of the
+     * AutocompleteMatch.
+     *
+     * @param suggestion The Suggestion to delete.
+     */
+    void deleteMatch(AutocompleteMatch suggestion);
 
     /**
      * Triggered when the user long presses the omnibox suggestion element (eg. tile). Performs
@@ -65,19 +80,18 @@ public interface SuggestionHost {
     void onDeleteMatchElement(AutocompleteMatch suggestion, String titleText, int element);
 
     /**
-     * Triggered when the user selects a switch to tab action.
-     *
-     * @param suggestion Suggestion for which a corresponding tab is already open.
-     * @param position The position of the suggestion on the list.
-     */
-    void onSwitchToTab(AutocompleteMatch suggestion, int position);
-
-    /**
      * Update the content of the Omnibox without triggering the Navigation.
      *
      * @param text The text to be displayed in the Omnibox.
      */
     void setOmniboxEditingText(String text);
+
+    /**
+     * Triggered when the user focuses the omnibox suggestion via keyboard.
+     *
+     * @param suggestion Focused Suggestion.
+     */
+    void onSuggestionFocused(AutocompleteMatch suggestion);
 
     /** Clear focus, close the suggestions list and complete the interaction with the Omnibox. */
     void finishInteraction();

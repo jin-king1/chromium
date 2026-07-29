@@ -4,7 +4,9 @@
 
 #include "components/global_media_controls/public/views/media_progress_view.h"
 
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/rtl.h"
+#include "base/test/icu_test_util.h"
 #include "base/timer/mock_timer.h"
 #include "components/strings/grit/components_strings.h"
 #include "services/media_session/public/mojom/media_session.mojom.h"
@@ -15,6 +17,7 @@
 #include "ui/events/keycodes/dom/dom_key.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/test/views_test_base.h"
+#include "ui/views/view_test_api.h"
 
 namespace global_media_controls {
 
@@ -65,8 +68,6 @@ class MediaProgressViewTest : public views::ViewsTestBase {
     progress_drag_started_delay_timer_ = mock_timer.get();
     view_->set_progress_drag_started_delay_timer_for_testing(
         std::move(mock_timer));
-
-    default_locale_ = base::i18n::GetConfiguredLocale();
   }
 
   void TearDown() override {
@@ -75,7 +76,6 @@ class MediaProgressViewTest : public views::ViewsTestBase {
     progress_drag_started_delay_timer_ = nullptr;
     view_ = nullptr;
     widget_->Close();
-    base::i18n::SetICUDefaultLocale(default_locale_);
     ViewsTestBase::TearDown();
   }
 
@@ -97,12 +97,12 @@ class MediaProgressViewTest : public views::ViewsTestBase {
   MOCK_METHOD1(OnProgressUpdated, void(base::TimeDelta));
 
  private:
+  base::test::ScopedRestoreICUDefaultLocale restore_default_locale_;
   std::unique_ptr<views::Widget> widget_;
   raw_ptr<MediaProgressView> view_ = nullptr;
   raw_ptr<base::MockOneShotTimer> update_progress_timer_ = nullptr;
   raw_ptr<base::MockOneShotTimer> switch_progress_colors_delay_timer_ = nullptr;
   raw_ptr<base::MockOneShotTimer> progress_drag_started_delay_timer_ = nullptr;
-  std::string default_locale_;
 };
 
 TEST_F(MediaProgressViewTest, MediaPlaying) {
@@ -502,6 +502,169 @@ TEST_F(MediaProgressViewTest, MediaProgressAccessibleValue) {
   view()->GetViewAccessibility().GetAccessibleNodeData(&data);
   EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kValue),
             u"0:03");
+}
+
+TEST_F(MediaProgressViewTest, PausesForDraggingIfPlayedAfterDraggingStarted) {
+  // Simulate a paused media.
+  media_session::MediaPosition paused_media_position(
+      /*playback_rate=*/0, /*duration=*/base::Seconds(600),
+      /*position=*/base::Seconds(100), /*end_of_media=*/false);
+  view()->UpdateProgress(paused_media_position);
+
+  // Simulate a mouse press event. This should not fire a
+  // "PauseForDraggingStarted" notification since media is already paused.
+  gfx::Point point(view()->width() / 2, view()->height() / 2);
+  ui::MouseEvent pressed_event(ui::EventType::kMousePressed, point, point,
+                               ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                               ui::EF_LEFT_MOUSE_BUTTON);
+  EXPECT_CALL(*this,
+              OnPlaybackStateChangeForProgressDrag(
+                  PlaybackStateChangeForDragging::kPauseForDraggingStarted))
+      .Times(0);
+  view()->OnMousePressed(pressed_event);
+  progress_drag_started_delay_timer()->Fire();
+  testing::Mock::VerifyAndClearExpectations(this);
+
+  // Now update the media to start playing. This should fire a
+  // "PauseForDraggingStarted" notification to pause the media.
+  media_session::MediaPosition playing_media_position(
+      /*playback_rate=*/1.0, /*duration=*/base::Seconds(600),
+      /*position=*/base::Seconds(100), /*end_of_media=*/false);
+  EXPECT_CALL(*this,
+              OnPlaybackStateChangeForProgressDrag(
+                  PlaybackStateChangeForDragging::kPauseForDraggingStarted));
+  view()->UpdateProgress(playing_media_position);
+  testing::Mock::VerifyAndClearExpectations(this);
+
+  // Simulate a mouse release event. This should fire a
+  // "ResumeForDraggingEnded" notification.
+  ui::MouseEvent released_event = ui::MouseEvent(
+      ui::EventType::kMouseReleased, point, point, ui::EventTimeForNow(),
+      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
+  EXPECT_CALL(*this,
+              OnPlaybackStateChangeForProgressDrag(
+                  PlaybackStateChangeForDragging::kResumeForDraggingEnded));
+  view()->OnMouseReleased(released_event);
+}
+
+TEST_F(MediaProgressViewTest, UpdateProgressCallbackFollowsVisibility) {
+  base::TimeDelta position = base::Seconds(100);
+  media_session::MediaPosition media_position(
+      /*playback_rate=*/1.0, /*duration=*/base::Seconds(600),
+      /*position=*/position, /*end_of_media=*/false);
+
+  // When the view is drawn, the callback should run.
+  ASSERT_TRUE(view()->IsDrawn());
+  EXPECT_CALL(*this, OnProgressUpdated(testing::Ge(position)));
+  view()->UpdateProgress(media_position);
+  testing::Mock::VerifyAndClearExpectations(this);
+
+  // When the view is not drawn, the callback should not run.
+  view()->SetVisible(false);
+  ASSERT_FALSE(view()->IsDrawn());
+  EXPECT_CALL(*this, OnProgressUpdated(testing::_)).Times(0);
+  view()->UpdateProgress(media_position);
+}
+
+TEST_F(MediaProgressViewTest, VisibilityChangedUpdatesToPosition) {
+  // Start hidden.
+  view()->SetVisible(false);
+  base::TimeDelta hidden_position = base::Seconds(300);
+  media_session::MediaPosition media_position(
+      /*playback_rate=*/1.0, /*duration=*/base::Seconds(600),
+      /*position=*/hidden_position, /*end_of_media=*/false);
+
+  // Update while hidden. No callback should run yet.
+  EXPECT_CALL(*this, OnProgressUpdated(testing::_)).Times(0);
+  view()->UpdateProgress(media_position);
+  testing::Mock::VerifyAndClearExpectations(this);
+
+  // When becoming visible, the view should immediately reflect the position
+  // updated while it was hidden. This verifies background synchronization.
+  EXPECT_CALL(*this, OnProgressUpdated(testing::Ge(hidden_position)));
+  view()->SetVisible(true);
+}
+
+TEST_F(MediaProgressViewTest,
+       UpdateProgressTimerContinuesRunningWhileViewIsHidden) {
+  // Start hidden.
+  view()->SetVisible(false);
+  ASSERT_FALSE(view()->IsDrawn());
+
+  // Trigger progress while hidden.
+  media_session::MediaPosition playing_media_position(
+      /*playback_rate=*/1.0, /*duration=*/base::Seconds(600),
+      /*position=*/base::Seconds(100), /*end_of_media=*/false);
+  view()->UpdateProgress(playing_media_position);
+
+  // Ensure `should_animate_waves` is true by setting animation to end state.
+  view()->slide_animation_for_testing().Reset(1.0);
+  int initial_phase = view()->phase_offset_for_testing();
+
+  // Fire the timer and verify that the callback does not run.
+  EXPECT_CALL(*this, OnProgressUpdated(testing::_)).Times(0);
+  update_progress_timer()->Fire();
+
+  // Verify the internal animation state is updated despite the view being
+  // hidden.
+  EXPECT_NE(view()->phase_offset_for_testing(), initial_phase);
+}
+
+TEST_F(MediaProgressViewTest, AnimationProgressedWhileHidden) {
+  // Hide the view.
+  view()->SetVisible(false);
+  ASSERT_FALSE(view()->IsDrawn());
+
+  // Simulate squiggly path animation progress while hidden.
+  view()->slide_animation_for_testing().Reset(0.5);
+  view()->AnimationProgressed(&view()->slide_animation_for_testing());
+  EXPECT_EQ(view()->progress_amp_fraction_for_testing(), 0.5);
+
+  // Simulate thickness animation progress while hidden.
+  view()->thickness_animation_for_testing().Reset(0.5);
+  view()->AnimationProgressed(&view()->thickness_animation_for_testing());
+  EXPECT_EQ(view()->straight_progress_stroke_width_for_testing(), 3);
+}
+
+TEST_F(MediaProgressViewTest, UpdateProgressSchedulesPaintOnlyWhenDrawn) {
+  views::ViewTestApi test_api(view());
+  media_session::MediaPosition media_position(
+      /*playback_rate=*/1.0, /*duration=*/base::Seconds(600),
+      /*position=*/base::Seconds(300), /*end_of_media=*/false);
+
+  // When drawn, `UpdateProgress` should notify that properties changed (paint
+  // scheduled).
+  ASSERT_TRUE(view()->IsDrawn());
+  test_api.ClearNeedsPaint();
+  view()->UpdateProgress(media_position);
+  EXPECT_TRUE(test_api.needs_paint());
+
+  // When hidden, `UpdateProgress` should NOT notify property changes (no
+  // paint scheduled).
+  view()->SetVisible(false);
+  ASSERT_FALSE(view()->IsDrawn());
+  test_api.ClearNeedsPaint();
+  view()->UpdateProgress(media_position);
+  EXPECT_FALSE(test_api.needs_paint());
+}
+
+TEST_F(MediaProgressViewTest, UpdateIntervalsAreCorrectRelatively) {
+  // Use arbitrary values for the constructor since we only care about the
+  // update interval property.
+  ui::ColorId id = ui::kUiColorsStart;
+
+  MediaProgressView squiggly_view(
+      /*use_squiggly_line=*/true, id, id, id, id, id, base::DoNothing(),
+      base::DoNothing(), base::DoNothing(), base::DoNothing());
+
+  MediaProgressView straight_view(
+      /*use_squiggly_line=*/false, id, id, id, id, id, base::DoNothing(),
+      base::DoNothing(), base::DoNothing(), base::DoNothing());
+
+  // Verify that the straight progress bar is updated less frequently than the
+  // squiggly wave animation.
+  EXPECT_GT(straight_view.GetUpdateInterval(),
+            squiggly_view.GetUpdateInterval());
 }
 
 }  // namespace global_media_controls

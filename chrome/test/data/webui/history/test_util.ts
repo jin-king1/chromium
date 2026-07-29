@@ -5,7 +5,6 @@
 import type {ForeignSession, ForeignSessionTab, ForeignSessionWindow, HistoryAppElement} from 'chrome://history/history.js';
 import type {HistoryEntry, HistoryQuery} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import type {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {middleOfNode} from 'chrome://webui-test/mouse_mock_interactions.js';
 
 
@@ -14,9 +13,13 @@ import {middleOfNode} from 'chrome://webui-test/mouse_mock_interactions.js';
  * @param timestamp Timestamp of the entry, as a number in ms or a string which
  *     can be parsed by Date.parse().
  * @param urlStr The URL to set on this entry.
+ * @param otherTimestamps The other timestamps associated with this or similar
+ *     urls. This should not include the current `timestamp` associated with
+ *     `urlStr`.
  */
 export function createHistoryEntry(
-    timestamp: number|string, urlStr: string): HistoryEntry {
+    timestamp: number|string, urlStr: string,
+    otherTimestamps?: {[key: string]: number[]}): HistoryEntry {
   if (typeof timestamp === 'string') {
     timestamp += ' UTC';
   }
@@ -24,8 +27,19 @@ export function createHistoryEntry(
   const d = new Date(timestamp);
   const url = new URL(urlStr);
   const domain = url.host;
+
+  // Add the other urls' timestamps (if any) and append the current url &
+  // timestamp to allTimestamps.
+  otherTimestamps = otherTimestamps || {};
+  const {[urlStr]: currentUrlTimestamps = [], ...otherUrlsTimestamps} =
+      otherTimestamps;
+  const allTimestamps = {
+    [urlStr]: [d.getTime(), ...currentUrlTimestamps],
+    ...otherUrlsTimestamps,
+  };
+
   return {
-    allTimestamps: [d.getTime()],
+    allTimestamps: allTimestamps,
     remoteIconUrlForUma: '',
     isUrlInRemoteUserData: false,
     blockedVisit: false,
@@ -35,7 +49,7 @@ export function createHistoryEntry(
     dateRelativeDay: d.toISOString().split('T')[0]!,
     dateShort: '',
     dateTimeOfDay: d.getUTCHours() + ':' + d.getUTCMinutes(),
-    debugInfo: null,
+    debug: null,
     deviceName: '',
     deviceType: '',
     domain: domain,
@@ -48,6 +62,7 @@ export function createHistoryEntry(
     time: d.getTime(),
     title: urlStr,
     url: urlStr,
+    isActorVisit: false,
   };
 }
 
@@ -75,10 +90,6 @@ export function createSearchEntry(
  */
 export function createHistoryInfo(searchTerm?: string): HistoryQuery {
   return {finished: true, term: searchTerm || ''};
-}
-
-export function polymerSelectAll(element: Element, selector: string): NodeList {
-  return element.shadowRoot!.querySelectorAll(selector);
 }
 
 /**
@@ -189,8 +200,8 @@ export function createWindow(tabUrls: string[]): ForeignSessionWindow {
       remoteIconUrlForUma: '',
       sessionId: 456,
       timestamp: 0,
+      timestampDisplayStr: '',
       title: tabUrl,
-      type: 'tab',
       url: tabUrl,
       windowId: 0,
     };
@@ -202,5 +213,4 @@ export function createWindow(tabUrls: string[]): ForeignSessionWindow {
 export function navigateTo(route: string, _app: HistoryAppElement) {
   window.history.replaceState({}, '', route);
   window.dispatchEvent(new CustomEvent('popstate'));
-  flush();
 }

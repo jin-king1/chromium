@@ -24,6 +24,7 @@ import org.chromium.components.embedder_support.contextmenu.ContextMenuNativeDel
 import org.chromium.components.embedder_support.contextmenu.ContextMenuParams;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.url.GURL;
 
 @NullMarked
 class ContextMenuNativeDelegateImpl implements ContextMenuNativeDelegate {
@@ -81,7 +82,6 @@ class ContextMenuNativeDelegateImpl implements ContextMenuNativeDelegate {
             ContextMenuNativeDelegateImplJni.get()
                     .retrieveImageForShare(
                             mNativePtr,
-                            ContextMenuNativeDelegateImpl.this,
                             mRenderFrameHost,
                             imageRetrieveCallback,
                             MAX_SHARE_DIMEN_PX,
@@ -97,33 +97,55 @@ class ContextMenuNativeDelegateImpl implements ContextMenuNativeDelegate {
 
         ContextMenuNativeDelegateImplJni.get()
                 .retrieveImageForContextMenu(
-                        mNativePtr,
-                        ContextMenuNativeDelegateImpl.this,
-                        mRenderFrameHost,
-                        callback,
-                        maxWidthPx,
-                        maxHeightPx);
+                        mNativePtr, mRenderFrameHost, callback, maxWidthPx, maxHeightPx);
     }
 
     @Override
-    public void startDownload(boolean isLink) {
+    public void startDownload(GURL url, boolean isMedia) {
         if (mNativePtr == 0) return;
 
-        ContextMenuNativeDelegateImplJni.get()
-                .startDownload(mNativePtr, ContextMenuNativeDelegateImpl.this, isLink);
+        ContextMenuNativeDelegateImplJni.get().startDownload(mNativePtr, url, isMedia);
     }
 
     @Override
     public void searchForImage() {
         if (mNativePtr == 0) return;
 
-        ContextMenuNativeDelegateImplJni.get()
-                .searchForImage(mNativePtr, ContextMenuNativeDelegateImpl.this, mRenderFrameHost);
+        ContextMenuNativeDelegateImplJni.get().searchForImage(mNativePtr, mRenderFrameHost);
+    }
+
+    @Override
+    public void inspectElement(int x, int y) {
+        if (mNativePtr == 0) return;
+
+        ContextMenuNativeDelegateImplJni.get().inspectElement(mNativePtr, mRenderFrameHost, x, y);
     }
 
     @Override
     public RenderFrameHost getRenderFrameHost() {
         return mRenderFrameHost;
+    }
+
+    @Override
+    public void setPictureInPicture(boolean enterPip) {
+        if (mNativePtr == 0) return;
+
+        ContextMenuNativeDelegateImplJni.get()
+                .setPictureInPicture(mNativePtr, mRenderFrameHost, enterPip);
+    }
+
+    @Override
+    public void copyVideoFrame() {
+        if (mNativePtr == 0) return;
+
+        ContextMenuNativeDelegateImplJni.get().copyVideoFrame(mNativePtr, mRenderFrameHost);
+    }
+
+    @Override
+    public void downloadVideoFrame() {
+        if (mNativePtr == 0) return;
+
+        ContextMenuNativeDelegateImplJni.get().downloadVideoFrame(mNativePtr, mRenderFrameHost);
     }
 
     /** The class hold the |retrieveImageForShare| callback result. */
@@ -153,12 +175,13 @@ class ContextMenuNativeDelegateImpl implements ContextMenuNativeDelegate {
 
     @NativeMethods
     interface Natives {
-        long init(WebContents webContents, ContextMenuParams contextMenuParams);
+        long init(
+                @JniType("content::WebContents*") WebContents webContents,
+                ContextMenuParams contextMenuParams);
 
         void retrieveImageForShare(
                 long nativeContextMenuNativeDelegateImpl,
-                ContextMenuNativeDelegateImpl caller,
-                RenderFrameHost renderFrameHost,
+                @JniType("content::RenderFrameHost*") RenderFrameHost renderFrameHost,
                 Callback<ImageCallbackResult> callback,
                 int maxWidthPx,
                 int maxHeightPx,
@@ -166,20 +189,37 @@ class ContextMenuNativeDelegateImpl implements ContextMenuNativeDelegate {
 
         void retrieveImageForContextMenu(
                 long nativeContextMenuNativeDelegateImpl,
-                ContextMenuNativeDelegateImpl caller,
-                RenderFrameHost renderFrameHost,
+                @JniType("content::RenderFrameHost*") RenderFrameHost renderFrameHost,
                 Callback<Bitmap> callback,
                 int maxWidthPx,
                 int maxHeightPx);
 
         void startDownload(
                 long nativeContextMenuNativeDelegateImpl,
-                ContextMenuNativeDelegateImpl caller,
-                boolean isLink);
+                @JniType("GURL") GURL url,
+                boolean isMedia);
 
         void searchForImage(
                 long nativeContextMenuNativeDelegateImpl,
-                ContextMenuNativeDelegateImpl caller,
-                RenderFrameHost renderFrameHost);
+                @JniType("content::RenderFrameHost*") RenderFrameHost renderFrameHost);
+
+        void inspectElement(
+                long nativeContextMenuNativeDelegateImpl,
+                @JniType("content::RenderFrameHost*") RenderFrameHost renderFrameHost,
+                int x,
+                int y);
+
+        void setPictureInPicture(
+                long nativeContextMenuNativeDelegateImpl,
+                @JniType("content::RenderFrameHost*") RenderFrameHost renderFrameHost,
+                boolean enterPip);
+
+        void copyVideoFrame(
+                long nativeContextMenuNativeDelegateImpl,
+                @JniType("content::RenderFrameHost*") RenderFrameHost renderFrameHost);
+
+        void downloadVideoFrame(
+                long nativeContextMenuNativeDelegateImpl,
+                @JniType("content::RenderFrameHost*") RenderFrameHost renderFrameHost);
     }
 }

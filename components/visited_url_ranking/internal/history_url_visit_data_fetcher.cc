@@ -12,7 +12,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
@@ -63,6 +62,46 @@ TimeGroup GetTimeGroupForExplodedTime(
   return static_cast<TimeGroup>(exploded_time.hour / kHoursPerGroup);
 }
 
+bool ShouldDiscardShortVisit(
+    visited_url_ranking::URLVisitAggregate::URLType type,
+    int64_t visit_duration_limit,
+    const history::AnnotatedVisit& annotated_visit) {
+  visited_url_ranking::URLVisitAggregate::URLType visit_type =
+      visited_url_ranking::URLVisitAggregate::URLType::kRemoteVisit;
+  if (annotated_visit.visit_row.app_id) {
+    visit_type = visited_url_ranking::URLVisitAggregate::URLType::kCCTVisit;
+  } else if (annotated_visit.visit_row.originator_cache_guid.empty()) {
+    visit_type = visited_url_ranking::URLVisitAggregate::URLType::kLocalVisit;
+  }
+  if (type != visit_type) {
+    return false;
+  }
+
+  return annotated_visit.visit_row.visit_duration.InMilliseconds() <
+         visit_duration_limit;
+}
+
+visited_url_ranking::URLVisit::Source GetVisitSource(
+    const std::map<std::string,
+                   std::pair<std::string, syncer::DeviceInfo::FormFactor>>&
+        sync_device_info,
+    const history::AnnotatedVisit& annotated_visit,
+    const syncer::DeviceInfo* local_device_info) {
+  // The `originator_cache_guid` field is only set for foreign session visits
+  // but some foreign visits are actually local as they can come from different
+  // browsers/channels on the same device.
+  auto it =
+      sync_device_info.find(annotated_visit.visit_row.originator_cache_guid);
+  if (annotated_visit.visit_row.originator_cache_guid.empty() ||
+      (it != sync_device_info.end() &&
+       (local_device_info &&
+        it->second.first == local_device_info->client_name()))) {
+    return visited_url_ranking::URLVisit::Source::kLocal;
+  } else {
+    return visited_url_ranking::URLVisit::Source::kForeign;
+  }
+}
+
 }  // namespace
 
 namespace visited_url_ranking {
@@ -84,6 +123,8 @@ void HistoryURLVisitDataFetcher::FetchURLVisitData(
     FetchResultCallback callback) {
   history::QueryOptions query_options;
   query_options.begin_time = options.begin_time;
+  query_options.policy_for_404_visits =
+      history::VisitQuery404sPolicy::kExclude404s;
   query_options.duplicate_policy =
       history::QueryOptions::DuplicateHandling::KEEP_ALL_DUPLICATES;
 
@@ -94,7 +135,8 @@ void HistoryURLVisitDataFetcher::FetchURLVisitData(
         /*get_unclustered_visits_only=*/false,
         base::BindOnce(&HistoryURLVisitDataFetcher::OnGotAnnotatedVisits,
                        weak_ptr_factory_.GetWeakPtr(), std::move(callback),
-                       options.fetcher_sources.at(Fetcher::kHistory), config),
+                       options.fetcher_sources.at(Fetcher::kHistory),
+                       options.result_sources, config),
         &task_tracker_);
     return;
   }
@@ -105,23 +147,37 @@ void HistoryURLVisitDataFetcher::FetchURLVisitData(
 void HistoryURLVisitDataFetcher::OnGotAnnotatedVisits(
     FetchResultCallback callback,
     FetchOptions::FetchSources requested_fetch_sources,
+    const FetchOptions::ResultSourceOptions& result_sources,
     const FetcherConfig& config,
     std::vector<history::AnnotatedVisit> annotated_visits) {
-  if (!annotated_visits.empty() &&
-      features::kVisitedURLRankingHistoryFetcherDiscardZeroDurationVisits
-          .Get()) {
-    const size_t original_visit_count = annotated_visits.size();
-    std::erase_if(annotated_visits,
-                  [](const history::AnnotatedVisit& annotated_visit) {
-                    return annotated_visit.visit_row.visit_duration.is_zero();
-                  });
-    base::UmaHistogramCustomCounts(
-        "VisitedURLRanking.Fetch.History.Filter.ZeroDurationVisits."
-        "InOutPercentage",
-        base::ClampRound((static_cast<float>(annotated_visits.size()) /
-                          original_visit_count) *
-                         100),
-        1, 100, 100);
+  if (!annotated_visits.empty()) {
+    if (features::kVisitedURLRankingHistoryFetcherDiscardZeroDurationVisits
+            .Get()) {
+      const size_t original_visit_count = annotated_visits.size();
+      std::erase_if(annotated_visits,
+                    [](const history::AnnotatedVisit& annotated_visit) {
+                      return annotated_visit.visit_row.visit_duration.is_zero();
+                    });
+      base::UmaHistogramCustomCounts(
+          "VisitedURLRanking.Fetch.History.Filter.ZeroDurationVisits."
+          "InOutPercentage",
+          base::ClampRound((static_cast<float>(annotated_visits.size()) /
+                            original_visit_count) *
+                           100),
+          1, 100, 100);
+    }
+
+    for (auto res : result_sources) {
+      if (res.second.visit_duration_limit.has_value()) {
+        int64_t visit_duration_limit =
+            res.second.visit_duration_limit->InMilliseconds();
+        erase_if(annotated_visits,
+                 [&](const history::AnnotatedVisit& annotated_visit) {
+                   return ShouldDiscardShortVisit(
+                       res.first, visit_duration_limit, annotated_visit);
+                 });
+      }
+    }
   }
 
   std::map<std::string, std::pair<std::string, syncer::DeviceInfo::FormFactor>>
@@ -143,13 +199,16 @@ void HistoryURLVisitDataFetcher::OnGotAnnotatedVisits(
   syncer::DeviceInfo::FormFactor local_device_form_factor =
       syncer::GetLocalDeviceFormFactor();
   std::map<std::string, URLVisitAggregate::HistoryData> url_annotations;
+  const syncer::DeviceInfo* local_device_info =
+      device_info_sync_service_ &&
+              device_info_sync_service_->GetLocalDeviceInfoProvider()
+          ? device_info_sync_service_->GetLocalDeviceInfoProvider()
+                ->GetLocalDeviceInfo()
+          : nullptr;
   for (auto& annotated_visit : annotated_visits) {
-    // The `originator_cache_guid` field is only set for foreign session visits.
     Source current_visit_source =
-        annotated_visit.visit_row.originator_cache_guid.empty()
-            ? Source::kLocal
-            : Source::kForeign;
-    if (!base::Contains(requested_fetch_sources, current_visit_source)) {
+        GetVisitSource(sync_device_info, annotated_visit, local_device_info);
+    if (!std::ranges::contains(requested_fetch_sources, current_visit_source)) {
       continue;
     }
 
@@ -160,7 +219,7 @@ void HistoryURLVisitDataFetcher::OnGotAnnotatedVisits(
       std::optional<std::string> client_name = std::nullopt;
       syncer::DeviceInfo::FormFactor device_type =
           syncer::DeviceInfo::FormFactor::kUnknown;
-      if (annotated_visit.visit_row.originator_cache_guid.empty()) {
+      if (current_visit_source == Source::kLocal) {
         device_type = local_device_form_factor;
       } else {
         auto it = sync_device_info.find(

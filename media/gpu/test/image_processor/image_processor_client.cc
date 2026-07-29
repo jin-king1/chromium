@@ -73,9 +73,7 @@ std::unique_ptr<ImageProcessorClient> ImageProcessorClient::Create(
 
 ImageProcessorClient::ImageProcessorClient(
     std::vector<std::unique_ptr<VideoFrameProcessor>> frame_processors)
-    : gpu_memory_buffer_factory_(
-          gpu::GpuMemoryBufferFactory::CreateNativeType(nullptr)),
-      test_sii_(base::MakeRefCounted<gpu::TestSharedImageInterface>()),
+    : test_sii_(base::MakeRefCounted<gpu::TestSharedImageInterface>()),
       frame_processors_(std::move(frame_processors)),
       image_processor_client_thread_("ImageProcessorClientThread"),
       output_cv_(&output_lock_),
@@ -156,14 +154,14 @@ scoped_refptr<VideoFrame> ImageProcessorClient::CreateInputFrame(
   std::optional<VideoFrameLayout> input_layout = CreateLayout(input_config);
   ASSERT_TRUE_OR_RETURN_NULLPTR(input_layout);
 
-  if (VideoFrame::IsStorageTypeMappable(input_storage_type)) {
+  if (VideoFrame::StorageTypeAllowsDirectCpuAccess(input_storage_type)) {
     return CloneVideoFrame(CreateVideoFrameFromImage(input_image).get(),
                            *input_layout, test_sii_.get(),
                            VideoFrame::STORAGE_OWNED_MEMORY);
   } else {
     ASSERT_TRUE_OR_RETURN_NULLPTR(
         input_storage_type == VideoFrame::STORAGE_DMABUFS ||
-        input_storage_type == VideoFrame::STORAGE_GPU_MEMORY_BUFFER);
+        input_storage_type == VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE);
     // NV12 is the only format that can be allocated with
     // gfx::BufferUsage::VEA_READ_CAMERA_AND_CPU_READ_WRITE. So
     // gfx::BufferUsage::GPU_READ_CPU_READ_WRITE is specified for other formats.
@@ -189,7 +187,7 @@ scoped_refptr<VideoFrame> ImageProcessorClient::CreateOutputFrame(
       output_config.storage_type;
   std::optional<VideoFrameLayout> output_layout = CreateLayout(output_config);
   ASSERT_TRUE_OR_RETURN_NULLPTR(output_layout);
-  if (VideoFrame::IsStorageTypeMappable(output_storage_type)) {
+  if (VideoFrame::StorageTypeAllowsDirectCpuAccess(output_storage_type)) {
     return VideoFrame::CreateFrameWithLayout(
         *output_layout, gfx::Rect(output_image.Size()), output_image.Size(),
         base::TimeDelta(), false /* zero_initialize_memory*/);
@@ -197,14 +195,14 @@ scoped_refptr<VideoFrame> ImageProcessorClient::CreateOutputFrame(
 
   ASSERT_TRUE_OR_RETURN_NULLPTR(
       output_storage_type == VideoFrame::STORAGE_DMABUFS ||
-      output_storage_type == VideoFrame::STORAGE_GPU_MEMORY_BUFFER);
+      output_storage_type == VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE);
   scoped_refptr<VideoFrame> output_frame = CreatePlatformVideoFrame(
       output_layout->format(), output_layout->coded_size(),
       gfx::Rect(output_image.Size()), output_image.Size(), base::TimeDelta(),
       gfx::BufferUsage::GPU_READ_CPU_READ_WRITE);
 
-  if (output_storage_type == VideoFrame::STORAGE_GPU_MEMORY_BUFFER) {
-    output_frame = CreateGpuMemoryBufferVideoFrame(
+  if (output_storage_type == VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE) {
+    output_frame = CreateMappableSharedImageVideoFrame(
         output_frame.get(), gfx::BufferUsage::GPU_READ_CPU_READ_WRITE,
         test_sii_.get());
   }

@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "ash/public/cpp/app_list/app_list_types.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -22,6 +21,7 @@
 #include "chrome/browser/ash/app_list/search/search_features.h"
 #include "chrome/browser/ash/app_list/search/types.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/drivefs/drivefs_search_query.h"
 #include "components/drive/file_errors.h"

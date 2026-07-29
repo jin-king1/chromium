@@ -3,9 +3,12 @@
 // found in the LICENSE file.
 
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import 'chrome://resources/cr_elements/cr_tooltip/cr_tooltip.js';
 import '/strings.m.js';
 
+import type {CrTooltipElement} from 'chrome://resources/cr_elements/cr_tooltip/cr_tooltip.js';
 import {MouseHoverableMixinLit} from 'chrome://resources/cr_elements/mouse_hoverable_mixin_lit.js';
+import {assert} from 'chrome://resources/js/assert.js';
 import {getFaviconForPageURL} from 'chrome://resources/js/icon.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
@@ -34,11 +37,17 @@ function deepGet(obj: Record<string, any>, path: string): any {
   return value;
 }
 
+export enum TabSearchItemSize {
+  COMPACT = 'compact',
+  MEDIUM = 'medium',
+  LARGE = 'large',
+}
 
 export interface TabSearchItemElement {
   $: {
     primaryText: HTMLElement,
     secondaryText: HTMLElement,
+    secondaryTextInner: HTMLElement,
   };
 }
 
@@ -62,43 +71,51 @@ export class TabSearchItemElement extends TabSearchItemBase {
     return {
       data: {type: Object},
       buttonRipples_: {type: Boolean},
-      inSuggestedGroup: {type: Boolean},
+      tabGroupColorRefresh_: {type: Boolean},
+      hideTimestamp: {type: Boolean},
       hideUrl: {type: Boolean},
+      hideCloseButton: {type: Boolean},
       closeButtonAriaLabel: {type: String},
       closeButtonTooltip: {type: String},
       closeButtonIcon: {type: String},
-
-      compact: {
-        type: Boolean,
-        reflect: true,
-      },
+      size: {type: String, reflect: true},
     };
   }
 
-  data: TabData = new TabData(
+  accessor data: TabData = new TabData(
       {
         active: false,
+        visible: false,
         faviconUrl: null,
         groupId: null,
         alertStates: [],
-        index: 0,
         isDefaultFavicon: false,
         lastActiveElapsedText: '',
         lastActiveTimeTicks: {internalValue: BigInt(0)},
         pinned: false,
+        split: false,
+        splitId: null,
+        splitLayout: null,
         showIcon: false,
         tabId: 1,
         title: '',
-        url: {url: ''},
+        url: '',
       },
       TabItemType.OPEN_TAB, '');
-  protected buttonRipples_: boolean = loadTimeData.getBoolean('useRipples');
-  inSuggestedGroup: boolean = false;
-  compact: boolean = false;
-  hideUrl: boolean = false;
-  closeButtonIcon: string = 'tab-search:close';
-  closeButtonAriaLabel: string = '';
-  closeButtonTooltip: string = '';
+  protected accessor buttonRipples_: boolean =
+      loadTimeData.getBoolean('useRipples');
+  protected accessor tabGroupColorRefresh_: boolean =
+      loadTimeData.getBoolean('useTabGroupColorRefresh');
+  accessor hideTimestamp: boolean = false;
+  accessor size: TabSearchItemSize = TabSearchItemSize.MEDIUM;
+  accessor hideUrl: boolean = false;
+  accessor hideCloseButton: boolean = false;
+  accessor closeButtonIcon: string =
+      loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+      'tab-search:close' :
+      'tab-search:close-old';
+  accessor closeButtonAriaLabel: string = '';
+  accessor closeButtonTooltip: string = '';
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -107,7 +124,13 @@ export class TabSearchItemElement extends TabSearchItemBase {
       if (this.data.tabGroup) {
         this.style.setProperty(
             '--group-dot-color',
-            `var(--tab-group-color-${colorName(this.data.tabGroup.color)})`);
+            this.tabGroupColorRefresh_ ?
+                `var(--tab-group-refresh-color-${colorName(this.data.tabGroup.color)})` :
+                `var(--tab-group-color-${colorName(this.data.tabGroup.color)})`);
+      }
+
+      if (changedProperties.has('size')) {
+        assert(Object.values(TabSearchItemSize).includes(this.size));
       }
     }
   }
@@ -124,7 +147,7 @@ export class TabSearchItemElement extends TabSearchItemBase {
    * @return Whether a close action can be performed on the item.
    */
   protected isCloseable_(): boolean {
-    return this.data.type === TabItemType.OPEN_TAB;
+    return !this.hideCloseButton && this.data.type === TabItemType.OPEN_TAB;
   }
 
   /**
@@ -145,18 +168,32 @@ export class TabSearchItemElement extends TabSearchItemBase {
     return this.role === 'option' ? 'option' : 'button';
   }
 
-  protected onItemClose_(e: Event) {
+  protected onCloseButtonClick_(e: Event) {
     this.dispatchEvent(new CustomEvent('close'));
     e.stopPropagation();
+  }
+
+  protected onCloseButtonFocus_() {
+    // Manual tooltip control for keyboard focus.
+    const tooltip =
+        this.shadowRoot.querySelector<CrTooltipElement>('cr-tooltip');
+    assert(tooltip);
+    tooltip.show();
+  }
+
+  protected onCloseButtonBlur_() {
+    const tooltip =
+        this.shadowRoot.querySelector<CrTooltipElement>('cr-tooltip');
+    assert(tooltip);
+    tooltip.hide();
   }
 
   protected faviconUrl_(): string {
     const tab = this.data.tab;
     return (tab as Tab).faviconUrl ?
-        `url("${(tab as Tab).faviconUrl!.url}")` :
+        `url("${(tab as Tab).faviconUrl!}")` :
         getFaviconForPageURL(
-            (tab as Tab).isDefaultFavicon ? 'chrome://newtab' : tab.url.url,
-            false);
+            (tab as Tab).isDefaultFavicon ? 'chrome://newtab' : tab.url, false);
   }
 
   /**
@@ -217,7 +254,7 @@ export class TabSearchItemElement extends TabSearchItemBase {
     const data = this.data;
     ([
       ['tab.title', this.$.primaryText],
-      ['hostname', this.$.secondaryText],
+      ['hostname', this.$.secondaryTextInner],
       ['tabGroup.title', this.shadowRoot.querySelector('#groupTitle')],
     ] as Array<[string, HTMLElement | null]>)
         .forEach(([path, element]) => {
@@ -229,9 +266,9 @@ export class TabSearchItemElement extends TabSearchItemBase {
         });
 
     // Show chrome:// if it's a chrome internal url
-    const protocol = new URL(normalizeURL(data.tab.url.url)).protocol;
+    const protocol = new URL(normalizeURL(data.tab.url)).protocol;
     if (protocol === 'chrome:') {
-      this.$.secondaryText.prepend(document.createTextNode('chrome://'));
+      this.$.secondaryTextInner.prepend(document.createTextNode('chrome://'));
     }
   }
 

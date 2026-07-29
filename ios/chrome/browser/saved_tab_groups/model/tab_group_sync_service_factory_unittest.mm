@@ -17,17 +17,7 @@ namespace tab_groups {
 class TabGroupSyncServiceFactoryTest : public PlatformTest {
  public:
   TabGroupSyncServiceFactoryTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {
-            kTabGroupSync,
-            kTabGroupsIPad,
-            kModernTabStrip,
-        },
-        /*disable_features=*/{});
     TestProfileIOS::Builder builder;
-    builder.AddTestingFactory(TabGroupSyncServiceFactory::GetInstance(),
-                              TabGroupSyncServiceFactory::GetDefaultFactory());
     profile_ = std::move(builder).Build();
   }
 
@@ -37,21 +27,11 @@ class TabGroupSyncServiceFactoryTest : public PlatformTest {
   std::unique_ptr<TestProfileIOS> profile_;
 };
 
-// Tests the creation of the service in regular.
-TEST_F(TabGroupSyncServiceFactoryTest, ServiceCreatedInRegularProfile) {
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
+// Tests that TabGroupSyncServiceFactory does not create TabGroupSyncService
+// for TestProfileIOS.
+TEST_F(TabGroupSyncServiceFactoryTest, NoServiceForTests) {
   TabGroupSyncService* service =
       TabGroupSyncServiceFactory::GetForProfile(profile_.get());
-  EXPECT_TRUE(service);
-}
-
-// Tests that the factory is returning a nil pointer for incognito.
-TEST_F(TabGroupSyncServiceFactoryTest, ServiceNotCreatedInIncognito) {
-  TabGroupSyncService* service = TabGroupSyncServiceFactory::GetForProfile(
-      profile_->GetOffTheRecordProfile());
   EXPECT_FALSE(service);
 }
 

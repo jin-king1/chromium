@@ -277,16 +277,8 @@ void AnimationEffect::updateTiming(OptionalEffectTiming* optional_timing,
   if (GetAnimation() && GetAnimation()->TimelineInternal() &&
       GetAnimation()->TimelineInternal()->IsProgressBased()) {
     if (optional_timing->hasDuration()) {
-      if (optional_timing->duration()->IsUnrestrictedDouble()) {
-        double duration =
-            optional_timing->duration()->GetAsUnrestrictedDouble();
-        if (duration == std::numeric_limits<double>::infinity()) {
-          exception_state.ThrowTypeError(
-              "Effect duration cannot be Infinity when used with Scroll "
-              "Timelines");
-          return;
-        }
-      } else if (optional_timing->duration()->GetAsString() == "auto") {
+      if (optional_timing->duration()->IsString() &&
+          optional_timing->duration()->GetAsString() == "auto") {
         // TODO(crbug.com/1216527)
         // Eventually we hope to be able to be more flexible with
         // iteration_duration "auto" and its interaction with start_delay and
@@ -345,7 +337,8 @@ void AnimationEffect::UpdateInheritedTime(
   if (needs_update) {
     Timing::CalculatedTiming calculated = SpecifiedTiming().CalculateTimings(
         inherited_time, is_idle, NormalizedTiming(), direction,
-        IsA<KeyframeEffect>(this), inherited_playback_rate);
+        IsA<KeyframeEffect>(this), inherited_playback_rate, paused_for_trigger_,
+        reason == TimingUpdateReason::kTimingUpdateCommitStyles);
 
     const bool was_canceled = calculated.phase != calculated_.phase &&
                               calculated.phase == Timing::kPhaseNone;
@@ -357,7 +350,9 @@ void AnimationEffect::UpdateInheritedTime(
       event_delegate_->OnEventCondition(*this, calculated.phase);
     }
 
-    if (owner_ && (calculated_.is_in_play != calculated.is_in_play)) {
+    if (RuntimeEnabledFeatures::
+            CompositingDecisionAtAnimationPhaseBoundariesEnabled() &&
+        owner_ && (calculated_.is_in_play != calculated.is_in_play)) {
       owner_->GetAnimation()->OnActivePhaseStateChange(calculated.is_in_play);
     }
 
@@ -396,11 +391,12 @@ const Timing::CalculatedTiming& AnimationEffect::EnsureCalculated() const {
   return calculated_;
 }
 
-Animation* AnimationEffect::GetAnimation() {
+Animation* AnimationEffect::GetAnimation() const {
   return owner_ ? owner_->GetAnimation() : nullptr;
 }
-const Animation* AnimationEffect::GetAnimation() const {
-  return owner_ ? owner_->GetAnimation() : nullptr;
+
+void AnimationEffect::SetPausedForTrigger(bool paused_for_trigger) {
+  paused_for_trigger_ = paused_for_trigger;
 }
 
 void AnimationEffect::Trace(Visitor* visitor) const {

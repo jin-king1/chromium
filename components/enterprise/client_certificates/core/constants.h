@@ -5,6 +5,10 @@
 #ifndef COMPONENTS_ENTERPRISE_CLIENT_CERTIFICATES_CORE_CONSTANTS_H_
 #define COMPONENTS_ENTERPRISE_CLIENT_CERTIFICATES_CORE_CONSTANTS_H_
 
+#include <array>
+#include <cstdint>
+#include <vector>
+
 namespace client_certificates {
 
 // Name of the identity representing a managed Profile. This value also
@@ -37,6 +41,10 @@ extern const char kKeyDetails[];
 
 // Key name used within a key-value context for a certificate.
 extern const char kCertificate[];
+
+// Number of days before a certificate's expiration date when it is considered
+// to be expiring soon.
+extern const int kDaysBeforeExpiration;
 
 }  // namespace client_certificates
 

@@ -11,7 +11,6 @@ assert(!is_android && !is_fuchsia)
 
 source_set("signin") {
   sources = [
-    "cookie_clear_on_exit_migration_notice.h",
     "signin_modal_dialog.h",
     "signin_modal_dialog_impl.h",
     "signin_view_controller.h",
@@ -25,6 +24,7 @@ source_set("signin") {
     "//chrome/common",
     "//components/signin/public/base",
     "//components/sync/base",
+    "//ui/base/interaction",
     "//url",
   ]
 
@@ -37,19 +37,27 @@ source_set("signin") {
   if (enable_dice_support) {
     sources += [
       "chrome_signout_confirmation_prompt.h",
+      "dice_migration_service.h",
+      "dice_migration_service_factory.h",
       "dice_web_signin_interceptor_delegate.h",
       "promos/bubble_signin_promo_delegate.h",
       "promos/bubble_signin_promo_signin_button_view.h",
       "promos/bubble_signin_promo_view.h",
       "promos/signin_promo_tab_helper.h",
+      "signin_qrcode_infobar.h",
+      "signin_qrcode_infobar_delegate.h",
+      "signin_qrcode_model.h",
+      "signin_qrcode_view.h",
     ]
-    public_deps += [ "//chrome/browser/signin" ]
+    public_deps += [
+      "//chrome/browser/signin",
+      "//chrome/browser/ui/views/infobars",
+    ]
   }
 }
 
 source_set("impl") {
   sources = [
-    "cookie_clear_on_exit_migration_notice.cc",
     "signin_modal_dialog.cc",
     "signin_modal_dialog_impl.cc",
     "signin_view_controller.cc",
@@ -62,13 +70,26 @@ source_set("impl") {
     "//base",
     "//chrome/app:branded_strings",
     "//chrome/app:generated_resources",
+    "//chrome/browser:browser_process",
+    "//chrome/browser/profiles:misc",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/search",
     "//chrome/browser/search_engines",
     "//chrome/browser/sync",
-    "//chrome/browser/ui:browser_navigator_params_headers",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/dialogs",
+    "//chrome/browser/ui/navigator",
+    "//chrome/browser/ui/profiles",
+
+    # TODO(crubug.com/430804948): This dependency is needed because
+    # `signin_view_controller.cc` includes
+    # `signin_intercept_first_run_experience_dialog.h`, temporarily built from
+    # profiles:impl, due to a circular dependency.
+    "//chrome/browser/signin:signin_promo",
+    "//chrome/browser/ui/profiles:impl",
     "//chrome/browser/ui/signin",
     "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/ui/views/frame:toolbar_button_provider",
     "//chrome/browser/ui/webui/signin",
     "//chrome/common",
     "//components/prefs",
@@ -79,21 +100,42 @@ source_set("impl") {
     "//components/sync/service",
     "//content/public/browser",
     "//google_apis",
-    "//ui/base",
+    "//ui/base/interaction",
     "//url",
   ]
 
   if (enable_dice_support) {
     sources += [
       "chrome_signout_confirmation_prompt.cc",
+      "dice_migration_service.cc",
+      "dice_migration_service_factory.cc",
       "dice_web_signin_interceptor_delegate.cc",
       "promos/bubble_signin_promo_delegate.cc",
       "promos/bubble_signin_promo_signin_button_view.cc",
       "promos/bubble_signin_promo_view.cc",
       "promos/signin_promo_tab_helper.cc",
+      "signin_qrcode_infobar.cc",
+      "signin_qrcode_infobar_delegate.cc",
+      "signin_qrcode_model.cc",
+      "signin_qrcode_view.cc",
     ]
 
-    deps += [ "//chrome/browser/profiles:profile_util" ]
+    deps += [
+      "//chrome/browser/profiles:profile_util",
+      "//chrome/browser/signin:signin_promo",
+      "//chrome/browser/ui/hats",
+      "//chrome/browser/ui/toasts",
+      "//chrome/browser/ui/views:layout_provider",
+      "//chrome/browser/ui/views/controls",
+      "//chrome/browser/ui/views/infobars",
+      "//chrome/browser/ui/views/webauthn",
+      "//chrome/browser/ui/web_applications",
+      "//components/infobars/content",
+      "//components/pref_registry",
+      "//components/send_tab_to_self:features",
+      "//components/user_education/common",
+      "//ui/views",
+    ]
   }
 
   if (enable_extensions) {
@@ -116,11 +158,23 @@ if (!is_android) {
         "//base",
         "//base/test:test_support",
         "//chrome/browser",
+        "//chrome/browser/bookmarks",
+        "//chrome/browser/password_manager:test_support",
+        "//chrome/browser/signin:signin_browser_test_base",
         "//chrome/browser/ui",
         "//chrome/browser/ui:browser_element_identifiers",
+        "//chrome/browser/ui:chrome_pages",
         "//chrome/browser/ui:ui_features",
+        "//chrome/browser/ui/browser_window",
+        "//chrome/browser/ui/extensions",
+        "//chrome/browser/ui/extensions:extension_post_install_dialog",
+        "//chrome/browser/ui/hats",
+        "//chrome/browser/ui/hats:test_support",
+        "//chrome/browser/ui/passwords:test_support",
+        "//chrome/browser/ui/views/extensions:extension_post_install_dialog_view_utils",
+        "//chrome/browser/ui/views/passwords:password_bubble_view_base",
         "//chrome/browser/ui/webui/signin:test_support_ui",
-        "//chrome/test:browser_tests",
+        "//chrome/test:test_support",
         "//chrome/test:test_support_ui",
         "//components/autofill/content/browser",
         "//components/autofill/core/browser:test_support",
@@ -129,6 +183,7 @@ if (!is_android) {
         "//components/signin/public/identity_manager",
         "//components/signin/public/identity_manager:test_support",
         "//components/sync:test_support",
+        "//components/sync_bookmarks",
         "//content/public/browser",
         "//content/test:test_support",
         "//google_apis",
@@ -137,6 +192,17 @@ if (!is_android) {
         "//ui/events:events_base",
         "//ui/views:test_support",
       ]
+      if (enable_dice_support) {
+        sources += [
+          "dice_migration_service_interactive_uitest.cc",
+          "dice_migration_service_pixel_browsertest.cc",
+        ]
+        deps += [ "//chrome/browser/ui/toasts" ]
+
+        # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+        # enable the diagnostic by removing this line.
+        configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+      }
     }
   }
 
@@ -152,11 +218,14 @@ if (!is_android) {
       "//base",
       "//base/test:test_support",
       "//chrome/browser",
+      "//chrome/browser/signin:signin_browser_test_base",
       "//chrome/browser/sync",
+      "//chrome/browser/sync/test/integration:sync_integration_test_support",
       "//chrome/browser/ui",
       "//chrome/browser/ui:ui_features",
+      "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/views/frame:toolbar_button_provider",
       "//chrome/browser/ui/webui/signin:test_support_ui",
-      "//chrome/test:sync_integration_test_support",
       "//chrome/test:test_support_ui",
       "//components/signin/public/base",
       "//components/signin/public/base:signin_switches",
@@ -169,24 +238,57 @@ if (!is_android) {
 
     if (enable_dice_support) {
       sources += [
+        "dice_migration_service_browsertest.cc",
         "promos/bubble_sign_in_promo_delegate_browsertest.cc",
         "promos/signin_promo_tab_helper_browsertest.cc",
         "signin_view_controller_browsertest.cc",
       ]
       deps += [
-        "//chrome/browser/ui/webui/signin/signout_confirmation:signout_confirmation",
+        "//chrome/browser/ui/toasts/api:toasts",
+        "//chrome/browser/ui/webui/signin/signout_confirmation",
+        "//chrome/browser/ui/webui/signin/signout_confirmation:test_support",
+        "//chrome/browser/web_applications:web_applications_test_support",
         "//chrome/test:test_support",
+        "//components/infobars/content",
         "//components/sync:test_support",
+        "//device/bluetooth",
+        "//device/bluetooth:mocks",
       ]
     }
 
     if (!is_chromeos) {
       sources += [
+        "account_settings_page_pixel_browsertest.cc",
         "chrome_signout_confirmation_prompt_browsertest.cc",
-        "cookie_clear_on_exit_migration_notice_browsertest.cc",
       ]
 
-      deps += [ "//chrome/browser/content_settings:content_settings_factory" ]
+      deps += [
+        "//chrome/browser/content_settings:content_settings_factory",
+        "//chrome/browser/profiles/batch_upload:test_support",
+      ]
     }
+  }
+}
+
+if (enable_dice_support) {
+  source_set("unit_tests") {
+    testonly = true
+
+    sources = [ "promos/signin_promo_tab_helper_unittest.cc" ]
+
+    deps = [
+      ":signin",
+      "//base",
+      "//base/test:test_support",
+      "//chrome/browser",
+      "//chrome/browser/ui",
+      "//chrome/test:test_support",
+      "//components/signin/public/base",
+      "//components/signin/public/identity_manager",
+      "//components/signin/public/identity_manager:test_support",
+      "//content/test:test_support",
+      "//google_apis",
+      "//testing/gtest",
+    ]
   }
 }

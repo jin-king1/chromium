@@ -5,13 +5,14 @@
 #include "chrome/browser/ui/sharing_hub/screenshot/screenshot_captured_bubble_controller.h"
 
 #include "base/feature_list.h"
-#include "chrome/browser/accessibility/accessibility_state_utils.h"
+#include "base/notimplemented.h"
 #include "chrome/browser/image_editor/screenshot_flow.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_window.h"
-#include "chrome/grit/generated_resources.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/sharing_hub/sharing_hub_window_controller.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/accessibility/platform/ax_platform.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 
 namespace sharing_hub {
@@ -35,9 +36,11 @@ void ScreenshotCapturedBubbleController::ShowBubble(
   ui::ScopedClipboardWriter(ui::ClipboardBuffer::kCopyPaste)
       .WriteImage(*captured_image.ToSkBitmap());
 
-  Browser* browser = chrome::FindBrowserWithTab(&GetWebContents());
-  browser->window()->ShowScreenshotCapturedBubble(&GetWebContents(),
-                                                  captured_image);
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+          &GetWebContents());
+  sharing_hub::SharingHubWindowController::From(browser)
+      ->ShowScreenshotCapturedBubble(&GetWebContents(), captured_image);
 }
 
 void ScreenshotCapturedBubbleController::HideBubble() {
@@ -48,9 +51,10 @@ void ScreenshotCapturedBubbleController::OnBubbleClosed() {
   NOTIMPLEMENTED();
 }
 
-void ScreenshotCapturedBubbleController::Capture(Browser* browser) {
+void ScreenshotCapturedBubbleController::Capture(
+    BrowserWindowInterface* browser) {
   content::WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   screenshot_flow_ =
       std::make_unique<image_editor::ScreenshotFlow>(web_contents);
 
@@ -68,7 +72,7 @@ void ScreenshotCapturedBubbleController::Capture(Browser* browser) {
           },
           web_contents->GetWeakPtr());
 
-  if (accessibility_state_utils::IsScreenReaderEnabled()) {
+  if (ui::AXPlatform::GetInstance().IsScreenReaderActive()) {
     screenshot_flow_->StartFullscreenCapture(std::move(callback));
   } else {
     screenshot_flow_->Start(std::move(callback));

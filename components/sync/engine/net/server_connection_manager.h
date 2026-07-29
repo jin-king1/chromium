@@ -12,7 +12,9 @@
 #include <string>
 
 #include "base/observer_list.h"
+#include "base/observer_list_types.h"
 #include "base/sequence_checker.h"
+#include "components/signin/public/identity_manager/access_token_info.h"
 
 namespace syncer {
 
@@ -72,12 +74,12 @@ struct ServerConnectionEvent {
       : connection_code(code) {}
 };
 
-class ServerConnectionEventListener {
+class ServerConnectionEventListener : public base::CheckedObserver {
  public:
   virtual void OnServerConnectionEvent(const ServerConnectionEvent& event) = 0;
 
  protected:
-  virtual ~ServerConnectionEventListener() = default;
+  ~ServerConnectionEventListener() override = default;
 };
 
 // Use this class to interact with the sync server.
@@ -115,12 +117,13 @@ class ServerConnectionManager {
     return server_response_.http_status_code;
   }
 
-  // Sets a new access token. If `access_token` is empty, the current token is
-  // invalidated and cleared. Returns false if the server is in authentication
-  // error state.
-  bool SetAccessToken(const std::string& access_token);
+  // Sets a new access token. If `access_token_info` is empty, the current token
+  // is invalidated and cleared. Returns false if the server is in
+  // authentication error state.
+  bool SetAccessTokenInfo(const signin::AccessTokenInfo& access_token_info);
 
-  bool HasInvalidAccessToken() { return access_token_.empty(); }
+  // Returns true if the current access token is not empty.
+  bool HasAccessToken() const;
 
  protected:
   // Updates `server_response_` and notifies listeners if the server status
@@ -130,18 +133,23 @@ class ServerConnectionManager {
   // Internal PostBuffer base function which subclasses are expected to
   // implement.
   virtual HttpResponse PostBuffer(const std::string& buffer_in,
-                                  const std::string& access_token,
                                   std::string* buffer_out) = 0;
 
+  // Clears the current access token.
   void ClearAccessToken();
+
+  // Returns the current raw access token, empty if there is no valid token.
+  std::string GetAccessToken() const;
+
+  bool IsAccessTokenValid() const;
 
  private:
   void NotifyStatusChanged();
 
   // The access token to use in authenticated requests.
-  std::string access_token_;
+  signin::AccessTokenInfo access_token_info_;
 
-  base::ObserverList<ServerConnectionEventListener>::Unchecked listeners_;
+  base::ObserverList<ServerConnectionEventListener> listeners_;
 
   HttpResponse server_response_;
 

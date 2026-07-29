@@ -12,6 +12,7 @@
 #include "base/time/time.h"
 #include "media/base/video_codecs.h"
 #include "media/base/video_color_space.h"
+#include "media/base/video_decoder_config.h"
 #include "media/base/video_encoder.h"
 #include "media/base/video_frame_pool.h"
 #include "media/video/video_encoder_info.h"
@@ -120,6 +121,7 @@ class MODULES_EXPORT VideoEncoder : public EncoderBase<VideoEncoderTraits> {
   void ProcessConfigure(Request* request) override;
   void ProcessReconfigure(Request* request) override;
   void ResetInternal(DOMException* ex) override;
+  void OnNewEncode(VideoFrame* input, ExceptionState& exception_state) override;
 
   void OnEncodeDone(Request* request, media::EncoderStatus status);
   media::VideoEncoder::EncodeOptions CreateEncodeOptions(Request* request);
@@ -133,8 +135,8 @@ class MODULES_EXPORT VideoEncoder : public EncoderBase<VideoEncoderTraits> {
                              bool fallback,
                              media::VideoCodec codec);
 
-  ParsedConfig* ParseConfig(const VideoEncoderConfig*,
-                            ExceptionState&) override;
+  ParsedConfig* OnNewConfigure(const VideoEncoderConfig*,
+                               ExceptionState&) override;
   bool VerifyCodecSupport(ParsedConfig*, String* js_error_message) override;
 
   // Virtual for UTs.
@@ -149,6 +151,7 @@ class MODULES_EXPORT VideoEncoder : public EncoderBase<VideoEncoderTraits> {
   void ContinueConfigureWithGpuFactories(
       Request* request,
       media::GpuVideoAcceleratorFactories* gpu_factories);
+  void ContinueConfigureAfterFlush(Request* request);
   media::EncoderStatus::Or<std::unique_ptr<media::VideoEncoder>>
   CreateAcceleratedVideoEncoder(
       media::VideoCodecProfile profile,
@@ -182,18 +185,22 @@ class MODULES_EXPORT VideoEncoder : public EncoderBase<VideoEncoderTraits> {
   // Per-frame metadata to be applied to outputs, linked by timestamp.
   struct FrameMetadata {
     base::TimeDelta duration;
+    media::VideoTransformation transformation;
   };
   base::flat_map<base::TimeDelta, FrameMetadata> frame_metadata_;
 
   // Buffers returned by getAllFrameBuffers()
   HeapVector<Member<VideoEncoderBuffer>> frame_reference_buffers_;
 
-  // The color space corresponding to the last emitted output. Used to update
-  // emitted VideoDecoderConfig when necessary.
-  gfx::ColorSpace last_output_color_space_;
+  // The transformation corresponding to the last input received by
+  // ProcessEncode(). Used to request a key frame.
+  std::optional<media::VideoTransformation> first_input_transformation_;
 
   // Latest VideoEncoderInfo reported by encoder
   media::VideoEncoderInfo encoder_info_;
+
+  // The last emitted decoder config.
+  std::optional<media::VideoDecoderConfig> last_decoder_config_;
 };
 
 }  // namespace blink

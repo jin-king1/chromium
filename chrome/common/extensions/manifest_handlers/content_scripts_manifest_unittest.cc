@@ -9,6 +9,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/extensions/manifest_tests/chrome_manifest_test.h"
 #include "chrome/common/webui_url_constants.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/file_util.h"
@@ -17,6 +18,8 @@
 #include "extensions/common/mojom/match_origin_as_fallback.mojom-shared.h"
 #include "extensions/common/switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -56,7 +59,7 @@ TEST_F(ContentScriptsManifestTest, MatchPattern) {
                "Error at key 'content_scripts'. Parsing array failed at index "
                "0: Error at key 'matches': Parsing array failed at index 0: "
                "expected string, got integer")};
-  RunTestcases(testcases, EXPECT_TYPE_ERROR);
+  RunTestcases(testcases, ExpectType::kError);
 
   LoadAndExpectSuccess("ports_in_content_scripts.json");
 }
@@ -66,7 +69,7 @@ TEST_F(ContentScriptsManifestTest, OnChromeUrlsWithFlag) {
       switches::kExtensionsOnChromeURLs);
   scoped_refptr<Extension> extension =
       LoadAndExpectSuccess("content_script_invalid_match_chrome_url.json");
-  const GURL newtab_url(chrome::kChromeUINewTabURL);
+  const GURL& newtab_url = chrome::ChromeUINewTabURLAsGURL();
   EXPECT_TRUE(
       ContentScriptsInfo::ExtensionHasScriptAtURL(extension.get(), newtab_url));
 }
@@ -109,15 +112,46 @@ TEST_F(ContentScriptsManifestTest, FailLoadingNonUTF8Scripts) {
                     .AppendASCII("bad")
                     .AppendASCII("bad_encoding");
 
-  std::string error;
+  std::u16string error;
   scoped_refptr<Extension> extension(
       file_util::LoadExtension(install_dir, mojom::ManifestLocation::kUnpacked,
                                Extension::NO_FLAGS, &error));
-  ASSERT_TRUE(extension.get() == nullptr);
-  ASSERT_STREQ(
-      "Could not load file 'bad_encoding.js' for content script. "
-      "It isn't UTF-8 encoded.",
-      error.c_str());
+  ASSERT_EQ(extension.get(), nullptr);
+  ASSERT_EQ(
+      u"Could not load file 'bad_encoding.js' for content script. "
+      u"It isn't UTF-8 encoded.",
+      error);
+}
+
+TEST_F(ContentScriptsManifestTest, FailLoadingNonJsScripts) {
+  static constexpr char kWarning[] =
+      "Invalid script mime type: 'Could not load file 'files/bad_script.json' "
+      "for content script, content scripts can only be loaded from supported "
+      "JavaScript files such as .js files.'";
+  scoped_refptr<Extension> extension =
+      LoadAndExpectWarning("mime_type/bad_content_script.json", kWarning);
+
+  const UserScriptList& user_scripts =
+      ContentScriptsInfo::GetContentScripts(extension.get());
+  EXPECT_TRUE(user_scripts.empty());
+}
+
+TEST_F(ContentScriptsManifestTest, AllowLoadingScssStyleSheets) {
+  scoped_refptr<Extension> extension =
+      LoadAndExpectWarnings("mime_type/good_scss_style_sheet.json", {});
+
+  const UserScriptList& user_scripts =
+      ContentScriptsInfo::GetContentScripts(extension.get());
+  EXPECT_EQ(1u, user_scripts.size());
+}
+
+TEST_F(ContentScriptsManifestTest, AllowLoadingUserJsContentScripts) {
+  scoped_refptr<Extension> extension =
+      LoadAndExpectWarnings("mime_type/good_user_js_script.json", {});
+
+  const UserScriptList& user_scripts =
+      ContentScriptsInfo::GetContentScripts(extension.get());
+  EXPECT_EQ(1u, user_scripts.size());
 }
 
 TEST_F(ContentScriptsManifestTest, MatchOriginAsFallback) {

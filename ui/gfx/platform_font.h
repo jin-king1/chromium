@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/component_export.h"
 #include "base/memory/ref_counted.h"
@@ -15,7 +16,7 @@
 #include "third_party/skia/include/core/SkTypeface.h"
 #include "ui/gfx/font.h"
 #include "ui/gfx/font_render_params.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace gfx {
 
@@ -100,7 +101,14 @@ class COMPONENT_EXPORT(GFX) PlatformFont
   virtual const std::string& GetFontName() const = 0;
 
   // Returns the actually used font name in UTF-8.
+  // This string is for logging or display only. Requesting a font with this
+  // name may return a different font.
+  // In tests prefer GetActualFontNames. The common names used in the tests may
+  // not be the primary actual name of the resolved font.
   virtual std::string GetActualFontName() const = 0;
+
+  // Returns the actually used font names in UTF-8.
+  virtual std::vector<std::string> GetActualFontNames() const = 0;
 
   // Returns the font size in pixels.
   virtual int GetFontSize() const = 0;
@@ -118,11 +126,27 @@ class COMPONENT_EXPORT(GFX) PlatformFont
   // otherwise lose the handle to the correct platform font instance.
   virtual sk_sp<SkTypeface> GetNativeSkTypeface() const = 0;
 
+  uint32_t typeface_unique_id() const { return typeface_unique_id_; }
+
+  std::strong_ordering operator<=>(const PlatformFont& other) const {
+    return Compare(other);
+  }
+
  protected:
-  virtual ~PlatformFont() = default;
+  PlatformFont();
+  virtual ~PlatformFont();
+
+  // Compares this PlatformFont with |other|.
+  virtual std::strong_ordering Compare(const PlatformFont& other) const;
+
+  void set_typeface_unique_id(uint32_t id);
 
  private:
   friend class base::RefCounted<PlatformFont>;
+
+  // Cached unique ID of the Skia typeface, used to ensure stable comparison
+  // ordering.
+  uint32_t typeface_unique_id_ = 0;
 };
 
 constexpr int PlatformFont::GetFontSizeDelta(int desired_font_size) {

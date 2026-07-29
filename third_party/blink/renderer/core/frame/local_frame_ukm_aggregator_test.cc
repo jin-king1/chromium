@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/core/frame/local_frame_ukm_aggregator.h"
 
 #include "base/metrics/statistics_recorder.h"
@@ -25,7 +20,8 @@
 #include "third_party/blink/renderer/core/testing/intersection_observer_test_helper.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
-#include "third_party/blink/renderer/platform/testing/testing_platform_support_with_mock_scheduler.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
+#include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 
 namespace blink {
 
@@ -682,6 +678,10 @@ TEST_F(LocalFrameUkmAggregatorTest, IntersectionObserverSamplePeriod) {
 
 class LocalFrameUkmAggregatorSimTest : public SimTest {
  protected:
+  explicit LocalFrameUkmAggregatorSimTest(
+      base::test::TaskEnvironment::TimeSource time_source =
+          base::test::TaskEnvironment::TimeSource::SYSTEM_TIME)
+      : SimTest(time_source) {}
   LocalFrameUkmAggregator& local_root_aggregator() {
     return *LocalFrameRoot().GetFrame()->View()->GetUkmAggregator();
   }
@@ -874,7 +874,7 @@ TEST_F(LocalFrameUkmAggregatorSimTest, PrePostFCPMetricsWithChildFrameFCP) {
           GetDocument().getElementById(AtomicString("frame")))
           ->contentDocument();
   Element* target = subframe_document->getElementById(AtomicString("target"));
-  target->setInnerHTML("test1");
+  target->SetInnerHTMLWithoutTrustedTypes("test1");
 
   // Do a frame that reaches FCP.
   Compositor().BeginFrame();
@@ -883,7 +883,7 @@ TEST_F(LocalFrameUkmAggregatorSimTest, PrePostFCPMetricsWithChildFrameFCP) {
   histogram_tester.ExpectTotalCount("Blink.MainFrame.UpdateTime.PostFCP", 0);
 
   // Make a change to the subframe that causes another frame.
-  target->setInnerHTML("test2");
+  target->SetInnerHTMLWithoutTrustedTypes("test2");
 
   // Do a post-FCP frame.
   Compositor().BeginFrame();
@@ -914,8 +914,8 @@ TEST_F(LocalFrameUkmAggregatorSimTest, VisualUpdateDelay) {
   Compositor().ResetLastFrameTime();
 
   // This is the code path for a normal invalidation from blink
-  WebView().MainFrameViewWidget()->RequestAnimationAfterDelay(
-      base::TimeDelta());
+  WebView().MainFrameViewWidget()->RequestAnimationAfterDelay(base::TimeDelta(),
+                                                              /*urgent=*/false);
 
   base::PlatformThread::Sleep(base::Microseconds(3000));
 
@@ -1049,6 +1049,10 @@ class LocalFrameUkmAggregatorSyncScrollTest
     return ::testing::get<2>(config);
   }
 
+  LocalFrameUkmAggregatorSyncScrollTest()
+      : LocalFrameUkmAggregatorSimTest(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+
   bool ShouldTriggerSyncScrollHeuristic() const {
     // We would only attempt to synchronize scrolling if we had a scroll handler
     // and, provided this is the case, we look for both mutating a property and
@@ -1130,8 +1134,7 @@ class LocalFrameUkmAggregatorSyncScrollTest
     NOTREACHED();
   }
 
-  ScopedTestingPlatformSupport<TestingPlatformSupportWithMockScheduler>
-      platform_;
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform_;
 };
 
 TEST_P(LocalFrameUkmAggregatorSyncScrollTest, SyncScrollHeuristicRAFSetTop) {
@@ -1171,7 +1174,7 @@ TEST_P(LocalFrameUkmAggregatorSyncScrollTest, SyncScrollHeuristicRAFSetTop) {
   main_resource.Complete(html.c_str());
 
   // Wait until the script has had time to run.
-  platform_->RunForPeriodSeconds(5.);
+  task_environment().FastForwardBy(base::Seconds(5.));
   base::RunLoop().RunUntilIdle();
 
   // Do a pre-FCP frame.
@@ -1197,7 +1200,7 @@ TEST_P(LocalFrameUkmAggregatorSyncScrollTest, SyncScrollHeuristicRAFSetTop) {
 
   // Cause FCP on the next frame.
   Element* target = GetDocument().getElementById(AtomicString("card"));
-  target->setInnerHTML("hello world");
+  target->SetInnerHTMLWithoutTrustedTypes("hello world");
 
   Compositor().BeginFrame();
 

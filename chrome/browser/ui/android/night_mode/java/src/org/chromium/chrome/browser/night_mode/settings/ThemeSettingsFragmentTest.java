@@ -11,11 +11,11 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.chromium.chrome.browser.flags.ChromeFeatureList.DARKEN_WEBSITES_CHECKBOX_IN_THEMES_SETTING;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.UI_THEME_SETTING;
 
-import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.LinearLayout;
 
+import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
@@ -25,7 +25,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
@@ -53,6 +54,8 @@ import org.chromium.components.feature_engagement.Tracker;
 @DisableFeatures(DARKEN_WEBSITES_CHECKBOX_IN_THEMES_SETTING)
 public class ThemeSettingsFragmentTest {
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public BlankUiTestActivitySettingsTestRule mSettingsTestRule =
             new BlankUiTestActivitySettingsTestRule();
@@ -69,7 +72,6 @@ public class ThemeSettingsFragmentTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         ChromeSharedPreferences.getInstance().removeKey(UI_THEME_SETTING);
 
         WebsitePreferenceBridgeJni.setInstanceForTesting(mMockWebsitePreferenceBridgeJni);
@@ -98,13 +100,7 @@ public class ThemeSettingsFragmentTest {
         launchThemeSettings(ThemeSettingsEntry.SETTINGS);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    int expectedDefaultTheme = ThemeType.LIGHT;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        Assert.assertFalse(
-                                "Q should not default to light.",
-                                NightModeUtils.isNightModeDefaultToLight());
-                        expectedDefaultTheme = ThemeType.SYSTEM_DEFAULT;
-                    }
+                    int expectedDefaultTheme = ThemeType.SYSTEM_DEFAULT;
 
                     Assert.assertEquals(
                             "Incorrect default theme setting.",
@@ -139,6 +135,7 @@ public class ThemeSettingsFragmentTest {
                             mPreference.getSetting(),
                             ChromeSharedPreferences.getInstance().readInt(UI_THEME_SETTING));
                 });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
     }
 
     @Test
@@ -149,13 +146,7 @@ public class ThemeSettingsFragmentTest {
         launchThemeSettings(ThemeSettingsEntry.SETTINGS);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    int expectedDefaultTheme = ThemeType.LIGHT;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        Assert.assertFalse(
-                                "Q should not default to light.",
-                                NightModeUtils.isNightModeDefaultToLight());
-                        expectedDefaultTheme = ThemeType.SYSTEM_DEFAULT;
-                    }
+                    int expectedDefaultTheme = ThemeType.SYSTEM_DEFAULT;
 
                     LinearLayout checkboxContainer = mPreference.getCheckboxContainerForTesting();
                     RadioButtonWithDescriptionLayout group = mPreference.getGroupForTesting();
@@ -229,6 +220,7 @@ public class ThemeSettingsFragmentTest {
                             .setContentSettingEnabled(
                                     any(), eq(ContentSettingsType.AUTO_DARK_WEB_CONTENT), eq(true));
                 });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
     }
 
     @Test
@@ -250,6 +242,7 @@ public class ThemeSettingsFragmentTest {
                 (RadioButtonGroupThemePreference)
                         mFragment.findPreference(ThemeSettingsFragment.PREF_UI_THEME_PREF);
         assertThemeSettingsEntryRecorded(settingsEntry);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
     }
 
     private RadioButtonWithDescription getButton(int index) {

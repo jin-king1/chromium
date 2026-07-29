@@ -8,9 +8,7 @@
 #include <string_view>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/logging.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chromecast/shared/platform_info_serializer.h"
@@ -120,7 +118,7 @@ cast_streaming::ReceiverConfig CreateConfig(
         continue;
       }
 
-      if (!base::Contains(audio_codecs, converted_codec)) {
+      if (!std::ranges::contains(audio_codecs, converted_codec)) {
         audio_codecs.push_back(converted_codec);
 
         audio_limits.emplace_back();
@@ -135,7 +133,7 @@ cast_streaming::ReceiverConfig CreateConfig(
       auto it = std::ranges::find(
           audio_limits, converted_codec,
           &cast_streaming::ReceiverConfig::AudioLimits::codec);
-      CHECK(it != audio_limits.end(), base::NotFatalUntil::M130);
+      CHECK(it != audio_limits.end());
       if (it->max_sample_rate) {
         it->max_sample_rate =
             std::max(it->max_sample_rate.value(), info.max_samples_per_second);
@@ -171,7 +169,7 @@ cast_streaming::ReceiverConfig CreateConfig(
         continue;
       }
 
-      if (!base::Contains(video_codecs, converted_codec)) {
+      if (!std::ranges::contains(video_codecs, converted_codec)) {
         video_codecs.push_back(converted_codec);
       }
     }

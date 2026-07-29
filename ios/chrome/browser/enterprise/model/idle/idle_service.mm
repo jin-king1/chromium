@@ -10,9 +10,9 @@
 #import "components/enterprise/idle/idle_pref_names.h"
 #import "components/enterprise/idle/metrics.h"
 #import "components/prefs/pref_service.h"
+#import "ios/chrome/browser/enterprise/model/idle/action_runner_impl.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
-#import "ios/chrome/browser/signin/model/authentication_service.h"
-#import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 
 namespace enterprise_idle {
 
@@ -164,9 +164,8 @@ void IdleService::RunActionsForStateForTesting(LastState last_state) {
 }
 
 void IdleService::MaybeRunActionsForState(LastState last_state) {
-  last_action_set_ =
-      GetActionSet(profile_->GetPrefs(),
-                   AuthenticationServiceFactory::GetForProfile(profile_));
+  last_action_set_ = GetActionSet(
+      profile_->GetPrefs(), IdentityManagerFactory::GetForProfile(profile_));
 
   if (!IsAnyActionNeededToRun()) {
     PostCheckIdleTask(GetTimeout());

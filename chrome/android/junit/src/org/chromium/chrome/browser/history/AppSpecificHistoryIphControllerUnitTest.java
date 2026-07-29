@@ -26,7 +26,6 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
@@ -40,6 +39,7 @@ import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.Highl
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.ui.test.util.MockitoHelper;
 
 /** Unit tests for {@link AppSpecificHistoryIphController}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -53,7 +53,7 @@ public class AppSpecificHistoryIphControllerUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private UserEducationHelper mUserEducationHelper;
-    @Mock private Supplier<Profile> mProfileSupplier;
+    @Mock private Profile mMockProfile;
     @Mock private Tracker mTracker;
 
     @Mock private Activity mActivity;
@@ -65,8 +65,7 @@ public class AppSpecificHistoryIphControllerUnitTest {
         when(mTracker.wouldTriggerHelpUi(FeatureConstants.APP_SPECIFIC_HISTORY_FEATURE))
                 .thenReturn(true);
         TrackerFactory.setTrackerForTests(mTracker);
-        when(mProfileSupplier.hasValue()).thenReturn(true);
-        mController = new AppSpecificHistoryIphController(mActivity, mProfileSupplier);
+        mController = new AppSpecificHistoryIphController(mActivity, () -> mMockProfile);
         mController.setUserEducationHelperForTesting(mUserEducationHelper);
     }
 
@@ -77,6 +76,7 @@ public class AppSpecificHistoryIphControllerUnitTest {
 
     @Test
     @Config(sdk = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @SuppressWarnings("DirectInvocationOnMock")
     public void testShowsIphOnPageLoad() {
         mController.maybeShowIph();
         var captor = ArgumentCaptor.forClass(IphCommand.class);
@@ -91,7 +91,7 @@ public class AppSpecificHistoryIphControllerUnitTest {
 
     @Test
     public void testNotifyUserEngaged() {
-        var captor = ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Boolean>> captor = MockitoHelper.callbackCaptor();
         mController.notifyUserEngaged();
         verify(mTracker).addOnInitializedCallback(captor.capture());
         captor.getValue().onResult(true);

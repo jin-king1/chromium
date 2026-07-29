@@ -15,20 +15,18 @@ import android.provider.MediaStore;
 import androidx.annotation.IntDef;
 import androidx.test.filters.SmallTest;
 
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
-import org.robolectric.android.util.concurrent.RoboExecutorService;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
 import org.robolectric.fakes.BaseCursor;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.net.MimeTypeFilter;
 import org.chromium.ui.base.WindowAndroid;
@@ -43,7 +41,6 @@ import java.util.List;
 /** Tests for {@link FileEnumWorkerTaskTest}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@LooperMode(LooperMode.Mode.LEGACY)
 public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumeratedCallback {
     // The Fields the test Cursor represents.
     @IntDef({Fields.ID, Fields.MIME_TYPE, Fields.DATE_ADDED})
@@ -82,7 +79,7 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                 String whereClause,
                 String[] whereArgs,
                 String orderBy) {
-            ArrayList<TestData> list = new ArrayList<TestData>();
+            ArrayList<TestData> list = new ArrayList<>();
             list.add(new TestData("file0", "text/html", 0));
             list.add(new TestData("file1", "image/jpeg", 1));
             list.add(new TestData("file2", "image/jpeg", 2));
@@ -104,9 +101,9 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
     }
 
     private static class TestData {
-        public Uri mUri;
-        public String mMimeType;
-        public long mDateAdded;
+        public final Uri mUri;
+        public final String mMimeType;
+        public final long mDateAdded;
 
         public TestData(String uri, String mimeType, long dateAdded) {
             mUri = Uri.parse(uri);
@@ -116,7 +113,7 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
     }
 
     private static class FileCursor extends BaseCursor {
-        private List<TestData> mData;
+        private final List<TestData> mData;
 
         private int mIndex;
 
@@ -176,8 +173,6 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
         public void close() {}
     }
 
-    private final RoboExecutorService mRoboExecutorService = new RoboExecutorService();
-
     // A callback that fires the task completes.
     private final CallbackHelper mOnWorkerCompleteCallback = new CallbackHelper();
 
@@ -189,13 +184,7 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
         ThreadUtils.hasSubtleSideEffectsSetThreadAssertsDisabledForTesting(true);
     }
 
-    @After
-    public void tearDown() {
-        Assert.assertTrue(mRoboExecutorService.shutdownNow().isEmpty());
-    }
-
     // FileEnumWorkerTask.FilesEnumeratedCallback:
-
     @Override
     public void filesEnumeratedCallback(List<PickerBitmap> files) {
         mFilesReturned = files;
@@ -219,7 +208,8 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                         new MimeTypeFilter(mimeTypes, true),
                         mimeTypes,
                         contentResolver);
-        task.executeOnExecutor(mRoboExecutorService);
+        task.executeOnExecutor(RobolectricUtil.getPausedExecutor());
+        RobolectricUtil.runAllBackgroundAndUi();
         mOnWorkerCompleteCallback.waitForOnly();
 
         Uri contentUri = MediaStore.Files.getContentUri("external");
@@ -228,11 +218,11 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
             MediaStore.Files.FileColumns.DATE_ADDED,
             MediaStore.Files.FileColumns.MEDIA_TYPE,
             MediaStore.Files.FileColumns.MIME_TYPE,
-            MediaStore.Files.FileColumns.DATA
+            MediaStore.Files.FileColumns.RELATIVE_PATH,
         };
         String whereClause =
-                "_data LIKE ? OR _data LIKE ? OR _data LIKE ? OR _data LIKE ? OR "
-                        + "_data LIKE ? OR _data LIKE ?";
+                "relative_path LIKE ? OR relative_path LIKE ? OR relative_path LIKE ? OR "
+                        + "relative_path LIKE ? OR relative_path LIKE ? OR relative_path LIKE ?";
         String orderBy = MediaStore.MediaColumns.DATE_ADDED + " DESC";
 
         ArgumentCaptor<String[]> argument = ArgumentCaptor.forClass(String[].class);
@@ -273,7 +263,8 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                         new MimeTypeFilter(mimeTypes, true),
                         mimeTypes,
                         /* contentResolver= */ null);
-        task.executeOnExecutor(mRoboExecutorService);
+        task.executeOnExecutor(RobolectricUtil.getPausedExecutor());
+        RobolectricUtil.runAllBackgroundAndUi();
         mOnWorkerCompleteCallback.waitForOnly();
 
         // If this assert hits, then onCancelled has been called in FileEnumWorkerTask, most likely
@@ -305,7 +296,8 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                         mimeTypes,
                         /* contentResolver= */ null);
         task.setShouldShowCameraTile(false);
-        task.executeOnExecutor(mRoboExecutorService);
+        task.executeOnExecutor(RobolectricUtil.getPausedExecutor());
+        RobolectricUtil.runAllBackgroundAndUi();
         mOnWorkerCompleteCallback.waitForOnly();
 
         // If this assert hits, then onCancelled has been called in FileEnumWorkerTask, most likely
@@ -332,7 +324,8 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                         mimeTypes,
                         /* contentResolver= */ null);
         task.setShouldShowBrowseTile(false);
-        task.executeOnExecutor(mRoboExecutorService);
+        task.executeOnExecutor(RobolectricUtil.getPausedExecutor());
+        RobolectricUtil.runAllBackgroundAndUi();
         mOnWorkerCompleteCallback.waitForOnly();
 
         // If this assert hits, then onCancelled has been called in FileEnumWorkerTask, most likely
@@ -358,7 +351,8 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                         new MimeTypeFilter(mimeTypes, true),
                         mimeTypes,
                         /* contentResolver= */ null);
-        task.executeOnExecutor(mRoboExecutorService);
+        task.executeOnExecutor(RobolectricUtil.getPausedExecutor());
+        RobolectricUtil.runAllBackgroundAndUi();
         mOnWorkerCompleteCallback.waitForOnly();
 
         // If this assert hits, then onCancelled has been called in FileEnumWorkerTask, most likely
@@ -400,7 +394,8 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                         new MimeTypeFilter(mimeTypes, true),
                         mimeTypes,
                         /* contentResolver= */ null);
-        task.executeOnExecutor(mRoboExecutorService);
+        task.executeOnExecutor(RobolectricUtil.getPausedExecutor());
+        RobolectricUtil.runAllBackgroundAndUi();
         mOnWorkerCompleteCallback.waitForOnly();
 
         // If this assert hits, then onCancelled has been called in FileEnumWorkerTask, most likely
@@ -441,7 +436,8 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                         new MimeTypeFilter(mimeTypes, true),
                         mimeTypes,
                         /* contentResolver= */ null);
-        task.executeOnExecutor(mRoboExecutorService);
+        task.executeOnExecutor(RobolectricUtil.getPausedExecutor());
+        RobolectricUtil.runAllBackgroundAndUi();
         mOnWorkerCompleteCallback.waitForOnly();
 
         // If this assert hits, then onCancelled has been called in FileEnumWorkerTask, most likely

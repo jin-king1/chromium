@@ -8,19 +8,16 @@
 #include <string>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/stl_util.h"
 #include "base/time/time.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/lifetime/browser_shutdown.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller.h"
+#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/shelf/app_service/app_service_app_window_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/app_constants/constants.h"
@@ -160,11 +157,13 @@ void AppServiceInstanceRegistryHelper::OnTabClosing(
 void AppServiceInstanceRegistryHelper::OnBrowserRemoved() {
   auto instances = GetInstances(app_constants::kChromeAppId);
   for (const auto* instance : instances) {
-    if (!chrome::FindBrowserWithWindow(instance->Window())) {
-      // The tabs in the browser should be closed, and tab windows have been
-      // removed from |browser_window_to_tab_windows_|.
-      DCHECK(
-          !base::Contains(browser_window_to_tab_windows_, instance->Window()));
+    if (!ash::BrowserController::GetInstance()->GetBrowserForWindow(
+            instance->Window())) {
+      // The browser window may still exist in `tab_window_to_browser_window_`
+      // in cases where `OnTabClosing()` does not fire for a browser-close. This
+      // may occur in instances such as the browser app tab being re-parented to
+      // a new browser. In this case removing the window from
+      // `tab_window_to_browser_window_` is handled by `OnTabInserted()`.
 
       // The browser is removed if the window can't be found, so update the
       // Chrome window instance as destroyed.
@@ -207,7 +206,7 @@ void AppServiceInstanceRegistryHelper::OnSetShelfIDForBrowserWindowContents(
   // Do not try to update window status on shutdown, because during the shutdown
   // phase, we can't guaranteen the window destroy sequence, and it might cause
   // crash.
-  if (browser_shutdown::HasShutdownStarted()) {
+  if (ash::BrowserController::GetInstance()->HasShutdownStarted()) {
     return;
   }
 
@@ -278,10 +277,22 @@ void AppServiceInstanceRegistryHelper::OnWindowVisibilityChanged(
     return;
   }
 
+  // Visibility changes from a browser's NativeWidget, which has a lifetime
+  // independent from browser and its associated Widget, can be propagated after
+  // the browser has been closed and its associated instance is destroyed. In
+  // such cases it is important to NOT call `OnInstances()` as this will end up
+  // calling `InstanceRegistry::CreateOrUpdateInstance()` re-creating an
+  // instance for the destroyed browser and resulting in UAF errors.
+  // TODO(crbug.com/486700214): Update app service classes to reflect correct
+  // browser lifetime semantics.
+  if (!ash::BrowserController::GetInstance()->GetBrowserForWindow(window)) {
+    return;
+  }
+
   OnInstances(app_constants::kChromeAppId, window, std::string(),
               CalculateVisibilityState(window, visible));
 
-  if (!base::Contains(browser_window_to_tab_windows_, window)) {
+  if (!browser_window_to_tab_windows_.contains(window)) {
     return;
   }
 
@@ -326,23 +337,35 @@ void AppServiceInstanceRegistryHelper::SetWindowActivated(
     return;
   }
 
+  // Activation changes from a browser's NativeWidget, which has a lifetime
+  // independent from browser and its associated Widget, can be propagated after
+  // the browser has been closed and its associated instance is destroyed. In
+  // such cases it is important to NOT call `OnInstances()` as this will end up
+  // calling `InstanceRegistry::CreateOrUpdateInstance()` re-creating an
+  // instance for the destroyed browser and resulting in UAF errors.
+  // TODO(crbug.com/486700214): Update app service classes to reflect correct
+  // browser lifetime semantics.
+  if (!ash::BrowserController::GetInstance()->GetBrowserForWindow(window)) {
+    return;
+  }
+
   OnInstances(app_constants::kChromeAppId, window, std::string(),
               CalculateActivatedState(window, active));
 
-  if (!base::Contains(browser_window_to_tab_windows_, window)) {
+  if (!browser_window_to_tab_windows_.contains(window)) {
     return;
   }
 
   // For the Chrome browser, when the window is activated, the active tab is set
   // as started, running, visible and active state.
   if (active) {
-    Browser* browser = chrome::FindBrowserWithWindow(window);
+    ash::BrowserDelegate* browser =
+        ash::BrowserController::GetInstance()->GetBrowserForWindow(window);
     if (!browser) {
       return;
     }
 
-    content::WebContents* contents =
-        browser->tab_strip_model()->GetActiveWebContents();
+    content::WebContents* contents = browser->GetActiveWebContents();
     if (!contents) {
       return;
     }

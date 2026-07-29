@@ -71,7 +71,8 @@ TEST_F(DisplayLockUtilitiesTest, DISABLED_ActivatableLockedInclusiveAncestors) {
   Element& innermost = *GetDocument().getElementById(AtomicString("innermost"));
   ShadowRoot& shadow_root =
       inner_b.AttachShadowRootForTesting(ShadowRootMode::kOpen);
-  shadow_root.setInnerHTML("<div id='shadowDiv'>shadow!</div>");
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(
+      "<div id='shadowDiv'>shadow!</div>");
   Element& shadow_div = *shadow_root.getElementById(AtomicString("shadowDiv"));
 
   LockElement(outer, true);
@@ -274,11 +275,12 @@ TEST_F(DisplayLockUtilitiesTest, InteractionWithIntersectionObserver) {
   auto* target = ChildDocument().getElementById(AtomicString("target"));
 
   UpdateAllLifecyclePhasesForTest();
+  test::RunPendingTasks();
   EXPECT_FALSE(ChildDocument().View()->ShouldThrottleRenderingForTest());
   LockElement(*container, false);
   EXPECT_TRUE(ChildDocument().View()->ShouldThrottleRenderingForTest());
 
-  target->setInnerHTML("Hello, world!");
+  target->SetInnerHTMLWithoutTrustedTypes("Hello, world!");
   UpdateAllLifecyclePhasesForTest();
   EXPECT_TRUE(ChildDocument().View()->ShouldThrottleRenderingForTest());
   EXPECT_TRUE(ChildDocument().Lifecycle().GetState() ==
@@ -345,6 +347,30 @@ TEST_F(DisplayLockUtilitiesTest, ContainerQueryCrash) {
 
   // Should not fail DCHECKs or crash.
   child->offsetTopForBinding();
+}
+
+TEST_F(DisplayLockUtilitiesTest, ScrollMarkerGroupContentVisibilityCrash) {
+  SetHtmlInnerHTML(R"HTML(
+    <style>
+      #scroller {
+        overflow: auto;
+        scroll-marker-group: after;
+        display: flex;
+      }
+      #scroller::scroll-marker-group { display: flex; }
+      #scroller > *::scroll-marker { content: counter(item); }
+      #scroller::scroll-button(inline-start) { content: '<'; }
+      #scroller::scroll-button(inline-end) { content: '>'; }
+    </style>
+    <div id="scroller"><div></div><div></div></div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  ASSERT_TRUE(scroller);
+  scroller->setAttribute(html_names::kStyleAttr,
+                         AtomicString("content-visibility: hidden"));
+  UpdateAllLifecyclePhasesForTest();
 }
 
 }  // namespace blink

@@ -10,6 +10,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/extensions/extension_install_ui_android.h"
 #include "chrome/browser/ui/extensions/extension_install_ui_desktop.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace {
 
@@ -42,7 +45,6 @@ void ExtensionInstallUI::SetSkipPostInstallUI(bool skip_ui) {
 
 // static
 base::AutoReset<bool> ExtensionInstallUI::disable_ui_for_tests(bool disable) {
-  CHECK_IS_TEST();
   return base::AutoReset<bool>(&g_disable_ui_for_tests, disable);
 }
 

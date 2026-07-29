@@ -12,11 +12,14 @@
 #include "chrome/browser/devtools/devtools_browser_context_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_navigator.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/web_contents.h"
@@ -30,18 +33,24 @@ NavigateParams CreateNavigateParams(Profile* profile,
                                     ui::PageTransition transition,
                                     bool new_window,
                                     bool background,
-                                    Browser* browser) {
+                                    BrowserWindowInterface* bwi) {
+  Browser* browser = nullptr;
+  if (!new_window && bwi) {
+    browser = bwi->GetBrowserForMigrationOnly();
+  }
+
   DCHECK(new_window || browser);
   NavigateParams params(profile, url, transition);
   if (new_window) {
     params.disposition = WindowOpenDisposition::NEW_WINDOW;
-    if (background)
-      params.window_action = NavigateParams::WindowAction::SHOW_WINDOW_INACTIVE;
   } else {
     params.disposition = (background)
                              ? WindowOpenDisposition::NEW_BACKGROUND_TAB
                              : WindowOpenDisposition::NEW_FOREGROUND_TAB;
     params.browser = browser;
+  }
+  if (background) {
+    params.window_action = NavigateParams::WindowAction::kShowWindowInactive;
   }
   return params;
 }
@@ -92,7 +101,13 @@ protocol::Response TargetHandler::CreateTarget(
     std::optional<bool> new_window,
     std::optional<bool> background,
     std::optional<bool> for_tab,
+    std::optional<bool> hidden,
+    std::optional<bool> focus,
     std::string* out_target_id) {
+  if (hidden.value_or(false)) {
+    // Rely on web contents implementation.
+    return protocol::Response::FallThrough();
+  }
   Profile* profile = nullptr;
   if (browser_context_id.has_value()) {
     std::string profile_id = browser_context_id.value();
@@ -108,24 +123,36 @@ protocol::Response TargetHandler::CreateTarget(
   }
 
   bool create_new_window = new_window.value_or(false);
-  bool create_in_background = background.value_or(false);
-  Browser* target_browser = nullptr;
+  const bool should_focus = focus.value_or(!background.value_or(false));
+  const bool create_in_background =
+      background.value_or(false) || (focus.has_value() && !focus.value());
+  if (should_focus && create_in_background) {
+    return protocol::Response::InvalidParams(
+        "Can't focus a target in the background. Use background=false "
+        "instead.");
+  }
+  BrowserWindowInterface* target_browser_interface = nullptr;
 
-  // Must find target_browser if new_window not explicitly true.
+  // Must find target_browser_interface if new_window not explicitly true.
   if (!create_new_window) {
     // Find a browser to open a new tab.
     // We shouldn't use browser that is scheduled to close.
-    for (Browser* browser : *BrowserList::GetInstance()) {
-      if (browser->profile() == profile &&
-          !browser->IsAttemptingToCloseBrowser()) {
-        target_browser = browser;
-        break;
-      }
-    }
+    ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+        [profile, &target_browser_interface](
+            BrowserWindowInterface* browser_window_interface) {
+          if (browser_window_interface->GetProfile() == profile) {
+            if (!browser_window_interface->capabilities()
+                     ->IsAttemptingToCloseBrowser()) {
+              target_browser_interface = browser_window_interface;
+              return false;
+            }
+          }
+          return true;
+        });
   }
 
   bool explicit_old_window = !new_window.value_or(true);
-  if (explicit_old_window && !target_browser) {
+  if (explicit_old_window && !target_browser_interface) {
     return protocol::Response::ServerError(
         "Failed to open new tab - "
         "no browser is open");
@@ -136,17 +163,23 @@ protocol::Response TargetHandler::CreateTarget(
     gurl = GURL(url::kAboutBlankURL);
   }
 
-  if (!is_trusted_ && gurl.SchemeIs(content::kChromeUIUntrustedScheme)) {
-    return protocol::Response::ServerError(
-        "Refusing to create a target with the specified URL");
+  GURL inner_url = gurl;
+  if (gurl.SchemeIs(content::kViewSourceScheme)) {
+    inner_url = GURL(gurl.GetContent());
   }
 
-  if (!may_read_local_files_ && gurl.SchemeIsFile()) {
+  if (!is_trusted_ && (inner_url.SchemeIs(content::kChromeUIUntrustedScheme) ||
+                       inner_url.SchemeIs(content::kChromeDevToolsScheme))) {
+    return protocol::Response::ServerError(
+        "Navigating to a URL with a privileged scheme is not allowed");
+  }
+
+  if (!may_read_local_files_ && inner_url.SchemeIsFile()) {
     return protocol::Response::ServerError(
         "Creating a target with a local URL is not allowed");
   }
 
-  create_new_window = !target_browser;
+  create_new_window = !target_browser_interface;
 
   const bool set_window_position = left || top || width || height;
   if (set_window_position && !create_new_window) {
@@ -177,7 +210,7 @@ protocol::Response TargetHandler::CreateTarget(
 
   NavigateParams params = CreateNavigateParams(
       profile, gurl, ui::PAGE_TRANSITION_AUTO_TOPLEVEL, create_new_window,
-      create_in_background, target_browser);
+      create_in_background, target_browser_interface);
 
   Navigate(&params);
   if (!params.navigated_or_inserted_contents) {
@@ -185,7 +218,7 @@ protocol::Response TargetHandler::CreateTarget(
   }
 
   if (set_window_position) {
-    BrowserWindow* browser_window = params.browser->window();
+    ui::BaseWindow* browser_window = params.browser->GetWindow();
     CHECK(browser_window);
     gfx::Rect bounds = browser_window->GetBounds();
     if (left) {
@@ -205,19 +238,19 @@ protocol::Response TargetHandler::CreateTarget(
 
   if (set_window_state) {
     if (*window_state == protocol::Target::WindowStateEnum::Minimized) {
-      params.browser->window()->Minimize();
+      params.browser->GetWindow()->Minimize();
     } else if (*window_state == protocol::Target::WindowStateEnum::Maximized) {
-      params.browser->window()->Maximize();
+      params.browser->GetWindow()->Maximize();
     } else if (*window_state == protocol::Target::WindowStateEnum::Fullscreen) {
-      params.browser->exclusive_access_manager()
+      params.browser->GetFeatures()
+          .exclusive_access_manager()
           ->fullscreen_controller()
           ->ToggleBrowserFullscreenMode(/*user_initiated=*/false);
     } else {
       NOTREACHED();
     }
   }
-
-  if (!create_in_background) {
+  if (should_focus) {
     params.navigated_or_inserted_contents->Focus();
   }
 

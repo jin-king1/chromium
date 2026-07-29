@@ -41,24 +41,6 @@ namespace printing {
 
 namespace {
 
-// Wrapper class to close provider automatically.
-class ScopedProvider {
- public:
-  explicit ScopedProvider(HPTPROVIDER provider) : provider_(provider) {}
-  ScopedProvider(const ScopedProvider&) = delete;
-  ScopedProvider& operator=(const ScopedProvider&) = delete;
-
-  // Once the object is destroyed, it automatically closes the provider by
-  // calling the XPSModule API.
-  ~ScopedProvider() {
-    if (provider_)
-      XPSModule::CloseProvider(provider_);
-  }
-
- private:
-  HPTPROVIDER provider_;
-};
-
 std::string ErrorMessageCheckSpooler(const std::string& base_message,
                                      logging::SystemErrorCode err) {
   std::string message = base_message;
@@ -323,8 +305,8 @@ mojom::ResultCode PrintBackendWin::EnumeratePrinters(
   DWORD count_returned = 0;
   constexpr DWORD kFlags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
   const DWORD kLevel = 4;
-  EnumPrinters(kFlags, nullptr, kLevel, nullptr, 0, &bytes_needed,
-               &count_returned);
+  ::EnumPrinters(kFlags, nullptr, kLevel, nullptr, 0, &bytes_needed,
+                 &count_returned);
   logging::SystemErrorCode code = logging::GetLastSystemErrorCode();
   if (code == ERROR_SUCCESS) {
     // If EnumPrinters() succeeded, that means there are no printer drivers
@@ -340,30 +322,31 @@ mojom::ResultCode PrintBackendWin::EnumeratePrinters(
     return GetResultCodeFromSystemErrorCode(code);
   }
 
+  CHECK_GE(bytes_needed, count_returned * sizeof(PRINTER_INFO_4));
   auto printer_info_buffer = base::HeapArray<BYTE>::Uninit(bytes_needed);
-  if (!EnumPrinters(kFlags, nullptr, kLevel, printer_info_buffer.data(),
-                    printer_info_buffer.size(), &bytes_needed,
-                    &count_returned)) {
+  if (!::EnumPrinters(kFlags, nullptr, kLevel, printer_info_buffer.data(),
+                      printer_info_buffer.size(), &bytes_needed,
+                      &count_returned)) {
     return GetResultCodeFromSystemErrorCode(logging::GetLastSystemErrorCode());
   }
-
-  const auto* printer_info =
-      reinterpret_cast<PRINTER_INFO_4*>(printer_info_buffer.data());
-  UNSAFE_TODO({
-    for (DWORD index = 0; index < count_returned; index++) {
-      ScopedPrinterHandle printer;
-      if (!printer.OpenPrinterWithName(printer_info[index].pPrinterName)) {
-        continue;
-      }
-
-      std::optional<PrinterBasicInfo> info = GetBasicPrinterInfo(printer.Get());
-      if (!info.has_value()) {
-        continue;
-      }
-
-      printer_list.push_back(info.value());
+  // SAFETY: Trust `bytes_needed` and `count_returned` computed and used
+  // correctly by `EnumPrinters`. See the CHECK_GE above.
+  auto printer_infos = UNSAFE_BUFFERS(base::span(
+      reinterpret_cast<const PRINTER_INFO_4*>(printer_info_buffer.data()),
+      count_returned));
+  for (const auto& printer_info : printer_infos) {
+    ScopedPrinterHandle printer;
+    if (!printer.OpenPrinterWithName(printer_info.pPrinterName)) {
+      continue;
     }
-  });
+
+    std::optional<PrinterBasicInfo> info = GetBasicPrinterInfo(printer.Get());
+    if (!info.has_value()) {
+      continue;
+    }
+
+    printer_list.push_back(info.value());
+  }
 
   VLOG(1) << "Found " << printer_list.size() << " printers";
   return mojom::ResultCode::kSuccess;
@@ -395,8 +378,9 @@ mojom::ResultCode PrintBackendWin::GetPrinterBasicInfo(
     const std::string& printer_name,
     PrinterBasicInfo* printer_info) {
   ScopedPrinterHandle printer_handle = GetPrinterHandle(printer_name);
-  if (!printer_handle.IsValid())
+  if (!printer_handle.is_valid()) {
     return GetResultCodeFromSystemErrorCode(logging::GetLastSystemErrorCode());
+  }
 
   std::optional<PrinterBasicInfo> info =
       GetBasicPrinterInfo(printer_handle.Get());
@@ -414,7 +398,7 @@ mojom::ResultCode PrintBackendWin::GetPrinterSemanticCapsAndDefaults(
     const std::string& printer_name,
     PrinterSemanticCapsAndDefaults* printer_info) {
   ScopedPrinterHandle printer_handle = GetPrinterHandle(printer_name);
-  if (!printer_handle.IsValid()) {
+  if (!printer_handle.is_valid()) {
     logging::SystemErrorCode err = logging::GetLastSystemErrorCode();
     LOG(WARNING) << "Failed to open printer `" << printer_name
                  << "`, error = " << logging::SystemErrorCodeToString(err);
@@ -572,7 +556,7 @@ std::optional<gfx::Rect> PrintBackendWin::GetPaperPrintableArea(
     const std::string& paper_vendor_id,
     const gfx::Size& paper_size_um) {
   ScopedPrinterHandle printer_handle = GetPrinterHandle(printer_name);
-  if (!printer_handle.IsValid()) {
+  if (!printer_handle.is_valid()) {
     return std::nullopt;
   }
 
@@ -618,13 +602,13 @@ std::optional<gfx::Rect> PrintBackendWin::GetPaperPrintableArea(
 std::vector<std::string> PrintBackendWin::GetPrinterDriverInfo(
     const std::string& printer_name) {
   ScopedPrinterHandle printer = GetPrinterHandle(printer_name);
-  return printer.IsValid() ? GetDriverInfo(printer.Get())
-                           : std::vector<std::string>();
+  return printer.is_valid() ? GetDriverInfo(printer.Get())
+                            : std::vector<std::string>();
 }
 
 bool PrintBackendWin::IsValidPrinter(const std::string& printer_name) {
   ScopedPrinterHandle printer_handle = GetPrinterHandle(printer_name);
-  return printer_handle.IsValid();
+  return printer_handle.is_valid();
 }
 
 void PrintBackendWin::SetPrintableAreaLoadedCallbackForTesting(
@@ -636,57 +620,6 @@ void PrintBackendWin::SetPrintableAreaLoadedCallbackForTesting(
 scoped_refptr<PrintBackend> PrintBackend::CreateInstanceImpl(
     const std::string& /*locale*/) {
   return base::MakeRefCounted<PrintBackendWin>();
-}
-
-base::expected<std::string, mojom::ResultCode>
-PrintBackend::GetXmlPrinterCapabilitiesForXpsDriver(
-    const std::string& printer_name) {
-  ScopedXPSInitializer xps_initializer;
-  CHECK(xps_initializer.initialized());
-
-  if (!IsValidPrinter(printer_name)) {
-    return base::unexpected(
-        GetResultCodeFromSystemErrorCode(logging::GetLastSystemErrorCode()));
-  }
-
-  HPTPROVIDER provider = nullptr;
-  std::wstring wide_printer_name = base::UTF8ToWide(printer_name);
-  HRESULT hr =
-      XPSModule::OpenProvider(wide_printer_name, /*version=*/1, &provider);
-  ScopedProvider scoped_provider(provider);
-  if (FAILED(hr) || !provider) {
-    LOG(ERROR) << "Failed to open provider";
-    return base::unexpected(mojom::ResultCode::kFailed);
-  }
-  Microsoft::WRL::ComPtr<IStream> print_capabilities_stream;
-  hr = CreateStreamOnHGlobal(/*hGlobal=*/nullptr, /*fDeleteOnRelease=*/TRUE,
-                             &print_capabilities_stream);
-  if (FAILED(hr) || !print_capabilities_stream.Get()) {
-    LOG(ERROR) << "Failed to create stream";
-    return base::unexpected(mojom::ResultCode::kFailed);
-  }
-  base::win::ScopedBstr error;
-  hr = XPSModule::GetPrintCapabilities(provider, /*print_ticket=*/nullptr,
-                                       print_capabilities_stream.Get(),
-                                       error.Receive());
-  if (FAILED(hr)) {
-    LOG(ERROR) << "Failed to get print capabilities";
-
-    // Failures from getting print capabilities don't give a system error,
-    // so just indicate general failure.
-    return base::unexpected(mojom::ResultCode::kFailed);
-  }
-  std::string capabilities_xml;
-  hr = StreamOnHGlobalToString(print_capabilities_stream.Get(),
-                               &capabilities_xml);
-
-  if (FAILED(hr)) {
-    LOG(ERROR) << "Failed to convert stream to string";
-    return base::unexpected(mojom::ResultCode::kFailed);
-  }
-  DVLOG(2) << "Printer capabilities info: Name = " << printer_name
-           << ", capabilities = " << capabilities_xml;
-  return capabilities_xml;
 }
 
 }  // namespace printing

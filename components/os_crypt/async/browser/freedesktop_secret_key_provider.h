@@ -5,7 +5,7 @@
 #ifndef COMPONENTS_OS_CRYPT_ASYNC_BROWSER_FREEDESKTOP_SECRET_KEY_PROVIDER_H_
 #define COMPONENTS_OS_CRYPT_ASYNC_BROWSER_FREEDESKTOP_SECRET_KEY_PROVIDER_H_
 
-#include <map>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -18,11 +18,11 @@
 #include "base/sequence_checker.h"
 #include "base/types/expected.h"
 #include "build/branding_buildflags.h"
-#include "components/dbus/properties/types.h"
+#include "components/dbus/utils/call_method.h"
 #include "components/dbus/utils/check_for_service_and_start.h"
+#include "components/dbus/utils/connect_to_signal.h"
 #include "components/dbus/utils/name_has_owner.h"
 #include "components/os_crypt/async/browser/key_provider.h"
-#include "crypto/encryptor.h"
 #include "dbus/bus.h"
 #include "dbus/object_path.h"
 #include "dbus/object_proxy.h"
@@ -31,7 +31,8 @@ namespace os_crypt_async {
 
 // FreedesktopSecretKeyProvider uses the org.freedesktop.secrets interface
 // to retrieve a secret from backend (GNOME Keyring, KWallet, KeePassXC),
-// which can then be used to encrypt confidential data.
+// which can then be used to encrypt confidential data. If registration with
+// D-Bus services fails, this class will fallback to using PosixKeyProvider.
 class FreedesktopSecretKeyProvider : public KeyProvider {
  public:
   enum class InitStatus {
@@ -47,7 +48,18 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
     kSearchItemsFailed = 8,
     kSessionFailure = 9,
     kUnlockFailed = 10,
-    kMaxValue = kUnlockFailed,
+    kDisabled = 11,
+    kKWalletNoService = 12,
+    kKWalletDisabled = 13,
+    kKWalletNoNetworkWallet = 14,
+    kKWalletOpenFailed = 15,
+    kKWalletNoSecret = 16,
+    kKWalletFolderCheckFailed = 17,
+    kKWalletFolderCreationFailed = 18,
+    kKWalletEntryCheckFailed = 19,
+    kKWalletReadFailed = 20,
+    kKWalletWriteFailed = 21,
+    kMaxValue = kKWalletWriteFailed,
   };
 
   // Supplements InitStatus in case of errors.
@@ -62,10 +74,14 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
     kNoResponse = 6,
     kPromptDismissed = 7,
     kPromptFailedSignalConnection = 8,
-    kMaxValue = kPromptFailedSignalConnection,
+    kKWalletApiReturnedError = 9,
+    kKWalletApiReturnedFalse = 10,
+    kErrorResponse = 11,
+    kExtraDataInResponse = 12,
+    kMaxValue = kExtraDataInResponse,
   };
 
-  FreedesktopSecretKeyProvider(bool use_for_encryption,
+  FreedesktopSecretKeyProvider(const std::string& password_store,
                                const std::string& product_name,
                                scoped_refptr<dbus::Bus> bus);
   ~FreedesktopSecretKeyProvider() override;
@@ -73,23 +89,20 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
   // KeyProvider:
   void GetKey(KeyCallback callback) override;
   bool UseForEncryption() override;
-  bool IsCompatibleWithOsCryptSync() override;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(FreedesktopSecretKeyProviderTest, BasicHappyPath);
   FRIEND_TEST_ALL_PREFIXES(FreedesktopSecretKeyProviderTest,
                            CreateCollectionAndItemWithUnlockPrompt);
+  FRIEND_TEST_ALL_PREFIXES(FreedesktopSecretKeyProviderTest, KWallet);
   FRIEND_TEST_ALL_PREFIXES(FreedesktopSecretKeyProviderTest,
-                           MigrateFromKWallet);
+                           KWalletCreateFolderAndPassword);
+  FRIEND_TEST_ALL_PREFIXES(FreedesktopSecretKeyProviderTest,
+                           SearchItemsWithItemUnlockPrompt);
   friend class FreedesktopSecretKeyProviderCompatTest;
 
   template <typename T>
   class Prompter;
-
-  using DbusSecret = DbusStruct</*session=*/DbusObjectPath,
-                                /*parameters=*/DbusByteArray,
-                                /*value=*/DbusByteArray,
-                                /*content_type=*/DbusString>;
 
   static constexpr char kSecretServiceName[] = "org.freedesktop.secrets";
   static constexpr char kSecretServicePath[] = "/org/freedesktop/secrets";
@@ -97,7 +110,6 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
       "org.freedesktop.Secret.Service";
   static constexpr char kSecretCollectionInterface[] =
       "org.freedesktop.Secret.Collection";
-  static constexpr char kSecretItemInterface[] = "org.freedesktop.Secret.Item";
   static constexpr char kSecretSessionInterface[] =
       "org.freedesktop.Secret.Session";
   static constexpr char kSecretPromptInterface[] =
@@ -105,7 +117,7 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
 
   static constexpr char kMethodReadAlias[] = "ReadAlias";
   static constexpr char kMethodCreateCollection[] = "CreateCollection";
-  static constexpr char kMethodGetSecret[] = "GetSecret";
+  static constexpr char kMethodGetSecrets[] = "GetSecrets";
   static constexpr char kMethodOpenSession[] = "OpenSession";
   static constexpr char kMethodCreateItem[] = "CreateItem";
   static constexpr char kMethodUnlock[] = "Unlock";
@@ -119,9 +131,15 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
   static constexpr char kKWalletInterface[] = "org.kde.KWallet";
   static constexpr char kKWalletMethodIsEnabled[] = "isEnabled";
   static constexpr char kKWalletMethodNetworkWallet[] = "networkWallet";
-  static constexpr char kKWalletMethodOpen[] = "open";
+  static constexpr char kKWalletMethodOpenAsync[] = "openAsync";
   static constexpr char kKWalletMethodReadPassword[] = "readPassword";
   static constexpr char kKWalletMethodClose[] = "close";
+  static constexpr char kKWalletMethodHasFolder[] = "hasFolder";
+  static constexpr char kKWalletMethodCreateFolder[] = "createFolder";
+  static constexpr char kKWalletMethodHasEntry[] = "hasEntry";
+  static constexpr char kKWalletMethodWritePassword[] = "writePassword";
+
+  static constexpr char kKWalletSignalWalletAsyncOpened[] = "walletAsyncOpened";
 
   static constexpr char kDefaultAlias[] = "default";
 
@@ -144,6 +162,16 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
   static constexpr char kDefaultCollectionLabel[] = "Default Keyring";
   static constexpr char kLabelProperty[] = "Label";
 
+  static constexpr char kKWalletDService[] = "org.kde.kwalletd";
+  static constexpr char kKWalletDPath[] = "/modules/kwalletd";
+  static constexpr char kKWalletD5Service[] = "org.kde.kwalletd5";
+  static constexpr char kKWalletD5Path[] = "/modules/kwalletd5";
+  static constexpr char kKWalletD6Service[] = "org.kde.kwalletd6";
+  static constexpr char kKWalletD6Path[] = "/modules/kwalletd6";
+
+  static constexpr int kKWalletInvalidHandle = -1;
+  static constexpr int kKWalletInvalidTransactionId = -1;
+
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   static constexpr char kKWalletFolder[] = "Chrome Keys";
   static constexpr char kKeyName[] = "Chrome Safe Storage";
@@ -154,49 +182,50 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
   static constexpr char kAppName[] = "chromium";
 #endif
 
-  struct KwalletServiceAndPath {
-    const char* kwallet_service;
-    const char* kwallet_path;
-  };
-  static constexpr auto kKWalletCandidates =
-      std::to_array<KwalletServiceAndPath>({
-          {"org.kde.kwalletd6", "/modules/kwalletd6"},
-          {"org.kde.kwalletd5", "/modules/kwalletd5"},
-          {"org.kde.kwalletd", "/modules/kwalletd"},
-      });
-
+  void InitializeFreedesktopSecretService();
   void OnServiceStarted(std::optional<bool> service_started);
-
-  void OnReadAliasDefault(
-      base::expected<DbusObjectPath, ErrorDetail> collection_path);
+  void OnReadAliasDefault(dbus_utils::CallMethodResultSig<"o"> collection_path);
   void OnGetCollectionLabelResponse(
-      base::expected<DbusVariant, ErrorDetail> variant);
+      dbus_utils::CallMethodResultSig<"v"> variant);
   void OnCreateCollection(
-      base::expected<DbusObjectPath, ErrorDetail> create_collection_reply);
-  void OnUnlock(base::expected<DbusArray<DbusObjectPath>, ErrorDetail>
+      base::expected<dbus::ObjectPath, ErrorDetail> create_collection_reply);
+  void OnUnlock(base::expected<std::vector<dbus::ObjectPath>, ErrorDetail>
                     unlocked_collection);
-  void OnOpenSession(base::expected<DbusParameters<DbusVariant, DbusObjectPath>,
-                                    ErrorDetail> session_reply);
-  void OnSearchItems(
-      base::expected<DbusArray<DbusObjectPath>, ErrorDetail> results);
-  void OnGetSecret(base::expected<DbusSecret, ErrorDetail> secret_reply);
+  void OnUnlockItems(const dbus::ObjectPath& item_path,
+                     base::expected<std::vector<dbus::ObjectPath>, ErrorDetail>
+                         unlocked_items);
+  void OnOpenSession(dbus_utils::CallMethodResultSig<"vo"> session_reply);
+  void OnSearchItems(dbus_utils::CallMethodResultSig<"ao"> results);
+  void OnGetSecrets(
+      dbus::ObjectPath expected_item_path,
+      dbus_utils::CallMethodResultSig<"a{o(oayays)}"> secrets_reply);
 
-  // KWallet migration
-  void TryKWalletMigration();
-  void OnNameHasOwnerForKWallet(std::optional<bool> has_owner);
-  void OnKWalletIsEnabled(base::expected<DbusBoolean, ErrorDetail> is_enabled);
-  void OnKWalletNetworkWallet(
-      base::expected<DbusString, ErrorDetail> wallet_name);
-  void OnKWalletOpen(base::expected<DbusInt32, ErrorDetail> handle_reply);
-  void OnKWalletReadPassword(
-      int32_t handle,
-      base::expected<DbusString, ErrorDetail> secret_reply);
+  // KWallet password storage
+  void InitializeKWallet(const char* kwallet_service, const char* kwallet_path);
+  void OnKWalletServiceStarted(std::optional<bool> has_owner);
+  void OnKWalletIsEnabled(dbus_utils::CallMethodResultSig<"b"> is_enabled);
+  void OnKWalletNetworkWallet(dbus_utils::CallMethodResultSig<"s"> wallet_name);
+  void OnKWalletOpenAsync(dbus_utils::CallMethodResultSig<"i"> t_id);
+  void OnKWalletWalletAsyncOpened(
+      dbus_utils::ConnectToSignalResultSig<"ii"> result);
+  void OnSignalConnected(const std::string& interface_name,
+                         const std::string& signal_name,
+                         bool connected);
+  void OnKWalletOpen(int32_t handle);
+  void OnKWalletHasFolder(dbus_utils::CallMethodResultSig<"b"> has_folder);
+  void OnKWalletCreateFolder(dbus_utils::CallMethodResultSig<"b"> success);
+  void OnKWalletHasEntry(dbus_utils::CallMethodResultSig<"b"> has_entry);
+  void OnKWalletReadPassword(dbus_utils::CallMethodResultSig<"s"> secret_reply);
+  void GenerateAndWriteKWalletPassword();
+  void OnKWalletWritePassword(
+      scoped_refptr<base::RefCountedMemory> generated_secret,
+      dbus_utils::CallMethodResultSig<"i"> return_code);
 
   void UnlockDefaultCollection();
   void OpenSession();
   void CreateItem(scoped_refptr<base::RefCountedMemory> secret);
   void OnCreateItem(scoped_refptr<base::RefCountedMemory> secret,
-                    base::expected<DbusObjectPath, ErrorDetail> created_item);
+                    base::expected<dbus::ObjectPath, ErrorDetail> created_item);
   void DeriveKeyFromSecret(base::span<const uint8_t> secret);
   void FinalizeSuccess(Encryptor::Key key);
   void FinalizeFailure(InitStatus status, ErrorDetail detail);
@@ -207,11 +236,12 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
   raw_ptr<dbus::ObjectProxy> session_proxy_ = nullptr;
   bool session_opened_ = false;
 
-  // For KWallet migration
+  // For KWallet password storage
   raw_ptr<dbus::ObjectProxy> kwallet_proxy_ = nullptr;
-  size_t kwallet_candidate_index_ = 0;
+  int32_t kwallet_handle_ = kKWalletInvalidHandle;
+  int32_t kwallet_transaction_id_ = kKWalletInvalidTransactionId;
 
-  const bool use_for_encryption_;
+  const std::string password_store_;
   const std::string product_name_;
   scoped_refptr<dbus::Bus> bus_;
   KeyCallback key_callback_;

@@ -51,7 +51,6 @@
 #include "ui/color/color_id.h"
 #include "ui/compositor/animation_throughput_reporter.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_utils.h"
@@ -61,6 +60,7 @@
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/geometry/transform_util.h"
 #include "ui/gfx/interpolated_transform.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/scoped_canvas.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/animation_abort_handle.h"
@@ -534,6 +534,13 @@ void TrayBackgroundView::UpdateAfterLockStateChange(bool locked) {
 void TrayBackgroundView::OnVisibilityAnimationFinished(
     bool should_log_visible_pod_count,
     bool aborted) {
+  if (visible_preferred_) {
+    // The animation may not trigger painting of `tray_container_` during
+    // running (which is intended, because painting on each frame is expensive).
+    // Therefore, schedule paint on `tray_container_` at the end of animation.
+    tray_container_->SchedulePaint();
+  }
+
   SetCanProcessEventsWithinSubtree(true);
   if (aborted && is_starting_animation_) {
     return;
@@ -666,7 +673,8 @@ void TrayBackgroundView::UpdateBackground() {
 
   const views::Widget* widget = GetWidget();
   if (widget) {
-    layer()->SetColor(ShelfConfig::Get()->GetShelfControlButtonColor(widget));
+    layer()->AsSolidColor()->SetColor(SkColor4f::FromColor(
+        ShelfConfig::Get()->GetShelfControlButtonColor(widget)));
   }
   UpdateBackgroundColor(is_active_);
 }
@@ -789,11 +797,13 @@ void TrayBackgroundView::SetIsActive(bool is_active) {
   UpdateTrayItemColor(is_active);
 }
 
-void TrayBackgroundView::CloseBubble() {
+void TrayBackgroundView::CloseBubble(CloseReason close_reason) {
   CloseBubbleInternal();
 
-  // If ChromeVox is enabled, focus on the this tray when the bubble is closed.
-  if (Shell::Get()->accessibility_controller() &&
+  // If ChromeVox is enabled and the bubble is not closed via window activation
+  // change, focus on the this tray when the bubble is closed.
+  if (close_reason != CloseReason::kWindowActivation &&
+      Shell::Get()->accessibility_controller() &&
       Shell::Get()->accessibility_controller()->spoken_feedback().enabled()) {
     shelf_->shelf_focus_cycler()->FocusStatusArea(false);
     RequestFocus();
@@ -850,7 +860,7 @@ TrayBackgroundView::CreateContextMenuModel() {
 
 void TrayBackgroundView::StartPulseAnimation() {
   // Do not start animation when animations are set to ZERO_DURATION (in tests).
-  if (ui::ScopedAnimationDurationScaleMode::is_zero()) {
+  if (gfx::ScopedAnimationDurationScaleMode::is_zero()) {
     return;
   }
 
@@ -993,7 +1003,8 @@ gfx::Insets TrayBackgroundView::GetBackgroundInsets() const {
   MirrorInsetsIfNecessary(&local_contents_insets);
   insets += local_contents_insets;
 
-  if (Shell::Get()->IsInTabletMode() && ShelfConfig::Get()->is_in_app()) {
+  if (display::Screen::Get()->InTabletMode() &&
+      ShelfConfig::Get()->is_in_app()) {
     insets +=
         gfx::Insets(ShelfConfig::Get()->in_app_control_button_height_inset());
   }
@@ -1047,22 +1058,24 @@ void TrayBackgroundView::UpdateBackgroundColor(bool active) {
   // The shelf is not transparent when 1)the shelf is in app mode OR 2) the
   // shelf is in the regular logged in page (not session blocked).
   const bool is_shelf_opaque =
-      (!Shell::Get()->IsInTabletMode() || ShelfConfig::Get()->is_in_app()) &&
+      (!display::Screen::Get()->InTabletMode() ||
+       ShelfConfig::Get()->is_in_app()) &&
       !Shell::Get()->session_controller()->IsUserSessionBlocked();
 
   const ui::ColorId non_active_color_id =
       (is_shelf_opaque || !chromeos::features::IsSystemBlurEnabled())
           ? cros_tokens::kCrosSysSystemOnBase
           : cros_tokens::kCrosSysSystemBaseElevated;
-  layer()->SetColor(widget->GetColorProvider()->GetColor(
-      active ? cros_tokens::kCrosSysSystemPrimaryContainer
-             : non_active_color_id));
+  layer()->AsSolidColor()->SetColor(
+      SkColor4f::FromColor(widget->GetColorProvider()->GetColor(
+          active ? cros_tokens::kCrosSysSystemPrimaryContainer
+                 : non_active_color_id)));
 }
 
 void TrayBackgroundView::AddRippleLayer() {
-  ripple_layer_ = std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
-  ripple_layer_->SetColor(
-      GetColorProvider()->GetColor(cros_tokens::kCrosSysOnPrimaryContainer));
+  ripple_layer_ = std::make_unique<ui::LayerSolidColor>();
+  ripple_layer_->SetColor(SkColor4f::FromColor(
+      GetColorProvider()->GetColor(cros_tokens::kCrosSysOnPrimaryContainer)));
   layer()->parent()->Add(ripple_layer_.get());
 }
 

@@ -5,25 +5,31 @@
 package org.chromium.chrome.browser.tracing;
 
 import android.app.Notification;
-import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
 import org.chromium.chrome.browser.notifications.NotificationWrapperBuilderFactory;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
-import org.chromium.components.browser_ui.notifications.NotificationManagerProxyImpl;
+import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
+import org.chromium.components.browser_ui.notifications.NotificationMetadata;
 import org.chromium.components.browser_ui.notifications.NotificationProxyUtils;
+import org.chromium.components.browser_ui.notifications.NotificationWrapper;
 import org.chromium.components.browser_ui.notifications.NotificationWrapperBuilder;
 import org.chromium.ui.accessibility.AccessibilityState;
 
 /** Manages notifications displayed while tracing and once tracing is complete. */
+@NullMarked
 public class TracingNotificationManager {
     private static final String TRACING_NOTIFICATION_TAG = "tracing_status";
     private static final int TRACING_NOTIFICATION_ID = 100;
 
-    private static NotificationWrapperBuilder sTracingActiveNotificationBuilder;
+    private static @Nullable NotificationWrapperBuilder sTracingActiveNotificationBuilder;
     private static int sTracingActiveNotificationBufferPercentage;
 
     // Non-translated strings:
@@ -43,24 +49,34 @@ public class TracingNotificationManager {
     // TODO(eseckler): Consider recording UMAs, see e.g. IncognitoNotificationManager.
 
     /**
-     * @return whether notifications posted to the BROWSER notification channel are enabled by the
-     *     user. True if the state can't be determined.
+     * Whether notifications posted to the BROWSER notification channel are enabled by the user.
+     * Callback will return true if the state can't be determined.
      */
-    public static boolean browserNotificationsEnabled() {
+    public static void browserNotificationsEnabled(Callback<Boolean> callback) {
         if (!NotificationProxyUtils.areNotificationsEnabled()) {
-            return false;
+            callback.onResult(false);
+            return;
         }
 
         // On Android O and above, the BROWSER channel may have independently been disabled, too.
-        return notificationChannelEnabled(ChromeChannelDefinitions.ChannelId.BROWSER);
+        notificationChannelEnabled(ChromeChannelDefinitions.ChannelId.BROWSER, callback);
     }
 
-    private static boolean notificationChannelEnabled(String channelId) {
-        NotificationChannel channel =
-                NotificationManagerProxyImpl.getInstance().getNotificationChannel(channelId);
-        // Can't determine the state if the channel doesn't exist, assume notifications are enabled.
-        if (channel == null) return true;
-        return channel.getImportance() != NotificationManager.IMPORTANCE_NONE;
+    private static void notificationChannelEnabled(String channelId, Callback<Boolean> callback) {
+        BaseNotificationManagerProxyFactory.create()
+                .getNotificationChannel(
+                        channelId,
+                        (channel) -> {
+                            // Can't determine the state if the channel doesn't exist, assume
+                            // notifications are enabled.
+                            if (channel == null) {
+                                callback.onResult(true);
+                            } else {
+                                callback.onResult(
+                                        channel.getImportance()
+                                                != NotificationManager.IMPORTANCE_NONE);
+                            }
+                        });
     }
 
     /** Replace the tracing notification with one indicating that a trace is being recorded. */
@@ -88,7 +104,7 @@ public class TracingNotificationManager {
                                 R.drawable.ic_stop_white_24dp,
                                 MSG_STOP,
                                 TracingNotificationServiceImpl.getStopRecordingIntent(context));
-        showNotification(sTracingActiveNotificationBuilder.build());
+        showNotification(sTracingActiveNotificationBuilder.buildNotificationWrapper());
     }
 
     /**
@@ -115,7 +131,7 @@ public class TracingNotificationManager {
                         sTracingActiveNotificationBufferPercentage);
 
         sTracingActiveNotificationBuilder.setContentText(message);
-        showNotification(sTracingActiveNotificationBuilder.build());
+        showNotification(sTracingActiveNotificationBuilder.buildNotificationWrapper());
     }
 
     /** Replace the tracing notification with one indicating that a trace is being finalized. */
@@ -128,7 +144,7 @@ public class TracingNotificationManager {
                         .setContentTitle(title)
                         .setContentText(message)
                         .setOngoing(true);
-        showNotification(builder.build());
+        showNotification(builder.buildNotificationWrapper());
     }
 
     /**
@@ -151,27 +167,30 @@ public class TracingNotificationManager {
                                 TracingNotificationServiceImpl.getOpenSettingsIntent(context))
                         .setDeleteIntent(
                                 TracingNotificationServiceImpl.getDiscardTraceIntent(context));
-        showNotification(builder.build());
+        showNotification(builder.buildNotificationWrapper());
     }
 
     /** Dismiss any active tracing notification if there is one. */
     public static void dismissNotification() {
-        NotificationManagerProxyImpl.getInstance()
+        BaseNotificationManagerProxyFactory.create()
                 .cancel(TRACING_NOTIFICATION_TAG, TRACING_NOTIFICATION_ID);
         sTracingActiveNotificationBuilder = null;
     }
 
     private static NotificationWrapperBuilder createNotificationWrapperBuilder() {
         return NotificationWrapperBuilderFactory.createNotificationWrapperBuilder(
-                        ChromeChannelDefinitions.ChannelId.BROWSER)
+                        ChromeChannelDefinitions.ChannelId.BROWSER,
+                        new NotificationMetadata(
+                                NotificationUmaTracker.SystemNotificationType.TRACING,
+                                TRACING_NOTIFICATION_TAG,
+                                TRACING_NOTIFICATION_ID))
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setSmallIcon(R.drawable.ic_chrome)
                 .setShowWhen(false)
                 .setLocalOnly(true);
     }
 
-    private static void showNotification(Notification notification) {
-        NotificationManagerProxyImpl.getInstance()
-                .notify(TRACING_NOTIFICATION_TAG, TRACING_NOTIFICATION_ID, notification);
+    private static void showNotification(NotificationWrapper notificationWrapper) {
+        BaseNotificationManagerProxyFactory.create().notify(notificationWrapper);
     }
 }

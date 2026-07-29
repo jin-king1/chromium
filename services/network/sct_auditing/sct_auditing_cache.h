@@ -17,7 +17,6 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "services/network/public/proto/sct_audit_report.pb.h"
-#include "url/gurl.h"
 
 namespace net {
 class X509Certificate;
@@ -56,7 +55,8 @@ class NetworkContext;
 class COMPONENT_EXPORT(NETWORK_SERVICE) SCTAuditingCache {
  public:
   struct COMPONENT_EXPORT(NETWORK_SERVICE) ReportEntry {
-    ReportEntry();
+    ReportEntry(net::HashValue key,
+                std::unique_ptr<sct_auditing::SCTClientReport> report);
     ~ReportEntry();
     ReportEntry(const ReportEntry&) = delete;
     ReportEntry operator==(const ReportEntry&) = delete;

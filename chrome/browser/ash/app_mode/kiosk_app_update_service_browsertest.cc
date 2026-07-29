@@ -8,6 +8,7 @@
 #include <string>
 
 #include "ash/constants/ash_paths.h"
+#include "ash/constants/ash_pref_names.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
@@ -29,13 +30,13 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
+#include "chrome/browser/ash/app_mode/kiosk_app_update_service_factory.h"
 #include "chrome/browser/ash/system/automatic_reboot_manager.h"
 #include "chrome/browser/ash/system/automatic_reboot_manager_observer.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
@@ -143,7 +144,9 @@ class KioskAppUpdateServiceTest
     update_service_->Init(app_->id());
   }
 
-  void FireAppUpdateAvailable() { update_service_->OnAppUpdateAvailable(app_); }
+  void FireAppUpdateAvailable() {
+    update_service_->OnAppUpdateAvailable(*app_);
+  }
 
   void FireUpdatedNeedReboot() {
     update_engine::StatusResult status;
@@ -155,7 +158,7 @@ class KioskAppUpdateServiceTest
 
   void RequestPeriodicReboot() {
     test_waiter_ = std::make_unique<TestFuture<void>>();
-    g_browser_process->local_state()->SetInteger(prefs::kUptimeLimit,
+    g_browser_process->local_state()->SetInteger(ash::prefs::kUptimeLimit,
                                                  base::Hours(2).InSeconds());
     EXPECT_TRUE(test_waiter_->Wait());
   }
@@ -181,10 +184,6 @@ IN_PROC_BROWSER_TEST_F(KioskAppUpdateServiceTest, AppUpdate) {
   ExtensionTestMessageListener listener("app_update");
   FireAppUpdateAvailable();
   EXPECT_TRUE(listener.WaitUntilSatisfied());
-
-  histogram.ExpectUniqueSample(kKioskPrimaryAppInSessionUpdateHistogram,
-                               /*sample=*/1,
-                               /*expected_bucket_count=*/1);
 }
 
 // Verifies that the app is notified a reboot is required when an OS update is
@@ -193,7 +192,8 @@ IN_PROC_BROWSER_TEST_F(KioskAppUpdateServiceTest, AppUpdate) {
 IN_PROC_BROWSER_TEST_F(KioskAppUpdateServiceTest, OsUpdate) {
   CreateKioskAppUpdateService();
 
-  g_browser_process->local_state()->SetBoolean(prefs::kRebootAfterUpdate, true);
+  g_browser_process->local_state()->SetBoolean(ash::prefs::kRebootAfterUpdate,
+                                               true);
   ExtensionTestMessageListener listener("os_update");
   FireUpdatedNeedReboot();
   EXPECT_TRUE(listener.WaitUntilSatisfied());
@@ -213,7 +213,8 @@ IN_PROC_BROWSER_TEST_F(KioskAppUpdateServiceTest, Periodic) {
 // applied before Chrome was started and the policy to reboot after update is
 // enabled.
 IN_PROC_BROWSER_TEST_F(KioskAppUpdateServiceTest, StartAfterOsUpdate) {
-  g_browser_process->local_state()->SetBoolean(prefs::kRebootAfterUpdate, true);
+  g_browser_process->local_state()->SetBoolean(ash::prefs::kRebootAfterUpdate,
+                                               true);
   FireUpdatedNeedReboot();
 
   ExtensionTestMessageListener listener("os_update");

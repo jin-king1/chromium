@@ -71,7 +71,7 @@ void PrepopulatedComputedStylePropertyMap::UpdateCustomProperty(
     const Document& document,
     const ComputedStyle& style,
     const AtomicString& property_name) {
-  CSSPropertyRef ref(property_name, document);
+  CSSPropertyRef ref(&property_name, document);
   const CSSValue* value = ref.GetProperty().CSSValueFromComputedStyle(
       style, /*layout_object=*/nullptr,
       /*allow_visited_style=*/false, CSSValuePhase::kComputedValue);
@@ -122,7 +122,7 @@ void PrepopulatedComputedStylePropertyMap::ForEachProperty(
 String PrepopulatedComputedStylePropertyMap::SerializationForShorthand(
     const CSSProperty&) const {
   // TODO(816722): Shorthands not yet supported for this style map.
-  NOTREACHED();
+  return "";
 }
 
 void PrepopulatedComputedStylePropertyMap::Trace(Visitor* visitor) const {

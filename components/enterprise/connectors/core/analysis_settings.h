@@ -8,13 +8,13 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_span.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/enterprise/connectors/core/service_provider_config.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "url/gurl.h"
 
 namespace enterprise_connectors {
@@ -22,6 +22,8 @@ namespace enterprise_connectors {
 // A struct representing a custom message and associated "learn more" URL. These
 // are scoped to a tag.
 struct CustomMessageData {
+  bool operator==(const CustomMessageData&) const;
+
   std::u16string message;
   GURL learn_more_url;
 };
@@ -29,6 +31,8 @@ struct CustomMessageData {
 // A struct representing tag-specific settings that are applied to an analysis
 // which includes that tag.
 struct TagSettings {
+  bool operator==(const TagSettings&) const;
+
   CustomMessageData custom_message;
   bool requires_justification = false;
 };
@@ -54,6 +58,7 @@ struct CloudAnalysisSettings {
   CloudAnalysisSettings& operator=(CloudAnalysisSettings&&);
   CloudAnalysisSettings(const CloudAnalysisSettings&);
   CloudAnalysisSettings& operator=(const CloudAnalysisSettings&);
+  bool operator==(const CloudAnalysisSettings&) const;
   ~CloudAnalysisSettings();
 
   // The URL of the server that performs an analysis in the cloud.
@@ -74,6 +79,7 @@ struct LocalAnalysisSettings {
   LocalAnalysisSettings& operator=(LocalAnalysisSettings&&);
   LocalAnalysisSettings(const LocalAnalysisSettings&);
   LocalAnalysisSettings& operator=(const LocalAnalysisSettings&);
+  bool operator==(const LocalAnalysisSettings&) const;
   ~LocalAnalysisSettings();
 
   std::string local_path;
@@ -86,7 +92,7 @@ struct LocalAnalysisSettings {
 };
 
 class CloudOrLocalAnalysisSettings
-    : public absl::variant<CloudAnalysisSettings, LocalAnalysisSettings> {
+    : public std::variant<CloudAnalysisSettings, LocalAnalysisSettings> {
  public:
   CloudOrLocalAnalysisSettings();
   explicit CloudOrLocalAnalysisSettings(CloudAnalysisSettings settings);
@@ -95,6 +101,7 @@ class CloudOrLocalAnalysisSettings
   CloudOrLocalAnalysisSettings& operator=(CloudOrLocalAnalysisSettings&&);
   CloudOrLocalAnalysisSettings(const CloudOrLocalAnalysisSettings&);
   CloudOrLocalAnalysisSettings& operator=(const CloudOrLocalAnalysisSettings&);
+  bool operator==(const CloudOrLocalAnalysisSettings&) const;
 
   ~CloudOrLocalAnalysisSettings();
 
@@ -112,6 +119,7 @@ class CloudOrLocalAnalysisSettings
   const std::string local_path() const;
   bool user_specific() const;
   base::span<const char* const> subject_names() const;
+  std::vector<std::string> verification_signatures() const;
 
   // Field accessible by both CloudAnalysisSettings and LocalAnalysisSettings.
   size_t max_file_size() const;
@@ -122,6 +130,7 @@ struct AnalysisSettings {
   AnalysisSettings();
   AnalysisSettings(AnalysisSettings&&);
   AnalysisSettings& operator=(AnalysisSettings&&);
+  bool operator==(const AnalysisSettings&) const;
   ~AnalysisSettings();
 
   CloudOrLocalAnalysisSettings cloud_or_local_settings;

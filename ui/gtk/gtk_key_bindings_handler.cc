@@ -6,7 +6,10 @@
 
 #include <array>
 
+#include "base/compiler_specific.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/logging.h"
+#include "ui/base/glib/gsettings.h"
 #include "ui/base/ime/text_edit_commands.h"
 #include "ui/events/event_constants.h"
 #include "ui/gtk/gtk_compat.h"
@@ -66,8 +69,6 @@ constexpr auto kEmacsBindings =
          ui::TextEditCommand::MOVE_UP},
         {{ui::KeyboardCode::VKEY_P, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN},
          ui::TextEditCommand::MOVE_UP_AND_MODIFY_SELECTION},
-        {{ui::KeyboardCode::VKEY_T, ui::EF_CONTROL_DOWN},
-         ui::TextEditCommand::TRANSPOSE},
         {{ui::KeyboardCode::VKEY_U, ui::EF_CONTROL_DOWN},
          ui::TextEditCommand::DELETE_TO_BEGINNING_OF_LINE},
         {{ui::KeyboardCode::VKEY_W, ui::EF_CONTROL_DOWN},
@@ -83,7 +84,10 @@ constexpr auto kEmacsBindings =
 }  // namespace
 
 GtkKeyBindingsHandler::GtkKeyBindingsHandler() {
-  settings_ = TakeGObject(g_settings_new(kDesktopInterface));
+  settings_ = ui::GSettingsNew(kDesktopInterface);
+  if (!settings_) {
+    return;
+  }
   signal_ = ScopedGSignal(
       settings_, "changed",
       base::BindRepeating(&GtkKeyBindingsHandler::OnSettingsChanged,
@@ -118,7 +122,7 @@ ui::TextEditCommand GtkKeyBindingsHandler::MatchEvent(const ui::Event& event) {
 void GtkKeyBindingsHandler::OnSettingsChanged(GSettings* settings,
                                               const char* key) {
   DCHECK(settings);
-  if (strcmp(key, kGtkKeyTheme) != 0) {
+  if (UNSAFE_TODO(strcmp(key, kGtkKeyTheme)) != 0) {
     return;
   }
   auto g_free_deleter = [](gchar* s) { g_free(s); };
@@ -127,7 +131,7 @@ void GtkKeyBindingsHandler::OnSettingsChanged(GSettings* settings,
   if (!key_theme) {
     return;
   }
-  emacs_theme_ = strcmp(key_theme.get(), kEmacsKeyTheme) == 0;
+  emacs_theme_ = UNSAFE_TODO(strcmp(key_theme.get(), kEmacsKeyTheme)) == 0;
 }
 
 }  // namespace gtk

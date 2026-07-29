@@ -13,17 +13,17 @@
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/infobar_banner_overlay_mediator.h"
 #import "ios/chrome/browser/overlays/ui_bundled/overlay_request_mediator+subclassing.h"
 #import "ios/chrome/browser/safe_browsing/model/tailored_security/tailored_security_service_infobar_delegate.h"
-#import "ios/chrome/browser/shared/ui/symbols/buildflags.h"
+#import "ios/chrome/browser/shared/ui/buildflags.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 
 namespace {
 
 // Returns the branded version of the Google shield symbol.
-NSString* GetBrandedGoogleShieldSymbol() {
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
-  return kGoogleShieldSymbol;
+Symbol GetBrandedGoogleShieldSymbol() {
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+  return SymbolGoogleShield;
 #else
-  return kShieldSymbol;
+  return SymbolShield;
 #endif
 }
 
@@ -87,21 +87,20 @@ NSString* GetBrandedGoogleShieldSymbol() {
       base::SysUTF16ToNSString(delegate->GetMessageActionText());
   NSString* bannerAccessibilityLabel =
       [NSString stringWithFormat:@"%@,%@", title, subtitle];
-  NSString* iconImageName =
-      [self iconImageNameForState:delegate->message_state()];
+  Symbol iconSymbol = [self iconSymbolForState:delegate->message_state()];
 
   [self.consumer setBannerAccessibilityLabel:bannerAccessibilityLabel];
   [self.consumer setButtonText:buttonText];
-  [self.consumer setIconImage:CustomSymbolWithPointSize(
-                                  iconImageName, kInfobarSymbolPointSize)];
+  [self.consumer
+      setIconImage:SymbolWithPointSize(iconSymbol, kInfobarSymbolPointSize)];
   [self.consumer setTitleText:title];
   [self.consumer setSubtitleText:subtitle];
 }
 
 #pragma mark - Private methods
 
-// Returns the icon image name corresponding to the given `state`.
-- (NSString*)iconImageNameForState:
+// Returns the icon symbol corresponding to the given `state`.
+- (Symbol)iconSymbolForState:
     (safe_browsing::TailoredSecurityServiceMessageState)state {
   switch (state) {
     case safe_browsing::TailoredSecurityServiceMessageState::
@@ -111,7 +110,7 @@ NSString* GetBrandedGoogleShieldSymbol() {
       return GetBrandedGoogleShieldSymbol();
     case safe_browsing::TailoredSecurityServiceMessageState::
         kConsentedAndFlowDisabled:
-      return kShieldSymbol;
+      return SymbolShield;
   }
 }
 

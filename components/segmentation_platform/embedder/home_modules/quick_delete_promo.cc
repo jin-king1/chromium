@@ -6,19 +6,25 @@
 
 #include "base/metrics/field_trial_params.h"
 #include "components/commerce/core/commerce_feature_list.h"
+#include "components/prefs/pref_registry_simple.h"
+#include "components/prefs/pref_service.h"
 #include "components/segmentation_platform/embedder/home_modules/constants.h"
 #include "components/segmentation_platform/embedder/home_modules/ephemeral_module_utils.h"
-#include "components/segmentation_platform/embedder/home_modules/home_modules_card_registry.h"
+#include "components/segmentation_platform/embedder/home_modules/home_modules_card_registry_android.h"
 #include "components/segmentation_platform/public/features.h"
 #include "components/segmentation_platform/public/proto/model_metadata.pb.h"
 
 namespace {
 
-// The number of times the quick delete promo card can be shown to the user in
-// a single day.
-const int kShownCountLimit = 3;
+// Impression counter for the Quick Delete promo ephemeral module.
+const char kQuickDeletePromoImpressionCounterPref[] =
+    "ephemeral_pref_counter.quick_delete_promo_counter";
 
-const char kQuickDeletePromoHistogramName[] =
+// Interaction counter for the Quick Delete promo ephemeral module.
+const char kQuickDeletePromoInteractedPref[] =
+    "ephemeral_pref_interacted.quick_delete_promo_interacted";
+
+const char kEducationalTipModuleHistogramName[] =
     "MagicStack.Clank.NewTabPage.Module.TopImpressionV2";
 
 // TODO(crbug.com/382803396): The enum id of the quick delete promo card. Could
@@ -27,8 +33,6 @@ const int kQuickDeletePromoId = 9;
 
 const char kClearBrowsingDataHistogramName[] =
     "Privacy.DeleteBrowsingData.Action";
-
-constexpr std::array<int32_t, 0> kClearBrowsingDataHistogramEnumValues{};
 
 const int kClearBrowsingDataHistogramQuickDeleteId = 6;
 
@@ -39,14 +43,24 @@ namespace segmentation_platform::home_modules {
 QuickDeletePromo::QuickDeletePromo(PrefService* profile_prefs)
     : CardSelectionInfo(kQuickDeletePromo), profile_prefs_(profile_prefs) {}
 
+// static
+void QuickDeletePromo::RegisterProfilePrefs(PrefRegistrySimple* registry) {
+  registry->RegisterIntegerPref(kQuickDeletePromoImpressionCounterPref, 0);
+  registry->RegisterBooleanPref(kQuickDeletePromoInteractedPref, false);
+}
+
 std::map<SignalKey, FeatureQuery> QuickDeletePromo::GetInputs() {
-  std::map<SignalKey, FeatureQuery> map;
+  std::map<SignalKey, FeatureQuery> map = {
+      {kIsUserSignedIn,
+       FeatureQuery::FromCustomInput(MetadataWriter::CustomInput{
+           .tensor_length = 1,
+           .fill_policy = proto::CustomInput::FILL_FROM_INPUT_CONTEXT,
+           .name = kIsUserSignedIn})}};
 
   // Define the number of times user cleared browsing data in the past 30 days.
   DEFINE_UMA_FEATURE_ENUM_COUNT(countOfClearBrowsingData,
                                 kClearBrowsingDataHistogramName,
-                                kClearBrowsingDataHistogramEnumValues.data(),
-                                kClearBrowsingDataHistogramEnumValues.size(),
+                                /* enum_id= */ nullptr, /* enum_size= */ 0,
                                 /* days= */ 30);
   map.emplace(kCountOfClearingBrowsingData,
               std::move(countOfClearBrowsingData));
@@ -61,12 +75,21 @@ std::map<SignalKey, FeatureQuery> QuickDeletePromo::GetInputs() {
   map.emplace(kCountOfClearingBrowsingDataThroughQuickDelete,
               std::move(countOfClearBrowsingDataThroughQuickDelete));
 
+  // Define signal for number of times all educational tip card has shown to the
+  // user in limited days.
+  DEFINE_UMA_FEATURE_ENUM_COUNT(countOfEducationalTipCardShownTimes,
+                                kEducationalTipModuleHistogramName,
+                                /* enum_id= */ nullptr, /* enum_size= */ 0,
+                                /* days= */ KDaysToShowEphemeralCardOnce);
+  map.emplace(kEducationalTipShownCount,
+              std::move(countOfEducationalTipCardShownTimes));
+
   // Define signal for number of times quick delete promo card has shown to the
-  // user in last 24 hours.
+  // user in limited days.
   DEFINE_UMA_FEATURE_ENUM_COUNT(countOfQuickDeletePromoShownTimes,
-                                kQuickDeletePromoHistogramName,
+                                kEducationalTipModuleHistogramName,
                                 &kQuickDeletePromoId, /* enum_size= */ 1,
-                                /* days= */ 1);
+                                /* days= */ KDaysToShowEachEphemeralCardOnce);
   map.emplace(kQuickDeletePromoShownCount,
               std::move(countOfQuickDeletePromoShownTimes));
 
@@ -95,16 +118,26 @@ CardSelectionInfo::ShowResult QuickDeletePromo::ComputeCardResult(
     return result;
   }
 
-  std::optional<float> resultForCountOfClearingBrowsingData =
+  std::optional<float> result_for_is_user_signed_in =
+      signals.GetSignal(kIsUserSignedIn);
+  std::optional<float> result_for_count_of_clearing_browsing_data =
       signals.GetSignal(kCountOfClearingBrowsingData);
-  std::optional<float> resultForCountOfClearingBrowsingDataThroughQuickDelete =
-      signals.GetSignal(kCountOfClearingBrowsingDataThroughQuickDelete);
-  std::optional<float> resultForQuickDeletePromoShownCount =
+  std::optional<float>
+      result_for_count_of_clearing_browsing_data_through_quick_delete =
+          signals.GetSignal(kCountOfClearingBrowsingDataThroughQuickDelete);
+  std::optional<float> result_for_quick_delete_promo_shown_count =
       signals.GetSignal(kQuickDeletePromoShownCount);
+  std::optional<float>
+      result_for_educational_tip_shown_count_for_quick_delete_signal =
+          signals.GetSignal(kEducationalTipShownCount);
 
-  if (!resultForCountOfClearingBrowsingData.has_value() ||
-      !resultForCountOfClearingBrowsingDataThroughQuickDelete.has_value() ||
-      !resultForQuickDeletePromoShownCount.has_value()) {
+  if (!result_for_is_user_signed_in.has_value() ||
+      !result_for_count_of_clearing_browsing_data.has_value() ||
+      !result_for_count_of_clearing_browsing_data_through_quick_delete
+           .has_value() ||
+      !result_for_quick_delete_promo_shown_count.has_value() ||
+      !result_for_educational_tip_shown_count_for_quick_delete_signal
+           .has_value()) {
     result.position = EphemeralHomeModuleRank::kNotShown;
     return result;
   }
@@ -112,10 +145,14 @@ CardSelectionInfo::ShowResult QuickDeletePromo::ComputeCardResult(
   // Show the promo card if the user has never cleared browsing data or has
   // cleared browsing data but never through quick delete in the past 30 days
   // and the promo card has not been shown more than 3 times in 24 hours.
-  if ((resultForCountOfClearingBrowsingData.value() == 0 ||
-       (resultForCountOfClearingBrowsingData.value() > 0 &&
-        resultForCountOfClearingBrowsingDataThroughQuickDelete.value() == 0)) &&
-      resultForQuickDeletePromoShownCount.value() < kShownCountLimit) {
+  if (*result_for_is_user_signed_in &&
+      (result_for_count_of_clearing_browsing_data.value() == 0 ||
+       (result_for_count_of_clearing_browsing_data.value() > 0 &&
+        result_for_count_of_clearing_browsing_data_through_quick_delete
+                .value() == 0)) &&
+      result_for_quick_delete_promo_shown_count.value() < 1 &&
+      result_for_educational_tip_shown_count_for_quick_delete_signal.value() <
+          1) {
     result.position = EphemeralHomeModuleRank::kLast;
     return result;
   }
@@ -124,7 +161,7 @@ CardSelectionInfo::ShowResult QuickDeletePromo::ComputeCardResult(
   return result;
 }
 
-bool QuickDeletePromo::IsEnabled(int impression_count) {
+bool QuickDeletePromo::IsEnabled(PrefService* profile_prefs) {
   std::optional<CardSelectionInfo::ShowResult> forced_result =
       GetForcedEphemeralModuleShowResult();
 
@@ -134,15 +171,35 @@ bool QuickDeletePromo::IsEnabled(int impression_count) {
     return true;
   }
 
-  if (!base::FeatureList::IsEnabled(features::kEducationalTipModule)) {
-    return false;
-  }
+  int impression_count =
+      profile_prefs->GetInteger(kQuickDeletePromoImpressionCounterPref);
 
-  if (impression_count >= features::kMaxQuickDeleteCardImpressions.Get()) {
+  if (impression_count >= kSingleEphemeralCardMaxImpressions) {
     return false;
   }
 
   return true;
+}
+
+void QuickDeletePromo::OnShow(PrefService* profile_prefs,
+                              PrefService* local_state) {
+  // Only record an impression once per session.
+  if (has_been_shown_this_session_) {
+    return;
+  }
+
+  has_been_shown_this_session_ = true;
+
+  int freshness_impression_count =
+      profile_prefs->GetInteger(kQuickDeletePromoImpressionCounterPref);
+
+  profile_prefs->SetInteger(kQuickDeletePromoImpressionCounterPref,
+                            freshness_impression_count + 1);
+}
+
+void QuickDeletePromo::OnInteract(PrefService* profile_prefs,
+                                  PrefService* local_state) {
+  profile_prefs->SetBoolean(kQuickDeletePromoInteractedPref, true);
 }
 
 }  // namespace segmentation_platform::home_modules

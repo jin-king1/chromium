@@ -103,16 +103,17 @@ export class KeyboardRemapModifierKeyRowElement extends
     };
   }
 
-  protected keyLabel: string;
-  private metaKeyLabel: string;
-  private keyMapTargets: DropdownMenuOptionList;
-  private keyIcon: KeyIcon;
-  private hasFunctionKey: boolean;
-  keyState: KeyState;
-  pref: chrome.settingsPrivate.PrefObject;
-  metaKey: MetaKey;
-  key: ModifierKey;
-  defaultRemappings: {[key: number]: ModifierKey};
+  declare protected keyLabel: string;
+  declare private metaKeyLabel: string;
+  declare private keyMapTargets: DropdownMenuOptionList;
+  declare private keyIcon: KeyIcon;
+  declare private hasFunctionKey: boolean;
+  declare keyState: KeyState;
+  declare pref: chrome.settingsPrivate.PrefObject;
+  declare metaKey: MetaKey;
+  declare key: ModifierKey;
+  declare defaultRemappings: {[key: number]: ModifierKey};
+  declare removeTopBorder: boolean;
 
   override ready(): void {
     super.ready();
@@ -150,6 +151,8 @@ export class KeyboardRemapModifierKeyRowElement extends
       case MetaKey.kSearch:
       case MetaKey.kLauncherRefresh:
         return this.i18n('perDeviceKeyboardKeySearch');
+      default:
+        assertNotReached();
     }
   }
 

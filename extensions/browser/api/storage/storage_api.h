@@ -6,6 +6,7 @@
 #define EXTENSIONS_BROWSER_API_STORAGE_STORAGE_API_H_
 
 #include "base/compiler_specific.h"
+#include "base/gtest_prod_util.h"
 #include "components/value_store/value_store.h"
 #include "extensions/browser/api/storage/session_storage_manager.h"
 #include "extensions/browser/api/storage/settings_namespace.h"
@@ -27,7 +28,7 @@ class SettingsFunction : public ExtensionFunction {
   bool PreRunValidation(std::string* error) override;
 
   // Returns whether the caller's context has access to the storage or not.
-  bool IsAccessToStorageAllowed();
+  bool IsAccessToStorageAllowed(StorageAreaNamespace storage_area_);
 
   StorageAreaNamespace storage_area() const { return storage_area_; }
 
@@ -57,7 +58,7 @@ class StorageStorageAreaGetFunction : public SettingsFunction {
   // Called after getting data from storage. If `defaults` is provided, merges
   // the data from `result` into the dictionary. This allows developers to
   // provide a fallback for data not present in storage.
-  void OnGetOperationFinished(std::optional<base::Value::Dict> defaults,
+  void OnGetOperationFinished(std::optional<base::DictValue> defaults,
                               StorageFrontend::GetResult result);
 };
 

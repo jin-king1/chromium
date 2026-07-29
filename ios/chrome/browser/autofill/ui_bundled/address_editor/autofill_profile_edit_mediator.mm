@@ -6,18 +6,20 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/application_locale_storage/application_locale_storage.h"
+#import "components/autofill/core/browser/country_type.h"
 #import "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
-#import "components/autofill/core/browser/data_quality/addresses/profile_requirement_utils.h"
+#import "components/autofill/core/browser/data_quality/addresses/address_import_requirement_utils.h"
 #import "components/autofill/core/browser/data_quality/autofill_data_util.h"
 #import "components/autofill/core/browser/geo/autofill_country.h"
 #import "components/autofill/core/browser/ui/addresses/autofill_address_util.h"
 #import "components/autofill/core/browser/ui/country_combobox_model.h"
-#import "components/autofill/ios/common/features.h"
+#import "components/variations/service/variations_service.h"
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_profile_edit_consumer.h"
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_profile_edit_mediator_delegate.h"
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/cells/country_item.h"
-#import "ios/chrome/browser/autofill/ui_bundled/autofill_ui_type_util.h"
+#import "ios/chrome/browser/autofill/ui_bundled/autofill_credit_card_ui_type_util.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_model.h"
 #import "third_party/libaddressinput/src/cpp/include/libaddressinput/address_ui.h"
@@ -31,17 +33,21 @@ typedef NS_ENUM(NSInteger, ItemType) {
 };
 
 // Field types that do not change with the country value.
-constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
-    autofill::NAME_FULL, autofill::COMPANY_NAME, autofill::ADDRESS_HOME_COUNTRY,
-    autofill::PHONE_HOME_WHOLE_NUMBER, autofill::EMAIL_ADDRESS};
+constexpr std::array<autofill::FieldType, 3> kStaticFieldsTypes = {
+    autofill::ADDRESS_HOME_COUNTRY, autofill::PHONE_HOME_WHOLE_NUMBER,
+    autofill::EMAIL_ADDRESS};
 
 }  // namespace
 
 @interface AutofillProfileEditMediator ()
 
+// Stores the non-address input fields.
+@property(nonatomic, strong, readonly)
+    NSArray<AutofillEditProfileField*>* inputNonAddressFields;
+
 // Stores the address input fields.
 @property(nonatomic, strong, readonly)
-    NSArray<AutofillProfileAddressField*>* inputAddressFields;
+    NSArray<AutofillEditProfileField*>* inputAddressFields;
 
 @end
 
@@ -70,14 +76,19 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
   BOOL _stateRequired;
   BOOL _zipRequired;
 
+  // If YES, the new address is being added manually.
+  BOOL _addManualAddress;
+
+  // Indicates if error warnings should be ignored. Prevents displaying error
+  // messages while adding a new address manually from settings, before the
+  // user inputs data.
+  BOOL _ignoreErrorMessage;
+
   // Stores the required field names whose values are empty;
   NSMutableSet<NSString*>* _requiredFieldsWithEmptyValue;
 
   // Stores the value displayed in the fields.
   NSMutableDictionary<NSString*, NSString*>* _currentValuesMap;
-
-  // Yes if `kAutofillDynamicallyLoadsFieldsForAddressInput` is enabled.
-  BOOL _dynamicallyLoadInputFieldsEnabled;
 
   // Stores the fields that were edited.
   NSMutableSet<NSString*>* _editedFields;
@@ -90,7 +101,8 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
                     (id<AutofillProfileEditMediatorDelegate>)delegate
              personalDataManager:(autofill::PersonalDataManager*)dataManager
                  autofillProfile:(autofill::AutofillProfile*)autofillProfile
-               isMigrationPrompt:(BOOL)isMigrationPrompt {
+               isMigrationPrompt:(BOOL)isMigrationPrompt
+                addManualAddress:(BOOL)addManualAddress {
   self = [super init];
 
   if (self) {
@@ -99,15 +111,19 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
     _autofillProfile = autofillProfile;
     _delegate = delegate;
     _isMigrationPrompt = isMigrationPrompt;
+    _addManualAddress = addManualAddress;
     _requiredFieldsWithEmptyValue = [[NSMutableSet<NSString*> alloc] init];
     _selectedCountryCode =
         base::SysUTF8ToNSString(autofill::data_util::GetCountryCodeWithFallback(
-            *autofillProfile, GetApplicationContext()->GetApplicationLocale()));
-    _dynamicallyLoadInputFieldsEnabled = base::FeatureList::IsEnabled(
-        kAutofillDynamicallyLoadsFieldsForAddressInput);
+            *autofillProfile,
+            GetApplicationContext()->GetApplicationLocaleStorage()->Get()));
     _editedFields = [[NSMutableSet<NSString*> alloc] init];
 
-    [self loadCountries];
+    // Initially ignore the error warnings when adding an address manually
+    // through settings.
+    _ignoreErrorMessage = _addManualAddress;
+
+    _allCountries = [AutofillProfileEditMediator loadCountries];
   }
 
   return self;
@@ -120,14 +136,19 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
 
   _consumer = consumer;
 
-  [self fetchAndSetInputAddressFields];
+  [self fetchAndSetFieldsForInput];
   [self populateCurrentValuesMap];
   [self fetchAndUpdateFieldRequirements];
-
-  [_consumer setAccountProfile:[self isAccountProfile]];
+  [self initializeRequiredEmptyFieldsForManualAddition];
+  [_consumer setProfileRecordType:[self accountRecordType]];
 }
 
 #pragma mark - Public
+
+- (void)disconnect {
+  _autofillProfile = nullptr;
+  _personalDataManager = nullptr;
+}
 
 - (void)didSelectCountry:(CountryItem*)countryItem {
   if ([_selectedCountryCode isEqualToString:countryItem.countryCode]) {
@@ -136,7 +157,7 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
 
   _selectedCountryCode = countryItem.countryCode;
 
-  [self fetchAndSetInputAddressFields];
+  [self fetchAndSetFieldsForInput];
   [self fetchAndUpdateFieldRequirements];
   [self
       computeFieldWasEdited:base::SysUTF8ToNSString(autofill::FieldTypeToString(
@@ -146,17 +167,14 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
 }
 
 - (BOOL)canDismissImmediately {
-  CHECK(_dynamicallyLoadInputFieldsEnabled);
   return !_errorSectionPresented && ![_editedFields count];
 }
 
 - (BOOL)shouldShowConfirmationDialogOnDismissBySwiping {
-  CHECK(_dynamicallyLoadInputFieldsEnabled);
   return !_errorSectionPresented && [_editedFields count] > 0;
 }
 
 - (void)saveChangesForDismiss {
-  CHECK(_dynamicallyLoadInputFieldsEnabled);
   [self didSaveProfileFromModal];
 }
 
@@ -174,6 +192,10 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
   return autofill::IsMinimumAddress(*_autofillProfile);
 }
 
+- (autofill::AutofillProfile::RecordType)accountRecordType {
+  return _autofillProfile->record_type();
+}
+
 - (void)didTapMigrateToAccountButton {
   _personalDataManager->address_data_manager().MigrateProfileToAccount(
       *_autofillProfile);
@@ -183,7 +205,7 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
   [self populateCurrentValuesMap];
 }
 
-#pragma mark - AutofillProfileEditTableViewControllerDelegate
+#pragma mark - AutofillProfileEditTableViewHelperDelegate
 
 - (void)willSelectCountryWithCurrentlySelectedCountry:(NSString*)country {
   [_delegate willSelectCountryWithCurrentlySelectedCountry:country
@@ -213,7 +235,7 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
     _autofillProfile->SetInfoWithVerificationStatus(
         autofill::AutofillType(serverFieldType),
         base::SysNSStringToUTF16(value),
-        GetApplicationContext()->GetApplicationLocale(),
+        GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
         autofill::VerificationStatus::kUserVerified);
   } else {
     _autofillProfile->SetRawInfoWithVerificationStatus(
@@ -225,12 +247,21 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
 - (BOOL)fieldContainsValidValue:(NSString*)autofillFieldType
                   hasEmptyValue:(BOOL)hasEmptyValue
       moveToAccountFromSettings:(BOOL)moveToAccountFromSettings {
-  if (![self isAutofillFieldTypeRequiredField:autofillFieldType] ||
+  BOOL isRequired = [self isAutofillFieldTypeRequiredField:autofillFieldType];
+
+  // Only required fields need further checks. If not required, it's considered
+  // valid.
+  if (!isRequired) {
+    return YES;
+  }
+
+  // Early return if adding an address through infobar and the text field
+  // contained an empty value when the profile was loaded. An empty value isn't
+  // considered a valid value when adding an address manually through settings.
+  if (!_addManualAddress &&
       [self requiredFieldWasEmptyOnProfileLoadForType:autofillFieldType
                             moveToAccountFromSettings:
                                 moveToAccountFromSettings]) {
-    // Early return if the text field is not a required field or contained an
-    // empty value when the profile was loaded.
     return YES;
   }
 
@@ -239,6 +270,12 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
   if ([_requiredFieldsWithEmptyValue containsObject:autofillFieldType] &&
       !hasEmptyValue) {
     [_requiredFieldsWithEmptyValue removeObject:autofillFieldType];
+
+    // If `_requiredFieldsWithEmptyValue` is empty, error warnings should not be
+    // ignored.
+    if ([self requiredFieldsWithEmptyValuesCount] == 0) {
+      _ignoreErrorMessage = NO;
+    }
     return YES;
   }
 
@@ -277,6 +314,10 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
 }
 
 - (void)validateFieldsAndUpdateButtonStatus {
+  if (_ignoreErrorMessage) {
+    return;
+  }
+
   BOOL shouldShowError = ([self requiredFieldsWithEmptyValuesCount] > 0);
 
   if (shouldShowError != _errorSectionPresented) {
@@ -291,16 +332,13 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
 
 - (void)computeFieldWasEdited:(NSString*)editedFieldType
                         value:(NSString*)value {
-  if (!_dynamicallyLoadInputFieldsEnabled) {
-    return;
-  }
-
   BOOL contains = [_editedFields containsObject:editedFieldType];
   autofill::FieldType serverFieldType =
       [self typeNameToFieldType:editedFieldType];
   NSString* fieldOriginalValue =
       base::SysUTF16ToNSString(_autofillProfile->GetInfo(
-          serverFieldType, GetApplicationContext()->GetApplicationLocale()));
+          serverFieldType,
+          GetApplicationContext()->GetApplicationLocaleStorage()->Get()));
   if (contains && [fieldOriginalValue isEqualToString:value]) {
     [_editedFields removeObject:editedFieldType];
   } else if (!contains && ![fieldOriginalValue isEqualToString:value]) {
@@ -334,16 +372,20 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
       [self typeNameToFieldType:autofillFieldType];
   return _autofillProfile
       ->GetInfo(serverFieldType,
-                GetApplicationContext()->GetApplicationLocale())
+                GetApplicationContext()->GetApplicationLocaleStorage()->Get())
       .empty();
 }
 
 // Loads the country codes and names and sets the default selected country code.
-- (void)loadCountries {
++ (NSArray<CountryItem*>*)loadCountries {
   autofill::CountryComboboxModel countryModel;
-  countryModel.SetCountries(_personalDataManager->address_data_manager(),
-                            base::RepeatingCallback<bool(const std::string&)>(),
-                            GetApplicationContext()->GetApplicationLocale());
+  const variations::VariationsService* variations_service =
+      GetApplicationContext()->GetVariationsService();
+  countryModel.SetCountries(
+      autofill::GeoIpCountryCode(variations_service
+                                     ? variations_service->GetLatestCountry()
+                                     : std::string()),
+      GetApplicationContext()->GetApplicationLocaleStorage()->Get());
   const autofill::CountryComboboxModel::CountryVector& countriesVector =
       countryModel.countries();
 
@@ -354,12 +396,6 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
   // search option.
   for (size_t i = 1; i < countriesVector.size(); ++i) {
     if (countriesVector[i].get()) {
-      if (([self isAccountProfile] || _isMigrationPrompt) &&
-          !_personalDataManager->address_data_manager()
-               .IsCountryEligibleForAccountStorage(
-                   countriesVector[i]->country_code())) {
-        continue;
-      }
       CountryItem* countryItem =
           [[CountryItem alloc] initWithType:ItemTypeCountry];
       countryItem.text = base::SysUTF16ToNSString(countriesVector[i]->name());
@@ -370,7 +406,7 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
       [countryItems addObject:countryItem];
     }
   }
-  _allCountries = countryItems;
+  return countryItems;
 }
 
 // Fetches and computes the required fields based on `_selectedCountryCode`.
@@ -385,90 +421,77 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
 
   autofill::AutofillCountry country(
       base::SysNSStringToUTF8(_selectedCountryCode),
-      GetApplicationContext()->GetApplicationLocale());
+      GetApplicationContext()->GetApplicationLocaleStorage()->Get());
   _line1Required = country.requires_line1();
   _cityRequired = country.requires_city();
   _stateRequired = country.requires_state();
   _zipRequired = country.requires_zip();
 }
 
-// Fetches the address fields for input and sets them to inputAddressFields.
-- (void)fetchAndSetInputAddressFields {
-  NSMutableArray<AutofillProfileAddressField*>* addressFields =
+// Fetches the fields for input and sets them to
+// `inputAddressFields`/`inputNonAddressFields`.
+- (void)fetchAndSetFieldsForInput {
+  NSMutableArray<AutofillEditProfileField*>* addressFields =
+      [[NSMutableArray alloc] init];
+  NSMutableArray<AutofillEditProfileField*>* nonAddressFields =
       [[NSMutableArray alloc] init];
 
-  if (_dynamicallyLoadInputFieldsEnabled) {
-    i18n::addressinput::Localization localization;
-    localization.SetGetter(l10n_util::GetStringUTF8);
-    std::string best_language_tag_unused;
-    std::string country_code = base::SysNSStringToUTF8(_selectedCountryCode);
-    autofill::AutofillCountry country(country_code);
-    std::vector<autofill::AutofillAddressUIComponent> ui_components =
-        ConvertAddressUiComponents(
-            BuildComponents(country_code, localization,
-                            GetApplicationContext()->GetApplicationLocale(),
-                            &best_language_tag_unused),
-            country);
-    ExtendAddressComponents(ui_components, country, localization,
-                            /*include_literals=*/false);
-    for (const auto& item : ui_components) {
-      if (GroupTypeOfFieldType(item.field) !=
-          autofill::FieldTypeGroup::kAddress) {
-        continue;
-      }
+  i18n::addressinput::Localization localization;
+  localization.SetGetter(l10n_util::GetStringUTF8);
+  std::string best_language_tag_unused;
+  std::string country_code = base::SysNSStringToUTF8(_selectedCountryCode);
+  autofill::AutofillCountry country(country_code);
+  std::vector<autofill::AutofillAddressUIComponent> ui_components =
+      ConvertAddressUiComponents(
+          BuildComponents(
+              country_code, localization,
+              GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
+              &best_language_tag_unused),
+          country);
+  ExtendAddressComponents(ui_components, country, localization,
+                          /*include_literals=*/false);
+  for (const auto& item : ui_components) {
+    AutofillEditProfileField* field = [[AutofillEditProfileField alloc] init];
+    field.fieldType = [self fieldTypeToTypeName:item.field];
+    field.fieldLabel = base::SysUTF8ToNSString(item.name);
 
-      AutofillProfileAddressField* field =
-          [[AutofillProfileAddressField alloc] init];
-      field.fieldType = [self fieldTypeToTypeName:item.field];
-      field.fieldLabel = base::SysUTF8ToNSString(item.name);
-
+    if (GroupTypeOfFieldType(item.field) ==
+        autofill::FieldTypeGroup::kAddress) {
       [addressFields addObject:field];
-    }
-  } else {
-    for (size_t i = 0; i < std::size(kProfileFieldsToDisplay); ++i) {
-      const AutofillProfileFieldDisplayInfo& fieldDisplayInfo =
-          kProfileFieldsToDisplay[i];
-
-      if (!FieldIsUsedInAddress(fieldDisplayInfo.autofillType,
-                                _selectedCountryCode) ||
-          GroupTypeOfFieldType(fieldDisplayInfo.autofillType) !=
-              autofill::FieldTypeGroup::kAddress ||
-          fieldDisplayInfo.autofillType == autofill::ADDRESS_HOME_COUNTRY) {
-        // Country field is added separately in the VC.
-        continue;
-      }
-
-      AutofillProfileAddressField* field =
-          [[AutofillProfileAddressField alloc] init];
-      field.fieldLabel =
-          l10n_util::GetNSString(fieldDisplayInfo.displayStringID);
-      field.fieldType =
-          [self fieldTypeToTypeName:fieldDisplayInfo.autofillType];
-
-      [addressFields addObject:field];
+    } else {
+      [nonAddressFields addObject:field];
     }
   }
 
+  _inputNonAddressFields = nonAddressFields;
   _inputAddressFields = addressFields;
 }
 
 // Populates `_currentValuesMap` on the basis of values in `_autofillProfile`.
 - (void)populateCurrentValuesMap {
   CHECK(!_errorSectionPresented);
-  int totalFieldCount =
-      [self.inputAddressFields count] + kStaticFieldsTypes.size();
+  int totalFieldCount = [self.inputNonAddressFields count] +
+                        [self.inputAddressFields count] +
+                        kStaticFieldsTypes.size();
   NSMutableDictionary<NSString*, NSString*>* fieldValuesMap =
       [[NSMutableDictionary alloc] initWithCapacity:totalFieldCount];
-  for (AutofillProfileAddressField* field in self.inputAddressFields) {
+  for (AutofillEditProfileField* field in self.inputNonAddressFields) {
     NSString* fieldValue = base::SysUTF16ToNSString(_autofillProfile->GetInfo(
         [self typeNameToFieldType:field.fieldType],
-        GetApplicationContext() -> GetApplicationLocale()));
+        GetApplicationContext() -> GetApplicationLocaleStorage() -> Get()));
+    fieldValuesMap[field.fieldType] = fieldValue;
+  }
+  for (AutofillEditProfileField* field in self.inputAddressFields) {
+    NSString* fieldValue = base::SysUTF16ToNSString(_autofillProfile->GetInfo(
+        [self typeNameToFieldType:field.fieldType],
+        GetApplicationContext() -> GetApplicationLocaleStorage() -> Get()));
     fieldValuesMap[field.fieldType] = fieldValue;
   }
 
   for (const auto& field_type : kStaticFieldsTypes) {
     NSString* fieldValue = base::SysUTF16ToNSString(_autofillProfile->GetInfo(
-        field_type, GetApplicationContext()->GetApplicationLocale()));
+        field_type,
+        GetApplicationContext()->GetApplicationLocaleStorage()->Get()));
     fieldValuesMap[[self fieldTypeToTypeName:field_type]] = fieldValue;
   }
 
@@ -484,6 +507,33 @@ constexpr std::array<autofill::FieldType, 5> kStaticFieldsTypes = {
 - (autofill::FieldType)typeNameToFieldType:(NSString*)autofillFieldType {
   return autofill::TypeNameToFieldType(
       base::SysNSStringToUTF8(autofillFieldType));
+}
+
+// Populates `_requiredFieldsWithEmptyValue` with required address field types
+// if adding a new address from settings.
+- (void)initializeRequiredEmptyFieldsForManualAddition {
+  // Early return if we are adding an address through infobar or adding a new
+  // local address manually.
+  if (!_addManualAddress || ![self isAccountProfile]) {
+    return;
+  }
+  if (_line1Required) {
+    [_requiredFieldsWithEmptyValue
+        addObject:
+            [self fieldTypeToTypeName:autofill::ADDRESS_HOME_STREET_ADDRESS]];
+  }
+  if (_cityRequired) {
+    [_requiredFieldsWithEmptyValue
+        addObject:[self fieldTypeToTypeName:autofill::ADDRESS_HOME_CITY]];
+  }
+  if (_stateRequired) {
+    [_requiredFieldsWithEmptyValue
+        addObject:[self fieldTypeToTypeName:autofill::ADDRESS_HOME_STATE]];
+  }
+  if (_zipRequired) {
+    [_requiredFieldsWithEmptyValue
+        addObject:[self fieldTypeToTypeName:autofill::ADDRESS_HOME_ZIP]];
+  }
 }
 
 @end

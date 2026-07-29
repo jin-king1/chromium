@@ -4,7 +4,6 @@
 
 #include "chrome/browser/web_applications/test/fake_environment.h"
 
-#include "base/containers/contains.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace web_app {
@@ -12,29 +11,27 @@ namespace web_app {
 FakeEnvironment::FakeEnvironment() = default;
 FakeEnvironment::~FakeEnvironment() = default;
 
-void FakeEnvironment::Set(std::string_view name, const std::string& value) {
+void FakeEnvironment::Set(base::cstring_view name, const std::string& value) {
   const std::string key(name);
   variables_[key] = value;
 }
 
-bool FakeEnvironment::GetVar(std::string_view variable_name,
-                             std::string* result) {
+std::optional<std::string> FakeEnvironment::GetVar(
+    base::cstring_view variable_name) {
   const std::string key(variable_name);
-  if (base::Contains(variables_, key)) {
-    *result = variables_[key];
-    return true;
+  if (!variables_.contains(key)) {
+    return std::nullopt;
   }
-
-  return false;
+  return variables_[key];
 }
 
-bool FakeEnvironment::SetVar(std::string_view variable_name,
+bool FakeEnvironment::SetVar(base::cstring_view variable_name,
                              const std::string& new_value) {
   ADD_FAILURE();
   return false;
 }
 
-bool FakeEnvironment::UnSetVar(std::string_view variable_name) {
+bool FakeEnvironment::UnSetVar(base::cstring_view variable_name) {
   ADD_FAILURE();
   return false;
 }

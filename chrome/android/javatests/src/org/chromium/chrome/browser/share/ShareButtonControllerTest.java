@@ -9,6 +9,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
+
 import android.view.View;
 
 import androidx.test.filters.MediumTest;
@@ -23,16 +25,18 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarFeatures;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarStatePredictor;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.chrome.test.util.BottomBarTestUtils;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -43,8 +47,8 @@ import org.chromium.ui.modelutil.PropertyModel;
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public final class ShareButtonControllerTest {
-    private final ChromeTabbedActivityTestRule mActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    private final AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.autoResetCtaActivityRule();
 
     private final SigninTestRule mSigninTestRule = new SigninTestRule();
 
@@ -55,11 +59,25 @@ public final class ShareButtonControllerTest {
             RuleChain.outerRule(mSigninTestRule).around(mActivityTestRule);
 
     private boolean mButtonExpected;
+    private WebPageStation mInitialPage;
 
     @Before
     public void setUp() {
         AdaptiveToolbarStatePredictor.setToolbarStateForTesting(AdaptiveToolbarButtonVariant.SHARE);
-        mActivityTestRule.startMainActivityOnBlankPage();
+
+        if (mActivityTestRule.getActivity() != null) {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        mActivityTestRule
+                                .getActivity()
+                                .getRootUiCoordinatorForTesting()
+                                .getAdaptiveToolbarUiCoordinatorForTesting()
+                                .getAdaptiveToolbarButtonControllerForTesting()
+                                .recomputeUiState();
+                    });
+        }
+
+        mInitialPage = mActivityTestRule.startOnBlankPage();
 
         int deviceWidth =
                 mActivityTestRule.getActivity().getResources().getConfiguration().screenWidthDp;
@@ -71,16 +89,12 @@ public final class ShareButtonControllerTest {
     @Test
     @MediumTest
     public void testShareButtonInToolbarIsDisabledOnStartNTP() {
-        mActivityTestRule.loadUrl(UrlConstants.NTP_URL);
+        mActivityTestRule.loadUrl(getOriginalNativeNtpUrl());
         ChromeTabUtils.waitForTabPageLoaded(
-                mActivityTestRule.getActivity().getActivityTab(), UrlConstants.NTP_URL);
+                mActivityTestRule.getActivityTab(), getOriginalNativeNtpUrl());
 
         View experimentalButton =
-                mActivityTestRule
-                        .getActivity()
-                        .getToolbarManager()
-                        .getToolbarLayoutForTesting()
-                        .getOptionalButtonViewForTesting();
+                BottomBarTestUtils.findOptionalButton(mActivityTestRule.getActivity());
         if (experimentalButton != null) {
             String shareString =
                     mActivityTestRule.getActivity().getResources().getString(R.string.share);
@@ -95,11 +109,7 @@ public final class ShareButtonControllerTest {
     @MediumTest
     public void testShareButtonInToolbarIsEnabledOnBlankPage() {
         View experimentalButton =
-                mActivityTestRule
-                        .getActivity()
-                        .getToolbarManager()
-                        .getToolbarLayoutForTesting()
-                        .getOptionalButtonViewForTesting();
+                BottomBarTestUtils.findOptionalButton(mActivityTestRule.getActivity());
 
         if (!mButtonExpected) {
             assertTrue(
@@ -116,14 +126,10 @@ public final class ShareButtonControllerTest {
 
     @Test
     @MediumTest
-    @DisabledTest(message = "crbug.com/1381572")
+    @DisabledTest(message = "crbug.com/40876865")
     public void testShareButtonInToolbarIsDisabledOnUpdate() {
         View experimentalButton =
-                mActivityTestRule
-                        .getActivity()
-                        .getToolbarManager()
-                        .getToolbarLayoutForTesting()
-                        .getOptionalButtonViewForTesting();
+                BottomBarTestUtils.findOptionalButton(mActivityTestRule.getActivity());
 
         ModalDialogProperties.Controller controller =
                 new ModalDialogProperties.Controller() {

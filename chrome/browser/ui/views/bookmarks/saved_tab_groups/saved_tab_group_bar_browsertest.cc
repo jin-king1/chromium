@@ -2,27 +2,28 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <algorithm>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "base/task/single_thread_task_runner.h"
-#include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/uuid.h"
 #include "chrome/browser/favicon/favicon_utils.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils_desktop.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
-#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_keyed_service.h"
-#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_service_factory.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_action_context_desktop.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "components/bookmarks/common/bookmark_pref_names.h"
+#include "components/data_sharing/public/features.h"
+#include "components/prefs/pref_service.h"
 #include "components/saved_tab_groups/internal/saved_tab_group_model.h"
 #include "components/saved_tab_groups/internal/tab_group_sync_service_impl.h"
 #include "components/saved_tab_groups/public/features.h"
@@ -30,10 +31,12 @@
 #include "components/saved_tab_groups/public/saved_tab_group_tab.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/saved_tab_groups/public/types.h"
+#include "components/search/ntp_features.h"
 #include "components/tab_groups/tab_group_color.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/views/test/button_test_api.h"
 
 namespace tab_groups {
 
@@ -43,36 +46,14 @@ class SavedTabGroupBarBrowserTest : public InProcessBrowserTest,
   SavedTabGroupBarBrowserTest() {
     if (GetParam()) {
       features_.InitWithFeatures(
-          {tab_groups::kTabGroupSyncServiceDesktopMigration,
-           tab_groups::kTabGroupsSaveV2},
-          {});
+          {data_sharing::features::kDataSharingFeature},
+          {data_sharing::features::kDataSharingJoinOnly});
     } else {
       features_.InitWithFeatures(
-          {}, {tab_groups::kTabGroupSyncServiceDesktopMigration,
-               tab_groups::kTabGroupsSaveV2});
+          {}, {data_sharing::features::kDataSharingFeature,
+               data_sharing::features::kDataSharingJoinOnly});
     }
   }
-
-  bool IsV2UIMigrationEnabled() const { return GetParam(); }
-
- private:
-  base::test::ScopedFeatureList features_;
-};
-
-struct ScopedAddObservation : public TabGroupSyncService::Observer {
-  explicit ScopedAddObservation(TabGroupSyncService* service_)
-      : service(service_) {
-    service->AddObserver(this);
-  }
-
-  ~ScopedAddObservation() override { service->RemoveObserver(this); }
-
-  void OnTabGroupAdded(const SavedTabGroup& group,
-                       TriggerSource source) override {
-    last_group_tab_count = group.saved_tabs().size();
-    last_trigger_source = source;
-  }
-
   void Wait() {
     // Post a dummy task in the current thread and wait for its completion so
     // that any already posted tasks are completed.
@@ -82,291 +63,299 @@ struct ScopedAddObservation : public TabGroupSyncService::Observer {
     run_loop.Run();
   }
 
-  std::optional<int> last_group_tab_count = std::nullopt;
-  std::optional<TriggerSource> last_trigger_source = std::nullopt;
-  raw_ptr<TabGroupSyncService> service;
+ private:
+  base::test::ScopedFeatureList features_;
 };
 
 // Verifies that a saved group can be only be opened in the tabstrip once. If
 // it is already open, we will find that group and focus it.
 IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
                        ValidGroupIsOpenedInTabstripOnce) {
-  if (IsV2UIMigrationEnabled()) {
-    TabGroupSyncService* service =
-        TabGroupSyncServiceFactory::GetForProfile(browser()->profile());
-    TabStripModel* model = browser()->tab_strip_model();
-    const TabGroupId id = model->AddToNewGroup({0});
+  TabGroupSyncService* service =
+      tab_groups::TabGroupSyncServiceFactory::GetForProfile(
+          browser()->GetProfile());
 
-    std::optional<SavedTabGroup> group = service->GetGroup(id);
-    EXPECT_EQ(id, group->local_group_id());
-    EXPECT_TRUE(group);
+  TabStripModel* model = browser()->tab_strip_model();
+  const TabGroupId group_id = model->AddToNewGroup({0});
+  // Adding a new tab group posts a task. Wait for it to resolve.
+  Wait();
 
-    const int original_model_count = model->GetTabCount();
-    const base::Uuid guid = group->saved_guid();
-    service->OpenTabGroup(guid,
-                          std::make_unique<TabGroupActionContextDesktop>(
-                              browser(), OpeningSource::kOpenedFromRevisitUi));
+  std::optional<SavedTabGroup> saved_group = service->GetGroup(group_id);
+  ASSERT_TRUE(saved_group);
+  EXPECT_EQ(group_id, saved_group->local_group_id());
 
-    group = service->GetGroup(guid);
-    EXPECT_TRUE(group->local_group_id());
-    EXPECT_TRUE(model->group_model()->ContainsTabGroup(
-        group->local_group_id().value()));
-    EXPECT_EQ(model->count(), original_model_count);
-  } else {
-    SavedTabGroupKeyedService* saved_tab_group_service =
-        SavedTabGroupServiceFactory::GetForProfile(browser()->profile());
-    SavedTabGroupModel* stg_model = saved_tab_group_service->model();
-    TabStripModel* model = browser()->tab_strip_model();
-    base::Uuid guid = base::Uuid::GenerateRandomV4();
+  const int original_model_count = model->count();
+  const base::Uuid guid = saved_group->saved_guid();
+  std::optional<LocalTabGroupID> opened_group_id = service->OpenTabGroup(
+      guid, std::make_unique<TabGroupActionContextDesktop>(
+                browser(), OpeningSource::kOpenedFromRevisitUi));
 
-    {  // Add the STG to the model and then open it from the current browser.
-      const int original_model_count = model->GetTabCount();
-
-      stg_model->AddedLocally(SavedTabGroup(
-          std::u16string(u"test_title_1"), tab_groups::TabGroupColorId::kGrey,
-          {SavedTabGroupTab(GURL("chrome://newtab"), u"New Tab Title", guid,
-                            /*position=*/0)
-               .SetTitle(u"Title")
-               .SetFavicon(favicon::GetDefaultFavicon())},
-          /*position=*/std::nullopt, guid));
-      saved_tab_group_service->OpenSavedTabGroupInBrowser(
-          browser(), guid, OpeningSource::kOpenedFromRevisitUi);
-      const SavedTabGroup* saved_tab_group = stg_model->Get(guid);
-      EXPECT_NE(saved_tab_group, nullptr);
-      EXPECT_TRUE(saved_tab_group->local_group_id().has_value());
-      EXPECT_TRUE(model->group_model()->ContainsTabGroup(
-          saved_tab_group->local_group_id().value()));
-      EXPECT_NE(model->GetTabCount(), original_model_count);
-    }
-
-    {  // The STG is already opened in the saved tab group
-      const int original_model_count = model->GetTabCount();
-
-      saved_tab_group_service->OpenSavedTabGroupInBrowser(
-          browser(), guid, OpeningSource::kOpenedFromRevisitUi);
-      const SavedTabGroup* saved_tab_group = stg_model->Get(guid);
-      EXPECT_NE(saved_tab_group, nullptr);
-      EXPECT_TRUE(saved_tab_group->local_group_id().has_value());
-      EXPECT_TRUE(model->group_model()->ContainsTabGroup(
-          saved_tab_group->local_group_id().value()));
-      EXPECT_EQ(model->count(), original_model_count);
-    }
-  }
+  EXPECT_TRUE(opened_group_id.has_value());
+  EXPECT_TRUE(model->group_model()->ContainsTabGroup(opened_group_id.value()));
+  EXPECT_EQ(model->count(), original_model_count);
 }
 
 IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
                        DeletedSavedTabGroupDoesNotOpen) {
-  if (IsV2UIMigrationEnabled()) {
-    TabGroupSyncService* service =
-        TabGroupSyncServiceFactory::GetForProfile(browser()->profile());
-    TabStripModel* model = browser()->tab_strip_model();
-    const TabGroupId id = model->AddToNewGroup({0});
+  TabGroupSyncService* service =
+      tab_groups::TabGroupSyncServiceFactory::GetForProfile(
+          browser()->GetProfile());
+  TabStripModel* model = browser()->tab_strip_model();
+  const TabGroupId group_id = model->AddToNewGroup({0});
+  Wait();
 
-    std::optional<SavedTabGroup> group = service->GetGroup(id);
-    EXPECT_EQ(id, group->local_group_id());
-    EXPECT_TRUE(group);
+  std::optional<SavedTabGroup> saved_group = service->GetGroup(group_id);
+  ASSERT_TRUE(saved_group);
+  EXPECT_EQ(group_id, saved_group->local_group_id());
 
-    const base::Uuid guid = group->saved_guid();
+  const base::Uuid guid = saved_group->saved_guid();
+  // Close and delete the group.
+  model->CloseAllTabsInGroup(group_id);
+  service->RemoveGroup(guid);
 
-    // Close and delete the group.
-    model->CloseAllTabsInGroup(id);
-    service->RemoveGroup(guid);
+  // Attempt to reopen, it should not open.
+  std::optional<LocalTabGroupID> opened_group_id = service->OpenTabGroup(
+      guid, std::make_unique<TabGroupActionContextDesktop>(
+                browser(), OpeningSource::kOpenedFromRevisitUi));
 
-    // Attempt to reopen, it should not open.
-    service->OpenTabGroup(guid,
-                          std::make_unique<TabGroupActionContextDesktop>(
-                              browser(), OpeningSource::kOpenedFromRevisitUi));
-
-    group = service->GetGroup(guid);
-    EXPECT_FALSE(group);
-    EXPECT_FALSE(model->group_model()->ContainsTabGroup(id));
-  } else {
-    SavedTabGroupKeyedService* saved_tab_group_service =
-        SavedTabGroupServiceFactory::GetForProfile(browser()->profile());
-    SavedTabGroupModel* stg_model = saved_tab_group_service->model();
-    TabStripModel* model = browser()->tab_strip_model();
-
-    base::Uuid guid = base::Uuid::GenerateRandomV4();
-
-    {  // Add an STG, open a group for it in the tabstrip, and delete the STG.
-      stg_model->AddedLocally(SavedTabGroup(
-          std::u16string(u"test_title_1"), tab_groups::TabGroupColorId::kGrey,
-          {SavedTabGroupTab(GURL("chrome://newtab"), u"New Tab Title", guid,
-                            /*position=*/0)
-               .SetTitle(u"Title")
-               .SetFavicon(favicon::GetDefaultFavicon())},
-          /*position=*/std::nullopt, guid));
-      saved_tab_group_service->OpenSavedTabGroupInBrowser(
-          browser(), guid, OpeningSource::kOpenedFromRevisitUi);
-
-      const SavedTabGroup* saved_tab_group = stg_model->Get(guid);
-
-      EXPECT_NE(saved_tab_group, nullptr);
-      EXPECT_TRUE(saved_tab_group->local_group_id().has_value());
-      EXPECT_TRUE(model->group_model()->ContainsTabGroup(
-          saved_tab_group->local_group_id().value()));
-      saved_tab_group_service->UnsaveGroup(
-          saved_tab_group->local_group_id().value(),
-          ClosingSource::kDeletedByUser);
-    }
-
-    {  // Attempt to reopen the STG, it should not open.
-      const int original_tab_count = model->count();
-      saved_tab_group_service->OpenSavedTabGroupInBrowser(
-          browser(), guid, OpeningSource::kOpenedFromRevisitUi);
-
-      const SavedTabGroup* saved_tab_group = stg_model->Get(guid);
-      EXPECT_EQ(saved_tab_group, nullptr);
-      EXPECT_EQ(model->count(), original_tab_count);
-    }
-  }
+  EXPECT_FALSE(opened_group_id);
 }
 
 IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
-                       SavedTabGroupLoadStoredEntriesV1) {
-  if (IsV2UIMigrationEnabled()) {
-    GTEST_SKIP() << "N/A for V2";
-  }
-
-  ASSERT_TRUE(SavedTabGroupUtils::IsEnabledForProfile(browser()->profile()));
+                       SavedTabGroupLoadStoredEntries) {
+  ASSERT_TRUE(SavedTabGroupUtils::IsEnabledForProfile(browser()->GetProfile()));
   const SavedTabGroupBar* saved_tab_group_bar =
       BrowserView::GetBrowserViewForBrowser(browser())
           ->bookmark_bar()
           ->saved_tab_group_bar();
   EXPECT_EQ(0, saved_tab_group_bar->GetNumberOfVisibleGroups());
 
-  {  // Create 1 pinned group
-    base::Uuid group_guid = base::Uuid::GenerateRandomV4();
-    SavedTabGroup group{
-        u"group_title", TabGroupColorId::kGrey, {}, 0, group_guid};
-    SavedTabGroupTab tab{GURL("https://www.zombo.com"), u"tab_title",
-                         group_guid, 0};
+  // Create 1 pinned group
+  base::Uuid group_guid = base::Uuid::GenerateRandomV4();
+  SavedTabGroup group{
+      u"group_title", TabGroupColorId::kGrey, {}, 0, group_guid};
+  SavedTabGroupTab tab{GURL("https://www.zombo.com"), u"tab_title", group_guid,
+                       0};
+  group.AddTabFromSync(std::move(tab));
 
-    SavedTabGroupKeyedService* old_service =
-        SavedTabGroupServiceFactory::GetForProfile(browser()->profile());
-    SavedTabGroupModel* model = old_service->model();
-    model->LoadStoredEntries({std::move(group)}, {std::move(tab)});
-  }
+  TabGroupSyncService* service =
+      TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
+  service->AddGroup(std::move(group));
+  // Wait until the add group task resolves.
+  Wait();
 
   EXPECT_EQ(1, saved_tab_group_bar->GetNumberOfVisibleGroups());
 }
 
-IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
-                       SavedTabGroupAddedFromSyncV2) {
-  if (!IsV2UIMigrationEnabled()) {
-    GTEST_SKIP() << "N/A for V1";
-  }
-  ASSERT_TRUE(SavedTabGroupUtils::IsEnabledForProfile(browser()->profile()));
+IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest, SavedTabGroupAdded) {
+  ASSERT_TRUE(SavedTabGroupUtils::IsEnabledForProfile(browser()->GetProfile()));
   TabGroupSyncService* service =
-      SavedTabGroupUtils::GetServiceForProfile(browser()->profile());
-  TabGroupSyncServiceImpl* service_impl =
-      static_cast<TabGroupSyncServiceImpl*>(service);
-  service_impl->SetIsInitializedForTesting(true);
-  SavedTabGroupModel* model = service_impl->GetModelForTesting();
+      TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
 
-  {  // Create 1 pinned group
-    ScopedAddObservation observer(service);
-    base::Uuid group_guid = base::Uuid::GenerateRandomV4();
-    SavedTabGroup group{
-        u"group_title", TabGroupColorId::kGrey, {}, 0, group_guid};
-    SavedTabGroupTab tab{GURL("https://www.zombo.com"), u"tab_title",
-                         group_guid, 0};
-    group.AddTabFromSync(std::move(tab));
-    model->AddedFromSync(std::move(group));
-    observer.Wait();
+  // Create 1 pinned group
+  base::Uuid pinned_group_guid = base::Uuid::GenerateRandomV4();
+  SavedTabGroup pinned_group{
+      u"group_title", TabGroupColorId::kGrey, {}, 1, pinned_group_guid};
+  SavedTabGroupTab pinned_tab{GURL("https://www.zombo.com"), u"tab_title",
+                              pinned_group_guid, 0};
+  pinned_group.AddTabFromSync(std::move(pinned_tab));
+  service->AddGroup(std::move(pinned_group));
 
-    // Expect that a remote group was created.
-    EXPECT_EQ(1, observer.last_group_tab_count);
-    EXPECT_EQ(TriggerSource::REMOTE, observer.last_trigger_source);
-  }
+  // Create 1 unpinned group.
+  base::Uuid unpinned_group_guid = base::Uuid::GenerateRandomV4();
+  SavedTabGroup unpinned_group{u"group_title",
+                               TabGroupColorId::kGrey,
+                               {},
+                               std::nullopt,
+                               unpinned_group_guid};
+  SavedTabGroupTab unpinned_tab{GURL("https://www.zombo.com"), u"tab_title",
+                                unpinned_group_guid, 0};
+  unpinned_group.AddTabFromSync(std::move(unpinned_tab));
+  service->AddGroup(std::move(unpinned_group));
 
-  {  // Create one unpinned group.
-    ScopedAddObservation observer(service);
-    base::Uuid group_guid = base::Uuid::GenerateRandomV4();
-    SavedTabGroup group{
-        u"group_title", TabGroupColorId::kGrey, {}, std::nullopt, group_guid};
-    SavedTabGroupTab tab{GURL("https://www.zombo.com"), u"tab_title",
-                         group_guid, 0};
-
-    model->AddedFromSync(std::move(group));
-    model->AddTabToGroupFromSync(group_guid, {std::move(tab)});
-    observer.Wait();
-
-    // Expect that a remote group was created.
-    EXPECT_EQ(1, observer.last_group_tab_count);
-    EXPECT_EQ(TriggerSource::REMOTE, observer.last_trigger_source);
-  }
+  // Wait until the add group tasks have resolved.
+  Wait();
 
   const SavedTabGroupBar* saved_tab_group_bar =
       BrowserView::GetBrowserViewForBrowser(browser())
           ->bookmark_bar()
           ->saved_tab_group_bar();
   EXPECT_EQ(1, saved_tab_group_bar->GetNumberOfVisibleGroups());
+  EXPECT_EQ(service->GetAllGroups().size(), 2u);
 }
 
 IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
-                       EmptySavedTabGroupDoesntDisplayV1) {
-  if (IsV2UIMigrationEnabled()) {
-    GTEST_SKIP() << "N/A for V2";
-  }
-
-  ASSERT_TRUE(SavedTabGroupUtils::IsEnabledForProfile(browser()->profile()));
+                       EmptySavedTabGroupDoesntDisplay) {
+  ASSERT_TRUE(SavedTabGroupUtils::IsEnabledForProfile(browser()->GetProfile()));
   const SavedTabGroupBar* saved_tab_group_bar =
       BrowserView::GetBrowserViewForBrowser(browser())
           ->bookmark_bar()
           ->saved_tab_group_bar();
   EXPECT_EQ(0, saved_tab_group_bar->GetNumberOfVisibleGroups());
 
-  {  // Create an empty group.
-    base::Uuid group_guid = base::Uuid::GenerateRandomV4();
-    SavedTabGroup group{
-        u"group_title", TabGroupColorId::kGrey, {}, 0, group_guid};
+  // Create an empty group.
+  base::Uuid group_guid = base::Uuid::GenerateRandomV4();
+  SavedTabGroup group{
+      u"group_title", TabGroupColorId::kGrey, {}, 0, group_guid};
 
-    SavedTabGroupKeyedService* old_service =
-        SavedTabGroupServiceFactory::GetForProfile(browser()->profile());
-    SavedTabGroupModel* model = old_service->model();
-    model->LoadStoredEntries({std::move(group)}, {});
-  }
-
-  EXPECT_EQ(0, saved_tab_group_bar->GetNumberOfVisibleGroups());
-}
-
-IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
-                       EmptySavedTabGroupDoesntDisplayV2) {
-  if (!IsV2UIMigrationEnabled()) {
-    GTEST_SKIP() << "N/A for V1";
-  }
-  ASSERT_TRUE(SavedTabGroupUtils::IsEnabledForProfile(browser()->profile()));
   TabGroupSyncService* service =
-      SavedTabGroupUtils::GetServiceForProfile(browser()->profile());
-  TabGroupSyncServiceImpl* service_impl =
-      static_cast<TabGroupSyncServiceImpl*>(service);
-  service_impl->SetIsInitializedForTesting(true);
+      TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
+  service->AddGroup(std::move(group));
+  Wait();
 
-  {  // Create an empty group.
-    ScopedAddObservation observer(service);
+  EXPECT_EQ(0, saved_tab_group_bar->GetNumberOfVisibleGroups());
+}
+
+// Disabled since it does not work for trybots but helps test performance
+// issues.
+IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
+                       DISABLED_LargeNumberOfSavedTabGroups) {
+  constexpr int kLargeGroupCount = 1000;
+  constexpr int kLargeTabInGroupCount = 1000;
+
+  TabGroupSyncService* service =
+      TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
+  auto* service_impl = static_cast<TabGroupSyncServiceImpl*>(service);
+  SavedTabGroupModel* model = service_impl->GetModel();
+  for (int i = 0; i < kLargeGroupCount; i++) {
     base::Uuid group_guid = base::Uuid::GenerateRandomV4();
-    SavedTabGroup group{
-        u"group_title", TabGroupColorId::kGrey, {}, 0, group_guid};
-
-    SavedTabGroupModel* model = service_impl->GetModelForTesting();
+    SavedTabGroup group(u"Group Title", TabGroupColorId::kGrey, {}, 0,
+                        group_guid);
+    for (int j = 0; j < kLargeTabInGroupCount; j++) {
+      GURL url("https://www.example.com");
+      SavedTabGroupTab tab(url, u"Tab Title", group_guid, j);
+      tab.SetFavicon(favicon::GetDefaultFavicon());
+      group.AddTabFromSync(std::move(tab));
+    }
     model->AddedFromSync(std::move(group));
-    observer.Wait();
-
-    // Expect that a remote group was created.
-    EXPECT_EQ(std::nullopt, observer.last_group_tab_count);
-    EXPECT_EQ(std::nullopt, observer.last_trigger_source);
   }
 
+  Wait();
+
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  auto* bookmark_bar = browser_view->bookmark_bar();
   const SavedTabGroupBar* saved_tab_group_bar =
-      BrowserView::GetBrowserViewForBrowser(browser())
-          ->bookmark_bar()
-          ->saved_tab_group_bar();
-  EXPECT_EQ(0, saved_tab_group_bar->GetNumberOfVisibleGroups());
+      bookmark_bar->saved_tab_group_bar();
+  EXPECT_EQ(100, saved_tab_group_bar->GetNumberOfVisibleGroups());
 }
 
 INSTANTIATE_TEST_SUITE_P(SavedTabGroupBar,
                          SavedTabGroupBarBrowserTest,
                          testing::Bool());
+
+class SavedTabGroupBarNtpSimplificationBrowserTest
+    : public InProcessBrowserTest {
+ public:
+  SavedTabGroupBarNtpSimplificationBrowserTest() {
+    features_.InitWithFeatures({data_sharing::features::kDataSharingFeature,
+                                ntp_features::kNtpSimplificationBookmarkBar},
+                               {data_sharing::features::kDataSharingJoinOnly});
+  }
+  void Wait() {
+    base::RunLoop run_loop;
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+  }
+
+ private:
+  base::test::ScopedFeatureList features_;
+};
+
+IN_PROC_BROWSER_TEST_F(SavedTabGroupBarNtpSimplificationBrowserTest,
+                       UpdateBookmarkBarVisibilityOnEverythingButtonPressed) {
+  ASSERT_TRUE(SavedTabGroupUtils::IsEnabledForProfile(browser()->GetProfile()));
+  SavedTabGroupBar* saved_tab_group_bar = const_cast<SavedTabGroupBar*>(
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->bookmark_bar()
+          ->saved_tab_group_bar());
+
+  base::Uuid group_guid = base::Uuid::GenerateRandomV4();
+  SavedTabGroup group{
+      u"group_title", TabGroupColorId::kGrey, {}, 0, group_guid};
+  SavedTabGroupTab tab{GURL("https://www.google.com"), u"tab_title", group_guid,
+                       0};
+  group.AddTabFromSync(std::move(tab));
+
+  TabGroupSyncService* service =
+      TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
+  service->AddGroup(std::move(group));
+  Wait();
+
+  EXPECT_EQ(1, saved_tab_group_bar->GetNumberOfVisibleGroups());
+
+  const int overflow_preferred_width =
+      saved_tab_group_bar->everything_menu_button()
+          ->GetPreferredSize()
+          .width() +
+      SavedTabGroupBar::kBetweenElementSpacing;
+
+  saved_tab_group_bar->SetBounds(0, 0, overflow_preferred_width + 1, 100);
+  ASSERT_TRUE(saved_tab_group_bar->IsOverflowButtonVisible());
+
+  EXPECT_TRUE(
+      browser()
+          ->GetProfile()
+          ->GetPrefs()
+          ->FindPreference(bookmarks::prefs::kBookmarkBarVisibilityState)
+          ->IsDefaultValue());
+
+  views::test::ButtonTestApi(views::AsViewClass<views::Button>(
+                                 saved_tab_group_bar->everything_menu_button()))
+      .NotifyClick(ui::MouseEvent(ui::EventType::kMousePressed, gfx::Point(),
+                                  gfx::Point(), base::TimeTicks(),
+                                  ui::EF_LEFT_MOUSE_BUTTON, 0));
+
+  EXPECT_FALSE(
+      browser()
+          ->GetProfile()
+          ->GetPrefs()
+          ->FindPreference(bookmarks::prefs::kBookmarkBarVisibilityState)
+          ->IsDefaultValue());
+}
+
+IN_PROC_BROWSER_TEST_F(SavedTabGroupBarNtpSimplificationBrowserTest,
+                       UpdateBookmarkBarVisibilityOnTabGroupButtonPressed) {
+  ASSERT_TRUE(SavedTabGroupUtils::IsEnabledForProfile(browser()->GetProfile()));
+  SavedTabGroupBar* saved_tab_group_bar = const_cast<SavedTabGroupBar*>(
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->bookmark_bar()
+          ->saved_tab_group_bar());
+
+  base::Uuid group_guid = base::Uuid::GenerateRandomV4();
+  SavedTabGroup group{
+      u"group_title", TabGroupColorId::kGrey, {}, 0, group_guid};
+  SavedTabGroupTab tab{GURL("https://www.google.com"), u"tab_title", group_guid,
+                       0};
+  group.AddTabFromSync(std::move(tab));
+
+  TabGroupSyncService* service =
+      TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
+  service->AddGroup(std::move(group));
+  Wait();
+
+  ASSERT_EQ(1, saved_tab_group_bar->GetNumberOfVisibleGroups());
+
+  EXPECT_TRUE(
+      browser()
+          ->GetProfile()
+          ->GetPrefs()
+          ->FindPreference(bookmarks::prefs::kBookmarkBarVisibilityState)
+          ->IsDefaultValue());
+
+  views::test::ButtonTestApi(
+      views::AsViewClass<views::Button>(
+          saved_tab_group_bar->GetSavedTabGroupButtons()[0]))
+      .NotifyClick(ui::MouseEvent(ui::EventType::kMousePressed, gfx::Point(),
+                                  gfx::Point(), base::TimeTicks(),
+                                  ui::EF_LEFT_MOUSE_BUTTON, 0));
+
+  EXPECT_FALSE(
+      browser()
+          ->GetProfile()
+          ->GetPrefs()
+          ->FindPreference(bookmarks::prefs::kBookmarkBarVisibilityState)
+          ->IsDefaultValue());
+}
 
 }  // namespace tab_groups

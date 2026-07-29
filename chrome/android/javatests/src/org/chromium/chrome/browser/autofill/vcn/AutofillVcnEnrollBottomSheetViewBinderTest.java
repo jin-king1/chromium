@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.autofill.vcn;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -11,7 +13,6 @@ import static org.hamcrest.Matchers.isEmptyString;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.Assert.assertEquals;
 
-import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
@@ -52,10 +53,9 @@ import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.widget.LoadingView;
 import org.chromium.url.GURL;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.LinkedList;
-import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.TimeoutException;
 
@@ -74,8 +74,6 @@ public final class AutofillVcnEnrollBottomSheetViewBinderTest implements LinkOpe
     @ClassRule
     public static BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
-
-    private static Activity sActivity;
 
     private PropertyModel.Builder mModelBuilder;
     private PropertyModel mModel;
@@ -108,14 +106,15 @@ public final class AutofillVcnEnrollBottomSheetViewBinderTest implements LinkOpe
 
     @BeforeClass
     public static void setupSuite() {
-        sActivity = sActivityTestRule.launchActivity(null);
+        sActivityTestRule.launchActivity(null);
     }
 
     @Before
     public void setUp() throws Exception {
         mModelBuilder = new PropertyModel.Builder(AutofillVcnEnrollBottomSheetProperties.ALL_KEYS);
-        mView = new AutofillVcnEnrollBottomSheetView(sActivity);
-        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mView.mContentView));
+        BlankUiTestActivity activity = sActivityTestRule.getActivity();
+        mView = new AutofillVcnEnrollBottomSheetView(activity);
+        ThreadUtils.runOnUiThreadBlocking(() -> activity.setContentView(mView.mContentView));
         bind(mModelBuilder);
     }
 
@@ -272,7 +271,7 @@ public final class AutofillVcnEnrollBottomSheetViewBinderTest implements LinkOpe
     }
 
     Matcher<BitmapDrawable> drawableWithSameBitmap(Bitmap expectedBitmap) {
-        return new TypeSafeMatcher<BitmapDrawable>() {
+        return new TypeSafeMatcher<>() {
             @Override
             protected boolean matchesSafely(BitmapDrawable drawable) {
                 return drawable.getBitmap().sameAs(expectedBitmap);
@@ -301,9 +300,9 @@ public final class AutofillVcnEnrollBottomSheetViewBinderTest implements LinkOpe
                         Comparator.comparingInt((IssuerIcon issuerIcon) -> issuerIcon.mIconResource)
                                 .thenComparing(
                                         (IssuerIcon issuerIcon) ->
-                                                Optional.of(issuerIcon.mIconUrl)
-                                                        .map(Object::toString)
-                                                        .orElse(null)));
+                                                issuerIcon.mIconUrl != null
+                                                        ? issuerIcon.mIconUrl.toString()
+                                                        : null));
 
         private void putBitmap(IssuerIcon issuerIcon, Bitmap bitmap) {
             mIconBitmapLookup.put(issuerIcon, bitmap);
@@ -320,7 +319,7 @@ public final class AutofillVcnEnrollBottomSheetViewBinderTest implements LinkOpe
             }
             // IssuerIcon#mBitmap must not be set when
             // AutofillFeatures.AUTOFILL_ENABLE_VIRTUAL_CARD_JAVA_PAYMENTS_DATA_MANAGER is enabled.
-            assert icon.mBitmap == null;
+            assertThat(icon.mBitmap).isNull();
             return new BitmapDrawable(mIconBitmapLookup.get(icon));
         }
     }
@@ -342,7 +341,7 @@ public final class AutofillVcnEnrollBottomSheetViewBinderTest implements LinkOpe
     public void testCardDescription() {
         assertThat(
                 String.valueOf(mView.mCardDescription.getText()),
-                equalTo(sActivity.getString(DESCRIPTION_STRING_RESOURCE)));
+                equalTo(sActivityTestRule.getActivity().getString(DESCRIPTION_STRING_RESOURCE)));
     }
 
     private void runTextViewTest(TextView view, ReadableObjectPropertyKey<String> property) {
@@ -394,14 +393,14 @@ public final class AutofillVcnEnrollBottomSheetViewBinderTest implements LinkOpe
                 mModelBuilder.with(
                         property,
                         new LegalMessages(
-                                new LinkedList<LegalMessageLine>(),
+                                new ArrayList<>(),
                                 VirtualCardEnrollmentLinkType
                                         .VIRTUAL_CARD_ENROLLMENT_ISSUER_TOS_LINK,
                                 /* linkOpener= */ this)));
         assertThat(String.valueOf(view.getText()), isEmptyString());
         assertThat(view.getVisibility(), equalTo(View.GONE));
 
-        LinkedList<LegalMessageLine> lines = new LinkedList<>();
+        ArrayList<LegalMessageLine> lines = new ArrayList<>();
         lines.add(new LegalMessageLine("Legal message line"));
         bind(
                 mModelBuilder.with(
@@ -416,7 +415,7 @@ public final class AutofillVcnEnrollBottomSheetViewBinderTest implements LinkOpe
 
         LegalMessageLine line = new LegalMessageLine("Legal message line");
         line.links.add(new Link(0, 5, "https://example.test"));
-        lines = new LinkedList<>();
+        lines = new ArrayList<>();
         lines.add(line);
         bind(
                 mModelBuilder.with(
@@ -491,6 +490,9 @@ public final class AutofillVcnEnrollBottomSheetViewBinderTest implements LinkOpe
     public void testLoadingAccessibilityDescription() {
         assertThat(
                 String.valueOf(mView.mLoadingViewContainer.getContentDescription()),
-                equalTo(sActivity.getString(LOADING_ACCESSIBILITY_STRING_RESOURCE)));
+                equalTo(
+                        sActivityTestRule
+                                .getActivity()
+                                .getString(LOADING_ACCESSIBILITY_STRING_RESOURCE)));
     }
 }

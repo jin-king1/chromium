@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/accessibility/platform/inspect/ax_tree_formatter_auralinux.h"
 
 #include <dbus/dbus.h>
 
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -41,14 +37,14 @@ AXTreeFormatterAuraLinux::AXTreeFormatterAuraLinux() = default;
 
 AXTreeFormatterAuraLinux::~AXTreeFormatterAuraLinux() {}
 
-base::Value::Dict AXTreeFormatterAuraLinux::BuildTreeForSelector(
+base::DictValue AXTreeFormatterAuraLinux::BuildTreeForSelector(
     const AXTreeSelector& selector) const {
   AtspiAccessible* node = FindAccessible(selector);
   if (!node) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   RecursiveBuildTree(node, &dict);
   return dict;
 }
@@ -105,29 +101,35 @@ AtkObject* GetAtkObject(AXPlatformNodeDelegate* node) {
   return atk_node;
 }
 
-base::Value::Dict AXTreeFormatterAuraLinux::BuildTree(
+base::DictValue AXTreeFormatterAuraLinux::BuildTree(
     AXPlatformNodeDelegate* root) const {
-  base::Value::Dict dict;
-  RecursiveBuildTree(GetAtkObject(root), &dict);
+  base::DictValue dict;
+  AtkObject* atk_root = GetAtkObject(root);
+  if (!atk_root) {
+    return dict;
+  }
+  RecursiveBuildTree(atk_root, &dict);
   return dict;
 }
 
-base::Value::Dict AXTreeFormatterAuraLinux::BuildNode(
+base::DictValue AXTreeFormatterAuraLinux::BuildNode(
     AXPlatformNodeDelegate* node) const {
-  base::Value::Dict dict;
+  base::DictValue dict;
   AddProperties(GetAtkObject(node), &dict);
   return dict;
 }
 
-void AXTreeFormatterAuraLinux::RecursiveBuildTree(
-    AtkObject* atk_node,
-    base::Value::Dict* dict) const {
+void AXTreeFormatterAuraLinux::RecursiveBuildTree(AtkObject* atk_node,
+                                                  base::DictValue* dict) const {
+  if (!atk_node || !dict) {
+    return;
+  }
+
   AXPlatformNodeAuraLinux* platform_node =
       AXPlatformNodeAuraLinux::FromAtkObject(atk_node);
   DCHECK(platform_node);
 
   AXPlatformNodeDelegate* node = platform_node->GetDelegate();
-  DCHECK(node);
 
   if (!ShouldDumpNode(*node))
     return;
@@ -136,29 +138,35 @@ void AXTreeFormatterAuraLinux::RecursiveBuildTree(
   if (!ShouldDumpChildren(*node))
     return;
 
-  auto child_count = atk_object_get_n_accessible_children(atk_node);
-  if (child_count <= 0)
+  gfx::NativeViewAccessible native_child = node->GetFirstChild();
+  if (!native_child) {
     return;
+  }
 
-  base::Value::List children;
-  for (auto i = 0; i < child_count; i++) {
-    base::Value::Dict child_dict;
-
-    AtkObject* atk_child = atk_object_ref_accessible_child(atk_node, i);
-    CHECK(atk_child);
-
-    RecursiveBuildTree(atk_child, &child_dict);
-    g_object_unref(atk_child);
-
+  base::ListValue children;
+  while (native_child) {
+    base::DictValue child_dict;
+    RecursiveBuildTree(native_child, &child_dict);
     children.Append(std::move(child_dict));
+
+    AXPlatformNodeAuraLinux* platform_child =
+        AXPlatformNodeAuraLinux::FromAtkObject(native_child);
+    if (platform_child && platform_child->GetDelegate()) {
+      native_child = platform_child->GetDelegate()->GetNextSibling();
+    } else {
+      native_child = nullptr;
+    }
   }
 
   dict->Set(kChildrenDictAttr, std::move(children));
 }
 
-void AXTreeFormatterAuraLinux::RecursiveBuildTree(
-    AtspiAccessible* node,
-    base::Value::Dict* dict) const {
+void AXTreeFormatterAuraLinux::RecursiveBuildTree(AtspiAccessible* node,
+                                                  base::DictValue* dict) const {
+  if (!node || !dict) {
+    return;
+  }
+
   AddProperties(node, dict);
 
   GError* error = nullptr;
@@ -171,9 +179,9 @@ void AXTreeFormatterAuraLinux::RecursiveBuildTree(
   if (child_count <= 0)
     return;
 
-  base::Value::List children;
+  base::ListValue children;
   for (int i = 0; i < child_count; i++) {
-    base::Value::Dict child_dict;
+    base::DictValue child_dict;
 
     AtspiAccessible* child =
         atspi_accessible_get_child_at_index(node, i, &error);
@@ -193,7 +201,7 @@ void AXTreeFormatterAuraLinux::RecursiveBuildTree(
 
 void AXTreeFormatterAuraLinux::AddHypertextProperties(
     AtkObject* atk_object,
-    base::Value::Dict* dict) const {
+    base::DictValue* dict) const {
   if (!ATK_IS_TEXT(atk_object) || !ATK_IS_HYPERTEXT(atk_object))
     return;
 
@@ -202,7 +210,7 @@ void AXTreeFormatterAuraLinux::AddHypertextProperties(
   if (!character_text)
     return;
 
-  base::Value::List values;
+  base::ListValue values;
 
   // Each link in the atk_text is represented by the multibyte unicode character
   // U+FFFC, which in UTF-8 is 0xEF 0xBF 0xBC. We will replace each instance of
@@ -223,7 +231,7 @@ void AXTreeFormatterAuraLinux::AddHypertextProperties(
 
       AtkHyperlink* link = atk_hypertext_get_link(hypertext, link_index);
       if (!link)
-        continue;  // TODO(aleventhal) Change to DCHECK(link);
+        continue;  // ATK may return null; skip gracefully in inspector code.
 
 #if DCHECK_IS_ON()
       AtkObject* link_obj = atk_hyperlink_get_object(link, 0);
@@ -248,15 +256,14 @@ void AXTreeFormatterAuraLinux::AddHypertextProperties(
   g_free(character_text);
 }
 
-void AXTreeFormatterAuraLinux::AddTextProperties(
-    AtkObject* atk_object,
-    base::Value::Dict* dict) const {
+void AXTreeFormatterAuraLinux::AddTextProperties(AtkObject* atk_object,
+                                                 base::DictValue* dict) const {
   if (!ATK_IS_TEXT(atk_object))
     return;
 
   AtkText* atk_text = ATK_TEXT(atk_object);
 
-  base::Value::List text_values;
+  base::ListValue text_values;
   int character_count = atk_text_get_character_count(atk_text);
   text_values.Append(base::StringPrintf("character_count=%i", character_count));
 
@@ -276,7 +283,7 @@ void AXTreeFormatterAuraLinux::AddTextProperties(
 
   auto add_attribute_set_values = [](gpointer value, gpointer list) {
     const AtkAttribute* attribute = static_cast<const AtkAttribute*>(value);
-    static_cast<base::Value::List*>(list)->Append(
+    static_cast<base::ListValue*>(list)->Append(
         base::StringPrintf("%s=%s", attribute->name, attribute->value));
   };
 
@@ -303,7 +310,7 @@ void AXTreeFormatterAuraLinux::AddTextProperties(
 
 void AXTreeFormatterAuraLinux::AddActionProperties(
     AtkObject* atk_object,
-    base::Value::Dict* dict) const {
+    base::DictValue* dict) const {
   if (!ATK_IS_ACTION(atk_object))
     return;
 
@@ -312,7 +319,7 @@ void AXTreeFormatterAuraLinux::AddActionProperties(
   if (!action_count)
     return;
 
-  base::Value::List actions;
+  base::ListValue actions;
   for (int i = 0; i < action_count; i++) {
     const char* name = atk_action_get_name(action, i);
     actions.Append(name ? name : "");
@@ -322,9 +329,9 @@ void AXTreeFormatterAuraLinux::AddActionProperties(
 
 void AXTreeFormatterAuraLinux::AddRelationProperties(
     AtkObject* atk_object,
-    base::Value::Dict* dict) const {
+    base::DictValue* dict) const {
   AtkRelationSet* relation_set = atk_object_ref_relation_set(atk_object);
-  base::Value::List relations;
+  base::ListValue relations;
 
   for (int i = ATK_RELATION_NULL; i < ATK_RELATION_LAST_DEFINED; i++) {
     AtkRelationType relation_type = static_cast<AtkRelationType>(i);
@@ -349,10 +356,11 @@ std::string AXTreeFormatterAuraLinux::ToString(AtkRelation* relation) {
 
   std::vector<std::string> target_roles(relation_targets->len);
   for (guint i = 0; i < relation_targets->len; i++) {
-    AtkObject* atk_target =
-        static_cast<AtkObject*>(g_ptr_array_index(relation_targets, i));
+    AtkObject* atk_target = static_cast<AtkObject*>(
+        UNSAFE_TODO(g_ptr_array_index(relation_targets, i)));
     DCHECK(atk_target);
-    target_roles[i] = atk_role_get_name(atk_object_get_role(atk_target));
+    // Use the same stable mapping as the per-node role output.
+    target_roles[i] = AtkRoleToString(atk_object_get_role(atk_target));
   }
 
   // We need to alphabetically sort the roles so tests don't flake from the
@@ -362,13 +370,12 @@ std::string AXTreeFormatterAuraLinux::ToString(AtkRelation* relation) {
       {relation_name, "=[", base::JoinString(target_roles, ","), "]"});
 }
 
-void AXTreeFormatterAuraLinux::AddValueProperties(
-    AtkObject* atk_object,
-    base::Value::Dict* dict) const {
+void AXTreeFormatterAuraLinux::AddValueProperties(AtkObject* atk_object,
+                                                  base::DictValue* dict) const {
   if (!ATK_IS_VALUE(atk_object))
     return;
 
-  base::Value::List value_properties;
+  base::ListValue value_properties;
   AtkValue* value = ATK_VALUE(atk_object);
   GValue current = G_VALUE_INIT;
   g_value_init(&current, G_TYPE_FLOAT);
@@ -395,16 +402,15 @@ void AXTreeFormatterAuraLinux::AddValueProperties(
   dict->Set("value", std::move(value_properties));
 }
 
-void AXTreeFormatterAuraLinux::AddTableProperties(
-    AtkObject* atk_object,
-    base::Value::Dict* dict) const {
+void AXTreeFormatterAuraLinux::AddTableProperties(AtkObject* atk_object,
+                                                  base::DictValue* dict) const {
   if (!ATK_IS_TABLE(atk_object))
     return;
 
   // Column details.
   AtkTable* table = ATK_TABLE(atk_object);
   int n_cols = atk_table_get_n_columns(table);
-  base::Value::List table_properties;
+  base::ListValue table_properties;
   table_properties.Append(base::StringPrintf("cols=%i", n_cols));
 
   std::vector<std::string> col_headers;
@@ -465,7 +471,7 @@ void AXTreeFormatterAuraLinux::AddTableProperties(
 void AXTreeFormatterAuraLinux::AddTableCellProperties(
     const AXPlatformNodeAuraLinux* node,
     AtkObject* atk_object,
-    base::Value::Dict* dict) const {
+    base::DictValue* dict) const {
   AtkRole role = atk_object_get_role(atk_object);
   if (role != ATK_ROLE_TABLE_CELL && role != ATK_ROLE_COLUMN_HEADER &&
       role != ATK_ROLE_ROW_HEADER) {
@@ -496,20 +502,19 @@ void AXTreeFormatterAuraLinux::AddTableCellProperties(
   cell_info.push_back(base::StringPrintf("n_row_headers=%i", n_row_headers));
   cell_info.push_back(base::StringPrintf("n_col_headers=%i", n_column_headers));
 
-  base::Value::List cell_properties;
+  base::ListValue cell_properties;
   cell_properties.Append(
       base::StringPrintf("(%s)", base::JoinString(cell_info, ", ").c_str()));
   dict->Set("cell", std::move(cell_properties));
 }
 
 void AXTreeFormatterAuraLinux::AddProperties(AtkObject* atk_object,
-                                             base::Value::Dict* dict) const {
+                                             base::DictValue* dict) const {
   AXPlatformNodeAuraLinux* platform_node =
       AXPlatformNodeAuraLinux::FromAtkObject(atk_object);
   DCHECK(platform_node);
 
   AXPlatformNodeDelegate* node = platform_node->GetDelegate();
-  DCHECK(node);
 
   dict->Set("id", node->GetId());
 
@@ -526,7 +531,7 @@ void AXTreeFormatterAuraLinux::AddProperties(AtkObject* atk_object,
     dict->Set("description", std::string(description));
 
   AtkStateSet* state_set = atk_object_ref_state_set(atk_object);
-  base::Value::List states;
+  base::ListValue states;
   for (int i = ATK_STATE_INVALID; i < ATK_STATE_LAST_DEFINED; i++) {
     AtkStateType state_type = static_cast<AtkStateType>(i);
     if (atk_state_set_contains_state(state_set, state_type))
@@ -553,7 +558,7 @@ void AXTreeFormatterAuraLinux::AddProperties(AtkObject* atk_object,
 }
 
 void AXTreeFormatterAuraLinux::AddProperties(AtspiAccessible* node,
-                                             base::Value::Dict* dict) const {
+                                             base::DictValue* dict) const {
   GError* error = nullptr;
   char* role_name = atspi_accessible_get_role_name(node, &error);
   if (!error)
@@ -591,9 +596,10 @@ void AXTreeFormatterAuraLinux::AddProperties(AtspiAccessible* node,
 
   AtspiStateSet* atspi_states = atspi_accessible_get_state_set(node);
   GArray* state_array = atspi_state_set_get_states(atspi_states);
-  base::Value::List states;
+  base::ListValue states;
   for (unsigned i = 0; i < state_array->len; i++) {
-    AtspiStateType state_type = g_array_index(state_array, AtspiStateType, i);
+    AtspiStateType state_type =
+        UNSAFE_TODO(g_array_index(state_array, AtspiStateType, i));
     states.Append(ATSPIStateToString(state_type));
   }
   dict->Set("states", std::move(states));
@@ -629,7 +635,8 @@ const char* const ATK_OBJECT_ATTRIBUTES[] = {
     "explicit-name",
     "grabbed",
     "haspopup",
-    "has-interest-target",
+    "has-actions",
+    "has-interest-for",
     "hidden",
     "html-input-name",
     "id",
@@ -665,7 +672,7 @@ const char* const ATK_OBJECT_ATTRIBUTES[] = {
 };
 
 std::string AXTreeFormatterAuraLinux::ProcessTreeForOutput(
-    const base::Value::Dict& node) const {
+    const base::DictValue& node) const {
   const std::string* error_value = node.FindString("error");
   if (error_value)
     return *error_value;
@@ -691,7 +698,7 @@ std::string AXTreeFormatterAuraLinux::ProcessTreeForOutput(
         &line);
   }
 
-  const base::Value::List* states_value = node.FindList("states");
+  const base::ListValue* states_value = node.FindList("states");
   if (states_value) {
     for (const auto& entry : *states_value) {
       const std::string* state_value = entry.GetIfString();
@@ -700,7 +707,7 @@ std::string AXTreeFormatterAuraLinux::ProcessTreeForOutput(
     }
   }
 
-  const base::Value::List* action_names_list = node.FindList("actions");
+  const base::ListValue* action_names_list = node.FindList("actions");
   if (action_names_list) {
     std::vector<std::string> action_names;
     for (const auto& entry : *action_names_list) {
@@ -716,7 +723,7 @@ std::string AXTreeFormatterAuraLinux::ProcessTreeForOutput(
     }
   }
 
-  const base::Value::List* relations_value = node.FindList("relations");
+  const base::ListValue* relations_value = node.FindList("relations");
   if (relations_value) {
     for (const auto& entry : *relations_value) {
       const std::string* relation_value = entry.GetIfString();
@@ -743,7 +750,7 @@ std::string AXTreeFormatterAuraLinux::ProcessTreeForOutput(
     }
   }
 
-  const base::Value::List* value_info = node.FindList("value");
+  const base::ListValue* value_info = node.FindList("value");
   if (value_info) {
     for (const auto& entry : *value_info) {
       const std::string* value_property = entry.GetIfString();
@@ -752,7 +759,7 @@ std::string AXTreeFormatterAuraLinux::ProcessTreeForOutput(
     }
   }
 
-  const base::Value::List* table_info = node.FindList("table");
+  const base::ListValue* table_info = node.FindList("table");
   if (table_info) {
     for (const auto& entry : *table_info) {
       const std::string* table_property = entry.GetIfString();
@@ -761,7 +768,7 @@ std::string AXTreeFormatterAuraLinux::ProcessTreeForOutput(
     }
   }
 
-  const base::Value::List* cell_info = node.FindList("cell");
+  const base::ListValue* cell_info = node.FindList("cell");
   if (cell_info) {
     for (const auto& entry : *cell_info) {
       const std::string* cell_property = entry.GetIfString();
@@ -770,7 +777,7 @@ std::string AXTreeFormatterAuraLinux::ProcessTreeForOutput(
     }
   }
 
-  const base::Value::List* text_info = node.FindList("text");
+  const base::ListValue* text_info = node.FindList("text");
   if (text_info) {
     for (const auto& entry : *text_info) {
       const std::string* text_property = entry.GetIfString();
@@ -779,7 +786,7 @@ std::string AXTreeFormatterAuraLinux::ProcessTreeForOutput(
     }
   }
 
-  const base::Value::List* hypertext_info = node.FindList("hypertext");
+  const base::ListValue* hypertext_info = node.FindList("hypertext");
   if (hypertext_info) {
     for (const auto& entry : *hypertext_info) {
       const std::string* hypertext_property = entry.GetIfString();

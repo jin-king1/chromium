@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {PluginController, PluginControllerEventType} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
 import type {ViewerBottomToolbarDropdownElement} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
-import {microtasksFinished} from 'chrome://webui-test/test_util.js';
+import {getTrustedHTML} from 'chrome://resources/js/static_types.js';
+import {keyDownOn, keyUpOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
+import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {getRequiredElement} from './test_util.js';
 
@@ -68,22 +69,30 @@ chrome.test.runTests([
     chrome.test.succeed();
   },
 
-  async function testContentFocusedClosesDropdown() {
-    const dropdown = createDropdown();
+  async function testDropdownFocusesMenuElement() {
+    document.body.innerHTML = getTrustedHTML`
+      <viewer-bottom-toolbar-dropdown>
+        <button slot="menu">Button</button>
+      </viewer-bottom-toolbar-dropdown>
+    `;
+    const dropdown =
+        document.body.querySelector('viewer-bottom-toolbar-dropdown');
+    chrome.test.assertTrue(!!dropdown);
+    chrome.test.assertTrue(!getMenu(dropdown));
+    const button = document.body.querySelector('button');
+    chrome.test.assertTrue(!!button);
+    const whenFocused = eventToPromise('focus', button);
 
-    // Open the dropdown.
-    getRequiredElement(dropdown, 'cr-button').click();
+    // Focus the dropdown and open with the keyboard.
+    const crButton = getRequiredElement(dropdown, 'cr-button');
+    crButton.focus();
+    keyDownOn(crButton, 0, [], ' ');
+    keyUpOn(crButton, 0, [], ' ');
     await microtasksFinished();
-
     chrome.test.assertTrue(!!getMenu(dropdown));
 
-    // Mock a 'contentFocused' event from the PDF content. The dropdown should
-    // not be visible.
-    PluginController.getInstance().getEventTarget().dispatchEvent(
-        new CustomEvent(PluginControllerEventType.CONTENT_FOCUSED));
-    await microtasksFinished();
-
-    chrome.test.assertTrue(!getMenu(dropdown));
+    // Focus should be on the button.
+    await whenFocused;
     chrome.test.succeed();
   },
 ]);

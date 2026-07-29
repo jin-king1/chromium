@@ -17,7 +17,6 @@
 #include "chrome/browser/web_applications/test/prevent_close_test_base.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/browser/browser_policy_connector_base.h"
@@ -30,6 +29,10 @@
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace {
 constexpr char kCalculatorAppUrl[] = "https://calculator.apps.chrome/";
@@ -74,10 +77,11 @@ IN_PROC_BROWSER_TEST_F(UnloadControllerPreventCloseTest,
       LaunchPWA(ash::kCalculatorAppId, /*launch_in_window=*/true);
   ASSERT_TRUE(browser);
 
-  UnloadController unload_controller(browser);
-  EXPECT_EQ(kShouldPreventClose ? BrowserClosingStatus::kDeniedByPolicy
-                                : BrowserClosingStatus::kPermitted,
-            unload_controller.GetBrowserClosingStatus());
+  UnloadController* unload_controller = UnloadController::From(browser);
+  EXPECT_EQ(kShouldPreventClose
+                ? BrowserWindowInterface::ClosingStatus::kDeniedByPolicy
+                : BrowserWindowInterface::ClosingStatus::kPermitted,
+            unload_controller->GetBrowserClosingStatus());
 }
 
 // Flaky on IS_CHROMEOS. crbug.com/369817361
@@ -104,9 +108,9 @@ IN_PROC_BROWSER_TEST_F(
       LaunchPWA(ash::kCalculatorAppId, /*launch_in_window=*/false);
   ASSERT_TRUE(browser);
 
-  UnloadController unload_controller(browser);
-  EXPECT_EQ(BrowserClosingStatus::kPermitted,
-            unload_controller.GetBrowserClosingStatus());
+  UnloadController* unload_controller = UnloadController::From(browser);
+  EXPECT_EQ(BrowserWindowInterface::ClosingStatus::kPermitted,
+            unload_controller->GetBrowserClosingStatus());
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -117,7 +121,7 @@ class UnloadControllerWithOnTaskTest : public InProcessBrowserTest {
  protected:
   webapps::AppId InstallMockApp() {
     return web_app::test::InstallDummyWebApp(
-        browser()->profile(), /*app_name=*/"Mock app",
+        browser()->GetProfile(), /*app_name=*/"Mock app",
         /*app_url=*/GURL("https://www.example.com/"));
   }
 };
@@ -127,14 +131,15 @@ IN_PROC_BROWSER_TEST_F(UnloadControllerWithOnTaskTest,
   // Install and launch app.
   webapps::AppId app_id = InstallMockApp();
   Browser* const app_browser =
-      web_app::LaunchWebAppBrowser(browser()->profile(), app_id);
-  app_browser->SetLockedForOnTask(true);
+      web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
+  ash::boca::OnTaskLockedController::From(app_browser)
+      ->set_locked_for_on_task(true);
 
   // Verify tab cannot be closed.
   content::WebContents* const active_web_contents =
       app_browser->tab_strip_model()->GetWebContentsAt(0);
-  UnloadController unload_controller(app_browser);
-  EXPECT_FALSE(unload_controller.CanCloseContents(active_web_contents));
+  UnloadController* unload_controller = UnloadController::From(app_browser);
+  EXPECT_FALSE(unload_controller->CanCloseContents(active_web_contents));
 }
 
 IN_PROC_BROWSER_TEST_F(UnloadControllerWithOnTaskTest,
@@ -142,14 +147,15 @@ IN_PROC_BROWSER_TEST_F(UnloadControllerWithOnTaskTest,
   // Install and launch app.
   webapps::AppId app_id = InstallMockApp();
   Browser* const app_browser =
-      web_app::LaunchWebAppBrowser(browser()->profile(), app_id);
-  app_browser->SetLockedForOnTask(false);
+      web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
+  ash::boca::OnTaskLockedController::From(app_browser)
+      ->set_locked_for_on_task(false);
 
   // Verify tab can be closed.
   content::WebContents* const active_web_contents =
       app_browser->tab_strip_model()->GetWebContentsAt(0);
-  UnloadController unload_controller(app_browser);
-  EXPECT_TRUE(unload_controller.CanCloseContents(active_web_contents));
+  UnloadController* unload_controller = UnloadController::From(app_browser);
+  EXPECT_TRUE(unload_controller->CanCloseContents(active_web_contents));
 }
 
 #endif

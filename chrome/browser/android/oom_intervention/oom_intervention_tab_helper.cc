@@ -10,11 +10,11 @@
 #include "base/functional/bind.h"
 #include "chrome/browser/android/oom_intervention/oom_intervention_config.h"
 #include "chrome/browser/android/oom_intervention/oom_intervention_decider.h"
-#include "components/back_forward_cache/back_forward_cache_disable.h"
 #include "components/messages/android/messages_feature.h"
-#include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
@@ -75,7 +75,7 @@ void OomInterventionTabHelper::DeclineIntervention() {
 
   if (decider_) {
     DCHECK(!web_contents()->GetBrowserContext()->IsOffTheRecord());
-    const std::string& host = web_contents()->GetVisibleURL().host();
+    const std::string& host = web_contents()->GetVisibleURL().GetHost();
     decider_->OnInterventionDeclined(host);
   }
 }
@@ -136,6 +136,36 @@ void OomInterventionTabHelper::DidStartNavigation(
   }
 }
 
+void OomInterventionTabHelper::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  // Only handle primary main frame navigations
+  if (!navigation_handle->IsInPrimaryMainFrame() ||
+      !navigation_handle->HasCommitted()) {
+    return;
+  }
+  // Check if this navigation was restored from BackForwardCache
+  if (navigation_handle->IsServedFromBackForwardCache()) {
+    // BFC restoration detected - we need to check and potentially rebuild Mojo
+    // connections
+    OnBackForwardCacheRestore(navigation_handle);
+  }
+}
+
+void OomInterventionTabHelper::OnBackForwardCacheRestore(
+    content::NavigationHandle* navigation_handle) {
+  // Check if our Mojo connections are still valid after BFC restore
+  if (intervention_.is_connected() || receiver_.is_bound()) {
+    // Reset existing connections since BFC restore may have invalidated them
+    ResetInterfaces();
+  }
+
+  // Always try to restart monitoring for BFC-restored pages if this is the
+  // visible tab
+  if (IsLastVisibleWebContents(web_contents())) {
+    StartMonitoringIfNeeded();
+  }
+}
+
 void OomInterventionTabHelper::PrimaryPageChanged(content::Page& page) {
   if (!page.GetMainDocument().IsDocumentOnLoadCompletedInMainFrame())
     return;
@@ -182,7 +212,7 @@ void OomInterventionTabHelper::OnCrashDumpProcessed(
 
   if (decider_) {
     DCHECK(!web_contents()->GetBrowserContext()->IsOffTheRecord());
-    const std::string& host = web_contents()->GetVisibleURL().host();
+    const std::string& host = web_contents()->GetVisibleURL().GetHost();
     decider_->OnOomDetected(host);
   }
 }
@@ -226,7 +256,7 @@ void OomInterventionTabHelper::StartDetectionInRenderer() {
        purge_v8_memory_enabled) &&
       decider_) {
     DCHECK(!web_contents()->GetBrowserContext()->IsOffTheRecord());
-    const std::string& host = web_contents()->GetVisibleURL().host();
+    const std::string& host = web_contents()->GetVisibleURL().GetHost();
     if (!decider_->CanTriggerIntervention(host)) {
       return;
     }
@@ -234,13 +264,6 @@ void OomInterventionTabHelper::StartDetectionInRenderer() {
 
   content::RenderFrameHost& main_frame =
       web_contents()->GetPrimaryPage().GetMainDocument();
-
-  // Connections to the renderer will not be recreated when coming out of the
-  // cache so prevent us from getting in there in the first place.
-  content::BackForwardCache::DisableForRenderFrameHost(
-      &main_frame,
-      back_forward_cache::DisabledReason(
-          back_forward_cache::DisabledReasonId::kOomInterventionTabHelper));
 
   content::RenderProcessHost* render_process_host = main_frame.GetProcess();
   DCHECK(render_process_host);

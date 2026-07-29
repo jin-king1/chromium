@@ -14,7 +14,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/containers/queue.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
@@ -41,7 +40,6 @@
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/file_system_operation.h"
 #include "storage/browser/file_system/file_system_url.h"
-#include "storage/browser/file_system/file_system_util.h"
 #include "storage/browser/quota/quota_manager.h"
 #include "storage/browser/test/async_file_test_helper.h"
 #include "storage/browser/test/file_system_test_file_set.h"
@@ -118,7 +116,7 @@ class TestValidatorFactory : public CopyOrMoveFileValidatorFactory {
                                   ResultCallback result_callback) override {
       base::File::Error result = write_result_;
       std::string unsafe = dest_platform_path.BaseName().AsUTF8Unsafe();
-      if (base::Contains(unsafe, reject_string_)) {
+      if (unsafe.contains(reject_string_)) {
         result = base::File::FILE_ERROR_SECURITY;
       }
       // Post the result since a real validator must do work asynchronously.
@@ -350,10 +348,8 @@ class CopyOrMoveOperationTestHelper {
 
     // Grant relatively big quota initially.
     quota_manager_->SetQuota(blink::StorageKey::CreateFirstParty(origin_),
-                             FileSystemTypeToQuotaStorageType(src_type_),
                              1024 * 1024);
     quota_manager_->SetQuota(blink::StorageKey::CreateFirstParty(origin_),
-                             FileSystemTypeToQuotaStorageType(dest_type_),
                              1024 * 1024);
   }
 
@@ -550,7 +546,7 @@ class CopyOrMoveOperationTestHelper {
         base::FilePath relative;
         root.virtual_path().AppendRelativePath(url.virtual_path(), &relative);
         relative = relative.NormalizePathSeparators();
-        ASSERT_TRUE(base::Contains(test_case_map, relative));
+        ASSERT_TRUE(test_case_map.contains(relative));
         if (entry.type == filesystem::mojom::FsFileType::DIRECTORY) {
           EXPECT_TRUE(test_case_map[relative]->is_directory);
           directories.push(url);

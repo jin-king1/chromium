@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "base/lazy_instance.h"
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -30,6 +31,7 @@
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/win/window_event_target.h"
 #include "ui/events/event.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -39,10 +41,10 @@
 #include "ui/views/views_export.h"
 #include "ui/views/win/pen_event_processor.h"
 #include "ui/views/win/scoped_enable_unadjusted_mouse_events_win.h"
+#include "ui/views/win/user_resize_move_detector.h"
 
 namespace gfx {
 class ImageSkia;
-class Insets;
 }  // namespace gfx
 
 namespace ui {
@@ -89,23 +91,34 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
                                         public ui::InputMethodObserver,
                                         public ui::WindowEventTarget,
                                         public ui::AXFragmentRootDelegateWin {
+  // TODO(https://crbug.com/495981317): Remove this macro.
+  ADVANCED_MEMORY_SAFETY_CHECKS();
+
  public:
   // See WindowImpl for details on |debugging_id|.
   static std::unique_ptr<HWNDMessageHandler> Create(
       HWNDMessageHandlerDelegate* delegate,
-      const std::string& debugging_id,
-      bool headless_mode);
+      const std::string& debugging_id);
 
   HWNDMessageHandler(const HWNDMessageHandler&) = delete;
   HWNDMessageHandler& operator=(const HWNDMessageHandler&) = delete;
 
   ~HWNDMessageHandler() override;
 
+  base::WeakPtr<HWNDMessageHandler> GetWeakPtr() {
+    return msg_handler_weak_factory_.GetWeakPtr();
+  }
+
   virtual void Init(HWND parent, const gfx::Rect& bounds);
   virtual void InitModalType(ui::mojom::ModalType modal_type);
 
   virtual void Close();
   virtual void CloseNow();
+
+  void DestroyHandler();
+
+  // Delete `this` if `in_wnd_proc_depth_` is 0.
+  void DeleteIfStackUnwound();
 
   virtual gfx::Rect GetWindowBoundsInScreen() const;
   virtual gfx::Rect GetClientAreaBoundsInScreen() const;
@@ -133,6 +146,9 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // owner of the HWND.
   virtual void SetParentOrOwner(HWND new_parent);
 
+  // Gets all descendant owned HWNDs of this handler's HWND.
+  std::vector<HWND> GetOwnedWindows();
+
   // Shows the window. If |show_state| is maximized, |pixel_restore_bounds| is
   // the bounds to restore the window to when going back to normal.
   virtual void Show(ui::mojom::WindowShowState show_state,
@@ -159,6 +175,12 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   virtual bool RunMoveLoop(const gfx::Vector2d& drag_offset,
                            bool hide_on_escape);
   virtual void EndMoveLoop();
+
+  // Returns true if any HWndMessageHandler is in a native move/resize loop.
+  static bool IsInNativeMoveResizeLoop();
+
+  // Returns true if any HWNDMessageHandler is in a native menu loop.
+  static bool IsInNativeMenuLoop();
 
   // Tells the HWND its client area has changed.
   virtual void SendFrameChanged();
@@ -210,11 +232,28 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   virtual void set_is_translucent(bool is_translucent);
   virtual bool is_translucent() const;
 
+  // Sets whether to use rounded corners. This uses DWMWCP_ROUND and is not
+  // effective on Windows 10.
+  void set_use_rounded_corner(bool use_rounded_corner) {
+    use_rounded_corner_ = use_rounded_corner;
+  }
+
   virtual std::unique_ptr<aura::ScopedEnableUnadjustedMouseEvents>
   RegisterUnadjustedMouseEvent();
 
   virtual void set_using_wm_input(bool using_wm_input);
   virtual bool using_wm_input() const;
+
+  // Sets/gets whether the mouse is locked (pointer lock is active).
+  void set_mouse_locked(bool mouse_locked) { mouse_locked_ = mouse_locked; }
+  bool mouse_locked() const { return mouse_locked_; }
+
+  ui::EventFlags raw_input_button_state_for_testing() const {
+    return raw_input_button_state_;
+  }
+  void set_raw_input_button_state_for_testing(ui::EventFlags state) {
+    raw_input_button_state_ = state;
+  }
 
  protected:
   HWNDMessageHandler(HWNDMessageHandlerDelegate* delegate,
@@ -245,8 +284,13 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
                                  gfx::Rect* monitor_rect,
                                  gfx::Rect* work_area);
 
+  // Returns true if IsFrameSystemDrawn() and there's actually a frame to draw.
+  bool HasSystemFrame() const;
+
  private:
   friend class ::views::test::DesktopWindowTreeHostWinTestApi;
+
+  class ScopedWndProcDepth;
 
   using TouchIDs = std::set<DWORD>;
   enum class DwmFrameState { kOff, kOn };
@@ -292,7 +336,6 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
                                  WPARAM w_param,
                                  LPARAM l_param,
                                  bool* handled) override;
-  void HandleParentChanged() override;
   void ApplyPinchZoomScale(float scale) override;
   void ApplyPinchZoomBegin() override;
   void ApplyPinchZoomEnd() override;
@@ -375,9 +418,6 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // Returns whether Windows should help with frame rendering (i.e. we're using
   // the glass frame).
   bool IsFrameSystemDrawn() const;
-
-  // Returns true if IsFrameSystemDrawn() and there's actually a frame to draw.
-  bool HasSystemFrame() const;
 
   // Adds or removes the frame extension into client area with
   // DwmExtendFrameIntoClientArea.
@@ -601,16 +641,6 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // Updates DWM frame to extend into client area if needed.
   void UpdateDwmFrame();
 
-  // Generates a touch event and adds it to the |touch_events| parameter.
-  // |point| is the point where the touch was initiated.
-  // |id| is the event id associated with the touch event.
-  // |time_stamp| is the time stamp associated with the message.
-  void GenerateTouchEvent(ui::EventType event_type,
-                          const gfx::Point& point,
-                          ui::PointerId id,
-                          base::TimeTicks time_stamp,
-                          TouchEvents* touch_events);
-
   // Handles WM_NCLBUTTONDOWN and WM_NCMOUSEMOVE messages on the caption.
   // Returns true if the message was handled.
   bool HandleMouseInputForCaption(unsigned int message,
@@ -636,8 +666,22 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // refers to the edge of the window being sized.
   void SizeWindowToAspectRatio(UINT param, gfx::Rect* rect);
 
-  // Get the cursor position, which may be mocked if running a test
+  // Get the cursor position, which may be mocked if running a test.
   POINT GetCursorPos() const;
+
+  // Remove the current window's reference from `fullscreen_monitor_map_`.
+  void RemoveCurrentWindowFromFullscreenMonitorMap();
+
+  // Update `fullscreen_monitor_map_` to remove the invalid HMONITOR handle
+  // corresponding to the current window handle. This is called when the
+  // WM_DISPLAYCHANGE message is received (i.e., when the display configuration
+  // changes).
+  void UpdateFullscreenMonitorMap();
+
+  // Updates the tracked button state based on Raw Input button transitions.
+  // Raw Input only reports button state changes (down/up transitions), not the
+  // current state, so we must maintain our own state tracking.
+  void UpdateRawInputButtonState(const RAWINPUT* const input);
 
   raw_ptr<HWNDMessageHandlerDelegate> delegate_;
 
@@ -664,7 +708,7 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   std::optional<float> aspect_ratio_;
 
   // Size to exclude from aspect ratio calculation.
-  gfx::Size excluded_margin_;
+  gfx::Size excluded_margin_dip_;
 
   // The current DPI.
   int dpi_;
@@ -691,9 +735,6 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // area. We need this so we can correctly show the context menu on mouse-up.
   bool is_right_mouse_pressed_on_caption_;
 
-  // The set of touch devices currently down.
-  TouchIDs touch_ids_;
-
   // ScopedRedrawLock ----------------------------------------------------------
 
   // Represents the number of ScopedRedrawLocks active against this widget.
@@ -713,7 +754,8 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // The last-seen monitor containing us, and its rect and work area.  These are
   // used to catch updates to the rect and work area and react accordingly.
   HMONITOR last_monitor_;
-  gfx::Rect last_monitor_rect_, last_work_area_;
+  gfx::Rect last_monitor_rect_;
+  gfx::Rect last_work_area_;
 
   // True the first time nccalc is called on a sizable widget
   bool is_first_nccalc_;
@@ -728,6 +770,8 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   ui::SequentialIDGenerator id_generator_;
 
   PenEventProcessor pen_processor_;
+
+  UserResizeMoveDetector user_resize_move_detector_;
 
   // Stores a pointer to the WindowEventTarget interface implemented by this
   // class. Allows callers to retrieve the interface pointer.
@@ -772,8 +816,8 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // glass. Defaults to false.
   bool dwm_transition_desired_;
 
-  // True if HandleWindowSizeChanging has been called in the delegate, but not
-  // HandleClientSizeChanged.
+  // True if a size-changing WM_WINDOWPOSCHANGING has been observed but the
+  // corresponding client size change hasn't been processed yet.
   bool sent_window_size_changing_;
 
   // This is used to keep track of whether a WM_WINDOWPOSCHANGED has
@@ -795,6 +839,11 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // cause re-entrancy during teardown. https://crbug.com/1087553
   bool did_return_uia_object_;
 
+  // Set to true once WM_CREATE handling has completed and back to false before
+  // processing WM_DESTROY. Requests for accessibility objects via WM_GETOBJECT
+  // are ignored outside of this window.
+  bool may_service_accessibility_requests_ = false;
+
   // The location where the user clicked on the caption. We cache this when we
   // receive the WM_NCLBUTTONDOWN message. We use this in the subsequent
   // WM_NCMOUSEMOVE message to see if the mouse actually moved.
@@ -814,9 +863,9 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // partially or fully transparent.
   bool is_translucent_ = false;
 
-  // True if the window should process WM_POINTER for touch events and
-  // not WM_TOUCH events.
-  bool pointer_events_for_touch_;
+  // True if the window uses rounded corners. This uses DWMWCP_ROUND style on
+  // Windows 11. Not effective on Windows 10.
+  bool use_rounded_corner_ = false;
 
   // True if DWM frame should be cleared on next WM_ERASEBKGND message.  This is
   // necessary to avoid white flashing in the titlebar area around the
@@ -825,8 +874,22 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // the first message after frame type changes.
   bool needs_dwm_frame_clear_ = true;
 
+  // Tracks the last DWM frame insets sent via DwmExtendFrameIntoClientArea.
+  // Used to avoid redundant cross-process DWM calls when the margins haven't
+  // changed.
+  std::optional<gfx::Insets> last_dwm_frame_insets_;
+
   // True if is handling mouse WM_INPUT messages.
   bool using_wm_input_ = false;
+
+  // Tracks the current mouse button state for Raw Input (WM_INPUT) events.
+  // Raw Input only reports button state transitions, not current state, so we
+  // must track it ourselves. This is a bitmask of ui::EventFlags values.
+  ui::EventFlags raw_input_button_state_ = ui::EF_NONE;
+
+  // True if the mouse is locked (pointer lock is active). This is used to
+  // suppress system key events (like Alt) that would steal focus.
+  bool mouse_locked_ = false;
 
   // True if we're displaying the system menu on the title bar. If we are,
   // then we want to ignore right mouse clicks instead of bringing up a
@@ -851,7 +914,8 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
   // This is a map of the HMONITOR to full screeen window instance. It is safe
   // to keep a raw pointer to the HWNDMessageHandler instance as we track the
   // window destruction and ensure that the map is cleaned up.
-  using FullscreenWindowMonitorMap = std::map<HMONITOR, HWNDMessageHandler*>;
+  using FullscreenWindowMonitorMap =
+      std::map<HMONITOR, raw_ptr<HWNDMessageHandler>>;
   static base::LazyInstance<FullscreenWindowMonitorMap>::DestructorAtExit
       fullscreen_monitor_map_;
 
@@ -865,6 +929,14 @@ class VIEWS_EXPORT HWNDMessageHandler : public gfx::WindowImpl,
 
   base::ScopedObservation<ui::InputMethod, ui::InputMethodObserver>
       observation_{this};
+
+  bool delete_pending_ = false;
+
+  // Tracks how many instances of OnWndProc are on the stack.
+  int in_wnd_proc_depth_ = 0;
+
+  // Returns true if the message handler is pending deletion.
+  bool IsDestroyed() const;
 
   // The WeakPtrFactories below (one inside the
   // CR_MSG_MAP_CLASS_DECLARATIONS macro and autohide_factory_) must

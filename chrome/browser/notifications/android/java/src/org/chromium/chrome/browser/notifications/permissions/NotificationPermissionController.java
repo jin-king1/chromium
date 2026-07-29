@@ -10,13 +10,10 @@ import android.os.Build;
 
 import androidx.annotation.IntDef;
 
-import org.chromium.base.ApiCompatibilityUtils;
-import org.chromium.base.BuildInfo;
 import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.TimeUtils;
-import org.chromium.base.UnownedUserData;
 import org.chromium.base.UnownedUserDataKey;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -32,16 +29,20 @@ import org.chromium.ui.permissions.PermissionPrefs;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * Central class containing the logic for when to trigger notification permission request optionally
  * with a rationale.
  */
 @NullMarked
-public class NotificationPermissionController implements UnownedUserData {
+public class NotificationPermissionController {
     /** Field trial param controlling rationale behavior. */
     public static final String FIELD_TRIAL_ALWAYS_SHOW_RATIONALE_BEFORE_REQUESTING_PERMISSION =
             "always_show_rationale_before_requesting_permission";
+
+    /** Field trial param controlling number of days before the first permission request. */
+    public static final String FIELD_TRIAL_INITIAL_PROMPT_DELAY_DAYS = "initial_prompt_delay_days";
 
     /** Field trial param controlling number of days between permission requests. */
     public static final String FIELD_TRIAL_PERMISSION_REQUEST_INTERVAL_DAYS =
@@ -59,15 +60,6 @@ public class NotificationPermissionController implements UnownedUserData {
      */
     public static final String FIELD_TRIAL_PERMISSION_REQUEST_MAX_COUNT =
             "permission_request_max_count";
-
-    /**
-     * Returns whether the bottom sheet rationale UI should be used.
-     *
-     * @return true if the bottom sheet UI should be used, false if the dialog UI should be used.
-     */
-    public static boolean shouldUseBottomSheetRationaleUi() {
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.NOTIFICATION_PERMISSION_BOTTOM_SHEET);
-    }
 
     /** Refers to what type of permission UI should be shown. */
     @IntDef({
@@ -115,7 +107,7 @@ public class NotificationPermissionController implements UnownedUserData {
     }
 
     private static final UnownedUserDataKey<NotificationPermissionController> KEY =
-            new UnownedUserDataKey<>(NotificationPermissionController.class);
+            new UnownedUserDataKey<>();
 
     private final AndroidPermissionDelegate mAndroidPermissionDelegate;
     private final Supplier<RationaleDelegate> mRationaleDelegateSupplier;
@@ -183,9 +175,7 @@ public class NotificationPermissionController implements UnownedUserData {
      * @return True if any UI was shown (either rationale dialog or OS prompt), false otherwise.
      */
     public boolean requestPermissionIfNeeded(boolean contextual) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
-                || !BuildInfo.targetsAtLeastT()
-                || ApiCompatibilityUtils.isDemoUser()) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || DeviceInfo.isRetailDemoMode()) {
             return false;
         }
 
@@ -235,7 +225,7 @@ public class NotificationPermissionController implements UnownedUserData {
     int shouldRequestPermission() {
         // Notifications only require permission starting at Android T. And apps targeting < T can't
         // request permission as the OS prompts the user automatically.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || !BuildInfo.targetsAtLeastT()) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             return PermissionRequestMode.DO_NOT_REQUEST;
         }
 
@@ -248,7 +238,11 @@ public class NotificationPermissionController implements UnownedUserData {
         }
 
         // Check if it is too soon to request permission again.
-        if (wasPermissionRequestShown() && !hasEnoughTimeExpiredForRetriggerSinceLastDenial()) {
+        if (wasPermissionRequestShown()) {
+            if (!hasEnoughTimeExpiredForRetriggerSinceLastDenial()) {
+                return PermissionRequestMode.DO_NOT_REQUEST;
+            }
+        } else if (!hasEnoughTimeExpiredForFirstRequest()) {
             return PermissionRequestMode.DO_NOT_REQUEST;
         }
 
@@ -364,14 +358,10 @@ public class NotificationPermissionController implements UnownedUserData {
 
     private void onNotificationPermissionRequestResult(String[] permissions, int[] grantResults) {
         if (permissions == null
+                || grantResults == null
                 || permissions.length != 1
                 || grantResults.length != 1
                 || !permissions[0].equals(Manifest.permission.POST_NOTIFICATIONS)) {
-            assert permissions != null : "Parameter permissions should not be null";
-            assert permissions.length == 1 : "A single permission should have been requested";
-            assert grantResults.length == 1 : "A single result should have been returned";
-            assert permissions[0].equals(Manifest.permission.POST_NOTIFICATIONS)
-                    : "The requested permission should be for notifications";
             return;
         }
         boolean isPermissionGranted = grantResults[0] == PackageManager.PERMISSION_GRANTED;
@@ -401,6 +391,27 @@ public class NotificationPermissionController implements UnownedUserData {
     }
 
     /** Gets the amount of time to wait between permission requests in milliseconds. */
+    private boolean hasEnoughTimeExpiredForFirstRequest() {
+        long firstRequestTimestamp =
+                ChromeSharedPreferences.getInstance()
+                        .readLong(
+                                ChromePreferenceKeys
+                                        .NOTIFICATION_PERMISSION_FIRST_REQUEST_TIMESTAMP,
+                                0);
+
+        if (firstRequestTimestamp == 0) {
+            ChromeSharedPreferences.getInstance()
+                    .writeLong(
+                            ChromePreferenceKeys.NOTIFICATION_PERMISSION_FIRST_REQUEST_TIMESTAMP,
+                            TimeUtils.currentTimeMillis());
+            return getInitialPromptDelayMs() == 0;
+        }
+
+        long elapsedTime = TimeUtils.currentTimeMillis() - firstRequestTimestamp;
+        return elapsedTime >= getInitialPromptDelayMs();
+    }
+
+    /** Gets the amount of time to wait between permission requests in milliseconds. */
     private static long getPermissionRequestRetriggerIntervalMs() {
         // Get number of days from param, or use 7 days as default.
         int retriggerIntervalDays =
@@ -410,6 +421,15 @@ public class NotificationPermissionController implements UnownedUserData {
                         /* defaultValue= */ 7);
 
         return TimeUnit.DAYS.toMillis(retriggerIntervalDays);
+    }
+
+    private static long getInitialPromptDelayMs() {
+        int delayDays =
+                ChromeFeatureList.getFieldTrialParamByFeatureAsInt(
+                        ChromeFeatureList.NOTIFICATION_PERMISSION_VARIANT,
+                        FIELD_TRIAL_INITIAL_PROMPT_DELAY_DAYS,
+                        /* defaultValue= */ 0);
+        return TimeUnit.DAYS.toMillis(delayDays);
     }
 
     private static boolean shouldAlwaysShowRationaleFirst() {

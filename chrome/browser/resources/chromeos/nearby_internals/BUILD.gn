@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
 import("//ui/webui/resources/tools/build_webui.gni")
 
 assert(is_chromeos)
@@ -25,7 +24,7 @@ build_webui("build") {
     "ui_trigger_list_object.ts",
     "ui_trigger_tab.ts",
   ]
-  non_web_component_files = [
+  ts_files = [
     "cross_device_logs_browser_proxy.ts",
     "nearby_contact_browser_proxy.ts",
     "nearby_http_browser_proxy.ts",

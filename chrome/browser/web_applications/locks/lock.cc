@@ -7,9 +7,11 @@
 #include <memory>
 #include <ostream>
 
+#include "base/time/clock.h"
+#include "chrome/browser/web_applications/locks/partitioned_lock_holder.h"
 #include "chrome/browser/web_applications/locks/partitioned_lock_manager.h"
 #include "chrome/browser/web_applications/locks/web_app_lock_manager.h"
-#include "chrome/browser/web_applications/visited_manifest_manager.h"
+#include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "components/webapps/common/web_app_id.h"
 
@@ -53,8 +55,8 @@ bool LockDescription::IncludesSharedWebContents() const {
   }
 }
 base::Value LockDescription::AsDebugValue() const {
-  base::Value::Dict result;
-  base::Value::List ids;
+  base::DictValue result;
+  base::ListValue ids;
   ids.reserve(app_ids_.size());
   for (const auto& id : app_ids_) {
     ids.Append(id);
@@ -79,11 +81,39 @@ VisitedManifestManager& Lock::visited_manifest_manager() {
   return lock_manager_->provider().visited_manifest_manager();
 }
 
-Lock::Lock() : holder_(std::make_unique<PartitionedLockHolder>()) {}
+WebAppOriginAssociationManager& Lock::origin_association_manager() {
+  CHECK(lock_manager_);
+  return lock_manager_->provider().origin_association_manager();
+}
+
+base::Clock& Lock::clock() {
+  CHECK(lock_manager_);
+  return lock_manager_->provider().clock();
+}
+
+WebAppCommandScheduler& Lock::scheduler() {
+  CHECK(lock_manager_);
+  return lock_manager_->provider().scheduler();
+}
+
+Lock::Lock() = default;
 Lock::~Lock() = default;
 
 bool Lock::IsGranted() const {
   return !!lock_manager_;
+}
+
+PartitionedLockHolder& Lock::InitializeLockHolderForAcquire(
+    base::PassKey<WebAppLockManager>) {
+  holder_ = std::make_unique<PartitionedLockHolder>();
+  return *holder_;
+}
+
+PartitionedLockHolder& Lock::InitializeLockHolderForUpgrade(
+    std::unique_ptr<Lock> from_lock,
+    base::PassKey<WebAppLockManager>) {
+  holder_ = std::move(from_lock->holder_);
+  return *holder_;
 }
 
 void Lock::GrantLockResources(WebAppLockManager& lock_manager) {

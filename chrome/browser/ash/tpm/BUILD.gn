@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("tpm") {
@@ -20,16 +18,17 @@ static_library("tpm") {
     "//ash/constants",
     "//ash/public/cpp",
     "//base",
-    "//chrome/browser:browser_process",
     "//chrome/browser/profiles:profile",
     "//chrome/common",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/install_attributes",
     "//chromeos/ash/components/settings",
-    "//chromeos/ash/components/system",
+    "//chromeos/ash/experiences/settings_ui",
     "//components/prefs",
+    "//components/user_manager",
     "//ui/base",
     "//ui/chromeos",
-    "//ui/message_center/public/cpp",
+    "//ui/message_center",
   ]
 }
 
@@ -42,6 +41,7 @@ source_set("unit_tests") {
     ":tpm",
     "//base",
     "//base/test:test_support",
+    "//chrome/browser/ash/policy/enrollment",
     "//chrome/browser/ash/settings:test_support",
     "//chrome/common",
     "//chromeos/ash/components/install_attributes:test_support",

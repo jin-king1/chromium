@@ -10,10 +10,12 @@
 #include <memory>
 #include <string>
 
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ref.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/permission_result.h"
 #include "content/public/browser/push_messaging_service.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
@@ -21,12 +23,10 @@
 #include "third_party/blink/public/mojom/push_messaging/push_messaging.mojom.h"
 #include "url/gurl.h"
 
-namespace blink {
-namespace mojom {
+namespace blink::mojom {
 enum class PushRegistrationStatus;
 enum class PushUnregistrationStatus;
-}  // namespace mojom
-}  // namespace blink
+}  // namespace blink::mojom
 
 namespace url {
 class Origin;
@@ -38,14 +38,18 @@ class PushMessagingService;
 class RenderProcessHost;
 class ServiceWorkerContextWrapper;
 
-// Documented at definition.
-extern const char kPushSenderIdServiceWorkerKey[];
-extern const char kPushRegistrationIdServiceWorkerKey[];
+// Service Worker database keys. If a registration ID is stored, the stored
+// sender ID must be the one used to register. Unfortunately, this isn't always
+// true of pre-InstanceID registrations previously stored in the database, but
+// fortunately it's less important for their sender ID to be accurate.
+inline constexpr char kPushSenderIdServiceWorkerKey[] = "push_sender_id";
+inline constexpr char kPushRegistrationIdServiceWorkerKey[] =
+    "push_registration_id";
 
 // Owned by RenderFrameHostImpl (if `this` handles requests from a document) or
 // RenderProcessHostImpl (if `this` handles requests from a service worker).
 // Lives on the UI thread.
-class PushMessagingManager : public blink::mojom::PushMessaging {
+class CONTENT_EXPORT PushMessagingManager : public blink::mojom::PushMessaging {
  public:
   PushMessagingManager(
       RenderProcessHost& render_process_host,
@@ -75,6 +79,9 @@ class PushMessagingManager : public blink::mojom::PushMessaging {
                        GetSubscriptionCallback callback) override;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(PushMessagingManagerTest,
+                           TimeOfCheckToTimeOfUse_OriginSecurityCheck);
+
   struct RegisterData;
 
   void Register(RegisterData data);
@@ -86,7 +93,7 @@ class PushMessagingManager : public blink::mojom::PushMessaging {
                    const std::vector<uint8_t>& auth,
                    blink::mojom::PushRegistrationStatus status);
   void DidRequestPermissionInIncognito(RegisterData data,
-                                       blink::mojom::PermissionStatus status);
+                                       PermissionResult permission_result);
 
   void DidCheckForExistingRegistration(
       RegisterData data,
@@ -135,6 +142,7 @@ class PushMessagingManager : public blink::mojom::PushMessaging {
       int64_t service_worker_registration_id,
       const std::string& application_server_key,
       bool is_valid,
+      bool user_visible_only,
       const GURL& endpoint,
       const std::optional<base::Time>& expiration_time,
       const std::vector<uint8_t>& p256dh,

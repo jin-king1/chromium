@@ -5,11 +5,13 @@
 #include "components/viz/service/display/occlusion_culler.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdlib>
 #include <limits>
 #include <vector>
 
 #include "base/check.h"
+#include "base/numerics/safe_conversions.h"
 #include "cc/base/math_util.h"
 #include "cc/base/region.h"
 #include "components/viz/common/display/renderer_settings.h"
@@ -18,15 +20,26 @@
 #include "components/viz/common/quads/draw_quad.h"
 #include "components/viz/common/quads/shared_quad_state.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
+#include "components/viz/common/viz_utils.h"
 #include "components/viz/service/display/display_resource_provider.h"
 #include "components/viz/service/display/overlay_processor_interface.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/gfx/geometry/rect_f.h"
 
 namespace viz {
 namespace {
 
 constexpr float kEpsilon = std::numeric_limits<float>::epsilon();
+
+base::CheckedNumeric<int> GetCheckedArea(const cc::Region& region) {
+  base::CheckedNumeric<int> checked_area = 0;
+  for (const auto rect : region) {
+    checked_area += rect.size().GetCheckedArea();
+  }
+
+  return checked_area;
+}
 
 bool Is2dAndRightAngledRotationOrPositiveScaleOrTranslation(
     const gfx::Transform& transform) {
@@ -76,20 +89,16 @@ gfx::Rect SafeConvertRectForRegion(const gfx::Rect& r) {
   return safe_rect;
 }
 
-// Returns the bounds for the largest rect that can be inscribed in a rounded
-// rect.
-gfx::RectF GetOccludingRectForRRectF(const gfx::RRectF& bounds) {
-  if (bounds.IsEmpty()) {
-    return gfx::RectF();
+cc::Region GetOccludingRegionForRRectF(
+    const gfx::RRectF& bounds,
+    bool generate_complex_occluder_for_rounded_corners,
+    int minumum_quad_size_with_rounded_corners) {
+  gfx::RectF bounds_f = bounds.rect();
+  if (bounds.GetType() == gfx::RRectF::Type::kRect ||
+      bounds.GetType() == gfx::RRectF::Type::kEmpty) {
+    return gfx::ToEnclosedRect(bounds_f);
   }
 
-  if (bounds.GetType() == gfx::RRectF::Type::kRect) {
-    return bounds.rect();
-  }
-
-  gfx::RectF occluding_rect = bounds.rect();
-
-  // Compute the radius for each corner
   const auto top_left = bounds.GetCornerRadii(gfx::RRectF::Corner::kUpperLeft);
   const auto top_right =
       bounds.GetCornerRadii(gfx::RRectF::Corner::kUpperRight);
@@ -97,6 +106,101 @@ gfx::RectF GetOccludingRectForRRectF(const gfx::RRectF& bounds) {
       bounds.GetCornerRadii(gfx::RRectF::Corner::kLowerRight);
   const auto lower_left =
       bounds.GetCornerRadii(gfx::RRectF::Corner::kLowerLeft);
+
+  // The complex occluder is the enclosed rect of `bounds` with the enclosing
+  // bounds of the corners subtracted.
+  //
+  // The diagram below describes the rects that tessellate the complex occluder.
+  //
+  // ___________________________________________
+  // +       +                         +       +
+  // |topLefCorner        R1           |topRightCorner
+  // |       |                         |       |
+  // |       |                         |       |
+  // +-------+-------------------------+-------|
+  // |                                         |
+  // |                    R2                   |
+  // |                                         |
+  // |                                         |
+  // |                                         |
+  // |                                         |
+  // |                                         |
+  // +----------+-------------------+----------+
+  // |lowerLefCorner                |lowerRightCorner
+  // |          |         R3        |          |
+  // +____--____+___________________+__________+
+  //
+  // - R1 fills the horizontal space between the top left and right corners.
+  // - R2 fills the vertical space between the top and bottom corners.
+  // - R3 fills the horizontal space between the bottom left and right corners.
+  //
+  // `cc::Region` requires integral rects, so R1, R2, and R3 are conservatively
+  // the enclosed rects of the actual bounds. The bottom of R1 and top of R2
+  // have the same Y value to avoid seams between the rects. The same goes for
+  // the bottom of R2 and top of R3.
+
+  const bool uniform_top_corners =
+      top_left == top_right || top_left.IsZero() || top_right.IsZero();
+  const bool uniform_bottom_corners =
+      lower_left == lower_right || lower_left.IsZero() || lower_right.IsZero();
+
+  const bool should_generate_complex_occluder =
+      generate_complex_occluder_for_rounded_corners && uniform_top_corners &&
+      uniform_bottom_corners &&
+      bounds_f.size().GetArea() >= minumum_quad_size_with_rounded_corners;
+  if (should_generate_complex_occluder) {
+    cc::Region occluding_region;
+
+    static constexpr auto union_rect(
+        [](const gfx::RectF& rect_f, cc::Region& region) {
+          region.Union(gfx::ToEnclosedRect(rect_f));
+        });
+
+    // Compute integer border between the three rects and round towards R2 in
+    // both cases. This ensures that we do not accidentally intersect with any
+    // of the rounded corners.
+    const int r2_top =
+        base::ClampCeil(bounds_f.y() + std::max(top_left.y(), top_right.y()));
+    const int r2_bottom =
+        base::ClampFloor(bounds_f.y() + bounds_f.height() -
+                         std::max(lower_left.y(), lower_right.y()));
+
+    {
+      // R1
+      const int y = base::ClampCeil(bounds_f.y());
+      const int height = r2_top - y;
+      if (height > 0) {
+        const float x = bounds_f.x() + top_left.x();
+        const float width = bounds_f.width() - (top_left.x() + top_right.x());
+        union_rect(gfx::RectF(x, y, width, height), occluding_region);
+      }
+    }
+    {
+      // R2
+      const int y = r2_top;
+      const int height = r2_bottom - y;
+      if (height > 0) {
+        const float x = bounds_f.x();
+        const float width = bounds_f.width();
+        union_rect(gfx::RectF(x, y, width, height), occluding_region);
+      }
+    }
+    {
+      // R3
+      const int y = r2_bottom;
+      const int height = base::ClampFloor(bounds_f.bottom()) - y;
+      if (height > 0) {
+        const float x = bounds_f.x() + lower_left.x();
+        const float width =
+            bounds_f.width() - (lower_left.x() + lower_right.x());
+        union_rect(gfx::RectF(x, y, width, height), occluding_region);
+      }
+    }
+
+    return occluding_region;
+  }
+
+  gfx::RectF occluding_rect = bounds_f;
 
   // Get a bounding rect that does not intersect with the rounding clip.
   // When a rect has rounded corner with radius r, then the largest rect that
@@ -109,7 +213,8 @@ gfx::RectF GetOccludingRectForRRectF(const gfx::RRectF& bounds) {
       std::max(top_left.x(), lower_left.x()) * kInsetCoefficient,
       std::max(lower_right.y(), lower_left.y()) * kInsetCoefficient,
       std::max(top_right.x(), lower_right.x()) * kInsetCoefficient));
-  return occluding_rect;
+
+  return gfx::ToEnclosedRect(occluding_rect);
 }
 
 // Attempts to consolidate rectangles that were only split because of the
@@ -142,7 +247,15 @@ bool ReduceComplexity(const cc::Region& region,
   return true;
 }
 
-bool CanContributeToOcclusion(const SharedQuadState* shared_quad_state) {
+bool CanContributeToOcclusion(const SharedQuadState* shared_quad_state,
+                              bool is_for_rpdq) {
+  // Skip if sqs is for AggregatedRenderPassDrawQuad because it is a
+  // special type of DrawQuad where the visible_rect of shared quad state
+  // is not entirely covered by draw quads in it.
+  if (is_for_rpdq) {
+    return false;
+  }
+
   // TODO(yiyix): For transforms that don't preserve axis-alignmement, find a
   // rect interior to each transformed quad.
   return shared_quad_state->opacity == 1 &&
@@ -190,27 +303,43 @@ void OcclusionCuller::UpdateDeviceScaleFactor(float device_scale_factor) {
 }
 
 void OcclusionCuller::RemoveOverdrawQuads(AggregatedFrame* frame) {
-  if (frame->render_pass_list.empty()) {
-    return;
+  base::flat_set<AggregatedRenderPassId> render_passes_affected_by_any_filters;
+  base::flat_set<AggregatedRenderPassId>
+      render_passes_affected_by_pixel_moving_backdrop_filters;
+  for (const auto& pass : frame->render_pass_list) {
+    for (auto quad = pass->quad_list.begin(); quad != pass->quad_list.end();
+         ++quad) {
+      if (auto* rpdq = quad->DynamicCast<AggregatedRenderPassDrawQuad>()) {
+        if (!rpdq->filters.IsEmpty() || !rpdq->backdrop_filters.IsEmpty()) {
+          render_passes_affected_by_any_filters.insert(rpdq->render_pass_id);
+        }
+        if (rpdq->backdrop_filters.HasFilterThatMovesPixels()) {
+          render_passes_affected_by_pixel_moving_backdrop_filters.insert(
+              rpdq->render_pass_id);
+        }
+      }
+    }
   }
 
   base::flat_map<AggregatedRenderPassId, gfx::Rect> backdrop_filter_rects;
   for (const auto& pass : frame->render_pass_list) {
-    if (!pass->backdrop_filters.IsEmpty() &&
-        pass->backdrop_filters.HasFilterThatMovesPixels()) {
+    if (render_passes_affected_by_pixel_moving_backdrop_filters.contains(
+            pass->id)) {
+      // For the pixel-moving backdrop filters, all effects are limited to
+      // the size of the RenderPassDrawQuad rect. So unlike pixel-moving
+      // foreground filters, we can safely use the output rect.
       backdrop_filter_rects[pass->id] = cc::MathUtil::MapEnclosingClippedRect(
           pass->transform_to_root_target, pass->output_rect);
     }
-  }
 
-  for (const auto& pass : frame->render_pass_list) {
     const SharedQuadState* last_sqs = nullptr;
+    bool last_sqs_is_for_rpdq = false;
+
     cc::Region occlusion_in_target_space;
-    cc::Region backdrop_filters_in_target_space;
     bool current_sqs_intersects_occlusion = false;
 
     // TODO(yiyix): Add filter effects to draw occlusion calculation
-    if (!pass->filters.IsEmpty() || !pass->backdrop_filters.IsEmpty()) {
+    if (render_passes_affected_by_any_filters.contains(pass->id)) {
       continue;
     }
 
@@ -222,28 +351,11 @@ void OcclusionCuller::RemoveOverdrawQuads(AggregatedFrame* frame) {
 
     auto quad_list_end = pass->quad_list.end();
     cc::Region occlusion_in_quad_content_space;
-    gfx::Rect render_pass_quads_in_content_space;
 
     for (auto quad = pass->quad_list.begin(); quad != quad_list_end;) {
       // Sanity check: we should not have a Compositor
       // CompositorRenderPassDrawQuad here.
       DCHECK_NE(quad->material, DrawQuad::Material::kCompositorRenderPass);
-
-      // Skip quad if it is a AggregatedRenderPassDrawQuad because it is a
-      // special type of DrawQuad where the visible_rect of shared quad state is
-      // not entirely covered by draw quads in it.
-      if (auto* rpdq = quad->DynamicCast<AggregatedRenderPassDrawQuad>()) {
-        // A RenderPass with backdrop filters may apply to a quad underlying
-        // RenderPassQuad. These regions should be tracked so that correctly
-        // handle splitting and occlusion of the underlying quad.
-        auto it = backdrop_filter_rects.find(rpdq->render_pass_id);
-        if (it != backdrop_filter_rects.end()) {
-          backdrop_filters_in_target_space.Union(it->second);
-        }
-
-        ++quad;
-        continue;
-      }
 
       // Also skip quad if the DrawQuad is inside a 3d object.
       if (quad->shared_quad_state->sorting_context_id != 0) {
@@ -251,36 +363,53 @@ void OcclusionCuller::RemoveOverdrawQuads(AggregatedFrame* frame) {
         continue;
       }
 
+      auto* rpdq = quad->DynamicCast<AggregatedRenderPassDrawQuad>();
       if (!last_sqs) {
         last_sqs = quad->shared_quad_state;
+        last_sqs_is_for_rpdq = !!rpdq;
       }
 
       const gfx::Transform transform =
           quad->shared_quad_state->quad_to_target_transform;
 
       if (last_sqs != quad->shared_quad_state) {
-        if (CanContributeToOcclusion(last_sqs)) {
-          gfx::Rect sqs_rect_in_target =
+        if (CanContributeToOcclusion(last_sqs, last_sqs_is_for_rpdq)) {
+          cc::Region sqs_region_in_target(
               cc::MathUtil::MapEnclosedRectWith2dAxisAlignedTransform(
                   last_sqs->quad_to_target_transform,
-                  last_sqs->visible_quad_layer_rect);
+                  last_sqs->visible_quad_layer_rect));
 
           // If a rounded corner is being applied then the visible rect for the
           // sqs is actually even smaller. Reduce the rect size to get a
           // rounded corner adjusted occluding region.
           if (last_sqs->mask_filter_info.HasRoundedCorners()) {
-            sqs_rect_in_target.Intersect(
-                gfx::ToEnclosedRect(GetOccludingRectForRRectF(
-                    last_sqs->mask_filter_info.rounded_corner_bounds())));
+            sqs_region_in_target.Intersect(GetOccludingRegionForRRectF(
+                last_sqs->mask_filter_info.rounded_corner_bounds(),
+                settings_.generate_complex_occluder_for_rounded_corners,
+                settings_.minumum_quad_size_with_rounded_corners));
           }
 
           if (last_sqs->clip_rect) {
-            sqs_rect_in_target.Intersect(*last_sqs->clip_rect);
+            sqs_region_in_target.Intersect(*last_sqs->clip_rect);
           }
 
-          if (sqs_rect_in_target.size().GetCheckedArea().ValueOrDefault(
-                  INT_MAX) > settings_.occluder_minium_visible_quad_size) {
-            occlusion_in_target_space.Union(sqs_rect_in_target);
+          if (GetCheckedArea(sqs_region_in_target).ValueOrDefault(INT_MAX) >
+              settings_.occluder_minium_visible_quad_size) {
+            occlusion_in_target_space.Union(sqs_region_in_target);
+            MaybeReduceOccluderComplexity(
+                occlusion_in_target_space,
+                settings_.maximum_occluder_complexity);
+          }
+        }
+
+        if (rpdq) {
+          // A RenderPass with backdrop filters may apply to a quad underlying
+          // RenderPassQuad. These regions should be tracked so that correctly
+          // handle splitting and occlusion of the underlying quad.
+          auto it = backdrop_filter_rects.find(rpdq->render_pass_id);
+          if (it != backdrop_filter_rects.end()) {
+            auto& [_, rect_in_target] = *it;
+            occlusion_in_target_space.Subtract(rect_in_target);
             MaybeReduceOccluderComplexity(
                 occlusion_in_target_space,
                 settings_.maximum_occluder_complexity);
@@ -291,8 +420,8 @@ void OcclusionCuller::RemoveOverdrawQuads(AggregatedFrame* frame) {
         // intersect with the occlusion rect, we can skip draw occlusion checks
         // for quads in the current SharedQuadState.
         last_sqs = quad->shared_quad_state;
+        last_sqs_is_for_rpdq = !!rpdq;
         occlusion_in_quad_content_space.Clear();
-        render_pass_quads_in_content_space = gfx::Rect();
 
         const auto current_sqs_in_target_space =
             cc::MathUtil::MapEnclosingClippedRect(
@@ -336,19 +465,6 @@ void OcclusionCuller::RemoveOverdrawQuads(AggregatedFrame* frame) {
                   SafeConvertRectForRegion(rect_in_content));
             }
           }
-
-          // A render pass quad may apply some filter or transform to an
-          // underlying quad. Do not split quads when they intersect with a
-          // render pass quad.
-          if (current_sqs_in_target_space.Intersects(
-                  backdrop_filters_in_target_space.bounds())) {
-            for (auto rect_in_target_space : backdrop_filters_in_target_space) {
-              const auto rect_in_content =
-                  cc::MathUtil::MapEnclosedRectWith2dAxisAlignedTransform(
-                      reverse_transform, rect_in_target_space);
-              render_pass_quads_in_content_space.Union(rect_in_content);
-            }
-          }
         }
       }
 
@@ -357,13 +473,20 @@ void OcclusionCuller::RemoveOverdrawQuads(AggregatedFrame* frame) {
         continue;
       }
 
-      if (occlusion_in_quad_content_space.Contains(quad->visible_rect)) {
+      gfx::Rect visible_rect = quad->visible_rect;
+      // Render pass draw quads can have pixel-moving filters that expand
+      // their visible bounds.
+      if (rpdq && rpdq->filters.HasFilterThatMovesPixels()) {
+        visible_rect = GetExpandedRectForPixelMovingFilters(*rpdq);
+      }
+
+      if (occlusion_in_quad_content_space.Contains(visible_rect)) {
         // Case 1: for simple transforms (scale or translation), define the
         // occlusion region in the quad content space. If |quad| is not
         // shown on the screen, then set its rect and visible_rect to be empty.
         quad->visible_rect.set_size(gfx::Size());
-      } else if (occlusion_in_quad_content_space.Intersects(
-                     quad->visible_rect)) {
+      } else if (!rpdq &&
+                 occlusion_in_quad_content_space.Intersects(visible_rect)) {
         // Case 2: for simple transforms, if the quad is partially shown on
         // screen and the region formed by (occlusion region - visible_rect) is
         // a rect, then update visible_rect to the resulting rect.
@@ -377,7 +500,6 @@ void OcclusionCuller::RemoveOverdrawQuads(AggregatedFrame* frame) {
         // more than X fragments.
         const bool should_split_quads =
             !overlay_processor_->DisableSplittingQuads() &&
-            !visible_region.Intersects(render_pass_quads_in_content_space) &&
             ReduceComplexity(visible_region, settings_.quad_split_limit,
                              reduced_visible_region) &&
             CanSplitDrawQuad(*quad, visible_region.bounds().size(),
@@ -386,8 +508,8 @@ void OcclusionCuller::RemoveOverdrawQuads(AggregatedFrame* frame) {
           auto new_quad = pass->quad_list.InsertCopyBeforeDrawQuad(
               quad, reduced_visible_region.size() - 1);
 
-          for (const auto& visible_rect : reduced_visible_region) {
-            new_quad->visible_rect = visible_rect;
+          for (const auto& rect : reduced_visible_region) {
+            new_quad->visible_rect = rect;
             ++new_quad;
           }
 
@@ -396,8 +518,8 @@ void OcclusionCuller::RemoveOverdrawQuads(AggregatedFrame* frame) {
         }
       } else if (occlusion_in_quad_content_space.IsEmpty() &&
                  occlusion_in_target_space.Contains(
-                     cc::MathUtil::MapEnclosingClippedRect(
-                         transform, quad->visible_rect))) {
+                     cc::MathUtil::MapEnclosingClippedRect(transform,
+                                                           visible_rect))) {
         // Case 3: for non simple transforms, define the occlusion region in
         // target space. If |quad| is not shown on the screen, then set its
         // rect and visible_rect to be empty.
@@ -418,10 +540,6 @@ bool OcclusionCuller::CanSplitDrawQuad(
   }
 
   if (quad->material == DrawQuad::Material::kTextureContent) {
-    if (!features::IsOcclusionCullingForTextureQuadsEnabled()) {
-      return false;
-    }
-
     // Exclude possible overlay candidates from quad splitting. See
     // `OverlayCandidateFactory::FromDrawQuad()`.
     if (resource_provider_->IsOverlayCandidate(quad->resource_id)) {

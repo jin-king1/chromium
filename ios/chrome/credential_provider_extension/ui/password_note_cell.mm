@@ -6,6 +6,8 @@
 
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
+#import "ios/chrome/credential_provider_extension/generated_localized_strings.h"
+#import "ios/chrome/credential_provider_extension/ui/ui_util.h"
 
 namespace {
 
@@ -87,8 +89,7 @@ const CGFloat kErrorIconLength = 20;
 }
 
 - (void)configureCell {
-  self.textLabel.text =
-      NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_NOTE", @"Note");
+  self.textLabel.text = CredentialProviderNoteString();
   self.textView.delegate = self;
 }
 
@@ -100,7 +101,7 @@ const CGFloat kErrorIconLength = 20;
   } else {
     self.textView.textColor = [UIColor colorNamed:kRedColor];
     self.iconView.hidden = NO;
-    [self.iconView setImage:[self errorImage]];
+    [self.iconView setImage:GetNoteErrorIcon()];
     self.iconView.tintColor = [UIColor colorNamed:kRedColor];
   }
 }
@@ -119,14 +120,6 @@ const CGFloat kErrorIconLength = 20;
 
 - (void)textViewDidChange:(UITextView*)textView {
   [self.delegate textViewDidChangeInCell:self];
-}
-
-#pragma mark - Private
-
-// Returns the error icon image.
-- (UIImage*)errorImage {
-  return [[UIImage imageNamed:@"error_icon"]
-      imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
 @end

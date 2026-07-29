@@ -109,6 +109,18 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="L1T3"/>
 </enum>
 
+<enum name="FullScreenDetectorResult">
+  <int value="0" label="Unknown"/>
+  <int value="1" label="Success"/>
+  <int value="2" label="FailureDueToSameTitleWindows"/>
+  <int value="3" label="FailureDueToSlideShowWasNotChosen"/>
+</enum>
+
+<enum name="FullScreenFindEditorResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="FailureDueToSameTitleWindows"/>
+</enum>
+
 <enum name="GenerateCertificateAlgorithms">
   <int value="0" label="ECDSA-P256"/>
   <int value="1" label="RSA-1024"/>
@@ -155,6 +167,31 @@ chromium-metrics-reviews@google.com.
   <int value="6" label="IceconnectionClosed"/>
 </enum>
 
+<enum name="IpAddressType">
+  <int value="0" label="Unknown"/>
+  <int value="1" label="Any"/>
+  <int value="2" label="Loopback"/>
+  <int value="3" label="Private"/>
+  <int value="4" label="Public"/>
+</enum>
+
+<!-- LINT.IfChange(LocalNetworkAccessRequestType) -->
+
+<enum name="LocalNetworkAccessRequestType">
+  <int value="0" label="Unknown"/>
+  <int value="1" label="LoopbackToLoopback"/>
+  <int value="2" label="LoopbackToLocal"/>
+  <int value="3" label="LoopbackToPublic"/>
+  <int value="4" label="LocalToLoopback"/>
+  <int value="5" label="LocalToLocal"/>
+  <int value="6" label="LocalToPublic"/>
+  <int value="7" label="PublicToLoopback"/>
+  <int value="8" label="PublicToLocal"/>
+  <int value="9" label="PublicToPublic"/>
+</enum>
+
+<!-- LINT.ThenChange(//third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.h:LocalNetworkAccessRequestType) -->
+
 <enum name="PeerConnectionBundlePolicy">
   <int value="0" label="balanced"/>
   <int value="1" label="max-bundle"/>
@@ -180,10 +217,27 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="IPv6 BestConnection."/>
 </enum>
 
+<enum name="PeerConnectionCryptexUsage">
+  <int value="0" label="Cryptex was disabled"/>
+  <int value="1" label="Cryptex was offered but not negotiated"/>
+  <int value="2" label="Cryptex was offered and negotiated"/>
+  <int value="3" label="Cryptex was required to negotiate"/>
+</enum>
+
 <enum name="PeerConnectionProvisionalAnswer">
   <int value="0" label="Not used"/>
   <int value="1" label="Local"/>
   <int value="2" label="Remote"/>
+</enum>
+
+<enum name="PeerConnectionRtcpFeedbackType">
+  <int value="0" label="None"/>
+  <int value="1" label="CCM"/>
+  <int value="2" label="LNTF"/>
+  <int value="3" label="NACK"/>
+  <int value="4" label="REMB"/>
+  <int value="5" label="Transport-CC"/>
+  <int value="6" label="CCFB"/>
 </enum>
 
 <enum name="PeerConnectionRtcpMux">
@@ -208,14 +262,27 @@ chromium-metrics-reviews@google.com.
   <int value="12" label="SetPreferredSinkId"/>
 </enum>
 
+<enum name="SdpBandwidthValue">
+  <int value="0" label="Parse failure"/>
+  <int value="1" label="Minus one"/>
+  <int value="2" label="Zero = unlimited"/>
+  <int value="3" label="Betweeen 1 and 2M"/>
+  <int value="4" label="Above 2M"/>
+  <int value="5" label="Negative - error"/>
+</enum>
+
+<enum name="SdpMungingOutcome">
+  <int value="0" label="Accepted"/>
+  <int value="1" label="Rejected"/>
+</enum>
+
 <enum name="SdpMungingType">
   <int value="0" label="NoModification"/>
   <int value="1" label="UnknownModification"/>
   <int value="2" label="WithoutCreateAnswer"/>
   <int value="3" label="WithoutCreateOffer"/>
   <int value="4" label="NumberOfContents"/>
-  <int value="5" label="NumberOfTransports"/>
-  <int value="6" label="OrderOfContents"/>
+  <int value="5" label="CurrentDescriptionFailedToParse"/>
   <int value="20" label="IceOptions"/>
   <int value="21" label="IcePwd"/>
   <int value="22" label="IceUfrag"/>
@@ -224,6 +291,13 @@ chromium-metrics-reviews@google.com.
   <int value="25" label="Mid"/>
   <int value="26" label="PayloadTypes"/>
   <int value="27" label="Ssrcs"/>
+  <int value="28" label="IceOptionsRenomination"/>
+  <int value="29" label="Direction"/>
+  <int value="30" label="RtcpMux"/>
+  <int value="31" label="IceOptionsTrickle"/>
+  <int value="32" label="IceCandidateCount"/>
+  <int value="33" label="Bundle"/>
+  <int value="34" label="Bandwidth"/>
   <int value="40" label="RtpHeaderExtensionsRemoved"/>
   <int value="41" label="RtpHeaderExtensionsAdded"/>
   <int value="42" label="RtpHeaderExtensionsModified"/>
@@ -234,11 +308,13 @@ chromium-metrics-reviews@google.com.
   <int value="64" label="AudioCodecsAddedL16"/>
   <int value="65" label="AudioCodecsRtcpFbAudioNack"/>
   <int value="66" label="AudioCodecsFmtpOpusFec"/>
-  <int value="67" label="AudioCodecsFmtpOpusPacketizationTime"/>
+  <int value="67" label="AudioCodecsFmtpOpusCbr"/>
   <int value="68" label="AudioCodecsFmtpOpusStereo"/>
   <int value="69" label="AudioCodecsFmtpOpusDtx"/>
   <int value="70" label="AudioCodecsFmtp"/>
   <int value="71" label="AudioCodecsRtcpFb"/>
+  <int value="72" label="AudioCodecsRtcpFbRrtr"/>
+  <int value="73" label="AudioCodecsRtcpReducedSize"/>
   <int value="80" label="VideoCodecsRemoved"/>
   <int value="81" label="VideoCodecsAdded"/>
   <int value="82" label="VideoCodecsReordered"/>
@@ -246,17 +322,26 @@ chromium-metrics-reviews@google.com.
   <int value="84" label="VideoCodecsFmtpH264SpsPpsIdrInKeyframe"/>
   <int value="85" label="VideoCodecsFmtp"/>
   <int value="86" label="VideoCodecsRtcpFb"/>
+  <int value="87" label="VideoCodecsAddedWithRawPacketization"/>
+  <int value="88" label="VideoCodecsModifiedWithRawPacketization"/>
+  <int value="89" label="VideoCodecsRtcpReducedSize"/>
+  <int value="100" label="DataChannelSctpInit"/>
+  <int value="101" label="DataChannelMaxMessageSize"/>
+  <int value="102" label="DataChannelSctpPort"/>
 </enum>
 
-<enum name="SocketErrorCode">
-  <int value="0" label="ERR_MSG_TOO_BIG"/>
-  <int value="1" label="ERR_ADDRESS_UNREACHABLE"/>
-  <int value="2" label="ERR_ADDRESS_INVALID"/>
-  <int value="3" label="ERR_INTERNET_DISCONNECTED"/>
-  <int value="4" label="ERR_TIMED_OUT"/>
-  <int value="5" label="ERR_INSUFFICIENT_RESOURCES"/>
-  <int value="6" label="ERR_OUT_OF_MEMORY"/>
-  <int value="7" label="ERR_OTHER"/>
+<enum name="SetTosArguments">
+  <int value="0" label="OTHER"/>
+  <int value="1" label="DSCP_OTHER_ECN_NOT_ECT"/>
+  <int value="2" label="DSCP_OTHER_ECN_ECT1"/>
+  <int value="3" label="DSCP_CS0_ECN_NOT_ECT"/>
+  <int value="4" label="DSCP_CS0_ECN_ECT1"/>
+  <int value="5" label="DSCP_CS1_ECN_NOT_ECT"/>
+  <int value="6" label="DSCP_CS1_ECN_ECT1"/>
+  <int value="7" label="DSCP_AF41_ECN_NOT_ECT"/>
+  <int value="8" label="DSCP_AF41_ECN_ECT1"/>
+  <int value="9" label="DSCP_AF42_ECN_NOT_ECT"/>
+  <int value="10" label="DSCP_AF42_ECN_ECT1"/>
 </enum>
 
 <enum name="SrtpErrorCode">
@@ -292,6 +377,7 @@ chromium-metrics-reviews@google.com.
   <int value="25" label="Error MKI present in packet is invalid"/>
   <int value="26" label="Packet index is too old to consider"/>
   <int value="27" label="Packet index advanced, reset needed"/>
+  <int value="28" label="Cryptex error"/>
 </enum>
 
 <enum name="ThermalState">
@@ -344,6 +430,13 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="InvalidMonitorId"/>
 </enum>
 
+<enum name="WebRtcDtlsVersion">
+  <int value="0" label="Unknown"/>
+  <int value="1" label="DTLS 1.0"/>
+  <int value="2" label="DTLS 1.2"/>
+  <int value="3" label="DTLS 1.3"/>
+</enum>
+
 <enum name="WebRTCEventFrequency">
   <int value="0" label="None."/>
   <int value="1" label="Few."/>
@@ -354,7 +447,7 @@ chromium-metrics-reviews@google.com.
 
 <enum name="WebRtcEventLoggingApiEnum">
   <int value="0" label="kSuccess"/>
-  <int value="1" label="kDeadRph"/>
+  <int value="1" label="OBSOLETE_kDeadRph"/>
   <int value="2" label="kFeatureDisabled"/>
   <int value="3" label="kIncognito"/>
   <int value="4" label="kInvalidArguments"/>
@@ -366,6 +459,7 @@ chromium-metrics-reviews@google.com.
   <int value="10" label="kLogPathNotAvailable"/>
   <int value="11" label="kHistoryPathNotAvailable"/>
   <int value="12" label="kFileCreationError"/>
+  <int value="13" label="kBrowserContextNotFound"/>
 </enum>
 
 <enum name="WebRtcEventLoggingUploadEnum">
@@ -539,6 +633,8 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="VP8"/>
   <int value="2" label="VP9"/>
   <int value="3" label="H264"/>
+  <int value="4" label="AV1"/>
+  <int value="5" label="H265"/>
 </enum>
 
 <enum name="WebRtcWgcCapturerResult">
@@ -566,6 +662,7 @@ chromium-metrics-reviews@google.com.
   <int value="10" label="ResizeMappedTextureFailed"/>
   <int value="11" label="RecreateFramePoolFailed"/>
   <int value="12" label="FramePoolEmpty"/>
+  <int value="13" label="WaitForFirstFrameFailed"/>
 </enum>
 
 <enum name="WebRtcWgcCaptureSessionStartResult">
@@ -581,6 +678,14 @@ chromium-metrics-reviews@google.com.
   <int value="9" label="CreateFreeThreadedFailed"/>
   <int value="10" label="CreateCaptureSessionFailed"/>
   <int value="11" label="StartCaptureFailed"/>
+</enum>
+
+<enum name="WebRtcWgcCaptureSessionWaitForFirstFrameResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="TryGetNextFrameFailed"/>
+  <int value="2" label="AddFrameArrivedCallbackFailed"/>
+  <int value="3" label="WaitingTimedOut"/>
+  <int value="4" label="RemoveFrameArrivedCallbackFailed"/>
 </enum>
 
 </enums>

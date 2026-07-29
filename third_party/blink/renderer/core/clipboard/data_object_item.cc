@@ -31,16 +31,15 @@
 #include "third_party/blink/renderer/core/clipboard/data_object_item.h"
 
 #include "base/time/time.h"
-#include "base/unguessable_token.h"
-#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_data_transfer_token.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
-#include "third_party/blink/renderer/core/clipboard/clipboard_mime_types.h"
 #include "third_party/blink/renderer/core/clipboard/system_clipboard.h"
 #include "third_party/blink/renderer/core/fileapi/blob.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/image-encoders/image_encoder.h"
 #include "third_party/blink/renderer/platform/network/mime/mime_type_registry.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "ui/base/clipboard/clipboard_constants.h"
 
 namespace blink {
 
@@ -78,7 +77,7 @@ DataObjectItem* DataObjectItem::CreateFromFileWithFileSystemId(
 DataObjectItem* DataObjectItem::CreateFromURL(const String& url,
                                               const String& title) {
   DataObjectItem* item =
-      MakeGarbageCollected<DataObjectItem>(kStringKind, kMimeTypeTextURIList);
+      MakeGarbageCollected<DataObjectItem>(kStringKind, ui::kMimeTypeUriList);
   item->data_ = url;
   item->title_ = title;
   return item;
@@ -88,7 +87,7 @@ DataObjectItem* DataObjectItem::CreateFromURL(const String& url,
 DataObjectItem* DataObjectItem::CreateFromHTML(const String& html,
                                                const KURL& base_url) {
   DataObjectItem* item =
-      MakeGarbageCollected<DataObjectItem>(kStringKind, kMimeTypeTextHTML);
+      MakeGarbageCollected<DataObjectItem>(kStringKind, ui::kMimeTypeHtml);
   item->data_ = html;
   item->base_url_ = base_url;
   return item;
@@ -116,8 +115,8 @@ DataObjectItem* DataObjectItem::CreateFromFileSharedBuffer(
 DataObjectItem* DataObjectItem::CreateFromClipboard(
     SystemClipboard* system_clipboard,
     const String& type,
-    const ClipboardSequenceNumberToken& sequence_number) {
-  if (type == kMimeTypeImagePng) {
+    absl::uint128 sequence_number) {
+  if (type == ui::kMimeTypePng) {
     return MakeGarbageCollected<DataObjectItem>(
         kFileKind, type, sequence_number, system_clipboard);
   }
@@ -129,14 +128,13 @@ DataObjectItem::DataObjectItem(ItemKind kind, const String& type)
     : source_(DataSource::kInternalSource),
       kind_(kind),
       type_(type),
-      sequence_number_(base::UnguessableToken::Create()),
+      sequence_number_(0),
       system_clipboard_(nullptr) {}
 
-DataObjectItem::DataObjectItem(
-    ItemKind kind,
-    const String& type,
-    const ClipboardSequenceNumberToken& sequence_number,
-    SystemClipboard* system_clipboard)
+DataObjectItem::DataObjectItem(ItemKind kind,
+                               const String& type,
+                               absl::uint128 sequence_number,
+                               SystemClipboard* system_clipboard)
     : source_(DataSource::kClipboardSource),
       kind_(kind),
       type_(type),
@@ -165,18 +163,28 @@ File* DataObjectItem::GetAsFile() const {
     const uint64_t length = data->length();
     auto blob = BlobDataHandle::Create(std::move(data), length);
     return MakeGarbageCollected<File>(
-        DecodeURLEscapeSequences(base_url_.LastPathComponent(),
-                                 DecodeURLMode::kUTF8OrIsomorphic),
+        DecodeUrlEscapeSequences(base_url_.LastPathComponent(),
+                                 DecodeUrlMode::kUtf8OrIsomorphic),
         base::Time::Now(), std::move(blob));
   }
 
   DCHECK_EQ(source_, DataSource::kClipboardSource);
-  if (GetType() == kMimeTypeImagePng) {
-    mojo_base::BigBuffer png_data =
-        system_clipboard_->ReadPng(mojom::blink::ClipboardBuffer::kStandard);
+  // Verify that the clipboard has not changed since the item was created.
+  // See crbug.com/501920294.
+  if (system_clipboard_->SequenceNumber() != sequence_number_) {
+    return nullptr;
+  }
+
+  if (GetType() == ui::kMimeTypePng) {
+    mojom::blink::ClipboardBuffer buffer =
+        RuntimeEnabledFeatures::ClipboardPasteImageRespectBufferEnabled() &&
+                system_clipboard_->IsSelectionMode()
+            ? mojom::blink::ClipboardBuffer::kSelection
+            : mojom::blink::ClipboardBuffer::kStandard;
+    mojo_base::BigBuffer png_data = system_clipboard_->ReadPng(buffer);
 
     auto data = std::make_unique<BlobData>();
-    data->SetContentType(kMimeTypeImagePng);
+    data->SetContentType(ui::kMimeTypePng);
     data->AppendBytes(png_data);
 
     const uint64_t length = data->length();
@@ -198,11 +206,11 @@ String DataObjectItem::GetAsString() const {
 
   String data;
   // This is ugly but there's no real alternative.
-  if (type_ == kMimeTypeTextPlain) {
+  if (type_ == ui::kMimeTypePlainText) {
     data = system_clipboard_->ReadPlainText();
-  } else if (type_ == kMimeTypeTextRTF) {
+  } else if (type_ == ui::kMimeTypeRtf) {
     data = system_clipboard_->ReadRTF();
-  } else if (type_ == kMimeTypeTextHTML) {
+  } else if (type_ == ui::kMimeTypeHtml) {
     KURL ignored_source_url;
     unsigned ignored;
     data = system_clipboard_->ReadHTML(ignored_source_url, ignored, ignored);

@@ -11,7 +11,6 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/dcheck_is_on.h"
 #include "base/feature_list.h"
@@ -24,13 +23,13 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/synchronization/lock.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/values_test_util.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -245,9 +244,7 @@ bool IsSimilarToIntABNF(const std::string& header_value) {
   return true;
 }
 
-// User agent minor version matches "0.X.0" which depends on reduced UA
-// through kReduceUserAgentMinorVersion experiment, currently the reduced minor
-// version is "0.0.0".
+// Checks that the user agent minor version matches "0.0.0"
 void CheckUserAgentMinorVersion(const std::string& user_agent_value,
                                 const bool expected_ua_reduced) {
   // A regular expression that matches Chrome/{major_version}.{minor_version}
@@ -256,19 +253,13 @@ void CheckUserAgentMinorVersion(const std::string& user_agent_value,
       "Chrome/[0-9]+\\.([0-9]+\\.[0-9]+\\.[0-9]+)";
   // The minor version in the reduced UA string is always "0.0.0".
   static constexpr char kReducedMinorVersion[] = "0.0.0";
-  // The minor version in the ReduceUserAgentMinorVersion experiment is always
-  // "0.X.0", where X is the frozen build version.
-  const std::string kReduceUserAgentMinorVersion =
-      "0." +
-      std::string(blink::features::kUserAgentFrozenBuildVersion.Get().data()) +
-      ".0";
 
   std::string minor_version;
   EXPECT_TRUE(re2::RE2::PartialMatch(user_agent_value, kChromeVersionRegex,
                                      &minor_version));
 
   if (expected_ua_reduced) {
-    EXPECT_EQ(minor_version, kReduceUserAgentMinorVersion);
+    EXPECT_EQ(minor_version, kReducedMinorVersion);
   } else {
     EXPECT_NE(minor_version, kReducedMinorVersion);
   }
@@ -944,7 +935,7 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
 
   Profile* GenerateNewProfile() {
     ProfileManager* profile_manager = g_browser_process->profile_manager();
-    base::FilePath current_profile_path = browser()->profile()->GetPath();
+    base::FilePath current_profile_path = browser()->GetProfile()->GetPath();
 
     // Create an additional profile.
     base::FilePath new_path =
@@ -1167,7 +1158,7 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
         EXPECT_EQ(980, value);
 #endif
 #if BUILDFLAG(IS_ANDROID)
-        // TODO(tbansal): https://crbug.com/825892: Viewport width on main
+        // TODO(tbansal): https://crbug.com/41378979: Viewport width on main
         // frame requests may be incorrect when the Chrome window is not
         // maximized.
         if (main_frame_viewport_width_observed_deprecated_ > 0) {
@@ -1185,7 +1176,7 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
         EXPECT_EQ(980, value);
 #endif
 #if BUILDFLAG(IS_ANDROID)
-        // TODO(tbansal): https://crbug.com/825892: Viewport width on main
+        // TODO(tbansal): https://crbug.com/41378979: Viewport width on main
         // frame requests may be incorrect when the Chrome window is not
         // maximized.
         if (main_frame_viewport_width_observed_ > 0) {
@@ -1205,7 +1196,7 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
 
     for (const auto& elem : network::GetClientHintToNameMap()) {
       const auto& header = elem.second;
-      if (base::Contains(request.headers, header)) {
+      if (request.headers.contains(header)) {
         base::AutoLock lock(count_headers_lock_);
         // The user agent hint is special:
         if (header == "sec-ch-ua") {
@@ -1241,23 +1232,7 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
         continue;
       }
 
-      // Skip over the `Sec-CH-UA-Reduced` client hint because it is only added
-      // in the presence of a valid "UserAgentReduction" Origin Trial token.
-      // `Sec-CH-UA-Reduced` is tested via UaReducedOriginTrialBrowserTest
-      // below.
-      if (header == "sec-ch-ua-reduced") {
-        continue;
-      }
-
-      // TODO(crbug.com/40211003): Skip over the `Sec-CH-UA-Full` client hint
-      // because it is only added in the presence of a valid
-      // "UserAgentDeprecation" Origin Trial token. Need to add `Sec-CH-UA-Full`
-      // corresponding tests.
-      if (header == "sec-ch-ua-full") {
-        continue;
-      }
-
-      EXPECT_EQ(expect_client_hints, base::Contains(request.headers, header));
+      EXPECT_EQ(expect_client_hints, request.headers.contains(header));
     }
   }
 
@@ -1288,10 +1263,10 @@ class ClientHintsBrowserTest : public policy::PolicyTest {
 
     EXPECT_FALSE(request.headers.find("ect")->second.empty());
 
-    // TODO(tbansal): https://crbug.com/819244: When network servicification is
-    // enabled, the renderer processes do not receive notifications on
-    // change in the network quality. Hence, the network quality client hints
-    // are not set to the correct value on subresources.
+    // TODO(tbansal): https://crbug.com/40565882: When network servicification
+    // is enabled, the renderer processes do not receive notifications on change
+    // in the network quality. Hence, the network quality client hints are not
+    // set to the correct value on subresources.
     bool is_main_frame_navigation =
         request.GetURL().spec().find(".html") != std::string::npos;
     if (is_main_frame_navigation) {
@@ -1606,7 +1581,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, PRE_ClientHintsClearSession) {
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -1625,7 +1600,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, PRE_ClientHintsClearSession) {
 
   // Clients hints preferences for one origin should be persisted.
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(1u, host_settings.size());
 
@@ -1648,7 +1623,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, PRE_ClientHintsClearSession) {
 IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, ClientHintsClearSession) {
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
 
   EXPECT_EQ(1u, host_settings.size());
@@ -1686,7 +1661,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   // Verify that the client hints settings for localhost have been saved.
   HostContentSettingsMap* host_content_settings_map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
   ContentSettingsForOneType client_hints_settings =
       host_content_settings_map->GetSettingsForOneType(
           ContentSettingsType::CLIENT_HINTS);
@@ -1699,7 +1674,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   // Verify that client hints for the two hosts has been saved.
   host_content_settings_map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
   client_hints_settings = host_content_settings_map->GetSettingsForOneType(
       ContentSettingsType::CLIENT_HINTS);
   ASSERT_EQ(2U, client_hints_settings.size());
@@ -1782,7 +1757,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
             count_client_hints_headers_seen());
 
   // OTR profile should get neither.
-  Browser* otr_browser = CreateIncognitoBrowser(browser()->profile());
+  Browser* otr_browser = CreateIncognitoBrowser(browser()->GetProfile());
   SetClientHintExpectationsOnMainFrame(false);
   SetClientHintExpectationsOnSubresources(false);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(otr_browser,
@@ -1843,9 +1818,10 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, RestartBrowser) {
             expected_full_version_list);
 
   // Restart the browser, create a new browser to mock the restart process.
-  Browser* new_browser = CreateBrowser(browser()->profile());
+  BrowserWindowInterface* const new_browser =
+      CreateBrowser(browser()->GetProfile());
   CloseBrowserSynchronously(browser());
-  SelectFirstBrowser();
+  SetBrowser(new_browser);
   ASSERT_EQ(browser(), new_browser);
 
   // First request with new browser should expect the high-entropy client hints
@@ -2173,13 +2149,13 @@ void ClientHintsBrowserTest::TestProfilesIndependent(Browser* browser_a,
 // use the right settings, regular -> OTR direction.
 IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, OffTheRecordIndependent) {
   TestProfilesIndependent(browser(),
-                          CreateIncognitoBrowser(browser()->profile()));
+                          CreateIncognitoBrowser(browser()->GetProfile()));
 }
 
 // Check that client hints attached to navigation inside OTR profiles
 // use the right settings, OTR -> regular direction.
 IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, OffTheRecordIndependent2) {
-  TestProfilesIndependent(CreateIncognitoBrowser(browser()->profile()),
+  TestProfilesIndependent(CreateIncognitoBrowser(browser()->GetProfile()),
                           browser());
 }
 
@@ -2200,11 +2176,20 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, Default) {
                                     update_event_count);
 
   // One fetch when initially add the client hints head, one fetch for look up
-  // commit client hints when navigation commits.
-  histogram_tester.ExpectTotalCount("ClientHints.FetchLatency_Total", 2);
-  histogram_tester.ExpectTotalCount("ClientHints.FetchLatency_PrefRead", 2);
+  // commit client hints when navigation commits. When
+  // kOffloadAcceptCHFrameCheck is enabled, an additional fetch is performed
+  // from the URLLoader during resource request creation.
+  const int expected_fetch_count =
+      base::FeatureList::IsEnabled(
+          network::features::kOffloadAcceptCHFrameCheck)
+          ? 3
+          : 2;
+  histogram_tester.ExpectTotalCount("ClientHints.FetchLatency_Total",
+                                    expected_fetch_count);
+  histogram_tester.ExpectTotalCount("ClientHints.FetchLatency_PrefRead",
+                                    expected_fetch_count);
   histogram_tester.ExpectTotalCount("ClientHints.FetchLatency_PrerenderHost",
-                                    2);
+                                    expected_fetch_count);
   histogram_tester.ExpectTotalCount("ClientHints.FetchLatency_OriginTrialCheck",
                                     0);
 
@@ -2283,7 +2268,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   const GURL gurl = accept_ch_with_iframe_url();
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2313,11 +2298,11 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
                        DisregardPersistenceRequestIframe_CrossOrigin) {
   const GURL gurl = accept_ch_with_iframe_url();
 
-  intercept_iframe_resource_ = gurl.path();
+  intercept_iframe_resource_ = gurl.GetPath();
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2351,11 +2336,11 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
       intercept_to_meta_delegate_iframe_ = true;
       break;
   }
-  intercept_iframe_resource_ = gurl.path();
+  intercept_iframe_resource_ = gurl.GetPath();
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2388,7 +2373,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   base::HistogramTester histogram_tester;
 
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2422,7 +2407,7 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2453,7 +2438,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2488,7 +2473,7 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2532,7 +2517,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2551,7 +2536,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   // Clients hints preferences for one origin should be persisted.
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(1u, host_settings.size());
 
@@ -2588,7 +2573,7 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2606,7 +2591,7 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
 
   // Clients hints preferences for one origin should be persisted.
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2651,7 +2636,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2669,7 +2654,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   // Clients hints preferences for one origin should be persisted.
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(1u, host_settings.size());
 
@@ -2700,11 +2685,11 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   const GURL gurl_with = accept_ch_url();
 
   scoped_refptr<content_settings::CookieSettings> cookie_settings_ =
-      CookieSettingsFactory::GetForProfile(browser()->profile());
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile());
   base::HistogramTester histogram_tester;
 
   // Block cookies.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(gurl_with, GURL(),
                                       ContentSettingsType::COOKIES,
                                       CONTENT_SETTING_BLOCK);
@@ -2713,7 +2698,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), gurl_with));
   histogram_tester.ExpectTotalCount("ClientHints.UpdateEventCount", 1);
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(1u, host_settings.size());
   VerifyContentSettingsNotNotified();
@@ -2729,7 +2714,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   const GURL gurl_without = accept_ch_url();
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2745,12 +2730,12 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   // Clients hints preferences for one origin should be persisted.
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(1u, host_settings.size());
 
   // Block the cookies: Client hints should be attached.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(gurl_without, GURL(),
                                       ContentSettingsType::COOKIES,
                                       CONTENT_SETTING_BLOCK);
@@ -2775,7 +2760,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
                                 /*loads=*/1);
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::COOKIES);
 }
 
@@ -2790,23 +2775,23 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   const GURL gurl = accept_ch_url();
 
   // Block JavaScript: Client hint preferences should not be persisted.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(
           gurl, GURL(), ContentSettingsType::JAVASCRIPT, CONTENT_SETTING_BLOCK);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), accept_ch_url()));
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
   VerifyContentSettingsNotNotified();
 
   // Allow JavaScript: Client hint preferences should be persisted.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(
           gurl, GURL(), ContentSettingsType::JAVASCRIPT, CONTENT_SETTING_ALLOW);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), accept_ch_url()));
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(1u, host_settings.size());
   // Three navigations occurred but only two had an Accept-CH header.
@@ -2816,7 +2801,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
                                 /*loads=*/2);
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::JAVASCRIPT);
 }
 IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
@@ -2836,23 +2821,23 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
   }
 
   // Block JavaScript: Client hint preferences should not be persisted.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(
           gurl, GURL(), ContentSettingsType::JAVASCRIPT, CONTENT_SETTING_BLOCK);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), accept_ch_url()));
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
   VerifyContentSettingsNotNotified();
 
   // Allow JavaScript: Client hint preferences should be persisted.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(
           gurl, GURL(), ContentSettingsType::JAVASCRIPT, CONTENT_SETTING_ALLOW);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), accept_ch_url()));
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(1u, host_settings.size());
   ExpectAcceptCHMetaUKMSeen(*ukm_recorder_, {},
@@ -2861,7 +2846,7 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
                               /*loads=*/1);
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::JAVASCRIPT);
 }
 
@@ -2873,7 +2858,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -2894,7 +2879,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   // Clients hints preferences for one origin should be persisted.
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(1u, host_settings.size());
 
@@ -2915,7 +2900,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   SetJsEnabledForActiveView(true);
 
   // Block JavaScript via ContentSetting: Client hints should not be attached.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(without_accept_ch_url(), GURL(),
                                       ContentSettingsType::JAVASCRIPT,
                                       CONTENT_SETTING_BLOCK);
@@ -2928,7 +2913,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   EXPECT_EQ(0u, count_save_data_client_hints_headers_seen());
 
   // Allow JavaScript: Client hints should now be attached.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(without_accept_ch_url(), GURL(),
                                       ContentSettingsType::JAVASCRIPT,
                                       CONTENT_SETTING_ALLOW);
@@ -2953,7 +2938,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
                                 /*loads=*/1);
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::JAVASCRIPT);
 }
 
@@ -2962,12 +2947,12 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
                        ClientHintsMalformedContentSettings) {
   HostContentSettingsMap* host_content_settings_map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
 
   // Add setting for the host.
-  base::Value::List client_hints_list;
+  base::ListValue client_hints_list;
   client_hints_list.Append(42 /* client hint value */);
-  base::Value::Dict client_hints_dictionary;
+  base::DictValue client_hints_dictionary;
   client_hints_dictionary.Set(client_hints::kClientHintsSettingKey,
                               base::Value(std::move(client_hints_list)));
   host_content_settings_map->SetWebsiteSettingDefaultScope(
@@ -2992,13 +2977,13 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, ClientHintsScriptNotAllowed) {
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
   // Block Javascript: Client hints should not be attached.
   SetClientHintExpectationsOnSubresources(false);
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(accept_ch_img_localhost(), GURL(),
                                       ContentSettingsType::JAVASCRIPT,
                                       CONTENT_SETTING_BLOCK);
@@ -3013,7 +2998,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, ClientHintsScriptNotAllowed) {
   EXPECT_EQ(0u, third_party_client_hints_count_seen());
 
   // Allow Javascript: Client hints should now be attached.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(accept_ch_img_localhost(), GURL(),
                                       ContentSettingsType::JAVASCRIPT,
                                       CONTENT_SETTING_ALLOW);
@@ -3032,12 +3017,12 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, ClientHintsScriptNotAllowed) {
   VerifyContentSettingsNotNotified();
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::JAVASCRIPT);
 
   // Block Javascript again: Client hints should not be attached.
   SetClientHintExpectationsOnSubresources(false);
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(accept_ch_img_localhost(), GURL(),
                                       ContentSettingsType::JAVASCRIPT,
                                       CONTENT_SETTING_BLOCK);
@@ -3052,7 +3037,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, ClientHintsScriptNotAllowed) {
   EXPECT_EQ(3u, third_party_client_hints_count_seen());
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::JAVASCRIPT);
   // Three navigations occurred.
   ExpectAcceptCHHeaderUKMSeen(*ukm_recorder_, kStandardHTTPHeaderHints,
@@ -3074,13 +3059,13 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
 
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
   // Block Javascript: Client hints should not be attached.
   SetClientHintExpectationsOnSubresources(false);
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(accept_ch_img_localhost(), GURL(),
                                       ContentSettingsType::JAVASCRIPT,
                                       CONTENT_SETTING_BLOCK);
@@ -3095,7 +3080,7 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
   EXPECT_EQ(0u, third_party_client_hints_count_seen());
 
   // Allow Javascript: Client hints should now be attached.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(accept_ch_img_localhost(), GURL(),
                                       ContentSettingsType::JAVASCRIPT,
                                       CONTENT_SETTING_ALLOW);
@@ -3114,12 +3099,12 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
   VerifyContentSettingsNotNotified();
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::JAVASCRIPT);
 
   // Block Javascript again: Client hints should not be attached.
   SetClientHintExpectationsOnSubresources(false);
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(accept_ch_img_localhost(), GURL(),
                                       ContentSettingsType::JAVASCRIPT,
                                       CONTENT_SETTING_BLOCK);
@@ -3138,7 +3123,7 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
                               /*loads=*/1);
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::JAVASCRIPT);
 }
 
@@ -3149,15 +3134,15 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, ClientHintsCookiesNotAllowed) {
 
   base::HistogramTester histogram_tester;
   scoped_refptr<content_settings::CookieSettings> cookie_settings_ =
-      CookieSettingsFactory::GetForProfile(browser()->profile());
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile());
 
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
   // Block cookies.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(
           gurl, GURL(), ContentSettingsType::COOKIES, CONTENT_SETTING_BLOCK);
   base::RunLoop().RunUntilIdle();
@@ -3177,7 +3162,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, ClientHintsCookiesNotAllowed) {
                                 /*loads=*/1);
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::COOKIES);
 }
 IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
@@ -3194,15 +3179,15 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
 
   base::HistogramTester histogram_tester;
   scoped_refptr<content_settings::CookieSettings> cookie_settings_ =
-      CookieSettingsFactory::GetForProfile(browser()->profile());
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile());
 
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
   // Block cookies.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(
           gurl, GURL(), ContentSettingsType::COOKIES, CONTENT_SETTING_BLOCK);
   base::RunLoop().RunUntilIdle();
@@ -3232,7 +3217,7 @@ IN_PROC_BROWSER_TEST_P(ClientHintsBrowserTestForMetaTagTypes,
   }
 
   // Clear settings.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::COOKIES);
 }
 
@@ -3246,7 +3231,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
   Browser* incognito = CreateIncognitoBrowser();
 
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(incognito->profile())
+      HostContentSettingsMapFactory::GetForProfile(incognito->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -3264,7 +3249,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest,
 
   // Clients hints preferences for one origin should be persisted.
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(incognito->profile())
+      HostContentSettingsMapFactory::GetForProfile(incognito->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(1u, host_settings.size());
 
@@ -3717,7 +3702,7 @@ IN_PROC_BROWSER_TEST_F(CriticalClientHintsBrowserTest,
                        CriticalClientHintWithUncachedViewport) {
   // Force an empty viewport size.
   browser()
-      ->profile()
+      ->GetProfile()
       ->GetClientHintsControllerDelegate()
       ->ForceEmptyViewportSizeForTesting(true);
   // We should never see real sizes sent.
@@ -3731,7 +3716,7 @@ IN_PROC_BROWSER_TEST_F(CriticalClientHintsBrowserTest,
   EXPECT_EQ(observed_ch_viewport_widths_deprecated()[0], "MISSING");
   // Cleanup shim to prevent other tests from breaking.
   browser()
-      ->profile()
+      ->GetProfile()
       ->GetClientHintsControllerDelegate()
       ->ForceEmptyViewportSizeForTesting(false);
 }
@@ -3742,22 +3727,22 @@ IN_PROC_BROWSER_TEST_F(CriticalClientHintsBrowserTest,
                        CriticalClientHintWithUncachedViewportAndCachedHints) {
   // Force an empty viewport size.
   browser()
-      ->profile()
+      ->GetProfile()
       ->GetClientHintsControllerDelegate()
       ->ForceEmptyViewportSizeForTesting(true);
   // Add setting for the host.
-  base::Value::List client_hints_list;
+  base::ListValue client_hints_list;
   client_hints_list.Append(
       static_cast<int>(network::mojom::WebClientHintsType::kViewportHeight));
   client_hints_list.Append(
       static_cast<int>(network::mojom::WebClientHintsType::kViewportWidth));
   client_hints_list.Append(static_cast<int>(
       network::mojom::WebClientHintsType::kViewportWidth_DEPRECATED));
-  base::Value::Dict client_hints_dictionary;
+  base::DictValue client_hints_dictionary;
   client_hints_dictionary.Set(client_hints::kClientHintsSettingKey,
                               base::Value(std::move(client_hints_list)));
   HostContentSettingsMap* host_content_settings_map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
   host_content_settings_map->SetWebsiteSettingDefaultScope(
       critical_ch_viewport_url(), GURL(), ContentSettingsType::CLIENT_HINTS,
       base::Value(std::move(client_hints_dictionary)));
@@ -3772,7 +3757,7 @@ IN_PROC_BROWSER_TEST_F(CriticalClientHintsBrowserTest,
   EXPECT_EQ(observed_ch_viewport_widths_deprecated()[0], "MISSING");
   // Cleanup shim to prevent other tests from breaking.
   browser()
-      ->profile()
+      ->GetProfile()
       ->GetClientHintsControllerDelegate()
       ->ForceEmptyViewportSizeForTesting(false);
 }
@@ -3833,7 +3818,7 @@ IN_PROC_BROWSER_TEST_F(CriticalClientHintsBrowserTest,
   // Ensure that hints are now in storage.
   ContentSettingsForOneType client_hints_settings;
   HostContentSettingsMap* host_content_settings_map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
   client_hints_settings = host_content_settings_map->GetSettingsForOneType(
       ContentSettingsType::CLIENT_HINTS);
   ASSERT_EQ(1U, client_hints_settings.size());
@@ -3868,7 +3853,7 @@ IN_PROC_BROWSER_TEST_F(CriticalClientHintsBrowserTest,
 
   // Ensure that hints are now in storage.
   HostContentSettingsMap* host_content_settings_map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
   ContentSettingsForOneType client_hints_settings =
       host_content_settings_map->GetSettingsForOneType(
           ContentSettingsType::CLIENT_HINTS);
@@ -4058,16 +4043,15 @@ class ClientHintsBrowserTestWithEmulatedMedia
   ~ClientHintsBrowserTestWithEmulatedMedia() override = default;
 
   void MonitorResourceRequest(const net::test_server::HttpRequest& request) {
-    if (base::Contains(request.headers, "sec-ch-prefers-color-scheme")) {
+    if (request.headers.contains("sec-ch-prefers-color-scheme")) {
       prefers_color_scheme_observed_ =
           request.headers.at("sec-ch-prefers-color-scheme");
     }
-    if (base::Contains(request.headers, "sec-ch-prefers-reduced-motion")) {
+    if (request.headers.contains("sec-ch-prefers-reduced-motion")) {
       prefers_reduced_motion_observed_ =
           request.headers.at("sec-ch-prefers-reduced-motion");
     }
-    if (base::Contains(request.headers,
-                       "sec-ch-prefers-reduced-transparency")) {
+    if (request.headers.contains("sec-ch-prefers-reduced-transparency")) {
       prefers_reduced_transparency_observed_ =
           request.headers.at("sec-ch-prefers-reduced-transparency");
     }
@@ -4090,7 +4074,7 @@ class ClientHintsBrowserTestWithEmulatedMedia
   void EmulateMedia(std::string_view string) {
     base::Value features = base::test::ParseJson(string);
     DCHECK(features.is_list());
-    base::Value::Dict params;
+    base::DictValue params;
     params.Set("features", std::move(features));
     SendCommandSync("Emulation.setEmulatedMedia", std::move(params));
   }
@@ -4179,6 +4163,146 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTestWithEmulatedMedia,
   EXPECT_EQ(prefers_color_scheme_observed(), "dark");
   EXPECT_EQ(prefers_reduced_motion_observed(), "no-preference");
   EXPECT_EQ(prefers_reduced_transparency_observed(), "no-preference");
+}
+
+class ClientHintsUserAgentOverrideDevTools : public DevToolsProtocolTestBase {
+ public:
+  ClientHintsUserAgentOverrideDevTools()
+      : https_server_(net::EmbeddedTestServer::TYPE_HTTPS) {
+    https_server_.ServeFilesFromSourceDirectory(
+        "chrome/test/data/client_hints");
+    https_server_.RegisterRequestMonitor(base::BindRepeating(
+        &ClientHintsUserAgentOverrideDevTools::MonitorResourceRequest,
+        base::Unretained(this)));
+    EXPECT_TRUE(https_server_.Start());
+
+    test_url_ = https_server_.GetURL("/accept_ch.html");
+  }
+
+  ClientHintsUserAgentOverrideDevTools(
+      const ClientHintsUserAgentOverrideDevTools&) = delete;
+  ClientHintsUserAgentOverrideDevTools& operator=(
+      const ClientHintsUserAgentOverrideDevTools&) = delete;
+
+  ~ClientHintsUserAgentOverrideDevTools() override = default;
+
+  void MonitorResourceRequest(const net::test_server::HttpRequest& request) {
+    last_request_headers_.clear();
+
+    if (request.headers.count("User-Agent")) {
+      last_request_headers_["User-Agent"] = request.headers.at("User-Agent");
+    }
+    for (const auto& header : request.headers) {
+      if (base::StartsWith(header.first, "sec-ch-ua",
+                           base::CompareCase::INSENSITIVE_ASCII)) {
+        last_request_headers_[header.first] = header.second;
+      }
+    }
+  }
+
+  const GURL& test_url() const { return test_url_; }
+
+ protected:
+  net::EmbeddedTestServer https_server_;
+  GURL test_url_;
+  std::map<std::string, std::string> last_request_headers_;
+};
+
+IN_PROC_BROWSER_TEST_F(ClientHintsUserAgentOverrideDevTools,
+                       UserAgentAndUserAgentClientHints) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url()));
+
+  Attach();
+
+  base::DictValue params;
+  params.Set("userAgent", "MyTestAgent/2.0");
+
+  base::DictValue metadata;
+  base::ListValue brands;
+  base::DictValue brand1;
+  brand1.Set("brand", "My Fake Browser");
+  brand1.Set("version", "101");
+  brands.Append(std::move(brand1));
+  base::DictValue brand2;
+  brand2.Set("brand", "Chromium");
+  brand2.Set("version", "101");
+  brands.Append(std::move(brand2));
+  metadata.Set("brands", std::move(brands));
+
+  base::ListValue full_version_list;
+  base::DictValue fv_brand1;
+  fv_brand1.Set("brand", "My Fake Browser");
+  fv_brand1.Set("version", "101.0.1234.0");
+  full_version_list.Append(std::move(fv_brand1));
+  base::DictValue fv_brand2;
+  fv_brand2.Set("brand", "Chromium");
+  fv_brand2.Set("version", "101.0.5555.0");
+  full_version_list.Append(std::move(fv_brand2));
+  metadata.Set("fullVersionList", std::move(full_version_list));
+
+  metadata.Set("fullVersion", "101.0.1234.0");
+  metadata.Set("platform", "TestPlatform");
+  metadata.Set("platformVersion", "1.2.3");
+  metadata.Set("architecture", "x64");
+  metadata.Set("model", "TestModel-ABC");
+  metadata.Set("mobile", false);
+  metadata.Set("bitness", "64");
+  metadata.Set("wow64", false);
+
+  base::ListValue form_factors;
+  form_factors.Append(blink::kDesktopFormFactor);
+  form_factors.Append(blink::kEInkFormFactor);
+
+  metadata.Set("formFactors", std::move(form_factors));
+  params.Set("userAgentMetadata", std::move(metadata));
+
+  SendCommandSync("Emulation.setUserAgentOverride", std::move(params));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url()));
+
+  // Verify all captured headers.
+  EXPECT_EQ(last_request_headers_["User-Agent"], "MyTestAgent/2.0");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua"],
+            R"("My Fake Browser";v="101", "Chromium";v="101")");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-arch"], R"("x64")");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-platform"], R"("TestPlatform")");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-model"], R"("TestModel-ABC")");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-mobile"], "?0");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-full-version"],
+            R"("101.0.1234.0")");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-platform-version"], R"("1.2.3")");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-bitness"], R"("64")");
+  EXPECT_EQ(
+      last_request_headers_["sec-ch-ua-full-version-list"],
+      R"("My Fake Browser";v="101.0.1234.0", "Chromium";v="101.0.5555.0")");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-wow64"], "?0");
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-form-factors"],
+            R"("Desktop", "EInk")");
+}
+
+IN_PROC_BROWSER_TEST_F(ClientHintsUserAgentOverrideDevTools,
+                       InvalidFormfactor) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url()));
+
+  Attach();
+
+  base::DictValue params;
+  base::DictValue metadata;
+  base::ListValue form_factors;
+  form_factors.Append("InvalidFormfactor");
+
+  metadata.Set("formFactors", std::move(form_factors));
+  params.Set("userAgentMetadata", std::move(metadata));
+
+  SendCommandSync("Emulation.setUserAgentOverride", std::move(params));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url()));
+
+  // The test expects the default "Desktop" or "Mobile" form factor, as the
+  // invalid override was rejected.
+  EXPECT_EQ(last_request_headers_["sec-ch-ua-form-factors"],
+            base::CommandLine::ForCurrentProcess()->HasSwitch(
+                embedder_support::kUseMobileUserAgent)
+                ? R"("Mobile")"
+                : R"("Desktop")");
 }
 
 // Base class for the User-Agent reduction browser tests.  Common functionality
@@ -4348,9 +4472,9 @@ class SameOriginUaReductionBrowserTest : public UaReductionBrowserTest {
       return false;
 
     std::string path = "chrome/test/data/client_hints";
-    path.append(static_cast<std::string>(params->url_request.url.path_piece()));
+    path.append(static_cast<std::string>(params->url_request.url.path()));
 
-    if (params->url_request.url.path() == "/basic.html") {
+    if (params->url_request.url.GetPath() == "/basic.html") {
       URLLoaderInterceptor::WriteResponse(path, params->client.get());
       return true;
     }
@@ -4407,7 +4531,7 @@ IN_PROC_BROWSER_TEST_F(SameOriginUaReductionBrowserTest,
   CheckSecClientHintUaCount();
 
   // Make sure the last intercepted URL was the request for the embedded iframe.
-  EXPECT_EQ(last_request_url().path(), "/simple.html");
+  EXPECT_EQ(last_request_url().GetPath(), "/simple.html");
 }
 
 IN_PROC_BROWSER_TEST_F(SameOriginUaReductionBrowserTest, SubresourceRequest) {
@@ -4420,7 +4544,7 @@ IN_PROC_BROWSER_TEST_F(SameOriginUaReductionBrowserTest, SubresourceRequest) {
 
   // Make sure the last intercepted URL was the subresource request for the
   // embedded stylesheet.
-  EXPECT_EQ(last_request_url().path(), "/style.css");
+  EXPECT_EQ(last_request_url().GetPath(), "/style.css");
 }
 
 IN_PROC_BROWSER_TEST_F(SameOriginUaReductionBrowserTest, UserAgentOverride) {
@@ -4542,9 +4666,9 @@ class ThirdPartyUaReductionBrowserTest : public UaReductionBrowserTest {
         GURL(kFirstPartyOriginUrl)) {
       return false;
     }
-    if (params->url_request.url.path() !=
+    if (params->url_request.url.GetPath() !=
             base::StrCat({"/accept_ch_ua_cross_origin_iframe_request.html"}) &&
-        params->url_request.url.path() !=
+        params->url_request.url.GetPath() !=
             base::StrCat(
                 {"/accept_ch_ua_cross_origin_subresource_request.html"})) {
       return false;
@@ -4554,12 +4678,12 @@ class ThirdPartyUaReductionBrowserTest : public UaReductionBrowserTest {
     std::string headers =
         "HTTP/1.1 200 OK\nContent-Type: text/html; charset=utf-8\n";
     std::string body = "<html><head>";
-    if (params->url_request.url.path() ==
+    if (params->url_request.url.GetPath() ==
         base::StrCat({"/accept_ch_ua_cross_origin_subresource_request.html"})) {
       base::StrAppend(&body, {BuildSubresourceHTML()});
     }
     base::StrAppend(&body, {"</head><body>"});
-    if (params->url_request.url.path() ==
+    if (params->url_request.url.GetPath() ==
         base::StrCat({"/accept_ch_ua_cross_origin_iframe_request.html"})) {
       base::StrAppend(&body, {BuildIframeHTML()});
     }
@@ -4623,7 +4747,7 @@ IN_PROC_BROWSER_TEST_F(ThirdPartyUaReductionBrowserTest,
 
   // Make sure the last intercepted URL was the request for the embedded
   // iframe.
-  EXPECT_EQ(GetLastRequestedURL()->path(), "/simple.html");
+  EXPECT_EQ(GetLastRequestedURL()->GetPath(), "/simple.html");
 }
 
 // Tests that headers are not sent to a third-party iframe after script is
@@ -4636,7 +4760,7 @@ IN_PROC_BROWSER_TEST_F(ThirdPartyUaReductionBrowserTest, ScriptDisabled) {
                           /*navigation_url_count=*/2);
 
   // Disable script for first party origin.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingCustomScope(
           ContentSettingsPattern::FromURL(GURL(kFirstPartyOriginUrl)),
           ContentSettingsPattern::Wildcard(), ContentSettingsType::JAVASCRIPT,
@@ -4648,7 +4772,7 @@ IN_PROC_BROWSER_TEST_F(ThirdPartyUaReductionBrowserTest, ScriptDisabled) {
 
   // Make sure the last intercepted URL was the request for the embedded
   // iframe.
-  EXPECT_EQ(GetLastRequestedURL()->path(), "/simple.html");
+  EXPECT_EQ(GetLastRequestedURL()->GetPath(), "/simple.html");
 }
 
 IN_PROC_BROWSER_TEST_F(ThirdPartyUaReductionBrowserTest,
@@ -4661,7 +4785,7 @@ IN_PROC_BROWSER_TEST_F(ThirdPartyUaReductionBrowserTest,
 
   // Make sure the last intercepted URL was the request for the embedded
   // iframe.
-  EXPECT_EQ(GetLastRequestedURL()->path(), "/style.css");
+  EXPECT_EQ(GetLastRequestedURL()->GetPath(), "/style.css");
 }
 
 IN_PROC_BROWSER_TEST_F(ThirdPartyUaReductionBrowserTest,
@@ -4676,7 +4800,7 @@ IN_PROC_BROWSER_TEST_F(ThirdPartyUaReductionBrowserTest,
 
   // Make sure the last intercepted URL was the request for the embedded
   // iframe.
-  EXPECT_EQ(GetLastRequestedURL()->path(), "/simple.html");
+  EXPECT_EQ(GetLastRequestedURL()->GetPath(), "/simple.html");
 }
 
 IN_PROC_BROWSER_TEST_F(ThirdPartyUaReductionBrowserTest,
@@ -4691,11 +4815,11 @@ IN_PROC_BROWSER_TEST_F(ThirdPartyUaReductionBrowserTest,
 
   // Make sure the last intercepted URL was the request for the embedded
   // iframe.
-  EXPECT_EQ(GetLastRequestedURL()->path(), "/style.css");
+  EXPECT_EQ(GetLastRequestedURL()->GetPath(), "/style.css");
 }
 
 // CrOS multi-profiles implementation is too different for these tests.
-#if !BUILDFLAG(IS_CHROMEOS_ASH)
+#if !BUILDFLAG(IS_CHROMEOS)
 
 void ClientHintsBrowserTest::TestSwitchWithNewProfile(
     const std::string& switch_value,
@@ -4740,7 +4864,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, SwitchAppliesStorageOneOrigin) {
       "\"https://b.test\":\"Not Valid\"}",
       1);
 }
-#endif  // !BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 class ClientHintsCommandLineSwitchBrowserTest : public ClientHintsBrowserTest {
  public:
@@ -4794,7 +4918,7 @@ IN_PROC_BROWSER_TEST_F(ClientHintsCommandLineSwitchBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), without_accept_ch_url()));
 
   // OTR profile should get neither.
-  Browser* otr_browser = CreateIncognitoBrowser(browser()->profile());
+  Browser* otr_browser = CreateIncognitoBrowser(browser()->GetProfile());
   SetClientHintExpectationsOnMainFrame(false);
   SetClientHintExpectationsOnSubresources(false);
   ASSERT_TRUE(
@@ -4808,40 +4932,6 @@ IN_PROC_BROWSER_TEST_F(ClientHintsBrowserTest, UpdatedGREASEByDefault) {
   std::string ua_ch_result = main_frame_ua_observed();
 
   ASSERT_TRUE(SawUpdatedGrease(ua_ch_result) && !SawOldGrease(ua_ch_result));
-}
-
-class XRClientHintsTest : public ClientHintsBrowserTest {
-  // Enables ClientHintsXRFormFactor feature in addition to the default ones.
-  void SetUpScopedFeatureList(
-      base::test::ScopedFeatureList& scoped_feature_list) override {
-    std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
-    feature_list->InitFromCommandLine(
-        base::StrCat({kDefaultFeatures, ",ClientHintsXRFormFactor"}), "");
-    scoped_feature_list.InitWithFeatureList(std::move(feature_list));
-  }
-};
-
-// Tests that form_factors client hints include "XR" when
-// ClientHintsXRFormFactor is enabled.
-IN_PROC_BROWSER_TEST_F(XRClientHintsTest, UAHintsXRMode) {
-  const GURL gurl = accept_ch_url();
-
-  // First request: no high-entropy hints send in the request header because we
-  // don't know server preferences.
-  SetClientHintExpectationsOnMainFrame(false);
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), gurl));
-  EXPECT_TRUE(main_frame_ua_form_factors_observed().empty());
-
-  // Send request: we should expect the high-entropy client hints send in the
-  // request header.
-  SetClientHintExpectationsOnMainFrame(true);
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), gurl));
-
-  auto form_factors =
-      base::SplitString(main_frame_ua_form_factors_observed(), ",",
-                        base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-  EXPECT_TRUE(base::Contains(form_factors, "\"XR\""))
-      << main_frame_ua_form_factors_observed();
 }
 
 // Tests that user-agent reduction on a redirect request.
@@ -4893,7 +4983,7 @@ class RedirectUaReductionBrowserTest : public InProcessBrowserTest {
 
     std::string resource_path = "chrome/test/data/client_hints";
     resource_path.append(
-        static_cast<std::string>(params->url_request.url.path_piece()));
+        static_cast<std::string>(params->url_request.url.path()));
     URLLoaderInterceptor::WriteResponse(resource_path, params->client.get());
     return true;
   }
@@ -4987,7 +5077,7 @@ IN_PROC_BROWSER_TEST_P(
     Block) {
   base::HistogramTester histogram_tester;
   ContentSettingsForOneType host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(0u, host_settings.size());
 
@@ -5009,7 +5099,7 @@ IN_PROC_BROWSER_TEST_P(
   // Clients hints preferences for one origin should be persisted iff the url is
   // not targeted as the blocked site.
   host_settings =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
           ->GetSettingsForOneType(ContentSettingsType::CLIENT_HINTS);
   EXPECT_EQ(expected_count, host_settings.size());
 

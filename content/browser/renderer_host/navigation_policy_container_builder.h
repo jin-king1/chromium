@@ -22,7 +22,6 @@ namespace content {
 class FrameNavigationEntry;
 class NavigationHandle;
 class RenderFrameHostImpl;
-class StoragePartition;
 
 // Keeps track of a few important sets of policies during a navigation: those of
 // the parent document, of the navigation initiator, etc. Computes the policies
@@ -49,21 +48,11 @@ class CONTENT_EXPORT NavigationPolicyContainerBuilder {
   // All arguments may be nullptr and need only outlive this call.
   //
   // If `parent` is not nullptr, its policies are copied.
-  // If `initiator_frame_token` is not nullptr, the policies are copied from the
-  // corresponding RenderFrameHost.
-  // `initiator_process_id` is used with the frame token to look up the
-  // initiator frame.
-  // If `storage_partition` is not nullptr, it may contain a
-  // NavigationStateKeepAlive that is keeping the PolicyContainerHost of the
-  // initiator alive.
   // If `history_entry` is not nullptr and contains policies, those are copied.
   //
   // This must only be called on the browser's UI thread.
   NavigationPolicyContainerBuilder(
       RenderFrameHostImpl* parent,
-      const blink::LocalFrameToken* initiator_frame_token,
-      int initiator_process_id,
-      StoragePartition* storage_partition,
       const FrameNavigationEntry* history_entry);
 
   ~NavigationPolicyContainerBuilder();
@@ -81,18 +70,25 @@ class CONTENT_EXPORT NavigationPolicyContainerBuilder {
   // construction time. Returns nullptr if there was no parent.
   const PolicyContainerPolicies* ParentPolicies() const;
 
-  // Returns a pointer to a snapshot of the navigation initiator's policies
-  // captured at construction time. Returns nullptr if there was no initiator.
-  const PolicyContainerPolicies* InitiatorPolicies() const;
-
   // Returns a pointer to a snapshot of the navigation history entry's policies
   // captured at construction time. Returns nullptr if there was no entry, of
   // if the entry had no policies.
   const PolicyContainerPolicies* HistoryPolicies() const;
 
-  // Sets the cross origin opener policy of the new document.
+  // Sets the connection allowlists for the new document.
   //
   // This must be called before `ComputePolicies()`.
+  void SetConnectionAllowlists(network::ConnectionAllowlists allowlists);
+
+  // Sets the cross origin opener policy of the new document.
+  //
+  // This should be called before `ComputePolicies()` to set the COOP delivered
+  // in the header response. For subframes, it should be called again after the
+  // policies have been computed, to potentially inherit COOP from the top-level
+  // frame if the subframe is same-origin with the top level frame. This
+  // requires knowing the origin of the document to commit, which in turns
+  // requires having computed the sandbox flags, which happens in
+  // `ComputePolicies()`.
   void SetCrossOriginOpenerPolicy(network::CrossOriginOpenerPolicy coop);
 
   // Sets the cross origin embedder policy of the new document.
@@ -105,10 +101,19 @@ class CONTENT_EXPORT NavigationPolicyContainerBuilder {
   // This must be called before `ComputePolicies()`.
   void SetDocumentIsolationPolicy(const network::DocumentIsolationPolicy& dip);
 
+  void SetIntegrityPolicy(network::IntegrityPolicy ip);
+  void SetIntegrityPolicyReportOnly(network::IntegrityPolicy ip);
+
   // Sets the IP address space of the delivered policies of the new document.
   //
   // This must be called before `ComputePolicies()`.
   void SetIPAddressSpace(network::mojom::IPAddressSpace address_space);
+
+  // Sets whether the origin is allowed to issue Local Network Access requests
+  // even if it is not a secure context. If not set, this defaults to false.
+  //
+  // If set, this must be called before `ComputePolicies()`.
+  void SetLocalNetworkAccessNonSecureContextAllowed(bool allowed);
 
   // Sets whether the origin of the document being navigated to is
   // potentially-trustworthy, as defined in:
@@ -117,13 +122,17 @@ class CONTENT_EXPORT NavigationPolicyContainerBuilder {
   // This must be called before `ComputePolicies()`.
   void SetIsOriginPotentiallyTrustworthy(bool value);
 
-  // Sets whether COOP origins allow the document to be crossOriginIsolated.
-  // This must be called before `ComputePolicies()`.
-  void SetAllowCrossOriginIsolation(bool value);
-
   // Sets whether crossOriginIsolation is enabled by DocumentIsolationPolicy.
   // This must be called after `ComputePolicies()`.
   void SetCrossOriginIsolationEnabledByDIP();
+
+  // Sets an override of the CrossOriginIsolationKey for the context. This
+  // should only be used when no form of SiteInstance switching is available
+  // (i.e. on Android WebView) and after `ComputePolicies()` has been called.
+  // TODO(crbug.com/419595581): Remove this once default SiteInstanceGroups
+  // ships on Android WebView.
+  void SetCrossOriginIsolationKeyOverride(
+      const AgentClusterKey::CrossOriginIsolationKey& coi_key);
 
   // Records an additional Content Security Policy that will apply to the new
   // document. `policy` must not be null. Policies added this way are ignored
@@ -155,9 +164,19 @@ class CONTENT_EXPORT NavigationPolicyContainerBuilder {
   // `navigation_handle` should be the handle for the navigation to compute
   // policies for. Its URL should designate the URL of the document after all
   // redirects have been followed.
+  // `initiator_policies` should be the policies of the initiator of the
+  // navigation, if the navigation has an initiator whose policies can be
+  // inherited.
   // `is_inside_mhtml` specifies whether the navigation loads an MHTML document
   // or a subframe of an MHTML document. This influences computed sandbox flags.
   // `frame_sandbox_flags` represents the frame's sandbox flags.
+  // If `is_secure_context_root` is true, the new document is treated as a
+  // secure-context inheritance root that evaluates the frame based solely on
+  // its own origin's trustworthiness, ignoring the parent's secure context
+  // status. Used for embedder-identified boundaries (today, MIME-handler
+  // OOPIFs; see `ContentBrowserClient::IsSecureContextRoot()`) where the
+  // frame acts as an independent security boundary that does not inherit an
+  // insecure state from its embedder.
   //
   // Also sets `DeliveredPoliciesForTesting().is_web_secure_context` to its
   // final value.
@@ -165,9 +184,11 @@ class CONTENT_EXPORT NavigationPolicyContainerBuilder {
   // This method must only be called once. `ComputePoliciesForError()` may be
   // called later, in which case it overrides the final policies.
   void ComputePolicies(NavigationHandle* navigation_handle,
+                       const PolicyContainerPolicies* initiator_policies,
                        bool is_inside_mhtml,
                        network::mojom::WebSandboxFlags frame_sandbox_flags,
-                       bool is_credentialless);
+                       bool is_credentialless,
+                       bool is_secure_context_root);
 
   // Returns a reference to the policies of the new document, i.e. the policies
   // in the policy container host to be committed.
@@ -213,9 +234,12 @@ class CONTENT_EXPORT NavigationPolicyContainerBuilder {
 
  private:
   // Sets `delivered_policies_.is_web_secure_context` to its final value.
+  // If `is_secure_context_root` is true, the bit is decided solely by the
+  // frame's own origin trustworthiness, ignoring the parent -- see the
+  // `ComputePolicies()` documentation.
   //
   // Helper for `ComputePolicies()`.
-  void ComputeIsWebSecureContext();
+  void ComputeIsWebSecureContext(bool is_secure_context_root);
 
   // Sets `policies.sandbox_flags` to its final value. This merges the CSP
   // sandbox flags with the frame's sandbox flag.
@@ -235,28 +259,32 @@ class CONTENT_EXPORT NavigationPolicyContainerBuilder {
   // Sets `host_`.
   void SetFinalPolicies(PolicyContainerPolicies policies);
 
-  // Helper for `FinalizePolicies()`. Appends the delivered Content Security
-  // Policies to `policies`.
-  void IncorporateDeliveredPolicies(const GURL& url,
-                                    PolicyContainerPolicies& policies);
+  // Helper for `FinalizePolicies()`. Called for local scheme urls only,
+  // incorporates `delivered_policies_` into `policies` (e.g. appending the
+  // delivered Content Security Policies). This is needed for example for CSP
+  // Embedded Enforcement, in order to merge the inherited policies with the
+  // policies forced by the `csp` attribute (which are contained in
+  // `delivered_policies_`).
+  void IncorporateDeliveredPoliciesForLocalURL(
+      PolicyContainerPolicies& policies);
 
   // Helper for `FinalizePolicies()`. Returns, depending on `url`, the policies
   // that this document inherits from parent/initiator.
-  PolicyContainerPolicies ComputeInheritedPolicies(const GURL& url);
+  PolicyContainerPolicies ComputeInheritedPolicies(
+      const GURL& url,
+      const PolicyContainerPolicies* initiator_policies);
 
   // Helper for `FinalizePolicies()`. Returns, depending on `navigation_handle`,
   // the final policies for the document that is going to be committed.
   PolicyContainerPolicies ComputeFinalPolicies(
       NavigationHandle* navigation_handle,
+      const PolicyContainerPolicies* initiator_policies,
       bool is_inside_mhtml,
       network::mojom::WebSandboxFlags frame_sandbox_flags,
       bool is_credentialless);
 
   // The policies of the parent document, if any.
   const std::unique_ptr<PolicyContainerPolicies> parent_policies_;
-
-  // The policies of the document that initiated the navigation, if any.
-  const std::unique_ptr<PolicyContainerPolicies> initiator_policies_;
 
   // The policies restored from the history navigation entry, if any.
   const std::unique_ptr<PolicyContainerPolicies> history_policies_;

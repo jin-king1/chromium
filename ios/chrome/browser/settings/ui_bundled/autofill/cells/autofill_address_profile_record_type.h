@@ -12,7 +12,9 @@
 // broken into local and syncable profiles.
 typedef NS_ENUM(NSInteger, AutofillAddressProfileRecordType) {
   AutofillAccountProfile,
-  AutofillSyncableProfile,
+  AutofillAccountHomeProfile,
+  AutofillAccountWorkProfile,
+  AutofillAccountNameEmailProfile,
   AutofillLocalProfile
 };
 

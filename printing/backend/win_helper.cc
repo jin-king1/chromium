@@ -12,12 +12,12 @@
 #include <string_view>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/debug/alias.h"
 #include "base/file_version_info.h"
 #include "base/files/file_path.h"
 #include "base/memory/free_deleter.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
@@ -32,7 +32,6 @@
 #include "printing/backend/print_backend.h"
 #include "printing/backend/print_backend_consts.h"
 #include "printing/backend/printing_info_win.h"
-#include "printing/printing_features.h"
 
 namespace printing {
 
@@ -99,7 +98,7 @@ PTReleaseMemoryProc g_release_memory_proc = nullptr;
 PTCloseProviderProc g_close_provider_proc = nullptr;
 StartXpsPrintJobProc g_start_xps_print_job_proc = nullptr;
 
-typedef std::string (*GetDisplayNameFunc)(const std::string& printer_name);
+typedef std::string (*GetDisplayNameFunc)(std::string_view printer_name);
 GetDisplayNameFunc g_get_display_name_func = nullptr;
 
 PrinterBasicInfo InitializePrinterInfo(LPTSTR name, LPTSTR comment) {
@@ -200,44 +199,6 @@ std::string GetDriverVersionString(DWORDLONG version_number) {
       static_cast<uint16_t>(version_number & 0xFFFF));
 }
 
-std::optional<PrinterBasicInfo> GetBasicPrinterInfoMixedMethod(HANDLE printer) {
-  // `printer` already guaranteed to be non-null by caller.
-  CHECK(printer);
-  PrinterInfo1 info_1;
-  if (!info_1.Init(printer)) {
-    return std::nullopt;
-  }
-
-  PrinterBasicInfo printer_info =
-      InitializePrinterInfo(info_1.get()->pName, info_1.get()->pComment);
-
-  // Location is not available from the fast ::GetPrinter() call that uses
-  // PRINTER_INFO_1, it is only available with the potentially slow level
-  // PRINTER_INFO_2.  Try to read the location information directly from the
-  // registry.  Since the location metadata is not critical, do not fail if
-  // the printer cannot be found in the registry.  Capture the success of this
-  // in a metric, as it will be of interest should finding the registry entry
-  // ever fail.
-  base::win::RegKey reg_key;
-  std::wstring root_key =
-      base::StrCat({kDriversRegistryKeyPath, info_1.get()->pName});
-  LONG result =
-      reg_key.Open(HKEY_LOCAL_MACHINE, root_key.c_str(), KEY_QUERY_VALUE);
-  base::UmaHistogramBoolean("Printing.EnumeratePrinters.BasicInfo.Registry",
-                            result == ERROR_SUCCESS);
-  if (result == ERROR_SUCCESS) {
-    // Even though the registry entry for the printer is found, it isn't
-    // required to contain a value name for location.
-    std::wstring value_data;
-    result = reg_key.ReadValue(kLocationRegistryValueName, &value_data);
-    if (result == ERROR_SUCCESS && !value_data.empty()) {
-      printer_info.options[kLocationTagName] = base::WideToUTF8(value_data);
-    }
-  }
-
-  return printer_info;
-}
-
 }  // namespace
 
 // static
@@ -257,7 +218,7 @@ bool ScopedPrinterHandle::OpenPrinterWithName(const wchar_t* printer) {
   if (::OpenPrinter(const_cast<LPTSTR>(printer), &temp_handle, nullptr)) {
     Set(temp_handle);
   }
-  return IsValid();
+  return is_valid();
 }
 
 bool XPSModule::Init() {
@@ -455,31 +416,35 @@ std::optional<PrinterBasicInfo> GetBasicPrinterInfo(HANDLE printer) {
     return std::nullopt;
   }
 
-  if (base::FeatureList::IsEnabled(features::kFastEnumeratePrinters)) {
-    return GetBasicPrinterInfoMixedMethod(printer);
-  }
-
-  PrinterInfo2 info_2;
-  if (!info_2.Init(printer)) {
+  PrinterInfo1 info_1;
+  if (!info_1.Init(printer)) {
     return std::nullopt;
   }
 
   PrinterBasicInfo printer_info =
-      InitializePrinterInfo(info_2.get()->pPrinterName, info_2.get()->pComment);
+      InitializePrinterInfo(info_1.get()->pName, info_1.get()->pComment);
 
-  if (info_2.get()->pLocation) {
-    std::string location = base::WideToUTF8(info_2.get()->pLocation);
-    if (!location.empty()) {
-      printer_info.options[kLocationTagName] = std::move(location);
+  // Location is not available from the fast ::GetPrinter() call that uses
+  // PRINTER_INFO_1, it is only available with the potentially slow level
+  // PRINTER_INFO_2.  Try to read the location information directly from the
+  // registry.  Since the location metadata is not critical, do not fail if
+  // the printer cannot be found in the registry.
+  base::win::RegKey reg_key;
+  std::wstring root_key =
+      base::StrCat({kDriversRegistryKeyPath, info_1.get()->pName});
+  LONG result =
+      reg_key.Open(HKEY_LOCAL_MACHINE, root_key.c_str(), KEY_QUERY_VALUE);
+  if (result == ERROR_SUCCESS) {
+    // Even though the registry entry for the printer is found, it isn't
+    // required to contain a value name for location.
+    std::wstring value_data;
+    result = reg_key.ReadValue(kLocationRegistryValueName, &value_data);
+    if (result == ERROR_SUCCESS && !value_data.empty()) {
+      printer_info.options[kLocationTagName] = base::WideToUTF8(value_data);
     }
   }
-  return printer_info;
-}
 
-std::optional<PrinterBasicInfo>
-GetBasicPrinterInfoMixedMethodForTesting(  // IN-TEST
-    HANDLE printer) {
-  return GetBasicPrinterInfoMixedMethod(printer);
+  return printer_info;
 }
 
 std::vector<std::string> GetDriverInfo(HANDLE printer) {
@@ -586,8 +551,9 @@ std::unique_ptr<DEVMODE, base::FreeDeleter> CreateDevModeWithColor(
   const DRIVER_INFO_6* p = info_6.get();
 
   // Only HP known to have issues.
-  if (!p->pszMfgName || wcscmp(p->pszMfgName, L"HP") != 0)
+  if (!p->pszMfgName || std::wstring_view(p->pszMfgName) != L"HP") {
     return default_ticket;
+  }
 
   // Need XPS for this workaround.
   ScopedXPSInitializer xps_initializer;

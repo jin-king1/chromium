@@ -16,9 +16,9 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/overloaded.h"
 #include "base/json/json_writer.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/path_service.h"
@@ -227,7 +227,7 @@ LaunchContext::BackgroundLaunchResult LaunchContext::LaunchInBackground(
     reconnect_command_line.AppendSwitchASCII(
         ::switches::kNativeMessagingConnectHost, native_host_name);
     reconnect_command_line.AppendSwitchASCII(
-        ::switches::kNativeMessagingConnectExtension, origin.host());
+        ::switches::kNativeMessagingConnectExtension, origin.GetHost());
     reconnect_command_line.AppendSwitchASCII(::switches::kEnableFeatures,
                                              features::kOnConnectNative.name);
     reconnect_command_line.AppendSwitchPath(::switches::kProfileDirectory,
@@ -239,7 +239,7 @@ LaunchContext::BackgroundLaunchResult LaunchContext::LaunchInBackground(
         app_launch_prefetch::GetPrefetchSwitch(
             app_launch_prefetch::SubprocessType::kBrowserBackground));
 #endif
-    base::Value::List args;
+    base::ListValue args;
     for (const auto& arg : reconnect_command_line.argv()) {
 #if BUILDFLAG(IS_WIN)
       args.Append(base::WideToUTF8(arg));
@@ -248,8 +248,7 @@ LaunchContext::BackgroundLaunchResult LaunchContext::LaunchInBackground(
 #endif
     }
     std::string encoded_reconnect_command;
-    bool success =
-        base::JSONWriter::Write(std::move(args), &encoded_reconnect_command);
+    bool success = base::JSONWriter::Write(args, &encoded_reconnect_command);
     DCHECK(success);
     command_line.AppendArg(
         base::StrCat({"--reconnect-command=",

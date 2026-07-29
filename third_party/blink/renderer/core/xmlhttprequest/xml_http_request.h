@@ -24,13 +24,11 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_XMLHTTPREQUEST_XML_HTTP_REQUEST_H_
 
 #include <memory>
-#include <optional>
 
 #include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "services/network/public/mojom/attribution.mojom-blink.h"
 #include "services/network/public/mojom/trust_tokens.mojom-blink.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
@@ -63,7 +61,6 @@
 
 namespace blink {
 
-class AttributionReportingRequestOptions;
 class Blob;
 class BlobDataHandle;
 class DOMArrayBuffer;
@@ -76,6 +73,7 @@ class ExecutionContext;
 class FormData;
 class PrivateToken;
 class ScriptState;
+class ScriptValue;
 class TextResourceDecoder;
 class ThreadableLoader;
 class URLSearchParams;
@@ -141,8 +139,7 @@ class CORE_EXPORT XMLHttpRequest final
                         const AtomicString& value,
                         ExceptionState&);
   void setPrivateToken(const PrivateToken*, ExceptionState&);
-  void setAttributionReporting(const AttributionReportingRequestOptions*,
-                               ExceptionState&);
+  void setAttributionReporting(const ScriptValue&);
   void overrideMimeType(const AtomicString& override, ExceptionState&);
   String getAllResponseHeaders() const;
   const AtomicString& getResponseHeader(const AtomicString&) const;
@@ -172,7 +169,7 @@ class CORE_EXPORT XMLHttpRequest final
   DEFINE_ATTRIBUTE_EVENT_LISTENER(readystatechange, kReadystatechange)
 
   void Trace(Visitor*) const override;
-  const char* NameInHeapSnapshot() const override { return "XMLHttpRequest"; }
+  const char* GetHumanReadableName() const override { return "XMLHttpRequest"; }
 
   bool HasRequestHeaderForTesting(AtomicString name) const;
 
@@ -221,7 +218,7 @@ class CORE_EXPORT XMLHttpRequest final
   AtomicString GetResponseMIMEType() const;
   // Returns the "final charset" defined in
   // https://xhr.spec.whatwg.org/#final-charset.
-  WTF::TextEncoding FinalResponseCharset() const;
+  TextEncoding FinalResponseCharset() const;
   bool ResponseIsXML() const;
   bool ResponseIsHTML() const;
 
@@ -294,11 +291,6 @@ class CORE_EXPORT XMLHttpRequest final
   //   so there is no need.
   void ReportMemoryUsageToV8();
 
-  // Creates a task scope used for firing events if the `parent_task_` is set
-  // and different from the current task.
-  std::optional<scheduler::TaskAttributionTracker::TaskScope>
-  MaybeCreateTaskAttributionScope();
-
   Member<XMLHttpRequestUpload> upload_;
 
   KURL url_;
@@ -364,15 +356,15 @@ class CORE_EXPORT XMLHttpRequest final
   // |m_responseTypeCode| is NOT ResponseTypeBlob.
   Member<BlobLoader> blob_loader_;
 
-  Member<scheduler::TaskAttributionInfo> parent_task_;
+  // Task state associated with send(). Note this will be null before send() is
+  // called, which means event dispatched before that, e.g. due to open(), will
+  // have a null context -- which is fine since task attribution ignores null
+  // both null task state and non-top-level propagation.
+  Member<scheduler::TaskAttributionInfo> task_state_;
 
   bool async_ = true;
 
   bool with_credentials_ = false;
-
-  network::mojom::AttributionReportingEligibility
-      attribution_reporting_eligibility_ =
-          network::mojom::AttributionReportingEligibility::kUnset;
 
   // Used to skip m_responseDocument creation if it's done previously. We need
   // this separate flag since m_responseDocument can be 0 for some cases.

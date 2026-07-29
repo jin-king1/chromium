@@ -10,7 +10,6 @@
 
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "components/browsing_data/core/clear_browsing_data_tab.h"
 #include "components/browsing_data/core/counters/browsing_data_counter.h"
 #include "net/cookies/cookie_constants.h"
 
@@ -20,42 +19,49 @@ namespace browsing_data {
 // in all platforms.
 extern const char kDeleteBrowsingDataDialogHistogram[];
 
-// Browsing data types as seen in the Android and Desktop UI.
+// Browsing data types as seen in the Android and Desktop UI. Keep in sync with
+// the respective enum in
+// c/b/r/s/clear_browsing_data_dialog/clear_browsing_data_browser_proxy.ts
 //
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.browsing_data
+// LINT.IfChange(BrowsingDataType)
 enum class BrowsingDataType {
-  HISTORY,
-  CACHE,
-  SITE_DATA,
-  PASSWORDS,
-  FORM_DATA,
-  SITE_SETTINGS,
+  HISTORY = 0,
+  CACHE = 1,
+  SITE_DATA = 2,
+  PASSWORDS = 3,
+  FORM_DATA = 4,
+  SITE_SETTINGS = 5,
   // Only for Desktop:
-  DOWNLOADS,
-  HOSTED_APPS_DATA,
-  TABS,
+  DOWNLOADS = 6,
+  HOSTED_APPS_DATA = 7,
+  // Only for Android:
+  TABS = 8,
   MAX_VALUE = TABS,
 };
+// LINT.ThenChange(/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_browser_proxy.ts:BrowsingDataType)
 
 // Time period ranges available when doing browsing data removals.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused. Keep in sync with respective enums in
 // tools/metrics/histograms/metadata/settings/enums.xml and
-// c/b/r/s/clear_browsing_data_dialog/clear_browsing_data_dialog.ts
+// c/b/r/s/clear_browsing_data_dialog/clear_browsing_data_browser_proxy.ts
 //
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.browsing_data
+// LINT.IfChange(TimePeriod)
 enum class TimePeriod {
   LAST_HOUR = 0,
-  LAST_DAY,
-  LAST_WEEK,
-  FOUR_WEEKS,
-  ALL_TIME,
-  OLDER_THAN_30_DAYS,
-  LAST_15_MINUTES,
+  LAST_DAY = 1,
+  LAST_WEEK = 2,
+  FOUR_WEEKS = 3,
+  ALL_TIME = 4,
+  OLDER_THAN_30_DAYS = 5,
+  LAST_15_MINUTES = 6,
   TIME_PERIOD_LAST = LAST_15_MINUTES
 };
+// LINT.ThenChange(/chrome/browser/resources/settings/clear_browsing_data_dialog/clear_browsing_data_browser_proxy.ts:TimePeriod)
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -76,7 +82,8 @@ enum class DeleteBrowsingDataAction {
   kHistoryPageEntries = 5,
   kQuickDelete = 6,
   kPageInfoResetPermissions = 7,
-  kMaxValue = kPageInfoResetPermissions,
+  kRwsDeleteAllData = 8,
+  kMaxValue = kRwsDeleteAllData,
 };
 
 // These values are persisted to logs. Entries should not be renumbered and
@@ -118,7 +125,7 @@ enum class DeleteBrowsingDataDialogAction {
   kKeyboardEntryPointSelected = 31,
   kMaxValue = kKeyboardEntryPointSelected,
 };
-// LINT.ThenChange(//tools/metrics/histograms/enums.xml:DeleteBrowsingDataDialogAction)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/privacy/enums.xml:DeleteBrowsingDataDialogAction)
 
 // Calculate the begin time for the deletion range specified by |time_period|.
 base::Time CalculateBeginDeleteTime(TimePeriod time_period);
@@ -142,14 +149,12 @@ std::u16string GetCounterTextFromResult(
     const BrowsingDataCounter::Result* result);
 
 // Returns the preference that stores the time period.
-const char* GetTimePeriodPreferenceName(
-    ClearBrowsingDataTab clear_browsing_data_tab);
+const char* GetTimePeriodPreferenceName();
 
 // Copies the name of the deletion preference corresponding to the given
 // |data_type| to |out_pref|. Returns false if no such preference exists.
 bool GetDeletionPreferenceFromDataType(
     BrowsingDataType data_type,
-    ClearBrowsingDataTab clear_browsing_data_tab,
     std::string* out_pref);
 
 // Returns a BrowsingDataType if a type matching |pref_name| is found.

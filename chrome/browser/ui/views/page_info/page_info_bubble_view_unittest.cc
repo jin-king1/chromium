@@ -4,28 +4,28 @@
 
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
 
+#include <memory>
 #include <string_view>
 
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/values_test_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 #include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/privacy_sandbox/mock_privacy_sandbox_service.h"
+#include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_service_factory.h"
 #include "chrome/browser/ssl/chrome_security_state_tab_helper.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/hats/mock_trust_safety_sentiment_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
-#include "chrome/browser/ui/views/controls/page_switcher_view.h"
 #include "chrome/browser/ui/views/controls/rich_controls_container_view.h"
 #include "chrome/browser/ui/views/controls/rich_hover_button.h"
 #include "chrome/browser/ui/views/page_info/chosen_object_view.h"
+#include "chrome/browser/ui/views/page_info/page_info_bubble_specification.h"
 #include "chrome/browser/ui/views/page_info/page_info_main_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_permission_content_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_security_content_view.h"
@@ -34,56 +34,54 @@
 #include "chrome/browser/usb/usb_chooser_context.h"
 #include "chrome/browser/usb/usb_chooser_context_factory.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/common/url_constants.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chrome/test/views/chrome_test_views_delegate.h"
+#include "components/content_settings/core/browser/content_settings_registry.h"
 #include "components/content_settings/core/browser/content_settings_uma_util.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
-#include "components/content_settings/core/common/cookie_blocking_3pcd_status.h"
-#include "components/content_settings/core/common/features.h"
+#include "components/content_settings/core/common/content_settings_types.h"
+#include "components/content_settings/core/common/cookie_controls_state.h"
 #include "components/content_settings/core/common/pref_names.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/page_info/core/features.h"
+#include "components/page_info/page_info_ui_delegate.h"
+#include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permission_recovery_success_rate_tracker.h"
 #include "components/permissions/permission_uma_util.h"
 #include "components/permissions/permission_util.h"
+#include "components/permissions/permissions_client.h"
+#include "components/prefs/testing_pref_service.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/ssl_status.h"
+#include "content/public/common/buildflags.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_web_contents_factory.h"
-#include "google_apis/gaia/gaia_id.h"
+#include "media/base/media_switches.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/cert/cert_status_flags.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/ssl/ssl_info.h"
 #include "net/test/cert_test_util.h"
-#include "net/test/test_certificate_data.h"
 #include "net/test/test_data_directory.h"
-#include "ppapi/buildflags/buildflags.h"
 #include "services/device/public/cpp/test/fake_usb_device_manager.h"
-#include "services/device/public/mojom/usb_device.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/events/event_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/toggle_button.h"
-#include "ui/views/controls/combobox/combobox.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/controls/link.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/test/scoped_views_test_helper.h"
-#include "ui/views/test/test_views_delegate.h"
 
 #if BUILDFLAG(ENABLE_PLUGINS)
 #include "chrome/browser/plugins/chrome_plugin_service_filter.h"
@@ -120,14 +118,16 @@ class PageInfoBubbleViewTestApi {
       bubble_delegate_->GetWidget()->CloseNow();
     }
 
-    views::View* anchor_view = nullptr;
-    auto* bubble = static_cast<PageInfoBubbleView*>(
-        PageInfoBubbleView::CreatePageInfoBubble(
-            anchor_view, gfx::Rect(), parent_, web_contents_, GURL(kUrl),
-            base::DoNothing(),
-            base::BindOnce(&PageInfoBubbleViewTestApi::OnPageInfoBubbleClosed,
-                           base::Unretained(this), run_loop_.QuitClosure()),
-            /*allow_extended_site_info=*/true));
+    std::unique_ptr<PageInfoBubbleSpecification> specification =
+        PageInfoBubbleSpecification::Builder(views::BubbleAnchor(), parent_,
+                                             web_contents_, GURL(kUrl))
+            .AddPageInfoClosingCallback(base::BindOnce(
+                &PageInfoBubbleViewTestApi::OnPageInfoBubbleClosed,
+                base::Unretained(this), run_loop_.QuitClosure()))
+            .Build();
+
+    auto* const bubble = static_cast<PageInfoBubbleView*>(
+        PageInfoBubbleView::CreatePageInfoBubble(std::move(specification)));
     presenter_ = bubble->presenter_for_testing();
     navigation_handler_ = bubble;
     bubble_delegate_ = bubble;
@@ -268,6 +268,13 @@ class PageInfoBubbleViewTestApi {
     return static_cast<RichHoverButton*>(button)->GetTitleText();
   }
 
+  std::u16string_view GetPrivacyAndSiteDataButtonTitleText() {
+    auto* button = bubble_delegate_->GetViewByID(
+        PageInfoViewFactory::
+            VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_PRIVACY_SITE_DATA_SUBPAGE);
+    return static_cast<RichHoverButton*>(button)->GetTitleText();
+  }
+
   std::u16string_view GetPermissionLabelTextAt(int index) {
     return GetPermissionToggleRowAt(index)->row_view_->GetTitleForTesting();
   }
@@ -296,7 +303,7 @@ class PageInfoBubbleViewTestApi {
   }
 
   // Simulates updating the number of blocked and allowed sites and rws info.
-  void SetCookieInfo(const PageInfoUI::CookiesNewInfo& cookie_info) {
+  void SetCookieInfo(const PageInfoUI::CookiesInfo& cookie_info) {
     presenter_->ui_for_testing()->SetCookieInfo(cookie_info);
   }
 
@@ -406,7 +413,7 @@ class ScopedWebContentsTestHelper {
   content::WebContents* web_contents() { return web_contents_; }
   Profile* profile() { return profile_; }
   TestingPrefServiceSimple* local_state() {
-    return testing_profile_manager_.local_state()->Get();
+    return TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
   }
 
  private:
@@ -431,12 +438,12 @@ class PageInfoBubbleViewTest : public testing::Test {
 
   // testing::Test:
   void SetUp() override {
-    TestingBrowserProcess::GetGlobal()->CreateGlobalFeaturesForTesting();
+    // Create after the global features to ensure that there are no
+    // dangling pointers during teardown.
+    CHECK(!web_contents_helper_);
+    web_contents_helper_ =
+        std::make_unique<ScopedWebContentsTestHelper>(off_the_record_);
 
-    if (!web_contents_helper_) {
-      web_contents_helper_ =
-          std::make_unique<ScopedWebContentsTestHelper>(false);
-    }
     views_helper_ = std::make_unique<views::ScopedViewsTestHelper>(
         std::make_unique<ChromeTestViewsDelegate<>>());
     views::Widget::InitParams parent_params(
@@ -465,6 +472,8 @@ class PageInfoBubbleViewTest : public testing::Test {
   void TearDown() override { parent_window_->CloseNow(); }
 
  protected:
+  bool off_the_record_ = false;
+
   std::unique_ptr<ScopedWebContentsTestHelper> web_contents_helper_;
   std::unique_ptr<views::ScopedViewsTestHelper> views_helper_;
   raw_ptr<MockTrustSafetySentimentService> mock_sentiment_service_;
@@ -521,6 +530,10 @@ TEST_F(PageInfoBubbleViewTest, NotificationPermissionRevokeUkm) {
 // Test UI construction and reconstruction via
 // PageInfoBubbleView::SetPermissionInfo().
 TEST_F(PageInfoBubbleViewTest, SetPermissionInfo) {
+  // Mock system-level location permission.
+  system_permission_settings::ScopedSettingsForTesting system_location_settings(
+      ContentSettingsType::GEOLOCATION, /*blocked=*/false);
+
   PermissionInfoList list(1);
   list.back().type = ContentSettingsType::GEOLOCATION;
   list.back().setting = CONTENT_SETTING_BLOCK;
@@ -578,6 +591,42 @@ TEST_F(PageInfoBubbleViewTest, SetPermissionInfo) {
   EXPECT_EQ(num_expected_children, api_->GetPermissionsCount());
 }
 
+TEST_F(PageInfoBubbleViewTest, ResetEmbargoedPermission) {
+  GURL url(kUrl);
+  permissions::PermissionDecisionAutoBlocker* autoblocker =
+      permissions::PermissionsClient::Get()->GetPermissionDecisionAutoBlocker(
+          web_contents_helper_->profile());
+
+  // Place under embargo for multiple dismissals.
+  autoblocker->RecordDismissAndEmbargo(url, ContentSettingsType::NOTIFICATIONS,
+                                       /*dismissed_prompt_was_quiet=*/false);
+  autoblocker->RecordDismissAndEmbargo(url, ContentSettingsType::NOTIFICATIONS,
+                                       /*dismissed_prompt_was_quiet=*/false);
+  bool embargoed = autoblocker->RecordDismissAndEmbargo(
+      url, ContentSettingsType::NOTIFICATIONS,
+      /*dismissed_prompt_was_quiet=*/false);
+  EXPECT_TRUE(embargoed);
+  EXPECT_TRUE(
+      autoblocker->IsEmbargoed(url, ContentSettingsType::NOTIFICATIONS));
+
+  // Create the bubble.
+  api_->CreateView();
+
+  // Reset button should be enabled because Notifications is under embargo
+  // (non-default state).
+  EXPECT_TRUE(api_->reset_permissions_button()->GetEnabled());
+
+  // Click the reset button.
+  ui::MouseEvent event(ui::EventType::kMousePressed, gfx::Point(), gfx::Point(),
+                       ui::EventTimeForNow(), 0, 0);
+  views::test::ButtonTestApi(api_->reset_permissions_button())
+      .NotifyClick(event);
+
+  // The embargo should be cleared.
+  EXPECT_FALSE(
+      autoblocker->IsEmbargoed(url, ContentSettingsType::NOTIFICATIONS));
+}
+
 TEST_F(PageInfoBubbleViewTest, CheckToggleSettingForCapturedSurfaceControl) {
   PermissionInfoList list(1);
   list.back().type = ContentSettingsType::CAPTURED_SURFACE_CONTROL;
@@ -607,9 +656,7 @@ TEST_F(PageInfoBubbleViewTest, CheckToggleSettingForCapturedSurfaceControl) {
 
 class PageInfoBubbleViewOffTheRecordTest : public PageInfoBubbleViewTest {
  public:
-  PageInfoBubbleViewOffTheRecordTest() {
-    web_contents_helper_ = std::make_unique<ScopedWebContentsTestHelper>(true);
-  }
+  PageInfoBubbleViewOffTheRecordTest() { off_the_record_ = true; }
 };
 
 // Test resetting blocked in Incognito permission.
@@ -987,11 +1034,9 @@ TEST_F(PageInfoBubbleViewTest, UpdatingSiteDataRetainsLayout) {
   EXPECT_EQ(kExpectedChildren, api_->current_view()->children().size());
 
   // Create a fake cookies info.
-  PageInfoUI::CookiesNewInfo cookies;
+  PageInfoUI::CookiesInfo cookies;
   cookies.allowed_sites_count = 10;
-  cookies.protections_on = true;
   cookies.enforcement = CookieControlsEnforcement::kNoEnforcement;
-  cookies.blocking_status = CookieBlocking3pcdStatus::kNotIn3pcd;
 
   // Update the cookies info.
   api_->SetCookieInfo(cookies);
@@ -1113,7 +1158,7 @@ TEST_F(PageInfoBubbleViewTest, CertificateButtonShowsEvCertDetails) {
             api_->GetCertificateButtonSubtitleText());
 }
 
-// Regression test for crbug.com/1069113. Test cert includes country and state
+// Regression test for crbug.com/40683846. Test cert includes country and state
 // but not locality.
 TEST_F(PageInfoBubbleViewTest, EvDetailsShowForCertWithStateButNoLocality) {
   ChromeSecurityStateTabHelper::CreateForWebContents(
@@ -1164,88 +1209,21 @@ TEST_F(PageInfoBubbleViewTest, EvDetailsShowForCertWithStateButNoLocality) {
             api_->GetCertificateButtonSubtitleText());
 }
 
-class PageInfoBubbleViewCookies3pcdButtonTest
-    : public PageInfoBubbleViewTest,
-      public testing::WithParamInterface<bool> {
- public:
-  PageInfoBubbleViewCookies3pcdButtonTest() {
-    feature_list_.InitWithFeatures(
-        {content_settings::features::kTrackingProtection3pcd}, {});
-    web_contents_helper_ =
-        std::make_unique<ScopedWebContentsTestHelper>(GetParam());
-  }
-
- protected:
-  void NavigateToPage(content::WebContents* web_contents,
-                      const std::string& url) {
-    web_contents->GetController().LoadURL(GURL(url), content::Referrer(),
-                                          ui::PAGE_TRANSITION_FROM_ADDRESS_BAR,
-                                          std::string());
-    content::RenderFrameHostTester::CommitPendingLoad(
-        &web_contents->GetController());
-  }
-
-  void CreateCookieExceptionForSite(const std::string& pattern) {
-    auto top_level_domain_pattern = ContentSettingsPattern::FromString(pattern);
-    HostContentSettingsMapFactory::GetForProfile(
-        web_contents_helper_->profile())
-        ->SetContentSettingCustomScope(ContentSettingsPattern::Wildcard(),
-                                       top_level_domain_pattern,
-                                       ContentSettingsType::COOKIES,
-                                       ContentSetting::CONTENT_SETTING_ALLOW);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-TEST_P(PageInfoBubbleViewCookies3pcdButtonTest, DisplaysCookiesButtonLabel) {
-  // Block all 3PC
-  web_contents_helper_->profile()->GetPrefs()->SetBoolean(
-      prefs::kBlockAll3pcToggleEnabled, true);
-  // Rerender with the new pref set
-  api_->CreateView();
-
-  EXPECT_EQ(api_->GetCookiesButtonTitleText(),
-            l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_HEADER));
-
-  // Turn off toggle
-  web_contents_helper_->profile()->GetPrefs()->SetBoolean(
-      prefs::kBlockAll3pcToggleEnabled, false);
-  // Rerender with the new pref set
-  api_->CreateView();
-
-  EXPECT_EQ(api_->GetCookiesButtonTitleText(),
-            l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_HEADER));
-}
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         PageInfoBubbleViewCookies3pcdButtonTest,
-                         /*is_otr*/ testing::Bool());
-
 class PageInfoBubbleViewCookiesSubpageTitleTest
     : public PageInfoBubbleViewTest,
       public testing::WithParamInterface<
-          testing::tuple</*protections_on*/ bool,
-                         CookieBlocking3pcdStatus,
+          testing::tuple<CookieControlsState,
                          /*is_otr*/ bool>> {
  public:
   PageInfoBubbleViewCookiesSubpageTitleTest() {
-    feature_list_.InitWithFeatures(
-        {content_settings::features::kTrackingProtection3pcd}, {});
-    web_contents_helper_ = std::make_unique<ScopedWebContentsTestHelper>(
-        testing::get<2>(GetParam()));
+    off_the_record_ = testing::get<1>(GetParam());
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_P(PageInfoBubbleViewCookiesSubpageTitleTest,
        DisplaysCookiesAndSiteDataTitle) {
-  PageInfoUI::CookiesNewInfo cookie_info;
-  cookie_info.protections_on = testing::get<0>(GetParam());
-  cookie_info.blocking_status = testing::get<1>(GetParam());
+  PageInfoUI::CookiesInfo cookie_info;
+  cookie_info.controls_state = testing::get<0>(GetParam());
   api_->SetCookieInfo(cookie_info);
   EXPECT_EQ(api_->GetCookiesSubpageTitle(),
             l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_HEADER));
@@ -1254,7 +1232,141 @@ TEST_P(PageInfoBubbleViewCookiesSubpageTitleTest,
 INSTANTIATE_TEST_SUITE_P(
     All,
     PageInfoBubbleViewCookiesSubpageTitleTest,
-    testing::Combine(/*protections_on*/ testing::Bool(),
-                     testing::Values(CookieBlocking3pcdStatus::kNotIn3pcd,
-                                     CookieBlocking3pcdStatus::kAll),
+    testing::Combine(testing::Values(CookieControlsState::kAllowed3pc,
+                                     CookieControlsState::kBlocked3pc),
                      /*is_otr*/ testing::Bool()));
+
+class PageInfoBubbleViewAutoPipTest : public PageInfoBubbleViewTest {
+ public:
+  PageInfoBubbleViewAutoPipTest() {
+    feature_list_.InitAndEnableFeature(
+        media::kAutoPictureInPicturePageInfoDetails);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(PageInfoBubbleViewAutoPipTest, CheckSubpageForAutoPictureInPicture) {
+  // Set auto-pip permission to be allowed, so it shows up.
+  HostContentSettingsMapFactory::GetForProfile(web_contents_helper_->profile())
+      ->SetContentSettingDefaultScope(
+          GURL(kUrl), GURL(kUrl), ContentSettingsType::AUTO_PICTURE_IN_PICTURE,
+          CONTENT_SETTING_ALLOW);
+
+  // Recreate the view to display the permission.
+  api_->CreateView();
+
+  // Verify label matches the auto auto-pip setting.
+  EXPECT_EQ(
+      l10n_util::GetStringUTF16(IDS_SITE_SETTINGS_TYPE_AUTO_PICTURE_IN_PICTURE),
+      api_->GetPermissionLabelTextAt(0));
+
+  // Verify the permission toggle row for auto-pip exists.
+  PermissionToggleRowView* pip_toggle_row = api_->GetPermissionToggleRowAt(0);
+  ASSERT_TRUE(pip_toggle_row);
+
+  // Open the subpage for the auto-pip permission.
+  api_->navigation_handler()->OpenPermissionPage(
+      ContentSettingsType::AUTO_PICTURE_IN_PICTURE);
+  ASSERT_GE(api_->current_view()->children().size(), 2u);
+  auto* page_view = static_cast<PageInfoPermissionContentView*>(
+      api_->current_view()->children()[1]);
+  ASSERT_TRUE(page_view);
+
+  EXPECT_NE(page_view->GetToggleButtonForTesting(), nullptr);
+}
+
+namespace {
+
+class MockPageInfoUiDelegate : public PageInfoUiDelegate {
+ public:
+#if !BUILDFLAG(IS_ANDROID)
+  MOCK_METHOD(bool, IsBlockAutoPlayEnabled, (), (override));
+  MOCK_METHOD(bool, IsMultipleTabsOpen, (), (override));
+  MOCK_METHOD(void, OpenSiteSettingsFileSystem, (), (override));
+#endif
+  MOCK_METHOD(content::PermissionResult,
+              GetPermissionResult,
+              (blink::PermissionType permission),
+              (override));
+  MOCK_METHOD(std::optional<content::PermissionResult>,
+              GetEmbargoResult,
+              (ContentSettingsType type),
+              (override));
+  MOCK_METHOD(void,
+              GetMerchantTrustInfo,
+              (page_info::MerchantDataCallback callback),
+              (override));
+};
+
+class PageInfoUIAutoBlockedToUIStringTest : public testing::Test {
+ public:
+  PageInfoUIAutoBlockedToUIStringTest() = default;
+};
+
+}  // namespace
+
+TEST_F(PageInfoUIAutoBlockedToUIStringTest, PermissionAutoBlockedToUIString) {
+  content_settings::ContentSettingsRegistry::GetInstance();
+  MockPageInfoUiDelegate delegate;
+  PageInfo::PermissionInfo permission;
+  permission.type = ContentSettingsType::GEOLOCATION;
+
+  // 1. Returns empty string when permission.setting is not set.
+  permission.setting = std::nullopt;
+  EXPECT_EQ(std::u16string(),
+            PageInfoUI::PermissionAutoBlockedToUIString(&delegate, permission));
+
+  // 2. Returns empty string when permission.setting is already blocked.
+  permission.setting = CONTENT_SETTING_BLOCK;
+  EXPECT_EQ(std::u16string(),
+            PageInfoUI::PermissionAutoBlockedToUIString(&delegate, permission));
+
+  // 3. Returns empty string if auto-blocker is disabled for the type.
+  // ContentSettingsType::COOKIES is not a permission type and thus doesn't
+  // support auto-blocking.
+  permission.type = ContentSettingsType::COOKIES;
+  permission.setting = CONTENT_SETTING_ASK;
+  EXPECT_EQ(std::u16string(),
+            PageInfoUI::PermissionAutoBlockedToUIString(&delegate, permission));
+
+  // 4. Returns blocked string for standard permission with multiple dismissals.
+  permission.type = ContentSettingsType::GEOLOCATION;
+  EXPECT_CALL(delegate, GetPermissionResult(blink::PermissionType::GEOLOCATION))
+      .WillOnce(Return(content::PermissionResult(
+          content::PermissionStatus::ASK,
+          content::PermissionStatusSource::MULTIPLE_DISMISSALS)));
+  EXPECT_EQ(
+      l10n_util::GetStringUTF16(IDS_PAGE_INFO_PERMISSION_AUTOMATICALLY_BLOCKED),
+      PageInfoUI::PermissionAutoBlockedToUIString(&delegate, permission));
+
+  // 5. Returns blocked string for standard permission with multiple ignores.
+  EXPECT_CALL(delegate, GetPermissionResult(blink::PermissionType::GEOLOCATION))
+      .WillOnce(Return(content::PermissionResult(
+          content::PermissionStatus::ASK,
+          content::PermissionStatusSource::MULTIPLE_IGNORES)));
+  EXPECT_EQ(
+      l10n_util::GetStringUTF16(IDS_PAGE_INFO_PERMISSION_AUTOMATICALLY_BLOCKED),
+      PageInfoUI::PermissionAutoBlockedToUIString(&delegate, permission));
+
+  // 6. Returns blocked string for Federated Identity API with embargo.
+  permission.type = ContentSettingsType::FEDERATED_IDENTITY_API;
+  EXPECT_CALL(delegate,
+              GetEmbargoResult(ContentSettingsType::FEDERATED_IDENTITY_API))
+      .WillOnce(Return(content::PermissionResult(
+          content::PermissionStatus::ASK,
+          content::PermissionStatusSource::MULTIPLE_DISMISSALS)));
+  EXPECT_EQ(
+      l10n_util::GetStringUTF16(IDS_PAGE_INFO_PERMISSION_AUTOMATICALLY_BLOCKED),
+      PageInfoUI::PermissionAutoBlockedToUIString(&delegate, permission));
+
+  // 7. Returns empty string for other sources.
+  permission.type = ContentSettingsType::GEOLOCATION;
+  EXPECT_CALL(delegate, GetPermissionResult(blink::PermissionType::GEOLOCATION))
+      .WillOnce(Return(content::PermissionResult(
+          content::PermissionStatus::ASK,
+          content::PermissionStatusSource::UNSPECIFIED)));
+  EXPECT_EQ(std::u16string(),
+            PageInfoUI::PermissionAutoBlockedToUIString(&delegate, permission));
+}

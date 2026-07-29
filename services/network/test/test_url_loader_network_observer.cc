@@ -5,7 +5,6 @@
 #include "services/network/test/test_url_loader_network_observer.h"
 
 #include "net/base/net_errors.h"
-#include "services/network/public/mojom/shared_storage.mojom.h"
 
 namespace network {
 
@@ -48,13 +47,16 @@ void TestURLLoaderNetworkObserver::OnAuthRequired(
     mojo::PendingRemote<mojom::AuthChallengeResponder>
         auth_challenge_responder) {}
 
-void TestURLLoaderNetworkObserver::OnPrivateNetworkAccessPermissionRequired(
-    const GURL& url,
-    const net::IPAddress& ip_address,
-    const std::optional<std::string>& private_network_device_id,
-    const std::optional<std::string>& private_network_device_name,
-    OnPrivateNetworkAccessPermissionRequiredCallback callback) {
-  std::move(callback).Run(false);
+void TestURLLoaderNetworkObserver::OnLocalNetworkAccessPermissionRequired(
+    mojom::TransportType type,
+    network::mojom::IPAddressSpace ip_address_space,
+    OnLocalNetworkAccessPermissionRequiredCallback callback) {
+  std::move(callback).Run(mojom::LocalNetworkAccessResult::kDenied);
+}
+
+void TestURLLoaderNetworkObserver::OnPlatformLocalNetworkPermissionRequired(
+    OnPlatformLocalNetworkPermissionRequiredCallback callback) {
+  std::move(callback).Run(platform_local_network_permission_response_);
 }
 
 void TestURLLoaderNetworkObserver::OnClearSiteData(
@@ -75,27 +77,20 @@ void TestURLLoaderNetworkObserver::OnLoadingStateUpdate(
 
 void TestURLLoaderNetworkObserver::OnDataUseUpdate(
     int32_t network_traffic_annotation_id_hash,
-    int64_t recv_bytes,
-    int64_t sent_bytes) {}
+    base::ByteSize recv_bytes,
+    base::ByteSize sent_bytes) {}
 
-void TestURLLoaderNetworkObserver::OnSharedStorageHeaderReceived(
-    const url::Origin& request_origin,
-    std::vector<network::mojom::SharedStorageModifierMethodWithOptionsPtr>
-        methods_with_options,
-    const std::optional<std::string>& with_lock,
-    OnSharedStorageHeaderReceivedCallback callback) {
-  std::move(callback).Run();
-}
 
 void TestURLLoaderNetworkObserver::Clone(
     mojo::PendingReceiver<URLLoaderNetworkServiceObserver> observer) {
   receivers_.Add(this, std::move(observer));
 }
 
-void TestURLLoaderNetworkObserver::OnWebSocketConnectedToPrivateNetwork(
+void TestURLLoaderNetworkObserver::OnWebSocketConnectedToLocalNetwork(
+    const GURL& request_url,
     network::mojom::IPAddressSpace ip_address_space) {}
 
-void TestURLLoaderNetworkObserver::OnUrlLoaderConnectedToPrivateNetwork(
+void TestURLLoaderNetworkObserver::OnUrlLoaderConnectedToLocalNetwork(
     const GURL& request_url,
     network::mojom::IPAddressSpace response_address_space,
     network::mojom::IPAddressSpace client_address_space,

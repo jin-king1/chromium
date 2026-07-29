@@ -26,6 +26,9 @@ extern NSString* const kInactiveTabsButtonAccessibilityIdentifier;
 // index].
 extern NSString* const kGridCellIdentifierPrefix;
 
+// Accessibility identifier prefix of a grid cell's snapshot.
+extern NSString* const kGridCellSnapshotIdentifierPrefix;
+
 // Accessibility identifier prefix of a group grid cell. To reference a specific
 // cell, concatenate `kGroupGridCellIdentifierPrefix` with the index of the
 // cell. For example, [NSString stringWithFormat:@"%@%d",
@@ -46,6 +49,12 @@ extern NSString* const kGridSectionHeaderIdentifier;
 
 // Accessibility identifier for the suggested actions cell.
 extern NSString* const kSuggestedActionsGridCellIdentifier;
+
+// Accessibility identifier for the activity summary cell.
+extern NSString* const kActivitySummaryGridCellIdentifier;
+
+// Accessibility identifier for the close button in the activity summary cell.
+extern NSString* const kActivitySummaryGridCellCloseButtonIdentifier;
 
 // Grid styling.
 extern NSString* const kGridBackgroundColor;
@@ -95,5 +104,11 @@ typedef NS_ENUM(NSUInteger, GridCellState) {
   GridCellStateEditingUnselected,
   GridCellStateEditingSelected,
 };
+
+// The scale transform of a grid cell's contents.
+extern const CGFloat kGridCellHighlightScaleTransform;
+
+// The duration of the grid cell highlight animation.
+extern const CGFloat kGridCellHighlightDuration;
 
 #endif  // IOS_CHROME_BROWSER_TAB_SWITCHER_UI_BUNDLED_TAB_GRID_GRID_GRID_CONSTANTS_H_

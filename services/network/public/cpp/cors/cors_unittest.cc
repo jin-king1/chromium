@@ -2,17 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "services/network/public/cpp/cors/cors.h"
 
 #include <limits.h>
 
+#include <algorithm>
+
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "services/network/public/cpp/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -165,23 +164,17 @@ enum class AccessCheckResult {
 
   kMaxValue = kNotPermittedInPreflight,
 };
-constexpr char kAccessCheckHistogram[] = "Net.Cors.AccessCheckResult";
-constexpr char kAccessCheckHistogramNotSecure[] =
-    "Net.Cors.AccessCheckResult.NotSecureRequestor";
 
 TEST_F(CorsTest, CheckAccessAndReportMetricsForPermittedSecureOrigin) {
   base::HistogramTester histogram_tester;
   const GURL response_url("http://example.com/data");
   const url::Origin origin = url::Origin::Create(GURL("https://google.com"));
 
-  EXPECT_TRUE(CheckAccessAndReportMetrics(
-                  response_url, origin.Serialize() /* allow_origin_header */,
-                  std::nullopt /* allow_credentials_header */,
-                  network::mojom::CredentialsMode::kOmit, origin)
+  EXPECT_TRUE(CheckAccess(response_url,
+                          origin.Serialize() /* allow_origin_header */,
+                          std::nullopt /* allow_credentials_header */,
+                          network::mojom::CredentialsMode::kOmit, origin)
                   .has_value());
-  histogram_tester.ExpectUniqueSample(kAccessCheckHistogram,
-                                      AccessCheckResult::kPermitted, 1);
-  histogram_tester.ExpectTotalCount(kAccessCheckHistogramNotSecure, 0);
 }
 
 TEST_F(CorsTest, CheckAccessAndReportMetricsForPermittedNotSecureOrigin) {
@@ -189,15 +182,11 @@ TEST_F(CorsTest, CheckAccessAndReportMetricsForPermittedNotSecureOrigin) {
   const GURL response_url("http://example.com/data");
   const url::Origin origin = url::Origin::Create(GURL("http://google.com"));
 
-  EXPECT_TRUE(CheckAccessAndReportMetrics(
-                  response_url, origin.Serialize() /* allow_origin_header */,
-                  std::nullopt /* allow_credentials_header */,
-                  network::mojom::CredentialsMode::kOmit, origin)
+  EXPECT_TRUE(CheckAccess(response_url,
+                          origin.Serialize() /* allow_origin_header */,
+                          std::nullopt /* allow_credentials_header */,
+                          network::mojom::CredentialsMode::kOmit, origin)
                   .has_value());
-  histogram_tester.ExpectUniqueSample(kAccessCheckHistogram,
-                                      AccessCheckResult::kPermitted, 1);
-  histogram_tester.ExpectUniqueSample(kAccessCheckHistogramNotSecure,
-                                      AccessCheckResult::kPermitted, 1);
 }
 
 TEST_F(CorsTest, CheckAccessAndReportMetricsForNotPermittedSecureOrigin) {
@@ -205,15 +194,10 @@ TEST_F(CorsTest, CheckAccessAndReportMetricsForNotPermittedSecureOrigin) {
   const GURL response_url("http://example.com/data");
   const url::Origin origin = url::Origin::Create(GURL("https://google.com"));
 
-  EXPECT_FALSE(CheckAccessAndReportMetrics(
-                   response_url, std::nullopt /* allow_origin_header */,
-                   std::nullopt /* allow_credentials_header */,
-                   network::mojom::CredentialsMode::kOmit, origin)
+  EXPECT_FALSE(CheckAccess(response_url, std::nullopt /* allow_origin_header */,
+                           std::nullopt /* allow_credentials_header */,
+                           network::mojom::CredentialsMode::kOmit, origin)
                    .has_value());
-
-  histogram_tester.ExpectUniqueSample(kAccessCheckHistogram,
-                                      AccessCheckResult::kNotPermitted, 1);
-  histogram_tester.ExpectTotalCount(kAccessCheckHistogramNotSecure, 0);
 }
 
 TEST_F(CorsTest, SafelistedMethod) {
@@ -234,21 +218,46 @@ TEST_F(CorsTest, SafelistedHeader) {
   EXPECT_FALSE(IsCorsSafelistedHeader("user-agent", "foo"));
 }
 
+TEST_F(CorsTest, SafelistedResponseHeaderName) {
+  // The seven CORS-safelisted response header names, in mixed case to exercise
+  // the case-insensitive match.
+  static constexpr std::string_view kSafelisted[] = {
+      "cache-control", "Content-Language", "CONTENT-LENGTH", "content-type",
+      "Expires",       "Last-Modified",    "pragma",
+  };
+  for (std::string_view name : kSafelisted) {
+    SCOPED_TRACE(name);
+    EXPECT_TRUE(IsCorsSafelistedResponseHeaderName(name));
+  }
+
+  // "content-range" is deliberately excluded: it is a media-only carve-out
+  // kept out of the JS-visible safelist. The rest are ordinary non-safelisted
+  // headers.
+  static constexpr std::string_view kNotSafelisted[] = {
+      "content-range",
+      "set-cookie",
+      "x-auth-token",
+      "sec-ch-ua",
+  };
+  for (std::string_view name : kNotSafelisted) {
+    SCOPED_TRACE(name);
+    EXPECT_FALSE(IsCorsSafelistedResponseHeaderName(name));
+  }
+}
+
 TEST_F(CorsTest, SafelistedAccept) {
   EXPECT_TRUE(IsCorsSafelistedHeader("accept", "text/html"));
   EXPECT_TRUE(IsCorsSafelistedHeader("AccepT", "text/html"));
 
-  constexpr char kAllowed[] =
+  constexpr std::string_view kAllowed =
       "\t !#$%&'*+,-./0123456789;="
       "ABCDEFGHIJKLMNOPQRSTUVWXYZ^_`abcdefghijklmnopqrstuvwxyz|~";
   for (int i = 0; i < 128; ++i) {
     SCOPED_TRACE(testing::Message() << "c = static_cast<char>(" << i << ")");
     char c = static_cast<char>(i);
-    // 1 for the trailing null character.
-    auto* end = kAllowed + std::size(kAllowed) - 1;
-    EXPECT_EQ(std::find(kAllowed, end, c) != end,
+    EXPECT_EQ(std::ranges::find(kAllowed, c) != kAllowed.end(),
               IsCorsSafelistedHeader("accept", std::string(1, c)));
-    EXPECT_EQ(std::find(kAllowed, end, c) != end,
+    EXPECT_EQ(std::ranges::find(kAllowed, c) != kAllowed.end(),
               IsCorsSafelistedHeader("AccepT", std::string(1, c)));
   }
   for (int i = 128; i <= 255; ++i) {
@@ -268,14 +277,12 @@ TEST_F(CorsTest, SafelistedAcceptLanguage) {
   EXPECT_TRUE(IsCorsSafelistedHeader("accept-language", "en,ja"));
   EXPECT_TRUE(IsCorsSafelistedHeader("aCcEPT-lAngUAge", "en,ja"));
 
-  constexpr char kAllowed[] =
+  constexpr std::string_view kAllowed =
       "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz *,-.;=";
   for (int i = CHAR_MIN; i <= CHAR_MAX; ++i) {
     SCOPED_TRACE(testing::Message() << "c = static_cast<char>(" << i << ")");
     char c = static_cast<char>(i);
-    // 1 for the trailing null character.
-    auto* end = kAllowed + std::size(kAllowed) - 1;
-    EXPECT_EQ(std::find(kAllowed, end, c) != end,
+    EXPECT_EQ(std::ranges::find(kAllowed, c) != kAllowed.end(),
               IsCorsSafelistedHeader("aCcEPT-lAngUAge", std::string(1, c)));
   }
   EXPECT_TRUE(IsCorsSafelistedHeader("accept-language", std::string(128, 'a')));
@@ -327,16 +334,14 @@ TEST_F(CorsTest, SafelistedContentLanguage) {
   EXPECT_TRUE(IsCorsSafelistedHeader("content-language", "en,ja"));
   EXPECT_TRUE(IsCorsSafelistedHeader("cONTent-LANguaGe", "en,ja"));
 
-  constexpr char kAllowed[] =
+  constexpr std::string_view kAllowed =
       "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz *,-.;=";
   for (int i = CHAR_MIN; i <= CHAR_MAX; ++i) {
     SCOPED_TRACE(testing::Message() << "c = static_cast<char>(" << i << ")");
     char c = static_cast<char>(i);
-    // 1 for the trailing null character.
-    auto* end = kAllowed + std::size(kAllowed) - 1;
-    EXPECT_EQ(std::find(kAllowed, end, c) != end,
+    EXPECT_EQ(std::ranges::find(kAllowed, c) != kAllowed.end(),
               IsCorsSafelistedHeader("content-language", std::string(1, c)));
-    EXPECT_EQ(std::find(kAllowed, end, c) != end,
+    EXPECT_EQ(std::ranges::find(kAllowed, c) != kAllowed.end(),
               IsCorsSafelistedHeader("cONTent-LANguaGe", std::string(1, c)));
   }
   EXPECT_TRUE(
@@ -350,15 +355,13 @@ TEST_F(CorsTest, SafelistedContentLanguage) {
 }
 
 TEST_F(CorsTest, SafelistedContentType) {
-  constexpr char kAllowed[] =
+  constexpr std::string_view kAllowed =
       "\t !#$%&'*+,-./0123456789;="
       "ABCDEFGHIJKLMNOPQRSTUVWXYZ^_`abcdefghijklmnopqrstuvwxyz|~";
   for (int i = 0; i < 128; ++i) {
     SCOPED_TRACE(testing::Message() << "c = static_cast<char>(" << i << ")");
     const char c = static_cast<char>(i);
-    // 1 for the trailing null character.
-    const auto* const end = kAllowed + std::size(kAllowed) - 1;
-    const bool is_allowed = std::find(kAllowed, end, c) != end;
+    const bool is_allowed = std::ranges::find(kAllowed, c) != kAllowed.end();
     const std::string value = std::string("text/plain; charset=") + c;
 
     EXPECT_EQ(is_allowed, IsCorsSafelistedHeader("content-type", value));
@@ -383,6 +386,13 @@ TEST_F(CorsTest, SafelistedContentType) {
   EXPECT_TRUE(IsCorsSafelistedHeader("content-type",
                                      "application/x-www-form-urlencoded"));
   EXPECT_TRUE(IsCorsSafelistedHeader("content-type", "multipart/form-data"));
+
+  EXPECT_FALSE(IsCorsSafelistedHeader(
+      "content-type", "message/ad-auction-trusted-signals-request"));
+  EXPECT_TRUE(IsCorsSafelistedHeader(
+      "content-type", "message/ad-auction-trusted-signals-request",
+      /*is_ad_auction_trusted_signals_request=*/
+      true));
 
   EXPECT_TRUE(IsCorsSafelistedHeader("content-type", "Text/plain"));
   EXPECT_TRUE(IsCorsSafelistedHeader("content-type", "tEXT/PLAIN"));

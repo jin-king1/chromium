@@ -6,13 +6,13 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/feature_list.h"
-#include "base/memory/singleton.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/no_destructor.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
-#include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
 #include "chromeos/constants/chromeos_features.h"
+#include "chromeos/ui/base/chromeos_ui_constants.h"
 
 namespace arc {
 
@@ -28,11 +28,12 @@ class ArcChromeFeatureFlagsBridgeFactory
   static constexpr const char* kName = "ArcChromeFeatureFlagsBridgeFactory";
 
   static ArcChromeFeatureFlagsBridgeFactory* GetInstance() {
-    return base::Singleton<ArcChromeFeatureFlagsBridgeFactory>::get();
+    static base::NoDestructor<ArcChromeFeatureFlagsBridgeFactory> instance;
+    return instance.get();
   }
 
  private:
-  friend base::DefaultSingletonTraits<ArcChromeFeatureFlagsBridgeFactory>;
+  friend base::NoDestructor<ArcChromeFeatureFlagsBridgeFactory>;
   ArcChromeFeatureFlagsBridgeFactory() = default;
   ~ArcChromeFeatureFlagsBridgeFactory() override = default;
 };
@@ -57,12 +58,11 @@ ArcChromeFeatureFlagsBridge::ArcChromeFeatureFlagsBridge(
     content::BrowserContext* context,
     ArcBridgeService* bridge_service)
     : arc_bridge_service_(bridge_service) {
-  arc_bridge_service_->chrome_feature_flags()->AddObserver(this);
+  arc_bridge_service_observation_.Observe(
+      arc_bridge_service_->chrome_feature_flags());
 }
 
-ArcChromeFeatureFlagsBridge::~ArcChromeFeatureFlagsBridge() {
-  arc_bridge_service_->chrome_feature_flags()->RemoveObserver(this);
-}
+ArcChromeFeatureFlagsBridge::~ArcChromeFeatureFlagsBridge() = default;
 
 void ArcChromeFeatureFlagsBridge::OnConnectionReady() {
   NotifyFeatureFlags();
@@ -79,14 +79,8 @@ void ArcChromeFeatureFlagsBridge::NotifyFeatureFlags() {
   flags->jelly_colors = true;
   flags->touchscreen_emulation = true;
   flags->rounded_window_compat_strategy =
-      base::FeatureList::IsEnabled(arc::kRoundedWindowCompat)
-          ? static_cast<mojom::RoundedWindowCompatStrategy>(
-                base::GetFieldTrialParamByFeatureAsInt(
-                    kRoundedWindowCompat, kRoundedWindowCompatStrategy,
-                    static_cast<int>(mojom::RoundedWindowCompatStrategy::
-                                         kLeftRightBottomGesture)))
-          : mojom::RoundedWindowCompatStrategy::kDisabled;
-  flags->rounded_window_radius = chromeos::features::RoundedWindowsRadius();
+      mojom::RoundedWindowCompatStrategy::kLeftRightBottomGesture;
+  flags->rounded_window_radius = chromeos::kRoundedWindowCornerRadius;
   flags->enable_pip_double_tap = true;
   flags->render_arc_notifications_by_chrome =
       ash::features::IsRenderArcNotificationsByChromeEnabled();

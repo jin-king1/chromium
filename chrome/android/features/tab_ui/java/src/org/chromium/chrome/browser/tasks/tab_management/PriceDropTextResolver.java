@@ -11,15 +11,16 @@ import android.text.SpannableString;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.StrikethroughSpan;
 
-import androidx.annotation.Nullable;
-
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
+import org.chromium.components.browser_ui.util.TextResolver;
 import org.chromium.ui.base.LocalizationUtils;
 
 /** A {@link TextResolver} for the {@link TabCardLabelView} when showing a price drop. */
+@NullMarked
 public class PriceDropTextResolver implements TextResolver {
-    private String mPrice;
-    private String mPreviousPrice;
+    private final String mPrice;
+    private final String mPreviousPrice;
 
     /**
      * @param price The current price.
@@ -31,7 +32,7 @@ public class PriceDropTextResolver implements TextResolver {
     }
 
     @Override
-    public @Nullable CharSequence resolve(Context context) {
+    public CharSequence resolve(Context context) {
         boolean isRtl = LocalizationUtils.isLayoutRtl();
         String firstItem = isRtl ? mPreviousPrice : mPrice;
         String secondItem = isRtl ? mPrice : mPreviousPrice;
@@ -40,7 +41,7 @@ public class PriceDropTextResolver implements TextResolver {
                 new ForegroundColorSpan(
                         context.getColor(R.color.default_text_color_secondary_list));
         ForegroundColorSpan greenFcs =
-                new ForegroundColorSpan(context.getColor(R.color.price_drop_annotation_text_green));
+                new ForegroundColorSpan(context.getColor(R.color.price_indicator_text_color));
         StrikethroughSpan strikeSpan = new StrikethroughSpan();
         int secondItemStart = firstItem.length() + 1;
         int secondItemEnd = secondItemStart + secondItem.length();

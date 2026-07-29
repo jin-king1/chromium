@@ -21,9 +21,7 @@
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "components/account_id/account_id.h"
 #include "components/account_manager_core/account.h"
-#include "components/account_manager_core/account_manager_facade.h"
 #include "components/account_manager_core/chromeos/account_manager.h"
-#include "components/account_manager_core/chromeos/account_manager_facade_factory.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -96,27 +94,19 @@ class AccountManagerEducoexistenceControllerTest : public testing::Test {
   account_manager::AccountManager* account_manager() {
     return account_manager_;
   }
-  account_manager::AccountManagerFacade* account_manager_facade() {
-    return account_manager_facade_;
-  }
 
  private:
   // To support context of browser threads.
   content::BrowserTaskEnvironment task_environment_;
   raw_ptr<account_manager::AccountManager> account_manager_ = nullptr;
-  raw_ptr<account_manager::AccountManagerFacade> account_manager_facade_ =
-      nullptr;
   network::TestURLLoaderFactory test_url_loader_factory_;
   TestingProfile testing_profile_;
 };
 
 void AccountManagerEducoexistenceControllerTest::SetUp() {
   testing_profile_.SetIsSupervisedProfile();
-  account_manager_ = g_browser_process->platform_part()
-                         ->GetAccountManagerFactory()
-                         ->GetAccountManager(profile()->GetPath().value());
-  account_manager_facade_ =
-      ::GetAccountManagerFacade(profile()->GetPath().value());
+  account_manager_ = AccountManagerFactory::Get()->GetAccountManager(
+      profile()->GetPath().value());
 
   AddAccount(account_manager(), kPrimaryAccount, kPrimaryAccountGaiaId);
 }
@@ -166,7 +156,6 @@ TEST_F(AccountManagerEducoexistenceControllerTest,
 
   EduCoexistenceConsentInvalidationController
       edu_coexistence_invalidation_controller(profile(), account_manager(),
-                                              account_manager_facade(),
                                               kDeviceAccount);
   edu_coexistence_invalidation_controller.Init();
 
@@ -193,7 +182,6 @@ TEST_F(AccountManagerEducoexistenceControllerTest,
 
   EduCoexistenceConsentInvalidationController
       edu_coexistence_invalidation_controller(profile(), account_manager(),
-                                              account_manager_facade(),
                                               kDeviceAccount);
   edu_coexistence_invalidation_controller.Init();
 
@@ -228,7 +216,6 @@ TEST_F(AccountManagerEducoexistenceControllerTest,
 
   EduCoexistenceConsentInvalidationController
       edu_coexistence_invalidation_controller(profile(), account_manager(),
-                                              account_manager_facade(),
                                               kDeviceAccount);
   edu_coexistence_invalidation_controller.Init();
 

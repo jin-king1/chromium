@@ -6,22 +6,10 @@
 
 #include "base/observer_list.h"
 #include "build/build_config.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/signin_promo.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
-#include "chrome/common/url_constants.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/signin/signin_view_controller.h"
 
-#if !BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/ui/profiles/profile_picker.h"
-#endif  // !BUILDFLAG(IS_CHROMEOS)
-
-LoginUIService::LoginUIService(Profile* profile)
-#if !BUILDFLAG(IS_CHROMEOS)
-    : profile_(profile)
-#endif
-{
-}
+LoginUIService::LoginUIService() = default;
 
 LoginUIService::~LoginUIService() = default;
 
@@ -53,9 +41,9 @@ void LoginUIService::SyncConfirmationUIClosed(
   }
 }
 
-void LoginUIService::DisplayLoginResult(Browser* browser,
-                                        const SigninUIError& error,
-                                        bool from_profile_picker) {
+void LoginUIService::DisplayLoginResult(
+    BrowserWindowFeatures& browser_window_features,
+    const SigninUIError& error) {
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOS doesn't have the avatar bubble so it never calls this function.
   NOTREACHED();
@@ -63,20 +51,9 @@ void LoginUIService::DisplayLoginResult(Browser* browser,
   last_login_error_ = error;
   // TODO(crbug.com/40225985): Check if the condition should be `!error.IsOk()`
   if (!error.message().empty()) {
-    if (browser) {
-      browser->signin_view_controller()->ShowModalSigninErrorDialog();
-    } else {
-      LOG(ERROR) << "Unable to show Login error message: " << error.message();
-    }
+    browser_window_features.signin_view_controller()
+        ->ShowModalSigninErrorDialog();
   }
-#endif
-}
-
-void LoginUIService::SetProfileBlockingErrorMessage() {
-#if BUILDFLAG(IS_CHROMEOS)
-  NOTREACHED();
-#else
-  last_login_error_ = SigninUIError::ProfileIsBlocked();
 #endif
 }
 

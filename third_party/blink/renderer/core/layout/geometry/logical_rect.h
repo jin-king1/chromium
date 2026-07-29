@@ -10,11 +10,9 @@
 #include "third_party/blink/renderer/core/layout/geometry/logical_size.h"
 #include "ui/gfx/geometry/rect_f.h"
 
-namespace WTF {
-class String;
-}  // namespace WTF
-
 namespace blink {
+
+struct BoxStrut;
 
 // LogicalRect is the position and size of a rect (typically a fragment)
 // relative to the parent in the logical coordinate system.
@@ -47,6 +45,13 @@ struct CORE_EXPORT LogicalRect {
 
   constexpr bool IsEmpty() const { return size.IsEmpty(); }
 
+  constexpr LayoutUnit InlineStartOffset() const {
+    return offset.inline_offset;
+  }
+  constexpr LayoutUnit BlockStartOffset() const { return offset.block_offset; }
+  constexpr LayoutUnit InlineSize() const { return size.inline_size; }
+  constexpr LayoutUnit BlockSize() const { return size.block_size; }
+
   LayoutUnit InlineEndOffset() const {
     return offset.inline_offset + size.inline_size;
   }
@@ -55,9 +60,7 @@ struct CORE_EXPORT LogicalRect {
   }
   LogicalOffset EndOffset() const { return offset + size; }
 
-  constexpr bool operator==(const LogicalRect& other) const {
-    return other.offset == offset && other.size == size;
-  }
+  constexpr bool operator==(const LogicalRect& other) const = default;
 
   LogicalRect operator+(const LogicalOffset& additional_offset) const {
     return {offset + additional_offset, size};
@@ -88,6 +91,7 @@ struct CORE_EXPORT LogicalRect {
     size.block_size += block_start + block_end;
   }
 
+  void Contract(const BoxStrut&);
   void ContractEdges(LayoutUnit block_start,
                      LayoutUnit inline_end,
                      LayoutUnit block_end,
@@ -107,6 +111,11 @@ struct CORE_EXPORT LogicalRect {
     LayoutUnit new_block_size = (BlockEndOffset() - edge).ClampNegativeToZero();
     offset.block_offset = edge;
     size.block_size = new_block_size;
+  }
+
+  // Update inline-end offset without changing the inline-start offset.
+  void ShiftInlineEndEdgeTo(LayoutUnit edge) {
+    size.inline_size = (edge - offset.inline_offset).ClampNegativeToZero();
   }
 
   // Update block-end offset without changing the block-start offset.
@@ -129,7 +138,7 @@ struct CORE_EXPORT LogicalRect {
       : offset(LayoutUnit(r.x()), LayoutUnit(r.y())),
         size(LayoutUnit(r.width()), LayoutUnit(r.height())) {}
 
-  WTF::String ToString() const;
+  String ToString() const;
 };
 
 CORE_EXPORT std::ostream& operator<<(std::ostream&, const LogicalRect&);

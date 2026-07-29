@@ -15,6 +15,7 @@
 #include "base/types/expected.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_refresh_cookie_fetcher.h"
 #include "net/cookies/canonical_cookie.h"
+#include "url/gurl.h"
 
 namespace network::mojom {
 class CookieManager;
@@ -27,6 +28,7 @@ class FakeBoundSessionRefreshCookieFetcher
       network::mojom::CookieManager* cookie_manager,
       const GURL& url,
       base::flat_set<std::string> cookie_names,
+      Trigger trigger,
       std::optional<base::TimeDelta> unlock_automatically_in = std::nullopt);
   ~FakeBoundSessionRefreshCookieFetcher() override;
 
@@ -37,6 +39,7 @@ class FakeBoundSessionRefreshCookieFetcher
   bool IsChallengeReceived() const override;
   std::optional<std::string> TakeSecSessionChallengeResponseIfAny() override;
   base::flat_set<std::string> GetNonRefreshedCookieNames() override;
+  Trigger GetTrigger() const override;
 
   const std::optional<std::string>& sec_session_challenge_response() {
     return sec_session_challenge_response_;
@@ -64,6 +67,7 @@ class FakeBoundSessionRefreshCookieFetcher
   const raw_ptr<network::mojom::CookieManager> cookie_manager_;
   const GURL url_;
   const base::flat_set<std::string> cookie_names_;
+  const Trigger trigger_;
   base::flat_set<std::string> non_refreshed_cookie_names_;
   RefreshCookieCompleteCallback callback_;
   size_t callback_counter_ = 0;

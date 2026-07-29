@@ -6,18 +6,24 @@
 #define CHROME_BROWSER_KEYBOARD_ACCESSORY_ANDROID_PAYMENT_METHOD_ACCESSORY_CONTROLLER_IMPL_H_
 
 #include <optional>
+#include <variant>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/keyboard_accessory/android/payment_method_accessory_controller.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
+#include "components/autofill/core/browser/data_manager/valuables/valuables_data_manager.h"
+#include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
+#include "components/autofill/core/browser/foundations/scoped_autofill_managers_observation.h"
 #include "content/public/browser/web_contents_user_data.h"
 
 class ManualFillingController;
 
 namespace autofill {
 
+class AutofillManager;
 class BrowserAutofillManager;
 
 // Use either PaymentMethodAccessoryController::GetOrCreate or
@@ -26,8 +32,9 @@ class BrowserAutofillManager;
 class PaymentMethodAccessoryControllerImpl
     : public PaymentMethodAccessoryController,
       public PaymentsDataManager::Observer,
-      public content::WebContentsUserData<
-          PaymentMethodAccessoryControllerImpl> {
+      public ValuablesDataManager::Observer,
+      public content::WebContentsUserData<PaymentMethodAccessoryControllerImpl>,
+      public AutofillManager::Observer {
  public:
   ~PaymentMethodAccessoryControllerImpl() override;
 
@@ -51,6 +58,7 @@ class PaymentMethodAccessoryControllerImpl
       content::WebContents* web_contents,
       base::WeakPtr<ManualFillingController> mf_controller,
       PaymentsDataManager* payments_data_manager,
+      ValuablesDataManager* valuables_data_manager,
       BrowserAutofillManager* af_manager,
       AutofillDriver* af_driver);
 
@@ -58,7 +66,7 @@ class PaymentMethodAccessoryControllerImpl
   friend class content::WebContentsUserData<PaymentMethodAccessoryControllerImpl>;
 
   using CardOrVirtualCard =
-      absl::variant<const CreditCard*, std::unique_ptr<CreditCard>>;
+      std::variant<const CreditCard*, std::unique_ptr<CreditCard>>;
 
   // Required for construction via |CreateForWebContents|:
   explicit PaymentMethodAccessoryControllerImpl(content::WebContents* contents);
@@ -68,6 +76,7 @@ class PaymentMethodAccessoryControllerImpl
       content::WebContents* web_contents,
       base::WeakPtr<ManualFillingController> mf_controller,
       PaymentsDataManager* payments_data_manager,
+      ValuablesDataManager* valuables_data_manager,
       BrowserAutofillManager* af_manager,
       AutofillDriver* af_driver);
 
@@ -96,6 +105,9 @@ class PaymentMethodAccessoryControllerImpl
   // Gets IBANs from the personal data manager.
   std::vector<Iban> GetIbans() const;
 
+  // Gets Google Wallet loyalty cards from the valuables data manager.
+  std::vector<LoyaltyCard> GetLoyaltyCards() const;
+
   base::WeakPtr<ManualFillingController> GetManualFillingController();
   AutofillDriver* GetDriver();
   const BrowserAutofillManager* GetAutofillManager() const;
@@ -111,13 +123,33 @@ class PaymentMethodAccessoryControllerImpl
   // method also tries to fetch IBAN and fill the form field.
   bool FetchIfIban(const std::string& selection_id);
 
+  // ValuablesDataManager::Observer:
+  void OnValuablesDataChanged() override;
+
+  // AutofillManager::Observer:
+  void OnFillOrPreviewForm(
+      AutofillManager&,
+      FormGlobalId,
+      FieldGlobalId trigger_field_id,
+      mojom::ActionPersistence action_persistence,
+      const base::flat_set<FieldGlobalId>& filled_field_ids,
+      const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&,
+      const FillingPayload&) override;
+
   const PaymentsDataManager* paydm() const {
     return paydm_observation_.GetSource();
+  }
+
+  const ValuablesDataManager* valuables_data_manager() const {
+    return valuables_data_manager_observation_.GetSource();
   }
 
   base::WeakPtr<ManualFillingController> mf_controller_;
   raw_ptr<BrowserAutofillManager> af_manager_for_testing_ = nullptr;
   raw_ptr<AutofillDriver> af_driver_for_testing_ = nullptr;
+
+  // The browser autofill manager associated with the last form fill.
+  base::WeakPtr<BrowserAutofillManager> browser_autofill_manager_;
 
   // The observer to notify if available suggestions change.
   FillingSourceObserver source_observer_;
@@ -129,6 +161,13 @@ class PaymentMethodAccessoryControllerImpl
   // Observes the `PaymentsDataManager` of the profile to react to updates.
   base::ScopedObservation<PaymentsDataManager, PaymentsDataManager::Observer>
       paydm_observation_{this};
+
+  // Observes the `ValuablesDataManager` of the profile to react to updates.
+  base::ScopedObservation<ValuablesDataManager, ValuablesDataManager::Observer>
+      valuables_data_manager_observation_{this};
+
+  // The observation for the Autofill managers of the WebContents.
+  ScopedAutofillManagersObservation autofill_managers_observation_{this};
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 

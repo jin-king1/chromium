@@ -31,43 +31,34 @@ class Browser;
 
 @end
 
-// Initiate a sign-out action.
-// If the sync feature is disabled, directly sign-out, and display a toast.
-// If the sync feature is enabled, displays sign-out action sheet with options
-// to clear or keep user data on the device.
-// The user must be signed-in to use these actions. The owner is responsible to
-// block the UI, when the sign-out flow is in progress. The UI needs to be
-// blocked and unblocked using methods from
-// SignoutActionSheetCoordinatorDelegate.
-// TODO(crbug.com/40066949): Update this comment when syncing users no longer
-// exist on iOS.
+// Signs out and displays a toast. The user must be signed-in to use this. The
+// SignoutActionSheetCoordinatorDelegate is responsible for blocking and
+// unblocking the UI while the sign-out flow is in progress.
 @interface SignoutActionSheetCoordinator : ChromeCoordinator
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
                                    browser:(Browser*)browser NS_UNAVAILABLE;
 
 // Designated initializer.
-- (instancetype)initWithBaseViewController:(UIViewController*)viewController
-                                   browser:(Browser*)browser
-                                      rect:(CGRect)rect
-                                      view:(UIView*)view
-                  forceSnackbarOverToolbar:(BOOL)forceSnackbarOverToolbar
-                                withSource:(signin_metrics::ProfileSignout)
-                                               signout_source_metric
+- (instancetype)
+    initWithBaseViewController:(UIViewController*)viewController
+                       browser:(Browser*)browser
+                          rect:(CGRect)rect
+                          view:(UIView*)view
+      forceSnackbarOverToolbar:(BOOL)forceSnackbarOverToolbar
+                showUndoButton:(BOOL)showUndoButton
+                    withSource:(signin_metrics::ProfileSignout)source
+                    completion:(signin_ui::SignoutCompletionCallback)completion
     NS_DESIGNATED_INITIALIZER;
 
 // The delegate.
 @property(nonatomic, weak) id<SignoutActionSheetCoordinatorDelegate> delegate;
 
 // The title displayed for the sign-out alert.
-@property(nonatomic, strong, readonly) NSString* title;
+@property(nonatomic, copy, readonly) NSString* title;
 
 // The message displayed for the sign-out alert.
-@property(nonatomic, strong, readonly) NSString* message;
-
-// Required callback to be used after sign-out is completed.
-@property(nonatomic, copy)
-    signin_ui::SignoutCompletionCallback signoutCompletion;
+@property(nonatomic, copy, readonly) NSString* message;
 
 // Whether to warns feature won’t be available anymore when user is not
 // synced.

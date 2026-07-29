@@ -10,12 +10,12 @@
 #include "android_webview/browser/gfx/root_frame_sink_proxy.h"
 #include "android_webview/browser/gfx/scoped_app_gl_state_restore.h"
 #include "android_webview/browser/gfx/task_queue_webview.h"
+#include "android_webview/browser/gfx/test/fake_hwui_gl_context.h"
 #include "android_webview/browser/gfx/viz_compositor_thread_runner_webview.h"
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
-#include "components/viz/common/features.h"
 #include "components/viz/common/quads/solid_color_draw_quad.h"
 #include "components/viz/common/quads/surface_draw_quad.h"
 #include "components/viz/service/frame_sinks/compositor_frame_sink_support.h"
@@ -182,11 +182,7 @@ class VizClient : public viz::mojom::CompositorFrameSinkClient {
   }
   void OnBeginFrame(const viz::BeginFrameArgs& args,
                     const viz::FrameTimingDetailsMap& feedbacks,
-                    bool frame_ack,
                     std::vector<viz::ReturnedResource> resources) override {
-    if (features::IsOnBeginFrameAcksEnabled() && pending_frames_) {
-      DidReceiveCompositorFrameAck(std::move(resources));
-    }
     for (const auto& feedback : feedbacks) {
       DCHECK(!feedbacks_.contains(feedback.first));
       feedbacks_[feedback.first] = feedback.second;
@@ -331,15 +327,10 @@ class InvalidateTest
     // explicitly.
     render_thread_manager_ = std::make_unique<RenderThreadManager>(
         base::SingleThreadTaskRunner::GetCurrentDefault());
-    surface_ = gl::init::CreateOffscreenGLSurface(gl::GetDefaultDisplayEGL(),
-                                                  gfx::Size(100, 100));
-    DCHECK(surface_);
-    DCHECK(surface_->GetHandle());
-    context_ = gl::init::CreateGLContext(nullptr, surface_.get(),
-                                         gl::GLContextAttribs());
-    DCHECK(context_);
 
-    context_->MakeCurrent(surface_.get());
+    gl_context_.CreateOffscreenContext(100, 100);
+    gl_context_.MakeCurrent();
+
     render_thread_manager_->SetRootFrameSinkGetterForTesting(
         root_frame_sink_proxy_->GetRootFrameSinkCallback());
   }
@@ -351,7 +342,7 @@ class InvalidateTest
                          // `client` leaves scope.
                        },
                        std::move(client_)));
-    render_thread_manager_->DestroyHardwareRendererOnRT(false, false);
+    render_thread_manager_->DestroyHardwareRendererOnRT(false);
     TaskQueueWebView::GetInstance()->ResetRenderThreadForTesting();
   }
 
@@ -414,8 +405,7 @@ class InvalidateTest
     params.transform[15] = 1.0f;
     params.color_space = gfx::ColorSpace::CreateSRGB();
 
-    render_thread_manager_->DrawOnRT(/*save_restore=*/false, params,
-                                     OverlaysParams(),
+    render_thread_manager_->DrawOnRT(params, OverlaysParams(),
                                      ReportRenderingThreadsCallback());
 
     if (invalidated)
@@ -652,8 +642,7 @@ class InvalidateTest
   std::unique_ptr<RootFrameSinkProxy> root_frame_sink_proxy_;
 
   std::unique_ptr<RenderThreadManager> render_thread_manager_;
-  scoped_refptr<gl::GLSurface> surface_;
-  scoped_refptr<gl::GLContext> context_;
+  FakeHWUIGLContext gl_context_;
 
   std::unique_ptr<VizClient> client_;
   viz::ParentLocalSurfaceIdAllocator root_local_surface_id_allocator_;

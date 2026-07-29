@@ -14,16 +14,20 @@ MediaTrackContainerType GetMediaContainerTypeFromString(const String& type) {
     return MediaTrackContainerType::kNone;
   }
 
-  if (EqualIgnoringASCIICase(type, "video/mp4")) {
+  if (EqualIgnoringAsciiCase(type, "video/mp4")) {
     return MediaTrackContainerType::kVideoMp4;
-  } else if (EqualIgnoringASCIICase(type, "video/webm")) {
+  } else if (EqualIgnoringAsciiCase(type, "video/webm")) {
     return MediaTrackContainerType::kVideoWebM;
-  } else if (EqualIgnoringASCIICase(type, "video/x-matroska")) {
-    return MediaTrackContainerType::kVidoMatroska;
-  } else if (EqualIgnoringASCIICase(type, "audio/mp4")) {
+  } else if (EqualIgnoringAsciiCase(type, "video/x-matroska") ||
+             EqualIgnoringAsciiCase(type, "video/matroska")) {
+    return MediaTrackContainerType::kVideoMatroska;
+  } else if (EqualIgnoringAsciiCase(type, "audio/mp4")) {
     return MediaTrackContainerType::kAudioMp4;
-  } else if (EqualIgnoringASCIICase(type, "audio/webm")) {
+  } else if (EqualIgnoringAsciiCase(type, "audio/webm")) {
     return MediaTrackContainerType::kAudioWebM;
+  } else if (EqualIgnoringAsciiCase(type, "audio/x-matroska") ||
+             EqualIgnoringAsciiCase(type, "audio/matroska")) {
+    return MediaTrackContainerType::kAudioMatroska;
   }
 
   return MediaTrackContainerType::kNone;

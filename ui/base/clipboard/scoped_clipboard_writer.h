@@ -68,8 +68,8 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ScopedClipboardWriter {
   // party since any paths written to the clipboard can be read by renderers.
   void WriteFilenames(std::string uri_list);
 
-  // Adds a bookmark to the clipboard.
-  void WriteBookmark(std::u16string_view bookmark_title, std::string url);
+  // Adds a URL to the clipboard.
+  void WriteURL(const ClipboardUrlInfo& url_info);
 
   // Adds an html hyperlink (<a href>) to the clipboard. |anchor_text| and
   // |url| will be escaped as needed.
@@ -81,6 +81,10 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ScopedClipboardWriter {
   // Adds arbitrary pickled data to clipboard.
   void WritePickledData(const base::Pickle& pickle,
                         const ClipboardFormatType& format);
+
+  // Writes raw bytes to clipboard.
+  void WriteRawDataForTest(const ClipboardFormatType& format,
+                           std::vector<uint8_t> data);
 
   // Data is written to the system clipboard in the same order as WriteData
   // calls are received.
@@ -106,7 +110,9 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ScopedClipboardWriter {
 
   // Same as `objects_`, but holds every type passed to `WritePickledData` to
   // allow writing more than one to the clipboard at once.
-  std::vector<Clipboard::RawData> raw_objects_;
+  // This uses a map instead of a vector to avoid attempts to write the same
+  // format type multiple times to the clipboard.
+  std::map<ClipboardFormatType, Clipboard::RawData> raw_objects_;
 
   std::vector<Clipboard::PlatformRepresentation> platform_representations_;
   // Keeps track of the unique custom formats registered in the clipboard.

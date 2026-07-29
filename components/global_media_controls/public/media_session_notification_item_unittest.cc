@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/functional/callback_helpers.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -45,7 +46,8 @@ class MediaSessionNotificationItemTest : public testing::Test {
     session_info->is_controllable = true;
     item_ = std::make_unique<MediaSessionNotificationItem>(
         &delegate_, kRequestId, std::string(), source_id_,
-        controller_.CreateMediaControllerRemote(), std::move(session_info));
+        controller_.CreateMediaControllerRemote(), std::move(session_info),
+        /*always_hidden=*/false);
     item_->SetView(&view_);
   }
 
@@ -117,10 +119,14 @@ TEST_F(MediaSessionNotificationItemTest,
   item().MediaSessionMetadataChanged(metadata);
   item().SetView(nullptr);
 
-  // Make sure that presentation request origin was reset after the view is set
-  // to null in SetView().
-  EXPECT_CALL(view(), UpdateWithMediaMetadata(metadata)).Times(1);
+  // Make sure that presentation request origin persists after the view is set
+  // to null and then set back to non-null.
+  EXPECT_CALL(view(), UpdateWithMediaMetadata(updated_metadata)).Times(1);
   item().SetView(&view());
+
+  // Make sure that presentation request origin can be reset.
+  EXPECT_CALL(view(), UpdateWithMediaMetadata(metadata)).Times(1);
+  item().UpdatePresentationRequestOrigin(std::nullopt);
 }
 
 TEST_F(MediaSessionNotificationItemTest, Freezing_DoNotUpdateImage) {
@@ -176,12 +182,11 @@ TEST_F(MediaSessionNotificationItemTest, Freezing_DisableInteraction) {
 
 TEST_F(MediaSessionNotificationItemTest, UpdatesViewWithActions) {
   EXPECT_CALL(view(), UpdateWithMediaActions(_))
-      .WillOnce(testing::Invoke(
-          [](const base::flat_set<MediaSessionAction>& actions) {
-            EXPECT_EQ(2u, actions.size());
-            EXPECT_TRUE(actions.contains(MediaSessionAction::kPlay));
-            EXPECT_TRUE(actions.contains(MediaSessionAction::kPause));
-          }));
+      .WillOnce([](const base::flat_set<MediaSessionAction>& actions) {
+        EXPECT_EQ(2u, actions.size());
+        EXPECT_TRUE(actions.contains(MediaSessionAction::kPlay));
+        EXPECT_TRUE(actions.contains(MediaSessionAction::kPause));
+      });
   item().MediaSessionActionsChanged(
       {MediaSessionAction::kPlay, MediaSessionAction::kPause});
 }
@@ -307,8 +312,8 @@ TEST_F(MediaSessionNotificationItemTest, SemiUnfreezesWithoutArtwork_Timeout) {
   // Once the freeze timer fires, the artwork should unfreeze even if there's no
   // artwork. Since we've received no artwork, the artwork should be null.
   EXPECT_CALL(view(), UpdateWithMediaArtwork(_))
-      .WillOnce(testing::Invoke(
-          [](const gfx::ImageSkia& image) { EXPECT_TRUE(image.isNull()); }));
+      .WillOnce(
+          [](const gfx::ImageSkia& image) { EXPECT_TRUE(image.isNull()); });
   AdvanceClockMilliseconds(2600);
   testing::Mock::VerifyAndClearExpectations(&view());
 }
@@ -482,12 +487,7 @@ TEST_F(MediaSessionNotificationItemTest, GetSessionMetadata) {
   EXPECT_EQ(u"source_title", item().GetSessionMetadata().source_title);
 
   base::test::ScopedFeatureList feature_list;
-#if BUILDFLAG(IS_CHROMEOS)
   feature_list.InitAndEnableFeature(media::kMediaRemotingWithoutFullscreen);
-#else
-  feature_list.InitWithFeatures({media::kMediaRemotingWithoutFullscreen},
-                                {media::kGlobalMediaControlsUpdatedUI});
-#endif
 
   auto session_info = media_session::mojom::MediaSessionInfo::New();
   auto remote_playback_metadata =
@@ -498,22 +498,13 @@ TEST_F(MediaSessionNotificationItemTest, GetSessionMetadata) {
   item().MediaSessionInfoChanged(std::move(session_info));
   item().UpdateDeviceName("device_friendly_name");
 
+#if BUILDFLAG(IS_CHROMEOS)
   EXPECT_EQ(u"source_title \xB7 device_friendly_name",
             item().GetSessionMetadata().source_title);
-}
-
-#if !BUILDFLAG(IS_CHROMEOS)
-TEST_F(MediaSessionNotificationItemTest, GetSessionMetadataForUpdatedUI) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(media::kGlobalMediaControlsUpdatedUI);
-
-  media_session::MediaMetadata metadata;
-  metadata.source_title = u"source_title";
-  item().MediaSessionMetadataChanged(metadata);
-  item().UpdateDeviceName("device_friendly_name");
+#else
   EXPECT_EQ(u"source_title", item().GetSessionMetadata().source_title);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 }
-#endif
 
 TEST_F(MediaSessionNotificationItemTest, GetRemotePlaybackMetadata) {
   auto session_info = media_session::mojom::MediaSessionInfo::New();
@@ -587,6 +578,18 @@ TEST_F(MediaSessionNotificationItemTest, ShouldShowNotification) {
           /* is_encrypted_media */ false);
   item().MediaSessionInfoChanged(mojo::Clone(session_info));
   EXPECT_TRUE(item().ShouldShowNotification());
+
+  // Check always hidden item.
+  media_session::test::TestMediaController controller2;
+  auto session_info2 = media_session::mojom::MediaSessionInfo::New();
+  session_info2->is_controllable = true;
+  auto item2 = std::make_unique<MediaSessionNotificationItem>(
+      &delegate(), kRequestId, std::string(),
+      /*source_id=*/base::UnguessableToken::Create(),
+      controller2.CreateMediaControllerRemote(), std::move(session_info2),
+      /*always_hidden=*/true);
+  item2->SetView(&view());
+  EXPECT_FALSE(item2->ShouldShowNotification());
 }
 
 }  // namespace global_media_controls

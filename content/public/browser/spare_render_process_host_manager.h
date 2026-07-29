@@ -5,14 +5,22 @@
 #ifndef CONTENT_PUBLIC_BROWSER_SPARE_RENDER_PROCESS_HOST_MANAGER_H_
 #define CONTENT_PUBLIC_BROWSER_SPARE_RENDER_PROCESS_HOST_MANAGER_H_
 
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list_types.h"
 #include "content/common/content_export.h"
-#include "content/public/browser/child_process_id.h"
+#include "content/public/common/child_process_id.h"
 
 namespace content {
 
 class RenderProcessHost;
 class BrowserContext;
+
+// Information about the last spare renderer creation event.
+// This is used for metrics reporting.
+struct LastSpareRendererCreationInfo {
+  base::TimeTicks creation_time;
+  int available_memory_mb;
+};
 
 // This class manages spare RenderProcessHosts.
 //
@@ -41,7 +49,7 @@ class CONTENT_EXPORT SpareRenderProcessHostManager {
   // Return all existing spare RenderProcessHosts. Can be used in tandem
   // with the Observer interface above to track the lifetime of all the spare
   // RenderProcessHosts.
-  virtual const std::vector<RenderProcessHost*>& GetSpares() = 0;
+  virtual const std::vector<raw_ptr<RenderProcessHost>>& GetSpares() = 0;
 
   // Returns the IDs of all the existing spare RenderProcessHosts. Useful when
   // you want to save the current set of spare RPHs for a later comparison (e.g.
@@ -68,10 +76,16 @@ class CONTENT_EXPORT SpareRenderProcessHostManager {
   // strict site isolation (via ShouldEnableStrictSiteIsolation), then the
   // //content layer will maintain a warm spare process host at all times
   // (without a need for separate calls to WarmupSpare).
-  virtual void WarmupSpare(BrowserContext* browser_context) = 0;
+  //
+  // Returns a RenderProcessHost if a new one is created.
+  virtual RenderProcessHost* WarmupSpare(BrowserContext* browser_context) = 0;
 
   // Gracefully remove and cleanup all existing spare RenderProcessHosts.
   virtual void CleanupSparesForTesting() = 0;
+
+  // Returns the creation info of the last spare renderer.
+  virtual const std::optional<LastSpareRendererCreationInfo>&
+  GetLastSpareRendererCreationInfo() const = 0;
 
  protected:
   virtual ~SpareRenderProcessHostManager() = default;

@@ -25,13 +25,13 @@
 #include "cc/resources/ui_resource_manager.h"
 #include "cc/test/fake_impl_task_runner_provider.h"
 #include "cc/test/fake_layer_tree_host.h"
-#include "cc/test/fake_layer_tree_host_client.h"
+#include "cc/test/fake_layer_tree_host_delegate.h"
 #include "cc/test/fake_layer_tree_host_impl.h"
 #include "cc/test/fake_scrollbar.h"
 #include "cc/test/fake_scrollbar_layer.h"
 #include "cc/test/layer_tree_impl_test_base.h"
 #include "cc/test/layer_tree_test.h"
-#include "cc/test/stub_layer_tree_host_single_thread_client.h"
+#include "cc/test/stub_layer_tree_host_single_thread_delegate.h"
 #include "cc/test/test_task_graph_runner.h"
 #include "cc/trees/effect_node.h"
 #include "cc/trees/layer_tree_host.h"
@@ -98,10 +98,10 @@ class FakeResourceTrackingUIResourceManager : public UIResourceManager {
       std::unordered_map<UIResourceId, UIResourceBitmap>;
   UIResourceBitmapMap ui_resource_bitmap_map_;
 
-  StubLayerTreeHostSingleThreadClient single_thread_client_;
-  int next_id_;
-  int total_ui_resource_created_;
-  int total_ui_resource_deleted_;
+  StubLayerTreeHostSingleThreadDelegate single_thread_delegate_;
+  int next_id_ = 1;
+  int total_ui_resource_created_ = 0;
+  int total_ui_resource_deleted_ = 0;
 };
 
 class BaseScrollbarLayerTest : public testing::Test {
@@ -136,21 +136,22 @@ class BaseScrollbarLayerTest : public testing::Test {
     layer_tree_host_->SetUIResourceManagerForTesting(
         std::move(fake_ui_resource_manager));
     layer_tree_host_->InitializeSingleThreaded(
-        &single_thread_client_,
+        &single_thread_delegate_,
         base::SingleThreadTaskRunner::GetCurrentDefault());
     layer_tree_host_->SetVisible(true);
     fake_client_.SetLayerTreeHost(layer_tree_host_.get());
   }
 
  protected:
-  raw_ptr<FakeResourceTrackingUIResourceManager, DanglingUntriaged>
-      fake_ui_resource_manager_;
-  FakeLayerTreeHostClient fake_client_;
-  StubLayerTreeHostSingleThreadClient single_thread_client_;
+  FakeLayerTreeHostDelegate fake_client_;
+  StubLayerTreeHostSingleThreadDelegate single_thread_delegate_;
   TestTaskGraphRunner task_graph_runner_;
   LayerTreeSettings layer_tree_settings_;
   std::unique_ptr<AnimationHost> animation_host_;
   std::unique_ptr<FakeLayerTreeHost> layer_tree_host_;
+  // Declare after layer_tree_host_ so it's destroyed before the LayerTreeHost
+  // that owns the object it points to.
+  raw_ptr<FakeResourceTrackingUIResourceManager> fake_ui_resource_manager_;
 };
 
 class CommitToActiveTreeScrollbarLayerTest : public BaseScrollbarLayerTest {
@@ -274,8 +275,7 @@ TEST_F(ScrollbarLayerTest,
   // Simulate commit to compositor thread.
   scrollbar_layer->PushPropertiesTo(
       scrollbar_layer->CreateLayerImpl(layer_tree_host_->active_tree()).get(),
-      *layer_tree_host_->GetPendingCommitState(),
-      layer_tree_host_->GetThreadUnsafeCommitState());
+      *layer_tree_host_->GetPendingCommitState());
   scrollbar_layer->fake_scrollbar()->set_thumb_needs_repaint(false);
   scrollbar_layer->fake_scrollbar()->set_track_and_buttons_need_repaint(false);
 
@@ -340,8 +340,7 @@ TEST_F(ScrollbarLayerTest,
   // Simulate commit to compositor thread.
   scrollbar_layer->PushPropertiesTo(
       scrollbar_layer->CreateLayerImpl(layer_tree_host_->active_tree()).get(),
-      *layer_tree_host_->GetPendingCommitState(),
-      layer_tree_host_->GetThreadUnsafeCommitState());
+      *layer_tree_host_->GetPendingCommitState());
   scrollbar_layer->fake_scrollbar()->set_thumb_needs_repaint(false);
   scrollbar_layer->fake_scrollbar()->set_track_and_buttons_need_repaint(false);
 
@@ -563,6 +562,7 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest,
   // The track_rect should be relative to the scrollbar's origin.
   scrollbar_layer->fake_scrollbar()->set_track_rect(gfx::Rect(10, 10, 50, 10));
   scrollbar_layer->fake_scrollbar()->set_thumb_size(gfx::Size(4, 10));
+  scrollbar_layer->fake_scrollbar()->set_minimum_thumb_length(4);
 
   LayerImpl* root_layer_impl = nullptr;
   PaintedScrollbarLayerImpl* scrollbar_layer_impl = nullptr;
@@ -602,7 +602,7 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, NinePatchThumbRect) {
 
   // The track_rect should be relative to the scrollbar's origin.
   scrollbar_layer->fake_scrollbar()->set_track_rect(gfx::Rect(10, 10, 50, 10));
-  scrollbar_layer->fake_scrollbar()->set_thumb_size(gfx::Size(4, 10));
+  scrollbar_layer->fake_scrollbar()->set_thumb_size(gfx::Size(10, 10));
 
   layer_tree_host_->UpdateLayers();
   LayerImpl* root_layer_impl = nullptr;
@@ -612,14 +612,14 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, NinePatchThumbRect) {
   // the start of the track within the scrollbar layer's
   // position).
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(10, 0, 4, 10).ToString(),
+  EXPECT_EQ(gfx::Rect(10, 0, 10, 10).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
   // Under-scroll (thumb position should clamp and be unchanged).
   scroll_layer->SetScrollOffset(gfx::PointF(-5, 0));
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(10, 0, 4, 10).ToString(),
+  EXPECT_EQ(gfx::Rect(10, 0, 10, 10).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
   // Over-scroll (thumb position should clamp on the far side).
@@ -627,14 +627,14 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, NinePatchThumbRect) {
   layer_tree_host_->UpdateLayers();
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(56, 0, 4, 10).ToString(),
+  EXPECT_EQ(gfx::Rect(50, 0, 10, 10).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
-  // Change thumb thickness and length.
-  scrollbar_layer->fake_scrollbar()->set_thumb_size(gfx::Size(6, 4));
+  // Change thumb thickness.
+  scrollbar_layer->fake_scrollbar()->set_thumb_size(gfx::Size(10, 4));
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(54, 0, 6, 4).ToString(),
+  EXPECT_EQ(gfx::Rect(50, 0, 10, 4).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
   // Shrink the scrollbar layer to cover only the track.
@@ -642,7 +642,7 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, NinePatchThumbRect) {
   scrollbar_layer->fake_scrollbar()->set_track_rect(gfx::Rect(0, 10, 50, 10));
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(44, 0, 6, 4).ToString(),
+  EXPECT_EQ(gfx::Rect(40, 0, 10, 4).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
   // Shrink the track in the non-scrolling dimension so that it only covers the
@@ -651,7 +651,7 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, NinePatchThumbRect) {
   scrollbar_layer->fake_scrollbar()->set_track_rect(gfx::Rect(0, 12, 50, 6));
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(44, 0, 6, 4).ToString(),
+  EXPECT_EQ(gfx::Rect(40, 0, 10, 4).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 }
 
@@ -688,14 +688,14 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, PaintedThumbRect) {
   // the start of the track within the scrollbar layer's
   // position).
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(10, 0, 4, 10).ToString(),
+  EXPECT_EQ(gfx::Rect(10, 0, 10, 10).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
   // Under-scroll (thumb position should clamp and be unchanged).
   scroll_layer->SetScrollOffset(gfx::PointF(-5, 0));
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(10, 0, 4, 10).ToString(),
+  EXPECT_EQ(gfx::Rect(10, 0, 10, 10).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
   // Over-scroll (thumb position should clamp on the far side).
@@ -703,14 +703,14 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, PaintedThumbRect) {
   layer_tree_host_->UpdateLayers();
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(56, 0, 4, 10).ToString(),
+  EXPECT_EQ(gfx::Rect(50, 0, 10, 10).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
   // Change thumb thickness and length.
   scrollbar_layer->fake_scrollbar()->set_thumb_size(gfx::Size(6, 4));
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(54, 3, 6, 4).ToString(),
+  EXPECT_EQ(gfx::Rect(50, 3, 10, 4).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
   // Shrink the scrollbar layer to cover only the track.
@@ -718,7 +718,7 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, PaintedThumbRect) {
   scrollbar_layer->fake_scrollbar()->set_track_rect(gfx::Rect(0, 10, 50, 10));
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(44, 3, 6, 4).ToString(),
+  EXPECT_EQ(gfx::Rect(40, 3, 10, 4).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 
   // Shrink the track in the non-scrolling dimension so that it only covers the
@@ -727,7 +727,7 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, PaintedThumbRect) {
   scrollbar_layer->fake_scrollbar()->set_track_rect(gfx::Rect(0, 12, 50, 6));
 
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
-  EXPECT_EQ(gfx::Rect(44, 1, 6, 4).ToString(),
+  EXPECT_EQ(gfx::Rect(40, 1, 10, 4).ToString(),
             scrollbar_layer_impl->ComputeThumbQuadRect().ToString());
 }
 
@@ -753,6 +753,7 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest,
   scrollbar_layer->SetBounds(gfx::Size(10, 20));
   scrollbar_layer->fake_scrollbar()->set_track_rect(gfx::Rect(0, 0, 10, 20));
   scrollbar_layer->fake_scrollbar()->set_thumb_size(gfx::Size(10, 4));
+  scrollbar_layer->fake_scrollbar()->set_minimum_thumb_length(4);
   layer_tree_host_->UpdateLayers();
   LayerImpl* root_layer_impl = nullptr;
   NinePatchThumbScrollbarLayerImpl* scrollbar_layer_impl = nullptr;
@@ -774,6 +775,7 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest,
 
   // Change thumb thickness and length.
   scrollbar_layer->fake_scrollbar()->set_thumb_size(gfx::Size(4, 6));
+  scrollbar_layer->fake_scrollbar()->set_minimum_thumb_length(6);
   UPDATE_AND_EXTRACT_LAYER_POINTERS();
   // For left side vertical scrollbars thumb_rect.x = bounds.width() -
   // thumb_thickness.
@@ -835,7 +837,7 @@ TEST_F(CommitToActiveTreeScrollbarLayerTest, SolidColorDrawQuads) {
     const auto& quads = render_pass->quad_list;
     ASSERT_EQ(1u, quads.size());
     EXPECT_EQ(viz::DrawQuad::Material::kSolidColor, quads.front()->material);
-    EXPECT_EQ(gfx::Rect(8, 0, 19, 3), quads.front()->rect);
+    EXPECT_EQ(gfx::Rect(8, 0, 20, 3), quads.front()->rect);
   }
 
   // We shouldn't attempt div-by-zero when the maximum is zero.
@@ -943,26 +945,31 @@ TEST_F(ScrollbarLayerTest, ScrollbarLayerOpacity) {
 
   // A solid color scrollbar layer's opacity is initialized to 0 on main thread
   layer_tree_host_->UpdateLayers();
-  const EffectNode* node =
-      layer_tree_host_->property_trees()->effect_tree().Node(
-          scrollbar_layer->effect_tree_index());
-  EXPECT_EQ(node->opacity, 0.f);
+  EXPECT_EQ(layer_tree_host_->property_trees()
+                ->effect_tree()
+                .Node(scrollbar_layer->effect_tree_index())
+                .opacity,
+            0.f);
 
   // This tests that the initial opacity(0) of the scrollbar gets pushed onto
   // the pending tree and then onto the active tree.
-  LayerTreeHostImpl* host_impl = layer_tree_host_->host_impl();
+  ClientLayerTreeHostImpl* host_impl = layer_tree_host_->host_impl();
   host_impl->CreatePendingTree();
   LayerImpl* layer_impl_tree_root = layer_tree_host_->CommitToPendingTree();
   LayerTreeImpl* layer_tree_impl = layer_impl_tree_root->layer_tree_impl();
   EXPECT_TRUE(layer_tree_impl->IsPendingTree());
-  node = layer_tree_impl->property_trees()->effect_tree().Node(
-      scrollbar_layer->effect_tree_index());
-  EXPECT_EQ(node->opacity, 0.f);
+  EXPECT_EQ(layer_tree_host_->property_trees()
+                ->effect_tree()
+                .Node(scrollbar_layer->effect_tree_index())
+                .opacity,
+            0.f);
   host_impl->ActivateSyncTree();
   layer_tree_impl = host_impl->active_tree();
-  node = layer_tree_impl->property_trees()->effect_tree().Node(
-      scrollbar_layer->effect_tree_index());
-  EXPECT_EQ(node->opacity, 0.f);
+  EXPECT_EQ(layer_tree_host_->property_trees()
+                ->effect_tree()
+                .Node(scrollbar_layer->effect_tree_index())
+                .opacity,
+            0.f);
 
   // This tests that activation does not change the opacity of scrollbar layer.
   ScrollbarLayerImplBase* scrollbar_layer_impl =
@@ -974,14 +981,18 @@ TEST_F(ScrollbarLayerTest, ScrollbarLayerOpacity) {
   layer_impl_tree_root = layer_tree_host_->CommitToPendingTree();
   layer_tree_impl = layer_impl_tree_root->layer_tree_impl();
   EXPECT_TRUE(layer_tree_impl->IsPendingTree());
-  node = layer_tree_impl->property_trees()->effect_tree().Node(
-      scrollbar_layer->effect_tree_index());
-  EXPECT_EQ(node->opacity, 0.f);
+  EXPECT_EQ(layer_tree_host_->property_trees()
+                ->effect_tree()
+                .Node(scrollbar_layer->effect_tree_index())
+                .opacity,
+            0.f);
   host_impl->ActivateSyncTree();
   layer_tree_impl = host_impl->active_tree();
-  node = layer_tree_impl->property_trees()->effect_tree().Node(
-      scrollbar_layer->effect_tree_index());
-  EXPECT_EQ(node->opacity, 0.25f);
+  EXPECT_EQ(layer_tree_impl->property_trees()
+                ->effect_tree()
+                .Node(scrollbar_layer->effect_tree_index())
+                .opacity,
+            0.25f);
 }
 
 TEST_P(AuraScrollbarLayerTest, ScrollbarLayerPushProperties) {
@@ -1011,7 +1022,7 @@ TEST_P(AuraScrollbarLayerTest, ScrollbarLayerPushProperties) {
   scroll_layer->SetBounds(gfx::Size(10, 10));
   scroll_layer->SetScrollable(layer_tree_root->bounds());
   layer_tree_host_->UpdateLayers();
-  LayerTreeHostImpl* host_impl = layer_tree_host_->host_impl();
+  ClientLayerTreeHostImpl* host_impl = layer_tree_host_->host_impl();
   host_impl->CreatePendingTree();
   layer_tree_host_->CommitToPendingTree();
   host_impl->ActivateSyncTree();
@@ -1024,12 +1035,13 @@ TEST_P(AuraScrollbarLayerTest, ScrollbarLayerPushProperties) {
   host_impl->CreatePendingTree();
   layer_tree_host_->CommitToPendingTree();
   host_impl->ActivateSyncTree();
-  const EffectNode* node =
-      host_impl->active_tree()->property_trees()->effect_tree().Node(
-          scrollbar_layer->effect_tree_index());
   // If Fluent overlay scrollbars are active, changing the bounds scrollable
   // content shouldn't make the scrollbars appear.
-  EXPECT_EQ(node->opacity,
+  EXPECT_EQ(host_impl->active_tree()
+                ->property_trees()
+                ->effect_tree()
+                .Node(scrollbar_layer->effect_tree_index())
+                .opacity,
             layer_tree_settings_.enable_fluent_overlay_scrollbar ? 0.f : 1.f);
 }
 
@@ -1095,7 +1107,7 @@ TEST_P(AuraScrollbarLayerTest, ScrollbarLayerCreateAfterSetScrollable) {
   scroll_layer->SetBounds(gfx::Size(10, 10));
   scroll_layer->SetScrollable(layer_tree_root->bounds());
   layer_tree_host_->UpdateLayers();
-  LayerTreeHostImpl* host_impl = layer_tree_host_->host_impl();
+  ClientLayerTreeHostImpl* host_impl = layer_tree_host_->host_impl();
   host_impl->CreatePendingTree();
   layer_tree_host_->CommitToPendingTree();
   host_impl->ActivateSyncTree();
@@ -1114,10 +1126,12 @@ TEST_P(AuraScrollbarLayerTest, ScrollbarLayerCreateAfterSetScrollable) {
 
   EXPECT_TRUE(host_impl->ScrollbarAnimationControllerForElementId(
       scroll_layer->element_id()));
-  const EffectNode* node =
-      host_impl->active_tree()->property_trees()->effect_tree().Node(
-          scrollbar_layer->effect_tree_index());
-  EXPECT_EQ(node->opacity, 1.f);
+  EXPECT_EQ(host_impl->active_tree()
+                ->property_trees()
+                ->effect_tree()
+                .Node(scrollbar_layer->effect_tree_index())
+                .opacity,
+            1.f);
 }
 
 class ScrollbarLayerSolidColorThumbTest : public testing::Test {
@@ -1170,17 +1184,17 @@ TEST_F(ScrollbarLayerSolidColorThumbTest, SolidColorThumbPosition) {
   horizontal_scrollbar_layer_->SetClipLayerLength(12.f);
   horizontal_scrollbar_layer_->SetScrollLayerLength(112.f);
   EXPECT_EQ(0, horizontal_scrollbar_layer_->ComputeThumbQuadRect().x());
-  EXPECT_EQ(10, horizontal_scrollbar_layer_->ComputeThumbQuadRect().width());
+  EXPECT_EQ(11, horizontal_scrollbar_layer_->ComputeThumbQuadRect().width());
 
   horizontal_scrollbar_layer_->SetCurrentPos(100);
-  // The thumb is 10px long and the track is 100px, so the maximum thumb
-  // position is 90px.
-  EXPECT_EQ(90, horizontal_scrollbar_layer_->ComputeThumbQuadRect().x());
+  // The thumb is 11px long and the track is 100px, so the maximum thumb
+  // position is 89px.
+  EXPECT_EQ(89, horizontal_scrollbar_layer_->ComputeThumbQuadRect().x());
 
   horizontal_scrollbar_layer_->SetCurrentPos(80);
   // The scroll position is 80% of the maximum, so the thumb's position should
-  // be at 80% of its maximum or 72px.
-  EXPECT_EQ(72, horizontal_scrollbar_layer_->ComputeThumbQuadRect().x());
+  // be at 80% of its maximum or 71px.
+  EXPECT_EQ(71, horizontal_scrollbar_layer_->ComputeThumbQuadRect().x());
 }
 
 TEST_F(ScrollbarLayerSolidColorThumbTest, SolidColorThumbVerticalAdjust) {
@@ -1437,8 +1451,7 @@ TEST_F(ScrollbarLayerTestResourceCreationAndRelease, TestResourceUpdate) {
   // Simulate commit to compositor thread.
   scrollbar_layer->PushPropertiesTo(
       scrollbar_layer->CreateLayerImpl(layer_tree_host_->active_tree()).get(),
-      *layer_tree_host_->GetPendingCommitState(),
-      layer_tree_host_->GetThreadUnsafeCommitState());
+      *layer_tree_host_->GetPendingCommitState());
   scrollbar_layer->fake_scrollbar()->set_thumb_needs_repaint(false);
   scrollbar_layer->fake_scrollbar()->set_track_and_buttons_need_repaint(false);
 

@@ -42,7 +42,7 @@ import org.chromium.ui.base.TestActivity;
 public class SafetyHubLocalPasswordsModuleMediatorTest {
     private static final @DrawableRes int SAFE_ICON = R.drawable.material_ic_check_24dp;
     private static final @DrawableRes int INFO_ICON = R.drawable.btn_info;
-    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_business;
+    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_domain;
     private static final @DrawableRes int WARNING_ICON = R.drawable.ic_error;
 
     private static final String TEST_EMAIL_ADDRESS = "test@email.com";
@@ -70,7 +70,6 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         clearInvocations(mMediatorDelegateMock);
     }
 
-    // TODO(crbug.com/388788969): Mock reused passwords.
     private void mockPasswordCounts(int compromised, int weak, int reused) {
         doReturn(compromised).when(mDataSource).getCompromisedPasswordCount();
         doReturn(weak).when(mDataSource).getWeakPasswordCount();
@@ -90,7 +89,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(/* compromised= */ -1, /* weak= */ -1, /* reused= */ -1);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.UNAVAILABLE_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.UNAVAILABLE_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -111,7 +110,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(/* compromised= */ -1, /* weak= */ -1, /* reused= */ -1);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.UNAVAILABLE_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.UNAVAILABLE_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -133,7 +132,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(/* compromised= */ 0, /* weak= */ 0, /* reused= */ 0);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.NO_SAVED_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.NO_SAVED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle = mActivity.getString(R.string.safety_hub_no_local_passwords_title);
@@ -153,7 +152,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(/* compromised= */ 0, /* weak= */ 0, /* reused= */ 0);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.NO_SAVED_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.NO_SAVED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle = mActivity.getString(R.string.safety_hub_no_local_passwords_title);
@@ -175,7 +174,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(compromisedPasswordsCount, /* weak= */ 1, /* reused= */ 2);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_COMPROMISED_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.HAS_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -206,7 +205,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(compromisedPasswordsCount, /* weak= */ 1, /* reused= */ 2);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_COMPROMISED_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.HAS_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -235,7 +234,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(/* compromised= */ 0, /* weak= */ 1, /* reused= */ reusedPasswordsCount);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_REUSED_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.HAS_REUSED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -262,7 +261,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(/* compromised= */ 0, /* weak= */ 1, /* reused= */ 2);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_REUSED_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.HAS_REUSED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -287,7 +286,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(/* compromised= */ 0, weakPasswordsCount, /* reused= */ 0);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_WEAK_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.HAS_WEAK_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -312,7 +311,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(/* compromised= */ 0, 1, /* reused= */ 0);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_WEAK_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.HAS_WEAK_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -336,13 +335,13 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(0, 0, 0);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
                 mActivity.getString(R.string.safety_hub_no_compromised_local_passwords_title);
         String expectedSummary =
-                mActivity.getString(R.string.safety_hub_no_compromised_local_passwords_summary);
+                mActivity.getString(R.string.safety_hub_no_compromised_passwords_summary);
         String expectedSecondaryButtonText =
                 mActivity.getString(R.string.safety_hub_passwords_navigation_button);
 
@@ -358,7 +357,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         mockPasswordCounts(0, 0, 0);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =

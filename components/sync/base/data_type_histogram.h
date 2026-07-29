@@ -6,6 +6,7 @@
 #define COMPONENTS_SYNC_BASE_DATA_TYPE_HISTOGRAM_H_
 
 #include "components/sync/base/data_type.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace syncer {
 
@@ -22,6 +23,22 @@ enum class UpdateDropReason {
   // This should effectively replace kCannotGenerateStorageKey in the long run.
   kDroppedByBridge
 };
+
+// LINT.IfChange(UnsyncedDataRecordingEvent)
+enum class UnsyncedDataRecordingEvent {
+  // Upon `DataTypeLocalChangeProcessor::ModelReadyToSync()` call.
+  kOnModelReady,
+  // When the user initiates a signout flow (but has not confirmed yet).
+  // And is in pending state.
+  kOnSignoutConfirmationFromPendingState,
+  // And is not in pending state.
+  kOnSignoutConfirmation,
+  // Right after the user reauthenticates and fixes their signin pending state.
+  // Only recorded in transport mode. Not recorded for sync-the-feature (aka
+  // "Sync paused").
+  kOnReauthFromPendingState,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/sync/histograms.xml:UnsyncedDataRecordingEventVariants)
 
 // Records that a remote update of an entity of type `type` got dropped into a
 // `reason` related histogram.
@@ -43,15 +60,14 @@ void SyncRecordDataTypeEntitySizeHistogram(DataType data_type,
                                            size_t specifics_bytes,
                                            size_t total_bytes);
 
-// Records the amount of unsynced entities for the given `data_type` upon
-// DataTypeLocalChangeProcessor::ModelReadyToSync() call.
-void SyncRecordDataTypeNumUnsyncedEntitiesOnModelReady(
-    DataType data_type,
-    size_t num_unsynced_entities);
+// Records the amount of unsynced entities for the given `unsynced_data`.
+void SyncRecordDataTypeNumUnsyncedEntitiesFromDataCounts(
+    UnsyncedDataRecordingEvent event,
+    absl::flat_hash_map<DataType, size_t> unsynced_data);
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
-// LINT.IfChange(SyncToSigninMigrationReadingListStep)
+// LINT.IfChange(ReadingListMigrationStep)
 enum class ReadingListMigrationStep {
   kMigrationRequested = 0,
   kMigrationStarted = 1,
@@ -61,6 +77,59 @@ enum class ReadingListMigrationStep {
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncToSigninMigrationReadingListStep)
 void RecordSyncToSigninMigrationReadingListStep(ReadingListMigrationStep step);
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(SyncToSigninMigrationExtensionsStep)
+enum class SyncToSigninMigrationExtensionsStep {
+  kMigrationRequested = 0,
+  kMigrationStarted = 1,
+  kMigrationFinishedAndPrefCleared = 2,
+  kMaxValue = kMigrationFinishedAndPrefCleared
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncToSigninMigrationExtensionsStep)
+void RecordSyncToSigninMigrationExtensionsStep(
+    SyncToSigninMigrationExtensionsStep step);
+void RecordSyncToSigninMigrationExtensionsDeduplicatedCount(int count);
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(SyncToSigninMigrationThemeStep)
+enum class SyncToSigninMigrationThemeStep {
+  kMigrationRequested = 0,
+  kMigrationStarted = 1,
+  kMigrationFinishedAndPrefCleared = 2,
+  kMaxValue = kMigrationFinishedAndPrefCleared
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncToSigninMigrationThemeStep)
+void RecordSyncToSigninMigrationThemeStep(SyncToSigninMigrationThemeStep step);
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(SyncToSigninMigrationThemeOutcome)
+enum class SyncToSigninMigrationThemeOutcome {
+  kNoLocalTheme = 0,
+  kNoAccountTheme = 1,
+  kLocalThemeDifferentFromAccountTheme = 2,
+  kRemovedLocalTheme = 3,
+  kMaxValue = kRemovedLocalTheme
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncToSigninMigrationThemeOutcome)
+void RecordSyncToSigninMigrationThemeOutcome(
+    SyncToSigninMigrationThemeOutcome outcome);
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(SyncToSigninMigrationStatsTableCleanupStep)
+enum class SyncToSigninMigrationStatsTableCleanupStep {
+  kCleanupRequested = 0,
+  kCleanupStarted = 1,
+  kCleanupFinishedAndPrefCleared = 2,
+  kMaxValue = kCleanupFinishedAndPrefCleared
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncToSigninMigrationStatsTableCleanupStep)
+void RecordSyncToSigninMigrationStatsTableCleanupStep(
+    SyncToSigninMigrationStatsTableCleanupStep step);
 
 }  // namespace syncer
 

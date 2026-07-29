@@ -22,7 +22,7 @@ import type {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_
 import type {CrFeedbackButtonsElement} from 'chrome://resources/cr_elements/cr_feedback_buttons/cr_feedback_buttons.js';
 import {CrFeedbackOption} from 'chrome://resources/cr_elements/cr_feedback_buttons/cr_feedback_buttons.js';
 import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
-import {assert} from 'chrome://resources/js/assert.js';
+import {assert, assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {hexColorToSkColor} from 'chrome://resources/js/color_utils.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
@@ -30,9 +30,9 @@ import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {Token} from 'chrome://resources/mojo/mojo/public/mojom/base/token.mojom-webui.js';
 
 import {CustomizeChromeAction, recordCustomizeChromeAction} from '../common.js';
-import type {CustomizeChromePageCallbackRouter, CustomizeChromePageHandlerInterface, Theme} from '../customize_chrome.mojom-webui.js';
+import type {Theme} from '../customize_chrome.mojom-webui.js';
 import {CustomizeChromeApiProxy} from '../customize_chrome_api_proxy.js';
-import type {DescriptorB, DescriptorDValue, Descriptors, Group, InspirationDescriptors, InspirationGroup, ResultDescriptors, WallpaperSearchClientCallbackRouter, WallpaperSearchHandlerInterface, WallpaperSearchResult} from '../wallpaper_search.mojom-webui.js';
+import type {DescriptorB, DescriptorDValue, Descriptors, Group, InspirationDescriptors, InspirationGroup, ResultDescriptors, WallpaperSearchResult} from '../wallpaper_search.mojom-webui.js';
 import {DescriptorDName, UserFeedback, WallpaperSearchStatus} from '../wallpaper_search.mojom-webui.js';
 import {WindowProxy} from '../window_proxy.js';
 
@@ -68,6 +68,8 @@ function descriptorDNameToHex(name: DescriptorDName): string {
   switch (name) {
     case DescriptorDName.kYellow:
       return '#f9cc18';
+    default:
+      assertNotReachedCase(name);
   }
 }
 
@@ -155,7 +157,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
       inspirationToggleIcon_: {type: String},
       openInspirations_: {type: Boolean},
       resultsDescriptors_: {type: Object},
-      results_: {type: Object},
+      results_: {type: Array},
       selectedFeedbackOption_: {type: Number},
       selectedDescriptorA_: {type: String},
       selectedDescriptorB_: {type: String},
@@ -169,57 +171,53 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     };
   }
 
-  protected comboboxItems_: ComboxItems = {
+  protected accessor comboboxItems_: ComboxItems = {
     a: [],
     b: [],
     c: [],
   };
-  private descriptors_: Descriptors|null = null;
-  protected descriptorD_: string[] = DESCRIPTOR_D_VALUE.map(value => value.hex);
+  private accessor descriptors_: Descriptors|null = null;
+  protected accessor descriptorD_: string[] =
+      DESCRIPTOR_D_VALUE.map(value => value.hex);
   private errorCallback_: (() => void)|undefined;
-  protected errorState_: ErrorState|null = null;
-  private expandedCategories_: {[categoryIndex: number]: boolean} = {};
-  protected history_: WallpaperSearchResult[] = [];
-  protected inspirationGroups_: InspirationGroup[] = [];
-  protected inspirationCardEnabled_: boolean =
+  protected accessor errorState_: ErrorState|null = null;
+  private accessor expandedCategories_: {[categoryIndex: number]: boolean} = {};
+  protected accessor history_: WallpaperSearchResult[] = [];
+  protected accessor inspirationGroups_: InspirationGroup[] = [];
+  protected accessor inspirationCardEnabled_: boolean =
       loadTimeData.getBoolean('wallpaperSearchInspirationCardEnabled');
-  protected inspirationToggleIcon_: string = '';
-  protected loading_: boolean = false;
-  protected openInspirations_: boolean = false;
-  protected results_: WallpaperSearchResult[] = [];
-  private resultsDescriptors_: ResultDescriptors|null = null;
+  protected accessor inspirationToggleIcon_: string = '';
+  protected accessor loading_: boolean = false;
+  protected accessor openInspirations_: boolean = false;
+  protected accessor results_: WallpaperSearchResult[] = [];
+  private accessor resultsDescriptors_: ResultDescriptors|null = null;
   private resultsPromises_: Array<Promise<WallpaperSearchResponse>> = [];
   private selectedDefaultColor_: string|undefined;
-  protected selectedDescriptorA_: string|null = null;
-  protected selectedDescriptorB_: string|null = null;
-  protected selectedDescriptorC_: string|null = null;
-  private selectedDescriptorD_: DescriptorDValue|null = null;
-  protected selectedFeedbackOption_: CrFeedbackOption =
+  protected accessor selectedDescriptorA_: string|undefined;
+  protected accessor selectedDescriptorB_: string|undefined;
+  protected accessor selectedDescriptorC_: string|undefined;
+  private accessor selectedDescriptorD_: DescriptorDValue|null = null;
+  protected accessor selectedFeedbackOption_: CrFeedbackOption =
       CrFeedbackOption.UNSPECIFIED;
-  protected selectedHue_: number|null = null;
-  protected shouldShowHistory_: boolean = false;
-  protected shouldShowInspiration_: boolean = false;
-  private status_: WallpaperSearchStatus = WallpaperSearchStatus.kOk;
-  private theme_?: Theme;
+  protected accessor selectedHue_: number|null = null;
+  protected accessor shouldShowHistory_: boolean = false;
+  protected accessor shouldShowInspiration_: boolean = false;
+  private accessor status_: WallpaperSearchStatus = WallpaperSearchStatus.kOk;
+  private accessor theme_: Theme|undefined;
 
-  private callbackRouter_: CustomizeChromePageCallbackRouter;
-  private pageHandler_: CustomizeChromePageHandlerInterface;
-  private wallpaperSearchCallbackRouter_: WallpaperSearchClientCallbackRouter;
-  private wallpaperSearchHandler_: WallpaperSearchHandlerInterface;
+  private apiProxy_: CustomizeChromeApiProxy =
+      CustomizeChromeApiProxy.getInstance();
+  private wallpaperSearchProxy_: WallpaperSearchProxy =
+      WallpaperSearchProxy.getInstance();
   private setThemeListenerId_: number|null = null;
   private setHistoryListenerId_: number|null = null;
   private loadingUiResizeObserver_: ResizeObserver|null = null;
 
   constructor() {
     super();
-    this.callbackRouter_ = CustomizeChromeApiProxy.getInstance().callbackRouter;
-    this.pageHandler_ = CustomizeChromeApiProxy.getInstance().handler;
-    this.wallpaperSearchHandler_ = WallpaperSearchProxy.getInstance().handler;
-    this.wallpaperSearchCallbackRouter_ =
-        WallpaperSearchProxy.getInstance().callbackRouter;
     this.fetchDescriptors_();
     if (this.inspirationCardEnabled_) {
-      this.wallpaperSearchHandler_.getInspirations().then(
+      this.wallpaperSearchProxy_.handler.getInspirations().then(
           ({inspirationGroups}) => {
             this.inspirationGroups_ = inspirationGroups || [];
           });
@@ -229,17 +227,17 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
   override connectedCallback() {
     super.connectedCallback();
     this.setThemeListenerId_ =
-        this.callbackRouter_.setTheme.addListener((theme: Theme) => {
+        this.apiProxy_.callbackRouter.setTheme.addListener(theme => {
           this.theme_ = theme;
         });
-    this.pageHandler_.updateTheme();
+    this.apiProxy_.handler.updateTheme();
     this.setHistoryListenerId_ =
-        this.wallpaperSearchCallbackRouter_.setHistory.addListener(
-            (history: WallpaperSearchResult[]) => {
+        this.wallpaperSearchProxy_.callbackRouter.setHistory.addListener(
+            history => {
               this.history_ = history;
               this.openInspirations_ = !this.computeShouldShowHistory_();
             });
-    this.wallpaperSearchHandler_.updateHistory();
+    this.wallpaperSearchProxy_.handler.updateHistory();
     this.loadingUiResizeObserver_ = new ResizeObserver(() => {
       this.generateLoadingUi_();
     });
@@ -250,8 +248,8 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     super.disconnectedCallback();
     assert(this.setThemeListenerId_);
     assert(this.setHistoryListenerId_);
-    this.callbackRouter_.removeListener(this.setThemeListenerId_);
-    this.wallpaperSearchCallbackRouter_.removeListener(
+    this.apiProxy_.callbackRouter.removeListener(this.setThemeListenerId_);
+    this.wallpaperSearchProxy_.callbackRouter.removeListener(
         this.setHistoryListenerId_);
     this.loadingUiResizeObserver_!.disconnect();
     this.loadingUiResizeObserver_ = null;
@@ -323,6 +321,8 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
           description: this.i18n('signedOutDescription'),
           callToAction: this.i18n('ok'),
         };
+      default:
+        assertNotReachedCase(this.status_);
     }
   }
 
@@ -351,40 +351,46 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
   }
 
   private fetchDescriptors_() {
-    this.wallpaperSearchHandler_.getDescriptors().then(({descriptors}) => {
-      if (descriptors) {
-        // Order the descriptors so they appear alphabetically in all languages.
-        descriptors.groups.sort((a, b) => a.category.localeCompare(b.category));
-        descriptors.groups.forEach(
-            (group) => group.descriptorAs.sort(
-                (a, b) => a.label.localeCompare(b.label)));
-        descriptors.descriptorB.sort((a, b) => a.label.localeCompare(b.label));
-        descriptors.descriptorC.sort((a, b) => a.label.localeCompare(b.label));
+    this.wallpaperSearchProxy_.handler.getDescriptors().then(
+        ({descriptors}) => {
+          if (descriptors) {
+            // Order the descriptors so they appear alphabetically in all
+            // languages.
+            descriptors.groups.sort(
+                (a, b) => a.category.localeCompare(b.category));
+            descriptors.groups.forEach(
+                (group) => group.descriptorAs.sort(
+                    (a, b) => a.label.localeCompare(b.label)));
+            descriptors.descriptorB.sort(
+                (a, b) => a.label.localeCompare(b.label));
+            descriptors.descriptorC.sort(
+                (a, b) => a.label.localeCompare(b.label));
 
-        this.descriptors_ = descriptors;
-        this.comboboxItems_ = {
-          a: descriptors.groups.map((group) => {
-            return {
-              key: group.category,
-              label: group.category,
-              items: group.descriptorAs,
+            this.descriptors_ = descriptors;
+            this.comboboxItems_ = {
+              a: descriptors.groups.map((group) => {
+                return {
+                  key: group.category,
+                  label: group.category,
+                  items: group.descriptorAs,
+                };
+              }),
+              b: descriptors.descriptorB,
+              c: descriptors.descriptorC,
             };
-          }),
-          b: descriptors.descriptorB,
-          c: descriptors.descriptorC,
-        };
-        this.errorCallback_ = undefined;
-        recordStatusChange(WallpaperSearchStatus.kOk);
-      } else {
-        // Wallpaper search cannot render properly without descriptors, so the
-        // error callback takes the user back a page.
-        this.errorCallback_ = () => this.dispatchEvent(new Event('back-click'));
-        this.status_ = WindowProxy.getInstance().onLine ?
-            WallpaperSearchStatus.kError :
-            WallpaperSearchStatus.kOffline;
-        recordStatusChange(this.status_);
-      }
-    });
+            this.errorCallback_ = undefined;
+            recordStatusChange(WallpaperSearchStatus.kOk);
+          } else {
+            // Wallpaper search cannot render properly without descriptors, so
+            // the error callback takes the user back a page.
+            this.errorCallback_ = () =>
+                this.dispatchEvent(new Event('back-click'));
+            this.status_ = WindowProxy.getInstance().onLine ?
+                WallpaperSearchStatus.kError :
+                WallpaperSearchStatus.kOffline;
+            recordStatusChange(this.status_);
+          }
+        });
   }
 
   /**
@@ -442,12 +448,9 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     const groupDescriptorColor = groupDescriptors.color?.name !== undefined ?
         descriptorDNameToHex(groupDescriptors.color.name) :
         undefined;
-    return (groupDescriptors.subject?.key || null) ===
-                this.selectedDescriptorA_ &&
-            (groupDescriptors.style?.key || null) ===
-                this.selectedDescriptorB_ &&
-            (groupDescriptors.mood?.key || null) ===
-                this.selectedDescriptorC_ &&
+    return (groupDescriptors.subject?.key) === this.selectedDescriptorA_ &&
+            (groupDescriptors.style?.key) === this.selectedDescriptorB_ &&
+            (groupDescriptors.mood?.key) === this.selectedDescriptorC_ &&
             groupDescriptorColor === this.selectedDefaultColor_ ?
         'true' :
         'false';
@@ -534,7 +537,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     return option.key === this.selectedDescriptorB_;
   }
 
-  protected onBackClick_() {
+  protected onBackButtonClick_() {
     this.dispatchEvent(new Event('back-click'));
   }
 
@@ -582,7 +585,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
         CustomizeChromeAction.WALLPAPER_SEARCH_COLOR_DESCRIPTOR_UPDATED);
   }
 
-  protected onMoodDescriptorChange_(e: CustomEvent<{value: string}>) {
+  protected onMoodDescriptorValueChanged_(e: CustomEvent<{value: string}>) {
     if (this.selectedDescriptorC_ !== e.detail.value) {
       recordCustomizeChromeAction(
           CustomizeChromeAction.WALLPAPER_SEARCH_MOOD_DESCRIPTOR_UPDATED);
@@ -590,7 +593,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     this.selectedDescriptorC_ = e.detail.value;
   }
 
-  protected onStyleDescriptorChange_(e: CustomEvent<{value: string}>) {
+  protected onStyleDescriptorValueChanged_(e: CustomEvent<{value: string}>) {
     if (this.selectedDescriptorB_ !== e.detail.value) {
       recordCustomizeChromeAction(
           CustomizeChromeAction.WALLPAPER_SEARCH_STYLE_DESCRIPTOR_UPDATED);
@@ -598,7 +601,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     this.selectedDescriptorB_ = e.detail.value;
   }
 
-  protected onSubjectDescriptorChange_(e: CustomEvent<{value: string}>) {
+  protected onSubjectDescriptorValueChanged_(e: CustomEvent<{value: string}>) {
     if (this.selectedDescriptorA_ !== e.detail.value) {
       recordCustomizeChromeAction(
           CustomizeChromeAction.WALLPAPER_SEARCH_SUBJECT_DESCRIPTOR_UPDATED);
@@ -611,18 +614,23 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     this.selectedFeedbackOption_ = e.detail.value;
     switch (e.detail.value) {
       case CrFeedbackOption.UNSPECIFIED:
-        this.wallpaperSearchHandler_.setUserFeedback(UserFeedback.kUnspecified);
+        this.wallpaperSearchProxy_.handler.setUserFeedback(
+            UserFeedback.kUnspecified);
         return;
       case CrFeedbackOption.THUMBS_UP:
         recordCustomizeChromeAction(
             CustomizeChromeAction.WALLPAPER_SEARCH_THUMBS_UP_SELECTED);
-        this.wallpaperSearchHandler_.setUserFeedback(UserFeedback.kThumbsUp);
+        this.wallpaperSearchProxy_.handler.setUserFeedback(
+            UserFeedback.kThumbsUp);
         return;
       case CrFeedbackOption.THUMBS_DOWN:
         recordCustomizeChromeAction(
             CustomizeChromeAction.WALLPAPER_SEARCH_THUMBS_DOWN_SELECTED);
-        this.wallpaperSearchHandler_.setUserFeedback(UserFeedback.kThumbsDown);
+        this.wallpaperSearchProxy_.handler.setUserFeedback(
+            UserFeedback.kThumbsDown);
         return;
+      default:
+        assertNotReachedCase(e.detail.value);
     }
   }
 
@@ -631,7 +639,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     const item = this.history_[index]!;
     recordCustomizeChromeAction(
         CustomizeChromeAction.WALLPAPER_SEARCH_HISTORY_IMAGE_SELECTED);
-    this.wallpaperSearchHandler_.setBackgroundToHistoryImage(
+    this.wallpaperSearchProxy_.handler.setBackgroundToHistoryImage(
         item.id,
         item.descriptors ??
             {subject: null, style: null, mood: null, color: null});
@@ -656,14 +664,14 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     const item = inspirationGroup.inspirations[index]!;
     recordCustomizeChromeAction(
         CustomizeChromeAction.WALLPAPER_SEARCH_INSPIRATION_THEME_SELECTED);
-    this.wallpaperSearchHandler_.setBackgroundToInspirationImage(
+    this.wallpaperSearchProxy_.handler.setBackgroundToInspirationImage(
         item.id, item.backgroundUrl);
     this.selectDescriptorsFromInspirationGroup_(inspirationGroup);
   }
 
   protected onLearnMoreClick_(e: Event) {
     e.preventDefault();
-    this.wallpaperSearchHandler_.openHelpArticle();
+    this.wallpaperSearchProxy_.handler.openHelpArticle();
   }
 
   protected onSelectedHueChanged_() {
@@ -674,7 +682,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
         CustomizeChromeAction.WALLPAPER_SEARCH_COLOR_DESCRIPTOR_UPDATED);
   }
 
-  protected onSelectedHueDelete_() {
+  protected onSelectedHueDeleteClick_() {
     this.selectedHue_ = null;
     this.selectedDescriptorD_ = null;
     this.$.hueSlider.hide();
@@ -707,7 +715,8 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
       color: this.selectedDescriptorD_ ?? null,
     };
     this.resultsPromises_.push(
-        this.wallpaperSearchHandler_.getWallpaperSearchResults(descriptors));
+        this.wallpaperSearchProxy_.handler.getWallpaperSearchResults(
+            descriptors));
     if (this.resultsPromises_.length <= 1) {
       // Start processing requests, as well as any requests that are added
       // while waiting for results.
@@ -725,7 +734,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
           if (this.status_ === WallpaperSearchStatus.kOk) {
             announcer.announce(
                 this.i18n('wallpaperSearchSuccessA11yMessage', results.length));
-            this.wallpaperSearchHandler_.launchHatsSurvey();
+            this.wallpaperSearchProxy_.handler.launchHatsSurvey();
           }
           recordStatusChange(status);
           this.selectedFeedbackOption_ = CrFeedbackOption.UNSPECIFIED;
@@ -739,7 +748,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
   }
 
   private onResultsRender_() {
-    this.wallpaperSearchHandler_.setResultRenderTime(
+    this.wallpaperSearchProxy_.handler.setResultRenderTime(
         this.results_.map(r => r.id), WindowProxy.getInstance().now());
   }
 
@@ -749,7 +758,7 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
     assert(this.resultsDescriptors_);
     recordCustomizeChromeAction(
         CustomizeChromeAction.WALLPAPER_SEARCH_RESULT_IMAGE_SELECTED);
-    this.wallpaperSearchHandler_.setBackgroundToWallpaperSearchResult(
+    this.wallpaperSearchProxy_.handler.setBackgroundToWallpaperSearchResult(
         item.id, WindowProxy.getInstance().now(), this.resultsDescriptors_);
   }
 
@@ -766,9 +775,9 @@ export class WallpaperSearchElement extends WallpaperSearchElementBase {
   private selectDescriptorsFromInspirationGroup_(group: InspirationGroup) {
     const announcer = getAnnouncerInstance();
     const groupDescriptors = group.descriptors;
-    this.selectedDescriptorA_ = groupDescriptors.subject?.key || null;
-    this.selectedDescriptorB_ = groupDescriptors.style?.key || null;
-    this.selectedDescriptorC_ = groupDescriptors.mood?.key || null;
+    this.selectedDescriptorA_ = groupDescriptors.subject?.key;
+    this.selectedDescriptorB_ = groupDescriptors.style?.key;
+    this.selectedDescriptorC_ = groupDescriptors.mood?.key;
 
     if (groupDescriptors.color?.name !== undefined) {
       const hex = descriptorDNameToHex(groupDescriptors.color.name);

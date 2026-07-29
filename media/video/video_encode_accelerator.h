@@ -15,9 +15,11 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
+#include "gpu/command_buffer/client/shared_image_interface.h"
 #include "media/base/bitrate.h"
 #include "media/base/encoder_status.h"
 #include "media/base/media_export.h"
+#include "media/base/media_log.h"
 #include "media/base/svc_scalability_mode.h"
 #include "media/base/video_bitrate_allocation.h"
 #include "media/base/video_codecs.h"
@@ -29,7 +31,6 @@
 namespace media {
 
 class BitstreamBuffer;
-class MediaLog;
 class VideoFrame;
 class CommandBufferHelper;
 
@@ -133,6 +134,12 @@ struct MEDIA_EXPORT SVCGenericMetadata final {
   std::optional<uint16_t> refresh_flags;
 };
 
+struct MEDIA_EXPORT YuvPsnr final {
+  double y;
+  double u;
+  double v;
+};
+
 //  Metadata associated with a bitstream buffer.
 //  |payload_size| is the byte size of the used portion of the buffer.
 //  |key_frame| is true if this delivered frame is a keyframe.
@@ -184,6 +191,9 @@ struct MEDIA_EXPORT BitstreamBufferMetadata final {
 
   // Some platforms may adjust the color space.
   std::optional<gfx::ColorSpace> encoded_color_space;
+
+  // Y, U, and V Peak Signal-to-Noise Ratio (PSNR) values.
+  std::optional<YuvPsnr> yuv_psnr;
 };
 
 // Video encoder interface.
@@ -350,6 +360,11 @@ class MEDIA_EXPORT VideoEncodeAccelerator {
     // Indicates what type of encoder is required. Useful when OS software
     // encoders may be present and/or superior to built-in encoders.
     EncoderType required_encoder_type = EncoderType::kHardware;
+
+    // When set to true, indicates that the frame reference structure is
+    // specified per frame by application, and ignores config item specified by
+    // `spatial_layers` and `inter_layer_pred`.
+    bool manual_reference_buffer_control = false;
   };
 
   // Interface for clients that use VideoEncodeAccelerator. These callbacks will
@@ -405,8 +420,8 @@ class MEDIA_EXPORT VideoEncodeAccelerator {
   virtual SupportedProfiles GetSupportedProfiles() = 0;
 
   // Initializes the video encoder with specific configuration.  Called once per
-  // encoder construction.  This call is synchronous and returns true iff
-  // initialization is successful.
+  // encoder construction.  This call is synchronous and returns
+  // EncoderStatus::Codes::kOk iff initialization is successful.
   // TODO(mcasas): Update to asynchronous, https://crbug.com/744210.
   // Parameters:
   //  |config| contains the initialization parameters.
@@ -414,9 +429,9 @@ class MEDIA_EXPORT VideoEncodeAccelerator {
   //  be valid until Destroy() is called.
   //  |media_log| is used to report error messages.
   // TODO(sheu): handle resolution changes.  http://crbug.com/249944
-  virtual bool Initialize(const Config& config,
-                          Client* client,
-                          std::unique_ptr<MediaLog> media_log) = 0;
+  virtual EncoderStatus Initialize(const Config& config,
+                                   Client* client,
+                                   std::unique_ptr<MediaLog> media_log) = 0;
 
   // Encodes the given frame.
   // The storage type of |frame| must be the |storage_type| if it is specified
@@ -509,6 +524,9 @@ class MEDIA_EXPORT VideoEncodeAccelerator {
           get_command_buffer_helper_cb,
       scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner);
 
+  virtual void SetSharedImageInterfaceForTesting(
+      scoped_refptr<gpu::SharedImageInterface> sii);
+
  protected:
   // Do not delete directly; use Destroy() or own it with a unique_ptr, which
   // will Destroy() it properly by default.
@@ -523,6 +541,7 @@ MEDIA_EXPORT bool operator==(const VideoEncodeAccelerator::SupportedProfile& l,
                              const VideoEncodeAccelerator::SupportedProfile& r);
 MEDIA_EXPORT bool operator==(const Vp8Metadata& l, const Vp8Metadata& r);
 MEDIA_EXPORT bool operator==(const Vp9Metadata& l, const Vp9Metadata& r);
+MEDIA_EXPORT bool operator==(const YuvPsnr& l, const YuvPsnr& r);
 MEDIA_EXPORT bool operator==(const BitstreamBufferMetadata& l,
                              const BitstreamBufferMetadata& r);
 MEDIA_EXPORT bool operator==(

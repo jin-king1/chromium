@@ -12,6 +12,8 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/task/bind_post_task.h"
+#include "base/task/single_thread_task_runner.h"
 #include "components/data_sharing/internal/android/data_sharing_network_loader_android.h"
 #include "components/data_sharing/internal/jni_headers/DataSharingSDKDelegateBridge_jni.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
@@ -22,6 +24,7 @@ using base::android::ConvertUTF8ToJavaString;
 using base::android::JavaRef;
 using base::android::ScopedJavaGlobalRef;
 using base::android::ScopedJavaLocalRef;
+using base::android::ToJavaByteArray;
 
 namespace data_sharing {
 
@@ -52,8 +55,7 @@ void DataSharingSDKDelegateAndroid::LazyInitializeIfNeeded() {
   auto sdk_delegate = std::move(sdk_delegate_callback_).Run();
   JNIEnv* env = AttachCurrentThread();
   java_obj_.Reset(env, Java_DataSharingSDKDelegateBridge_create(
-                           env, reinterpret_cast<int64_t>(this), sdk_delegate)
-                           .obj());
+                           env, reinterpret_cast<int64_t>(this), sdk_delegate));
   CHECK(network_loader_);
   Java_DataSharingSDKDelegateBridge_initialize(
       env, java_obj_, network_loader_->GetJavaObject());
@@ -86,12 +88,13 @@ void DataSharingSDKDelegateAndroid::CreateGroup(
   std::string create_group_params;
   params.SerializeToString(&create_group_params);
   std::unique_ptr<CreateGroupCallback> wrapped_callback =
-      std::make_unique<CreateGroupCallback>(std::move(callback));
+      std::make_unique<CreateGroupCallback>(
+          base::BindPostTask(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                             std::move(callback)));
   CHECK(wrapped_callback.get());
-  jlong j_native_ptr = reinterpret_cast<jlong>(wrapped_callback.get());
+  int64_t j_native_ptr = reinterpret_cast<int64_t>(wrapped_callback.get());
   Java_DataSharingSDKDelegateBridge_createGroup(
-      env, java_obj_, ConvertUTF8ToJavaString(env, create_group_params),
-      j_native_ptr);
+      env, java_obj_, ToJavaByteArray(env, create_group_params), j_native_ptr);
   // We expect Java to always call us back through
   // JNI_DataSharingSDKDelegateBridge_RunCreateGroupCallback.
   wrapped_callback.release();
@@ -105,16 +108,41 @@ void DataSharingSDKDelegateAndroid::ReadGroups(
   std::string read_groups_params;
   params.SerializeToString(&read_groups_params);
   std::unique_ptr<ReadGroupsCallback> wrapped_callback =
-      std::make_unique<ReadGroupsCallback>(std::move(callback));
+      std::make_unique<ReadGroupsCallback>(
+          base::BindPostTask(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                             std::move(callback)));
   CHECK(wrapped_callback.get());
-  jlong j_native_ptr = reinterpret_cast<jlong>(wrapped_callback.get());
+  int64_t j_native_ptr = reinterpret_cast<int64_t>(wrapped_callback.get());
   Java_DataSharingSDKDelegateBridge_readGroups(
-      env, java_obj_, ConvertUTF8ToJavaString(env, read_groups_params),
+      env, java_obj_, ToJavaByteArray(env, read_groups_params), j_native_ptr);
+  // We expect Java to always call us back through
+  // JNI_DataSharingSDKDelegateBridge_RunReadGroupsCallback.
+  wrapped_callback.release();
+}
+
+void DataSharingSDKDelegateAndroid::ReadGroupWithToken(
+    const data_sharing_pb::ReadGroupWithTokenParams& params,
+    base::OnceCallback<void(
+        const base::expected<data_sharing_pb::ReadGroupsResult, absl::Status>&)>
+        callback) {
+  LazyInitializeIfNeeded();
+  JNIEnv* env = AttachCurrentThread();
+  std::string read_group_with_token_params;
+  params.SerializeToString(&read_group_with_token_params);
+  std::unique_ptr<ReadGroupsCallback> wrapped_callback =
+      std::make_unique<ReadGroupsCallback>(
+          base::BindPostTask(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                             std::move(callback)));
+  CHECK(wrapped_callback.get());
+  int64_t j_native_ptr = reinterpret_cast<int64_t>(wrapped_callback.get());
+  Java_DataSharingSDKDelegateBridge_readGroupWithToken(
+      env, java_obj_, ToJavaByteArray(env, read_group_with_token_params),
       j_native_ptr);
   // We expect Java to always call us back through
   // JNI_DataSharingSDKDelegateBridge_RunReadGroupsCallback.
   wrapped_callback.release();
 }
+
 void DataSharingSDKDelegateAndroid::AddMember(
     const data_sharing_pb::AddMemberParams& params,
     GetStatusCallback callback) {
@@ -123,12 +151,13 @@ void DataSharingSDKDelegateAndroid::AddMember(
   std::string add_member_params;
   params.SerializeToString(&add_member_params);
   std::unique_ptr<GetStatusCallback> wrapped_callback =
-      std::make_unique<GetStatusCallback>(std::move(callback));
+      std::make_unique<GetStatusCallback>(
+          base::BindPostTask(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                             std::move(callback)));
   CHECK(wrapped_callback.get());
-  jlong j_native_ptr = reinterpret_cast<jlong>(wrapped_callback.get());
+  int64_t j_native_ptr = reinterpret_cast<int64_t>(wrapped_callback.get());
   Java_DataSharingSDKDelegateBridge_addMember(
-      env, java_obj_, ConvertUTF8ToJavaString(env, add_member_params),
-      j_native_ptr);
+      env, java_obj_, ToJavaByteArray(env, add_member_params), j_native_ptr);
   // We expect Java to always call us back through
   // JNI_DataSharingSDKDelegateBridge_RunAddMemberCallback.
   wrapped_callback.release();
@@ -142,12 +171,13 @@ void DataSharingSDKDelegateAndroid::RemoveMember(
   std::string remove_member_params;
   params.SerializeToString(&remove_member_params);
   std::unique_ptr<GetStatusCallback> wrapped_callback =
-      std::make_unique<GetStatusCallback>(std::move(callback));
+      std::make_unique<GetStatusCallback>(
+          base::BindPostTask(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                             std::move(callback)));
   CHECK(wrapped_callback.get());
-  jlong j_native_ptr = reinterpret_cast<jlong>(wrapped_callback.get());
+  int64_t j_native_ptr = reinterpret_cast<int64_t>(wrapped_callback.get());
   Java_DataSharingSDKDelegateBridge_removeMember(
-      env, java_obj_, ConvertUTF8ToJavaString(env, remove_member_params),
-      j_native_ptr);
+      env, java_obj_, ToJavaByteArray(env, remove_member_params), j_native_ptr);
   // We expect Java to always call us back through
   // JNI_DataSharingSDKDelegateBridge_RunRemoveMemberCallback.
   wrapped_callback.release();
@@ -161,12 +191,13 @@ void DataSharingSDKDelegateAndroid::LeaveGroup(
   std::string leave_group_params;
   params.SerializeToString(&leave_group_params);
   std::unique_ptr<GetStatusCallback> wrapped_callback =
-      std::make_unique<GetStatusCallback>(std::move(callback));
+      std::make_unique<GetStatusCallback>(
+          base::BindPostTask(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                             std::move(callback)));
   CHECK(wrapped_callback.get());
-  jlong j_native_ptr = reinterpret_cast<jlong>(wrapped_callback.get());
+  int64_t j_native_ptr = reinterpret_cast<int64_t>(wrapped_callback.get());
   Java_DataSharingSDKDelegateBridge_leaveGroup(
-      env, java_obj_, ConvertUTF8ToJavaString(env, leave_group_params),
-      j_native_ptr);
+      env, java_obj_, ToJavaByteArray(env, leave_group_params), j_native_ptr);
   // We expect Java to always call us back through
   // JNI_DataSharingSDKDelegateBridge_RunDeleteGroupCallback.
   wrapped_callback.release();
@@ -180,12 +211,13 @@ void DataSharingSDKDelegateAndroid::DeleteGroup(
   std::string delete_group_params;
   params.SerializeToString(&delete_group_params);
   std::unique_ptr<GetStatusCallback> wrapped_callback =
-      std::make_unique<GetStatusCallback>(std::move(callback));
+      std::make_unique<GetStatusCallback>(
+          base::BindPostTask(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                             std::move(callback)));
   CHECK(wrapped_callback.get());
-  jlong j_native_ptr = reinterpret_cast<jlong>(wrapped_callback.get());
+  int64_t j_native_ptr = reinterpret_cast<int64_t>(wrapped_callback.get());
   Java_DataSharingSDKDelegateBridge_deleteGroup(
-      env, java_obj_, ConvertUTF8ToJavaString(env, delete_group_params),
-      j_native_ptr);
+      env, java_obj_, ToJavaByteArray(env, delete_group_params), j_native_ptr);
   // We expect Java to always call us back through
   // JNI_DataSharingSDKDelegateBridge_RunDeleteGroupCallback.
   wrapped_callback.release();
@@ -199,11 +231,13 @@ void DataSharingSDKDelegateAndroid::LookupGaiaIdByEmail(
   std::string lookup_gaid_id_params;
   params.SerializeToString(&lookup_gaid_id_params);
   std::unique_ptr<LookupGaiaIdByEmailCallback> wrapped_callback =
-      std::make_unique<LookupGaiaIdByEmailCallback>(std::move(callback));
+      std::make_unique<LookupGaiaIdByEmailCallback>(
+          base::BindPostTask(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                             std::move(callback)));
   CHECK(wrapped_callback.get());
-  jlong j_native_ptr = reinterpret_cast<jlong>(wrapped_callback.get());
+  int64_t j_native_ptr = reinterpret_cast<int64_t>(wrapped_callback.get());
   Java_DataSharingSDKDelegateBridge_lookupGaiaIdByEmail(
-      env, java_obj_, ConvertUTF8ToJavaString(env, lookup_gaid_id_params),
+      env, java_obj_, ToJavaByteArray(env, lookup_gaid_id_params),
       j_native_ptr);
   // We expect Java to always call us back through
   // JNI_DataSharingSDKDelegateBridge_RunLookupGaiaIdByEmailCallback.
@@ -218,11 +252,13 @@ void DataSharingSDKDelegateAndroid::AddAccessToken(
   std::string add_access_token_params;
   params.SerializeToString(&add_access_token_params);
   std::unique_ptr<AddAccessTokenCallback> wrapped_callback =
-      std::make_unique<AddAccessTokenCallback>(std::move(callback));
+      std::make_unique<AddAccessTokenCallback>(
+          base::BindPostTask(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                             std::move(callback)));
   CHECK(wrapped_callback.get());
-  jlong j_native_ptr = reinterpret_cast<jlong>(wrapped_callback.get());
+  int64_t j_native_ptr = reinterpret_cast<int64_t>(wrapped_callback.get());
   Java_DataSharingSDKDelegateBridge_addAccessToken(
-      env, java_obj_, ConvertUTF8ToJavaString(env, add_access_token_params),
+      env, java_obj_, ToJavaByteArray(env, add_access_token_params),
       j_native_ptr);
   // We expect Java to always call us back through
   // JNI_DataSharingSDKDelegateBridge_RunAddAccessTokenCallback.
@@ -231,9 +267,9 @@ void DataSharingSDKDelegateAndroid::AddAccessToken(
 
 static void JNI_DataSharingSDKDelegateBridge_RunCreateGroupCallback(
     JNIEnv* env,
-    jlong callback,
-    const jni_zero::JavaParamRef<jbyteArray>& j_serlialized_proto,
-    jint j_status) {
+    int64_t callback,
+    const jni_zero::JavaRef<jbyteArray>& j_serlialized_proto,
+    int32_t j_status) {
   std::unique_ptr<DataSharingSDKDelegateAndroid::CreateGroupCallback>
       callback_ptr(
           reinterpret_cast<DataSharingSDKDelegateAndroid::CreateGroupCallback*>(
@@ -250,9 +286,9 @@ static void JNI_DataSharingSDKDelegateBridge_RunCreateGroupCallback(
 
 static void JNI_DataSharingSDKDelegateBridge_RunReadGroupsCallback(
     JNIEnv* env,
-    jlong callback,
-    const jni_zero::JavaParamRef<jbyteArray>& j_serlialized_proto,
-    jint j_status) {
+    int64_t callback,
+    const jni_zero::JavaRef<jbyteArray>& j_serlialized_proto,
+    int32_t j_status) {
   std::unique_ptr<DataSharingSDKDelegateAndroid::ReadGroupsCallback>
       callback_ptr(
           reinterpret_cast<DataSharingSDKDelegateAndroid::ReadGroupsCallback*>(
@@ -269,8 +305,8 @@ static void JNI_DataSharingSDKDelegateBridge_RunReadGroupsCallback(
 
 static void JNI_DataSharingSDKDelegateBridge_RunGetStatusCallback(
     JNIEnv* env,
-    jlong callback,
-    jint j_status) {
+    int64_t callback,
+    int32_t j_status) {
   std::unique_ptr<DataSharingSDKDelegateAndroid::GetStatusCallback>
       callback_ptr(
           reinterpret_cast<DataSharingSDKDelegateAndroid::GetStatusCallback*>(
@@ -282,9 +318,9 @@ static void JNI_DataSharingSDKDelegateBridge_RunGetStatusCallback(
 
 static void JNI_DataSharingSDKDelegateBridge_RunLookupGaiaIdByEmailCallback(
     JNIEnv* env,
-    jlong callback,
-    const jni_zero::JavaParamRef<jbyteArray>& j_serlialized_proto,
-    jint j_status) {
+    int64_t callback,
+    const jni_zero::JavaRef<jbyteArray>& j_serlialized_proto,
+    int32_t j_status) {
   std::unique_ptr<DataSharingSDKDelegateAndroid::LookupGaiaIdByEmailCallback>
       callback_ptr(reinterpret_cast<
                    DataSharingSDKDelegateAndroid::LookupGaiaIdByEmailCallback*>(
@@ -301,9 +337,9 @@ static void JNI_DataSharingSDKDelegateBridge_RunLookupGaiaIdByEmailCallback(
 
 static void JNI_DataSharingSDKDelegateBridge_RunAddAccessTokenCallback(
     JNIEnv* env,
-    jlong callback,
-    const jni_zero::JavaParamRef<jbyteArray>& j_serlialized_proto,
-    jint j_status) {
+    int64_t callback,
+    const jni_zero::JavaRef<jbyteArray>& j_serlialized_proto,
+    int32_t j_status) {
   std::unique_ptr<DataSharingSDKDelegateAndroid::AddAccessTokenCallback>
       callback_ptr(reinterpret_cast<
                    DataSharingSDKDelegateAndroid::AddAccessTokenCallback*>(
@@ -319,3 +355,5 @@ static void JNI_DataSharingSDKDelegateBridge_RunAddAccessTokenCallback(
 }
 
 }  // namespace data_sharing
+
+DEFINE_JNI(DataSharingSDKDelegateBridge)

@@ -10,11 +10,18 @@
 #include "base/containers/span.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/metrics/histogram_base.h"
+#include "base/metrics/histogram_samples.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "chrome/browser/extensions/extension_apitest.h"
+#include "components/ukm/test_ukm_recorder.h"
 #include "content/public/test/browser_test.h"
+#include "extensions/buildflags/buildflags.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -26,10 +33,16 @@ namespace {
 constexpr struct RecordedUserAction {
   const char* name;
   int count;  // number of times the metric was recorded.
-} g_user_actions[] = {
+} kUserActions[] = {
     {"test.ua.1", 1},
     {"test.ua.2", 2},
 };
+
+// The tests that are run by this extension are expected to record the following
+// UKM user actions related to extension usage (cast to int), in the given
+// order. If the tests in test.js are modified, this array may need to be
+// updated.
+constexpr int64_t kExtensionUsageUkms[] = {1, 2, 3, 4, 5, 6};
 
 // The tests that are run by this extension are expected to record the following
 // histograms.  If the tests in test.js are modified, this array may need to be
@@ -41,9 +54,12 @@ constexpr struct RecordedHistogram {
   int max;
   size_t buckets;
   int count;
-} g_histograms[] = {
-    {"test.h.1", base::HISTOGRAM, 1, 100, 50, 1},          // custom
-    {"test.h.2", base::LINEAR_HISTOGRAM, 1, 200, 50, 1},   // custom
+} kHistograms[] = {
+    {"test.h.1", base::HISTOGRAM, 1, 100, 50, 1},         // custom
+    {"test.h.2", base::LINEAR_HISTOGRAM, 1, 200, 50, 1},  // custom
+    // test.h.large requested 2000 buckets, but was clamped to 1002
+    // (kBucketCount_MAX).
+    {"test.h.large", base::LINEAR_HISTOGRAM, 1, 2000, 1002, 1},
     {"test.h.3", base::LINEAR_HISTOGRAM, 1, 101, 102, 2},  // percentage
     {"test.sparse.1", base::SPARSE_HISTOGRAM, 0, 0, 0, 1},
     {"test.sparse.2", base::SPARSE_HISTOGRAM, 0, 0, 0, 2},
@@ -56,6 +72,10 @@ constexpr struct RecordedHistogram {
     {"test.small.count", base::HISTOGRAM, 1, 100, 50, 1},
     {"test.bucketchange.linear", base::LINEAR_HISTOGRAM, 1, 100, 10, 2},
     {"test.bucketchange.log", base::HISTOGRAM, 1, 100, 10, 2},
+    {"test.enum.1", base::LINEAR_HISTOGRAM, 1, 5, 6, 1},
+    // Blink.UseCounter.Test requested 1000000 buckets, but was clamped to 1001
+    // (kBucketCount_MAX - 1). Regression test for crbug.com/535290296.
+    {"Blink.UseCounter.Test", base::LINEAR_HISTOGRAM, 1, 1001, 1002, 1},
 };
 
 // Represents a bucket in a sparse histogram.
@@ -77,6 +97,19 @@ void ValidateUserActions(const base::UserActionTester& user_action_tester,
                          base::span<const RecordedUserAction> recorded) {
   for (const auto& ua : recorded) {
     EXPECT_EQ(ua.count, user_action_tester.GetActionCount(ua.name));
+  }
+}
+
+void ValidateExtensionUsageUkm(const ukm::TestAutoSetUkmRecorder& ukm_recorder,
+                               base::span<const int64_t> expected_ukms) {
+  auto ukm_entries = ukm_recorder.GetEntriesByName(
+      ukm::builders::Extensions_ExtensionUsage::kEntryName);
+  ASSERT_EQ(expected_ukms.size(), ukm_entries.size());
+
+  for (size_t i = 0; i < expected_ukms.size(); ++i) {
+    ukm_recorder.ExpectEntryMetric(
+        ukm_entries[i], ukm::builders::Extensions_ExtensionUsage::kActionName,
+        expected_ukms[i]);
   }
 }
 
@@ -125,29 +158,17 @@ void ValidateHistograms(base::span<const RecordedHistogram> recorded) {
   }
 }
 
-}  // namespace
-
-using ContextType = extensions::browser_test_util::ContextType;
-
-class ExtensionMetricsApiTest
-    : public ExtensionApiTest,
-      public testing::WithParamInterface<ContextType> {
+class ExtensionMetricsApiTest : public ExtensionApiTest {
  public:
-  ExtensionMetricsApiTest() : ExtensionApiTest(GetParam()) {}
+  ExtensionMetricsApiTest() = default;
   ~ExtensionMetricsApiTest() override = default;
   ExtensionMetricsApiTest(const ExtensionMetricsApiTest&) = delete;
   ExtensionMetricsApiTest& operator=(const ExtensionMetricsApiTest&) = delete;
 };
 
-INSTANTIATE_TEST_SUITE_P(PersistentBackground,
-                         ExtensionMetricsApiTest,
-                         ::testing::Values(ContextType::kPersistentBackground));
+IN_PROC_BROWSER_TEST_F(ExtensionMetricsApiTest, Metrics) {
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
 
-INSTANTIATE_TEST_SUITE_P(ServiceWorker,
-                         ExtensionMetricsApiTest,
-                         ::testing::Values(ContextType::kServiceWorker));
-
-IN_PROC_BROWSER_TEST_P(ExtensionMetricsApiTest, Metrics) {
   base::UserActionTester user_action_tester;
 
   base::FieldTrialList::CreateFieldTrial("apitestfieldtrial2", "group1");
@@ -158,8 +179,10 @@ IN_PROC_BROWSER_TEST_P(ExtensionMetricsApiTest, Metrics) {
   ASSERT_TRUE(RunExtensionTest("metrics", {}, {.load_as_component = true}))
       << message_;
 
-  ValidateUserActions(user_action_tester, g_user_actions);
-  ValidateHistograms(g_histograms);
+  ValidateUserActions(user_action_tester, kUserActions);
+  ValidateExtensionUsageUkm(ukm_recorder, kExtensionUsageUkms);
+  ValidateHistograms(kHistograms);
 }
 
+}  // namespace
 }  // namespace extensions

@@ -13,14 +13,14 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.CommandLine;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.build.BuildConfig;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.transit.ChromeTabbedActivityPublicTransitEntryPoints;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.components.cached_flags.CachedFlag;
 
 import java.util.ArrayList;
@@ -33,10 +33,8 @@ import java.util.Set;
 @DoNotBatch(reason = "Tests state of flags at specific app startup points")
 public class ChromeCachedFlagsTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
-
-    private final ChromeTabbedActivityPublicTransitEntryPoints mEntryPoints =
-            new ChromeTabbedActivityPublicTransitEntryPoints(mActivityTestRule);
+    public FreshCtaTransitTestRule mCtaTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     // Baseline so that the test can be enabled and catch new violations.
     //
@@ -49,13 +47,16 @@ public class ChromeCachedFlagsTest {
     // change.
     //
     // DO NOT ADD FLAGS TO THIS LIST.
-    private static final Set<CachedFlag> BASELINE = Set.of(ChromeFeatureList.sSafetyHubMagicStack);
+    private static final Set<CachedFlag> BASELINE = Set.of();
 
     /**
      * Tests that the |defaultValueForTests| in the CachedFlag declaration matches
      * fieldtrial_testing_config.json.
      *
      * <p>Also breaks when the baseline contains unnecessary exceptions.
+     *
+     * <p>TODO(crbug.com/445490091): Write a test to ensure the |defaultValue| in the CachedFlag
+     * declaration matches the default value in native.
      */
     @Test
     @MediumTest
@@ -64,7 +65,11 @@ public class ChromeCachedFlagsTest {
         // flag values may differ.
         Assume.assumeTrue(!BuildConfig.IS_CHROME_BRANDED);
 
-        mEntryPoints.startOnBlankPageNonBatched();
+        // If the switch --disable-field-trial-config is set, the fieldtrial_testing_config.json
+        // isn't applied either.
+        Assume.assumeTrue(!CommandLine.getInstance().hasSwitch("disable-field-trial-config"));
+
+        mCtaTestRule.startOnBlankPage();
 
         List<List<CachedFlag>> allListsOfCachedFlags =
                 new ArrayList<>(ChromeCachedFlags.LISTS_OF_CACHED_FLAGS_FULL_BROWSER);

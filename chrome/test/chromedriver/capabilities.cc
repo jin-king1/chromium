@@ -2,23 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/test/chromedriver/capabilities.h"
 
+#include <algorithm>
 #include <map>
 #include <string_view>
 #include <utility>
 
-#include "base/containers/contains.h"
-#include "base/containers/fixed_flat_set.h"
+#include "base/compiler_specific.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/json/string_escape.h"
 #include "base/logging.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_tokenizer.h"
@@ -65,6 +62,212 @@ Status ParseString(std::string* to_set,
   return Status(kOk);
 }
 
+bool IsValidAndroidPackageName(const std::string& name) {
+  if (name.empty() || name.length() > 255) {
+    return false;
+  }
+  std::vector<std::string> segments =
+      base::SplitString(name, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  if (segments.size() < 2) {
+    return false;
+  }
+  for (const std::string& segment : segments) {
+    if (segment.empty()) {
+      return false;
+    }
+    if (!base::IsAsciiAlpha(segment[0]) && segment[0] != '_') {
+      return false;
+    }
+    for (char c : segment) {
+      if (!base::IsAsciiAlphaNumeric(c) && c != '_') {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool IsValidAndroidActivityName(const std::string& name) {
+  if (name.empty() || name.length() > 255) {
+    return false;
+  }
+  std::vector<std::string> segments =
+      base::SplitString(name, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  for (size_t i = 0; i < segments.size(); ++i) {
+    const std::string& segment = segments[i];
+    if (segment.empty()) {
+      if (i == 0) {
+        continue;
+      }
+      return false;
+    }
+    char first_char = segment[0];
+    if (!base::IsAsciiAlpha(first_char) && first_char != '_' &&
+        first_char != ':') {
+      return false;
+    }
+    for (char c : segment) {
+      if (!base::IsAsciiAlphaNumeric(c) && c != '_' && c != ':') {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool IsValidAndroidProcessName(const std::string& name) {
+  if (name.empty() || name.length() > 255) {
+    return false;
+  }
+  std::vector<std::string> segments =
+      base::SplitString(name, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  for (const std::string& segment : segments) {
+    if (segment.empty()) {
+      return false;
+    }
+    char first_char = segment[0];
+    if (!base::IsAsciiAlpha(first_char) && first_char != '_' &&
+        first_char != ':') {
+      return false;
+    }
+    for (char c : segment) {
+      if (!base::IsAsciiAlphaNumeric(c) && c != '_' && c != ':') {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool IsValidAndroidDeviceSocketName(const std::string& name) {
+  if (name.empty() || name.length() > 255) {
+    return false;
+  }
+  for (char c : name) {
+    if (!base::IsAsciiAlphaNumeric(c) && c != '_' && c != '.' && c != '/' &&
+        c != '@' && c != ':' && c != '-') {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool IsValidAndroidDeviceSerialName(const std::string& name) {
+  if (name.empty() || name.length() > 255) {
+    return false;
+  }
+  for (char c : name) {
+    if (!base::IsAsciiAlphaNumeric(c) && c != '_' && c != '.' && c != ':' &&
+        c != '-') {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool IsValidAndroidExecName(const std::string& name) {
+  if (name.empty() || name.length() > 255) {
+    return false;
+  }
+  for (char c : name) {
+    if (!base::IsAsciiAlphaNumeric(c) && c != '/' && c != '.' && c != '_' &&
+        c != '-') {
+      return false;
+    }
+  }
+  return true;
+}
+
+Status ParseAndroidPackage(std::string* to_set,
+                           const base::Value& option,
+                           Capabilities* capabilities) {
+  std::string str;
+  Status status = ParseString(&str, option, capabilities);
+  if (status.IsError()) {
+    return status;
+  }
+  if (!IsValidAndroidPackageName(str)) {
+    return Status(kInvalidArgument, "invalid 'androidPackage': " + str);
+  }
+  *to_set = std::move(str);
+  return Status(kOk);
+}
+
+Status ParseAndroidActivity(std::string* to_set,
+                            const base::Value& option,
+                            Capabilities* capabilities) {
+  std::string str;
+  Status status = ParseString(&str, option, capabilities);
+  if (status.IsError()) {
+    return status;
+  }
+  if (!IsValidAndroidActivityName(str)) {
+    return Status(kInvalidArgument, "invalid 'androidActivity': " + str);
+  }
+  *to_set = std::move(str);
+  return Status(kOk);
+}
+
+Status ParseAndroidProcess(std::string* to_set,
+                           const base::Value& option,
+                           Capabilities* capabilities) {
+  std::string str;
+  Status status = ParseString(&str, option, capabilities);
+  if (status.IsError()) {
+    return status;
+  }
+  if (!IsValidAndroidProcessName(str)) {
+    return Status(kInvalidArgument, "invalid 'androidProcess': " + str);
+  }
+  *to_set = std::move(str);
+  return Status(kOk);
+}
+
+Status ParseAndroidDeviceSocket(std::string* to_set,
+                                const base::Value& option,
+                                Capabilities* capabilities) {
+  std::string str;
+  Status status = ParseString(&str, option, capabilities);
+  if (status.IsError()) {
+    return status;
+  }
+  if (!IsValidAndroidDeviceSocketName(str)) {
+    return Status(kInvalidArgument, "invalid 'androidDeviceSocket': " + str);
+  }
+  *to_set = std::move(str);
+  return Status(kOk);
+}
+
+Status ParseAndroidDeviceSerial(std::string* to_set,
+                                const base::Value& option,
+                                Capabilities* capabilities) {
+  std::string str;
+  Status status = ParseString(&str, option, capabilities);
+  if (status.IsError()) {
+    return status;
+  }
+  if (!IsValidAndroidDeviceSerialName(str)) {
+    return Status(kInvalidArgument, "invalid 'androidDeviceSerial': " + str);
+  }
+  *to_set = std::move(str);
+  return Status(kOk);
+}
+
+Status ParseAndroidExecName(std::string* to_set,
+                            const base::Value& option,
+                            Capabilities* capabilities) {
+  std::string str;
+  Status status = ParseString(&str, option, capabilities);
+  if (status.IsError()) {
+    return status;
+  }
+  if (!IsValidAndroidExecName(str)) {
+    return Status(kInvalidArgument, "invalid 'androidExecName': " + str);
+  }
+  *to_set = std::move(str);
+  return Status(kOk);
+}
+
 Status ParseInterval(int* to_set,
                      const base::Value& option,
                      Capabilities* capabilities) {
@@ -96,13 +299,13 @@ Status ParseFilePath(base::FilePath* to_set,
   return Status(kOk);
 }
 
-Status ParseDict(std::unique_ptr<base::Value::Dict>* to_set,
+Status ParseDict(std::unique_ptr<base::DictValue>* to_set,
                  const base::Value& option,
                  Capabilities* capabilities) {
-  const base::Value::Dict* dict = option.GetIfDict();
+  const base::DictValue* dict = option.GetIfDict();
   if (!dict)
     return Status(kInvalidArgument, "must be a dictionary");
-  *to_set = std::make_unique<base::Value::Dict>(dict->Clone());
+  *to_set = std::make_unique<base::DictValue>(dict->Clone());
   return Status(kOk);
 }
 
@@ -133,7 +336,8 @@ Status ParseDeviceName(const std::string& device_name,
 
   if (status.IsError()) {
     return Status(kInvalidArgument,
-                  "'" + device_name + "' must be a valid device", status);
+                  base::StrCat({"'", device_name, "' must be a valid device"}),
+                  status);
   }
 
   capabilities->mobile_device = std::move(device);
@@ -143,7 +347,7 @@ Status ParseDeviceName(const std::string& device_name,
 
 Status ParseMobileEmulation(const base::Value& option,
                             Capabilities* capabilities) {
-  const base::Value::Dict* mobile_emulation = option.GetIfDict();
+  const base::DictValue* mobile_emulation = option.GetIfDict();
   if (!mobile_emulation)
     return Status(kInvalidArgument, "'mobileEmulation' must be a dictionary");
 
@@ -175,7 +379,7 @@ Status ParseMobileEmulation(const base::Value& option,
   }
 
   if (mobile_emulation->Find("deviceMetrics")) {
-    const base::Value::Dict* metrics =
+    const base::DictValue* metrics =
         mobile_emulation->FindDict("deviceMetrics");
     if (!metrics)
       return Status(kInvalidArgument, "'deviceMetrics' must be a dictionary");
@@ -243,7 +447,7 @@ Status ParseMobileEmulation(const base::Value& option,
     if (!mobile_emulation->Find("clientHints")->is_dict()) {
       return Status{kInvalidArgument, "'clientHints' must be a dictionary"};
     }
-    const base::Value::Dict& client_hints_dict =
+    const base::DictValue& client_hints_dict =
         *mobile_emulation->FindDict("clientHints");
 
     ClientHints client_hints;
@@ -262,7 +466,7 @@ Status ParseMobileEmulation(const base::Value& option,
     std::vector<std::string> supported_platforms =
         MobileDevice::GetReducedUserAgentPlatforms();
     if (!mobile_device.user_agent.has_value() &&
-        !base::Contains(supported_platforms, client_hints.platform)) {
+        !std::ranges::contains(supported_platforms, client_hints.platform)) {
       std::string supported_platforms_str =
           base::JoinString(supported_platforms, ", ");
       return Status(kInvalidArgument,
@@ -326,8 +530,7 @@ Status ParseMobileEmulation(const base::Value& option,
     }
 
     if (client_hints_dict.Find("brands")) {
-      const base::Value::List* brand_list =
-          client_hints_dict.FindList("brands");
+      const base::ListValue* brand_list = client_hints_dict.FindList("brands");
       if (!brand_list) {
         return Status(kInvalidArgument,
                       "'clientHints.brands' must be an array of objects");
@@ -362,7 +565,7 @@ Status ParseMobileEmulation(const base::Value& option,
     }
 
     if (client_hints_dict.Find("fullVersionList")) {
-      const base::Value::List* full_version_list_list =
+      const base::ListValue* full_version_list_list =
           client_hints_dict.FindList("fullVersionList");
       if (!full_version_list_list) {
         return Status(
@@ -512,7 +715,7 @@ Status ParseUnhandledPromptBehavior(bool w3c_compliant,
 }
 
 Status ParseTimeouts(const base::Value& option, Capabilities* capabilities) {
-  const base::Value::Dict* timeouts = option.GetIfDict();
+  const base::DictValue* timeouts = option.GetIfDict();
   if (!timeouts)
     return Status(kInvalidArgument, "'timeouts' must be a JSON object");
   for (auto it : *timeouts) {
@@ -552,11 +755,11 @@ Status ParseSwitches(const base::Value& option,
   for (const base::Value& arg : option.GetList()) {
     if (!arg.is_string())
       return Status(kInvalidArgument, "each argument must be a string");
-    std::string arg_string = arg.GetString();
-    base::TrimWhitespaceASCII(arg_string, base::TRIM_ALL, &arg_string);
+    std::string_view arg_string =
+        base::TrimWhitespaceASCII(arg.GetString(), base::TRIM_ALL);
     if (arg_string.empty() || arg_string == "--")
       return Status(kInvalidArgument, "argument is empty");
-    capabilities->switches.SetUnparsedSwitch(std::move(arg_string));
+    capabilities->switches.SetUnparsedSwitch(arg_string);
   }
   return Status(kOk);
 }
@@ -577,7 +780,7 @@ Status ParseExtensions(const base::Value& option, Capabilities* capabilities) {
 Status ParseProxy(bool w3c_compliant,
                   const base::Value& option,
                   Capabilities* capabilities) {
-  const base::Value::Dict* proxy_dict = option.GetIfDict();
+  const base::DictValue* proxy_dict = option.GetIfDict();
   if (!proxy_dict)
     return Status(kInvalidArgument, "must be a dictionary");
   const std::string* proxy_type_str = proxy_dict->FindString("proxyType");
@@ -598,10 +801,10 @@ Status ParseProxy(bool w3c_compliant,
   } else if (proxy_type == "autodetect") {
     capabilities->switches.SetSwitch("proxy-auto-detect");
   } else if (proxy_type == "manual") {
-    const char* const proxy_servers_options[][2] = {
-        {"ftpProxy", "ftp"}, {"httpProxy", "http"}, {"sslProxy", "https"},
-        {"socksProxy", "socks"}};
-    const std::string kSocksProxy = "socksProxy";
+    const char* const proxy_servers_options[][2] = {{"ftpProxy", "ftp"},
+                                                    {"httpProxy", "http"},
+                                                    {"sslProxy", "https"},
+                                                    {"socksProxy", "socks"}};
     const base::Value* option_value = nullptr;
     std::string proxy_servers;
     for (const char* const* proxy_servers_option : proxy_servers_options) {
@@ -615,6 +818,7 @@ Status ParseProxy(bool w3c_compliant,
                                          proxy_servers_option[0]));
       }
       std::string value = option_value->GetString();
+      static constexpr std::string_view kSocksProxy = "socksProxy";
       if (proxy_servers_option[0] == kSocksProxy) {
         int socks_version = proxy_dict->FindInt("socksVersion").value_or(-1);
         if (socks_version < 0 || socks_version > 255)
@@ -628,8 +832,8 @@ Status ParseProxy(bool w3c_compliant,
       // Example: "http=localhost:9000;ftp=localhost:8000".
       if (!proxy_servers.empty())
         proxy_servers += ";";
-      proxy_servers +=
-          base::StringPrintf("%s=%s", proxy_servers_option[1], value.c_str());
+      proxy_servers += base::StringPrintf(
+          "%s=%s", UNSAFE_TODO(proxy_servers_option[1]), value.c_str());
     }
 
     std::string proxy_bypass_list;
@@ -640,14 +844,16 @@ Status ParseProxy(bool w3c_compliant,
       // In practice, library implementations are not always consistent,
       // so we accept both formats regardless of the W3C mode setting.
       if (option_value->is_list()) {
+        std::vector<std::string_view> item_strings;
+        item_strings.reserve(option_value->GetList().size());
         for (const base::Value& item : option_value->GetList()) {
           if (!item.is_string())
             return Status(kInvalidArgument,
                           "'noProxy' must be a list of strings");
-          if (!proxy_bypass_list.empty())
-            proxy_bypass_list += ",";
-          proxy_bypass_list += item.GetString();
+          item_strings.push_back(item.GetString());
         }
+        proxy_bypass_list = base::JoinString(item_strings, ",");
+
       } else if (option_value->is_string()) {
         proxy_bypass_list = option_value->GetString();
       } else {
@@ -678,10 +884,11 @@ Status ParseExcludeSwitches(const base::Value& option,
       return Status(kInvalidArgument,
                     "each switch to be removed must be a string");
     }
-    std::string switch_name = switch_value.GetString();
-    if (switch_name.substr(0, 2) == "--")
+    std::string_view switch_name = switch_value.GetString();
+    if (switch_name.starts_with("--")) {
       switch_name = switch_name.substr(2);
-    capabilities->exclude_switches.insert(std::move(switch_name));
+    }
+    capabilities->exclude_switches.emplace(switch_name);
   }
   return Status(kOk);
 }
@@ -707,7 +914,7 @@ Status ParseNetAddress(NetAddress* to_set,
                        Capabilities* capabilities) {
   if (!option.is_string())
     return Status(kInvalidArgument, "must be 'host:port'");
-  std::string server_addr = option.GetString();
+  std::string_view server_addr = option.GetString();
   std::vector<std::string> values;
   if (base::StartsWith(server_addr, "[")) {
     size_t ipv6_terminator_pos = server_addr.find(']');
@@ -715,7 +922,7 @@ Status ParseNetAddress(NetAddress* to_set,
       return Status(kInvalidArgument,
                     "ipv6 address must be terminated with ']'");
     }
-    values.push_back(server_addr.substr(0, ipv6_terminator_pos + 1));
+    values.emplace_back(server_addr.substr(0, ipv6_terminator_pos + 1));
     std::vector<std::string> remaining =
         base::SplitString(server_addr.substr(ipv6_terminator_pos + 1), ":",
                           base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
@@ -739,7 +946,7 @@ Status ParseNetAddress(NetAddress* to_set,
 
 Status ParseLoggingPrefs(const base::Value& option,
                          Capabilities* capabilities) {
-  const base::Value::Dict* logging_prefs = option.GetIfDict();
+  const base::DictValue* logging_prefs = option.GetIfDict();
   if (!logging_prefs)
     return Status(kInvalidArgument, "must be a dictionary");
 
@@ -749,9 +956,9 @@ Status ParseLoggingPrefs(const base::Value& option,
     const std::string* level_name = pref.second.GetIfString();
     if (!level_name || !WebDriverLog::NameToLevel(*level_name, &level)) {
       return Status(kInvalidArgument,
-                    "invalid log level for '" + type + "' log");
+                    base::StrCat({"invalid log level for '", type, "' log"}));
     }
-    capabilities->logging_prefs.insert(std::make_pair(type, level));
+    capabilities->logging_prefs.emplace(type, level);
   }
   return Status(kOk);
 }
@@ -771,7 +978,7 @@ Status ParseInspectorDomainStatus(
 
 Status ParsePerfLoggingPrefs(const base::Value& option,
                              Capabilities* capabilities) {
-  const base::Value::Dict* perf_logging_prefs = option.GetIfDict();
+  const base::DictValue* perf_logging_prefs = option.GetIfDict();
   if (!perf_logging_prefs)
     return Status(kInvalidArgument, "must be a dictionary");
 
@@ -828,7 +1035,7 @@ Status ParseWindowTypes(const base::Value& option, Capabilities* capabilities) {
 Status ParseChromeOptions(
     const base::Value& capability,
     Capabilities* capabilities) {
-  const base::Value::Dict* chrome_options = capability.GetIfDict();
+  const base::DictValue* chrome_options = capability.GetIfDict();
   if (!chrome_options)
     return Status(kInvalidArgument, "must be a dictionary");
 
@@ -855,19 +1062,23 @@ Status ParseChromeOptions(
   // sent if not parsed correctly.
   parser_map["w3c"] = base::BindRepeating(&IgnoreCapability);
 
+  parser_map["localState"] =
+      base::BindRepeating(&ParseDict, &capabilities->local_state);
+  parser_map["prefs"] = base::BindRepeating(&ParseDict, &capabilities->prefs);
+
   if (is_android) {
-    parser_map["androidActivity"] =
-        base::BindRepeating(&ParseString, &capabilities->android_activity);
-    parser_map["androidDeviceSerial"] =
-        base::BindRepeating(&ParseString, &capabilities->android_device_serial);
-    parser_map["androidPackage"] =
-        base::BindRepeating(&ParseString, &capabilities->android_package);
-    parser_map["androidProcess"] =
-        base::BindRepeating(&ParseString, &capabilities->android_process);
-    parser_map["androidExecName"] =
-        base::BindRepeating(&ParseString, &capabilities->android_exec_name);
-    parser_map["androidDeviceSocket"] =
-        base::BindRepeating(&ParseString, &capabilities->android_device_socket);
+    parser_map["androidActivity"] = base::BindRepeating(
+        &ParseAndroidActivity, &capabilities->android_activity);
+    parser_map["androidDeviceSerial"] = base::BindRepeating(
+        &ParseAndroidDeviceSerial, &capabilities->android_device_serial);
+    parser_map["androidPackage"] = base::BindRepeating(
+        &ParseAndroidPackage, &capabilities->android_package);
+    parser_map["androidProcess"] = base::BindRepeating(
+        &ParseAndroidProcess, &capabilities->android_process);
+    parser_map["androidExecName"] = base::BindRepeating(
+        &ParseAndroidExecName, &capabilities->android_exec_name);
+    parser_map["androidDeviceSocket"] = base::BindRepeating(
+        &ParseAndroidDeviceSocket, &capabilities->android_device_socket);
     parser_map["androidUseRunningApp"] = base::BindRepeating(
         &ParseBoolean, &capabilities->android_use_running_app);
     parser_map["androidKeepAppDataDir"] = base::BindRepeating(
@@ -895,13 +1106,10 @@ Status ParseChromeOptions(
         &ParseTimeDelta, &capabilities->extension_load_timeout);
     parser_map["loadAsync"] =
         base::BindRepeating(&IgnoreDeprecatedOption, "loadAsync");
-    parser_map["localState"] =
-        base::BindRepeating(&ParseDict, &capabilities->local_state);
     parser_map["logPath"] = base::BindRepeating(&ParseLogPath);
     parser_map["minidumpPath"] =
         base::BindRepeating(&ParseString, &capabilities->minidump_path);
     parser_map["mobileEmulation"] = base::BindRepeating(&ParseMobileEmulation);
-    parser_map["prefs"] = base::BindRepeating(&ParseDict, &capabilities->prefs);
     parser_map["useAutomationExtension"] =
         base::BindRepeating(&IgnoreDeprecatedOption, "useAutomationExtension");
     parser_map["browserStartupTimeout"] = base::BindRepeating(
@@ -926,7 +1134,7 @@ Status ParseChromeOptions(
 Status ParseSeleniumOptions(
     const base::Value& capability,
     Capabilities* capabilities) {
-  const base::Value::Dict* selenium_options = capability.GetIfDict();
+  const base::DictValue* selenium_options = capability.GetIfDict();
   if (!selenium_options)
     return Status(kInvalidArgument, "must be a dictionary");
   std::map<std::string, Parser> parser_map;
@@ -943,9 +1151,9 @@ Status ParseSeleniumOptions(
 }
 }  // namespace
 
-bool GetChromeOptionsDictionary(const base::Value::Dict& params,
-                                const base::Value::Dict** out) {
-  const base::Value::Dict* result =
+bool GetChromeOptionsDictionary(const base::DictValue& params,
+                                const base::DictValue** out) {
+  const base::DictValue* result =
       params.FindDict(kChromeDriverOptionsKeyPrefixed);
   if (result) {
     *out = result;
@@ -982,50 +1190,79 @@ void Switches::SetSwitch(const std::string& name, const base::FilePath& value) {
 }
 
 void Switches::SetMultivaluedSwitch(const std::string& name,
-                                    const std::string& value) {
+                                    const std::string& value,
+                                    const std::string_view& delimiter) {
 #if BUILDFLAG(IS_WIN)
   auto native_value = base::UTF8ToWide(value);
-  auto delimiter = L',';
+  auto native_delimiter = base::UTF8ToWide(delimiter);
 #else
   const auto& native_value = value;
-  const auto delimiter = ',';
+  const auto& native_delimiter = delimiter;
 #endif
   NativeString& switch_value = switch_map_[name];
-  if (switch_value.size() > 0 && switch_value.back() != delimiter) {
-    switch_value += delimiter;
+  if (switch_value.size() > 0 && !switch_value.ends_with(native_delimiter)) {
+    switch_value += native_delimiter;
   }
   switch_value += native_value;
 }
 
+namespace {
+
+constexpr auto kMultivaluedSwitches =
+    base::MakeFixedFlatMap<std::string_view, std::string_view>({
+        {"enable-blink-features", ","},
+        {"disable-blink-features", ","},
+        {"enable-features", ","},
+        {"disable-features", ","},
+        {"js-flags", " "},
+    });
+
+}  // namespace
+
 void Switches::SetFromSwitches(const Switches& switches) {
-  for (auto iter = switches.switch_map_.begin();
-       iter != switches.switch_map_.end(); ++iter) {
-    switch_map_[iter->first] = iter->second;
+  for (const auto& switch_iter : switches.switch_map_) {
+    // The value in `switch_iter.second` is `NativeString`.
+    // `SetSwitch` and `SetMultivaluedSwitch` expect `std::string` (UTF8).
+    // Convert `NativeString` to `std::string` before passing.
+#if BUILDFLAG(IS_WIN)
+    auto native_value = base::WideToUTF8(switch_iter.second);
+#else
+    const auto& native_value = switch_iter.second;
+#endif
+    const auto multivalued_iter = kMultivaluedSwitches.find(switch_iter.first);
+    if (multivalued_iter != kMultivaluedSwitches.end()) {
+      SetMultivaluedSwitch(switch_iter.first, native_value,
+                           multivalued_iter->second);
+    } else {
+      SetSwitch(switch_iter.first, native_value);
+    }
   }
 }
 
-namespace {
-constexpr auto kMultivaluedSwitches = base::MakeFixedFlatSet<std::string_view>(
-    {"enable-blink-features", "disable-blink-features", "enable-features",
-     "disable-features"});
-}  // namespace
-
-void Switches::SetUnparsedSwitch(const std::string& unparsed_switch) {
-  std::string value;
+void Switches::SetUnparsedSwitch(std::string_view unparsed_switch) {
+  std::string_view value;
   size_t equals_index = unparsed_switch.find('=');
   if (equals_index != std::string::npos)
     value = unparsed_switch.substr(equals_index + 1);
 
-  std::string name;
   size_t start_index = 0;
-  if (unparsed_switch.substr(0, 2) == "--")
+  if (unparsed_switch.starts_with("--")) {
     start_index = 2;
-  name = unparsed_switch.substr(start_index, equals_index - start_index);
+  }
+  std::string_view name =
+      unparsed_switch.substr(start_index, equals_index - start_index);
 
-  if (kMultivaluedSwitches.contains(name))
-    SetMultivaluedSwitch(name, value);
-  else
-    SetSwitch(name, value);
+  if (name.find_first_of(" \t\n\r\"\'") != std::string::npos) {
+    LOG(WARNING) << "Ignoring switch with invalid name: " << name;
+    return;
+  }
+
+  const auto iter = kMultivaluedSwitches.find(name);
+  if (iter != kMultivaluedSwitches.end()) {
+    SetMultivaluedSwitch(std::string(name), std::string(value), iter->second);
+  } else {
+    SetSwitch(std::string(name), std::string(value));
+  }
 }
 
 void Switches::RemoveSwitch(const std::string& name) {
@@ -1033,7 +1270,7 @@ void Switches::RemoveSwitch(const std::string& name) {
 }
 
 bool Switches::HasSwitch(const std::string& name) const {
-  return switch_map_.count(name) > 0;
+  return switch_map_.contains(name);
 }
 
 std::string Switches::GetSwitchValue(const std::string& name) const {
@@ -1067,12 +1304,12 @@ std::string Switches::ToString() const {
   std::string str;
   auto iter = switch_map_.begin();
   while (iter != switch_map_.end()) {
-    str += "--" + iter->first;
+    base::StrAppend(&str, {"--", iter->first});
     std::string value = GetSwitchValue(iter->first);
     if (value.length()) {
       if (value.find(' ') != std::string::npos)
         value = base::GetQuotedJSONString(value);
-      str += "=" + value;
+      base::StrAppend(&str, {"=", value});
     }
     ++iter;
     if (iter == switch_map_.end())
@@ -1121,7 +1358,7 @@ Status Capabilities::MigrateCapabilities() {
   return Status(kOk);
 }
 
-Status Capabilities::Parse(const base::Value::Dict& desired_caps,
+Status Capabilities::Parse(const base::DictValue& desired_caps,
                            bool w3c_compliant) {
   std::map<std::string, Parser> parser_map;
 
@@ -1186,7 +1423,7 @@ Status Capabilities::Parse(const base::Value::Dict& desired_caps,
   // Network emulation requires device mode, which is only enabled when
   // mobile emulation is on.
 
-  const base::Value::Dict* chrome_options = nullptr;
+  const base::DictValue* chrome_options = nullptr;
   if (GetChromeOptionsDictionary(desired_caps, &chrome_options) &&
       chrome_options->FindDict("mobileEmulation")) {
     parser_map["networkConnectionEnabled"] =

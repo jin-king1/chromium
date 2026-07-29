@@ -10,7 +10,7 @@ import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {FakeShimlessRmaService} from 'chrome://shimless-rma/fake_shimless_rma_service.js';
 import {setShimlessRmaServiceForTesting} from 'chrome://shimless-rma/mojo_interface_provider.js';
 import {OnboardingWaitForManualWpDisablePage} from 'chrome://shimless-rma/onboarding_wait_for_manual_wp_disable_page.js';
-import {assertEquals} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 
 
@@ -51,18 +51,18 @@ suite('onboardingWaitForManualWpDisablePageTest', function() {
         '#manuallyDisableHwwpInstructions', component.shadowRoot, HTMLElement);
     assertEquals(
         loadTimeData.getString('manuallyDisableWpTitleText'),
-        title.textContent!.trim());
+        title.textContent.trim());
     assertEquals(
         loadTimeData.getString('manuallyDisableWpInstructionsText'),
-        manualDisableComponent.textContent!.trim());
+        manualDisableComponent.textContent.trim());
 
     // Disable write protect and expect the page text to update.
     component.onHardwareWriteProtectionStateChanged(/* enabled= */ false);
     assertEquals(
         loadTimeData.getString('manuallyDisableWpTitleTextReboot'),
-        title.textContent!.trim());
+        title.textContent.trim());
     assertEquals(
         loadTimeData.getString('manuallyDisableWpInstructionsTextReboot'),
-        manualDisableComponent.textContent!.trim());
+        manualDisableComponent.textContent.trim());
   });
 });

@@ -43,17 +43,20 @@ class CC_EXPORT ViewTransitionRequest {
       const blink::ViewTransitionToken& transition_token,
       bool maybe_cross_frame_sink,
       std::vector<viz::ViewTransitionElementResourceId> capture_ids,
-      ViewTransitionCaptureCallback commit_callback);
+      ViewTransitionCaptureCallback commit_callback,
+      bool delay_layer_tree_view_deletion);
 
   // Creates a Type::kAnimateRenderer type of request.
   static std::unique_ptr<ViewTransitionRequest> CreateAnimateRenderer(
       const blink::ViewTransitionToken& transition_token,
-      bool maybe_cross_frame_sink);
+      bool maybe_cross_frame_sink,
+      bool delay_layer_tree_view_deletion);
 
   // Creates a Type::kRelease type of request.
   static std::unique_ptr<ViewTransitionRequest> CreateRelease(
       const blink::ViewTransitionToken& transition_token,
-      bool maybe_cross_frame_sink);
+      bool maybe_cross_frame_sink,
+      bool delay_layer_tree_view_deletion);
 
   ViewTransitionRequest(ViewTransitionRequest&) = delete;
   ~ViewTransitionRequest();
@@ -73,19 +76,32 @@ class CC_EXPORT ViewTransitionRequest {
   // processed again by viz.
   viz::CompositorFrameTransitionDirective ConstructDirective(
       const ViewTransitionElementMap& shared_element_render_pass_id_map,
-      const gfx::DisplayColorSpaces& display_color_spaces) const;
+      const gfx::DisplayColorSpaces& display_color_spaces,
+      bool delay_layer_tree_view_deletion) const;
 
   // Returns the sequence id for this request.
   uint32_t sequence_id() const { return sequence_id_; }
+  // This is only called on the viz side where the request is constructed from
+  // mojo wire and the sequence id is originally created on the renderer side.
+  void set_sequence_id(uint32_t id) { sequence_id_ = id; }
 
   Type type() const { return type_; }
 
   // Testing / debugging functionality.
   std::string ToString() const;
 
-  const blink::ViewTransitionToken& token() { return transition_token_; }
+  const blink::ViewTransitionToken& token() const { return transition_token_; }
 
-  bool HasSubframeSnapshot() const;
+  bool maybe_cross_frame_sink() const { return maybe_cross_frame_sink_; }
+
+  const std::vector<viz::ViewTransitionElementResourceId>&
+  capture_resource_ids() const {
+    return capture_resource_ids_;
+  }
+
+  bool delay_layer_tree_view_deletion() const {
+    return delay_layer_tree_view_deletion_;
+  }
 
  private:
   ViewTransitionRequest(
@@ -93,14 +109,16 @@ class CC_EXPORT ViewTransitionRequest {
       const blink::ViewTransitionToken& transition_token,
       bool maybe_cross_frame_sink,
       std::vector<viz::ViewTransitionElementResourceId> capture_ids,
-      ViewTransitionCaptureCallback commit_callback);
+      ViewTransitionCaptureCallback commit_callback,
+      bool delay_layer_tree_view_deletion);
 
   const Type type_;
   const blink::ViewTransitionToken transition_token_;
   const bool maybe_cross_frame_sink_;
   ViewTransitionCaptureCallback commit_callback_;
-  const uint32_t sequence_id_;
-  const std::vector<viz::ViewTransitionElementResourceId> capture_resource_ids_;
+  uint32_t sequence_id_;
+  std::vector<viz::ViewTransitionElementResourceId> capture_resource_ids_;
+  const bool delay_layer_tree_view_deletion_;
 
   static uint32_t s_next_sequence_id_;
 };

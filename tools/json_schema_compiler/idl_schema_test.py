@@ -46,6 +46,16 @@ class IdlSchemaTest(unittest.TestCase):
     self.idl_basics = loaded[0]
     self.maxDiff = None
 
+  def testNamespaceDescription(self):
+    # Tests the top level namespace description is cleaned up and joined
+    # together as expected.
+    schema = self.idl_basics
+    self.assertEqual(
+        'Tests a variety of basic API definition features, ensuring things are'
+        ' parsed and processed as expected.',
+        schema['description'],
+    )
+
   def testSimpleCallbacks(self):
     schema = self.idl_basics
     expected = {'name': 'cb', 'parameters': []}
@@ -293,7 +303,7 @@ class IdlSchemaTest(unittest.TestCase):
   def testAllPlatformsNamespace(self):
     schema = idl_schema.Load('test/idl_namespace_all_platforms.idl')[0]
     self.assertEqual('idl_namespace_all_platforms', schema['namespace'])
-    expected = ['chromeos', 'fuchsia', 'linux', 'mac', 'win']
+    expected = ['chromeos', 'desktop_android', 'linux', 'mac', 'win']
     self.assertEqual(expected, schema['platforms'])
 
   def testNonSpecificPlatformsNamespace(self):
@@ -427,6 +437,18 @@ class IdlSchemaTest(unittest.TestCase):
     self.assertEqual('integer', baz_type['properties']['x']['type'])
     self.assertEqual(True, baz_type['properties']['foo']['optional'])
     self.assertEqual('FooType', baz_type['properties']['foo']['$ref'])
+
+  def testArrayBufferTypes(self):
+    schema = idl_schema.Load('test/idl_binary_types.idl')[0]
+
+    array_buffer_type = getType(schema, 'ArrayBufferTestType')
+    self.assertEqual('binary', array_buffer_type['properties']['x']['type'])
+    self.assertEqual('ArrayBuffer',
+                     array_buffer_type['properties']['x']['isInstanceOf'])
+
+    self.assertEqual('binary', array_buffer_type['properties']['y']['type'])
+    self.assertEqual('Uint8Array',
+                     array_buffer_type['properties']['y']['isInstanceOf'])
 
   def testObjectTypesWithUnions(self):
     schema = idl_schema.Load('test/idl_object_types.idl')[0]
@@ -576,7 +598,7 @@ class IdlSchemaTest(unittest.TestCase):
             'name': 'x',
             'type': 'integer'
         }],
-        'does_not_support_promises': 'Test'
+        'does_not_support_promises': True
     }
     params = getParams(schema, 'non_promise_supporting')
     returns_async = getReturnsAsync(schema, 'non_promise_supporting')
@@ -604,7 +626,7 @@ class IdlSchemaTest(unittest.TestCase):
             'name': 'x',
             'type': 'integer'
         }],
-        'does_not_support_promises': 'Test'
+        'does_not_support_promises': True
     }
     params = getParams(schema, 'non_promise_supporting_with_params')
     returns_async = getReturnsAsync(schema,
@@ -650,17 +672,20 @@ class IdlSchemaTest(unittest.TestCase):
     manifest_keys = schema.get('manifest_keys')
     self.assertEqual(
         manifest_keys['key_str'],
-        OrderedDict([('description', 'String manifest key.'),
+        OrderedDict([('optional', True),
+                     ('description', 'String manifest key.'),
                      ('name', 'key_str'), ('type', 'string')]))
-    self.assertEqual(manifest_keys['key_ref'],
-                     OrderedDict([('name', 'key_ref'), ('$ref', 'MyType2')])),
+    self.assertEqual(
+        manifest_keys['key_ref'],
+        OrderedDict([('optional', True), ('name', 'key_ref'),
+                     ('$ref', 'MyType2')])),
     self.assertEqual(
         manifest_keys['choice_with_arrays'],
-        OrderedDict([('name', 'choice_with_arrays'),
+        OrderedDict([('optional', True), ('name', 'choice_with_arrays'),
                      ('$ref', 'ChoiceWithArraysType')])),
     self.assertEqual(
         manifest_keys['choice_with_optional'],
-        OrderedDict([('name', 'choice_with_optional'),
+        OrderedDict([('optional', True), ('name', 'choice_with_optional'),
                      ('$ref', 'ChoiceWithOptionalType')]))
 
   def testNoManifestKeys(self):

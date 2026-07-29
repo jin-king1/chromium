@@ -7,13 +7,13 @@
 #include <optional>
 #include <string_view>
 
-#include "base/containers/contains.h"
 #include "base/containers/map_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
+#include "base/types/pass_key.h"
 #include "components/user_education/common/feature_promo/feature_promo_result.h"
 #include "components/user_education/common/feature_promo/feature_promo_specification.h"
 #include "components/user_education/common/help_bubble/help_bubble.h"
@@ -111,6 +111,7 @@ FeaturePromoResult FeaturePromoLifecycle::CanShow() const {
         case PromoType::kCustomAction:
         case PromoType::kSnooze:
         case PromoType::kTutorial:
+        case PromoType::kCustomUi:
           result = CanShowSnoozePromo(*data);
           break;
         case PromoType::kRotating:
@@ -158,6 +159,7 @@ bool FeaturePromoLifecycle::CanSnooze() const {
     case PromoType::kCustomAction:
     case PromoType::kSnooze:
     case PromoType::kTutorial:
+    case PromoType::kCustomUi:
       // Only enforce snooze count in V2 to avoid breaking backwards behavior.
       return storage_service_->GetSnoozeCount(*iph_feature_) <
              features::GetMaxSnoozeCount();
@@ -265,7 +267,7 @@ bool FeaturePromoLifecycle::MaybeEndPromo() {
   state_ = State::kClosed;
   if (!is_demo() && !tracker_dismissed_) {
     tracker_dismissed_ = true;
-    tracker_->Dismissed(*iph_feature_);
+    tracker_->Dismissed(*iph_feature_, base::PassKey<FeaturePromoLifecycle>());
   }
   return true;
 }
@@ -448,6 +450,9 @@ void FeaturePromoLifecycle::RecordShown() {
       break;
     case PromoType::kCustomAction:
       type_action_name.append("CustomAction");
+      break;
+    case PromoType::kCustomUi:
+      type_action_name.append("CustomUi");
       break;
     case PromoType::kSnooze:
       type_action_name.append("Snooze");

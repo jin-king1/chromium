@@ -6,44 +6,48 @@ package org.chromium.chrome.browser.tab;
 
 import android.graphics.Rect;
 
+import org.chromium.base.lifetime.Destroyable;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.util.PictureInPictureWindowOptions;
+import org.chromium.chrome.browser.util.WindowFeatures;
 import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.url.GURL;
+
+import java.util.List;
 
 /** A basic {@link WebContentsDelegateAndroid} that proxies methods into Tab. */
-public abstract class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid {
+@NullMarked
+public abstract class TabWebContentsDelegateAndroid extends WebContentsDelegateAndroid
+        implements Destroyable {
     /**
-     * Returns whether the page should resume accepting requests for the new window. This is
-     * used when window creation is asynchronous and the navigations need to be delayed.
+     * Returns whether the page should resume accepting requests for the new window. This is used
+     * when window creation is asynchronous and the navigations need to be delayed.
      */
     protected abstract boolean shouldResumeRequestsForCreatedWindow();
 
     /**
-     * Creates a new tab with the already-created WebContents. The tab for the added
-     * contents should be reparented correctly when this method returns.
+     * Creates a new tab with the already-created WebContents. The tab for the added contents should
+     * be reparented correctly when this method returns.
+     *
      * @param sourceWebContents Source WebContents from which the new one is created.
      * @param webContents Newly created WebContents object.
+     * @param targetUrl URL that was used to create the new WebContents object.
      * @param disposition WindowOpenDisposition indicating how the tab should be created.
-     * @param initialPosition Initial position of the content to be created.
+     * @param windowFeatures Initial window features to be used for the new tab.
      * @param userGesture {@code true} if opened by user gesture.
-     * @return {@code true} if new tab was created successfully with a give WebContents.
+     * @param pictureInPictureWindowOptions Picture-in-Picture window options.
+     * @return {@code true} if new tab was created successfully with a given WebContents.
      */
     protected abstract boolean addNewContents(
             WebContents sourceWebContents,
             WebContents webContents,
+            GURL targetUrl,
             int disposition,
-            Rect initialPosition,
-            boolean userGesture);
-
-    /**
-     * Repositions the window containing this tab to given bounds. Applicable
-     * only for multi-window mode in Android.
-     *
-     * @param source Source WebContents which requested the repositioning.
-     * @param bounds Rectangle specifying desired bounds in global work area coordinate system.
-     */
-    protected void setContentsBounds(WebContents source, Rect bounds) {
-        // Do nothing.
-    }
+            WindowFeatures windowFeatures,
+            boolean userGesture,
+            @Nullable PictureInPictureWindowOptions pictureInPictureWindowOptions);
 
     /**
      * Sets the overlay mode.
@@ -61,6 +65,14 @@ public abstract class TabWebContentsDelegateAndroid extends WebContentsDelegateA
     }
 
     /**
+     * @return true if the OS currently prevents the creation of a Document Picture-in-Picture
+     *     window.
+     */
+    protected boolean isDocumentPictureInPictureBlockedBySystem() {
+        return false;
+    }
+
+    /**
      * @return web preferences for enabling Picture-in-Picture.
      */
     protected boolean isPictureInPictureEnabled() {
@@ -68,22 +80,15 @@ public abstract class TabWebContentsDelegateAndroid extends WebContentsDelegateA
     }
 
     /**
-     * @return Night mode enabled/disabled for this Tab. To be used to propagate
-     *         the preferred color scheme to the renderer.
+     * @return whether immersive Picture-in-Picture playback is enabled.
      */
-    protected boolean isNightModeEnabled() {
-        return false;
-    }
-
-    /**
-     * @return True if auto-darkening may be applied to web contents per Chrome browser settings.
-     */
-    protected boolean isForceDarkWebContentEnabled() {
+    protected boolean isImmersivePlaybackEnabled() {
         return false;
     }
 
     /**
      * Return true if app banners are to be permitted in this tab. May need to be overridden.
+     *
      * @return true if app banners are permitted, and false otherwise.
      */
     protected boolean canShowAppBanners() {
@@ -94,15 +99,25 @@ public abstract class TabWebContentsDelegateAndroid extends WebContentsDelegateA
      * @return the WebAPK manifest scope. This gives frames within the scope increased privileges
      * such as autoplaying media unmuted.
      */
-    protected String getManifestScope() {
+    protected @Nullable String getManifestScope() {
         return null;
     }
 
     /**
      * Checks if the associated tab is currently presented in the context of custom tabs.
+     *
      * @return true if this is currently a custom tab.
      */
     protected boolean isCustomTab() {
+        return false;
+    }
+
+    /**
+     * Checks if the associated tab is currently presented as a contextual popup.
+     *
+     * @return true if this is currently a contextual popup.
+     */
+    protected boolean isPopup() {
         return false;
     }
 
@@ -132,6 +147,19 @@ public abstract class TabWebContentsDelegateAndroid extends WebContentsDelegateA
 
     /** Return if dynamically change safe area insets as browser controls scroll. */
     protected boolean isDynamicSafeAreaInsetsEnabled() {
+        return false;
+    }
+
+    /** Called when WebContents reports a change to the non-draggable regions in header content. */
+    protected void nonDraggableRegionsChanged(List<Rect> regions) {}
+
+    /**
+     * Called when WebContents is about to handle a keyboard event.
+     *
+     * @param nativeKeyEvent The native key event.
+     * @return true if the event was handled.
+     */
+    protected boolean preHandleKeyboardEvent(long nativeKeyEvent) {
         return false;
     }
 }

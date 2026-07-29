@@ -11,6 +11,8 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.blink.mojom.DisplayMode;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ShortcutHelper;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
@@ -23,6 +25,7 @@ import org.chromium.ui.util.ColorUtils;
 import org.chromium.webapk.lib.common.splash.SplashLayout;
 
 /** Factory for building {@link BrowserServicesIntentDataProvider} for homescreen shortcuts. */
+@NullMarked
 public class WebappIntentDataProviderFactory {
     private static final String TAG = "WebappInfo";
 
@@ -56,9 +59,10 @@ public class WebappIntentDataProviderFactory {
 
     /**
      * Construct a BrowserServicesIntentDataProvider.
+     *
      * @param intent Intent containing info about the app.
      */
-    public static BrowserServicesIntentDataProvider create(Intent intent) {
+    public static @Nullable BrowserServicesIntentDataProvider create(Intent intent) {
         String id = WebappIntentUtils.getIdForHomescreenShortcut(intent);
         String url = IntentUtils.safeGetStringExtra(intent, WebappConstants.EXTRA_URL);
         if (id == null || url == null) {
@@ -118,6 +122,9 @@ public class WebappIntentDataProviderFactory {
         boolean isIconAdaptive =
                 IntentUtils.safeGetBooleanExtra(
                         intent, WebappConstants.EXTRA_IS_ICON_ADAPTIVE, false);
+        boolean isIconTrusted =
+                IntentUtils.safeGetBooleanExtra(
+                        intent, WebappConstants.EXTRA_IS_ICON_TRUSTED, false);
         boolean forceNavigation =
                 IntentUtils.safeGetBooleanExtra(
                         intent, WebappConstants.EXTRA_FORCE_NAVIGATION, false);
@@ -133,7 +140,7 @@ public class WebappIntentDataProviderFactory {
                         id,
                         url,
                         scope,
-                        new WebappIcon(icon, /* isTrusted= */ true),
+                        new WebappIcon(icon, isIconTrusted),
                         name,
                         shortName,
                         displayMode,

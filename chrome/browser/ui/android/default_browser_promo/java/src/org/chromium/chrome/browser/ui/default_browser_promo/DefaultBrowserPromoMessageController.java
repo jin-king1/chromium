@@ -11,6 +11,7 @@ import android.provider.Settings;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.IntentUtils;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.messages.DismissReason;
 import org.chromium.components.messages.MessageBannerProperties;
@@ -20,6 +21,7 @@ import org.chromium.components.messages.PrimaryActionClickBehavior;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** A controller class for messages that promo user to set Chrome as the default browser. */
+@NullMarked
 public class DefaultBrowserPromoMessageController {
     private final Context mContext;
     private final Tracker mTracker;
@@ -63,6 +65,8 @@ public class DefaultBrowserPromoMessageController {
     @PrimaryActionClickBehavior
     int onPrimaryAction() {
         mTracker.notifyEvent("default_browser_promo_messages_used");
+        DefaultBrowserPromoMetrics.recordPromoClick(
+                DefaultBrowserPromoMetrics.DefaultBrowserPromoSourceType.MESSAGES_PROMO);
 
         Intent intent = new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS);
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);

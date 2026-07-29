@@ -6,48 +6,61 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/functional/bind.h"
+#import "base/ios/ios_util.h"
 #import "base/location.h"
+#import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/bind.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/run_until.h"
 #import "components/affiliations/core/browser/fake_affiliation_service.h"
-#import "components/feature_engagement/public/feature_constants.h"
+#import "components/application_locale_storage/application_locale_storage.h"
+#import "components/google/core/common/google_util.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/leak_detection/mock_bulk_leak_check_service.h"
 #import "components/password_manager/core/browser/password_form.h"
+#import "components/password_manager/core/browser/password_manager_constants.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
+#import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/affiliations/model/ios_chrome_affiliation_service_factory.h"
 #import "ios/chrome/browser/favicon/model/favicon_loader.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
+#import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_bulk_leak_check_service_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_profile_password_store_factory.h"
 #import "ios/chrome/browser/passwords/model/password_check_observer_bridge.h"
-#import "ios/chrome/browser/passwords/model/save_passwords_consumer.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/inline_promo_cell.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/inline_promo_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/settings_check_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_manager_view_controller+Testing.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/password_manager_view_controller_presentation_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_consumer.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_mediator.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_settings_commands.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/ui/image/image_names.h"
+#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_text_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_controller_test.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/scoped_key_window.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gmock/include/gmock/gmock.h"
@@ -79,21 +92,21 @@ class PasswordManagerViewControllerTest
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindRepeating(
-            &password_manager::BuildPasswordStore<web::BrowserState,
+        base::BindOnce(
+            &password_manager::BuildPasswordStore<ProfileIOS,
                                                   TestPasswordStore>));
     builder.AddTestingFactory(
         IOSChromeBulkLeakCheckServiceFactory::GetInstance(),
-        base::BindRepeating(base::BindLambdaForTesting([](web::BrowserState*) {
-          return std::unique_ptr<KeyedService>(
-              std::make_unique<MockBulkLeakCheckService>());
-        })));
+        base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          return std::make_unique<MockBulkLeakCheckService>();
+        }));
     builder.AddTestingFactory(
         IOSChromeAffiliationServiceFactory::GetInstance(),
-        base::BindRepeating(base::BindLambdaForTesting([](web::BrowserState*) {
-          return std::unique_ptr<KeyedService>(
-              std::make_unique<affiliations::FakeAffiliationService>());
-        })));
+        base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          return std::make_unique<affiliations::FakeAffiliationService>();
+        }));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
 
     profile_ = std::move(builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
@@ -106,8 +119,8 @@ class PasswordManagerViewControllerTest
                                          GetForProfile(profile)
                        faviconLoader:IOSChromeFaviconLoaderFactory::
                                          GetForProfile(profile)
-                         syncService:SyncServiceFactory::GetForProfile(profile)
-                         prefService:profile->GetPrefs()];
+                         syncService:SyncServiceFactory::GetForProfile(
+                                         profile)];
 
     // Inject some fake passwords to pass the loading state.
     PasswordManagerViewController* passwords_controller =
@@ -118,6 +131,14 @@ class PasswordManagerViewControllerTest
     passwords_settings_commands_strict_mock_ =
         OCMStrictProtocolMock(@protocol(PasswordsSettingsCommands));
     passwords_controller.handler = passwords_settings_commands_strict_mock_;
+
+    password_manager_view_controller_presentation_delegate_mock_ =
+        OCMStrictProtocolMock(
+            @protocol(PasswordManagerViewControllerPresentationDelegate));
+    passwords_controller.presentationDelegate =
+        password_manager_view_controller_presentation_delegate_mock_;
+    OCMStub([password_manager_view_controller_presentation_delegate_mock_
+        showLevelUpWalkthroughIPH]);
 
     // Show the Password Manager widget promo.
     passwords_controller.shouldShowPasswordManagerWidgetPromo = YES;
@@ -182,7 +203,7 @@ class PasswordManagerViewControllerTest
     PasswordManagerViewController* passwords_controller =
         GetPasswordManagerViewController();
     NSInteger insecure_count = 0;
-    for (const auto& signon_realm_forms : GetTestStore().stored_passwords()) {
+    for (const auto& signon_realm_forms : GetAllLoginsSync(&GetTestStore())) {
       insecure_count += std::ranges::count_if(
           signon_realm_forms.second, [](const PasswordForm& form) {
             return !form.password_issues.empty();
@@ -193,72 +214,72 @@ class PasswordManagerViewControllerTest
                            insecurePasswordsCount:insecure_count];
   }
 
-  // Adds a form to PasswordManagerViewController.
-  void AddPasswordForm(std::unique_ptr<password_manager::PasswordForm> form) {
-    form->in_store = password_manager::PasswordForm::Store::kProfileStore;
-    GetTestStore().AddLogin(*form);
+  // Adds a credential to PasswordManagerViewController.
+  void AddStoredCredential(password_manager::StoredCredential cred) {
+    cred.in_store = password_manager::PasswordForm::Store::kProfileStore;
+    GetTestStore().AddLogin(std::move(cred));
     RunUntilIdle();
   }
 
-  // Creates a form.
-  std::unique_ptr<password_manager::PasswordForm> CreateForm(
+  // Creates a credential.
+  password_manager::StoredCredential CreateCredential(
       std::u16string username_value) {
-    auto form = std::make_unique<password_manager::PasswordForm>();
-    form->url = GURL("http://www.example.com/accounts/LoginAuth");
-    form->action = GURL("http://www.example.com/accounts/Login");
-    form->username_element = u"Email";
-    form->username_value = username_value;
-    form->password_element = u"Passwd";
-    form->password_value = u"test";
-    form->submit_element = u"signIn";
-    form->signon_realm = "http://www.example.com/";
-    form->scheme = password_manager::PasswordForm::Scheme::kHtml;
-    form->blocked_by_user = false;
-    return form;
+    password_manager::StoredCredential cred;
+    cred.url = GURL("http://www.example.com/accounts/LoginAuth");
+    cred.action = GURL("http://www.example.com/accounts/Login");
+    cred.username_element = u"Email";
+    cred.username_value = username_value;
+    cred.password_element = u"Passwd";
+    cred.password_value = u"test";
+    cred.submit_element = u"signIn";
+    cred.signon_realm = "http://www.example.com/";
+    cred.scheme = password_manager::PasswordForm::Scheme::kHtml;
+    cred.blocked_by_user = false;
+    return cred;
   }
 
   // Created and adds a saved password form.
   void AddSavedForm1(std::u16string username_value = u"test@egmail.com") {
-    auto form = CreateForm(username_value);
-    AddPasswordForm(std::move(form));
+    auto cred = CreateCredential(username_value);
+    AddStoredCredential(std::move(cred));
   }
 
   // Creates and adds a saved password form.
   void AddSavedForm2() {
-    auto form = std::make_unique<password_manager::PasswordForm>();
-    form->url = GURL("http://www.example2.com/accounts/LoginAuth");
-    form->action = GURL("http://www.example2.com/accounts/Login");
-    form->username_element = u"Email";
-    form->username_value = u"test@egmail.com";
-    form->password_element = u"Passwd";
-    form->password_value = u"test";
-    form->submit_element = u"signIn";
-    form->signon_realm = "http://www.example2.com/";
-    form->scheme = password_manager::PasswordForm::Scheme::kHtml;
-    form->blocked_by_user = false;
-    AddPasswordForm(std::move(form));
+    password_manager::StoredCredential cred;
+    cred.url = GURL("http://www.example2.com/accounts/LoginAuth");
+    cred.action = GURL("http://www.example2.com/accounts/Login");
+    cred.username_element = u"Email";
+    cred.username_value = u"test@egmail.com";
+    cred.password_element = u"Passwd";
+    cred.password_value = u"test";
+    cred.submit_element = u"signIn";
+    cred.signon_realm = "http://www.example2.com/";
+    cred.scheme = password_manager::PasswordForm::Scheme::kHtml;
+    cred.blocked_by_user = false;
+    AddStoredCredential(std::move(cred));
   }
 
   // Creates and adds a blocked site form to never offer to save
   // user's password to those sites.
   void AddBlockedForm1() {
-    auto form = std::make_unique<password_manager::PasswordForm>();
-    form->url = GURL("http://www.secret.com/login");
-    form->signon_realm = "http://www.secret.com/";
-    form->scheme = password_manager::PasswordForm::Scheme::kHtml;
-    form->blocked_by_user = true;
-    AddPasswordForm(std::move(form));
+    password_manager::StoredCredential cred;
+    cred.url = GURL("http://www.secret.com/login");
+    cred.signon_realm = "http://www.secret.com/";
+    cred.scheme = password_manager::PasswordForm::Scheme::kHtml;
+    cred.blocked_by_user = true;
+    AddStoredCredential(std::move(cred));
   }
 
   // Creates and adds another blocked site form to never offer to save
   // user's password to those sites.
   void AddBlockedForm2() {
-    auto form = std::make_unique<password_manager::PasswordForm>();
-    form->url = GURL("http://www.secret2.com/login");
-    form->signon_realm = "http://www.secret2.com/";
-    form->scheme = password_manager::PasswordForm::Scheme::kHtml;
-    form->blocked_by_user = true;
-    AddPasswordForm(std::move(form));
+    password_manager::StoredCredential cred;
+    cred.url = GURL("http://www.secret2.com/login");
+    cred.signon_realm = "http://www.secret2.com/";
+    cred.scheme = password_manager::PasswordForm::Scheme::kHtml;
+    cred.blocked_by_user = true;
+    AddStoredCredential(std::move(cred));
   }
 
   // Creates and adds a saved insecure password form.
@@ -266,13 +287,13 @@ class PasswordManagerViewControllerTest
       InsecureType insecure_type,
       bool is_muted = false,
       std::u16string username_value = u"test@egmail.com") {
-    auto form = CreateForm(username_value);
-    form->password_issues = {
+    auto cred = CreateCredential(username_value);
+    cred.password_issues = {
         {insecure_type,
          password_manager::InsecurityMetadata(
              base::Time::Now(), password_manager::IsMuted(is_muted),
              password_manager::TriggerBackendNotification(false))}};
-    AddPasswordForm(std::move(form));
+    AddStoredCredential(std::move(cred));
   }
 
   // Deletes the item at (row, section) and wait util idle.
@@ -334,12 +355,14 @@ class PasswordManagerViewControllerTest
   void RunUntilIdle() { task_environment_.RunUntilIdle(); }
 
   web::WebTaskEnvironment task_environment_;
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestBrowser> browser_;
   PasswordsMediator* mediator_;
   ScopedKeyWindow scoped_window_;
   UIViewController* root_view_controller_ = nil;
   id passwords_settings_commands_strict_mock_;
+  id password_manager_view_controller_presentation_delegate_mock_;
 };
 
 // Tests default case has no saved sites and no blocked sites.
@@ -497,7 +520,9 @@ TEST_F(PasswordManagerViewControllerTest,
 
 // Tests that the password manager is updated when passwords change while in
 // search mode.
-TEST_F(PasswordManagerViewControllerTest, TestChangePasswordsWhileSearching) {
+// TODO(crbug.com/347688002): The test is flaky on iPad on iOS 17.
+TEST_F(PasswordManagerViewControllerTest,
+       DISABLED_TestChangePasswordsWhileSearching) {
   root_view_controller_ = [[UIViewController alloc] init];
   scoped_window_.Get().rootViewController = root_view_controller_;
 
@@ -648,8 +673,9 @@ TEST_F(PasswordManagerViewControllerTest, TestOpenInSearchMode) {
 
   // Verify that the search controller is active and that the content of table
   // view model is as expected in search mode.
-  RunUntilIdle();
-  EXPECT_TRUE(passwords_controller.navigationItem.searchController.active);
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return passwords_controller.navigationItem.searchController.active;
+  }));
   EXPECT_EQ(1, [[passwords_controller tableViewModel] numberOfSections]);
   EXPECT_TRUE([passwords_controller.tableViewModel
       hasSectionForSectionIdentifier:SectionIdentifierSavedPasswords]);
@@ -768,18 +794,18 @@ TEST_F(PasswordManagerViewControllerTest, FilterGroupsOfPasswords) {
   GURL mUrl = GURL("http://www.m.me");
   GURL facebookUrl = GURL("http://www.facebook.com");
   {
-    auto form = CreateForm(u"username1");
-    form->url = mUrl;
-    form->action = facebookUrl;
-    form->signon_realm = "http://www.facebook.com";
-    AddPasswordForm(std::move(form));
+    auto cred = CreateCredential(u"username1");
+    cred.url = mUrl;
+    cred.action = facebookUrl;
+    cred.signon_realm = "http://www.facebook.com";
+    AddStoredCredential(std::move(cred));
   }
   {
-    auto form = CreateForm(u"username2");
-    form->url = facebookUrl;
-    form->action = facebookUrl;
-    form->signon_realm = "http://www.facebook.com";
-    AddPasswordForm(std::move(form));
+    auto cred = CreateCredential(u"username2");
+    cred.url = facebookUrl;
+    cred.action = facebookUrl;
+    cred.signon_realm = "http://www.facebook.com";
+    AddStoredCredential(std::move(cred));
   }
 
   EXPECT_EQ(5, NumberOfSections());
@@ -1177,8 +1203,10 @@ TEST_F(PasswordManagerViewControllerTest, PasswordStoreListener) {
   EXPECT_EQ(2, NumberOfItemsInSection(
                    GetSectionIndex(SectionIdentifierSavedPasswords)));
 
-  auto password =
-      GetTestStore().stored_passwords().at("http://www.example.com/").at(0);
+  password_manager::StoredCredential password =
+      password_manager::FromPasswordForm(GetAllLoginsSync(&GetTestStore())
+                                             .at("http://www.example.com/")
+                                             .at(0));
   GetTestStore().RemoveLogin(FROM_HERE, password);
   RunUntilIdle();
   EXPECT_EQ(1, NumberOfItemsInSection(
@@ -1218,68 +1246,194 @@ TEST_F(PasswordManagerViewControllerTest, WidgetPromo) {
   [GetPasswordManagerViewController() settingsWillBeDismissed];
 }
 
-// Tests that the right metric is logged when tapping the widget promo's close
-// button.
-TEST_F(PasswordManagerViewControllerTest, WidgetPromoCloseButtonMetric) {
+// Test verifies the content of the Trusted Vault widget promo cell.
+TEST_F(PasswordManagerViewControllerTest, TrustedVaultWidgetPromo) {
+  base::HistogramTester histogram_tester;
   AddSavedForm1();
 
-  // Make Password Manager show the promo.
-  GetPasswordManagerViewController().shouldShowPasswordManagerWidgetPromo = YES;
+  // Make Password Manager show the promo:
+  [GetPasswordManagerViewController() setUserEmail:u"test@egmail.com"];
+  GetPasswordManagerViewController().shouldShowTrustedVaultWidgetPromo = YES;
   [GetPasswordManagerViewController() reloadData];
 
-  // Bucket count should be zero.
-  base::HistogramTester histogram_tester;
-  histogram_tester.ExpectBucketCount(kPasswordManagerWidgetPromoActionHistogram,
-                                     PasswordManagerWidgetPromoAction::kClose,
-                                     0);
+  EXPECT_EQ(1, NumberOfItemsInSection(
+                   GetSectionIndex(SectionIdentifierTrustedVaultWidgetPromo)));
 
-  NSIndexPath* index_path = [NSIndexPath
-      indexPathForRow:0
-            inSection:GetSectionIndex(SectionIdentifierWidgetPromo)];
-  InlinePromoCell* cell = base::apple::ObjCCastStrict<InlinePromoCell>(
-      [GetPasswordManagerViewController() tableView:controller().tableView
-                              cellForRowAtIndexPath:index_path]);
+  // Bucket count should be one.
+  histogram_tester.ExpectBucketCount(
+      kPasswordManagerPromoWithTrustedVaultKeyRetrievalActionHistogram,
+      PasswordManagerPromoWithTrustedVaultKeyRetrievalAction::kDisplayed, 1);
 
-  // Simulate tap on promo's close button.
-  [cell.closeButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+  InlinePromoItem* item = static_cast<InlinePromoItem*>(GetTableViewItem(
+      GetSectionIndex(SectionIdentifierTrustedVaultWidgetPromo), 0));
 
-  // Bucket count should now be one.
-  histogram_tester.ExpectBucketCount(kPasswordManagerWidgetPromoActionHistogram,
-                                     PasswordManagerWidgetPromoAction::kClose,
-                                     1);
+  EXPECT_NSEQ(
+      item.promoImage,
+      [UIImage imageNamed:kPasswordManagerTrustedVaultWidgetPromoImage]);
+  EXPECT_NSEQ(
+      item.promoText,
+      l10n_util::GetNSStringF(
+          IDS_IOS_IDENTITY_ERROR_INFOBAR_KEEP_USING_PASSWORDS_MESSAGE_WITH_EMAIL,
+          u"test@egmail.com"));
+  EXPECT_NSEQ(item.moreInfoButtonTitle,
+              l10n_util::GetNSString(
+                  IDS_IOS_IDENTITY_ERROR_INFOBAR_VERIFY_ITS_YOU_TITLE));
+  EXPECT_FALSE(item.shouldShowCloseButton);
+  EXPECT_FALSE(GetPasswordManagerViewController().editing);
+  EXPECT_TRUE(item.enabled);
+
+  SetEditing(true);
+  EXPECT_FALSE(item.enabled);
+  EXPECT_NSEQ(
+      item.promoImage,
+      [UIImage
+          imageNamed:kPasswordManagerTrustedVaultWidgetPromoDisabledImage]);
+  SetEditing(false);
 
   [GetPasswordManagerViewController() settingsWillBeDismissed];
 }
 
-// Tests that the right metric is logged when tapping the widget promo's more
-// info button.
-TEST_F(PasswordManagerViewControllerTest, WidgetPromoMoreInfoButtonMetric) {
+// Test verifies that the Trusted Vault widget promo impression is being
+// recorded only once.
+TEST_F(PasswordManagerViewControllerTest,
+       TrustedVaultWidgetPromoIpressionRecordedOnlyOnce) {
+  base::HistogramTester histogram_tester;
   AddSavedForm1();
 
-  // Make Password Manager show the promo.
-  GetPasswordManagerViewController().shouldShowPasswordManagerWidgetPromo = YES;
+  // Make Password Manager show the promo:
+  GetPasswordManagerViewController().shouldShowTrustedVaultWidgetPromo = YES;
+  [GetPasswordManagerViewController() reloadData];
   [GetPasswordManagerViewController() reloadData];
 
-  // Bucket count should be zero.
-  base::HistogramTester histogram_tester;
+  // Bucket count should be one.
   histogram_tester.ExpectBucketCount(
-      kPasswordManagerWidgetPromoActionHistogram,
-      PasswordManagerWidgetPromoAction::kOpenInstructions, 0);
+      kPasswordManagerPromoWithTrustedVaultKeyRetrievalActionHistogram,
+      PasswordManagerPromoWithTrustedVaultKeyRetrievalAction::kDisplayed, 1);
+
+  [GetPasswordManagerViewController() settingsWillBeDismissed];
+}
+
+// Tests that `showTrustedVaultReauthForFetchKeysFromViewController` is being
+// called when tapping the trusted vault widget promo's button.
+TEST_F(PasswordManagerViewControllerTest,
+       TrustedVaultWidgetPromoTappingButton) {
+  base::HistogramTester histogram_tester;
+  AddSavedForm1();
+
+  // Make Password Manager show the promo:
+  GetPasswordManagerViewController().shouldShowTrustedVaultWidgetPromo = YES;
+  [GetPasswordManagerViewController() reloadData];
 
   NSIndexPath* index_path = [NSIndexPath
       indexPathForRow:0
-            inSection:GetSectionIndex(SectionIdentifierWidgetPromo)];
+            inSection:GetSectionIndex(
+                          SectionIdentifierTrustedVaultWidgetPromo)];
   InlinePromoCell* cell = base::apple::ObjCCastStrict<InlinePromoCell>(
       [GetPasswordManagerViewController() tableView:controller().tableView
                               cellForRowAtIndexPath:index_path]);
 
-  // Simulate tap on promo's more info button.
+  OCMExpect([password_manager_view_controller_presentation_delegate_mock_
+      performReauthenticationForRetrievingTrustedVaultKey]);
+
+  // Simulate tap on the promo's button.
   [cell.moreInfoButton sendActionsForControlEvents:UIControlEventTouchUpInside];
 
-  // Bucket count should now be one.
+  EXPECT_OCMOCK_VERIFY(
+      password_manager_view_controller_presentation_delegate_mock_);
+
+  // Bucket count should be one.
   histogram_tester.ExpectBucketCount(
-      kPasswordManagerWidgetPromoActionHistogram,
-      PasswordManagerWidgetPromoAction::kOpenInstructions, 1);
+      kPasswordManagerPromoWithTrustedVaultKeyRetrievalActionHistogram,
+      PasswordManagerPromoWithTrustedVaultKeyRetrievalAction::kActedUpon, 1);
+
+  [GetPasswordManagerViewController() settingsWillBeDismissed];
+}
+
+TEST_F(PasswordManagerViewControllerTest,
+       TestTrustedVaultPromoIsNotPresentedWhileSearching) {
+  root_view_controller_ = [[UIViewController alloc] init];
+  scoped_window_.Get().rootViewController = root_view_controller_;
+
+  PasswordManagerViewController* passwords_controller =
+      GetPasswordManagerViewController();
+
+  [passwords_controller setUserEmail:u"test@egmail.com"];
+  passwords_controller.shouldShowTrustedVaultWidgetPromo = YES;
+
+  // Add a saved password so the empty state isn't shown.
+  AddSavedForm1();
+
+  // Present the view controller.
+  __block bool presentation_finished = NO;
+  UINavigationController* navigation_controller =
+      [[UINavigationController alloc]
+          initWithRootViewController:passwords_controller];
+  [root_view_controller_ presentViewController:navigation_controller
+                                      animated:NO
+                                    completion:^{
+                                      presentation_finished = YES;
+                                    }];
+  EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool {
+        return presentation_finished;
+      }));
+
+  EXPECT_TRUE([passwords_controller.tableViewModel
+      hasSectionForSectionIdentifier:SectionIdentifierTrustedVaultWidgetPromo]);
+
+  passwords_controller.navigationItem.searchController.active = YES;
+
+  EXPECT_FALSE([passwords_controller.tableViewModel
+      hasSectionForSectionIdentifier:SectionIdentifierTrustedVaultWidgetPromo]);
+
+  passwords_controller.navigationItem.searchController.active = NO;
+
+  EXPECT_TRUE([passwords_controller.tableViewModel
+      hasSectionForSectionIdentifier:SectionIdentifierTrustedVaultWidgetPromo]);
+
+  // Dismiss the view controller and wait for the dismissal to finish.
+  __block bool dismissal_finished = NO;
+  [passwords_controller settingsWillBeDismissed];
+  [root_view_controller_ dismissViewControllerAnimated:NO
+                                            completion:^{
+                                              dismissal_finished = YES;
+                                            }];
+  EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool {
+        return dismissal_finished;
+      }));
+}
+
+// Tests that the content of the ManageAccountHeader is being updated when
+// `setSavingPasswordsToAccount` changes.
+TEST_F(PasswordManagerViewControllerTest, ManageAccountHeaderIsBeingUpdated) {
+  AddSavedForm1();
+
+  [GetPasswordManagerViewController() setSavingPasswordsToAccount:NO];
+
+  TableViewModel* model = GetPasswordManagerViewController().tableViewModel;
+  TableViewLinkHeaderFooterItem* header =
+      base::apple::ObjCCastStrict<TableViewLinkHeaderFooterItem>([model
+          headerForSectionWithIdentifier:SectionIdentifierManageAccountHeader]);
+
+  EXPECT_NSEQ(
+      l10n_util::GetNSString(IDS_IOS_PASSWORD_MANAGER_HEADER_NOT_SYNCING),
+      header.text);
+  EXPECT_NSEQ(@[], header.urls);
+
+  [GetPasswordManagerViewController() setSavingPasswordsToAccount:YES];
+
+  EXPECT_NSEQ(l10n_util::GetNSString(
+                  IDS_IOS_SAVE_PASSWORDS_PASSKEYS_MANAGE_ACCOUNT_HEADER),
+              header.text);
+  EXPECT_EQ(1U, [header.urls count]);
+  CrURL* expectedHeaderUrl = [[CrURL alloc]
+      initWithGURL:google_util::AppendGoogleLocaleParam(
+                       GURL(password_manager::kPasswordManagerHelpCenteriOSURL),
+                       GetApplicationContext()
+                           ->GetApplicationLocaleStorage()
+                           ->Get())];
+  EXPECT_NSEQ(header.urls[0].nsurl, expectedHeaderUrl.nsurl);
 
   [GetPasswordManagerViewController() settingsWillBeDismissed];
 }

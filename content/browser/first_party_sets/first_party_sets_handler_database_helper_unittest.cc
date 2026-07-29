@@ -39,33 +39,33 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_SitesJoined) {
   net::SchemefulSite member2(GURL("https://member2.test"));
   net::SchemefulSite member3(GURL("https://member3.test"));
 
-  net::GlobalFirstPartySets old_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {member1,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)},
-       {member3,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 1)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets old_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {member1,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+           {member3,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
-  net::GlobalFirstPartySets current_sets(
-      kVersion,
-      /*entries=*/
-      {
-          {example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                            std::nullopt)},
-          {member1,
-           net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)},
-          {member3,
-           net::FirstPartySetEntry(example, net::SiteType::kAssociated, 1)},
-          {foo,
-           net::FirstPartySetEntry(foo, net::SiteType::kPrimary, std::nullopt)},
-          {member2,
-           net::FirstPartySetEntry(foo, net::SiteType::kAssociated, 0)},
-      },
-      /*aliases=*/{});
+  net::GlobalFirstPartySets current_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {
+              {example,
+               net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+              {member1,
+               net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+              {member3,
+               net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+              {foo, net::FirstPartySetEntry(foo, net::SiteType::kPrimary)},
+              {member2,
+               net::FirstPartySetEntry(foo, net::SiteType::kAssociated)},
+          },
+          /*aliases=*/{});
 
   // "https://foo.test" and "https://member2.test" joined FPSs. We don't clear
   // site data upon joining, so the computed diff should be empty set.
@@ -83,28 +83,27 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_SitesLeft) {
   net::SchemefulSite member2(GURL("https://member2.test"));
   net::SchemefulSite member3(GURL("https://member3.test"));
 
-  net::GlobalFirstPartySets old_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {member1,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)},
-       {member3,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 1)},
-       {foo,
-        net::FirstPartySetEntry(foo, net::SiteType::kPrimary, std::nullopt)},
-       {member2, net::FirstPartySetEntry(foo, net::SiteType::kAssociated, 0)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets old_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {member1,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+           {member3,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+           {foo, net::FirstPartySetEntry(foo, net::SiteType::kPrimary)},
+           {member2, net::FirstPartySetEntry(foo, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
-  net::GlobalFirstPartySets current_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {member1,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets current_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {member1,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
   // Expected diff: "https://foo.test", "https://member2.test" and
   // "https://member3.test" left FPSs.
@@ -122,32 +121,30 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_PrimaryChanged) {
   net::SchemefulSite member2(GURL("https://member2.test"));
   net::SchemefulSite member3(GURL("https://member3.test"));
 
-  net::GlobalFirstPartySets old_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {member1,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)},
-       {foo,
-        net::FirstPartySetEntry(foo, net::SiteType::kPrimary, std::nullopt)},
-       {member2, net::FirstPartySetEntry(foo, net::SiteType::kAssociated, 0)},
-       {member3, net::FirstPartySetEntry(foo, net::SiteType::kAssociated, 1)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets old_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {member1,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+           {foo, net::FirstPartySetEntry(foo, net::SiteType::kPrimary)},
+           {member2, net::FirstPartySetEntry(foo, net::SiteType::kAssociated)},
+           {member3, net::FirstPartySetEntry(foo, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
-  net::GlobalFirstPartySets current_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {member1,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)},
-       {member3,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 1)},
-       {foo,
-        net::FirstPartySetEntry(foo, net::SiteType::kPrimary, std::nullopt)},
-       {member2, net::FirstPartySetEntry(foo, net::SiteType::kAssociated, 0)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets current_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {member1,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+           {member3,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+           {foo, net::FirstPartySetEntry(foo, net::SiteType::kPrimary)},
+           {member2, net::FirstPartySetEntry(foo, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
   // Expected diff: "https://member3.test" changed primary.
   EXPECT_THAT(
@@ -162,22 +159,22 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_PrimaryLeft) {
   net::SchemefulSite foo(GURL("https://foo.test"));
   net::SchemefulSite bar(GURL("https://bar.test"));
 
-  net::GlobalFirstPartySets old_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {foo, net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)},
-       {bar, net::FirstPartySetEntry(example, net::SiteType::kAssociated, 1)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets old_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {foo, net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+           {bar, net::FirstPartySetEntry(example, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
-  net::GlobalFirstPartySets current_sets(
-      kVersion,
-      /*entries=*/
-      {{foo,
-        net::FirstPartySetEntry(foo, net::SiteType::kPrimary, std::nullopt)},
-       {bar, net::FirstPartySetEntry(foo, net::SiteType::kAssociated, 0)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets current_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{foo, net::FirstPartySetEntry(foo, net::SiteType::kPrimary)},
+           {bar, net::FirstPartySetEntry(foo, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
   // Expected diff: "https://example.test" left FPSs, "https://foo.test" and
   // "https://bar.test" changed primary.
@@ -195,21 +192,21 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_PrimaryMemberRotate) {
   net::SchemefulSite example(GURL("https://example.test"));
   net::SchemefulSite foo(GURL("https://foo.test"));
 
-  net::GlobalFirstPartySets old_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {foo, net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets old_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {foo, net::FirstPartySetEntry(example, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
-  net::GlobalFirstPartySets current_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(foo, net::SiteType::kAssociated, 0)},
-       {foo,
-        net::FirstPartySetEntry(foo, net::SiteType::kPrimary, std::nullopt)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets current_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(foo, net::SiteType::kAssociated)},
+           {foo, net::FirstPartySetEntry(foo, net::SiteType::kPrimary)}},
+          /*aliases=*/{});
 
   // Expected diff: "https://example.test" and "https://foo.test" changed
   // primary. It would be valid to not include example.test and foo.test in the
@@ -226,14 +223,14 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_EmptyOldSets) {
   net::SchemefulSite member1(GURL("https://member1.test"));
 
   // Empty old_sets.
-  net::GlobalFirstPartySets current_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {member1,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets current_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {member1,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
   EXPECT_THAT(
       FirstPartySetsHandlerDatabaseHelper::ComputeSetsDiff(
@@ -248,14 +245,14 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_EmptyCurrentSets) {
   net::SchemefulSite member1(GURL("https://member1.test"));
 
   // Empty current sets.
-  net::GlobalFirstPartySets old_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {member1,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets old_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {member1,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
   EXPECT_THAT(FirstPartySetsHandlerDatabaseHelper::ComputeSetsDiff(
                   old_sets, /*old_config=*/net::FirstPartySetsContextConfig(),
@@ -271,10 +268,10 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_PolicySitesJoined) {
   net::FirstPartySetsContextConfig current_config =
       net::FirstPartySetsContextConfig::Create(
           {
-              {foo, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                        foo, net::SiteType::kPrimary, std::nullopt))},
+              {foo, net::FirstPartySetEntryOverride(
+                        net::FirstPartySetEntry(foo, net::SiteType::kPrimary))},
               {member2, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            foo, net::SiteType::kAssociated, 0))},
+                            foo, net::SiteType::kAssociated))},
           })
           .value();
 
@@ -294,23 +291,21 @@ TEST(FirstPartySetsHandlerDatabaseHelper,
   net::SchemefulSite foo(GURL("https://foo.test"));
   net::SchemefulSite member1(GURL("https://member1.test"));
 
-  net::GlobalFirstPartySets sets(
+  net::GlobalFirstPartySets sets = net::GlobalFirstPartySets::CreateForTesting(
       kVersion,
       /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {member1,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)}},
+      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+       {member1, net::FirstPartySetEntry(example, net::SiteType::kAssociated)}},
       /*aliases=*/{});
 
   // "https://example.test" was removed from FPSs by policy modifications.
   net::FirstPartySetsContextConfig old_config =
       net::FirstPartySetsContextConfig::Create(
           {
-              {foo, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                        foo, net::SiteType::kPrimary, std::nullopt))},
+              {foo, net::FirstPartySetEntryOverride(
+                        net::FirstPartySetEntry(foo, net::SiteType::kPrimary))},
               {member1, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            foo, net::SiteType::kAssociated, 0))},
+                            foo, net::SiteType::kAssociated))},
               {example, net::FirstPartySetEntryOverride()},
           })
           .value();
@@ -319,12 +314,12 @@ TEST(FirstPartySetsHandlerDatabaseHelper,
   net::FirstPartySetsContextConfig current_config =
       net::FirstPartySetsContextConfig::Create(
           {
-              {foo, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                        foo, net::SiteType::kPrimary, std::nullopt))},
+              {foo, net::FirstPartySetEntryOverride(
+                        net::FirstPartySetEntry(foo, net::SiteType::kPrimary))},
               {member1, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            foo, net::SiteType::kAssociated, 0))},
+                            foo, net::SiteType::kAssociated))},
               {example, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            foo, net::SiteType::kAssociated, 0))},
+                            foo, net::SiteType::kAssociated))},
           })
           .value();
 
@@ -344,12 +339,12 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_PolicyMemberLeft) {
   net::FirstPartySetsContextConfig old_config =
       net::FirstPartySetsContextConfig::Create(
           {
-              {foo, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                        foo, net::SiteType::kPrimary, std::nullopt))},
+              {foo, net::FirstPartySetEntryOverride(
+                        net::FirstPartySetEntry(foo, net::SiteType::kPrimary))},
               {member1, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            foo, net::SiteType::kAssociated, 0))},
+                            foo, net::SiteType::kAssociated))},
               {member2, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            foo, net::SiteType::kAssociated, 0))},
+                            foo, net::SiteType::kAssociated))},
           })
           .value();
 
@@ -357,10 +352,10 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_PolicyMemberLeft) {
   net::FirstPartySetsContextConfig current_config =
       net::FirstPartySetsContextConfig::Create(
           {
-              {foo, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                        foo, net::SiteType::kPrimary, std::nullopt))},
+              {foo, net::FirstPartySetEntryOverride(
+                        net::FirstPartySetEntry(foo, net::SiteType::kPrimary))},
               {member1, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            foo, net::SiteType::kAssociated, 0))},
+                            foo, net::SiteType::kAssociated))},
           })
           .value();
 
@@ -379,11 +374,11 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_PolicyPrimaryLeft) {
       net::FirstPartySetsContextConfig::Create(
           {
               {example, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            example, net::SiteType::kPrimary, std::nullopt))},
+                            example, net::SiteType::kPrimary))},
               {member1, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            example, net::SiteType::kAssociated, 0))},
+                            example, net::SiteType::kAssociated))},
               {member2, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            example, net::SiteType::kAssociated, 0))},
+                            example, net::SiteType::kAssociated))},
           })
           .value();
 
@@ -391,9 +386,9 @@ TEST(FirstPartySetsHandlerDatabaseHelper, ComputeSetsDiff_PolicyPrimaryLeft) {
       net::FirstPartySetsContextConfig::Create(
           {
               {member1, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            member1, net::SiteType::kPrimary, std::nullopt))},
+                            member1, net::SiteType::kPrimary))},
               {member2, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            member1, net::SiteType::kAssociated, 0))},
+                            member1, net::SiteType::kAssociated))},
           })
           .value();
 
@@ -419,28 +414,28 @@ TEST(FirstPartySetsHandlerDatabaseHelper,
   net::FirstPartySetsContextConfig old_config =
       net::FirstPartySetsContextConfig::Create(
           {
-              {foo, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                        foo, net::SiteType::kPrimary, std::nullopt))},
+              {foo, net::FirstPartySetEntryOverride(
+                        net::FirstPartySetEntry(foo, net::SiteType::kPrimary))},
               {member1, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            foo, net::SiteType::kAssociated, 0))},
-              {bar, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                        bar, net::SiteType::kPrimary, std::nullopt))},
+                            foo, net::SiteType::kAssociated))},
+              {bar, net::FirstPartySetEntryOverride(
+                        net::FirstPartySetEntry(bar, net::SiteType::kPrimary))},
               {member2, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            bar, net::SiteType::kAssociated, 0))},
+                            bar, net::SiteType::kAssociated))},
           })
           .value();
 
   net::FirstPartySetsContextConfig current_config =
       net::FirstPartySetsContextConfig::Create(
           {
-              {foo, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                        foo, net::SiteType::kPrimary, std::nullopt))},
+              {foo, net::FirstPartySetEntryOverride(
+                        net::FirstPartySetEntry(foo, net::SiteType::kPrimary))},
               {member2, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            foo, net::SiteType::kAssociated, 0))},
-              {bar, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                        bar, net::SiteType::kPrimary, std::nullopt))},
+                            foo, net::SiteType::kAssociated))},
+              {bar, net::FirstPartySetEntryOverride(
+                        net::FirstPartySetEntry(bar, net::SiteType::kPrimary))},
               {member1, net::FirstPartySetEntryOverride(net::FirstPartySetEntry(
-                            bar, net::SiteType::kAssociated, 0))},
+                            bar, net::SiteType::kAssociated))},
           })
           .value();
 
@@ -476,30 +471,27 @@ TEST_F(FirstPartySetsHandlerDatabaseHelperTest,
 
   db_helper_->PersistSets(
       browser_context_id,
-      net::GlobalFirstPartySets(
+      net::GlobalFirstPartySets::CreateForTesting(
           base::Version("0.0.1"),
           /*entries=*/
-          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                             std::nullopt)},
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
            {member1,
-            net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)},
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
            {member3,
-            net::FirstPartySetEntry(example, net::SiteType::kAssociated, 1)},
-           {foo, net::FirstPartySetEntry(foo, net::SiteType::kPrimary,
-                                         std::nullopt)},
-           {member2,
-            net::FirstPartySetEntry(foo, net::SiteType::kAssociated, 0)}},
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)},
+           {foo, net::FirstPartySetEntry(foo, net::SiteType::kPrimary)},
+           {member2, net::FirstPartySetEntry(foo, net::SiteType::kAssociated)}},
           /*aliases=*/{}),
       /*config=*/net::FirstPartySetsContextConfig());
 
-  net::GlobalFirstPartySets current_sets(
-      kVersion,
-      /*entries=*/
-      {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary,
-                                         std::nullopt)},
-       {member1,
-        net::FirstPartySetEntry(example, net::SiteType::kAssociated, 0)}},
-      /*aliases=*/{});
+  net::GlobalFirstPartySets current_sets =
+      net::GlobalFirstPartySets::CreateForTesting(
+          kVersion,
+          /*entries=*/
+          {{example, net::FirstPartySetEntry(example, net::SiteType::kPrimary)},
+           {member1,
+            net::FirstPartySetEntry(example, net::SiteType::kAssociated)}},
+          /*aliases=*/{});
 
   std::optional<std::pair<std::vector<net::SchemefulSite>,
                           net::FirstPartySetsCacheFilter>>

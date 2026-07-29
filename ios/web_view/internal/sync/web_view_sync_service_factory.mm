@@ -6,6 +6,7 @@
 
 #import <utility>
 
+#import "base/feature_list.h"
 #import "base/functional/callback_helpers.h"
 #import "base/no_destructor.h"
 #import "base/time/time.h"
@@ -17,10 +18,10 @@
 #import "components/metrics/demographics/user_demographics.h"
 #import "components/password_manager/core/browser/sharing/password_receiver_service.h"
 #import "components/password_manager/core/browser/sharing/password_sender_service.h"
-#import "components/plus_addresses/settings/plus_address_setting_service.h"
-#import "components/plus_addresses/webdata/plus_address_webdata_service.h"
 #import "components/sync/base/data_type.h"
+#import "components/sync/base/features.h"
 #import "components/sync/base/sync_util.h"
+#import "components/sync/engine/net/http_bridge.h"
 #import "components/sync/service/data_type_controller.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_service_impl.h"
@@ -103,20 +104,17 @@ syncer::DataTypeController::TypeVector CreateControllers(
   controller_builder.SetPasskeyModel(nullptr);
   controller_builder.SetPasswordReceiverService(nullptr);
   controller_builder.SetPasswordSenderService(nullptr);
-  controller_builder.SetPlusAddressServices(nullptr, nullptr);
-  controller_builder.SetPowerBookmarkService(nullptr);
   controller_builder.SetPrefServiceSyncable(nullptr);
-  // TODO(crbug.com/330201909) implement for iOS.
-  controller_builder.SetProductSpecificationsService(nullptr);
   controller_builder.SetSendTabToSelfSyncService(nullptr);
   controller_builder.SetSessionSyncService(nullptr);
   controller_builder.SetSharingMessageBridge(nullptr);
 #if BUILDFLAG(ENABLE_SUPERVISED_USERS)
-  controller_builder.SetSupervisedUserSettingsService(nullptr);
+  controller_builder.SetFamilyLinkSettingsService(nullptr);
 #endif  // BUILDFLAG(ENABLE_SUPERVISED_USERS)
   controller_builder.SetTabGroupSyncService(nullptr);
   controller_builder.SetTemplateURLService(nullptr);
   controller_builder.SetUserEventService(nullptr);
+  controller_builder.SetNotebooksService(nullptr);
 
   return controller_builder.Build(GetDisabledTypes(prefs), sync_service,
                                   version_info::Channel::STABLE);
@@ -172,9 +170,19 @@ WebViewSyncServiceFactory::BuildServiceInstanceFor(
       WebViewSyncInvalidationsServiceFactory::GetForBrowserState(
           browser_state));
   init_params.url_loader_factory = browser_state->GetSharedURLLoaderFactory();
+  init_params.create_http_post_provider_factory = base::BindRepeating(
+      [](const std::string& user_agent,
+         std::unique_ptr<network::PendingSharedURLLoaderFactory>
+             pending_url_loader_factory)
+          -> std::unique_ptr<syncer::HttpPostProviderFactory> {
+        return std::make_unique<syncer::HttpBridgeFactory>(
+            user_agent, std::move(pending_url_loader_factory));
+      });
   init_params.network_connection_tracker =
       ApplicationContext::GetInstance()->GetNetworkConnectionTracker();
   init_params.channel = version_info::Channel::STABLE;
+  init_params.os_crypt_async =
+      ApplicationContext::GetInstance()->GetOSCryptAsync();
 
   auto sync_service =
       std::make_unique<syncer::SyncServiceImpl>(std::move(init_params));

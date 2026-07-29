@@ -15,7 +15,6 @@ import './bluetooth_pairing_confirm_code_page.js';
 import './bluetooth_spinner_page.js';
 
 import {assert, assertNotReached} from '//resources/js/assert.js';
-import {mojoString16ToString} from '//resources/js/mojo_type_util.js';
 import type {BluetoothDeviceProperties, BluetoothDiscoveryDelegateInterface, BluetoothSystemProperties, DevicePairingDelegateInterface, DevicePairingHandlerInterface, KeyEnteredHandlerInterface, KeyEnteredHandlerPendingReceiver, SystemPropertiesObserverInterface} from '//resources/mojo/chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom-webui.js';
 import {BluetoothDiscoveryDelegateReceiver, BluetoothSystemState, DevicePairingDelegateReceiver, KeyEnteredHandlerReceiver, PairingResult, SystemPropertiesObserverReceiver} from '//resources/mojo/chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom-webui.js';
 import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -163,16 +162,16 @@ export class SettingsBluetoothPairingUiElement extends PolymerElement
     };
   }
 
-  pairingDeviceAddress: string|null;
-  shouldOmitLinks: boolean;
-  private selectedPageId_: BluetoothPairingSubpageId;
-  private discoveredDevices_: BluetoothDeviceProperties[];
-  private devicePendingPairing_: BluetoothDeviceProperties|null;
-  private pairingAuthType_: PairingAuthType|null;
-  private pairingCode_: string;
-  private numKeysEntered_: number;
-  private lastFailedPairingDeviceId_: string;
-  private isBluetoothEnabled_: boolean;
+  declare pairingDeviceAddress: string|null;
+  declare shouldOmitLinks: boolean;
+  declare private selectedPageId_: BluetoothPairingSubpageId;
+  declare private discoveredDevices_: BluetoothDeviceProperties[];
+  declare private devicePendingPairing_: BluetoothDeviceProperties|null;
+  declare private pairingAuthType_: PairingAuthType|null;
+  declare private pairingCode_: string;
+  declare private numKeysEntered_: number;
+  declare private lastFailedPairingDeviceId_: string;
+  declare private isBluetoothEnabled_: boolean;
   private systemPropertiesObserverReceiver_: SystemPropertiesObserverReceiver;
   private bluetoothDiscoveryDelegateReceiver_: BluetoothDiscoveryDelegateReceiver;
   private devicePairingHandler_: DevicePairingHandlerInterface|null;
@@ -597,7 +596,7 @@ export class SettingsBluetoothPairingUiElement extends PolymerElement
     if (!this.devicePendingPairing_) {
       return '';
     }
-    return mojoString16ToString(this.devicePendingPairing_.publicName);
+    return this.devicePendingPairing_.publicName;
   }
 }
 

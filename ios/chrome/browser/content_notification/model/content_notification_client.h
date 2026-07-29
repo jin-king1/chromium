@@ -10,13 +10,23 @@
 
 #import "ios/chrome/browser/push_notification/model/push_notification_client.h"
 
+class ProfileIOS;
+
 // Client for handling content notifications.
 class ContentNotificationClient : public PushNotificationClient {
  public:
+  // Constructor for when multi-Profile push notification handling is enabled.
+  // Associates this client instance with a specific user `profile`. This should
+  // only be called when `IsMultiProfilePushNotificationHandlingEnabled()`
+  // returns YES.
+  explicit ContentNotificationClient(ProfileIOS* profile);
   ContentNotificationClient();
   ~ContentNotificationClient() override;
 
   // Override PushNotificationClient::
+  std::optional<NotificationType> GetNotificationType(
+      UNNotification* notification) override;
+  bool CanHandleNotification(UNNotification* notification) override;
   bool HandleNotificationInteraction(UNNotificationResponse* response) override;
   std::optional<UIBackgroundFetchResult> HandleNotificationReception(
       NSDictionary<NSString*, id>* payload) override;

@@ -2,12 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/user_manager/multi_user/multi_user_sign_in_policy_controller.h"
+
+#include <array>
 
 // TODO(b/278643115): Move to components/user_manager/multi_user
 // once we remove the dependency to chrome/*
@@ -23,20 +20,20 @@
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/policy/networking/policy_cert_service.h"
 #include "chrome/browser/policy/networking/policy_cert_service_factory.h"
 #include "chrome/browser/prefs/browser_prefs.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/test/test_user_session_manager.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/user_manager/multi_user/multi_user_sign_in_policy.h"
-#include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_manager_pref_names.h"
 #include "content/public/test/browser_task_environment.h"
@@ -51,7 +48,12 @@ namespace user_manager {
 
 namespace {
 
-constexpr const char* kUsers[] = {"a@gmail.com", "b@gmail.com"};
+constexpr std::array<AccountIdLiteral, 2> kUsers = {
+    AccountIdLiteral::FromUserEmailGaiaId("a@gmail.com",
+                                          GaiaId::Literal("111111")),
+    AccountIdLiteral::FromUserEmailGaiaId("b@gmail.com",
+                                          GaiaId::Literal("222222")),
+};
 
 struct BehaviorTestCase {
   MultiUserSignInPolicy primary;
@@ -59,7 +61,7 @@ struct BehaviorTestCase {
   bool expected_secondary_allowed;
 };
 
-constexpr BehaviorTestCase kBehaviorTestCases[] = {
+constexpr std::array<BehaviorTestCase, 9> kBehaviorTestCases = {{
     {
         MultiUserSignInPolicy::kUnrestricted,
         MultiUserSignInPolicy::kUnrestricted,
@@ -105,7 +107,7 @@ constexpr BehaviorTestCase kBehaviorTestCases[] = {
         MultiUserSignInPolicy::kNotAllowed,
         false,
     },
-};
+}};
 
 std::unique_ptr<KeyedService> TestPolicyCertServiceFactory(
     content::BrowserContext* context) {
@@ -122,11 +124,8 @@ class MockUserManagerObserver : public UserManager::Observer {
 
 class MultiUserSignInPolicyControllerTest : public testing::Test {
  public:
-  MultiUserSignInPolicyControllerTest() {
-    for (const char* user : kUsers) {
-      test_users_.push_back(AccountId::FromUserEmail(user));
-    }
-  }
+  MultiUserSignInPolicyControllerTest()
+      : test_users_(kUsers.begin(), kUsers.end()) {}
 
   MultiUserSignInPolicyControllerTest(
       const MultiUserSignInPolicyControllerTest&) = delete;
@@ -137,11 +136,14 @@ class MultiUserSignInPolicyControllerTest : public testing::Test {
 
   void SetUp() override {
     profile_manager_ = std::make_unique<TestingProfileManager>(
-        TestingBrowserProcess::GetGlobal(), &local_state_);
+        TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
 
+    session_manager_ = std::make_unique<ash::test::TestUserSessionManager>(
+        TestingBrowserProcess::GetGlobal()->local_state());
+
     for (const auto& account_id : test_users_) {
-      fake_user_manager_->AddUser(account_id);
+      ASSERT_TRUE(session_manager_->AddRegularUser(account_id));
 
       // Note that user profiles are created after user login in reality.
       TestingProfile* user_profile =
@@ -149,6 +151,11 @@ class MultiUserSignInPolicyControllerTest : public testing::Test {
       user_profile->set_profile_name(account_id.GetUserEmail());
       user_profiles_.push_back(user_profile);
     }
+
+    controller_ =
+        std::make_unique<user_manager::MultiUserSignInPolicyController>(
+            TestingBrowserProcess::GetGlobal()->local_state(),
+            user_manager::UserManager::Get());
   }
 
   void TearDown() override {
@@ -158,22 +165,25 @@ class MultiUserSignInPolicyControllerTest : public testing::Test {
     // freeing the network::CertVerifierWithTrustAnchors (see
     // PolicyCertService::OnTrustAnchorsChanged() which is called from
     // PolicyCertService::Shutdown()).
+    controller_.reset();
     for (const auto& account_id : test_users_) {
-      fake_user_manager_->OnUserProfileWillBeDestroyed(account_id);
+      user_manager::UserManager::Get()->OnUserProfileWillBeDestroyed(
+          account_id);
     }
+    session_manager_.reset();
     profile_manager_.reset();
     base::RunLoop().RunUntilIdle();
   }
 
   void LoginUser(size_t user_index) {
     ASSERT_LT(user_index, test_users_.size());
-    fake_user_manager_->LoginUser(test_users_[user_index], false);
-    fake_user_manager_->OnUserProfileCreated(
+    session_manager_->LogIn(test_users_[user_index], false);
+    user_manager::UserManager::Get()->OnUserProfileCreated(
         test_users_[user_index], user_profiles_[user_index]->GetPrefs());
   }
 
   void SetOwner(size_t user_index) {
-    fake_user_manager_->SetOwnerId(test_users_[user_index]);
+    user_manager::UserManager::Get()->SetOwnerId(test_users_[user_index]);
   }
 
   PrefService* GetUserPrefs(size_t user_index) {
@@ -199,14 +209,9 @@ class MultiUserSignInPolicyControllerTest : public testing::Test {
 
   TestingProfile* profile(int index) { return user_profiles_[index]; }
 
-  ScopedTestingLocalState local_state_{TestingBrowserProcess::GetGlobal()};
   content::BrowserTaskEnvironment task_environment_;
-  TypedScopedUserManager<ash::FakeChromeUserManager> fake_user_manager_{
-      std::make_unique<ash::FakeChromeUserManager>()};
-  std::unique_ptr<user_manager::MultiUserSignInPolicyController> controller_{
-      std::make_unique<user_manager::MultiUserSignInPolicyController>(
-          local_state_.Get(),
-          fake_user_manager_.Get())};
+  std::unique_ptr<ash::test::TestUserSessionManager> session_manager_;
+  std::unique_ptr<user_manager::MultiUserSignInPolicyController> controller_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
 
   std::vector<raw_ptr<TestingProfile, VectorExperimental>> user_profiles_;
@@ -216,18 +221,23 @@ class MultiUserSignInPolicyControllerTest : public testing::Test {
 
 // Tests that everyone is allowed before a session starts.
 TEST_F(MultiUserSignInPolicyControllerTest, AllAllowedBeforeLogin) {
-  constexpr MultiUserSignInPolicy kTestCases[] = {
+  constexpr std::array<MultiUserSignInPolicy, 3> kTestCases = {{
       MultiUserSignInPolicy::kUnrestricted,
       MultiUserSignInPolicy::kPrimaryOnly,
       MultiUserSignInPolicy::kNotAllowed,
-  };
-  for (size_t i = 0; i < std::size(kTestCases); ++i) {
+  }};
+  for (size_t i = 0; i < kTestCases.size(); ++i) {
     SCOPED_TRACE(i);
     SetCachedBehavior(0, kTestCases[i]);
     EXPECT_TRUE(
         controller()->IsUserAllowedInSession(test_users_[0].GetUserEmail()));
-    EXPECT_EQ(std::nullopt,
-              GetMultiUserSignInPolicy(fake_user_manager_->GetPrimaryUser()));
+    const session_manager::Session* primary_session =
+        session_manager::SessionManager::Get()->GetPrimarySession();
+    const user_manager::User* primary_user =
+        primary_session ? user_manager::UserManager::Get()->FindUser(
+                              primary_session->account_id())
+                        : nullptr;
+    EXPECT_EQ(std::nullopt, GetMultiUserSignInPolicy(primary_user));
   }
 }
 
@@ -247,12 +257,12 @@ TEST_F(MultiUserSignInPolicyControllerTest, InvalidCacheBecomesDefault) {
 TEST_F(MultiUserSignInPolicyControllerTest, CachedBehaviorUpdate) {
   LoginUser(0);
 
-  constexpr MultiUserSignInPolicy kTestCases[] = {
+  constexpr std::array<MultiUserSignInPolicy, 4> kTestCases = {{
       MultiUserSignInPolicy::kUnrestricted,
       MultiUserSignInPolicy::kPrimaryOnly,
       MultiUserSignInPolicy::kNotAllowed,
       MultiUserSignInPolicy::kUnrestricted,
-  };
+  }};
   for (const auto policy : kTestCases) {
     SetPrefBehavior(0, policy);
     EXPECT_EQ(policy, GetCachedBehavior(0));
@@ -265,7 +275,7 @@ TEST_F(MultiUserSignInPolicyControllerTest, CompromisedCacheFixedOnLogin) {
   MockUserManagerObserver mock_observer;
   base::ScopedObservation<UserManager, UserManager::Observer> observation(
       &mock_observer);
-  observation.Observe(fake_user_manager_.Get());
+  observation.Observe(user_manager::UserManager::Get());
 
   SetPrefBehavior(0, MultiUserSignInPolicy::kPrimaryOnly);
   SetCachedBehavior(0, MultiUserSignInPolicy::kUnrestricted);
@@ -291,13 +301,19 @@ TEST_F(MultiUserSignInPolicyControllerTest, CompromisedCacheFixedOnLogin) {
 TEST_F(MultiUserSignInPolicyControllerTest, IsSecondaryAllowed) {
   LoginUser(0);
 
-  for (size_t i = 0; i < std::size(kBehaviorTestCases); ++i) {
+  for (size_t i = 0; i < kBehaviorTestCases.size(); ++i) {
     SCOPED_TRACE(i);
     SetPrefBehavior(0, kBehaviorTestCases[i].primary);
     SetCachedBehavior(1, kBehaviorTestCases[i].secondary);
 
+    const session_manager::Session* primary_session =
+        session_manager::SessionManager::Get()->GetPrimarySession();
+    ASSERT_TRUE(primary_session);
+    const user_manager::User* primary_user =
+        user_manager::UserManager::Get()->FindUser(
+            primary_session->account_id());
     EXPECT_EQ(kBehaviorTestCases[i].primary,
-              GetMultiUserSignInPolicy(fake_user_manager_->GetPrimaryUser()));
+              GetMultiUserSignInPolicy(primary_user));
     EXPECT_EQ(
         kBehaviorTestCases[i].expected_secondary_allowed,
         controller()->IsUserAllowedInSession(test_users_[1].GetUserEmail()));
@@ -309,14 +325,14 @@ TEST_F(MultiUserSignInPolicyControllerTest, PrimaryBehaviorChange) {
   MockUserManagerObserver mock_observer;
   base::ScopedObservation<UserManager, UserManager::Observer> observation(
       &mock_observer);
-  observation.Observe(fake_user_manager_.Get());
+  observation.Observe(user_manager::UserManager::Get());
   EXPECT_CALL(mock_observer, OnUserNotAllowed(testing::_))
       .Times(testing::AnyNumber());
   LoginUser(0);
   LoginUser(1);
   testing::Mock::VerifyAndClearExpectations(&mock_observer);
 
-  for (size_t i = 0; i < std::size(kBehaviorTestCases); ++i) {
+  for (size_t i = 0; i < kBehaviorTestCases.size(); ++i) {
     SCOPED_TRACE(i);
     EXPECT_CALL(mock_observer, OnUserNotAllowed(testing::_))
         .Times(testing::AnyNumber());

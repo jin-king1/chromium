@@ -6,59 +6,54 @@
 
 #include <stdint.h>
 
-#include <algorithm>
 #include <initializer_list>
-#include <limits>
-#include <map>
 #include <memory>
+#include <optional>
 #include <set>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check.h"
-#include "base/command_line.h"
-#include "base/containers/contains.h"
-#include "base/debug/crash_logging.h"
-#include "base/functional/overloaded.h"
-#include "base/i18n/case_conversion.h"
+#include "base/check_deref.h"
+#include "base/check_op.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
-#include "base/notreached.h"
-#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/types/optional_ref.h"
 #include "base/uuid.h"
-#include "components/autofill/core/browser/autofill_type.h"
-#include "components/autofill/core/browser/data_manager/personal_data_manager.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_wallet_usage_data.h"
 #include "components/autofill/core/browser/data_model/payments/bank_account.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
+#include "components/autofill/core/browser/data_model/payments/credit_card_benefit.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card_cloud_token_data.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/browser/data_model/payments/payment_instrument.h"
 #include "components/autofill/core/browser/data_model/payments/payments_metadata.h"
-#include "components/autofill/core/browser/field_type_utils.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/payments/payments_customer_data.h"
-#include "components/autofill/core/browser/webdata/autofill_change.h"
 #include "components/autofill/core/browser/webdata/autofill_table_utils.h"
+#include "components/autofill/core/browser/webdata/payments/server_cvc.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_constants.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
-#include "components/autofill/core/common/autofill_switches.h"
-#include "components/autofill/core/common/autofill_util.h"
 #include "components/os_crypt/async/common/encryptor.h"
 #include "components/sync/protocol/autofill_specifics.pb.h"
 #include "components/webdata/common/web_database.h"
+#include "components/webdata/common/web_database_table.h"
 #include "sql/statement.h"
+#include "sql/statement_id.h"
+#include "sql/table_management_helpers.h"
 #include "sql/transaction.h"
-#include "ui/base/l10n/l10n_util.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -75,7 +70,7 @@ constexpr std::string_view kCardNumberEncrypted = "card_number_encrypted";
 constexpr std::string_view kUseCount = "use_count";
 constexpr std::string_view kUseDate = "use_date";
 constexpr std::string_view kDateModified = "date_modified";
-constexpr std::string_view kOrigin = "origin";
+constexpr std::string_view kIsUserConfirmed = "is_user_confirmed";
 constexpr std::string_view kBillingAddressId = "billing_address_id";
 constexpr std::string_view kNickname = "nickname";
 
@@ -101,6 +96,8 @@ constexpr std::string_view kProductDescription = "product_description";
 constexpr std::string_view kProductTermsUrl = "product_terms_url";
 constexpr std::string_view kCardInfoRetrievalEnrollmentState =
     "card_info_retrieval_enrollment_state";
+constexpr std::string_view kCardBenefitSource = "card_benefit_source";
+constexpr std::string_view kCardCreationSource = "card_creation_source";
 
 constexpr std::string_view kServerCardCloudTokenDataTable =
     "server_card_cloud_token_data";
@@ -187,7 +184,8 @@ constexpr std::string_view kMaskedBankAccountsMetadataTable =
 // kInstrumentId = "instrument_id"
 // kUseCount = "use_count"
 // kUseDate = "use_date"
-constexpr std::initializer_list<std::pair<std::string_view, std::string_view>>
+constexpr std::initializer_list<
+    const std::pair<const std::string_view, const std::string_view>>
     kMaskedBankAccountsMetadataColumnNamesAndTypes = {
         {kInstrumentId, "INTEGER NOT NULL"},
         {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
@@ -200,7 +198,8 @@ constexpr std::string_view kAccountNumberSuffix = "account_number_suffix";
 constexpr std::string_view kAccountType = "account_type";
 // kNickname = "nickname"
 constexpr std::string_view kDisplayIconUrl = "display_icon_url";
-constexpr std::initializer_list<std::pair<std::string_view, std::string_view>>
+constexpr std::initializer_list<
+    const std::pair<const std::string_view, const std::string_view>>
     kMaskedBankAccountsColumnNamesAndTypes = {
         {kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
         {kBankName, "VARCHAR"},
@@ -218,7 +217,8 @@ constexpr std::string_view kBenefitCategory = "benefit_category";
 constexpr std::string_view kBenefitDescription = "benefit_description";
 constexpr std::string_view kStartTime = "start_time";
 constexpr std::string_view kEndTime = "end_time";
-constexpr std::initializer_list<std::pair<std::string_view, std::string_view>>
+constexpr std::initializer_list<
+    const std::pair<const std::string_view, const std::string_view>>
     kMaskedCreditCardBenefitsColumnNamesAndTypes = {
         {kBenefitId, "VARCHAR PRIMARY KEY NOT NULL"},
         {kInstrumentId, "INTEGER NOT NULL DEFAULT 0"},
@@ -232,7 +232,8 @@ constexpr std::string_view kBenefitMerchantDomainsTable =
     "benefit_merchant_domains";
 // kBenefitId = "benefit_id"
 // kMerchantDomain = "merchant_domain";
-constexpr std::initializer_list<std::pair<std::string_view, std::string_view>>
+constexpr std::initializer_list<
+    const std::pair<const std::string_view, const std::string_view>>
     kBenefitMerchantDomainsColumnNamesAndTypes = {
         {kBenefitId, "VARCHAR NOT NULL"},
         {kMerchantDomain, "VARCHAR NOT NULL"}};
@@ -242,7 +243,8 @@ constexpr std::string_view kGenericPaymentInstrumentsTable =
 // kInstrumentId = "instrument_id"
 constexpr std::string_view kSerializedValueEncrypted =
     "serialized_value_encrypted";
-constexpr std::initializer_list<std::pair<std::string_view, std::string_view>>
+constexpr std::initializer_list<
+    const std::pair<const std::string_view, const std::string_view>>
     kGenericPaymentInstrumentsColumnNamesAndTypes = {
         {kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
         {kSerializedValueEncrypted, "VARCHAR NOT NULL"}};
@@ -256,7 +258,7 @@ void BindEncryptedStringToColumn(sql::Statement* s,
                                  const os_crypt_async::Encryptor& encryptor) {
   std::string encrypted_data;
   std::ignore = encryptor.EncryptString(value, &encrypted_data);
-  s->BindBlob(column_index, encrypted_data);
+  s->BindBlob(column_index, std::move(encrypted_data));
 }
 
 void BindEncryptedU16StringToColumn(
@@ -266,7 +268,7 @@ void BindEncryptedU16StringToColumn(
     const os_crypt_async::Encryptor& encryptor) {
   std::string encrypted_data;
   std::ignore = encryptor.EncryptString16(value, &encrypted_data);
-  s->BindBlob(column_index, encrypted_data);
+  s->BindBlob(column_index, std::move(encrypted_data));
 }
 
 void BindCreditCardToStatement(const CreditCard& credit_card,
@@ -287,9 +289,9 @@ void BindCreditCardToStatement(const CreditCard& credit_card,
   s->BindInt64(index++, credit_card.usage_history().use_count());
   s->BindInt64(index++, credit_card.usage_history().use_date().ToTimeT());
   s->BindInt64(index++, modification_date.ToTimeT());
-  s->BindString(index++, credit_card.origin());
   s->BindString(index++, credit_card.billing_address_id());
   s->BindString16(index++, credit_card.nickname());
+  s->BindBool(index++, credit_card.is_user_confirmed());
 }
 
 void BindLocalStoredCvcToStatement(const std::string& guid,
@@ -375,7 +377,7 @@ VirtualCardUsageData GetVirtualCardUsageDataFromStatement(sql::Statement& s) {
   int index = 0;
   std::string id = s.ColumnString(index++);
   int64_t instrument_id = s.ColumnInt64(index++);
-  std::string merchant_domain = s.ColumnString(index++);
+  std::string_view merchant_domain = s.ColumnStringView(index++);
   std::u16string last_four = s.ColumnString16(index++);
 
   return {VirtualCardUsageData::UsageDataId(id),
@@ -389,8 +391,7 @@ std::string DecryptStringFromColumn(
     int column_index,
     const os_crypt_async::Encryptor& encryptor) {
   std::string value;
-  std::string encrypted_value;
-  s.ColumnBlobAsString(column_index, &encrypted_value);
+  std::string encrypted_value = s.ColumnBlobAsString(column_index);
   if (!encrypted_value.empty()) {
     std::ignore = encryptor.DecryptString(encrypted_value, &value);
   }
@@ -402,8 +403,7 @@ std::u16string DecryptU16StringFromColumn(
     int column_index,
     const os_crypt_async::Encryptor& encryptor) {
   std::u16string value;
-  std::string encrypted_value;
-  s.ColumnBlobAsString(column_index, &encrypted_value);
+  std::string encrypted_value = s.ColumnBlobAsString(column_index);
   if (!encrypted_value.empty()) {
     std::ignore = encryptor.DecryptString16(encrypted_value, &value);
   }
@@ -433,9 +433,10 @@ std::unique_ptr<CreditCard> CreditCardFromStatement(
       base::Time::FromTimeT(card_statement.ColumnInt64(index++)));
   credit_card->usage_history().set_modification_date(
       base::Time::FromTimeT(card_statement.ColumnInt64(index++)));
-  credit_card->set_origin(card_statement.ColumnString(index++));
+
   credit_card->set_billing_address_id(card_statement.ColumnString(index++));
   credit_card->SetNickname(card_statement.ColumnString16(index++));
+  credit_card->set_is_user_confirmed(card_statement.ColumnBool(index++));
   // Only set cvc if we retrieve cvc from local_stored_cvc table.
   if (cvc_statement) {
     credit_card->set_cvc(
@@ -478,6 +479,22 @@ WebDatabaseTable::TypeKey GetKey() {
   return reinterpret_cast<void*>(&table_key);
 }
 
+// Safely converts a raw database integer into a Mojo enum `T`. It returns
+// `T::kMinValue` (which corresponds to the default or "unknown" value) if the
+// integer cannot be mapped to a known enum value.
+//
+// Fallback to `T::kMinValue` is preferred over declaring the entire database
+// row/entity (e.g., a credit card) invalid. Many enum fields represent optional
+// features (like card benefits, virtual card enrollment, etc.). Dropping the
+// entire entity due to an unparsed or legacy enum value would be highly
+// disruptive (e.g., causing a card to disappear entirely).
+template <typename T>
+  requires std::is_enum_v<T>
+T CheckedToEnum(std::underlying_type_t<T> raw_int) {
+  T e = static_cast<T>(raw_int);
+  return IsKnownEnumValue(e) ? e : T::kMinValue;
+}
+
 }  // namespace
 
 PaymentsAutofillTable::PaymentsAutofillTable() = default;
@@ -485,7 +502,8 @@ PaymentsAutofillTable::~PaymentsAutofillTable() = default;
 
 // static
 PaymentsAutofillTable* PaymentsAutofillTable::FromWebDatabase(WebDatabase* db) {
-  return static_cast<PaymentsAutofillTable*>(db->GetTable(GetKey()));
+  return static_cast<PaymentsAutofillTable*>(
+      CHECK_DEREF(db).GetTable(GetKey()));
 }
 
 WebDatabaseTable::TypeKey PaymentsAutofillTable::GetTypeKey() const {
@@ -598,6 +616,15 @@ bool PaymentsAutofillTable::MigrateToVersion(int version,
     case 136:
       *update_compatible_version = false;
       return MigrateToVersion136AddPaymentInstrumentCreationOptionsTable();
+    case 141:
+      *update_compatible_version = false;
+      return MigrateToVersion141AddCardBenefitSourceColumn();
+    case 144:
+      *update_compatible_version = false;
+      return MigrateToVersion144AddCardCreationSourceColumn();
+    case 153:
+      *update_compatible_version = true;
+      return MigrateToVersion153ReplaceOriginWithIsUserConfirmed();
   }
   return true;
 }
@@ -610,13 +637,13 @@ bool PaymentsAutofillTable::SetMaskedBankAccounts(
   }
 
   // Deletes all old values.
-  Delete(db(), kMaskedBankAccountsTable);
+  sql::DeleteAllRows(*db(), kMaskedBankAccountsTable);
 
   // Add bank accounts.
   sql::Statement insert;
-  InsertBuilder(db(), insert, kMaskedBankAccountsTable,
-                {kInstrumentId, kBankName, kAccountNumberSuffix, kAccountType,
-                 kNickname, kDisplayIconUrl});
+  sql::InsertBuilder(*db(), insert, kMaskedBankAccountsTable,
+                     {kInstrumentId, kBankName, kAccountNumberSuffix,
+                      kAccountType, kNickname, kDisplayIconUrl});
   for (BankAccount bank_account : bank_accounts) {
     BindMaskedBankAccountToStatement(bank_account, &insert);
     if (!insert.Run()) {
@@ -632,9 +659,9 @@ bool PaymentsAutofillTable::GetMaskedBankAccounts(
   sql::Statement s;
   bank_accounts.clear();
 
-  SelectBuilder(db(), s, kMaskedBankAccountsTable,
-                {kInstrumentId, kBankName, kAccountNumberSuffix, kAccountType,
-                 kNickname, kDisplayIconUrl});
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s, kMaskedBankAccountsTable,
+                           {kInstrumentId, kBankName, kAccountNumberSuffix,
+                            kAccountType, kNickname, kDisplayIconUrl});
   while (s.Step()) {
     int index = 0;
     auto instrument_id = s.ColumnInt64(index++);
@@ -658,8 +685,9 @@ bool PaymentsAutofillTable::GetMaskedBankAccounts(
 
 bool PaymentsAutofillTable::AddLocalIban(const Iban& iban) {
   sql::Statement s;
-  InsertBuilder(db(), s, kLocalIbansTable,
-                {kGuid, kUseCount, kUseDate, kValueEncrypted, kNickname});
+  sql::CachedInsertBuilder(
+      SQL_FROM_HERE, *db(), s, kLocalIbansTable,
+      {kGuid, kUseCount, kUseDate, kValueEncrypted, kNickname});
   BindIbanToStatement(iban, &s, *encryptor());
   return s.Run();
 }
@@ -677,9 +705,10 @@ bool PaymentsAutofillTable::UpdateLocalIban(const Iban& iban) {
   }
 
   sql::Statement s;
-  UpdateBuilder(db(), s, kLocalIbansTable,
-                {kGuid, kUseCount, kUseDate, kValueEncrypted, kNickname},
-                "guid=?1");
+  sql::CachedUpdateBuilder(
+      SQL_FROM_HERE, *db(), s, kLocalIbansTable,
+      {kGuid, kUseCount, kUseDate, kValueEncrypted, kNickname},
+      /*where_clause=*/"guid=?1");
   BindIbanToStatement(iban, &s, *encryptor());
 
   return s.Run();
@@ -687,15 +716,16 @@ bool PaymentsAutofillTable::UpdateLocalIban(const Iban& iban) {
 
 bool PaymentsAutofillTable::RemoveLocalIban(const std::string& guid) {
   DCHECK(base::Uuid::ParseCaseInsensitive(guid).is_valid());
-  return DeleteWhereColumnEq(db(), kLocalIbansTable, kGuid, guid);
+  return sql::DeleteWhereColumnEq(*db(), kLocalIbansTable, kGuid, guid);
 }
 
 std::unique_ptr<Iban> PaymentsAutofillTable::GetLocalIban(const std::string& guid) {
   DCHECK(base::Uuid::ParseCaseInsensitive(guid).is_valid());
   sql::Statement s;
-  SelectBuilder(db(), s, kLocalIbansTable,
-                {kGuid, kUseCount, kUseDate, kValueEncrypted, kNickname},
-                "WHERE guid = ?");
+  sql::CachedSelectBuilder(
+      SQL_FROM_HERE, *db(), s, kLocalIbansTable,
+      {kGuid, kUseCount, kUseDate, kValueEncrypted, kNickname},
+      /*modifiers=*/"WHERE guid = ?");
   s.BindString(0, guid);
 
   if (!s.Step())
@@ -709,8 +739,8 @@ bool PaymentsAutofillTable::GetLocalIbans(std::vector<std::unique_ptr<Iban>>* ib
   ibans->clear();
 
   sql::Statement s;
-  SelectBuilder(db(), s, kLocalIbansTable, {kGuid},
-                "ORDER BY use_date DESC, guid");
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s, kLocalIbansTable, {kGuid},
+                           "ORDER BY use_date DESC, guid");
 
   while (s.Step()) {
     std::string guid = s.ColumnString(0);
@@ -731,10 +761,11 @@ bool PaymentsAutofillTable::AddCreditCard(const CreditCard& credit_card) {
   // a valid record, we are OK that the CC is stored but the CVC fails silently.
   // We only return false if credit_card insert fails.
   sql::Statement card_statement;
-  InsertBuilder(db(), card_statement, kCreditCardsTable,
-                {kGuid, kNameOnCard, kExpirationMonth, kExpirationYear,
-                 kCardNumberEncrypted, kUseCount, kUseDate, kDateModified,
-                 kOrigin, kBillingAddressId, kNickname});
+  sql::CachedInsertBuilder(
+      SQL_FROM_HERE, *db(), card_statement, kCreditCardsTable,
+      {kGuid, kNameOnCard, kExpirationMonth, kExpirationYear,
+       kCardNumberEncrypted, kUseCount, kUseDate, kDateModified,
+       kBillingAddressId, kNickname, kIsUserConfirmed});
   BindCreditCardToStatement(credit_card, AutofillClock::Now(), &card_statement,
                             *encryptor());
 
@@ -743,12 +774,11 @@ bool PaymentsAutofillTable::AddCreditCard(const CreditCard& credit_card) {
   }
 
   // If credit card contains cvc, will store cvc in local_stored_cvc table.
-  if (!credit_card.cvc().empty() &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillEnableCvcStorageAndFilling)) {
+  if (!credit_card.cvc().empty()) {
     sql::Statement cvc_statement;
-    InsertBuilder(db(), cvc_statement, kLocalStoredCvcTable,
-                  {kGuid, kValueEncrypted, kLastUpdatedTimestamp});
+    sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), cvc_statement,
+                             kLocalStoredCvcTable,
+                             {kGuid, kValueEncrypted, kLastUpdatedTimestamp});
     BindLocalStoredCvcToStatement(credit_card.guid(), credit_card.cvc(),
                                   AutofillClock::Now(), &cvc_statement,
                                   *encryptor());
@@ -766,23 +796,19 @@ bool PaymentsAutofillTable::UpdateCreditCard(const CreditCard& credit_card) {
   if (!old_credit_card)
     return false;
 
-  bool cvc_result = false;
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillEnableCvcStorageAndFilling)) {
-    cvc_result = UpdateLocalCvc(credit_card.guid(), credit_card.cvc());
-  }
-
+  bool cvc_result = UpdateLocalCvc(credit_card.guid(), credit_card.cvc());
   // If only cvc is updated, we don't need to update credit_card table
   // date_modified field. Since we already checked if cvc updated, to ignore
   // cvc, we set old_credit_card cvc to new cvc.
   old_credit_card->set_cvc(credit_card.cvc());
   bool card_updated = *old_credit_card != credit_card;
   sql::Statement card_statement;
-  UpdateBuilder(db(), card_statement, kCreditCardsTable,
-                {kGuid, kNameOnCard, kExpirationMonth, kExpirationYear,
-                 kCardNumberEncrypted, kUseCount, kUseDate, kDateModified,
-                 kOrigin, kBillingAddressId, kNickname},
-                "guid=?1");
+  sql::CachedUpdateBuilder(
+      SQL_FROM_HERE, *db(), card_statement, kCreditCardsTable,
+      {kGuid, kNameOnCard, kExpirationMonth, kExpirationYear,
+       kCardNumberEncrypted, kUseCount, kUseDate, kDateModified,
+       kBillingAddressId, kNickname, kIsUserConfirmed},
+      /*where_clause=*/"guid=?1");
   BindCreditCardToStatement(
       credit_card,
       card_updated ? AutofillClock::Now()
@@ -801,16 +827,17 @@ bool PaymentsAutofillTable::UpdateLocalCvc(const std::string& guid,
   }
   if (cvc.empty()) {
     // Delete the CVC record if the new CVC is empty.
-    return DeleteWhereColumnEq(db(), kLocalStoredCvcTable, kGuid, guid);
+    return sql::DeleteWhereColumnEq(*db(), kLocalStoredCvcTable, kGuid, guid);
   }
   sql::Statement cvc_statement;
   // The INSERT OR REPLACE inserts the new or updates an existing card.
   // In particular, it gracefully handles the case where an entry for `guid`
   // exists but `old_credit_card->cvc().empty()` because the decryption failed
   // (crbug.com/392169470).
-  InsertBuilder(db(), cvc_statement, kLocalStoredCvcTable,
-                {kGuid, kValueEncrypted, kLastUpdatedTimestamp},
-                /*or_replace=*/true);
+  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), cvc_statement,
+                           kLocalStoredCvcTable,
+                           {kGuid, kValueEncrypted, kLastUpdatedTimestamp},
+                           /*or_replace=*/true);
   BindLocalStoredCvcToStatement(guid, cvc, AutofillClock::Now(), &cvc_statement,
                                 *encryptor());
   return cvc_statement.Run();
@@ -818,8 +845,8 @@ bool PaymentsAutofillTable::UpdateLocalCvc(const std::string& guid,
 
 bool PaymentsAutofillTable::RemoveCreditCard(const std::string& guid) {
   DCHECK(base::Uuid::ParseCaseInsensitive(guid).is_valid());
-  DeleteWhereColumnEq(db(), kLocalStoredCvcTable, kGuid, guid);
-  return DeleteWhereColumnEq(db(), kCreditCardsTable, kGuid, guid);
+  sql::DeleteWhereColumnEq(*db(), kLocalStoredCvcTable, kGuid, guid);
+  return sql::DeleteWhereColumnEq(*db(), kCreditCardsTable, kGuid, guid);
 }
 
 bool PaymentsAutofillTable::AddServerCreditCardForTesting(
@@ -848,11 +875,12 @@ std::unique_ptr<CreditCard> PaymentsAutofillTable::GetCreditCard(
     const std::string& guid) {
   DCHECK(base::Uuid::ParseCaseInsensitive(guid).is_valid());
   sql::Statement card_statement;
-  SelectBuilder(db(), card_statement, kCreditCardsTable,
-                {kGuid, kNameOnCard, kExpirationMonth, kExpirationYear,
-                 kCardNumberEncrypted, kUseCount, kUseDate, kDateModified,
-                 kOrigin, kBillingAddressId, kNickname},
-                "WHERE guid = ?");
+  sql::CachedSelectBuilder(
+      SQL_FROM_HERE, *db(), card_statement, kCreditCardsTable,
+      {kGuid, kNameOnCard, kExpirationMonth, kExpirationYear,
+       kCardNumberEncrypted, kUseCount, kUseDate, kDateModified,
+       kBillingAddressId, kNickname, kIsUserConfirmed},
+      /*modifiers=*/"WHERE guid = ?");
   card_statement.BindString(0, guid);
 
   if (!card_statement.Step()) {
@@ -861,8 +889,10 @@ std::unique_ptr<CreditCard> PaymentsAutofillTable::GetCreditCard(
 
   // Get cvc from local_stored_cvc table.
   sql::Statement cvc_statement;
-  SelectBuilder(db(), cvc_statement, kLocalStoredCvcTable,
-                {kValueEncrypted, kLastUpdatedTimestamp}, "WHERE guid = ?");
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), cvc_statement,
+                           kLocalStoredCvcTable,
+                           {kValueEncrypted, kLastUpdatedTimestamp},
+                           /*modifiers=*/"WHERE guid = ?");
   cvc_statement.BindString(0, guid);
 
   bool has_cvc = cvc_statement.Step();
@@ -876,21 +906,14 @@ bool PaymentsAutofillTable::GetCreditCards(
   credit_cards->clear();
 
   sql::Statement s;
-  SelectBuilder(db(), s, kCreditCardsTable, {kGuid},
-                "ORDER BY date_modified DESC, guid");
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s, kCreditCardsTable, {kGuid},
+                           /*modifiers=*/"ORDER BY date_modified DESC, guid");
 
   while (s.Step()) {
     std::string guid = s.ColumnString(0);
     std::unique_ptr<CreditCard> credit_card = GetCreditCard(guid);
     if (!credit_card)
       return false;
-    // Clear the CVC from the local `credit_card` entry if the CVC storage flag
-    // is disabled. This ensures CVC is not deleted if a user toggles flags back
-    // and forth, but is still inaccessible if the feature is disabled.
-    if (!base::FeatureList::IsEnabled(
-            features::kAutofillEnableCvcStorageAndFilling)) {
-      credit_card->clear_cvc();
-    }
     credit_cards->push_back(std::move(credit_card));
   }
 
@@ -906,28 +929,33 @@ bool PaymentsAutofillTable::GetServerCreditCards(
       });
 
   sql::Statement s;
-  SelectBuilder(db(), s, base::StrCat({kMaskedCreditCardsTable, " AS masked"}),
-                {kLastFour,
-                 base::StrCat({"masked.", kId}),
-                 base::StrCat({"metadata.", kUseCount}),
-                 base::StrCat({"metadata.", kUseDate}),
-                 kNetwork,
-                 kNameOnCard,
-                 kExpMonth,
-                 kExpYear,
-                 base::StrCat({"metadata.", kBillingAddressId}),
-                 kBankName,
-                 kNickname,
-                 kCardIssuer,
-                 kCardIssuerId,
-                 kInstrumentId,
-                 kVirtualCardEnrollmentState,
-                 kVirtualCardEnrollmentType,
-                 kCardArtUrl,
-                 kProductDescription,
-                 kProductTermsUrl,
-                 kCardInfoRetrievalEnrollmentState},
-                "LEFT OUTER JOIN server_card_metadata AS metadata USING (id)");
+  sql::CachedSelectBuilder(
+      SQL_FROM_HERE, *db(), s,
+      base::StrCat({kMaskedCreditCardsTable, " AS masked"}),
+      {kLastFour,
+       base::StrCat({"masked.", kId}),
+       base::StrCat({"metadata.", kUseCount}),
+       base::StrCat({"metadata.", kUseDate}),
+       kNetwork,
+       kNameOnCard,
+       kExpMonth,
+       kExpYear,
+       base::StrCat({"metadata.", kBillingAddressId}),
+       kBankName,
+       kNickname,
+       kCardIssuer,
+       kCardIssuerId,
+       kInstrumentId,
+       kVirtualCardEnrollmentState,
+       kVirtualCardEnrollmentType,
+       kCardArtUrl,
+       kProductDescription,
+       kProductTermsUrl,
+       kCardInfoRetrievalEnrollmentState,
+       kCardBenefitSource,
+       kCardCreationSource},
+      /*modifiers=*/
+      "LEFT OUTER JOIN server_card_metadata AS metadata USING (id)");
   while (s.Step()) {
     int index = 0;
 
@@ -946,7 +974,7 @@ bool PaymentsAutofillTable::GetServerCreditCards(
     std::string card_network = s.ColumnString(index++);
     // The issuer network must be set after setting the number to override the
     // autodetected issuer network.
-    card->SetNetworkForMaskedCard(card_network.c_str());
+    card->SetNetworkForMaskedCard(card_network);
 
     card->SetRawInfo(CREDIT_CARD_NAME_FULL, s.ColumnString16(index++));
     card->SetRawInfo(CREDIT_CARD_EXP_MONTH, s.ColumnString16(index++));
@@ -955,33 +983,28 @@ bool PaymentsAutofillTable::GetServerCreditCards(
     card->set_bank_name(s.ColumnString(index++));
     card->SetNickname(s.ColumnString16(index++));
     card->set_card_issuer(
-        static_cast<CreditCard::Issuer>(s.ColumnInt(index++)));
+        CheckedToEnum<CreditCard::Issuer>(s.ColumnInt(index++)));
     card->set_issuer_id(s.ColumnString(index++));
     card->set_instrument_id(s.ColumnInt64(index++));
     card->set_virtual_card_enrollment_state(
-        static_cast<CreditCard::VirtualCardEnrollmentState>(
+        CheckedToEnum<CreditCard::VirtualCardEnrollmentState>(
             s.ColumnInt(index++)));
     card->set_virtual_card_enrollment_type(
-        static_cast<CreditCard::VirtualCardEnrollmentType>(
+        CheckedToEnum<CreditCard::VirtualCardEnrollmentType>(
             s.ColumnInt(index++)));
-    card->set_card_art_url(GURL(s.ColumnString(index++)));
+    card->set_card_art_url(GURL(s.ColumnStringView(index++)));
     card->set_product_description(s.ColumnString16(index++));
-    card->set_product_terms_url(GURL(s.ColumnString(index++)));
-    if (base::FeatureList::IsEnabled(
-            features::kAutofillEnableCardInfoRuntimeRetrieval)) {
-      card->set_card_info_retrieval_enrollment_state(
-          static_cast<CreditCard::CardInfoRetrievalEnrollmentState>(
-              s.ColumnInt(index++)));
-    } else {
-      index++;
-    }
-    // Add CVC to the the `card` if the CVC storage flag is enabled.
-    if (base::FeatureList::IsEnabled(
-            features::kAutofillEnableCvcStorageAndFilling)) {
-      const ServerCvc& cvc = instrument_to_cvc[card->instrument_id()];
-      card->set_cvc(cvc.cvc);
-      card->set_cvc_modification_date(cvc.last_updated_timestamp);
-    }
+    card->set_product_terms_url(GURL(s.ColumnStringView(index++)));
+    card->set_card_info_retrieval_enrollment_state(
+        CheckedToEnum<CreditCard::CardInfoRetrievalEnrollmentState>(
+            s.ColumnInt(index++)));
+    card->set_benefit_source(CreditCard::GetBenefitSourceStringFromEnum(
+        CheckedToEnum<CreditCard::BenefitSource>(s.ColumnInt(index++))));
+    card->set_card_creation_source(
+        CheckedToEnum<CreditCard::CardCreationSource>(s.ColumnInt(index++)));
+    const ServerCvc& cvc = instrument_to_cvc[card->instrument_id()];
+    card->set_cvc(cvc.cvc);
+    card->set_cvc_modification_date(cvc.last_updated_timestamp);
     credit_cards.push_back(std::move(card));
   }
   return s.Succeeded();
@@ -994,13 +1017,14 @@ void PaymentsAutofillTable::SetServerCreditCards(
     return;
 
   // Delete all old values.
-  Delete(db(), kMaskedCreditCardsTable);
+  sql::DeleteAllRows(*db(), kMaskedCreditCardsTable);
 
   AddMaskedCreditCards(credit_cards);
 
   // Delete all items in the metadata table that aren't in the new set.
-  Delete(db(), kServerCardMetadataTable,
-         "id NOT IN (SELECT id FROM masked_credit_cards)");
+  sql::DeleteFromTable(
+      *db(), kServerCardMetadataTable,
+      /*where_clause=*/"id NOT IN (SELECT id FROM masked_credit_cards)");
 
   transaction.Commit();
 }
@@ -1016,9 +1040,10 @@ bool PaymentsAutofillTable::AddServerCvc(const ServerCvc& server_cvc) {
   // However, decryption of the CVC may have failed (crbug.com/392169470), in
   // which case there is an entry for `server_cvc.instrument_id` in the database
   // already. To handle this case, we set `or_replace = true`.
-  InsertBuilder(db(), s, kServerStoredCvcTable,
-                {kInstrumentId, kValueEncrypted, kLastUpdatedTimestamp},
-                /*or_replace=*/true);
+  sql::CachedInsertBuilder(
+      SQL_FROM_HERE, *db(), s, kServerStoredCvcTable,
+      {kInstrumentId, kValueEncrypted, kLastUpdatedTimestamp},
+      /*or_replace=*/true);
   BindServerCvcToStatement(server_cvc, *encryptor(), &s);
   s.Run();
   return db()->GetLastChangeCount() > 0;
@@ -1026,22 +1051,23 @@ bool PaymentsAutofillTable::AddServerCvc(const ServerCvc& server_cvc) {
 
 bool PaymentsAutofillTable::UpdateServerCvc(const ServerCvc& server_cvc) {
   sql::Statement s;
-  UpdateBuilder(db(), s, kServerStoredCvcTable,
-                {kInstrumentId, kValueEncrypted, kLastUpdatedTimestamp},
-                "instrument_id=?1");
+  sql::CachedUpdateBuilder(
+      SQL_FROM_HERE, *db(), s, kServerStoredCvcTable,
+      {kInstrumentId, kValueEncrypted, kLastUpdatedTimestamp},
+      /*where_clause=*/"instrument_id=?1");
   BindServerCvcToStatement(server_cvc, *encryptor(), &s);
   s.Run();
   return db()->GetLastChangeCount() > 0;
 }
 
 bool PaymentsAutofillTable::RemoveServerCvc(int64_t instrument_id) {
-  DeleteWhereColumnEq(db(), kServerStoredCvcTable, kInstrumentId,
-                      instrument_id);
+  sql::DeleteWhereColumnEq(*db(), kServerStoredCvcTable, kInstrumentId,
+                           instrument_id);
   return db()->GetLastChangeCount() > 0;
 }
 
 bool PaymentsAutofillTable::ClearServerCvcs() {
-  Delete(db(), kServerStoredCvcTable);
+  sql::DeleteAllRows(*db(), kServerStoredCvcTable);
   return db()->GetLastChangeCount() > 0;
 }
 
@@ -1062,8 +1088,9 @@ std::vector<std::unique_ptr<ServerCvc>> PaymentsAutofillTable::GetAllServerCvcs(
     const {
   std::vector<std::unique_ptr<ServerCvc>> cvcs;
   sql::Statement s;
-  SelectBuilder(db(), s, kServerStoredCvcTable,
-                {kInstrumentId, kValueEncrypted, kLastUpdatedTimestamp});
+  sql::CachedSelectBuilder(
+      SQL_FROM_HERE, *db(), s, kServerStoredCvcTable,
+      {kInstrumentId, kValueEncrypted, kLastUpdatedTimestamp});
   while (s.Step()) {
     cvcs.push_back(ServerCvcFromStatement(s, *encryptor()));
   }
@@ -1071,50 +1098,26 @@ std::vector<std::unique_ptr<ServerCvc>> PaymentsAutofillTable::GetAllServerCvcs(
 }
 
 bool PaymentsAutofillTable::ClearLocalCvcs() {
-  Delete(db(), kLocalStoredCvcTable);
+  sql::DeleteAllRows(*db(), kLocalStoredCvcTable);
   return db()->GetLastChangeCount() > 0;
 }
 
-bool PaymentsAutofillTable::AddServerCardMetadata(
-    const PaymentsMetadata& card_metadata) {
-  sql::Statement s;
-  InsertBuilder(db(), s, kServerCardMetadataTable,
-                {kUseCount, kUseDate, kBillingAddressId, kId});
-  s.BindInt64(0, card_metadata.use_count);
-  s.BindTime(1, card_metadata.use_date);
-  s.BindString(2, card_metadata.billing_address_id);
-  s.BindString(3, card_metadata.id);
-  s.Run();
-
+#if BUILDFLAG(IS_IOS)
+bool PaymentsAutofillTable::CleanupForCrbug445879524() {
+  sql::DeleteAllRows(*db(), kCreditCardsTable);
   return db()->GetLastChangeCount() > 0;
 }
+#endif  // BUILDFLAG(IS_IOS)
 
-bool PaymentsAutofillTable::UpdateServerCardMetadata(const CreditCard& credit_card) {
-  DCHECK_NE(CreditCard::RecordType::kLocalCard, credit_card.record_type());
-
-  DeleteWhereColumnEq(db(), kServerCardMetadataTable, kId,
-                      credit_card.server_id());
-
-  sql::Statement s;
-  InsertBuilder(db(), s, kServerCardMetadataTable,
-                {kUseCount, kUseDate, kBillingAddressId, kId});
-  s.BindInt64(0, credit_card.usage_history().use_count());
-  s.BindTime(1, credit_card.usage_history().use_date());
-  s.BindString(2, credit_card.billing_address_id());
-  s.BindString(3, credit_card.server_id());
-  s.Run();
-
-  return db()->GetLastChangeCount() > 0;
-}
-
-bool PaymentsAutofillTable::UpdateServerCardMetadata(
+bool PaymentsAutofillTable::AddOrUpdateServerCardMetadata(
     const PaymentsMetadata& card_metadata) {
   // Do not check if there was a record that got deleted. Inserting a new one is
   // also fine.
   RemoveServerCardMetadata(card_metadata.id);
+
   sql::Statement s;
-  InsertBuilder(db(), s, kServerCardMetadataTable,
-                {kUseCount, kUseDate, kBillingAddressId, kId});
+  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), s, kServerCardMetadataTable,
+                           {kUseCount, kUseDate, kBillingAddressId, kId});
   s.BindInt64(0, card_metadata.use_count);
   s.BindTime(1, card_metadata.use_date);
   s.BindString(2, card_metadata.billing_address_id);
@@ -1125,7 +1128,7 @@ bool PaymentsAutofillTable::UpdateServerCardMetadata(
 }
 
 bool PaymentsAutofillTable::RemoveServerCardMetadata(const std::string& id) {
-  DeleteWhereColumnEq(db(), kServerCardMetadataTable, kId, id);
+  sql::DeleteWhereColumnEq(*db(), kServerCardMetadataTable, kId, id);
   return db()->GetLastChangeCount() > 0;
 }
 
@@ -1134,8 +1137,8 @@ bool PaymentsAutofillTable::GetServerCardsMetadata(
   cards_metadata.clear();
 
   sql::Statement s;
-  SelectBuilder(db(), s, kServerCardMetadataTable,
-                {kId, kUseCount, kUseDate, kBillingAddressId});
+  sql::SelectBuilder(*db(), s, kServerCardMetadataTable,
+                     {kId, kUseCount, kUseDate, kBillingAddressId});
 
   while (s.Step()) {
     int index = 0;
@@ -1158,8 +1161,8 @@ bool PaymentsAutofillTable::AddOrUpdateServerIbanMetadata(
   RemoveServerIbanMetadata(iban_metadata.id);
 
   sql::Statement s;
-  InsertBuilder(db(), s, kMaskedIbansMetadataTable,
-                {kInstrumentId, kUseCount, kUseDate});
+  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), s, kMaskedIbansMetadataTable,
+                           {kInstrumentId, kUseCount, kUseDate});
   s.BindString(0, iban_metadata.id);
   s.BindInt64(1, iban_metadata.use_count);
   s.BindTime(2, iban_metadata.use_date);
@@ -1169,8 +1172,8 @@ bool PaymentsAutofillTable::AddOrUpdateServerIbanMetadata(
 }
 
 bool PaymentsAutofillTable::RemoveServerIbanMetadata(const std::string& instrument_id) {
-  DeleteWhereColumnEq(db(), kMaskedIbansMetadataTable, kInstrumentId,
-                      instrument_id);
+  sql::DeleteWhereColumnEq(*db(), kMaskedIbansMetadataTable, kInstrumentId,
+                           instrument_id);
   return db()->GetLastChangeCount() > 0;
 }
 
@@ -1178,8 +1181,8 @@ bool PaymentsAutofillTable::GetServerIbansMetadata(
     std::vector<PaymentsMetadata>& ibans_metadata) const {
   ibans_metadata.clear();
   sql::Statement s;
-  SelectBuilder(db(), s, kMaskedIbansMetadataTable,
-                {kInstrumentId, kUseCount, kUseDate});
+  sql::SelectBuilder(*db(), s, kMaskedIbansMetadataTable,
+                     {kInstrumentId, kUseCount, kUseDate});
 
   while (s.Step()) {
     int index = 0;
@@ -1200,16 +1203,17 @@ void PaymentsAutofillTable::SetServerCardsData(
     return;
 
   // Delete all old values.
-  Delete(db(), kMaskedCreditCardsTable);
+  sql::DeleteAllRows(*db(), kMaskedCreditCardsTable);
 
   // Add all the masked cards.
   sql::Statement masked_insert;
-  InsertBuilder(db(), masked_insert, kMaskedCreditCardsTable,
-                {kId, kNetwork, kNameOnCard, kLastFour, kExpMonth, kExpYear,
-                 kBankName, kNickname, kCardIssuer, kCardIssuerId,
-                 kInstrumentId, kVirtualCardEnrollmentState,
-                 kVirtualCardEnrollmentType, kCardArtUrl, kProductDescription,
-                 kProductTermsUrl, kCardInfoRetrievalEnrollmentState});
+  sql::CachedInsertBuilder(
+      SQL_FROM_HERE, *db(), masked_insert, kMaskedCreditCardsTable,
+      {kId, kNetwork, kNameOnCard, kLastFour, kExpMonth, kExpYear, kBankName,
+       kNickname, kCardIssuer, kCardIssuerId, kInstrumentId,
+       kVirtualCardEnrollmentState, kVirtualCardEnrollmentType, kCardArtUrl,
+       kProductDescription, kProductTermsUrl, kCardInfoRetrievalEnrollmentState,
+       kCardBenefitSource, kCardCreationSource});
 
   int index;
   for (const CreditCard& card : credit_cards) {
@@ -1236,6 +1240,11 @@ void PaymentsAutofillTable::SetServerCardsData(
     masked_insert.BindString(index++, card.product_terms_url().spec());
     masked_insert.BindInt(
         index++, static_cast<int>(card.card_info_retrieval_enrollment_state()));
+    masked_insert.BindInt(
+        index++, static_cast<int>(CreditCard::GetEnumFromBenefitSourceString(
+                     card.benefit_source())));
+    masked_insert.BindInt(index++,
+                          static_cast<int>(card.card_creation_source()));
     masked_insert.Run();
     masked_insert.Reset(/*clear_bound_vars=*/true);
   }
@@ -1250,12 +1259,12 @@ void PaymentsAutofillTable::SetCreditCardCloudTokenData(
     return;
 
   // Deletes all old values.
-  Delete(db(), kServerCardCloudTokenDataTable);
+  sql::DeleteAllRows(*db(), kServerCardCloudTokenDataTable);
 
   // Inserts new values.
   sql::Statement insert_cloud_token;
-  InsertBuilder(
-      db(), insert_cloud_token, kServerCardCloudTokenDataTable,
+  sql::CachedInsertBuilder(
+      SQL_FROM_HERE, *db(), insert_cloud_token, kServerCardCloudTokenDataTable,
       {kId, kSuffix, kExpMonth, kExpYear, kCardArtUrl, kInstrumentToken});
 
   for (const CreditCardCloudTokenData& data : credit_card_cloud_token_data) {
@@ -1277,8 +1286,8 @@ bool PaymentsAutofillTable::GetCreditCardCloudTokenData(
   credit_card_cloud_token_data.clear();
 
   sql::Statement s;
-  SelectBuilder(
-      db(), s, kServerCardCloudTokenDataTable,
+  sql::CachedSelectBuilder(
+      SQL_FROM_HERE, *db(), s, kServerCardCloudTokenDataTable,
       {kId, kSuffix, kExpMonth, kExpYear, kCardArtUrl, kInstrumentToken});
 
   while (s.Step()) {
@@ -1299,16 +1308,17 @@ bool PaymentsAutofillTable::GetCreditCardCloudTokenData(
 
 bool PaymentsAutofillTable::GetServerIbans(std::vector<std::unique_ptr<Iban>>& ibans) {
   sql::Statement s;
-  SelectBuilder(
-      db(), s, kMaskedIbansTable,
+  sql::CachedSelectBuilder(
+      SQL_FROM_HERE, *db(), s, kMaskedIbansTable,
       {kInstrumentId, kUseCount, kUseDate, kNickname, kPrefix, kSuffix},
+      /*modifiers=*/
       "LEFT OUTER JOIN masked_ibans_metadata USING (instrument_id)");
 
   ibans.clear();
   while (s.Step()) {
     int index = 0;
     int64_t instrument_id = 0;
-    if (!base::StringToInt64(s.ColumnString(index++), &instrument_id)) {
+    if (!base::StringToInt64(s.ColumnStringView(index++), &instrument_id)) {
       continue;
     }
     std::unique_ptr<Iban> iban =
@@ -1332,11 +1342,11 @@ bool PaymentsAutofillTable::SetServerIbansData(const std::vector<Iban>& ibans) {
   }
 
   // Delete all old ones first.
-  Delete(db(), kMaskedIbansTable);
+  sql::DeleteAllRows(*db(), kMaskedIbansTable);
 
   sql::Statement s;
-  InsertBuilder(db(), s, kMaskedIbansTable,
-                {kInstrumentId, kNickname, kPrefix, kSuffix});
+  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), s, kMaskedIbansTable,
+                           {kInstrumentId, kNickname, kPrefix, kSuffix});
   for (const Iban& iban : ibans) {
     CHECK_EQ(Iban::RecordType::kServerIban, iban.record_type());
     int index = 0;
@@ -1353,7 +1363,7 @@ bool PaymentsAutofillTable::SetServerIbansData(const std::vector<Iban>& ibans) {
 }
 
 void PaymentsAutofillTable::SetServerIbansForTesting(const std::vector<Iban>& ibans) {
-  Delete(db(), kMaskedIbansMetadataTable);
+  sql::DeleteAllRows(*db(), kMaskedIbansMetadataTable);
   SetServerIbansData(ibans);
   for (const Iban& iban : ibans) {
     AddOrUpdateServerIbanMetadata(iban.GetMetadata());
@@ -1367,12 +1377,12 @@ void PaymentsAutofillTable::SetPaymentsCustomerData(
     return;
 
   // Delete all old values.
-  Delete(db(), kPaymentsCustomerDataTable);
+  sql::DeleteAllRows(*db(), kPaymentsCustomerDataTable);
 
   if (customer_data) {
     sql::Statement insert_customer_data;
-    InsertBuilder(db(), insert_customer_data, kPaymentsCustomerDataTable,
-                  {kCustomerId});
+    sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), insert_customer_data,
+                             kPaymentsCustomerDataTable, {kCustomerId});
     insert_customer_data.BindString(0, customer_data->customer_id);
     insert_customer_data.Run();
   }
@@ -1383,7 +1393,8 @@ void PaymentsAutofillTable::SetPaymentsCustomerData(
 bool PaymentsAutofillTable::GetPaymentsCustomerData(
     std::unique_ptr<PaymentsCustomerData>& customer_data) const {
   sql::Statement s;
-  SelectBuilder(db(), s, kPaymentsCustomerDataTable, {kCustomerId});
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s, kPaymentsCustomerDataTable,
+                           {kCustomerId});
   if (s.Step()) {
     customer_data = std::make_unique<PaymentsCustomerData>(
         /*customer_id=*/s.ColumnString(0));
@@ -1399,16 +1410,26 @@ void PaymentsAutofillTable::SetAutofillOffers(
     return;
 
   // Delete all old values.
-  Delete(db(), kOfferDataTable);
-  Delete(db(), kOfferEligibleInstrumentTable);
-  Delete(db(), kOfferMerchantDomainTable);
+  sql::DeleteAllRows(*db(), kOfferDataTable);
+  sql::DeleteAllRows(*db(), kOfferEligibleInstrumentTable);
+  sql::DeleteAllRows(*db(), kOfferMerchantDomainTable);
 
   // Insert new values.
   sql::Statement insert_offers;
-  InsertBuilder(
-      db(), insert_offers, kOfferDataTable,
+  sql::CachedInsertBuilder(
+      SQL_FROM_HERE, *db(), insert_offers, kOfferDataTable,
       {kOfferId, kOfferRewardAmount, kExpiry, kOfferDetailsUrl, kPromoCode,
        kValuePropText, kSeeDetailsText, kUsageInstructionsText});
+
+  sql::Statement insert_offer_eligible_instruments;
+  sql::CachedInsertBuilder(
+      SQL_FROM_HERE, *db(), insert_offer_eligible_instruments,
+      kOfferEligibleInstrumentTable, {kOfferId, kInstrumentId});
+
+  sql::Statement insert_offer_merchant_domains;
+  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), insert_offer_merchant_domains,
+                           kOfferMerchantDomainTable,
+                           {kOfferId, kMerchantDomain});
 
   for (const AutofillOfferData& data : autofill_offer_data) {
     insert_offers.BindInt64(0, data.GetOfferId());
@@ -1426,22 +1447,18 @@ void PaymentsAutofillTable::SetAutofillOffers(
 
     for (const int64_t instrument_id : data.GetEligibleInstrumentIds()) {
       // Insert new offer_eligible_instrument values.
-      sql::Statement insert_offer_eligible_instruments;
-      InsertBuilder(db(), insert_offer_eligible_instruments,
-                    kOfferEligibleInstrumentTable, {kOfferId, kInstrumentId});
       insert_offer_eligible_instruments.BindInt64(0, data.GetOfferId());
       insert_offer_eligible_instruments.BindInt64(1, instrument_id);
       insert_offer_eligible_instruments.Run();
+      insert_offer_eligible_instruments.Reset(/*clear_bound_vars=*/true);
     }
 
     for (const GURL& merchant_origin : data.GetMerchantOrigins()) {
       // Insert new offer_merchant_domain values.
-      sql::Statement insert_offer_merchant_domains;
-      InsertBuilder(db(), insert_offer_merchant_domains,
-                    kOfferMerchantDomainTable, {kOfferId, kMerchantDomain});
       insert_offer_merchant_domains.BindInt64(0, data.GetOfferId());
       insert_offer_merchant_domains.BindString(1, merchant_origin.spec());
       insert_offer_merchant_domains.Run();
+      insert_offer_merchant_domains.Reset(/*clear_bound_vars=*/true);
     }
   }
   transaction.Commit();
@@ -1452,10 +1469,22 @@ bool PaymentsAutofillTable::GetAutofillOffers(
   autofill_offer_data->clear();
 
   sql::Statement s;
-  SelectBuilder(
-      db(), s, kOfferDataTable,
+  sql::CachedSelectBuilder(
+      SQL_FROM_HERE, *db(), s, kOfferDataTable,
       {kOfferId, kOfferRewardAmount, kExpiry, kOfferDetailsUrl, kPromoCode,
        kValuePropText, kSeeDetailsText, kUsageInstructionsText});
+
+  sql::Statement s_offer_eligible_instrument;
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s_offer_eligible_instrument,
+                           kOfferEligibleInstrumentTable,
+                           {kOfferId, kInstrumentId},
+                           /*modifiers=*/"WHERE offer_id = ?");
+
+  sql::Statement s_offer_merchant_domain;
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s_offer_merchant_domain,
+                           kOfferMerchantDomainTable,
+                           {kOfferId, kMerchantDomain},
+                           /*modifiers=*/"WHERE offer_id = ?");
 
   while (s.Step()) {
     int index = 0;
@@ -1463,7 +1492,7 @@ bool PaymentsAutofillTable::GetAutofillOffers(
     std::string offer_reward_amount = s.ColumnString(index++);
     base::Time expiry = base::Time::FromDeltaSinceWindowsEpoch(
         base::Milliseconds(s.ColumnInt64(index++)));
-    GURL offer_details_url = GURL(s.ColumnString(index++));
+    GURL offer_details_url = GURL(s.ColumnStringView(index++));
     std::string promo_code = s.ColumnString(index++);
     std::string value_prop_text = s.ColumnString(index++);
     std::string see_details_text = s.ColumnString(index++);
@@ -1473,10 +1502,6 @@ bool PaymentsAutofillTable::GetAutofillOffers(
     std::vector<int64_t> eligible_instrument_id;
     std::vector<GURL> merchant_origins;
 
-    sql::Statement s_offer_eligible_instrument;
-    SelectBuilder(db(), s_offer_eligible_instrument,
-                  kOfferEligibleInstrumentTable, {kOfferId, kInstrumentId},
-                  "WHERE offer_id = ?");
     s_offer_eligible_instrument.BindInt64(0, offer_id);
     while (s_offer_eligible_instrument.Step()) {
       const int64_t instrument_id = s_offer_eligible_instrument.ColumnInt64(1);
@@ -1484,10 +1509,8 @@ bool PaymentsAutofillTable::GetAutofillOffers(
         eligible_instrument_id.push_back(instrument_id);
       }
     }
+    s_offer_eligible_instrument.Reset(/*clear_bound_vars=*/true);
 
-    sql::Statement s_offer_merchant_domain;
-    SelectBuilder(db(), s_offer_merchant_domain, kOfferMerchantDomainTable,
-                  {kOfferId, kMerchantDomain}, "WHERE offer_id = ?");
     s_offer_merchant_domain.BindInt64(0, offer_id);
     while (s_offer_merchant_domain.Step()) {
       const std::string merchant_domain =
@@ -1496,6 +1519,8 @@ bool PaymentsAutofillTable::GetAutofillOffers(
         merchant_origins.emplace_back(merchant_domain);
       }
     }
+    s_offer_merchant_domain.Reset(/*clear_bound_vars=*/true);
+
     if (promo_code.empty()) {
       auto data = std::make_unique<AutofillOfferData>(
           AutofillOfferData::GPayCardLinkedOffer(
@@ -1520,11 +1545,14 @@ bool PaymentsAutofillTable::AddOrUpdateVirtualCardUsageData(
       GetVirtualCardUsageData(*virtual_card_usage_data.usage_data_id());
   sql::Statement s;
   if (!existing_data) {
-    InsertBuilder(db(), s, kVirtualCardUsageDataTable,
-                  {kId, kInstrumentId, kMerchantDomain, kLastFour});
+    sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), s,
+                             kVirtualCardUsageDataTable,
+                             {kId, kInstrumentId, kMerchantDomain, kLastFour});
   } else {
-    UpdateBuilder(db(), s, kVirtualCardUsageDataTable,
-                  {kId, kInstrumentId, kMerchantDomain, kLastFour}, "id=?1");
+    sql::CachedUpdateBuilder(SQL_FROM_HERE, *db(), s,
+                             kVirtualCardUsageDataTable,
+                             {kId, kInstrumentId, kMerchantDomain, kLastFour},
+                             /*where_clause=*/"id=?1");
   }
   BindVirtualCardUsageDataToStatement(virtual_card_usage_data, s);
   return s.Run();
@@ -1534,9 +1562,9 @@ std::optional<VirtualCardUsageData>
 PaymentsAutofillTable::GetVirtualCardUsageData(
     const std::string& usage_data_id) {
   sql::Statement s;
-  SelectBuilder(db(), s, kVirtualCardUsageDataTable,
-                {kId, kInstrumentId, kMerchantDomain, kLastFour},
-                "WHERE id = ?");
+  sql::SelectBuilder(*db(), s, kVirtualCardUsageDataTable,
+                     {kId, kInstrumentId, kMerchantDomain, kLastFour},
+                     /*modifiers=*/"WHERE id = ?");
   s.BindString(0, usage_data_id);
   if (!s.Step()) {
     return std::nullopt;
@@ -1550,8 +1578,8 @@ bool PaymentsAutofillTable::RemoveVirtualCardUsageData(
     return false;
   }
 
-  return DeleteWhereColumnEq(db(), kVirtualCardUsageDataTable, kId,
-                             usage_data_id);
+  return sql::DeleteWhereColumnEq(*db(), kVirtualCardUsageDataTable, kId,
+                                  usage_data_id);
 }
 
 void PaymentsAutofillTable::SetVirtualCardUsageData(
@@ -1562,11 +1590,12 @@ void PaymentsAutofillTable::SetVirtualCardUsageData(
   }
 
   // Delete old data.
-  Delete(db(), kVirtualCardUsageDataTable);
+  sql::DeleteAllRows(*db(), kVirtualCardUsageDataTable);
   // Insert new values.
   sql::Statement insert_data;
-  InsertBuilder(db(), insert_data, kVirtualCardUsageDataTable,
-                {kId, kInstrumentId, kMerchantDomain, kLastFour});
+  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), insert_data,
+                           kVirtualCardUsageDataTable,
+                           {kId, kInstrumentId, kMerchantDomain, kLastFour});
   for (const VirtualCardUsageData& data : virtual_card_usage_data) {
     BindVirtualCardUsageDataToStatement(data, insert_data);
     insert_data.Run();
@@ -1580,8 +1609,8 @@ bool PaymentsAutofillTable::GetAllVirtualCardUsageData(
   virtual_card_usage_data.clear();
 
   sql::Statement s;
-  SelectBuilder(db(), s, kVirtualCardUsageDataTable,
-                {kId, kInstrumentId, kMerchantDomain, kLastFour});
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s, kVirtualCardUsageDataTable,
+                           {kId, kInstrumentId, kMerchantDomain, kLastFour});
   while (s.Step()) {
     virtual_card_usage_data.push_back(GetVirtualCardUsageDataFromStatement(s));
   }
@@ -1590,7 +1619,7 @@ bool PaymentsAutofillTable::GetAllVirtualCardUsageData(
 }
 
 bool PaymentsAutofillTable::RemoveAllVirtualCardUsageData() {
-  return Delete(db(), kVirtualCardUsageDataTable);
+  return sql::DeleteAllRows(*db(), kVirtualCardUsageDataTable);
 }
 
 bool PaymentsAutofillTable::ClearAllServerData() {
@@ -1608,7 +1637,7 @@ bool PaymentsAutofillTable::ClearAllServerData() {
         kMaskedBankAccountsTable, kMaskedBankAccountsMetadataTable,
         kGenericPaymentInstrumentsTable,
         kPaymentInstrumentCreationOptionsTable}) {
-    Delete(db(), table_name);
+    sql::DeleteAllRows(*db(), table_name);
     changed |= db()->GetLastChangeCount() > 0;
   }
 
@@ -1628,39 +1657,46 @@ bool PaymentsAutofillTable::SetCreditCardBenefits(
     return false;
   }
 
+  sql::Statement insert_benefit;
+  sql::CachedInsertBuilder(
+      SQL_FROM_HERE, *db(), insert_benefit, kMaskedCreditCardBenefitsTable,
+      {kBenefitId, kInstrumentId, kBenefitType, kBenefitCategory,
+       kBenefitDescription, kStartTime, kEndTime});
+
+  sql::Statement insert_benefit_merchant_domain;
+  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), insert_benefit_merchant_domain,
+                           kBenefitMerchantDomainsTable,
+                           {kBenefitId, kMerchantDomain});
+
   for (const CreditCardBenefit& credit_card_benefit : credit_card_benefits) {
-    if (!absl::visit([](const auto& a) { return a.IsValidForWriteFromSync(); },
-                     credit_card_benefit)) {
+    if (!std::visit([](const auto& a) { return a.IsValidForWriteFromSync(); },
+                    credit_card_benefit)) {
       continue;
     }
-    const CreditCardBenefitBase& benefit_base = absl::visit(
+    const CreditCardBenefitBase& benefit_base = std::visit(
         [](const auto& a) -> const CreditCardBenefitBase& { return a; },
         credit_card_benefit);
 
     int benefit_type =
-        absl::visit(base::Overloaded{
-                        // WARNING: Do not renumber, since the identifiers are
-                        // stored in the database.
-                        [](const CreditCardFlatRateBenefit&) { return 0; },
-                        [](const CreditCardCategoryBenefit&) { return 1; },
-                        [](const CreditCardMerchantBenefit&) { return 2; },
-                        // Next free benefit type: 3.
-                    },
-                    credit_card_benefit);
+        std::visit(absl::Overload{
+                       // WARNING: Do not renumber, since the identifiers are
+                       // stored in the database.
+                       [](const CreditCardFlatRateBenefit&) { return 0; },
+                       [](const CreditCardCategoryBenefit&) { return 1; },
+                       [](const CreditCardMerchantBenefit&) { return 2; },
+                       // Next free benefit type: 3.
+                   },
+                   credit_card_benefit);
 
     // Insert new card benefit data.
-    sql::Statement insert_benefit;
-    InsertBuilder(db(), insert_benefit, kMaskedCreditCardBenefitsTable,
-                  {kBenefitId, kInstrumentId, kBenefitType, kBenefitCategory,
-                   kBenefitDescription, kStartTime, kEndTime});
     int index = 0;
     insert_benefit.BindString(index++, *benefit_base.benefit_id());
     insert_benefit.BindInt64(index++,
                              *benefit_base.linked_card_instrument_id());
     insert_benefit.BindInt(index++, benefit_type);
     insert_benefit.BindInt(
-        index++, base::to_underlying(absl::visit(
-                     base::Overloaded{
+        index++, std::to_underlying(std::visit(
+                     absl::Overload{
                          [](const CreditCardCategoryBenefit& a) {
                            return a.benefit_category();
                          },
@@ -1676,21 +1712,19 @@ bool PaymentsAutofillTable::SetCreditCardBenefits(
     if (!insert_benefit.Run()) {
       return false;
     }
+    insert_benefit.Reset(/*clear_bound_vars=*/true);
 
     // Insert merchant domains linked with the benefit.
     if (const auto* merchant_benefit =
-            absl::get_if<CreditCardMerchantBenefit>(&credit_card_benefit)) {
+            std::get_if<CreditCardMerchantBenefit>(&credit_card_benefit)) {
       for (const url::Origin& domain : merchant_benefit->merchant_domains()) {
-        sql::Statement insert_benefit_merchant_domain;
-        InsertBuilder(db(), insert_benefit_merchant_domain,
-                      kBenefitMerchantDomainsTable,
-                      {kBenefitId, kMerchantDomain});
         insert_benefit_merchant_domain.BindString(
             0, *merchant_benefit->benefit_id());
         insert_benefit_merchant_domain.BindString(1, domain.Serialize());
         if (!insert_benefit_merchant_domain.Run()) {
           return false;
         }
+        insert_benefit_merchant_domain.Reset(/*clear_bound_vars=*/true);
       }
     }
   }
@@ -1707,14 +1741,24 @@ bool PaymentsAutofillTable::GetCreditCardBenefitsForInstrumentId(
     const std::optional<int64_t> instrument_id,
     std::vector<CreditCardBenefit>& credit_card_benefits) {
   sql::Statement get_benefits;
-  std::string statement_modifiers =
-      instrument_id ? base::StrCat({"WHERE instrument_id = ",
-                                    base::NumberToString(*instrument_id)})
-                    : "";
-  SelectBuilder(db(), get_benefits, kMaskedCreditCardBenefitsTable,
-                {kBenefitId, kInstrumentId, kBenefitType, kBenefitDescription,
-                 kStartTime, kEndTime, kBenefitCategory},
-                statement_modifiers);
+
+  // These statement builders must be kept separate in order to take advantage
+  // of the SQL statement cache.
+  if (instrument_id) {
+    std::string statement_modifiers =
+        base::StrCat({"WHERE ", kInstrumentId, " = ", sql::kPlaceholder});
+    sql::CachedSelectBuilder(
+        SQL_FROM_HERE, *db(), get_benefits, kMaskedCreditCardBenefitsTable,
+        {kBenefitId, kInstrumentId, kBenefitType, kBenefitDescription,
+         kStartTime, kEndTime, kBenefitCategory},
+        statement_modifiers);
+    get_benefits.BindInt64(0, *instrument_id);
+  } else {
+    sql::CachedSelectBuilder(
+        SQL_FROM_HERE, *db(), get_benefits, kMaskedCreditCardBenefitsTable,
+        {kBenefitId, kInstrumentId, kBenefitType, kBenefitDescription,
+         kStartTime, kEndTime, kBenefitCategory});
+  }
 
   while (get_benefits.Step()) {
     int index = 0;
@@ -1726,8 +1770,8 @@ bool PaymentsAutofillTable::GetCreditCardBenefitsForInstrumentId(
     std::u16string benefit_description = get_benefits.ColumnString16(index++);
     base::Time start_time = get_benefits.ColumnTime(index++);
     base::Time expiry_time = get_benefits.ColumnTime(index++);
-    CreditCardCategoryBenefit::BenefitCategory benefit_category =
-        static_cast<CreditCardCategoryBenefit::BenefitCategory>(
+    const auto benefit_category =
+        CheckedToEnum<CreditCardCategoryBenefit::BenefitCategory>(
             get_benefits.ColumnInt(index++));
 
     switch (benefit_type) {
@@ -1757,8 +1801,10 @@ bool PaymentsAutofillTable::GetCreditCardBenefitsForInstrumentId(
 
 bool PaymentsAutofillTable::ClearAllCreditCardBenefits() {
   sql::Transaction transaction(db());
-  return transaction.Begin() && Delete(db(), kMaskedCreditCardBenefitsTable) &&
-         Delete(db(), kBenefitMerchantDomainsTable) && transaction.Commit();
+  return transaction.Begin() &&
+         sql::DeleteAllRows(*db(), kMaskedCreditCardBenefitsTable) &&
+         sql::DeleteAllRows(*db(), kBenefitMerchantDomainsTable) &&
+         transaction.Commit();
 }
 
 bool PaymentsAutofillTable::SetPaymentInstruments(
@@ -1769,12 +1815,13 @@ bool PaymentsAutofillTable::SetPaymentInstruments(
   }
 
   // Delete the existing values.
-  Delete(db(), kGenericPaymentInstrumentsTable);
+  sql::DeleteAllRows(*db(), kGenericPaymentInstrumentsTable);
 
   // Insert the new values.
   sql::Statement insert;
-  InsertBuilder(db(), insert, kGenericPaymentInstrumentsTable,
-                {kInstrumentId, kSerializedValueEncrypted});
+  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), insert,
+                           kGenericPaymentInstrumentsTable,
+                           {kInstrumentId, kSerializedValueEncrypted});
   for (const sync_pb::PaymentInstrument& payment_instrument :
        payment_instruments) {
     BindPaymentInstrumentToStatement(payment_instrument, &insert, *encryptor());
@@ -1790,8 +1837,9 @@ bool PaymentsAutofillTable::GetPaymentInstruments(
   payment_instruments.clear();
 
   sql::Statement s;
-  SelectBuilder(db(), s, kGenericPaymentInstrumentsTable,
-                {kInstrumentId, kSerializedValueEncrypted});
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s,
+                           kGenericPaymentInstrumentsTable,
+                           {kInstrumentId, kSerializedValueEncrypted});
 
   while (s.Step()) {
     int index = 0;
@@ -1820,12 +1868,13 @@ bool PaymentsAutofillTable::SetPaymentInstrumentCreationOptions(
   }
 
   // Delete the existing values.
-  Delete(db(), kPaymentInstrumentCreationOptionsTable);
+  sql::DeleteAllRows(*db(), kPaymentInstrumentCreationOptionsTable);
 
   // Insert the new values.
   sql::Statement insert;
-  InsertBuilder(db(), insert, kPaymentInstrumentCreationOptionsTable,
-                {kId, kSerializedValueEncrypted});
+  sql::CachedInsertBuilder(SQL_FROM_HERE, *db(), insert,
+                           kPaymentInstrumentCreationOptionsTable,
+                           {kId, kSerializedValueEncrypted});
   for (const sync_pb::PaymentInstrumentCreationOption&
            payment_instrument_creation_option :
        payment_instrument_creation_options) {
@@ -1848,8 +1897,9 @@ bool PaymentsAutofillTable::GetPaymentInstrumentCreationOptions(
   payment_instrument_creation_options.clear();
 
   sql::Statement s;
-  SelectBuilder(db(), s, kPaymentInstrumentCreationOptionsTable,
-                {kId, kSerializedValueEncrypted});
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s,
+                           kPaymentInstrumentCreationOptionsTable,
+                           {kId, kSerializedValueEncrypted});
 
   while (s.Step()) {
     int index = 0;
@@ -1871,7 +1921,7 @@ bool PaymentsAutofillTable::GetPaymentInstrumentCreationOptions(
 bool PaymentsAutofillTable::MigrateToVersion83RemoveServerCardTypeColumn() {
   sql::Transaction transaction(db());
   return transaction.Begin() &&
-         DropColumn(db(), kMaskedCreditCardsTable, "type") &&
+         sql::DropColumn(*db(), kMaskedCreditCardsTable, "type") &&
          transaction.Commit();
 }
 
@@ -1952,7 +2002,7 @@ bool PaymentsAutofillTable::
     MigrateToVersion98RemoveStatusColumnMaskedCreditCards() {
   sql::Transaction transaction(db());
   return transaction.Begin() &&
-         DropColumn(db(), kMaskedCreditCardsTable, kStatus) &&
+         sql::DropColumn(*db(), kMaskedCreditCardsTable, kStatus) &&
          transaction.Commit();
 }
 
@@ -1980,23 +2030,23 @@ bool PaymentsAutofillTable::MigrateToVersion104AddProductDescriptionColumn() {
 }
 
 bool PaymentsAutofillTable::MigrateToVersion105AddAutofillIbanTable() {
-  return CreateTable(db(), kIbansTable,
-                     {{kGuid, "VARCHAR"},
-                      {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
-                      {kUseDate, "INTEGER NOT NULL DEFAULT 0"},
-                      {kValue, "VARCHAR"},
-                      {kNickname, "VARCHAR"}});
+  return sql::CreateTable(*db(), kIbansTable,
+                          {{kGuid, "VARCHAR"},
+                           {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
+                           {kUseDate, "INTEGER NOT NULL DEFAULT 0"},
+                           {kValue, "VARCHAR"},
+                           {kNickname, "VARCHAR"}});
 }
 
 bool PaymentsAutofillTable::MigrateToVersion106RecreateAutofillIbanTable() {
   sql::Transaction transaction(db());
   return transaction.Begin() && DropTableIfExists(db(), kIbansTable) &&
-         CreateTable(db(), kIbansTable,
-                     {{kGuid, "VARCHAR PRIMARY KEY"},
-                      {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
-                      {kUseDate, "INTEGER NOT NULL DEFAULT 0"},
-                      {kValue, "VARCHAR"},
-                      {kNickname, "VARCHAR"}}) &&
+         sql::CreateTable(*db(), kIbansTable,
+                          {{kGuid, "VARCHAR PRIMARY KEY"},
+                           {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
+                           {kUseDate, "INTEGER NOT NULL DEFAULT 0"},
+                           {kValue, "VARCHAR"},
+                           {kNickname, "VARCHAR"}}) &&
          transaction.Commit();
 }
 
@@ -2008,11 +2058,11 @@ bool PaymentsAutofillTable::MigrateToVersion108AddCardIssuerIdColumn() {
 }
 
 bool PaymentsAutofillTable::MigrateToVersion109AddVirtualCardUsageDataTable() {
-  return CreateTable(db(), kVirtualCardUsageDataTable,
-                     {{kId, "VARCHAR PRIMARY KEY"},
-                      {kInstrumentId, "INTEGER DEFAULT 0"},
-                      {kMerchantDomain, "VARCHAR"},
-                      {kLastFour, "VARCHAR"}});
+  return sql::CreateTable(*db(), kVirtualCardUsageDataTable,
+                          {{kId, "VARCHAR PRIMARY KEY"},
+                           {kInstrumentId, "INTEGER DEFAULT 0"},
+                           {kMerchantDomain, "VARCHAR"},
+                           {kLastFour, "VARCHAR"}});
 }
 
 bool PaymentsAutofillTable::
@@ -2034,7 +2084,7 @@ bool PaymentsAutofillTable::MigrateToVersion115EncryptIbanValue() {
     return false;
   }
   sql::Statement s;
-  SelectBuilder(db(), s, kIbansTable, {kGuid, kValue});
+  sql::SelectBuilder(*db(), s, kIbansTable, {kGuid, kValue});
   std::vector<std::pair<std::string, std::u16string>> iban_guid_to_value_pairs;
   while (s.Step()) {
     iban_guid_to_value_pairs.emplace_back(s.ColumnString(0),
@@ -2044,14 +2094,16 @@ bool PaymentsAutofillTable::MigrateToVersion115EncryptIbanValue() {
     return false;
   }
 
+  sql::UpdateBuilder(*db(), s, kIbansTable, {kGuid, kValue},
+                     /*where_clause=*/"guid=?1");
   for (const auto& [guid, value] : iban_guid_to_value_pairs) {
-    UpdateBuilder(db(), s, kIbansTable, {kGuid, kValue}, "guid=?1");
     int index = 0;
     s.BindString(index++, guid);
     BindEncryptedU16StringToColumn(&s, index++, value, *encryptor());
     if (!s.Run()) {
       return false;
     }
+    s.Reset(/*clear_bound_vars=*/true);
   }
 
   return db()->Execute(
@@ -2063,14 +2115,14 @@ bool PaymentsAutofillTable::MigrateToVersion115EncryptIbanValue() {
 bool PaymentsAutofillTable::MigrateToVersion116AddStoredCvcTable() {
   sql::Transaction transaction(db());
   return transaction.Begin() &&
-         CreateTable(db(), kLocalStoredCvcTable,
-                     {{kGuid, "VARCHAR PRIMARY KEY NOT NULL"},
-                      {kValueEncrypted, "VARCHAR NOT NULL"},
-                      {kLastUpdatedTimestamp, "INTEGER NOT NULL"}}) &&
-         CreateTable(db(), kServerStoredCvcTable,
-                     {{kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
-                      {kValueEncrypted, "VARCHAR NOT NULL"},
-                      {kLastUpdatedTimestamp, "INTEGER NOT NULL"}}) &&
+         sql::CreateTable(*db(), kLocalStoredCvcTable,
+                          {{kGuid, "VARCHAR PRIMARY KEY NOT NULL"},
+                           {kValueEncrypted, "VARCHAR NOT NULL"},
+                           {kLastUpdatedTimestamp, "INTEGER NOT NULL"}}) &&
+         sql::CreateTable(*db(), kServerStoredCvcTable,
+                          {{kInstrumentId, "INTEGER PRIMARY KEY NOT NULL"},
+                           {kValueEncrypted, "VARCHAR NOT NULL"},
+                           {kLastUpdatedTimestamp, "INTEGER NOT NULL"}}) &&
          transaction.Commit();
 }
 
@@ -2084,18 +2136,18 @@ bool PaymentsAutofillTable::
     MigrateToVersion119AddMaskedIbanTablesAndRenameLocalIbanTable() {
   sql::Transaction transaction(db());
   return transaction.Begin() &&
-         CreateTable(db(), kMaskedIbansTable,
-                     {{kInstrumentId, "VARCHAR PRIMARY KEY NOT NULL"},
-                      {kPrefix, "VARCHAR NOT NULL"},
-                      {kSuffix, "VARCHAR NOT NULL"},
-                      {"length", "INTEGER NOT NULL DEFAULT 0"},
-                      {kNickname, "VARCHAR"}}) &&
-         CreateTable(db(), kMaskedIbansMetadataTable,
-                     {{kInstrumentId, "VARCHAR PRIMARY KEY NOT NULL"},
-                      {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
-                      {kUseDate, "INTEGER NOT NULL DEFAULT 0"}}) &&
+         sql::CreateTable(*db(), kMaskedIbansTable,
+                          {{kInstrumentId, "VARCHAR PRIMARY KEY NOT NULL"},
+                           {kPrefix, "VARCHAR NOT NULL"},
+                           {kSuffix, "VARCHAR NOT NULL"},
+                           {"length", "INTEGER NOT NULL DEFAULT 0"},
+                           {kNickname, "VARCHAR"}}) &&
+         sql::CreateTable(*db(), kMaskedIbansMetadataTable,
+                          {{kInstrumentId, "VARCHAR PRIMARY KEY NOT NULL"},
+                           {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
+                           {kUseDate, "INTEGER NOT NULL DEFAULT 0"}}) &&
          (!db()->DoesTableExist(kIbansTable) ||
-          RenameTable(db(), kIbansTable, kLocalIbansTable)) &&
+          sql::RenameTable(*db(), kIbansTable, kLocalIbansTable)) &&
          transaction.Commit();
 }
 
@@ -2103,12 +2155,12 @@ bool PaymentsAutofillTable::
     MigrateToVersion123AddProductTermsUrlColumnAndAddCardBenefitsTables() {
   sql::Transaction transaction(db());
   return transaction.Begin() && db()->DoesTableExist(kMaskedCreditCardsTable) &&
-         AddColumn(db(), kMaskedCreditCardsTable, kProductTermsUrl,
-                   "VARCHAR") &&
-         CreateTable(db(), kMaskedCreditCardBenefitsTable,
-                     kMaskedCreditCardBenefitsColumnNamesAndTypes) &&
-         CreateTable(db(), kBenefitMerchantDomainsTable,
-                     kBenefitMerchantDomainsColumnNamesAndTypes) &&
+         sql::AddColumn(*db(), kMaskedCreditCardsTable, kProductTermsUrl,
+                        "VARCHAR") &&
+         sql::CreateTable(*db(), kMaskedCreditCardBenefitsTable,
+                          kMaskedCreditCardBenefitsColumnNamesAndTypes) &&
+         sql::CreateTable(*db(), kBenefitMerchantDomainsTable,
+                          kBenefitMerchantDomainsColumnNamesAndTypes) &&
          transaction.Commit();
 }
 
@@ -2120,10 +2172,10 @@ bool PaymentsAutofillTable::
          DropTableIfExists(db(), "payment_instruments_metadata") &&
          DropTableIfExists(db(), "bank_accounts") &&
          DropTableIfExists(db(), "payment_instrument_supported_rails") &&
-         CreateTable(db(), kMaskedBankAccountsTable,
-                     kMaskedBankAccountsColumnNamesAndTypes) &&
-         CreateTable(db(), kMaskedBankAccountsMetadataTable,
-                     kMaskedBankAccountsMetadataColumnNamesAndTypes) &&
+         sql::CreateTable(*db(), kMaskedBankAccountsTable,
+                          kMaskedBankAccountsColumnNamesAndTypes) &&
+         sql::CreateTable(*db(), kMaskedBankAccountsMetadataTable,
+                          kMaskedBankAccountsMetadataColumnNamesAndTypes) &&
          transaction.Commit();
 }
 
@@ -2133,8 +2185,8 @@ bool PaymentsAutofillTable::MigrateToVersion125DeleteFullServerCardsTable() {
 
 bool PaymentsAutofillTable::
     MigrateToVersion129AddGenericPaymentInstrumentsTable() {
-  return CreateTable(db(), kGenericPaymentInstrumentsTable,
-                     kGenericPaymentInstrumentsColumnNamesAndTypes);
+  return sql::CreateTable(*db(), kGenericPaymentInstrumentsTable,
+                          kGenericPaymentInstrumentsColumnNamesAndTypes);
 }
 
 bool PaymentsAutofillTable::
@@ -2158,21 +2210,60 @@ bool PaymentsAutofillTable::
 
 bool PaymentsAutofillTable::
     MigrateToVersion136AddPaymentInstrumentCreationOptionsTable() {
-  return CreateTable(db(), kPaymentInstrumentCreationOptionsTable,
-                     {{kId, "VARCHAR PRIMARY KEY NOT NULL"},
-                      {kSerializedValueEncrypted, "VARCHAR NOT NULL"}});
+  return sql::CreateTable(*db(), kPaymentInstrumentCreationOptionsTable,
+                          {{kId, "VARCHAR PRIMARY KEY NOT NULL"},
+                           {kSerializedValueEncrypted, "VARCHAR NOT NULL"}});
+}
+
+bool PaymentsAutofillTable::MigrateToVersion141AddCardBenefitSourceColumn() {
+  return sql::AddColumn(*db(), "masked_credit_cards", "card_benefit_source",
+                        "INTEGER DEFAULT 0");
+}
+
+bool PaymentsAutofillTable::MigrateToVersion144AddCardCreationSourceColumn() {
+  return db()->DoesTableExist(kMaskedCreditCardsTable) &&
+         AddColumnIfNotExists(db(), kMaskedCreditCardsTable,
+                              kCardCreationSource, "INTEGER DEFAULT 0");
+}
+
+bool PaymentsAutofillTable::
+    MigrateToVersion153ReplaceOriginWithIsUserConfirmed() {
+  sql::Transaction transaction(db());
+  if (!transaction.Begin()) {
+    return false;
+  }
+
+  if (!AddColumnIfNotExists(db(), kCreditCardsTable, kIsUserConfirmed,
+                            "INTEGER NOT NULL DEFAULT 0")) {
+    return false;
+  }
+
+  constexpr std::string_view kOrigin = "origin";
+  std::string migration_sql =
+      base::StrCat({"UPDATE ", kCreditCardsTable, " SET ", kIsUserConfirmed,
+                    " = 1 WHERE ", kOrigin, " = 'Chrome settings'"});
+  if (!db()->Execute(migration_sql)) {
+    return false;
+  }
+
+  if (!sql::DropColumn(*db(), kCreditCardsTable, kOrigin)) {
+    return false;
+  }
+
+  return transaction.Commit();
 }
 
 void PaymentsAutofillTable::AddMaskedCreditCards(
     const std::vector<CreditCard>& credit_cards) {
   DCHECK_GT(db()->transaction_nesting(), 0);
   sql::Statement masked_insert;
-  InsertBuilder(db(), masked_insert, kMaskedCreditCardsTable,
-                {kId, kNetwork, kNameOnCard, kLastFour, kExpMonth, kExpYear,
-                 kBankName, kNickname, kCardIssuer, kCardIssuerId,
-                 kInstrumentId, kVirtualCardEnrollmentState,
-                 kVirtualCardEnrollmentType, kCardArtUrl, kProductDescription,
-                 kProductTermsUrl, kCardInfoRetrievalEnrollmentState});
+  sql::InsertBuilder(
+      *db(), masked_insert, kMaskedCreditCardsTable,
+      {kId, kNetwork, kNameOnCard, kLastFour, kExpMonth, kExpYear, kBankName,
+       kNickname, kCardIssuer, kCardIssuerId, kInstrumentId,
+       kVirtualCardEnrollmentState, kVirtualCardEnrollmentType, kCardArtUrl,
+       kProductDescription, kProductTermsUrl, kCardInfoRetrievalEnrollmentState,
+       kCardBenefitSource, kCardCreationSource});
 
   int index;
   for (const CreditCard& card : credit_cards) {
@@ -2199,16 +2290,21 @@ void PaymentsAutofillTable::AddMaskedCreditCards(
     masked_insert.BindString(index++, card.product_terms_url().spec());
     masked_insert.BindInt(
         index++, static_cast<int>(card.card_info_retrieval_enrollment_state()));
+    masked_insert.BindInt(
+        index++, static_cast<int>(CreditCard::GetEnumFromBenefitSourceString(
+                     card.benefit_source())));
+    masked_insert.BindInt(index++,
+                          static_cast<int>(card.card_creation_source()));
     masked_insert.Run();
     masked_insert.Reset(/*clear_bound_vars=*/true);
 
     // Save the use count and use date of the card.
-    UpdateServerCardMetadata(card);
+    AddOrUpdateServerCardMetadata(card.GetMetadata());
   }
 }
 
 bool PaymentsAutofillTable::DeleteFromMaskedCreditCards(const std::string& id) {
-  DeleteWhereColumnEq(db(), kMaskedCreditCardsTable, kId, id);
+  sql::DeleteWhereColumnEq(*db(), kMaskedCreditCardsTable, kId, id);
   return db()->GetLastChangeCount() > 0;
 }
 
@@ -2217,28 +2313,30 @@ PaymentsAutofillTable::GetMerchantDomainsForBenefitId(
     const CreditCardBenefitBase::BenefitId& benefit_id) {
   base::flat_set<url::Origin> merchant_domains;
   sql::Statement s;
-  SelectBuilder(db(), s, kBenefitMerchantDomainsTable, {kMerchantDomain},
-                "WHERE benefit_id = ?");
+  sql::CachedSelectBuilder(SQL_FROM_HERE, *db(), s,
+                           kBenefitMerchantDomainsTable, {kMerchantDomain},
+                           /*modifiers=*/"WHERE benefit_id = ?");
   s.BindString(0, *benefit_id);
   while (s.Step()) {
-    merchant_domains.insert(url::Origin::Create(GURL(s.ColumnString(0))));
+    merchant_domains.insert(url::Origin::Create(GURL(s.ColumnStringView(0))));
   }
   return merchant_domains;
 }
 
 bool PaymentsAutofillTable::InitCreditCardsTable() {
-  return CreateTableIfNotExists(db(), kCreditCardsTable,
-                                {{kGuid, "VARCHAR PRIMARY KEY"},
-                                 {kNameOnCard, "VARCHAR"},
-                                 {kExpirationMonth, "INTEGER"},
-                                 {kExpirationYear, "INTEGER"},
-                                 {kCardNumberEncrypted, "BLOB"},
-                                 {kDateModified, "INTEGER NOT NULL DEFAULT 0"},
-                                 {kOrigin, "VARCHAR DEFAULT ''"},
-                                 {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
-                                 {kUseDate, "INTEGER NOT NULL DEFAULT 0"},
-                                 {kBillingAddressId, "VARCHAR"},
-                                 {kNickname, "VARCHAR"}});
+  return CreateTableIfNotExists(
+      db(), kCreditCardsTable,
+      {{kGuid, "VARCHAR PRIMARY KEY"},
+       {kNameOnCard, "VARCHAR"},
+       {kExpirationMonth, "INTEGER"},
+       {kExpirationYear, "INTEGER"},
+       {kCardNumberEncrypted, "BLOB"},
+       {kDateModified, "INTEGER NOT NULL DEFAULT 0"},
+       {kUseCount, "INTEGER NOT NULL DEFAULT 0"},
+       {kUseDate, "INTEGER NOT NULL DEFAULT 0"},
+       {kBillingAddressId, "VARCHAR"},
+       {kNickname, "VARCHAR"},
+       {kIsUserConfirmed, "INTEGER NOT NULL DEFAULT 0"}});
 }
 
 bool PaymentsAutofillTable::InitLocalIbansTable() {
@@ -2269,7 +2367,9 @@ bool PaymentsAutofillTable::InitMaskedCreditCardsTable() {
        {kCardIssuerId, "VARCHAR"},
        {kVirtualCardEnrollmentType, "INTEGER DEFAULT 0"},
        {kProductTermsUrl, "VARCHAR"},
-       {kCardInfoRetrievalEnrollmentState, "INTEGER DEFAULT 0"}});
+       {kCardInfoRetrievalEnrollmentState, "INTEGER DEFAULT 0"},
+       {kCardBenefitSource, "INTEGER DEFAULT 0"},
+       {kCardCreationSource, "INTEGER DEFAULT 0"}});
 }
 
 bool PaymentsAutofillTable::InitMaskedIbansTable() {
@@ -2388,49 +2488,6 @@ bool PaymentsAutofillTable::InitPaymentInstrumentCreationOptionsTable() {
       db(), kPaymentInstrumentCreationOptionsTable,
       {{kId, "VARCHAR PRIMARY KEY NOT NULL"},
        {kSerializedValueEncrypted, "VARCHAR NOT NULL"}});
-}
-
-PaymentsAutofillTable::Dropper::Dropper() = default;
-PaymentsAutofillTable::Dropper::~Dropper() = default;
-
-WebDatabaseTable::TypeKey PaymentsAutofillTable::Dropper::GetTypeKey() const {
-  static int table_key = 0;
-  return reinterpret_cast<void*>(&table_key);
-}
-
-bool PaymentsAutofillTable::Dropper::CreateTablesIfNecessary() {
-  return true;
-}
-
-bool PaymentsAutofillTable::Dropper::MigrateToVersion(
-    int version,
-    bool* update_compatible_version) {
-  static constexpr auto kTables =
-      std::to_array<std::string_view>({kBenefitMerchantDomainsTable,
-                                       kCreditCardsTable,
-                                       kGenericPaymentInstrumentsTable,
-                                       kIbansTable,
-                                       kLocalIbansTable,
-                                       kLocalStoredCvcTable,
-                                       kMaskedBankAccountsMetadataTable,
-                                       kMaskedBankAccountsTable,
-                                       kMaskedCreditCardBenefitsTable,
-                                       kMaskedCreditCardsTable,
-                                       kMaskedIbansMetadataTable,
-                                       kMaskedIbansTable,
-                                       kOfferDataTable,
-                                       kOfferEligibleInstrumentTable,
-                                       kOfferMerchantDomainTable,
-                                       kPaymentInstrumentCreationOptionsTable,
-                                       kPaymentsCustomerDataTable,
-                                       kPaymentsUpiVpaTable,
-                                       kServerCardCloudTokenDataTable,
-                                       kServerCardMetadataTable,
-                                       kServerStoredCvcTable,
-                                       kVirtualCardUsageDataTable});
-  return std::ranges::all_of(kTables, [this](std::string_view table_name) {
-    return DropTableIfExists(db(), table_name);
-  });
 }
 
 }  // namespace autofill

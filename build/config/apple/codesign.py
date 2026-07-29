@@ -11,22 +11,30 @@ import glob
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import stat
 import sys
 import tempfile
 
-# Keys that should not be copied from mobileprovision
-BANNED_KEYS = [
-    "com.apple.developer.cs.allow-jit",
-    "com.apple.developer.memory.transfer-send",
-    "com.apple.developer.web-browser",
-    "com.apple.developer.web-browser-engine.host",
-    "com.apple.developer.web-browser-engine.networking",
-    "com.apple.developer.web-browser-engine.rendering",
-    "com.apple.developer.web-browser-engine.webcontent",
+# Keys that should be copied from mobileprovision
+ALLOWED_KEYS = [
+    "aps-environment",
+    "com.apple.developer.team-identifier",
+    "get-task-allow",
+    "keychain-access-groups",
 ]
+
+# Patterns for bundle extension per bundle type.
+# Note: "ExtensionIcon83.5x83.5@2x.png" is one of the generated icon filename
+# thus this pattern need to match decimal sized icons.
+ICON_SUFFIX_PATTERN = '(\\d+(?:\\.\\d+)?)x\\1(@[23]x)?(~ipad)?\\.png'
+BUNDLE_ICON_PATTERNS_MAP = {
+    ".app": re.compile('AppIcon' + ICON_SUFFIX_PATTERN),
+    ".appex": re.compile('ExtensionIcon' + ICON_SUFFIX_PATTERN),
+}
+
 
 if sys.version_info.major < 3:
   basestring_compat = basestring
@@ -34,16 +42,39 @@ else:
   basestring_compat = str
 
 
-def GetProvisioningProfilesDir():
+class FileListAction(argparse.Action):
+  """Action that load a file and interpret it as a list of file names."""
+
+  def __init__(self, option_strings, dest, nargs=None, **kwds):
+    if nargs is not None:
+      raise ValueError("nargs not allowed")
+    super().__init__(option_strings, dest, nargs, **kwds)
+
+  def __call__(self, parser, namespace, values, option_strings):
+    dest = getattr(namespace, self.dest)
+    with open(values, 'r', encoding='utf-8') as stream:
+      for line in stream:
+        path = line[:-1]
+        dest.append(path)
+
+
+def GetProvisioningProfilesDirs():
   """Returns the location of the installed mobile provisioning profiles.
 
   Returns:
-    The path to the directory containing the installed mobile provisioning
+    The paths to the directory containing the installed mobile provisioning
     profiles as a string.
   """
-  return os.path.join(
-      os.environ['HOME'], 'Library', 'MobileDevice', 'Provisioning Profiles')
-
+  paths = []
+  paths.append(
+      os.path.join(os.environ['HOME'], 'Library', 'MobileDevice',
+                   'Provisioning Profiles'))
+  # For Xcode 16 and later, include the new location,
+  # `~/Library/Developer/Xcode/UserData/Provisioning Profiles`.
+  paths.append(
+      os.path.join(os.environ['HOME'], 'Library', 'Developer', 'Xcode',
+                   'UserData', 'Provisioning Profiles'))
+  return paths
 
 def ReadPlistFromString(plist_bytes):
   """Parse property list from given |plist_bytes|.
@@ -108,6 +139,8 @@ class Bundle(object):
       return 'mac'
     if platform in ('watchos', 'watchsimulator'):
       return 'watchos'
+    if platform in ('appletvos', 'appletvsimulator'):
+      return 'tvos'
     raise ValueError('unknown bundle type %s for %s' % (extension, platform))
 
   @property
@@ -147,6 +180,18 @@ class Bundle(object):
   @property
   def signature_dir(self):
     return os.path.join(self.contents_dir, '_CodeSignature')
+
+  @property
+  def relative_signature_dir(self):
+    return os.path.relpath(self.signature_dir, self.path)
+
+  @property
+  def embedded_mobileprovision(self):
+    return os.path.join(self.path, 'embedded.mobileprovision')
+
+  @property
+  def relative_embedded_mobileprovision(self):
+    return os.path.relpath(self.embedded_mobileprovision, self.path)
 
   @property
   def identifier(self):
@@ -277,7 +322,7 @@ class Entitlements(object):
 
   def LoadDefaults(self, defaults):
     for key, value in defaults.items():
-      if key not in self._data and key not in BANNED_KEYS:
+      if key not in self._data and key in ALLOWED_KEYS:
         self._data[key] = value
 
   def WriteTo(self, target_path):
@@ -300,8 +345,9 @@ def FindProvisioningProfile(provisioning_profile_paths, bundle_identifier,
     object or None if no matching provisioning profile was found.
   """
   if not provisioning_profile_paths:
-    provisioning_profile_paths = glob.glob(
-        os.path.join(GetProvisioningProfilesDir(), '*.mobileprovision'))
+    for path in GetProvisioningProfilesDirs():
+      provisioning_profile_paths.extend(
+          glob.glob(os.path.join(path, '*.mobileprovision')))
 
   # Iterate over all installed mobile provisioning profiles and filter those
   # that can be used to sign the bundle, ignoring expired ones.
@@ -360,6 +406,123 @@ def CodeSignBundle(bundle_path, identity, extra_args):
     sys.stderr.write('\n')
 
 
+def IsSubPath(path, parent_path):
+  """Returns whether path is a sub-path of parent_path."""
+  return path.startswith(parent_path + os.path.sep)
+
+
+def DeleteItemAtPath(path):
+  """Delete item at path.
+
+  Support being called with a path pointing to a file, a symlink or a
+  directory, calling the correct function for each situation.
+  """
+  if os.path.isdir(path):
+    if not os.path.islink(path):
+      shutil.rmtree(path)
+      return
+  os.unlink(path)
+
+
+def VerifyBundleManifest(bundle, manifest):
+  """Verify that bundle corresponds to manifest.
+
+  If non-empty, then manifest is a list of all the files that should be present
+  in the bundle (including the code signature that will be generated by this
+  script).
+
+  Does nothing if the manifest is empty. Otherwise, delete all files found in
+  the bundle directory that are not listed in the manifest and terminate with
+  an error if any files listed in the manifest is missing.
+  """
+  if not manifest:
+    return
+
+  # Ignore the files and directories created by the script when codesigning.
+  # They will be listed in the manifest, but will be created after checking
+  # the validity of the bundle.
+  patterns = [
+      lambda p: p == bundle.relative_embedded_mobileprovision,
+      lambda p: IsSubPath(p, bundle.relative_signature_dir),
+  ]
+  filtered = lambda path: any(map(lambda pattern: pattern(path), patterns))
+  manifest = set(path for path in manifest if not filtered(path))
+
+  # Create a set of all directories in the manifest. Used to avoid doing
+  # a linear scan of all files when a directory is found that may not be
+  # present in the bundle (as that would cause the script to have O(n^2)
+  # behaviour, since this check would happen for all directories).
+  #
+  # Note: since manifest only list files and maybe some directories that
+  # should be considered as files (see comments below when processing
+  # dirnames), it is required to iterate over all parent directories here.
+  #
+  # E.g if the manifest contains the following:
+  #   'Foo'
+  #   'data/test/files/file1'
+  #   'data/test/files/file2'
+  #   'data/test/files/file3'
+  #
+  # then manifest_directories should contain the following
+  #   'data'
+  #   'data/test'
+  #   'data/test/files'
+  manifest_directories = set()
+  for path in manifest:
+    dirname = os.path.dirname(path)
+    while dirname and dirname not in manifest_directories:
+      manifest_directories.add(dirname)
+      dirname = os.path.dirname(dirname)
+
+  # The bundle may contain a set of icons which will not be listed in the
+  # manifest (this is because they are conditionally based on the sources
+  # passed to the build/toolchain/apple/compile_xcassets.py script). Skip
+  # them if present.
+  bundle_icon_pattern = BUNDLE_ICON_PATTERNS_MAP.get(
+      os.path.splitext(bundle.path)[-1], None)
+
+  # Iterate over the content of the bundle.
+  for dirpath, dirnames, filenames in os.walk(bundle.path):
+    reldirpath = os.path.relpath(dirpath, bundle.path)
+
+    # For directories, if they are listed explicitly in the manifest (and
+    # not individual files), then skip them. This is necessary due to how
+    # embedded frameworks work (there is a single bundle_data(...) target
+    # that list the top-level bundle directory as the only source file).
+    dirnames_to_skip = []
+    for dirname in dirnames:
+      subdirpath = os.path.normpath(os.path.join(reldirpath, dirname))
+      if subdirpath in manifest:
+        dirnames_to_skip.append(dirname)
+        manifest.remove(subdirpath)
+      elif subdirpath not in manifest_directories:
+        dirnames_to_skip.append(dirname)
+        print(f'warning: deleting old directory: {subdirpath}', file=sys.stderr)
+        DeleteItemAtPath(os.path.join(dirpath, dirname))
+    if dirnames_to_skip:
+      dirnames[:] = list(set(dirnames) - set(dirnames_to_skip))
+
+    # For files, if they are not listed by the manifest, delete them and
+    # print a warning (this is not an error because they may be left-over
+    # from an incremental build after changing the target dependencies).
+    for filename in filenames:
+      filepath = os.path.normpath(os.path.join(reldirpath, filename))
+      if not filepath in manifest:
+        if not bundle_icon_pattern or not bundle_icon_pattern.match(filename):
+          print(f'warning: deleting old file: {filepath}', file=sys.stderr)
+          DeleteItemAtPath(os.path.join(dirpath, filename))
+      else:
+        manifest.remove(filepath)
+
+  # At this point, any files still listed in manifest is missing from the
+  # bundle, so report this as an error and terminate the script with error.
+  if manifest:
+    print(f'error: {len(manifest)} missing files:', file=sys.stderr)
+    for filepath in sorted(manifest):
+      print(f'  - {filepath}', file=sys.stderr)
+    sys.exit(1)
+
+
 def InstallSystemFramework(framework_path, bundle_path, args):
   """Install framework from |framework_path| to |bundle| and code-re-sign it."""
   installed_framework_path = os.path.join(
@@ -374,6 +537,51 @@ def InstallSystemFramework(framework_path, bundle_path, args):
 
   CodeSignBundle(installed_framework_path, args.identity,
       ['--deep', '--preserve-metadata=identifier,entitlements,flags'])
+
+
+def VerifyLoadOrder(binary_path, expected_first_framework):
+  """Verifies that the first LC_LOAD_DYLIB in binary_path matches
+  expected_first_framework.
+  """
+  try:
+    output = subprocess.check_output(['otool', '-l', binary_path],
+                                     stderr=subprocess.STDOUT,
+                                     universal_newlines=True)
+  except subprocess.CalledProcessError as e:
+    sys.stderr.write('otool failed: %s\n' % e.output)
+    sys.exit(1)
+
+  first_dylib = None
+  lines = output.splitlines()
+  for i, line in enumerate(lines):
+    if line.strip() == 'cmd LC_LOAD_DYLIB':
+      # The name is usually a few lines down.
+      for j in range(i + 1, min(i + 10, len(lines))):
+        if lines[j].strip().startswith('name '):
+          # Extract path. Format: name /path/to/lib (offset 24)
+          parts = lines[j].strip().split(' ', 1)
+          if len(parts) > 1:
+            name_line = parts[1]
+            # Remove " (offset \d+)"
+            first_dylib = name_line.rsplit(' (offset', 1)[0]
+          break
+      if first_dylib:
+        break
+
+  if not first_dylib:
+    sys.stderr.write(
+        'Error: No LC_LOAD_DYLIB found in %s, but expected %s to be first.\n' %
+        (binary_path, expected_first_framework))
+    sys.exit(1)
+
+  # The framework path ends with .../FrameworkName.framework/FrameworkName
+  expected_suffix = '/%s.framework/%s' % (expected_first_framework,
+                                          expected_first_framework)
+  if not first_dylib.endswith(expected_suffix):
+    sys.stderr.write(
+        'Error: First LC_LOAD_DYLIB in %s is "%s", expected to end with "%s".\n'
+        % (binary_path, first_dylib, expected_suffix))
+    sys.exit(1)
 
 
 def GenerateEntitlements(path, provisioning_profile, bundle_identifier):
@@ -484,6 +692,28 @@ class CodeSignBundleAction(Action):
         dest='mobileprovision_files',
         help='list of mobileprovision files to use. If empty, uses the files ' +
         'in $HOME/Library/MobileDevice/Provisioning Profiles')
+    parser.add_argument(
+        '--mobileprovision-list',
+        '-M',
+        action=FileListAction,
+        dest='mobileprovision_files',
+        help='path to a file containing a list of mobileprovision files to ' +
+        'use (this will behave as each "-m $line" was passsed for each line ' +
+        'in that file)')
+    parser.add_argument(
+        '--manifest',
+        '-L',
+        default=[],
+        action=FileListAction,
+        dest='manifest',
+        help='if present, path to a file containing the list of files that ' +
+        'are part of the bundle to codesign. The script will delete any ' +
+        'files found that are not listed, and will fail if any files is ' +
+        'missing.')
+    parser.add_argument(
+        '--verify-load-order-first',
+        dest='verify_load_order_first',
+        help='verify that the named framework is the first loaded dylib')
     parser.set_defaults(no_signature=False)
 
   @staticmethod
@@ -531,8 +761,7 @@ class CodeSignBundleAction(Action):
       sys.exit(1)
 
     # Delete existing embedded mobile provisioning.
-    embedded_provisioning_profile = os.path.join(
-        bundle.path, 'embedded.mobileprovision')
+    embedded_provisioning_profile = bundle.embedded_mobileprovision
     if os.path.isfile(embedded_provisioning_profile):
       os.unlink(embedded_provisioning_profile)
 
@@ -549,11 +778,17 @@ class CodeSignBundleAction(Action):
       os.makedirs(bundle.executable_dir)
     shutil.copy(args.binary, bundle.binary_path)
 
+    # Record the symlinks created (they are likely not listed in the
+    # manifest, but must not be deleted).
+    created_symlinks = []
+
     if bundle.kind == 'mac_framework':
       # Create Versions/Current -> Versions/A symlink
+      created_symlinks.append('Versions/Current')
       CreateSymlink('A', os.path.join(bundle.path, 'Versions/Current'))
 
       # Create $binary_name -> Versions/Current/$binary_name symlink
+      created_symlinks.append(bundle.binary_name)
       CreateSymlink(os.path.join('Versions/Current', bundle.binary_name),
                     os.path.join(bundle.path, bundle.binary_name))
 
@@ -561,12 +796,23 @@ class CodeSignBundleAction(Action):
       for name in ('Headers', 'Resources', 'Modules'):
         target = os.path.join(bundle.path, 'Versions/A', name)
         if os.path.exists(target):
+          created_symlinks.append(name)
           CreateSymlink(os.path.join('Versions/Current', name),
                         os.path.join(bundle.path, name))
         else:
           obsolete_path = os.path.join(bundle.path, name)
           if os.path.exists(obsolete_path):
             os.unlink(obsolete_path)
+
+    # If the manifest is present, check that the bundle is well-formed. Only
+    # perform this verification if requested, but in that case, consider all
+    # the created symlinks as part of the manifest (since they are generated
+    # conditionally, it is difficult to explicit list them all).
+    if args.manifest:
+      VerifyBundleManifest(bundle, set(args.manifest) | set(created_symlinks))
+
+    if args.verify_load_order_first:
+      VerifyLoadOrder(bundle.binary_path, args.verify_load_order_first)
 
     if args.no_signature:
       return
@@ -663,6 +909,14 @@ class GenerateEntitlementsAction(Action):
         dest='mobileprovision_files',
         help='set of mobileprovision files to use. If empty, uses the files ' +
         'in $HOME/Library/MobileDevice/Provisioning Profiles')
+    parser.add_argument(
+        '--mobileprovision-list',
+        '-M',
+        action=FileListAction,
+        dest='mobileprovision_files',
+        help='path to a file containing a list of mobileprovision files to ' +
+        'use (this will behave as each "-m $line" was passsed for each line ' +
+        'in that file)')
 
   @staticmethod
   def _Execute(args):
@@ -695,6 +949,14 @@ class FindProvisioningProfileAction(Action):
         dest='mobileprovision_files',
         help='set of mobileprovision files to use. If empty, uses the files ' +
         'in $HOME/Library/MobileDevice/Provisioning Profiles')
+    parser.add_argument(
+        '--mobileprovision-list',
+        '-M',
+        action=FileListAction,
+        dest='mobileprovision_files',
+        help='path to a file containing a list of mobileprovision files to ' +
+        'use (this will behave as each "-m $line" was passsed for each line ' +
+        'in that file)')
 
   @staticmethod
   def _Execute(args):

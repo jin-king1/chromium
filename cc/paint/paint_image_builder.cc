@@ -81,7 +81,7 @@ PaintImage PaintImageBuilder::TakePaintImage() {
     DCHECK(!paint_image_.gainmap_paint_image_generator_);
   }
 
-  if (paint_image_.HasGainmap()) {
+  if (paint_image_.HasGainmapInfo()) {
     DCHECK(paint_image_.paint_image_generator_ ||
            paint_image_.gainmap_sk_image_);
   }
@@ -93,6 +93,15 @@ PaintImage PaintImageBuilder::TakePaintImage() {
       DCHECK_GT(frame.duration, base::TimeDelta());
   }
 #endif
+  // Merge any explicitly specified HDR metadata on top of the paint image
+  // generator's.
+  if (paint_image_.paint_image_generator_) {
+    gfx::HDRMetadata merged =
+        paint_image_.paint_image_generator_->GetHdrMetadata();
+    merged.MergeMetadataFrom(paint_image_.hdr_metadata_);
+    paint_image_.hdr_metadata_ = merged;
+  }
+
   if (paint_image_.reinterpret_as_srgb_) {
     if (paint_image_.sk_image_) {
       paint_image_.sk_image_ = paint_image_.sk_image_->reinterpretColorSpace(

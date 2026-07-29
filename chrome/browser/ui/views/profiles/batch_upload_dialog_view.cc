@@ -4,7 +4,6 @@
 
 #include "chrome/browser/ui/views/profiles/batch_upload_dialog_view.h"
 
-#include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
@@ -19,7 +18,7 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/widget/widget.h"
@@ -128,7 +127,10 @@ BatchUploadDialogView::BatchUploadDialogView(
     BatchUploadService::EntryPoint entry_point,
     BatchUploadSelectedDataTypeItemsCallback complete_callback)
     : complete_callback_(std::move(complete_callback)),
-      entry_point_(entry_point) {
+      entry_point_(entry_point),
+      browser_close_subscription_(browser.RegisterBrowserDidClose(
+          base::BindRepeating(&BatchUploadDialogView::BrowserDidClose,
+                              base::Unretained(this)))) {
   SetModalType(ui::mojom::ModalType::kWindow);
   // No native buttons.
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
@@ -144,7 +146,7 @@ BatchUploadDialogView::BatchUploadDialogView(
 
   // Create the web view in the native bubble.
   std::unique_ptr<views::WebView> web_view =
-      std::make_unique<views::WebView>(browser.profile());
+      std::make_unique<views::WebView>(browser.GetProfile());
   web_view->LoadInitialURL(GURL(chrome::kChromeUIBatchUploadURL));
   web_view_ = web_view.get();
   web_view_->GetWebContents()->SetDelegate(this);
@@ -154,7 +156,7 @@ BatchUploadDialogView::BatchUploadDialogView(
       gfx::Size(kBatchUploadDialogFixedWidth, kBatchUploadDialogMaxHeight));
 
   signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(browser.profile());
+      IdentityManagerFactory::GetForProfile(browser.GetProfile());
   CHECK(identity_manager);
   primary_account_info_ = GetBatchUploadPrimaryAccountInfo(*identity_manager);
 
@@ -237,7 +239,7 @@ void BatchUploadDialogView::SetHeightAndShowWidget(int height) {
     // Enforce the web view round corners to match the native view. Since we set
     // the view margin to 0 in the constructor, it leads to the webview
     // overlapping on the native view in the corners.
-    web_view_->holder()->SetCornerRadii(
+    web_view_->holder()->SetNativeViewCornerRadii(
         gfx::RoundedCornersF(GetCornerRadius()));
 
     widget->Show();
@@ -296,6 +298,17 @@ void BatchUploadDialogView::CloseWithReason(
     BatchUploadDialogCloseReason reason) {
   close_reason_ = reason;
   GetWidget()->Close();
+}
+
+void BatchUploadDialogView::BrowserDidClose(BrowserWindowInterface* browser) {
+  // In the event the host Browser window closes and the dialog is open the
+  // dialog is dismissed without any explicit action on the dialog.
+  close_reason_ = BatchUploadDialogCloseReason::kWindowClosed;
+  if (GetWidget()) {
+    // Close the dialog synchronously in the event the host Browser window
+    // closes to mitigate the risk of dangling refs.
+    GetWidget()->CloseNow();
+  }
 }
 
 views::WebView* BatchUploadDialogView::GetWebViewForTesting() {

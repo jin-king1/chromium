@@ -8,10 +8,15 @@
 #include <ostream>
 #include <utility>
 
-#include "base/containers/enum_set.h"
+#include "base/functional/bind.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/structured_shared_memory.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/test/task_environment.h"
+#include "base/threading/thread.h"
+#include "components/performance_manager/scenario_api/performance_scenario_memory.h"
+#include "components/performance_manager/scenario_api/performance_scenario_test_support.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace performance_scenarios {
@@ -36,6 +41,10 @@ std::ostream& operator<<(std::ostream& os, InputScenario input_scenario) {
       return os << "NoInput";
     case InputScenario::kTyping:
       return os << "TypingInput";
+    case InputScenario::kTap:
+      return os << "Tap";
+    case InputScenario::kScroll:
+      return os << "Scroll";
   }
 }
 
@@ -55,8 +64,8 @@ INSTANTIATE_TEST_SUITE_P(All,
                          ::testing::ValuesIn(InputScenarios::All()));
 
 TEST(PerformanceScenariosTest, MappedScenarioState) {
-  auto shared_memory = base::StructuredSharedMemory<ScenarioState>::Create();
-  ASSERT_TRUE(shared_memory.has_value());
+  auto test_helper = PerformanceScenarioTestHelper::CreateWithoutMapping();
+  ASSERT_TRUE(test_helper);
 
   // Before the shared memory is mapped in, GetLoadingScenario should return
   // default values.
@@ -70,14 +79,15 @@ TEST(PerformanceScenariosTest, MappedScenarioState) {
   {
     // Map the shared memory as the global state.
     ScopedReadOnlyScenarioMemory mapped_global_memory(
-        ScenarioScope::kGlobal, shared_memory->DuplicateReadOnlyRegion());
+        ScenarioScope::kGlobal,
+        test_helper->GetReadOnlyScenarioRegion(ScenarioScope::kGlobal));
     EXPECT_EQ(GetLoadingScenario(ScenarioScope::kGlobal)
                   ->load(std::memory_order_relaxed),
               LoadingScenario::kNoPageLoading);
 
     // Updates should be visible in the global state only.
-    shared_memory->WritableRef().loading.store(
-        LoadingScenario::kFocusedPageLoading, std::memory_order_relaxed);
+    test_helper->SetLoadingScenario(ScenarioScope::kGlobal,
+                                    LoadingScenario::kFocusedPageLoading);
     EXPECT_EQ(GetLoadingScenario(ScenarioScope::kGlobal)
                   ->load(std::memory_order_relaxed),
               LoadingScenario::kFocusedPageLoading);
@@ -88,14 +98,14 @@ TEST(PerformanceScenariosTest, MappedScenarioState) {
     // Map the same shared memory as the per-process state.
     ScopedReadOnlyScenarioMemory mapped_current_memory(
         ScenarioScope::kCurrentProcess,
-        shared_memory->DuplicateReadOnlyRegion());
+        test_helper->GetReadOnlyScenarioRegion(ScenarioScope::kGlobal));
     EXPECT_EQ(GetLoadingScenario(ScenarioScope::kCurrentProcess)
                   ->load(std::memory_order_relaxed),
               LoadingScenario::kFocusedPageLoading);
 
     // Updates should be visible in both mappings.
-    shared_memory->WritableRef().loading.store(
-        LoadingScenario::kVisiblePageLoading, std::memory_order_relaxed);
+    test_helper->SetLoadingScenario(ScenarioScope::kGlobal,
+                                    LoadingScenario::kVisiblePageLoading);
     EXPECT_EQ(GetLoadingScenario(ScenarioScope::kGlobal)
                   ->load(std::memory_order_relaxed),
               LoadingScenario::kVisiblePageLoading);
@@ -116,11 +126,11 @@ TEST(PerformanceScenariosTest, MappedScenarioState) {
 
 TEST(PerformanceScenariosTest, SharedAtomicRef) {
   // Create and map shared memory.
-  auto shared_memory = base::StructuredSharedMemory<ScenarioState>::Create();
-  ASSERT_TRUE(shared_memory.has_value());
+  auto test_helper = PerformanceScenarioTestHelper::CreateWithoutMapping();
+  ASSERT_TRUE(test_helper);
   auto read_only_mapping =
       base::StructuredSharedMemory<ScenarioState>::MapReadOnlyRegion(
-          shared_memory->DuplicateReadOnlyRegion());
+          test_helper->GetReadOnlyScenarioRegion(ScenarioScope::kGlobal));
   ASSERT_TRUE(read_only_mapping.has_value());
 
   // Store pointers to the atomics in the shared memory for later comparison.
@@ -140,10 +150,9 @@ TEST(PerformanceScenariosTest, SharedAtomicRef) {
 
   // The SharedAtomicRef's should keep the mapping alive.
   mapping_ptr.reset();
-  shared_memory->WritableRef().loading.store(
-      LoadingScenario::kBackgroundPageLoading, std::memory_order_relaxed);
-  shared_memory->WritableRef().input.store(InputScenario::kNoInput,
-                                           std::memory_order_relaxed);
+  test_helper->SetLoadingScenario(ScenarioScope::kGlobal,
+                                  LoadingScenario::kBackgroundPageLoading);
+  test_helper->SetInputScenario(ScenarioScope::kGlobal, InputScenario::kTyping);
 
   // get()
   EXPECT_EQ(loading_ref.get(), loading_ptr);
@@ -156,8 +165,7 @@ TEST(PerformanceScenariosTest, SharedAtomicRef) {
   // operator->
   EXPECT_EQ(loading_ref->load(std::memory_order_relaxed),
             LoadingScenario::kBackgroundPageLoading);
-  EXPECT_EQ(input_ref->load(std::memory_order_relaxed),
-            InputScenario::kNoInput);
+  EXPECT_EQ(input_ref->load(std::memory_order_relaxed), InputScenario::kTyping);
 }
 
 TEST_P(PerformanceScenariosAllLoadingScenariosTest, EmptyScenarioPattern) {
@@ -167,9 +175,13 @@ TEST_P(PerformanceScenariosAllLoadingScenariosTest, EmptyScenarioPattern) {
                              kEmptyScenarioPattern));
   EXPECT_TRUE(ScenariosMatch(GetParam(), InputScenario::kTyping,
                              kEmptyScenarioPattern));
+  EXPECT_TRUE(
+      ScenariosMatch(GetParam(), InputScenario::kTap, kEmptyScenarioPattern));
+  EXPECT_TRUE(ScenariosMatch(GetParam(), InputScenario::kScroll,
+                             kEmptyScenarioPattern));
 }
 
-TEST_P(PerformanceScenariosAllLoadingScenariosTest, InputScenarioPattern) {
+TEST_P(PerformanceScenariosAllLoadingScenariosTest, NoInputScenarioPattern) {
   // kNoInput matches the pattern, loading scenarios are ignored.
   static ScenarioPattern kInputScenarioPattern{
       .input = {InputScenario::kNoInput},
@@ -178,6 +190,26 @@ TEST_P(PerformanceScenariosAllLoadingScenariosTest, InputScenarioPattern) {
                              kInputScenarioPattern));
   EXPECT_FALSE(ScenariosMatch(GetParam(), InputScenario::kTyping,
                               kInputScenarioPattern));
+  EXPECT_FALSE(
+      ScenariosMatch(GetParam(), InputScenario::kTap, kInputScenarioPattern));
+  EXPECT_FALSE(ScenariosMatch(GetParam(), InputScenario::kScroll,
+                              kInputScenarioPattern));
+}
+
+TEST_P(PerformanceScenariosAllLoadingScenariosTest, InputScenarioPattern) {
+  // All except kNoInput matches the pattern, loading scenarios are ignored.
+  static ScenarioPattern kInputScenarioPattern{
+      .input = {InputScenario::kTyping, InputScenario::kTap,
+                InputScenario::kScroll},
+  };
+  EXPECT_FALSE(ScenariosMatch(GetParam(), InputScenario::kNoInput,
+                              kInputScenarioPattern));
+  EXPECT_TRUE(ScenariosMatch(GetParam(), InputScenario::kTyping,
+                             kInputScenarioPattern));
+  EXPECT_TRUE(
+      ScenariosMatch(GetParam(), InputScenario::kTap, kInputScenarioPattern));
+  EXPECT_TRUE(ScenariosMatch(GetParam(), InputScenario::kScroll,
+                             kInputScenarioPattern));
 }
 
 TEST_P(PerformanceScenariosAllInputScenariosTest, LoadingScenarioPattern) {
@@ -243,6 +275,80 @@ TEST_P(PerformanceScenariosAllLoadingScenariosTest,
        DefaultIdleScenariosWithInput) {
   EXPECT_FALSE(ScenariosMatch(GetParam(), InputScenario::kTyping,
                               kDefaultIdleScenarios));
+}
+
+// Ensure that all values of LoadingScenario are ordered correctly.
+TEST_P(PerformanceScenariosAllLoadingScenariosTest, LoadingScenarioOrdering) {
+  // When adding a new scenario to this switch, make sure that everything
+  // comparing less than the new scenario is less performance-sensitive.
+  switch (GetParam()) {
+    case LoadingScenario::kFocusedPageLoading:
+      EXPECT_LT(LoadingScenario::kVisiblePageLoading, GetParam());
+      [[fallthrough]];
+    case LoadingScenario::kVisiblePageLoading:
+      EXPECT_LT(LoadingScenario::kBackgroundPageLoading, GetParam());
+      [[fallthrough]];
+    case LoadingScenario::kBackgroundPageLoading:
+      EXPECT_LT(LoadingScenario::kNoPageLoading, GetParam());
+      [[fallthrough]];
+    case LoadingScenario::kNoPageLoading:
+      // This is the lowest priority scenario.
+      break;
+  }
+}
+
+// Ensure that all values of InputScenario are ordered correctly.
+TEST_P(PerformanceScenariosAllInputScenariosTest, InputScenarioOrdering) {
+  // When adding a new scenario to this switch, make sure that everything
+  // comparing less than the new scenario is less performance-sensitive.
+  switch (GetParam()) {
+    case InputScenario::kScroll:
+      // Scrolling is the most performance-sensitive because scroll jank is
+      // very obvious to the user.
+      EXPECT_LT(InputScenario::kTap, GetParam());
+      [[fallthrough]];
+    case InputScenario::kTap:
+      // Tap is more performance-sensitive than typing because there's a tactile
+      // link: users expect immediate screen feedback when touching the screen.
+      EXPECT_LT(InputScenario::kTyping, GetParam());
+      [[fallthrough]];
+    case InputScenario::kTyping:
+      EXPECT_LT(InputScenario::kNoInput, GetParam());
+      [[fallthrough]];
+    case InputScenario::kNoInput:
+      // This is the lowest priority scenario.
+      break;
+  }
+}
+
+// Tests that creating a ScopedReadOnlyScenarioMemory on one thread while
+// getting the scenario on another thread doesn't race.
+TEST(PerformanceScenariosTest, GetAndSetScenarioMappingRace) {
+  base::test::TaskEnvironment task_environment;
+  auto test_helper = PerformanceScenarioTestHelper::CreateWithoutMapping();
+  ASSERT_TRUE(test_helper);
+
+  base::RunLoop runloop;
+  base::Thread thread("racy_thread");
+  ASSERT_TRUE(thread.Start());
+
+  thread.task_runner()->PostTask(
+      FROM_HERE, base::BindOnce([] {
+                   for (int i = 0; i < 10; ++i) {
+                     // This reads the global mapping pointer.
+                     auto scope =
+                         GetScenarioMappingForScope(ScenarioScope::kGlobal);
+                   }
+                 }).Then(task_environment.QuitClosure()));
+
+  for (int i = 0; i < 10; ++i) {
+    // This sets and clears the global mapping pointer.
+    ScopedReadOnlyScenarioMemory mapped_global_memory(
+        ScenarioScope::kGlobal,
+        test_helper->GetReadOnlyScenarioRegion(ScenarioScope::kGlobal));
+  }
+
+  task_environment.RunUntilQuit();
 }
 
 }  // namespace

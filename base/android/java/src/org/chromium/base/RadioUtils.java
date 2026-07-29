@@ -10,12 +10,9 @@ import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
-import android.os.Build;
 import android.os.Process;
 import android.telephony.SignalStrength;
 import android.telephony.TelephonyManager;
-
-import androidx.annotation.RequiresApi;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
@@ -35,15 +32,14 @@ public class RadioUtils {
     private RadioUtils() {}
 
     /**
-     * Return whether the current SDK supports necessary functions and the app
-     * has necessary permissions.
+     * Return whether the current SDK supports necessary functions and the app has necessary
+     * permissions.
+     *
      * @return True or false.
      */
     @CalledByNative
     private static boolean isSupported() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
-                && haveAccessNetworkState()
-                && haveAccessWifiState();
+        return haveAccessNetworkState() && haveAccessWifiState();
     }
 
     private static boolean haveAccessNetworkState() {
@@ -78,10 +74,10 @@ public class RadioUtils {
 
     /**
      * Return whether the device is currently connected to a wifi network.
+     *
      * @return True or false.
      */
     @CalledByNative
-    @RequiresApi(Build.VERSION_CODES.P)
     @SuppressWarnings("AssertionSideEffect") // isSupported() caches via sHaveAccessNetworkState.
     private static boolean isWifiConnected() {
         assert isSupported();
@@ -105,10 +101,10 @@ public class RadioUtils {
 
     /**
      * Return current cell signal level.
+     *
      * @return Signal level from 0 (no signal) to 4 (good signal) or -1 in case of error.
      */
     @CalledByNative
-    @RequiresApi(Build.VERSION_CODES.P)
     @SuppressWarnings("AssertionSideEffect") // isSupported() caches via sHaveAccessNetworkState.
     private static int getCellSignalLevel() {
         assert isSupported();
@@ -123,7 +119,7 @@ public class RadioUtils {
                 if (signalStrength != null) {
                     level = signalStrength.getLevel();
                 }
-            } catch (java.lang.SecurityException e) {
+            } catch (SecurityException e) {
                 // Sometimes SignalStrength.getLevel() requires extra permissions
                 // that Chrome doesn't have. See crbug.com/1150536.
             }
@@ -133,10 +129,10 @@ public class RadioUtils {
 
     /**
      * Return current cell data activity.
+     *
      * @return 0 - none, 1 - in, 2 - out, 3 - in/out, 4 - dormant, or -1 in case of error.
      */
     @CalledByNative
-    @RequiresApi(Build.VERSION_CODES.P)
     @SuppressWarnings("AssertionSideEffect") // isSupported() caches via sHaveAccessNetworkState.
     private static int getCellDataActivity() {
         assert isSupported();
@@ -147,7 +143,7 @@ public class RadioUtils {
                                     .getSystemService(Context.TELEPHONY_SERVICE);
             try {
                 return telephonyManager.getDataActivity();
-            } catch (java.lang.SecurityException e) {
+            } catch (SecurityException e) {
                 // Just in case getDataActivity() requires extra permissions.
                 return -1;
             }

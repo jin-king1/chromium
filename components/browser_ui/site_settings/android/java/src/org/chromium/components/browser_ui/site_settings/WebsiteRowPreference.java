@@ -4,8 +4,6 @@
 
 package org.chromium.components.browser_ui.site_settings;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.app.Dialog;
 import android.content.Context;
 import android.graphics.Color;
@@ -42,21 +40,25 @@ public class WebsiteRowPreference extends ChromeImageViewPreference {
 
     private @Nullable Dialog mConfirmationDialog;
 
-    private LayoutInflater mLayoutInflater;
+    private final LayoutInflater mLayoutInflater;
 
     private Runnable mOnDeleteCallback;
+
+    private final boolean mIsClickable;
 
     WebsiteRowPreference(
             Context context,
             SiteSettingsDelegate siteSettingsDelegate,
             WebsiteEntry siteEntry,
-            LayoutInflater layoutInflater) {
+            LayoutInflater layoutInflater,
+            boolean isClickable) {
         super(context);
         mSiteSettingsDelegate = siteSettingsDelegate;
         mSiteEntry = siteEntry;
         mLayoutInflater = layoutInflater;
         // Initialize with an empty callback.
         mOnDeleteCallback = CallbackUtils.emptyRunnable();
+        mIsClickable = isClickable;
 
         // To make sure the layout stays stable throughout, we assign a
         // transparent drawable as the icon initially. This is so that
@@ -104,7 +106,6 @@ public class WebsiteRowPreference extends ChromeImageViewPreference {
 
         // Manually apply ListItemStartIcon style to draw the outer circle in the right size.
         ImageView icon = (ImageView) holder.findViewById(android.R.id.icon);
-        assumeNonNull(icon);
         FaviconViewUtils.formatIconForFavicon(getContext().getResources(), icon);
 
         if (!mFaviconFetched) {
@@ -113,6 +114,8 @@ public class WebsiteRowPreference extends ChromeImageViewPreference {
                     mSiteEntry.getFaviconUrl(), this::onFaviconAvailable);
             mFaviconFetched = true;
         }
+
+        setViewClickable(mIsClickable);
     }
 
     public void setOnDeleteCallback(Runnable callback) {
@@ -180,16 +183,16 @@ public class WebsiteRowPreference extends ChromeImageViewPreference {
 
         int cookies = mSiteEntry.getNumberOfCookies();
         if (cookies > 0) {
-            String cookie_str =
+            String cookieStr =
                     getContext()
                             .getResources()
                             .getQuantityString(R.plurals.cookies_count, cookies, cookies);
             if (summary.isEmpty()) {
-                summary = cookie_str;
+                summary = cookieStr;
             } else {
                 summary =
                         getContext()
-                                .getString(R.string.summary_with_one_bullet, cookie_str, summary);
+                                .getString(R.string.summary_with_one_bullet, cookieStr, summary);
             }
         }
 
@@ -199,20 +202,6 @@ public class WebsiteRowPreference extends ChromeImageViewPreference {
                 summary = HTTP;
             } else {
                 summary = getContext().getString(R.string.summary_with_one_bullet, HTTP, summary);
-            }
-        }
-
-        if (mSiteSettingsDelegate.shouldShowPrivacySandboxRwsUi()) {
-            if (mSiteEntry.isPartOfRws()) {
-                String rwsSummary = getContext().getString(R.string.all_sites_rws_label);
-                if (summary.isEmpty()) {
-                    summary = rwsSummary;
-                } else {
-                    summary =
-                            getContext()
-                                    .getString(
-                                            R.string.summary_with_one_bullet, summary, rwsSummary);
-                }
             }
         }
 

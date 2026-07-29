@@ -68,6 +68,7 @@ void AppListTestViewDelegate::OpenSearchResult(
       case ash::AppListLaunchedFrom::kLaunchedFromContinueTask:
       case ash::AppListLaunchedFrom::kLaunchedFromQuickAppAccess:
       case ash::AppListLaunchedFrom::kLaunchedFromDiscoveryChip:
+      case ash::AppListLaunchedFrom::kLaunchedFromSearchBoxIcon:
         return;
       case ash::AppListLaunchedFrom::DEPRECATED_kLaunchedFromSuggestionChip:
         NOTREACHED();
@@ -152,18 +153,9 @@ bool AppListTestViewDelegate::IsCategoryEnabled(
   return true;
 }
 
-ash::AssistantViewDelegate*
-AppListTestViewDelegate::GetAssistantViewDelegate() {
-  return nullptr;
-}
-
 void AppListTestViewDelegate::OnSearchResultVisibilityChanged(
     const std::string& id,
     bool visibility) {}
-
-bool AppListTestViewDelegate::IsAssistantAllowedAndEnabled() const {
-  return false;
-}
 
 void AppListTestViewDelegate::OnStateTransitionAnimationCompleted(
     AppListViewState state,

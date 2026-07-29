@@ -4,6 +4,10 @@
 
 #include "services/screen_ai/proto/visual_annotator_proto_convertor.h"
 
+#include "services/screen_ai/public/mojom/screen_ai_service.mojom.h"
+#include "ui/gfx/geometry/rect.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
 #include <stdint.h>
 
 #include <iterator>
@@ -13,26 +17,24 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "services/screen_ai/public/mojom/screen_ai_service.mojom.h"
 #include "services/strings/grit/services_strings.h"
-#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/accessibility/ax_role_properties.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/transform.h"
 
 namespace ranges = std::ranges;
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace {
 
+#if BUILDFLAG(IS_CHROMEOS)
 // A negative ID for ui::AXNodeID needs to start from -2 as using -1 for this
 // node id is still incorrectly treated as invalid.
 // TODO(crbug.com/40908646): fix code treating -1 as invalid for ui::AXNodeID.
@@ -88,14 +90,12 @@ void SerializeBoundingBox(const chrome_screen_ai::Rect& bounding_box,
                           const ui::AXNodeID& container_id,
                           ui::AXNodeData& out_data) {
   out_data.relative_bounds.bounds = ToGfxRect(bounding_box);
-  // TODO(crbug.com/347622611): Instead of DCHECK, drop empty boxes in
-  // preprocessing.
-  DCHECK(!out_data.relative_bounds.bounds.IsEmpty());
+  CHECK(!out_data.relative_bounds.bounds.IsEmpty());
 }
 
 void SerializeDirection(const chrome_screen_ai::Direction& direction,
                         ui::AXNodeData& out_data) {
-  DCHECK(chrome_screen_ai::Direction_IsValid(direction));
+  CHECK(chrome_screen_ai::Direction_IsValid(direction));
   switch (direction) {
     case chrome_screen_ai::DIRECTION_UNSPECIFIED:
     // We assume that LEFT_TO_RIGHT is the default direction.
@@ -127,7 +127,7 @@ void SerializeDirection(const chrome_screen_ai::Direction& direction,
 
 void SerializeContentType(const chrome_screen_ai::ContentType& content_type,
                           ui::AXNodeData& out_data) {
-  DCHECK(chrome_screen_ai::ContentType_IsValid(content_type));
+  CHECK(chrome_screen_ai::ContentType_IsValid(content_type));
   switch (content_type) {
     case chrome_screen_ai::CONTENT_TYPE_PRINTED_TEXT:
     case chrome_screen_ai::CONTENT_TYPE_HANDWRITTEN_TEXT:
@@ -233,7 +233,7 @@ void UpdateCharacterOffsets(const chrome_screen_ai::WordBox& word_box,
 void SerializeWordBox(const chrome_screen_ai::WordBox& word_box,
                       ui::AXNodeData& inline_text_box,
                       bool space_after_previous_word) {
-  DCHECK_NE(inline_text_box.id, ui::kInvalidAXNodeID);
+  CHECK_NE(inline_text_box.id, ui::kInvalidAXNodeID);
 
   // TODO(crbug.com/347622611): Drop empty words in preprocessing.
   if (word_box.utf8_string().empty()) {
@@ -253,7 +253,9 @@ void SerializeWordBox(const chrome_screen_ai::WordBox& word_box,
   // Word length should specify the number of characters, which differs
   // from the number of bytes in multi-byte characters.
   size_t word_length = base::UTF8ToUTF16(word_box.utf8_string()).length();
-  if (word_box.has_space_after()) {
+  // Add whitespace if it's not empty.
+  if (word_box.whitespace_bounding_box().width() &&
+      word_box.whitespace_bounding_box().height()) {
     inner_text += " ";
     ++word_length;
   }
@@ -275,8 +277,8 @@ void SerializeWordBox(const chrome_screen_ai::WordBox& word_box,
                                       word_starts);
   inline_text_box.AddIntListAttribute(ax::mojom::IntListAttribute::kWordEnds,
                                       word_ends);
-  DCHECK_LE(new_word_start, new_word_end);
-  DCHECK_LE(
+  CHECK_LE(new_word_start, new_word_end);
+  CHECK_LE(
       new_word_end,
       base::checked_cast<int32_t>(
           inline_text_box.GetStringAttribute(ax::mojom::StringAttribute::kName)
@@ -309,16 +311,16 @@ size_t SerializeWordBoxes(const google::protobuf::RepeatedPtrField<
   if (word_boxes.empty()) {
     return 0u;
   }
-  DCHECK_LT(start_from_word_index, word_boxes.size());
-  DCHECK_LT(node_index, node_data.size());
-  DCHECK_NE(static_text_node.id, ui::kInvalidAXNodeID);
+  CHECK_LT(start_from_word_index, word_boxes.size());
+  CHECK_LT(node_index, node_data.size());
+  CHECK_NE(static_text_node.id, ui::kInvalidAXNodeID);
   ui::AXNodeData& inline_text_box_node = node_data[node_index];
-  DCHECK_EQ(inline_text_box_node.role, ax::mojom::Role::kUnknown);
+  CHECK_EQ(inline_text_box_node.role, ax::mojom::Role::kUnknown);
   inline_text_box_node.role = ax::mojom::Role::kInlineTextBox;
   inline_text_box_node.id = GetNextNegativeNodeID();
   // The union of the bounding boxes in this formatting context is set as
   // the bounding box of `inline_text_box_node`.
-  DCHECK(inline_text_box_node.relative_bounds.bounds.IsEmpty());
+  CHECK(inline_text_box_node.relative_bounds.bounds.IsEmpty());
 
   static_text_node.child_ids.push_back(inline_text_box_node.id);
 
@@ -336,7 +338,8 @@ size_t SerializeWordBoxes(const google::protobuf::RepeatedPtrField<
        word_iter != formatting_context_end; ++word_iter) {
     SerializeWordBox(*word_iter, inline_text_box_node,
                      has_space_after_previous_word);
-    has_space_after_previous_word = word_iter->has_space_after();
+    has_space_after_previous_word =
+        word_iter->whitespace_bounding_box().width();
   }
 
   std::string language = formatting_context_start->language();
@@ -366,10 +369,10 @@ size_t SerializeLineBox(const chrome_screen_ai::LineBox& line_box,
                         const size_t index,
                         ui::AXNodeData& parent_node,
                         std::vector<ui::AXNodeData>& node_data) {
-  DCHECK_LT(index, node_data.size());
-  DCHECK_NE(parent_node.id, ui::kInvalidAXNodeID);
+  CHECK_LT(index, node_data.size());
+  CHECK_NE(parent_node.id, ui::kInvalidAXNodeID);
   ui::AXNodeData& line_box_node = node_data[index];
-  DCHECK_EQ(line_box_node.role, ax::mojom::Role::kUnknown);
+  CHECK_EQ(line_box_node.role, ax::mojom::Role::kUnknown);
 
   SerializeContentType(line_box.content_type(), line_box_node);
   line_box_node.id = GetNextNegativeNodeID();
@@ -393,6 +396,7 @@ size_t SerializeLineBox(const chrome_screen_ai::LineBox& line_box,
                                  /* start_from_word_index */ 0, (index + 1u),
                                  line_box_node, node_data);
 }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 gfx::Rect ProtoToMojo(const chrome_screen_ai::Rect& source) {
   gfx::Rect dest;
@@ -427,6 +431,7 @@ screen_ai::mojom::Direction ProtoToMojo(chrome_screen_ai::Direction direction) {
 
 namespace screen_ai {
 
+#if BUILDFLAG(IS_CHROMEOS)
 void ResetNodeIDForTesting() {
   next_negative_node_id = kFirstValidNegativeId;
 }
@@ -472,7 +477,7 @@ ui::AXTreeUpdate VisualAnnotationToAXTreeUpdate(
     // context regardless as to whether the format styles are identical with
     // previous lines or not.
     ++formatting_context_count;
-    DCHECK(!line.words().empty())
+    CHECK(!line.words().empty())
         << "Empty lines should have been pruned in the Screen AI library.";
     for (auto iter = std::cbegin(line.words());
          std::next(iter) != std::cend(line.words()); ++iter) {
@@ -599,6 +604,7 @@ ui::AXTreeUpdate VisualAnnotationToAXTreeUpdate(
 
   return update;
 }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 mojom::VisualAnnotationPtr ConvertProtoToVisualAnnotation(
     const chrome_screen_ai::VisualAnnotation& annotation_proto) {
@@ -621,7 +627,10 @@ mojom::VisualAnnotationPtr ConvertProtoToVisualAnnotation(
       word_box->bounding_box = ProtoToMojo(word.bounding_box());
       word_box->bounding_box_angle = word.bounding_box().angle();
       word_box->direction = ProtoToMojo(word.direction());
-      word_box->has_space_after = word.has_space_after();
+      word_box->whitespace_bounding_box =
+          ProtoToMojo(word.whitespace_bounding_box());
+      word_box->whitespace_bounding_box_angle =
+          word.whitespace_bounding_box().angle();
       word_box->confidence = word.confidence();
       line_box->words.push_back(std::move(word_box));
     }

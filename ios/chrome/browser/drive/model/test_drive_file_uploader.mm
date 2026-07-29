@@ -6,6 +6,7 @@
 
 #import "base/command_line.h"
 #import "base/task/single_thread_task_runner.h"
+#import "base/time/time.h"
 
 namespace {
 
@@ -27,6 +28,18 @@ TestDriveFileUploader::TestDriveFileUploader(id<SystemIdentity> identity)
   } else if (command_line_behavior ==
              kTestDriveFileUploaderCommandLineSwitchSucceed) {
     behavior_ = TestDriveFileUploaderBehavior::kSucceed;
+  } else if (command_line_behavior ==
+             kTestDriveFileUploaderCommandLineSwitchFullStorage) {
+    const int64_t usage_limit = 13'000'000'000;  // 15.0GB
+    const int64_t usage_total = 14'500'000'000;  // 14.5GB
+    const int64_t usage_drive = 14'000'000'000;  // 14.0GB
+    const int64_t usage_trash = 1'000'000'000;   //  1.0GB
+    SetStorageQuotaResult(
+        DriveStorageQuotaResult{.limit = usage_limit,
+                                .usage_in_drive = usage_drive,
+                                .usage_in_drive_trash = usage_trash,
+                                .usage = usage_total,
+                                .error = nil});
   }
 }
 
@@ -34,19 +47,14 @@ TestDriveFileUploader::~TestDriveFileUploader() = default;
 
 #pragma mark - Public
 
-DriveFolderResult TestDriveFileUploader::GetFolderSearchResult() const {
-  if (folder_search_result_) {
-    return *folder_search_result_;
-  }
-  return DriveFolderResult{.folder_identifier = nil, .error = nil};
-}
 
-DriveFolderResult TestDriveFileUploader::GetFolderCreationResult() const {
-  if (folder_creation_result_) {
-    return *folder_creation_result_;
+
+DriveFolderResult TestDriveFileUploader::GetClientFolderResult() const {
+  if (client_folder_result_) {
+    return *client_folder_result_;
   }
-  return DriveFolderResult{.folder_identifier = @"test_folder_identifier",
-                           .error = nil};
+  return DriveFolderResult{
+      .folder_identifier = @"test_client_folder_identifier", .error = nil};
 }
 
 std::vector<DriveFileUploadProgress>
@@ -92,14 +100,11 @@ DriveStorageQuotaResult TestDriveFileUploader::GetStorageQuotaResult() const {
                                  .error = nil};
 }
 
-void TestDriveFileUploader::SetFolderSearchResult(
-    const DriveFolderResult& result) {
-  folder_search_result_ = result;
-}
 
-void TestDriveFileUploader::SetFolderCreationResult(
+
+void TestDriveFileUploader::SetClientFolderResult(
     const DriveFolderResult& result) {
-  folder_creation_result_ = result;
+  client_folder_result_ = result;
 }
 
 void TestDriveFileUploader::SetFileUploadProgressElements(
@@ -117,14 +122,11 @@ void TestDriveFileUploader::SetStorageQuotaResult(
   storage_quota_result_ = result;
 }
 
-void TestDriveFileUploader::SetSearchFolderQuitClosure(
-    base::RepeatingClosure quit_closure) {
-  search_folder_quit_closure_ = std::move(quit_closure);
-}
 
-void TestDriveFileUploader::SetCreateFolderQuitClosure(
+
+void TestDriveFileUploader::SetFetchClientFolderQuitClosure(
     base::RepeatingClosure quit_closure) {
-  create_folder_quit_closure_ = std::move(quit_closure);
+  fetch_client_folder_quit_closure_ = std::move(quit_closure);
 }
 
 void TestDriveFileUploader::SetUploadFileProgressQuitClosure(
@@ -142,12 +144,10 @@ void TestDriveFileUploader::SetFetchStorageQuotaQuitClosure(
   fetch_storage_quota_quit_closure_ = std::move(quit_closure);
 }
 
-NSString* TestDriveFileUploader::GetSearchedFolderName() const {
-  return searched_folder_name_;
-}
 
-NSString* TestDriveFileUploader::GetCreatedFolderName() const {
-  return created_folder_name_;
+
+NSString* TestDriveFileUploader::GetFetchedClientFolderName() const {
+  return fetched_client_folder_name_;
 }
 
 NSURL* TestDriveFileUploader::GetUploadedFileUrl() const {
@@ -180,34 +180,20 @@ void TestDriveFileUploader::CancelCurrentQuery() {
   callbacks_weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
-void TestDriveFileUploader::SearchSaveToDriveFolder(
-    NSString* folder_name,
-    DriveFolderCompletionCallback completion_callback) {
-  searched_folder_name_ = folder_name;
-  auto quit_closure =
-      base::BindRepeating(&TestDriveFileUploader::RunSearchFolderQuitClosure,
-                          callbacks_weak_ptr_factory_.GetWeakPtr());
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&TestDriveFileUploader::ReportFolderSearchResult,
-                     callbacks_weak_ptr_factory_.GetWeakPtr(),
-                     std::move(completion_callback), GetFolderSearchResult())
-          .Then(quit_closure),
-      kTestDriveFileUploaderTimeConstant);
-}
 
-void TestDriveFileUploader::CreateSaveToDriveFolder(
+
+void TestDriveFileUploader::FetchSaveToDriveClientFolder(
     NSString* folder_name,
     DriveFolderCompletionCallback completion_callback) {
-  created_folder_name_ = folder_name;
-  auto quit_closure =
-      base::BindRepeating(&TestDriveFileUploader::RunCreateFolderQuitClosure,
-                          callbacks_weak_ptr_factory_.GetWeakPtr());
+  fetched_client_folder_name_ = folder_name;
+  auto quit_closure = base::BindRepeating(
+      &TestDriveFileUploader::RunFetchClientFolderQuitClosure,
+      callbacks_weak_ptr_factory_.GetWeakPtr());
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
-      base::BindOnce(&TestDriveFileUploader::ReportFolderCreationResult,
+      base::BindOnce(&TestDriveFileUploader::ReportClientFolderResult,
                      callbacks_weak_ptr_factory_.GetWeakPtr(),
-                     std::move(completion_callback), GetFolderCreationResult())
+                     std::move(completion_callback), GetClientFolderResult())
           .Then(quit_closure),
       kTestDriveFileUploaderTimeConstant);
 }
@@ -270,16 +256,12 @@ void TestDriveFileUploader::FetchStorageQuota(
 
 #pragma mark - Private
 
-void TestDriveFileUploader::ReportFolderSearchResult(
-    DriveFolderCompletionCallback completion_callback,
-    DriveFolderResult folder_search_result) {
-  std::move(completion_callback).Run(folder_search_result);
-}
 
-void TestDriveFileUploader::ReportFolderCreationResult(
+
+void TestDriveFileUploader::ReportClientFolderResult(
     DriveFolderCompletionCallback completion_callback,
-    DriveFolderResult folder_creation_result) {
-  std::move(completion_callback).Run(folder_creation_result);
+    DriveFolderResult client_folder_result) {
+  std::move(completion_callback).Run(client_folder_result);
 }
 
 void TestDriveFileUploader::ReportFileUploadProgress(
@@ -301,12 +283,10 @@ void TestDriveFileUploader::ReportStorageQuotaResult(
   std::move(completion_callback).Run(storage_quota_result);
 }
 
-void TestDriveFileUploader::RunSearchFolderQuitClosure() {
-  search_folder_quit_closure_.Run();
-}
 
-void TestDriveFileUploader::RunCreateFolderQuitClosure() {
-  create_folder_quit_closure_.Run();
+
+void TestDriveFileUploader::RunFetchClientFolderQuitClosure() {
+  fetch_client_folder_quit_closure_.Run();
 }
 
 void TestDriveFileUploader::RunUploadFileProgressQuitClosure() {

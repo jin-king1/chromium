@@ -31,19 +31,14 @@
 
 namespace blink {
 
-int IntValueForLength(const Length& length, int maximum_value) {
-  return ValueForLength(length, LayoutUnit(maximum_value)).ToInt();
-}
-
 float FloatValueForLength(const Length& length,
                           float maximum_value,
                           const EvaluationInput& input) {
   switch (length.GetType()) {
     case Length::kFixed:
-      return length.GetFloatValue();
+      return length.Pixels();
     case Length::kPercent:
       return ClampTo<float>(maximum_value * length.Percent() / 100.0f);
-    case Length::kFillAvailable:
     case Length::kStretch:
     case Length::kAuto:
       return static_cast<float>(maximum_value);
@@ -55,10 +50,8 @@ float FloatValueForLength(const Length& length,
     case Length::kFitContent:
     case Length::kContent:
     case Length::kFlex:
-    case Length::kExtendToZoom:
-    case Length::kDeviceWidth:
-    case Length::kDeviceHeight:
     case Length::kNone:
+    case Length::kOverlapJoin:
       NOTREACHED();
   }
   NOTREACHED();
@@ -75,7 +68,6 @@ LayoutUnit MinimumValueForLengthInternal(const Length& length,
           static_cast<float>(maximum_value * length.Percent() / 100.0f));
     case Length::kCalculated:
       return LayoutUnit(length.NonNanCalculatedValue(maximum_value, input));
-    case Length::kFillAvailable:
     case Length::kStretch:
     case Length::kAuto:
       return LayoutUnit();
@@ -86,10 +78,8 @@ LayoutUnit MinimumValueForLengthInternal(const Length& length,
     case Length::kFitContent:
     case Length::kContent:
     case Length::kFlex:
-    case Length::kExtendToZoom:
-    case Length::kDeviceWidth:
-    case Length::kDeviceHeight:
     case Length::kNone:
+    case Length::kOverlapJoin:
       NOTREACHED();
   }
   NOTREACHED();
@@ -103,7 +93,6 @@ LayoutUnit ValueForLength(const Length& length,
     case Length::kPercent:
     case Length::kCalculated:
       return MinimumValueForLength(length, maximum_value, input);
-    case Length::kFillAvailable:
     case Length::kStretch:
     case Length::kAuto:
       return maximum_value;
@@ -113,10 +102,8 @@ LayoutUnit ValueForLength(const Length& length,
     case Length::kFitContent:
     case Length::kContent:
     case Length::kFlex:
-    case Length::kExtendToZoom:
-    case Length::kDeviceWidth:
-    case Length::kDeviceHeight:
     case Length::kNone:
+    case Length::kOverlapJoin:
       NOTREACHED();
   }
   NOTREACHED();

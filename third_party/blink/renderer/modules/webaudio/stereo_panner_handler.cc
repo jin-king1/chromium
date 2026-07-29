@@ -19,7 +19,7 @@ namespace blink {
 
 namespace {
 
-// A PannerNode only supports 1 or 2 channels
+// A StereoPannerNode only supports 1 or 2 channels.
 constexpr unsigned kMinimumOutputChannels = 1;
 constexpr unsigned kMaximumOutputChannels = 2;
 
@@ -30,8 +30,7 @@ StereoPannerHandler::StereoPannerHandler(AudioNode& node,
                                          AudioParamHandler& pan)
     : AudioHandler(NodeType::kNodeTypeStereoPanner, node, sample_rate),
       pan_(&pan),
-      sample_accurate_pan_values_(
-          GetDeferredTaskHandler().RenderQuantumFrames()) {
+      sample_accurate_pan_values_(node.context()->renderQuantumSize()) {
   AddInput();
   AddOutput(kMaximumOutputChannels);
 
@@ -74,10 +73,11 @@ void StereoPannerHandler::Process(uint32_t frames_to_process) {
   if (is_sample_accurate && pan_->IsAudioRate()) {
     // Apply sample-accurate panning specified by AudioParam automation.
     DCHECK_LE(frames_to_process, sample_accurate_pan_values_.size());
-    float* pan_values = sample_accurate_pan_values_.Data();
-    pan_->CalculateSampleAccurateValues(pan_values, frames_to_process);
-    stereo_panner_->PanWithSampleAccurateValues(input_bus.get(), output_bus,
-                                                pan_values, frames_to_process);
+    pan_->CalculateSampleAccurateValues(
+        sample_accurate_pan_values_.as_span().first(frames_to_process));
+    stereo_panner_->PanWithSampleAccurateValues(
+        input_bus.get(), output_bus,
+        sample_accurate_pan_values_.as_span().first(frames_to_process));
     return;
   }
 
@@ -91,17 +91,10 @@ void StereoPannerHandler::Process(uint32_t frames_to_process) {
 }
 
 void StereoPannerHandler::ProcessOnlyAudioParams(uint32_t frames_to_process) {
-  // TODO(crbug.com/40637820): Eventually, the render quantum size will no
-  // longer be hardcoded as 128. At that point, we'll need to switch from
-  // stack allocation to heap allocation.
-  constexpr unsigned render_quantum_frames_expected = 128;
-  CHECK_EQ(GetDeferredTaskHandler().RenderQuantumFrames(),
-           render_quantum_frames_expected);
+  DCHECK_LE(frames_to_process, sample_accurate_pan_values_.size());
 
-  float values[render_quantum_frames_expected];
-  DCHECK_LE(frames_to_process, render_quantum_frames_expected);
-
-  pan_->CalculateSampleAccurateValues(values, frames_to_process);
+  pan_->CalculateSampleAccurateValues(
+      sample_accurate_pan_values_.as_span().first(frames_to_process));
 }
 
 void StereoPannerHandler::Initialize() {
@@ -117,7 +110,8 @@ void StereoPannerHandler::Initialize() {
 void StereoPannerHandler::SetChannelCount(unsigned channel_count,
                                           ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(Context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      Context()->GetDeferredTaskHandler());
 
   if (channel_count >= kMinimumOutputChannels &&
       channel_count <= kMaximumOutputChannels) {
@@ -140,7 +134,8 @@ void StereoPannerHandler::SetChannelCount(unsigned channel_count,
 void StereoPannerHandler::SetChannelCountMode(V8ChannelCountMode::Enum mode,
                                               ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(Context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      Context()->GetDeferredTaskHandler());
 
   V8ChannelCountMode::Enum old_mode = InternalChannelCountMode();
 

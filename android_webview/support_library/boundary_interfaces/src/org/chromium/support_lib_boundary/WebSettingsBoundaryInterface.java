@@ -4,14 +4,17 @@
 
 package org.chromium.support_lib_boundary;
 
+import androidx.annotation.IntDef;
+
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.lang.reflect.InvocationHandler;
 import java.util.Map;
-import java.util.Set;
 
 // Technically this interface is not needed until we add a method to WebSettings with an
 // android.webkit parameter or android.webkit return value. But for forwards compatibility all
@@ -69,10 +72,6 @@ public interface WebSettingsBoundaryInterface {
     @WebauthnSupport
     int getWebauthnSupport();
 
-    void setRequestedWithHeaderOriginAllowList(Set<String> allowedOriginRules);
-
-    Set<String> getRequestedWithHeaderOriginAllowList();
-
     void setEnterpriseAuthenticationAppLinkPolicyEnabled(boolean enabled);
 
     boolean getEnterpriseAuthenticationAppLinkPolicyEnabled();
@@ -81,6 +80,7 @@ public interface WebSettingsBoundaryInterface {
 
     Map<String, Object> getUserAgentMetadataMap();
 
+    @Deprecated
     @Retention(RetentionPolicy.SOURCE)
     @interface AttributionBehavior {
         int DISABLED = 0;
@@ -89,8 +89,10 @@ public interface WebSettingsBoundaryInterface {
         int APP_SOURCE_AND_APP_TRIGGER = 3;
     }
 
+    @Deprecated
     void setAttributionBehavior(@AttributionBehavior int behavior);
 
+    @Deprecated
     @AttributionBehavior
     int getAttributionBehavior();
 
@@ -125,4 +127,63 @@ public interface WebSettingsBoundaryInterface {
     void setBackForwardCacheEnabled(boolean backForwardCacheEnabled);
 
     boolean getBackForwardCacheEnabled();
+
+    void setBackForwardCacheSettings(
+            /* BackForwardCacheSettings */ InvocationHandler backForwardCacheSettings);
+
+    @Nullable /* BackForwardCacheSettings */ InvocationHandler getBackForwardCacheSettings();
+
+    void setPaymentRequestEnabled(boolean enabled);
+
+    boolean getPaymentRequestEnabled();
+
+    void setHasEnrolledInstrumentEnabled(boolean enabled);
+
+    boolean getHasEnrolledInstrumentEnabled();
+
+    void setIncludeCookiesOnIntercept(boolean includeCookiesOnIntercept);
+
+    boolean getIncludeCookiesOnIntercept();
+
+    /**
+     * Do not change these constants. Apps rely on them for compatibility across WebView versions.
+     */
+
+    // LINT.IfChange(BoundaryHyperlinkContextMenuItems)
+    @IntDef(
+            flag = true,
+            value = {
+                HyperlinkContextMenuItems.DISABLED,
+                HyperlinkContextMenuItems.COPY_LINK_ADDRESS,
+                HyperlinkContextMenuItems.COPY_LINK_TEXT,
+                HyperlinkContextMenuItems.OPEN_LINK
+            })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface HyperlinkContextMenuItems {
+        int DISABLED = 0;
+        int COPY_LINK_ADDRESS = 1; // 2^0
+        int COPY_LINK_TEXT = 1 << 1; // 2^1
+        int OPEN_LINK = 1 << 2; // 2^2
+    }
+
+    // LINT.ThenChange(/android_webview/java/src/org/chromium/android_webview/AwSettings.java:AwSettingsHyperlinkContextMenuItems)
+
+    void setHyperlinkContextMenuItems(@HyperlinkContextMenuItems int hyperlinkMenuItems);
+
+    void setBackForwardCacheSettingsTimeout(long timeout);
+
+    void setBackForwardCacheSettingsMaxPagesInCache(int pagesInCache);
+
+    void setBackForwardCacheSettingsKeepForwardEntries(
+            boolean keepForwardEntries);
+
+    long getBackForwardCacheSettingsTimeout();
+
+    int getBackForwardCacheSettingsMaxPagesInCache();
+
+    boolean getBackForwardCacheSettingsKeepForwardEntries();
+
+    void setDownloadFaviconsEnabled(boolean enabled);
+
+    boolean getDownloadFaviconsEnabled();
 }

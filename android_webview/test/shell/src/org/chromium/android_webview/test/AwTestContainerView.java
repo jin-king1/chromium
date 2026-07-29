@@ -20,6 +20,7 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.accessibility.AccessibilityNodeProvider;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -41,7 +42,7 @@ public class AwTestContainerView extends FrameLayout {
     private static Handler sRenderThreadHandler;
 
     private AwContents mAwContents;
-    private AwContents.InternalAccessDelegate mInternalAccessDelegate;
+    private final AwContents.InternalAccessDelegate mInternalAccessDelegate;
 
     private HardwareView mHardwareView;
     private boolean mAttachedContents;
@@ -84,7 +85,7 @@ public class AwTestContainerView extends FrameLayout {
         private int mLastScrollX;
         private int mLastScrollY;
         private boolean mHaveSurface;
-        private SurfaceView mOverlaysSurfaceView;
+        private final SurfaceView mOverlaysSurfaceView;
 
         // Only accessed on render thread.
         private final ContextManager mContextManager;
@@ -208,16 +209,23 @@ public class AwTestContainerView extends FrameLayout {
 
     private static boolean sCreatedOnce;
 
-    private HardwareView createHardwareViewOnlyOnce(Context context) {
-        if (sCreatedOnce) return null;
+    private HardwareView createHardwareView(Context context, boolean allowMultiple) {
+        if (!allowMultiple && sCreatedOnce) return null;
         sCreatedOnce = true;
         return new HardwareView(context);
     }
 
     public AwTestContainerView(Context context, boolean allowHardwareAcceleration) {
+        this(context, allowHardwareAcceleration, false);
+    }
+
+    public AwTestContainerView(
+            Context context,
+            boolean allowHardwareAcceleration,
+            boolean allowMultipleHardwareViews) {
         super(context);
         if (allowHardwareAcceleration) {
-            mHardwareView = createHardwareViewOnlyOnce(context);
+            mHardwareView = createHardwareView(context, allowMultipleHardwareViews);
         }
         if (isBackedByHardwareView()) {
             addView(
@@ -274,8 +282,19 @@ public class AwTestContainerView extends FrameLayout {
         return mAwContents;
     }
 
-    public AwContents.NativeDrawFunctorFactory getNativeDrawFunctorFactory() {
-        return new NativeDrawFunctorFactory();
+    public static class RoutingDrawFnAccess implements AwDrawFnImpl.DrawFnAccess {
+        private HardwareView mHardwareView;
+
+        public void setHardwareView(HardwareView hardwareView) {
+            mHardwareView = hardwareView;
+        }
+
+        @Override
+        public void drawWebViewFunctor(Canvas canvas, int functor) {
+            if (mHardwareView != null) {
+                mHardwareView.drawWebViewFunctor(functor);
+            }
+        }
     }
 
     public AwContents.InternalAccessDelegate getInternalAccessDelegate() {
@@ -289,12 +308,12 @@ public class AwTestContainerView extends FrameLayout {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        mAwContents.onConfigurationChanged(newConfig);
+        mAwContents.getViewMethods().onConfigurationChanged(newConfig);
     }
 
     private void attachedContentsInternal() {
         assert !mAttachedContents;
-        mAwContents.onAttachedToWindow();
+        mAwContents.getViewMethods().onAttachedToWindow();
         mAttachedContents = true;
     }
 
@@ -308,7 +327,7 @@ public class AwTestContainerView extends FrameLayout {
     public void onDetachedFromWindow() {
         super.onDetachedFromWindow();
         if (mAttachedContents) {
-            mAwContents.onDetachedFromWindow();
+            mAwContents.getViewMethods().onDetachedFromWindow();
             mAttachedContents = false;
         }
     }
@@ -316,127 +335,128 @@ public class AwTestContainerView extends FrameLayout {
     @Override
     public void onFocusChanged(boolean focused, int direction, Rect previouslyFocusedRect) {
         super.onFocusChanged(focused, direction, previouslyFocusedRect);
-        mAwContents.onFocusChanged(focused, direction, previouslyFocusedRect);
+        mAwContents.getViewMethods().onFocusChanged(focused, direction, previouslyFocusedRect);
     }
 
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
-        return mAwContents.onCreateInputConnection(outAttrs);
+        return mAwContents.getViewMethods().onCreateInputConnection(outAttrs);
     }
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
-        return mAwContents.onKeyUp(keyCode, event);
+        return mAwContents.getViewMethods().onKeyUp(keyCode, event);
     }
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        return mAwContents.dispatchKeyEvent(event);
+        return mAwContents.getViewMethods().dispatchKeyEvent(event);
     }
 
     @Override
     public void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-        mAwContents.onMeasure(widthMeasureSpec, heightMeasureSpec);
+        mAwContents.getViewMethods().onMeasure(widthMeasureSpec, heightMeasureSpec);
     }
 
     @Override
     public void onSizeChanged(int w, int h, int ow, int oh) {
         super.onSizeChanged(w, h, ow, oh);
-        mAwContents.onSizeChanged(w, h, ow, oh);
+        mAwContents.getViewMethods().onSizeChanged(w, h, ow, oh);
     }
 
     @Override
     public void onOverScrolled(int scrollX, int scrollY, boolean clampedX, boolean clampedY) {
-        mAwContents.onContainerViewOverScrolled(scrollX, scrollY, clampedX, clampedY);
+        mAwContents
+                .getViewMethods()
+                .onContainerViewOverScrolled(scrollX, scrollY, clampedX, clampedY);
     }
 
     @Override
     public void onScrollChanged(int l, int t, int oldl, int oldt) {
         super.onScrollChanged(l, t, oldl, oldt);
         if (mAwContents != null) {
-            mAwContents.onContainerViewScrollChanged(l, t, oldl, oldt);
+            mAwContents.getViewMethods().onContainerViewScrollChanged(l, t, oldl, oldt);
         }
     }
 
     @Override
     public void computeScroll() {
-        mAwContents.computeScroll();
+        mAwContents.getViewMethods().computeScroll();
     }
 
     @Override
     public void onVisibilityChanged(View changedView, int visibility) {
         super.onVisibilityChanged(changedView, visibility);
-        mAwContents.onVisibilityChanged(changedView, visibility);
+        mAwContents.getViewMethods().onVisibilityChanged(changedView, visibility);
     }
 
     @Override
     public void onWindowVisibilityChanged(int visibility) {
         super.onWindowVisibilityChanged(visibility);
-        mAwContents.onWindowVisibilityChanged(visibility);
+        mAwContents.getViewMethods().onWindowVisibilityChanged(visibility);
+    }
+
+    @Override
+    public WindowInsets onApplyWindowInsets(WindowInsets insets) {
+        return mAwContents.onApplyWindowInsets(insets);
     }
 
     @Override
     public boolean onTouchEvent(MotionEvent ev) {
         super.onTouchEvent(ev);
-        return mAwContents.onTouchEvent(ev);
+        return mAwContents.getViewMethods().onTouchEvent(ev);
     }
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent ev) {
         super.onGenericMotionEvent(ev);
-        return mAwContents.onGenericMotionEvent(ev);
+        return mAwContents.getViewMethods().onGenericMotionEvent(ev);
     }
 
     @Override
     public boolean onHoverEvent(MotionEvent ev) {
         super.onHoverEvent(ev);
-        return mAwContents.onHoverEvent(ev);
+        return mAwContents.getViewMethods().onHoverEvent(ev);
     }
 
     @Override
     public void onDraw(Canvas canvas) {
-        if (isBackedByHardwareView()) {
-            mHardwareView.updateScroll(getScrollX(), getScrollY());
+        RoutingDrawFnAccess routingAccess = null;
+        if (mAwContents != null) {
+            routingAccess = (RoutingDrawFnAccess) mAwContents.getDrawFnAccess();
+            routingAccess.setHardwareView(mHardwareView);
         }
-        mAwContents.onDraw(canvas);
+        try {
+            if (isBackedByHardwareView()) {
+                mHardwareView.updateScroll(getScrollX(), getScrollY());
+            }
+            if (mAwContents != null) {
+                mAwContents.getViewMethods().onDraw(canvas);
+            }
+        } finally {
+            if (routingAccess != null) {
+                routingAccess.setHardwareView(null);
+            }
+        }
         super.onDraw(canvas);
     }
 
     @Override
     public AccessibilityNodeProvider getAccessibilityNodeProvider() {
-        AccessibilityNodeProvider provider = mAwContents.getAccessibilityNodeProvider();
+        AccessibilityNodeProvider provider =
+                mAwContents.getViewMethods().getAccessibilityNodeProvider();
         return provider == null ? super.getAccessibilityNodeProvider() : provider;
     }
 
     @Override
     public boolean performAccessibilityAction(int action, Bundle arguments) {
-        return mAwContents.performAccessibilityAction(action, arguments);
+        return mAwContents.getViewMethods().performAccessibilityAction(action, arguments);
     }
 
     @Override
     public boolean onDragEvent(DragEvent event) {
-        return mAwContents.onDragEvent(event);
-    }
-
-    private class NativeDrawFunctorFactory implements AwContents.NativeDrawFunctorFactory {
-        @Override
-        public AwContents.NativeDrawGLFunctor createGLFunctor(long context) {
-            return null;
-        }
-
-        @Override
-        public AwDrawFnImpl.DrawFnAccess getDrawFnAccess() {
-            return new DrawFnAccess();
-        }
-    }
-
-    private class DrawFnAccess implements AwDrawFnImpl.DrawFnAccess {
-        @Override
-        public void drawWebViewFunctor(Canvas canvas, int functor) {
-            assert isBackedByHardwareView();
-            mHardwareView.drawWebViewFunctor(functor);
-        }
+        return mAwContents.getViewMethods().onDragEvent(event);
     }
 
     // TODO: AwContents could define a generic class that holds an implementation similar to

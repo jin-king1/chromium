@@ -7,10 +7,10 @@
 
 #include <map>
 #include <set>
+#include <vector>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
 #include "base/time/time.h"
 #include "components/keyed_service/core/keyed_service.h"
 #import "components/signin/ios/browser/manage_accounts_delegate.h"
@@ -27,6 +27,7 @@ class CookieManager;
 }
 
 class AccountReconcilor;
+class PrefService;
 
 // Handles actions necessary for keeping the list of Google accounts available
 // on the web and those available on the iOS device from first-party Google apps
@@ -42,7 +43,8 @@ class AccountConsistencyService : public KeyedService,
 
   AccountConsistencyService(CookieManagerCallback cookie_manager_cb,
                             AccountReconcilor* account_reconcilor,
-                            signin::IdentityManager* identity_manager);
+                            signin::IdentityManager* identity_manager,
+                            PrefService* prefs);
 
   AccountConsistencyService(const AccountConsistencyService&) = delete;
   AccountConsistencyService& operator=(const AccountConsistencyService&) =
@@ -120,10 +122,13 @@ class AccountConsistencyService : public KeyedService,
   CookieManagerCallback cookie_manager_cb_;
   // Service managing accounts reconciliation, notified of GAIA responses with
   // the X-Chrome-Manage-Accounts header
-  raw_ptr<AccountReconcilor> account_reconcilor_;
+  raw_ptr<AccountReconcilor, DanglingUntriaged> account_reconcilor_;
   // Identity manager, observed to be notified of primary account signin and
   // signout events.
-  raw_ptr<signin::IdentityManager> identity_manager_;
+  raw_ptr<signin::IdentityManager, DanglingUntriaged> identity_manager_;
+
+  // Pref service to check for incognito mode availability.
+  raw_ptr<PrefService> prefs_;
 
   // The number of cookie manager requests that are being processed.
   // Used for testing purposes only.

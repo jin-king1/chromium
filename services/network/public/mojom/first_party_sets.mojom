@@ -7,12 +7,6 @@ module network.mojom;
 import "mojo/public/mojom/base/version.mojom";
 import "services/network/public/mojom/schemeful_site.mojom";
 
-// This struct should match net::FirstPartySetEntry::SiteIndex in
-// //net/first_party_sets/first_party_set_entry.h
-struct SiteIndex {
-  uint32 value;
-};
-
 // This enum should match //net/first_party_sets/first_party_set_entry.h.
 enum SiteType {
   kPrimary,
@@ -24,7 +18,6 @@ enum SiteType {
 struct FirstPartySetEntry {
   SchemefulSite primary;
   SiteType site_type;
-  SiteIndex? site_index;
 };
 
 // This struct must match the class fields defined in
@@ -67,9 +60,8 @@ struct FirstPartySetsCacheFilter {
   map<SchemefulSite, int64> filter;
 
   // The id of the current browser run, to mark the cache entry when persisting.
-  // The cache filter should be no-op if this is 0.
-  // TODO(crbug.com/40489779): Make this optional.
-  int64 browser_run_id = 0;
+  // The cache filter should be no-op if this is unset.
+  int64? browser_run_id;
 };
 
 // This struct must match the class fields defined in
@@ -80,11 +72,8 @@ struct GlobalFirstPartySets {
   // corrupted. Entries and aliases from invalid components are ignored.
   mojo_base.mojom.Version public_sets_version;
 
-  // The mapping from site to FPS entry from public sets.
-  map<SchemefulSite, FirstPartySetEntry> sets;
-
-  // The mapping from site alias to canonical site from public sets.
-  map<SchemefulSite, SchemefulSite> aliases;
+  // The config induced by the public sets. Contains all relevant ccTLD aliases.
+  FirstPartySetsContextConfig public_config;
 
   // The config induced by the manually-supplied set. This config contains all
   // relevant ccTLD aliases.

@@ -9,11 +9,11 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
 #include "chromeos/ash/services/multidevice_setup/account_status_change_delegate_notifier.h"
 #include "chromeos/ash/services/multidevice_setup/host_status_provider.h"
 #include "chromeos/ash/services/multidevice_setup/public/cpp/oobe_completion_tracker.h"
 #include "chromeos/ash/services/multidevice_setup/public/mojom/multidevice_setup.mojom.h"
-#include "components/session_manager/core/session_manager_observer.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
@@ -36,8 +36,7 @@ class HostDeviceTimestampManager;
 class AccountStatusChangeDelegateNotifierImpl
     : public AccountStatusChangeDelegateNotifier,
       public HostStatusProvider::Observer,
-      public OobeCompletionTracker::Observer,
-      public session_manager::SessionManagerObserver {
+      public OobeCompletionTracker::Observer {
  public:
   class Factory {
    public:
@@ -105,18 +104,9 @@ class AccountStatusChangeDelegateNotifierImpl
   // OobeCompletionTracker::Observer:
   void OnOobeCompleted() override;
 
-  // SessionManagerObserver::
-  void OnSessionStateChanged() override;
-
-  void UpdateSessionStartTimeIfEligible();
-
-  bool IsInPhoneHubNotificationExperimentGroup();
-
   void CheckForMultiDeviceEvents(
       const HostStatusProvider::HostStatusWithDevice& host_status_with_device);
 
-  void CheckForNewUserPotentialHostExistsEvent(
-      const HostStatusProvider::HostStatusWithDevice& host_status_with_device);
   void CheckForNoLongerNewUserEvent(
       const HostStatusProvider::HostStatusWithDevice& host_status_with_device,
       const std::optional<mojom::HostStatus> host_status_before_update);
@@ -143,6 +133,12 @@ class AccountStatusChangeDelegateNotifierImpl
   raw_ptr<HostDeviceTimestampManager> host_device_timestamp_manager_;
   raw_ptr<OobeCompletionTracker> oobe_completion_tracker_;
   raw_ptr<base::Clock> clock_;
+
+  base::ScopedObservation<HostStatusProvider, HostStatusProvider::Observer>
+      host_status_provider_observation_{this};
+  base::ScopedObservation<OobeCompletionTracker,
+                          OobeCompletionTracker::Observer>
+      oobe_completion_tracker_observation_{this};
 };
 
 }  // namespace multidevice_setup

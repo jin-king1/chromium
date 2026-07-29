@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/vaapi/test/vp9_decoder.h"
 
 #include <va/va.h>
 
 #include <bitset>
 
+#include "base/compiler_specific.h"
 #include "base/numerics/safe_conversions.h"
 #include "media/gpu/macros.h"
 #include "media/gpu/vaapi/test/macros.h"
@@ -61,8 +57,7 @@ Vp9Decoder::Vp9Decoder(std::unique_ptr<IvfParser> ivf_parser,
                        const VaapiDevice& va_device,
                        SharedVASurface::FetchPolicy fetch_policy)
     : VideoDecoder::VideoDecoder(va_device, fetch_policy),
-      vp9_parser_(
-          std::make_unique<Vp9Parser>(/*parsing_compressed_header=*/false)),
+      vp9_parser_(std::make_unique<Vp9Parser>()),
       ref_frames_(kVp9NumRefFrames),
       ivf_parser_(std::move(ivf_parser)) {}
 
@@ -87,13 +82,14 @@ Vp9Parser::Result Vp9Decoder::ReadNextFrame(Vp9FrameHeader& vp9_frame_header,
         vp9_parser_->ParseNextFrame(&vp9_frame_header, &size, &null_config);
     if (res == Vp9Parser::kEOStream) {
       IvfFrameHeader ivf_frame_header{};
-      const uint8_t* ivf_frame_data;
+      base::span<const uint8_t> ivf_frame_data =
+          ivf_parser_->ParseNextFrame(&ivf_frame_header);
 
-      if (!ivf_parser_->ParseNextFrame(&ivf_frame_header, &ivf_frame_data))
+      if (ivf_frame_data.empty()) {
         return Vp9Parser::kEOStream;
+      }
 
-      vp9_parser_->SetStream(ivf_frame_data, ivf_frame_header.frame_size,
-                             /*stream_config=*/nullptr);
+      vp9_parser_->SetStream(ivf_frame_data, /*stream_config=*/nullptr);
       continue;
     }
 
@@ -173,7 +169,7 @@ VideoDecoder::Result Vp9Decoder::DecodeNextFrame() {
   CHECK_EQ(kVp9NumRefFrames, std::size(pic_param.reference_frames));
   CHECK_EQ(kVp9NumRefFrames, ref_frames_.size());
   for (size_t i = 0; i < std::size(pic_param.reference_frames); ++i) {
-    pic_param.reference_frames[i] =
+    UNSAFE_TODO(pic_param.reference_frames[i]) =
         ref_frames_[i] ? ref_frames_[i]->id() : VA_INVALID_SURFACE;
   }
 
@@ -238,7 +234,7 @@ VideoDecoder::Result Vp9Decoder::DecodeNextFrame() {
   slice_param.slice_data_flag = VA_SLICE_DATA_FLAG_ALL;
 
   for (size_t i = 0; i < std::size(slice_param.seg_param); ++i) {
-    VASegmentParameterVP9& seg_param = slice_param.seg_param[i];
+    VASegmentParameterVP9& seg_param = UNSAFE_TODO(slice_param.seg_param[i]);
 #define SEG_TO_SP_SF(a, b) seg_param.segment_flags.fields.a = b
     SEG_TO_SP_SF(
         segment_reference_enabled,
@@ -249,7 +245,7 @@ VideoDecoder::Result Vp9Decoder::DecodeNextFrame() {
                  seg.FeatureEnabled(i, Vp9SegmentationParams::SEG_LVL_SKIP));
 #undef SEG_TO_SP_SF
 
-    SafeArrayMemcpy(seg_param.filter_level, lf.lvl[i]);
+    SafeArrayMemcpy(seg_param.filter_level, UNSAFE_TODO(lf.lvl[i]));
 
     seg_param.luma_dc_quant_scale = seg.y_dequant[i][0];
     seg_param.luma_ac_quant_scale = seg.y_dequant[i][1];

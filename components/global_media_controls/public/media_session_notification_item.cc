@@ -10,6 +10,7 @@
 #include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "components/global_media_controls/public/constants.h"
 #include "components/media_message_center/media_notification_util.h"
@@ -20,6 +21,7 @@
 #include "services/media_session/public/cpp/util.h"
 #include "services/media_session/public/mojom/media_controller.mojom.h"
 #include "services/media_session/public/mojom/media_session.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/image/image.h"
 
@@ -35,9 +37,6 @@ media_message_center::Source GetSourceFromName(const std::string& name) {
 
   if (name == "arc")
     return media_message_center::Source::kArc;
-
-  if (name == "assistant")
-    return media_message_center::Source::kAssistant;
 
   return media_message_center::Source::kUnknown;
 }
@@ -62,11 +61,13 @@ MediaSessionNotificationItem::MediaSessionNotificationItem(
     const std::string& source_name,
     const std::optional<base::UnguessableToken>& source_id,
     mojo::Remote<media_session::mojom::MediaController> controller,
-    media_session::mojom::MediaSessionInfoPtr session_info)
+    media_session::mojom::MediaSessionInfoPtr session_info,
+    bool always_hidden)
     : delegate_(delegate),
       request_id_(request_id),
       source_(GetSourceFromName(source_name)),
-      source_id_(source_id) {
+      source_id_(source_id),
+      always_hidden_(always_hidden) {
   DCHECK(delegate_);
 
   SetController(std::move(controller), std::move(session_info));
@@ -146,13 +147,16 @@ void MediaSessionNotificationItem::UpdateDeviceName(
   if (view_ && !frozen_) {
     view_->UpdateWithMediaMetadata(GetSessionMetadata());
     view_->UpdateWithVectorIcon(
-        device_name_ ? &vector_icons::kMediaRouterIdleIcon : nullptr);
+        device_name_ ? &(features::IsRoundedIconsEnabled()
+                             ? vector_icons::kCastIcon
+                             : vector_icons::kMediaRouterIdleOldIcon)
+                     : nullptr);
   }
 }
 
 void MediaSessionNotificationItem::UpdatePresentationRequestOrigin(
-    const url::Origin& origin) {
-  if (!media_message_center::IsOriginGoodForDisplay(origin)) {
+    const std::optional<url::Origin>& origin) {
+  if (origin && !media_message_center::IsOriginGoodForDisplay(*origin)) {
     return;
   }
 
@@ -219,8 +223,6 @@ void MediaSessionNotificationItem::SetView(
     }
     if (session_favicon_.has_value())
       view_->UpdateWithFavicon(*session_favicon_);
-  } else {
-    optional_presentation_request_origin_.reset();
   }
 }
 
@@ -380,9 +382,7 @@ media_session::MediaMetadata MediaSessionNotificationItem::GetSessionMetadata()
 
   bool add_device_name_to_source_title = !!device_name_;
 #if !BUILDFLAG(IS_CHROMEOS)
-  // Never include the device name for updated media UI on non-CrOS.
-  add_device_name_to_source_title &=
-      !base::FeatureList::IsEnabled(media::kGlobalMediaControlsUpdatedUI);
+  add_device_name_to_source_title = false;
 #endif
 
   if (add_device_name_to_source_title) {
@@ -411,6 +411,10 @@ MediaSessionNotificationItem::GetMediaSessionActions() const {
 }
 
 bool MediaSessionNotificationItem::ShouldShowNotification() const {
+  if (always_hidden_) {
+    return false;
+  }
+
   // Hide the media notification if it is not controllable or the notification
   // title is missing.
   if (!session_info_ || !session_info_->is_controllable ||
@@ -567,8 +571,11 @@ void MediaSessionNotificationItem::UpdateViewCommon() {
   view_->UpdateWithMediaMetadata(GetSessionMetadata());
   view_->UpdateWithMediaActions(GetMediaSessionActions());
   view_->UpdateWithMuteStatus(session_info_->muted);
-  view_->UpdateWithVectorIcon(device_name_ ? &vector_icons::kMediaRouterIdleIcon
-                                           : nullptr);
+  view_->UpdateWithVectorIcon(
+      device_name_ ? &(features::IsRoundedIconsEnabled()
+                           ? vector_icons::kCastIcon
+                           : vector_icons::kMediaRouterIdleOldIcon)
+                   : nullptr);
 }
 
 bool MediaSessionNotificationItem::FrozenWithChapterArtwork() {

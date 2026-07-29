@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/immediate_crash.h"
 
 #include <stdint.h>
@@ -16,6 +11,7 @@
 
 #include "base/base_paths.h"
 #include "base/clang_profiling_buildflags.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/path_service.h"
@@ -150,9 +146,8 @@ void GetTestFunctionInstructions(std::vector<Instruction>* body) {
   const Instruction* const start = static_cast<Instruction*>(std::min(a, b));
   const Instruction* const end = static_cast<Instruction*>(std::max(a, b));
 
-  for (const Instruction& instruction : span(start, end)) {
-    body->push_back(instruction);
-  }
+  auto instructions = UNSAFE_TODO(span(start, end));
+  body->insert(body->end(), instructions.begin(), instructions.end());
 }
 
 #if defined(OFFICIAL_BUILD)
@@ -239,7 +234,7 @@ std::vector<Instruction> MaybeSkipCoverageHook(
 TEST(ImmediateCrashTest, ExpectedOpcodeSequence) {
   std::vector<Instruction> body;
   ASSERT_NO_FATAL_FAILURE(GetTestFunctionInstructions(&body));
-  SCOPED_TRACE(HexEncode(body.data(), body.size() * sizeof(Instruction)));
+  SCOPED_TRACE(HexEncode(base::as_byte_span(body)));
 
   // In non-official builds, we std::abort instead, so the result will be
   // false - but let's still go through the motions above so we spot any

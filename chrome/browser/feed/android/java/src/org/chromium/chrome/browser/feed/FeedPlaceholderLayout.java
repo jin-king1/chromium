@@ -26,12 +26,14 @@ import androidx.appcompat.widget.AppCompatImageView;
 
 import org.chromium.base.CommandLine;
 import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /** A {@link LinearLayout} that shows loading placeholder for Feed cards. */
+@NullMarked
 public class FeedPlaceholderLayout extends LinearLayout {
     private static final String TAG = "FeedPlaceholder";
 
@@ -66,7 +68,7 @@ public class FeedPlaceholderLayout extends LinearLayout {
     private final Context mContext;
     private final Resources mResources;
     private long mLayoutInflationCompleteMs;
-    private int mScreenWidthDp;
+    private final int mScreenWidthDp;
     private boolean mIsFirstCardDense;
     private UiConfig mUiConfig;
 
@@ -94,6 +96,8 @@ public class FeedPlaceholderLayout extends LinearLayout {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
+        // TODO(crbug.com/515150822): Investigate to see whether this logic also needs to be
+        //  triggered by #onSizeChanged().
         mUiConfig.updateDisplayStyle();
     }
 

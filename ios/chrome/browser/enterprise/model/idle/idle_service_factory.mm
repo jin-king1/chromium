@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/enterprise/model/idle/idle_service_factory.h"
 
 #import "components/enterprise/idle/idle_pref_names.h"
+#import "ios/chrome/browser/enterprise/model/idle/idle_service.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 
 namespace enterprise_idle {
@@ -26,11 +27,11 @@ IdleServiceFactory::IdleServiceFactory()
 IdleServiceFactory::~IdleServiceFactory() = default;
 
 std::unique_ptr<KeyedService> IdleServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  return std::make_unique<IdleService>(ProfileIOS::FromBrowserState(context));
+    ProfileIOS* profile) const {
+  return std::make_unique<IdleService>(profile);
 }
 
-void IdleServiceFactory::RegisterBrowserStatePrefs(
+void IdleServiceFactory::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterTimeDeltaPref(enterprise_idle::prefs::kIdleTimeout,
                                   base::TimeDelta());

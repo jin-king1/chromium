@@ -1,4 +1,5 @@
 include_rules = [
+  "+components/activity_reporter",
   "+components/affiliations/core/browser",
   "+components/autofill/core/browser",
   "+components/autofill/core/common",
@@ -25,6 +26,9 @@ include_rules = [
   "+components/enterprise",
   "+components/error_page/common",
   "+components/favicon/core",
+  "+components/fingerprinting_protection_filter/browser",
+  "+components/fingerprinting_protection_filter/common",
+  "+components/fingerprinting_protection_filter/ios",
   "+components/shared_highlighting/core/common",
   "+components/power_bookmarks/core",
   "+components/previous_session_info/previous_session_info.h",
@@ -47,7 +51,6 @@ include_rules = [
   "+components/infobars/core",
   "+components/invalidation",
   "+components/keyed_service/core",
-  "+components/keyed_service/ios",
   "+components/language",
   "+components/language_detection/core",
   "+components/lens",
@@ -72,7 +75,6 @@ include_rules = [
   "+components/password_manager/ios",
   "+components/payments/core",
   "+components/payments/mojom",
-  "+components/plus_addresses",
   "+components/policy/core/browser",
   "+components/policy/core/common",
   "+components/policy/policy_constants.h",
@@ -110,6 +112,7 @@ include_rules = [
   "+components/signin/public/base",
   "+components/signin/ios/browser",
   "+components/ssl_errors",
+  "+components/strike_database",
   "+components/suggestions",
   "+components/supervised_user",
   "+components/sync",
@@ -128,6 +131,7 @@ include_rules = [
   "+components/unified_consent",
   "+components/update_client",
   "+components/upload_list",
+  "+components/user_data_importer",
   "+components/url_formatter",
   "+components/variations",
   "+components/variations/net",
@@ -138,6 +142,7 @@ include_rules = [
   "+components/webp_transcode",
   "+components/webui/flags",
   "+components/webui/version",
+  "+components/application_locale_storage",
   "+crypto",
   "+google_apis",
   "+ios/chrome/app",
@@ -160,6 +165,7 @@ include_rules = [
   "+services/network/public/mojom",
   "+services/network/public/cpp",
   "+third_party/crashpad/crashpad/client",
+  "+third_party/re2/src/re2",
   "+third_party/breakpad/breakpad/src/client/ios",
   "+third_party/breakpad/breakpad/src/common",
   "+third_party/libaddressinput",
@@ -174,7 +180,21 @@ include_rules = [
 
   # Features should add explicit dependencies.
   "-ios/chrome/browser",
+  "+ios/chrome/browser/autofill/scan_save_and_fill/coordinator",
+  "+ios/chrome/browser/backend_promo/model",
+  "+ios/chrome/browser/content_settings/model",
+  "+ios/chrome/browser/default_browser/model",
+  "+ios/chrome/browser/google/model",
+  "+ios/chrome/browser/metrics/model",
+  "+ios/chrome/browser/intelligence/bwg/utils/gemini_feature_availability.h",
+  "+ios/chrome/browser/ntp/search_engine_logo/mediator",
+  "+ios/chrome/browser/ntp/search_engine_logo/ui",
+  "+ios/chrome/browser/policy/model",
   "+ios/chrome/browser/profile/model",
+  "+ios/chrome/browser/push_notification",
+  "+ios/chrome/browser/regional_capabilities",
+  "+ios/chrome/browser/search_engines/model",
+  "+ios/chrome/browser/url_loading/model",
 
   # Shared dependencies.
   "+ios/chrome/browser/shared/coordinator",
@@ -182,11 +202,6 @@ include_rules = [
   "+ios/chrome/browser/shared/ui",
   "+ios/chrome/browser/shared/public",
 
-  # ios/chrome/browser should not depend on ios/chrome/browser/ui except
-  # on commands.
-  "-ios/chrome/browser/ui",
-  "-ios/common/ui",
-  "+ios/chrome/browser/ui/commands",
   "+ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h",
 
   # For tests.
@@ -201,20 +216,15 @@ include_rules = [
   "+ios/chrome/grit",
 
   # Temporary, remove when upstream updated
-  "+ios/chrome/browser/ui/popup_menu/popup_menu_constants.h",
-  "+ios/chrome/browser/ui/page_info/features.h",
-  "+ios/chrome/browser/ui/page_info/page_info_app_interface.h",
+  "+ios/chrome/browser/popup_menu/public",
 ]
 
 specific_include_rules = {
-  ".*test\.mm": [
+  ".*test\\.mm": [
     "+components/signin/internal/identity_manager/account_capabilities_constants.h",
     "+components/previous_session_info/previous_session_info_private.h",
-    # TODO(crbug.com/40820398): browser should not depend on UI, this is a
-    # blanket exception for tests.
-    "+ios/chrome/browser/ui",
-    # Use ios/chrome/browser/authentication/ui_bundled/signin_earl_grey.h instead
-    "-ios/chrome/browser/authentication/ui_bundled/signin_earl_grey_app_interface.h",
+    # Use ios/chrome/browser/authentication/test/signin_earl_grey.h instead
+    "-ios/chrome/browser/authentication/test/signin_earl_grey_app_interface.h",
     # use ios/chrome/browser/bookmarks/ui_bundled/bookmark_earl_grey.h instead
     "-ios/chrome/browser/bookmarks/ui_bundled/bookmark_earl_grey_app_interface.h",
     # Blanket exception for tests to be allowed to depend on everything.

@@ -66,6 +66,8 @@ NTSTATUS ProcessPolicy::OpenThreadAction(const ClientInfo& client_info,
   NTSTATUS status = GetNtExports()->OpenThread(&local_handle, desired_access,
                                                &attributes, &client_id);
   if (NT_SUCCESS(status)) {
+    // `local_handle` must be a real handle from OpenThread() call above and
+    // `client_info.process` is trusted.
     if (!CallDuplicateHandle(::GetCurrentProcess(), local_handle,
                              client_info.process, handle, 0, false,
                              DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS)) {
@@ -77,19 +79,16 @@ NTSTATUS ProcessPolicy::OpenThreadAction(const ClientInfo& client_info,
 }
 
 NTSTATUS ProcessPolicy::OpenProcessTokenExAction(const ClientInfo& client_info,
-                                                 HANDLE process,
                                                  uint32_t desired_access,
                                                  uint32_t attributes,
                                                  HANDLE* handle) {
   *handle = nullptr;
-  if (CURRENT_PROCESS != process) {
-    return STATUS_ACCESS_DENIED;
-  }
-
   HANDLE local_handle = nullptr;
   NTSTATUS status = GetNtExports()->OpenProcessTokenEx(
       client_info.process, desired_access, attributes, &local_handle);
   if (NT_SUCCESS(status)) {
+    // `local_handle` is a real handle from OpenProcessTokenEx() call and
+    // `client_info.process` is trusted.
     if (!CallDuplicateHandle(::GetCurrentProcess(), local_handle,
                              client_info.process, handle, 0, false,
                              DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS)) {
@@ -120,6 +119,8 @@ DWORD ProcessPolicy::CreateThreadAction(
         ->OnCreateThreadActionCreateFailure(gle);
     return gle;
   }
+  // `local_handle` is a real handle from CreateRemoteThread() above and
+  // `client_info.process` is trusted.
   if (!CallDuplicateHandle(::GetCurrentProcess(), local_handle.get(),
                            client_info.process, handle, 0, FALSE,
                            DUPLICATE_SAME_ACCESS)) {

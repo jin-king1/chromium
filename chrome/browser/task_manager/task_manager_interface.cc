@@ -4,6 +4,7 @@
 
 #include "chrome/browser/task_manager/task_manager_interface.h"
 
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
@@ -17,7 +18,7 @@
 #include "content/public/browser/child_process_host.h"
 
 #if BUILDFLAG(IS_MAC)
-#include "chrome/browser/ui/browser_dialogs.h"  // nogncheck
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"  // nogncheck
 #endif  // BUILDFLAG(IS_MAC)
 
 namespace task_manager {
@@ -25,6 +26,7 @@ namespace task_manager {
 // static
 void TaskManagerInterface::RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterDictionaryPref(prefs::kTaskManagerWindowPlacement);
+  registry->RegisterIntegerPref(prefs::kTaskManagerCategory, 1);
   registry->RegisterDictionaryPref(prefs::kTaskManagerColumnVisibility);
   registry->RegisterBooleanPref(prefs::kTaskManagerEndProcessEnabled, true);
 }
@@ -45,8 +47,8 @@ TaskManagerInterface* TaskManagerInterface::GetTaskManager() {
 // static
 void TaskManagerInterface::UpdateAccumulatedStatsNetworkForRoute(
     content::GlobalRenderFrameHostId render_frame_host_id,
-    int64_t recv_bytes,
-    int64_t sent_bytes) {
+    base::ByteSize recv_bytes,
+    base::ByteSize sent_bytes) {
   // Don't create a task manager if it hasn't already been created.
   if (TaskManagerImpl::IsCreated()) {
     TaskManagerImpl::GetInstance()->UpdateAccumulatedStatsNetworkForRoute(
@@ -66,6 +68,10 @@ void TaskManagerInterface::AddObserver(TaskManagerObserver* observer) {
     StartUpdating();
   }
 
+  // Observer was removed as part of StartUpdating.
+  if (!observers_.HasObserver(observer)) {
+    return;
+  }
   if (observer->desired_refresh_time() > current_refresh_time)
     return;
 

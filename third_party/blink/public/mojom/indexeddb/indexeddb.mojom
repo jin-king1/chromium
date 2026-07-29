@@ -4,6 +4,7 @@
 
 module blink.mojom;
 
+import "mojo/public/mojom/base/big_buffer.mojom";
 import "mojo/public/mojom/base/string16.mojom";
 import "mojo/public/mojom/base/string16.mojom";
 import "mojo/public/mojom/base/time.mojom";
@@ -11,7 +12,7 @@ import "third_party/blink/public/mojom/blob/blob.mojom";
 import "third_party/blink/public/mojom/file_system_access/file_system_access_transfer_token.mojom";
 
 // kIDBMaxMessageSize is 128MB, originally based on
-// IPC::Channel::kMaximumMessageSize.  The "usable" size is this value less
+// IPC::mojom::kChannelMaximumMessageSize.  The "usable" size is this value less
 // the overhead size.
 const int32 kIDBMaxMessageSize = 134217728;
 
@@ -47,9 +48,9 @@ enum IDBDataLoss {
 
 // In order of the least to the highest precedent in terms of sort order.
 enum IDBKeyType {
-  // Invalid is used in blink bindings code. When converting a V8 value that
-  // is not a valid key, key of this type is returned. Outside of testing
-  // it should only be used in blink code.
+  // Invalid is used in blink bindings code when converting a V8 value that
+  // is not a valid key. It's also used in backend code to indicate a value
+  // that didn't decode properly e.g. due to corruption.
   Invalid,
 
   // The following indicate the type of a valid key, per the standard:
@@ -62,7 +63,6 @@ enum IDBKeyType {
 
   // None is used to represent the lack of a key, e.g. when a key range
   // has no upper/lower bound.
-  // TODO(jsbell): Consider using Optional<> instead.
   None,
 
   // Min is used to encode the lower bound of a construct in leveldb, e.g.
@@ -148,11 +148,15 @@ enum IDBTaskType {
   Preemptive,
 };
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(IDBTransactionMode)
 enum IDBTransactionMode {
-  ReadOnly,
-  ReadWrite,
-  VersionChange,
+  ReadOnly = 0,
+  ReadWrite = 1,
+  VersionChange = 2,
 };
+// LINT.ThenChange(/tools/metrics/histograms/metadata/storage/enums.xml:IDBTransactionMode)
 
 // These values need to match core/dom/exception_code.h
 enum IDBException {
@@ -185,12 +189,12 @@ struct IDBObjectStoreMetadata {
 };
 
 struct IDBDatabaseMetadata {
-  int64 id;
   mojo_base.mojom.String16 name;
   int64 version;
   int64 max_object_store_id;
   map<int64, IDBObjectStoreMetadata> object_stores;
-  bool was_cold_open;
+  // True if the backing store uses SQLite. If false, it uses LevelDB.
+  bool is_sqlite;
 };
 
 struct IDBNameAndVersion {
@@ -221,7 +225,7 @@ union IDBExternalObject {
 };
 
 struct IDBValue {
-  array<uint8> bits;
+  mojo_base.mojom.BigBuffer bits;
   array<IDBExternalObject> external_objects;
 };
 
@@ -256,6 +260,12 @@ interface IDBFactoryClient {
   UpgradeNeeded(pending_associated_remote<IDBDatabase> pending_database,
                 int64 old_version, IDBDataLoss data_loss,
                 string data_loss_message, IDBDatabaseMetadata db_metadata);
+
+  // Called during Open operations. `pending_database` may be null if:
+  // 1. The connection pipe was already established through `UpgradeNeeded`
+  //    (during database upgrade), or
+  // 2. The request is sharing an existing connection (connection
+  //    deduplication).
   OpenSuccess(pending_associated_remote<IDBDatabase>? pending_database,
               IDBDatabaseMetadata metadata);
 
@@ -321,6 +331,16 @@ interface IDBTransaction {
       IDBPutMode mode,
       array<IDBIndexKeys> index_keys)
     => (IDBTransactionPutResult result);
+  // Called when constructing an index. The renderer constructs the index by
+  // iterating over all the values in the object store and extracting values for
+  // the index's key, then updates the backend by calling this method, once for
+  // each record.
+  // TODO(crbug.com/421156863): this is pretty inefficient looking.
+  SetIndexKeys(int64 object_store_id,
+               IDBKey primary_key,
+               IDBIndexKeys index_keys);
+  // Called after SetIndexKeys() has been invoked for each record.
+  SetIndexKeysDone();
   Commit(int64 num_errors_handled);
 };
 
@@ -379,26 +399,21 @@ interface IDBDatabase {
   // Reads the results for a `getAllKeys()`, `getAll()` or `getAllRecords()`
   // request from either an `IDBObjectStore` or an `IDBIndex`. `index_id` must
   // be `IndexedDBIndexMetadata::kInvalidId` to read from an `IDBObjectStore`.
-  // To to return results, `GetAll()` streams an array of `IDBRecord` values in
-  // batches to the `IDBDatabaseGetAllResultSink` receiver until the request
-  // completes.  Each `IDBRecord` result contains necessary properties only.
-  // For example, the `IDBRecord` result for `getAllKeys()` contains
-  // `primary_key` only.
+  // Returns results in `records`. If all results fit in one response (under
+  // `kIDBGetAllChunkSize`), `receiver` will be null. Otherwise, `records`
+  // contains the first chunk and remaining results are streamed via the
+  // `IDBDatabaseGetAllResultSink` receiver. Each `IDBRecord` result contains
+  // necessary properties only. For example, the `IDBRecord` result for
+  // `getAllKeys()` contains `primary_key` only.
   GetAll(int64 transaction_id,
          int64 object_store_id,
          int64 index_id,
          IDBKeyRange key_range,
          IDBGetAllResultType result_type,
-         int64 max_count,
+         uint32 max_count,
          IDBCursorDirection direction)
-    => (pending_associated_receiver<IDBDatabaseGetAllResultSink> receiver);
-  SetIndexKeys(int64 transaction_id,
-               int64 object_store_id,
-               IDBKey primary_key,
-               array<IDBIndexKeys> index_keys);
-  SetIndexesReady(int64 transaction_id,
-                  int64 object_store_id,
-                  array<int64> index_ids);
+    => (array<IDBRecord> records,
+        pending_associated_receiver<IDBDatabaseGetAllResultSink>? receiver);
   OpenCursor(int64 transaction_id,
              int64 object_store_id,
              int64 index_id,
@@ -426,11 +441,7 @@ interface IDBDatabase {
   // Correlates to IDBObjectStore::createIndex()
   CreateIndex(int64 transaction_id,
               int64 object_store_id,
-              int64 index_id,
-              mojo_base.mojom.String16 name,
-              IDBKeyPath key_path,
-              bool unique,
-              bool multi_entry);
+              IDBIndexMetadata index);
   DeleteIndex(int64 transaction_id,
               int64 object_store_id,
               int64 index_id);
@@ -467,12 +478,15 @@ interface IDBFactory {
   // higher priority. This can determine relative execution order for open
   // requests from different clients, but requests from a single client (window,
   // worker, etc) will always execute in order.
+  // If `request_shared_connection` is true, the browser may share an existing
+  // connection to the database if available, to reduce overhead.
   Open(pending_associated_remote<IDBFactoryClient> client,
        pending_associated_remote<IDBDatabaseCallbacks> database_callbacks,
        mojo_base.mojom.String16 name,
        int64 version,
        pending_associated_receiver<IDBTransaction> version_change_transaction_receiver,
-       int64 transaction_id, int32 priority);
+       int64 transaction_id, int32 priority,
+       bool request_shared_connection);
 
   // Deletes a database |name| in the frame's origin. If |force_close|
   // is true, any existing connections to that database will be closed

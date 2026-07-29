@@ -85,7 +85,7 @@ class FetchDataLoaderAsBlobHandle final : public FetchDataLoader,
         mime_type_ ? mime_type_ : "", /*content_disposition=*/"",
         /*length_hint=*/0, std::move(handle),
         mojo::PendingAssociatedRemote<mojom::blink::ProgressClient>(),
-        WTF::BindOnce(
+        blink::BindOnce(
             &FetchDataLoaderAsBlobHandle::FinishedCreatingFromDataPipe,
             WrapWeakPersistent(this)));
   }
@@ -146,7 +146,7 @@ class FetchDataLoaderAsArrayBuffer final : public FetchDataLoader,
     DCHECK(!buffer_);
     client_ = client;
     consumer_ = consumer;
-    buffer_ = WTF::SharedBuffer::Create();
+    buffer_ = SharedBuffer::Create();
     consumer_->SetClient(this);
     OnStateChange();
   }
@@ -296,9 +296,9 @@ class FetchDataLoaderAsFormData final : public FetchDataLoader,
     DCHECK(!form_data_);
     DCHECK(!multipart_parser_);
 
-    StringUTF8Adaptor multipart_boundary_utf8(multipart_boundary_);
+    StringUtf8Adaptor multipart_boundary_utf8(multipart_boundary_);
     Vector<char> multipart_boundary_vector;
-    multipart_boundary_vector.AppendSpan(base::span(multipart_boundary_utf8));
+    multipart_boundary_vector.append_range(multipart_boundary_utf8);
 
     client_ = client;
     form_data_ = MakeGarbageCollected<FormData>();
@@ -573,13 +573,13 @@ class FetchDataLoaderAsDataPipe final : public FetchDataLoader,
 
       data_pipe_watcher_.Watch(
           out_data_pipe_.get(), MOJO_HANDLE_SIGNAL_WRITABLE,
-          WTF::BindRepeating(&FetchDataLoaderAsDataPipe::OnWritable,
-                             WrapWeakPersistent(this)));
+          BindRepeating(&FetchDataLoaderAsDataPipe::OnWritable,
+                        WrapWeakPersistent(this)));
       data_pipe_close_watcher_.Watch(
           out_data_pipe_.get(), MOJO_HANDLE_SIGNAL_PEER_CLOSED,
           MOJO_TRIGGER_CONDITION_SIGNALS_SATISFIED,
-          WTF::BindRepeating(&FetchDataLoaderAsDataPipe::OnPeerClosed,
-                             WrapWeakPersistent(this)));
+          BindRepeating(&FetchDataLoaderAsDataPipe::OnPeerClosed,
+                        WrapWeakPersistent(this)));
 
       data_pipe_watcher_.ArmOrNotify();
       data_pipe_close_watcher_.ArmOrNotify();

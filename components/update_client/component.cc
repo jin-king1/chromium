@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/files/file_util.h"
+#include "base/containers/to_vector.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -24,7 +24,6 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
@@ -74,7 +73,7 @@ bool Component::is_foreground() const {
   return update_context_->is_foreground;
 }
 
-void Component::Handle(CallbackHandleComplete callback_handle_complete) {
+void Component::Handle(base::OnceClosure callback_handle_complete) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(state_);
 
@@ -118,7 +117,6 @@ CrxUpdateItem Component::GetCrxUpdateItem() const {
   }
   crx_update_item.last_check = last_check_;
   crx_update_item.next_version = next_version_;
-  crx_update_item.next_fp = next_fp_;
   crx_update_item.downloaded_bytes = downloaded_bytes_;
   crx_update_item.install_progress = install_progress_;
   crx_update_item.total_bytes = total_bytes_;
@@ -131,11 +129,10 @@ CrxUpdateItem Component::GetCrxUpdateItem() const {
   return crx_update_item;
 }
 
-void Component::SetUpdateCheckResult(
-    std::optional<ProtocolParser::Result> result,
-    ErrorCategory error_category,
-    int error,
-    base::OnceCallback<void(bool)> callback) {
+void Component::SetUpdateCheckResult(std::optional<ProtocolParser::App> result,
+                                     ErrorCategory error_category,
+                                     int error,
+                                     base::OnceCallback<void(bool)> callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK_EQ(ComponentState::kChecking, state());
 
@@ -145,89 +142,91 @@ void Component::SetUpdateCheckResult(
   if (result) {
     CHECK(crx_component_);
     custom_attrs_ = result->custom_attributes;
-    if (!result->manifest.packages.empty()) {
-      next_version_ = base::Version(result->manifest.version);
-      next_fp_ = result->manifest.packages.front().fingerprint;
+    if (result->nextversion.IsValid()) {
+      next_version_ = base::Version(result->nextversion);
     } else {
       // When the updatecheck response doesn't contain any packages, use the
       // current version and fingerprint as the "next" version and fingerprint
       // for any events emitted (such as a RunAction event).
       next_version_ = crx_component_->version;
-      next_fp_ = crx_component_->fingerprint;
     }
     MakePipeline(
         update_context_->config, update_context_->get_available_space,
         update_context_->is_foreground, update_context_->session_id,
-        update_context_->crx_cache_, crx_component_->crx_format_requirement,
-        crx_component_->app_id, crx_component_->pk_hash,
-        crx_component_->install_data_index, crx_component_->fingerprint,
+        update_context_->config->GetCrxCache(),
+        crx_component_->crx_format_requirement, crx_component_->app_id,
+        crx_component_->pk_hash, crx_component_->install_data_index,
         crx_component_->installer,
         base::BindRepeating(
-            [](base::raw_ref<Component> component, ComponentState state) {
-              component->state_hint_ = state;
+            [](base::WeakPtr<Component> component, ComponentState state) {
+              if (component) {
+                component->state_hint_ = state;
+              }
             },
-            base::raw_ref(*this)),
+            weak_ptr_factory_.GetWeakPtr()),
         base::BindRepeating(&Component::AppendEvent, base::Unretained(this)),
         base::BindRepeating(
-            [](base::raw_ref<Component> component, int64_t downloaded_bytes,
+            [](base::WeakPtr<Component> component, int64_t downloaded_bytes,
                int64_t total_bytes) {
-              component->downloaded_bytes_ = downloaded_bytes;
-              component->total_bytes_ = total_bytes;
-              component->NotifyObservers();
-            },
-            base::raw_ref(*this)),
-        base::BindRepeating(
-            [](base::raw_ref<Component> component, int progress) {
-              if (progress >= 0 && progress <= 100) {
-                component->install_progress_ = progress;
+              if (component) {
+                component->downloaded_bytes_ = downloaded_bytes;
+                component->total_bytes_ = total_bytes;
+                component->NotifyObservers();
               }
-              component->NotifyObservers();
             },
-            base::raw_ref(*this)),
+            weak_ptr_factory_.GetWeakPtr()),
         base::BindRepeating(
-            [](base::raw_ref<Component> component,
+            [](base::WeakPtr<Component> component, int progress) {
+              if (component) {
+                if (progress >= 0 && progress <= 100) {
+                  component->install_progress_ = progress;
+                }
+                component->NotifyObservers();
+              }
+            },
+            weak_ptr_factory_.GetWeakPtr()),
+        base::BindRepeating(
+            [](base::WeakPtr<Component> component,
                const CrxInstaller::Result& result) {
-              component->installer_result_ = result;
-              component->error_category_ = result.result.category_;
-              component->error_code_ = result.result.code_;
-              component->extra_code1_ = result.result.extra_;
+              if (component) {
+                component->installer_result_ = result;
+                component->error_category_ = result.result.category;
+                component->error_code_ = result.result.code;
+                component->extra_code1_ = result.result.extra;
+              }
             },
-            base::raw_ref(*this)),
-        crx_component_->action_handler,
-        base::BindRepeating(
-            [](base::raw_ref<Component> component,
-               const CategorizedError& result) {
-              component->diff_error_category_ = result.category_;
-              component->diff_error_code_ = result.code_;
-              component->diff_extra_code1_ = result.extra_;
-            },
-            base::raw_ref(*this)),
-        result.value(),
+            weak_ptr_factory_.GetWeakPtr()),
+        crx_component_->action_handler, result.value(),
         base::BindOnce(
             base::BindOnce(
-                [](base::raw_ref<Component> component,
+                [](base::WeakPtr<Component> component,
                    base::expected<
                        base::OnceCallback<base::OnceClosure(
                            base::OnceCallback<void(const CategorizedError&)>)>,
                        CategorizedError> pipeline) {
-                  component->pipeline_ = std::move(pipeline);
-                  return true;
+                  if (component) {
+                    component->pipeline_ = std::move(pipeline);
+                    return true;
+                  }
+                  return false;
                 },
-                base::raw_ref(*this)))
+                weak_ptr_factory_.GetWeakPtr()))
             .Then(std::move(callback)));
   } else {
     pipeline_ = base::unexpected(
-        CategorizedError({.category_ = error_category, .code_ = error}));
+        CategorizedError({.category = error_category, .code = error}));
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), true));
   }
 }
 
-bool Component::HasDiffUpdate() const {
-  return !crx_diffurls().empty();
+base::DictValue WrapFingerprint(const std::string& fp) {
+  base::DictValue wrapper;
+  wrapper.Set("fingerprint", fp);
+  return wrapper;
 }
 
-void Component::AppendEvent(base::Value::Dict event) {
+void Component::AppendEvent(base::DictValue event) {
   if (previous_version().IsValid()) {
     event.Set("previousversion", previous_version().GetString());
   }
@@ -254,8 +253,8 @@ base::TimeDelta Component::GetUpdateDuration() const {
   return std::min(update_cost, update_context_->config->UpdateDelay());
 }
 
-base::Value::Dict Component::MakeEventUpdateComplete() const {
-  base::Value::Dict event;
+base::DictValue Component::MakeEventUpdateComplete() const {
+  base::DictValue event;
   event.Set("eventtype", update_context_->is_install
                              ? protocol_request::kEventInstall
                              : protocol_request::kEventUpdate);
@@ -270,35 +269,18 @@ base::Value::Dict Component::MakeEventUpdateComplete() const {
   if (extra_code1()) {
     event.Set("extracode1", extra_code1());
   }
-  if (HasDiffUpdate()) {
-    const int diffresult = static_cast<int>(!diff_update_failed());
-    event.Set("diffresult", diffresult);
-  }
-  if (diff_error_category() != ErrorCategory::kNone) {
-    const int differrorcat = static_cast<int>(diff_error_category());
-    event.Set("differrorcat", differrorcat);
-  }
-  if (diff_error_code()) {
-    event.Set("differrorcode", diff_error_code());
-  }
-  if (diff_extra_code1()) {
-    event.Set("diffextracode1", diff_extra_code1());
-  }
   if (!previous_fp().empty()) {
-    event.Set("previousfp", previous_fp());
+    event.Set("previousfp", WrapFingerprint(previous_fp()));
   }
   if (!next_fp().empty()) {
-    event.Set("nextfp", next_fp());
+    event.Set("nextfp", WrapFingerprint(next_fp()));
   }
   return event;
 }
 
-std::vector<base::Value::Dict> Component::GetEvents() const {
-  std::vector<base::Value::Dict> events;
-  for (const auto& event : events_) {
-    events.push_back(event.Clone());
-  }
-  return events;
+std::vector<base::DictValue> Component::GetEvents() const {
+  return base::ToVector(events_,
+                        [](const auto& event) { return event.Clone(); });
 }
 
 std::unique_ptr<CrxInstaller::InstallParams> Component::install_params() const {
@@ -385,13 +367,11 @@ void Component::StateChecking::DoHandle() {
   CHECK(component.crx_component());
 
   if (component.error_code_) {
-    metrics::RecordUpdateCheckResult(metrics::UpdateCheckResult::kError);
     TransitionState(std::make_unique<StateUpdateError>(&component));
     return;
   }
 
   if (component.update_context_->is_cancelled) {
-    metrics::RecordUpdateCheckResult(metrics::UpdateCheckResult::kCanceled);
     TransitionState(std::make_unique<StateUpdateError>(&component));
     component.error_category_ = ErrorCategory::kService;
     component.error_code_ = static_cast<int>(ServiceError::CANCELLED);
@@ -399,18 +379,15 @@ void Component::StateChecking::DoHandle() {
   }
 
   if (component.pipeline_.has_value()) {
-    metrics::RecordUpdateCheckResult(metrics::UpdateCheckResult::kHasUpdate);
     TransitionState(std::make_unique<StateCanUpdate>(&component));
     return;
   }
 
-  if (component.pipeline_.error().category_ == ErrorCategory::kNone) {
-    metrics::RecordUpdateCheckResult(metrics::UpdateCheckResult::kNoUpdate);
+  if (component.pipeline_.error().category == ErrorCategory::kNone) {
     TransitionState(std::make_unique<StateUpToDate>(&component));
     return;
   }
 
-  metrics::RecordUpdateCheckResult(metrics::UpdateCheckResult::kError);
   TransitionState(std::make_unique<StateUpdateError>(&component));
 }
 
@@ -520,9 +497,9 @@ void Component::StateUpdating::DoHandle() {
                                 base::Unretained(this)));
     return;
   }
-  component.error_category_ = component.pipeline_.error().category_;
-  component.error_code_ = component.pipeline_.error().code_;
-  component.extra_code1_ = component.pipeline_.error().extra_;
+  component.error_category_ = component.pipeline_.error().category;
+  component.error_code_ = component.pipeline_.error().code;
+  component.extra_code1_ = component.pipeline_.error().extra;
   TransitionState(std::make_unique<StateUpdateError>(&component));
 }
 
@@ -532,16 +509,16 @@ void Component::StateUpdating::PipelineComplete(
 
   auto& component = Component::State::component();
 
-  if (result.category_ != ErrorCategory::kNone) {
-    component.error_category_ = result.category_;
-    component.error_code_ = result.code_;
-    component.extra_code1_ = result.extra_;
+  if (result.category != ErrorCategory::kNone) {
+    component.error_category_ = result.category;
+    component.error_code_ = result.code;
+    component.extra_code1_ = result.extra;
   }
 
   CHECK(component.crx_component_);
   if (!component.crx_component_->allow_cached_copies) {
-    component.update_context_->crx_cache_->RemoveAll(
-        component.crx_component()->app_id);
+    component.config()->GetCrxCache()->RemoveAll(
+        component.crx_component()->app_id, base::DoNothing());
   }
 
   if (component.error_category_ != ErrorCategory::kNone) {
@@ -569,7 +546,6 @@ void Component::StateUpdated::DoHandle() {
   CHECK(component.crx_component());
 
   component.crx_component_->version = component.next_version_;
-  component.crx_component_->fingerprint = component.next_fp_;
 
   component.update_context_->persisted_data->SetProductVersion(
       component.id(), component.crx_component_->version);
@@ -581,7 +557,6 @@ void Component::StateUpdated::DoHandle() {
   component.AppendEvent(component.MakeEventUpdateComplete());
 
   component.NotifyObservers();
-  metrics::RecordComponentUpdated();
   EndState();
 }
 

@@ -33,6 +33,7 @@
 #include "third_party/blink/renderer/core/script/script_element_base.h"
 #include "third_party/blink/renderer/core/script/script_loader.h"
 #include "third_party/blink/renderer/platform/bindings/parkable_string.h"
+#include "third_party/blink/renderer/platform/bindings/union_base.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 
 namespace blink {
@@ -48,11 +49,13 @@ class CORE_EXPORT HTMLScriptElement final : public HTMLElement,
 
   HTMLScriptElement(Document&, const CreateElementFlags);
 
+  ElementType GetElementType() const final {
+    return ElementType::kHTMLScriptElement;
+  }
+
   // Returns attributes that should be checked against Trusted Types
   const AttrNameToTrustedType& GetCheckedAttributeTypes() const override;
 
-  String text() { return TextFromChildren(); }
-  void setText(const String&);
   void setInnerTextForBinding(
       const V8UnionStringLegacyNullToEmptyStringOrTrustedScript*
           string_or_trusted_script,
@@ -60,6 +63,24 @@ class CORE_EXPORT HTMLScriptElement final : public HTMLElement,
   void setTextContentForBinding(const V8UnionStringOrTrustedScript* value,
                                 ExceptionState& exception_state) override;
   void setTextContent(const String&) override;
+  void setSrc(
+      const V8UnionTrustedScriptURLOrUSVString* string_or_trusted_script_url,
+      ExceptionState& exception_state);
+  String src();
+
+  void setText(V8UnionStringOrTrustedScript*, ExceptionState&);
+  bindings::OptimizedReturnProxy<V8UnionStringOrTrustedScript> text(
+      ScriptState*);
+  void setTextWithoutTrustedTypes(const String&);
+
+  void setScriptTextContentForBinding(const V8UnionStringOrTrustedScript*,
+                                      ExceptionState&);
+  String scriptTextContentForBinding();
+  void setScriptInnerTextForBinding(
+      const V8UnionStringLegacyNullToEmptyStringOrTrustedScript*
+          string_or_trusted_script,
+      ExceptionState& exception_state);
+  String scriptInnerTextForBinding();
 
   void setAsync(bool);
   bool async() const;
@@ -105,12 +126,12 @@ class CORE_EXPORT HTMLScriptElement final : public HTMLElement,
   String SignatureAttributeValue() const override;
   String ReferrerPolicyAttributeValue() const override;
   String FetchPriorityAttributeValue() const override;
+  String CacheHintAttributeValue() const override;
   String ChildTextContent() override;
   String ScriptTextInternalSlot() const override;
   bool AsyncAttributeValue() const override;
   bool DeferAttributeValue() const override;
   bool HasSourceAttribute() const override;
-  bool HasAttributionsrcAttribute() const override;
   bool IsConnected() const override;
   bool HasChildren() const override;
   const AtomicString& GetNonceForElement() const override;
@@ -118,14 +139,15 @@ class CORE_EXPORT HTMLScriptElement final : public HTMLElement,
     return HasDuplicateAttribute();
   }
   bool AllowInlineScriptForCSP(const AtomicString& nonce,
-                               const WTF::OrdinalNumber&,
+                               const OrdinalNumber&,
                                const String& script_content) override;
   void DispatchLoadEvent() override;
   void DispatchErrorEvent() override;
 
   Type GetScriptElementType() override;
 
-  Element& CloneWithoutAttributesAndChildren(Document&) const override;
+  Element& CloneWithoutAttributesAndChildren(Document&, CustomElementRegistry*)
+      const override;
 
   // https://w3c.github.io/trusted-types/dist/spec/#script-scripttext
   ParkableString script_text_internal_slot_;

@@ -37,7 +37,7 @@
 #include "third_party/blink/renderer/core/css/css_length_resolver.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/layout/geometry/axis.h"
-#include "third_party/blink/renderer/core/style/position_area.h"
+#include "third_party/blink/renderer/core/style/default_anchor_data.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
 #include "third_party/blink/renderer/platform/text/writing_mode.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
@@ -172,6 +172,16 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
           dynamic_height_(height) {}
 
     explicit ViewportSize(const LayoutView*);
+
+    void SubtractScrollbars(const gfx::Size& scrollbars) {
+      large_width_ -= scrollbars.width();
+      large_height_ -= scrollbars.height();
+      small_width_ -= scrollbars.width();
+      small_height_ -= scrollbars.height();
+      dynamic_width_ -= scrollbars.width();
+      dynamic_height_ -= scrollbars.height();
+    }
+
     bool operator==(const ViewportSize&) const = default;
 
     // v*
@@ -189,6 +199,14 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
     // dv*
     double DynamicWidth() const { return dynamic_width_; }
     double DynamicHeight() const { return dynamic_height_; }
+
+    String ToString() const {
+      return String::Format(
+          "large_width: %f, large_height: %f, small_width: %f, small_height: "
+          "%f, dynamic_width: %f, dynamic_height: %f",
+          large_width_, large_height_, small_width_, small_height_,
+          dynamic_width_, dynamic_height_);
+    }
 
    private:
     // v*, lv*
@@ -254,17 +272,19 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
    public:
     AnchorData() = default;
     AnchorData(AnchorEvaluator*,
-               const ScopedCSSName* position_anchor,
+               const DefaultAnchorData& default_anchor_data,
                const std::optional<PositionAreaOffsets>&);
     AnchorEvaluator* GetEvaluator() const { return evaluator_; }
-    const ScopedCSSName* GetPositionAnchor() const { return position_anchor_; }
+    const DefaultAnchorData& GetDefaultAnchorData() const {
+      return default_anchor_data_;
+    }
     const std::optional<PositionAreaOffsets>& GetPositionAreaOffsets() const {
       return position_area_offsets_;
     }
 
    private:
     AnchorEvaluator* evaluator_ = nullptr;
-    const ScopedCSSName* position_anchor_ = nullptr;
+    DefaultAnchorData default_anchor_data_;
     std::optional<PositionAreaOffsets> position_area_offsets_;
   };
 
@@ -289,7 +309,7 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
     kDynamicViewport = 1u << 5,
     // cq*
     kContainerRelative = 1u << 6,
-    // https://drafts.csswg.org/css-scoping-1/#css-tree-scoped-reference
+    // https://drafts.csswg.org/css-shadow-1/#css-tree-scoped-reference
     kTreeScopedReference = 1u << 7,
     // vi, vb, cqi, cqb, etc
     kLogicalDirectionRelative = 1u << 8,
@@ -316,6 +336,8 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
     kRexRelative = 1u << 18,
     // sibling-index(), sibling-count()
     kSiblingRelative = 1u << 19,
+    // random() without element-shared
+    kElementDependentRandom = 1u << 20,
     // Adjust the Flags type above if adding more bits below.
   };
 
@@ -384,14 +406,20 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
     anchor_data_ = anchor_data;
   }
 
+  void SubtractScrollbars(const gfx::Size& scrollbars) {
+    viewport_size_.SubtractScrollbars(scrollbars);
+  }
+
   void ReferenceAnchor() const override;
   void ReferenceSibling() const override;
+
+  void ReferenceElementDependentRandom() const override;
 
   AnchorEvaluator* GetAnchorEvaluator() const override {
     return anchor_data_.GetEvaluator();
   }
-  const ScopedCSSName* GetPositionAnchor() const override {
-    return anchor_data_.GetPositionAnchor();
+  DefaultAnchorData GetDefaultAnchorData() const override {
+    return anchor_data_.GetDefaultAnchorData();
   }
   std::optional<PositionAreaOffsets> GetPositionAreaOffsets() const override {
     return anchor_data_.GetPositionAreaOffsets();

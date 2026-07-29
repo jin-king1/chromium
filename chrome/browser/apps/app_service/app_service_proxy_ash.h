@@ -21,7 +21,6 @@
 #include "chrome/browser/apps/app_service/app_icon/app_icon_reader.h"
 #include "chrome/browser/apps/app_service/app_icon/app_icon_writer.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_base.h"
-#include "chrome/browser/apps/app_service/launch_result_type.h"
 #include "chrome/browser/apps/app_service/paused_apps.h"
 #include "chrome/browser/apps/app_service/publisher_host.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
@@ -29,9 +28,10 @@
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/icon_types.h"
 #include "components/services/app_service/public/cpp/instance_registry.h"
+#include "components/services/app_service/public/cpp/launch_result.h"
 #include "components/services/app_service/public/cpp/package_id.h"
 #include "components/services/app_service/public/cpp/preferred_app.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 // Avoid including this header file directly or referring directly to
 // AppServiceProxyAsh as a type. Instead:
@@ -50,9 +50,7 @@ namespace apps {
 class AppInstallService;
 class AppPlatformMetrics;
 class AppPlatformMetricsService;
-class InstanceRegistryUpdater;
-class BrowserAppInstanceRegistry;
-class BrowserAppInstanceTracker;
+class AppServiceRegistry;
 class PackageId;
 class PromiseAppRegistryCache;
 class PromiseAppService;
@@ -72,13 +70,13 @@ struct PauseData {
 //
 // See components/services/app_service/README.md.
 class AppServiceProxyAsh : public AppServiceProxyBase,
-                           public apps::AppRegistryCache::Observer,
-                           public apps::InstanceRegistry::Observer {
+                           public apps::AppRegistryCache::Observer {
  public:
   using OnPauseDialogClosedCallback = base::OnceCallback<void()>;
   using OnUninstallForTestingCallback = base::OnceCallback<void(bool)>;
 
-  explicit AppServiceProxyAsh(Profile* profile);
+  explicit AppServiceProxyAsh(Profile* profile,
+                              PublisherHostFactory* publisher_host_factory);
   AppServiceProxyAsh(const AppServiceProxyAsh&) = delete;
   AppServiceProxyAsh& operator=(const AppServiceProxyAsh&) = delete;
   ~AppServiceProxyAsh() override;
@@ -86,11 +84,6 @@ class AppServiceProxyAsh : public AppServiceProxyBase,
   apps::InstanceRegistry& InstanceRegistry();
   apps::AppPlatformMetrics* AppPlatformMetrics();
   apps::AppPlatformMetricsService* AppPlatformMetricsService();
-
-  // TODO(373972275): Remove BrowserAppInstanceTracker,
-  // BrowserAppInstanceRegistry and InstanceRegistryUpdater.
-  apps::BrowserAppInstanceTracker* BrowserAppInstanceTracker();
-  apps::BrowserAppInstanceRegistry* BrowserAppInstanceRegistry();
 
   // Sets the publisher for `app_type` is unavailable, to allow
   // AppService to remove apps for `app_type`, and clean up launch requests,
@@ -148,8 +141,6 @@ class AppServiceProxyAsh : public AppServiceProxyBase,
                            WindowInfoPtr window_info,
                            LaunchCallback callback) override;
 
-  base::WeakPtr<AppServiceProxyAsh> GetWeakPtr();
-
   void ReInitializeCrostiniForTesting();
   void SetDialogCreatedCallbackForTesting(base::OnceClosure callback);
   void UninstallForTesting(const std::string& app_id,
@@ -195,7 +186,36 @@ class AppServiceProxyAsh : public AppServiceProxyBase,
   // indicates system language being chosen.
   void SetAppLocale(const std::string& app_id, const std::string& locale_tag);
 
+  // Set |app_id| as preferred app for this `protocol_scheme` (which is
+  // guaranteed to not be equal to http/https and hence not overlap with
+  // supported links; attempt to pass http/https will CHECK()). This is only
+  // supported for web apps.
+  void SetProtocolLinkPreference(std::string_view app_id,
+                                 std::string_view protocol_scheme);
+
  private:
+  // Minimum RAII style AppServiceRegistry registration handling.
+  class ScopedAppServiceRegistrar {
+   public:
+    // `registry` must not be nullptr and must outlive this instance.
+    explicit ScopedAppServiceRegistrar(AppServiceRegistry* registry);
+    ScopedAppServiceRegistrar(const ScopedAppServiceRegistrar&) = delete;
+    ScopedAppServiceRegistrar& operator=(const ScopedAppServiceRegistrar&) =
+        delete;
+    ~ScopedAppServiceRegistrar();
+
+    // Registers the given `app_service` as the service of the User
+    // identified by `account_id`.
+    // `account_id` must not be empty, and `app_service` must be outlive
+    // this instance.
+    // This cannot be called twice for the same registrar instance.
+    void Register(const AccountId& account_id, AppService* app_service);
+
+   private:
+    const raw_ref<AppServiceRegistry> registry_;
+    AccountId account_id_;
+  };
+
   // OnAppsRequest is used to save the parameters of the OnApps calling.
   struct OnAppsRequest {
     OnAppsRequest(std::vector<AppPtr> deltas,
@@ -258,8 +278,7 @@ class AppServiceProxyAsh : public AppServiceProxyBase,
 
   // apps::AppServiceProxyBase overrides:
   bool MaybeShowLaunchPreventionDialog(const apps::AppUpdate& update) override;
-  void OnLaunched(LaunchCallback callback,
-                  LaunchResult&& launch_result) override;
+  void OnLaunched(LaunchCallback callback, LaunchResult launch_result) override;
 
   // Loads the icon for the app block dialog or the app pause dialog.
   void LoadIconForDialog(const apps::AppUpdate& update,
@@ -300,15 +319,6 @@ class AppServiceProxyAsh : public AppServiceProxyBase,
   void PerformPostUninstallTasks(apps::AppType app_type,
                                  const std::string& app_id,
                                  UninstallSource uninstall_source) override;
-
-  // apps::InstanceRegistry::Observer overrides.
-  void OnInstanceUpdate(const apps::InstanceUpdate& update) override;
-  void OnInstanceRegistryWillBeDestroyed(
-      apps::InstanceRegistry* cache) override;
-
-  // Checks if all instance IDs correspond to existing windows.
-  bool CanRunLaunchCallback(
-      const std::vector<base::UnguessableToken>& instance_ids);
 
   // Launches the app if `is_allowed` is set true.
   void LaunchAppWithIntentIfAllowed(const std::string& app_id,
@@ -361,7 +371,7 @@ class AppServiceProxyAsh : public AppServiceProxyBase,
       const apps::IntentFilterPtr& filter,
       const apps::AppUpdate& update) override;
 
-  std::unique_ptr<PublisherHost> publisher_host_;
+  std::optional<ScopedAppServiceRegistrar> app_service_registrar_;
 
   AppIconReader icon_reader_;
   AppIconWriter icon_writer_;
@@ -392,19 +402,9 @@ class AppServiceProxyAsh : public AppServiceProxyBase,
   std::unique_ptr<apps::AppPlatformMetricsService>
       app_platform_metrics_service_;
 
-  base::ScopedObservation<apps::InstanceRegistry,
-                          apps::InstanceRegistry::Observer>
-      instance_registry_observer_{this};
-
   base::ScopedObservation<apps::AppRegistryCache,
                           apps::AppRegistryCache::Observer>
       app_registry_cache_observer_{this};
-
-  // A list to record outstanding launch callbacks. When the first member
-  // returns true, the second member should be run and the pair can be removed
-  // from the outstanding callback queue.
-  std::list<std::pair<base::RepeatingCallback<bool(void)>, base::OnceClosure>>
-      callback_list_;
 
   std::unique_ptr<apps::AppInstallService> app_install_service_;
 

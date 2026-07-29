@@ -30,7 +30,6 @@ import 'chrome://resources/ash/common/cr_elements/cr_hidden_style.css.js';
 import 'chrome://resources/ash/common/cr_elements/icons.html.js';
 import 'chrome://resources/ash/common/cr_elements/cr_shared_vars.css.js';
 import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
-import '../os_about_page/eol_offer_section.js';
 import '../os_languages_page/languages.js';
 import '../os_settings_icons.html.js';
 import './page_displayer.js';
@@ -73,7 +72,7 @@ export class MainPageContainerElement extends MainPageContainerElementBase {
       },
 
       /** Mirror Section enum to be used in Polymer data bindings. */
-      Section: {
+      SectionEnum_: {
         type: Object,
         value: Section,
       },
@@ -115,21 +114,6 @@ export class MainPageContainerElement extends MainPageContainerElementBase {
         value: !!loadTimeData.getString('updateRequiredEolBannerText'),
       },
 
-      currentRoute_: {
-        type: Object,
-        value: null,
-      },
-
-      showEolIncentive_: {
-        type: Boolean,
-        value: false,
-      },
-
-      shouldShowOfferText_: {
-        type: Boolean,
-        value: false,
-      },
-
       /**
        * This is used to cache the set of languages from <settings-languages>
        * via bi-directional data-binding.
@@ -144,19 +128,17 @@ export class MainPageContainerElement extends MainPageContainerElementBase {
     };
   }
 
-  prefs: PrefsState;
-  androidAppsInfo?: AndroidAppsInfo;
-  pageAvailability: OsPageAvailability;
+  declare prefs: PrefsState;
+  declare androidAppsInfo?: AndroidAppsInfo;
+  declare pageAvailability: OsPageAvailability;
 
   // Languages data and API
-  private languages_: LanguagesModel|undefined;
-  private languageHelper_: LanguageHelper|undefined;
+  declare private languages_: LanguagesModel|undefined;
+  declare private languageHelper_: LanguageHelper|undefined;
 
-  private isShowingSubpage_: boolean;
-  private showSecondaryUserBanner_: boolean;
-  private showUpdateRequiredEolBanner_: boolean;
-  private showEolIncentive_: boolean;
-  private shouldShowOfferText_: boolean;
+  declare private isShowingSubpage_: boolean;
+  declare private showSecondaryUserBanner_: boolean;
+  declare private showUpdateRequiredEolBanner_: boolean;
 
   override ready(): void {
     super.ready();
@@ -173,10 +155,6 @@ export class MainPageContainerElement extends MainPageContainerElementBase {
     AndroidAppsBrowserProxyImpl.getInstance().requestAndroidAppsInfo();
 
     AboutPageBrowserProxyImpl.getInstance().pageReady();
-    AboutPageBrowserProxyImpl.getInstance().getEndOfLifeInfo().then(result => {
-      this.showEolIncentive_ = !!result.shouldShowEndOfLifeIncentive;
-      this.shouldShowOfferText_ = !!result.shouldShowOfferText;
-    });
   }
 
   override currentRouteChanged(newRoute: Route, oldRoute?: Route): void {
@@ -202,7 +180,7 @@ export class MainPageContainerElement extends MainPageContainerElementBase {
   /** Stamp page in the DOM depending on page availability */
   private shouldStampPage_(
       pageAvailability: OsPageAvailability, pageName: Section): boolean {
-    return !!pageAvailability[pageName];
+    return pageAvailability[pageName];
   }
 
   private computeShowSecondaryUserBanner_(): boolean {
@@ -211,13 +189,9 @@ export class MainPageContainerElement extends MainPageContainerElementBase {
   }
 
   private computeShowUpdateRequiredEolBanner_(): boolean {
-    return !this.isShowingSubpage_ && this.showUpdateRequiredEolBanner_ &&
-        !this.showEolIncentive_;
+    return !this.isShowingSubpage_ && this.showUpdateRequiredEolBanner_;
   }
 
-  private computeShowEolIncentive_(): boolean {
-    return !this.isShowingSubpage_ && this.showEolIncentive_;
-  }
 
   private androidAppsInfoUpdate_(info: AndroidAppsInfo): void {
     this.androidAppsInfo = info;

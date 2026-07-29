@@ -16,16 +16,24 @@
 #include "components/permissions/permission_request_id.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/permission_util.h"
+#include "components/permissions/resolvers/content_setting_permission_resolver.h"
 #include "components/permissions/test/mock_permission_prompt_factory.h"
+#include "components/prefs/pref_service.h"
+#include "components/privacy_sandbox/privacy_sandbox_prefs.h"
+#include "content/public/browser/permission_descriptor_util.h"
+#include "content/public/browser/permission_result.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/navigation_simulator.h"
+#include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "net/base/schemeful_site.h"
 #include "net/first_party_sets/first_party_set_entry.h"
 #include "net/first_party_sets/global_first_party_sets.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/mojom/permissions/permission.mojom.h"
 
 namespace {
 
@@ -61,6 +69,8 @@ class TopLevelStorageAccessPermissionContextTest
   TopLevelStorageAccessPermissionContextTest() = default;
 
   void SetUp() override {
+    features_.InitAndEnableFeature(
+        blink::features::kStorageAccessAPIRelatedWebsiteSets);
     ChromeRenderViewHostTestHarness::SetUp();
 
     // Ensure we are navigated to some page so that the proper views get setup.
@@ -76,18 +86,24 @@ class TopLevelStorageAccessPermissionContextTest
     first_party_sets_handler_.SetGlobalSets(net::GlobalFirstPartySets());
   }
 
-  ContentSetting DecidePermissionSync(
+  PermissionStatus DecidePermissionSync(
       TopLevelStorageAccessPermissionContext* permission_context,
       bool user_gesture,
       const GURL& requester_url,
-      const GURL& embedding_url) {
-    base::test::TestFuture<ContentSetting> future;
+      const GURL& embedding_url,
+      bool simulate_user_gesture = true) {
+    if (user_gesture && simulate_user_gesture) {
+      content::RenderFrameHostTester::For(main_rfh())->SimulateUserActivation();
+    }
+    base::test::TestFuture<content::PermissionResult> future;
     permission_context->DecidePermissionForTesting(
-        permissions::PermissionRequestData(permission_context, CreateFakeID(),
-                                           user_gesture, requester_url,
-                                           embedding_url),
+        std::make_unique<permissions::PermissionRequestData>(
+            blink::mojom::PermissionDescriptor::New(
+                blink::mojom::PermissionName::TOP_LEVEL_STORAGE_ACCESS,
+                /*extension=*/nullptr),
+            CreateFakeID(), user_gesture, requester_url, embedding_url),
         future.GetCallback());
-    return future.Get();
+    return future.Get().status;
   }
 
   void TearDown() override {
@@ -109,6 +125,7 @@ class TopLevelStorageAccessPermissionContextTest
   }
 
  private:
+  base::test::ScopedFeatureList features_;
   base::HistogramTester histogram_tester_;
   first_party_sets::ScopedMockFirstPartySetsHandler first_party_sets_handler_;
   std::unique_ptr<permissions::MockPermissionPromptFactory>
@@ -134,7 +151,23 @@ TEST_F(TopLevelStorageAccessPermissionContextTest,
 
   EXPECT_EQ(DecidePermissionSync(&permission_context, /*user_gesture=*/false,
                                  GetRequesterURL(), GetTopLevelURL()),
-            CONTENT_SETTING_BLOCK);
+            PermissionStatus::DENIED);
+
+  EXPECT_EQ(histogram_tester().GetBucketCount(
+                kRequestOutcomeHistogram,
+                TopLevelStorageAccessRequestOutcome::kDeniedByPrerequisites),
+            1);
+}
+
+// The renderer cannot spoof a user_gesture.
+TEST_F(TopLevelStorageAccessPermissionContextTest,
+       PermissionDeniedWithoutUserGesture_RendererSpoof) {
+  TopLevelStorageAccessPermissionContext permission_context(profile());
+
+  EXPECT_EQ(DecidePermissionSync(&permission_context, /*user_gesture=*/true,
+                                 GetRequesterURL(), GetTopLevelURL(),
+                                 /*simulate_user_gesture=*/false),
+            PermissionStatus::DENIED);
 
   EXPECT_EQ(histogram_tester().GetBucketCount(
                 kRequestOutcomeHistogram,
@@ -146,11 +179,18 @@ TEST_F(TopLevelStorageAccessPermissionContextTest,
        PermissionStatusAsksWhenFeatureEnabled) {
   TopLevelStorageAccessPermissionContext permission_context(profile());
 
-  EXPECT_EQ(PermissionStatus::ASK,
-            permission_context
-                .GetPermissionStatus(/*render_frame_host=*/nullptr,
-                                     GetRequesterURL(), GetTopLevelURL())
-                .status);
+  EXPECT_EQ(
+      PermissionStatus::ASK,
+      permission_context
+          .GetPermissionStatus(
+              content::PermissionDescriptorUtil::
+                  CreatePermissionDescriptorForPermissionType(
+                      permissions::PermissionUtil::
+                          ContentSettingsTypeToPermissionType(
+                              permission_context.content_settings_type())),
+              /*render_frame_host=*/nullptr, GetRequesterURL(),
+              GetTopLevelURL())
+          .status);
 }
 
 TEST_F(TopLevelStorageAccessPermissionContextTest,
@@ -170,7 +210,7 @@ TEST_F(TopLevelStorageAccessPermissionContextTest,
 
   EXPECT_EQ(DecidePermissionSync(&permission_context, /*user_gesture=*/true,
                                  GetRequesterURL(), GetDummyEmbeddingUrl()),
-            CONTENT_SETTING_BLOCK);
+            PermissionStatus::DENIED);
 
   // Check the `SessionModel::DURABLE` settings with
   // `decided_by_related_website_sets`. None were granted, and implicit denials
@@ -180,11 +220,32 @@ TEST_F(TopLevelStorageAccessPermissionContextTest,
                   content_settings::mojom::SessionModel::DURABLE),
               Each(DecidedByRelatedWebsiteSets(false)));
 
-  EXPECT_EQ(PermissionStatus::ASK,
-            permission_context
-                .GetPermissionStatus(/*render_frame_host=*/nullptr,
-                                     GetRequesterURL(), GetDummyEmbeddingUrl())
-                .status);
+  EXPECT_EQ(
+      PermissionStatus::ASK,
+      permission_context
+          .GetPermissionStatus(
+              content::PermissionDescriptorUtil::
+                  CreatePermissionDescriptorForPermissionType(
+                      permissions::PermissionUtil::
+                          ContentSettingsTypeToPermissionType(
+                              permission_context.content_settings_type())),
+              /*render_frame_host=*/nullptr, GetRequesterURL(),
+              GetDummyEmbeddingUrl())
+          .status);
+}
+
+TEST_F(TopLevelStorageAccessPermissionContextTest, SameSiteDisallowed) {
+  TopLevelStorageAccessPermissionContext permission_context(profile());
+  NavigateAndCommit(GetTopLevelURL());
+
+  EXPECT_EQ(
+      DecidePermissionSync(&permission_context, /*user_gesture=*/true,
+                           GetDummyEmbeddingUrl(), GetDummyEmbeddingUrl()),
+      PermissionStatus::DENIED);
+
+  EXPECT_EQ(1, static_cast<content::MockRenderProcessHost*>(
+                   web_contents()->GetPrimaryMainFrame()->GetProcess())
+                   ->bad_msg_count());
 }
 
 class TopLevelStorageAccessPermissionContextAPIWithFirstPartySetsTest
@@ -196,16 +257,20 @@ class TopLevelStorageAccessPermissionContextAPIWithFirstPartySetsTest
     TopLevelStorageAccessPermissionContextTest::SetUp();
 
     const net::SchemefulSite top_level(GetTopLevelURL());
-    first_party_sets_handler().SetGlobalSets(net::GlobalFirstPartySets(
-        base::Version("1.2.3"),
-        /*entries=*/
-        {
-            {net::SchemefulSite(GetRequesterURL()),
-             net::FirstPartySetEntry(top_level, net::SiteType::kAssociated, 0)},
-            {top_level, net::FirstPartySetEntry(
-                            top_level, net::SiteType::kPrimary, std::nullopt)},
-        },
-        /*aliases=*/{}));
+    first_party_sets_handler().SetGlobalSets(
+        net::GlobalFirstPartySets::CreateForTesting(
+            base::Version("1.2.3"),
+            /*entries=*/
+            {
+                {net::SchemefulSite(GetRequesterURL()),
+                 net::FirstPartySetEntry(top_level,
+                                         net::SiteType::kAssociated)},
+                {top_level,
+                 net::FirstPartySetEntry(top_level, net::SiteType::kPrimary)},
+            },
+            /*aliases=*/{}));
+    profile()->GetPrefs()->SetBoolean(
+        prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, true);
   }
 
  private:
@@ -228,7 +293,7 @@ TEST_F(TopLevelStorageAccessPermissionContextAPIWithFirstPartySetsTest,
 
   EXPECT_EQ(DecidePermissionSync(&permission_context, /*user_gesture=*/true,
                                  GetRequesterURL(), GetTopLevelURL()),
-            CONTENT_SETTING_ALLOW);
+            PermissionStatus::GRANTED);
   EXPECT_EQ(histogram_tester().GetBucketCount(
                 kRequestOutcomeHistogram,
                 TopLevelStorageAccessRequestOutcome::kGrantedByFirstPartySet),
@@ -260,7 +325,7 @@ TEST_F(TopLevelStorageAccessPermissionContextAPIWithFirstPartySetsTest,
 
   EXPECT_EQ(DecidePermissionSync(&permission_context, /*user_gesture=*/true,
                                  GetRequesterURL(), GetTopLevelURL()),
-            CONTENT_SETTING_ALLOW);
+            PermissionStatus::GRANTED);
 
   // Check the `SessionModel::DURABLE` setting with
   // `decided_by_related_website_sets` granted by FPS.
@@ -279,11 +344,17 @@ TEST_F(TopLevelStorageAccessPermissionContextAPIWithFirstPartySetsTest,
 
   // Even though the permission is granted, queries from cross-site frames
   // should return the default value.
-  EXPECT_EQ(PermissionStatus::ASK,
-            permission_context
-                .GetPermissionStatus(navigated_subframe, GetRequesterURL(),
-                                     GetTopLevelURL())
-                .status);
+  EXPECT_EQ(
+      PermissionStatus::ASK,
+      permission_context
+          .GetPermissionStatus(
+              content::PermissionDescriptorUtil::
+                  CreatePermissionDescriptorForPermissionType(
+                      permissions::PermissionUtil::
+                          ContentSettingsTypeToPermissionType(
+                              permission_context.content_settings_type())),
+              navigated_subframe, GetRequesterURL(), GetTopLevelURL())
+          .status);
 }
 
 TEST_F(TopLevelStorageAccessPermissionContextAPIWithFirstPartySetsTest,
@@ -303,7 +374,7 @@ TEST_F(TopLevelStorageAccessPermissionContextAPIWithFirstPartySetsTest,
 
   EXPECT_EQ(DecidePermissionSync(&permission_context, /*user_gesture=*/true,
                                  GetRequesterURL(), GetDummyEmbeddingUrl()),
-            CONTENT_SETTING_BLOCK);
+            PermissionStatus::DENIED);
   EXPECT_EQ(histogram_tester().GetBucketCount(
                 kRequestOutcomeHistogram,
                 TopLevelStorageAccessRequestOutcome::kDeniedByFirstPartySet),
@@ -336,7 +407,7 @@ TEST_F(TopLevelStorageAccessPermissionContextAPIWithFirstPartySetsTest,
 
   EXPECT_EQ(DecidePermissionSync(&permission_context, /*user_gesture=*/true,
                                  GetRequesterURL(), GetDummyEmbeddingUrl()),
-            CONTENT_SETTING_BLOCK);
+            PermissionStatus::DENIED);
 
   // Check the `SessionModel::DURABLE` setting with
   // `decided_by_related_website_sets`. None were granted, and implicit denials
@@ -349,9 +420,111 @@ TEST_F(TopLevelStorageAccessPermissionContextAPIWithFirstPartySetsTest,
   // The permission denial should not be exposed via query. Note that the block
   // setting is not persisted anyway with the current implementation; this is a
   // forward-looking test.
-  EXPECT_EQ(PermissionStatus::ASK,
-            permission_context
-                .GetPermissionStatus(/*render_frame_host=*/nullptr,
-                                     GetRequesterURL(), GetDummyEmbeddingUrl())
-                .status);
+  EXPECT_EQ(
+      PermissionStatus::ASK,
+      permission_context
+          .GetPermissionStatus(
+              content::PermissionDescriptorUtil::
+                  CreatePermissionDescriptorForPermissionType(
+                      permissions::PermissionUtil::
+                          ContentSettingsTypeToPermissionType(
+                              permission_context.content_settings_type())),
+              /*render_frame_host=*/nullptr, GetRequesterURL(),
+              GetDummyEmbeddingUrl())
+          .status);
+}
+
+class TopLevelStorageAccessPermissionContextFeatureDisabledTest
+    : public ChromeRenderViewHostTestHarness {
+ public:
+  TopLevelStorageAccessPermissionContextFeatureDisabledTest() = default;
+
+  void SetUp() override {
+    features_.InitAndDisableFeature(
+        blink::features::kStorageAccessAPIRelatedWebsiteSets);
+    ChromeRenderViewHostTestHarness::SetUp();
+    NavigateAndCommit(GetTopLevelURL());
+    permissions::PermissionRequestManager::CreateForWebContents(web_contents());
+    mock_permission_prompt_factory_ =
+        std::make_unique<permissions::MockPermissionPromptFactory>(
+            permissions::PermissionRequestManager::FromWebContents(
+                web_contents()));
+    first_party_sets_handler_.SetGlobalSets(net::GlobalFirstPartySets());
+  }
+
+  PermissionStatus DecidePermissionSync(
+      TopLevelStorageAccessPermissionContext* permission_context,
+      bool user_gesture,
+      const GURL& requester_url,
+      const GURL& embedding_url,
+      bool simulate_user_gesture = true) {
+    if (user_gesture && simulate_user_gesture) {
+      content::RenderFrameHostTester::For(main_rfh())->SimulateUserActivation();
+    }
+    base::test::TestFuture<content::PermissionResult> future;
+    permission_context->DecidePermissionForTesting(
+        std::make_unique<permissions::PermissionRequestData>(
+            blink::mojom::PermissionDescriptor::New(
+                blink::mojom::PermissionName::TOP_LEVEL_STORAGE_ACCESS,
+                /*extension=*/nullptr),
+            CreateFakeID(), user_gesture, requester_url, embedding_url),
+        future.GetCallback());
+    return future.Get().status;
+  }
+
+  void TearDown() override {
+    mock_permission_prompt_factory_.reset();
+    ChromeRenderViewHostTestHarness::TearDown();
+  }
+
+  permissions::PermissionRequestID CreateFakeID() {
+    return permissions::PermissionRequestID(
+        web_contents()->GetPrimaryMainFrame(),
+        request_id_generator_.GenerateNextId());
+  }
+
+  base::HistogramTester& histogram_tester() { return histogram_tester_; }
+
+  first_party_sets::ScopedMockFirstPartySetsHandler&
+  first_party_sets_handler() {
+    return first_party_sets_handler_;
+  }
+
+ private:
+  base::test::ScopedFeatureList features_;
+  base::HistogramTester histogram_tester_;
+  first_party_sets::ScopedMockFirstPartySetsHandler first_party_sets_handler_;
+  std::unique_ptr<permissions::MockPermissionPromptFactory>
+      mock_permission_prompt_factory_;
+  permissions::PermissionRequestID::RequestLocalId::Generator
+      request_id_generator_;
+};
+
+TEST_F(TopLevelStorageAccessPermissionContextFeatureDisabledTest,
+       PermissionDeniedEvenWithinFPS) {
+  // Create a FPS with https://requester.com as the member and
+  // https://embedder.example.com as the primary.
+  first_party_sets_handler().SetGlobalSets(
+      net::GlobalFirstPartySets::CreateForTesting(
+          base::Version("1.2.3"),
+          /*entries=*/
+          {{net::SchemefulSite(GetTopLevelURL()),
+            {net::FirstPartySetEntry(net::SchemefulSite(GetTopLevelURL()),
+                                     net::SiteType::kPrimary)}},
+           {net::SchemefulSite(GetRequesterURL()),
+            {net::FirstPartySetEntry(net::SchemefulSite(GetTopLevelURL()),
+                                     net::SiteType::kAssociated)}}},
+          /*aliases=*/{}));
+
+  TopLevelStorageAccessPermissionContext permission_context(profile());
+
+  // Even though they are in the same FPS, it should be denied because the
+  // feature is disabled.
+  EXPECT_EQ(DecidePermissionSync(&permission_context, /*user_gesture=*/true,
+                                 GetRequesterURL(), GetTopLevelURL()),
+            PermissionStatus::DENIED);
+  EXPECT_EQ(histogram_tester().GetBucketCount(
+                kRequestOutcomeHistogram,
+                TopLevelStorageAccessRequestOutcome::kDeniedByPrerequisites),
+            1);
 }

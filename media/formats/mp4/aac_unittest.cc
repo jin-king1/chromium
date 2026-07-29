@@ -2,17 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
+#include "media/formats/mp4/aac.h"
 
 #include <stdint.h>
 
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "media/base/mock_media_log.h"
-#include "media/formats/mp4/aac.h"
 #include "media/formats/mpeg/adts_constants.h"
 #include "media/formats/mpeg/adts_stream_parser.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -61,27 +58,21 @@ class AACTest : public testing::Test {
 };
 
 TEST_F(AACTest, BasicProfileTest) {
-  uint8_t buffer[] = {0x12, 0x10};
-  std::vector<uint8_t> data;
-
-  data.assign(buffer, buffer + sizeof(buffer));
+  std::vector<uint8_t> data = {0x12, 0x10};
 
   EXPECT_TRUE(Parse(data));
   EXPECT_EQ(aac_.GetOutputSamplesPerSecond(false), 44100);
-  EXPECT_EQ(aac_.GetChannelLayout(false), CHANNEL_LAYOUT_STEREO);
+  EXPECT_EQ(aac_.GetChannelLayout(false), ChannelLayoutConfig::Stereo());
   EXPECT_EQ(aac_.GetProfile(), AudioCodecProfile::kUnknown);
 }
 
 TEST_F(AACTest, ExtensionTest) {
-  uint8_t buffer[] = {0x13, 0x08, 0x56, 0xe5, 0x9d, 0x48, 0x80};
-  std::vector<uint8_t> data;
-
-  data.assign(buffer, buffer + sizeof(buffer));
+  std::vector<uint8_t> data = {0x13, 0x08, 0x56, 0xe5, 0x9d, 0x48, 0x80};
 
   EXPECT_TRUE(Parse(data));
   EXPECT_EQ(aac_.GetOutputSamplesPerSecond(false), 48000);
   EXPECT_EQ(aac_.GetOutputSamplesPerSecond(true), 48000);
-  EXPECT_EQ(aac_.GetChannelLayout(false), CHANNEL_LAYOUT_STEREO);
+  EXPECT_EQ(aac_.GetChannelLayout(false), ChannelLayoutConfig::Stereo());
   EXPECT_EQ(aac_.GetProfile(), AudioCodecProfile::kUnknown);
 }
 
@@ -90,53 +81,45 @@ TEST_F(AACTest, ExtensionTest) {
 // specified. Otherwise stereo should be reported.
 // See ISO 14496-3:2005 Section 1.6.5.3 for details about this special casing.
 TEST_F(AACTest, ImplicitSBR_ChannelConfig0) {
-  uint8_t buffer[] = {0x13, 0x08};
-  std::vector<uint8_t> data;
-
-  data.assign(buffer, buffer + sizeof(buffer));
+  std::vector<uint8_t> data = {0x13, 0x08};
 
   EXPECT_TRUE(Parse(data));
 
   // Test w/o implicit SBR.
   EXPECT_EQ(aac_.GetOutputSamplesPerSecond(false), 24000);
-  EXPECT_EQ(aac_.GetChannelLayout(false), CHANNEL_LAYOUT_MONO);
+  EXPECT_EQ(aac_.GetChannelLayout(false), ChannelLayoutConfig::Mono());
   EXPECT_EQ(aac_.GetProfile(), AudioCodecProfile::kUnknown);
 
   // Test implicit SBR.
   EXPECT_EQ(aac_.GetOutputSamplesPerSecond(true), 48000);
-  EXPECT_EQ(aac_.GetChannelLayout(true), CHANNEL_LAYOUT_STEREO);
+  EXPECT_EQ(aac_.GetChannelLayout(true), ChannelLayoutConfig::Stereo());
   EXPECT_EQ(aac_.GetProfile(), AudioCodecProfile::kUnknown);
 }
 
 // Tests implicit SBR with a stereo channel config.
 TEST_F(AACTest, ImplicitSBR_ChannelConfig1) {
-  uint8_t buffer[] = {0x13, 0x10};
-  std::vector<uint8_t> data;
-
-  data.assign(buffer, buffer + sizeof(buffer));
+  std::vector<uint8_t> data = {0x13, 0x10};
 
   EXPECT_TRUE(Parse(data));
 
   // Test w/o implicit SBR.
   EXPECT_EQ(aac_.GetOutputSamplesPerSecond(false), 24000);
-  EXPECT_EQ(aac_.GetChannelLayout(false), CHANNEL_LAYOUT_STEREO);
+  EXPECT_EQ(aac_.GetChannelLayout(false), ChannelLayoutConfig::Stereo());
   EXPECT_EQ(aac_.GetProfile(), AudioCodecProfile::kUnknown);
 
   // Test implicit SBR.
   EXPECT_EQ(aac_.GetOutputSamplesPerSecond(true), 48000);
-  EXPECT_EQ(aac_.GetChannelLayout(true), CHANNEL_LAYOUT_STEREO);
+  EXPECT_EQ(aac_.GetChannelLayout(true), ChannelLayoutConfig::Stereo());
   EXPECT_EQ(aac_.GetProfile(), AudioCodecProfile::kUnknown);
 }
 
 TEST_F(AACTest, SixChannelTest) {
-  uint8_t buffer[] = {0x11, 0xb0};
-  std::vector<uint8_t> data;
-
-  data.assign(buffer, buffer + sizeof(buffer));
+  std::vector<uint8_t> data = {0x11, 0xb0};
 
   EXPECT_TRUE(Parse(data));
   EXPECT_EQ(aac_.GetOutputSamplesPerSecond(false), 48000);
-  EXPECT_EQ(aac_.GetChannelLayout(false), CHANNEL_LAYOUT_5_1_BACK);
+  EXPECT_EQ(aac_.GetChannelLayout(false),
+            ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_5_1_BACK>());
   EXPECT_EQ(aac_.GetProfile(), AudioCodecProfile::kUnknown);
 }
 
@@ -151,10 +134,8 @@ TEST_F(AACTest, DataTooShortTest) {
 
 TEST_F(AACTest, IncorrectProfileTest) {
   InSequence s;
-  uint8_t buffer[] = {0x0, 0x08};
-  std::vector<uint8_t> data;
+  std::vector<uint8_t> data = {0x0, 0x08};
 
-  data.assign(buffer, buffer + sizeof(buffer));
   EXPECT_MEDIA_LOG(UnsupportedAudioProfileLog("mp4a.40.0"));
   EXPECT_FALSE(Parse(data));
 
@@ -169,10 +150,8 @@ TEST_F(AACTest, IncorrectProfileTest) {
 }
 
 TEST_F(AACTest, IncorrectFrequencyTest) {
-  uint8_t buffer[] = {0x0f, 0x88};
-  std::vector<uint8_t> data;
+  std::vector<uint8_t> data = {0x0f, 0x88};
 
-  data.assign(buffer, buffer + sizeof(buffer));
   EXPECT_FALSE(Parse(data));
 
   data[0] = 0x0e;
@@ -181,10 +160,8 @@ TEST_F(AACTest, IncorrectFrequencyTest) {
 }
 
 TEST_F(AACTest, IncorrectChannelTest) {
-  uint8_t buffer[] = {0x0e, 0x00};
-  std::vector<uint8_t> data;
+  std::vector<uint8_t> data = {0x0e, 0x00};
 
-  data.assign(buffer, buffer + sizeof(buffer));
   EXPECT_FALSE(Parse(data));
 
   data[1] = 0x08;
@@ -193,10 +170,8 @@ TEST_F(AACTest, IncorrectChannelTest) {
 
 TEST_F(AACTest, UnsupportedProfileTest) {
   InSequence s;
-  uint8_t buffer[] = {0x3a, 0x08};
-  std::vector<uint8_t> data;
+  std::vector<uint8_t> data = {0x3a, 0x08};
 
-  data.assign(buffer, buffer + sizeof(buffer));
   EXPECT_MEDIA_LOG(UnsupportedAudioProfileLog("mp4a.40.7"));
   EXPECT_FALSE(Parse(data));
 
@@ -207,10 +182,8 @@ TEST_F(AACTest, UnsupportedProfileTest) {
 
 TEST_F(AACTest, UnsupportedChannelLayoutTest) {
   InSequence s;
-  uint8_t buffer[] = {0x12, 0x78};
-  std::vector<uint8_t> data;
+  std::vector<uint8_t> data = {0x12, 0x78};
 
-  data.assign(buffer, buffer + sizeof(buffer));
   EXPECT_MEDIA_LOG(UnsupportedChannelConfigLog("15"));
   EXPECT_FALSE(Parse(data));
 
@@ -220,10 +193,8 @@ TEST_F(AACTest, UnsupportedChannelLayoutTest) {
 
 TEST_F(AACTest, UnsupportedFrequencyIndexTest) {
   InSequence s;
-  uint8_t buffer[] = {0x17, 0x10};
-  std::vector<uint8_t> data;
+  std::vector<uint8_t> data = {0x17, 0x10};
 
-  data.assign(buffer, buffer + sizeof(buffer));
   EXPECT_MEDIA_LOG(UnsupportedFrequencyIndexLog("e"));
   EXPECT_FALSE(Parse(data));
 
@@ -233,10 +204,8 @@ TEST_F(AACTest, UnsupportedFrequencyIndexTest) {
 
 TEST_F(AACTest, UnsupportedExFrequencyIndexTest) {
   InSequence s;
-  uint8_t buffer[] = {0x29, 0x17, 0x08, 0x0};
-  std::vector<uint8_t> data;
+  std::vector<uint8_t> data = {0x29, 0x17, 0x08, 0x0};
 
-  data.assign(buffer, buffer + sizeof(buffer));
   EXPECT_MEDIA_LOG(UnsupportedExtensionFrequencyIndexLog("e"));
   EXPECT_FALSE(Parse(data));
 
@@ -246,34 +215,33 @@ TEST_F(AACTest, UnsupportedExFrequencyIndexTest) {
 
 TEST_F(AACTest, XHE_AAC) {
   InSequence s;
-  uint8_t buffer[] = {0xf9, 0x46, 0x43, 0x22, 0x2c, 0xc0, 0x4c, 0x00,
-                      0x85, 0xa0, 0x01, 0x13, 0x84, 0x00, 0x20, 0x00,
-                      0x02, 0x50, 0x01, 0x19, 0x72, 0xc0, 0x00};
-  std::vector<uint8_t> data;
-  data.assign(buffer, buffer + sizeof(buffer));
+  std::vector<uint8_t> data = {0xf9, 0x46, 0x43, 0x22, 0x2c, 0xc0, 0x4c, 0x00,
+                               0x85, 0xa0, 0x01, 0x13, 0x84, 0x00, 0x20, 0x00,
+                               0x02, 0x50, 0x01, 0x19, 0x72, 0xc0, 0x00};
 
   EXPECT_TRUE(Parse(data));
   EXPECT_EQ(aac_.GetOutputSamplesPerSecond(false), 48000);
-  EXPECT_EQ(aac_.GetChannelLayout(false), CHANNEL_LAYOUT_STEREO);
+  EXPECT_EQ(aac_.GetChannelLayout(false), ChannelLayoutConfig::Stereo());
   EXPECT_EQ(aac_.GetProfile(), AudioCodecProfile::kXHE_AAC);
 
   // ADTS conversion should do nothing since xHE-AAC can't be represented with
   // only two bits for the profile.
-  int adts_header_size = 1;  // Choose a non-zero value to make sure it's set.
+
+  // Choose a non-zero value to make sure it's set.
+  size_t adts_header_size = 1;
   auto adts_buffer = aac_.CreateAdtsFromEsds(data, &adts_header_size);
   EXPECT_TRUE(adts_buffer.empty());
-  EXPECT_EQ(adts_header_size, 0);
+  EXPECT_EQ(adts_header_size, 0u);
 }
 
 TEST_F(AACTest, CreateAdtsFromEsds) {
   // Prime `aac_` with a codec description.
-  uint8_t buffer[] = {0x12, 0x10};
-  std::vector<uint8_t> codec_desc(buffer, buffer + sizeof(buffer));
+  std::vector<uint8_t> codec_desc = {0x12, 0x10};
   EXPECT_TRUE(Parse(codec_desc));
 
   uint8_t packet[] = {0x00, 0x01, 0x03, 0x04};
 
-  int adts_header_size = 0;
+  size_t adts_header_size = 0;
   auto adts_packet = aac_.CreateAdtsFromEsds(packet, &adts_header_size);
 
   const size_t total_size = sizeof(packet) + adts_header_size;
@@ -283,29 +251,29 @@ TEST_F(AACTest, CreateAdtsFromEsds) {
   EXPECT_EQ(adts_header_size, kADTSHeaderMinSize);
 
   // Verify the packet data.
-  EXPECT_EQ(
-      0, memcmp(adts_packet.data() + adts_header_size, packet, sizeof(packet)));
-
-  ADTSStreamParser adts_parser;
+  EXPECT_EQ(adts_packet.subspan(adts_header_size), base::span(packet));
 
   // Verify the header data.
-  int frame_size = 0;
-  int sample_rate = 0;
-  ChannelLayout channel_layout;
-  int sample_count = 0;
-  bool metadata_frame;
-  std::vector<uint8_t> extra_data;
+  const auto header =
+      ADTSStreamParser::ParseHeader(adts_packet.first(total_size));
+  ASSERT_TRUE(header);
+  EXPECT_EQ(header->frame_size, total_size);
+  EXPECT_EQ(header->sample_rate, 44100);
+  EXPECT_EQ(header->channel_layout, ChannelLayout::CHANNEL_LAYOUT_STEREO);
+  EXPECT_EQ(base::span(header->extra_data), base::span(codec_desc));
+}
 
-  // TODO(b/40285824): Change ParseFrameHeader to take a span instead of a
-  // `const uint8_t* data` as its first arg.
-  adts_parser.ParseFrameHeader(adts_packet.data(), total_size, &frame_size,
-                               &sample_rate, &channel_layout, &sample_count,
-                               &metadata_frame, &extra_data);
+TEST_F(AACTest, FitsInAdts_ExplicitFrequencyReturnsFalse) {
+  // Corresponds to AAC-LC, explicit 22050Hz, Stereo.
+  // Audio Object Type (AOT) = 2 (AAC-LC) -> 5 bits: 00010
+  // Sampling Frequency Index (SFI) = 15 (escape value) -> 4 bits: 1111
+  // Sampling Frequency = 22050 -> 24 bits: 000000000101011000100010
+  // Channel Configuration = 2 (Stereo) -> 4 bits: 0010
+  // Combined: 00010111 10000000 00101011 00010001 00010000
+  std::vector<uint8_t> data = {0x17, 0x80, 0x2b, 0x11, 0x10};
 
-  EXPECT_EQ(frame_size, static_cast<int>(total_size));
-  EXPECT_EQ(sample_rate, 44100);
-  EXPECT_EQ(channel_layout, ChannelLayout::CHANNEL_LAYOUT_STEREO);
-  EXPECT_EQ(0, memcmp(extra_data.data(), buffer, extra_data.size()));
+  EXPECT_TRUE(Parse(data));
+  EXPECT_FALSE(aac_.fits_in_adts());
 }
 
 }  // namespace media::mp4

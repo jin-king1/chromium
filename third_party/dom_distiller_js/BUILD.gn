@@ -20,7 +20,6 @@ protoc_plugin_files = [
   "//third_party/protobuf/python/google/protobuf/descriptor_pool.py",
   "//third_party/protobuf/python/google/protobuf/duration.py",
   "//third_party/protobuf/python/google/protobuf/internal/__init__.py",
-  "//third_party/protobuf/python/google/protobuf/internal/_parameterized.py",
   "//third_party/protobuf/python/google/protobuf/internal/api_implementation.py",
   "//third_party/protobuf/python/google/protobuf/internal/builder.py",
   "//third_party/protobuf/python/google/protobuf/internal/containers.py",
@@ -43,7 +42,6 @@ protoc_plugin_files = [
   "//third_party/protobuf/python/google/protobuf/proto_json.py",
   "//third_party/protobuf/python/google/protobuf/reflection.py",
   "//third_party/protobuf/python/google/protobuf/runtime_version.py",
-  "//third_party/protobuf/python/google/protobuf/service.py",
   "//third_party/protobuf/python/google/protobuf/service_reflection.py",
   "//third_party/protobuf/python/google/protobuf/symbol_database.py",
   "//third_party/protobuf/python/google/protobuf/text_encoding.py",
@@ -94,7 +92,7 @@ action("json_values_converter_tests") {
   _stamp = "$target_gen_dir/json_values_converter_tests.stamp"
   _actual_file = "$target_gen_dir/test_sample_json_converter.h"
   _golden_file = "test_sample_json_converter.h.golden"
-  deps = [ ":json_values_converter_test_proto" ]
+  deps = [ ":json_values_converter_test_proto_gen" ]
   inputs = [
     _actual_file,
     _golden_file,

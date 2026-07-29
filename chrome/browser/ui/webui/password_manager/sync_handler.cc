@@ -17,15 +17,16 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/webui/web_ui_util.h"
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#if BUILDFLAG(ENABLE_DICE_SUPPORT) || BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/profiles/batch_upload/batch_upload_service.h"
 #include "chrome/browser/profiles/batch_upload/batch_upload_service_factory.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #endif
 
 namespace password_manager {
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#if BUILDFLAG(ENABLE_DICE_SUPPORT) || BUILDFLAG(IS_CHROMEOS)
 namespace {
 
 // Entry points to the Batch Upload dialog in the passwords settings section.
@@ -52,8 +53,6 @@ BatchUploadService::EntryPoint ToBatchUploadEntryPoint(
 }  // namespace
 #endif
 
-using password_manager::features_util::ShouldShowAccountStorageSettingToggle;
-
 SyncHandler::SyncHandler(Profile* profile) : profile_(profile) {}
 
 SyncHandler::~SyncHandler() = default;
@@ -73,7 +72,7 @@ void SyncHandler::RegisterMessages() {
       "GetLocalPasswordCount",
       base::BindRepeating(&SyncHandler::HandleGetLocalPasswordCount,
                           base::Unretained(this)));
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#if BUILDFLAG(ENABLE_DICE_SUPPORT) || BUILDFLAG(IS_CHROMEOS)
   web_ui()->RegisterMessageCallback(
       "OpenBatchUpload",
       base::BindRepeating(&SyncHandler::HandleOpenBatchUploadDialog,
@@ -117,7 +116,7 @@ base::Value SyncHandler::GetTrustedVaultBannerState() const {
 }
 
 void SyncHandler::HandleGetTrustedVaultBannerState(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   CHECK_EQ(1U, args.size());
   const base::Value& callback_id = args[0];
@@ -125,8 +124,8 @@ void SyncHandler::HandleGetTrustedVaultBannerState(
   ResolveJavascriptCallback(callback_id, GetTrustedVaultBannerState());
 }
 
-base::Value::Dict SyncHandler::GetSyncInfo() const {
-  base::Value::Dict dict;
+base::DictValue SyncHandler::GetSyncInfo() const {
+  base::DictValue dict;
 
   syncer::SyncService* sync_service = GetSyncService();
   // sync_service might be nullptr if SyncServiceFactory::IsSyncAllowed is
@@ -135,21 +134,18 @@ base::Value::Dict SyncHandler::GetSyncInfo() const {
     return dict;
   }
 
-  PrefService* pref_service = profile_->GetPrefs();
   syncer::UserSelectableTypeSet types =
       sync_service->GetUserSettings()->GetSelectedTypes();
 
-  auto* identity_manager = IdentityManagerFactory::GetForProfile(profile_);
-  dict.Set("isEligibleForAccountStorage",
-           (!identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync) &&
-            ShouldShowAccountStorageSettingToggle(pref_service, sync_service)));
+  // TODO(crbug.com/40066949): Clean this up once Sync-the-feature users are
+  // migrated to ConsentLevel::kSignin.
   dict.Set("isSyncingPasswords",
            (sync_service->IsSyncFeatureEnabled() &&
             types.Has(syncer::UserSelectableType::kPasswords)));
   return dict;
 }
 
-void SyncHandler::HandleGetSyncInfo(const base::Value::List& args) {
+void SyncHandler::HandleGetSyncInfo(const base::ListValue& args) {
   AllowJavascript();
 
   CHECK_EQ(1U, args.size());
@@ -158,13 +154,13 @@ void SyncHandler::HandleGetSyncInfo(const base::Value::List& args) {
   ResolveJavascriptCallback(callback_id, GetSyncInfo());
 }
 
-base::Value::Dict SyncHandler::GetAccountInfo() const {
+base::DictValue SyncHandler::GetAccountInfo() const {
   signin::IdentityManager* identity_manager(
       IdentityManagerFactory::GetInstance()->GetForProfile(profile_));
   auto stored_account = identity_manager->FindExtendedAccountInfo(
       identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin));
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("email", stored_account.email);
   const auto& avatar_image = stored_account.account_image;
   if (!avatar_image.IsEmpty()) {
@@ -173,7 +169,7 @@ base::Value::Dict SyncHandler::GetAccountInfo() const {
   return dict;
 }
 
-void SyncHandler::HandleGetAccountInfo(const base::Value::List& args) {
+void SyncHandler::HandleGetAccountInfo(const base::ListValue& args) {
   AllowJavascript();
   CHECK_EQ(1U, args.size());
   const base::Value& callback_id = args[0];
@@ -181,8 +177,8 @@ void SyncHandler::HandleGetAccountInfo(const base::Value::List& args) {
   ResolveJavascriptCallback(callback_id, GetAccountInfo());
 }
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-void SyncHandler::HandleOpenBatchUploadDialog(const base::Value::List& args) {
+#if BUILDFLAG(ENABLE_DICE_SUPPORT) || BUILDFLAG(IS_CHROMEOS)
+void SyncHandler::HandleOpenBatchUploadDialog(const base::ListValue& args) {
   AllowJavascript();
   CHECK_EQ(1U, args.size());
   CHECK(args[0].is_int());
@@ -196,12 +192,14 @@ void SyncHandler::HandleOpenBatchUploadDialog(const base::Value::List& args) {
   BatchUploadService* batch_upload =
       BatchUploadServiceFactory::GetForProfile(profile_);
   CHECK(batch_upload);
-  batch_upload->OpenBatchUpload(chrome::FindBrowserWithProfile(profile_),
-                                entry_point);
+  BrowserWindowInterface* browser =
+      ProfileBrowserCollection::GetForProfile(profile_)->GetLastActiveBrowser();
+  batch_upload->OpenBatchUpload(
+      browser ? browser->GetBrowserForMigrationOnly() : nullptr, entry_point);
 }
 #endif
 
-void SyncHandler::HandleGetLocalPasswordCount(const base::Value::List& args) {
+void SyncHandler::HandleGetLocalPasswordCount(const base::ListValue& args) {
   AllowJavascript();
   CHECK_EQ(1U, args.size());
   const base::Value& callback_id = args[0];
@@ -233,6 +231,12 @@ void SyncHandler::OnStateChanged(syncer::SyncService* sync_service) {
         base::BindOnce(&SyncHandler::FireOnGetLocalDataDescriptionReceived,
                        weak_ptr_factory_.GetWeakPtr()));
   }
+}
+
+void SyncHandler::OnSyncShutdown(syncer::SyncService* sync_service) {
+  // Unreachable, since this class is tied to UI which gets destroyed before the
+  // Profile and its KeyedServices.
+  NOTREACHED();
 }
 
 void SyncHandler::FireOnGetLocalDataDescriptionReceived(

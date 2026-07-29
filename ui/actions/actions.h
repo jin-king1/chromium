@@ -9,10 +9,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
-#include "base/callback_list.h"
 #include "base/component_export.h"
 #include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
@@ -20,12 +20,15 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "ui/actions/action_id.h"
-#include "ui/actions/action_utils.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/class_property.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/events/event.h"
+
+namespace base {
+class CallbackListSubscription;
+}
 
 namespace actions {
 
@@ -62,6 +65,9 @@ class COMPONENT_EXPORT(ACTIONS) BaseAction
       public ui::PropertyHandler {
  public:
   METADATA_HEADER_BASE(BaseAction);
+
+  using PopulateChildActions = base::RepeatingCallback<void(BaseAction*)>;
+
   BaseAction();
   BaseAction(const BaseAction&) = delete;
   BaseAction& operator=(const BaseAction&) = delete;
@@ -74,6 +80,9 @@ class COMPONENT_EXPORT(ACTIONS) BaseAction
 
   const ActionList& GetChildren() const { return children_; }
   void ResetActionList();
+  void SetPopulateChildrenCallback(PopulateChildActions callback);
+  bool HasPopulateChildActionsCallback() const;
+  void PopulateChildItems();
 
  protected:
   void ActionListChanged() override;
@@ -81,6 +90,7 @@ class COMPONENT_EXPORT(ACTIONS) BaseAction
  private:
   raw_ptr<BaseAction> parent_ = nullptr;
   ActionList children_{this};
+  PopulateChildActions populate_child_callback_;
 };
 
 // Class returned from ActionItem::BeginUpdate() in order to allow a "batch"
@@ -123,6 +133,14 @@ class COMPONENT_EXPORT(ACTIONS) ActionInvocationContext
       return std::move(*this);
     }
 
+    template <typename T, typename U>
+      requires std::is_enum_v<U> && std::is_same_v<T, std::underlying_type_t<U>>
+    ContextBuilder&& SetProperty(const ui::ClassProperty<T>* property,
+                                 U value) && {
+      context_->SetProperty(property, static_cast<T>(value));
+      return std::move(*this);
+    }
+
     [[nodiscard]] ActionInvocationContext Build() &&;
 
    private:
@@ -142,6 +160,9 @@ class BaseActionItemBuilderT {
   using ActionChangedCallback = ui::metadata::PropertyChangedCallback;
   using InvokeActionCallback =
       base::RepeatingCallback<void(ActionItem*, ActionInvocationContext)>;
+
+  using PopulateChildActions = base::RepeatingCallback<void(BaseAction*)>;
+
   BaseActionItemBuilderT() {
     action_item_ = std::make_unique<ActionItemClass>();
   }
@@ -311,6 +332,15 @@ class BaseActionItemBuilderT {
     return std::move(this->SetInvokeActionCallback(std::move(callback)));
   }
 
+  BuilderT& SetPopulateChildrenCallback(PopulateChildActions callback) & {
+    action_item_->SetPopulateChildrenCallback(std::move(callback));
+    return static_cast<BuilderT&>(*this);
+  }
+
+  BuilderT&& SetPopulateChildrenCallback(PopulateChildActions callback) && {
+    return std::move(this->SetPopulateChildrenCallback(std::move(callback)));
+  }
+
   BuilderT& SetIsShowingBubble(bool showing_bubble) & {
     action_item_->SetIsShowingBubble(showing_bubble);
     return static_cast<BuilderT&>(*this);
@@ -356,7 +386,6 @@ class COMPONENT_EXPORT(ACTIONS) ActionItem : public BaseAction {
   using ActionChangedCallback = ui::metadata::PropertyChangedCallback;
   using InvokeActionCallback =
       base::RepeatingCallback<void(ActionItem*, ActionInvocationContext)>;
-
   class COMPONENT_EXPORT(ACTIONS) ActionItemBuilder
       : public BaseActionItemBuilderT<ActionItemBuilder, ActionItem> {
     // TODO: possibly construct a Core class of
@@ -508,6 +537,11 @@ class COMPONENT_EXPORT(ACTIONS) StatefulImageActionItem : public ActionItem {
   ui::ImageModel stateful_image_;
 };
 
+template <typename A>
+bool IsActionItemClass(ActionItem* action_item) {
+  return ui::metadata::IsClass<A, ActionItem>(action_item);
+}
+
 class COMPONENT_EXPORT(ACTIONS) ActionManager
     : public ui::metadata::MetaDataProvider {
  public:
@@ -610,6 +644,12 @@ class COMPONENT_EXPORT(ACTIONS) ActionIdMap {
   static std::optional<StringToActionIdMap>& GetGlobalStringToActionIdMap();
   static ActionIdToStringMap& GetActionIdToStringMap();
   static StringToActionIdMap& GetStringToActionIdMap();
+};
+
+enum class ActionPinnableState {
+  kNotPinnable = 0,
+  kPinnable = 1,
+  kEnterpriseControlled = 2,
 };
 
 COMPONENT_EXPORT(ACTIONS)

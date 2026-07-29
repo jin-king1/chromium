@@ -19,7 +19,7 @@ class AutoSigninFirstRunDialogAndroid : public content::WebContentsObserver {
  public:
   explicit AutoSigninFirstRunDialogAndroid(content::WebContents* web_contents);
 
-  void Destroy(JNIEnv* env, jobject obj);
+  void Destroy(JNIEnv* env);
 
   AutoSigninFirstRunDialogAndroid(const AutoSigninFirstRunDialogAndroid&) =
       delete;
@@ -29,16 +29,13 @@ class AutoSigninFirstRunDialogAndroid : public content::WebContentsObserver {
   void ShowDialog();
 
   // Closes the dialog and propagates that no credentials was chosen.
-  void CancelDialog(JNIEnv* env, jobject obj);
-
-  // Opens new tab with page which explains the Smart Lock branding.
-  void OnLinkClicked(JNIEnv* env, jobject obj);
+  void CancelDialog(JNIEnv* env);
 
   // Records the user decision to use auto sign-in feature.
-  void OnOkClicked(JNIEnv* env, jobject obj);
+  void OnOkClicked(JNIEnv* env);
 
   // Opts user out of the auto sign-in feature.
-  void OnTurnOffClicked(JNIEnv* env, jobject obj);
+  void OnTurnOffClicked(JNIEnv* env);
 
   // content::WebContentsObserver overrides:
   void WebContentsDestroyed() override;

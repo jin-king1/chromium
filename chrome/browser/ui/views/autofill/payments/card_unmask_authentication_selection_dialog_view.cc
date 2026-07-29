@@ -7,17 +7,17 @@
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "components/autofill/core/browser/ui/payments/card_unmask_authentication_selection_dialog_controller.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
-#include "ui/gfx/image/image_skia_operations.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -37,9 +37,14 @@ ui::ImageModel GetAuthenticationModeIcon(
     const CardUnmaskChallengeOption& challenge_option) {
   switch (challenge_option.type) {
     case CardUnmaskChallengeOptionType::kSmsOtp:
-      return ui::ImageModel::FromVectorIcon(vector_icons::kSmsIcon);
+      return ui::ImageModel::FromVectorIcon(::features::IsRoundedIconsEnabled()
+                                                ? vector_icons::kSmsIcon
+                                                : vector_icons::kSmsOldIcon);
     case CardUnmaskChallengeOptionType::kEmailOtp:
-      return ui::ImageModel::FromVectorIcon(vector_icons::kEmailOutlineIcon);
+      return ui::ImageModel::FromVectorIcon(
+          ::features::IsRoundedIconsEnabled()
+              ? vector_icons::kMailIcon
+              : vector_icons::kEmailOutlineOldIcon);
     case CardUnmaskChallengeOptionType::kCvc:
       // CVC auth has its own authentication dialog in the single challenge
       // option case.
@@ -281,7 +286,8 @@ CreateAndShowCardUnmaskAuthenticationSelectionDialog(
   auto* tab_interface = tabs::TabInterface::GetFromContents(web_contents);
   tab_interface->GetTabFeatures()
       ->tab_dialog_manager()
-      ->CreateShowDialogAndBlockTabInteraction(dialog_view)
+      ->CreateAndShowDialog(dialog_view,
+                            std::make_unique<tabs::TabDialogManager::Params>())
       .release();
   return dialog_view;
 }

@@ -58,9 +58,11 @@ const char kGreenPDFPath[] = "/green.pdf";
   // Swipe back and forth a few times. If this crashes, there may be a new
   // problem with how WKWebView snapshots PDFs.
   for (int i = 0; i < 3; i++) {
-    [[EarlGrey selectElementWithMatcher:toolbar]
+    [[[EarlGrey selectElementWithMatcher:toolbar]
+        assertWithMatcher:grey_interactable()]
         performAction:grey_swipeFastInDirection(kGREYDirectionLeft)];
-    [[EarlGrey selectElementWithMatcher:toolbar]
+    [[[EarlGrey selectElementWithMatcher:toolbar]
+        assertWithMatcher:grey_interactable()]
         performAction:grey_swipeFastInDirection(kGREYDirectionRight)];
   }
 
@@ -71,7 +73,8 @@ const char kGreenPDFPath[] = "/green.pdf";
 // Enter and leave the tab grid. Swipe back and forth repeatedly between
 // the two tabs in the toolbar. The regressiom is a crash anywhere in this
 // process.
-- (void)testSwitchBetweenPDFs {
+// TODO(crbug.com/447146436): Re-enable when fixed.
+- (void)DISABLED_testSwitchBetweenPDFs {
   // Compact width only.
   if (![ChromeEarlGrey isCompactWidth]) {
     EARL_GREY_TEST_DISABLED(@"Disabled on iPad -- depends on swiping in the "
@@ -89,16 +92,17 @@ const char kGreenPDFPath[] = "/green.pdf";
   [ChromeEarlGreyUI openTabGrid];
 
   // Leave the tab grid.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridDoneButton()]
-      performAction:grey_tap()];
+  [ChromeEarlGrey hideTabSwitcher];
 
   id<GREYMatcher> toolbar = chrome_test_util::PrimaryToolbar();
   // Swipe back and forth a few times. If this crashes, there may be a new
   // problem with how WKWebView snapshots PDFs.
   for (int i = 0; i < 3; i++) {
-    [[EarlGrey selectElementWithMatcher:toolbar]
+    [[[EarlGrey selectElementWithMatcher:toolbar]
+        assertWithMatcher:grey_interactable()]
         performAction:grey_swipeFastInDirection(kGREYDirectionLeft)];
-    [[EarlGrey selectElementWithMatcher:toolbar]
+    [[[EarlGrey selectElementWithMatcher:toolbar]
+        assertWithMatcher:grey_interactable()]
         performAction:grey_swipeFastInDirection(kGREYDirectionRight)];
   }
 }
@@ -118,13 +122,12 @@ const char kGreenPDFPath[] = "/green.pdf";
   base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(5));
 
   // Leave the tab grid.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::TabGridDoneButton()]
-      performAction:grey_tap()];
+  [ChromeEarlGrey hideTabSwitcher];
 }
 
 // Tests the center color of the grid tab showing a PDF. (physical device only)
 - (void)testCenterColorOfPDFTabGrid {
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
   EARL_GREY_TEST_SKIPPED(@"The API to take a snapshot is not working correctly "
                          @"and it becomes black on simulator.");
 #endif
@@ -149,6 +152,7 @@ const char kGreenPDFPath[] = "/green.pdf";
   // Take a snapshot of the tab grid showing a PDF.
   EDORemoteVariable<UIImage*>* tabGridSnapshot =
       [[EDORemoteVariable alloc] init];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:TabGridCellAtIndex(0)];
   [[EarlGrey selectElementWithMatcher:TabGridCellAtIndex(0)]
       performAction:grey_snapshot(tabGridSnapshot)];
 
@@ -185,31 +189,34 @@ const char kGreenPDFPath[] = "/green.pdf";
                  alpha:(CGFloat*)alpha {
   CGImageRef imageRef = [image CGImage];
 
-  NSUInteger width = CGImageGetWidth(imageRef);
-  NSUInteger height = CGImageGetHeight(imageRef);
-  NSUInteger x = width / 2;
-  NSUInteger y = height / 2;
+  constexpr NSUInteger bytesPerPixel = 4;
+  constexpr NSUInteger bitsPerComponent = 8;
+  const NSUInteger width = CGImageGetWidth(imageRef);
+  const NSUInteger height = CGImageGetHeight(imageRef);
+  const NSUInteger bytesPerRow = bytesPerPixel * width;
+  const NSUInteger x = width / 2;
+  const NSUInteger y = height / 2;
+
+  std::vector<uint8_t> data;
+  data.resize(bytesPerRow * height);
 
   CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-  unsigned char* data =
-      (unsigned char*)calloc(height * width * 4, sizeof(unsigned char));
-  NSUInteger bytesPerPixel = 4;
-  NSUInteger bytesPerRow = bytesPerPixel * width;
-  NSUInteger bitsPerComponent = 8;
-  CGContextRef context =
-      CGBitmapContextCreate(data, width, height, bitsPerComponent, bytesPerRow,
-                            colorSpace, kCGImageAlphaPremultipliedLast);
+  CGContextRef context = CGBitmapContextCreate(
+      data.data(), width, height, bitsPerComponent, bytesPerRow, colorSpace,
+      kCGImageAlphaPremultipliedLast);
   CGContextDrawImage(context, CGRectMake(0, 0, width, height), imageRef);
 
-  NSUInteger index = (bytesPerRow * y) + x * bytesPerPixel;
-  *red = ((CGFloat)data[index]) / 255.0f;
-  *green = ((CGFloat)data[index + 1]) / 255.0f;
-  *blue = ((CGFloat)data[index + 2]) / 255.0f;
-  *alpha = ((CGFloat)data[index + 3]) / 255.0f;
+  const NSUInteger index = (bytesPerRow * y) + x * bytesPerPixel;
+  const base::span<const uint8_t> view =
+      base::span(data).subspan(index, bytesPerPixel);
+
+  *red = view[0] / 255.0f;
+  *green = view[1] / 255.0f;
+  *blue = view[2] / 255.0f;
+  *alpha = view[3] / 255.0f;
 
   CGColorSpaceRelease(colorSpace);
   CGContextRelease(context);
-  free(data);
 }
 
 @end

@@ -16,7 +16,7 @@
 #include "components/user_education/common/help_bubble/help_bubble_params.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
-#include "ui/base/interaction/framework_specific_implementation.h"
+#include "ui/base/interaction/implementation_list.h"
 
 namespace user_education {
 
@@ -53,6 +53,13 @@ class HelpBubbleFactoryRegistry {
   // exists.
   HelpBubble* GetHelpBubble(ui::ElementContext context);
 
+  // Adds the given bubble to the registry. The bubble must be valid and open.
+  // It will be removed when it is closed.
+  //
+  // This can be used to add an external help bubble as well (e.g. for custom
+  // help bubbles).
+  void AddHelpBubble(HelpBubble* help_bubble);
+
   // Adds a bubble factory of type `T` to the list of bubble factories, if it
   // is not already present.
   template <class T, typename... Args>
@@ -61,13 +68,14 @@ class HelpBubbleFactoryRegistry {
   }
 
  private:
-  void OnHelpBubbleClosed(HelpBubble* help_bubble, HelpBubble::CloseReason);
+  void OnHelpBubbleClosing(const HelpBubble* help_bubble,
+                           HelpBubble::CloseReason);
 
   // The list of known factories.
-  ui::FrameworkSpecificRegistrationList<HelpBubbleFactory> factories_;
+  ui::ImplementationList<HelpBubbleFactory> factories_;
 
   // The list of known help bubbles.
-  std::map<HelpBubble*, base::CallbackListSubscription> help_bubbles_;
+  std::map<raw_ptr<HelpBubble>, base::CallbackListSubscription> help_bubbles_;
 };
 
 }  // namespace user_education

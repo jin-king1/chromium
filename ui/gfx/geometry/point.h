@@ -95,18 +95,12 @@ class COMPONENT_EXPORT(GEOMETRY) Point {
   // Returns a string representation of point.
   std::string ToString() const;
 
+  friend constexpr bool operator==(const Point&, const Point&) = default;
+
  private:
   int x_;
   int y_;
 };
-
-constexpr bool operator==(const Point& lhs, const Point& rhs) {
-  return lhs.x() == rhs.x() && lhs.y() == rhs.y();
-}
-
-inline bool operator!=(const Point& lhs, const Point& rhs) {
-  return !(lhs == rhs);
-}
 
 inline Point operator+(const Point& lhs, const Vector2d& rhs) {
   Point result(lhs);
@@ -142,15 +136,15 @@ void PrintTo(const Point& point, ::std::ostream* os);
 COMPONENT_EXPORT(GEOMETRY)
 Point ScaleToCeiledPoint(const Point& point, float x_scale, float y_scale);
 COMPONENT_EXPORT(GEOMETRY)
-Point ScaleToCeiledPoint(const Point& point, float x_scale);
+Point ScaleToCeiledPoint(const Point& point, float scale);
 COMPONENT_EXPORT(GEOMETRY)
 Point ScaleToFlooredPoint(const Point& point, float x_scale, float y_scale);
 COMPONENT_EXPORT(GEOMETRY)
-Point ScaleToFlooredPoint(const Point& point, float x_scale);
+Point ScaleToFlooredPoint(const Point& point, float scale);
 COMPONENT_EXPORT(GEOMETRY)
 Point ScaleToRoundedPoint(const Point& point, float x_scale, float y_scale);
 COMPONENT_EXPORT(GEOMETRY)
-Point ScaleToRoundedPoint(const Point& point, float x_scale);
+Point ScaleToRoundedPoint(const Point& point, float scale);
 
 }  // namespace gfx
 

@@ -5,6 +5,7 @@
 #ifndef ASH_CAPTURE_MODE_CAPTURE_MODE_CONTROLLER_H_
 #define ASH_CAPTURE_MODE_CAPTURE_MODE_CONTROLLER_H_
 
+#include <list>
 #include <memory>
 #include <optional>
 #include <string>
@@ -19,6 +20,9 @@
 #include "ash/public/cpp/capture_mode/capture_mode_delegate.h"
 #include "ash/public/cpp/session/session_observer.h"
 #include "ash/scanner/scanner_session.h"
+#include "ash/shell.h"
+#include "ash/shell_observer.h"
+#include "ash/system/video_conference/video_conference_common.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
@@ -26,11 +30,11 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/unguessable_token.h"
 #include "chromeos/ash/services/recording/public/mojom/recording_service.mojom.h"
-#include "chromeos/crosapi/mojom/video_conference.mojom.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -38,6 +42,7 @@
 #include "services/viz/privileged/mojom/compositing/frame_sink_video_capture.mojom-forward.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_skia.h"
 
 class PrefRegistrySimple;
 
@@ -46,6 +51,11 @@ class FilePath;
 class Time;
 class SequencedTaskRunner;
 }  // namespace base
+
+namespace network {
+class SimpleURLLoader;
+class SharedURLLoaderFactory;
+}  // namespace network
 
 namespace ash {
 
@@ -78,7 +88,8 @@ class ASH_EXPORT CaptureModeController
       public recording::mojom::DriveFsQuotaDelegate,
       public SessionObserver,
       public chromeos::PowerManagerClient::Observer,
-      public crosapi::mojom::VideoConferenceManagerClient {
+      public VideoConferenceManagerClient,
+      public ShellObserver {
  public:
   // Contains info about the folder used for saving the captured images and
   // videos.
@@ -98,6 +109,11 @@ class ASH_EXPORT CaptureModeController
   // Convenience function to get the controller instance, which is created and
   // owned by Shell.
   static CaptureModeController* Get();
+
+  // Returns true if the controller instance (owned by the Shell) is non-null,
+  // returns false otherwise. Used to check the validity of `Get()` during
+  // Shell shutdown.
+  static bool HasInstance();
 
   static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
@@ -140,9 +156,12 @@ class ASH_EXPORT CaptureModeController
   // Returns the search results panel, or nullptr if none exists.
   SearchResultsPanel* GetSearchResultsPanel() const;
 
-  // Shows the results panel with the captured region as `image` and the search
-  // results `url`.
-  void ShowSearchResultsPanel(const gfx::ImageSkia& image, GURL url);
+  // Shows the results panel.
+  void ShowSearchResultsPanel();
+
+  // Navigates the Sunfish search results panel to the given URL, if the panel
+  // is available.
+  void NavigateSearchResultsPanel(const GURL& url);
 
   // Closes the search results panel, or does nothing if it doesn't exist.
   void CloseSearchResultsPanel();
@@ -361,10 +380,12 @@ class ASH_EXPORT CaptureModeController
   void MaybeUpdateVcPanel();
 
   // Checks if there are any content currently on the screen that are restricted
-  // by DLP. `callback` will be triggered by the DLP manager with `proceed` set
-  // to true if screen capture is allowed to continue, or set to false if it
-  // should not continue.
+  // by DLP. `shutting_down` is true if the lock state controller has received a
+  // request to shut down, and false otherwise. `callback` will be triggered by
+  // the DLP manager with `proceed` set to true if screen capture is allowed to
+  // continue, or set to false if it should not continue.
   void CheckScreenCaptureDlpRestrictions(
+      bool shutting_down,
       OnCaptureModeDlpRestrictionChecked callback);
 
   // Returns true if the video recording is in progress and annotating is
@@ -375,19 +396,30 @@ class ASH_EXPORT CaptureModeController
   // behavior.
   bool IsAnnotatingSupported() const;
 
-  // Calls the delegate to send a multimodal search with `image` and `text`.
-  void SendMultimodalSearch(const gfx::ImageSkia& image,
-                            const std::string& text);
-
-  // Called by `CaptureModeDelegate` when the search result is fetched.
-  // Opens `url` and `image` if the captured region on the screen has not
-  // changed since the request was made.
+  // TODO(hewer): Remove the `image` param when cleaning up the native
+  // implementation.
+  // Called by `CaptureModeDelegate` when the search result is fetched. Opens
+  // `url` if the captured region on the screen has not changed since the
+  // request was made. `image` is used as the thumbnail image for the native
+  // search box; if the Lens Web implementation is enabled, then `image` can be
+  // empty as we use the Lens search box instead.
   void OnSearchUrlFetched(const gfx::Rect& captured_region,
                           const gfx::ImageSkia& image,
                           GURL url);
 
+  // Called by `CaptureModeDelegate` if an error occurs while trying to perform
+  // and image search or text detection. Shows a generic error message in the
+  // action container if the session is active.
+  void OnLensWebError(base::WeakPtr<BaseCaptureModeSession> image_search_token,
+                      CaptureModeImageSearchResult image_result,
+                      CaptureModeTextDetectionResult text_result);
+
   // Called by `SearchResultsView` when a search result is opened.
   void OnSearchResultClicked();
+
+  // Returns true if Google is the default search engine for the active user,
+  // and false otherwise.
+  bool ActiveUserDefaultSearchProviderIsGoogle() const;
 
   // recording::mojom::RecordingServiceClient:
   void OnRecordingEnded(recording::mojom::RecordingStatus status,
@@ -406,15 +438,13 @@ class ASH_EXPORT CaptureModeController
   // chromeos::PowerManagerClient::Observer:
   void SuspendImminent(power_manager::SuspendImminent::Reason reason) override;
 
-  // crosapi::mojom::VideoConferenceManagerClient:
-  void GetMediaApps(GetMediaAppsCallback callback) override;
-  void ReturnToApp(const base::UnguessableToken& token,
-                   ReturnToAppCallback callback) override;
-  void SetSystemMediaDeviceStatus(
-      crosapi::mojom::VideoConferenceMediaDevice device,
-      bool disabled,
-      SetSystemMediaDeviceStatusCallback callback) override;
-  void StopAllScreenShare() override;
+  // VideoConferenceManagerClient:
+  MediaApps GetMediaApps() override;
+  bool ReturnToApp(const base::UnguessableToken& token) override;
+  bool SetSystemMediaDeviceStatus(VideoConferenceMediaDevice device,
+                                  bool enabled) override;
+  // ShellObserver:
+  void OnPinnedStateChanged(aura::Window* pinned_window) override;
 
   // Skips the 3-second count down, and IsCaptureAllowed() checks, and starts
   // video recording right away for testing purposes.
@@ -540,13 +570,6 @@ class ASH_EXPORT CaptureModeController
       bool was_cursor_originally_blocked,
       base::WeakPtr<BaseCaptureModeSession> image_search_token,
       scoped_refptr<base::RefCountedMemory> jpeg_bytes);
-
-  // Called when an access token request completes (successfully or not). Used
-  // for the Lens Web API POST request.
-  void OnPrimaryAccountAccessTokenAvailable(
-      const gfx::Image& original_image,
-      base::WeakPtr<BaseCaptureModeSession> image_search_token,
-      const std::string& access_token);
 
   // Called back when on-device text detection is complete to show copy text and
   // smart actions buttons if needed. `image_search_token` is a weak pointer
@@ -914,6 +937,15 @@ class ASH_EXPORT CaptureModeController
   base::ObserverList<CaptureModeObserver> observers_;
 
   std::unique_ptr<CaptureModeEducationController> education_controller_;
+
+  base::ScopedObservation<Shell, ShellObserver> shell_observation_{this};
+
+  std::list<std::unique_ptr<const network::SimpleURLLoader>>
+      uploads_in_progress_;
+
+  // URLLoaderFactory used for network requests. May be null initially if the
+  // creation is delayed.
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   base::WeakPtrFactory<CaptureModeController> weak_ptr_factory_{this};
 };

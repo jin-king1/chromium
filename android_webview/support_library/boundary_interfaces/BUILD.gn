@@ -7,12 +7,15 @@ import("//build/config/android/rules.gni")
 
 android_library("boundary_interface_java") {
   sources = [
-    "src/org/chromium/support_lib_boundary/AsyncShouldInterceptRequestCallbackBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/DropDataContentProviderBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/ExecuteJavaScriptCallbackBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/FeatureFlagHolderBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/HttpCacheBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/IsomorphicObjectBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/JsReplyProxyBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/NavigationParametersBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/NoVarySearchDataBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/OriginMatchedHeaderBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/PrefetchOperationCallbackBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/ProcessGlobalConfigConstants.java",
     "src/org/chromium/support_lib_boundary/ProfileBoundaryInterface.java",
@@ -37,10 +40,13 @@ android_library("boundary_interface_java") {
     "src/org/chromium/support_lib_boundary/WebResourceRequestBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebSettingsBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebStorageBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/WebViewBackForwardCacheSettingsBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/WebViewBuilderBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewClientBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewCookieManagerBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewNavigationBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewNavigationClientBoundaryInterface.java",
+    "src/org/chromium/support_lib_boundary/WebViewNavigationListenerBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewPageBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewProviderBoundaryInterface.java",
     "src/org/chromium/support_lib_boundary/WebViewProviderFactoryBoundaryInterface.java",
@@ -55,7 +61,10 @@ android_library("boundary_interface_java") {
     "src/org/chromium/support_lib_boundary/util/Features.java",
   ]
 
-  proguard_configs = [ "proguard.flags" ]
+  proguard_configs = [
+    # Include rules that should not be copied to AndroidX.
+    "../proguard.flags",
+  ]
 
   # Our choice of deps is limited, because boundary_interfaces/ must continue to
   # build when we mirror this into AndroidX. We are only permitted to depend on
@@ -77,14 +86,8 @@ android_library("boundary_interface_java") {
 android_apk("boundary_interface_example_apk") {
   apk_name = "BoundaryInterfaceExample"
 
-  # Use a placeholder android manifest since this code is copied to androidx.
-  android_manifest = "//build/android/AndroidManifest.xml"
-
-  # This is to verify that the boundary interfaces compile and lint correctly
-  # against the minSdkVersion of the webkit support library module. As the
-  # minSdkVersion of the support library increases, so should this value. See
-  # http://crbug.com/828184 for more details.
-  lint_min_sdk_version = 21
+  # Use a custom AndroidManifest.xml to specify minSdkVersion.
+  android_manifest = "AndroidManifest.xml"
 
   # Explicitly enable lint for this apk.
   enable_lint = true

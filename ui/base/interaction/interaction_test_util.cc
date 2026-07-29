@@ -7,6 +7,9 @@
 #include <array>
 #include <functional>
 
+#include "base/containers/adapters.h"
+#include "ui/base/interaction/element_tracker.h"
+
 namespace ui::test {
 
 namespace {
@@ -17,7 +20,7 @@ ActionResult Simulate(
         simulators,
     ActionResult (InteractionTestUtil::Simulator::*method)(Args...),
     Args... args) {
-  for (const auto& simulator : simulators) {
+  for (const auto& simulator : base::Reversed(simulators)) {
     const auto result = std::invoke(method, simulator.get(), args...);
     if (result != ActionResult::kNotAttempted) {
       return result;
@@ -45,7 +48,8 @@ ActionResult InteractionTestUtil::Simulator::DoDefaultAction(TrackedElement*,
 
 ActionResult InteractionTestUtil::Simulator::SelectTab(TrackedElement*,
                                                        size_t,
-                                                       InputType) {
+                                                       InputType,
+                                                       std::optional<size_t>) {
   return ActionResult::kNotAttempted;
 }
 
@@ -66,13 +70,27 @@ ActionResult InteractionTestUtil::Simulator::ActivateSurface(
   return ActionResult::kNotAttempted;
 }
 
+ActionResult InteractionTestUtil::Simulator::FocusElement(
+    TrackedElement* element) {
+  return ActionResult::kNotAttempted;
+}
+
 #if !BUILDFLAG(IS_IOS)
+
 ActionResult InteractionTestUtil::Simulator::SendAccelerator(
     TrackedElement* element,
     Accelerator accelerator) {
   return ActionResult::kNotAttempted;
 }
-#endif
+
+ActionResult InteractionTestUtil::Simulator::SendKeyPress(
+    TrackedElement* element,
+    KeyboardCode key,
+    int flags) {
+  return ActionResult::kNotAttempted;
+}
+
+#endif  // !BUILDFLAG(IS_IOS)
 
 ActionResult InteractionTestUtil::Simulator::Confirm(TrackedElement* element) {
   return ActionResult::kNotAttempted;
@@ -97,11 +115,13 @@ ActionResult InteractionTestUtil::DoDefaultAction(TrackedElement* element,
                   input_type);
 }
 
-ActionResult InteractionTestUtil::SelectTab(TrackedElement* tab_collection,
-                                            size_t index,
-                                            InputType input_type) {
+ActionResult InteractionTestUtil::SelectTab(
+    TrackedElement* tab_collection,
+    size_t index,
+    InputType input_type,
+    std::optional<size_t> expected_index_after_selection) {
   return Simulate(simulators_, &Simulator::SelectTab, tab_collection, index,
-                  input_type);
+                  input_type, expected_index_after_selection);
 }
 
 ActionResult InteractionTestUtil::SelectDropdownItem(TrackedElement* dropdown,
@@ -121,16 +141,38 @@ ActionResult InteractionTestUtil::ActivateSurface(TrackedElement* element) {
   return Simulate(simulators_, &Simulator::ActivateSurface, element);
 }
 
+ActionResult InteractionTestUtil::FocusElement(TrackedElement* element) {
+  return Simulate(simulators_, &Simulator::FocusElement, element);
+}
+
 #if !BUILDFLAG(IS_IOS)
+
 ActionResult InteractionTestUtil::SendAccelerator(TrackedElement* element,
                                                   Accelerator accelerator) {
   return Simulate(simulators_, &Simulator::SendAccelerator, element,
                   accelerator);
 }
-#endif
+
+ActionResult InteractionTestUtil::SendKeyPress(TrackedElement* element,
+                                               KeyboardCode key,
+                                               int flags) {
+  return Simulate(simulators_, &Simulator::SendKeyPress, element, key, flags);
+}
+
+#endif  // !BUILDFLAG(IS_IOS)
 
 ActionResult InteractionTestUtil::Confirm(TrackedElement* element) {
   return Simulate(simulators_, &Simulator::Confirm, element);
+}
+
+void PrintTo(ActionResult action_result, std::ostream* os) {
+  static constexpr auto kActionResults = std::to_array<const char*>(
+      {"ActionResult::kNotAttempted", "ActionResult::kSucceeded",
+       "ActionResult::kFailed", "ActionResult::kKnownIncompatible"});
+  constexpr size_t kCount = kActionResults.size();
+  static_assert(kCount == static_cast<size_t>(ActionResult::kMaxValue) + 1);
+  const size_t value = base::checked_cast<size_t>(action_result);
+  *os << (value >= kCount ? "[invalid ActionResult]" : kActionResults[value]);
 }
 
 void PrintTo(InteractionTestUtil::InputType input_type, std::ostream* os) {
@@ -145,6 +187,10 @@ void PrintTo(InteractionTestUtil::InputType input_type, std::ostream* os) {
   *os << (value >= kCount ? "[invalid InputType]" : kInputTypeNames[value]);
 }
 
+std::ostream& operator<<(std::ostream& os, ActionResult action_result) {
+  PrintTo(action_result, &os);
+  return os;
+}
 std::ostream& operator<<(std::ostream& os,
                          InteractionTestUtil::InputType input_type) {
   PrintTo(input_type, &os);

@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_PERFORMANCE_MANAGER_PUBLIC_USER_TUNING_PERFORMANCE_DETECTION_MANAGER_H_
 
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "base/containers/enum_set.h"
@@ -40,8 +41,7 @@ class PerformanceDetectionManager {
     kMaxValue = kUnhealthy,
   };
 
-  using ResourceTypeSet = base::
-      EnumSet<ResourceType, ResourceType::kMinValue, ResourceType::kMaxValue>;
+  using ResourceTypeSet = base::EnumSet<ResourceType>;
   using ActionableTabsResult = std::vector<resource_attribution::PageContext>;
 
   class StatusObserver : public base::CheckedObserver {
@@ -88,7 +88,7 @@ class PerformanceDetectionManager {
  private:
   friend class ::ChromeBrowserMainExtraPartsPerformanceManager;
   friend class PerformanceDetectionManagerTest;
-  friend class CpuHealthTrackerBrowserTest;
+  friend class CpuHealthTrackerActionabilityTest;
 
   PerformanceDetectionManager();
 
@@ -109,9 +109,8 @@ class PerformanceDetectionManager {
   base::flat_map<ResourceType, ActionableTabsResult> actionable_tabs_;
   base::flat_map<ResourceType, HealthLevel> current_health_status_;
 
-  base::OneShotTimer one_minute_discard_timer_;
-  base::OneShotTimer two_minute_discard_timer_;
-  base::OneShotTimer four_minute_discard_timer_;
+  std::optional<HealthLevel> health_level_before_discard_;
+  base::OneShotTimer discard_timer_;
 
   base::WeakPtrFactory<PerformanceDetectionManager> weak_ptr_factory_{this};
 };

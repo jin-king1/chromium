@@ -4,11 +4,13 @@
 
 package org.chromium.chrome.test.transit.layouts;
 
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.test.transit.Condition;
 import org.chromium.base.test.transit.ConditionStatus;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.compositor.layouts.Layout;
 import org.chromium.chrome.browser.layouts.LayoutType;
+
+import java.util.function.Supplier;
 
 /** Check that the current LayoutType is the expected one. */
 public class LayoutTypeVisibleCondition extends Condition {
@@ -24,12 +26,30 @@ public class LayoutTypeVisibleCondition extends Condition {
 
     @Override
     protected ConditionStatus checkWithSuppliers() throws Exception {
-        // TODO(crbug.com/394600771): Also check that the layout is not in transition, like
-        // {@link HubLayoutNotInTransition} does.
-        @LayoutType
-        int layoutType = mActivitySupplier.get().getLayoutManager().getActiveLayoutType();
-        return whetherEquals(
-                mExpectedLayoutType, layoutType, LayoutTypeVisibleCondition::getLayoutTypeName);
+        Layout activeLayout = mActivitySupplier.get().getLayoutManager().getActiveLayout();
+        if (activeLayout == null) {
+            return whetherEquals(
+                    mExpectedLayoutType,
+                    LayoutType.NONE,
+                    LayoutTypeVisibleCondition::getLayoutTypeName);
+        }
+
+        @LayoutType int layoutType = activeLayout.getLayoutType();
+        boolean isStartingToHide = activeLayout.isStartingToHide();
+        boolean isStartingToShow = activeLayout.isStartingToShow();
+        String expectedDescription = getLayoutTypeName(mExpectedLayoutType);
+        String actualDescription = getLayoutTypeName(layoutType);
+        if (isStartingToHide) {
+            actualDescription += " (starting to hide)";
+        }
+        if (isStartingToShow) {
+            actualDescription += " (starting to show)";
+        }
+        return whether(
+                mExpectedLayoutType == layoutType && !isStartingToHide && !isStartingToShow,
+                "Expected: %s; Actual: %s",
+                expectedDescription,
+                actualDescription);
     }
 
     @Override
@@ -41,7 +61,7 @@ public class LayoutTypeVisibleCondition extends Condition {
         return switch (layoutType) {
             case LayoutType.NONE -> "NONE";
             case LayoutType.BROWSING -> "BROWSING";
-            case LayoutType.TAB_SWITCHER -> "TAB_SWITCHER";
+            case LayoutType.HUB -> "HUB";
             case LayoutType.TOOLBAR_SWIPE -> "TOOLBAR_SWIPE";
             case LayoutType.SIMPLE_ANIMATION -> "SIMPLE_ANIMATION";
             default -> "UNKNOWN";

@@ -23,6 +23,7 @@ public class MockTab extends TabImpl {
     private boolean mIsInitialized;
     private boolean mIsDestroyed;
     private boolean mIsBeingRestored;
+    private boolean mIsNativePage;
 
     private Boolean mCanGoBack;
     private Boolean mCanGoForward;
@@ -34,7 +35,7 @@ public class MockTab extends TabImpl {
     /** Create a new Tab for testing and initializes Tab UserData objects. */
     public static MockTab createAndInitialize(int id, Profile profile) {
         MockTab tab = new MockTab(id, profile);
-        tab.initialize(null, null, null, null, null, null, false, null, false);
+        tab.initialize(null, null, null, null, null, null, false, null, false, false);
         return tab;
     }
 
@@ -42,7 +43,7 @@ public class MockTab extends TabImpl {
     public static MockTab createAndInitialize(
             int id, Profile profile, @TabLaunchType int tabLaunchType) {
         MockTab tab = new MockTab(id, profile, tabLaunchType);
-        tab.initialize(null, null, null, null, null, null, false, null, false);
+        tab.initialize(null, null, null, null, null, null, false, null, false, false);
         return tab;
     }
 
@@ -51,7 +52,7 @@ public class MockTab extends TabImpl {
     }
 
     public MockTab(int id, Profile profile, @TabLaunchType int tabLaunchType) {
-        super(id, profile, tabLaunchType);
+        super(id, profile, tabLaunchType, /* isArchived= */ false);
     }
 
     @Override
@@ -64,7 +65,8 @@ public class MockTab extends TabImpl {
             @Nullable TabDelegateFactory delegateFactory,
             boolean initiallyHidden,
             TabState tabState,
-            boolean initializeRenderer) {
+            boolean initializeRenderer,
+            boolean isPinned) {
         if (loadUrlParams != null) {
             mGurlOverride = new GURL(loadUrlParams.getUrl());
         }
@@ -116,6 +118,11 @@ public class MockTab extends TabImpl {
         return mIsDestroyed;
     }
 
+    @Override
+    public void show(@TabSelectionType int type) {
+        // Intentionally do nothing.
+    }
+
     public void setIsInitialized(boolean isInitialized) {
         mIsInitialized = isInitialized;
     }
@@ -124,12 +131,37 @@ public class MockTab extends TabImpl {
         mIsCustomTab = isCustomTab;
     }
 
+    public void setIsNativePage(boolean isNativePage) {
+        mIsNativePage = isNativePage;
+    }
+
     @Override
-    public void destroy() {
+    public boolean isNativePage() {
+        return mIsNativePage;
+    }
+
+    @Override
+    public void onLoadStarted(boolean toDifferentDocument) {
+        super.onLoadStarted(toDifferentDocument);
+    }
+
+    @Override
+    public void onLoadStopped() {
+        super.onLoadStopped();
+    }
+
+    @Override
+    public void handleTabCrash() {
+        super.handleTabCrash();
+    }
+
+    @Override
+    public @TabDestroyStatus int destroy() {
         mIsDestroyed = true;
         mIsInitialized = false;
         for (TabObserver observer : mObservers) observer.onDestroyed(this);
         mObservers.clear();
+        return TabDestroyStatus.FAST_SHUTDOWN;
     }
 
     @Override

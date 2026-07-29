@@ -79,7 +79,7 @@ class MODULES_EXPORT AudioNode : public EventTarget,
   AudioHandler& Handler() const;
 
   void HandleChannelOptions(const AudioNodeOptions*, ExceptionState&);
-  String GetNodeName() const;
+  const char* GetNodeName() const;
 
   AudioNode* connect(AudioNode*,
                      unsigned output_index,
@@ -136,7 +136,7 @@ class MODULES_EXPORT AudioNode : public EventTarget,
   bool DisconnectFromOutputIfConnected(unsigned output_index, AudioParam&);
 
   // https://chromium.googlesource.com/chromium/src/+/refs/heads/main/docs/media/capture/README.md#logs
-  void SendLogMessage(const char* const function_name, const String& message);
+  void SendLogMessage(const String& function_name, const String& message);
 
   Member<BaseAudioContext> context_;
   scoped_refptr<DeferredTaskHandler> deferred_task_handler_;
@@ -145,11 +145,11 @@ class MODULES_EXPORT AudioNode : public EventTarget,
   // Represents audio node graph with Oilpan references. N-th HeapHashSet
   // represents a set of AudioNode objects connected to this AudioNode's N-th
   // output.
-  HeapVector<Member<HeapHashSet<Member<AudioNode>>>> connected_nodes_;
+  HeapVector<Member<GCedHeapHashSet<Member<AudioNode>>>> connected_nodes_;
   // Represents audio node graph with Oilpan references. N-th HeapHashSet
   // represents a set of AudioParam objects connected to this AudioNode's N-th
   // output.
-  HeapVector<Member<HeapHashSet<Member<AudioParam>>>> connected_params_;
+  HeapVector<Member<GCedHeapHashSet<Member<AudioParam>>>> connected_params_;
 };
 
 }  // namespace blink

@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/platform_shared_memory_region.h"
@@ -15,12 +16,16 @@
 #include "base/posix/eintr_wrapper.h"
 #include "base/system/sys_info.h"
 #include "base/task/bind_post_task.h"
+#include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/video_accelerator/arc_video_accelerator_util.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
+#include "gpu/ipc/service/arc_shared_image_interface.h"
 #include "media/base/bitrate.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/color_plane_layout.h"
 #include "media/base/format_utils.h"
 #include "media/base/media_log.h"
+#include "media/base/video_codecs.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_types.h"
 #include "media/gpu/buffer_validation.h"
@@ -29,6 +34,7 @@
 #include "media/video/video_encode_accelerator.h"
 #include "mojo/public/cpp/bindings/type_converter.h"
 #include "mojo/public/cpp/system/platform_handle.h"
+#include "ui/ozone/public/ozone_platform.h"
 
 namespace arc {
 
@@ -39,17 +45,32 @@ namespace {
 // VEAs. Currently this value is selected as 40 instances are enough to pass
 // the CTS tests.
 constexpr size_t kMaxConcurrentClients = 8;
+
+bool ForceL1T3Encode(const media::VideoEncodeAccelerator::Config& config) {
+  if (media::VideoCodecProfileToVideoCodec(config.output_profile) !=
+      media::VideoCodec::kH264) {
+    return false;
+  }
+  // We force to encode in L1T3 for H264 stream in ChromeOS Selphie.
+  static bool isSelphie = base::SysInfo::GetLsbReleaseBoard() == "selphie";
+
+  return isSelphie;
+}
 }  // namespace
 
 // static
 size_t GpuArcVideoEncodeAccelerator::client_count_ = 0;
 
 GpuArcVideoEncodeAccelerator::GpuArcVideoEncodeAccelerator(
+    scoped_refptr<gpu::ArcSharedImageInterface> sii,
     const gpu::GpuPreferences& gpu_preferences,
     const gpu::GpuDriverBugWorkarounds& gpu_workarounds)
-    : gpu_preferences_(gpu_preferences),
+    : sii_(sii),
+      gpu_preferences_(gpu_preferences),
       gpu_workarounds_(gpu_workarounds),
-      bitstream_buffer_serial_(0) {}
+      bitstream_buffer_serial_(0),
+      client_native_pixmap_factory_(
+          ui::CreateClientNativePixmapFactoryOzone()) {}
 
 GpuArcVideoEncodeAccelerator::~GpuArcVideoEncodeAccelerator() {
   // Normally |client_count_| should always be > 0 if vea_ is set, but if it
@@ -129,14 +150,38 @@ GpuArcVideoEncodeAccelerator::InitializeTask(
     return mojom::VideoEncodeAccelerator::Result::kInsufficientResourcesError;
   }
 
+  if (!sii_) {
+    DLOG(ERROR) << "Was passed null SharedImageInterface on construction";
+    return mojom::VideoEncodeAccelerator::Result::kPlatformFailureError;
+  }
+
+  if (ForceL1T3Encode(config)) {
+    auto& cfg = const_cast<media::VideoEncodeAccelerator::Config&>(config);
+    cfg.spatial_layers.clear();
+    cfg.spatial_layers.push_back(
+        media::VideoEncodeAccelerator::Config::SpatialLayer{
+            .width = config.input_visible_size.width(),
+            .height = config.input_visible_size.height(),
+            .bitrate_bps = config.bitrate.target_bps(),
+            .framerate = config.framerate,
+            .max_qp = 0,  // Not used by ChromeOS VEA.
+            .num_of_temporal_layers = 3,
+        });
+    DVLOGF(1) << "Enforce L1T3 encoding for H264 stream for ARC";
+  }
+
   visible_size_ = config.input_visible_size;
-  accelerator_ = media::GpuVideoEncodeAcceleratorFactory::CreateVEA(
-      config, this, gpu_preferences_, gpu_workarounds_,
-      gpu::GPUInfo::GPUDevice());
-  if (accelerator_ == nullptr) {
+  coded_size_ = gfx::Size();
+  accelerator_.reset();
+  auto accelerator_or_error =
+      media::GpuVideoEncodeAcceleratorFactory::CreateVEA(
+          config, this, gpu_preferences_, gpu_workarounds_,
+          gpu::GPUInfo::GPUDevice());
+  if (!accelerator_or_error.has_value()) {
     DLOG(ERROR) << "Failed to create a VideoEncodeAccelerator.";
     return mojom::VideoEncodeAccelerator::Result::kPlatformFailureError;
   }
+  accelerator_ = std::move(accelerator_or_error).value();
 
   client_.Bind(std::move(client));
 
@@ -158,8 +203,24 @@ void GpuArcVideoEncodeAccelerator::Encode(
     return;
   }
 
+  // |coded_size_| is only set when the (asynchronous) RequireBitstreamBuffers()
+  // callback fires. Until then it is empty (reset in Initialize()) and cannot
+  // be used to validate the incoming dmabuf. Reject early instead.
+  if (coded_size_.IsEmpty()) {
+    DLOG(ERROR) << "Encode() called before RequireBitstreamBuffers().";
+    if (client_) {
+      client_->NotifyError(Error::kIllegalStateError);
+    }
+    return;
+  }
+
   if (planes.empty()) {  // EOS
     accelerator_->Encode(media::VideoFrame::CreateEOSFrame(), force_keyframe);
+    return;
+  }
+
+  if (!client_) {
+    DLOG(ERROR) << "No client is bound.";
     return;
   }
 
@@ -190,27 +251,38 @@ void GpuArcVideoEncodeAccelerator::Encode(
     return;
   }
 
-  std::optional<gfx::BufferFormat> buffer_format =
-      VideoPixelFormatToGfxBufferFormat(format);
-  if (!format) {
-    DLOG(ERROR) << "Unexpected format: " << format;
+  std::optional<viz::SharedImageFormat> si_format =
+      VideoPixelFormatToSharedImageFormat(format);
+  if (!si_format) {
+    DLOG(ERROR) << "Unexpected si_format";
     client_->NotifyError(Error::kInvalidArgumentError);
     return;
   }
-  std::unique_ptr<gfx::GpuMemoryBuffer> gpu_memory_buffer =
-      support_.CreateGpuMemoryBufferImplFromHandle(
-          std::move(gmb_handle).value(), coded_size_, *buffer_format,
-          gfx::BufferUsage::VEA_READ_CAMERA_AND_CPU_READ_WRITE,
-          base::NullCallback());
+  scoped_refptr<media::VideoFrame> frame;
+  const gfx::ColorSpace color_space = gfx::ColorSpace::CreateREC709();
+  auto shared_image = sii_->CreateSharedImage(
+      {*si_format, visible_size_, color_space,
+       gpu::SHARED_IMAGE_USAGE_CPU_ONLY_READ_WRITE,
+       "GpuArcVideoEncodeAccelerator"},
+      gpu::kNullSurfaceHandle,
+      gfx::BufferUsage::VEA_READ_CAMERA_AND_CPU_READ_WRITE,
+      std::move(gmb_handle).value());
+  if (!shared_image) {
+    DLOG(ERROR) << "Failed to create mappable SharedImage";
+    client_->NotifyError(Error::kInvalidArgumentError);
+  }
 
-  auto frame = media::VideoFrame::WrapExternalGpuMemoryBuffer(
-      gfx::Rect(visible_size_), visible_size_, std::move(gpu_memory_buffer),
-      base::Microseconds(timestamp));
+  frame = media::VideoFrame::WrapMappableSharedImage(
+      std::move(shared_image), gpu::SyncToken(), base::NullCallback(),
+      gfx::Rect(visible_size_), visible_size_, base::Microseconds(timestamp));
+
   if (!frame) {
     DLOG(ERROR) << "Failed to create VideoFrame";
     client_->NotifyError(Error::kInvalidArgumentError);
     return;
   }
+
+  frame->set_color_space(color_space);
 
   // Make sure the Mojo callback is called on the same thread as where the Mojo
   // call is received (here).

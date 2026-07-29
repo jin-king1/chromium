@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/json/json_writer.h"
+#include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "base/values.h"
@@ -70,20 +71,20 @@ bool UpdateStudentActivitiesRequest::GetContentData(
     std::string* upload_content_type,
     std::string* upload_content) {
   *upload_content_type = boca::kContentTypeApplicationJson;
-  base::Value::Dict root;
-  base::Value::List activities;
+  base::DictValue root;
+  base::ListValue activities;
   // TODO(b/371450038): Immediately dispatch event when they occur for now since
   // we only have one type of user activity, consider buffer and batch
   if (!active_tab_title_.empty()) {
-    base::Value::Dict activity;
-    base::Value::Dict tab;
+    base::DictValue activity;
+    base::DictValue tab;
     tab.Set(kTitle, active_tab_title_);
     activity.Set(kActiveTab, std::move(tab));
     activities.Append(std::move(activity));
   }
   root.Set(kActivities, std::move(activities));
 
-  base::JSONWriter::Write(root, upload_content);
+  *upload_content = base::WriteJson(root).value_or("");
   return true;
 }
 

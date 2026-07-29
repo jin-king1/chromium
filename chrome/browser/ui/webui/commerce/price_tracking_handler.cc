@@ -4,14 +4,19 @@
 
 #include "chrome/browser/ui/webui/commerce/price_tracking_handler.h"
 
+#include "base/debug/dump_without_crashing.h"
+#include "base/strings/string_number_conversions.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/bookmarks/bookmark_editor.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
+#include "components/commerce/core/account_checker.h"
 #include "components/commerce/core/metrics/metrics_utils.h"
 #include "components/commerce/core/mojom/shared.mojom.h"
 #include "components/commerce/core/price_tracking_utils.h"
@@ -69,9 +74,18 @@ void PriceTrackingHandler::UntrackPriceForBookmark(int64_t bookmark_id) {
 
 void PriceTrackingHandler::SetPriceTrackingStatusForCurrentUrl(bool track) {
   if (track) {
+    const bookmarks::BookmarkNode* parent = GetOrAddBookmarkForCurrentUrl();
+    // TODO(crbug.com/451578902): The parent should always exist once the side
+    // panel is updated accordingly, so we can then turn this into a CHECK
+    // instead.
+    if (!parent) {
+      base::debug::DumpWithoutCrashing();
+      return;
+    }
+
     // If the product on the page isn't already tracked, create a bookmark for
     // it and start tracking.
-    TrackPriceForBookmark(GetOrAddBookmarkForCurrentUrl()->id());
+    TrackPriceForBookmark(parent->id());
     commerce::metrics::RecordShoppingActionUKM(
         GetCurrentTabUkmSourceId(),
         commerce::metrics::ShoppingAction::kPriceTracked);
@@ -194,7 +208,8 @@ void PriceTrackingHandler::ShowBookmarkEditorForCurrentUrl() {
   }
 
   auto* profile = Profile::FromWebUI(web_ui_);
-  auto* browser = chrome::FindLastActiveWithProfile(profile);
+  BrowserWindowInterface* const browser =
+      ProfileBrowserCollection::GetForProfile(profile)->GetLastActiveBrowser();
   if (!browser) {
     return;
   }
@@ -205,7 +220,7 @@ void PriceTrackingHandler::ShowBookmarkEditorForCurrentUrl() {
     return;
   }
 
-  BookmarkEditor::Show(browser->window()->GetNativeWindow(), profile,
+  BookmarkEditor::Show(browser->GetWindow()->GetNativeWindow(), profile,
                        BookmarkEditor::EditDetails::EditNode(existing_node),
                        BookmarkEditor::SHOW_TREE);
 }
@@ -297,13 +312,14 @@ void PriceTrackingHandler::HandleSubscriptionChange(
 
 std::optional<GURL> PriceTrackingHandler::GetCurrentTabUrl() {
   auto* profile = Profile::FromWebUI(web_ui_);
-  auto* browser = chrome::FindTabbedBrowser(profile, false);
+  BrowserWindowInterface* browser =
+      ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser();
   if (!browser) {
     return std::nullopt;
   }
 
   content::WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   if (!web_contents) {
     return std::nullopt;
   }
@@ -312,12 +328,14 @@ std::optional<GURL> PriceTrackingHandler::GetCurrentTabUrl() {
 }
 
 ukm::SourceId PriceTrackingHandler::GetCurrentTabUkmSourceId() {
-  auto* browser = chrome::FindTabbedBrowser(Profile::FromWebUI(web_ui_), false);
+  BrowserWindowInterface* browser =
+      ProfileBrowserCollection::GetForProfile(Profile::FromWebUI(web_ui_))
+          ->FindTabbedBrowser();
   if (!browser) {
     return ukm::kInvalidSourceId;
   }
   content::WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   if (!web_contents) {
     return ukm::kInvalidSourceId;
   }
@@ -326,13 +344,14 @@ ukm::SourceId PriceTrackingHandler::GetCurrentTabUkmSourceId() {
 
 const bookmarks::BookmarkNode*
 PriceTrackingHandler::GetOrAddBookmarkForCurrentUrl() {
-  auto* browser =
-      chrome::FindLastActiveWithProfile(Profile::FromWebUI(web_ui_));
+  BrowserWindowInterface* const browser =
+      ProfileBrowserCollection::GetForProfile(Profile::FromWebUI(web_ui_))
+          ->GetLastActiveBrowser();
   if (!browser) {
     return nullptr;
   }
   content::WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetTabStripModel()->GetActiveWebContents();
   if (!web_contents) {
     return nullptr;
   }
@@ -340,15 +359,16 @@ PriceTrackingHandler::GetOrAddBookmarkForCurrentUrl() {
   const bookmarks::BookmarkNode* existing_node =
       bookmark_model_->GetMostRecentlyAddedUserNodeForURL(
           web_contents->GetLastCommittedURL());
-  if (existing_node != nullptr) {
+  if (existing_node != nullptr &&
+      !bookmark_model_->IsLocalOnlyNode(*existing_node)) {
     return existing_node;
   }
   GURL url;
   std::u16string title;
-  if (chrome::GetURLAndTitleToBookmark(web_contents, &url, &title)) {
-    const bookmarks::BookmarkNode* parent =
-        commerce::GetShoppingCollectionBookmarkFolder(bookmark_model_, true);
+  const bookmarks::BookmarkNode* parent =
+      commerce::GetShoppingCollectionBookmarkFolder(bookmark_model_, true);
 
+  if (chrome::GetURLAndTitleToBookmark(web_contents, &url, &title) && parent) {
     return bookmark_model_->AddNewURL(parent, parent->children().size(), title,
                                       url);
   }

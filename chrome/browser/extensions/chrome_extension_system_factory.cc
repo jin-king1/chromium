@@ -7,10 +7,10 @@
 #include "chrome/browser/extensions/blocklist_factory.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/forced_extensions/install_stage_tracker_factory.h"
+#include "chrome/browser/extensions/install_tracker_factory.h"
 #include "chrome/browser/extensions/install_verifier_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "extensions/browser/event_router_factory.h"
 #include "extensions/browser/extension_host_registry.h"
@@ -20,6 +20,13 @@
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/process_manager_factory.h"
 #include "extensions/browser/renderer_startup_helper.h"
+#include "extensions/buildflags/buildflags.h"
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/browser/ui/global_error/global_error_service_factory.h"
+#endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -45,8 +52,8 @@ ChromeExtensionSystemSharedFactory::ChromeExtensionSystemSharedFactory()
           "ExtensionSystemShared",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kRedirectedToOriginal)
-              // TODO(crbug.com/40257657): Check if this service is needed in
-              // Guest mode.
+              // TODO(crbug.com/40257657): Audit whether these should be
+              // redirected or should have their own instance.
               .WithGuest(ProfileSelection::kRedirectedToOriginal)
               // TODO(crbug.com/41488885): Check if this service is needed for
               // Ash Internals.
@@ -56,7 +63,10 @@ ChromeExtensionSystemSharedFactory::ChromeExtensionSystemSharedFactory()
   DependsOn(ExtensionManagementFactory::GetInstance());
   // This depends on ExtensionService, which depends on ExtensionRegistry.
   DependsOn(ExtensionRegistryFactory::GetInstance());
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+  // GlobalErrorService is only used on Win/Mac/Linux.
   DependsOn(GlobalErrorServiceFactory::GetInstance());
+#endif
   DependsOn(InstallVerifierFactory::GetInstance());
   DependsOn(ProcessManagerFactory::GetInstance());
   DependsOn(RendererStartupHelperFactory::GetInstance());
@@ -66,6 +76,7 @@ ChromeExtensionSystemSharedFactory::ChromeExtensionSystemSharedFactory()
   // IdentityManager for webstore authentication.
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(InstallStageTrackerFactory::GetInstance());
+  DependsOn(InstallTrackerFactory::GetInstance());
   // ExtensionService (owned by the ExtensionSystem) depends on
   // ExtensionHostRegistry.
   DependsOn(ExtensionHostRegistry::GetFactory());
@@ -118,8 +129,6 @@ content::BrowserContext* ChromeExtensionSystemFactory::GetBrowserContextToUse(
     content::BrowserContext* context) const {
   return ProfileSelections::Builder()
       .WithRegular(ProfileSelection::kOwnInstance)
-      // TODO(crbug.com/40257657): Check if this service is needed in
-      // Guest mode.
       .WithGuest(ProfileSelection::kOwnInstance)
       // TODO(crbug.com/41488885): Check if this service is needed for
       // Ash Internals.

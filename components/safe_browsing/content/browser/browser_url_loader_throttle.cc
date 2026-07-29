@@ -9,10 +9,13 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/content/browser/async_check_tracker.h"
+#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer.h"
+#include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #include "components/safe_browsing/core/browser/hashprefix_realtime/hash_realtime_service.h"
 #include "components/safe_browsing/core/browser/realtime/url_lookup_service_base.h"
 #include "components/safe_browsing/core/browser/safe_browsing_url_checker_impl.h"
@@ -24,11 +27,13 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
+#include "net/base/ip_endpoint.h"
 #include "net/base/load_flags.h"
 #include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace {
 
@@ -106,13 +111,15 @@ std::unique_ptr<BrowserURLLoaderThrottle> BrowserURLLoaderThrottle::Create(
     base::WeakPtr<HashRealTimeService> hash_realtime_service,
     hash_realtime_utils::HashRealTimeSelection hash_realtime_selection,
     base::WeakPtr<AsyncCheckTracker> async_check_tracker,
-    std::optional<internal::ReferringAppInfo> referring_app_info) {
+    std::optional<internal::ReferringAppInfo> referring_app_info,
+    base::WeakPtr<safe_browsing::V5GetHashProtocolManager>
+        v5_get_hash_protocol_manager) {
   return base::WrapUnique<BrowserURLLoaderThrottle>(
       new BrowserURLLoaderThrottle(
           std::move(delegate_getter), web_contents_getter, frame_tree_node_id,
           navigation_id, url_lookup_service, hash_realtime_service,
           hash_realtime_selection, async_check_tracker,
-          std::move(referring_app_info)));
+          std::move(referring_app_info), v5_get_hash_protocol_manager));
 }
 
 BrowserURLLoaderThrottle::BrowserURLLoaderThrottle(
@@ -124,7 +131,9 @@ BrowserURLLoaderThrottle::BrowserURLLoaderThrottle(
     base::WeakPtr<HashRealTimeService> hash_realtime_service,
     hash_realtime_utils::HashRealTimeSelection hash_realtime_selection,
     base::WeakPtr<AsyncCheckTracker> async_check_tracker,
-    std::optional<internal::ReferringAppInfo> referring_app_info)
+    std::optional<internal::ReferringAppInfo> referring_app_info,
+    base::WeakPtr<safe_browsing::V5GetHashProtocolManager>
+        v5_get_hash_protocol_manager)
     : async_check_tracker_(async_check_tracker),
       url_lookup_service_(url_lookup_service),
       hash_realtime_service_(hash_realtime_service),
@@ -133,7 +142,8 @@ BrowserURLLoaderThrottle::BrowserURLLoaderThrottle(
       navigation_id_(navigation_id),
       delegate_getter_(delegate_getter),
       web_contents_getter_(web_contents_getter),
-      referring_app_info_(referring_app_info) {
+      referring_app_info_(referring_app_info),
+      v5_get_hash_protocol_manager_(v5_get_hash_protocol_manager) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   // Decide whether to do real time URL lookups or not.
@@ -153,8 +163,9 @@ BrowserURLLoaderThrottle::BrowserURLLoaderThrottle(
 BrowserURLLoaderThrottle::~BrowserURLLoaderThrottle() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (deferred_) {
-    TRACE_EVENT_NESTABLE_ASYNC_END0("safe_browsing", "Deferred",
-                                    TRACE_ID_LOCAL(this));
+    TRACE_EVENT_END("safe_browsing", /* Deferred */
+                    perfetto::NamedTrack::FromPointer(
+                        "safe_browsing::BrowserURLLoaderThrottle", this));
   }
   if (was_async_faster_than_sync_.has_value()) {
     base::UmaHistogramBoolean(
@@ -172,10 +183,17 @@ void BrowserURLLoaderThrottle::WillStartRequest(
   DCHECK_EQ(0u, pending_async_checks_);
   DCHECK(!blocked_);
 
+  current_url_ = request->url;
+
   base::UmaHistogramEnumeration(
       "SafeBrowsing.BrowserThrottle.RequestDestination", request->destination);
 
-  if (KnownSafeUrl(request->url)) {
+  // Decision override used in enterprise mode to send safe urls for check
+  // since admins can ban chrome:// pages
+  bool should_override_known_safe_decision =
+      url_real_time_lookup_enabled_ &&
+      url_lookup_service_->ShouldOverrideKnownSafeUrlDecision(request->url);
+  if (KnownSafeUrl(request->url) && !should_override_known_safe_decision) {
     skip_checks_ = true;
     return;
   }
@@ -229,7 +247,8 @@ void BrowserURLLoaderThrottle::WillStartRequest(
         /*is_async_check=*/false,
         /*check_allowlist_before_hash_database=*/
         async_check_tracker_->should_sync_checker_check_allowlist(),
-        SessionID::InvalidValue(), referring_app_info_);
+        /*tab_id=*/SessionID::InvalidValue(), referring_app_info_,
+        v5_get_hash_protocol_manager_);
     async_sb_checker_ = std::make_unique<UrlCheckerHolder>(
         delegate_getter_, frame_tree_node_id_, navigation_id_,
         web_contents_getter_,
@@ -240,7 +259,7 @@ void BrowserURLLoaderThrottle::WillStartRequest(
         can_check_high_confidence_allowlist, url_lookup_service_metric_suffix_,
         url_lookup_service_, hash_realtime_service_, hash_realtime_selection_,
         /*is_async_check=*/true, /*check_allowlist_before_hash_database=*/false,
-        tab_id_, referring_app_info_);
+        tab_id_, referring_app_info_, v5_get_hash_protocol_manager_);
     if (on_sync_sb_checker_created_callback_for_testing_) {
       std::move(on_sync_sb_checker_created_callback_for_testing_).Run();
     }
@@ -259,7 +278,7 @@ void BrowserURLLoaderThrottle::WillStartRequest(
         url_lookup_service_, hash_realtime_service_, hash_realtime_selection_,
         /*is_async_check=*/false,
         /*check_allowlist_before_hash_database=*/false, tab_id_,
-        referring_app_info_);
+        referring_app_info_, v5_get_hash_protocol_manager_);
     if (on_sync_sb_checker_created_callback_for_testing_) {
       std::move(on_sync_sb_checker_created_callback_for_testing_).Run();
     }
@@ -304,11 +323,9 @@ void BrowserURLLoaderThrottle::OnSkipCheckCompleteOnOriginalUrl(
 
 void BrowserURLLoaderThrottle::WillRedirectRequest(
     net::RedirectInfo* redirect_info,
-    const network::mojom::URLResponseHead& /* response_head */,
+    const network::mojom::URLResponseHead& response_head,
     bool* defer,
-    std::vector<std::string>* /* to_be_removed_headers */,
-    net::HttpRequestHeaders* /* modified_headers */,
-    net::HttpRequestHeaders* /* modified_cors_exempt_headers */) {
+    network::HttpRequestHeadersUpdateParams* headers_update_params) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   if (blocked_) {
@@ -322,6 +339,21 @@ void BrowserURLLoaderThrottle::WillRedirectRequest(
   if (skip_checks_) {
     return;
   }
+
+  // Make IP addresses from redirects available for later real-time URL checks.
+  if (!response_head.remote_endpoint.address().empty()) {
+    content::WebContents* web_contents = web_contents_getter_.Run();
+    if (web_contents) {
+      SafeBrowsingNavigationObserver* navigation_observer =
+          SafeBrowsingNavigationObserver::FromWebContents(web_contents);
+      if (navigation_observer) {
+        navigation_observer->RecordHostToIpMapping(
+            current_url_.GetHost(),
+            response_head.remote_endpoint.ToStringWithoutPort());
+      }
+    }
+  }
+  current_url_ = redirect_info->new_url;
 
   pending_sync_checks_++;
   if (async_sb_checker_) {
@@ -365,10 +397,6 @@ void BrowserURLLoaderThrottle::WillProcessResponse(
     network::mojom::URLResponseHead* response_head,
     bool* defer) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  will_process_response_count_++;
-  base::UmaHistogramCounts100(
-      "SafeBrowsing.BrowserThrottle.WillProcessResponseCount",
-      will_process_response_count_);
 
   if (blocked_) {
     // OnCompleteCheck() has set |blocked_| to true and called
@@ -411,8 +439,9 @@ void BrowserURLLoaderThrottle::WillProcessResponse(
   deferred_ = true;
   defer_start_time_ = base::TimeTicks::Now();
   *defer = true;
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("safe_browsing", "Deferred",
-                                    TRACE_ID_LOCAL(this));
+  TRACE_EVENT_BEGIN("safe_browsing", "Deferred",
+                    perfetto::NamedTrack::FromPointer(
+                        "safe_browsing::BrowserURLLoaderThrottle", this));
 }
 
 const char* BrowserURLLoaderThrottle::NameForLoggingWillProcessResponse() {
@@ -472,8 +501,9 @@ void BrowserURLLoaderThrottle::OnCompleteSyncCheck(
   if (result.proceed) {
     if (pending_sync_checks_ == 0 && deferred_) {
       deferred_ = false;
-      TRACE_EVENT_NESTABLE_ASYNC_END0("safe_browsing", "Deferred",
-                                      TRACE_ID_LOCAL(this));
+      TRACE_EVENT_END("safe_browsing", /* Deferred */
+                      perfetto::NamedTrack::FromPointer(
+                          "safe_browsing::BrowserURLLoaderThrottle", this));
       delegate_->Resume();
       MaybeTransferAsyncChecker();
     }
@@ -566,7 +596,13 @@ void BrowserURLLoaderThrottle::MaybeTransferAsyncChecker() {
         pending_async_checks_ > 0);
   }
   if (pending_async_checks_ > 0) {
-    async_check_tracker_->TransferUrlChecker(std::move(async_sb_checker_));
+    bool is_async_check_tracker_alive = !!async_check_tracker_;
+    base::UmaHistogramBoolean(
+        "SafeBrowsing.BrowserThrottle.IsAsyncCheckTrackerAliveOnTransfer",
+        is_async_check_tracker_alive);
+    if (is_async_check_tracker_alive) {
+      async_check_tracker_->TransferUrlChecker(std::move(async_sb_checker_));
+    }
   }
 }
 

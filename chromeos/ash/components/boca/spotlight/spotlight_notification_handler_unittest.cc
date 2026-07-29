@@ -7,16 +7,20 @@
 #include <memory>
 #include <string_view>
 
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "chromeos/ash/components/boca/spotlight/spotlight_notification_constants.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/message_center/public/cpp/notification.h"
+
+using base::test::TestFuture;
 
 namespace ash::boca {
 namespace {
@@ -67,9 +71,9 @@ class SpotlightNotificationHandlerTest : public testing::Test {
 };
 
 TEST_F(SpotlightNotificationHandlerTest, StartSpotlightCountdownNotification) {
-  bool callback_triggered = false;
+  TestFuture<void> countdown_completion_callback;
   handler_->StartSpotlightCountdownNotification(
-      base::BindLambdaForTesting([&]() { callback_triggered = true; }));
+      countdown_completion_callback.GetCallback());
   task_environment_.FastForwardBy(kSpotlightNotificationCountdownInterval);
 
   int notification_called_count = 1;
@@ -79,42 +83,16 @@ TEST_F(SpotlightNotificationHandlerTest, StartSpotlightCountdownNotification) {
         l10n_util::GetStringFUTF16(IDS_BOCA_SPOTLIGHT_NOTIFICATION_MESSAGE,
                                    base::NumberToString16(i.InSeconds()));
 
-    ASSERT_EQ(delegate_ptr_->called_show_count(), notification_called_count);
-    ASSERT_FALSE(callback_triggered);
+    EXPECT_EQ(delegate_ptr_->called_show_count(), notification_called_count);
     notification_called_count++;
     task_environment_.FastForwardBy(kSpotlightNotificationCountdownInterval);
   }
-
-  EXPECT_TRUE(callback_triggered);
-}
-
-TEST_F(SpotlightNotificationHandlerTest,
-       StartSpotlightCountdownNotificationOverridesExistingRequest) {
-  bool callback_1_triggered = false;
-  bool callback_2_triggered = false;
-  handler_->StartSpotlightCountdownNotification(
-      base::BindLambdaForTesting([&]() { callback_1_triggered = true; }));
-
-  task_environment_.FastForwardBy(kSpotlightNotificationCountdownInterval);
-
-  // Send second request while first is in progress.
-  handler_->StartSpotlightCountdownNotification(
-      base::BindLambdaForTesting([&]() { callback_2_triggered = true; }));
-
-  task_environment_.FastForwardBy(kSpotlightNotificationCountdownInterval);
-
-  for (base::TimeDelta i = kSpotlightNotificationDuration; i.is_positive();
-       i = i - kSpotlightNotificationCountdownInterval) {
-    task_environment_.FastForwardBy(kSpotlightNotificationCountdownInterval);
-  }
-  EXPECT_FALSE(callback_1_triggered);
-  EXPECT_TRUE(callback_2_triggered);
+  ASSERT_TRUE(countdown_completion_callback.Wait());
 }
 
 TEST_F(SpotlightNotificationHandlerTest, StopSpotlightNotification) {
-  bool callback_triggered = false;
-  handler_->StartSpotlightCountdownNotification(
-      base::BindLambdaForTesting([&]() { callback_triggered = true; }));
+  handler_->StartSpotlightCountdownNotification(base::BindOnce(
+      []() { GTEST_FAIL() << "Unexpected call to completion callback"; }));
   task_environment_.FastForwardBy(kSpotlightNotificationCountdownInterval);
   ASSERT_EQ(delegate_ptr_->called_show_count(), 1);
 
@@ -123,8 +101,6 @@ TEST_F(SpotlightNotificationHandlerTest, StopSpotlightNotification) {
        i = i - kSpotlightNotificationCountdownInterval) {
     task_environment_.FastForwardBy(kSpotlightNotificationCountdownInterval);
   }
-
-  EXPECT_FALSE(callback_triggered);
   EXPECT_EQ(delegate_ptr_->called_show_count(), 1);
   EXPECT_EQ(delegate_ptr_->cancel_called_count(), 1);
 }

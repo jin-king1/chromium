@@ -16,10 +16,12 @@
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
+#include "chrome/browser/sharesheet/share_action/example_action.h"
 #include "chrome/browser/sharesheet/share_action/share_action.h"
+#include "chrome/browser/sharesheet/share_action/share_action_cache.h"
+#include "chrome/browser/sharesheet/sharesheet_controller.h"
 #include "chrome/browser/sharesheet/sharesheet_service_delegator.h"
 #include "chrome/browser/sharesheet/sharesheet_types.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/drive/drive_api_util.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/app_types.h"
@@ -130,6 +132,10 @@ void SharesheetService::ShowNearbyShareBubbleForArc(
       std::move(intent), std::move(delivered_callback),
       std::move(close_callback));
 }
+
+void SharesheetService::AddShareActionForTest(ShareActionType type) {
+  share_action_cache_->AddShareActionForTest(type);  // IN-TEST
+}
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Cleanup delegator when bubble closes.
@@ -222,11 +228,11 @@ void SharesheetService::ShowBubbleForTesting(
     LaunchSource source,
     DeliveredCallback delivered_callback,
     CloseCallback close_callback,
-    int num_actions_to_add) {
+    std::vector<::sharesheet::ShareActionType> actions) {
   CHECK(views::Widget::GetWidgetForNativeWindow(native_window));
   SharesheetMetrics::RecordSharesheetLaunchSource(source);
-  for (int i = 0; i < num_actions_to_add; ++i) {
-    share_action_cache_->AddShareActionForTesting();  // IN-TEST
+  for (auto action : actions) {
+    share_action_cache_->AddShareActionForTest(action);  // IN-TEST
   }
   auto targets = GetActionsForIntent(intent);
   OnReadyToShowBubble(native_window, std::move(intent),
@@ -358,7 +364,7 @@ void SharesheetService::OnAppIconsLoaded(
     std::vector<TargetInfo> targets) {
   gfx::NativeWindow native_window = std::move(get_native_window_callback).Run();
   // Note that checking |native_window| is not sufficient: |widget| can be null
-  // even when |native_window| is 'true': https://crbug.com/1375887#c11
+  // even when |native_window| is 'true': https://crbug.com/40873333#comment12
   views::Widget* const widget =
       views::Widget::GetWidgetForNativeWindow(native_window);
   if (!widget) {
@@ -479,8 +485,6 @@ void SharesheetService::RecordUserActionMetrics(
             SharesheetMetrics::UserAction::kArc);
         return;
       case apps::AppType::kWeb:
-      // TODO(crbug.com/40172532): Add a separate metrics for System Web Apps if
-      // needed.
       case apps::AppType::kSystemWeb:
         SharesheetMetrics::RecordSharesheetActionMetrics(
             SharesheetMetrics::UserAction::kWeb);

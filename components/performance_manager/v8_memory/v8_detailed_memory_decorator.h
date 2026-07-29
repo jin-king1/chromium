@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "base/functional/bind_internal.h"
 #include "base/functional/callback_forward.h"
 #include "base/functional/function_ref.h"
 #include "base/sequence_checker.h"
@@ -53,8 +52,8 @@ class V8DetailedMemoryDecorator
   void OnBeforeProcessNodeRemoved(const ProcessNode* process_node) override;
 
   // NodeDataDescriber overrides.
-  base::Value::Dict DescribeFrameNodeData(const FrameNode* node) const override;
-  base::Value::Dict DescribeProcessNodeData(
+  base::DictValue DescribeFrameNodeData(const FrameNode* node) const override;
+  base::DictValue DescribeProcessNodeData(
       const ProcessNode* node) const override;
 
   // Returns the next measurement request that should be scheduled.

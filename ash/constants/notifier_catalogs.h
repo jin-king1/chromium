@@ -15,6 +15,7 @@ namespace ash {
 // Current values should not be renumbered or removed. Please keep in sync with
 // "NotificationCatalogName" in tools/metrics/histograms/enums.xml.
 // To deprecate comment out the entry.
+// LINT.IfChange(NotificationCatalogName)
 enum class NotificationCatalogName {
   kNone = 0,
   kTestCatalogName = 1,
@@ -60,7 +61,7 @@ enum class NotificationCatalogName {
   kScreenTimeLimit = 41,
   kBedtimeLimit = 42,
   kTPMFirmwareUpdate = 43,
-  kU2F = 44,
+  // [Deprecated] kU2F = 44,
   kReleaseNotes = 45,
   kSMS = 46,
   kAssistantNotification = 47,
@@ -106,7 +107,7 @@ enum class NotificationCatalogName {
   kEasyUnlockChromebookAdded = 87,
   kEasyUnlockPairingChange = 88,
   kEasyUnlockPairingChangeApplied = 89,
-  kEasyUnlockSmartLockSignInRemoved = 90,
+  // [Deprecated] kEasyUnlockSmartLockSignInRemoved = 90,
   kSystemProxy = 91,
   kDlpPolicy = 92,
   kPacketCapture = 93,
@@ -136,7 +137,7 @@ enum class NotificationCatalogName {
   kNetworkPortalDetector = 117,
   kCrostiniPackage = 118,
   kCrostiniUpgradeAvailable = 119,
-  kFullRestore = 120,
+  // [Deprecated] kFullRestore = 120,
   kAdbSideloadingDisallowed = 121,
   kAdbSideloadingPowerwashPlanned = 122,
   kAdbSideloadingPowerwashOnReboot = 123,
@@ -184,12 +185,12 @@ enum class NotificationCatalogName {
   kIPHGoogleOneOffer = 165,
   kLockScreen = 166,
   kWebAppSettings = 167,
-  kEOLIncentive = 168,
+  // [Deprecated] kEOLIncentive = 168,
   kHotspot = 169,
   kGeolocationSwitch = 170,
   kMultiCaptureOnLogin = 171,
   kFloatingWorkspace = 172,
-  kScalableIphNotification = 173,
+  // [Deprecated] kScalableIphNotification = 173,
   // [Deprecated] kUpdateNotification = 174,
   kSubAppsUninstall = 175,
   kNetworkCarrierUnlock = 176,
@@ -213,8 +214,18 @@ enum class NotificationCatalogName {
   kChromeAppDeprecation = 194,
   kDownloadImageFromLobster = 195,
   kBocaSpotlightStarted = 196,
-  kMaxValue = kBocaSpotlightStarted
+  kFaceGazeActive = 197,
+  kUsbPeripheralDeviceOrEndpointLimit = 198,
+  kDemoMode = 199,
+  kArcDlcInstall = 200,
+  kIncompatibleCharger = 201,
+  kCameraUpload = 202,
+  kFrozenUpdateNotification = 203,
+  kDeviceCommandGeolocation = 204,
+  kLocalAuthFactorsComplexity = 205,
+  kMaxValue = kLocalAuthFactorsComplexity
 };
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml:NotificationCatalogName)
 
 // A living catalog that registers system nudges.
 // Current values should not be renumbered or removed. Please keep in sync with
@@ -242,7 +253,7 @@ enum class NudgeCatalogName {
   kVideoConferenceTrayCameraUseWhileSWDisabled = 15,
   kVideoConferenceTraySpeakOnMuteOptIn = 16,
   // [Deprecated] kVideoConferenceTraySpeakOnMuteOptInConfirmation = 17,
-  kScalableIphBubble = 18,
+  // [Deprecated] kScalableIphBubble = 18,
   kVideoConferenceTrayCameraMicrophoneUseWhileDisabled = 19,
   kMultitaskMenuClamshell = 20,
   kMultitaskMenuTablet = 21,
@@ -264,7 +275,8 @@ enum class NudgeCatalogName {
   kVideoConferenceTraySidetoneEnabled = 37,
   kGraduationAppEnabled = 38,
   kSunfishLauncherNudge = 39,
-  kMaxValue = kSunfishLauncherNudge
+  kSunfishIncognitoNudge = 40,
+  kMaxValue = kSunfishIncognitoNudge
 };
 
 // A living catalog that registers toasts.

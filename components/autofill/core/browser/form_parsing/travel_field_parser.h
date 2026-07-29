@@ -6,11 +6,11 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FORM_PARSING_TRAVEL_FIELD_PARSER_H_
 
 #include <memory>
+#include <optional>
 
-#include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/form_parsing/autofill_scanner.h"
+#include "components/autofill/core/browser/form_parsing/field_candidates.h"
 #include "components/autofill/core/browser/form_parsing/form_field_parser.h"
-#include "components/autofill/core/common/language_code.h"
 
 namespace autofill {
 
@@ -20,7 +20,7 @@ class TravelFieldParser : public FormFieldParser {
   ~TravelFieldParser() override;
 
   static std::unique_ptr<FormFieldParser> Parse(ParsingContext& context,
-                                                AutofillScanner* scanner);
+                                                AutofillScanner& scanner);
 
  protected:
   void AddClassifications(FieldCandidatesMap& field_candidates) const override;

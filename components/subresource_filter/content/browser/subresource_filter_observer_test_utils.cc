@@ -5,7 +5,6 @@
 #include "components/subresource_filter/content/browser/subresource_filter_observer_test_utils.h"
 
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/containers/map_util.h"
 #include "base/types/optional_util.h"
 #include "components/subresource_filter/core/mojom/subresource_filter.mojom.h"
@@ -50,10 +49,11 @@ void TestSubresourceFilterObserver::OnChildFrameNavigationEvaluated(
 void TestSubresourceFilterObserver::OnIsAdFrameChanged(
     content::RenderFrameHost* render_frame_host,
     bool is_ad_frame) {
-  if (is_ad_frame)
+  if (is_ad_frame) {
     ad_frames_.insert(render_frame_host->GetFrameTreeNodeId());
-  else
+  } else {
     ad_frames_.erase(render_frame_host->GetFrameTreeNodeId());
+  }
 }
 
 void TestSubresourceFilterObserver::DidFinishNavigation(
@@ -62,8 +62,9 @@ void TestSubresourceFilterObserver::DidFinishNavigation(
   bool did_compute = it != pending_activations_.end();
   if (!navigation_handle->IsInMainFrame() ||
       !navigation_handle->HasCommitted() || navigation_handle->IsErrorPage()) {
-    if (did_compute)
+    if (did_compute) {
       pending_activations_.erase(it);
+    }
     return;
   }
 
@@ -82,7 +83,7 @@ TestSubresourceFilterObserver::GetPageActivation(const GURL& url) const {
 
 bool TestSubresourceFilterObserver::GetIsAdFrame(
     content::FrameTreeNodeId frame_tree_node_id) const {
-  return base::Contains(ad_frames_, frame_tree_node_id);
+  return ad_frames_.contains(frame_tree_node_id);
 }
 
 std::optional<LoadPolicy>

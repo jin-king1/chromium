@@ -4,8 +4,10 @@
 
 #include "ui/color/dynamic_color/palette_factory.h"
 
+#include <algorithm>
 #include <array>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -16,6 +18,7 @@
 #include "third_party/material_color_utilities/src/cpp/palettes/tones.h"
 #include "ui/color/color_provider_manager.h"
 #include "ui/color/dynamic_color/palette.h"
+#include "ui/gfx/color_palette.h"
 
 namespace ui {
 
@@ -173,6 +176,13 @@ base::flat_map<S, T> Zip(const std::array<S, N>& keys,
   return base::flat_map<S, T>(base::sorted_unique_t(), std::move(zipped));
 }
 
+// Represents a pair of Chroma (in the range [0, 120]) and Tone (in the range
+// [0, 100]) used in the Hue-Chroma-Tone (HCT) color space.
+struct ChromaTonePair {
+  double chroma = 0.0;
+  double tone = 0.0;
+};
+
 }  // namespace
 
 std::unique_ptr<Palette> GeneratePalette(SkColor seed_color,
@@ -232,5 +242,6 @@ std::unique_ptr<Palette> GeneratePalette(SkColor seed_color,
 
   return FromConfig(seed_color, config);
 }
+
 
 }  // namespace ui

@@ -11,6 +11,21 @@
 // The current scroll position to save in the NTP state.
 @property(nonatomic, assign) CGFloat scrollPositionToSave;
 
+// Sets whether the NTP is scrolled to the top.
+- (void)setIsScrolledToTop:(BOOL)isScrolledToTop;
+
+// Notifies that the Lens "new" badge has been displayed.
+- (void)notifyLensBadgeDisplayed;
+
+// Notifies that the Customization "new" badge has been displayed.
+- (void)notifyCustomizationBadgeDisplayed;
+
+// Notifies the caller to check if any new badge is eligible to be shown.
+- (void)checkNewBadgeEligibility;
+
+// Notifies that the NTP has been displayed in landscape.
+- (void)notifyNtpDisplayedInLandscape;
+
 @end
 
 #endif  // IOS_CHROME_BROWSER_NTP_UI_BUNDLED_NEW_TAB_PAGE_MUTATOR_H_

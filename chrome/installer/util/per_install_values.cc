@@ -13,7 +13,6 @@
 #include "base/values.h"
 #include "base/win/registry.h"
 #include "base/win/windows_types.h"
-#include "build/branding_buildflags.h"
 #include "chrome/install_static/install_details.h"
 #include "chrome/install_static/install_util.h"
 
@@ -58,7 +57,8 @@ std::optional<base::Value> PerInstallValue::Get() {
     return {};
   }
 
-  return base::JSONReader::Read(base::WideToUTF8(value_string));
+  return base::JSONReader::Read(base::WideToUTF8(value_string),
+                                base::JSON_PARSE_CHROMIUM_EXTENSIONS);
 }
 
 void PerInstallValue::Delete() {

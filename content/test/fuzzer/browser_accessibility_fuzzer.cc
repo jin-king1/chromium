@@ -11,10 +11,14 @@
 #include "base/at_exit.h"
 #include "base/command_line.h"
 #include "content/browser/accessibility/browser_accessibility_state_impl.h"
+#if BUILDFLAG(IS_ANDROID)
+#include "base/test/test_support_android.h"
+#include "content/browser/accessibility/browser_accessibility_manager_android.h"
+#endif
 #include "content/public/common/content_client.h"
 #include "content/public/test/browser_task_environment.h"
-#include "content/test/test_content_browser_client.h"
-#include "content/test/test_content_client.h"
+#include "content/public/test/test_content_browser_client.h"
+#include "content/public/test/test_content_client.h"
 #include "ui/accessibility/platform/browser_accessibility_manager.h"
 #include "ui/accessibility/platform/one_shot_accessibility_tree_search.h"
 #include "ui/accessibility/platform/test_ax_node_id_delegate.h"
@@ -22,7 +26,18 @@
 
 struct Env {
   Env() {
-    base::CommandLine::Init(0, nullptr);
+#if BUILDFLAG(IS_ANDROID)
+    // On Android, BrowserTaskEnvironment creates a UI message pump that does
+    // not support RunLoop::Run(). This struct installs a stub pump to allow it
+    // in tests.
+    base::InitAndroidTestMessageLoop();
+#endif
+    // CommandLine could already be initialized on Android.
+    if (!base::CommandLine::InitializedForCurrentProcess()) {
+      base::CommandLine::Init(0, nullptr);
+    }
+
+    task_environment_ = std::make_unique<content::BrowserTaskEnvironment>();
 
     // BrowserAccessibilityStateImpl requires a ContentBrowserClient.
     content_client_ = std::make_unique<content::TestContentClient>();
@@ -37,7 +52,7 @@ struct Env {
     content::SetContentClient(nullptr);
   }
 
-  content::BrowserTaskEnvironment task_environment;
+  std::unique_ptr<content::BrowserTaskEnvironment> task_environment_;
   std::unique_ptr<content::ContentBrowserClient> content_browser_client_;
   std::unique_ptr<content::ContentClient> content_client_;
   base::AtExitManager at_exit;
@@ -97,6 +112,9 @@ void AddStates(FuzzedDataProvider& fdp, ui::AXNodeData* node) {
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   static Env env;
   auto accessibility_state = BrowserAccessibilityStateImpl::Create();
+  // Prevent accessibility from being turned on by the platform so that the
+  // tests can run undisturbed.
+  accessibility_state->SetActivationFromPlatformEnabled(false);
   FuzzedDataProvider fdp(data, size);
 
   // The tree structure is always the same, only the data changes.
@@ -177,13 +195,21 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
   ui::TestAXPlatformTreeManagerDelegate delegate;
   ui::TestAXNodeIdDelegate node_id_delegate;
+#if BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<ui::BrowserAccessibilityManager> manager(
+      BrowserAccessibilityManagerAndroid::Create(tree, node_id_delegate,
+                                                 &delegate));
+  std::unique_ptr<ui::BrowserAccessibilityManager> child_manager(
+      BrowserAccessibilityManagerAndroid::Create(child_tree, node_id_delegate,
+                                                 &delegate));
+#else
   std::unique_ptr<ui::BrowserAccessibilityManager> manager(
       ui::BrowserAccessibilityManager::Create(tree, node_id_delegate,
                                               &delegate));
   std::unique_ptr<ui::BrowserAccessibilityManager> child_manager(
       ui::BrowserAccessibilityManager::Create(child_tree, node_id_delegate,
                                               &delegate));
-
+#endif
   // We want to call a bunch of functions but we don't care what the
   // return values are. To ensure the compiler doesn't optimize the calls
   // away, push the return values onto a vector and make an assertion about

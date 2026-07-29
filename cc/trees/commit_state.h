@@ -7,6 +7,7 @@
 
 #include <array>
 #include <memory>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -31,6 +32,7 @@
 #include "cc/resources/ui_resource_request.h"
 #include "cc/trees/begin_main_frame_trace_id.h"
 #include "cc/trees/browser_controls_params.h"
+#include "cc/trees/layer_tree_host_delegate.h"
 #include "cc/trees/presentation_time_callback_buffer.h"
 #include "cc/trees/render_frame_metadata.h"
 #include "cc/trees/swap_promise.h"
@@ -90,6 +92,7 @@ struct CC_EXPORT CommitState {
   float bottom_controls_shown_ratio = 0.f;
   float device_scale_factor = 1.f;
   float external_page_scale_factor = 1.f;
+  bool page_scale_factor_limits_set = false;
   float max_page_scale_factor = 1.f;
   float min_page_scale_factor = 1.f;
   float page_scale_factor = 1.f;
@@ -127,8 +130,12 @@ struct CC_EXPORT CommitState {
   bool new_local_surface_id_request = false;
   bool next_commit_forces_recalculate_raster_scales = false;
   bool next_commit_forces_redraw = false;
+  PropertyChangeForcesCommitCriteria property_change_forces_commit_criteria =
+      PropertyChangeForcesCommitCriteria::kNone;
   BeginMainFrameTraceId trace_id{0};
   EventMetrics::List event_metrics;
+
+  PropertyTrees property_trees;
 
   // Latency information for work done in ProxyMain::BeginMainFrame. The
   // unique_ptr is allocated in RequestMainFrameUpdate, and passed to Blink's
@@ -143,7 +150,8 @@ struct CC_EXPORT CommitState {
   std::unique_ptr<gfx::DelegatedInkMetadata> delegated_ink_metadata;
 
   std::unique_ptr<PendingPageScaleAnimation> pending_page_scale_animation;
-  std::vector<std::pair<int, std::unique_ptr<DrawImage>>> queued_image_decodes;
+  std::vector<std::tuple<int, std::unique_ptr<DrawImage>, bool>>
+      queued_image_decodes;
 
   // Presentation time callbacks requested for the next frame are initially
   // added here.
@@ -161,9 +169,9 @@ struct CC_EXPORT CommitState {
   std::vector<std::unique_ptr<SwapPromise>> swap_promises;
   std::vector<UIResourceRequest> ui_resource_request_queue;
   base::flat_map<UIResourceId, gfx::Size> ui_resource_sizes;
-  PropertyTreesChangeState property_trees_change_state;
-  // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of speedometer3).
-  RAW_PTR_EXCLUSION base::flat_set<Layer*> layers_that_should_push_properties;
+  base::flat_set<int> layer_ids_that_should_push_properties;
+  base::flat_set<int> picture_layer_ids_with_new_raster_source;
+  base::flat_map<int, gfx::Rect> layer_update_rects;
 
   // Specific scrollers may request clobbering the active delta value on the
   // compositor when committing the current scroll offset to ensure the scroll
@@ -182,8 +190,7 @@ struct CC_EXPORT CommitState {
 };
 
 struct CC_EXPORT ThreadUnsafeCommitState {
-  ThreadUnsafeCommitState(MutatorHost* mh,
-                          const ProtectedSequenceSynchronizer& synchronizer);
+  explicit ThreadUnsafeCommitState(MutatorHost* mh);
   ~ThreadUnsafeCommitState();
 
   // TODO(szager/vmpstr): These methods are to support range-based 'for' loops,
@@ -194,9 +201,16 @@ struct CC_EXPORT ThreadUnsafeCommitState {
   }
   LayerListConstIterator end() const { return LayerListConstIterator(nullptr); }
 
+  size_t num_layers() const { return layer_id_map.size(); }
+  Layer* LayerById(int id) const {
+    auto iter = layer_id_map.find(id);
+    return iter != layer_id_map.end() ? iter->second : nullptr;
+  }
+
   raw_ptr<MutatorHost> mutator_host;
-  PropertyTrees property_trees;
   scoped_refptr<Layer> root_layer;
+  // Layer id to Layer map.
+  std::unordered_map<int, raw_ptr<Layer, CtnExperimental>> layer_id_map;
 };
 
 struct CC_EXPORT CommitTimestamps {

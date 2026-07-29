@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/strings/stringprintf.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
@@ -52,9 +53,11 @@ class IPv6ReachabilityOverridePolicyTest : public PolicyTest {
   int LoadIPv6OnlyRequest() {
     GURL url(base::StringPrintf("http://ipv6.test:%hu/empty.html",
                                 embedded_test_server()->port()));
-    return content::LoadBasicRequest(
-        browser()->profile()->GetDefaultStoragePartition()->GetNetworkContext(),
-        url);
+    return content::LoadBasicRequest(browser()
+                                         ->GetProfile()
+                                         ->GetDefaultStoragePartition()
+                                         ->GetNetworkContext(),
+                                     url);
   }
 };
 

@@ -7,12 +7,20 @@
 #include <memory>
 
 #include "base/no_destructor.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/enterprise/client_certificates/cert_utils.h"
 #include "chrome/browser/profiles/profile.h"
+#include "components/enterprise/client_certificates/core/features.h"
 #include "components/enterprise/client_certificates/core/leveldb_certificate_store.h"
+#include "components/enterprise/client_certificates/core/prefs_certificate_store.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ash/kcer/kcer_factory_ash.h"
+#include "chrome/browser/enterprise/client_certificates/ash/kcer_certificate_store.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace client_certificates {
 
@@ -30,7 +38,11 @@ CertificateStore* CertificateStoreFactory::GetForProfile(Profile* profile) {
 
 CertificateStoreFactory::CertificateStoreFactory()
     : ProfileKeyedServiceFactory("CertificateStore",
-                                 ProfileSelections::BuildForRegularProfile()) {}
+                                 ProfileSelections::BuildForRegularProfile()) {
+#if BUILDFLAG(IS_CHROMEOS)
+  DependsOn(kcer::KcerFactoryAsh::GetInstance());
+#endif  // BUILDFLAG(IS_CHROMEOS)
+}
 
 CertificateStoreFactory::~CertificateStoreFactory() = default;
 
@@ -38,8 +50,19 @@ std::unique_ptr<KeyedService>
 CertificateStoreFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   auto* profile = Profile::FromBrowserContext(context);
+  if (!profile) {
+    return nullptr;
+  }
 
-  if (!profile || !profile->GetDefaultStoragePartition() ||
+#if BUILDFLAG(IS_CHROMEOS)
+  return KcerCertificateStore::CreateForProfile(profile);
+#else
+  if (features::IsManagedUserClientCertificateInPrefsEnabled()) {
+    return std::make_unique<PrefsCertificateStore>(profile->GetPrefs(),
+                                                   CreatePrivateKeyFactory());
+  }
+
+  if (!profile->GetDefaultStoragePartition() ||
       !profile->GetDefaultStoragePartition()->GetProtoDatabaseProvider()) {
     return nullptr;
   }
@@ -48,6 +71,7 @@ CertificateStoreFactory::BuildServiceInstanceForBrowserContext(
       profile->GetPath(),
       profile->GetDefaultStoragePartition()->GetProtoDatabaseProvider(),
       CreatePrivateKeyFactory());
+#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
 }  // namespace client_certificates

@@ -14,11 +14,11 @@ namespace autofill {
 
 class LogRouter;
 
-// A factory that associates autofill::LogRouter instances with
-// profiles. This returns nullptr for off-the-record profiles.
+// A factory that associates LogRouter instances with profiles. This returns
+// nullptr for off-the-record profiles.
 class AutofillLogRouterFactory : public ProfileKeyedServiceFactoryIOS {
  public:
-  static autofill::LogRouter* GetForProfile(ProfileIOS* profile);
+  static LogRouter* GetForProfile(ProfileIOS* profile);
   static AutofillLogRouterFactory* GetInstance();
 
  private:
@@ -27,9 +27,9 @@ class AutofillLogRouterFactory : public ProfileKeyedServiceFactoryIOS {
   AutofillLogRouterFactory();
   ~AutofillLogRouterFactory() override;
 
-  // BrowserStateKeyedServiceFactory:
+  // ProfileKeyedServiceFactoryIOS:
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
+      ProfileIOS* profile) const override;
 };
 
 }  // namespace autofill

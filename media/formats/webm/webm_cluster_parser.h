@@ -16,6 +16,7 @@
 
 #include "base/containers/circular_deque.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "media/base/audio_decoder_config.h"
@@ -172,12 +173,12 @@ class MEDIA_EXPORT WebMClusterParser : public WebMParserClient {
   // Resets the parser state so it can accept a new cluster.
   void Reset();
 
-  // Parses a WebM cluster element in |buf|.
+  // Parses a WebM cluster element in `buf`.
   //
   // Returns -1 if the parse fails.
   // Returns 0 if more data is needed.
   // Returns the number of bytes parsed on success.
-  int Parse(const uint8_t* buf, int size);
+  int Parse(base::span<const uint8_t> buf);
 
   base::TimeDelta cluster_start_time() const { return cluster_start_time_; }
 
@@ -203,13 +204,11 @@ class MEDIA_EXPORT WebMClusterParser : public WebMParserClient {
   WebMParserClient* OnListStart(int id) override;
   bool OnListEnd(int id) override;
   bool OnUInt(int id, int64_t val) override;
-  bool OnBinary(int id, const uint8_t* data, int size) override;
+  bool OnBinary(int id, base::span<const uint8_t> data) override;
 
   bool ParseBlock(bool is_simple_block,
-                  const uint8_t* buf,
-                  size_t size,
-                  const uint8_t* additional,
-                  int additional_size,
+                  base::span<const uint8_t> buf,
+                  base::span<const uint8_t> additional,
                   int duration,
                   int64_t discard_padding,
                   bool reference_block_set);
@@ -217,10 +216,8 @@ class MEDIA_EXPORT WebMClusterParser : public WebMParserClient {
                int track_num,
                int timecode,
                int duration,
-               const uint8_t* data,
-               size_t size,
-               const uint8_t* additional,
-               size_t additional_size,
+               base::span<const uint8_t> data,
+               base::span<const uint8_t> additional,
                int64_t discard_padding,
                bool is_keyframe);
 
@@ -243,11 +240,11 @@ class MEDIA_EXPORT WebMClusterParser : public WebMParserClient {
   // Cluster we parse, so we can't simply use the delta of the first Block in
   // the next Cluster). Avoid calling if encrypted; may produce unexpected
   // output. See implementation for supported codecs.
-  base::TimeDelta TryGetEncodedAudioDuration(const uint8_t* data, int size);
+  base::TimeDelta TryGetEncodedAudioDuration(base::span<const uint8_t> data);
 
   // Reads Opus packet header to determine packet duration. Duration returned
   // as TimeDelta or kNoTimestamp upon failure to read duration from packet.
-  base::TimeDelta ReadOpusDuration(const uint8_t* data, int size);
+  base::TimeDelta ReadOpusDuration(base::span<const uint8_t> data);
 
   // Tracks the number of MEDIA_LOGs made in process of reading encoded
   // duration. Useful to prevent log spam.
@@ -293,7 +290,7 @@ class MEDIA_EXPORT WebMClusterParser : public WebMParserClient {
   // kInfiniteDuration if no buffers are currently missing duration.
   DecodeTimestamp ready_buffer_upper_bound_;
 
-  raw_ptr<MediaLog> media_log_;
+  const std::unique_ptr<MediaLog> media_log_;
 };
 
 }  // namespace media

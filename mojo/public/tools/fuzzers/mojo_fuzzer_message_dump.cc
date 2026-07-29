@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -15,6 +10,7 @@
 #include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_executor.h"
@@ -63,10 +59,9 @@ class MessageDumper : public mojo::MessageFilter {
       return false;
     }
 
-    size_t size = message->data_num_bytes();
-    const uint8_t* data = message->data();
-    if (!file.WriteAtCurrentPosAndCheck(UNSAFE_TODO(base::span(data, size)))) {
-      LOG(ERROR) << "Failed to write " << size << " bytes.";
+    if (!file.WriteAtCurrentPosAndCheck(message->data_as_span())) {
+      LOG(ERROR) << "Failed to write " << message->data_num_bytes()
+                 << " bytes.";
       return false;
     }
     return true;
@@ -96,8 +91,8 @@ auto GetStructMapFuzzUnion(fuzz::mojom::FuzzDummyStructPtr in) {
 auto GetComplexFuzzUnion(fuzz::mojom::FuzzUnionPtr in) {
   std::remove_reference<decltype(in->get_fuzz_complex())>::type complex_map;
   std::remove_reference<decltype(complex_map.value()[0])>::type outer;
-  std::remove_reference<decltype(
-      outer[fuzz::mojom::FuzzEnum::FUZZ_VALUE0])>::type inner;
+  std::remove_reference<
+      decltype(outer[fuzz::mojom::FuzzEnum::FUZZ_VALUE0])>::type inner;
   std::remove_reference<decltype(inner['z'])>::type center;
 
   center.emplace();
@@ -172,8 +167,8 @@ auto GetFuzzStructNullableArrayValue() {
 auto GetFuzzStructComplexValue() {
   decltype(fuzz::mojom::FuzzStruct::fuzz_complex) complex_map;
   std::remove_reference<decltype(complex_map.value()[0])>::type outer;
-  std::remove_reference<decltype(
-      outer[fuzz::mojom::FuzzEnum::FUZZ_VALUE0])>::type inner;
+  std::remove_reference<
+      decltype(outer[fuzz::mojom::FuzzEnum::FUZZ_VALUE0])>::type inner;
   std::remove_reference<decltype(inner['z'])>::type center;
 
   center.emplace();
@@ -270,10 +265,10 @@ void DumpMessages(std::string output_directory) {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    printf("Usage: %s [output_directory]\n", argv[0]);
+    UNSAFE_TODO(printf("Usage: %s [output_directory]\n", argv[0]));
     exit(1);
   }
-  std::string output_directory(argv[1]);
+  std::string output_directory(UNSAFE_TODO(argv[1]));
 
   /* Dump the messages from a TaskExecutor, and wait for it to finish. */
   env->main_thread_task_executor.task_runner()->PostTask(

@@ -51,21 +51,6 @@ void ElementIntersectionObserverData::TrackWithController(
     controller.AddTrackedObserver(*observer);
 }
 
-void ElementIntersectionObserverData::StopTrackingWithController(
-    IntersectionObserverController& controller) {
-  for (auto& entry : observations_)
-    controller.RemoveTrackedObservation(*entry.value);
-  for (auto& observer : observers_)
-    controller.RemoveTrackedObserver(*observer);
-}
-
-void ElementIntersectionObserverData::ComputeIntersectionsForTarget() {
-  ComputeIntersectionsContext context;
-  for (auto& [observer, observation] : observations_) {
-    observation->ComputeIntersectionImmediately(context);
-  }
-}
-
 bool ElementIntersectionObserverData::NeedsOcclusionTracking() const {
   for (auto& entry : observations_) {
     if (entry.key->trackVisibility())
@@ -77,7 +62,7 @@ bool ElementIntersectionObserverData::NeedsOcclusionTracking() const {
 void ElementIntersectionObserverData::Trace(Visitor* visitor) const {
   visitor->Trace(observations_);
   visitor->Trace(observers_);
-  ElementRareDataField::Trace(visitor);
+  NodeRareDataField::Trace(visitor);
 }
 
 }  // namespace blink

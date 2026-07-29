@@ -7,9 +7,9 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/enterprise/connectors/analysis/content_analysis_delegate_base.h"
 #include "components/download/public/common/download_item.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
+#include "components/enterprise/connectors/core/content_analysis_delegate_base.h"
 
 namespace enterprise_connectors {
 
@@ -29,7 +29,8 @@ class ContentAnalysisDownloadsDelegate
       base::OnceClosure discard_file_callback,
       download::DownloadItem* download_item,
       const ContentAnalysisResponse::Result::TriggeredRule::CustomRuleMessage&
-          custom_rule_message);
+          custom_rule_message,
+      const std::u16string& base_verdict_text);
   ~ContentAnalysisDownloadsDelegate() override;
 
   // Called when the user opts to keep the download and open it. Should not be
@@ -56,6 +57,9 @@ class ContentAnalysisDownloadsDelegate
   // download::DownloadItem::Observer:
   void OnDownloadDestroyed(download::DownloadItem* download) override;
 
+  // Returns the file name of the content, if it exists.
+  std::optional<std::u16string> GetFilename() const override;
+
  private:
   // Resets |open_file_callback_| and |discard_file_callback_|, ensuring actions
   // can't be attempted on a file that has already been opened or discarded
@@ -76,6 +80,7 @@ class ContentAnalysisDownloadsDelegate
   base::OnceClosure open_file_callback_;
   base::OnceClosure discard_file_callback_;
   raw_ptr<download::DownloadItem> download_item_;
+  std::u16string base_verdict_text_;
 };
 
 }  // namespace enterprise_connectors

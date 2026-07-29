@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromecast/starboard/media/media/starboard_audio_decoder.h"
 
 #include <cstdint>
@@ -143,7 +138,7 @@ MATCHER_P(MatchesAudioBufferPCM, buffer, "") {
     return false;
   }
 
-  CHECK_EQ(static_cast<int>(buffer->data_size()) % 4, 0);
+  CHECK_EQ(buffer->data_size() % 4, 0u);
   CHECK_EQ(arg.buffer_size % 4, 0);
 
   const std::vector<float> expected_buffer(
@@ -219,14 +214,13 @@ AudioConfig GetBasicConfig() {
 TEST_F(StarboardAudioDecoderTest, PushesBufferToStarboard) {
   const AudioConfig config = GetBasicConfig();
   const std::vector<uint8_t> buffer_data = {1, 2, 3, 4, 5};
-  scoped_refptr<CastDecoderBufferImpl> buffer(
-      new CastDecoderBufferImpl(buffer_data.size()));
-  memcpy(buffer->writable_data(), buffer_data.data(), buffer_data.size());
+  auto buffer = base::MakeRefCounted<DecoderBufferAdapter>(
+      ::media::DecoderBuffer::CopyFrom(buffer_data));
 
   EXPECT_CALL(
       *starboard_,
       WriteSample(&fake_player_, kStarboardMediaTypeAudio,
-                  Pointee(MatchesAudioConfigAndBuffer(config, buffer)), 1))
+                  ElementsAre(MatchesAudioConfigAndBuffer(config, buffer))))
       .Times(1);
 
   StarboardAudioDecoder decoder(starboard_.get());
@@ -321,7 +315,7 @@ TEST_F(StarboardAudioDecoderTest, PopulatesDrmInfoInSamples) {
   // unencrypted even for encrypted content.
   config.encryption_scheme = EncryptionScheme::kUnencrypted;
 
-  const ::media::EncryptionPattern encryption_pattern(5, 6);
+  const auto encryption_pattern = ::media::EncryptionPattern::Create(5, 6);
   std::unique_ptr<::media::DecryptConfig> decrypt_config =
       ::media::DecryptConfig::CreateCbcsConfig(kKeyId, kIv, subsamples,
                                                encryption_pattern);
@@ -343,25 +337,23 @@ TEST_F(StarboardAudioDecoderTest, PopulatesDrmInfoInSamples) {
 
   EXPECT_CALL(
       *starboard_,
-      WriteSample(&fake_player_, kStarboardMediaTypeAudio,
-                  Pointee(AllOf(MatchesAudioConfigAndBuffer(config, buffer))),
-                  1))
-      .WillOnce(WithArg<2>([&actual_drm_info, &actual_subsamples](
-                               StarboardSampleInfo* sample_infos) {
-        // Since this is only called when the fourth argument is 1, that
-        // means that sample_infos_count is 1.
-        StarboardSampleInfo sample_info = sample_infos[0];
-        if (!sample_info.drm_info) {
-          return;
-        }
-        actual_drm_info = *sample_info.drm_info;
-        const int subsample_count = actual_drm_info.subsample_count;
-        if (subsample_count > 0) {
-          actual_subsamples.assign(
-              actual_drm_info.subsample_mapping,
-              actual_drm_info.subsample_mapping + subsample_count);
-        }
-      }));
+      WriteSample(
+          &fake_player_, kStarboardMediaTypeAudio,
+          ElementsAre(AllOf(MatchesAudioConfigAndBuffer(config, buffer)))))
+      .WillOnce(
+          WithArg<2>([&actual_drm_info, &actual_subsamples](
+                         base::span<const StarboardSampleInfo> sample_infos) {
+            // The "ElementsAre" matcher above ensures that there is exactly one
+            // element in sample_infos.
+            CHECK_EQ(sample_infos.size(), 1UL);
+            StarboardSampleInfo sample_info = sample_infos[0];
+            if (!sample_info.drm_info) {
+              return;
+            }
+            actual_drm_info = *sample_info.drm_info;
+            actual_subsamples.assign(actual_drm_info.subsample_mapping.begin(),
+                                     actual_drm_info.subsample_mapping.end());
+          }));
 
   StarboardAudioDecoder decoder(starboard_.get());
   MockDelegate delegate;
@@ -376,9 +368,9 @@ TEST_F(StarboardAudioDecoderTest, PopulatesDrmInfoInSamples) {
   EXPECT_EQ(actual_drm_info.encryption_scheme,
             kStarboardDrmEncryptionSchemeAesCbc);
   EXPECT_EQ(actual_drm_info.encryption_pattern.crypt_byte_block,
-            encryption_pattern.crypt_byte_block());
+            encryption_pattern->crypt_byte_block());
   EXPECT_EQ(actual_drm_info.encryption_pattern.skip_byte_block,
-            encryption_pattern.skip_byte_block());
+            encryption_pattern->skip_byte_block());
   EXPECT_THAT(std::string(reinterpret_cast<const char*>(
                               actual_drm_info.initialization_vector),
                           actual_drm_info.initialization_vector_size),
@@ -414,7 +406,7 @@ TEST_F(StarboardAudioDecoderTest, DoesNotPushToStarboardIfDrmKeyIsUnavailable) {
   AudioConfig config = GetBasicConfig();
   config.encryption_scheme = EncryptionScheme::kAesCtr;
 
-  const ::media::EncryptionPattern encryption_pattern(5, 6);
+  const auto encryption_pattern = ::media::EncryptionPattern::Create(5, 6);
   std::unique_ptr<::media::DecryptConfig> decrypt_config =
       ::media::DecryptConfig::CreateCbcsConfig(kKeyId, kIv, subsamples,
                                                encryption_pattern);
@@ -457,7 +449,7 @@ TEST_F(StarboardAudioDecoderTest,
   AudioConfig config = GetBasicConfig();
   config.encryption_scheme = EncryptionScheme::kAesCbc;
 
-  const ::media::EncryptionPattern encryption_pattern(5, 6);
+  const auto encryption_pattern = ::media::EncryptionPattern::Create(5, 6);
   std::unique_ptr<::media::DecryptConfig> decrypt_config =
       ::media::DecryptConfig::CreateCbcsConfig(kKeyId, kIv, subsamples,
                                                encryption_pattern);
@@ -479,25 +471,23 @@ TEST_F(StarboardAudioDecoderTest,
 
   EXPECT_CALL(
       *starboard_,
-      WriteSample(&fake_player_, kStarboardMediaTypeAudio,
-                  Pointee(AllOf(MatchesAudioConfigAndBuffer(config, buffer))),
-                  1))
-      .WillOnce(WithArg<2>([&actual_drm_info, &actual_subsamples](
-                               StarboardSampleInfo* sample_infos) {
-        // Since this is only called when the fourth argument is 1, that
-        // means that sample_infos_count is 1.
-        StarboardSampleInfo sample_info = sample_infos[0];
-        if (!sample_info.drm_info) {
-          return;
-        }
-        actual_drm_info = *sample_info.drm_info;
-        const int subsample_count = actual_drm_info.subsample_count;
-        if (subsample_count > 0) {
-          actual_subsamples.assign(
-              actual_drm_info.subsample_mapping,
-              actual_drm_info.subsample_mapping + subsample_count);
-        }
-      }));
+      WriteSample(
+          &fake_player_, kStarboardMediaTypeAudio,
+          ElementsAre(AllOf(MatchesAudioConfigAndBuffer(config, buffer)))))
+      .WillOnce(
+          WithArg<2>([&actual_drm_info, &actual_subsamples](
+                         base::span<const StarboardSampleInfo> sample_infos) {
+            // The "ElementsAre" matcher above ensures that there is exactly one
+            // element in sample_infos.
+            CHECK_EQ(sample_infos.size(), 1UL);
+            StarboardSampleInfo sample_info = sample_infos[0];
+            if (!sample_info.drm_info) {
+              return;
+            }
+            actual_drm_info = *sample_info.drm_info;
+            actual_subsamples.assign(actual_drm_info.subsample_mapping.begin(),
+                                     actual_drm_info.subsample_mapping.end());
+          }));
 
   StarboardAudioDecoder decoder(starboard_.get());
   MockDelegate delegate;
@@ -518,9 +508,9 @@ TEST_F(StarboardAudioDecoderTest,
   EXPECT_EQ(actual_drm_info.encryption_scheme,
             kStarboardDrmEncryptionSchemeAesCbc);
   EXPECT_EQ(actual_drm_info.encryption_pattern.crypt_byte_block,
-            encryption_pattern.crypt_byte_block());
+            encryption_pattern->crypt_byte_block());
   EXPECT_EQ(actual_drm_info.encryption_pattern.skip_byte_block,
-            encryption_pattern.skip_byte_block());
+            encryption_pattern->skip_byte_block());
   EXPECT_THAT(std::string(reinterpret_cast<const char*>(
                               actual_drm_info.initialization_vector),
                           actual_drm_info.initialization_vector_size),
@@ -564,17 +554,50 @@ TEST_F(StarboardAudioDecoderTest,
                              kStarboardAudioCodecAac)));
 }
 
+TEST_F(StarboardAudioDecoderTest, RejectedConfigDoesNotUpdateSampleInfo) {
+  const AudioConfig good_config = GetBasicConfig();
+
+  AudioConfig bad_config = GetBasicConfig();
+  bad_config.codec = AudioCodec::kCodecAAC;
+  bad_config.channel_number = 64;
+
+  const std::vector<uint8_t> buffer_data = {1, 2, 3, 4, 5};
+  auto buffer = base::MakeRefCounted<DecoderBufferAdapter>(
+      ::media::DecoderBuffer::CopyFrom(buffer_data));
+
+  // The buffer pushed after the rejected config change should still use the
+  // last accepted config.
+  EXPECT_CALL(*starboard_,
+              WriteSample(&fake_player_, kStarboardMediaTypeAudio,
+                          ElementsAre(MatchesAudioConfigAndBuffer(good_config,
+                                                                  buffer))))
+      .Times(1);
+
+  StarboardAudioDecoder decoder(starboard_.get());
+  MockDelegate delegate;
+
+  decoder.Initialize(&fake_player_);
+  EXPECT_TRUE(decoder.SetConfig(good_config));
+  decoder.SetDelegate(&delegate);
+
+  EXPECT_FALSE(decoder.SetConfig(bad_config));
+  EXPECT_THAT(decoder.GetAudioSampleInfo(),
+              Optional(Field(&StarboardAudioSampleInfo::number_of_channels,
+                             good_config.channel_number)));
+
+  EXPECT_EQ(decoder.PushBuffer(buffer.get()),
+            MediaPipelineBackend::BufferStatus::kBufferPending);
+}
+
 TEST_F(StarboardAudioDecoderTest,
        HandlesMultiplePushBuffersBeforeInitialization) {
   const std::vector<uint8_t> buffer_data_1 = {1, 2, 3, 4, 5};
-  scoped_refptr<CastDecoderBufferImpl> buffer_1(
-      new CastDecoderBufferImpl(buffer_data_1.size()));
-  memcpy(buffer_1->writable_data(), buffer_data_1.data(), buffer_data_1.size());
+  auto buffer_1 = base::MakeRefCounted<DecoderBufferAdapter>(
+      ::media::DecoderBuffer::CopyFrom(buffer_data_1));
 
   const std::vector<uint8_t> buffer_data_2 = {6, 7, 8, 9, 10};
-  scoped_refptr<CastDecoderBufferImpl> buffer_2(
-      new CastDecoderBufferImpl(buffer_data_2.size()));
-  memcpy(buffer_2->writable_data(), buffer_data_2.data(), buffer_data_2.size());
+  auto buffer_2 = base::MakeRefCounted<DecoderBufferAdapter>(
+      ::media::DecoderBuffer::CopyFrom(buffer_data_2));
 
   const AudioConfig config = GetBasicConfig();
 
@@ -583,12 +606,12 @@ TEST_F(StarboardAudioDecoderTest,
   EXPECT_CALL(
       *starboard_,
       WriteSample(&fake_player_, kStarboardMediaTypeAudio,
-                  Pointee(MatchesAudioConfigAndBuffer(config, buffer_1)), 1))
+                  ElementsAre(MatchesAudioConfigAndBuffer(config, buffer_1))))
       .Times(0);
   EXPECT_CALL(
       *starboard_,
       WriteSample(&fake_player_, kStarboardMediaTypeAudio,
-                  Pointee(MatchesAudioConfigAndBuffer(config, buffer_2)), 1))
+                  ElementsAre(MatchesAudioConfigAndBuffer(config, buffer_2))))
       .Times(1);
 
   StarboardAudioDecoder decoder(starboard_.get());
@@ -645,9 +668,8 @@ TEST_F(StarboardAudioDecoderTest, ReportsStatistics) {
   decoder.SetDelegate(&delegate);
 
   const std::vector<uint8_t> buffer_data = {1, 2, 3, 4, 5};
-  scoped_refptr<CastDecoderBufferImpl> buffer(
-      new CastDecoderBufferImpl(buffer_data.size()));
-  memcpy(buffer->writable_data(), buffer_data.data(), buffer_data.size());
+  auto buffer = base::MakeRefCounted<DecoderBufferAdapter>(
+      ::media::DecoderBuffer::CopyFrom(buffer_data));
 
   EXPECT_EQ(decoder.PushBuffer(buffer.get()),
             MediaPipelineBackend::BufferStatus::kBufferPending);
@@ -665,9 +687,8 @@ TEST_F(StarboardAudioDecoderTest, ConvertsPcmToS16ForPushBeforeInitialization) {
   // This will be treated as unsigned 8 bit samples, and we expect it to be
   // converted to two S16 samples.
   const std::vector<uint8_t> buffer_data = {0x00, 0xFF};
-  scoped_refptr<CastDecoderBufferImpl> buffer(
-      new CastDecoderBufferImpl(buffer_data.size()));
-  memcpy(buffer->writable_data(), buffer_data.data(), buffer_data.size());
+  auto buffer = base::MakeRefCounted<DecoderBufferAdapter>(
+      ::media::DecoderBuffer::CopyFrom(buffer_data));
 
   AudioConfig original_config;
   original_config.codec = AudioCodec::kCodecPCM;
@@ -691,17 +712,13 @@ TEST_F(StarboardAudioDecoderTest, ConvertsPcmToS16ForPushBeforeInitialization) {
   // buffer_data above.
   const std::vector<uint8_t> expected_resampled_buffer_data = {0x00, 0x80, 0xFF,
                                                                0x7F};
-  scoped_refptr<CastDecoderBufferImpl> expected_resampled_buffer(
-      new CastDecoderBufferImpl(expected_resampled_buffer_data.size()));
-  memcpy(expected_resampled_buffer->writable_data(),
-         expected_resampled_buffer_data.data(),
-         expected_resampled_buffer_data.size());
+  auto expected_resampled_buffer = base::MakeRefCounted<DecoderBufferAdapter>(
+      ::media::DecoderBuffer::CopyFrom(expected_resampled_buffer_data));
 
   EXPECT_CALL(*starboard_,
               WriteSample(&fake_player_, kStarboardMediaTypeAudio,
-                          Pointee(MatchesAudioConfigAndBuffer(
-                              resampled_config, expected_resampled_buffer)),
-                          1))
+                          ElementsAre(MatchesAudioConfigAndBuffer(
+                              resampled_config, expected_resampled_buffer))))
       .Times(1);
 
   StarboardAudioDecoder decoder(starboard_.get());

@@ -64,6 +64,20 @@ void HTMLHtmlElement::InsertedByParser() {
   }
 }
 
+void HTMLHtmlElement::AttachLayoutTree(AttachContext& context) {
+  HTMLElement::AttachLayoutTree(context);
+  if (PseudoElement* skeleton = GetPseudoElement(kPseudoIdSkeleton)) {
+    skeleton->AttachLayoutTree(context);
+  }
+}
+
+void HTMLHtmlElement::DetachLayoutTree(bool performing_reattach) {
+  HTMLElement::DetachLayoutTree(performing_reattach);
+  if (PseudoElement* skeleton = GetPseudoElement(kPseudoIdSkeleton)) {
+    skeleton->DetachLayoutTree(performing_reattach);
+  }
+}
+
 namespace {
 
 bool NeedsLayoutStylePropagation(const ComputedStyle& layout_style,
@@ -160,11 +174,11 @@ void HTMLHtmlElement::PropagateWritingModeAndDirectionFromBody() {
   layout_object->SetStyle(new_style);
 
   // TODO(crbug.com/371033184): We should propagate `writing-mode` and
-  // `direction` to ComputedStyles of pseudo elements of `this`.
+  // `direction` to ComputedStyles of pseudo-elements of `this`.
   // * We can't use Element::RecalcStyle() because it refers to the
   //   ComputedStyle stored in this element, not `layout_object`.
   // * We should not copy `writing-mode` and `direction` values of `new_style`
-  //   if `writing-mode` or `direction` is specified explicitly for a pseudo
+  //   if `writing-mode` or `direction` is specified explicitly for a pseudo-
   //   element.
   // See css/css-writing-modes/wm-propagation-body-{042,047,049,054}.html.
 }

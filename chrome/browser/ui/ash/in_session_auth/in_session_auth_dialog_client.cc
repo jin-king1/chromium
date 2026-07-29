@@ -8,9 +8,11 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/webauthn_dialog_controller.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/memory/raw_ref.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/auth/cryptohome_pin_engine.h"
 #include "chrome/browser/ash/auth/legacy_fingerprint_engine.h"
@@ -21,9 +23,9 @@
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_utils.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chromeos/ash/components/cryptohome/common_types.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/login/auth/auth_performer.h"
@@ -38,6 +40,8 @@ using ::ash::AuthStatusConsumer;
 using ::ash::Key;
 using ::ash::UserContext;
 
+class PrefService;
+
 namespace {
 
 const char kInSessionAuthHelpPageUrl[] =
@@ -47,8 +51,9 @@ InSessionAuthDialogClient* g_auth_dialog_client_instance = nullptr;
 
 }  // namespace
 
-InSessionAuthDialogClient::InSessionAuthDialogClient()
-    : auth_performer_(ash::UserDataAuthClient::Get()) {
+InSessionAuthDialogClient::InSessionAuthDialogClient(PrefService* local_state)
+    : local_state_(CHECK_DEREF(local_state)),
+      auth_performer_(ash::UserDataAuthClient::Get()) {
   ash::WebAuthNDialogController::Get()->SetClient(this);
 
   DCHECK(!g_auth_dialog_client_instance);
@@ -274,7 +279,7 @@ void InSessionAuthDialogClient::OnAuthSessionStarted(
 
   // Take temporary ownership of user_context to pass on later.
   user_context_ = std::move(user_context);
-  pin_engine_.emplace(&auth_performer_);
+  pin_engine_.emplace(&local_state_.get(), &auth_performer_);
   legacy_fingerprint_engine_.emplace(&auth_performer_);
   std::move(callback).Run(true);
 }
@@ -355,12 +360,12 @@ aura::Window* InSessionAuthDialogClient::OpenInSessionAuthHelpPage() const {
                         ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   params.disposition = WindowOpenDisposition::NEW_POPUP;
   params.trusted_source = true;
-  params.window_action = NavigateParams::SHOW_WINDOW;
+  params.window_action = NavigateParams::WindowAction::kShowWindow;
   params.user_gesture = true;
   params.path_behavior = NavigateParams::IGNORE_AND_NAVIGATE;
   Navigate(&params);
 
-  return params.browser->window()->GetNativeWindow();
+  return params.browser->GetWindow()->GetNativeWindow();
 }
 
 // AuthStatusConsumer:

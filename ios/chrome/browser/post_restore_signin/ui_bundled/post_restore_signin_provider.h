@@ -5,11 +5,20 @@
 #ifndef IOS_CHROME_BROWSER_POST_RESTORE_SIGNIN_UI_BUNDLED_POST_RESTORE_SIGNIN_PROVIDER_H_
 #define IOS_CHROME_BROWSER_POST_RESTORE_SIGNIN_UI_BUNDLED_POST_RESTORE_SIGNIN_PROVIDER_H_
 
-#import "ios/chrome/browser/promos_manager/ui_bundled/bannered_promo_view_provider.h"
-#import "ios/chrome/browser/promos_manager/ui_bundled/standard_promo_alert_provider.h"
+#import "ios/chrome/browser/promos_manager/coordinator/bannered_promo_view_provider.h"
+#import "ios/chrome/browser/promos_manager/coordinator/standard_promo_alert_provider.h"
 #import "ios/chrome/browser/shared/public/commands/promos_manager_commands.h"
 
-class Browser;
+namespace signin {
+class IdentityManager;
+}  // namespace signin
+
+namespace syncer {
+class SyncService;
+}  // namespace syncer
+
+class AuthenticationService;
+class PrefService;
 
 // Provider for displaying the Post Restore Sign-in Promo.
 //
@@ -18,7 +27,11 @@ class Browser;
 // necessary data and functionality to power both variations of this promo.
 @interface PostRestoreSignInProvider : NSObject <StandardPromoAlertProvider>
 
-- (instancetype)initForBrowser:(Browser*)browser NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithSyncService:(syncer::SyncService*)syncService
+              authenticationService:(AuthenticationService*)authService
+                    identityManager:(signin::IdentityManager*)identityManager
+                        prefService:(PrefService*)prefService
+    NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 

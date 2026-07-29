@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,9 +9,10 @@
 #include <unordered_map>
 #include <utility>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/containers/queue.h"
 #include "base/containers/span.h"
+#include "base/containers/span_reader.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
@@ -249,12 +245,21 @@ class FakeAndroidUsbDevice : public FakeUsbDevice {
                           GenericTransferOutCallback callback) override {
     if (remaining_body_length_ == 0) {
       // A new message, parse header first.
-      DCHECK_GE(buffer.size(), 6u);
-      const auto* header = reinterpret_cast<const uint32_t*>(buffer.data());
-      current_message_ = std::make_unique<AdbMessage>(header[0], header[1],
-                                                      header[2], std::string());
-      remaining_body_length_ = header[3];
-      uint32_t magic = header[5];
+      auto reader = base::SpanReader(buffer);
+      uint32_t command;
+      uint32_t arg0;
+      uint32_t arg1;
+      uint32_t body_length;
+      uint32_t magic;
+      CHECK(reader.ReadU32LittleEndian(command));
+      CHECK(reader.ReadU32LittleEndian(arg0));
+      CHECK(reader.ReadU32LittleEndian(arg1));
+      CHECK(reader.ReadU32LittleEndian(body_length));
+      CHECK(reader.Skip(4u));  // checksum
+      CHECK(reader.ReadU32LittleEndian(magic));
+      current_message_ =
+          std::make_unique<AdbMessage>(command, arg0, arg1, std::string());
+      remaining_body_length_ = body_length;
       if ((current_message_->command ^ 0xffffffff) != magic) {
         DCHECK(false) << "Header checksum error";
         base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -283,18 +288,16 @@ class FakeAndroidUsbDevice : public FakeUsbDevice {
 
   template <class D>
   void append(D data) {
-    std::copy(reinterpret_cast<uint8_t*>(&data),
-              (reinterpret_cast<uint8_t*>(&data)) + sizeof(D),
-              std::back_inserter(output_buffer_));
+    auto bytes = base::byte_span_from_ref(data);
+    output_buffer_.insert(output_buffer_.end(), bytes.begin(), bytes.end());
   }
 
   // Copied from AndroidUsbDevice::Checksum
   uint32_t Checksum(const std::string& data) {
-    unsigned char* x = (unsigned char*)data.data();
-    int count = data.length();
     uint32_t sum = 0;
-    while (count-- > 0)
-      sum += *x++;
+    for (unsigned char c : data) {
+      sum += c;
+    }
     return sum;
   }
 
@@ -368,8 +371,8 @@ class FakeAndroidUsbDevice : public FakeUsbDevice {
     append(static_cast<uint32_t>(body.size() + (add_zero ? 1 : 0)));
     append(Checksum(body));
     append(command ^ 0xffffffff);
-    const auto* body_head = reinterpret_cast<const uint8_t*>(body.data());
-    std::copy(body_head, body_head + body.size(),
+    base::span<const uint8_t> body_head = base::as_byte_span(body);
+    std::copy(body_head.data(), body_head.subspan(body.size()).data(),
               std::back_inserter(output_buffer_));
     if (add_zero) {
       output_buffer_.push_back(0);
@@ -437,7 +440,7 @@ class FakeAndroidUsbManager : public FakeUsbDeviceManager {
       mojo::PendingReceiver<device::mojom::UsbDevice> device_receiver,
       mojo::PendingRemote<device::mojom::UsbDeviceClient> device_client)
       override {
-    DCHECK(base::Contains(devices(), guid));
+    DCHECK(devices().contains(guid));
     FakeAndroidUsbDevice::Create(devices()[guid], std::move(device_receiver),
                                  std::move(device_client));
   }
@@ -508,7 +511,7 @@ class AndroidUsbDiscoveryTest : public InProcessBrowserTest {
 
   void SetUpOnMainThread() override {
     adb_bridge_ =
-        DevToolsAndroidBridge::Factory::GetForProfile(browser()->profile());
+        DevToolsAndroidBridge::Factory::GetForProfile(browser()->GetProfile());
     DCHECK(adb_bridge_);
     adb_bridge_->set_task_scheduler_for_test(base::BindRepeating(
         &AndroidUsbDiscoveryTest::ScheduleDeviceCountRequest,
@@ -516,7 +519,7 @@ class AndroidUsbDiscoveryTest : public InProcessBrowserTest {
 
     AndroidDeviceManager::DeviceProviders providers;
     providers.push_back(
-        base::MakeRefCounted<UsbDeviceProvider>(browser()->profile()));
+        base::MakeRefCounted<UsbDeviceProvider>(browser()->GetProfile()));
     adb_bridge_->set_device_providers_for_test(providers);
     runner_ = base::MakeRefCounted<content::MessageLoopRunner>();
 

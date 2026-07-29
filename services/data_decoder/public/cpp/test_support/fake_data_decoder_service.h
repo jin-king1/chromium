@@ -12,13 +12,8 @@
 #include "services/data_decoder/public/mojom/data_decoder_service.mojom.h"
 #include "services/data_decoder/public/mojom/gzipper.mojom.h"
 #include "services/data_decoder/public/mojom/image_decoder.mojom.h"
-#include "services/data_decoder/public/mojom/json_parser.mojom.h"
 #include "services/data_decoder/public/mojom/structured_headers_parser.mojom.h"
 #include "services/data_decoder/public/mojom/xml_parser.mojom.h"
-
-#if BUILDFLAG(IS_CHROMEOS)
-#include "services/data_decoder/public/mojom/ble_scan_parser.mojom.h"
-#endif
 
 namespace data_decoder {
 
@@ -34,8 +29,6 @@ class FakeDataDecoderService : public mojom::DataDecoderService {
   // data_decoder::mojom::DataDecoderService:
   void BindImageDecoder(mojo::PendingReceiver<data_decoder::mojom::ImageDecoder>
                             receiver) override;
-  void BindJsonParser(mojo::PendingReceiver<data_decoder::mojom::JsonParser>
-                          receiver) override;
   void BindStructuredHeadersParser(
       mojo::PendingReceiver<data_decoder::mojom::StructuredHeadersParser>
           receiver) override;
@@ -51,11 +44,6 @@ class FakeDataDecoderService : public mojom::DataDecoderService {
   void BindPixCodeValidator(
       mojo::PendingReceiver<payments::facilitated::mojom::PixCodeValidator>
           receiver) override;
-
-#if BUILDFLAG(IS_CHROMEOS)
-  void BindBleScanParser(
-      mojo::PendingReceiver<mojom::BleScanParser> receiver) override;
-#endif  // BUILDFLAG(IS_CHROMEOS)
 };
 
 }  // namespace data_decoder

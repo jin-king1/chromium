@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.autofill;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.os.Bundle;
@@ -24,15 +26,21 @@ import android.widget.Spinner;
 
 import androidx.fragment.app.Fragment;
 
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.components.browser_ui.settings.EmbeddableSettingsPage;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.FadingEdgeScrollView;
 import org.chromium.ui.text.EmptyTextWatcher;
 
 /** Base class for Autofill editors (e.g. credit cards and profiles). */
+@NullMarked
 public abstract class AutofillEditorBase extends Fragment
         implements EmbeddableSettingsPage,
                 OnItemSelectedListener,
@@ -41,10 +49,7 @@ public abstract class AutofillEditorBase extends Fragment
     /** We know which profile to edit based on the GUID stuffed in extras. */
     public static final String AUTOFILL_GUID = "guid";
 
-    /** Needs to be in sync with autofill::kSettingsOrigin[]. */
-    public static final String SETTINGS_ORIGIN = "Chrome settings";
-
-    /** GUID of the profile we are editing.  Empty if creating a new profile. */
+    /** GUID of the profile we are editing. Empty if creating a new profile. */
     protected String mGUID;
 
     /** Whether or not the editor is creating a new entry. */
@@ -53,23 +58,29 @@ public abstract class AutofillEditorBase extends Fragment
     /** Context for the app. */
     protected Context mContext;
 
-    private final ObservableSupplierImpl<String> mPageTitle = new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<String> mPageTitle =
+            ObservableSuppliers.createMonotonic();
 
     @Override
     public View onCreateView(
-            LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+            LayoutInflater inflater,
+            @Nullable ViewGroup container,
+            @Nullable Bundle savedInstanceState) {
         super.onCreateView(inflater, container, savedInstanceState);
+        assumeNonNull(container);
         setHasOptionsMenu(true);
         mContext = container.getContext();
 
         Bundle extras = getArguments();
+        String guid = null;
         if (extras != null) {
-            mGUID = extras.getString(AUTOFILL_GUID);
+            guid = extras.getString(AUTOFILL_GUID);
         }
-        if (mGUID == null) {
+        if (guid == null) {
             mGUID = "";
             mIsNewEntry = true;
         } else {
+            mGUID = guid;
             mIsNewEntry = false;
         }
         mPageTitle.set(getString(getTitleResourceId(mIsNewEntry)));
@@ -87,15 +98,20 @@ public abstract class AutofillEditorBase extends Fragment
                         SettingsUtils.getShowShadowOnScrollListener(
                                 scrollView, baseView.findViewById(R.id.shadow)));
         // Inflate the editor and buttons into the "content" LinearLayout.
-        LinearLayout contentLayout = (LinearLayout) scrollView.findViewById(R.id.content);
+        LinearLayout contentLayout = scrollView.findViewById(R.id.content);
         inflater.inflate(getLayoutId(), contentLayout, true);
         inflater.inflate(R.layout.autofill_editor_base_buttons, contentLayout, true);
+
+        if (ChromeFeatureList.sAndroidSettingsContainment.isEnabled()) {
+            baseView.findViewById(R.id.button_bar)
+                    .setBackgroundColor(SemanticColorUtils.getSettingsBackgroundColor(mContext));
+        }
 
         return baseView;
     }
 
     @Override
-    public ObservableSupplier<String> getPageTitle() {
+    public MonotonicObservableSupplier<String> getPageTitle() {
         return mPageTitle;
     }
 
@@ -119,6 +135,8 @@ public abstract class AutofillEditorBase extends Fragment
 
         MenuItem deleteItem = menu.findItem(R.id.delete_menu_id);
         if (deleteItem != null) deleteItem.setVisible(!mIsNewEntry && getIsDeletable());
+        MenuItem brandingIcon = menu.findItem(R.id.branding_icon_id);
+        brandingIcon.setVisible(false);
     }
 
     /** @return True if the item is deletable. Can be false for server credit cards, for example. */
@@ -128,7 +146,7 @@ public abstract class AutofillEditorBase extends Fragment
 
     /** Initializes the buttons within the layout. */
     protected void initializeButtons(View layout) {
-        Button button = (Button) layout.findViewById(R.id.button_secondary);
+        Button button = layout.findViewById(R.id.button_secondary);
         button.setOnClickListener(
                 new View.OnClickListener() {
                     @Override

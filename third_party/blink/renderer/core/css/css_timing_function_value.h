@@ -28,7 +28,6 @@
 
 #include <optional>
 
-#include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/css_value.h"
 #include "third_party/blink/renderer/platform/animation/timing_function.h"
@@ -110,6 +109,10 @@ class CSSStepsTimingFunctionValue : public CSSValue {
   String CustomCSSText() const;
 
   bool Equals(const CSSStepsTimingFunctionValue&) const;
+
+  bool HasRandomFunctions() const {
+    return steps_ && steps_->HasRandomFunctions();
+  }
 
   void TraceAfterDispatch(blink::Visitor* visitor) const {
     visitor->Trace(steps_);

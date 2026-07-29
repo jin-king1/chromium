@@ -9,7 +9,6 @@
 #include <memory>
 
 #include "base/containers/flat_map.h"
-#include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
@@ -92,7 +91,13 @@ class IOTaskController {
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::ObserverList<Observer> observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      Observer,
+      /*check_empty=*/false,
+      /*reentrancy=*/
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observers_;
 
   IOTaskId last_id_ = 0;
   std::map<IOTaskId, std::unique_ptr<IOTask>> tasks_;

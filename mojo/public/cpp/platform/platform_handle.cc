@@ -32,36 +32,30 @@
 #include "base/files/scoped_file.h"
 #endif
 
-#if BUILDFLAG(IS_ANDROID)
-#include "base/android/binder.h"
-#endif
-
 namespace mojo {
 
 namespace {
 
 #if BUILDFLAG(IS_WIN)
 base::win::ScopedHandle CloneHandle(const base::win::ScopedHandle& handle) {
-  DCHECK(handle.IsValid());
+  DCHECK(handle.is_valid());
 
-  HANDLE dupe;
-  BOOL result = FALSE;
-
-  // INVALID_HANDLE_VALUE and the process pseudo-handle are both represented as
-  // the value -1. This means that if a caller does not correctly check the
-  // handle returned by file and pipe creation APIs, then it would pass an
-  // INVALID_HANDLE_VALUE to the code below, which would result in the
-  // destination process getting full control over the calling process (see
-  // http://crbug.com/243339 for an example of this vulnerability). So, we just
-  // explicitly check for INVALID_HANDLE_VALUE, since there's no valid scenario
-  // in which it would be passed as the source handle here.
-  if (handle.Get() != INVALID_HANDLE_VALUE) {
-    result = ::DuplicateHandle(::GetCurrentProcess(), handle.Get(),
-                               ::GetCurrentProcess(), &dupe, 0, FALSE,
-                               DUPLICATE_SAME_ACCESS);
-  }
-  if (!result)
+  // If a caller does not correctly check the handle returned by file and pipe
+  // creation APIs, or directly provides a pseudo handle value like
+  // ::GetCurrentThread(), then it would result in the destination process
+  // getting full control over the calling process (see http://crbug.com/243339
+  // for an example of this vulnerability). HandleTraits for Windows rejects
+  // pseudo handle values, but check again here for defense-in-depth.
+  if (!handle.is_valid()) {
     return base::win::ScopedHandle();
+  }
+
+  HANDLE dupe = nullptr;
+  if (!::DuplicateHandle(::GetCurrentProcess(), handle.Get(),
+                         ::GetCurrentProcess(), &dupe, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS)) {
+    return base::win::ScopedHandle();
+  }
   DCHECK_NE(dupe, INVALID_HANDLE_VALUE);
   return base::win::ScopedHandle(dupe);
 }
@@ -71,8 +65,9 @@ zx::handle CloneHandle(const zx::handle& handle) {
 
   zx::handle dupe;
   zx_status_t result = handle.duplicate(ZX_RIGHT_SAME_RIGHTS, &dupe);
-  if (result != ZX_OK)
+  if (result != ZX_OK) {
     ZX_DLOG(ERROR, result) << "zx_duplicate_handle";
+  }
   return std::move(dupe);
 }
 #elif BUILDFLAG(IS_APPLE)
@@ -127,11 +122,6 @@ PlatformHandle::PlatformHandle(base::ScopedFD fd)
 }
 #endif
 
-#if BUILDFLAG(IS_ANDROID)
-PlatformHandle::PlatformHandle(base::android::BinderRef binder)
-    : type_(Type::kBinder), binder_(std::move(binder)) {}
-#endif
-
 PlatformHandle::~PlatformHandle() = default;
 
 PlatformHandle& PlatformHandle::operator=(PlatformHandle&& other) {
@@ -151,9 +141,6 @@ PlatformHandle& PlatformHandle::operator=(PlatformHandle&& other) {
   fd_ = std::move(other.fd_);
 #endif
 
-#if BUILDFLAG(IS_ANDROID)
-  binder_ = std::move(other.binder_);
-#endif
   return *this;
 }
 
@@ -193,14 +180,6 @@ void PlatformHandle::ToMojoPlatformHandle(PlatformHandle handle,
     }
 #endif
 
-#if BUILDFLAG(IS_ANDROID)
-    if (handle.type_ == Type::kBinder) {
-      out_handle->type = MOJO_PLATFORM_HANDLE_TYPE_BINDER;
-      out_handle->value = reinterpret_cast<uint64_t>(handle.binder_.release());
-      return;
-    }
-#endif
-
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
     DCHECK(handle.is_fd());
     out_handle->type = MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR;
@@ -221,13 +200,15 @@ PlatformHandle PlatformHandle::FromMojoPlatformHandle(
   }
 
 #if BUILDFLAG(IS_WIN)
-  if (handle->type != MOJO_PLATFORM_HANDLE_TYPE_WINDOWS_HANDLE)
+  if (handle->type != MOJO_PLATFORM_HANDLE_TYPE_WINDOWS_HANDLE) {
     return PlatformHandle();
+  }
   return PlatformHandle(
       base::win::ScopedHandle(LongToHandle(static_cast<long>(handle->value))));
 #elif BUILDFLAG(IS_FUCHSIA)
-  if (handle->type == MOJO_PLATFORM_HANDLE_TYPE_FUCHSIA_HANDLE)
+  if (handle->type == MOJO_PLATFORM_HANDLE_TYPE_FUCHSIA_HANDLE) {
     return PlatformHandle(zx::handle(handle->value));
+  }
 #elif BUILDFLAG(IS_APPLE)
   if (handle->type == MOJO_PLATFORM_HANDLE_TYPE_MACH_SEND_RIGHT) {
     return PlatformHandle(base::apple::ScopedMachSendRight(
@@ -238,16 +219,10 @@ PlatformHandle PlatformHandle::FromMojoPlatformHandle(
   }
 #endif
 
-#if BUILDFLAG(IS_ANDROID)
-  if (handle->type == MOJO_PLATFORM_HANDLE_TYPE_BINDER) {
-    return PlatformHandle(
-        base::android::BinderRef(reinterpret_cast<AIBinder*>(handle->value)));
-  }
-#endif
-
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
-  if (handle->type != MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR)
+  if (handle->type != MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR) {
     return PlatformHandle();
+  }
   return PlatformHandle(base::ScopedFD(static_cast<int>(handle->value)));
 #endif
 }
@@ -267,10 +242,6 @@ void PlatformHandle::reset() {
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   fd_.reset();
 #endif
-
-#if BUILDFLAG(IS_ANDROID)
-  binder_.reset();
-#endif
 }
 
 void PlatformHandle::release() {
@@ -288,30 +259,23 @@ void PlatformHandle::release() {
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
   std::ignore = fd_.release();
 #endif
-
-#if BUILDFLAG(IS_ANDROID)
-  std::ignore = binder_.release();
-#endif
 }
 
 PlatformHandle PlatformHandle::Clone() const {
 #if BUILDFLAG(IS_WIN)
   return PlatformHandle(CloneHandle(handle_));
 #elif BUILDFLAG(IS_FUCHSIA)
-  if (is_valid_handle())
+  if (is_valid_handle()) {
     return PlatformHandle(CloneHandle(handle_));
+  }
   return PlatformHandle(CloneFD(fd_));
 #elif BUILDFLAG(IS_APPLE)
-  if (is_valid_mach_send())
+  if (is_valid_mach_send()) {
     return PlatformHandle(CloneMachPort(mach_send_));
+  }
   CHECK(!is_valid_mach_receive()) << "Cannot clone Mach receive rights";
   return PlatformHandle(CloneFD(fd_));
 #elif BUILDFLAG(IS_POSIX)
-#if BUILDFLAG(IS_ANDROID)
-  if (is_valid_binder()) {
-    return PlatformHandle(binder_);
-  }
-#endif
   return PlatformHandle(CloneFD(fd_));
 #endif
 }

@@ -8,7 +8,6 @@
 #import <Foundation/Foundation.h>
 
 #import "base/time/time.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 
 // CreditCardSaveManager events that can be waited on by the IOSTestEventWaiter.
 // Name reflects the observer method that is triggering this event.
@@ -36,8 +35,15 @@ enum CreditCardSaveManagerObserverEvent : int {
 // Saves an example form in the store for the passed URL spec.
 + (void)savePasswordFormForURLSpec:(NSString*)URLSpec;
 
+// Saves an example form with a backup password in the store for the passed URL
+// spec.
++ (void)savePasswordFormWithBackupForURLSpec:(NSString*)URLSpec;
+
 // Returns the number of profiles (addresses) in the data manager.
 + (NSInteger)profilesCount;
+
+// Returns true if the profile is saved to account.
++ (BOOL)isAccountProfileAtIndex:(NSInteger)index;
 
 // Clears the profiles (addresses) in the data manager.
 + (void)clearProfilesStore;
@@ -47,6 +53,13 @@ enum CreditCardSaveManagerObserverEvent : int {
 
 // Saves a sample account profile (address) in the data manager.
 + (void)saveExampleAccountProfile;
+
+// Saves a sample account profile (address) with Home record type in the data
+// manager.
++ (void)saveExampleHomeAndWorkAccountProfile;
+
+// Saves a sample account name and email profile in the data manager.
++ (void)saveExampleAccountNameEmailProfile;
 
 // Returns the name of the sample profile.
 + (NSString*)exampleProfileName;
@@ -61,8 +74,15 @@ enum CreditCardSaveManagerObserverEvent : int {
 // Returns the `card.NetworkAndLastFourDigits` of the card used in the UIs.
 + (NSString*)saveLocalCreditCard;
 
+// Saves a local credit card that requires CVC to be used.
+// Returns the `card.NetworkAndLastFourDigits` of the card used in the UIs.
++ (NSString*)saveLocalCreditCardWithCvc;
+
 // Returns the number of credit cards in the local store.
 + (NSInteger)localCreditCount;
+
+// Returns the CVC of the first saved local credit card.
++ (NSString*)firstLocalCreditCardCvc;
 
 // Saves a masked credit card that requires CVC to be used.
 // Returns the `card.NetworkAndLastFourDigits` of the card used in the UIs.
@@ -72,6 +92,11 @@ enum CreditCardSaveManagerObserverEvent : int {
 // No current CVC auth required.
 // Returns the `card.NetworkAndLastFourDigits` of the card used in the UIs.
 + (NSString*)saveMaskedCreditCardEnrolledInVirtualCard;
+
+// Saves a masked credit card which is enrolled in CardInfoRetrieval.
+// No current CVC auth required.
+// Returns the `card.NetworkAndLastFourDigits` of the card used in the UIs.
++ (NSString*)saveMaskedCreditCardEnrolledInCardInfoRetrieval;
 
 // The functions below are helpers for the SaveCardInfobarEGTest that requires
 // observing autofill events in the app process.
@@ -120,22 +145,46 @@ enum CreditCardSaveManagerObserverEvent : int {
 // want to use this for tests.
 + (void)considerCreditCardFormSecureForTesting;
 
-// Sets a re-authentication mock (i.e. what asks user for fingerprint to
-// view password) and its options for next test.
-+ (void)setUpMockReauthenticationModule;
-+ (void)clearMockReauthenticationModule;
-+ (void)mockReauthenticationModuleCanAttempt:(BOOL)canAttempt;
-+ (void)mockReauthenticationModuleExpectedResult:
-    (ReauthenticationResult)expectedResult;
-
 // Configs the mandatory reauth preference.
 + (void)setMandatoryReauthEnabled:(BOOL)enabled;
 
-// Returns true if the Keyboard Accessory Upgrade feature is enabled.
-+ (BOOL)isKeyboardAccessoryUpgradeEnabled;
+// Sets the CVC storage preference.
++ (void)setPaymentCvcStorageEnabled:(BOOL)enabled;
 
-// Returns true if the dynamically loading fields on input feature is enabled.
-+ (BOOL)isDynamicallyLoadFieldsOnInputEnabled;
+// Triggers the Autofill AI save entity bubble.
++ (void)showAutofillAiSaveEntityBubble;
+
+// TODO(crbug.com/538242036): Remove showAtMemoryUI once the
+// SuggestionType::kAutocompleteAtMemoryButton can be received.
+// Triggers the AtMemory UI.
++ (void)showAtMemoryUI;
+
+// Saves a Redress Number entity with the given name and number. Returns the
+// UUID of the created entity. Because entities are saved asynchronously, it is
+// not immediately available to be retrieved from the EntityDataManager.
++ (NSString*)saveRedressNumberEntityWithName:(NSString*)name
+                                      number:(NSString*)number;
+
+// Removes the entity with the given UUID.
++ (void)removeEntityWithUUID:(NSString*)uuid;
+
+// Deletes all entities modified since the given time.
++ (void)removeEntityModifiedSince:(NSDate*)time;
+
+// Saves a Passport entity with test data.
++ (BOOL)savePassportEntity;
+
+// Saves a Passport entity with type kServerWallet.
++ (NSString*)saveServerWalletPassportEntity;
+
+// Saves a Vehicle entity with test data.
++ (BOOL)saveVehicleEntity;
+
+// Returns YES if there is at least one form cached in the AutofillManager.
++ (BOOL)isFormCachedInMainFrame;
+
+// Wait until a form is cached in the AutofillManager.
++ (BOOL)waitForFormToBeCachedInMainFrame;
 
 @end
 

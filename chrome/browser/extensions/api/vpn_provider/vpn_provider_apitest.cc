@@ -13,17 +13,14 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/test_future.h"
-#include "base/types/cxx23_to_underlying.h"
-#include "chrome/browser/ash/crosapi/crosapi_ash.h"
-#include "chrome/browser/ash/crosapi/crosapi_manager.h"
-#include "chrome/browser/ash/crosapi/vpn_service_ash.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/chromeos/extensions/vpn_provider/vpn_provider_api.h"
+#include "chrome/browser/chromeos/extensions/vpn_provider/vpn_service.h"
 #include "chrome/browser/chromeos/extensions/vpn_provider/vpn_service_factory.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_service.h"
@@ -34,13 +31,12 @@
 #include "chromeos/ash/components/dbus/shill/shill_profile_client.h"
 #include "chromeos/ash/components/network/network_configuration_handler.h"
 #include "chromeos/ash/components/network/shill_property_handler.h"
-#include "chromeos/crosapi/mojom/vpn_service.mojom.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/pepper_vpn_provider_resource_host_proxy.h"
-#include "content/public/browser/vpn_service_proxy.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/api_test_utils.h"
+#include "extensions/browser/disable_reason.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/common/extension.h"
 #include "extensions/test/result_catcher.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -90,7 +86,7 @@ class TestShillThirdPartyVpnDriverClient
     : public ash::FakeShillThirdPartyVpnDriverClient {
  public:
   void SetParameters(const std::string& object_path_value,
-                     const base::Value::Dict& parameters,
+                     const base::DictValue& parameters,
                      StringCallback callback,
                      ErrorCallback error_callback) override {
     set_parameters_counter_++;
@@ -123,7 +119,7 @@ class TestShillThirdPartyVpnDriverClient
   }
 
   int set_parameters_counter_ = 0;
-  base::Value::Dict parameters_;
+  base::DictValue parameters_;
   int update_connection_state_counter_ = 0;
   uint32_t connection_state_;
   int send_packet_counter_ = 0;
@@ -150,11 +146,10 @@ class VpnProviderApiTestBase : public extensions::ExtensionApiTest {
     return *extension_id_;
   }
 
-  chromeos::VpnServiceInterface* service() {
-    return chromeos::VpnServiceFactory::GetForBrowserContext(profile());
+  chromeos::VpnService* service() {
+    return static_cast<chromeos::VpnService*>(
+        chromeos::VpnServiceFactory::GetForBrowserContext(profile()));
   }
-
-  virtual crosapi::mojom::VpnService* service_remote() const = 0;
 
   virtual void OnPlatformMessage(const std::string& configuration_name,
                                  api_vpn::PlatformMessage) = 0;
@@ -185,14 +180,11 @@ class VpnProviderApiTest : public VpnProviderApiTestBase {
     VpnProviderApiTestBase::SetUpOnMainThread();
     AddNetworkProfileForUser();
   }
-  crosapi::mojom::VpnService* service_remote() const override {
-    return GetVpnServiceAsh();
-  }
   void OnPlatformMessage(const std::string& configuration_name,
                          api_vpn::PlatformMessage message) override {
     test_client_->OnPlatformMessage(
         shill::kObjectPathBase + GetKey(configuration_name),
-        base::to_underlying(message));
+        std::to_underlying(message));
   }
   void OnPacketReceived(const std::string& configuration_name,
                         const std::vector<char>& data) override {
@@ -201,41 +193,21 @@ class VpnProviderApiTest : public VpnProviderApiTestBase {
   }
 
   std::string GetKey(const std::string& configuration_name) const {
-    return crosapi::VpnServiceForExtensionAsh::GetKey(extension_id(),
-                                                      configuration_name);
+    return VpnService::GetKeyForTesting(extension_id(), configuration_name);
   }
 
-  bool DoesConfigExist(const std::string& configuration_name) const {
-    const auto& mapping = GetVpnServiceAsh()->extension_id_to_service_;
-    if (!base::Contains(mapping, extension_id())) {
-      return false;
-    }
-    return base::Contains(mapping.at(extension_id())->key_to_configuration_map_,
-                          GetKey(configuration_name));
+  bool DoesConfigExist(const std::string& configuration_name) {
+    return service()->LookupConfiguration(extension_id(), configuration_name) !=
+           nullptr;
   }
 
-  bool IsConfigConnected() const {
-    const auto& mapping = GetVpnServiceAsh()->extension_id_to_service_;
-    if (!base::Contains(mapping, extension_id())) {
-      return false;
-    }
-    return mapping.at(extension_id())->OwnsActiveConfiguration();
+  bool IsConfigConnected() {
+    return service()->GetActiveConfigurationForExtension(extension_id());
   }
 
   std::string GetSingleServicePath() {
-    std::vector<std::string> service_paths;
-    for (const auto& [extension_id, service] :
-         GetVpnServiceAsh()->extension_id_to_service_) {
-      const auto& service_path_map =
-          service->service_path_to_configuration_map_;
-      if (service_path_map.empty()) {
-        continue;
-      }
-      DCHECK_EQ(service_path_map.size(), 1U);
-      service_paths.push_back(service_path_map.begin()->first);
-    }
-    EXPECT_EQ(service_paths.size(), 1U);
-    return service_paths[0];
+    EXPECT_EQ(service()->service_path_to_configuration_map_.size(), 1);
+    return service()->service_path_to_configuration_map_.begin()->first;
   }
 
   bool CreateConfigForTest(const std::string& name) {
@@ -266,21 +238,17 @@ class VpnProviderApiTest : public VpnProviderApiTestBase {
 
   bool HasService(const std::string& service_path) const {
     std::string profile_path;
-    std::optional<base::Value::Dict> properties =
+    std::optional<base::DictValue> properties =
         ash::ShillProfileClient::Get()->GetTestInterface()->GetService(
             service_path, &profile_path);
     return properties.has_value();
   }
 
   void SendPlatformError(const std::string& extension_id,
-                         const std::string& configuration_name,
-                         const std::string& error_message) {
-    const auto& mapping = GetVpnServiceAsh()->extension_id_to_service_;
-    DCHECK(base::Contains(mapping, extension_id));
-    auto* service = mapping.at(extension_id).get();
-    service->DispatchOnPlatformMessageEvent(
-        configuration_name,
-        base::to_underlying(api_vpn::PlatformMessage::kError), error_message);
+                         const std::string& configuration_name) {
+    service()->SendOnPlatformMessageToExtension(
+        extension_id, configuration_name,
+        std::to_underlying(api_vpn::PlatformMessage::kError));
   }
 
   void ClearNetworkProfiles() {
@@ -296,10 +264,6 @@ class VpnProviderApiTest : public VpnProviderApiTestBase {
         kNetworkProfilePath,
         ash::ProfileHelper::GetUserIdHashFromProfile(profile()));
     content::RunAllPendingInMessageLoop();
-  }
-
-  static crosapi::VpnServiceAsh* GetVpnServiceAsh() {
-    return crosapi::CrosapiManager::Get()->crosapi_ash()->vpn_service_ash();
   }
 
   raw_ptr<TestShillThirdPartyVpnDriverClient, DanglingUntriaged> test_client_ =
@@ -364,7 +328,7 @@ IN_PROC_BROWSER_TEST_F(VpnProviderApiTest, CheckEvents) {
   EXPECT_TRUE(DoesConfigExist(kTestConfig));
 
   extensions::ResultCatcher catcher;
-  SendPlatformError(extension_id(), kTestConfig, "error_message");
+  SendPlatformError(extension_id(), kTestConfig);
   service()->SendShowAddDialogToExtension(extension_id());
   service()->SendShowConfigureDialogToExtension(extension_id(), kTestConfig);
   EXPECT_TRUE(catcher.GetNextResult());
@@ -373,7 +337,7 @@ IN_PROC_BROWSER_TEST_F(VpnProviderApiTest, CheckEvents) {
 IN_PROC_BROWSER_TEST_F(VpnProviderApiTest, ConfigPersistence) {
   EXPECT_FALSE(DoesConfigExist(kTestConfig));
 
-  base::Value::Dict properties;
+  base::DictValue properties;
   properties.Set(shill::kTypeProperty, shill::kTypeVPN);
   properties.Set(shill::kNameProperty, kTestConfig);
   properties.Set(shill::kProviderHostProperty, extension_id());
@@ -410,10 +374,8 @@ IN_PROC_BROWSER_TEST_F(VpnProviderApiTest, CreateDisable) {
   const std::string service_path = GetSingleServicePath();
   EXPECT_TRUE(HasService(service_path));
 
-  extensions::ExtensionService* extension_service =
-      extensions::ExtensionSystem::Get(profile())->extension_service();
-  extension_service->DisableExtension(
-      extension_id(), extensions::disable_reason::DISABLE_USER_ACTION);
+  extensions::ExtensionRegistrar::Get(profile())->DisableExtension(
+      extension_id(), {extensions::disable_reason::DISABLE_USER_ACTION});
   content::RunAllPendingInMessageLoop();
   EXPECT_FALSE(DoesConfigExist(kTestConfig));
   EXPECT_FALSE(HasService(service_path));
@@ -456,7 +418,7 @@ IN_PROC_BROWSER_TEST_F(VpnProviderApiTest, VpnSuccess) {
   EXPECT_EQ(1, test_client_->set_parameters_counter_);
   EXPECT_EQ(1, test_client_->update_connection_state_counter_);
   EXPECT_EQ(1, test_client_->send_packet_counter_);
-  EXPECT_EQ(base::to_underlying(api_vpn::VpnConnectionState::kConnected),
+  EXPECT_EQ(std::to_underlying(api_vpn::VpnConnectionState::kConnected),
             test_client_->update_connection_state_counter_);
   for (size_t i = 0; i < std::size(kParameterValues); ++i) {
     const std::string* value =
@@ -476,103 +438,6 @@ IN_PROC_BROWSER_TEST_F(VpnProviderApiTest, VpnSuccess) {
   ASSERT_TRUE(catcher.GetNextResult());
 
   EXPECT_FALSE(IsConfigConnected());
-}
-
-class FakePepperVpnProviderResourceHostProxy
-    : public content::PepperVpnProviderResourceHostProxy {
- public:
-  FakePepperVpnProviderResourceHostProxy(
-      base::test::TestFuture<bool>* unbind,
-      base::test::TestFuture<std::vector<char>>* data)
-      : unbind_(unbind), data_(data) {}
-
-  void SendOnUnbind() override { unbind_->SetValue(true); }
-
-  void SendOnPacketReceived(const std::vector<char>& data) override {
-    data_->SetValue(data);
-  }
-
- private:
-  raw_ptr<base::test::TestFuture<bool>> unbind_;
-  raw_ptr<base::test::TestFuture<std::vector<char>>> data_;
-};
-
-IN_PROC_BROWSER_TEST_F(VpnProviderApiTest, PepperProxy) {
-  base::test::TestFuture<bool> unbind;
-  base::test::TestFuture<std::vector<char>> data;
-  // This class will be used as a receiver for mojo::SelfOwnedReceiver.
-  // Therefore it's unsafe to keep these TestFuture-s as members (especially
-  // |unbind|).
-  auto pepper_proxy =
-      std::make_unique<FakePepperVpnProviderResourceHostProxy>(&unbind, &data);
-
-  extensions::ResultCatcher catcher;
-
-  // Create config and imitate the platform sending a
-  // PLATFORM_MESSAGE_CONNECTED.
-  EXPECT_TRUE(RunTest("createConfigConnectForBind"));
-  ASSERT_TRUE(catcher.GetNextResult());
-  OnPlatformMessage(kTestConfig, api_vpn::PlatformMessage::kConnected);
-  ASSERT_TRUE(catcher.GetNextResult());
-
-  // Synchronously bind the fake pepper proxy.
-  base::RunLoop run_loop;
-  service()->GetVpnServiceProxy()->Bind(
-      extension_id(), {}, kTestConfig, run_loop.QuitClosure(),
-      base::DoNothing(), std::move(pepper_proxy));
-  run_loop.Run();
-
-  // Assert that packets are routed through the proxy.
-  OnPacketReceived(kTestConfig,
-                   std::vector<char>{std::begin(kPacket), std::end(kPacket)});
-  ASSERT_TRUE(data.Wait());
-
-  // Assert that pepper proxy receives an OnUnbind event on
-  // PLATFORM_MESSAGE_DISCONNECTED.
-  OnPlatformMessage(kTestConfig, api_vpn::PlatformMessage::kDisconnected);
-  ASSERT_TRUE(catcher.GetNextResult());
-  ASSERT_TRUE(unbind.Wait());
-}
-
-class TestEventObserverForExtension
-    : public crosapi::mojom::EventObserverForExtension {
- public:
-  // crosapi::mojom::EventObserverForExtension:
-  void OnAddDialog() override {}
-  void OnConfigureDialog(const std::string& configuration_name) override {}
-  void OnConfigRemoved(const std::string& configuration_name) override {}
-  void OnPlatformMessage(const std::string& configuration_name,
-                         int32_t platform_message,
-                         const std::optional<std::string>& error) override {}
-  void OnPacketReceived(const std::vector<uint8_t>& data) override {}
-};
-
-// Tests that the per-extension crosapi connection between ash and browser
-// is initialized by the moment ash decides to send a platform message to the
-// browser.
-IN_PROC_BROWSER_TEST_F(VpnProviderApiTest, PlatformMessage) {
-  auto test_observer = std::make_unique<TestEventObserverForExtension>();
-  mojo::Remote<crosapi::mojom::VpnServiceForExtension> remote;
-  mojo::Receiver<crosapi::mojom::EventObserverForExtension> receiver{
-      test_observer.get()};
-  service_remote()->RegisterVpnServiceForExtension(
-      extension_id(), remote.BindNewPipeAndPassReceiver(),
-      receiver.BindNewPipeAndPassRemote());
-
-  base::test::TestFuture<crosapi::mojom::VpnErrorResponsePtr> future;
-  remote->CreateConfiguration(kTestConfig, future.GetCallback());
-  auto error = future.Take();
-  ASSERT_FALSE(error) << "CreateConfiguration failed with |message| = "
-                      << error->message.value_or(std::string{});
-
-  extensions::ResultCatcher catcher;
-  EXPECT_TRUE(RunTest("platformMessage"));
-  ASSERT_TRUE(catcher.GetNextResult());
-
-  OnPlatformMessage(kTestConfig, api_vpn::PlatformMessage::kConnected);
-  ASSERT_TRUE(catcher.GetNextResult());
-  OnPlatformMessage(kTestConfig, api_vpn::PlatformMessage::kDisconnected);
-  ASSERT_TRUE(catcher.GetNextResult());
 }
 
 }  // namespace chromeos

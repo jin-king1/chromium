@@ -18,9 +18,7 @@
 namespace tracing {
 namespace {
 
-BASE_FEATURE(kEnableEtwExports,
-             "EnableEtwExports",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kEnableEtwExports, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Used to protect the upper 16 bits reserved by winmeta.xml as they
 // should not be used but older logging code and tools incorrectly used
@@ -35,6 +33,7 @@ perfetto::TraceConfig CreateTraceConfigForETWKeyword(uint64_t keyword) {
   data_source_config->mutable_interceptor_config()->set_name("etwexport");
   perfetto::protos::gen::TrackEventConfig track_event_config =
       base::trace_event::ETWKeywordToTrackEventConfig(keyword);
+  track_event_config.set_filter_dynamic_event_names(true);
   data_source_config->set_track_event_config_raw(
       track_event_config.SerializeAsString());
   return config;

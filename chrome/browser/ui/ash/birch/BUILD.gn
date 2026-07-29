@@ -49,7 +49,9 @@ static_library("birch") {
     "//chrome/browser/ash/release_notes",
     "//chrome/browser/ash/video_conference",
     "//chrome/browser/favicon",
+    "//chrome/browser/history",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/signin",
     "//chrome/browser/sync",
     "//chrome/common",
     "//components/favicon_base",
@@ -90,6 +92,7 @@ source_set("unit_tests") {
     "//ash",
     "//ash:test_support",
     "//ash/constants",
+    "//ash/webui/help_app_ui:help_app_ui_pref",
     "//base",
     "//base/test:test_support",
     "//base/version_info",
@@ -100,6 +103,7 @@ source_set("unit_tests") {
     "//chrome/browser/ash/release_notes",
     "//chrome/browser/favicon",
     "//chrome/browser/prefs",
+    "//chrome/browser/signin",
     "//chrome/browser/sync",
     "//chrome/browser/ui/ash/holding_space:test_support",
     "//chrome/common",
@@ -112,7 +116,7 @@ source_set("unit_tests") {
     "//components/signin/public/identity_manager:test_support",
     "//components/sync:test_support",
     "//components/sync_preferences:test_support",
-    "//components/sync_sessions",
+    "//components/sync_sessions:test_support",
     "//components/user_manager",
     "//content/test:test_support",
     "//net:test_support",
@@ -120,6 +124,10 @@ source_set("unit_tests") {
     "//testing/gmock",
     "//testing/gtest",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 static_library("test_support") {
@@ -155,6 +163,7 @@ source_set("browser_tests") {
     "//ash/constants",
     "//ash/public/cpp",
     "//base",
+    "//chrome/browser/apps/platform_apps:browser_test_support",
     "//chrome/browser/ash/app_restore:test_support",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",

@@ -17,18 +17,16 @@ component("printing") {
 
   deps = [
     "//base:i18n",
-    "//chromeos/crosapi/mojom",
     "//components/device_event_log",
     "//components/printing/common",
+    "//printing:printing_base",
     "//printing/mojom",
-    "//services/network/public/cpp:cpp",
+    "//services/network/public/cpp",
   ]
 
   sources = [
     "cups_printer_status.cc",
     "cups_printer_status.h",
-    "epson_driver_matching.cc",
-    "epson_driver_matching.h",
     "ppd_cache.cc",
     "ppd_cache.h",
     "ppd_line_reader.cc",
@@ -38,7 +36,6 @@ component("printing") {
     "ppd_metadata_parser.cc",
     "ppd_metadata_parser.h",
     "ppd_provider.cc",
-    "ppd_provider.h",
     "ppd_provider.h",
     "printer_config_cache.cc",
     "printer_config_cache.h",
@@ -68,7 +65,6 @@ source_set("unit_tests") {
   ]
   sources = [
     "cups_printer_status_unittest.cc",
-    "epson_driver_matching_unittest.cc",
     "fake_printer_config_cache.cc",
     "fake_printer_config_cache.h",
     "ppd_cache_unittest.cc",
@@ -85,19 +81,6 @@ source_set("unit_tests") {
     "uri_unittest.h",
     "uri_unittest_consistency.cc",
     "usb_printer_id_unittest.cc",
-  ]
-}
-
-source_set("test_support") {
-  testonly = true
-  deps = [
-    "//chromeos/crosapi/mojom",
-    "//components/printing/common",
-    "//printing/mojom",
-  ]
-  sources = [
-    "print_settings_test_util.cc",
-    "print_settings_test_util.h",
   ]
 }
 

@@ -55,7 +55,7 @@ bool HttpsOnlyModeBlockingPage::ShouldCreateNewNavigation() const {
 }
 
 void HttpsOnlyModeBlockingPage::PopulateInterstitialStrings(
-    base::Value::Dict& load_time_data) const {
+    base::DictValue& load_time_data) const {
   // Set a value if backwards navigation is not available, used
   // to change the button text to 'Close page' when there is no
   // suggested URL.
@@ -83,7 +83,7 @@ void HttpsOnlyModeBlockingPage::HandleCommand(
         security_interstitials::MetricsHelper::DONT_PROCEED);
     controller_->GoBack();
   } else if (command == security_interstitials::CMD_PROCEED) {
-    service_->AllowHttpForHost(request_url().host());
+    service_->AllowHttpForHost(request_url().GetHost());
 
     controller_->metrics_helper()->RecordUserDecision(
         security_interstitials::MetricsHelper::PROCEED);

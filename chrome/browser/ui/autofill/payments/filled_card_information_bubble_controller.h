@@ -6,10 +6,11 @@
 #define CHROME_BROWSER_UI_AUTOFILL_PAYMENTS_FILLED_CARD_INFORMATION_BUBBLE_CONTROLLER_H_
 
 #include <string>
+#include <utility>
 
 #include "components/autofill/core/browser/ui/payments/payments_ui_closed_reasons.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/gfx/image/image.h"
+#include "ui/base/models/image_model.h"
 
 namespace autofill {
 
@@ -108,6 +109,19 @@ class FilledCardInformationBubbleController {
 
   // Returns whether the Google Pay icon should be shown in the bubble title.
   virtual bool ShouldShowGooglePayIconInTitle() const = 0;
+
+  // Returns the masked card name to display in the description view of the
+  // bubble.
+  virtual std::u16string GetMaskedCardNameForDescriptionView() const = 0;
+
+  // Returns a pair of images to display in the description view of the bubble.
+  // The first is the image to be shown for light themes, and the second is an
+  // optional image to be shown for dark themes.
+  virtual std::pair<ui::ImageModel, std::optional<ui::ImageModel>>
+  GetCardImageForDescriptionView() const = 0;
+
+  // Returns whether the educational body includes a learn more link.
+  virtual bool EducationalBodyHasLearnMoreLink() const = 0;
 };
 
 }  // namespace autofill

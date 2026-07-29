@@ -5,7 +5,8 @@
 #include "remoting/host/ipc_video_frame_capturer.h"
 
 #include "base/check.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
+#include "base/time/time.h"
 #include "remoting/host/desktop_session_proxy.h"
 #include "remoting/host/video_memory_utils.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
@@ -34,6 +35,10 @@ void IpcVideoFrameCapturer::OnCreateVideoCapturerResult(
 
   capturer_control_.set_disconnect_handler(base::BindOnce(
       &IpcVideoFrameCapturer::OnDisconnect, base::Unretained(this)));
+  if (callback_) {
+    // Start() has been called.
+    capturer_control_->Start();
+  }
 }
 
 base::WeakPtr<IpcVideoFrameCapturer> IpcVideoFrameCapturer::GetWeakPtr() {
@@ -44,15 +49,8 @@ void IpcVideoFrameCapturer::Start(Callback* callback) {
   DCHECK(!callback_);
   DCHECK(callback);
   callback_ = callback;
-}
-
-void IpcVideoFrameCapturer::CaptureFrame() {
   if (capturer_control_) {
-    ++pending_capture_frame_requests_;
-    capturer_control_->CaptureFrame();
-  } else {
-    callback_->OnCaptureResult(webrtc::DesktopCapturer::Result::ERROR_TEMPORARY,
-                               nullptr);
+    capturer_control_->Start();
   }
 }
 
@@ -68,6 +66,31 @@ bool IpcVideoFrameCapturer::SelectSource(SourceId id) {
   // will be disconnected and the Desktop process will delete the old capturer.
   desktop_session_proxy_->RebindSingleVideoCapturer(id, GetWeakPtr());
   return true;
+}
+
+void IpcVideoFrameCapturer::SetComposeEnabled(bool enabled) {
+  if (capturer_control_) {
+    capturer_control_->SetComposeEnabled(enabled);
+  }
+}
+
+void IpcVideoFrameCapturer::SetMaxFrameRate(uint32_t max_frame_rate) {
+  if (capturer_control_) {
+    capturer_control_->SetMaxFrameRate(max_frame_rate);
+  }
+}
+
+void IpcVideoFrameCapturer::Pause(bool pause) {
+  if (capturer_control_) {
+    capturer_control_->Pause(pause);
+  }
+}
+
+void IpcVideoFrameCapturer::BoostCaptureRate(base::TimeDelta capture_interval,
+                                             base::TimeDelta duration) {
+  if (capturer_control_) {
+    capturer_control_->BoostCaptureRate(capture_interval, duration);
+  }
 }
 
 void IpcVideoFrameCapturer::OnSharedMemoryRegionCreated(
@@ -88,12 +111,13 @@ void IpcVideoFrameCapturer::OnSharedMemoryRegionReleased(int id) {
   shared_buffers_.erase(id);
 }
 
+void IpcVideoFrameCapturer::OnFrameCaptureStart(base::TimeTicks start_time) {
+  // TODO: crbug.com/475611769 - Pass `start_time` to the callback so that the
+  // IPC latency is accounted for.
+  callback_->OnFrameCaptureStart();
+}
+
 void IpcVideoFrameCapturer::OnCaptureResult(mojom::CaptureResultPtr result) {
-  CHECK(pending_capture_frame_requests_)
-      << "Received unexpected capture result.";
-
-  --pending_capture_frame_requests_;
-
   if (result->is_capture_error()) {
     callback_->OnCaptureResult(result->get_capture_error(), nullptr);
     return;
@@ -108,8 +132,8 @@ void IpcVideoFrameCapturer::OnCaptureResult(mojom::CaptureResultPtr result) {
 
   std::unique_ptr<webrtc::DesktopFrame> frame =
       std::make_unique<webrtc::SharedMemoryDesktopFrame>(
-          desktop_frame->size, desktop_frame->stride,
-          new IpcSharedBuffer(shared_buffer_core));
+          desktop_frame->size, desktop_frame->stride, webrtc::FOURCC_ARGB,
+          std::make_unique<IpcSharedBuffer>(shared_buffer_core));
   frame->set_capture_time_ms(desktop_frame->capture_time_ms);
   frame->set_dpi(desktop_frame->dpi);
   frame->set_capturer_id(desktop_frame->capturer_id);
@@ -125,16 +149,10 @@ void IpcVideoFrameCapturer::OnCaptureResult(mojom::CaptureResultPtr result) {
 void IpcVideoFrameCapturer::OnDisconnect() {
   shared_buffers_.clear();
 
-  // Reset the endpoints so that any further calls to CaptureFrame()
-  // do not try to send Mojo commands.
+  // Reset the endpoints so that any further calls do not try to send Mojo
+  // commands.
   capturer_control_.reset();
   event_handler_.reset();
-
-  // Generate fake responses to keep the frame scheduler in sync.
-  while (pending_capture_frame_requests_) {
-    OnCaptureResult(mojom::CaptureResult::NewCaptureError(
-        webrtc::DesktopCapturer::Result::ERROR_TEMPORARY));
-  }
 }
 
 scoped_refptr<IpcSharedBufferCore> IpcVideoFrameCapturer::GetSharedBufferCore(

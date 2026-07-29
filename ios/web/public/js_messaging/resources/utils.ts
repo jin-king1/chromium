@@ -92,6 +92,32 @@ export function sendWebKitMessage(handlerName: string, message: object|string) {
 }
 
 /**
+ * Posts `message` to the webkit message handler specified by `handlerName`
+ * and waits for a reply.
+ *
+ * @param handlerName The name of the webkit message handler.
+ * @param message The message to post to the handler.
+ * @return A promise that resolves with the reply.
+ */
+export function sendWebKitMessageWithReply(
+    handlerName: string, message: object|string): Promise<any> {
+  try {
+    // A web page can override `window.webkit` with any value. Deleting the
+    // object ensures that original and working implementation of
+    // window.webkit is restored.
+    const oldWebkit = window.webkit;
+    delete window['webkit'];
+    const promise =
+        window.webkit.messageHandlers[handlerName].postMessage(message);
+    window.webkit = oldWebkit;
+    return promise;
+  } catch (err) {
+    // TODO(crbug.com/40269960): Report this fatal error
+    return Promise.reject(err);
+  }
+}
+
+/**
  * Trims any whitespace from the start and end of a string.
  * Used in preference to String.prototype.trim which can be overridden by
  * sites.
@@ -148,4 +174,27 @@ export function isTextField(element: Element): boolean {
     'url',
     'number',
   ].includes(element.type);
+}
+
+/**
+ * Generates a 128-bit cryptographically-strong random number. The properties
+ * must match base::UnguessableToken, as these values may be deserialized into
+ * that class on the C++ side.
+ * @return the generated number as a hex string.
+ */
+export function generateRandomId(): string {
+  // Generate 128 bit unique identifier.
+  const components = new Uint32Array(4);
+  window.crypto.getRandomValues(components);
+  return components.reduce(
+      (id = '', component) => id + component.toString(16).padStart(8, '0'), '');
+}
+
+/**
+ * Casts a function to a Listener according to the ListenerFunction type.
+ */
+export type ListenerFunction = (this: EventTarget, event: Event) => void;
+
+export function functionAsListener(func: Function): ListenerFunction {
+  return func as ListenerFunction;
 }

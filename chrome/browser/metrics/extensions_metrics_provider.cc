@@ -20,7 +20,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/chrome_content_browser_client_extensions_part.h"
 #include "chrome/browser/extensions/extension_management.h"
-#include "chrome/browser/extensions/install_verifier.h"
+#include "chrome/browser/extensions/install_verifier_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "components/metrics/metrics_log.h"
@@ -32,6 +32,8 @@
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
 #include "extensions/browser/install_prefs_helper.h"
+#include "extensions/browser/install_verifier.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_set.h"
 #include "extensions/common/features/feature_developer_mode_only.h"
@@ -39,6 +41,8 @@
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "third_party/metrics_proto/system_profile.pb.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using extensions::Extension;
 using extensions::Manifest;
@@ -59,28 +63,28 @@ const size_t kExtensionListBuckets = 1024;
 // Possible states for extensions. The order of these enum values is important,
 // and is used when combining the state of multiple extensions and multiple
 // profiles. Combining two states should always result in the higher state.
-// Ex: One profile is in state FROM_STORE_VERIFIED, and another is in
-// FROM_STORE_UNVERIFIED. The state of the two profiles together will be
-// FROM_STORE_UNVERIFIED.
+// Ex: One profile is in state kFromStoreVerified, and another is in
+// kFromStoreUnverified. The state of the two profiles together will be
+// kFromStoreUnverified.
 // This enum should be kept in sync with the corresponding enum in
 // third_party/metrics_proto/system_profile.proto
-enum ExtensionState {
-  NO_EXTENSIONS,
-  FROM_STORE_VERIFIED,
-  FROM_STORE_UNVERIFIED,
-  OFF_STORE
+enum class ExtensionState {
+  kNoExtensions,
+  kFromStoreVerified,
+  kFromStoreUnverified,
+  kOffStore
 };
 
 metrics::SystemProfileProto::ExtensionsState ExtensionStateAsProto(
     ExtensionState value) {
   switch (value) {
-    case NO_EXTENSIONS:
+    case ExtensionState::kNoExtensions:
       return metrics::SystemProfileProto::NO_EXTENSIONS;
-    case FROM_STORE_VERIFIED:
+    case ExtensionState::kFromStoreVerified:
       return metrics::SystemProfileProto::NO_OFFSTORE_VERIFIED;
-    case FROM_STORE_UNVERIFIED:
+    case ExtensionState::kFromStoreUnverified:
       return metrics::SystemProfileProto::NO_OFFSTORE_UNVERIFIED;
-    case OFF_STORE:
+    case ExtensionState::kOffStore:
       return metrics::SystemProfileProto::HAS_OFFSTORE;
   }
   NOTREACHED();
@@ -95,27 +99,27 @@ ExtensionState IsOffStoreExtension(const extensions::Extension& extension,
                                    const extensions::InstallVerifier& verifier,
                                    content::BrowserContext* context) {
   if (!extension.is_extension() && !extension.is_legacy_packaged_app())
-    return NO_EXTENSIONS;
+    return ExtensionState::kNoExtensions;
 
   // Component extensions are considered safe.
   if (extensions::Manifest::IsComponentLocation(extension.location()))
-    return NO_EXTENSIONS;
+    return ExtensionState::kNoExtensions;
 
   if (verifier.AllowedByEnterprisePolicy(extension.id()))
-    return NO_EXTENSIONS;
+    return ExtensionState::kNoExtensions;
 
   if (!extensions::InstallVerifier::IsFromStore(extension, context))
-    return OFF_STORE;
+    return ExtensionState::kOffStore;
 
   // Local information about the extension implies it is from the store. We try
   // to use the install verifier to verify this.
   if (!verifier.IsKnownId(extension.id()))
-    return FROM_STORE_UNVERIFIED;
+    return ExtensionState::kFromStoreUnverified;
 
   if (verifier.IsInvalid(extension.id()))
-    return OFF_STORE;
+    return ExtensionState::kOffStore;
 
-  return FROM_STORE_VERIFIED;
+  return ExtensionState::kFromStoreVerified;
 }
 
 // Finds the ExtensionState of |extensions|. The return value will be the
@@ -124,9 +128,9 @@ ExtensionState IsOffStoreExtension(const extensions::Extension& extension,
 ExtensionState CheckForOffStore(const extensions::ExtensionSet& extensions,
                                 const extensions::InstallVerifier& verifier,
                                 content::BrowserContext* context) {
-  ExtensionState state = NO_EXTENSIONS;
+  ExtensionState state = ExtensionState::kNoExtensions;
   for (extensions::ExtensionSet::const_iterator it = extensions.begin();
-       it != extensions.end() && state < OFF_STORE; ++it) {
+       it != extensions.end() && state < ExtensionState::kOffStore; ++it) {
     // Combine the state of each extension, always favoring the higher state as
     // defined by the order of ExtensionState.
     state = std::max(state, IsOffStoreExtension(**it, verifier, context));
@@ -136,28 +140,28 @@ ExtensionState CheckForOffStore(const extensions::ExtensionSet& extensions,
 
 ExtensionInstallProto::Type GetType(Manifest::Type type) {
   switch (type) {
-    case Manifest::TYPE_UNKNOWN:
+    case Manifest::Type::kUnknown:
       return ExtensionInstallProto::UNKNOWN_TYPE;
-    case Manifest::TYPE_EXTENSION:
+    case Manifest::Type::kExtension:
       return ExtensionInstallProto::EXTENSION;
-    case Manifest::TYPE_THEME:
+    case Manifest::Type::kTheme:
       return ExtensionInstallProto::THEME;
-    case Manifest::TYPE_USER_SCRIPT:
+    case Manifest::Type::kUserScript:
       return ExtensionInstallProto::USER_SCRIPT;
-    case Manifest::TYPE_HOSTED_APP:
+    case Manifest::Type::kHostedApp:
       return ExtensionInstallProto::HOSTED_APP;
-    case Manifest::TYPE_LEGACY_PACKAGED_APP:
+    case Manifest::Type::kLegacyPackagedApp:
       return ExtensionInstallProto::LEGACY_PACKAGED_APP;
-    case Manifest::TYPE_PLATFORM_APP:
+    case Manifest::Type::kPlatformApp:
       return ExtensionInstallProto::PLATFORM_APP;
-    case Manifest::TYPE_SHARED_MODULE:
+    case Manifest::Type::kSharedModule:
       return ExtensionInstallProto::SHARED_MODULE;
-    case Manifest::TYPE_LOGIN_SCREEN_EXTENSION:
+    case Manifest::Type::kLoginScreenExtension:
       return ExtensionInstallProto::LOGIN_SCREEN_EXTENSION;
-    case Manifest::TYPE_CHROMEOS_SYSTEM_EXTENSION:
+    case Manifest::Type::kChromeOSSystemExtension:
       // TODO(mgawad): introduce new CHROMEOS_SYSTEM_EXTENSION type.
       return ExtensionInstallProto::EXTENSION;
-    case Manifest::NUM_LOAD_TYPES:
+    case Manifest::Type::kNumLoadTypes:
       NOTREACHED();
   }
   return ExtensionInstallProto::UNKNOWN_TYPE;
@@ -223,7 +227,7 @@ ExtensionInstallProto::BackgroundScriptType GetBackgroundScriptType(
   return ExtensionInstallProto::NO_BACKGROUND_SCRIPT;
 }
 
-static_assert(extensions::disable_reason::DISABLE_REASON_LAST == (1LL << 26),
+static_assert(extensions::disable_reason::DISABLE_REASON_LAST == (1LL << 27),
               "Adding a new disable reason? Be sure to include the new reason "
               "below, update the test to exercise it, and then adjust this "
               "value for DISABLE_REASON_LAST");
@@ -273,6 +277,8 @@ std::vector<ExtensionInstallProto::DisableReason> GetDisableReasons(
        ExtensionInstallProto::UNSUPPORTED_MANIFEST_VERSION},
       {extensions::disable_reason::DISABLE_UNSUPPORTED_DEVELOPER_EXTENSION,
        ExtensionInstallProto::UNSUPPORTED_DEVELOPER_EXTENSION},
+      {extensions::disable_reason::DISABLE_BLOCKED_BY_CLOUD_POLICY_CHECK,
+       ExtensionInstallProto::BLOCKED_BY_CLOUD_POLICY_CHECK},
       {extensions::disable_reason::DISABLE_UNKNOWN,
        ExtensionInstallProto::UNKNOWN},
   };
@@ -465,19 +471,20 @@ void ExtensionsMetricsProvider::ProvideOffStoreMetric(
   if (!profile_manager)
     return;
 
-  ExtensionState state = NO_EXTENSIONS;
+  ExtensionState state = ExtensionState::kNoExtensions;
 
   // The off-store metric includes information from all loaded profiles at the
   // time when this metric is generated.
   std::vector<Profile*> profiles = profile_manager->GetLoadedProfiles();
-  for (size_t i = 0u; i < profiles.size() && state < OFF_STORE; ++i) {
+  for (size_t i = 0u; i < profiles.size() && state < ExtensionState::kOffStore;
+       ++i) {
     std::optional<extensions::ExtensionSet> extensions =
         GetInstalledExtensions(profiles[i]);
     if (!extensions)
       continue;
 
     extensions::InstallVerifier* verifier =
-        extensions::InstallVerifier::Get(profiles[i]);
+        extensions::InstallVerifierFactory::GetForBrowserContext(profiles[i]);
     DCHECK(verifier);
 
     // Combine the state from each profile, always favoring the higher state as

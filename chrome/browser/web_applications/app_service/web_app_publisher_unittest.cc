@@ -5,6 +5,7 @@
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "chrome/browser/apps/app_service/app_registry_cache_waiter.h"
@@ -26,10 +27,10 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/web_app_id_constants.h"
-#include "chrome/browser/apps/app_service/app_launch_params.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "chromeos/constants/url_constants.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "net/base/url_util.h"
 #endif
 

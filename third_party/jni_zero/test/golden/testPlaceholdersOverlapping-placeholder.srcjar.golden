@@ -8,6 +8,10 @@ This is the concatenated contents of all files inside the placeholder srcjar.
 
 package org.jni_zero;
 
+import javax.annotation.processing.Generated;
+
+@Generated("JNI Zero")
+@SuppressWarnings({"rawtypes", "unchecked"})
 public interface TinySample {
   public interface Natives {
     public boolean bar(int a, Object b);
@@ -24,6 +28,10 @@ public interface TinySample {
 
 package org.jni_zero.extrapackage;
 
+import javax.annotation.processing.Generated;
+
+@Generated("JNI Zero")
+@SuppressWarnings({"rawtypes", "unchecked"})
 public interface ImportsTinySample {
   public interface Natives {
     public void asdf();

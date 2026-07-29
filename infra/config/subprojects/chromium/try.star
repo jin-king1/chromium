@@ -2,12 +2,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-load("//lib/branches.star", "branches")
-load("//lib/builders.star", "builders", "cpu")
-load("//lib/consoles.star", "consoles")
-load("//lib/try.star", "try_")
-load("//project.star", "ACTIVE_MILESTONES", "settings")
+load("@chromium-luci//branches.star", "branches")
+load("@chromium-luci//builders.star", "builders", "cpu")
+load("@chromium-luci//consoles.star", "consoles")
+load("@chromium-luci//try.star", "try_")
 load("./fallback-cq.star", "fallback_cq")
+load("//project.star", "ACTIVE_MILESTONES", "settings")
 
 try_.defaults.set(
     bucket = "try",
@@ -41,9 +41,14 @@ luci.bucket(
             users = [
                 "dawn-automated-expectations@chops-service-accounts.iam.gserviceaccount.com",
                 "findit-for-me@appspot.gserviceaccount.com",
+                # Need to add project-scoped accounts here to trigger builders
+                # in Turbo CI mode. The "projects" field below only applies to
+                # builders triggered fully through LUCI.
+                "v8-scoped@luci-project-accounts.iam.gserviceaccount.com",
             ],
             projects = [p for p in [
                 branches.value(branch_selector = branches.selector.MAIN, value = "angle"),
+                branches.value(branch_selector = branches.selector.MAIN, value = "boringssl"),
                 branches.value(branch_selector = branches.selector.DESKTOP_BRANCHES, value = "dawn"),
                 branches.value(branch_selector = branches.selector.MAIN, value = "infra"),
                 branches.value(branch_selector = branches.selector.MAIN, value = "skia"),
@@ -161,6 +166,11 @@ luci.cq_group(
             run = cq.run_limits(max_active = None),
         ),
         cq.user_limit(
+            name = "chromium-src-increased-quota",
+            groups = ["chromium-src-increased-quota"],
+            run = cq.run_limits(max_active = 20),
+        ),
+        cq.user_limit(
             name = "bots",
             users = [
                 "chromium-autoroll@skia-public.iam.gserviceaccount.com",
@@ -230,7 +240,9 @@ exec("./try/tryserver.chromium.fuzz.star")
 exec("./try/tryserver.chromium.infra.star")
 exec("./try/tryserver.chromium.linux.star")
 exec("./try/tryserver.chromium.mac.star")
+exec("./try/tryserver.chromium.prompt_eval.star")
 exec("./try/tryserver.chromium.rust.star")
 exec("./try/tryserver.chromium.tricium.star")
 exec("./try/tryserver.chromium.updater.star")
 exec("./try/tryserver.chromium.win.star")
+exec("./try/tryserver.crossbench.star")

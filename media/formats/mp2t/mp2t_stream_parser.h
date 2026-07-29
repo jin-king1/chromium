@@ -14,6 +14,7 @@
 
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "media/base/audio_decoder_config.h"
@@ -55,6 +56,7 @@ class MEDIA_EXPORT Mp2tStreamParser : public StreamParser {
             EndMediaSegmentCB end_of_segment_cb,
             MediaLog* media_log) override;
   void Flush() override;
+  void MarkEndOfStream() override;
   bool GetGenerateTimestampsFlag() const override;
   [[nodiscard]] bool AppendToParseBuffer(
       base::span<const uint8_t> buf) override;
@@ -150,7 +152,7 @@ class MEDIA_EXPORT Mp2tStreamParser : public StreamParser {
   EncryptedMediaInitDataCB encrypted_media_init_data_cb_;
   NewMediaSegmentCB new_segment_cb_;
   EndMediaSegmentCB end_of_segment_cb_;
-  raw_ptr<MediaLog> media_log_;
+  std::unique_ptr<MediaLog> media_log_;
 
   // List of allowed stream types for this parser. If this set is `nullopt`,
   // allowed stream type checking is disabled. An empty set implies no codecs

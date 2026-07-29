@@ -8,7 +8,7 @@
  * individual permissions under Site Details should appear here.
  * This should be kept in sync with the |kContentSettingsTypeGroupNames| array
  * in chrome/browser/ui/webui/settings/site_settings_helper.cc. See
- * chrome/browser/resources/settings/site_settings_page/site_settings_page_util
+ * chrome/browser/resources/settings/site_settings/site_settings_page_util
  * for translations.
  */
 
@@ -33,10 +33,13 @@ export enum ContentSettingsTypes {
   HID_DEVICES = 'hid-devices',
   IDLE_DETECTION = 'idle-detection',
   IMAGES = 'images',
+  INLINE_CUE_MENU = 'inline-cue-menu',
   JAVASCRIPT = 'javascript',
   JAVASCRIPT_OPTIMIZER = 'javascript-optimizer',
   KEYBOARD_LOCK = 'keyboard-lock',
   LOCAL_FONTS = 'local-fonts',
+  LOCAL_NETWORK = 'local-network',
+  LOOPBACK_NETWORK = 'loopback-network',
   MIC = 'media-stream-mic',  // AKA Microphone.
   MIDI_DEVICES = 'midi-sysex',
   MIXEDSCRIPT = 'mixed-script',
@@ -45,7 +48,6 @@ export enum ContentSettingsTypes {
   PERFORMANCE = 'performance',
   POINTER_LOCK = 'pointer-lock',
   POPUPS = 'popups',
-  PRIVATE_NETWORK_DEVICES = 'private-network-devices',
   PROTECTED_CONTENT = 'protected-content',
   PROTOCOL_HANDLERS = 'register-protocol-handler',
   SENSORS = 'sensors',
@@ -53,7 +55,6 @@ export enum ContentSettingsTypes {
   SMART_CARD_READERS = 'smart-card-readers',
   SOUND = 'sound',
   STORAGE_ACCESS = 'storage-access',
-  TRACKING_PROTECTION = 'tracking-protection',
   TOP_LEVEL_STORAGE_ACCESS = 'top-level-storage-access',
   USB_DEVICES = 'usb-devices',
   VR = 'vr',
@@ -80,7 +81,6 @@ export enum ContentSetting {
   BLOCK = 'block',
   ASK = 'ask',
   SESSION_ONLY = 'session_only',
-  IMPORTANT_CONTENT = 'detect_important_content',
 }
 
 /**
@@ -94,7 +94,9 @@ export enum ChooserType {
   SERIAL_PORTS = 'serial-ports-data',
   HID_DEVICES = 'hid-devices-data',
   BLUETOOTH_DEVICES = 'bluetooth-devices-data',
-  PRIVATE_NETWORK_DEVICES = 'private-network-devices-data',
+  // <if expr="is_chromeos">
+  SMART_CARD_READERS_DEVICES = 'smart-card-readers-data',
+  // </if>
 }
 
 /**
@@ -102,12 +104,13 @@ export enum ChooserType {
  * This should be kept in sync with the |CookieControlsMode| enum in
  * components/content_settings/core/browser/cookie_settings.h
  */
+// LINT.IfChange(CookieControlsMode)
 export enum CookieControlsMode {
   OFF = 0,
   BLOCK_THIRD_PARTY = 1,
   INCOGNITO_ONLY = 2,
-  LIMITED = 3,
 }
+// LINT.ThenChange(//tools/metrics/histograms/metadata/privacy/enums.xml:CookieControlsMode, //components/content_settings/core/browser/cookie_settings.h:CookieControlsMode)
 
 /**
  * Contains the possible sources of a ContentSetting.
@@ -133,11 +136,24 @@ export enum SiteSettingSource {
  * chrome/browser/content_settings/generated_permission_prompting_behavior_pref.h
  */
 export enum SettingsState {
+  UNDEFINED = -1,
   LOUD = 0,
   QUIET = 1,
   CPSS = 2,
-  BLOCK = 3,
 }
+
+/**
+ * Enumeration of states for the Javascript optimizer default setting generated
+ * pref. Must be kept in sync with the JavascriptOptimizerSetting enum in:
+ * components/content_settings/browser/ui/javascript_optimizer_setting.h
+ */
+// LINT.IfChange(JavascriptOptimizerSetting)
+export enum JavascriptOptimizerSetting {
+  BLOCKED = 0,
+  ALLOWED = 1,
+  BLOCKED_FOR_UNFAMILIAR_SITES = 2,
+}
+// LINT.ThenChange(//components/content_settings/browser/ui/javascript_optimizer_setting.h)
 
 /**
  * An invalid subtype value.
@@ -187,14 +203,6 @@ export enum AllSitesDialog {
  * match for SiteExceptions.
  */
 export const SITE_EXCEPTION_WILDCARD: string = '*';
-
-/**
- * Corresponds to the animation-duration CSS parameter defined in
- * chrome/browser/resources/settings/site_settings_page/site_review_shared.css.
- * Set to be slightly higher, as we want to ensure that the animation is
- * finished before updating the model for the right visual effect.
- */
-export const MODEL_UPDATE_DELAY_MS = 300;
 
 /**
  * Types of cookies exceptions based on the use of wildcard in the patterns:

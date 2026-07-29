@@ -42,7 +42,7 @@ export class ProfileInternalsAppElement extends ProfileInternalsAppElementBase {
   private profileInternalsBrowserProxy_: ProfileInternalsBrowserProxy =
       ProfileInternalsBrowserProxyImpl.getInstance();
 
-  protected profilesList_: ProfileStateElement[] = [];
+  protected accessor profilesList_: ProfileStateElement[] = [];
 
   override connectedCallback() {
     super.connectedCallback();
@@ -74,6 +74,12 @@ export class ProfileInternalsAppElement extends ProfileInternalsAppElementBase {
     assert(profile);
     profile.expanded = event.detail.value;
     this.requestUpdate();
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'profile-internals-app': ProfileInternalsAppElement;
   }
 }
 

@@ -38,6 +38,7 @@
 #include "third_party/blink/public/platform/web_isolated_world_info.h"
 #include "third_party/blink/renderer/platform/bindings/dom_data_store.h"
 #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
+#include "third_party/blink/renderer/platform/heap/disallow_new_wrapper.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
@@ -58,18 +59,19 @@ static_assert(IsMainWorldId(kMainDOMWorldId),
               "the internal blink value.");
 
 // This does not contain the main world because the WorldMap needs
-// non-default hashmap traits (WTF::IntWithZeroKeyHashTraits) to contain
+// non-default hashmap traits (blink::IntWithZeroKeyHashTraits) to contain
 // it for the main world's id (0), and it may change the performance trends.
 // (see https://crbug.com/704778#c6).
 using WorldMap = HeapHashMap<int, WeakMember<DOMWrapperWorld>>;
 static WorldMap& GetWorldMap() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<WorldMap>>, map,
-                                  ());
-  Persistent<WorldMap>& persistent_map = *map;
+  using WorldMapWrapper = DisallowNewWrapper<WorldMap>;
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<WorldMapWrapper>>,
+                                  map, ());
+  Persistent<WorldMapWrapper>& persistent_map = *map;
   if (!persistent_map) {
-    persistent_map = MakeGarbageCollected<WorldMap>();
+    persistent_map = MakeGarbageCollected<WorldMapWrapper>();
   }
-  return *persistent_map;
+  return persistent_map->Value();
 }
 
 }  // namespace
@@ -104,6 +106,24 @@ DOMWrapperWorld* DOMWrapperWorld::EnsureIsolatedWorld(v8::Isolate* isolate,
   return MakeGarbageCollected<DOMWrapperWorld>(
       PassKey(), isolate, WorldType::kIsolated, world_id,
       /*is_default_world_of_isolate=*/false);
+}
+
+DOMWrapperWorld* DOMWrapperWorld::EnsureInspectorIsolatedWorldWithName(
+    v8::Isolate* isolate,
+    const String& name) {
+  for (DOMWrapperWorld* world : GetWorldMap().Values()) {
+    if (world->GetWorldType() == WorldType::kInspectorIsolated &&
+        world->NonMainWorldHumanReadableName() == name) {
+      return world;
+    }
+  }
+  DOMWrapperWorld* world = DOMWrapperWorld::Create(
+      isolate, DOMWrapperWorld::WorldType::kInspectorIsolated);
+  if (world && !name.empty()) {
+    DOMWrapperWorld::SetNonMainWorldHumanReadableName(world->GetWorldId(),
+                                                      name);
+  }
+  return world;
 }
 
 DOMWrapperWorld::DOMWrapperWorld(PassKey,

@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/file_system_provider/fileapi/buffering_file_stream_writer.h"
 
 #include <algorithm>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
@@ -35,6 +31,10 @@ BufferingFileStreamWriter::~BufferingFileStreamWriter() {
 int BufferingFileStreamWriter::Write(net::IOBuffer* buffer,
                                      int buffer_length,
                                      net::CompletionOnceCallback callback) {
+  if (!buffer || (buffer_length < 0)) {
+    return net::ERR_INVALID_ARGUMENT;
+  }
+
   // If |buffer_length| is larger than the intermediate buffer, then call the
   // inner file stream writer directly. Note, that the intermediate buffer
   // (used for buffering) must be flushed first.
@@ -95,10 +95,11 @@ void BufferingFileStreamWriter::CopyToIntermediateBuffer(
     scoped_refptr<net::IOBuffer> buffer,
     int buffer_offset,
     int buffer_length) {
+  DCHECK_LE(0, buffer_length);
+  DCHECK_LE(static_cast<size_t>(buffer_length), buffer->span().size());
   DCHECK_GE(intermediate_buffer_length_, buffer_length + buffered_bytes_);
-  memcpy(intermediate_buffer_->data() + buffered_bytes_,
-         buffer->data() + buffer_offset,
-         buffer_length);
+  UNSAFE_TODO(memcpy(intermediate_buffer_->data() + buffered_bytes_,
+                     buffer->data() + buffer_offset, buffer_length));
   buffered_bytes_ += buffer_length;
 }
 

@@ -33,6 +33,8 @@
     UMA_HISTOGRAM_ENUMERATION(kNTPImpressionHistogram, impressionType,
                               IOSNTPImpressionType::kMaxValue);
   }
+  UMA_HISTOGRAM_ENUMERATION(kHomeImpressionHistogram, impressionType,
+                            IOSNTPImpressionType::kMaxValue);
 }
 
 - (void)recordCustomizationState:
@@ -66,20 +68,26 @@
   base::RecordAction(base::UserMetricsAction(kNTPIdentityDiscTappedAction));
 }
 
+- (void)recordIncognitoTapped {
+  base::RecordAction(base::UserMetricsAction(kNTPIncognitoButtonTappedAction));
+}
+
+- (void)recordAIMButtonTapped {
+  base::RecordAction(base::UserMetricsAction(kNTPMIAEntryPointTappedAction));
+}
+
+- (void)recordPlusButtonTapped {
+  base::RecordAction(base::UserMetricsAction(kNTPAIMPlusButtonTappedAction));
+}
+
 - (void)
-    recordMagicStackCustomizationStateWithSetUpList:(BOOL)setUpListEnabled
-                                        safetyCheck:(BOOL)safetyCheckEnabled
-                                      tabResumption:(BOOL)tabResumptionEnabled
-                                     parcelTracking:(BOOL)parcelTrackingEnabled
-                                               tips:(BOOL)tipsEnabled {
-  base::UmaHistogramBoolean(kMagicStackSetUpListEnabledHistogram,
-                            setUpListEnabled);
+    recordMagicStackCustomizationStateWithSafetyCheck:(BOOL)safetyCheckEnabled
+                                        tabResumption:(BOOL)tabResumptionEnabled
+                                                 tips:(BOOL)tipsEnabled {
   base::UmaHistogramBoolean(kMagicStackSafetyCheckEnabledHistogram,
                             safetyCheckEnabled);
   base::UmaHistogramBoolean(kMagicStackTabResumptionEnabledHistogram,
                             tabResumptionEnabled);
-  base::UmaHistogramBoolean(kMagicStackParcelTrackingEnabledHistogram,
-                            parcelTrackingEnabled);
   base::UmaHistogramBoolean(kMagicStackTipsEnabledHistogram, tipsEnabled);
 }
 

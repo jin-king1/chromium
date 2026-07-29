@@ -39,11 +39,12 @@ const std::set<redaction::PIIType> kExpectedPIITypes = {
     redaction::PIIType::kEmail, redaction::PIIType::kURL,
     redaction::PIIType::kGaiaID};
 
-void ReadExportedFile(base::Value::Dict* signin, base::FilePath file_path) {
+void ReadExportedFile(base::DictValue* signin, base::FilePath file_path) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   std::string file_contents;
   ASSERT_TRUE(base::ReadFileToString(file_path, &file_contents));
-  std::optional<base::Value> dict_value = base::JSONReader::Read(file_contents);
+  std::optional<base::Value> dict_value = base::JSONReader::Read(
+      file_contents, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(dict_value);
   *signin = std::move(dict_value->GetDict());
 }
@@ -68,7 +69,7 @@ class SigninDataCollectorBrowserTestAsh
         base::ThreadPool::CreateSequencedTaskRunner({});
     redaction_tool_container_ =
         base::MakeRefCounted<redaction::RedactionToolContainer>(
-            task_runner_for_redaction_tool_, nullptr);
+            task_runner_for_redaction_tool_);
 
     logged_in_user_mixin_.LogInUser();
   }
@@ -135,7 +136,7 @@ IN_PROC_BROWSER_TEST_F(SigninDataCollectorBrowserTestAsh, CollectSigninStatus) {
   EXPECT_EQ(error, std::nullopt);
 
   // Review the file contents.
-  base::Value::Dict json_result;
+  base::DictValue json_result;
   ASSERT_NO_FATAL_FAILURE(ReadExportedFile(&json_result, output_file));
   EXPECT_FALSE(json_result.empty());
 }
@@ -143,11 +144,11 @@ IN_PROC_BROWSER_TEST_F(SigninDataCollectorBrowserTestAsh, CollectSigninStatus) {
 IN_PROC_BROWSER_TEST_F(SigninDataCollectorBrowserTestAsh, FailInIncognitoMode) {
   // Create incognito browser for testing.
   Browser* incognito_browser = Browser::Create(Browser::CreateParams(
-      browser()->profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
+      browser()->GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
       true));
 
   // `SigninDataCollector` for testing.
-  SigninDataCollector data_collector(incognito_browser->profile());
+  SigninDataCollector data_collector(incognito_browser->GetProfile());
 
   // Attempt to collect sign-in data and verify that an error is returned.
   base::test::TestFuture<std::optional<SupportToolError>>

@@ -7,7 +7,9 @@
 
 #include <stddef.h>
 
-#include "base/functional/callback.h"
+#include <unordered_map>
+
+#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "components/viz/common/quads/shared_quad_state.h"
 #include "components/viz/common/resources/resource_id.h"
@@ -74,9 +76,7 @@ class VIZ_COMMON_EXPORT DrawQuad {
   // Stores state common to a large bundle of quads; kept separate for memory
   // efficiency. There is special treatment to reconstruct these pointers
   // during serialization.
-  // RAW_PTR_EXCLUSION: Performance reasons (rendering.mobile,
-  // Graphics.Smoothness, see crbug.com/345298647)
-  RAW_PTR_EXCLUSION const SharedQuadState* shared_quad_state;
+  raw_ptr<const SharedQuadState> shared_quad_state;
 
   // A resource defined by `TransferableResource` with the same `ResourceId`. If
   // set to `kInvalidResourceId` then the quad is resourceless.
@@ -124,7 +124,11 @@ class VIZ_COMMON_EXPORT DrawQuad {
     return IsLeftEdge() || IsTopEdge() || IsRightEdge() || IsBottomEdge();
   }
 
-  void AsValueInto(base::trace_event::TracedValue* value) const;
+  void AsValueInto(base::trace_event::TracedValue* value,
+                   const std::unordered_map<const SharedQuadState*, size_t>&
+                       sqs_pointer_to_index_map,
+                   const std::unordered_map<ResourceId, size_t>&
+                       resource_id_to_index_map) const;
 
   template <typename T>
   const T* DynamicCast() const {
@@ -141,6 +145,11 @@ class VIZ_COMMON_EXPORT DrawQuad {
               const gfx::Rect& visible_r,
               bool blending);
   virtual void ExtendValue(base::trace_event::TracedValue* value) const = 0;
+
+ private:
+  int ResourceIdIndex(
+      const std::unordered_map<ResourceId, size_t>& resource_id_to_index_map,
+      ResourceId id) const;
 };
 
 }  // namespace viz

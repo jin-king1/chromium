@@ -32,4 +32,5 @@ public interface StaticsBoundaryInterface {
     void setDefaultTrafficStatsTag(int tag);
 
     void setDefaultTrafficStatsUid(int uid);
+
 }

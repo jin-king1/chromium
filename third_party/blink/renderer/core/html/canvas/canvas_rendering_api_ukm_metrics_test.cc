@@ -22,7 +22,7 @@ class CanvasRenderingAPIUkmMetricsTest : public PageTestBase {
 
   void SetUp() override {
     PageTestBase::SetUp();
-    GetDocument().documentElement()->setInnerHTML(
+    GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(
         "<body><canvas id='c'></canvas></body>");
     canvas_element_ =
         To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
@@ -32,7 +32,8 @@ class CanvasRenderingAPIUkmMetricsTest : public PageTestBase {
   void CheckContext(String context_type,
                     CanvasRenderingContext::CanvasRenderingAPI expected_value) {
     CanvasContextCreationAttributesCore attributes;
-    canvas_element_->GetCanvasRenderingContext(context_type, attributes);
+    canvas_element_->GetCanvasRenderingContext(
+        GetDocument().GetExecutionContext(), context_type, attributes);
 
     auto entries = recorder_.GetEntriesByName(
         ukm::builders::ClientRenderingAPI::kEntryName);

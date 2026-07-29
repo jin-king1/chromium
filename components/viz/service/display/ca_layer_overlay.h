@@ -6,7 +6,6 @@
 #define COMPONENTS_VIZ_SERVICE_DISPLAY_CA_LAYER_OVERLAY_H_
 
 #include "base/containers/flat_map.h"
-#include "base/memory/ref_counted.h"
 #include "components/viz/common/quads/aggregated_render_pass.h"
 #include "components/viz/common/quads/compositor_render_pass.h"
 #include "components/viz/service/display/overlay_candidate.h"
@@ -41,12 +40,6 @@ class VIZ_SERVICE_EXPORT CALayerOverlayProcessor {
       AggregatedRenderPass* render_pass,
       const gfx::RectF& display_rect,
       QuadList* quad_list,
-      const base::flat_map<AggregatedRenderPassId,
-                           raw_ptr<cc::FilterOperations, CtnExperimental>>&
-          render_pass_filters,
-      const base::flat_map<AggregatedRenderPassId,
-                           raw_ptr<cc::FilterOperations, CtnExperimental>>&
-          render_pass_backdrop_filters,
       OverlayCandidateList* ca_layer_overlays) const;
 
   // Returns true if all quads in the root render pass have been replaced by
@@ -55,12 +48,6 @@ class VIZ_SERVICE_EXPORT CALayerOverlayProcessor {
       AggregatedRenderPass* render_passes,
       const DisplayResourceProvider* resource_provider,
       const gfx::RectF& display_rect,
-      const base::flat_map<AggregatedRenderPassId,
-                           raw_ptr<cc::FilterOperations, CtnExperimental>>&
-          render_pass_filters,
-      const base::flat_map<AggregatedRenderPassId,
-                           raw_ptr<cc::FilterOperations, CtnExperimental>>&
-          render_pass_backdrop_filters,
       OverlayCandidateList* ca_layer_overlays);
 
   gfx::CALayerResult ca_layer_result() { return ca_layer_result_; }
@@ -73,12 +60,6 @@ class VIZ_SERVICE_EXPORT CALayerOverlayProcessor {
       AggregatedRenderPass* render_pass,
       const gfx::RectF& display_rect,
       const DrawQuad* quad,
-      const base::flat_map<AggregatedRenderPassId,
-                           raw_ptr<cc::FilterOperations, CtnExperimental>>&
-          render_pass_filters,
-      const base::flat_map<AggregatedRenderPassId,
-                           raw_ptr<cc::FilterOperations, CtnExperimental>>&
-          render_pass_backdrop_filters,
       gfx::ProtectedVideoType protected_video_type,
       OverlayCandidateList* ca_layer_overlays) const;
 

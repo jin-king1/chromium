@@ -12,27 +12,37 @@
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
 #import "ios/chrome/browser/shared/public/commands/new_tab_page_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_lens_input_selection_command.h"
+#import "ios/chrome/browser/tips_notifications/model/utils.h"
 #import "ios/chrome/browser/tips_notifications/ui/lens_promo_instructions_view_controller.h"
 #import "ios/chrome/browser/tips_notifications/ui/lens_promo_view_controller.h"
+#import "ios/chrome/browser/tips_notifications/ui/tips_promo_view_controller.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_action_delegate.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
 
-@interface LensPromoCoordinator () <ConfirmationAlertActionHandler,
-                                    PromoStyleViewControllerDelegate,
+@interface LensPromoCoordinator () <ButtonStackActionDelegate,
+                                    ConfirmationAlertActionHandler,
                                     UIAdaptivePresentationControllerDelegate>
 @end
 
 @implementation LensPromoCoordinator {
   LensPromoViewController* _viewController;
   LensPromoInstructionsViewController* _instructionsViewController;
+  UINavigationController* _instructionsNavigationController;
   BOOL _presentBubbleOnDismiss;
   BOOL _goToLensOnDismiss;
+  BOOL _actionLogged;
 }
 
 #pragma mark - ChromeCoordinator
 
 - (void)start {
   _viewController = [[LensPromoViewController alloc] init];
-  _viewController.delegate = self;
+  _viewController.actionDelegate = self;
+  UIBarButtonItem* dismissButton = [[UIBarButtonItem alloc]
+      initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                           target:self
+                           action:@selector(dismissViewController)];
+  _viewController.navigationItem.rightBarButtonItem = dismissButton;
 
   UINavigationController* navigationController = [[UINavigationController alloc]
       initWithRootViewController:_viewController];
@@ -48,6 +58,7 @@
 - (void)stop {
   _instructionsViewController.actionHandler = nil;
   _instructionsViewController = nil;
+  _instructionsNavigationController = nil;
   ProceduralBlock completion = nil;
   CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
   if (_goToLensOnDismiss) {
@@ -70,26 +81,41 @@
   _viewController = nil;
 }
 
-#pragma mark - PromoStyleViewControllerDelegate
+#pragma mark - ButtonStackActionDelegate
 
 - (void)didTapPrimaryActionButton {
   _goToLensOnDismiss = YES;
+  if (!_actionLogged) {
+    LogTipsNotificationPromoAction(TipsNotificationType::kLens,
+                                   TipsNotificationPromoAction::kPrimary);
+    _actionLogged = YES;
+  }
   [self dismissScreen];
 }
 
 - (void)didTapSecondaryActionButton {
+  if (!_actionLogged) {
+    LogTipsNotificationPromoAction(TipsNotificationType::kLens,
+                                   TipsNotificationPromoAction::kSecondary);
+    _actionLogged = YES;
+  }
   _instructionsViewController =
       [[LensPromoInstructionsViewController alloc] init];
   _instructionsViewController.actionHandler = self;
-  _instructionsViewController.presentationController.delegate = self;
-  [_viewController presentViewController:_instructionsViewController
+  _instructionsNavigationController = [[UINavigationController alloc]
+      initWithRootViewController:_instructionsViewController];
+  _instructionsViewController.navigationItem.rightBarButtonItem =
+      [[UIBarButtonItem alloc]
+          initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
+                               target:self
+                               action:@selector(dismissInstructions)];
+  [_viewController presentViewController:_instructionsNavigationController
                                 animated:YES
                               completion:nil];
 }
 
-- (void)didDismissViewController {
-  _presentBubbleOnDismiss = YES;
-  [self dismissScreen];
+- (void)didTapTertiaryActionButton {
+  // Not used.
 }
 
 #pragma mark - ConfirmationAlertPrimaryAction
@@ -99,26 +125,29 @@
   [self dismissScreen];
 }
 
-- (void)confirmationAlertDismissAction {
-  [_instructionsViewController.presentingViewController
-      dismissViewControllerAnimated:YES
-                         completion:nil];
-  _instructionsViewController = nil;
-}
-
 #pragma mark - UIAdaptivePresentationControllerDelegate
 
 - (void)presentationControllerDidDismiss:
     (UIPresentationController*)presentationController {
-  if (presentationController.presentedViewController ==
-      _instructionsViewController) {
-    _instructionsViewController = nil;
-  } else {
-    // The UINavigationController was dismissed.
-    [self dismissScreen];
-  }
+  [self dismissScreen];
 }
+
 #pragma mark - Private methods
+
+// Dismisses the coordinator and its view controller.
+- (void)dismissViewController {
+  _presentBubbleOnDismiss = YES;
+  [self dismissScreen];
+}
+
+// Dismisses the instruction sheet.
+- (void)dismissInstructions {
+  [_instructionsNavigationController.presentingViewController
+      dismissViewControllerAnimated:YES
+                         completion:nil];
+  _instructionsNavigationController = nil;
+  _instructionsViewController = nil;
+}
 
 // Sends a command that will stop this coordinator and dismiss the screen.
 - (void)dismissScreen {

@@ -31,12 +31,12 @@ TouchSelectionMenuChromeOS::TouchSelectionMenuChromeOS(
     views::TouchSelectionMenuRunnerViews* owner,
     base::WeakPtr<ui::TouchSelectionMenuClient> client,
     aura::Window* context,
-    arc::mojom::TextSelectionActionPtr action)
-    : views::TouchSelectionMenuViews(owner, client, context),
+    arc::mojom::TextSelectionActionPtr action,
+    bool can_paste)
+    : views::TouchSelectionMenuViews(owner, client, context, can_paste),
       action_(std::move(action)),
       display_id_(
-          display::Screen::GetScreen()->GetDisplayNearestWindow(context).id()) {
-}
+          display::Screen::Get()->GetDisplayNearestWindow(context).id()) {}
 
 void TouchSelectionMenuChromeOS::SetActionsForTesting(
     std::vector<arc::mojom::TextSelectionActionPtr> actions) {

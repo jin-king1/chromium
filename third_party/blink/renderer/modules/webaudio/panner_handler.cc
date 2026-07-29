@@ -2,13 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/modules/webaudio/panner_handler.h"
 
+#include <array>
+
+#include "base/compiler_specific.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/synchronization/lock.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_listener.h"
@@ -53,7 +51,16 @@ PannerHandler::PannerHandler(AudioNode& node,
       orientation_x_(&orientation_x),
       orientation_y_(&orientation_y),
       orientation_z_(&orientation_z),
-      listener_handler_(&node.context()->listener()->Handler()) {
+      listener_handler_(&node.context()->listener()->Handler()),
+      panner_x_values_(GetDeferredTaskHandler().RenderQuantumFrames()),
+      panner_y_values_(GetDeferredTaskHandler().RenderQuantumFrames()),
+      panner_z_values_(GetDeferredTaskHandler().RenderQuantumFrames()),
+      orientation_x_values_(GetDeferredTaskHandler().RenderQuantumFrames()),
+      orientation_y_values_(GetDeferredTaskHandler().RenderQuantumFrames()),
+      orientation_z_values_(GetDeferredTaskHandler().RenderQuantumFrames()),
+      azimuth_values_(GetDeferredTaskHandler().RenderQuantumFrames()),
+      elevation_values_(GetDeferredTaskHandler().RenderQuantumFrames()),
+      total_gain_values_(GetDeferredTaskHandler().RenderQuantumFrames()) {
   AddInput();
   AddOutput(kMaximumOutputChannels);
 
@@ -130,7 +137,12 @@ void PannerHandler::ProcessIfNecessary(uint32_t frames_to_process) {
           // to the downstream nodes.  (For example, a Gain node with a gain of
           // 0 will want to silence its output.)
           UnsilenceOutputs();
+          base::TimeTicks process_start_time = base::TimeTicks::Now();
           Process(frames_to_process);
+          base::TimeDelta process_duration =
+              base::TimeTicks::Now() - process_start_time;
+          uma_reporter_->AddProcessDuration(process_duration,
+                                            frames_to_process);
         }
       } else {
         // We must be in the middle of changing the properties of the panner.
@@ -219,101 +231,90 @@ void PannerHandler::Process(uint32_t frames_to_process) {
 void PannerHandler::ProcessSampleAccurateValues(AudioBus* destination,
                                                 const AudioBus* source,
                                                 uint32_t frames_to_process) {
-  // TODO(crbug.com/40637820): Eventually, the render quantum size will no
-  // longer be hardcoded as 128. At that point, we'll need to switch from
-  // stack allocation to heap allocation.
-  constexpr unsigned render_quantum_frames_expected = 128;
   const unsigned render_quantum_frames =
       GetDeferredTaskHandler().RenderQuantumFrames();
-  CHECK_EQ(render_quantum_frames, render_quantum_frames_expected);
-  CHECK_LE(frames_to_process, render_quantum_frames_expected);
+  DCHECK_LE(frames_to_process, render_quantum_frames);
 
-  float panner_x[render_quantum_frames_expected];
-  float panner_y[render_quantum_frames_expected];
-  float panner_z[render_quantum_frames_expected];
-  float orientation_x[render_quantum_frames_expected];
-  float orientation_y[render_quantum_frames_expected];
-  float orientation_z[render_quantum_frames_expected];
-  double azimuth[render_quantum_frames_expected];
-  double elevation[render_quantum_frames_expected];
-  float total_gain[render_quantum_frames_expected];
+  position_x_->CalculateSampleAccurateValues(
+      panner_x_values_.as_span().first(frames_to_process));
+  position_y_->CalculateSampleAccurateValues(
+      panner_y_values_.as_span().first(frames_to_process));
+  position_z_->CalculateSampleAccurateValues(
+      panner_z_values_.as_span().first(frames_to_process));
+  orientation_x_->CalculateSampleAccurateValues(
+      orientation_x_values_.as_span().first(frames_to_process));
+  orientation_y_->CalculateSampleAccurateValues(
+      orientation_y_values_.as_span().first(frames_to_process));
+  orientation_z_->CalculateSampleAccurateValues(
+      orientation_z_values_.as_span().first(frames_to_process));
 
-  position_x_->CalculateSampleAccurateValues(panner_x, frames_to_process);
-  position_y_->CalculateSampleAccurateValues(panner_y, frames_to_process);
-  position_z_->CalculateSampleAccurateValues(panner_z, frames_to_process);
-  orientation_x_->CalculateSampleAccurateValues(orientation_x,
-                                                frames_to_process);
-  orientation_y_->CalculateSampleAccurateValues(orientation_y,
-                                                frames_to_process);
-  orientation_z_->CalculateSampleAccurateValues(orientation_z,
-                                                frames_to_process);
-
-  const float* listener_x = listener_handler_->GetPositionXValues(
-      render_quantum_frames);
-  const float* listener_y = listener_handler_->GetPositionYValues(
-      render_quantum_frames);
-  const float* listener_z = listener_handler_->GetPositionZValues(
-      render_quantum_frames);
-  const float* forward_x = listener_handler_->GetForwardXValues(
-      render_quantum_frames);
-  const float* forward_y = listener_handler_->GetForwardYValues(
-      render_quantum_frames);
-  const float* forward_z = listener_handler_->GetForwardZValues(
-      render_quantum_frames);
-  const float* up_x = listener_handler_->GetUpXValues(
-      render_quantum_frames);
-  const float* up_y = listener_handler_->GetUpYValues(
-      render_quantum_frames);
-  const float* up_z = listener_handler_->GetUpZValues(
-      render_quantum_frames);
+  base::span<const float> listener_x =
+      listener_handler_->GetPositionXValues(render_quantum_frames);
+  base::span<const float> listener_y =
+      listener_handler_->GetPositionYValues(render_quantum_frames);
+  base::span<const float> listener_z =
+      listener_handler_->GetPositionZValues(render_quantum_frames);
+  base::span<const float> forward_x =
+      listener_handler_->GetForwardXValues(render_quantum_frames);
+  base::span<const float> forward_y =
+      listener_handler_->GetForwardYValues(render_quantum_frames);
+  base::span<const float> forward_z =
+      listener_handler_->GetForwardZValues(render_quantum_frames);
+  base::span<const float> up_x =
+      listener_handler_->GetUpXValues(render_quantum_frames);
+  base::span<const float> up_y =
+      listener_handler_->GetUpYValues(render_quantum_frames);
+  base::span<const float> up_z =
+      listener_handler_->GetUpZValues(render_quantum_frames);
 
   // Compute the azimuth, elevation, and total gains for each position.
   for (unsigned k = 0; k < frames_to_process; ++k) {
-    gfx::Point3F panner_position(panner_x[k], panner_y[k], panner_z[k]);
-    gfx::Vector3dF orientation(orientation_x[k], orientation_y[k],
-                               orientation_z[k]);
+    gfx::Point3F panner_position(panner_x_values_[k], panner_y_values_[k],
+                                 panner_z_values_[k]);
+    gfx::Vector3dF orientation(orientation_x_values_[k],
+                               orientation_y_values_[k],
+                               orientation_z_values_[k]);
     gfx::Point3F listener_position(listener_x[k], listener_y[k], listener_z[k]);
     gfx::Vector3dF listener_forward(forward_x[k], forward_y[k], forward_z[k]);
     gfx::Vector3dF listener_up(up_x[k], up_y[k], up_z[k]);
 
-    CalculateAzimuthElevation(&azimuth[k], &elevation[k], panner_position,
-                              listener_position, listener_forward, listener_up);
+    CalculateAzimuthElevation(&azimuth_values_[k], &elevation_values_[k],
+                              panner_position, listener_position,
+                              listener_forward, listener_up);
 
-    total_gain[k] = CalculateDistanceConeGain(panner_position, orientation,
-                                              listener_position);
+    total_gain_values_[k] = CalculateDistanceConeGain(
+        panner_position, orientation, listener_position);
   }
-
   // Update cached values in case automations end.
   if (frames_to_process > 0) {
-    cached_azimuth_ = azimuth[frames_to_process - 1];
-    cached_elevation_ = elevation[frames_to_process - 1];
-    cached_distance_cone_gain_ = total_gain[frames_to_process - 1];
+    cached_azimuth_ = azimuth_values_[frames_to_process - 1];
+    cached_elevation_ = elevation_values_[frames_to_process - 1];
+    cached_distance_cone_gain_ = total_gain_values_[frames_to_process - 1];
   }
 
-  panner_->PanWithSampleAccurateValues(azimuth, elevation, source, destination,
-                                       frames_to_process,
-                                       InternalChannelInterpretation());
-  destination->CopyWithSampleAccurateGainValuesFrom(*destination, total_gain,
-                                                    frames_to_process);
+  panner_->PanWithSampleAccurateValues(
+      azimuth_values_.as_span().first(frames_to_process),
+      elevation_values_.as_span().first(frames_to_process), source, destination,
+      frames_to_process, InternalChannelInterpretation());
+  destination->CopyWithSampleAccurateGainValuesFrom(
+      *destination, total_gain_values_.as_span().first(frames_to_process));
 }
 
 void PannerHandler::ProcessOnlyAudioParams(uint32_t frames_to_process) {
-  // TODO(crbug.com/40637820): Eventually, the render quantum size will no
-  // longer be hardcoded as 128. At that point, we'll need to switch from
-  // stack allocation to heap allocation.
-  constexpr unsigned render_quantum_frames_expected = 128;
-  CHECK_EQ(GetDeferredTaskHandler().RenderQuantumFrames(),
-           render_quantum_frames_expected);
-  float values[render_quantum_frames_expected];
-
   DCHECK_LE(frames_to_process, GetDeferredTaskHandler().RenderQuantumFrames());
 
-  position_x_->CalculateSampleAccurateValues(values, frames_to_process);
-  position_y_->CalculateSampleAccurateValues(values, frames_to_process);
-  position_z_->CalculateSampleAccurateValues(values, frames_to_process);
-  orientation_x_->CalculateSampleAccurateValues(values, frames_to_process);
-  orientation_y_->CalculateSampleAccurateValues(values, frames_to_process);
-  orientation_z_->CalculateSampleAccurateValues(values, frames_to_process);
+  position_x_->CalculateSampleAccurateValues(
+      panner_x_values_.as_span().first(frames_to_process));
+  position_y_->CalculateSampleAccurateValues(
+      panner_y_values_.as_span().first(frames_to_process));
+  position_z_->CalculateSampleAccurateValues(
+      panner_z_values_.as_span().first(frames_to_process));
+  orientation_x_->CalculateSampleAccurateValues(
+      orientation_x_values_.as_span().first(frames_to_process));
+  orientation_y_->CalculateSampleAccurateValues(
+      orientation_y_values_.as_span().first(frames_to_process));
+  orientation_z_->CalculateSampleAccurateValues(
+      orientation_z_values_.as_span().first(frames_to_process));
 }
 
 void PannerHandler::Initialize() {
@@ -389,7 +390,8 @@ bool PannerHandler::SetPanningModel(Panner::PanningModel model) {
     // We need the graph lock to secure the panner backend because
     // BaseAudioContext::Handle{Pre,Post}RenderTasks() from the audio thread
     // can touch it.
-    DeferredTaskHandler::GraphAutoLocker context_locker(Context());
+    DeferredTaskHandler::GraphAutoLocker context_locker(
+        Context()->GetDeferredTaskHandler());
 
     // This synchronizes with process().
     base::AutoLock process_locker(process_lock_);
@@ -402,7 +404,7 @@ bool PannerHandler::SetPanningModel(Panner::PanningModel model) {
 }
 
 V8DistanceModelType::Enum PannerHandler::DistanceModel() const {
-  switch (const_cast<PannerHandler*>(this)->distance_effect_.Model()) {
+  switch (distance_effect_.Model()) {
     case DistanceEffect::kModelLinear:
       return V8DistanceModelType::Enum::kLinear;
     case DistanceEffect::kModelInverse:
@@ -523,9 +525,9 @@ void PannerHandler::SetPosition(float x,
 
   double now = Context()->currentTime();
 
-  position_x_->Timeline().SetValueAtTime(x, now, exceptionState);
-  position_y_->Timeline().SetValueAtTime(y, now, exceptionState);
-  position_z_->Timeline().SetValueAtTime(z, now, exceptionState);
+  position_x_->SetValueAtTime(x, now, exceptionState);
+  position_y_->SetValueAtTime(y, now, exceptionState);
+  position_z_->SetValueAtTime(z, now, exceptionState);
 
   MarkPannerAsDirty(PannerHandler::kAzimuthElevationDirty |
                     PannerHandler::kDistanceConeGainDirty);
@@ -540,9 +542,9 @@ void PannerHandler::SetOrientation(float x,
 
   double now = Context()->currentTime();
 
-  orientation_x_->Timeline().SetValueAtTime(x, now, exceptionState);
-  orientation_y_->Timeline().SetValueAtTime(y, now, exceptionState);
-  orientation_z_->Timeline().SetValueAtTime(z, now, exceptionState);
+  orientation_x_->SetValueAtTime(x, now, exceptionState);
+  orientation_y_->SetValueAtTime(y, now, exceptionState);
+  orientation_z_->SetValueAtTime(z, now, exceptionState);
 
   MarkPannerAsDirty(PannerHandler::kDistanceConeGainDirty);
 }
@@ -678,7 +680,8 @@ void PannerHandler::MarkPannerAsDirty(unsigned dirty) {
 void PannerHandler::SetChannelCount(unsigned channel_count,
                                     ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(Context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      Context()->GetDeferredTaskHandler());
 
   if (channel_count >= kMinimumOutputChannels &&
       channel_count <= kMaximumOutputChannels) {
@@ -701,7 +704,8 @@ void PannerHandler::SetChannelCount(unsigned channel_count,
 void PannerHandler::SetChannelCountMode(V8ChannelCountMode::Enum mode,
                                         ExceptionState& exception_state) {
   DCHECK(IsMainThread());
-  DeferredTaskHandler::GraphAutoLocker locker(Context());
+  DeferredTaskHandler::GraphAutoLocker locker(
+      Context()->GetDeferredTaskHandler());
 
   V8ChannelCountMode::Enum old_mode = InternalChannelCountMode();
 

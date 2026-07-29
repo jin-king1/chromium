@@ -14,7 +14,6 @@
 
 namespace ui {
 class LatencyInfo;
-struct DidOverscrollParams;
 }  // namespace ui
 
 namespace input {
@@ -50,7 +49,7 @@ class COMPONENT_EXPORT(INPUT) InputRouterClient {
 
   // Called when the router has received an overscroll notification from the
   // renderer.
-  virtual void DidOverscroll(const ui::DidOverscrollParams& params) = 0;
+  virtual void DidOverscroll(blink::mojom::DidOverscrollParamsPtr params) = 0;
 
   // Called when the router has received an allowed touch action notification
   // from the renderer.
@@ -58,6 +57,9 @@ class COMPONENT_EXPORT(INPUT) InputRouterClient {
 
   // Called when a GSB has started scrolling a viewport.
   virtual void DidStartScrollingViewport() = 0;
+
+  // Called when the input router becomes active.
+  virtual void OnInputRouterActive() = 0;
 
   // Called when the input router generates an event. It is intended that the
   // client will do some processing on |gesture_event| and then send it back
@@ -108,6 +110,8 @@ class COMPONENT_EXPORT(INPUT) InputRouterClient {
       const std::optional<std::vector<gfx::Rect>>& character_bounds) = 0;
   virtual StylusInterface* GetStylusInterface() = 0;
   virtual void OnStartStylusWriting() = 0;
+
+  virtual void OnUnconfirmedTapConvertedToTap() = 0;
 
   virtual DispatchToRendererCallback GetDispatchToRendererCallback() = 0;
 };

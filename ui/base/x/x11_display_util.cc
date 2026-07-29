@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/base/x/x11_display_util.h"
 
 #include <dlfcn.h>
@@ -20,10 +15,14 @@
 
 #include "base/bits.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/logging.h"
+#include "base/notimplemented.h"
+#include "base/numerics/checked_math.h"
 #include "base/numerics/clamped_math.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/x/x11_util.h"
 #include "ui/display/util/display_util.h"
@@ -77,19 +76,28 @@ gfx::Rect GetWorkAreaSync(x11::Future<x11::GetPropertyReply> future) {
     return gfx::Rect();
   }
   const uint32_t* value = response->value->cast_to<uint32_t>();
-  return gfx::Rect(value[0], value[1], value[2], value[3]);
+  return gfx::Rect(value[0], UNSAFE_TODO(value[1]), UNSAFE_TODO(value[2]),
+                   UNSAFE_TODO(value[3]));
 }
 
 x11::Future<x11::GetPropertyReply> GetIccProfileFuture(
     x11::Connection* connection,
     size_t monitor) {
+  // Limit the size of the ICC profile to 4MB. Most monitor profiles are
+  // much smaller than this (typically < 1MB). This prevents potential
+  // memory exhaustion and serves as a first-line defense against malicious
+  // profiles with massive CLUTs.
+  constexpr size_t kMaxIccProfileSize = 4 * 1024 * 1024;
+  // GetProperty takes the length in 4-byte multiples.
+  constexpr uint32_t kMaxIccProfileLongLength = kMaxIccProfileSize / 4;
+
   std::string atom_name = monitor == 0
                               ? "_ICC_PROFILE"
                               : base::StringPrintf("_ICC_PROFILE_%zu", monitor);
   auto future = connection->GetProperty({
       .window = connection->default_root(),
       .property = x11::GetAtom(atom_name.c_str()),
-      .long_length = std::numeric_limits<uint32_t>::max(),
+      .long_length = kMaxIccProfileLongLength,
   });
   future.IgnoreError();
   return future;
@@ -97,11 +105,17 @@ x11::Future<x11::GetPropertyReply> GetIccProfileFuture(
 
 gfx::ICCProfile GetIccProfileSync(x11::Future<x11::GetPropertyReply> future) {
   auto response = future.Sync();
-  if (!response || !response->value_len) {
+  if (!response || !response->value_len || response->bytes_after > 0) {
     return gfx::ICCProfile();
   }
-  return gfx::ICCProfile::FromData(response->value->bytes(),
-                                   response->value_len * response->format / 8u);
+
+  base::CheckedNumeric<size_t> size = response->value_len;
+  size *= (response->format / 8u);
+  if (!size.IsValid()) {
+    return gfx::ICCProfile();
+  }
+
+  return gfx::ICCProfile::FromData(response->value->bytes(), size.ValueOrDie());
 }
 
 x11::Future<x11::RandR::GetOutputPropertyReply> GetEdidFuture(
@@ -488,8 +502,8 @@ std::vector<display::Display> BuildDisplaysFromXRandRInfo(
         color_space = display::GetColorSpaceFromEdid(edid_parser);
       }
 
-      display.SetColorSpaces(
-          gfx::DisplayColorSpaces(color_space, gfx::BufferFormat::BGRA_8888));
+      display.SetColorSpaces(gfx::DisplayColorSpaces(
+          color_space, viz::SinglePlaneFormat::kBGRA_8888));
     }
 
     display.set_color_depth(depth);

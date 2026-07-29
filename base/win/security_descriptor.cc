@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/notreached.h"
@@ -231,8 +233,10 @@ std::optional<SecurityDescriptor> SecurityDescriptor::FromPointer(
       GetSecurityDescriptorSid(sd, ::GetSecurityDescriptorGroup),
       GetSecurityDescriptorAcl(sd, ::GetSecurityDescriptorDacl),
       !!(control & SE_DACL_PROTECTED),
+      !!(control & SE_DACL_AUTO_INHERITED),
       GetSecurityDescriptorAcl(sd, ::GetSecurityDescriptorSacl),
-      !!(control & SE_SACL_PROTECTED)};
+      !!(control & SE_SACL_PROTECTED),
+      !!(control & SE_SACL_AUTO_INHERITED)};
 }
 
 std::optional<SecurityDescriptor> SecurityDescriptor::FromFile(
@@ -242,7 +246,7 @@ std::optional<SecurityDescriptor> SecurityDescriptor::FromFile(
 }
 
 std::optional<SecurityDescriptor> SecurityDescriptor::FromName(
-    const std::wstring& name,
+    wcstring_view name,
     SecurityObjectType object_type,
     SECURITY_INFORMATION security_info) {
   return GetSecurityDescriptor(name.c_str(), object_type, security_info,
@@ -258,7 +262,7 @@ std::optional<SecurityDescriptor> SecurityDescriptor::FromHandle(
 }
 
 std::optional<SecurityDescriptor> SecurityDescriptor::FromSddl(
-    const std::wstring& sddl) {
+    wcstring_view sddl) {
   PSECURITY_DESCRIPTOR sd;
   if (!::ConvertStringSecurityDescriptorToSecurityDescriptor(
           sddl.c_str(), SDDL_REVISION_1, &sd, nullptr)) {
@@ -266,6 +270,18 @@ std::optional<SecurityDescriptor> SecurityDescriptor::FromSddl(
   }
   auto sd_ptr = TakeLocalAlloc(sd);
   return FromPointer(sd_ptr.get());
+}
+
+// static
+SecurityDescriptor SecurityDescriptor::CreateWithEmptyDacl() {
+  return {std::nullopt,
+          std::nullopt,
+          AccessControlList{},
+          /*dacl_protected=*/false,
+          /*dacl_auto_inherited=*/false,
+          std::nullopt,
+          /*sacl_protected=*/false,
+          /*sacl_auto_inherited=*/false};
 }
 
 SecurityDescriptor::SecurityDescriptor() = default;
@@ -279,7 +295,7 @@ bool SecurityDescriptor::WriteToFile(const base::FilePath& path,
   return WriteToName(path.value(), SecurityObjectType::kFile, security_info);
 }
 
-bool SecurityDescriptor::WriteToName(const std::wstring& name,
+bool SecurityDescriptor::WriteToName(wcstring_view name,
                                      SecurityObjectType object_type,
                                      SECURITY_INFORMATION security_info) const {
   return SetSecurityDescriptor<wchar_t*>(
@@ -301,9 +317,8 @@ std::optional<std::wstring> SecurityDescriptor::ToSddl(
   // populating the `SECURITY_DESCRIPTOR` with them. Since we're in a const-
   // qualified member method, we need to clone ourselves and call `ToAbsolute()`
   // on the clone.
-  auto self = Clone();
-  SECURITY_DESCRIPTOR sd = {};
-  self.ToAbsolute(sd);
+  SecurityDescriptor self = Clone();
+  SECURITY_DESCRIPTOR sd = self.ToAbsolute();
 
   LPWSTR sddl;
   if (!::ConvertSecurityDescriptorToStringSecurityDescriptor(
@@ -314,8 +329,8 @@ std::optional<std::wstring> SecurityDescriptor::ToSddl(
   return sddl_ptr.get();
 }
 
-void SecurityDescriptor::ToAbsolute(SECURITY_DESCRIPTOR& sd) {
-  memset(&sd, 0, sizeof(sd));
+SECURITY_DESCRIPTOR SecurityDescriptor::ToAbsolute() {
+  SECURITY_DESCRIPTOR sd = {};
   sd.Revision = SECURITY_DESCRIPTOR_REVISION;
   sd.Owner = owner_ ? owner_->GetPSID() : nullptr;
   sd.Group = group_ ? group_->GetPSID() : nullptr;
@@ -325,6 +340,9 @@ void SecurityDescriptor::ToAbsolute(SECURITY_DESCRIPTOR& sd) {
     if (dacl_protected_) {
       sd.Control |= SE_DACL_PROTECTED;
     }
+    if (dacl_auto_inherited_) {
+      sd.Control |= SE_DACL_AUTO_INHERITED;
+    }
   }
   if (sacl_) {
     sd.Sacl = sacl_->get();
@@ -332,8 +350,12 @@ void SecurityDescriptor::ToAbsolute(SECURITY_DESCRIPTOR& sd) {
     if (sacl_protected_) {
       sd.Control |= SE_SACL_PROTECTED;
     }
+    if (sacl_auto_inherited_) {
+      sd.Control |= SE_SACL_AUTO_INHERITED;
+    }
   }
   DCHECK(::IsValidSecurityDescriptor(&sd));
+  return sd;
 }
 
 std::optional<SecurityDescriptor::SelfRelative>
@@ -343,8 +365,7 @@ SecurityDescriptor::ToSelfRelative() const {
   // qualified member method, we need to clone ourselves and call `ToAbsolute()`
   // on the clone.
   auto self = Clone();
-  SECURITY_DESCRIPTOR sd = {};
-  self.ToAbsolute(sd);
+  SECURITY_DESCRIPTOR sd = self.ToAbsolute();
 
   DWORD size = sizeof(SECURITY_DESCRIPTOR_MIN_LENGTH);
   std::vector<uint8_t> buffer(SECURITY_DESCRIPTOR_MIN_LENGTH);
@@ -364,9 +385,9 @@ SecurityDescriptor::ToSelfRelative() const {
 }
 
 SecurityDescriptor SecurityDescriptor::Clone() const {
-  return SecurityDescriptor{CloneValue(owner_), CloneValue(group_),
-                            CloneValue(dacl_),  dacl_protected_,
-                            CloneValue(sacl_),  sacl_protected_};
+  return {CloneValue(owner_), CloneValue(group_),   CloneValue(dacl_),
+          dacl_protected_,    dacl_auto_inherited_, CloneValue(sacl_),
+          sacl_protected_,    sacl_auto_inherited_};
 }
 
 bool SecurityDescriptor::SetMandatoryLabel(DWORD integrity_level,
@@ -382,7 +403,7 @@ bool SecurityDescriptor::SetMandatoryLabel(DWORD integrity_level,
 }
 
 bool SecurityDescriptor::SetDaclEntries(
-    const std::vector<ExplicitAccessEntry>& entries) {
+    base::span<const ExplicitAccessEntry> entries) {
   if (!dacl_) {
     dacl_ = AccessControlList{};
   }
@@ -397,6 +418,13 @@ bool SecurityDescriptor::SetDaclEntry(const Sid& sid,
     dacl_ = AccessControlList{};
   }
   return dacl_->SetEntry(sid, mode, access_mask, inheritance);
+}
+
+bool SecurityDescriptor::SetDaclEntry(const AccessToken& token,
+                                      SecurityAccessMode mode,
+                                      DWORD access_mask,
+                                      DWORD inheritance) {
+  return SetDaclEntry(token.User(), mode, access_mask, inheritance);
 }
 
 bool SecurityDescriptor::SetDaclEntry(WellKnownSid known_sid,
@@ -420,8 +448,7 @@ std::optional<AccessCheckResult> SecurityDescriptor::AccessCheck(
   std::vector<char> priv_set(priv_set_length);
   DWORD granted_access = 0;
   BOOL access_status = FALSE;
-  SECURITY_DESCRIPTOR sd = {};
-  ToAbsolute(sd);
+  SECURITY_DESCRIPTOR sd = ToAbsolute();
   if (!::AccessCheck(&sd, token.get(), desired_access, &local_mapping,
                      reinterpret_cast<PPRIVILEGE_SET>(priv_set.data()),
                      &priv_set_length, &granted_access, &access_status)) {
@@ -442,18 +469,22 @@ std::optional<AccessCheckResult> SecurityDescriptor::AccessCheck(
                      GetGenericMappingForType(object_type));
 }
 
-SecurityDescriptor::SecurityDescriptor(std::optional<Sid>&& owner,
-                                       std::optional<Sid>&& group,
-                                       std::optional<AccessControlList>&& dacl,
+SecurityDescriptor::SecurityDescriptor(std::optional<Sid> owner,
+                                       std::optional<Sid> group,
+                                       std::optional<AccessControlList> dacl,
                                        bool dacl_protected,
-                                       std::optional<AccessControlList>&& sacl,
-                                       bool sacl_protected) {
+                                       bool dacl_auto_inherited,
+                                       std::optional<AccessControlList> sacl,
+                                       bool sacl_protected,
+                                       bool sacl_auto_inherited) {
   owner_.swap(owner);
   group_.swap(group);
   dacl_.swap(dacl);
   dacl_protected_ = dacl_protected;
+  dacl_auto_inherited_ = dacl_auto_inherited;
   sacl_.swap(sacl);
   sacl_protected_ = sacl_protected;
+  sacl_auto_inherited_ = sacl_auto_inherited;
 }
 
 }  // namespace base::win

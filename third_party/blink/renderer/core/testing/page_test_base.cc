@@ -11,23 +11,26 @@
 #include "base/test/bind.h"
 #include "base/time/default_clock.h"
 #include "base/time/default_tick_clock.h"
+#include "skia/ext/font_utils.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_font_face_descriptors.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybuffer_arraybufferview_string.h"
 #include "third_party/blink/renderer/core/css/css_default_style_sheets.h"
 #include "third_party/blink/renderer/core/css/font_face_set_document.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/frame/csp/test_util.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
-#include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/html_collection.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_text_fragment.h"
+#include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/mock_policy_container_host.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/loader/fetch/memory_cache.h"
+#include "third_party/blink/renderer/platform/loader/fetch/policy_container_utils.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -92,9 +95,8 @@ void PageTestBase::MockClipboardHostProvider::Install(
   interface_broker_ = &interface_broker;
   interface_broker_->SetBinderForTesting(
       blink::mojom::blink::ClipboardHost::Name_,
-      WTF::BindRepeating(
-          &PageTestBase::MockClipboardHostProvider::BindClipboardHost,
-          base::Unretained(this)));
+      BindRepeating(&PageTestBase::MockClipboardHostProvider::BindClipboardHost,
+                    Unretained(this)));
 }
 
 void PageTestBase::MockClipboardHostProvider::BindClipboardHost(
@@ -146,6 +148,8 @@ void PageTestBase::SetUp() {
   // We do a lot of one-offs in unit tests, so update this so that every
   // single test doesn't have to.
   GetStyleEngine().UpdateViewportSize();
+
+  skia::InitializeFontRendering();
 }
 
 void PageTestBase::SetUp(gfx::Size size) {
@@ -166,6 +170,8 @@ void PageTestBase::SetUp(gfx::Size size) {
   // We do a lot of one-offs in unit tests, so update this so that every
   // single test doesn't have to.
   GetStyleEngine().UpdateViewportSize();
+
+  skia::InitializeFontRendering();
 }
 
 void PageTestBase::SetupPageWithClients(
@@ -199,6 +205,18 @@ void PageTestBase::SetupPageWithClients(
 void PageTestBase::TearDown() {
   dummy_page_holder_ = nullptr;
   MemoryCache::Get()->EvictResources();
+
+  // `SimpleFontData` is leaked because of
+  // `ComputedStyle::GetInitialStyleSingleton()`. i.e.
+  // `ComputedStyleBase::inherited_data_::font_` ->
+  // `Font::font_fallback_list_` -> `FontFallbackList::font_list_`. The leak
+  // may cause `Debug check failed: isolate == isolate_` while running
+  // `~SimpleFontData`. So we have to decouple FontFallbackList from the
+  // initial style. `FontFallbackList` will be recreated by
+  // `EnsureFallbackList()` if needed.
+  const_cast<ComputedStyle*>(ComputedStyle::GetInitialStyleSingleton())
+      ->GetFont()
+      ->NullifyForTesting();
 }
 
 Document& PageTestBase::GetDocument() const {
@@ -211,6 +229,10 @@ Page& PageTestBase::GetPage() const {
 
 LocalFrame& PageTestBase::GetFrame() const {
   return GetDummyPageHolder().GetFrame();
+}
+
+LocalFrameView& PageTestBase::GetFrameView() const {
+  return *GetFrame().View();
 }
 
 FrameSelection& PageTestBase::Selection() const {
@@ -257,16 +279,17 @@ void PageTestBase::LoadNoto(LocalFrame& frame) {
 
 // Both sets the inner html and runs the document lifecycle.
 void PageTestBase::SetBodyInnerHTML(const String& body_content) {
-  GetDocument().body()->setInnerHTML(body_content, ASSERT_NO_EXCEPTION);
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(body_content);
   UpdateAllLifecyclePhasesForTest();
 }
 
 void PageTestBase::SetBodyContent(const std::string& body_content) {
-  SetBodyInnerHTML(String::FromUTF8(body_content));
+  SetBodyInnerHTML(String::FromUtf8(body_content));
 }
 
 void PageTestBase::SetHtmlInnerHTML(const std::string& html_content) {
-  GetDocument().documentElement()->setInnerHTML(String::FromUTF8(html_content));
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      String::FromUtf8(html_content));
   UpdateAllLifecyclePhasesForTest();
 }
 
@@ -281,7 +304,7 @@ void PageTestBase::InsertStyleElement(const std::string& style_rules) {
 }
 
 void PageTestBase::NavigateTo(const KURL& url,
-                              const WTF::HashMap<String, String>& headers) {
+                              const HashMap<String, String>& headers) {
   auto params = WebNavigationParams::CreateWithEmptyHTMLForTesting(url);
 
   for (const auto& header : headers)
@@ -299,7 +322,7 @@ void PageTestBase::NavigateTo(const KURL& url,
            network::mojom::blink::ContentSecurityPolicyType::kEnforce,
            network::mojom::blink::ContentSecurityPolicySource::kHTTP, url)) {
     params->policy_container->policies.content_security_policies.emplace_back(
-        ConvertToPublic(std::move(csp)));
+        ToWebContentSecurityPolicy(*csp));
   }
 
   GetFrame().Loader().CommitNavigation(std::move(params),

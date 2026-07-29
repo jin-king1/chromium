@@ -6,7 +6,7 @@
 #define COMPONENTS_TAB_GROUPS_TAB_GROUP_COLOR_H_
 
 #include <stddef.h>
-#include <map>
+
 #include <string>
 
 #include "base/component_export.h"
@@ -35,6 +35,7 @@ namespace tab_groups {
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.tab_groups
 //
+// LINT.IfChange
 enum class TabGroupColorId {
   kGrey = 0,
   kBlue = 1,
@@ -48,6 +49,7 @@ enum class TabGroupColorId {
   // Next value: 9
   kNumEntries = 9,
 };
+// LINT.ThenChange(//components/tab_groups/android/java/src/org/chromium/components/tab_groups/TabGroupColorPickerUtils.java)
 
 using ColorLabelMap = base::flat_map<TabGroupColorId, std::u16string>;
 
@@ -56,12 +58,6 @@ using ColorLabelMap = base::flat_map<TabGroupColorId, std::u16string>;
 // map for valid values.
 COMPONENT_EXPORT(TAB_GROUPS)
 const ColorLabelMap& GetTabGroupColorLabelMap();
-
-// Returns the least-used color in the color set, breaking ties toward the first
-// color in the set. Used to initialize a new group's color, which should be as
-// distinct from the other groups as possible.
-COMPONENT_EXPORT(TAB_GROUPS)
-TabGroupColorId GetNextColor(const std::vector<TabGroupColorId>& used_colors);
 
 }  // namespace tab_groups
 

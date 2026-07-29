@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_COMMON_PASSWORD_MANAGER_UI_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_COMMON_PASSWORD_MANAGER_UI_H_
 
+#include <string>
+
 namespace password_manager::ui {
 
 // The current state of the password manager's UI.
@@ -36,10 +38,6 @@ enum State {
   // The user submitted a form that we consider to be a change password form.
   // Chrome needs to ask the user to confirm password updating.
   PENDING_PASSWORD_UPDATE_STATE,
-
-  // A user opted in to account storage is about to lose some unsynced
-  // passwords.
-  WILL_DELETE_UNSYNCED_ACCOUNT_PASSWORDS_STATE,
 
   // The user used a profile credential to log in successfully and should see a
   // prompt that allows them to move the credential to their account store.
@@ -94,9 +92,12 @@ enum State {
   // the same website and user.
   PASSKEY_UPGRADE_STATE,
 
-  // Password change flow was started.
+  // Password change flow ended successfully. User can trigger this state
+  // from the password change success toast.
   PASSWORD_CHANGE_STATE,
 };
+
+std::string StateToString(State state);
 
 }  // namespace password_manager::ui
 

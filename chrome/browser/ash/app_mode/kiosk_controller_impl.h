@@ -15,17 +15,30 @@
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
+#include "chrome/browser/ash/app_mode/arcvm_app/kiosk_arcvm_app_manager.h"
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_app.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_controller.h"
+#include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
 #include "chrome/browser/ash/app_mode/kiosk_system_session.h"
-#include "chrome/browser/ash/app_mode/web_app/web_kiosk_app_manager.h"
+#include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
+#include "chrome/browser/chromeos/app_mode/kiosk_app_level_logs_manager_wrapper.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_contents.h"
+
+class PrefService;
+
+namespace network {
+class SharedURLLoaderFactory;
+}
+
+namespace policy {
+class PolicyService;
+}  // namespace policy
 
 namespace ash {
 
@@ -36,7 +49,13 @@ class KioskLaunchController;
 class KioskControllerImpl : public KioskController,
                             public user_manager::UserManager::Observer {
  public:
-  explicit KioskControllerImpl(user_manager::UserManager* user_manager);
+  // `local_state` and `policy_service` must be non-null and must outlive
+  // `this`.
+  KioskControllerImpl(
+      PrefService* local_state,
+      const policy::PolicyService* policy_service,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      user_manager::UserManager* user_manager);
   KioskControllerImpl(const KioskControllerImpl&) = delete;
   KioskControllerImpl& operator=(const KioskControllerImpl&) = delete;
   ~KioskControllerImpl() override;
@@ -66,10 +85,7 @@ class KioskControllerImpl : public KioskController,
 
   KioskSystemSession* GetKioskSystemSession() override;
 
-  kiosk_vision::TelemetryProcessor* GetKioskVisionTelemetryProcessor() override;
-
-  kiosk_vision::InternalsPageProcessor* GetKioskVisionInternalsPageProcessor()
-      override;
+  void RemoveObsoleteCryptohomes() override;
 
  private:
   // `user_manager::UserManager::Observer` implementation:
@@ -93,13 +109,23 @@ class KioskControllerImpl : public KioskController,
   void AppendWebApps(std::vector<KioskApp>& apps) const;
   void AppendChromeApps(std::vector<KioskApp>& apps) const;
   void AppendIsolatedWebApps(std::vector<KioskApp>& apps) const;
+  void AppendArcvmApps(std::vector<KioskApp>& apps) const;
 
   SEQUENCE_CHECKER(sequence_checker_);
 
+  const raw_ref<PrefService> local_state_;
+  const raw_ref<const policy::PolicyService> policy_service_;
+
+  KioskCryptohomeRemover cryptohome_remover_;
+
   KioskIwaManager GUARDED_BY_CONTEXT(sequence_checker_) iwa_manager_;
-  WebKioskAppManager GUARDED_BY_CONTEXT(sequence_checker_) web_app_manager_;
+  KioskWebAppManager GUARDED_BY_CONTEXT(sequence_checker_) web_app_manager_;
   KioskChromeAppManager GUARDED_BY_CONTEXT(sequence_checker_)
       chrome_app_manager_;
+  KioskArcvmAppManager GUARDED_BY_CONTEXT(sequence_checker_) arcvm_app_manager_;
+
+  std::unique_ptr<chromeos::KioskAppLevelLogsManagerWrapper> GUARDED_BY_CONTEXT(
+      sequence_checker_) kiosk_log_manager_wrapper_;
 
   // Created once the Kiosk session launch starts. Only not null during the
   // kiosk launch.

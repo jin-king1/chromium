@@ -5,12 +5,15 @@
 #include "ui/ozone/platform/wayland/test/mock_wayland_platform_window_delegate.h"
 
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
 
 namespace ui {
 
-MockWaylandPlatformWindowDelegate::MockWaylandPlatformWindowDelegate() =
-    default;
+MockWaylandPlatformWindowDelegate::MockWaylandPlatformWindowDelegate(
+    raw_ptr<WaylandConnection> connection)
+    : connection_(connection) {}
+
 MockWaylandPlatformWindowDelegate::~MockWaylandPlatformWindowDelegate() =
     default;
 
@@ -33,7 +36,7 @@ MockWaylandPlatformWindowDelegate::CreateWaylandWindow(
     WaylandConnection* connection,
     PlatformWindowInitProperties properties) {
   auto window = WaylandWindow::Create(this, connection, std::move(properties));
-  wayland_window_ = window.get();
+  wayland_window_ = window->AsWeakPtr();
   return window;
 }
 
@@ -48,10 +51,18 @@ int64_t MockWaylandPlatformWindowDelegate::OnStateUpdate(
       old.window_scale != latest.window_scale) {
     bool origin_changed = old.bounds_dip.origin() != latest.bounds_dip.origin();
     OnBoundsChanged({origin_changed});
+    if (!wayland_window_) {
+      return -1;
+    }
   }
 
   if (!on_state_update_callback_.is_null()) {
-    on_state_update_callback_.Run();
+    if (!on_state_update_callback_.Run()) {
+      return -1;
+    }
+    if (!wayland_window_) {
+      return -1;
+    }
   }
 
   if (!latest.WillProduceFrameOnUpdateFrom(old)) {

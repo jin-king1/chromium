@@ -23,7 +23,7 @@ namespace payments::facilitated {
 class FacilitatedPaymentsInitiatePaymentRequest
     : public autofill::payments::PaymentsRequest {
  public:
-  // Either the PIX code or the payment link must be present in the
+  // Either the Pix code or the payment link must be present in the
   // `request_details`.
   FacilitatedPaymentsInitiatePaymentRequest(
       std::unique_ptr<FacilitatedPaymentsInitiatePaymentRequestDetails>
@@ -42,7 +42,7 @@ class FacilitatedPaymentsInitiatePaymentRequest
   std::string GetRequestUrlPath() override;
   std::string GetRequestContentType() override;
   std::string GetRequestContent() override;
-  void ParseResponse(const base::Value::Dict& response) override;
+  void ParseResponse(const base::DictValue& response) override;
   bool IsResponseComplete() override;
   void RespondToDelegate(
       autofill::payments::PaymentsAutofillClient::PaymentsRpcResult result)

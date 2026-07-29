@@ -41,14 +41,14 @@ public class NetworkStatusListenerAndroid implements BackgroundNetworkStatusList
     static class Helper implements BackgroundNetworkStatusListener.Observer {
         // A thread handler that |mBackgroundNetworkStatusListener| lives on, which performs actual
         // network queries. Use a background thread to avoid jank on main thread.
-        private Handler mNetworkThreadHandler;
+        private final Handler mNetworkThreadHandler;
 
         // The object that performs actual network queries on a background thread.
         private BackgroundNetworkStatusListener mBackgroundNetworkStatusListener;
 
         private boolean mReady;
         private @ConnectionType int mConnectionType = ConnectionType.CONNECTION_UNKNOWN;
-        private ObserverList<BackgroundNetworkStatusListener.Observer> mObservers =
+        private final ObserverList<BackgroundNetworkStatusListener.Observer> mObservers =
                 new ObserverList<>();
 
         Helper() {
@@ -154,9 +154,7 @@ public class NetworkStatusListenerAndroid implements BackgroundNetworkStatusList
     public void onNetworkStatusReady(int connectionType) {
         ThreadUtils.assertOnUiThread();
         if (mNativePtr != 0) {
-            NetworkStatusListenerAndroidJni.get()
-                    .onNetworkStatusReady(
-                            mNativePtr, NetworkStatusListenerAndroid.this, connectionType);
+            NetworkStatusListenerAndroidJni.get().onNetworkStatusReady(mNativePtr, connectionType);
         }
     }
 
@@ -165,21 +163,14 @@ public class NetworkStatusListenerAndroid implements BackgroundNetworkStatusList
         ThreadUtils.assertOnUiThread();
         if (mNativePtr != 0) {
             NetworkStatusListenerAndroidJni.get()
-                    .notifyNetworkChange(
-                            mNativePtr, NetworkStatusListenerAndroid.this, newConnectionType);
+                    .notifyNetworkChange(mNativePtr, newConnectionType);
         }
     }
 
     @NativeMethods
     interface Natives {
-        void onNetworkStatusReady(
-                long nativeNetworkStatusListenerAndroid,
-                NetworkStatusListenerAndroid caller,
-                int connectionType);
+        void onNetworkStatusReady(long nativeNetworkStatusListenerAndroid, int connectionType);
 
-        void notifyNetworkChange(
-                long nativeNetworkStatusListenerAndroid,
-                NetworkStatusListenerAndroid caller,
-                int connectionType);
+        void notifyNetworkChange(long nativeNetworkStatusListenerAndroid, int connectionType);
     }
 }

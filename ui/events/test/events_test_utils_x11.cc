@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ui/events/test/events_test_utils_x11.h"
 
@@ -14,6 +10,7 @@
 #include <vector>
 
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/notreached.h"
 #include "ui/events/devices/x11/touch_factory_x11.h"
 #include "ui/events/devices/x11/xinput_util.h"
@@ -211,7 +208,8 @@ void ScopedXI2Event::InitGenericButtonEvent(int deviceid,
   dev_event->detail = XButtonEventButton(type, flags);
   dev_event->event_x = ToFp1616(location.x()),
   dev_event->event_y = ToFp1616(location.y()),
-  SetXinputMask(dev_event->button_mask.data(), XButtonEventButton(type, flags));
+  SetXinputMask(base::as_writable_byte_span(dev_event->button_mask),
+                XButtonEventButton(type, flags));
 
   // Setup an empty valuator list for generic button events.
   SetUpValuators(std::vector<Valuator>());

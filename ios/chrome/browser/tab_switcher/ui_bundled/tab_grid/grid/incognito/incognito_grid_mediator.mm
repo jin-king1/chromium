@@ -4,28 +4,26 @@
 
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/incognito/incognito_grid_mediator.h"
 
-#import "base/feature_list.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
+#import "components/feature_engagement/public/event_constants.h"
+#import "components/feature_engagement/public/tracker.h"
 #import "components/policy/core/common/policy_pref_names.h"
-#import "components/prefs/ios/pref_observer_bridge.h"
-#import "components/prefs/pref_change_registrar.h"
+#import "components/prefs/pref_service.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/tribool.h"
 #import "components/supervised_user/core/browser/family_link_user_capabilities.h"
-#import "components/supervised_user/core/browser/supervised_user_preferences.h"
-#import "components/supervised_user/core/common/features.h"
-#import "components/supervised_user/core/common/pref_names.h"
-#import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_constants.h"
-#import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/incognito_lock_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/tab_groups_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_browser_agent.h"
 #import "ios/chrome/browser/supervised_user/model/family_link_user_capabilities_observer_bridge.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/base_grid_mediator.h"
+#import "ios/chrome/browser/tab_switcher/tab_grid/base_grid/coordinator/base_grid_mediator.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_consumer.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_toolbars_mutator.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/incognito/incognito_grid_mediator_delegate.h"
@@ -40,16 +38,11 @@
 // refactored.
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_view_controller.h"
 
-@interface IncognitoGridMediator () <IncognitoReauthObserver,
-                                     PrefObserverDelegate,
-                                     FamilyLinkUserCapabilitiesObserving>
+@interface IncognitoGridMediator () <FamilyLinkUserCapabilitiesObserving,
+                                     IncognitoStateObserver>
 @end
 
 @implementation IncognitoGridMediator {
-  // Pref observer to track changes to prefs.
-  std::unique_ptr<PrefObserverBridge> _prefObserverBridge;
-  // Registrar for pref changes notifications.
-  std::unique_ptr<PrefChangeRegistrar> _prefChangeRegistrar;
   // YES if incognito is disabled.
   BOOL _incognitoDisabled;
   // Whether this grid is currently selected.
@@ -78,20 +71,9 @@
   base::RecordAction(
       base::UserMetricsAction("MobileTabGridCloseAllIncognitoTabs"));
   // This is a no-op if `webStateList` is already empty.
-  CloseAllWebStates(*self.webStateList, WebStateList::CLOSE_USER_ACTION);
+  CloseAllWebStates(*self.webStateList,
+                    WebStateList::ClosingReason::kUserAction);
   SnapshotBrowserAgent::FromBrowser(self.browser)->RemoveAllSnapshots();
-}
-
-- (void)saveAndCloseAllItems {
-  NOTREACHED() << "Incognito tabs should not be saved before closing.";
-}
-
-- (void)undoCloseAllItems {
-  NOTREACHED() << "Incognito tabs are not saved before closing.";
-}
-
-- (void)discardSavedClosedItems {
-  NOTREACHED() << "Incognito tabs cannot be saved.";
 }
 
 - (void)setPinState:(BOOL)pinState forItemWithID:(web::WebStateID)itemID {
@@ -111,14 +93,27 @@
   }
 }
 
-- (void)setPageAsActive {
-  [self.gridConsumer setActivePageFromPage:TabGridPageIncognitoTabs];
+- (void)setPageAsActiveWithBehavior:(TabGridScrollBehavior)behavior {
+  [self.gridConsumer setActivePageFromPage:TabGridPageIncognitoTabs
+                                  behavior:behavior];
 }
 
 #pragma mark - TabGridToolbarsGridDelegate
 
 - (void)closeAllButtonTapped:(id)sender {
-  [self closeAllItems];
+  [self.incognitoDelegate showCloseAllConfirmationFromSourceView:sender];
+}
+
+- (void)closeOtherTabsButtonTapped:(id)sender {
+  int indexToKeep = self.webStateList->active_index();
+  if (indexToKeep == WebStateList::kInvalidIndex) {
+    return;
+  }
+  RecordTabGridCloseOtherTabs(/*incognito=*/true);
+  // There is no pinned tabs in incognito.
+  RecordTabGridCloseTabsCount(self.webStateList->count() - 1);
+  CloseOtherWebStates(*self.webStateList, indexToKeep,
+                      WebStateList::ClosingReason::kUserAction);
 }
 
 - (void)newTabButtonTapped:(id)sender {
@@ -149,11 +144,9 @@
 #pragma mark - Parent's function
 
 - (void)disconnect {
-  _prefChangeRegistrar.reset();
-  _prefObserverBridge.reset();
   _familyLinkUserCapabilitiesObserver.reset();
   _identityManager = nil;
-  [_reauthSceneAgent removeObserver:self];
+  [self.incognitoState removeObserver:self];
   [super disconnect];
 }
 
@@ -165,8 +158,12 @@
   // correct delegate.
   [self.toolbarsMutator setToolbarsButtonsDelegate:self];
 
-  BOOL authenticationRequired = self.reauthSceneAgent.authenticationRequired;
+  BOOL authenticationRequired = self.incognitoState.authenticationRequired;
   if (_incognitoDisabled || authenticationRequired) {
+    if (IsIOSSoftLockEnabled()) {
+      [self.toolbarsMutator
+          setIncognitoToolbarsBackgroundHidden:authenticationRequired];
+    }
     [self.toolbarsMutator
         setToolbarConfiguration:
             [TabGridToolbarsConfiguration
@@ -177,67 +174,41 @@
   TabGridToolbarsConfiguration* toolbarsConfiguration =
       [[TabGridToolbarsConfiguration alloc]
           initWithPage:TabGridPageIncognitoTabs];
+  toolbarsConfiguration.overflowMenuButton = YES;
 
   if (self.modeHolder.mode == TabGridMode::kSelection) {
     [self configureButtonsInSelectionMode:toolbarsConfiguration];
   } else {
     toolbarsConfiguration.closeAllButton = !self.webStateList->empty();
-    toolbarsConfiguration.doneButton = !self.webStateList->empty();
+    toolbarsConfiguration.exitTabGridButton = !self.webStateList->empty();
     toolbarsConfiguration.newTabButton = YES;
     toolbarsConfiguration.searchButton = YES;
     toolbarsConfiguration.selectTabsButton = !self.webStateList->empty();
+    toolbarsConfiguration.closeOtherTabsButton = [self canCloseOtherTabs];
   }
 
   [self.toolbarsMutator setToolbarConfiguration:toolbarsConfiguration];
 }
 
 - (void)displayActiveTab {
-  [self.gridConsumer setActivePageFromPage:TabGridPageIncognitoTabs];
+  [self.gridConsumer setActivePageFromPage:TabGridPageIncognitoTabs
+                                  behavior:TabGridScrollBehaviorAnimated];
   [self.tabPresentationDelegate showActiveTabInPage:TabGridPageIncognitoTabs
                                        focusOmnibox:NO];
-}
-
-#pragma mark - PrefObserverDelegate
-
-- (void)onPreferenceChanged:(const std::string&)preferenceName {
-  if (!base::FeatureList::IsEnabled(
-          supervised_user::
-              kReplaceSupervisionPrefsWithAccountCapabilitiesOnIOS) &&
-      preferenceName == prefs::kSupervisedUserId) {
-    BOOL isDisabled = [self isIncognitoModeDisabled];
-    if (_incognitoDisabled != isDisabled) {
-      _incognitoDisabled = isDisabled;
-      [self.incognitoDelegate shouldDisableIncognito:_incognitoDisabled];
-    }
-
-    [self configureToolbarsButtons];
+  if (IsDownloadAutoDeletionFeatureEnabled()) {
+    self.tracker->NotifyEvent(
+        feature_engagement::events::kIOSDownloadAutoDeletionIPHCriterionMet);
   }
 }
 
 #pragma mark - Properties
 
 - (void)setBrowser:(Browser*)browser {
-  _prefChangeRegistrar.reset();
-  _prefObserverBridge.reset();
-
   [super setBrowser:browser];
 
   if (browser) {
     PrefService* prefService = browser->GetProfile()->GetPrefs();
     DCHECK(prefService);
-
-    if (!base::FeatureList::IsEnabled(
-            supervised_user::
-                kReplaceSupervisionPrefsWithAccountCapabilitiesOnIOS)) {
-      _prefChangeRegistrar = std::make_unique<PrefChangeRegistrar>();
-      _prefChangeRegistrar->Init(prefService);
-
-      // Register to observe any changes on supervised_user status.
-      _prefObserverBridge = std::make_unique<PrefObserverBridge>(self);
-      _prefObserverBridge->ObserveChangesForPreference(
-          prefs::kSupervisedUserId, _prefChangeRegistrar.get());
-    }
-
     _incognitoDisabled = [self isIncognitoModeDisabled];
   }
 }
@@ -248,71 +219,75 @@
   return browser->GetProfile()->GetPrefs();
 }
 
-- (void)setReauthSceneAgent:(IncognitoReauthSceneAgent*)reauthSceneAgent {
-  if (_reauthSceneAgent == reauthSceneAgent) {
+- (void)setIncognitoState:(IncognitoState*)incognitoState {
+  if (_incognitoState == incognitoState) {
     return;
   }
-  [_reauthSceneAgent removeObserver:self];
-  _reauthSceneAgent = reauthSceneAgent;
-  [_reauthSceneAgent addObserver:self];
+  [_incognitoState removeObserver:self];
+  _incognitoState = incognitoState;
+  [_incognitoState addObserver:self];
 }
 
-#pragma mark - IncognitoReauthObserver
+#pragma mark - IncognitoStateObserver
 
-- (void)reauthAgent:(IncognitoReauthSceneAgent*)agent
-    didUpdateAuthenticationRequirement:(BOOL)isRequired {
-  if (isRequired) {
+- (void)didUpdateAuthenticationRequirementForState:
+    (IncognitoState*)incognitoState {
+  if (incognitoState.authenticationRequired) {
     [self.tabGroupsHandler hideTabGroup];
   }
   if (_selected) {
-    if (isRequired) {
+    if (incognitoState.authenticationRequired) {
       self.modeHolder.mode = TabGridMode::kNormal;
     }
     [self configureToolbarsButtons];
   }
 }
 
-- (void)reauthAgent:(IncognitoReauthSceneAgent*)agent
-    didUpdateIncognitoLockState:(IncognitoLockState)incogitoLockState {
-  [self reauthAgent:agent
-      didUpdateAuthenticationRequirement:incogitoLockState !=
-                                         IncognitoLockState::kNone];
+- (void)didUpdateIncognitoLockStateForState:(IncognitoState*)incognitoState {
+  [self didUpdateAuthenticationRequirementForState:incognitoState];
+  [self.toolbarsMutator
+      setIncognitoToolbarsBackgroundHidden:incognitoState
+                                               .authenticationRequired];
 }
 
 #pragma mark - FamilyLinkUserCapabilitiesObserving
 
 - (void)onIsSubjectToParentalControlsCapabilityChanged:
     (supervised_user::CapabilityUpdateState)capabilityUpdateState {
-  if (base::FeatureList::IsEnabled(
-          supervised_user::
-              kReplaceSupervisionPrefsWithAccountCapabilitiesOnIOS)) {
-    BOOL isDisabled = [self isIncognitoModeDisabled];
-    if (_incognitoDisabled != isDisabled) {
-      _incognitoDisabled = isDisabled;
-      [self.incognitoDelegate shouldDisableIncognito:_incognitoDisabled];
-    }
-
-    [self configureToolbarsButtons];
+  BOOL isDisabled = [self isIncognitoModeDisabled];
+  if (_incognitoDisabled != isDisabled) {
+    _incognitoDisabled = isDisabled;
+    [self.incognitoDelegate shouldDisableIncognito:_incognitoDisabled];
   }
+
+  [self configureToolbarsButtons];
 }
 
 #pragma mark - Public
 
 - (void)initializeFamilyLinkUserCapabilitiesObserver:
     (signin::IdentityManager*)identityManager {
-  if (base::FeatureList::IsEnabled(
-          supervised_user::
-              kReplaceSupervisionPrefsWithAccountCapabilitiesOnIOS)) {
-    DCHECK(identityManager);
-    _identityManager = identityManager;
-    _familyLinkUserCapabilitiesObserver = std::make_unique<
-        supervised_user::FamilyLinkUserCapabilitiesObserverBridge>(
-        _identityManager, self);
-    _incognitoDisabled = [self isIncognitoModeDisabled];
-  }
+  DCHECK(identityManager);
+  _identityManager = identityManager;
+  _familyLinkUserCapabilitiesObserver = std::make_unique<
+      supervised_user::FamilyLinkUserCapabilitiesObserverBridge>(
+      _identityManager, self);
+  _incognitoDisabled = [self isIncognitoModeDisabled];
 }
 
 #pragma mark - Private
+
+// Returns YES if "Close Other Tabs" should be enabled.
+- (BOOL)canCloseOtherTabs {
+  if (!self.webStateList) {
+    return NO;
+  }
+  int activeIndex = self.webStateList->active_index();
+  if (activeIndex == WebStateList::kInvalidIndex) {
+    return NO;
+  }
+  return self.webStateList->count() > 1;
+}
 
 // Returns YES if incognito is disabled.
 - (BOOL)isIncognitoModeDisabled {
@@ -328,15 +303,9 @@
 
 // Returns YES if the primary account is supervised.
 - (BOOL)isSupervisedUser {
-  if (base::FeatureList::IsEnabled(
-          supervised_user::
-              kReplaceSupervisionPrefsWithAccountCapabilitiesOnIOS)) {
-    return _identityManager &&
-           supervised_user::IsPrimaryAccountSubjectToParentalControls(
-               _identityManager) == signin::Tribool::kTrue;
-  }
-
-  return supervised_user::IsSubjectToParentalControls(*[self prefService]);
+  return _identityManager &&
+         supervised_user::IsPrimaryAccountSubjectToParentalControls(
+             _identityManager) == signin::Tribool::kTrue;
 }
 
 // Returns YES if incognito mode is managed by enterprise policies.

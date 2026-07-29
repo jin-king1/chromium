@@ -7,30 +7,36 @@
 #import <AuthenticationServices/AuthenticationServices.h>
 
 #import "base/check.h"
+#import "base/check_is_test.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/notreached.h"
 #import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/task/bind_post_task.h"
 #import "base/task/sequenced_task_runner.h"
+#import "base/task/thread_pool.h"
 #import "build/build_config.h"
 #import "components/affiliations/core/browser/affiliation_service.h"
 #import "components/affiliations/core/browser/affiliation_utils.h"
 #import "components/password_manager/core/browser/affiliation/affiliated_match_helper.h"
 #import "components/password_manager/core/browser/password_manager_util.h"
+#import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/password_store_change.h"
 #import "components/password_manager/core/browser/password_store/password_store_interface.h"
 #import "components/password_manager/core/browser/password_store/password_store_util.h"
 #import "components/password_manager/core/browser/password_sync_util.h"
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/password_manager/core/common/password_manager_pref_names.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
+#import "components/signin/public/identity_manager/tribool.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_service_utils.h"
 #import "components/sync/service/sync_user_settings.h"
 #import "ios/chrome/browser/credential_provider/model/archivable_credential+password_form.h"
 #import "ios/chrome/browser/credential_provider/model/credential_provider_util.h"
 #import "ios/chrome/browser/credential_provider/model/features.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/chrome/common/credential_provider/ASPasskeyCredentialIdentity+credential.h"
@@ -38,6 +44,7 @@
 #import "ios/chrome/common/credential_provider/archivable_credential+passkey.h"
 #import "ios/chrome/common/credential_provider/constants.h"
 #import "ios/chrome/common/credential_provider/credential_store.h"
+#import "ios/chrome/common/credential_provider/credential_store_util.h"
 #import "ios/components/credential_provider_extension/password_util.h"
 
 namespace {
@@ -77,54 +84,52 @@ ErrorForReportingForASCredentialIdentityStoreErrorCode(
   return CredentialIdentityStoreErrorForReporting::kUnknownError;
 }
 
-void SyncASIdentityStore(id<CredentialStore> credential_store) {
+// We can't sync store when the app is backgrounded, as it loses access to files
+// and stores provided by iOS.
+bool CanSyncStore() {
+  return UIApplication.sharedApplication.applicationState !=
+         UIApplicationStateBackground;
+}
+
+// Writes ASCredentialIdentity objects corresponding to `credentials` into the
+// ASCredentialIdentityStore used for OS-initated credential lookups.
+void SyncASIdentityStore(NSArray<id<Credential>>* credentials) {
   auto stateCompletion = ^(ASCredentialIdentityStoreState* state) {
-#if !defined(NDEBUG)
-    dispatch_assert_queue_not(dispatch_get_main_queue());
-#endif  // !defined(NDEBUG)
-    if (state.enabled) {
-      NSArray<id<Credential>>* credentials = credential_store.credentials;
-      auto replaceCompletion = ^(BOOL success, NSError* error) {
-        // Sometimes ASCredentialIdentityStore fails. Log this to measure the
-        // impact of these failures and move on.
-        if (!success) {
-          ASCredentialIdentityStoreErrorCode code =
-              static_cast<ASCredentialIdentityStoreErrorCode>(error.code);
-          CredentialIdentityStoreErrorForReporting errorForReporting =
-              ErrorForReportingForASCredentialIdentityStoreErrorCode(code);
-          base::UmaHistogramEnumeration(
-              "IOS.CredentialExtension.Service.Error."
-              "ReplaceCredentialIdentitiesWithIdentities",
-              errorForReporting);
+    if (!state.enabled || !CanSyncStore()) {
+      return;
+    }
+    auto replaceCompletion = ^(BOOL success, NSError* error) {
+      // Sometimes ASCredentialIdentityStore fails. Log this to measure the
+      // impact of these failures and move on.
+      if (!success) {
+        ASCredentialIdentityStoreErrorCode code =
+            static_cast<ASCredentialIdentityStoreErrorCode>(error.code);
+        CredentialIdentityStoreErrorForReporting errorForReporting =
+            ErrorForReportingForASCredentialIdentityStoreErrorCode(code);
+        base::UmaHistogramEnumeration(
+            "IOS.CredentialExtension.Service.Error."
+            "ReplaceCredentialIdentitiesWithIdentities",
+            errorForReporting);
+      }
+    };
+    NSMutableArray<id<ASCredentialIdentity>>* storeIdentities =
+        [NSMutableArray arrayWithCapacity:credentials.count];
+    for (id<Credential> credential in credentials) {
+      if (credential.isPasskey) {
+        // Hidden passkeys shouldn't be surfaced in the sign-in suggestions.
+        if (credential.hidden) {
+          continue;
         }
-      };
-      if (@available(iOS 17.0, *)) {
-        NSMutableArray<id<ASCredentialIdentity>>* storeIdentities =
-            [NSMutableArray arrayWithCapacity:credentials.count];
-        for (id<Credential> credential in credentials) {
-          if (credential.isPasskey) {
-            [storeIdentities addObject:[[ASPasskeyCredentialIdentity alloc]
-                                           cr_initWithCredential:credential]];
-          } else {
-            [storeIdentities addObject:[[ASPasswordCredentialIdentity alloc]
-                                           cr_initWithCredential:credential]];
-          }
-        }
-        [ASCredentialIdentityStore.sharedStore
-            replaceCredentialIdentityEntries:storeIdentities
-                                  completion:replaceCompletion];
+        [storeIdentities addObject:[[ASPasskeyCredentialIdentity alloc]
+                                       cr_initWithCredential:credential]];
       } else {
-        NSMutableArray<ASPasswordCredentialIdentity*>* storeIdentities =
-            [NSMutableArray arrayWithCapacity:credentials.count];
-        for (id<Credential> credential in credentials) {
-          [storeIdentities addObject:[[ASPasswordCredentialIdentity alloc]
-                                         cr_initWithCredential:credential]];
-        }
-        [ASCredentialIdentityStore.sharedStore
-            replaceCredentialIdentitiesWithIdentities:storeIdentities
-                                           completion:replaceCompletion];
+        [storeIdentities addObject:[[ASPasswordCredentialIdentity alloc]
+                                       cr_initWithCredential:credential]];
       }
     }
+    [ASCredentialIdentityStore.sharedStore
+        replaceCredentialIdentityEntries:storeIdentities
+                              completion:replaceCompletion];
   };
   [ASCredentialIdentityStore.sharedStore
       getCredentialIdentityStoreStateWithCompletion:stateCompletion];
@@ -149,7 +154,9 @@ void RecordNumberFaviconsFetched(size_t fetched_favicon_count) {
 }  // namespace
 
 CredentialProviderService::CredentialProviderService(
+    const std::string& profile_name,
     PrefService* prefs,
+    PrefService* local_state,
     scoped_refptr<PasswordStoreInterface> profile_password_store,
     scoped_refptr<PasswordStoreInterface> account_password_store,
     webauthn::PasskeyModel* passkey_model,
@@ -158,7 +165,8 @@ CredentialProviderService::CredentialProviderService(
     syncer::SyncService* sync_service,
     affiliations::AffiliationService* affiliation_service,
     FaviconLoader* favicon_loader)
-    : prefs_(prefs),
+    : profile_name_(profile_name),
+      local_state_(local_state),
       profile_password_store_(profile_password_store),
       account_password_store_(account_password_store),
       passkey_model_(passkey_model),
@@ -173,6 +181,17 @@ CredentialProviderService::CredentialProviderService(
   CHECK(sync_service_);
   CHECK(favicon_loader_);
   CHECK(dual_credential_store_);
+
+  // Favicon folder availability check involves disk I/O or IPC to get the app
+  // group container URL. Move to background task to avoid blocking the main
+  // thread.
+  base::ThreadPool::PostTask(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::BindOnce([]() {
+        base::UmaHistogramBoolean(
+            "IOS.CredentialExtension.FaviconFolderAvailable",
+            IsFaviconFolderAvailable());
+      }));
 
   profile_password_store_->AddObserver(this);
   if (account_password_store_) {
@@ -223,8 +242,7 @@ CredentialProviderService::CredentialProviderService(
   OnPrefOrPolicyStatusChanged();
   UpdatePasswordSyncSetting();
   UpdateAutomaticPasskeyUpgradeSetting();
-  UpdatePasskeyPRFSetting();
-  UpdatePasskeysM2Availability();
+  UpdatePasskeyLargeBlobSetting();
 }
 
 CredentialProviderService::~CredentialProviderService() {}
@@ -238,71 +256,53 @@ void CredentialProviderService::Shutdown() {
     passkey_model_->RemoveObserver(this);
   }
   identity_manager_->RemoveObserver(this);
-  sync_service_->RemoveObserver(this);
+  if (sync_service_) {
+    sync_service_->RemoveObserver(this);
+    sync_service_ = nullptr;
+  }
 }
 
 void CredentialProviderService::OnLoginsChanged(
     password_manager::PasswordStoreInterface* store,
     const PasswordStoreChangeList& changes) {
-  std::vector<PasswordForm> forms_to_add, forms_to_remove;
+  std::vector<password_manager::StoredCredential> forms_to_add, forms_to_remove;
   for (const PasswordStoreChange& change : changes) {
-    if (change.form().blocked_by_user) {
+    if (change.credential().blocked_by_user) {
       continue;
     }
     switch (change.type()) {
       case PasswordStoreChange::ADD:
-        forms_to_add.push_back(change.form());
+        forms_to_add.push_back(
+            password_manager::CloneStoredCredential(change.credential()));
         break;
       case PasswordStoreChange::UPDATE:
-        // Only act on updates if they involve a password change. This is
-        // because using a passwords triggers this code path, since it updates
+        // Using a password triggers this code path, since it updates
         // the use count and use date. Ideally we shouldn't care about this, but
         // for now the whole password file is re-written on every change, which
         // is inefficient. Username changes are not considered updates, but
         // instead treated as a new credential (REMOVE then ADD).
-        if (!IsCPEPerformanceImprovementsEnabled() ||
-            change.password_changed()) {
-          forms_to_remove.push_back(change.form());
-          forms_to_add.push_back(change.form());
-        }
+        forms_to_remove.push_back(
+            password_manager::CloneStoredCredential(change.credential()));
+        forms_to_add.push_back(
+            password_manager::CloneStoredCredential(change.credential()));
         break;
       case PasswordStoreChange::REMOVE:
-        forms_to_remove.push_back(change.form());
+        forms_to_remove.push_back(
+            password_manager::CloneStoredCredential(change.credential()));
         break;
       default:
         NOTREACHED();
     }
   }
 
-  if (IsCPEPerformanceImprovementsEnabled()) {
-    if (!forms_to_remove.empty()) {
-      RemoveCredentials(GetCredentialStore(store), std::move(forms_to_remove));
+  RemoveCredentials(GetCredentialStore(store), std::move(forms_to_remove));
 
-      // Need to commit the removal to disk if there will not be forms added
-      // afterwards.
-      if (forms_to_add.empty()) {
-        SyncStore();
-      }
-    }
+  auto callback = base::BindOnce(
+      &CredentialProviderService::OnInjectedAffiliationAfterLoginsChanged,
+      weak_ptr_factory_.GetWeakPtr(), base::Unretained(store));
 
-    if (!forms_to_add.empty()) {
-      auto callback = base::BindOnce(
-          &CredentialProviderService::OnInjectedAffiliationAfterLoginsChanged,
-          weak_ptr_factory_.GetWeakPtr(), base::Unretained(store));
-
-      affiliated_helper_->InjectAffiliationAndBrandingInformation(
-          std::move(forms_to_add), std::move(callback));
-    }
-  } else {
-    RemoveCredentials(GetCredentialStore(store), std::move(forms_to_remove));
-
-    auto callback = base::BindOnce(
-        &CredentialProviderService::OnInjectedAffiliationAfterLoginsChanged,
-        weak_ptr_factory_.GetWeakPtr(), base::Unretained(store));
-
-    affiliated_helper_->InjectAffiliationAndBrandingInformation(
-        std::move(forms_to_add), std::move(callback));
-  }
+  affiliated_helper_->InjectAffiliationAndBrandingInformation(
+      std::move(forms_to_add), std::move(callback));
 }
 
 void CredentialProviderService::RequestSyncAllCredentials() {
@@ -317,48 +317,87 @@ void CredentialProviderService::RequestSyncAllCredentials() {
 void CredentialProviderService::SyncAllCredentials(
     password_manager::PasswordStoreInterface* store,
     password_manager::LoginsResultOrError forms_or_error) {
-  std::vector<PasswordForm> forms =
+  std::vector<password_manager::StoredCredential> forms =
       password_manager::GetLoginsOrEmptyListOnFailure(
           std::move(forms_or_error));
 
-  MemoryCredentialStore* memoryCredentialStore = GetCredentialStore(store);
-  AddCredentials(memoryCredentialStore, std::move(forms));
+  MemoryCredentialStore* memory_credential_store = GetCredentialStore(store);
+
+  auto completion = base::BindOnce(
+      &CredentialProviderService::CompleteSyncAllCredentials,
+      weak_ptr_factory_.GetWeakPtr(), base::Unretained(memory_credential_store),
+      base::Unretained(store));
+
+  AddCredentials(memory_credential_store, std::move(forms),
+                 std::move(completion));
+}
+
+void CredentialProviderService::CompleteSyncAllCredentials(
+    MemoryCredentialStore* memory_credential_store,
+    password_manager::PasswordStoreInterface* store) {
   // We only sync passkeys into the account store.
   if (passkey_model_ && (store == account_password_store_)) {
-    AddCredentials(memoryCredentialStore, passkey_model_->GetAllPasskeys());
+    AddCredentials(memory_credential_store,
+                   passkey_model_->GetPasskeys(
+                       webauthn::PasskeyModel::AnyRp(),
+                       webauthn::PasskeyModel::ShadowedCredentials::kExclude));
   }
   SyncStore();
 }
 
 void CredentialProviderService::SyncStore() {
+  if (!IsLastUsedProfile() || !CanSyncStore()) {
+    return;
+  }
+
   base::UmaHistogramBoolean(kSyncStoreHistogramName, true);
 
-  [dual_credential_store_ removeAllCredentials];
-  for (id<Credential> credential in profile_credential_store_.credentials) {
-    [dual_credential_store_ addCredential:credential];
-  }
-  for (id<Credential> credential in account_credential_store_.credentials) {
-    [dual_credential_store_ addCredential:credential];
+  // Create a callback to process the read credentials, matching the signature
+  // required by `ReadFromMultipleCredentialStoresAsync`.
+  //
+  // Use `BindPostTask` along with the current thread's task runner to ensure
+  // that we run on the current thread. This class is not thread-safe, and
+  // `ReadFromMultipleCredentialStoresAsync` does not guarantee that the
+  // completion will run on the same thread.
+  //
+  // By first binding CompleteSync with a WeakPtr to `this`, we ensure that the
+  // completion is a no-op if `this` goes out of scope during the read. This
+  // style of binding also requires that the callback be run on the same thread
+  // where the WeakPtr was created (i.e., the current thread).
+  auto update_store_on_current_thread = base::BindPostTask(
+      base::SequencedTaskRunner::GetCurrentDefault(),
+      base::BindOnce(&CredentialProviderService::CompleteSync,
+                     weak_ptr_factory_.GetWeakPtr()));
+
+  credential_store_util::ReadFromMultipleCredentialStoresAsync(
+      @[ account_credential_store_, profile_credential_store_ ],
+      std::move(update_store_on_current_thread));
+}
+
+void CredentialProviderService::CompleteSync(
+    NSArray<id<Credential>>* credentials) {
+  if (!CanSyncStore()) {
+    return;
   }
 
-  __weak id<CredentialStore> weak_credential_store = dual_credential_store_;
-  [dual_credential_store_ saveDataWithCompletion:^(NSError* error) {
-    if (error) {
-      return;
-    }
-    if (weak_credential_store) {
-      SyncASIdentityStore(weak_credential_store);
-    }
-  }];
+  [dual_credential_store_ removeAllCredentials];
+  for (id<Credential> credential in credentials) {
+    [dual_credential_store_ addCredential:credential];
+  }
+  [dual_credential_store_ saveDataWithCompletion:nil];
+  SyncASIdentityStore(credentials);
 }
 
 void CredentialProviderService::AddCredentials(
     MemoryCredentialStore* store,
-    std::vector<PasswordForm> forms) {
-  if (IsCPEPerformanceImprovementsEnabled()) {
-    AddCredentialsRefactored(store, forms);
+    std::vector<password_manager::StoredCredential> forms,
+    base::OnceClosure completion) {
+  if (base::FeatureList::IsEnabled(
+          kCredentialProviderRefactoredAddCredentials)) {
+    AddCredentialsRefactored(store, std::move(forms), std::move(completion));
   } else {
-    AddCredentialsLegacy(store, forms);
+    AddCredentialsLegacy(store, std::move(forms));
+    std::move(completion).Run();
   }
 }
 
@@ -370,7 +409,7 @@ NSString* CredentialProviderService::PrimaryAccountId() const {
 
 void CredentialProviderService::AddCredentialsLegacy(
     MemoryCredentialStore* store,
-    std::vector<PasswordForm> forms) {
+    std::vector<password_manager::StoredCredential> forms) {
   // User is adding a password (not batch add from user login).
   const bool should_skip_max_verification = forms.size() == 1;
   const bool fallback_to_google_server_allowed =
@@ -379,7 +418,7 @@ void CredentialProviderService::AddCredentialsLegacy(
 
   int fetched_favicon_count = 0;
 
-  for (const PasswordForm& form : forms) {
+  for (const auto& form : forms) {
     NSString* favicon_key;
     // Only fetch favicon for valid URL. FaviconLoader::FaviconForPageUrl does
     // not take Android facet URI.
@@ -396,10 +435,10 @@ void CredentialProviderService::AddCredentialsLegacy(
     // Only store password with valid Android facet URI or valid URL.
     if (affiliations::IsValidAndroidFacetURI(form.signon_realm) ||
         form.url.is_valid()) {
-      ArchivableCredential* credential =
-          [[ArchivableCredential alloc] initWithPasswordForm:form
-                                                     favicon:favicon_key
-                                                        gaia:gaia];
+      ArchivableCredential* credential = [[ArchivableCredential alloc]
+          initWithPasswordForm:password_manager::ToPasswordForm(form)
+                       favicon:favicon_key
+                          gaia:gaia];
       DCHECK(credential);
       [store addCredential:credential];
     }
@@ -410,25 +449,50 @@ void CredentialProviderService::AddCredentialsLegacy(
 
 void CredentialProviderService::AddCredentialsRefactored(
     MemoryCredentialStore* store,
-    std::vector<PasswordForm> forms) {
-  // Dont' rate limit the favicon fetch when adding a single password.
+    std::vector<password_manager::StoredCredential> forms,
+    base::OnceClosure completion) {
+  auto reply_callback = base::BindPostTask(
+      base::SequencedTaskRunner::GetCurrentDefault(),
+      base::BindOnce(
+          &CredentialProviderService::ContinueAddCredentialsRefactored,
+          weak_ptr_factory_.GetWeakPtr(), base::Unretained(store),
+          std::move(forms), std::move(completion)));
+
+  base::ThreadPool::PostTask(
+      FROM_HERE,
+      {base::MayBlock(), base::ThreadPolicy::PREFER_BACKGROUND,
+       base::TaskPriority::BEST_EFFORT},
+      base::BindOnce(
+          [](base::OnceCallback<void(NSDictionary<NSString*, NSDate*>*)>
+                 reply) {
+            std::move(reply).Run(GetFaviconsListAndFreshness());
+          },
+          std::move(reply_callback)));
+}
+
+void CredentialProviderService::ContinueAddCredentialsRefactored(
+    MemoryCredentialStore* store,
+    std::vector<password_manager::StoredCredential> forms,
+    base::OnceClosure completion,
+    NSDictionary<NSString*, NSDate*>* favicon_dict) {
+  // Don't rate limit the favicon fetch when adding a single password.
   const bool should_skip_max_verification = forms.size() == 1;
   const bool fallback_to_google_server_allowed =
       CanSendHistoryData(sync_service_);
   NSString* gaia = PrimaryAccountId();
 
-  // Get the list of existing favicon files, along with their creation date.
-  NSDictionary<NSString*, NSDate*>* favicon_dict =
-      GetFaviconsListAndFreshness();
   int fetched_favicon_count = 0;
+  NSMutableSet<NSString*>* fetched_in_batch = [NSMutableSet set];
 
-  for (const PasswordForm& form : forms) {
+  for (const auto& form : forms) {
     NSString* favicon_key;
     if (form.url.is_valid()) {
       favicon_key = GetFaviconFileKey(form.url);
 
-      if (ShouldFetchFavicon(favicon_key, favicon_dict)) {
+      if (ShouldFetchFavicon(favicon_key, favicon_dict) &&
+          ![fetched_in_batch containsObject:favicon_key]) {
         ++fetched_favicon_count;
+        [fetched_in_batch addObject:favicon_key];
 
         // Fetch the favicon and save it to the storage.
         FetchFaviconForURLToPath(favicon_loader_, form.url, favicon_key,
@@ -440,16 +504,17 @@ void CredentialProviderService::AddCredentialsRefactored(
     // Only store password with valid Android facet URI or valid URL.
     if (affiliations::IsValidAndroidFacetURI(form.signon_realm) ||
         form.url.is_valid()) {
-      ArchivableCredential* credential =
-          [[ArchivableCredential alloc] initWithPasswordForm:form
-                                                     favicon:favicon_key
-                                                        gaia:gaia];
+      ArchivableCredential* credential = [[ArchivableCredential alloc]
+          initWithPasswordForm:password_manager::ToPasswordForm(form)
+                       favicon:favicon_key
+                          gaia:gaia];
       DCHECK(credential);
       [store addCredential:credential];
     }
   }
 
   RecordNumberFaviconsFetched(fetched_favicon_count);
+  std::move(completion).Run();
 }
 
 void CredentialProviderService::AddCredentials(
@@ -460,11 +525,7 @@ void CredentialProviderService::AddCredentials(
   const bool fallback_to_google_server = CanSendHistoryData(sync_service_);
   NSString* gaia = PrimaryAccountId();
 
-  for (const auto& passkey : passkeys) {
-    if (passkey.hidden()) {
-      continue;
-    }
-
+  for (const sync_pb::WebauthnCredentialSpecifics& passkey : passkeys) {
     GURL url(base::StrCat(
         {url::kHttpsScheme, url::kStandardSchemeSeparator, passkey.rp_id()}));
     // Only fetch favicon for valid URL.
@@ -489,9 +550,10 @@ void CredentialProviderService::AddCredentials(
 
 void CredentialProviderService::RemoveCredentials(
     MemoryCredentialStore* store,
-    std::vector<PasswordForm> forms) {
+    std::vector<password_manager::StoredCredential> forms) {
   for (const auto& form : forms) {
-    NSString* recordID = RecordIdentifierForPasswordForm(form);
+    NSString* recordID =
+        RecordIdentifierForPasswordForm(password_manager::ToPasswordForm(form));
     DCHECK(recordID);
     [store removeCredentialWithRecordIdentifier:recordID];
   }
@@ -507,14 +569,23 @@ void CredentialProviderService::RemoveCredentials(
   }
 }
 
+bool CredentialProviderService::IsLastUsedProfile() const {
+  return profile_name_ == local_state_->GetString(prefs::kLastUsedProfile);
+}
+
 void CredentialProviderService::UpdateAccountId() {
+  if (!IsLastUsedProfile()) {
+    return;
+  }
+
   CoreAccountInfo account =
       identity_manager_->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
   NSString* account_id = account.gaia.ToNSString();
   BOOL is_valid_account = !account.IsEmpty();
   BOOL is_managed_account =
       is_valid_account &&
-      identity_manager_->FindExtendedAccountInfo(account).IsManaged();
+      identity_manager_->FindExtendedAccountInfo(account).IsManaged() ==
+          signin::Tribool::kTrue;
   [app_group::GetGroupUserDefaults()
       setObject:is_managed_account ? account_id : nil
          forKey:AppGroupUserDefaultsCredentialProviderManagedUserID()];
@@ -525,8 +596,12 @@ void CredentialProviderService::UpdateAccountId() {
 }
 
 void CredentialProviderService::UpdateUserEmail() {
+  if (!IsLastUsedProfile()) {
+    return;
+  }
+
   std::optional accountForSaving =
-      password_manager::sync_util::GetAccountForSaving(prefs_, sync_service_);
+      password_manager::sync_util::GetAccountForSaving(sync_service_);
   [app_group::GetGroupUserDefaults()
       setObject:accountForSaving ? base::SysUTF8ToNSString(*accountForSaving)
                                  : nil
@@ -534,6 +609,10 @@ void CredentialProviderService::UpdateUserEmail() {
 }
 
 void CredentialProviderService::UpdatePasswordSyncSetting() {
+  if (!IsLastUsedProfile()) {
+    return;
+  }
+
   BOOL is_syncing =
       password_manager::sync_util::HasChosenToSyncPasswords(sync_service_);
   [app_group::GetGroupUserDefaults()
@@ -542,9 +621,11 @@ void CredentialProviderService::UpdatePasswordSyncSetting() {
 }
 
 void CredentialProviderService::UpdateAutomaticPasskeyUpgradeSetting() {
-  BOOL is_enabled = base::FeatureList::IsEnabled(
-                        kCredentialProviderAutomaticPasskeyUpgrade) &&
-                    saving_passwords_enabled_.GetValue() &&
+  if (!IsLastUsedProfile()) {
+    return;
+  }
+
+  BOOL is_enabled = saving_passwords_enabled_.GetValue() &&
                     saving_passkeys_enabled_.GetValue() &&
                     automatic_passkey_upgrades_enabled_.GetValue();
   [app_group::GetGroupUserDefaults()
@@ -553,18 +634,19 @@ void CredentialProviderService::UpdateAutomaticPasskeyUpgradeSetting() {
              AppGroupUserDefaulsCredentialProviderAutomaticPasskeyUpgradeEnabled()];
 }
 
-void CredentialProviderService::UpdatePasskeyPRFSetting() {
-  BOOL is_enabled = base::FeatureList::IsEnabled(kCredentialProviderPasskeyPRF);
+
+void CredentialProviderService::UpdatePasskeyLargeBlobSetting() {
+  if (!IsLastUsedProfile()) {
+    return;
+  }
+
+  BOOL is_enabled =
+      base::FeatureList::IsEnabled(kCredentialProviderPasskeyLargeBlob);
   [app_group::GetGroupUserDefaults()
       setObject:[NSNumber numberWithBool:is_enabled]
-         forKey:AppGroupUserDefaulsCredentialProviderPasskeyPRFEnabled()];
+         forKey:AppGroupUserDefaulsCredentialProviderPasskeyLargeBlobEnabled()];
 }
 
-void CredentialProviderService::UpdatePasskeysM2Availability() {
-  [app_group::GetGroupUserDefaults()
-      setObject:[NSNumber numberWithBool:IOSPasskeysM2Enabled()]
-         forKey:AppGroupUserDefaultsCredentialProviderPasskeysM2Enabled()];
-}
 
 void CredentialProviderService::OnGetPasswordStoreResultsOrErrorFrom(
     password_manager::PasswordStoreInterface* store,
@@ -592,16 +674,17 @@ void CredentialProviderService::OnPrimaryAccountChanged(
 
 void CredentialProviderService::OnLoginsRetained(
     password_manager::PasswordStoreInterface* /*store*/,
-    const std::vector<password_manager::PasswordForm>& /*retained_passwords*/) {
-}
+    const std::vector<
+        password_manager::StoredCredential>& /*retained_credentials*/) {}
 
 void CredentialProviderService::OnInjectedAffiliationAfterLoginsChanged(
     password_manager::PasswordStoreInterface* store,
     password_manager::LoginsResultOrError results_or_error) {
   AddCredentials(GetCredentialStore(store),
                  password_manager::GetLoginsOrEmptyListOnFailure(
-                     std::move(results_or_error)));
-  SyncStore();
+                     std::move(results_or_error)),
+                 base::BindOnce(&CredentialProviderService::SyncStore,
+                                weak_ptr_factory_.GetWeakPtr()));
 }
 
 void CredentialProviderService::OnStateChanged(syncer::SyncService* sync) {
@@ -610,6 +693,11 @@ void CredentialProviderService::OnStateChanged(syncer::SyncService* sync) {
   UpdateAccountId();
   UpdateUserEmail();
   UpdatePasswordSyncSetting();
+}
+
+void CredentialProviderService::OnSyncShutdown(syncer::SyncService* sync) {
+  // Unreachable, since this service is Shutdown() before the SyncService.
+  NOTREACHED();
 }
 
 // PasskeyModel::Observer:
@@ -632,7 +720,7 @@ void CredentialProviderService::OnPasskeysChanged(
         passkeys_to_remove.push_back(passkey);
         break;
       case webauthn::PasskeyModelChange::ChangeType::UPDATE:
-        // TODO(crbug.com/330355124): do something more optimal than this.
+        // TODO(crbug.com/458784354): do something more optimal than this.
         passkeys_to_add.push_back(passkey);
         passkeys_to_remove.push_back(passkey);
         break;
@@ -666,6 +754,10 @@ void CredentialProviderService::OnPasskeyModelShuttingDown() {
 void CredentialProviderService::OnPasskeyModelIsReady(bool is_ready) {}
 
 void CredentialProviderService::OnPrefOrPolicyStatusChanged() {
+  if (!IsLastUsedProfile()) {
+    return;
+  }
+
   [app_group::GetGroupUserDefaults()
       setObject:[NSNumber numberWithBool:saving_passwords_enabled_.GetValue()]
          forKey:AppGroupUserDefaultsCredentialProviderSavingPasswordsEnabled()];

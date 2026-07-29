@@ -4,27 +4,27 @@
 
 package org.chromium.chrome.browser.homepage;
 
+import static org.junit.Assert.assertEquals;
+
 import android.content.Intent;
 import android.view.View;
 
 import androidx.test.filters.MediumTest;
-import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.hamcrest.Matchers;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.ActivityState;
-import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
@@ -33,12 +33,14 @@ import org.chromium.chrome.browser.homepage.settings.HomepageMetricsEnums.Homepa
 import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
-import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.TabLoadObserver;
 import org.chromium.components.policy.test.annotations.Policies;
@@ -55,6 +57,7 @@ import org.chromium.url.GURL;
 @Policies.Add({
     @Policies.Item(key = "HomepageLocation", string = HomepagePolicyIntegrationTest.TEST_URL)
 })
+@Batch(Batch.PER_CLASS)
 public class HomepagePolicyIntegrationTest {
     public static final String TEST_URL = "http://127.0.0.1:8000/foo.html";
     public static final String GOOGLE_HTML = "/chrome/test/data/android/google.html";
@@ -63,17 +66,12 @@ public class HomepagePolicyIntegrationTest {
 
     private EmbeddedTestServer mTestServer;
 
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
-    public SettingsActivityTestRule<HomepageSettings> mSettingsActivityTestRule =
-            new SettingsActivityTestRule<>(HomepageSettings.class);
-
-    // SettingsActivity has to be finished before the outer CTA can be finished or trying to finish
-    // CTA won't work.
     @Rule
-    public final RuleChain mRuleChain =
-            RuleChain.outerRule(mActivityTestRule).around(mSettingsActivityTestRule);
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule public HomepageTestRule mHomepageTestRule = new HomepageTestRule();
+    private RegularNewTabPageStation mPage;
 
     @Before
     public void setUp() {
@@ -81,11 +79,9 @@ public class HomepagePolicyIntegrationTest {
         // Use shared preference manager, not to change the order object created in tests.
         mHomepageTestRule.useCustomizedHomepageForTest(GOOGLE_HTML);
 
-        mActivityTestRule.startMainActivityFromLauncher();
+        mPage = mActivityTestRule.startFromLauncherAtNtp();
 
-        mTestServer =
-                EmbeddedTestServer.createAndStartServer(
-                        InstrumentationRegistry.getInstrumentation().getContext());
+        mTestServer = mActivityTestRule.getTestServer();
     }
 
     @Test
@@ -96,7 +92,7 @@ public class HomepagePolicyIntegrationTest {
                 () ->
                         Assert.assertTrue(
                                 "HomepageLocation Policy should be enforced",
-                                HomepagePolicyManager.isHomepageManagedByPolicy()));
+                                HomepagePolicyManager.isHomepageLocationManaged()));
 
         // The first time when the page starts, the homepage is fetched from shared preference
         // So the homepage policy is not enforced yet at this point.
@@ -105,28 +101,61 @@ public class HomepagePolicyIntegrationTest {
                 ChromeSharedPreferences.getInstance()
                         .readString(ChromePreferenceKeys.HOMEPAGE_LOCATION_POLICY_GURL, "");
         GURL homepageGurl = GURL.deserialize(homepageGurlSerialized);
-        Assert.assertEquals(
+        assertEquals(
                 "URL stored in shared preference should be the same as policy setting",
                 TEST_URL,
                 homepageGurl.getSpec());
 
         // METRICS_HOMEPAGE_LOCATION_TYPE is recorded once in deferred start up tasks.
-        Assert.assertEquals(
+        assertEquals(
                 "Settings.Homepage.LocationType should record POLICY_OTHER once.",
                 1,
                 RecordHistogram.getHistogramValueCountForTesting(
                         METRICS_HOMEPAGE_LOCATION_TYPE, HomepageLocationType.POLICY_OTHER));
 
         // Start the page again. This time, the homepage should be set to what policy is.
-        destroyAndRestartActivity();
+        ChromeTabbedActivity activity = mActivityTestRule.getActivity();
 
-        Assert.assertEquals(
+        // Create an intent to launch a new ChromeTabbedActivity.
+        Intent intent = new Intent();
+        intent.setClass(activity, ChromeTabbedActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        // Close all tabs so the new activity will create another initial tab with current homepage.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    TabClosureParams params =
+                            TabClosureParams.closeAllTabs().uponExit(false).build();
+                    TabModelSelector selector = activity.getTabModelSelector();
+                    selector.getModel(false)
+                            .getTabRemover()
+                            .closeTabs(params, /* allowDialog= */ false);
+                    selector.getModel(true)
+                            .getTabRemover()
+                            .closeTabs(params, /* allowDialog= */ false);
+                });
+
+        mActivityTestRule.finishActivity();
+
+        // Start a new ChromeActivity.
+        WebPageStation pageAfterRecreate =
+                mActivityTestRule
+                        .startWithIntentTo(intent)
+                        .arriveAt(
+                                WebPageStation.newBuilder()
+                                        .withEntryPoint()
+                                        .withExpectedUrlSubstring(TEST_URL)
+                                        .build());
+
+        String urlAfterRecreate = ChromeTabUtils.getUrlStringOnUiThread(pageAfterRecreate.getTab());
+        assertEquals("Start up page is not homepage", getHomepageUrlOnUiThread(), urlAfterRecreate);
+        assertEquals(
                 "Start up homepage should be the same as the policy setting",
                 TEST_URL,
-                ChromeTabUtils.getUrlStringOnUiThread(
-                        mActivityTestRule.getActivity().getActivityTab()));
+                urlAfterRecreate);
     }
 
+    @DisabledTest(message = "crbug.com/415374799")
     @Test
     @MediumTest
     @Feature({"Homepage"})
@@ -171,54 +200,18 @@ public class HomepagePolicyIntegrationTest {
                     TouchCommon.singleClickView(homeButton);
                 });
 
-        Assert.assertEquals(
+        assertEquals(
                 "After clicking HomeButton, URL should be back to Homepage",
                 TEST_URL,
                 ChromeTabUtils.getUrlStringOnUiThread(
                         mActivityTestRule.getActivity().getActivityTab()));
     }
 
-    private void destroyAndRestartActivity() {
-        ChromeTabbedActivity activity = mActivityTestRule.getActivity();
-
-        // Create an intent to launch a new ChromeTabbedActivity.
-        Intent intent = new Intent();
-        intent.setClass(activity, ChromeTabbedActivity.class);
-        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-        // Close all tabs so the new activity will create another initial tab with current homepage.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    TabClosureParams params =
-                            TabClosureParams.closeAllTabs().uponExit(false).build();
-                    TabModelSelector selector = activity.getTabModelSelector();
-                    selector.getModel(false)
-                            .getTabRemover()
-                            .closeTabs(params, /* allowDialog= */ false);
-                    selector.getModel(true)
-                            .getTabRemover()
-                            .closeTabs(params, /* allowDialog= */ false);
-                });
-
-        activity.finish();
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            ApplicationStatus.getStateForActivity(activity),
-                            Matchers.is(ActivityState.DESTROYED));
-                });
-
-        // Start a new ChromeActivity.
-        mActivityTestRule.startActivityCompletely(intent);
-        Assert.assertEquals(
-                "Start up page is not homepage",
-                getHomepageUrlOnUiThread(),
-                ChromeTabUtils.getUrlStringOnUiThread(
-                        mActivityTestRule.getActivity().getActivityTab()));
-    }
-
     private String getHomepageUrlOnUiThread() {
         return ThreadUtils.runOnUiThreadBlocking(
-                () -> HomepageManager.getInstance().getHomepageGurl().getSpec());
+                () ->
+                        HomepageManager.getInstance()
+                                .getHomepageGurl(/* isIncognito= */ false)
+                                .getSpec());
     }
 }

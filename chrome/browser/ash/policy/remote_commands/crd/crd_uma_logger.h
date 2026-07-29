@@ -7,6 +7,7 @@
 
 #include "base/time/time.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_remote_command_utils.h"
+#include "chrome/browser/ash/policy/remote_commands/crd/public/crd_session_result_codes.h"
 
 namespace policy {
 
@@ -19,9 +20,6 @@ class CrdUmaLogger {
 
   // Logs the CRD session launch result to UMA.
   void LogSessionLaunchResult(ExtendedStartCrdSessionResultCode result_code);
-
-  // Logs the CRD session duration to UMA.
-  void LogSessionDuration(base::TimeDelta duration);
 
  private:
   const char* FormatCrdSessionType() const;

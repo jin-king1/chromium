@@ -8,10 +8,10 @@
 #include <string>
 #include <type_traits>
 
-#include "base/containers/contains.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_i18n_formatting_expressions.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_hierarchies.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_i18n_parsing_expressions.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component_test_api.h"
@@ -45,21 +45,11 @@ bool IsTree(AddressComponent* node, FieldTypeSet* visited_types) {
 
 class AutofillI18nApiTest : public testing::Test {
  public:
-  AutofillI18nApiTest() {
-    feature_list_.InitWithFeatures(
-        {
-            features::kAutofillUseFRAddressModel,
-            features::kAutofillUseINAddressModel,
-            features::kAutofillUseITAddressModel,
-            features::kAutofillUseNLAddressModel,
-            features::kAutofillUsePLAddressModel,
-        },
-        {});
-  }
   ~AutofillI18nApiTest() override = default;
 
  private:
-  base::test::ScopedFeatureList feature_list_;
+  base::test::ScopedFeatureList feature_list_{
+      features::kAutofillUseINAddressModel};
 };
 
 TEST_F(AutofillI18nApiTest, GetAddressComponentModel_ReturnsNonEmptyModel) {
@@ -183,7 +173,7 @@ TEST_F(AutofillI18nApiTest, IsTypeEnabledForCountry) {
 
     for (std::underlying_type_t<FieldType> i = 0; i < MAX_VALID_FIELD_TYPE;
          ++i) {
-      FieldType field_type = ToSafeFieldType(i, NO_SERVER_DATA);
+      FieldType field_type = ToSafeFieldType(i).value_or(NO_SERVER_DATA);
       if (field_type == NO_SERVER_DATA) {
         continue;
       }

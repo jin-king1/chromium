@@ -10,7 +10,6 @@ import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -19,8 +18,6 @@ import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.Accessor
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.Type.PROMO_CODE_INFO;
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.Type.TITLE;
 import static org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece.getType;
-
-import android.graphics.drawable.Drawable;
 
 import org.junit.After;
 import org.junit.Before;
@@ -33,17 +30,17 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
-import org.chromium.base.task.test.CustomShadowAsyncTask;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.chrome.browser.autofill.PersonalDataManager;
-import org.chromium.chrome.browser.autofill.PersonalDataManagerFactory;
+import org.chromium.chrome.browser.autofill.AutofillImageFetcher;
+import org.chromium.chrome.browser.autofill.AutofillImageFetcherFactory;
 import org.chromium.chrome.browser.keyboard_accessory.AccessorySuggestionType;
 import org.chromium.chrome.browser.keyboard_accessory.AccessoryTabType;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.AccessorySheetData;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.PromoCodeInfo;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.UserInfo;
-import org.chromium.chrome.browser.keyboard_accessory.data.PropertyProvider;
 import org.chromium.chrome.browser.keyboard_accessory.data.UserInfoField;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
@@ -51,24 +48,21 @@ import org.chromium.ui.modelutil.ListObservable;
 
 /** Controller tests for the credit card accessory sheet. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {CustomShadowAsyncTask.class})
+@Config(manifest = Config.NONE)
 public class CreditCardAccessorySheetControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private AccessorySheetTabView mMockView;
     @Mock private ListObservable.ListObserver<Void> mMockItemListObserver;
     @Mock private Profile mMockProfile;
-    @Mock private PersonalDataManager mMockPersonalDataManager;
+    @Mock private AutofillImageFetcher mMockImageFetcher;
 
     private CreditCardAccessorySheetCoordinator mCoordinator;
     private AccessorySheetTabItemsModel mSheetDataPieces;
 
     @Before
     public void setUp() {
-        AccessorySheetTabCoordinator.IconProvider.setIconForTesting(mock(Drawable.class));
-        PersonalDataManagerFactory.setInstanceForTesting(mMockPersonalDataManager);
+        AutofillImageFetcherFactory.setInstanceForTesting(mMockImageFetcher);
         mCoordinator =
                 new CreditCardAccessorySheetCoordinator(
                         RuntimeEnvironment.application, mMockProfile, null);
@@ -85,7 +79,6 @@ public class CreditCardAccessorySheetControllerTest {
     public void testCreatesValidTab() {
         KeyboardAccessoryData.Tab tab = mCoordinator.getTab();
         assertNotNull(tab);
-        assertNotNull(tab.getIcon());
         assertNotNull(tab.getListener());
     }
 
@@ -113,49 +106,47 @@ public class CreditCardAccessorySheetControllerTest {
 
     @Test
     public void testModelNotifiesAboutTabDataChangedByProvider() {
-        final PropertyProvider<AccessorySheetData> testProvider = new PropertyProvider<>();
-
+        final SettableNullableObservableSupplier<AccessorySheetData> testProvider =
+                ObservableSuppliers.createNullable();
         mSheetDataPieces.addObserver(mMockItemListObserver);
         mCoordinator.registerDataProvider(testProvider);
 
         // If the coordinator receives a set of initial items, the model should report an insertion.
-        testProvider.notifyObservers(
+        testProvider.set(
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "Payments",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ ""));
         verify(mMockItemListObserver).onItemRangeInserted(mSheetDataPieces, 0, 1);
         assertThat(mSheetDataPieces.size(), is(1));
 
         // If the coordinator receives a new set of items, the model should report a change.
-        testProvider.notifyObservers(
+        testProvider.set(
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "Other Payments",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ ""));
         verify(mMockItemListObserver).onItemRangeChanged(mSheetDataPieces, 0, 1, null);
         assertThat(mSheetDataPieces.size(), is(1));
 
         // If the coordinator receives an empty set of items, the model should report a deletion.
-        testProvider.notifyObservers(null);
+        testProvider.set(null);
         verify(mMockItemListObserver).onItemRangeRemoved(mSheetDataPieces, 0, 1);
         assertThat(mSheetDataPieces.size(), is(0));
 
         // There should be no notification if no item are reported repeatedly.
-        testProvider.notifyObservers(null);
+        testProvider.set(null);
         verifyNoMoreInteractions(mMockItemListObserver);
     }
 
     @Test
     public void testSplitsTabDataToList() {
-        final PropertyProvider<AccessorySheetData> testProvider = new PropertyProvider<>();
+        final SettableNullableObservableSupplier<AccessorySheetData> testProvider =
+                ObservableSuppliers.createNullable();
         final AccessorySheetData testData =
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ "");
         testData.getUserInfoList().add(new UserInfo("", false));
         testData.getUserInfoList()
@@ -180,19 +171,17 @@ public class CreditCardAccessorySheetControllerTest {
         testData.getPromoCodeInfoList().add(new PromoCodeInfo());
         testData.getPromoCodeInfoList()
                 .get(0)
-                .setPromoCode(
-                        new UserInfoField.Builder()
+                .initialize(
+                        /* promoCode= */ new UserInfoField.Builder()
                                 .setSuggestionType(AccessorySuggestionType.PROMO_CODE)
                                 .setDisplayText("50$OFF")
                                 .setA11yDescription("Promo Code for Todd Tester")
                                 .setCallback(field -> {})
-                                .build());
-        testData.getPromoCodeInfoList()
-                .get(0)
-                .setDetailsText("Get $50 off when you use this code at checkout.");
+                                .build(),
+                        /* detailsText= */ "Get $50 off when you use this code at checkout.");
 
         mCoordinator.registerDataProvider(testProvider);
-        testProvider.notifyObservers(testData);
+        testProvider.set(testData);
 
         // Tests that promo code offers are ordered before credit cards.
         assertThat(mSheetDataPieces.size(), is(2));
@@ -205,16 +194,16 @@ public class CreditCardAccessorySheetControllerTest {
 
     @Test
     public void testUsesTitleElementForEmptyState() {
-        final PropertyProvider<AccessorySheetData> testProvider = new PropertyProvider<>();
+        final SettableNullableObservableSupplier<AccessorySheetData> testProvider =
+                ObservableSuppliers.createNullable();
         final AccessorySheetData testData =
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "Payments",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ "");
         mCoordinator.registerDataProvider(testProvider);
 
-        testProvider.notifyObservers(testData);
+        testProvider.set(testData);
 
         assertThat(mSheetDataPieces.size(), is(1));
         assertThat(getType(mSheetDataPieces.get(0)), is(TITLE));
@@ -223,30 +212,28 @@ public class CreditCardAccessorySheetControllerTest {
 
     @Test
     public void testShowsNoCreditCardsMessageBelowPromoCodes() {
-        final PropertyProvider<AccessorySheetData> testProvider = new PropertyProvider<>();
+        final SettableNullableObservableSupplier<AccessorySheetData> testProvider =
+                ObservableSuppliers.createNullable();
         final AccessorySheetData testData =
                 new AccessorySheetData(
                         AccessoryTabType.CREDIT_CARDS,
                         /* userInfoTitle= */ "No payment methods",
-                        /* plusAddressTitle= */ "",
                         /* warning= */ "");
 
         testData.getPromoCodeInfoList().add(new PromoCodeInfo());
         testData.getPromoCodeInfoList()
                 .get(0)
-                .setPromoCode(
-                        new UserInfoField.Builder()
+                .initialize(
+                        /* promoCode= */ new UserInfoField.Builder()
                                 .setSuggestionType(AccessorySuggestionType.PROMO_CODE)
                                 .setDisplayText("50$OFF")
                                 .setA11yDescription("Promo Code for Todd Tester")
                                 .setCallback(field -> {})
-                                .build());
-        testData.getPromoCodeInfoList()
-                .get(0)
-                .setDetailsText("Get $50 off when you use this code at checkout.");
+                                .build(),
+                        /* detailsText= */ "Get $50 off when you use this code at checkout.");
 
         mCoordinator.registerDataProvider(testProvider);
-        testProvider.notifyObservers(testData);
+        testProvider.set(testData);
 
         // Tests |mTitle| is shown below promo codes.
         assertThat(mSheetDataPieces.size(), is(2));

@@ -34,7 +34,7 @@ export class CardDemoElement extends CrLitElement {
     };
   }
 
-  protected expanded_: boolean = false;
+  protected accessor expanded_: boolean = false;
 
   protected onExternalLinkClick_() {
     window.open('https://chromium.org');
@@ -42,6 +42,12 @@ export class CardDemoElement extends CrLitElement {
 
   protected onExpandedChanged_(e: CustomEvent<{value: boolean}>) {
     this.expanded_ = e.detail.value;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'card-demo': CardDemoElement;
   }
 }
 

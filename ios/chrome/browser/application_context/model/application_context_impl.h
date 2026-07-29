@@ -8,16 +8,26 @@
 #include <memory>
 #include <string>
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "build/blink_buildflags.h"
 #include "ios/chrome/browser/shared/model/application_context/application_context.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "services/network/public/mojom/proxy_resolving_socket.mojom.h"
 
+namespace activity_reporter {
+class ActivityReporter;
+}  // namespace activity_reporter
+namespace auto_deletion {
+class AutoDeletionService;
+}  // namespace auto_deletion
 namespace base {
 class CommandLine;
 class SequencedTaskRunner;
+#if !BUILDFLAG(USE_BLINK)
+class MemoryPressureListenerRegistry;
+#endif
 }  // namespace base
 
 class ApplicationBreadcrumbsLogger;
@@ -25,6 +35,10 @@ class ApplicationBreadcrumbsLogger;
 namespace network {
 class NetworkChangeManager;
 }
+
+namespace supervised_user {
+class DeviceParentalControls;
+}  // namespace supervised_user
 
 class ApplicationContextImpl : public ApplicationContext {
  public:
@@ -66,7 +80,7 @@ class ApplicationContextImpl : public ApplicationContext {
   scoped_refptr<network::SharedURLLoaderFactory> GetSharedURLLoaderFactory()
       override;
   network::mojom::NetworkContext* GetSystemNetworkContext() override;
-  const std::string& GetApplicationLocale() override;
+  ApplicationLocaleStorage* GetApplicationLocaleStorage() override;
   const std::string& GetApplicationCountry() override;
   ProfileManagerIOS* GetProfileManager() override;
   metrics_services_manager::MetricsServicesManager* GetMetricsServicesManager()
@@ -78,27 +92,29 @@ class ApplicationContextImpl : public ApplicationContext {
   variations::VariationsService* GetVariationsService() override;
   net::NetLog* GetNetLog() override;
   net_log::NetExportFileWriter* GetNetExportFileWriter() override;
+  network_time::NetworkTimeTracker* GetNetworkTimeTrackerMaybeUninitialized()
+      override;
   network_time::NetworkTimeTracker* GetNetworkTimeTracker() override;
   IOSChromeIOThread* GetIOSChromeIOThread() override;
   gcm::GCMDriver* GetGCMDriver() override;
+  activity_reporter::ActivityReporter* GetActivityReporter() override;
   component_updater::ComponentUpdateService* GetComponentUpdateService()
       override;
   SafeBrowsingService* GetSafeBrowsingService() override;
   network::NetworkConnectionTracker* GetNetworkConnectionTracker() override;
   BrowserPolicyConnectorIOS* GetBrowserPolicyConnector() override;
   id<SingleSignOnService> GetSingleSignOnService() override;
+  signin::AvatarProvider* GetIdentityAvatarProvider() override;
   SystemIdentityManager* GetSystemIdentityManager() override;
   AccountProfileMapper* GetAccountProfileMapper() override;
   IncognitoSessionTracker* GetIncognitoSessionTracker() override;
   PushNotificationService* GetPushNotificationService() override;
   os_crypt_async::OSCryptAsync* GetOSCryptAsync() override;
   AdditionalFeaturesController* GetAdditionalFeaturesController() override;
-#if BUILDFLAG(BUILD_WITH_INTERNAL_OPTIMIZATION_GUIDE)
-  optimization_guide::OnDeviceModelServiceController*
-  GetOnDeviceModelServiceController(
-      base::WeakPtr<optimization_guide::OnDeviceModelComponentStateManager>
-          on_device_component_manager) override;
-#endif  // BUILD_WITH_INTERNAL_OPTIMIZATION_GUIDE
+  auto_deletion::AutoDeletionService* GetAutoDeletionService() override;
+  supervised_user::DeviceParentalControls& GetDeviceParentalControls() override;
+  optimization_guide::OptimizationGuideGlobalState*
+  GetOptimizationGuideGlobalState() override;
 
  private:
   // Represents the possible application states the app can be in.
@@ -112,9 +128,6 @@ class ApplicationContextImpl : public ApplicationContext {
   // Helper method to implement the work required when transitioning between
   // application states.
   void OnAppEnterState(AppState app_state);
-
-  // Sets the locale used by the application.
-  void SetApplicationLocale(const std::string& locale);
 
   // Create the local state.
   void CreateLocalState();
@@ -154,6 +167,7 @@ class ApplicationContextImpl : public ApplicationContext {
       network_connection_tracker_;
 
   std::unique_ptr<PrefService> local_state_;
+  std::unique_ptr<ApplicationLocaleStorage> application_locale_storage_;
   std::unique_ptr<net_log::NetExportFileWriter> net_export_file_writer_;
   std::unique_ptr<network_time::NetworkTimeTracker> network_time_tracker_;
   std::unique_ptr<IOSChromeIOThread> ios_chrome_io_thread_;
@@ -162,10 +176,10 @@ class ApplicationContextImpl : public ApplicationContext {
   std::unique_ptr<metrics_services_manager::MetricsServicesManager>
       metrics_services_manager_;
   std::unique_ptr<gcm::GCMDriver> gcm_driver_;
+  std::unique_ptr<activity_reporter::ActivityReporter> activity_reporter_;
   std::unique_ptr<component_updater::ComponentUpdateService> component_updater_;
 
   std::unique_ptr<ProfileManagerIOS> profile_manager_;
-  std::string application_locale_;
   std::string application_country_;
 
   // Sequenced task runner for local state related I/O tasks.
@@ -175,6 +189,7 @@ class ApplicationContextImpl : public ApplicationContext {
 
   __strong id<SingleSignOnService> single_sign_on_service_ = nil;
   std::unique_ptr<SystemIdentityManager> system_identity_manager_;
+  std::unique_ptr<signin::AvatarProvider> resized_avatar_caches_;
   std::unique_ptr<AccountProfileMapper> account_profile_mapper_;
 
   std::unique_ptr<IncognitoSessionTracker> incognito_session_tracker_;
@@ -184,10 +199,18 @@ class ApplicationContextImpl : public ApplicationContext {
 
   std::unique_ptr<AdditionalFeaturesController> additional_features_controller_;
 
-#if BUILDFLAG(BUILD_WITH_INTERNAL_OPTIMIZATION_GUIDE)
-  scoped_refptr<optimization_guide::OnDeviceModelServiceController>
-      on_device_model_service_controller_;
-#endif  // BUILD_WITH_INTERNAL_OPTIMIZATION_GUIDE
+  std::unique_ptr<auto_deletion::AutoDeletionService> auto_deletion_service_;
+
+  std::unique_ptr<supervised_user::DeviceParentalControls>
+      device_parental_controls_;
+
+  std::unique_ptr<optimization_guide::OptimizationGuideGlobalState>
+      optimization_guide_global_state_;
+
+#if !BUILDFLAG(USE_BLINK)
+  std::unique_ptr<base::MemoryPressureListenerRegistry>
+      memory_pressure_listener_registry_;
+#endif
 
   // Must be the last member variable.
   base::WeakPtrFactory<ApplicationContextImpl> weak_ptr_factory_{this};

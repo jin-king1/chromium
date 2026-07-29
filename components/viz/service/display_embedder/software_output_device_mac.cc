@@ -2,20 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/viz/service/display_embedder/software_output_device_mac.h"
 
 #include <memory>
 #include <utility>
 
 #include "base/apple/foundation_util.h"
+#include "base/compiler_specific.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/trace_event/trace_event.h"
+#include "components/viz/common/resources/shared_image_format.h"
 #include "third_party/skia/include/core/SkCanvas.h"
+#include "third_party/skia/include/core/SkColorSpace.h"
 #include "ui/gfx/ca_layer_params.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/mac/io_surface.h"
@@ -78,10 +76,10 @@ void SoftwareOutputDeviceMac::UpdateAndCopyBufferDamage(
 
   {
     TRACE_EVENT0("browser", "IOSurfaceLock for software copy");
-    IOReturn io_result = IOSurfaceLock(
+    kern_return_t io_result = IOSurfaceLock(
         previous_io_surface, kIOSurfaceLockReadOnly | kIOSurfaceLockAvoidSync,
         nullptr);
-    if (io_result) {
+    if (io_result != KERN_SUCCESS) {
       DLOG(ERROR) << "Failed to lock previous IOSurface " << io_result;
       return;
     }
@@ -94,18 +92,20 @@ void SoftwareOutputDeviceMac::UpdateAndCopyBufferDamage(
   for (SkRegion::Iterator it(copy_region); !it.done(); it.next()) {
     const SkIRect& rect = it.rect();
     current_paint_canvas_->writePixels(
-        SkImageInfo::MakeN32Premul(rect.width(), rect.height()),
-        pixels + bytes_per_element * rect.x() + stride * rect.y(), stride,
-        rect.x(), rect.y());
+        SkImageInfo::MakeN32Premul(rect.width(), rect.height(),
+                                   SkColorSpace::MakeSRGB()),
+        UNSAFE_TODO(pixels + bytes_per_element * rect.x() + stride * rect.y()),
+        stride, rect.x(), rect.y());
   }
 
   {
     TRACE_EVENT0("browser", "IOSurfaceUnlock");
-    IOReturn io_result = IOSurfaceUnlock(
+    kern_return_t io_result = IOSurfaceUnlock(
         previous_io_surface, kIOSurfaceLockReadOnly | kIOSurfaceLockAvoidSync,
         nullptr);
-    if (io_result)
+    if (io_result != KERN_SUCCESS) {
       DLOG(ERROR) << "Failed to unlock previous IOSurface " << io_result;
+    }
   }
 }
 
@@ -133,7 +133,7 @@ SkCanvas* SoftwareOutputDeviceMac::BeginPaint(
   if (!current_paint_buffer_) {
     std::unique_ptr<Buffer> new_buffer(new Buffer);
     new_buffer->io_surface =
-        gfx::CreateIOSurface(pixel_size_, gfx::BufferFormat::BGRA_8888);
+        gfx::CreateIOSurface(pixel_size_, SinglePlaneFormat::kBGRA_8888);
     if (!new_buffer->io_surface)
       return nullptr;
     // Set the initial damage to be the full buffer.
@@ -156,9 +156,10 @@ SkCanvas* SoftwareOutputDeviceMac::BeginPaint(
   // |current_paint_canvas_|.
   {
     TRACE_EVENT0("browser", "IOSurfaceLock for software paint");
-    IOReturn io_result = IOSurfaceLock(current_paint_buffer_->io_surface.get(),
-                                       kIOSurfaceLockAvoidSync, nullptr);
-    if (io_result) {
+    kern_return_t io_result =
+        IOSurfaceLock(current_paint_buffer_->io_surface.get(),
+                      kIOSurfaceLockAvoidSync, nullptr);
+    if (io_result != KERN_SUCCESS) {
       DLOG(ERROR) << "Failed to lock IOSurface " << io_result;
       current_paint_buffer_ = nullptr;
       return nullptr;
@@ -169,8 +170,10 @@ SkCanvas* SoftwareOutputDeviceMac::BeginPaint(
         IOSurfaceGetBaseAddress(current_paint_buffer_->io_surface.get()));
     size_t stride =
         IOSurfaceGetBytesPerRow(current_paint_buffer_->io_surface.get());
-    current_paint_canvas_ = SkCanvas::MakeRasterDirectN32(
-        pixel_size_.width(), pixel_size_.height(), pixels, stride);
+    current_paint_canvas_ = SkCanvas::MakeRasterDirect(
+        SkImageInfo::MakeN32Premul(pixel_size_.width(), pixel_size_.height(),
+                                   SkColorSpace::MakeSRGB()),
+        pixels, stride);
   }
 
   UpdateAndCopyBufferDamage(previous_paint_buffer,
@@ -186,22 +189,22 @@ void SoftwareOutputDeviceMac::EndPaint() {
 
   {
     TRACE_EVENT0("browser", "IOSurfaceUnlock");
-    IOReturn io_result =
+    kern_return_t io_result =
         IOSurfaceUnlock(current_paint_buffer_->io_surface.get(),
                         kIOSurfaceLockAvoidSync, nullptr);
-    if (io_result)
+    if (io_result != KERN_SUCCESS) {
       DLOG(ERROR) << "Failed to unlock IOSurface " << io_result;
+    }
   }
   current_paint_canvas_.reset();
 
   if (client_) {
     gfx::CALayerParams ca_layer_params;
-    ca_layer_params.is_empty = false;
     ca_layer_params.scale_factor = scale_factor_;
     ca_layer_params.pixel_size = pixel_size_;
     ca_layer_params.io_surface_mach_port.reset(
         IOSurfaceCreateMachPort(current_paint_buffer_->io_surface.get()));
-    client_->SoftwareDeviceUpdatedCALayerParams(ca_layer_params);
+    client_->SoftwareDeviceUpdatedCALayerParams(std::move(ca_layer_params));
   }
 
   current_paint_buffer_ = nullptr;

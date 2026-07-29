@@ -9,17 +9,20 @@
 #include <optional>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "cc/cc_export.h"
 #include "cc/input/browser_controls_state.h"
 #include "cc/input/scroll_snap_data.h"
 #include "cc/input/snap_selection_strategy.h"
 #include "cc/paint/element_id.h"
-#include "cc/trees/layer_tree_host_client.h"
+#include "cc/trees/layer_tree_host_delegate.h"
+#include "cc/trees/scroll_source_type.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/geometry/vector2d.h"
 
 namespace cc {
 
+class AnimatedImageFrameIndexMap;
 class SwapPromise;
 
 struct CC_EXPORT CompositorCommitData {
@@ -100,18 +103,6 @@ struct CC_EXPORT CompositorCommitData {
   struct ScrollEndInfo {
     ScrollEndInfo();
     ~ScrollEndInfo();
-    // Set to true when a scroll gesture being handled on the compositor has
-    // ended.
-    // TODO(crbug.com/372627916): This is not used when
-    // MultiImplOnlyScrollAnimations is enabled. Remove it when deleting the old
-    // code path.
-    bool scroll_gesture_did_end = false;
-
-    // TODO(crbug.com/372627916): These are not used when
-    // MultiImplOnlyScrollAnimations is enabled. Remove them when deleting the
-    // old code path.
-    bool gesture_affects_outer_viewport_scroll = false;
-    bool gesture_affects_inner_viewport_scroll = false;
 
     // The set of containers for which an impl scroll has ended between this
     // commit and the last.
@@ -136,6 +127,15 @@ struct CC_EXPORT CompositorCommitData {
   // scroll based on the scroll updates so far. The main thread will use this to
   // determine whether to fire scrollsnapchanging or not.
   std::unique_ptr<SnapSelectionStrategy> snap_strategy;
+
+  // Tracks type of the last latched scroll: absolute, relative or stationary.
+  // https://drafts.csswg.org/css-scroll-snap-1/#scroll-types.
+  ScrollSourceType scroll_type = ScrollSourceType::kNone;
+
+  // Clients of image animations that have advanced since the last commit.
+  base::flat_set<ElementId> advanced_image_animation_clients;
+  scoped_refptr<const AnimatedImageFrameIndexMap>
+      animated_image_frame_index_map;
 };
 
 }  // namespace cc

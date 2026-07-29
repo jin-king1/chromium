@@ -6,7 +6,6 @@
 
 #include <algorithm>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/holding_space/holding_space_file.h"
 #include "base/containers/adapters.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
@@ -38,7 +37,7 @@ bool ItemIsPinnedSuggestion(
   }
 
   for (const auto& [_, suggested_file_paths] : suggestions_by_type) {
-    if (base::Contains(suggested_file_paths, item->file().file_path)) {
+    if (std::ranges::contains(suggested_file_paths, item->file().file_path)) {
       return true;
     }
   }
@@ -51,9 +50,7 @@ bool ItemIsPinnedSuggestion(
 HoldingSpaceSuggestionsDelegate::HoldingSpaceSuggestionsDelegate(
     HoldingSpaceKeyedService* service,
     HoldingSpaceModel* model)
-    : HoldingSpaceKeyedServiceDelegate(service, model) {
-  DCHECK(features::IsHoldingSpaceSuggestionsEnabled());
-}
+    : HoldingSpaceKeyedServiceDelegate(service, model) {}
 
 HoldingSpaceSuggestionsDelegate::~HoldingSpaceSuggestionsDelegate() = default;
 
@@ -130,7 +127,7 @@ void HoldingSpaceSuggestionsDelegate::MaybeFetchSuggestions(
     FileSuggestionType type) {
   // A data query on `type` has been sent so it is unnecessary to send a request
   // again. Return early.
-  if (base::Contains(pending_fetches_, type)) {
+  if (pending_fetches_.contains(type)) {
     return;
   }
 

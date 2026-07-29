@@ -76,6 +76,10 @@ inline constexpr char kIsCrosDebugKey[] = "is_cros_debug";
 inline constexpr char kIsCrosDebugValueFalse[] = "0";
 inline constexpr char kIsCrosDebugValueTrue[] = "1";
 
+// A kernel key version is a number stored in the TPM, which is used to prevent
+// the device from rolling back to an older OS version with a lower key version.
+inline constexpr char kKernelKeyVersion[] = "tpm_kernver";
+
 // Manufacture date key.
 inline constexpr char kManufactureDateKey[] = "mfg_date";
 
@@ -128,6 +132,12 @@ inline constexpr char kSerialNumberKey[] = "serial_number";
 // is the appropriate way to obtain the serial number.
 inline constexpr char kFlexIdKey[] = "flex_id";
 
+// System Management BIOS (SMBIOS)/Desktop Management Interface (DMI)
+// information for Flex devices.
+inline constexpr char kFlexSysVendorKey[] = "flex_sys_vendor";
+inline constexpr char kFlexProductNameKey[] = "flex_product_name";
+inline constexpr char kFlexProductVersionKey[] = "flex_product_version";
+
 // Display Profiles key.
 inline constexpr char kDisplayProfilesKey[] = "display_profiles";
 
@@ -151,6 +161,12 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_SYSTEM) StatisticsProvider {
     kUnset,
     kTrue,
     kFalse,
+  };
+
+  enum class LoadingState {
+    kNotStarted,
+    kStarted,
+    kFinished,
   };
 
   // Converts `value` to bool. Returns corresponding true or false, or
@@ -200,6 +216,12 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_SYSTEM) StatisticsProvider {
 
   // Returns the status of RO_VPD and RW_VPD partitions.
   virtual VpdStatus GetVpdStatus() const = 0;
+
+  // Get the current state of loading VPD data.
+  virtual LoadingState GetLoadingState() const = 0;
+
+  // Returns the updated hardware class.
+  virtual std::optional<std::string> GetUpdatedHardwareClass() const = 0;
 
   // Get the Singleton instance.
   static StatisticsProvider* GetInstance();

@@ -11,17 +11,14 @@
 
 #include "base/functional/callback.h"
 #include "base/location.h"
+#include "base/memory/weak_ptr.h"
 #include "remoting/base/session_policies.h"
 #include "remoting/protocol/credentials_type.h"
-
-namespace jingle_xmpp {
-class XmlElement;
-}  // namespace jingle_xmpp
+#include "remoting/signaling/jingle_data_structures.h"
 
 namespace remoting::protocol {
 
 class Authenticator;
-class ChannelAuthenticator;
 
 // Authenticator is an abstract interface for authentication protocol
 // implementations. Different implementations of this interface may be used on
@@ -73,9 +70,6 @@ class Authenticator {
     // The client JID was not valid (i.e. violated a policy or was malformed).
     INVALID_ACCOUNT_ID,
 
-    // Generic error used when something goes wrong establishing a session.
-    PROTOCOL_ERROR,
-
     // Session was rejected by the user (i.e. via the confirmation dialog).
     REJECTED_BY_USER,
 
@@ -101,6 +95,19 @@ class Authenticator {
     // Failed to find an authentication method that is supported by both the
     // host and the client.
     NO_COMMON_AUTH_METHOD,
+
+    // A local network issue has prevented the remote connection.
+    NETWORK_FAILURE,
+
+    // The authenticator is not in a valid state.
+    INVALID_STATE,
+
+    // The peer has sent an invalid message. E.g. fields are missing in the
+    // message.
+    INVALID_ARGUMENT,
+
+    // Generic error used when something goes wrong establishing a session.
+    UNEXPECTED_ERROR,
   };
 
   // Details explaining why authentication was rejected.
@@ -144,18 +151,6 @@ class Authenticator {
       Authenticator::State initial_state)>
       CreateBaseAuthenticatorCallback;
 
-  // Returns true if |message| is an Authenticator message.
-  static bool IsAuthenticatorMessage(const jingle_xmpp::XmlElement* message);
-
-  // Creates an empty Authenticator message, owned by the caller.
-  static std::unique_ptr<jingle_xmpp::XmlElement>
-  CreateEmptyAuthenticatorMessage();
-
-  // Finds Authenticator message among child elements of |message|, or
-  // returns nullptr otherwise.
-  static const jingle_xmpp::XmlElement* FindAuthenticatorMessage(
-      const jingle_xmpp::XmlElement* message);
-
   Authenticator();
   virtual ~Authenticator();
 
@@ -190,12 +185,12 @@ class Authenticator {
   // ownership of |message|. |resume_callback| will be called when processing is
   // finished. The implementation must guarantee that |resume_callback| is not
   // called after the Authenticator is destroyed.
-  virtual void ProcessMessage(const jingle_xmpp::XmlElement* message,
+  virtual void ProcessMessage(const JingleAuthentication& message,
                               base::OnceClosure resume_callback) = 0;
 
   // Must be called when in MESSAGE_READY state. Returns next
   // authentication message that needs to be sent to the peer.
-  virtual std::unique_ptr<jingle_xmpp::XmlElement> GetNextMessage() = 0;
+  virtual JingleAuthentication GetNextMessage() = 0;
 
   // Returns the auth key received as result of the authentication handshake.
   virtual const std::string& GetAuthKey() const = 0;
@@ -203,11 +198,6 @@ class Authenticator {
   // Returns the session policies, or nullptr if no session policies are
   // specified. Must be called in the ACCEPTED state.
   virtual const SessionPolicies* GetSessionPolicies() const = 0;
-
-  // Creates new authenticator for a channel. Can be called only in
-  // the ACCEPTED state.
-  virtual std::unique_ptr<ChannelAuthenticator> CreateChannelAuthenticator()
-      const = 0;
 
   // Sets a callback that will be called if `state()` has changed from
   // `ACCEPTED` from something else, likely because the authenticator has some
@@ -229,6 +219,8 @@ class Authenticator {
 
  private:
   base::RepeatingClosure on_state_change_after_accepted_;
+
+  base::WeakPtrFactory<Authenticator> weak_factory_{this};
 };
 
 // Factory for Authenticator instances.
@@ -248,6 +240,8 @@ class AuthenticatorFactory {
   virtual std::unique_ptr<Authenticator> CreateAuthenticator(
       const std::string& local_jid,
       const std::string& remote_jid) = 0;
+
+  virtual std::unique_ptr<AuthenticatorFactory> Clone() const = 0;
 };
 
 }  // namespace remoting::protocol

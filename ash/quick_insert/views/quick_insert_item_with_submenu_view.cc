@@ -18,11 +18,13 @@
 #include "ash/style/typography.h"
 #include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/geometry/insets.h"
@@ -35,6 +37,7 @@
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/layout_manager.h"
 #include "ui/views/layout/layout_types.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 
@@ -90,7 +93,9 @@ QuickInsertItemWithSubmenuView::QuickInsertItemWithSubmenuView()
                   views::Builder<views::ImageView>()
                       .SetImageSize(kIconSizeDip)
                       .SetImage(ui::ImageModel::FromVectorIcon(
-                          vector_icons::kSubmenuArrowChromeRefreshIcon,
+                          ::features::IsRoundedIconsEnabled()
+                              ? vector_icons::kKeyboardArrowRightFlippableIcon
+                              : vector_icons::kSubmenuArrowChromeRefreshOldIcon,
                           cros_tokens::kCrosSysOnSurface))))
       .BuildChildren();
 

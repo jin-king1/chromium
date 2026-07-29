@@ -7,9 +7,8 @@
 #include "base/test/mock_callback.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
+#include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "content/public/browser/permission_controller.h"
-#include "content/public/browser/permission_request_description.h"
 #include "content/public/browser/permission_result.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -20,18 +19,19 @@
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
 
-class ExclusiveAccessPermissionManagerTest : public BrowserWithTestWindowTest {
+class ExclusiveAccessPermissionManagerTest
+    : public ChromeRenderViewHostTestHarness {
  public:
   ExclusiveAccessPermissionManagerTest()
-      : BrowserWithTestWindowTest(
-            base::test::SingleThreadTaskEnvironment::TimeSource::MOCK_TIME),
+      : ChromeRenderViewHostTestHarness(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME),
         manager_(nullptr) {}
   ~ExclusiveAccessPermissionManagerTest() override = default;
 
   void SetUp() override {
-    BrowserWithTestWindowTest::SetUp();
+    ChromeRenderViewHostTestHarness::SetUp();
     manager_.set_permission_controller_for_test(&permission_controller_);
-    AddTab(browser(), GURL("https://example.com"));
+    NavigateAndCommit(GURL("https://example.com"));
   }
 
  protected:
@@ -56,15 +56,15 @@ class ExclusiveAccessPermissionManagerTest : public BrowserWithTestWindowTest {
   }
 
   void WaitForPermissionControllerResponse(
-      std::optional<blink::mojom::PermissionStatus> pointer_lock_response,
-      std::optional<blink::mojom::PermissionStatus> keyboard_lock_response) {
+      std::optional<content::PermissionResult> pointer_lock_response,
+      std::optional<content::PermissionResult> keyboard_lock_response) {
     EXPECT_CALL(permission_controller_, RequestPermissionsFromCurrentDocument)
-        .WillRepeatedly(testing::WithArgs<1, 2>(testing::Invoke(
+        .WillRepeatedly(testing::WithArgs<1, 2>(
             [&](content::PermissionRequestDescription description,
                 base::OnceCallback<void(
-                    const std::vector<blink::mojom::PermissionStatus>&)>
-                    callback) {
-              switch (description.permissions.at(0)) {
+                    const std::vector<content::PermissionResult>&)> callback) {
+              switch (blink::PermissionDescriptorToPermissionType(
+                  description.permissions.at(0))) {
                 case blink::PermissionType::POINTER_LOCK:
                   if (pointer_lock_response) {
                     std::move(callback).Run({*pointer_lock_response});
@@ -78,12 +78,12 @@ class ExclusiveAccessPermissionManagerTest : public BrowserWithTestWindowTest {
                 default:
                   NOTREACHED();
               }
-            })));
+            }));
     task_environment()->FastForwardBy(base::Milliseconds(200));
   }
 
   content::WebContents* web_contents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return ChromeRenderViewHostTestHarness::web_contents();
   }
 
   content::MockPermissionController permission_controller_;
@@ -99,7 +99,9 @@ TEST_F(ExclusiveAccessPermissionManagerTest, GrantPermission) {
   QueuePointerLockRequest();
   EXPECT_CALL(pointer_granted_callback_, Run);
   WaitForPermissionControllerResponse(
-      /*pointer_lock_response=*/blink::mojom::PermissionStatus::GRANTED,
+      /*pointer_lock_response=*/content::PermissionResult(
+          blink::mojom::PermissionStatus::GRANTED,
+          content::PermissionStatusSource::UNSPECIFIED),
       /*keyboard_lock_response=*/std::nullopt);
 }
 
@@ -107,7 +109,9 @@ TEST_F(ExclusiveAccessPermissionManagerTest, DenyPermission) {
   QueuePointerLockRequest();
   EXPECT_CALL(pointer_denied_callback_, Run);
   WaitForPermissionControllerResponse(
-      /*pointer_lock_response=*/blink::mojom::PermissionStatus::DENIED,
+      /*pointer_lock_response=*/content::PermissionResult(
+          blink::mojom::PermissionStatus::DENIED,
+          content::PermissionStatusSource::UNSPECIFIED),
       /*keyboard_lock_response=*/std::nullopt);
 }
 
@@ -126,14 +130,18 @@ TEST_F(ExclusiveAccessPermissionManagerTest, HandleMultipleRequests) {
   EXPECT_CALL(keyboard_denied_callback_, Run);
   QueueKeyboardLockRequest();
   WaitForPermissionControllerResponse(
-      /*pointer_lock_response=*/blink::mojom::PermissionStatus::GRANTED,
-      /*keyboard_lock_response=*/blink::mojom::PermissionStatus::DENIED);
+      /*pointer_lock_response=*/content::PermissionResult(
+          blink::mojom::PermissionStatus::GRANTED,
+          content::PermissionStatusSource::UNSPECIFIED),
+      /*keyboard_lock_response=*/content::PermissionResult(
+          blink::mojom::PermissionStatus::DENIED,
+          content::PermissionStatusSource::UNSPECIFIED));
 }
 
 TEST_F(ExclusiveAccessPermissionManagerTest,
        CloseTabBeforeRequestingPermission) {
   QueuePointerLockRequest();
-  browser()->tab_strip_model()->CloseAllTabs();
+  DeleteContents();
 
   EXPECT_CALL(permission_controller_, RequestPermissionsFromCurrentDocument)
       .Times(0);

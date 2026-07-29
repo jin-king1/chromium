@@ -14,11 +14,12 @@
 #include "base/functional/callback.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/color/color_id.h"
-#include "ui/color/color_id.mojom.h"
-#include "ui/color/color_mixer.h"
+#include "ui/color/color_id.mojom-forward.h"
 #include "ui/color/color_provider_manager.h"
 
 namespace ui {
+
+class ColorMixer;
 
 using RendererColorMap = base::flat_map<color::mojom::RendererColorId, SkColor>;
 
@@ -26,30 +27,19 @@ class COMPONENT_EXPORT(COLOR) ColorProviderUtilsCallbacks {
  public:
   virtual ~ColorProviderUtilsCallbacks();
   virtual bool ColorIdName(ColorId color_id, std::string_view* color_name) = 0;
+  virtual bool NameToColorId(std::string_view color_name, ColorId* color_id);
 };
 
 // The following functions convert various values to strings intended for
 // logging. Do not retain the results for longer than the scope in which these
 // functions are called.
 
-// Converts the ColorMode.
-std::string_view COMPONENT_EXPORT(COLOR)
-    ColorModeName(ColorProviderKey::ColorMode color_mode);
-
-// Converts the ContrastMode.
-std::string_view COMPONENT_EXPORT(COLOR)
-    ContrastModeName(ColorProviderKey::ContrastMode contrast_mode);
-
-// Converts the ForcedColors.
-std::string_view COMPONENT_EXPORT(COLOR)
-    ForcedColorsName(ColorProviderKey::ForcedColors forced_colors);
-
-// Converts SystemTheme.
-std::string_view COMPONENT_EXPORT(COLOR)
-    SystemThemeName(ui::SystemTheme system_theme);
-
 // Converts ColorId.
 std::string COMPONENT_EXPORT(COLOR) ColorIdName(ColorId color_id);
+
+// Converts string representation of ColorId to its enum value.
+std::optional<ColorId> COMPONENT_EXPORT(COLOR)
+    NameToColorId(std::string_view color_id_name);
 
 // Converts SkColor to string. Check if color matches a standard color palette
 // value and return it as a string. Otherwise return as an rgba(xx, xxx, xxx,
@@ -59,7 +49,7 @@ std::string COMPONENT_EXPORT(COLOR) SkColorName(SkColor color);
 // Converts Color Provider Color Id in string format from kColorXXX to
 // "--color-X-X-X" for CSS
 std::string COMPONENT_EXPORT(COLOR)
-    ConvertColorProviderColorIdToCSSColorId(std::string color_id_name);
+    ConvertColorProviderColorIdToCSSColorId(std::string_view color_id_name);
 
 // Converts SkColor in ARGB format to CSS color in RGBA color. Returns the color
 // in a Hex string representation.
@@ -77,11 +67,6 @@ RendererColorMap COMPONENT_EXPORT(COLOR)
 std::unique_ptr<ColorProvider> COMPONENT_EXPORT(COLOR)
     CreateColorProviderFromRendererColorMap(
         const RendererColorMap& renderer_color_map);
-
-// Adds colors for emulating Windows 10 default high contrast color themes
-// to `mixer`. Used to support the devtools forced colors emulation feature.
-void COMPONENT_EXPORT(COLOR)
-    AddEmulatedForcedColorsToMixer(ColorMixer& mixer, bool dark_mode);
 
 // Creates a color provider emulating Windows 10 default high contrast color
 // themes.
@@ -105,16 +90,23 @@ std::unique_ptr<ColorProvider> COMPONENT_EXPORT(COLOR)
 std::unique_ptr<ColorProvider> COMPONENT_EXPORT(COLOR)
     CreateDefaultColorProviderForBlink(bool dark_mode);
 
-// Scrollbars have three main colors. This function completes the
+// Fluent scrollbars have three main colors. This function completes the
 // definition of colors for all scrollbar parts in relation to the three main
 // ones.
 void COMPONENT_EXPORT(COLOR)
-    CompleteScrollbarColorsDefinition(ui::ColorMixer& mixer);
+    CompleteFluentScrollbarColorsDefinition(ui::ColorMixer& mixer);
 
 // Completes color definitions for the controls defined in
 // NativeThemeBase::ControlColorId when in forced colors mode.
 void COMPONENT_EXPORT(COLOR)
     CompleteControlsForcedColorsDefinition(ui::ColorMixer& mixer);
+
+// Completes default color definitions for the RendererColorIds that are web
+// native.
+void COMPONENT_EXPORT(COLOR)
+    CompleteDefaultWebNativeRendererColorIdsDefinition(ui::ColorMixer& mixer,
+                                                       bool dark_mode,
+                                                       bool high_contrast);
 
 // Completes default color definitions for the RendererColorIds that are non
 // web native.

@@ -12,12 +12,9 @@ static_library("bluetooth") {
     "bluetooth_section.h",
     "fast_pair_saved_devices_handler.cc",
     "fast_pair_saved_devices_handler.h",
-    "fast_pair_software_scanning_handler.cc",
-    "fast_pair_software_scanning_handler.h",
   ]
 
   public_deps = [
-    "//ash/quick_pair/feature_status_tracker",
     "//ash/quick_pair/proto:fastpair_proto",
     "//base",
     "//chrome/browser/ui/webui/settings",
@@ -75,4 +72,8 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//ui/gfx:test_support",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

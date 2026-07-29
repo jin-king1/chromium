@@ -11,8 +11,11 @@
 #import "base/metrics/user_metrics_action.h"
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
+#import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -27,14 +30,13 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/inactive_tabs/inactive_tabs_view_controller.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_context_menu/tab_context_menu_helper.h"
 #import "ios/chrome/browser/tabs/model/inactive_tabs/features.h"
-#import "ios/chrome/browser/tabs/model/tabs_closer.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/web_state_id.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/strings/grit/ui_strings.h"
 
-// A view that can be dimmed continusouly between no dimming and being fully
+// A view that can be dimmed continuously between no dimming and being fully
 // dimmed (the view is then fully black).
 @interface DimmableSnapshot : UIView
 
@@ -107,6 +109,7 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
 
 @interface InactiveTabsCoordinator () <
     GridViewControllerDelegate,
+    InactiveTabsMediatorDelegate,
     InactiveTabsUserEducationCoordinatorDelegate,
     InactiveTabsViewControllerDelegate,
     SettingsNavigationControllerDelegate>
@@ -120,7 +123,7 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
 // The constraints for placing `viewController` horizontally.
 @property(nonatomic, strong) NSLayoutConstraint* horizontalPosition;
 
-// Whether the view controller is shown. It is true inbetween calls to `-show`
+// Whether the view controller is shown. It is true in-between calls to `-show`
 // and `-hide`.
 @property(nonatomic, getter=isShowing) BOOL showing;
 
@@ -161,8 +164,9 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
                                    browser:(Browser*)browser
                                   delegate:(id<InactiveTabsCoordinatorDelegate>)
                                                delegate {
-  CHECK(IsInactiveTabsAvailable());
   CHECK(delegate);
+  CHECK_EQ(browser->type(), Browser::Type::kInactive,
+           base::NotFatalUntil::M146);
   self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
     _delegate = delegate;
@@ -188,25 +192,26 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
       tabContextMenuDelegate:self.tabContextMenuDelegate];
 
   Browser* browser = self.browser;
-  SnapshotStorageWrapper* snapshotStorage =
-      SnapshotBrowserAgent::FromBrowser(browser)->snapshot_storage();
   self.mediator = [[InactiveTabsMediator alloc]
       initWithWebStateList:browser->GetWebStateList()
         profilePrefService:browser->GetProfile()->GetPrefs()
-           snapshotStorage:snapshotStorage
-                tabsCloser:std::make_unique<TabsCloser>(
-                               browser, TabsCloser::ClosePolicy::kAllTabs)];
+             faviconLoader:IOSChromeFaviconLoaderFactory::GetForProfile(
+                               browser->GetProfile())
+      snapshotBrowserAgent:SnapshotBrowserAgent::FromBrowser(browser)];
 }
 
 - (void)show {
   if (self.showing) {
     return;
   }
+  CHECK(!IsInactiveTabsExplicitlyDisabledByUser(
+      self.browser->GetProfile()->GetPrefs()));
   self.showing = YES;
   base::RecordAction(base::UserMetricsAction("MobileInactiveTabGridEntered"));
 
   // Create the view controller.
   self.viewController = [[InactiveTabsViewController alloc] init];
+  self.viewController.layoutState = self.browser->GetSceneState().layoutState;
   self.viewController.delegate = self;
   self.viewController.gridViewController.delegate = self;
 
@@ -218,8 +223,11 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
   [self.viewController.view addGestureRecognizer:edgeSwipeRecognizer];
 
   self.mediator.consumer = self.viewController.gridViewController;
+  self.mediator.delegate = self;
 
   self.viewController.gridViewController.menuProvider = _contextMenuProvider;
+  self.viewController.gridViewController.snapshotAndfaviconDataSource =
+      self.mediator;
 
   // Add the Inactive Tabs view controller to the hierarchy.
   UIView* baseView = self.baseViewController.view;
@@ -290,6 +298,7 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
 
   [self.mediator disconnect];
   self.mediator = nil;
+  self.viewController.layoutState = nil;
   self.viewController = nil;
 }
 
@@ -400,6 +409,12 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
   NOTREACHED();
 }
 
+#pragma mark - InactiveTabsMediatorDelegate
+
+- (void)inactiveTabsMediatorEmpty:(InactiveTabsMediator*)inactiveTabsMediator {
+  [self popIfNeeded];
+}
+
 #pragma mark - InactiveTabsUserEducationCoordinatorDelegate
 
 - (void)inactiveTabsUserEducationCoordinatorDidTapSettingsButton:
@@ -490,11 +505,11 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
   [self onSettingsDismissed];
 }
 
-- (id<ApplicationCommands, BrowserCommands>)handlerForSettings {
+- (id<SceneCommands, BrowserCommands>)handlerForSettings {
   NOTREACHED();
 }
 
-- (id<ApplicationCommands>)handlerForApplicationCommands {
+- (id<SceneCommands>)handlerForSceneCommands {
   NOTREACHED();
 }
 
@@ -633,6 +648,7 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
         self.baseViewSnapshot = nil;
         self.showing = NO;
         self.mediator.consumer = nil;
+        self.mediator.delegate = nil;
         self.viewController = nil;
       }];
 }
@@ -674,7 +690,7 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
 // controller.
 - (void)presentSettings {
   _settingsController = [SettingsNavigationController
-      inactiveTabsControllerForBrowser:self.browser
+      inactiveTabsControllerForBrowser:self.browser->GetActiveBrowser()
                               delegate:self];
   [self.viewController presentViewController:_settingsController
                                     animated:YES
@@ -693,7 +709,8 @@ const base::TimeDelta kPopUIDelay = base::Seconds(0.3);
 // Tells the delegate this coordinator did finish if it was showing its view
 // controller and had no item left.
 - (void)popIfNeeded {
-  if ([self.mediator numberOfItems] == 0 && self.showing) {
+  if ([self.mediator numberOfItems] == 0 && self.showing &&
+      !self.presentingSettings) {
     [self didFinish];
   }
 }

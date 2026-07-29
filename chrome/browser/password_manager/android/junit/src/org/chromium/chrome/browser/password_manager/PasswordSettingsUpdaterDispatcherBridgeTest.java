@@ -27,6 +27,7 @@ import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.components.signin.AccountUtils;
+import org.chromium.ui.test.util.MockitoHelper;
 
 import java.util.Optional;
 
@@ -37,8 +38,8 @@ import java.util.Optional;
 public class PasswordSettingsUpdaterDispatcherBridgeTest {
 
     private static final String sTestAccountEmail = "test@email.com";
-    private static final Optional<Account> sTestAccount =
-            Optional.of(AccountUtils.createAccountFromName(sTestAccountEmail));
+    private static final Account sTestAccount =
+            AccountUtils.createAccountFromEmail(sTestAccountEmail);
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -61,9 +62,10 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         mDispatcherBridge.getSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.OFFER_TO_SAVE_PASSWORDS);
         ArgumentCaptor<Callback<Optional<Boolean>>> successCallback =
-                ArgumentCaptor.forClass(Callback.class);
+                MockitoHelper.callbackCaptor();
         verify(mAccessorMock)
-                .getOfferToSavePasswords(eq(sTestAccount), successCallback.capture(), any());
+                .getOfferToSavePasswords(
+                        eq(Optional.of(sTestAccount)), successCallback.capture(), any());
         assertNotNull(successCallback.getValue());
 
         successCallback.getValue().onResult(Optional.of(true));
@@ -73,7 +75,7 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         verify(mReceiverBridgeMock)
                 .onSettingValueFetched(
                         eq(PasswordManagerSetting.OFFER_TO_SAVE_PASSWORDS),
-                        eq(Optional.of(true)),
+                        eq(true),
                         metricsRecorder.capture());
 
         assertEquals("GetSettingValue", metricsRecorder.getValue().getFunctionSuffixForTesting());
@@ -87,9 +89,10 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         mDispatcherBridge.getSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.OFFER_TO_SAVE_PASSWORDS);
         ArgumentCaptor<Callback<Optional<Boolean>>> successCallback =
-                ArgumentCaptor.forClass(Callback.class);
+                MockitoHelper.callbackCaptor();
         verify(mAccessorMock)
-                .getOfferToSavePasswords(eq(sTestAccount), successCallback.capture(), any());
+                .getOfferToSavePasswords(
+                        eq(Optional.of(sTestAccount)), successCallback.capture(), any());
         assertNotNull(successCallback.getValue());
 
         successCallback.getValue().onResult(Optional.empty());
@@ -99,7 +102,7 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         verify(mReceiverBridgeMock)
                 .onSettingValueFetched(
                         eq(PasswordManagerSetting.OFFER_TO_SAVE_PASSWORDS),
-                        eq(Optional.empty()),
+                        eq(null),
                         metricsRecorder.capture());
 
         assertEquals("GetSettingValue", metricsRecorder.getValue().getFunctionSuffixForTesting());
@@ -112,10 +115,10 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
     public void testGetSavePasswordsSettingFails() {
         mDispatcherBridge.getSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.OFFER_TO_SAVE_PASSWORDS);
-        ArgumentCaptor<Callback<Exception>> failureCallback =
-                ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Exception>> failureCallback = MockitoHelper.callbackCaptor();
         verify(mAccessorMock)
-                .getOfferToSavePasswords(eq(sTestAccount), any(), failureCallback.capture());
+                .getOfferToSavePasswords(
+                        eq(Optional.of(sTestAccount)), any(), failureCallback.capture());
         assertNotNull(failureCallback.getValue());
 
         Exception expectedException = new Exception("Sample failure");
@@ -139,8 +142,9 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
     public void testGetAutoSignInSettingValueSucceeds() {
         mDispatcherBridge.getSettingValue(sTestAccountEmail, PasswordManagerSetting.AUTO_SIGN_IN);
         ArgumentCaptor<Callback<Optional<Boolean>>> successCallback =
-                ArgumentCaptor.forClass(Callback.class);
-        verify(mAccessorMock).getAutoSignIn(eq(sTestAccount), successCallback.capture(), any());
+                MockitoHelper.callbackCaptor();
+        verify(mAccessorMock)
+                .getAutoSignIn(eq(Optional.of(sTestAccount)), successCallback.capture(), any());
         assertNotNull(successCallback.getValue());
 
         successCallback.getValue().onResult(Optional.of(true));
@@ -150,7 +154,7 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         verify(mReceiverBridgeMock)
                 .onSettingValueFetched(
                         eq(PasswordManagerSetting.AUTO_SIGN_IN),
-                        eq(Optional.of(true)),
+                        eq(true),
                         metricsRecorder.capture());
 
         assertEquals("GetSettingValue", metricsRecorder.getValue().getFunctionSuffixForTesting());
@@ -163,8 +167,9 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
     public void testGetAutoSignInAbsentSucceeds() {
         mDispatcherBridge.getSettingValue(sTestAccountEmail, PasswordManagerSetting.AUTO_SIGN_IN);
         ArgumentCaptor<Callback<Optional<Boolean>>> successCallback =
-                ArgumentCaptor.forClass(Callback.class);
-        verify(mAccessorMock).getAutoSignIn(eq(sTestAccount), successCallback.capture(), any());
+                MockitoHelper.callbackCaptor();
+        verify(mAccessorMock)
+                .getAutoSignIn(eq(Optional.of(sTestAccount)), successCallback.capture(), any());
         assertNotNull(successCallback.getValue());
 
         successCallback.getValue().onResult(Optional.empty());
@@ -174,7 +179,7 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         verify(mReceiverBridgeMock)
                 .onSettingValueFetched(
                         eq(PasswordManagerSetting.AUTO_SIGN_IN),
-                        eq(Optional.empty()),
+                        eq(null),
                         metricsRecorder.capture());
 
         assertEquals("GetSettingValue", metricsRecorder.getValue().getFunctionSuffixForTesting());
@@ -186,9 +191,9 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
     @Test
     public void testGetAutoSignInSettingFails() {
         mDispatcherBridge.getSettingValue(sTestAccountEmail, PasswordManagerSetting.AUTO_SIGN_IN);
-        ArgumentCaptor<Callback<Exception>> failureCallback =
-                ArgumentCaptor.forClass(Callback.class);
-        verify(mAccessorMock).getAutoSignIn(eq(sTestAccount), any(), failureCallback.capture());
+        ArgumentCaptor<Callback<Exception>> failureCallback = MockitoHelper.callbackCaptor();
+        verify(mAccessorMock)
+                .getAutoSignIn(eq(Optional.of(sTestAccount)), any(), failureCallback.capture());
         assertNotNull(failureCallback.getValue());
 
         Exception expectedException = new Exception("Sample failure");
@@ -212,10 +217,10 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
     public void testSetSavePasswordsSucceeds() {
         mDispatcherBridge.setSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.OFFER_TO_SAVE_PASSWORDS, true);
-        ArgumentCaptor<Callback<Void>> successCallback = ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Void>> successCallback = MockitoHelper.callbackCaptor();
         verify(mAccessorMock)
                 .setOfferToSavePasswords(
-                        eq(true), eq(sTestAccount), successCallback.capture(), any());
+                        eq(true), eq(Optional.of(sTestAccount)), successCallback.capture(), any());
         assertNotNull(successCallback.getValue());
 
         successCallback.getValue().onResult(null);
@@ -237,11 +242,10 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
     public void testSetSavePasswordsSettingFails() {
         mDispatcherBridge.setSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.OFFER_TO_SAVE_PASSWORDS, true);
-        ArgumentCaptor<Callback<Exception>> failureCallback =
-                ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Exception>> failureCallback = MockitoHelper.callbackCaptor();
         verify(mAccessorMock)
                 .setOfferToSavePasswords(
-                        eq(true), eq(sTestAccount), any(), failureCallback.capture());
+                        eq(true), eq(Optional.of(sTestAccount)), any(), failureCallback.capture());
         assertNotNull(failureCallback.getValue());
 
         Exception expectedException = new Exception("Sample failure");
@@ -265,9 +269,10 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
     public void testSetAutoSignInSucceeds() {
         mDispatcherBridge.setSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.AUTO_SIGN_IN, true);
-        ArgumentCaptor<Callback<Void>> successCallback = ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Void>> successCallback = MockitoHelper.callbackCaptor();
         verify(mAccessorMock)
-                .setAutoSignIn(eq(true), eq(sTestAccount), successCallback.capture(), any());
+                .setAutoSignIn(
+                        eq(true), eq(Optional.of(sTestAccount)), successCallback.capture(), any());
         assertNotNull(successCallback.getValue());
 
         successCallback.getValue().onResult(null);
@@ -288,10 +293,10 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
     public void testSetAutoSignInSettingFails() {
         mDispatcherBridge.setSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.AUTO_SIGN_IN, true);
-        ArgumentCaptor<Callback<Exception>> failureCallback =
-                ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Exception>> failureCallback = MockitoHelper.callbackCaptor();
         verify(mAccessorMock)
-                .setAutoSignIn(eq(true), eq(sTestAccount), any(), failureCallback.capture());
+                .setAutoSignIn(
+                        eq(true), eq(Optional.of(sTestAccount)), any(), failureCallback.capture());
         assertNotNull(failureCallback.getValue());
 
         Exception expectedException = new Exception("Sample failure");
@@ -316,7 +321,7 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         mDispatcherBridge.getSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.BIOMETRIC_REAUTH_BEFORE_PWD_FILLING);
         ArgumentCaptor<Callback<Optional<Boolean>>> successCallback =
-                ArgumentCaptor.forClass(Callback.class);
+                MockitoHelper.callbackCaptor();
         verify(mAccessorMock).getUseBiometricReauthBeforeFilling(successCallback.capture(), any());
         assertNotNull(successCallback.getValue());
 
@@ -327,7 +332,7 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         verify(mReceiverBridgeMock)
                 .onSettingValueFetched(
                         eq(PasswordManagerSetting.BIOMETRIC_REAUTH_BEFORE_PWD_FILLING),
-                        eq(Optional.of(true)),
+                        eq(true),
                         metricsRecorder.capture());
 
         assertEquals("GetSettingValue", metricsRecorder.getValue().getFunctionSuffixForTesting());
@@ -341,7 +346,7 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         mDispatcherBridge.getSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.BIOMETRIC_REAUTH_BEFORE_PWD_FILLING);
         ArgumentCaptor<Callback<Optional<Boolean>>> successCallback =
-                ArgumentCaptor.forClass(Callback.class);
+                MockitoHelper.callbackCaptor();
         verify(mAccessorMock).getUseBiometricReauthBeforeFilling(successCallback.capture(), any());
         assertNotNull(successCallback.getValue());
 
@@ -352,7 +357,7 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
         verify(mReceiverBridgeMock)
                 .onSettingValueFetched(
                         eq(PasswordManagerSetting.BIOMETRIC_REAUTH_BEFORE_PWD_FILLING),
-                        eq(Optional.empty()),
+                        eq(null),
                         metricsRecorder.capture());
 
         assertEquals("GetSettingValue", metricsRecorder.getValue().getFunctionSuffixForTesting());
@@ -365,8 +370,7 @@ public class PasswordSettingsUpdaterDispatcherBridgeTest {
     public void testGetBiometricReauthBeforePwdFillingFails() {
         mDispatcherBridge.getSettingValue(
                 sTestAccountEmail, PasswordManagerSetting.BIOMETRIC_REAUTH_BEFORE_PWD_FILLING);
-        ArgumentCaptor<Callback<Exception>> failureCallback =
-                ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Exception>> failureCallback = MockitoHelper.callbackCaptor();
         verify(mAccessorMock).getUseBiometricReauthBeforeFilling(any(), failureCallback.capture());
         assertNotNull(failureCallback.getValue());
 

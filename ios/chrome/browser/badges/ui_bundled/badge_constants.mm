@@ -53,11 +53,8 @@ NSString* const
     kBadgeButtonPermissionsMicrophoneAcceptedAccessibilityIdentifier =
         @"badgeButtonPermissionsMicrophoneAcceptedAXID";
 
-NSString* const kBadgeButtonParcelTrackingAccessibilityIdentifier =
-    @"badgeButtonParcelTrackingAXID";
-
-NSString* const kBadgeButtonParcelTrackingAcceptedAccessibilityIdentifier =
-    @"badgeButtonParcelTrackingAcceptedAXID";
+NSString* const kBadgeButtonReaderModeAccessibilityIdentifier =
+    @"badgeButtonReaderModeAXID";
 
 NSString* const kBadgeUnreadIndicatorAccessibilityIdentifier =
     @"badgeUnreadIndicatorAXID";
@@ -79,6 +76,3 @@ NSString* const kBadgeButtonTranslateActionIdentifier =
 
 NSString* const kBadgeButtonPermissionsActionIdentifier =
     @"badgeButtonPermissionsActionIdentifier";
-
-NSString* const kBadgeButtonParcelTrackingActionIdentifier =
-    @"badgeButtonParcelTrackingActionIdentifier";

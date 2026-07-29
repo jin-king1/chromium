@@ -5,9 +5,11 @@
 #include "content/browser/renderer_host/media/peer_connection_tracker_host.h"
 
 #include <algorithm>
+#include <iterator>
 #include <set>
 #include <utility>
 
+#include "base/barrier_closure.h"
 #include "base/functional/bind.h"
 #include "base/no_destructor.h"
 #include "base/observer_list.h"
@@ -22,9 +24,10 @@ namespace content {
 
 namespace {
 
-using ObserverListType = base::ObserverList<PeerConnectionTrackerHostObserver,
-                                            /*check_empty=*/true,
-                                            /*allow_reentrancy=*/false>;
+using ObserverListType =
+    base::ObserverList<PeerConnectionTrackerHostObserver,
+                       /*check_empty=*/true,
+                       base::ObserverListReentrancyPolicy::kDisallowReentrancy>;
 ObserverListType& GetObserverList() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   static base::NoDestructor<ObserverListType> observer_list{};
@@ -91,6 +94,11 @@ PeerConnectionTrackerHost::PeerConnectionTrackerHost(RenderFrameHost* frame)
 
 PeerConnectionTrackerHost::~PeerConnectionTrackerHost() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  for (int lid : peer_connection_lids_) {
+    for (auto& observer : GetObserverList()) {
+      observer.OnPeerConnectionRemoved(frame_id_, lid);
+    }
+  }
   RemoveHost(this);
   auto* power_monitor = base::PowerMonitor::GetInstance();
   power_monitor->RemovePowerSuspendObserver(this);
@@ -104,6 +112,7 @@ void PeerConnectionTrackerHost::AddPeerConnection(
   const std::string& url =
       (info->url == std::nullopt) ? std::string() : *info->url;
 
+  peer_connection_lids_.insert(info->lid);
   for (auto& observer : GetObserverList()) {
     observer.OnPeerConnectionAdded(frame_id_, info->lid, peer_pid_, url,
                                    info->rtc_configuration);
@@ -113,6 +122,7 @@ void PeerConnectionTrackerHost::AddPeerConnection(
 void PeerConnectionTrackerHost::RemovePeerConnection(int lid) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
+  peer_connection_lids_.erase(lid);
   for (auto& observer : GetObserverList()) {
     observer.OnPeerConnectionRemoved(frame_id_, lid);
   }
@@ -130,16 +140,25 @@ void PeerConnectionTrackerHost::UpdatePeerConnection(int lid,
 
 void PeerConnectionTrackerHost::OnPeerConnectionSessionIdSet(
     int lid,
-    const std::string& session_id) {
+    const std::string& session_id,
+    base::OnceClosure callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
+  // The observer list does not have a method to query the number of observers.
+  // The correctness of `count` relies on OnPeerConnectionSessionIdSet not
+  // removing or adding any observers.
+  const size_t count =
+      std::distance(GetObserverList().begin(), GetObserverList().end());
+
+  base::RepeatingClosure barrier =
+      base::BarrierClosure(count, std::move(callback));
   for (auto& observer : GetObserverList()) {
-    observer.OnPeerConnectionSessionIdSet(frame_id_, lid, session_id);
+    observer.OnPeerConnectionSessionIdSet(frame_id_, lid, session_id, barrier);
   }
 }
 
 void PeerConnectionTrackerHost::AddStandardStats(int lid,
-                                                 base::Value::List value) {
+                                                 base::ListValue value) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
   for (auto& observer : GetObserverList()) {
@@ -257,6 +276,27 @@ void PeerConnectionTrackerHost::StartEventLog(int lid, int output_period_ms) {
 void PeerConnectionTrackerHost::StopEventLog(int lid) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   tracker_->StopEventLog(lid);
+}
+
+void PeerConnectionTrackerHost::StartDataChannelLog(int lid) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  tracker_->StartDataChannelLog(lid);
+}
+
+void PeerConnectionTrackerHost::StopDataChannelLog(int lid) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  tracker_->StopDataChannelLog(lid);
+}
+
+void PeerConnectionTrackerHost::WebRtcDataChannelLogWrite(
+    int lid,
+    const std::vector<uint8_t>& output) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+
+  std::string message(output.begin(), output.end());
+  for (auto& observer : GetObserverList()) {
+    observer.OnWebRtcDataChannelLogWrite(frame_id_, lid, message);
+  }
 }
 
 void PeerConnectionTrackerHost::GetStandardStats() {

@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <optional>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ash/ash_export.h"
@@ -22,10 +23,11 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "base/values.h"
 
+namespace endpoint_fetcher {
 class EndpointFetcher;
+}
 
 namespace ash {
 
@@ -98,7 +100,7 @@ class ASH_EXPORT QuickInsertSearchRequest {
 
   std::unique_ptr<QuickInsertClipboardHistoryProvider> clipboard_provider_;
   QuickInsertSearchDebouncer gif_search_debouncer_;
-  std::unique_ptr<EndpointFetcher> gif_fetcher_;
+  std::unique_ptr<endpoint_fetcher::EndpointFetcher> gif_fetcher_;
 
   SearchResultsCallback current_callback_;
   // Set to true once all the searches have started at the end of the ctor.
@@ -109,7 +111,7 @@ class ASH_EXPORT QuickInsertSearchRequest {
   DoneCallback done_callback_;
 
   static constexpr size_t kNumSources =
-      base::to_underlying(QuickInsertSearchSource::kMaxValue) + 1;
+      std::to_underlying(QuickInsertSearchSource::kMaxValue) + 1;
   std::array<std::optional<base::TimeTicks>, kNumSources> search_starts_;
 
   base::WeakPtrFactory<QuickInsertSearchRequest> weak_ptr_factory_{this};

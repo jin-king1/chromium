@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <memory>
 #include <utility>
+#include <variant>
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
@@ -58,11 +59,13 @@
 #include "third_party/blink/renderer/platform/loader/fetch/unique_identifier.h"
 #include "third_party/blink/renderer/platform/network/http_parsers.h"
 #include "third_party/blink/renderer/platform/network/network_utils.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/reporting_disposition.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 #include "v8/include/v8.h"
 
@@ -168,6 +171,9 @@ class ImageResource::ImageResourceInfoImpl final
 
  private:
   const KURL& Url() const override { return resource_->Url(); }
+  bool IsAutomaticUpgrade() const override {
+    return resource_->GetResourceRequest().IsAutomaticUpgrade();
+  }
   base::TimeTicks LoadEnd() const override {
     if (ResourceLoadTiming* load_timing =
             resource_->GetResponse().GetResourceLoadTiming()) {
@@ -202,14 +208,11 @@ class ImageResource::ImageResourceInfoImpl final
   bool IsCacheValidator() const override {
     return resource_->IsCacheValidator();
   }
-  bool IsAccessAllowed(
+  bool IsCorsSameOrigin(
       DoesCurrentFrameHaveSingleSecurityOrigin
-          does_current_frame_has_single_security_origin) const override {
-    return resource_->IsAccessAllowed(
-        does_current_frame_has_single_security_origin);
-  }
-  bool HasCacheControlNoStoreHeader() const override {
-    return resource_->HasCacheControlNoStoreHeader();
+          does_current_frame_have_single_security_origin) const override {
+    return resource_->IsCorsSameOrigin(
+        does_current_frame_have_single_security_origin);
   }
   std::optional<ResourceError> GetResourceError() const override {
     if (resource_->LoadFailedOrCanceled())
@@ -240,8 +243,8 @@ class ImageResource::ImageResourceInfoImpl final
     }
   }
 
-  bool IsAdResource() const override {
-    return resource_->GetResourceRequest().IsAdResource();
+  const std::optional<AdProvenance>& GetAdProvenance() const override {
+    return resource_->GetResourceRequest().GetAdProvenance();
   }
 
   const HashSet<String>* GetUnsupportedImageMimeTypes() const override {
@@ -269,24 +272,17 @@ class ImageResource::ImageResourceFactory : public NonTextResourceFactory {
   STACK_ALLOCATED();
 
  public:
-  explicit ImageResourceFactory(bool transparent_image_optimization_enabled)
-      : NonTextResourceFactory(ResourceType::kImage),
-        transparent_image_optimization_enabled_(
-            transparent_image_optimization_enabled) {}
+  ImageResourceFactory() : NonTextResourceFactory(ResourceType::kImage) {}
 
   Resource* Create(const ResourceRequest& request,
                    const ResourceLoaderOptions& options) const override {
-    if (transparent_image_optimization_enabled_ &&
-        (request.GetKnownTransparentPlaceholderImageIndex() != kNotFound)) {
+    if (request.GetKnownTransparentPlaceholderImageIndex() != kNotFound) {
       return CreateResourceForTransparentPlaceholderImage(request, options);
     }
 
     return MakeGarbageCollected<ImageResource>(
         request, options, ImageResourceContent::CreateNotStarted());
   }
-
- private:
-  const bool transparent_image_optimization_enabled_;
 };
 
 ImageResource* ImageResource::Fetch(FetchParameters& params,
@@ -308,11 +304,8 @@ ImageResource* ImageResource::Fetch(FetchParameters& params,
         network::mojom::CSPDisposition::DO_NOT_CHECK);
   }
 
-  auto* resource = To<ImageResource>(fetcher->RequestResource(
-      params,
-      ImageResourceFactory(
-          fetcher->IsSimplifyLoadingTransparentPlaceholderImageEnabled()),
-      nullptr));
+  auto* resource = To<ImageResource>(
+      fetcher->RequestResource(params, ImageResourceFactory(), nullptr));
 
   // If the fetch originated from user agent CSS we should mark it as a user
   // agent resource.
@@ -353,8 +346,7 @@ ImageResource* ImageResource::CreateForTest(const KURL& url) {
   request.SetPriority(WebURLRequest::Priority::kLow);
   MarkKnownTransparentPlaceholderResourceRequestIfNeeded(request);
 
-  ImageResourceFactory factory(base::FeatureList::IsEnabled(
-      features::kSimplifyLoadingTransparentPlaceholderImage));
+  ImageResourceFactory factory;
   return To<ImageResource>(
       factory.Create(request, ResourceLoaderOptions(/* world=*/nullptr)));
 }
@@ -384,7 +376,7 @@ ImageResource::~ImageResource() {
 void ImageResource::OnMemoryDump(WebMemoryDumpLevelOfDetail level_of_detail,
                                  WebProcessMemoryDump* memory_dump) const {
   Resource::OnMemoryDump(level_of_detail, memory_dump);
-  const String name = GetMemoryDumpName() + "/image_content";
+  const String name = StrCat({GetMemoryDumpName(), "/image_content"});
   auto* dump = memory_dump->CreateMemoryAllocatorDump(name);
   if (content_->HasImage() && content_->GetImage()->HasData())
     dump->AddScalar("size", "bytes", content_->GetImage()->DataSize());
@@ -446,11 +438,11 @@ scoped_refptr<const SharedBuffer> ImageResource::ResourceBuffer() const {
 }
 
 void ImageResource::AppendData(
-    absl::variant<SegmentedBuffer, base::span<const char>> data) {
+    std::variant<SegmentedBuffer, base::span<const char>> data) {
   // We don't have a BackgroundResponseProcessor for ImageResources. So this
   // method must be called with a `span<const char>` data.
-  CHECK(absl::holds_alternative<base::span<const char>>(data));
-  base::span<const char> span = absl::get<base::span<const char>>(data);
+  CHECK(std::holds_alternative<base::span<const char>>(data));
+  base::span<const char> span = std::get<base::span<const char>>(data);
   external_memory_accounter_.Increase(v8::Isolate::GetCurrent(), span.size());
   if (multipart_parser_) {
     multipart_parser_->AppendData(span);
@@ -487,8 +479,8 @@ void ImageResource::AppendData(
           std::max(base::TimeDelta(), last_flush_time_ - now + kFlushDelay);
       task_runner->PostDelayedTask(
           FROM_HERE,
-          WTF::BindOnce(&ImageResource::FlushImageIfNeeded,
-                        WrapWeakPersistent(this)),
+          blink::BindOnce(&ImageResource::FlushImageIfNeeded,
+                          WrapWeakPersistent(this)),
           flush_delay);
       is_pending_flushing_ = true;
     }
@@ -535,6 +527,22 @@ void ImageResource::DecodeError(bool all_data_received) {
   MemoryCache::Get()->Remove(this);
 }
 
+void ImageResource::IntegrityFailure() {
+  if (!ErrorOccurred()) {
+    SetStatus(ResourceStatus::kLoadError);
+  }
+  ClearData();
+  SetEncodedSize(0);
+  external_memory_accounter_.Clear(v8::Isolate::GetCurrent());
+  if (multipart_parser_) {
+    multipart_parser_->Cancel();
+  }
+  auto result = GetContent()->UpdateImage(
+      nullptr, GetStatus(), ImageResourceContent::kClearImageAndNotifyObservers,
+      /*all_data_received=*/true, /*is_multipart=*/!!multipart_parser_);
+  DCHECK_EQ(result, ImageResourceContent::UpdateImageResult::kNoDecodeError);
+}
+
 void ImageResource::UpdateImageAndClearBuffer() {
   UpdateImage(Data(), ImageResourceContent::kClearAndUpdateImage, true);
   ClearData();
@@ -548,9 +556,24 @@ void ImageResource::NotifyStartLoad() {
 
 void ImageResource::Finish(base::TimeTicks load_finish_time,
                            base::SingleThreadTaskRunner* task_runner) {
-  if (multipart_parser_) {
-    if (!ErrorOccurred())
-      multipart_parser_->Finish();
+  const bool enforce_integrity =
+      RuntimeEnabledFeatures::CSSResourceIntegrityEnforcementEnabled();
+
+  if (multipart_parser_ && !ErrorOccurred()) {
+    multipart_parser_->Finish();
+  }
+
+  if (enforce_integrity) {
+    // Resource::Finish() runs CheckResourceIntegrity() before notifying
+    // observers, so we can act on the result afterwards.
+    Resource::Finish(load_finish_time, task_runner);
+  }
+
+  if (enforce_integrity && !PassedIntegrityChecks()) {
+    // TODO(crbug.com/435625756): Surface the integrity failure to the
+    // devtools console.
+    IntegrityFailure();
+  } else if (multipart_parser_) {
     if (Data())
       UpdateImageAndClearBuffer();
   } else {
@@ -562,7 +585,10 @@ void ImageResource::Finish(base::TimeTicks load_finish_time,
     // https://docs.google.com/document/d/1v0yTAZ6wkqX2U_M6BNIGUJpM1s0TIw1VsqpxoL7aciY/edit?usp=sharing
     ClearData();
   }
-  Resource::Finish(load_finish_time, task_runner);
+
+  if (!enforce_integrity) {
+    Resource::Finish(load_finish_time, task_runner);
+  }
 }
 
 void ImageResource::FinishAsError(const ResourceError& error,
@@ -604,13 +630,23 @@ void ImageResource::UpdateResourceInfoFromObservers() {
   GetContent()->UpdateResourceInfoFromObservers();
 }
 
-std::pair<ResourcePriority, ResourcePriority>
+std::pair<std::optional<ResourcePriority>, std::optional<ResourcePriority>>
 ImageResource::PriorityFromObservers() const {
   return GetContent()->PriorityFromObservers();
 }
 
-bool ImageResource::HasNonDegenerateSizeForDecode() const {
-  return GetContent()->HasNonDegenerateSizeForDecode();
+// static
+bool ImageResource::IsAboveSpeculativeDecodeSizeThreshold(
+    const gfx::Size& size) {
+  return size.GetCheckedArea().ValueOrDefault(0) >=
+         ImageResource::kSpeculativeDecodeMinImageSize;
+}
+
+bool ImageResource::IsAboveSpeculativeDecodeSizeThreshold() const {
+  // Images with too few pixels will not be speculatively decoded.
+  CHECK(GetContent()->GetImage());
+  return IsAboveSpeculativeDecodeSizeThreshold(
+      GetContent()->GetImage()->Size());
 }
 
 void ImageResource::OnePartInMultipartReceived(
@@ -650,13 +686,13 @@ void ImageResource::MultipartDataReceived(base::span<const uint8_t> bytes) {
   Resource::AppendData(base::as_chars(bytes));
 }
 
-bool ImageResource::IsAccessAllowed(
+bool ImageResource::IsCorsSameOrigin(
     ImageResourceInfo::DoesCurrentFrameHaveSingleSecurityOrigin
-        does_current_frame_has_single_security_origin) const {
-  if (does_current_frame_has_single_security_origin !=
-      ImageResourceInfo::kHasSingleSecurityOrigin)
+        does_current_frame_have_single_security_origin) const {
+  if (does_current_frame_have_single_security_origin !=
+      ImageResourceInfo::kHasSingleSecurityOrigin) {
     return false;
-
+  }
   return GetResponse().IsCorsSameOrigin();
 }
 

@@ -13,6 +13,8 @@
 
 #include <string_view>
 
+#include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
@@ -24,7 +26,7 @@
 #include "base/win/registry.h"
 #include "base/win/win_util.h"
 #include "chrome/browser/browser_switcher/browser_switcher_prefs.h"
-#include "chrome/grit/generated_resources.h"
+#include "chrome/browser/win/isolated_browser_support.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "url/gurl.h"
@@ -35,7 +37,7 @@ namespace {
 
 using LaunchCallback = AlternativeBrowserDriver::LaunchCallback;
 
-const wchar_t kUrlVarName[] = L"${url}";
+constexpr std::wstring_view kUrlVarName = L"${url}";
 
 const wchar_t kIExploreKey[] =
     L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\IEXPLORE.EXE";
@@ -156,7 +158,7 @@ bool ExpandUrlVarName(std::wstring* arg, const std::wstring& url_spec) {
   size_t url_index = arg->find(kUrlVarName);
   if (url_index == std::wstring::npos)
     return false;
-  arg->replace(url_index, wcslen(kUrlVarName), url_spec);
+  arg->replace(url_index, kUrlVarName.size(), url_spec);
   return true;
 }
 
@@ -278,6 +280,15 @@ bool TryLaunchWithExec(const GURL& url,
   auto cmd_line = CreateCommandLine(url, path, args);
 
   base::LaunchOptions options;
+
+  const auto unisolated_token = chrome::GetUnisolatedAccessToken();
+  if (!unisolated_token) {
+    return false;
+  }
+
+  // Always run alternative browsers unisolated.
+  options.using_token = unisolated_token->get();
+
   if (!base::LaunchProcess(cmd_line, options).IsValid()) {
     LOG(ERROR) << "Could not start the alternative browser! Error: "
                << GetLastError();

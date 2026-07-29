@@ -4,15 +4,19 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import static org.chromium.chrome.browser.tabmodel.TabGroupTitleUtils.UNSET_TAB_GROUP_TITLE;
+
 import android.os.Bundle;
 
 import androidx.annotation.ColorInt;
-import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -21,62 +25,70 @@ import java.util.Objects;
  */
 @NullMarked
 public class TabGroupMetadata {
-    private static final String KEY_ROOT_ID = "rootId";
     private static final String KEY_SELECTED_TAB_ID = "selectedTabId";
     private static final String KEY_SOURCE_WINDOW_ID = "sourceWindowId";
     private static final String KEY_TAB_GROUP_ID = "tabGroupId";
-    private static final String KEY_TAB_IDS = "tabIds";
-    private static final String KEY_TAB_URLS = "tabUrls";
+    @VisibleForTesting static final String KEY_TAB_IDS_TO_URLS = "tabIdsToUrls";
     private static final String KEY_TAB_GROUP_COLOR = "tabGroupColor";
     private static final String KEY_TAB_GROUP_TITLE = "tabGroupTitle";
     private static final String KEY_TAB_GROUP_COLLAPSED = "tabGroupCollapsed";
+    private static final String KEY_IS_GROUP_SHARED = "isGroupShared";
     private static final String KEY_IS_INCOGNITO = "isIncognito";
+    private static final String KEY_MHTML_TAB_TITLE = "mhtmlTabTitle";
 
-    public final int rootId;
     public final int selectedTabId;
     public final int sourceWindowId;
     public final Token tabGroupId;
-    public final ArrayList<Integer> tabIds;
-    public final ArrayList<String> tabUrls;
     public final @ColorInt int tabGroupColor;
-    @Nullable public final String tabGroupTitle;
+    public final String tabGroupTitle;
+    public final @Nullable String mhtmlTabTitle;
     public final boolean tabGroupCollapsed;
+    public final boolean isGroupShared;
     public final boolean isIncognito;
+
+    /**
+     * See <a href="https://crbug.com/416345985">bug</a> for more details. We previously attempted
+     * to preserve {@link org.chromium.chrome.browser.tab.Tab} order with a {@link
+     * java.util.LinkedHashMap}, but this gets clobbered when passing the {@link Bundle} to the
+     * target {@link android.app.Activity}. This is because the map gets parsed as a regular {@link
+     * Map} when to writing to (then reading from) a {@link android.os.Parcel}.
+     */
+    public final ArrayList<Map.Entry<Integer, String>> tabIdsToUrls;
 
     /**
      * Constructs a {@link TabGroupMetadata} object that stores metadata about a tab group.
      *
-     * @param rootId The root ID of the group.
      * @param selectedTabId The selected tab ID of the group.
      * @param sourceWindowId The ID of the window that holds the tab group before re-parenting.
      * @param tabGroupId The stable ID for the tab group.
-     * @param tabIds The list of tab IDs belonging to the group.
-     * @param tabUrls The list of tab URLs belonging to the group.
+     * @param tabIdsToUrls The {@link ArrayList} containing key-value pairs of tab IDs and URLs.
      * @param tabGroupColor The color of the tab group.
      * @param tabGroupTitle The title of the tab group.
+     * @param mhtmlTabTitle The title of the first MHTML tab in the group if there is any.
      * @param tabGroupCollapsed Whether the tab group is currently collapsed.
+     * @param isGroupShared Whether the tab group is shared with other collaborators.
      * @param isIncognito Whether the tab group is in incognito mode.
      */
     public TabGroupMetadata(
-            int rootId,
             int selectedTabId,
             int sourceWindowId,
             Token tabGroupId,
-            ArrayList<Integer> tabIds,
-            ArrayList<String> tabUrls,
+            ArrayList<Map.Entry<Integer, String>> tabIdsToUrls,
             @ColorInt int tabGroupColor,
-            @Nullable String tabGroupTitle,
+            String tabGroupTitle,
+            @Nullable String mhtmlTabTitle,
             boolean tabGroupCollapsed,
+            boolean isGroupShared,
             boolean isIncognito) {
-        this.rootId = rootId;
         this.selectedTabId = selectedTabId;
         this.sourceWindowId = sourceWindowId;
         this.tabGroupId = tabGroupId;
-        this.tabIds = tabIds;
-        this.tabUrls = tabUrls;
+        this.tabIdsToUrls = tabIdsToUrls;
         this.tabGroupColor = tabGroupColor;
         this.tabGroupTitle = tabGroupTitle;
+        this.mhtmlTabTitle = mhtmlTabTitle;
         this.tabGroupCollapsed = tabGroupCollapsed;
+        this.isGroupShared = isGroupShared;
         this.isIncognito = isIncognito;
     }
 
@@ -87,15 +99,15 @@ public class TabGroupMetadata {
      */
     public Bundle toBundle() {
         Bundle bundle = new Bundle();
-        bundle.putInt(KEY_ROOT_ID, rootId);
         bundle.putInt(KEY_SELECTED_TAB_ID, selectedTabId);
         bundle.putInt(KEY_SOURCE_WINDOW_ID, sourceWindowId);
         bundle.putBundle(KEY_TAB_GROUP_ID, tabGroupId.toBundle());
-        bundle.putIntegerArrayList(KEY_TAB_IDS, tabIds);
-        bundle.putStringArrayList(KEY_TAB_URLS, tabUrls);
+        bundle.putSerializable(KEY_TAB_IDS_TO_URLS, tabIdsToUrls);
         bundle.putInt(KEY_TAB_GROUP_COLOR, tabGroupColor);
         bundle.putString(KEY_TAB_GROUP_TITLE, tabGroupTitle);
+        bundle.putString(KEY_MHTML_TAB_TITLE, mhtmlTabTitle);
         bundle.putBoolean(KEY_TAB_GROUP_COLLAPSED, tabGroupCollapsed);
+        bundle.putBoolean(KEY_IS_GROUP_SHARED, isGroupShared);
         bundle.putBoolean(KEY_IS_INCOGNITO, isIncognito);
         return bundle;
     }
@@ -108,88 +120,89 @@ public class TabGroupMetadata {
         if (bundle == null) return null;
 
         // A valid bundle should have all required properties.
-        @Nullable
-        Token tabGroupIdFromBundle =
+        @Nullable Token tabGroupIdFromBundle =
                 Token.maybeCreateFromBundle(bundle.getBundle(KEY_TAB_GROUP_ID));
+        // Cast from Serializable to generic ArrayList is unchecked due to type erasure.
+        @SuppressWarnings("unchecked")
+        ArrayList<Map.Entry<Integer, String>> tabIdsToUrls =
+                (ArrayList<Map.Entry<Integer, String>>) bundle.getSerializable(KEY_TAB_IDS_TO_URLS);
         if (tabGroupIdFromBundle == null
-                || bundle.getIntegerArrayList(KEY_TAB_IDS) == null
-                || bundle.getStringArrayList(KEY_TAB_URLS) == null
-                || bundle.getString(KEY_TAB_GROUP_TITLE) == null
-                || !bundle.containsKey(KEY_ROOT_ID)
+                || tabIdsToUrls == null
+                || tabIdsToUrls.isEmpty()
                 || !bundle.containsKey(KEY_SELECTED_TAB_ID)
                 || !bundle.containsKey(KEY_SOURCE_WINDOW_ID)
                 || !bundle.containsKey(KEY_TAB_GROUP_COLOR)
                 || !bundle.containsKey(KEY_TAB_GROUP_COLLAPSED)
+                || !bundle.containsKey(KEY_IS_GROUP_SHARED)
                 || !bundle.containsKey(KEY_IS_INCOGNITO)) return null;
 
-        TabGroupMetadata tabGroupMetadata =
-                new TabGroupMetadata(
-                        bundle.getInt(KEY_ROOT_ID),
-                        bundle.getInt(KEY_SELECTED_TAB_ID),
-                        bundle.getInt(KEY_SOURCE_WINDOW_ID),
-                        tabGroupIdFromBundle,
-                        bundle.getIntegerArrayList(KEY_TAB_IDS),
-                        bundle.getStringArrayList(KEY_TAB_URLS),
-                        bundle.getInt(KEY_TAB_GROUP_COLOR),
-                        bundle.getString(KEY_TAB_GROUP_TITLE),
-                        bundle.getBoolean(KEY_TAB_GROUP_COLLAPSED),
-                        bundle.getBoolean(KEY_IS_INCOGNITO));
-        return tabGroupMetadata;
+        return new TabGroupMetadata(
+                bundle.getInt(KEY_SELECTED_TAB_ID),
+                bundle.getInt(KEY_SOURCE_WINDOW_ID),
+                tabGroupIdFromBundle,
+                tabIdsToUrls,
+                bundle.getInt(KEY_TAB_GROUP_COLOR),
+                bundle.getString(KEY_TAB_GROUP_TITLE, UNSET_TAB_GROUP_TITLE),
+                bundle.getString(KEY_MHTML_TAB_TITLE),
+                bundle.getBoolean(KEY_TAB_GROUP_COLLAPSED),
+                bundle.getBoolean(KEY_IS_GROUP_SHARED),
+                bundle.getBoolean(KEY_IS_INCOGNITO));
     }
 
     @Override
     public boolean equals(Object other) {
         if (this == other) return true;
-        if (other == null || getClass() != other.getClass()) return false;
+        if (!(other instanceof TabGroupMetadata)) return false;
         TabGroupMetadata that = (TabGroupMetadata) other;
-        return rootId == that.rootId
-                && selectedTabId == that.selectedTabId
+        return selectedTabId == that.selectedTabId
                 && sourceWindowId == that.sourceWindowId
                 && tabGroupColor == that.tabGroupColor
                 && tabGroupCollapsed == that.tabGroupCollapsed
+                && isGroupShared == that.isGroupShared
                 && isIncognito == that.isIncognito
                 && Objects.equals(tabGroupId, that.tabGroupId)
-                && Objects.equals(tabIds, that.tabIds)
-                && Objects.equals(tabUrls, that.tabUrls)
-                && Objects.equals(tabGroupTitle, that.tabGroupTitle);
+                && Objects.equals(tabIdsToUrls, that.tabIdsToUrls)
+                && Objects.equals(tabGroupTitle, that.tabGroupTitle)
+                && Objects.equals(mhtmlTabTitle, that.mhtmlTabTitle);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
-                this.rootId,
                 this.selectedTabId,
                 this.sourceWindowId,
                 this.tabGroupId,
-                this.tabIds,
-                this.tabUrls,
+                this.tabIdsToUrls,
                 this.tabGroupColor,
                 this.tabGroupTitle,
+                this.mhtmlTabTitle,
                 this.tabGroupCollapsed,
+                this.isGroupShared,
                 this.isIncognito);
     }
 
     public String toDebugString() {
         return "TabGroupMetadata{"
-                + "rootId="
-                + rootId
                 + "selectedTabId="
                 + selectedTabId
                 + "sourceWindowId="
                 + sourceWindowId
                 + ", tabGroupId="
                 + tabGroupId
-                + ", tabIds="
-                + tabIds
-                + ", tabUrls="
-                + tabUrls
+                + ", tabIdsToUrls="
+                + tabIdsToUrls
                 + ", tabGroupColor="
                 + tabGroupColor
                 + ", tabGroupTitle='"
                 + tabGroupTitle
                 + '\''
+                + ", mhtmlTabTitle='"
+                + mhtmlTabTitle
+                + '\''
                 + ", isCollapsed="
                 + tabGroupCollapsed
+                + ", isGroupShared="
+                + isGroupShared
                 + ", isIncognito="
                 + isIncognito
                 + '}';

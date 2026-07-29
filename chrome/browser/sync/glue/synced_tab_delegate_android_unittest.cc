@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/sync/glue/synced_tab_delegate_android.h"
 
 #include <cstddef>
@@ -15,9 +10,13 @@
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
+#include "base/compiler_specific.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/android/tab_android_data_provider.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
+#include "chrome/browser/ui/android/tab_model/tab_model.h"
+#include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#include "chrome/browser/ui/android/tab_model/tab_model_test_helper.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -46,34 +45,47 @@ class MockTabAndroidDataProvider : public TabAndroidDataProvider {
   MOCK_METHOD(std::unique_ptr<WebContentsStateByteBuffer>,
               GetWebContentsByteBuffer,
               (),
-              (override));
+              (const override));
 };
 
-const bool kIsOffTheRecord = false;
 const int kVersion = 2;
-const url::Origin kInitiatorOrigin;
 
 class SyncedTabDelegateAndroidTest : public testing::Test {
  protected:
   void SetUp() override {
     CHECK(profile_manager_.SetUp());
     profile_ = TestingProfile::Builder().Build();
+    test_tab_model_ = std::make_unique<TestTabModel>(profile_.get());
+    TabModelList::AddTabModel(test_tab_model_.get());
 
     Mock::VerifyAndClear(&mock_sync_sessions_client_);
     ON_CALL(mock_sync_sessions_client_, ShouldSyncURL(GURL(kInterestingUrl)))
         .WillByDefault(Return(true));
     ON_CALL(mock_sync_sessions_client_, ShouldSyncURL(GURL(kBoringUrl)))
         .WillByDefault(Return(false));
+    ON_CALL(mock_tab_android_data_provider_, GetWindowId())
+        .WillByDefault(Return(test_tab_model_->GetSessionId()));
   }
 
-  void MockBufferFromPickle(const base::Pickle& pickle) {
-    base::raw_span<const uint8_t> nav_span{pickle.data(), pickle.size()};
+  void TearDown() override {
+    TabModelList::RemoveTabModel(test_tab_model_.get());
+  }
+
+  void MockBufferFromPickle(base::Pickle& pickle) {
+    JNIEnv* env = base::android::AttachCurrentThread();
+
+    auto jbuffer = jni_zero::AdoptRef(
+        env, env->NewDirectByteBuffer(
+                 reinterpret_cast<void*>(pickle.AsWritableBytes().data()),
+                 pickle.size()));
+
     std::unique_ptr<WebContentsStateByteBuffer> buffer =
-        std::make_unique<WebContentsStateByteBuffer>(nav_span, kVersion);
+        std::make_unique<WebContentsStateByteBuffer>(jbuffer, kVersion);
     EXPECT_CALL(mock_tab_android_data_provider_, GetWebContentsByteBuffer())
         .WillOnce(Return(std::move(buffer)));
   }
 
+  const url::Origin kInitiatorOrigin;
   const std::u16string kTitle = u"";
   const GURL kInterestingUrl = GURL("fake://interesting");
   const GURL kBoringUrl = GURL("fake://boring");
@@ -85,6 +97,7 @@ class SyncedTabDelegateAndroidTest : public testing::Test {
   TestingProfileManager profile_manager_ =
       TestingProfileManager(TestingBrowserProcess::GetGlobal());
   std::unique_ptr<TestingProfile> profile_;
+  std::unique_ptr<TestTabModel> test_tab_model_;
   testing::NiceMock<sync_sessions::MockSyncSessionsClient>
       mock_sync_sessions_client_;
   testing::NiceMock<MockTabAndroidDataProvider> mock_tab_android_data_provider_;
@@ -105,7 +118,7 @@ TEST_F(SyncedTabDelegateAndroidTest, ReadPlaceholderNullBuffer) {
 
 TEST_F(SyncedTabDelegateAndroidTest, ReadPlaceholderBoring) {
   base::Pickle pickle = WebContentsState::CreateSingleNavigationStateAsPickle(
-      kTitle, kBoringUrl, kReferrer, kInitiatorOrigin, kIsOffTheRecord);
+      &*profile_, kTitle, kBoringUrl, kReferrer, kInitiatorOrigin);
   MockBufferFromPickle(pickle);
 
   std::unique_ptr<sync_sessions::SyncedTabDelegate> placeholder =
@@ -119,7 +132,7 @@ TEST_F(SyncedTabDelegateAndroidTest, ReadPlaceholderBoringWithOptimization) {
   feature_list_.InitAndEnableFeature(
       sync_sessions::kOptimizeAssociateWindowsAndroid);
   base::Pickle pickle = WebContentsState::CreateSingleNavigationStateAsPickle(
-      kTitle, kBoringUrl, kReferrer, kInitiatorOrigin, kIsOffTheRecord);
+      &*profile_, kTitle, kBoringUrl, kReferrer, kInitiatorOrigin);
   MockBufferFromPickle(pickle);
 
   std::unique_ptr<sync_sessions::SyncedTabDelegate> placeholder =
@@ -134,7 +147,7 @@ TEST_F(SyncedTabDelegateAndroidTest,
   feature_list_.InitAndEnableFeature(
       sync_sessions::kOptimizeAssociateWindowsAndroid);
   base::Pickle pickle = WebContentsState::CreateSingleNavigationStateAsPickle(
-      kTitle, kInterestingUrl, kReferrer, kInitiatorOrigin, kIsOffTheRecord);
+      &*profile_, kTitle, kInterestingUrl, kReferrer, kInitiatorOrigin);
   MockBufferFromPickle(pickle);
 
   std::unique_ptr<sync_sessions::SyncedTabDelegate> placeholder =

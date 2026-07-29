@@ -29,7 +29,7 @@ namespace {
 // This is for cases where no message should be sent back from Js.
 constexpr base::TimeDelta kWaitForJsNotReturnTimeout = base::Milliseconds(500);
 
-NSString* kSearchableForm =
+NSString* const kSearchableForm =
     @"<html>"
     @"  <form id='f' action='index.html' method='get'>"
     @"    <input type='search' name='q'>"
@@ -92,6 +92,13 @@ class SearchEngineJsTest : public PlatformTest,
     // delegate can be overriden.
     web::test::LoadHtml(@"<html></html>", web_state());
     SearchEngineJavaScriptFeature::GetInstance()->SetDelegate(this);
+  }
+
+  void TearDown() override {
+    // Clear the delegate to avoid a dangling pointer after the test object is
+    // destroyed, since the feature is a singleton that outlives the test.
+    SearchEngineJavaScriptFeature::GetInstance()->SetDelegate(nullptr);
+    PlatformTest::TearDown();
   }
 
   void SetSearchableUrl(web::WebState* web_state, GURL url) override {

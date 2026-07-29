@@ -21,6 +21,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/test/task_environment.h"
 #include "base/values.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/enterprise_companion/app/app.h"
 #include "chrome/enterprise_companion/device_management_storage/dm_storage.h"
@@ -64,7 +65,7 @@ constexpr char kFakeMachineLevelExtensionPolicyValue[] =
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 std::string ToProxyURL(const GURL& url) {
-  return base::StrCat({url.host(), ":", url.port()});
+  return base::StrCat({url.GetHost(), ":", url.GetPort()});
 }
 #endif
 
@@ -138,8 +139,8 @@ class IntegrationTests : public ::testing::Test {
     EXPECT_EQ(WaitForProcess(server_process_), 0);
   }
 
-  base::Value::Dict GetDefaultConstantsOverrides() {
-    base::Value::Dict overrides;
+  base::DictValue GetDefaultConstantsOverrides() {
+    base::DictValue overrides;
 
 #if BUILDFLAG(IS_WIN)
     // Allow access from builtin administrators.
@@ -163,7 +164,7 @@ class IntegrationTests : public ::testing::Test {
   void InstallConstantsOverrides() {
     InstallConstantsOverrides(GetDefaultConstantsOverrides());
   }
-  void InstallConstantsOverrides(const base::Value::Dict& overrides) {
+  void InstallConstantsOverrides(const base::DictValue& overrides) {
     std::optional<base::FilePath> overrides_json_path = GetOverridesFilePath();
     ASSERT_TRUE(overrides_json_path);
     ASSERT_TRUE(base::CreateDirectory(overrides_json_path->DirName()));
@@ -213,7 +214,7 @@ class IntegrationTests : public ::testing::Test {
               << "Cached policy type is not a directory";
 
           base::FilePath cached_response_path =
-              name.AppendASCII("PolicyFetchResponse");
+              name.Append(FILE_PATH_LITERAL("PolicyFetchResponse"));
           ASSERT_TRUE(base::PathExists(cached_response_path));
           std::string cached_response_contents;
           ASSERT_TRUE(base::ReadFileToString(cached_response_path,
@@ -283,17 +284,17 @@ class IntegrationTests : public ::testing::Test {
   // Copies artifacts from the installed application (e.g. logs, crash dumps,
   // etc.) to ISOLATED_OUTDIR, if present.
   void CopyApplicationArtifacts() {
-    std::string isolated_outdir_str;
-    if (!base::Environment::Create()->GetVar("ISOLATED_OUTDIR",
-                                             &isolated_outdir_str)) {
+    std::optional<std::string> isolated_outdir_str =
+        base::Environment::Create()->GetVar("ISOLATED_OUTDIR");
+    if (!isolated_outdir_str.has_value()) {
       return;
     }
 
     std::optional<base::FilePath> install_dir = GetInstallDirectory();
     ASSERT_TRUE(install_dir);
     base::FilePath artifacts_dir =
-        base::FilePath::FromASCII(isolated_outdir_str)
-            .AppendASCII(base::StrCat(
+        base::FilePath::FromUTF8Unsafe(isolated_outdir_str.value())
+            .AppendUTF8(base::StrCat(
                 {testing::UnitTest::GetInstance()->current_test_suite()->name(),
                  ".",
                  testing::UnitTest::GetInstance()
@@ -308,16 +309,18 @@ class IntegrationTests : public ::testing::Test {
                                 const base::FilePath& artifacts_dir) {
     ASSERT_TRUE(base::CreateDirectory(artifacts_dir));
     base::FilePath log_path =
-        install_dir.AppendASCII("enterprise_companion.log");
+        install_dir.Append(FILE_PATH_LITERAL("enterprise_companion.log"));
     if (base::PathExists(log_path)) {
       ASSERT_TRUE(
           base::CopyFile(log_path, artifacts_dir.Append(log_path.BaseName())));
     }
 
-    base::FilePath crash_db_path = install_dir.AppendASCII("Crashpad");
+    base::FilePath crash_db_path =
+        install_dir.Append(FILE_PATH_LITERAL("Crashpad"));
     if (base::PathExists(crash_db_path)) {
       ASSERT_TRUE(base::CopyDirectory(
-          crash_db_path, artifacts_dir.AppendASCII("Crashpad"), true));
+          crash_db_path, artifacts_dir.Append(FILE_PATH_LITERAL("Crashpad")),
+          true));
     }
   }
 
@@ -544,6 +547,45 @@ TEST_F(IntegrationTests, InvalidDMTokenDeleted) {
   EXPECT_EQ(dm_storage->GetDmToken(), "");
 }
 
+// The application should not attempt registration if the enrollment token has
+// been previously rejected by DMServer.
+TEST_F(IntegrationTests, BlockEnrollmentWithRejectedToken) {
+  SetDefaultPolicyFetchResponses();
+  ASSERT_NO_FATAL_FAILURE(GetTestMethods().Install());
+  ASSERT_NO_FATAL_FAILURE(LaunchApp());
+  ASSERT_NO_FATAL_FAILURE(WaitForServerStart());
+
+  test_server_.ExpectOnce(
+      {CreateEventLogMatcher(
+          test_server_,
+          {{proto::EnterpriseCompanionEvent::kBrowserEnrollmentEvent,
+            EnterpriseCompanionStatus::FromDeviceManagementStatus(
+                policy::DM_STATUS_SERVICE_MANAGEMENT_TOKEN_INVALID)}})},
+      CreateLogResponse());
+
+  // Attempt a registration with the invalid enrollment token, it should fail.
+  // The client should store the failed token.
+  ASSERT_NO_FATAL_FAILURE(
+      StoreEnrollmentToken(policy::kInvalidEnrollmentToken));
+  EXPECT_TRUE(CreateAppFetchPolicies()->Run().EqualsDeviceManagementStatus(
+      policy::DM_STATUS_SERVICE_MANAGEMENT_TOKEN_INVALID));
+
+  // Try to register again with the same invalid token. The client should
+  // immediately block the attempt locally. It should not send a request to the
+  // server, and as such, there should be no event log entry.
+  EXPECT_TRUE(CreateAppFetchPolicies()->Run().EqualsApplicationError(
+      ApplicationError::kEnrollmentBlocked));
+
+  ShutdownServerAndWaitForExit();
+
+  scoped_refptr<device_management_storage::DMStorage> dm_storage =
+      device_management_storage::GetDefaultDMStorage();
+  ASSERT_TRUE(dm_storage);
+  EXPECT_EQ(dm_storage->GetDmToken(), "");
+  EXPECT_FALSE(base::PathExists(
+      policy_cache_root_.Append(FILE_PATH_LITERAL("CachedPolicyInfo"))));
+}
+
 // The application should reload the enrollment token from storage on every
 // registration attempt.
 TEST_F(IntegrationTests, ReloadsTokens) {
@@ -613,7 +655,7 @@ TEST_F(IntegrationTests, CloudPolicyProxy_FixedServer) {
   EXPECT_TRUE(CreateAppShutdown()->Run().ok());
   EXPECT_EQ(WaitForProcess(server_process_), 0);
 
-  base::Value::Dict overrides = GetDefaultConstantsOverrides();
+  base::DictValue overrides = GetDefaultConstantsOverrides();
   overrides.Set(kDMServerUrlKey, "http://dm.server.not_exist/dmapi");
   ASSERT_NO_FATAL_FAILURE(InstallConstantsOverrides(overrides));
 
@@ -666,7 +708,7 @@ TEST_F(IntegrationTests, CloudPolicyProxy_SettingsChangeAppliedAtRuntime) {
   // this service should be routed through the proxy.
   EXPECT_TRUE(CreateAppShutdown()->Run().ok());
   EXPECT_EQ(WaitForProcess(server_process_), 0);
-  base::Value::Dict overrides = GetDefaultConstantsOverrides();
+  base::DictValue overrides = GetDefaultConstantsOverrides();
   overrides.Set(kDMServerUrlKey, "http://dm.server.not_exist/dmapi");
   ASSERT_NO_FATAL_FAILURE(InstallConstantsOverrides(overrides));
   ASSERT_NO_FATAL_FAILURE(LaunchApp());
@@ -739,7 +781,7 @@ TEST_F(IntegrationTests, CloudPolicyProxy_PacScript) {
   EXPECT_TRUE(CreateAppShutdown()->Run().ok());
   EXPECT_EQ(WaitForProcess(server_process_), 0);
 
-  base::Value::Dict overrides = GetDefaultConstantsOverrides();
+  base::DictValue overrides = GetDefaultConstantsOverrides();
   overrides.Set(kDMServerUrlKey, "http://dm.server.not_exist/dmapi");
   ASSERT_NO_FATAL_FAILURE(InstallConstantsOverrides(overrides));
 
@@ -763,7 +805,7 @@ TEST_F(IntegrationTests, CloudPolicyProxy_PacScript) {
 // The application should tunnel network requests through the proxy server
 // configured by Group Policy.
 TEST_F(IntegrationTests, GroupPolicyProxy_ProxyServer) {
-  base::Value::Dict overrides = GetDefaultConstantsOverrides();
+  base::DictValue overrides = GetDefaultConstantsOverrides();
   overrides.Set(kDMServerUrlKey, "http://dm.server.not_exist/dmapi");
   ASSERT_NO_FATAL_FAILURE(InstallConstantsOverrides(overrides));
   ASSERT_NO_FATAL_FAILURE(SetLocalProxyPolicies(
@@ -794,7 +836,7 @@ TEST_F(IntegrationTests, GroupPolicyProxy_ProxyServer) {
 // The application should tunnel network requests through the proxy server
 // configured by the PAC script specified by Group Policy.
 TEST_F(IntegrationTests, GroupPolicyProxy_PacScript) {
-  base::Value::Dict overrides = GetDefaultConstantsOverrides();
+  base::DictValue overrides = GetDefaultConstantsOverrides();
   overrides.Set(kDMServerUrlKey, "http://dm.server.not_exist/dmapi");
   ASSERT_NO_FATAL_FAILURE(InstallConstantsOverrides(overrides));
   ASSERT_NO_FATAL_FAILURE(SetLocalProxyPolicies(
@@ -827,10 +869,48 @@ TEST_F(IntegrationTests, GroupPolicyProxy_PacScript) {
   ASSERT_NO_FATAL_FAILURE(ExpectDefaultPolicyValuesPersisted());
 }
 
+// The application should canonicalize proxy URLs sources from PAC scripts
+// containing special characters.
+TEST_F(IntegrationTests, GroupPolicyProxy_PacProxyRequiresCanonicalization) {
+  base::DictValue overrides = GetDefaultConstantsOverrides();
+  overrides.Set(kDMServerUrlKey, "http://dm.server.not_exist/dmapi");
+  ASSERT_NO_FATAL_FAILURE(InstallConstantsOverrides(overrides));
+  ASSERT_NO_FATAL_FAILURE(SetLocalProxyPolicies(
+      /*proxy_mode=*/"pac_script", test_server_.proxy_pac_url().spec(),
+      /*proxy_server=*/std::nullopt,
+      /*cloud_policy_overrides_platform_policy=*/std::nullopt));
+  // URL canonicalization should remove the leading zero width space.
+  test_server_.ExpectOnce(
+      {CreatePacUrlMatcher(test_server_)},
+      base::StringPrintf(
+          "function FindProxyForURL(url, host) { return \"PROXY %s\"; }",
+          base::StrCat(
+              {"\u200b", ToProxyURL(dm_test_server_.GetServiceURL())})));
+
+  SetDefaultPolicyFetchResponses();
+  ASSERT_NO_FATAL_FAILURE(StoreEnrollmentToken(kFakeEnrollmentToken));
+  ASSERT_NO_FATAL_FAILURE(GetTestMethods().Install());
+  ASSERT_NO_FATAL_FAILURE(LaunchApp());
+  ASSERT_NO_FATAL_FAILURE(WaitForServerStart());
+
+  test_server_.ExpectOnce(
+      {CreateEventLogMatcher(
+          test_server_,
+          {{proto::EnterpriseCompanionEvent::kBrowserEnrollmentEvent,
+            EnterpriseCompanionStatus::Success()},
+           {proto::EnterpriseCompanionEvent::kPolicyFetchEvent,
+            EnterpriseCompanionStatus::Success()}})},
+      CreateLogResponse());
+
+  EXPECT_TRUE(CreateAppFetchPolicies()->Run().ok());
+
+  ASSERT_NO_FATAL_FAILURE(ExpectDefaultPolicyValuesPersisted());
+}
+
 // The application should exit with a failure if proxy navigation fails and the
 // server is not directly reachable.
 TEST_F(IntegrationTests, GroupPolicyProxy_BadProxyServer) {
-  base::Value::Dict overrides = GetDefaultConstantsOverrides();
+  base::DictValue overrides = GetDefaultConstantsOverrides();
   overrides.Set(kDMServerUrlKey, "http://dm.server.not_exist/dmapi");
   ASSERT_NO_FATAL_FAILURE(InstallConstantsOverrides(overrides));
   ASSERT_NO_FATAL_FAILURE(SetLocalProxyPolicies(
@@ -841,4 +921,25 @@ TEST_F(IntegrationTests, GroupPolicyProxy_BadProxyServer) {
 }
 
 #endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(CHROMIUM_BRANDING)
+
+// The application should be able to install over a previous version.
+TEST_F(IntegrationTests, OverInstallRealOld) {
+  ASSERT_NO_FATAL_FAILURE(GetTestMethods().InstallOlderVersion());
+  ASSERT_NO_FATAL_FAILURE(GetTestMethods().ExpectInstalled());
+  ASSERT_NO_FATAL_FAILURE(LaunchApp());
+  ASSERT_NO_FATAL_FAILURE(WaitForServerStart());
+
+  ASSERT_NO_FATAL_FAILURE(GetTestMethods().Install());
+
+  // The server process should be shut down by the install process. Reset the
+  // handle in the test fixture to ensure that a second shutdown is not
+  // attempted during `TearDown`.
+  EXPECT_EQ(WaitForProcess(server_process_), 0);
+  server_process_ = base::Process();
+  ASSERT_NO_FATAL_FAILURE(GetTestMethods().ExpectInstalled());
+}
+
+#endif  // BUILDFLAG(CHROMIUM_BRANDING)
 }  // namespace enterprise_companion

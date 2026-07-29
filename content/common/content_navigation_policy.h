@@ -5,11 +5,10 @@
 #ifndef CONTENT_COMMON_CONTENT_NAVIGATION_POLICY_H_
 #define CONTENT_COMMON_CONTENT_NAVIGATION_POLICY_H_
 
-#include "base/feature_list.h"
-#include "content/common/content_export.h"
-
 #include <array>
 #include <string>
+
+#include "content/common/content_export.h"
 
 namespace content {
 
@@ -40,6 +39,15 @@ enum class RenderDocumentLevel {
   kAllFrames = 4,
 };
 
+// LINT.IfChange(DuplicateNavsCookieStatus)
+enum class DuplicateNavsCookieStatus {
+  kNoListener = 0,
+  kCookiesChanged = 1,
+  kCookiesNotChanged = 2,
+  kMaxValue = kCookiesNotChanged,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/navigation/enums.xml:DuplicateNavsCookieStatus)
+
 // Whether same-SiteInstance navigations will result in a change of
 // RenderFrameHosts, which will happen when RenderDocument is enabled. Due to
 // the various levels of the feature, the result may differ depending on whether
@@ -52,42 +60,19 @@ CONTENT_EXPORT bool ShouldCreateNewRenderFrameHostOnSameSiteNavigation(
     bool is_main_frame,
     bool is_local_root = true,
     bool has_committed_any_navigation = true,
-    bool must_be_replaced = false);
+    bool must_be_replaced = false,
+    bool client_overrides_level = false);
 CONTENT_EXPORT bool ShouldCreateNewHostForAllFrames();
 CONTENT_EXPORT RenderDocumentLevel GetRenderDocumentLevel();
 CONTENT_EXPORT std::string GetRenderDocumentLevelName(
     RenderDocumentLevel level);
-CONTENT_EXPORT extern const char kRenderDocumentLevelParameterName[];
+inline constexpr char kRenderDocumentLevelParameterName[] = "level";
 
 // If this is false we continue the old behaviour of doing an early call to
 // RenderFrameHostManager::CommitPending when we are replacing a crashed
 // frame.
 // TODO(crbug.com/40052076): Stop allowing this.
 CONTENT_EXPORT bool ShouldSkipEarlyCommitPendingForCrashedFrame();
-
-// The levels for the kQueueNavigationsWhileWaitingForCommit feature.
-enum class NavigationQueueingFeatureLevel {
-  // Feature is disabled.
-  kNone,
-  // Navigation code attempts to avoid unnecessary cancellations; otherwise,
-  // queueing navigations is pointless because the slow-to-commit page will
-  // simply cancel the queued navigation request.
-  kAvoidRedundantCancellations,
-  // Navigation code attempts to queue navigations rather than clobbering a
-  // speculative RenderFrameHost that is waiting for the renderer to acknowledge
-  // the navigation commit.
-  kFull,
-};
-
-CONTENT_EXPORT NavigationQueueingFeatureLevel
-GetNavigationQueueingFeatureLevel();
-
-// Returns true if GetNavigationQueueingFeatureLevel() returns at least
-// kAvoidRedundantCancellations.
-CONTENT_EXPORT bool ShouldAvoidRedundantNavigationCancellations();
-
-// Returns true if GetNavigationQueueingFeatureLevel() is kFull.
-CONTENT_EXPORT bool ShouldQueueNavigationsWhenPendingCommitRFHExists();
 
 // Returns true if data: URL subframes should be put in a separate SiteInstance
 // in the SiteInstanceGroup of the initiator.

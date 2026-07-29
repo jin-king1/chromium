@@ -13,65 +13,60 @@ import android.app.Activity;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.PowerManager;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowLog;
 import org.robolectric.shadows.ShadowPackageManager;
 import org.robolectric.shadows.ShadowSystemClock;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.UserDataHost;
-import org.chromium.base.task.test.ShadowPostTask;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
-import org.chromium.chrome.browser.infobar.InfoBarContainer;
+import org.chromium.chrome.browser.media.FullscreenVideoPictureInPictureController.PipEntered;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.content_public.browser.MediaSession;
 import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.content_public.browser.test.mock.MockWebContents;
+import org.chromium.media_session.mojom.MediaSession.SuspendType;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /** Test FullscreenVideoPictureInPictureController. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        sdk = Build.VERSION_CODES.O,
-        shadows = {ShadowPackageManager.class, ShadowPostTask.class, ShadowSystemClock.class})
+@Config(shadows = {ShadowPackageManager.class, ShadowSystemClock.class})
 public class FullscreenVideoPictureInPictureControllerUnitTest {
     private static final int TAB_ID = 0;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Activity mActivity;
-    @Mock private ActivityTabProvider mActivityTabProvider;
     @Mock private FullscreenManager mFullscreenManager;
     @Mock private Tab mTab;
     @Mock private MockWebContents mWebContents;
-    @Mock private InfoBarContainer mInfoBarContainer;
     @Mock private MediaSession mMediaSession;
     @Mock private PowerManager mPowerManager;
 
     // Not a mock, since it's just a container and `final` anyway.
-    private UserDataHost mUserDataHost = new UserDataHost();
+    private final UserDataHost mUserDataHost = new UserDataHost();
+    private final ActivityTabProvider mActivityTabProvider = new ActivityTabProvider();
 
     private FullscreenVideoPictureInPictureController mController;
 
     @Captor private ArgumentCaptor<FullscreenManager.Observer> mFullscreenObserverCaptor;
     @Captor private ArgumentCaptor<WebContentsObserver> mWebContentsObserverCaptor;
-
-    /** List of tasks that were posted, including with delay. Run with runUntilIdle(). */
-    private List<Runnable> mRunnables = new ArrayList<>();
 
     /** Class to be tested, extended to allow us to provide some hooks. */
     class FullscreenVideoPictureInPictureControllerWithOverrides
@@ -81,11 +76,6 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
                 ActivityTabProvider activityTabProvider,
                 FullscreenManager fullscreenManager) {
             super(activity, activityTabProvider, fullscreenManager);
-        }
-
-        @Override
-        InfoBarContainer getInfoBarContainerForTab(Tab tab) {
-            return mInfoBarContainer;
         }
 
         @Override
@@ -99,26 +89,15 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-        ShadowLog.stream = System.out;
-
-        ShadowPostTask.setTestImpl(
-                new ShadowPostTask.TestImpl() {
-                    @Override
-                    public void postDelayedTask(int taskTraits, Runnable task, long delay) {
-                        mRunnables.add(task);
-                    }
-                });
-
         Context context = ContextUtils.getApplicationContext();
         ShadowPackageManager shadowPackageManager = Shadows.shadowOf(context.getPackageManager());
         shadowPackageManager.setSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE, true);
+        mActivityTabProvider.setForTesting(mTab);
 
         when(mActivity.getSystemService(Context.ACTIVITY_SERVICE))
                 .thenReturn((ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE));
         when(mActivity.getSystemService(Context.POWER_SERVICE)).thenReturn(mPowerManager);
         when(mActivity.getPackageManager()).thenReturn(context.getPackageManager());
-        when(mActivityTabProvider.get()).thenReturn(mTab);
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.getUserDataHost()).thenReturn(mUserDataHost);
         when(mPowerManager.isInteractive()).thenReturn(true);
@@ -144,13 +123,7 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
 
     /** Run any runnables, including any delayed ones. */
     private void runUntilIdle() {
-        // In case the tasks post more tasks, start a new list.
-        List<Runnable> runnables = mRunnables;
-        mRunnables = new ArrayList<>();
-
-        for (Runnable r : runnables) {
-            r.run();
-        }
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
     }
 
     /** Verify that full screen video will try to enter PiP */
@@ -207,10 +180,10 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
         verify(mWebContents).addObserver(mWebContentsObserverCaptor.capture());
 
         // Stash while media is playing.
-        mWebContentsObserverCaptor.getValue().mediaStartedPlaying();
+        mWebContentsObserverCaptor.getValue().mediaStartedPlaying(0, true, true);
         mController.onStashReported(true);
-        verify(mMediaSession, times(1)).suspend();
-        mWebContentsObserverCaptor.getValue().mediaStoppedPlaying();
+        verify(mMediaSession, times(1)).suspend(SuspendType.SYSTEM);
+        mWebContentsObserverCaptor.getValue().mediaStoppedPlaying(0);
 
         // Un-stash while media is still paused.
         mController.onStashReported(false);
@@ -218,7 +191,7 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
                 FullscreenVideoPictureInPictureController.UNSTASH_DELAY_MILLIS + 10L,
                 TimeUnit.MILLISECONDS);
         runUntilIdle();
-        verify(mMediaSession, times(1)).resume();
+        verify(mMediaSession, times(1)).resume(SuspendType.SYSTEM);
     }
 
     /**
@@ -230,11 +203,11 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
         mController.onEnteredPictureInPictureMode();
         verify(mWebContents).addObserver(mWebContentsObserverCaptor.capture());
         // Make sure that the video is paused.
-        mWebContentsObserverCaptor.getValue().mediaStoppedPlaying();
+        mWebContentsObserverCaptor.getValue().mediaStoppedPlaying(0);
 
         // Stashing paused video should do nothing.
         mController.onStashReported(true);
-        verify(mMediaSession, times(0)).suspend();
+        verify(mMediaSession, times(0)).suspend(SuspendType.SYSTEM);
 
         // Un-stash should also do nothing.
         mController.onStashReported(false);
@@ -242,7 +215,7 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
                 FullscreenVideoPictureInPictureController.UNSTASH_DELAY_MILLIS + 10L,
                 TimeUnit.MILLISECONDS);
         runUntilIdle();
-        verify(mMediaSession, times(0)).resume();
+        verify(mMediaSession, times(0)).resume(SuspendType.SYSTEM);
     }
 
     /** If video starts playing during a normal stash, unstash should no-op. */
@@ -251,13 +224,13 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
         mController.onEnteredPictureInPictureMode();
         verify(mWebContents).addObserver(mWebContentsObserverCaptor.capture());
         // Stash normally.
-        mWebContentsObserverCaptor.getValue().mediaStartedPlaying();
+        mWebContentsObserverCaptor.getValue().mediaStartedPlaying(0, true, true);
         mController.onStashReported(true);
-        verify(mMediaSession, times(1)).suspend();
-        mWebContentsObserverCaptor.getValue().mediaStoppedPlaying();
+        verify(mMediaSession, times(1)).suspend(SuspendType.SYSTEM);
+        mWebContentsObserverCaptor.getValue().mediaStoppedPlaying(0);
 
         // Restart playback while still stashed.
-        mWebContentsObserverCaptor.getValue().mediaStartedPlaying();
+        mWebContentsObserverCaptor.getValue().mediaStartedPlaying(1, true, true);
 
         // Un-stash should do nothing since there's nothing to do.
         mController.onStashReported(false);
@@ -265,14 +238,14 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
                 FullscreenVideoPictureInPictureController.UNSTASH_DELAY_MILLIS + 10L,
                 TimeUnit.MILLISECONDS);
         runUntilIdle();
-        verify(mMediaSession, times(0)).resume();
+        verify(mMediaSession, times(0)).resume(SuspendType.SYSTEM);
     }
 
     @Test
     public void pictureInPictureDoesNotHideIfScreenIsOff() {
         enterPip();
         verify(mWebContents).addObserver(mWebContentsObserverCaptor.capture());
-        mWebContentsObserverCaptor.getValue().mediaStartedPlaying();
+        mWebContentsObserverCaptor.getValue().mediaStartedPlaying(0, true, true);
         when(mPowerManager.isInteractive()).thenReturn(false);
 
         // Expect that there will be no attempt to exit pip yet, because the screen is off.
@@ -281,7 +254,7 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
         mController.onResume();
         verify(mActivity, times(0)).moveTaskToBack(true);
         // The media should be paused, though, just as if pip had closed.
-        verify(mMediaSession, times(1)).suspend();
+        verify(mMediaSession, times(1)).suspend(SuspendType.SYSTEM);
 
         // When the device is unlocked, we will get `onStart`.  This should cause pip to close
         // because it's still deferred from the `onResume` call, above.
@@ -309,5 +282,96 @@ public class FullscreenVideoPictureInPictureControllerUnitTest {
 
         mController.onResume();
         verify(mActivity, times(1)).moveTaskToBack(true);
+    }
+
+    @Test
+    public void testOnEnteredPictureInPictureMode_Success() {
+        when(mTab.getWebContents()).thenReturn(mWebContents);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                FullscreenVideoPictureInPictureController.ENTERED_HISTOGRAM,
+                                PipEntered.ENTERED)
+                        .build();
+
+        mController.onEnteredPictureInPictureMode();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testOnEnteredPictureInPictureMode_NoActivityTab() {
+        mActivityTabProvider.setForTesting(null);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                FullscreenVideoPictureInPictureController.ENTERED_HISTOGRAM,
+                                PipEntered.FAILED_NO_ACTIVITY_TAB)
+                        .build();
+
+        mController.onEnteredPictureInPictureMode();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testOnEnteredPictureInPictureMode_NoWebContents() {
+        mActivityTabProvider.setForTesting(mTab); // Reset just in case
+        when(mTab.getWebContents()).thenReturn(null);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                FullscreenVideoPictureInPictureController.ENTERED_HISTOGRAM,
+                                PipEntered.FAILED_NO_WEB_CONTENTS)
+                        .build();
+
+        mController.onEnteredPictureInPictureMode();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testOnFrameworkExitedPictureInPicture() {
+        mActivityTabProvider.setForTesting(mTab); // Reset just in case
+        when(mTab.getWebContents()).thenReturn(mWebContents);
+
+        // Enter PiP first to set mLastOnEnteredTimeMillis.
+        mController.onEnteredPictureInPictureMode();
+
+        // Advance clock to simulate time passing.
+        ShadowSystemClock.advanceBy(1000, TimeUnit.MILLISECONDS);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectAnyRecord(
+                                FullscreenVideoPictureInPictureController.DURATION_HISTOGRAM)
+                        .build();
+
+        mController.onFrameworkExitedPictureInPicture();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testOnFrameworkExitedPictureInPicture_NotPiPed() {
+        mActivityTabProvider.setForTesting(mTab); // Reset just in case
+        when(mTab.getWebContents()).thenReturn(mWebContents);
+
+        // Do NOT enter PiP.
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords(
+                                FullscreenVideoPictureInPictureController.DURATION_HISTOGRAM)
+                        .expectNoRecords(
+                                FullscreenVideoPictureInPictureController.EXIT_REASON_HISTOGRAM)
+                        .build();
+
+        mController.onFrameworkExitedPictureInPicture();
+
+        watcher.assertExpected();
     }
 }

@@ -25,6 +25,8 @@
 
 #include "third_party/blink/renderer/core/style/filter_operation.h"
 
+#include <sstream>
+
 #include "third_party/blink/renderer/core/svg/svg_resource.h"
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
 #include "third_party/blink/renderer/platform/graphics/filters/fe_drop_shadow.h"
@@ -69,7 +71,8 @@ void ReferenceFilterOperation::RemoveClient(SVGResourceClient& client) {
 bool ReferenceFilterOperation::IsEqualAssumingSameType(
     const FilterOperation& o) const {
   const auto& other = To<ReferenceFilterOperation>(o);
-  return url_ == other.url_ && resource_ == other.resource_;
+  return url_ == other.url_ && resource_ == other.resource_ &&
+         filter_.Get() == other.filter_.Get();
 }
 
 gfx::RectF BlurFilterOperation::MapRect(const gfx::RectF& rect) const {
@@ -80,9 +83,21 @@ gfx::RectF BlurFilterOperation::MapRect(const gfx::RectF& rect) const {
 }
 
 gfx::RectF DropShadowFilterOperation::MapRect(const gfx::RectF& rect) const {
-  float std_deviation = shadow_.Blur();
+  // The blur value is stored in sigma form.
+  float std_deviation = shadow_.BlurValue();
   return FEDropShadow::MapEffect(gfx::SizeF(std_deviation, std_deviation),
                                  shadow_.Offset(), rect);
+}
+
+String DropShadowFilterOperation::DebugString() const {
+  std::stringstream ss;
+  ss << shadow_.GetColor();
+  char buf[256];
+  snprintf(buf, sizeof(buf),
+           "<drop shadow: x=%f y=%f blur=%f spread=%f opacity=%f color=%s>",
+           shadow_.X(), shadow_.Y(), shadow_.BlurValue(), shadow_.Spread(),
+           shadow_.Opacity(), ss.str().c_str());
+  return buf;
 }
 
 gfx::RectF BoxReflectFilterOperation::MapRect(const gfx::RectF& rect) const {

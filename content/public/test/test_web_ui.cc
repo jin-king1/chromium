@@ -10,9 +10,14 @@
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
 #include "base/no_destructor.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_ui_browser_interface_broker_registry.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/web_ui_message_handler.h"
+#include "content/public/browser/webui_config.h"
+#include "content/public/browser/webui_config_map.h"
 
 namespace content {
 
@@ -27,7 +32,7 @@ void TestWebUI::ClearTrackedCalls() {
 }
 
 void TestWebUI::HandleReceivedMessage(const std::string& handler_name,
-                                      const base::Value::List& args) {
+                                      const base::ListValue& args) {
   const auto callbacks_map_it = message_callbacks_.find(handler_name);
   if (callbacks_map_it != message_callbacks_.end()) {
     // Create a copy of the callbacks before running them. Without this, it
@@ -102,7 +107,7 @@ void TestWebUI::RegisterMessageCallback(std::string_view message,
 
 void TestWebUI::ProcessWebUIMessage(const GURL& source_url,
                                     const std::string& message,
-                                    base::Value::List args) {
+                                    base::ListValue args) {
   auto callback_entry = message_callbacks_.find(message);
   if (callback_entry == message_callbacks_.end()) {
     return;
@@ -125,6 +130,11 @@ void TestWebUI::CallJavascriptFunctionUnsafe(
     call_data_.back()->AppendArgument(arg.ToValue());
   }
   OnJavascriptCall(*call_data_.back());
+}
+
+WebUIConfig* TestWebUI::GetWebUIConfig() {
+  return WebUIConfigMap::GetInstance().GetConfig(
+      web_contents_->GetBrowserContext(), web_contents_->GetLastCommittedURL());
 }
 
 void TestWebUI::OnJavascriptCall(const CallData& call_data) {

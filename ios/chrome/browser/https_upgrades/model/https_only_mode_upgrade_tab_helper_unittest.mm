@@ -6,13 +6,9 @@
 
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
-#import "base/test/task_environment.h"
 #import "components/keyed_service/core/keyed_service.h"
 #import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/https_upgrades/model/https_upgrade_service_factory.h"
-#import "ios/chrome/browser/prerender/model/fake_prerender_service.h"
-#import "ios/chrome/browser/prerender/model/prerender_service.h"
-#import "ios/chrome/browser/prerender/model/prerender_service_factory.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
@@ -21,8 +17,10 @@
 #import "ios/components/security_interstitials/https_only_mode/https_upgrade_service.h"
 #import "ios/components/security_interstitials/https_only_mode/https_upgrade_test_util.h"
 #import "ios/web/public/navigation/web_state_policy_decider.h"
+#import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "net/base/apple/url_conversions.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
@@ -43,13 +41,8 @@ enum class HttpsUpgradesTestType {
 };
 }
 
-std::unique_ptr<KeyedService> BuildFakePrerenderService(
-    web::BrowserState* context) {
-  return std::make_unique<FakePrerenderService>();
-}
-
 std::unique_ptr<KeyedService> BuildFakeHttpsUpgradeService(
-    web::BrowserState* context) {
+    ProfileIOS* profile) {
   return std::make_unique<FakeHttpsUpgradeService>();
 }
 
@@ -58,8 +51,6 @@ class HttpsOnlyModeUpgradeTabHelperTest
  protected:
   HttpsOnlyModeUpgradeTabHelperTest() {
     TestProfileIOS::Builder builder;
-    builder.AddTestingFactory(PrerenderServiceFactory::GetInstance(),
-                              base::BindRepeating(&BuildFakePrerenderService));
     builder.AddTestingFactory(
         HttpsUpgradeServiceFactory::GetInstance(),
         base::BindRepeating(&BuildFakeHttpsUpgradeService));
@@ -104,7 +95,6 @@ class HttpsOnlyModeUpgradeTabHelperTest
 
     HttpsOnlyModeUpgradeTabHelper::CreateForWebState(
         &web_state_, profile_->GetPrefs(),
-        PrerenderServiceFactory::GetForProfile(profile_.get()),
         HttpsUpgradeServiceFactory::GetForProfile(profile_.get()));
     HttpsOnlyModeContainer::CreateForWebState(&web_state_);
   }
@@ -143,19 +133,43 @@ class HttpsOnlyModeUpgradeTabHelperTest
     return policy_decision;
   }
 
+  // Helper function that calls into WebState::ShouldAllowRequest with the
+  // given `url` and `for_main_frame`, waits for the callback with the decision
+  // to be called, and returns the decision.
+  web::WebStatePolicyDecider::PolicyDecision ShouldAllowRequestUrl(
+      const GURL& url,
+      bool for_main_frame) {
+    NSURLRequest* request =
+        [NSURLRequest requestWithURL:net::NSURLWithGURL(url)];
+    __block bool callback_called = false;
+    __block web::WebStatePolicyDecider::PolicyDecision policy_decision =
+        web::WebStatePolicyDecider::PolicyDecision::Allow();
+    auto callback =
+        base::BindOnce(^(web::WebStatePolicyDecider::PolicyDecision decision) {
+          policy_decision = decision;
+          callback_called = true;
+        });
+    web::WebStatePolicyDecider::RequestInfo request_info(
+        ui::PAGE_TRANSITION_CLIENT_REDIRECT, for_main_frame,
+        /*target_frame_is_cross_origin=*/false,
+        /*target_window_is_cross_origin=*/false,
+        /*is_user_initiated=*/false, /*user_tapped_recently=*/false);
+    web_state_.ShouldAllowRequest(request, request_info, std::move(callback));
+    EXPECT_TRUE(callback_called);
+    return policy_decision;
+  }
+
   base::HistogramTester histogram_tester_;
   web::FakeWebState web_state_;
 
  private:
-  std::unique_ptr<ProfileIOS> profile_;
-  base::test::TaskEnvironment task_environment_;
   base::test::ScopedFeatureList scoped_feature_list_;
+  web::WebTaskEnvironment task_environment_;
+  std::unique_ptr<ProfileIOS> profile_;
 };
 
 // Tests that ShouldAllowResponse properly upgrades navigations and
-// ignores subframe navigations. ShouldAllowRequest should always allow
-// the navigation.
-// Also tests that UMA records correctly.
+// ignores subframe navigations. Also tests that UMA records correctly.
 TEST_P(HttpsOnlyModeUpgradeTabHelperTest, ShouldAllowResponse) {
   // Create a navigation item.
   auto fake_navigation_manager_ =
@@ -195,6 +209,61 @@ TEST_P(HttpsOnlyModeUpgradeTabHelperTest, ShouldAllowResponse) {
   service->AllowHttpForHost("example.com");
   EXPECT_TRUE(ShouldAllowResponseUrl(http_url, /*main_frame=*/true)
                   .ShouldAllowNavigation());
+}
+
+// Tests that ShouldAllowRequest allows the initial request of a navigation so
+// that ShouldAllowResponse can handle the upgrade, but cancels HTTP redirect
+// targets in the middle of an in-progress main frame navigation so that the
+// redirect chain does not transit cleartext.
+TEST_P(HttpsOnlyModeUpgradeTabHelperTest, ShouldAllowRequest) {
+  auto fake_navigation_manager = std::make_unique<web::FakeNavigationManager>();
+  std::unique_ptr<web::NavigationItem> pending_item =
+      web::NavigationItem::Create();
+  fake_navigation_manager->SetPendingItem(pending_item.release());
+  web_state_.SetNavigationManager(std::move(fake_navigation_manager));
+
+  GURL https_url("https://example.com/");
+  GURL http_url("http://example.com/");
+
+  // Before the navigation has started, the initial request should be allowed
+  // regardless of scheme; ShouldAllowResponse handles upgrades for the first
+  // hop.
+  EXPECT_TRUE(ShouldAllowRequestUrl(http_url, /*main_frame=*/true)
+                  .ShouldAllowNavigation());
+  EXPECT_TRUE(ShouldAllowRequestUrl(https_url, /*main_frame=*/true)
+                  .ShouldAllowNavigation());
+
+  // Start an HTTPS main frame navigation. Subsequent ShouldAllowRequest calls
+  // simulate server redirects.
+  web::FakeNavigationContext context;
+  context.SetUrl(https_url);
+  web_state_.OnNavigationStarted(&context);
+
+  // Redirects to HTTPS should always be allowed.
+  EXPECT_TRUE(ShouldAllowRequestUrl(https_url, /*main_frame=*/true)
+                  .ShouldAllowNavigation());
+  // Subframe HTTP requests should be allowed.
+  EXPECT_TRUE(ShouldAllowRequestUrl(http_url, /*main_frame=*/false)
+                  .ShouldAllowNavigation());
+  // Allowlisted hosts shouldn't be blocked.
+  ProfileIOS* profile =
+      ProfileIOS::FromBrowserState(web_state_.GetBrowserState());
+  HttpsUpgradeService* service =
+      HttpsUpgradeServiceFactory::GetForProfile(profile);
+  service->AllowHttpForHost("allowlisted.com");
+  EXPECT_TRUE(ShouldAllowRequestUrl(GURL("http://allowlisted.com/"),
+                                    /*main_frame=*/true)
+                  .ShouldAllowNavigation());
+
+  // If either HTTPS-Only Mode or HTTPS-Upgrades is enabled, redirects to HTTP
+  // in the main frame should be cancelled before the request is sent.
+  if (GetParam() != HttpsUpgradesTestType::kNone) {
+    EXPECT_FALSE(ShouldAllowRequestUrl(http_url, /*main_frame=*/true)
+                     .ShouldAllowNavigation());
+  } else {
+    EXPECT_TRUE(ShouldAllowRequestUrl(http_url, /*main_frame=*/true)
+                    .ShouldAllowNavigation());
+  }
 }
 
 TEST_P(HttpsOnlyModeUpgradeTabHelperTest, GetUpgradedHttpsUrl) {

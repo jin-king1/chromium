@@ -15,7 +15,10 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_remote_command_utils.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/start_crd_session_job_delegate.h"
+#include "components/crash/core/common/crash_key.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
+
+class PrefService;
 
 namespace policy {
 
@@ -26,10 +29,12 @@ class DeviceCommandStartCrdSessionJob : public RemoteCommandJob {
  public:
   using Delegate = StartCrdSessionJobDelegate;
 
-  explicit DeviceCommandStartCrdSessionJob(Delegate& delegate);
+  // `local_state` must be non-null and outlive `this`.
+  DeviceCommandStartCrdSessionJob(PrefService* local_state, Delegate& delegate);
   // Constructor used in unit tests. By using this constructor we avoid the need
   // for a `DeviceOAuth2TokenService` to exist.
-  DeviceCommandStartCrdSessionJob(Delegate& delegate,
+  DeviceCommandStartCrdSessionJob(PrefService* local_state,
+                                  Delegate& delegate,
                                   std::string_view robot_account_id);
   ~DeviceCommandStartCrdSessionJob() override;
 
@@ -45,8 +50,8 @@ class DeviceCommandStartCrdSessionJob : public RemoteCommandJob {
   void TerminateImpl() override;
 
  private:
-  void CheckManagedNetworkASync(base::OnceClosure on_success);
-  void StartCrdHostAndGetCode();
+  void CheckManagedNetworkASync(base::OnceCallback<void(bool)> on_success);
+  void StartCrdHostAndGetCode(bool is_in_managed_environment);
   void FinishWithSuccess(const std::string& access_code);
   // Finishes command with error code and optional message.
   void FinishWithError(ExtendedStartCrdSessionResultCode result_code,
@@ -56,6 +61,8 @@ class DeviceCommandStartCrdSessionJob : public RemoteCommandJob {
   bool UserTypeSupportsCrd() const;
   CrdSessionType GetCrdSessionType() const;
   bool IsDeviceIdle() const;
+  bool IsRemoteSupportSession() const;
+  bool IsRemoteAccessSession() const;
 
   bool ShouldShowConfirmationDialog() const;
   bool ShouldTerminateUponInput() const;
@@ -63,8 +70,13 @@ class DeviceCommandStartCrdSessionJob : public RemoteCommandJob {
   bool ShouldAllowTroubleshootingTools() const;
   bool ShouldShowTroubleshootingTools() const;
   bool ShouldAllowFileTransfer() const;
+  bool ShouldAutoAcceptSession(bool is_in_managed_environment) const;
 
   Delegate::ErrorCallback GetErrorCallback();
+
+  const raw_ref<PrefService> local_state_;
+
+  std::unique_ptr<crash_reporter::ScopedCrashKeyString> crd_crash_key_;
 
   // The callback that will be called when the access code was successfully
   // obtained or when this command failed.

@@ -16,7 +16,7 @@
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/platform_shared_memory_region.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
@@ -34,7 +34,6 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/media_playback_renderer_type.mojom.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
-#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom-forward.h"
@@ -78,7 +77,7 @@ class CastWebContentsImpl : public CastWebContents,
                             additional_feature_permission_origins) override;
   void SetGroupInfo(const std::string& session_id,
                     bool is_multizone_launch) override;
-  void AddRendererFeatures(base::Value::Dict features) override;
+  void AddRendererFeatures(base::DictValue features) override;
   void SetInterfacesForRenderer(
       mojo::PendingRemote<mojom::RemoteInterfaces> remote_interfaces) override;
   void LoadUrl(const GURL& url) override;
@@ -92,7 +91,7 @@ class CastWebContentsImpl : public CastWebContents,
   void EnableBackgroundVideoPlayback(bool enabled) override;
   void AddBeforeLoadJavaScript(uint64_t id, std::string_view script) override;
   void PostMessageToMainFrame(
-      const std::string& target_origin,
+      const std::string& serialized_target_origin,
       const std::string& data,
       std::vector<blink::WebMessagePort> ports) override;
   void ExecuteJavaScript(
@@ -102,7 +101,6 @@ class CastWebContentsImpl : public CastWebContents,
       mojo::PendingRemote<mojom::ApiBindings> api_bindings_remote) override;
   void SetEnabledForRemoteDebugging(bool enabled) override;
   void GetMainFramePid(GetMainFramePidCallback cb) override;
-  bool is_websql_enabled() override;
   bool is_mixer_audio_enabled() override;
 
   // content::RenderProcessHostObserver implementation:
@@ -132,6 +130,7 @@ class CastWebContentsImpl : public CastWebContents,
   void ResourceLoadComplete(
       content::RenderFrameHost* render_frame_host,
       const content::GlobalRequestID& request_id,
+      const GURL& original_url,
       const blink::mojom::ResourceLoadInfo& resource_load_info) override;
   void InnerWebContentsCreated(
       content::WebContents* inner_web_contents) override;
@@ -140,7 +139,8 @@ class CastWebContentsImpl : public CastWebContents,
   void WebContentsDestroyed() override;
   void DidUpdateFaviconURL(
       content::RenderFrameHost* render_frame_host,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override;
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override;
   void MediaStartedPlaying(const MediaPlayerInfo& video_type,
                            const content::MediaPlayerId& id) override;
   void MediaStoppedPlaying(
@@ -176,7 +176,7 @@ class CastWebContentsImpl : public CastWebContents,
   content::RenderProcessHost* main_process_host_;
 
   base::flat_set<std::unique_ptr<CastWebContents>> inner_contents_;
-  base::Value::Dict renderer_features_;
+  base::DictValue renderer_features_;
 
   const int tab_id_;
   const int id_;

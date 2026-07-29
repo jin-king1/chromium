@@ -6,6 +6,8 @@
 #define NET_COOKIES_COOKIE_CONSTANTS_H_
 
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include "base/time/time.h"
 #include "net/base/net_export.h"
@@ -18,6 +20,13 @@ namespace net {
 NET_EXPORT extern const base::TimeDelta kLaxAllowUnsafeMaxAge;
 // The short version of the above time threshold, to be used for tests.
 NET_EXPORT extern const base::TimeDelta kShortLaxAllowUnsafeMaxAge;
+
+// We collect multiple histograms when getting and setting cookies. The cost
+// of reporting adds up, contributing to latency of operations. But we don't
+// need the absolute numbers, we just need to see trends, so we can down
+// sample. Cookies are written and obtained a lot, so we can use a very low
+// probability.
+static constexpr double kHistogramSampleProbability = 0.001;
 
 enum CookiePriority {
   COOKIE_PRIORITY_LOW     = 0,
@@ -322,12 +331,10 @@ NET_EXPORT std::string CookieSameSiteToString(CookieSameSite same_site);
 
 // Converts the Set-Cookie header SameSite token |same_site| to a
 // CookieSameSite. Defaults to CookieSameSite::UNSPECIFIED for empty or
-// unrecognized strings. Returns an appropriate value of CookieSameSiteString in
-// |samesite_string| to indicate what type of string was parsed as the SameSite
-// attribute value, if a pointer is provided.
-NET_EXPORT CookieSameSite
-StringToCookieSameSite(const std::string& same_site,
-                       CookieSameSiteString* samesite_string = nullptr);
+// unrecognized strings. Returns an appropriate value of CookieSameSiteString to
+// indicate what type of string was parsed as the SameSite attribute value.
+NET_EXPORT std::pair<CookieSameSite, CookieSameSiteString>
+StringToCookieSameSite(std::string_view same_site);
 
 NET_EXPORT void RecordCookieSameSiteAttributeValueHistogram(
     CookieSameSiteString value);
@@ -369,8 +376,6 @@ enum class CookiesAllowedForUrlsUsage {
 //
 // Do not reorder or renumber. Used for metrics.
 enum class CookieSourceType {
-  // 'unknown' is used for tests or cookies set before this field was added.
-  kUnknown = 0,
   // 'http' is used for cookies set via HTTP Response Headers.
   kHTTP = 1,
   // 'script' is used for cookies set via document.cookie.
@@ -386,11 +391,37 @@ enum class CookieSourceType {
 // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis-13#name-cookie-name-prefixes
 //
 // This enum is being histogrammed; do not reorder or remove values.
-enum CookiePrefix {
-  COOKIE_PREFIX_NONE = 0,
-  COOKIE_PREFIX_SECURE,
-  COOKIE_PREFIX_HOST,
-  COOKIE_PREFIX_LAST
+enum class CookiePrefix {
+  kNone = 0,
+  kSecure,
+  kHost,
+  kHttp,
+  kHostHttp,
+  kMaxValue = kHostHttp
+};
+
+// For metrics about how a cookie line may end up parsed as a cookie having an
+// empty name. These buckets are mutually exclusive. This only includes parsing
+// of cookie lines. Does not include cookies set explicitly via APIs that set
+// the name and value separately.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class NamelessCookieLineParseType {
+  // A cookie set as a bare token, relying on the parsing behavior that turns
+  // a cookie line of "Foo" into a nameless cookie with value "Foo".
+  kBareToken = 0,
+  // A cookie set as a bare token, as above, but more specifically having a
+  // value that matches any cookie attribute name (e.g. "secure", "httponly",
+  // etc.). These are very likely to be configuration mistakes rather than
+  // intentionally set nameless cookies.
+  kBareTokenMatchingAttributeName = 1,
+  // A cookie set with an empty name using a cookie line such as "=Foo", where
+  // the first non-whitespace character is an equals sign.
+  kEqualsPrecedingToken = 2,
+  // A cookie set with an ambiguous value, via a cookie line such as "=Foo=Bar",
+  // which is parsed as a nameless cookie with value "Foo=Bar".
+  kNamelessWithAmbiguousValue = 3,
+  kMaxValue = kNamelessWithAmbiguousValue,
 };
 
 }  // namespace net

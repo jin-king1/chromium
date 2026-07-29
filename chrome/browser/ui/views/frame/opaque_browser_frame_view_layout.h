@@ -38,6 +38,7 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
 
   // Constants public for testing only.
   static constexpr int kNonClientExtraTopThickness = 1;
+  static constexpr int kFrameShadowThickness = 1;
   static const int kTopFrameEdgeThickness;
   static const int kSideFrameEdgeThickness;
   static const int kIconLeftSpacing;
@@ -62,12 +63,8 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
       const std::vector<views::FrameButton>& leading_buttons,
       const std::vector<views::FrameButton>& trailing_buttons);
 
-  gfx::Rect GetBoundsForTabStripRegion(const gfx::Size& tabstrip_minimum_size,
-                                       int total_width) const;
-  gfx::Rect GetBoundsForWebAppFrameToolbar(
-      const gfx::Size& toolbar_preferred_size) const;
-  void LayoutWebAppWindowTitle(const gfx::Rect& available_space,
-                               views::Label& window_title_label) const;
+  // Retrieves the given frame button, if present.
+  const views::Button* GetFrameButton(views::FrameButton which) const;
 
   // Returns the bounds of the window required to display the content area at
   // the specified bounds.
@@ -128,8 +125,8 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
   // Enables or disables WCO and updates child views accordingly.
   void SetWindowControlsOverlayEnabled(bool enabled, views::View* host);
 
-  // Enables or disables borderless.
-  void SetBorderlessModeEnabled(bool enabled, views::View* host);
+  // Enables or disables unframed.
+  void SetUnframedModeEnabled(bool enabled, views::View* host);
 
   // views::LayoutManager:
   // Called explicitly from OpaqueBrowserFrameView so we can't group it with
@@ -139,7 +136,7 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
  protected:
   // Whether a specific button should be inserted on the leading or trailing
   // side.
-  enum ButtonAlignment { ALIGN_LEADING, ALIGN_TRAILING };
+  enum class ButtonAlignment { kAlignLeading, kAlignTrailing };
 
   struct TopAreaPadding {
     int leading;
@@ -181,6 +178,8 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
   int minimum_size_for_buttons_ = 0;
 
  private:
+  friend class OpaqueBrowserFrameViewLayoutTest;
+
   // Layout various sub-components of this view.
   void LayoutWindowControls();
   void LayoutTitleBar();
@@ -249,7 +248,7 @@ class OpaqueBrowserFrameViewLayout : public views::LayoutManager {
   raw_ptr<views::ClientView> client_view_ = nullptr;
 
   bool is_window_controls_overlay_enabled_ = false;
-  bool is_borderless_mode_enabled_ = false;
+  bool is_unframed_mode_enabled_ = false;
   raw_ptr<CaptionButtonPlaceholderContainer, DanglingUntriaged>
       caption_button_placeholder_container_ = nullptr;
 };

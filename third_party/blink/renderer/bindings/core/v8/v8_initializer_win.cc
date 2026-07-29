@@ -16,20 +16,20 @@ namespace blink {
 v8::FilterETWSessionByURLResult FilterETWSessionByURLCallback(
     v8::Local<v8::Context> context,
     const std::string& json_payload) {
-  std::optional<base::Value> optional_value =
-      base::JSONReader::Read(json_payload);
+  std::optional<base::Value> optional_value = base::JSONReader::Read(
+      json_payload, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!optional_value || !optional_value.value().is_dict()) {
     return {false, false};  // Invalid payload
   }
 
-  const base::Value::Dict& dict = optional_value.value().GetDict();
+  const base::DictValue& dict = optional_value.value().GetDict();
 
   std::optional<bool> opt_trace_interpreter_frames =
       dict.FindBool("trace_interpreter_frames");
   bool trace_interpreter_frames = opt_trace_interpreter_frames.has_value() &&
                                   opt_trace_interpreter_frames.value();
 
-  const base::Value::List* filtered_urls = dict.FindList("filtered_urls");
+  const base::ListValue* filtered_urls = dict.FindList("filtered_urls");
   if (!filtered_urls) {
     return {false, false};  // Invalid payload
   }

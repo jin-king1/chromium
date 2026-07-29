@@ -30,7 +30,7 @@ class AccountReconcilorDelegate {
   virtual bool IsReconcileEnabled() const;
 
   // Returns the value to set in the "source" parameter for Gaia API calls.
-  virtual gaia::GaiaSource GetGaiaApiSource() const;
+  virtual gaia::GaiaSource GetGaiaApiSource(bool is_cookie_upgrade) const;
 
   // Returns true if Reconcile should be aborted when the primary account is in
   // error state. Defaults to false.
@@ -65,10 +65,8 @@ class AccountReconcilorDelegate {
       const std::vector<gaia::ListedAccount>& gaia_accounts);
 
   // Called when cookies are deleted by user action.
-  // This might be a no-op or signout the profile or lead to a sync paused state
-  // based on different platforms conditions.
-  virtual void OnAccountsCookieDeletedByUserAction(
-      bool synced_data_deletion_in_progress);
+  // This might be a no-op or signout the profile.
+  virtual void OnAccountsCookieDeletedByUserAction();
 
   // Returns whether tokens should be revoked when the primary account is empty.
   virtual bool ShouldRevokeTokensIfNoPrimaryAccount() const;

@@ -4,6 +4,7 @@
 
 #include "ash/system/holding_space/holding_space_view_delegate.h"
 
+#include <algorithm>
 #include <vector>
 
 #include "ash/constants/ash_features.h"
@@ -23,7 +24,6 @@
 #include "ash/system/holding_space/holding_space_tray.h"
 #include "ash/system/holding_space/holding_space_tray_bubble.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
@@ -33,9 +33,11 @@
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
+#include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/dragdrop/os_exchange_data_provider.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/display/screen.h"
 #include "ui/display/tablet_state.h"
@@ -153,7 +155,7 @@ HoldingSpaceViewDelegate::HoldingSpaceViewDelegate(
 
   // Multi-select is the only selection UI in tablet mode. Outside of tablet
   // mode, selection UI is based on the `selection_size_`.
-  selection_ui_ = display::Screen::GetScreen()->InTabletMode()
+  selection_ui_ = display::Screen::Get()->InTabletMode()
                       ? SelectionUi::kMultiSelect
                       : SelectionUi::kSingleSelect;
 }
@@ -415,7 +417,7 @@ void HoldingSpaceViewDelegate::OnHoldingSpaceTrayChildBubbleMousePressed(
   ClearSelection();
 }
 
-base::RepeatingClosureList::Subscription
+base::CallbackListSubscription
 HoldingSpaceViewDelegate::AddSelectionUiChangedCallback(
     base::RepeatingClosureList::CallbackType callback) {
   return selection_ui_changed_callbacks_.Add(std::move(callback));
@@ -519,7 +521,7 @@ void HoldingSpaceViewDelegate::ExecuteCommand(int command, int event_flags) {
           [](const std::vector<const HoldingSpaceItem*>& items,
              std::vector<base::FilePath>& suggested_file_paths,
              const HoldingSpaceItem* item) {
-            const bool remove = base::Contains(items, item);
+            const bool remove = std::ranges::contains(items, item);
             if (remove) {
               if (HoldingSpaceItem::IsSuggestionType(item->type())) {
                 suggested_file_paths.push_back(item->file().file_path);
@@ -660,11 +662,10 @@ ui::SimpleMenuModel* HoldingSpaceViewDelegate::BuildMenuModel() {
         .label_id = IDS_ASH_HOLDING_SPACE_CONTEXT_MENU_SHOW_IN_FOLDER,
         .icon = raw_ref(kFolderIcon)});
 
-    std::string ext = selection.front()->item()->file().file_path.Extension();
     std::string mime_type;
     const bool is_image =
-        !ext.empty() &&
-        net::GetWellKnownMimeTypeFromExtension(ext.substr(1), &mime_type) &&
+        net::GetWellKnownMimeTypeFromFile(
+            selection.front()->item()->file().file_path, &mime_type) &&
         net::MatchesMimeType(kMimeTypeImage, mime_type);
 
     if (is_image) {
@@ -683,12 +684,16 @@ ui::SimpleMenuModel* HoldingSpaceViewDelegate::BuildMenuModel() {
       menu_sections.back().emplace_back(
           MenuItemModel{.command_id = HoldingSpaceCommandId::kPinItem,
                         .label_id = IDS_ASH_HOLDING_SPACE_CONTEXT_MENU_PIN,
-                        .icon = raw_ref(views::kPinIcon)});
+                        .icon = raw_ref(::features::IsRoundedIconsEnabled()
+                                            ? views::kKeepIcon
+                                            : views::kPinOldIcon)});
     } else {
       menu_sections.back().emplace_back(
           MenuItemModel{.command_id = HoldingSpaceCommandId::kUnpinItem,
                         .label_id = IDS_ASH_HOLDING_SPACE_CONTEXT_MENU_UNPIN,
-                        .icon = raw_ref(views::kUnpinIcon)});
+                        .icon = raw_ref(::features::IsRoundedIconsEnabled()
+                                            ? views::kKeepFilledIcon
+                                            : views::kUnpinOldIcon)});
     }
   }
 
@@ -752,7 +757,7 @@ void HoldingSpaceViewDelegate::SetSelection(
 
   if (bubble_) {  // May be `nullptr` in testing.
     for (HoldingSpaceItemView* view : bubble_->GetHoldingSpaceItemViews()) {
-      view->SetSelected(base::Contains(item_ids, view->item_id()));
+      view->SetSelected(std::ranges::contains(item_ids, view->item_id()));
       if (view->selected())
         selection.push_back(view);
     }
@@ -788,7 +793,7 @@ void HoldingSpaceViewDelegate::SetSelectedRange(HoldingSpaceItemView* start,
 
 void HoldingSpaceViewDelegate::UpdateSelectionUi() {
   const SelectionUi selection_ui =
-      display::Screen::GetScreen()->InTabletMode() || selection_size_ > 1u
+      display::Screen::Get()->InTabletMode() || selection_size_ > 1u
           ? SelectionUi::kMultiSelect
           : SelectionUi::kSingleSelect;
 

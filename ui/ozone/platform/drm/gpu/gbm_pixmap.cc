@@ -56,12 +56,12 @@ bool GbmPixmap::SupportsZeroCopyWebGPUImport() const {
   return buffer_->SupportsZeroCopyWebGPUImport();
 }
 
-uint64_t GbmPixmap::GetBufferFormatModifier() const {
+uint64_t GbmPixmap::GetFormatModifier() const {
   return buffer_->GetFormatModifier();
 }
 
-gfx::BufferFormat GbmPixmap::GetBufferFormat() const {
-  return buffer_->GetBufferFormat();
+viz::SharedImageFormat GbmPixmap::GetSharedImageFormat() const {
+  return buffer_->GetSharedImageFormat();
 }
 
 gfx::Size GbmPixmap::GetBufferSize() const {

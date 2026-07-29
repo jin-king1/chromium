@@ -19,6 +19,7 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_path_override.h"
 #include "base/test/task_environment.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "remoting/host/file_transfer/directory_helpers.h"
 #include "remoting/host/file_transfer/ensure_user.h"
 #include "remoting/host/file_transfer/fake_file_chooser.h"
@@ -138,7 +139,9 @@ class FakeDesktopSessionAgent : public mojom::DesktopSessionControl {
   // mojom::DesktopSessionControl implementation.
   void CreateVideoCapturer(int64_t desktop_display_id,
                            CreateVideoCapturerCallback callback) override;
-  void SetScreenResolution(const ScreenResolution& resolution) override;
+  void SetScreenResolution(const ScreenResolution& resolution,
+                           std::optional<int64_t> screen_id) override;
+  void SetVideoLayout(const protocol::VideoLayout& video_layout) override;
   void LockWorkstation() override;
   void InjectSendAttentionSequence() override;
   void InjectClipboardEvent(const protocol::ClipboardEvent& event) override;
@@ -151,6 +154,14 @@ class FakeDesktopSessionAgent : public mojom::DesktopSessionControl {
   void BeginFileRead(BeginFileReadCallback callback) override;
   void BeginFileWrite(const base::FilePath& file_path,
                       BeginFileWriteCallback callback) override;
+  void SetHostCursorRenderedByClient() override;
+  void StartAudioInjector(
+      std::unique_ptr<IpcFifoBufferReader> audio_reader) override {}
+  void SetAudioInjectorSampleInfo(
+      const protocol::AudioSampleInfo& info,
+      SetAudioInjectorSampleInfoCallback callback) override {
+    std::move(callback).Run(true);
+  }
 
   // Binds the pending DesktopSessionControl receiver to |receiver_|.
   void Bind(
@@ -190,7 +201,11 @@ void FakeDesktopSessionAgent::CreateVideoCapturer(
     CreateVideoCapturerCallback callback) {}
 
 void FakeDesktopSessionAgent::SetScreenResolution(
-    const ScreenResolution& resolution) {}
+    const ScreenResolution& resolution,
+    std::optional<int64_t> screen_id) {}
+
+void FakeDesktopSessionAgent::SetVideoLayout(
+    const protocol::VideoLayout& video_layout) {}
 
 void FakeDesktopSessionAgent::LockWorkstation() {}
 
@@ -243,6 +258,8 @@ void FakeDesktopSessionAgent::BeginFileWrite(const base::FilePath& file_path,
   session_file_operations_handler_.BeginFileWrite(file_path,
                                                   std::move(callback));
 }
+
+void FakeDesktopSessionAgent::SetHostCursorRenderedByClient() {}
 
 void FakeDesktopSessionAgent::Bind(
     mojo::PendingAssociatedReceiver<mojom::DesktopSessionControl> receiver) {

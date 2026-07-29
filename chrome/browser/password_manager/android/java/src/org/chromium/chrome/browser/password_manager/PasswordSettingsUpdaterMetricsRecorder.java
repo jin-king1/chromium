@@ -11,10 +11,9 @@ import static org.chromium.chrome.browser.password_manager.PasswordManagerSettin
 import android.os.SystemClock;
 import android.text.TextUtils;
 
-import androidx.annotation.Nullable;
-import androidx.annotation.VisibleForTesting;
-
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,6 +23,7 @@ import java.util.List;
  * when the {@link PasswordSettingsUpdaterMetricsRecorder} instance is created. Latency is reported
  * in {@link #recordMetrics(Exception) recordMetrics} under that assumption.
  */
+@NullMarked
 class PasswordSettingsUpdaterMetricsRecorder {
     private static final String PASSWORD_SETTINGS_HISTOGRAM_BASE =
             "PasswordManager.PasswordSettings";
@@ -124,7 +124,6 @@ class PasswordSettingsUpdaterMetricsRecorder {
         return mFunctionSuffix;
     }
 
-    @VisibleForTesting
     @PasswordManagerSetting
     int getSettingForTesting() {
         return mSetting;

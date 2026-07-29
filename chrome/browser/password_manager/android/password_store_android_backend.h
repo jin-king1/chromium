@@ -8,10 +8,11 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <variant>
 
 #include "base/containers/small_map.h"
 #include "base/functional/callback_forward.h"
-#include "base/memory/raw_ptr.h"
+#include "base/location.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
@@ -23,26 +24,10 @@
 #include "chrome/browser/password_manager/android/password_store_android_backend_api_error_codes.h"
 #include "chrome/browser/password_manager/android/password_store_android_backend_bridge_helper.h"
 #include "chrome/browser/password_manager/android/password_store_android_backend_dispatcher_bridge.h"
+#include "components/password_manager/core/browser/password_store/password_store_backend.h"
 #include "components/password_manager/core/browser/password_store/password_store_backend_metrics_recorder.h"
 
-class PrefService;
-
 namespace password_manager {
-
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused. Update enums.xml whenever updating
-// this enum.
-enum class UnifiedPasswordManagerActiveStatus {
-  // UPM is active.
-  kActive = 0,
-  // UPM is inactive because passwords sync is off.
-  kInactiveSyncOff = 1,
-  // UPM is inactive because the client has been unenrolled due to unresolvable
-  // errors
-  kInactiveUnenrolledDueToErrors = 2,
-
-  kMaxValue = kInactiveUnenrolledDueToErrors
-};
 
 // This enum is used in the JobReturnHandler for tracking the store operation
 // that started the job so that the correct operation can be retried when the
@@ -98,8 +83,7 @@ class PasswordStoreAndroidBackend
  protected:
   PasswordStoreAndroidBackend(
       std::unique_ptr<PasswordStoreAndroidBackendBridgeHelper> bridge_helper,
-      std::unique_ptr<PasswordManagerLifecycleHelper> lifecycle_helper,
-      PrefService* prefs);
+      std::unique_ptr<PasswordManagerLifecycleHelper> lifecycle_helper);
   ~PasswordStoreAndroidBackend() override;
 
   // Internal methods corresponding to PasswordStoreBackendInterface that take
@@ -126,13 +110,14 @@ class PasswordStoreAndroidBackend
                          bool include_psl,
                          LoginsOrErrorReply callback);
   void AddLoginInternal(std::string account,
-                        const PasswordForm& form,
+                        StoredCredential credential,
                         PasswordChangesOrErrorReply callback);
   void UpdateLoginInternal(std::string account,
-                           const PasswordForm& form,
+                           StoredCredential credential,
                            PasswordChangesOrErrorReply callback);
   void RemoveLoginInternal(std::string account,
-                           const PasswordForm& form,
+                           StoredCredential credential,
+                           const base::Location& location,
                            PasswordChangesOrErrorReply callback);
   void FillMatchingLoginsInternal(std::string account,
                                   LoginsOrErrorReply callback,
@@ -142,6 +127,7 @@ class PasswordStoreAndroidBackend
                                         const PasswordFormDigest& form_digest,
                                         LoginsOrErrorReply callback);
   void RemoveLoginsCreatedBetweenInternal(std::string account,
+                                          const base::Location& location,
                                           base::Time delete_begin,
                                           base::Time delete_end,
                                           PasswordChangesOrErrorReply callback);
@@ -156,18 +142,15 @@ class PasswordStoreAndroidBackend
       const AndroidBackendError& reason,
       const PasswordStoreBackendError& reply_error);
 
+  ActionableError last_error() { return last_error_; }
+
   PasswordStoreAndroidBackendBridgeHelper* bridge_helper() {
     return bridge_helper_.get();
   }
 
-  PrefService* prefs() { return prefs_; }
-
   // Subclasses can override this method
   // to have a special handling for different errors.
   virtual void RecoverOnError(AndroidBackendAPIErrorCode error) = 0;
-  // Subclasses can override this method to react when GMSCore responds
-  // successfully.
-  virtual void OnCallToGMSCoreSucceeded() = 0;
   // Subclasses have to provide an account which will be used for retries.
   virtual std::string GetAccountToRetryOperation() = 0;
   // Subclasses have to provide a store backend type that is used for tracking
@@ -206,12 +189,12 @@ class PasswordStoreAndroidBackend
 
     template <typename T>
     bool Holds() const {
-      return absl::holds_alternative<T>(success_callback_);
+      return std::holds_alternative<T>(success_callback_);
     }
 
     template <typename T>
     T&& Get() && {
-      return std::move(absl::get<T>(success_callback_));
+      return std::move(std::get<T>(success_callback_));
     }
 
     void RecordMetrics(std::optional<AndroidBackendError> error) const;
@@ -221,7 +204,7 @@ class PasswordStoreAndroidBackend
     PasswordStoreOperation GetOperation();
 
    private:
-    absl::variant<LoginsOrErrorReply, PasswordChangesOrErrorReply>
+    std::variant<LoginsOrErrorReply, PasswordChangesOrErrorReply>
         success_callback_;
     PasswordStoreBackendMetricsRecorder metrics_recorder_;
     base::TimeDelta delay_;
@@ -285,7 +268,7 @@ class PasswordStoreAndroidBackend
   // Implements PasswordStoreAndroidBackendDispatcherBridge::Consumer interface.
   void OnCompleteWithLogins(
       PasswordStoreAndroidBackendDispatcherBridge::JobId job_id,
-      std::vector<PasswordForm> passwords) override;
+      std::vector<StoredCredential> passwords) override;
   void OnLoginsChanged(
       PasswordStoreAndroidBackendDispatcherBridge::JobId task_id,
       PasswordChanges changes) override;
@@ -311,6 +294,7 @@ class PasswordStoreAndroidBackend
   // |delay| is the amount of time by which the call to this method was delayed.
   void FilterAndRemoveLogins(
       std::string account,
+      const base::Location& location,
       const base::RepeatingCallback<bool(const GURL&)>& url_filter,
       base::Time delete_begin,
       base::Time delete_end,
@@ -382,12 +366,13 @@ class PasswordStoreAndroidBackend
   // scheduled.
   DelayedRetryId::Generator delayed_retry_id_generator_;
 
-  raw_ptr<PrefService> prefs_ = nullptr;
-
   base::Time initialized_at_ = base::Time::Now();
 
   // This will be set to false once the first foregrounding has been handled.
   bool should_delay_refresh_on_foregrounding_ = true;
+
+  // Last seen backend error.
+  ActionableError last_error_ = ActionableError::kNoError;
 
   base::WeakPtrFactory<PasswordStoreAndroidBackend> weak_ptr_factory_{this};
 };

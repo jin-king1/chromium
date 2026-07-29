@@ -5,21 +5,111 @@
 #ifndef CHROME_BROWSER_UI_LENS_TEST_LENS_OVERLAY_QUERY_CONTROLLER_H_
 #define CHROME_BROWSER_UI_LENS_TEST_LENS_OVERLAY_QUERY_CONTROLLER_H_
 
+#include "chrome/browser/ui/lens/lens_overlay_gen204_controller.h"
+#include "chrome/browser/ui/lens/lens_overlay_query_controller.h"
 #include "components/endpoint_fetcher/endpoint_fetcher.h"
-#include "lens_overlay_query_controller.h"
+#include "components/lens/proto/server/lens_overlay_response.pb.h"
+#include "testing/gmock/include/gmock/gmock.h"
 
 namespace lens {
 
-class FakeEndpointFetcher : public EndpointFetcher {
+// The commas used within the std::map type caus the C++ macros to fail.
+// This is a workaround to allow the map to be used in the mock method
+// signatures by defining the type outside of the mock method.
+using AdditionalQueryParamsMap = std::map<std::string, std::string>;
+
+class MockLensOverlayQueryController : public LensOverlayQueryController {
  public:
-  explicit FakeEndpointFetcher(EndpointResponse response);
-  void PerformRequest(EndpointFetcherCallback endpoint_fetcher_callback,
-                      const char* key) override;
+  explicit MockLensOverlayQueryController(
+      lens::LensOverlayGen204Controller* gen204_controller);
+  ~MockLensOverlayQueryController() override;
+
+  MOCK_METHOD(bool, IsOff, (), (override));
+
+  MOCK_METHOD(void,
+              StartQueryFlow,
+              (const SkBitmap&,
+               const SkBitmap&,
+               GURL,
+               std::optional<std::string>,
+               std::vector<lens::mojom::CenterRotatedBoxPtr>,
+               base::span<const lens::PageContent>,
+               lens::MimeType,
+               std::optional<uint32_t>,
+               float,
+               base::TimeTicks),
+              (override));
+
+  MOCK_METHOD(void,
+              SendRegionSearch,
+              (base::Time,
+               lens::mojom::CenterRotatedBoxPtr,
+               lens::LensOverlaySelectionType,
+               AdditionalQueryParamsMap,
+               std::optional<SkBitmap>),
+              (override));
+
+  MOCK_METHOD(void,
+              SendTextOnlyQuery,
+              (base::Time,
+               const std::string&,
+               lens::LensOverlaySelectionType,
+               AdditionalQueryParamsMap),
+              (override));
+
+  MOCK_METHOD(void,
+              SendContextualTextQuery,
+              (base::Time,
+               const std::string&,
+               lens::LensOverlaySelectionType,
+               AdditionalQueryParamsMap),
+              (override));
+
+  MOCK_METHOD(void,
+              SendMultimodalRequest,
+              (base::Time,
+               lens::mojom::CenterRotatedBoxPtr,
+               const std::string&,
+               lens::LensOverlaySelectionType,
+               AdditionalQueryParamsMap,
+               std::optional<SkBitmap>),
+              (override));
+
+  MOCK_METHOD(const lens::proto::LensOverlaySuggestInputs&,
+              GetLensSuggestInputs,
+              (),
+              (const));
+
+  MOCK_METHOD(void,
+              SetSuggestInputsReadyCallback,
+              (base::RepeatingClosure),
+              ());
+
+  MOCK_METHOD(void,
+              SendTaskCompletionGen204IfEnabled,
+              (std::string,
+               lens::mojom::UserAction,
+               lens::LensOverlayRequestId),
+              (override));
+
+  MOCK_METHOD(void,
+              SendSemanticEventGen204IfEnabled,
+              (lens::mojom::SemanticEvent,
+               std::optional<lens::LensOverlayRequestId>),
+              (override));
+};
+
+class FakeEndpointFetcher : public endpoint_fetcher::EndpointFetcher {
+ public:
+  explicit FakeEndpointFetcher(endpoint_fetcher::EndpointResponse response);
+  void PerformRequest(
+      endpoint_fetcher::EndpointFetcherCallback endpoint_fetcher_callback,
+      const char* key) override;
 
   bool disable_responding_ = false;
 
  private:
-  EndpointResponse response_;
+  endpoint_fetcher::EndpointResponse response_;
 };
 
 // Helper for testing features that use the LensOverlayQueryController.
@@ -31,7 +121,6 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
       LensOverlayFullImageResponseCallback full_image_callback,
       LensOverlayUrlResponseCallback url_callback,
       LensOverlayInteractionResponseCallback interaction_callback,
-      LensOverlaySuggestInputsCallback interaction_data_callback,
       LensOverlayThumbnailCreatedCallback thumbnail_created_callback,
       UploadProgressCallback upload_progress_callback,
       variations::VariationsClient* variations_client,
@@ -65,6 +154,18 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
       bool next_full_image_request_should_return_error) {
     next_full_image_request_should_return_error_ =
         next_full_image_request_should_return_error;
+  }
+
+  void set_next_page_content_objects_request_should_return_metadata_error(
+      bool next_page_content_objects_request_should_return_metadata_error) {
+    next_page_content_objects_request_should_return_metadata_error_ =
+        next_page_content_objects_request_should_return_metadata_error;
+  }
+
+  void set_next_page_content_objects_request_should_return_chunks_error(
+      bool next_page_content_objects_request_should_return_chunks_error) {
+    next_page_content_objects_request_should_return_chunks_error_ =
+        next_page_content_objects_request_should_return_chunks_error;
   }
 
   void set_disable_page_upload_response_callback(bool disable) {
@@ -182,14 +283,23 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
     return num_partial_page_content_requests_sent_;
   }
 
+  const int& num_upload_chunk_requests_sent() const {
+    return num_upload_chunk_requests_sent_;
+  }
+
+  const std::optional<lens::LensOverlayServerClusterInfoRequest>&
+  last_cluster_info_request() const {
+    return last_cluster_info_request_;
+  }
+
   int latency_gen_204_counter(
       lens::LensOverlayGen204Controller::LatencyType latency_type) const {
     auto it = latency_gen_204_counter_.find(latency_type);
     return it == latency_gen_204_counter_.end() ? 0 : it->second;
   }
 
-  const std::optional<lens::LensOverlayRequestId>& last_latency_gen204_request_id()
-      const {
+  const std::optional<lens::LensOverlayRequestId>&
+  last_latency_gen204_request_id() const {
     return last_latency_gen204_request_id_;
   }
 
@@ -214,26 +324,31 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
 
   void StartQueryFlow(
       const SkBitmap& screenshot,
+      const SkBitmap& initial_image,
       GURL page_url,
       std::optional<std::string> page_title,
       std::vector<lens::mojom::CenterRotatedBoxPtr> significant_region_boxes,
       base::span<const lens::PageContent> underlying_page_contents,
       lens::MimeType primary_content_type,
+      std::optional<uint32_t> pdf_current_page,
       float ui_scale_factor,
       base::TimeTicks invocation_time) override;
 
   void SendRegionSearch(
+      base::Time query_start_time,
       lens::mojom::CenterRotatedBoxPtr region,
       lens::LensOverlaySelectionType selection_type,
       std::map<std::string, std::string> additional_search_query_params,
       std::optional<SkBitmap> region_bytes) override;
 
-  void SendTextOnlyQuery(const std::string& query_text,
+  void SendTextOnlyQuery(base::Time query_start_time,
+                         const std::string& query_text,
                          lens::LensOverlaySelectionType lens_selection_type,
                          std::map<std::string, std::string>
                              additional_search_query_params) override;
 
   void SendMultimodalRequest(
+      base::Time query_start_time,
       lens::mojom::CenterRotatedBoxPtr region,
       const std::string& query_text,
       lens::LensOverlaySelectionType multimodal_selection_type,
@@ -241,6 +356,7 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
       std::optional<SkBitmap> region_bitmap) override;
 
   void SendContextualTextQuery(
+      base::Time query_start_time,
       const std::string& query_text,
       lens::LensOverlaySelectionType lens_selection_type,
       std::map<std::string, std::string> additional_search_query_params)
@@ -250,14 +366,14 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
   void ResetTestingState();
 
  protected:
-  std::unique_ptr<EndpointFetcher> CreateEndpointFetcher(
-      lens::LensOverlayServerRequest* request,
+  std::unique_ptr<endpoint_fetcher::EndpointFetcher> CreateEndpointFetcher(
+      std::string request_string,
       const GURL& fetch_url,
-      const HttpMethod& http_method,
-      const base::TimeDelta& timeout,
+      endpoint_fetcher::HttpMethod http_method,
+      base::TimeDelta timeout,
       const std::vector<std::string>& request_headers,
       const std::vector<std::string>& cors_exempt_headers,
-      const UploadProgressCallback upload_progress_callback) override;
+      UploadProgressCallback upload_progress_callback) override;
 
   void SendLatencyGen204IfEnabled(
       lens::LensOverlayGen204Controller::LatencyType latency_type,
@@ -276,6 +392,8 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
       lens::mojom::SemanticEvent event,
       std::optional<lens::LensOverlayRequestId> request_id) override;
 
+  void RunSuggestInputsCallback() override;
+
   // The fake response to return for cluster info requests.
   lens::LensOverlayServerClusterInfoResponse fake_cluster_info_response_;
 
@@ -290,6 +408,14 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
 
   // If true, the next full image request will return an error.
   bool next_full_image_request_should_return_error_ = false;
+
+  // If true, the next page content objects request will return a missing
+  // metadata error.
+  bool next_page_content_objects_request_should_return_metadata_error_ = false;
+
+  // If true, the next page content objects request will return a missing chunks
+  // error.
+  bool next_page_content_objects_request_should_return_chunks_error_ = false;
 
   // If true, the CreateEndpointFetcher will not automatically respond with a
   // complete upload to the UploadProgressCallback.
@@ -341,9 +467,13 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
   std::string last_sent_page_content_data_;
 
   // The Payload proto sent in the last page content upload.
+  // This is deprecated field and will soon be removed. Use
+  // last_sent_page_content_data_ directly instead.
   lens::Payload last_sent_page_content_payload_;
 
   // The last underlying content bytes sent by the query controller.
+  // This is deprecated field and will soon be removed. Use
+  // last_sent_page_content_data_ directly instead.
   base::raw_span<const uint8_t> last_sent_underlying_content_bytes_;
 
   // The last underlying content type sent by the query controller.
@@ -386,6 +516,13 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
 
   // The number of partial page content requests sent by the query controller.
   int num_partial_page_content_requests_sent_ = 0;
+
+  // The number of upload chunk requests sent by the query controller.
+  int num_upload_chunk_requests_sent_ = 0;
+
+  // The last cluster info request received.
+  std::optional<lens::LensOverlayServerClusterInfoRequest>
+      last_cluster_info_request_;
 
   // The last encoded request id attached to a latency gen204 ping.
   std::optional<lens::LensOverlayRequestId> last_latency_gen204_request_id_;

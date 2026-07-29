@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/core/animation/color_property_functions.h"
 #include "third_party/blink/renderer/core/animation/interpolable_color.h"
 #include "third_party/blink/renderer/core/animation/interpolable_value.h"
+#include "third_party/blink/renderer/core/animation/underlying_value_owner.h"
 #include "third_party/blink/renderer/core/css/css_color.h"
 #include "third_party/blink/renderer/core/css/css_identifier_value.h"
 #include "third_party/blink/renderer/core/css/resolver/style_builder_converter.h"
@@ -61,17 +62,50 @@ void CSSColorInterpolationType::EnsureInterpolableStyleColor(
 }
 
 /* static */
+void CSSColorInterpolationType::EnsureInterpolableStyleColor(
+    InterpolableValue*& value) {
+  BaseInterpolableColor& base = To<BaseInterpolableColor>(*value);
+  if (!base.IsStyleColor()) {
+    value = InterpolableStyleColor::Create(&base);
+  }
+}
+
+/* static */
+void CSSColorInterpolationType::EnsureCompatibleInterpolableColorTypes(
+    InterpolableValue*& a,
+    InterpolableValue*& b) {
+  if (a->IsStyleColor() != b->IsStyleColor()) {
+    // If either value is a style color then both must be.
+    EnsureInterpolableStyleColor(a);
+    EnsureInterpolableStyleColor(b);
+  }
+
+  DCHECK_EQ(a->IsStyleColor(), b->IsStyleColor());
+  DCHECK_EQ(a->IsColor(), b->IsColor());
+
+  if (a->IsColor()) {
+    auto& a_color = To<InterpolableColor>(*a);
+    auto& b_color = To<InterpolableColor>(*b);
+    if (a_color.GetColor().GetColorSpace() !=
+        b_color.GetColor().GetColorSpace()) {
+      InterpolableColor::SetupColorInterpolationSpaces(a_color, b_color);
+    }
+  }
+}
+
+/* static */
 void CSSColorInterpolationType::EnsureCompatibleInterpolableColorTypes(
     InterpolableList& list_a,
     InterpolableList& list_b) {
   CHECK_EQ(list_a.length(), list_b.length());
-  for (wtf_size_t i = 0; i < list_a.length(); i++) {
-    if (list_a.Get(i)->IsStyleColor() != list_b.Get(i)->IsStyleColor()) {
-      // If either value is a style color then both must be.
-      EnsureInterpolableStyleColor(list_a, i);
-      EnsureInterpolableStyleColor(list_b, i);
-    }
-    DCHECK_EQ(list_a.Get(i)->IsStyleColor(), list_b.Get(i)->IsStyleColor());
+  for (wtf_size_t i = 0; i < list_a.length(); ++i) {
+    InterpolableValue* a = list_a.GetMutable(i);
+    InterpolableValue* b = list_b.GetMutable(i);
+
+    EnsureCompatibleInterpolableColorTypes(a, b);
+
+    list_a.Set(i, a);
+    list_b.Set(i, b);
   }
 }
 
@@ -110,7 +144,7 @@ BaseInterpolableColor* CSSColorInterpolationType::CreateBaseInterpolableColor(
   return CreateInterpolableColor(color, color_scheme, color_provider);
 }
 
-InterpolableColor* CSSColorInterpolationType::MaybeCreateInterpolableColor(
+BaseInterpolableColor* CSSColorInterpolationType::MaybeCreateInterpolableColor(
     const CSSValue& value,
     const StyleResolverState* state) {
   if (auto* color_value = DynamicTo<cssvalue::CSSColor>(value)) {
@@ -131,20 +165,17 @@ InterpolableColor* CSSColorInterpolationType::MaybeCreateInterpolableColor(
                                    color_provider);
   }
 
-  if (state && (value.IsLightDarkValuePair() || value.IsColorMixValue() ||
-                value.IsRelativeColorValue())) {
+  if (state && (value.IsLightDarkValuePair() || value.IsAlphaColorValue() ||
+                value.IsColorMixValue() || value.IsRelativeColorValue() ||
+                value.IsContrastColorValue())) {
     ResolveColorValueContext context{
         .length_resolver = state->CssToLengthConversionData(),
         .text_link_colors = state->GetDocument().GetTextLinkColors(),
         .used_color_scheme = color_scheme,
         .color_provider = color_provider};
     StyleColor style_color = ResolveColorValue(value, context);
-    if (!style_color.IsUnresolvedColorFunction()) {
-      return CreateInterpolableColor(style_color.GetColor());
-    }
-    // TODO(crbug.com/40940960): Handle unresolved-color-mix and unresolved
-    // relative colors. CSS-animations go through this code path. Unresolved
-    // color-mix and unresolved relative colors result in a discrete animation.
+    return CreateBaseInterpolableColor(style_color, color_scheme,
+                                       color_provider);
   }
 
   return nullptr;
@@ -265,19 +296,18 @@ enum InterpolableColorPairIndex : unsigned {
 
 InterpolationValue CSSColorInterpolationType::MaybeConvertValue(
     const CSSValue& value,
-    const StyleResolverState* state,
+    const StyleResolverState& state,
     ConversionCheckers& conversion_checkers) const {
   if (CssProperty().PropertyID() == CSSPropertyID::kColor) {
     auto* identifier_value = DynamicTo<CSSIdentifierValue>(value);
     if (identifier_value &&
         identifier_value->GetValueID() == CSSValueID::kCurrentcolor) {
-      DCHECK(state);
-      return MaybeConvertInherit(*state, conversion_checkers);
+      return MaybeConvertInherit(state, conversion_checkers);
     }
   }
 
-  InterpolableColor* interpolable_color =
-      MaybeCreateInterpolableColor(value, state);
+  BaseInterpolableColor* interpolable_color =
+      MaybeCreateInterpolableColor(value, &state);
   if (!interpolable_color) {
     return nullptr;
   }
@@ -356,6 +386,22 @@ CSSColorInterpolationType::MaybeConvertStandardPropertyUnderlyingValue(
       style.UsedColorScheme(), /*color_provider=*/nullptr);
 }
 
+InterpolationValue
+CSSColorInterpolationType::MaybeConvertCustomPropertyUnderlyingValue(
+    const CSSValue& value) const {
+  BaseInterpolableColor* interpolable_color =
+      MaybeCreateInterpolableColor(value, /*state=*/nullptr);
+  if (!interpolable_color) {
+    return nullptr;
+  }
+
+  auto* color_pair =
+      MakeGarbageCollected<InterpolableList>(kInterpolableColorPairIndexCount);
+  color_pair->Set(kUnvisited, interpolable_color->Clone());
+  color_pair->Set(kVisited, interpolable_color);
+  return InterpolationValue(color_pair);
+}
+
 void CSSColorInterpolationType::ApplyStandardPropertyValue(
     const InterpolableValue& interpolable_value,
     const NonInterpolableValue*,
@@ -401,7 +447,6 @@ void CSSColorInterpolationType::Composite(
     auto& underlying =
         To<BaseInterpolableColor>(*underlying_list.GetMutable(i));
     auto& other = To<BaseInterpolableColor>(*other_list.Get(i));
-    DCHECK_EQ(underlying.IsStyleColor(), other.IsStyleColor());
     underlying.Composite(other, underlying_fraction);
   }
 }

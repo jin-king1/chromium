@@ -12,7 +12,6 @@
 #include <string>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -35,7 +34,7 @@
 #include "components/policy/core/common/values_util.h"
 #include "components/policy/proto/chrome_extension_policy.pb.h"
 #include "components/policy/proto/device_management_backend.pb.h"
-#include "crypto/rsa_private_key.h"
+#include "crypto/keypair.h"
 #include "crypto/sha2.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_network_connection_tracker.h"
@@ -116,7 +115,7 @@ class ComponentCloudPolicyServiceTest : public testing::Test {
   ComponentCloudPolicyServiceTest()
       : cache_(nullptr),
         client_(nullptr),
-        core_(dm_protocol::kChromeUserPolicyType,
+        core_(dm_protocol::GetChromeUserPolicyType(),
               std::string(),
               &store_,
               base::SingleThreadTaskRunner::GetCurrentDefault(),
@@ -249,7 +248,7 @@ class ComponentCloudPolicyServiceTest : public testing::Test {
   std::unique_ptr<ResourceCache> owned_cache_;
   raw_ptr<ResourceCache, AcrossTasksDanglingUntriaged> cache_;
   raw_ptr<MockCloudPolicyClient, DanglingUntriaged> client_;
-  MockCloudPolicyStore store_;
+  MockCloudPolicyStore store_{dm_protocol::GetChromeUserPolicyType()};
   CloudPolicyCore core_;
   SchemaRegistry registry_;
   std::unique_ptr<ComponentCloudPolicyService> service_;
@@ -320,8 +319,8 @@ TEST_F(ComponentCloudPolicyServiceTest, InitializeWithCachedPolicy) {
   std::map<std::string, std::string> contents;
   cache_->LoadAllSubkeys("extension-policy", &contents);
   ASSERT_EQ(2u, contents.size());
-  EXPECT_TRUE(base::Contains(contents, kTestExtension));
-  EXPECT_TRUE(base::Contains(contents, kTestExtension2));
+  EXPECT_TRUE(contents.contains(kTestExtension));
+  EXPECT_TRUE(contents.contains(kTestExtension2));
 
   // Policy for extension 1 is now being served.
   PolicyBundle expected_bundle;
@@ -521,8 +520,8 @@ TEST_F(ComponentCloudPolicyServiceTest, LoadCacheAndDeleteExtensions) {
   std::map<std::string, std::string> contents;
   cache_->LoadAllSubkeys("extension-policy", &contents);
   EXPECT_EQ(2u, contents.size());
-  EXPECT_TRUE(base::Contains(contents, kTestExtension));
-  EXPECT_TRUE(base::Contains(contents, kTestExtension2));
+  EXPECT_TRUE(contents.contains(kTestExtension));
+  EXPECT_TRUE(contents.contains(kTestExtension2));
 }
 
 TEST_F(ComponentCloudPolicyServiceTest, SignInAfterStartup) {
@@ -662,8 +661,8 @@ TEST_F(ComponentCloudPolicyServiceTest, PurgeWhenServerRemovesPolicy) {
   std::map<std::string, std::string> contents;
   cache_->LoadAllSubkeys("extension-policy", &contents);
   ASSERT_EQ(2u, contents.size());
-  EXPECT_TRUE(base::Contains(contents, kTestExtension));
-  EXPECT_TRUE(base::Contains(contents, kTestExtension2));
+  EXPECT_TRUE(contents.contains(kTestExtension));
+  EXPECT_TRUE(contents.contains(kTestExtension2));
 
   PolicyBundle expected_bundle;
   expected_bundle.Get(kTestExtensionNS) = expected_policy_.Clone();
@@ -684,8 +683,8 @@ TEST_F(ComponentCloudPolicyServiceTest, PurgeWhenServerRemovesPolicy) {
   contents.clear();
   cache_->LoadAllSubkeys("extension-policy", &contents);
   ASSERT_EQ(1u, contents.size());
-  EXPECT_TRUE(base::Contains(contents, kTestExtension));
-  EXPECT_FALSE(base::Contains(contents, kTestExtension2));
+  EXPECT_TRUE(contents.contains(kTestExtension));
+  EXPECT_FALSE(contents.contains(kTestExtension2));
 
   // And the service isn't publishing policy for the second extension anymore.
   expected_bundle.Clear();
@@ -703,9 +702,9 @@ TEST_F(ComponentCloudPolicyServiceTest, KeyRotation) {
 
   // Send back a fake policy fetch response with the new signing key.
   const int kNewPublicKeyVersion = PolicyBuilder::kFakePublicKeyVersion + 1;
-  std::unique_ptr<crypto::RSAPrivateKey> new_signing_key =
+  crypto::keypair::PrivateKey new_signing_key =
       PolicyBuilder::CreateTestOtherSigningKey();
-  builder_.SetSigningKey(*new_signing_key);
+  builder_.SetSigningKey(new_signing_key);
   builder_.policy_data().set_public_key_version(kNewPublicKeyVersion);
   client_->SetPolicy(dm_protocol::kChromeExtensionPolicyType, kTestExtension,
                      *CreateResponse());

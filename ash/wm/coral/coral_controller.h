@@ -15,7 +15,6 @@
 #include "base/token.h"
 #include "chromeos/ash/services/coral/public/mojom/coral_service.mojom.h"
 #include "components/desks_storage/core/desk_model.h"
-#include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
 namespace aura {
@@ -53,6 +52,10 @@ class ASH_EXPORT CoralRequest {
     return suppression_context_;
   }
 
+  void set_language(const std::string& language) { language_ = language; }
+
+  std::string language() const { return language_; }
+
   std::string ToString() const;
 
  private:
@@ -63,6 +66,9 @@ class ASH_EXPORT CoralRequest {
 
   // Original tab/app content of the workspace.
   std::vector<ContentItem> suppression_context_;
+
+  // The language code, e.g., "en" for English.
+  std::string language_;
 };
 
 // `CoralResponse` contains 0-2 groups in order of relevance.
@@ -98,10 +104,10 @@ class ASH_EXPORT CoralController {
   ~CoralController();
 
   // Claims necessary resources (dlc download / model loading) for processing
-  // `GenerateContentGroups` and `CacheEmbeddings` requests. It is not necessary
-  // to call `Initialize` before calling other methods, but in that case
-  // the first method request might take longer to run.
-  void Initialize();
+  // `GenerateContentGroups` and `CacheEmbeddings` requests. This should be
+  // run before other methods to ensure models are ready, and set up the
+  // language.
+  void Initialize(std::string language);
 
   // GenerateContentGroups clusters the input ContentItems (which includes web
   // tabs, apps, etc.) into suitable groups based on their topics, and gives
@@ -130,7 +136,8 @@ class ASH_EXPORT CoralController {
                             const Desk* source_desk);
 
   // Creates a saved desk with up to one browser with tabs from `group`.
-  void CreateSavedDeskFromGroup(coral::mojom::GroupPtr group,
+  void CreateSavedDeskFromGroup(const std::string& template_name,
+                                coral::mojom::GroupPtr group,
                                 aura::Window* root_window);
 
   void OpenFeedbackDialog(const std::string& group_description);
@@ -140,7 +147,7 @@ class ASH_EXPORT CoralController {
 
   // Requests coral processor from service manager and returns the pointer of
   // the processor instance.
-  CoralProcessor* EnsureCoralProcessor();
+  CoralProcessor* EnsureCoralProcessor(std::string language);
 
   // Used as the callback of mojom::CoralProcessor::Group.
   void HandleGroupResult(CoralSource source,
@@ -157,8 +164,9 @@ class ASH_EXPORT CoralController {
   // directly if a group has no apps in it. If `desk_template` is nullptr, then
   // we create one if `tab_urls` is not empty, otherwise this function does
   // nothing.
-  void OnTemplateCreated(const std::vector<GURL>& tab_urls,
+  void OnTemplateCreated(std::vector<coral::mojom::EntityPtr> tab_app_entities,
                          std::unique_ptr<aura::WindowTracker> window_tracker,
+                         const std::string& template_name,
                          std::unique_ptr<DeskTemplate> desk_template);
 
   // Callback that is run after a saved desk is saved. Shows the saved desk

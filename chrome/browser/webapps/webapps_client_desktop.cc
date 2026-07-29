@@ -36,11 +36,18 @@ bool CheckNewWebAppConflictsWithExistingInstallation(
     const ManifestId& manifest_id) {
   CHECK(browser_context);
 
+  const AppId installing_app_id =
+      web_app::GenerateAppIdFromManifestId(manifest_id);
+
   // We prompt the user to re-install if the site wants to be in a
   // standalone window but the user has opted for opening in browser tab. This
   // is to support the situation where a site is not a PWA, users have installed
   // it via Create Shortcut action, the site becomes a standalone PWA later and
   // we want to prompt them to "install" the new PWA experience.
+  // However we don't want to show this "install" prompt if there already is
+  // some other standalone PWA installed that also has this url in scope as
+  // showing both the "install" and "open in app" chips at the same time is
+  // confusing.
   // TODO(crbug.com/40180519): Showing an install button when it's already
   // installed is confusing. Perhaps different UX would be best.
 
@@ -48,31 +55,53 @@ bool CheckNewWebAppConflictsWithExistingInstallation(
   web_app::WebAppProvider* provider =
       web_app::WebAppProvider::GetForWebApps(profile);
 
+  // Don't allow installation if an existing "crafted" controlling app exists.
+  base::flat_map<webapps::AppId, std::string> controlling_apps =
+      provider->registrar_unsafe().GetAllAppsControllingUrl(start_url);
+  for (const auto& [app_id, _] : controlling_apps) {
+    if (provider->registrar_unsafe().AppMatches(
+            app_id, web_app::WebAppFilter::IsCraftedApp())) {
+      return true;
+    }
+  }
+
   // We can install if it's not installed, or this is crafted app and already
   // installed but opens in a tab.
   std::optional<web_app::mojom::UserDisplayMode> user_display_mode =
-      provider->registrar_unsafe().GetAppUserDisplayMode(
-          web_app::GenerateAppIdFromManifestId(manifest_id));
+      provider->registrar_unsafe().GetAppUserDisplayMode(installing_app_id);
+
   if (user_display_mode == web_app::mojom::UserDisplayMode::kBrowser) {
     return false;
   }
 
   // If there is an existing crafted or DIY app that has the same manifest_id,
   // do not promote installation.
-  if (provider->registrar_unsafe().IsInstallState(
-          web_app::GenerateAppIdFromManifestId(manifest_id),
-          {web_app::proto::InstallState::INSTALLED_WITH_OS_INTEGRATION,
-           web_app::proto::InstallState::INSTALLED_WITHOUT_OS_INTEGRATION})) {
+  if (provider->registrar_unsafe().AppMatches(
+          installing_app_id, web_app::WebAppFilter::InstalledInChrome())) {
     return true;
   }
 
+  // Don't install if in primary scope of installed crafted app,
+  // and don't install if in primary or extended scope of installed crafted
+  // standalone app.
+
   // We cannot install if we are in scope of an installed crafted app, no matter
   // the user display type.
-  std::optional<AppId> non_diy_app_id =
+  std::optional<AppId> non_diy_primary_scope_app_id =
       provider->registrar_unsafe().FindBestAppWithUrlInScope(
-          start_url, web_app::WebAppFilter::IsCraftedApp());
+          start_url, web_app::WebAppFilter::IsCraftedApp(),
+          {.exclude_scope_extensions = true});
+  if (non_diy_primary_scope_app_id) {
+    return true;
+  }
 
-  if (non_diy_app_id) {
+  std::optional<AppId> non_diy_extended_scope_app_id =
+      provider->registrar_unsafe().FindBestAppWithUrlInScope(
+          start_url,
+          web_app::WebAppFilter::IsCraftedApp() &
+              web_app::WebAppFilter::OpensInDedicatedWindow(),
+          {.exclude_scope_extensions = false});
+  if (non_diy_extended_scope_app_id) {
     return true;
   }
 
@@ -108,7 +137,10 @@ WebappInstallSource WebappsClientDesktop::GetInstallSource(
 AppBannerManager* WebappsClientDesktop::GetAppBannerManager(
     content::WebContents* web_contents) {
   CHECK(web_contents);
-  return AppBannerManagerDesktop::FromWebContents(web_contents);
+  if (auto* manager = AppBannerManagerDesktop::FromWebContents(web_contents)) {
+    return manager->app_banner_manager();
+  }
+  return nullptr;
 }
 
 void WebappsClientDesktop::DoesNewWebAppConflictWithExistingInstallation(
@@ -174,7 +206,7 @@ void WebappsClientDesktop::SaveInstallationDismissedForMl(
   Profile* profile = Profile::FromBrowserContext(browser_context);
   CHECK(profile);
   web_app::WebAppPrefGuardrails::GetForMlInstallPrompt(profile->GetPrefs())
-      .RecordDismiss(web_app::GenerateAppIdFromManifestId(manifest_id),
+      .RecordDismiss(web_app::GenerateAppIdFromManifestId(ManifestId(manifest_id)),
                      base::Time::Now());
 }
 
@@ -185,7 +217,7 @@ void WebappsClientDesktop::SaveInstallationIgnoredForMl(
   Profile* profile = Profile::FromBrowserContext(browser_context);
   CHECK(profile);
   web_app::WebAppPrefGuardrails::GetForMlInstallPrompt(profile->GetPrefs())
-      .RecordIgnore(web_app::GenerateAppIdFromManifestId(manifest_id),
+      .RecordIgnore(web_app::GenerateAppIdFromManifestId(ManifestId(manifest_id)),
                     base::Time::Now());
 }
 
@@ -196,7 +228,7 @@ void WebappsClientDesktop::SaveInstallationAcceptedForMl(
   Profile* profile = Profile::FromBrowserContext(browser_context);
   CHECK(profile);
   web_app::WebAppPrefGuardrails::GetForMlInstallPrompt(profile->GetPrefs())
-      .RecordAccept(web_app::GenerateAppIdFromManifestId(manifest_id));
+      .RecordAccept(web_app::GenerateAppIdFromManifestId(ManifestId(manifest_id)));
 }
 
 bool WebappsClientDesktop::IsMlPromotionBlockedByHistoryGuardrail(
@@ -209,7 +241,7 @@ bool WebappsClientDesktop::IsMlPromotionBlockedByHistoryGuardrail(
   if (!manifest_id.is_empty() &&
       web_app::WebAppPrefGuardrails::GetForMlInstallPrompt(profile->GetPrefs())
           .IsBlockedByGuardrails(
-              web_app::GenerateAppIdFromManifestId(manifest_id))) {
+              web_app::GenerateAppIdFromManifestId(ManifestId(manifest_id)))) {
     return true;
   }
 

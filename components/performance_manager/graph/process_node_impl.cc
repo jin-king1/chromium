@@ -6,10 +6,11 @@
 
 #include <optional>
 #include <utility>
+#include <variant>
 
+#include "base/byte_size.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/trace_event/named_trigger.h"
@@ -22,6 +23,7 @@
 #include "components/performance_manager/v8_memory/v8_context_tracker.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/tracing_support.h"
 #include "content/public/common/content_switches.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 
@@ -39,17 +41,20 @@ content::ProcessType ValidateBrowserChildProcessType(
   return process_type;
 }
 
+perfetto::StaticString PriorityToString(
+    const base::Process::Priority& priority) {
+  return perfetto::StaticString(base::ProcessPriorityToString(priority));
+}
+
 }  // namespace
 
 ProcessNodeImpl::ProcessNodeImpl(BrowserProcessNodeTag tag)
     : ProcessNodeImpl(content::PROCESS_TYPE_BROWSER,
                       AnyChildProcessHostProxy{},
-                      base::TaskPriority::HIGHEST) {
-  tracing_track_.emplace(perfetto::ProcessTrack::Current());
-}
+                      base::Process::Priority::kMaxValue) {}
 
 ProcessNodeImpl::ProcessNodeImpl(RenderProcessHostProxy proxy,
-                                 base::TaskPriority priority)
+                                 base::Process::Priority priority)
     : ProcessNodeImpl(content::PROCESS_TYPE_RENDERER,
                       AnyChildProcessHostProxy(std::move(proxy)),
                       priority) {}
@@ -58,14 +63,17 @@ ProcessNodeImpl::ProcessNodeImpl(content::ProcessType process_type,
                                  BrowserChildProcessHostProxy proxy)
     : ProcessNodeImpl(ValidateBrowserChildProcessType(process_type),
                       AnyChildProcessHostProxy(std::move(proxy)),
-                      base::TaskPriority::HIGHEST) {}
+                      base::Process::Priority::kMaxValue) {}
 
 ProcessNodeImpl::ProcessNodeImpl(content::ProcessType process_type,
                                  AnyChildProcessHostProxy proxy,
-                                 base::TaskPriority priority)
+                                 base::Process::Priority priority)
     : process_type_(process_type),
       child_process_host_proxy_(std::move(proxy)),
-      priority_(priority) {
+      tracing_track_(GetTracingTrack(process_type_, child_process_host_proxy_)),
+      priority_(priority,
+                perfetto::StateTrack("Priority", 0, tracing_track_),
+                PriorityToString) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   // Child process nodes must have a valid proxy.
   switch (process_type) {
@@ -73,11 +81,11 @@ ProcessNodeImpl::ProcessNodeImpl(content::ProcessType process_type,
       // Do nothing.
       break;
     case content::PROCESS_TYPE_RENDERER:
-      CHECK(absl::get<RenderProcessHostProxy>(child_process_host_proxy_)
+      CHECK(std::get<RenderProcessHostProxy>(child_process_host_proxy_)
                 .is_valid());
       break;
     default:
-      CHECK(absl::get<BrowserChildProcessHostProxy>(child_process_host_proxy_)
+      CHECK(std::get<BrowserChildProcessHostProxy>(child_process_host_proxy_)
                 .is_valid());
       break;
   }
@@ -85,6 +93,7 @@ ProcessNodeImpl::ProcessNodeImpl(content::ProcessType process_type,
 
 ProcessNodeImpl::~ProcessNodeImpl() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(frame_nodes_.empty());
   // Crash if this process node is destroyed while still hosting a worker node.
   // TODO(crbug.com/40051698): Turn this into a DCHECK once the issue is
   //                                  resolved.
@@ -153,6 +162,25 @@ void ProcessNodeImpl::OnRemoteIframeAttached(
     mojom::IframeAttributionDataPtr iframe_attribution_data) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(process_type_, content::PROCESS_TYPE_RENDERER);
+
+  // Only dispatch if the frame and its parent still exist when the mojo message
+  // reaches the browser process. If the frame still exists but now has no
+  // parent, we don't need to record IframeAttribution data for it since it's
+  // now unreachable.
+  //
+  // An example of this is the custom <webview> element used in Chrome UI
+  // (extensions/renderer/resources/guest_view/web_view/web_view.js). This
+  // element has an inner web contents with an opener relationship to the
+  // webview, but no parent-child relationship. However since it is a custom
+  // element implemented on top of <iframe>, the renderer has no way to
+  // distinguish it from a regular iframe. At the moment the contents is
+  // attached it has a transient parent frame, which is reported through
+  // OnRemoteIframeAttached, but the parent frame disappears shortly
+  // afterward.
+  //
+  // TODO(crbug.com/40132061): Write an end-to-end browsertest that covers
+  // this case once all parts of the measure memory API are hooked up.
+
   if (auto* tracker = v8_memory::V8ContextTracker::GetFromGraph(graph())) {
     auto* ec_registry =
         execution_context::ExecutionContextRegistry::GetFromGraph(graph());
@@ -187,15 +215,8 @@ void ProcessNodeImpl::OnRemoteIframeDetached(
 }
 
 void ProcessNodeImpl::InitializeChildProcessCoordination(
-    uint64_t process_track_id,
     InitializeChildProcessCoordinationCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  // Should not be called for the Browser process, which already has a track.
-  // Otherwise, it's ok to overwrite `tracing_track_`, since processes can be
-  // re-initialized for the same ProcessNode (eg. after a crash).
-  CHECK_NE(process_type_, content::PROCESS_TYPE_BROWSER);
-  tracing_track_.emplace(perfetto::Track::Global(process_track_id));
 
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kSingleProcess)) {
@@ -253,19 +274,19 @@ bool ProcessNodeImpl::GetMainThreadTaskLoadIsLow() const {
   return main_thread_task_load_is_low_.value();
 }
 
-uint64_t ProcessNodeImpl::GetPrivateFootprintKb() const {
+base::ByteSize ProcessNodeImpl::GetPrivateFootprint() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return private_footprint_kb_;
+  return private_footprint_;
 }
 
-uint64_t ProcessNodeImpl::GetResidentSetKb() const {
+base::ByteSize ProcessNodeImpl::GetResidentSet() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return resident_set_kb_;
+  return resident_set_;
 }
 
-uint64_t ProcessNodeImpl::GetPrivateSwapKb() const {
+base::ByteSize ProcessNodeImpl::GetPrivateSwap() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return private_swap_kb_;
+  return private_swap_;
 }
 
 RenderProcessHostId ProcessNodeImpl::GetRenderProcessHostId() const {
@@ -275,7 +296,7 @@ RenderProcessHostId ProcessNodeImpl::GetRenderProcessHostId() const {
 const RenderProcessHostProxy& ProcessNodeImpl::GetRenderProcessHostProxy()
     const {
   DCHECK_EQ(process_type_, content::PROCESS_TYPE_RENDERER);
-  return absl::get<RenderProcessHostProxy>(child_process_host_proxy_);
+  return std::get<RenderProcessHostProxy>(child_process_host_proxy_);
 }
 
 const BrowserChildProcessHostProxy&
@@ -283,10 +304,10 @@ ProcessNodeImpl::GetBrowserChildProcessHostProxy() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_NE(process_type_, content::PROCESS_TYPE_BROWSER);
   DCHECK_NE(process_type_, content::PROCESS_TYPE_RENDERER);
-  return absl::get<BrowserChildProcessHostProxy>(child_process_host_proxy_);
+  return std::get<BrowserChildProcessHostProxy>(child_process_host_proxy_);
 }
 
-base::TaskPriority ProcessNodeImpl::GetPriority() const {
+base::Process::Priority ProcessNodeImpl::GetPriority() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return priority_.value();
 }
@@ -310,7 +331,7 @@ ProcessNode::NodeSetView<WorkerNodeImpl*> ProcessNodeImpl::worker_nodes()
   return NodeSetView<WorkerNodeImpl*>(worker_nodes_);
 }
 
-std::optional<perfetto::Track> ProcessNodeImpl::tracing_track() const {
+perfetto::Track ProcessNodeImpl::tracing_track() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return tracing_track_;
 }
@@ -357,7 +378,7 @@ void ProcessNodeImpl::AddFrame(FrameNodeImpl* frame_node) {
 void ProcessNodeImpl::RemoveFrame(FrameNodeImpl* frame_node) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(process_type_, content::PROCESS_TYPE_RENDERER);
-  DCHECK(base::Contains(frame_nodes_, frame_node));
+  DCHECK(frame_nodes_.contains(frame_node));
   frame_nodes_.erase(frame_node);
 }
 
@@ -371,11 +392,11 @@ void ProcessNodeImpl::AddWorker(WorkerNodeImpl* worker_node) {
 void ProcessNodeImpl::RemoveWorker(WorkerNodeImpl* worker_node) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_EQ(process_type_, content::PROCESS_TYPE_RENDERER);
-  DCHECK(base::Contains(worker_nodes_, worker_node));
+  DCHECK(worker_nodes_.contains(worker_node));
   worker_nodes_.erase(worker_node);
 }
 
-void ProcessNodeImpl::set_priority(base::TaskPriority priority) {
+void ProcessNodeImpl::set_priority(base::Process::Priority priority) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   priority_.SetAndMaybeNotify(this, priority);
 }
@@ -404,9 +425,9 @@ void ProcessNodeImpl::SetProcessImpl(base::Process process,
 
   // Also clear the measurement data (if any), as it references the previous
   // process.
-  private_footprint_kb_ = 0;
-  resident_set_kb_ = 0;
-  private_swap_kb_ = 0;
+  private_footprint_ = base::ByteSize(0);
+  resident_set_ = base::ByteSize(0);
+  private_swap_ = base::ByteSize(0);
 
   process_id_ = new_pid;
   launch_time_ = launch_time;
@@ -435,6 +456,17 @@ void ProcessNodeImpl::OnAllFramesInProcessFrozen() {
   for (auto& observer : GetObservers()) {
     observer.OnAllFramesInProcessFrozen(this);
   }
+}
+
+// static
+perfetto::Track ProcessNodeImpl::GetTracingTrack(
+    content::ProcessType process_type,
+    const AnyChildProcessHostProxy& proxy) {
+  if (process_type == content::PROCESS_TYPE_BROWSER) {
+    return perfetto::ProcessTrack::Current();
+  }
+  return content::GetChildProcessTracingTrack(std::visit(
+      [](const auto& proxy) { return proxy.child_process_id(); }, proxy));
 }
 
 void ProcessNodeImpl::OnInitializingProperties() {

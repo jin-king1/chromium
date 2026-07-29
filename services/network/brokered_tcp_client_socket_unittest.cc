@@ -4,6 +4,7 @@
 
 #include "services/network/brokered_tcp_client_socket.h"
 
+#include "base/compiler_specific.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "base/test/task_environment.h"
@@ -61,7 +62,13 @@ class BrokeredTcpClientSocketTest : public testing::Test,
         net::IPAddress::IPv4Localhost(), local_address.port());
 
     socket_ = client_socket_factory_.CreateTransportClientSocket(
-        addr, nullptr, nullptr, net::NetLog::Get(), net::NetLogSource());
+        addr,
+        // Currently, multi-networking is supported only on Android, where
+        // `BrokeredClientSocketFactory` is not used. This makes it safe to
+        // always target the default network. If `BrokeredClientSocketFactory`
+        // starts being used in Android, this should be revisited.
+        net::handles::kInvalidNetworkHandle, nullptr, nullptr,
+        net::NetLog::Get(), net::NetLogSource());
 
     // Confirm that we fail gracefully when making certain calls before
     // connecting.
@@ -163,7 +170,13 @@ TEST_F(BrokeredTcpClientSocketTest, MAYBE_FailedBind) {
       net::IPAddress::IPv6Localhost(), local_address.port());
 
   socket_ = client_socket_factory_.CreateTransportClientSocket(
-      addr, nullptr, nullptr, net::NetLog::Get(), net::NetLogSource());
+      addr,
+      // Currently, multi-networking is supported only on Android, where
+      // `BrokeredClientSocketFactory` is not used. This makes it safe to
+      // always target the default network. If `BrokeredClientSocketFactory`
+      // starts being used in Android, this should be revisited.
+      net::handles::kInvalidNetworkHandle, nullptr, nullptr, net::NetLog::Get(),
+      net::NetLogSource());
 
   // Bind to an ipv4 address
   EXPECT_THAT(
@@ -378,7 +391,7 @@ TEST_F(BrokeredTcpClientSocketTest, FullDuplex_ReadFirst) {
   auto request_buffer =
       base::MakeRefCounted<net::IOBufferWithSize>(kWriteBufLen);
   char* request_data = request_buffer->data();
-  memset(request_data, 'A', kWriteBufLen);
+  UNSAFE_TODO(memset(request_data, 'A', kWriteBufLen));
   net::TestCompletionCallback write_callback;
 
   int bytes_written = 0;
@@ -412,7 +425,7 @@ TEST_F(BrokeredTcpClientSocketTest, FullDuplex_WriteFirst) {
   auto request_buffer =
       base::MakeRefCounted<net::IOBufferWithSize>(kWriteBufLen);
   char* request_data = request_buffer->data();
-  memset(request_data, 'A', kWriteBufLen);
+  UNSAFE_TODO(memset(request_data, 'A', kWriteBufLen));
   net::TestCompletionCallback write_callback;
 
   int bytes_written = 0;

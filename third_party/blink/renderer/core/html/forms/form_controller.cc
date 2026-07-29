@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "base/memory/ptr_util.h"
+#include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/scoped_event_queue.h"
@@ -38,6 +39,7 @@
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 #include "third_party/blink/renderer/platform/wtf/hash_table_deleted_value_type.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 
 namespace blink {
 
@@ -99,11 +101,13 @@ void FormControlState::SerializeTo(Vector<String>& state_vector) const {
 FormControlState FormControlState::Deserialize(
     const Vector<String>& state_vector,
     wtf_size_t& index) {
-  if (index >= state_vector.size())
+  if (index >= state_vector.size()) {
     return FormControlState(kTypeFailure);
-  unsigned value_size = state_vector[index++].ToUInt();
-  if (!value_size)
+  }
+  unsigned value_size = StringToUintLoose(state_vector[index++]).value_or(0);
+  if (!value_size) {
     return FormControlState();
+  }
   if (index + value_size > state_vector.size())
     return FormControlState(kTypeFailure);
   FormControlState state;
@@ -146,20 +150,21 @@ class SavedFormState {
 };
 
 static bool IsNotFormControlTypeCharacter(UChar ch) {
-  return ch != '-' && (ch > 'z' || ch < 'a');
+  return ch != '-' && !IsAsciiLower(ch);
 }
 
 std::unique_ptr<SavedFormState> SavedFormState::Deserialize(
     const Vector<String>& state_vector,
     wtf_size_t& index) {
-  if (index >= state_vector.size())
+  if (index >= state_vector.size()) {
     return nullptr;
-  // FIXME: We need String::toSizeT().
-  wtf_size_t item_count = state_vector[index++].ToUInt();
-  if (!item_count)
+  }
+  wtf_size_t item_count = StringToUintLoose(state_vector[index++]).value_or(0);
+  if (!item_count) {
     return nullptr;
+  }
   std::unique_ptr<SavedFormState> saved_form_state =
-      base::WrapUnique(new SavedFormState);
+      std::make_unique<SavedFormState>();
   while (item_count--) {
     if (index + 1 >= state_vector.size())
       return nullptr;
@@ -232,7 +237,7 @@ Vector<String> SavedFormState::GetReferencedFilePaths() const {
     }
     const Deque<FormControlState>& queue = form_control.value;
     for (const FormControlState& form_control_state : queue) {
-      to_return.AppendVector(
+      to_return.append_range(
           HTMLInputElement::FilesFromFileInputFormControlState(
               form_control_state));
     }
@@ -376,7 +381,7 @@ static String FormStateSignature() {
 Vector<String> DocumentState::ToStateVector() {
   auto* key_generator = MakeGarbageCollected<FormKeyGenerator>();
   std::unique_ptr<SavedFormStateMap> state_map =
-      base::WrapUnique(new SavedFormStateMap);
+      std::make_unique<SavedFormStateMap>();
   for (auto& control : GetControlList()) {
     DCHECK(control->ToHTMLElement().isConnected());
     if (!control->ShouldSaveAndRestoreFormControlState())
@@ -487,8 +492,10 @@ void FormController::RestoreControlStateIn(HTMLFormElement& form) {
   if (!document_->HasFinishedParsing())
     return;
   EventQueueScope scope;
-  const ListedElement::List& elements = form.ListedElements();
-  for (const auto& control : elements) {
+  // Make a copy of the list because the DOM could be modified during
+  // restoration of a <select> with a <selectedcontent> element.
+  ListedElement::List elements_copy(form.ListedElements());
+  for (const auto& control : elements_copy) {
     if (!control->ClassSupportsStateRestore())
       continue;
     if (OwnerFormForState(*control) != &form)
@@ -529,10 +536,9 @@ void FormController::RestoreControlStateOnUpgrade(ListedElement& control) {
 
 void FormController::ScheduleRestore() {
   document_->GetTaskRunner(TaskType::kInternalLoading)
-      ->PostTask(
-          FROM_HERE,
-          WTF::BindOnce(&FormController::RestoreAllControlsInDocumentOrder,
-                        WrapPersistent(this)));
+      ->PostTask(FROM_HERE,
+                 BindOnce(&FormController::RestoreAllControlsInDocumentOrder,
+                          WrapPersistent(this)));
 }
 
 void FormController::RestoreImmediately() {
@@ -546,7 +552,11 @@ void FormController::RestoreAllControlsInDocumentOrder() {
     return;
   HeapHashSet<Member<HTMLFormElement>> finished_forms;
   EventQueueScope scope;
-  for (auto& control : document_state_->GetControlList()) {
+  // Make a copy of the list because the DOM could be modified during
+  // restoration of a <select> with a <selectedcontent> element.
+  DocumentState::ControlList control_list_copy(
+      document_state_->GetControlList());
+  for (auto& control : control_list_copy) {
     auto* owner = OwnerFormForState(*control);
     if (!owner)
       RestoreControlStateFor(*control);
@@ -562,7 +572,7 @@ Vector<String> FormController::GetReferencedFilePaths(
   SavedFormStateMap map;
   ControlStatesFromStateVector(state_vector, map);
   for (const auto& saved_form_state : map)
-    to_return.AppendVector(saved_form_state.value->GetReferencedFilePaths());
+    to_return.append_range(saved_form_state.value->GetReferencedFilePaths());
   return to_return;
 }
 

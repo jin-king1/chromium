@@ -19,16 +19,17 @@ import androidx.test.filters.SmallTest;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InOrder;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowLog;
 
 import org.chromium.android_webview.AwDisplayModeController;
 import org.chromium.base.Log;
@@ -40,6 +41,8 @@ import org.chromium.blink.mojom.DisplayMode;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class AwDisplayModeControllerTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     private static final String TAG = "DisplayModeTest";
     private static final boolean DEBUG = false;
 
@@ -50,11 +53,10 @@ public class AwDisplayModeControllerTest {
     @Mock private View mView;
     @Mock private View mAnotherView;
 
-    @Mock private ViewGroup mParentView;
     @Mock private ViewGroup mRootView;
 
     private View.OnApplyWindowInsetsListener mListener;
-    private int[] mLocationOnScreen = {0, 0};
+    private final int[] mLocationOnScreen = {0, 0};
     private int mViewWidth;
     private int mViewHeight;
 
@@ -66,14 +68,11 @@ public class AwDisplayModeControllerTest {
 
     private AwDisplayModeController mController;
 
-    public AwDisplayModeControllerTest() {
-        if (DEBUG) ShadowLog.stream = System.out; // allows logging
-    }
+    public AwDisplayModeControllerTest() {}
 
     @Before
     public void setUp() {
         if (DEBUG) Log.i(TAG, "setUp");
-        MockitoAnnotations.initMocks(this);
         mContext = RuntimeEnvironment.application;
 
         // Set up default values.

@@ -4,32 +4,43 @@
 
 #include "chrome/browser/enterprise/data_protection/paste_allowed_request.h"
 
+#include "base/functional/bind.h"
+#include "base/memory/ptr_util.h"
 #include "base/test/bind.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_delegate.h"
-#include "chrome/browser/enterprise/connectors/analysis/content_analysis_delegate_base.h"
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
+#include "chrome/browser/enterprise/connectors/test/fake_clipboard_request_handler.h"
+#include "chrome/browser/enterprise/connectors/test/fake_content_analysis_delegate.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_clipboard_utils.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/enterprise/common/proto/synced/browser_events.pb.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/clipboard_request_handler.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
+#include "components/enterprise/connectors/core/content_analysis_delegate_base.h"
 #include "components/enterprise/data_controls/core/browser/test_utils.h"
 #include "content/public/browser/clipboard_types.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/navigation_simulator.h"
+#include "content/public/test/test_renderer_host.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/clipboard_monitor.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/clipboard/test/test_clipboard.h"
 
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chromeos/ash/components/network/network_handler.h"
+#include "chromeos/ash/services/network_config/public/cpp/cros_network_config_test_helper.h"
+#endif
+
 namespace enterprise_data_protection {
 
 namespace {
-
-enterprise_connectors::ContentAnalysisDelegate* test_delegate_ = nullptr;
 
 constexpr char kScanId[] = "scan_id";
 
@@ -61,43 +72,47 @@ enterprise_connectors::ContentAnalysisResponse CreateResponse(
   return response;
 }
 
-class PasteTestContentAnalysisDelegate
-    : public enterprise_connectors::ContentAnalysisDelegate {
+class TestClipboardRequestHandler
+    : public enterprise_connectors::test::FakeClipboardRequestHandler {
  public:
-  PasteTestContentAnalysisDelegate(
-      enterprise_connectors::ContentAnalysisResponse::Result::TriggeredRule::
-          Action action,
-      content::WebContents* contents,
-      ContentAnalysisDelegate::Data data,
-      ContentAnalysisDelegate::CompletionCallback callback)
-      : ContentAnalysisDelegate(contents,
-                                std::move(data),
-                                std::move(callback),
-                                safe_browsing::DeepScanAccessPoint::PASTE),
-        action_(action) {}
-
-  static std::unique_ptr<enterprise_connectors::ContentAnalysisDelegate> Create(
-      enterprise_connectors::ContentAnalysisResponse::Result::TriggeredRule::
-          Action action,
-      content::WebContents* contents,
-      ContentAnalysisDelegate::Data data,
-      ContentAnalysisDelegate::CompletionCallback callback) {
-    auto delegate = std::make_unique<PasteTestContentAnalysisDelegate>(
-        action, contents, std::move(data), std::move(callback));
-    test_delegate_ = delegate.get();
-    return delegate;
+  static std::unique_ptr<ClipboardRequestHandler> Create(
+      enterprise_connectors::ContentAnalysisInfoBase* content_analysis_info,
+      enterprise_connectors::BinaryUploadService* upload_service,
+      enterprise_connectors::ReportingEventRouter* router,
+      GURL url,
+      Type type,
+      enterprise_connectors::DeepScanAccessPoint access_point,
+      enterprise_connectors::ContentMetaData::CopiedTextSource clipboard_source,
+      std::string source_content_area_email,
+      std::string content_transfer_method,
+      std::string data,
+      CompletionCallback callback,
+      enterprise_connectors::BinaryUploadRequest::BrowserPolicyConnectorGetter
+          policy_getter) {
+    return base::WrapUnique(new TestClipboardRequestHandler(
+        content_analysis_info, upload_service, router, std::move(url), type,
+        access_point, std::move(clipboard_source),
+        std::move(source_content_area_email),
+        std::move(content_transfer_method), std::move(data),
+        std::move(callback), std::move(policy_getter)));
   }
+
+ protected:
+  using FakeClipboardRequestHandler::FakeClipboardRequestHandler;
 
  private:
-  void UploadTextForDeepScanning(
-      std::unique_ptr<safe_browsing::BinaryUploadService::Request> request)
+  void UploadForDeepScanning(
+      std::unique_ptr<enterprise_connectors::ClipboardAnalysisRequest> request)
       override {
-    StringRequestCallback(safe_browsing::BinaryUploadService::Result::SUCCESS,
-                          CreateResponse(action_));
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            &TestClipboardRequestHandler::OnContentAnalysisResponse,
+            base::Unretained(this),
+            enterprise_connectors::ScanRequestUploadResult::kSuccess,
+            CreateResponse(enterprise_connectors::ContentAnalysisResponse::
+                               Result::TriggeredRule::BLOCK)));
   }
-
-  enterprise_connectors::ContentAnalysisResponse::Result::TriggeredRule::Action
-      action_;
 };
 
 class PasteAllowedRequestTest : public testing::Test {
@@ -111,6 +126,18 @@ class PasteAllowedRequestTest : public testing::Test {
   void SetUp() override {
     PasteAllowedRequest::CleanupRequestsForTesting();
     ui::TestClipboard::CreateForCurrentThread();
+
+#if BUILDFLAG(IS_CHROMEOS)
+    network_config_helper_ =
+        std::make_unique<ash::network_config::CrosNetworkConfigTestHelper>();
+    ash::NetworkHandler::Initialize();
+#endif
+  }
+
+  void TearDown() override {
+#if BUILDFLAG(IS_CHROMEOS)
+    ash::NetworkHandler::Shutdown();
+#endif
   }
 
   content::WebContents* main_web_contents() {
@@ -132,6 +159,25 @@ class PasteAllowedRequestTest : public testing::Test {
           return static_cast<content::BrowserContext*>(profile_);
         }),
         main_rfh());
+  }
+
+  content::RenderFrameHost& child_rfh() {
+    if (!child_rfh_) {
+      content::RenderFrameHostTester::For(&main_rfh())
+          ->InitializeRenderFrameIfNeeded();
+      child_rfh_ = content::RenderFrameHostTester::For(&main_rfh())
+                       ->AppendChild("child");
+    }
+    return *child_rfh_;
+  }
+
+  content::ClipboardEndpoint child_endpoint() {
+    return content::ClipboardEndpoint(
+        ui::DataTransferEndpoint(GURL("https://google.com")),
+        base::BindLambdaForTesting([this]() -> content::BrowserContext* {
+          return static_cast<content::BrowserContext*>(profile_);
+        }),
+        child_rfh());
   }
 
   content::WebContents* secondary_web_contents() {
@@ -158,10 +204,16 @@ class PasteAllowedRequestTest : public testing::Test {
  protected:
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  content::RenderViewHostTestEnabler rvh_test_enabler_;
   TestingProfileManager profile_manager_;
   raw_ptr<TestingProfile> profile_;
   std::unique_ptr<content::WebContents> main_web_contents_;
   std::unique_ptr<content::WebContents> secondary_web_contents_;
+  raw_ptr<content::RenderFrameHost> child_rfh_ = nullptr;
+#if BUILDFLAG(IS_CHROMEOS)
+  std::unique_ptr<ash::network_config::CrosNetworkConfigTestHelper>
+      network_config_helper_;
+#endif
 };
 
 class PasteAllowedRequestScanningTest : public PasteAllowedRequestTest {
@@ -401,6 +453,39 @@ TEST_F(PasteAllowedRequestTest,
   EXPECT_EQ(1u, PasteAllowedRequest::requests_count_for_testing());
 }
 
+TEST_F(PasteAllowedRequestTest, ChildFrameDestinationCreatesSeparateRequest) {
+  auto seqno = ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
+      ui::ClipboardBuffer::kCopyPaste);
+
+  // Seed a completed request for the main frame so that a paste targeting it
+  // would resolve to `kCachedText`.
+  const std::u16string kCachedText = u"cached";
+  content::ClipboardPasteData cached_data;
+  cached_data.text = kCachedText;
+  PasteAllowedRequest cached_request;
+  cached_request.Complete(cached_data);
+  PasteAllowedRequest::AddRequestToCacheForTesting(
+      main_rfh().GetGlobalId(), seqno, std::move(cached_request));
+  EXPECT_EQ(1u, PasteAllowedRequest::requests_count_for_testing());
+
+  // A paste into a child frame of the same page must not be coalesced into the
+  // main frame's request, so it should be evaluated independently and resolve
+  // to its own data rather than the main frame's cached result.
+  const std::u16string kChildText = u"child";
+  content::ClipboardPasteData child_data;
+  child_data.text = kChildText;
+
+  base::test::TestFuture<std::optional<content::ClipboardPasteData>> future;
+  PasteAllowedRequest::StartPasteAllowedRequest(
+      /*source*/ secondary_endpoint(), /*destination*/ child_endpoint(),
+      {.seqno = seqno}, child_data, future.GetCallback());
+
+  ASSERT_TRUE(future.Get());
+  EXPECT_EQ(future.Get()->text, kChildText);
+
+  EXPECT_EQ(2u, PasteAllowedRequest::requests_count_for_testing());
+}
+
 TEST_F(PasteAllowedRequestTest, UnknownSource) {
   auto seqno = ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
       ui::ClipboardBuffer::kCopyPaste);
@@ -563,38 +648,40 @@ TEST_F(PasteAllowedRequestTest, CleanupObsoleteScanRequests) {
 }
 
 TEST_F(PasteAllowedRequestScanningTest, DifferentDestinationSource) {
-  enterprise_connectors::ContentAnalysisDelegate::SetFactoryForTesting(
-      base::BindRepeating(&PasteTestContentAnalysisDelegate::Create,
-                          enterprise_connectors::ContentAnalysisResponse::
-                              Result::TriggeredRule::BLOCK));
+  enterprise_connectors::ClipboardRequestHandler::SetFactoryForTesting(
+      base::BindRepeating(TestClipboardRequestHandler::Create));
 
   auto validator = helper_->CreateValidator();
-  validator.ExpectSensitiveDataEvent(
-      /*url*/
-      "",
-      /*tab_url*/ "",
-      /*source*/ "https://google.com/",
-      /*destination*/ "",
-      /*filename*/ "Text data",
-      /*sha*/ "",
-      /*trigger*/ "WEB_CONTENT_UPLOAD",
-      /*dlp_verdict*/
-      CreateResult(enterprise_connectors::ContentAnalysisResponse::Result::
-                       TriggeredRule::BLOCK),
-      /*mimetype*/
-      []() {
-        static std::set<std::string> set = {"text/plain"};
-        return &set;
-      }(),
-      /*size*/ 4,
-      /*result*/
-      enterprise_connectors::EventResultToString(
-          enterprise_connectors::EventResult::BLOCKED),
-      /*username*/ "test-user@chromium.org",
-      /*profile_identifier*/ profile_->GetPath().AsUTF8Unsafe(),
-      /*scan_id*/ kScanId,
-      /*content_transfer_method*/ std::nullopt,
-      /*user_justification*/ std::nullopt);
+  base::RunLoop run_loop;
+  validator.SetDoneClosure(run_loop.QuitClosure());
+
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
+
+  expected_event.set_url("");
+  expected_event.set_tab_url("");
+  expected_event.set_source("https://google.com/");
+  expected_event.set_destination("");
+  expected_event.set_file_name("Text data");
+  expected_event.set_content_type("text/plain");
+  expected_event.set_content_size(4);
+  expected_event.set_scan_id(kScanId);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_BLOCKED);
+  expected_event.set_clicked_through(false);
+  expected_event.set_trigger(chrome::cros::reporting::proto::
+                                 DataTransferEventTrigger::WEB_CONTENT_UPLOAD);
+
+  chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule;
+  triggered_rule.set_action(
+      chrome::cros::reporting::proto::TriggeredRuleInfo::BLOCK);
+  triggered_rule.set_rule_name("paste_rule_name");
+
+  *expected_event.add_triggered_rule_info() = triggered_rule;
+
+  expected_event.set_profile_identifier(profile_->GetPath().AsUTF8Unsafe());
+  expected_event.set_profile_user_name("test-user@chromium.org");
+
+  validator.ExpectSensitiveDataEvent(std::move(expected_event));
 
   auto seqno = ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
       ui::ClipboardBuffer::kCopyPaste);
@@ -608,10 +695,11 @@ TEST_F(PasteAllowedRequestScanningTest, DifferentDestinationSource) {
       /*source*/ secondary_endpoint(), /*destination*/ main_endpoint(),
       {.seqno = seqno}, clipboard_paste_data, future.GetCallback());
 
-  ASSERT_TRUE(future.Get());
-  ASSERT_EQ(future.Get()->text, kText);
+  ASSERT_TRUE(future.Wait());
+  ASSERT_FALSE(future.Get().has_value());
 
   EXPECT_EQ(1u, PasteAllowedRequest::requests_count_for_testing());
+  run_loop.Run();
 }
 
 }  // namespace enterprise_data_protection

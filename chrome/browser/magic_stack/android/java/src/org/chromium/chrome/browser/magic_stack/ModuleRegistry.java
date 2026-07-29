@@ -6,25 +6,30 @@ package org.chromium.chrome.browser.magic_stack;
 
 import android.view.ViewGroup;
 
-import androidx.annotation.NonNull;
-
 import org.chromium.base.Callback;
 import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.LifecycleObserver;
 import org.chromium.chrome.browser.lifecycle.PauseResumeWithNativeObserver;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
-import org.chromium.components.segmentation_platform.InputContext;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
 
 /** A class which is responsible for registering module builders {@link ModuleProviderBuilder}. */
+@NullMarked
 public class ModuleRegistry {
     /** The callback interface which is called when the view of a module is inflated. */
     public interface OnViewCreatedCallback {
-        void onViewCreated(@ModuleType int moduleType, @NonNull ViewGroup view);
+        void onViewCreated(@ModuleType int moduleType, ViewGroup view);
     }
 
     private static final String TAG = "ModuleRegistry";
@@ -38,8 +43,8 @@ public class ModuleRegistry {
     private LifecycleObserver mLifecycleObserver;
 
     public ModuleRegistry(
-            @NonNull HomeModulesConfigManager homeModulesConfigManager,
-            @NonNull ActivityLifecycleDispatcher activityLifecycleDispatcher) {
+            HomeModulesConfigManager homeModulesConfigManager,
+            ActivityLifecycleDispatcher activityLifecycleDispatcher) {
         mHomeModulesConfigManager = homeModulesConfigManager;
         mActivityLifecycleDispatcher = activityLifecycleDispatcher;
         mLifecycleObserver =
@@ -63,12 +68,53 @@ public class ModuleRegistry {
      * @param moduleType The type of the module.
      * @param builder The object of the module builder.
      */
-    public void registerModule(@ModuleType int moduleType, @NonNull ModuleProviderBuilder builder) {
+    public void registerModule(@ModuleType int moduleType, ModuleProviderBuilder builder) {
         mModuleBuildersMap.put(moduleType, builder);
-        if (builder instanceof ModuleConfigChecker) {
-            mHomeModulesConfigManager.registerModuleEligibilityChecker(
-                    moduleType, (ModuleConfigChecker) builder);
+    }
+
+    /**
+     * Returns the set which contains all the module types that are registered and enabled according
+     * to user preference. Note: this function should be called after profile is ready.
+     */
+    @ModuleType
+    public Set<Integer> getEnabledModuleSet() {
+        @ModuleType Set<Integer> enabledModuleList = new HashSet<>();
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.HOME_MODULE_PREF_REFACTOR)
+                && !mHomeModulesConfigManager.getPrefAllCardsEnabled()) {
+            return enabledModuleList;
         }
+
+        for (Entry<Integer, ModuleProviderBuilder> entry : mModuleBuildersMap.entrySet()) {
+            ModuleProviderBuilder builder = entry.getValue();
+            if (builder.isEligible()
+                    && mHomeModulesConfigManager.getPrefModuleTypeEnabled(entry.getKey())) {
+                enabledModuleList.add(entry.getKey());
+            }
+        }
+        return enabledModuleList;
+    }
+
+    /** Returns a list of modules that allow users to configure in settings. */
+    @ModuleType
+    public List<Integer> getModuleListShownInSettings() {
+        @ModuleType List<Integer> moduleListShownInSettings = new ArrayList<>();
+        boolean isEducationalTipModuleAdded = false;
+
+        for (Entry<Integer, ModuleProviderBuilder> entry : mModuleBuildersMap.entrySet()) {
+            ModuleProviderBuilder builder = entry.getValue();
+            if (builder.isEligible()) {
+                int moduleType = entry.getKey();
+                if (HomeModulesUtils.belongsToEducationalTipModule(moduleType)) {
+                    // All the educational tip modules are controlled by the same preference.
+                    if (isEducationalTipModuleAdded) continue;
+
+                    isEducationalTipModuleAdded = true;
+                }
+
+                moduleListShownInSettings.add(moduleType);
+            }
+        }
+        return moduleListShownInSettings;
     }
 
     /**
@@ -79,8 +125,7 @@ public class ModuleRegistry {
      *     is created.
      */
     public void registerAdapter(
-            @NonNull SimpleRecyclerViewAdapter adapter,
-            @NonNull OnViewCreatedCallback onViewCreatedCallback) {
+            SimpleRecyclerViewAdapter adapter, OnViewCreatedCallback onViewCreatedCallback) {
         for (Integer moduleType : mModuleBuildersMap.keySet()) {
             ModuleProviderBuilder builder = mModuleBuildersMap.get(moduleType);
             adapter.registerType(
@@ -105,8 +150,8 @@ public class ModuleRegistry {
      */
     public boolean build(
             @ModuleType int moduleType,
-            @NonNull ModuleDelegate moduleDelegate,
-            @NonNull Callback<ModuleProvider> onModuleBuiltCallback) {
+            ModuleDelegate moduleDelegate,
+            Callback<ModuleProvider> onModuleBuiltCallback) {
         if (!mModuleBuildersMap.containsKey(moduleType)) {
             Log.i(TAG, "The module type isn't supported!");
             return false;
@@ -116,7 +161,24 @@ public class ModuleRegistry {
         return builder.build(moduleDelegate, onModuleBuiltCallback);
     }
 
+    /**
+     * Returns the builder {@link ModuleProviderBuilder} for a given module type.
+     *
+     * @param moduleType The type of the module.
+     * @return The object of the module builder.
+     */
+    public ModuleProviderBuilder getModuleProviderBuilder(@ModuleType int moduleType) {
+        assert mModuleBuildersMap.containsKey(moduleType);
+        return mModuleBuildersMap.get(moduleType);
+    }
+
+    /** Returns a list of all registered module types. */
+    public List<Integer> getAllRegisteredModuleTypes() {
+        return new ArrayList<>(mModuleBuildersMap.keySet());
+    }
+
     /** Destroys the registry. */
+    @SuppressWarnings("NullAway") // Restrict non-@Nullable assumptions to before destroy().
     public void destroy() {
         if (mActivityLifecycleDispatcher == null) return;
 
@@ -127,14 +189,5 @@ public class ModuleRegistry {
         mActivityLifecycleDispatcher.unregister(mLifecycleObserver);
         mLifecycleObserver = null;
         mActivityLifecycleDispatcher = null;
-    }
-
-    /** Creates an instance of InputContext. */
-    InputContext createInputContext() {
-        InputContext inputContext = new InputContext();
-        for (ModuleProviderBuilder builder : mModuleBuildersMap.values()) {
-            inputContext.mergeFrom(builder.createInputContext());
-        }
-        return inputContext;
     }
 }

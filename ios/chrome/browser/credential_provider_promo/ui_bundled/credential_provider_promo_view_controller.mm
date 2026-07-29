@@ -6,6 +6,7 @@
 
 #import "base/values.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_configuration.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_view_controller.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -16,6 +17,11 @@
 namespace {
 constexpr CGFloat kCustomSpacingAtTopIfNoNavigationBar = 24;
 constexpr CGFloat kCustomSpacingAfterImageWithoutAnimation = 0;
+// The image resource used in this promo has lots of blank space around it,
+// and a subtle drop shadow. Setting the spacing after the image to a negative
+// value reduces the extra padding allowing all the content to fit on the
+// screen.
+constexpr CGFloat kCustomSpacingAfterImageWithAnimation = -8;
 constexpr CGFloat kPreferredCornerRadius = 20;
 NSString* const kDarkModeAnimationSuffix = @"_darkmode";
 NSString* const kPasswordOptionsKeypath = @"text_password_options";
@@ -57,24 +63,10 @@ NSString* const kCredentialProviderPromoAccessibilityId =
   [self configureAlertScreen];
   [self layoutAlertScreen];
 
-  if (@available(iOS 17, *)) {
-    NSArray<UITrait>* traits = TraitCollectionSetForTraits(
-        @[ UITraitVerticalSizeClass.class, UITraitUserInterfaceStyle.class ]);
-    [self registerForTraitChanges:traits
-                       withAction:@selector(updateUIOnTraitChange)];
-  }
+  [self registerForTraitChanges:
+            @[ UITraitVerticalSizeClass.class, UITraitUserInterfaceStyle.class ]
+                     withAction:@selector(updateUIOnTraitChange)];
 }
-
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-
-  [self updateUIOnTraitChange];
-}
-#endif
 
 #pragma mark - CredentialProviderPromoConsumer
 
@@ -85,13 +77,18 @@ NSString* const kCredentialProviderPromoAccessibilityId =
      tertiaryActionString:(NSString*)tertiaryActionString
                     image:(UIImage*)image {
   DCHECK(!self.alertScreen);
+
+  ButtonStackConfiguration* configuration =
+      [[ButtonStackConfiguration alloc] init];
+  configuration.primaryActionString = primaryActionString;
+  configuration.secondaryActionString = secondaryActionString;
+  configuration.tertiaryActionString = tertiaryActionString;
+
   ConfirmationAlertViewController* alertScreen =
-      [[ConfirmationAlertViewController alloc] init];
+      [[ConfirmationAlertViewController alloc]
+          initWithConfiguration:configuration];
   alertScreen.titleString = titleString;
   alertScreen.subtitleString = subtitleString;
-  alertScreen.primaryActionString = primaryActionString;
-  alertScreen.secondaryActionString = secondaryActionString;
-  alertScreen.tertiaryActionString = tertiaryActionString;
   alertScreen.image = image;
   alertScreen.actionHandler = self.actionHandler;
   self.alertScreen = alertScreen;
@@ -122,7 +119,7 @@ NSString* const kCredentialProviderPromoAccessibilityId =
   LottieAnimationConfiguration* config =
       [[LottieAnimationConfiguration alloc] init];
   config.animationName = animationAssetName;
-  config.loopAnimationCount = 1000;
+  config.shouldLoop = YES;
   return ios::provider::GenerateLottieAnimation(config);
 }
 
@@ -130,17 +127,17 @@ NSString* const kCredentialProviderPromoAccessibilityId =
 - (void)configureAlertScreen {
   DCHECK(self.alertScreen);
   self.alertScreen.imageHasFixedSize = YES;
-  self.alertScreen.showDismissBarButton = NO;
   self.alertScreen.titleTextStyle = UIFontTextStyleTitle2;
   self.alertScreen.topAlignedLayout = YES;
 
-  if (self.shouldShowAnimation) {
-    self.alertScreen.customSpacingBeforeImageIfNoNavigationBar =
+  if (!self.shouldShowAnimation || !self.alertScreen.image) {
+    self.alertScreen.customSpacingBeforeImage =
         kCustomSpacingAtTopIfNoNavigationBar;
-  } else {
-    self.alertScreen.customSpacingAfterImage =
-        kCustomSpacingAfterImageWithoutAnimation;
   }
+
+  self.alertScreen.customSpacingAfterImage =
+      self.shouldShowAnimation ? kCustomSpacingAfterImageWithAnimation
+                               : kCustomSpacingAfterImageWithoutAnimation;
 
   [self addChildViewController:self.alertScreen];
   [self.view addSubview:self.alertScreen.view];
@@ -181,7 +178,7 @@ NSString* const kCredentialProviderPromoAccessibilityId =
         constraintEqualToAnchor:self.view.centerYAnchor];
   } else {
     self.alertScreenTopAnchorConstraint = [self.alertScreen.view.topAnchor
-        constraintEqualToAnchor:self.view.topAnchor];
+        constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor];
   }
   self.alertScreenTopAnchorConstraint.active = YES;
 }
@@ -194,8 +191,8 @@ NSString* const kCredentialProviderPromoAccessibilityId =
       self.alertScreen.sheetPresentationController;
   presentationController.prefersEdgeAttachedInCompactHeight = YES;
   presentationController.detents = @[
-    UISheetPresentationControllerDetent.mediumDetent,
-    UISheetPresentationControllerDetent.largeDetent
+    self.alertScreen.preferredHeightDetent,
+    [UISheetPresentationControllerDetent largeDetent]
   ];
   presentationController.preferredCornerRadius = kPreferredCornerRadius;
 }
@@ -228,7 +225,7 @@ NSString* const kCredentialProviderPromoAccessibilityId =
     [wrapper.animationView.rightAnchor
         constraintEqualToAnchor:self.view.rightAnchor],
     [wrapper.animationView.topAnchor
-        constraintEqualToAnchor:self.view.topAnchor],
+        constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
     [wrapper.animationView.bottomAnchor
         constraintEqualToAnchor:self.view.centerYAnchor],
   ]];

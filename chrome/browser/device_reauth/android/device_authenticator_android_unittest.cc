@@ -81,31 +81,6 @@ class DeviceAuthenticatorAndroidTest : public testing::Test {
   raw_ptr<MockDeviceAuthenticatorBridge> bridge_ = nullptr;
 };
 
-TEST_F(DeviceAuthenticatorAndroidTest, CanAuthenticateCallsBridge) {
-  base::HistogramTester histogram_tester;
-
-  EXPECT_CALL(bridge(), CanAuthenticateWithBiometric)
-      .WillOnce(Return(BiometricsAvailability::kAvailable));
-  EXPECT_TRUE(authenticator()->CanAuthenticateWithBiometrics());
-
-  histogram_tester.ExpectUniqueSample(
-      "Android.DeviceAuthenticator.CanAuthenticateWithBiometrics",
-      BiometricsAvailability::kAvailable, 1);
-}
-
-TEST_F(
-    DeviceAuthenticatorAndroidTest,
-    CanAuthenticateDoesNotReecordHistogramForNonPasswordManagerForIncognito) {
-  base::HistogramTester histogram_tester;
-
-  EXPECT_CALL(bridge(), CanAuthenticateWithBiometricOrScreenLock)
-      .WillOnce(Return(true));
-  EXPECT_TRUE(authenticator()->CanAuthenticateWithBiometricOrScreenLock());
-
-  histogram_tester.ExpectTotalCount(
-      "Android.DeviceAuthenticator.CanAuthenticateWithBiometrics", 0);
-}
-
 TEST_F(DeviceAuthenticatorAndroidTest, AuthenticateRecordsSource) {
   base::HistogramTester histogram_tester;
 
@@ -186,21 +161,6 @@ TEST_F(DeviceAuthenticatorAndroidTest, TriggersAuthIfPreviousFailed) {
                   Bucket(static_cast<int>(DeviceAuthFinalResult::kFailed), 1)));
 }
 
-TEST_F(DeviceAuthenticatorAndroidTest, GetBiometricAvailabilityStatusRequired) {
-  EXPECT_CALL(bridge(), CanAuthenticateWithBiometric)
-      .WillOnce(Return(BiometricsAvailability::kRequired));
-  EXPECT_EQ(device_reauth::BiometricStatus::kRequired,
-            authenticator()->GetBiometricAvailabilityStatus());
-}
-
-TEST_F(DeviceAuthenticatorAndroidTest,
-       GetBiometricAvailabilityStatusRequiredButHasErrors) {
-  EXPECT_CALL(bridge(), CanAuthenticateWithBiometric)
-      .WillOnce(Return(BiometricsAvailability::kRequiredButHasError));
-  EXPECT_EQ(device_reauth::BiometricStatus::kRequired,
-            authenticator()->GetBiometricAvailabilityStatus());
-}
-
 TEST_F(DeviceAuthenticatorAndroidTest,
        GetBiometricAvailabilityStatusAvailable) {
   EXPECT_CALL(bridge(), CanAuthenticateWithBiometric)
@@ -227,4 +187,29 @@ TEST_F(DeviceAuthenticatorAndroidTest,
       .WillOnce(Return(false));
   EXPECT_EQ(device_reauth::BiometricStatus::kUnavailable,
             authenticator()->GetBiometricAvailabilityStatus());
+}
+
+TEST_F(DeviceAuthenticatorAndroidTest, DestroySignalingInCancel) {
+  // The test ensures that bridge_ptr->Cancel() gets called and nothing crashes
+  // (if it's called after authenticator destruction, there can be a
+  // use-after-free).
+  std::unique_ptr<MockDeviceAuthenticatorBridge> unique_bridge =
+      std::make_unique<MockDeviceAuthenticatorBridge>();
+  MockDeviceAuthenticatorBridge* bridge_ptr = unique_bridge.get();
+
+  DeviceAuthenticatorProxy proxy;
+  device_reauth::DeviceAuthParams params(
+      base::Seconds(60), device_reauth::DeviceAuthSource::kPasswordManager);
+
+  auto authenticator = std::make_unique<DeviceAuthenticatorAndroid>(
+      std::move(unique_bridge), &proxy, params);
+
+  EXPECT_CALL(*bridge_ptr, Cancel());
+
+  authenticator->AuthenticateWithMessage(
+      u"", base::BindOnce([](std::unique_ptr<DeviceAuthenticatorAndroid>* auth,
+                             bool success) { auth->reset(); },
+                          base::Unretained(&authenticator)));
+
+  authenticator->Cancel();
 }

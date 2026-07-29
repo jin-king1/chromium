@@ -39,8 +39,6 @@ class LensOverlayTabHelperTest : public PlatformTest {
     profile_ =
         profile_manager_.AddProfileWithBuilder(TestProfileIOS::Builder());
 
-    feature_list_.InitAndEnableFeature(kEnableLensOverlay);
-
     profile_->GetPrefs()->SetInteger(
         lens::prefs::kLensOverlaySettings,
         static_cast<int>(
@@ -70,7 +68,7 @@ class LensOverlayTabHelperTest : public PlatformTest {
   TestProfileManagerIOS profile_manager_;
   raw_ptr<ProfileIOS> profile_;
   std::unique_ptr<web::FakeWebState> web_state_;
-  raw_ptr<LensOverlayTabHelper> helper_ = nullptr;
+  raw_ptr<LensOverlayTabHelper, DanglingUntriaged> helper_ = nullptr;
   id handler_;
   id dispatcher_;
   id mock_commands_handler_;
@@ -109,7 +107,7 @@ TEST_F(LensOverlayTabHelperTest, ShouldShowTheUIWhenWebStateChanges) {
   helper_->SetLensOverlayUIAttachedAndAlive(true);
 
   // Then the Lens UI should be shown.
-  OCMExpect([mock_commands_handler_ showLensUI:YES]);
+  OCMExpect([mock_commands_handler_ showLensUI:NO]);
   // When the tab helper is notifed of a change in the web state.
   helper_->WasShown(web_state_.get());
 
@@ -121,7 +119,7 @@ TEST_F(LensOverlayTabHelperTest, ShouldHideTheUIWhenWebStateChanges) {
   // Given a shown lens overlay state.
   helper_->SetLensOverlayUIAttachedAndAlive(true);
   // Then the Lens UI should be hidden.
-  OCMExpect([mock_commands_handler_ hideLensUI:YES completion:nil]);
+  OCMExpect([mock_commands_handler_ hideLensUI:NO completion:nil]);
   // When the tab helper is notify of a change in the web state.
   helper_->WasHidden(web_state_.get());
 

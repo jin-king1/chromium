@@ -26,17 +26,15 @@ import {
   ref,
 } from 'chrome://resources/mwc/lit/index.js';
 
-import {CraIconButton} from '../components/cra/cra-icon-button.js';
-import {DeleteRecordingDialog} from '../components/delete-recording-dialog.js';
+import type {CraIconButton} from '../components/cra/cra-icon-button.js';
+import type {DeleteRecordingDialog} from '../components/delete-recording-dialog.js';
 import {withTooltip} from '../components/directives/with-tooltip.js';
-import {ExportDialog} from '../components/export-dialog.js';
-import {OnboardingDialog} from '../components/onboarding-dialog.js';
-import {RecordingFileList} from '../components/recording-file-list.js';
-import {RecordingInfoDialog} from '../components/recording-info-dialog.js';
-import {SettingsMenu} from '../components/settings-menu.js';
-import {
-  SystemAudioConsentDialog,
-} from '../components/system-audio-consent-dialog.js';
+import type {ExportDialog} from '../components/export-dialog.js';
+import type {OnboardingDialog} from '../components/onboarding-dialog.js';
+import type {RecordingFileList} from '../components/recording-file-list.js';
+import type {RecordingInfoDialog} from '../components/recording-info-dialog.js';
+import type {SettingsMenu} from '../components/settings-menu.js';
+import type {SystemAudioConsentDialog} from '../components/system-audio-consent-dialog.js';
 import {AudioPlayerController} from '../core/audio_player_controller.js';
 import {focusToBody} from '../core/focus.js';
 import {i18n} from '../core/i18n.js';
@@ -141,7 +139,7 @@ export class MainPage extends ReactiveLitElement {
 
     #start-record-nudge {
       flex-flow: column;
-      position: absolute;
+      position: fixed;
       position-anchor: --record-button;
       position-area: top span-all;
     }
@@ -373,10 +371,15 @@ export class MainPage extends ReactiveLitElement {
     </secondary-button>`;
   }
 
-  private onOnboardingDone() {
+  private onOnboardingDone(ev: CustomEvent<boolean>) {
     settings.mutate((s) => {
       s.onboardingDone = true;
     });
+    // The dialog is hidden. No need to focus back as the focus is already on
+    // the body.
+    if (!ev.detail) {
+      return;
+    }
     const onboardingDialog = assertExists(this.onboardingDialogRef.value);
     // Focus back to body after the dialog is closed.
     onboardingDialog.updateComplete.then(() => {
@@ -403,8 +406,8 @@ export class MainPage extends ReactiveLitElement {
 
     return html`
       <onboarding-dialog
-        ?open=${onboarding}
-        @close=${this.onOnboardingDone}
+        ?onboarding=${onboarding}
+        @onboarded=${this.onOnboardingDone}
         ${ref(this.onboardingDialogRef)}
       ></onboarding-dialog>
       <system-audio-consent-dialog

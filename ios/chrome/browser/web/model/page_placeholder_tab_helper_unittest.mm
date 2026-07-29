@@ -11,6 +11,7 @@
 #import "base/test/ios/wait_util.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/ui/util/named_guide.h"
+#import "ios/chrome/browser/snapshots/model/snapshot_source_tab_helper.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/test/scoped_key_window.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -43,6 +44,7 @@ class PagePlaceholderTabHelperTest : public PlatformTest {
     // PagePlaceholderTabHelper uses SnapshotTabHelper, so ensure it has been
     // created.
     SnapshotTabHelper::CreateForWebState(web_state_.get());
+    SnapshotSourceTabHelper::CreateForWebState(web_state_.get());
     PagePlaceholderTabHelper::CreateForWebState(web_state_.get());
   }
 
@@ -145,6 +147,28 @@ TEST_F(PagePlaceholderTabHelperTest, NotShownIfTabNotVisible) {
   EXPECT_FALSE(tab_helper()->will_add_placeholder_for_next_navigation());
 }
 
+// Tests that placeholder is not displayed when the tab is presented and a
+// new navigation starts if a navigation successfully completed while the
+// tab was hidden.
+TEST_F(PagePlaceholderTabHelperTest, NotShownIfPageLoadedWhileHidden) {
+  web_state_->WasHidden();
+
+  ASSERT_FALSE(tab_helper()->will_add_placeholder_for_next_navigation());
+  tab_helper()->AddPlaceholderForNextNavigation();
+  web_state_->OnNavigationStarted(nullptr);
+
+  EXPECT_FALSE(tab_helper()->displaying_placeholder());
+  EXPECT_TRUE(tab_helper()->will_add_placeholder_for_next_navigation());
+
+  web_state_->OnPageLoaded(web::PageLoadCompletionStatus::SUCCESS);
+  EXPECT_FALSE(tab_helper()->displaying_placeholder());
+  EXPECT_FALSE(tab_helper()->will_add_placeholder_for_next_navigation());
+
+  web_state_->WasShown();
+  EXPECT_FALSE(tab_helper()->displaying_placeholder());
+  EXPECT_FALSE(tab_helper()->will_add_placeholder_for_next_navigation());
+}
+
 // Tests that placeholder is removed if cancelled while presented.
 TEST_F(PagePlaceholderTabHelperTest, RemovedIfCancelledWhileShown) {
   web_state_->WasShown();
@@ -173,7 +197,10 @@ TEST_F(PagePlaceholderTabHelperTest, DestructWebStateWhenShowingPlaceholder) {
 
   EXPECT_TRUE(tab_helper()->displaying_placeholder());
   EXPECT_FALSE(tab_helper()->will_add_placeholder_for_next_navigation());
-  EXPECT_TRUE([[web_state_view_ subviews] count] != 0);
+  // Wait for the snapshot retrieval to complete and add the subview.
+  EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForUIElementTimeout, ^{
+    return [[web_state_view_ subviews] count] != 0;
+  }));
   web_state_.reset();
 
   // The tab helper has been deleted at this point, so do not check the value

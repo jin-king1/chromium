@@ -10,7 +10,6 @@
 #include <string_view>
 
 #include "base/check.h"
-#include "base/functional/callback_forward.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "net/base/connection_endpoint_metadata.h"
@@ -103,15 +102,17 @@ static constexpr std::string_view kAliasTarget2 = "alias2.example.net";
 static const ConnectionEndpointMetadata kMetadata1(
     /*supported_protocol_alpns=*/{"h3"},
     /*ech_config_list=*/{},
-    std::string(kHostName));
+    std::string(kHostName),
+    {});
 
 static const ConnectionEndpointMetadata kMetadata2(
     /*supported_protocol_alpns=*/{"h2", "http/1.1"},
     /*ech_config_list=*/{},
-    std::string(kHostName));
+    std::string(kHostName),
+    {});
 
 static const std::multimap<HttpsRecordPriority, ConnectionEndpointMetadata>
-    kMetadatas{{1, kMetadata1}, {2, kMetadata2}};
+    kMetadatas{{1, kMetadata1}, {2, kMetadata2}, {}};
 
 // A helper class to create a DnsTaskResultsManager.
 class ManagerFactory {
@@ -411,7 +412,7 @@ TEST_F(DnsTaskResultsManagerTest, MetadataDifferentTargetName) {
   const ConnectionEndpointMetadata kMetadataDifferentTargetName(
       /*supported_protocol_alpns=*/{"h2", "http/1.1"},
       /*ech_config_list=*/{},
-      /*target_name=*/"other.example.net.");
+      /*target_name=*/"other.example.net.", {});
   std::unique_ptr<HostResolverInternalResult> result1 =
       CreateMetadata(kHostName, {{1, kMetadataDifferentTargetName}});
   manager->ProcessDnsTransactionResults(DnsQueryType::HTTPS, {result1.get()});
@@ -495,6 +496,41 @@ TEST_F(DnsTaskResultsManagerTest, IPv6TimedoutAfterMetadata) {
                                 IsEmpty(), kMetadata2)));
 }
 
+TEST_F(DnsTaskResultsManagerTest, MetadataAfterIpv6Timeout) {
+  std::unique_ptr<DnsTaskResultsManager> manager = factory().Create();
+
+  // A comes first. Service endpoints creation should be delayed.
+  std::unique_ptr<HostResolverInternalResult> result1 = CreateDataResult(
+      kHostName, {MakeIPEndPoint("192.0.2.1")}, DnsQueryType::A);
+  manager->ProcessDnsTransactionResults(DnsQueryType::A, {result1.get()});
+
+  ASSERT_FALSE(manager->IsMetadataReady());
+  ASSERT_TRUE(manager->GetCurrentEndpoints().empty());
+
+  // AAAA is timed out. Service endpoints should be available without metadatas.
+  FastForwardBy(DnsTaskResultsManager::GetResolutionDelay() +
+                base::Milliseconds(1));
+
+  ASSERT_FALSE(manager->IsMetadataReady());
+  EXPECT_THAT(manager->GetCurrentEndpoints(),
+              ElementsAre(ExpectServiceEndpoint(
+                  ElementsAre(MakeIPEndPoint("192.0.2.1", 443)))));
+
+  // HTTPS is responded after timeout. Service endpoints should be updated.
+  std::unique_ptr<HostResolverInternalResult> result2 =
+      CreateMetadata(kHostName, kMetadatas);
+  manager->ProcessDnsTransactionResults(DnsQueryType::HTTPS, {result2.get()});
+
+  ASSERT_TRUE(manager->IsMetadataReady());
+  EXPECT_THAT(
+      manager->GetCurrentEndpoints(),
+      ElementsAre(
+          ExpectServiceEndpoint(ElementsAre(MakeIPEndPoint("192.0.2.1", 443)),
+                                IsEmpty(), kMetadata1),
+          ExpectServiceEndpoint(ElementsAre(MakeIPEndPoint("192.0.2.1", 443)),
+                                IsEmpty(), kMetadata2)));
+}
+
 TEST_F(DnsTaskResultsManagerTest, IPv4NoDataIPv6TimedoutAfterMetadata) {
   std::unique_ptr<DnsTaskResultsManager> manager = factory().Create();
 
@@ -544,11 +580,11 @@ TEST_F(DnsTaskResultsManagerTest, EndpointOrdering) {
   const ConnectionEndpointMetadata kSvcbHost1Metadata1(
       /*supported_protocol_alpns=*/{"h2", "http/1.1"},
       /*ech_config_list=*/{},
-      /*target_name=*/std::string(kSvcbHost1));
+      /*target_name=*/std::string(kSvcbHost1), {});
   const ConnectionEndpointMetadata kSvcbHost1Metadata2(
       /*supported_protocol_alpns=*/{"h3"},
       /*ech_config_list=*/{},
-      /*target_name=*/std::string(kSvcbHost1));
+      /*target_name=*/std::string(kSvcbHost1), {});
 
   const std::multimap<HttpsRecordPriority, ConnectionEndpointMetadata>
       kSvcbHost1Metadatas{{1, kSvcbHost1Metadata1}, {2, kSvcbHost1Metadata2}};

@@ -1,5 +1,5 @@
 // META: title=ensure an MLOperand cannot be created with an invalid rank
-// META: global=window,dedicatedworker
+// META: global=window
 // META: variant=?cpu
 // META: variant=?gpu
 // META: variant=?npu

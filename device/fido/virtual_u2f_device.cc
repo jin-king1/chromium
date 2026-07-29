@@ -9,16 +9,16 @@
 #include <tuple>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/apdu/apdu_command.h"
 #include "components/apdu/apdu_response.h"
-#include "crypto/ec_private_key.h"
-#include "device/fido/fido_constants.h"
+#include "crypto/keypair.h"
+#include "crypto/sign.h"
 #include "device/fido/fido_parsing_utils.h"
+#include "device/fido/public/fido_constants.h"
 
 namespace device {
 
@@ -43,11 +43,11 @@ std::optional<std::vector<uint8_t>> ErrorStatus(
 
 // static
 bool VirtualU2fDevice::IsTransportSupported(FidoTransportProtocol transport) {
-  return base::Contains(base::flat_set<FidoTransportProtocol>(
-                            {FidoTransportProtocol::kUsbHumanInterfaceDevice,
-                             FidoTransportProtocol::kBluetoothLowEnergy,
-                             FidoTransportProtocol::kNearFieldCommunication}),
-                        transport);
+  return (base::flat_set<FidoTransportProtocol>(
+              {FidoTransportProtocol::kUsbHumanInterfaceDevice,
+               FidoTransportProtocol::kBluetoothLowEnergy,
+               FidoTransportProtocol::kNearFieldCommunication}))
+      .contains(transport);
 }
 
 VirtualU2fDevice::VirtualU2fDevice() = default;
@@ -163,11 +163,11 @@ std::optional<std::vector<uint8_t>> VirtualU2fDevice::DoRegister(
   // Sign with attestation key.
   // Note: Non-deterministic, you need to mock this out if you rely on
   // deterministic behavior.
-  std::vector<uint8_t> sig;
-  std::unique_ptr<crypto::ECPrivateKey> attestation_private_key =
-      crypto::ECPrivateKey::CreateFromPrivateKeyInfo(GetAttestationKey());
-  bool status = Sign(attestation_private_key.get(), sign_buffer, &sig);
-  DCHECK(status);
+  auto key =
+      crypto::keypair::PrivateKey::FromPrivateKeyInfo(GetAttestationKey());
+  CHECK(key && key->IsEc());
+  std::vector<uint8_t> sig = crypto::sign::Sign(
+      crypto::sign::SignatureKind::ECDSA_SHA256, *key, sign_buffer);
 
   // The spec says that the other bits of P1 should be zero. However, Chrome
   // sends Test User Presence (0x03) so we ignore those bits.
@@ -227,15 +227,18 @@ std::optional<std::vector<uint8_t>> VirtualU2fDevice::DoSign(
   if (!registration)
     return ErrorStatus(apdu::ApduResponse::Status::SW_WRONG_DATA);
 
-  ++registration->counter;
+  if (registration->counter.has_value()) {
+    (*registration->counter)++;
+  }
 
   // First create the part of the response that gets signed over.
   std::vector<uint8_t> response;
   response.push_back(0x01);  // Always pretend we got a touch.
-  response.push_back(registration->counter >> 24);
-  response.push_back(registration->counter >> 16);
-  response.push_back(registration->counter >> 8);
-  response.push_back(registration->counter);
+  uint32_t counter_value = registration->counter.value_or(0);
+  response.push_back(counter_value >> 24);
+  response.push_back(counter_value >> 16);
+  response.push_back(counter_value >> 8);
+  response.push_back(counter_value);
 
   std::vector<uint8_t> sign_buffer;
   sign_buffer.reserve(application_parameter.size() + response.size() +

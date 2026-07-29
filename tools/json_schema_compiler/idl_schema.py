@@ -22,15 +22,19 @@ from json_parse import OrderedDict
 # idl_parser expects to be able to import certain files in its directory,
 # so let's set things up the way it wants.
 _idl_generators_path = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                                    os.pardir, os.pardir, 'ppapi', 'generators')
-if _idl_generators_path in sys.path:
+                                    'ppapi', 'generators')
+# The ppapi idl_parser also needs access to ply, which exists in //third_party,
+# so also put it onto the path.
+_ply_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir,
+                         os.pardir, 'third_party')
+
+sys.path.insert(0, _idl_generators_path)
+sys.path.insert(0, _ply_path)
+try:
   import idl_parser
-else:
-  sys.path.insert(0, _idl_generators_path)
-  try:
-    import idl_parser
-  finally:
-    sys.path.pop(0)
+finally:
+  sys.path.pop(0)
+  sys.path.pop(0)
 
 
 def ProcessComment(comment):
@@ -141,8 +145,13 @@ class Callspec(object):
       does_not_support_promises = self.node.GetProperty(
           'doesNotSupportPromises')
       if does_not_support_promises is not None:
-        returns_async['does_not_support_promises'] = does_not_support_promises
+        returns_async['does_not_support_promises'] = True
       else:
+        # Since all functions which support Promise based calls can inherently
+        # drop the callback to get a Promise returned, any optionality specified
+        # on the schema will actually be ignored, so we can just pop it off.
+        returns_async.pop('optional', None)
+
         assert return_type is None, (
             'Function "%s" cannot support promises and also have a '
             'return value.' % self.node.GetName())
@@ -354,12 +363,9 @@ class Typeref(object):
       properties['type'] = 'binary'
       # We force the APIs to specify instanceOf since ArrayBufferView isn't an
       # instantiable type, therefore we don't specify isInstanceOf here.
-    elif self.typeref == 'FileEntry':
-      properties['type'] = 'object'
-      properties['isInstanceOf'] = 'FileEntry'
-      if 'additionalProperties' not in properties:
-        properties['additionalProperties'] = OrderedDict()
-      properties['additionalProperties']['type'] = 'any'
+      instance_of = self.parent.GetProperty('instanceOf')
+      if instance_of:
+        properties['isInstanceOf'] = instance_of
     elif self.parent.GetPropertyLocal('Union'):
       properties['choices'] = [
           Typeref(node.GetProperty('TYPEREF'), node,
@@ -416,9 +422,8 @@ class Enum(object):
         'type': 'string',
         'enum': enum
     }
-    for property_name in ['cpp_enum_prefix_override', 'nodoc']:
-      if self.node.GetProperty(property_name):
-        result[property_name] = self.node.GetProperty(property_name)
+    if self.node.GetProperty('nodoc'):
+      result['nodoc'] = True
     if self.node.GetProperty('deprecated'):
       result['deprecated'] = self.node.GetProperty('deprecated')
     return result
@@ -447,7 +452,7 @@ class Namespace(object):
     self.manifest_keys = None
     self.types = []
     self.callbacks = OrderedDict()
-    self.description = description
+    self.description = description.strip().replace('\n', '')
     self.deprecated = deprecated
 
   def process(self):

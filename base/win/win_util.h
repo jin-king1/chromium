@@ -27,6 +27,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <typeinfo>
 #include <vector>
 
 #include "base/auto_reset.h"
@@ -42,25 +43,13 @@ struct _tagpropertykey;
 using PROPERTYKEY = _tagpropertykey;
 struct tagPOINTER_DEVICE_INFO;
 using POINTER_DEVICE_INFO = tagPOINTER_DEVICE_INFO;
+typedef struct _UNICODE_STRING UNICODE_STRING;
 
 namespace base {
 
 struct NativeLibraryLoadError;
 
 namespace win {
-
-inline uint32_t HandleToUint32(HANDLE h) {
-  // Cast through uintptr_t and then unsigned int to make the truncation to
-  // 32 bits explicit. Handles are size of-pointer but are always 32-bit values.
-  // https://msdn.microsoft.com/en-us/library/aa384203(VS.85).aspx says:
-  // 64-bit versions of Windows use 32-bit handles for interoperability.
-  return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(h));
-}
-
-inline HANDLE Uint32ToHandle(uint32_t h) {
-  return reinterpret_cast<HANDLE>(
-      static_cast<uintptr_t>(static_cast<int32_t>(h)));
-}
 
 // Returns the string representing the current user sid. Does not modify
 // |user_sid| on failure.
@@ -74,6 +63,11 @@ BASE_EXPORT bool GetUserSidString(std::wstring* user_sid);
 // if the OS is Vista or later.
 BASE_EXPORT bool UserAccountControlIsEnabled();
 
+// Returns true if the process is running at elevated permissions, but could
+// be at medium IL (eg. UAC is enabled and the account is not a built-in
+// administrator).
+BASE_EXPORT bool UserAccountIsUnnecessarilyElevated();
+
 // Sets the boolean value for a given key in given IPropertyStore.
 BASE_EXPORT bool SetBooleanValueForPropertyStore(
     IPropertyStore* property_store,
@@ -84,7 +78,7 @@ BASE_EXPORT bool SetBooleanValueForPropertyStore(
 BASE_EXPORT bool SetStringValueForPropertyStore(
     IPropertyStore* property_store,
     const PROPERTYKEY& property_key,
-    const wchar_t* property_string_value);
+    base::wcstring_view property_string_value);
 
 // Sets the CLSID value for a given key in a given IPropertyStore.
 BASE_EXPORT bool SetClsidForPropertyStore(IPropertyStore* property_store,
@@ -94,7 +88,7 @@ BASE_EXPORT bool SetClsidForPropertyStore(IPropertyStore* property_store,
 // Sets the application id in given IPropertyStore. The function is used to tag
 // application/Chrome shortcuts, and set app details for Chrome windows.
 BASE_EXPORT bool SetAppIdForPropertyStore(IPropertyStore* property_store,
-                                          const wchar_t* app_id);
+                                          base::wcstring_view app_id);
 
 // Adds the specified |command| using the specified |name| to the AutoRun key.
 // |root_key| could be HKCU or HKLM or the root of any user hive.
@@ -215,8 +209,15 @@ BASE_EXPORT bool IsEnrolledToDomain();
 
 // Returns true if either the device is joined to Azure Active Directory (AD) or
 // one or more Azure AD work accounts have been added on the device. This call
-// trigger some I/O when loading netapi32.dll to determine the management state.
+// triggers some I/O when loading netapi32.dll to determine the management
+// state.
 BASE_EXPORT bool IsJoinedToAzureAD();
+
+// Returns true only if the device is joined to Azure Active Directory (AD).
+// Unlike IsJoinedToAzureAD(), this does not return true if there are only Azure
+// AD work accounts added. This call triggers some I/O when loading
+// netapi32.dll to determine the management state.
+BASE_EXPORT bool IsDeviceJoinedToAzureAD();
 
 // Returns true if the machine is being managed by an MDM system.
 BASE_EXPORT bool IsDeviceRegisteredWithManagement();
@@ -322,15 +323,6 @@ BASE_EXPORT std::optional<std::wstring> ExpandEnvironmentVariables(
 // `::GetCurrentProcess()` or `GetCurrentProcessHandle()`.
 BASE_EXPORT expected<std::wstring, NTSTATUS> GetObjectTypeName(HANDLE handle);
 
-// Returns a smart pointer wrapping `handle` if it references an object of type
-// `object_type_name`. Crashes the process if `handle` is valid but of an
-// unexpected type. This function will fail with STATUS_INVALID_HANDLE if called
-// with the pseudo handle returned by `::GetCurrentProcess()` or
-// `GetCurrentProcessHandle()`.
-BASE_EXPORT expected<ScopedHandle, NTSTATUS> TakeHandleOfType(
-    HANDLE handle,
-    std::wstring_view object_type_name);
-
 // Process Power Throttling APIs are only available on Windows 11. By default,
 // Windows will throttle processes based on various heuristics (power plan,
 // media playback state, MMCSS apis, app visibility, etc). This can result in
@@ -380,6 +372,27 @@ BASE_EXPORT ProcessPowerState GetProcessTimerThrottleState(HANDLE process);
 BASE_EXPORT bool SetProcessTimerThrottleState(HANDLE process,
                                               ProcessPowerState state);
 
+// Returns the serial number of the device.  Needs to be called from a COM
+// enabled thread.
+BASE_EXPORT std::optional<std::wstring> GetSerialNumber();
+
+// Converts a native UNICODE_STRING to a wstring_view.
+// Note the UNICODE_STRING must be in scope as long as the wstring_view is
+// valid.
+BASE_EXPORT std::wstring_view UnicodeStringToView(const UNICODE_STRING& ustr);
+
+// Converts a wstring_view to a native UNICODE_STRING.
+// Returns false if the string can't be stored in the UNICODE_STRING buffer.
+// Note the wstring_view must be in scope as long as the UNICODE_STRING is
+// valid.
+BASE_EXPORT bool ViewToUnicodeString(std::wstring_view str,
+                                     UNICODE_STRING& ustr);
+
+// Enables strict handle checking for the current process.
+// See
+// https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-process_mitigation_strict_handle_check_policy.
+BASE_EXPORT bool EnableStrictHandleCheckingForCurrentProcess();
+
 // Allows changing the domain enrolled state for the life time of the object.
 // The original state is restored upon destruction.
 class BASE_EXPORT ScopedDomainStateForTesting {
@@ -417,7 +430,14 @@ class BASE_EXPORT ScopedDeviceRegisteredWithManagementForTesting {
 // object. The original state is restored upon destruction.
 class BASE_EXPORT ScopedAzureADJoinStateForTesting {
  public:
-  explicit ScopedAzureADJoinStateForTesting(bool state);
+  enum class AzureADJoinType {
+    kUnknown,
+    kDevice,
+    kWorkplace,
+  };
+
+  explicit ScopedAzureADJoinStateForTesting(
+      std::optional<AzureADJoinType> state);
   ScopedAzureADJoinStateForTesting(const ScopedAzureADJoinStateForTesting&) =
       delete;
   ScopedAzureADJoinStateForTesting& operator=(
@@ -425,13 +445,13 @@ class BASE_EXPORT ScopedAzureADJoinStateForTesting {
   ~ScopedAzureADJoinStateForTesting();
 
  private:
-  const bool initial_state_;
+  const std::optional<AzureADJoinType> initial_state_;
 };
 
 // Allows changing the return values of convertibility functions for the
 // lifetime of the object. The original state is restored upon destruction.
-class BASE_EXPORT
-    [[maybe_unused, nodiscard]] ScopedDeviceConvertibilityStateForTesting {
+class BASE_EXPORT [[maybe_unused, nodiscard]]
+ScopedDeviceConvertibilityStateForTesting {
  public:
   using QueryFunction = bool (*)();
   ScopedDeviceConvertibilityStateForTesting(

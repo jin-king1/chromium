@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.ntp;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
@@ -13,8 +12,10 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Token;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.components.tab_groups.TabGroupColorId;
@@ -24,11 +25,12 @@ import java.util.List;
 
 /** This class allows Java code to get and clear the list of recently closed entries. */
 @JNINamespace("recent_tabs")
+@NullMarked
 public class RecentlyClosedBridge implements RecentlyClosedTabManager {
     private long mNativeBridge;
     private final TabModelSelector mTabModelSelector;
 
-    @Nullable private Runnable mEntriesUpdatedRunnable;
+    private @Nullable Runnable mEntriesUpdatedRunnable;
 
     @CalledByNative
     private static void addTabToEntries(List<RecentlyClosedEntry> entries, RecentlyClosedTab tab) {
@@ -70,48 +72,46 @@ public class RecentlyClosedBridge implements RecentlyClosedTabManager {
 
     @CalledByNative
     private void restoreTabGroup(
-            TabModel tabModel,
+            @JniType("TabModel*") TabModel tabModel,
             @JniType("std::u16string") String title,
             int color,
             @JniType("std::vector") int[] tabIds) {
         if (tabIds.length == 0) return;
 
         assert mTabModelSelector.getModel(tabModel.isIncognito()) == tabModel;
-        TabGroupModelFilter filter =
-                mTabModelSelector
-                        .getTabGroupModelFilterProvider()
-                        .getTabGroupModelFilter(tabModel.isIncognito());
-        TabGroupModelFilter groupFilter = filter;
-
-        int rootId = tabIds[0];
-        groupFilter.setTabGroupColor(rootId, color);
 
         // TODO(b/336589861): Use savedTabGroupId to reassociate this tab group with a sync entity.
 
+        int destinationId = tabIds[0];
         if (tabIds.length == 1) {
-            groupFilter.createSingleTabGroup(tabIds[0]);
+            tabModel.createSingleTabGroup(destinationId);
         } else {
             for (int id : tabIds) {
-                if (id == rootId) continue;
+                if (id == destinationId) continue;
 
-                groupFilter.mergeTabsToGroup(id, rootId);
+                tabModel.mergeTabsToGroup(id, destinationId);
             }
         }
 
+        Tab tab = tabModel.getTabById(destinationId);
+        assert tab != null;
+        Token tabGroupId = tab.getTabGroupId();
+        assert tabGroupId != null;
+        tabModel.setTabGroupColor(tabGroupId, color);
+
         if (title == null || title.isEmpty()) return;
 
-        groupFilter.setTabGroupTitle(rootId, title);
+        tabModel.setTabGroupTitle(tabGroupId, title);
     }
 
     /**
      * Initializes this class with the given profile.
      *
      * @param profile The {@link Profile} whose recently closed tabs will be queried.
-     * @param tabModelSelector The {@link TabModelSelector} to use to get {@link
-     *     TabGroupModelFilter}s.
+     * @param tabModelSelector The {@link TabModelSelector} to use to get {@link TabModel}s.
      */
     public RecentlyClosedBridge(Profile profile, TabModelSelector tabModelSelector) {
-        mNativeBridge = RecentlyClosedBridgeJni.get().init(RecentlyClosedBridge.this, profile);
+        mNativeBridge = RecentlyClosedBridgeJni.get().init(this, profile);
         mTabModelSelector = tabModelSelector;
     }
 
@@ -129,18 +129,32 @@ public class RecentlyClosedBridge implements RecentlyClosedTabManager {
     }
 
     @Override
-    public List<RecentlyClosedEntry> getRecentlyClosedEntries(int maxEntryCount) {
-        List<RecentlyClosedEntry> entries = new ArrayList<RecentlyClosedEntry>();
+    public @Nullable List<RecentlyClosedEntry> getRecentlyClosedEntries(int maxEntryCount) {
+        List<RecentlyClosedEntry> entries = new ArrayList<>();
         boolean received =
                 RecentlyClosedBridgeJni.get()
                         .getRecentlyClosedEntries(mNativeBridge, entries, maxEntryCount);
         return received ? entries : null;
     }
 
+    /**
+     * Commits all pending tab closures in the regular tab model. Restoring a tab can synchronously
+     * commit pending tab group closures, which calls back into TabRestoreService's
+     * CreateHistoricalGroup. To prevent concurrent modification issues in TabRestoreService, we
+     * commit all pending closures before starting restoration.
+     */
+    private void commitTabClosuresInRegularModel() {
+        TabModel regularModel = mTabModelSelector.getModel(/* incognito= */ false);
+        if (regularModel != null) {
+            regularModel.commitAllTabClosures();
+        }
+    }
+
     @Override
     public boolean openRecentlyClosedTab(
             TabModel tabModel, RecentlyClosedTab recentTab, int windowOpenDisposition) {
         assert mTabModelSelector.getModel(tabModel.isIncognito()) == tabModel;
+        commitTabClosuresInRegularModel();
         return RecentlyClosedBridgeJni.get()
                 .openRecentlyClosedTab(
                         mNativeBridge, tabModel, recentTab.getSessionId(), windowOpenDisposition);
@@ -148,20 +162,32 @@ public class RecentlyClosedBridge implements RecentlyClosedTabManager {
 
     @Override
     public boolean openRecentlyClosedEntry(TabModel tabModel, RecentlyClosedEntry recentEntry) {
-        assert mTabModelSelector.getModel(tabModel.isIncognito()) == tabModel;
+        assert mTabModelSelector.getModel(tabModel.isIncognitoBranded()) == tabModel
+                && recentEntry instanceof SessionRecentlyClosedEntry;
+        commitTabClosuresInRegularModel();
+        SessionRecentlyClosedEntry sessionRecentEntry = (SessionRecentlyClosedEntry) recentEntry;
         return RecentlyClosedBridgeJni.get()
-                .openRecentlyClosedEntry(mNativeBridge, tabModel, recentEntry.getSessionId());
+                .openRecentlyClosedEntry(
+                        mNativeBridge, tabModel, sessionRecentEntry.getSessionId());
     }
 
     @Override
     public void openMostRecentlyClosedEntry(TabModel tabModel) {
         assert mTabModelSelector.getModel(tabModel.isIncognito()) == tabModel;
+        commitTabClosuresInRegularModel();
         RecentlyClosedBridgeJni.get().openMostRecentlyClosedEntry(mNativeBridge, tabModel);
     }
 
     @Override
     public void clearRecentlyClosedEntries() {
         RecentlyClosedBridgeJni.get().clearRecentlyClosedEntries(mNativeBridge);
+    }
+
+    @Override
+    public void clearLeastRecentlyUsedClosedEntries(int numToRemove) {
+        if (numToRemove == 0) return;
+        RecentlyClosedBridgeJni.get()
+                .clearLeastRecentlyUsedClosedEntries(mNativeBridge, numToRemove);
     }
 
     /** This method will be called every time the list of recently closed tabs is updated. */
@@ -173,7 +199,7 @@ public class RecentlyClosedBridge implements RecentlyClosedTabManager {
     @NativeMethods
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     public interface Natives {
-        long init(RecentlyClosedBridge caller, @JniType("Profile*") Profile profile);
+        long init(RecentlyClosedBridge self, @JniType("Profile*") Profile profile);
 
         void destroy(long nativeRecentlyClosedTabsBridge);
 
@@ -184,15 +210,21 @@ public class RecentlyClosedBridge implements RecentlyClosedTabManager {
 
         boolean openRecentlyClosedTab(
                 long nativeRecentlyClosedTabsBridge,
-                TabModel tabModel,
+                @JniType("TabModel*") TabModel tabModel,
                 int tabSessionId,
                 int windowOpenDisposition);
 
         boolean openRecentlyClosedEntry(
-                long nativeRecentlyClosedTabsBridge, TabModel tabModel, int sessionId);
+                long nativeRecentlyClosedTabsBridge,
+                @JniType("TabModel*") TabModel tabModel,
+                int sessionId);
 
-        boolean openMostRecentlyClosedEntry(long nativeRecentlyClosedTabsBridge, TabModel tabModel);
+        boolean openMostRecentlyClosedEntry(
+                long nativeRecentlyClosedTabsBridge, @JniType("TabModel*") TabModel tabModel);
 
         void clearRecentlyClosedEntries(long nativeRecentlyClosedTabsBridge);
+
+        void clearLeastRecentlyUsedClosedEntries(
+                long nativeRecentlyClosedTabsBridge, int numToRemove);
     }
 }

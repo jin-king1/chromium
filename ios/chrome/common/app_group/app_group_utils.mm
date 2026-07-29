@@ -10,6 +10,8 @@
 
 namespace {
 
+NSString* const kFieldTrialValueKey = @"FieldTrialValue";
+
 void ClearAppGroupFolder(NSString* app_group) {
   if (!app_group) {
     return;

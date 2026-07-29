@@ -9,15 +9,13 @@
 
 #include "base/functional/function_ref.h"
 #include "base/memory/ref_counted.h"
-#include "chrome/updater/util/util.h"
+#include "chrome/updater/updater_scope.h"
 
 class PrefService;
 
 namespace updater {
 
 enum class UpdaterScope;
-
-extern const char kPrefUpdateTime[];
 
 class UpdaterPrefs : public base::RefCountedThreadSafe<UpdaterPrefs> {
  public:
@@ -38,8 +36,6 @@ class LocalPrefs : virtual public UpdaterPrefs {
 
   virtual bool GetQualified() const = 0;
   virtual void SetQualified(bool value) = 0;
-  virtual bool GetCecaExperimentEnabled() = 0;
-  virtual void SetCecaExperimentEnabled(bool value) = 0;
 
  protected:
   ~LocalPrefs() override = default;

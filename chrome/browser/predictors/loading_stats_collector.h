@@ -5,15 +5,12 @@
 #ifndef CHROME_BROWSER_PREDICTORS_LOADING_STATS_COLLECTOR_H_
 #define CHROME_BROWSER_PREDICTORS_LOADING_STATS_COLLECTOR_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
-#include "base/strings/string_util.h"
 #include "base/time/time.h"
-#include "url/gurl.h"
 
 namespace predictors {
 

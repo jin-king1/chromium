@@ -13,6 +13,7 @@ group("signin") {
 # Contains public headers.
 source_set("signin_headers") {
   sources = [
+    "buggy_authentication_view_owner.h",
     "signin_coordinator.h",
     "signin_utils.h",
   ]
@@ -20,27 +21,17 @@ source_set("signin_headers") {
     ":constants",
     "//base",
     "//components/signin/public/base",
+    "//components/signin/public/base:signin_deep_link",
     "//components/signin/public/identity_manager",
     "//components/sync/base",
-    "//ios/chrome/browser/authentication/ui_bundled/signin:interruptible_chrome_coordinator",
+    "//ios/chrome/app:change_profile_continuation",
+    "//ios/chrome/browser/authentication/ui_bundled:continuation",
     "//ios/chrome/browser/shared/coordinator/chrome_coordinator",
+    "//ios/chrome/browser/shared/coordinator/chrome_coordinator:animated_coordinator",
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/signin/model:capabilities_types",
     "//ios/chrome/browser/signin/model:system_identity",
   ]
-}
-
-source_set("interruptible_chrome_coordinator") {
-  sources = [
-    "interruptible_chrome_coordinator.h",
-    "interruptible_chrome_coordinator.mm",
-  ]
-  deps = [
-    "//base",
-    "//ios/chrome/browser/authentication/ui_bundled/signin:constants",
-    "//ios/chrome/browser/shared/coordinator/chrome_coordinator",
-  ]
-  frameworks = [ "UIKit.framework" ]
 }
 
 source_set("signin_protected") {
@@ -57,6 +48,7 @@ source_set("signin_impl") {
   public_deps = [ ":constants" ]
   deps = [
     ":signin_headers",
+    ":signin_in_progress",
     ":signin_protected",
     ":signin_screen_provider",
     "//components/feature_engagement/public",
@@ -72,25 +64,30 @@ source_set("signin_impl") {
     "//ios/chrome/app:tests_hook",
     "//ios/chrome/app/application_delegate:app_state",
     "//ios/chrome/app/profile",
+    "//ios/chrome/browser/authentication/account_menu/coordinator",
+    "//ios/chrome/browser/authentication/add_account_signin/coordinator",
+    "//ios/chrome/browser/authentication/consistency_promo_signin/coordinator",
+    "//ios/chrome/browser/authentication/history_sync/coordinator",
+    "//ios/chrome/browser/authentication/history_sync/model:history_sync_utils",
+    "//ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator",
+    "//ios/chrome/browser/authentication/two_screens_signin/coordinator",
     "//ios/chrome/browser/authentication/ui_bundled/change_profile",
-    "//ios/chrome/browser/authentication/ui_bundled/history_sync",
     "//ios/chrome/browser/authentication/ui_bundled/signin:features",
-    "//ios/chrome/browser/authentication/ui_bundled/signin:interruptible_chrome_coordinator",
-    "//ios/chrome/browser/authentication/ui_bundled/signin/account_menu",
-    "//ios/chrome/browser/authentication/ui_bundled/signin/add_account_signin",
-    "//ios/chrome/browser/authentication/ui_bundled/signin/consistency_promo_signin",
-    "//ios/chrome/browser/authentication/ui_bundled/signin/forced_signin",
+    "//ios/chrome/browser/authentication/ui_bundled/signin/deeplink_signin",
     "//ios/chrome/browser/authentication/ui_bundled/signin/history_sync",
     "//ios/chrome/browser/authentication/ui_bundled/signin/instant_signin",
     "//ios/chrome/browser/authentication/ui_bundled/signin/logging",
     "//ios/chrome/browser/authentication/ui_bundled/signin/signin_history_sync",
-    "//ios/chrome/browser/authentication/ui_bundled/signin/trusted_vault_reauthentication",
-    "//ios/chrome/browser/authentication/ui_bundled/signin/two_screens_signin",
     "//ios/chrome/browser/feature_engagement/model",
+    "//ios/chrome/browser/metrics/model:activity_reporter",
+    "//ios/chrome/browser/shared/coordinator/chrome_coordinator:animated_coordinator",
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/prefs:pref_names",
+    "//ios/chrome/browser/shared/model/profile:features",
+    "//ios/chrome/browser/shared/model/profile:utils",
+    "//ios/chrome/browser/shared/public/commands",
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/shared/public/features:system_flags",
     "//ios/chrome/browser/signin/model",
@@ -112,7 +109,6 @@ source_set("signin_screen_provider") {
   deps = [
     "//base",
     "//components/sync/base:features",
-    "//ios/chrome/browser/first_run/ui_bundled:field_trial",
     "//ios/chrome/browser/screen/ui_bundled:screen_provider",
     "//ios/chrome/browser/screen/ui_bundled:screen_provider_protected",
     "//ios/chrome/browser/screen/ui_bundled:screen_type",
@@ -121,7 +117,11 @@ source_set("signin_screen_provider") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [ "signin_utils_unittest.mm" ]
+  sources = [
+    "deeplink_signin/cross_device_signin_url_interceptor_unittest.mm",
+    "signin_coordinator_unittest.mm",
+    "signin_utils_unittest.mm",
+  ]
   deps = [
     ":features",
     ":signin_impl",
@@ -130,13 +130,18 @@ source_set("unit_tests") {
     "//components/feature_engagement/public",
     "//components/feature_engagement/test:test_support",
     "//components/pref_registry",
+    "//components/signin/public/base:signin_deep_link",
     "//components/sync/base",
     "//components/sync/service",
     "//components/sync_preferences",
     "//components/sync_preferences:test_support",
+    "//ios/chrome/app/profile",
     "//ios/chrome/browser/authentication/ui_bundled/signin:signin_headers",
+    "//ios/chrome/browser/authentication/ui_bundled/signin/deeplink_signin",
     "//ios/chrome/browser/feature_engagement/model",
+    "//ios/chrome/browser/metrics/model:activity_reporter",
     "//ios/chrome/browser/policy/model:policy_util",
+    "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/browser/test:test_support",
     "//ios/chrome/browser/shared/model/prefs:browser_prefs",
@@ -150,6 +155,8 @@ source_set("unit_tests") {
     "//ios/chrome/browser/signin/model:signin_util",
     "//ios/chrome/browser/signin/model:test_support",
     "//ios/chrome/browser/sync/model",
+    "//ios/chrome/browser/sync/model:test_support",
+    "//ios/chrome/browser/url_loading/model",
     "//ios/chrome/test:test_support",
     "//ios/web/public/test",
     "//net",
@@ -158,10 +165,19 @@ source_set("unit_tests") {
   ]
 }
 
+source_set("signin_in_progress") {
+  sources = [
+    "signin_in_progress.h",
+    "signin_in_progress.mm",
+  ]
+  deps = [ "//ios/chrome/browser/shared/public/commands" ]
+}
+
 source_set("constants") {
   sources = [
     "signin_constants.h",
     "signin_constants.mm",
+    "signin_context_style.h",
   ]
   deps = [ "//base" ]
   frameworks = [ "Foundation.framework" ]
@@ -184,19 +200,21 @@ source_set("eg2_tests") {
     "//components/sync/base",
     "//components/sync/base:features",
     "//ios/chrome/app/strings",
-    "//ios/chrome/browser/authentication/ui_bundled:eg_test_support+eg2",
+    "//ios/chrome/browser/authentication/test:eg_test_support+eg2",
     "//ios/chrome/browser/authentication/ui_bundled/views:views_constants",
     "//ios/chrome/browser/bookmarks/model:bookmark_storage_type",
-    "//ios/chrome/browser/bookmarks/ui_bundled:eg_test_support+eg2",
+    "//ios/chrome/browser/bookmarks/test:eg_test_support+eg2",
     "//ios/chrome/browser/metrics/model:eg_test_support+eg2",
     "//ios/chrome/browser/ntp/ui_bundled:constants",
     "//ios/chrome/browser/ntp/ui_bundled:feature_flags",
     "//ios/chrome/browser/policy/model:eg_test_support+eg2",
     "//ios/chrome/browser/policy/model:policy_util",
-    "//ios/chrome/browser/recent_tabs/ui_bundled:ui_constants",
+    "//ios/chrome/browser/reading_list/ui_bundled:eg_test_support+eg2",
+    "//ios/chrome/browser/reading_list/ui_bundled:reading_list_constants",
+    "//ios/chrome/browser/recent_tabs/public:ui_constants",
+    "//ios/chrome/browser/settings/manage_sync/public",
     "//ios/chrome/browser/settings/ui_bundled:constants",
     "//ios/chrome/browser/settings/ui_bundled:eg_test_support+eg2",
-    "//ios/chrome/browser/settings/ui_bundled/google_services:constants",
     "//ios/chrome/browser/shared/model/prefs:pref_names",
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/shared/ui/elements:constants",

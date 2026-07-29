@@ -10,8 +10,11 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/values_test_util.h"
 #include "base/values.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -131,8 +134,9 @@ TEST(DeclarativeContentConditionTest, AllSpecifiedPredicatesCreated) {
   ASSERT_EQ(1u, factory1.created_predicates().size());
   ASSERT_EQ(1u, factory2.created_predicates().size());
   std::vector<const ContentPredicate*> predicates;
-  for (const auto& predicate : condition->predicates)
+  for (const auto& predicate : condition->predicates) {
     predicates.push_back(predicate.get());
+  }
   EXPECT_THAT(predicates,
               UnorderedElementsAre(factory1.created_predicates()[0],
                                    factory2.created_predicates()[0]));

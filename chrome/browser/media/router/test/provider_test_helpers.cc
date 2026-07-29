@@ -66,6 +66,10 @@ MockDialAppDiscoveryService::PassCallback() {
   return std::move(app_info_cb_);
 }
 
+bool MockDialAppDiscoveryService::HasPendingCallback() const {
+  return !app_info_cb_.is_null();
+}
+
 TestDialURLFetcher::TestDialURLFetcher(
     DialURLFetcher::SuccessCallback success_cb,
     DialURLFetcher::ErrorCallback error_cb,
@@ -194,7 +198,8 @@ std::unique_ptr<ParsedDialAppInfo> CreateParsedDialAppInfoPtr(
 
 std::unique_ptr<DialInternalMessage> ParseDialInternalMessage(
     const std::string& message) {
-  auto message_value = base::JSONReader::Read(message);
+  auto message_value =
+      base::JSONReader::Read(message, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   std::string error_unused;
   return message_value && message_value->is_dict()
              ? DialInternalMessage::From(std::move(message_value->GetDict()),

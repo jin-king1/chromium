@@ -33,8 +33,6 @@ bool ShouldHideNotification(Profile* profile,
   }
   // If the user changes the pref to show all Cast sessions, they won't be shown
   // until `OnRoutesUpdated()` is called again.
-  // TODO(crbug.com/41321719): Ash currently considers Lacros routes non-local
-  // and hides them if the pref is set to false.
   if (!route.is_local() &&
       !profile->GetPrefs()->GetBoolean(
           media_router::prefs::
@@ -65,8 +63,8 @@ bool ShouldHideNotification(Profile* profile,
   // If the session is multizone member, then it would appear as a duplicate of
   // the multizone group's session, so it should instead be hidden.
   return source && source->GetAppIds().size() == 1 &&
-         base::Contains(media_router::kMultizoneMemberAppIds,
-                        source->GetAppIds()[0]);
+         std::ranges::contains(media_router::kMultizoneMemberAppIds,
+                               source->GetAppIds()[0]);
 }
 
 }  // namespace
@@ -159,8 +157,8 @@ void CastMediaNotificationProducer::OnRoutesUpdated(
   const bool had_items = HasActiveItems();
 
   std::erase_if(items_, [&routes](const auto& item) {
-    return !base::Contains(routes, item.first,
-                           &media_router::MediaRoute::media_route_id);
+    return !std::ranges::contains(routes, item.first,
+                                  &media_router::MediaRoute::media_route_id);
   });
 
   for (const auto& route : routes) {

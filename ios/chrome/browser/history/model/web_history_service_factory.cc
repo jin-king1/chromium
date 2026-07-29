@@ -30,8 +30,7 @@ bool IsHistorySyncEnabled(ProfileIOS* profile) {
 // static
 history::WebHistoryService* WebHistoryServiceFactory::GetForProfile(
     ProfileIOS* profile) {
-  // Ensure that the service is not instantiated or used if the user is not
-  // signed into sync, or if web history is not enabled.
+  // Ensure that the service is not instantiated if history sync is off.
   if (!IsHistorySyncEnabled(profile)) {
     return nullptr;
   }
@@ -55,8 +54,7 @@ WebHistoryServiceFactory::WebHistoryServiceFactory()
 WebHistoryServiceFactory::~WebHistoryServiceFactory() = default;
 
 std::unique_ptr<KeyedService> WebHistoryServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
+    ProfileIOS* profile) const {
   return std::make_unique<history::WebHistoryService>(
       IdentityManagerFactory::GetForProfile(profile),
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(

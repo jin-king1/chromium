@@ -9,8 +9,6 @@
 
 // UI Util containing functions that do not require Objective-C.
 
-// Returns the height of the screen in the current orientation.
-CGFloat CurrentScreenHeight();
 
 // Returns the width of the screen in the current orientation.
 CGFloat CurrentScreenWidth();
@@ -48,5 +46,11 @@ bool IsRegularXRegularSizeClass(id<UITraitEnvironment> environment);
 // Whether the `traitCollection` has a regular vertical and regular horizontal
 // size class.
 bool IsRegularXRegularSizeClass(UITraitCollection* traitCollection);
+
+// Returns a color which is a blend of `color_1` and `color_2`, depending on
+// the value of `fraction`. `fraction` is a value between 0 and 1. If it is
+// closer to 0, the output will be closer to `color_1`, and if it is closer to
+// 1 the output will be closer to `color_2`.
+UIColor* BlendColors(UIColor* color_1, UIColor* color_2, CGFloat fraction);
 
 #endif  // IOS_CHROME_COMMON_UI_UTIL_UI_UTIL_H_

@@ -2,16 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "content/common/service_worker/race_network_request_write_buffer_manager.h"
 
 #include "base/containers/span.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/system/sys_info.h"
+#include "base/trace_event/trace_event.h"
 #include "content/common/service_worker/race_network_request_url_loader_client.h"
 #include "content/public/common/content_features.h"
 #include "mojo/public/cpp/system/data_pipe.h"
@@ -41,6 +38,9 @@ RaceNetworkRequestWriteBufferManager::RaceNetworkRequestWriteBufferManager()
       watcher_(FROM_HERE,
                mojo::SimpleWatcher::ArmingPolicy::MANUAL,
                base::SequencedTaskRunner::GetCurrentDefault()) {
+  TRACE_EVENT("ServiceWorker",
+              "RaceNetworkRequestWriteBufferManager::"
+              "RaceNetworkRequestWriteBufferManager");
   MojoResult result =
       CreateDataPipe(producer_, consumer_, data_pipe_buffer_size_);
   is_data_pipe_created_ = result == MOJO_RESULT_OK;

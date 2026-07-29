@@ -45,7 +45,6 @@ using ::testing::_;
 using ::testing::AllOf;
 using ::testing::Eq;
 using ::testing::Field;
-using ::testing::Invoke;
 using ::testing::StrEq;
 using ::testing::UnorderedElementsAre;
 using ::testing::WithArg;
@@ -197,10 +196,12 @@ class PpdProviderTest : public ::testing::Test {
 
   // Capture the result of a ResolvePpd() call.
   void CaptureResolvePpd(PpdProvider::CallbackResultCode code,
-                         const std::string& ppd_contents) {
+                         const std::string& ppd_contents,
+                         const std::string& ppd_name) {
     CapturedResolvePpdResults results;
     results.code = code;
     results.ppd_contents = ppd_contents;
+    results.ppd_name = ppd_name;
     captured_resolve_ppd_.push_back(results);
   }
 
@@ -234,7 +235,7 @@ class PpdProviderTest : public ::testing::Test {
                             std::move(content));
         };
     EXPECT_CALL(*provider_backdoor_.remote_ppd_fetcher, Fetch(GURL(url), _))
-        .WillOnce(Invoke(WithArg<1>(invoke_callback_with_content)));
+        .WillOnce(WithArg<1>(invoke_callback_with_content));
   }
 
   void MockRemotePpdFetchResult(const std::string& url,
@@ -244,7 +245,7 @@ class PpdProviderTest : public ::testing::Test {
           std::move(cb).Run(code, std::string());
         };
     EXPECT_CALL(*provider_backdoor_.remote_ppd_fetcher, Fetch(GURL(url), _))
-        .WillOnce(Invoke(WithArg<1>(invoke_callback_with_content)));
+        .WillOnce(WithArg<1>(invoke_callback_with_content));
   }
 
   // Calls the ResolveManufacturer() method of the |provider| and
@@ -446,9 +447,9 @@ class PpdProviderTest : public ::testing::Test {
   struct CapturedResolvePpdResults {
     PpdProvider::CallbackResultCode code;
     std::string ppd_contents;
+    std::string ppd_name;
   };
   std::vector<CapturedResolvePpdResults> captured_resolve_ppd_;
-
   struct CapturedResolvePpdReferenceResults {
     PpdProvider::CallbackResultCode code;
     Printer::PpdReference ref;
@@ -742,10 +743,14 @@ TEST_F(PpdProviderTest, ResolveServerKeyPpd) {
       UnorderedElementsAre(
           AllOf(Field(&CapturedResolvePpdResults::code,
                       PpdProvider::CallbackResultCode::SUCCESS),
+                Field(&CapturedResolvePpdResults::ppd_name,
+                      StrEq("printer_b.ppd")),
                 Field(&CapturedResolvePpdResults::ppd_contents,
                       StrEq(kCupsFilter2PpdContents))),
           AllOf(Field(&CapturedResolvePpdResults::code,
                       PpdProvider::CallbackResultCode::SUCCESS),
+                Field(&CapturedResolvePpdResults::ppd_name,
+                      StrEq("printer_c.ppd")),
                 Field(&CapturedResolvePpdResults::ppd_contents, StrEq("c")))));
 }
 
@@ -771,6 +776,7 @@ TEST_F(PpdProviderTest, ResolveUserSuppliedUrlPpdFromFile) {
 
   ASSERT_EQ(1UL, captured_resolve_ppd_.size());
   EXPECT_EQ(PpdProvider::SUCCESS, captured_resolve_ppd_[0].code);
+  EXPECT_EQ("", captured_resolve_ppd_[0].ppd_name);
   EXPECT_EQ(user_ppd_contents, captured_resolve_ppd_[0].ppd_contents);
 }
 

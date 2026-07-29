@@ -4,8 +4,10 @@
 
 #include "components/webapps/browser/installable/installable_evaluator.h"
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
 #include "base/feature_list.h"
+#include "base/strings/string_util.h"
 #include "components/security_state/core/security_state.h"
 #include "components/webapps/browser/features.h"
 #include "components/webapps/browser/webapps_client.h"
@@ -15,6 +17,7 @@
 #include "content/public/common/url_constants.h"
 #include "net/base/url_util.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
+#include "third_party/blink/public/common/manifest/manifest_icon_selector.h"
 #include "third_party/blink/public/common/manifest/manifest_util.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom.h"
 
@@ -29,17 +32,6 @@ using IconPurpose = blink::mojom::ManifestImageResource_Purpose;
 // size for triggering banners.
 const int kMinimumPrimaryIconSizeInPx = 144;
 
-struct ImageTypeDetails {
-  const char* extension;
-  const char* mimetype;
-};
-
-constexpr ImageTypeDetails kSupportedImageTypes[] = {
-    {".png", "image/png"},
-    {".svg", "image/svg+xml"},
-    {".webp", "image/webp"},
-};
-
 InstallableStatusCode HasManifestOrAtRootScope(
     InstallableCriteria criteria,
     const blink::mojom::Manifest& manifest,
@@ -49,7 +41,7 @@ InstallableStatusCode HasManifestOrAtRootScope(
     case InstallableCriteria::kDoNotCheck:
       return InstallableStatusCode::NO_ERROR_DETECTED;
     case InstallableCriteria::kNoManifestAtRootScope:
-      if (site_url.GetWithoutFilename().path().length() <= 1) {
+      if (site_url.GetWithoutFilename().GetPath().length() <= 1) {
         return InstallableStatusCode::NO_ERROR_DETECTED;
       }
       break;
@@ -93,7 +85,7 @@ bool HasValidStartUrl(const blink::mojom::Manifest& manifest,
     case InstallableCriteria::kNoManifestAtRootScope:
       return manifest.start_url.is_valid() ||
              metadata.application_url.is_valid() ||
-             site_url.GetWithoutFilename().path().length() <= 1;
+             site_url.GetWithoutFilename().GetPath().length() <= 1;
   }
 }
 
@@ -122,54 +114,19 @@ bool HasValidName(const blink::mojom::Manifest& manifest,
   }
 }
 
-bool IsIconTypeSupported(const blink::Manifest::ImageResource& icon) {
-  // The type field is optional. If it isn't present, fall back on checking
-  // the src extension.
-  if (icon.type.empty()) {
-    std::string filename = icon.src.ExtractFileName();
-    for (const ImageTypeDetails& details : kSupportedImageTypes) {
-      if (base::EndsWith(filename, details.extension,
-                         base::CompareCase::INSENSITIVE_ASCII)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  for (const ImageTypeDetails& details : kSupportedImageTypes) {
-    if (base::EqualsASCII(icon.type, details.mimetype)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Returns whether |manifest| specifies an SVG or PNG icon that has
+// Returns whether |manifest| specifies a supported icon that has
 // IconPurpose::ANY, with size >= kMinimumPrimaryIconSizeInPx (or size "any").
 bool DoesManifestContainRequiredIcon(const blink::mojom::Manifest& manifest) {
-  for (const auto& icon : manifest.icons) {
-    if (!IsIconTypeSupported(icon)) {
-      continue;
-    }
-
-    if (!base::Contains(icon.purpose, IconPurpose::ANY)) {
-      continue;
-    }
-
-    for (const auto& size : icon.sizes) {
-      if (size.IsEmpty()) {  // "any"
-        return true;
-      }
-      if (size.width() >= InstallableEvaluator::GetMinimumIconSizeInPx() &&
-          size.height() >= InstallableEvaluator::GetMinimumIconSizeInPx() &&
-          size.width() <= InstallableEvaluator::kMaximumIconSizeInPx &&
-          size.height() <= InstallableEvaluator::kMaximumIconSizeInPx) {
-        return true;
-      }
-    }
-  }
-
-  return false;
+  blink::ManifestIconSelectorParams params;
+  params.purpose = IconPurpose::ANY;
+  params.minimum_icon_size_in_px =
+      InstallableEvaluator::GetMinimumIconSizeInPx();
+  params.maximum_icon_size_in_px = InstallableEvaluator::kMaximumIconSizeInPx;
+  params.max_width_to_height_ratio = std::numeric_limits<float>::max();
+  params.limited_image_types_for_installable_icon = true;
+  return blink::ManifestIconSelector::FindBestMatchingIcon(manifest.icons,
+                                                           params)
+      .has_value();
 }
 
 bool HasNonDefaultFavicon(content::WebContents* web_contents) {
@@ -207,7 +164,7 @@ bool IsInstallableDisplayMode(blink::mojom::DisplayMode display_mode) {
          display_mode == blink::mojom::DisplayMode::kFullscreen ||
          display_mode == blink::mojom::DisplayMode::kMinimalUi ||
          display_mode == blink::mojom::DisplayMode::kWindowControlsOverlay ||
-         display_mode == blink::mojom::DisplayMode::kBorderless ||
+         display_mode == blink::mojom::DisplayMode::kUnframed ||
          display_mode == blink::mojom::DisplayMode::kTabbed;
 }
 
@@ -225,7 +182,7 @@ InstallableStatusCode InstallableEvaluator::GetDisplayError(
   // If this array is not empty, the first value will "win", so validate
   // this value is installable.
   if (!manifest.display_override.empty()) {
-    display_mode_to_evaluate = manifest.display_override[0];
+    display_mode_to_evaluate = manifest.display_override[0].display();
     error_type_if_invalid =
         InstallableStatusCode::MANIFEST_DISPLAY_OVERRIDE_NOT_SUPPORTED;
   }
@@ -264,18 +221,17 @@ int InstallableEvaluator::GetMinimumIconSizeInPx() {
   return kMinimumPrimaryIconSizeInPx;
 }
 
-std::optional<std::vector<InstallableStatusCode>>
-InstallableEvaluator::CheckInstallability() const {
+std::vector<InstallableStatusCode> InstallableEvaluator::CheckInstallability()
+    const {
   CHECK(blink::IsEmptyManifest(page_data_->GetManifest()) ||
         (page_data_->GetManifest().start_url.is_valid() &&
          page_data_->GetManifest().scope.is_valid() &&
          page_data_->GetManifest().id.is_valid()));
 
-  if (criteria_ == InstallableCriteria::kDoNotCheck) {
-    return std::nullopt;
-  }
-
   std::vector<InstallableStatusCode> errors;
+  if (criteria_ == InstallableCriteria::kDoNotCheck) {
+    return errors;
+  }
 
   InstallableStatusCode error = HasManifestOrAtRootScope(
       criteria_, page_data_->GetManifest(), page_data_->manifest_url(),
@@ -315,6 +271,9 @@ std::vector<InstallableStatusCode> InstallableEvaluator::CheckEligibility(
     content::WebContents* web_contents) const {
   std::vector<InstallableStatusCode> errors;
   if (web_contents->GetBrowserContext()->IsOffTheRecord()) {
+    // TODO(http://crbug.com/452122299): Have this not fail if the we are in
+    // CrOS + guest mode (either by not adding this error, or filtering it out
+    // later).
     errors.push_back(InstallableStatusCode::IN_INCOGNITO);
   }
   if (!IsContentSecure(web_contents)) {
@@ -331,13 +290,13 @@ bool InstallableEvaluator::IsContentSecure(content::WebContents* web_contents) {
 
   // chrome:// URLs are considered secure.
   const GURL& url = web_contents->GetLastCommittedURL();
-  if (url.scheme() == content::kChromeUIScheme) {
+  if (url.GetScheme() == content::kChromeUIScheme) {
     return true;
   }
 
   // chrome-untrusted:// URLs are shipped with Chrome, so they are considered
   // secure in this context.
-  if (url.scheme() == content::kChromeUIUntrustedScheme) {
+  if (url.GetScheme() == content::kChromeUIUntrustedScheme) {
     return true;
   }
 

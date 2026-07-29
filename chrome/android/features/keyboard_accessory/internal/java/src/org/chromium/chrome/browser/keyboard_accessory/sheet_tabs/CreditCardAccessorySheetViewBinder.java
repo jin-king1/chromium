@@ -12,12 +12,14 @@ import androidx.annotation.DrawableRes;
 import androidx.appcompat.content.res.AppCompatResources;
 import androidx.recyclerview.widget.RecyclerView;
 
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.base.ServiceLoaderUtil;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData;
 import org.chromium.chrome.browser.keyboard_accessory.data.UserInfoField;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabItemsModel.AccessorySheetDataPiece;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AccessorySheetTabViewBinder.ElementViewHolder;
+import org.chromium.chrome.browser.touch_to_fill.common.TouchToFillResourceProvider;
 import org.chromium.components.browser_ui.widget.chips.ChipView;
 import org.chromium.ui.modelutil.RecyclerViewAdapter;
 import org.chromium.ui.modelutil.SimpleRecyclerViewMcp;
@@ -32,6 +34,12 @@ class CreditCardAccessorySheetViewBinder {
          * appropriate drawable.
          */
         public Function<KeyboardAccessoryData.UserInfo, Drawable> cardDrawableFunction;
+
+        /**
+         * Converts an {@link KeyboardAccessoryData.LoyaltyCardInfo} to the appropriate drawable.
+         */
+        public Function<KeyboardAccessoryData.LoyaltyCardInfo, Drawable>
+                loyaltyCardDrawableFunction;
     }
 
     static ElementViewHolder create(
@@ -48,7 +56,11 @@ class CreditCardAccessorySheetViewBinder {
                 return new PromoCodeInfoViewHolder(parent);
             case AccessorySheetDataPiece.Type.IBAN_INFO:
                 return new IbanInfoViewHolder(parent);
+            case AccessorySheetDataPiece.Type.LOYALTY_CARD_INFO:
+                return new LoyaltyCardInfoViewHolder(
+                        parent, uiConfiguration.loyaltyCardDrawableFunction);
             case AccessorySheetDataPiece.Type.FOOTER_COMMAND:
+            case AccessorySheetDataPiece.Type.DIVIDER:
                 return AccessorySheetTabViewBinder.create(parent, viewType);
         }
         assert false : "Unhandled type of data piece: " + viewType;
@@ -135,6 +147,28 @@ class CreditCardAccessorySheetViewBinder {
         }
     }
 
+    /** View which represents a single Google Wallet loyalty card and its fields. */
+    static class LoyaltyCardInfoViewHolder
+            extends ElementViewHolder<KeyboardAccessoryData.LoyaltyCardInfo, LoyaltyCardInfoView> {
+        private final Function<KeyboardAccessoryData.LoyaltyCardInfo, Drawable>
+                mLoyaltyCardDrawableFunction;
+
+        LoyaltyCardInfoViewHolder(
+                ViewGroup parent,
+                Function<KeyboardAccessoryData.LoyaltyCardInfo, Drawable>
+                        loyaltyCardDrawableFunction) {
+            super(parent, R.layout.keyboard_accessory_sheet_tab_loyalty_card_info);
+            mLoyaltyCardDrawableFunction = loyaltyCardDrawableFunction;
+        }
+
+        @Override
+        protected void bind(KeyboardAccessoryData.LoyaltyCardInfo info, LoyaltyCardInfoView view) {
+            view.getMerchantName().setText(info.getMerchantName());
+            bindChipView(view.getLoyaltyCardNumber(), info.getLoyaltyCardNumber());
+            view.setIcon(mLoyaltyCardDrawableFunction.apply(info));
+        }
+    }
+
     static void initializeView(
             RecyclerView view, UiConfiguration uiConfiguration, AccessorySheetTabItemsModel model) {
         view.setAdapter(
@@ -170,14 +204,20 @@ class CreditCardAccessorySheetViewBinder {
             case "unionPayCC":
                 return R.drawable.unionpay_metadata_card;
             case "verveCC":
-                if (ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.AUTOFILL_ENABLE_VERVE_CARD_SUPPORT)) {
-                    return R.drawable.verve_metadata_card;
-                }
-                break;
+                return R.drawable.verve_metadata_card;
             case "visaCC":
                 return R.drawable.visa_metadata_card;
+            case "affirm":
+            case "klarna":
+            case "zip":
+                @Nullable
+                final TouchToFillResourceProvider resourceProvider =
+                        ServiceLoaderUtil.maybeCreate(TouchToFillResourceProvider.class);
+                return resourceProvider == null
+                        ? R.drawable.bnpl_icon_generic
+                        : resourceProvider.getBnplIssuerDrawableId(
+                                /* issuerId= */ origin, /* isLinked= */ true);
         }
-        return R.drawable.infobar_autofill_cc;
+        return R.drawable.ic_autofill_cc;
     }
 }

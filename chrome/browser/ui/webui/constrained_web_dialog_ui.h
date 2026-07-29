@@ -9,7 +9,7 @@
 
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/webui_config.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace gfx {
 class Size;
@@ -98,7 +98,7 @@ class ConstrainedWebDialogUI : public content::WebUIController {
 
  private:
   // JS Message Handler
-  void OnDialogCloseMessage(const base::Value::List& args);
+  void OnDialogCloseMessage(const base::ListValue& args);
 };
 
 // Create and show a constrained HTML dialog. The actual object that gets

@@ -5,13 +5,15 @@
 #ifndef CHROME_BROWSER_CHROME_BROWSER_INTERFACE_BINDERS_WEBUI_H_
 #define CHROME_BROWSER_CHROME_BROWSER_INTERFACE_BINDERS_WEBUI_H_
 
-#include "mojo/public/cpp/bindings/binder_map.h"
-
 namespace content {
 class RenderFrameHost;
 class WebUIBrowserInterfaceBrokerRegistry;
 }  // namespace content
 
+namespace mojo {
+template <typename>
+class BinderMapWithContext;
+}  // namespace mojo
 
 namespace chrome::internal {
 
@@ -22,10 +24,16 @@ void PopulateChromeWebUIFrameBinders(
     mojo::BinderMapWithContext<content::RenderFrameHost*>* map,
     content::RenderFrameHost* render_frame_host);
 
-// PopulateChromeWebUIFrameInterfaceBrokers() registers BrowserInterfaceBrokers
-// for each WebUI, these brokers are used to handle that WebUI's JavaScript
-// Mojo.bindInterface calls.
-void PopulateChromeWebUIFrameInterfaceBrokers(
+// PopulateTrustedChromeWebUIFrameInterfaceBrokers() registers
+// BrowserInterfaceBrokers for each trusted WebUI, these brokers are used to
+// handle that WebUI's JavaScript Mojo.bindInterface calls.
+void PopulateTrustedChromeWebUIFrameInterfaceBrokers(
+    content::WebUIBrowserInterfaceBrokerRegistry& registry);
+
+// PopulateUntrustedChromeWebUIFrameInterfaceBrokers() registers
+// BrowserInterfaceBrokers for each untrusted WebUI, these brokers are used to
+// handle that WebUI's JavaScript Mojo.bindInterface calls.
+void PopulateUntrustedChromeWebUIFrameInterfaceBrokers(
     content::WebUIBrowserInterfaceBrokerRegistry& registry);
 
 } // namespace chrome::internal

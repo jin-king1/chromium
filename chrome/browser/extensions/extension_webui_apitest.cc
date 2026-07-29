@@ -13,7 +13,6 @@
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -42,7 +41,7 @@ namespace OnMessage = api::test::OnMessage;
 
 namespace {
 
-#if !BUILDFLAG(IS_WIN)  // flaky http://crbug.com/530722
+#if !BUILDFLAG(IS_WIN)  // flaky http://crbug.com/40435404
 
 // Tests running extension APIs on WebUI.
 class ExtensionWebUITest : public ExtensionApiTest {
@@ -63,15 +62,12 @@ class ExtensionWebUITest : public ExtensionApiTest {
       if (!base::PathExists(path))
         return testing::AssertionFailure() << "Couldn't find " << path.value();
       base::ReadFileToString(path, &script);
-      script = "(function(){'use strict';" + script + "}());";
     }
 
     // Run the test.
-    EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), page_url));
-    content::RenderFrameHost* webui = browser()
-                                          ->tab_strip_model()
-                                          ->GetActiveWebContents()
-                                          ->GetPrimaryMainFrame();
+    auto* web_contents = GetActiveWebContents();
+    EXPECT_TRUE(NavigateToURL(web_contents, page_url));
+    content::RenderFrameHost* webui = web_contents->GetPrimaryMainFrame();
     if (!webui)
       return testing::AssertionFailure() << "Failed to navigate to WebUI";
     bool actual_result = content::EvalJs(webui, script).ExtractBool();
@@ -110,7 +106,7 @@ class ExtensionWebUIEmbeddedOptionsTest
     ExtensionWebUITest::SetUpOnMainThread();
     test_guest_view_manager_ =
         test_guest_view_manager_factory_.GetOrCreateTestGuestViewManager(
-            browser()->profile(),
+            profile(),
             ExtensionsAPIClient::Get()->CreateGuestViewManagerDelegate());
   }
 
@@ -125,8 +121,7 @@ class ExtensionWebUIEmbeddedOptionsTest
   content::RenderFrameHost* OpenExtensionOptions(const Extension* extension) {
     EXPECT_TRUE(ui_test_utils::NavigateToURL(
         browser(), GURL(chrome::kChromeUIExtensionsURL)));
-    content::WebContents* webui =
-        browser()->tab_strip_model()->GetActiveWebContents();
+    content::WebContents* webui = GetActiveWebContents();
 
     EXPECT_EQ(0U, test_guest_view_manager_->num_guests_created());
 
@@ -356,7 +351,7 @@ IN_PROC_BROWSER_TEST_P(ExtensionWebUIEmbeddedOptionsTest,
   ASSERT_TRUE(onclose_listener.WaitUntilSatisfied());
 }
 
-// Regression test for crbug.com/414526.
+// Regression test for crbug.com/40384641.
 //
 // Same setup as CanEmbedExtensionOptions but disable the extension before
 // embedding.
@@ -430,16 +425,15 @@ class ExtensionWebUIListenersTest : public ExtensionWebUITest {
   }
 };
 
-// Tests crbug.com/1253745 where adding and removing listeners in a WebUI frame
+// Tests crbug.com/40199285 where adding and removing listeners in a WebUI frame
 // causes all listeners to be removed.
 IN_PROC_BROWSER_TEST_F(ExtensionWebUIListenersTest, MultipleURLListeners) {
   // Use the same URL both for the parent and child frames for convenience.
   // These could be different WebUI URLs.
   GURL test_url("chrome://webui-test/extension_webui_listeners_test.html");
 
-  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url));
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+  content::WebContents* web_contents = GetActiveWebContents();
+  EXPECT_TRUE(NavigateToURL(web_contents, test_url));
   content::RenderFrameHost* main_frame = web_contents->GetPrimaryMainFrame();
   EventRouter* event_router = EventRouter::Get(profile());
   EXPECT_FALSE(event_router->HasEventListener("test.onMessage"));

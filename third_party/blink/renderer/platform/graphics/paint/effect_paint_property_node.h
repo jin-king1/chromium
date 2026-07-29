@@ -8,17 +8,20 @@
 #include <algorithm>
 
 #include "components/viz/common/view_transition_element_resource_id.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_child_paint_state.h"
 #include "third_party/blink/renderer/platform/graphics/compositing_reasons.h"
 #include "third_party/blink/renderer/platform/graphics/compositor_element_id.h"
 #include "third_party/blink/renderer/platform/graphics/compositor_filter_operations.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_property_node.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/restriction_target_id.h"
+#include "third_party/skia/include/core/SkPath.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/rrect_f.h"
 
 namespace blink {
 
+class ClipPaintPropertyNode;
 class ClipPaintPropertyNodeOrAlias;
 class PropertyTreeState;
 class TransformPaintPropertyNodeOrAlias;
@@ -83,14 +86,40 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
     STACK_ALLOCATED();
   };
 
+  struct FilterInfo {
+    CompositorFilterOperations operations;
+    gfx::Rect output_bounds;
+
+    USING_FAST_MALLOC(FilterInfo);
+  };
+
   struct BackdropFilterInfo {
     CompositorFilterOperations operations;
-    gfx::RRectF bounds;
+    SkPath bounds;
     // The compositor element id for any masks that are applied to elements that
     // also have backdrop-filters applied.
     CompositorElementId mask_element_id;
 
     USING_FAST_MALLOC(BackdropFilterInfo);
+  };
+
+  // Used to associate this effect with a direct child of a canvas element for
+  // DrawElementImage.
+  struct PLATFORM_EXPORT CanvasChildState
+      : public GarbageCollected<CanvasChildState> {
+   public:
+    bool operator==(const CanvasChildState& other) const {
+      return id == other.id && paint_state == other.paint_state &&
+             content_effect == other.content_effect &&
+             content_clip == other.content_clip;
+    }
+
+    DOMNodeId id = kInvalidDOMNodeId;
+    CanvasChildPaintState paint_state;
+    Member<const EffectPaintPropertyNodeOrAlias> content_effect;
+    Member<const ClipPaintPropertyNodeOrAlias> content_clip;
+
+    void Trace(Visitor* visitor) const;
   };
 
   // To make it less verbose and more readable to construct and update a node,
@@ -111,7 +140,7 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
     // Optionally a number of effects can be applied to the composited output.
     // The chain of effects will be applied in the following order:
     // === Begin of effects ===
-    CompositorFilterOperations filter;
+    std::unique_ptr<FilterInfo> filter_info;
     std::unique_ptr<BackdropFilterInfo> backdrop_filter_info;
     float opacity = 1;
     SkBlendMode blend_mode = SkBlendMode::kSrcOver;
@@ -127,15 +156,19 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
     // Used to associate this effect node with its originating Element.
     RestrictionTargetId restriction_target_id;
 
+    Member<CanvasChildState> canvas_child_state;
+
     // When set, the affected elements should avoid doing clipping for
     // optimization purposes (like off-screen clipping). This is set by view
     // transition code to ensure that the element is fully painted since it will
-    // likely be drawn by pseudo elements that themselves can reposition and
+    // likely be drawn by pseudo-elements that themselves can reposition and
     // resize the painted output of the element. Note that this bit is
     // propagated to the subtree of the effect tree.
     bool self_or_ancestor_participates_in_view_transition = false;
 
-    bool has_2d_scale_transform = false;
+    bool needs_effect_for_2d_scale_transform = false;
+
+    bool is_in_canvas_subtree = false;
 
     PaintPropertyChangeType ComputeChange(
         const State& other,
@@ -204,7 +237,13 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
 
   SkBlendMode BlendMode() const { return state_.blend_mode; }
   float Opacity() const { return state_.opacity; }
-  const CompositorFilterOperations& Filter() const { return state_.filter; }
+  const CompositorFilterOperations* Filter() const {
+    return state_.filter_info ? &state_.filter_info->operations : nullptr;
+  }
+  const gfx::Rect& FilterOutputBounds() const {
+    CHECK(state_.filter_info);
+    return state_.filter_info->output_bounds;
+  }
 
   const CompositorFilterOperations* BackdropFilter() const {
     if (!state_.backdrop_filter_info) {
@@ -214,7 +253,7 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
     return &state_.backdrop_filter_info->operations;
   }
 
-  const gfx::RRectF& BackdropFilterBounds() const {
+  const SkPath& BackdropFilterBounds() const {
     DCHECK(state_.backdrop_filter_info);
     return state_.backdrop_filter_info->bounds;
   }
@@ -224,31 +263,47 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
     return state_.backdrop_filter_info->mask_element_id;
   }
 
+  bool HasReferenceFilter() const {
+    return (state_.filter_info &&
+            state_.filter_info->operations.HasReferenceFilter()) ||
+           (state_.backdrop_filter_info &&
+            state_.backdrop_filter_info->operations.HasReferenceFilter());
+  }
   bool HasFilterThatMovesPixels() const {
-    return state_.filter.HasFilterThatMovesPixels();
+    return state_.filter_info &&
+           state_.filter_info->operations.HasFilterThatMovesPixels();
   }
 
   bool HasRealEffects() const {
     return Opacity() != 1.0f || BlendMode() != SkBlendMode::kSrcOver ||
-           !Filter().IsEmpty() || BackdropFilter();
+           Filter() || BackdropFilter();
   }
 
   bool IsOpacityOnly() const {
-    return BlendMode() == SkBlendMode::kSrcOver && Filter().IsEmpty() &&
+    return BlendMode() == SkBlendMode::kSrcOver && !Filter() &&
            !BackdropFilter();
   }
 
   // Returns a rect covering the pixels that can be affected by pixels in
-  // |inputRect|. The rects are in the space of localTransformSpace.
-  gfx::RectF MapRect(const gfx::RectF& input_rect) const;
+  // `input_rect`. The rects are in the space of `LocalTransformSpace`.
+  gfx::Rect MapRect(const gfx::Rect& input_rect) const;
 
   bool HasDirectCompositingReasons() const {
     return state_.direct_compositing_reasons != CompositingReason::kNone;
+  }
+  bool RequiresCompositingForUnboundedElement() const {
+    return state_.direct_compositing_reasons &
+           CompositingReason::kUnboundedElement;
   }
   bool RequiresCompositingForBackdropFilterMask() const {
     return state_.direct_compositing_reasons &
            CompositingReason::kBackdropFilterMask;
   }
+  bool RequiresCompositingForCanvasChild() const {
+    return state_.direct_compositing_reasons & CompositingReason::kCanvasChild;
+  }
+
+  bool IsInCanvasSubtree() const { return state_.is_in_canvas_subtree; }
 
   bool FlattensAtLeafOf3DScene() const {
     return state_.direct_compositing_reasons &
@@ -290,7 +345,7 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
   // True if the filter is not empty, or could become non-empty without a
   // compositing update via a compositor animation or direct update.
   bool MayHaveFilter() const {
-    return !Filter().IsEmpty() || HasActiveFilterAnimation() ||
+    return Filter() || HasActiveFilterAnimation() ||
            RequiresCompositingForWillChangeFilter();
   }
   // True if the backdrop filter is not empty, or could become non-empty
@@ -298,6 +353,12 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
   bool MayHaveBackdropFilter() const {
     return BackdropFilter() || HasActiveBackdropFilterAnimation() ||
            RequiresCompositingForWillChangeBackdropFilter();
+  }
+
+  bool NeedsPixelMovingFilterClipExpander() const {
+    return HasActiveFilterAnimation() ||
+           RequiresCompositingForWillChangeFilter() ||
+           HasFilterThatMovesPixels();
   }
 
   // Whether the effect node uses the backdrop as an input. This includes
@@ -332,11 +393,33 @@ class PLATFORM_EXPORT EffectPaintPropertyNode final
     return state_.restriction_target_id;
   }
 
+  bool HasCanvasChildState() const {
+    if (!state_.canvas_child_state) {
+      return false;
+    }
+    return state_.canvas_child_state->id != kInvalidDOMNodeId;
+  }
+
+  DOMNodeId CanvasChildId() const {
+    return state_.canvas_child_state ? state_.canvas_child_state->id
+                                     : kInvalidDOMNodeId;
+  }
+
+  const CanvasChildPaintState* canvas_child_paint_state() const {
+    return state_.canvas_child_state ? &state_.canvas_child_state->paint_state
+                                     : nullptr;
+  }
+
+  const EffectPaintPropertyNode& CanvasChildContentEffect() const;
+  const ClipPaintPropertyNode& CanvasChildContentClip() const;
+
   bool SelfOrAncestorParticipatesInViewTransition() const {
     return state_.self_or_ancestor_participates_in_view_transition;
   }
 
-  bool Has2DScaleTransform() const { return state_.has_2d_scale_transform; }
+  bool NeedsEffectFor2DScaleTransform() const {
+    return state_.needs_effect_for_2d_scale_transform;
+  }
 
   std::unique_ptr<JSONObject> ToJSON() const final;
 

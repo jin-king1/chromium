@@ -3,9 +3,15 @@
   const relativeLengthUnits = ["em", "ex", "cap", "ch", "ic", "lh", "rcap", "rch", "rem", "rex", "ric", "rlh", "vw", "vh ", "vi", "vb", "vmin", "vmax"];
   const lengthExpressions = ["calc(1em + 10px)", "calc(1em + 3em)", "calc(3px + 2.54cm)", "clamp(10px, calc(10rem + 10rex), 30px)", "max(100px, 30em)", "calc(100px * cos(60deg))"];
   const invalidLengthValues = ["calc(", "em", "calc(10 + 20)", "red", "calc(10ms + 5s)"];
-  const testValues = ["invalid", "1em", "1rem", "calc(3px + 3px)", "calc(1em + 1px)"];
+  const validNumberValues = ["100", "log(1000, 10)", "calc(10 + 30)"];
+  const testValues = ["invalid", "1em", "1rem", "calc(3px + 3px)", "calc(1em + 1px)", "random(10px, 30px)"];
   const cssWideKeywords = ["initial", "inherit", "unset"];
-  const validColorValues = ["aqua", "peachpuff", "blanchedalmond", "rgb(255, 0, 0)", "#0f5ffe", "color-mix(in srgb, plum, #f00)"];
+  const validColorValues = ["aqua", "peachpuff", "blanchedalmond", "rgb(255, 0, 0)", "#0f5ffe", "color-mix(in srgb, plum, #f00)",
+                            "rgb(random(30, 10) random(60, 10) random(90, 10))", "color-mix(in srgb, rgb(random(30, 10) 0 0), rgb(random(21, 10) 0 0))"];
+  const validPercentageExpressions = ["10%", "50%", "calc(10% + 10%)", "calc(10% - 10%)", "calc(10px + 10% - 10%)", "calc(10px + 10px)", "calc(10px + 0%)", "calc(10px + 10%)", "calc(1em + 10%)"];
+  const invalidPercentageExpressions = ["calc(", "%", "calc(10 + 20)%", "calc(10 + 30%"];
+  const arbSubs = ["var(--x)", "attr(data-foo type(<length>))", "attr(invalid, 3px)", "var(--invalid, 3px)", "var(--cycle1)", "env(0)", "attr(0)"];
+  const listOfLengths = ["1px 3px 9px", "1em 3em 9em", "calc(3 * 1px) calc(3 * 3px) calc(3 * 9px)"];
 
   var {page, session, dp} = await testRunner.startURL('resources/css-resolve-values.html', 'Test css.resolveValue method');
 
@@ -59,6 +65,14 @@
       testRunner.log('Test invalid property name');
       await testResolveValues('.outer', testValues, "invalid");
     },
+    async function testDescriptor() {
+      testRunner.log('Test descriptor name');
+      await testResolveValues('.outer', testValues, "initial-value");
+    },
+    async function testShorthandProperty() {
+      testRunner.log('Test shorthand property');
+      await testResolveValues('.inner', lengthExpressions, "margin");
+    },
     async function testResolveValuesSimple() {
       testRunner.log('Test resolveValues for width property');
       await testResolveValues('.inner', testValues, "width");
@@ -71,6 +85,11 @@
       testRunner.log('Relative length units to absolute test');
       var relativeValues = relativeLengthUnits.map((x) => "1" + x);
       await testResolveValues('.inner', relativeValues, "width");
+    },
+    async function testResolveValuesRelativeUnitsNoProperty() {
+      testRunner.log('Test resolveValues on relative units no property specified');
+      var relativeValues = relativeLengthUnits.map((x) => "1" + x);
+      await testResolveValuesWithoutProperty('.inner', relativeValues);
     },
     async function testRelativeUnitsNoProperty() {
       testRunner.log('Relative length units to absolute no property specified test');
@@ -116,17 +135,29 @@
       testRunner.log('Test <color> values with no property specified');
       await testResolveValuesWithoutProperty('.inner', validColorValues);
     },
-    async function testOnlyInvalidValues() {
-      testRunner.log('Invalid values test');
+    async function testInvalidLengthValues() {
+      testRunner.log('Invalid length values test');
       await testResolveValues('.inner', invalidLengthValues, "width");
     },
     async function testCustomProperty() {
       testRunner.log('Test resolveValues on custom property');
       await testResolveValues('div', testValues, "--prop");
     },
+    async function testCustomProperty() {
+      testRunner.log('Test resolveValues on custom property with cycle should ignore custom property');
+      await testResolveValues('div', ["var(--prop)"], "--prop");
+    },
+    async function testCustomProperty() {
+      testRunner.log('Test resolveValues ray() with random()');
+      await testResolveValues('div', ["ray(50deg closest-corner contain at 30px random(10px, 30px))"], "offset-path");
+    },
     async function testRegisterCustomProperty() {
       testRunner.log('Test resolveValues on register custom property');
       await testResolveValues('div', testValues, "--reg-prop");
+    },
+    async function testRegisterCustomPropertyWithoutCombinedSyntax() {
+      testRunner.log('Test resolveValues on registered custom property with value not parsable with combined syntax');
+      await testResolveValues('div', listOfLengths, "--reg-prop");
     },
     async function testPseudoElement() {
       testRunner.log('Pseudo element test');
@@ -147,6 +178,98 @@
     async function testElementDisplayNone() {
       testRunner.log('Test on element without computed style');
       await testResolveValues('.display-none', testValues, "height");
+    },
+    async function testResolveValuesIgnoreProperty() {
+      testRunner.log('Test resolveValues should ignore property');
+      await testResolveValues('.inner', validNumberValues, "width");
+    },
+    async function testResolveValuesValidInnerHeight() {
+      testRunner.log('Test resolveValues for height property of inner element');
+      await testResolveValues('.inner', validPercentageExpressions, "height");
+    },
+    async function testResolveValuesValidOuterWidth() {
+      testRunner.log('Test resolveValues for width property of outer element');
+      await testResolveValues('.outer', validPercentageExpressions, "width");
+    },
+    async function testResolveValuesValidInnerMinHeight() {
+      testRunner.log('Test resolveValues for min-height property of inner element');
+      await testResolveValues('.inner', validPercentageExpressions, "min-height");
+    },
+    async function testResolveValuesValidOuterMinWidth() {
+      testRunner.log('Test resolveValues for min-width property of outer element');
+      await testResolveValues('.outer', validPercentageExpressions, "min-width");
+    },
+    async function testResolveValuesValidInnerMaxWidth() {
+      testRunner.log('Test resolveValues for max-width property of outer element');
+      await testResolveValues('.inner', validPercentageExpressions, "max-width");
+    },
+    async function testResolveValuesValidOuterMaxHeight() {
+      testRunner.log('Test resolveValues for max-height property of inner element');
+      await testResolveValues('.outer', validPercentageExpressions, "max-height");
+    },
+    async function testResolveValuesValidInnerLeft() {
+      testRunner.log('Test resolveValues for left property of inner element');
+      await testResolveValues('.inner', validPercentageExpressions, "left");
+    },
+    async function testResolveValuesValidInnerTop() {
+      testRunner.log('Test resolveValues for top property of inner element');
+      await testResolveValues('.inner', validPercentageExpressions, "top");
+    },
+    async function testResolveValuesValidOuterRight() {
+      testRunner.log('Test resolveValues for right property of outer element');
+      await testResolveValues('.outer', validPercentageExpressions, "right");
+    },
+    async function testResolveValuesValidOuterBottom() {
+      testRunner.log('Test resolveValues for bottom property of outer element');
+      await testResolveValues('.outer', validPercentageExpressions, "bottom");
+    },
+    async function testResolveValuesValidInnerMarginLeft() {
+      testRunner.log('Test resolveValues for margin-left property of inner element');
+      await testResolveValues('.inner', validPercentageExpressions, "margin-left");
+    },
+    async function testResolveValuesValidInnerMarginBottom() {
+      testRunner.log('Test resolveValues for margin-bottom property of inner element');
+      await testResolveValues('.inner', validPercentageExpressions, "margin-bottom");
+    },
+    async function testResolveValuesValidOuterMarginTop() {
+      testRunner.log('Test resolveValues for margin-top property of outer element');
+      await testResolveValues('.outer', validPercentageExpressions, "margin-top");
+    },
+    async function testResolveValuesValidOuterMarginRight() {
+      testRunner.log('Test resolveValues for margin-right property of outer element');
+      await testResolveValues('.outer', validPercentageExpressions, "margin-right");
+    },
+    async function testResolveValuesValidInnerPaddingLeft() {
+      testRunner.log('Test resolveValues for padding-left property of inner element');
+      await testResolveValues('.inner', validPercentageExpressions, "padding-left");
+    },
+    async function testResolveValuesValidInnerPAddingTop() {
+      testRunner.log('Test resolveValues for padding-top property of inner element');
+      await testResolveValues('.inner', validPercentageExpressions, "padding-top");
+    },
+    async function testResolveValuesValidOuterPaddingRight() {
+      testRunner.log('Test resolveValues for padding-right property of outer element');
+      await testResolveValues('.outer', validPercentageExpressions, "padding-right");
+    },
+    async function testResolveValuesValidOuterPaddingBottom() {
+      testRunner.log('Test resolveValues for padding-bottom property of outer element');
+      await testResolveValues('.outer', validPercentageExpressions, "padding-bottom");
+    },
+    async function testResolvePercentageValuesNoProperty() {
+      testRunner.log('Test resolveValues with invalid percentage expressions');
+      await testResolveValues('.inner', validPercentageExpressions);
+    },
+    async function testResolveInvalidPercentageValues() {
+      testRunner.log('Test resolveValues with invalid percentage expressions');
+      await testResolveValues('.inner', invalidPercentageExpressions, "height");
+    },
+    async function testResolveValuesWithVar() {
+      testRunner.log('Test resolveValues with var() for width property');
+      await testResolveValues('.inner', arbSubs, "width");
+    },
+    async function testNestedCalc() {
+      testRunner.log('Nested calc evaluation test');
+      await testResolveValues('.inner', ["calc(calc(10px))", "calc(calc(1em + 10px))", "calc(calc(calc(10px)))"], "width");
     }
   ]);
 });

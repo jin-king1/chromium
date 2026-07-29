@@ -19,7 +19,6 @@
 #include "base/test/values_test_util.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/hid/hid_chooser_context_factory.h"
 #include "chrome/browser/hid/mock_hid_device_observer.h"
@@ -42,7 +41,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/origin.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "components/account_id/account_id.h"
@@ -67,14 +66,18 @@ constexpr char kTestUserEmail[] = "user@example.com";
 constexpr uint16_t kTestUsagePage = device::mojom::kPageGenericDesktop;
 constexpr uint16_t kTestUsage = device::mojom::kGenericDesktopGamePad;
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 constexpr char kTestExtensionId[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 // Main text fixture.
 class HidChooserContextTestBase {
  public:
   HidChooserContextTestBase() {
+#if !BUILDFLAG(IS_ANDROID)
     scoped_feature_list_.InitAndEnableFeature(
         features::kSecurityKeyHidInterfacesAreFido);
+#endif  // !BUILDFLAG(IS_ANDROID)
   }
 
   HidChooserContextTestBase(const HidChooserContextTestBase&) = delete;
@@ -84,7 +87,7 @@ class HidChooserContextTestBase {
 
   void DoSetUp(bool is_affiliated, bool login_user) {
     auto* profile_name = kTestUserEmail;
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     if (login_user) {
       const GaiaId kTestUserGaiaId("1111111111");
       auto fake_user_manager = std::make_unique<ash::FakeChromeUserManager>();
@@ -99,7 +102,7 @@ class HidChooserContextTestBase {
     } else {
       profile_name = ash::kSigninBrowserContextBaseName;
     }
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
     testing_profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
@@ -184,6 +187,7 @@ class HidChooserContextTestBase {
     return ConnectDeviceBlocking(CreateDevice(kTestSerialNumber));
   }
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   device::mojom::HidDeviceInfoPtr ConnectFidoDeviceBlocking() {
     auto device = CreateDevice(/*serial_number=*/"");
     device->collections[0]->usage->usage_page = device::mojom::kPageFido;
@@ -209,6 +213,7 @@ class HidChooserContextTestBase {
     device->collections[0]->usage->usage = 1;
     return ConnectDeviceBlocking(std::move(device));
   }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
   device::mojom::HidDeviceInfoPtr ConnectDeviceBlocking(
       device::mojom::HidDeviceInfoPtr device) {
@@ -266,7 +271,7 @@ class HidChooserContextTestBase {
   }
 
   void RevokeObjectPermissionBlocking(const url::Origin& origin,
-                                      const base::Value::Dict& object) {
+                                      const base::DictValue& object) {
     base::RunLoop loop;
     EXPECT_CALL(permission_observer_,
                 OnObjectPermissionChanged(
@@ -314,24 +319,24 @@ class HidChooserContextTestBase {
   }
 
   void SetAllowDevicesForUrlsPolicy(std::string_view policy) {
-    testing_profile_manager_->local_state()->Get()->SetManagedPref(
+    TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetManagedPref(
         prefs::kManagedWebHidAllowDevicesForUrls, ParseJson(policy));
   }
 
   void SetAllowDevicesForUrlsOnLoginScreenPolicy(std::string_view policy) {
-    testing_profile_manager_->local_state()->Get()->SetManagedPref(
+    TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetManagedPref(
         prefs::kManagedWebHidAllowDevicesForUrlsOnLoginScreen,
         ParseJson(policy));
   }
 
   void SetAllowDevicesWithHidUsagesForUrlsPolicy(std::string_view policy) {
-    testing_profile_manager_->local_state()->Get()->SetManagedPref(
+    TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetManagedPref(
         prefs::kManagedWebHidAllowDevicesWithHidUsagesForUrls,
         ParseJson(policy));
   }
 
   void SetAllowAllDevicesForUrlsPolicy(std::string_view policy) {
-    testing_profile_manager_->local_state()->Get()->SetManagedPref(
+    TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetManagedPref(
         prefs::kManagedWebHidAllowAllDevicesForUrls, ParseJson(policy));
   }
 
@@ -342,7 +347,7 @@ class HidChooserContextTestBase {
   std::unique_ptr<TestingProfileManager> testing_profile_manager_;
   raw_ptr<TestingProfile> profile_ = nullptr;
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<user_manager::ScopedUserManager> scoped_user_manager_;
 #endif
 
@@ -1236,6 +1241,7 @@ TEST_P(HidChooserContextAffiliatedTest, BlocklistOverridesPolicy) {
   EXPECT_EQ(0u, context()->GetAllGrantedObjects().size());
 }
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 TEST_F(HidChooserContextTest, FidoAllowlistOverridesBlocklistDeviceIdRule) {
   const auto kFidoAllowedOrigin = url::Origin::Create(
       GURL("chrome-extension://ckcendljdlmgnhghiaomidhiiclmapok"));
@@ -1310,17 +1316,18 @@ TEST_P(HidChooserContextAffiliatedTest,
                                  kFidoAndPolicyAllowedOrigin, *device));
   EXPECT_FALSE(context()->HasDevicePermission(kOtherOrigin, *device));
 }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 // Boolean parameter means if user is affiliated on the device. Affiliated
 // users belong to the domain that owns the device and is only meaningful
-// on Chrome OS.
+// on ChromeOS.
 //
 // The WebHidAllowDevicesForUrls, WebHidAllowDevicesWithHidUsagesForUrls, and
 // WebHidAllowAllDevicesForUrls policies only take effect for affiliated users.
 INSTANTIATE_TEST_SUITE_P(
     HidChooserContextAffiliatedTestInstance,
     HidChooserContextAffiliatedTest,
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     testing::Values(true, false),
 #else
     testing::Values(true),
@@ -1358,9 +1365,9 @@ TEST_F(HidChooserContextLoginScreenTest, ApplyPolicyOnLoginScreen) {
         }
       ])");
 
-  // The policy has an effect only for IS_CHROMEOS_ASH build, otherwise it is
+  // The policy has an effect only for IS_CHROMEOS build, otherwise it is
   // ignored.
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   EXPECT_TRUE(context()->HasDevicePermission(kOrigin, *device));
   EXPECT_EQ(1u, context()->GetGrantedObjects(kOrigin).size());
   EXPECT_EQ(1u, context()->GetAllGrantedObjects().size());
@@ -1371,6 +1378,7 @@ TEST_F(HidChooserContextLoginScreenTest, ApplyPolicyOnLoginScreen) {
 #endif
 }
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 class HidChooserContextWebViewTest : public HidChooserContextTest {
  public:
   HidChooserContextWebViewTest() {
@@ -1478,3 +1486,4 @@ TEST_F(HidChooserContextWebViewTest, WebsitePermissionDoesNotLeakToWebView) {
   EXPECT_FALSE(context()->HasDevicePermission(kWebViewOrigin, *device,
                                               kEmbeddingOrigin));
 }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)

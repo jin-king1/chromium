@@ -11,7 +11,6 @@
 #include <string>
 #include <vector>
 
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/threading/thread_checker.h"
@@ -157,7 +156,10 @@ class MessageCenterImpl : public MessageCenter,
 
   std::unique_ptr<NotificationList> notification_list_;
   NotificationList::Notifications visible_notifications_;
-  base::ObserverList<MessageCenterObserver> observer_list_;
+  // MessageCenterObserver further notifies other observer methods upon
+  // `OnNotificationAdded()` (e.g. `OnNotificationUpdated()`), so allow
+  // reentrancy.
+  base::ReentrantObserverList<MessageCenterObserver> observer_list_;
   std::unique_ptr<PopupTimersController> popup_timers_controller_;
   base::OneShotTimer quiet_mode_timer_;
   std::vector<raw_ptr<NotificationBlocker, VectorExperimental>> blockers_;

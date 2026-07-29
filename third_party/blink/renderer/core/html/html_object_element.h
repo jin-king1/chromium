@@ -48,12 +48,17 @@ class CORE_EXPORT HTMLObjectElement final : public HTMLPlugInElement,
   ~HTMLObjectElement() override = default;
   void Trace(Visitor*) const override;
 
+  ElementType GetElementType() const final {
+    return ElementType::kHTMLObjectElement;
+  }
+
   // Returns attributes that should be checked against Trusted Types
   const AttrNameToTrustedType& GetCheckedAttributeTypes() const override;
 
   const String& ClassId() const { return class_id_; }
 
   HTMLFormElement* formOwner() const override;
+  HTMLElement* formForBinding() const override;
 
   bool ContainsJavaApplet() const;
 
@@ -93,6 +98,11 @@ class CORE_EXPORT HTMLObjectElement final : public HTMLPlugInElement,
     kDispatch,
   };
   void RenderFallbackContent(ErrorEventPolicy should_dispatch_error_event);
+
+  String data();
+  void setData(const V8UnionTrustedScriptURLOrUSVString*, ExceptionState&);
+  String codeBase();
+  void setCodeBase(const V8UnionTrustedScriptURLOrUSVString*, ExceptionState&);
 
  private:
   void ParseAttribute(const AttributeModificationParams&) override;

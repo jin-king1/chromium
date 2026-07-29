@@ -21,11 +21,12 @@
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/font_access/font_enumeration_cache.h"
 #include "content/browser/origin_agent_cluster_isolation_state.h"
+#include "content/browser/renderer_host/page_impl.h"
 #include "content/browser/renderer_host/render_frame_host_delegate.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_info.h"
 #include "content/browser/site_instance_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -34,6 +35,7 @@
 #include "content/public/browser/browser_child_process_host_iterator.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/site_isolation_policy.h"
@@ -197,7 +199,7 @@ bool AreAllSitesIsolatedForTesting() {
 bool IsOriginAgentClusterEnabledForOrigin(SiteInstance* site_instance,
                                           const url::Origin& origin) {
   OriginAgentClusterIsolationState origin_requests_isolation(
-      OriginAgentClusterIsolationState::CreateNonIsolated());
+      OriginAgentClusterIsolationState::CreateNonIsolatedByDefault());
 
   return static_cast<ChildProcessSecurityPolicyImpl*>(
              ChildProcessSecurityPolicy::GetInstance())
@@ -234,10 +236,6 @@ bool WillSameSiteNavigationChangeRenderFrameHosts(bool is_main_frame,
 
 bool CanSameSiteMainFrameNavigationsChangeSiteInstances() {
   return IsBackForwardCacheEnabled();
-}
-
-bool IsNavigationQueueingEnabled() {
-  return ShouldQueueNavigationsWhenPendingCommitRFHExists();
 }
 
 void DisableProactiveBrowsingInstanceSwapFor(RenderFrameHost* rfh) {
@@ -542,12 +540,13 @@ void EffectiveURLContentBrowserClientHelper::AddTranslation(
   urls_to_modify_[url_to_modify] = url_to_return;
 }
 
-GURL EffectiveURLContentBrowserClientHelper::GetEffectiveURL(const GURL& url) {
+std::optional<GURL> EffectiveURLContentBrowserClientHelper::GetEffectiveURL(
+    const GURL& url) {
   auto it = urls_to_modify_.find(url);
   if (it != urls_to_modify_.end()) {
     return it->second;
   }
-  return url;
+  return std::nullopt;
 }
 
 bool EffectiveURLContentBrowserClientHelper::DoesSiteRequireDedicatedProcess(
@@ -558,9 +557,18 @@ bool EffectiveURLContentBrowserClientHelper::DoesSiteRequireDedicatedProcess(
   }
 
   for (const auto& pair : urls_to_modify_) {
-    auto site_info = SiteInfo::CreateForTesting(
-        IsolationContext(browser_context), pair.first);
-    if (site_info.site_url() == effective_site_url) {
+    // `effective_site_url` requires a dedicated process if a SiteInfo created
+    // for it uses a matching site URL (and thus doesn't use unisolated.invalid
+    // for the default SiteInstance). It is important not to call
+    // SiteInfo::CreateForTesting here to avoid an infinite recursive call when
+    // computing values for the SiteInfo.
+    // TODO(crbug.com/390571607): Make sure this test works as intended in
+    // default SiteInstanceGroup mode.
+    GURL maybe_modified_url =
+        SiteInfo::GetSiteForURLForTest(IsolationContext(browser_context),
+                                       UrlInfo::CreateForTesting(pair.first),
+                                       /*should_use_effective_urls=*/true);
+    if (maybe_modified_url == effective_site_url) {
       return true;
     }
   }
@@ -587,7 +595,7 @@ void EffectiveURLContentBrowserClient::AddTranslation(
   helper_.AddTranslation(url_to_modify, url_to_return);
 }
 
-GURL EffectiveURLContentBrowserClient::GetEffectiveURL(
+std::optional<GURL> EffectiveURLContentBrowserClient::GetEffectiveURL(
     BrowserContext* browser_context,
     const GURL& url) {
   return helper_.GetEffectiveURL(url);

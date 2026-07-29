@@ -24,6 +24,7 @@
 #include "services/screen_ai/public/mojom/screen_ai_service.mojom.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_features.mojom-features.h"
+#include "ui/accessibility/ax_mode.h"
 
 namespace {
 
@@ -97,16 +98,18 @@ class MainContentExtractionTest : public InProcessBrowserTest {
 
   void Connect() {
     base::test::TestFuture<bool> future;
-    ScreenAIServiceRouterFactory::GetForBrowserContext(browser()->profile())
+    ScreenAIServiceRouterFactory::GetForBrowserContext(browser()->GetProfile())
         ->GetServiceStateAsync(
             ScreenAIServiceRouter::Service::kMainContentExtraction,
             future.GetCallback());
     ASSERT_TRUE(future.Wait()) << "Service state callback not called.";
     ASSERT_TRUE(future.Get<bool>()) << "Service initialization failed.";
 
-    ScreenAIServiceRouterFactory::GetForBrowserContext(browser()->profile())
+    ScreenAIServiceRouterFactory::GetForBrowserContext(browser()->GetProfile())
         ->BindMainContentExtractor(
             main_content_extractor_.BindNewPipeAndPassReceiver());
+    main_content_extractor_->SetClientType(
+        screen_ai::mojom::MceClientType::kTest);
   }
 
   ui::AXTreeUpdate DistillPage(const std::string& relative_url) {
@@ -119,7 +122,7 @@ class MainContentExtractionTest : public InProcessBrowserTest {
 
     base::test::TestFuture<ui::AXTreeUpdate&> future;
     web_contents->RequestAXTreeSnapshot(
-        future.GetCallback(), ui::kAXModeComplete,
+        future.GetCallback(), ui::kAXModeDefaultForTests,
         /* max_nodes= */ 0,
         /* timeout= */ {}, content::WebContents::AXTreeSnapshotPolicy::kAll);
     EXPECT_TRUE(future.Wait());
@@ -150,6 +153,8 @@ class MainContentExtractionTest : public InProcessBrowserTest {
 
 // Tests that calling main content extraction without content gets replied.
 IN_PROC_BROWSER_TEST_F(MainContentExtractionTest, EmptyInput) {
+  base::HistogramTester histograms;
+
   Connect();
 
   ui::AXNodeData root;
@@ -167,6 +172,15 @@ IN_PROC_BROWSER_TEST_F(MainContentExtractionTest, EmptyInput) {
   ExtractMainContent(empty_tree, main_content_ids);
 
   ASSERT_EQ(0u, main_content_ids.size());
+
+  metrics::SubprocessMetricsProvider::MergeHistogramDeltasForTesting();
+
+  histograms.ExpectUniqueSample(
+      "Accessibility.ScreenAI.MainContentExtraction.Successful2", false, 1);
+  histograms.ExpectTotalCount(
+      "Accessibility.ScreenAI.MainContentExtraction.Latency.Success", 0);
+  histograms.ExpectTotalCount(
+      "Accessibility.ScreenAI.MainContentExtraction.Latency.Failure", 1);
 }
 
 // Fake library always returns empty.
@@ -189,10 +203,12 @@ IN_PROC_BROWSER_TEST_F(MainContentExtractionTest, RequestWithContent) {
 
   metrics::SubprocessMetricsProvider::MergeHistogramDeltasForTesting();
 
+  histograms.ExpectUniqueSample(
+      "Accessibility.ScreenAI.MainContentExtraction.Successful2", true, 1);
   histograms.ExpectTotalCount(
-      "Accessibility.ScreenAI.MainContentExtraction.Successful", 1);
-  histograms.ExpectBucketCount(
-      "Accessibility.ScreenAI.MainContentExtraction.Successful", true, 1);
+      "Accessibility.ScreenAI.MainContentExtraction.Latency.Success", 1);
+  histograms.ExpectTotalCount(
+      "Accessibility.ScreenAI.MainContentExtraction.Latency.Failure", 0);
 }
 
 // Test requesting several extractions without waiting for the previous ones to

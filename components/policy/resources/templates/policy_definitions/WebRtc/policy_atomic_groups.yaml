@@ -3,3 +3,5 @@ WebRtc:
   policies:
   - WebRtcIPHandling
   - WebRtcIPHandlingUrl
+  - WebRtcPostQuantumKeyAgreement
+  - WebRtcDiagnosticLogCollectionAllowedForOrigins

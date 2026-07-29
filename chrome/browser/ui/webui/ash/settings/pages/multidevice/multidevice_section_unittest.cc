@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/ash/settings/pages/multidevice/multidevice_section.h"
 
+#include <string>
 #include <string_view>
 
 #include "ash/constants/ash_features.h"
@@ -46,14 +47,17 @@ class MockWebUIDataSource : public content::WebUIDataSource {
   void AddLocalizedString(std::string_view name, int ids) override {}
   void AddLocalizedStrings(
       base::span<const webui::LocalizedString> strings) override {}
-  void AddLocalizedStrings(
-      const base::Value::Dict& localized_strings) override {}
+  void AddLocalizedStrings(const base::DictValue& localized_strings) override {}
   void AddInteger(std::string_view name, int32_t value) override {}
   void AddDouble(std::string_view name, double value) override {}
   void UseStringsJs() override {}
   void AddResourcePath(std::string_view path, int resource_id) override {}
   void AddResourcePaths(base::span<const webui::ResourcePath> paths) override {}
   void SetDefaultResource(int resource_id) override {}
+  void SetResourcePathToResponse(std::string_view path,
+                                 std::string_view content) override {}
+  void PopulateWebUIResources(
+      base::flat_map<std::string, std::string>& map) const override {}
   void SetRequestFilter(const WebUIDataSource::ShouldHandleRequestCallback&
                             should_handle_request_callback,
                         const WebUIDataSource::HandleRequestCallback&

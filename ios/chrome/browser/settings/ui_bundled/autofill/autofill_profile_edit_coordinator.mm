@@ -11,10 +11,11 @@
 #import "components/autofill/core/browser/data_quality/autofill_data_util.h"
 #import "components/autofill/ios/browser/personal_data_manager_observer_bridge.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
+#import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_constants.h"
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_country_selection_table_view_controller.h"
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_profile_edit_mediator.h"
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_profile_edit_mediator_delegate.h"
-#import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_profile_edit_table_view_controller.h"
+#import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_profile_edit_table_view_helper.h"
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/cells/country_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_settings_profile_edit_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
@@ -43,7 +44,7 @@
   // The view controller attached to this coordinator.
   AutofillSettingsProfileEditTableViewController* _viewController;
 
-  AutofillProfileEditTableViewController* _sharedViewController;
+  AutofillProfileEditTableViewHelper* _sharedViewController;
 
   // Default NO. Yes when the country selection view has been presented.
   BOOL _isCountrySelectorPresented;
@@ -78,27 +79,32 @@
   // one so the user can edit the profile.
   autofill::PersonalDataManager* personalDataManager =
       autofill::PersonalDataManagerFactory::GetForProfile(
-          self.browser->GetProfile()->GetOriginalProfile());
+          self.profile->GetOriginalProfile());
 
   _mediator = [[AutofillProfileEditMediator alloc]
          initWithDelegate:self
       personalDataManager:personalDataManager
           autofillProfile:_autofillProfile.get()
-        isMigrationPrompt:NO];
+        isMigrationPrompt:NO
+         addManualAddress:NO];
 
   _viewController = [[AutofillSettingsProfileEditTableViewController alloc]
                       initWithDelegate:_mediator
       shouldShowMigrateToAccountButton:_showMigrateToAccountButton
                              userEmail:[self userEmail]];
-  _sharedViewController = [[AutofillProfileEditTableViewController alloc]
-      initWithDelegate:_mediator
-             userEmail:[self userEmail]
-            controller:_viewController
-          settingsView:YES];
+  _sharedViewController = [[AutofillProfileEditTableViewHelper alloc]
+       initWithDelegate:_mediator
+              userEmail:[self userEmail]
+             controller:_viewController
+      textFieldDelegate:_viewController
+         addressContext:SaveAddressContext::kEditingSavedAddress];
   _mediator.consumer = _sharedViewController;
   _viewController.handler = _sharedViewController;
   _viewController.snackbarCommandsHandler = HandlerForProtocol(
       self.browser->GetCommandDispatcher(), SnackbarCommands);
+  _viewController.sceneHandler =
+      HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneCommands);
+
   if (self.openInEditMode) {
     [_viewController editButtonPressed];
   }
@@ -111,6 +117,7 @@
 - (void)stop {
   _sharedViewController = nil;
   _viewController = nil;
+  [_mediator disconnect];
   _mediator = nil;
 }
 
@@ -165,10 +172,9 @@
 
 - (NSString*)userEmail {
   AuthenticationService* authenticationService =
-      AuthenticationServiceFactory::GetForProfile(self.browser->GetProfile());
+      AuthenticationServiceFactory::GetForProfile(self.profile);
   CHECK(authenticationService);
-  id<SystemIdentity> identity =
-      authenticationService->GetPrimaryIdentity(signin::ConsentLevel::kSignin);
+  id<SystemIdentity> identity = authenticationService->GetPrimaryIdentity();
   return identity ? identity.userEmail : nil;
 }
 

@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "content/browser/media/capture/frame_sink_video_capture_device.h"
 
 #include <array>
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -34,7 +30,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
 
 using testing::_;
 using testing::ByRef;
@@ -105,19 +100,21 @@ class MockFrameSinkVideoCapturer : public viz::mojom::FrameSinkVideoCapturer {
   MOCK_METHOD1(SetFormat, void(media::VideoPixelFormat format));
   MOCK_METHOD1(SetMinCapturePeriod, void(base::TimeDelta min_period));
   MOCK_METHOD1(SetMinSizeChangePeriod, void(base::TimeDelta));
+  MOCK_METHOD2(SetAnimationFpsLockIn,
+               void(bool enabled, float majority_damaged_pixel_min_ratio));
   MOCK_METHOD3(SetResolutionConstraints,
                void(const gfx::Size& min_size,
                     const gfx::Size& max_size,
                     bool use_fixed_aspect_ratio));
   MOCK_METHOD1(SetAutoThrottlingEnabled, void(bool));
   void ChangeTarget(const std::optional<viz::VideoCaptureTarget>& target,
-                    uint32_t sub_capture_target_version) final {
+                    uint32_t sub_capture_version) final {
     DCHECK_NOT_ON_DEVICE_THREAD();
-    MockChangeTarget(target, sub_capture_target_version);
+    MockChangeTarget(target, sub_capture_version);
   }
   MOCK_METHOD2(MockChangeTarget,
                void(const std::optional<viz::VideoCaptureTarget>& target,
-                    uint32_t sub_capture_target_version));
+                    uint32_t sub_capture_version));
   void Start(
       mojo::PendingRemote<viz::mojom::FrameSinkVideoConsumer> consumer,
       viz::mojom::BufferFormatPreference buffer_format_preference) final {
@@ -215,8 +212,8 @@ class MockVideoFrameReceiver : public media::VideoFrameReceiver {
   MOCK_METHOD1(OnBufferRetired, void(int buffer_id));
   MOCK_METHOD1(OnError, void(media::VideoCaptureError error));
   MOCK_METHOD1(OnFrameDropped, void(media::VideoCaptureFrameDropReason reason));
-  MOCK_METHOD1(OnNewSubCaptureTargetVersion,
-               void(uint32_t sub_capture_target_version));
+  MOCK_METHOD1(OnNewCaptureVersion,
+               void(media::CaptureVersion capture_version));
   MOCK_METHOD0(OnFrameWithEmptyRegionCapture, void());
   MOCK_METHOD1(OnLog, void(const std::string& message));
   MOCK_METHOD0(OnStarted, void());
@@ -357,12 +354,13 @@ class FrameSinkVideoCaptureDeviceTest : public testing::Test {
         MockChangeTarget(std::optional<viz::VideoCaptureTarget>(target), 0));
     EXPECT_CALL(
         capturer_,
-        MockStart(NotNull(),
-                  viz::mojom::BufferFormatPreference::kPreferGpuMemoryBuffer));
+        MockStart(
+            NotNull(),
+            viz::mojom::BufferFormatPreference::kPreferMappableSharedImage));
 
     EXPECT_FALSE(capturer_.is_bound());
     POST_DEVICE_METHOD_CALL(OnTargetChanged, target,
-                            /*sub_capture_target_version=*/0);
+                            /*sub_capture_version=*/0);
     POST_DEVICE_METHOD_CALL(AllocateAndStartWithReceiver, GetCaptureParams(),
                             std::move(receiver));
     WAIT_FOR_DEVICE_TASKS();
@@ -390,8 +388,8 @@ class FrameSinkVideoCaptureDeviceTest : public testing::Test {
         base::ReadOnlySharedMemoryRegion::Create(
             media::VideoFrame::AllocationSize(kFormat, kResolution));
     CHECK(region.IsValid());
-    memset(region.mapping.memory(), GetFrameFillValue(frame_number),
-           region.mapping.size());
+    UNSAFE_TODO(memset(region.mapping.memory(), GetFrameFillValue(frame_number),
+                       region.mapping.size()));
 
     mojo::PendingRemote<viz::mojom::FrameSinkVideoConsumerFrameCallbacks>
         callbacks_remote;
@@ -408,7 +406,8 @@ class FrameSinkVideoCaptureDeviceTest : public testing::Test {
                   std::move(data)),
               media::mojom::VideoFrameInfo::New(
                   kMinCapturePeriod * frame_number, media::VideoFrameMetadata(),
-                  kFormat, kResolution, gfx::Rect(kResolution), kNotPremapped,
+                  kFormat, kResolution, gfx::Rect(kResolution),
+                  /*natural_size=*/kResolution, kNotPremapped,
                   gfx::ColorSpace::CreateREC709(), nullptr),
               gfx::Rect(kResolution), std::move(callbacks_remote));
         },
@@ -604,7 +603,7 @@ TEST_F(FrameSinkVideoCaptureDeviceTest, ShutsDownOnFatalError) {
   {
     EXPECT_CALL(capturer_,
                 MockChangeTarget(std::optional<viz::VideoCaptureTarget>(),
-                                 /*sub_capture_target_version=*/0));
+                                 /*sub_capture_version=*/0));
     EXPECT_CALL(capturer_, MockStop());
     POST_DEVICE_METHOD_CALL0(OnTargetPermanentlyLost);
     WAIT_FOR_DEVICE_TASKS();
@@ -629,6 +628,51 @@ TEST_F(FrameSinkVideoCaptureDeviceTest, ShutsDownOnFatalError) {
                             std::move(receiver_ptr));
     WAIT_FOR_DEVICE_TASKS();
   }
+}
+
+// Tests that the video rotation is properly sent through metadata.
+TEST_F(FrameSinkVideoCaptureDeviceTest, SetsVideoRotation) {
+  auto receiver_ptr = std::make_unique<MockVideoFrameReceiver>();
+  auto* const receiver = receiver_ptr.get();
+  EXPECT_CALL(*receiver, OnStarted());
+  EXPECT_CALL(*receiver, OnError(_)).Times(0);
+
+  AllocateAndStartSynchronouslyWithExpectations(std::move(receiver_ptr));
+
+  // Set the rotation to 180 degrees.
+  POST_DEVICE_METHOD_CALL(SetVideoRotation, media::VIDEO_ROTATION_180);
+  WAIT_FOR_DEVICE_TASKS();
+
+  int buffer_id = -1;
+  MockFrameSinkVideoConsumerFrameCallbacks callbacks;
+
+  Expectation new_buffer_called =
+      EXPECT_CALL(*receiver, MockOnNewBuffer(Ge(0), NotNull()))
+          .WillOnce(SaveArg<0>(&buffer_id));
+  EXPECT_CALL(*receiver, MockOnFrameReadyInBuffer(Eq(ByRef(buffer_id)), Ge(0),
+                                                  NotNull(), NotNull()))
+      .After(new_buffer_called);
+
+  SimulateFrameCapture(0, &callbacks);
+  WAIT_FOR_DEVICE_TASKS();
+
+  // Confirm the VideoFrameReceiver was provided the correct metadata.
+  const auto info = receiver->TakeVideoFrameInfo(buffer_id);
+  ASSERT_TRUE(info);
+  EXPECT_TRUE(info->metadata.transformation.has_value());
+  EXPECT_EQ(media::VIDEO_ROTATION_180, info->metadata.transformation->rotation);
+
+  media::VideoCaptureFeedback fake_feedback = media::VideoCaptureFeedback(0.0);
+  fake_feedback.frame_id = receiver->TakeFeedbackId(buffer_id);
+  EXPECT_CALL(callbacks, ProvideFeedback(fake_feedback));
+  EXPECT_CALL(callbacks, Done());
+  EXPECT_CALL(*receiver, OnBufferRetired(buffer_id));
+  POST_DEVICE_METHOD_CALL(OnUtilizationReport, fake_feedback);
+  receiver->ReleaseAccessPermission(buffer_id);
+  auto buffer = receiver->TakeBufferHandle(buffer_id);
+  WAIT_FOR_DEVICE_TASKS();
+
+  StopAndDeAllocateSynchronouslyWithExpectations(true /* capturer will stop */);
 }
 
 }  // namespace

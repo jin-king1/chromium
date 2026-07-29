@@ -7,11 +7,13 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/metrics/histogram_tester.h"
-#import "base/types/cxx23_to_underlying.h"
 #import "components/signin/public/base/signin_metrics.h"
+#import "components/sync/test/test_sync_service.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/metrics/model/constants.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_util.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
+#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -20,6 +22,8 @@
 #import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/testing_application_context.h"
 #import "ios/web/public/test/web_task_environment.h"
@@ -35,16 +39,16 @@ namespace {
 // mock will be uninstalled when the returned object is destroyed.
 id InstallMockPushNotificationUtil(UNAuthorizationStatus status) {
   id mock = OCMClassMock([PushNotificationUtil class]);
-  OCMStub(ClassMethod([mock getPermissionSettings:[OCMArg any]]))
-      .andDo(^(NSInvocation* invocation) {
-        __unsafe_unretained void (^block)(UNNotificationSettings*) = nil;
-        [invocation getArgument:&block atIndex:2];
-        if (block) {
-          id mock_value = OCMClassMock([UNNotificationSettings class]);
-          OCMStub([mock_value authorizationStatus]).andReturn(status);
-          block(mock_value);
-        }
-      });
+  id mock_value = OCMClassMock([UNNotificationSettings class]);
+  OCMStub([mock_value authorizationStatus]).andReturn(status);
+  OCMStub(ClassMethod(
+      [mock getPermissionSettings:[OCMArg checkWithBlock:^BOOL(id obj) {
+              void (^block)(UNNotificationSettings*) = obj;
+              if (block) {
+                block(mock_value);
+              }
+              return YES;
+            }]]));
   return mock;
 }
 
@@ -79,17 +83,13 @@ class IOSPushNotificationsMetricsProviderTest : public PlatformTest {
     FakeSystemIdentityManager::FromSystemIdentityManager(
         GetApplicationContext()->GetSystemIdentityManager())
         ->AddIdentity(identity);
-    std::string profile_name;
-    if (AreSeparateProfilesForManagedAccountsEnabled()) {
-      std::optional<std::string> assigned_profile_name =
-          GetApplicationContext()
-              ->GetAccountProfileMapper()
-              ->FindProfileNameForGaiaID(GaiaId(identity.gaiaID));
-      CHECK(assigned_profile_name.has_value());
-      profile_name = *assigned_profile_name;
-    } else {
-      profile_name = profile_manager_.ReserveNewProfileName();
-    }
+    std::optional<std::string> assigned_profile_name =
+        GetApplicationContext()
+            ->GetAccountProfileMapper()
+            ->FindProfileNameForGaiaID(identity.gaiaId);
+    CHECK(assigned_profile_name.has_value());
+    std::string profile_name = *assigned_profile_name;
+
     CHECK(!profile_name.empty());
 
     ProfileIOS* profile = AddProfileImpl(profile_name);
@@ -108,6 +108,8 @@ class IOSPushNotificationsMetricsProviderTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
 
     return profile_manager_.AddProfileWithBuilder(std::move(builder));
   }
@@ -157,6 +159,10 @@ TEST_F(IOSPushNotificationsMetricsProviderTest,
   EXPECT_THAT(histogram_tester().GetAllSamples(
                   kSendTabNotifClientStatusByProviderHistogram),
               ::testing::ElementsAre());
+
+  EXPECT_THAT(histogram_tester().GetAllSamples(
+                  kRemindersClientStatusByProviderHistogram),
+              ::testing::ElementsAre());
 }
 
 // Tests that ProvideCurrentSessionData(...) records the status of the
@@ -199,6 +205,10 @@ TEST_F(IOSPushNotificationsMetricsProviderTest,
   EXPECT_THAT(histogram_tester().GetAllSamples(
                   kSendTabNotifClientStatusByProviderHistogram),
               ::testing::ElementsAre());
+
+  EXPECT_THAT(histogram_tester().GetAllSamples(
+                  kRemindersClientStatusByProviderHistogram),
+              ::testing::ElementsAre(base::Bucket(0, 1)));
 }
 
 // Tests that ProvideCurrentSessionData(...) records the status of the
@@ -242,4 +252,8 @@ TEST_F(IOSPushNotificationsMetricsProviderTest,
   EXPECT_THAT(histogram_tester().GetAllSamples(
                   kSendTabNotifClientStatusByProviderHistogram),
               ::testing::ElementsAre(base::Bucket(0, 1)));
+
+  EXPECT_THAT(histogram_tester().GetAllSamples(
+                  kRemindersClientStatusByProviderHistogram),
+              ::testing::ElementsAre(base::Bucket(0, 2)));
 }

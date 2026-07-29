@@ -16,6 +16,7 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.media.ThumbnailUtils;
 import android.net.Uri;
+import android.os.PersistableBundle;
 import android.os.SystemClock;
 import android.text.TextUtils;
 import android.view.DragAndDropPermissions;
@@ -26,19 +27,17 @@ import android.view.ViewGroup;
 import android.widget.ImageView;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.content.res.AppCompatResources;
 import androidx.core.graphics.drawable.RoundedBitmapDrawable;
 import androidx.core.graphics.drawable.RoundedBitmapDrawableFactory;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.base.MathUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.R;
 import org.chromium.ui.accessibility.AccessibilityState;
-import org.chromium.ui.base.MimeTypeUtils;
 import org.chromium.ui.dragdrop.AnimatedImageDragShadowBuilder.CursorOffset;
 import org.chromium.ui.dragdrop.AnimatedImageDragShadowBuilder.DragShadowSpec;
 import org.chromium.ui.dragdrop.DragDropMetricUtils.UrlIntentSource;
@@ -52,12 +51,15 @@ import java.lang.annotation.RetentionPolicy;
  */
 @NullMarked
 public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTracker {
+    private static final String TAG = "DnDDelegateImpl";
+
     /**
      * Java Enum of AndroidDragTargetType used for histogram recording for
      * Android.DragDrop.FromWebContent.TargetType. This is used for histograms and should therefore
      * be treated as append-only. TODO (crbug.com/1484695) Revisit hists to capture drag and drop
      * source.
      */
+    // LINT.IfChange(DragTargetType)
     @IntDef({
         DragTargetType.INVALID,
         DragTargetType.TEXT,
@@ -76,6 +78,7 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
 
         int NUM_ENTRIES = 5;
     }
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidDragTargetType)
 
     private int mShadowWidth;
     private int mShadowHeight;
@@ -86,9 +89,6 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
 
     /** The type of drag target from the view this object tracks. */
     private @DragTargetType int mDragTargetType;
-
-    private float mDragStartXDp;
-    private float mDragStartYDp;
 
     private long mDragStartSystemElapsedTime;
 
@@ -121,7 +121,8 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
             int cursorOffsetY,
             int dragObjRectWidth,
             int dragObjRectHeight) {
-        if (isA11yStateEnabled()) return false;
+        // Tab tearing to be enabled on XR device all the time.
+        if (isA11yStateEnabled() && !DeviceInfo.isXr()) return false;
         int windowWidth = containerView.getRootView().getWidth();
         int windowHeight = containerView.getRootView().getHeight();
         View.DragShadowBuilder dragShadowBuilder =
@@ -142,7 +143,8 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
     @Override
     public boolean startDragAndDrop(
             View containerView, DragShadowBuilder dragShadowBuilder, DropDataAndroid dropData) {
-        if (isA11yStateEnabled()) return false;
+        // Tab tearing to be enabled on XR device all the time.
+        if (isA11yStateEnabled() && !DeviceInfo.isXr()) return false;
         return startDragAndDropInternal(containerView, dragShadowBuilder, dropData);
     }
 
@@ -156,6 +158,13 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
     private boolean startDragAndDropInternal(
             View containerView, DragShadowBuilder dragShadowBuilder, DropDataAndroid dropData) {
         ClipData clipdata = buildClipData(dropData);
+        // A null clipdata is ok where DOM elements are being moved
+        // (crbug.com/363930156) but not for images which can happen in webview
+        // where DropDataProvider is not registered and will result in a crash
+        // (crbug.com/491018397).
+        if (clipdata == null && dropData.hasImage()) {
+            return false;
+        }
         mIsDragStarted = true;
         mDragStartSystemElapsedTime = SystemClock.elapsedRealtime();
         mDragTargetType = getDragTargetType(dropData);
@@ -170,7 +179,7 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
     }
 
     @Override
-    public void setDragAndDropBrowserDelegate(DragAndDropBrowserDelegate delegate) {
+    public void setDragAndDropBrowserDelegate(@Nullable DragAndDropBrowserDelegate delegate) {
         mDragAndDropBrowserDelegate = delegate;
     }
 
@@ -209,11 +218,8 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
         }
 
         switch (dragEvent.getAction()) {
-            case DragEvent.ACTION_DRAG_STARTED:
-                onDragStarted(dragEvent);
-                break;
             case DragEvent.ACTION_DROP:
-                onDrop(dragEvent);
+                onDrop();
                 break;
             case DragEvent.ACTION_DRAG_ENDED:
                 onDragEnd(dragEvent);
@@ -236,15 +242,34 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
      * @return ClipData based on the dropData type.
      */
     protected @Nullable ClipData buildClipData(DropDataAndroid dropData) {
+        return addCustomDataToClipData(buildClipDataInternal(dropData), dropData);
+    }
+
+    private @Nullable ClipData addCustomDataToClipData(
+            @Nullable ClipData clipData, DropDataAndroid dropData) {
+        if (clipData == null || clipData.getDescription() == null) {
+            return clipData;
+        }
+
+        PersistableBundle extras = clipData.getDescription().getExtras();
+        if (extras == null) {
+            extras = new PersistableBundle();
+        }
+        if (dropData.customData != null) {
+            extras.putString(DropDataAndroid.EXTRA_CUSTOM_DATA, dropData.customData);
+        }
+        if (dropData.effectAllowed != null) {
+            extras.putString(DropDataAndroid.EXTRA_EFFECT_ALLOWED, dropData.effectAllowed);
+        }
+        clipData.getDescription().setExtras(extras);
+        return clipData;
+    }
+
+    protected @Nullable ClipData buildClipDataInternal(DropDataAndroid dropData) {
         @DragTargetType int type = getDragTargetType(dropData);
         switch (type) {
             case DragTargetType.TEXT:
-                return new ClipData(
-                        null,
-                        new String[] {
-                            ClipDescription.MIMETYPE_TEXT_PLAIN, MimeTypeUtils.CHROME_MIMETYPE_TEXT
-                        },
-                        new Item(dropData.text));
+                return ClipData.newPlainText(null, dropData.text);
             case DragTargetType.IMAGE:
                 Uri cachedUri = DropDataProviderUtils.cacheImageData(dropData);
                 // If there's no content provider we shouldn't start the drag.
@@ -254,6 +279,7 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
                 return ClipData.newUri(
                         ContextUtils.getApplicationContext().getContentResolver(), null, cachedUri);
             case DragTargetType.LINK:
+                assumeNonNull(dropData.gurl);
                 if (mDragAndDropBrowserDelegate != null) {
                     Intent intent =
                             mDragAndDropBrowserDelegate.createUrlIntent(
@@ -263,8 +289,7 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
                                 null,
                                 new String[] {
                                     ClipDescription.MIMETYPE_TEXT_PLAIN,
-                                    ClipDescription.MIMETYPE_TEXT_INTENT,
-                                    MimeTypeUtils.CHROME_MIMETYPE_LINK
+                                    ClipDescription.MIMETYPE_TEXT_INTENT
                                 },
                                 new Item(getTextForLinkData(dropData), intent, null));
                     }
@@ -413,21 +438,8 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
         mShadowHeight = targetHeight + borderSize * 2;
     }
 
-    private void onDragStarted(DragEvent dragStartEvent) {
-        mDragStartXDp = dragStartEvent.getX();
-        mDragStartYDp = dragStartEvent.getY();
-    }
-
-    private void onDrop(DragEvent dropEvent) {
+    private void onDrop() {
         mIsDropOnView = true;
-
-        final int dropDistance =
-                Math.round(
-                        MathUtils.distance(
-                                mDragStartXDp, mDragStartYDp, dropEvent.getX(), dropEvent.getY()));
-        RecordHistogram.recordExactLinearHistogram(
-                "Android.DragDrop.FromWebContent.DropInWebContent.DistanceDip", dropDistance, 51);
-
         long dropDuration = SystemClock.elapsedRealtime() - mDragStartSystemElapsedTime;
         RecordHistogram.deprecatedRecordMediumTimesHistogram(
                 "Android.DragDrop.FromWebContent.DropInWebContent.Duration", dropDuration);
@@ -452,8 +464,6 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
         // Only record metrics when drop does not happen for ContentView.
         if (!mIsDropOnView) {
             assert mDragStartSystemElapsedTime > 0;
-            long dragDuration = SystemClock.elapsedRealtime() - mDragStartSystemElapsedTime;
-            recordDragDurationAndResult(dragDuration, dragResult);
             recordDragTargetType(mDragTargetType);
         }
         // Allow drop into ContentView when files are supported by clank.
@@ -482,6 +492,7 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
     /** Return the text to be dropped when {@link DropDataAndroid} contains a link. */
     static String getTextForLinkData(DropDataAndroid dropData) {
         assert dropData.hasLink();
+        assumeNonNull(dropData.gurl);
         if (TextUtils.isEmpty(dropData.text)) return dropData.gurl.getSpec();
         return dropData.text + "\n" + dropData.gurl.getSpec();
     }
@@ -499,21 +510,5 @@ public class DragAndDropDelegateImpl implements DragAndDropDelegate, DragStateTr
     private void recordDragTargetType(@DragTargetType int type) {
         RecordHistogram.recordEnumeratedHistogram(
                 "Android.DragDrop.FromWebContent.TargetType", type, DragTargetType.NUM_ENTRIES);
-    }
-
-    private void recordDragDurationAndResult(long duration, boolean result) {
-        String histogramPrefix = "Android.DragDrop.FromWebContent.Duration.";
-        String suffix = result ? "Success" : "Canceled";
-        RecordHistogram.deprecatedRecordMediumTimesHistogram(histogramPrefix + suffix, duration);
-    }
-
-    @VisibleForTesting
-    float getDragStartXDp() {
-        return mDragStartXDp;
-    }
-
-    @VisibleForTesting
-    float getDragStartYDp() {
-        return mDragStartYDp;
     }
 }

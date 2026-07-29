@@ -7,6 +7,8 @@
 #import <UIKit/UIKit.h>
 
 #import <memory>
+#import <optional>
+#import <string>
 #import <utility>
 
 #import "base/functional/bind.h"
@@ -26,6 +28,7 @@
 #import "base/time/time.h"
 #import "base/values.h"
 #import "build/branding_buildflags.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/metrics/metrics_pref_names.h"
 #import "components/prefs/pref_service.h"
 #import "components/version_info/version_info.h"
@@ -395,7 +398,8 @@ void OmahaService::Start(std::unique_ptr<network::PendingSharedURLLoaderFactory>
   DCHECK(!service->pending_url_loader_factory_ ||
          !service->url_loader_factory_);
   service->pending_url_loader_factory_ = std::move(pending_url_loader_factory);
-  service->locale_lang_ = GetApplicationContext()->GetApplicationLocale();
+  service->locale_lang_ =
+      GetApplicationContext()->GetApplicationLocaleStorage()->Get();
   web::GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(&OmahaService::SendOrScheduleNextPing,
                                 base::Unretained(service)));
@@ -601,7 +605,7 @@ void OmahaService::StartInternal(
 
 // static
 void OmahaService::GetDebugInformation(
-    base::OnceCallback<void(base::Value::Dict)> callback) {
+    base::OnceCallback<void(base::DictValue)> callback) {
   if (OmahaService::IsEnabled()) {
     OmahaService* service = GetInstance();
     web::GetIOThreadTaskRunner({})->PostTask(
@@ -612,7 +616,7 @@ void OmahaService::GetDebugInformation(
   } else {
     // Invoke the callback with an empty response.
     web::GetUIThreadTaskRunner({})->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), base::Value::Dict()));
+        FROM_HERE, base::BindOnce(std::move(callback), base::DictValue()));
   }
 }
 
@@ -851,8 +855,7 @@ void OmahaService::SendOrScheduleNextPing() {
 // the expected deadline.
 void OmahaService::ResyncTimerIfNeeded() {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
-  CHECK(base::FeatureList::IsEnabled(kOmahaResyncTimerOnForeground),
-        base::NotFatalUntil::M134);
+  CHECK(base::FeatureList::IsEnabled(kOmahaResyncTimerOnForeground));
 
   // If the timer isn't already running, nothing needs to be done.
   if (!timer_.IsRunning()) {
@@ -871,7 +874,7 @@ void OmahaService::ResyncTimerIfNeeded() {
 
   // The deadline is still in the future, but may not match what the
   // timer is currently set to. Reset the timer with a new deadline.
-  CHECK(schedule_, base::NotFatalUntil::M134);
+  CHECK(schedule_);
   timer_.Start(FROM_HERE, next_tries_time_ - now,
                base::BindOnce(&OmahaService::SendPing, base::Unretained(this)));
 }
@@ -897,8 +900,7 @@ void OmahaService::PersistStates() {
   });
 }
 
-void OmahaService::OnURLLoadComplete(
-    std::unique_ptr<std::string> response_body) {
+void OmahaService::OnURLLoadComplete(std::optional<std::string> response_body) {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
   // Reset the loader.
   url_loader_.reset();
@@ -970,9 +972,9 @@ void OmahaService::OnURLLoadComplete(
 }
 
 void OmahaService::GetDebugInformationOnIOThread(
-    base::OnceCallback<void(base::Value::Dict)> callback) {
+    base::OnceCallback<void(base::DictValue)> callback) {
   DCHECK_CURRENTLY_ON(web::WebThread::IO);
-  base::Value::Dict result;
+  base::DictValue result;
 
   result.Set("message", GetCurrentPingContent());
   result.Set("last_sent_time",

@@ -41,15 +41,13 @@ void ScreenMetricsEmulator::DisableAndApply() {
   frame_widget_->SetScreenInfoAndSize(original_screen_infos_,
                                       original_widget_size_dips_,
                                       original_visible_viewport_size_);
-  // The posture service will restore the original device posture coming from
-  // the platform.
-  frame_widget_->DisableDevicePostureOverrideForEmulation();
 }
 
 void ScreenMetricsEmulator::ChangeEmulationParams(
-    const DeviceEmulationParams& params) {
+    const DeviceEmulationParams& params,
+    const mojom::blink::DeviceEmulationCacheBehavior& cache_behavior) {
   emulation_params_ = params;
-  Apply();
+  Apply(cache_behavior);
 }
 
 gfx::Point ScreenMetricsEmulator::ViewRectOrigin() {
@@ -61,7 +59,8 @@ gfx::Point ScreenMetricsEmulator::ViewRectOrigin() {
   return widget_pos;
 }
 
-void ScreenMetricsEmulator::Apply() {
+void ScreenMetricsEmulator::Apply(
+    const mojom::blink::DeviceEmulationCacheBehavior& cache_behavior) {
   // The WidgetScreenRect gets derived from the widget size of the main frame
   // widget, not from the original WidgetScreenRect.
   gfx::Size widget_size = original_widget_size_dips_;
@@ -138,7 +137,7 @@ void ScreenMetricsEmulator::Apply() {
   modified_emulation_params.device_scale_factor =
       original_screen_info.device_scale_factor;
   frame_widget_->SetScreenMetricsEmulationParameters(
-      true, std::move(modified_emulation_params));
+      true, std::move(modified_emulation_params), cache_behavior);
 
   frame_widget_->SetScreenRects(gfx::Rect(widget_pos, widget_size),
                                 gfx::Rect(window_pos, window_size));
@@ -154,9 +153,6 @@ void ScreenMetricsEmulator::Apply() {
         {0, 0, widget_size.width(), widget_size.height()}};
     frame_widget_->SetViewportSegments(emulated_segments);
   }
-
-  frame_widget_->OverrideDevicePostureForEmulation(
-      emulation_params_.device_posture);
 
   display::ScreenInfos emulated_screen_infos = original_screen_infos_;
   display::ScreenInfo& emulated_screen_info =

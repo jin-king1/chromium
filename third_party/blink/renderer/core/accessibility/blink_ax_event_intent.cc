@@ -401,7 +401,7 @@ BlinkAXEventIntent::BlinkAXEventIntent(
     ax::mojom::blink::MoveDirection move_direction)
     : intent_(command, text_boundary, move_direction), is_initialized_(true) {}
 
-BlinkAXEventIntent::BlinkAXEventIntent(WTF::HashTableDeletedValueType type)
+BlinkAXEventIntent::BlinkAXEventIntent(HashTableDeletedValueType type)
     : is_initialized_(true), is_deleted_(true) {}
 
 BlinkAXEventIntent::~BlinkAXEventIntent() = default;
@@ -415,10 +415,6 @@ BlinkAXEventIntent& BlinkAXEventIntent::operator=(
 bool operator==(const BlinkAXEventIntent& a, const BlinkAXEventIntent& b) {
   return BlinkAXEventIntentHashTraits::GetHash(a) ==
          BlinkAXEventIntentHashTraits::GetHash(b);
-}
-
-bool operator!=(const BlinkAXEventIntent& a, const BlinkAXEventIntent& b) {
-  return !(a == b);
 }
 
 bool BlinkAXEventIntent::IsHashTableDeletedValue() const {
@@ -446,13 +442,11 @@ unsigned int BlinkAXEventIntentHashTraits::GetHash(
     return std::numeric_limits<unsigned>::max();
 
   unsigned hash = 1u;
-  WTF::AddIntToHash(hash, static_cast<const unsigned>(key.intent().command));
-  WTF::AddIntToHash(hash,
-                    static_cast<const unsigned>(key.intent().input_event_type));
-  WTF::AddIntToHash(hash,
-                    static_cast<const unsigned>(key.intent().text_boundary));
-  WTF::AddIntToHash(hash,
-                    static_cast<const unsigned>(key.intent().move_direction));
+  AddIntToHash(hash, static_cast<const unsigned>(key.intent().command));
+  AddIntToHash(hash,
+               static_cast<const unsigned>(key.intent().input_event_type));
+  AddIntToHash(hash, static_cast<const unsigned>(key.intent().text_boundary));
+  AddIntToHash(hash, static_cast<const unsigned>(key.intent().move_direction));
   return hash;
 }
 

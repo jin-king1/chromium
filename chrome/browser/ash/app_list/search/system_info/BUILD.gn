@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("system_info") {
@@ -31,7 +29,6 @@ static_library("system_info") {
     "//ash/strings",
     "//ash/webui/diagnostics_ui:url_constants",
     "//ash/webui/settings/public/constants:mojom",
-    "//chrome/app:generated_resources",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/ash/app_list/search",
     "//chrome/browser/ash/app_list/search/common",
@@ -39,10 +36,12 @@ static_library("system_info") {
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/browser/ui/webui/ash/settings/pages/storage",
     "//chrome/common:channel_info",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus/cicerone",
     "//chromeos/ash/components/launcher_search",
     "//chromeos/ash/components/string_matching",
     "//chromeos/ash/components/system_info",
+    "//chromeos/ash/experiences/settings_ui",
     "//chromeos/ash/services/cros_healthd/public/cpp",
     "//chromeos/ash/services/cros_healthd/public/mojom",
     "//chromeos/dbus/power",

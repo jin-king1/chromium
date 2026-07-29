@@ -9,18 +9,18 @@
 #include <stdint.h>
 
 #include <compare>
-#include <map>
 #include <memory>
 
+#include "base/byte_size.h"
 #include "base/functional/callback_forward.h"
+#include "components/performance_manager/public/resource_attribution/process_context.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace performance_manager {
 class Graph;
 }
 
 namespace resource_attribution {
-
-class ProcessContext;
 
 // A shim that Resource Attribution queries use to request memory measurements.
 // Public so that users of the API can inject a test override by passing a
@@ -29,17 +29,24 @@ class MemoryMeasurementDelegate {
  public:
   class Factory;
 
-  // The minimal results returned for a process memory measurement.
+  // The minimal results returned for a process memory measurement. The default
+  // implementation fills this in from a memory_instrumentation.mojom.OSMemDump.
+  // See the comments in memory_instrumentation.mojom for more details.
+  //
   // MemoryMeasurementProvider will wrap this in a full MemorySummaryResult.
   struct MemorySummaryMeasurement {
-    uint64_t resident_set_size_kb = 0;
-    uint64_t private_footprint_kb = 0;
+    base::ByteSize resident_set_size;
+    base::ByteSize private_footprint;
+
+    // Only populated by default on Linux, ChromeOS and Android.
+    base::ByteSize private_swap;
 
     // Division operator required by SplitResourceAmongFramesAndWorkers().
     constexpr MemorySummaryMeasurement operator/(size_t divisor) {
       return MemorySummaryMeasurement{
-          .resident_set_size_kb = resident_set_size_kb / divisor,
-          .private_footprint_kb = private_footprint_kb / divisor};
+          .resident_set_size = resident_set_size / divisor,
+          .private_footprint = private_footprint / divisor,
+          .private_swap = private_swap / divisor};
     }
 
     friend constexpr auto operator<=>(const MemorySummaryMeasurement&,
@@ -49,7 +56,8 @@ class MemoryMeasurementDelegate {
                                      const MemorySummaryMeasurement&) = default;
   };
 
-  using MemorySummaryMap = std::map<ProcessContext, MemorySummaryMeasurement>;
+  using MemorySummaryMap =
+      absl::flat_hash_map<ProcessContext, MemorySummaryMeasurement>;
 
   // The given `factory` will be used to create a MemoryMeasurementDelegate to
   // measure ProcessNodes in `graph`. The factory object must outlive the graph.

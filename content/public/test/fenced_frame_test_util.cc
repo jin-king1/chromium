@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include "base/strings/string_number_conversions.h"
 #include "base/test/run_until.h"
 #include "base/trace_event/typed_macros.h"
 #include "content/browser/fenced_frame/fenced_frame.h"
@@ -55,9 +56,6 @@ FencedFrameTestHelper::FencedFrameTestHelper() {
   scoped_feature_list_.InitWithFeaturesAndParameters(
       {{blink::features::kFencedFrames, {}},
        {features::kPrivacySandboxAdsAPIsOverride, {}},
-       {network::features::kInterestGroupStorage, {}},
-       {blink::features::kAdInterestGroupAPI, {}},
-       {blink::features::kFledge, {}},
        {blink::features::kFencedFramesAPIChanges, {}},
        {blink::features::kFencedFramesDefaultMode, {}},
        {features::kFencedFramesEnforceFocus, {}},
@@ -65,7 +63,6 @@ FencedFrameTestHelper::FencedFrameTestHelper() {
        {blink::features::kFencedFramesLocalUnpartitionedDataAccess, {}},
        {blink::features::kFencedFramesCrossOriginEventReporting, {}},
        {blink::features::kFencedFramesReportEventHeaderChanges, {}},
-       {blink::features::kExemptUrlFromNetworkRevocationForTesting, {}},
        {blink::features::kFencedFramesCrossOriginAutomaticBeaconData, {}}},
       {/* disabled_features */});
 }
@@ -145,47 +142,6 @@ RenderFrameHost* FencedFrameTestHelper::CreateFencedFrame(
   return target_node->current_frame_host();
 }
 
-void FencedFrameTestHelper::NavigateFencedFrameUsingFledge(
-    RenderFrameHost* fenced_frame_parent,
-    const GURL& url,
-    const std::string fenced_frame_id) {
-  // Run an ad auction using FLEDGE and load the result into the fenced frame
-  // with id `fenced_frame_id`.
-  EXPECT_TRUE(ExecJs(fenced_frame_parent, JsReplace(R"(
-    (async() => {
-      const FLEDGE_BIDDING_URL = "/interest_group/bidding_logic.js";
-      const FLEDGE_DECISION_URL = "/interest_group/decision_logic.js";
-
-      const page_origin = new URL($1).origin;
-      const bidding_url = new URL(FLEDGE_BIDDING_URL, page_origin);
-      const interest_group = {
-        name: 'testAd1',
-        owner: page_origin,
-        biddingLogicUrl: bidding_url,
-        ads: [{renderURL: $1, bid: 1, allowedReportingOrigins: [$1]}],
-      };
-
-      // Pick an arbitrarily high duration to guarantee that we never leave the
-      // ad interest group while the test runs.
-      await navigator.joinAdInterestGroup(
-          interest_group, /*durationSeconds=*/3000000);
-
-      const auction_config = {
-        seller: page_origin,
-        interestGroupBuyers: [page_origin],
-        decisionLogicURL: new URL(FLEDGE_DECISION_URL, page_origin),
-      };
-      auction_config.resolveToConfig = true;
-
-      const fenced_frame_config = await navigator.runAdAuction(auction_config);
-      if (!(fenced_frame_config instanceof FencedFrameConfig)) {
-        throw new Error('runAdAuction() did not return a FencedFrameConfig');
-      }
-
-      document.getElementById($2).config = fenced_frame_config;
-    })())",
-                                                    url, fenced_frame_id)));
-}
 
 void FencedFrameTestHelper::CreateFencedFrameAsync(
     RenderFrameHost* fenced_frame_parent_rfh,
@@ -300,21 +256,6 @@ GURL AddAndVerifyFencedFrameURL(
   EXPECT_TRUE(urn_uuid.has_value());
   EXPECT_TRUE(urn_uuid->is_valid());
   return urn_uuid.value();
-}
-
-bool RevokeFencedFrameUntrustedNetwork(RenderFrameHost* rfh) {
-  static_cast<RenderFrameHostImpl*>(rfh)->DisableUntrustedNetworkInFencedFrame(
-      base::DoNothing());
-  return base::test::RunUntil(
-      [rfh]() { return rfh->IsUntrustedNetworkDisabled(); });
-}
-
-void ExemptUrlsFromFencedFrameNetworkRevocation(RenderFrameHost* rfh,
-                                                const std::vector<GURL>& urls) {
-  std::ranges::for_each(urls, [rfh](GURL url) {
-    static_cast<RenderFrameHostImpl*>(rfh)
-        ->ExemptUrlFromNetworkRevocationForTesting(url, base::DoNothing());
-  });
 }
 
 void SetFencedFrameConfig(RenderFrameHost* rfh, const GURL& url) {

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <utility>
 
 #include "base/check.h"
@@ -14,6 +15,7 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
@@ -51,6 +53,9 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_features.h"
+#include "base/hash/hash.h"
+#include "base/location.h"
+#include "base/strings/strcat.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
@@ -70,8 +75,10 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #else
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck crbug.com/40147906
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #endif
 
 namespace policy {
@@ -157,7 +164,7 @@ class LocalTestInfoBarVisibilityManager :
 #if BUILDFLAG(IS_ANDROID)
     public TabModelObserver
 #else
-    public BrowserListObserver,
+    public BrowserCollectionObserver,
     public TabStripModelObserver
 #endif  // BUILDFLAG(IS_ANDROID)
 {
@@ -176,28 +183,37 @@ class LocalTestInfoBarVisibilityManager :
   }
 
 #if BUILDFLAG(IS_ANDROID)
+  // TabModelObserver
   void DidAddTab(TabAndroid* tab, TabModel::TabLaunchType type) override {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-    if (tab) {
-      AddInfobarForActiveLocalTestPolicies(tab->web_contents());
+    if (tab && tab->web_contents()) {
+      EnsureInfobarForActiveLocalTestPolicies(tab->web_contents());
+    }
+  }
+
+  // TabModelObserver
+  void DidSelectTab(TabAndroid* tab, TabModel::TabSelectionType type) override {
+    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    if (tab && tab->web_contents()) {
+      EnsureInfobarForActiveLocalTestPolicies(tab->web_contents());
     }
   }
 #else
-  void OnBrowserAdded(Browser* browser) override {
+  void OnBrowserCreated(BrowserWindowInterface* browser) override {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     CHECK(browser);
 
-    browser->tab_strip_model()->AddObserver(this);
+    // TODO(crbug.com/452120900): TabStripModel auto-unregistered by dtor
+    browser->GetTabStripModel()->AddObserver(this);
   }
 
-  void OnBrowserRemoved(Browser* browser) override {
+  void OnBrowserClosed(BrowserWindowInterface* browser) override {
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     CHECK(browser);
 
-    if (BrowserList::GetInstance()->empty()) {
-      BrowserList::GetInstance()->RemoveObserver(this);
+    if (GlobalBrowserCollection::GetInstance()->IsEmpty()) {
+      browser_collection_observation_.Reset();
     }
-    browser->tab_strip_model()->RemoveObserver(this);
   }
 
   void OnTabStripModelChanged(
@@ -207,7 +223,7 @@ class LocalTestInfoBarVisibilityManager :
     DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
     if (change.type() == TabStripModelChange::kInserted) {
       for (const auto& contents : change.GetInsert()->contents) {
-        AddInfobarForActiveLocalTestPolicies(contents.contents);
+        EnsureInfobarForActiveLocalTestPolicies(contents.contents);
       }
     } else if (change.type() == TabStripModelChange::kRemoved &&
                tab_strip_model->empty()) {
@@ -222,37 +238,50 @@ class LocalTestInfoBarVisibilityManager :
     for (TabModel* model : TabModelList::models()) {
       for (int index = 0; index < model->GetTabCount(); ++index) {
         TabAndroid* tab = model->GetTabAt(index);
-        if (tab) {
-          AddInfobarForActiveLocalTestPolicies(tab->web_contents());
+        if (tab && tab->web_contents()) {
+          EnsureInfobarForActiveLocalTestPolicies(tab->web_contents());
         }
       }
       model->AddObserver(this);
     }
 #else
-    for (Browser* browser : *BrowserList::GetInstance()) {
-      CHECK(browser);
+    ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+        [this](BrowserWindowInterface* browser) {
+          CHECK(browser);
 
-      OnBrowserAdded(browser);
+          OnBrowserCreated(browser);
 
-      TabStripModel* tab_strip_model = browser->tab_strip_model();
-      for (int i = 0; i < tab_strip_model->count(); i++) {
-        AddInfobarForActiveLocalTestPolicies(
-            tab_strip_model->GetWebContentsAt(i));
-      }
-    }
-    BrowserList::GetInstance()->AddObserver(this);
+          TabStripModel* const tab_strip_model = browser->GetTabStripModel();
+          for (int i = 0; i < tab_strip_model->count(); i++) {
+            EnsureInfobarForActiveLocalTestPolicies(
+                tab_strip_model->GetWebContentsAt(i));
+          }
+          return true;
+        });
+    browser_collection_observation_.Observe(
+        GlobalBrowserCollection::GetInstance());
 #endif  // BUILDFLAG(IS_ANDROID)
     infobar_active_ = true;
   }
 
-  void AddInfobarForActiveLocalTestPolicies(
+  void EnsureInfobarForActiveLocalTestPolicies(
       content::WebContents* web_contents) {
     infobars::ContentInfoBarManager::CreateForWebContents(web_contents);
+    auto* infobar_manager =
+        infobars::ContentInfoBarManager::FromWebContents(web_contents);
+    if (std::ranges::contains(
+        infobar_manager->infobars(),
+        infobars::InfoBarDelegate::LOCAL_TEST_POLICIES_APPLIED_INFOBAR,
+        &infobars::InfoBar::GetIdentifier)) {
+      return;
+    }
     CreateSimpleAlertInfoBar(
-        infobars::ContentInfoBarManager::FromWebContents(web_contents),
+        infobar_manager,
         infobars::InfoBarDelegate::LOCAL_TEST_POLICIES_APPLIED_INFOBAR, nullptr,
         l10n_util::GetStringUTF16(IDS_LOCAL_TEST_POLICIES_ENABLED),
-        /*auto_expire=*/false, /*should_animate=*/false, /*closeable=*/false);
+        /*auto_expire=*/false, /*should_animate=*/false, /*closeable=*/false,
+        /*infobar_priority=*/
+        infobars::InfoBarDelegate::InfobarPriority::kLow);
   }
 
   void DismissInfobarsForActiveLocalTestPoliciesAllTabs() {
@@ -268,18 +297,20 @@ class LocalTestInfoBarVisibilityManager :
       model->RemoveObserver(this);
     }
 #else
-    for (Browser* browser : *BrowserList::GetInstance()) {
-      CHECK(browser);
+    ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+        [this](BrowserWindowInterface* browser) {
+          CHECK(browser);
 
-      browser->tab_strip_model()->RemoveObserver(this);
+          browser->GetTabStripModel()->RemoveObserver(this);
 
-      TabStripModel* tab_strip_model = browser->tab_strip_model();
-      for (int i = 0; i < tab_strip_model->count(); i++) {
-        DismissInfobarForActiveLocalTestPolicies(
-            tab_strip_model->GetWebContentsAt(i));
-      }
-    }
-    BrowserList::GetInstance()->RemoveObserver(this);
+          TabStripModel* const tab_strip_model = browser->GetTabStripModel();
+          for (int i = 0; i < tab_strip_model->count(); i++) {
+            DismissInfobarForActiveLocalTestPolicies(
+                tab_strip_model->GetWebContentsAt(i));
+          }
+          return true;
+        });
+    browser_collection_observation_.Reset();
 #endif  // BUILDFLAG(IS_ANDROID)
     infobar_active_ = false;
   }
@@ -300,10 +331,34 @@ class LocalTestInfoBarVisibilityManager :
 
   bool infobar_active() { return infobar_active_; }
 
+  base::WeakPtr<LocalTestInfoBarVisibilityManager> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
  private:
   bool infobar_active_ = false;
+#if !BUILDFLAG(IS_ANDROID)
+  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
+      browser_collection_observation_{this};
+#endif  // !BUILDFLAG(IS_ANDROID)
+  base::WeakPtrFactory<LocalTestInfoBarVisibilityManager> weak_ptr_factory_{
+      this};
 };
 }  // namespace internal
+
+namespace {
+
+// Runs a task on the UI thread, eagerly if currently on the UI thread (to
+// reduce the risk for potential race conditions), else posted to the UI thread.
+void RunNowOnOrPostToUIThread(base::OnceClosure task) {
+  if (content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) {
+    std::move(task).Run();
+  } else {
+    content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE, std::move(task));
+  }
+}
+
+}  // namespace
 
 #if BUILDFLAG(IS_CHROMEOS)
 namespace {
@@ -321,6 +376,108 @@ ProxyPolicyProvider* GetProxyPolicyProvider() {
       g_browser_process->platform_part()->browser_policy_connector_ash();
   return browser_policy_connector->GetGlobalUserCloudPolicyProvider();
 }
+
+// Returns the hash to identify the caller for investigation.
+// To stabilize against unrelated line edits in the file, we drop line number
+// from the source of the hash.
+uint32_t LocationHash(const base::Location& location) {
+  if (!location.has_source_info()) {
+    // Use 0 to indicate "missing source info" error.
+    return 0;
+  }
+  return base::PersistentHash(
+      base::StrCat({location.function_name(), location.file_name()}));
+}
+
+// ProfilePolicyConnector::IsManaged() is equivalent to
+// user_manager::User::is_managed().value_or(false) for most cases. This
+// function records UMA metrics on other unexpected situations.
+void RecordIsManagedCallerForChromeOS(
+    const user_manager::User* user,
+    const CloudPolicyStore* actual_policy_store,
+    base::Location original_caller) {
+  if (!user) {
+    // This case cannot be replaced with user_->is_managed() and we need to
+    // address case-by-case.
+    base::UmaHistogramSparse(
+        "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged.NonUserProfile",
+        LocationHash(original_caller));
+    return;
+  }
+
+  if (user->IsDeviceLocalAccount()) {
+    CHECK(user->is_managed().has_value() && user->is_managed().value());
+
+    // `actual_policy_store` should be non-null.
+    // TODO(crbug.com/489635809): Put CHECK(actual_policy_store).
+    if (!actual_policy_store || !actual_policy_store->is_managed()) {
+      base::UmaHistogramSparse(
+          "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged."
+          "DeviceLocalAccountUnexpected",
+          LocationHash(original_caller));
+    } else {
+      base::UmaHistogramSparse(
+          "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged.Consistent",
+          LocationHash(original_caller));
+    }
+    return;
+  }
+
+  // Regular users (UserType::kRegular or UserType::kChild)
+
+  if (!user->is_managed().has_value()) {
+    if (!actual_policy_store) {
+      // Null actual_policy_store means, the user should be unmanaged and
+      // user->is_managed() should have false, which is set on OnProfileAdded().
+      // !has_value() means that the call is too early, i.e. before
+      // ProfileManagerObserver::OnProfileAdedd().
+      base::UmaHistogramSparse(
+          "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged."
+          "RegularUserEarlyCallUnmanaged",
+          LocationHash(original_caller));
+    } else if (actual_policy_store->is_managed()) {
+      // User should be managed, but User::is_managed_ has not been updated yet.
+      // !has_value() means that the call is in between when the policy is set
+      // and when UserManager::SetUserPolicyStatus() is called.
+      base::UmaHistogramSparse(
+          "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged."
+          "RegularUserEarlyCallManaged",
+          LocationHash(original_caller));
+    } else {
+      base::UmaHistogramSparse(
+          "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged.Consistent",
+          LocationHash(original_caller));
+    }
+    return;
+  }
+
+  if (user->is_managed().value()) {
+    // `actual_policy_store` should be non-null.
+    // TODO(crbug.com/489635809): Put CHECK(actual_policy_store).
+    if (!actual_policy_store || !actual_policy_store->is_managed()) {
+      base::UmaHistogramSparse(
+          "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged."
+          "RegularUserUnexpectedUserIsManaged",
+          LocationHash(original_caller));
+    } else {
+      base::UmaHistogramSparse(
+          "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged.Consistent",
+          LocationHash(original_caller));
+    }
+  } else {
+    if (actual_policy_store && actual_policy_store->is_managed()) {
+      base::UmaHistogramSparse(
+          "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged."
+          "RegularUserUnexpectedProfileIsManaged",
+          LocationHash(original_caller));
+    } else {
+      base::UmaHistogramSparse(
+          "Ash.RefactoringHint.ProfilePolicyConnectorIsManaged.Consistent",
+          LocationHash(original_caller));
+    }
+  }
+}
+
 }  // namespace
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -404,7 +561,6 @@ void ProfilePolicyConnector::Init(
     // the user supplied is not a device-local account user or not in demo mode.
     std::string user_id = user->GetAccountId().GetUserEmail();
     if (ash::demo_mode::IsDemoAccountSignInEnabled()) {
-      // TODO(crbug.com/355043200): Figure out if it is safe to do so.
       std::vector<DeviceLocalAccount> device_local_accounts =
           GetDeviceLocalAccounts(ash::CrosSettings::Get());
       CHECK_EQ(device_local_accounts.size(), 1u);
@@ -507,10 +663,18 @@ void ProfilePolicyConnector::Shutdown() {
   }
 }
 
-bool ProfilePolicyConnector::IsManaged() const {
+bool ProfilePolicyConnector::IsManaged(
+#if BUILDFLAG(IS_CHROMEOS)
+    base::Location caller_location
+#endif  // BUILDFLAG(IS_CHROMEOS)
+) const {
   if (is_managed_override_)
     return *is_managed_override_;
   const CloudPolicyStore* actual_policy_store = GetActualPolicyStore();
+#if BUILDFLAG(IS_CHROMEOS)
+  RecordIsManagedCallerForChromeOS(user_.get(), actual_policy_store,
+                                   caller_location);
+#endif  // BUILDFLAG(IS_CHROMEOS)
   if (actual_policy_store)
     return actual_policy_store->is_managed();
   return false;
@@ -623,9 +787,10 @@ std::string ProfilePolicyConnector::GetTimeToFirstPolicyLoadMetricSuffix()
       return "Child";
     case user_manager::UserType::kPublicAccount:
       return "ManagedGuestSession";
-    case user_manager::UserType::kKioskApp:
-    case user_manager::UserType::kWebKioskApp:
+    case user_manager::UserType::kKioskChromeApp:
+    case user_manager::UserType::kKioskWebApp:
     case user_manager::UserType::kKioskIWA:
+    case user_manager::UserType::kKioskArcvmApp:
       return "Kiosk";
     case user_manager::UserType::kGuest:
       // Don't report the metric in uninteresting or unreachable cases.
@@ -645,8 +810,10 @@ void ProfilePolicyConnector::UseLocalTestPolicyProvider() {
   policy_service()->RefreshPolicies(base::DoNothing(),
                                     PolicyFetchReason::kTest);
   if (!local_test_infobar_visibility_manager_->infobar_active()) {
-    local_test_infobar_visibility_manager_
-        ->AddInfobarsForActiveLocalTestPoliciesAllTabs();
+    RunNowOnOrPostToUIThread(
+        base::BindOnce(&internal::LocalTestInfoBarVisibilityManager::
+                           AddInfobarsForActiveLocalTestPoliciesAllTabs,
+                       local_test_infobar_visibility_manager_->GetWeakPtr()));
   }
 }
 
@@ -658,8 +825,10 @@ void ProfilePolicyConnector::RevertUseLocalTestPolicyProvider() {
   policy_service()->RefreshPolicies(base::DoNothing(),
                                     PolicyFetchReason::kTest);
   if (local_test_infobar_visibility_manager_->infobar_active()) {
-    local_test_infobar_visibility_manager_
-        ->DismissInfobarsForActiveLocalTestPoliciesAllTabs();
+    RunNowOnOrPostToUIThread(
+        base::BindOnce(&internal::LocalTestInfoBarVisibilityManager::
+                           DismissInfobarsForActiveLocalTestPoliciesAllTabs,
+                       local_test_infobar_visibility_manager_->GetWeakPtr()));
   }
 }
 

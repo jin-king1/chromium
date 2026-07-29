@@ -4,6 +4,8 @@
 
 #include "components/services/app_service/public/cpp/app_update.h"
 
+#include <variant>
+
 #include "base/check.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
@@ -44,11 +46,11 @@ void MergeIconKeyDelta(App* new_delta, App* delta) {
 
   // `new_delta` should hold a bool icon version only.
   CHECK(!new_delta->icon_key.has_value() ||
-        absl::holds_alternative<bool>(new_delta->icon_key->update_version));
+        std::holds_alternative<bool>(new_delta->icon_key->update_version));
 
   // `delta` should hold a bool icon version only.
   CHECK(!delta || !delta->icon_key.has_value() ||
-        absl::holds_alternative<bool>(delta->icon_key->update_version));
+        std::holds_alternative<bool>(delta->icon_key->update_version));
 
   if (delta && delta->readiness != Readiness::kUnknown &&
       !apps_util::IsInstalled(delta->readiness)) {
@@ -67,8 +69,8 @@ void MergeIconKeyDelta(App* new_delta, App* delta) {
     // If `new_delta`'s `update_version` is true, or `delta`'s `update_version`
     // is true, the new `update_version` should be true.
     delta->icon_key->update_version =
-        absl::get<bool>(new_delta->icon_key->update_version) ||
-        absl::get<bool>(delta->icon_key->update_version);
+        std::get<bool>(new_delta->icon_key->update_version) ||
+        std::get<bool>(delta->icon_key->update_version);
   }
 
   new_delta->icon_key = std::move(delta->icon_key);
@@ -83,11 +85,11 @@ void MergeIconKeyDelta(App* new_delta, App* delta) {
 std::optional<apps::IconKey> MergeIconKey(const App* state, const App* delta) {
   //`state` should have int32_t `update_version` only.
   CHECK(!state || !state->icon_key.has_value() ||
-        absl::holds_alternative<int32_t>(state->icon_key->update_version));
+        std::holds_alternative<int32_t>(state->icon_key->update_version));
 
   // `delta` should hold a bool icon version only.
   CHECK(!delta || !delta->icon_key.has_value() ||
-        absl::holds_alternative<bool>(delta->icon_key->update_version));
+        std::holds_alternative<bool>(delta->icon_key->update_version));
 
   if (delta && delta->readiness != Readiness::kUnknown &&
       !apps_util::IsInstalled(delta->readiness)) {
@@ -166,9 +168,12 @@ bool MergeWithoutIconKey(App* state, const App* delta) {
   SET_OPTIONAL_VALUE(paused);
   SET_OPTIONAL_VALUE(allow_window_mode_selection);
 
-  if (!delta->intent_filters.empty()) {
-    state->intent_filters.clear();
-    state->intent_filters = CloneIntentFilters(delta->intent_filters);
+  if (delta->intent_filters) {
+    if (delta->intent_filters->empty()) {
+      state->intent_filters = std::nullopt;
+    } else {
+      state->intent_filters = CloneIntentFilters(*delta->intent_filters);
+    }
   }
 
   SET_OPTIONAL_VALUE(resize_locked)
@@ -523,18 +528,23 @@ bool AppUpdate::PausedChanged() const {
 }
 
 apps::IntentFilters AppUpdate::IntentFilters() const {
-  if (delta_ && !delta_->intent_filters.empty()) {
-    return CloneIntentFilters(delta_->intent_filters);
+  if (delta_ && delta_->intent_filters) {
+    return CloneIntentFilters(*delta_->intent_filters);
   }
-  if (state_ && !state_->intent_filters.empty()) {
-    return CloneIntentFilters(state_->intent_filters);
+  if (state_ && state_->intent_filters) {
+    return CloneIntentFilters(*state_->intent_filters);
   }
-  return std::vector<IntentFilterPtr>{};
+  return {};
 }
 
 bool AppUpdate::IntentFiltersChanged() const {
-  return delta_ && !delta_->intent_filters.empty() &&
-         (!state_ || !IsEqual(delta_->intent_filters, state_->intent_filters));
+  if (!delta_ || !delta_->intent_filters) {
+    return false;
+  }
+  if (!state_ || !state_->intent_filters) {
+    return !delta_->intent_filters->empty();
+  }
+  return !IsEqual(*state_->intent_filters, *delta_->intent_filters);
 }
 
 std::optional<bool> AppUpdate::ResizeLocked() const {
@@ -619,7 +629,7 @@ std::optional<std::string> AppUpdate::SelectedLocale() const {
 bool AppUpdate::SelectedLocaleChanged() const {
     RETURN_OPTIONAL_VALUE_CHANGED(selected_locale)}
 
-std::optional<base::Value::Dict> AppUpdate::Extra() const {
+std::optional<base::DictValue> AppUpdate::Extra() const {
   if (delta_ && delta_->extra.has_value()) {
     return delta_->extra->Clone();
   }

@@ -21,16 +21,16 @@
 #include "content/public/common/url_constants.h"
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_content_client.h"
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_browser_context.h"
-#include "content/shell/browser/shell_paths.h"
+#include "content/shell/common/shell_paths.h"
 #include "content/shell/common/shell_switches.h"
-#include "content/test/test_content_client.h"
 #include "ui/events/platform/platform_event_source.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "base/apple/foundation_util.h"
-#include "content/shell/app/paths_mac.h"
+#include "content/shell/app/paths_apple.h"
 #endif
 
 #if BUILDFLAG(IS_LINUX)
@@ -204,6 +204,12 @@ Shell* ContentBrowserTest::CreateOffTheRecordBrowser() {
   return Shell::CreateNewWindow(
       ShellContentBrowserClient::Get()->off_the_record_browser_context(),
       GURL(url::kAboutBlankURL), nullptr, gfx::Size());
+}
+
+void ContentBrowserTest::RecreateWindow() {
+  Shell* new_shell = CreateBrowser();
+  shell_->Close();
+  shell_ = new_shell;
 }
 
 std::unique_ptr<TestBrowserContext>

@@ -266,8 +266,8 @@ bool TextIteratorAlgorithm<Strategy>::IsInsideAtomicInlineElement() const {
   if (AtEnd() || length() != 1 || !node_)
     return false;
 
-  LayoutObject* layout_object = node_->GetLayoutObject();
-  return layout_object && layout_object->IsAtomicInlineLevel();
+  const LayoutObject* layout_object = node_->GetLayoutObject();
+  return layout_object && layout_object->IsAtomicInline();
 }
 
 template <typename Strategy>
@@ -315,7 +315,9 @@ void TextIteratorAlgorithm<Strategy>::Advance() {
   }
   while (node_ && should_continue_iteration) {
     // TODO(crbug.com/1296290): Disable this DCHECK as it's troubling CrOS engs.
-#if DCHECK_IS_ON() && !BUILDFLAG(IS_CHROMEOS)
+    // TODO(crbug.com/421311110): Disable this DCHECK as it's troubling android
+    // engs.
+#if DCHECK_IS_ON() && !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
     // |node_| shouldn't be after |past_end_node_|.
     if (past_end_node_) {
       DCHECK_LE(PositionTemplate<Strategy>(node_, 0),
@@ -464,12 +466,10 @@ void TextIteratorAlgorithm<Strategy>::Advance() {
               node_ ? node_->GetLayoutObject() : nullptr;
           LayoutObject* parent_node_layout =
               parent_node ? parent_node->GetLayoutObject() : nullptr;
-          bool should_exit_node = have_layout_object ||
-              (RuntimeEnabledFeatures::
-                   CallExitNodeWithoutLayoutObjectEnabled() &&
-               node_layout && parent_node_layout &&
-               node_layout->IsLayoutBlock() &&
-               !parent_node_layout->IsInline());
+          bool should_exit_node =
+              have_layout_object ||
+              (node_layout && parent_node_layout &&
+               node_layout->IsLayoutBlock() && !parent_node_layout->IsInline());
           if (should_exit_node) {
             ExitNode();
           }
@@ -486,7 +486,13 @@ void TextIteratorAlgorithm<Strategy>::Advance() {
           // sibling shadow root, if any.
           const auto* shadow_root = DynamicTo<ShadowRoot>(node_);
           if (!shadow_root) {
+#if !BUILDFLAG(IS_ANDROID)
+            // TODO(crbug.com/421311110): Hits at chrome://extensions,
+            // chrome://flags, etc.
             NOTREACHED();
+#endif  // !BUILDFLAG(IS_ANDROID)
+            should_stop_ = true;
+            return;
           }
           if (shadow_root->IsOpen()) {
             // We are the shadow root; exit from here and go back to
@@ -590,13 +596,13 @@ void TextIteratorAlgorithm<Strategy>::HandleReplacedElement() {
     return;
 
   LayoutObject* layout_object = node_->GetLayoutObject();
-  if (layout_object->Style()->Visibility() != EVisibility::kVisible &&
+  if (layout_object->StyleRef().Visibility() != EVisibility::kVisible &&
       !IgnoresStyleVisibility()) {
     return;
   }
 
   if (EmitsObjectReplacementCharacter()) {
-    EmitChar16AsNode(kObjectReplacementCharacter, *node_);
+    EmitChar16AsNode(uchar::kObjectReplacementCharacter, *node_);
     return;
   }
 
@@ -788,10 +794,10 @@ bool TextIteratorAlgorithm<Strategy>::ShouldRepresentNodeOffsetZero() {
   // unrendered content, we would create VisiblePositions on every call to this
   // function without this check.
   if (!node_->GetLayoutObject() ||
-      node_->GetLayoutObject()->Style()->Visibility() !=
+      node_->GetLayoutObject()->StyleRef().Visibility() !=
           EVisibility::kVisible ||
       (node_->GetLayoutObject()->IsLayoutBlockFlow() &&
-       !To<LayoutBlock>(node_->GetLayoutObject())->Size().height &&
+       !To<LayoutBlock>(node_->GetLayoutObject())->StitchedSize().height &&
        !IsA<HTMLBodyElement>(*node_))) {
     return false;
   }
@@ -837,7 +843,7 @@ void TextIteratorAlgorithm<Strategy>::RepresentNodeOffsetZero() {
       EmitChar16BeforeNode('\n', *node_);
   } else if (ShouldEmitSpaceBeforeAndAfterNode(*node_)) {
     if (ShouldRepresentNodeOffsetZero())
-      EmitChar16BeforeNode(kSpaceCharacter, *node_);
+      EmitChar16BeforeNode(uchar::kSpace, *node_);
   }
 }
 
@@ -847,7 +853,7 @@ void TextIteratorAlgorithm<Strategy>::HandleNonTextNode() {
     EmitChar16AsNode('\n', *node_);
   else if (EmitsCharactersBetweenAllVisiblePositions() &&
            node_->GetLayoutObject() && node_->GetLayoutObject()->IsHR())
-    EmitChar16AsNode(kSpaceCharacter, *node_);
+    EmitChar16AsNode(uchar::kSpace, *node_);
   else
     RepresentNodeOffsetZero();
 }
@@ -881,19 +887,19 @@ void TextIteratorAlgorithm<Strategy>::ExitNode() {
     // contain a VisiblePosition when doing selection preservation.
     if (text_state_.LastCharacter() != '\n') {
       // insert a newline with a position following this block's contents.
-      EmitChar16AfterNode(kNewlineCharacter, *base_node);
+      EmitChar16AfterNode(uchar::kLineFeed, *base_node);
       // remember whether to later add a newline for the current node
       DCHECK(!needs_another_newline_);
       needs_another_newline_ = add_newline;
     } else if (add_newline) {
       // insert a newline with a position following this block's contents.
-      EmitChar16AfterNode(kNewlineCharacter, *base_node);
+      EmitChar16AfterNode(uchar::kLineFeed, *base_node);
     }
   }
 
   // If nothing was emitted, see if we need to emit a space.
   if (!text_state_.PositionNode() && ShouldEmitSpaceBeforeAndAfterNode(*node_))
-    EmitChar16AfterNode(kSpaceCharacter, *base_node);
+    EmitChar16AfterNode(uchar::kSpace, *base_node);
 }
 
 template <typename Strategy>

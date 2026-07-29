@@ -2,13 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "chrome/updater/certificate_tag.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -18,6 +14,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/memory_mapped_file.h"
@@ -40,7 +37,7 @@ TEST(CertificateTag, RoundTrip) {
   std::optional<std::vector<uint8_t>> orig_tag(bin->tag());
   EXPECT_FALSE(orig_tag);
 
-  constexpr uint8_t kTag[] = {1, 2, 3, 4, 5};
+  static constexpr uint8_t kTag[] = {1, 2, 3, 4, 5};
   std::optional<std::vector<uint8_t>> updated_exe(bin->SetTag(kTag));
   ASSERT_TRUE(updated_exe);
 
@@ -49,10 +46,10 @@ TEST(CertificateTag, RoundTrip) {
   std::optional<std::vector<uint8_t>> parsed_tag(bin2->tag());
   ASSERT_TRUE(parsed_tag);
   ASSERT_EQ(parsed_tag->size(), sizeof(kTag));
-  EXPECT_TRUE(memcmp(kTag, parsed_tag->data(), sizeof(kTag)) == 0);
+  UNSAFE_TODO(EXPECT_TRUE(memcmp(kTag, parsed_tag->data(), sizeof(kTag)) == 0));
 
   // Update an existing tag.
-  constexpr uint8_t kTag2[] = {1, 2, 3, 4, 6};
+  static constexpr uint8_t kTag2[] = {1, 2, 3, 4, 6};
   std::optional<std::vector<uint8_t>> updated_again_exe(bin2->SetTag(kTag2));
   ASSERT_TRUE(updated_again_exe);
 
@@ -61,7 +58,8 @@ TEST(CertificateTag, RoundTrip) {
   std::optional<std::vector<uint8_t>> parsed_tag2(bin3->tag());
   ASSERT_TRUE(parsed_tag2);
   ASSERT_EQ(parsed_tag2->size(), sizeof(kTag2));
-  EXPECT_TRUE(memcmp(kTag2, parsed_tag2->data(), sizeof(kTag2)) == 0);
+  UNSAFE_TODO(
+      EXPECT_TRUE(memcmp(kTag2, parsed_tag2->data(), sizeof(kTag2)) == 0));
 
   // Updating an existing tag with a tag of the same size should not have grown
   // the binary, i.e. the old tag should have been erased first.
@@ -245,14 +243,13 @@ void VerifyEntries(size_t added,
   while (first_free > 0 && old_entries[first_free - 1] == kFatFreeSector) {
     --first_free;
   }
-  const std::vector<uint32_t> same_entries = std::vector<uint32_t>(
-      new_entries.begin(), new_entries.begin() + first_free);
-  const std::vector<uint32_t> diff_entries = std::vector<uint32_t>(
-      new_entries.begin() + first_free,
-      new_entries.begin() + first_free + changed_entries.size());
-  const std::vector<uint32_t> free_entries = std::vector<uint32_t>(
-      new_entries.begin() + first_free + changed_entries.size(),
-      new_entries.end());
+  auto span_new_entries = base::span(new_entries);
+  const std::vector<uint32_t> same_entries =
+      base::ToVector(span_new_entries.first(first_free));
+  const std::vector<uint32_t> diff_entries = base::ToVector(
+      span_new_entries.subspan(first_free, changed_entries.size()));
+  const std::vector<uint32_t> free_entries = base::ToVector(
+      span_new_entries.subspan(first_free + changed_entries.size()));
   for (size_t i = 0; i < same_entries.size(); ++i) {
     EXPECT_EQ(old_entries[i], same_entries[i]);
   }
@@ -486,7 +483,8 @@ void Validate(const MSIBinary& bin,
     for (i = 0; i < bin.sector_format_.size / kNumDirEntryBytes; ++i) {
       uint64_t offset =
           dir_sector * bin.sector_format_.size + i * kNumDirEntryBytes;
-      std::memcpy(&entry, &bin.contents_[offset], sizeof(MSIDirEntry));
+      UNSAFE_TODO(
+          std::memcpy(&entry, &bin.contents_[offset], sizeof(MSIDirEntry)));
 
       // Skip the mini stream and signature entries.
       // SAFETY: byte manipulation of a C data structure.
@@ -533,7 +531,7 @@ struct CertificateTagMsiValidateTestCase {
 class CertificateTagMsiValidateTest
     : public ::testing::TestWithParam<CertificateTagMsiValidateTestCase> {};
 
-INSTANTIATE_TEST_SUITE_P(
+UNSAFE_TODO(INSTANTIATE_TEST_SUITE_P(
     CertificateTagMsiValidateTestCases,
     CertificateTagMsiValidateTest,
     ::testing::ValuesIn(std::vector<CertificateTagMsiValidateTestCase>{
@@ -551,9 +549,9 @@ INSTANTIATE_TEST_SUITE_P(
         {"GUH-multiple.msi",
          [] {
            std::vector<uint8_t> expected_tag(8632);
-           constexpr char magic[] = "Gact2.0Omaha";
+           static constexpr char magic[] = "Gact2.0Omaha";
            std::memcpy(&expected_tag[0], magic, sizeof(magic));
-           constexpr char tag[] =
+           static constexpr char tag[] =
                "appguid={8A69D345-D564-463C-AFF1-A69D9E530F96}&iid={2D8C18E9-"
                "8D3A-4EFC-6D61-AE23E3530EA2}&lang=en&browser=4&usagestats=0&"
                "appname=Google%20Chrome&needsadmin=prefers&brand=CHMB&"
@@ -570,7 +568,7 @@ INSTANTIATE_TEST_SUITE_P(
            new_tag.resize(8206);
            return new_tag;
          }()},
-    }));
+    })));
 
 TEST_P(CertificateTagMsiValidateTest, TestCases) {
   base::MemoryMappedFile mapped_file;

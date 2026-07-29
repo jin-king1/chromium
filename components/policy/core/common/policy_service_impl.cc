@@ -2,24 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/policy/core/common/policy_service_impl.h"
 
 #include <stddef.h>
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
+#include "base/hash/hash.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
@@ -59,9 +58,9 @@ void DowngradeMetricsReportingToRecommendedPolicy(PolicyMap* policies) {
   // Capture both the Chrome-only and device-level policies on Chrome OS.
   const std::vector<const char*> metrics_keys = {
 #if BUILDFLAG(IS_CHROMEOS)
-    policy::key::kDeviceMetricsReportingEnabled,
+      policy::key::kDeviceMetricsReportingEnabled,
 #else
-    policy::key::kMetricsReportingEnabled,
+      policy::key::kMetricsReportingEnabled,
 #endif
   };
   for (const char* policy_key : metrics_keys) {
@@ -101,8 +100,9 @@ void AddPolicyMessages(PolicyMap& policies) {
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_IOS)
   // Add warning to inform users that these policies are ignored when the user
   // is unaffiliated.
-  if (policies.IsUserAffiliated())
+  if (policies.IsUserAffiliated()) {
     return;
+  }
 
   auto* cloud_user_precedence_entry =
       policies.GetMutable(key::kCloudUserPolicyOverridesCloudMachinePolicy);
@@ -180,8 +180,9 @@ PolicyServiceImpl::PolicyServiceImpl(Providers providers,
       migrators_(std::move(migrators)),
       initialization_throttled_(initialization_throttled),
       scope_for_metrics_(scope_for_metrics) {
-  for (int domain = 0; domain < POLICY_DOMAIN_SIZE; ++domain)
+  for (int domain = 0; domain < POLICY_DOMAIN_SIZE; ++domain) {
     policy_domain_status_[domain] = PolicyDomainStatus::kUninitialized;
+  }
 
   for (policy::ConfigurationPolicyProvider* provider : providers_) {
     provider->AddObserver(this);
@@ -219,8 +220,9 @@ void PolicyServiceImpl::RemoveObserver(PolicyDomain domain,
                                        PolicyService::Observer* observer) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   auto it = observers_.find(domain);
-  if (it == observers_.end())
+  if (it == observers_.end()) {
     return;
+  }
   it->second.RemoveObserver(observer);
   if (it->second.empty()) {
     observers_.erase(it);
@@ -242,13 +244,22 @@ void PolicyServiceImpl::RemoveProviderUpdateObserver(
 bool PolicyServiceImpl::HasProvider(
     ConfigurationPolicyProvider* provider) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return base::Contains(providers_, provider);
+  return std::ranges::contains(providers_, provider);
 }
 
 const PolicyMap& PolicyServiceImpl::GetPolicies(
     const PolicyNamespace& ns) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return policy_bundle_.Get(ns);
+}
+
+std::optional<size_t> PolicyServiceImpl::GetInitialChromePolicyValueHash(
+    std::string_view policy_name) const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto it = startup_chrome_policy_hash_map_.find(policy_name);
+  return it != startup_chrome_policy_hash_map_.end()
+             ? std::make_optional(it->second)
+             : std::nullopt;
 }
 
 bool PolicyServiceImpl::IsInitializationComplete(PolicyDomain domain) const {
@@ -271,8 +282,9 @@ void PolicyServiceImpl::RefreshPolicies(base::OnceClosure callback,
 
   VLOG_POLICY(2, POLICY_PROCESSING) << "Policy refresh starting";
 
-  if (!callback.is_null())
+  if (!callback.is_null()) {
     refresh_callbacks_.push_back(std::move(callback));
+  }
 
   if (providers_.empty()) {
     // Refresh is immediately complete if there are no providers. See the note
@@ -297,22 +309,25 @@ void PolicyServiceImpl::RefreshPolicies(base::OnceClosure callback,
 
 #if BUILDFLAG(IS_ANDROID)
 android::PolicyServiceAndroid* PolicyServiceImpl::GetPolicyServiceAndroid() {
-  if (!policy_service_android_)
+  if (!policy_service_android_) {
     policy_service_android_ =
         std::make_unique<android::PolicyServiceAndroid>(this);
+  }
   return policy_service_android_.get();
 }
 #endif
 
 void PolicyServiceImpl::UnthrottleInitialization() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!initialization_throttled_)
+  if (!initialization_throttled_) {
     return;
+  }
 
   initialization_throttled_ = false;
   std::vector<PolicyDomain> updated_domains;
-  for (int domain = 0; domain < POLICY_DOMAIN_SIZE; ++domain)
+  for (int domain = 0; domain < POLICY_DOMAIN_SIZE; ++domain) {
     updated_domains.push_back(static_cast<PolicyDomain>(domain));
+  }
   MaybeNotifyPolicyDomainStatusChange(updated_domains);
 }
 
@@ -346,14 +361,16 @@ void PolicyServiceImpl::NotifyNamespaceUpdated(const PolicyNamespace& ns,
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   auto iterator = observers_.find(ns.domain);
   if (iterator != observers_.end()) {
-    for (auto& observer : iterator->second)
+    for (auto& observer : iterator->second) {
       observer.OnPolicyUpdated(ns, previous, current);
+    }
   }
 }
 
 void PolicyServiceImpl::NotifyProviderUpdatesPropagated() {
-  if (provider_update_pending_.empty())
+  if (provider_update_pending_.empty()) {
     return;
+  }
 
   for (auto& provider_update_observer : provider_update_observers_) {
     for (ConfigurationPolicyProvider* provider : provider_update_pending_) {
@@ -442,14 +459,24 @@ PolicyBundle PolicyServiceImpl::MergePolicyBundles(
   DefaultChromeAppsMigrator chrome_apps_migrator;
 #endif  // BUILDFLAG(IS_CHROMEOS)
   for (const PolicyBundle* policy_bundle : bundles) {
-    PolicyBundle provided_bundle = policy_bundle->Clone();
-    IgnoreUserCloudPrecedencePolicies(&provided_bundle.Get(chrome_namespace));
-    DowngradeMetricsReportingToRecommendedPolicy(
-        &provided_bundle.Get(chrome_namespace));
+    // Merge non-chrome namespaces directly from the provider. No clone is
+    // needed because PolicyMap::MergeFrom deep-copies individual entries
+    // internally — the provider's data is never mutated. Only the chrome
+    // namespace requires cloning for pre-merge mutations below.
+    for (const auto& [ns, map] : *policy_bundle) {
+      if (ns != chrome_namespace) {
+        bundle.Get(ns).MergeFrom(map);
+      }
+    }
+
+    // Clone only the chrome-namespace PolicyMap for pre-merge mutations.
+    PolicyMap chrome_clone = policy_bundle->Get(chrome_namespace).Clone();
+    IgnoreUserCloudPrecedencePolicies(&chrome_clone);
+    DowngradeMetricsReportingToRecommendedPolicy(&chrome_clone);
 #if BUILDFLAG(IS_CHROMEOS)
-    chrome_apps_migrator.Migrate(&provided_bundle.Get(chrome_namespace));
+    chrome_apps_migrator.Migrate(&chrome_clone);
 #endif  // BUILDFLAG(IS_CHROMEOS)
-    bundle.MergeFrom(provided_bundle);
+    bundle.Get(chrome_namespace).MergeFrom(chrome_clone);
   }
 
   auto& chrome_policies = bundle.Get(chrome_namespace);
@@ -492,11 +519,13 @@ PolicyBundle PolicyServiceImpl::MergePolicyBundles(
                                      &policy_dictionary_merger};
 
   PolicyGroupMerger policy_group_merger;
-  if (atomic_policy_group_enabled)
+  if (atomic_policy_group_enabled) {
     mergers.push_back(&policy_group_merger);
+  }
 
-  for (auto& entry : bundle)
+  for (auto& entry : bundle) {
     entry.second.MergeValues(mergers);
+  }
 
   for (auto& migrator : migrators) {
     migrator->Migrate(&bundle);
@@ -515,8 +544,9 @@ std::vector<PolicyDomain> PolicyServiceImpl::UpdatePolicyDomainStatus() {
   // their first policies loaded.
   for (int domain = 0; domain < POLICY_DOMAIN_SIZE; ++domain) {
     PolicyDomain policy_domain = static_cast<PolicyDomain>(domain);
-    if (policy_domain_status_[domain] == PolicyDomainStatus::kPolicyReady)
+    if (policy_domain_status_[domain] == PolicyDomainStatus::kPolicyReady) {
       continue;
+    }
 
     PolicyDomainStatus new_status = PolicyDomainStatus::kPolicyReady;
 
@@ -529,8 +559,9 @@ std::vector<PolicyDomain> PolicyServiceImpl::UpdatePolicyDomainStatus() {
       }
     }
 
-    if (new_status == policy_domain_status_[domain])
+    if (new_status == policy_domain_status_[domain]) {
       continue;
+    }
 
     policy_domain_status_[domain] = new_status;
     updated_domains.push_back(static_cast<PolicyDomain>(domain));
@@ -540,8 +571,9 @@ std::vector<PolicyDomain> PolicyServiceImpl::UpdatePolicyDomainStatus() {
 
 void PolicyServiceImpl::MaybeNotifyPolicyDomainStatusChange(
     const std::vector<PolicyDomain>& updated_domains) {
-  if (initialization_throttled_)
+  if (initialization_throttled_) {
     return;
+  }
 
   for (const auto policy_domain : updated_domains) {
     if (policy_domain_status_[policy_domain] ==
@@ -550,8 +582,9 @@ void PolicyServiceImpl::MaybeNotifyPolicyDomainStatusChange(
     }
 
     auto iter = observers_.find(policy_domain);
-    if (iter == observers_.end())
+    if (iter == observers_.end()) {
       continue;
+    }
 
     // If and when crbug.com/1221454 gets fixed, we should drop the WeakPtr
     // construction and checks here.
@@ -589,19 +622,34 @@ void PolicyServiceImpl::MaybeNotifyPolicyDomainStatusChange(
             .size(),
         base::Time::Now() - creation_time_);
   }
+
+  // Check if POLICY_DOMAIN_CHROME has just become initialized and we haven't
+  // cached the startup chrome policy map.
+  if (!initial_snapshot_taken_ &&
+      std::ranges::contains(updated_domains, POLICY_DOMAIN_CHROME) &&
+      policy_domain_status_[POLICY_DOMAIN_CHROME] ==
+          PolicyDomainStatus::kPolicyReady) {
+    VLOG_POLICY(1, POLICY_PROCESSING)
+        << "Taking initial snapshot of POLICY_DOMAIN_CHROME policies";
+    const PolicyNamespace chrome_namespace(POLICY_DOMAIN_CHROME, std::string());
+    startup_chrome_policy_hash_map_ =
+        CopyPoliciesStartupHash(policy_bundle_.Get(chrome_namespace));
+    initial_snapshot_taken_ = true;
+  }
 }
 
 void PolicyServiceImpl::CheckRefreshComplete() {
   if (refresh_pending_.empty()) {
-    VLOG(2) << "Policy refresh complete";
+    VLOG_POLICY(2, POLICY_PROCESSING) << "Policy refresh complete";
   }
 
   // Invoke all the callbacks if a refresh has just fully completed.
   if (refresh_pending_.empty() && !refresh_callbacks_.empty()) {
     std::vector<base::OnceClosure> callbacks;
     callbacks.swap(refresh_callbacks_);
-    for (auto& callback : callbacks)
+    for (auto& callback : callbacks) {
       std::move(callback).Run();
+    }
   }
 }
 
@@ -635,4 +683,21 @@ void PolicyServiceImpl::RecordInitializationTime(
   }
 }
 
+absl::flat_hash_map<std::string, size_t>
+PolicyServiceImpl::CopyPoliciesStartupHash(
+    const PolicyMap& startup_policy_map) {
+  absl::flat_hash_map<std::string, size_t>
+      startup_policy_dynamic_refresh_false_map;
+  for (const auto& [key, entry] : startup_policy_map) {
+    const policy::PolicyDetails* policy_details = GetChromePolicyDetails(key);
+    if (policy_details && !policy_details->supports_dynamic_refresh) {
+      const base::Value* policy_value = entry.value_unsafe();
+      if (policy_value) {
+        size_t hash = policy::PolicyValueHash(*policy_value);
+        startup_policy_dynamic_refresh_false_map[key] = hash;
+      }
+    }
+  }
+  return startup_policy_dynamic_refresh_false_map;
+}
 }  // namespace policy

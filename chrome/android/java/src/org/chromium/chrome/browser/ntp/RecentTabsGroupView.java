@@ -13,15 +13,17 @@ import android.widget.ImageView;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSession;
 import org.chromium.components.browser_ui.widget.TintedDrawable;
 
 /**
- * Header view shown above each group of items on the Recent Tabs page. Shows the name of the
- * group (e.g. "Recently closed" or "Jim's Laptop"), an icon, last synced time, and a button to
- * expand or collapse the group.
+ * Header view shown above each group of items on the Recent Tabs page. Shows the name of the group
+ * (e.g. "Recently closed" or "Jim's Laptop"), an icon, last synced time, and a button to expand or
+ * collapse the group.
  */
+@NullMarked
 public class RecentTabsGroupView extends RelativeLayout {
 
     /** Drawable levels for the device type icon and the expand/collapse arrow. */
@@ -66,6 +68,11 @@ public class RecentTabsGroupView extends RelativeLayout {
         mExpandCollapseIcon.setImageDrawable(collapseIcon);
     }
 
+    /** Returns the expand/collapse icon. */
+    public ImageView getExpandCollapseIcon() {
+        return mExpandCollapseIcon;
+    }
+
     /**
      * Configures the view for a foreign session.
      *
@@ -105,14 +112,6 @@ public class RecentTabsGroupView extends RelativeLayout {
     }
 
     private void configureExpandedCollapsed(boolean isExpanded) {
-        String description =
-                getResources()
-                        .getString(
-                                isExpanded
-                                        ? R.string.accessibility_collapse_section_header
-                                        : R.string.accessibility_expand_section_header);
-        mExpandCollapseIcon.setContentDescription(description);
-
         int level = isExpanded ? DRAWABLE_LEVEL_EXPANDED : DRAWABLE_LEVEL_COLLAPSED;
         mExpandCollapseIcon.getDrawable().setLevel(level);
     }

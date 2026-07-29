@@ -15,8 +15,8 @@
 #include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/notifications/notification_handler.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
@@ -45,6 +45,9 @@ const int kQuitAllAppsButtonIndex = 0;
 const int kDontShowAgainButtonIndex = 1;
 
 void CloseNotification(Profile* profile) {
+  if (!profile || profile->ShutdownStarted()) {
+    return;
+  }
   NotificationDisplayServiceFactory::GetForProfile(profile)->Close(
       NotificationHandler::Type::TRANSIENT,
       QuitWithAppsController::kQuitWithAppsNotificationID);
@@ -141,7 +144,7 @@ bool QuitWithAppsController::ShouldQuit() {
   // quitting. If there are no browser windows, always show the notification.
   bool suppress_always = !g_browser_process->local_state()->GetBoolean(
       prefs::kNotifyWhenAppsKeepChromeAlive);
-  if (!BrowserList::GetInstance()->empty() &&
+  if (!GlobalBrowserCollection::GetInstance()->IsEmpty() &&
       (suppress_for_session_ || suppress_always)) {
     return false;
   }
@@ -159,6 +162,14 @@ bool QuitWithAppsController::ShouldQuit() {
     CloseNotification(notification_profile_);
   }
   notification_profile_ = profiles[0];
+
+  // If the profile's keyed services have been torn down during shutdown,
+  // accessing NotificationDisplayServiceFactory will crash. Allow quit instead.
+  if (notification_profile_->ShutdownStarted()) {
+    notification_profile_ = nullptr;
+    return true;
+  }
+
   NotificationDisplayServiceFactory::GetForProfile(notification_profile_)
       ->Display(NotificationHandler::Type::TRANSIENT, *notification_,
                 /*metadata=*/nullptr);

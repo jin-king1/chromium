@@ -752,6 +752,12 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
                                    base::OnceClosure callback,
                                    ErrorCallback error_callback) = 0;
 
+  // When enabled, start accepting simple secure pairing (Just Works) requests
+  // from nearby devices. Disabled by default
+  virtual void SetSimpleSecurePairingEnabled(bool enabled,
+                                             base::OnceClosure callback,
+                                             ErrorCallback error_callback) = 0;
+
   // Returns |kSupported| if the device supports the offloading of filtering and
   // other scanning logic to the Bluetooth hardware. This brings the benefit of
   // reduced power consumption for BluetoothLowEnergyScanSession. Returns
@@ -792,6 +798,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
 
   // Set the adapter name to one chosen from the system information.
   virtual void SetStandardChromeOSAdapterName() = 0;
+
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // The timeout in seconds used by RemoveTimedOutDevices.
@@ -828,7 +835,8 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   using DevicesMap =
       std::unordered_map<std::string, std::unique_ptr<BluetoothDevice>>;
   using PairingDelegatePair =
-      std::pair<BluetoothDevice::PairingDelegate*, PairingDelegatePriority>;
+      std::pair<raw_ptr<BluetoothDevice::PairingDelegate>,
+                PairingDelegatePriority>;
 
   using CallbackQueue =
       base::queue<std::unique_ptr<StartOrStopDiscoveryCallback>>;
@@ -936,7 +944,11 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner_;
 
   // Observers of BluetoothAdapter, notified from implementation subclasses.
-  base::ObserverList<device::BluetoothAdapter::Observer>::
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      device::BluetoothAdapter::Observer,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::
       UncheckedAndDanglingUntriaged observers_;
 
   // Devices paired with, connected to, discovered by, or visible to the

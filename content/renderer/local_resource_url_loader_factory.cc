@@ -12,7 +12,8 @@
 #include "base/containers/span.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/notimplemented.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_view_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
@@ -20,9 +21,11 @@
 #include "content/common/web_ui_loading_util.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/url_constants.h"
+#include "content/public/common/url_utils.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/base/mime_util.h"
+#include "net/http/http_response_headers.h"
 #include "net/socket/socket.h"
 #include "services/network/public/cpp/parsed_headers.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -31,6 +34,7 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/mojom/loader/local_resource_loader_config.mojom.h"
 #include "ui/base/template_expressions.h"
+#include "ui/base/webui/jstemplate_builder.h"
 #include "url/origin.h"
 
 namespace content {
@@ -43,17 +47,109 @@ ConvertConfigToSourcesMap(blink::mojom::LocalResourceLoaderConfigPtr config) {
   // TODO(https://crbug.com/384765582) This manual copy is only necessary
   // because ui::ReplaceTemplateExpressions uses an unconventional map type.
   // Remove this when that is fixed.
-  for (const auto& source : config->sources) {
-    const url::Origin origin = source.first;
-    const blink::mojom::LocalResourceSourcePtr& mojo_source = source.second;
-    const std::map<std::string, std::string> replacement_strings(
+  for (auto& [origin, mojo_source] : config->sources) {
+    std::map<std::string, std::string> replacement_strings(
         mojo_source->replacement_strings.begin(),
         mojo_source->replacement_strings.end());
-    LocalResourceURLLoaderFactory::Source local_source(
-        mojo_source.Clone(), std::move(replacement_strings));
-    sources.insert({std::move(origin), std::move(local_source)});
+    // Since we're iterating over a base::flat_map, the keys are already sorted
+    // and unique, so we can use end() as a hint for efficient insertion.
+    sources.try_emplace(sources.end(), std::move(origin),
+                        std::move(mojo_source), std::move(replacement_strings));
   }
   return sources;
+}
+
+// Returns a Web UI resource path from the given URL, which is the URL path
+// (without the leading slash) with the canonicalized query appended (if any).
+std::string GetWebUIResourcePath(const GURL& url) {
+  std::string path = std::string(url.path().substr(1));
+  std::string canonical_query = GetCanonicalQuery(url);
+  if (!canonical_query.empty()) {
+    base::StrAppend(&path, {"?", canonical_query});
+  }
+  return path;
+}
+
+// Returns the mime type of the given URL. If the mime type cannot be
+// determined, returns "text/html".
+std::string GetMimeType(const GURL& url) {
+  std::string mime_type;
+  if (net::GetMimeTypeFromFile(base::FilePath::FromASCII(url.ExtractFileName()),
+                               &mime_type)) {
+    return mime_type;
+  }
+  return "text/html";
+}
+
+// Returns the content of the response for `path` in `source` if found.
+// Note: This only searches for `response_body`, not `resource_id`.
+std::optional<std::string_view> FindResponseInSource(
+    const LocalResourceURLLoaderFactory::Source& source,
+    std::string_view path) {
+  if (auto it = source.source->path_to_resource_map.find(std::string(path));
+      it != source.source->path_to_resource_map.end()) {
+    if (it->second->is_response_body()) {
+      return it->second->get_response_body();
+    }
+  }
+  return std::nullopt;
+}
+
+// Searches for a response in `sources`.
+// Checks the source corresponding to `origin` for `url.path()`. Returns the
+// response content and headers if found.
+// Note: This only searches for `response_body`, not `resource_id`.
+std::optional<std::pair<std::string_view, std::string_view>> FindResponse(
+    const std::map<url::Origin, LocalResourceURLLoaderFactory::Source>& sources,
+    const url::Origin& origin,
+    const GURL& url) {
+  // Check if the source corresponding to `origin` has the URL path in its
+  // path_to_response_map.
+  if (auto it = sources.find(origin); it != sources.end()) {
+    std::string path_key = GetWebUIResourcePath(url);
+    if (auto response_opt = FindResponseInSource(it->second, path_key)) {
+      return std::make_pair(*response_opt,
+                            std::string_view(it->second.source->headers));
+    }
+  }
+  return std::nullopt;
+}
+
+// Sends a response with the given `content`, `headers_str`, and `mime_type` to
+// `client`.
+void SendResponse(mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+                  std::string_view content,
+                  std::string_view headers_str,
+                  std::string_view mime_type) {
+  auto url_response_head = network::mojom::URLResponseHead::New();
+  url_response_head->mime_type = std::string(mime_type);
+  scoped_refptr<net::HttpResponseHeaders> headers =
+      base::MakeRefCounted<net::HttpResponseHeaders>(std::string(headers_str));
+  headers->SetHeader(net::HttpRequestHeaders::kContentType,
+                     url_response_head->mime_type);
+  url_response_head->headers = headers;
+  auto now_time = base::Time::Now();
+  auto now_ticks = base::TimeTicks::Now();
+  url_response_head->request_time = now_time;
+  url_response_head->request_start = now_ticks;
+  url_response_head->load_timing.request_start_time = now_time;
+  url_response_head->load_timing.request_start = now_ticks;
+
+  scoped_refptr<base::RefCountedString> bytes =
+      base::MakeRefCounted<base::RefCountedString>(std::string(content));
+
+  webui::SendData(std::move(url_response_head), std::move(client), std::nullopt,
+                  bytes);
+}
+
+// Returns the bytes of the resource with the given `value`.
+// This function assumes that the resource value is a resource ID.
+scoped_refptr<base::RefCountedMemory> GetResourceBytes(
+    const blink::mojom::LocalResourceValuePtr& value) {
+  // response body must be handled by `FindResponse()`.
+  CHECK(value->is_resource_id());
+  int resource_id = value->get_resource_id();
+  return GetContentClient()->GetDataResourceBytes(resource_id);
 }
 
 }  // namespace
@@ -83,26 +179,34 @@ LocalResourceURLLoaderFactory::~LocalResourceURLLoaderFactory() = default;
 bool LocalResourceURLLoaderFactory::CanServe(
     const network::ResourceRequest& request) const {
   const url::Origin origin = url::Origin::Create(request.url);
+
+  // Check if we have a direct response for this URL.
+  // This may include strings.m.js or chrome://theme/colors.css, depending on
+  // how the source is configured in browser.
+  if (FindResponse(sources_->data, origin, request.url).has_value()) {
+    return true;
+  }
+
   auto it = sources_->data.find(origin);
-  // The renderer process may not have metadata for the data source. This can
-  // happen if the data source isn't a WebUIDataSource, in which case the
-  // browser process doesn't send metadata for it.
-  // Example: chrome://theme/colors.css
   if (it == sources_->data.end()) {
     return false;
   }
 
   // Get the resource ID corresponding to the URL path.
   const blink::mojom::LocalResourceSourcePtr& source = it->second.source;
-  std::string_view path = request.url.path_piece().substr(1);
-  auto resource_it = source->path_to_resource_id_map.find(path);
+  std::string path_key = GetWebUIResourcePath(request.url);
+  auto resource_it = source->path_to_resource_map.find(path_key);
   // The path-to-ID map may not have an entry for the given path. This can
   // happen for resources that are generated on-the-fly in the browser process.
   // Example: chrome://my-webui/strings.m.js
-  if (resource_it == source->path_to_resource_id_map.end()) {
+  if (resource_it == source->path_to_resource_map.end()) {
     return false;
   }
-  int resource_id = resource_it->second;
+
+  // If the resource value is a response body, it should have been handled by
+  // FindResponse() above.
+  CHECK(resource_it->second->is_resource_id());
+  int resource_id = resource_it->second->get_resource_id();
 
   // Return true if the in-process ResourceBundle has the resource for this ID.
   return GetContentClient()->HasDataResource(resource_id);
@@ -123,7 +227,7 @@ void LocalResourceURLLoaderFactory::CreateLoaderAndStart(
     return;
   }
   // Only the "chrome" scheme is supported.
-  CHECK(request.url.scheme() == kChromeUIScheme);
+  CHECK(request.url.GetScheme() == kChromeUIScheme);
   // Parallelize calls to GetResourceAndRespond across multiple threads.
   // Needs to be posted to a SequencedTaskRunner as Mojo requires a
   // SequencedTaskRunner::CurrentDefaultHandle in scope.
@@ -146,52 +250,103 @@ void LocalResourceURLLoaderFactory::GetResourceAndRespond(
     const network::ResourceRequest& request,
     mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
   const url::Origin origin = url::Origin::Create(request.url);
+
+  // Check if we have a direct response for this URL.
+  if (auto match = FindResponse(sources->data, origin, request.url)) {
+    SendResponse(std::move(client), match->first, match->second,
+                 GetMimeType(request.url));
+    return;
+  }
+
   auto it = sources->data.find(origin);
-  // CanServe should have been called before this point, which would have
-  // confirmed that there exists a source corresponding to the URL origin.
   CHECK(it != sources->data.end());
 
   const blink::mojom::LocalResourceSourcePtr& source = it->second.source;
   const std::map<std::string, std::string>& replacement_strings =
       it->second.replacement_strings;
 
-  // Get resource id.
-  std::string_view path = request.url.path_piece().substr(1);
-  auto resource_it = source->path_to_resource_id_map.find(path);
-  // CanServe should have been called before this point, which would have
-  // confirmed that there exists a resource ID corresponding to the URL path.
-  CHECK(resource_it != source->path_to_resource_id_map.end());
-  int resource_id = resource_it->second;
+  // Mime type.
+  auto url_response_head = network::mojom::URLResponseHead::New();
+  url_response_head->mime_type = GetMimeType(request.url);
+  std::string mime_type = url_response_head->mime_type;
 
-  // Load bytes.
+  // Other headers.
+  scoped_refptr<net::HttpResponseHeaders> headers =
+      base::MakeRefCounted<net::HttpResponseHeaders>(source->headers);
+  headers->SetHeader(net::HttpRequestHeaders::kContentType, mime_type);
+  url_response_head->headers = headers;
+  url_response_head->parsed_headers = network::PopulateParsedHeaders(
+      url_response_head->headers.get(), request.url);
+  auto now_time = base::Time::Now();
+  auto now_ticks = base::TimeTicks::Now();
+  url_response_head->request_time = now_time;
+  url_response_head->request_start = now_ticks;
+  url_response_head->load_timing.request_start_time = now_time;
+  url_response_head->load_timing.request_start = now_ticks;
+
+  // Handle Range header if request.
+  std::optional<net::HttpByteRange> maybe_range = std::nullopt;
+  base::expected<net::HttpByteRange, webui::GetRequestedRangeError>
+      range_or_error = webui::GetRequestedRange(request.headers);
+  // Errors (aside from 'no Range header') should be surfaced to the client.
+  if (!range_or_error.has_value() &&
+      range_or_error.error() != webui::GetRequestedRangeError::kNoRanges) {
+    webui::CallOnError(std::move(client),
+                       net::ERR_REQUEST_RANGE_NOT_SATISFIABLE);
+    return;
+  }
+
+  if (range_or_error.has_value()) {
+    maybe_range = range_or_error.value();
+  }
+
+  webui::SendData(
+      std::move(url_response_head), std::move(client), maybe_range,
+      GetResource(request.url, source, replacement_strings, mime_type));
+}
+
+// static
+scoped_refptr<base::RefCountedMemory>
+LocalResourceURLLoaderFactory::GetResource(
+    const GURL& url,
+    const blink::mojom::LocalResourceSourcePtr& source,
+    const std::map<std::string, std::string>& replacement_strings,
+    const std::string& mime_type) {
+  // Get resource.
+  std::string path_key = GetWebUIResourcePath(url);
+  auto resource_it = source->path_to_resource_map.find(path_key);
+  // CanServe should have been called before this point, which would have
+  // confirmed that there exists a resource corresponding to the URL path.
+  if (resource_it == source->path_to_resource_map.end()) {
+    SCOPED_CRASH_KEY_STRING256("Bug470579309", "url", url.spec());
+    SCOPED_CRASH_KEY_STRING256("Bug470579309", "path", path_key);
+    SCOPED_CRASH_KEY_NUMBER("Bug470579309", "resource_map_size",
+                            source->path_to_resource_map.size());
+    NOTREACHED();
+  }
+  if (resource_it->second->is_response_body()) {
+    // The resource is a direct response. Note that this should already be
+    // handled earlier for callers from `GetResourceAndRespond()`, so this path
+    // is only for direct callers for `GetResource()`.
+    return base::MakeRefCounted<base::RefCountedString>(
+        resource_it->second->get_response_body());
+  }
+
+  // Load bytes using a resource ID.
   scoped_refptr<base::RefCountedMemory> raw_bytes =
-      GetContentClient()->GetDataResourceBytes(resource_id);
+      GetResourceBytes(resource_it->second);
   // CanServe should have been called before this point, which would have
   // confirmed that the ResourceBundle will return non-null for the given
   // resource ID.
   CHECK(raw_bytes);
   std::string_view bytes(base::as_string_view(*raw_bytes));
 
-  auto url_response_head = network::mojom::URLResponseHead::New();
-
-  // Mime type.
-  std::string mime_type;
-  if (net::GetMimeTypeFromFile(
-          base::FilePath::FromASCII(request.url.ExtractFileName()),
-          &mime_type)) {
-    url_response_head->mime_type = mime_type;
-  } else {
-    url_response_head->mime_type = "text/html";
-  }
-
   scoped_refptr<base::RefCountedMemory> bytes_after_replacement = raw_bytes;
-  if (source->replacement_strings.size() > 0 &&
-      (url_response_head->mime_type == "text/html" ||
-       url_response_head->mime_type == "text/css" ||
-       (source->should_replace_i18n_in_js &&
-        url_response_head->mime_type == "text/javascript"))) {
+  if (replacement_strings.size() > 0 &&
+      (mime_type == "text/html" || mime_type == "text/css" ||
+       (source->should_replace_i18n_in_js && mime_type == "text/javascript"))) {
     std::string replaced_string;
-    if (url_response_head->mime_type == "text/javascript") {
+    if (mime_type == "text/javascript") {
       CHECK(ui::ReplaceTemplateExpressionsInJS(bytes, replacement_strings,
                                                &replaced_string));
     } else {
@@ -202,30 +357,7 @@ void LocalResourceURLLoaderFactory::GetResourceAndRespond(
         std::move(replaced_string));
   }
 
-  // Other headers.
-  scoped_refptr<net::HttpResponseHeaders> headers =
-      base::MakeRefCounted<net::HttpResponseHeaders>(source->headers);
-  headers->SetHeader(net::HttpRequestHeaders::kContentType, mime_type);
-  url_response_head->headers = headers;
-  url_response_head->parsed_headers = network::PopulateParsedHeaders(
-      url_response_head->headers.get(), request.url);
-
-  // Handle Range header if request.
-  base::expected<net::HttpByteRange, webui::GetRequestedRangeError>
-      range_or_error = webui::GetRequestedRange(request.headers);
-  // Errors (aside from 'no Range header') should be surfaced to the client.
-  if (!range_or_error.has_value() &&
-      range_or_error.error() != webui::GetRequestedRangeError::kNoRanges) {
-    webui::CallOnError(std::move(client),
-                       net::ERR_REQUEST_RANGE_NOT_SATISFIABLE);
-    return;
-  }
-  std::optional<net::HttpByteRange> maybe_range =
-      range_or_error.has_value() ? std::make_optional(range_or_error.value())
-                                 : std::nullopt;
-
-  webui::SendData(std::move(url_response_head), std::move(client), maybe_range,
-                  bytes_after_replacement);
+  return bytes_after_replacement;
 }
 
 }  // namespace content

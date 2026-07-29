@@ -10,13 +10,13 @@
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "chrome/test/base/testing_profile.h"
+#include "content/public/browser/webid/constants.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/webid/login_status_account.h"
 #include "third_party/blink/public/common/webid/login_status_options.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom-forward.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -113,8 +113,7 @@ TEST_F(FederatedIdentityIdentityProviderSigninStatusContextTest,
   options.accounts.push_back(kAccountA);
 
   context()->SetSigninStatus(kIdpOriginA, true, options);
-  std::vector<LoginStatusAccount> returned_accounts =
-      context()->GetAccountProfiles(kIdpOriginA);
+  base::ListValue returned_accounts = context()->GetAccounts(kIdpOriginA);
   EXPECT_EQ(1U, returned_accounts.size());
 }
 
@@ -126,7 +125,7 @@ TEST_F(FederatedIdentityIdentityProviderSigninStatusContextTest,
   context()->SetSigninStatus(kIdpOriginA, true, std::move(options));
   context()->SetSigninStatus(kIdpOriginA, false, /*options=*/std::nullopt);
 
-  EXPECT_EQ(0U, context()->GetAccountProfiles(kIdpOriginA).size());
+  EXPECT_EQ(0U, context()->GetAccounts(kIdpOriginA).size());
 }
 
 TEST_F(FederatedIdentityIdentityProviderSigninStatusContextTest,
@@ -146,17 +145,28 @@ TEST_F(FederatedIdentityIdentityProviderSigninStatusContextTest,
 
   // The accounts should be expired for IdpA, but the login status should've
   // been preserved.
-  std::vector<LoginStatusAccount> returned_accounts_idp_a =
-      context()->GetAccountProfiles(kIdpOriginA);
+  base::ListValue returned_accounts_idp_a = context()->GetAccounts(kIdpOriginA);
   EXPECT_EQ(0U, returned_accounts_idp_a.size());
   EXPECT_TRUE(context()->GetSigninStatus(kIdpOriginA).value_or(false));
 
   // The accounts should still be valid for IdpB, and the login status should be
   // preserved.
-  std::vector<LoginStatusAccount> returned_accounts_idp_b =
-      context()->GetAccountProfiles(kIdpOriginB);
+  base::ListValue returned_accounts_idp_b = context()->GetAccounts(kIdpOriginB);
   EXPECT_EQ(1U, returned_accounts_idp_b.size());
-  EXPECT_EQ(kAccountB.name, returned_accounts_idp_b[0].name);
+
+  base::DictValue& account_dict = returned_accounts_idp_b[0].GetDict();
+  EXPECT_EQ(*account_dict.FindString(content::webid::kAccountIdKey),
+            kAccountB.id);
+  EXPECT_EQ(*account_dict.FindString(content::webid::kAccountNameKey),
+            kAccountB.name);
+  EXPECT_EQ(*account_dict.FindString(content::webid::kAccountEmailKey),
+            kAccountB.email);
+  EXPECT_TRUE(kAccountB.given_name);
+  EXPECT_EQ(*account_dict.FindString(content::webid::kAccountGivenNameKey),
+            kAccountB.given_name.value());
+  EXPECT_TRUE(kAccountB.picture && !kAccountB.picture->is_empty());
+  EXPECT_EQ(*account_dict.FindString(content::webid::kAccountPictureKey),
+            kAccountB.picture.value().spec());
   EXPECT_TRUE(context()->GetSigninStatus(kIdpOriginB).value_or(false));
 }
 
@@ -203,11 +213,10 @@ TEST_F(FederatedIdentityIdentityProviderSigninStatusContextTest,
   options.accounts.push_back(kAccountA);
 
   context()->SetSigninStatus(kIdpOriginA, true, options);
-  std::vector<LoginStatusAccount> returned_accounts =
-      context()->GetAccountProfiles(kIdpOriginA);
+  base::ListValue returned_accounts = context()->GetAccounts(kIdpOriginA);
   EXPECT_EQ(1U, returned_accounts.size());
 
   context()->SetSigninStatus(kIdpOriginA, true, /*options=*/std::nullopt);
-  returned_accounts = context()->GetAccountProfiles(kIdpOriginA);
+  returned_accounts = context()->GetAccounts(kIdpOriginA);
   EXPECT_EQ(1U, returned_accounts.size());
 }

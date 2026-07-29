@@ -5,6 +5,7 @@
 #include "components/ui_devtools/devtools_server.h"
 
 #include "base/command_line.h"
+#include "base/files/file_path.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
@@ -15,6 +16,7 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/address_list.h"
 #include "net/base/completion_once_callback.h"
+#include "net/base/network_handle.h"
 #include "net/base/test_completion_callback.h"
 #include "net/server/http_server_request_info.h"
 #include "net/socket/tcp_client_socket.h"
@@ -32,8 +34,9 @@ class UIDevToolsServerTest : public testing::Test {
 
   void SetUp() override {
     base::RunLoop run_loop;
-    server_ =
-        UiDevToolsServer::CreateForViews(io_thread_.task_runner(), /*port=*/0);
+    server_ = UiDevToolsServer::CreateForViews(
+        io_thread_.task_runner(), /*port=*/0,
+        /*active_port_output_directory=*/base::FilePath());
     server_->SetOnSocketConnectedForTesting(run_loop.QuitClosure());
     run_loop.Run();
   }
@@ -79,7 +82,8 @@ TEST_F(UIDevToolsServerTest, ConnectionToViewsServer) {
             net::AddressList addr(
                 net::IPEndPoint(net::IPAddress(127, 0, 0, 1), port));
             client_socket = std::make_unique<net::TCPClientSocket>(
-                addr, nullptr, nullptr, nullptr, net::NetLogSource());
+                addr, nullptr, nullptr, nullptr, net::NetLogSource(),
+                net::handles::kInvalidNetworkHandle);
             int connect_result = client_socket->Connect(on_connect_complete);
             // On ERR_IO_PENDING, `on_connect_complete` will be invoked
             // asynchronously, so need to let the message loop spin until that

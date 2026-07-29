@@ -5,26 +5,103 @@
 package org.chromium.chrome.modules.readaloud;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
+
+import com.google.common.collect.ImmutableList;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.List;
+import java.util.Locale;
 
 /** Encapsulates information about the playback being requested. */
+@NullMarked
 public class PlaybackArgs {
-    /** TODO(basiaz): Delete after source lands e2e */
-    private final String mUrl;
-
     /* Can represent either page url or plain text */
     private final String mSource;
     /* if false, the surce is plain text rather than url of a website. */
     private final boolean mIsSourceUrl;
 
-    @Nullable private final String mLanguage;
-    @Nullable private final List<PlaybackVoice> mVoices;
+    private final @Nullable String mLanguage;
+    private final List<PlaybackVoice> mVoices;
     private final long mDateModifiedMsSinceEpoch;
+
+    /* The playback mode. Still unused. */
+    private final List<PlaybackMode> mPlaybackModes;
+
+    /** Playback mode. */
+    public enum PlaybackMode {
+        UNSPECIFIED(0),
+        CLASSIC(1),
+        OVERVIEW(2);
+
+        private final int mValue;
+
+        PlaybackMode(int value) {
+            mValue = value;
+        }
+
+        public int getValue() {
+            return mValue;
+        }
+
+        public static PlaybackMode fromValue(int value) {
+            for (PlaybackMode mode : values()) {
+                if (mode.getValue() == value) {
+                    return mode;
+                }
+            }
+            throw new IllegalArgumentException("Unknown value: " + value);
+        }
+
+        @Override
+        public String toString() {
+            return String.format(Locale.US, "%s (%d)", this.name(), this.getValue());
+        }
+    }
+
+    // The status of the playback mode selection feature.
+    public enum PlaybackModeSelectionEnablementStatus {
+        // Feature is completely disabled. In this case, we never offer audio overviews or consider
+        // it in any way.
+        FEATURE_DISABLED(0),
+        // Feature is enabled and mode selection should be offered to the user. Happens when both
+        // playback modes are available.
+        MODE_SELECTION_ENABLED(1),
+        // Feature is enabled in general but disabled for the specific playback because AO is unavailable.
+        MODE_SELECTION_DISABLED_AO_UNAVAILABLE(2),
+        // Feature is enabled in general but disabled for the specific playback because classic ReadAloud is unavailable.
+        MODE_SELECTION_DISABLED_CLASSIC_UNAVAILABLE(3),
+        // Feature is enabled in general but disabled for unknown reason (e.g. readability info couldn't be checked for some reason).
+        MODE_SELECTION_DISABLED_UNKNOWN_REASON(4);
+
+        private final int mValue;
+
+        PlaybackModeSelectionEnablementStatus(int value) {
+            mValue = value;
+        }
+
+        public int getValue() {
+            return mValue;
+        }
+
+        public static PlaybackModeSelectionEnablementStatus fromValue(int value) {
+            for (PlaybackModeSelectionEnablementStatus status : values()) {
+                if (status.getValue() == value) {
+                    return status;
+                }
+            }
+            throw new IllegalArgumentException("Unknown value: " + value);
+        }
+
+        @Override
+        public String toString() {
+            return String.format(Locale.US, "%s (%d)", this.name(), this.getValue());
+        }
+    }
 
     /**
      * Encapsulates info about a TTS voice that can be used for playback. Tone is only relevant for
@@ -103,9 +180,9 @@ public class PlaybackArgs {
         }
 
         private final String mLanguage;
-        @Nullable private final String mAccentRegionCode;
+        private final @Nullable String mAccentRegionCode;
         private final String mVoiceId;
-        private final String mDisplayName;
+        private final @Nullable String mDisplayName;
 
         private final @Pitch int mPitch;
         private final @Tone int mTone;
@@ -126,7 +203,7 @@ public class PlaybackArgs {
                 String language,
                 @Nullable String accentRegionCode,
                 String voiceId,
-                String displayName,
+                @Nullable String displayName,
                 @Pitch int pitch,
                 @Tone int tone) {
             mLanguage = language;
@@ -173,19 +250,11 @@ public class PlaybackArgs {
             return mVoiceId;
         }
 
-        @Nullable
-        public String getAccentRegionCode() {
+        public @Nullable String getAccentRegionCode() {
             return mAccentRegionCode;
         }
 
-        // TODO(iwells): Remove this method when it is no longer called internally.
-        @Nullable
-        public String getDescription() {
-            return mDisplayName;
-        }
-
-        @Nullable
-        public String getDisplayName() {
+        public @Nullable String getDisplayName() {
             return mDisplayName;
         }
 
@@ -223,29 +292,39 @@ public class PlaybackArgs {
     public PlaybackArgs(
             String url,
             @Nullable String language,
-            @Nullable List<PlaybackVoice> voices,
+            List<PlaybackVoice> voices,
             long dateModifiedMsSinceEpoch) {
         this(url, true, language, voices, dateModifiedMsSinceEpoch);
     }
 
     public PlaybackArgs(
-            String mSource,
+            String source,
             boolean isUrl,
             @Nullable String language,
-            @Nullable List<PlaybackVoice> voices,
+            List<PlaybackVoice> voices,
             long dateModifiedMsSinceEpoch) {
-        this.mUrl = mSource;
-        this.mSource = mSource;
-        this.mIsSourceUrl = isUrl;
-        this.mLanguage = language;
-        this.mVoices = voices;
-        this.mDateModifiedMsSinceEpoch = dateModifiedMsSinceEpoch;
+        this(
+                source,
+                isUrl,
+                language,
+                voices,
+                dateModifiedMsSinceEpoch,
+                ImmutableList.of(PlaybackMode.UNSPECIFIED));
     }
 
-    /** Returns the URL of the playback page. */
-    @Deprecated
-    public String getUrl() {
-        return mUrl;
+    public PlaybackArgs(
+            String source,
+            boolean isUrl,
+            @Nullable String language,
+            List<PlaybackVoice> voices,
+            long dateModifiedMsSinceEpoch,
+            List<PlaybackMode> playbackModes) {
+        mSource = source;
+        mIsSourceUrl = isUrl;
+        mLanguage = language;
+        mVoices = voices;
+        mDateModifiedMsSinceEpoch = dateModifiedMsSinceEpoch;
+        mPlaybackModes = playbackModes;
     }
 
     /** Returns the source which can either be an URL or plain text */
@@ -258,17 +337,12 @@ public class PlaybackArgs {
         return mIsSourceUrl;
     }
 
-    /**
-     * Returns the language to request the audio in. If not set, the default is
-     * used.
-     */
-    @Nullable
-    public String getLanguage() {
+    /** Returns the language to request the audio in. If not set, the default is used. */
+    public @Nullable String getLanguage() {
         return mLanguage;
     }
 
     /** Returns the list of voices that may be used for synthesis. */
-    @Nullable
     public List<PlaybackVoice> getVoices() {
         return mVoices;
     }
@@ -276,6 +350,16 @@ public class PlaybackArgs {
     /** Represents the website version. */
     public long getDateModifiedMsSinceEpoch() {
         return mDateModifiedMsSinceEpoch;
+    }
+
+    /** Returns the playback mode. This method is to be deprecated and replaced by the list version. */
+    public PlaybackMode getPlaybackMode() {
+        return mPlaybackModes.size() > 0 ? mPlaybackModes.get(0) : PlaybackMode.UNSPECIFIED;
+    }
+
+    /** Returns the requested playback modes. */
+    public List<PlaybackMode> getPlaybackModes() {
+        return mPlaybackModes;
     }
 
     // Override toString() to help with debug logging.
@@ -299,6 +383,9 @@ public class PlaybackArgs {
                 + "\t}\n"
                 + "\tdateModifiedMs="
                 + mDateModifiedMsSinceEpoch
+                + "\n"
+                + "\tplaybackModes="
+                + mPlaybackModes
                 + "\n"
                 + "}";
     }

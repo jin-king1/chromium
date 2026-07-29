@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,14 +18,13 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/test/gtest_util.h"
-#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/accessibility/platform/ax_platform_for_test.h"
 #include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -110,10 +110,9 @@ void SetRTL(bool rtl) {
 }
 
 std::u16string GetClipboardText(ui::ClipboardBuffer clipboard_buffer) {
-  std::u16string clipboard_text;
-  ui::Clipboard::GetForCurrentThread()->ReadText(
-      clipboard_buffer, /* data_dst = */ nullptr, &clipboard_text);
-  return clipboard_text;
+  return ui::clipboard_test_util::ReadText(ui::Clipboard::GetForCurrentThread(),
+                                           clipboard_buffer,
+                                           /* data_dst = */ nullptr);
 }
 
 // Makes an RTL string by mapping 0..6 to [א,ב,ג,ד,ה,ו,ז].
@@ -139,7 +138,8 @@ class LabelTest : public test::BaseControlTestWidget {
   ~LabelTest() override = default;
 
   void MockAXModeAdded() {
-    ui::AXMode mode = ui::AXPlatformForTest::GetInstance().GetProcessMode();
+    ui::AXMode mode =
+        ui::AXPlatformForTest::GetInstance().GetAccessibilityMode();
     widget()->OnAXModeAdded(mode);
   }
 
@@ -821,6 +821,21 @@ TEST_F(LabelTest, SetTextNotifiesAccessibilityEvent) {
   EXPECT_EQ(2, counter.GetCount(ax::mojom::Event::kTextChanged));
 }
 
+TEST_F(LabelTest, SetTextFiresExactlyOneTextChangedEvent) {
+  test::AXEventCounter counter(views::AXUpdateNotifier::Get());
+
+  EXPECT_EQ(0, counter.GetCount(ax::mojom::Event::kTextChanged));
+
+  label()->SetText(u"First");
+  EXPECT_EQ(1, counter.GetCount(ax::mojom::Event::kTextChanged));
+
+  label()->SetText(u"Second");
+  EXPECT_EQ(2, counter.GetCount(ax::mojom::Event::kTextChanged));
+
+  label()->SetText(u"Second");
+  EXPECT_EQ(2, counter.GetCount(ax::mojom::Event::kTextChanged));
+}
+
 TEST_F(LabelTest, TextChangeWithoutLayout) {
   label()->SetText(u"Example");
   label()->SetBounds(0, 0, 200, 200);
@@ -1238,6 +1253,26 @@ TEST_F(LabelTest, CanForceDirectionality) {
             ltr_text_force_rtl.GetTextDirectionForTesting());
 }
 
+TEST_F(LabelTest, SetDirectionalityMode) {
+  Label label(ToRTL("0123456"));
+  EXPECT_EQ(base::i18n::TextDirection::RIGHT_TO_LEFT,
+            label.GetTextDirectionForTesting());
+
+  label.SetDirectionalityMode(
+      gfx::DirectionalityMode::DIRECTIONALITY_FORCE_LTR);
+  EXPECT_EQ(base::i18n::TextDirection::LEFT_TO_RIGHT,
+            label.GetTextDirectionForTesting());
+
+  label.SetDirectionalityMode(
+      gfx::DirectionalityMode::DIRECTIONALITY_FORCE_RTL);
+  EXPECT_EQ(base::i18n::TextDirection::RIGHT_TO_LEFT,
+            label.GetTextDirectionForTesting());
+
+  label.SetDirectionalityMode(gfx::DirectionalityMode::DIRECTIONALITY_AS_URL);
+  EXPECT_EQ(base::i18n::TextDirection::LEFT_TO_RIGHT,
+            label.GetTextDirectionForTesting());
+}
+
 TEST_F(LabelTest, DefaultDirectionalityIsFromText) {
   Label ltr(u"Foo");
   EXPECT_EQ(base::i18n::TextDirection::LEFT_TO_RIGHT,
@@ -1314,8 +1349,9 @@ TEST_F(LabelTest, GetSubstringBounds) {
 #endif
 // Ensures DCHECK for subpixel rendering on transparent layer is working.
 TEST_F(LabelTest, MAYBE_ChecksSubpixelRenderingOntoOpaqueSurface) {
-  View view;
-  Label* label = view.AddChildView(std::make_unique<TestLabel>());
+  View* view =
+      widget()->GetContentsView()->AddChildView(std::make_unique<View>());
+  Label* label = view->AddChildView(std::make_unique<TestLabel>());
   EXPECT_TRUE(label->GetSubpixelRenderingEnabled());
 
   gfx::Canvas canvas;
@@ -1324,11 +1360,11 @@ TEST_F(LabelTest, MAYBE_ChecksSubpixelRenderingOntoOpaqueSurface) {
   label->OnPaint(&canvas);
 
   // Painting to an opaque layer should also be fine.
-  view.SetPaintToLayer();
+  view->SetPaintToLayer();
   label->OnPaint(&canvas);
 
   // Set up a transparent layer for the parent view.
-  view.layer()->SetFillsBoundsOpaquely(false);
+  view->layer()->SetFillsBoundsOpaquely(false);
 
   // Painting on a transparent layer should DCHECK.
   EXPECT_DCHECK_DEATH(label->OnPaint(&canvas));
@@ -1340,7 +1376,7 @@ TEST_F(LabelTest, MAYBE_ChecksSubpixelRenderingOntoOpaqueSurface) {
 
   // Painting onto a transparent layer should not DCHECK if there's an opaque
   // background in a parent of the Label.
-  view.SetBackground(CreateSolidBackground(SK_ColorWHITE));
+  view->SetBackground(CreateSolidBackground(SK_ColorWHITE));
   label->OnPaint(&canvas);
 }
 
@@ -1349,8 +1385,6 @@ TEST_F(LabelTest, WordOffsets) {
   const ::ui::ScopedAXModeSetter ax_mode_setter(ui::AXMode::kNativeAPIs);
   MockAXModeAdded();
   ASSERT_TRUE(label()->GetViewAccessibility().is_initialized());
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(::features::kUiaProvider);
   const std::u16string text = u"This is a string";
   label()->SetText(text);
   label()->SizeToPreferredSize();
@@ -1370,8 +1404,6 @@ TEST_F(LabelTest, WordOffsets) {
 TEST_F(LabelTest, WordOffsetsAXNotOn) {
   const ::ui::ScopedAXModeSetter ax_mode_setter(ui::AXMode::kNativeAPIs);
   ASSERT_FALSE(label()->GetViewAccessibility().is_initialized());
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(::features::kUiaProvider);
   const std::u16string text = u"This is a string";
   label()->SetText(text);
   label()->SizeToPreferredSize();
@@ -1421,9 +1453,6 @@ TEST_F(LabelTest, AccessibleGraphemeOffsets) {
       {u"ab\U0001D11Ecd", {4, 10, 17, 23, 29, 37}},
   });
 
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(::features::kUiaProvider);
-
   for (size_t i = 0; i < std::size(cases); i++) {
     ASSERT_TRUE(label()->GetViewAccessibility().is_initialized());
     SCOPED_TRACE(base::StringPrintf("Testing cases[%" PRIuS "]", i));
@@ -1443,8 +1472,6 @@ TEST_F(LabelTest, AccessibleGraphemeOffsetsObscured) {
   const ::ui::ScopedAXModeSetter ax_mode_setter(ui::AXMode::kNativeAPIs);
   MockAXModeAdded();
   ASSERT_TRUE(label()->GetViewAccessibility().is_initialized());
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(::features::kUiaProvider);
   const std::u16string text = u"password";
   label()->SetText(text);
   label()->SizeToPreferredSize();
@@ -1464,8 +1491,6 @@ TEST_F(LabelTest, AccessibleGraphemeOffsetsElided) {
   const ::ui::ScopedAXModeSetter ax_mode_setter(ui::AXMode::kNativeAPIs);
   MockAXModeAdded();
   ASSERT_TRUE(label()->GetViewAccessibility().is_initialized());
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(::features::kUiaProvider);
   label()->SetElideBehavior(gfx::NO_ELIDE);
   const std::u16string text = u"This is a string";
 

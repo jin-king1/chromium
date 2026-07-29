@@ -31,7 +31,7 @@ class ExtensionHostDelegate;
 
 // This class maintains a WebContents used in the background. It can host a
 // renderer, but does not have any visible display.
-// TODO(atwilson): Unify this with background pages; http://crbug.com/77790
+// TODO(atwilson): Unify this with background pages; http://crbug.com/41351554
 class BackgroundContents : public extensions::DeferredStartRenderHost,
                            public content::WebContentsDelegate,
                            public content::WebContentsObserver {
@@ -91,12 +91,13 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
-  bool IsNeverComposited(content::WebContents* web_contents) override;
 
   // content::WebContentsObserver implementation:
   void PrimaryMainFrameRenderProcessGone(
       base::TerminationStatus status) override;
   void PrimaryPageChanged(content::Page& page) override;
+
+  const GURL& GetInitialURLForTesting() const { return initial_url_; }
 
  protected:
   // Exposed for testing.

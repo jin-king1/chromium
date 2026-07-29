@@ -5,22 +5,26 @@
 package org.chromium.components.data_sharing.configs;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.data_sharing.GroupToken;
 import org.chromium.components.sync.protocol.GroupData;
 import org.chromium.components.sync.protocol.GroupMember;
 import org.chromium.url.GURL;
 
 /** Config class for the Data Sharing Manage UI. */
+@NullMarked
 public class DataSharingManageUiConfig {
 
     // --- Group related Info ---
-    private GroupToken mGroupToken;
+    private final @Nullable GroupToken mGroupToken;
 
     // --- Manage Usage Config ---
-    private ManageCallback mManageCallback;
-    private GURL mLearnAboutBlockedAccounts;
-    private GURL mActivityLogsUrl;
-    private DataSharingUiConfig mCommonConfig;
+    private final @Nullable ManageCallback mManageCallback;
+    private final @Nullable GURL mLearnAboutBlockedAccounts;
+    private final @Nullable GURL mActivityLogsUrl;
+    private final @Nullable DataSharingUiConfig mCommonConfig;
+    private final boolean mIsSharingDisabled;
 
     /** Callback interface for data sharing Manage UI events. */
     public interface ManageCallback {
@@ -39,11 +43,6 @@ public class DataSharingManageUiConfig {
 
         default void onMemberBlocked(GroupMember member) {}
 
-        default void onMemberRemovedAndStopSharingInitiated(
-                GroupMember member, GroupData groupData, Callback<Boolean> readyToStop) {}
-
-        default void onMemberBlockedAndLeaveGroup(GroupMember member, GroupData groupData) {}
-
         default void onLeaveGroup() {}
 
         default void getDataSharingUrl(GroupToken groupToken, Callback<String> url) {}
@@ -59,35 +58,41 @@ public class DataSharingManageUiConfig {
         this.mActivityLogsUrl = builder.mActivityLogsUrl;
         this.mManageCallback = builder.mManageCallback;
         this.mCommonConfig = builder.mCommonConfig;
+        this.mIsSharingDisabled = builder.mIsSharingDisabled;
     }
 
-    public GroupToken getGroupToken() {
+    public @Nullable GroupToken getGroupToken() {
         return mGroupToken;
     }
 
-    public ManageCallback getManageCallback() {
+    public @Nullable ManageCallback getManageCallback() {
         return mManageCallback;
     }
 
-    public GURL getLearnAboutBlockedAccounts() {
+    public @Nullable GURL getLearnAboutBlockedAccounts() {
         return mLearnAboutBlockedAccounts;
     }
 
-    public GURL getActivityLogsUrl() {
+    public @Nullable GURL getActivityLogsUrl() {
         return mActivityLogsUrl;
     }
 
-    public DataSharingUiConfig getCommonConfig() {
+    public @Nullable DataSharingUiConfig getCommonConfig() {
         return mCommonConfig;
+    }
+
+    public boolean getIsSharingDisabled() {
+        return mIsSharingDisabled;
     }
 
     // Builder class
     public static class Builder {
-        private GroupToken mGroupToken;
-        private GURL mLearnAboutBlockedAccounts;
-        private GURL mActivityLogsUrl;
-        private ManageCallback mManageCallback;
-        private DataSharingUiConfig mCommonConfig;
+        private @Nullable GroupToken mGroupToken;
+        private @Nullable GURL mLearnAboutBlockedAccounts;
+        private @Nullable GURL mActivityLogsUrl;
+        private @Nullable ManageCallback mManageCallback;
+        private @Nullable DataSharingUiConfig mCommonConfig;
+        private boolean mIsSharingDisabled;
 
         /**
          * Sets the group token for the data sharing group.
@@ -136,6 +141,16 @@ public class DataSharingManageUiConfig {
          */
         public Builder setCommonConfig(DataSharingUiConfig commonConfig) {
             this.mCommonConfig = commonConfig;
+            return this;
+        }
+
+        /**
+         * Sets whether sharing is disabled.
+         *
+         * @param isSharingDisabled True if sharing is disabled.
+         */
+        public Builder setIsSharingDisabled(boolean isSharingDisabled) {
+            this.mIsSharingDisabled = isSharingDisabled;
             return this;
         }
 

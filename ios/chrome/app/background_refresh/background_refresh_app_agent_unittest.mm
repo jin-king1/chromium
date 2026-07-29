@@ -9,14 +9,20 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/task/thread_pool.h"
+#import "base/test/ios/wait_util.h"
+#import "base/test/metrics/histogram_tester.h"
+#import "base/test/run_until.h"
 #import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
+#import "components/test/ios/test_utils.h"
+#import "crypto/features.h"
 #import "ios/chrome/app/application_delegate/app_init_stage.h"
 #import "ios/chrome/app/application_delegate/app_init_stage_test_utils.h"
 #import "ios/chrome/app/application_delegate/app_state+Testing.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/background_refresh/app_refresh_provider.h"
 #import "ios/chrome/app/background_refresh/background_refresh_app_agent_audience.h"
+#import "ios/chrome/app/background_refresh/background_refresh_metrics.h"
 #import "ios/chrome/app/background_refresh_constants.h"
 #import "ios/chrome/browser/profile/model/ios_chrome_io_thread.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -64,6 +70,44 @@ typedef void (^TaskExpirationBlock)();
 }
 @end
 
+// Async refresh provider task stub.
+@interface AsyncVerifiableTask : NSObject <AppRefreshProviderTask>
+@property(nonatomic, readonly) BOOL executed;
+@property(nonatomic, readonly) BOOL hasCompletionClosure;
+- (void)completeTask;
+@end
+
+@implementation AsyncVerifiableTask {
+  BOOL _executed;
+  base::OnceClosure _completion;
+}
+
+- (BOOL)executed {
+  @synchronized(self) {
+    return _executed;
+  }
+}
+
+- (BOOL)hasCompletionClosure {
+  @synchronized(self) {
+    return !_completion.is_null();
+  }
+}
+
+- (void)executeWithCompletion:(base::OnceClosure)completion {
+  _completion = std::move(completion);
+}
+
+- (void)completeTask {
+  @synchronized(self) {
+    _executed = YES;
+  }
+  if (_completion) {
+    std::move(_completion).Run();
+  }
+}
+@end
+
 // Refresh provider for use in tests that allows a task to be injected, and is
 // always due.
 @interface TestRefreshProvider : AppRefreshProvider
@@ -91,7 +135,7 @@ typedef void (^TaskExpirationBlock)();
 @interface TestUIThreadRefreshProvider : TestRefreshProvider
 @end
 @implementation TestUIThreadRefreshProvider
-- (scoped_refptr<base::SingleThreadTaskRunner>)taskThread {
+- (scoped_refptr<base::SequencedTaskRunner>)taskRunner {
   return web::GetUIThreadTaskRunner({});
 }
 @end
@@ -100,16 +144,16 @@ typedef void (^TaskExpirationBlock)();
 @interface TestOtherThreadRefreshProvider : TestRefreshProvider
 @end
 @implementation TestOtherThreadRefreshProvider {
-  scoped_refptr<base::SingleThreadTaskRunner> _thread;
+  scoped_refptr<base::SequencedTaskRunner> _runner;
 }
 - (instancetype)init {
   if ((self = [super init])) {
-    _thread = base::ThreadPool::CreateSingleThreadTaskRunner({});
+    _runner = base::ThreadPool::CreateSequencedTaskRunner({});
   }
   return self;
 }
-- (scoped_refptr<base::SingleThreadTaskRunner>)taskThread {
-  return _thread;
+- (scoped_refptr<base::SequencedTaskRunner>)taskRunner {
+  return _runner;
 }
 @end
 
@@ -135,16 +179,22 @@ typedef void (^TaskExpirationBlock)();
 //    (b) quits the injected runloop when the end callback is made.
 @interface TestRefreshAudience : NSObject <BackgroundRefreshAudience>
 @property(nonatomic) base::RunLoop* runLoop;
+@property(nonatomic) base::RunLoop* startRunLoop;
 @property(nonatomic) BOOL started;
 @property(nonatomic) BOOL ended;
 @end
 @implementation TestRefreshAudience
 - (void)backgroundRefreshDidStart {
   _started = YES;
+  if (_startRunLoop) {
+    _startRunLoop->Quit();
+  }
 }
 - (void)backgroundRefreshDidEnd {
   _ended = YES;
-  _runLoop->Quit();
+  if (_runLoop) {
+    _runLoop->Quit();
+  }
 }
 @end
 
@@ -167,6 +217,10 @@ typedef void (^TaskExpirationBlock)();
 class BackgroundRefreshAppAgentTest : public PlatformTest {
  protected:
   BackgroundRefreshAppAgentTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {kEnableAppBackgroundRefresh,
+         crypto::features::kMigrateIOSKeychainAccessibility},
+        {});
     TestingApplicationContext* application_context =
         TestingApplicationContext::GetGlobal();
 
@@ -200,6 +254,8 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
     agent_.audience = audience_;
     agent_.appState = app_state_;
     audience_.runLoop = &run_loop_;
+
+    [agent_ appState:app_state_ willTransitionToInitStage:AppInitStage::kStart];
   }
 
   ~BackgroundRefreshAppAgentTest() override {
@@ -218,16 +274,10 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
     OCMStub([task_scheduler_mock_ sharedScheduler])
         .andReturn(task_scheduler_mock_);
     // Stub the registration method to capture the configured block.
-    OCMStub(
-        [task_scheduler_mock_
-            registerForTaskWithIdentifier:kAppBackgroundRefreshTaskIdentifier
-                               usingQueue:[OCMArg isNil]
-                            launchHandler:OCMOCK_ANY])
-        .andDo(^(NSInvocation* invocation) {
-          __weak TaskHandlerBlock handler;
-          [invocation getArgument:&handler atIndex:4];
-          task_handler_ = [handler copy];
-        });
+    OCMStub([task_scheduler_mock_
+        registerForTaskWithIdentifier:kAppBackgroundRefreshTaskIdentifier
+                           usingQueue:[OCMArg isNil]
+                        launchHandler:CopyValueToVariable(task_handler_)]);
   }
 
   void BuildMockTask() {
@@ -237,22 +287,19 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
     // tests that need this captured block (specifically tests that call
     // `ExpireTask()` need to wait until this call completes before accessing
     // the expiration handler. See the ExpireTask test for an example.
-    OCMStub([task_mock_ setExpirationHandler:OCMOCK_ANY])
-        .andDo(^(NSInvocation* invocation) {
-          __weak TaskExpirationBlock handler;
-          [invocation getArgument:&handler atIndex:2];
-          // This write to a member variable is done on a non-main sequence;
-          // see the notes above on correctly ensuring that it completes before
-          // the member is accessed by `ExpireTask()`.
-          task_expiration_handler_ = [handler copy];
-        });
+    OCMStub([task_mock_
+        setExpirationHandler:CopyValueToVariable(task_expiration_handler_)]);
+
+    // This write to a member variable is done on a non-main sequence;
+    // see the notes above on correctly ensuring that it completes before
+    // the member is accessed by `ExpireTask()`.
+
     // Stub the task request method to capture the last task request.
-    OCMStub([task_scheduler_mock_ submitTaskRequest:OCMOCK_ANY
-                                              error:[OCMArg setTo:nil]])
+    OCMStub([task_scheduler_mock_
+                submitTaskRequest:CopyValueToVariable(last_task_request_)
+                            error:[OCMArg setTo:nil]])
         .andDo(^(NSInvocation* invocation) {
-          __weak BGAppRefreshTaskRequest* request;
-          [invocation getArgument:&request atIndex:2];
-          last_task_request_ = [request copy];
+          task_request_count_++;
         });
   }
 
@@ -300,8 +347,7 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
   }
 
   // By default, enable background refresh for all tests.
-  base::test::ScopedFeatureList scoped_feature_list_{
-      kEnableAppBackgroundRefresh};
+  base::test::ScopedFeatureList scoped_feature_list_;
   // Local state for test application context.
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   // Threads.
@@ -319,6 +365,7 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
   id task_mock_;
   TaskExpirationBlock task_expiration_handler_;
   AppState* app_state_;
+  int task_request_count_ = 0;
 
   // Object under test and its audience.
   BackgroundRefreshAppAgent* agent_;
@@ -351,6 +398,8 @@ TEST_F(BackgroundRefreshAppAgentTest, ExecuteSingleTask) {
   // Test that when a single provider is registered, that task executes and the
   // refresh is marked successful.
 
+  base::HistogramTester histogram_tester;
+
   TestRefreshProvider* provider = [[TestRefreshProvider alloc] init];
   [agent_ addAppRefreshProvider:provider];
 
@@ -365,6 +414,56 @@ TEST_F(BackgroundRefreshAppAgentTest, ExecuteSingleTask) {
   VerifyTaskCompleted(YES);
   EXPECT_TRUE(audience_.ended);
   EXPECT_TRUE([provider injectedTask].executed);
+
+  histogram_tester.ExpectTotalCount(
+      "IOS.BackgroundRefresh.Provider.Duration.TestRefreshProvider", 1);
+}
+
+TEST_F(BackgroundRefreshAppAgentTest, ExecuteAsyncSingleTask) {
+  // Test that when a single provider with an async task is registered, it runs
+  // and finishes only after the task completes.
+
+  base::HistogramTester histogram_tester;
+
+  TestUIThreadRefreshProvider* provider =
+      [[TestUIThreadRefreshProvider alloc] init];
+  AsyncVerifiableTask* async_task = [[AsyncVerifiableTask alloc] init];
+  provider.injectedTask = (VerifiableTask*)async_task;
+  [agent_ addAppRefreshProvider:provider];
+
+  OCMStub([task_mock_ setTaskCompletedWithSuccess:YES]);
+
+  base::RunLoop start_run_loop;
+  audience_.startRunLoop = &start_run_loop;
+
+  SimulateAppBackgrounding();
+  InvokeTaskHandler();
+
+  // Run the loop until backgroundRefreshDidStart is called.
+  start_run_loop.Run();
+
+  // Wait until executeWithCompletion has been called on the task.
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return async_task.hasCompletionClosure; }));
+
+  EXPECT_TRUE(audience_.started);
+  EXPECT_FALSE(audience_.ended);
+  EXPECT_FALSE(async_task.executed);
+
+  // Now trigger async completion.
+  [async_task completeTask];
+
+  // The completion will post to the UI thread, which quits our main run loop.
+  run_loop_.Run();
+
+  EXPECT_TRUE(audience_.ended);
+  VerifyTaskCompleted(YES);
+  EXPECT_TRUE(async_task.executed);
+
+  histogram_tester.ExpectTotalCount("IOS.BackgroundRefresh.ExecutionDuration",
+                                    1);
+  histogram_tester.ExpectTotalCount(
+      "IOS.BackgroundRefresh.Provider.Duration.TestUIThreadRefreshProvider", 1);
 }
 
 TEST_F(BackgroundRefreshAppAgentTest, NotExecuteNotDueTask) {
@@ -619,4 +718,123 @@ TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecution) {
   VerifyTaskCompleted(YES);
   EXPECT_TRUE(audience_.ended);
   EXPECT_TRUE([provider injectedTask].executed);
+}
+
+TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionMetrics) {
+  // Test that the startup wait duration is recorded when execution is delayed.
+  base::HistogramTester histogram_tester;
+
+  [app_state_
+      updateInitStage:AppInitStage::kBrowserObjectsForBackgroundHandlers];
+
+  TestRefreshProvider* provider = [[TestRefreshProvider alloc] init];
+  [agent_ addAppRefreshProvider:provider];
+
+  OCMStub([task_mock_ setTaskCompletedWithSuccess:YES]);
+
+  SimulateAppBackgrounding();
+  InvokeTaskHandlerThen(run_loop_.QuitClosure());
+  run_loop_.Run();
+  // Ensure the dispatched handleExecutionForTask block runs on the main thread.
+  // This is signaled by the task request count being incremented (once for
+  // SimulateAppBackgrounding, once for handleExecutionForTask).
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool {
+        return task_request_count_ >= 2;
+      }));
+
+  histogram_tester.ExpectTotalCount(kStartupWaitDurationCompletedHistogram, 0);
+
+  base::RunLoop second_run_loop;
+  audience_.runLoop = &second_run_loop;
+
+  AppInitStage refreshStage =
+      NextAppInitStage(AppInitStage::kBrowserObjectsForBackgroundHandlers);
+  [app_state_ updateInitStage:refreshStage];
+  [agent_ appState:app_state_ willTransitionToInitStage:refreshStage];
+
+  second_run_loop.Run();
+
+  histogram_tester.ExpectTotalCount(kStartupWaitDurationCompletedHistogram, 1);
+}
+
+TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionNeverStartedMetrics) {
+  // Test that the startup wait duration is recorded when execution times out
+  // while pending (i.e. before the app is ready).
+  base::HistogramTester histogram_tester;
+
+  [app_state_
+      updateInitStage:AppInitStage::kBrowserObjectsForBackgroundHandlers];
+
+  TestRefreshProvider* provider = [[TestRefreshProvider alloc] init];
+  [agent_ addAppRefreshProvider:provider];
+
+  OCMStub([task_mock_ setTaskCompletedWithSuccess:NO]);
+
+  SimulateAppBackgrounding();
+  InvokeTaskHandlerThen(run_loop_.QuitClosure());
+  run_loop_.Run();
+  // Ensure the dispatched handleExecutionForTask block runs on the main thread.
+  // This is signaled by the task request count being incremented (once for
+  // SimulateAppBackgrounding, once for handleExecutionForTask).
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool {
+        return task_request_count_ >= 2;
+      }));
+
+  histogram_tester.ExpectTotalCount(kStartupWaitDurationNeverStartedHistogram,
+                                    0);
+
+  ExpireTask();
+  base::RunLoop second_run_loop;
+  audience_.runLoop = &second_run_loop;
+  second_run_loop.Run();
+
+  histogram_tester.ExpectTotalCount(kStartupWaitDurationNeverStartedHistogram,
+                                    1);
+}
+
+TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionTimeoutMetrics) {
+  // Test that the startup wait duration is recorded when execution starts but
+  // then times out.
+  base::HistogramTester histogram_tester;
+
+  [app_state_
+      updateInitStage:AppInitStage::kBrowserObjectsForBackgroundHandlers];
+
+  // Use a prolonged task so we can control when it finishes (or doesn't).
+  TestRefreshProvider* provider = [[TestRefreshProvider alloc] init];
+  provider.injectedTask = [[ProlongedTask alloc] init];
+  [agent_ addAppRefreshProvider:provider];
+
+  OCMStub([task_mock_ setTaskCompletedWithSuccess:NO]);
+
+  SimulateAppBackgrounding();
+  InvokeTaskHandlerThen(run_loop_.QuitClosure());
+  run_loop_.Run();
+  // Ensure the dispatched handleExecutionForTask block runs on the main thread.
+  // This is signaled by the task request count being incremented (once for
+  // SimulateAppBackgrounding, once for handleExecutionForTask).
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool {
+        return task_request_count_ >= 2;
+      }));
+
+  histogram_tester.ExpectTotalCount(kStartupWaitDurationTimeoutHistogram, 0);
+
+  base::RunLoop second_run_loop;
+  audience_.runLoop = &second_run_loop;
+
+  // Transition to ready state to start execution.
+  AppInitStage refreshStage =
+      NextAppInitStage(AppInitStage::kBrowserObjectsForBackgroundHandlers);
+  [app_state_ updateInitStage:refreshStage];
+  [agent_ appState:app_state_ willTransitionToInitStage:refreshStage];
+
+  // Now the task is running. We simulate a timeout.
+  ExpireTask();
+
+  second_run_loop.Run();
+
+  histogram_tester.ExpectTotalCount(kStartupWaitDurationTimeoutHistogram, 1);
 }

@@ -7,7 +7,7 @@
 #include <memory>
 
 #include "ash/constants/ash_features.h"
-#include "base/files/file_util.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/task/task_traits.h"
 #include "base/test/scoped_feature_list.h"
@@ -341,7 +341,7 @@ class TwentyEightDayImplDirectCheckMembership : public TwentyEightDayImplBase {
     return twenty_eight_day_impl_.get();
   }
 
-  base::Value::Dict* GetActivesCache() {
+  base::DictValue* GetActivesCache() {
     return &twenty_eight_day_impl_->actives_cache_;
   }
 

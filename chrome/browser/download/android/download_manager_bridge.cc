@@ -19,14 +19,14 @@
 #include "chrome/browser/download/android/jni_headers/DownloadManagerBridge_jni.h"
 
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using download::DownloadItem;
 
 static void JNI_DownloadManagerBridge_OnAddCompletedDownloadDone(
     JNIEnv* env,
-    jlong callback_id,
-    jlong download_id) {
+    int64_t callback_id,
+    int64_t download_id) {
   DCHECK(callback_id);
 
   // Convert java long long int to c++ pointer, take ownership.
@@ -39,23 +39,12 @@ void DownloadManagerBridge::AddCompletedDownload(
     download::DownloadItem* download,
     AddCompletedDownloadCallback callback) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  std::string file_name = download->GetFileNameToReportUser().value();
-  std::string mime_type = download->GetMimeType();
-  std::string file_path = download->GetTargetFilePath().value();
-  int64_t file_size = download->GetReceivedBytes();
-  ScopedJavaLocalRef<jobject> joriginal_url =
-      url::GURLAndroid::FromNativeGURL(env, download->GetOriginalUrl());
-  ScopedJavaLocalRef<jobject> jreferer =
-      url::GURLAndroid::FromNativeGURL(env, download->GetReferrerUrl());
-  std::string download_guid = download->GetGuid();
 
   // Make copy on the heap so we can pass the pointer through JNI.
   intptr_t callback_id = reinterpret_cast<intptr_t>(
       new AddCompletedDownloadCallback(std::move(callback)));
 
-  Java_DownloadManagerBridge_addCompletedDownload(
-      env, file_name, file_name, mime_type, file_path, file_size, joriginal_url,
-      jreferer, download_guid, callback_id);
+  Java_DownloadManagerBridge_addCompletedDownload(env, callback_id);
 }
 
 void DownloadManagerBridge::RemoveCompletedDownload(
@@ -64,3 +53,5 @@ void DownloadManagerBridge::RemoveCompletedDownload(
   Java_DownloadManagerBridge_removeCompletedDownload(
       env, download->GetGuid(), download->GetFileExternallyRemoved());
 }
+
+DEFINE_JNI(DownloadManagerBridge)

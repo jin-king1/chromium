@@ -67,16 +67,17 @@
 #include "third_party/blink/renderer/platform/network/mime/mime_type_registry.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/scheduling_policy.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
 namespace {
 
 String GetMIMETypeFromURL(const KURL& url) {
-  String filename = url.LastPathComponent().ToString();
-  int extension_pos = filename.ReverseFind('.');
-  if (extension_pos >= 0) {
-    String extension = filename.Substring(extension_pos + 1);
+  StringView filename = url.LastPathComponent();
+  wtf_size_t extension_pos = filename.rfind('.');
+  if (extension_pos != kNotFound) {
+    StringView extension = filename.substr(extension_pos + 1);
     return MIMETypeRegistry::GetWellKnownMIMETypeForExtension(extension);
   }
   return String();
@@ -112,13 +113,13 @@ void PluginParameters::AppendNameWithValue(const String& name,
 
 void PluginParameters::MapDataParamToSrc() {
   if (std::ranges::any_of(names_, [](auto name) {
-        return EqualIgnoringASCIICase(name, "src");
+        return EqualIgnoringAsciiCase(name, "src");
       })) {
     return;
   }
 
   auto data = std::ranges::find_if(
-      names_, [](auto name) { return EqualIgnoringASCIICase(name, "data"); });
+      names_, [](auto name) { return EqualIgnoringAsciiCase(name, "data"); });
 
   if (data != names_.end()) {
     AppendNameWithValue(
@@ -262,6 +263,7 @@ void HTMLPlugInElement::AttachLayoutTree(AttachContext& context) {
 }
 
 void HTMLPlugInElement::NaturalSizingInfoChanged() {
+  HTMLFrameOwnerElement::NaturalSizingInfoChanged();
   if (auto* embedded_object = GetLayoutEmbeddedObject())
     embedded_object->NaturalSizeChanged();
 }
@@ -867,10 +869,9 @@ bool HTMLPlugInElement::AllowedToLoadPlugin(const KURL& url) {
         MakeGarbageCollected<ConsoleMessage>(
             mojom::blink::ConsoleMessageSource::kSecurity,
             mojom::blink::ConsoleMessageLevel::kError,
-            "Failed to load '" + url.ElidedString() +
-                "' as a plugin, because the "
-                "frame into which the plugin "
-                "is loading is sandboxed."));
+            StrCat({"Failed to load '", url.ElidedString(),
+                    "' as a plugin, because the frame into which the plugin is "
+                    "loading is sandboxed."})));
     return false;
   }
   return true;
@@ -910,9 +911,11 @@ bool HTMLPlugInElement::UseFallbackContent() const {
   return false;
 }
 
-void HTMLPlugInElement::ReattachOnPluginChangeIfNeeded() {
-  if (UseFallbackContent() || !NeedsPluginUpdate() || !GetLayoutObject())
+void HTMLPlugInElement::ReattachOnPluginChangeIfNeeded(bool require_layout) {
+  if (UseFallbackContent() || !NeedsPluginUpdate() ||
+      (require_layout && !GetLayoutObject())) {
     return;
+  }
 
   SetNeedsStyleRecalc(
       kSubtreeStyleChange,

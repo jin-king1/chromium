@@ -13,6 +13,9 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/events/test/event_generator.h"
@@ -47,6 +50,11 @@ class LoginPinInputViewTest
     SetWidget(CreateWidgetWithContent(view_));
   }
 
+  void TearDown() override {
+    view_ = nullptr;
+    LoginTestBase::TearDown();
+  }
+
   void OnPinSubmit(std::u16string_view pin) {
     submitted_pin_ = std::make_optional(std::u16string(pin));
   }
@@ -57,8 +65,9 @@ class LoginPinInputViewTest
 
   void PressKeyHelper(ui::KeyboardCode key) {
     GetEventGenerator()->PressKey(key, ui::EF_NONE);
-    // Wait until the keypress is processed.
-    base::RunLoop().RunUntilIdle();
+    // Run input-method zero-delay callbacks that are already due at the
+    // current mock time.
+    task_environment()->FastForwardBy(base::TimeDelta());
   }
 
   void ExpectAttribute(const std::string& value,
@@ -81,7 +90,7 @@ class LoginPinInputViewTest
     ExpectAttribute(value, ax::mojom::StringAttribute::kValue);
   }
 
-  raw_ptr<LoginPinInputView, DanglingUntriaged> view_ = nullptr;
+  raw_ptr<LoginPinInputView> view_ = nullptr;
   int length_ = 0;
 
   // Generated during the callback response.

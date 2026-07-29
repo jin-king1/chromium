@@ -5,9 +5,11 @@
 #include "components/paint_preview/renderer/paint_preview_recorder_utils.h"
 
 #include <utility>
+#include <variant>
 
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_view_util.h"
 #include "base/trace_event/common/trace_event_common.h"
 #include "base/trace_event/trace_event.h"
 #include "cc/paint/paint_image.h"
@@ -16,7 +18,7 @@
 #include "components/paint_preview/common/file_stream.h"
 #include "components/paint_preview/common/paint_preview_tracker.h"
 #include "mojo/public/cpp/base/shared_memory_utils.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "skia/ext/skia_utils_base.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkData.h"
 #include "third_party/skia/include/core/SkImage.h"
@@ -58,7 +60,7 @@ class OpConverterAndTracker {
       : tracker_(tracker) {}
 
   const cc::PaintOp* ConvertAndTrack(const cc::PaintOp& op) {
-    converted_op_.emplace<absl::monostate>();
+    converted_op_.emplace<std::monostate>();
     switch (op.GetType()) {
       case cc::PaintOpType::kDrawTextBlob: {
         const auto& text_blob_op = static_cast<const cc::DrawTextBlobOp&>(op);
@@ -67,10 +69,9 @@ class OpConverterAndTracker {
       }
       case cc::PaintOpType::kAnnotate: {
         const auto& annotate_op = static_cast<const cc::AnnotateOp&>(op);
-        tracker_->AnnotateLink(GURL(std::string(reinterpret_cast<const char*>(
-                                                    annotate_op.data->data()),
-                                                annotate_op.data->size())),
-                               annotate_op.rect);
+        tracker_->AnnotateLink(
+            GURL(base::as_string_view(skia::as_byte_span(*annotate_op.data))),
+            annotate_op.rect);
         // Delete the op. We no longer need it.
         return nullptr;
       }
@@ -126,7 +127,7 @@ class OpConverterAndTracker {
           converted_op_.emplace<cc::DrawImageOp>(
               MakeUnaccelerated(image_op.image), image_op.left, image_op.top,
               image_op.sampling, &image_op.flags);
-          return &absl::get<cc::DrawImageOp>(converted_op_);
+          return &std::get<cc::DrawImageOp>(converted_op_);
         }
         break;
       }
@@ -136,7 +137,7 @@ class OpConverterAndTracker {
           converted_op_.emplace<cc::DrawImageRectOp>(
               MakeUnaccelerated(image_op.image), image_op.src, image_op.dst,
               image_op.sampling, &image_op.flags, image_op.constraint);
-          return &absl::get<cc::DrawImageRectOp>(converted_op_);
+          return &std::get<cc::DrawImageRectOp>(converted_op_);
         }
         break;
       }
@@ -148,7 +149,7 @@ class OpConverterAndTracker {
 
  private:
   raw_ptr<PaintPreviewTracker> tracker_;
-  absl::variant<absl::monostate, cc::DrawImageOp, cc::DrawImageRectOp>
+  std::variant<std::monostate, cc::DrawImageOp, cc::DrawImageRectOp>
       converted_op_;
 };
 

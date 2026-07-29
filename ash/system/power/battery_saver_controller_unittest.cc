@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/system/power/battery_saver_controller.h"
 
 #include <memory>
@@ -21,6 +16,7 @@
 #include "ash/system/toast/toast_manager_impl.h"
 #include "ash/system/toast/toast_overlay.h"
 #include "ash/test/ash_test_base.h"
+#include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"

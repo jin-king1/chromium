@@ -11,6 +11,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/system/string_data_source.h"
@@ -65,10 +66,10 @@ void WriteDataToProducer(
   // the duration of the write.
   producer_raw->Write(
       std::move(data_source),
-      WTF::BindOnce([](std::unique_ptr<mojo::DataPipeProducer>,
-                       scoped_refptr<base::RefCountedData<Vector<uint8_t>>>,
-                       MojoResult) {},
-                    std::move(producer), std::move(data)));
+      blink::BindOnce([](std::unique_ptr<mojo::DataPipeProducer>,
+                         scoped_refptr<base::RefCountedData<Vector<uint8_t>>>,
+                         MojoResult) {},
+                      std::move(producer), std::move(data)));
 }
 
 }  // namespace
@@ -118,7 +119,8 @@ base::FileErrorOr<int> FileSystemAccessIncognitoFileDelegate::Read(
     CHECK_LE(bytes_read, bytes_to_read);
     CHECK_LE(buffer->size(), static_cast<uint64_t>(bytes_to_read));
 
-    memcpy(data.data(), buffer->data(), bytes_to_read);
+    data.copy_prefix_from(
+        base::span(*buffer).first(base::checked_cast<size_t>(bytes_read)));
   } else {
     CHECK_EQ(bytes_read, 0);
   }
@@ -140,7 +142,7 @@ base::FileErrorOr<int> FileSystemAccessIncognitoFileDelegate::Write(
 
   auto ref_counted_data =
       base::MakeRefCounted<base::RefCountedData<Vector<uint8_t>>>();
-  ref_counted_data->data.AppendSpan(data);
+  ref_counted_data->data.append_range(data);
 
   // Write the data to the data pipe on another thread. This is safe to run in
   // parallel to the `Write()` call, since the browser can read from the pipe as

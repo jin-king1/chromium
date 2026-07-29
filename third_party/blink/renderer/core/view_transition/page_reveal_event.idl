@@ -4,9 +4,8 @@
 
 // https://html.spec.whatwg.org/multipage/nav-history-apis.html#pagerevealevent
 [
-  Exposed=Window,
-  RuntimeEnabled=PageRevealEvent
+  Exposed=Window
 ] interface PageRevealEvent : Event {
   constructor(DOMString type, optional PageRevealEventInit eventInitDict = {});
-  [RuntimeEnabled=ViewTransitionOnNavigation] readonly attribute ViewTransition? viewTransition;
+  readonly attribute ViewTransition? viewTransition;
 };

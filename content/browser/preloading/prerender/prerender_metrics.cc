@@ -7,6 +7,7 @@
 #include <cmath>
 #include <memory>
 #include <optional>
+#include <variant>
 
 #include "base/check_op.h"
 #include "base/metrics/histogram_functions.h"
@@ -16,9 +17,12 @@
 #include "content/browser/preloading/preloading_trigger_type_impl.h"
 #include "content/browser/preloading/prerender/prerender_final_status.h"
 #include "content/browser/preloading/prerender/prerender_host.h"
+#include "content/public/browser/preloading_data.h"
 #include "content/public/browser/preloading_trigger_type.h"
+#include "net/http/http_request_headers.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "services/network/public/cpp/headers_matcher.h"
 
 namespace content {
 
@@ -36,12 +40,12 @@ enum HeaderMismatchType : uint32_t {
 
 PrerenderCancelledInterface GetCancelledInterfaceType(
     const std::string& interface_name) {
-  if (interface_name == "device.mojom.GamepadHapticsManager")
+  if (interface_name == "device.mojom.GamepadHapticsManager") {
     return PrerenderCancelledInterface::kGamepadHapticsManager;
-  else if (interface_name == "device.mojom.GamepadMonitor")
+  } else if (interface_name == "device.mojom.GamepadMonitor") {
     return PrerenderCancelledInterface::kGamepadMonitor;
-  else if (interface_name ==
-           "chrome.mojom.TrustedVaultEncryptionKeysExtension") {
+  } else if (interface_name ==
+             "chrome.mojom.TrustedVaultEncryptionKeysExtension") {
     return PrerenderCancelledInterface::kTrustedVaultEncryptionKeys;
   }
   return PrerenderCancelledInterface::kUnknown;
@@ -54,8 +58,8 @@ int32_t InterfaceNameHasher(const std::string& interface_name) {
 int32_t HeaderMismatchHasher(const std::string& header,
                              HeaderMismatchType mismatch_type) {
   // Throw two bits away to encode the mismatch type.
-  // {0---30} bits are the encoded hash number.
-  // {31, 32} bits encode the mismatch type.
+  // {0---29} bits are the encoded hash number.
+  // {30, 31} bits encode the mismatch type.
   static_assert(HeaderMismatchType::kMaxValue == 3u,
                 "HeaderMismatchType should use 2 bits at most.");
   return static_cast<int32_t>(base::HashMetricNameAs32Bits(header) << 2 |
@@ -64,9 +68,9 @@ int32_t HeaderMismatchHasher(const std::string& header,
 
 std::string GenerateHistogramName(const std::string& histogram_base_name,
                                   PreloadingTriggerType trigger_type,
-                                  const std::string& embedder_suffix) {
+                                  const std::string& histogram_suffix) {
   return histogram_base_name +
-         GeneratePrerenderHistogramSuffix(trigger_type, embedder_suffix);
+         GeneratePrerenderHistogramSuffix(trigger_type, histogram_suffix);
 }
 
 void ReportHeaderMismatch(const std::string& key,
@@ -78,20 +82,20 @@ void ReportHeaderMismatch(const std::string& key,
 }
 
 void ReportAllPrerenderMismatchedHeaders(
-    const std::vector<PrerenderMismatchedHeaders>& mismatched_headers,
+    const std::vector<network::MismatchedHttpRequestHeader>& mismatched_headers,
     const std::string& histogram_suffix) {
   for (const auto& mismatched_header : mismatched_headers) {
-    if (mismatched_header.initial_value.has_value() &&
-        mismatched_header.activation_value.has_value()) {
-      ReportHeaderMismatch(mismatched_header.header_name,
+    if (mismatched_header.expected_value.has_value() &&
+        mismatched_header.actual_value.has_value()) {
+      ReportHeaderMismatch(mismatched_header.lowered_key,
                            HeaderMismatchType::kValueMismatch,
                            histogram_suffix);
-    } else if (mismatched_header.initial_value.has_value()) {
-      ReportHeaderMismatch(mismatched_header.header_name,
+    } else if (mismatched_header.expected_value.has_value()) {
+      ReportHeaderMismatch(mismatched_header.lowered_key,
                            HeaderMismatchType::kMissingInActivation,
                            histogram_suffix);
     } else {
-      ReportHeaderMismatch(mismatched_header.header_name,
+      ReportHeaderMismatch(mismatched_header.lowered_key,
                            HeaderMismatchType::kMissingInPrerendering,
                            histogram_suffix);
     }
@@ -118,13 +122,12 @@ void RecordPrerenderCancelledInterface(const std::string& interface_name,
   }
 }
 
-void RecordPrerenderFinalStatusUma(
-    PrerenderFinalStatus final_status,
-    PreloadingTriggerType trigger_type,
-    const std::string& embedder_histogram_suffix) {
+void RecordPrerenderFinalStatusUma(PrerenderFinalStatus final_status,
+                                   PreloadingTriggerType trigger_type,
+                                   const std::string& histogram_suffix) {
   base::UmaHistogramEnumeration(
       GenerateHistogramName("Prerender.Experimental.PrerenderHostFinalStatus",
-                            trigger_type, embedder_histogram_suffix),
+                            trigger_type, histogram_suffix),
       final_status);
 }
 
@@ -154,9 +157,10 @@ PrerenderCancellationReason::BuildForMojoBinderPolicy(
                                      interface_name);
 }
 
-const std::vector<PrerenderMismatchedHeaders>*
+const std::vector<network::MismatchedHttpRequestHeader>*
 PrerenderCancellationReason::GetPrerenderMismatchedHeaders() const {
-  return absl::get_if<std::vector<PrerenderMismatchedHeaders>>(&explanation_);
+  return std::get_if<std::vector<network::MismatchedHttpRequestHeader>>(
+      &explanation_);
 }
 
 // static
@@ -167,9 +171,8 @@ PrerenderCancellationReason PrerenderCancellationReason::
 }
 
 void PrerenderCancellationReason::SetPrerenderMismatchedHeaders(
-    std::unique_ptr<std::vector<PrerenderMismatchedHeaders>>
-        mismatched_headers) {
-  explanation_ = std::move(*mismatched_headers);
+    std::vector<network::MismatchedHttpRequestHeader> mismatched_headers) {
+  explanation_ = std::move(mismatched_headers);
 }
 
 //  static
@@ -197,36 +200,37 @@ void PrerenderCancellationReason::ReportMetrics(
     const std::string& histogram_suffix) const {
   switch (final_status_) {
     case PrerenderFinalStatus::kInactivePageRestriction:
-      CHECK(absl::holds_alternative<uint64_t>(explanation_));
+      CHECK(std::holds_alternative<uint64_t>(explanation_));
       base::UmaHistogramSparse(
           "Prerender.CanceledForInactivePageRestriction."
           "DisallowActivationReason" +
               histogram_suffix,
-          absl::get<uint64_t>(explanation_));
+          std::get<uint64_t>(explanation_));
       break;
     case PrerenderFinalStatus::kMojoBinderPolicy:
-      CHECK(absl::holds_alternative<std::string>(explanation_));
-      RecordPrerenderCancelledInterface(absl::get<std::string>(explanation_),
+      CHECK(std::holds_alternative<std::string>(explanation_));
+      RecordPrerenderCancelledInterface(std::get<std::string>(explanation_),
                                         histogram_suffix);
       break;
     case PrerenderFinalStatus::kDidFailLoad:
-      CHECK(absl::holds_alternative<int32_t>(explanation_));
-      RecordDidFailLoadErrorType(absl::get<int32_t>(explanation_),
+      CHECK(std::holds_alternative<int32_t>(explanation_));
+      RecordDidFailLoadErrorType(std::get<int32_t>(explanation_),
                                  histogram_suffix);
       break;
     case PrerenderFinalStatus::kActivationNavigationParameterMismatch:
-      CHECK(absl::holds_alternative<std::vector<PrerenderMismatchedHeaders>>(
+      CHECK(std::holds_alternative<
+                std::vector<network::MismatchedHttpRequestHeader>>(
                 explanation_) ||
-            absl::holds_alternative<absl::monostate>(explanation_));
+            std::holds_alternative<std::monostate>(explanation_));
       if (auto* mismatched_headers =
-              absl::get_if<std::vector<PrerenderMismatchedHeaders>>(
+              std::get_if<std::vector<network::MismatchedHttpRequestHeader>>(
                   &explanation_)) {
         ReportAllPrerenderMismatchedHeaders(*mismatched_headers,
                                             histogram_suffix);
       }
       break;
     default:
-      CHECK(absl::holds_alternative<absl::monostate>(explanation_));
+      CHECK(std::holds_alternative<std::monostate>(explanation_));
       // Other types need not to report.
       break;
   }
@@ -236,38 +240,16 @@ std::optional<std::string>
 PrerenderCancellationReason::DisallowedMojoInterface() const {
   switch (final_status_) {
     case PrerenderFinalStatus::kMojoBinderPolicy:
-      return absl::get<std::string>(explanation_);
+      return std::get<std::string>(explanation_);
     default:
       return std::nullopt;
   }
 }
 
-PrerenderMismatchedHeaders::PrerenderMismatchedHeaders(
-    const std::string& header_name,
-    std::optional<std::string> initial_value,
-    std::optional<std::string> activation_value)
-    : header_name(header_name),
-      initial_value(std::move(initial_value)),
-      activation_value(std::move(activation_value)) {}
-
-PrerenderMismatchedHeaders::~PrerenderMismatchedHeaders() = default;
-
-PrerenderMismatchedHeaders::PrerenderMismatchedHeaders(
-    const PrerenderMismatchedHeaders& other) = default;
-
-PrerenderMismatchedHeaders::PrerenderMismatchedHeaders(
-    PrerenderMismatchedHeaders&& other) = default;
-
-PrerenderMismatchedHeaders& PrerenderMismatchedHeaders::operator=(
-    const PrerenderMismatchedHeaders& other) = default;
-
-PrerenderMismatchedHeaders& PrerenderMismatchedHeaders::operator=(
-    PrerenderMismatchedHeaders&& other) = default;
-
 std::string GeneratePrerenderHistogramSuffix(
     PreloadingTriggerType trigger_type,
-    const std::string& embedder_suffix) {
-  CHECK(embedder_suffix.empty() ||
+    const std::string& histogram_suffix) {
+  CHECK(histogram_suffix.empty() ||
         trigger_type == PreloadingTriggerType::kEmbedder);
   switch (trigger_type) {
     case PreloadingTriggerType::kSpeculationRule:
@@ -277,7 +259,7 @@ std::string GeneratePrerenderHistogramSuffix(
     case PreloadingTriggerType::kSpeculationRuleFromAutoSpeculationRules:
       return ".SpeculationRuleFromAutoSpeculationRules";
     case PreloadingTriggerType::kEmbedder:
-      return ".Embedder_" + embedder_suffix;
+      return ".Embedder_" + histogram_suffix;
   }
   NOTREACHED();
 }
@@ -287,13 +269,12 @@ void RecordPrerenderTriggered(ukm::SourceId ukm_id) {
       ukm::UkmRecorder::Get());
 }
 
-void RecordPrerenderActivationTime(
-    base::TimeDelta delta,
-    PreloadingTriggerType trigger_type,
-    const std::string& embedder_histogram_suffix) {
+void RecordPrerenderActivationTime(base::TimeDelta delta,
+                                   PreloadingTriggerType trigger_type,
+                                   const std::string& histogram_suffix) {
   base::UmaHistogramTimes(
       GenerateHistogramName("Navigation.TimeToActivatePrerender", trigger_type,
-                            embedder_histogram_suffix),
+                            histogram_suffix),
       delta);
 }
 
@@ -304,7 +285,7 @@ void RecordFailedPrerenderFinalStatus(
            PrerenderFinalStatus::kActivated);
   RecordPrerenderFinalStatusUma(cancellation_reason.final_status(),
                                 attributes.trigger_type,
-                                attributes.embedder_histogram_suffix);
+                                attributes.histogram_suffix);
 
   if (cancellation_reason.final_status() ==
       PrerenderFinalStatus::kPrerenderFailedDuringPrefetch) {
@@ -315,7 +296,7 @@ void RecordFailedPrerenderFinalStatus(
           GenerateHistogramName("Prerender.Experimental."
                                 "PrefetchAheadOfPrerenderFailed.PrefetchStatus",
                                 attributes.trigger_type,
-                                attributes.embedder_histogram_suffix),
+                                attributes.histogram_suffix),
           prefetch_status.value());
     }
   }
@@ -333,7 +314,7 @@ void ReportSuccessActivation(const PrerenderAttributes& attributes,
                              ukm::SourceId prerendered_ukm_id) {
   RecordPrerenderFinalStatusUma(PrerenderFinalStatus::kActivated,
                                 attributes.trigger_type,
-                                attributes.embedder_histogram_suffix);
+                                attributes.histogram_suffix);
   if (attributes.initiator_ukm_id != ukm::kInvalidSourceId) {
     // `initiator_ukm_id` must be valid only for the speculation rules.
     CHECK(IsSpeculationRuleType(attributes.trigger_type));
@@ -419,10 +400,10 @@ void RecordPrerenderBackNavigationEligibility(
 void RecordPrerenderActivationCommitDeferTime(
     base::TimeDelta time_delta,
     PreloadingTriggerType trigger_type,
-    const std::string& embedder_histogram_suffix) {
+    const std::string& histogram_suffix) {
   base::UmaHistogramTimes(
       GenerateHistogramName("Navigation.Prerender.ActivationCommitDeferTime",
-                            trigger_type, embedder_histogram_suffix),
+                            trigger_type, histogram_suffix),
       time_delta);
 }
 

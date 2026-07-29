@@ -4,6 +4,9 @@
 
 #include "chrome/browser/webid/identity_provider_permission_request.h"
 
+#include <memory>
+#include <variant>
+
 #include "base/test/mock_callback.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -25,26 +28,24 @@ class IdentityProviderPermissionRequestTest : public testing::Test {
 TEST_F(IdentityProviderPermissionRequestTest, PermissionGranted) {
   base::MockCallback<base::OnceCallback<void(bool accepted)>> callback;
   EXPECT_CALL(callback, Run(true)).WillOnce(testing::Return());
-  auto* request = new IdentityProviderPermissionRequest(
+  auto request = std::make_unique<IdentityProviderPermissionRequest>(
       url::Origin::Create(GURL("https://idp.example")), callback.Get());
-  request->PermissionGranted(/**is_one_time=*/false);
-  request->RequestFinished();
+  request->PermissionGranted(/*prompt_options=*/std::monostate(),
+                             /*is_one_time=*/false);
 }
 
 TEST_F(IdentityProviderPermissionRequestTest, PermissionDenied) {
   base::MockCallback<base::OnceCallback<void(bool accepted)>> callback;
   EXPECT_CALL(callback, Run(false)).WillOnce(testing::Return());
-  auto* request = new IdentityProviderPermissionRequest(
+  auto request = std::make_unique<IdentityProviderPermissionRequest>(
       url::Origin::Create(GURL("https://idp.example")), callback.Get());
   request->PermissionDenied();
-  request->RequestFinished();
 }
 
 TEST_F(IdentityProviderPermissionRequestTest, PermissionCancelled) {
   base::MockCallback<base::OnceCallback<void(bool accepted)>> callback;
   EXPECT_CALL(callback, Run(false)).WillOnce(testing::Return());
-  auto* request = new IdentityProviderPermissionRequest(
+  auto request = std::make_unique<IdentityProviderPermissionRequest>(
       url::Origin::Create(GURL("https://idp.example")), callback.Get());
   request->Cancelled();
-  request->RequestFinished();
 }

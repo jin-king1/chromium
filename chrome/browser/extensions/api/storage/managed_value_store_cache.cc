@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/one_shot_event.h"
 #include "base/scoped_observation.h"
@@ -31,6 +32,7 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/extension_set.h"
@@ -39,7 +41,10 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chromeos/constants/chromeos_features.h"
 #endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using content::BrowserContext;
 using content::BrowserThread;
@@ -128,8 +133,9 @@ void ManagedValueStoreCache::ExtensionTracker::OnExtensionWillBeInstalled(
   // becomes ready. Wait until all of them are ready before registering the
   // schemas of managed extensions, so that the policy loaders are reloaded at
   // most once.
-  if (!ExtensionSystem::Get(profile_)->ready().is_signaled())
+  if (!ExtensionSystem::Get(profile_)->ready().is_signaled()) {
     return;
+  }
   ExtensionSet added;
   added.Insert(extension);
   LoadSchemas(std::move(added));
@@ -139,8 +145,9 @@ void ManagedValueStoreCache::ExtensionTracker::OnExtensionUninstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     extensions::UninstallReason reason) {
-  if (!ExtensionSystem::Get(profile_)->ready().is_signaled())
+  if (!ExtensionSystem::Get(profile_)->ready().is_signaled()) {
     return;
+  }
   if (extension && UsesManagedStorage(extension)) {
     schema_registry_->UnregisterComponent(
         policy::PolicyNamespace(policy_domain_, extension->id()));
@@ -158,11 +165,13 @@ void ManagedValueStoreCache::ExtensionTracker::LoadSchemas(ExtensionSet added) {
   ExtensionSet::const_iterator it = added.begin();
   while (it != added.end()) {
     std::string to_remove;
-    if (!UsesManagedStorage(it->get()))
+    if (!UsesManagedStorage(it->get())) {
       to_remove = (*it)->id();
+    }
     ++it;
-    if (!to_remove.empty())
+    if (!to_remove.empty()) {
       added.Remove(to_remove);
+    }
   }
 
   GetExtensionFileTaskRunner()->PostTask(
@@ -184,7 +193,7 @@ void ManagedValueStoreCache::ExtensionTracker::LoadSchemasOnFileTaskRunner(
   for (const auto& extension : extensions) {
     if (!extension->manifest()->FindStringPath(
             manifest_keys::kStorageManagedSchema)) {
-      // TODO(joaodasilva): Remove this. http://crbug.com/325349
+      // TODO(joaodasilva): Remove this. http://crbug.com/41078198
       (*components)[extension->id()] = policy::Schema();
       continue;
     }
@@ -192,9 +201,14 @@ void ManagedValueStoreCache::ExtensionTracker::LoadSchemasOnFileTaskRunner(
     // and is valid. If the schema is invalid then proceed with an empty schema.
     // The extension will be listed in chrome://policy but won't be able to load
     // any policies.
-    (*components)[extension->id()] =
-        StorageSchemaManifestHandler::GetSchema(extension.get())
-            .value_or(policy::Schema());
+    base::expected<policy::Schema, std::string> schema =
+        StorageSchemaManifestHandler::GetSchema(extension.get());
+    if (!schema.has_value()) {
+      LOG(ERROR) << "Failed to parse schema for extension " << extension->id()
+                 << " with error: " << schema.error();
+      schema = policy::Schema();
+    }
+    (*components)[extension->id()] = std::move(schema.value());
   }
 
   content::GetUIThreadTaskRunner({})->PostTask(
@@ -243,8 +257,9 @@ ManagedValueStoreCache::ManagedValueStoreCache(
   extension_tracker_ =
       std::make_unique<ExtensionTracker>(&profile, policy_domain_);
 
-  if (policy_service_->IsInitializationComplete(policy_domain_))
+  if (policy_service_->IsInitializationComplete(policy_domain_)) {
     OnPolicyServiceInitialized(policy_domain_);
+  }
 }
 
 ManagedValueStoreCache::~ManagedValueStoreCache() {
@@ -288,8 +303,9 @@ void ManagedValueStoreCache::DeleteStorageSoon(
   // It's possible that the store exists, but hasn't been loaded yet
   // (because the extension is unloaded, for example). Open the database to
   // clear it if it exists.
-  if (!HasStore(extension_id))
+  if (!HasStore(extension_id)) {
     return;
+  }
   GetOrCreateStore(extension_id).DeleteStorage();
   store_map_.erase(extension_id);
 }
@@ -298,8 +314,9 @@ void ManagedValueStoreCache::OnPolicyServiceInitialized(
     policy::PolicyDomain domain) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(ui_sequence_checker_);
 
-  if (domain != policy_domain_)
+  if (domain != policy_domain_) {
     return;
+  }
 
   // The PolicyService now has all the initial policies ready. Send policy
   // for all the managed extensions to their backing stores now.
@@ -351,9 +368,14 @@ void ManagedValueStoreCache::OnPolicyUpdated(const policy::PolicyNamespace& ns,
 policy::PolicyDomain ManagedValueStoreCache::GetPolicyDomain(
     const Profile& profile) {
 #if BUILDFLAG(IS_CHROMEOS)
-  return ash::ProfileHelper::IsSigninProfile(&profile)
-             ? policy::POLICY_DOMAIN_SIGNIN_EXTENSIONS
-             : policy::POLICY_DOMAIN_EXTENSIONS;
+  bool use_signin_extensions_domain =
+      ash::ProfileHelper::IsSigninProfile(&profile);
+  if (chromeos::features::IsLockScreenBadgeAuthEnabled()) {
+    use_signin_extensions_domain |=
+        ash::ProfileHelper::IsLockScreenProfile(&profile);
+  }
+  return use_signin_extensions_domain ? policy::POLICY_DOMAIN_SIGNIN_EXTENSIONS
+                                      : policy::POLICY_DOMAIN_EXTENSIONS;
 #else
   return policy::POLICY_DOMAIN_EXTENSIONS;
 #endif
@@ -375,8 +397,9 @@ void ManagedValueStoreCache::UpdatePolicyOnBackend(
 PolicyValueStore& ManagedValueStoreCache::GetOrCreateStore(
     const ExtensionId& extension_id) {
   const auto& it = store_map_.find(extension_id);
-  if (it != store_map_.end())
+  if (it != store_map_.end()) {
     return *it->second;
+  }
 
   // Create the store now, and serve the cached policy until the PolicyService
   // sends updated values.

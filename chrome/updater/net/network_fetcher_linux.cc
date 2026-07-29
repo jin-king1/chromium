@@ -7,11 +7,13 @@
 #include <dlfcn.h>
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 
+#include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
@@ -33,6 +35,7 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/sequence_bound.h"
+#include "chrome/updater/event_logger.h"
 #include "chrome/updater/net/network.h"
 #include "chrome/updater/policy/service.h"
 #include "chrome/updater/util/util.h"
@@ -50,12 +53,12 @@ using CurlUniquePtr = std::unique_ptr<CURL, CurlDeleter>;
 class LibcurlNetworkFetcherImpl {
  public:
   using ResponseStartedCallback =
-      update_client::NetworkFetcher::ResponseStartedCallback;
-  using ProgressCallback = update_client::NetworkFetcher::ProgressCallback;
+      ::update_client::NetworkFetcher::ResponseStartedCallback;
+  using ProgressCallback = ::update_client::NetworkFetcher::ProgressCallback;
   using PostRequestCompleteCallback =
-      update_client::NetworkFetcher::PostRequestCompleteCallback;
+      ::update_client::NetworkFetcher::PostRequestCompleteCallback;
   using DownloadToFileCompleteCallback =
-      update_client::NetworkFetcher::DownloadToFileCompleteCallback;
+      ::update_client::NetworkFetcher::DownloadToFileCompleteCallback;
 
   LibcurlNetworkFetcherImpl() = delete;
   LibcurlNetworkFetcherImpl(const LibcurlNetworkFetcherImpl&) = delete;
@@ -112,7 +115,8 @@ class LibcurlNetworkFetcherImpl {
       const base::flat_map<std::string, std::string>& response_headers,
       const std::string& header) {
     const std::string lower = base::ToLowerASCII(header);
-    return response_headers.contains(lower) ? response_headers.at(lower) : "";
+    auto it = response_headers.find(lower);
+    return it != response_headers.end() ? it->second : "";
   }
 
   CurlUniquePtr curl_;
@@ -155,7 +159,7 @@ void LibcurlNetworkFetcherImpl::PostRequest(
   }
 
   base::flat_map<std::string, std::string> response_headers;
-  std::unique_ptr<std::string> response_body = std::make_unique<std::string>();
+  std::optional<std::string> response_body = std::string();
 
   base::WeakPtr<LibcurlNetworkFetcherImpl> weak_ptr =
       weak_factory_.GetWeakPtr();
@@ -171,7 +175,8 @@ void LibcurlNetworkFetcherImpl::PostRequest(
       curl_easy_setopt(curl_.get(), CURLOPT_HEADERDATA, &response_headers) ||
       curl_easy_setopt(curl_.get(), CURLOPT_WRITEFUNCTION,
                        &LibcurlNetworkFetcherImpl::CurlWriteStringCallback) ||
-      curl_easy_setopt(curl_.get(), CURLOPT_WRITEDATA, response_body.get()) ||
+      curl_easy_setopt(curl_.get(), CURLOPT_WRITEDATA,
+                       &response_body.value()) ||
       curl_easy_setopt(curl_.get(), CURLOPT_NOPROGRESS, 0) ||
       curl_easy_setopt(curl_.get(), CURLOPT_XFERINFOFUNCTION,
                        &LibcurlNetworkFetcherImpl::CurlTransferCallback) ||
@@ -210,6 +215,8 @@ void LibcurlNetworkFetcherImpl::PostRequest(
                          update_client::NetworkFetcher::kHeaderEtag),
           GetHeaderValue(response_headers,
                          update_client::NetworkFetcher::kHeaderXCupServerProof),
+          GetHeaderValue(response_headers,
+                         update_client::NetworkFetcher::kHeaderSetCookie),
           x_retry_after));
 
   curl_slist_free_all(headers);
@@ -393,12 +400,12 @@ int LibcurlNetworkFetcherImpl::CurlTransferCallback(void* userp,
 class LibcurlNetworkFetcher : public update_client::NetworkFetcher {
  public:
   using ResponseStartedCallback =
-      update_client::NetworkFetcher::ResponseStartedCallback;
-  using ProgressCallback = update_client::NetworkFetcher::ProgressCallback;
+      ::update_client::NetworkFetcher::ResponseStartedCallback;
+  using ProgressCallback = ::update_client::NetworkFetcher::ProgressCallback;
   using PostRequestCompleteCallback =
-      update_client::NetworkFetcher::PostRequestCompleteCallback;
+      ::update_client::NetworkFetcher::PostRequestCompleteCallback;
   using DownloadToFileCompleteCallback =
-      update_client::NetworkFetcher::DownloadToFileCompleteCallback;
+      ::update_client::NetworkFetcher::DownloadToFileCompleteCallback;
 
   LibcurlNetworkFetcher() = delete;
   LibcurlNetworkFetcher(const LibcurlNetworkFetcher&) = delete;
@@ -466,7 +473,8 @@ base::OnceClosure LibcurlNetworkFetcher::DownloadToFile(
 class NetworkFetcherFactory::Impl {};
 
 NetworkFetcherFactory::NetworkFetcherFactory(
-    std::optional<PolicyServiceProxyConfiguration>) {}
+    std::optional<PolicyServiceProxyConfiguration>,
+    scoped_refptr<UpdaterEventLogger>) {}
 NetworkFetcherFactory::~NetworkFetcherFactory() = default;
 
 std::unique_ptr<update_client::NetworkFetcher> NetworkFetcherFactory::Create()
@@ -477,7 +485,8 @@ std::unique_ptr<update_client::NetworkFetcher> NetworkFetcherFactory::Create()
     VLOG(1) << "Failed to initialize a curl handle.";
     return nullptr;
   }
-  return std::make_unique<LibcurlNetworkFetcher>(std::move(curl));
+  return std::make_unique<LoggingNetworkFetcher>(
+      std::make_unique<LibcurlNetworkFetcher>(std::move(curl)));
 }
 
 }  // namespace updater

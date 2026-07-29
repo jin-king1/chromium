@@ -18,10 +18,12 @@ import android.view.contentcapture.ContentCaptureManager;
 import androidx.annotation.RequiresApi;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -30,16 +32,16 @@ import java.util.HashSet;
 
 /** Unit test for PlatformContentCaptureController. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, sdk = Build.VERSION_CODES.Q)
+@Config(manifest = Config.NONE, sdk = BaseRobolectricTestRunner.MIN_SDK)
 @RequiresApi(Build.VERSION_CODES.Q)
 public class PlatformContentCaptureControllerTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     private ContentCaptureManager mContentCaptureManager;
     private Context mContext;
     private ComponentName mComponentName;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mContext = Mockito.mock(Context.class);
         mContentCaptureManager = Mockito.mock(ContentCaptureManager.class);
         mComponentName = Mockito.mock(ComponentName.class);
@@ -63,9 +65,7 @@ public class PlatformContentCaptureControllerTest {
 
     @Test
     public void testEverythingDisallowed() throws Throwable {
-        doReturn(new HashSet<ContentCaptureCondition>())
-                .when(mContentCaptureManager)
-                .getContentCaptureConditions();
+        doReturn(new HashSet<>()).when(mContentCaptureManager).getContentCaptureConditions();
         PlatformContentCaptureController controller =
                 new PlatformContentCaptureController(mContext);
         assertTrue(controller.isAiai());
@@ -75,7 +75,7 @@ public class PlatformContentCaptureControllerTest {
 
     @Test
     public void testContentCaptureConditions() throws Throwable {
-        HashSet<ContentCaptureCondition> conditions = new HashSet<ContentCaptureCondition>();
+        HashSet<ContentCaptureCondition> conditions = new HashSet<>();
         conditions.add(
                 new ContentCaptureCondition(
                         new LocusId(".*chromium.org"), ContentCaptureCondition.FLAG_IS_REGEX));

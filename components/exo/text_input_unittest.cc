@@ -338,12 +338,12 @@ TEST_F(TextInputTest, ShowVirtualKeyboardIfEnabled) {
   // VirtualKeyboardControllerObserver event as if it is done via
   // real VirtualKeyboardController implementation.
   EXPECT_CALL(observer, OnVirtualKeyboardVisibilityChangedIfEnabled)
-      .WillOnce(testing::Invoke([this](bool should_show) {
+      .WillOnce([this](bool should_show) {
         if (should_show)
           text_input()->OnKeyboardVisible(gfx::Rect());
         else
           text_input()->OnKeyboardHidden();
-      }));
+      });
   EXPECT_CALL(*delegate(), OnVirtualKeyboardVisibilityChanged(true)).Times(1);
   text_input()->ShowVirtualKeyboardIfEnabled();
   testing::Mock::VerifyAndClearExpectations(&observer);
@@ -370,12 +370,12 @@ TEST_F(TextInputTest, ShowVirtualKeyboardIfEnabledBeforeActivated) {
   // VirtualKeyboardControllerObserver event as if it is done via
   // real VirtualKeyboardController implementation.
   EXPECT_CALL(observer, OnVirtualKeyboardVisibilityChangedIfEnabled)
-      .WillOnce(testing::Invoke([this](bool should_show) {
+      .WillOnce([this](bool should_show) {
         if (should_show)
           text_input()->OnKeyboardVisible(gfx::Rect());
         else
           text_input()->OnKeyboardHidden();
-      }));
+      });
   EXPECT_CALL(*delegate(), Activated).Times(1);
   EXPECT_CALL(*delegate(), OnVirtualKeyboardVisibilityChanged(true)).Times(1);
   text_input()->Activate(seat(), surface(),
@@ -608,8 +608,8 @@ TEST_F(TextInputTest, InsertCharNumpadEqual) {
 
   // NUMPAD_EQUAL is set key_code to VKEY_UNKNOWN, but code t- NUMPAD_EQUAL.
   ui::KeyEvent ev(ui::EventType::kKeyPressed, ui::VKEY_UNKNOWN,
-                  ui::DomCode::NUMPAD_EQUAL, /*flags=*/0, /*key=*/0,
-                  base::TimeTicks());
+                  ui::DomCode::NUMPAD_EQUAL, /*flags=*/0,
+                  /*key=*/ui::DomKey::NONE, base::TimeTicks());
   ev.set_character(u'=');
 
   // InsertChar should ignore it (because it is not consumed by IME),

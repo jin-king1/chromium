@@ -6,16 +6,18 @@
 #define CHROME_BROWSER_SMART_CARD_SMART_CARD_PERMISSION_CONTEXT_H_
 
 #include <cstdint>
-#include <map>
 #include <set>
-#include <string>
-#include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
+#include "base/scoped_observation.h"
+#include "base/time/time.h"
 #include "chrome/browser/smart_card/smart_card_permission_request.h"
 #include "chrome/browser/smart_card/smart_card_reader_tracker.h"
 #include "components/permissions/object_permission_context_base.h"
+#include "content/public/browser/smart_card_delegate.h"
 #include "url/origin.h"
 
 class Profile;
@@ -26,9 +28,13 @@ class RenderFrameHost;
 namespace settings {
 class SmartCardReaderPermissionsSiteSettingsHandlerTest;
 }  // namespace settings
+namespace site_settings {
+class SiteSettingsHelperChooserExceptionTest;
+}  // namespace site_settings
 
 class SmartCardPermissionContext
-    : public permissions::ObjectPermissionContextBase {
+    : public permissions::ObjectPermissionContextBase,
+      public permissions::ObjectPermissionContextBase::PermissionObserver {
  public:
   // Callback type to report whether the user allowed the connection request.
   using RequestReaderPermissionCallback = base::OnceCallback<void(bool)>;
@@ -47,44 +53,39 @@ class SmartCardPermissionContext
                                 RequestReaderPermissionCallback callback);
 
   // permissions::ObjectPermissionContextBase:
-  std::string GetKeyForObject(const base::Value::Dict& object) override;
-  bool IsValidObject(const base::Value::Dict& object) override;
-  std::u16string GetObjectDisplayName(const base::Value::Dict& object) override;
+  std::string GetKeyForObject(const base::DictValue& object) override;
+  bool IsValidObject(const base::DictValue& object) override;
+  std::u16string GetObjectDisplayName(const base::DictValue& object) override;
+
+  // permissions::ObjectPermissionContextBase::PermissionObserver:
+  void OnPermissionRevoked(const url::Origin& origin) override;
+
+  void AddObserver(content::SmartCardDelegate::PermissionObserver* observer);
+  void RemoveObserver(content::SmartCardDelegate::PermissionObserver* observer);
 
   void RevokeEphemeralPermissions();
   void RevokeAllPermissions();
-  void RevokePersistentPermission(const std::string& reader_name,
-                                  const url::Origin& origin);
-
-  struct ReaderGrants {
-    ReaderGrants(const std::string& reader_name,
-                 const std::vector<url::Origin>& origins);
-    ~ReaderGrants();
-
-    ReaderGrants(const ReaderGrants& other);
-    bool operator==(const ReaderGrants& other) const;
-
-    std::string reader_name;
-    std::vector<url::Origin> origins;
-  };
-
-  // Returns persistent grants, grouped by reader.
-  std::vector<ReaderGrants> GetPersistentReaderGrants();
+  bool RevokeObjectPermissions(const url::Origin& origin) override;
 
   // Checks whether |origin|'s value of |guard_content_settings_type_| is both:
   // - set to "allow"
   // - set by policy
-  bool IsAllowlistedByPolicy(const url::Origin& origin);
+  bool IsAllowlistedByPolicy(const url::Origin& origin) const;
 
-  // Overridden to expose a symbolic "All readers" device in case of
-  // allowlisting via policy.
+  bool CanRequestObjectPermission(const url::Origin& origin) const override;
+
+  // The two methods below are overridden to expose a symbolic "All readers"
+  // device in case of allowlisting via policy.
   std::vector<std::unique_ptr<Object>> GetGrantedObjects(
       const url::Origin& origin) override;
+  std::vector<std::unique_ptr<Object>> GetAllGrantedObjects() override;
 
  private:
   friend class SmartCardPermissionContextTest;
   friend class settings::SmartCardReaderPermissionsSiteSettingsHandlerTest;
   friend class PageInfoBubbleViewInteractiveUiTest;
+  friend class ChromeOsSmartCardDelegateBrowserTest;
+  friend class site_settings::SiteSettingsHelperChooserExceptionTest;
 
   class OneTimeObserver;
   class PowerSuspendObserver;
@@ -104,7 +105,7 @@ class SmartCardPermissionContext
                                      const std::string& reader_name);
 
   void RevokeEphemeralPermissionsForReader(const std::string& reader_name);
-  void RevokeEphemeralPermissionsForOrigin(const url::Origin& origin);
+  bool RevokeEphemeralPermissionsForOrigin(const url::Origin& origin);
 
   void OnTrackingStarted(
       std::optional<std::vector<SmartCardReaderTracker::ReaderInfo>>);
@@ -114,18 +115,18 @@ class SmartCardPermissionContext
   void OnPermissionRequestDecided(const url::Origin& origin,
                                   const std::string& reader_name,
                                   RequestReaderPermissionCallback callback,
-                                  SmartCardPermissionRequest::Result result);
-
-  void OnPermissionDenied(const url::Origin& origin);
+                                  PermissionDecision decision);
 
   SmartCardReaderTracker& GetReaderTracker() const;
 
-  // Set of readers to which an origin has ephemeral access to.
-  std::map<url::Origin, std::set<std::string>> ephemeral_grants_;
+  void RevokeEphemeralPermissionIfLongTimeoutOccured(
+      const url::Origin& origin,
+      const std::string& reader_name);
 
-  // this is for tracking consecutive denials (after 3, guard setting is to be
-  // set to blocked)
-  std::map<url::Origin, uint8_t> consecutive_denials_;
+  // Set of readers to which an origin has ephemeral access to and times the
+  // ephemeral permissions should expire.
+  base::flat_map<url::Origin, base::flat_map<std::string, base::Time>>
+      ephemeral_grants_with_expiry_;
 
   std::unique_ptr<OneTimeObserver> one_time_observer_;
   std::unique_ptr<PowerSuspendObserver> power_suspend_observer_;
@@ -133,6 +134,14 @@ class SmartCardPermissionContext
 
   // Instance is owned by this profile.
   base::raw_ref<Profile> profile_;
+
+  base::ObserverList<content::SmartCardDelegate::PermissionObserver>
+      permission_observers_;
+
+  base::ScopedObservation<
+      permissions::ObjectPermissionContextBase,
+      permissions::ObjectPermissionContextBase::PermissionObserver>
+      permission_observation_{this};
 
   base::WeakPtrFactory<SmartCardPermissionContext> weak_ptr_factory_;
 };

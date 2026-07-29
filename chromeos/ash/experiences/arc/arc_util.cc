@@ -2,21 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromeos/ash/experiences/arc/arc_util.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <optional>
 
+#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/system/time/calendar_utils.h"
 #include "ash/system/time/date_helper.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -31,12 +28,15 @@
 #include "chromeos/ash/components/dbus/upstart/upstart_client.h"
 #include "chromeos/ash/components/dbus/vm_concierge/concierge_service.pb.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
+#include "chromeos/ash/experiences/arc/arc_platform_support.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/session/arc_vm_data_migration_status.h"
 #include "chromeos/version/version_loader.h"
 #include "components/exo/shell_surface_util.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
@@ -164,6 +164,26 @@ void OnStaleArcVmUpstartJobsStopped(
 bool IsArcAvailable() {
   const auto* command_line = base::CommandLine::ForCurrentProcess();
 
+  // If a device requires downloading the ARCVM image from a DLC (only on Reven
+  // board), but the download is not allowed due to unmet requirements (such as
+  // hardware or device management policies), then ARC is not considered
+  // available.
+  if (IsArcVmDlcRequired()) {
+    if (!arc::ArcPlatformSupport::Get()->IsDlcEnabled()) {
+      VLOG(1)
+          << "The ARCVM preload device policy is not enabled on the device, so "
+             "installing the ARCVM image from DLC is not supported.";
+      return false;
+    }
+
+    if (!IsArcVmDlcHardwareRequirementSatisfied()) {
+      VLOG(1)
+          << "The device does not meet the minimum hardware requirements to "
+             "install the ARCVM image from DLC.";
+      return false;
+    }
+  }
+
   if (command_line->HasSwitch(ash::switches::kArcAvailability)) {
     const std::string value =
         command_line->GetSwitchValueASCII(ash::switches::kArcAvailability);
@@ -188,9 +208,16 @@ bool IsArcVmEnabled() {
       ash::switches::kEnableArcVm);
 }
 
-bool IsArcVmDlcEnabled() {
+// TODO(crbug.com/450134000): Rename --arcvm-dlc-enabled flag to
+// --arcvm-dlc-required.
+bool IsArcVmDlcRequired() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
       ash::switches::kEnableArcVmDlc);
+}
+
+bool IsArcVmDlcHardwareRequirementSatisfied() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      ash::switches::kArcVmDlcHardwareRequirementSatisfied);
 }
 
 int GetArcAndroidSdkVersionAsInt() {
@@ -208,21 +235,6 @@ int GetArcAndroidSdkVersionAsInt() {
     return kMaxArcVersion;
   }
   return arc_version;
-}
-
-bool IsArcVmRtVcpuEnabled(uint32_t cpus) {
-  // TODO(kansho): remove switch after tast test use Finch instead.
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          ash::switches::kEnableArcVmRtVcpu)) {
-    return true;
-  }
-  if (cpus == 2 && base::FeatureList::IsEnabled(kRtVcpuDualCore)) {
-    return true;
-  }
-  if (cpus > 2 && base::FeatureList::IsEnabled(kRtVcpuQuadCore)) {
-    return true;
-  }
-  return false;
 }
 
 bool IsArcVmUseHugePages() {
@@ -283,9 +295,43 @@ bool ShouldShowOptInForTesting() {
       ash::switches::kArcForceShowOptInUi);
 }
 
+bool IsArcvmKioskAvailable() {
+  return IsArcVmEnabled() && ash::features::IsHeliumArcvmKioskEnabled();
+}
+
+// TODO(crbug.com/425999592): Pass current session of
+// components/session_manager/core/session.h to this method then check the
+// condition as needed from that, instead of depending on the global state in
+// UserManager, which is to be removed.
+bool IsArcvmKioskMode() {
+  // Ensure valid session id exists for the currently active user.
+  uint32_t user_session_id = 0u;
+  const user_manager::User* active_user =
+      user_manager::UserManager::Get()->GetActiveUser();
+  const AccountId& account_id = active_user->GetAccountId();
+  for (const auto& session :
+       session_manager::SessionManager::Get()->sessions()) {
+    if (session->account_id() == account_id) {
+      user_session_id = session->session_id();
+    }
+  }
+  CHECK_NE(0u, user_session_id);
+
+  return active_user->GetType() == user_manager::UserType::kKioskArcvmApp;
+}
+
+// TODO(crbug.com/425999592): Pass current session of
+// components/session_manager/core/session.h to this method then check the
+// condition as needed from that, instead of depending on the global state in
+// UserManager, which is to be removed.
 bool IsRobotOrOfflineDemoAccountMode() {
+  // Since the ManagedGuestSession check does not return true for ARCVM Kiosk we
+  // add it here explicitly. We do not check for other kiosk user types since
+  // ARCVM is not launched during other kiosk session types and this method is
+  // currently not invoked for kiosk flows other than ARCVM Kiosk.
   return user_manager::UserManager::IsInitialized() &&
-         user_manager::UserManager::Get()->IsLoggedInAsManagedGuestSession();
+         (user_manager::UserManager::Get()->IsLoggedInAsKioskArcvmApp() ||
+          user_manager::UserManager::Get()->IsLoggedInAsManagedGuestSession());
 }
 
 bool IsArcAllowedForUser(const user_manager::User* user) {
@@ -294,16 +340,18 @@ bool IsArcAllowedForUser(const user_manager::User* user) {
     return false;
   }
 
-  // ARC is only supported for the following cases:
+  // ARCVM is only supported for the following cases:
   // - Users have Gaia accounts;
+  // - ARCVM kiosk session;
   // - Public Session users;
-  //   kPublicAccount check is compatible with IsRobotOrOfflineDemoAccountMode()
-  //   above because public account user is always the primary/active user of a
-  //   user session.
+  //   kUserTypeKioskArcvmApp check is compatible with IsArcvmKioskMode()
+  //   above because ARCVM kiosk user is always the primary/active user of a
+  //   user session. The same for kPublicAccount.
   if (!user->HasGaiaAccount() &&
+      user->GetType() != user_manager::UserType::kKioskArcvmApp &&
       user->GetType() != user_manager::UserType::kPublicAccount) {
-    VLOG(1) << "Only users with GAIA account or managed guest session users "
-               "are supported in ARC.";
+    VLOG(1) << "Users without GAIA account, or not ARCVM kiosk apps are not "
+               "supported in ARCVM.";
     return false;
   }
 
@@ -328,8 +376,8 @@ std::optional<int> GetWindowTaskId(const aura::Window* window) {
 
 std::optional<int> GetTaskIdFromWindowAppId(const std::string& window_app_id) {
   int task_id;
-  if (std::sscanf(window_app_id.c_str(), "org.chromium.arc.%d", &task_id) !=
-      1) {
+  if (UNSAFE_TODO(std::sscanf(window_app_id.c_str(), "org.chromium.arc.%d",
+                              &task_id)) != 1) {
     return std::nullopt;
   }
   return task_id;
@@ -349,8 +397,9 @@ std::optional<int> GetWindowSessionId(const aura::Window* window) {
 std::optional<int> GetSessionIdFromWindowAppId(
     const std::string& window_app_id) {
   int session_id;
-  if (std::sscanf(window_app_id.c_str(), "org.chromium.arc.session.%d",
-                  &session_id) != 1) {
+  if (UNSAFE_TODO(std::sscanf(window_app_id.c_str(),
+                              "org.chromium.arc.session.%d", &session_id)) !=
+      1) {
     return std::nullopt;
   }
   return session_id;
@@ -539,10 +588,8 @@ bool ShouldUseArcKeyMint() {
   // TODO(b/308630124): Change to ">= kArcVersionT", when ready to enable
   // KeyMint on ARC V+.
   return version == kArcVersionT && version < kMaxArcVersion &&
-         base::FeatureList::IsEnabled(kSwitchToKeyMintOnT) &&
-         (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-              ash::switches::kArcBlockKeyMint) ||
-          base::FeatureList::IsEnabled(kSwitchToKeyMintOnTOverride));
+         !base::CommandLine::ForCurrentProcess()->HasSwitch(
+             ash::switches::kArcBlockKeyMint);
 }
 
 bool ShouldUseArcAttestation() {
@@ -558,8 +605,6 @@ int GetDaysUntilArcVmDataMigrationDeadline(PrefService* prefs) {
       ArcVmDataMigrationStatus::kStarted) {
     // If ARCVM /data migration is in progress. Treat it in the same way as
     // cases where the deadline is passed.
-    // TODO(b/258278176): Do not call this function when the migration is in
-    // progress, or return a different value (0) to provide a dedicated UI.
     return 1;
   }
   const base::Time notification_first_shown_time =
@@ -706,8 +751,8 @@ bool ShouldDeferArcActivationUntilUserSessionStartUpTaskCompletion(
   const auto& history =
       prefs->GetList(prefs::kArcFirstActivationDuringUserSessionStartUpHistory);
   const size_t window_size = std::min<size_t>(history.size(), max_window_size);
-  base::span<const base::Value> history_window(history.end() - window_size,
-                                               history.end());
+  base::span<const base::Value> UNSAFE_TODO(
+      history_window(history.end() - window_size, history.end()));
   return std::ranges::count(history_window, base::Value(true)) < threshold;
 }
 

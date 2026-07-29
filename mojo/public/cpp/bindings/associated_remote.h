@@ -6,6 +6,7 @@
 #define MOJO_PUBLIC_CPP_BINDINGS_ASSOCIATED_REMOTE_H_
 
 #include <cstdint>
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -142,8 +143,9 @@ class AssociatedRemote {
   // If invoked at all, |handler| will be scheduled asynchronously using the
   // AssociatedRemote's bound SequencedTaskRunner.
   void set_disconnect_handler(base::OnceClosure handler) {
-    if (is_connected())
+    if (is_connected()) {
       internal_state_.set_connection_error_handler(std::move(handler));
+    }
   }
 
   // Similar to above but the handler receives additional metadata if provided
@@ -177,9 +179,10 @@ class AssociatedRemote {
   }
 
   // Similar to the method above, but also specifies a disconnect reason.
-  void ResetWithReason(uint32_t custom_reason, const std::string& description) {
-    if (internal_state_.is_bound())
+  void ResetWithReason(uint32_t custom_reason, std::string_view description) {
+    if (internal_state_.is_bound()) {
       internal_state_.CloseWithReason(custom_reason, description);
+    }
     reset();
   }
 

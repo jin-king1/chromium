@@ -2,19 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/crash/core/common/crash_keys.h"
 
+#include <array>
 #include <deque>
 #include <string_view>
 #include <vector>
 
 #include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/format_macros.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
@@ -114,12 +111,12 @@ void ResetCommandLineForTesting() {
 }
 
 using PrinterInfoKey = crash_reporter::CrashKeyString<64>;
-static PrinterInfoKey printer_info_keys[] = {
+static std::array<PrinterInfoKey, 4> printer_info_keys = {{
     {"prn-info-1", PrinterInfoKey::Tag::kArray},
     {"prn-info-2", PrinterInfoKey::Tag::kArray},
     {"prn-info-3", PrinterInfoKey::Tag::kArray},
     {"prn-info-4", PrinterInfoKey::Tag::kArray},
-};
+}};
 
 ScopedPrinterInfo::ScopedPrinterInfo(const std::string& printer_name,
                                      std::vector<std::string> data) {

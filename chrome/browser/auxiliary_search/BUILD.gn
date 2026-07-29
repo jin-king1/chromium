@@ -7,12 +7,110 @@ import("//build/config/android/rules.gni")
 import("//chrome/browser/buildflags.gni")
 import("//third_party/jni_zero/jni_zero.gni")
 
+assert(is_android)
+
+source_set("auxiliary_search") {
+  sources = [
+    "auxiliary_search_donation_service.h",
+    "auxiliary_search_donation_service_bridge.h",
+    "auxiliary_search_donation_service_factory.h",
+    "auxiliary_search_provider.h",
+    "auxiliary_search_top_site_provider_bridge.h",
+    "fetch_and_rank_helper.h",
+  ]
+  public_deps = [
+    ":jni_headers",
+    "//base",
+    "//chrome/browser/ntp_tiles",
+    "//chrome/browser/profiles:profile",
+    "//components/keyed_service/core",
+    "//components/ntp_tiles",
+    "//components/page_content_annotations/core",
+    "//components/signin/public/identity_manager",
+    "//components/visited_url_ranking/public",
+  ]
+}
+
+source_set("impl") {
+  sources = [
+    "auxiliary_search_donation_service.cc",
+    "auxiliary_search_donation_service_bridge.cc",
+    "auxiliary_search_donation_service_factory.cc",
+    "auxiliary_search_provider.cc",
+    "auxiliary_search_top_site_provider_bridge.cc",
+    "fetch_and_rank_helper.cc",
+  ]
+  deps = [
+    ":auxiliary_search",
+    ":auxiliary_search_enums_srcjar",
+    ":jni_headers",
+    "//base",
+    "//chrome/browser/android:tabs_public",
+    "//chrome/browser/auxiliary_search/proto",
+    "//chrome/browser/flags:flags_android",
+    "//chrome/browser/page_content_annotations",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/visited_url_ranking",
+    "//components/ntp_tiles",
+    "//components/visited_url_ranking/public",
+    "//url",
+  ]
+  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [
+    "auxiliary_search_donation_service_unittest.cc",
+    "auxiliary_search_top_site_provider_bridge_unittest.cc",
+  ]
+  deps = [
+    ":auxiliary_search",
+    "//base/test:test_support",
+    "//components/history/core/test",
+    "//components/ntp_tiles",
+    "//components/page_content_annotations/core:test_support",
+    "//components/prefs:test_support",
+    "//components/signin/public/identity_manager:test_support",
+    "//components/visited_url_ranking/public:test_support",
+    "//testing/gmock",
+    "//testing/gtest",
+  ]
+}
+
+source_set("browser_tests") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+  sources = [ "auxiliary_search_provider_browsertest.cc" ]
+  deps = [
+    ":auxiliary_search",
+    ":auxiliary_search_enums_srcjar",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/android:tabs_public",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/android/tab_model",
+    "//chrome/browser/ui/android/tab_model:enums_java",
+    "//chrome/test:test_support",
+    "//chrome/test:test_support_ui_android",
+    "//content/test:test_support",
+    "//net:test_support",
+    "//net/android:net_java_test_support_enums_srcjar",
+    "//url",
+  ]
+
+  if (is_android) {
+    deps += [ "//chrome/browser/android" ]
+  }
+}
+
 android_library("java") {
   srcjar_deps = [
     ":auxiliary_search_enums_srcjar",
     ":jni_headers",
   ]
   sources = [
+    "java/src/org/chromium/chrome/browser/auxiliary_search/AppSearchStorageFactory.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchBackgroundTask.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchBridge.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchConfigManager.java",
@@ -20,20 +118,21 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchControllerFactory.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchControllerImpl.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchDataEntry.java",
+    "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchDonationServiceBridge.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchDonor.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchHooks.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchMetrics.java",
+    "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchMultiDataControllerImpl.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchProvider.java",
+    "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchTopSiteProviderBridge.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchUtils.java",
+    "java/src/org/chromium/chrome/browser/auxiliary_search/FetchAndRankHelper.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/module/AuxiliarySearchModuleBuilder.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/module/AuxiliarySearchModuleCoordinator.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/module/AuxiliarySearchModuleMediator.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/module/AuxiliarySearchModuleProperties.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/module/AuxiliarySearchModuleView.java",
     "java/src/org/chromium/chrome/browser/auxiliary_search/module/AuxiliarySearchModuleViewBinder.java",
-    "java/src/org/chromium/chrome/browser/auxiliary_search/schema/CustomTabWebPage.java",
-    "java/src/org/chromium/chrome/browser/auxiliary_search/schema/TabWebPage.java",
-    "java/src/org/chromium/chrome/browser/auxiliary_search/schema/TopSiteWebPage.java",
   ]
 
   deps = [
@@ -61,6 +160,8 @@ android_library("java") {
     "//components/background_task_scheduler:factory_java",
     "//components/background_task_scheduler:public_java",
     "//components/segmentation_platform/public:public_java",
+    "//components/signin/public/android:java",
+    "//google_apis/gaia/android:java",
     "//third_party/android_deps:guava_android_java",
     "//third_party/android_deps:protobuf_lite_runtime_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
@@ -78,7 +179,12 @@ android_library("java") {
 }
 
 generate_jni("jni_headers") {
-  sources = [ "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchBridge.java" ]
+  sources = [
+    "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchBridge.java",
+    "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchDonationServiceBridge.java",
+    "java/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchTopSiteProviderBridge.java",
+    "java/src/org/chromium/chrome/browser/auxiliary_search/FetchAndRankHelper.java",
+  ]
 }
 
 java_cpp_enum("auxiliary_search_enums_srcjar") {
@@ -103,9 +209,13 @@ robolectric_library("junit") {
     "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchConfigManagerUnitTest.java",
     "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchControllerFactoryUnitTest.java",
     "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchControllerImplUnitTest.java",
+    "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchDonationServiceBridgeUnitTest.java",
     "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchDonorUnitTest.java",
+    "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchMetricsUnitTest.java",
+    "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchMultiDataControllerImplUnitTest.java",
     "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchProviderUnitTest.java",
     "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchTestHelper.java",
+    "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchTopSiteProviderBridgeUnitTest.java",
     "junit/src/org/chromium/chrome/browser/auxiliary_search/AuxiliarySearchUtilsUnitTest.java",
     "junit/src/org/chromium/chrome/browser/auxiliary_search/module/AuxiliarySearchModuleBuilderUnitTest.java",
     "junit/src/org/chromium/chrome/browser/auxiliary_search/module/AuxiliarySearchModuleMediatorUnitTest.java",
@@ -121,6 +231,7 @@ robolectric_library("junit") {
     "//base:base_junit_test_support",
     "//base:base_shared_preferences_java",
     "//base:callback_java",
+    "//base:service_loader_java",
     "//base:time_utils_java",
     "//chrome/browser/android/lifecycle:java",
     "//chrome/browser/auxiliary_search/proto:proto_java",
@@ -137,6 +248,8 @@ robolectric_library("junit") {
     "//components/background_task_scheduler:public_java",
     "//components/browser_ui/theme/android:java_resources",
     "//components/segmentation_platform/public:public_java",
+    "//components/signin/public/android:java",
+    "//google_apis/gaia/android:java",
     "//third_party/android_deps:guava_android_java",
     "//third_party/android_deps:protobuf_lite_runtime_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
@@ -145,9 +258,10 @@ robolectric_library("junit") {
     "//third_party/androidx:androidx_test_core_java",
     "//third_party/androidx:androidx_test_runner_java",
     "//third_party/jni_zero:gendeps_java",
-    "//third_party/junit:junit",
+    "//third_party/junit",
     "//third_party/mockito:mockito_java",
     "//ui/android:ui_java",
+    "//ui/android:ui_java_test_support",
     "//url:gurl_junit_test_support",
     "//url:url_java",
   ]
@@ -171,7 +285,8 @@ android_library("javatests") {
     "//third_party/androidx:androidx_appsearch_appsearch_java",
     "//third_party/androidx:androidx_appsearch_appsearch_platform_storage_java",
     "//third_party/androidx:androidx_test_runner_java",
-    "//third_party/junit:junit",
+    "//third_party/google-truth:google_truth_java",
+    "//third_party/junit",
     "//third_party/mockito:mockito_java",
     "//ui/android:ui_java_test_support",
   ]

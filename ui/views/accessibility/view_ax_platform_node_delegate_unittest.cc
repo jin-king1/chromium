@@ -9,9 +9,11 @@
 #include <utility>
 #include <vector>
 
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gtest_util.h"
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -27,7 +29,11 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/native_ui_types.h"
+#include "ui/views/accessibility/ax_virtual_view.h"
+#include "ui/views/cascading_property.h"
 #include "ui/views/controls/button/button.h"
+#include "ui/views/controls/button/radio_button.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/menu/submenu_view.h"
 #include "ui/views/controls/menu/test_menu_item_view.h"
@@ -268,7 +274,7 @@ class ViewAXPlatformNodeDelegateTableTest
   ui::TableColumn TestTableColumn(int id, const std::string& title) {
     ui::TableColumn column;
     column.id = id;
-    column.title = base::ASCIIToUTF16(title.c_str());
+    column.title = base::ASCIIToUTF16(title);
     column.sortable = true;
     return column;
   }
@@ -609,6 +615,61 @@ TEST_F(ViewAXPlatformNodeDelegateTest, LabelIsChildOfButton) {
   EXPECT_EQ(ax::mojom::Role::kStaticText, label_accessibility()->GetRole());
 }
 
+// An ignored view is left out of its parent's children, but still reports that
+// parent. Asking it for its index in parent therefore searches a list it can
+// never appear in.
+TEST_F(ViewAXPlatformNodeDelegateTest, IgnoredChildIndexInParent) {
+  button_->SetInstallFocusRingOnFocus(false);
+
+  // A focusable button ignores all of its children, and a parent with no
+  // unignored children is a leaf, which is handled separately. So make the
+  // button unfocusable and give the label a sibling.
+  button_->SetFocusBehavior(View::FocusBehavior::NEVER);
+  button_->AddChildView(std::make_unique<Label>());
+  label_->GetViewAccessibility().SetIsIgnored(true);
+
+  ASSERT_EQ(1u, button_accessibility()->GetChildCount());
+  ASSERT_NE(label_->GetNativeViewAccessible(),
+            button_accessibility()->ChildAtIndex(0));
+  ASSERT_EQ(button_->GetNativeViewAccessible(),
+            label_accessibility()->GetParent());
+
+  auto* label_node = static_cast<ui::AXPlatformNodeBase*>(
+      ui::AXPlatformNode::FromNativeViewAccessible(
+          label_->GetNativeViewAccessible()));
+  ASSERT_NE(nullptr, label_node);
+
+  EXPECT_FALSE(label_node->GetIndexInParent().has_value());
+}
+
+// A virtual child hides all of its parent's real children, but those children
+// still report that parent. Asking one of them for its index in parent
+// therefore searches a list it can never appear in.
+TEST_F(ViewAXPlatformNodeDelegateTest, HiddenRealChildIndexInParent) {
+  button_->SetInstallFocusRingOnFocus(false);
+  button_->SetFocusBehavior(View::FocusBehavior::NEVER);
+
+  auto virtual_label = std::make_unique<AXVirtualView>();
+  virtual_label->SetRole(ax::mojom::Role::kStaticText);
+  virtual_label->SetName("Virtual label");
+  button_->GetViewAccessibility().AddVirtualChildView(std::move(virtual_label));
+
+  // The virtual child is now the button's only child, and the real label is
+  // nowhere among them.
+  ASSERT_EQ(1u, button_accessibility()->GetChildCount());
+  ASSERT_NE(label_->GetNativeViewAccessible(),
+            button_accessibility()->ChildAtIndex(0));
+  ASSERT_EQ(button_->GetNativeViewAccessible(),
+            label_accessibility()->GetParent());
+
+  auto* label_node = static_cast<ui::AXPlatformNodeBase*>(
+      ui::AXPlatformNode::FromNativeViewAccessible(
+          label_->GetNativeViewAccessible()));
+  ASSERT_NE(nullptr, label_node);
+
+  EXPECT_FALSE(label_node->GetIndexInParent().has_value());
+}
+
 // Verify Views with invisible ancestors have ax::mojom::State::kInvisible.
 TEST_F(ViewAXPlatformNodeDelegateTest, InvisibleViews) {
   EXPECT_TRUE(widget_->IsVisible());
@@ -649,14 +710,14 @@ TEST_F(ViewAXPlatformNodeDelegateTest, SetFocus) {
   // ViewAXPlatformNodeDelegate.
   button_->SetFocusBehavior(View::FocusBehavior::ALWAYS);
   EXPECT_EQ(nullptr, button_->GetFocusManager()->GetFocusedView());
-  EXPECT_EQ(nullptr, button_accessibility()->GetFocus());
+  EXPECT_EQ(gfx::NativeViewAccessible(), button_accessibility()->GetFocus());
   EXPECT_TRUE(SetFocused(button_accessibility(), true));
   EXPECT_EQ(button_, button_->GetFocusManager()->GetFocusedView());
   EXPECT_EQ(button_->GetNativeViewAccessible(),
             button_accessibility()->GetFocus());
   EXPECT_TRUE(SetFocused(button_accessibility(), false));
   EXPECT_EQ(nullptr, button_->GetFocusManager()->GetFocusedView());
-  EXPECT_EQ(nullptr, button_accessibility()->GetFocus());
+  EXPECT_EQ(gfx::NativeViewAccessible(), button_accessibility()->GetFocus());
 
   // If the button is not focusable at all, or if it is disabled for
   // accessibility, SetFocused() should return false.
@@ -736,7 +797,7 @@ TEST_F(ViewAXPlatformNodeDelegateTest, SetNameAndDescription) {
 
   // Setting the labelledby View to itself should trigger a DCHECK.
   EXPECT_DCHECK_DEATH_WITH(button_accessibility()->SetName(*button_),
-                           "Check failed: view_ != &naming_view");
+                           "DCHECK failed: view_ != &naming_view");
 }
 
 TEST_F(ViewAXPlatformNodeDelegateTest, SetIsSelected) {
@@ -860,13 +921,34 @@ TEST_F(ViewAXPlatformNodeDelegateTest, SetSizeAndPosition) {
   EXPECT_EQ(view_accessibility(group_ids[4])->GetPosInSet(), 1);
 }
 
+TEST_F(ViewAXPlatformNodeDelegateTest, NonSiblingRadioButtons) {
+  // Ensure that radio buttons that aren't direct siblings read properly when
+  // the Cascading property is applied.
+  auto* group_owner =
+      widget_->GetRootView()->AddChildView(std::make_unique<View>());
+  SetCascadingRadioGroupView(group_owner, kCascadingRadioGroupView);
+
+  auto* wrapper1 = group_owner->AddChildView(std::make_unique<View>());
+  auto* radio1 =
+      wrapper1->AddChildView(std::make_unique<RadioButton>(u"Radio 1", 1));
+  auto* wrapper2 = group_owner->AddChildView(std::make_unique<View>());
+  auto* radio2 =
+      wrapper2->AddChildView(std::make_unique<RadioButton>(u"Radio 2", 1));
+
+  EXPECT_EQ(view_accessibility(radio1)->GetSetSize(), 2);
+  EXPECT_EQ(view_accessibility(radio1)->GetPosInSet(), 1);
+
+  EXPECT_EQ(view_accessibility(radio2)->GetSetSize(), 2);
+  EXPECT_EQ(view_accessibility(radio2)->GetPosInSet(), 2);
+}
+
 TEST_F(ViewAXPlatformNodeDelegateTest, TreeNavigation) {
   // Adds one extra parent view with four child views to our widget. The parent
   // view is added as the next sibling of the already present button view.
   //
   // Widget
   // ++NonClientView
-  // ++NonClientFrameView
+  // ++FrameView
   // ++Button
   // ++++Label
   // 0 = ++ParentView
@@ -893,7 +975,7 @@ TEST_F(ViewAXPlatformNodeDelegateTest, TreeNavigation) {
   EXPECT_EQ(child_view_3->GetNativeObject(), parent_view->ChildAtIndex(2));
   EXPECT_EQ(child_view_4->GetNativeObject(), parent_view->ChildAtIndex(3));
 
-  EXPECT_EQ(nullptr, parent_view->GetNextSibling());
+  EXPECT_EQ(gfx::NativeViewAccessible(), parent_view->GetNextSibling());
   EXPECT_EQ(textfield_accessibility()->GetNativeObject(),
             parent_view->GetPreviousSibling());
 
@@ -901,7 +983,7 @@ TEST_F(ViewAXPlatformNodeDelegateTest, TreeNavigation) {
   EXPECT_EQ(0u, child_view_1->GetChildCount());
   EXPECT_EQ(0u, child_view_1->GetIndexInParent());
   EXPECT_EQ(child_view_2->GetNativeObject(), child_view_1->GetNextSibling());
-  EXPECT_EQ(nullptr, child_view_1->GetPreviousSibling());
+  EXPECT_EQ(gfx::NativeViewAccessible(), child_view_1->GetPreviousSibling());
 
   EXPECT_EQ(parent_view->GetNativeObject(), child_view_2->GetParent());
   EXPECT_EQ(0u, child_view_2->GetChildCount());
@@ -920,7 +1002,7 @@ TEST_F(ViewAXPlatformNodeDelegateTest, TreeNavigation) {
   EXPECT_EQ(parent_view->GetNativeObject(), child_view_4->GetParent());
   EXPECT_EQ(0u, child_view_4->GetChildCount());
   EXPECT_EQ(3u, child_view_4->GetIndexInParent());
-  EXPECT_EQ(nullptr, child_view_4->GetNextSibling());
+  EXPECT_EQ(gfx::NativeViewAccessible(), child_view_4->GetNextSibling());
   EXPECT_EQ(child_view_3->GetNativeObject(),
             child_view_4->GetPreviousSibling());
 }
@@ -1089,8 +1171,8 @@ TEST_F(ViewAXPlatformNodeDelegateTest, TreeNavigationWithIgnoredViews) {
   EXPECT_EQ(child_view_3->GetNativeObject(), contents_view->ChildAtIndex(3));
   EXPECT_EQ(child_view_4->GetNativeObject(), contents_view->ChildAtIndex(4));
 
-  EXPECT_EQ(nullptr, parent_view->GetNextSibling());
-  EXPECT_EQ(nullptr, parent_view->GetPreviousSibling());
+  EXPECT_EQ(gfx::NativeViewAccessible(), parent_view->GetNextSibling());
+  EXPECT_EQ(gfx::NativeViewAccessible(), parent_view->GetPreviousSibling());
 
   EXPECT_EQ(contents_view->GetNativeObject(), child_view_1->GetParent());
   EXPECT_EQ(0u, child_view_1->GetChildCount());
@@ -1102,8 +1184,8 @@ TEST_F(ViewAXPlatformNodeDelegateTest, TreeNavigationWithIgnoredViews) {
   EXPECT_EQ(contents_view->GetNativeObject(), child_view_2->GetParent());
   EXPECT_EQ(0u, child_view_2->GetChildCount());
   EXPECT_FALSE(child_view_2->GetIndexInParent().has_value());
-  EXPECT_EQ(nullptr, child_view_2->GetNextSibling());
-  EXPECT_EQ(nullptr, child_view_2->GetPreviousSibling());
+  EXPECT_EQ(gfx::NativeViewAccessible(), child_view_2->GetNextSibling());
+  EXPECT_EQ(gfx::NativeViewAccessible(), child_view_2->GetPreviousSibling());
 
   EXPECT_EQ(contents_view->GetNativeObject(), child_view_3->GetParent());
   EXPECT_EQ(0u, child_view_3->GetChildCount());
@@ -1115,23 +1197,28 @@ TEST_F(ViewAXPlatformNodeDelegateTest, TreeNavigationWithIgnoredViews) {
   EXPECT_EQ(contents_view->GetNativeObject(), child_view_4->GetParent());
   EXPECT_EQ(0u, child_view_4->GetChildCount());
   EXPECT_EQ(4u, child_view_4->GetIndexInParent());
-  EXPECT_EQ(nullptr, child_view_4->GetNextSibling());
+  EXPECT_EQ(gfx::NativeViewAccessible(), child_view_4->GetNextSibling());
   EXPECT_EQ(child_view_3->GetNativeObject(),
             child_view_4->GetPreviousSibling());
 }
 
 TEST_F(ViewAXPlatformNodeDelegateTest, SetIsEnabled) {
-  // Initially, the button should be enabled.
+  // Initially, the button and label should be enabled.
   EXPECT_TRUE(button_accessibility()->GetIsEnabled());
   EXPECT_TRUE(button_accessibility()->IsAccessibilityFocusable());
+  EXPECT_TRUE(label_accessibility()->GetIsEnabled());
 
   button_->SetEnabled(false);
   EXPECT_FALSE(button_accessibility()->GetIsEnabled());
   EXPECT_FALSE(button_accessibility()->IsAccessibilityFocusable());
+  // child label should be disabled for accessibility, as child of disabled
+  // button.
+  EXPECT_FALSE(label_accessibility()->GetIsEnabled());
 
   button_->SetEnabled(true);
   EXPECT_TRUE(button_accessibility()->GetIsEnabled());
   EXPECT_TRUE(button_accessibility()->IsAccessibilityFocusable());
+  EXPECT_TRUE(label_accessibility()->GetIsEnabled());
 
   // `ViewAccessibility::SetIsEnabled` should have priority over
   // `View::SetEnabled`.
@@ -1146,6 +1233,8 @@ TEST_F(ViewAXPlatformNodeDelegateTest, SetIsEnabled) {
   EXPECT_TRUE(button_accessibility()->GetIsEnabled());
   EXPECT_TRUE(button_accessibility()->IsAccessibilityFocusable());
 
+  // Restore button original state.
+  button_->SetEnabled(true);
   // Initially, the label should be enabled. It should never be focusable
   // because it is not an interactive control like the button.
   EXPECT_TRUE(label_accessibility()->GetIsEnabled());
@@ -1187,7 +1276,7 @@ TEST_F(ViewAXPlatformNodeDelegateTest, FocusOnMenuClose) {
   // Set Focus on the button
   button_->SetFocusBehavior(View::FocusBehavior::ALWAYS);
   EXPECT_EQ(nullptr, button_->GetFocusManager()->GetFocusedView());
-  EXPECT_EQ(nullptr, button_accessibility()->GetFocus());
+  EXPECT_EQ(gfx::NativeViewAccessible(), button_accessibility()->GetFocus());
 
   EXPECT_TRUE(SetFocused(button_accessibility(), true));
   EXPECT_EQ(button_->GetNativeViewAccessible(),
@@ -1201,6 +1290,29 @@ TEST_F(ViewAXPlatformNodeDelegateTest, FocusOnMenuClose) {
   run_loop.Run();
   EXPECT_EQ(button_->GetNativeViewAccessible(),
             button_accessibility()->GetFocus());
+}
+
+TEST_F(ViewAXPlatformNodeDelegateTest, TransientFocusDelaysNextFocusEvent) {
+  button_accessibility()->SetName("Button", ax::mojom::NameFrom::kAttribute);
+  textfield_accessibility()->SetName("Textfield",
+                                     ax::mojom::NameFrom::kAttribute);
+
+  int focus_events = 0;
+  ui::AXPlatformNodeBase::SetOnNotifyEventCallbackForTesting(
+      ax::mojom::Event::kFocus,
+      base::BindRepeating([](int* count) { ++*count; }, &focus_events));
+
+  widget()->GetRootView()->GetViewAccessibility().NotifyTransientFocus();
+  EXPECT_EQ(1, focus_events);
+
+  button_->NotifyAccessibilityEventDeprecated(ax::mojom::Event::kFocus, true);
+  EXPECT_EQ(1, focus_events);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() { return focus_events == 2; }));
+  EXPECT_EQ(2, focus_events);
+
+  ui::AXPlatformNodeBase::SetOnNotifyEventCallbackForTesting(
+      ax::mojom::Event::kFocus, {});
 }
 
 TEST_F(ViewAXPlatformNodeDelegateTest, GetUnignoredSelection) {
@@ -1418,7 +1530,7 @@ TEST_F(ViewAXPlatformNodeDelegateMenuTest, MenuTest) {
       separator_item->GetBoolAttribute(ax::mojom::BoolAttribute::kSelected));
   EXPECT_FALSE(separator_item->IsInvisibleOrIgnored());
   EXPECT_FALSE(separator_item->GetData().IsInvisibleOrIgnored());
-  EXPECT_EQ(separator_item->GetRole(), ax::mojom::Role::kSplitter);
+  EXPECT_EQ(separator_item->GetRole(), ax::mojom::Role::kMenuItemSeparator);
   EXPECT_EQ(separator_item->GetData().GetHasPopup(),
             ax::mojom::HasPopup::kFalse);
   EXPECT_FALSE(

@@ -33,6 +33,7 @@
 #include <memory>
 
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
@@ -155,7 +156,8 @@ bool Frame::Detach(FrameDetachType type) {
     // In the case of a swap, detach is carefully coordinated with `Swap()`.
     // Intentionally avoid clearing the opener with `SetOpener(nullptr)` here,
     // since `Swap()` needs the original value to clone to the new frame.
-    DCHECK_EQ(FrameDetachType::kSwap, type);
+    DCHECK(type == FrameDetachType::kSwapForLocal ||
+           type == FrameDetachType::kSwapForRemote);
 
     // Clearing the window proxies can call back into `LocalFrameClient`, so
     // this must be done before nulling out `client_` below.
@@ -491,7 +493,7 @@ void Frame::UpdateVisibleToHitTesting() {
   if (auto* local_owner = DynamicTo<HTMLFrameOwnerElement>(owner_.Get())) {
     self_visible_to_hit_testing =
         !local_owner->GetLayoutObject() ||
-        local_owner->GetLayoutObject()->Style()->VisibleToHitTesting();
+        local_owner->GetLayoutObject()->StyleRef().VisibleToHitTesting();
   }
 
   bool visible_to_hit_testing =
@@ -586,6 +588,7 @@ void Frame::ApplyFrameOwnerProperties(
   owner->SetAllowFullscreen(properties->allow_fullscreen);
   owner->SetAllowPaymentRequest(properties->allow_payment_request);
   owner->SetIsDisplayNone(properties->is_display_none);
+  owner->SetResponsiveSizing(properties->responsive_sizing);
   owner->SetColorScheme(properties->color_scheme);
   owner->SetPreferredColorScheme(properties->preferred_color_scheme);
 }
@@ -641,15 +644,18 @@ void Frame::InsertAfter(Frame* new_child, Frame* previous_sibling) {
 base::OnceClosure Frame::ScheduleFormSubmission(
     FrameScheduler* scheduler,
     FormSubmission* form_submission) {
+  // Notify inspector about the imminent navigation synchronously,
+  // instead of in a later task, which might be deferred for a while.
+  // See https://crbug.com/350540984#comment32 for details.
+  form_submission->NotifyInspector();
   form_submit_navigation_task_ = PostCancellableTask(
       *scheduler->GetTaskRunner(TaskType::kDOMManipulation), FROM_HERE,
-      WTF::BindOnce(&FormSubmission::Navigate,
-                    WrapPersistent(form_submission)));
+      BindOnce(&FormSubmission::Navigate, WrapPersistent(form_submission)));
   form_submit_navigation_task_version_++;
 
-  return WTF::BindOnce(&Frame::CancelFormSubmissionWithVersion,
-                       WrapWeakPersistent(this),
-                       form_submit_navigation_task_version_);
+  return BindOnce(&Frame::CancelFormSubmissionWithVersion,
+                  WrapWeakPersistent(this),
+                  form_submit_navigation_task_version_);
 }
 
 void Frame::CancelFormSubmission() {
@@ -666,11 +672,14 @@ bool Frame::IsFormSubmissionPending() {
 }
 
 void Frame::FocusPage(LocalFrame* originating_frame) {
-  // We only allow focus to move to the |frame|'s page when the request comes
-  // from a user gesture. (See https://bugs.webkit.org/show_bug.cgi?id=33389.)
+  // To prevent unexpected focus stealing, only allow the focus to move to the
+  // |originating_frame|'s page if the request is initiated by a user
+  // gesture (has transient user activation) or if the |originating_frame|
+  // is specially permitted to change focus without user interaction.
   if (originating_frame &&
-      LocalFrame::HasTransientUserActivation(originating_frame)) {
-    // Ask the broswer process to focus the page.
+      (LocalFrame::HasTransientUserActivation(originating_frame) ||
+       originating_frame->GetSettings()->GetAllowUnrestrictedWindowFocus())) {
+    // Ask the browser process to focus the page.
     GetPage()->GetChromeClient().FocusPage();
 
     // Tattle on the frame that called |window.focus()|.
@@ -781,10 +790,13 @@ bool Frame::SwapImpl(
                                *parent_local_frame->GetDocument())
                          : nullptr;
 
+  const FrameDetachType swap_type = new_web_frame->IsWebLocalFrame()
+                                        ? FrameDetachType::kSwapForLocal
+                                        : FrameDetachType::kSwapForRemote;
   // Unload the current Document in this frame: this calls unload handlers,
   // detaches child frames, etc. Since this runs script, make sure this frame
   // wasn't detached before continuing with the swap.
-  if (!Detach(FrameDetachType::kSwap)) {
+  if (!Detach(swap_type)) {
     // If the Swap() fails, it should be because the frame has been detached
     // already. Otherwise the caller will not detach the frame when we return
     // false, and the browser and renderer will disagree about the destruction
@@ -920,11 +932,11 @@ bool Frame::SwapImpl(
         CHECK(!DynamicTo<RemoteFrame>(new_page->MainFrame())
                    ->IsRemoteFrameHostRemoteBound());
         // Trigger the detachment of the new page's placeholder main
-        // RemoteFrame. Note that we also use `FrameDetachType::kSwap` here
-        // instead of kRemove to avoid triggering destructive action on the new
-        // Page and the provisional LocalFrame that will be swapped in (e.g.
+        // RemoteFrame. Note that we also use `FrameDetachType::kSwapForLocal`
+        // here instead of kRemove to avoid triggering destructive action on the
+        // new Page and the provisional LocalFrame that will be swapped in (e.g.
         // clearing the opener, or detaching the provisional frame).
-        new_page->MainFrame()->Detach(FrameDetachType::kSwap);
+        new_page->MainFrame()->Detach(FrameDetachType::kSwapForLocal);
       }
 
       // Set the provisioanl LocalFrame to become the new page's main frame.
@@ -936,9 +948,8 @@ bool Frame::SwapImpl(
 
       // This trace event is needed to detect the main frame of the
       // renderer in telemetry metrics. See crbug.com/692112#c11.
-      TRACE_EVENT_INSTANT1("loading", "markAsMainFrame",
-                           TRACE_EVENT_SCOPE_THREAD, "frame",
-                           ::blink::GetFrameIdForTracing(new_local_frame));
+      TRACE_EVENT_INSTANT("loading", "markAsMainFrame", "frame",
+                          ::blink::GetFrameIdForTracing(new_local_frame));
     }
   }
 
@@ -1015,39 +1026,26 @@ void Frame::DetachFromParent() {
   Parent()->RemoveChild(this);
 }
 
-HeapVector<Member<Resource>> Frame::AllResourcesUnderFrame() {
-  DCHECK(base::FeatureList::IsEnabled(features::kMemoryCacheStrongReference));
-
-  HeapVector<Member<Resource>> resources;
-  if (IsLocalFrame()) {
-    if (auto* this_local_frame = DynamicTo<LocalFrame>(this)) {
-      HeapHashSet<Member<Resource>> local_frame_resources =
-          this_local_frame->GetDocument()
-              ->Fetcher()
-              ->MoveResourceStrongReferences();
-      for (Resource* resource : local_frame_resources) {
-        resources.push_back(resource);
-      }
-    }
-  }
-
-  for (Frame* child = Tree().FirstChild(); child;
-       child = child->Tree().NextSibling()) {
-    resources.AppendVector(child->AllResourcesUnderFrame());
-  }
-  return resources;
-}
-
 void Frame::AdjustOffsetByAncestorFrames(gfx::Point* origin_point) {
   CHECK(origin_point);
   Frame* current_frame = this;
   while (current_frame->Owner()) {
     if (auto* frame_view = current_frame->View()) {
-      gfx::Point location = frame_view->Location();
+      gfx::Point location = frame_view->DeprecatedLocation();
       origin_point->Offset(-location.x(), -location.y());
     }
     current_frame = current_frame->Parent();
   }
+}
+
+bool Frame::IsDescendantOf(const Frame* other) const {
+  const Frame* current = this;
+  do {
+    if (current == other) {
+      return true;
+    }
+  } while ((current = current->Parent()));
+  return false;
 }
 
 }  // namespace blink

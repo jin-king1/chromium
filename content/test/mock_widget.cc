@@ -40,7 +40,8 @@ void MockWidget::ClearScreenRects() {
 
 void MockWidget::GetWidgetInputHandler(
     mojo::PendingReceiver<blink::mojom::WidgetInputHandler> request,
-    mojo::PendingRemote<blink::mojom::WidgetInputHandlerHost> host) {
+    mojo::PendingRemote<blink::mojom::WidgetInputHandlerHost> host,
+    bool from_viz) {
   // Some tests try to reinitialize a host against same MockWidget multiple
   // times. We assume this happens against the same host and avoid changing the
   // binding.
@@ -73,16 +74,16 @@ void MockWidget::WasHidden() {
     std::move(shown_hidden_callback_).Run();
 }
 
-void MockWidget::WasShown(bool was_evicted,
-                          blink::mojom::RecordContentToVisibleTimeRequestPtr
-                              record_tab_switch_time_request) {
+void MockWidget::WasShown(
+    bool was_evicted,
+    const std::optional<blink::RecordContentToVisibleTimeRequest>&) {
   is_hidden_ = false;
   if (shown_hidden_callback_)
     std::move(shown_hidden_callback_).Run();
 }
 
 void MockWidget::RequestSuccessfulPresentationTimeForNextFrame(
-    blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request) {}
+    const blink::RecordContentToVisibleTimeRequest&) {}
 
 void MockWidget::CancelSuccessfulPresentationTimeRequest() {}
 

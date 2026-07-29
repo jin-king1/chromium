@@ -5,12 +5,13 @@
 #include "content/browser/webid/fake_identity_request_dialog_controller.h"
 
 #include "base/functional/callback.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_runner.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 
 namespace content {
 
@@ -23,12 +24,11 @@ FakeIdentityRequestDialogController::~FakeIdentityRequestDialogController() =
     default;
 
 bool FakeIdentityRequestDialogController::ShowAccountsDialog(
-    const std::string& rp_for_display,
+    RelyingPartyData rp_data,
     const std::vector<IdentityProviderDataPtr>& idp_list,
     const std::vector<IdentityRequestAccountPtr>& accounts,
-    content::IdentityRequestAccount::SignInMode sign_in_mode,
+    const std::vector<IdentityRequestAccountPtr>& filtered_accounts,
     blink::mojom::RpMode rp_mode,
-    const std::vector<IdentityRequestAccountPtr>& new_accounts,
     AccountSelectionCallback on_selected,
     LoginToIdPCallback on_add_account,
     DismissCallback dismiss_callback,
@@ -52,6 +52,12 @@ bool FakeIdentityRequestDialogController::ShowAccountsDialog(
       title_ = "Continue";
       break;
   };
+  if (!rp_data.iframe_for_display.empty()) {
+    title_ += " to " + base::UTF16ToUTF8(rp_data.iframe_for_display);
+    subtitle_ = "on " + base::UTF16ToUTF8(rp_data.rp_for_display);
+  } else {
+    title_ += " to " + base::UTF16ToUTF8(rp_data.rp_for_display);
+  }
 
   // Use the provided account, if any. Otherwise do not run the callback right
   // away.
@@ -62,30 +68,27 @@ bool FakeIdentityRequestDialogController::ShowAccountsDialog(
                                        idp_list[0]->idp_metadata.config_url,
                                        *selected_account_,
                                        /* is_sign_in= */ true));
-  } else if (sign_in_mode == IdentityRequestAccount::SignInMode::kAuto) {
-    PostTask(
-        FROM_HERE,
-        base::BindOnce(std::move(on_selected),
-                       accounts[0]->identity_provider->idp_metadata.config_url,
-                       accounts[0]->id, /* is_sign_in= */ true));
   }
+  std::move(accounts_displayed_callback).Run();
   return true;
 }
 
 bool FakeIdentityRequestDialogController::ShowFailureDialog(
-    const std::string& rp_for_display,
+    const RelyingPartyData& rp_data,
     const std::string& idp_for_display,
     blink::mojom::RpContext rp_context,
     blink::mojom::RpMode rp_mode,
     const IdentityProviderMetadata& idp_metadata,
+    const std::vector<scoped_refptr<IdentityRequestAccount>>& filtered_accounts,
     DismissCallback dismiss_callback,
     LoginToIdPCallback login_callback) {
   title_ = "Confirm IDP Login";
+  subtitle_ = "";
   return true;
 }
 
 bool FakeIdentityRequestDialogController::ShowErrorDialog(
-    const std::string& rp_for_display,
+    const RelyingPartyData& rp_data,
     const std::string& idp_for_display,
     blink::mojom::RpContext rp_context,
     blink::mojom::RpMode rp_mode,
@@ -103,17 +106,41 @@ bool FakeIdentityRequestDialogController::ShowErrorDialog(
 }
 
 bool FakeIdentityRequestDialogController::ShowLoadingDialog(
-    const std::string& rp_for_display,
+    const RelyingPartyData& rp_data,
     const std::string& idp_for_display,
     blink::mojom::RpContext rp_context,
     blink::mojom::RpMode rp_mode,
     DismissCallback dismiss_callback) {
   title_ = "Loading";
+  subtitle_ = "";
+  return true;
+}
+
+bool FakeIdentityRequestDialogController::ShowVerifyingDialog(
+    const RelyingPartyData& rp_data,
+    const IdentityProviderDataPtr& idp_data,
+    const IdentityRequestAccountPtr& account,
+    IdentityRequestAccount::SignInMode sign_in_mode,
+    blink::mojom::RpMode rp_mode,
+    AccountsDisplayedCallback accounts_displayed_callback) {
+  title_ = sign_in_mode == IdentityRequestAccount::SignInMode::kAuto
+               ? "Signing you in"
+               : "Verifying";
+  subtitle_ = "";
+  std::move(accounts_displayed_callback).Run();
   return true;
 }
 
 std::string FakeIdentityRequestDialogController::GetTitle() const {
   return title_;
+}
+
+std::optional<std::string> FakeIdentityRequestDialogController::GetSubtitle()
+    const {
+  if (subtitle_.empty()) {
+    return std::nullopt;
+  }
+  return subtitle_;
 }
 
 void FakeIdentityRequestDialogController::ShowUrl(LinkType link_type,
@@ -122,26 +149,27 @@ void FakeIdentityRequestDialogController::ShowUrl(LinkType link_type,
     return;
   }
 
-  content::OpenURLParams params(
-      url, content::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+  OpenURLParams params(
+      url, Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
       ui::PAGE_TRANSITION_AUTO_TOPLEVEL, /*is_renderer_initiated=*/false);
   web_contents_->GetDelegate()->OpenURLFromTab(
       web_contents_, params, /*navigation_handle_callback=*/{});
 }
 
-content::WebContents* FakeIdentityRequestDialogController::ShowModalDialog(
+WebContents* FakeIdentityRequestDialogController::ShowModalDialog(
     const GURL& url,
     blink::mojom::RpMode rp_mode,
-    DismissCallback dismiss_callback) {
+    DismissCallback dismiss_callback,
+    ShownModalAsyncCallback on_shown_async) {
   if (!web_contents_) {
     return nullptr;
   }
 
   popup_dismiss_callback_ = std::move(dismiss_callback);
   // This follows the code in FedCmModalDialogView::ShowPopupWindow.
-  content::OpenURLParams params(
-      url, content::Referrer(), WindowOpenDisposition::NEW_POPUP,
-      ui::PAGE_TRANSITION_AUTO_TOPLEVEL, /*is_renderer_initiated=*/false);
+  OpenURLParams params(url, Referrer(), WindowOpenDisposition::NEW_POPUP,
+                       ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
+                       /*is_renderer_initiated=*/false);
   popup_window_ = web_contents_->GetDelegate()->OpenURLFromTab(
       web_contents_, params, /*navigation_handle_callback=*/{});
   Observe(popup_window_);
@@ -172,7 +200,7 @@ void FakeIdentityRequestDialogController::RequestIdPRegistrationPermision(
     const url::Origin& origin,
     base::OnceCallback<void(bool accepted)> callback) {
   if (!is_interception_enabled_) {
-    PostTask(FROM_HERE, base::BindOnce(std::move(callback), false));
+    PostTask(FROM_HERE, base::BindOnce(std::move(callback), true));
   }
 }
 

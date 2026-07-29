@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 
 #include "base/base_export.h"
 #include "base/json/json_common.h"
@@ -94,14 +95,14 @@ class BASE_EXPORT JSONWriter {
 
   // Called recursively to build the JSON string. When completed,
   // |json_string_| will contain the JSON.
-  bool BuildJSONString(absl::monostate node, size_t depth);
+  bool BuildJSONString(std::monostate node, size_t depth);
   bool BuildJSONString(bool node, size_t depth);
   bool BuildJSONString(int node, size_t depth);
   bool BuildJSONString(double node, size_t depth);
   bool BuildJSONString(std::string_view node, size_t depth);
   bool BuildJSONString(const Value::BlobStorage& node, size_t depth);
-  bool BuildJSONString(const Value::Dict& node, size_t depth);
-  bool BuildJSONString(const Value::List& node, size_t depth);
+  bool BuildJSONString(const DictValue& node, size_t depth);
+  bool BuildJSONString(const ListValue& node, size_t depth);
 
   // Adds space to json_string_ for the indent level.
   void IndentLine(size_t depth);

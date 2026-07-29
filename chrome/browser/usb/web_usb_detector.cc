@@ -11,20 +11,22 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/net/referrer.h"
 #include "chrome/browser/notifications/system_notification_helper.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_tab_strip_tracker.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "chrome/browser/ui/tab_contents/tab_contents_iterator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/url_formatter/elide_url.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/device_service.h"
@@ -33,6 +35,7 @@
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/image/image.h"
@@ -74,12 +77,12 @@ void RecordNotificationClosure(WebUsbNotificationClosed disposition) {
 }
 
 GURL GetActiveTabURL() {
-  Browser* browser = chrome::FindLastActiveWithProfile(
-      ProfileManager::GetLastUsedProfileAllowedByPolicy());
+  BrowserWindowInterface* const browser =
+      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
   if (!browser)
     return GURL();
 
-  TabStripModel* tab_strip_model = browser->tab_strip_model();
+  TabStripModel* tab_strip_model = browser->GetTabStripModel();
   content::WebContents* web_contents =
       tab_strip_model->GetWebContentsAt(tab_strip_model->active_index());
   if (!web_contents)
@@ -91,7 +94,7 @@ GURL GetActiveTabURL() {
 void OpenURL(const GURL& url) {
   chrome::ScopedTabbedBrowserDisplayer browser_displayer(
       ProfileManager::GetLastUsedProfileAllowedByPolicy());
-  browser_displayer.browser()->OpenURL(
+  browser_displayer.browser_window_interface()->OpenURL(
       content::OpenURLParams(url, content::Referrer(),
                              WindowOpenDisposition::NEW_FOREGROUND_TAB,
                              ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
@@ -139,23 +142,27 @@ class WebUsbNotificationDelegate : public TabStripModelObserver,
     disposition_ = WEBUSB_NOTIFICATION_CLOSED_CLICKED;
 
     // If the URL is already open, activate that tab.
-    content::WebContents* tab_to_activate = nullptr;
-    Browser* browser = nullptr;
-    auto& all_tabs = AllTabContentses();
-    for (auto it = all_tabs.begin(), end = all_tabs.end(); it != end; ++it) {
-      if (base::StartsWith(it->GetVisibleURL().spec(), landing_page_.spec(),
+    tabs::TabInterface* tab_to_activate = nullptr;
+    BrowserWindowInterface* browser = nullptr;
+    tabs::ForEachTabInterface([&](tabs::TabInterface* tab) {
+      content::WebContents* const tab_contents = tab->GetContents();
+      if (base::StartsWith(tab_contents->GetVisibleURL().spec(),
+                           landing_page_.spec(),
                            base::CompareCase::INSENSITIVE_ASCII) &&
-          (!tab_to_activate || it->GetLastActiveTimeTicks() >
-                                   tab_to_activate->GetLastActiveTimeTicks())) {
-        tab_to_activate = *it;
-        browser = it.browser();
+          (!tab_to_activate ||
+           tab_contents->GetLastActiveTimeTicks() >
+               tab_to_activate->GetContents()->GetLastActiveTimeTicks())) {
+        tab_to_activate = tab;
+        browser = tab->GetBrowserWindowInterface();
+        return false;
       }
-    }
+      return true;
+    });
     if (tab_to_activate) {
-      TabStripModel* tab_strip_model = browser->tab_strip_model();
+      TabStripModel* tab_strip_model = browser->GetTabStripModel();
       tab_strip_model->ActivateTabAt(
-          tab_strip_model->GetIndexOfWebContents(tab_to_activate));
-      browser->window()->Activate();
+          tab_strip_model->GetIndexOfTab(tab_to_activate));
+      browser->GetWindow()->Activate();
       return;
     }
 
@@ -241,8 +248,10 @@ void WebUsbDetector::OnDeviceAdded(
           IDS_WEBUSB_DEVICE_DETECTED_NOTIFICATION,
           url_formatter::FormatUrlForSecurityDisplay(
               landing_page, url_formatter::SchemeDisplay::OMIT_CRYPTOGRAPHIC)),
-      ui::ImageModel::FromVectorIcon(vector_icons::kUsbIcon, ui::kColorIcon,
-                                     64),
+      ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
+                                         ? vector_icons::kUsbIcon
+                                         : vector_icons::kUsbOldIcon,
+                                     ui::kColorIcon, 64),
       std::u16string(), GURL(),
 #if BUILDFLAG(IS_CHROMEOS)
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,

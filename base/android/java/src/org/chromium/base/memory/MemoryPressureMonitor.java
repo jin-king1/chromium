@@ -7,6 +7,7 @@ package org.chromium.base.memory;
 import android.app.ActivityManager;
 import android.content.ComponentCallbacks2;
 import android.content.res.Configuration;
+import android.os.Build;
 
 import androidx.annotation.VisibleForTesting;
 
@@ -15,11 +16,12 @@ import org.chromium.base.MemoryPressureLevel;
 import org.chromium.base.MemoryPressureListener;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+
+import java.util.function.Supplier;
 
 /**
  *
@@ -132,9 +134,8 @@ public class MemoryPressureMonitor {
                                 // See |PreFreezeBackgroundMemoryTrimmer| for
                                 // more details.
                                 if (level == ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
-                                        && android.os.Build.VERSION.SDK_INT
-                                                >= android.os.Build.VERSION_CODES
-                                                        .UPSIDE_DOWN_CAKE) {
+                                        && Build.VERSION.SDK_INT
+                                                >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                                     MemoryPressureListener.onPreFreeze();
                                 }
                             }
@@ -269,10 +270,13 @@ public class MemoryPressureMonitor {
         ResettersForTesting.register(() -> mReportingCallbackForTesting = null);
     }
 
-    /**
-     * Queries current memory pressure.
-     * Returns null if the pressure couldn't be determined.
-     */
+    /** Sets the last reported pressure level for testing purposes. */
+    public void setLastReportedPressureForTesting(@MemoryPressureLevel int pressure) {
+        mLastReportedPressure = pressure;
+        ResettersForTesting.register(() -> mLastReportedPressure = MemoryPressureLevel.NONE);
+    }
+
+    /** Queries current memory pressure. Returns null if the pressure couldn't be determined. */
     private static @MemoryPressureLevel @Nullable Integer getCurrentMemoryPressure() {
         // We used to have a histogram here to measure the duration of each successful
         // ActivityManager.getMyMemoryState() call called

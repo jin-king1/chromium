@@ -37,13 +37,10 @@ class CORE_EXPORT ScopedCSSName : public GarbageCollected<ScopedCSSName> {
   bool operator==(const ScopedCSSName& other) const {
     return name_ == other.name_ && tree_scope_ == other.tree_scope_;
   }
-  bool operator!=(const ScopedCSSName& other) const {
-    return !operator==(other);
-  }
 
   unsigned GetHash() const {
-    unsigned hash = WTF::GetHash(name_);
-    WTF::AddIntToHash(hash, WTF::GetHash(tree_scope_.Get()));
+    unsigned hash = blink::GetHash(name_);
+    AddIntToHash(hash, blink::GetHash(tree_scope_.Get()));
     return hash;
   }
 
@@ -59,8 +56,8 @@ class CORE_EXPORT ScopedCSSName : public GarbageCollected<ScopedCSSName> {
 
 // Represents a list of tree-scoped names (or tree-scoped references).
 //
-// https://drafts.csswg.org/css-scoping/#css-tree-scoped-name
-// https://drafts.csswg.org/css-scoping/#css-tree-scoped-reference
+// https://drafts.csswg.org/css-shadow/#css-tree-scoped-name
+// https://drafts.csswg.org/css-shadow/#css-tree-scoped-reference
 class CORE_EXPORT ScopedCSSNameList
     : public GarbageCollected<ScopedCSSNameList> {
  public:
@@ -78,19 +75,12 @@ class CORE_EXPORT ScopedCSSNameList
                                 return base::ValuesEquivalent(a, b);
                               });
   }
-  bool operator!=(const ScopedCSSNameList& other) const {
-    return !operator==(other);
-  }
 
   void Trace(Visitor* visitor) const;
 
  private:
   HeapVector<Member<const ScopedCSSName>> names_;
 };
-
-}  // namespace blink
-
-namespace WTF {
 
 // Allows creating a hash table of ScopedCSSName in wrapper pointers (e.g.,
 // HeapHashSet<Member<ScopedCSSName>>) that hashes the ScopedCSSNames directly
@@ -111,12 +101,12 @@ struct ScopedCSSNameWrapperPtrHashTraits
 };
 
 template <>
-struct HashTraits<blink::Member<blink::ScopedCSSName>>
-    : ScopedCSSNameWrapperPtrHashTraits<blink::ScopedCSSName> {};
+struct HashTraits<Member<ScopedCSSName>>
+    : ScopedCSSNameWrapperPtrHashTraits<ScopedCSSName> {};
 template <>
-struct HashTraits<blink::Member<const blink::ScopedCSSName>>
-    : ScopedCSSNameWrapperPtrHashTraits<const blink::ScopedCSSName> {};
+struct HashTraits<Member<const ScopedCSSName>>
+    : ScopedCSSNameWrapperPtrHashTraits<const ScopedCSSName> {};
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_SCOPED_CSS_NAME_H_

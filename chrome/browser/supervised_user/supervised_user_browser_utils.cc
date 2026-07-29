@@ -14,7 +14,6 @@
 #include "chrome/browser/profiles/profile_selections.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/supervised_user/child_accounts/child_account_service_factory.h"
-#include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/prefs/pref_service.h"
@@ -25,7 +24,6 @@
 #include "components/signin/public/identity_manager/tribool.h"
 #include "components/supervised_user/core/browser/child_account_service.h"
 #include "components/supervised_user/core/browser/family_link_user_capabilities.h"
-#include "components/supervised_user/core/browser/supervised_user_service.h"
 #include "components/supervised_user/core/common/features.h"
 #include "components/supervised_user/core/common/pref_names.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
@@ -36,7 +34,7 @@
 #include "google_apis/gaia/core_account_id.h"
 #include "url/url_constants.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_type.h"
@@ -49,7 +47,7 @@
 namespace supervised_user {
 
 bool IsSupportedChromeExtensionURL(const GURL& effective_url) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   static const char* const kCrxDownloadUrls[] = {
       "https://clients2.googleusercontent.com/crx/blobs/",
       "https://chrome.google.com/webstore/download/"};
@@ -75,9 +73,8 @@ bool IsSupportedChromeExtensionURL(const GURL& effective_url) {
 
   for (const char* crx_download_url_str : kCrxDownloadUrls) {
     GURL crx_download_url(crx_download_url_str);
-    if (crx_download_url.host_piece() == effective_url.host_piece() &&
-        base::StartsWith(effective_url.path_piece(),
-                         crx_download_url.path_piece(),
+    if (crx_download_url.host() == effective_url.host() &&
+        base::StartsWith(effective_url.path(), crx_download_url.path(),
                          base::CompareCase::SENSITIVE)) {
       return true;
     }
@@ -85,32 +82,25 @@ bool IsSupportedChromeExtensionURL(const GURL& effective_url) {
   return false;
 #else
   return false;
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 }
 
 bool SupervisedUserCanSkipExtensionParentApprovals(const Profile* profile) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   return profile->IsChild() &&
-         IsSupervisedUserSkipParentApprovalToInstallExtensionsEnabled() &&
          profile->GetPrefs()->GetBoolean(
              prefs::kSkipParentApprovalToInstallExtensions);
 #else
   return false;
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 }
 
 bool AreExtensionsPermissionsEnabled(Profile* profile) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   return profile->IsChild();
 #else
-  return profile->IsChild() &&
-         base::FeatureList::IsEnabled(
-             kEnableExtensionsPermissionsForSupervisedUsersOnDesktop);
-#endif  // BUILDFLAG(IS_CHROMEOS)
-#else
   return false;
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 }
 
 bool ShouldContentSkipParentAllowlistFiltering(content::WebContents* contents) {
@@ -145,15 +135,15 @@ std::string GetAccountGivenName(Profile& profile) {
       IdentityManagerFactory::GetForProfile(profile.GetOriginalProfile());
   CHECK(identity_manager);
 
-  const CoreAccountInfo core_info =
-      identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
+  const CoreAccountId primary_account_id =
+      identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
   const AccountInfo account_info =
-      identity_manager->FindExtendedAccountInfo(core_info);
-  return account_info.given_name;
+      identity_manager->FindExtendedAccountInfoByAccountId(primary_account_id);
+  return std::string(account_info.GetGivenName().value_or(""));
 }
 
 void AssertChildStatusOfTheUser(Profile* profile, bool is_child) {
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   user_manager::User* user =
       ash::ProfileHelper::Get()->GetUserByProfile(profile);
   if (user && is_child != (user->GetType() == user_manager::UserType::kChild)) {
@@ -179,11 +169,10 @@ std::string CreateReauthenticationInterstitialForYouTube(
       std::make_unique<SupervisedUserVerificationPageForYouTube>(
           web_contents, profile->GetProfileUserName(), request_url,
           ChildAccountServiceFactory::GetForProfile(profile),
-          navigation_handle.GetNextPageUkmSourceId(),
           std::make_unique<SupervisedUserVerificationControllerClient>(
               web_contents, profile->GetPrefs(),
               g_browser_process->GetApplicationLocale(),
-              GURL(chrome::kChromeUINewTabURL), request_url),
+              chrome::ChromeUINewTabURLAsGURL(), request_url),
           is_main_frame);
 
   std::string interstitial_html = blocking_page->GetHTMLContents();
@@ -193,15 +182,10 @@ std::string CreateReauthenticationInterstitialForYouTube(
 }
 
 std::string CreateReauthenticationInterstitialForBlockedSites(
-    content::NavigationHandle& navigation_handle,
-    FilteringBehaviorReason block_reason) {
+    content::NavigationHandle& navigation_handle) {
   content::WebContents* web_contents = navigation_handle.GetWebContents();
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
-  supervised_user::SupervisedUserService* supervised_user_service =
-      SupervisedUserServiceFactory::GetForProfile(profile);
-  bool has_second_custodian =
-      !supervised_user_service->GetSecondCustodianName().empty();
   GURL request_url = navigation_handle.GetURL();
   bool is_main_frame = navigation_handle.GetNavigatingFrameType() ==
                        content::FrameType::kPrimaryMainFrame;
@@ -213,8 +197,8 @@ std::string CreateReauthenticationInterstitialForBlockedSites(
           std::make_unique<SupervisedUserVerificationControllerClient>(
               web_contents, profile->GetPrefs(),
               g_browser_process->GetApplicationLocale(),
-              GURL(chrome::kChromeUINewTabURL), request_url),
-          block_reason, is_main_frame, has_second_custodian);
+              chrome::ChromeUINewTabURLAsGURL(), request_url),
+          is_main_frame);
 
   std::string interstitial_html = blocking_page->GetHTMLContents();
   security_interstitials::SecurityInterstitialTabHelper::AssociateBlockingPage(

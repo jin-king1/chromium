@@ -27,7 +27,7 @@ class CC_EXPORT SolidColorScrollbarLayerImpl : public ScrollbarLayerImplBase {
   mojom::LayerType GetLayerType() const override;
   std::unique_ptr<LayerImpl> CreateLayerImpl(
       LayerTreeImpl* tree_impl) const override;
-  void PushPropertiesTo(LayerImpl* layer) override;
+  void CopyPropertiesTo(LayerImpl* layer) const override;
 
   void AppendQuads(const AppendQuadsContext& context,
                    viz::CompositorRenderPass* render_pass,
@@ -36,6 +36,10 @@ class CC_EXPORT SolidColorScrollbarLayerImpl : public ScrollbarLayerImplBase {
   int ThumbThickness() const override;
 
   void set_color(SkColor4f color) { color_ = color; }
+
+  int thumb_thickness() const { return thumb_thickness_; }
+  int track_start() const { return track_start_; }
+  SkColor4f color() const { return color_; }
 
  protected:
   SolidColorScrollbarLayerImpl(LayerTreeImpl* tree_impl,
@@ -46,7 +50,7 @@ class CC_EXPORT SolidColorScrollbarLayerImpl : public ScrollbarLayerImplBase {
                                bool is_left_side_vertical_scrollbar);
 
   // ScrollbarLayerImplBase implementation.
-  int ThumbLength() const override;
+  int MinimumThumbLength() const override;
   float TrackLength() const override;
   int TrackStart() const override;
   bool IsThumbResizable() const override;

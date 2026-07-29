@@ -2,17 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/peerconnection/video_encoder_state_observer_impl.h"
 
 #include <queue>
 
 #include "base/atomic_ref_count.h"
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/sequence_checker.h"
 #include "third_party/webrtc/api/video/encoded_image.h"
 
@@ -82,7 +77,8 @@ class VideoEncoderStateObserverImpl::EncoderState {
     if (codec.codecType == webrtc::VideoCodecType::kVideoCodecVP9 &&
         codec.VP9().numberOfSpatialLayers > 0) {
       for (int i = 0; i < codec.VP9().numberOfSpatialLayers; ++i) {
-        const webrtc::SpatialLayer& stream = codec.spatialLayers[i];
+        const webrtc::SpatialLayer& stream =
+            UNSAFE_TODO(codec.spatialLayers[i]);
         int pixel_rate =
             (active_vec_size >= i + 1 && codec_config_.active_spatial_layers[i]
                  ? 1
@@ -96,7 +92,8 @@ class VideoEncoderStateObserverImpl::EncoderState {
       }
     } else {
       for (int i = 0; i < codec.numberOfSimulcastStreams; ++i) {
-        const webrtc::SimulcastStream& stream = codec.simulcastStream[i];
+        const webrtc::SimulcastStream& stream =
+            UNSAFE_TODO(codec.simulcastStream[i]);
         int pixel_rate =
             (active_vec_size >= i + 1 && codec_config_.active_spatial_layers[i]
                  ? 1
@@ -129,7 +126,8 @@ class VideoEncoderStateObserverImpl::EncoderState {
 VideoEncoderStateObserverImpl::VideoEncoderStateObserverImpl(
     media::VideoCodecProfile profile,
     const StatsCollector::StoreProcessingStatsCB& store_processing_stats_cb)
-    : StatsCollector(/*is_decode=*/false, profile, store_processing_stats_cb) {
+    : store_processing_stats_cb_(store_processing_stats_cb),
+      stats_collector_(/*is_decode=*/false, profile) {
   DETACH_FROM_SEQUENCE(encoder_sequence_);
 }
 
@@ -140,11 +138,16 @@ VideoEncoderStateObserverImpl::~VideoEncoderStateObserverImpl() {
   }
 }
 
+void VideoEncoderStateObserverImpl::ReportStats(
+    const StatsCollector::Stats& stats) const {
+  store_processing_stats_cb_.Run(stats.key, stats.video_stats);
+}
+
 void VideoEncoderStateObserverImpl::OnEncoderCreated(
     int encoder_id,
     const webrtc::VideoCodec& config) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(encoder_sequence_);
-  DCHECK(!base::Contains(encoder_state_by_id_, encoder_id));
+  DCHECK(!encoder_state_by_id_.contains(encoder_id));
 
   // Initially, assume all layers active.
   // TODO(hiroh): Set the number of layers to the currently configured layers?
@@ -166,10 +169,11 @@ void VideoEncoderStateObserverImpl::OnEncoderDestroyed(int encoder_id) {
     return;
   }
 
-  if (active_stats_collection() &&
-      samples_collected() >= kMinSamplesThreshold) {
-    ReportStats();
-    ClearStatsCollection();
+  if (stats_collector_.is_active() &&
+      stats_collector_.samples_collected() >=
+          StatsCollector::kMinSamplesThreshold) {
+    ReportStats(stats_collector_.ComputeVideoStats());
+    stats_collector_.Clear();
   }
 
   if (encoder_state->FirstFrameEncodeCalled()) {
@@ -233,7 +237,7 @@ void VideoEncoderStateObserverImpl::OnEncodedImage(int encoder_id,
     return;
   }
 
-  if (stats_collection_finished()) {
+  if (stats_collector_.has_finished()) {
     return;
   }
 
@@ -251,15 +255,20 @@ void VideoEncoderStateObserverImpl::OnEncodedImage(int encoder_id,
 
   UpdateStatsCollection(now);
 
-  if (!active_stats_collection()) {
+  if (!stats_collector_.is_active()) {
     return;
   }
 
   const float encode_time_ms =
       (result.encode_end_time - encode_start->time).InMillisecondsF();
   const int pixel_size = result.width * result.height;
-  AddProcessingTime(pixel_size, result.is_hardware_accelerated, encode_time_ms,
-                    result.keyframe, now);
+  std::optional<StatsCollector::Stats> stats_to_report =
+      stats_collector_.AddProcessingTimeAndGetStats(
+          pixel_size, result.is_hardware_accelerated, encode_time_ms,
+          result.keyframe, now);
+  if (stats_to_report) {
+    ReportStats(*stats_to_report);
+  }
 }
 
 void VideoEncoderStateObserverImpl::UpdateStatsCollection(base::TimeTicks now) {
@@ -275,14 +284,14 @@ void VideoEncoderStateObserverImpl::UpdateStatsCollection(base::TimeTicks now) {
   // Limit data collection to when only a single encoder is active. This gives
   // an optimistic estimate of the performance.
   constexpr int kMaximumEncodersToCollectStats = 1;
-  if (active_stats_collection()) {
+  if (stats_collector_.is_active()) {
     if (g_encoder_counter_ > kMaximumEncodersToCollectStats) {
       // Too many encoders, cancel stats collection.
-      ClearStatsCollection();
+      stats_collector_.Clear();
     }
   } else if (g_encoder_counter_ <= kMaximumEncodersToCollectStats) {
     // Start up stats collection since there's only a single encoder active.
-    StartStatsCollection();
+    stats_collector_.Start();
   }
 }
 

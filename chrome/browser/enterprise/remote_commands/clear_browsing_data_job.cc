@@ -12,6 +12,9 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "components/policy/core/common/policy_logger.h"
+#include "content/public/browser/browsing_data_remover.h"
 
 namespace enterprise_commands {
 
@@ -39,8 +42,8 @@ enum class DataTypes {
 };
 
 std::string CreatePayload(uint64_t failed_data_types) {
-  base::Value::Dict root;
-  base::Value::List failed_types_list;
+  base::DictValue root;
+  base::ListValue failed_types_list;
 
   if (failed_data_types & content::BrowsingDataRemover::DATA_TYPE_CACHE)
     failed_types_list.Append(static_cast<int>(DataTypes::kCache));
@@ -50,9 +53,7 @@ std::string CreatePayload(uint64_t failed_data_types) {
 
   root.Set(kFailedTypesPath, std::move(failed_types_list));
 
-  std::string payload;
-  base::JSONWriter::Write(root, &payload);
-  return payload;
+  return base::WriteJson(root).value_or("");
 }
 
 }  // namespace
@@ -71,8 +72,10 @@ enterprise_management::RemoteCommand_Type ClearBrowsingDataJob::GetType()
 
 bool ClearBrowsingDataJob::ParseCommandPayload(
     const std::string& command_payload) {
-  std::optional<base::Value::Dict> root =
-      base::JSONReader::ReadDict(command_payload);
+  VLOG_POLICY(2, REMOTE_COMMANDS)
+      << "Clear browsing data command payload: " << command_payload;
+  std::optional<base::DictValue> root = base::JSONReader::ReadDict(
+      command_payload, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!root)
     return false;
 
@@ -110,6 +113,10 @@ void ClearBrowsingDataJob::RunImpl(CallbackWithResult result_callback) {
   result_callback_ = std::move(result_callback);
 
   if (types == 0) {
+    LOG_POLICY(WARNING, REMOTE_COMMANDS)
+        << "Clear browsing data command has not specified any "
+           "data types. Please double check the payload to "
+           "make sure everything is set as required.";
     // There's nothing to clear, invoke the callback with success result and be
     // done.
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(

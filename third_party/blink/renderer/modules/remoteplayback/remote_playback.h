@@ -73,7 +73,7 @@ class MODULES_EXPORT RemotePlayback final
   void RemotePlaybackDisabled();
 
   // EventTarget implementation.
-  const WTF::AtomicString& InterfaceName() const override;
+  const AtomicString& InterfaceName() const override;
   ExecutionContext* GetExecutionContext() const override;
 
   // Starts notifying the page about the changes to the remote playback devices
@@ -129,7 +129,7 @@ class MODULES_EXPORT RemotePlayback final
   // RemotePlaybackClient implementation.
   bool RemotePlaybackAvailable() const override;
   void SourceChanged(const KURL&, bool is_source_supported) override;
-  WTF::String GetPresentationId() override;
+  String GetPresentationId() override;
   void MediaMetadataChanged(
       std::optional<media::VideoCodec> video_codec,
       std::optional<media::AudioCodec> audio_codec) override;

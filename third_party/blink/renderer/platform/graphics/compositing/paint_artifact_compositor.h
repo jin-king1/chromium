@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/dcheck_is_on.h"
+#include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "cc/layers/content_layer_client.h"
@@ -91,13 +92,13 @@ class SynthesizedClip : public cc::ContentLayerClient {
   bool FillsBoundsCompletely() const final { return false; }
 
  private:
-  scoped_refptr<cc::PictureLayer> layer_;
   gfx::Transform projection_;
-  bool rrect_is_local_ = false;
   SkRRect rrect_;
-  std::optional<Path> path_;
+  scoped_refptr<cc::PictureLayer> layer_;
   CompositorElementId mask_isolation_id_;
   CompositorElementId mask_effect_id_;
+  std::optional<Path> path_;
+  bool rrect_is_local_ = false;
 };
 
 // Responsible for managing compositing in terms of a PaintArtifact.
@@ -187,8 +188,6 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   // noncomposited nodes, and is used for Scroll Unification to generate scroll
   // nodes for noncomposited scrollers to complete the compositor's scroll
   // property tree.
-  using StackScrollTranslationVector =
-      HeapVector<Member<const TransformPaintPropertyNode>, 32>;
   void Update(const PaintArtifact& artifact,
               const ViewportProperties& viewport_properties,
               const StackScrollTranslationVector& scroll_translation_nodes,
@@ -198,6 +197,7 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   bool DirectlyUpdateScrollOffsetTransform(const TransformPaintPropertyNode&);
   bool DirectlyUpdateTransform(const TransformPaintPropertyNode&);
   bool DirectlyUpdatePageScaleTransform(const TransformPaintPropertyNode&);
+  bool DirectlyUpdateScrollingContentsCullRect(const ScrollPaintPropertyNode&);
 
   // Directly sets cc::ScrollTree::current_scroll_offset. This doesn't affect
   // cc::TransformNode::scroll_offset (which will be synched with blink
@@ -219,6 +219,18 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
 
   void SetTracksRasterInvalidations(bool);
 
+  using GetCanvasSnapshotCallback =
+      base::RepeatingCallback<std::optional<cc::PaintRecord>(DOMNodeId)>;
+  void SetGetCanvasSnapshotCallback(GetCanvasSnapshotCallback callback) {
+    get_canvas_snapshot_callback_ = std::move(callback);
+  }
+
+  bool HasCanvasChildPaintRecord(DOMNodeId child_id) const;
+  std::optional<CanvasChildPaintRecord> GetCanvasChildPaintRecord(
+      DOMNodeId child_id) const;
+  const CanvasChildPaintState* GetCanvasChildPaintState(
+      DOMNodeId child_id) const;
+
   // Called when the local frame view that owns this compositor is
   // going to be removed from its frame.
   void WillBeRemovedFromFrame();
@@ -235,6 +247,7 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   ContentLayerClientImpl* ContentLayerClientForTesting(wtf_size_t i) const;
 
   void SetLCDTextPreference(LCDTextPreference);
+  void SetDevicePixelRatio(float ratio);
 
   // Returns true if a property tree node associated with |element_id| exists
   // on any of the PropertyTrees constructed by |Update|.
@@ -262,11 +275,18 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   struct SynthesizedClipEntry {
     DISALLOW_NEW();
 
-    Member<const ClipPaintPropertyNode> key;
+    Member<const ClipPaintPropertyNode> clip_key;
     std::unique_ptr<SynthesizedClip> synthesized_clip;
     bool in_use;
+    // Transform space of the emitted mask layer. The same clip can be
+    // re-emitted in a different transform space, so the cache key must
+    // include both clip and transform.
+    Member<const TransformPaintPropertyNode> transform_key;
 
-    void Trace(Visitor* visitor) const { visitor->Trace(key); }
+    void Trace(Visitor* visitor) const {
+      visitor->Trace(clip_key);
+      visitor->Trace(transform_key);
+    }
   };
 
  private:
@@ -304,6 +324,8 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   PendingLayer::CompositingType ChunkCompositingType(const PaintArtifact&,
                                                      const PaintChunk&) const;
 
+  void AddRangeDependentScroll(const PropertyTreeState&);
+
   static void UpdateRenderSurfaceForEffects(
       cc::EffectTree&,
       const cc::LayerList&,
@@ -328,6 +350,7 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   UpdateType previous_update_for_testing_ = UpdateType::kNone;
 
   LCDTextPreference lcd_text_preference_ = LCDTextPreference::kIgnored;
+  float device_pixel_ratio_ = 1.f;
 
   scoped_refptr<cc::Layer> root_layer_;
 
@@ -335,6 +358,8 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
 
   class OldPendingLayerMatcher;
   PendingLayers pending_layers_;
+  HashMap<DOMNodeId, wtf_size_t> canvas_child_layer_map_;
+  GetCanvasSnapshotCallback get_canvas_snapshot_callback_;
 
   class Layerizer;
 
@@ -348,6 +373,11 @@ class PLATFORM_EXPORT PaintArtifactCompositor final
   // scrolling (including raster-inducing and main-thread repainted).
   HeapHashMap<Member<const TransformPaintPropertyNode>, ScrollTranslationInfo>
       painted_scroll_translations_;
+
+  // Scroll nodes whose painted scroll ranges (i.e. scrolling contents cull
+  // rects) the last layerization result depended on. We'll need a full update
+  // if any of these scroll nodes' scrolling contents cull rects change.
+  HeapHashSet<Member<const ScrollPaintPropertyNode>> range_dependent_scrolls_;
 
   friend class PaintArtifactCompositorTest;
 };

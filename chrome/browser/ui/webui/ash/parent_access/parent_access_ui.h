@@ -7,18 +7,13 @@
 
 #include <memory>
 
+#include "ash/constants/webui_url_constants.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_ui.mojom-forward.h"
-#include "chrome/common/webui_url_constants.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "ui/web_dialogs/web_dialog_ui.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
-
-namespace ui {
-class ColorChangeHandler;
-}
 
 namespace ash {
 
@@ -31,7 +26,7 @@ class ParentAccessUIConfig
  public:
   ParentAccessUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
-                           chrome::kChromeUIParentAccessHost) {}
+                           ash::kChromeUIParentAccessHost) {}
 };
 
 // Controller for the ParentAccessUI, a WebUI which enables parent verification.
@@ -52,18 +47,10 @@ class ParentAccessUI : public ui::MojoWebDialogUI {
       mojo::PendingReceiver<parent_access_ui::mojom::ParentAccessUiHandler>
           receiver);
 
-  // Instantiates the implementor of the mojom::PageHandler mojo interface
-  // passing the pending receiver that will be internally bound.
-  void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          receiver);
-
   parent_access_ui::mojom::ParentAccessUiHandler* GetHandlerForTest();
 
  private:
   void SetUpResources();
-
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
 
   std::unique_ptr<parent_access_ui::mojom::ParentAccessUiHandler>
       mojo_api_handler_;

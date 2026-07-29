@@ -96,7 +96,8 @@ void ContentLayerClientImpl::AppendAdditionalInfoAsJSON(
 }
 
 void ContentLayerClientImpl::UpdateCcPictureLayer(
-    const PendingLayer& pending_layer) {
+    const PendingLayer& pending_layer,
+    PropertyTreeState property_state_for_paint) {
   const auto& paint_chunks = pending_layer.Chunks();
   CHECK_EQ(cc_picture_layer_->client(), this);
 #if EXPENSIVE_DCHECKS_ARE_ON()
@@ -113,8 +114,7 @@ void ContentLayerClientImpl::UpdateCcPictureLayer(
 #endif  // EXPENSIVE_DCHECKS_ARE_ON()
 
   auto layer_state = pending_layer.GetPropertyTreeState();
-  gfx::Size layer_bounds = pending_layer.LayerBounds();
-  gfx::Vector2dF layer_offset = pending_layer.LayerOffset();
+  auto [layer_offset, layer_bounds] = pending_layer.Bounds();
   gfx::Size old_layer_bounds = raster_invalidator_->LayerBounds();
 
   bool is_mask_layer = layer_state.Effect().BlendMode() == SkBlendMode::kDstIn;
@@ -135,6 +135,12 @@ void ContentLayerClientImpl::UpdateCcPictureLayer(
         *raster_invalidator_->GetTracking(), gfx::Rect(layer_bounds),
         paint_chunks.GetPaintArtifact().ClientDebugName(
             paint_chunks[0].id.client_id));
+  }
+
+  if (const auto* state = layer_state.Effect().canvas_child_paint_state()) {
+    canvas_child_paint_state_ = std::make_unique<CanvasChildPaintState>(*state);
+  } else {
+    canvas_child_paint_state_.reset();
   }
 
   // Note: cc::Layer API assumes the layer bounds start at (0, 0), but the
@@ -169,7 +175,7 @@ void ContentLayerClientImpl::UpdateCcPictureLayer(
   auto previous_display_list = std::move(cc_display_item_list_);
   cc_display_item_list_ = base::MakeRefCounted<cc::DisplayItemList>();
   PaintChunksToCcLayer::ConvertInto(
-      paint_chunks, layer_state, layer_offset,
+      paint_chunks, property_state_for_paint, layer_offset,
       base::OptionalToPtr(raster_under_invalidation_params),
       *cc_display_item_list_);
 
@@ -204,8 +210,8 @@ void ContentLayerClientImpl::UpdateCcPictureLayer(
       // pixels during rasterization.
       cc_picture_layer_->background_color() != SkColors::kTransparent &&
       pending_layer.RectKnownToBeOpaque().Contains(
-          gfx::RectF(gfx::PointAtOffsetFromOrigin(pending_layer.LayerOffset()),
-                     gfx::SizeF(pending_layer.LayerBounds())));
+          gfx::RectF(gfx::PointAtOffsetFromOrigin(layer_offset),
+                     gfx::SizeF(layer_bounds)));
   cc_picture_layer_->SetContentsOpaque(contents_opaque);
   if (!contents_opaque) {
     cc_picture_layer_->SetContentsOpaqueForText(
@@ -236,6 +242,24 @@ void ContentLayerClientImpl::InvalidateRect(const gfx::Rect& rect) {
   }
   cc_display_item_list_ = nullptr;
   cc_picture_layer_->SetNeedsDisplayRect(rect);
+}
+
+std::optional<CanvasChildPaintRecord>
+ContentLayerClientImpl::GetCanvasChildPaintRecord() const {
+  if (!canvas_child_paint_state_) {
+    return std::nullopt;
+  }
+  gfx::Vector2dF offset = cc_picture_layer_->offset_to_transform_parent();
+  cc::PaintRecord record;
+  if (offset.IsZero()) {
+    record = cc_display_item_list_->paint_op_buffer().DeepCopyAsRecord();
+  } else {
+    auto result = sk_make_sp<cc::PaintOpBuffer>();
+    result->push<cc::TranslateOp>(offset.x(), offset.y());
+    *result += cc_display_item_list_->paint_op_buffer();
+    record = result->ReleaseAsRecord();
+  }
+  return CanvasChildPaintRecord{*canvas_child_paint_state_, std::move(record)};
 }
 
 size_t ContentLayerClientImpl::ApproximateUnsharedMemoryUsage() const {

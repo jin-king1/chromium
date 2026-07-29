@@ -5,21 +5,21 @@
 #include "chrome/browser/ui/views/profiles/profile_picker_glic_flow_controller.h"
 
 #include "base/files/file_path.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/test/mock_callback.h"
-#include "base/test/test_future.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_destroyer.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_view_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/profile_destruction_waiter.h"
 #include "chrome/test/base/profile_waiter.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -79,26 +79,41 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerGlicFlowControllerBrowserTest,
   ProfilePickerGlicFlowController controller(
       host(), ClearHostClosure(clear_host_callback.Get()),
       picked_profile_callback.Get());
-  controller.PickProfile(new_profile_path, ProfilePicker::ProfilePickingArgs());
+  base::MockCallback<base::OnceCallback<void(bool)>> mock_callback;
+  EXPECT_CALL(mock_callback, Run(true));
+  controller.PickProfile(new_profile_path, ProfilePicker::ProfilePickingArgs(),
+                         mock_callback.Get());
 
-  profile_waiter.WaitForProfileAdded();
+  Profile* loaded_profile = profile_waiter.WaitForProfileAdded();
+  signin::WaitForRefreshTokensLoaded(
+      IdentityManagerFactory::GetForProfile(loaded_profile));
 }
 
+// TODO(crbug.com/404425678): Re-enable failing test on Windows.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_PickProfileWithCurrentProfile \
+  DISABLED_PickProfileWithCurrentProfile
+#else
+#define MAYBE_PickProfileWithCurrentProfile PickProfileWithCurrentProfile
+#endif
 IN_PROC_BROWSER_TEST_F(ProfilePickerGlicFlowControllerBrowserTest,
-                       PickProfileWithCurrentProfile) {
+                       MAYBE_PickProfileWithCurrentProfile) {
   base::MockCallback<base::OnceClosure> clear_host_callback;
   EXPECT_CALL(clear_host_callback, Run());
 
   base::MockCallback<base::OnceCallback<void(Profile*)>>
       picked_profile_callback;
   // Return the currently active profile right away if it is already loaded.
-  EXPECT_CALL(picked_profile_callback, Run(browser()->profile()));
+  EXPECT_CALL(picked_profile_callback, Run(browser()->GetProfile()));
 
   ProfilePickerGlicFlowController controller(
       host(), ClearHostClosure(clear_host_callback.Get()),
       picked_profile_callback.Get());
-  controller.PickProfile(browser()->profile()->GetPath(),
-                         ProfilePicker::ProfilePickingArgs());
+  base::MockCallback<base::OnceCallback<void(bool)>> mock_callback;
+  EXPECT_CALL(mock_callback, Run(true));
+  controller.PickProfile(browser()->GetProfile()->GetPath(),
+                         ProfilePicker::ProfilePickingArgs(),
+                         mock_callback.Get());
 }
 
 IN_PROC_BROWSER_TEST_F(ProfilePickerGlicFlowControllerBrowserTest,
@@ -118,8 +133,11 @@ IN_PROC_BROWSER_TEST_F(ProfilePickerGlicFlowControllerBrowserTest,
   // as it was not created yet.
   base::FilePath non_profile_file_path =
       g_browser_process->profile_manager()->GenerateNextProfileDirectoryPath();
+  base::MockCallback<base::OnceCallback<void(bool)>> mock_callback;
+  EXPECT_CALL(mock_callback, Run(false));
   controller.PickProfile(non_profile_file_path,
-                         ProfilePicker::ProfilePickingArgs());
+                         ProfilePicker::ProfilePickingArgs(),
+                         mock_callback.Get());
 }
 
 IN_PROC_BROWSER_TEST_F(ProfilePickerGlicFlowControllerBrowserTest,

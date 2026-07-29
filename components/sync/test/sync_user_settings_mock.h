@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "components/signin/public/base/gaia_id_hash.h"
-#include "components/sync/engine/nigori/nigori.h"
+#include "components/sync/model/crypto/nigori.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -22,10 +22,7 @@ class SyncUserSettingsMock : public SyncUserSettings {
   ~SyncUserSettingsMock() override;
   MOCK_METHOD(bool, IsInitialSyncFeatureSetupComplete, (), (const override));
 #if !BUILDFLAG(IS_CHROMEOS)
-  MOCK_METHOD(void,
-              SetInitialSyncFeatureSetupComplete,
-              (SyncFirstSetupCompleteSource),
-              (override));
+  MOCK_METHOD(void, SetInitialSyncFeatureSetupComplete, (), (override));
 #endif  // !BUILDFLAG(IS_CHROMEOS)
   MOCK_METHOD(bool, IsSyncEverythingEnabled, (), (const override));
   MOCK_METHOD(UserSelectableTypeSet, GetSelectedTypes, (), (const override));
@@ -49,7 +46,7 @@ class SyncUserSettingsMock : public SyncUserSettings {
   MOCK_METHOD(void, ResetSelectedType, (UserSelectableType), (override));
   MOCK_METHOD(void,
               KeepAccountSettingsPrefsOnlyForUsers,
-              (const std::vector<signin::GaiaIdHash>&),
+              (const std::vector<GaiaId>&),
               (override));
   MOCK_METHOD(UserSelectableTypeSet,
               GetRegisteredSelectableTypes,
@@ -58,6 +55,7 @@ class SyncUserSettingsMock : public SyncUserSettings {
 
 #if BUILDFLAG(IS_CHROMEOS)
   MOCK_METHOD(bool, IsSyncFeatureDisabledViaDashboard, (), (const override));
+  MOCK_METHOD(void, ClearSyncFeatureDisabledViaDashboard, (), (override));
   MOCK_METHOD(bool, IsSyncAllOsTypesEnabled, (), (const override));
   MOCK_METHOD(UserSelectableOsTypeSet,
               GetSelectedOsTypes,
@@ -94,6 +92,7 @@ class SyncUserSettingsMock : public SyncUserSettings {
               (),
               (override));
   MOCK_METHOD(bool, IsTrustedVaultKeyRequired, (), (const override));
+  MOCK_METHOD(bool, IsKeystoreKeyRequiredForTesting, (), (const override));
   MOCK_METHOD(bool,
               IsTrustedVaultKeyRequiredForPreferredDataTypes,
               (),
@@ -107,14 +106,6 @@ class SyncUserSettingsMock : public SyncUserSettings {
               (const override));
   MOCK_METHOD(void, SetEncryptionPassphrase, (const std::string&), (override));
   MOCK_METHOD(bool, SetDecryptionPassphrase, (const std::string&), (override));
-  MOCK_METHOD(void,
-              SetExplicitPassphraseDecryptionNigoriKey,
-              (std::unique_ptr<Nigori>),
-              (override));
-  MOCK_METHOD(std::unique_ptr<Nigori>,
-              GetExplicitPassphraseDecryptionNigoriKey,
-              (),
-              (const override));
 };
 
 }  // namespace syncer

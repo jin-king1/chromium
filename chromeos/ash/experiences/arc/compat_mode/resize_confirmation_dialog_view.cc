@@ -6,7 +6,7 @@
 
 #include <memory>
 
-#include "ash/frame/non_client_frame_view_ash.h"
+#include "ash/frame/frame_view_ash.h"
 #include "ash/style/ash_color_id.h"
 #include "ash/style/checkbox_group.h"
 #include "ash/style/pill_button.h"
@@ -19,9 +19,11 @@
 #include "chromeos/constants/chromeos_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_border.h"
@@ -29,6 +31,7 @@
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/layout/layout_provider.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/style/typography_provider.h"
 #include "ui/views/view_class_properties.h"
@@ -49,11 +52,10 @@ ResizeConfirmationDialogView::ResizeConfirmationDialogView(
   SetArrow(views::BubbleBorder::Arrow::FLOAT);
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   set_parent_window(parent->GetNativeWindow());
-  set_title_margins(gfx::Insets());
+  set_frame_margins({.contents = gfx::Insets(), .title = gfx::Insets()});
   SetTitle(
       l10n_util::GetStringUTF16(IDS_ASH_ARC_APP_COMPAT_RESIZE_CONFIRM_TITLE));
   SetShowTitle(false);
-  set_margins(gfx::Insets());
   SetAnchorView(parent->GetContentsView());
   SetAccessibleWindowRole(ax::mojom::Role::kDialog);
   set_adjust_if_offscreen(false);
@@ -111,7 +113,7 @@ void ResizeConfirmationDialogView::AddedToWidget() {
   const int kCornerRadius = 20;
   auto* const frame = GetBubbleFrameView();
   if (frame) {
-    frame->SetCornerRadius(kCornerRadius);
+    frame->SetRoundedCorners(gfx::RoundedCornersF(kCornerRadius));
   }
 
   widget_observation_.Observe(GetWidget());

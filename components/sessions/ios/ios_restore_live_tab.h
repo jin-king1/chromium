@@ -14,8 +14,8 @@ class NavigationStorage;
 
 namespace sessions {
 
-// An implementation of LiveTab that is backed by web::CRWSessionStorage for use
-// when restoring tabs from a crashed session.
+// An implementation of LiveTab that is backed by web::proto::NavigationStorage
+// for use when restoring tabs from a crashed session.
 class SESSIONS_EXPORT RestoreIOSLiveTab : public IOSLiveTab {
  public:
   explicit RestoreIOSLiveTab(web::proto::NavigationStorage storage);
@@ -24,6 +24,7 @@ class SESSIONS_EXPORT RestoreIOSLiveTab : public IOSLiveTab {
   RestoreIOSLiveTab& operator=(const RestoreIOSLiveTab&) = delete;
 
   // LiveTab:
+  SessionID GetSessionID() const override;
   bool IsInitialBlankNavigation() override;
   int GetCurrentEntryIndex() override;
   int GetPendingEntryIndex() override;

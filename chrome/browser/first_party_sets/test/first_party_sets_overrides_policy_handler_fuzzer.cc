@@ -5,11 +5,13 @@
 #include "chrome/browser/first_party_sets/first_party_sets_overrides_policy_handler.h"
 
 #include <stdlib.h>
+
 #include <iostream>
 
 #include "base/at_exit.h"
 #include "base/i18n/icu_util.h"
 #include "base/json/json_reader.h"
+#include "base/no_destructor.h"
 #include "components/policy/core/browser/policy_error_map.h"
 #include "components/policy/core/common/chrome_schema.h"
 #include "components/policy/core/common/policy_map.h"
@@ -27,9 +29,8 @@ struct IcuEnvironment {
   base::AtExitManager at_exit_manager;
 };
 
-IcuEnvironment* test_case = new IcuEnvironment();
-
 DEFINE_PROTO_FUZZER(const json_proto::JsonValue& json_value) {
+  static base::NoDestructor<IcuEnvironment> test_case;
   json_proto::JsonProtoConverter converter;
   std::string native_input = converter.Convert(json_value);
   FirstPartySetsOverridesPolicyHandler fps_handler(
@@ -45,13 +46,15 @@ DEFINE_PROTO_FUZZER(const json_proto::JsonValue& json_value) {
                  policy::PolicyLevel::POLICY_LEVEL_MANDATORY,
                  policy::PolicyScope::POLICY_SCOPE_MACHINE,
                  policy::PolicySource::POLICY_SOURCE_ENTERPRISE_DEFAULT,
-                 base::JSONReader::Read(native_input),
+                 base::JSONReader::Read(native_input,
+                                        base::JSON_PARSE_CHROMIUM_EXTENSIONS),
                  /*external_data_fetcher=*/nullptr);
   policy_map.Set(policy::key::kRelatedWebsiteSetsOverrides,
                  policy::PolicyLevel::POLICY_LEVEL_MANDATORY,
                  policy::PolicyScope::POLICY_SCOPE_MACHINE,
                  policy::PolicySource::POLICY_SOURCE_ENTERPRISE_DEFAULT,
-                 base::JSONReader::Read(native_input),
+                 base::JSONReader::Read(native_input,
+                                        base::JSON_PARSE_CHROMIUM_EXTENSIONS),
                  /*external_data_fetcher=*/nullptr);
   policy::PolicyErrorMap errors;
   fps_handler.CheckPolicySettings(policy_map, &errors);

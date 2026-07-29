@@ -17,8 +17,10 @@
 #include "base/types/pass_key.h"
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
+#include "services/webnn/graph_builder_context.h"
 #include "services/webnn/public/cpp/context_properties.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
+#include "services/webnn/public/cpp/webnn_types.h"
 #include "services/webnn/public/mojom/webnn_error.mojom-forward.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom.h"
 #include "services/webnn/public/mojom/webnn_graph_builder.mojom.h"
@@ -29,7 +31,6 @@
 namespace webnn {
 
 class WebNNConstantOperand;
-class WebNNContextImpl;
 
 // Services-side connection to an `MLGraphBuilder`. Responsible for managing
 // data associated with the graph builder.
@@ -40,7 +41,7 @@ class WebNNContextImpl;
 class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphBuilderImpl
     : public mojom::WebNNGraphBuilder {
  public:
-  explicit WebNNGraphBuilderImpl(WebNNContextImpl& context);
+  explicit WebNNGraphBuilderImpl(GraphBuilderContext& context);
 
   WebNNGraphBuilderImpl(const WebNNGraphBuilderImpl&) = delete;
   WebNNGraphBuilderImpl& operator=(const WebNNGraphBuilderImpl&) = delete;
@@ -52,19 +53,20 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphBuilderImpl
       const blink::WebNNPendingConstantToken& constant_handle,
       OperandDataType data_type,
       mojo_base::BigBuffer data) override;
+
   void CreateGraph(mojom::GraphInfoPtr graph_info,
                    CreateGraphCallback callback) override;
   void IsValidGraphForTesting(const ContextProperties& context_properties,
                               mojom::GraphInfoPtr graph_info,
                               IsValidGraphForTestingCallback callback) override;
 
-  void SetId(mojo::ReceiverId id, base::PassKey<WebNNContextImpl> pass_key);
+  void SetId(mojo::ReceiverId id, base::PassKey<GraphBuilderContext> pass_key);
 
  protected:
   struct ValidateGraphSuccessResult {
     ValidateGraphSuccessResult(
         WebNNGraphImpl::ComputeResourceInfo compute_resource_info,
-        base::flat_map<uint64_t, std::unique_ptr<WebNNConstantOperand>>
+        base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
             constant_operands);
     ~ValidateGraphSuccessResult();
 
@@ -80,7 +82,7 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphBuilderImpl
     // Constant operands associated with this graph, which will be used during
     // graph construction. This member is only non-empty when
     // `keep_builder_resources_for_testing` is false.
-    base::flat_map<uint64_t, std::unique_ptr<WebNNConstantOperand>>
+    base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands;
   };
 
@@ -96,16 +98,22 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphBuilderImpl
       bool keep_builder_resources_for_testing);
 
  private:
-  void DidCreateGraph(
+  void DidTransposePendingPermutations(
+      mojom::GraphInfoPtr graph_info,
+      WebNNGraphImpl::ComputeResourceInfo compute_resource_info,
       CreateGraphCallback callback,
-      base::expected<std::unique_ptr<WebNNGraphImpl>, mojom::ErrorPtr> result);
+      base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>&&
+          constant_operands);
+  void DidCreateGraph(CreateGraphCallback callback,
+                      base::expected<GraphBuilderContext::GraphCreationResult,
+                                     mojom::ErrorPtr> result);
 
   void DestroySelf();
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  // The `WebNNContextImpl` which owns and will outlive this object.
-  const raw_ref<WebNNContextImpl> context_;
+  // The `GraphBuilderContext` which owns and will outlive this object.
+  const raw_ref<GraphBuilderContext> context_;
 
   // Set by the owning `context_` so this builder can identify itself when
   // requesting to be destroyed.
@@ -116,8 +124,7 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNGraphBuilderImpl
   bool has_built_ = false;
 
   std::set<std::unique_ptr<WebNNPendingConstantOperand>,
-           WebNNObjectImpl<blink::WebNNPendingConstantToken>::Comparator<
-               WebNNPendingConstantOperand>>
+           WebNNPendingConstantOperand::Comparator>
       pending_constant_operands_;
 
   base::WeakPtrFactory<WebNNGraphBuilderImpl> weak_factory_

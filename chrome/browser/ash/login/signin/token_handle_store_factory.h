@@ -5,15 +5,32 @@
 #ifndef CHROME_BROWSER_ASH_LOGIN_SIGNIN_TOKEN_HANDLE_STORE_FACTORY_H_
 #define CHROME_BROWSER_ASH_LOGIN_SIGNIN_TOKEN_HANDLE_STORE_FACTORY_H_
 
+#include <memory>
+#include <vector>
+
 #include "ash/public/cpp/token_handle_store.h"
-#include "base/no_destructor.h"
+#include "base/containers/flat_map.h"
+#include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
+#include "chromeos/ash/components/login/auth/auth_factor_editor.h"
+
+class PrefService;
 
 namespace ash {
 
 // Helper class to switch implementation of TokenHandleStore depending
 // on feature flag state.
+// TokenHandleStoreFactory just switches the returned implementation by either
+// creating a TokenHandleUtil or returning the global instance of
+// TokenHandleStoreImpl.
+// This class is temporary, and will be removed once we completely migrate to
+// TokenHandleStoreImpl.
 class TokenHandleStoreFactory {
  public:
+  // `local_state` must be non-null and must outlive `this`.
+  explicit TokenHandleStoreFactory(PrefService* local_state);
+  ~TokenHandleStoreFactory();
+
   TokenHandleStoreFactory(const TokenHandleStoreFactory&) = delete;
   TokenHandleStoreFactory& operator=(const TokenHandleStoreFactory&) = delete;
 
@@ -22,11 +39,45 @@ class TokenHandleStoreFactory {
   TokenHandleStore* GetTokenHandleStore();
 
  private:
-  friend class base::NoDestructor<TokenHandleStoreFactory>;
+  // Functor that determines if a given `account_id` has a gaia password.
+  // The class maintains the invariant that at any given time, there is at most
+  // one request in flight for a given `account_id`.
+  class DoesUserHaveGaiaPassword {
+   public:
+    using OnUserHasGaiaPasswordDetermined =
+        base::OnceCallback<void(std::optional<bool>)>;
+    using DoesUserHaveGaiaPasswordCallback = base::RepeatingCallback<void(
+        const AccountId&,
+        TokenHandleStoreFactory::DoesUserHaveGaiaPassword ::
+            OnUserHasGaiaPasswordDetermined)>;
 
-  TokenHandleStoreFactory();
-  ~TokenHandleStoreFactory();
+    explicit DoesUserHaveGaiaPassword(
+        std::unique_ptr<AuthFactorEditor> factor_editor);
+    ~DoesUserHaveGaiaPassword();
+    DoesUserHaveGaiaPassword(const DoesUserHaveGaiaPassword&) = delete;
+    DoesUserHaveGaiaPassword& operator=(const DoesUserHaveGaiaPassword&) =
+        delete;
 
+    void Run(const AccountId& account_id,
+             OnUserHasGaiaPasswordDetermined callback);
+
+    DoesUserHaveGaiaPasswordCallback CreateRepeatingCallback();
+
+   private:
+    // Callback passed to `AuthFactorEditor::GetAuthFactorConfiguration`.
+    void OnGetAuthFactorConfiguration(std::unique_ptr<UserContext> user_context,
+                                      std::optional<AuthenticationError> error);
+
+    std::unique_ptr<AuthFactorEditor> factor_editor_;
+    base::flat_map<AccountId, std::vector<OnUserHasGaiaPasswordDetermined>>
+        callbacks_;
+    base::WeakPtrFactory<DoesUserHaveGaiaPassword> weak_factory_{this};
+  };
+
+  std::unique_ptr<TokenHandleStore> CreateTokenHandleStoreImpl();
+
+  const raw_ref<PrefService> local_state_;
+  std::unique_ptr<DoesUserHaveGaiaPassword> does_user_have_gaia_password_;
   std::unique_ptr<TokenHandleStore> token_handle_store_;
 };
 

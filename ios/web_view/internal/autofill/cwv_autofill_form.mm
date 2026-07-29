@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#import <ranges>
+
 #import "base/strings/sys_string_conversions.h"
 #import "components/autofill/core/browser/form_structure.h"
 #import "components/autofill/core/common/dense_set.h"
@@ -17,7 +19,8 @@
 
     _type = CWVAutofillFormTypeUnknown;
     autofill::DenseSet<autofill::FormType> formTypes =
-        formStructure.GetFormTypes();
+        formStructure.GetFormTypes(
+            autofill::AutocompleteUnrecognizedBehavior::kSuggestionsSuppressed);
     if (formTypes.contains(autofill::FormType::kAddressForm)) {
       _type |= CWVAutofillFormTypeAddresses;
     }
@@ -28,7 +31,11 @@
     // not consider password forms as autofillable. In other words, |formTypes|
     // will never contain PASSWORD_FORM. Luckily, it already provides a function
     // to check if it has any password fields.
-    if (formStructure.has_password_field()) {
+    auto isPasswordField = [](const auto& field) {
+      return field->form_control_type() ==
+             autofill::FormControlType::kInputPassword;
+    };
+    if (std::ranges::any_of(formStructure.fields(), isPasswordField)) {
       _type |= CWVAutofillFormTypePasswords;
     }
   }

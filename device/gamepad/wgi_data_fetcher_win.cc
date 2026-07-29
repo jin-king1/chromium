@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "device/gamepad/wgi_data_fetcher_win.h"
 
 #include <XInput.h>
@@ -21,6 +16,7 @@
 #include <utility>
 
 #include "base/containers/flat_map.h"
+#include "base/feature_list.h"
 #include "base/sequence_checker.h"
 #include "base/strings/string_util_win.h"
 #include "base/strings/stringprintf.h"
@@ -34,6 +30,7 @@
 #include "device/gamepad/gamepad_id_list.h"
 #include "device/gamepad/gamepad_standard_mappings.h"
 #include "device/gamepad/nintendo_controller.h"
+#include "device/gamepad/public/cpp/gamepad_features.h"
 #include "device/gamepad/wgi_gamepad_device.h"
 
 namespace device {
@@ -74,7 +71,13 @@ GetRawGameController(ABI::Windows::Gaming::Input::IGamepad* gamepad,
   return raw_game_controller;
 }
 
-std::optional<GamepadId> GetGamepadId(
+struct GamepadDetails {
+  GamepadId gamepad_id;
+  uint16_t vendor_id;
+  uint16_t product_id;
+};
+
+std::optional<GamepadDetails> GetGamepadDetails(
     const std::u16string& product_name,
     ABI::Windows::Gaming::Input::IGamepad* gamepad,
     WgiDataFetcherWin::GetActivationFactoryFunction
@@ -100,8 +103,9 @@ std::optional<GamepadId> GetGamepadId(
     return std::nullopt;
   }
 
-  return GamepadIdList::Get().GetGamepadId(product_name_string, vendor_id,
-                                           product_id);
+  return GamepadDetails{GamepadIdList::Get().GetGamepadId(
+                            product_name_string, vendor_id, product_id),
+                        vendor_id, product_id};
 }
 
 // Check if the gamepad should be added by Windows.Gaming.Input. In the
@@ -116,6 +120,12 @@ bool ShouldEnumerateGamepad(GamepadId gamepad_id) {
 
   if (Dualshock4Controller::IsDualshock4(gamepad_id)) {
     // Dualshock4 devices are handled by the RawInput data fetcher.
+    return false;
+  }
+
+  if (base::FeatureList::IsEnabled(features::kIgnorePS5GamepadsInWgi) &&
+      GamepadIdList::IsPlayStation5Gamepad(gamepad_id)) {
+    // PlayStation 5 gamepads are handled by the RawInput data fetcher.
     return false;
   }
 
@@ -239,22 +249,26 @@ void WgiDataFetcherWin::OnGamepadAdded(
     return;
 
   const std::u16string display_name = GetGamepadDisplayName(gamepad);
-  std::optional<GamepadId> gamepad_id_optional =
-      GetGamepadId(display_name, gamepad, get_activation_factory_function_);
+  auto gamepad_details_optional = GetGamepadDetails(
+      display_name, gamepad, get_activation_factory_function_);
 
-  // If `gamepad_id_optional` has std::nullopt, it means that an error has
+  // If `gamepad_details_optional` has std::nullopt, it means that an error has
   // happened when calling the Windows API's.
-  if (!gamepad_id_optional.has_value()) {
+  if (!gamepad_details_optional.has_value()) {
     return;
   }
 
-  GamepadId gamepad_id = gamepad_id_optional.value();
+  auto [gamepad_id, vendor_id, product_id] = gamepad_details_optional.value();
   if (!ShouldEnumerateGamepad(gamepad_id)) {
     return;
   }
 
+  std::string product_identifier =
+      GamepadIdList::GetProductIdentifier(vendor_id, product_id);
+
   int source_id = next_source_id_++;
-  PadState* state = GetPadState(source_id);
+  PadState* state =
+      GetPadState(source_id, /*new_pad_recognized=*/true, product_identifier);
   if (!state)
     return;
   state->is_initialized = true;
@@ -270,7 +284,8 @@ void WgiDataFetcherWin::OnGamepadAdded(
 
   pad.vibration_actuator.not_null = true;
   pad.mapping = GamepadMapping::kStandard;
-  devices_[source_id] = std::make_unique<WgiGamepadDevice>(gamepad);
+  devices_[source_id] = std::make_unique<WgiGamepadDevice>(
+      gamepad, std::move(product_identifier));
 }
 
 void WgiDataFetcherWin::OnGamepadRemoved(
@@ -300,7 +315,14 @@ void WgiDataFetcherWin::GetGamepadData(bool devices_changed_hint) {
   // redirect any detected meta button presses to it.
   PadState* lowest_index_wgi_pad_state = nullptr;
   for (const auto& map_entry : devices_) {
-    PadState* state = GetPadState(map_entry.first);
+    const auto& [source_id, wgi_gamepad_device] = map_entry;
+    std::optional<std::string_view> product_identifier;
+    if (base::FeatureList::IsEnabled(
+            features::kClaimDuplicateGamepadsProductIdentifier)) {
+      product_identifier = wgi_gamepad_device->GetProductIdentifier();
+    }
+    PadState* state =
+        GetPadState(source_id, /*new_pad_recognized=*/true, product_identifier);
     if (!state)
       continue;
 
@@ -358,6 +380,8 @@ void WgiDataFetcherWin::GetGamepadData(bool devices_changed_hint) {
     };
 
     for (const auto& button : kButtonMappings) {
+      pad.buttons[button.button_index].used =
+          static_cast<size_t>(button.button_index) < pad.buttons_length;
       if (reading.Buttons & button.wgi_button_mask) {
         pad.buttons[button.button_index].pressed = true;
         pad.buttons[button.button_index].value = 1.0f;
@@ -367,10 +391,12 @@ void WgiDataFetcherWin::GetGamepadData(bool devices_changed_hint) {
       }
     }
 
+    pad.buttons[BUTTON_INDEX_LEFT_TRIGGER].used = true;
     pad.buttons[BUTTON_INDEX_LEFT_TRIGGER].pressed =
         reading.LeftTrigger > GamepadButton::kDefaultButtonPressedThreshold;
     pad.buttons[BUTTON_INDEX_LEFT_TRIGGER].value = reading.LeftTrigger;
 
+    pad.buttons[BUTTON_INDEX_RIGHT_TRIGGER].used = true;
     pad.buttons[BUTTON_INDEX_RIGHT_TRIGGER].pressed =
         reading.RightTrigger > GamepadButton::kDefaultButtonPressedThreshold;
     pad.buttons[BUTTON_INDEX_RIGHT_TRIGGER].value = reading.RightTrigger;
@@ -392,6 +418,7 @@ void WgiDataFetcherWin::GetGamepadData(bool devices_changed_hint) {
   // getting the WGI reading.
   if (lowest_index_wgi_pad_state) {
     bool is_meta_pressed = xinput_data_fetcher_->IsAnyMetaButtonPressed();
+    lowest_index_wgi_pad_state->data.buttons[BUTTON_INDEX_META].used = true;
     lowest_index_wgi_pad_state->data.buttons[BUTTON_INDEX_META].pressed =
         is_meta_pressed;
     lowest_index_wgi_pad_state->data.buttons[BUTTON_INDEX_META].value =

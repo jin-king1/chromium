@@ -9,31 +9,30 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.ListView;
 
-import androidx.annotation.Nullable;
-
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.recent_tabs.ui.CrossDevicePaneView;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
-import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
-import org.chromium.components.browser_ui.edge_to_edge.EdgeToEdgePadAdjuster;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.ModelListAdapter;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
 /** Orchestrates the displaying of a list of cross device tabs and related promos. */
+@NullMarked
 public class CrossDeviceListCoordinator {
     private final CrossDevicePaneView mView;
     private final CrossDeviceListMediator mCrossDeviceListMediator;
-    private @Nullable EdgeToEdgePadAdjuster mEdgeToEdgePadAdjuster;
+    private final EdgeToEdgePadAdjuster mEdgeToEdgePadAdjuster;
 
     /**
      * @param context Used to load resources and views.
      * @param edgeToEdgeSupplier Supplier to the {@link EdgeToEdgeController} instance.
      */
     public CrossDeviceListCoordinator(
-            Context context, ObservableSupplier<EdgeToEdgeController> edgeToEdgeSupplier) {
+            Context context, MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeSupplier) {
         ModelList listItems = new ModelList();
         ModelListAdapter adapter = new ModelListAdapter(listItems);
 
@@ -41,18 +40,16 @@ public class CrossDeviceListCoordinator {
                 (CrossDevicePaneView)
                         LayoutInflater.from(context)
                                 .inflate(R.layout.cross_device_pane, /* root= */ null);
-        ListView listView = (ListView) mView.findViewById(R.id.cross_device_list_view);
+        ListView listView = mView.findViewById(R.id.cross_device_list_view);
         listView.setAdapter(adapter);
 
         PropertyModel model = CrossDeviceListProperties.create();
         PropertyModelChangeProcessor.create(model, mView, CrossDeviceListViewBinder::bind);
 
         mCrossDeviceListMediator = new CrossDeviceListMediator(listItems, model);
-        if (EdgeToEdgeUtils.isDrawKeyNativePageToEdgeEnabled()) {
-            mEdgeToEdgePadAdjuster =
-                    EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
-                            listView, edgeToEdgeSupplier);
-        }
+        mEdgeToEdgePadAdjuster =
+                EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
+                        listView, edgeToEdgeSupplier);
     }
 
     /** Returns the root view of this component. */

@@ -5,6 +5,7 @@
 #include "ui/display/manager/display_change_observer.h"
 
 #include <cmath>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <set>
@@ -65,29 +66,7 @@ std::unique_ptr<DisplayMode> MakeDisplayMode(
 
 }  // namespace
 
-class DisplayChangeObserverTestBase : public testing::Test {
- public:
-  DisplayChangeObserverTestBase() = default;
-
-  DisplayChangeObserverTestBase(const DisplayChangeObserverTestBase&) = delete;
-  DisplayChangeObserverTestBase& operator=(
-      const DisplayChangeObserverTestBase&) = delete;
-
-  ~DisplayChangeObserverTestBase() override = default;
-
-  // Pass through method to be called by individual test cases.
-  ManagedDisplayInfo CreateManagedDisplayInfo(DisplayChangeObserver* observer,
-                                              const DisplaySnapshot* snapshot,
-                                              const DisplayMode* mode_info) {
-    return observer->CreateManagedDisplayInfoInternal(snapshot, mode_info);
-  }
-
- protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-class DisplayChangeObserverTest : public DisplayChangeObserverTestBase,
-                                  public testing::WithParamInterface<bool> {
+class DisplayChangeObserverTest : public testing::Test {
  public:
   DisplayChangeObserverTest() = default;
 
@@ -97,21 +76,15 @@ class DisplayChangeObserverTest : public DisplayChangeObserverTestBase,
 
   ~DisplayChangeObserverTest() override = default;
 
-  // DisplayChangeObserverTestBase:
-  void SetUp() override {
-    if (GetParam()) {
-      scoped_feature_list_.InitAndEnableFeature(features::kListAllDisplayModes);
-    } else {
-      scoped_feature_list_.InitAndDisableFeature(
-          features::kListAllDisplayModes);
-    }
-
-    DisplayChangeObserverTestBase::SetUp();
+  // Pass through method to be called by individual test cases.
+  ManagedDisplayInfo CreateManagedDisplayInfo(DisplayChangeObserver* observer,
+                                              const DisplaySnapshot* snapshot,
+                                              const DisplayMode* mode_info) {
+    return observer->CreateManagedDisplayInfoInternal(snapshot, mode_info);
   }
 };
 
-class DisplayChangeObserverPanelRadiiTest
-    : public DisplayChangeObserverTestBase {
+class DisplayChangeObserverPanelRadiiTest : public DisplayChangeObserverTest {
  public:
   DisplayChangeObserverPanelRadiiTest() = default;
 
@@ -128,7 +101,7 @@ class DisplayChangeObserverPanelRadiiTest
     default_display_mode_ = MakeDisplayMode(1920, 1080, true, 60);
 
     ui::DeviceDataManager::CreateInstance();
-    DisplayChangeObserverTestBase::SetUp();
+    DisplayChangeObserverTest::SetUp();
   }
 
   void InitializeDisplayChangeObserver() {
@@ -191,7 +164,7 @@ TEST_F(DisplayChangeObserverPanelRadiiTest, IgnoreRadiiIfNotInternalDisplay) {
   EXPECT_TRUE(display_info.panel_corners_radii().IsEmpty());
 }
 
-TEST_P(DisplayChangeObserverTest, GetExternalManagedDisplayModeList) {
+TEST_F(DisplayChangeObserverTest, GetExternalManagedDisplayModeList) {
   std::unique_ptr<DisplaySnapshot> display_snapshot =
       FakeDisplaySnapshot::Builder()
           .SetId(123)
@@ -220,83 +193,55 @@ TEST_P(DisplayChangeObserverTest, GetExternalManagedDisplayModeList) {
       DisplayChangeObserver::GetExternalManagedDisplayModeList(
           *display_snapshot);
 
-  const bool listing_all_modes = GetParam();
-  if (listing_all_modes) {
-    ASSERT_EQ(13u, display_modes.size());
-    EXPECT_EQ(gfx::Size(640, 480), display_modes[0].size());
-    EXPECT_TRUE(display_modes[0].is_interlaced());
-    EXPECT_EQ(display_modes[0].refresh_rate(), 60);
+  ASSERT_EQ(13u, display_modes.size());
+  EXPECT_EQ(gfx::Size(640, 480), display_modes[0].size());
+  EXPECT_TRUE(display_modes[0].is_interlaced());
+  EXPECT_EQ(display_modes[0].refresh_rate(), 60);
 
-    EXPECT_EQ(gfx::Size(1024, 600), display_modes[1].size());
-    EXPECT_FALSE(display_modes[1].is_interlaced());
-    EXPECT_EQ(display_modes[1].refresh_rate(), 60);
-    EXPECT_EQ(gfx::Size(1024, 600), display_modes[2].size());
-    EXPECT_TRUE(display_modes[2].is_interlaced());
-    EXPECT_EQ(display_modes[2].refresh_rate(), 60);
-    EXPECT_EQ(gfx::Size(1024, 600), display_modes[3].size());
-    EXPECT_FALSE(display_modes[3].is_interlaced());
-    EXPECT_EQ(display_modes[3].refresh_rate(), 70);
+  EXPECT_EQ(gfx::Size(1024, 600), display_modes[1].size());
+  EXPECT_FALSE(display_modes[1].is_interlaced());
+  EXPECT_EQ(display_modes[1].refresh_rate(), 60);
+  EXPECT_EQ(gfx::Size(1024, 600), display_modes[2].size());
+  EXPECT_TRUE(display_modes[2].is_interlaced());
+  EXPECT_EQ(display_modes[2].refresh_rate(), 60);
+  EXPECT_EQ(gfx::Size(1024, 600), display_modes[3].size());
+  EXPECT_FALSE(display_modes[3].is_interlaced());
+  EXPECT_EQ(display_modes[3].refresh_rate(), 70);
 
-    EXPECT_EQ(gfx::Size(1024, 768), display_modes[4].size());
-    EXPECT_TRUE(display_modes[4].is_interlaced());
-    EXPECT_EQ(display_modes[4].refresh_rate(), 60);
-    EXPECT_EQ(gfx::Size(1024, 768), display_modes[5].size());
-    EXPECT_TRUE(display_modes[5].is_interlaced());
-    EXPECT_EQ(display_modes[5].refresh_rate(), 70);
+  EXPECT_EQ(gfx::Size(1024, 768), display_modes[4].size());
+  EXPECT_TRUE(display_modes[4].is_interlaced());
+  EXPECT_EQ(display_modes[4].refresh_rate(), 60);
+  EXPECT_EQ(gfx::Size(1024, 768), display_modes[5].size());
+  EXPECT_TRUE(display_modes[5].is_interlaced());
+  EXPECT_EQ(display_modes[5].refresh_rate(), 70);
 
-    EXPECT_EQ(gfx::Size(1280, 720), display_modes[6].size());
-    EXPECT_FALSE(display_modes[6].is_interlaced());
-    EXPECT_EQ(display_modes[6].refresh_rate(), 60);
-    EXPECT_EQ(gfx::Size(1280, 720), display_modes[7].size());
-    EXPECT_TRUE(display_modes[7].is_interlaced());
-    EXPECT_EQ(display_modes[7].refresh_rate(), 60);
+  EXPECT_EQ(gfx::Size(1280, 720), display_modes[6].size());
+  EXPECT_FALSE(display_modes[6].is_interlaced());
+  EXPECT_EQ(display_modes[6].refresh_rate(), 60);
+  EXPECT_EQ(gfx::Size(1280, 720), display_modes[7].size());
+  EXPECT_TRUE(display_modes[7].is_interlaced());
+  EXPECT_EQ(display_modes[7].refresh_rate(), 60);
 
-    EXPECT_EQ(gfx::Size(1920, 1080), display_modes[8].size());
-    EXPECT_FALSE(display_modes[8].is_interlaced());
-    EXPECT_EQ(display_modes[8].refresh_rate(), 60);
-    EXPECT_EQ(gfx::Size(1920, 1080), display_modes[9].size());
-    EXPECT_FALSE(display_modes[9].is_interlaced());
-    EXPECT_EQ(display_modes[9].refresh_rate(), 70);
-    EXPECT_EQ(gfx::Size(1920, 1080), display_modes[10].size());
-    EXPECT_FALSE(display_modes[10].is_interlaced());
-    EXPECT_EQ(display_modes[10].refresh_rate(), 80);
+  EXPECT_EQ(gfx::Size(1920, 1080), display_modes[8].size());
+  EXPECT_FALSE(display_modes[8].is_interlaced());
+  EXPECT_EQ(display_modes[8].refresh_rate(), 60);
+  EXPECT_EQ(gfx::Size(1920, 1080), display_modes[9].size());
+  EXPECT_FALSE(display_modes[9].is_interlaced());
+  EXPECT_EQ(display_modes[9].refresh_rate(), 70);
+  EXPECT_EQ(gfx::Size(1920, 1080), display_modes[10].size());
+  EXPECT_FALSE(display_modes[10].is_interlaced());
+  EXPECT_EQ(display_modes[10].refresh_rate(), 80);
 
-    EXPECT_EQ(gfx::Size(1920, 1200), display_modes[11].size());
-    EXPECT_FALSE(display_modes[11].is_interlaced());
-    EXPECT_EQ(display_modes[11].refresh_rate(), 60);
+  EXPECT_EQ(gfx::Size(1920, 1200), display_modes[11].size());
+  EXPECT_FALSE(display_modes[11].is_interlaced());
+  EXPECT_EQ(display_modes[11].refresh_rate(), 60);
 
-    EXPECT_EQ(gfx::Size(1920, 1200), display_modes[12].size());
-    EXPECT_FALSE(display_modes[12].is_interlaced());
-    EXPECT_EQ(display_modes[12].refresh_rate(), 75);
-  } else {
-    ASSERT_EQ(6u, display_modes.size());
-    EXPECT_EQ(gfx::Size(640, 480), display_modes[0].size());
-    EXPECT_TRUE(display_modes[0].is_interlaced());
-    EXPECT_EQ(display_modes[0].refresh_rate(), 60);
-
-    EXPECT_EQ(gfx::Size(1024, 600), display_modes[1].size());
-    EXPECT_FALSE(display_modes[1].is_interlaced());
-    EXPECT_EQ(display_modes[1].refresh_rate(), 70);
-
-    EXPECT_EQ(gfx::Size(1024, 768), display_modes[2].size());
-    EXPECT_TRUE(display_modes[2].is_interlaced());
-    EXPECT_EQ(display_modes[2].refresh_rate(), 70);
-
-    EXPECT_EQ(gfx::Size(1280, 720), display_modes[3].size());
-    EXPECT_FALSE(display_modes[3].is_interlaced());
-    EXPECT_EQ(display_modes[3].refresh_rate(), 60);
-
-    EXPECT_EQ(gfx::Size(1920, 1080), display_modes[4].size());
-    EXPECT_FALSE(display_modes[4].is_interlaced());
-    EXPECT_EQ(display_modes[4].refresh_rate(), 80);
-
-    EXPECT_EQ(gfx::Size(1920, 1200), display_modes[5].size());
-    EXPECT_FALSE(display_modes[5].is_interlaced());
-    EXPECT_EQ(display_modes[5].refresh_rate(), 60);
-  }
+  EXPECT_EQ(gfx::Size(1920, 1200), display_modes[12].size());
+  EXPECT_FALSE(display_modes[12].is_interlaced());
+  EXPECT_EQ(display_modes[12].refresh_rate(), 75);
 }
 
-TEST_P(DisplayChangeObserverTest, GetEmptyExternalManagedDisplayModeList) {
+TEST_F(DisplayChangeObserverTest, GetEmptyExternalManagedDisplayModeList) {
   DisplaySnapshot::ColorInfo color_info;
   FakeDisplaySnapshot display_snapshot(
       /*display_id=*/123, /*port_display_id=*/123, /*edid_display_id=*/456,
@@ -328,7 +273,52 @@ bool IsDpiOutOfRange(float dpi) {
   return false;
 }
 
-TEST_P(DisplayChangeObserverTest, FindDeviceScaleFactor) {
+// Check if a display with a specific size and resolution have an expected
+// scale factor and screenshot size.
+void CheckDisplayConfig(const DisplayData entry) {
+  SCOPED_TRACE(base::StringPrintf(
+      "%dx%d, diag=%1.3f inch, expected=%1.10f", entry.resolution.width(),
+      entry.resolution.height(), entry.diagonal_size, entry.expected_dsf));
+
+  float dpi = ComputeDpi(entry.diagonal_size, entry.resolution);
+  // Check ScaleFactor.
+  float scale_factor = ComputeDeviceScaleFactor(dpi, entry.resolution);
+  EXPECT_EQ(entry.expected_dsf, scale_factor);
+  bool bad_range = !IsDpiOutOfRange(dpi);
+  EXPECT_EQ(bad_range, entry.bad_range);
+
+  // Check DP size.
+  gfx::ScaleToCeiledSize(entry.resolution, 1.f / scale_factor);
+
+  const gfx::Size dp_size =
+      gfx::ScaleToCeiledSize(entry.resolution, 1.f / scale_factor);
+
+  // Check Screenshot size.
+  EXPECT_EQ(entry.expected_dp_size, dp_size);
+  gfx::Transform transform;
+  transform.Scale(scale_factor, scale_factor);
+  const gfx::Size screenshot_size =
+      cc::MathUtil::MapEnclosingClippedRect(transform, gfx::Rect(dp_size))
+          .size();
+  switch (entry.screenshot_size_error) {
+    case kEpsilon: {
+      EXPECT_NE(entry.resolution, screenshot_size);
+      constexpr float kEpsilon = 0.001f;
+      EXPECT_EQ(entry.resolution,
+                cc::MathUtil::MapEnclosingClippedRectIgnoringError(
+                    transform, gfx::Rect(dp_size), kEpsilon)
+                    .size());
+      break;
+    }
+    case kExact:
+      EXPECT_EQ(entry.resolution, screenshot_size);
+      break;
+    case kSkip:
+      break;
+  }
+}
+
+TEST_F(DisplayChangeObserverTest, FindDeviceScaleFactor) {
   // Validation check
   EXPECT_EQ(1.25f,
             DisplayChangeObserver::FindDeviceScaleFactor(150, gfx::Size()));
@@ -345,55 +335,16 @@ TEST_P(DisplayChangeObserverTest, FindDeviceScaleFactor) {
   EXPECT_EQ(kDsf_2_666,
             DisplayChangeObserver::FindDeviceScaleFactor(310, gfx::Size()));
 
+  // Loop through the known LCD displays and check if the expected scale factor
+  // is applied.
   std::set<std::tuple<float, int, int>> dup_check;
-
-  for (auto& entry : lcd_display_configs) {
+  for (const DisplayData& entry : lcd_display_configs) {
     std::tuple<float, int, int> key{entry.diagonal_size,
                                     entry.resolution.width(),
                                     entry.resolution.height()};
     DCHECK(!dup_check.count(key));
     dup_check.emplace(key);
-
-    SCOPED_TRACE(base::StringPrintf(
-        "%dx%d, diag=%1.3f inch, expected=%1.10f", entry.resolution.width(),
-        entry.resolution.height(), entry.diagonal_size, entry.expected_dsf));
-
-    float dpi = ComputeDpi(entry.diagonal_size, entry.resolution);
-    // Check ScaleFactor.
-    float scale_factor = ComputeDeviceScaleFactor(dpi, entry.resolution);
-    EXPECT_EQ(entry.expected_dsf, scale_factor);
-    bool bad_range = !IsDpiOutOfRange(dpi);
-    EXPECT_EQ(bad_range, entry.bad_range);
-
-    // Check DP size.
-    gfx::ScaleToCeiledSize(entry.resolution, 1.f / scale_factor);
-
-    const gfx::Size dp_size =
-        gfx::ScaleToCeiledSize(entry.resolution, 1.f / scale_factor);
-
-    // Check Screenshot size.
-    EXPECT_EQ(entry.expected_dp_size, dp_size);
-    gfx::Transform transform;
-    transform.Scale(scale_factor, scale_factor);
-    const gfx::Size screenshot_size =
-        cc::MathUtil::MapEnclosingClippedRect(transform, gfx::Rect(dp_size))
-            .size();
-    switch (entry.screenshot_size_error) {
-      case kEpsilon: {
-        EXPECT_NE(entry.resolution, screenshot_size);
-        constexpr float kEpsilon = 0.001f;
-        EXPECT_EQ(entry.resolution,
-                  cc::MathUtil::MapEnclosingClippedRectIgnoringError(
-                      transform, gfx::Rect(dp_size), kEpsilon)
-                      .size());
-        break;
-      }
-      case kExact:
-        EXPECT_EQ(entry.resolution, screenshot_size);
-        break;
-      case kSkip:
-        break;
-    }
+    CheckDisplayConfig(entry);
   }
 
   float max_scale_factor = kDsf_2_666;
@@ -406,7 +357,33 @@ TEST_P(DisplayChangeObserverTest, FindDeviceScaleFactor) {
                                   10000.0f, gfx::Size()));
 }
 
-TEST_P(DisplayChangeObserverTest,
+TEST_F(DisplayChangeObserverTest, FindOledDeviceScaleFactor) {
+  // This test is the same as the `FindDeviceScaleFactor` test but with
+  // kOledScaleFactorEnabled set to true.
+  base::test::ScopedFeatureList feature_list_;
+  feature_list_.InitAndEnableFeature(
+      display::features::kOledScaleFactorEnabled);
+
+  // validation
+  EXPECT_EQ(1.25f,
+            DisplayChangeObserver::FindDeviceScaleFactor(140, gfx::Size()));
+  EXPECT_EQ(kDsf_1_333,
+            DisplayChangeObserver::FindDeviceScaleFactor(160, gfx::Size()));
+
+  // Loop through the known Oled displays and check if the expected scale factor
+  // is applied.
+  std::set<std::tuple<float, int, int>> dup_check;
+  for (const DisplayData& entry : oled_display_configs) {
+    std::tuple<float, int, int> key{entry.diagonal_size,
+                                    entry.resolution.width(),
+                                    entry.resolution.height()};
+    DCHECK(!dup_check.count(key));
+    dup_check.emplace(key);
+    CheckDisplayConfig(entry);
+  }
+}
+
+TEST_F(DisplayChangeObserverTest,
        FindExternalDisplayNativeModeWhenOverwritten) {
   std::unique_ptr<DisplaySnapshot> display_snapshot =
       FakeDisplaySnapshot::Builder()
@@ -419,30 +396,19 @@ TEST_P(DisplayChangeObserverTest,
       DisplayChangeObserver::GetExternalManagedDisplayModeList(
           *display_snapshot);
 
-  const bool listing_all_modes = GetParam();
+  ASSERT_EQ(2u, display_modes.size());
+  EXPECT_EQ(gfx::Size(1920, 1080), display_modes[0].size());
+  EXPECT_FALSE(display_modes[0].is_interlaced());
+  EXPECT_FALSE(display_modes[0].native());
+  EXPECT_EQ(display_modes[0].refresh_rate(), 60);
 
-  if (listing_all_modes) {
-    ASSERT_EQ(2u, display_modes.size());
-    EXPECT_EQ(gfx::Size(1920, 1080), display_modes[0].size());
-    EXPECT_FALSE(display_modes[0].is_interlaced());
-    EXPECT_FALSE(display_modes[0].native());
-    EXPECT_EQ(display_modes[0].refresh_rate(), 60);
-
-    EXPECT_EQ(gfx::Size(1920, 1080), display_modes[1].size());
-    EXPECT_TRUE(display_modes[1].is_interlaced());
-    EXPECT_TRUE(display_modes[1].native());
-    EXPECT_EQ(display_modes[1].refresh_rate(), 60);
-  } else {
-    // Only the native mode will be listed.
-    ASSERT_EQ(1u, display_modes.size());
-    EXPECT_EQ(gfx::Size(1920, 1080), display_modes[0].size());
-    EXPECT_TRUE(display_modes[0].is_interlaced());
-    EXPECT_TRUE(display_modes[0].native());
-    EXPECT_EQ(display_modes[0].refresh_rate(), 60);
-  }
+  EXPECT_EQ(gfx::Size(1920, 1080), display_modes[1].size());
+  EXPECT_TRUE(display_modes[1].is_interlaced());
+  EXPECT_TRUE(display_modes[1].native());
+  EXPECT_EQ(display_modes[1].refresh_rate(), 60);
 }
 
-TEST_P(DisplayChangeObserverTest, InvalidDisplayColorSpaces) {
+TEST_F(DisplayChangeObserverTest, InvalidDisplayColorSpaces) {
   const std::unique_ptr<DisplaySnapshot> display_snapshot =
       FakeDisplaySnapshot::Builder()
           .SetId(123)
@@ -462,18 +428,18 @@ TEST_P(DisplayChangeObserverTest, InvalidDisplayColorSpaces) {
   const auto display_color_spaces = display_info.display_color_spaces();
   EXPECT_FALSE(display_color_spaces.SupportsHDR());
 
-  EXPECT_EQ(
-      DisplaySnapshot::PrimaryFormat(),
-      display_color_spaces.GetOutputBufferFormat(gfx::ContentColorUsage::kSRGB,
+  EXPECT_EQ(DisplaySnapshot::PrimaryFormat(),
+            display_color_spaces.GetOutputFormat(gfx::ContentColorUsage::kSRGB,
                                                  /*needs_alpha=*/true));
 
-  const auto color_space = display_color_spaces.GetRasterColorSpace();
+  const auto color_space = display_color_spaces.GetRasterAndCompositeColorSpace(
+      gfx::ContentColorUsage::kSRGB);
   // DisplayColorSpaces will fix an invalid ColorSpace to return sRGB.
   EXPECT_TRUE(color_space.IsValid());
   EXPECT_EQ(color_space, gfx::ColorSpace::CreateSRGB());
 }
 
-TEST_P(DisplayChangeObserverTest, SDRDisplayColorSpaces) {
+TEST_F(DisplayChangeObserverTest, SDRDisplayColorSpaces) {
   const std::unique_ptr<DisplaySnapshot> display_snapshot =
       FakeDisplaySnapshot::Builder()
           .SetId(123)
@@ -494,18 +460,18 @@ TEST_P(DisplayChangeObserverTest, SDRDisplayColorSpaces) {
   const auto display_color_spaces = display_info.display_color_spaces();
   EXPECT_FALSE(display_color_spaces.SupportsHDR());
 
-  EXPECT_EQ(
-      DisplaySnapshot::PrimaryFormat(),
-      display_color_spaces.GetOutputBufferFormat(gfx::ContentColorUsage::kSRGB,
+  EXPECT_EQ(DisplaySnapshot::PrimaryFormat(),
+            display_color_spaces.GetOutputFormat(gfx::ContentColorUsage::kSRGB,
                                                  /*needs_alpha=*/true));
 
-  const auto color_space = display_color_spaces.GetRasterColorSpace();
+  const auto color_space = display_color_spaces.GetRasterAndCompositeColorSpace(
+      gfx::ContentColorUsage::kWideColorGamut);
   EXPECT_TRUE(color_space.IsValid());
   EXPECT_EQ(color_space.GetPrimaryID(), gfx::ColorSpace::PrimaryID::BT709);
   EXPECT_EQ(color_space.GetTransferID(), gfx::ColorSpace::TransferID::SRGB);
 }
 
-TEST_P(DisplayChangeObserverTest, WCGDisplayColorSpaces) {
+TEST_F(DisplayChangeObserverTest, WCGDisplayColorSpaces) {
   const std::unique_ptr<DisplaySnapshot> display_snapshot =
       FakeDisplaySnapshot::Builder()
           .SetId(123)
@@ -526,18 +492,18 @@ TEST_P(DisplayChangeObserverTest, WCGDisplayColorSpaces) {
   const auto display_color_spaces = display_info.display_color_spaces();
   EXPECT_FALSE(display_color_spaces.SupportsHDR());
 
-  EXPECT_EQ(
-      DisplaySnapshot::PrimaryFormat(),
-      display_color_spaces.GetOutputBufferFormat(gfx::ContentColorUsage::kSRGB,
+  EXPECT_EQ(DisplaySnapshot::PrimaryFormat(),
+            display_color_spaces.GetOutputFormat(gfx::ContentColorUsage::kSRGB,
                                                  /*needs_alpha=*/true));
 
-  const auto color_space = display_color_spaces.GetRasterColorSpace();
+  const auto color_space = display_color_spaces.GetRasterAndCompositeColorSpace(
+      gfx::ContentColorUsage::kHDR);
   EXPECT_TRUE(color_space.IsValid());
   EXPECT_EQ(color_space.GetPrimaryID(), gfx::ColorSpace::PrimaryID::BT709);
   EXPECT_EQ(color_space.GetTransferID(), gfx::ColorSpace::TransferID::SRGB);
 }
 
-TEST_P(DisplayChangeObserverTest, HDRDisplayColorSpaces) {
+TEST_F(DisplayChangeObserverTest, HDRDisplayColorSpaces) {
   // TODO(crbug.com/40652358): Remove this flag and provision when HDR is fully
   // supported on ChromeOS.
   base::test::ScopedFeatureList scoped_feature_list;
@@ -573,17 +539,15 @@ TEST_P(DisplayChangeObserverTest, HDRDisplayColorSpaces) {
   EXPECT_TRUE(display_color_spaces.SupportsHDR());
 
   // Ensure that all spaces be HDR10, and have headroom of 3x (609/203).
-  EXPECT_EQ(
-      gfx::BufferFormat::RGBA_1010102,
-      display_color_spaces.GetOutputBufferFormat(gfx::ContentColorUsage::kSRGB,
+  EXPECT_EQ(viz::SinglePlaneFormat::kRGBA_1010102,
+            display_color_spaces.GetOutputFormat(gfx::ContentColorUsage::kSRGB,
                                                  /*needs_alpha=*/true));
   EXPECT_EQ(
       gfx::ColorSpace::CreateHDR10(),
       display_color_spaces.GetOutputColorSpace(gfx::ContentColorUsage::kSRGB,
                                                /*needs_alpha=*/true));
-  EXPECT_EQ(
-      gfx::BufferFormat::RGBA_1010102,
-      display_color_spaces.GetOutputBufferFormat(gfx::ContentColorUsage::kHDR,
+  EXPECT_EQ(viz::SinglePlaneFormat::kRGBA_1010102,
+            display_color_spaces.GetOutputFormat(gfx::ContentColorUsage::kHDR,
                                                  /*needs_alpha=*/true));
   EXPECT_EQ(
       gfx::ColorSpace::CreateHDR10(),
@@ -593,7 +557,7 @@ TEST_P(DisplayChangeObserverTest, HDRDisplayColorSpaces) {
             display_color_spaces.GetHDRMaxLuminanceRelative());
 }
 
-TEST_P(DisplayChangeObserverTest, VSyncRateMin) {
+TEST_F(DisplayChangeObserverTest, VSyncRateMin) {
   ui::DeviceDataManager::CreateInstance();
   DisplayManager manager(nullptr);
   DisplayChangeObserver observer(&manager);
@@ -633,7 +597,7 @@ TEST_P(DisplayChangeObserverTest, VSyncRateMin) {
   }
 }
 
-TEST_P(DisplayChangeObserverTest, DisplayModeNativeCalculation) {
+TEST_F(DisplayChangeObserverTest, DisplayModeNativeCalculation) {
   ui::DeviceDataManager::CreateInstance();
   DisplayManager manager(nullptr);
   DisplayChangeObserver observer(&manager);
@@ -693,7 +657,7 @@ TEST_P(DisplayChangeObserverTest, DisplayModeNativeCalculation) {
   }
 }
 
-TEST_P(DisplayChangeObserverTest, OPSDisplayScaleFactor) {
+TEST_F(DisplayChangeObserverTest, OPSDisplayScaleFactor) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(features::kOpsDisplayScaleFactor);
   // Since the only way to set the physical size of FakeDisplaySnapshot is to
@@ -735,10 +699,6 @@ TEST_P(DisplayChangeObserverTest, OPSDisplayScaleFactor) {
               param.expected_scale_factor);
   }
 }
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         DisplayChangeObserverTest,
-                         ::testing::Values(false, true));
 
 using DisplayResolutionTest = testing::Test;
 
@@ -820,11 +780,11 @@ TEST_F(DisplayResolutionTest, CheckEffectiveResolutionUMAIndex) {
   }
 #endif
 
-  // With the current set of display configs and zoom levels, there are only 340
+  // With the current set of display configs and zoom levels, there are only 356
   // possible effective resolutions for internal displays in chromebooks. Update
   // this value when adding a new display config, and re-generate the
   // EffectiveResolution value in enum.xml.
-  EXPECT_EQ(logical_resolutions.size(), 340ul);
+  EXPECT_EQ(logical_resolutions.size(), 356ul);
 }
 
 // Make sure that when display zoom is applied, the effective device scale

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/browser/indexed_db/indexed_db_internals_ui.h"
 
 #include <cstdint>
@@ -19,7 +14,6 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/task/thread_pool.h"
 #include "components/services/storage/privileged/cpp/bucket_client_info.h"
 #include "components/services/storage/privileged/mojom/indexed_db_internals_types.mojom-forward.h"
@@ -28,9 +22,9 @@
 #include "content/browser/devtools/service_worker_devtools_agent_host.h"
 #include "content/browser/devtools/service_worker_devtools_manager.h"
 #include "content/browser/devtools/shared_worker_devtools_agent_host.h"
-#include "content/browser/indexed_db/indexed_db_internals.mojom-forward.h"
 #include "content/browser/indexed_db/indexed_db_internals.mojom.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/service_worker/service_worker_info.h"
 #include "content/browser/worker_host/shared_worker_service_impl.h"
 #include "content/grit/indexed_db_resources.h"
 #include "content/grit/indexed_db_resources_map.h"
@@ -121,7 +115,7 @@ IndexedDBInternalsUI::IndexedDBInternalsUI(WebUI* web_ui)
       "trusted-types static-types lit-html-desktop;");
   source->UseStringsJs();
   source->AddResourcePaths(kIndexedDbResources);
-  source->AddResourcePath("", IDR_INDEXED_DB_INDEXEDDB_INTERNALS_HTML);
+  source->SetDefaultResource(IDR_INDEXED_DB_INDEXEDDB_INTERNALS_HTML);
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(IndexedDBInternalsUI)
@@ -228,7 +222,7 @@ void IndexedDBInternalsUI::DownloadBucketData(
   }
 
   control->ForceClose(
-      bucket_id, storage::mojom::ForceCloseReason::FORCE_CLOSE_INTERNALS_PAGE,
+      bucket_id,
       base::BindOnce(
           [](base::WeakPtr<IndexedDBInternalsUI> handler,
              storage::BucketId bucket_id,
@@ -256,13 +250,8 @@ void IndexedDBInternalsUI::ForceClose(storage::BucketId bucket_id,
     return;
   }
 
-  control->ForceClose(
-      bucket_id, storage::mojom::ForceCloseReason::FORCE_CLOSE_INTERNALS_PAGE,
-      base::BindOnce(
-          [](ForceCloseCallback callback) {
-            std::move(callback).Run(std::nullopt);
-          },
-          std::move(callback)));
+  control->ForceClose(bucket_id,
+                      base::BindOnce(std::move(callback), std::nullopt));
 }
 
 void IndexedDBInternalsUI::StartMetadataRecording(

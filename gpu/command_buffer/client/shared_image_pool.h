@@ -9,16 +9,17 @@
 #include <optional>
 #include <vector>
 
+#include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
+#include "gpu/command_buffer/client/gpu_command_buffer_client_export.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/common/shared_image_pool_id.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/common/sync_token.h"
-#include "gpu/gpu_export.h"
 #include "gpu/ipc/common/shared_image_pool_client_interface.mojom.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "ui/gfx/buffer_types.h"
@@ -30,7 +31,7 @@ class SharedImageInterface;
 // Structure holding the necessary information to create shared images and
 // describe its characteristics in the SharedImagePool. It will be constant for
 // all the shared images in the pool.
-struct GPU_EXPORT ImageInfo {
+struct GPU_COMMAND_BUFFER_CLIENT_EXPORT ImageInfo {
   gfx::Size size;
   viz::SharedImageFormat format;
   SharedImageUsageSet usage;
@@ -38,15 +39,18 @@ struct GPU_EXPORT ImageInfo {
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
   SkAlphaType alpha_type = kPremul_SkAlphaType;
   std::optional<gfx::BufferUsage> buffer_usage = std::nullopt;
+  bool is_software = false;
 
   ImageInfo(gfx::Size size,
             viz::SharedImageFormat format,
             SharedImageUsageSet usage,
-            std::optional<gfx::BufferUsage> buffer_usage = std::nullopt)
+            std::optional<gfx::BufferUsage> buffer_usage = std::nullopt,
+            bool is_software = false)
       : size(size),
         format(format),
         usage(usage),
-        buffer_usage(std::move(buffer_usage)) {}
+        buffer_usage(std::move(buffer_usage)),
+        is_software(is_software) {}
 
   ImageInfo(gfx::Size size,
             viz::SharedImageFormat format,
@@ -54,20 +58,24 @@ struct GPU_EXPORT ImageInfo {
             gfx::ColorSpace color_space,
             GrSurfaceOrigin surface_origin,
             SkAlphaType alpha_type,
-            std::optional<gfx::BufferUsage> buffer_usage = std::nullopt)
+            std::optional<gfx::BufferUsage> buffer_usage = std::nullopt,
+            bool is_software = false)
       : size(size),
         format(format),
         usage(usage),
         color_space(color_space),
         surface_origin(surface_origin),
         alpha_type(alpha_type),
-        buffer_usage(std::move(buffer_usage)) {}
+        buffer_usage(std::move(buffer_usage)),
+        is_software(is_software) {}
 
   bool operator==(const ImageInfo& other) const {
     return size == other.size && format == other.format &&
            usage == other.usage && color_space == other.color_space &&
            surface_origin == other.surface_origin &&
-           alpha_type == other.alpha_type && buffer_usage == other.buffer_usage;
+           alpha_type == other.alpha_type &&
+           buffer_usage == other.buffer_usage &&
+           is_software == other.is_software;
   }
 };
 
@@ -76,8 +84,10 @@ struct GPU_EXPORT ImageInfo {
 // addition to the shared image it wraps. This allow clients to create its own
 // custom pool of images of ClientImage type and are not limited to creating
 // pool of only ClientSharedImage. See unittests for example.
-class GPU_EXPORT ClientImage : public base::RefCounted<ClientImage> {
+class GPU_COMMAND_BUFFER_CLIENT_EXPORT ClientImage
+    : public base::RefCountedThreadSafe<ClientImage> {
  public:
+  REQUIRE_ADOPTION_FOR_REFCOUNTED_TYPE();
   explicit ClientImage(scoped_refptr<ClientSharedImage> shared_image);
 
   // Returns the reference on the underlying shared image. Note that clients
@@ -95,14 +105,22 @@ class GPU_EXPORT ClientImage : public base::RefCounted<ClientImage> {
   // Only used for testing purposes.
   const SharedImagePoolId& GetPoolIdForTesting() const;
 
+  // Dumps memoy allocation. Caller specified `parent_path` cannot be empty.
+  virtual void OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
+                            const std::string& parent_path) const;
+
  protected:
-  friend class base::RefCounted<ClientImage>;
+  friend class base::RefCountedThreadSafe<ClientImage>;
   friend class SharedImagePoolBase;
 
   // Allow each instantiation of SharedImagePool to access `pool_id_`.
   template <typename ClientImageType>
   friend class SharedImagePool;
   virtual ~ClientImage();
+
+  // Subclasses can set this to true if they have more complex logic if managing
+  // destruction sync token.
+  bool subclass_manages_destruction_sync_token_ = false;
 
  private:
   scoped_refptr<ClientSharedImage> shared_image_;
@@ -127,7 +145,7 @@ class GPU_EXPORT ClientImage : public base::RefCounted<ClientImage> {
 // want it to be as thin as possible as it will also code generate for all
 // possible params and this will increase binary size. Clients will not use this
 // class directly.
-class GPU_EXPORT SharedImagePoolBase {
+class GPU_COMMAND_BUFFER_CLIENT_EXPORT SharedImagePoolBase {
  public:
   virtual ~SharedImagePoolBase();
 
@@ -138,6 +156,7 @@ class GPU_EXPORT SharedImagePoolBase {
   SharedImagePoolBase(
       const SharedImagePoolId& pool_id,
       const ImageInfo& image_info,
+      std::string_view debug_label,
       const scoped_refptr<SharedImageInterface> sii,
       std::optional<uint8_t> max_pool_size,
       std::optional<base::TimeDelta> unused_resource_expiration_time);
@@ -154,11 +173,13 @@ class GPU_EXPORT SharedImagePoolBase {
   // Information used to create new ClientSharedImage.
   ImageInfo image_info_;
 
+  std::string debug_label_;
+
   // Interface to the GPU process for creating shared images.
   const scoped_refptr<SharedImageInterface> sii_;
 
-  // Optional maximum size of the pool. It defaults to 0 which means there is no
-  // limit on the size of the pool.
+  // Optional maximum size of the pool. If unset, there is no limit on the size
+  // of the pool.
   const std::optional<uint8_t> max_pool_size_;
 
   const std::optional<base::TimeDelta> unused_resource_expiration_time_;
@@ -180,19 +201,20 @@ class GPU_EXPORT SharedImagePoolBase {
 // additional functionality.
 // Clients will use this class and its apis for desired functionality.
 template <typename ClientImageType = ClientImage>
-class GPU_EXPORT SharedImagePool
+class GPU_COMMAND_BUFFER_CLIENT_EXPORT SharedImagePool
     : public SharedImagePoolBase,
       public mojom::SharedImagePoolClientInterface {
  public:
   static std::unique_ptr<SharedImagePool<ClientImageType>> Create(
       const ImageInfo& image_info,
       const scoped_refptr<SharedImageInterface> sii,
+      std::string_view debug_label,
       std::optional<uint8_t> max_pool_size = std::nullopt,
       std::optional<base::TimeDelta> unused_resource_expiration_time =
           std::nullopt) {
     CHECK(sii);
     return base::WrapUnique<SharedImagePool<ClientImageType>>(
-        new SharedImagePool(image_info, std::move(sii),
+        new SharedImagePool(image_info, debug_label, std::move(sii),
                             std::move(max_pool_size),
                             std::move(unused_resource_expiration_time)));
   }
@@ -251,6 +273,21 @@ class GPU_EXPORT SharedImagePool
   // mojom::SharedImagePoolClientInterface implementation.
   void OnClearPool() override { Clear(); }
 
+  base::ByteSize EstimatedSizeInBytes() const {
+    base::ByteSize result;
+    for (const auto& image : image_pool_) {
+      result += image->GetSharedImage()->EstimatedSizeInBytes();
+    }
+    return result;
+  }
+
+  void OnMemoryDump(base::trace_event::ProcessMemoryDump* pmd,
+                    const std::string& parent_path) const {
+    for (const auto& image : image_pool_) {
+      image->OnMemoryDump(pmd, parent_path);
+    }
+  }
+
   // Returns a weak pointer to this pool, allowing for safe reference without
   // ownership.
   base::WeakPtr<SharedImagePool<ClientImageType>> GetWeakPtr() {
@@ -260,11 +297,13 @@ class GPU_EXPORT SharedImagePool
  private:
   SharedImagePool(
       const ImageInfo& image_info,
+      std::string_view debug_label,
       scoped_refptr<SharedImageInterface> sii,
       std::optional<uint8_t> max_pool_size,
       std::optional<base::TimeDelta> unused_resource_expiration_time)
       : SharedImagePoolBase(SharedImagePoolId::Create(),
                             image_info,
+                            debug_label,
                             sii,
                             std::move(max_pool_size),
                             std::move(unused_resource_expiration_time)) {

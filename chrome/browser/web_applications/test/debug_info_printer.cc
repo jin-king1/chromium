@@ -7,7 +7,9 @@
 #include <string_view>
 
 #include "base/command_line.h"
+#include "base/logging.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/time/time.h"
 #include "chrome/browser/profiles/profile.h"
@@ -15,7 +17,6 @@
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_provider_factory.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
-
 #if BUILDFLAG(IS_MAC)
 #include <inttypes.h>
 

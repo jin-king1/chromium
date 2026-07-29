@@ -7,18 +7,17 @@
 #include "base/command_line.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
 #include "build/build_config.h"
 #include "build/config/chromebox_for_meetings/buildflags.h"  // PLATFORM_CFM
 #include "chrome/browser/media/webrtc/desktop_media_list.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_manager.h"
-#include "chrome/browser/media/webrtc/desktop_media_picker_utils.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/extensions/extensions_container.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/desktop_capture/desktop_media_picker_views.h"
 #include "chrome/browser/ui/views/desktop_capture/share_this_tab_source_view.h"
 #include "chrome/browser/ui/views/media_picker_utils.h"
 #include "chrome/common/chrome_switches.h"
@@ -30,13 +29,13 @@
 #include "content/public/browser/desktop_media_id.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents_delegate.h"
+#include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
-#include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
-#include "ui/gfx/color_palette.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
@@ -51,6 +50,9 @@
 #endif
 
 namespace {
+
+using ::blink::mojom::MediaStreamRequestResult;
+using ::content::DesktopMediaID;
 
 constexpr int kTitleTopMargin = 16;
 constexpr gfx::Insets kAudioToggleInsets = gfx::Insets::VH(8, 16);
@@ -123,14 +125,19 @@ ShareThisTabDialogView::ShareThisTabDialogView(
   CHECK(!auto_accept_this_tab_capture_ || !auto_reject_this_tab_capture_);
 
   SetModalType(params.modality);
-  RegisterDeleteDelegateCallback(base::BindOnce(
-      [](ShareThisTabDialogView* dialog) {
-        // If the dialog is being closed then notify the parent about it.
-        if (dialog->parent_) {
-          dialog->parent_->NotifyDialogResult(content::DesktopMediaID());
-        }
-      },
-      this));
+  RegisterDeleteDelegateCallback(
+      RegisterDeleteCallbackPassKey(),
+      base::BindOnce(
+          [](ShareThisTabDialogView* dialog) {
+            // If the dialog is being closed then notify the parent about it.
+            // That the parent has not yet been detached indicates that there
+            // has been no result yet. We can infer that the user rejected.
+            if (dialog->parent_) {
+              dialog->parent_->NotifyDialogResult(base::unexpected(
+                  MediaStreamRequestResult::PERMISSION_DENIED_BY_USER));
+            }
+          },
+          this));
 
   const ChromeLayoutProvider* const provider = ChromeLayoutProvider::Get();
   gfx::Insets dialog_insets = provider->GetDialogInsetsForContentType(
@@ -177,11 +184,15 @@ ShareThisTabDialogView::ShareThisTabDialogView(
   // Make sure web modal dialogs are supported before trying to show the picker
   // as a web model dialog.
   if (MediaPickerCanShowAsWebModal(params.web_contents)) {
-    const Browser* browser = chrome::FindBrowserWithTab(params.web_contents);
+    BrowserWindowInterface* browser =
+        GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+            params.web_contents);
     // Close the extension popup to prevent spoofing.
-    if (browser && browser->window() &&
-        browser->window()->GetExtensionsContainer()) {
-      browser->window()->GetExtensionsContainer()->HideActivePopup();
+    if (browser) {
+      ExtensionsContainer* container = ExtensionsContainer::From(*browser);
+      if (container) {
+        container->HideActivePopup();
+      }
     }
     constrained_window::ShowWebModalDialogViews(this, params.web_contents);
   } else {
@@ -190,11 +201,11 @@ ShareThisTabDialogView::ShareThisTabDialogView(
     // ModalType::kWindow.
     SetModalType(ui::mojom::ModalType::kWindow);
 #endif
-    CreateDialogWidget(this, params.context, nullptr)->Show();
+    CreateDialogWidget(this, params.context, gfx::NativeView())->Show();
   }
 
-  source_view_->SetBorder(views::CreateThemedRoundedRectBorder(
-      1, 4, ui::kColorSysPrimaryContainer));
+  source_view_->SetBorder(
+      views::CreateRoundedRectBorder(1, 4, ui::kColorSysPrimaryContainer));
 
   SetButtonLabel(ui::mojom::DialogButton::kOk,
                  l10n_util::GetStringUTF16(IDS_SHARE_THIS_TAB_DIALOG_ALLOW));
@@ -238,9 +249,8 @@ bool ShareThisTabDialogView::Accept() {
 
   source_view_->StopRefreshing();
   if (parent_ && web_contents_) {
-    content::DesktopMediaID desktop_media_id(
-        content::DesktopMediaID::TYPE_WEB_CONTENTS,
-        content::DesktopMediaID::kNullId,
+    DesktopMediaID desktop_media_id(
+        DesktopMediaID::TYPE_WEB_CONTENTS, DesktopMediaID::kNullId,
         content::WebContentsMediaCaptureId(
             web_contents_->GetPrimaryMainFrame()
                 ->GetProcess()
@@ -295,8 +305,9 @@ void ShareThisTabDialogView::SetupAudioToggle() {
   views::ImageView* audio_icon_view = audio_toggle_container->AddChildView(
       std::make_unique<views::ImageView>());
   audio_icon_view->SetImage(ui::ImageModel::FromVectorIcon(
-      vector_icons::kVolumeUpIcon, ui::kColorIcon,
-      GetLayoutConstant(PAGE_INFO_ICON_SIZE)));
+      features::IsRoundedIconsEnabled() ? vector_icons::kVolumeUpFilledIcon
+                                        : vector_icons::kVolumeUpOldIcon,
+      ui::kColorIcon, GetLayoutConstant(LayoutConstant::kPageInfoIconSize)));
 
   views::Label* audio_toggle_label =
       audio_toggle_container->AddChildView(std::make_unique<views::Label>());
@@ -311,7 +322,7 @@ void ShareThisTabDialogView::SetupAudioToggle() {
       l10n_util::GetStringUTF16(IDS_SHARE_THIS_TAB_AUDIO_SHARE));
   audio_toggle_button_->SetIsOn(
       !base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kScreenCaptureAudioDefaultUnchecked));
+          switches::kTabCaptureAudioDefaultUnchecked));
 
   views::BoxLayout* audio_toggle_layout =
       audio_toggle_container->SetLayoutManager(
@@ -395,7 +406,8 @@ void ShareThisTabMediaPicker::Show(
 }
 
 void ShareThisTabMediaPicker::NotifyDialogResult(
-    const content::DesktopMediaID& source) {
+    base::expected<content::DesktopMediaID,
+                   blink::mojom::MediaStreamRequestResult> result) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   // Once this method is called the |dialog_| will close and destroy itself.
@@ -411,5 +423,5 @@ void ShareThisTabMediaPicker::NotifyDialogResult(
   // Notify the |callback_| asynchronously because it may need to destroy
   // DesktopMediaPicker.
   content::GetUIThreadTaskRunner({})->PostTask(
-      FROM_HERE, base::BindOnce(std::move(callback_), source));
+      FROM_HERE, base::BindOnce(std::move(callback_), result));
 }

@@ -7,6 +7,7 @@
 
 #include <optional>
 
+#include "base/byte_size.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -21,17 +22,6 @@
 #include "services/metrics/public/cpp/ukm_source.h"
 #include "third_party/perfetto/include/perfetto/tracing/event_context.h"
 #include "ui/base/page_transition_types.h"
-
-namespace internal {
-
-extern const char
-    kHistogramLayoutInstabilityMaxCumulativeShiftScoreSessionWindowGap1000msMax5000ms2
-        [];
-extern const char
-    kHistogramLayoutInstabilityMaxCumulativeShiftScoreSessionWindowGap1000msMax5000ms2Incognito
-        [];
-
-}  // namespace internal
 
 namespace content {
 class BrowserContext;
@@ -54,11 +44,10 @@ class UkmPageLoadMetricsObserver
  public:
   // Returns a UkmPageLoadMetricsObserver, or nullptr if it is not needed.
   static std::unique_ptr<page_load_metrics::PageLoadMetricsObserver>
-  CreateIfNeeded(bool is_incognito);
+  CreateIfNeeded();
 
   explicit UkmPageLoadMetricsObserver(
-      network::NetworkQualityTracker* network_quality_tracker,
-      bool is_incognito);
+      network::NetworkQualityTracker* network_quality_tracker);
 
   UkmPageLoadMetricsObserver(const UkmPageLoadMetricsObserver&) = delete;
   UkmPageLoadMetricsObserver& operator=(const UkmPageLoadMetricsObserver&) =
@@ -67,6 +56,7 @@ class UkmPageLoadMetricsObserver
   ~UkmPageLoadMetricsObserver() override;
 
   // page_load_metrics::PageLoadMetricsObserver implementation:
+  const char* GetObserverName() const override;
   ObservePolicy OnStart(content::NavigationHandle* navigation_handle,
                         const GURL& currently_committed_url,
                         bool started_in_foreground) override;
@@ -111,10 +101,6 @@ class UkmPageLoadMetricsObserver
       content::RenderFrameHost* subframe_rfh,
       const page_load_metrics::mojom::PageLoadTiming& timing) override;
 
-  void SetUpSharedMemoryForUkms(
-      const base::ReadOnlySharedMemoryRegion& smoothness_memory,
-      const base::ReadOnlySharedMemoryRegion& dropped_frames_memory) override;
-
   void OnCpuTimingUpdate(
       content::RenderFrameHost* subframe_rfh,
       const page_load_metrics::mojom::CpuTiming& timing) override;
@@ -122,8 +108,7 @@ class UkmPageLoadMetricsObserver
   void OnFirstContentfulPaintInPage(
       const page_load_metrics::mojom::PageLoadTiming& timing) override;
 
-  void OnSoftNavigationUpdated(
-      const page_load_metrics::mojom::SoftNavigationMetrics&) override;
+  void OnSoftNavigation() override;
 
   // Whether the current page load is an Offline Preview. Must be called from
   // OnCommit. Virtual for testing.
@@ -141,6 +126,12 @@ class UkmPageLoadMetricsObserver
   void RecordInternalTimingMetrics(
       const page_load_metrics::ContentfulPaintTimingInfo&
           all_frames_largest_contentful_paint);
+
+  // Finalizes soft navigation recording - this emits
+  // PageLoad.SoftNavigationCount and the UMA histogram.
+  // This is to be emitted regardless of whether the page started in the
+  // background or is / was backgrounded.
+  void RecordSoftNavigationCount();
 
   // Records metrics based on the page load information exposed by the observer
   // delegate, as well as updating the URL. |app_background_time| should be set
@@ -168,12 +159,13 @@ class UkmPageLoadMetricsObserver
   const page_load_metrics::ContentfulPaintTimingInfo&
   GetCoreWebVitalsLcpTimingInfo();
 
+  bool PageLoadMayOriginGate(
+      content::NavigationHandle* navigation_handle) const;
+
   const page_load_metrics::ContentfulPaintTimingInfo&
   GetSoftNavigationLargestContentfulPaint() const;
 
-  void RecordSoftNavigationMetrics(
-      ukm::SourceId ukm_source_id,
-      page_load_metrics::mojom::SoftNavigationMetrics& soft_navigation_metrics);
+  void RecordLargestContentfulPaintBeforeSoftNavigation();
 
   void RecordResponsivenessMetricsBeforeSoftNavigationForMainFrame();
 
@@ -188,8 +180,6 @@ class UkmPageLoadMetricsObserver
       ukm::builders::PageLoad& builder,
       const page_load_metrics::PageEndReason page_end_reason);
 
-  void RecordDroppedFramesMetrics();
-  void RecordSmoothnessMetrics();
   void RecordResponsivenessMetrics();
 
   void RecordPageLoadTimestampMetrics(ukm::builders::PageLoad& builder);
@@ -213,6 +203,10 @@ class UkmPageLoadMetricsObserver
   // engine) for starting URL and committed URL.
   void RecordGeneratedNavigationUKM(ukm::SourceId source_id,
                                     const GURL& committed_url);
+
+  // Records the metrics for Navigation.TypedAndDefault.
+  void RecordTypedAndDefaultUKM(ukm::SourceId source_id,
+                                const GURL& committed_url);
 
   // Records some metrics at the end of a page, even for failed provisional
   // loads.
@@ -263,19 +257,19 @@ class UkmPageLoadMetricsObserver
 
   // The number of body (not header) prefilter bytes consumed by requests for
   // the page.
-  int64_t cache_bytes_ = 0;
-  int64_t network_bytes_ = 0;
+  base::ByteSize cache_bytes_;
+  base::ByteSize network_bytes_;
 
-  // Sum of decoded body lengths of JS resources in bytes.
-  int64_t js_decoded_bytes_ = 0;
+  // Sum of decoded body lengths of JS resources.
+  base::ByteSize js_decoded_bytes_;
 
-  // Max decoded body length of JS resources in bytes.
-  int64_t js_max_decoded_bytes_ = 0;
+  // Max decoded body length of JS resources.
+  base::ByteSize js_max_decoded_bytes_;
 
   // Network data use broken down by resource type.
-  int64_t image_total_bytes_ = 0;
-  int64_t image_subframe_bytes_ = 0;
-  int64_t media_bytes_ = 0;
+  base::ByteSize image_total_bytes_;
+  base::ByteSize image_subframe_bytes_;
+  base::ByteSize media_bytes_;
 
   // Network quality estimates.
   net::EffectiveConnectionType effective_connection_type_ =
@@ -363,9 +357,6 @@ class UkmPageLoadMetricsObserver
   // The connection info for the committed URL.
   std::optional<net::HttpConnectionInfo> connection_info_;
 
-  base::ReadOnlySharedMemoryMapping ukm_smoothness_data_;
-  base::ReadOnlySharedMemoryMapping ukm_dropped_frames_data_;
-
   // Only true if the page became hidden after the first time it was shown in
   // the foreground, no matter how it started.
   bool was_hidden_after_first_show_in_foreground = false;
@@ -383,11 +374,11 @@ class UkmPageLoadMetricsObserver
   // The type of initiator starts the navigation, for more details, please refer
   // to `page_load_metrics::NavigationHandleUserData::InitiatorLocation`.
   page_load_metrics::NavigationHandleUserData::InitiatorLocation
-      navigation_trigger_type_ = page_load_metrics::NavigationHandleUserData::
-          InitiatorLocation::kOther;
+      navigation_trigger_type_ =
+          page_load_metrics::NavigationHandleUserData::kInitiatorLocationOther;
 
-  // Whether the WebContents being observed is for an Incognito profile.
-  bool is_incognito_;
+  // Counts the soft navigations since the beginning of the page load.
+  int64_t soft_navigation_count_ = 0;
 
   base::WeakPtrFactory<UkmPageLoadMetricsObserver> weak_factory_{this};
 };

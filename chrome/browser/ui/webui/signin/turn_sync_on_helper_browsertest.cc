@@ -6,15 +6,16 @@
 
 #include <memory>
 #include <optional>
+#include <variant>
 #include <vector>
 
-#include "base/functional/callback_forward.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/buildflag.h"
+#include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/account_reconcilor_factory.h"
 #include "chrome/browser/signin/signin_browser_test_base.h"
@@ -26,6 +27,7 @@
 #include "components/signin/public/identity_manager/accounts_mutator.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/sync/base/features.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -58,14 +60,17 @@ class Delegate : public TurnSyncOnHelper::Delegate {
   using SyncConfirmationCallback =
       base::OnceCallback<void(LoginUIService::SyncConfirmationUIClosedResult)>;
   using CallbackVariant =
-      absl::variant<signin::SigninChoiceCallback, SyncConfirmationCallback>;
+      std::variant<signin::SigninChoiceCallback, SyncConfirmationCallback>;
 
   explicit Delegate(Choices choices)
       : choices_(choices), run_loop_(std::make_unique<base::RunLoop>()) {}
   ~Delegate() override = default;
 
   // TurnSyncOnHelper::Delegate:
-  void ShowLoginError(const SigninUIError& error) override { NOTREACHED(); }
+  void ShowLoginError(const SigninUIError& error) override {
+    ADD_FAILURE() << "ShowLoginError() invoked unpexectedly with error: "
+                  << error.message();
+  }
   void ShowMergeSyncDataConfirmation(
       const std::string& previous_email,
       const std::string& new_email,
@@ -119,22 +124,22 @@ class Delegate : public TurnSyncOnHelper::Delegate {
         NOTREACHED();
       case BlockingStep::kMergeData:
         ASSERT_TRUE(choices_.merge_data_choice.has_value());
-        std::move(absl::get<signin::SigninChoiceCallback>(blocking_callback_))
+        std::move(std::get<signin::SigninChoiceCallback>(blocking_callback_))
             .Run(*choices_.merge_data_choice);
         break;
       case BlockingStep::kEnterpriseManagement:
         ASSERT_TRUE(choices_.enterprise_management_choice.has_value());
-        std::move(absl::get<signin::SigninChoiceCallback>(blocking_callback_))
+        std::move(std::get<signin::SigninChoiceCallback>(blocking_callback_))
             .Run(*choices_.enterprise_management_choice);
         break;
       case BlockingStep::kSyncConfirmation:
         ASSERT_TRUE(choices_.sync_optin_choice.has_value());
-        std::move(absl::get<SyncConfirmationCallback>(blocking_callback_))
+        std::move(std::get<SyncConfirmationCallback>(blocking_callback_))
             .Run(*choices_.sync_optin_choice);
         break;
       case BlockingStep::kSyncDisabled:
         ASSERT_TRUE(choices_.sync_disabled_choice.has_value());
-        std::move(absl::get<SyncConfirmationCallback>(blocking_callback_))
+        std::move(std::get<SyncConfirmationCallback>(blocking_callback_))
             .Run(*choices_.sync_disabled_choice);
         break;
     }
@@ -149,28 +154,28 @@ class Delegate : public TurnSyncOnHelper::Delegate {
         if (!choices_.merge_data_choice.has_value()) {
           break;
         }
-        std::move(absl::get<signin::SigninChoiceCallback>(callback))
+        std::move(std::get<signin::SigninChoiceCallback>(callback))
             .Run(*choices_.merge_data_choice);
         return;
       case BlockingStep::kEnterpriseManagement:
         if (!choices_.enterprise_management_choice.has_value()) {
           break;
         }
-        std::move(absl::get<signin::SigninChoiceCallback>(callback))
+        std::move(std::get<signin::SigninChoiceCallback>(callback))
             .Run(*choices_.enterprise_management_choice);
         return;
       case BlockingStep::kSyncConfirmation:
         if (!choices_.sync_optin_choice.has_value()) {
           break;
         }
-        std::move(absl::get<SyncConfirmationCallback>(callback))
+        std::move(std::get<SyncConfirmationCallback>(callback))
             .Run(*choices_.sync_optin_choice);
         return;
       case BlockingStep::kSyncDisabled:
         if (!choices_.sync_disabled_choice.has_value()) {
           break;
         }
-        std::move(absl::get<SyncConfirmationCallback>(callback))
+        std::move(std::get<SyncConfirmationCallback>(callback))
             .Run(*choices_.sync_disabled_choice);
         return;
     }
@@ -202,6 +207,20 @@ class TurnSyncOnHelperBrowserTestWithParam
  public:
   TurnSyncOnHelperBrowserTestWithParam()
       : SigninBrowserTestBase(/*use_main_profile=*/false) {
+    // Class `TurnSyncOnHelper` is only reachable and usable if the feature is
+    // disabled.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            syncer::kReplaceSyncPromosWithSignInPromos,
+            syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
+  }
+
+  void SetUpOnMainThread() override {
+    SigninBrowserTestBase::SetUpOnMainThread();
+    disclaimer_service_resetter_ =
+        enterprise_util::DisableAutomaticManagementDisclaimerUntilReset(
+            GetProfile());
   }
 
  protected:
@@ -210,6 +229,9 @@ class TurnSyncOnHelperBrowserTestWithParam
   TurnSyncOnHelper::SigninAbortedMode aborted_mode() const {
     return std::get<TurnSyncOnHelper::SigninAbortedMode>(GetParam());
   }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+  base::ScopedClosureRunner disclaimer_service_resetter_;
 };
 
 // Tests that aborting a Sync opt-in flow started with a secondary account
@@ -240,7 +262,7 @@ IN_PROC_BROWSER_TEST_P(TurnSyncOnHelperBrowserTestWithParam,
   auto owned_delegate = std::make_unique<Delegate>(choices);
   base::WeakPtr<Delegate> delegate = owned_delegate->GetWeakPtr();
   new TurnSyncOnHelper(
-      profile, signin_metrics::AccessPoint::kUnknown,
+      profile, signin_metrics::AccessPoint::kStartPage,
       signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO,
       second_account_id, aborted_mode(), std::move(owned_delegate),
       run_loop.QuitClosure());
@@ -287,11 +309,10 @@ IN_PROC_BROWSER_TEST_P(TurnSyncOnHelperBrowserTestWithParam,
       break;
     case TurnSyncOnHelper::SigninAbortedMode::KEEP_ACCOUNT:
       if (should_remove_initial_account()) {
-        // With `switches::kExplicitBrowserSigninUIOnDesktop` enabled, the
-        // primary account isn't set implicitly based on cookies but by explicit
-        // user action, therefore it is also not removed when cookies change.
-        // The account should remain and Chrome still signed in.
-
+        // With explicit signin enabled, the primary account isn't set
+        // implicitly based on cookies but by explicit user action, therefore it
+        // is also not removed when cookies change. The account should remain
+        // and Chrome still signed in.
         EXPECT_FALSE(
             identity_manager()->GetAccountsWithRefreshTokens().empty());
         EXPECT_TRUE(identity_manager()->HasPrimaryAccount(
@@ -311,7 +332,8 @@ IN_PROC_BROWSER_TEST_P(TurnSyncOnHelperBrowserTestWithParam,
       break;
     case TurnSyncOnHelper::SigninAbortedMode::KEEP_ACCOUNT_ON_WEB_ONLY:
       // This case is handled in the TurnSyncOnHelperBrowserTestWithUnoDesktop
-      // test suite, since this mode is used only when Uno Desktop is enabled.
+      // test suite, since this mode is used only when explicit signin Desktop
+      // is enabled.
       NOTREACHED();
   }
 }
@@ -328,10 +350,29 @@ INSTANTIATE_TEST_SUITE_P(
 class TurnSyncOnHelperBrowserTest : public SigninBrowserTestBase {
  public:
   TurnSyncOnHelperBrowserTest()
-      : SigninBrowserTestBase(/*use_main_profile=*/false) {}
+      : SigninBrowserTestBase(/*use_main_profile=*/false) {
+    // Class `TurnSyncOnHelper` is only reachable and usable if the feature is
+    // disabled.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            syncer::kReplaceSyncPromosWithSignInPromos,
+            syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
+  }
+
+  void SetUpOnMainThread() override {
+    SigninBrowserTestBase::SetUpOnMainThread();
+    disclaimer_service_resetter_ =
+        enterprise_util::DisableAutomaticManagementDisclaimerUntilReset(
+            GetProfile());
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+  base::ScopedClosureRunner disclaimer_service_resetter_;
 };
 
-// Regression test for https://crbug.com/1404961
+// Regression test for https://crbug.com/40252085
 IN_PROC_BROWSER_TEST_F(TurnSyncOnHelperBrowserTest, UndoSyncRemoveAccount) {
   Profile* profile = GetProfile();
 
@@ -348,7 +389,7 @@ IN_PROC_BROWSER_TEST_F(TurnSyncOnHelperBrowserTest, UndoSyncRemoveAccount) {
   auto owned_delegate = std::make_unique<Delegate>(choices);
   base::WeakPtr<Delegate> delegate = owned_delegate->GetWeakPtr();
   new TurnSyncOnHelper(
-      profile, signin_metrics::AccessPoint::kUnknown,
+      profile, signin_metrics::AccessPoint::kStartPage,
       signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, account_id,
       TurnSyncOnHelper::SigninAbortedMode::REMOVE_ACCOUNT,
       std::move(owned_delegate), run_loop.QuitClosure());
@@ -363,7 +404,7 @@ IN_PROC_BROWSER_TEST_F(TurnSyncOnHelperBrowserTest, UndoSyncRemoveAccount) {
 
   AccountReconcilor* reconcilor =
       AccountReconcilorFactory::GetForProfile(profile);
-  // For the scenario in https://crbug.com/1404961, the reconcilor has to be
+  // For the scenario in https://crbug.com/40252085, the reconcilor has to be
   // triggered by the account removal.
   ASSERT_EQ(reconcilor->GetState(),
             signin_metrics::AccountReconcilorState::kOk);
@@ -378,12 +419,11 @@ IN_PROC_BROWSER_TEST_F(TurnSyncOnHelperBrowserTest, UndoSyncRemoveAccount) {
   EXPECT_FALSE(
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
 
-  // On Dice platforms with `switches::kExplicitBrowserSigninUIOnDesktop`
-  // enabled and empty primary account, updating cookies is disabled. Therefore
-  // running the reconcilor doesn't require any network requests and might have
-  // been completed by now. The reconcilor will not remove the account from
-  // cookies but revoking refresh tokens should be sufficient to invalidate
-  // cookies.
+  // On Dice platforms with explicit signin enabled and empty primary account,
+  // updating cookies is disabled. Therefore running the reconcilor doesn't
+  // require any network requests and might have been completed by now. The
+  // reconcilor will not remove the account from cookies but revoking refresh
+  // tokens should be sufficient to invalidate cookies.
 }
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
@@ -408,7 +448,7 @@ IN_PROC_BROWSER_TEST_F(TurnSyncOnHelperBrowserTest,
   auto owned_delegate = std::make_unique<Delegate>(choices);
   base::WeakPtr<Delegate> delegate = owned_delegate->GetWeakPtr();
   new TurnSyncOnHelper(
-      profile, signin_metrics::AccessPoint::kUnknown,
+      profile, signin_metrics::AccessPoint::kStartPage,
       signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO,
       first_account_id,
       TurnSyncOnHelper::SigninAbortedMode::KEEP_ACCOUNT_ON_WEB_ONLY,
@@ -466,7 +506,7 @@ IN_PROC_BROWSER_TEST_F(
   auto owned_delegate = std::make_unique<Delegate>(choices);
   base::WeakPtr<Delegate> delegate = owned_delegate->GetWeakPtr();
   new TurnSyncOnHelper(
-      profile, signin_metrics::AccessPoint::kUnknown,
+      profile, signin_metrics::AccessPoint::kStartPage,
       signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO,
       second_account_id,
       TurnSyncOnHelper::SigninAbortedMode::KEEP_ACCOUNT_ON_WEB_ONLY,
@@ -527,7 +567,7 @@ IN_PROC_BROWSER_TEST_F(
   auto owned_delegate = std::make_unique<Delegate>(choices);
   base::WeakPtr<Delegate> delegate = owned_delegate->GetWeakPtr();
   new TurnSyncOnHelper(
-      profile, signin_metrics::AccessPoint::kUnknown,
+      profile, signin_metrics::AccessPoint::kStartPage,
       signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO,
       second_account_id, TurnSyncOnHelper::SigninAbortedMode::REMOVE_ACCOUNT,
       std::move(owned_delegate), run_loop.QuitClosure());

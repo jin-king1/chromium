@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
@@ -27,7 +28,7 @@
 #include "third_party/skia/include/core/SkMallocPixelRef.h"
 #include "third_party/skia/include/core/SkPaint.h"
 #include "third_party/skia/include/core/SkScalar.h"
-#include "third_party/skia/include/effects/SkGradientShader.h"
+#include "third_party/skia/include/effects/SkGradient.h"
 #include "ui/display/screen.h"
 #include "ui/display/screen_base.h"
 
@@ -60,10 +61,10 @@ class Etc1ThumbnailHelperTest : public ::testing::Test {
 
   thumbnail::Etc1ThumbnailHelper& GetInterface() { return *interface_; }
   SkPaint SetupPaint() {
-    SkColor colors[] = {SK_ColorRED, SK_ColorGREEN, SK_ColorBLUE};
+    SkColor4f colors[] = {SkColors::kRed, SkColors::kGreen, SkColors::kBlue};
     SkScalar pos[] = {0, SK_Scalar1 / 2, SK_Scalar1};
     SkPaint paint;
-    paint.setShader(SkGradientShader::MakeSweep(256, 256, colors, pos, 3));
+    paint.setShader(SkShaders::SweepGradient({256, 256}, {{colors, pos, SkTileMode::kClamp}, {}}));
     return paint;
   }
 
@@ -250,9 +251,9 @@ TEST_F(Etc1ThumbnailHelperTest, WriteReadAndDeleteThumbnail) {
   EXPECT_EQ(data_size_copy.width(), read_data_size.width());
   EXPECT_EQ(data_size_copy.height(), read_data_size.height());
 
-  EXPECT_EQ(
-      0, memcmp(compressed_data_copy->pixels(), read_compressed_data->pixels(),
-                compressed_data_copy->rowBytes()));
+  EXPECT_EQ(0, UNSAFE_TODO(memcmp(compressed_data_copy->pixels(),
+                                  read_compressed_data->pixels(),
+                                  compressed_data_copy->rowBytes())));
 
   base::FilePath file_path_post_read = GetFile(tab_id);
   EXPECT_TRUE(base::PathExists(file_path_post_read));
@@ -264,6 +265,30 @@ TEST_F(Etc1ThumbnailHelperTest, WriteReadAndDeleteThumbnail) {
   // Check deletion
   base::FilePath post_delete_file_path = GetFile(tab_id);
   EXPECT_FALSE(base::PathExists(post_delete_file_path));
+}
+
+TEST_F(Etc1ThumbnailHelperTest, DeleteAllExceptForIds) {
+  std::vector<int> tab_ids = {1, 2, 3, 4, 5};
+  for (int tab_id : tab_ids) {
+    base::WriteFile(GetFile(tab_id), "thumbnail_data");
+    EXPECT_TRUE(base::PathExists(GetFile(tab_id)));
+  }
+
+  // Create a jpeg file to make sure it is not deleted.
+  base::FilePath jpeg_file = GetFile(1).AddExtension(".jpeg");
+  base::WriteFile(jpeg_file, "thumbnail_data");
+  EXPECT_TRUE(base::PathExists(jpeg_file));
+
+  GetInterface().DeleteAllExceptForIds({2, 4});
+  task_environment_.RunUntilIdle();
+
+  EXPECT_FALSE(base::PathExists(GetFile(1)));
+  EXPECT_TRUE(base::PathExists(GetFile(2)));
+  EXPECT_FALSE(base::PathExists(GetFile(3)));
+  EXPECT_TRUE(base::PathExists(GetFile(4)));
+  EXPECT_FALSE(base::PathExists(GetFile(5)));
+
+  EXPECT_TRUE(base::PathExists(jpeg_file));
 }
 
 }  // namespace thumbnail

@@ -5,7 +5,14 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_EXTENSION_VIEW_H_
 #define CHROME_BROWSER_EXTENSIONS_EXTENSION_VIEW_H_
 
-#include "ui/gfx/native_widget_types.h"
+#include "build/build_config.h"
+#include "extensions/buildflags/buildflags.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "ui/gfx/native_ui_types.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace content {
 class RenderFrameHost;
@@ -27,8 +34,10 @@ class ExtensionView {
  public:
   virtual ~ExtensionView() = default;
 
+#if !BUILDFLAG(IS_ANDROID)
   // Returns the extension's native view.
   virtual gfx::NativeView GetNativeView() = 0;
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   // Method for the ExtensionHost to notify us about the correct size for
   // extension contents.

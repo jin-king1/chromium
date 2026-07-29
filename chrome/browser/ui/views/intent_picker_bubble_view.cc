@@ -17,7 +17,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/sharing/click_to_call/click_to_call_ui_controller.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
@@ -84,6 +83,7 @@ constexpr int kGridItemBorderRadius = 4;
 constexpr int kGridItemGroupId = 1;
 
 bool g_auto_accept_intent_picker_bubble_for_testing = false;
+bool g_auto_cancel_intent_picker_bubble_for_testing = false;
 
 bool IsKeyboardCodeArrow(ui::KeyboardCode key_code) {
   return key_code == ui::VKEY_UP || key_code == ui::VKEY_DOWN ||
@@ -363,7 +363,7 @@ class IntentPickerLabelButton : public views::LabelButton {
         provider->GetDistanceMetric(DISTANCE_CONTENT_LIST_VERTICAL_MULTI),
         provider->GetInsetsMetric(views::INSETS_DIALOG).left())));
     views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::ON);
-    views::InkDrop::Get(this)->SetBaseColorId(
+    views::InkDrop::Get(this)->SetBaseColor(
         views::TypographyProvider::Get().GetColorId(
             views::style::CONTEXT_BUTTON, views::style::STYLE_SECONDARY));
   }
@@ -408,7 +408,7 @@ class IntentPickerAppListView
       scrollable_view->AddChildViewAt(std::move(app_button), i);
     }
 
-    SetBackgroundThemeColorId(ui::kColorBubbleBackground);
+    SetBackgroundColor(ui::kColorBubbleBackground);
     SetContents(std::move(scrollable_view));
     DCHECK(!contents()->children().empty());
     const int row_height =
@@ -515,8 +515,8 @@ IntentPickerBubbleView* IntentPickerBubbleView::intent_picker_bubble_ = nullptr;
 
 // static
 views::Widget* IntentPickerBubbleView::ShowBubble(
-    views::View* anchor_view,
-    views::Button* highlighted_button,
+    views::BubbleAnchor bubble_anchor,
+    std::optional<ui::ElementIdentifier> highlighted_element,
     BubbleType bubble_type,
     content::WebContents* web_contents,
     std::vector<AppInfo> app_info,
@@ -528,20 +528,15 @@ views::Widget* IntentPickerBubbleView::ShowBubble(
     intent_picker_bubble_->CloseBubble();
   }
   intent_picker_bubble_ = new IntentPickerBubbleView(
-      anchor_view, bubble_type, std::move(app_info),
+      bubble_anchor, bubble_type, std::move(app_info),
       std::move(intent_picker_cb), web_contents, show_stay_in_chrome,
       show_remember_selection, initiating_origin);
-  if (highlighted_button) {
-    intent_picker_bubble_->SetHighlightedButton(highlighted_button);
+  if (highlighted_element) {
+    intent_picker_bubble_->SetHighlightedElement(*highlighted_element);
   }
   intent_picker_bubble_->Initialize();
   views::Widget* widget =
       views::BubbleDialogDelegateView::CreateBubble(intent_picker_bubble_);
-
-  if (bubble_type == BubbleType::kClickToCall) {
-    ClickToCallUiController::GetOrCreateFromWebContents(web_contents)
-        ->ClearLastDialog();
-  }
 
   DCHECK(intent_picker_bubble_->HasCandidates());
   intent_picker_bubble_->ShowForReason(DisplayReason::USER_GESTURE);
@@ -550,6 +545,9 @@ views::Widget* IntentPickerBubbleView::ShowBubble(
   if (g_auto_accept_intent_picker_bubble_for_testing) {
     intent_picker_bubble_->AcceptDialog();
   }
+  if (g_auto_cancel_intent_picker_bubble_for_testing) {
+    CloseCurrentBubble();
+  }
   return widget;
 }
 
@@ -557,6 +555,13 @@ views::Widget* IntentPickerBubbleView::ShowBubble(
 base::AutoReset<bool>
 IntentPickerBubbleView::SetAutoAcceptIntentPickerBubbleForTesting() {
   return base::AutoReset<bool>(&g_auto_accept_intent_picker_bubble_for_testing,
+                               true);
+}
+
+// static
+base::AutoReset<bool>
+IntentPickerBubbleView::SetAutoCancelIntentPickerBubbleForTesting() {
+  return base::AutoReset<bool>(&g_auto_cancel_intent_picker_bubble_for_testing,
                                true);
 }
 
@@ -622,18 +627,13 @@ std::optional<size_t> IntentPickerBubbleView::GetSelectedIndex() const {
 }
 
 std::u16string IntentPickerBubbleView::GetWindowTitle() const {
-  if (bubble_type_ == BubbleType::kClickToCall) {
-    return l10n_util::GetStringUTF16(
-        IDS_BROWSER_SHARING_CLICK_TO_CALL_DIALOG_TITLE_LABEL);
-  }
-
   return l10n_util::GetStringUTF16(
       use_grid_view_ ? IDS_INTENT_PICKER_BUBBLE_VIEW_OPEN_IN_APP
                      : IDS_INTENT_PICKER_BUBBLE_VIEW_OPEN_WITH);
 }
 
 IntentPickerBubbleView::IntentPickerBubbleView(
-    views::View* anchor_view,
+    views::BubbleAnchor bubble_anchor,
     BubbleType bubble_type,
     std::vector<AppInfo> app_info,
     IntentPickerResponse intent_picker_cb,
@@ -641,7 +641,7 @@ IntentPickerBubbleView::IntentPickerBubbleView(
     bool show_stay_in_chrome,
     bool show_remember_selection,
     const std::optional<url::Origin>& initiating_origin)
-    : LocationBarBubbleDelegateView(anchor_view, web_contents),
+    : LocationBarBubbleDelegateView(bubble_anchor, web_contents),
       intent_picker_cb_(std::move(intent_picker_cb)),
       app_info_(std::move(app_info)),
       use_grid_view_(apps::features::ShouldShowLinkCapturingUX() &&
@@ -654,12 +654,8 @@ IntentPickerBubbleView::IntentPickerBubbleView(
                  ? static_cast<int>(ui::mojom::DialogButton::kOk) |
                        static_cast<int>(ui::mojom::DialogButton::kCancel)
                  : static_cast<int>(ui::mojom::DialogButton::kOk));
-  SetButtonLabel(
-      ui::mojom::DialogButton::kOk,
-      l10n_util::GetStringUTF16(
-          bubble_type_ == BubbleType::kClickToCall
-              ? IDS_BROWSER_SHARING_CLICK_TO_CALL_DIALOG_CALL_BUTTON_LABEL
-              : IDS_INTENT_PICKER_BUBBLE_VIEW_OPEN));
+  SetButtonLabel(ui::mojom::DialogButton::kOk,
+                 l10n_util::GetStringUTF16(IDS_INTENT_PICKER_BUBBLE_VIEW_OPEN));
   SetButtonLabel(
       ui::mojom::DialogButton::kCancel,
       l10n_util::GetStringUTF16(IDS_INTENT_PICKER_BUBBLE_VIEW_STAY_IN_CHROME));
@@ -670,11 +666,10 @@ IntentPickerBubbleView::IntentPickerBubbleView(
   SetCloseCallback(base::BindOnce(&IntentPickerBubbleView::OnDialogClosed,
                                   base::Unretained(this)));
 
-  // Click to call bubbles need to be closed after navigation if the main frame
-  // origin changed. Other intent picker bubbles will be handled in
-  // intent_picker_helpers, they will get closed on each navigation start and
-  // should stay open until after navigation finishes.
-  SetCloseOnMainFrameOriginNavigation(bubble_type == BubbleType::kClickToCall);
+  // Intent picker bubbles are handled in `intent_picker_helpers`, where they
+  // get closed on each navigation start and should stay open until after
+  // navigation finishes.
+  SetCloseOnMainFrameOriginNavigation(false);
   // Margins are manually added in Initialize().
   set_margins(gfx::Insets());
 }
@@ -743,9 +738,7 @@ void IntentPickerBubbleView::Initialize() {
 
   if (show_origin) {
     std::u16string origin_text = l10n_util::GetStringFUTF16(
-        bubble_type_ == BubbleType::kClickToCall
-            ? IDS_BROWSER_SHARING_CLICK_TO_CALL_DIALOG_INITIATING_ORIGIN
-            : IDS_INTENT_PICKER_BUBBLE_VIEW_INITIATING_ORIGIN,
+        IDS_INTENT_PICKER_BUBBLE_VIEW_INITIATING_ORIGIN,
         url_formatter::FormatOriginForSecurityDisplay(*initiating_origin_));
     auto* label = AddChildView(std::make_unique<views::Label>(
         origin_text, ChromeTextContext::CONTEXT_DIALOG_BODY_TEXT_SMALL,

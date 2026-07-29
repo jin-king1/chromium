@@ -137,7 +137,8 @@ class MEDIA_GPU_EXPORT AV1Decoder : public AcceleratedVideoDecoder {
   AV1Decoder& operator=(const AV1Decoder&) = delete;
 
   // AcceleratedVideoDecoder implementation.
-  void SetStream(int32_t id, const DecoderBuffer& decoder_buffer) override;
+  void SetStream(int32_t id,
+                 scoped_refptr<DecoderBuffer> decoder_buffer) override;
   [[nodiscard]] bool Flush() override;
   void Reset() override;
   [[nodiscard]] DecodeResult Decode() override;
@@ -147,7 +148,6 @@ class MEDIA_GPU_EXPORT AV1Decoder : public AcceleratedVideoDecoder {
   uint8_t GetBitDepth() const override;
   VideoChromaSampling GetChromaSampling() const override;
   VideoColorSpace GetVideoColorSpace() const override;
-  std::optional<gfx::HDRMetadata> GetHDRMetadata() const override;
   size_t GetRequiredNumOfPictures() const override;
   size_t GetNumReferenceFrames() const override;
 
@@ -171,6 +171,7 @@ class MEDIA_GPU_EXPORT AV1Decoder : public AcceleratedVideoDecoder {
 
   bool on_error_ = false;
 
+  scoped_refptr<media::DecoderBuffer> decoder_buffer_;
   std::unique_ptr<libgav1::BufferPool> buffer_pool_;
   std::unique_ptr<libgav1::DecoderState> state_;
   std::unique_ptr<libgav1::ObuParser> parser_;
@@ -189,11 +190,9 @@ class MEDIA_GPU_EXPORT AV1Decoder : public AcceleratedVideoDecoder {
   VideoColorSpace picture_color_space_;
   uint8_t bit_depth_ = 0;
   VideoChromaSampling chroma_sampling_ = VideoChromaSampling::kUnknown;
-  std::optional<gfx::HDRMetadata> hdr_metadata_;
+  gfx::HDRMetadata hdr_metadata_bitstream_;
 
   int32_t stream_id_ = 0;
-  raw_ptr<const uint8_t, DanglingUntriaged> stream_ = nullptr;
-  size_t stream_size_ = 0;
   std::unique_ptr<DecryptConfig> decrypt_config_;
 
   // Secure handle to pass through to the accelerator when doing secure playback

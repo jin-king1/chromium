@@ -7,7 +7,6 @@
 #include <jni.h>
 
 #include "base/android/jni_android.h"
-#include "base/metrics/histogram_macros.h"
 #include "chrome/browser/browser_process.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -23,3 +22,5 @@ void LoadFullBrowser() {
 }
 
 }  // namespace android_startup
+
+DEFINE_JNI(NativeStartupBridge)

@@ -9,7 +9,6 @@
 #include <variant>
 
 #include "base/feature_list.h"
-#include "base/memory/ref_counted.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
@@ -17,6 +16,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
@@ -30,6 +30,7 @@
 #include "components/user_education/common/feature_promo/feature_promo_specification.h"
 #include "components/user_education/common/user_education_features.h"
 #include "components/user_education/views/help_bubble_view.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/interaction_sequence.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -40,49 +41,44 @@ InteractiveFeaturePromoTestApi::InteractiveFeaturePromoTestApi(
     TrackerMode tracker_mode,
     ClockMode clock_mode,
     InitialSessionState initial_session_state)
-    : InteractiveBrowserTestApi(
-          std::make_unique<internal::InteractiveFeaturePromoTestPrivate>(
-              std::make_unique<InteractionTestUtilBrowser>(),
-              std::move(tracker_mode),
-              clock_mode,
-              initial_session_state)) {}
+    : test_impl_(private_test_impl()
+                     .MaybeRegisterFrameworkImpl<
+                         internal::InteractiveFeaturePromoTestPrivate>(
+                         std::move(tracker_mode),
+                         clock_mode,
+                         initial_session_state)) {}
 
 InteractiveFeaturePromoTestApi::~InteractiveFeaturePromoTestApi() = default;
 
-void InteractiveFeaturePromoTestApi::SetControllerMode(
-    ControllerMode controller_mode) {
-  test_impl().SetControllerMode(controller_mode);
-}
-
 InteractiveFeaturePromoTestApi::MockTracker*
 InteractiveFeaturePromoTestApi::GetMockTrackerFor(Browser* browser) {
-  return test_impl().GetMockTrackerFor(browser);
+  return test_impl_->GetMockTrackerFor(browser);
 }
 
 void InteractiveFeaturePromoTestApi::RegisterTestFeature(
     Browser* browser,
     user_education::FeaturePromoSpecification spec) {
-  UserEducationServiceFactory::GetForBrowserContext(browser->profile())
+  UserEducationServiceFactory::GetForBrowserContext(browser->GetProfile())
       ->feature_promo_registry()
       .RegisterFeature(std::move(spec));
 }
 
 InteractiveFeaturePromoTestApi::MultiStep
 InteractiveFeaturePromoTestApi::WaitForFeatureEngagementReady() {
-  // Use a refcounted value to pass information between steps, since there is no
-  // access to the browser proper in the pure API class.
-  auto browser = base::MakeRefCounted<base::RefCountedData<Browser*>>(nullptr);
+  INTERACTIVE_TEST_TEMPORARY_VALUE(raw_ptr<Browser>, kBrowser);
   auto steps = Steps(
       // Ensure that the correct tracker for the current context is used.
       WithView(kBrowserViewElementId,
-               [this, browser](BrowserView* browser_view) {
-                 browser->data = browser_view->browser();
-                 CHECK(!test_impl().GetMockTrackerFor(browser->data));
+               [this, kBrowser](BrowserView* browser_view) {
+                 auto& browser =
+                     SetTemporaryValue(kBrowser, browser_view->browser());
+                 CHECK(!test_impl_->GetMockTrackerFor(browser));
                }),
       ObserveState(kFeatureEngagementInitializedState,
-                   [browser]() { return browser->data; }),
+                   [this, kBrowser]() { return GetTemporaryValue(kBrowser); }),
       WaitForState(kFeatureEngagementInitializedState, true),
-      StopObservingState(kFeatureEngagementInitializedState));
+      StopObservingState(kFeatureEngagementInitializedState),
+      Do([this, kBrowser] { ClearTemporaryValue(kBrowser); }));
   AddDescriptionPrefix(steps, "WaitForFeatureEngagementReady()");
   return steps;
 }
@@ -90,14 +86,14 @@ InteractiveFeaturePromoTestApi::WaitForFeatureEngagementReady() {
 InteractiveFeaturePromoTestApi::StepBuilder
 InteractiveFeaturePromoTestApi::AdvanceTime(NewTime time) {
   return std::move(Do([this, time]() {
-                     test_impl().AdvanceTime(time);
+                     test_impl_->AdvanceTime(time);
                    }).SetDescription("AdvanceTime()"));
 }
 
 InteractiveFeaturePromoTestApi::StepBuilder
 InteractiveFeaturePromoTestApi::SetLastActive(NewTime time) {
   return std::move(Do([this, time]() {
-                     test_impl().SetLastActive(time);
+                     test_impl_->SetLastActive(time);
                    }).SetDescription("SetLastActive()"));
 }
 
@@ -106,31 +102,35 @@ InteractiveFeaturePromoTestApi::MaybeShowPromo(
     user_education::FeaturePromoParams params,
     ShowPromoResult show_promo_result) {
   // Always attempt to show the promo.
-  bool is_web_bubble;
+  bool is_web_bubble = false;
+  ui::ElementIdentifier custom_bubble_id;
   user_education::FeaturePromoResult expected_result;
   if (std::holds_alternative<WebUiHelpBubbleShown>(show_promo_result)) {
     is_web_bubble = true;
     expected_result = user_education::FeaturePromoResult::Success();
+  } else if (auto* const shown =
+                 std::get_if<CustomHelpBubbleShown>(&show_promo_result)) {
+    custom_bubble_id = shown->expected_id;
+    expected_result = user_education::FeaturePromoResult::Success();
   } else {
-    is_web_bubble = false;
     expected_result =
         std::get<user_education::FeaturePromoResult>(show_promo_result);
   }
   const base::Feature& iph_feature = *params.feature;
-  using Result = base::RefCountedData<user_education::FeaturePromoResult>;
-  auto start_result = base::MakeRefCounted<Result>();
+  INTERACTIVE_TEST_TEMPORARY_VALUE(user_education::FeaturePromoResult,
+                                   kStartResult);
   auto steps = Steps(
       std::move(
           WithView(
               kBrowserViewElementId,
-              [this, start_result, params = std::move(params),
+              [this, kStartResult, params = std::move(params),
                expected_result](BrowserView* browser_view) mutable {
                 const base::Feature& iph_feature = *params.feature;
 
                 // If using a mock tracker, ensure that it returns the correct
                 // status.
                 auto* const tracker =
-                    test_impl().GetMockTrackerFor(browser_view->browser());
+                    test_impl_->GetMockTrackerFor(browser_view->browser());
                 if (tracker) {
                   if (expected_result) {
                     EXPECT_CALL(*tracker,
@@ -153,12 +153,12 @@ InteractiveFeaturePromoTestApi::MaybeShowPromo(
                     views::ElementTrackerViews::GetInstance()
                         ->GetElementForView(browser_view));
                 params.show_promo_result_callback = base::BindLambdaForTesting(
-                    [el = std::move(browser_el),
+                    [this, el = std::move(browser_el),
                      old_cb = std::move(params.show_promo_result_callback),
-                     start_result](user_education::FeaturePromoResult
+                     kStartResult](user_education::FeaturePromoResult
                                        promo_result) mutable {
                       CHECK(el);
-                      start_result->data = promo_result;
+                      SetTemporaryValue(kStartResult, promo_result);
                       if (old_cb) {
                         std::move(old_cb).Run(promo_result);
                       }
@@ -168,23 +168,24 @@ InteractiveFeaturePromoTestApi::MaybeShowPromo(
                     });
 
                 // Attempt to show the promo.
-                browser_view->MaybeShowFeaturePromo(std::move(params));
+                BrowserUserEducationInterface::From(browser_view->browser())
+                    ->MaybeShowFeaturePromo(std::move(params));
 
                 // If the promo showed, expect it to be dismissed at some point.
                 if (expected_result) {
                   if (tracker) {
                     EXPECT_CALL(*tracker, Dismissed(testing::Ref(iph_feature)));
                   }
-                } else if (user_education::features::IsUserEducationV25()) {
-                  switch (test_impl().clock_mode()) {
+                } else {
+                  switch (test_impl_->clock_mode()) {
                     case ClockMode::kUseTestClock:
-                      test_impl().AdvanceTime(
+                      test_impl_->AdvanceTime(
                           user_education::features::GetLowPriorityTimeout() +
                           base::Seconds(1));
                       break;
                     case ClockMode::kUseDefaultClock:
-                      CHECK(test_impl()
-                                .use_shortened_timeouts_for_internal_testing())
+                      CHECK(test_impl_
+                                ->use_shortened_timeouts_for_internal_testing())
                           << "Tests that verify an IPH has not been shown that "
                              "also use a live (default) clock must use "
                              "set_use_shortened_timeouts_for_internal_testing()"
@@ -195,14 +196,19 @@ InteractiveFeaturePromoTestApi::MaybeShowPromo(
               })
               .SetDescription("Try to show promo")),
       WaitForEvent(kBrowserViewElementId, kShowPromoResultReceived),
-      CheckResult([start_result]() { return start_result->data; },
-                  expected_result));
+      CheckResult(
+          [this, kStartResult]() { return GetTemporaryValue(kStartResult); },
+          expected_result));
 
   // If success is expected, add steps to wait for the bubble to be shown and
   // verify that the correct promo is showing.
   if (is_web_bubble) {
     steps += CheckPromoImpl(iph_feature, /*requested=*/true,
                             /*include_queued=*/false);
+  } else if (custom_bubble_id) {
+    steps += Steps(WaitForShow(custom_bubble_id),
+                   CheckPromoImpl(iph_feature, /*requested=*/true,
+                                  /*include_queued=*/false));
   } else if (expected_result) {
     steps += WaitForPromo(iph_feature);
   }
@@ -236,6 +242,13 @@ InteractiveFeaturePromoTestApi::CheckPromoRequested(
 }
 
 InteractiveFeaturePromoTestApi::StepBuilder
+InteractiveFeaturePromoTestApi::CheckPromoActive(
+    const base::Feature& iph_feature,
+    bool active) {
+  return CheckPromoImpl(iph_feature, active, false);
+}
+
+InteractiveFeaturePromoTestApi::StepBuilder
 InteractiveFeaturePromoTestApi::CheckPromoImpl(const base::Feature& iph_feature,
                                                bool requested,
                                                bool include_queued) {
@@ -246,19 +259,25 @@ InteractiveFeaturePromoTestApi::CheckPromoImpl(const base::Feature& iph_feature,
               ui::InteractionSequence* seq, ui::TrackedElement* browser_el) {
             bool actual = false;
             if (seq->IsCurrentStepInAnyContextForTesting()) {
-              for (const auto browser : *BrowserList::GetInstance()) {
-                if (browser->window()->IsFeaturePromoActive(iph_feature) ||
-                    (include_queued &&
-                     browser->window()->IsFeaturePromoQueued(iph_feature))) {
-                  actual = true;
-                  break;
-                }
-              }
+              ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+                  [&actual, &iph_feature,
+                   include_queued](BrowserWindowInterface* browser) {
+                    if (BrowserUserEducationInterface::From(browser)
+                            ->IsFeaturePromoActive(iph_feature) ||
+                        (include_queued &&
+                         BrowserUserEducationInterface::From(browser)
+                             ->IsFeaturePromoQueued(iph_feature))) {
+                      actual = true;
+                    }
+                    return !actual;
+                  });
             } else {
               auto* const browser = AsView<BrowserView>(browser_el);
-              actual = browser->IsFeaturePromoActive(iph_feature) ||
+              actual = BrowserUserEducationInterface::From(browser->browser())
+                           ->IsFeaturePromoActive(iph_feature) ||
                        (include_queued &&
-                        browser->IsFeaturePromoQueued(iph_feature));
+                        BrowserUserEducationInterface::From(browser->browser())
+                            ->IsFeaturePromoQueued(iph_feature));
             }
             if (actual != requested) {
               seq->FailForTesting();
@@ -275,7 +294,8 @@ InteractiveFeaturePromoTestApi::AbortPromo(const base::Feature& iph_feature,
   auto steps = Steps(CheckView(
       kBrowserViewElementId,
       [&iph_feature](BrowserView* browser_view) {
-        return browser_view->AbortFeaturePromo(iph_feature);
+        return BrowserUserEducationInterface::From(browser_view->browser())
+            ->AbortFeaturePromo(iph_feature);
       },
       expected_result));
   if (expected_result) {

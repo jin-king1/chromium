@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 // IMPORTANT NOTE: All QtUi members that use `shim_` must be decorated
 // with DISABLE_CFI_VCALL.
 
@@ -20,19 +15,24 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/environment.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/nix/xdg_util.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/scoped_environment_variable_override.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/time/time.h"
 #include "cc/paint/paint_canvas.h"
 #include "chrome/browser/themes/theme_properties.h"  // nogncheck
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/ime/linux/linux_input_method_context.h"
 #include "ui/base/ime/text_edit_commands.h"
+#include "ui/base/ui_base_switches.h"
 #include "ui/color/color_mixer.h"
 #include "ui/color/color_provider.h"
 #include "ui/color/color_provider_manager.h"
@@ -44,24 +44,27 @@
 #include "ui/gfx/font_render_params.h"
 #include "ui/gfx/font_render_params_linux.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_rep.h"
 #include "ui/gfx/image/image_skia_source.h"
 #include "ui/linux/device_scale_factor_observer.h"
 #include "ui/linux/linux_ui.h"
 #include "ui/linux/linux_ui_delegate.h"
 #include "ui/linux/nav_button_provider.h"
-#include "ui/native_theme/native_theme_aura.h"
-#include "ui/native_theme/native_theme_base.h"
+#include "ui/qt/native_theme_qt.h"
+#include "ui/qt/os_settings_provider_qt.h"
 #include "ui/qt/qt_interface.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 #include "ui/views/controls/button/label_button_border.h"
 
+#if BUILDFLAG(ENABLE_PRINTING)
+#include "printing/print_dialog_linux_interface.h"  // nogncheck
+#endif
+
 namespace qt {
 
 namespace {
-
-const char kQtVersionFlag[] = "qt-version";
 
 void* LoadLibrary(const base::FilePath& path) {
   return dlopen(path.value().c_str(), RTLD_NOW | RTLD_GLOBAL);
@@ -69,8 +72,9 @@ void* LoadLibrary(const base::FilePath& path) {
 
 bool PreferQt6() {
   auto* cmd = base::CommandLine::ForCurrentProcess();
-  if (cmd->HasSwitch(kQtVersionFlag)) {
-    std::string qt_version_string = cmd->GetSwitchValueASCII(kQtVersionFlag);
+  if (cmd->HasSwitch(switches::kQtVersionFlag)) {
+    std::string qt_version_string =
+        cmd->GetSwitchValueASCII(switches::kQtVersionFlag);
     unsigned int qt_version = 0;
     if (base::StringToUint(qt_version_string, &qt_version)) {
       switch (qt_version) {
@@ -103,8 +107,8 @@ int Qt5WeightToCssWeight(int weight) {
 
   weight = std::clamp(weight, 0, 99);
   for (size_t i = 0; i < std::size(kMapping) - 1; i++) {
-    const auto& lo = kMapping[i];
-    const auto& hi = kMapping[i + 1];
+    const auto& lo = UNSAFE_TODO(kMapping[i]);
+    const auto& hi = UNSAFE_TODO(kMapping[i + 1]);
     if (weight <= hi.qt_weight) {
       return (weight - lo.qt_weight) * (hi.css_weight - lo.css_weight) /
                  (hi.qt_weight - lo.qt_weight) +
@@ -129,51 +133,126 @@ gfx::FontRenderParams::Hinting QtHintingToGfxHinting(
   }
 }
 
+bool IsGtk4Loaded() {
+  void* handle = dlopen("libgtk-4.so.1", RTLD_LAZY | RTLD_NOLOAD);
+  if (!handle) {
+    handle = dlopen("libgtk-4.so", RTLD_LAZY | RTLD_NOLOAD);
+  }
+  if (handle) {
+    dlclose(handle);
+    return true;
+  }
+  return false;
+}
+
+// Determines if running in a GTK-based desktop environment by inspecting the
+// same environment variables that Qt's QGenericUnixTheme uses.
+// This logic has been stable across Qt 5 and Qt 6 and is unlikely to change,
+// as doing so would break theme auto-detection across standard Unix desktop
+// environments.
+bool IsGtkDesktop(base::Environment* env) {
+  std::string xdg_desktop = env->GetVar("XDG_CURRENT_DESKTOP").value_or("");
+  if (!xdg_desktop.empty()) {
+    xdg_desktop = base::ToUpperASCII(xdg_desktop);
+    // Qt splits XDG_CURRENT_DESKTOP by ':' and checks if any part is one of
+    // the GTK-based environments: GNOME, X-CINNAMON, UNITY, MATE, XFCE, LXDE.
+    // PANTHEON and COSMIC are also checked as they are GTK-based or
+    // GNOME-derived.
+    for (const auto& part :
+         base::SplitStringPiece(xdg_desktop, ":", base::TRIM_WHITESPACE,
+                                base::SPLIT_WANT_NONEMPTY)) {
+      if (part == "GNOME" || part == "X-CINNAMON" || part == "CINNAMON" ||
+          part == "UNITY" || part == "MATE" || part == "XFCE" ||
+          part == "LXDE" || part == "PANTHEON" || part == "COSMIC") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Classic fallbacks used by Qt when XDG_CURRENT_DESKTOP is empty.
+  if (env->HasVar("GNOME_DESKTOP_SESSION_ID")) {
+    return true;
+  }
+
+  std::string desktop_session = env->GetVar("DESKTOP_SESSION").value_or("");
+  desktop_session = base::ToLowerASCII(desktop_session);
+  // Extract the basename of the desktop session if it's a path.
+  size_t last_slash = desktop_session.find_last_of('/');
+  if (last_slash != std::string::npos) {
+    desktop_session = desktop_session.substr(last_slash + 1);
+  }
+  return desktop_session == "gnome" || desktop_session == "mate" ||
+         desktop_session == "xfce" || desktop_session == "xubuntu" ||
+         desktop_session == "cinnamon" || desktop_session == "lxde" ||
+         desktop_session == "pantheon";
+}
+
+std::vector<std::unique_ptr<base::ScopedEnvironmentVariableOverride>>
+GetGtkQtCollisionPreventionOverrides() {
+  std::vector<std::unique_ptr<base::ScopedEnvironmentVariableOverride>>
+      env_overrides;
+  if (!IsGtk4Loaded()) {
+    return env_overrides;
+  }
+
+  auto env = base::Environment::Create();
+  const bool is_gtk_desktop = IsGtkDesktop(env.get());
+
+  auto platform_theme_opt = env->GetVar("QT_QPA_PLATFORMTHEME");
+  bool has_gtk_platform_theme = false;
+  if (platform_theme_opt.has_value()) {
+    const std::string& value = platform_theme_opt.value();
+    if (value == "gnome" || value == "gtk3" || value == "gtk2") {
+      has_gtk_platform_theme = true;
+    }
+  }
+
+  // If the platform theme is explicitly set to a clashing GTK-based theme,
+  // or if it is unset and the current desktop environment is GTK-based,
+  // override it to a custom non-existent theme to prevent loading GTK
+  // plugins.
+  if (has_gtk_platform_theme ||
+      (!platform_theme_opt.has_value() && is_gtk_desktop)) {
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "QT_QPA_PLATFORMTHEME", "chromium-fallback"));
+  }
+
+  // To prevent Qt's fallback/auto-detection logic from loading the GTK3
+  // platform theme plugin (e.g. if the explicitly set theme plugin like qt5ct
+  // is missing, or if overridden to "chromium-fallback"), unset the
+  // desktop environment variables during initialization if running on a
+  // GTK-based desktop or if a GTK-based platform theme was requested.
+  if (is_gtk_desktop || has_gtk_platform_theme) {
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "XDG_CURRENT_DESKTOP"));
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "DESKTOP_SESSION"));
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "GNOME_DESKTOP_SESSION_ID"));
+    env_overrides.push_back(
+        std::make_unique<base::ScopedEnvironmentVariableOverride>(
+            "KDE_FULL_SESSION"));
+  }
+
+  auto style_override_opt = env->GetVar("QT_STYLE_OVERRIDE");
+  if (style_override_opt.has_value()) {
+    const std::string& value = style_override_opt.value();
+    if (value == "gtk3" || value == "gtk2" || value == "gtk") {
+      env_overrides.push_back(
+          std::make_unique<base::ScopedEnvironmentVariableOverride>(
+              "QT_STYLE_OVERRIDE", "chromium-fallback"));
+    }
+  }
+
+  return env_overrides;
+}
+
 }  // namespace
-
-class QtNativeTheme : public ui::NativeThemeAura {
- public:
-  explicit QtNativeTheme(QtInterface* shim)
-      : ui::NativeThemeAura(/*use_overlay_scrollbars=*/false,
-                            /*should_only_use_dark_colors=*/false,
-                            ui::SystemTheme::kQt),
-        shim_(shim) {}
-  QtNativeTheme(const QtNativeTheme&) = delete;
-  QtNativeTheme& operator=(const QtNativeTheme&) = delete;
-  ~QtNativeTheme() override = default;
-
-  void ThemeChanged(bool prefer_dark_theme) {
-    set_use_dark_colors(IsForcedDarkMode() || prefer_dark_theme);
-    set_preferred_color_scheme(CalculatePreferredColorScheme());
-
-    NotifyOnNativeThemeUpdated();
-  }
-
-  // ui::NativeTheme:
-  DISABLE_CFI_VCALL
-  void PaintFrameTopArea(cc::PaintCanvas* canvas,
-                         State state,
-                         const gfx::Rect& rect,
-                         const FrameTopAreaExtraParams& frame_top_area,
-                         ColorScheme color_scheme) const override {
-    auto image = shim_->DrawHeader(
-        rect.width(), rect.height(), frame_top_area.default_background_color,
-        frame_top_area.is_active ? ColorState::kNormal : ColorState::kInactive,
-        frame_top_area.use_custom_frame);
-    SkImageInfo image_info = SkImageInfo::Make(
-        image.width, image.height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
-    SkBitmap bitmap;
-    bitmap.installPixels(
-        image_info, image.data_argb.Take(), image_info.minRowBytes(),
-        [](void* data, void*) { free(data); }, nullptr);
-    bitmap.setImmutable();
-    canvas->drawImage(cc::PaintImage::CreateFromBitmap(std::move(bitmap)),
-                      rect.x(), rect.y());
-  }
-
- private:
-  raw_ptr<QtInterface> const shim_;
-};
 
 QtUi::QtUi(ui::LinuxUi* fallback_linux_ui)
     : fallback_linux_ui_(fallback_linux_ui) {}
@@ -205,26 +284,6 @@ ui::SelectFileDialog* QtUi::CreateSelectFileDialog(
 DISABLE_CFI_DLSYM
 DISABLE_CFI_VCALL
 bool QtUi::Initialize() {
-  base::FilePath path;
-  if (!base::PathService::Get(base::DIR_MODULE, &path)) {
-    return false;
-  }
-  void* libqt_shim = nullptr;
-  auto load_libqt_shim = [&](int qt_version) -> bool {
-    auto file_name = base::StringPrintf("libqt%d_shim.so", qt_version);
-    if ((libqt_shim = LoadLibrary(path.Append(file_name)))) {
-      qt_version_ = qt_version;
-    }
-    return libqt_shim;
-  };
-  PreferQt6() ? load_libqt_shim(6) || load_libqt_shim(5)
-              : load_libqt_shim(5) || load_libqt_shim(6);
-  if (!libqt_shim) {
-    return false;
-  }
-  void* create_qt_interface = dlsym(libqt_shim, "CreateQtInterface");
-  DCHECK(create_qt_interface);
-
   // Under certain conditions, a hang may occur in libICE when reading from the
   // ICE connection.  Chrome doesn't use QT's session save/restore capabilities
   // and instead manages it's own sessions, so this is not needed anyway.  Unset
@@ -238,6 +297,11 @@ bool QtUi::Initialize() {
   // [3] https://crbug.com/396193145
   base::ScopedEnvironmentVariableOverride qt_xcb_no_xi2("QT_XCB_NO_XI2", "1");
 
+  // If Chrome is using GTK4, prevent QT from loading GTK3, otherwise
+  // the symbols from both versions will collide and crash the browser process.
+  auto env_overrides = GetGtkQtCollisionPreventionOverrides();
+
+  // Set up command line.
   auto cmd_line = *base::CommandLine::ForCurrentProcess();
   if (auto* delegate = ui::LinuxUiDelegate::GetInstance()) {
     // Ensure QT is initialized with the same display server protocol as Chrome.
@@ -257,9 +321,35 @@ bool QtUi::Initialize() {
     }
   }
   cmd_line_ = CopyCmdLine(cmd_line);
+
+  // Create shim.
+  base::FilePath path;
+  if (!base::PathService::Get(base::DIR_MODULE, &path)) {
+    return false;
+  }
+  void* libqt_shim = nullptr;
+  auto load_libqt_shim = [&](int qt_version) {
+    auto file_name = base::StringPrintf("libqt%d_shim.so", qt_version);
+    if ((libqt_shim = LoadLibrary(path.Append(file_name)))) {
+      qt_version_ = qt_version;
+    }
+    return !!libqt_shim;
+  };
+  PreferQt6() ? load_libqt_shim(6) || load_libqt_shim(5)
+              : load_libqt_shim(5) || load_libqt_shim(6);
+  if (!libqt_shim) {
+    return false;
+  }
+  void* create_qt_interface = dlsym(libqt_shim, "CreateQtInterface");
+  DCHECK(create_qt_interface);
   shim_.reset((reinterpret_cast<decltype(&CreateQtInterface)>(
       create_qt_interface)(this, &cmd_line_.argc, cmd_line_.argv.data())));
-  native_theme_ = std::make_unique<QtNativeTheme>(shim_.get());
+
+  // Initialize native theme.
+  os_settings_provider_ = std::make_unique<OsSettingsProviderQt>(shim_.get());
+  native_theme_ = std::make_unique<NativeThemeQt>(shim_.get());
+  native_theme_->BeginObservingOsSettingChanges();
+
   ui::ColorProviderManager::Get().AppendColorProviderInitializer(
       base::BindRepeating(&QtUi::AddNativeColorMixer, base::Unretained(this)));
   ScaleFactorMaybeChangedImpl();
@@ -354,11 +444,6 @@ void QtUi::GetInactiveSelectionFgColor(SkColor* color) const {
 }
 
 DISABLE_CFI_VCALL
-base::TimeDelta QtUi::GetCursorBlinkInterval() const {
-  return base::Milliseconds(shim_->GetCursorBlinkIntervalMs());
-}
-
-DISABLE_CFI_VCALL
 gfx::Image QtUi::GetIconForContentType(const std::string& content_type,
                                        int size,
                                        float scale) const {
@@ -395,10 +480,27 @@ QtUi::WindowFrameAction QtUi::GetWindowFrameAction(
   }
 }
 
-DISABLE_CFI_VCALL
+bool QtUi::PrimaryPasteEnabled() const {
+  // Qt 6 does not have any setting that controls middle click behavior.
+  return true;
+}
+
+int QtUi::GetWindowDragThresholdPx() const {
+  // TODO(crbug.com/459840685): Qt supports both startDragDistance and
+  // startDragTime as thresholds:
+  // https://doc.qt.io/qt-6/qapplication.html#startDragDistance-prop.
+  return kDefaultWindowDragThreshold;
+}
+
+std::vector<std::string> QtUi::GetCmdLineFlagsForCopy() const {
+  return {std::string(switches::kUiToolkitFlag) + "=qt",
+          base::StrCat({switches::kQtVersionFlag, "=",
+                        base::NumberToString(qt_version_)})};
+}
+
 bool QtUi::PreferDarkTheme() const {
-  return color_utils::IsDark(
-      shim_->GetColor(ColorType::kWindowBg, ColorState::kNormal));
+  return native_theme_->preferred_color_scheme() ==
+         ui::NativeTheme::PreferredColorScheme::kDark;
 }
 
 DISABLE_CFI_VCALL
@@ -409,7 +511,7 @@ void QtUi::SetDarkTheme(bool dark) {
 DISABLE_CFI_VCALL
 void QtUi::SetAccentColor(std::optional<SkColor> accent_color) {
   accent_color_ = accent_color;
-  ThemeChanged();
+  native_theme_->NotifyOnNativeThemeUpdated();
 }
 
 DISABLE_CFI_VCALL
@@ -431,12 +533,14 @@ void QtUi::RemoveWindowButtonOrderObserver(
   }
 }
 
-std::unique_ptr<ui::NavButtonProvider> QtUi::CreateNavButtonProvider() {
+std::unique_ptr<ui::NavButtonProvider> QtUi::CreateNavButtonProvider(
+    ui::FrameType type) {
   // QT prefers server-side decorations.
   return nullptr;
 }
 
-ui::WindowFrameProvider* QtUi::GetWindowFrameProvider(bool solid_frame,
+ui::WindowFrameProvider* QtUi::GetWindowFrameProvider(ui::FrameType type,
+                                                      bool solid_frame,
                                                       bool tiled,
                                                       bool maximized) {
   // QT prefers server-side decorations.
@@ -467,7 +571,7 @@ ui::TextEditCommand QtUi::GetTextEditCommandForEvent(const ui::Event& event,
 }
 
 #if BUILDFLAG(ENABLE_PRINTING)
-printing::PrintDialogLinuxInterface* QtUi::CreatePrintDialog(
+std::unique_ptr<printing::PrintDialogLinuxInterface> QtUi::CreatePrintDialog(
     printing::PrintingContextLinux* context) {
   return fallback_linux_ui_ ? fallback_linux_ui_->CreatePrintDialog(context)
                             : nullptr;
@@ -485,7 +589,7 @@ void QtUi::FontChanged() {
 }
 
 void QtUi::ThemeChanged() {
-  native_theme_->ThemeChanged(PreferDarkTheme());
+  native_theme_->OnQtThemeChanged();
 }
 
 void QtUi::ScaleFactorMaybeChanged() {
@@ -537,7 +641,7 @@ void QtUi::AddNativeColorMixer(ui::ColorProvider* provider,
       {ui::kColorTextSelectionForeground, ColorType::kHighlightFg},
 
       // Platform-specific UI elements
-      {ui::kColorNativeButtonBorder, ColorType::kMidground},
+      {ui::kColorNativeBoxFrameBorder, ColorType::kMidground},
       {ui::kColorNativeHeaderButtonBorderActive, ColorType::kMidground},
       {ui::kColorNativeHeaderButtonBorderInactive, ColorType::kMidground,
        ColorState::kInactive},
@@ -659,7 +763,7 @@ void QtUi::ScaleFactorMaybeChangedImpl() {
   std::vector<display::DisplayGeometry> ui_monitors;
   ui_monitors.reserve(n_monitors);
   for (size_t i = 0; i < n_monitors; i++) {
-    const qt::MonitorScale& monitor = qt_monitors[i];
+    const qt::MonitorScale& monitor = UNSAFE_TODO(qt_monitors[i]);
     ui_monitors.push_back(display::DisplayGeometry{
         {monitor.x_px, monitor.y_px, monitor.width_px, monitor.height_px},
         monitor.scale});

@@ -2,15 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/base/test_data_util.h"
 
 #include <stdint.h>
 
+#include <array>
 #include <optional>
 #include <ostream>
 
@@ -36,6 +33,7 @@ const char kMp3Audio[] = "audio/mpeg";
 // MP4
 const char kMp4AacAudio[] = "audio/mp4; codecs=\"mp4a.40.2\"";
 const char kMp4Av110bitVideo[] = "video/mp4; codecs=\"av01.0.04M.10\"";
+const char kMp4IamfAudioAvc1Video[] = "video/mp4; codecs=\"avc1.640028, iamf\"";
 const char kMp4Av1Video[] = "video/mp4; codecs=\"av01.0.04M.08\"";
 const char kMp4Av1VideoOpusAudio[] = "video/mp4; codecs=\"av01.0.04M.08,opus\"";
 const char kMp4Avc1Video[] = "video/mp4; codecs=\"avc1.64001E\"";
@@ -161,6 +159,8 @@ const FileToMimeTypeMap& GetFileToMimeTypeMap() {
        kMp4DolbyVisionProfile8x},
       {"frame_size_change-av_enc-v.webm", kWebMVorbisAudioVp8Video},
       {"icy_sfx.mp3", kMp3Audio},
+      {"iamf_alternating_sine_waves_714.mp4", kMp4IamfAudioAvc1Video},
+      {"iamf_alternating_sine_waves_stereo.mp4", kMp4IamfAudioAvc1Video},
       {"noise-xhe-aac.mp4", kMp4XheAacAudio},
       {"opus-trimming-test.mp4", kMp4OpusAudio},
       {"opus-trimming-test.webm", kWebMOpusAudio},
@@ -175,12 +175,44 @@ const FileToMimeTypeMap& GetFileToMimeTypeMap() {
 }
 
 // Key used to encrypt test files.
-const uint8_t kSecretKey[] = {0xeb, 0xdd, 0x62, 0xf1, 0x68, 0x14, 0xd2, 0x7b,
-                              0x68, 0xef, 0x12, 0x2a, 0xfc, 0xe4, 0xae, 0x3c};
+const auto kSecretKey = std::to_array<uint8_t>({
+    0xeb,
+    0xdd,
+    0x62,
+    0xf1,
+    0x68,
+    0x14,
+    0xd2,
+    0x7b,
+    0x68,
+    0xef,
+    0x12,
+    0x2a,
+    0xfc,
+    0xe4,
+    0xae,
+    0x3c,
+});
 
 // The key ID for all encrypted files.
-const uint8_t kKeyId[] = {0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
-                          0x38, 0x39, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35};
+const auto kKeyId = std::to_array<uint8_t>({
+    0x30,
+    0x31,
+    0x32,
+    0x33,
+    0x34,
+    0x35,
+    0x36,
+    0x37,
+    0x38,
+    0x39,
+    0x30,
+    0x31,
+    0x32,
+    0x33,
+    0x34,
+    0x35,
+});
 
 }  // namespace
 
@@ -199,10 +231,6 @@ const char kErrorTitle[] = "error";
 
 const base::FilePath::CharType kTestDataPath[] =
     FILE_PATH_LITERAL("media/test/data");
-
-const base::span<const uint8_t> ExternalMemoryAdapterForTesting::Span() const {
-  return span_;
-}
 
 base::FilePath GetTestDataFilePath(std::string_view name) {
   base::FilePath file_path;
@@ -258,13 +286,17 @@ scoped_refptr<DecoderBuffer> ReadTestDataFile(std::string_view name,
 bool LookupTestKeyVector(const std::vector<uint8_t>& key_id,
                          bool allow_rotation,
                          std::vector<uint8_t>* key) {
-  std::vector<uint8_t> starting_key_id(kKeyId, kKeyId + std::size(kKeyId));
+  std::vector<uint8_t> starting_key_id(
+      kKeyId.data(),
+      base::span<const uint8_t>(kKeyId).subspan(std::size(kKeyId)).data());
   size_t rotate_limit = allow_rotation ? starting_key_id.size() : 1;
   for (size_t pos = 0; pos < rotate_limit; ++pos) {
     std::rotate(starting_key_id.begin(), starting_key_id.begin() + pos,
                 starting_key_id.end());
     if (key_id == starting_key_id) {
-      key->assign(kSecretKey, kSecretKey + std::size(kSecretKey));
+      key->assign(kSecretKey.data(), base::span<const uint8_t>(kSecretKey)
+                                         .subspan(std::size(kSecretKey))
+                                         .data());
       std::rotate(key->begin(), key->begin() + pos, key->end());
       return true;
     }

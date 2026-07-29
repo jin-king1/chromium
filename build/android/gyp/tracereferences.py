@@ -7,9 +7,8 @@
 import argparse
 import json
 import logging
-import os
 import pathlib
-import re
+import shutil
 import sys
 
 from util import build_utils
@@ -52,7 +51,7 @@ _SUPPRESSION_PATTERN = '|'.join([
     # android.jar. Not in the above list so as to not match parameter types.
     # E.g. Missing method void android.media.MediaRouter2$RouteCallback
     # E.g. Missing class android.util.StatsEvent$Builder
-    r'Missing method \S+ android\.',
+    r'Missing (?:field|method) \S+ android\.',
     r'Missing class android\.',
 
     # The follow classes are from Android XR system libraries and used on
@@ -140,7 +139,7 @@ def main():
                       help='Do not filter output')
   args = parser.parse_args()
 
-  with open(args.tracerefs_json) as f:
+  with open(args.tracerefs_json, encoding='utf-8') as f:
     spec = json.load(f)
   r8jar = spec['r8jar']
   libs = spec['libs']

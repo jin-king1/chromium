@@ -8,9 +8,13 @@ import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.autofill.AutofillSheetUiController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
 import org.chromium.ui.modelutil.PropertyModel;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /**
  * Mediator class for the autofill save card UI.
@@ -24,6 +28,7 @@ import org.chromium.ui.modelutil.PropertyModel;
  *
  * <p>This mediator sends UI events (OnUiShown, OnUiAccepted, etc.) to the bridge.
  */
+@NullMarked
 /*package*/ class AutofillSaveCardBottomSheetMediator
         implements AutofillSaveCardBottomSheetLifecycle.ControllerDelegate {
     @VisibleForTesting
@@ -34,7 +39,7 @@ import org.chromium.ui.modelutil.PropertyModel;
 
     private final AutofillSaveCardBottomSheetContent mContent;
     private final AutofillSaveCardBottomSheetLifecycle mLifecycle;
-    private final BottomSheetController mBottomSheetController;
+    private final AutofillSheetUiController mUiController;
     private final PropertyModel mModel;
     private final AutofillSaveCardBottomSheetCoordinator.NativeDelegate mDelegate;
     private final boolean mIsServerCard;
@@ -53,6 +58,7 @@ import org.chromium.ui.modelutil.PropertyModel;
         SaveCardPromptResult.UNKNOWN,
         SaveCardPromptResult.COUNT
     })
+    @Retention(RetentionPolicy.SOURCE)
     @VisibleForTesting
     @interface SaveCardPromptResult {
         int ACCEPTED = 0;
@@ -69,7 +75,7 @@ import org.chromium.ui.modelutil.PropertyModel;
      *
      * @param content The bottom sheet content to be shown.
      * @param lifecycle A custom lifecycle that ignores page navigation.
-     * @param bottomSheetController The controller to use for showing or hiding the content.
+     * @param uiController The controller to use for showing or hiding the content.
      * @param delegate The delegate to signal UI flow events (OnUiShown, OnUiAccepted, etc.) to.
      * @param isServerCard Whether or not the bottom sheet is for a server card save.
      * @param isLoadingDisabled Whether or not the loading for the card save is disabled.
@@ -77,14 +83,14 @@ import org.chromium.ui.modelutil.PropertyModel;
     AutofillSaveCardBottomSheetMediator(
             AutofillSaveCardBottomSheetContent content,
             AutofillSaveCardBottomSheetLifecycle lifecycle,
-            BottomSheetController bottomSheetController,
+            AutofillSheetUiController uiController,
             PropertyModel model,
             AutofillSaveCardBottomSheetCoordinator.NativeDelegate delegate,
             boolean isServerCard,
             boolean isLoadingDisabled) {
         mContent = content;
         mLifecycle = lifecycle;
-        mBottomSheetController = bottomSheetController;
+        mUiController = uiController;
         mModel = model;
         mDelegate = delegate;
         mIsServerCard = isServerCard;
@@ -93,7 +99,7 @@ import org.chromium.ui.modelutil.PropertyModel;
 
     /** Requests to show the bottom sheet content. */
     void requestShowContent() {
-        if (mBottomSheetController.requestShowContent(mContent, /* animate= */ true)) {
+        if (mUiController.requestShowContent(mContent, /* animate= */ true)) {
             mLifecycle.begin(this);
             mDelegate.onUiShown();
         } else {
@@ -135,7 +141,7 @@ import org.chromium.ui.modelutil.PropertyModel;
     /** Hide the bottom sheet (if showing) and end the lifecycle. */
     void hide(@StateChangeReason int hideReason) {
         mLifecycle.end();
-        mBottomSheetController.hideContent(mContent, /* animate= */ true, hideReason);
+        mUiController.hideContent(mContent, /* animate= */ true, hideReason);
         if (mModel.get(AutofillSaveCardBottomSheetProperties.SHOW_LOADING_STATE)) {
             // Reset loading state to false to prevent a race condition from recording the metric
             // twice.

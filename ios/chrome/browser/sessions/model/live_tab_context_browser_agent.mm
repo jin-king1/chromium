@@ -12,6 +12,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/uuid.h"
 #import "components/sessions/core/session_types.h"
+#import "components/split_tabs/split_tab_id.h"
 #import "components/tab_groups/tab_group_id.h"
 #import "components/tab_groups/tab_group_visual_data.h"
 #import "ios/chrome/browser/sessions/model/session_util.h"
@@ -21,10 +22,9 @@
 #import "ios/web/public/web_state.h"
 #import "ui/base/mojom/window_show_state.mojom.h"
 
-BROWSER_USER_DATA_KEY_IMPL(LiveTabContextBrowserAgent)
-
 LiveTabContextBrowserAgent::LiveTabContextBrowserAgent(Browser* browser)
-    : profile_(browser->GetProfile()),
+    : BrowserUserData(browser),
+      profile_(browser->GetProfile()),
       web_state_list_(browser->GetWebStateList()),
       session_id_(SessionID::NewUnique()) {}
 
@@ -85,12 +85,27 @@ LiveTabContextBrowserAgent::GetTabGroupForTab(int index) const {
   return std::nullopt;
 }
 
+std::optional<split_tabs::SplitTabId>
+LiveTabContextBrowserAgent::GetSplitForTab(int index) const {
+  // Split views are not currently supported on the iOS platform. This
+  // function would get the SplitTabId implementation of a given tab.
+  return std::nullopt;
+}
+
 const tab_groups::TabGroupVisualData*
 LiveTabContextBrowserAgent::GetVisualDataForGroup(
     const tab_groups::TabGroupId& group) const {
   // Since we never return a group from GetTabGroupForTab(), this should never
   // be called.
   NOTREACHED();
+}
+
+const split_tabs::SplitTabVisualData*
+LiveTabContextBrowserAgent::GetVisualDataForSplit(
+    const split_tabs::SplitTabId& split_id) const {
+  // Split views are not currently supported on the iOS platform. This function
+  // would return the visual data of the split (orientation and ratio).
+  return nullptr;
 }
 
 bool LiveTabContextBrowserAgent::IsTabPinned(int index) const {
@@ -101,6 +116,13 @@ bool LiveTabContextBrowserAgent::IsTabPinned(int index) const {
 const std::optional<base::Uuid>
 LiveTabContextBrowserAgent::GetSavedTabGroupIdForGroup(
     const tab_groups::TabGroupId& group) const {
+  // Not supported by iOS... yet.
+  NOTREACHED();
+}
+
+const std::optional<tab_groups::TabGroupId>
+LiveTabContextBrowserAgent::GetGroupIdForSavedGroup(
+    const base::Uuid& saved) const {
   // Not supported by iOS... yet.
   NOTREACHED();
 }
@@ -131,6 +153,7 @@ sessions::LiveTab* LiveTabContextBrowserAgent::AddRestoredTab(
     const sessions::tab_restore::Tab& tab,
     int tab_index,
     bool select,
+    bool is_restoring_group_or_window,
     sessions::tab_restore::Type original_session_type) {
   // TODO(crbug.com/40491734): Handle tab-switch animation somehow...
   web_state_list_->InsertWebState(
@@ -150,7 +173,18 @@ sessions::LiveTab* LiveTabContextBrowserAgent::ReplaceRestoredTab(
   return nullptr;
 }
 
+void LiveTabContextBrowserAgent::ReconstructSplit(
+    sessions::LiveTab* leading_tab,
+    sessions::LiveTab* trailing_tab,
+    split_tabs::SplitTabId split_id,
+    const split_tabs::SplitTabVisualData& visual_data) {
+  // Split views are currently not supported on the iOS platform.
+  // This function serves as a placeholder to store the logic that would combine
+  // two tabs into a singular SplitView object.
+  NOTREACHED();
+}
+
 void LiveTabContextBrowserAgent::CloseTab() {
   web_state_list_->CloseWebStateAt(web_state_list_->active_index(),
-                                   WebStateList::CLOSE_USER_ACTION);
+                                   WebStateList::ClosingReason::kUserAction);
 }

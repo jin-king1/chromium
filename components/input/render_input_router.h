@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_INPUT_RENDER_INPUT_ROUTER_H_
 #define COMPONENTS_INPUT_RENDER_INPUT_ROUTER_H_
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -18,9 +19,7 @@
 #include "components/input/render_input_router_iterator.h"
 #include "components/input/render_input_router_latency_tracker.h"
 #include "components/viz/common/resources/peak_gpu_memory_tracker.h"
-#include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
-#include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/viz/public/mojom/hit_test/input_target_client.mojom.h"
@@ -81,6 +80,16 @@ class COMPONENT_EXPORT(INPUT) RenderInputRouter
 
   void SetView(RenderWidgetHostViewInput* view);
 
+  void SetBeginFrameSourceForFlingScheduler(
+      viz::BeginFrameSource* begin_frame_source);
+
+  // Sets the value of the delay before the renderer is considered hung.
+  // Already running timers won't be affected.
+  // Note: This only affects the RenderInputRouter in the current process
+  // (either Browser or Viz) and does not propagate to other processes (either
+  // Browser or Viz).
+  void SetHungRendererDelay(base::TimeDelta delay);
+
   // InputRouterClient overrides.
   blink::mojom::WidgetInputHandler* GetWidgetInputHandler() override;
   void OnImeCompositionRangeChanged(
@@ -99,6 +108,8 @@ class COMPONENT_EXPORT(INPUT) RenderInputRouter
       bool unadjusted_movement,
       InputRouterImpl::RequestMouseLockCallback response) override;
   gfx::Size GetRootWidgetViewportSize() override;
+  void OnUnconfirmedTapConvertedToTap() override;
+  void OnInputRouterActive() override;
 
   // InputRouterImplClient overrides.
   blink::mojom::InputEventResultState FilterInputEvent(
@@ -107,7 +118,7 @@ class COMPONENT_EXPORT(INPUT) RenderInputRouter
   void IncrementInFlightEventCount() override;
   void DecrementInFlightEventCount(
       blink::mojom::InputEventResultSource ack_source) override;
-  void DidOverscroll(const ui::DidOverscrollParams& params) override;
+  void DidOverscroll(blink::mojom::DidOverscrollParamsPtr params) override;
   void DidStartScrollingViewport() override;
   void OnSetCompositorAllowedTouchAction(cc::TouchAction) override {}
   void OnInvalidInputEventSource() override;
@@ -204,6 +215,8 @@ class COMPONENT_EXPORT(INPUT) RenderInputRouter
     return fling_scheduler_.get();
   }
 
+  void RenderProcessBlockedStateChanged(bool blocked);
+
   // Stops all existing hang monitor timeouts and assumes the renderer is
   // responsive.
   void StopInputEventAckTimeout();
@@ -238,10 +251,25 @@ class COMPONENT_EXPORT(INPUT) RenderInputRouter
   // by the renderer.
   int in_flight_event_count_ = 0;
 
+  bool is_blocked_ = false;
+
   base::OneShotTimer input_event_ack_timeout_;
 
   // This value indicates how long to wait before we consider a renderer hung.
   base::TimeDelta hung_renderer_delay_;
+
+  // Called when the response to PingMainThread is received.
+  void OnPingAck();
+
+  // State machine for the hang monitor timer.
+  enum class HangMonitorTimerState {
+    kStopped,     // Not monitoring.
+    kMonitoring,  // Monitoring responsiveness (standard timer running).
+    kPinging,     // Actively pinging the main thread (short timer running).
+  };
+
+  HangMonitorTimerState hang_monitor_timer_state_ =
+      HangMonitorTimerState::kStopped;
 
   // Must be declared before `input_router_`. The latter is constructed by
   // borrowing a reference to this object, so it must be deleted first.
@@ -255,6 +283,7 @@ class COMPONENT_EXPORT(INPUT) RenderInputRouter
              base::checked_cast<size_t>(blink::WebGestureDevice::kMaxValue) + 1>
       is_in_gesture_scroll_ = {{false}};
   bool is_in_touchpad_gesture_fling_ = false;
+  bool gsb_filtered_for_paint_holding_ = false;
   std::unique_ptr<RenderInputRouterLatencyTracker> latency_tracker_;
 
   std::unique_ptr<viz::PeakGpuMemoryTracker> scroll_peak_gpu_mem_tracker_;

@@ -5,6 +5,7 @@
 #import "ios/testing/earl_grey/matchers.h"
 
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ui/base/device_form_factor.h"
 
 namespace testing {
 
@@ -13,15 +14,21 @@ id<GREYMatcher> ButtonWithAccessibilityLabel(NSString* label) {
                     grey_accessibilityTrait(UIAccessibilityTraitButton), nil);
 }
 
+id<GREYMatcher> AlertItemWithAccessibilityLabel(NSString* label) {
+  return grey_allOf(ButtonWithAccessibilityLabel(label),
+                    grey_ancestor(grey_kindOfClassName(
+                        @"_UIInterfaceActionCustomViewRepresentationView")),
+                    grey_minimumVisiblePercent(0.5), nil);
+}
+
 id<GREYMatcher> ElementToDismissAlert(NSString* cancel_text) {
-  UIUserInterfaceIdiom idiom = [[UIDevice currentDevice] userInterfaceIdiom];
-  if (idiom == UIUserInterfaceIdiomPad) {
+  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
     // On iPad the context menu is dismissed by tapping on something
     // that isn't the popover. UIKit conveniently labels this element.
     return grey_accessibilityID(@"PopoverDismissRegion");
   } else {
     // On iPhone the context menu is dismissed by tapping on the "Cancel" item.
-    return ButtonWithAccessibilityLabel(cancel_text);
+    return AlertItemWithAccessibilityLabel(cancel_text);
   }
 }
 
@@ -45,7 +52,9 @@ id<GREYMatcher> ElementWithAccessibilityLabelSubstring(NSString* substring) {
 }
 
 id<GREYMatcher> NavigationBarBackButton() {
-  return grey_accessibilityID(@"BackButton");
+  return grey_allOf(grey_accessibilityID(@"BackButton"),
+                    grey_kindOfClassName(@"_UIButtonBarButton"),
+                    grey_sufficientlyVisible(), nil);
 }
 
 }  // namespace testing

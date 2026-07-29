@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "third_party/blink/renderer/platform/image-decoders/gif/gif_image_decoder.h"
 
@@ -527,6 +523,31 @@ TEST(GIFImageDecoderTest, errorFrame) {
     decoder->DecodeFrameBufferAtIndex(i);
   }
   EXPECT_FALSE(decoder->Failed());
+}
+
+// This is a regression test for https://crbug.com/404288140 where
+// the following DCHECK in `blink::ImageFrame::TakeBitmapDataIfWritable` would
+// fail when called from `blink::SkiaImageDecoderBase::Decode`:
+//
+//     ```
+//     bool ImageFrame::TakeBitmapDataIfWritable(ImageFrame* other) {
+//       DCHECK(other);
+//       DCHECK_EQ(kFrameComplete, other->status_);  // <- this one
+//     ```
+TEST(GIFImageDecoderTest, regressionAgainstReusingIncompletePreviousFrame) {
+  scoped_refptr<SharedBuffer> test_data = ReadFileToSharedBuffer(
+      kDecodersTestingDir,
+      "incomplete-prev-frame-reusing-clusterfuzz-repro.gif");
+  ASSERT_TRUE(test_data.get());
+
+  std::unique_ptr<ImageDecoder> decoder = CreateDecoder();
+  decoder->SetData(test_data.get(), true);
+  ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(2);
+  // Lack of a `DCHECK`-triggered crash is the main verification in this test.
+  // But for completeness, some supplementary verification follows below...
+  EXPECT_TRUE(decoder->Failed());
+  EXPECT_TRUE(frame);
+  EXPECT_EQ(frame->GetStatus(), ImageFrame::kFrameEmpty);
 }
 
 }  // namespace blink

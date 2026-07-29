@@ -15,13 +15,15 @@ WebMouseEvent::WebMouseEvent(WebInputEvent::Type type,
                              int modifiers,
                              base::TimeTicks time_stamp,
                              PointerId id_param)
-    : WebInputEvent(type, modifiers, time_stamp),
+    : WebInputEvent(type,
+                    WebInputEvent::Type::kMouseTypeFirst,
+                    WebInputEvent::Type::kMouseTypeLast,
+                    modifiers,
+                    time_stamp),
       WebPointerProperties(id_param,
                            WebPointerProperties::PointerType::kMouse,
                            button_param),
       click_count(click_count_param) {
-  DCHECK_GE(type, Type::kMouseTypeFirst);
-  DCHECK_LE(type, Type::kMouseTypeLast);
   SetPositionInWidget(gesture_event.PositionInWidget());
   SetPositionInScreen(gesture_event.PositionInScreen());
   SetFrameScale(gesture_event.FrameScale());
@@ -80,16 +82,16 @@ void WebMouseEvent::SetMenuSourceType(WebInputEvent::Type type) {
     case Type::kGestureTapDown:
     case Type::kGestureTap:
     case Type::kGestureDoubleTap:
-      menu_source_type = kMenuSourceTouch;
+      menu_source_type = ui::mojom::MenuSourceType::kTouch;
       break;
     case Type::kGestureLongPress:
-      menu_source_type = kMenuSourceLongPress;
+      menu_source_type = ui::mojom::MenuSourceType::kLongPress;
       break;
     case Type::kGestureLongTap:
-      menu_source_type = kMenuSourceLongTap;
+      menu_source_type = ui::mojom::MenuSourceType::kLongTap;
       break;
     default:
-      menu_source_type = kMenuSourceNone;
+      menu_source_type = ui::mojom::MenuSourceType::kNone;
   }
 }
 

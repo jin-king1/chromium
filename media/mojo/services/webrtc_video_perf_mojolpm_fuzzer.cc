@@ -3,9 +3,11 @@
 // found in the LICENSE file.
 
 #include <stdint.h>
+
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
@@ -18,6 +20,7 @@
 #include "media/mojo/services/webrtc_video_perf_history.h"
 #include "media/mojo/services/webrtc_video_perf_mojolpm_fuzzer.pb.h"
 #include "media/mojo/services/webrtc_video_perf_recorder.h"
+#include "mojo/core/embedder/embedder.h"
 #include "third_party/libprotobuf-mutator/src/src/libfuzzer/libfuzzer_macro.h"
 
 namespace media {
@@ -49,6 +52,9 @@ struct InitGlobals {
     task_environment = std::make_unique<base::test::TaskEnvironment>(
         base::test::TaskEnvironment::MainThreadType::IO,
         base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+
+    // Initialize Mojo for this fuzzer process so Mojo API calls succeed.
+    mojo::core::Init();
   }
 
   // This allows us to mock time for all threads.

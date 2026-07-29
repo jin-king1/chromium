@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <variant>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -21,7 +22,6 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "ui/webui/resources/cr_components/history_clusters/history_clusters.mojom.h"
 
 class BrowserWindowInterface;
@@ -70,6 +70,7 @@ class HistoryClustersHandler : public mojom::PageHandler,
   // called immediately after construction.
   HistoryClustersHandler(
       mojo::PendingReceiver<mojom::PageHandler> pending_page_handler,
+      mojo::PendingRemote<mojom::Page> pending_page,
       Profile* profile,
       content::WebContents* web_contents,
       BrowserWindowInterface* browser_window_interface);
@@ -77,6 +78,7 @@ class HistoryClustersHandler : public mojom::PageHandler,
   // Constructor for the tab-scoped history clusters UI.
   HistoryClustersHandler(
       mojo::PendingReceiver<mojom::PageHandler> pending_page_handler,
+      mojo::PendingRemote<mojom::Page> pending_page,
       Profile* profile,
       content::WebContents* web_contents,
       tabs::TabInterface* tab_interface);
@@ -90,8 +92,8 @@ class HistoryClustersHandler : public mojom::PageHandler,
   void SetSidePanelUIEmbedder(
       base::WeakPtr<TopChromeWebUIController::Embedder> side_panel_embedder);
 
-  using ContextInterface =
-      absl::variant<BrowserWindowInterface*, tabs::TabInterface*>;
+  using ContextInterface = std::variant<raw_ptr<BrowserWindowInterface>,
+                                        raw_ptr<tabs::TabInterface>>;
   void SetContextInterface(ContextInterface interface);
 
   // Used to set the in-page query from the browser.
@@ -100,7 +102,7 @@ class HistoryClustersHandler : public mojom::PageHandler,
   // mojom::PageHandler:
   void OpenHistoryUrl(const GURL& url,
                       ui::mojom::ClickModifiersPtr click_modifiers) override;
-  void SetPage(mojo::PendingRemote<mojom::Page> pending_page) override;
+
   void ShowSidePanelUI() override;
   void ToggleVisibility(bool visible,
                         ToggleVisibilityCallback callback) override;

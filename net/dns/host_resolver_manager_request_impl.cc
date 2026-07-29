@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/containers/linked_list.h"
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/safe_ref.h"
 #include "base/memory/weak_ptr.h"
@@ -19,6 +20,7 @@
 #include "base/time/tick_clock.h"
 #include "net/base/address_list.h"
 #include "net/base/completion_once_callback.h"
+#include "net/base/features.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/base/request_priority.h"
 #include "net/dns/dns_alias_utility.h"
@@ -39,6 +41,7 @@ HostResolverManager::RequestImpl::RequestImpl(
     NetLogWithSource source_net_log,
     HostResolver::Host request_host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     std::optional<ResolveHostParameters> optional_parameters,
     base::WeakPtr<ResolveContext> resolve_context,
     base::WeakPtr<HostResolverManager> resolver,
@@ -46,14 +49,17 @@ HostResolverManager::RequestImpl::RequestImpl(
     : source_net_log_(std::move(source_net_log)),
       request_host_(std::move(request_host)),
       network_anonymization_key_(
-          NetworkAnonymizationKey::IsPartitioningEnabled()
+          NetworkAnonymizationKey::IsPartitioningEnabled() &&
+                  base::FeatureList::IsEnabled(
+                      features::kSplitHostCacheByNetworkAnonymizationKey)
               ? std::move(network_anonymization_key)
               : NetworkAnonymizationKey()),
+      target_network_(target_network),
       parameters_(optional_parameters ? std::move(optional_parameters).value()
                                       : ResolveHostParameters()),
       resolve_context_(std::move(resolve_context)),
       priority_(parameters_.initial_priority),
-      job_key_(request_host_, resolve_context_.get()),
+      job_key_(request_host_, target_network_, resolve_context_.get()),
       resolver_(std::move(resolver)),
       tick_clock_(tick_clock) {
   CHECK_NE(parameters_.cache_usage,
@@ -97,54 +103,46 @@ int HostResolverManager::RequestImpl::Start(CompletionOnceCallback callback) {
   return rv;
 }
 
-const AddressList* HostResolverManager::RequestImpl::GetAddressResults() const {
+const AddressList& HostResolverManager::RequestImpl::GetAddressResults() const {
   DCHECK(complete_);
-  return base::OptionalToPtr(legacy_address_results_);
+  return legacy_address_results_;
 }
 
-const std::vector<HostResolverEndpointResult>*
+base::span<const HostResolverEndpointResult>
 HostResolverManager::RequestImpl::GetEndpointResults() const {
   DCHECK(complete_);
-  return base::OptionalToPtr(endpoint_results_);
+  return endpoint_results_;
 }
 
-const std::vector<std::string>*
-HostResolverManager::RequestImpl::GetTextResults() const {
+base::span<const std::string> HostResolverManager::RequestImpl::GetTextResults()
+    const {
   DCHECK(complete_);
-  return results_ ? &results_.value().text_records() : nullptr;
+  return results_ ? results_->text_records() : base::span<const std::string>();
 }
 
-const std::vector<HostPortPair>*
+base::span<const HostPortPair>
 HostResolverManager::RequestImpl::GetHostnameResults() const {
   DCHECK(complete_);
-  return results_ ? &results_.value().hostnames() : nullptr;
+  return results_ ? results_->hostnames() : base::span<const HostPortPair>();
 }
 
-const std::set<std::string>*
+const std::set<std::string>&
 HostResolverManager::RequestImpl::GetDnsAliasResults() const {
   DCHECK(complete_);
 
   // If `include_canonical_name` param was true, should only ever have at most
   // a single alias, representing the expected "canonical name".
 #if DCHECK_IS_ON()
-  if (parameters().include_canonical_name && fixed_up_dns_alias_results_) {
-    DCHECK_LE(fixed_up_dns_alias_results_->size(), 1u);
-    if (GetAddressResults()) {
-      std::set<std::string> address_list_aliases_set(
-          GetAddressResults()->dns_aliases().begin(),
-          GetAddressResults()->dns_aliases().end());
-      DCHECK(address_list_aliases_set == fixed_up_dns_alias_results_.value());
-    }
+  if (parameters().include_canonical_name) {
+    DCHECK_LE(fixed_up_dns_alias_results_.size(), 1u);
+    std::set<std::string> address_list_aliases_set(
+        GetAddressResults().dns_aliases().begin(),
+        GetAddressResults().dns_aliases().end());
+    DCHECK(address_list_aliases_set == fixed_up_dns_alias_results_);
   }
 #endif  // DCHECK_IS_ON()
 
-  return base::OptionalToPtr(fixed_up_dns_alias_results_);
-}
-
-const std::vector<bool>*
-HostResolverManager::RequestImpl::GetExperimentalResultsForTesting() const {
-  DCHECK(complete_);
-  return results_ ? &results_.value().https_record_compatibility() : nullptr;
+  return fixed_up_dns_alias_results_;
 }
 
 net::ResolveErrorInfo HostResolverManager::RequestImpl::GetResolveErrorInfo()
@@ -169,14 +167,24 @@ void HostResolverManager::RequestImpl::ChangeRequestPriority(
   job_.value()->ChangeRequestPriority(this, priority);
 }
 
-void HostResolverManager::RequestImpl::set_results(HostCache::Entry results) {
+std::optional<ResolutionDetails>
+HostResolverManager::RequestImpl::GetResolutionDetails() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return resolution_details_;
+}
+
+void HostResolverManager::RequestImpl::SetResults(
+    HostCache::Entry results,
+    ResolutionDetails resolution_details) {
   // Should only be called at most once and before request is marked
   // completed.
   DCHECK(!complete_);
   DCHECK(!results_);
+  DCHECK(!resolution_details_);
   DCHECK(!parameters_.is_speculative);
 
   results_ = std::move(results);
+  resolution_details_ = resolution_details;
   FixUpEndpointAndAliasResults();
 }
 
@@ -289,7 +297,7 @@ int HostResolverManager::RequestImpl::DoIPv6Reachability() {
   // cannot make assumptions about reachability.
   if (parameters_.source == HostResolverSource::LOCAL_ONLY) {
     int rv = resolver_->StartIPv6ReachabilityCheck(
-        source_net_log_, GetClientSocketFactory(),
+        target_network_, source_net_log_, GetClientSocketFactory(),
         base::DoNothingAs<void(int)>());
     if (rv == ERR_IO_PENDING) {
       next_state_ = STATE_FINISH_REQUEST;
@@ -298,7 +306,7 @@ int HostResolverManager::RequestImpl::DoIPv6Reachability() {
     return OK;
   }
   return resolver_->StartIPv6ReachabilityCheck(
-      source_net_log_, GetClientSocketFactory(),
+      target_network_, source_net_log_, GetClientSocketFactory(),
       base::BindOnce(&RequestImpl::OnIOComplete,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -316,7 +324,7 @@ int HostResolverManager::RequestImpl::DoGetParameters() {
       resolver_->last_ipv6_probe_result_) {
     next_state_ = STATE_GET_PARAMETERS_COMPLETE;
     return resolver_->StartGloballyReachableCheck(
-        ip_address_, source_net_log_, GetClientSocketFactory(),
+        ip_address_, target_network_, source_net_log_, GetClientSocketFactory(),
         base::BindOnce(&RequestImpl::OnIOComplete,
                        weak_ptr_factory_.GetWeakPtr()));
   }
@@ -326,7 +334,7 @@ int HostResolverManager::RequestImpl::DoGetParameters() {
 
 int HostResolverManager::RequestImpl::DoGetParametersComplete(int rv) {
   next_state_ = STATE_RESOLVE_LOCALLY;
-  only_ipv6_reachable_ = (rv == ERR_FAILED) ? true : false;
+  only_ipv6_reachable_ = (rv == ERR_FAILED);
   return OK;
 }
 
@@ -339,7 +347,14 @@ int HostResolverManager::RequestImpl::DoResolveLocally() {
   if (results.error() != ERR_DNS_CACHE_MISS ||
       parameters_.source == HostResolverSource::LOCAL_ONLY || tasks_.empty()) {
     if (results.error() == OK && !parameters_.is_speculative) {
-      set_results(results.CopyWithDefaultPort(request_host_.GetPort()));
+      // TODO(crbug.com/485672648): Consider refactoring to move resolution
+      // source calculation logic into HostResolverManager::ResolveLocally().
+      ResolutionDetails resolution_details;
+      resolution_details.source = stale_info.has_value()
+                                      ? ResolutionSource::kCache
+                                      : ResolutionSource::kLocal;
+      SetResults(results.CopyWithDefaultPort(request_host_.GetPort()),
+                 resolution_details);
     }
     if (stale_info && !parameters_.is_speculative) {
       set_stale_info(std::move(stale_info).value());
@@ -369,26 +384,24 @@ int HostResolverManager::RequestImpl::DoFinishRequest(int rv) {
 
 void HostResolverManager::RequestImpl::FixUpEndpointAndAliasResults() {
   DCHECK(results_.has_value());
-  DCHECK(!legacy_address_results_.has_value());
-  DCHECK(!endpoint_results_.has_value());
-  DCHECK(!fixed_up_dns_alias_results_.has_value());
+  DCHECK(legacy_address_results_.empty());
+  DCHECK(endpoint_results_.empty());
+  DCHECK(fixed_up_dns_alias_results_.empty());
 
-  endpoint_results_ = results_.value().GetEndpoints();
-  if (endpoint_results_.has_value()) {
-    fixed_up_dns_alias_results_ = results_.value().aliases();
+  endpoint_results_ = results_->GetEndpoints();
+  fixed_up_dns_alias_results_ = results_->aliases();
 
-    // Skip fixups for `include_canonical_name` requests. Just use the
-    // canonical name exactly as it was received from the system resolver.
-    if (parameters().include_canonical_name) {
-      DCHECK_LE(fixed_up_dns_alias_results_.value().size(), 1u);
-    } else {
-      fixed_up_dns_alias_results_ = dns_alias_utility::FixUpDnsAliases(
-          fixed_up_dns_alias_results_.value());
-    }
-
-    legacy_address_results_ = HostResolver::EndpointResultToAddressList(
-        endpoint_results_.value(), fixed_up_dns_alias_results_.value());
+  // Skip fixups for `include_canonical_name` requests. Just use the
+  // canonical name exactly as it was received from the system resolver.
+  if (parameters().include_canonical_name) {
+    DCHECK_LE(fixed_up_dns_alias_results_.size(), 1u);
+  } else {
+    fixed_up_dns_alias_results_ =
+        dns_alias_utility::FixUpDnsAliases(fixed_up_dns_alias_results_);
   }
+
+  legacy_address_results_ = HostResolver::EndpointResultToAddressList(
+      endpoint_results_, fixed_up_dns_alias_results_);
 }
 
 void HostResolverManager::RequestImpl::LogStartRequest() {
@@ -397,7 +410,7 @@ void HostResolverManager::RequestImpl::LogStartRequest() {
 
   source_net_log_.BeginEvent(
       NetLogEventType::HOST_RESOLVER_MANAGER_REQUEST, [this] {
-        base::Value::Dict dict;
+        base::DictValue dict;
         dict.Set("host", request_host_.ToString());
         dict.Set("dns_query_type",
                  kDnsQueryTypes.at(parameters_.dns_query_type));

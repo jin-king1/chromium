@@ -4,11 +4,13 @@
 
 #include "components/exo/wayland/wayland_display_output.h"
 
-#include <cstring>
-
 #include <wayland-server-core.h>
 #include <wayland-server-protocol-core.h>
 
+#include <cstring>
+#include <string_view>
+
+#include "base/compiler_specific.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/exo/surface.h"
 #include "components/exo/wayland/server_util.h"
@@ -110,7 +112,7 @@ void WaylandDisplayOutput::RegisterOutput(wl_resource* output_resource) {
   wl_client_for_each_resource(
       client,
       [](wl_resource* resource, void*) {
-        if (std::strcmp("wl_surface", wl_resource_get_class(resource)) == 0) {
+        if (std::string_view(wl_resource_get_class(resource)) == "wl_surface") {
           if (auto* surface = GetUserDataAs<Surface>(resource)) {
             surface->OnNewOutputAdded();
           }

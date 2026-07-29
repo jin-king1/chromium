@@ -5,8 +5,10 @@
 #include "ash/display/mirror_window_controller.h"
 #include "ash/display/window_tree_host_manager.h"
 #include "ash/shell.h"
+#include "cc/raster/one_copy_raster_buffer_provider.h"
 #include "cc/trees/layer_tree_host.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "content/public/browser/gpu_utils.h"
 #include "content/public/test/browser_test.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
@@ -22,11 +24,7 @@
 namespace {
 
 void SimulateGpuCrash() {
-  const cc::LayerTreeHost* host = ash::Shell::GetPrimaryRootWindow()
-                                      ->layer()
-                                      ->GetCompositor()
-                                      ->host_for_testing();
-  const_cast<cc::LayerTreeHost*>(host)->CrashGpuProcessForTesting();
+  content::KillGpuProcess();
 }
 
 display::DisplayManager* GetDisplayManager() {
@@ -39,14 +37,14 @@ class TestDisplayObserver : public display::DisplayObserver {
  public:
   explicit TestDisplayObserver(base::OnceClosure quit_closure)
       : quit_closure_(std::move(quit_closure)) {
-    display::Screen::GetScreen()->AddObserver(this);
+    display::Screen::Get()->AddObserver(this);
   }
 
   TestDisplayObserver(const TestDisplayObserver&) = delete;
   const TestDisplayObserver& operator=(const TestDisplayObserver&) = delete;
 
   ~TestDisplayObserver() override {
-    display::Screen::GetScreen()->RemoveObserver(this);
+    display::Screen::Get()->RemoveObserver(this);
   }
 
   // display::DisplayObserver:
@@ -83,8 +81,8 @@ class TestSurfaceIdObserver : public ui::CompositorObserver {
 
 }  // namespace
 
-// TODO(crbug.com/388451843): Flaky on ChromeOS release.
 IN_PROC_BROWSER_TEST_F(DisplayGpuCrashBrowserTest, DISABLED_CrashInMirror) {
+  cc::test::ScopedDisableSharedImageCreationLog disable;
   display::test::DisplayManagerTestApi test_api(GetDisplayManager());
   test_api.UpdateDisplay("1300x1000,1000x800");
   ASSERT_EQ(2u, GetDisplayManager()->GetNumDisplays());
@@ -116,15 +114,14 @@ IN_PROC_BROWSER_TEST_F(DisplayGpuCrashBrowserTest, DISABLED_CrashInMirror) {
     ASSERT_EQ(mirror->GetAllRootWindows().size(), 1u);
     const aura::Window* mirror_window =
         mirror->GetMirrorWindowForDisplayIdForTest(secondary_id);
-    EXPECT_TRUE(mirror_window->layer()->has_external_content());
+    EXPECT_TRUE(mirror_window->layer()->HasExternalContent());
     EXPECT_EQ(primary_root->GetSurfaceId(),
               mirror_window->layer()->external_content_surface_id());
   }
 }
 
-// TODO(crbug.com/368538284): Debug build prints too many error messages while
-// waiting for GPU restart, which causes test failure on bots.
 IN_PROC_BROWSER_TEST_F(DisplayGpuCrashBrowserTest, CrashInUnified) {
+  cc::test::ScopedDisableSharedImageCreationLog disable;
   auto* display_manager = GetDisplayManager();
   display_manager->SetUnifiedDesktopEnabled(true);
 
@@ -157,7 +154,7 @@ IN_PROC_BROWSER_TEST_F(DisplayGpuCrashBrowserTest, CrashInUnified) {
     const aura::Window* mirror_window =
         mirror_window_controller->GetMirrorWindowForDisplayIdForTest(
             display.id());
-    EXPECT_TRUE(mirror_window->layer()->has_external_content());
+    EXPECT_TRUE(mirror_window->layer()->HasExternalContent());
     EXPECT_EQ(primary_root->GetSurfaceId(),
               mirror_window->layer()->external_content_surface_id());
   }

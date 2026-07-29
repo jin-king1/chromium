@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "cc/paint/draw_image.h"
 #include "cc/raster/tile_task.h"
 #include "cc/tiles/tile_draw_info.h"
@@ -56,6 +56,36 @@ class CC_EXPORT Tile {
     return id_;
   }
 
+  TileDrawInfo::Mode draw_mode() {
+    CHECK(IsReadyToDraw());
+    return draw_info().mode();
+  }
+
+  bool IsReadyToDraw() const { return draw_info().IsReadyToDraw(); }
+
+  std::optional<viz::ResourceId> GetResourceId() const {
+    if (IsReadyToDraw() && draw_info().mode() == TileDrawInfo::RESOURCE_MODE) {
+      return draw_info().resource_id_for_export();
+    }
+    return std::nullopt;
+  }
+
+  std::optional<gfx::Size> GetResourceSize() const {
+    if (IsReadyToDraw() && draw_info().mode() == TileDrawInfo::RESOURCE_MODE) {
+      return draw_info().resource_size();
+    }
+    return std::nullopt;
+  }
+
+  std::optional<SkColor4f> GetSolidColor() const {
+    if (draw_info().mode() == TileDrawInfo::SOLID_COLOR_MODE) {
+      return draw_info().solid_color();
+    }
+    return std::nullopt;
+  }
+
+  bool IsOOM() const { return draw_info().mode() == TileDrawInfo::OOM_MODE; }
+
   // TODO(vmpstr): Move this to the iterators.
   bool required_for_activation() const { return required_for_activation_; }
   void set_required_for_activation(bool is_required) {
@@ -96,8 +126,6 @@ class CC_EXPORT Tile {
   int layer_id() const { return layer_id_; }
 
   int source_frame_number() const { return source_frame_number_; }
-
-  bool IsReadyToDraw() const { return draw_info().IsReadyToDraw(); }
 
   size_t GPUMemoryUsageInBytes() const;
 
@@ -144,6 +172,7 @@ class CC_EXPORT Tile {
   void mark_used() { used_ = true; }
   void clear_used() { used_ = false; }
   bool used() const { return used_; }
+  bool deleted() const { return deleted_; }
 
  private:
   friend class TileManager;
@@ -191,12 +220,10 @@ class CC_EXPORT Tile {
   // rasterize a resource with checker images.
   bool raster_task_scheduled_with_checker_images_ : 1 = false;
 
-  Id id_;
+  // Set to true in destructor.
+  bool deleted_ : 1 = false;
 
-  // List of Rect-Transform pairs, representing unoccluded parts of the
-  // tile, to support raster culling. See Bug: 1071932
-  std::vector<std::pair<const gfx::Rect, const gfx::AxisTransform2d>>
-      raster_rects_;
+  Id id_;
 
   // The rect bounding the changes in this Tile vs the previous tile it
   // replaced.

@@ -5,7 +5,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/memory/raw_ptr.h"
 #include "media/mojo/mojom/media_player.mojom-blink.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
@@ -138,6 +137,9 @@ class MockPictureInPictureSession
                const viz::SurfaceId&,
                const gfx::Size&,
                bool));
+  MOCK_METHOD(void,
+              UpdateMediaPosition,
+              (media_session::mojom::blink::MediaPositionPtr));
 
  private:
   mojo::Receiver<mojom::blink::PictureInPictureSession> receiver_;
@@ -151,7 +153,7 @@ class MockPictureInPictureService
  public:
   MockPictureInPictureService() {
     // Setup default implementations.
-    ON_CALL(*this, StartSession(_, _, _, _, _, _, _, _))
+    ON_CALL(*this, StartSession(_, _, _, _, _, _, _, _, _, _))
         .WillByDefault(testing::Invoke(
             this, &MockPictureInPictureService::StartSessionInternal));
   }
@@ -180,6 +182,8 @@ class MockPictureInPictureService
        bool,
        mojo::PendingRemote<mojom::blink::PictureInPictureSessionObserver>,
        const gfx::Rect&,
+       bool,
+       const media::VideoSpatialFormat&,
        StartSessionCallback));
 
   MockPictureInPictureSession& Session() { return *session_.get(); }
@@ -192,6 +196,8 @@ class MockPictureInPictureService
       bool,
       mojo::PendingRemote<mojom::blink::PictureInPictureSessionObserver>,
       const gfx::Rect& source_bounds,
+      bool,
+      const media::VideoSpatialFormat&,
       StartSessionCallback callback) {
     source_bounds_ = source_bounds;
     std::move(callback).Run(std::move(session_remote_), gfx::Size());
@@ -237,8 +243,9 @@ class PictureInPictureControllerPlayer final : public EmptyWebMediaPlayer {
   ~PictureInPictureControllerPlayer() override = default;
 
   double Duration() const override {
-    if (infinity_duration_)
+    if (infinity_duration_) {
       return std::numeric_limits<double>::infinity();
+    }
     return EmptyWebMediaPlayer::Duration();
   }
   ReadyState GetReadyState() const override { return kReadyStateHaveMetadata; }
@@ -291,8 +298,8 @@ class PictureInPictureControllerTestWithWidget : public RenderingTest {
 
     GetFrame().GetBrowserInterfaceBroker().SetBinderForTesting(
         mojom::blink::PictureInPictureService::Name_,
-        WTF::BindRepeating(&MockPictureInPictureService::Bind,
-                           WTF::Unretained(&mock_service_)));
+        BindRepeating(&MockPictureInPictureService::Bind,
+                      Unretained(&mock_service_)));
 
     video_ = MakeGarbageCollected<HTMLVideoElement>(GetDocument());
     GetDocument().body()->AppendChild(video_);
@@ -302,7 +309,7 @@ class PictureInPictureControllerTestWithWidget : public RenderingTest {
 
     std::string test_name =
         testing::UnitTest::GetInstance()->current_test_info()->name();
-    if (base::Contains(test_name, "MediaSource")) {
+    if (test_name.contains("MediaSource")) {
       MediaStreamComponentVector dummy_tracks;
       auto* descriptor = MakeGarbageCollected<MediaStreamDescriptor>(
           dummy_tracks, dummy_tracks);
@@ -352,8 +359,9 @@ TEST_F(PictureInPictureControllerTestWithWidget,
                          .PictureInPictureElement());
 
   WebMediaPlayer* player = Video()->GetWebMediaPlayer();
-  EXPECT_CALL(Service(), StartSession(player->GetPlayerId(), _, TestSurfaceId(),
-                                      player->NaturalSize(), true, _, _, _));
+  EXPECT_CALL(Service(),
+              StartSession(player->GetPlayerId(), _, TestSurfaceId(),
+                           player->NaturalSize(), true, _, _, _, _, _));
 
   PictureInPictureControllerImpl::From(GetDocument())
       .EnterPictureInPicture(Video(), /*promise=*/nullptr);
@@ -391,8 +399,9 @@ TEST_F(PictureInPictureControllerTestWithWidget,
                          .PictureInPictureElement());
 
   WebMediaPlayer* player = Video()->GetWebMediaPlayer();
-  EXPECT_CALL(Service(), StartSession(player->GetPlayerId(), _, TestSurfaceId(),
-                                      player->NaturalSize(), true, _, _, _));
+  EXPECT_CALL(Service(),
+              StartSession(player->GetPlayerId(), _, TestSurfaceId(),
+                           player->NaturalSize(), true, _, _, _, _, _));
 
   PictureInPictureControllerImpl::From(GetDocument())
       .EnterPictureInPicture(Video(), /*promise=*/nullptr);
@@ -426,8 +435,9 @@ TEST_F(PictureInPictureControllerTestWithWidget, StartObserving) {
                    .IsSessionObserverReceiverBoundForTesting());
 
   WebMediaPlayer* player = Video()->GetWebMediaPlayer();
-  EXPECT_CALL(Service(), StartSession(player->GetPlayerId(), _, TestSurfaceId(),
-                                      player->NaturalSize(), true, _, _, _));
+  EXPECT_CALL(Service(),
+              StartSession(player->GetPlayerId(), _, TestSurfaceId(),
+                           player->NaturalSize(), true, _, _, _, _, _));
 
   PictureInPictureControllerImpl::From(GetDocument())
       .EnterPictureInPicture(Video(), /*promise=*/nullptr);
@@ -444,8 +454,9 @@ TEST_F(PictureInPictureControllerTestWithWidget, StopObserving) {
                    .IsSessionObserverReceiverBoundForTesting());
 
   WebMediaPlayer* player = Video()->GetWebMediaPlayer();
-  EXPECT_CALL(Service(), StartSession(player->GetPlayerId(), _, TestSurfaceId(),
-                                      player->NaturalSize(), true, _, _, _));
+  EXPECT_CALL(Service(),
+              StartSession(player->GetPlayerId(), _, TestSurfaceId(),
+                           player->NaturalSize(), true, _, _, _, _, _));
 
   PictureInPictureControllerImpl::From(GetDocument())
       .EnterPictureInPicture(Video(), /*promise=*/nullptr);
@@ -472,8 +483,9 @@ TEST_F(PictureInPictureControllerTestWithWidget,
   Video()->DurationChanged(std::numeric_limits<double>::infinity(), false);
 
   WebMediaPlayer* player = Video()->GetWebMediaPlayer();
-  EXPECT_CALL(Service(), StartSession(player->GetPlayerId(), _, TestSurfaceId(),
-                                      player->NaturalSize(), false, _, _, _));
+  EXPECT_CALL(Service(),
+              StartSession(player->GetPlayerId(), _, TestSurfaceId(),
+                           player->NaturalSize(), false, _, _, _, _, _));
 
   PictureInPictureControllerImpl::From(GetDocument())
       .EnterPictureInPicture(Video(), /*promise=*/nullptr);
@@ -490,8 +502,9 @@ TEST_F(PictureInPictureControllerTestWithWidget, PlayPauseButton_MediaSource) {
   // the test name.
 
   WebMediaPlayer* player = Video()->GetWebMediaPlayer();
-  EXPECT_CALL(Service(), StartSession(player->GetPlayerId(), _, TestSurfaceId(),
-                                      player->NaturalSize(), false, _, _, _));
+  EXPECT_CALL(Service(),
+              StartSession(player->GetPlayerId(), _, TestSurfaceId(),
+                           player->NaturalSize(), false, _, _, _, _, _));
 
   PictureInPictureControllerImpl::From(GetDocument())
       .EnterPictureInPicture(Video(), /*promise=*/nullptr);
@@ -551,8 +564,9 @@ TEST_F(PictureInPictureControllerTestWithWidget,
                          .PictureInPictureElement());
 
   WebMediaPlayer* player = Video()->GetWebMediaPlayer();
-  EXPECT_CALL(Service(), StartSession(player->GetPlayerId(), _, TestSurfaceId(),
-                                      player->NaturalSize(), true, _, _, _));
+  EXPECT_CALL(Service(),
+              StartSession(player->GetPlayerId(), _, TestSurfaceId(),
+                           player->NaturalSize(), true, _, _, _, _, _));
 
   PictureInPictureControllerImpl::From(GetDocument())
       .EnterPictureInPicture(Video(), /*promise=*/nullptr);
@@ -603,8 +617,9 @@ TEST_F(PictureInPictureControllerTestWithWidget,
                          .PictureInPictureElement());
 
   WebMediaPlayer* player = Video()->GetWebMediaPlayer();
-  EXPECT_CALL(Service(), StartSession(player->GetPlayerId(), _, TestSurfaceId(),
-                                      player->NaturalSize(), true, _, _, _));
+  EXPECT_CALL(Service(),
+              StartSession(player->GetPlayerId(), _, TestSurfaceId(),
+                           player->NaturalSize(), true, _, _, _, _, _));
 
   PictureInPictureControllerImpl::From(GetDocument())
       .EnterPictureInPicture(Video(), /*promise=*/nullptr);
@@ -669,8 +684,9 @@ TEST_F(PictureInPictureControllerTestWithWidget,
                          .PictureInPictureElement());
 
   WebMediaPlayer* player = Video()->GetWebMediaPlayer();
-  EXPECT_CALL(Service(), StartSession(player->GetPlayerId(), _, TestSurfaceId(),
-                                      player->NaturalSize(), true, _, _, _));
+  EXPECT_CALL(Service(),
+              StartSession(player->GetPlayerId(), _, TestSurfaceId(),
+                           player->NaturalSize(), true, _, _, _, _, _));
 
   PictureInPictureControllerImpl::From(GetDocument())
       .EnterPictureInPicture(Video(), /*promise=*/nullptr);
@@ -680,7 +696,8 @@ TEST_F(PictureInPictureControllerTestWithWidget,
 
   EXPECT_NE(nullptr, PictureInPictureControllerImpl::From(GetDocument())
                          .PictureInPictureElement());
-  EXPECT_EQ(DisplayType::kVideoPictureInPicture, Video()->GetDisplayType());
+  EXPECT_EQ(WebMediaPlayer::DisplayType::kVideoPictureInPicture,
+            Video()->GetDisplayType());
 }
 
 TEST_F(PictureInPictureControllerTestWithWidget,
@@ -694,10 +711,11 @@ TEST_F(PictureInPictureControllerTestWithWidget,
   auto* pip = OpenDocumentPictureInPictureWindow(v8_scope, GetDocument(),
                                                  KURL("file://my/file.html"));
   EXPECT_TRUE(pip);
-  EXPECT_EQ(DisplayType::kInline, Video()->GetDisplayType());
+  EXPECT_EQ(WebMediaPlayer::DisplayType::kInline, Video()->GetDisplayType());
 
   pip->document()->body()->AppendChild(Video());
-  EXPECT_EQ(DisplayType::kDocumentPictureInPicture, Video()->GetDisplayType());
+  EXPECT_EQ(WebMediaPlayer::DisplayType::kDocumentPictureInPicture,
+            Video()->GetDisplayType());
 }
 
 class PictureInPictureControllerChromeClient
@@ -721,6 +739,8 @@ class PictureInPictureControllerChromeClient
     return &dummy_page_holder_->GetPage();
   }
   MOCK_METHOD(void, SetWindowRect, (const gfx::Rect&, LocalFrame&));
+  MOCK_METHOD(void, MoveWindowTo, (const gfx::Point&, LocalFrame&));
+  MOCK_METHOD(void, ResizeWindowTo, (const gfx::Size&, LocalFrame&));
 
  private:
   raw_ptr<DummyPageHolder, DanglingUntriaged> dummy_page_holder_ = nullptr;
@@ -779,15 +799,14 @@ TEST_F(PictureInPictureControllerTestWithChromeClient,
   EXPECT_EQ(GetOpenerURL().GetString(), document->BaseURL().GetString());
 
   // Verify that move* doesn't call through to the chrome client.
-  EXPECT_CALL(GetPipChromeClient(), SetWindowRect(_, _)).Times(0);
+  EXPECT_CALL(GetPipChromeClient(), MoveWindowTo(_, _)).Times(0);
   document->domWindow()->moveTo(10, 10);
   document->domWindow()->moveBy(10, 10);
   testing::Mock::VerifyAndClearExpectations(&GetPipChromeClient());
 
   {
-    // Verify that resizeTo consumes a user gesture, and so only one of the
-    // following calls will succeed.
-    EXPECT_CALL(GetPipChromeClient(), SetWindowRect(_, _));
+    // resizeTo consumes a user gesture, so only the first call succeeds.
+    EXPECT_CALL(GetPipChromeClient(), ResizeWindowTo(_, _));
     LocalFrame::NotifyUserActivation(
         document->GetFrame(), mojom::UserActivationNotificationType::kTest);
     document->domWindow()->resizeTo(10, 10, IGNORE_EXCEPTION);
@@ -796,9 +815,8 @@ TEST_F(PictureInPictureControllerTestWithChromeClient,
   }
 
   {
-    // Verify that resizeBy consumes a user gesture, and so only one of the
-    // following calls will succeed.
-    EXPECT_CALL(GetPipChromeClient(), SetWindowRect(_, _));
+    // resizeBy consumes a user gesture, so only the first call succeeds.
+    EXPECT_CALL(GetPipChromeClient(), ResizeWindowTo(_, _));
     LocalFrame::NotifyUserActivation(
         document->GetFrame(), mojom::UserActivationNotificationType::kTest);
     document->domWindow()->resizeBy(10, 10, IGNORE_EXCEPTION);

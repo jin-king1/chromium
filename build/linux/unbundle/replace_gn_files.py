@@ -48,7 +48,7 @@ REPLACEMENTS = {
     'flatbuffers': 'third_party/flatbuffers/BUILD.gn',
     'fontconfig': 'third_party/fontconfig/BUILD.gn',
     'freetype': 'build/config/freetype/freetype.gni',
-    'harfbuzz-ng': 'third_party/harfbuzz-ng/harfbuzz.gni',
+    'harfbuzz': 'third_party/harfbuzz/harfbuzz.gni',
     'highway': 'third_party/highway/BUILD.gn',
     'icu': 'third_party/icu/BUILD.gn',
     'jsoncpp': 'third_party/jsoncpp/BUILD.gn',
@@ -67,6 +67,7 @@ REPLACEMENTS = {
     'openh264': 'third_party/openh264/BUILD.gn',
     'opus': 'third_party/opus/BUILD.gn',
     're2': 'third_party/re2/BUILD.gn',
+    'simdutf': 'third_party/simdutf/BUILD.gn',
     'snappy': 'third_party/snappy/BUILD.gn',
     # Use system libSPIRV-Tools in Swiftshader.
     # These two shims MUST be used together.

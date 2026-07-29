@@ -7,7 +7,7 @@
 
 #import <Foundation/Foundation.h>
 
-#include "components/autofill/core/browser/foundations/autofill_manager.h"
+#import "components/autofill/core/browser/foundations/autofill_manager.h"
 
 // Objective-C version of the AutofillManager::Observer interface. Only the
 // methods that are currently in use in Objective-C are implemented.
@@ -26,7 +26,11 @@
                        forForm:(autofill::FormGlobalId)form
                     fromSource:
                         (autofill::AutofillManager::Observer::FieldTypeSource)
-                            source;
+                            source
+          smallFormsWereParsed:(bool)smallFormsWereParsed;
+
+- (void)onAfterFormSubmitted:(autofill::AutofillManager&)manager
+                    formData:(const autofill::FormData&)form;
 @end
 
 namespace autofill {
@@ -48,7 +52,10 @@ class AutofillManagerObserverBridge final : public AutofillManager::Observer {
       autofill::AutofillManager::LifecycleState new_state) override;
   void OnFieldTypesDetermined(AutofillManager& manager,
                               FormGlobalId form,
-                              FieldTypeSource source) override;
+                              FieldTypeSource source,
+                              bool small_forms_were_parsed) override;
+  void OnAfterFormSubmitted(AutofillManager& manager,
+                            const FormData& form) override;
 
  private:
   __weak id<AutofillManagerObserver> observer_ = nil;

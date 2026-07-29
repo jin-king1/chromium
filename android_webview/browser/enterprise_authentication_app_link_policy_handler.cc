@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/policy/policy_constants.h"
@@ -34,7 +35,7 @@ bool EnterpriseAuthenticationAppLinkPolicyHandler::CheckPolicySettings(
     return true;
   }
 
-  const base::Value::List& policy_list = value->GetList();
+  const base::ListValue& policy_list = value->GetList();
   if (policy_list.empty()) {
     return true;
   }
@@ -74,7 +75,7 @@ void EnterpriseAuthenticationAppLinkPolicyHandler::ApplyPolicySettings(
   if (!value)
     return;
 
-  base::Value::List filtered_values;
+  base::ListValue filtered_values;
   for (const auto& entry : value->GetList()) {
     const std::string* url = entry.GetDict().FindString("url");
     if (ValidatePolicyEntry(url))

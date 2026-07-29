@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/component_export.h"
 #include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
@@ -18,14 +19,14 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
-#include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/websocket.mojom.h"
 #include "url/gurl.h"
 
 namespace device::enclave {
 
-class EnclaveWebSocketClient : public network::mojom::WebSocketHandshakeClient,
-                               network::mojom::WebSocketClient {
+class COMPONENT_EXPORT(DEVICE_FIDO) EnclaveWebSocketClient
+    : public network::mojom::WebSocketHandshakeClient,
+      public network::mojom::WebSocketClient {
  public:
   enum class SocketStatus {
     kOk,

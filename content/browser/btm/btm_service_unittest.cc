@@ -5,11 +5,12 @@
 #include "content/public/browser/btm_service.h"
 
 #include <optional>
+#include <string_view>
 
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
@@ -28,7 +29,7 @@
 #include "content/browser/btm/btm_test_utils.h"
 #include "content/browser/btm/btm_utils.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/btm_redirect_info.h"
+#include "content/public/browser/btm_redirect.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
@@ -53,37 +54,40 @@ using testing::Pair;
 
 namespace content {
 
-bool Has3pcException(BrowserContext* browser_context,
-                     WebContents* web_contents,
-                     const GURL& url,
-                     const GURL& initial_url,
-                     const GURL& final_url) {
-  BtmRedirectInfoPtr redirect = BtmRedirectInfo::CreateForServer(
-      UrlAndSourceId(url, ukm::kInvalidSourceId), BtmDataAccessType::kWrite,
-      base::Time::Now(), false, net::HTTP_FOUND, base::TimeDelta());
-  btm::Populate3PcExceptions(browser_context, web_contents, initial_url,
-                             final_url, base::span_from_ref(redirect));
-  return redirect->has_3pc_exception.value();
-}
-
 class BtmServiceTest : public testing::Test {
  protected:
   base::PassKey<BtmServiceTest> PassKey() { return {}; }
 
   void RecordBounce(
       BrowserContext* browser_context,
-      const GURL& url,
-      const GURL& initial_url,
-      const GURL& final_url,
+      std::string_view url,
+      std::string_view initial_url,
+      std::string_view final_url,
       base::Time time,
       bool stateful,
-      base::RepeatingCallback<void(const GURL&)> stateful_bounce_callback) {
+      BtmServiceImpl::StatefulBounceCallback stateful_bounce_callback) {
+    BtmRedirectChain chain(
+        GURL(initial_url), ukm::AssignNewSourceId(), GURL(final_url),
+        ukm::AssignNewSourceId(),
+        /*length=*/3,
+        /*is_partial_chain=*/false,
+        btm::Are3PcsGenerallyEnabled(browser_context, nullptr));
+
+    BtmRedirectPtr redirect = BtmRedirect::CreateForServer(
+        GURL(url), ukm::AssignNewSourceId(),
+        stateful ? BtmDataAccessType::kWrite : BtmDataAccessType::kRead, time,
+        /*was_response_cached=*/false,
+        /*response_code=*/net::HTTP_FOUND,
+        /*server_bounce_delay=*/base::TimeDelta());
+
+    btm::Populate3PcExceptions(browser_context,
+                               /*web_contents=*/nullptr, GURL(initial_url),
+                               GURL(final_url), base::span_from_ref(redirect));
+    redirect->chain_index = 1;
+    redirect->chain_id = chain.chain_id;
+
     BtmServiceImpl::Get(browser_context)
-        ->RecordBounceForTesting(url,
-                                 Has3pcException(browser_context, nullptr, url,
-                                                 initial_url, final_url),
-                                 final_url, time, stateful,
-                                 stateful_bounce_callback);
+        ->RecordBounceForTesting(*redirect, chain, stateful_bounce_callback);
   }
 
  private:
@@ -91,70 +95,61 @@ class BtmServiceTest : public testing::Test {
 };
 
 TEST_F(BtmServiceTest, CreateServiceIfFeatureEnabled) {
-  ScopedInitBtmFeature init_dips(true);
+  ScopedInitBtmFeature init_btm(true);
 
   TestBrowserContext profile;
   EXPECT_NE(BtmServiceImpl::Get(&profile), nullptr);
 }
 
 TEST_F(BtmServiceTest, DontCreateServiceIfFeatureDisabled) {
-  ScopedInitBtmFeature init_dips(false);
+  ScopedInitBtmFeature init_btm(false);
 
   TestBrowserContext profile;
   EXPECT_EQ(BtmServiceImpl::Get(&profile), nullptr);
 }
 
-// Verifies that if database persistence is disabled via Finch, then when the
-// BTM Service is constructed, it deletes any BTM Database files for the
-// associated BrowserContext.
-TEST_F(BtmServiceTest, DeleteDbFilesIfPersistenceDisabled) {
+// Verifies that if the BTM feature is enabled, BTM database is created when a
+// (non-OTR) profile is created.
+TEST_F(BtmServiceTest, CreateBTMDatabaseIfBtmEnabled) {
   base::FilePath data_path = base::CreateUniqueTempDirectoryScopedToTest();
   BtmServiceImpl* service;
   std::unique_ptr<TestBrowserContext> profile;
 
-  // Ensure the BTM feature is enabled and the database is set to be persisted.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"persist_database", "true"}});
+  // Ensure the BTM feature is enabled.
+  base::test::ScopedFeatureList feature_list(features::kBtm);
 
   profile = std::make_unique<TestBrowserContext>(data_path);
   service = BtmServiceImpl::Get(profile.get());
   ASSERT_NE(service, nullptr);
 
-  // Ensure the database files have been created and are NOT deleted since the
-  // BTM feature is enabled.
+  // Ensure the database files have been created since the BTM feature is
+  // enabled.
   WaitOnStorage(service);
-  service->WaitForFileDeletionCompleteForTesting();
-  ASSERT_TRUE(base::PathExists(GetBtmFilePath(profile.get())));
-
-  // Reset the feature list to set database persistence to false.
-  feature_list.Reset();
-  feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"persist_database", "false"}});
-
-  // Reset the TestBrowserContext, then create a new instance with the same user
-  // data path.
-  profile.reset();
-  profile = std::make_unique<TestBrowserContext>(data_path);
-
-  service = BtmServiceImpl::Get(profile.get());
-  ASSERT_NE(service, nullptr);
-
-  // Ensure the database files ARE deleted since the BTM feature is disabled.
-  WaitOnStorage(service);
-  service->WaitForFileDeletionCompleteForTesting();
+  BrowserContextImpl::From(profile.get())->WaitForBtmCleanupForTesting();
+#if BUILDFLAG(IS_FUCHSIA) && defined(IS_WEB_ENGINE)
+  // See crbug.com/434764000, file based BTM is disabled on web engine on
+  // fuchsia due to the storage constraint.
   EXPECT_FALSE(base::PathExists(GetBtmFilePath(profile.get())));
+#else
+  EXPECT_TRUE(base::PathExists(GetBtmFilePath(profile.get())));
+#endif
 }
 
+#if BUILDFLAG(IS_FUCHSIA) && defined(IS_WEB_ENGINE)
+// See crbug.com/434764000, file based BTM is disabled on web engine on fuchsia
+// due to the storage constraint.
+#define MAYBE_PreserveRegularProfileDbFiles \
+  DISABLED_PreserveRegularProfileDbFiles
+#else
+#define MAYBE_PreserveRegularProfileDbFiles PreserveRegularProfileDbFiles
+#endif
 // Verifies that when an OTR profile is opened, the BTM database file for
 // the underlying regular profile is NOT deleted.
-TEST_F(BtmServiceTest, PreserveRegularProfileDbFiles) {
+TEST_F(BtmServiceTest, MAYBE_PreserveRegularProfileDbFiles) {
   base::FilePath data_path = base::CreateUniqueTempDirectoryScopedToTest();
 
-  // Ensure the BTM feature is enabled and the database is set to be persisted.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"persist_database", "true"}});
+  // Ensure the BTM feature is enabled.
+  base::test::ScopedFeatureList feature_list(features::kBtm);
 
   // Build a regular profile.
   std::unique_ptr<TestBrowserContext> profile =
@@ -163,9 +158,9 @@ TEST_F(BtmServiceTest, PreserveRegularProfileDbFiles) {
   ASSERT_NE(service, nullptr);
 
   // Ensure the regular profile's database files have been created since the
-  // BTM feature and persistence are enabled.
+  // BTM feature is enabled.
   WaitOnStorage(service);
-  service->WaitForFileDeletionCompleteForTesting();
+  BrowserContextImpl::From(profile.get())->WaitForBtmCleanupForTesting();
   ASSERT_TRUE(base::PathExists(GetBtmFilePath(profile.get())));
 
   // Build an off-the-record profile based on `profile`.
@@ -178,7 +173,7 @@ TEST_F(BtmServiceTest, PreserveRegularProfileDbFiles) {
   // Ensure the OTR profile's database has been initialized and any file
   // deletion tasks have finished (although there shouldn't be any).
   WaitOnStorage(otr_service);
-  otr_service->WaitForFileDeletionCompleteForTesting();
+  BrowserContextImpl::From(otr_profile.get())->WaitForBtmCleanupForTesting();
 
   // Ensure the regular profile's database files were NOT deleted.
   EXPECT_TRUE(base::PathExists(GetBtmFilePath(profile.get())));
@@ -187,6 +182,112 @@ TEST_F(BtmServiceTest, PreserveRegularProfileDbFiles) {
   // But since `otr_profile` is sharing `profile`'s directory, we don't want it
   // to delete that folder (`profile` will).
   otr_profile->TakePath();
+}
+#if BUILDFLAG(IS_FUCHSIA) && defined(IS_WEB_ENGINE)
+// See crbug.com/434764000, file based BTM is disabled on web engine on
+// fuchsia due to the storage constraint. But the leftover file previously
+// created should be deleted.
+TEST_F(BtmServiceTest, DeleteLeftoverDatabaseFileOnWebEngineOnFuchsia) {
+  base::FilePath user_data_dir;
+  base::FilePath db_path;
+
+  // First, create a browser context and create a mock database file at the
+  // correct path.
+  {
+    TestBrowserContext browser_context;
+    db_path = GetBtmFilePath(&browser_context);
+    // Ensure the BtmService (and its database) are initialized.
+    BrowserContextImpl::From(&browser_context)
+        ->GetBtmService()
+        ->WaitForFuchsiaCleanupForTesting();
+
+    // Create a mock database file where one would be if the platform wasn't
+    // WebEngine on Fuchsia.
+    ASSERT_TRUE(base::WriteFile(db_path, "test"));
+    ASSERT_TRUE(base::PathExists(db_path));
+
+    // Take ownership of the browser context's directory so we can reuse it.
+    user_data_dir = browser_context.TakePath();
+
+    // Confirm that WaitForBtmCleanupForTesting() returns and the file still
+    // exists.
+    BrowserContextImpl::From(&browser_context)->WaitForBtmCleanupForTesting();
+    ASSERT_TRUE(base::PathExists(db_path));
+  }
+
+  // Confirm the file still exists after the browser context is destroyed.
+  ASSERT_TRUE(base::PathExists(db_path));
+
+  // Create another browser context for the same directory and confirm the
+  // database file is deleted.
+  {
+    TestBrowserContext browser_context(user_data_dir);
+    BrowserContextImpl::From(&browser_context)
+        ->GetBtmService()
+        ->WaitForFuchsiaCleanupForTesting();
+    ASSERT_FALSE(base::PathExists(db_path));
+  }
+}
+
+TEST_F(BtmServiceTest, BtmServiceCanStartWithoutDatabaseFile) {
+  TestBrowserContext browser_context;
+  base::FilePath db_path = GetBtmFilePath(&browser_context);
+  ASSERT_FALSE(base::PathExists(db_path));
+  // Wait for the database to be created.
+  BrowserContextImpl::From(&browser_context)
+      ->GetBtmService()
+      ->storage()
+      ->FlushPostedTasksForTesting();
+  ASSERT_FALSE(base::PathExists(db_path));
+}
+#endif
+
+#if BUILDFLAG(IS_FUCHSIA) && defined(IS_WEB_ENGINE)
+// See crbug.com/434764000, file based BTM is disabled on web engine on
+// fuchsia due to the storage constraint.
+#define MAYBE_DatabaseFileIsDeletedIfFeatureIsDisabled \
+  DISABLED_DatabaseFileIsDeletedIfFeatureIsDisabled
+#else
+#define MAYBE_DatabaseFileIsDeletedIfFeatureIsDisabled \
+  DatabaseFileIsDeletedIfFeatureIsDisabled
+#endif
+TEST_F(BtmServiceTest, MAYBE_DatabaseFileIsDeletedIfFeatureIsDisabled) {
+  base::FilePath user_data_dir;
+  base::FilePath db_path;
+
+  // First, create a browser context while BTM is enabled, and confirm a
+  // database file is created.
+  {
+    TestBrowserContext browser_context;
+    db_path = GetBtmFilePath(&browser_context);
+    // Wait for the database to be created.
+    BrowserContextImpl::From(&browser_context)
+        ->GetBtmService()
+        ->storage()
+        ->FlushPostedTasksForTesting();
+    ASSERT_TRUE(base::PathExists(db_path));
+
+    // Take ownership of the browser context's directory so we can reuse it.
+    user_data_dir = browser_context.TakePath();
+
+    // Confirm that WaitForBtmCleanupForTesting() returns even if the file is
+    // not deleted.
+    BrowserContextImpl::From(&browser_context)->WaitForBtmCleanupForTesting();
+    ASSERT_TRUE(base::PathExists(db_path));
+  }
+
+  // Confirm the file still exists after the browser context is destroyed.
+  ASSERT_TRUE(base::PathExists(db_path));
+
+  // Create another browser context for the same directory, while BTM is
+  // disabled. Confirm the database file is deleted.
+  {
+    ScopedInitBtmFeature disable_btm(false);
+    TestBrowserContext browser_context(user_data_dir);
+    ASSERT_FALSE(BrowserContextImpl::From(&browser_context)->GetBtmService());
+    BrowserContextImpl::From(&browser_context)->WaitForBtmCleanupForTesting();
+    ASSERT_FALSE(base::PathExists(db_path));
+  }
 }
 
 TEST_F(BtmServiceTest, EmptySiteEventsIgnored) {
@@ -199,9 +300,8 @@ TEST_F(BtmServiceTest, EmptySiteEventsIgnored) {
   // Record a bounce for an empty URL.
   GURL url;
   base::Time bounce = base::Time::FromSecondsSinceUnixEpoch(2);
-  RecordBounce(profile.get(), url, GURL("https://initial.com"),
-               GURL("https://final.com"), bounce, false,
-               base::BindRepeating([](const GURL& final_url) {}));
+  RecordBounce(profile.get(), url.spec(), "https://initial.com",
+               "https://final.com", bounce, false, base::DoNothing());
   WaitOnStorage(service);
 
   // Verify that an entry is not returned when querying for an empty URL,
@@ -242,6 +342,7 @@ class BtmServiceStateRemovalTest : public testing::Test {
 
     GetProfile()->GetBrowsingDataRemover()->SetEmbedderDelegate(&delegate_);
     browser_client_.SetBlockThirdPartyCookiesByDefault(true);
+    ASSERT_FALSE(Are3PcsGenerallyEnabled());
 
     DCHECK(service_);
     service_->SetStorageClockForTesting(&clock_);
@@ -272,33 +373,54 @@ class BtmServiceStateRemovalTest : public testing::Test {
   // |third_party_url| embedded by |first_party_url|.
   void Add3PCException(const GURL& first_party_url,
                        const GURL& third_party_url) {
-    browser_client_.GrantCookieAccessDueToHeuristic(
-        profile_.get(), net::SchemefulSite(first_party_url),
-        net::SchemefulSite(third_party_url), base::Days(1),
-        /*ignore_schemes=*/false);
+    browser_client_.SetThirdPartyCookieAccess(third_party_url, first_party_url,
+                                              CONTENT_SETTING_ALLOW);
 
     auto* client = GetContentClientForTesting()->browser();
     EXPECT_TRUE(client->IsFullCookieAccessAllowed(
         profile_.get(), nullptr, third_party_url,
         blink::StorageKey::CreateFirstParty(
-            url::Origin::Create(first_party_url))));
+            url::Origin::Create(first_party_url)),
+        /*overrides=*/{}));
     EXPECT_FALSE(client->IsFullCookieAccessAllowed(
         profile_.get(), nullptr, first_party_url,
         blink::StorageKey::CreateFirstParty(
-            url::Origin::Create(third_party_url))));
+            url::Origin::Create(third_party_url)),
+        /*overrides=*/{}));
   }
 
   void RecordBounce(
-      const GURL& url,
-      const GURL& initial_url,
-      const GURL& final_url,
+      std::string_view url,
+      std::string_view initial_url,
+      std::string_view final_url,
       base::Time time,
       bool stateful,
-      base::RepeatingCallback<void(const GURL&)> stateful_bounce_callback) {
-    GetService()->RecordBounceForTesting(
-        url,
-        Has3pcException(GetProfile(), nullptr, url, initial_url, final_url),
-        final_url, time, stateful, stateful_bounce_callback);
+      BtmServiceImpl::StatefulBounceCallback stateful_bounce_callback) {
+    BtmRedirectChain chain(GURL(initial_url), ukm::AssignNewSourceId(),
+                           GURL(final_url), ukm::AssignNewSourceId(),
+                           /*length=*/3,
+                           /*is_partial_chain=*/false,
+                           Are3PcsGenerallyEnabled());
+
+    BtmRedirectPtr redirect = BtmRedirect::CreateForServer(
+        GURL(url), ukm::AssignNewSourceId(),
+        stateful ? BtmDataAccessType::kWrite : BtmDataAccessType::kRead, time,
+        /*was_response_cached=*/false,
+        /*response_code=*/net::HTTP_FOUND,
+        /*server_bounce_delay=*/base::TimeDelta());
+
+    btm::Populate3PcExceptions(GetProfile(),
+                               /*web_contents=*/nullptr, GURL(initial_url),
+                               GURL(final_url), base::span_from_ref(redirect));
+    redirect->chain_index = 1;
+    redirect->chain_id = chain.chain_id;
+
+    GetService()->RecordBounceForTesting(*redirect, chain,
+                                         stateful_bounce_callback);
+  }
+
+  bool Are3PcsGenerallyEnabled() {
+    return btm::Are3PcsGenerallyEnabled(profile_.get(), nullptr);
   }
 
  private:
@@ -316,8 +438,8 @@ class RedirectChainCounter : public BtmService::Observer {
   size_t count() const { return count_; }
 
  private:
-  void OnChainHandled(const std::vector<BtmRedirectInfoPtr>& redirects,
-                      const BtmRedirectChainInfoPtr& chain) override {
+  void OnChainHandled(const std::vector<BtmRedirectPtr>& redirects,
+                      const BtmRedirectChainPtr& chain) override {
     count_++;
   }
 
@@ -327,58 +449,64 @@ class RedirectChainCounter : public BtmService::Observer {
 }  // namespace
 
 TEST_F(BtmServiceStateRemovalTest,
-       CompleteChain_NotifiesDipsRedirectChainObservers) {
+       CompleteChain_NotifiesBtmRedirectChainObservers) {
   GetService()->SetStorageClockForTesting(base::DefaultClock::GetInstance());
   RedirectChainCounter chain_counter(GetService());
 
-  std::vector<BtmRedirectInfoPtr> complete_redirects;
-  complete_redirects.push_back(BtmRedirectInfo::CreateForServer(
-      /*url=*/MakeUrlAndId("http://b.test/"),
+  std::vector<BtmRedirectPtr> complete_redirects;
+  complete_redirects.push_back(BtmRedirect::CreateForServer(
+      /*redirector_url=*/GURL("http://b.test/"),
+      /*redirector_source_id=*/ukm::AssignNewSourceId(),
       /*access_type=*/BtmDataAccessType::kNone,
       /*time=*/Now(),
       /*was_response_cached=*/false,
       /*response_code=*/net::HTTP_FOUND,
       /*server_bounce_delay=*/base::TimeDelta()));
-  auto complete_chain = std::make_unique<BtmRedirectChainInfo>(
-      /*initial_url=*/MakeUrlAndId("http://a.test/"),
-      /*final_url=*/MakeUrlAndId("http://c.test/"),
-      /*length=*/1, /*is_partial_chain=*/false);
+  auto complete_chain = std::make_unique<BtmRedirectChain>(
+      /*initial_url=*/GURL("http://a.test/"),
+      /*initial_source_id=*/ukm::AssignNewSourceId(),
+      /*final_url=*/GURL("http://c.test/"),
+      /*final_source_id*/ ukm::AssignNewSourceId(),
+      /*length=*/1, /*is_partial_chain=*/false, Are3PcsGenerallyEnabled());
 
   btm::Populate3PcExceptions(GetProfile(), /*web_contents=*/nullptr,
-                             complete_chain->initial_url.url,
-                             complete_chain->final_url.url, complete_redirects);
-  GetService()->HandleRedirectChain(
-      std::move(complete_redirects), std::move(complete_chain),
-      base::BindRepeating([](const GURL& final_url) {}));
+                             complete_chain->initial_url,
+                             complete_chain->final_url, complete_redirects);
+  GetService()->HandleRedirectChain(std::move(complete_redirects),
+                                    std::move(complete_chain),
+                                    base::DoNothing());
   WaitOnStorage(GetService());
   // Expect one call to Observer.OnChainHandled when handling a complete chain.
   EXPECT_EQ(chain_counter.count(), 1u);
 }
 
 TEST_F(BtmServiceStateRemovalTest,
-       PartialChain_DoesNotNotifyDipsRedirectChainObservers) {
+       PartialChain_DoesNotNotifyBtmRedirectChainObservers) {
   GetService()->SetStorageClockForTesting(base::DefaultClock::GetInstance());
   RedirectChainCounter chain_counter(GetService());
 
-  std::vector<BtmRedirectInfoPtr> partial_redirects;
-  partial_redirects.push_back(BtmRedirectInfo::CreateForServer(
-      /*url=*/MakeUrlAndId("http://b.test/"),
+  std::vector<BtmRedirectPtr> partial_redirects;
+  partial_redirects.push_back(BtmRedirect::CreateForServer(
+      /*redirector_url=*/GURL("http://b.test/"),
+      /*redirector_source_id=*/ukm::AssignNewSourceId(),
       /*access_type=*/BtmDataAccessType::kNone,
       /*time=*/Now(),
       /*was_response_cached=*/false,
       /*response_code=*/net::HTTP_FOUND,
       /*server_bounce_delay=*/base::TimeDelta()));
-  auto partial_chain = std::make_unique<BtmRedirectChainInfo>(
-      /*initial_url=*/MakeUrlAndId("http://a.test/"),
-      /*final_url=*/MakeUrlAndId("http://c.test/"),
-      /*length=*/1, /*is_partial_chain=*/true);
+  auto partial_chain = std::make_unique<BtmRedirectChain>(
+      /*initial_url=*/GURL("http://a.test/"),
+      /*initial_source_id=*/ukm::AssignNewSourceId(),
+      /*final_url=*/GURL("http://c.test/"),
+      /*final_source_id=*/ukm::AssignNewSourceId(),
+      /*length=*/1, /*is_partial_chain=*/true, Are3PcsGenerallyEnabled());
 
   btm::Populate3PcExceptions(GetProfile(), /*web_contents=*/nullptr,
-                             partial_chain->initial_url.url,
-                             partial_chain->final_url.url, partial_redirects);
-  GetService()->HandleRedirectChain(
-      std::move(partial_redirects), std::move(partial_chain),
-      base::BindRepeating([](const GURL& final_url) {}));
+                             partial_chain->initial_url,
+                             partial_chain->final_url, partial_redirects);
+  GetService()->HandleRedirectChain(std::move(partial_redirects),
+                                    std::move(partial_chain),
+                                    base::DoNothing());
   WaitOnStorage(GetService());
   // Expect no calls to Observer.OnChainHandled when handling a partial chain.
   EXPECT_EQ(chain_counter.count(), 0u);
@@ -392,14 +520,13 @@ TEST_F(BtmServiceStateRemovalTest, DISABLED_BrowsingDataDeletion_Enabled) {
   ukm::TestAutoSetUkmRecorder ukm_recorder;
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"delete", "true"}, {"triggering_action", "bounce"}});
+      features::kBtm, {{"triggering_action", "bounce"}});
 
   // Record a bounce.
   GURL url("https://example.com");
   base::Time bounce = base::Time::FromSecondsSinceUnixEpoch(2);
-  RecordBounce(url, GURL("https://initial.com"), GURL("https://final.com"),
-               bounce, false,
-               base::BindRepeating([](const GURL& final_url) {}));
+  RecordBounce(url.spec(), "https://initial.com", "https://final.com", bounce,
+               false, base::DoNothing());
   WaitOnStorage(GetService());
   EXPECT_TRUE(GetBtmState(GetService(), url).has_value());
 
@@ -418,7 +545,7 @@ TEST_F(BtmServiceStateRemovalTest, DISABLED_BrowsingDataDeletion_Enabled) {
       net::CookiePartitionKeyCollection());
   delegate_.ExpectCall(
       base::Time::Min(), base::Time::Max(),
-      (ContentBrowserClient::kDefaultDipsRemoveMask &
+      (ContentBrowserClient::kDefaultBtmRemoveMask &
        ~BrowsingDataRemover::DATA_TYPE_PRIVACY_SANDBOX) |
           BrowsingDataRemover::DATA_TYPE_AVOID_CLOSING_CONNECTIONS,
       BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB |
@@ -448,52 +575,12 @@ TEST_F(BtmServiceStateRemovalTest, DISABLED_BrowsingDataDeletion_Enabled) {
               EntryUrlsAre("DIPS.Deletion", {"http://example.com/"}));
 }
 
-TEST_F(BtmServiceStateRemovalTest, BrowsingDataDeletion_Disabled) {
-  ukm::TestAutoSetUkmRecorder ukm_recorder;
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"delete", "false"}, {"triggering_action", "bounce"}});
-
-  // Record a bounce.
-  GURL url("https://example.com");
-  base::Time bounce = base::Time::FromSecondsSinceUnixEpoch(2);
-  RecordBounce(url, GURL("https://initial.com"), GURL("https://final.com"),
-               bounce, false,
-               base::BindRepeating([](const GURL& final_url) {}));
-  WaitOnStorage(GetService());
-  EXPECT_TRUE(GetBtmState(GetService(), url).has_value());
-
-  // Set the current time to just after the bounce happened.
-  AdvanceTimeTo(bounce + tiny_delta);
-  FireBtmTimer();
-  task_environment_.RunUntilIdle();
-
-  // Verify the BTM entry was not removed and a removal task was not posted to
-  // the BrowsingDataRemover(Delegate).
-  delegate_.VerifyAndClearExpectations();
-  EXPECT_TRUE(GetBtmState(GetService(), url).has_value());
-
-  // Time-travel to after the grace period has ended for the bounce.
-  AdvanceTimeTo(bounce + grace_period + tiny_delta);
-  FireBtmTimer();
-  task_environment_.RunUntilIdle();
-
-  // Verify that the site's BTM entry WAS removed, but a removal task was NOT
-  // posted to the BrowsingDataRemover(Delegate) since
-  // `features::kBtmDeletionEnabled` is false.
-  delegate_.VerifyAndClearExpectations();
-  EXPECT_FALSE(GetBtmState(GetService(), url).has_value());
-
-  EXPECT_THAT(ukm_recorder,
-              EntryUrlsAre("DIPS.Deletion", {"http://example.com/"}));
-}
-
 TEST_F(BtmServiceStateRemovalTest,
        BrowsingDataDeletion_Respects3PExceptionsFor3PC) {
   ukm::TestAutoSetUkmRecorder ukm_recorder;
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"delete", "true"}, {"triggering_action", "bounce"}});
+      features::kBtm, {{"triggering_action", "bounce"}});
 
   GURL excepted_3p_url("https://excepted-as-3p.com");
   GURL non_excepted_url("https://not-excepted.com");
@@ -501,16 +588,16 @@ TEST_F(BtmServiceStateRemovalTest,
   browser_client_.GrantCookieAccessTo3pSite(excepted_3p_url);
 
   int stateful_bounce_count = 0;
-  base::RepeatingCallback<void(const GURL&)> increment_bounce =
+  BtmServiceImpl::StatefulBounceCallback increment_bounce =
       base::BindLambdaForTesting(
           [&](const GURL& final_url) { stateful_bounce_count++; });
 
   // Bounce through both tracking sites.
   base::Time bounce = base::Time::FromSecondsSinceUnixEpoch(2);
-  RecordBounce(excepted_3p_url, GURL("https://initial.com"),
-               GURL("https://final.com"), bounce, true, increment_bounce);
-  RecordBounce(non_excepted_url, GURL("https://initial.com"),
-               GURL("https://final.com"), bounce, true, increment_bounce);
+  RecordBounce(excepted_3p_url.spec(), "https://initial.com",
+               "https://final.com", bounce, true, increment_bounce);
+  RecordBounce(non_excepted_url.spec(), "https://initial.com",
+               "https://final.com", bounce, true, increment_bounce);
   WaitOnStorage(GetService());
 
   // Verify that the bounce was not recorded for the excepted 3P URL.
@@ -536,7 +623,7 @@ TEST_F(BtmServiceStateRemovalTest,
   ukm::TestAutoSetUkmRecorder ukm_recorder;
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"delete", "true"}, {"triggering_action", "bounce"}});
+      features::kBtm, {{"triggering_action", "bounce"}});
 
   GURL excepted_1p_url("https://excepted-as-1p.com");
   GURL scoped_excepted_1p_url("https://excepted-as-1p-with-3p.com");
@@ -549,35 +636,35 @@ TEST_F(BtmServiceStateRemovalTest,
   Add3PCException(scoped_excepted_1p_url, redirect_url_1);
 
   int stateful_bounce_count = 0;
-  base::RepeatingCallback<void(const GURL&)> increment_bounce =
+  BtmServiceImpl::StatefulBounceCallback increment_bounce =
       base::BindLambdaForTesting(
           [&](const GURL& final_url) { stateful_bounce_count++; });
 
   base::Time bounce = base::Time::FromSecondsSinceUnixEpoch(2);
   // Record a bounce through redirect_url_1 that starts on an excepted
   // URL.
-  RecordBounce(redirect_url_1, excepted_1p_url, non_excepted_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_1.spec(), excepted_1p_url.spec(),
+               non_excepted_url.spec(), bounce, true, increment_bounce);
   // Record a bounce through redirect_url_1 that ends on an excepted
   // URL.
-  RecordBounce(redirect_url_1, non_excepted_url, excepted_1p_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_1.spec(), non_excepted_url.spec(),
+               excepted_1p_url.spec(), bounce, true, increment_bounce);
   // Record a bounce through redirect_url_1 that ends on a URL with an exception
   // scoped to redirect_url_1.
-  RecordBounce(redirect_url_1, non_excepted_url, scoped_excepted_1p_url, bounce,
-               true, increment_bounce);
+  RecordBounce(redirect_url_1.spec(), non_excepted_url.spec(),
+               scoped_excepted_1p_url.spec(), bounce, true, increment_bounce);
   // Record a bounce through redirect_url_2 that does not start or
   // end on an excepted URL.
-  RecordBounce(redirect_url_2, non_excepted_url, non_excepted_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_2.spec(), non_excepted_url.spec(),
+               non_excepted_url.spec(), bounce, true, increment_bounce);
   // Record a bounce through redirect_url_3 that does not start or
   // end on an excepted URL. Record an interaction on this URL as well.
-  RecordBounce(redirect_url_3, non_excepted_url, non_excepted_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_3.spec(), non_excepted_url.spec(),
+               non_excepted_url.spec(), bounce, true, increment_bounce);
   GetService()
       ->storage()
       ->AsyncCall(&BtmStorage::RecordUserActivation)
-      .WithArgs(redirect_url_3, bounce, GetService()->GetCookieMode());
+      .WithArgs(redirect_url_3, bounce);
   WaitOnStorage(GetService());
 
   // Expect no recorded BtmState for redirect_url_1, since every
@@ -588,15 +675,15 @@ TEST_F(BtmServiceStateRemovalTest,
 
   // Record a bounce through redirect_url_2 that starts on an
   // excepted URL. This should clear the DB entry for redirect_url_2.
-  RecordBounce(redirect_url_2, excepted_1p_url, non_excepted_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_2.spec(), excepted_1p_url.spec(),
+               non_excepted_url.spec(), bounce, true, increment_bounce);
   EXPECT_FALSE(GetBtmState(GetService(), redirect_url_2).has_value());
 
   // Record a bounce through redirect_url_3 that starts on an
   // excepted URL. This should not clear the DB entry for redirect_url_3 as it
   // has a recorded interaction.
-  RecordBounce(redirect_url_3, excepted_1p_url, non_excepted_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_3.spec(), excepted_1p_url.spec(),
+               non_excepted_url.spec(), bounce, true, increment_bounce);
   EXPECT_TRUE(GetBtmState(GetService(), redirect_url_3).has_value());
 
   // Expect two non-excepted stateful redirects: the first bounces through
@@ -612,7 +699,7 @@ TEST_F(BtmServiceStateRemovalTest,
   ukm::TestAutoSetUkmRecorder ukm_recorder;
   std::vector<base::test::FeatureRefAndParams> enabled_features;
   enabled_features.push_back(
-      {features::kBtm, {{"delete", "true"}, {"triggering_action", "bounce"}}});
+      {features::kBtm, {{"triggering_action", "bounce"}}});
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeaturesAndParameters(enabled_features, {});
 
@@ -640,31 +727,32 @@ TEST_F(BtmServiceStateRemovalTest,
       ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS, CONTENT_SETTING_ALLOW);
   */
   int stateful_bounce_count = 0;
-  base::RepeatingCallback<void(const GURL&)> increment_bounce =
+  BtmServiceImpl::StatefulBounceCallback increment_bounce =
       base::BindLambdaForTesting(
           [&](const GURL& final_url) { stateful_bounce_count++; });
 
   base::Time bounce = base::Time::FromSecondsSinceUnixEpoch(2);
   // Record a bounce through redirect_url_1 that starts on a URL with an SA
   // grant.
-  RecordBounce(redirect_url_1, storage_access_grant_url, no_grant_url, bounce,
-               true, increment_bounce);
+  RecordBounce(redirect_url_1.spec(), storage_access_grant_url.spec(),
+               no_grant_url.spec(), bounce, true, increment_bounce);
   // Record a bounce through redirect_url_1 that ends on a URL with a top-level
   // SA grant.
-  RecordBounce(redirect_url_1, no_grant_url, top_level_storage_access_grant_url,
-               bounce, true, increment_bounce);
+  RecordBounce(redirect_url_1.spec(), no_grant_url.spec(),
+               top_level_storage_access_grant_url.spec(), bounce, true,
+               increment_bounce);
   // Record a bounce through redirect_url_2 that does not start or
   // end on a URL with an SA grant.
-  RecordBounce(redirect_url_2, no_grant_url, no_grant_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_2.spec(), no_grant_url.spec(), no_grant_url.spec(),
+               bounce, true, increment_bounce);
   // Record a bounce through redirect_url_3 that does not start or
   // end on a URL with an SA grant. Record an interaction on this URL as well.
-  RecordBounce(redirect_url_3, no_grant_url, no_grant_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_3.spec(), no_grant_url.spec(), no_grant_url.spec(),
+               bounce, true, increment_bounce);
   GetService()
       ->storage()
       ->AsyncCall(&BtmStorage::RecordUserActivation)
-      .WithArgs(redirect_url_3, bounce, GetService()->GetCookieMode());
+      .WithArgs(redirect_url_3, bounce);
   WaitOnStorage(GetService());
 
   // Expect no recorded BtmState for redirect_url_1, since every
@@ -675,15 +763,15 @@ TEST_F(BtmServiceStateRemovalTest,
 
   // Record a bounce through redirect_url_2 that starts on a URL with an SA
   // grant. This should clear the DB entry for redirect_url_2.
-  RecordBounce(redirect_url_2, storage_access_grant_url, no_grant_url, bounce,
-               true, increment_bounce);
+  RecordBounce(redirect_url_2.spec(), storage_access_grant_url.spec(),
+               no_grant_url.spec(), bounce, true, increment_bounce);
   EXPECT_FALSE(GetBtmState(GetService(), redirect_url_2).has_value());
 
   // Record a bounce through redirect_url_3 that starts on a URL with an SA
   // grant. This should not clear the DB entry for redirect_url_3 as it has a
   // recorded interaction.
-  RecordBounce(redirect_url_3, storage_access_grant_url, no_grant_url, bounce,
-               true, increment_bounce);
+  RecordBounce(redirect_url_3.spec(), storage_access_grant_url.spec(),
+               no_grant_url.spec(), bounce, true, increment_bounce);
   EXPECT_TRUE(GetBtmState(GetService(), redirect_url_3).has_value());
 
   // Expect two non-SA stateful redirects: the first bounces through
@@ -697,11 +785,12 @@ TEST_F(
     BtmServiceStateRemovalTest,
     BrowsingDataDeletion_Respects1PExceptionsForBlocking3PCWhenDefaultAllowed) {
   browser_client_.SetBlockThirdPartyCookiesByDefault(false);
+  ASSERT_TRUE(Are3PcsGenerallyEnabled());
 
   ukm::TestAutoSetUkmRecorder ukm_recorder;
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"delete", "true"}, {"triggering_action", "bounce"}});
+      features::kBtm, {{"triggering_action", "bounce"}});
 
   GURL blocked_1p_url("https://excepted-as-1p.com");
   GURL scoped_blocked_1p_url("https://excepted-as-1p-with-3p.com");
@@ -713,33 +802,34 @@ TEST_F(
 
   // Exceptions to block third-party cookies.
   browser_client_.BlockThirdPartyCookiesOnSite(blocked_1p_url);
-  browser_client_.BlockThirdPartyCookies(redirect_url_1, scoped_blocked_1p_url);
+  browser_client_.SetThirdPartyCookieAccess(
+      redirect_url_1, scoped_blocked_1p_url, CONTENT_SETTING_BLOCK);
 
   int stateful_bounce_count = 0;
-  base::RepeatingCallback<void(const GURL&)> increment_bounce =
+  BtmServiceImpl::StatefulBounceCallback increment_bounce =
       base::BindLambdaForTesting(
           [&](const GURL& final_url) { stateful_bounce_count++; });
 
   base::Time bounce = base::Time::FromSecondsSinceUnixEpoch(2);
   // Record a bounce through redirect_url_1 that starts and ends on blocked
   // URLs.
-  RecordBounce(redirect_url_1, blocked_1p_url, scoped_blocked_1p_url, bounce,
-               true, increment_bounce);
+  RecordBounce(redirect_url_1.spec(), blocked_1p_url.spec(),
+               scoped_blocked_1p_url.spec(), bounce, true, increment_bounce);
   // Record a bounce through redirect_url_2 that starts and ends on blocked
   // URLs. Record an interaction on this URL as well.
-  RecordBounce(redirect_url_2, blocked_1p_url, blocked_1p_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_2.spec(), blocked_1p_url.spec(),
+               blocked_1p_url.spec(), bounce, true, increment_bounce);
   GetService()
       ->storage()
       ->AsyncCall(&BtmStorage::RecordUserActivation)
-      .WithArgs(redirect_url_2, bounce, GetService()->GetCookieMode());
+      .WithArgs(redirect_url_2, bounce);
   WaitOnStorage(GetService());
   // Record a bounce through redirect_url_3 that starts on a non-blocked URL.
-  RecordBounce(redirect_url_3, non_blocked_url, blocked_1p_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_3.spec(), non_blocked_url.spec(),
+               blocked_1p_url.spec(), bounce, true, increment_bounce);
   // Record a bounce through redirect_url_4 that ends on a non-blocked URL.
-  RecordBounce(redirect_url_4, blocked_1p_url, non_blocked_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_4.spec(), blocked_1p_url.spec(),
+               non_blocked_url.spec(), bounce, true, increment_bounce);
 
   // Expect a recorded BtmState for redirect_url_1 and redirect_url_2, since
   // they were bounced through with blocking exceptions on both the initial and
@@ -752,15 +842,15 @@ TEST_F(
 
   // Record a bounce through redirect_url_1 that starts on a non-blocked URL.
   // This should clear the DB entry for redirect_url_1.
-  RecordBounce(redirect_url_1, non_blocked_url, blocked_1p_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_1.spec(), non_blocked_url.spec(),
+               blocked_1p_url.spec(), bounce, true, increment_bounce);
   EXPECT_FALSE(GetBtmState(GetService(), redirect_url_1).has_value());
 
   // Record a bounce through redirect_url_2 that starts on a
   // blocked URL. This should not clear the DB entry for redirect_url_2 as it
   // has a recorded interaction.
-  RecordBounce(redirect_url_2, non_blocked_url, blocked_1p_url, bounce, true,
-               increment_bounce);
+  RecordBounce(redirect_url_2.spec(), non_blocked_url.spec(),
+               blocked_1p_url.spec(), bounce, true, increment_bounce);
   EXPECT_TRUE(GetBtmState(GetService(), redirect_url_2).has_value());
 
   // Expect two recorded stateful redirects: the first bounces through
@@ -771,15 +861,15 @@ TEST_F(
 TEST_F(BtmServiceStateRemovalTest, ImmediateEnforcement) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"delete", "true"}, {"triggering_action", "bounce"}});
+      features::kBtm, {{"triggering_action", "bounce"}});
   SetNow(base::Time::FromSecondsSinceUnixEpoch(2));
+  ASSERT_FALSE(Are3PcsGenerallyEnabled());
 
   // Record a bounce.
   GURL url("https://example.com");
   base::Time bounce = Now();
-  RecordBounce(url, GURL("https://initial.com"), GURL("https://final.com"),
-               bounce, false,
-               base::BindRepeating([](const GURL& final_url) {}));
+  RecordBounce(url.spec(), "https://initial.com", "https://final.com", bounce,
+               false, base::DoNothing());
   WaitOnStorage(GetService());
   EXPECT_TRUE(GetBtmState(GetService(), url).has_value());
 
@@ -799,7 +889,7 @@ TEST_F(BtmServiceStateRemovalTest, ImmediateEnforcement) {
       net::CookiePartitionKeyCollection());
   delegate_.ExpectCall(
       base::Time::Min(), base::Time::Max(),
-      (ContentBrowserClient::kDefaultDipsRemoveMask &
+      (ContentBrowserClient::kDefaultBtmRemoveMask &
        ~BrowsingDataRemover::DATA_TYPE_PRIVACY_SANDBOX) |
           BrowsingDataRemover::DATA_TYPE_AVOID_CLOSING_CONNECTIONS,
       BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB |
@@ -858,7 +948,7 @@ class BtmServiceHistogramTest : public BtmServiceStateRemovalTest {
 TEST_F(BtmServiceHistogramTest, DeletionLatency) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"delete", "false"}, {"triggering_action", "bounce"}});
+      features::kBtm, {{"triggering_action", "bounce"}});
 
   // Verify the histogram starts empty
   histograms().ExpectTotalCount("Privacy.DIPS.DeletionLatency2", 0);
@@ -866,9 +956,8 @@ TEST_F(BtmServiceHistogramTest, DeletionLatency) {
   // Record a bounce.
   GURL url("https://example.com");
   base::Time bounce = base::Time::FromSecondsSinceUnixEpoch(2);
-  RecordBounce(url, GURL("https://initial.com"), GURL("https://final.com"),
-               bounce, false,
-               base::BindRepeating([](const GURL& final_url) {}));
+  RecordBounce(url.spec(), "https://initial.com", "https://final.com", bounce,
+               false, base::DoNothing());
   WaitOnStorage(GetService());
 
   // Set the current time to just after the bounce happened.
@@ -892,45 +981,10 @@ TEST_F(BtmServiceHistogramTest, DeletionLatency) {
   EXPECT_FALSE(GetBtmState(GetService(), url).has_value());
 }
 
-TEST_F(BtmServiceHistogramTest, Deletion_Disallowed) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm,
-      {{"delete", "false"}, {"triggering_action", "stateful_bounce"}});
-
-  // Verify the histogram is initially empty.
-  EXPECT_TRUE(histograms()
-                  .GetTotalCountsForPrefix(kUmaHistogramDeletionPrefix)
-                  .empty());
-
-  // Record a bounce.
-  GURL url("https://example.com");
-  base::Time bounce_time = base::Time::FromSecondsSinceUnixEpoch(2);
-  RecordBounce(url, GURL("https://initial.com"), GURL("https://final.com"),
-               bounce_time, true,
-               base::BindRepeating([](const GURL& final_url) {}));
-  WaitOnStorage(GetService());
-
-  // Time-travel to after the grace period has ended for the bounce.
-  AdvanceTimeTo(bounce_time + grace_period + tiny_delta);
-  FireBtmTimer();
-  task_environment_.RunUntilIdle();
-
-  // Verify a deletion metric was emitted and the BTM entry was removed.
-  base::HistogramTester::CountsMap expected_counts;
-  expected_counts[kUmaHistogramDeletionPrefix + kBlock3PC] = 1;
-  EXPECT_THAT(histograms().GetTotalCountsForPrefix(kUmaHistogramDeletionPrefix),
-              testing::ContainerEq(expected_counts));
-  histograms().ExpectUniqueSample(kUmaHistogramDeletionPrefix + kBlock3PC,
-                                  BtmDeletionAction::kDisallowed, 1);
-  EXPECT_FALSE(GetBtmState(GetService(), url).has_value());
-}
-
 TEST_F(BtmServiceHistogramTest, Deletion_ExceptedAs1P) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm,
-      {{"delete", "true"}, {"triggering_action", "stateful_bounce"}});
+      features::kBtm, {{"triggering_action", "stateful_bounce"}});
 
   // Verify the histogram is initially empty.
   EXPECT_TRUE(histograms()
@@ -942,8 +996,8 @@ TEST_F(BtmServiceHistogramTest, Deletion_ExceptedAs1P) {
   GURL excepted_1p_url("https://initial.com");
   browser_client_.AllowThirdPartyCookiesOnSite(excepted_1p_url);
   base::Time bounce_time = base::Time::FromSecondsSinceUnixEpoch(2);
-  RecordBounce(url, excepted_1p_url, GURL("https://final.com"), bounce_time,
-               true, base::BindRepeating([](const GURL& final_url) {}));
+  RecordBounce(url.spec(), excepted_1p_url.spec(), "https://final.com",
+               bounce_time, true, base::DoNothing());
   WaitOnStorage(GetService());
 
   // Time-travel to after the grace period has ended for the bounce.
@@ -964,8 +1018,7 @@ TEST_F(BtmServiceHistogramTest, Deletion_ExceptedAs1P) {
 TEST_F(BtmServiceHistogramTest, Deletion_ExceptedAs3P) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm,
-      {{"delete", "true"}, {"triggering_action", "stateful_bounce"}});
+      features::kBtm, {{"triggering_action", "stateful_bounce"}});
 
   // Verify the histogram is initially empty.
   EXPECT_TRUE(histograms()
@@ -976,9 +1029,8 @@ TEST_F(BtmServiceHistogramTest, Deletion_ExceptedAs3P) {
   GURL excepted_3p_url("https://example.com");
   browser_client_.GrantCookieAccessTo3pSite(excepted_3p_url);
   base::Time bounce_time = base::Time::FromSecondsSinceUnixEpoch(2);
-  RecordBounce(excepted_3p_url, GURL("https://initial.com"),
-               GURL("https://final.com"), bounce_time, true,
-               base::BindRepeating([](const GURL& final_url) {}));
+  RecordBounce(excepted_3p_url.spec(), "https://initial.com",
+               "https://final.com", bounce_time, true, base::DoNothing());
   WaitOnStorage(GetService());
 
   // Time-travel to after the grace period has ended for the bounce.
@@ -999,8 +1051,7 @@ TEST_F(BtmServiceHistogramTest, Deletion_ExceptedAs3P) {
 TEST_F(BtmServiceHistogramTest, DISABLED_Deletion_Enforced) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm,
-      {{"delete", "true"}, {"triggering_action", "stateful_bounce"}});
+      features::kBtm, {{"triggering_action", "stateful_bounce"}});
 
   // Verify the histogram is initially empty.
   EXPECT_TRUE(histograms()
@@ -1010,9 +1061,8 @@ TEST_F(BtmServiceHistogramTest, DISABLED_Deletion_Enforced) {
   // Record a bounce.
   GURL url("https://example.com");
   base::Time bounce_time = base::Time::FromSecondsSinceUnixEpoch(2);
-  RecordBounce(url, GURL("https://initial.com"), GURL("https://final.com"),
-               bounce_time, true,
-               base::BindRepeating([](const GURL& final_url) {}));
+  RecordBounce(url.spec(), "https://initial.com", "https://final.com",
+               bounce_time, true, base::DoNothing());
   WaitOnStorage(GetService());
 
   // Time-travel to after the grace period has ended for the bounce.
@@ -1028,69 +1078,6 @@ TEST_F(BtmServiceHistogramTest, DISABLED_Deletion_Enforced) {
   histograms().ExpectUniqueSample(kUmaHistogramDeletionPrefix + kBlock3PC,
                                   BtmDeletionAction::kEnforced, 1);
   EXPECT_TRUE(GetBtmState(GetService(), url).has_value());
-}
-
-TEST_F(BtmServiceHistogramTest, ServerBounceDelay) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeatureWithParameters(
-      features::kBtm, {{"delete", "false"}, {"triggering_action", "bounce"}});
-
-  // Verify that the histograms start empty.
-  histograms().ExpectTotalCount(kServerRedirectsDelayHist, 0);
-  histograms().ExpectTotalCount(kServerRedirectsChainDelayHist, 0);
-  EXPECT_TRUE(histograms()
-                  .GetTotalCountsForPrefix(kServerRedirectsStatusCodePrefix)
-                  .empty());
-
-  TestBrowserContext profile;
-  BtmServiceImpl* service = BtmServiceImpl::Get(&profile);
-
-  UrlAndSourceId initial_url = MakeUrlAndId("http://a.test/");
-  UrlAndSourceId first_redirect_url = MakeUrlAndId("http://b.test/");
-  UrlAndSourceId second_redirect_url = MakeUrlAndId("http://c.test/");
-
-  DipsRedirectChainObserver observer(service, GURL());
-  std::vector<BtmRedirectInfoPtr> redirects;
-  redirects.push_back(BtmRedirectInfo::CreateForServer(
-      first_redirect_url,
-      /*access_type=*/BtmDataAccessType::kNone,
-      /*time=*/base::Time::Now(),
-      /*was_response_cached=*/true,
-      /*response_code=*/net::HTTP_MOVED_PERMANENTLY,
-      /*server_bounce_delay=*/base::Milliseconds(100)));
-  redirects.push_back(BtmRedirectInfo::CreateForServer(
-      second_redirect_url,
-      /*access_type=*/BtmDataAccessType::kNone,
-      /*time=*/base::Time::Now(),
-      /*was_response_cached=*/false,
-      /*response_code=*/net::HTTP_FOUND,
-      /*server_bounce_delay=*/base::Milliseconds(100)));
-  BtmRedirectChainInfoPtr chain = std::make_unique<BtmRedirectChainInfo>(
-      initial_url, UrlAndSourceId(), redirects.size(),
-      /*is_partial_chain=*/false);
-  btm::Populate3PcExceptions(&profile, /*web_contents=*/nullptr,
-                             chain->initial_url.url, chain->final_url.url,
-                             redirects);
-  service->HandleRedirectChain(std::move(redirects), std::move(chain),
-                               base::DoNothing());
-  observer.Wait();
-
-  histograms().ExpectTotalCount(kServerRedirectsDelayHist, 2);
-  histograms().ExpectTotalCount(kServerRedirectsChainDelayHist, 1);
-  base::HistogramTester::CountsMap expected_counts = {
-      {kServerRedirectsStatusCodePrefix + kNoCache, 1},
-      {kServerRedirectsStatusCodePrefix + kCached, 1},
-  };
-  EXPECT_THAT(
-      histograms().GetTotalCountsForPrefix(kServerRedirectsStatusCodePrefix),
-      testing::ContainerEq(expected_counts));
-
-  histograms().ExpectUniqueSample(kServerRedirectsStatusCodePrefix + kNoCache,
-                                  net::HTTP_FOUND, 1);
-  histograms().ExpectUniqueSample(kServerRedirectsStatusCodePrefix + kCached,
-                                  net::HTTP_MOVED_PERMANENTLY, 1);
-  histograms().ExpectUniqueSample(kServerRedirectsDelayHist, 100, 2);
-  histograms().ExpectUniqueSample(kServerRedirectsChainDelayHist, 200, 1);
 }
 
 MATCHER_P(HasSourceId, id, "") {
@@ -1109,58 +1096,63 @@ TEST_F(BtmServiceUkmTest, BothChainBeginAndChainEnd) {
   TestBrowserContext profile;
   BtmServiceImpl* service = BtmServiceImpl::Get(&profile);
 
-  UrlAndSourceId initial_url = MakeUrlAndId("http://a.test/");
-  UrlAndSourceId redirect_url1 = MakeUrlAndId("http://b.test/");
-  UrlAndSourceId redirect_url2 = MakeUrlAndId("http://c.test/first");
-  UrlAndSourceId final_url = MakeUrlAndId("http://c.test/second");
+  GURL initial_url = GURL("http://a.test/");
+  ukm::SourceId initial_source_id = ukm::AssignNewSourceId();
+  GURL redirect_url1 = GURL("http://b.test/");
+  ukm::SourceId redirect_source_id1 = ukm::AssignNewSourceId();
+  GURL redirect_url2 = GURL("http://c.test/first");
+  ukm::SourceId redirect_source_id2 = ukm::AssignNewSourceId();
+  GURL final_url = GURL("http://c.test/second");
+  ukm::SourceId final_source_id = ukm::AssignNewSourceId();
 
-  DipsRedirectChainObserver observer(service, final_url.url);
-  std::vector<BtmRedirectInfoPtr> redirects;
-  redirects.push_back(BtmRedirectInfo::CreateForServer(
-      redirect_url1,
-      /*access_type=*/BtmDataAccessType::kNone,
-      /*time=*/base::Time::Now(),
-      /*was_response_cached=*/false,
-      /*response_code=*/net::HTTP_FOUND,
-      /*server_bounce_delay=*/base::TimeDelta()));
-  redirects.push_back(BtmRedirectInfo::CreateForServer(
-      redirect_url2,
-      /*access_type=*/BtmDataAccessType::kNone,
-      /*time=*/base::Time::Now(),
-      /*was_response_cached=*/false,
-      /*response_code=*/net::HTTP_FOUND,
-      /*server_bounce_delay=*/base::TimeDelta()));
-  BtmRedirectChainInfoPtr chain = std::make_unique<BtmRedirectChainInfo>(
-      initial_url, final_url,
-      /*length=*/2, /*is_partial_chain=*/false);
+  BtmRedirectChainObserver observer(service, final_url);
+  std::vector<BtmRedirectPtr> redirects;
+  redirects.push_back(
+      BtmRedirect::CreateForServer(redirect_url1, redirect_source_id1,
+                                   /*access_type=*/BtmDataAccessType::kNone,
+                                   /*time=*/base::Time::Now(),
+                                   /*was_response_cached=*/false,
+                                   /*response_code=*/net::HTTP_FOUND,
+                                   /*server_bounce_delay=*/base::TimeDelta()));
+  redirects.push_back(
+      BtmRedirect::CreateForServer(redirect_url2, redirect_source_id2,
+                                   /*access_type=*/BtmDataAccessType::kNone,
+                                   /*time=*/base::Time::Now(),
+                                   /*was_response_cached=*/false,
+                                   /*response_code=*/net::HTTP_FOUND,
+                                   /*server_bounce_delay=*/base::TimeDelta()));
+  BtmRedirectChainPtr chain = std::make_unique<BtmRedirectChain>(
+      initial_url, initial_source_id, final_url, final_source_id,
+      /*length=*/2, /*is_partial_chain=*/false,
+      /*are_3pcs_generally_enabled=*/false);
   const int32_t chain_id = chain->chain_id;
-  btm::Populate3PcExceptions(&profile, /*web_contents=*/nullptr,
-                             initial_url.url, final_url.url, redirects);
+  btm::Populate3PcExceptions(&profile, /*web_contents=*/nullptr, initial_url,
+                             final_url, redirects);
   service->HandleRedirectChain(std::move(redirects), std::move(chain),
                                base::DoNothing());
   observer.Wait();
 
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.ChainBegin",
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainBegin",
                                       {"ChainId", "InitialAndFinalSitesSame"}),
-              ElementsAre(AllOf(HasSourceId(initial_url.source_id),
+              ElementsAre(AllOf(HasSourceId(initial_source_id),
                                 HasMetrics(ElementsAre(
                                     Pair("ChainId", chain_id),
                                     Pair("InitialAndFinalSitesSame", 0))))));
 
   EXPECT_THAT(
-      ukm_recorder.GetEntries("DIPS.Redirect",
+      ukm_recorder.GetEntries("BTM.Redirect",
                               {"ChainId", "InitialAndFinalSitesSame"}),
       ElementsAre(
-          AllOf(HasSourceId(redirect_url1.source_id),
+          AllOf(HasSourceId(redirect_source_id1),
                 HasMetrics(ElementsAre(Pair("ChainId", chain_id),
                                        Pair("InitialAndFinalSitesSame", 0)))),
-          AllOf(HasSourceId(redirect_url2.source_id),
+          AllOf(HasSourceId(redirect_source_id2),
                 HasMetrics(ElementsAre(Pair("ChainId", chain_id),
                                        Pair("InitialAndFinalSitesSame", 0))))));
 
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.ChainEnd",
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainEnd",
                                       {"ChainId", "InitialAndFinalSitesSame"}),
-              ElementsAre(AllOf(HasSourceId(final_url.source_id),
+              ElementsAre(AllOf(HasSourceId(final_source_id),
                                 HasMetrics(ElementsAre(
                                     Pair("ChainId", chain_id),
                                     Pair("InitialAndFinalSitesSame", 0))))));
@@ -1171,45 +1163,48 @@ TEST_F(BtmServiceUkmTest, InitialAndFinalSitesSame_True) {
   TestBrowserContext profile;
   BtmServiceImpl* service = BtmServiceImpl::Get(&profile);
 
-  UrlAndSourceId initial_url = MakeUrlAndId("http://a.test/");
-  UrlAndSourceId redirect_url = MakeUrlAndId("http://b.test/");
-  UrlAndSourceId final_url = MakeUrlAndId("http://a.test/different-path");
+  GURL initial_url = GURL("http://a.test/");
+  ukm::SourceId initial_source_id = ukm::AssignNewSourceId();
+  GURL redirect_url = GURL("http://b.test/");
+  ukm::SourceId redirect_source_id = ukm::AssignNewSourceId();
+  GURL final_url = GURL("http://a.test/different-path");
+  ukm::SourceId final_source_id = ukm::AssignNewSourceId();
 
-  DipsRedirectChainObserver observer(service, final_url.url);
-  std::vector<BtmRedirectInfoPtr> redirects;
-  redirects.push_back(BtmRedirectInfo::CreateForServer(
-      redirect_url,
-      /*access_type=*/BtmDataAccessType::kNone,
-      /*time=*/base::Time::Now(),
-      /*was_response_cached=*/false,
-      /*response_code=*/net::HTTP_FOUND,
-      /*server_bounce_delay=*/base::TimeDelta()));
-  BtmRedirectChainInfoPtr chain = std::make_unique<BtmRedirectChainInfo>(
-      initial_url, final_url,
-      /*length=*/1, /*is_partial_chain=*/false);
+  BtmRedirectChainObserver observer(service, final_url);
+  std::vector<BtmRedirectPtr> redirects;
+  redirects.push_back(
+      BtmRedirect::CreateForServer(redirect_url, redirect_source_id,
+                                   /*access_type=*/BtmDataAccessType::kNone,
+                                   /*time=*/base::Time::Now(),
+                                   /*was_response_cached=*/false,
+                                   /*response_code=*/net::HTTP_FOUND,
+                                   /*server_bounce_delay=*/base::TimeDelta()));
+  BtmRedirectChainPtr chain = std::make_unique<BtmRedirectChain>(
+      initial_url, initial_source_id, final_url, final_source_id,
+      /*length=*/1, /*is_partial_chain=*/false,
+      /*are_3pcs_generally_enabled=*/false);
   btm::Populate3PcExceptions(&profile, /*web_contents=*/nullptr,
-                             chain->initial_url.url, chain->final_url.url,
-                             redirects);
+                             chain->initial_url, chain->final_url, redirects);
   service->HandleRedirectChain(std::move(redirects), std::move(chain),
                                base::DoNothing());
   observer.Wait();
 
   EXPECT_THAT(
-      ukm_recorder.GetEntries("DIPS.ChainBegin", {"InitialAndFinalSitesSame"}),
+      ukm_recorder.GetEntries("BTM.ChainBegin", {"InitialAndFinalSitesSame"}),
       ElementsAre(
-          AllOf(HasSourceId(initial_url.source_id),
+          AllOf(HasSourceId(initial_source_id),
                 HasMetrics(ElementsAre(Pair("InitialAndFinalSitesSame", 1))))));
 
   EXPECT_THAT(
-      ukm_recorder.GetEntries("DIPS.Redirect", {"InitialAndFinalSitesSame"}),
+      ukm_recorder.GetEntries("BTM.Redirect", {"InitialAndFinalSitesSame"}),
       ElementsAre(
-          AllOf(HasSourceId(redirect_url.source_id),
+          AllOf(HasSourceId(redirect_source_id),
                 HasMetrics(ElementsAre(Pair("InitialAndFinalSitesSame", 1))))));
 
   EXPECT_THAT(
-      ukm_recorder.GetEntries("DIPS.ChainEnd", {"InitialAndFinalSitesSame"}),
+      ukm_recorder.GetEntries("BTM.ChainEnd", {"InitialAndFinalSitesSame"}),
       ElementsAre(
-          AllOf(HasSourceId(final_url.source_id),
+          AllOf(HasSourceId(final_source_id),
                 HasMetrics(ElementsAre(Pair("InitialAndFinalSitesSame", 1))))));
 }
 
@@ -1218,20 +1213,23 @@ TEST_F(BtmServiceUkmTest, DontReportEmptyChainsAtAll) {
   TestBrowserContext profile;
   BtmServiceImpl* service = BtmServiceImpl::Get(&profile);
 
-  UrlAndSourceId initial_url = MakeUrlAndId("http://a.test/");
-  UrlAndSourceId final_url = MakeUrlAndId("http://b.test/");
+  GURL initial_url = GURL("http://a.test/");
+  ukm::SourceId initial_source_id = ukm::AssignNewSourceId();
+  GURL final_url = GURL("http://b.test/");
+  ukm::SourceId final_source_id = ukm::AssignNewSourceId();
 
-  DipsRedirectChainObserver observer(service, final_url.url);
-  BtmRedirectChainInfoPtr chain = std::make_unique<BtmRedirectChainInfo>(
-      initial_url, final_url,
-      /*length=*/0, /*is_partial_chain=*/false);
+  BtmRedirectChainObserver observer(service, final_url);
+  BtmRedirectChainPtr chain = std::make_unique<BtmRedirectChain>(
+      initial_url, initial_source_id, final_url, final_source_id,
+      /*length=*/0, /*is_partial_chain=*/false,
+      /*are_3pcs_generally_enabled*/ false);
 
   service->HandleRedirectChain({}, std::move(chain), base::DoNothing());
   observer.Wait();
 
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.ChainBegin", {}), IsEmpty());
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.Redirect", {}), IsEmpty());
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.ChainEnd", {}), IsEmpty());
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainBegin", {}), IsEmpty());
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.Redirect", {}), IsEmpty());
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainEnd", {}), IsEmpty());
 }
 
 TEST_F(BtmServiceUkmTest, DontReportChainBeginIfInvalidSourceId) {
@@ -1239,35 +1237,37 @@ TEST_F(BtmServiceUkmTest, DontReportChainBeginIfInvalidSourceId) {
   TestBrowserContext profile;
   BtmServiceImpl* service = BtmServiceImpl::Get(&profile);
 
-  UrlAndSourceId redirect_url = MakeUrlAndId("http://b.test/");
-  UrlAndSourceId final_url = MakeUrlAndId("http://c.test/");
+  GURL redirect_url = GURL("http://b.test/");
+  ukm::SourceId redirect_source_id = ukm::AssignNewSourceId();
+  GURL final_url = GURL("http://c.test/");
+  ukm::SourceId final_source_id = ukm::AssignNewSourceId();
 
-  DipsRedirectChainObserver observer(service, final_url.url);
-  std::vector<BtmRedirectInfoPtr> redirects;
-  redirects.push_back(BtmRedirectInfo::CreateForServer(
-      redirect_url,
-      /*access_type=*/BtmDataAccessType::kNone,
-      /*time=*/base::Time::Now(),
-      /*was_response_cached=*/false,
-      /*response_code=*/net::HTTP_FOUND,
-      /*server_bounce_delay=*/base::TimeDelta()));
-  BtmRedirectChainInfoPtr chain = std::make_unique<BtmRedirectChainInfo>(
-      UrlAndSourceId(), final_url,
-      /*length=*/1, /*is_partial_chain=*/false);
+  BtmRedirectChainObserver observer(service, final_url);
+  std::vector<BtmRedirectPtr> redirects;
+  redirects.push_back(
+      BtmRedirect::CreateForServer(redirect_url, redirect_source_id,
+                                   /*access_type=*/BtmDataAccessType::kNone,
+                                   /*time=*/base::Time::Now(),
+                                   /*was_response_cached=*/false,
+                                   /*response_code=*/net::HTTP_FOUND,
+                                   /*server_bounce_delay=*/base::TimeDelta()));
+  BtmRedirectChainPtr chain = std::make_unique<BtmRedirectChain>(
+      GURL(), ukm::kInvalidSourceId, final_url, final_source_id,
+      /*length=*/1, /*is_partial_chain=*/false,
+      /*are_3pcs_generally_enabled=*/false);
   btm::Populate3PcExceptions(&profile, /*web_contents=*/nullptr,
-                             chain->initial_url.url, chain->final_url.url,
-                             redirects);
+                             chain->initial_url, chain->final_url, redirects);
   service->HandleRedirectChain(std::move(redirects), std::move(chain),
                                base::DoNothing());
   observer.Wait();
 
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.ChainBegin", {}), IsEmpty());
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainBegin", {}), IsEmpty());
 
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.Redirect", {}),
-              ElementsAre(AllOf(HasSourceId(redirect_url.source_id))));
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.Redirect", {}),
+              ElementsAre(AllOf(HasSourceId(redirect_source_id))));
 
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.ChainEnd", {}),
-              ElementsAre(AllOf(HasSourceId(final_url.source_id))));
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainEnd", {}),
+              ElementsAre(AllOf(HasSourceId(final_source_id))));
 }
 
 TEST_F(BtmServiceUkmTest, DontReportChainEndIfInvalidSourceId) {
@@ -1275,76 +1275,76 @@ TEST_F(BtmServiceUkmTest, DontReportChainEndIfInvalidSourceId) {
   TestBrowserContext profile;
   BtmServiceImpl* service = BtmServiceImpl::Get(&profile);
 
-  UrlAndSourceId initial_url = MakeUrlAndId("http://a.test/");
-  UrlAndSourceId redirect_url = MakeUrlAndId("http://b.test/");
+  GURL initial_url = GURL("http://a.test/");
+  ukm::SourceId initial_source_id = ukm::AssignNewSourceId();
+  GURL redirect_url = GURL("http://b.test/");
+  ukm::SourceId redirect_source_id = ukm::AssignNewSourceId();
 
-  DipsRedirectChainObserver observer(service, GURL());
-  std::vector<BtmRedirectInfoPtr> redirects;
-  redirects.push_back(BtmRedirectInfo::CreateForServer(
-      redirect_url,
-      /*access_type=*/BtmDataAccessType::kNone,
-      /*time=*/base::Time::Now(),
-      /*was_response_cached=*/false,
-      /*response_code=*/net::HTTP_FOUND,
-      /*server_bounce_delay=*/base::TimeDelta()));
-  BtmRedirectChainInfoPtr chain = std::make_unique<BtmRedirectChainInfo>(
-      initial_url, UrlAndSourceId(),
-      /*length=*/1, /*is_partial_chain=*/false);
+  BtmRedirectChainObserver observer(service, GURL());
+  std::vector<BtmRedirectPtr> redirects;
+  redirects.push_back(
+      BtmRedirect::CreateForServer(redirect_url, redirect_source_id,
+                                   /*access_type=*/BtmDataAccessType::kNone,
+                                   /*time=*/base::Time::Now(),
+                                   /*was_response_cached=*/false,
+                                   /*response_code=*/net::HTTP_FOUND,
+                                   /*server_bounce_delay=*/base::TimeDelta()));
+  BtmRedirectChainPtr chain = std::make_unique<BtmRedirectChain>(
+      initial_url, initial_source_id, GURL(), ukm::kInvalidSourceId,
+      /*length=*/1, /*is_partial_chain=*/false,
+      /*are_3pcs_generally_enabled=*/false);
   btm::Populate3PcExceptions(&profile, /*web_contents=*/nullptr,
-                             chain->initial_url.url, chain->final_url.url,
-                             redirects);
+                             chain->initial_url, chain->final_url, redirects);
   service->HandleRedirectChain(std::move(redirects), std::move(chain),
                                base::DoNothing());
   observer.Wait();
 
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.ChainBegin", {}),
-              ElementsAre(AllOf(HasSourceId(initial_url.source_id))));
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainBegin", {}),
+              ElementsAre(AllOf(HasSourceId(initial_source_id))));
 
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.Redirect", {}),
-              ElementsAre(AllOf(HasSourceId(redirect_url.source_id))));
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.Redirect", {}),
+              ElementsAre(AllOf(HasSourceId(redirect_source_id))));
 
-  EXPECT_THAT(ukm_recorder.GetEntries("DIPS.ChainEnd", {}), IsEmpty());
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainEnd", {}), IsEmpty());
 }
 
-TEST(BtmCleanupTest, DatabaseFileIsDeletedIfFeatureIsDisabled) {
-  BrowserTaskEnvironment task_environment;
+TEST_F(BtmServiceUkmTest, DontReportChainIfTpcsEnabled) {
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+  TestBrowserContext profile;
+  BtmServiceImpl* service = BtmServiceImpl::Get(&profile);
 
-  base::FilePath user_data_dir;
-  base::FilePath db_path;
+  GURL initial_url = GURL("http://a.test/");
+  ukm::SourceId initial_source_id = ukm::AssignNewSourceId();
+  GURL redirect_url = GURL("http://b.test/");
+  ukm::SourceId redirect_source_id = ukm::AssignNewSourceId();
+  GURL final_url = GURL("http://c.test/");
+  ukm::SourceId final_source_id = ukm::AssignNewSourceId();
 
-  // First, create a browser context while DIPS is enabled, and confirm a
-  // database file is created.
-  {
-    TestBrowserContext browser_context;
-    db_path = GetBtmFilePath(&browser_context);
-    // Wait for the database to be created.
-    BrowserContextImpl::From(&browser_context)
-        ->GetDipsService()
-        ->storage()
-        ->FlushPostedTasksForTesting();
-    ASSERT_TRUE(base::PathExists(db_path));
+  BtmRedirectChainObserver observer(service, final_url);
+  std::vector<BtmRedirectPtr> redirects;
+  redirects.push_back(
+      BtmRedirect::CreateForServer(redirect_url, redirect_source_id,
+                                   /*access_type=*/BtmDataAccessType::kNone,
+                                   /*time=*/base::Time::Now(),
+                                   /*was_response_cached=*/false,
+                                   /*response_code=*/net::HTTP_FOUND,
+                                   /*server_bounce_delay=*/base::TimeDelta()));
+  BtmRedirectChainPtr chain = std::make_unique<BtmRedirectChain>(
+      initial_url, initial_source_id, final_url, final_source_id,
+      redirects.size(), /*is_partial_chain=*/false,
+      /*are_3pcs_generally_enabled=*/true);
+  btm::Populate3PcExceptions(&profile, /*web_contents=*/nullptr, initial_url,
+                             final_url, redirects);
+  service->HandleRedirectChain(std::move(redirects), std::move(chain),
+                               base::DoNothing());
+  observer.Wait();
 
-    // Take ownership of the browser context's directory so we can reuse it.
-    user_data_dir = browser_context.TakePath();
-
-    // Confirm that WaitForDipsCleanupForTesting() returns even if the file is
-    // not deleted.
-    BrowserContextImpl::From(&browser_context)->WaitForDipsCleanupForTesting();
-    ASSERT_TRUE(base::PathExists(db_path));
-  }
-
-  // Confirm the file still exists after the browser context is destroyed.
-  ASSERT_TRUE(base::PathExists(db_path));
-
-  // Create another browser context for the same directory, while DIPS is
-  // disabled. Confirm the database file is deleted.
-  {
-    ScopedInitBtmFeature disable_dips(false);
-    TestBrowserContext browser_context(user_data_dir);
-    ASSERT_FALSE(BrowserContextImpl::From(&browser_context)->GetDipsService());
-    BrowserContextImpl::From(&browser_context)->WaitForDipsCleanupForTesting();
-    ASSERT_FALSE(base::PathExists(db_path));
-  }
+  // There should be no BTM chain UKMs, as processing gets short-circuited when
+  // third-party cookies are enabled.
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainBegin", {"ChainId"}),
+              IsEmpty());
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.Redirect", {"ChainId"}), IsEmpty());
+  EXPECT_THAT(ukm_recorder.GetEntries("BTM.ChainEnd", {"ChainId"}), IsEmpty());
 }
 
 }  // namespace content

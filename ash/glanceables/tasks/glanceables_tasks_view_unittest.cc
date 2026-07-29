@@ -5,6 +5,7 @@
 #include "ash/glanceables/tasks/glanceables_tasks_view.h"
 
 #include <memory>
+#include <utility>
 
 #include "ash/api/tasks/fake_tasks_client.h"
 #include "ash/glanceables/common/glanceables_list_footer_view.h"
@@ -21,10 +22,10 @@
 #include "ash/test/ash_test_base.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/gtest_tags.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "components/account_id/account_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/event_constants.h"
@@ -73,6 +74,12 @@ class GlanceablesTasksViewTest : public AshTestBase {
   }
 
   void TearDown() override {
+    view_ = nullptr;
+    widget_.reset();
+    Shell::Get()->glanceables_controller()->UpdateClientsRegistration(
+        account_id_, GlanceablesController::ClientsRegistration{
+                         .classroom_client = nullptr, .tasks_client = nullptr});
+    fake_glanceables_tasks_client_.reset();
     // Destroy `widget_` first, before destroying `LayoutProvider` (needed in
     // the `views::Combobox`'s destruction chain).
     CloseWidget();
@@ -92,6 +99,8 @@ class GlanceablesTasksViewTest : public AshTestBase {
     fake_glanceables_tasks_client_->OnGlanceablesBubbleClosed(
         base::DoNothing());
 
+    // reset pointer due to SetContentsView deleting referencing view
+    view_ = nullptr;
     // Recreate the tasks view to update the task views.
     view_ = widget_->SetContentsView(std::make_unique<GlanceablesTasksView>(
         fake_glanceables_tasks_client_->task_lists()));
@@ -104,56 +113,55 @@ class GlanceablesTasksViewTest : public AshTestBase {
 
   Combobox* GetComboBoxView() const {
     return views::AsViewClass<Combobox>(view_->GetViewByID(
-        base::to_underlying(GlanceablesViewId::kTimeManagementBubbleComboBox)));
+        std::to_underlying(GlanceablesViewId::kTimeManagementBubbleComboBox)));
   }
 
   const IconButton* GetHeaderIconView() const {
-    return views::AsViewClass<IconButton>(
-        view_->GetViewByID(base::to_underlying(
-            GlanceablesViewId::kTimeManagementBubbleHeaderIcon)));
+    return views::AsViewClass<IconButton>(view_->GetViewByID(std::to_underlying(
+        GlanceablesViewId::kTimeManagementBubbleHeaderIcon)));
   }
 
   const CounterExpandButton* GetCounterExpandButton() const {
     return views::AsViewClass<CounterExpandButton>(
-        view_->GetViewByID(base::to_underlying(
+        view_->GetViewByID(std::to_underlying(
             GlanceablesViewId::kTimeManagementBubbleExpandButton)));
   }
 
   views::ScrollView* GetScrollView() const {
     return views::AsViewClass<views::ScrollView>(view_->GetViewByID(
-        base::to_underlying(GlanceablesViewId::kContentsScrollView)));
+        std::to_underlying(GlanceablesViewId::kContentsScrollView)));
   }
 
   const views::View* GetTaskItemsContainerView() const {
     return views::AsViewClass<views::View>(
-        view_->GetViewByID(base::to_underlying(
+        view_->GetViewByID(std::to_underlying(
             GlanceablesViewId::kTimeManagementBubbleListContainer)));
   }
 
   const views::View* GetEditInBrowserButton() const {
     return views::AsViewClass<views::View>(view_->GetViewByID(
-        base::to_underlying(GlanceablesViewId::kTaskItemEditInBrowserLabel)));
+        std::to_underlying(GlanceablesViewId::kTaskItemEditInBrowserLabel)));
   }
 
   const views::LabelButton* GetAddNewTaskButton() const {
     return views::AsViewClass<views::LabelButton>(view_->GetViewByID(
-        base::to_underlying(GlanceablesViewId::kTasksBubbleAddNewButton)));
+        std::to_underlying(GlanceablesViewId::kTasksBubbleAddNewButton)));
   }
 
   const GlanceablesListFooterView* GetListFooterView() const {
     return views::AsViewClass<GlanceablesListFooterView>(
-        view_->GetViewByID(base::to_underlying(
+        view_->GetViewByID(std::to_underlying(
             GlanceablesViewId::kTimeManagementBubbleListFooter)));
   }
 
   const views::ProgressBar* GetProgressBar() const {
     return views::AsViewClass<views::ProgressBar>(view_->GetViewByID(
-        base::to_underlying(GlanceablesViewId::kProgressBar)));
+        std::to_underlying(GlanceablesViewId::kProgressBar)));
   }
 
   const ErrorMessageToast* GetErrorMessage() const {
     return views::AsViewClass<ErrorMessageToast>(
-        view_->GetViewByID(base::to_underlying(
+        view_->GetViewByID(std::to_underlying(
             GlanceablesViewId::kTimeManagementErrorMessageToast)));
   }
 
@@ -174,7 +182,7 @@ class GlanceablesTasksViewTest : public AshTestBase {
  private:
   AccountId account_id_ = AccountId::FromUserEmail("test_user@gmail.com");
   std::unique_ptr<api::FakeTasksClient> fake_glanceables_tasks_client_;
-  raw_ptr<GlanceablesTasksView, DanglingUntriaged> view_;
+  raw_ptr<GlanceablesTasksView> view_;
   std::unique_ptr<views::Widget> widget_;
 
   const GlanceablesTestNewWindowDelegate new_window_delegate_;
@@ -186,8 +194,8 @@ TEST_F(GlanceablesTasksViewTest, Basics) {
 
   // Check that the expand button does not exist when `GlanceablesTasksView` is
   // created alone.
-  auto* expand_button = view()->GetViewByID(base::to_underlying(
-      GlanceablesViewId::kTimeManagementBubbleExpandButton));
+  auto* expand_button = view()->GetViewByID(
+      std::to_underlying(GlanceablesViewId::kTimeManagementBubbleExpandButton));
   EXPECT_TRUE(expand_button);
   EXPECT_FALSE(expand_button->GetVisible());
 }
@@ -255,7 +263,7 @@ TEST_F(GlanceablesTasksViewTest, ShowsProgressBarWhileEditingTask) {
 
   const auto* const title_label = views::AsViewClass<views::Label>(
       task_items_container_view->children()[0]->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
   GestureTapOn(title_label);
   GetEventGenerator()->PressAndReleaseKey(ui::VKEY_SPACE);
   GetEventGenerator()->PressAndReleaseKey(ui::VKEY_U);
@@ -330,7 +338,7 @@ TEST_F(GlanceablesTasksViewTest, SupportsEditingRightAfterAdding) {
   // Edit the same task.
   const auto* const title_label = views::AsViewClass<views::Label>(
       GetTaskItemsContainerView()->children()[0]->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
 
   GestureTapOn(title_label);
   GetEventGenerator()->PressAndReleaseKey(ui::VKEY_SPACE);
@@ -359,7 +367,7 @@ TEST_F(GlanceablesTasksViewTest, TabbingOutOfNewTaskTextfieldAddsTask) {
 
   const auto* task_view = GetTaskItemsContainerView()->children()[0].get();
   EXPECT_TRUE(task_view->GetViewByID(
-      base::to_underlying(GlanceablesViewId::kTaskItemTitleTextField)));
+      std::to_underlying(GlanceablesViewId::kTaskItemTitleTextField)));
 
   PressAndReleaseKey(ui::VKEY_N, ui::EF_SHIFT_DOWN);
   PressAndReleaseKey(ui::VKEY_E);
@@ -375,7 +383,7 @@ TEST_F(GlanceablesTasksViewTest, TabbingOutOfNewTaskTextfieldAddsTask) {
 
   const auto* title_label =
       views::AsViewClass<views::Label>(task_view->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
   EXPECT_FALSE(title_label);
 
   // Verify executed callbacks number.
@@ -388,7 +396,7 @@ TEST_F(GlanceablesTasksViewTest, TabbingOutOfNewTaskTextfieldAddsTask) {
 
   const auto* title_text_field =
       views::AsViewClass<views::Textfield>(task_view->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleTextField)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleTextField)));
   ASSERT_TRUE(title_text_field);
   EXPECT_TRUE(title_text_field->HasFocus());
   EXPECT_EQ(u"New", title_text_field->GetText());
@@ -410,11 +418,11 @@ TEST_F(GlanceablesTasksViewTest, TabbingOutOfNewTaskTextfieldAddsTask) {
   task_view = GetTaskItemsContainerView()->children()[0].get();
   title_text_field =
       views::AsViewClass<views::Textfield>(task_view->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleTextField)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleTextField)));
   EXPECT_FALSE(title_text_field);
 
   title_label = views::AsViewClass<views::Label>(task_view->GetViewByID(
-      base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+      std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
   ASSERT_TRUE(title_label);
   EXPECT_TRUE(title_label->IsDrawn());
   EXPECT_EQ(u"New1", title_label->GetText());
@@ -433,7 +441,7 @@ TEST_F(GlanceablesTasksViewTest, TabbingOutOfNewTaskTextfieldAddsTask) {
 
   title_label = views::AsViewClass<views::Label>(
       GetTaskItemsContainerView()->children()[0]->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
   ASSERT_TRUE(title_label);
   EXPECT_TRUE(title_label->IsDrawn());
   EXPECT_EQ(u"New1 1", title_label->GetText());
@@ -470,7 +478,7 @@ TEST_F(GlanceablesTasksViewTest, AllowsPressingAddNewTaskButtonWhileAdding) {
   // But the previous task becomes automatically committed due to losing focus.
   const auto* const previous_task_label = views::AsViewClass<views::Label>(
       GetTaskItemsContainerView()->children()[1]->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
   ASSERT_TRUE(previous_task_label);
   EXPECT_EQ(previous_task_label->GetText(), u"New");
 }
@@ -481,7 +489,7 @@ TEST_F(GlanceablesTasksViewTest,
 
   const auto* const title_label = views::AsViewClass<views::Label>(
       GetTaskItemsContainerView()->children()[0]->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
 
   // Enter and exit editing mode, the task's title should stay the same.
   GestureTapOn(title_label);
@@ -500,7 +508,7 @@ TEST_F(GlanceablesTasksViewTest, DoesNotAllowEditingToBlankTitle) {
   {
     const auto* const title_label =
         views::AsViewClass<views::Label>(task_view->GetViewByID(
-            base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+            std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
     EXPECT_FALSE(title_label->GetText().empty());
 
     // Enter editing mode.
@@ -510,7 +518,7 @@ TEST_F(GlanceablesTasksViewTest, DoesNotAllowEditingToBlankTitle) {
   {
     const auto* const title_text_field =
         views::AsViewClass<views::Textfield>(task_view->GetViewByID(
-            base::to_underlying(GlanceablesViewId::kTaskItemTitleTextField)));
+            std::to_underlying(GlanceablesViewId::kTaskItemTitleTextField)));
     EXPECT_FALSE(title_text_field->GetText().empty());
 
     // Clear `title_text_field`.
@@ -527,7 +535,7 @@ TEST_F(GlanceablesTasksViewTest, DoesNotAllowEditingToBlankTitle) {
   {
     const auto* const title_label =
         views::AsViewClass<views::Label>(task_view->GetViewByID(
-            base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+            std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
 
     // `title_label` is back with non-empty title.
     EXPECT_FALSE(title_label->GetText().empty());
@@ -636,7 +644,7 @@ TEST_F(GlanceablesTasksViewTest, HandlesErrorAfterEditing) {
 
   const auto* title_label = views::AsViewClass<views::Label>(
       task_items_container_view->children()[0]->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
 
   GestureTapOn(title_label);
   GetEventGenerator()->PressAndReleaseKey(ui::VKEY_SPACE);
@@ -658,7 +666,7 @@ TEST_F(GlanceablesTasksViewTest, HandlesErrorAfterEditing) {
   // Revert the task title to the one before editing.
   title_label = views::AsViewClass<views::Label>(
       task_items_container_view->children()[0]->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
   EXPECT_EQ(title_label->GetText(), u"Task List 1 Item 1 Title");
 }
 
@@ -743,7 +751,7 @@ TEST_F(GlanceablesTasksViewTest, ShowTasksWebUIFromEditInBrowserView) {
   base::UserActionTester user_actions;
   const auto* const title_label = views::AsViewClass<views::Label>(
       GetTaskItemsContainerView()->children()[0]->GetViewByID(
-          base::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
+          std::to_underlying(GlanceablesViewId::kTaskItemTitleLabel)));
 
   // Tap the title label to enter the edit mode. The enter in browser button
   // should be visible.

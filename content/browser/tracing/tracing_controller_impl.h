@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "base/functional/callback_forward.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/task_traits.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
@@ -34,6 +34,8 @@ class TraceConfig;
 
 namespace content {
 
+class TracingDelegate;
+
 class TracingControllerImpl : public TracingController,
                               public mojo::DataPipeDrainer::Client,
                               public tracing::mojom::TracingSessionClient {
@@ -54,14 +56,18 @@ class TracingControllerImpl : public TracingController,
   TracingControllerImpl(const TracingControllerImpl&) = delete;
   TracingControllerImpl& operator=(const TracingControllerImpl&) = delete;
 
+  // Returns the embedder's tracing delegate.
+  TracingDelegate* tracing_delegate() { return delegate_.get(); }
+
   // TracingController implementation.
   bool GetCategories(GetCategoriesDoneCallback callback) override;
-  bool StartTracing(const base::trace_event::TraceConfig& trace_config,
-                    StartTracingDoneCallback callback) override;
+  std::vector<uint8_t> GetTrackEventDescriptor() override;
+  bool StartTracingImpl(const base::trace_event::TraceConfig& trace_config,
+                        StartTracingDoneCallback callback,
+                        bool privacy_filtering_enabled) override;
   bool StopTracing(const scoped_refptr<TraceDataEndpoint>& endpoint) override;
   bool StopTracing(const scoped_refptr<TraceDataEndpoint>& endpoint,
-                   const std::string& agent_label,
-                   bool privacy_filtering_enabled = false) override;
+                   const std::string& agent_label) override;
   bool GetTraceBufferUsage(GetTraceBufferUsageCallback callback) override;
   bool IsTracing() override;
 
@@ -77,11 +83,10 @@ class TracingControllerImpl : public TracingController,
   ~TracingControllerImpl() override;
   void InitializeDataSources();
   void ConnectToServiceIfNeeded();
-  std::optional<base::Value::Dict> GenerateMetadataDict();
-  void GenerateMetadataPacket(perfetto::protos::pbzero::TracePacket* packet,
-                              bool privacy_filtering_enabled);
-  void GenerateMetadataPacketFieldTrials(
-      perfetto::protos::pbzero::ChromeMetadataPacket* metadata_proto,
+  static void RecorderMetadataToBundle(
+      perfetto::protos::pbzero::ChromeEventBundle* bundle);
+  static void GenerateMetadataPacket(
+      perfetto::protos::pbzero::TracePacket* packet,
       bool privacy_filtering_enabled);
 
   // mojo::DataPipeDrainer::Client
@@ -108,6 +113,8 @@ class TracingControllerImpl : public TracingController,
   scoped_refptr<TraceDataEndpoint> trace_data_endpoint_;
   bool is_data_complete_ = false;
   bool read_buffers_complete_ = false;
+
+  std::unique_ptr<TracingDelegate> delegate_;
 
 #if BUILDFLAG(IS_CHROMEOS)
   bool are_statistics_loaded_ = false;

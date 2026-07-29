@@ -6,14 +6,17 @@
 
 #include <math.h>
 
+#include <numbers>
 #include <vector>
 
 #include "cc/slim/layer.h"
 #include "cc/slim/nine_patch_layer.h"
+#include "cc/slim/solid_color_layer.h"
 #include "chrome/browser/android/compositor/decoration_tab_title.h"
 #include "chrome/browser/android/compositor/layer_title_cache.h"
 #include "ui/android/resources/nine_patch_resource.h"
 #include "ui/base/l10n/l10n_util_android.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 
 namespace android {
 
@@ -23,16 +26,39 @@ scoped_refptr<TabHandleLayer> TabHandleLayer::Create(
   return base::WrapRefCounted(new TabHandleLayer(layer_title_cache));
 }
 
+// static
+void TabHandleLayer::SetConstants(float tab_underline_thickness,
+                                  float tab_underline_corner_radius,
+                                  float tab_underline_bottom_margin) {
+  tab_underline_thickness_ = tab_underline_thickness;
+  tab_underline_corner_radius_ = tab_underline_corner_radius;
+  tab_underline_bottom_margin_ = tab_underline_bottom_margin;
+}
+
 void TabHandleLayer::SetProperties(
     int id,
     ui::Resource* close_button_resource,
     ui::Resource* close_button_background_resource,
+    bool is_close_keyboard_focused,
+    ui::Resource* close_button_keyboard_focus_ring_resource,
     ui::Resource* divider_resource,
     ui::NinePatchResource* tab_handle_resource,
     ui::NinePatchResource* tab_handle_outline_resource,
     bool foreground,
+    bool is_pinned,
     bool shouldShowTabOutline,
     bool close_pressed,
+    bool should_hide_favicon,
+    bool should_show_media_indicator,
+    ui::Resource* media_indicator_resource,
+    float media_indicator_width,
+    float media_indicator_spacing,
+    float media_indicator_internal_padding,
+    float title_to_media_indicator_spacing,
+    float media_indicator_opacity,
+    ui::Resource* tab_indicator_overlay_resource,
+    float target_rotation,
+    float tab_indicator_overlay_width,
     float toolbar_width,
     float x,
     float y,
@@ -48,10 +74,24 @@ void TabHandleLayer::SetProperties(
     bool is_end_divider_visible,
     bool is_loading,
     float spinner_rotation,
-    float opacity) {
-  if (foreground != foreground_ || opacity != opacity_) {
+    float opacity,
+    bool is_keyboard_focused,
+    ui::NinePatchResource* keyboard_focus_ring_drawable,
+    int keyboard_focus_ring_offset,
+    int stroke_width,
+    float folio_foot_length,
+    float width_to_hide_tab_title,
+    float pinned_icon_offset_x,
+    float underline_opacity,
+    float underline_shimmer_offset,
+    SkColor underline_start_color,
+    SkColor underline_end_color,
+    int underline_width_threshold) {
+  if (foreground != foreground_ || opacity != opacity_ ||
+      is_pinned != is_pinned_) {
     foreground_ = foreground;
     opacity_ = opacity;
+    is_pinned_ = is_pinned;
   }
 
   y += top_margin;
@@ -90,7 +130,7 @@ void TabHandleLayer::SetProperties(
   }
 
   if (title_layer) {
-    unsigned expected_children = 4;
+    unsigned expected_children = 6;
     title_layer_ = title_layer->layer();
     if (tab_->children().size() < expected_children) {
       tab_->AddChild(title_layer_);
@@ -100,6 +140,7 @@ void TabHandleLayer::SetProperties(
                          title_layer_);
     }
     title_layer->SetUIResourceIds();
+    title_layer->SetIconOffsetX(pinned_icon_offset_x);
   } else if (title_layer_.get()) {
     title_layer_->RemoveFromParent();
     title_layer_ = nullptr;
@@ -149,6 +190,13 @@ void TabHandleLayer::SetProperties(
     close_width = 0.f;
   }
 
+  // Spacing between the media indicator and the close button.
+  float media_close_spacing =
+      (close_button_alpha > 0.f)
+          ? (media_indicator_spacing - close_button_padding -
+             media_indicator_internal_padding)
+          : 0.f;
+
   int divider_y = content_offset_y;
   int divider_width = divider_resource->size().width();
 
@@ -174,6 +222,41 @@ void TabHandleLayer::SetProperties(
     end_divider_->SetPosition(gfx::PointF(divider_x, divider_y));
   }
 
+  float media_indicator_size = 0.f;
+  if (should_show_media_indicator && media_indicator_resource) {
+    media_indicator_size = media_indicator_width;
+    media_indicator_layer_->SetIsDrawable(true);
+    media_indicator_layer_->SetUIResourceId(
+        media_indicator_resource->ui_resource()->id());
+    media_indicator_layer_->SetBounds(
+        gfx::Size(media_indicator_size, media_indicator_size));
+    media_indicator_layer_->SetOpacity(media_indicator_opacity);
+  } else {
+    media_indicator_layer_->SetIsDrawable(false);
+  }
+
+  if (should_show_media_indicator && tab_indicator_overlay_resource) {
+    tab_indicator_overlay_layer_->SetIsDrawable(true);
+    tab_indicator_overlay_layer_->SetUIResourceId(
+        tab_indicator_overlay_resource->ui_resource()->id());
+    float overlay_size = tab_indicator_overlay_width;
+    tab_indicator_overlay_layer_->SetBounds(
+        gfx::Size(overlay_size, overlay_size));
+    tab_indicator_overlay_layer_->SetOpacity(media_indicator_opacity);
+
+    // Apply spinning animation.
+    tab_indicator_overlay_layer_->SetTransformOrigin(
+        gfx::PointF(overlay_size / 2, overlay_size / 2));
+    float diff = target_rotation - tab_indicator_overlay_rotation_;
+    tab_indicator_overlay_rotation_ = target_rotation;
+    if (diff != 0) {
+      transform_->RotateAboutZAxis(diff);
+    }
+    tab_indicator_overlay_layer_->SetTransform(*transform_.get());
+  } else {
+    tab_indicator_overlay_layer_->SetIsDrawable(false);
+  }
+
   if (title_layer) {
     int title_y;
     float title_y_offset_mid = (tab_handle_resource->padding().y() + height -
@@ -182,9 +265,36 @@ void TabHandleLayer::SetProperties(
     // 8dp top padding for folio.
     title_y = std::min(content_offset_y, title_y_offset_mid);
 
-    int title_x = is_rtl ? padding_left + close_width : padding_left;
-    title_layer->setBounds(
-        gfx::Size(width - padding_right - padding_left - close_width, height));
+    // Hide tab title text when it reached threshold.
+    float hide_title_threshold = width_to_hide_tab_title;
+    if (media_indicator_size > 0) {
+      hide_title_threshold += media_indicator_size +
+                              title_to_media_indicator_spacing +
+                              media_close_spacing;
+    }
+    title_layer->SetShouldHideTitleText(width <= hide_title_threshold);
+
+    // Hide tab favicon if necessary.
+    title_layer->SetShouldHideIcon(should_hide_favicon);
+
+    int title_x = is_rtl ? padding_left + close_width + media_indicator_size
+                         : padding_left;
+    int title_width = width - padding_left - padding_right - close_width -
+                      media_indicator_size;
+
+    if (media_indicator_size > 0) {
+      // Account for the spacing between the title and the media indicator.
+      title_width -= title_to_media_indicator_spacing;
+
+      // Account for the spacing between the media indicator and the close
+      // button.
+      title_width -= media_close_spacing;
+
+      if (is_rtl) {
+        title_x += title_to_media_indicator_spacing + media_close_spacing;
+      }
+    }
+    title_layer->setBounds(gfx::Size(title_width, height));
     title_layer->layer()->SetPosition(gfx::PointF(title_x, title_y));
     if (is_loading) {
       title_layer->SetIsLoading(true);
@@ -193,23 +303,29 @@ void TabHandleLayer::SetProperties(
       title_layer->SetIsLoading(false);
     }
   }
+
+  // Pull this out of the close-button-related block so it can be used for
+  // keyboard focus ring calculation as well.
+  int close_y;
+
+  // Close button image is larger than divider image, so close button will
+  // appear slightly lower even the close_y are set in the same value as
+  // divider_y. Thus need this offset to account for the effect of image
+  // size difference has on close_y.
+  int close_y_offset_tsr = std::max(0, (close_button_resource->size().height() -
+                                        divider_resource->size().height()) /
+                                           2);
+  close_y = content_offset_y - std::abs(close_y_offset_tsr);
+
+  // The keyboard focus ring should not be drawn by default. Make sure this
+  // happens whether the parent tab is selected or unselected.
+  close_keyboard_focus_ring_->SetIsDrawable(false);
   if (close_button_alpha == 0.f) {
     close_button_->SetIsDrawable(false);
     close_button_hover_highlight_->SetIsDrawable(false);
   } else {
     close_button_->SetIsDrawable(true);
     close_button_hover_highlight_->SetIsDrawable(true);
-    int close_y;
-
-    // Close button image is larger than divider image, so close button will
-    // appear slightly lower even the close_y are set in the same value as
-    // divider_y. Thus need this offset to account for the effect of image
-    // size difference has on close_y.
-    int close_y_offset_tsr =
-        std::max(0, (close_button_resource->size().height() -
-                     divider_resource->size().height()) /
-                        2);
-    close_y = content_offset_y - std::abs(close_y_offset_tsr);
 
     int close_x = is_rtl ? padding_left - close_button_padding
                          : width - padding_right - close_width;
@@ -226,11 +342,152 @@ void TabHandleLayer::SetProperties(
         gfx::PointF(background_left_offset, background_top_offset));
     close_button_->SetOpacity(close_button_alpha);
     close_button_hover_highlight_->SetPosition(gfx::PointF(close_x, close_y));
+    if (is_close_keyboard_focused) {
+      close_keyboard_focus_ring_->SetIsDrawable(true);
+      close_keyboard_focus_ring_->SetUIResourceId(
+          close_button_keyboard_focus_ring_resource->ui_resource()->id());
+      // We need to make sure that the keyboard focus ring's position is
+      // int-aligned. That is, we want the final position of the focus ring to
+      // be (close_x + std::round(x), close_y + std::round(y)). Because
+      // close_keyboard_focus_ring is a child of layer, the final position of
+      // the ring will be whatever coordinates we use in SetPosition plus
+      // (x, y). Therefore we just use the coordinates we want,
+      // (close_x + std::round(x), close_y + std::round(y)), and subtract
+      // (x, y).
+      close_keyboard_focus_ring_->SetPosition(gfx::PointF(
+          close_x + std::round(x) - x, close_y + std::round(y) - y));
+      close_keyboard_focus_ring_->SetBounds(gfx::Size(
+          close_button_keyboard_focus_ring_resource->size().width(),
+          close_button_keyboard_focus_ring_resource->size().height()));
+    }
+  }
+
+  if (media_indicator_size > 0) {
+    float right_aligned_icon_x = is_rtl ? padding_left - close_button_padding
+                                        : width - padding_right - close_width;
+    if (close_button_alpha == 0.f) {
+      right_aligned_icon_x = is_rtl ? padding_left : width - padding_right;
+    }
+
+    float media_x_spacing = media_close_spacing;
+    if (is_rtl && close_button_alpha > 0.f) {
+      media_x_spacing += close_button_padding;
+    }
+
+    float media_x =
+        is_rtl ? right_aligned_icon_x + close_width + media_x_spacing
+               : right_aligned_icon_x - media_indicator_size - media_x_spacing;
+    float media_y =
+        close_y + std::round((close_button_resource->size().height() -
+                              media_indicator_size) /
+                             2);
+    media_indicator_layer_->SetPosition(gfx::PointF(media_x, media_y));
+    float overlay_size = tab_indicator_overlay_width;
+    float overlay_x = media_x + (media_indicator_size - overlay_size) / 2;
+    float overlay_y = media_y + (media_indicator_size - overlay_size) / 2;
+    tab_indicator_overlay_layer_->SetPosition(
+        gfx::PointF(overlay_x, overlay_y));
+  }
+
+  if (underline_opacity > 0.f) {
+    float underline_width = width - padding_left - padding_right;
+
+    underline_start_layer_->SetIsDrawable(true);
+    underline_start_layer_->SetOpacity(underline_opacity);
+    underline_start_layer_->SetBackgroundColor(
+        SkColor4f::FromColor(underline_start_color));
+    underline_start_layer_->SetBounds(gfx::Size(
+        std::round(underline_width), std::round(tab_underline_thickness_)));
+    underline_start_layer_->SetPosition(gfx::PointF(
+        padding_left,
+        height - tab_underline_thickness_ - tab_underline_bottom_margin_));
+    underline_start_layer_->SetRoundedCorner(
+        gfx::RoundedCornersF(tab_underline_corner_radius_));
+
+    if (underline_width < underline_width_threshold) {
+      underline_end_layer_->SetIsDrawable(false);
+      underline_start_layer_->SetGradientMask(gfx::LinearGradient());
+    } else {
+      underline_end_layer_->SetIsDrawable(true);
+      underline_end_layer_->SetOpacity(underline_opacity);
+      underline_end_layer_->SetBackgroundColor(
+          SkColor4f::FromColor(underline_end_color));
+      underline_end_layer_->SetBounds(gfx::Size(
+          std::round(underline_width), std::round(tab_underline_thickness_)));
+      underline_end_layer_->SetPosition(gfx::PointF(
+          padding_left,
+          height - tab_underline_thickness_ - tab_underline_bottom_margin_));
+      underline_end_layer_->SetRoundedCorner(
+          gfx::RoundedCornersF(tab_underline_corner_radius_));
+
+      // Use a 3-point gradient mask to create a moving wave/shimmer effect
+      // across the underline.
+      gfx::LinearGradient gradient;
+      gradient.AddStep(
+          0.f, static_cast<uint8_t>(
+                   255 * (0.5f +
+                          0.5f * cos(std::numbers::pi_v<float> *
+                                     (0.f - 2.f * underline_shimmer_offset)))));
+      gradient.AddStep(
+          0.5f,
+          static_cast<uint8_t>(
+              255 *
+              (0.5f + 0.5f * cos(std::numbers::pi_v<float> *
+                                 (0.5f - 2.f * underline_shimmer_offset)))));
+      gradient.AddStep(
+          1.f, static_cast<uint8_t>(
+                   255 * (0.5f +
+                          0.5f * cos(std::numbers::pi_v<float> *
+                                     (1.f - 2.f * underline_shimmer_offset)))));
+      gradient.set_angle(is_rtl ? 180 : 0);
+      underline_start_layer_->SetGradientMask(gradient);
+    }
+  } else {
+    underline_end_layer_->SetIsDrawable(false);
+    underline_start_layer_->SetIsDrawable(false);
+  }
+
+  if (is_keyboard_focused) {
+    keyboard_focus_ring_->SetIsDrawable(true);
+    keyboard_focus_ring_->SetUIResourceId(
+        keyboard_focus_ring_drawable->ui_resource()->id());
+    keyboard_focus_ring_->SetAperture(keyboard_focus_ring_drawable->aperture());
+
+    float close_button_center_y =
+        close_y + close_button_resource->size().height() / 2;
+    if (shouldShowTabOutline) {
+      float keyboard_focus_ring_y = keyboard_focus_ring_offset + stroke_width;
+      keyboard_focus_ring_->SetPosition(
+          gfx::PointF(folio_foot_length + keyboard_focus_ring_offset,
+                      keyboard_focus_ring_y));
+      keyboard_focus_ring_->SetBounds(gfx::Size(
+          width - folio_foot_length * 2 - keyboard_focus_ring_offset * 2,
+          (close_button_center_y - keyboard_focus_ring_y) * 2));
+    } else {
+      float keyboard_focus_ring_y = 0;
+      keyboard_focus_ring_->SetPosition(
+          gfx::PointF(folio_foot_length, keyboard_focus_ring_y));
+      keyboard_focus_ring_->SetBounds(
+          gfx::Size(width - folio_foot_length * 2,
+                    (close_button_center_y - keyboard_focus_ring_y) * 2));
+    }
+
+    keyboard_focus_ring_->SetFillCenter(true);
+    keyboard_focus_ring_->SetBorder(
+        keyboard_focus_ring_drawable->Border(keyboard_focus_ring_->bounds()));
+  } else {
+    // Clean up the keyboard focus ring if it was previously showing but
+    // shouldn't be showing now.
+    keyboard_focus_ring_->SetIsDrawable(false);
   }
 }
 
 bool TabHandleLayer::foreground() {
   return foreground_;
+}
+
+bool TabHandleLayer::is_pinned() {
+  return is_pinned_;
 }
 
 scoped_refptr<cc::slim::Layer> TabHandleLayer::layer() {
@@ -243,16 +500,24 @@ TabHandleLayer::TabHandleLayer(LayerTitleCache* layer_title_cache)
       tab_(cc::slim::Layer::Create()),
       close_button_(cc::slim::UIResourceLayer::Create()),
       close_button_hover_highlight_(cc::slim::UIResourceLayer::Create()),
+      close_keyboard_focus_ring_(cc::slim::UIResourceLayer::Create()),
       start_divider_(cc::slim::UIResourceLayer::Create()),
       end_divider_(cc::slim::UIResourceLayer::Create()),
+      media_indicator_layer_(cc::slim::UIResourceLayer::Create()),
+      tab_indicator_overlay_layer_(cc::slim::UIResourceLayer::Create()),
       decoration_tab_(cc::slim::NinePatchLayer::Create()),
       tab_outline_(cc::slim::NinePatchLayer::Create()),
-      foreground_(false) {
+      underline_end_layer_(cc::slim::SolidColorLayer::Create()),
+      underline_start_layer_(cc::slim::SolidColorLayer::Create()),
+      keyboard_focus_ring_(cc::slim::NinePatchLayer::Create()),
+      transform_(new gfx::Transform()) {
   decoration_tab_->SetIsDrawable(true);
 
   tab_->AddChild(decoration_tab_);
   tab_->AddChild(tab_outline_);
   tab_->AddChild(close_button_hover_highlight_);
+  tab_->AddChild(media_indicator_layer_);
+  tab_->AddChild(tab_indicator_overlay_layer_);
   close_button_hover_highlight_->AddChild(close_button_);
 
   decoration_tab_->SetPosition(gfx::PointF(0, 0));
@@ -263,6 +528,10 @@ TabHandleLayer::TabHandleLayer(LayerTitleCache* layer_title_cache)
   layer_->AddChild(tab_);
   layer_->AddChild(start_divider_);
   layer_->AddChild(end_divider_);
+  layer_->AddChild(close_keyboard_focus_ring_);
+  layer_->AddChild(underline_end_layer_);
+  layer_->AddChild(underline_start_layer_);
+  layer_->AddChild(keyboard_focus_ring_);
 }
 
 TabHandleLayer::~TabHandleLayer() = default;

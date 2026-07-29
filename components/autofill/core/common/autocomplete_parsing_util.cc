@@ -7,6 +7,7 @@
 
 #include "base/containers/fixed_flat_map.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -162,10 +163,11 @@ std::optional<HtmlFieldType> ParseNonStandarizedAutocompleteAttribute(
 }  // namespace
 
 std::string AutocompleteParsingResult::ToString() const {
-  return base::StrCat({"section='", section, "' ", "mode='",
-                       HtmlFieldModeToStringView(mode), "' ", "field_type='",
-                       FieldTypeToStringView(field_type), "' ", "webauthn='",
-                       base::ToString(webauthn), "'"});
+  return base::StrCat(
+      {"section=\"", section, "\" mode=", HtmlFieldModeToStringView(mode),
+       " field_type=", FieldTypeToStringView(field_type), " webauthn=",
+       base::ToString(webauthn), " webidentity=", base::ToString(webidentity),
+       " email_verification_token=", base::ToString(email_verification_token)});
 }
 
 bool AutocompleteParsingResult::operator==(
@@ -183,20 +185,12 @@ HtmlFieldType FieldTypeFromAutocompleteAttributeValue(std::string value) {
     base::ReplaceFirstSubstringAfterOffset(&value, 0, "phone", "tel");
   }
 
-  std::optional<HtmlFieldType> type =
-      ParseStandardizedAutocompleteAttribute(value);
-  if (!type.has_value()) {
-    type = ParseProposedAutocompleteAttribute(value);
-    if (!type.has_value())
-      type = ParseNonStandarizedAutocompleteAttribute(value);
-  }
-
-  if (type.has_value())
-    return *type;
-
-  // `value` cannot be mapped to any HtmlFieldType. By classifying the field
-  // as HtmlFieldType::kUnrecognized Autofill is effectively disabled.
-  return HtmlFieldType::kUnrecognized;
+  return ParseStandardizedAutocompleteAttribute(value)
+      .or_else([&] { return ParseProposedAutocompleteAttribute(value); })
+      .or_else([&] { return ParseNonStandarizedAutocompleteAttribute(value); })
+      // `value` cannot be mapped to any HtmlFieldType. By classifying the field
+      // as HtmlFieldType::kUnrecognized Autofill is effectively disabled.
+      .value_or(HtmlFieldType::kUnrecognized);
 }
 
 std::optional<AutocompleteParsingResult> ParseAutocompleteAttribute(
@@ -214,13 +208,25 @@ std::optional<AutocompleteParsingResult> ParseAutocompleteAttribute(
 
   AutocompleteParsingResult result;
 
-  // Parse the "webauthn" token.
-  if (tokens.back() == "webauthn") {
-    result.webauthn = true;
-    tokens.pop_back();
-    if (tokens.empty()) {
-      return result;
+  // The "webauthn" and "webidentity" tokens can appear in any order at the end
+  // of the list. Note that `tokens` won't be empty by this moment.
+  while (!tokens.empty()) {
+    if (tokens.back() == "webauthn") {
+      result.webauthn = true;
+      tokens.pop_back();
+    } else if (tokens.back() == "webidentity") {
+      result.webidentity = true;
+      tokens.pop_back();
+    } else if (tokens.back() == "email-verification-token") {
+      result.email_verification_token = true;
+      tokens.pop_back();
+    } else {
+      // If the last token is neither of these, stop processing.
+      break;
     }
+  }
+  if (tokens.empty()) {
+    return result;
   }
 
   // (1) The final token must be the field type.
@@ -285,6 +291,14 @@ bool IsAutocompleteTypeWrongButWellIntended(
 
   // Parse the "webauthn" token.
   if (tokens.back() == "webauthn") {
+    tokens.pop_back();
+    if (tokens.empty()) {
+      return false;
+    }
+  }
+
+  // Parse the "webidentity" token.
+  if (tokens.back() == "webidentity") {
     tokens.pop_back();
     if (tokens.empty()) {
       return false;

@@ -33,8 +33,12 @@ class SVGRectElement final : public SVGGeometryElement {
 
  public:
   explicit SVGRectElement(Document&);
+  ElementType GetElementType() const final {
+    return ElementType::kSVGRectElement;
+  }
 
   Path AsPath() const override;
+  PathBuilder AsMutablePath() const override;
 
   SVGAnimatedLength* x() const { return x_.Get(); }
   SVGAnimatedLength* y() const { return y_.Get(); }
@@ -47,8 +51,6 @@ class SVGRectElement final : public SVGGeometryElement {
 
  private:
   void SvgAttributeChanged(const SvgAttributeChangedParams&) override;
-
-  bool SelfHasRelativeLengths() const override;
 
   LayoutObject* CreateLayoutObject(const ComputedStyle&) override;
 

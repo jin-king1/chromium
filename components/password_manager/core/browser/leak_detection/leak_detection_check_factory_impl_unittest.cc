@@ -5,6 +5,7 @@
 #include "components/password_manager/core/browser/leak_detection/leak_detection_check_factory_impl.h"
 
 #include "base/test/task_environment.h"
+#include "build/build_config.h"
 #include "components/password_manager/core/browser/leak_detection/leak_detection_check.h"
 #include "components/password_manager/core/browser/leak_detection/mock_leak_detection_delegate.h"
 #include "components/signin/public/base/consent_level.h"
@@ -16,7 +17,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace password_manager {
-namespace {
 
 using ::testing::StrictMock;
 
@@ -29,8 +29,9 @@ class LeakDetectionCheckFactoryImplTest : public testing::Test {
   ~LeakDetectionCheckFactoryImplTest() override = default;
 
   signin::IdentityTestEnvironment& identity_env() { return identity_test_env_; }
-  MockLeakDetectionDelegateInterface& delegate() { return delegate_; }
+#if !BUILDFLAG(IS_ANDROID)
   MockBulkLeakCheckDelegateInterface& bulk_delegate() { return bulk_delegate_; }
+#endif  // !BUILDFLAG(IS_ANDROID)
   const scoped_refptr<network::SharedURLLoaderFactory>& url_loader_factory() {
     return url_loader_factory_;
   }
@@ -39,36 +40,37 @@ class LeakDetectionCheckFactoryImplTest : public testing::Test {
  private:
   base::test::TaskEnvironment task_env_;
   signin::IdentityTestEnvironment identity_test_env_;
-  StrictMock<MockLeakDetectionDelegateInterface> delegate_;
+#if !BUILDFLAG(IS_ANDROID)
   StrictMock<MockBulkLeakCheckDelegateInterface> bulk_delegate_;
+#endif  // !BUILDFLAG(IS_ANDROID)
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_ =
       base::MakeRefCounted<network::TestSharedURLLoaderFactory>();
   LeakDetectionCheckFactoryImpl request_factory_;
 };
 
-}  // namespace
 
 TEST_F(LeakDetectionCheckFactoryImplTest, SignedOut) {
   EXPECT_TRUE(request_factory().TryCreateLeakCheck(
-      &delegate(), identity_env().identity_manager(), url_loader_factory(),
-      kChannel));
+      identity_env().identity_manager(), url_loader_factory(), kChannel));
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 TEST_F(LeakDetectionCheckFactoryImplTest, BulkCheck_SignedOut) {
   EXPECT_CALL(bulk_delegate(), OnError(LeakDetectionError::kNotSignIn));
   EXPECT_FALSE(request_factory().TryCreateBulkLeakCheck(
       &bulk_delegate(), identity_env().identity_manager(),
       url_loader_factory()));
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(LeakDetectionCheckFactoryImplTest, SignedIn) {
   identity_env().MakePrimaryAccountAvailable(kTestAccount,
                                              signin::ConsentLevel::kSignin);
   EXPECT_TRUE(request_factory().TryCreateLeakCheck(
-      &delegate(), identity_env().identity_manager(), url_loader_factory(),
-      kChannel));
+      identity_env().identity_manager(), url_loader_factory(), kChannel));
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 TEST_F(LeakDetectionCheckFactoryImplTest, BulkCheck_SignedIn) {
   identity_env().MakePrimaryAccountAvailable(kTestAccount,
                                              signin::ConsentLevel::kSignin);
@@ -76,14 +78,15 @@ TEST_F(LeakDetectionCheckFactoryImplTest, BulkCheck_SignedIn) {
       &bulk_delegate(), identity_env().identity_manager(),
       url_loader_factory()));
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(LeakDetectionCheckFactoryImplTest, SignedInAndSyncing) {
   identity_env().SetPrimaryAccount(kTestAccount, signin::ConsentLevel::kSync);
   EXPECT_TRUE(request_factory().TryCreateLeakCheck(
-      &delegate(), identity_env().identity_manager(), url_loader_factory(),
-      kChannel));
+      identity_env().identity_manager(), url_loader_factory(), kChannel));
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 TEST_F(LeakDetectionCheckFactoryImplTest, BulkCheck_SignedInAndSyncing) {
   identity_env().MakePrimaryAccountAvailable(kTestAccount,
                                              signin::ConsentLevel::kSync);
@@ -91,5 +94,5 @@ TEST_F(LeakDetectionCheckFactoryImplTest, BulkCheck_SignedInAndSyncing) {
       &bulk_delegate(), identity_env().identity_manager(),
       url_loader_factory()));
 }
-
+#endif  // !BUILDFLAG(IS_ANDROID)
 }  // namespace password_manager

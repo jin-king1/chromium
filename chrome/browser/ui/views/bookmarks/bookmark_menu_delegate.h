@@ -7,12 +7,14 @@
 
 #include <map>
 #include <set>
+#include <variant>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service_observer.h"
+#include "chrome/browser/bookmarks/bookmark_parent_folder.h"
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_context_menu.h"
@@ -23,6 +25,7 @@
 #include "ui/views/controls/menu/menu_delegate.h"
 #include "ui/views/view.h"
 
+class BookmarkMergedSurfaceService;
 class Browser;
 class Profile;
 
@@ -128,6 +131,11 @@ class BookmarkMenuDelegate : public BookmarkMergedSurfaceServiceObserver,
                        int id,
                        const gfx::Point& p,
                        ui::mojom::MenuSourceType source_type);
+  void RunContextMenuAt(std::vector<int64_t> node_ids,
+                        const gfx::Point& p,
+                        ui::mojom::MenuSourceType source_type,
+                        bool close_on_remove,
+                        bool can_paste);
   bool CanDrag(views::MenuItemView* menu);
   void WriteDragData(views::MenuItemView* sender, ui::OSExchangeData* data);
   int GetDragOperations(views::MenuItemView* sender);
@@ -363,9 +371,14 @@ class BookmarkMenuDelegate : public BookmarkMergedSurfaceServiceObserver,
   // enable mnemonics.
   bool menu_uses_mnemonics_ = false;
 
+  base::ScopedObservation<BookmarkContextMenu, BookmarkContextMenuObserver>
+      bookmark_context_menu_observation_{this};
+
   base::ScopedObservation<BookmarkMergedSurfaceService,
                           BookmarkMergedSurfaceServiceObserver>
       bookmark_merged_service_observation_{this};
+
+  base::WeakPtrFactory<BookmarkMenuDelegate> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_BOOKMARKS_BOOKMARK_MENU_DELEGATE_H_

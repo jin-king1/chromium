@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ash/wallpaper/wallpaper_utils/wallpaper_file_utils.h"
 
@@ -156,17 +152,6 @@ bool ResizeAndSaveWallpaper(const gfx::ImageSkia& image,
                             const WallpaperLayout layout,
                             const gfx::Size preferred_size,
                             const std::string& image_metadata) {
-  if (layout == WALLPAPER_LAYOUT_CENTER) {
-    // TODO(b/325498873) remove this.
-    if (base::PathExists(path)) {
-      DVLOG(1) << "Deleting path " << path;
-      base::DeleteFile(path);
-    }
-    DVLOG(1) << "Skipping resize and save for WALLPAPER_LAYOUT_CENTER path "
-             << path;
-    return false;
-  }
-
   gfx::ImageSkia resized_image = ResizeImage(image, layout, preferred_size);
   if (resized_image.isNull()) {
     LOG(WARNING) << "Failed to resize image";

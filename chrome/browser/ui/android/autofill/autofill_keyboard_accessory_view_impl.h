@@ -39,10 +39,11 @@ class AutofillKeyboardAccessoryViewImpl : public AutofillKeyboardAccessoryView {
   bool Initialize() override;
   void Hide() override;
   void Show() override;
-  void AxAnnounce(const std::u16string& text) override;
   void ConfirmDeletion(
       const std::u16string& confirmation_title,
       const std::u16string& confirmation_body,
+      const std::u16string& confirmation_body_link,
+      const std::u16string& confirm_button_text,
       base::OnceCallback<void(bool)> deletion_callback) override;
 
   // --------------------------------------------------------------------------
@@ -50,23 +51,19 @@ class AutofillKeyboardAccessoryViewImpl : public AutofillKeyboardAccessoryView {
   // --------------------------------------------------------------------------
 
   // Called when an autofill item was selected.
-  void SuggestionSelected(JNIEnv* env,
-                          const base::android::JavaParamRef<jobject>& obj,
-                          jint list_index);
+  void SuggestionSelected(JNIEnv* env, int32_t list_index);
 
   // Called when the deletion of an autofill item was requested.
-  void DeletionRequested(JNIEnv* env,
-                         const base::android::JavaParamRef<jobject>& obj,
-                         jint list_index);
+  void DeletionRequested(JNIEnv* env, int32_t list_index);
 
   // Called when the user closes the deletion dialog.
-  void OnDeletionDialogClosed(JNIEnv* env,
-                              const base::android::JavaParamRef<jobject>& obj,
-                              jboolean confirmed);
+  void OnDeletionDialogClosed(JNIEnv* env, bool confirmed);
 
   // Called when this view was dismissed.
-  void ViewDismissed(JNIEnv* env,
-                     const base::android::JavaParamRef<jobject>& obj);
+  void ViewDismissed(JNIEnv* env);
+
+  // Called when opening settings for an entity type was requested.
+  void OpenSettingsForEntityType(JNIEnv* env, int32_t entity_type);
 
  private:
   // Weak reference to the controller of this view. It can be null if the

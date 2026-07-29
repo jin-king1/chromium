@@ -4,28 +4,36 @@
 
 #include "components/autofill/core/browser/form_structure_sectioning_util.h"
 
-#include <algorithm>
-#include <iterator>
-#include <memory>
-#include <utility>
+#include <stddef.h>
 
+#include <algorithm>
+#include <memory>
+
+#include "base/check.h"
+#include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "components/autofill/core/browser/autofill_field.h"
+#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/common/dense_set.h"
+#include "components/autofill/core/common/unique_ids.h"
 
 namespace autofill {
 
 namespace {
 
-bool HaveSeenSimilarType(FieldType type, const FieldTypeSet& seen_types) {
+bool HaveSeenSimilarType(const FieldTypeSet& types,
+                         const FieldTypeSet& seen_types) {
   // Forms sometimes have a different format of inputting names in
   // different sections. If we believe a new name is being entered, assume
   // it is a new section.
-  FieldTypeSet first_last_name = {NAME_FIRST, NAME_LAST};
-  if ((type == NAME_FULL && seen_types.contains_any(first_last_name)) ||
-      (first_last_name.contains(type) && seen_types.contains(NAME_FULL))) {
+  static constexpr FieldTypeSet kFirstLastName = {NAME_FIRST, NAME_LAST};
+  if ((types.contains(NAME_FULL) && seen_types.contains_any(kFirstLastName)) ||
+      (types.contains_any(kFirstLastName) && seen_types.contains(NAME_FULL))) {
     return true;
   }
-  return seen_types.count(type) > 0;
+  return seen_types.contains_any(types);
 }
 
 // Some forms have adjacent fields of the same or very similar type. These
@@ -38,18 +46,24 @@ bool HaveSeenSimilarType(FieldType type, const FieldTypeSet& seen_types) {
 //  * In Japan, forms commonly have separate inputs for phonetic names. In
 //    practice this means consecutive name field types (e.g. first name and last
 //    name).
-bool ConsecutiveSimilarFieldType(FieldType current_type,
-                                 FieldType previous_type) {
-  if (previous_type == current_type)
-    return true;
-  if (GroupTypeOfFieldType(current_type) == FieldTypeGroup::kName &&
-      GroupTypeOfFieldType(previous_type) == FieldTypeGroup::kName) {
+bool ConsecutiveSimilarFieldType(const AutofillType& current_type,
+                                 const AutofillType& previous_type) {
+  const FieldTypeSet common_types =
+      Intersection(current_type.GetTypes(), previous_type.GetTypes());
+  if (!common_types.empty()) {
     return true;
   }
-  if (FieldTypeSet({ADDRESS_HOME_ZIP, ADDRESS_HOME_DEPENDENT_LOCALITY,
-                    ADDRESS_HOME_CITY, ADDRESS_HOME_ADMIN_LEVEL2,
-                    ADDRESS_HOME_STATE, ADDRESS_HOME_COUNTRY})
-          .contains_all({previous_type, current_type})) {
+  if (current_type.GetGroups().contains(FieldTypeGroup::kName) &&
+      previous_type.GetGroups().contains(FieldTypeGroup::kName)) {
+    return true;
+  }
+  static constexpr FieldTypeSet kSimilar = {
+      ADDRESS_HOME_ZIP,        ADDRESS_HOME_ZIP_PREFIX,
+      ADDRESS_HOME_ZIP_SUFFIX, ADDRESS_HOME_DEPENDENT_LOCALITY,
+      ADDRESS_HOME_CITY,       ADDRESS_HOME_ADMIN_LEVEL2,
+      ADDRESS_HOME_STATE,      ADDRESS_HOME_COUNTRY};
+  if (kSimilar.contains_any(previous_type.GetTypes()) &&
+      kSimilar.contains_any(current_type.GetTypes())) {
     return true;
   }
   return false;
@@ -61,7 +75,7 @@ bool ConsecutiveSimilarFieldType(FieldType current_type,
 // common in custom select elements. To confine the impact of hidden <select>
 // elements, this exception only applies if their type is actually autofillable.
 bool IsSectionable(const AutofillField& field) {
-  return field.IsFocusable() ||
+  return field.is_focusable() ||
          (field.IsSelectElement() && field.IsFieldFillable());
 }
 
@@ -72,15 +86,17 @@ void AssignCreditCardSections(
     base::flat_map<LocalFrameToken, size_t>& frame_token_ids) {
   auto first_cc_field = std::ranges::find_if(
       fields, [](const std::unique_ptr<AutofillField>& field) {
-        return field->Type().group() == FieldTypeGroup::kCreditCard &&
+        return field->Type().GetGroups().contains(
+                   FieldTypeGroup::kCreditCard) &&
                !field->section();
       });
-  if (first_cc_field == fields.end())
+  if (first_cc_field == fields.end()) {
     return;
+  }
   Section cc_section =
       Section::FromFieldIdentifier(**first_cc_field, frame_token_ids);
   for (const auto& field : fields) {
-    if (field->Type().group() == FieldTypeGroup::kCreditCard &&
+    if (field->Type().GetGroups().contains(FieldTypeGroup::kCreditCard) &&
         !field->section()) {
       field->set_section(cc_section);
     }
@@ -94,8 +110,9 @@ void AssignAutocompleteSections(
       Section autocomplete_section = Section::FromAutocomplete(
           {.section = field->parsed_autocomplete()->section,
            .mode = field->parsed_autocomplete()->mode});
-      if (autocomplete_section)
+      if (autocomplete_section) {
         field->set_section(autocomplete_section);
+      }
     }
   }
 }
@@ -103,8 +120,9 @@ void AssignAutocompleteSections(
 void AssignFieldIdentifierSections(
     base::span<const std::unique_ptr<AutofillField>> section,
     base::flat_map<LocalFrameToken, size_t>& frame_token_ids) {
-  if (section.empty())
+  if (section.empty()) {
     return;
+  }
   Section s = Section::FromFieldIdentifier(**section.begin(), frame_token_ids);
   for (const auto& field : section) {
     if (!field->section() && IsSectionable(*field)) {
@@ -120,25 +138,25 @@ bool BelongsToCurrentSection(const FieldTypeSet& seen_types,
     return true;
   }
 
-  const FieldType current_type = current_field.Type().GetStorableType();
-  if (current_type == UNKNOWN_TYPE)
+  const AutofillType current_type = current_field.Type();
+  if (current_type.GetTypes().contains(UNKNOWN_TYPE)) {
     return true;
+  }
 
   // Generally, adjacent fields of the same or very similar type belong in the
   // same logical section.
-  if (ConsecutiveSimilarFieldType(current_type,
-                                  previous_field.Type().GetStorableType())) {
+  if (ConsecutiveSimilarFieldType(current_type, previous_field.Type())) {
     return true;
   }
 
   // There are many phone number field types and their classification is
   // generally a little bit off. Furthermore, forms often ask for multiple phone
   // numbers, e.g. both a daytime and evening phone number.
-  if (GroupTypeOfFieldType(current_type) == FieldTypeGroup::kPhone) {
+  if (current_type.GetGroups().contains(FieldTypeGroup::kPhone)) {
     return true;
   }
 
-  return !HaveSeenSimilarType(current_type, seen_types);
+  return !HaveSeenSimilarType(current_type.GetTypes(), seen_types);
 }
 
 // Finds the first focusable field that doesn't have a section assigned.
@@ -153,7 +171,7 @@ base::span<const std::unique_ptr<AutofillField>>::iterator
 FindBeginOfNextSection(
     base::span<const std::unique_ptr<AutofillField>>::iterator begin,
     base::span<const std::unique_ptr<AutofillField>>::iterator end) {
-  while (begin != end && ((*begin)->section() || !(*begin)->IsFocusable())) {
+  while (begin != end && ((*begin)->section() || !(*begin)->is_focusable())) {
     begin++;
   }
   return begin;
@@ -170,14 +188,15 @@ base::span<const std::unique_ptr<AutofillField>>::iterator FindEndOfNextSection(
   const AutofillField* prev_field = nullptr;
   for (auto it = begin; it != end; it++) {
     const AutofillField& field = **it;
-    if (!IsSectionable(field))
+    if (!IsSectionable(field)) {
       continue;
+    }
     if (prev_field &&
         !BelongsToCurrentSection(seen_types, field, *prev_field)) {
       return it;
     }
     if (!field.section()) {
-      seen_types.insert(field.Type().GetStorableType());
+      seen_types.insert_all(field.Type().GetTypes());
       prev_field = &field;
     }
   }
@@ -187,8 +206,12 @@ base::span<const std::unique_ptr<AutofillField>>::iterator FindEndOfNextSection(
 }  // namespace
 
 void AssignSections(base::span<const std::unique_ptr<AutofillField>> fields) {
-  for (const auto& field : fields)
+  // It is important to reset the sections before running sectioning again for
+  // consistent cache updates (see AutofillManager::UpdateFormCache() for more
+  // details).
+  for (const auto& field : fields) {
     field->set_section(Section());
+  }
 
   // Create a unique identifier based on the field for the section.
   base::flat_map<LocalFrameToken, size_t> frame_token_ids;
@@ -202,8 +225,11 @@ void AssignSections(base::span<const std::unique_ptr<AutofillField>> fields) {
     auto end = FindEndOfNextSection(begin, fields.end());
     DCHECK(begin != end || end == fields.end());
     // SAFETY: The iterators are from the same container.
-    AssignFieldIdentifierSections(UNSAFE_BUFFERS({begin, end}),
-                                  frame_token_ids);
+    AssignFieldIdentifierSections(
+        fields.subspan(
+            static_cast<size_t>(std::distance(fields.begin(), begin)),
+            static_cast<size_t>(std::distance(begin, end))),
+        frame_token_ids);
     begin = end;
   }
 }

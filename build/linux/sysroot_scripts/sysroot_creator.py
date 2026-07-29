@@ -21,17 +21,32 @@ import requests
 import reversion_glibc
 
 DISTRO = "debian"
-RELEASE = "bullseye"
+RELEASES = {
+    "amd64": "bullseye",
+    "i386": "bullseye",
+    "armhf": "bullseye",
+    "arm64": "bullseye",
+    "mipsel": "bullseye",
+    "mips64el": "bullseye",
+    "ppc64el": "bullseye",
+    "riscv64": "trixie",
+    "s390x": "bullseye",
+}
+
+GCC_VERSIONS = {
+    "bullseye": 10,
+    "trixie": 12,
+}
+
 
 # This number is appended to the sysroot key to cause full rebuilds.  It
 # should be incremented when removing packages or patching existing packages.
 # It should not be incremented when adding packages.
-SYSROOT_RELEASE = 1
+SYSROOT_RELEASE = 2
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CHROME_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
-BUILD_DIR = os.path.join(CHROME_DIR, "out", "sysroot-build", RELEASE)
 
 # gpg keyring file generated using generate_keyring.sh
 KEYRING_FILE = os.path.join(SCRIPT_DIR, "keyring.gpg")
@@ -49,6 +64,18 @@ APT_SOURCES_LIST = [
     ("bullseye-updates", ["main", "contrib", "non-free"]),
     ("bullseye-backports", ["main", "contrib", "non-free"]),
 ]
+APT_SOURCES_LIST_RISCV = [("trixie", ["main", "contrib"])]
+APT_SOURCES_LISTS = {
+    "amd64": APT_SOURCES_LIST,
+    "i386": APT_SOURCES_LIST,
+    "armhf": APT_SOURCES_LIST,
+    "arm64": APT_SOURCES_LIST,
+    "mipsel": APT_SOURCES_LIST,
+    "mips64el": APT_SOURCES_LIST,
+    "ppc64el": APT_SOURCES_LIST,
+    "riscv64": APT_SOURCES_LIST_RISCV,
+    "s390x": APT_SOURCES_LIST,
+}
 
 TRIPLES = {
     "amd64": "x86_64-linux-gnu",
@@ -58,6 +85,13 @@ TRIPLES = {
     "mipsel": "mipsel-linux-gnu",
     "mips64el": "mips64el-linux-gnuabi64",
     "ppc64el": "powerpc64le-linux-gnu",
+    "riscv64": "riscv64-linux-gnu",
+    "s390x": "s390x-linux-gnu",
+}
+
+LIB_DIRS = {
+    "bullseye": "lib",
+    "trixie": "usr/lib",
 }
 
 REQUIRED_TOOLS = [
@@ -137,7 +171,7 @@ DEBIAN_PACKAGES = [
     "mesa-common-dev",
     "qt6-base-dev",
     "qtbase5-dev",
-    "valgrind",
+    "valgrind-if-available",
 ]
 
 
@@ -229,15 +263,19 @@ def download_file(url: str, dest: str, retries=5) -> None:
         raise Exception(f"Failed to download file after {retries} attempts")
 
 
-def sanity_check() -> None:
+def get_build_dir(arch: str) -> str:
+    return os.path.join(CHROME_DIR, "out", "sysroot-build", RELEASES[arch])
+
+
+def sanity_check(build_dir: str) -> None:
     """
     Performs sanity checks to ensure the environment is correctly set up.
     """
     banner("Sanity Checks")
 
     # Determine the Chrome build directory
-    os.makedirs(BUILD_DIR, exist_ok=True)
-    print(f"Using build directory: {BUILD_DIR}")
+    os.makedirs(build_dir, exist_ok=True)
+    print(f"Using build directory: {build_dir}")
 
     # Check for required tools
     missing = [tool for tool in REQUIRED_TOOLS if not shutil.which(tool)]
@@ -251,9 +289,9 @@ def clear_install_dir(install_root: str) -> None:
     os.makedirs(install_root)
 
 
-def create_tarball(install_root: str, arch: str) -> None:
-    tarball_path = os.path.join(BUILD_DIR,
-                                f"{DISTRO}_{RELEASE}_{arch}_sysroot.tar.xz")
+def create_tarball(install_root: str, arch: str, build_dir: str) -> None:
+    tarball_path = os.path.join(
+        build_dir, f"{DISTRO}_{RELEASES[arch]}_{arch}_sysroot.tar.xz")
     banner("Creating tarball " + tarball_path)
     command = [
         "tar",
@@ -273,16 +311,16 @@ def create_tarball(install_root: str, arch: str) -> None:
     subprocess.run(command, check=True)
 
 
-def generate_package_list_dist_repo(arch: str, dist: str,
-                                    repo_name: str) -> list[dict[str, str]]:
+def generate_package_list_dist_repo(arch: str, dist: str, repo_name: str,
+                                    build_dir: str) -> list[dict[str, str]]:
     repo_basedir = f"{ARCHIVE_URL}/dists/{dist}"
-    package_list = f"{BUILD_DIR}/Packages.{dist}_{repo_name}_{arch}"
+    package_list = f"{build_dir}/Packages.{dist}_{repo_name}_{arch}"
     package_list = f"{package_list}.{PACKAGES_EXT}"
     package_file_arch = f"{repo_name}/binary-{arch}/Packages.{PACKAGES_EXT}"
     package_list_arch = f"{repo_basedir}/{package_file_arch}"
 
     download_or_copy_non_unique_filename(package_list_arch, package_list)
-    verify_package_listing(package_file_arch, package_list, dist)
+    verify_package_listing(package_file_arch, package_list, dist, build_dir)
 
     with lzma.open(package_list, "rt") as src:
         return [
@@ -293,21 +331,26 @@ def generate_package_list_dist_repo(arch: str, dist: str,
         ]
 
 
-def generate_package_list(arch: str) -> dict[str, str]:
+def generate_package_list(arch: str, build_dir: str) -> dict[str, str]:
     # Workaround for some misconfigured package dependencies.
     BROKEN_DEPS = {
         "libgcc1",
         "qt6-base-abi",
+        "libc-dev",  # pulls in a newer libc6-dev
     }
 
     package_meta = {}
-    for dist, repos in APT_SOURCES_LIST:
+    sources = APT_SOURCES_LISTS[arch]
+    for dist, repos in sources:
         for repo_name in repos:
-            for meta in generate_package_list_dist_repo(arch, dist, repo_name):
+            for meta in generate_package_list_dist_repo(
+                    arch, dist, repo_name, build_dir):
                 package_meta[meta["Package"]] = meta
                 if "Provides" not in meta:
                     continue
                 for provides in meta["Provides"].split(", "):
+                    # Strip version requirements
+                    provides = provides.split()[0]
                     if provides in package_meta:
                         continue
                     package_meta[provides] = meta
@@ -327,9 +370,10 @@ def generate_package_list(arch: str) -> dict[str, str]:
     # Read the input file and create a dictionary mapping package names to URLs
     # and checksums.
     missing = set(DEBIAN_PACKAGES)
+    # Add corresponding libstdc++-dev package (needed for trixie)
+    missing.add(f"libstdc++-{GCC_VERSIONS[RELEASES[arch]]}-dev")
     package_dict: dict[str, str] = {}
-    for meta in package_meta.values():
-        package = meta["Package"]
+    for package in package_meta:
         if package in missing:
             missing.remove(package)
             add_package_dependencies(package)
@@ -338,7 +382,7 @@ def generate_package_list(arch: str) -> dict[str, str]:
 
     # Write the URLs and checksums of the requested packages to the output file
     output_file = os.path.join(SCRIPT_DIR, "generated_package_lists",
-                               f"{RELEASE}.{arch}")
+                               f"{RELEASES[arch]}.{arch}")
     with open(output_file, "w") as f:
         f.write("\n".join(sorted(package_dict)) + "\n")
     return package_dict
@@ -370,6 +414,16 @@ def hacks_and_patches(install_root: str, script_dir: str, arch: str) -> None:
     features_h = os.path.join(install_root, "usr", "include", "features.h")
     replace_in_file(features_h, r"(#define\s+__GLIBC_MINOR__)", r"\1 26 //")
 
+    # C23 STRTOL requires glibc >= 2.38
+    replace_in_file(features_h, r"(#\s?define\s+__GLIBC_USE_C23_STRTOL)",
+                    r"\1 0 //")
+
+    # riscv_hwprobe requires glibc >= 2.40
+    if arch == "riscv64":
+        os.remove(
+            os.path.join(install_root, "usr", "include", "riscv64-linux-gnu",
+                         "sys", "hwprobe.h"))
+
     # fcntl64() was introduced in glibc 2.28. Make sure to use fcntl() instead.
     fcntl_h = os.path.join(install_root, "usr", "include", "fcntl.h")
     replace_in_file(
@@ -385,7 +439,7 @@ def hacks_and_patches(install_root: str, script_dir: str, arch: str) -> None:
         "include",
         TRIPLES[arch],
         "c++",
-        "10",
+        str(GCC_VERSIONS[RELEASES[arch]]),
         "bits",
         "c++config.h",
     )
@@ -397,6 +451,36 @@ def hacks_and_patches(install_root: str, script_dir: str, arch: str) -> None:
     stdlib_h = os.path.join(install_root, "usr", "include", "stdlib.h")
     replace_in_file(stdlib_h, r"(#include <stddef.h>)",
                     r"\1\n#include <limits.h>")
+
+    # Glibc < 2.34 (like in our Bullseye sysroot) doesn't support
+    # _FORTIFY_SOURCE=3.  We can "upgrade" it by redefining the internal macros
+    # used by the fortified headers to use __builtin_dynamic_object_size instead
+    # of __builtin_object_size. This can be removed when the sysroot is upgraded
+    # from bullseye to bookworm.
+    #
+    # First, allow __USE_FORTIFY_LEVEL to be 3.
+    replace_in_file(
+        features_h, r"(#\s?if\s+_FORTIFY_SOURCE\s?>\s?1)",
+        r"# if _FORTIFY_SOURCE > 2\n"
+        r"#  define __USE_FORTIFY_LEVEL 3\n"
+        r"# elif _FORTIFY_SOURCE > 1")
+    # Second, redefine __bos and __bos0 to use __builtin_dynamic_object_size
+    # when __USE_FORTIFY_LEVEL is 3.
+    cdefs_h = os.path.join(install_root, "usr", "include", TRIPLES[arch],
+                           "sys", "cdefs.h")
+    replace_in_file(
+        cdefs_h, r"(#define\s+__bos\(ptr\)\s+__builtin_object_size\s+"
+        r"\(ptr,\s+__USE_FORTIFY_LEVEL\s+>\s+1\))",
+        r"#if defined(__clang__) && defined(__USE_FORTIFY_LEVEL) && "
+        r"__USE_FORTIFY_LEVEL > 2\n"
+        r"# define __bos(ptr) __builtin_dynamic_object_size (ptr, 1)\n"
+        r"# define __bos0(ptr) __builtin_dynamic_object_size (ptr, 0)\n"
+        r"#else\n"
+        r"\1")
+    replace_in_file(
+        cdefs_h,
+        r"(#define\s+__bos0\(ptr\)\s+__builtin_object_size\s+\(ptr,\s+0\))",
+        r"\1\n#endif")
 
     # Move pkgconfig scripts.
     pkgconfig_dir = os.path.join(install_root, "usr", "lib", "pkgconfig")
@@ -411,7 +495,7 @@ def hacks_and_patches(install_root: str, script_dir: str, arch: str) -> None:
     # Avoid requiring unsupported glibc versions.
     for lib in ["libc.so.6", "libm.so.6", "libcrypt.so.1"]:
         lib_path = os.path.join(install_root, "lib", TRIPLES[arch], lib)
-        reversion_glibc.reversion_glibc(lib_path)
+        reversion_glibc.reversion_glibc(lib_path, arch)
 
     # GTK4 is provided by bookworm (12), but pango is provided by bullseye
     # (11).  Fix the GTK4 pkgconfig file to relax the pango version
@@ -422,6 +506,16 @@ def hacks_and_patches(install_root: str, script_dir: str, arch: str) -> None:
 
     # Remove a cyclic symlink: /usr/bin/X11 -> /usr/bin
     os.remove(os.path.join(install_root, "usr/bin/X11"))
+
+
+def create_extra_symlinks(install_root: str, arch: str):
+    if RELEASES[arch] != "bullseye":
+        # Recent debian releases no longer symlink lib{dl,pthread,rt}.so
+        for lib in ["libdl.so.2", "librt.so.1", "libpthread.so.0"]:
+            os.symlink(
+                lib,
+                os.path.join(install_root, "lib", TRIPLES[arch],
+                             lib.rpartition(".")[0]))
 
 
 def replace_in_file(file_path: str, search_pattern: str,
@@ -549,15 +643,17 @@ def removing_unnecessary_files(install_root, arch):
     """
     # Preserve these files.
     gcc_triple = "i686-linux-gnu" if arch == "i386" else TRIPLES[arch]
+    gcc_version = GCC_VERSIONS[RELEASES[arch]]
     ALLOWLIST = {
         "usr/bin/cups-config",
-        f"usr/lib/gcc/{gcc_triple}/10/libgcc.a",
+        f"usr/lib/gcc/{gcc_triple}/{gcc_version}/libgcc.a",
         f"usr/lib/{TRIPLES[arch]}/libc_nonshared.a",
         f"usr/lib/{TRIPLES[arch]}/libffi_pic.a",
     }
 
     for file in ALLOWLIST:
-        assert os.path.exists(os.path.join(install_root, file))
+        assert os.path.exists(os.path.join(install_root,
+                                           file)), f"{file} does not exist"
 
     # Remove all executables and static libraries, and any symlinks that
     # were pointing to them.
@@ -586,15 +682,8 @@ def removing_unnecessary_files(install_root, arch):
 def strip_sections(install_root: str, arch: str):
     """
     Strips all sections from ELF files except for dynamic linking and
-    essential sections. Skips static libraries (.a), object files (.o), and a
-    few files used by other Chromium-related projects.
+    essential sections. Skips static libraries (.a) and object files (.o).
     """
-    PRESERVED_FILES = (
-        'libc-2.31.so',
-        'libm-2.31.so',
-        'ld-2.31.so',
-    )
-
     PRESERVED_SECTIONS = {
         ".dynamic",
         ".dynstr",
@@ -607,15 +696,9 @@ def strip_sections(install_root: str, arch: str):
         ".note.gnu.build-id",
     }
 
-    preserved_files_count = 0
-    lib_arch_path = os.path.join(install_root, "lib", TRIPLES[arch])
     for root, _, files in os.walk(install_root):
         for file in files:
             file_path = os.path.join(root, file)
-            if file_path.startswith(lib_arch_path) and file in PRESERVED_FILES:
-                preserved_files_count += 1
-                continue
-
             if (os.access(file, os.X_OK) or file.endswith((".a", ".o"))
                     or os.path.islink(file_path)):
                 continue
@@ -645,13 +728,13 @@ def strip_sections(install_root: str, arch: str):
             if sections_to_remove:
                 objcopy_arch = "amd64" if arch == "i386" else arch
                 objcopy_bin = TRIPLES[objcopy_arch] + "-objcopy"
+                if not shutil.which(objcopy_bin):
+                    objcopy_bin = "objcopy"
                 objcopy_cmd = ([objcopy_bin] + [
                     f"--remove-section={section}"
                     for section in sections_to_remove
                 ] + [file_path])
                 subprocess.run(objcopy_cmd, check=True, stderr=subprocess.PIPE)
-    if preserved_files_count != len(PRESERVED_FILES):
-        raise Exception("Expected file to preserve missing")
 
 
 def record_metadata(install_root: str) -> dict[str, tuple[float, float]]:
@@ -701,22 +784,25 @@ def restore_metadata(install_root: str,
 
 
 def build_sysroot(arch: str) -> None:
-    install_root = os.path.join(BUILD_DIR, f"{RELEASE}_{arch}_staging")
+    build_dir = get_build_dir(arch)
+    install_root = os.path.join(build_dir, f"{RELEASES[arch]}_{arch}_staging")
     clear_install_dir(install_root)
-    packages = generate_package_list(arch)
-    install_into_sysroot(BUILD_DIR, install_root, packages)
+    packages = generate_package_list(arch, build_dir)
+    install_into_sysroot(build_dir, install_root, packages)
     old_metadata = record_metadata(install_root)
     hacks_and_patches(install_root, SCRIPT_DIR, arch)
+    create_extra_symlinks(install_root, arch)
     cleanup_jail_symlinks(install_root)
     removing_unnecessary_files(install_root, arch)
     strip_sections(install_root, arch)
     restore_metadata(install_root, old_metadata)
-    create_tarball(install_root, arch)
+    create_tarball(install_root, arch, build_dir)
 
 
 def upload_sysroot(arch: str) -> str:
-    tarball_path = os.path.join(BUILD_DIR,
-                                f"{DISTRO}_{RELEASE}_{arch}_sysroot.tar.xz")
+    build_dir = get_build_dir(arch)
+    tarball_path = os.path.join(
+        build_dir, f"{DISTRO}_{RELEASES[arch]}_{arch}_sysroot.tar.xz")
     command = [
         "upload_to_google_storage_first_class.py",
         "--bucket",
@@ -726,8 +812,8 @@ def upload_sysroot(arch: str) -> str:
     return subprocess.check_output(command).decode("utf-8")
 
 
-def verify_package_listing(file_path: str, output_file: str,
-                           dist: str) -> None:
+def verify_package_listing(file_path: str, output_file: str, dist: str,
+                           build_dir: str) -> None:
     """
     Verifies the downloaded Packages.xz file against its checksum and GPG keys.
     """
@@ -736,8 +822,8 @@ def verify_package_listing(file_path: str, output_file: str,
     release_list = f"{repo_basedir}/{RELEASE_FILE}"
     release_list_gpg = f"{repo_basedir}/{RELEASE_FILE_GPG}"
 
-    release_file = os.path.join(BUILD_DIR, f"{dist}-{RELEASE_FILE}")
-    release_file_gpg = os.path.join(BUILD_DIR, f"{dist}-{RELEASE_FILE_GPG}")
+    release_file = os.path.join(build_dir, f"{dist}-{RELEASE_FILE}")
+    release_file_gpg = os.path.join(build_dir, f"{dist}-{RELEASE_FILE_GPG}")
 
     if not os.path.exists(KEYRING_FILE):
         raise Exception(f"KEYRING_FILE not found: {KEYRING_FILE}")
@@ -775,8 +861,7 @@ def main():
     parser.add_argument("command", choices=["build", "upload"])
     parser.add_argument("architecture", choices=list(TRIPLES))
     args = parser.parse_args()
-
-    sanity_check()
+    sanity_check(get_build_dir(args.architecture))
 
     if args.command == "build":
         build_sysroot(args.architecture)

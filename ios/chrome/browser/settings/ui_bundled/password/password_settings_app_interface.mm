@@ -4,9 +4,8 @@
 
 #import "ios/chrome/browser/settings/ui_bundled/password/password_settings_app_interface.h"
 
-#import <MaterialComponents/MaterialSnackbar.h>
-
 #import "base/apple/foundation_util.h"
+#import "base/functional/callback_helpers.h"
 #import "base/location.h"
 #import "base/rand_util.h"
 #import "base/strings/stringprintf.h"
@@ -16,6 +15,7 @@
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/password_form.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
+#import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #import "components/password_manager/core/browser/password_store/password_store_interface.h"
 #import "components/password_manager/core/common/password_manager_pref_names.h"
@@ -26,18 +26,17 @@
 #import "ios/chrome/browser/passwords/model/ios_chrome_account_password_store_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_bulk_leak_check_service_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_profile_password_store_factory.h"
+#import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/webauthn/model/ios_passkey_model_factory.h"
 #import "ios/chrome/test/app/chrome_test_util.h"
-#import "ios/chrome/test/app/mock_reauthentication_module.h"
-#import "ios/chrome/test/app/password_test_util.h"
 #import "ios/public/provider/chrome/browser/passcode_settings/passcode_settings_api.h"
 #import "url/gurl.h"
 #import "url/origin.h"
 
-using chrome_test_util::
-    SetUpAndReturnMockReauthenticationModuleForPasswordManager;
 using password_manager::FakeBulkLeakCheckService;
 using password_manager::PasswordForm;
 
@@ -73,24 +72,32 @@ webauthn::PasskeyModel* GetPasskeyStore() {
 // processing.
 class FakeStoreConsumer : public password_manager::PasswordStoreConsumer {
  public:
-  void OnGetPasswordStoreResults(
-      std::vector<std::unique_ptr<password_manager::PasswordForm>> obtained)
-      override {
-    obtained_ = std::move(obtained);
+  void OnGetPasswordStoreResultsOrErrorFrom(
+      password_manager::PasswordStoreInterface* store,
+      password_manager::LoginsResultOrError results_or_error) override {
+    if (std::holds_alternative<password_manager::PasswordStoreBackendError>(
+            results_or_error)) {
+      obtained_ = std::vector<PasswordForm>();
+    } else {
+      obtained_ = password_manager::ToPasswordForms(
+          std::get<password_manager::LoginsResult>(
+              std::move(results_or_error)));
+    }
   }
 
   // Retrieves all logins from the profile password store and updates
   // `results_`. Returns true if the logins retrieved successfully.
   bool FetchProfileStoreResults() {
     results_.clear();
-    ResetObtained();
+    obtained_.reset();
     GetPasswordProfileStore()->GetAllLogins(weak_ptr_factory_.GetWeakPtr());
     bool responded =
         base::test::ios::WaitUntilConditionOrTimeout(base::Seconds(2), ^bool {
-          return !AreObtainedReset();
+          return obtained_.has_value();
         });
-    if (responded) {
-      AppendObtainedToResults();
+    if (responded && obtained_.has_value()) {
+      results_ = std::move(obtained_.value());
+      obtained_.reset();
     }
     return responded;
   }
@@ -99,14 +106,15 @@ class FakeStoreConsumer : public password_manager::PasswordStoreConsumer {
   // `results_`. Returns true if the logins retrieved successfully.
   bool FetchAccountStoreResults() {
     results_.clear();
-    ResetObtained();
+    obtained_.reset();
     GetPasswordAccountStore()->GetAllLogins(weak_ptr_factory_.GetWeakPtr());
     bool responded =
         base::test::ios::WaitUntilConditionOrTimeout(base::Seconds(2), ^bool {
-          return !AreObtainedReset();
+          return obtained_.has_value();
         });
-    if (responded) {
-      AppendObtainedToResults();
+    if (responded && obtained_.has_value()) {
+      results_ = std::move(obtained_.value());
+      obtained_.reset();
     }
     return responded;
   }
@@ -116,25 +124,8 @@ class FakeStoreConsumer : public password_manager::PasswordStoreConsumer {
   }
 
  private:
-  // Puts `obtained_` in a known state not corresponding to any PasswordStore
-  // state.
-  void ResetObtained() {
-    obtained_.clear();
-    obtained_.emplace_back(nullptr);
-  }
-
-  // Returns true if `obtained_` are in the reset state.
-  bool AreObtainedReset() { return obtained_.size() == 1 && !obtained_[0]; }
-
-  void AppendObtainedToResults() {
-    for (const auto& source : obtained_) {
-      results_.emplace_back(*source);
-    }
-    ResetObtained();
-  }
-
   // Temporary cache of obtained store results.
-  std::vector<std::unique_ptr<password_manager::PasswordForm>> obtained_;
+  std::optional<std::vector<password_manager::PasswordForm>> obtained_;
 
   // Combination of fillable and blocked credentials from the store.
   std::vector<password_manager::PasswordForm> results_;
@@ -145,7 +136,7 @@ class FakeStoreConsumer : public password_manager::PasswordStoreConsumer {
 // Saves `form` to the password store and waits until the async processing is
 // done.
 bool SaveToPasswordProfileStore(const PasswordForm& form) {
-  GetPasswordProfileStore()->AddLogin(form);
+  GetPasswordProfileStore()->AddLogin(password_manager::FromPasswordForm(form));
   // When we retrieve the form from the store, `in_store` should be set.
   password_manager::PasswordForm expected_form = form;
   expected_form.in_store = password_manager::PasswordForm::Store::kProfileStore;
@@ -168,7 +159,7 @@ bool SaveToPasswordProfileStore(const PasswordForm& form) {
 // processing is done.
 // Returns true if `form` is saved successfully, otherwise returns false.
 bool SaveToPasswordAccountStore(const PasswordForm& form) {
-  GetPasswordAccountStore()->AddLogin(form);
+  GetPasswordAccountStore()->AddLogin(password_manager::FromPasswordForm(form));
   // When we retrieve the form from the store, `in_store` should be set.
   password_manager::PasswordForm expected_form = form;
   expected_form.in_store = password_manager::PasswordForm::Store::kAccountStore;
@@ -240,53 +231,17 @@ bool ClearPasswordStores() {
 
 @implementation PasswordSettingsAppInterface
 
-static std::unique_ptr<ScopedPasswordSettingsReauthModuleOverride>
-    _scopedReauthOverride;
-
-// Helper for accessing the scoped override's module.
-+ (MockReauthenticationModule*)mockModule {
-  DCHECK(_scopedReauthOverride);
-
-  return base::apple::ObjCCastStrict<MockReauthenticationModule>(
-      _scopedReauthOverride->module);
-}
-
-+ (void)setUpMockReauthenticationModule {
-  _scopedReauthOverride =
-      SetUpAndReturnMockReauthenticationModuleForPasswordManager();
-}
-
-+ (void)removeMockReauthenticationModule {
-  _scopedReauthOverride = nullptr;
-}
-
-+ (void)mockReauthenticationModuleExpectedResult:
-    (ReauthenticationResult)expectedResult {
-  [self mockModule].expectedResult = expectedResult;
-}
-
-+ (void)mockReauthenticationModuleCanAttempt:(BOOL)canAttempt {
-  DCHECK(_scopedReauthOverride);
-
-  [self mockModule].canAttempt = canAttempt;
-}
-
-+ (void)mockReauthenticationModuleShouldSkipReAuth:(BOOL)returnSync {
-  [self mockModule].shouldSkipReAuth = returnSync;
-}
-
-+ (void)mockReauthenticationModuleReturnMockedResult {
-  [[self mockModule] returnMockedReauthenticationResult];
-}
-
 + (void)dismissSnackBar {
-  [MDCSnackbarManager.defaultManager
-      dismissAndCallCompletionBlocksWithCategory:@"PasswordsSnackbarCategory"];
+  id<SnackbarCommands> handler = HandlerForProtocol(
+      chrome_test_util::GetCurrentBrowser()->GetCommandDispatcher(),
+      SnackbarCommands);
+  [handler dismissAllSnackbars];
 }
 
 + (void)saveExamplePasswordToProfileWithCount:(NSInteger)count {
   for (int i = 1; i <= count; ++i) {
-    GetPasswordProfileStore()->AddLogin(CreateSampleFormWithIndex(i));
+    GetPasswordProfileStore()->AddLogin(
+        password_manager::FromPasswordForm(CreateSampleFormWithIndex(i)));
   }
 }
 
@@ -392,6 +347,23 @@ static std::unique_ptr<ScopedPasswordSettingsReauthModuleOverride>
   GetPasskeyStore()->AddNewPasskeyForTesting(passkey);
 }
 
+// Creates a hidden passkey in the passkey store.
++ (void)saveHiddenPasskeyToStore:(NSString*)rpId
+                          userId:(NSString*)userId
+                        username:(NSString*)username
+                 userDisplayName:(NSString*)userDisplayName {
+  sync_pb::WebauthnCredentialSpecifics passkey;
+  passkey.set_sync_id(base::RandBytesAsString(16));
+  passkey.set_credential_id(base::RandBytesAsString(16));
+  passkey.set_rp_id(base::SysNSStringToUTF8(rpId));
+  passkey.set_user_id(base::SysNSStringToUTF8(userId));
+  passkey.set_user_name(base::SysNSStringToUTF8(username));
+  passkey.set_user_display_name(base::SysNSStringToUTF8(userDisplayName));
+  passkey.set_encrypted(kEncrypted);
+  passkey.set_hidden(true);
+  GetPasskeyStore()->AddNewPasskeyForTesting(passkey);
+}
+
 + (NSInteger)passwordProfileStoreResultsCount {
   FakeStoreConsumer consumer;
   if (!consumer.FetchProfileStoreResults()) {
@@ -420,10 +392,20 @@ static std::unique_ptr<ScopedPasswordSettingsReauthModuleOverride>
   return ClearPasswordStores();
 }
 
++ (void)clearPasskeyStore {
+  GetPasskeyStore()->DeleteAllPasskeys();
+}
+
 + (BOOL)isCredentialsServiceEnabled {
   ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
   return profile->GetPrefs()->GetBoolean(
       password_manager::prefs::kCredentialsEnableService);
+}
+
++ (BOOL)isAutomaticPasskeyUpgradesEnabled {
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  return profile->GetPrefs()->GetBoolean(
+      password_manager::prefs::kAutomaticPasskeyUpgrades);
 }
 
 + (void)setFakeBulkLeakCheckBufferedState:
@@ -433,6 +415,16 @@ static std::unique_ptr<ScopedPasswordSettingsReauthModuleOverride>
           IOSChromeBulkLeakCheckServiceFactory::GetForProfile(
               chrome_test_util::GetOriginalProfile()));
   fakeBulkLeakCheckService->SetBufferedState(state);
+}
+
++ (void)setFakeBulkLeakCheckBufferedStateAndNotifyObservers:
+    (password_manager::BulkLeakCheckServiceInterface::State)state {
+  FakeBulkLeakCheckService* fakeBulkLeakCheckService =
+      static_cast<FakeBulkLeakCheckService*>(
+          IOSChromeBulkLeakCheckServiceFactory::GetForProfile(
+              chrome_test_util::GetOriginalProfile()));
+  fakeBulkLeakCheckService->SetBufferedState(state);
+  fakeBulkLeakCheckService->SetStateToBufferedState();
 }
 
 + (BOOL)isPasscodeSettingsAvailable {

@@ -87,7 +87,7 @@ std::unique_ptr<ArcDefaultAppList::AppInfoMap> ReadAppsFromFileThread(
               << file.value() << ".";
       continue;
     }
-    base::Value::Dict app_info = std::move(app_info_ptr->GetDict());
+    base::DictValue app_info = std::move(app_info_ptr->GetDict());
 
     auto* name = app_info.FindString(kName);
     auto* package_name = app_info.FindString(kPackageName);
@@ -117,9 +117,9 @@ std::unique_ptr<ArcDefaultAppList::AppInfoMap> ReadAppsFromFileThread(
 
 // Returns true if default app |app_id| is marked as hidden in the prefs.
 bool IsAppHidden(const PrefService* prefs, const std::string& app_id) {
-  const base::Value::Dict& apps_dict = prefs->GetDict(kDefaultApps);
+  const base::DictValue& apps_dict = prefs->GetDict(kDefaultApps);
 
-  const base::Value::Dict* app_dict = apps_dict.FindDict(app_id);
+  const base::DictValue* app_dict = apps_dict.FindDict(app_id);
   if (!app_dict)
     return false;
   return app_dict->FindBool(kHidden).value_or(false);
@@ -138,13 +138,14 @@ std::string GetBoardName(const base::FilePath& build_prop_path) {
       content, "\n", base::WhitespaceHandling::KEEP_WHITESPACE,
       base::SplitResult::SPLIT_WANT_ALL);
   for (const auto& line : lines) {
-    if (!base::StartsWith(line, kKeyToFind, base::CompareCase::SENSITIVE))
-      continue;
-    const std::string board = line.substr(strlen(kKeyToFind));
-    VLOG(2) << "Current board is " << board;
-    return board;
+    std::optional<std::string_view> remainder =
+        base::RemovePrefix(line, kKeyToFind);
+    if (remainder) {
+      std::string board(*remainder);
+      VLOG(2) << "Current board is " << board;
+      return board;
+    }
   }
-
   LOG(ERROR) << "Failed to find " << kKeyToFind << " in " << build_prop_path;
   return std::string();
 }

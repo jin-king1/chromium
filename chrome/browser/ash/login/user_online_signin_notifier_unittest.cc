@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ash/login/user_online_signin_notifier.h"
+
 #include <string>
 #include <utility>
 
@@ -10,10 +12,8 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/ash/login/existing_user_controller_base_test.h"
-#include "chrome/browser/ash/login/user_online_signin_notifier.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "components/user_manager/known_user.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -60,7 +60,8 @@ class UserOnlineSigninNotifierTest : public ExistingUserControllerBaseTest {
 // Tests login screen update when SAMLOfflineSigninTimeLimit policy is set.
 TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthSingleUser) {
   const base::Time now = base::DefaultClock::GetInstance()->Now();
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   known_user.SetLastOnlineSignin(saml_login_account1_id_, now);
   known_user.SetOfflineSigninLimit(saml_login_account1_id_,
                                    kLoginOnlineShortDelay);
@@ -68,6 +69,7 @@ TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthSingleUser) {
   auto* user_manager = GetFakeUserManager();
   user_manager->AddSamlUser(saml_login_account1_id_);
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());
@@ -84,7 +86,8 @@ TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthSingleUser) {
 // Verfies that `OfflineSigninLimiter` does affect SAML and non SAML user.
 TEST_F(UserOnlineSigninNotifierTest, OfflineLimiteOutOfSessionSAMLAndNonSAML) {
   const base::Time now = base::DefaultClock::GetInstance()->Now();
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   known_user.SetLastOnlineSignin(saml_login_account1_id_, now);
   known_user.SetOfflineSigninLimit(saml_login_account1_id_,
                                    kLoginOnlineShortDelay);
@@ -92,6 +95,7 @@ TEST_F(UserOnlineSigninNotifierTest, OfflineLimiteOutOfSessionSAMLAndNonSAML) {
   auto* user_manager = GetFakeUserManager();
   user_manager->AddUser(saml_login_account1_id_);
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());
@@ -106,7 +110,8 @@ TEST_F(UserOnlineSigninNotifierTest, OfflineLimiteOutOfSessionSAMLAndNonSAML) {
 // Tests login screen update functionality for 2 SAML users.
 TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthTwoSamlUsers) {
   base::Time now = base::DefaultClock::GetInstance()->Now();
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   known_user.SetLastOnlineSignin(saml_login_account1_id_, now);
   known_user.SetOfflineSigninLimit(saml_login_account1_id_,
                                    kLoginOnlineLongDelay);
@@ -121,6 +126,7 @@ TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthTwoSamlUsers) {
   user_manager->AddSamlUser(saml_login_account1_id_);
   user_manager->AddSamlUser(saml_login_account2_id_);
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());
@@ -139,7 +145,8 @@ TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthTwoSamlUsers) {
 // Tests login screen update functionality for 2 users: SAML and non-SAML.
 TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthSamlAndNonSamlUsers) {
   const base::Time now = base::DefaultClock::GetInstance()->Now();
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   known_user.SetLastOnlineSignin(saml_login_account1_id_, now);
   known_user.SetLastOnlineSignin(saml_login_account2_id_, now);
 
@@ -152,6 +159,7 @@ TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthSamlAndNonSamlUsers) {
   user_manager->AddSamlUser(saml_login_account1_id_);
   user_manager->AddUser(saml_login_account2_id_);
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());
@@ -170,13 +178,15 @@ TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthSamlAndNonSamlUsers) {
 // Tests unset policy value in local state.
 TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthSamlPolicyNotSet) {
   const base::Time now = base::DefaultClock::GetInstance()->Now();
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   known_user.SetLastOnlineSignin(saml_login_account1_id_, now);
   known_user.SetOfflineSigninLimit(saml_login_account1_id_, std::nullopt);
 
   auto* user_manager = GetFakeUserManager();
   user_manager->AddSamlUser(saml_login_account1_id_);
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());
@@ -195,13 +205,15 @@ TEST_F(UserOnlineSigninNotifierTest, SamlOnlineAuthSamlPolicyNotSet) {
 TEST_F(UserOnlineSigninNotifierTest,
        GaiaOnlineAuthSingleUserNoLastOnlineSignin) {
   const base::Time now = base::DefaultClock::GetInstance()->Now();
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   known_user.SetOfflineSigninLimit(gaia_login_account1_id_,
                                    kLoginOnlineShortDelay);
 
   auto* user_manager = GetFakeUserManager();
   user_manager->AddUser(gaia_login_account1_id_);
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());
@@ -222,6 +234,7 @@ TEST_F(UserOnlineSigninNotifierTest,
   user_manager->SaveForceOnlineSignin(gaia_login_account1_id_, false);
 
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());
@@ -246,7 +259,8 @@ TEST_F(UserOnlineSigninNotifierTest,
 // and the last online sign in has been set.
 TEST_F(UserOnlineSigninNotifierTest, GaiaOnlineAuthSingleUserLastOnlineSignin) {
   const base::Time now = base::DefaultClock::GetInstance()->Now();
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   known_user.SetLastOnlineSignin(gaia_login_account1_id_, now);
   known_user.SetOfflineSigninLimit(gaia_login_account1_id_,
                                    kLoginOnlineShortDelay);
@@ -254,6 +268,7 @@ TEST_F(UserOnlineSigninNotifierTest, GaiaOnlineAuthSingleUserLastOnlineSignin) {
   auto* user_manager = GetFakeUserManager();
   user_manager->AddUser(gaia_login_account1_id_);
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());
@@ -270,7 +285,8 @@ TEST_F(UserOnlineSigninNotifierTest, GaiaOnlineAuthSingleUserLastOnlineSignin) {
 // Tests login screen update functionality for 2 Gaia without SAML users.
 TEST_F(UserOnlineSigninNotifierTest, GaiaOnlineAuthTwoGaiaUsers) {
   base::Time now = base::DefaultClock::GetInstance()->Now();
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   known_user.SetLastOnlineSignin(gaia_login_account1_id_, now);
   known_user.SetOfflineSigninLimit(gaia_login_account1_id_,
                                    kLoginOnlineLongDelay);
@@ -285,6 +301,7 @@ TEST_F(UserOnlineSigninNotifierTest, GaiaOnlineAuthTwoGaiaUsers) {
   user_manager->AddUser(gaia_login_account1_id_);
   user_manager->AddUser(gaia_login_account2_id_);
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());
@@ -306,7 +323,8 @@ TEST_F(UserOnlineSigninNotifierTest, GaiaOnlineAuthTwoGaiaUsers) {
 // Tests unset `GaiaOfflineTimeLimitDays` policy value in local state.
 TEST_F(UserOnlineSigninNotifierTest, GaiaOnlineAuthGaiaPolicyNotSet) {
   const base::Time now = base::DefaultClock::GetInstance()->Now();
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
   // No `LastOnlineSignin` value, case where devices didn't store that value in
   // the first Gaia login.
   known_user.SetOfflineSigninLimit(gaia_login_account1_id_, std::nullopt);
@@ -319,6 +337,7 @@ TEST_F(UserOnlineSigninNotifierTest, GaiaOnlineAuthGaiaPolicyNotSet) {
   user_manager->AddUser(gaia_login_account1_id_);
   user_manager->AddUser(gaia_login_account2_id_);
   user_online_signin_notifier_ = std::make_unique<UserOnlineSigninNotifier>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       user_manager->GetPersistedUsers());
   user_online_signin_notifier_->AddObserver(
       mock_online_signin_notifier_observer_.get());

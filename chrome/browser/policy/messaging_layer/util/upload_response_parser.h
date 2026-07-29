@@ -5,7 +5,6 @@
 #ifndef CHROME_BROWSER_POLICY_MESSAGING_LAYER_UTIL_UPLOAD_RESPONSE_PARSER_H_
 #define CHROME_BROWSER_POLICY_MESSAGING_LAYER_UTIL_UPLOAD_RESPONSE_PARSER_H_
 
-#include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/values.h"
 #include "components/reporting/proto/synced/configuration_file.pb.h"
@@ -33,7 +32,7 @@ namespace reporting {
 class UploadResponseParser {
  public:
   UploadResponseParser(bool is_generation_guid_required,
-                       base::Value::Dict response);
+                       base::DictValue response);
   UploadResponseParser(UploadResponseParser&& other);
   UploadResponseParser& operator=(UploadResponseParser&& other);
   ~UploadResponseParser();
@@ -55,17 +54,17 @@ class UploadResponseParser {
   // if the base::Value is not convertible.
   static StatusOr<SequenceInformation> SequenceInformationValueToProto(
       bool is_generation_guid_required,
-      const base::Value::Dict& sequence_information_dict);
+      const base::DictValue& sequence_information_dict);
 
   // Helper function for converting a base::Value representation of
   // SequenceInformation into a gap record proto.
   static StatusOr<EncryptedRecord> HandleFailedUploadedSequenceInformation(
       bool is_generation_guid_required,
       const SequenceInformation& highest_sequence_information,
-      const base::Value::Dict& sequence_information_dict);
+      const base::DictValue& sequence_information_dict);
 
   bool is_generation_guid_required_;
-  base::Value::Dict response_;
+  base::DictValue response_;
 };
 }  // namespace reporting
 

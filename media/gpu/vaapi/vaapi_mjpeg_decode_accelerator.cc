@@ -12,6 +12,7 @@
 #include <optional>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -27,7 +28,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/trace_event/trace_event.h"
-#include "gpu/ipc/common/gpu_memory_buffer_impl.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/format_utils.h"
 #include "media/base/video_frame.h"
@@ -42,7 +42,6 @@
 #include "media/gpu/vaapi/vaapi_wrapper.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/gpu_memory_buffer.h"
 
 namespace media {
 
@@ -233,8 +232,8 @@ void VaapiMjpegDecodeAccelerator::Decoder::DecodeFromDmaBufTask(
     error_cb_.Run(task_id, UNREADABLE_INPUT);
     return;
   }
-  base::span<const uint8_t> src_image(static_cast<const uint8_t*>(src_addr),
-                                      src_size);
+  UNSAFE_TODO(base::span<const uint8_t> src_image(
+      static_cast<const uint8_t*>(src_addr), src_size));
 
   DecodeImpl(task_id, src_image, std::move(dst_frame));
 
@@ -407,14 +406,18 @@ bool VaapiMjpegDecodeAccelerator::Decoder::OutputPictureLibYuv(
   // Wrap |image| into VideoFrame.
   std::vector<size_t> strides(image->num_planes);
   for (size_t i = 0; i < image->num_planes; ++i) {
-    if (!base::CheckedNumeric<size_t>(image->pitches[i])
-             .AssignIfValid(&strides[i])) {
-      VLOGF(1) << "Invalid VAImage stride " << image->pitches[i]
+    if (!base::CheckedNumeric<size_t>(UNSAFE_TODO(image->pitches[i]))
+             .AssignIfValid(UNSAFE_TODO(&strides[i]))) {
+      VLOGF(1) << "Invalid VAImage stride " << UNSAFE_TODO(image->pitches[i])
                << " for plane " << i;
       return false;
     }
   }
-  auto* const data = static_cast<uint8_t*>(scoped_image->va_buffer()->data());
+  uint8_t* data_ptr = static_cast<uint8_t*>(scoped_image->va_buffer()->data());
+  // SAFETY: We take the size and the data pointer from the same `VAImage`
+  // It is responsibility of VA API for them to be valid.
+  auto data_span = UNSAFE_BUFFERS(base::span(data_ptr, image->data_size));
+
   scoped_refptr<VideoFrame> src_frame;
   switch (image->format.fourcc) {
     case VA_FOURCC_YUY2:
@@ -426,8 +429,8 @@ bool VaapiMjpegDecodeAccelerator::Decoder::OutputPictureLibYuv(
         return false;
       }
       src_frame = VideoFrame::WrapExternalDataWithLayout(
-          *layout, crop_rect, crop_rect.size(), data + image->offsets[0],
-          base::strict_cast<size_t>(image->data_size), base::TimeDelta());
+          *layout, crop_rect, crop_rect.size(),
+          data_span.subspan(image->offsets[0]), base::TimeDelta());
       break;
     }
     case VA_FOURCC_I420: {
@@ -438,9 +441,10 @@ bool VaapiMjpegDecodeAccelerator::Decoder::OutputPictureLibYuv(
         return false;
       }
       src_frame = VideoFrame::WrapExternalYuvDataWithLayout(
-          *layout, crop_rect, crop_rect.size(), data + image->offsets[0],
-          data + image->offsets[1], data + image->offsets[2],
-          base::TimeDelta());
+          *layout, crop_rect, crop_rect.size(),
+          data_span.subspan(image->offsets[0]),
+          data_span.subspan(image->offsets[1]),
+          data_span.subspan(image->offsets[2]), base::TimeDelta());
       break;
     }
     default:
@@ -606,7 +610,7 @@ void VaapiMjpegDecodeAccelerator::Decode(
   }
 
   // Validate output video frame.
-  if (!video_frame->IsMappable() && !video_frame->HasDmaBufs()) {
+  if (!video_frame->HasDirectCpuAccess() && !video_frame->HasDmaBufs()) {
     VLOGF(1) << "Unsupported output frame storage type";
     NotifyError(bitstream_buffer.id(), INVALID_ARGUMENT);
     return;
@@ -671,7 +675,7 @@ void VaapiMjpegDecodeAccelerator::Decode(int32_t task_id,
   }
 
   // Validate output video frame.
-  if (!dst_frame->IsMappable() && !dst_frame->HasDmaBufs()) {
+  if (!dst_frame->HasDirectCpuAccess() && !dst_frame->HasDmaBufs()) {
     VLOGF(1) << "Unsupported output frame storage type";
     NotifyError(task_id, INVALID_ARGUMENT);
     return;

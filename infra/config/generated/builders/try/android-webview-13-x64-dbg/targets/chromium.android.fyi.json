@@ -14,11 +14,13 @@
             "--bucket",
             "chromium-result-details",
             "--test-name",
-            "webview_trichrome_64_32_cts_tests"
+            "webview_64_32_cts_tests"
           ],
           "script": "//build/android/pylib/results/presentation/test_results_presentation.py"
         },
-        "name": "webview_trichrome_64_32_cts_tests",
+        "module_name": "//android_webview/test:webview_64_32_cts_tests",
+        "module_scheme": "junit",
+        "name": "webview_64_32_cts_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -28,7 +30,7 @@
             {
               "cipd_package": "chromium/android_webview/tools/cts_archive",
               "location": "android_webview/tools/cts_archive/cipd",
-              "revision": "8BpUBTnmt5bH3GiqPKpmTWTP-Ie2X1TuUgf4F0IsgVgC"
+              "revision": "oW6-jyOPGwPJeLlaldYwrxZoYqzXpjO1OZUdyF3Qq7sC"
             }
           ],
           "dimensions": {
@@ -53,8 +55,8 @@
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 2
         },
-        "test": "webview_trichrome_64_32_cts_tests",
-        "test_id_prefix": "ninja://android_webview/test:webview_trichrome_64_32_cts_tests/"
+        "test": "webview_64_32_cts_tests",
+        "test_id_prefix": "ninja://android_webview/test:webview_64_32_cts_tests/"
       },
       {
         "args": [
@@ -69,11 +71,13 @@
             "--bucket",
             "chromium-result-details",
             "--test-name",
-            "webview_trichrome_64_cts_tests"
+            "webview_64_cts_tests"
           ],
           "script": "//build/android/pylib/results/presentation/test_results_presentation.py"
         },
-        "name": "webview_trichrome_64_cts_tests",
+        "module_name": "//android_webview/test:webview_64_cts_tests",
+        "module_scheme": "junit",
+        "name": "webview_64_cts_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -83,7 +87,7 @@
             {
               "cipd_package": "chromium/android_webview/tools/cts_archive",
               "location": "android_webview/tools/cts_archive/cipd",
-              "revision": "8BpUBTnmt5bH3GiqPKpmTWTP-Ie2X1TuUgf4F0IsgVgC"
+              "revision": "oW6-jyOPGwPJeLlaldYwrxZoYqzXpjO1OZUdyF3Qq7sC"
             }
           ],
           "dimensions": {
@@ -108,8 +112,8 @@
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 2
         },
-        "test": "webview_trichrome_64_cts_tests",
-        "test_id_prefix": "ninja://android_webview/test:webview_trichrome_64_cts_tests/"
+        "test": "webview_64_cts_tests",
+        "test_id_prefix": "ninja://android_webview/test:webview_64_cts_tests/"
       },
       {
         "args": [
@@ -125,11 +129,13 @@
             "--bucket",
             "chromium-result-details",
             "--test-name",
-            "webview_trichrome_64_cts_tests_no_field_trial"
+            "webview_64_cts_tests_no_field_trial"
           ],
           "script": "//build/android/pylib/results/presentation/test_results_presentation.py"
         },
-        "name": "webview_trichrome_64_cts_tests_no_field_trial",
+        "module_name": "//android_webview/test:webview_64_cts_tests",
+        "module_scheme": "junit",
+        "name": "webview_64_cts_tests_no_field_trial",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -139,7 +145,7 @@
             {
               "cipd_package": "chromium/android_webview/tools/cts_archive",
               "location": "android_webview/tools/cts_archive/cipd",
-              "revision": "8BpUBTnmt5bH3GiqPKpmTWTP-Ie2X1TuUgf4F0IsgVgC"
+              "revision": "oW6-jyOPGwPJeLlaldYwrxZoYqzXpjO1OZUdyF3Qq7sC"
             }
           ],
           "dimensions": {
@@ -164,8 +170,8 @@
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 2
         },
-        "test": "webview_trichrome_64_cts_tests",
-        "test_id_prefix": "ninja://android_webview/test:webview_trichrome_64_cts_tests/"
+        "test": "webview_64_cts_tests",
+        "test_id_prefix": "ninja://android_webview/test:webview_64_cts_tests/"
       }
     ]
   }

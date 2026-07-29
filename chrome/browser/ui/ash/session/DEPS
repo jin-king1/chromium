@@ -11,7 +11,6 @@ include_rules = [
   # refactor ash codes in //chrome to break these dependencies; see b/332804822.
   # Whenever possible, avoid adding new //chrome dependencies to this list.
   "+chrome/browser/app_mode",
-  "+chrome/browser/ash/crosapi",
   "+chrome/browser/ash/floating_workspace",
   "+chrome/browser/ash/login/demo_mode",
   "+chrome/browser/ash/login/lock",
@@ -28,9 +27,8 @@ include_rules = [
   "+chrome/browser/ui/ash/assistant",
   "+chrome/browser/ui/ash/login",
   "+chrome/browser/ui/ash/multi_user",
-  "+chrome/browser/ui/browser_dialogs.h",
+  "+chrome/browser/ui/dialogs/browser_dialogs.h",
   "+chrome/browser/ui/managed_ui.h",
-  "+chrome/common",
   "+chrome/grit",
   "+chrome/test",
 ]

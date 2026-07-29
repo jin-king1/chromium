@@ -4,15 +4,18 @@
 
 #include "chrome/browser/new_tab_page/modules/v2/calendar/outlook_calendar_page_handler.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/i18n/time_formatting.h"
+#include "base/json/json_reader.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/escape.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
 #include "chrome/browser/new_tab_page/microsoft_auth/microsoft_auth_service_factory.h"
 #include "chrome/browser/new_tab_page/modules/microsoft_modules_helper.h"
 #include "chrome/browser/new_tab_page/modules/v2/calendar/calendar_data.mojom.h"
@@ -273,7 +276,7 @@ void OutlookCalendarPageHandler::MakeRequest(GetEventsCallback callback) {
 
 void OutlookCalendarPageHandler::OnJsonReceived(
     GetEventsCallback callback,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   const int net_error = url_loader_->NetError();
   OutlookCalendarRequestResult request_result =
       OutlookCalendarRequestResult::kNetworkError;
@@ -281,13 +284,14 @@ void OutlookCalendarPageHandler::OnJsonReceived(
   // Check for unauthorized and throttling errors.
   auto* response_info = url_loader_->ResponseInfo();
   if (net_error != net::OK && response_info && response_info->headers) {
-    int64_t wait_time =
+    std::optional<int64_t> wait_time =
         response_info->headers->GetInt64HeaderValue("Retry-After");
-    if (wait_time != -1) {
+    if (wait_time) {
       request_result = OutlookCalendarRequestResult::kThrottlingError;
-      RecordThrottlingWaitTime(base::Seconds(wait_time));
-      pref_service_->SetTime(prefs::kNtpOutlookCalendarRetryAfterTime,
-                             base::Time::Now() + base::Seconds(wait_time));
+      RecordThrottlingWaitTime(base::Seconds(wait_time.value()));
+      pref_service_->SetTime(
+          prefs::kNtpOutlookCalendarRetryAfterTime,
+          base::Time::Now() + base::Seconds(wait_time.value()));
     } else if (response_info->headers->response_code() ==
                net::HTTP_UNAUTHORIZED) {
       request_result = OutlookCalendarRequestResult::kAuthError;
@@ -298,10 +302,9 @@ void OutlookCalendarPageHandler::OnJsonReceived(
   url_loader_.reset();
 
   if (net_error == net::OK && response_body) {
-    data_decoder::DataDecoder::ParseJsonIsolated(
-        *response_body,
-        base::BindOnce(&OutlookCalendarPageHandler::OnJsonParsed,
-                       weak_factory_.GetWeakPtr(), std::move(callback)));
+    ProcessResponse(
+        std::move(callback),
+        base::JSONReader::ReadDict(*response_body, base::JSON_PARSE_RFC));
   } else {
     RecordCalendarRequestResult(request_result);
     std::move(callback).Run(
@@ -309,16 +312,16 @@ void OutlookCalendarPageHandler::OnJsonReceived(
   }
 }
 
-void OutlookCalendarPageHandler::OnJsonParsed(
+void OutlookCalendarPageHandler::ProcessResponse(
     GetEventsCallback callback,
-    data_decoder::DataDecoder::ValueOrError result) {
-  if (!result.has_value()) {
+    std::optional<base::DictValue> response_dict) {
+  if (!response_dict) {
     RecordCalendarRequestResult(OutlookCalendarRequestResult::kJsonParseError);
     std::move(callback).Run(
         std::vector<ntp::calendar::mojom::CalendarEventPtr>());
     return;
   }
-  auto* events = result->GetDict().FindList("value");
+  auto* events = response_dict->FindList("value");
   if (!events) {
     RecordCalendarRequestResult(OutlookCalendarRequestResult::kContentError);
     std::move(callback).Run(
@@ -354,8 +357,8 @@ void OutlookCalendarPageHandler::OnJsonParsed(
     const std::string* end_time =
         event_dict.FindStringByDottedPath("end.dateTime");
     std::optional<bool> is_organizer = event_dict.FindBool("isOrganizer");
-    const base::Value::List* attendees = event_dict.FindList("attendees");
-    const base::Value::List* attachments = event_dict.FindList("attachments");
+    const base::ListValue* attendees = event_dict.FindList("attendees");
+    const base::ListValue* attachments = event_dict.FindList("attachments");
 
     base::Time start_timestamp;
     base::Time end_timestamp;

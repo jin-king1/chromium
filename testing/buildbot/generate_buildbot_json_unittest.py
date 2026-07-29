@@ -89,22 +89,36 @@ class FakeBBGen(generate_buildbot_json.BBJSONGenerator):
                autoshard_exceptions=json.dumps({}),
                mixins=EMPTY_PYL_FILE,
                gn_isolate_map=EMPTY_PYL_FILE,
-               variants=EMPTY_PYL_FILE):
+               variants=EMPTY_PYL_FILE,
+               use_legacy_pyl_paths=False):
     super(FakeBBGen, self).__init__(args)
 
     pyl_files_dir = args.pyl_files_dir or THIS_DIR
     infra_config_dir = args.infra_config_dir
 
+    if use_legacy_pyl_paths:
+      test_suites_pyl_path = args.test_suites_pyl.legacy_path
+      mixins_pyl_path = args.mixins_pyl.legacy_path
+      gn_isolate_map_pyl_path = args.gn_isolate_map_pyl.legacy_path
+      variants_pyl_path = args.variants_pyl.legacy_path
+    else:
+      test_suites_pyl_path = args.test_suites_pyl.generated_path
+      mixins_pyl_path = args.mixins_pyl.generated_path
+      gn_isolate_map_pyl_path = args.gn_isolate_map_pyl.generated_path
+      variants_pyl_path = args.variants_pyl.generated_path
+
     files = {
         args.waterfalls_pyl_path: waterfalls,
-        args.test_suites_pyl_path: test_suites,
+        test_suites_pyl_path: test_suites,
         args.test_suite_exceptions_pyl_path: exceptions,
         args.autoshard_exceptions_json_path: autoshard_exceptions,
-        args.mixins_pyl_path: mixins,
-        args.gn_isolate_map_pyl_path: gn_isolate_map,
-        args.variants_pyl_path: variants,
+        mixins_pyl_path: mixins,
+        gn_isolate_map_pyl_path: gn_isolate_map,
+        variants_pyl_path: variants,
         os.path.join(pyl_files_dir, 'gn_isolate_map2.pyl'):
         GPU_TELEMETRY_GN_ISOLATE_MAP,
+        os.path.join(pyl_files_dir, 'gn_isolate_map_prefix.pyl'):
+        GN_ISOLATE_MAP_PREFIX,
         os.path.join(infra_config_dir, 'generated/project.pyl'): project_pyl,
         os.path.join(infra_config_dir, 'generated/luci/luci-milo.cfg'):
         luci_milo_cfg,
@@ -1161,6 +1175,40 @@ COMPOSITION_SUITE_WITH_TELEMETRY_TEST = """\
 }
 """
 
+COMPOSITION_SUITE_WITH_TELEMETRY_TEST_SKYLAB = """\
+{
+  'basic_suites': {
+    'foo_tests': {
+      'foo_tests': {
+        'telemetry_test_name': 'foo',
+        'autotest_name': 'chromium_Graphics',
+        'swarming': {
+          'dimensions': {
+            'os': 'Linux',
+          },
+          'shards': 2,
+        },
+      },
+    },
+    'bar_tests': {
+      'bar_test': {
+        'swarming': {
+          'dimensions': {
+            'os': 'Linux',
+          },
+        },
+      },
+    },
+  },
+  'compound_suites': {
+    'composition_tests': [
+      'foo_tests',
+      'bar_tests',
+    ],
+  },
+}
+"""
+
 COMPOSITION_SUITE_WITH_GPU_ARGS = """\
 {
   'basic_suites': {
@@ -1690,6 +1738,28 @@ GN_ISOLATE_MAP="""\
   'foo_test': {
     'label': '//chrome/test:foo_test',
     'type': 'windowed_test_launcher',
+    'module_name': '//chrome/test:foo_test',
+  }
+}
+"""
+
+GN_ISOLATE_MAP_MODULE_SCHEME = """\
+{
+  'foo_test': {
+    'label': '//chrome/test:foo_test',
+    'type': 'windowed_test_launcher',
+    'module_scheme': 'gtest',
+  }
+}
+"""
+
+GN_ISOLATE_MAP_PREFIX = """\
+{
+  'foo_test_prefix': {
+    'label': '//chrome/test:foo_test_prefix',
+    'type': 'windowed_test_launcher',
+    'module_scheme': 'gtest',
+    'test_prefix': 'ninja://chrome/test:foo_test_prefix'
   }
 }
 """
@@ -1699,6 +1769,7 @@ GPU_TELEMETRY_GN_ISOLATE_MAP="""\
   'telemetry_gpu_integration_test': {
     'label': '//chrome/test:telemetry_gpu_integration_test',
     'type': 'script',
+    'module_name': '//chrome/test:telemetry_gpu_integration_test',
       }
 }
 """
@@ -1708,6 +1779,7 @@ GPU_TELEMETRY_GN_ISOLATE_MAP_ANDROID = """\
   'telemetry_gpu_integration_test_android_chrome': {
     'label': '//chrome/test:telemetry_gpu_integration_test_android_chrome',
     'type': 'script',
+    'module_name': '//chrome/test:telemetry_gpu_integration_test_android_chrome',
       }
 }
 """
@@ -1717,6 +1789,7 @@ GPU_TELEMETRY_GN_ISOLATE_MAP_ANDROID_WEBVIEW = """\
   'telemetry_gpu_integration_test_android_webview': {
     'label': '//chrome/test:telemetry_gpu_integration_test_android_webview',
     'type': 'script',
+    'module_name': '//chrome/test:telemetry_gpu_integration_test_android_webview',
       }
 }
 """
@@ -1726,6 +1799,7 @@ GPU_TELEMETRY_GN_ISOLATE_MAP_FUCHSIA = """\
   'telemetry_gpu_integration_test_fuchsia': {
     'label': '//chrome/test:telemetry_gpu_integration_test_fuchsia',
     'type': 'script',
+    'module_name': '//chrome/test:telemetry_gpu_integration_test_fuchsia',
       }
 }
 """
@@ -1735,6 +1809,18 @@ GPU_TELEMETRY_GN_ISOLATE_MAP_CAST_STREAMING = """\
   'telemetry_gpu_integration_test_fuchsia': {
     'label': '//chrome/test:telemetry_gpu_integration_test_fuchsia',
     'type': 'script',
+    'module_name': '//chrome/test:telemetry_gpu_integration_test_fuchsia',
+      }
+}
+"""
+
+GPU_TELEMETRY_GN_ISOLATE_MAP_MODULE_SCHEME = """\
+{
+  'telemetry_gpu_integration_test': {
+    'label': '//chrome/test:telemetry_gpu_integration_test',
+    'type': 'script',
+    'module_name': '//chrome/test:telemetry_gpu_integration_test',
+    'module_scheme': 'single',
       }
 }
 """
@@ -1744,6 +1830,7 @@ GN_ISOLATE_MAP_KEY_LABEL_MISMATCH="""\
   'foo_test': {
     'label': '//chrome/test:foo_test_tmp',
     'type': 'windowed_test_launcher',
+    'module_scheme': '//chrome/test:foo_test_tmp',
   }
 }
 """
@@ -1753,6 +1840,7 @@ GN_ISOLATE_MAP_USING_IMPLICIT_NAME="""\
   'foo_test': {
     'label': '//chrome/foo_test',
     'type': 'windowed_test_launcher',
+    'module_scheme': '//chrome/foo_test',
   }
 }
 """
@@ -1852,6 +1940,15 @@ class UnitTest(TestCase):
     fbb.check_output_file_consistency(verbose=True)
     self.assertFalse(fbb.printed_lines)
 
+  def test_good_waterfall_output_legacy_pyl_paths(self):
+    fbb = FakeBBGen(self.args,
+                    COMPOSITION_GTEST_SUITE_WATERFALL,
+                    GOOD_COMPOSITION_TEST_SUITES,
+                    LUCI_MILO_CFG,
+                    use_legacy_pyl_paths=True)
+    fbb.check_output_file_consistency(verbose=True)
+    self.assertFalse(fbb.printed_lines)
+
   def test_reusing_gtest_targets(self):
     fbb = FakeBBGen(self.args,
                     FOO_GTESTS_WATERFALL,
@@ -1862,7 +1959,7 @@ class UnitTest(TestCase):
     self.assertFalse(fbb.printed_lines)
 
   def test_load_multiple_isolate_map_files_with_duplicates(self):
-    self.args.isolate_map_files = [self.args.gn_isolate_map_pyl_path]
+    self.args.isolate_map_files = [self.args.gn_isolate_map_pyl.generated_path]
     fbb = FakeBBGen(self.args,
                     FOO_GTESTS_WATERFALL,
                     REUSING_TEST_WITH_DIFFERENT_NAME,
@@ -1881,11 +1978,29 @@ class UnitTest(TestCase):
                     gn_isolate_map=GN_ISOLATE_MAP)
     fbb.load_configuration_files()
     isolate_dict = {}
-    isolate_map_1 = fbb.load_pyl_file(self.args.gn_isolate_map_pyl_path)
+    isolate_map_1 = fbb.load_pyl_file(self.args.gn_isolate_map_pyl.actual_path)
     isolate_map_2 = fbb.load_pyl_file('gn_isolate_map2.pyl')
     isolate_dict.update(isolate_map_1)
     isolate_dict.update(isolate_map_2)
     self.assertEqual(isolate_dict, fbb.gn_isolate_map)
+
+  def test_exclude_test_prefix_from_isolate_map(self):
+    self.args.isolate_map_files = ['gn_isolate_map_prefix.pyl']
+    self.args.prefix_exclude_map_files = ['gn_isolate_map_prefix.pyl']
+    fbb = FakeBBGen(self.args,
+                    FOO_GTESTS_WATERFALL,
+                    REUSING_TEST_WITH_DIFFERENT_NAME,
+                    LUCI_MILO_CFG,
+                    gn_isolate_map=GN_ISOLATE_MAP)
+    fbb.load_configuration_files()
+    isolate_dict = {}
+    isolate_map_1 = fbb.load_pyl_file(self.args.gn_isolate_map_pyl.actual_path)
+    isolate_map_2 = fbb.load_pyl_file('gn_isolate_map_prefix.pyl')
+    isolate_dict.update(isolate_map_1)
+    isolate_dict.update(isolate_map_2)
+    self.assertEqual(isolate_dict, fbb.gn_isolate_map)
+    fbb.check_input_file_consistency(verbose=True)
+    self.assertFalse(fbb.printed_lines)
 
   def test_gn_isolate_map_with_label_mismatch(self):
     fbb = FakeBBGen(self.args,
@@ -1910,6 +2025,15 @@ class UnitTest(TestCase):
         'Malformed.*//chrome/foo_test.*for key.*'
         'foo_test.*'):
       fbb.check_input_file_consistency(verbose=True)
+    self.assertFalse(fbb.printed_lines)
+
+  def test_gn_isolate_map_with_module_scheme(self):
+    fbb = FakeBBGen(self.args,
+                    FOO_GTESTS_WATERFALL,
+                    FOO_TEST_SUITE,
+                    LUCI_MILO_CFG,
+                    gn_isolate_map=GN_ISOLATE_MAP_MODULE_SCHEME)
+    fbb.check_output_file_consistency(verbose=True)
     self.assertFalse(fbb.printed_lines)
 
   def test_noop_exception_does_nothing(self):
@@ -2094,7 +2218,7 @@ class UnitTest(TestCase):
   def test_gpu_telemetry_tests_skylab(self):
     fbb = FakeBBGen(self.args,
                     FOO_GPU_TELEMETRY_TEST_WATERFALL_SKYLAB,
-                    COMPOSITION_SUITE_WITH_TELEMETRY_TEST,
+                    COMPOSITION_SUITE_WITH_TELEMETRY_TEST_SKYLAB,
                     LUCI_MILO_CFG,
                     exceptions=NO_BAR_TEST_EXCEPTIONS,
                     gn_isolate_map=GPU_TELEMETRY_GN_ISOLATE_MAP)
@@ -2118,6 +2242,16 @@ class UnitTest(TestCase):
                     LUCI_MILO_CFG,
                     exceptions=NO_BAR_TEST_EXCEPTIONS,
                     gn_isolate_map=GPU_TELEMETRY_GN_ISOLATE_MAP)
+    fbb.check_output_file_consistency(verbose=True)
+    self.assertFalse(fbb.printed_lines)
+
+  def test_gpu_telemetry_tests_module_scheme(self):
+    fbb = FakeBBGen(self.args,
+                    FOO_GPU_TELEMETRY_TEST_WATERFALL,
+                    COMPOSITION_SUITE_WITH_TELEMETRY_TEST,
+                    LUCI_MILO_CFG,
+                    exceptions=NO_BAR_TEST_EXCEPTIONS,
+                    gn_isolate_map=GPU_TELEMETRY_GN_ISOLATE_MAP_MODULE_SCHEME)
     fbb.check_output_file_consistency(verbose=True)
     self.assertFalse(fbb.printed_lines)
 
@@ -2693,6 +2827,11 @@ SWARMING_MIXINS = """\
     'swarming': {
       'value': 'waterfall',
     },
+    'resultdb': {
+      'base_variant': {
+        'variant_key': 'variant_val',
+      },
+    },
   },
 }
 """
@@ -2922,7 +3061,7 @@ class MixinTests(TestCase):
     with self.assertRaisesRegex(
         generate_buildbot_json.BBGenErr,
         ('The following files have invalid keys: ' +
-         re.escape(self.args.mixins_pyl_path)),
+         re.escape(self.args.mixins_pyl.actual_path)),
     ):
       fbb.check_input_file_consistency(verbose=True)
     joined_lines = '\n'.join(fbb.printed_lines)
@@ -2936,7 +3075,7 @@ class MixinTests(TestCase):
     with self.assertRaisesRegex(
         generate_buildbot_json.BBGenErr,
         ('The following files have invalid keys: ' +
-         re.escape(self.args.test_suites_pyl_path)),
+         re.escape(self.args.test_suites_pyl.actual_path)),
     ):
       fbb.check_input_file_consistency(verbose=True)
     joined_lines = '\n'.join(fbb.printed_lines)
@@ -2951,11 +3090,11 @@ class MixinTests(TestCase):
     with self.assertRaisesRegex(
         generate_buildbot_json.BBGenErr,
         f'Invalid \\.pyl file '
-        f"'{re.escape(self.args.test_suites_pyl_path)}'.*",
+        f"'{re.escape(self.args.test_suites_pyl.actual_path)}'.*",
     ):
       fbb.check_input_file_consistency(verbose=True)
     self.assertEqual(fbb.printed_lines, [
-        f'== {self.args.test_suites_pyl_path} ==',
+        f'== {self.args.test_suites_pyl.actual_path} ==',
         '<snip>',
         '1 {',
         "2   'basic_suites': {",
@@ -4396,6 +4535,27 @@ MATRIX_SKYLAB_WATERFALL_WITH_BUILD_TARGET_VARIANT = """\
 ]
 """
 
+MATRIX_COMPOUND_SKYLAB_TFC_REF = """\
+{
+  'basic_suites': {
+    'cros_skylab_basic': {
+      'chrome_all_tast_tests': {
+        'timeout': 3600,
+        'cros_test_tags': ['group:mainline'],
+        'cros_test_tags_exclude': ['informational'],
+        'cros_test_names_exclude_from_file': ['disabled.txt'],
+      },
+    },
+  },
+  'compound_suites': {},
+  'matrix_compound_suites': {
+    'cros_skylab_basic_x86': {
+      'cros_skylab_basic': {},
+    },
+  },
+}
+"""
+
 MATRIX_COMPOUND_SKYLAB_REF = """\
 {
   'basic_suites': {
@@ -4406,15 +4566,10 @@ MATRIX_COMPOUND_SKYLAB_REF = """\
     'cros_skylab_basic': {
       'benchmark_suite': {
         'benchmark': 'something',
+        'autotest_name': 'chromium_Telemetry',
       },
-      'chrome_all_tast_tests': {
-        'tast_expr': 'dummy expr',
-        'timeout': 3600,
-      },
-      'gtest_suite': { },
-      'lacros_all_tast_tests': {
-        'tast_expr': 'lacros expr',
-        'timeout': 3600,
+      'gtest_suite': {
+        'autotest_name': 'chromium',
       },
     },
   },
@@ -4427,7 +4582,6 @@ MATRIX_COMPOUND_SKYLAB_REF = """\
         ],
       },
       'cros_skylab_basic': {
-        'tast_expr': 'dummy expr',
         'variants': [
           'octopus-89',
           'octopus-88',
@@ -4500,22 +4654,20 @@ ENABLED_AND_DISABLED_MATRIX_COMPOUND_SKYLAB_REF = """\
 {
   'basic_suites': {
     'cros_skylab_basic': {
-      'tast.basic': {
+      'autotest_suites': {
         'skylab': {
-          'tast_expr': 'dummy expr',
-          'shard_level_retries_on_ctp': 2,
         },
-        'suite': 'tast.basic',
         'timeout': 3600,
+        'autotest_name': 'chromium',
       },
       'tast.foo': {
         'skylab': {
-          'tast_expr': 'dummy expr',
         },
-        'suite': 'tast.foo',
         'timeout': 3600,
+        'autotest_name': 'tast.chrome-from-gcs',
       },
     },
+
   },
   'compound_suites': {},
   'matrix_compound_suites': {
@@ -4775,6 +4927,16 @@ class MatrixCompositionTests(TestCase):
                     LUCI_MILO_CFG,
                     exceptions=EMPTY_SKYLAB_TEST_EXCEPTIONS,
                     variants=SKYLAB_VARIANTS)
+    fbb.check_input_file_consistency(verbose=True)
+    fbb.check_output_file_consistency(verbose=True)
+    self.assertFalse(fbb.printed_lines)
+
+  def test_good_skylab_matrix_with_tfc(self):
+    fbb = FakeBBGen(self.args,
+                    MATRIX_SKYLAB_WATERFALL,
+                    MATRIX_COMPOUND_SKYLAB_TFC_REF,
+                    LUCI_MILO_CFG,
+                    exceptions=EMPTY_SKYLAB_TEST_EXCEPTIONS)
     fbb.check_input_file_consistency(verbose=True)
     fbb.check_output_file_consistency(verbose=True)
     self.assertFalse(fbb.printed_lines)

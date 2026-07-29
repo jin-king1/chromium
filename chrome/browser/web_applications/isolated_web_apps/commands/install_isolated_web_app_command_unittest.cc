@@ -4,13 +4,13 @@
 
 #include "chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.h"
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check_op.h"
@@ -22,7 +22,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/functional/overloaded.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
@@ -31,19 +30,16 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
+#include "base/version.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/isolated_web_app_install_command_helper.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_install_source.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_response_reader_factory.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_source.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_storage_location.h"
+#include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
+#include "chrome/browser/web_applications/isolated_web_apps/install/non_installed_bundle_inspection_context.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_trust_checker.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_validator.h"
-#include "chrome/browser/web_applications/isolated_web_apps/pending_install_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
-#include "chrome/browser/web_applications/isolated_web_apps/test/test_signed_web_bundle_builder.h"
+#include "chrome/browser/web_applications/isolated_web_apps/test/key_distribution/test_utils.h"
 #include "chrome/browser/web_applications/locks/lock.h"
+#include "chrome/browser/web_applications/model/web_app_icon_types.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/fake_web_contents_manager.h"
 #include "chrome/browser/web_applications/test/mock_data_retriever.h"
@@ -55,7 +51,6 @@
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_icon_manager.h"
-#include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_install_utils.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -66,12 +61,17 @@
 #include "components/webapps/browser/installable/installable_logging.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
+#include "components/webapps/isolated_web_apps/test_support/signing_keys.h"
+#include "components/webapps/isolated_web_apps/test_support/test_signed_web_bundle_builder.h"
+#include "components/webapps/isolated_web_apps/types/source.h"
+#include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "net/http/http_status_code.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom-shared.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "url/gurl.h"
@@ -189,7 +189,7 @@ class InstallIsolatedWebAppCommandTest : public WebAppTest {
 
     auto& icon_state = web_contents_manager().GetOrCreateIconState(
         application_url.Resolve(kIconPath));
-    icon_state.bitmaps = {web_app::CreateSquareIcon(32, SK_ColorRED)};
+    icon_state.bitmaps = {CreateSquareIcon(32, SK_ColorRED)};
 
     return {page_state, icon_state};
   }
@@ -197,7 +197,7 @@ class InstallIsolatedWebAppCommandTest : public WebAppTest {
   struct Parameters {
     IsolatedWebAppUrlInfo url_info;
     std::optional<IsolatedWebAppInstallSource> install_source;
-    std::optional<base::Version> expected_version;
+    std::optional<IwaVersion> expected_version;
   };
 
   base::expected<InstallIsolatedWebAppCommandSuccess,
@@ -247,11 +247,9 @@ TEST_F(InstallIsolatedWebAppCommandTest,
   page_state.url_load_result =
       webapps::WebAppUrlLoaderResult::kFailedWebContentsDestroyed;
 
-  EXPECT_THAT(
-      ExecuteCommand(Parameters{.url_info = url_info}),
-      ErrorIs(Field(
-          &InstallIsolatedWebAppCommandError::message,
-          HasSubstr("Error during URL loading: FailedWebContentsDestroyed"))));
+  EXPECT_THAT(ExecuteCommand(Parameters{.url_info = url_info}),
+              ErrorIs(Field(&InstallIsolatedWebAppCommandError::message,
+                            HasSubstr("FailedWebContentsDestroyed"))));
 
   EXPECT_THAT(histogram_tester_.GetAllSamples("WebApp.Isolated.InstallSuccess"),
               BucketsAre(base::Bucket(false, 1)));
@@ -368,8 +366,9 @@ TEST_F(InstallIsolatedWebAppCommandTest,
   SetUpPageAndIconStates(url_info);
 
   EXPECT_THAT(
-      ExecuteCommand(Parameters{.url_info = url_info,
-                                .expected_version = base::Version("99.99.99")}),
+      ExecuteCommand(
+          Parameters{.url_info = url_info,
+                     .expected_version = *IwaVersion::Create("99.99.99")}),
       ErrorIs(Field(
           &InstallIsolatedWebAppCommandError::message,
           HasSubstr("does not match the version provided in the manifest"))));
@@ -388,19 +387,11 @@ TEST_F(InstallIsolatedWebAppCommandTest, CommandLocksOnAppId) {
   base::test::TestFuture<base::expected<InstallIsolatedWebAppCommandSuccess,
                                         InstallIsolatedWebAppCommandError>>
       test_future;
-  auto command_helper = std::make_unique<IsolatedWebAppInstallCommandHelper>(
-      url_info, web_contents_manager().CreateDataRetriever(),
-      IsolatedWebAppInstallCommandHelper::CreateDefaultResponseReaderFactory(
-          *profile()));
-
   auto command = std::make_unique<InstallIsolatedWebAppCommand>(
       url_info, IsolatedWebAppInstallSource::FromDevUi(CreateDevProxySource()),
-      /*expected_version=*/std::nullopt,
-      content::WebContents::Create(
-          content::WebContents::CreateParams(profile())),
+      /*expected_version=*/std::nullopt, *profile(),
       /*optional_keep_alive=*/nullptr,
-      /*optional_profile_keep_alive=*/nullptr, test_future.GetCallback(),
-      std::move(command_helper));
+      /*optional_profile_keep_alive=*/nullptr, test_future.GetCallback());
 
   EXPECT_THAT(
       command->InitialLockRequestForTesting(),
@@ -586,12 +577,12 @@ TEST_F(InstallIsolatedWebAppCommandManifestIconsTest,
 
   EXPECT_THAT(ExecuteCommand(Parameters{.url_info = url_info}), HasValue());
 
-  base::test::TestFuture<std::map<SquareSizePx, SkBitmap>> test_future;
+  base::test::TestFuture<OrderedSizeToBitmap> test_future;
   web_app_icon_manager().ReadIconAndResize(url_info.app_id(), IconPurpose::ANY,
                                            SquareSizePx{1},
                                            test_future.GetCallback());
 
-  std::map<SquareSizePx, SkBitmap> icon_bitmaps = test_future.Get();
+  OrderedSizeToBitmap icon_bitmaps = test_future.Get();
 
   EXPECT_THAT(icon_bitmaps,
               UnorderedElementsAre(Pair(_, ResultOf(
@@ -617,7 +608,7 @@ TEST_F(InstallIsolatedWebAppCommandManifestIconsTest,
       ExecuteCommand(Parameters{.url_info = url_info}),
       ErrorIs(Field(
           &InstallIsolatedWebAppCommandError::message,
-          HasSubstr("Error during icon downloading: AbortedDueToFailure"))));
+          HasSubstr("Error during icon downloading, stopping installation."))));
 
   EXPECT_THAT(histogram_tester_.GetAllSamples("WebApp.Isolated.InstallSuccess"),
               BucketsAre(base::Bucket(false, 1)));
@@ -723,6 +714,52 @@ TEST_F(InstallIsolatedWebAppCommandTest,
   EXPECT_THAT(histogram_tester_.GetAllSamples("WebApp.Isolated.InstallError"),
               BucketsAre(base::Bucket(
                   /*IWAInstallError::kCantValidateManifest*/ 5, 1)));
+}
+
+TEST_F(InstallIsolatedWebAppCommandTest, UpdateManifestUrlIgnoredInDevMode) {
+  auto app =
+      IsolatedWebAppBuilder(ManifestBuilder().SetUpdateManifestUrl(GURL(
+                                "https://example.com/update_manifest.json")))
+          .BuildBundle(test::GetDefaultEd25519KeyPair());
+  auto install_source =
+      IsolatedWebAppInstallSource::FromDevUi(IwaSourceBundleDevModeWithFileOp(
+          app->path(), IwaSourceBundleDevFileOp::kCopy));
+  app->FakeInstallPageState(profile());
+  app->TrustSigningKey();
+  IsolatedWebAppUrlInfo url_info = CreateEd25519IsolatedWebAppUrlInfo();
+
+  EXPECT_THAT(ExecuteCommand(Parameters{.url_info = url_info,
+                                        .install_source = install_source}),
+              HasValue());
+
+  const WebApp* installed_app =
+      web_app_registrar().GetAppById(url_info.app_id());
+  EXPECT_NE(installed_app, nullptr);
+  EXPECT_EQ(installed_app->isolation_data()->update_manifest_url(),
+            std::nullopt);
+}
+
+TEST_F(InstallIsolatedWebAppCommandTest, UpdateManifestUrlSavedInProdMode) {
+  auto app =
+      IsolatedWebAppBuilder(ManifestBuilder().SetUpdateManifestUrl(GURL(
+                                "https://example.com/update_manifest.json")))
+          .BuildBundle(test::GetDefaultEd25519KeyPair());
+  auto install_source = IsolatedWebAppInstallSource::FromExternalPolicy(
+      IwaSourceBundleProdModeWithFileOp(app->path(),
+                                        IwaSourceBundleProdFileOp::kCopy));
+  app->FakeInstallPageState(profile());
+  app->TrustSigningKey();
+  IsolatedWebAppUrlInfo url_info = CreateEd25519IsolatedWebAppUrlInfo();
+
+  EXPECT_THAT(ExecuteCommand(Parameters{.url_info = url_info,
+                                        .install_source = install_source}),
+              HasValue());
+
+  const WebApp* installed_app =
+      web_app_registrar().GetAppById(url_info.app_id());
+  EXPECT_NE(installed_app, nullptr);
+  EXPECT_EQ(installed_app->isolation_data()->update_manifest_url(),
+            GURL("https://example.com/update_manifest.json"));
 }
 
 TEST_F(InstallIsolatedWebAppCommandTest, FailsWhenAppInstalledAlready) {
@@ -836,23 +873,23 @@ TEST_P(InstallIsolatedWebAppCommandBundleTest, InstallsWhenThereIsNoError) {
 
   if (bundle_info_.want_success) {
     EXPECT_THAT(result, HasValue());
-    absl::visit(
-        base::Overloaded{[&iwa_root_dir](const IwaStorageOwnedBundle& bundle) {
-                           EXPECT_TRUE(DirectoryExists(iwa_root_dir));
-                           EXPECT_TRUE(PathExists(iwa_root_dir.AppendASCII(
-                               bundle.dir_name_ascii())));
-                         },
-                         [&iwa_root_dir](const IwaStorageUnownedBundle&) {
-                           EXPECT_FALSE(DirectoryExists(iwa_root_dir));
-                         },
-                         [](const IwaStorageProxy&) { FAIL(); }},
+    std::visit(
+        absl::Overload{[&iwa_root_dir](const IwaStorageOwnedBundle& bundle) {
+                         EXPECT_TRUE(DirectoryExists(iwa_root_dir));
+                         EXPECT_TRUE(PathExists(iwa_root_dir.AppendASCII(
+                             bundle.dir_name_ascii())));
+                       },
+                       [&iwa_root_dir](const IwaStorageUnownedBundle&) {
+                         EXPECT_FALSE(DirectoryExists(iwa_root_dir));
+                       },
+                       [](const IwaStorageProxy&) { FAIL(); }},
         result->location.variant());
   } else {
     EXPECT_THAT(result, Not(HasValue()));
     // Wait till IWA directory is removed.
     task_environment()->RunUntilIdle();
-    absl::visit(
-        base::Overloaded{
+    std::visit(
+        absl::Overload{
             [&iwa_root_dir](const IwaSourceBundleWithModeAndFileOp& source) {
               switch (source.mode_and_file_op()) {
                 case IwaSourceBundleModeAndFileOp::kDevModeCopy:
@@ -907,6 +944,39 @@ class InstallIsolatedWebAppCommandBundleInstallSourceTest
 };
 
 TEST_P(InstallIsolatedWebAppCommandBundleInstallSourceTest,
+       BlocklistBlocksInstallationFromAllSources) {
+  auto app = IsolatedWebAppBuilder(ManifestBuilder())
+                 .BuildBundle(test::GetDefaultEd25519KeyPair());
+  app->FakeInstallPageState(profile());
+  app->TrustSigningKey();
+  IsolatedWebAppUrlInfo url_info = CreateEd25519IsolatedWebAppUrlInfo();
+  IsolatedWebAppInstallSource install_source =
+      GetParam().install_source(app->path());
+
+  test::KeyDistributionComponentBuilder(base::Version("1.0.0"))
+      // Make sure it is not allowlist what blocks the installation
+      .AddToManagedAllowlist(url_info.web_bundle_id())
+      .AddToBlocklist(url_info.web_bundle_id())
+      .Build()
+      .InjectComponentDataDirectly();
+
+  EXPECT_THAT(ExecuteCommand(Parameters{.url_info = url_info,
+                                        .install_source = install_source}),
+              Not(HasValue()));
+  EXPECT_THAT(histogram_tester_.GetAllSamples("WebApp.Install.Result"),
+              BucketsAre(base::Bucket(false, 1)));
+
+  EXPECT_THAT(histogram_tester_.GetAllSamples("WebApp.Isolated.InstallSuccess"),
+              BucketsAre(base::Bucket(false, 1)));
+  EXPECT_THAT(
+      histogram_tester_.GetAllSamples("WebApp.Isolated.InstallError"),
+      BucketsAre(base::Bucket(/*IWAInstallError::kAppNotPermitted*/ 8, 1)));
+
+  const WebApp* web_app = web_app_registrar().GetAppById(url_info.app_id());
+  ASSERT_THAT(web_app, IsNull());
+}
+
+TEST_P(InstallIsolatedWebAppCommandBundleInstallSourceTest,
        InstallationFinalizedWithCorrectInstallSurface) {
   auto app = IsolatedWebAppBuilder(ManifestBuilder())
                  .BuildBundle(test::GetDefaultEd25519KeyPair());
@@ -915,6 +985,11 @@ TEST_P(InstallIsolatedWebAppCommandBundleInstallSourceTest,
   IsolatedWebAppUrlInfo url_info = CreateEd25519IsolatedWebAppUrlInfo();
   IsolatedWebAppInstallSource install_source =
       GetParam().install_source(app->path());
+
+  test::KeyDistributionComponentBuilder(base::Version("1.0.0"))
+      .AddToManagedAllowlist(url_info.web_bundle_id())
+      .Build()
+      .InjectComponentDataDirectly();
 
   EXPECT_THAT(ExecuteCommand(Parameters{.url_info = url_info,
                                         .install_source = install_source}),

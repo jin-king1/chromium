@@ -7,6 +7,7 @@
 #include "base/functional/bind.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/blink/blink_event_util.h"
 #include "ui/latency/latency_info.h"
@@ -80,16 +81,17 @@ class QueuedTouchpadPinchEvent : public GestureEventWithLatencyInfo {
                            DispatchToRendererCallback callback)
       : GestureEventWithLatencyInfo(original_event),
         dispatch_callback(std::move(callback)) {
-    TRACE_EVENT_ASYNC_BEGIN0("input", "TouchpadPinchEventQueue::QueueEvent",
-                             this);
+    TRACE_EVENT_BEGIN(
+        "input", "TouchpadPinchEventQueue::QueueEvent",
+        perfetto::NamedTrack::FromPointer("TouchpadPinchEventQueue", this));
   }
 
   QueuedTouchpadPinchEvent(const QueuedTouchpadPinchEvent&) = delete;
   QueuedTouchpadPinchEvent& operator=(const QueuedTouchpadPinchEvent&) = delete;
 
   ~QueuedTouchpadPinchEvent() {
-    TRACE_EVENT_ASYNC_END0("input", "TouchpadPinchEventQueue::QueueEvent",
-                           this);
+    TRACE_EVENT_END("input", perfetto::NamedTrack::FromPointer(
+                                 "TouchpadPinchEventQueue", this));
   }
 
   DispatchToRendererCallback dispatch_callback;
@@ -119,10 +121,9 @@ void TouchpadPinchEventQueue::QueueEvent(
       last_event->CoalesceWith(event);
       DCHECK_EQ(blink::WebInputEvent::Type::kGesturePinchUpdate,
                 last_event->event.GetType());
-      TRACE_EVENT_INSTANT1("input",
-                           "TouchpadPinchEventQueue::CoalescedPinchEvent",
-                           TRACE_EVENT_SCOPE_THREAD, "scale",
-                           last_event->event.data.pinch_update.scale);
+      TRACE_EVENT_INSTANT("input",
+                          "TouchpadPinchEventQueue::CoalescedPinchEvent",
+                          "scale", last_event->event.data.pinch_update.scale);
       return;
     }
   }

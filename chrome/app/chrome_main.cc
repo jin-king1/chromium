@@ -2,21 +2,27 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/app/chrome_main.h"
+
 #include <stdint.h>
 
 #include <iostream>
 #include <memory>
+#include <optional>
 
 #include "base/command_line.h"
 #include "base/environment.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/no_destructor.h"
 #include "base/sampling_heap_profiler/poisson_allocation_sampler.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#if !defined(BUILDING_CHROME_RENDERER)
 #include "chrome/app/chrome_main_delegate.h"
+#endif
 #include "chrome/app/startup_timestamps.h"
-#include "chrome/browser/headless/headless_mode_util.h"
+#include "chrome/browser/headless/headless_mode_init.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "chrome/common/chrome_switches.h"
@@ -26,6 +32,7 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/app/chrome_main_mac.h"
+#include "chrome/common/mac/detect_inappropriate_exit.h"
 #endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
@@ -52,35 +59,55 @@
 #define DLLEXPORT __declspec(dllexport)
 #endif  // BUILDFLAG(IS_WIN)
 
-// This is only here so that we can display an informational message when
-// Chrome is started with --headless=old switch. This should be deleted
-// sometime after old headless code is removed from Chrome.
-// See https://crbug.com/373672160.
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
-    BUILDFLAG(IS_WIN)
-#define ENABLE_OLD_HEADLESS_INFO
+// TODO(crbug.com/534570563): Implement separate renderer binary entry point.
+// Currently this is a fake implementation to set up the build workflow.
+#if defined(BUILDING_CHROME_RENDERER)
+
+extern "C" {
+
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
+#define DLLEXPORT __declspec(dllexport)
+DLLEXPORT int __cdecl ChromeRendererMain(HINSTANCE instance,
+                                         void* sandbox_info,
+                                         int64_t exe_entry_point_ticks,
+                                         int64_t preread_begin_ticks,
+                                         int64_t preread_end_ticks) {
+  return 0;
+}
+#elif BUILDFLAG(IS_POSIX)
+[[gnu::visibility("default")]] int ChromeRendererMain(int argc,
+                                                      const char** argv) {
+  return 0;
+}
 #endif
 
-#ifdef ENABLE_OLD_HEADLESS_INFO
-namespace {
-void ShowOldHeadlessInfoMaybe(const base::CommandLine* command_line) {
-  // Show warning only if in browser process.
-  if (!command_line->GetSwitchValueASCII(::switches::kProcessType).empty()) {
-    return;
-  }
+}  // extern "C"
 
-  std::cerr
-      << "Old Headless mode has been removed from the Chrome binary. "
-         "Please use the new Headless mode "
-         "(https://developer.chrome.com/docs/chromium/new-headless) or the "
-         "chrome-headless-shell which is a standalone implementation of "
-         "the old Headless mode "
-         "(https://developer.chrome.com/blog/chrome-headless-shell)."
-      << std::endl
-      << std::endl;
+#if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_MAC)
+int main(int argc, const char** argv) {
+  return ChromeRendererMain(argc, argv);
 }
+#endif
+
+#else  // defined(BUILDING_CHROME_RENDERER)
+
+namespace {
+
+// Returns storage to hold the browser process's initial command line.
+std::optional<base::CommandLine>& GetInitialCommandLineStorage() {
+  static base::NoDestructor<std::optional<base::CommandLine>>
+      initial_command_line;
+  return *initial_command_line;
+}
+
 }  // namespace
-#endif  // ENABLE_OLD_HEADLESS_INFO
+
+const base::CommandLine& GetInitialBrowserCommandLine() {
+  // Will `CHECK` if called without a previous assignment during browser
+  // process startup.
+  return GetInitialCommandLineStorage().value();
+}
 
 #if BUILDFLAG(IS_WIN)
 // We use extern C for the prototype DLLEXPORT to avoid C++ name mangling.
@@ -156,28 +183,35 @@ int ChromeMain(int argc, const char** argv) {
   // dynamic linking.
   base::debug::SetDumpWithoutCrashingFunction(&DumpProcessWithoutCrash);
 
-  // Verify that chrome_elf and this module (chrome.dll and chrome_child.dll)
-  // have the same version.
-  if (install_static::InstallDetails::Get().VersionMismatch())
+  // Verify that chrome_elf and this module (chrome.dll) have the same version.
+  if (install_static::InstallDetails::Get().VersionMismatch()) {
     base::debug::DumpWithoutCrashing();
+  }
 #else
   params.argc = argc;
   params.argv = argv;
   base::CommandLine::Init(params.argc, params.argv);
 #endif  // BUILDFLAG(IS_WIN)
   base::CommandLine::Init(0, nullptr);
-  [[maybe_unused]] base::CommandLine* command_line(
-      base::CommandLine::ForCurrentProcess());
+
+  base::CommandLine* command_line(base::CommandLine::ForCurrentProcess());
+
+  // Capture the unpolluted command line snapshot in the browser process.
+  // This must happen immediately after CommandLine::Init to ensure we capture
+  // the state before any internal programmatic mutations.
+  if (!command_line->HasSwitch(switches::kProcessType)) {
+    GetInitialCommandLineStorage() = *command_line;
+  }
 
 #if BUILDFLAG(IS_WIN)
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          ::switches::kRaiseTimerFrequency)) {
+  if (command_line->HasSwitch(::switches::kRaiseTimerFrequency)) {
     // Raise the timer interrupt frequency and leave it raised.
     timeBeginPeriod(1);
   }
 #endif
 
 #if BUILDFLAG(IS_MAC)
+  chrome::InitializeExitSixtyNineDetector();
   SetUpBundleOverrides();
 #endif
 
@@ -202,14 +236,14 @@ int ChromeMain(int argc, const char** argv) {
       LOG(ERROR) << "Multiple targets are not supported in headless mode.";
       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
     }
-    headless_mode_handle = headless::InitHeadlessMode();
-  } else {
-#ifdef ENABLE_OLD_HEADLESS_INFO
-    if (headless::IsOldHeadlessMode()) {
-      ShowOldHeadlessInfoMaybe(command_line);
+
+    auto init_headless_mode = headless::InitHeadlessMode();
+    if (!init_headless_mode.has_value()) {
+      LOG(ERROR) << init_headless_mode.error();
       return EXIT_FAILURE;
     }
-#endif  // ENABLE_OLD_HEADLESS_INFO
+
+    headless_mode_handle = std::move(init_headless_mode.value());
   }
 
 #if BUILDFLAG(IS_MAC)
@@ -226,3 +260,5 @@ int ChromeMain(int argc, const char** argv) {
   }
   return rv;
 }
+
+#endif  // defined(BUILDING_CHROME_RENDERER)

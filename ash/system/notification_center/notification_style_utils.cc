@@ -14,6 +14,7 @@
 #include "ash/system/notification_center/message_center_constants.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -50,7 +51,9 @@ gfx::ImageSkia CreateNotificationAppIcon(
 
   gfx::ImageSkia app_icon =
       masked_small_icon.IsEmpty()
-          ? gfx::CreateVectorIcon(message_center::kProductIcon,
+          ? gfx::CreateVectorIcon(::features::IsRoundedIconsEnabled()
+                                      ? message_center::kChromeProductIcon
+                                      : message_center::kProductOldIcon,
                                   kNotificationAppIconImageSize, icon_color)
           : masked_small_icon.AsImageSkia();
 
@@ -72,14 +75,16 @@ gfx::ImageSkia CreateNotificationItemIcon(
   // hardcoded chrome icon as a default icon.
   return gfx::ImageSkiaOperations::CreateImageWithCircleBackground(
       kNotificationAppIconViewSize / 2, SK_ColorRED,
-      gfx::CreateVectorIcon(message_center::kProductIcon,
+      gfx::CreateVectorIcon(::features::IsRoundedIconsEnabled()
+                                ? message_center::kChromeProductIcon
+                                : message_center::kProductOldIcon,
                             kNotificationAppIconImageSize, SK_ColorBLACK));
 }
 
 SkColor CalculateIconBackgroundColor(
     const message_center::Notification* notification) {
-  SkColor default_color = AshColorProvider::Get()->GetControlsLayerColor(
-      AshColorProvider::ControlsLayerType::kControlBackgroundColorActive);
+  SkColor default_color = GetColorProviderForNativeTheme()->GetColor(
+      kColorAshControlBackgroundColorActive);
 
   if (!notification) {
     return default_color;
@@ -88,7 +93,7 @@ SkColor CalculateIconBackgroundColor(
   auto color_id = notification->accent_color_id();
   std::optional<SkColor> accent_color = notification->accent_color();
 
-  if (!color_id || !accent_color.has_value()) {
+  if (!color_id && !accent_color.has_value()) {
     return default_color;
   }
 
@@ -126,12 +131,8 @@ void ConfigureLabelStyle(views::Label* label,
   label->SetAutoColorReadabilityEnabled(false);
   label->SetFontList(
       gfx::FontList({kGoogleSansFont}, gfx::Font::NORMAL, size, font_weight));
-  auto layer_type =
-      is_color_primary
-          ? ash::AshColorProvider::ContentLayerType::kTextColorPrimary
-          : ash::AshColorProvider::ContentLayerType::kTextColorSecondary;
-  label->SetEnabledColor(
-      ash::AshColorProvider::Get()->GetContentLayerColor(layer_type));
+  label->SetEnabledColor(is_color_primary ? cros_tokens::kTextColorPrimary
+                                          : cros_tokens::kTextColorSecondary);
 }
 
 ui::ColorProvider* GetColorProviderForNativeTheme() {
@@ -196,7 +197,7 @@ std::unique_ptr<views::LabelButton> GenerateNotificationLabelButton(
   std::unique_ptr<PillButton> actions_button = std::make_unique<PillButton>(
       std::move(callback), label, PillButton::Type::kFloatingWithoutIcon,
       /*icon=*/nullptr, kNotificationPillButtonHorizontalSpacing);
-  actions_button->SetButtonTextColorId(cros_tokens::kCrosSysOnSurface);
+  actions_button->SetButtonTextColor(cros_tokens::kCrosSysOnSurface);
 
   return actions_button;
 }

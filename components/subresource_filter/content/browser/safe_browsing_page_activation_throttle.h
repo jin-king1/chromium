@@ -11,9 +11,8 @@
 #include <utility>
 #include <vector>
 
-#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -23,6 +22,10 @@
 #include "components/subresource_filter/core/common/activation_decision.h"
 #include "components/subresource_filter/core/common/activation_list.h"
 #include "content/public/browser/navigation_throttle.h"
+
+namespace safe_browsing {
+class V5GetHashProtocolManager;
+}  // namespace safe_browsing
 
 namespace subresource_filter {
 
@@ -60,13 +63,18 @@ class SafeBrowsingPageActivationThrottle final
         content::NavigationHandle* navigation_handle,
         mojom::ActivationLevel initial_activation_level,
         ActivationDecision* decision) = 0;
+
+    // Returns a weak pointer to the V5GetHashProtocolManager used for Safe
+    // Browsing v5 lookups.
+    virtual base::WeakPtr<safe_browsing::V5GetHashProtocolManager>
+    GetV5GetHashProtocolManager() = 0;
   };
 
   // `delegate` is allowed to be null, in which case the client creating this
   // throttle will not be able to adjust activation decisions made by the
   // throttle.
   SafeBrowsingPageActivationThrottle(
-      content::NavigationHandle* handle,
+      content::NavigationThrottleRegistry& registry,
       Delegate* delegate,
       scoped_refptr<safe_browsing::SafeBrowsingDatabaseManager>
           database_manager);

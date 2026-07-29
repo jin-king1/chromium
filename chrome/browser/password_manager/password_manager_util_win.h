@@ -5,7 +5,9 @@
 #ifndef CHROME_BROWSER_PASSWORD_MANAGER_PASSWORD_MANAGER_UTIL_WIN_H_
 #define CHROME_BROWSER_PASSWORD_MANAGER_PASSWORD_MANAGER_UTIL_WIN_H_
 
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
+
+class PrefService;
 
 namespace password_manager_util_win {
 
@@ -13,12 +15,13 @@ namespace password_manager_util_win {
 // the user was successfully authenticated, or if authentication was not
 // possible. Populates the user facing prompt with `password_prompt` message.
 bool AuthenticateUser(gfx::NativeWindow window,
-                      const std::u16string& password_prompt);
+                      const std::u16string& password_prompt,
+                      PrefService* local_state);
 
 // Returns true if we can authenticate with screen lock, false otherwise. If we
 // can not retrieve a username for the device, we will treat that as being
 // unable to authenticate with device unlock.
-bool CanAuthenticateWithScreenLock();
+bool CanAuthenticateWithScreenLock(PrefService* local_state);
 
 }  // namespace password_manager_util_win
 

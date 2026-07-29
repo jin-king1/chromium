@@ -12,11 +12,10 @@
 #include "ash/constants/ash_switches.h"
 #include "ash/test/ash_test_base.h"
 #include "base/base_switches.h"
-#include "base/command_line.h"
-#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/ptr_util.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
@@ -27,6 +26,7 @@
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/session/arc_vm_data_migration_status.h"
 #include "chromeos/ash/experiences/arc/test/arc_util_test_support.h"
+#include "chromeos/ash/experiences/arc/test/fake_arc_platform_support.h"
 #include "components/account_id/account_id.h"
 #include "components/exo/shell_surface_util.h"
 #include "components/prefs/testing_pref_service.h"
@@ -67,20 +67,6 @@ class ScopedArcFeature {
   base::test::ScopedFeatureList feature_list;
 };
 
-class ScopedRtVcpuFeature {
- public:
-  ScopedRtVcpuFeature(bool dual_core_enabled, bool quad_core_enabled) {
-    feature_list.InitWithFeatureStates({{kRtVcpuDualCore, dual_core_enabled},
-                                        {kRtVcpuQuadCore, quad_core_enabled}});
-  }
-  ~ScopedRtVcpuFeature() = default;
-  ScopedRtVcpuFeature(const ScopedRtVcpuFeature&) = delete;
-  ScopedRtVcpuFeature& operator=(const ScopedRtVcpuFeature&) = delete;
-
- private:
-  base::test::ScopedFeatureList feature_list;
-};
-
 class ArcUtilTest : public ash::AshTestBase {
  public:
   ArcUtilTest() {
@@ -95,11 +81,15 @@ class ArcUtilTest : public ash::AshTestBase {
   }
 
   void SetUp() override {
+    fake_arc_platform_support_ = std::make_unique<FakeArcPlatformSupport>();
     ash::AshTestBase::SetUp();
     prefs::RegisterProfilePrefs(profile_prefs_.registry());
   }
 
-  void TearDown() override { ash::AshTestBase::TearDown(); }
+  void TearDown() override {
+    ash::AshTestBase::TearDown();
+    fake_arc_platform_support_.reset();
+  }
 
  protected:
   void InjectUpstartStartJobFailure(const std::string& job_name_to_fail) {
@@ -125,12 +115,32 @@ class ArcUtilTest : public ash::AshTestBase {
 
   PrefService* profile_prefs() { return &profile_prefs_; }
 
+  std::unique_ptr<FakeArcPlatformSupport> fake_arc_platform_support_;
+  base::test::ScopedCommandLine scoped_command_line_;
+
  private:
   TestingPrefServiceSimple profile_prefs_;
 };
 
+TEST_F(ArcUtilTest, IsArcAvailable_ArcVmDlcRequired_DlcNotEnabled) {
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
+  command_line->InitFromArgv({"", "--enable-arcvm-dlc"});
+  command_line->InitFromArgv({"", "--arcvm-dlc-hardware-satisfied"});
+  fake_arc_platform_support_->SetDlcEnabled(false);
+
+  EXPECT_FALSE(IsArcAvailable());
+}
+
+TEST_F(ArcUtilTest, IsArcAvailable_ArcVmDlcRequired_HardwareNotSatisfied) {
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
+  command_line->InitFromArgv({"", "--enable-arcvm-dlc"});
+  fake_arc_platform_support_->SetDlcEnabled(true);
+
+  EXPECT_FALSE(IsArcAvailable());
+}
+
 TEST_F(ArcUtilTest, IsArcAvailable_None) {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
 
   command_line->InitFromArgv({"", "--arc-availability=none"});
   EXPECT_FALSE(IsArcAvailable());
@@ -145,7 +155,7 @@ TEST_F(ArcUtilTest, IsArcAvailable_None) {
 
 // Test --arc-available with EnableARC feature combination.
 TEST_F(ArcUtilTest, IsArcAvailable_Installed) {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
 
   // If ARC is not installed, IsArcAvailable() should return false,
   // regardless of EnableARC feature.
@@ -198,7 +208,7 @@ TEST_F(ArcUtilTest, IsArcAvailable_Installed) {
 
 TEST_F(ArcUtilTest, IsArcAvailable_OfficiallySupported) {
   // Regardless of FeatureList, IsArcAvailable() should return true.
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv({"", "--enable-arc"});
   EXPECT_TRUE(IsArcAvailable());
 
@@ -209,17 +219,25 @@ TEST_F(ArcUtilTest, IsArcAvailable_OfficiallySupported) {
 TEST_F(ArcUtilTest, IsArcVmEnabled) {
   EXPECT_FALSE(IsArcVmEnabled());
 
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv({"", "--enable-arcvm"});
   EXPECT_TRUE(IsArcVmEnabled());
 }
 
-TEST_F(ArcUtilTest, IsArcVmDlcEnabled) {
-  EXPECT_FALSE(IsArcVmDlcEnabled());
+TEST_F(ArcUtilTest, IsArcVmDlcRequired) {
+  EXPECT_FALSE(IsArcVmDlcRequired());
 
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv({"", "--enable-arcvm-dlc"});
-  EXPECT_TRUE(IsArcVmDlcEnabled());
+  EXPECT_TRUE(IsArcVmDlcRequired());
+}
+
+TEST_F(ArcUtilTest, IsArcVmDlcHardwareRequirementSatisfied) {
+  EXPECT_FALSE(IsArcVmDlcHardwareRequirementSatisfied());
+
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
+  command_line->InitFromArgv({"", "--arcvm-dlc-hardware-satisfied"});
+  EXPECT_TRUE(IsArcVmDlcHardwareRequirementSatisfied());
 }
 
 TEST_F(ArcUtilTest, GetArcAndroidSdkVersionAsInt) {
@@ -228,37 +246,10 @@ TEST_F(ArcUtilTest, GetArcAndroidSdkVersionAsInt) {
   EXPECT_EQ(kMaxArcVersion, GetArcAndroidSdkVersionAsInt());
 }
 
-TEST_F(ArcUtilTest, IsArcVmRtVcpuEnabled) {
-  {
-    ScopedRtVcpuFeature feature(false, false);
-    EXPECT_FALSE(IsArcVmRtVcpuEnabled(2));
-    EXPECT_FALSE(IsArcVmRtVcpuEnabled(4));
-    EXPECT_FALSE(IsArcVmRtVcpuEnabled(8));
-  }
-  {
-    ScopedRtVcpuFeature feature(true, false);
-    EXPECT_TRUE(IsArcVmRtVcpuEnabled(2));
-    EXPECT_FALSE(IsArcVmRtVcpuEnabled(4));
-    EXPECT_FALSE(IsArcVmRtVcpuEnabled(8));
-  }
-  {
-    ScopedRtVcpuFeature feature(false, true);
-    EXPECT_FALSE(IsArcVmRtVcpuEnabled(2));
-    EXPECT_TRUE(IsArcVmRtVcpuEnabled(4));
-    EXPECT_TRUE(IsArcVmRtVcpuEnabled(8));
-  }
-  {
-    ScopedRtVcpuFeature feature(true, true);
-    EXPECT_TRUE(IsArcVmRtVcpuEnabled(2));
-    EXPECT_TRUE(IsArcVmRtVcpuEnabled(4));
-    EXPECT_TRUE(IsArcVmRtVcpuEnabled(8));
-  }
-}
-
 TEST_F(ArcUtilTest, IsArcVmUseHugePages) {
   EXPECT_FALSE(IsArcVmUseHugePages());
 
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv({"", "--arcvm-use-hugepages"});
   EXPECT_TRUE(IsArcVmUseHugePages());
 }
@@ -266,13 +257,13 @@ TEST_F(ArcUtilTest, IsArcVmUseHugePages) {
 TEST_F(ArcUtilTest, IsArcVmDevConfIgnored) {
   EXPECT_FALSE(IsArcVmDevConfIgnored());
 
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv({"", "--ignore-arcvm-dev-conf"});
   EXPECT_TRUE(IsArcVmDevConfIgnored());
 }
 
 TEST_F(ArcUtilTest, GetArcUreadaheadModeVmSwitch) {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   const char* mode = ash::switches::kArcVmUreadaheadMode;
 
   command_line->InitFromArgv({""});
@@ -289,7 +280,7 @@ TEST_F(ArcUtilTest, GetArcUreadaheadModeVmSwitch) {
 }
 
 TEST_F(ArcUtilTest, GetArcUreadaheadModeContainerSwitch) {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   const char* mode = ash::switches::kArcHostUreadaheadMode;
 
   command_line->InitFromArgv({""});
@@ -310,13 +301,13 @@ TEST_F(ArcUtilTest, UseDevCachesDefault) {
 }
 
 TEST_F(ArcUtilTest, UseDevCachesSet) {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv({"", "--arc-use-dev-caches"});
   EXPECT_TRUE(IsArcUseDevCaches());
 }
 
 TEST_F(ArcUtilTest, IsArcOptInVerificationDisabled) {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv({""});
   EXPECT_FALSE(IsArcOptInVerificationDisabled());
 
@@ -341,18 +332,18 @@ TEST_F(ArcUtilTest, IsArcAllowedForUser) {
       fake_user_manager->AddPublicAccountUser(AccountId::FromUserEmailGaiaId(
           "user3@test.com", GaiaId("1234567890-3")))));
   EXPECT_FALSE(IsArcAllowedForUser(
-      user_manager::TestHelper(*fake_user_manager)
-          .AddKioskAppUser("user4@kiosk-apps.device-local.localhost")));
+      user_manager::TestHelper(fake_user_manager.Get())
+          .AddKioskChromeAppUser("user4@kiosk-apps.device-local.localhost")));
   EXPECT_TRUE(IsArcAllowedForUser(fake_user_manager->AddGaiaUser(
       AccountId::FromUserEmailGaiaId("user5@test.com", GaiaId("1234567890-5")),
       user_manager::UserType::kChild)));
 
   // Set up public account user.
-  fake_user_manager->AddPublicAccountUser(
-      AccountId::FromUserEmailGaiaId("test@test.com", GaiaId("9876543210")));
+  const AccountId account_id =
+      AccountId::FromUserEmailGaiaId("test@test.com", GaiaId("9876543210"));
+  fake_user_manager->AddPublicAccountUser(account_id);
   fake_user_manager->UserLoggedIn(
-      AccountId::FromUserEmailGaiaId("test@test.com", GaiaId("9876543210")),
-      "test@test.com-hash", false /* browser_restart */, false /* is_child */);
+      account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
   const user_manager::User* ephemeral_user = fake_user_manager->GetActiveUser();
   ASSERT_TRUE(ephemeral_user);
   ASSERT_TRUE(fake_user_manager->IsUserCryptohomeDataEphemeral(
@@ -362,14 +353,14 @@ TEST_F(ArcUtilTest, IsArcAllowedForUser) {
 }
 
 TEST_F(ArcUtilTest, ArcStartModeDefault) {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv({"", "--arc-availability=installed"});
   EXPECT_FALSE(ShouldArcAlwaysStart());
   EXPECT_FALSE(ShouldArcAlwaysStartWithNoPlayStore());
 }
 
 TEST_F(ArcUtilTest, ArcStartModeWithoutPlayStore) {
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv(
       {"", "--arc-availability=installed",
        "--arc-start-mode=always-start-with-no-play-store"});
@@ -379,7 +370,7 @@ TEST_F(ArcUtilTest, ArcStartModeWithoutPlayStore) {
 
 // Verifies that ARC manual start is activated by switch.
 TEST_F(ArcUtilTest, ArcStartModeManually) {
-  base::CommandLine::ForCurrentProcess()->InitFromArgv(
+  scoped_command_line_.GetProcessCommandLine()->InitFromArgv(
       {"", "--arc-start-mode=manual"});
   EXPECT_FALSE(ShouldArcAlwaysStart());
   EXPECT_TRUE(ShouldArcStartManually());
@@ -409,7 +400,7 @@ TEST_F(ArcUtilTest, ScaleFactorToDensity) {
   EXPECT_EQ(180, GetLcdDensityForDeviceScaleFactor(1.5f));
   EXPECT_EQ(1200, GetLcdDensityForDeviceScaleFactor(10.f));
 
-  auto* command_line = base::CommandLine::ForCurrentProcess();
+  auto* command_line = scoped_command_line_.GetProcessCommandLine();
   command_line->InitFromArgv({"", "--arc-scale=280"});
   EXPECT_EQ(280, GetLcdDensityForDeviceScaleFactor(1.234f));
 
@@ -522,8 +513,8 @@ TEST_F(ArcUtilTest, ConfigureUpstartJobs_StartFail) {
 }
 
 TEST_F(ArcUtilTest, GetArcWindowTaskId) {
-  std::unique_ptr<aura::Window> window(
-      aura::test::CreateTestWindowWithId(100, nullptr));
+  std::unique_ptr<aura::Window> window =
+      aura::test::CreateTestWindow({.bounds = {100, 100}, .window_id = 100});
 
   exo::SetShellApplicationId(window.get(), "org.chromium.arc.100");
 
@@ -546,8 +537,8 @@ TEST_F(ArcUtilTest, GetArcWindowTaskId) {
 }
 
 TEST_F(ArcUtilTest, GetArcWindowSessionId) {
-  std::unique_ptr<aura::Window> window(
-      aura::test::CreateTestWindowWithId(200, nullptr));
+  std::unique_ptr<aura::Window> window =
+      aura::test::CreateTestWindow({.bounds = {100, 100}, .window_id = 200});
 
   exo::SetShellApplicationId(window.get(), "org.chromium.arc.session.200");
 

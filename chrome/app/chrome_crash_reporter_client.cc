@@ -4,6 +4,8 @@
 
 #include "chrome/app/chrome_crash_reporter_client.h"
 
+#include <optional>
+
 #include "base/command_line.h"
 #include "base/environment.h"
 #include "base/files/file_path.h"
@@ -34,12 +36,27 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "chrome/common/chrome_descriptors.h"
+#include "chrome/common/chrome_descriptors_android.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
+#include "build/util/LASTCHANGE_commit_position.h"
 #endif
+
+namespace {
+
+constexpr const char* UpdaterVersion() {
+#if BUILDFLAG(IS_CHROMEOS) && CHROMIUM_COMMIT_POSITION_IS_MAIN
+  // Adds the revision number as a suffix to the version number if the chrome
+  // is built from the main branch.
+  return PRODUCT_VERSION "-r" CHROMIUM_COMMIT_POSITION_NUMBER;
+#else
+  return PRODUCT_VERSION;
+#endif
+}
+
+}  // namespace
 
 void ChromeCrashReporterClient::Create() {
   static base::NoDestructor<ChromeCrashReporterClient> crash_client;
@@ -48,11 +65,12 @@ void ChromeCrashReporterClient::Create() {
   // By setting the BREAKPAD_DUMP_LOCATION environment variable, an alternate
   // location to write crash dumps can be set.
   std::unique_ptr<base::Environment> env(base::Environment::Create());
-  std::string alternate_crash_dump_location;
   base::FilePath crash_dumps_dir_path;
-  if (env->GetVar("BREAKPAD_DUMP_LOCATION", &alternate_crash_dump_location)) {
+  std::optional<std::string> alternate_crash_dump_location =
+      env->GetVar("BREAKPAD_DUMP_LOCATION");
+  if (alternate_crash_dump_location.has_value()) {
     crash_dumps_dir_path =
-        base::FilePath::FromUTF8Unsafe(alternate_crash_dump_location);
+        base::FilePath::FromUTF8Unsafe(alternate_crash_dump_location.value());
   } else if (base::CommandLine::ForCurrentProcess()->HasSwitch(
                  "breakpad-dump-location")) {
     // This is needed for Android tests, where we want dumps to go to a location
@@ -73,7 +91,6 @@ bool ChromeCrashReporterClient::ShouldPassCrashLoopBefore(
     const std::string& process_type) {
   if (process_type == ::switches::kRendererProcess ||
       process_type == ::switches::kUtilityProcess ||
-      process_type == ::switches::kPpapiPluginProcess ||
       process_type == ::switches::kZygoteProcess) {
     // These process types never cause a log-out, even if they crash. So the
     // normal crash handling process should work fine; we shouldn't need to
@@ -131,7 +148,7 @@ void ChromeCrashReporterClient::GetProductInfo(ProductInfo* product_info) {
   NOTREACHED();
 #endif
 
-  product_info->version = PRODUCT_VERSION;
+  product_info->version = UpdaterVersion();
   product_info->channel =
       chrome::GetChannelName(chrome::WithExtendedStable(true));
 }
@@ -202,7 +219,6 @@ bool ChromeCrashReporterClient::ShouldMonitorCrashHandlerExpensively() {
 bool ChromeCrashReporterClient::EnableBreakpadForProcess(
     const std::string& process_type) {
   return process_type == switches::kRendererProcess ||
-         process_type == switches::kPpapiPluginProcess ||
          process_type == switches::kZygoteProcess ||
          process_type == switches::kGpuProcess ||
          process_type == switches::kUtilityProcess;

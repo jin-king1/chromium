@@ -55,14 +55,16 @@ class ChromeWebAuthenticationDelegateBase
   content::WebAuthenticationRequestProxy* MaybeGetRequestProxy(
       content::BrowserContext* browser_context,
       const url::Origin& caller_origin) override;
-  void DeletePasskey(content::WebContents* web_contents,
-                     const std::vector<uint8_t>& passkey_credential_id,
-                     const std::string& relying_party_id) override;
-  void DeleteUnacceptedPasskeys(content::WebContents* web_contents,
-                                const std::string& relying_party_id,
-                                const std::vector<uint8_t>& user_id,
-                                const std::vector<std::vector<uint8_t>>&
-                                    all_accepted_credentials_ids) override;
+  void PasskeyUnrecognized(content::WebContents* web_contents,
+                           const url::Origin& origin,
+                           const std::vector<uint8_t>& passkey_credential_id,
+                           const std::string& relying_party_id) override;
+  void SignalAllAcceptedCredentials(content::WebContents* web_contents,
+                                    const url::Origin& origin,
+                                    const std::string& relying_party_id,
+                                    const std::vector<uint8_t>& user_id,
+                                    const std::vector<std::vector<uint8_t>>&
+                                        all_accepted_credentials_ids) override;
   void UpdateUserPasskeys(content::WebContents* web_contents,
                           const url::Origin& origin,
                           const std::string& relying_party_id,

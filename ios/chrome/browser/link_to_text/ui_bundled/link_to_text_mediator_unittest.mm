@@ -16,7 +16,7 @@
 #import "components/shared_highlighting/core/common/text_fragment.h"
 #import "components/ukm/ios/ukm_url_recorder.h"
 #import "components/ukm/test_ukm_recorder.h"
-#import "ios/chrome/browser/browser_container/ui_bundled/edit_menu_alert_delegate.h"
+#import "ios/chrome/browser/browser_content/ui_bundled/edit_menu_alert_delegate.h"
 #import "ios/chrome/browser/link_to_text/model/link_generation_outcome.h"
 #import "ios/chrome/browser/link_to_text/model/link_to_text_constants.h"
 #import "ios/chrome/browser/link_to_text/model/link_to_text_java_script_feature.h"
@@ -47,17 +47,17 @@ using shared_highlighting::TextFragment;
 using web::FakeWebState;
 
 namespace {
-const CGFloat kCaretWidth = 4.0;
-const CGFloat kFakeLeftInset = 50;
-const CGFloat kFakeTopInset = 100;
-const char kTestQuote[] = "some selected text on a page";
-const char kTestHighlightURL[] =
+constexpr CGFloat kCaretWidth = 4.0;
+constexpr CGFloat kFakeLeftInset = 50;
+constexpr CGFloat kFakeTopInset = 100;
+constexpr char kTestQuote[] = "some selected text on a page";
+constexpr char kTestHighlightURL[] =
     "https://www.chromium.org/#:~:text=selected%20text";
-const char kTestBaseURL[] = "https://www.chromium.org/";
-const TextFragment kTestTextFragment = TextFragment("selected text");
+constexpr char kTestBaseURL[] = "https://www.chromium.org/";
+constexpr char kTestTextFragment[] = "selected text";
 
-const char kSuccessUkmMetric[] = "Success";
-const char kErrorUkmMetric[] = "Error";
+constexpr char kSuccessUkmMetric[] = "Success";
+constexpr char kErrorUkmMetric[] = "Error";
 
 // Fake version of JS Feature which directly invokes the passed callback using
 // the provided latency and response values, without actually invoking JS (or
@@ -78,7 +78,7 @@ class FakeJSFeature : public LinkToTextJavaScriptFeature {
 
  private:
   base::TimeDelta latency_;
-  raw_ptr<base::Value> response_;
+  raw_ptr<base::Value, DanglingUntriaged> response_;
 };
 
 }  // namespace
@@ -131,8 +131,7 @@ class LinkToTextMediatorTest : public PlatformTest {
     LinkToTextTabHelper::FromWebState(web_state_)
         ->SetJSFeatureForTesting(&fake_js_feature_);
 
-    mediator_ =
-        [[LinkToTextMediator alloc] initWithWebStateList:&web_state_list_];
+    mediator_ = [[LinkToTextMediator alloc] init];
     mediator_.alertDelegate = mocked_alert_delegate_;
     mediator_.activityServiceHandler = mocked_activity_service_commands_;
   }
@@ -153,16 +152,16 @@ class LinkToTextMediatorTest : public PlatformTest {
   std::unique_ptr<base::Value> CreateSuccessResponse(
       const std::string& selected_text,
       CGRect selection_rect) {
-    base::Value::Dict rect_value;
+    base::DictValue rect_value;
     rect_value.Set("x", selection_rect.origin.x);
     rect_value.Set("y", selection_rect.origin.y);
     rect_value.Set("width", selection_rect.size.width);
     rect_value.Set("height", selection_rect.size.height);
 
-    base::Value::Dict response_value;
+    base::DictValue response_value;
     response_value.Set("status",
                        static_cast<double>(LinkGenerationOutcome::kSuccess));
-    response_value.Set("fragment", kTestTextFragment.ToValue());
+    response_value.Set("fragment", TextFragment(kTestTextFragment).ToValue());
     response_value.Set("selectedText", selected_text);
     response_value.Set("selectionRect", std::move(rect_value));
     return std::make_unique<base::Value>(std::move(response_value));
@@ -174,7 +173,7 @@ class LinkToTextMediatorTest : public PlatformTest {
 
   std::unique_ptr<base::Value> CreateErrorResponse(
       LinkGenerationOutcome outcome) {
-    base::Value::Dict response_value;
+    base::DictValue response_value;
     response_value.Set("status", static_cast<double>(outcome));
     return std::make_unique<base::Value>(std::move(response_value));
   }
@@ -200,6 +199,8 @@ class LinkToTextMediatorTest : public PlatformTest {
                                     static_cast<int64_t>(error));
   }
 
+  web::WebState* web_state() { return web_state_.get(); }
+
   web::WebTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   base::test::ScopedFeatureList feature_list_;
@@ -221,7 +222,7 @@ class LinkToTextMediatorTest : public PlatformTest {
 // HTML.
 TEST_F(LinkToTextMediatorTest, ShouldNotOfferLinkToTextNotHTML) {
   web_state_->SetContentIsHTML(false);
-  EXPECT_FALSE([mediator_ shouldOfferLinkToText]);
+  EXPECT_FALSE([mediator_ shouldOfferLinkToTextInWebState:web_state()]);
 }
 
 // Tests that the `-showShareSheetForHighlight:` command is triggered with the
@@ -251,7 +252,7 @@ TEST_F(LinkToTextMediatorTest, HandleLinkToTextSelectionTriggersCommandNoZoom) {
         return YES;
       }]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();
@@ -297,7 +298,7 @@ TEST_F(LinkToTextMediatorTest,
         return YES;
       }]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();
@@ -329,7 +330,7 @@ TEST_F(LinkToTextMediatorTest, LinkGenerationError) {
     callback_invoked = YES;
   }] showAlertWithTitle:[OCMArg any] message:[OCMArg any] actions:[OCMArg any]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();
@@ -363,7 +364,7 @@ TEST_F(LinkToTextMediatorTest, EmptyResponseLinkGenerationError) {
     callback_invoked = YES;
   }] showAlertWithTitle:[OCMArg any] message:[OCMArg any] actions:[OCMArg any]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();
@@ -399,7 +400,7 @@ TEST_F(LinkToTextMediatorTest, BadResponseLinkGenerationError) {
     callback_invoked = YES;
   }] showAlertWithTitle:[OCMArg any] message:[OCMArg any] actions:[OCMArg any]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();
@@ -434,7 +435,7 @@ TEST_F(LinkToTextMediatorTest, StringResponseLinkGenerationError) {
     callback_invoked = YES;
   }] showAlertWithTitle:[OCMArg any] message:[OCMArg any] actions:[OCMArg any]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();
@@ -469,7 +470,7 @@ TEST_F(LinkToTextMediatorTest, LinkGenerationSuccessButNoPayload) {
     callback_invoked = YES;
   }] showAlertWithTitle:[OCMArg any] message:[OCMArg any] actions:[OCMArg any]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();
@@ -504,7 +505,7 @@ TEST_F(LinkToTextMediatorTest, LinkGenerationTimeout) {
     callback_invoked = YES;
   }] showAlertWithTitle:[OCMArg any] message:[OCMArg any] actions:[OCMArg any]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();
@@ -548,7 +549,7 @@ TEST_F(LinkToTextMediatorTest, WithHttpsAndCanonicalUrl) {
         return YES;
       }]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();
@@ -586,7 +587,7 @@ TEST_F(LinkToTextMediatorTest, NotHttpsAndCanonicalUrl) {
         return YES;
       }]];
 
-  [mediator_ handleLinkToTextSelection];
+  [mediator_ handleLinkToTextSelectionInWebState:web_state()];
 
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^BOOL {
     base::RunLoop().RunUntilIdle();

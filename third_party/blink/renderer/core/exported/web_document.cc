@@ -32,9 +32,11 @@
 
 #include "base/containers/to_vector.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/unguessable_token.h"
 #include "net/storage_access_api/status.h"
 #include "services/network/public/mojom/referrer_policy.mojom-blink.h"
 #include "third_party/blink/public/common/loader/referrer_utils.h"
+#include "third_party/blink/public/mojom/content_extraction/script_tools.mojom-blink.h"
 #include "third_party/blink/public/platform/web_distillability.h"
 #include "third_party/blink/public/platform/web_url.h"
 #include "third_party/blink/public/web/web_dom_event.h"
@@ -42,6 +44,7 @@
 #include "third_party/blink/public/web/web_element_collection.h"
 #include "third_party/blink/public/web/web_form_control_element.h"
 #include "third_party/blink/public/web/web_form_element.h"
+#include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/css/css_selector_watch.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
@@ -69,16 +72,43 @@
 #include "third_party/blink/renderer/core/html/plugin_document.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/core/script_tools/model_context_supplement.h"
+#include "third_party/blink/renderer/core/script_tools/script_tool_types.h"
 #include "third_party/blink/renderer/core/speculation_rules/document_speculation_rules.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
+#include "ui/accessibility/ax_mode.h"
 
 namespace {
 
 static const blink::WebStyleSheetKey GenerateStyleSheetKey() {
   static unsigned counter = 0;
-  return String::Number(++counter);
+  return blink::String::Number(++counter);
+}
+
+blink::WebScriptToolErrorCode ToWebScriptToolErrorCode(
+    blink::ScriptToolErrorCode code) {
+  switch (code) {
+    case blink::ScriptToolErrorCode::kInvalidToolName:
+      return blink::WebScriptToolErrorCode::kInvalidToolName;
+    case blink::ScriptToolErrorCode::kInvalidInputArguments:
+      return blink::WebScriptToolErrorCode::kInvalidInputArguments;
+    case blink::ScriptToolErrorCode::kMissingRequiredSubmitButton:
+      return blink::WebScriptToolErrorCode::kMissingRequiredSubmitButton;
+    case blink::ScriptToolErrorCode::kToolInvocationFailed:
+      return blink::WebScriptToolErrorCode::kToolInvocationFailed;
+    case blink::ScriptToolErrorCode::kToolCancelled:
+      return blink::WebScriptToolErrorCode::kToolCancelled;
+  }
+}
+
+blink::WebScriptToolError ToWebScriptToolError(
+    const blink::ScriptToolError& error) {
+  return blink::WebScriptToolError(ToWebScriptToolErrorCode(error.code),
+                                   blink::WebString(error.message));
 }
 
 }  // namespace
@@ -94,11 +124,13 @@ WebURL WebDocument::Url() const {
 }
 
 WebSecurityOrigin WebDocument::GetSecurityOrigin() const {
-  if (!ConstUnwrap<Document>())
+  if (!ConstUnwrap<Document>()) {
     return WebSecurityOrigin();
+  }
   ExecutionContext* context = ConstUnwrap<Document>()->GetExecutionContext();
-  if (!context)
+  if (!context) {
     return WebSecurityOrigin();
+  }
   return WebSecurityOrigin(context->GetSecurityOrigin());
 }
 
@@ -123,8 +155,9 @@ WebString WebDocument::GetReferrer() const {
 
 std::optional<SkColor> WebDocument::ThemeColor() {
   std::optional<Color> color = Unwrap<Document>()->ThemeColor();
-  if (color)
+  if (color) {
     return color->Rgb();
+  }
   return std::nullopt;
 }
 
@@ -147,6 +180,10 @@ bool WebDocument::IsXHTMLDocument() const {
 
 bool WebDocument::IsPluginDocument() const {
   return IsA<PluginDocument>(ConstUnwrap<Document>());
+}
+
+bool WebDocument::IsActive() const {
+  return ConstUnwrap<Document>()->IsActive();
 }
 
 WebURL WebDocument::BaseURL() const {
@@ -189,8 +226,9 @@ WebString WebDocument::Title() const {
 
 WebString WebDocument::ContentAsTextForTesting() const {
   Element* document_element = ConstUnwrap<Document>()->documentElement();
-  if (!document_element)
+  if (!document_element) {
     return WebString();
+  }
   return document_element->innerText();
 }
 
@@ -222,6 +260,10 @@ std::vector<WebFormElement> WebDocument::Forms() const {
     form_elements.emplace_back(blink::To<HTMLFormElement>(element));
   }
   return form_elements;
+}
+
+WebElement WebDocument::ScrollingElement() {
+  return WebElement(Unwrap<Document>()->scrollingElement());
 }
 
 std::vector<WebFormElement> WebDocument::GetTopLevelForms() const {
@@ -275,8 +317,9 @@ void WebDocument::WatchCSSSelectors(
     const std::vector<WebString>& web_selectors) {
   Document* document = Unwrap<Document>();
   CSSSelectorWatch* watch = CSSSelectorWatch::FromIfExists(*document);
-  if (!watch && web_selectors.empty())
+  if (!watch && web_selectors.empty()) {
     return;
+  }
   CSSSelectorWatch::From(*document).WatchCSSSelectors(
       Vector<String>(web_selectors));
 }
@@ -297,8 +340,9 @@ WebDistillabilityFeatures WebDocument::DistillabilityFeatures() {
 }
 
 void WebDocument::SetShowBeforeUnloadDialog(bool show_dialog) {
-  if (!IsHTMLDocument())
+  if (!IsHTMLDocument()) {
     return;
+  }
 
   Document* doc = Unwrap<Document>();
   doc->SetShowBeforeUnloadDialog(show_dialog);
@@ -362,18 +406,115 @@ WebString WebDocument::OutgoingReferrer() const {
   return WebString(ConstUnwrap<Document>()->domWindow()->OutgoingReferrer());
 }
 
-void WebDocument::InitiatePreview(const WebURL& url) {
-  if (!url.IsValid()) {
-    return;
+void WebDocument::SnapshotAccessibilityTree(
+    size_t max_nodes,
+    base::TimeDelta timeout,
+    ui::AXTreeUpdate* response,
+    ui::AXMode mode,
+    std::set<ui::AXSerializationErrorFlag>* out_error) {
+  // This creates a different AXObjectCache from any owned by document for
+  // case where a11y stays on, because the AXMode may require a different set
+  // of nodes.
+  Member<blink::AXObjectCache> cache =
+      blink::AXObjectCache::CreateSnapshotter(*Unwrap<Document>(), mode);
+  cache->SerializeEntireTreeAndDispose(max_nodes, timeout, response, out_error);
+}
+
+size_t WebDocument::ActiveResourceRequestCount() const {
+  return ConstUnwrap<Document>()->Fetcher()->ActiveRequestCount();
+}
+
+uint64_t WebDocument::CookieModificationCount() const {
+  return ConstUnwrap<Document>()->CookieModificationCount();
+}
+
+bool WebDocument::ExecuteScriptTool(
+    const base::UnguessableToken& invocation_id,
+    const WebString& name,
+    const WebString& input_arguments,
+    WebScriptToolResultCallback tool_result_cb) {
+  auto* model_context =
+      ModelContextSupplement::modelContext(*Unwrap<Document>());
+  auto web_tool_declaration = std::make_unique<WebScriptToolDeclaration>();
+  if (auto script_tool_declaration =
+          model_context->GetScriptToolDeclaration(name)) {
+    web_tool_declaration->description =
+        WebString(script_tool_declaration->description);
+    web_tool_declaration->input_schema =
+        WebString(script_tool_declaration->input_schema);
+    web_tool_declaration->read_only = script_tool_declaration->read_only;
+    web_tool_declaration->untrusted_content =
+        script_tool_declaration->untrusted_content;
+  }
+  // TODO(481899636): PLUMB SIGNAL TO THE BROWSER SIDE!
+  return model_context->ExecuteTool(
+      invocation_id, name, input_arguments,
+      blink::BindOnce(
+          [](WebScriptToolResultCallback tool_result_cb,
+             std::unique_ptr<WebScriptToolDeclaration> web_tool_declaration,
+             base::expected<String, ScriptToolError> result) {
+            if (result.has_value()) {
+              std::move(tool_result_cb)
+                  .Run(std::move(web_tool_declaration),
+                       base::expected<WebString, WebScriptToolError>(
+                           WebString(*result)));
+            } else {
+              std::move(tool_result_cb)
+                  .Run(std::move(web_tool_declaration),
+                       base::unexpected(ToWebScriptToolError(result.error())));
+            }
+          },
+          std::move(tool_result_cb), std::move(web_tool_declaration)));
+}
+
+void WebDocument::CancelScriptTool(
+    const base::UnguessableToken& invocation_id) {
+  auto* model_context =
+      ModelContextSupplement::modelContext(*Unwrap<Document>());
+  model_context->CancelTool(invocation_id);
+}
+
+void WebDocument::GetCrossDocumentScriptToolResult(
+    const base::UnguessableToken& invocation_id,
+    CrossDocumentScriptToolResultCallback result_callback) {
+  auto* model_context =
+      ModelContextSupplement::modelContext(*Unwrap<Document>());
+  model_context->GetCrossDocumentScriptToolResult(
+      invocation_id,
+      blink::BindOnce(
+          [](CrossDocumentScriptToolResultCallback original_callback,
+             String result) {
+            std::move(original_callback).Run(WebString(result));
+          },
+          std::move(result_callback)));
+}
+
+bool WebDocument::IsAutofillEventEnabled() const {
+  const Document* document = ConstUnwrap<Document>();
+  CHECK(document);
+  return RuntimeEnabledFeatures::AutofillEventEnabled(
+      document->GetExecutionContext());
+}
+
+void WebDocument::DispatchAutofillEvent(
+    std::vector<std::pair<WebFormControlElement, WebString>> field_data,
+    const base::UnguessableToken& fill_id,
+    bool supports_refill) {
+  Document* document = Unwrap<Document>();
+  CHECK(document);
+
+  HeapVector<std::pair<Member<Element>, String>> converted_field_data;
+  for (auto& pair : field_data) {
+    if (pair.first.IsNull()) {
+      continue;
+    }
+    HTMLFormControlElement* control_element = pair.first;
+    converted_field_data.push_back(
+        std::make_pair(control_element, String(std::move(pair.second))));
   }
 
-  Document* document = blink::To<Document>(private_.Get());
-  if (!document) {
-    return;
-  }
-
-  KURL kurl(url);
-  DocumentSpeculationRules::From(*document).InitiatePreview(kurl);
+  document->DispatchAutofillEvent(std::move(converted_field_data), fill_id,
+                                  supports_refill);
 }
 
 }  // namespace blink

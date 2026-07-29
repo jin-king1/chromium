@@ -7,7 +7,6 @@
 #include <functional>
 #include <optional>
 
-#include "base/functional/callback_forward.h"
 #include "base/test/mock_callback.h"
 #include "base/test/task_environment.h"
 #include "chrome/browser/enterprise/reporting/legacy_tech/legacy_tech_report_generator.h"
@@ -55,7 +54,7 @@ class LegacyTechServiceTest : public ::testing::Test {
   }
 
   void SetPolicy(const std::vector<std::string>& urls) {
-    base::Value::List policy;
+    base::ListValue policy;
     for (const auto& url : urls) {
       policy.Append(base::Value(url));
     }

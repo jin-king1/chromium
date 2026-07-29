@@ -27,9 +27,9 @@ namespace optimization_guide {
 class TextSafetyClient {
  public:
   virtual ~TextSafetyClient() = 0;
-  virtual mojo::Remote<on_device_model::mojom::TextSafetyModel>&
-  GetTextSafetyModelRemote(
-      const on_device_model::TextSafetyLoaderParams& params) = 0;
+  virtual void StartSession(
+      mojo::PendingReceiver<on_device_model::mojom::TextSafetySession>
+          session) = 0;
 };
 
 // Performs safety checks according to a config against a text safety model.
@@ -54,7 +54,6 @@ class SafetyChecker final {
   using ResultCallback = base::OnceCallback<void(Result)>;
 
   explicit SafetyChecker(base::WeakPtr<TextSafetyClient> client,
-                         on_device_model::TextSafetyLoaderParams params,
                          SafetyConfig safety_cfg);
   SafetyChecker(const SafetyChecker&);
   ~SafetyChecker();
@@ -75,10 +74,14 @@ class SafetyChecker final {
                          ResultCallback callback);
 
   const SafetyConfig& safety_cfg() const { return safety_cfg_; }
+  const base::WeakPtr<TextSafetyClient>& client() const { return client_; }
 
  private:
+  mojo::Remote<on_device_model::mojom::TextSafetySession>& GetSession();
+
+  mojo::Remote<on_device_model::mojom::TextSafetySession> session_;
+
   base::WeakPtr<TextSafetyClient> client_;
-  on_device_model::TextSafetyLoaderParams params_;
   SafetyConfig safety_cfg_;
   base::WeakPtrFactory<SafetyChecker> weak_ptr_factory_{this};
 };

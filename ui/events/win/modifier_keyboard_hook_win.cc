@@ -2,14 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <optional>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
@@ -19,7 +15,7 @@
 #include "ui/events/win/events_win_utils.h"
 #include "ui/events/win/keyboard_hook_monitor_impl.h"
 #include "ui/events/win/keyboard_hook_win_base.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace ui {
 
@@ -290,8 +286,9 @@ void ModifierKeyboardHookWinImpl::UpdateModifierState(DWORD vk,
     return;
   }
 
+  auto keyboard_state_span = base::span(keyboard_state);
   // Update the located virtual key first.
-  keyboard_state[vk] = is_key_down ? kKeyDown : kKeyUp;
+  keyboard_state_span[vk] = is_key_down ? kKeyDown : kKeyUp;
 
   // Now update the non-located virtual key.
   keyboard_state[VK_CONTROL] = (keyboard_state[VK_LCONTROL] == kKeyDown ||

@@ -31,13 +31,9 @@
 #include "third_party/blink/renderer/core/inspector/main_thread_debugger.h"
 
 #include <memory>
-#include <set>
 
-#include "base/feature_list.h"
 #include "base/synchronization/lock.h"
-#include "base/unguessable_token.h"
 #include "build/build_config.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/bindings/core/v8/binding_security.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
@@ -327,36 +323,7 @@ void MainThreadDebugger::endEnsureAllContextsInGroup(int context_group_id) {
 
 bool MainThreadDebugger::canExecuteScripts(int context_group_id) {
   LocalFrame* frame = WeakIdentifierMap<LocalFrame>::Lookup(context_group_id);
-  if (!frame->DomWindow()->CanExecuteScripts(kNotAboutToExecuteScript)) {
-    return false;
-  }
-
-  if (base::FeatureList::IsEnabled(
-          features::kAllowDevToolsMainThreadDebuggerForMultipleMainFrames)) {
-    return true;
-  }
-
-  std::set<base::UnguessableToken> browsing_context_group_tokens;
-  for (auto& page : Page::OrdinaryPages()) {
-    if (page->MainFrame() && page->MainFrame()->IsOutermostMainFrame()) {
-      browsing_context_group_tokens.insert(page->BrowsingContextGroupToken());
-    }
-  }
-
-  if (browsing_context_group_tokens.size() > 1) {
-    String message = String(
-        "DevTools debugger is disabled because it is attached to a process "
-        "that hosts multiple top-level frames, where DevTools debugger doesn't "
-        "work properly. To enable debugger, visit "
-        "chrome://flags/#enable-process-per-site-up-to-main-frame-threshold "
-        "and disable the feature.");
-    frame->Console().AddMessage(MakeGarbageCollected<ConsoleMessage>(
-        mojom::ConsoleMessageSource::kJavaScript,
-        mojom::ConsoleMessageLevel::kError, message));
-    return false;
-  }
-
-  return true;
+  return frame->DomWindow()->CanExecuteScripts(kNotAboutToExecuteScript);
 }
 
 void MainThreadDebugger::runIfWaitingForDebugger(int context_group_id) {
@@ -378,13 +345,12 @@ void MainThreadDebugger::consoleAPIMessage(
     return;
   // TODO(dgozman): we can save a copy of message and url here by making
   // FrameConsole work with StringView.
-  std::unique_ptr<SourceLocation> location = std::make_unique<SourceLocation>(
+  SourceLocation* location = MakeGarbageCollected<SourceLocation>(
       ToCoreString(url), String(), line_number, column_number,
       stack_trace ? stack_trace->clone() : nullptr, 0);
   frame->Console().ReportMessageToClient(
       mojom::ConsoleMessageSource::kConsoleApi,
-      V8MessageLevelToMessageLevel(level), ToCoreString(message),
-      location.get());
+      V8MessageLevelToMessageLevel(level), ToCoreString(message), location);
 }
 
 void MainThreadDebugger::consoleClear(int context_group_id) {
@@ -451,8 +417,8 @@ void MainThreadDebugger::QuerySelectorCallback(
       AtomicString(selector), PassThroughException(info.GetIsolate()));
   if (try_catch.HasCaught()) {
     ApplyContextToException(script_state, try_catch.Exception(),
-                            ExceptionContext(v8::ExceptionContext::kOperation,
-                                             "CommandLineAPI", "$"));
+                            v8::ExceptionContext::kOperation, "CommandLineAPI",
+                            "$");
     try_catch.ReThrow();
     return;
   }
@@ -483,8 +449,8 @@ void MainThreadDebugger::QuerySelectorAllCallback(
       AtomicString(selector), PassThroughException(info.GetIsolate()));
   if (try_catch.HasCaught()) {
     ApplyContextToException(script_state, try_catch.Exception(),
-                            ExceptionContext(v8::ExceptionContext::kOperation,
-                                             "CommandLineAPI", "$$"));
+                            v8::ExceptionContext::kOperation, "CommandLineAPI",
+                            "$$");
     try_catch.ReThrow();
     return;
   }
@@ -526,8 +492,8 @@ void MainThreadDebugger::XpathSelectorCallback(
       PassThroughException(isolate));
   if (try_catch.HasCaught()) {
     ApplyContextToException(script_state, try_catch.Exception(),
-                            ExceptionContext(v8::ExceptionContext::kOperation,
-                                             "CommandLineAPI", "$x"));
+                            v8::ExceptionContext::kOperation, "CommandLineAPI",
+                            "$x");
     try_catch.ReThrow();
     return;
   }
@@ -560,8 +526,8 @@ void MainThreadDebugger::XpathSelectorCallback(
     }
     if (try_catch.HasCaught()) {
       ApplyContextToException(script_state, try_catch.Exception(),
-                              ExceptionContext(v8::ExceptionContext::kOperation,
-                                               "CommandLineAPI", "$x"));
+                              v8::ExceptionContext::kOperation,
+                              "CommandLineAPI", "$x");
       try_catch.ReThrow();
       return;
     }

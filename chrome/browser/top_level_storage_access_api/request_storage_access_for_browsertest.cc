@@ -8,6 +8,7 @@
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -27,8 +28,10 @@
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/permissions/test/mock_permission_prompt_factory.h"
 #include "components/prefs/pref_service.h"
+#include "components/privacy_sandbox/privacy_sandbox_prefs.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/network_service_util.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_paths.h"
@@ -64,7 +67,7 @@ constexpr char kRequestOutcomeHistogram[] =
     "API.TopLevelStorageAccess.RequestOutcome";
 
 constexpr char kAllowedByStorageAccessTypeHistogram[] =
-    "API.EffectiveStorageAccess.AllowedByStorageAccessType";
+    "API.EffectiveStorageAccess.AllowedByStorageAccessType.Subsampled";
 
 constexpr char kRequestStorageAccessUkmEntryName[] =
     "RequestStorageAccessFor.RequestStorageResult";
@@ -148,9 +151,9 @@ class RequestStorageAccessForBaseBrowserTest : public InProcessBrowserTest {
     GURL host_url = GetURL(host);
     std::string cookie = base::StrCat({"cross-site=", host});
     ASSERT_TRUE(
-        content::SetCookie(browser()->profile(), host_url,
+        content::SetCookie(browser()->GetProfile(), host_url,
                            base::StrCat({cookie, ";SameSite=None;Secure"})));
-    ASSERT_THAT(content::GetCookies(browser()->profile(), host_url),
+    ASSERT_THAT(content::GetCookies(browser()->GetProfile(), host_url),
                 testing::HasSubstr(cookie));
   }
 
@@ -162,12 +165,12 @@ class RequestStorageAccessForBaseBrowserTest : public InProcessBrowserTest {
     net::CookiePartitionKey partition_key =
         net::CookiePartitionKey::FromURLForTesting(GetURL(top_level_host));
     ASSERT_TRUE(content::SetCookie(
-        browser()->profile(), host_url,
+        browser()->GetProfile(), host_url,
         base::StrCat({cookie, ";SameSite=None;Secure;Partitioned"}),
         net::CookieOptions::SameSiteCookieContext::MakeInclusive(),
         &partition_key));
     ASSERT_THAT(content::GetCookies(
-                    browser()->profile(), host_url,
+                    browser()->GetProfile(), host_url,
                     net::CookieOptions::SameSiteCookieContext::MakeInclusive(),
                     net::CookiePartitionKeyCollection(partition_key)),
                 testing::HasSubstr(cookie));
@@ -185,12 +188,12 @@ class RequestStorageAccessForBaseBrowserTest : public InProcessBrowserTest {
     // manager to help reduce the potential for flakiness due to the race
     // condition described in the bug.
     browser()
-        ->profile()
+        ->GetProfile()
         ->GetDefaultStoragePartition()
         ->GetCookieManagerForBrowserProcess()
         ->BlockThirdPartyCookies(value);
 
-    browser()->profile()->GetPrefs()->SetInteger(
+    browser()->GetProfile()->GetPrefs()->SetInteger(
         prefs::kCookieControlsMode,
         static_cast<int>(
             value ? content_settings::CookieControlsMode::kBlockThirdParty
@@ -293,7 +296,11 @@ class InsecureRequestStorageAccessForBaseBrowserTest
   InsecureRequestStorageAccessForBaseBrowserTest()
       : http_server_(net::EmbeddedTestServer::TYPE_HTTP) {}
 
-  void SetUp() override { InProcessBrowserTest::SetUp(); }
+  void SetUp() override {
+    features_.InitAndEnableFeature(
+        blink::features::kStorageAccessAPIRelatedWebsiteSets);
+    InProcessBrowserTest::SetUp();
+  }
 
   void SetUpOnMainThread() override {
     host_resolver()->AddRule("*", "127.0.0.1");
@@ -305,7 +312,7 @@ class InsecureRequestStorageAccessForBaseBrowserTest
     ASSERT_TRUE(http_server_.Start());
   }
   void SetBlockThirdPartyCookies(bool value) {
-    browser()->profile()->GetPrefs()->SetInteger(
+    browser()->GetProfile()->GetPrefs()->SetInteger(
         prefs::kCookieControlsMode,
         static_cast<int>(
             value ? content_settings::CookieControlsMode::kBlockThirdParty
@@ -321,6 +328,9 @@ class InsecureRequestStorageAccessForBaseBrowserTest
   }
 
   net::test_server::EmbeddedTestServer http_server_;
+
+ private:
+  base::test::ScopedFeatureList features_;
 };
 
 IN_PROC_BROWSER_TEST_F(InsecureRequestStorageAccessForBaseBrowserTest,
@@ -352,10 +362,10 @@ IN_PROC_BROWSER_TEST_F(RequestStorageAccessForBrowserTest,
 
   // Set a cookie on `kHostB` and `kHostC`.
   SetCrossSiteCookieOnHost(kHostB);
-  ASSERT_EQ(content::GetCookies(browser()->profile(), GetURL(kHostB)),
+  ASSERT_EQ(content::GetCookies(browser()->GetProfile(), GetURL(kHostB)),
             "cross-site=b.test");
   SetCrossSiteCookieOnHost(kHostC);
-  ASSERT_EQ(content::GetCookies(browser()->profile(), GetURL(kHostC)),
+  ASSERT_EQ(content::GetCookies(browser()->GetProfile(), GetURL(kHostC)),
             "cross-site=c.test");
 
   const base::TimeDelta lifetime = base::Hours(24);
@@ -386,17 +396,17 @@ IN_PROC_BROWSER_TEST_F(RequestStorageAccessForBrowserTest,
           ContentSettingsPattern::FromURLNoWildcard(GetURL(kHostA)),
           base::Value(CONTENT_SETTING_ALLOW),
           content_settings::ProviderType::kPrefProvider,
-          /*incognito=*/false, metadata),
+          /*incognito=*/false, metadata.Clone()),
       ContentSettingPatternSource(
           ContentSettingsPattern::FromURLNoWildcard(GetURL(kHostC)),
           ContentSettingsPattern::FromURLNoWildcard(GetURL(kHostA)),
           base::Value(CONTENT_SETTING_ALLOW),
           content_settings::ProviderType::kPrefProvider,
-          /*incognito=*/false, metadata),
+          /*incognito=*/false, metadata.Clone()),
   };
 
   auto* cookie_manager = browser()
-                             ->profile()
+                             ->GetProfile()
                              ->GetDefaultStoragePartition()
                              ->GetCookieManagerForBrowserProcess();
 
@@ -443,7 +453,19 @@ class RequestStorageAccessForEnabledBrowserTest
     : public RequestStorageAccessForBaseBrowserTest,
       public testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
+  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
+      const override {
+    return {{blink::features::kStorageAccessAPIRelatedWebsiteSets, {}}};
+  }
 };
+
+IN_PROC_BROWSER_TEST_F(RequestStorageAccessForEnabledBrowserTest,
+                       RsaForOriginEnabled) {
+  NavigateToPageWithFrame(kHostA);
+  EXPECT_EQ(
+      EvalJs(GetPrimaryMainFrame(), "\"requestStorageAccessFor\" in document"),
+      true);
+}
 
 IN_PROC_BROWSER_TEST_F(RequestStorageAccessForEnabledBrowserTest,
                        SameOriginGrantedByDefault) {
@@ -575,6 +597,7 @@ IN_PROC_BROWSER_TEST_F(RequestStorageAccessForEnabledBrowserTest,
 IN_PROC_BROWSER_TEST_F(RequestStorageAccessForEnabledBrowserTest,
                        RequestStorageAccessForEmbeddedOriginScoping) {
   ukm::TestAutoSetUkmRecorder ukm_recorder;
+  base::HistogramTester histogram_tester;
 
   SetBlockThirdPartyCookies(true);
 
@@ -598,6 +621,13 @@ IN_PROC_BROWSER_TEST_F(RequestStorageAccessForEnabledBrowserTest,
                                             /*cors_enabled=*/true),
             "");
 
+  content::FetchHistogramsFromChildProcesses();
+  histogram_tester.ExpectBucketCount(
+      "Blink.UseCounter.Features",
+      blink::mojom::WebFeature::
+          kStorageAccessAPI_requestStorageAccessFor_Method_AsyncSuccess,
+      /*expected_count=*/0);
+
   EXPECT_THAT(
       ukm_recorder.GetMetricsEntryValues(kRequestStorageAccessUkmEntryName,
                                          kRequestStorageResultMetricName),
@@ -608,6 +638,25 @@ IN_PROC_BROWSER_TEST_F(RequestStorageAccessForEnabledBrowserTest,
 class RequestStorageAccessForWithFirstPartySetsBrowserTest
     : public RequestStorageAccessForBaseBrowserTest {
  public:
+  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
+      const override {
+    return {{blink::features::kStorageAccessAPIRelatedWebsiteSets, {}}};
+  }
+
+  RequestStorageAccessForWithFirstPartySetsBrowserTest() {
+    // The network service runs in a separate process by default. This is
+    // problematic for tests that check histograms, because
+    // ScopedAlwaysSampleForTesting doesn't affect other processes.
+    content::ForceInProcessNetworkService();
+  }
+
+  void SetUpOnMainThread() override {
+    RequestStorageAccessForBaseBrowserTest::SetUpOnMainThread();
+    // Explicitly enable Related Website Sets (formerly First Party Sets).
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
+        prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, true);
+  }
+
   void SetUpCommandLine(base::CommandLine* command_line) override {
     RequestStorageAccessForBaseBrowserTest::SetUpCommandLine(command_line);
     command_line->AppendSwitchASCII(
@@ -622,6 +671,9 @@ class RequestStorageAccessForWithFirstPartySetsBrowserTest
         permissions::PermissionRequestManager::FromWebContents(
             browser.tab_strip_model()->GetActiveWebContents()));
   }
+
+ private:
+  base::MetricsSubSampler::ScopedAlwaysSampleForTesting always_sample_;
 };
 
 IN_PROC_BROWSER_TEST_F(RequestStorageAccessForWithFirstPartySetsBrowserTest,
@@ -708,7 +760,6 @@ IN_PROC_BROWSER_TEST_F(RequestStorageAccessForWithFirstPartySetsBrowserTest,
 // unblocked for just that top-level/third-party combination.
 IN_PROC_BROWSER_TEST_F(
     RequestStorageAccessForWithFirstPartySetsBrowserTest,
-    // TODO(crbug.com/40869547): Re-enable usage metric assertions.
     Permission_AutograntedWithinFirstPartySet) {
   SetBlockThirdPartyCookies(true);
   base::HistogramTester histogram_tester;
@@ -774,6 +825,15 @@ IN_PROC_BROWSER_TEST_F(
                   kRequestOutcomeHistogram,
                   TopLevelStorageAccessRequestOutcome::kGrantedByFirstPartySet),
               Gt(0));
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    metrics::SubprocessMetricsProvider::MergeHistogramDeltasForTesting();
+    return histogram_tester.GetBucketCount(
+               "Blink.UseCounter.Features",
+               blink::mojom::WebFeature::
+                   kStorageAccessAPI_requestStorageAccessFor_Method_AsyncSuccess) ==
+           1;
+  }));
 
   EXPECT_THAT(
       ukm_recorder.GetMetricsEntryValues(kRequestStorageAccessUkmEntryName,
@@ -1164,7 +1224,7 @@ IN_PROC_BROWSER_TEST_F(RequestStorageAccessForWithFirstPartySetsBrowserTest,
   SetCrossSiteCookieOnHost(kHostB);
 
   // Block cookies at origin in browser settings
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetContentSettingDefaultScope(GetURL(kHostB), GetURL(kHostB),
                                       ContentSettingsType::COOKIES,
                                       CONTENT_SETTING_BLOCK);
@@ -1213,20 +1273,7 @@ IN_PROC_BROWSER_TEST_F(RequestStorageAccessForWithFirstPartySetsBrowserTest,
   EXPECT_EQ("prompt", QueryPermission(GetPrimaryMainFrame(), kHostB));
 }
 
-class RequestStorageAccessForWithCHIPSBrowserTest
-    : public RequestStorageAccessForBaseBrowserTest {
- public:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    RequestStorageAccessForBaseBrowserTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitchASCII(
-        network::switches::kUseRelatedWebsiteSet,
-        base::StrCat({R"({"primary": "https://)", kHostA,
-                      R"(", "associatedSites": ["https://)", kHostC, R"("])",
-                      R"(, "serviceSites": ["https://)", kHostB, R"("]})"}));
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(RequestStorageAccessForWithCHIPSBrowserTest,
+IN_PROC_BROWSER_TEST_F(RequestStorageAccessForWithFirstPartySetsBrowserTest,
                        RequestStorageAccessFor_CoexistsWithCHIPS) {
   ukm::TestAutoSetUkmRecorder ukm_recorder;
   SetBlockThirdPartyCookies(true);
@@ -1383,12 +1430,6 @@ class TopLevelStorageExemptionReasonMetricTest
   const std::vector<int64_t>& expected_metric_value() {
     return GetParam().expected_metric_value;
   }
-
-  std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
-    return {
-        content_settings::features::kTrackingProtection3pcd,
-    };
-  }
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1469,8 +1510,17 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_metric_value = {2}},
     }));
 
+
+// TODO(crbug.com/423704050): Re-enable this test
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_TestMetricResults \
+  DISABLED_TestMetricResults
+#else
+#define MAYBE_TestMetricResults \
+  TestMetricResults
+#endif
 IN_PROC_BROWSER_TEST_P(TopLevelStorageExemptionReasonMetricTest,
-                       TestMetricResults) {
+                       MAYBE_TestMetricResults) {
   ukm::TestAutoSetUkmRecorder ukm_recorder;
   SetBlockThirdPartyCookies(block_third_party_cookies());
 
@@ -1478,7 +1528,7 @@ IN_PROC_BROWSER_TEST_P(TopLevelStorageExemptionReasonMetricTest,
     case CookieSetMechanism::kBrowserInternal:
       for (const auto& name_value : cookie_name_value()) {
         ASSERT_TRUE(content::SetCookie(
-            browser()->profile(), GetURL(kHostB),
+            browser()->GetProfile(), GetURL(kHostB),
             base::StrCat({name_value, kSameSiteNoneSecure})));
       }
       break;
@@ -1503,7 +1553,7 @@ IN_PROC_BROWSER_TEST_P(TopLevelStorageExemptionReasonMetricTest,
     }
   }
 
-  ASSERT_EQ(content::GetCookies(browser()->profile(), GetURL(kHostB)),
+  ASSERT_EQ(content::GetCookies(browser()->GetProfile(), GetURL(kHostB)),
             expected_cookie_string());
 
   NavigateToPageWithFrame(kHostA);

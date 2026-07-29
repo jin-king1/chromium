@@ -7,20 +7,21 @@
 #include <vector>
 
 #include "base/check_deref.h"
+#include "base/strings/string_util.h"
 #include "build/build_config.h"
+#include "chrome/browser/extensions/extension_browsertest.h"
 #include "content/public/test/browser_test.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/extensions/extension_platform_browsertest.h"
-#else
+#if !BUILDFLAG(IS_ANDROID)
 #include "base/command_line.h"
 #include "base/containers/to_vector.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/api/settings_overrides/settings_overrides_api.h"
-#include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/external_provider_manager.h"
 #include "chrome/browser/prefs/session_startup_pref.h"  // nogncheck
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
@@ -31,6 +32,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/default_search_manager.h"
@@ -46,7 +48,10 @@
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/common/feature_switch.h"
 #include "extensions/common/features/feature_channel.h"
+#include "extensions/common/switches.h"
 #endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -55,12 +60,10 @@ namespace {
 // Prepopulated id hardcoded in test_extension. We select it to be a
 // prepopulated ID unlikely to match an engine that is part of the TopEngines
 // tier for the environments where the test run, but still matches some
-// known engine (context around these requirements: https://crbug.com/1500526).
+// known engine (context around these requirements: https://crbug.com/40940777).
 // The default set of engines (when no country is available) has ids 1, 2
 // and 3. The ID 83 is associated with mail.ru, chosen because it's not part
 // of the prepopulated set where we run tests.
-// TODO(crbug.com/40940777): Update the test to fix the country in such a way
-// that we have more control on what is in the prepopulated set or not.
 const int kTestExtensionPrepopulatedId = 83;
 // TemplateURLData with search engines settings from test extension manifest.
 // chrome/test/data/extensions/settings_override/manifest.json
@@ -102,11 +105,13 @@ std::unique_ptr<TemplateURLData> TestExtensionSearchEngine(Profile* profile) {
 
 testing::AssertionResult VerifyTemplateURLServiceLoad(
     TemplateURLService* service) {
-  if (service->loaded())
+  if (service->loaded()) {
     return testing::AssertionSuccess();
+  }
   search_test_utils::WaitForTemplateURLServiceToLoad(service);
-  if (service->loaded())
+  if (service->loaded()) {
     return testing::AssertionSuccess();
+  }
   return testing::AssertionFailure() << "TemplateURLService isn't loaded";
 }
 
@@ -200,7 +205,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionBrowserTest, PRE_OverridenDSEPersists) {
 // default_search_manager correctly determines extension overriden DSE
 // from profile.
 IN_PROC_BROWSER_TEST_F(ExtensionBrowserTest, OverridenDSEPersists) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   TemplateURLPrepopulateData::Resolver* prepopulate_data_resolver =
       TemplateURLPrepopulateData::ResolverFactory::GetForProfile(profile);
   DefaultSearchManager default_manager(
@@ -293,20 +298,24 @@ class ExtensionsDisabledWithSettingsOverrideAPI : public ExtensionBrowserTest {
     const char* test_name =
         testing::UnitTest::GetInstance()->current_test_info()->name();
     if (!base::StartsWith(test_name, "PRE_", base::CompareCase::SENSITIVE)) {
-      command_line->AppendSwitch(::switches::kDisableExtensions);
+      command_line->AppendSwitch(switches::kDisableExtensions);
     }
+  }
+
+  ExternalProviderManager* external_provider_manager() {
+    return ExternalProviderManager::Get(profile());
   }
 
  private:
   FeatureSwitch::ScopedOverride prompt_for_external_extensions_;
 };
 
-// The following test combo is a regression test for https://crbug.com/828295.
+// The following test combo is a regression test for https://crbug.com/41380408.
 // When extensions are disabled with --disable-extensions, no
 // extension-controlled prefs were loaded. However, external extensions (such as
 // those from policy or specified in the registry) are still loaded with
 // --disable-extensions (this itself is somewhat strange; see
-// https://crbug.com/833540). This caused a CHECK failure in the settings
+// https://crbug.com/41383647). This caused a CHECK failure in the settings
 // overrides API when an external extension used the API and
 // --disable-extensions was also used.
 // As a fix, we ensure that we load extension-controlled preferences for
@@ -318,19 +327,19 @@ IN_PROC_BROWSER_TEST_F(ExtensionsDisabledWithSettingsOverrideAPI,
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
   TestExtensionRegistryObserver observer(registry);
   auto provider = std::make_unique<MockExternalProvider>(
-      extension_service(), mojom::ManifestLocation::kExternalPref);
+      external_provider_manager(), mojom::ManifestLocation::kExternalPref);
   provider->UpdateOrAddExtension(
       kExternalId, "2.1",
       test_data_dir_.AppendASCII("api_test/settings_overrides/homepage.crx"));
-  extension_service()->AddProviderForTesting(std::move(provider));
-  extension_service()->CheckForExternalUpdates();
+  external_provider_manager()->AddProviderForTesting(std::move(provider));
+  external_provider_manager()->CheckForExternalUpdates();
   scoped_refptr<const Extension> extension = observer.WaitForExtensionLoaded();
   EXPECT_EQ(kExternalId, extension->id());
 }
 IN_PROC_BROWSER_TEST_F(ExtensionsDisabledWithSettingsOverrideAPI,
                        TestSettingsOverridesWithExtensionsDisabled) {
   // The external extension was actually uninstalled at this point (see
-  // https://crbug.com/833540). However, it was first loaded, before being
+  // https://crbug.com/41383647). However, it was first loaded, before being
   // orphaned, which would have caused the settings API to look at the
   // extension controlled preferences. As long as this didn't crash, the test
   // succeeded.
@@ -340,11 +349,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsDisabledWithSettingsOverrideAPI,
 
 #else
 
-#if BUILDFLAG(IS_ANDROID)
-using ExtensionSettingsOverrideTest = ExtensionPlatformBrowserTest;
-#else
 using ExtensionSettingsOverrideTest = ExtensionBrowserTest;
-#endif
 
 IN_PROC_BROWSER_TEST_F(ExtensionSettingsOverrideTest,
                        SettingsOverridesDisallowed) {

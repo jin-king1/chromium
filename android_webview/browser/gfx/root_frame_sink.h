@@ -10,6 +10,7 @@
 #include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_checker.h"
 #include "components/viz/common/frame_sinks/begin_frame_source.h"
@@ -72,7 +73,6 @@ class RootFrameSink : public base::RefCounted<RootFrameSink>,
   void RemoveChildFrameSinkId(const viz::FrameSinkId& frame_sink_id);
   bool BeginFrame(const viz::BeginFrameArgs& args, bool had_input_event);
   void SetBeginFrameSourcePaused(bool paused);
-  void SetNeedsDraw(bool needs_draw);
   void OnNewUncommittedFrame(const viz::SurfaceId& surface_id);
   bool IsChildSurface(const viz::FrameSinkId& frame_sink_id);
   void DettachClient();
@@ -90,7 +90,6 @@ class RootFrameSink : public base::RefCounted<RootFrameSink>,
       std::vector<viz::ReturnedResource> resources) override;
   void OnBeginFrame(const viz::BeginFrameArgs& args,
                     const viz::FrameTimingDetailsMap& feedbacks,
-                    bool frame_ack,
                     std::vector<viz::ReturnedResource> resources) override {}
   void OnBeginFramePausedChanged(bool paused) override {}
   void ReclaimResources(std::vector<viz::ReturnedResource> resources) override;
@@ -137,12 +136,9 @@ class RootFrameSink : public base::RefCounted<RootFrameSink>,
   bool clients_need_begin_frames_ = false;
   bool needs_begin_frames_ = false;
 
-  bool needs_draw_ = false;
   raw_ptr<RootFrameSinkClient> client_;
   base::flat_set<viz::SurfaceId> contained_surfaces_;
   std::map<viz::SurfaceId, uint64_t> last_invalidated_frame_index_;
-
-  const bool use_new_invalidate_heuristic_;
 
   THREAD_CHECKER(thread_checker_);
 };

@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/webui/signin/turn_sync_on_helper_policy_fetch_tracker.h"
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/timer/timer.h"
@@ -26,22 +27,33 @@ class PolicyFetchTracker
     : public TurnSyncOnHelperPolicyFetchTracker,
       public policy::PolicyService::ProviderUpdateObserver {
  public:
-  PolicyFetchTracker(Profile* profile, const AccountInfo& account_info)
-      : profile_(profile), account_info_(account_info) {}
+  PolicyFetchTracker(Profile* profile, const CoreAccountInfo& account_info)
+      : profile_(profile->GetWeakPtr()), account_info_(account_info) {}
   ~PolicyFetchTracker() override = default;
 
   void SwitchToProfile(Profile* new_profile) override {
-    profile_ = new_profile;
+    CHECK(new_profile);
+    profile_ = new_profile->GetWeakPtr();
   }
 
-  void RegisterForPolicy(base::OnceCallback<void(bool)> callback) override {
+  void RegisterForPolicy(
+      base::OnceCallback<void(bool)> callback,
+      bool is_registration_for_management_consistency_check) override {
+    // This method should only be called once per instance.
+    CHECK(!is_managed_account_.has_value());
+    CHECK(profile_);
     policy::UserPolicySigninService* policy_service =
-        policy::UserPolicySigninServiceFactory::GetForProfile(profile_);
+        policy::UserPolicySigninServiceFactory::GetForProfile(profile_.get());
     policy_service->RegisterForPolicyWithAccountId(
         account_info_.email, account_info_.account_id,
+        is_registration_for_management_consistency_check,
         base::BindOnce(&PolicyFetchTracker::OnRegisteredForPolicy,
                        weak_pointer_factory_.GetWeakPtr(),
                        std::move(callback)));
+  }
+
+  std::optional<bool> GetPolicyRegistrationResult() const override {
+    return is_managed_account_;
   }
 
   bool FetchPolicy(base::OnceClosure callback) override {
@@ -50,8 +62,9 @@ class PolicyFetchTracker
       return false;
     }
 
+    CHECK(profile_);
     policy::UserPolicySigninService* policy_service =
-        policy::UserPolicySigninServiceFactory::GetForProfile(profile_);
+        policy::UserPolicySigninServiceFactory::GetForProfile(profile_.get());
     policy_service->FetchPolicyForSignedInUser(
         AccountIdFromAccountInfo(account_info_), dm_token_, client_id_,
         user_affiliation_ids_,
@@ -66,13 +79,13 @@ class PolicyFetchTracker
   // policy::PolicyService::ProviderUpdateObserver
   void OnProviderUpdatePropagated(
       policy::ConfigurationPolicyProvider* provider) override {
-    if (provider != profile_->GetUserCloudPolicyManager()) {
+    if (!profile_ || provider != profile_->GetUserCloudPolicyManager()) {
       return;
     }
     VLOG(2) << "Policies after sign in:";
     VLOG(2) << policy::PolicyConversions(
                    std::make_unique<policy::ChromePolicyConversionsClient>(
-                       profile_))
+                       profile_.get()))
                    .ToJSON();
     scoped_policy_update_observer_.Reset();
     policy_update_timeout_timer_.Reset();
@@ -95,10 +108,12 @@ class PolicyFetchTracker
       const std::string& dm_token,
       const std::string& client_id,
       const std::vector<std::string>& user_affiliation_ids) {
+    CHECK(!is_managed_account_.has_value());
     // Indicates that the account isn't managed OR there is an error during the
     // registration
     if (dm_token.empty()) {
-      std::move(callback).Run(/*is_managed_account=*/false);
+      is_managed_account_ = false;
+      std::move(callback).Run(is_managed_account_.value());
       return;
     }
 
@@ -109,13 +124,14 @@ class PolicyFetchTracker
     dm_token_ = dm_token;
     client_id_ = client_id;
     user_affiliation_ids_ = user_affiliation_ids;
-    std::move(callback).Run(/*is_managed_account=*/true);
+    is_managed_account_ = true;
+    std::move(callback).Run(is_managed_account_.value());
   }
 
   void OnPolicyFetchComplete(base::OnceClosure callback, bool success) {
     DLOG_IF(ERROR, !success) << "Error fetching policy for user";
     DVLOG_IF(1, success) << "Policy fetch successful - completing signin";
-    if (!success) {
+    if (!success || !profile_) {
       // For now, we allow signin to complete even if the policy fetch fails. If
       // we ever want to change this behavior, we could call
       // PrimaryAccountMutator::ClearPrimaryAccount() here instead.
@@ -133,13 +149,14 @@ class PolicyFetchTracker
         &PolicyFetchTracker::OnProviderUpdateTimedOut);
   }
 
-  raw_ptr<Profile> profile_;
-  const AccountInfo account_info_;
+  base::WeakPtr<Profile> profile_;
+  const CoreAccountInfo account_info_;
 
   // Policy credentials we keep while determining whether to create
   // a new profile for an enterprise user or not.
   std::string dm_token_;
   std::string client_id_;
+  std::optional<bool> is_managed_account_;
   std::vector<std::string> user_affiliation_ids_;
 
   base::OnceClosure on_policy_updated_callback_;
@@ -156,6 +173,6 @@ class PolicyFetchTracker
 std::unique_ptr<TurnSyncOnHelperPolicyFetchTracker>
 TurnSyncOnHelperPolicyFetchTracker::CreateInstance(
     Profile* profile,
-    const AccountInfo& account_info) {
+    const CoreAccountInfo& account_info) {
   return std::make_unique<PolicyFetchTracker>(profile, account_info);
 }

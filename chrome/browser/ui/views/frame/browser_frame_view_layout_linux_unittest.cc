@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/views/frame/browser_frame_view_layout_linux.h"
 
 #include "build/build_config.h"
-#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 
 namespace {
@@ -33,16 +32,11 @@ class TestLayoutDelegate : public OpaqueBrowserFrameViewLayoutDelegate {
   bool IsMinimized() const override { return false; }
   bool IsFullscreen() const override { return false; }
   bool IsTabStripVisible() const override { return true; }
-  bool GetBorderlessModeEnabled() const override { return false; }
-  int GetTabStripHeight() const override {
-    return GetLayoutConstant(TAB_HEIGHT);
-  }
+  bool GetUnframedModeEnabled() const override { return false; }
   bool IsToolbarVisible() const override { return true; }
-  gfx::Size GetTabstripMinimumSize() const override { return {78, 29}; }
   int GetTopAreaHeight() const override { return 0; }
   bool UseCustomFrame() const override { return true; }
   bool IsFrameCondensed() const override { return false; }
-  bool EverHasVisibleBackgroundTabShapes() const override { return false; }
   void UpdateWindowControlsOverlay(const gfx::Rect& bounding_rect) override {}
   bool ShouldDrawRestoredFrameShadow() const override { return true; }
 #if BUILDFLAG(IS_LINUX)

@@ -10,8 +10,9 @@
 #import "build/branding_buildflags.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
-#import "components/safe_browsing/core/browser/db/v4_local_database_manager.h"
-#import "components/safe_browsing/core/browser/realtime/url_lookup_service.h"
+#import "components/safe_browsing/core/browser/db/sb_local_database_manager.h"
+#import "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
+#import "components/safe_browsing/core/browser/realtime/url_lookup_service_base.h"
 #import "components/safe_browsing/core/browser/safe_browsing_metrics_collector.h"
 #import "components/safe_browsing/core/browser/safe_browsing_url_checker_impl.h"
 #import "components/safe_browsing/core/browser/url_checker_delegate.h"
@@ -62,7 +63,7 @@ void SafeBrowsingServiceImpl::Initialize(const base::FilePath& user_data_path) {
 
   base::FilePath safe_browsing_data_path =
       user_data_path.Append(safe_browsing::kSafeBrowsingBaseFilename);
-  safe_browsing_db_manager_ = safe_browsing::V4LocalDatabaseManager::Create(
+  safe_browsing_db_manager_ = safe_browsing::SBLocalDatabaseManager::Create(
       safe_browsing_data_path, web::GetUIThreadTaskRunner({}),
       web::GetIOThreadTaskRunner({}),
       safe_browsing::ExtendedReportingLevelCallback());
@@ -158,7 +159,7 @@ SafeBrowsingServiceImpl::CreateUrlChecker(
     network::mojom::RequestDestination request_destination,
     web::WebState* web_state,
     SafeBrowsingClient* client) {
-  safe_browsing::RealTimeUrlLookupService* url_lookup_service =
+  safe_browsing::RealTimeUrlLookupServiceBase* url_lookup_service =
       client->GetRealTimeUrlLookupService();
   bool can_perform_full_url_lookup =
       url_lookup_service && url_lookup_service->CanPerformFullURLLookup();
@@ -178,6 +179,23 @@ SafeBrowsingServiceImpl::CreateUrlChecker(
               /*log_usage_histograms=*/true,
               /*are_background_lookups_allowed=*/false);
 
+  // Decide whether safe browsing database can be checked.
+  // If url_lookup_service_ is null, safe browsing database should be checked by
+  // default.
+  bool can_check_db = can_perform_full_url_lookup
+                          ? url_lookup_service->CanCheckSafeBrowsingDb()
+                          : true;
+  bool can_check_high_confidence_allowlist =
+      can_perform_full_url_lookup
+          ? url_lookup_service->CanCheckSafeBrowsingHighConfidenceAllowlist()
+          : true;
+  std::string url_lookup_service_metric_suffix =
+      can_perform_full_url_lookup ? url_lookup_service->GetMetricSuffix()
+                                  : safe_browsing::kNoRealTimeURLLookupService;
+
+  safe_browsing::V5GetHashProtocolManager* v5_get_hash_protocol_manager =
+      client ? client->GetV5GetHashProtocolManager() : nullptr;
+
   return std::make_unique<safe_browsing::SafeBrowsingUrlCheckerImpl>(
       /*headers=*/net::HttpRequestHeaders(), /*load_flags=*/0,
       /*has_user_gesture=*/false, url_checker_delegate,
@@ -189,14 +207,16 @@ SafeBrowsingServiceImpl::CreateUrlChecker(
       /*render_frame_token=*/std::nullopt,
       /*frame_tree_node_id=*/
       security_interstitials::UnsafeResource::kNoFrameTreeNodeId,
-      /*navigation_id=*/std::nullopt, can_perform_full_url_lookup,
-      /*can_check_db=*/true, /*can_check_high_confidence_allowlist=*/true,
-      /*url_lookup_service_metric_suffix=*/"", web::GetUIThreadTaskRunner({}),
+      /*navigation_id=*/std::nullopt, can_perform_full_url_lookup, can_check_db,
+      can_check_high_confidence_allowlist, url_lookup_service_metric_suffix,
+      web::GetUIThreadTaskRunner({}),
       url_lookup_service ? url_lookup_service->GetWeakPtr() : nullptr,
       hash_real_time_service ? hash_real_time_service->GetWeakPtr() : nullptr,
       hash_real_time_selection,
       /*is_async_check=*/false, /*check_allowlist_before_hash_database=*/false,
-      SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt);
+      /*tab_id=*/SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt,
+      v5_get_hash_protocol_manager ? v5_get_hash_protocol_manager->GetWeakPtr()
+                                   : nullptr);
 }
 
 std::unique_ptr<safe_browsing::SafeBrowsingUrlCheckerImpl>
@@ -204,7 +224,7 @@ SafeBrowsingServiceImpl::CreateAsyncChecker(
     network::mojom::RequestDestination request_destination,
     web::WebState* web_state,
     SafeBrowsingClient* client) {
-  safe_browsing::RealTimeUrlLookupService* url_lookup_service =
+  safe_browsing::RealTimeUrlLookupServiceBase* url_lookup_service =
       client->GetRealTimeUrlLookupService();
   bool can_perform_full_url_lookup =
       url_lookup_service && url_lookup_service->CanPerformFullURLLookup();
@@ -224,6 +244,23 @@ SafeBrowsingServiceImpl::CreateAsyncChecker(
               /*log_usage_histograms=*/true,
               /*are_background_lookups_allowed=*/false);
 
+  // Decide whether safe browsing database can be checked.
+  // If url_lookup_service_ is null, safe browsing database should be checked by
+  // default.
+  bool can_check_db = can_perform_full_url_lookup
+                          ? url_lookup_service->CanCheckSafeBrowsingDb()
+                          : true;
+  bool can_check_high_confidence_allowlist =
+      can_perform_full_url_lookup
+          ? url_lookup_service->CanCheckSafeBrowsingHighConfidenceAllowlist()
+          : true;
+  std::string url_lookup_service_metric_suffix =
+      can_perform_full_url_lookup ? url_lookup_service->GetMetricSuffix()
+                                  : safe_browsing::kNoRealTimeURLLookupService;
+
+  safe_browsing::V5GetHashProtocolManager* v5_get_hash_protocol_manager =
+      client ? client->GetV5GetHashProtocolManager() : nullptr;
+
   return std::make_unique<safe_browsing::SafeBrowsingUrlCheckerImpl>(
       /*headers=*/net::HttpRequestHeaders(), /*load_flags=*/0,
       /*has_user_gesture=*/false, url_checker_delegate,
@@ -235,14 +272,16 @@ SafeBrowsingServiceImpl::CreateAsyncChecker(
       /*render_frame_token=*/std::nullopt,
       /*frame_tree_node_id=*/
       security_interstitials::UnsafeResource::kNoFrameTreeNodeId,
-      /*navigation_id=*/std::nullopt, can_perform_full_url_lookup,
-      /*can_check_db=*/true, /*can_check_high_confidence_allowlist=*/true,
-      /*url_lookup_service_metric_suffix=*/"", web::GetUIThreadTaskRunner({}),
+      /*navigation_id=*/std::nullopt, can_perform_full_url_lookup, can_check_db,
+      can_check_high_confidence_allowlist, url_lookup_service_metric_suffix,
+      web::GetUIThreadTaskRunner({}),
       url_lookup_service ? url_lookup_service->GetWeakPtr() : nullptr,
       hash_real_time_service ? hash_real_time_service->GetWeakPtr() : nullptr,
       hash_real_time_selection,
       /*is_async_check=*/true, /*check_allowlist_before_hash_database=*/false,
-      SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt);
+      /*tab_id=*/SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt,
+      v5_get_hash_protocol_manager ? v5_get_hash_protocol_manager->GetWeakPtr()
+                                   : nullptr);
 }
 
 std::unique_ptr<safe_browsing::SafeBrowsingUrlCheckerImpl>
@@ -253,6 +292,9 @@ SafeBrowsingServiceImpl::CreateSyncChecker(
   scoped_refptr<safe_browsing::UrlCheckerDelegate> url_checker_delegate =
       base::MakeRefCounted<UrlCheckerDelegateImpl>(safe_browsing_db_manager_,
                                                    client->AsWeakPtr());
+
+  safe_browsing::V5GetHashProtocolManager* v5_get_hash_protocol_manager =
+      client ? client->GetV5GetHashProtocolManager() : nullptr;
 
   return std::make_unique<safe_browsing::SafeBrowsingUrlCheckerImpl>(
       /*headers=*/net::HttpRequestHeaders(), /*load_flags=*/0,
@@ -273,7 +315,9 @@ SafeBrowsingServiceImpl::CreateSyncChecker(
       /*hash_realtime_selection=*/
       safe_browsing::hash_realtime_utils::HashRealTimeSelection::kNone,
       /*is_async_check=*/false, /*check_allowlist_before_hash_database=*/false,
-      SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt);
+      /*tab_id=*/SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt,
+      v5_get_hash_protocol_manager ? v5_get_hash_protocol_manager->GetWeakPtr()
+                                   : nullptr);
 }
 
 // Checks if async check should be created.
@@ -284,7 +328,11 @@ bool SafeBrowsingServiceImpl::ShouldCreateAsyncChecker(
     return false;
   }
 
-  safe_browsing::RealTimeUrlLookupService* url_lookup_service =
+  if (client->ShouldForceSyncRealTimeUrlChecks()) {
+    return false;
+  }
+
+  safe_browsing::RealTimeUrlLookupServiceBase* url_lookup_service =
       client->GetRealTimeUrlLookupService();
   bool can_perform_full_url_lookup =
       url_lookup_service && url_lookup_service->CanPerformFullURLLookup();

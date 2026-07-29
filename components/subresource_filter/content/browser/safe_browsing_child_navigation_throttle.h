@@ -11,7 +11,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "components/subresource_filter/content/shared/browser/child_frame_navigation_filtering_throttle.h"
+#include "components/subresource_filter/content/browser/child_frame_navigation_filtering_throttle.h"
 #include "third_party/blink/public/common/frame/frame_ad_evidence.h"
 
 class GURL;
@@ -22,7 +22,6 @@ class NavigationThrottle;
 namespace subresource_filter {
 
 class AsyncDocumentSubresourceFilter;
-class ProfileInteractionManager;
 
 // ChildFrameNavigationFilteringThrottle implementation for Safe Browsing.
 //
@@ -35,9 +34,8 @@ class SafeBrowsingChildNavigationThrottle
     : public ChildFrameNavigationFilteringThrottle {
  public:
   SafeBrowsingChildNavigationThrottle(
-      content::NavigationHandle* handle,
+      content::NavigationThrottleRegistry& registry,
       AsyncDocumentSubresourceFilter* parent_frame_filter,
-      base::WeakPtr<ProfileInteractionManager> profile_interaction_manager,
       base::RepeatingCallback<std::string(const GURL& url)>
           disallow_message_callback,
       std::optional<blink::FrameAdEvidence> ad_evidence);
@@ -53,14 +51,10 @@ class SafeBrowsingChildNavigationThrottle
 
  private:
   bool ShouldDeferNavigation() const override;
-  void OnReadyToResumeNavigationWithLoadPolicy() override;
+  void OnCalculatedLoadPolicyFinished() override;
   void NotifyLoadPolicy() const override;
-  bool NavigationHasCookieException() const;
 
   std::optional<blink::FrameAdEvidence> ad_evidence_;
-
-  // May be null. If non-null, must outlive this class.
-  base::WeakPtr<ProfileInteractionManager> profile_interaction_manager_;
 
   base::WeakPtrFactory<SafeBrowsingChildNavigationThrottle> weak_ptr_factory_{
       this};

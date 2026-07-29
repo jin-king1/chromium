@@ -7,6 +7,10 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/types/expected.h"
+#include "third_party/blink/public/common/manifest/manifest_util.h"
+#include "third_party/blink/public/mojom/manifest/manifest.mojom-blink.h"
+#include "third_party/blink/public/mojom/manifest/manifest_manager.mojom-blink.h"
 #include "third_party/blink/public/platform/interface_registry.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/frame_console.h"
@@ -74,7 +78,7 @@ ManifestManager::ManifestManager(LocalDOMWindow& window)
   if (window.GetFrame()->IsMainFrame()) {
     manifest_change_notifier_ =
         MakeGarbageCollected<ManifestChangeNotifier>(window);
-    window.GetFrame()->GetInterfaceRegistry()->AddInterface(WTF::BindRepeating(
+    window.GetFrame()->GetInterfaceRegistry()->AddInterface(BindRepeating(
         &ManifestManager::BindReceiver, WrapWeakPersistent(this)));
   }
 }
@@ -82,7 +86,7 @@ ManifestManager::ManifestManager(LocalDOMWindow& window)
 ManifestManager::~ManifestManager() = default;
 
 void ManifestManager::RequestManifest(RequestManifestCallback callback) {
-  RequestManifestImpl(WTF::BindOnce(
+  RequestManifestImpl(blink::BindOnce(
       [](RequestManifestCallback callback, const Result& result) {
         std::move(callback).Run(result.result(), result.manifest_url(),
                                 result.manifest().Clone());
@@ -90,9 +94,32 @@ void ManifestManager::RequestManifest(RequestManifestCallback callback) {
       std::move(callback)));
 }
 
+void ManifestManager::RequestManifestAndErrors(
+    RequestManifestAndErrorsCallback callback) {
+  RequestManifestImpl(blink::BindOnce(
+      [](RequestManifestAndErrorsCallback callback, const Result& result) {
+        switch (result.result()) {
+          case mojom::blink::ManifestRequestResult::kManifestFailedToFetch:
+          case mojom::blink::ManifestRequestResult::kManifestFailedToParse:
+          case mojom::blink::ManifestRequestResult::kUnexpectedFailure:
+          case mojom::blink::ManifestRequestResult::kNoManifestAllowed:
+            std::move(callback).Run(
+                base::unexpected(mojom::blink::RequestManifestError::New(
+                    result.result(),
+                    std::move(result.debug_info().Clone()->errors))));
+            return;
+          case mojom::blink::ManifestRequestResult::kNoManifestSpecified:
+          case mojom::blink::ManifestRequestResult::kSuccess:
+            std::move(callback).Run(result.manifest().Clone());
+            return;
+        }
+      },
+      std::move(callback)));
+}
+
 void ManifestManager::RequestManifestDebugInfo(
     RequestManifestDebugInfoCallback callback) {
-  RequestManifestImpl(WTF::BindOnce(
+  RequestManifestImpl(blink::BindOnce(
       [](RequestManifestDebugInfoCallback callback, const Result& result) {
         std::move(callback).Run(result.manifest_url(),
                                 result.manifest().Clone(),
@@ -120,7 +147,7 @@ void ManifestManager::ParseManifestFromString(
 
 void ManifestManager::RequestManifestForTesting(
     WebManifestManager::Callback callback) {
-  RequestManifestImpl(WTF::BindOnce(
+  RequestManifestImpl(blink::BindOnce(
       [](WebManifestManager::Callback callback, const Result& result) {
         std::move(callback).Run(result.manifest_url());
       },
@@ -128,9 +155,11 @@ void ManifestManager::RequestManifestForTesting(
 }
 
 bool ManifestManager::CanFetchManifest() {
-  // Do not fetch the manifest if we are on an opaque origin.
+  // Do not fetch the manifest if we are on an opaque origin, or if the document
+  // url is an about: url.
   return !GetSupplementable()->GetSecurityOrigin()->IsOpaque() &&
-         GetSupplementable()->Url().IsValid();
+         GetSupplementable()->Url().IsValid() &&
+         !GetSupplementable()->Url().ProtocolIsAbout();
 }
 
 void ManifestManager::RequestManifestImpl(
@@ -147,11 +176,6 @@ void ManifestManager::RequestManifestImpl(
   }
 
   pending_callbacks_.push_back(std::move(callback));
-
-  // Just wait for the running call to be done if there are other callbacks.
-  if (pending_callbacks_.size() > 1)
-    return;
-
   FetchManifest();
 }
 
@@ -175,20 +199,37 @@ void ManifestManager::FetchManifest() {
   if (manifest_url.IsEmpty()) {
     ResolveCallbacks(
         Result(mojom::blink::ManifestRequestResult::kNoManifestSpecified,
-               KURL(), DefaultManifest()));
+               NullUrl(), DefaultManifest()));
     return;
   }
 
+  // Do not trigger a new fetch if an existing fetch is happening for the same
+  // `manifest_url`.
+  if (current_fetching_manifest_url_ == manifest_url) {
+    return;
+  }
+
+  current_fetching_manifest_url_ = manifest_url;
   ResourceFetcher* document_fetcher = window.document()->Fetcher();
   fetcher_ = MakeGarbageCollected<ManifestFetcher>(manifest_url);
   fetcher_->Start(window, ManifestUseCredentials(), document_fetcher,
-                  WTF::BindOnce(&ManifestManager::OnManifestFetchComplete,
-                                WrapWeakPersistent(this), window.Url()));
+                  BindOnce(&ManifestManager::OnManifestFetchComplete,
+                           WrapWeakPersistent(this), window.Url(),
+                           *current_fetching_manifest_url_));
 }
 
-void ManifestManager::OnManifestFetchComplete(const KURL& document_url,
-                                              const ResourceResponse& response,
-                                              const String& data) {
+void ManifestManager::OnManifestFetchComplete(
+    const KURL& document_url,
+    const KURL& manifest_url_for_fetch,
+    const ResourceResponse& response,
+    const String& data) {
+  // Exit early if the manifest fetch is happening for a request belonging to a
+  // stale manifest url.
+  if (current_fetching_manifest_url_ != manifest_url_for_fetch) {
+    return;
+  }
+
+  current_fetching_manifest_url_.reset();
   fetcher_ = nullptr;
   if (response.IsNull() && data.empty()) {
     // The only time we don't produce the default manifest is when there is a
@@ -207,10 +248,9 @@ void ManifestManager::OnManifestFetchComplete(const KURL& document_url,
   if (response.HttpStatusCode() >= 200 && response.HttpStatusCode() < 400) {
     ParseManifestFromPage(document_url, response.CurrentRequestUrl(), data);
   } else {
-    const String message = WTF::String::Format(
-        "Manifest fetch from %s failed, code %d",
-        response.CurrentRequestUrl().GetString().Utf8().c_str(),
-        response.HttpStatusCode());
+    const String message = StrCat(
+        {"Manifest fetch from ", response.CurrentRequestUrl().GetString(),
+         " failed, code ", String::Number(response.HttpStatusCode())});
 
     GetSupplementable()->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
         mojom::blink::ConsoleMessageSource::kOther,
@@ -254,15 +294,15 @@ void ManifestManager::ParseManifestFromPage(const KURL& document_url,
   parser.TakeErrors(&result.debug_info().errors);
 
   for (const auto& error : result.debug_info().errors) {
-    auto location = std::make_unique<SourceLocation>(ManifestURL().GetString(),
-                                                     String(), error->line,
-                                                     error->column, nullptr, 0);
+    auto* location = MakeGarbageCollected<SourceLocation>(
+        ManifestURL().GetString(), String(), error->line, error->column,
+        nullptr, 0);
 
     GetSupplementable()->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
         mojom::blink::ConsoleMessageSource::kOther,
         error->critical ? mojom::blink::ConsoleMessageLevel::kError
                         : mojom::blink::ConsoleMessageLevel::kWarning,
-        "Manifest: " + error->message, std::move(location)));
+        StrCat({"Manifest: ", error->message}), std::move(location)));
   }
 
   // Having errors while parsing the manifest doesn't mean the manifest parsing
@@ -331,7 +371,7 @@ bool ManifestManager::ManifestUseCredentials() const {
       GetSupplementable()->document()->LinkManifest();
   if (!link_element)
     return false;
-  return EqualIgnoringASCIICase(
+  return EqualIgnoringAsciiCase(
       link_element->FastGetAttribute(html_names::kCrossoriginAttr),
       "use-credentials");
 }

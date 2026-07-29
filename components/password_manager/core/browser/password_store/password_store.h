@@ -6,6 +6,7 @@
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_STORE_PASSWORD_STORE_H_
 
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -14,8 +15,6 @@
 #include "base/cancelable_callback.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/gtest_prod_util.h"
-#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
@@ -23,15 +22,13 @@
 #include "base/time/time.h"
 #include "base/types/strong_alias.h"
 #include "build/build_config.h"
-#include "components/password_manager/core/browser/affiliation/affiliated_match_helper.h"
 #include "components/password_manager/core/browser/password_form_digest.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_store/password_store_backend.h"
 #include "components/password_manager/core/browser/password_store/password_store_change.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/smart_bubble_stats_store.h"
-
-class PrefService;
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 
 namespace syncer {
 class DataTypeControllerDelegate;
@@ -39,15 +36,9 @@ class DataTypeControllerDelegate;
 
 namespace password_manager {
 
-struct PasswordForm;
-
 using metrics_util::GaiaPasswordHashChange;
 
 class PasswordStoreConsumer;
-
-// Used to notify that unsynced credentials are about to be deleted.
-using UnsyncedCredentialsDeletionNotifier =
-    base::RepeatingCallback<void(std::vector<PasswordForm>)>;
 
 // Partial, cross-platform implementation for storing form passwords.
 // The login request/manipulation API is not threadsafe and must be used
@@ -63,35 +54,32 @@ class PasswordStore : public PasswordStoreInterface {
 
   // Always call this too on the UI thread.
   // TODO(crbug.com/40185648): Move initialization into the core interface, too.
-  void Init(PrefService* prefs,
-            std::unique_ptr<AffiliatedMatchHelper> affiliated_match_helper);
+  void Init();
 
   // RefcountedKeyedService:
   void ShutdownOnUIThread() override;
 
   // PasswordStoreInterface:
-  bool IsAbleToSavePasswords() const override;
-  void AddLogin(const PasswordForm& form,
+  ActionableError GetError() const override;
+  void AddLogin(StoredCredential form,
                 base::OnceClosure completion = base::DoNothing()) override;
-  void AddLogins(const std::vector<PasswordForm>& forms,
+  void AddLogins(std::vector<StoredCredential> forms,
                  base::OnceClosure completion = base::DoNothing()) override;
-  void UpdateLogin(const PasswordForm& form,
+  void UpdateLogin(StoredCredential form,
                    base::OnceClosure completion = base::DoNothing()) override;
-  void UpdateLogins(const std::vector<PasswordForm>& forms,
+  void UpdateLogins(std::vector<StoredCredential> forms,
                     base::OnceClosure completion = base::DoNothing()) override;
   void UpdateLoginWithPrimaryKey(
-      const PasswordForm& new_form,
-      const PasswordForm& old_primary_key,
+      StoredCredential new_form,
+      const StoredCredential& old_primary_key,
       base::OnceClosure completion = base::DoNothing()) override;
   void RemoveLogin(const base::Location& location,
-                   const PasswordForm& form) override;
-  void RemoveLoginsCreatedBetween(
-      const base::Location& location,
-      base::Time delete_begin,
-      base::Time delete_end,
-      base::OnceCallback<void(bool)> completion = base::NullCallback(),
-      base::OnceCallback<void(bool)> sync_completion =
-          base::NullCallback()) override;
+                   const StoredCredential& form) override;
+  void RemoveLoginsCreatedBetween(const base::Location& location,
+                                  base::Time delete_begin,
+                                  base::Time delete_end,
+                                  base::OnceCallback<void(bool)> completion =
+                                      base::NullCallback()) override;
   void DisableAutoSignInForOrigins(
       const base::RepeatingCallback<bool(const GURL&)>& origin_filter,
       base::OnceClosure completion = base::NullCallback()) override;
@@ -144,15 +132,18 @@ class PasswordStore : public PasswordStoreInterface {
   // Notifies observers that password store data may have been changed. If
   // available, it forwards the changes to observers. Otherwise, all logins are
   // requested and forwarded to `NotifyLoginsRetainedOnMainSequence`.
-  void NotifyLoginsChangedOnMainSequence(
-      LoginsChangedTrigger change_event,
-      std::optional<PasswordStoreChangeList> changes);
+  void NotifyLoginsChangedOnMainSequence(LoginsChangedTrigger change_event,
+                                         PasswordChangesOrError);
 
   // Notifies observers with all logins remaining after a modifying operation.
-  void NotifyLoginsRetainedOnMainSequence(LoginsResultOrError result);
+  void NotifyLoginsRetainedOnMainSequence(BackendLoginsResultOrError result);
 
   // Called when the backend reports that sync has been enabled or disabled.
   void NotifySyncEnabledOrDisabledOnMainSequence();
+
+  // Helper to notify observers via OnErrorStateChanged if the actionable error
+  // differs from `last_reported_actionable_error_`.
+  void NotifyObserversIfErrorStateChanged(ActionableError error);
 
   // The following methods notify observers that the password store may have
   // been modified via NotifyLoginsChangedOnMainSequence(). Note that there is
@@ -178,16 +169,16 @@ class PasswordStore : public PasswordStoreInterface {
   // The observers.
   base::ObserverList<Observer, /*check_empty=*/true> observers_;
 
-  std::unique_ptr<AffiliatedMatchHelper> affiliated_match_helper_;
-
-  raw_ptr<PrefService> prefs_ = nullptr;
-
   base::Time construction_time_;
 
   // Any call to |this| before backend initialization is complete is preserved
   // here to be executed afterwards by chaining in FIFO order. Callback is
   // invoked inside OnInitCompleted().
   base::OnceClosure post_init_callback_ = base::DoNothing();
+
+  // Caches the most recent reported actionable error so duplicate reports
+  // with the exact same error are skipped.
+  std::optional<ActionableError> last_reported_actionable_error_;
 };
 
 }  // namespace password_manager

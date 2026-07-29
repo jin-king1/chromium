@@ -7,8 +7,8 @@
 #if !BUILDFLAG(IS_CHROMEOS)
 
 #include "base/run_loop.h"
-#include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ui/page_info/chrome_page_info_delegate.h"
 #include "chrome/browser/ui/page_info/chrome_page_info_ui_delegate.h"
@@ -21,14 +21,9 @@
 #include "components/permissions/permission_recovery_success_rate_tracker.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/test/web_contents_tester.h"
-#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/controls/label.h"
-
-using base::Bucket;
-using testing::ElementsAre;
 
 namespace {
 
@@ -43,8 +38,6 @@ constexpr char kGroupId[] = "group_id";
 constexpr char kMicId2[] = "mic_id_2";
 constexpr char kMicName2[] = "mic_name_2";
 constexpr char kGroupId2[] = "group_id_2";
-constexpr char kOriginTrialAllowedHistogramName[] =
-    "MediaPreviews.UI.PageInfo.OriginTrialAllowed";
 
 blink::mojom::MediaStreamType GetStreamTypeFromSettingsType(
     ContentSettingsType type) {
@@ -67,11 +60,6 @@ blink::mojom::MediaStreamType GetStreamTypeFromSettingsType(
 class PageInfoPermissionContentViewTestMediaPreview
     : public TestWithBrowserView {
  protected:
-  PageInfoPermissionContentViewTestMediaPreview() {
-    scoped_feature_list_.InitAndEnableFeature(
-        blink::features::kCameraMicPreview);
-  }
-
   void SetUp() override {
     TestWithBrowserView::SetUp();
     base::test::TestFuture<void> mic_infos, camera_infos;
@@ -142,7 +130,6 @@ class PageInfoPermissionContentViewTestMediaPreview
                                       base::NumberToString16(devices));
   }
 
-  base::test::ScopedFeatureList scoped_feature_list_;
   media_effects::ScopedFakeAudioService audio_service_;
   media_effects::ScopedFakeVideoCaptureService video_service_;
   std::optional<media_effects::ScopedMediaDeviceInfo> media_device_info_;
@@ -153,7 +140,6 @@ class PageInfoPermissionContentViewTestMediaPreview
   std::unique_ptr<PageInfo> presenter_;
   std::unique_ptr<ChromePageInfoUiDelegate> ui_delegate_;
   std::unique_ptr<PageInfoPermissionContentView> page_info_;
-  base::HistogramTester histogram_tester_;
 };
 
 // Verify the device counter as well as the tooltip for the title label for page
@@ -184,8 +170,6 @@ TEST_F(PageInfoPermissionContentViewTestMediaPreview, MediaPreviewCamera) {
   EXPECT_EQ(title_label->GetText(), GetExpectedCameraLabelText(1));
   EXPECT_EQ(title_label->GetRenderedTooltipText(gfx::Point()),
             base::UTF8ToUTF16(std::string(kCameraName)));
-  EXPECT_THAT(histogram_tester_.GetAllSamples(kOriginTrialAllowedHistogramName),
-              ElementsAre(Bucket(1, 1)));
 }
 
 // Verify the device counter as well as the tooltip for the title label for page
@@ -248,8 +232,6 @@ TEST_F(PageInfoPermissionContentViewTestMediaPreview, MediaPreviewMic) {
   EXPECT_EQ(title_label->GetText(), GetExpectedMicLabelText(1));
   EXPECT_EQ(title_label->GetRenderedTooltipText(gfx::Point()),
             base::UTF8ToUTF16(std::string(kMicName2)));
-  EXPECT_THAT(histogram_tester_.GetAllSamples(kOriginTrialAllowedHistogramName),
-              ElementsAre(Bucket(1, 1)));
 }
 
 // Verify there is no preview created when there is no camera or mic permissions
@@ -258,7 +240,6 @@ TEST_F(PageInfoPermissionContentViewTestMediaPreview,
        MediaPreviewNoCameraOrMic) {
   InitializePageInfo(ContentSettingsType::GEOLOCATION);
   ASSERT_FALSE(page_info_->GetPreviewsCoordinatorForTesting());
-  histogram_tester_.ExpectTotalCount(kOriginTrialAllowedHistogramName, 0);
 }
 
 #endif

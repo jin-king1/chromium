@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "sandbox/win/src/policy_engine_opcodes.h"
-
 #include <stddef.h>
 #include <stdint.h>
 
+#include "base/compiler_specific.h"
+#include "sandbox/win/src/policy_engine_opcodes.h"
 #include "sandbox/win/src/policy_engine_params.h"
 #include "sandbox/win/src/sandbox_nt_types.h"
 #include "sandbox/win/src/sandbox_nt_util.h"
@@ -41,11 +41,11 @@ TEST(PolicyEngineTest, ParameterSetTest) {
   EXPECT_EQ(number, result2);
 
   // Test that we can store and retrieve a string:
-  const wchar_t* txt = L"S231L";
+  std::wstring_view txt = L"S231L";
   ParameterSet pset4 = ParamPickerMake(txt);
-  const wchar_t* result3 = nullptr;
+  std::wstring_view result3;
   EXPECT_TRUE(pset4.Get(&result3));
-  EXPECT_EQ(0, wcscmp(txt, result3));
+  EXPECT_EQ(txt, result3);
 }
 
 TEST(PolicyEngineTest, OpcodeConstraints) {
@@ -60,53 +60,6 @@ TEST(PolicyEngineTest, OpcodeConstraints) {
   EXPECT_TRUE(__is_trivially_copyable(PolicyOpcode));
 }
 
-TEST(PolicyEngineTest, TrueFalseOpcodes) {
-  void* dummy = nullptr;
-  ParameterSet ppb1 = ParamPickerMake(dummy);
-  char memory[kOpcodeMemory];
-  OpcodeFactory opcode_maker(memory, sizeof(memory));
-
-  // This opcode always evaluates to true.
-  PolicyOpcode* op1 = opcode_maker.MakeOpAlwaysFalse(kPolNone);
-  ASSERT_NE(nullptr, op1);
-  EXPECT_EQ(EVAL_FALSE, op1->Evaluate(&ppb1, 1, nullptr));
-  EXPECT_FALSE(op1->IsAction());
-
-  // This opcode always evaluates to false.
-  PolicyOpcode* op2 = opcode_maker.MakeOpAlwaysTrue(kPolNone);
-  ASSERT_NE(nullptr, op2);
-  EXPECT_EQ(EVAL_TRUE, op2->Evaluate(&ppb1, 1, nullptr));
-
-  // Nulls not allowed on the params.
-  EXPECT_EQ(EVAL_ERROR, op2->Evaluate(nullptr, 0, nullptr));
-  EXPECT_EQ(EVAL_ERROR, op2->Evaluate(nullptr, 1, nullptr));
-
-  // True and False opcodes do not 'require' a number of parameters
-  EXPECT_EQ(EVAL_TRUE, op2->Evaluate(&ppb1, 0, nullptr));
-  EXPECT_EQ(EVAL_TRUE, op2->Evaluate(&ppb1, 1, nullptr));
-
-  // Test Inverting the logic. Note that inversion is done outside
-  // any particular opcode evaluation so no need to repeat for all
-  // opcodes.
-  PolicyOpcode* op3 = opcode_maker.MakeOpAlwaysFalse(kPolNegateEval);
-  ASSERT_NE(nullptr, op3);
-  EXPECT_EQ(EVAL_TRUE, op3->Evaluate(&ppb1, 1, nullptr));
-  PolicyOpcode* op4 = opcode_maker.MakeOpAlwaysTrue(kPolNegateEval);
-  ASSERT_NE(nullptr, op4);
-  EXPECT_EQ(EVAL_FALSE, op4->Evaluate(&ppb1, 1, nullptr));
-
-  // Test that we clear the match context
-  PolicyOpcode* op5 = opcode_maker.MakeOpAlwaysTrue(kPolClearContext);
-  ASSERT_NE(nullptr, op5);
-  MatchContext context;
-  context.position = 1;
-  context.options = kPolUseOREval;
-  EXPECT_EQ(EVAL_TRUE, op5->Evaluate(&ppb1, 1, &context));
-  EXPECT_EQ(0u, context.position);
-  MatchContext context2;
-  EXPECT_EQ(context2.options, context.options);
-}
-
 TEST(PolicyEngineTest, OpcodeMakerCase1) {
   // Testing that the opcode maker does not overrun the
   // supplied buffer. It should only be able to make 'count' opcodes.
@@ -118,12 +71,12 @@ TEST(PolicyEngineTest, OpcodeMakerCase1) {
   size_t count = sizeof(memory) / sizeof(PolicyOpcode);
 
   for (size_t ix = 0; ix != count; ++ix) {
-    PolicyOpcode* op = opcode_maker.MakeOpAlwaysFalse(kPolNone);
+    PolicyOpcode* op = opcode_maker.MakeOpAction(ASK_BROKER, 0U);
     ASSERT_NE(nullptr, op);
-    EXPECT_EQ(EVAL_FALSE, op->Evaluate(&ppb1, 1, nullptr));
+    EXPECT_EQ(ASK_BROKER, op->Evaluate(&ppb1, 1, nullptr));
   }
   // There should be no room more another opcode:
-  PolicyOpcode* op1 = opcode_maker.MakeOpAlwaysFalse(kPolNone);
+  PolicyOpcode* op1 = opcode_maker.MakeOpAction(ASK_BROKER, 0U);
   ASSERT_EQ(nullptr, op1);
 }
 
@@ -132,15 +85,16 @@ TEST(PolicyEngineTest, OpcodeMakerCase2) {
   // supplied buffer. It should only be able to make 'count' opcodes.
   // The difference with the previous test is that this opcodes allocate
   // the string 'txt2' inside the same buffer.
-  const wchar_t* txt1 = L"1234";
-  const wchar_t txt2[] = L"123";
+  std::wstring_view txt1 = L"1234";
+  std::wstring_view txt2 = L"123";
 
   ParameterSet ppb1 = ParamPickerMake(txt1);
   MatchContext mc1;
 
   char memory[kOpcodeMemory];
   OpcodeFactory opcode_maker(memory, sizeof(memory));
-  size_t count = sizeof(memory) / (sizeof(PolicyOpcode) + sizeof(txt2));
+  size_t count =
+      sizeof(memory) / (sizeof(PolicyOpcode) + txt2.size() * sizeof(wchar_t));
 
   // Test that it does not overrun the buffer.
   for (size_t ix = 0; ix != count; ++ix) {
@@ -157,7 +111,7 @@ TEST(PolicyEngineTest, OpcodeMakerCase2) {
 }
 
 TEST(PolicyEngineTest, IntegerOpcodes) {
-  const wchar_t* txt = L"abcdef";
+  std::wstring_view txt = L"abcdef";
   uint32_t num1 = 42;
   uint32_t num2 = 113377;
 
@@ -174,16 +128,6 @@ TEST(PolicyEngineTest, IntegerOpcodes) {
   EXPECT_EQ(EVAL_TRUE, op_m42->Evaluate(&pp_num1, 1, nullptr));
   EXPECT_EQ(EVAL_FALSE, op_m42->Evaluate(&pp_num2, 1, nullptr));
   EXPECT_EQ(EVAL_ERROR, op_m42->Evaluate(&pp_wrong1, 1, nullptr));
-
-  // Test basic match for void pointers.
-  const void* vp = nullptr;
-  ParameterSet pp_num3 = ParamPickerMake(vp);
-  PolicyOpcode* op_vp_null =
-      opcode_maker.MakeOpVoidPtrMatch(0, nullptr, kPolNone);
-  ASSERT_NE(nullptr, op_vp_null);
-  EXPECT_EQ(EVAL_TRUE, op_vp_null->Evaluate(&pp_num3, 1, nullptr));
-  EXPECT_EQ(EVAL_FALSE, op_vp_null->Evaluate(&pp_num1, 1, nullptr));
-  EXPECT_EQ(EVAL_ERROR, op_vp_null->Evaluate(&pp_wrong1, 1, nullptr));
 }
 
 TEST(PolicyEngineTest, LogicalOpcodes) {
@@ -204,12 +148,12 @@ TEST(PolicyEngineTest, LogicalOpcodes) {
 }
 
 TEST(PolicyEngineTest, WCharOpcodes1) {
-  const wchar_t* txt1 = L"the quick fox jumps over the lazy dog";
-  const wchar_t txt2[] = L"the quick";
-  const wchar_t txt3[] = L" fox jumps";
-  const wchar_t txt4[] = L"the lazy dog";
-  const wchar_t txt5[] = L"jumps over";
-  const wchar_t txt6[] = L"g";
+  std::wstring_view txt1 = L"the quick fox jumps over the lazy dog";
+  std::wstring_view txt2 = L"the quick";
+  std::wstring_view txt3 = L" fox jumps";
+  std::wstring_view txt4 = L"the lazy dog";
+  std::wstring_view txt5 = L"jumps over";
+  std::wstring_view txt6 = L"g";
 
   ParameterSet pp_tc1 = ParamPickerMake(txt1);
   char memory[kOpcodeMemory];
@@ -223,11 +167,11 @@ TEST(PolicyEngineTest, WCharOpcodes1) {
   // and the match context should be updated.
   MatchContext mc1;
   EXPECT_EQ(EVAL_TRUE, op1->Evaluate(&pp_tc1, 1, &mc1));
-  EXPECT_TRUE(_countof(txt2) == mc1.position + 1);
+  EXPECT_EQ(txt2.size(), mc1.position);
 
   // Matching again should fail and the context should be unmodified.
   EXPECT_EQ(EVAL_FALSE, op1->Evaluate(&pp_tc1, 1, &mc1));
-  EXPECT_TRUE(_countof(txt2) == mc1.position + 1);
+  EXPECT_EQ(txt2.size(), mc1.position);
 
   // Using the same match context we should continue where we left
   // in the previous successful match,
@@ -235,7 +179,7 @@ TEST(PolicyEngineTest, WCharOpcodes1) {
       opcode_maker.MakeOpWStringMatch(0, txt3, 0, kPolNone, false);
   ASSERT_NE(nullptr, op3);
   EXPECT_EQ(EVAL_TRUE, op3->Evaluate(&pp_tc1, 1, &mc1));
-  EXPECT_TRUE(_countof(txt3) + _countof(txt2) == mc1.position + 2);
+  EXPECT_EQ(txt3.size() + txt2.size(), mc1.position);
 
   // We now keep on matching but now we skip 6 characters which means
   // we skip the string ' over '. And we zero the match context. This is
@@ -296,10 +240,19 @@ TEST(PolicyEngineTest, ActionOpcodes) {
   void* dummy = nullptr;
   ParameterSet ppb1 = ParamPickerMake(dummy);
 
-  PolicyOpcode* op1 = opcode_maker.MakeOpAction(ASK_BROKER, kPolNone);
+  PolicyOpcode* op1 = opcode_maker.MakeOpAction(ASK_BROKER, 0U);
   ASSERT_NE(nullptr, op1);
   EXPECT_TRUE(op1->IsAction());
   EXPECT_EQ(ASK_BROKER, op1->Evaluate(&ppb1, 1, &mc1));
+
+  PolicyOpcode* op2 = opcode_maker.MakeOpAction(RETURN_CONST, 123456789U);
+  ASSERT_NE(nullptr, op2);
+  EXPECT_TRUE(op2->IsAction());
+  MatchContext mc2;
+  EXPECT_EQ(RETURN_CONST, op2->Evaluate(&ppb1, 1, &mc2));
+  uintptr_t constant;
+  op2->GetArgument(1, &constant);
+  EXPECT_EQ(123456789U, constant);
 }
 
 }  // namespace sandbox

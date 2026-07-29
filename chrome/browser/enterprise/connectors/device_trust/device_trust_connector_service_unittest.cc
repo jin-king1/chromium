@@ -27,23 +27,23 @@ constexpr char kExampleUrl2[] = "https://example2.com/some2path";
 constexpr char kExampleUrl3[] = "https://example3.com/some3path";
 constexpr char kExampleUrl4[] = "https://example4.com/some4path";
 
-base::Value::List GetOrigins() {
-  base::Value::List origins;
+base::ListValue GetOrigins() {
+  base::ListValue origins;
   origins.Append(kExampleDomain1);
   origins.Append(kExampleDomain2);
   return origins;
 }
 
-base::Value::List GetMoreOrigins() {
-  base::Value::List more_origins;
+base::ListValue GetMoreOrigins() {
+  base::ListValue more_origins;
   more_origins.Append(kExampleDomain1);
   more_origins.Append(kExampleDomain2);
   more_origins.Append(kExampleDomain3);
   return more_origins;
 }
 
-base::Value::List GetDifferentOrigins() {
-  base::Value::List more_origins;
+base::ListValue GetDifferentOrigins() {
+  base::ListValue more_origins;
   more_origins.Append(kExampleDomain3);
   more_origins.Append(kExampleDomain4);
   return more_origins;
@@ -51,7 +51,7 @@ base::Value::List GetDifferentOrigins() {
 
 void SetPolicy(TestingPrefServiceSimple* prefs,
                const std::string& pref_name,
-               base::Value::List list = base::Value::List()) {
+               base::ListValue list = base::ListValue()) {
   prefs->SetManagedPref(pref_name, std::move(list));
 }
 
@@ -105,7 +105,7 @@ class DeviceTrustConnectorServiceTest : public testing::Test {
     EXPECT_EQ(level, service->Watches(url1));
     EXPECT_EQ(level, service->Watches(url2));
     EXPECT_EQ(level, service->Watches(url3));
-    EXPECT_EQ(level, service->GetEnabledInlinePolicyLevels());
+    EXPECT_EQ(level, service->GetSignalsPolicyScope());
   }
 
   void TestPolicyObserverFlow(
@@ -189,7 +189,7 @@ TEST_F(DeviceTrustConnectorServiceTest,
   EXPECT_EQ(levels_, service->Watches(url1));
   EXPECT_EQ(levels_, service->Watches(url2));
   EXPECT_EQ(levels_, service->Watches(url3));
-  EXPECT_EQ(levels_, service->GetEnabledInlinePolicyLevels());
+  EXPECT_EQ(levels_, service->GetSignalsPolicyScope());
 }
 
 // Tests that the DTC policy levels set is enabled at the correct levels when
@@ -227,7 +227,7 @@ TEST_F(DeviceTrustConnectorServiceTest,
   EXPECT_EQ(user_policy_level, service->Watches(url2));
   EXPECT_EQ(browser_policy_level, service->Watches(url3));
   EXPECT_EQ(browser_policy_level, service->Watches(url4));
-  EXPECT_EQ(levels_, service->GetEnabledInlinePolicyLevels());
+  EXPECT_EQ(levels_, service->GetSignalsPolicyScope());
 }
 
 // Tests that the policy observer behaves as intended for the

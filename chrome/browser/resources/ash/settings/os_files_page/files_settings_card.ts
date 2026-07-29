@@ -26,7 +26,6 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 import {assertExhaustive} from '../assert_extras.js';
 import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
 import {RouteOriginMixin} from '../common/route_origin_mixin.js';
-import type {Setting} from '../mojom-webui/setting.mojom-webui.js';
 import type {Route} from '../router.js';
 import {Router, routes} from '../router.js';
 
@@ -48,14 +47,6 @@ export class FilesSettingsCardElement extends FilesSettingsCardElementBase {
 
   static get properties() {
     return {
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([]),
-      },
-
       bulkPinningPrefEnabled_: Boolean,
       mirrorSyncPrefEnabled_: Boolean,
 
@@ -127,19 +118,19 @@ export class FilesSettingsCardElement extends FilesSettingsCardElementBase {
     ];
   }
 
-  private bulkPinningPrefEnabled_: boolean;
-  private mirrorSyncPrefEnabled_: boolean;
-  private driveDisabled_: boolean;
-  private isBulkPinningEnabled_: boolean;
-  private isMirrorSyncEnabled_: boolean;
+  declare private bulkPinningPrefEnabled_: boolean;
+  declare private mirrorSyncPrefEnabled_: boolean;
+  declare private driveDisabled_: boolean;
+  declare private isBulkPinningEnabled_: boolean;
+  declare private isMirrorSyncEnabled_: boolean;
   private oneDriveBrowserProxy_: OneDriveBrowserProxy|undefined;
-  private oneDriveConnectionState_: OneDriveConnectionState;
+  declare private oneDriveConnectionState_: OneDriveConnectionState;
   private oneDriveEmailAddress_: string|null;
   private smbBrowserProxy_: SmbBrowserProxy;
-  private shouldShowAddSmbButton_: boolean;
-  private shouldShowAddSmbDialog_: boolean;
-  private shouldShowOneDriveSettings_: boolean;
-  private shouldShowOfficeSettings_: boolean;
+  declare private shouldShowAddSmbButton_: boolean;
+  declare private shouldShowAddSmbDialog_: boolean;
+  declare private shouldShowOneDriveSettings_: boolean;
+  declare private shouldShowOfficeSettings_: boolean;
 
 
   constructor() {

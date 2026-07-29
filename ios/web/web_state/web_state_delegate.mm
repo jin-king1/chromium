@@ -4,7 +4,6 @@
 
 #import "ios/web/public/web_state_delegate.h"
 
-#import "base/containers/contains.h"
 
 namespace web {
 
@@ -40,6 +39,25 @@ void WebStateDelegate::ShowRepostFormWarningDialog(
   std::move(callback).Run(true);
 }
 
+void WebStateDelegate::ShouldAllowCopy(
+    WebState* source,
+    base::OnceCallback<void(bool)> callback) {
+  std::move(callback).Run(true);
+}
+
+void WebStateDelegate::ShouldAllowPaste(
+    WebState* source,
+    base::OnceCallback<void(bool)> callback) {
+  std::move(callback).Run(true);
+}
+
+void WebStateDelegate::ShouldAllowCut(WebState* source,
+                                      base::OnceCallback<void(bool)> callback) {
+  std::move(callback).Run(true);
+}
+
+void WebStateDelegate::DidFinishClipboardRead(WebState* source) {}
+
 JavaScriptDialogPresenter* WebStateDelegate::GetJavaScriptDialogPresenter(
     WebState*) {
   return nullptr;
@@ -55,8 +73,14 @@ void WebStateDelegate::HandlePermissionsDecisionRequest(
 void WebStateDelegate::OnAuthRequired(WebState* source,
                                       NSURLProtectionSpace* protection_space,
                                       NSURLCredential* proposed_credential,
-                                      AuthCallback callback) {
+                                      HTTPAuthCallback callback) {
   std::move(callback).Run(nil, nil);
+}
+
+void WebStateDelegate::OnAuthRequired(WebState* source,
+                                      NSURLProtectionSpace* protection_space,
+                                      ClientCertAuthCallback callback) {
+  std::move(callback).Run(nil);
 }
 
 UIView* WebStateDelegate::GetWebViewContainer(WebState* source) {
@@ -64,12 +88,12 @@ UIView* WebStateDelegate::GetWebViewContainer(WebState* source) {
 }
 
 void WebStateDelegate::Attach(WebState* source) {
-  DCHECK(!base::Contains(attached_states_, source));
+  DCHECK(!attached_states_.contains(source));
   attached_states_.insert(source);
 }
 
 void WebStateDelegate::Detach(WebState* source) {
-  DCHECK(base::Contains(attached_states_, source));
+  DCHECK(attached_states_.contains(source));
   attached_states_.erase(source);
 }
 
@@ -78,6 +102,11 @@ void WebStateDelegate::ContextMenuConfiguration(
     const ContextMenuParams& params,
     void (^completion_handler)(UIContextMenuConfiguration*)) {
   completion_handler(nil);
+}
+
+UIContextMenuConfiguration*
+WebStateDelegate::GetCustomContextMenuConfiguration() {
+  return nil;
 }
 
 void WebStateDelegate::ContextMenuWillCommitWithAnimator(

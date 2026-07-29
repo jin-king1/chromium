@@ -16,6 +16,8 @@
 
 #include "base/check_op.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
@@ -112,7 +114,7 @@ void UpdateCheckerImpl::CheckForUpdates(
       &UpdateCheckerImpl::CheckForUpdatesHelper, weak_factory_.GetWeakPtr(),
       context, config_->UpdateUrl(), additional_attributes);
 
-  context->crx_cache_->ListHashesByAppId(base::BindOnce(
+  context->config->GetCrxCache()->ListHashesByAppId(base::BindOnce(
       [](base::OnceCallback<void(const std::multimap<std::string, std::string>&,
                                  const UpdaterStateAttributes&,
                                  const std::set<std::string>&)>
@@ -191,8 +193,9 @@ void UpdateCheckerImpl::CheckForUpdatesHelper(
 
   std::vector<protocol_request::App> apps;
   for (const auto& app_id : context->components_to_check_for_updates) {
-    CHECK_EQ(1u, context->components.count(app_id));
-    const auto& component = context->components.at(app_id);
+    auto it = context->components.find(app_id);
+    CHECK(it != context->components.end());
+    const auto& component = it->second;
     CHECK_EQ(component->id(), app_id);
     const auto& crx_component = component->crx_component();
     CHECK(crx_component);
@@ -212,22 +215,20 @@ void UpdateCheckerImpl::CheckForUpdatesHelper(
     }
 
     std::vector<std::string> cached_hashes;
-    auto range = cache_contents.equal_range(app_id);
-    for (auto i = range.first; i != range.second; i++) {
+    auto [first, last] = cache_contents.equal_range(app_id);
+    for (auto i = first; i != last; ++i) {
       cached_hashes.push_back(i->second);
     }
 
     apps.push_back(MakeProtocolApp(
         app_id, crx_component->version, crx_component->ap, crx_component->brand,
-        active_ids.find(app_id) != active_ids.end()
-            ? metadata->GetInstallId(app_id)
-            : "",
+        active_ids.contains(app_id) ? metadata->GetInstallId(app_id) : "",
         crx_component->lang.empty() ? config_->GetLang() : crx_component->lang,
         metadata->GetInstallDate(app_id), install_source,
-        crx_component->install_location, crx_component->fingerprint,
-        crx_component->installer_attributes, metadata->GetCohort(app_id),
-        metadata->GetCohortHint(app_id), metadata->GetCohortName(app_id),
-        crx_component->channel, crx_component->disabled_reasons, cached_hashes,
+        crx_component->install_location, crx_component->installer_attributes,
+        metadata->GetCohort(app_id), metadata->GetCohortHint(app_id),
+        metadata->GetCohortName(app_id), crx_component->channel,
+        crx_component->disabled_reasons, cached_hashes,
         MakeProtocolUpdateCheck(
             !crx_component->updates_enabled ||
                 (!crx_component->allow_updates_on_metered_connection &&
@@ -244,7 +245,7 @@ void UpdateCheckerImpl::CheckForUpdatesHelper(
           }
         }(crx_component->install_data_index),
         MakeProtocolPing(app_id, config_->GetPersistedData(),
-                         active_ids.find(app_id) != active_ids.end()),
+                         active_ids.contains(app_id)),
         std::nullopt));
   }
 
@@ -279,7 +280,7 @@ void UpdateCheckerImpl::CheckForUpdatesHelper(
                          ? std::optional<base::OnceClosure>(base::BindOnce(
                                &UpdateCheckerImpl::CheckForUpdatesHelper,
                                weak_factory_.GetWeakPtr(), context,
-                               std::vector<GURL>(urls.begin() + 1, urls.end()),
+                               base::ToVector(base::span(urls).subspan(1u)),
                                additional_attributes, cache_contents,
                                updater_state_attributes, active_ids))
                          : std::nullopt)));
@@ -326,18 +327,15 @@ void UpdateCheckerImpl::UpdateCheckSucceeded(
 
   PersistedData* metadata = config_->GetPersistedData();
   const int daynum = results.daystart_elapsed_days;
-  for (const auto& result : results.list) {
-    auto entry = result.cohort_attrs.find(ProtocolParser::Result::kCohort);
-    if (entry != result.cohort_attrs.end()) {
-      metadata->SetCohort(result.extension_id, entry->second);
+  for (const auto& result : results.apps) {
+    if (result.cohort) {
+      metadata->SetCohort(result.app_id, *result.cohort);
     }
-    entry = result.cohort_attrs.find(ProtocolParser::Result::kCohortName);
-    if (entry != result.cohort_attrs.end()) {
-      metadata->SetCohortName(result.extension_id, entry->second);
+    if (result.cohort_name) {
+      metadata->SetCohortName(result.app_id, *result.cohort_name);
     }
-    entry = result.cohort_attrs.find(ProtocolParser::Result::kCohortHint);
-    if (entry != result.cohort_attrs.end()) {
-      metadata->SetCohortHint(result.extension_id, entry->second);
+    if (result.cohort_hint) {
+      metadata->SetCohortHint(result.app_id, *result.cohort_hint);
     }
   }
 
@@ -363,7 +361,7 @@ void UpdateCheckerImpl::UpdateCheckFailed(ErrorCategory error_category,
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK_NE(0, error);
   config_->GetPersistedData()->SetLastUpdateCheckError(
-      {.category_ = error_category, .code_ = error});
+      {.category = error_category, .code = error});
 
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(std::move(update_check_callback_), std::nullopt,

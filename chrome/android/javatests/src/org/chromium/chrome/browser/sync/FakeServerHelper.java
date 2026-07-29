@@ -113,7 +113,7 @@ public class FakeServerHelper {
                         () ->
                                 FakeServerHelperJni.get()
                                         .getSyncEntitiesByDataType(mNativeFakeServer, dataType));
-        List<SyncEntity> entities = new ArrayList<SyncEntity>(serializedEntities.length);
+        List<SyncEntity> entities = new ArrayList<>(serializedEntities.length);
         for (byte[] serializedEntity : serializedEntities) {
             entities.add(SyncEntity.parseFrom(serializedEntity));
         }
@@ -349,6 +349,59 @@ public class FakeServerHelper {
                 () -> FakeServerHelperJni.get().clearServerData(mNativeFakeServer));
     }
 
+    /** Adds collaboration to fake sync server. */
+    public void addCollaboration(String collaborationId) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        FakeServerHelperJni.get()
+                                .addCollaboration(mNativeFakeServer, collaborationId));
+    }
+
+    /** Removes collaboration from fake sync server. */
+    public void removeCollaboration(String collaborationId) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        FakeServerHelperJni.get()
+                                .removeCollaboration(mNativeFakeServer, collaborationId));
+    }
+
+    /** Adds collaboration group to fake sync server. */
+    public void addCollaborationGroupToFakeServer(String collaborationId) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        FakeServerHelperJni.get()
+                                .addCollaborationGroupToFakeServer(
+                                        mNativeFakeServer, collaborationId));
+    }
+
+    /** Adds saved tab group to fake sync server. */
+    public void addSavedTabGroupToFakeServer(
+            @Nullable String syncGroupId, String groupTitle, int numberOfTabs) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        FakeServerHelperJni.get()
+                                .addSavedTabGroupToFakeServer(
+                                        mNativeFakeServer, syncGroupId, groupTitle, numberOfTabs));
+    }
+
+    /**
+     * Deletes all the SyncEntities on the fake server with the given dataType.
+     *
+     * @param dataType the type of entities to return.
+     */
+    public void deleteAllEntitiesForDataType(final int dataType) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        FakeServerHelperJni.get()
+                                .deleteAllEntitiesForDataType(mNativeFakeServer, dataType));
+    }
+
+    /** Returns the local device's sync cache GUID. */
+    public String getLocalCacheGuid() {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> FakeServerHelperJni.get().getLocalCacheGuid());
+    }
+
     @NativeMethods
     interface Natives {
         long createFakeServer();
@@ -425,5 +478,23 @@ public class FakeServerHelper {
         void setTrustedVaultNigori(long fakeServer, byte[] trustedVaultKey);
 
         void clearServerData(long fakeServer);
+
+        void addCollaboration(long fakeServer, @JniType("std::string") String collaborationId);
+
+        void removeCollaboration(long fakeServer, @JniType("std::string") String collaborationId);
+
+        void addCollaborationGroupToFakeServer(
+                long fakeServer, @JniType("std::string") String collaborationId);
+
+        void addSavedTabGroupToFakeServer(
+                long fakeServer,
+                @Nullable String syncGroupId,
+                @JniType("std::string") String groupTitle,
+                int numberOfTabs);
+
+        void deleteAllEntitiesForDataType(long fakeServer, int dataType);
+
+        @JniType("std::string")
+        String getLocalCacheGuid();
     }
 }

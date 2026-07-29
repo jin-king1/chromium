@@ -129,8 +129,14 @@ uint32_t FetchLaterUtil::GetReservedDeferredFetchQuota(const Frame* frame) {
     return kMaxScheduledDeferredBytes - kQuotaReservedForDeferredFetchMinimal;
   }
 
-  // `frame` is not top-level.
-  CHECK(frame->Owner());
+  // TODO(crbug.com/408106277): Until the spec is fixed, a temporarily 0 quota
+  // is returned for non top-level control frames where they also don't have a
+  // frame owner (iframe).
+  if (!frame->Owner()) {
+    return 0;
+  }
+
+  // `frame` must not be top-level and have a frame owner.
   auto container_policy =
       frame->Owner()->GetFramePolicy().deferred_fetch_policy;
   uint32_t container_reserved_quota =
@@ -191,11 +197,11 @@ Frame* FetchLaterUtil::GetDeferredFetchControlFrame(Frame* frame) {
 mojom::blink::DeferredFetchPolicy
 FetchLaterUtil::GetContainerDeferredFetchPolicyOnNavigation(
     FrameOwner* container_frame,
-    const KURL& to_url) {
+    scoped_refptr<const SecurityOrigin> to_origin) {
   CHECK(container_frame);
   // Must be called when "inherited policy" is available for container document.
   CHECK(container_frame->ContentFrame());
-  auto to_url_origin = SecurityOrigin::Create(to_url)->ToUrlOrigin();
+  const auto to_url_origin = to_origin->ToUrlOrigin();
   // At this moment, the overall "inherited policies" for `container_frame`'s
   // features are not yet calculated, which only happens in the call to
   // `PermissionsPolicy::CreateFromParentPolicy()` made by

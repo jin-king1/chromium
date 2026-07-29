@@ -23,10 +23,12 @@ FakeBoundSessionRefreshCookieFetcher::FakeBoundSessionRefreshCookieFetcher(
     network::mojom::CookieManager* cookie_manager,
     const GURL& url,
     base::flat_set<std::string> cookie_names,
+    Trigger trigger,
     std::optional<base::TimeDelta> unlock_automatically_in)
     : cookie_manager_(cookie_manager),
       url_(url),
       cookie_names_(std::move(cookie_names)),
+      trigger_(trigger),
       non_refreshed_cookie_names_(cookie_names_),
       unlock_automatically_in_(unlock_automatically_in) {
   CHECK(cookie_manager_);
@@ -70,6 +72,11 @@ FakeBoundSessionRefreshCookieFetcher::TakeSecSessionChallengeResponseIfAny() {
 base::flat_set<std::string>
 FakeBoundSessionRefreshCookieFetcher::GetNonRefreshedCookieNames() {
   return non_refreshed_cookie_names_;
+}
+
+BoundSessionRefreshCookieFetcher::Trigger
+FakeBoundSessionRefreshCookieFetcher::GetTrigger() const {
+  return trigger_;
 }
 
 void FakeBoundSessionRefreshCookieFetcher::set_sec_session_challenge_response(
@@ -158,7 +165,7 @@ FakeBoundSessionRefreshCookieFetcher::CreateFakeCookie(
       net::CanonicalCookie::CreateSanitizedCookie(
           /*url=*/url_, /*name=*/cookie_name,
           /*value=*/kFakeCookieValue,
-          /*domain=*/url_.host(), /*path=*/"/",
+          /*domain=*/url_.GetHost(), /*path=*/"/",
           /*creation_time=*/now, /*expiration_time=*/cookie_expiration,
           /*last_access_time=*/now, /*secure=*/true,
           /*http_only=*/true, net::CookieSameSite::UNSPECIFIED,

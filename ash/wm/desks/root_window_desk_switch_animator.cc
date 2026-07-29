@@ -73,9 +73,9 @@ constexpr float kFastSwipeVisibilityRatio = 0.1f;
 // sized as children get added to it. This is the layer that will be animated.
 std::unique_ptr<ui::LayerTreeOwner> CreateAnimationLayerOwner(
     aura::Window* root) {
-  auto animation_layer = std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
+  auto animation_layer = std::make_unique<ui::LayerSolidColor>();
   animation_layer->SetName("Desk switch animation layer");
-  animation_layer->SetColor(SK_ColorBLACK);
+  animation_layer->SetColor(SkColors::kBlack);
   return std::make_unique<ui::LayerTreeOwner>(std::move(animation_layer));
 }
 
@@ -92,7 +92,7 @@ void TakeScreenshot(
   const gfx::Rect request_bounds(screenshot_layer->size());
   auto screenshot_request = std::make_unique<viz::CopyOutputRequest>(
       viz::CopyOutputRequest::ResultFormat::RGBA,
-      viz::CopyOutputRequest::ResultDestination::kNativeTextures,
+      viz::CopyOutputRequest::ResultDestination::kSharedImage,
       std::move(on_screenshot_taken));
   screenshot_request->set_area(request_bounds);
   screenshot_request->set_result_task_runner(
@@ -170,8 +170,8 @@ void RootWindowDeskSwitchAnimator::TakeStartingDeskScreenshot() {
 
     // We don't take a screenshot of the soon-to-be-removed desk, we use an
     // empty black solid color layer.
-    auto black_layer = std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
-    black_layer->SetColor(SK_ColorBLACK);
+    auto black_layer = std::make_unique<ui::LayerSolidColor>();
+    black_layer->SetColor(SkColors::kBlack);
     CompleteAnimationPhase1WithLayer(std::move(black_layer));
     return;
   }
@@ -706,8 +706,6 @@ void RootWindowDeskSwitchAnimator::OnScreenshotLayerCreated() {
 }
 
 int RootWindowDeskSwitchAnimator::GetXPositionOfScreenshot(int index) {
-  // TODO(crbug.com/1223866): Investigate if we can prevent this higher in the
-  // call stack.
   if (index < 0 || index >= static_cast<int>(screenshot_layers_.size()))
     return 0;
   ui::Layer* layer = screenshot_layers_[index];

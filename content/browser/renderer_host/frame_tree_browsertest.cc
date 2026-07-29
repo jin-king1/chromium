@@ -13,12 +13,14 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/ipc_utils.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/content_navigation_policy.h"
+#include "content/common/frame.mojom.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/dedicated_worker_service.h"
 #include "content/public/browser/navigation_handle.h"
@@ -39,6 +41,7 @@
 #include "content/shell/common/shell_switches.h"
 #include "content/test/content_browser_test_utils_internal.h"
 #include "content/test/render_document_feature.h"
+#include "media/base/media_switches.h"
 #include "net/base/features.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
@@ -328,10 +331,10 @@ class FrameTreeBrowserWithDiscardTest
     RenderProcessHostImpl* root_rph = static_cast<RenderProcessHostImpl*>(
         frame_tree.root()->current_frame_host()->GetProcess());
     if (KeepAliveDiscardedProcess()) {
-      // Increment the keep alive ref count of the renderer process to keep it
+      // Increment the worker ref count of the renderer process to keep it
       // alive post discard, simulating the situation where the process may be
       // shared by multiple frames.
-      root_rph->IncrementKeepAliveRefCount(0);
+      root_rph->IncrementWorkerRefCount();
     }
 
     frame_tree.Discard();
@@ -477,6 +480,31 @@ IN_PROC_BROWSER_TEST_P(FrameTreeBrowserWithDiscardTest,
       base::test::RunUntil([&]() { return 0u == root->child_count(); }));
 }
 
+IN_PROC_BROWSER_TEST_P(FrameTreeBrowserWithDiscardTest,
+                       DiscardClearsServiceWorkers) {
+  WebContentsImpl* wc = static_cast<WebContentsImpl*>(shell()->web_contents());
+  FrameTree& frame_tree = wc->GetPrimaryFrameTree();
+  FrameTreeNode* root = frame_tree.root();
+
+  // Load a new page, register a service worker and wait for it to become ready.
+  EXPECT_TRUE(NavigateToURL(shell(), embedded_test_server()->GetURL(
+                                         "/register_service_worker.html")));
+  EXPECT_EQ("DONE", EvalJs(shell(), "register('/fetch_event_passthrough.js')"));
+  RenderFrameHostImplWrapper rfh(wc->GetPrimaryMainFrame());
+  EXPECT_EQ(1u, rfh->service_worker_clients_for_testing().size());
+
+  // Discard the frame tree.
+  EXPECT_FALSE(root->was_discarded());
+  EXPECT_FALSE(wc->GetController().NeedsReload());
+  DiscardFrameTree(frame_tree);
+  EXPECT_TRUE(root->was_discarded());
+  EXPECT_TRUE(wc->GetController().NeedsReload());
+
+  // Assert the service worker has been de-registered post discard.
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return rfh->service_worker_clients_for_testing().size() == 0; }));
+}
+
 // Runs pending navigation discard browsertests with RenderDocument enabled for
 // all frames to ensure a speculative RFH is created during navigation.
 class FrameTreeDiscardPendingNavigationTest
@@ -604,8 +632,8 @@ IN_PROC_BROWSER_TEST_F(FrameTreeBrowserTest,
   EXPECT_TRUE(rfh->IsRenderFrameLive());
   EXPECT_TRUE(rph->IsInitializedAndNotDead());
 
-  // Set a keep-alive on the renderer process.
-  rph->IncrementKeepAliveRefCount(0);
+  // Set a worker on the renderer process.
+  rph->IncrementWorkerRefCount();
 
   // Discard the frame tree. The process should remain alive.
   frame_tree.Discard();
@@ -658,7 +686,7 @@ class DedicatedWorkerObserver : public DedicatedWorkerService::Observer {
     }
   }
   void OnWorkerCreated(const blink::DedicatedWorkerToken& worker_token,
-                       int worker_process_id,
+                       ChildProcessId worker_process_id,
                        const url::Origin& security_origin,
                        DedicatedWorkerCreator creator) override {
     is_created_ = true;
@@ -703,7 +731,7 @@ IN_PROC_BROWSER_TEST_P(DedicatedWorkerFrameTreeBrowserTest,
                                               ->GetStoragePartition()
                                               ->GetDedicatedWorkerService());
   EXPECT_TRUE(EvalJs(shell(), "const worker = new Worker('/workers/empty.js');")
-                  .error.empty());
+                  .is_ok());
   worker_observer.WaitForCreated();
 
   // Discard the rfh, the associated worker should be cleared.
@@ -715,7 +743,7 @@ IN_PROC_BROWSER_TEST_P(DedicatedWorkerFrameTreeBrowserTest,
 
   if (KeepAliveDiscardedProcess()) {
     // Trigger GC to cleanup the worker in the renderer if persisted.
-    EXPECT_TRUE(EvalJs(shell(), "window.gc();").error.empty());
+    EXPECT_TRUE(EvalJs(shell(), "window.gc();").is_ok());
   }
 
   worker_observer.WaitForDestroyed();
@@ -742,7 +770,7 @@ IN_PROC_BROWSER_TEST_P(FrameTreeBrowserWithDiscardTest,
 
   // Assert the opened window is able to script its opener.
   EXPECT_EQ("foo", EvalJs(new_shell, "window.name;"));
-  EXPECT_TRUE(EvalJs(new_shell, "window.opener.name = 'bar';").error.empty());
+  EXPECT_TRUE(EvalJs(new_shell, "window.opener.name = 'bar';").is_ok());
   EXPECT_EQ("bar", EvalJs(shell(), "window.name;"));
 
   frame_tree.Discard();
@@ -750,13 +778,13 @@ IN_PROC_BROWSER_TEST_P(FrameTreeBrowserWithDiscardTest,
 
   // After a discard operation the opened window should should still be able to
   // script its opener.
-  EXPECT_TRUE(EvalJs(new_shell, "window.opener.name = 'bar2';").error.empty());
+  EXPECT_TRUE(EvalJs(new_shell, "window.opener.name = 'bar2';").is_ok());
   EXPECT_EQ("bar2", EvalJs(shell(), "window.name;"));
 
   // After a reload the opened window should still be able to script its opener.
   wc->GetController().LoadIfNecessary();
   EXPECT_TRUE(WaitForLoadStop(wc));
-  EXPECT_TRUE(EvalJs(new_shell, "window.opener.name = 'bar3';").error.empty());
+  EXPECT_TRUE(EvalJs(new_shell, "window.opener.name = 'bar3';").is_ok());
   EXPECT_EQ("bar3", EvalJs(shell(), "window.name;"));
 }
 
@@ -1019,7 +1047,7 @@ IN_PROC_BROWSER_TEST_F(FrameTreeBrowserTest, NavigateGrandchildToBlob) {
   if (AreAllSitesIsolatedForTesting())
     deleted_observer.WaitUntilDeleted();
   EXPECT_EQ(GURL(blob_url_string), target->current_url());
-  EXPECT_EQ(url::kBlobScheme, target->current_url().scheme());
+  EXPECT_EQ(url::kBlobScheme, target->current_url().GetScheme());
   EXPECT_FALSE(target->current_origin().opaque());
   EXPECT_EQ("a.com", target->current_origin().host());
   EXPECT_EQ(url::kHttpScheme, target->current_origin().scheme());
@@ -1064,7 +1092,7 @@ IN_PROC_BROWSER_TEST_F(FrameTreeBrowserTest, NavigateChildToAboutBlank) {
       "});");
   EXPECT_EQ(target->current_origin(), about_blank_origin);
   EXPECT_EQ(GURL(url::kAboutBlankURL), target->current_url());
-  EXPECT_EQ(url::kAboutScheme, target->current_url().scheme());
+  EXPECT_EQ(url::kAboutScheme, target->current_url().GetScheme());
   EXPECT_FALSE(target->current_origin().opaque());
   EXPECT_EQ("b.com", target->current_origin().host());
   EXPECT_EQ(url::kHttpScheme, target->current_origin().scheme());
@@ -1112,7 +1140,7 @@ IN_PROC_BROWSER_TEST_F(FrameTreeBrowserTest,
              "});");
   EXPECT_EQ(target->current_origin(), about_blank_origin);
   EXPECT_EQ(GURL(url::kAboutBlankURL), target->current_url());
-  EXPECT_EQ(url::kAboutScheme, target->current_url().scheme());
+  EXPECT_EQ(url::kAboutScheme, target->current_url().GetScheme());
   EXPECT_FALSE(target->current_origin().opaque());
   EXPECT_EQ("a.com", target->current_origin().host());
   EXPECT_EQ(url::kHttpScheme, target->current_origin().scheme());
@@ -1469,9 +1497,9 @@ IN_PROC_BROWSER_TEST_F(FrameTreeBrowserTest,
   EXPECT_FALSE(root->HasTransientUserActivation());
 
   // Set the user activation bits.
-  root->UpdateUserActivationState(
+  EXPECT_TRUE(root->UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType::kNotifyActivation,
-      blink::mojom::UserActivationNotificationType::kTest);
+      blink::mojom::UserActivationNotificationType::kTest));
   EXPECT_TRUE(root->HasStickyUserActivation());
   EXPECT_TRUE(root->HasTransientUserActivation());
 
@@ -1924,9 +1952,9 @@ IN_PROC_BROWSER_TEST_F(CrossProcessFrameTreeBrowserTest,
   EXPECT_FALSE(root->HasTransientUserActivation());
 
   // Set the user activation bits.
-  root->UpdateUserActivationState(
+  EXPECT_TRUE(root->UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType::kNotifyActivation,
-      blink::mojom::UserActivationNotificationType::kTest);
+      blink::mojom::UserActivationNotificationType::kTest));
   EXPECT_TRUE(root->HasStickyUserActivation());
   EXPECT_TRUE(root->HasTransientUserActivation());
 
@@ -1938,6 +1966,118 @@ IN_PROC_BROWSER_TEST_F(CrossProcessFrameTreeBrowserTest,
 
   EXPECT_FALSE(root->HasStickyUserActivation());
   EXPECT_FALSE(root->HasTransientUserActivation());
+}
+
+class PictureInPictureFrameTreeBrowserTest
+    : public CrossProcessFrameTreeBrowserTest {
+ public:
+  PictureInPictureFrameTreeBrowserTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {blink::features::kDocumentPictureInPictureUserActivation,
+         media::kDocumentPictureInPictureNavigation},
+        {});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Tests that user activation in a document picture-in-picture window only
+// propagates to the opener window when the activated frame is same-origin with
+// the opener's main frame.
+IN_PROC_BROWSER_TEST_F(PictureInPictureFrameTreeBrowserTest,
+                       UserActivationOpenerPropagationSameOriginOnly) {
+  // Load an a.com page that embeds a cross-origin b.com subframe.
+  GURL main_url(embedded_test_server()->GetURL(
+      "a.com", "/cross_site_iframe_factory.html?a(b)"));
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  WebContentsImpl* opener_contents =
+      static_cast<WebContentsImpl*>(shell()->web_contents());
+  FrameTreeNode* opener_root = opener_contents->GetPrimaryFrameTree().root();
+  ASSERT_EQ(1U, opener_root->child_count());
+  FrameTreeNode* opener_child = opener_root->child_at(0);
+  ASSERT_FALSE(
+      opener_root->current_frame_host()
+          ->GetLastCommittedOrigin()
+          .IsSameOriginWith(
+              opener_child->current_frame_host()->GetLastCommittedOrigin()));
+
+  // Create a picture-in-picture window whose opener is the b.com subframe so
+  // that the picture-in-picture opener resolves to the embedding a.com page.
+  WebContents::CreateParams create_params(
+      opener_contents->GetBrowserContext(),
+      opener_child->current_frame_host()->GetSiteInstance());
+  create_params.picture_in_picture_options =
+      blink::mojom::PictureInPictureWindowOptions();
+  std::unique_ptr<WebContentsImpl> pip_contents =
+      WebContentsImpl::CreateWithOpener(create_params,
+                                        opener_child->current_frame_host());
+  ASSERT_EQ(&opener_contents->GetPrimaryFrameTree(),
+            pip_contents->GetDocumentPictureInPictureOpenerFrameTree());
+
+  // Navigate the picture-in-picture window to a b.com document so that its
+  // main frame is cross-origin with the opener's main frame.
+  GURL cross_origin_url(
+      embedded_test_server()->GetURL("b.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(pip_contents.get(), cross_origin_url));
+  FrameTreeNode* pip_root = pip_contents->GetPrimaryFrameTree().root();
+  ASSERT_FALSE(
+      pip_root->current_frame_host()->GetLastCommittedOrigin().IsSameOriginWith(
+          opener_root->current_frame_host()->GetLastCommittedOrigin()));
+
+  EXPECT_FALSE(opener_root->HasStickyUserActivation());
+  EXPECT_FALSE(opener_root->HasTransientUserActivation());
+
+  // Activating the cross-origin picture-in-picture main frame must not
+  // propagate to the opener.
+  EXPECT_TRUE(pip_root->UpdateUserActivationState(
+      blink::mojom::UserActivationUpdateType::kNotifyActivation,
+      blink::mojom::UserActivationNotificationType::kTest));
+  EXPECT_TRUE(pip_root->HasStickyUserActivation());
+  EXPECT_TRUE(pip_root->HasTransientUserActivation());
+  EXPECT_FALSE(opener_root->HasStickyUserActivation());
+  EXPECT_FALSE(opener_root->HasTransientUserActivation());
+
+  // Navigate the picture-in-picture window to a same-origin a.com document and
+  // verify that activation does propagate to the opener.
+  GURL same_origin_url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(pip_contents.get(), same_origin_url));
+  pip_root = pip_contents->GetPrimaryFrameTree().root();
+  ASSERT_TRUE(
+      pip_root->current_frame_host()->GetLastCommittedOrigin().IsSameOriginWith(
+          opener_root->current_frame_host()->GetLastCommittedOrigin()));
+
+  EXPECT_TRUE(pip_root->UpdateUserActivationState(
+      blink::mojom::UserActivationUpdateType::kNotifyActivation,
+      blink::mojom::UserActivationNotificationType::kTest));
+  EXPECT_TRUE(opener_root->HasStickyUserActivation());
+  EXPECT_TRUE(opener_root->HasTransientUserActivation());
+}
+
+IN_PROC_BROWSER_TEST_F(PictureInPictureFrameTreeBrowserTest,
+                       VerifyCreateNewWindowParamsInvalidPipOptions) {
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("a.com", "/title1.html")));
+
+  RenderFrameHostImpl* rfh = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+
+  // Create invalid params: NEW_POPUP with pip_options.
+  mojom::CreateNewWindowParamsPtr params = mojom::CreateNewWindowParams::New();
+  params->disposition = WindowOpenDisposition::NEW_POPUP;
+  params->pip_options = blink::mojom::PictureInPictureWindowOptions::New();
+
+  RenderProcessHostWatcher crash_observer(
+      rfh->GetProcess(), RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+
+  // Call the validation function. It should return false and trigger bad
+  // message.
+  EXPECT_FALSE(VerifyCreateNewWindowParams(*rfh, *params));
+
+  // The process should be terminated.
+  crash_observer.Wait();
+  EXPECT_FALSE(crash_observer.did_exit_normally());
 }
 
 class BrowserContextGroupSwapFrameTreeBrowserTest : public ContentBrowserTest {
@@ -2022,8 +2162,14 @@ class IsolateIcelandFrameTreeBrowserTest : public ContentBrowserTest {
 };
 
 // Regression test for https://crbug.com/644966
+// TODO(crbug.com/432164517): The test is flaky on all platforms.
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#define MAYBE_ProcessSwitchForIsolatedBlob DISABLED_ProcessSwitchForIsolatedBlob
+#else
+#define MAYBE_ProcessSwitchForIsolatedBlob ProcessSwitchForIsolatedBlob
+#endif
 IN_PROC_BROWSER_TEST_F(IsolateIcelandFrameTreeBrowserTest,
-                       ProcessSwitchForIsolatedBlob) {
+                       MAYBE_ProcessSwitchForIsolatedBlob) {
   // Set up an iframe.
   WebContents* contents = shell()->web_contents();
   FrameTreeNode* root =
@@ -2048,7 +2194,7 @@ IN_PROC_BROWSER_TEST_F(IsolateIcelandFrameTreeBrowserTest,
 
   // Make sure we did a process transfer back to "b.is".
   const std::string kExpectedSiteURL =
-      AreAllSitesIsolatedForTesting()
+      AreStrictSiteInstancesEnabled()
           ? "http://a.com/"
           : SiteInstanceImpl::GetDefaultSiteURL().spec();
   const std::string kExpectedSubframeSiteURL =
@@ -2122,6 +2268,92 @@ IN_PROC_BROWSER_TEST_F(FrameTreeCredentiallessIframeBrowserTest,
   EXPECT_TRUE(root->child_at(2)->Credentialless());
   EXPECT_EQ(true, EvalJs(root->child_at(2)->current_frame_host(),
                          "window.credentialless"));
+}
+
+class FrameTreeLastSuccessfulOriginBrowserTest : public FrameTreeBrowserTest {
+ public:
+  FrameTreeLastSuccessfulOriginBrowserTest() = default;
+};
+
+IN_PROC_BROWSER_TEST_F(FrameTreeLastSuccessfulOriginBrowserTest,
+                       SuccessfulNavigation) {
+  GURL main_url(embedded_test_server()->GetURL("a.test", "/hello.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  FrameTreeNode* root = static_cast<WebContentsImpl*>(shell()->web_contents())
+                            ->GetPrimaryFrameTree()
+                            .root();
+
+  // After a successful navigation, the "last committed origin" and the
+  // "last successfully committed origin" should be the same.
+  EXPECT_FALSE(root->current_origin().opaque());
+  EXPECT_EQ(root->current_origin().GetTupleOrPrecursorTupleIfOpaque().host(),
+            "a.test");
+  EXPECT_EQ(root->last_successful_origin(), root->current_origin());
+}
+
+IN_PROC_BROWSER_TEST_F(FrameTreeLastSuccessfulOriginBrowserTest,
+                       FailedNavigationAfterSuccessfulNavigation) {
+  // First, perform a successful navigation, so that the root FrameTreeNode has
+  // a non-opaque `last_successful_origin()`.
+  GURL main_url(embedded_test_server()->GetURL("a.test", "/hello.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  FrameTreeNode* root = static_cast<WebContentsImpl*>(shell()->web_contents())
+                            ->GetPrimaryFrameTree()
+                            .root();
+  EXPECT_EQ(root->last_successful_origin(), root->current_origin());
+  url::Origin initial_successful_origin = root->last_successful_origin();
+
+  // Now, navigate to a malformed URL to force an error page.
+  TestFrameNavigationObserver navigation_observer(root);
+  EXPECT_TRUE(ExecJs(root, R"(location.href = 'https://hello';)"));
+  navigation_observer.Wait();
+
+  EXPECT_FALSE(navigation_observer.last_navigation_succeeded());
+  EXPECT_TRUE(root->current_frame_host()->IsErrorDocument());
+
+  // The new error document should have an opaque origin, but the frame's
+  // `last_successful_origin()` should remain the same as the initial origin
+  // from the first successful navigation.
+  EXPECT_TRUE(root->current_origin().opaque());
+  EXPECT_NE(root->last_successful_origin(), root->current_origin());
+  EXPECT_EQ(root->last_successful_origin(), initial_successful_origin);
+}
+
+IN_PROC_BROWSER_TEST_F(FrameTreeLastSuccessfulOriginBrowserTest,
+                       CorrectStateForNewMainFrame) {
+  // Don't navigate the root frame to anything. It should have an empty URL with
+  // an opaque origin.
+  FrameTreeNode* root = static_cast<WebContentsImpl*>(shell()->web_contents())
+                            ->GetPrimaryFrameTree()
+                            .root();
+  EXPECT_TRUE(root->current_frame_host()->GetLastCommittedURL().is_empty());
+  EXPECT_TRUE(root->current_origin().opaque());
+  EXPECT_EQ(root->last_successful_origin(), root->current_origin());
+}
+
+IN_PROC_BROWSER_TEST_F(FrameTreeLastSuccessfulOriginBrowserTest,
+                       CorrectStateForNewSubframe) {
+  GURL main_url(embedded_test_server()->GetURL("a.test", "/hello.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  FrameTreeNode* root = static_cast<WebContentsImpl*>(shell()->web_contents())
+                            ->GetPrimaryFrameTree()
+                            .root();
+
+  EXPECT_TRUE(ExecJs(root,
+                     "let frame = document.createElement('iframe');"
+                     "document.body.appendChild(frame);"));
+  EXPECT_EQ(1U, root->child_count());
+  FrameTreeNode* new_frame = root->child_at(0);
+
+  // Our new subframe hasn't been navigated yet, so its current URL is
+  // about:blank. It has also inherited the origin of its creator, and the
+  // last successful origin should be the same.
+  EXPECT_EQ(new_frame->current_url(), url::kAboutBlankURL);
+  EXPECT_EQ(new_frame->current_origin().host(), "a.test");
+  EXPECT_EQ(new_frame->last_successful_origin(), new_frame->current_origin());
 }
 
 INSTANTIATE_TEST_SUITE_P(

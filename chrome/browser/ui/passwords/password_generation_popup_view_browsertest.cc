@@ -10,9 +10,8 @@
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
 #include "chrome/browser/password_manager/password_manager_test_base.h"
 #include "chrome/browser/password_manager/password_manager_uitest_util.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/passwords/password_generation_popup_controller_impl.h"
 #include "chrome/browser/ui/views/passwords/password_generation_popup_view_views.h"
 #include "chrome/grit/generated_resources.h"
@@ -32,7 +31,7 @@
 #include "ui/events/event_utils.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget.h"
@@ -89,8 +88,8 @@ class PasswordGenerationPopupViewTest : public PasswordManagerBrowserTestBase {
   }
 };
 
-// Regression test for crbug.com/400543. Verifying that moving the mouse in the
-// editing dialog doesn't crash.
+// Regression test for crbug.com/40377826. Verifying that moving the mouse in
+// the editing dialog doesn't crash.
 IN_PROC_BROWSER_TEST_F(PasswordGenerationPopupViewTest,
                        MouseMovementInEditingPopup) {
   auto* client = ChromePasswordManagerClient::FromWebContents(WebContents());
@@ -249,7 +248,7 @@ IN_PROC_BROWSER_TEST_F(PasswordGenerationPopupViewTest,
 
   ui::AXNodeData node_data;
   popup_view->GetViewAccessibility().GetAccessibleNodeData(&node_data);
-  EXPECT_EQ(node_data.role, ax::mojom::Role::kListBox);
+  EXPECT_EQ(node_data.role, ax::mojom::Role::kDialog);
   EXPECT_FALSE(node_data.HasState(ax::mojom::State::kInvisible));
 }
 
@@ -271,7 +270,10 @@ IN_PROC_BROWSER_TEST_F(PasswordGenerationPopupViewTest, PopupInAxTree) {
   // the right place than on Linux or Windows (see below) where the popup
   // subtree lives separately.
   waiter.WaitIfNeededAndGet();
-  window = chrome::FindLastActive()->window()->GetNativeWindow();
+  window = GlobalBrowserCollection::GetInstance()
+               ->GetLastActiveBrowser()
+               ->GetWindow()
+               ->GetNativeWindow();
 #elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
   views::Widget* dialog_widget = waiter.WaitIfNeededAndGet();
   window = dialog_widget->GetNativeWindow();

@@ -17,6 +17,7 @@
 #include "base/command_line.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -26,12 +27,15 @@
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/expected_macros.h"
 #include "base/win/atl.h"
 #include "base/win/registry.h"
 #include "base/win/windows_types.h"
 #include "chrome/installer/util/work_item_list.h"
+#include "chrome/updater/app/server/update_service_internal_stub.h"
+#include "chrome/updater/app/server/update_service_stub.h"
 #include "chrome/updater/app/server/win/update_service_internal_stub_win.h"
 #include "chrome/updater/app/server/win/update_service_stub_win.h"
 #include "chrome/updater/constants.h"
@@ -46,6 +50,7 @@
 #include "chrome/updater/win/setup/uninstall.h"
 #include "chrome/updater/win/task_scheduler.h"
 #include "chrome/updater/win/win_constants.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 
 namespace updater {
 namespace {
@@ -147,8 +152,7 @@ bool AddSwapGoogleUpdateWorkItems(UpdaterScope scope,
   stop_google_update_processes->set_best_effort(true);
   stop_google_update_processes->set_rollback_enabled(false);
 
-  list->AddCopyTreeWorkItem(updater_path, *target_path, temp_path,
-                            WorkItem::ALWAYS);
+  list->AddCopyTreeWorkItem(updater_path, *target_path, temp_path);
 
   const std::wstring google_update_appid_key =
       GetAppClientsKey(kLegacyGoogleUpdateAppID);
@@ -248,20 +252,73 @@ void AppServerWin::PostRpcTask(base::OnceClosure task) {
   GetAppServerWinInstance()->PostRpcTaskOnMainSequence(std::move(task));
 }
 
+void AppServerWin::PostOnTaskRunner(
+    scoped_refptr<base::TaskRunner> task_runner,
+    base::OnceCallback<void(base::OnceClosure)> task) {
+  GetAppServerWinInstance()->PostRpcTaskOnTaskRunner(task_runner,
+                                                     std::move(task));
+}
+
 void AppServerWin::Stop() {
   VLOG(2) << __func__ << ": COM server is shutting down.";
+  if (IsSystemInstall(updater_scope())) {
+    // Call `on_service_stopping_` to allow for incoming COM activation requests
+    // received while the service is shutting down to be handled by a new
+    // service process.
+    // It is possible for `Stop` to be called multiple times, so check for a
+    // valid `on_service_stopping_` callback before calling `Run`.
+    base::OnceClosure on_service_stopping;
+    {
+      base::AutoLock lock(on_service_stopping_lock_);
+      on_service_stopping = std::move(on_service_stopping_);
+    }
+    if (on_service_stopping) {
+      std::move(on_service_stopping).Run();
+    }
+  }
   UnregisterClassObjects();
   main_task_runner_->PostTask(FROM_HERE, base::BindOnce([] {
                                 scoped_refptr<AppServerWin> this_server =
                                     GetAppServerWinInstance();
                                 this_server->update_service_ = nullptr;
                                 this_server->update_service_internal_ = nullptr;
+                                this_server->active_duty_stub_.reset();
+                                this_server->active_duty_internal_stub_.reset();
                                 this_server->Shutdown(0);
                               }));
 }
 
+HRESULT AppServerWin::RunCOMServer(base::OnceClosure on_service_stopping) {
+  {
+    base::AutoLock lock(on_service_stopping_lock_);
+    on_service_stopping_ = std::move(on_service_stopping);
+  }
+  absl::Cleanup reset_on_service_stopping = [&] {
+    base::AutoLock lock(on_service_stopping_lock_);
+    on_service_stopping_.Reset();
+  };
+  return Run();
+}
+
 void AppServerWin::PostRpcTaskOnMainSequence(base::OnceClosure task) {
-  main_task_runner_->PostTask(FROM_HERE, std::move(task));
+  main_task_runner_->PostTask(
+      FROM_HERE, base::BindOnce(&AppServerWin::TaskStarted, this)
+                     .Then(base::BindOnce(std::move(task)))
+                     .Then(base::BindOnce(&AppServerWin::TaskCompleted, this)));
+}
+
+void AppServerWin::PostRpcTaskOnTaskRunner(
+    scoped_refptr<base::TaskRunner> task_runner,
+    base::OnceCallback<void(base::OnceClosure)> task) {
+  task_runner->PostTask(
+      FROM_HERE,
+      base::BindPostTask(main_task_runner_,
+                         base::BindOnce(&AppServerWin::TaskStarted, this))
+          .Then(base::BindOnce(
+              std::move(task),
+              base::BindPostTask(
+                  main_task_runner_,
+                  base::BindOnce(&AppServerWin::TaskCompleted, this)))));
 }
 
 HRESULT AppServerWin::RegisterClassObjects() {
@@ -314,9 +371,14 @@ void AppServerWin::OnDelayedTaskComplete() {
 
 void AppServerWin::ActiveDuty(scoped_refptr<UpdateService> update_service) {
   update_service_ = base::MakeRefCounted<UpdateServiceStubWin>(
-      std::move(update_service),
+      update_service, base::BindRepeating(&AppServerWin::TaskStarted, this),
+      base::BindRepeating(&AppServerWin::TaskCompleted, this));
+
+  active_duty_stub_ = std::make_unique<UpdateServiceStub>(
+      update_service, updater_scope(),
       base::BindRepeating(&AppServerWin::TaskStarted, this),
       base::BindRepeating(&AppServerWin::TaskCompleted, this));
+
   Start(base::BindOnce(&AppServerWin::RegisterClassObjects,
                        base::Unretained(this)));
 }
@@ -324,9 +386,15 @@ void AppServerWin::ActiveDuty(scoped_refptr<UpdateService> update_service) {
 void AppServerWin::ActiveDutyInternal(
     scoped_refptr<UpdateServiceInternal> update_service_internal) {
   update_service_internal_ = base::MakeRefCounted<UpdateServiceInternalStubWin>(
-      std::move(update_service_internal),
+      update_service_internal,
       base::BindRepeating(&AppServerWin::TaskStarted, this),
       base::BindRepeating(&AppServerWin::TaskCompleted, this));
+
+  active_duty_internal_stub_ = std::make_unique<UpdateServiceInternalStub>(
+      update_service_internal, updater_scope(),
+      base::BindRepeating(&AppServerWin::TaskStarted, this),
+      base::BindRepeating(&AppServerWin::TaskCompleted, this));
+
   Start(base::BindOnce(&AppServerWin::RegisterInternalClassObjects,
                        base::Unretained(this)));
 }

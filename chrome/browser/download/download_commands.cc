@@ -28,8 +28,6 @@
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || \
     BUILDFLAG(IS_MAC)
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #endif
 
@@ -102,11 +100,8 @@ class ImageClipboardCopyManager : public ImageDecoder::ImageRequest {
     scw.Reset();
 
     if (!decoded_image.empty() && !decoded_image.isNull()) {
-      if (base::FeatureList::IsEnabled(
-              download::features::kCopyImageFilenameToClipboard)) {
-        scw.WriteFilenames(ui::FileInfosToURIList(
-            {ui::FileInfo(file_path_, file_name_to_report_user_)}));
-      }
+      scw.WriteFilenames(ui::FileInfosToURIList(
+          {ui::FileInfo(file_path_, file_name_to_report_user_)}));
       scw.WriteImage(decoded_image);
     }
 
@@ -179,13 +174,13 @@ void DownloadCommands::ExecuteCommand(Command command) {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
     BUILDFLAG(IS_CHROMEOS)
 
-Browser* DownloadCommands::GetBrowser() const {
+BrowserWindowInterface* DownloadCommands::GetBrowser() const {
   if (!model_)
     return nullptr;
 
   chrome::ScopedTabbedBrowserDisplayer browser_displayer(model_->profile());
-  DCHECK(browser_displayer.browser());
-  return browser_displayer.browser();
+  DCHECK(browser_displayer.browser_window_interface());
+  return browser_displayer.browser_window_interface();
 }
 
 bool DownloadCommands::IsDownloadPdf() const {

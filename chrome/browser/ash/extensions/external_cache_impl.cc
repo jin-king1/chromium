@@ -16,25 +16,29 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/rand_util.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/values.h"
 #include "base/version.h"
 #include "chrome/browser/ash/extensions/external_cache_delegate.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/external_provider_impl.h"
-#include "chrome/browser/extensions/install_observer.h"
-#include "chrome/browser/extensions/install_tracker.h"
+#include "chrome/browser/extensions/install_tracker_factory.h"
 #include "chrome/browser/extensions/updater/chrome_extension_downloader_factory.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile_manager_observer.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "extensions/browser/install_observer.h"
+#include "extensions/browser/install_tracker.h"
 #include "extensions/browser/updater/extension_downloader.h"
 #include "extensions/browser/updater/extension_downloader_delegate.h"
 #include "extensions/browser/updater/extension_downloader_types.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_urls.h"
 #include "extensions/common/manifest.h"
@@ -123,7 +127,8 @@ void ExternalCacheImpl::AnyInstallFailureObserver::OnProfileAdded(
     observed_profiles_.insert(profile);
   }
 
-  auto* tracker = extensions::InstallTracker::Get(profile);
+  auto* tracker =
+      extensions::InstallTrackerFactory::GetForBrowserContext(profile);
   // Only observe the tracker if it's not already observed - it could be shared
   // between profiles (for example regular & incognito). It's also legal for the
   // tracker not to exist - some profiles (like the CrOS system profile) don't
@@ -135,14 +140,16 @@ void ExternalCacheImpl::AnyInstallFailureObserver::OnProfileAdded(
 
 void ExternalCacheImpl::AnyInstallFailureObserver::OnProfileWillBeDestroyed(
     Profile* profile) {
-  auto* tracker = extensions::InstallTracker::Get(profile);
+  auto* tracker =
+      extensions::InstallTrackerFactory::GetForBrowserContext(profile);
 
   // If we received this notification for a given profile, we must have been
   // observing it to receive the notification in the first place.
   CHECK(profile_observations_.IsObservingSource(profile));
   profile_observations_.RemoveObservation(profile);
-  CHECK_EQ(observed_profiles_.count(profile), 1u);
-  observed_profiles_.erase(profile);
+  auto it = observed_profiles_.find(profile);
+  CHECK(it != observed_profiles_.end());
+  observed_profiles_.erase(it);
 
   bool is_observing = install_tracker_observations_.IsObservingSource(tracker);
   bool still_needed = IsAnyObservedProfileUsingTracker(tracker);
@@ -170,11 +177,12 @@ void ExternalCacheImpl::AnyInstallFailureObserver::OnFinishCrxInstall(
 bool ExternalCacheImpl::AnyInstallFailureObserver::
     IsAnyObservedProfileUsingTracker(
         extensions::InstallTracker* tracker) const {
-  return std::find_if(observed_profiles_.begin(), observed_profiles_.end(),
-                      [=](Profile* profile) -> bool {
-                        return extensions::InstallTracker::Get(profile) ==
-                               tracker;
-                      }) != observed_profiles_.end();
+  return std::find_if(
+             observed_profiles_.begin(), observed_profiles_.end(),
+             [=](Profile* profile) -> bool {
+               return extensions::InstallTrackerFactory::GetForBrowserContext(
+                          profile) == tracker;
+             }) != observed_profiles_.end();
 }
 
 ExternalCacheImpl::ExternalCacheImpl(
@@ -207,7 +215,7 @@ ExternalCacheImpl::ExternalCacheImpl(
 
 ExternalCacheImpl::~ExternalCacheImpl() = default;
 
-const base::Value::Dict& ExternalCacheImpl::GetCachedExtensions() {
+const base::DictValue& ExternalCacheImpl::GetCachedExtensions() {
   return cached_extensions_;
 }
 
@@ -215,7 +223,7 @@ void ExternalCacheImpl::Shutdown(base::OnceClosure callback) {
   local_cache_.Shutdown(std::move(callback));
 }
 
-void ExternalCacheImpl::UpdateExtensionsList(base::Value::Dict prefs) {
+void ExternalCacheImpl::UpdateExtensionsList(base::DictValue prefs) {
   extensions_ = std::move(prefs);
 
   if (extensions_.empty()) {
@@ -248,8 +256,6 @@ void ExternalCacheImpl::OnDamagedFileDetected(const base::FilePath& path) {
 
       // Don't try to DownloadMissingExtensions() from here,
       // since it can cause a fail/retry loop.
-      // TODO(crbug.com/40715565) trigger re-installation mechanism with
-      // exponential back-off.
       return;
     }
   }
@@ -360,7 +366,7 @@ bool ExternalCacheImpl::IsExtensionPending(const extensions::ExtensionId& id) {
 bool ExternalCacheImpl::GetExtensionExistingVersion(
     const extensions::ExtensionId& id,
     std::string* version) {
-  const base::Value::Dict* extension_dictionary =
+  const base::DictValue* extension_dictionary =
       cached_extensions_.FindDictByDottedPath(id);
   if (!extension_dictionary) {
     return false;
@@ -439,7 +445,7 @@ void ExternalCacheImpl::CheckCache() {
             id, update_url,
             extensions::mojom::ManifestLocation::kExternalPolicy, false, 0,
             extensions::DownloadFetchPriority::kBackground,
-            base::Version(version), extensions::Manifest::TYPE_UNKNOWN,
+            base::Version(version), extensions::Manifest::Type::kUnknown,
             std::string()));
       }
     }
@@ -482,8 +488,7 @@ void ExternalCacheImpl::MaybeScheduleNextCacheCheck() {
 
   // Jitter the frequency by +/- 20% like it's done in ExtensionUpdater.
   const double jitter_factor = base::RandDouble() * 0.4 + 0.8;
-  base::TimeDelta delay =
-      base::Seconds(extensions::kDefaultUpdateFrequencySeconds);
+  base::TimeDelta delay = extensions::kDefaultUpdateFrequency;
   delay *= jitter_factor;
   content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
       ->PostDelayedTask(
@@ -506,7 +511,7 @@ void ExternalCacheImpl::OnPutExtension(const extensions::ExtensionId& id,
 
   VLOG(1) << "ExternalCacheImpl installed a new extension in the cache " << id;
 
-  const base::Value::Dict* original_entry = extensions_.FindDict(id);
+  const base::DictValue* original_entry = extensions_.FindDict(id);
   if (!original_entry) {
     LOG(ERROR) << "ExternalCacheImpl cannot find entry for extension " << id;
     return;

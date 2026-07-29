@@ -10,16 +10,18 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
-#include "ash/constants/personalization_entry_point.h"
+#include "ash/constants/chrome_pref_names.h"
+#include "ash/constants/url_constants.h"
 #include "ash/constants/web_app_id_constants.h"
+#include "ash/constants/webui_url_constants.h"
 #include "ash/public/cpp/locale_update_controller.h"
 #include "ash/public/cpp/login_types.h"
 #include "ash/public/cpp/new_window_delegate.h"
 #include "ash/public/cpp/system_tray.h"
 #include "ash/public/cpp/update_types.h"
-#include "ash/webui/settings/public/constants/routes.mojom-forward.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
 #include "ash/webui/settings/public/constants/setting.mojom.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/i18n/time_formatting.h"
 #include "base/logging.h"
@@ -31,28 +33,27 @@
 #include "base/notreached.h"
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
-#include "chrome/browser/ash/eol/eol_incentive_util.h"
 #include "chrome/browser/ash/login/help_app_launcher.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/system/system_clock.h"
-#include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_metrics.h"
 #include "chrome/browser/chromeos/extensions/vpn_provider/vpn_service_factory.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
+#include "chrome/browser/enterprise/browser_management/management_identity.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/ash/system_web_apps/system_web_app_utils.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/managed_ui.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/webui/access_code_cast/access_code_cast_dialog.h"
 #include "chrome/browser/ui/webui/ash/bluetooth/bluetooth_pairing_dialog.h"
@@ -61,9 +62,6 @@
 #include "chrome/browser/ui/webui/ash/multidevice_setup/multidevice_setup_dialog.h"
 #include "chrome/browser/ui/webui/ash/set_time/set_time_dialog.h"
 #include "chrome/browser/upgrade_detector/upgrade_detector.h"
-#include "chrome/common/channel_info.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/common/url_constants.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/network/network_handler.h"
@@ -73,8 +71,10 @@
 #include "chromeos/ash/components/network/onc/network_onc_utils.h"
 #include "chromeos/ash/components/network/tether_constants.h"
 #include "chromeos/ash/components/phonehub/util/histogram_util.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/prefs/pref_service.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
+#include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/core/session_manager_observer.h"
 #include "components/user_manager/user_manager.h"
@@ -96,8 +96,14 @@ constexpr char kOfficialCalendarUrlPrefix[] =
     "https://calendar.google.com/calendar/";
 
 void ShowSettingsSubPageForActiveUser(const std::string& sub_page) {
-  chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      ProfileManager::GetActiveUserProfile(), sub_page);
+  auto* session = session_manager::SessionManager::Get()->GetActiveSession();
+  if (!session) {
+    return;
+  }
+  ash::SettingsAppManager::Get()->Open(
+      CHECK_DEREF(
+          user_manager::UserManager::Get()->FindUser(session->account_id())),
+      {.sub_page = sub_page});
 }
 
 // Returns the severity of a pending update.
@@ -263,7 +269,10 @@ class SystemTrayClientImpl::EnterpriseAccountObserver
     user_manager::User* user =
         user_manager::UserManager::Get()->GetActiveUser();
     Profile* profile =
-        user ? ash::ProfileHelper::Get()->GetProfileByUser(user) : nullptr;
+        user ? Profile::FromBrowserContext(
+                   ash::BrowserContextHelper::Get()->GetBrowserContextByUser(
+                       user))
+             : nullptr;
     if (profile == profile_) {
       return;
     }
@@ -372,7 +381,6 @@ void SystemTrayClientImpl::SetLocaleList(
 
 void SystemTrayClientImpl::SetShowEolNotice(bool show,
                                             bool eol_passed_recently) {
-  eol_incentive_recently_passed_ = eol_passed_recently;
   system_tray_->SetShowEolNotice(show);
 }
 ////////////////////////////////////////////////////////////////////////////////
@@ -381,8 +389,9 @@ void SystemTrayClientImpl::SetShowEolNotice(bool show,
 void SystemTrayClientImpl::ShowSettings(int64_t display_id) {
   // TODO(jamescook): Use different metric for OS settings.
   base::RecordAction(base::UserMetricsAction("ShowOptions"));
-  chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      ProfileManager::GetActiveUserProfile(), display_id);
+  ash::SettingsAppManager::Get()->Open(
+      CHECK_DEREF(user_manager::UserManager::Get()->GetActiveUser()),
+      {.display_id = display_id});
 }
 
 void SystemTrayClientImpl::ShowAccountSettings() {
@@ -430,11 +439,7 @@ void SystemTrayClientImpl::ShowDisplaySettings() {
 }
 
 void SystemTrayClientImpl::ShowDarkModeSettings() {
-  // Record entry point metric to Personalization through Dark Mode Quick
-  // Settings/System Tray.
-  ash::personalization_app::LogPersonalizationEntryPoint(
-      ash::PersonalizationEntryPoint::kSystemTray);
-  ash::NewWindowDelegate::GetPrimary()->OpenPersonalizationHub();
+  ash::NewWindowDelegate::GetInstance()->OpenPersonalizationHub();
 }
 
 void SystemTrayClientImpl::ShowStorageSettings() {
@@ -474,7 +479,7 @@ void SystemTrayClientImpl::ShowSmartPrivacySettings() {
 void SystemTrayClientImpl::ShowChromeSlow() {
   chrome::ScopedTabbedBrowserDisplayer displayer(
       ProfileManager::GetPrimaryUserProfile());
-  chrome::ShowSlow(displayer.browser());
+  chrome::ShowSlow(displayer.browser_window_interface());
 }
 
 void SystemTrayClientImpl::ShowIMESettings() {
@@ -548,14 +553,14 @@ void SystemTrayClientImpl::ShowGestureEducationHelp() {
   }
 
   ash::SystemAppLaunchParams params;
-  params.url = GURL(chrome::kChromeOSGestureEducationHelpURL);
+  params.url = GURL(ash::kChromeUIOSGestureEducationHelpURL);
   params.launch_source = apps::LaunchSource::kFromOtherApp;
   ash::LaunchSystemWebAppAsync(profile, ash::SystemWebAppType::HELP, params);
 }
 
 void SystemTrayClientImpl::ShowPaletteHelp() {
   ShowSingletonTab(ProfileManager::GetActiveUserProfile(),
-                   GURL(chrome::kChromePaletteHelpURL));
+                   GURL(ash::external_urls::kPaletteHelpURL));
 }
 
 void SystemTrayClientImpl::ShowPaletteSettings() {
@@ -575,7 +580,8 @@ void SystemTrayClientImpl::ShowEnterpriseInfo() {
   // Otherwise show enterprise management info page.
   chrome::ScopedTabbedBrowserDisplayer displayer(
       ProfileManager::GetActiveUserProfile());
-  chrome::ShowEnterpriseManagementPageInTabbedBrowser(displayer.browser());
+  chrome::ShowEnterpriseManagementPageInTabbedBrowser(
+      displayer.browser_window_interface());
 }
 
 void SystemTrayClientImpl::ShowNetworkConfigure(const std::string& network_id) {
@@ -721,17 +727,20 @@ void SystemTrayClientImpl::ShowNetworkSettingsHelper(
 
 void SystemTrayClientImpl::ShowMultiDeviceSetup() {
   ash::multidevice_setup::MultiDeviceSetupDialog::Show();
+  ash::phonehub::util::LogMultiDeviceSetupDialogEntryPoint(
+      ash::phonehub::util::MultiDeviceSetupDialogEntrypoint::
+          kSetupNotification);
 }
 
 void SystemTrayClientImpl::ShowFirmwareUpdate() {
-  chrome::ShowFirmwareUpdatesApp(ProfileManager::GetActiveUserProfile());
+  ash::ShowFirmwareUpdatesApp(ProfileManager::GetActiveUserProfile());
 }
 
 void SystemTrayClientImpl::SetLocaleAndExit(
     const std::string& locale_iso_code) {
   ProfileManager::GetActiveUserProfile()->ChangeAppLocale(
       locale_iso_code, Profile::APP_LOCALE_CHANGED_VIA_SYSTEM_TRAY);
-  chrome::AttemptUserExit();
+  session_manager::SessionManager::Get()->RequestSignOut();
 }
 
 void SystemTrayClientImpl::ShowAccessCodeCastingDialog(
@@ -793,6 +802,9 @@ void SystemTrayClientImpl::ShowCalendarEvent(
 // one for each call to `LaunchAppWithUrl`.
 void SystemTrayClientImpl::ShowVideoConference(
     const GURL& video_conference_url) {
+  if (!video_conference_url.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
   if (auto* profile = ProfileManager::GetActiveUserProfile()) {
     apps::MaybeLaunchPreferredAppForUrl(
         profile, video_conference_url,
@@ -833,21 +845,18 @@ void SystemTrayClientImpl::ShowMouseSettings() {
 }
 
 void SystemTrayClientImpl::ShowKeyboardSettings() {
-  DCHECK(ash::features::IsWelcomeExperienceEnabled());
   base::RecordAction(base::UserMetricsAction("ShowKeyboardSettingsPage"));
   ShowSettingsSubPageForActiveUser(
       chromeos::settings::mojom::kPerDeviceKeyboardSubpagePath);
 }
 
 void SystemTrayClientImpl::ShowTouchpadSettings() {
-  DCHECK(ash::features::IsInputDeviceSettingsSplitEnabled());
   base::RecordAction(base::UserMetricsAction("ShowTouchpadSettingsPage"));
   ShowSettingsSubPageForActiveUser(
       chromeos::settings::mojom::kPerDeviceTouchpadSubpagePath);
 }
 
 void SystemTrayClientImpl::ShowPointingStickSettings() {
-  DCHECK(ash::features::IsWelcomeExperienceEnabled());
   base::RecordAction(base::UserMetricsAction("ShowPointingStickSettingsPage"));
   ShowSettingsSubPageForActiveUser(
       chromeos::settings::mojom::kPerDevicePointingStickSubpagePath);
@@ -859,7 +868,6 @@ void SystemTrayClientImpl::ShowNearbyShareSettings() {
 }
 
 void SystemTrayClientImpl::ShowRemapKeysSubpage(int device_id) {
-  DCHECK(ash::features::IsInputDeviceSettingsSplitEnabled());
   base::RecordAction(base::UserMetricsAction("ShowRemapKeysSettingsSubpage"));
   ShowSettingsSubPageForActiveUser(base::StrCat({
       chromeos::settings::mojom::kPerDeviceKeyboardRemapKeysSubpagePath,
@@ -869,11 +877,9 @@ void SystemTrayClientImpl::ShowRemapKeysSubpage(int device_id) {
 }
 
 void SystemTrayClientImpl::ShowYouTubeMusicPremiumPage() {
-  DCHECK(ash::features::IsFocusModeEnabled());
-  DCHECK(ash::features::IsFocusModeYTMEnabled());
   base::RecordAction(base::UserMetricsAction("ShowYouTubeMusicPremiumPage"));
 
-  const GURL official_url(chrome::kYoutubeMusicPremiumURL);
+  const GURL official_url(ash::external_urls::kYoutubeMusicPremiumURL);
 
   // Check YouTube Music web app installation.
   if (!IsAppInstalled(ash::kYoutubeMusicAppId)) {
@@ -890,52 +896,27 @@ void SystemTrayClientImpl::ShowYouTubeMusicPremiumPage() {
   }
 
   // Launch web app.
-  proxy->LaunchAppWithUrl(
-      ash::kYoutubeMusicAppId, ui::EF_NONE, official_url,
-      apps::LaunchSource::kFromFocusMode, /*window_info=*/nullptr,
-      base::BindOnce(
-          [](const GURL& url, apps::LaunchResult&& result) {
-            if (result.state != apps::LaunchResult::State::kSuccess) {
-              OpenInBrowser(url);
-            }
-          },
-          official_url));
+  proxy->LaunchAppWithUrl(ash::kYoutubeMusicAppId, ui::EF_NONE, official_url,
+                          apps::LaunchSource::kFromFocusMode,
+                          /*window_info=*/nullptr,
+                          base::BindOnce(
+                              [](const GURL& url, apps::LaunchResult result) {
+                                if (result != apps::LaunchResult::kSuccess) {
+                                  OpenInBrowser(url);
+                                }
+                              },
+                              official_url));
 }
 
 void SystemTrayClientImpl::ShowChromebookPerksYouTubePage() {
-  DCHECK(ash::features::IsFocusModeEnabled());
-  DCHECK(ash::features::IsFocusModeYTMEnabled());
-  OpenInBrowser(GURL(chrome::kChromebookPerksYouTubePage));
+  OpenInBrowser(GURL(ash::external_urls::kChromebookPerksYouTubePage));
 }
 
 void SystemTrayClientImpl::ShowEolInfoPage() {
-  const bool use_offer_url = ash::features::kEolIncentiveParam.Get() !=
-                                 ash::features::EolIncentiveParam::kNoOffer &&
-                             eol_incentive_recently_passed_;
-
-  if (eol_incentive_recently_passed_) {
-    ash::eol_incentive_util::RecordButtonClicked(
-        use_offer_url ? ash::eol_incentive_util::EolIncentiveButtonType::
-                            kQuickSettings_Offer_RecentlyPassed
-                      : ash::eol_incentive_util::EolIncentiveButtonType::
-                            kQuickSettings_NoOffer_RecentlyPassed);
-  } else {
-    DCHECK(!use_offer_url);
-    ash::eol_incentive_util::RecordButtonClicked(
-        ash::eol_incentive_util::EolIncentiveButtonType::
-            kQuickSettings_NoOffer_Passed);
-  }
-
-  ash::NewWindowDelegate::GetPrimary()->OpenUrl(
-      GURL(use_offer_url ? chrome::kEolIncentiveNotificationOfferURL
-                         : chrome::kEolIncentiveNotificationNoOfferURL),
+  ash::NewWindowDelegate::GetInstance()->OpenUrl(
+      GURL(ash::external_urls::kEolNotificationURL),
       ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
       ash::NewWindowDelegate::Disposition::kNewForegroundTab);
-}
-
-void SystemTrayClientImpl::RecordEolNoticeShown() {
-  ash::eol_incentive_util::RecordShowSourceHistogram(
-      ash::eol_incentive_util::EolIncentiveShowSource::kQuickSettings);
 }
 
 bool SystemTrayClientImpl::IsUserFeedbackEnabled() {
@@ -947,7 +928,7 @@ bool SystemTrayClientImpl::IsUserFeedbackEnabled() {
   PrefService* signin_prefs =
       ProfileManager::GetActiveUserProfile()->GetPrefs();
   DCHECK(signin_prefs);
-  return signin_prefs->GetBoolean(prefs::kUserFeedbackAllowed);
+  return signin_prefs->GetBoolean(ash::chrome_prefs::kUserFeedbackAllowed);
 }
 
 void SystemTrayClientImpl::HandleUpdateAvailable() {

@@ -10,13 +10,13 @@
 
 #include "base/containers/flat_set.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/test_file_util.h"
@@ -33,16 +33,14 @@
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/signin/signin_manager.h"
-#include "chrome/browser/signin/signin_manager_factory.h"
 #include "chrome/browser/signin/test_signin_client_builder.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/sync/sync_startup_tracker.h"
+#include "chrome/browser/ui/webui/signin/history_sync_optin_helper.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "chrome/test/base/fake_profile_manager.h"
 #include "chrome/test/base/profile_waiter.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/account_id/account_id.h"
@@ -58,10 +56,12 @@
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
+#include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/test/mock_sync_service.h"
 #include "components/sync/test/sync_user_settings_mock.h"
@@ -248,6 +248,7 @@ class FakeUserPolicySigninService : public policy::UserPolicySigninService {
   void RegisterForPolicyWithAccountId(
       const std::string& username,
       const CoreAccountId& account_id,
+      bool is_registration_for_management_consistency_check,
       PolicyRegistrationCallback callback) override {
     EXPECT_EQ(email_, username);
     EXPECT_EQ(account_id_, account_id);
@@ -311,53 +312,6 @@ std::unique_ptr<KeyedService> BuildMockSyncService(
   return service;
 }
 
-class MockSigninManager : public SigninManager {
- public:
-  class Handle : public AccountSelectionInProgressHandle {
-   public:
-    explicit Handle(MockSigninManager* signin_manager)
-        : signin_manager_(signin_manager) {
-      ++signin_manager_->handle_creation_count_;
-    }
-    ~Handle() override { ++signin_manager_->handle_deletion_count_; }
-
-   private:
-    raw_ptr<MockSigninManager> signin_manager_;
-  };
-
-  explicit MockSigninManager(Profile* profile)
-      : SigninManager(*profile->GetPrefs(),
-                      *IdentityManagerFactory::GetForProfile(profile),
-                      *ChromeSigninClientFactory::GetForProfile(profile)) {}
-  ~MockSigninManager() override = default;
-
-  static std::unique_ptr<KeyedService> Build(content::BrowserContext* context) {
-    Profile* profile = Profile::FromBrowserContext(context);
-    auto signin_manager =
-        std::make_unique<testing::NiceMock<MockSigninManager>>(profile);
-    ON_CALL(*signin_manager, CreateAccountSelectionInProgressHandle())
-        .WillByDefault(
-            Invoke(signin_manager.get(), &MockSigninManager::MakeHandle));
-    return signin_manager;
-  }
-
-  int handle_creation_count() { return handle_creation_count_; }
-  int handle_deletion_count() { return handle_deletion_count_; }
-
-  MOCK_METHOD(std::unique_ptr<AccountSelectionInProgressHandle>,
-              CreateAccountSelectionInProgressHandle,
-              (),
-              (override));
-
- private:
-  int handle_creation_count_ = 0;
-  int handle_deletion_count_ = 0;
-
-  std::unique_ptr<AccountSelectionInProgressHandle> MakeHandle() {
-    return std::make_unique<Handle>(this);
-  }
-};
-
 // Helper to obtain a `base::OnceClosure` that allows checking if it did run and
 // that will not cause issues if it is run while the originating instance goes
 // out of scope.
@@ -383,9 +337,15 @@ class WeakClosure {
 
 class TurnSyncOnHelperTest : public testing::Test {
  public:
-  TurnSyncOnHelperTest() : local_state_(TestingBrowserProcess::GetGlobal()) {}
+  TurnSyncOnHelperTest() = default;
 
   void SetUp() override {
+    // TurnSyncOnHelperTest is no longer used when the feature is enabled.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            syncer::kReplaceSyncPromosWithSignInPromos,
+            syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
     const base::FilePath temp_user_data_dir =
         base::CreateUniqueTempDirectoryScopedToTest();
     TestingBrowserProcess::GetGlobal()->SetProfileManager(
@@ -524,7 +484,7 @@ class TurnSyncOnHelperTest : public testing::Test {
         weak_closure.Get().Then(flow_completion_loop_.QuitClosure()));
 
     // In no circumstance should the flow complete synchronously. It can cause
-    // some crashes, see https://crbug.com/1367078.
+    // some crashes, see https://crbug.com/40867387.
     EXPECT_FALSE(weak_closure.did_run());
 
     return helper;
@@ -542,7 +502,11 @@ class TurnSyncOnHelperTest : public testing::Test {
     AccountInfo account_info =
         identity_manager()->FindExtendedAccountInfo(core_account_info);
     EXPECT_FALSE(account_info.IsEmpty());
-    account_info.hosted_domain = kEnterpriseHostedDomain;
+    account_info = AccountInfo::Builder(account_info)
+                       .SetHostedDomain(kEnterpriseHostedDomain)
+                       .Build();
+    AccountCapabilitiesTestMutator(&account_info)
+        .set_is_subject_to_enterprise_features(true);
     signin::UpdateAccountInfoForAccount(identity_manager(), account_info);
   }
 
@@ -584,8 +548,7 @@ class TurnSyncOnHelperTest : public testing::Test {
 
   void SetExpectationsForSyncAborted() {
     EXPECT_CALL(*GetMockSyncService()->GetMockUserSettings(),
-                SetInitialSyncFeatureSetupComplete(
-                    syncer::SyncFirstSetupCompleteSource::BASIC_FLOW))
+                SetInitialSyncFeatureSetupComplete())
         .Times(0);
   }
 
@@ -781,6 +744,8 @@ class TurnSyncOnHelperTest : public testing::Test {
     kShownNonManaged
   };
 
+  base::test::ScopedFeatureList scoped_feature_list_;
+
   // Delegate behavior.
   signin::SigninChoice merge_data_choice_ = signin::SIGNIN_CHOICE_CANCEL;
   signin::SigninChoice enterprise_choice_ = signin::SIGNIN_CHOICE_CANCEL;
@@ -803,7 +768,6 @@ class TurnSyncOnHelperTest : public testing::Test {
  private:
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  ScopedTestingLocalState local_state_;
   CoreAccountId account_id_;
   raw_ptr<TestingProfile, DanglingUntriaged> profile_;
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
@@ -831,29 +795,6 @@ class TurnSyncOnHelperTest : public testing::Test {
   SyncDisabledConfirmation sync_disabled_confirmation_ = kNotShown;
   bool sync_settings_shown_ = false;
   base::RunLoop flow_completion_loop_;
-};
-
-class TurnSyncOnHelperWithMockSigninManagerTest : public TurnSyncOnHelperTest {
- public:
-  void AddTestingProfileFactories(
-      TestingProfile::Builder& profile_builder) override {
-    TurnSyncOnHelperTest::AddTestingProfileFactories(profile_builder);
-
-    profile_builder.AddTestingFactory(
-        SigninManagerFactory::GetInstance(),
-        base::BindRepeating(&MockSigninManager::Build));
-  }
-
-  MockSigninManager* GetMockSigninManager(Profile* profile) {
-    return static_cast<MockSigninManager*>(
-        SigninManagerFactory::GetForProfile(profile));
-  }
-
-  std::pair<int, int> GetSignInManagerHandleState() {
-    auto* mock_signin_manager = GetMockSigninManager(profile());
-    return {mock_signin_manager->handle_creation_count(),
-            mock_signin_manager->handle_deletion_count()};
-  }
 };
 
 TestTurnSyncOnHelperDelegate::TestTurnSyncOnHelperDelegate(
@@ -947,7 +888,7 @@ class TurnSyncOnHelperTestWithSigninAllowedDisabled
 TEST_F(TurnSyncOnHelperTestWithSigninAllowedDisabled,
        CanOfferSigninErrorKeepAccount) {
   // Set expectations.
-  expected_login_error_ = SigninUIError::Other(kEmail);
+  expected_login_error_ = SigninUIError::SigninDisallowed(kEmail);
   // Configure the test.
   profile()->GetPrefs()->SetBoolean(prefs::kSigninAllowed, false);
   // Signin flow.
@@ -966,7 +907,7 @@ TEST_F(TurnSyncOnHelperTestWithSigninAllowedDisabled,
 TEST_F(TurnSyncOnHelperTestWithSigninAllowedDisabled,
        CanOfferSigninErrorRemoveAccount) {
   // Set expectations.
-  expected_login_error_ = SigninUIError::Other(kEmail);
+  expected_login_error_ = SigninUIError::SigninDisallowed(kEmail);
   // Configure the test.
   profile()->GetPrefs()->SetBoolean(prefs::kSigninAllowed, false);
   // Signin flow.
@@ -1035,8 +976,7 @@ TEST_F(TurnSyncOnHelperTest, SyncDisabledAbortKeepAccount) {
 
 // Tests that the sync disabled message is displayed and that the account is
 // kept upon the SYNC_WITH_DEFAULT_SETTINGS action.
-TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
-       SyncDisabledContinueKeepAccount) {
+TEST_F(TurnSyncOnHelperTest, SyncDisabledContinueKeepAccount) {
   // Set expectations.
   expected_sync_disabled_confirmation_ = kShownNonManaged;
   SetExpectationsForSyncDisabled(profile());
@@ -1056,8 +996,6 @@ TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
             signin::GetPrimaryAccountConsentLevel(identity_manager()));
   EXPECT_TRUE(identity_manager()->HasAccountWithRefreshToken(account_id()));
   CheckDelegateCalls();
-  EXPECT_EQ(std::make_pair(/*creations=*/1, /*deletions=*/1),
-            GetSignInManagerHandleState());
   CheckSigninMetrics({.sign_in_access_point = kAccessPoint,
                       .sign_in_recorded = true,
                       .sync_opt_in_started = true,
@@ -1066,8 +1004,7 @@ TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
 
 // Tests that the sync disabled message is displayed and that the account is
 // kept upon the SYNC_WITH_DEFAULT_SETTINGS action.
-TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
-       SyncDisabledManagedContinueKeepAccount) {
+TEST_F(TurnSyncOnHelperTest, SyncDisabledManagedContinueKeepAccount) {
   // Reset the account info to be an enterprise account.
   UseEnterpriseAccount();
   // Set expectations.
@@ -1089,8 +1026,6 @@ TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
             signin::GetPrimaryAccountConsentLevel(identity_manager()));
   EXPECT_TRUE(identity_manager()->HasAccountWithRefreshToken(account_id()));
   CheckDelegateCalls();
-  EXPECT_EQ(std::make_pair(/*creations=*/1, /*deletions=*/1),
-            GetSignInManagerHandleState());
   CheckSigninMetrics({.sign_in_access_point = kAccessPoint,
                       .sign_in_recorded = true,
                       .sync_opt_in_started = true,
@@ -1699,8 +1634,7 @@ TEST_F(TurnSyncOnHelperTest, ConfigureSync) {
   expected_sync_settings_shown_ = true;
   SetExpectationsForSyncStartupCompleted(profile());
   EXPECT_CALL(*GetMockSyncService()->GetMockUserSettings(),
-              SetInitialSyncFeatureSetupComplete(
-                  syncer::SyncFirstSetupCompleteSource::BASIC_FLOW))
+              SetInitialSyncFeatureSetupComplete())
       .Times(0);
 
   // Configure the test.
@@ -1730,8 +1664,7 @@ TEST_F(TurnSyncOnHelperTest, StartSync) {
   expected_sync_confirmation_shown_ = true;
   SetExpectationsForSyncStartupCompleted(profile());
   EXPECT_CALL(*GetMockSyncService()->GetMockUserSettings(),
-              SetInitialSyncFeatureSetupComplete(
-                  syncer::SyncFirstSetupCompleteSource::BASIC_FLOW));
+              SetInitialSyncFeatureSetupComplete());
   // Configure the test.
   sync_confirmation_result_ = LoginUIService::SyncConfirmationUIClosedResult::
       SYNC_WITH_DEFAULT_SETTINGS;
@@ -1754,7 +1687,7 @@ TEST_F(TurnSyncOnHelperTest, StartSync) {
 
 // Tests that the user is signed in and Sync configuration is complete.
 // Also tests that turning sync on enables URL-keyed anonymized data collection.
-// Regression test for http://crbug.com/812546
+// Regression test for http://crbug.com/41370767
 TEST_F(TurnSyncOnHelperTest, ShowSyncDialogForEndConsumerAccount) {
   // Set expectations.
   expected_sync_confirmation_shown_ = true;
@@ -1762,8 +1695,7 @@ TEST_F(TurnSyncOnHelperTest, ShowSyncDialogForEndConsumerAccount) {
       SYNC_WITH_DEFAULT_SETTINGS;
   SetExpectationsForSyncStartupCompleted(profile());
   EXPECT_CALL(*GetMockSyncService()->GetMockUserSettings(),
-              SetInitialSyncFeatureSetupComplete(
-                  syncer::SyncFirstSetupCompleteSource::BASIC_FLOW));
+              SetInitialSyncFeatureSetupComplete());
   PrefService* pref_service = profile()->GetPrefs();
   std::unique_ptr<unified_consent::UrlKeyedDataCollectionConsentHelper>
       url_keyed_collection_helper =
@@ -1787,8 +1719,8 @@ TEST_F(TurnSyncOnHelperTest, ShowSyncDialogForEndConsumerAccount) {
 
 // For users on a cloud managed device, tests that the user is signed in only
 // after Sync engine starts.
-// Regression test for http://crbug.com/812546
-TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
+// Regression test for http://crbug.com/41370767
+TEST_F(TurnSyncOnHelperTest,
        ShowSyncDialogBlockedUntilSyncStartupCompletedForCloudManagedDevices) {
   // Simulate a managed browser.
   policy::ScopedManagementServiceOverrideForTesting browser_management(
@@ -1814,29 +1746,25 @@ TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
   EXPECT_EQ(signin::ConsentLevel::kSignin,
             signin::GetPrimaryAccountConsentLevel(identity_manager()));
   CheckDelegateCalls();
-  EXPECT_EQ(std::make_pair(/*creations=*/1, /*deletions=*/0),
-            GetSignInManagerHandleState());
 
   // Simulate that sync startup has completed.
   expected_sync_confirmation_shown_ = true;
   EXPECT_CALL(*GetMockSyncService()->GetMockUserSettings(),
-              SetInitialSyncFeatureSetupComplete(
-                  syncer::SyncFirstSetupCompleteSource::BASIC_FLOW));
+              SetInitialSyncFeatureSetupComplete());
   sync_confirmation_result_ = LoginUIService::SyncConfirmationUIClosedResult::
       SYNC_WITH_DEFAULT_SETTINGS;
-  sync_starter->OnSyncStartupStateChanged(
-      SyncStartupTracker::ServiceStartupState::kComplete);
+  sync_starter->GetSyncStartupStateObserverForTesting()
+      ->OnSyncStartupStateChangedForTesting(
+          SyncStartupTracker::ServiceStartupState::kComplete);
   EXPECT_EQ(account_id(), identity_manager()->GetPrimaryAccountId(
                               signin::ConsentLevel::kSync));
   CheckDelegateCalls();
-  EXPECT_EQ(std::make_pair(/*creations=*/1, /*deletions=*/1),
-            GetSignInManagerHandleState());
 }
 
 // For enterprise user, tests that the user is signed in only after Sync engine
 // starts.
-// Regression test for http://crbug.com/812546
-TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
+// Regression test for http://crbug.com/41370767
+TEST_F(TurnSyncOnHelperTest,
        ShowSyncDialogBlockedUntilSyncStartupCompletedForEnterpriseAccount) {
   // Reset the account info to be an enterprise account.
   UseEnterpriseAccount();
@@ -1860,29 +1788,25 @@ TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
   EXPECT_EQ(signin::ConsentLevel::kSignin,
             signin::GetPrimaryAccountConsentLevel(identity_manager()));
   CheckDelegateCalls();
-  EXPECT_EQ(std::make_pair(/*creations=*/1, /*deletions=*/0),
-            GetSignInManagerHandleState());
 
   // Simulate that sync startup has completed.
   expected_sync_confirmation_shown_ = true;
   EXPECT_CALL(*GetMockSyncService()->GetMockUserSettings(),
-              SetInitialSyncFeatureSetupComplete(
-                  syncer::SyncFirstSetupCompleteSource::BASIC_FLOW));
+              SetInitialSyncFeatureSetupComplete());
   sync_confirmation_result_ = LoginUIService::SyncConfirmationUIClosedResult::
       SYNC_WITH_DEFAULT_SETTINGS;
-  sync_starter->OnSyncStartupStateChanged(
-      SyncStartupTracker::ServiceStartupState::kComplete);
+  sync_starter->GetSyncStartupStateObserverForTesting()
+      ->OnSyncStartupStateChangedForTesting(
+          SyncStartupTracker::ServiceStartupState::kComplete);
   EXPECT_EQ(account_id(), identity_manager()->GetPrimaryAccountId(
                               signin::ConsentLevel::kSync));
   CheckDelegateCalls();
-  EXPECT_EQ(std::make_pair(/*creations=*/1, /*deletions=*/1),
-            GetSignInManagerHandleState());
 }
 
 // For enterprise user, tests that the user is signed in only after Sync engine
 // fails to start.
-// Regression test for http://crbug.com/812546
-TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
+// Regression test for http://crbug.com/41370767
+TEST_F(TurnSyncOnHelperTest,
        ShowSyncDialogBlockedUntilSyncStartupFailedForEnterpriseAccount) {
   // Reset the account info to be an enterprise account.
   UseEnterpriseAccount();
@@ -1890,8 +1814,6 @@ TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
   // Set expectations.
   expected_sync_confirmation_shown_ = false;
   SetExpectationsForSyncStartupPending(profile());
-  EXPECT_EQ(std::make_pair(/*creations=*/0, /*deletions=*/0),
-            GetSignInManagerHandleState());
 
   // Signin flow.
   EXPECT_FALSE(
@@ -1908,28 +1830,24 @@ TEST_F(TurnSyncOnHelperWithMockSigninManagerTest,
   EXPECT_EQ(signin::ConsentLevel::kSignin,
             signin::GetPrimaryAccountConsentLevel(identity_manager()));
   CheckDelegateCalls();
-  EXPECT_EQ(std::make_pair(/*creations=*/1, /*deletions=*/0),
-            GetSignInManagerHandleState());
 
   // Simulate that sync startup has failed.
   expected_sync_confirmation_shown_ = true;
   EXPECT_CALL(*GetMockSyncService()->GetMockUserSettings(),
-              SetInitialSyncFeatureSetupComplete(
-                  syncer::SyncFirstSetupCompleteSource::BASIC_FLOW));
+              SetInitialSyncFeatureSetupComplete());
   sync_confirmation_result_ = LoginUIService::SyncConfirmationUIClosedResult::
       SYNC_WITH_DEFAULT_SETTINGS;
-  sync_starter->OnSyncStartupStateChanged(
-      SyncStartupTracker::ServiceStartupState::kError);
+  sync_starter->GetSyncStartupStateObserverForTesting()
+      ->OnSyncStartupStateChangedForTesting(
+          SyncStartupTracker::ServiceStartupState::kError);
   EXPECT_EQ(account_id(), identity_manager()->GetPrimaryAccountId(
                               signin::ConsentLevel::kSignin));
   CheckDelegateCalls();
-  EXPECT_EQ(std::make_pair(/*creations=*/1, /*deletions=*/1),
-            GetSignInManagerHandleState());
 }
 
 // For users on a cloud managed device, tests that the user is signed in only
 // after Sync engine fails to start.
-// Regression test for http://crbug.com/812546
+// Regression test for http://crbug.com/41370767
 TEST_F(TurnSyncOnHelperTest,
        ShowSyncDialogBlockedUntilSyncStartupFailedForCloudManagedDevices) {
   // Simulate a managed platform.
@@ -1958,12 +1876,12 @@ TEST_F(TurnSyncOnHelperTest,
   // Simulate that sync startup has failed.
   expected_sync_confirmation_shown_ = true;
   EXPECT_CALL(*GetMockSyncService()->GetMockUserSettings(),
-              SetInitialSyncFeatureSetupComplete(
-                  syncer::SyncFirstSetupCompleteSource::BASIC_FLOW));
+              SetInitialSyncFeatureSetupComplete());
   sync_confirmation_result_ = LoginUIService::SyncConfirmationUIClosedResult::
       SYNC_WITH_DEFAULT_SETTINGS;
-  sync_starter->OnSyncStartupStateChanged(
-      SyncStartupTracker::ServiceStartupState::kError);
+  sync_starter->GetSyncStartupStateObserverForTesting()
+      ->OnSyncStartupStateChangedForTesting(
+          SyncStartupTracker::ServiceStartupState::kError);
   EXPECT_EQ(account_id(), identity_manager()->GetPrimaryAccountId(
                               signin::ConsentLevel::kSync));
   CheckDelegateCalls();

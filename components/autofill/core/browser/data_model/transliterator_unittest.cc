@@ -13,18 +13,19 @@
 
 namespace autofill {
 
-TEST(Transliterator, RemoveDiacriticsAndConvertToLowerCase) {
-  base::HistogramTester histogram_tester;
+class TransliteratorTest : public ::testing::Test {
+ public:
+  TransliteratorTest() { ClearCachedTransliterators(); }
+};
+
+TEST_F(TransliteratorTest, RemoveDiacriticsAndConvertToLowerCase) {
   EXPECT_EQ(RemoveDiacriticsAndConvertToLowerCase(
                 u"āēaa11.īūčģķļņšžKāäǟḑēīļņōȯȱõȭŗšțūžßł"),
             u"aeaa11.iucgklnszkaaadeilnooooorstuzssl");
-  // Check that the transliterator initialization status is recorded.
-  histogram_tester.ExpectUniqueSample("Autofill.TransliteratorInitStatus", true,
-                                      1);
+  EXPECT_EQ(RemoveDiacriticsAndConvertToLowerCase(u"ABC.Ó"), u"abc.o");
 }
 
-TEST(Transliterator, GermanTransliteration) {
-  base::HistogramTester histogram_tester;
+TEST_F(TransliteratorTest, GermanTransliteration) {
   base::test::ScopedFeatureList features{
       features::kAutofillEnableGermanTransliteration};
   EXPECT_EQ(
@@ -36,9 +37,6 @@ TEST(Transliterator, GermanTransliteration) {
   EXPECT_EQ(RemoveDiacriticsAndConvertToLowerCase(u"Ä_Ö_Ü_ß",
                                                   AddressCountryCode("DE")),
             u"ae_oe_ue_ss");
-  // Check that the transliterator initialization status is recorded.
-  histogram_tester.ExpectUniqueSample("Autofill.TransliteratorInitStatus", true,
-                                      3);
 }
 
 }  // namespace autofill

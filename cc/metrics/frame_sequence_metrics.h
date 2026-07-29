@@ -14,10 +14,10 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
-#include "base/trace_event/traced_value.h"
 #include "cc/cc_export.h"
 #include "cc/metrics/frame_info.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace viz {
 struct BeginFrameArgs;
@@ -38,7 +38,7 @@ enum class FrameSequenceTrackerType {
   kWheelScroll = 7,
   kScrollbarScroll = 8,
   kCustom = 9,  // Note that the metrics for kCustom are not reported on UMA,
-                // and instead are dispatched back to the LayerTreeHostClient.
+                // and instead are dispatched back to the LayerTreeHostDelegate.
   kCanvasAnimation = 10,
   kJSAnimation = 11,
   kSETMainThreadAnimation = 12,
@@ -121,8 +121,7 @@ class CC_EXPORT FrameSequenceMetrics {
   bool HasEnoughDataForReporting() const;
   bool HasDataLeftForReporting() const;
   // Report related metrics: throughput, checkboarding...
-  // Returns PercentDroppedFrames4.AllSequences metric.
-  int ReportMetrics();
+  void ReportMetrics();
 
   void AddSortedFrame(const viz::BeginFrameArgs& args,
                       const FrameInfo& frame_info);
@@ -189,12 +188,13 @@ class CC_EXPORT FrameSequenceMetrics {
     base::TimeTicks last_timestamp = base::TimeTicks::Now();
     int frame_count = 0;
     bool enabled = false;
-    uint64_t trace_id = 0u;
+    std::optional<perfetto::Track> trace_track;
 
     void Advance(base::TimeTicks start_timestamp,
                  base::TimeTicks new_timestamp,
                  uint32_t expected,
-                 uint32_t dropped,
+                 uint32_t dropped_v3,
+                 uint32_t dropped_v4,
                  uint64_t sequence_number,
                  const char* histogram_name);
     void Terminate(const V3& v3,

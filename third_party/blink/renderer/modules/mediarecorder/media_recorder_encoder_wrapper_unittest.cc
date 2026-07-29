@@ -17,7 +17,6 @@
 
 using ::testing::_;
 using ::testing::InSequence;
-using ::testing::Invoke;
 using ::testing::Return;
 using ::testing::WithArg;
 using ::testing::WithArgs;
@@ -128,31 +127,30 @@ class MediaRecorderEncoderWrapperTest
 
  protected:
   MOCK_METHOD(void, CreateEncoder, (), ());
-  MOCK_METHOD(void, OnError, (const media::EncoderStatus&), ());
+  MOCK_METHOD(void, OnError, (media::EncoderStatus), ());
   MOCK_METHOD(void, MockVideoEncoderWrapperDtor, (), ());
 
-  std::unique_ptr<media::VideoEncoder> CreateMockVideoEncoder(
-      media::GpuVideoAcceleratorFactories* /*gpu_factories*/) {
+  std::unique_ptr<media::VideoEncoder> CreateMockVideoEncoder() {
     CreateEncoder();
     return std::make_unique<MockVideoEncoderWrapper>(
         &mock_encoder_,
-        base::BindOnce(
-            &MediaRecorderEncoderWrapperTest::MockVideoEncoderWrapperDtor,
-            base::Unretained(this)));
+        BindOnce(&MediaRecorderEncoderWrapperTest::MockVideoEncoderWrapperDtor,
+                 Unretained(this)));
   }
 
   void CreateEncoderWrapper(bool is_screencast) {
     encoder_wrapper_ = std::make_unique<MediaRecorderEncoderWrapper>(
         scheduler::GetSingleThreadTaskRunnerForTesting(), profile_,
         kDefaultBitrate, is_screencast,
-        /*gpu_factories=*/nullptr,
-        WTF::BindRepeating(
+        /*is_hardware_encoder=*/false,
+        CrossThreadBindRepeating(
             &MediaRecorderEncoderWrapperTest::CreateMockVideoEncoder,
-            base::Unretained(this)),
-        WTF::BindRepeating(&MediaRecorderEncoderWrapperTest::OnEncodedVideo,
-                           base::Unretained(this)),
-        WTF::BindRepeating(&MediaRecorderEncoderWrapperTest::OnError,
-                           base::Unretained(this)));
+            CrossThreadUnretained(this)),
+        CrossThreadBindRepeating(
+            &MediaRecorderEncoderWrapperTest::OnEncodedVideo,
+            CrossThreadUnretained(this)),
+        CrossThreadBindOnce(&MediaRecorderEncoderWrapperTest::OnError,
+                            CrossThreadUnretained(this)));
     EXPECT_EQ(is_screencast,
               encoder_wrapper_->IsScreenContentEncodingForTesting());
     auto metrics_provider =

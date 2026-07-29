@@ -15,19 +15,31 @@
 
 @implementation TipsPromosTestCase
 
+- (BOOL)loadMinimalAppUI {
+  return YES;
+}
+
 #pragma mark - Helpers
 
 // Taps the primary action button on a PromoStyleViewController.
 - (void)tapPrimaryActionButton {
-  [[EarlGrey selectElementWithMatcher:
-                 chrome_test_util::PromoStylePrimaryActionButtonMatcher()]
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::ButtonStackPrimaryButton()]
       performAction:grey_tap()];
 }
 
 // Taps the secondary action button on a PromoStyleViewController.
 - (void)tapSecondaryActionButton {
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::ButtonStackSecondaryButton()]
+      performAction:grey_tap()];
+}
+
+// Taps the secondary action button on a ConfirmationAlertViewController.
+- (void)tapConfirmationAlertSecondaryButton {
   [[EarlGrey selectElementWithMatcher:
-                 chrome_test_util::PromoStyleSecondaryActionButtonMatcher()]
+                 grey_allOf(chrome_test_util::ButtonStackSecondaryButton(),
+                            grey_sufficientlyVisible(), nil)]
       performAction:grey_tap()];
 }
 
@@ -116,6 +128,43 @@
   GREYAssert([ChromeCoordinatorAppInterface
                  selectorWasDispatched:@"showSafeBrowsingSettings"],
              @"showSafeBrowsingSettings wasn't called");
+  [ChromeCoordinatorAppInterface reset];
+}
+
+// Tests the Search What You See promo.
+- (void)testSearchWhatYouSeePromo {
+  id<GREYMatcher> promo = grey_accessibilityID(@"kSearchWhatYouSeePromoAXID");
+  // Start the SearchWhatYouSeePromoCoordinator.
+  [ChromeCoordinatorAppInterface startSearchWhatYouSeePromoCoordinator];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:promo];
+
+  // Tap "Show Me How".
+  [self tapConfirmationAlertSecondaryButton];
+  id<GREYMatcher> instructions =
+      grey_accessibilityID(@"kSearchWhatYouSeePromoInstructionsAXID");
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:instructions];
+
+  // Tap "Learn More"
+  [self tapConfirmationAlertSecondaryButton];
+  GREYAssert(
+      [ChromeCoordinatorAppInterface selectorWasDispatched:@"openURLInNewTab:"],
+      @"openURLInNewTab wasn't called");
+
+  // Swipe down to dismiss the instructions.
+  [[EarlGrey selectElementWithMatcher:instructions]
+      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:instructions];
+
+  // Tap Close Button.
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::NavigationBarCloseButton()]
+      performAction:grey_tap()];
+  GREYAssert([ChromeCoordinatorAppInterface
+                 selectorWasDispatched:@"dismissSearchWhatYouSeePromo"],
+             @"dismissSearchWhatYouSeePromo wasn't called");
+
+  [ChromeCoordinatorAppInterface stopCoordinator];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:promo];
   [ChromeCoordinatorAppInterface reset];
 }
 

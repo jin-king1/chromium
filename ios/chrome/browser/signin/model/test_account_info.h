@@ -9,6 +9,8 @@
 
 #import <string>
 
+class GaiaId;
+
 @interface TestAccountInfo : NSObject <NSSecureCoding>
 
 // Encodes `identities` into a string, using NSKeyedArchiver.
@@ -47,12 +49,12 @@
 //                          userGivenName:nil
 //                           capabilities:nil]`
 + (instancetype)testAccountInfoWithUserEmail:(NSString*)userEmail
-                                      gaiaID:(NSString*)gaiaID;
+                                      gaiaID:(const GaiaId&)gaiaID;
 
-@property(strong, nonatomic, strong, readonly) NSString* gaiaID;
-@property(strong, nonatomic, strong, readonly) NSString* userEmail;
-@property(strong, nonatomic, strong, readonly) NSString* userFullName;
-@property(strong, nonatomic, strong, readonly) NSString* userGivenName;
+@property(assign, nonatomic, readonly) GaiaId gaiaID;
+@property(copy, nonatomic, readonly) NSString* userEmail;
+@property(copy, nonatomic, readonly) NSString* userFullName;
+@property(copy, nonatomic, readonly) NSString* userGivenName;
 // List capabilities related to `AccountCapabilities`.
 // @YES: the capability is true.
 // @NO: the capability is false.
@@ -60,16 +62,16 @@
 @property(strong, nonatomic, strong, readonly)
     NSDictionary<NSString*, NSNumber*>* capabilities;
 
-// Initialises a TestAccountInfo.
+// Initializes a TestAccountInfo.
 // `userEmail`: cannot be `nil` or empty.
-// `gaiaID`: if is nil or empty, the gaia is the email address (with `@`
+// `gaiaID`: if nil or empty, the gaia is the email address (with `@`
 // replaced by `_`).
 // `userFullName` and `userGivenName`: if empty or nil, the name of the email
 // address is used as the full name or/and the given name.
-// `capabilities`: if is nil, `+[TestAccountInfo defaultCapabilityValues]` is
+// `capabilities`: if nil, `+[TestAccountInfo defaultCapabilityValues]` is
 // used.
 - (instancetype)initWithUserEmail:(NSString*)userEmail
-                           gaiaID:(NSString*)gaiaID
+                           gaiaID:(const GaiaId&)gaiaID
                      userFullName:(NSString*)userFullName
                     userGivenName:(NSString*)userGivenName
                      capabilities:

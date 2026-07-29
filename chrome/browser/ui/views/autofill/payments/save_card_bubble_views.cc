@@ -11,29 +11,18 @@
 #include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/chrome_typography.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
-#include "components/autofill/core/browser/ui/payments/payments_ui_closed_reasons.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/grit/components_scaled_resources.h"
-#include "components/strings/grit/components_strings.h"
-#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/border.h"
-#include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
-#include "ui/views/bubble/tooltip_icon.h"
-#include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/styled_label.h"
-#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/flex_layout.h"
@@ -41,7 +30,13 @@
 
 namespace autofill {
 
-SaveCardBubbleViews::SaveCardBubbleViews(views::View* anchor_view,
+constexpr char16_t kEllipsisDotSeparator[] = u"\u2022";
+
+int GetObfuscationLength() {
+  return 2;
+}
+
+SaveCardBubbleViews::SaveCardBubbleViews(views::BubbleAnchor anchor_view,
                                          content::WebContents* web_contents,
                                          SaveCardBubbleController* controller)
     : AutofillLocationBarBubble(anchor_view, web_contents),
@@ -98,9 +93,28 @@ void SaveCardBubbleViews::AddedToWidget() {
     return;
   }
 
-  GetBubbleFrameView()->SetTitleView(
-      std::make_unique<TitleWithIconAfterLabelView>(
-          GetWindowTitle(), TitleWithIconAfterLabelView::Icon::GOOGLE_PAY));
+  bool is_upload_cvc_only_save = controller()->GetPaymentsBubbleType() ==
+                                 PaymentsBubbleType::kUploadCvcSave;
+  if ((is_upload_cvc_only_save &&
+       base::FeatureList::IsEnabled(features::kAutofillEnableWalletBranding)) ||
+      base::FeatureList::IsEnabled(features::kAutofillEnableWalletBrandingV2)) {
+    // CVC-only saves should not show a Google Wallet logo. When
+    // `kAutofillEnableWalletBrandingV2` is enabled the Google Wallet logo
+    // should not be shown during any type of upload save.
+    auto title_view = std::make_unique<views::Label>(
+        GetWindowTitle(), views::style::CONTEXT_DIALOG_TITLE);
+    title_view->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
+    title_view->SetMultiLine(true);
+    GetBubbleFrameView()->SetTitleView(std::move(title_view));
+  } else {
+    GetBubbleFrameView()->SetTitleView(
+        std::make_unique<TitleWithIconAfterLabelView>(
+            GetWindowTitle(),
+            base::FeatureList::IsEnabled(
+                features::kAutofillEnableWalletBranding)
+                ? TitleWithIconAfterLabelView::Icon::GOOGLE_WALLET
+                : TitleWithIconAfterLabelView::Icon::GOOGLE_PAY));
+  }
 }
 
 std::u16string SaveCardBubbleViews::GetWindowTitle() const {
@@ -120,7 +134,8 @@ views::View* SaveCardBubbleViews::GetFootnoteViewForTesting() {
 }
 
 const std::u16string SaveCardBubbleViews::GetCardIdentifierString() const {
-  return controller_->GetCard().CardNameAndLastFourDigits();
+  return controller_->GetCard().CardNameAndLastFourDigits(
+      /*customized_nickname=*/u"", GetObfuscationLength());
 }
 
 SaveCardBubbleViews::~SaveCardBubbleViews() = default;
@@ -162,8 +177,10 @@ std::unique_ptr<views::View> SaveCardBubbleViews::CreateMainContentView() {
 
   // Flex |card_identifier_view| to fill up space before the expiry date or CVC
   // icon.
-  if (controller()->GetBubbleType() == BubbleType::LOCAL_CVC_SAVE ||
-      controller()->GetBubbleType() == BubbleType::UPLOAD_CVC_SAVE) {
+  if (controller()->GetPaymentsBubbleType() ==
+          PaymentsBubbleType::kLocalCvcSave ||
+      controller()->GetPaymentsBubbleType() ==
+          PaymentsBubbleType::kUploadCvcSave) {
     description_view->SetFlexForView(card_identifier_view, 1);
   }
 
@@ -177,9 +194,10 @@ void SaveCardBubbleViews::InitFootnoteView(views::View* footnote_view) {
 }
 
 std::unique_ptr<views::View> SaveCardBubbleViews::GetCardIdentifierView() {
-  bool is_cvc_only_save =
-      controller()->GetBubbleType() == BubbleType::LOCAL_CVC_SAVE ||
-      controller()->GetBubbleType() == BubbleType::UPLOAD_CVC_SAVE;
+  bool is_cvc_only_save = controller()->GetPaymentsBubbleType() ==
+                              PaymentsBubbleType::kLocalCvcSave ||
+                          controller()->GetPaymentsBubbleType() ==
+                              PaymentsBubbleType::kUploadCvcSave;
 
   // Display the card expiration date in a separate line for credit card saves.
   // For CVC only save, the card name, last 4 digit and CVC icon will be shown
@@ -187,17 +205,12 @@ std::unique_ptr<views::View> SaveCardBubbleViews::GetCardIdentifierView() {
   auto card_identifier_view = std::make_unique<views::View>();
   auto* layout = card_identifier_view->SetLayoutManager(
       std::make_unique<views::FlexLayout>());
-  if (is_cvc_only_save) {
-    layout->SetCollapseMargins(true);
-    layout->SetDefault(
-        views::kMarginsKey,
-        gfx::Insets::TLBR(0, 0, 0,
-                          ChromeLayoutProvider::Get()->GetDistanceMetric(
-                              views::DISTANCE_RELATED_BUTTON_HORIZONTAL)));
-  } else {
-    layout->SetOrientation(views::LayoutOrientation::kVertical);
-    layout->SetCrossAxisAlignment(views::LayoutAlignment::kStart);
-  }
+  layout->SetCollapseMargins(true);
+  layout->SetDefault(
+      views::kMarginsKey,
+      gfx::Insets::TLBR(0, 0, 0,
+                        ChromeLayoutProvider::Get()->GetDistanceMetric(
+                            views::DISTANCE_RELATED_BUTTON_HORIZONTAL)));
 
   const CreditCard& card = controller_->GetCard();
   auto* const card_identifier_label =
@@ -215,7 +228,8 @@ std::unique_ptr<views::View> SaveCardBubbleViews::GetCardIdentifierView() {
   if (is_cvc_only_save) {
     // Add card last four, the spacing, and the CVC icon.
     card_identifier_view->AddChildView(std::make_unique<views::Label>(
-        card.ObfuscatedNumberWithVisibleLastFourDigits(),
+        card.ObfuscatedNumberWithVisibleLastFourDigits(
+            /*obfuscation_length=*/2),
         views::style::CONTEXT_DIALOG_BODY_TEXT, views::style::STYLE_PRIMARY));
     auto* gap_view =
         card_identifier_view->AddChildView(std::make_unique<views::View>());
@@ -239,13 +253,40 @@ std::unique_ptr<views::View> SaveCardBubbleViews::GetCardIdentifierView() {
                                  views::MaximumFlexSizeRule::kUnbounded)
             .WithOrder(2));
   } else if (!card.IsExpired(base::Time::Now())) {
-    // Add card expiration date for card saves.
-    auto* expiration_date_label =
-        card_identifier_view->AddChildView(std::make_unique<views::Label>(
-            card.AbbreviatedExpirationDateForDisplay(false),
-            views::style::CONTEXT_DIALOG_BODY_TEXT,
-            views::style::STYLE_SECONDARY));
-    expiration_date_label->SetID(DialogViewId::EXPIRATION_DATE_LABEL);
+    if (controller()->GetPaymentsBubbleType() ==
+            PaymentsBubbleType::kUploadSave &&
+        base::FeatureList::IsEnabled(
+            features::kAutofillEnableWalletBrandingV2)) {
+      // For upload saves, show a Google Pay pill image instead of the card's
+      // expiration date.
+      auto* gpay_pill_icon = card_identifier_view->AddChildView(
+          views::Builder<views::ImageView>()
+              .SetImage(ui::ImageModel::FromImage(
+                  ui::ResourceBundle::GetSharedInstance().GetImageNamed(
+                      base::FeatureList::IsEnabled(
+                          features::kAutofillEnableGradientGoogleLogos)
+                          ? IDR_AUTOFILL_GOOGLE_PAY_PILL_WITH_GRADIENT
+                          : IDR_AUTOFILL_GOOGLE_PAY_PILL)))
+              .SetProperty(views::kFlexBehaviorKey,
+                           views::FlexSpecification(
+                               views::LayoutOrientation::kHorizontal,
+                               views::MinimumFlexSizeRule::kScaleToMinimum,
+                               views::MaximumFlexSizeRule::kUnbounded)
+                               .WithAlignment(views::LayoutAlignment::kEnd))
+              .Build());
+      gpay_pill_icon->SetID(DialogViewId::GPAY_PILL_ICON);
+    } else {
+      card_identifier_view->AddChildView(std::make_unique<views::Label>(
+          kEllipsisDotSeparator, views::style::CONTEXT_DIALOG_BODY_TEXT,
+          views::style::STYLE_SECONDARY));
+      // Add card expiration date for card saves.
+      auto* expiration_date_label =
+          card_identifier_view->AddChildView(std::make_unique<views::Label>(
+              card.AbbreviatedExpirationDateForDisplay(false),
+              views::style::CONTEXT_DIALOG_BODY_TEXT,
+              views::style::STYLE_SECONDARY));
+      expiration_date_label->SetID(DialogViewId::EXPIRATION_DATE_LABEL);
+    }
   }
 
   return card_identifier_view;

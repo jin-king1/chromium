@@ -39,6 +39,7 @@ class PassthroughRegisterSupportHostRequest final
 
   // RegisterSupportHostRequest implementation.
   void StartRequest(SignalStrategy* signal_strategy,
+                    std::unique_ptr<net::ClientCertStore> client_cert_store,
                     scoped_refptr<RsaKeyPair> key_pair,
                     const std::string& authorized_helper,
                     std::optional<ChromeOsEnterpriseParams> params,
@@ -46,9 +47,7 @@ class PassthroughRegisterSupportHostRequest final
 
  private:
   // SignalStrategy::Listener interface.
-  void OnSignalStrategyStateChange(SignalStrategy::State state) override;
-  bool OnSignalStrategyIncomingStanza(
-      const jingle_xmpp::XmlElement* stanza) override;
+  void OnSignalingStateChanged(SignalStrategy::State state) override;
 
   void RunCallback(const std::string& support_id,
                    base::TimeDelta lifetime,

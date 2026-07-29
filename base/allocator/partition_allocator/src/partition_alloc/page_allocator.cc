@@ -5,18 +5,21 @@
 #include "partition_alloc/page_allocator.h"
 
 #include <atomic>
+#include <bit>
 #include <cstdint>
+#include <utility>
 
 #include "partition_alloc/address_space_randomization.h"
 #include "partition_alloc/build_config.h"
-#include "partition_alloc/page_allocator_internal.h"
-#include "partition_alloc/partition_alloc_base/bits.h"
+#include "partition_alloc/internal/page_allocator_internal.h"
 #include "partition_alloc/partition_alloc_base/thread_annotations.h"
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/partition_lock.h"
 
 #if PA_BUILDFLAG(IS_WIN)
 #include <windows.h>
+
+#include "partition_alloc/partition_alloc_base/win/windows_handle_util.h"
 #endif
 
 #if PA_BUILDFLAG(IS_WIN)
@@ -39,6 +42,17 @@ internal::Lock g_reserve_lock;
 internal::Lock& GetReserveLock() {
   return g_reserve_lock;
 }
+
+#if PA_BUILDFLAG(IS_WIN)
+// Handle to a process to terminate on commit failure and lock protecting it.
+//
+// Using `nullptr` to represent the unset state, instead of
+// `INVALID_HANDLE_VALUE` which has the same value as the pseudo handle
+// representing the current process (returned by ::GetCurrentProcess).
+internal::Lock g_process_to_terminate_on_commit_failure_lock;
+HANDLE g_process_to_terminate_on_commit_failure
+    PA_GUARDED_BY(g_process_to_terminate_on_commit_failure_lock) = nullptr;
+#endif
 
 std::atomic<size_t> g_total_mapped_address_space;
 
@@ -79,7 +93,7 @@ uintptr_t TrimMapping(uintptr_t base_address,
                       uintptr_t alignment_offset,
                       PageAccessibilityConfiguration accessibility) {
   PA_DCHECK(base_length >= trim_length);
-  PA_DCHECK(internal::base::bits::HasSingleBit(alignment));
+  PA_DCHECK(std::has_single_bit(alignment));
   PA_DCHECK(alignment_offset < alignment);
   uintptr_t new_base =
       NextAlignedWithOffset(base_address, alignment, alignment_offset);
@@ -108,7 +122,7 @@ uintptr_t TrimMapping(uintptr_t base_address,
 uintptr_t NextAlignedWithOffset(uintptr_t address,
                                 uintptr_t alignment,
                                 uintptr_t requested_offset) {
-  PA_DCHECK(internal::base::bits::HasSingleBit(alignment));
+  PA_DCHECK(std::has_single_bit(alignment));
   PA_DCHECK(requested_offset < alignment);
 
   uintptr_t actual_offset = address & (alignment - 1);
@@ -183,7 +197,7 @@ uintptr_t AllocPagesWithAlignOffset(
   PA_DCHECK(!(length & internal::PageAllocationGranularityOffsetMask()));
   PA_DCHECK(align >= internal::PageAllocationGranularity());
   // Alignment must be power of 2 for masking math to work.
-  PA_DCHECK(internal::base::bits::HasSingleBit(align));
+  PA_DCHECK(std::has_single_bit(align));
   PA_DCHECK(align_offset < align);
   PA_DCHECK(!(align_offset & internal::PageAllocationGranularityOffsetMask()));
   PA_DCHECK(!(address & internal::PageAllocationGranularityOffsetMask()));
@@ -428,6 +442,36 @@ void SetRetryOnCommitFailure(bool retry_on_commit_failure) {
 
 bool GetRetryOnCommitFailure() {
   return g_retry_on_commit_failure;
+}
+
+void SetProcessToTerminateOnCommitFailure(HANDLE handle) {
+  PA_CHECK(!internal::base::IsPseudoHandle(handle));
+
+  internal::ScopedGuard guard(g_process_to_terminate_on_commit_failure_lock);
+  if (g_process_to_terminate_on_commit_failure != nullptr) {
+    ::CloseHandle(g_process_to_terminate_on_commit_failure);
+  }
+  g_process_to_terminate_on_commit_failure = handle;
+}
+
+void TerminateAnotherProcessOnCommitFailure() {
+  // TODO(crbug.com/40880528): If hangs are observed in which a high priority
+  // thread is waiting for the lock while a low priority thread holds it,
+  // consider boosting thread priority for the scope.
+
+  // Hold the lock for the entire function to prevent a case in which a thread
+  // fails to commit while another thread is stalled between acquiring the
+  // handle of the process to terminate and actually terminating it.
+  internal::ScopedGuard guard(g_process_to_terminate_on_commit_failure_lock);
+
+  HANDLE process_to_terminate =
+      std::exchange(g_process_to_terminate_on_commit_failure, nullptr);
+  if (process_to_terminate == nullptr) {
+    return;
+  }
+
+  ::TerminateProcess(process_to_terminate, kTerminateOnCommitFailureExitCode);
+  ::CloseHandle(process_to_terminate);
 }
 #endif
 

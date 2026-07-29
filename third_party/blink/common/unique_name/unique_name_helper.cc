@@ -11,10 +11,11 @@
 #include "base/check_op.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/unguessable_token.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
 
 namespace blink {
 
@@ -74,7 +75,7 @@ std::string GenerateCandidate(const FrameAdapter* frame) {
   std::string new_name(kFramePathPrefix);
   std::vector<std::string> ancestor_names = frame->CollectAncestorNames(
       FrameAdapter::BeginPoint::kParentFrame, &IsNameWithFramePath);
-  std::reverse(ancestor_names.begin(), ancestor_names.end());
+  std::ranges::reverse(ancestor_names);
   // Note: This checks ancestor_names[0] twice, but it's nicer to do the name
   // extraction here rather than passing another function pointer to
   // CollectAncestorNames().
@@ -157,13 +158,9 @@ std::string CalculateNameInternal(const FrameAdapter* frame,
 std::string CalculateFrameHash(std::string_view name) {
   DCHECK_GT(name.size(), kMaxRequestedNameSize);
 
-  std::string hashed_name;
-  uint8_t result[crypto::kSHA256Length];
-  crypto::SHA256HashString(name, result, std::size(result));
-  hashed_name += "<!--frameHash";
-  hashed_name += base::HexEncode(result);
-  hashed_name += "-->";
-  return hashed_name;
+  return base::StrCat({"<!--frameHash",
+      base::HexEncode(crypto::hash::Sha256(name)),
+      "-->"});
 }
 
 std::string CalculateNewName(const FrameAdapter* frame, std::string_view name) {

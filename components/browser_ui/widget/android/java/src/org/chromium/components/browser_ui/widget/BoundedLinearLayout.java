@@ -12,6 +12,7 @@ import android.util.TypedValue;
 import android.widget.LinearLayout;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.base.ViewUtils;
 
 /**
@@ -28,16 +29,16 @@ import org.chromium.ui.base.ViewUtils;
 public class BoundedLinearLayout extends LinearLayout {
     private static final int NOT_SPECIFIED = -1;
 
-    private TypedValue mMaxWidthLandscape = new TypedValue();
-    private TypedValue mMaxWidthPortrait = new TypedValue();
+    private final TypedValue mMaxWidthLandscape = new TypedValue();
+    private final TypedValue mMaxWidthPortrait = new TypedValue();
 
-    private final int mMaxHeight;
+    private int mMaxHeight;
 
     private boolean mIgnoreWidthConstraints;
     private boolean mIgnoreHeightConstraints;
 
     /** Constructor for inflating from XML. */
-    public BoundedLinearLayout(Context context, AttributeSet attrs) {
+    public BoundedLinearLayout(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
 
         TypedArray a = context.obtainStyledAttributes(attrs, R.styleable.BoundedLinearLayout);
@@ -63,6 +64,12 @@ public class BoundedLinearLayout extends LinearLayout {
         mIgnoreWidthConstraints = ignoreWidthConstraints;
         mIgnoreHeightConstraints = ignoreHeightConstraint;
         ViewUtils.requestLayout(this, "BoundedLinearLayout.setIgnoreConstraints");
+    }
+
+    /** Set the maximum height, overriding the default maximum height. */
+    public void setMaxHeight(int maxHeight) {
+        mMaxHeight = maxHeight <= 0 ? NOT_SPECIFIED : maxHeight;
+        ViewUtils.requestLayout(this, "BoundedLinearLayout.setMaxHeight");
     }
 
     @Override

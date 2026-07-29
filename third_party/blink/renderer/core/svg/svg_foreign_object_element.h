@@ -32,13 +32,14 @@ class SVGForeignObjectElement final : public SVGGraphicsElement {
 
  public:
   explicit SVGForeignObjectElement(Document&);
+  ElementType GetElementType() const final {
+    return ElementType::kSVGForeignObjectElement;
+  }
 
   SVGAnimatedLength* x() const { return x_.Get(); }
   SVGAnimatedLength* y() const { return y_.Get(); }
   SVGAnimatedLength* width() const { return width_.Get(); }
   SVGAnimatedLength* height() const { return height_.Get(); }
-
-  bool SelfHasRelativeLengths() const override;
 
   void Trace(Visitor*) const override;
 

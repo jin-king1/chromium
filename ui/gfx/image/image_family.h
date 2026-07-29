@@ -6,8 +6,9 @@
 #define UI_GFX_IMAGE_IMAGE_FAMILY_H_
 
 #include <iterator>
-#include <map>
 #include <utility>
+
+#include "base/containers/flat_map.h"
 
 #include "base/component_export.h"
 #include "ui/gfx/image/image.h"
@@ -77,13 +78,8 @@ class COMPONENT_EXPORT(GFX) ImageFamily {
       return result;
     }
 
-    bool operator==(const const_iterator& other) const {
-      return map_iterator_ == other.map_iterator_;
-    }
-
-    bool operator!=(const const_iterator& other) const {
-      return map_iterator_ != other.map_iterator_;
-    }
+    friend bool operator==(const const_iterator&,
+                           const const_iterator&) = default;
 
     const gfx::Image& operator*() const {
       return map_iterator_->second;
@@ -97,9 +93,9 @@ class COMPONENT_EXPORT(GFX) ImageFamily {
     friend class ImageFamily;
 
     explicit const_iterator(
-        const std::map<MapKey, gfx::Image>::const_iterator& other);
+        const base::flat_map<MapKey, gfx::Image>::const_iterator& other);
 
-    std::map<MapKey, gfx::Image>::const_iterator map_iterator_;
+    base::flat_map<MapKey, gfx::Image>::const_iterator map_iterator_;
   };
 
   ImageFamily();
@@ -181,7 +177,7 @@ class COMPONENT_EXPORT(GFX) ImageFamily {
   const gfx::Image* GetWithExactAspect(float aspect, int width) const;
 
   // Map from (aspect ratio, width) to image.
-  std::map<MapKey, gfx::Image> map_;
+  base::flat_map<MapKey, gfx::Image> map_;
 };
 
 }  // namespace gfx

@@ -9,18 +9,16 @@
 #include <vector>
 
 #include "apps/test/app_window_waiter.h"
-#include "base/check.h"
 #include "base/check_deref.h"
+#include "chrome/browser/apps/app_service/chrome_app_deprecation/chrome_app_deprecation.h"
 #include "chrome/browser/ash/app_mode/kiosk_app.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_controller.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_mixin.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_test_utils.h"
-#include "chrome/browser/ash/login/app_mode/test/kiosk_base_test.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_web_app_install_util.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
@@ -28,14 +26,19 @@
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/common/mojom/manifest.mojom-shared.h"
 #include "extensions/components/native_app_window/native_app_window_views.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/views/window/non_client_view.h"
+#include "ui/views/window/frame_view.h"
 
 namespace ash {
 
+using kiosk::test::LaunchAppManually;
+using kiosk::test::WaitKioskLaunched;
+
 namespace {
 
+using extensions::mojom::ManifestLocation;
 using kiosk::test::CurrentProfile;
 using kiosk::test::TheKioskChromeApp;
 
@@ -47,10 +50,7 @@ ManifestLocation InstallationSource(Profile& profile, std::string_view app_id) {
 }
 
 KioskChromeAppManager::App GetAppFromManager(const KioskApp& app) {
-  KioskChromeAppManager::App chrome_app;
-  CHECK(KioskChromeAppManager::Get()->GetApp(app.id().app_id.value(),
-                                             &chrome_app));
-  return chrome_app;
+  return KioskChromeAppManager::Get()->GetApp(app.id().app_id.value()).value();
 }
 
 }  // namespace
@@ -65,7 +65,7 @@ class KioskChromeAppTest : public MixinBasedInProcessBrowserTest {
 
   void SetUpOnMainThread() override {
     MixinBasedInProcessBrowserTest::SetUpOnMainThread();
-    ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+    ASSERT_TRUE(WaitKioskLaunched());
   }
 
   KioskMixin kiosk_{&mixin_host_,
@@ -82,7 +82,7 @@ IN_PROC_BROWSER_TEST_F(KioskChromeAppTest, InstallsAppFromPolicy) {
                                TheKioskChromeApp().id().app_id.value()));
 }
 
-// Covers crbug.com/1235334.
+// Covers crbug.com/40782012.
 IN_PROC_BROWSER_TEST_F(KioskChromeAppTest, AppWindowIsFullScreen) {
   auto& registry =
       CHECK_DEREF(extensions::AppWindowRegistry::Get(&CurrentProfile()));
@@ -122,9 +122,9 @@ class KioskAutoLaunchWithZeroDelayTest
 
 IN_PROC_BROWSER_TEST_P(KioskAutoLaunchWithZeroDelayTest, SetsFlagCorrectly) {
   if (!HasAutoLaunchApp()) {
-    ASSERT_TRUE(kiosk_.LaunchManually(TheKioskChromeApp()));
+    ASSERT_TRUE(LaunchAppManually(TheKioskChromeApp()));
   }
-  ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+  ASSERT_TRUE(WaitKioskLaunched());
 
   auto app = GetAppFromManager(TheKioskChromeApp());
   EXPECT_EQ(app.was_auto_launched_with_zero_delay, HasAutoLaunchApp());

@@ -15,6 +15,24 @@
 #include "ui/gfx/geometry/transform_util.h"
 namespace device {
 
+namespace {
+// This represents a 90 degree (or pi/2) rotation about the X axis. Suitable
+// for turning "+Z" from being up to "+Y" being up.
+// clang-format off
+static constexpr gfx::Transform kZNormalToYNormalTransform =
+  gfx::Transform::RowMajor(1,  0,  0, 0,
+                            0,  0, -1, 0,
+                            0,  1,  0, 0,
+                            0,  0,  0, 1);
+
+float Cross2D(const mojom::XRPlanePointDataPtr& a,
+              const mojom::XRPlanePointDataPtr& b,
+              const mojom::XRPlanePointDataPtr& c) {
+  return (b->x - a->x) * (c->z - a->z) - (b->z - a->z) * (c->x - a->x);
+}
+// clang-format on
+}  // namespace
+
 XrPosef PoseIdentity() {
   XrPosef pose{};
   pose.orientation.w = 1;
@@ -39,19 +57,40 @@ device::Pose XrPoseToDevicePose(const XrPosef& pose) {
   return device::Pose{position, orientation};
 }
 
+device::Pose ZNormalXrPoseToYNormalDevicePose(const XrPosef& pose) {
+  auto z_normal = XrPoseToGfxTransform(pose);
+  auto y_normal = z_normal * kZNormalToYNormalTransform;
+  auto maybe_pose = device::Pose::Create(y_normal);
+
+  // Our XrPose is guaranteed parseable, and applying a simple rotation should
+  // not change that.
+  CHECK(maybe_pose);
+  return *maybe_pose;
+}
+
+gfx::Point3F ZNormalPositionToYNormalPosition(const gfx::Point3F& point) {
+  return kZNormalToYNormalTransform.MapPoint(point);
+}
+
 XrPosef GfxTransformToXrPose(const gfx::Transform& transform) {
   std::optional<gfx::DecomposedTransform> decomposed_transform =
       transform.Decompose();
   // This pose should always be a simple translation and rotation so this should
   // always be true
   DCHECK(decomposed_transform);
-  return {{static_cast<float>(decomposed_transform->quaternion.x()),
-           static_cast<float>(decomposed_transform->quaternion.y()),
-           static_cast<float>(decomposed_transform->quaternion.z()),
-           static_cast<float>(decomposed_transform->quaternion.w())},
+  return {GfxQuaternionToXrQuaternion(decomposed_transform->quaternion),
           {static_cast<float>(decomposed_transform->translate[0]),
            static_cast<float>(decomposed_transform->translate[1]),
            static_cast<float>(decomposed_transform->translate[2])}};
+}
+
+XrQuaternionf GfxQuaternionToXrQuaternion(const gfx::Quaternion& quaternion) {
+  return {
+      .x = static_cast<float>(quaternion.x()),
+      .y = static_cast<float>(quaternion.y()),
+      .z = static_cast<float>(quaternion.z()),
+      .w = static_cast<float>(quaternion.w()),
+  };
 }
 
 mojom::VRFieldOfViewPtr XrFovToMojomFov(const XrFovf& xr_fov) {
@@ -91,6 +130,7 @@ bool IsArOnlyFeature(device::mojom::XRSessionFeature feature) {
     case device::mojom::XRSessionFeature::DEPTH:
     case device::mojom::XRSessionFeature::IMAGE_TRACKING:
     case device::mojom::XRSessionFeature::FRONT_FACING:
+    case device::mojom::XRSessionFeature::MESH_DETECTION:
       return true;
   }
 }
@@ -106,6 +146,142 @@ bool IsFeatureSupportedForMode(device::mojom::XRSessionFeature feature,
 
   // If the feature isn't AR-only, then it's supported.
   return true;
+}
+
+mojom::XRSemanticLabel ToMojomSemanticLabel(
+    XrSpatialPlaneSemanticLabelEXT label) {
+  switch (label) {
+    case XR_SPATIAL_PLANE_SEMANTIC_LABEL_FLOOR_EXT:
+      return mojom::XRSemanticLabel::kFloor;
+    case XR_SPATIAL_PLANE_SEMANTIC_LABEL_WALL_EXT:
+      return mojom::XRSemanticLabel::kWall;
+    case XR_SPATIAL_PLANE_SEMANTIC_LABEL_CEILING_EXT:
+      return mojom::XRSemanticLabel::kCeiling;
+    case XR_SPATIAL_PLANE_SEMANTIC_LABEL_TABLE_EXT:
+      return mojom::XRSemanticLabel::kTable;
+    case XR_SPATIAL_PLANE_SEMANTIC_LABEL_UNCATEGORIZED_EXT:
+    default:
+      return mojom::XRSemanticLabel::kOther;
+  }
+}
+
+mojom::XRSemanticLabel ToMojomSemanticLabel(
+    XrSceneMeshSemanticLabelANDROID label) {
+  switch (label) {
+    case XR_SCENE_MESH_SEMANTIC_LABEL_FLOOR_ANDROID:
+      return mojom::XRSemanticLabel::kFloor;
+    case XR_SCENE_MESH_SEMANTIC_LABEL_WALL_ANDROID:
+      return mojom::XRSemanticLabel::kWall;
+    case XR_SCENE_MESH_SEMANTIC_LABEL_CEILING_ANDROID:
+      return mojom::XRSemanticLabel::kCeiling;
+    case XR_SCENE_MESH_SEMANTIC_LABEL_TABLE_ANDROID:
+      return mojom::XRSemanticLabel::kTable;
+    case XR_SCENE_MESH_SEMANTIC_LABEL_OTHER_ANDROID:
+    default:
+      return mojom::XRSemanticLabel::kOther;
+  }
+}
+
+bool IsConvexPolygon(
+    const std::vector<mojom::XRPlanePointDataPtr>& polygon) {
+  const size_t n = polygon.size();
+  if (n < 3) {
+    return false;
+  }
+  bool has_positive = false;
+  bool has_negative = false;
+  for (size_t i = 0; i < n; ++i) {
+    float cross =
+        Cross2D(polygon[i], polygon[(i + 1) % n], polygon[(i + 2) % n]);
+    if (cross > 0) {
+      has_positive = true;
+    } else if (cross < 0) {
+      has_negative = true;
+    }
+    if (has_positive && has_negative) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<uint32_t> EarClipTriangulate(
+    const std::vector<mojom::XRPlanePointDataPtr>& polygon) {
+  std::vector<uint32_t> indices;
+  const size_t n = polygon.size();
+  if (n < 3) {
+    return indices;
+  }
+
+  std::vector<uint32_t> remaining;
+  remaining.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    remaining.push_back(i);
+  }
+
+  // Determine winding: if total signed area is negative, polygon is clockwise.
+  float area = 0;
+  for (size_t i = 0; i < n; ++i) {
+    const auto& cur = polygon[i];
+    const auto& next = polygon[(i + 1) % n];
+    area += cur->x * next->z - next->x * cur->z;
+  }
+  const bool ccw = area > 0;
+
+  size_t iterations = 0;
+  const size_t max_iterations = remaining.size() * remaining.size();
+  while (remaining.size() > 2 && iterations < max_iterations) {
+    bool ear_found = false;
+    const size_t m = remaining.size();
+    for (size_t i = 0; i < m; ++i) {
+      uint32_t prev_idx = remaining[(i + m - 1) % m];
+      uint32_t cur_idx = remaining[i];
+      uint32_t next_idx = remaining[(i + 1) % m];
+
+      float cross =
+          Cross2D(polygon[prev_idx], polygon[cur_idx], polygon[next_idx]);
+      bool is_convex_vertex = ccw ? (cross > 0) : (cross < 0);
+      if (!is_convex_vertex) {
+        continue;
+      }
+
+      // Check that no other remaining vertex lies inside this triangle.
+      bool contains_point = false;
+      for (size_t j = 0; j < m; ++j) {
+        uint32_t test_idx = remaining[j];
+        if (test_idx == prev_idx || test_idx == cur_idx ||
+            test_idx == next_idx) {
+          continue;
+        }
+        float d1 =
+            Cross2D(polygon[prev_idx], polygon[cur_idx], polygon[test_idx]);
+        float d2 =
+            Cross2D(polygon[cur_idx], polygon[next_idx], polygon[test_idx]);
+        float d3 =
+            Cross2D(polygon[next_idx], polygon[prev_idx], polygon[test_idx]);
+        bool all_same_sign = ccw ? (d1 > 0 && d2 > 0 && d3 > 0)
+                                 : (d1 < 0 && d2 < 0 && d3 < 0);
+        if (all_same_sign) {
+          contains_point = true;
+          break;
+        }
+      }
+
+      if (!contains_point) {
+        indices.push_back(prev_idx);
+        indices.push_back(cur_idx);
+        indices.push_back(next_idx);
+        remaining.erase(remaining.begin() + i);
+        ear_found = true;
+        break;
+      }
+    }
+    ++iterations;
+    if (!ear_found) {
+      break;
+    }
+  }
+  return indices;
 }
 
 }  // namespace device

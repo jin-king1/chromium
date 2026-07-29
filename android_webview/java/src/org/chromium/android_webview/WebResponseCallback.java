@@ -6,8 +6,13 @@ package org.chromium.android_webview;
 
 import org.jni_zero.JNINamespace;
 
-import org.chromium.android_webview.AwContentsClient.AwWebResourceRequest;
+import org.chromium.base.JniOnceCallback;
+import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.embedder_support.util.WebResourceResponseInfo;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * WebResponseCallback can be called from any thread, and can be called either during
@@ -15,45 +20,48 @@ import org.chromium.components.embedder_support.util.WebResourceResponseInfo;
  * same callback object multiple times is not permitted and the implementation should always
  * eventually call the callback.
  */
-// TODO(crbug.com/395117566): Add a way to detect that the callback object has been "abandoned" (the
-// app didn't call intercept and didn't keep a reference to it either) and then do something to
-// clean it up; The handling should probably throw an exception when this happens.
 @JNINamespace("android_webview")
+@NullMarked
 public final class WebResponseCallback {
     private static final String TAG = "WebRspnsCllbck";
-    private final int mRequestId;
-    private AwContentsClient mAwContentsClient;
+    private @Nullable AwContentsClient mAwContentsClient;
     private final AwWebResourceRequest mRequest;
 
-    public WebResponseCallback(int requestId, AwWebResourceRequest request) {
-        mRequestId = requestId;
+    private final JniOnceCallback<AwWebResourceInterceptResponse> mResponseCallback;
+
+    /** Callback from native code should only be called once. */
+    private final AtomicBoolean mInterceptCalled = new AtomicBoolean(false);
+
+    public WebResponseCallback(
+            AwWebResourceRequest request,
+            final JniOnceCallback<AwWebResourceInterceptResponse> responseCallback) {
         mRequest = request;
+        mResponseCallback = responseCallback;
     }
 
-    public void intercept(WebResourceResponseInfo response) {
-        if (mAwContentsClient != null) {
-            if (response == null) {
-                mAwContentsClient.getCallbackHelper().postOnLoadResource(mRequest.url);
-            }
-            if (response != null && response.getData() == null) {
-                // In this case the intercepted URLRequest job will simulate an empty response
-                // which doesn't trigger the onReceivedError callback. For WebViewClassic
-                // compatibility we synthesize that callback.  http://crbug.com/180950
-                mAwContentsClient
-                        .getCallbackHelper()
-                        .postOnReceivedError(
-                                mRequest,
-                                /* error description filled in by the glue layer */
-                                new AwContentsClient.AwWebResourceError());
-            }
-        }
-
-        if (!AwContentsIoThreadClientJni.get()
-                .finishShouldInterceptRequest(
-                        mRequestId,
-                        new AwWebResourceInterceptResponse(
-                                response, /* raisedException= */ false))) {
+    public void intercept(@Nullable WebResourceResponseInfo response) {
+        if (mInterceptCalled.getAndSet(true)) {
             throw new IllegalStateException("Request has already been responded to.");
+        }
+        if (mAwContentsClient != null) {
+            notifyContentsClientCallbackHelper(mAwContentsClient.getCallbackHelper(), response);
+        }
+        mResponseCallback.onResult(new AwWebResourceInterceptResponse(response, false));
+    }
+
+    private void notifyContentsClientCallbackHelper(
+            AwContentsClientCallbackHelper callbackHelper,
+            @Nullable WebResourceResponseInfo response) {
+        if (response == null) {
+            callbackHelper.postOnLoadResource(mRequest.getUrl());
+        } else if (response.getData() == null) {
+            // In this case the intercepted URLRequest job will simulate an empty response
+            // which doesn't trigger the onReceivedError callback. For WebViewClassic
+            // compatibility we synthesize that callback.  http://crbug.com/180950
+            callbackHelper.postOnReceivedError(
+                    mRequest,
+                    /* error description filled in by the glue layer */
+                    AwWebResourceError.createEmpty());
         }
     }
 
@@ -62,9 +70,30 @@ public final class WebResponseCallback {
     }
 
     public void clientRaisedException() {
-        AwContentsIoThreadClientJni.get()
-                .finishShouldInterceptRequest(
-                        mRequestId,
-                        new AwWebResourceInterceptResponse(null, /* raisedException= */ true));
+        if (mInterceptCalled.getAndSet(true)) {
+            // Prevent the underlying callback from being invoked twice, which is an
+            // error.
+            return;
+        }
+        mResponseCallback.onResult(
+                new AwWebResourceInterceptResponse(null, /* raisedException= */ true));
+    }
+
+    // Performs cleanup in the possible event where the callback object goes unused.
+    @SuppressWarnings("Finalize")
+    @Override
+    protected void finalize() throws Throwable {
+        try {
+            boolean intercepted = mInterceptCalled.get();
+            if (!intercepted) {
+                Log.e(
+                        TAG,
+                        "Client's shouldInterceptRequestAsync implementation did not respond for "
+                                + mRequest.getUrl());
+                clientRaisedException();
+            }
+        } finally {
+            super.finalize(); // Call superclass finalize() to ensure proper cleanup.
+        }
     }
 }

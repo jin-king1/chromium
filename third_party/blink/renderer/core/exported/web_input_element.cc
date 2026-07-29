@@ -52,8 +52,8 @@ bool WebInputElement::IsTextField() const {
   return ConstUnwrap<HTMLInputElement>()->IsTextField();
 }
 
-void WebInputElement::SetHasBeenPasswordField() {
-  Unwrap<HTMLInputElement>()->SetHasBeenPasswordField();
+void WebInputElement::MaybeSetHasBeenPasswordField() {
+  Unwrap<HTMLInputElement>()->MaybeSetHasBeenPasswordField();
 }
 
 void WebInputElement::SetActivatedSubmit(bool activated) {
@@ -105,8 +105,8 @@ bool WebInputElement::ShouldRevealPassword() const {
   return ConstUnwrap<HTMLInputElement>()->ShouldRevealPassword();
 }
 
-bool WebInputElement::IsLastInputElementInForm() {
-  return Unwrap<HTMLInputElement>()->IsLastInputElementInForm();
+void WebInputElement::SetEmailVerificationState(EmailVerificationState state) {
+  Unwrap<HTMLInputElement>()->SetEmailVerificationState(state);
 }
 
 void WebInputElement::DispatchSimulatedEnter() {

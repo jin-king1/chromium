@@ -23,11 +23,11 @@ source_set("magic_boost") {
     "//chrome/browser/resources:component_extension_resources",
     "//chrome/browser/ui/ash/editor_menu:utils",
     "//chrome/browser/ui/ash/read_write_cards",
-    "//chromeos/components/magic_boost/public/cpp:cpp",
+    "//chromeos/components/magic_boost/public/cpp",
     "//chromeos/components/mahi/public/cpp",
-    "//chromeos/crosapi/mojom",
     "//chromeos/strings:strings_grit",
     "//chromeos/ui/vector_icons",
+    "//components/application_locale_storage",
     "//ui/color",
     "//ui/display",
     "//ui/gfx",
@@ -37,20 +37,24 @@ source_set("magic_boost") {
   if (is_chrome_branded) {
     deps += [ "//chromeos/ash/resources/internal/strings" ]
   }
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("test_support") {
   testonly = true
 
   sources = [
-    "test/mock_magic_boost_controller_crosapi.cc",
-    "test/mock_magic_boost_controller_crosapi.h",
+    "test/mock_magic_boost_controller.cc",
+    "test/mock_magic_boost_controller.h",
   ]
 
   deps = [
     ":magic_boost",
     "//base",
-    "//chromeos/crosapi/mojom",
+    "//chrome/browser/ash/magic_boost",
     "//testing/gmock",
   ]
 }

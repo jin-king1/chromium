@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/functional/callback.h"
@@ -29,20 +30,24 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/touch_selection_controller_client_manager.h"
 #include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom.h"
+#include "third_party/blink/public/common/page/content_to_visible_time_request.h"
 #include "third_party/blink/public/common/widget/visual_properties.h"
 #include "third_party/blink/public/mojom/frame/intrinsic_sizing_info.mojom-forward.h"
 #include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom-forward.h"
 #include "third_party/blink/public/mojom/input/input_event_result.mojom-shared.h"
-#include "third_party/blink/public/mojom/widget/record_content_to_visible_time_request.mojom-forward.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "third_party/blink/public/mojom/webshare/webshare.mojom.h"
 #endif  // BUILDFLAG(IS_MAC)
 
+namespace ui {
+class Compositor;
+}
+
 namespace content {
-class CrossProcessFrameConnector;
+class FrameConnector;
 class RenderWidgetHost;
 class RenderWidgetHostViewChildFrameTest;
 class TouchSelectionControllerClientChildFrame;
@@ -71,7 +76,7 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   RenderWidgetHostViewChildFrame& operator=(
       const RenderWidgetHostViewChildFrame&) = delete;
 
-  void SetFrameConnector(CrossProcessFrameConnector* frame_connector);
+  void SetFrameConnector(FrameConnector* frame_connector);
 
   // TouchSelectionControllerClientManager::Observer implementation.
   void OnManagerWillDestroy(
@@ -87,13 +92,14 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void CopyFromSurface(
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
-      base::OnceCallback<void(const SkBitmap&)> callback) override;
-  void EnsureSurfaceSynchronizedForWebTest() override;
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
+      override;
   void Hide() override;
   bool IsShowing() override;
-  void WasUnOccluded() override;
   void WasOccluded() override;
   gfx::Rect GetViewBounds() override;
+  gfx::Rect GetViewBoundsWithoutTransform() override;
   gfx::Size GetVisibleViewportSize() override;
   gfx::Size GetVisibleViewportSizeDevicePx() override;
   void SetInsets(const gfx::Insets& insets) override;
@@ -101,10 +107,27 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   gfx::NativeViewAccessible GetNativeViewAccessible() override;
   bool IsPointerLocked() override;
   void TakeFallbackContentFrom(RenderWidgetHostView* view) override;
+  ui::Compositor* GetCompositor() override;
 
   // RenderWidgetHostViewBase implementation.
+#if BUILDFLAG(IS_ANDROID)
+  bool IsTouchSequencePotentiallyActiveOnViz() override;
+  void RequestInputBackForDragAndDrop(
+      WeakDocumentPtr source_document,
+      blink::mojom::DragDataPtr drag_data,
+      blink::DragOperationsMask drag_operations_mask,
+      SkBitmap bitmap,
+      gfx::Vector2d cursor_offset_in_dip,
+      gfx::Rect drag_obj_rect_in_dip,
+      blink::mojom::DragEventSourceInfoPtr event_info) override;
+#endif
   RenderWidgetHostViewBase* GetRootView() override;
-  uint32_t GetCaptureSequenceNumber() const override;
+#if BUILDFLAG(IS_WIN)
+  bool ShouldInitiateStylusWriting() override;
+  void OnStartStylusWriting() override;
+  void OnEditElementFocusedForStylusWriting(
+      blink::mojom::StylusWritingFocusResultPtr focus_result) override;
+#endif  // BUILDFLAG(IS_WIN)
   gfx::Size GetCompositorViewportPixelSize() override;
   void InitAsPopup(RenderWidgetHostView* parent_host_view,
                    const gfx::Rect& bounds,
@@ -126,9 +149,11 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   // Since the URL of content rendered by this class is not displayed in
   // the URL bar, this method does not need an implementation.
   void ResetFallbackToFirstNavigationSurface() override {}
+  void OnUnconfirmedTapConvertedToTap() override;
 
   void TransformPointToRootSurface(gfx::PointF* point) override;
-  gfx::Rect GetBoundsInRootWindow() override;
+  gfx::Rect GetBoundsInScreen() override;
+  gfx::Rect GetBoundsInScreenWithoutTransform() override;
   void DidStopFlinging() override;
   blink::mojom::PointerLockResult LockPointer(
       bool request_unadjusted_movement) override;
@@ -144,6 +169,7 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void PreProcessTouchEvent(const blink::WebTouchEvent& event) override;
   viz::FrameSinkId GetRootFrameSinkId() override;
   viz::SurfaceId GetCurrentSurfaceId() const override;
+  bool HasSavedCompositorFrame() const override;
   bool HasSize() const override;
   double GetCSSZoomFactor() const override;
   gfx::PointF TransformPointToRootCoordSpaceF(
@@ -173,7 +199,7 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void ShowSharePicker(
       const std::string& title,
       const std::string& text,
-      const std::string& url,
+      const GURL& url,
       const std::vector<std::string>& file_paths,
       blink::mojom::ShareService::ShareCallback callback) override;
   uint64_t GetNSViewId() const override;
@@ -186,6 +212,7 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void DisableAutoResize(const gfx::Size& new_size) override;
   viz::ScopedSurfaceIdAllocator DidUpdateVisualProperties(
       const cc::RenderFrameMetadata& metadata) override;
+  input::CursorManager* GetCursorManager() override;
 
   // RenderFrameMetadataProvider::Observer implementation.
   void OnRenderFrameMetadataChangedBeforeActivation(
@@ -201,9 +228,7 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void OnFrameTokenChanged(uint32_t frame_token,
                            base::TimeTicks activation_time) override;
 
-  CrossProcessFrameConnector* FrameConnectorForTesting() const {
-    return frame_connector_;
-  }
+  FrameConnector* FrameConnectorForTesting() const { return frame_connector_; }
 
   RenderWidgetHostViewBase* GetParentViewInput() override;
 
@@ -227,6 +252,9 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   bool GetTextRange(gfx::Range* range) const;
 
   RenderWidgetHostViewBase* GetRootRenderWidgetHostView() const;
+
+  // Shows the view.
+  void Show();
 
  protected:
   friend class RenderWidgetHostView;
@@ -252,12 +280,13 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void UpdateFrameSinkIdRegistration() override;
   void UpdateBackgroundColor() override;
   std::optional<DisplayFeature> GetDisplayFeature() override;
-  void SetDisplayFeatureForTesting(
+  void DisableDisplayFeatureOverrideForEmulation() override;
+  void OverrideDisplayFeatureForEmulation(
       const DisplayFeature* display_feature) override;
   void NotifyHostAndDelegateOnWasShown(
-      blink::mojom::RecordContentToVisibleTimeRequestPtr) final;
+      std::optional<blink::RecordContentToVisibleTimeRequest>) final;
   void RequestSuccessfulPresentationTimeFromHostOrDelegate(
-      blink::mojom::RecordContentToVisibleTimeRequestPtr) final;
+      blink::RecordContentToVisibleTimeRequest) final;
   void CancelSuccessfulPresentationTimeRequestForHostAndDelegate() final;
 
   void StopFlingingIfNecessary(
@@ -273,13 +302,11 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
 
   // frame_connector_ provides a platform abstraction. Messages
   // sent through it are routed to the embedding renderer process.
-  raw_ptr<CrossProcessFrameConnector> frame_connector_;
+  raw_ptr<FrameConnector> frame_connector_;
 
   base::WeakPtr<RenderWidgetHostViewChildFrame> AsWeakPtr() {
     return weak_factory_.GetWeakPtr();
   }
-
-  ui::Compositor* GetCompositor() override;
 
   void SetInputHelperForTesting(
       std::unique_ptr<input::ChildFrameInputHelper> input_helper) {
@@ -298,12 +325,16 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   FRIEND_TEST_ALL_PREFIXES(SitePerProcessBrowserTest,
                            SubframeVisibleAfterRenderViewBecomesSwappedOut);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostInputEventRouterTest,
+                           BubbleScrollEventNullSafetyDuringTeardown);
+  FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostInputEventRouterTest,
                            FilteredGestureDoesntInterruptBubbling);
   friend class RenderWidgetHostViewChildFrameTest;
 
   virtual void FirstSurfaceActivation(const viz::SurfaceInfo& surface_info);
 
   void DetachFromTouchSelectionClientManagerIfNecessary();
+
+  gfx::Rect GetViewBoundsHelper(bool without_transform);
 
   // Returns false if the view cannot be shown. This is the case where the frame
   // associated with this view or a cross process ancestor frame has been hidden
@@ -335,15 +366,37 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   // The surface client ID of the parent RenderWidgetHostView.  0 if none.
   viz::FrameSinkId parent_frame_sink_id_;
 
+  // True if there is an active frame sink hierarchy registration for
+  // `parent_frame_sink_id_` and `frame_sink_id_`.
+  bool has_frame_sink_hierarchy_registered_ = false;
+
   gfx::Insets insets_;
 
   std::unique_ptr<TouchSelectionControllerClientChildFrame>
       selection_controller_client_;
 
+  // Weak pointer to the view which owns the
+  // TouchSelectionControllerClientManager that this object is registered with.
+  base::WeakPtr<RenderWidgetHostViewBase>
+      view_for_touch_selection_client_manager_;
+
   // If a new RWHVCF is created for a cross-origin navigation, the parent
   // will typically not notice and will not transmit a full complement of
   // properties.
   bool initial_properties_sent_ = false;
+
+#if BUILDFLAG(IS_WIN)
+  // Callback registered with the root view for handling the TSF
+  // FocusHandwritingTarget response. Converts the screen rect to child frame
+  // local coordinates and forwards to this view's host.
+  void OnFocusHandwritingTarget(
+      const gfx::Rect& focus_screen_rect_in_dips,
+      const gfx::Size& tolerance_screen_distance_in_dips);
+#endif  // BUILDFLAG(IS_WIN)
+
+  // A queue for `IntrinsicSizingInfo` sent from the child renderer before the
+  // frame connector is set.
+  blink::mojom::IntrinsicSizingInfoPtr pending_sizing_info_;
 
   base::WeakPtrFactory<RenderWidgetHostViewChildFrame> weak_factory_{this};
 };

@@ -5,15 +5,15 @@
 #ifndef UI_ACCESSIBILITY_PLATFORM_AX_PLATFORM_NODE_WIN_UNITTEST_H_
 #define UI_ACCESSIBILITY_PLATFORM_AX_PLATFORM_NODE_WIN_UNITTEST_H_
 
+#include <wrl/implements.h>
+
 #include <memory>
 #include <unordered_set>
 
 #include "base/test/scoped_feature_list.h"
-#include "base/win/atl.h"
 #include "ui/accessibility/ax_position.h"
 #include "ui/accessibility/platform/ax_fragment_root_delegate_win.h"
 #include "ui/accessibility/platform/ax_platform_node_unittest.h"
-#include "ui/accessibility/platform/sequence_affine_com_object_root_win.h"
 
 #include <UIAutomationCore.h>
 
@@ -39,28 +39,23 @@ class AXPlatformNode;
 
 class TestFragmentRootDelegate : public AXFragmentRootDelegateWin {
  public:
-  TestFragmentRootDelegate();
-  virtual ~TestFragmentRootDelegate();
+  TestFragmentRootDelegate() = default;
   gfx::NativeViewAccessible GetChildOfAXFragmentRoot() override;
   gfx::NativeViewAccessible GetParentOfAXFragmentRoot() override;
   bool IsAXFragmentRootAControlElement() override;
+
   gfx::NativeViewAccessible child_ = nullptr;
   gfx::NativeViewAccessible parent_ = nullptr;
   bool is_control_element_ = true;
 };
 
-class MockIRawElementProviderSimple : public SequenceAffineComObjectRoot,
-                                      public IRawElementProviderSimple {
+class MockIRawElementProviderSimple
+    : public Microsoft::WRL::RuntimeClass<
+          Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+          IRawElementProviderSimple> {
  public:
-  BEGIN_COM_MAP(MockIRawElementProviderSimple)
-  COM_INTERFACE_ENTRY(IRawElementProviderSimple)
-  END_COM_MAP()
-
   MockIRawElementProviderSimple();
-  ~MockIRawElementProviderSimple();
-
-  static HRESULT CreateMockIRawElementProviderSimple(
-      IRawElementProviderSimple** provider);
+  ~MockIRawElementProviderSimple() override;
 
   //
   // IRawElementProviderSimple methods.
@@ -82,8 +77,6 @@ class AXPlatformNodeWinTest : public AXPlatformNodeTest {
  public:
   AXPlatformNodeWinTest();
   ~AXPlatformNodeWinTest() override;
-
-  void SetUp() override;
 
   void TearDown() override;
 

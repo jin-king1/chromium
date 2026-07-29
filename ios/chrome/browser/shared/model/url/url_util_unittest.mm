@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/shared/model/url/url_util.h"
 
+#import <array>
+#import <string_view>
+
 #import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/components/webui/web_ui_url_constants.h"
@@ -34,15 +37,17 @@ TEST_F(ChromeURLUtilTest, TestUrlIsDownloadedFile) {
   EXPECT_FALSE(UrlIsDownloadedFile(not_downloaded_file_url));
 }
 
-const char* kSchemeTestData[] = {
-    "http://foo.com", "https://foo.com",   "data:text/html;charset=utf-8,Hello",
-    "about:blank",    "chrome://settings",
-};
+constexpr auto kSchemeTestData = std::to_array<std::string_view>({
+    "http://foo.com",
+    "https://foo.com",
+    "data:text/html;charset=utf-8,Hello",
+    "about:blank",
+    "chrome://settings",
+});
 
 // Tests UrlHasChromeScheme with NSURL* parameter.
 TEST_F(ChromeURLUtilTest, NSURLHasChromeScheme) {
-  for (unsigned int i = 0; i < std::size(kSchemeTestData); ++i) {
-    const char* url = kSchemeTestData[i];
+  for (const std::string_view url : kSchemeTestData) {
     NSURL* nsurl = [NSURL URLWithString:base::SysUTF8ToNSString(url)];
     bool nsurl_result = UrlHasChromeScheme(nsurl);
     EXPECT_EQ(GURL(url).SchemeIs(kChromeUIScheme), nsurl_result)
@@ -52,11 +57,10 @@ TEST_F(ChromeURLUtilTest, NSURLHasChromeScheme) {
 
 // Tests UrlHasChromeScheme with const GURL& paramter.
 TEST_F(ChromeURLUtilTest, GURLHasChromeScheme) {
-  for (unsigned int i = 0; i < std::size(kSchemeTestData); ++i) {
-    GURL gurl(kSchemeTestData[i]);
-    bool result = UrlHasChromeScheme(gurl);
-    EXPECT_EQ(gurl.SchemeIs(kChromeUIScheme), result)
-        << "Scheme check failed for " << gurl.spec();
+  for (const std::string_view url : kSchemeTestData) {
+    bool result = UrlHasChromeScheme(GURL(url));
+    EXPECT_EQ(GURL(url).SchemeIs(kChromeUIScheme), result)
+        << "Scheme check failed for " << url;
   }
 }
 
@@ -83,6 +87,42 @@ TEST_F(ChromeURLUtilTest, GetAllBundleURLSchemes) {
   // Verifies that at least the main unit test scheme is in returned schemes.
   NSString* unittestScheme = @"ios-chrome-unittests.http";
   EXPECT_TRUE([schemes containsObject:unittestScheme]);
+}
+
+TEST_F(ChromeURLUtilTest, UrlHasAppStoreScheme) {
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itms://itunes.apple.com/us/app/appname/id123")));
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itmss://itunes.apple.com/us/app/appname/id123")));
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itms-apps://itunes.apple.com/us/app/appname/id123")));
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itms-appss://itunes.apple.com/us/app/appname/id123")));
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itms-books://itunes.apple.com/us/app/appname/id123")));
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itms-bookss://itunes.apple.com/us/app/appname/id123")));
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itms-services://?action=download-manifest&url=https://example.com/"
+           "app.plist")));
+  EXPECT_TRUE(
+      UrlHasAppStoreScheme(GURL("itms-beta://testflight.apple.com/join/123")));
+  EXPECT_TRUE(
+      UrlHasAppStoreScheme(GURL("itms-betas://testflight.apple.com/join/123")));
+  EXPECT_TRUE(
+      UrlHasAppStoreScheme(GURL("itms-watch://testflight.apple.com/join/123")));
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itms-watchs://testflight.apple.com/join/123")));
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itms-podcasts://testflight.apple.com/join/123")));
+  EXPECT_TRUE(UrlHasAppStoreScheme(
+      GURL("itms-podcastss://testflight.apple.com/join/123")));
+
+  EXPECT_FALSE(UrlHasAppStoreScheme(
+      GURL("https://itunes.apple.com/us/app/appname/id123")));
+  EXPECT_FALSE(UrlHasAppStoreScheme(
+      GURL("http://itunes.apple.com/us/app/appname/id123")));
+  EXPECT_FALSE(UrlHasAppStoreScheme(GURL("not-itms://foo")));
 }
 
 }  // namespace

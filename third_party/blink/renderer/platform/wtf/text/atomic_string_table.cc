@@ -2,89 +2,275 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_table.h"
 
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <type_traits>
+#include <utility>
+
+#include "base/bit_cast.h"
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/notreached.h"
+#include "base/synchronization/lock.h"
+#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/ascii_lower_hash_reader.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
 #include "third_party/blink/renderer/platform/wtf/text/convert_to_8bit_hash_reader.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
+#include "third_party/blink/renderer/platform/wtf/text/utf16.h"
 #include "third_party/blink/renderer/platform/wtf/text/utf8.h"
+#include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 
-namespace WTF {
+namespace blink {
 
 namespace {
 
-ALWAYS_INLINE static bool IsOnly8Bit(const UChar* chars, unsigned len) {
-  for (unsigned i = 0; i < len; ++i) {
-    if ((uint16_t)chars[i] > 255) {
-      return false;
-    }
+constexpr auto kGoldenRatio64 = 0x9e3779b97f4a7c15ull;
+
+// A thread-local, direct-mapped cache for small 8-bit AtomicStrings (<= 16
+// bytes) that avoids the overhead of table locking, hash computation, and
+// pointer dereferences of the main AtomicStringTable. The cache keeps the
+// strings strongly.
+// TODO(537744910): The cache keeps the strings strongly. Since it's
+// thread-local, it's safe to clean the entries with use-count being 1.
+// Consider doing this from an idle task if memory becomes an issue.
+// Alternatively, use the cache only for the main thread.
+struct alignas(64) SmallStringCache {
+  // The cache size is 2^13 = 8192 entries (256 KB per thread).
+  static constexpr size_t kLogSize = 13;
+  static constexpr size_t kSize = 1 << kLogSize;
+  static constexpr size_t kHashShift = 64 - kLogSize;
+
+  struct alignas(32) Entry {
+    String string;
+    uint64_t sig_low = 0;
+    uint64_t sig_high = 0;
+    uint32_t length = 0;
+    uint32_t unused = 0;
+  };
+
+  alignas(64) std::array<Entry, kSize> entries;
+};
+
+NOINLINE SmallStringCache* SmallStringCacheInstance() {
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<SmallStringCache>, cache, ());
+  return cache;
+}
+
+constinit thread_local SmallStringCache* g_small_string_cache = nullptr;
+
+template <typename Generator>
+ALWAYS_INLINE String SmallStringCacheGetOrInsert(uint64_t sig_low,
+                                                 uint64_t sig_high,
+                                                 uint32_t length,
+                                                 Generator generator) {
+  // Fibonacci hash using the golden ratio constant to distribute strings
+  // evenly across the cache.
+  uint64_t hash_key = sig_low ^ sig_high ^ length;
+  const size_t index =
+      (hash_key * kGoldenRatio64) >> SmallStringCache::kHashShift;
+
+  SmallStringCache* cache = g_small_string_cache;
+  if (!cache) [[unlikely]] {
+    g_small_string_cache = SmallStringCacheInstance();
+    cache = g_small_string_cache;
   }
-  return true;
+
+  auto& entry = cache->entries[index];
+  if (entry.sig_low == sig_low && entry.sig_high == sig_high &&
+      entry.length == length) [[likely]] {
+    return entry.string;
+  }
+
+  String result = generator();
+  entry.string = result;
+  entry.sig_low = sig_low;
+  entry.sig_high = sig_high;
+  entry.length = length;
+  return result;
+}
+
+template <typename T, typename U, size_t N>
+ALWAYS_INLINE static T BitCastRead(base::span<const U, N> span) {
+  static_assert(std::is_trivially_copyable_v<T>);
+  static_assert(sizeof(T) == N * sizeof(U));
+  using Array = std::array<U, N>;
+  // SAFETY: `span` has fixed extent N matching exactly `sizeof(T)`.
+  return base::bit_cast<T>(*reinterpret_cast<const Array*>(span.data()));
+}
+
+ALWAYS_INLINE static uint16_t Compress2UCharsToUint16(
+    base::span<const UChar, 2> chars) {
+  return static_cast<uint16_t>(static_cast<uint8_t>(chars[0])) |
+         (static_cast<uint16_t>(static_cast<uint8_t>(chars[1])) << 8);
+}
+
+ALWAYS_INLINE static uint32_t Compress4UCharsToUint32(
+    base::span<const UChar, 4> chars) {
+  return static_cast<uint32_t>(static_cast<uint8_t>(chars[0])) |
+         (static_cast<uint32_t>(static_cast<uint8_t>(chars[1])) << 8) |
+         (static_cast<uint32_t>(static_cast<uint8_t>(chars[2])) << 16) |
+         (static_cast<uint32_t>(static_cast<uint8_t>(chars[3])) << 24);
+}
+
+ALWAYS_INLINE static uint64_t Compress8UCharsToUint64(
+    base::span<const UChar, 8> chars) {
+  return static_cast<uint64_t>(static_cast<uint8_t>(chars[0])) |
+         (static_cast<uint64_t>(static_cast<uint8_t>(chars[1])) << 8) |
+         (static_cast<uint64_t>(static_cast<uint8_t>(chars[2])) << 16) |
+         (static_cast<uint64_t>(static_cast<uint8_t>(chars[3])) << 24) |
+         (static_cast<uint64_t>(static_cast<uint8_t>(chars[4])) << 32) |
+         (static_cast<uint64_t>(static_cast<uint8_t>(chars[5])) << 40) |
+         (static_cast<uint64_t>(static_cast<uint8_t>(chars[6])) << 48) |
+         (static_cast<uint64_t>(static_cast<uint8_t>(chars[7])) << 56);
+}
+
+ALWAYS_INLINE static std::pair<uint64_t, uint64_t> ComputeSmallStringSignature(
+    base::span<const LChar> chars) {
+  const size_t length = chars.size();
+  DCHECK(length >= 1 && length <= 16);
+  if (length >= 8) {
+    return {BitCastRead<uint64_t>(chars.first<8>()),
+            BitCastRead<uint64_t>(chars.last<8>())};
+  }
+  if (length >= 4) {
+    uint32_t low32 = BitCastRead<uint32_t>(chars.first<4>());
+    uint32_t high32 = BitCastRead<uint32_t>(chars.last<4>());
+    return {low32 | (static_cast<uint64_t>(high32) << 32), 0};
+  }
+  if (length >= 2) {
+    uint16_t low16 = BitCastRead<uint16_t>(chars.first<2>());
+    uint16_t high16 = BitCastRead<uint16_t>(chars.last<2>());
+    return {low16 | (static_cast<uint64_t>(high16) << 16), 0};
+  }
+  return {chars[0], 0};
+}
+
+ALWAYS_INLINE static std::pair<uint64_t, uint64_t> ComputeSmallStringSignature(
+    base::span<const UChar> chars) {
+  const size_t length = chars.size();
+  DCHECK(length >= 1 && length <= 16);
+  if (length >= 8) {
+    return {Compress8UCharsToUint64(chars.first<8>()),
+            Compress8UCharsToUint64(chars.last<8>())};
+  }
+  if (length >= 4) {
+    uint32_t low32 = Compress4UCharsToUint32(chars.first<4>());
+    uint32_t high32 = Compress4UCharsToUint32(chars.last<4>());
+    return {low32 | (static_cast<uint64_t>(high32) << 32), 0};
+  }
+  if (length >= 2) {
+    uint16_t low16 = Compress2UCharsToUint16(chars.first<2>());
+    uint16_t high16 = Compress2UCharsToUint16(chars.last<2>());
+    return {low16 | (static_cast<uint64_t>(high16) << 16), 0};
+  }
+  return {static_cast<uint8_t>(chars[0]), 0};
+}
+
+// The compiler will conveniently combine this into a single 64-bit load for us,
+// as long as it is reasonably obvious that it can elide the bounds checks.
+ALWAYS_INLINE static uint64_t Read4Chars(base::span<const UChar> chars,
+                                         size_t start) {
+  static_assert(std::is_unsigned_v<UChar>);
+  return static_cast<uint64_t>(chars[start]) |
+         (static_cast<uint64_t>(chars[start + 1]) << 16) |
+         (static_cast<uint64_t>(chars[start + 2]) << 32) |
+         (static_cast<uint64_t>(chars[start + 3]) << 48);
+}
+
+ALWAYS_INLINE static bool IsOnly8Bit(base::span<const UChar> chars) {
+  if (chars.size() >= 4) {
+    for (size_t i = 0; i + 3 < chars.size(); i += 4) {
+      if (Read4Chars(chars, i) & 0xFF00FF00FF00FF00ULL) {
+        return false;
+      }
+    }
+    // NOTE: The tail will overlap already-tested characters,
+    // but that is completely OK.
+    return !(Read4Chars(chars, chars.size() - 4) & 0xFF00FF00FF00FF00ULL);
+  } else {
+    return !std::ranges::any_of(chars, [](UChar ch) { return ch & 0xFF00; });
+  }
 }
 
 class UCharBuffer {
  public:
   ALWAYS_INLINE static unsigned ComputeHashAndMaskTop8Bits(
-      const UChar* chars,
-      unsigned len,
+      base::span<const UChar> chars,
       AtomicStringUCharEncoding encoding) {
-    if (encoding == AtomicStringUCharEncoding::kIs8Bit ||
-        (encoding == AtomicStringUCharEncoding::kUnknown &&
-         IsOnly8Bit(chars, len))) {
-      // This is a very common case from HTML parsing, so we take
-      // the size penalty from inlining.
-      return StringHasher::ComputeHashAndMaskTop8BitsInline<
-          ConvertTo8BitHashReader>((const char*)chars, len);
-    } else {
-      return StringHasher::ComputeHashAndMaskTop8Bits((const char*)chars,
-                                                      len * 2);
+    base::span<const char> bytes = base::as_chars(chars);
+    switch (encoding) {
+      case AtomicStringUCharEncoding::kUnknown:
+        // encoding is always resolved in the constructor.
+        NOTREACHED();
+      case AtomicStringUCharEncoding::kIs8Bit: {
+        using Reader = ConvertTo8BitHashReader;
+        // This is a very common case from HTML parsing, so we take
+        // the size penalty from inlining.
+        return StringHasher::ComputeHashAndMaskTop8BitsInline<Reader>(
+            UNSAFE_TODO({base::unchecked, base::as_bytes(bytes).data(),
+                         bytes.size() / Reader::kCompressionFactor}));
+      }
+      case AtomicStringUCharEncoding::kIs16Bit:
+        return StringHasher::ComputeHashAndMaskTop8Bits(bytes.data(),
+                                                        bytes.size());
     }
   }
 
-  ALWAYS_INLINE UCharBuffer(const UChar* chars,
-                            unsigned len,
+  ALWAYS_INLINE UCharBuffer(base::span<const UChar> chars,
                             AtomicStringUCharEncoding encoding)
       : characters_(chars),
-        length_(len),
-        hash_(ComputeHashAndMaskTop8Bits(chars, len, encoding)),
-        encoding_(encoding) {}
+        encoding_(encoding == AtomicStringUCharEncoding::kUnknown
+                      ? (IsOnly8Bit(chars)
+                             ? AtomicStringUCharEncoding::kIs8Bit
+                             : AtomicStringUCharEncoding::kIs16Bit)
+                      : encoding),
+        hash_(ComputeHashAndMaskTop8Bits(chars, encoding_)) {}
 
-  base::span<const UChar> characters() const { return {characters_, length_}; }
-  unsigned length() const { return length_; }
+  ALWAYS_INLINE UCharBuffer(base::span<const UChar> chars,
+                            unsigned hash,
+                            AtomicStringUCharEncoding encoding)
+      : characters_(chars),
+        encoding_(encoding == AtomicStringUCharEncoding::kUnknown
+                      ? (IsOnly8Bit(chars)
+                             ? AtomicStringUCharEncoding::kIs8Bit
+                             : AtomicStringUCharEncoding::kIs16Bit)
+                      : encoding),
+        hash_(hash) {}
+
+  base::span<const UChar> characters() const { return characters_; }
   unsigned hash() const { return hash_; }
   AtomicStringUCharEncoding encoding() const { return encoding_; }
 
   scoped_refptr<StringImpl> CreateStringImpl() const {
     switch (encoding_) {
       case AtomicStringUCharEncoding::kUnknown:
-        return StringImpl::Create8BitIfPossible({characters_, length_});
+        // encoding_ is always resolved in the constructor.
+        NOTREACHED();
       case AtomicStringUCharEncoding::kIs8Bit:
-        return String::Make8BitFrom16BitSource({characters_, length_})
-            .ReleaseImpl();
+        return String::Make8BitFrom16BitSource(characters_).ReleaseImpl();
       case AtomicStringUCharEncoding::kIs16Bit:
-        return StringImpl::Create({characters_, length_});
+        return StringImpl::Create(characters_);
     }
   }
 
  private:
-  const UChar* characters_;
-  const unsigned length_;
-  const unsigned hash_;
+  const base::span<const UChar> characters_;
   const AtomicStringUCharEncoding encoding_;
+  const unsigned hash_;
 };
 
 struct UCharBufferTranslator {
   static unsigned GetHash(const UCharBuffer& buf) { return buf.hash(); }
 
   static bool Equal(StringImpl* const& str, const UCharBuffer& buf) {
-    return WTF::Equal(str, buf.characters());
+    return blink::Equal(str, buf.characters());
   }
 
   static void Store(StringImpl*& location,
@@ -103,12 +289,17 @@ struct StringViewLookupTranslator {
       return shared_impl->GetHash();
     }
 
+    base::span<const char> bytes = base::as_chars(buf.RawByteSpan());
     if (buf.Is8Bit()) {
-      return StringHasher::ComputeHashAndMaskTop8Bits(
-          (const char*)buf.Characters8(), buf.length());
+      return StringHasher::ComputeHashAndMaskTop8Bits(bytes.data(),
+                                                      bytes.size());
+    } else if (IsOnly8Bit(buf.Span16())) {
+      using Reader = ConvertTo8BitHashReader;
+      return StringHasher::ComputeHashAndMaskTop8Bits<Reader>(
+          bytes.data(), bytes.size() / Reader::kCompressionFactor);
     } else {
-      return StringHasher::ComputeHashAndMaskTop8Bits(
-          (const char*)buf.Characters16(), buf.length());
+      return StringHasher::ComputeHashAndMaskTop8Bits(bytes.data(),
+                                                      bytes.size());
     }
   }
 
@@ -122,125 +313,25 @@ struct StringViewLookupTranslator {
 // of hash and equality computations as if we had done so. Strings reaching
 // these methods are expected to not be lowercase.
 
-// NOTE: Interestingly, the SIMD paths here improve on code size, not just
-// on performance.
-template <typename CharType>
-struct ASCIILowerHashReader {
-  static constexpr unsigned kCompressionFactor = 1;
-  static constexpr unsigned kExpansionFactor = 1;
-
-  ALWAYS_INLINE static uint64_t Lowercase(CharType ch) {
-    return ToASCIILower(ch);
-  }
-
-  ALWAYS_INLINE static uint64_t Read64(const uint8_t* ptr) {
-    const CharType* p = reinterpret_cast<const CharType*>(ptr);
-#if defined(__SSE2__) || defined(__ARM_NEON__)
-    CharType b __attribute__((vector_size(8)));
-    memcpy(&b, p, sizeof(b));
-    b |= (b >= 'A' & b <= 'Z') & 0x20;
-    uint64_t ret;
-    memcpy(&ret, &b, sizeof(b));
-    return ret;
-#else
-    if constexpr (sizeof(CharType) == 2) {
-      return Lowercase(p[0]) | (Lowercase(p[1]) << 16) |
-             (Lowercase(p[2]) << 32) | (Lowercase(p[3]) << 48);
-    } else {
-      return Lowercase(p[0]) | (Lowercase(p[1]) << 8) |
-             (Lowercase(p[2]) << 16) | (Lowercase(p[3]) << 24) |
-             (Lowercase(p[4]) << 32) | (Lowercase(p[5]) << 40) |
-             (Lowercase(p[6]) << 48) | (Lowercase(p[7]) << 56);
-    }
-#endif
-  }
-  ALWAYS_INLINE static uint64_t Read32(const uint8_t* ptr) {
-    const CharType* p = reinterpret_cast<const CharType*>(ptr);
-#if defined(__SSE2__) || defined(__ARM_NEON__)
-    CharType b __attribute__((vector_size(4)));
-    memcpy(&b, p, sizeof(b));
-    b |= (b >= 'A' & b <= 'Z') & 0x20;
-    uint32_t ret;
-    memcpy(&ret, &b, sizeof(b));
-    return ret;
-#else
-    if constexpr (sizeof(CharType) == 2) {
-      return Lowercase(p[0]) | (Lowercase(p[1]) << 16);
-    } else {
-      return Lowercase(p[0]) | (Lowercase(p[1]) << 8) |
-             (Lowercase(p[2]) << 16) | (Lowercase(p[3]) << 24);
-    }
-#endif
-  }
-
-  ALWAYS_INLINE static uint64_t ReadSmall(const uint8_t* p, size_t k) {
-    if constexpr (sizeof(CharType) == 2) {
-      // This is fine, but the reasoning is a bit subtle. If we get here,
-      // we have to be a UTF-16 string, and since ReadSmall can only be called
-      // with 1, 2 or 3, it means we must be a UTF-16 string with a single
-      // code point (i.e., two bytes). Furthermore, we know that this code point
-      // must be above 0xFF, or the HashTranslatorLowercaseBuffer constructor
-      // would not have called us. Thus, ToASCIILower() on this code point would
-      // do nothing, and this, we should just hash it exactly as PlainHashReader
-      // would have done.
-      DCHECK_EQ(k, 2u);
-      k = 2;
-      return (uint64_t{p[0]} << 56) | (uint64_t{p[k >> 1]} << 32) |
-             uint64_t{p[k - 1]};
-    } else {
-      return (Lowercase(p[0]) << 56) | (Lowercase(p[k >> 1]) << 32) |
-             Lowercase(p[k - 1]);
-    }
-  }
-};
-
-// Combines ASCIILowerHashReader and ConvertTo8BitHashReader into one.
-// This is an obscure case that we only need for completeness,
-// so it is fine that it's not all that optimized.
-struct ASCIIConvertTo8AndLowerHashReader {
-  static constexpr unsigned kCompressionFactor = 2;
-  static constexpr unsigned kExpansionFactor = 1;
-
-  static uint64_t Lowercase(uint16_t ch) { return ToASCIILower(ch); }
-
-  static uint64_t Read64(const uint8_t* ptr) {
-    const uint16_t* p = reinterpret_cast<const uint16_t*>(ptr);
-    return Lowercase(p[0]) | (Lowercase(p[1]) << 8) | (Lowercase(p[2]) << 16) |
-           (Lowercase(p[3]) << 24) | (Lowercase(p[4]) << 32) |
-           (Lowercase(p[5]) << 40) | (Lowercase(p[6]) << 48) |
-           (Lowercase(p[7]) << 56);
-  }
-  static uint64_t Read32(const uint8_t* ptr) {
-    const uint16_t* p = reinterpret_cast<const uint16_t*>(ptr);
-    return Lowercase(p[0]) | (Lowercase(p[1]) << 8) | (Lowercase(p[2]) << 16) |
-           (Lowercase(p[3]) << 24);
-  }
-  static uint64_t ReadSmall(const uint8_t* ptr, size_t k) {
-    const uint16_t* p = reinterpret_cast<const uint16_t*>(ptr);
-    return (Lowercase(p[0]) << 56) | (Lowercase(p[k >> 1]) << 32) |
-           Lowercase(p[k - 1]);
-  }
-};
-
 class HashTranslatorLowercaseBuffer {
  public:
   explicit HashTranslatorLowercaseBuffer(const StringImpl* impl) : impl_(impl) {
     // We expect already lowercase strings to take another path in
     // Element::WeakLowercaseIfNecessary.
-    DCHECK(!impl_->IsLowerASCII());
+    DCHECK(!impl_->ContainsNoAsciiUpper());
+    base::span<const char> bytes = base::as_chars(impl->RawByteSpan());
     if (impl_->Is8Bit()) {
       hash_ =
-          StringHasher::ComputeHashAndMaskTop8Bits<ASCIILowerHashReader<LChar>>(
-              (const char*)impl_->Characters8(), impl_->length());
+          StringHasher::ComputeHashAndMaskTop8Bits<AsciiLowerHashReader<LChar>>(
+              bytes.data(), bytes.size());
     } else {
-      if (IsOnly8Bit(impl_->Characters16(), impl_->length())) {
-        hash_ = StringHasher::ComputeHashAndMaskTop8Bits<
-            ASCIIConvertTo8AndLowerHashReader>(
-            (const char*)impl_->Characters16(), impl_->length());
+      if (IsOnly8Bit(impl_->Span16())) {
+        using Reader = AsciiConvertTo8AndLowerHashReader;
+        hash_ = StringHasher::ComputeHashAndMaskTop8Bits<Reader>(
+            bytes.data(), bytes.size() / Reader::kCompressionFactor);
       } else {
         hash_ = StringHasher::ComputeHashAndMaskTop8Bits<
-            ASCIILowerHashReader<UChar>>((const char*)impl_->Characters16(),
-                                         impl_->length() * 2);
+            AsciiLowerHashReader<UChar>>(bytes.data(), bytes.size());
       }
     }
   }
@@ -263,11 +354,11 @@ struct LowercaseLookupTranslator {
   // lowercase version of |query|.
   static bool Equal(StringImpl* const& bucket,
                     const HashTranslatorLowercaseBuffer& buf) {
-    // This is similar to EqualIgnoringASCIICase, but not the same.
+    // This is similar to EqualIgnoringAsciiCase, but not the same.
     // In particular, it validates that |bucket| is a lowercase version of
     // |buf.impl()|.
     //
-    // Unlike EqualIgnoringASCIICase, it returns false if they are equal
+    // Unlike EqualIgnoringAsciiCase, it returns false if they are equal
     // ignoring ASCII case but |bucket| contains an uppercase ASCII character.
     //
     // However, similar optimizations are used here as there, so these should
@@ -275,15 +366,17 @@ struct LowercaseLookupTranslator {
     const StringImpl* query = buf.impl();
     if (bucket->length() != query->length())
       return false;
-    if (bucket->Bytes() == query->Bytes() &&
-        bucket->Is8Bit() == query->Is8Bit())
-      return query->IsLowerASCII();
-    return WTF::VisitCharacters(*bucket, [&](auto bch) {
-      return WTF::VisitCharacters(*query, [&](auto qch) {
+    if (bucket->RawByteSpan().data() == query->RawByteSpan().data() &&
+        bucket->Is8Bit() == query->Is8Bit()) {
+      return query->ContainsNoAsciiUpper();
+    }
+    return VisitCharacters(*bucket, [&](auto bch) {
+      return VisitCharacters(*query, [&](auto qch) {
         wtf_size_t len = query->length();
         for (wtf_size_t i = 0; i < len; ++i) {
-          if (bch[i] != ToASCIILower(qch[i]))
+          if (bch[i] != ToAsciiLower(qch[i])) {
             return false;
+          }
         }
         return true;
       });
@@ -312,7 +405,7 @@ void AtomicStringTable::ReserveCapacity(unsigned size) {
 }
 
 template <typename T, typename HashTranslator>
-scoped_refptr<StringImpl> AtomicStringTable::AddToStringTable(const T& value) {
+String AtomicStringTable::AddToStringTable(const T& value) {
   // Lock not only protects access to the table, it also guarantees
   // mutual exclusion with the refcount decrement on removal.
   base::AutoLock auto_lock(lock_);
@@ -326,35 +419,52 @@ scoped_refptr<StringImpl> AtomicStringTable::AddToStringTable(const T& value) {
              : base::WrapRefCounted(*add_result.stored_value);
 }
 
-scoped_refptr<StringImpl> AtomicStringTable::Add(
-    const UChar* s,
-    unsigned length,
-    AtomicStringUCharEncoding encoding) {
-  if (!s)
-    return nullptr;
+String AtomicStringTable::Add(base::span<const UChar> chars,
+                              AtomicStringUCharEncoding encoding) {
+  if (!chars.data()) {
+    return String();
+  }
 
-  if (!length)
+  if (chars.empty()) {
     return StringImpl::empty_;
+  }
 
-  UCharBuffer buffer(s, length, encoding);
+  if (encoding == AtomicStringUCharEncoding::kUnknown) {
+    encoding = IsOnly8Bit(chars) ? AtomicStringUCharEncoding::kIs8Bit
+                                 : AtomicStringUCharEncoding::kIs16Bit;
+  }
+
+  const auto length = chars.size();
+  if (encoding == AtomicStringUCharEncoding::kIs8Bit && length <= 16) {
+    const auto [sig_low, sig_high] = ComputeSmallStringSignature(chars);
+    return SmallStringCacheGetOrInsert(
+        sig_low, sig_high, static_cast<uint32_t>(length), [this, &chars]() {
+          return AddToStringTable<UCharBuffer, UCharBufferTranslator>(
+              UCharBuffer(chars, AtomicStringUCharEncoding::kIs8Bit));
+        });
+  }
+
+  UCharBuffer buffer(chars, encoding);
   return AddToStringTable<UCharBuffer, UCharBufferTranslator>(buffer);
 }
 
+namespace {
+
 class LCharBuffer {
  public:
-  ALWAYS_INLINE LCharBuffer(const LChar* chars, unsigned len)
+  ALWAYS_INLINE explicit LCharBuffer(base::span<const LChar> chars)
       : characters_(chars),
-        length_(len),
         // This is a common path from V8 strings, so inlining is worth it.
-        hash_(StringHasher::ComputeHashAndMaskTop8BitsInline((const char*)chars,
-                                                             len)) {}
+        hash_(StringHasher::ComputeHashAndMaskTop8BitsInline(chars)) {}
 
-  base::span<const LChar> characters() const { return {characters_, length_}; }
+  ALWAYS_INLINE LCharBuffer(base::span<const LChar> chars, unsigned hash)
+      : characters_(chars), hash_(hash) {}
+
+  base::span<const LChar> characters() const { return characters_; }
   unsigned hash() const { return hash_; }
 
  private:
-  const LChar* characters_;
-  const unsigned length_;
+  const base::span<const LChar> characters_;
   const unsigned hash_;
 };
 
@@ -362,7 +472,7 @@ struct LCharBufferTranslator {
   static unsigned GetHash(const LCharBuffer& buf) { return buf.hash(); }
 
   static bool Equal(StringImpl* const& str, const LCharBuffer& buf) {
-    return WTF::Equal(str, buf.characters());
+    return blink::Equal(str, buf.characters());
   }
 
   static void Store(StringImpl*& location,
@@ -375,35 +485,58 @@ struct LCharBufferTranslator {
   }
 };
 
-scoped_refptr<StringImpl> AtomicStringTable::Add(
-    const StringView& string_view) {
+}  // namespace
+
+String AtomicStringTable::Add(const StringView& string_view) {
   if (string_view.IsNull()) {
-    return nullptr;
+    return String();
   }
 
   if (string_view.empty()) {
     return StringImpl::empty_;
   }
 
-  if (string_view.Is8Bit()) {
-    LCharBuffer buffer(string_view.Characters8(), string_view.length());
-    return AddToStringTable<LCharBuffer, LCharBufferTranslator>(buffer);
+  const auto length = string_view.length();
+  if (length <= 16 && string_view.Is8Bit()) {
+    base::span<const LChar> chars = string_view.Span8();
+    const auto [sig_low, sig_high] = ComputeSmallStringSignature(chars);
+    return SmallStringCacheGetOrInsert(
+        sig_low, sig_high, static_cast<uint32_t>(length), [this, &chars]() {
+          return AddToStringTable<LCharBuffer, LCharBufferTranslator>(
+              LCharBuffer(chars));
+        });
   }
-  UCharBuffer buffer(string_view.Characters16(), string_view.length(),
-                     AtomicStringUCharEncoding::kUnknown);
-  return AddToStringTable<UCharBuffer, UCharBufferTranslator>(buffer);
+
+  if (string_view.Is8Bit()) {
+    return AddToStringTable<LCharBuffer, LCharBufferTranslator>(
+        LCharBuffer(string_view.Span8()));
+  }
+
+  return AddToStringTable<UCharBuffer, UCharBufferTranslator>(
+      UCharBuffer(string_view.Span16(), AtomicStringUCharEncoding::kUnknown));
 }
 
-scoped_refptr<StringImpl> AtomicStringTable::Add(const LChar* s,
-                                                 unsigned length) {
-  if (!s)
-    return nullptr;
+String AtomicStringTable::Add(base::span<const LChar> chars) {
+  if (!chars.data()) {
+    return String();
+  }
 
-  if (!length)
+  if (chars.empty()) {
     return StringImpl::empty_;
+  }
 
-  LCharBuffer buffer(s, length);
-  return AddToStringTable<LCharBuffer, LCharBufferTranslator>(buffer);
+  const auto length = chars.size();
+  if (length <= 16) {
+    const auto [sig_low, sig_high] = ComputeSmallStringSignature(chars);
+    return SmallStringCacheGetOrInsert(
+        sig_low, sig_high, static_cast<uint32_t>(length), [this, &chars]() {
+          return AddToStringTable<LCharBuffer, LCharBufferTranslator>(
+              LCharBuffer(chars));
+        });
+  }
+
+  return AddToStringTable<LCharBuffer, LCharBufferTranslator>(
+      LCharBuffer(chars));
 }
 
 StringImpl* AtomicStringTable::AddNoLock(StringImpl* string) {
@@ -416,54 +549,60 @@ StringImpl* AtomicStringTable::AddNoLock(StringImpl* string) {
   return entry;
 }
 
-scoped_refptr<StringImpl> AtomicStringTable::Add(StringImpl* string) {
+String AtomicStringTable::Add(StringImpl* string) {
   if (!string->length())
     return StringImpl::empty_;
 
-  // Lock not only protects access to the table, it also guarantess
+  // Lock not only protects access to the table, it also guarantees
   // mutual exclusion with the refcount decrement on removal.
   base::AutoLock auto_lock(lock_);
   return base::WrapRefCounted(AddNoLock(string));
 }
 
-scoped_refptr<StringImpl> AtomicStringTable::Add(
-    scoped_refptr<StringImpl>&& string) {
-  if (!string->length())
+String AtomicStringTable::Add(String&& string) {
+  if (!string.length()) {
     return StringImpl::empty_;
+  }
 
-  // Lock not only protects access to the table, it also guarantess
+  // Lock not only protects access to the table, it also guarantees
   // mutual exclusion with the refcount decrement on removal.
   base::AutoLock auto_lock(lock_);
-  StringImpl* entry = AddNoLock(string.get());
-  if (entry == string.get())
+  StringImpl* entry = AddNoLock(string.Impl());
+  if (entry == string.Impl()) {
     return std::move(string);
+  }
 
   return base::WrapRefCounted(entry);
 }
 
-scoped_refptr<StringImpl> AtomicStringTable::AddUTF8(
-    const uint8_t* characters_start,
-    const uint8_t* characters_end) {
+String AtomicStringTable::AddUtf8(base::span<const uint8_t> characters_span) {
   bool seen_non_ascii = false;
   bool seen_non_latin1 = false;
-  unsigned utf16_length = unicode::CalculateStringLengthFromUTF8(
-      characters_start, characters_end, seen_non_ascii, seen_non_latin1);
+
+  unsigned utf16_length = blink::unicode::CalculateStringLengthFromUtf8(
+      characters_span, seen_non_ascii, seen_non_latin1);
   if (!seen_non_ascii) {
-    return Add((const LChar*)characters_start, utf16_length);
+    return Add(characters_span);
+  }
+
+  // If CalculateStringLengthFromUtf8() detects invalid UTF-8, it will return
+  // 0. Calling ConvertUtf8ToUtf16() with a zero-length UTF-16 buffer will
+  // cause it to return a status of kTargetExhausted. Return a null String in
+  // this case instead. This matches String::FromUtf8(). If there are no
+  // characters, `seen_non_ascii` will be false, and thus the ASCII code-path
+  // will have been taken.
+  if (utf16_length == 0) {
+    return String();
   }
 
   auto utf16_buf = base::HeapArray<UChar>::Uninit(utf16_length);
-  base::span<const uint8_t> source_buffer(
-      reinterpret_cast<const uint8_t*>(characters_start),
-      static_cast<size_t>(characters_end - characters_start));
-  if (unicode::ConvertUTF8ToUTF16(source_buffer, utf16_buf).status !=
-      unicode::kConversionOK) {
+  if (!unicode::ConvertUtf8ToUtf16(characters_span, utf16_buf).IsSuccess()) {
     NOTREACHED();
   }
 
-  UCharBuffer buffer(utf16_buf.data(), utf16_buf.size(),
-                     seen_non_latin1 ? AtomicStringUCharEncoding::kIs16Bit
-                                     : AtomicStringUCharEncoding::kIs8Bit);
+  UCharBuffer buffer(utf16_buf, seen_non_latin1
+                                    ? AtomicStringUCharEncoding::kIs16Bit
+                                    : AtomicStringUCharEncoding::kIs8Bit);
   return AddToStringTable<UCharBuffer, UCharBufferTranslator>(buffer);
 }
 
@@ -480,15 +619,15 @@ AtomicStringTable::WeakResult AtomicStringTable::WeakFindSlowForTesting(
 AtomicStringTable::WeakResult AtomicStringTable::WeakFindLowercase(
     const AtomicString& string) {
   DCHECK(!string.empty());
-  DCHECK(!string.IsLowerASCII());
+  DCHECK(!string.ContainsNoAsciiUpper());
   DCHECK(string.length());
   HashTranslatorLowercaseBuffer buffer(string.Impl());
   base::AutoLock auto_lock(lock_);
   const auto& it = table_.Find<LowercaseLookupTranslator>(buffer);
   if (it == table_.end())
     return WeakResult();
-  DCHECK(StringView(*it).IsLowerASCII());
-  DCHECK(EqualIgnoringASCIICase(*it, string));
+  DCHECK(StringView(*it).ContainsNoAsciiUpper());
+  DCHECK(EqualIgnoringAsciiCase(*it, string));
   return WeakResult(*it);
 }
 
@@ -507,4 +646,4 @@ bool AtomicStringTable::ReleaseAndRemoveIfNeeded(StringImpl* string) {
   return true;
 }
 
-}  // namespace WTF
+}  // namespace blink

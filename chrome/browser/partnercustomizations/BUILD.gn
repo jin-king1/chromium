@@ -56,6 +56,7 @@ android_library("java") {
     "//chrome/browser/android/lifecycle:java",
     "//chrome/browser/flags:java",
     "//chrome/browser/preferences:java",
+    "//chrome/browser/ui/android/bottombar:config_java",
     "//components/embedder_support/android:util_java",
     "//components/url_formatter/android:url_formatter_java",
     "//content/public/android:content_main_dex_java",
@@ -76,7 +77,7 @@ android_library("test_support_java") {
     "//content/public/test/android:content_java_test_support",
     "//third_party/androidx:androidx_test_core_java",
     "//third_party/androidx:androidx_test_monitor_java",
-    "//third_party/junit:junit",
+    "//third_party/junit",
   ]
 }
 
@@ -94,12 +95,13 @@ android_library("unit_device_javatests") {
     "//base:base_java_test_support",
     "//chrome/browser/flags:java",
     "//chrome/browser/preferences:java",
+    "//chrome/browser/url_constants/android:java",
     "//chrome/test/android:chrome_java_unit_test_support",
     "//components/embedder_support/android:util_java",
     "//components/url_formatter/android:url_formatter_java",
     "//content/public/test/android:content_java_test_support",
     "//third_party/androidx:androidx_test_runner_java",
-    "//third_party/junit:junit",
+    "//third_party/junit",
     "//url:gurl_java",
   ]
 }
@@ -123,11 +125,13 @@ robolectric_library("junit") {
     "//base/test:test_support_java",
     "//chrome/browser/android/lifecycle:java",
     "//chrome/browser/flags:java",
+    "//chrome/browser/url_constants/android:java",
     "//chrome/test/android:chrome_java_unit_test_support",
     "//components/embedder_support/android:util_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
-    "//third_party/junit:junit",
+    "//third_party/junit",
     "//third_party/mockito:mockito_java",
+    "//ui/android:ui_java_test_support",
     "//url:gurl_java",
     "//url:gurl_junit_test_support",
   ]
@@ -138,6 +142,7 @@ android_library("junit_test_utils_java") {
   sources = [ "java/src/org/chromium/chrome/browser/partnercustomizations/PartnerCustomizationsTestUtils.java" ]
   deps = [
     ":helper_java",
+    "//chrome/browser/url_constants/android:java",
     "//components/embedder_support/android:util_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
   ]

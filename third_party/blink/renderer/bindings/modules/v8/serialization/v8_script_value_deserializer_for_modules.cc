@@ -104,7 +104,7 @@ ScriptWrappable* V8ScriptValueDeserializerForModules::ReadDOMObject(
           std::make_unique<RTCCertificateGenerator>();
       if (!certificate_generator)
         return nullptr;
-      rtc::scoped_refptr<rtc::RTCCertificate> certificate =
+      webrtc::scoped_refptr<webrtc::RTCCertificate> certificate =
           certificate_generator->FromPEM(pem_private_key, pem_certificate);
       if (!certificate)
         return nullptr;
@@ -196,18 +196,41 @@ bool AlgorithmIdFromWireFormat(uint32_t raw_id, WebCryptoAlgorithmId* id) {
     case kX25519Tag:
       *id = kWebCryptoAlgorithmIdX25519;
       return true;
+    case kChaCha20Poly1305Tag:
+      *id = kWebCryptoAlgorithmIdChaCha20Poly1305;
+      return true;
+    case kMlDsa44Tag:
+      *id = kWebCryptoAlgorithmIdMlDsa44;
+      return true;
+    case kMlDsa65Tag:
+      *id = kWebCryptoAlgorithmIdMlDsa65;
+      return true;
+    case kMlDsa87Tag:
+      *id = kWebCryptoAlgorithmIdMlDsa87;
+      return true;
+    case kMlKem768Tag:
+      *id = kWebCryptoAlgorithmIdMlKem768;
+      return true;
+    case kMlKem1024Tag:
+      *id = kWebCryptoAlgorithmIdMlKem1024;
+      return true;
+    case kMlKem768X25519Tag:
+      *id = kWebCryptoAlgorithmIdMlKem768X25519;
+      return true;
   }
   return false;
 }
 
-bool AsymmetricKeyTypeFromWireFormat(uint32_t raw_key_type,
-                                     WebCryptoKeyType* key_type) {
-  switch (static_cast<AsymmetricCryptoKeyType>(raw_key_type)) {
+bool KeyTypeFromWireFormat(uint32_t raw_key_type, WebCryptoKeyType* key_type) {
+  switch (static_cast<CryptoKeyType>(raw_key_type)) {
     case kPublicKeyType:
       *key_type = kWebCryptoKeyTypePublic;
       return true;
     case kPrivateKeyType:
       *key_type = kWebCryptoKeyTypePrivate;
+      return true;
+    case kSecretKeyType:
+      *key_type = kWebCryptoKeyTypeSecret;
       return true;
   }
   return false;
@@ -233,12 +256,13 @@ bool KeyUsagesFromWireFormat(uint32_t raw_usages,
                              WebCryptoKeyUsageMask* usages,
                              bool* extractable) {
   // Reminder to update this when adding new key usages.
-  static_assert(kEndOfWebCryptoKeyUsage == (1 << 7) + 1,
+  static_assert(kEndOfWebCryptoKeyUsage == (1 << 11) + 1,
                 "update required when adding new key usages");
   const uint32_t kAllPossibleUsages =
       kExtractableUsage | kEncryptUsage | kDecryptUsage | kSignUsage |
       kVerifyUsage | kDeriveKeyUsage | kWrapKeyUsage | kUnwrapKeyUsage |
-      kDeriveBitsUsage;
+      kDeriveBitsUsage | kEncapsulateKeyUsage | kEncapsulateBitsUsage |
+      kDecapsulateKeyUsage | kDecapsulateBitsUsage;
   if (raw_usages & ~kAllPossibleUsages)
     return false;
 
@@ -260,6 +284,18 @@ bool KeyUsagesFromWireFormat(uint32_t raw_usages,
     *usages |= kWebCryptoKeyUsageUnwrapKey;
   if (raw_usages & kDeriveBitsUsage)
     *usages |= kWebCryptoKeyUsageDeriveBits;
+  if (raw_usages & kEncapsulateKeyUsage) {
+    *usages |= kWebCryptoKeyUsageEncapsulateKey;
+  }
+  if (raw_usages & kEncapsulateBitsUsage) {
+    *usages |= kWebCryptoKeyUsageEncapsulateBits;
+  }
+  if (raw_usages & kDecapsulateKeyUsage) {
+    *usages |= kWebCryptoKeyUsageDecapsulateKey;
+  }
+  if (raw_usages & kDecapsulateBitsUsage) {
+    *usages |= kWebCryptoKeyUsageDecapsulateBits;
+  }
   return true;
 }
 
@@ -308,7 +344,7 @@ CryptoKey* V8ScriptValueDeserializerForModules::ReadCryptoKey() {
       WebCryptoAlgorithmId hash;
       if (!ReadUint32(&raw_id) || !AlgorithmIdFromWireFormat(raw_id, &id) ||
           !ReadUint32(&raw_key_type) ||
-          !AsymmetricKeyTypeFromWireFormat(raw_key_type, &key_type) ||
+          !KeyTypeFromWireFormat(raw_key_type, &key_type) ||
           !ReadUint32(&modulus_length_bits) ||
           !ReadUint32(&public_exponent_size) ||
           !ReadRawBytesToSpan(public_exponent_size, &public_exponent) ||
@@ -328,24 +364,24 @@ CryptoKey* V8ScriptValueDeserializerForModules::ReadCryptoKey() {
       WebCryptoNamedCurve named_curve;
       if (!ReadUint32(&raw_id) || !AlgorithmIdFromWireFormat(raw_id, &id) ||
           !ReadUint32(&raw_key_type) ||
-          !AsymmetricKeyTypeFromWireFormat(raw_key_type, &key_type) ||
+          !KeyTypeFromWireFormat(raw_key_type, &key_type) ||
           !ReadUint32(&raw_named_curve) ||
-          !NamedCurveFromWireFormat(raw_named_curve, &named_curve))
+          !NamedCurveFromWireFormat(raw_named_curve, &named_curve)) {
         return nullptr;
+      }
       algorithm = WebCryptoKeyAlgorithm::CreateEc(id, named_curve);
       break;
     }
     case kEd25519KeyTag:
     case kX25519KeyTag: {
-      if (!RuntimeEnabledFeatures::WebCryptoCurve25519Enabled())
-        break;
       uint32_t raw_id;
       WebCryptoAlgorithmId id;
       uint32_t raw_key_type;
       if (!ReadUint32(&raw_id) || !AlgorithmIdFromWireFormat(raw_id, &id) ||
           !ReadUint32(&raw_key_type) ||
-          !AsymmetricKeyTypeFromWireFormat(raw_key_type, &key_type))
+          !KeyTypeFromWireFormat(raw_key_type, &key_type)) {
         return nullptr;
+      }
       algorithm = raw_key_byte == kEd25519KeyTag
                       ? WebCryptoKeyAlgorithm::CreateEd25519(id)
                       : WebCryptoKeyAlgorithm::CreateX25519(id);
@@ -356,6 +392,18 @@ CryptoKey* V8ScriptValueDeserializerForModules::ReadCryptoKey() {
       WebCryptoAlgorithmId id;
       if (!ReadUint32(&raw_id) || !AlgorithmIdFromWireFormat(raw_id, &id))
         return nullptr;
+      algorithm = WebCryptoKeyAlgorithm::CreateWithoutParams(id);
+      break;
+    }
+    case kNoParamsWithKeyTypeKeyTag: {
+      uint32_t raw_id;
+      WebCryptoAlgorithmId id;
+      uint32_t raw_key_type;
+      if (!ReadUint32(&raw_id) || !AlgorithmIdFromWireFormat(raw_id, &id) ||
+          !ReadUint32(&raw_key_type) ||
+          !KeyTypeFromWireFormat(raw_key_type, &key_type)) {
+        return nullptr;
+      }
       algorithm = WebCryptoKeyAlgorithm::CreateWithoutParams(id);
       break;
     }
@@ -475,7 +523,7 @@ RTCDataChannel* V8ScriptValueDeserializerForModules::ReadRTCDataChannel() {
   }
 
   using NativeDataChannelVector =
-      Vector<rtc::scoped_refptr<webrtc::DataChannelInterface>>;
+      Vector<webrtc::scoped_refptr<webrtc::DataChannelInterface>>;
 
   const NativeDataChannelVector& channels = attachment->DataChannels();
   if (index >= attachment->size() || !channels[index]) {

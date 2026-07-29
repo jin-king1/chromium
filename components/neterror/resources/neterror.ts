@@ -16,6 +16,7 @@ declare global {
     errorPageController?: ErrorPageController;
     // `loadTimeDataRaw` is injected to the `window` scope from C++.
     loadTimeDataRaw: LoadTimeDataRaw;
+    initializeEasterEggHighScore: (score: number) => void;
   }
 }
 
@@ -27,6 +28,9 @@ interface ErrorPageController {
   portalSigninButtonClick(): void;
   savePageForLater(): void;
   cancelSavePage(): void;
+  updateEasterEggHighScore(score: number): void;
+  resetEasterEggHighScore(): void;
+  trackEasterEgg(): void;
 }
 
 interface TemplateData {
@@ -65,10 +69,23 @@ interface TemplateData {
     savePageMsg: string,
     cancelMsg: string,
   };
+  isOfflineError?: boolean;
+  dinoGameA11yAriaLabel: string;
+  dinoGameInstructionsTouch: string;
+  dinoGameInstructionsKeyboard: string;
+  dinoGameInstructionsHybrid: string;
+  dinoGameA11yAriaLabelTouch: string;
+  dinoGameA11yAriaLabelKeyboard: string;
+  dinoGameA11yAriaLabelHybrid: string;
 }
 
 let showingDetails: boolean = false;
 let lastData: TemplateData|null = null;
+// Flag to ensure that the Dino game's global singletons (like loadTimeData.data
+// and the Runner instance) are only initialized once. This prevents assertion
+// errors that occur if these are set/initialized multiple times, which can
+// happen in cases such as during testing
+let dinoGameInitialized: boolean = false;
 
 function toggleHelpBox() {
   showingDetails = !showingDetails;
@@ -100,6 +117,7 @@ if (window.top!.location !== window.location) {
 // Re-renders the error page using |data| as the dictionary of values.
 // Used by NetErrorTabHelper to update DNS error pages with probe results.
 function updateForDnsProbe(newData: TemplateData) {
+  updateInitialInstruction(newData);
   onTemplateDataReceived(newData);
 }
 
@@ -221,19 +239,52 @@ function getButtonsCssClass(): string {
   return primaryControlOnLeft ? 'suggested-left' : 'suggested-right';
 }
 
+// Use device capabilities to guess the most appropriate initial instruction.
+function updateInitialInstruction(data: TemplateData) {
+  // This method can be called for various error types. Only errors that
+  // represent an offline state (as determined by LocalizedError::IsOfflineError
+  // in C++, such as net::ERR_INTERNET_DISCONNECTED) result in the dino game
+  // being shown. Other errors (e.g., 404, connection reset) do not have the
+  // dino game or the localized strings for it, so we skip this logic.
+  if (!data.isOfflineError) {
+    return;
+  }
+
+  if (navigator.maxTouchPoints === 0) {
+    // No touch support, so it must be a keyboard/mouse device.
+    data.heading.msg = data.dinoGameInstructionsKeyboard;
+    data.dinoGameA11yAriaLabel = data.dinoGameA11yAriaLabelKeyboard;
+  } else if (window.matchMedia('(hover: hover)').matches) {
+    // Touch is supported, but so is hovering (e.g. mouse/trackpad).
+    // This implies a hybrid device or a tablet with a keyboard/trackpad.
+    data.heading.msg = data.dinoGameInstructionsHybrid;
+    data.dinoGameA11yAriaLabel = data.dinoGameA11yAriaLabelHybrid;
+  } else {
+    // Touch is supported and hovering is not (e.g. mobile/tablet).
+    data.heading.msg = data.dinoGameInstructionsTouch;
+    data.dinoGameA11yAriaLabel = data.dinoGameA11yAriaLabelTouch;
+  }
+}
+
 function onDocumentLoad() {
-  onTemplateDataReceived(window.loadTimeDataRaw as TemplateData);
+  const data = window.loadTimeDataRaw as TemplateData;
+  updateInitialInstruction(data);
+  onTemplateDataReceived(data);
 }
 
 function onTemplateDataReceived(newData: TemplateData) {
-  lastData = newData as TemplateData;
+  lastData = newData;
   render(getHtml(lastData, showingDetails), getRequiredElement('content'));
 
   if (!isSubFrame && newData.iconClass === 'icon-offline') {
     document.documentElement.classList.add('offline');
+
     // Set loadTimeData.data because it is used by the dino code.
-    loadTimeData.data = newData;
-    new Runner('.interstitial-wrapper');
+    if (!dinoGameInitialized) {
+      loadTimeData.data = newData;
+      Runner.initializeInstance('.interstitial-wrapper');
+      dinoGameInitialized = true;
+    }
   }
 }
 
@@ -339,6 +390,7 @@ Object.assign(window, {
   portalSignin,
   toggleHelpBox,
   updateForDnsProbe,
+  updateInitialInstruction,
 });
 
 document.addEventListener('DOMContentLoaded', onDocumentLoad);

@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 #include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
@@ -35,7 +36,7 @@ class SessionBindingHelper {
     kLoadKeyFailure = 1,
     kCreateAssertionFailure = 2,
     kSignAssertionFailure = 3,
-    kVerifySignatureFailure = 4,
+    // kVerifySignatureFailure = 4, obsolete.
     kAppendSignatureFailure = 5,
     kMaxValue = kAppendSignatureFailure
   };
@@ -75,8 +76,8 @@ class SessionBindingHelper {
       std::string_view challenge,
       const GURL& destination_url,
       base::OnceCallback<void(base::expected<std::string, Error>)> callback,
-      unexportable_keys::ServiceErrorOr<unexportable_keys::UnexportableKeyId>
-          binding_key);
+      unexportable_keys::ServiceErrorOr<
+          unexportable_keys::UnexportableSigningKeyId> binding_key);
 
   const raw_ref<unexportable_keys::UnexportableKeyService>
       unexportable_key_service_;

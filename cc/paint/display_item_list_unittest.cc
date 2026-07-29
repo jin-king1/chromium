@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "cc/paint/display_item_list.h"
 
 #include <stddef.h>
@@ -14,6 +9,8 @@
 #include <array>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/trace_event/traced_value.h"
 #include "base/values.h"
@@ -45,21 +42,24 @@ namespace cc {
 
 namespace {
 
-bool CompareN32Pixels(void* actual_pixels,
-                      void* expected_pixels,
+bool CompareN32Pixels(base::span<unsigned char> actual_pixels,
+                      base::span<unsigned char> expected_pixels,
                       int width,
                       int height) {
-  if (memcmp(actual_pixels, expected_pixels, 4 * width * height) == 0)
+  CHECK_EQ(actual_pixels.size(), 4u * width * height);
+  CHECK_EQ(expected_pixels.size(), 4u * width * height);
+  if (actual_pixels == expected_pixels) {
     return true;
+  }
 
   SkImageInfo actual_info = SkImageInfo::MakeN32Premul(width, height);
   SkBitmap actual_bitmap;
-  actual_bitmap.installPixels(actual_info, actual_pixels,
+  actual_bitmap.installPixels(actual_info, actual_pixels.data(),
                               actual_info.minRowBytes());
 
   SkImageInfo expected_info = SkImageInfo::MakeN32Premul(width, height);
   SkBitmap expected_bitmap;
-  expected_bitmap.installPixels(expected_info, expected_pixels,
+  expected_bitmap.installPixels(expected_info, expected_pixels.data(),
                                 expected_info.minRowBytes());
 
   std::string gen_bmp_data_url = GetPNGDataUrl(actual_bitmap);
@@ -114,16 +114,16 @@ TEST_F(DisplayItemListTest, TraceEmptyVisualRect) {
   // Pass: we don't crash
   std::unique_ptr<base::Value> root = ToBaseValue(list.get(), true);
 
-  const base::Value::Dict* root_dict = root->GetIfDict();
+  const base::DictValue* root_dict = root->GetIfDict();
   ASSERT_NE(nullptr, root_dict);
-  const base::Value::Dict* params_dict = root_dict->FindDict("params");
+  const base::DictValue* params_dict = root_dict->FindDict("params");
   ASSERT_NE(nullptr, params_dict);
-  const base::Value::List* items = params_dict->FindList("items");
+  const base::ListValue* items = params_dict->FindList("items");
   ASSERT_NE(nullptr, items);
   ASSERT_EQ(2u, items->size());
 
-  const base::Value::Dict* item_dict;
-  const base::Value::List* visual_rect;
+  const base::DictValue* item_dict;
+  const base::ListValue* visual_rect;
   const std::string* name;
 
   item_dict = ((*items)[0]).GetIfDict();
@@ -469,16 +469,16 @@ TEST_F(DisplayItemListTest, AsValueWithNoOps) {
 
   // Pass |true| to ask for PaintOps even though there are none.
   std::unique_ptr<base::Value> root = ToBaseValue(list.get(), true);
-  const base::Value::Dict* root_dict = root->GetIfDict();
+  const base::DictValue* root_dict = root->GetIfDict();
   ASSERT_NE(nullptr, root_dict);
   // The traced value has a params dictionary as its root.
   {
-    const base::Value::Dict* params_dict = root_dict->FindDict("params");
+    const base::DictValue* params_dict = root_dict->FindDict("params");
     ASSERT_NE(nullptr, params_dict);
 
     // The real contents of the traced value is in here.
     {
-      const base::Value::List* params_list;
+      const base::ListValue* params_list;
 
       // The layer_rect field is present by empty.
       params_list = params_dict->FindList("layer_rect");
@@ -498,12 +498,12 @@ TEST_F(DisplayItemListTest, AsValueWithNoOps) {
   ASSERT_NE(nullptr, root_dict);
   // The traced value has a params dictionary as its root.
   {
-    const base::Value::Dict* params_dict = root_dict->FindDict("params");
+    const base::DictValue* params_dict = root_dict->FindDict("params");
     ASSERT_NE(nullptr, params_dict);
 
     // The real contents of the traced value is in here.
     {
-      const base::Value::List* params_list;
+      const base::ListValue* params_list;
 
       // The layer_rect field is present by empty.
       params_list = params_dict->FindList("layer_rect");
@@ -556,23 +556,23 @@ TEST_F(DisplayItemListTest, AsValueWithOps) {
 
   // Pass |true| to ask for PaintOps to be included.
   std::unique_ptr<base::Value> root = ToBaseValue(list.get(), true);
-  const base::Value::Dict* root_dict = root->GetIfDict();
+  const base::DictValue* root_dict = root->GetIfDict();
   ASSERT_NE(nullptr, root_dict);
   // The traced value has a params dictionary as its root.
   {
-    const base::Value::Dict* params_dict = root_dict->FindDict("params");
+    const base::DictValue* params_dict = root_dict->FindDict("params");
     ASSERT_NE(nullptr, params_dict);
 
     // The real contents of the traced value is in here.
     {
-      const base::Value::List* layer_rect_list =
+      const base::ListValue* layer_rect_list =
           params_dict->FindList("layer_rect");
       // The layer_rect field is present and has the bounds of the rtree.
       ASSERT_NE(nullptr, layer_rect_list);
       EXPECT_TRACED_RECT(2, 3, 8, 9, layer_rect_list);
 
       // The items list has 3 things in it since we built 3 visual rects.
-      const base::Value::List* items = params_dict->FindList("items");
+      const base::ListValue* items = params_dict->FindList("items");
       ASSERT_NE(nullptr, items);
       ASSERT_EQ(7u, items->size());
 
@@ -598,10 +598,9 @@ TEST_F(DisplayItemListTest, AsValueWithOps) {
       for (int i = 0; i < 7; ++i) {
         const base::Value& item_value = (*items)[i];
         ASSERT_TRUE(item_value.is_dict());
-        const base::Value::Dict& item_dict = item_value.GetDict();
+        const base::DictValue& item_dict = item_value.GetDict();
 
-        const base::Value::List* visual_rect =
-            item_dict.FindList("visual_rect");
+        const base::ListValue* visual_rect = item_dict.FindList("visual_rect");
         ASSERT_NE(nullptr, visual_rect);
         EXPECT_TRACED_RECT(2, 3, 8, 9, visual_rect);
 
@@ -621,12 +620,12 @@ TEST_F(DisplayItemListTest, AsValueWithOps) {
   ASSERT_NE(nullptr, root_dict);
   // The traced value has a params dictionary as its root.
   {
-    const base::Value::Dict* params_dict = root_dict->FindDict("params");
+    const base::DictValue* params_dict = root_dict->FindDict("params");
     ASSERT_NE(nullptr, params_dict);
 
     // The real contents of the traced value is in here.
     {
-      const base::Value::List* params_list;
+      const base::ListValue* params_list;
       // The layer_rect field is present and has the bounds of the rtree.
       params_list = params_dict->FindList("layer_rect");
       ASSERT_NE(nullptr, params_list);

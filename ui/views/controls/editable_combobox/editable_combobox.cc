@@ -14,8 +14,10 @@
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_action_data.h"
@@ -53,6 +55,7 @@
 #include "ui/views/controls/button/button_controller.h"
 #include "ui/views/controls/combobox/combobox_util.h"
 #include "ui/views/controls/combobox/empty_combobox_model.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/menu/menu_config.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/menu/menu_types.h"
@@ -73,8 +76,8 @@ namespace views {
 
 namespace {
 
-int kEditableComboboxButtonSize = 24;
-int kEditableComboboxControlsContainerInsets = 6;
+constexpr int kEditableComboboxButtonSize = 24;
+constexpr int kEditableComboboxControlsContainerInsets = 6;
 
 class Arrow : public Button {
   METADATA_HEADER(Arrow, Button)
@@ -109,13 +112,14 @@ class Arrow : public Button {
     // Make sure the arrow use the same color as the text in the combobox.
     PaintComboboxArrow(
         GetColorProvider()->GetColor(TypographyProvider::Get().GetColorId(
-            style::CONTEXT_TEXTFIELD,
-            GetEnabled() ? style::STYLE_PRIMARY : style::STYLE_DISABLED)),
+            style::CONTEXT_TEXTFIELD, GetEnabledInViewsSubtree()
+                                          ? style::STYLE_PRIMARY
+                                          : style::STYLE_DISABLED)),
         arrow_bounds, canvas);
   }
 
   void UpdateAccessibleDefaultActionVerb() {
-    if (GetEnabled()) {
+    if (GetEnabledInViewsSubtree()) {
       GetViewAccessibility().SetDefaultActionVerb(
           ax::mojom::DefaultActionVerb::kOpen);
     } else {
@@ -124,12 +128,30 @@ class Arrow : public Button {
   }
 
   base::CallbackListSubscription enabled_changed_subscription_ =
-      AddEnabledChangedCallback(
+      AddEnabledInViewsSubtreeChangedCallback(
           base::BindRepeating(&Arrow::UpdateAccessibleDefaultActionVerb,
                               base::Unretained(this)));
 };
 
 BEGIN_METADATA(Arrow)
+END_METADATA
+
+class ControlElementsContainer final : public BoxLayoutView {
+  METADATA_HEADER(ControlElementsContainer, BoxLayoutView)
+
+ public:
+  ControlElementsContainer() = default;
+  ControlElementsContainer(ControlElementsContainer&) = delete;
+  ControlElementsContainer& operator=(ControlElementsContainer&) = delete;
+  ~ControlElementsContainer() override = default;
+
+ protected:
+  void ChildPreferredSizeChanged(View* child) override {
+    PreferredSizeChanged();
+  }
+};
+
+BEGIN_METADATA(ControlElementsContainer)
 END_METADATA
 
 }  // namespace
@@ -382,13 +404,15 @@ EditableCombobox::EditableCombobox(
   textfield_->SetFontList(GetFontList());
   views::FocusRing::Get(textfield_)->SetOutsetFocusRingDisabled(true);
 
-  control_elements_container_ = AddChildView(std::make_unique<BoxLayoutView>());
+  control_elements_container_ =
+      AddChildView(std::make_unique<ControlElementsContainer>());
   control_elements_container_->SetInsideBorderInsets(
       gfx::Insets::TLBR(kEditableComboboxControlsContainerInsets, 0,
                         kEditableComboboxControlsContainerInsets,
                         kEditableComboboxControlsContainerInsets));
   control_elements_container_->SetBetweenChildSpacing(
       kComboboxArrowPaddingWidth);
+  control_elements_container_observation_.Observe(control_elements_container_);
   if (display_arrow) {
     arrow_ = AddControlElement(std::make_unique<Arrow>(base::BindRepeating(
         &EditableCombobox::ArrowButtonPressed, base::Unretained(this))));
@@ -500,6 +524,15 @@ bool EditableCombobox::HandleKeyEvent(Textfield* sender,
 
 void EditableCombobox::OnViewBlurred(View* observed_view) {
   CloseMenu();
+}
+
+void EditableCombobox::OnViewPreferredSizeChanged(View* observed_view) {
+  // TODO(crbug.com/498077504): Watch for potential layout loops. Calling
+  // UpdateTextfieldInsets() during preferred size changes may trigger
+  // re-entrant or unnecessary second layouts.
+  if (observed_view == control_elements_container_) {
+    UpdateTextfieldInsets();
+  }
 }
 
 void EditableCombobox::OnLayoutIsAnimatingChanged(
@@ -648,8 +681,8 @@ const ui::ComboboxModel* EditableCombobox::GetComboboxModel() const {
 }
 
 BEGIN_METADATA(EditableCombobox)
-ADD_PROPERTY_METADATA(std::u16string_view, Text)
-ADD_PROPERTY_METADATA(std::u16string_view, PlaceholderText)
+ADD_PROPERTY_METADATA(std::u16string, Text)
+ADD_PROPERTY_METADATA(std::u16string, PlaceholderText)
 END_METADATA
 
 }  // namespace views

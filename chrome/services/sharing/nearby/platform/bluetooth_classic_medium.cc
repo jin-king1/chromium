@@ -5,8 +5,8 @@
 #include "chrome/services/sharing/nearby/platform/bluetooth_classic_medium.h"
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notimplemented.h"
 #include "chrome/services/sharing/nearby/platform/bluetooth_server_socket.h"
 #include "chrome/services/sharing/nearby/platform/bluetooth_socket.h"
 #include "components/cross_device/nearby/nearby_features.h"
@@ -252,7 +252,7 @@ void BluetoothClassicMedium::DeviceAdded(
   }
 
   const std::string& address = device->address;
-  if (base::Contains(discovered_bluetooth_devices_map_, address)) {
+  if (discovered_bluetooth_devices_map_.contains(address)) {
     auto& bluetooth_device = discovered_bluetooth_devices_map_.at(address);
     bool name_changed = device->name.has_value() &&
                         device->name.value() != bluetooth_device.GetName();
@@ -282,8 +282,9 @@ void BluetoothClassicMedium::DeviceRemoved(
   }
 
   const std::string& address = device->address;
-  if (!base::Contains(discovered_bluetooth_devices_map_, address))
+  if (!discovered_bluetooth_devices_map_.contains(address)) {
     return;
+  }
 
   discovery_callback_->device_lost_cb(
       discovered_bluetooth_devices_map_.at(address));

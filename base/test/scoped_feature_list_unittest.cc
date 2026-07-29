@@ -5,6 +5,7 @@
 #include "base/test/scoped_feature_list.h"
 
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -17,8 +18,8 @@ namespace base::test {
 
 namespace {
 
-BASE_FEATURE(kTestFeature1, "TestFeature1", FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kTestFeature2, "TestFeature2", FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kTestFeature1, FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kTestFeature2, FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE_PARAM(bool,
                    kTestFeatureParam1,
@@ -56,7 +57,7 @@ class ScopedFeatureListTest : public testing::Test {
  public:
   ScopedFeatureListTest() {
     // Clear default feature list.
-    std::unique_ptr<FeatureList> feature_list(new FeatureList);
+    auto feature_list = std::make_unique<FeatureList>();
     feature_list->InitFromCommandLine(std::string(), std::string());
     original_feature_list_ = FeatureList::ClearInstanceForTesting();
     FeatureList::SetInstance(std::move(feature_list));
@@ -84,6 +85,20 @@ TEST_F(ScopedFeatureListTest, BasicScoped) {
   {
     test::ScopedFeatureList feature_list1;
     feature_list1.InitFromCommandLine("TestFeature1", std::string());
+    ExpectFeatures("TestFeature1", std::string());
+    EXPECT_TRUE(FeatureList::IsEnabled(kTestFeature1));
+  }
+  ExpectFeatures(std::string(), std::string());
+  EXPECT_FALSE(FeatureList::IsEnabled(kTestFeature1));
+}
+
+TEST_F(ScopedFeatureListTest, MoveCopy) {
+  ExpectFeatures(std::string(), std::string());
+  EXPECT_FALSE(FeatureList::IsEnabled(kTestFeature1));
+  {
+    test::ScopedFeatureList feature_list1;
+    feature_list1.InitFromCommandLine("TestFeature1", std::string());
+    test::ScopedFeatureList feature_list2 = std::move(feature_list1);
     ExpectFeatures("TestFeature1", std::string());
     EXPECT_TRUE(FeatureList::IsEnabled(kTestFeature1));
   }
@@ -566,7 +581,7 @@ TEST_F(ScopedFeatureListTest, FeatureOverrideFeatureWithDefault2) {
 TEST_F(ScopedFeatureListTest, FeatureOverrideFeatureWithEnabledFieldTrial) {
   test::ScopedFeatureList feature_list1;
 
-  std::unique_ptr<FeatureList> feature_list(new FeatureList);
+  auto feature_list = std::make_unique<FeatureList>();
   FieldTrial* trial = FieldTrialList::CreateFieldTrial("TrialExample", "A");
   feature_list->RegisterFieldTrialOverride(
       kTestFeature1.name, FeatureList::OVERRIDE_ENABLE_FEATURE, trial);
@@ -582,7 +597,7 @@ TEST_F(ScopedFeatureListTest, FeatureOverrideFeatureWithEnabledFieldTrial) {
 TEST_F(ScopedFeatureListTest, FeatureOverrideFeatureWithDisabledFieldTrial) {
   test::ScopedFeatureList feature_list1;
 
-  std::unique_ptr<FeatureList> feature_list(new FeatureList);
+  auto feature_list = std::make_unique<FeatureList>();
   FieldTrial* trial = FieldTrialList::CreateFieldTrial("TrialExample", "A");
   feature_list->RegisterFieldTrialOverride(
       kTestFeature1.name, FeatureList::OVERRIDE_DISABLE_FEATURE, trial);

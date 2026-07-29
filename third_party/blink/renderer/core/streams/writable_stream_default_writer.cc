@@ -4,6 +4,9 @@
 
 #include "third_party/blink/renderer/core/streams/writable_stream_default_writer.h"
 
+#include <string_view>
+
+#include "base/containers/span.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/core/streams/miscellaneous_operations.h"
 #include "third_party/blink/renderer/core/streams/writable_stream.h"
@@ -12,19 +15,24 @@
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
 
 namespace {
 
-String CreateWriterLockReleasedMessage(const char* verbed) {
-  return String::Format(
-      "This writable stream writer has been released and cannot be %s", verbed);
+String CreateWriterLockReleasedMessage(std::string_view verbed) {
+  StringBuilder builder;
+  builder.Append(
+      "This writable stream writer has been released and cannot be ");
+  builder.Append(base::as_byte_span(verbed));
+  return builder.ToString();
 }
 
-v8::Local<v8::Value> CreateWriterLockReleasedException(v8::Isolate* isolate,
-                                                       const char* verbed) {
+v8::Local<v8::Value> CreateWriterLockReleasedException(
+    v8::Isolate* isolate,
+    std::string_view verbed) {
   return v8::Exception::TypeError(
       V8String(isolate, CreateWriterLockReleasedMessage(verbed)));
 }
@@ -63,8 +71,11 @@ WritableStreamDefaultWriter::WritableStreamDefaultWriter(
         "Cannot create writer when WritableStream is locked");
     return;
   }
+  CHECK_EQ(stream->wrapper_world_id_, script_state->World().GetWorldId());
   //  4. Set stream.[[writer]] to this.
   stream->SetWriter(this);
+
+  closed_resolver_->SuppressDetachCheck();
 
   //  5. Let state be stream.[[state]].
   const auto state = stream->GetState();
@@ -83,6 +94,8 @@ WritableStreamDefaultWriter::WritableStreamDefaultWriter(
         //      b. Otherwise, set this.[[readyPromise]] to a promise resolved
         //         with undefined.
         ready_resolver_->Resolve();
+      } else {
+        ready_resolver_->SuppressDetachCheck();
       }
       //      c. Set this.[[closedPromise]] to a new promise.
       break;
@@ -195,6 +208,8 @@ ScriptPromise<IDLUndefined> WritableStreamDefaultWriter::abort(
     exception_state.ThrowTypeError(CreateWriterLockReleasedMessage("aborted"));
     return EmptyPromise();
   }
+  CHECK_EQ(owner_writable_stream_->wrapper_world_id_,
+           script_state->World().GetWorldId());
 
   //  3. Return ! WritableStreamDefaultWriterAbort(this, reason).
   return Abort(script_state, this, reason.V8Value());
@@ -213,6 +228,7 @@ ScriptPromise<IDLUndefined> WritableStreamDefaultWriter::close(
     exception_state.ThrowTypeError(CreateWriterLockReleasedMessage("closed"));
     return EmptyPromise();
   }
+  CHECK_EQ(stream->wrapper_world_id_, script_state->World().GetWorldId());
 
   //  4. If ! WritableStreamCloseQueuedOrInFlight(stream) is true, return a
   //      promise rejected with a TypeError exception.
@@ -265,6 +281,8 @@ ScriptPromise<IDLUndefined> WritableStreamDefaultWriter::write(
         CreateWriterLockReleasedMessage("written to"));
     return EmptyPromise();
   }
+  CHECK_EQ(owner_writable_stream_->wrapper_world_id_,
+           script_state->World().GetWorldId());
 
   if (!script_state->ContextIsValid()) {
     exception_state.ThrowTypeError("invalid realm");
@@ -379,7 +397,8 @@ ScriptPromise<IDLUndefined> WritableStreamDefaultWriter::Write(
   WritableStream* stream = writer->owner_writable_stream_;
 
   //  2. Assert: stream is not undefined.
-  DCHECK(stream);
+  CHECK(stream);
+  CHECK_EQ(stream->wrapper_world_id_, script_state->World().GetWorldId());
 
   //  3. Let controller be stream.[[writableStreamController]].
   WritableStreamDefaultController* controller = stream->Controller();
@@ -432,6 +451,10 @@ ScriptPromise<IDLUndefined> WritableStreamDefaultWriter::Write(
     return resolver->Promise();
   }
 
+  // A writer may be discarded before the write completes, so suppress the
+  // detach check.
+  resolver->SuppressDetachCheck();
+
   // 10. Assert: state is "writable".
   DCHECK_EQ(state, WritableStream::kWritable);
 
@@ -477,6 +500,8 @@ std::optional<double> WritableStreamDefaultWriter::GetDesiredSizeInternal()
 void WritableStreamDefaultWriter::ResetReadyPromise(ScriptState* script_state) {
   ready_resolver_ =
       MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  // There is no guarantee that a ready promise will ever be resolved.
+  ready_resolver_->SuppressDetachCheck();
 }
 
 void WritableStreamDefaultWriter::Trace(Visitor* visitor) const {
@@ -497,7 +522,8 @@ ScriptPromise<IDLUndefined> WritableStreamDefaultWriter::Abort(
   WritableStream* stream = writer->owner_writable_stream_;
 
   //  2. Assert: stream is not undefined.
-  DCHECK(stream);
+  CHECK(stream);
+  CHECK_EQ(stream->wrapper_world_id_, script_state->World().GetWorldId());
 
   //  3. Return ! WritableStreamAbort(stream, reason).
   return WritableStream::Abort(script_state, stream, reason);
@@ -511,7 +537,8 @@ ScriptPromise<IDLUndefined> WritableStreamDefaultWriter::Close(
   WritableStream* stream = writer->owner_writable_stream_;
 
   //  2. Assert: stream is not undefined.
-  DCHECK(stream);
+  CHECK(stream);
+  CHECK_EQ(stream->wrapper_world_id_, script_state->World().GetWorldId());
 
   //  3. Return ! WritableStreamClose(stream).
   return WritableStream::Close(script_state, stream);

@@ -4,60 +4,51 @@
 
 #import "ios/chrome/browser/ntp/model/set_up_list_prefs.h"
 
+#import "components/ntp_tiles/pref_names.h"
 #import "components/prefs/pref_registry_simple.h"
 #import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/ntp/model/set_up_list_item_type.h"
 #import "ios/chrome/browser/ntp/model/set_up_list_metrics.h"
-#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 
 namespace set_up_list_prefs {
 
-const char kSigninSyncItemState[] = "set_up_list.signin_sync_item.state";
 const char kDefaultBrowserItemState[] =
     "set_up_list.default_browser_item.state";
 const char kAutofillItemState[] = "set_up_list.autofill_item.state";
-const char kFollowItemState[] = "set_up_list.follow_item.state";
 const char kNotificationsItemState[] =
     "set_up_list.content_notification_item.state";
-const char kDockingItemState[] = "set_up_list.docking_item.state";
-const char kAddressBarItemState[] = "set_up_list.address_bar_item.state";
+const char kSafariImportItemState[] = "set_up_list.safari_import_item.state";
+const char kBackgroundCustomizationItemState[] =
+    "set_up_list.background_customization_item.state";
 const char kAllItemsComplete[] = "set_up_list.all_items_complete";
-const char kDisabled[] = "set_up_list.disabled";
 const char kLastInteraction[] = "set_up_list.last_interaction";
 
 void RegisterPrefs(PrefRegistrySimple* registry) {
   int unknown = static_cast<int>(SetUpListItemState::kUnknown);
-  registry->RegisterIntegerPref(kSigninSyncItemState, unknown);
   registry->RegisterIntegerPref(kDefaultBrowserItemState, unknown);
   registry->RegisterIntegerPref(kAutofillItemState, unknown);
-  registry->RegisterIntegerPref(kFollowItemState, unknown);
   registry->RegisterIntegerPref(kNotificationsItemState, unknown);
-  registry->RegisterIntegerPref(kDockingItemState, unknown);
-  registry->RegisterIntegerPref(kAddressBarItemState, unknown);
+  registry->RegisterIntegerPref(kSafariImportItemState, unknown);
+  registry->RegisterIntegerPref(kBackgroundCustomizationItemState, unknown);
   registry->RegisterBooleanPref(kAllItemsComplete, false);
-  registry->RegisterBooleanPref(kDisabled, false);
   registry->RegisterTimePref(kLastInteraction, base::Time());
 }
 
 const char* PrefNameForItem(SetUpListItemType type) {
   switch (type) {
-    case SetUpListItemType::kSignInSync:
-      return kSigninSyncItemState;
     case SetUpListItemType::kDefaultBrowser:
       return kDefaultBrowserItemState;
     case SetUpListItemType::kAutofill:
       return kAutofillItemState;
-    case SetUpListItemType::kFollow:
-      return kFollowItemState;
     case SetUpListItemType::kNotifications:
       return kNotificationsItemState;
-    case SetUpListItemType::kDocking:
-      return kDockingItemState;
-    case SetUpListItemType::kAddressBar:
-      return kAddressBarItemState;
     case SetUpListItemType::kAllSet:
       NOTREACHED();
+    case SetUpListItemType::kSafariImport:
+      return kSafariImportItemState;
+    case SetUpListItemType::kBackgroundCustomization:
+      return kBackgroundCustomizationItemState;
   }
 }
 
@@ -102,16 +93,7 @@ bool AllItemsComplete(PrefService* prefs) {
 }
 
 bool IsSetUpListDisabled(PrefService* prefs) {
-  return prefs->GetBoolean(kDisabled);
-}
-
-void DisableSetUpList(PrefService* prefs) {
-  if (IsHomeCustomizationEnabled()) {
-    prefs->SetBoolean(prefs::kHomeCustomizationMagicStackSetUpListEnabled,
-                      false);
-  } else {
-    prefs->SetBoolean(kDisabled, true);
-  }
+  return !prefs->GetBoolean(ntp_tiles::prefs::kTipsHomeModuleEnabled);
 }
 
 void RecordInteraction(PrefService* prefs) {

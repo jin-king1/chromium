@@ -9,7 +9,6 @@
 
 #include "ash/birch/birch_icon_cache.h"
 #include "ash/birch/birch_model.h"
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/test/test_image_downloader.h"
 #include "ash/public/cpp/test/test_new_window_delegate.h"
@@ -21,7 +20,6 @@
 #include "base/functional/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_mock_clock_override.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
@@ -96,9 +94,11 @@ class BirchItemTest : public testing::Test {
         scoped_libc_timezone_("America/Los_Angeles") {
     BirchItem::set_action_count_for_test(0);
 
-    // The mock clock starts with a fixed but arbitrary time. Adjust the time
-    // to make the test times more readable (this makes "now" 5 PM).
-    mock_clock_override_.Advance(base::Minutes(53));
+    // ScopedMockClockOverride starts "now" at a fixed, known value:
+    // 1971-01-01 00:00:00 UTC, which is 4:00 PM in America/Los_Angeles (the
+    // timezone set above). Advance one hour so "now" is a round 5:00 PM PST,
+    // which keeps the times used throughout the tests readable.
+    mock_clock_override_.Advance(base::Hours(1));
   }
 
   ~BirchItemTest() override { BirchItem::set_action_count_for_test(0); }
@@ -564,10 +564,6 @@ TEST_F(BirchItemTest, SelfShare_PerformAction) {
 // The icon downloader requires ash::Shell, so use AshTestBase.
 class BirchItemIconTest : public AshTestBase {
  public:
-  BirchItemIconTest() {
-    feature_list_.InitAndEnableFeature(features::kForestFeature);
-  }
-
   void SetUp() override {
     AshTestBase::SetUp();
     Shell::Get()->birch_model()->SetClientAndInit(&stub_birch_client_);
@@ -580,7 +576,6 @@ class BirchItemIconTest : public AshTestBase {
 
   StubBirchClient stub_birch_client_;
   TestImageDownloader image_downloader_;
-  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(BirchItemIconTest, Calendar_LoadIcon) {

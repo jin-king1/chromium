@@ -75,6 +75,8 @@ std::u16string GetArrowName(BubbleBorder::Arrow arrow) {
   return u"INVALID";
 }
 
+}  // namespace
+
 class ExampleBubble : public BubbleDialogDelegateView {
   METADATA_HEADER(ExampleBubble, BubbleDialogDelegateView)
 
@@ -91,7 +93,7 @@ class ExampleBubble : public BubbleDialogDelegateView {
  protected:
   void Init() override {
     SetLayoutManager(std::make_unique<BoxLayout>(
-        BoxLayout::Orientation::kVertical, gfx::Insets(50)));
+        BoxLayout::Orientation::kVertical, gfx::Insets(30)));
     AddChildView(std::make_unique<Label>(GetArrowName(arrow())));
   }
 };
@@ -99,15 +101,16 @@ class ExampleBubble : public BubbleDialogDelegateView {
 BEGIN_METADATA(ExampleBubble)
 END_METADATA
 
-}  // namespace
-
 BubbleExample::BubbleExample() : ExampleBase("Bubble") {}
 
 BubbleExample::~BubbleExample() = default;
 
 void BubbleExample::CreateExampleView(View* container) {
-  container->SetLayoutManager(std::make_unique<BoxLayout>(
-      BoxLayout::Orientation::kHorizontal, gfx::Insets(), 10));
+  auto* const box_layout =
+      container->SetLayoutManager(std::make_unique<BoxLayout>(
+          BoxLayout::Orientation::kHorizontal, gfx::Insets(), 10));
+  box_layout->set_cross_axis_alignment(BoxLayout::CrossAxisAlignment::kCenter);
+  box_layout->set_main_axis_alignment(BoxLayout::MainAxisAlignment::kCenter);
 
   standard_shadow_ = container->AddChildView(std::make_unique<LabelButton>(
       base::BindRepeating(&BubbleExample::ShowBubble, base::Unretained(this),
@@ -140,7 +143,7 @@ void BubbleExample::ShowBubble(raw_ptr<Button>* button,
 
   // |bubble| will be destroyed by its widget when the widget is destroyed.
   auto bubble = std::make_unique<ExampleBubble>(*button, arrow);
-  bubble->set_background_color(colors[(color_index++) % std::size(colors)]);
+  bubble->SetBackgroundColor(colors[(color_index++) % std::size(colors)]);
   bubble->set_shadow(shadow);
   if (persistent) {
     bubble->set_close_on_deactivate(false);

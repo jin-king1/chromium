@@ -29,31 +29,38 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
 import org.chromium.components.webapps.AppType;
 import org.chromium.components.webapps.R;
 import org.chromium.components.webapps.pwa_universal_install.PwaUniversalInstallBottomSheetCoordinator;
 import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.ui.base.DeviceFormFactor;
 
 /** Test the showing of the PWA Universal Install Bottom Sheet dialog. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @DoNotBatch(reason = "Fails because of SurveyClientFactory assert")
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class PwaUniversalInstallBottomSheetIntegrationTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
-    public final ChromeTabbedActivityTestRule mActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public final FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     private static final String TAG = "PwaUniInstallIntegrTest";
 
@@ -73,16 +80,16 @@ public class PwaUniversalInstallBottomSheetIntegrationTest {
 
     private BottomSheetController mBottomSheetController;
 
-    private CallbackHelper mOnInstallCallback = new CallbackHelper();
-    private CallbackHelper mOnAddShortcutCallback = new CallbackHelper();
-    private CallbackHelper mOnOpenAppCallback = new CallbackHelper();
+    private final CallbackHelper mOnInstallCallback = new CallbackHelper();
+    private final CallbackHelper mOnAddShortcutCallback = new CallbackHelper();
+    private final CallbackHelper mOnOpenAppCallback = new CallbackHelper();
+    private WebPageStation mPage;
 
     @Before
     public void setUp() throws Exception {
-        MockitoAnnotations.initMocks(this);
         PwaUniversalInstallBottomSheetCoordinator.sEnableManualIconFetchingForTesting = true;
 
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
         runOnUiThreadBlocking(
                 () -> {
                     mBottomSheetController =
@@ -115,13 +122,14 @@ public class PwaUniversalInstallBottomSheetIntegrationTest {
         return Pair.create(bitmap, /* maskable= */ false);
     }
 
-    /*
+    /**
      * Shows the Universal Install Bottom Sheet.
+     *
      * @param showBeforeAppTypeKnown When true, this will show the dialog synchronously from the
-     * ctor. This can be used to simulate what happens if the app type check finishes after the
-     * dialog has appeared (timeout).
+     *     ctor. This can be used to simulate what happens if the app type check finishes after the
+     *     dialog has appeared (timeout).
      * @param webAppAlreadyInstalled When true, the dialog will behave as if the app has already
-     * been installed.
+     *     been installed.
      */
     private void showPwaUniversalInstallBottomSheet(
             boolean showBeforeAppTypeKnown, boolean webAppAlreadyInstalled) throws Exception {
@@ -408,6 +416,7 @@ public class PwaUniversalInstallBottomSheetIntegrationTest {
     @Feature({"PwaUniversalInstall"})
     // This test makes sure that clicking the install arrow (or the install text) does not trigger
     // an install for a site that doesn't support install (but creating a shortcut works).
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511287863
     public void testCallbackDisabledIfInstallDisabledAfterTimeout() throws Exception {
         HistogramWatcher watcher =
                 HistogramWatcher.newBuilder()
@@ -579,10 +588,11 @@ public class PwaUniversalInstallBottomSheetIntegrationTest {
     }
 
     private void assertDialogShowing(boolean expectShowing) {
+        String dialogTitle = "Install and create shortcut";
         if (expectShowing) {
-            onViewWaiting(withText("Add to home screen")).check(matches(isDisplayed()));
+            onViewWaiting(withText(dialogTitle)).check(matches(isDisplayed()));
         } else {
-            onView(withText("Add to home screen")).check(doesNotExist());
+            onView(withText(dialogTitle)).check(doesNotExist());
         }
     }
 }

@@ -13,6 +13,7 @@
 #include "ash/wm/overview/scoped_overview_transform_window.h"
 #include "ash/wm/window_state_observer.h"
 #include "base/cancelable_callback.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/aura/scoped_window_event_targeting_blocker.h"
@@ -258,21 +259,11 @@ class ASH_EXPORT OverviewItem : public OverviewItemBase,
 
   // Responsible for mirrors that look like the window on all displays during
   // dragging.
-  // TODO(sammiequon): We need two, one for the `item_widget_` and one for the
-  // source window (if not minimized). If DragWindowController supports multiple
-  // windows in the future, combine these.
   std::unique_ptr<DragWindowController> window_mirror_for_dragging_;
 
   // Disable animations on the contained window while it is being managed by the
   // overview item.
   wm::ScopedAnimationDisabler animation_disabler_;
-
-  // Force `OverviewItem` to be visible while overview is in progress. This is
-  // to ensure that overview items are properly marked as visible during all
-  // parts of their animation (e.g. overview enter). This is only required
-  // if those item's windows won't have snapshots.
-  std::optional<aura::WindowOcclusionTracker::ScopedForceVisible>
-      scoped_force_visible_;
 
   base::WeakPtrFactory<OverviewItem> weak_ptr_factory_{this};
 };

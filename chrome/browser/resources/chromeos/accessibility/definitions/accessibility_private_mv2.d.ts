@@ -26,6 +26,18 @@ declare global {
         message: string;
       }
 
+      export interface KeyboardEvent {
+        id: number;
+        altKey: boolean;
+        code: string;
+        ctrlKey: boolean;
+        key: string;
+        keyCode: number;
+        metaKey: boolean;
+        repeat: boolean;
+        shiftKey: boolean;
+      }
+
       export interface ScreenRect {
         left: number;
         top: number;
@@ -214,7 +226,6 @@ declare global {
       export enum AccessibilityFeature {
         GOOGLE_TTS_LANGUAGE_PACKS = 'googleTtsLanguagePacks',
         DICTATION_CONTEXT_CHECKING = 'dictationContextChecking',
-        FACE_GAZE = 'faceGaze',
         GOOGLE_TTS_HIGH_QUALITY_VOICES = 'googleTtsHighQualityVoices',
         CAPTIONS_ON_BRAILLE_DISPLAY = 'captionsOnBrailleDisplay',
       }
@@ -331,6 +342,11 @@ declare global {
         wasm: ArrayBuffer;
       }
 
+      export interface TenjiData {
+        wasm: ArrayBuffer;
+        wrapperJs: ArrayBuffer;
+      }
+
       export enum ScrollDirection {
         UP = 'up',
         DOWN = 'down',
@@ -378,6 +394,9 @@ declare global {
       type InstallPumpkinForDictationCallback = (data: PumpkinData) => void;
       export function installPumpkinForDictation(
           callback: InstallPumpkinForDictationCallback): void;
+
+      type InstallTenjiCallback = (data: TenjiData) => void;
+      export function installTenji(callback: InstallTenjiCallback): void;
 
       export function setNativeAccessibilityEnabled(enabled: boolean): void;
 
@@ -490,6 +509,12 @@ declare global {
 
       export function enableDragEventRewriter(enabled: boolean): void;
 
+      export function processPendingSpokenFeedbackEvent(
+          id: number, propagate: boolean, sessionId: number): void;
+
+      export function enableSpokenFeedbackMv3KeyHandling(sessionId: number):
+          void;
+
       export const onIntroduceChromeVox: ChromeEvent<() => void>;
 
       export const onChromeVoxFocusChanged:
@@ -497,6 +522,10 @@ declare global {
 
       export const onAccessibilityGesture:
           ChromeEvent<(gesture: Gesture, x: number, y: number) => void>;
+
+      export const onTwoFingerTouchStart: ChromeEvent<() => void>;
+
+      export const onTwoFingerTouchStop: ChromeEvent<() => void>;
 
       export const onSelectToSpeakContextMenuClicked: ChromeEvent<() => void>;
 
@@ -540,6 +569,10 @@ declare global {
 
       export const onToggleGestureInfoForSettings:
           ChromeEvent<(enabled: boolean) => void>;
+
+      export const onKeyDown: ChromeEvent<(event: KeyboardEvent) => void>;
+
+      export const onKeyUp: ChromeEvent<(event: KeyboardEvent) => void>;
     }
   }
 }

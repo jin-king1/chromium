@@ -24,9 +24,8 @@
 #import "ios/chrome/credential_provider_extension/ui/feature_flags.h"
 #import "ios/chrome/credential_provider_extension/ui/new_password_coordinator.h"
 
-@interface CredentialListCoordinator () <ConfirmationAlertActionHandler,
+@interface CredentialListCoordinator () <CredentialDetailsConsumerDelegate,
                                          CredentialListUIHandler,
-                                         CredentialDetailsConsumerDelegate,
                                          NewPasswordCoordinatorDelegate>
 
 // Base view controller from where `viewController` is presented.
@@ -119,24 +118,28 @@
 - (void)showEmptyCredentials {
   EmptyCredentialsViewController* emptyCredentialsViewController =
       [[EmptyCredentialsViewController alloc] init];
-  emptyCredentialsViewController.modalPresentationStyle =
+  UINavigationController* navigationController = [[UINavigationController alloc]
+      initWithRootViewController:emptyCredentialsViewController];
+  navigationController.modalPresentationStyle =
       UIModalPresentationOverCurrentContext;
-  emptyCredentialsViewController.actionHandler = self;
-  [self.viewController presentViewController:emptyCredentialsViewController
-                                    animated:YES
-                                  completion:nil];
+  emptyCredentialsViewController.navigationItem.rightBarButtonItem =
+      [[UIBarButtonItem alloc]
+          initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                               target:self
+                               action:@selector(dismissEmptyState)];
+  [self.baseViewController presentViewController:navigationController
+                                        animated:YES
+                                      completion:nil];
 }
 
 - (void)userSelectedCredential:(id<Credential>)credential {
-  if (@available(iOS 17.0, *)) {
-    if (credential.isPasskey) {
-      // Skip reauthentication if the credential is a passkey as it will be
-      // performed later on if needed.
-      [self.credentialResponseHandler
-            userSelectedPasskey:credential
-          passkeyRequestDetails:self.passkeyRequestDetails];
-      return;
-    }
+  if (credential.isPasskey) {
+    // Skip reauthentication if the credential is a passkey as it will be
+    // performed later on if needed.
+    [self.credentialResponseHandler
+          userSelectedPasskey:credential
+        passkeyRequestDetails:self.passkeyRequestDetails];
+    return;
   }
 
   [self
@@ -198,19 +201,6 @@
                        }];
 }
 
-#pragma mark - ConfirmationAlertActionHandler
-
-- (void)confirmationAlertDismissAction {
-  // Finish the extension. There is no recovery from the empty credentials
-  // state.
-  [self.credentialResponseHandler
-      userCancelledRequestWithErrorCode:ASExtensionErrorCodeUserCanceled];
-}
-
-- (void)confirmationAlertPrimaryAction {
-  // No-op.
-}
-
 #pragma mark - NewPasswordCoordinatorDelegate
 
 - (void)dismissNewPasswordCoordinator:
@@ -221,13 +211,19 @@
 
 #pragma mark - Private
 
+// Finish the extension. There is no recovery from the empty credentials
+// state.
+- (void)dismissEmptyState {
+  [self.credentialResponseHandler
+      userCancelledRequestWithErrorCode:ASExtensionErrorCodeUserCanceled];
+}
+
 // Asks user for hardware reauthentication if needed. `forPasskeys` indicates
 // whether the reauthentication is guarding an access to passkeys (when `YES`)
 // or an access to passwords (when `NO`).
 - (void)reauthenticateIfNeededToAccessPasskeys:(BOOL)forPasskeys
                          withCompletionHandler:
-                             (void (^)(ReauthenticationResult))
-                                 completionHandler {
+                             (ReauthenticationResultBlock)completionHandler {
   [self.reauthenticationHandler verifyUserToAccessPasskeys:forPasskeys
                                      withCompletionHandler:completionHandler
                            presentReminderOnViewController:self.viewController];

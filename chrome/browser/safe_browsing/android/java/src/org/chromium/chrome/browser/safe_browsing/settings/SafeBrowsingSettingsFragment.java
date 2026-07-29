@@ -13,6 +13,11 @@ import androidx.preference.Preference;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.safe_browsing.SafeBrowsingBridge;
 import org.chromium.chrome.browser.safe_browsing.SafeBrowsingState;
@@ -20,9 +25,11 @@ import org.chromium.chrome.browser.safe_browsing.metrics.SettingsAccessPoint;
 import org.chromium.chrome.browser.safe_browsing.metrics.UserAction;
 import org.chromium.chrome.browser.settings.ChromeManagedPreferenceDelegate;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
+import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.components.browser_ui.settings.ManagedPreferenceDelegate;
 
 /** Fragment containing Safe Browsing settings. */
+@NullMarked
 public class SafeBrowsingSettingsFragment extends SafeBrowsingSettingsFragmentBase
         implements RadioButtonGroupSafeBrowsingPreference.OnSafeBrowsingModeDetailsRequested,
                 Preference.OnPreferenceChangeListener {
@@ -31,6 +38,7 @@ public class SafeBrowsingSettingsFragment extends SafeBrowsingSettingsFragmentBa
     public static final String ACCESS_POINT = "SafeBrowsingSettingsFragment.AccessPoint";
 
     private RadioButtonGroupSafeBrowsingPreference mSafeBrowsingPreference;
+
     private @SettingsAccessPoint int mAccessPoint;
 
     /**
@@ -64,8 +72,9 @@ public class SafeBrowsingSettingsFragment extends SafeBrowsingSettingsFragmentBa
         return result;
     }
 
+    @Initializer
     @Override
-    protected void onCreatePreferencesInternal(Bundle bundle, String s) {
+    protected void onCreatePreferencesInternal(@Nullable Bundle bundle, @Nullable String s) {
         mAccessPoint =
                 IntentUtils.safeGetInt(getArguments(), ACCESS_POINT, SettingsAccessPoint.DEFAULT);
 
@@ -95,10 +104,18 @@ public class SafeBrowsingSettingsFragment extends SafeBrowsingSettingsFragmentBa
         recordUserActionHistogramForStateDetailsClicked(safeBrowsingState);
         if (safeBrowsingState == SafeBrowsingState.ENHANCED_PROTECTION) {
             SettingsNavigationFactory.createSettingsNavigation()
-                    .startSettings(getActivity(), EnhancedProtectionSettingsFragment.class);
+                    .startSettings(
+                            getActivity(),
+                            EnhancedProtectionSettingsFragment.class,
+                            /* fragmentArgs= */ null,
+                            /* addToBackStack= */ true);
         } else if (safeBrowsingState == SafeBrowsingState.STANDARD_PROTECTION) {
             SettingsNavigationFactory.createSettingsNavigation()
-                    .startSettings(getActivity(), StandardProtectionSettingsFragment.class);
+                    .startSettings(
+                            getActivity(),
+                            StandardProtectionSettingsFragment.class,
+                            /* fragmentArgs= */ null,
+                            /* addToBackStack= */ true);
         } else {
             assert false : "Should not be reached";
         }
@@ -154,6 +171,14 @@ public class SafeBrowsingSettingsFragment extends SafeBrowsingSettingsFragmentBa
                     .show();
         } else {
             getSafeBrowsingBridge().setSafeBrowsingState(newState);
+            if (newState == SafeBrowsingState.ENHANCED_PROTECTION) {
+                ChromeSharedPreferences.getInstance()
+                        .writeBoolean(
+                                ChromePreferenceKeys.SETUP_LIST_COMPLETED_KEY_PREFIX.createKey(
+                                        String.valueOf(
+                                                12 /* ModuleType.ENHANCED_SAFE_BROWSING_PROMO */)),
+                                true);
+            }
         }
         // This function is called when the user manually modifies their safe browsing settings via
         // the security settings page. This action indicates that the user has seen and interacted
@@ -234,6 +259,9 @@ public class SafeBrowsingSettingsFragment extends SafeBrowsingSettingsFragmentBa
             case SettingsAccessPoint.TAILORED_SECURITY:
                 metricsSuffix = "TailoredSecurity";
                 break;
+            case SettingsAccessPoint.TIPS_NOTIFICATIONS_PROMO:
+                metricsSuffix = "TipsNotificationsPromo";
+                break;
             default:
                 assert false : "Should not be reached.";
                 metricsSuffix = "";
@@ -276,4 +304,14 @@ public class SafeBrowsingSettingsFragment extends SafeBrowsingSettingsFragmentBa
         }
         RecordUserAction.record("SafeBrowsing.Settings." + userActionSuffix);
     }
+
+    @Override
+    public @AnimationType int getAnimationType() {
+        return AnimationType.PROPERTY;
+    }
+
+    public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
+            new ChromeBaseSearchIndexProvider(
+                    SafeBrowsingSettingsFragment.class.getName(),
+                    ChromeBaseSearchIndexProvider.INDEX_OPT_OUT);
 }

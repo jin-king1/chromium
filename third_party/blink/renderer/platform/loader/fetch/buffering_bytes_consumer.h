@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_LOADER_FETCH_BUFFERING_BYTES_CONSUMER_H_
 
 #include "base/memory/scoped_refptr.h"
+#include "base/sequence_checker.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/pass_key.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_deque.h"
@@ -93,7 +94,7 @@ class PLATFORM_EXPORT BufferingBytesConsumer final
 
   const Member<BytesConsumer> bytes_consumer_;
   HeapTaskRunnerTimer<BufferingBytesConsumer> timer_;
-  HeapDeque<Member<HeapVector<char>>> buffer_;
+  HeapDeque<Member<GCedHeapVector<char>>> buffer_;
   size_t offset_for_first_chunk_ = 0;
 
   // The sum of the sizes of all Vectors in `buffer_`.

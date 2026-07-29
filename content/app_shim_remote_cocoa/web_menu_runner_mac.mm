@@ -9,6 +9,8 @@
 #include <objc/runtime.h>
 #include <stddef.h>
 
+#include <optional>
+
 #include "base/base64.h"
 #include "base/mac/mac_util.h"
 #include "base/strings/sys_string_conversions.h"
@@ -29,12 +31,11 @@ static const char kMenuWasRunCallbackKey = 0;
 @end
 
 @implementation WebMenuRunner {
-  // The native menu control.
+  // The native menu.
   NSMenu* __strong _menu;
 
-  // The index of the selected menu item. Set to -1 initially, and then set to
-  // the index of the selected item if an item was selected.
-  int _selectedItemIndex;
+  // The index of the selected menu item.
+  std::optional<int> _selectedMenuItemIndex;
 
   // The font size being used for the menu.
   CGFloat _fontSize;
@@ -49,13 +50,12 @@ static const char kMenuWasRunCallbackKey = 0;
   if ((self = [super init])) {
     _menu = [[NSMenu alloc] initWithTitle:@""];
     _menu.autoenablesItems = NO;
-    if (rightAligned) {
-      _menu.userInterfaceLayoutDirection =
-          NSUserInterfaceLayoutDirectionRightToLeft;
-    }
-
-    _selectedItemIndex = -1;
-    _fontSize = fontSize;
+    // LINT.IfChange(fontSize)
+    // Blink caps font sizes to 10,000 but browser process code can't rely on
+    // the renderer to behave correctly.
+    // https://crbug.com/508452241
+    _fontSize = std::min(fontSize, 10'000.0);
+    // LINT.ThenChange(//third_party/blink/renderer/core/style/computed_style_constants.h:kMaximumAllowedFontSize)
     _rightAligned = rightAligned;
     for (const auto& item : items) {
       [self addItem:item];
@@ -81,14 +81,17 @@ static const char kMenuWasRunCallbackKey = 0;
     title = base::SysUTF8ToNSString(base::Base64Encode(label));
   }
 
-  // TODO(https://crbug.com/389084419): Figure out how to handle
-  // blink::mojom::MenuItem::Type::kGroup items. This should use the macOS 14+
-  // support for section headers, but popup menus have to resize themselves to
-  // match the scale of the page, and there's no good way (currently) to get the
-  // font used for section header items in order to scale it and set it.
-  NSMenuItem* menuItem = [_menu addItemWithTitle:title
+  NSMenuItem* menuItem;
+  if (@available(macOS 14, *)) {
+    if (item->type == blink::mojom::MenuItem::Type::kGroup) {
+      menuItem = [NSMenuItem sectionHeaderWithTitle:title];
+    }
+  }
+  if (!menuItem) {
+    menuItem = [[NSMenuItem alloc] initWithTitle:title
                                           action:@selector(menuItemSelected:)
                                    keyEquivalent:@""];
+  }
 
   if (item->tool_tip.has_value()) {
     menuItem.toolTip = base::SysUTF8ToNSString(item->tool_tip.value());
@@ -98,7 +101,7 @@ static const char kMenuWasRunCallbackKey = 0;
   menuItem.target = self;
 
   // Set various alignment/language attributes.
-  NSMutableDictionary* attrs = [[NSMutableDictionary alloc] initWithCapacity:3];
+  NSMutableDictionary* attrs = [NSMutableDictionary dictionary];
   NSMutableParagraphStyle* paragraphStyle =
       [[NSMutableParagraphStyle alloc] init];
   paragraphStyle.alignment =
@@ -116,8 +119,6 @@ static const char kMenuWasRunCallbackKey = 0;
         @[ @(long{writingDirection} | NSWritingDirectionOverride) ];
   }
 
-  attrs[NSFontAttributeName] = [NSFont menuFontOfSize:_fontSize];
-
   NSAttributedString* attrTitle =
       [[NSAttributedString alloc] initWithString:title attributes:attrs];
   menuItem.attributedTitle = attrTitle;
@@ -131,19 +132,17 @@ static const char kMenuWasRunCallbackKey = 0;
   NSCharacterSet* whitespaceSet = NSCharacterSet.whitespaceCharacterSet;
   menuItem.title = [title stringByTrimmingCharactersInSet:whitespaceSet];
 
-  menuItem.tag = _menu.numberOfItems - 1;
+  menuItem.tag = _menu.numberOfItems;
+
+  [_menu addItem:menuItem];
 }
 
-- (BOOL)menuItemWasChosen {
-  return _selectedItemIndex != -1;
-}
-
-- (int)indexOfSelectedItem {
-  return _selectedItemIndex;
+- (std::optional<int>)selectedMenuItemIndex {
+  return _selectedMenuItemIndex;
 }
 
 - (void)menuItemSelected:(id)sender {
-  _selectedItemIndex = [sender tag];
+  _selectedMenuItemIndex = [sender tag];
 }
 
 - (void)runMenuInView:(NSView*)view
@@ -157,30 +156,74 @@ static const char kMenuWasRunCallbackKey = 0;
     return;
   }
 
-  // Add a checkmark to the initial item.
-  NSMenuItem* item = [_menu itemWithTag:index];
-  item.state = NSControlStateValueOn;
+  // Using NSPopUpButtonCell in this way is not SPI, but there is new(er) API to
+  // show a pop-up menu in a way that avoids the hassle of instantiating a cell
+  // just to use its innards.
+  //
+  // However, that API, -[NSMenu popUpMenuPositioningItem:atLocation:inView:],
+  // is broken and displays menus that are the incorrect width and which
+  // improperly truncate their contents (see https://crbug.com/401443090).
+  //
+  // This has been filed as FB16843355. TODO(https://crbug.com/389067059): When
+  // this FB is resolved, switch to the new API by relanding an adapted version
+  // of https://crrev.com/c/6173642.
+  //
+  // In addition, note that there are web pages that use popups with a font size
+  // of 0. When relanding, font size will likely play a part in the calculation
+  // of the menu position of the reland, so be sure to not regress menu
+  // positioning in that case (https://crbug.com/404294118).
 
-  // Create a rect roughly containing the initial item, and center it in the
-  // provided bounds.
-  NSRect initialItemBounds =
-      NSInsetRect(bounds, /*dX=*/0.0f,
-                  /*dY=*/(NSHeight(bounds) - _fontSize) / 2);
-  initialItemBounds = NSIntegralRect(initialItemBounds);
+  // Set up the button cell, converting to NSView coordinates. The menu is
+  // positioned such that the currently selected menu item appears over the
+  // popup button, which is the expected Mac popup menu behavior.
+  NSPopUpButtonCell* cell = [[NSPopUpButtonCell alloc] initTextCell:@""
+                                                          pullsDown:NO];
+  cell.menu = _menu;
+  // Use -selectItemWithTag: so if the index is out-of-bounds nothing bad
+  // happens.
+  if (index > -1) {
+    [cell selectItemWithTag:index];
+  } else {
+    // If the select element doesn't have any options selected, then index will
+    // be -1. In this case, selectItemWithTag would make the first option look
+    // checked, but selectItemAtIndex lets us open the picker with no options
+    // checked. Not calling anything here would also leave the first item
+    // checked, we have to explicitly uncheck them by calling selectItemAtIndex
+    // with -1. https://crbug.com/391648151
+    [cell selectItemAtIndex:-1];
+  }
 
-  // Increase the minimum width of the menu so that we don't end up with a tiny
-  // menu floating in a sea of the popup widget.
-  _menu.minimumWidth = NSWidth(initialItemBounds);
+  cell.font = [NSFont menuFontOfSize:_fontSize];
 
-  // The call to do the popup menu takes the location of the upper-left corner.
-  // Tweak it to compensate for the overall padding of the menu.
-  NSPoint initialPoint =
-      NSMakePoint(NSMinX(initialItemBounds), NSMaxY(initialItemBounds));
-  initialPoint.x -= 8;
-  initialPoint.y += 4;
+  if (_rightAligned) {
+    cell.userInterfaceLayoutDirection =
+        NSUserInterfaceLayoutDirectionRightToLeft;
+    _menu.userInterfaceLayoutDirection =
+        NSUserInterfaceLayoutDirectionRightToLeft;
+  }
 
-  // Do the popup.
-  [_menu popUpMenuPositioningItem:item atLocation:initialPoint inView:view];
+  // When popping up a menu near the Dock, Cocoa restricts the menu size to not
+  // overlap the Dock, with a scroll arrow. At a certain point, though, this
+  // doesn't work, so the menu is repositioned, so that the current item can be
+  // selected without mouse-tracking selecting a different item immediately.
+  //
+  // Unfortunately, in that situation, the cell will try to reposition the menu
+  // relative to the view passed in, as it believes that the view is the
+  // NSPopUpButton control. However, `view` is the view containing the entire
+  // web page, so if it were to be passed in, the menu would be repositioned
+  // relative to that, and would end up being wildly misplaced.
+  //
+  // Therefore, set up a fake "control" view corresponding to the visual bounds
+  // of the HTML element, so that if the menu needs to be repositioned, it is
+  // repositioned relative to that.
+  NSView* fakeControlView = [[NSView alloc] initWithFrame:bounds];
+  [view addSubview:fakeControlView];
+
+  // Display the menu.
+  [cell attachPopUpWithFrame:fakeControlView.bounds inView:fakeControlView];
+  [cell performClickWithFrame:fakeControlView.bounds inView:fakeControlView];
+
+  [fakeControlView removeFromSuperview];
 }
 
 - (void)cancelSynchronously {

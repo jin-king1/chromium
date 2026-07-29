@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/media_router/media_router_ui_helper.h"
 
 #include "base/atomic_sequence_num.h"
+#include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/media_router/browser/presentation/start_presentation_context.h"
@@ -47,7 +48,7 @@ std::string GetHostFromURL(const GURL& gurl) {
   if (gurl.is_empty()) {
     return std::string();
   }
-  std::string host = gurl.host();
+  std::string host = gurl.GetHost();
   if (base::StartsWith(host, "www.", base::CompareCase::INSENSITIVE_ASCII)) {
     host = host.substr(4);
   }

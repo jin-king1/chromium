@@ -39,30 +39,24 @@ class SupervisedUserVerificationPageForBlockedSites
       std::unique_ptr<
           security_interstitials::SecurityInterstitialControllerClient>
           controller_client,
-      supervised_user::FilteringBehaviorReason block_reason,
-      bool is_main_frame,
-      bool has_second_custodian = false);
+      bool is_main_frame);
 
   SupervisedUserVerificationPageForBlockedSites(
       const SupervisedUserVerificationPageForBlockedSites&) = delete;
   SupervisedUserVerificationPageForBlockedSites& operator=(
       const SupervisedUserVerificationPageForBlockedSites&) = delete;
 
-  ~SupervisedUserVerificationPageForBlockedSites() override;
+  ~SupervisedUserVerificationPageForBlockedSites() override = default;
 
   // SecurityInterstitialPage method:
   security_interstitials::SecurityInterstitialPage::TypeID GetTypeForTesting()
       override;
 
  protected:
-  void PopulateInterstitialStrings(base::Value::Dict& load_time_data) override;
+  void PopulateInterstitialStrings(base::DictValue& load_time_data) override;
 
  private:
-  void RecordReauthStatusMetrics(Status status) override;
-  int GetBlockMessageReasonId();
-  supervised_user::FilteringBehaviorReason block_reason_;
   bool is_main_frame_;
-  bool has_second_custodian_;
 };
 
 #endif  // CHROME_BROWSER_SUPERVISED_USER_SUPERVISED_USER_VERIFICATION_PAGE_BLOCKED_SITES_H_

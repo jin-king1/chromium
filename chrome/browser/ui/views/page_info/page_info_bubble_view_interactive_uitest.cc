@@ -4,15 +4,18 @@
 
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
+#include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_view.h"
 #include "chrome/browser/ui/views/page_info/chosen_object_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_main_view.h"
+#include "chrome/browser/ui/views/page_info/page_info_permission_content_view.h"
+#include "chrome/browser/ui/views/page_info/page_info_view_factory.h"
 #include "chrome/browser/ui/views/page_info/permission_toggle_row_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -21,6 +24,7 @@
 #include "components/content_settings/core/browser/content_settings_registry.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_enums.mojom.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -29,7 +33,9 @@
 #include "net/dns/mock_host_resolver.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "ui/events/test/test_event.h"
+#include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/toggle_button.h"
+#include "ui/views/controls/styled_label.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
 #include "url/origin.h"
 
@@ -50,7 +56,7 @@ const char kSecondPermissionRow[] = "SecondPermissionRow";
 void OpenPageInfoBubble(Browser* browser) {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
   LocationIconView* location_icon_view =
-      browser_view->toolbar()->location_bar()->location_icon_view();
+      browser_view->toolbar()->location_bar_view()->location_icon_view();
   ASSERT_TRUE(location_icon_view);
   ui::test::TestEvent event;
   location_icon_view->ShowBubble(event);
@@ -127,11 +133,13 @@ class WebContentsFocusTracker : public FocusTracker,
 
  private:
   static bool IsWebContentsFocused(content::WebContents* web_contents) {
-    Browser* const browser = chrome::FindBrowserWithTab(web_contents);
+    BrowserWindowInterface* const browser =
+        GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+            web_contents);
     if (!browser) {
       return false;
     }
-    if (browser->tab_strip_model()->GetActiveWebContents() != web_contents) {
+    if (browser->GetTabStripModel()->GetActiveWebContents() != web_contents) {
       return false;
     }
     return BrowserView::GetBrowserViewForBrowser(browser)
@@ -190,7 +198,7 @@ class PageInfoBubbleViewFocusInteractiveUiTest : public InProcessBrowserTest {
 };
 
 #if BUILDFLAG(IS_MAC)
-// https://crbug.com/1029882
+// https://crbug.com/40661590
 #define MAYBE_FocusReturnsToContentOnClose DISABLED_FocusReturnsToContentOnClose
 #else
 #define MAYBE_FocusReturnsToContentOnClose FocusReturnsToContentOnClose
@@ -218,7 +226,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewFocusInteractiveUiTest,
 }
 
 #if BUILDFLAG(IS_MAC)
-// https://crbug.com/1029882
+// https://crbug.com/40661590
 #define MAYBE_FocusDoesNotReturnToContentsOnReloadPrompt \
   DISABLED_FocusDoesNotReturnToContentsOnReloadPrompt
 #else
@@ -229,7 +237,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewFocusInteractiveUiTest,
 // Test that when the PageInfo bubble is closed and a reload prompt is
 // displayed, focus is NOT returned to the web contents pane, but rather returns
 // to the location bar so accessibility users must tab through the reload prompt
-// before getting back to web contents (see https://crbug.com/910067).
+// before getting back to web contents (see https://crbug.com/41428907).
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewFocusInteractiveUiTest,
                        MAYBE_FocusDoesNotReturnToContentsOnReloadPrompt) {
   WebContentsFocusTracker web_contents_focus_tracker(web_contents());
@@ -289,10 +297,6 @@ class PageInfoBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
 
   net::EmbeddedTestServer* https_server() { return https_server_.get(); }
 
-  ui::ElementContext context() const {
-    return browser()->window()->GetElementContext();
-  }
-
   // Navigates a tab to `GetURL()` and opens PageInfo.
   auto NavigateAndOpenPageInfo() {
     return Steps(InstrumentTab(kWebContentsElementId),
@@ -324,7 +328,7 @@ class PageInfoBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
     return CheckResult(
         base::BindLambdaForTesting([this, reader_name]() {
           return SmartCardPermissionContextFactory::GetForProfile(
-                     *browser()->profile())
+                     *browser()->GetProfile())
               .HasReaderPermission(url::Origin::Create(GetURL()), reader_name);
         }),
         is_granted,
@@ -342,13 +346,28 @@ class PageInfoBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
         "Checking if the content setting value matches the expectation");
   }
 
+  auto CheckContentSettingIsOneTime(ContentSettingsType type,
+                                    bool is_one_time) {
+    return CheckResult(
+        base::BindLambdaForTesting([type, this]() {
+          content_settings::SettingInfo info;
+          host_content_settings_map()->GetContentSetting(GetURL(), GetURL(),
+                                                         type, &info);
+          return info.metadata.session_model() ==
+                 content_settings::mojom::SessionModel::ONE_TIME;
+        }),
+        is_one_time,
+        "Checking if the content setting is a one-time permission");
+  }
+
  protected:
   GURL GetURL() {
     return https_server()->GetURL("a.test", "/permissions/requests.html");
   }
 
   HostContentSettingsMap* host_content_settings_map() {
-    return HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+    return HostContentSettingsMapFactory::GetForProfile(
+        browser()->GetProfile());
   }
 
   void SetPermission(ContentSettingsType type, ContentSetting setting) {
@@ -364,13 +383,13 @@ class PageInfoBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
 
 #if BUILDFLAG(IS_CHROMEOS)
   void GrantSmartCardReaderPermission(const std::string& reader_name) {
-    SmartCardPermissionContextFactory::GetForProfile(*browser()->profile())
+    SmartCardPermissionContextFactory::GetForProfile(*browser()->GetProfile())
         .GrantPersistentReaderPermission(url::Origin::Create(GetURL()),
                                          reader_name);
   }
 
   void ResetSmartCardReaderGrants() {
-    SmartCardPermissionContextFactory::GetForProfile(*browser()->profile())
+    SmartCardPermissionContextFactory::GetForProfile(*browser()->GetProfile())
         .RevokeAllPermissions();
   }
 #endif
@@ -389,8 +408,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
   // Set Notifications permission to Allow so it becomes visible in PageInfo.
   SetPermission(ContentSettingsType::NOTIFICATIONS, CONTENT_SETTING_ALLOW);
 
-  RunTestSequenceInContext(
-      context(), NavigateAndOpenPageInfo(),
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
       CheckViewProperty(PageInfoMainView::kMainLayoutElementId,
                         &PageInfoMainView::GetVisiblePermissionsCountForTesting,
                         1),
@@ -437,8 +456,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
   host_content_settings_map()->SetDefaultContentSetting(
       ContentSettingsType::NOTIFICATIONS, CONTENT_SETTING_BLOCK);
 
-  RunTestSequenceInContext(
-      context(), NavigateAndOpenPageInfo(),
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
       CheckViewProperty(PageInfoMainView::kMainLayoutElementId,
                         &PageInfoMainView::GetVisiblePermissionsCountForTesting,
                         1),
@@ -495,8 +514,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
   // Set up a broad content setting exception for IMAGES.
   SetBroadException(ContentSettingsType::IMAGES, CONTENT_SETTING_BLOCK);
 
-  RunTestSequenceInContext(
-      context(), NavigateAndOpenPageInfo(),
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
       CheckViewProperty(PageInfoMainView::kMainLayoutElementId,
                         &PageInfoMainView::GetVisiblePermissionsCountForTesting,
                         1),
@@ -545,8 +564,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
   host_content_settings_map()->SetDefaultContentSetting(
       ContentSettingsType::IMAGES, CONTENT_SETTING_BLOCK);
 
-  RunTestSequenceInContext(
-      context(), NavigateAndOpenPageInfo(),
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
       CheckViewProperty(PageInfoMainView::kMainLayoutElementId,
                         &PageInfoMainView::GetVisiblePermissionsCountForTesting,
                         1),
@@ -598,34 +617,142 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
   GrantSmartCardReaderPermission("Reader 1");
   GrantSmartCardReaderPermission("Reader 2");
 
-  RunTestSequenceInContext(
-      context(), NavigateAndOpenPageInfo(),
-      // A view with permissions in PageInfo.
-      WaitForShow(PageInfoMainView::kPermissionsElementId),
-      // Set id to the first child of `kPermissionsElementId` -
-      // should be first reader grant.
-      NameChildView(PageInfoMainView::kPermissionsElementId,
-                    kFirstPermissionRow, 0u),
-      // Verify the first row is the Reader 1 grant.
-      CheckViewProperty(kFirstPermissionRow,
-                        &ChosenObjectView::GetObjectNameForTesting,
-                        u"Reader 1"),
-      // Set id to the second child of `kPermissionsElementId` -
-      // should be the second reader grant.
-      NameChildView(PageInfoMainView::kPermissionsElementId,
-                    kSecondPermissionRow, 1u),
-      // Verify the second row is the Reader 2 grant.
-      CheckViewProperty(kSecondPermissionRow,
-                        &ChosenObjectView::GetObjectNameForTesting,
-                        u"Reader 2"),
-      // Click the button deleting grant.
-      DeleteGrant(kFirstPermissionRow),
-      // Row with Reader 1 should disappear.
-      WaitForHide(kFirstPermissionRow),
-      // Permissions should align with what is visible.
-      EnsureSmartCardReaderGrantStatus("Reader 1", false),
-      EnsureSmartCardReaderGrantStatus("Reader 2", true));
+  RunTestSequence(NavigateAndOpenPageInfo(),
+                  // A view with permissions in PageInfo.
+                  WaitForShow(PageInfoMainView::kPermissionsElementId),
+                  // Set id to the first child of `kPermissionsElementId` -
+                  // should be first reader grant.
+                  NameChildView(PageInfoMainView::kPermissionsElementId,
+                                kFirstPermissionRow, 0u),
+                  // Verify the first row is the Reader 1 grant.
+                  CheckViewProperty(kFirstPermissionRow,
+                                    &ChosenObjectView::GetObjectNameForTesting,
+                                    u"Reader 1"),
+                  // Set id to the second child of `kPermissionsElementId` -
+                  // should be the second reader grant.
+                  NameChildView(PageInfoMainView::kPermissionsElementId,
+                                kSecondPermissionRow, 1u),
+                  // Verify the second row is the Reader 2 grant.
+                  CheckViewProperty(kSecondPermissionRow,
+                                    &ChosenObjectView::GetObjectNameForTesting,
+                                    u"Reader 2"),
+                  // Click the button deleting grant.
+                  DeleteGrant(kFirstPermissionRow),
+                  // Row with Reader 1 should disappear.
+                  WaitForHide(kFirstPermissionRow),
+                  // Permissions should align with what is visible.
+                  EnsureSmartCardReaderGrantStatus("Reader 1", false),
+                  EnsureSmartCardReaderGrantStatus("Reader 2", true));
 
   ResetSmartCardReaderGrants();
 }
 #endif
+
+#if BUILDFLAG(IS_MAC)
+// Test that when clipboard permission is denied at the platform level (e.g.,
+// macOS pasteboard permission), the Page Info bubble shows the correct system
+// settings message with a link to open system settings. This verifies the
+// clipboard platform permission UI integration works like camera/microphone.
+// This test is restricted to macOS as clipboard system permissions are only
+// supported on that platform.
+IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
+                       ClipboardPermissionSystemSettingsTest) {
+  // Mock clipboard permission denied at platform level
+  system_permission_settings::ScopedSettingsForTesting clipboard_denied(
+      ContentSettingsType::CLIPBOARD_READ_WRITE, /*blocked=*/true);
+
+  // Set clipboard permission to Allow in content settings to trigger
+  // the system permission check
+  SetPermission(ContentSettingsType::CLIPBOARD_READ_WRITE,
+                CONTENT_SETTING_ALLOW);
+
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
+      CheckViewProperty(PageInfoMainView::kMainLayoutElementId,
+                        &PageInfoMainView::GetVisiblePermissionsCountForTesting,
+                        1),
+      // A view with permissions in PageInfo
+      WaitForShow(PageInfoMainView::kPermissionsElementId),
+      // Set id to the first children of `kPermissionsElementId` -
+      // permissions view in PageInfo.
+      NameChildView(PageInfoMainView::kPermissionsElementId,
+                    kFirstPermissionRow, 0u),
+      // Verify the row label is Clipboard
+      CheckViewProperty(
+          kFirstPermissionRow, &PermissionToggleRowView::GetRowTitleForTesting,
+          l10n_util::GetStringUTF16(IDS_SITE_SETTINGS_TYPE_CLIPBOARD)),
+      // Verify the toggle is on (content setting is Allow)
+      CheckViewProperty(
+          kFirstPermissionRow,
+          &PermissionToggleRowView::GetToggleButtonStateForTesting, true),
+      // Verify the content setting is Allow
+      CheckContentSettings(ContentSettingsType::CLIPBOARD_READ_WRITE,
+                           CONTENT_SETTING_ALLOW),
+      // Verify that the system settings description appears in the blocked at
+      // system level label
+      WaitForShow(
+          PermissionToggleRowView::kPermissionDisabledAtSystemLevelElementId),
+      CheckViewProperty(
+          PermissionToggleRowView::kPermissionDisabledAtSystemLevelElementId,
+          &views::StyledLabel::GetText,
+          u"To use your clipboard, give Chrome access in system settings."));
+}
+#endif  // BUILDFLAG(IS_MAC)
+
+IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
+                       MicrophoneAllowOnEveryVisitToggleTest) {
+  content_settings::ContentSettingConstraints constraints;
+  constraints.set_session_model(
+      content_settings::mojom::SessionModel::ONE_TIME);
+  host_content_settings_map()->SetPermissionSettingDefaultScope(
+      GetURL(), GetURL(), ContentSettingsType::MEDIASTREAM_MIC,
+      CONTENT_SETTING_ALLOW, constraints);
+
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
+      WaitForShow(PermissionToggleRowView::kRowSubTitleMicrophoneElementId),
+      CheckViewProperty(
+          PermissionToggleRowView::kRowSubTitleMicrophoneElementId,
+          &views::Label::GetText,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_STATE_TEXT_ALLOWED_ONCE)),
+      NameChildView(PageInfoMainView::kPermissionsElementId,
+                    kFirstPermissionRow, 0u),
+      PressButton(PermissionToggleRowView::kSubpageButtonElementId),
+      WaitForShow(PageInfoPermissionContentView::kRememberCheckboxElementId),
+      CheckContentSettingIsOneTime(ContentSettingsType::MEDIASTREAM_MIC, true),
+      CheckViewProperty(
+          PageInfoPermissionContentView::kStateLabelElementId,
+          &views::Label::GetText,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_STATE_TEXT_ALLOWED_ONCE)),
+      PressButton(PageInfoPermissionContentView::kRememberCheckboxElementId),
+      CheckContentSettingIsOneTime(ContentSettingsType::MEDIASTREAM_MIC, false),
+      CheckViewProperty(
+          PageInfoPermissionContentView::kStateLabelElementId,
+          &views::Label::GetText,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_STATE_TEXT_ALLOWED)),
+      PressButton(PageInfoViewFactory::kBackButtonElementId),
+      WaitForShow(PageInfoMainView::kMainLayoutElementId),
+      // The main page is recreated, so we need to name the row again.
+      NameChildView(PageInfoMainView::kPermissionsElementId,
+                    kFirstPermissionRow, 0u),
+      // For permanent allow, subtitle is empty if not used recently.
+      CheckViewProperty(kFirstPermissionRow,
+                        &PermissionToggleRowView::GetRowSubTitleForTesting,
+                        u""),
+      PressButton(PermissionToggleRowView::kSubpageButtonElementId),
+      WaitForShow(PageInfoPermissionContentView::kRememberCheckboxElementId),
+      PressButton(PageInfoPermissionContentView::kRememberCheckboxElementId),
+      CheckContentSettingIsOneTime(ContentSettingsType::MEDIASTREAM_MIC, true),
+      CheckViewProperty(
+          PageInfoPermissionContentView::kStateLabelElementId,
+          &views::Label::GetText,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_STATE_TEXT_ALLOWED_ONCE)),
+      PressButton(PageInfoViewFactory::kBackButtonElementId),
+      WaitForShow(PageInfoMainView::kMainLayoutElementId),
+      NameChildView(PageInfoMainView::kPermissionsElementId,
+                    kFirstPermissionRow, 0u),
+      CheckViewProperty(
+          kFirstPermissionRow,
+          &PermissionToggleRowView::GetRowSubTitleForTesting,
+          l10n_util::GetStringUTF16(IDS_PAGE_INFO_STATE_TEXT_ALLOWED_ONCE)));
+}

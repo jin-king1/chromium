@@ -31,7 +31,7 @@ public class PlayerFrameBitmapState {
     private final Size mTileSize;
 
     /** The scale factor of bitmaps. */
-    private float mScaleFactor;
+    private final float mScaleFactor;
 
     /**
      * Bitmaps that make up the contents.
@@ -50,7 +50,7 @@ public class PlayerFrameBitmapState {
     private boolean @Nullable [][] mRequiredBitmaps;
 
     /** Whether a bitmap is visible for a given request. */
-    private boolean[][] mVisibleBitmaps;
+    private final boolean[][] mVisibleBitmaps;
 
     /** Delegate for accessing native to request bitmaps. */
     private final PlayerCompositorDelegate mCompositorDelegate;
@@ -341,9 +341,9 @@ public class PlayerFrameBitmapState {
     }
 
     /** Used as the callback for bitmap requests from the Paint Preview compositor. */
-    private class BitmapRequestHandler implements Callback<@Nullable Bitmap> {
-        int mRequestRow;
-        int mRequestCol;
+    private class BitmapRequestHandler implements Callback<Bitmap> {
+        final int mRequestRow;
+        final int mRequestCol;
         int mRequestId;
 
         private BitmapRequestHandler(int requestRow, int requestCol) {
@@ -364,13 +364,8 @@ public class PlayerFrameBitmapState {
 
         /** Called when bitmap is successfully composited. */
         @Override
-        public void onResult(@Nullable Bitmap result) {
+        public void onResult(Bitmap result) {
             TraceEvent.begin("BitmapRequestHandler.onResult");
-            if (result == null) {
-                onError();
-                TraceEvent.end("BitmapRequestHandler.onResult");
-                return;
-            }
             if (mBitmapMatrix == null
                     || mPendingBitmapRequests == null
                     || mRequiredBitmaps == null

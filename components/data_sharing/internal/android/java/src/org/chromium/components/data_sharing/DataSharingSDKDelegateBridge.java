@@ -4,6 +4,8 @@
 
 package org.chromium.components.data_sharing;
 
+import androidx.annotation.Nullable;
+
 import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.jni_zero.CalledByNative;
@@ -13,6 +15,7 @@ import org.jni_zero.NativeMethods;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.data_sharing.DataSharingSDKDelegateProtoResponseCallback.Status;
 import org.chromium.components.data_sharing.protocol.AddAccessTokenParams;
 import org.chromium.components.data_sharing.protocol.AddAccessTokenResult;
@@ -23,19 +26,30 @@ import org.chromium.components.data_sharing.protocol.DeleteGroupParams;
 import org.chromium.components.data_sharing.protocol.LeaveGroupParams;
 import org.chromium.components.data_sharing.protocol.LookupGaiaIdByEmailParams;
 import org.chromium.components.data_sharing.protocol.LookupGaiaIdByEmailResult;
+import org.chromium.components.data_sharing.protocol.ReadGroupWithTokenParams;
 import org.chromium.components.data_sharing.protocol.ReadGroupsParams;
 import org.chromium.components.data_sharing.protocol.ReadGroupsResult;
 import org.chromium.components.data_sharing.protocol.RemoveMemberParams;
 
 /** Java counterpart to the C++ DataSharingSDKDelegateAndroid class. */
 @JNINamespace("data_sharing")
+@NullMarked
 public class DataSharingSDKDelegateBridge {
 
     private DataSharingSDKDelegate mSDKDelegateImpl;
 
+    private static @Nullable DataSharingSDKDelegate sSDKDelegateForTesting;
+
+    // Flag to check if the bridge has been initialized. Used for testing purposes.
+    private static boolean sIsInitializedForTesting;
+
     @CalledByNative
     private static DataSharingSDKDelegateBridge create(
             long unused_nativePtr, DataSharingSDKDelegate delegate) {
+        sIsInitializedForTesting = true;
+        if (sSDKDelegateForTesting != null) {
+            return new DataSharingSDKDelegateBridge(sSDKDelegateForTesting);
+        }
         return new DataSharingSDKDelegateBridge(delegate);
     }
 
@@ -52,13 +66,13 @@ public class DataSharingSDKDelegateBridge {
     }
 
     @CalledByNative
-    public void createGroup(String protoParams, long nativeCallbackPtr) {
+    public void createGroup(byte[] protoParams, long nativeCallbackPtr) {
         CreateGroupParams params;
         try {
-            params = CreateGroupParams.parseFrom(protoParams.getBytes());
+            params = CreateGroupParams.parseFrom(protoParams);
         } catch (InvalidProtocolBufferException e) {
             PostTask.postTask(
-                    TaskTraits.USER_VISIBLE,
+                    TaskTraits.UI_USER_VISIBLE,
                     () -> {
                         DataSharingSDKDelegateBridgeJni.get()
                                 .runCreateGroupCallback(
@@ -77,13 +91,13 @@ public class DataSharingSDKDelegateBridge {
     }
 
     @CalledByNative
-    public void readGroups(String protoParams, long nativeCallbackPtr) {
+    public void readGroups(byte[] protoParams, long nativeCallbackPtr) {
         ReadGroupsParams params;
         try {
-            params = ReadGroupsParams.parseFrom(protoParams.getBytes());
+            params = ReadGroupsParams.parseFrom(protoParams);
         } catch (InvalidProtocolBufferException e) {
             PostTask.postTask(
-                    TaskTraits.USER_VISIBLE,
+                    TaskTraits.UI_USER_VISIBLE,
                     () -> {
                         DataSharingSDKDelegateBridgeJni.get()
                                 .runReadGroupsCallback(
@@ -102,13 +116,38 @@ public class DataSharingSDKDelegateBridge {
     }
 
     @CalledByNative
-    public void addMember(String protoParams, long nativeCallbackPtr) {
-        AddMemberParams params;
+    public void readGroupWithToken(byte[] protoParams, long nativeCallbackPtr) {
+        ReadGroupWithTokenParams params;
         try {
-            params = AddMemberParams.parseFrom(protoParams.getBytes());
+            params = ReadGroupWithTokenParams.parseFrom(protoParams);
         } catch (InvalidProtocolBufferException e) {
             PostTask.postTask(
-                    TaskTraits.USER_VISIBLE,
+                    TaskTraits.UI_USER_VISIBLE,
+                    () -> {
+                        DataSharingSDKDelegateBridgeJni.get()
+                                .runReadGroupsCallback(
+                                        nativeCallbackPtr,
+                                        ReadGroupsResult.newBuilder().build().toByteArray(),
+                                        Status.FAILURE);
+                    });
+            return;
+        }
+        mSDKDelegateImpl.readGroupWithToken(
+                params,
+                (byte[] serializedProto, int status) -> {
+                    DataSharingSDKDelegateBridgeJni.get()
+                            .runReadGroupsCallback(nativeCallbackPtr, serializedProto, status);
+                });
+    }
+
+    @CalledByNative
+    public void addMember(byte[] protoParams, long nativeCallbackPtr) {
+        AddMemberParams params;
+        try {
+            params = AddMemberParams.parseFrom(protoParams);
+        } catch (InvalidProtocolBufferException e) {
+            PostTask.postTask(
+                    TaskTraits.UI_USER_VISIBLE,
                     () -> {
                         DataSharingSDKDelegateBridgeJni.get()
                                 .runGetStatusCallback(nativeCallbackPtr, Status.FAILURE);
@@ -123,13 +162,13 @@ public class DataSharingSDKDelegateBridge {
     }
 
     @CalledByNative
-    public void removeMember(String protoParams, long nativeCallbackPtr) {
+    public void removeMember(byte[] protoParams, long nativeCallbackPtr) {
         RemoveMemberParams params;
         try {
-            params = RemoveMemberParams.parseFrom(protoParams.getBytes());
+            params = RemoveMemberParams.parseFrom(protoParams);
         } catch (InvalidProtocolBufferException e) {
             PostTask.postTask(
-                    TaskTraits.USER_VISIBLE,
+                    TaskTraits.UI_USER_VISIBLE,
                     () -> {
                         DataSharingSDKDelegateBridgeJni.get()
                                 .runGetStatusCallback(nativeCallbackPtr, Status.FAILURE);
@@ -144,13 +183,13 @@ public class DataSharingSDKDelegateBridge {
     }
 
     @CalledByNative
-    public void leaveGroup(String protoParams, long nativeCallbackPtr) {
+    public void leaveGroup(byte[] protoParams, long nativeCallbackPtr) {
         LeaveGroupParams params;
         try {
-            params = LeaveGroupParams.parseFrom(protoParams.getBytes());
+            params = LeaveGroupParams.parseFrom(protoParams);
         } catch (InvalidProtocolBufferException e) {
             PostTask.postTask(
-                    TaskTraits.USER_VISIBLE,
+                    TaskTraits.UI_USER_VISIBLE,
                     () -> {
                         DataSharingSDKDelegateBridgeJni.get()
                                 .runGetStatusCallback(nativeCallbackPtr, Status.FAILURE);
@@ -165,13 +204,13 @@ public class DataSharingSDKDelegateBridge {
     }
 
     @CalledByNative
-    public void deleteGroup(String protoParams, long nativeCallbackPtr) {
+    public void deleteGroup(byte[] protoParams, long nativeCallbackPtr) {
         DeleteGroupParams params;
         try {
-            params = DeleteGroupParams.parseFrom(protoParams.getBytes());
+            params = DeleteGroupParams.parseFrom(protoParams);
         } catch (InvalidProtocolBufferException e) {
             PostTask.postTask(
-                    TaskTraits.USER_VISIBLE,
+                    TaskTraits.UI_USER_VISIBLE,
                     () -> {
                         DataSharingSDKDelegateBridgeJni.get()
                                 .runGetStatusCallback(nativeCallbackPtr, Status.FAILURE);
@@ -186,13 +225,13 @@ public class DataSharingSDKDelegateBridge {
     }
 
     @CalledByNative
-    public void lookupGaiaIdByEmail(String protoParams, long nativeCallbackPtr) {
+    public void lookupGaiaIdByEmail(byte[] protoParams, long nativeCallbackPtr) {
         LookupGaiaIdByEmailParams params;
         try {
-            params = LookupGaiaIdByEmailParams.parseFrom(protoParams.getBytes());
+            params = LookupGaiaIdByEmailParams.parseFrom(protoParams);
         } catch (InvalidProtocolBufferException e) {
             PostTask.postTask(
-                    TaskTraits.USER_VISIBLE,
+                    TaskTraits.UI_USER_VISIBLE,
                     () -> {
                         DataSharingSDKDelegateBridgeJni.get()
                                 .runLookupGaiaIdByEmailCallback(
@@ -215,13 +254,13 @@ public class DataSharingSDKDelegateBridge {
     }
 
     @CalledByNative
-    public void addAccessToken(String protoParams, long nativeCallbackPtr) {
+    public void addAccessToken(byte[] protoParams, long nativeCallbackPtr) {
         AddAccessTokenParams params;
         try {
-            params = AddAccessTokenParams.parseFrom(protoParams.getBytes());
+            params = AddAccessTokenParams.parseFrom(protoParams);
         } catch (InvalidProtocolBufferException e) {
             PostTask.postTask(
-                    TaskTraits.USER_VISIBLE,
+                    TaskTraits.UI_USER_VISIBLE,
                     () -> {
                         DataSharingSDKDelegateBridgeJni.get()
                                 .runAddAccessTokenCallback(
@@ -247,6 +286,21 @@ public class DataSharingSDKDelegateBridge {
         DataSharingSDKDelegate old = mSDKDelegateImpl;
         ResettersForTesting.register(() -> mSDKDelegateImpl = old);
         mSDKDelegateImpl = delegate;
+    }
+
+    /* Set a delegate for testing, to be used by bridge when creating. */
+    public static void setForTesting(DataSharingSDKDelegate delegate) {
+        sSDKDelegateForTesting = delegate;
+        ResettersForTesting.register(() -> sSDKDelegateForTesting = null);
+    }
+
+    /**
+     * Returns whether the SDK bridge has been initialized.
+     *
+     * @return True if the bridge has been initialized, false otherwise.
+     */
+    public static boolean isInitializedForTesting() {
+        return sIsInitializedForTesting;
     }
 
     @NativeMethods

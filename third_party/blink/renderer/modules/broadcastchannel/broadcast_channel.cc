@@ -12,6 +12,7 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+#include "third_party/blink/public/mojom/frame/back_forward_cache_controller.mojom-blink.h"
 #include "third_party/blink/public/mojom/navigation/renderer_eviction_reason.mojom-blink.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -49,11 +50,18 @@ GetWorkerThreadSpecificProvider(WorkerGlobalScope& worker_global_scope) {
 
 // static
 BroadcastChannel* BroadcastChannel::Create(ExecutionContext* execution_context,
-                                           const String& name,
-                                           ExceptionState& exception_state) {
+                                           const String& name) {
   LocalDOMWindow* window = DynamicTo<LocalDOMWindow>(execution_context);
   if (window && window->IsCrossSiteSubframe())
     UseCounter::Count(window, WebFeature::kThirdPartyBroadcastChannel);
+
+  if (auto* worker_global_scope =
+          DynamicTo<WorkerGlobalScope>(execution_context)) {
+    if (worker_global_scope->Url().ProtocolIsData()) {
+      UseCounter::Count(worker_global_scope,
+                        WebFeature::kDataUrlWorkerBroadcastChannel);
+    }
+  }
 
   return MakeGarbageCollected<BroadcastChannel>(execution_context, name);
 }
@@ -103,11 +111,11 @@ void BroadcastChannel::postMessage(const ScriptValue& message,
   if (execution_context->IsWindow()) {
     Document* document = To<LocalDOMWindow>(execution_context)->document();
     if (document->IsPrerendering()) {
-      document->AddPostPrerenderingActivationStep(
-          WTF::BindOnce(&BroadcastChannel::PostMessageInternal,
-                        WrapWeakPersistent(this), std::move(value),
-                        execution_context->GetSecurityOrigin()->IsolatedCopy(),
-                        execution_context->GetAgentClusterID()));
+      document->AddPostPrerenderingActivationStep(blink::BindOnce(
+          &BroadcastChannel::PostMessageInternal, WrapWeakPersistent(this),
+          std::move(value),
+          execution_context->GetSecurityOrigin()->IsolatedCopy(),
+          execution_context->GetAgentClusterID()));
       return;
     }
   }
@@ -174,9 +182,11 @@ void BroadcastChannel::OnMessage(BlinkCloneableMessage message) {
        context->IsSameAgentCluster(message.sender_agent_cluster_id)) &&
       message.message->CanDeserializeIn(context)) {
     event = MessageEvent::Create(nullptr, std::move(message.message),
-                                 context->GetSecurityOrigin()->ToString());
+                                 context->GetSecurityOrigin(),
+                                 MessageEvent::kMessageIsSameOrigin,
+                                 /* last_event_id=*/{}, /* source=*/nullptr);
   } else {
-    event = MessageEvent::CreateError(context->GetSecurityOrigin()->ToString());
+    event = MessageEvent::CreateError(context->GetSecurityOrigin());
   }
 
   if (base::FeatureList::IsEnabled(features::kBFCacheOpenBroadcastChannel) &&
@@ -333,9 +343,9 @@ BroadcastChannel::BroadcastChannel(
 
 void BroadcastChannel::SetupDisconnectHandlers() {
   receiver_.set_disconnect_handler(
-      WTF::BindOnce(&BroadcastChannel::OnError, WrapWeakPersistent(this)));
+      BindOnce(&BroadcastChannel::OnError, WrapWeakPersistent(this)));
   remote_client_.set_disconnect_handler(
-      WTF::BindOnce(&BroadcastChannel::OnError, WrapWeakPersistent(this)));
+      BindOnce(&BroadcastChannel::OnError, WrapWeakPersistent(this)));
 }
 
 bool BroadcastChannel::IsRemoteClientConnectedForTesting() const {

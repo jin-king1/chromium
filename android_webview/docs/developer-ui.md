@@ -14,10 +14,9 @@ Canary](prerelease.md). These channels will have a launcher icon which will
 launch WebView DevTools.
 
 *** note
-**Note:** the WebView DevTools icon does not appear by default on Android 7
-through 9 (Nougat/Oreo/Pie). To enable the launcher icon, first [change your
-WebView provider](prerelease.md#Android-7-through-9-Nougat_Oreo_Pie) and then
-launch the same Chrome channel or any WebView app (ex. [WebView shell
+**Note:** the WebView DevTools icon does not appear by default. To enable the
+launcher icon, first [change your WebView provider](prerelease.md#trichrome-dev)
+and then launch the same Chrome channel or any WebView app (ex. [WebView shell
 browser](webview-shell.md), or open an email in Gmail).
 ***
 
@@ -79,7 +78,7 @@ provide more info about that crash.
 While the crash server has most of the information we need to solve issues, it
 is helpful if you can provide additional details in a bug report, such as steps
 to reproduce the crash. To do so press the "File bug report" button which will
-open https://issues.chromium.org/issues/new?component=1456456&template=1923373
+open our bug template
 in the browser. You can use the bug report template to provide additional info
 about the crash for the WebView engineering team. Make sure to fill all the
 relevant fields in the bug report and leave the crash upload ID in the bug
@@ -131,7 +130,7 @@ or "Disabled" in the UI; "Default" means WebView will pick up the random field
 trial experiment.
 
 If you find an experiment is the root cause for app breakage, please [file a
-bug](https://issues.chromium.org/issues/new?component=1456456&template=1923373),
+bug](/android_webview/docs/bugreport.md),
 mention which experiment, and link to your app's Play Store page for our team to
 investigate.
 
@@ -199,44 +198,22 @@ Exposing your feature this way has several benefits:
 
 - [Design doc](http://go/webview-dev-ui-flags-design) (Google-only)
 
-## Components UI
-
-Components UI shows all the registered components and their respective installed
-versions, similar to `chrome://components`. Components are config files downloaded
-via chrome's [component updater](https://chromium.googlesource.com/chromium/src/+/lkgr/components/component_updater/README.md). This can be accessed by opening the 3-dotted
-menu and tapping the "Components" option.
-
-Tapping the "Update" button located in the options menu will download new versions
-of the components if any are available.
-
-*** note
-**Note:** Updating components via the UI runs in "on-demand" or "user-visible"
-mode by default which may have [different behavior](https://crbug.com/1250837)
-from automated updates. To simulate the behaviour of the automated update
-service, on-demand updates can be turned off using the toggle provided
-below the Components Summary.
-***
-
-![WebView components UI](images/webview_components_ui.png)
-
 ## More cool stuff
 
 ### Switching WebView provider
 
-Since Android 7 (Nougat), Android supports installing [multiple WebView
-packages](prerelease.md) side by side and switching between them. After
-installing the WebView channel you want, launch WebView DevTools, open the
-three-dotted menu, and select "Change WebView Provider." This launches the
-system UI where you can select your new WebView channel.
+Android supports installing [multiple WebView packages](prerelease.md) side by
+side and switching between them. After installing the WebView channel you want,
+launch WebView DevTools, open the three-dotted menu, and select "Change WebView
+Provider." This launches the system UI where you can select your new WebView
+channel.
 
 ### Filing a bug report
 
 You can file general bug reports for the WebView engineering team. Launch
 WebView DevTools, open the three-dotted menu, and select "Report WebView Bug."
 Similar to filing bug reports for crashes, this will open the system browser to
-[our bug
-tracker](https://issues.chromium.org/issues/new?component=1456456&template=1923373)
-(requires sign-in), where you can describe the issue.
+our bug tracker (requires sign-in), where you can describe the issue.
 
 ### Check for WebView updates
 

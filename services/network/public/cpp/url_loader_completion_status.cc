@@ -4,6 +4,7 @@
 
 #include "services/network/public/cpp/url_loader_completion_status.h"
 
+#include "base/byte_size.h"
 #include "base/trace_event/trace_event.h"
 #include "net/base/net_errors.h"
 
@@ -35,14 +36,11 @@ bool URLLoaderCompletionStatus::operator==(
   return error_code == rhs.error_code &&
          extended_error_code == rhs.extended_error_code &&
          exists_in_cache == rhs.exists_in_cache &&
-         exists_in_memory_cache == rhs.exists_in_memory_cache &&
          completion_time == rhs.completion_time &&
          encoded_data_length == rhs.encoded_data_length &&
          encoded_body_length == rhs.encoded_body_length &&
          decoded_body_length == rhs.decoded_body_length &&
          cors_error_status == rhs.cors_error_status &&
-         private_network_access_preflight_result ==
-             rhs.private_network_access_preflight_result &&
          blocked_by_response_reason == rhs.blocked_by_response_reason &&
          should_report_orb_blocking == rhs.should_report_orb_blocking &&
          should_collapse_initiator == rhs.should_collapse_initiator;
@@ -53,9 +51,9 @@ void URLLoaderCompletionStatus::WriteIntoTrace(
   auto dict = std::move(context).WriteDictionary();
   dict.Add("error_code", error_code);
   dict.Add("extended_error_code", extended_error_code);
-  dict.Add("encoded_data_length", encoded_data_length);
-  dict.Add("encoded_body_length", encoded_body_length);
-  dict.Add("decoded_body_length", decoded_body_length);
+  dict.Add("encoded_data_length", encoded_data_length.InBytes());
+  dict.Add("encoded_body_length", encoded_body_length.InBytes());
+  dict.Add("decoded_body_length", decoded_body_length.InBytes());
 }
 
 }  // namespace network

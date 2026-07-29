@@ -14,14 +14,15 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.UrlUtils;
-import org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 
@@ -30,12 +31,11 @@ import java.util.concurrent.TimeoutException;
 /** Tests for evaluation of JavaScript. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Batch(Batch.PER_CLASS)
 public class JavaScriptEvalChromeTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
-
-    @Rule
-    public CustomTabActivityTestRule mCustomTabActivityTestRule = new CustomTabActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.autoResetCtaActivityRule();
 
     private static final String JSTEST_URL =
             UrlUtils.encodeHtmlDataUri(
@@ -48,7 +48,7 @@ public class JavaScriptEvalChromeTest {
 
     @Before
     public void setUp() {
-        mActivityTestRule.startMainActivityWithURL(JSTEST_URL);
+        mActivityTestRule.startOnWebPage(JSTEST_URL);
     }
 
     /**
@@ -59,12 +59,11 @@ public class JavaScriptEvalChromeTest {
     @LargeTest
     @Feature({"Browser"})
     public void testJavaScriptEvalIsCorrectlyOrderedWithinOneTab() throws TimeoutException {
-        Tab tab1 = mActivityTestRule.getActivity().getActivityTab();
-        Tab tab2;
+        Tab tab1 = mActivityTestRule.getActivityTab();
         ChromeTabUtils.newTabFromMenu(
                 InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
-        tab2 = mActivityTestRule.getActivity().getActivityTab();
-        mActivityTestRule.loadUrl(JSTEST_URL);
+        Tab tab2 = mActivityTestRule.getActivityTab();
+        mActivityTestRule.getActivityTestRule().loadUrl(JSTEST_URL);
         ChromeTabUtils.switchTabInCurrentTabModel(mActivityTestRule.getActivity(), tab1.getId());
 
         Assert.assertFalse("Tab didn't open", tab1 == tab2);

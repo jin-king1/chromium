@@ -2,13 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "skia/ext/skcolorspace_primaries.h"
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace skia {
@@ -53,9 +50,13 @@ TEST(SkiaUtils, PrimariesD50) {
 
   // The two matrices should be the same, but the primaries will not be.
   EXPECT_FALSE(pro_photo == d65);
-  for (size_t i = 0; i < 3; ++i) {
-    for (size_t j = 0; j < 3; ++j) {
-      EXPECT_NEAR(pro_photo_matrix.vals[i][j], d65_matrix.vals[i][j], kEpsilon);
+  auto pro_photo_rows = base::span(pro_photo_matrix.vals);
+  auto d65_rows = base::span(d65_matrix.vals);
+  for (size_t i = 0; i < pro_photo_rows.size(); ++i) {
+    auto pro_photo_row = base::span(pro_photo_rows[i]);
+    auto d65_row = base::span(d65_rows[i]);
+    for (size_t j = 0; j < pro_photo_rows.size(); ++j) {
+      EXPECT_NEAR(pro_photo_row[j], d65_row[j], kEpsilon);
     }
   }
 }

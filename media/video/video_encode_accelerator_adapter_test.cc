@@ -11,12 +11,14 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/task_environment.h"
 #include "base/threading/thread.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/viz/test/test_context_provider.h"
@@ -44,6 +46,30 @@ using ::testing::WithArgs;
 
 namespace media {
 
+class FlushHoldingVideoEncodeAccelerator : public FakeVideoEncodeAccelerator {
+ public:
+  explicit FlushHoldingVideoEncodeAccelerator(
+      scoped_refptr<base::SequencedTaskRunner> task_runner,
+      FlushCallback* out_held_callback)
+      : FakeVideoEncodeAccelerator(std::move(task_runner)),
+        out_held_callback_(out_held_callback) {}
+
+  void Flush(FlushCallback flush_callback) override {
+    flush_callback_ = std::move(flush_callback);
+  }
+
+  bool IsFlushSupported() override { return true; }
+
+  void Destroy() override {
+    *out_held_callback_ = std::move(flush_callback_);
+    FakeVideoEncodeAccelerator::Destroy();
+  }
+
+ private:
+  FlushCallback flush_callback_;
+  raw_ptr<FlushCallback> out_held_callback_;
+};
+
 class VideoEncodeAcceleratorAdapterTest
     : public ::testing::TestWithParam<VideoPixelFormat> {
  public:
@@ -54,7 +80,6 @@ class VideoEncodeAcceleratorAdapterTest
 
     vea_ = new FakeVideoEncodeAccelerator(vea_runner_);
     sii_ = base::MakeRefCounted<gpu::TestSharedImageInterface>();
-    sii_->UseTestGMBInSharedImageCreationWithBufferUsage();
     gpu_factories_ =
         std::make_unique<MockGpuVideoAcceleratorFactories>(sii_.get());
     supported_profiles_ = {
@@ -259,9 +284,9 @@ TEST_F(VideoEncodeAcceleratorAdapterTest, InitializeAfterFirstFrame) {
         outputs_count++;
       });
 
-  VideoPixelFormat expected_input_format = PIXEL_FORMAT_I420;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-  expected_input_format = PIXEL_FORMAT_NV12;
+  VideoPixelFormat expected_input_format = PIXEL_FORMAT_NV12;
+#if BUILDFLAG(IS_FUCHSIA)
+  expected_input_format = PIXEL_FORMAT_I420;
 #endif
   vea()->SetEncodingCallback(base::BindLambdaForTesting(
       [&](BitstreamBuffer&, bool keyframe, scoped_refptr<VideoFrame> frame) {
@@ -368,9 +393,9 @@ TEST_F(VideoEncodeAcceleratorAdapterTest, FlushDuringInitialize) {
         outputs_count++;
       });
 
-  VideoPixelFormat expected_input_format = PIXEL_FORMAT_I420;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-  expected_input_format = PIXEL_FORMAT_NV12;
+  VideoPixelFormat expected_input_format = PIXEL_FORMAT_NV12;
+#if BUILDFLAG(IS_FUCHSIA)
+  expected_input_format = PIXEL_FORMAT_I420;
 #endif
 
   vea()->SetEncodingCallback(base::BindLambdaForTesting(
@@ -392,6 +417,98 @@ TEST_F(VideoEncodeAcceleratorAdapterTest, FlushDuringInitialize) {
     EXPECT_EQ(outputs_count, 1);
   }));
   RunUntilIdle();
+}
+
+TEST_F(VideoEncodeAcceleratorAdapterTest, HeldFlushCallbackAfterDestroy) {
+  // Delete the default vea_ allocated in SetUp since we are replacing it.
+  delete vea_.ExtractAsDangling();
+
+  VideoEncodeAccelerator::FlushCallback held_flush_callback;
+  auto* flush_holding_vea =
+      new FlushHoldingVideoEncodeAccelerator(vea_runner_, &held_flush_callback);
+  vea_ = flush_holding_vea;
+  EXPECT_CALL(*gpu_factories_.get(), DoCreateVideoEncodeAccelerator())
+      .WillRepeatedly(Return(flush_holding_vea));
+
+  VideoEncoder::Options options;
+  options.frame_size = gfx::Size(640, 480);
+
+  // Wait 1: Initialize
+  base::RunLoop init_run_loop;
+  adapter()->Initialize(
+      profile_, options, /*info_cb=*/base::DoNothing(),
+      /*output_cb=*/base::DoNothing(),
+      base::BindLambdaForTesting([&](EncoderStatus status) {
+        EXPECT_TRUE(callback_runner_->RunsTasksInCurrentSequence());
+        EXPECT_TRUE(status.is_ok());
+        init_run_loop.Quit();
+      }));
+  init_run_loop.Run();
+
+  auto frame = CreateGreenFrame(options.frame_size, PIXEL_FORMAT_I420,
+                                base::Milliseconds(1));
+
+  // Block vea_runner_ to ensure Encode and Flush are both posted before either
+  // runs.
+  base::WaitableEvent event;
+  vea_runner_->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](base::WaitableEvent* e) {
+                       base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait;
+                       e->Wait();
+                     },
+                     base::Unretained(&event)));
+
+  // Start Encode but don't wait yet
+  base::RunLoop encode_run_loop;
+  adapter()->Encode(
+      frame, VideoEncoder::EncodeOptions(true),
+      base::BindLambdaForTesting([&](EncoderStatus status) {
+        EXPECT_TRUE(callback_runner_->RunsTasksInCurrentSequence());
+        EXPECT_TRUE(status.is_ok());
+        encode_run_loop.Quit();
+      }));
+
+  bool flush_called = false;
+  adapter()->Flush(base::BindLambdaForTesting([&](EncoderStatus status) {
+    flush_called = true;
+    EXPECT_TRUE(status.is_ok());
+  }));
+
+  // Unblock vea_runner_ now that both are posted.
+  event.Signal();
+
+  // Wait for vea_runner_ to process Encode and Flush, which will post
+  // the Encode completion callback to the main thread.
+  {
+    base::RunLoop run_loop;
+    vea_runner_->PostTaskAndReply(FROM_HERE, base::DoNothing(),
+                                  run_loop.QuitClosure());
+    run_loop.Run();
+  }
+
+  // Now run the main thread loop until the Encode callback executes.
+  encode_run_loop.Run();
+  EXPECT_FALSE(flush_called);
+
+  // Wait 4: Deletion
+  vea_runner_->DeleteSoon(FROM_HERE, std::move(vae_adapter_));
+  {
+    base::RunLoop run_loop;
+    vea_runner_->PostTaskAndReply(FROM_HERE, base::DoNothing(),
+                                  run_loop.QuitClosure());
+    run_loop.Run();
+  }
+
+  // Wait 5: Running the held callback
+  vea_runner_->PostTask(FROM_HERE,
+                        base::BindOnce(std::move(held_flush_callback), true));
+  {
+    base::RunLoop run_loop;
+    vea_runner_->PostTaskAndReply(FROM_HERE, base::DoNothing(),
+                                  run_loop.QuitClosure());
+    run_loop.Run();
+  }
 }
 
 TEST_F(VideoEncodeAcceleratorAdapterTest, InitializationError) {
@@ -466,9 +583,9 @@ TEST_P(VideoEncodeAcceleratorAdapterTest, TwoFramesResize) {
   auto large_frame =
       CreateGreenFrame(large_size, pixel_format, base::Milliseconds(2));
 
-  VideoPixelFormat expected_input_format = PIXEL_FORMAT_I420;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-    expected_input_format = PIXEL_FORMAT_NV12;
+  VideoPixelFormat expected_input_format = PIXEL_FORMAT_NV12;
+#if BUILDFLAG(IS_FUCHSIA)
+  expected_input_format = PIXEL_FORMAT_I420;
 #endif
   const gfx::ColorSpace expected_color_space =
       ExpectedColorSpace(pixel_format, expected_input_format);
@@ -532,6 +649,46 @@ TEST_F(VideoEncodeAcceleratorAdapterTest, AutomaticResizeSupport) {
   EXPECT_EQ(outputs_count, 2);
 }
 
+TEST_F(VideoEncodeAcceleratorAdapterTest, ManualReferenceControl) {
+  VideoEncoder::Options options;
+  options.frame_size = gfx::Size(640, 480);
+  options.manual_reference_buffer_control = true;
+  int outputs_count = 0;
+  auto pixel_format = PIXEL_FORMAT_NV12;
+  const gfx::ColorSpace expected_color_space =
+      ExpectedColorSpace(pixel_format, pixel_format);
+  VideoEncoder::OutputCB output_cb = base::BindLambdaForTesting(
+      [&](VideoEncoderOutput output,
+          std::optional<VideoEncoder::CodecDescription>) {
+        EXPECT_EQ(output.color_space, expected_color_space);
+        outputs_count++;
+      });
+
+  vea()->SetEncodingCallback(base::BindLambdaForTesting(
+      [&](BitstreamBuffer&, bool keyframe, scoped_refptr<VideoFrame> frame) {
+        return BitstreamBufferMetadata(1, keyframe, frame->timestamp());
+      }));
+
+  adapter()->Initialize(profile_, options, /*info_cb=*/base::DoNothing(),
+                        std::move(output_cb), ValidatingStatusCB());
+
+  auto frame1 =
+      CreateGreenFrame(options.frame_size, pixel_format, base::Milliseconds(1));
+  auto frame2 =
+      CreateGreenFrame(options.frame_size, pixel_format, base::Milliseconds(2));
+
+  VideoEncoder::EncodeOptions encode_opts;
+  encode_opts.reference_buffers = {};
+  encode_opts.update_buffer = 0;
+  adapter()->Encode(frame1, encode_opts, ValidatingStatusCB());
+
+  encode_opts.reference_buffers = {0};
+  encode_opts.update_buffer = std::nullopt;
+  adapter()->Encode(frame2, encode_opts, ValidatingStatusCB());
+  RunUntilIdle();
+  EXPECT_EQ(outputs_count, 2);
+}
+
 TEST_P(VideoEncodeAcceleratorAdapterTest, RunWithAllPossibleInputConversions) {
   VideoEncoder::Options options;
   options.frame_size = gfx::Size(640, 480);
@@ -547,10 +704,12 @@ TEST_P(VideoEncodeAcceleratorAdapterTest, RunWithAllPossibleInputConversions) {
           : VideoEncodeAcceleratorAdapter::InputBufferKind::CpuMemBuf;
   adapter()->SetInputBufferPreferenceForTesting(input_kind);
 
-  const VideoPixelFormat expected_input_format =
-      input_kind == VideoEncodeAcceleratorAdapter::InputBufferKind::GpuMemBuf
-          ? PIXEL_FORMAT_NV12
-          : PIXEL_FORMAT_I420;
+  VideoPixelFormat expected_input_format = PIXEL_FORMAT_NV12;
+  if (input_kind != VideoEncodeAcceleratorAdapter::InputBufferKind::GpuMemBuf) {
+#if BUILDFLAG(IS_FUCHSIA)
+    expected_input_format = PIXEL_FORMAT_I420;
+#endif
+  }
 
   constexpr auto get_source_format = [](int i) {
     // Every 4 frames switch between the 3 supported formats.
@@ -673,9 +832,9 @@ TEST_F(VideoEncodeAcceleratorAdapterTest,
         output_count_after_change++;
       });
 
-  VideoPixelFormat expected_input_format = PIXEL_FORMAT_I420;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-  expected_input_format = PIXEL_FORMAT_NV12;
+  VideoPixelFormat expected_input_format = PIXEL_FORMAT_NV12;
+#if BUILDFLAG(IS_FUCHSIA)
+  expected_input_format = PIXEL_FORMAT_I420;
 #endif
   vea()->SetEncodingCallback(base::BindLambdaForTesting(
       [&](BitstreamBuffer&, bool keyframe, scoped_refptr<VideoFrame> frame) {

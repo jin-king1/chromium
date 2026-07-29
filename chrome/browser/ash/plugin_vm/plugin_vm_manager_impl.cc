@@ -7,28 +7,27 @@
 #include <memory>
 
 #include "ash/constants/ash_features.h"
+#include "ash/strings/grit/ash_strings.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "chrome/app/vector_icons/vector_icons.h"
+#include "base/memory/raw_ref.h"
 #include "chrome/browser/ash/guest_os/guest_id.h"
 #include "chrome/browser/ash/guest_os/guest_os_dlc_helper.h"
 #include "chrome/browser/ash/guest_os/guest_os_share_path.h"
 #include "chrome/browser/ash/guest_os/guest_os_share_path_factory.h"
 #include "chrome/browser/ash/guest_os/public/types.h"
-#include "chrome/browser/ash/plugin_vm/plugin_vm_engagement_metrics_service.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_features.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_files.h"
-#include "chrome/browser/ash/plugin_vm/plugin_vm_metrics_util.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_pref_names.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_controller.h"
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_item_controller.h"
 #include "chrome/browser/ui/simple_message_box.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/dbus/debug_daemon/debug_daemon_client.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/prefs/pref_service.h"
@@ -116,14 +115,17 @@ void ShowStartVmFailedDialog(PluginVmLaunchResult result) {
       NOTREACHED();
   }
 
-  chrome::ShowWarningMessageBox(nullptr, std::move(title),
-                                l10n_util::GetStringUTF16(message_id));
+  chrome::ShowWarningMessageBoxAsync(nullptr, std::move(title),
+                                     l10n_util::GetStringUTF16(message_id));
 }
 
 }  // namespace
 
-PluginVmManagerImpl::PluginVmManagerImpl(Profile* profile)
-    : profile_(profile),
+PluginVmManagerImpl::PluginVmManagerImpl(
+    const ApplicationLocaleStorage* application_locale_storage,
+    Profile* profile)
+    : application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      profile_(profile),
       owner_id_(ash::ProfileHelper::GetUserIdHashFromProfile(profile)) {
   ash::VmPluginDispatcherClient::Get()->AddObserver(this);
   availability_subscription_ =
@@ -390,22 +392,13 @@ void PluginVmManagerImpl::OnVmStateChanged(
 
     ChromeShelfController::instance()->Close(ash::ShelfID(kPluginVmShelfAppId));
   }
-
-  auto* engagement_metrics_service =
-      PluginVmEngagementMetricsService::Factory::GetForProfile(profile_);
-  // This is null in unit tests.
-  if (engagement_metrics_service) {
-    engagement_metrics_service->SetBackgroundActive(
-        vm_state_ == vm_tools::plugin_dispatcher::VmState::VM_STATE_RUNNING);
-  }
 }
 
 void PluginVmManagerImpl::StartDispatcher(
     base::OnceCallback<void(bool)> callback) const {
   LOG_FUNCTION_CALL();
   ash::DebugDaemonClient::Get()->StartPluginVmDispatcher(
-      owner_id_, g_browser_process->GetApplicationLocale(),
-      std::move(callback));
+      owner_id_, application_locale_storage_->Get(), std::move(callback));
 }
 
 vm_tools::plugin_dispatcher::VmState PluginVmManagerImpl::vm_state() const {
@@ -598,8 +591,6 @@ void PluginVmManagerImpl::OnShowVm(
     return;
   }
 
-  RecordPluginVmLaunchResultHistogram(PluginVmLaunchResult::kSuccess);
-
   if (vm_tools_state_ ==
       vm_tools::plugin_dispatcher::VmToolsState::VM_TOOLS_STATE_INSTALLED) {
     LaunchSuccessful();
@@ -665,8 +656,6 @@ void PluginVmManagerImpl::LaunchFailed(PluginVmLaunchResult result) {
                                      false);
     plugin_vm::ShowPluginVmInstallerView(profile_);
   }
-
-  RecordPluginVmLaunchResultHistogram(result);
 
   ChromeShelfController::instance()->GetShelfSpinnerController()->CloseSpinner(
       kPluginVmShelfAppId);

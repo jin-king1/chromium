@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "mojo/public/cpp/base/proto_wrapper.h"
 
 #include <limits>
@@ -61,10 +56,18 @@ bool ProtoWrapper::DeserializeToMessage(
   } else {
     // Make an in-process copy here as protobuf is not designed to
     // safely parse data that might be changing underneath it.
-    auto as_span = base::span(bytes_->data(), bytes_->size());
-    const std::vector<uint8_t> copy(as_span.begin(), as_span.end());
+    const std::vector<uint8_t> copy(std::from_range, *bytes_);
     return message.ParseFromArray(copy.data(), copy.size());
   }
+}
+
+ProtoWrapper ProtoWrapper::Clone() const {
+  ProtoWrapper result;
+  result.proto_name_ = proto_name_;
+  if (is_valid()) {
+    result.bytes_ = bytes_->Clone();
+  }
+  return result;
 }
 
 }  // namespace mojo_base

@@ -58,8 +58,8 @@ public class PostTaskTest {
 
     @Test
     @SmallTest
-    public void testCreateTaskRunner() {
-        TaskRunner taskQueue = PostTask.createTaskRunner(TaskTraits.USER_BLOCKING);
+    public void testGetTaskRunner() {
+        TaskRunner taskQueue = PostTask.getTaskRunner(TaskTraits.USER_BLOCKING);
 
         // This should not timeout.
         SchedulerTestHelpers.postTaskAndBlockUntilRun(taskQueue);
@@ -71,13 +71,12 @@ public class PostTaskTest {
         RuntimeException ex =
                 Assert.assertThrows(
                         RuntimeException.class,
-                        () -> {
-                            PostTask.runSynchronously(
-                                    TaskTraits.USER_BLOCKING,
-                                    () -> {
-                                        throw new Error("Error");
-                                    });
-                        });
+                        () ->
+                                PostTask.runSynchronously(
+                                        TaskTraits.USER_BLOCKING,
+                                        () -> {
+                                            throw new Error("Error");
+                                        }));
         Assert.assertEquals("Error", ex.getCause().getMessage());
         // Ensure no TaskOriginException.
         Assert.assertNull("Was " + Log.getStackTraceString(ex), ex.getCause().getCause());

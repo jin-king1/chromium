@@ -9,7 +9,6 @@
 #include "chrome/browser/themes/custom_theme_supplier.h"
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/themes/theme_service.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/grit/components_scaled_resources.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -172,11 +171,9 @@ int ThemeHelper::GetDefaultDisplayProperty(int id) const {
 bool ThemeHelper::UseDarkModeColors(const CustomThemeSupplier* theme_supplier) {
   // Dark mode is disabled for custom themes so they apply atop a predictable
   // state.
-  if (IsCustomTheme(theme_supplier)) {
-    return false;
-  }
-
-  return theme_supplier->GetNativeTheme()->ShouldUseDarkColors();
+  return !IsCustomTheme(theme_supplier) &&
+         theme_supplier->GetNativeTheme()->preferred_color_scheme() ==
+             ui::NativeTheme::PreferredColorScheme::kDark;
 }
 
 gfx::Image ThemeHelper::GetImageNamed(

@@ -14,7 +14,6 @@ import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict
 import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
 import {EventTracker} from 'chrome://resources/js/event_tracker.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {mojoString16ToString} from 'chrome://resources/js/mojo_type_util.js';
 import type {String16} from 'chrome://resources/mojo/mojo/public/mojom/base/string16.mojom-webui.js';
 import type {PolymerElementProperties} from 'chrome://resources/polymer/v3_0/polymer/interfaces.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -161,25 +160,32 @@ export class AcceleratorViewElement extends AcceleratorViewElementBase {
     };
   }
 
-  acceleratorInfo: StandardAcceleratorInfo;
-  viewState: ViewState;
-  statusMessage: string|TrustedHTML;
-  hasError: boolean;
-  recordedError: boolean;
-  description: string;
-  action: number;
-  source: AcceleratorSource;
-  sourceIsLocked: boolean;
-  showEditIcon: boolean;
+  constructor() {
+    super();
+    this.metaKey = MetaKey.kSearch;
+    this.pendingKeyEvent = null;
+  }
+
+  declare acceleratorInfo: StandardAcceleratorInfo;
+  declare viewState: ViewState;
+  declare private modifiers: string[];
+  declare statusMessage: string|TrustedHTML;
+  declare hasError: boolean;
+  declare recordedError: boolean;
+  declare description: string;
+  declare action: number;
+  declare source: AcceleratorSource;
+  declare sourceIsLocked: boolean;
+  declare showEditIcon: boolean;
   subcategoryIsLocked: boolean;
-  isFirstAccelerator: boolean;
-  isDisabled: boolean;
-  metaKey: MetaKey = MetaKey.kSearch;
-  pendingKeyEvent: KeyEvent|null = null;
+  declare isFirstAccelerator: boolean;
+  declare isDisabled: boolean;
+  declare metaKey: MetaKey;
+  declare pendingKeyEvent: KeyEvent|null;
   shortcutInput: ShortcutInputElement|null;
   defaultAccelerators: Accelerator[];
-  hasFunctionKey: boolean;
-  protected isCapturing: boolean;
+  declare hasFunctionKey: boolean;
+  declare protected isCapturing: boolean;
   protected lastAccelerator: Accelerator;
   protected lastResult: AcceleratorConfigResult;
   protected lastPendingKeyEvent: KeyEvent|null = null;
@@ -418,9 +424,7 @@ export class AcceleratorViewElement extends AcceleratorViewElementBase {
       // Conflict with a locked accelerator.
       case AcceleratorConfigResult.kConflict:
       case AcceleratorConfigResult.kActionLocked: {
-        this.statusMessage = this.i18n(
-            'lockedShortcutStatusMessage',
-            mojoString16ToString(result.shortcutName as String16));
+        this.statusMessage = this.i18n('lockedShortcutStatusMessage', result.shortcutName as String16);
         this.hasError = true;
         this.makeA11yAnnouncement(this.statusMessage);
         return;
@@ -429,7 +433,7 @@ export class AcceleratorViewElement extends AcceleratorViewElementBase {
       case AcceleratorConfigResult.kConflictCanOverride: {
         this.statusMessage = this.i18n(
             'shortcutWithConflictStatusMessage',
-            mojoString16ToString(result.shortcutName as String16));
+            result.shortcutName as String16);
         this.hasError = true;
         this.makeA11yAnnouncement(this.statusMessage);
         return;

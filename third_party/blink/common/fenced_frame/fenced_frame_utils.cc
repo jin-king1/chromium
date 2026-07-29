@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/public/common/fenced_frame/fenced_frame_utils.h"
 
 #include <cstring>
@@ -37,16 +32,16 @@ bool IsValidFencedFrameURL(const GURL& url) {
          !url.parsed_for_possibly_invalid_spec().potentially_dangling_markup;
 }
 
-const char kURNUUIDprefix[] = "urn:uuid:";
+const char kUrnUuidPrefix[] = "urn:uuid:";
 
 bool IsValidUrnUuidURL(const GURL& url) {
   if (!url.is_valid())
     return false;
   const std::string& spec = url.spec();
-  return base::StartsWith(spec, kURNUUIDprefix,
+  return base::StartsWith(spec, kUrnUuidPrefix,
                           base::CompareCase::INSENSITIVE_ASCII) &&
          base::Uuid::ParseCaseInsensitive(
-             std::string_view(spec).substr(std::strlen(kURNUUIDprefix)))
+             std::string_view(spec).substr(std::strlen(kUrnUuidPrefix)))
              .is_valid();
 }
 
@@ -81,18 +76,6 @@ void RecordFencedFrameUnsandboxedFlags(network::mojom::WebSandboxFlags flags) {
 void RecordFencedFrameFailedSandboxLoadInTopLevelFrame(bool is_main_frame) {
   base::UmaHistogramBoolean(kFencedFrameFailedSandboxLoadInTopLevelFrame,
                             is_main_frame);
-}
-
-// If more event types besides click are supported for fenced events, this
-// function should operate on a global map of unfenced event_type_name ->
-// fenced event_type_name. Also, these functions use raw string literals to
-// represent event types. While this isn't ideal, the already-defined constants
-// for event types (in the blink::event_type_names namespace) aren't exported
-// by Blink's public interface. Wrapping the equivalent literals in this
-// function ensures that if names need to be changed later, changes are only
-// needed in one file.
-bool CanNotifyEventTypeAcrossFence(const std::string& event_type) {
-  return event_type == "click";
 }
 
 }  // namespace blink

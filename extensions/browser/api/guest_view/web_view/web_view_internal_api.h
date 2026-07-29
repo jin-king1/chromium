@@ -7,6 +7,9 @@
 
 #include <stdint.h>
 
+#include <optional>
+#include <string>
+
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -16,6 +19,8 @@
 #include "extensions/browser/guest_view/web_view/web_ui/web_ui_url_fetcher.h"
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
 #include "extensions/browser/url_fetcher.h"
+
+class SkBitmap;
 
 namespace base {
 class TaskRunner;
@@ -64,7 +69,7 @@ class WebViewInternalCaptureVisibleRegionFunction
 
  private:
   // extensions::WebContentsCaptureClient:
-  ScreenshotAccess GetScreenshotAccess(
+  base::expected<void, ScreenshotAccessError> GetScreenshotAccess(
       content::WebContents* web_contents) const override;
   bool ClientAllowsTransparency() override;
   void OnCaptureSuccess(const SkBitmap& bitmap) override;
@@ -108,8 +113,7 @@ class WebViewInternalExecuteCodeFunction
   // - If yes, the content of the file.
   // This callback should match the associated LoadFileCallback types
   // specified in WebUIURLFetcher and ControlledFrameEmbedderURLFetcher.
-  using LoadFileCallback =
-      base::OnceCallback<void(bool, std::unique_ptr<std::string>)>;
+  using LoadFileCallback = base::OnceCallback<void(bool, std::string)>;
 
   WebViewInternalExecuteCodeFunction();
 
@@ -121,7 +125,7 @@ class WebViewInternalExecuteCodeFunction
  protected:
   ~WebViewInternalExecuteCodeFunction() override;
 
-  // Initialize |details_| if it hasn't already been.
+  // Initialize `details_` if it hasn't already been.
   InitResult Init() override;
   bool ShouldInsertCSS() const override;
   bool ShouldRemoveCSS() const override;
@@ -139,7 +143,7 @@ class WebViewInternalExecuteCodeFunction
                            LoadFileCallback callback);
   void DidLoadFileForEmbedder(const std::string& file,
                               bool success,
-                              std::unique_ptr<std::string> data);
+                              std::string data);
 
   // Contains extension resource built from path of file which is
   // specified in JSON arguments.
@@ -371,7 +375,7 @@ class WebViewInternalFindFunction : public WebViewInternalExtensionFunction {
       delete;
 
   // Used by WebViewInternalFindHelper to Respond().
-  void ForwardResponse(base::Value::Dict results);
+  void ForwardResponse(base::DictValue results);
 
  protected:
   ~WebViewInternalFindFunction() override;

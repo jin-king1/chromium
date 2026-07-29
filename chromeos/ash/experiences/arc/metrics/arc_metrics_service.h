@@ -13,8 +13,8 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/singleton.h"
 #include "base/memory/weak_ptr.h"
+#include "base/no_destructor.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "base/threading/thread_checker.h"
@@ -38,9 +38,9 @@
 class BrowserContextKeyedServiceFactory;
 class PrefService;
 
-namespace metrics {
+namespace arc {
 class PSIMemoryParser;
-}  // namespace metrics
+}  // namespace arc
 
 namespace aura {
 class Window;
@@ -166,6 +166,8 @@ class ArcMetricsService : public KeyedService,
   void ReportArcKeyMintErrorForOperation(
       mojom::ArcKeyMintError error,
       mojom::ArcKeyMintLoggedOperation operation) override;
+  void ReportCertificateSigningResult(
+      mojom::CertificateSigningResult result) override;
 
   // wm::ActivationChangeObserver overrides.
   // Records to UMA when a user has interacted with an ARC app window.
@@ -336,6 +338,9 @@ class ArcMetricsService : public KeyedService,
   // Records load average with the appropriate histogram name if ready.
   void MaybeRecordLoadAveragePerProcessor();
 
+  void ReportGmsAppKill(mojom::AppKillType gms_app_kill, int count);
+  void ReportUnreportedGmsAppKill();
+
   THREAD_CHECKER(thread_checker_);
 
   const raw_ptr<ArcBridgeService>
@@ -363,7 +368,7 @@ class ArcMetricsService : public KeyedService,
   ArcBridgeServiceObserver arc_bridge_service_observer_;
   IntentHelperObserver intent_helper_observer_;
   AppLauncherObserver app_launcher_observer_;
-  std::unique_ptr<metrics::PSIMemoryParser> psi_parser_;
+  std::unique_ptr<arc::PSIMemoryParser> psi_parser_;
 
   bool was_arc_window_active_ = false;
   std::vector<int32_t> task_ids_;
@@ -390,6 +395,8 @@ class ArcMetricsService : public KeyedService,
 
   mojom::BootType boot_type_ = mojom::BootType::UNKNOWN;
 
+  std::vector<std::pair<mojom::AppKillType, int>> gms_app_kills_to_report_;
+
   // Always keep this the last member of this class to make sure it's the
   // first thing to be destructed.
   base::WeakPtrFactory<ArcMetricsService> weak_ptr_factory_{this};
@@ -407,7 +414,7 @@ class ArcMetricsServiceFactory
   static ArcMetricsServiceFactory* GetInstance();
 
  private:
-  friend base::DefaultSingletonTraits<ArcMetricsServiceFactory>;
+  friend base::NoDestructor<ArcMetricsServiceFactory>;
   ArcMetricsServiceFactory() = default;
   ~ArcMetricsServiceFactory() override = default;
 };

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/strings/safe_sprintf.h"
 
 #include <stddef.h>
@@ -14,10 +9,13 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <array>
 #include <limits>
 #include <memory>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
+#include "base/containers/heap_array.h"
 #include "base/types/fixed_array.h"
 #include "build/build_config.h"
 #include "partition_alloc/partition_alloc_config.h"
@@ -71,46 +69,46 @@ TEST(SafeSPrintfTest, NoArguments) {
   // always add a trailing NUL; it always deduplicates '%' characters).
   static const char text[] = "hello world";
   char ref[20], buf[20];
-  memset(ref, 'X', sizeof(ref));
-  memcpy(buf, ref, sizeof(buf));
+  UNSAFE_TODO(memset(ref, 'X', sizeof(ref)));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // A negative buffer size should always result in an error.
   EXPECT_EQ(-1, SafeSNPrintf(buf, static_cast<size_t>(-1), text));
-  EXPECT_TRUE(!memcmp(buf, ref, sizeof(buf)));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf, ref, sizeof(buf))));
 
   // Zero buffer size should always result in an error.
   EXPECT_EQ(-1, SafeSNPrintf(buf, 0, text));
-  EXPECT_TRUE(!memcmp(buf, ref, sizeof(buf)));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf, ref, sizeof(buf))));
 
   // A one-byte buffer should always print a single NUL byte.
   EXPECT_EQ(static_cast<ssize_t>(sizeof(text)) - 1, SafeSNPrintf(buf, 1, text));
   EXPECT_EQ(0, buf[0]);
-  EXPECT_TRUE(!memcmp(buf + 1, ref + 1, sizeof(buf) - 1));
-  memcpy(buf, ref, sizeof(buf));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf + 1, ref + 1, sizeof(buf) - 1)));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // A larger (but limited) buffer should always leave the trailing bytes
   // unchanged.
   EXPECT_EQ(static_cast<ssize_t>(sizeof(text)) - 1, SafeSNPrintf(buf, 2, text));
   EXPECT_EQ(text[0], buf[0]);
   EXPECT_EQ(0, buf[1]);
-  EXPECT_TRUE(!memcmp(buf + 2, ref + 2, sizeof(buf) - 2));
-  memcpy(buf, ref, sizeof(buf));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf + 2, ref + 2, sizeof(buf) - 2)));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // A unrestricted buffer length should always leave the trailing bytes
   // unchanged.
   EXPECT_EQ(static_cast<ssize_t>(sizeof(text)) - 1,
             SafeSNPrintf(buf, sizeof(buf), text));
   EXPECT_EQ(std::string(text), std::string(buf));
-  EXPECT_TRUE(!memcmp(buf + sizeof(text), ref + sizeof(text),
-                      sizeof(buf) - sizeof(text)));
-  memcpy(buf, ref, sizeof(buf));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf + sizeof(text), ref + sizeof(text),
+                                  sizeof(buf) - sizeof(text))));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // The same test using SafeSPrintf() instead of SafeSNPrintf().
   EXPECT_EQ(static_cast<ssize_t>(sizeof(text)) - 1, SafeSPrintf(buf, text));
   EXPECT_EQ(std::string(text), std::string(buf));
-  EXPECT_TRUE(!memcmp(buf + sizeof(text), ref + sizeof(text),
-                      sizeof(buf) - sizeof(text)));
-  memcpy(buf, ref, sizeof(buf));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf + sizeof(text), ref + sizeof(text),
+                                  sizeof(buf) - sizeof(text))));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // Check for deduplication of '%' percent characters.
   EXPECT_EQ(1, SafeSPrintf(buf, "%%"));
@@ -135,23 +133,23 @@ TEST(SafeSPrintfTest, OneArgument) {
   const char text[] = "hello world";
   const char fmt[] = "hello%cworld";
   char ref[20], buf[20];
-  memset(ref, 'X', sizeof(buf));
-  memcpy(buf, ref, sizeof(buf));
+  UNSAFE_TODO(memset(ref, 'X', sizeof(buf)));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // A negative buffer size should always result in an error.
   EXPECT_EQ(-1, SafeSNPrintf(buf, static_cast<size_t>(-1), fmt, ' '));
-  EXPECT_TRUE(!memcmp(buf, ref, sizeof(buf)));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf, ref, sizeof(buf))));
 
   // Zero buffer size should always result in an error.
   EXPECT_EQ(-1, SafeSNPrintf(buf, 0, fmt, ' '));
-  EXPECT_TRUE(!memcmp(buf, ref, sizeof(buf)));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf, ref, sizeof(buf))));
 
   // A one-byte buffer should always print a single NUL byte.
   EXPECT_EQ(static_cast<ssize_t>(sizeof(text)) - 1,
             SafeSNPrintf(buf, 1, fmt, ' '));
   EXPECT_EQ(0, buf[0]);
-  EXPECT_TRUE(!memcmp(buf + 1, ref + 1, sizeof(buf) - 1));
-  memcpy(buf, ref, sizeof(buf));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf + 1, ref + 1, sizeof(buf) - 1)));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // A larger (but limited) buffer should always leave the trailing bytes
   // unchanged.
@@ -159,24 +157,24 @@ TEST(SafeSPrintfTest, OneArgument) {
             SafeSNPrintf(buf, 2, fmt, ' '));
   EXPECT_EQ(text[0], buf[0]);
   EXPECT_EQ(0, buf[1]);
-  EXPECT_TRUE(!memcmp(buf + 2, ref + 2, sizeof(buf) - 2));
-  memcpy(buf, ref, sizeof(buf));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf + 2, ref + 2, sizeof(buf) - 2)));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // A unrestricted buffer length should always leave the trailing bytes
   // unchanged.
   EXPECT_EQ(static_cast<ssize_t>(sizeof(text)) - 1,
             SafeSNPrintf(buf, sizeof(buf), fmt, ' '));
   EXPECT_EQ(std::string(text), std::string(buf));
-  EXPECT_TRUE(!memcmp(buf + sizeof(text), ref + sizeof(text),
-                      sizeof(buf) - sizeof(text)));
-  memcpy(buf, ref, sizeof(buf));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf + sizeof(text), ref + sizeof(text),
+                                  sizeof(buf) - sizeof(text))));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // The same test using SafeSPrintf() instead of SafeSNPrintf().
   EXPECT_EQ(static_cast<ssize_t>(sizeof(text)) - 1, SafeSPrintf(buf, fmt, ' '));
   EXPECT_EQ(std::string(text), std::string(buf));
-  EXPECT_TRUE(!memcmp(buf + sizeof(text), ref + sizeof(text),
-                      sizeof(buf) - sizeof(text)));
-  memcpy(buf, ref, sizeof(buf));
+  EXPECT_TRUE(!UNSAFE_TODO(memcmp(buf + sizeof(text), ref + sizeof(text),
+                                  sizeof(buf) - sizeof(text))));
+  UNSAFE_TODO(memcpy(buf, ref, sizeof(buf)));
 
   // Check for deduplication of '%' percent characters.
   EXPECT_EQ(1, SafeSPrintf(buf, "%%", 0));
@@ -212,7 +210,7 @@ TEST(SafeSPrintfTest, ASANFriendlyBufferTest) {
   // more edge case, but it is also harder to debug in case of a failure.
   const char kTestString[] = "This is a test";
   base::FixedArray<char> buf(sizeof(kTestString));
-  memcpy(buf.data(), kTestString, sizeof(kTestString));
+  UNSAFE_TODO(memcpy(buf.data(), kTestString, sizeof(kTestString)));
   EXPECT_EQ(static_cast<ssize_t>(sizeof(kTestString) - 1),
             SafeSNPrintf(buf.data(), buf.size(), kTestString));
   EXPECT_EQ(std::string(kTestString), std::string(buf.data()));
@@ -362,10 +360,10 @@ TEST(SafeSPrintfTest, DataTypes) {
   SafeSPrintf(buf, "%019p", buf);
   EXPECT_EQ(std::string(addr), std::string(buf));
   snprintf(addr, sizeof(addr), "0x%llX", (unsigned long long)(uintptr_t)buf);
-  memset(addr, ' ',
-         (char*)memmove(addr + sizeof(addr) - strlen(addr) - 1, addr,
-                        strlen(addr) + 1) -
-             addr);
+  UNSAFE_TODO(memset(addr, ' ',
+                     (char*)memmove(addr + sizeof(addr) - strlen(addr) - 1,
+                                    addr, strlen(addr) + 1) -
+                         addr));
   SafeSPrintf(buf, "%19p", buf);
   EXPECT_EQ(std::string(addr), std::string(buf));
 }
@@ -392,7 +390,7 @@ void PrintLongString(char* buf, size_t sz) {
   char* out = tmp.data();
   size_t out_sz = sz;
   size_t len;
-  for (std::unique_ptr<char[]> perfect_buf;;) {
+  for (base::HeapArray<char> perfect_buf;;) {
     size_t needed =
         SafeSNPrintf(out, out_sz,
 #if defined(NDEBUG)
@@ -423,10 +421,10 @@ void PrintLongString(char* buf, size_t sz) {
     // running SafeSNPrintf() the first time, it is possible to compute the
     // correct buffer size for this test. So, allocate a second buffer and run
     // the exact same SafeSNPrintf() command again.
-    if (!perfect_buf.get()) {
+    if (perfect_buf.empty()) {
       out_sz = std::min(needed, sz);
-      out = new char[out_sz];
-      perfect_buf.reset(out);
+      perfect_buf = base::HeapArray<char>::Uninit(out_sz);
+      out = perfect_buf.data();
     } else {
       break;
     }
@@ -445,12 +443,14 @@ void PrintLongString(char* buf, size_t sz) {
   // N.B.: It would be so much cleaner to use snprintf(). But unfortunately,
   //       Visual Studio doesn't support this function, and the work-arounds
   //       are all really awkward.
-  char ref[256];
-  CHECK_LE(sz, sizeof(ref));
-  snprintf(ref, sizeof(ref), "A long string: %%d 00DEADBEEF %lld 0x%llX <NULL>",
-           static_cast<long long>(std::numeric_limits<intptr_t>::min()),
-           static_cast<unsigned long long>(
-               reinterpret_cast<uintptr_t>(PrintLongString)));
+  std::array<char, 256> ref;
+  CHECK_LE(sz, (ref.size() * sizeof(decltype(ref)::value_type)));
+  UNSAFE_TODO(
+      snprintf(ref.data(), (ref.size() * sizeof(decltype(ref)::value_type)),
+               "A long string: %%d 00DEADBEEF %lld 0x%llX <NULL>",
+               static_cast<long long>(std::numeric_limits<intptr_t>::min()),
+               static_cast<unsigned long long>(
+                   reinterpret_cast<uintptr_t>(PrintLongString))));
   ref[sz - 1] = '\000';
 
 #if defined(NDEBUG)
@@ -460,12 +460,13 @@ void PrintLongString(char* buf, size_t sz) {
 #endif
 
   // Compare the output from SafeSPrintf() to the one from snprintf().
-  EXPECT_EQ(std::string(ref).substr(0, kSSizeMax - 1), std::string(tmp.data()));
+  EXPECT_EQ(std::string(ref.data()).substr(0, kSSizeMax - 1),
+            std::string(tmp.data()));
 
   // We allocated a slightly larger buffer, so that we could perform some
   // extra sanity checks. Now that the tests have all passed, we copy the
   // data to the output buffer that the caller provided.
-  memcpy(buf, tmp.data(), len + 1);
+  UNSAFE_TODO(memcpy(buf, tmp.data(), len + 1));
 }
 
 #if !defined(NDEBUG)

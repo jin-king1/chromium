@@ -8,7 +8,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -31,6 +30,7 @@
 #include "components/bookmarks/browser/uuid_index.h"
 #include "components/bookmarks/common/bookmark_metrics.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/os_crypt/async/common/encryptor.h"
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
 
@@ -110,7 +110,7 @@ class BookmarkModel : public BookmarkUndoProvider,
   // Sync-the-feature is enabled. After Sync-to-Signin migration is finished -
   // local-or-syncable storage (and this folder) will become purely local.
   // This is null until loaded.
-  const BookmarkNode* bookmark_bar_node() const {
+  const BookmarkPermanentNode* bookmark_bar_node() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return bookmark_bar_node_;
   }
@@ -120,7 +120,7 @@ class BookmarkModel : public BookmarkUndoProvider,
   // Sync-the-feature is enabled. After Sync-to-Signin migration is finished -
   // local-or-syncable storage (and this folder) will become purely local.
   // This is null until loaded.
-  const BookmarkNode* other_node() const {
+  const BookmarkPermanentNode* other_node() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return other_node_;
   }
@@ -130,7 +130,7 @@ class BookmarkModel : public BookmarkUndoProvider,
   // Sync-the-feature is enabled. After Sync-to-Signin migration is finished -
   // local-or-syncable storage (and this folder) will become purely local.
   // This is null until loaded.
-  const BookmarkNode* mobile_node() const {
+  const BookmarkPermanentNode* mobile_node() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return mobile_node_;
   }
@@ -138,17 +138,17 @@ class BookmarkModel : public BookmarkUndoProvider,
   // Returns the 'bookmark bar' node for the account storage. This is null until
   // loaded or if the user is not signed in (or isn't opted into syncing
   // bookmarks in the account storage).
-  const BookmarkNode* account_bookmark_bar_node() const;
+  const BookmarkPermanentNode* account_bookmark_bar_node() const;
 
   // Returns the 'other' node for the account storage. This is null until loaded
   // or if the user is not signed in (or isn't opted into syncing bookmarks in
   // the account storage).
-  const BookmarkNode* account_other_node() const;
+  const BookmarkPermanentNode* account_other_node() const;
 
   // Returns the 'mobile' node for the account storage. This is null until
   // loaded or if the user is not signed in (or isn't opted into syncing
   // bookmarks in the account storage).
-  const BookmarkNode* account_mobile_node() const;
+  const BookmarkPermanentNode* account_mobile_node() const;
 
   bool is_root_node(const BookmarkNode* node) const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -162,9 +162,6 @@ class BookmarkModel : public BookmarkUndoProvider,
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return node && (node == root_ || node->parent() == root_);
   }
-
-  // Returns true if the given `node` should be visible in UI surfaces.
-  bool IsNodeVisible(const BookmarkNode& node) const;
 
   // Returns true if `node` represents a bookmark that is stored on the local
   // profile but not saved to the user's server-side account. The opposite case,
@@ -308,8 +305,11 @@ class BookmarkModel : public BookmarkUndoProvider,
   // Returns true if there are bookmarks, otherwise returns false.
   bool HasBookmarks() const;
 
-  // Returns true is there is no user created bookmarks or folders.
-  bool HasNoUserCreatedBookmarksOrFolders() const;
+  // Returns true is there is at least one user-created bookmark or folder. This
+  // includes bookmarks downloaded via Sync but excludes managed nodes
+  // (enterprise) as well as, on Android, partner bookmarks (which are not
+  // included in BookmarkModel).
+  bool HasUserCreatedBookmarksOrFolders() const;
 
   // Returns true if the specified URL is bookmarked.
   bool IsBookmarked(const GURL& url) const;
@@ -587,6 +587,33 @@ class BookmarkModel : public BookmarkUndoProvider,
   metrics::StorageStateForUma GetStorageStateForUma(
       const BookmarkNode* node) const;
 
+  // Returns true if the given `node` should be visible in UI surfaces.
+  // This method is used during transient states (eg. just before or just after
+  // making model updates), therefore explicit parameters are passed in for
+  // properties of the node/model that shouldn't be read directly.
+  bool DetermineIfNodeShouldBeVisible(const BookmarkNode& node,
+                                      bool account_folders_exist,
+                                      bool local_bookmarks_exist) const;
+
+  // Updates the visibility of all local permanent folders.
+  void RefreshPermanentFolderVisibility(bool notify_observers);
+
+  // Updates the visibility of `node` and notifies observers if the visibility
+  // changed and `notify_observers` is true.
+  void UpdateNodeVisibilityIfNeeded(BookmarkNode& node,
+                                    bool new_visibility,
+                                    bool notify_observers);
+
+  // Triggers the loading of bookmarks, which is an asynchronous operation with
+  // most heavy-lifting taking place in a background sequence. Upon completion,
+  // loaded() will return true and observers will be notified via
+  // BookmarkModelLoaded(). This is called after we're done loading the
+  // encryptor. Encryptor will be loaded only if encryption is enabled,
+  // otherwise encryptor will be null.
+  void ContinueLoadWithEncryptor(
+      const base::FilePath& profile_path,
+      scoped_refptr<const os_crypt_async::Encryptor> encryptor);
+
   // Whether the initial set of data has been loaded.
   bool loaded_ = false;
 
@@ -616,7 +643,12 @@ class BookmarkModel : public BookmarkUndoProvider,
   int64_t next_node_id_ = 1;
 
   // The observers.
-  base::ObserverList<BookmarkModelObserver, true> observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      BookmarkModelObserver,
+      /*check_empty=*/true,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observers_;
 
   std::unique_ptr<BookmarkClient> client_;
 

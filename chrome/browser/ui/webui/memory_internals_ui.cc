@@ -24,7 +24,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiling_host/profiling_process_host.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
+#include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
@@ -90,12 +90,23 @@ std::string GetMessageString() {
           "Each utility process has a fixed probability of being profiled at "
           "startup.");
 
+    case Mode::kUtilityAndBrowser:
+      return std::string(
+          "Memory logging is enabled for just the browser and utility "
+          "processes.");
+
+    case Mode::kAllUtilities:
+      return std::string(
+          "Memory logging is enabled for all utility processes.");
+
     case Mode::kNone:
     case Mode::kManual:
-    default:
       return std::string(
           "Memory logging must be manually enabled for each process via "
           "chrome://memory-internals.");
+    case Mode::kCount:
+    default:
+      NOTREACHED();
   }
 #elif defined(ADDRESS_SANITIZER)
   return "Memory logging is not available in this build because a memory "
@@ -108,8 +119,8 @@ std::string GetMessageString() {
 }
 
 // Generates one row of the returned process info.
-base::Value::List MakeProcessInfo(int pid, std::string description) {
-  base::Value::List result;
+base::ListValue MakeProcessInfo(int pid, std::string description) {
+  base::ListValue result;
   result.Append(pid);
   result.Append(std::move(description));
   return result;
@@ -146,13 +157,13 @@ class MemoryInternalsDOMHandler : public content::WebUIMessageHandler,
   void RegisterMessages() override;
 
   // Callback for the "requestProcessList" message.
-  void HandleRequestProcessList(const base::Value::List& args);
+  void HandleRequestProcessList(const base::ListValue& args);
 
   // Callback for the "saveDump" message.
-  void HandleSaveDump(const base::Value::List& args);
+  void HandleSaveDump(const base::ListValue& args);
 
   // Callback for the "startProfiling" message.
-  void HandleStartProfiling(const base::Value::List& args);
+  void HandleStartProfiling(const base::ListValue& args);
 
  protected:
   // WebUIMessageHandler implementation.
@@ -165,7 +176,7 @@ class MemoryInternalsDOMHandler : public content::WebUIMessageHandler,
   void RequestProcessList(base::Value callback_id, bool success);
 
   void ReturnProcessListOnUIThread(const base::Value& callback_id,
-                                   std::vector<base::Value::List> children,
+                                   std::vector<base::ListValue> children,
                                    std::vector<base::ProcessId> profiled_pids);
 
   // SelectFileDialog::Listener implementation:
@@ -213,13 +224,13 @@ void MemoryInternalsDOMHandler::RegisterMessages() {
 }
 
 void MemoryInternalsDOMHandler::HandleRequestProcessList(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   CHECK_EQ(args.size(), 1u);
   RequestProcessList(args[0].Clone(), /*success=*/true);
 }
 
-void MemoryInternalsDOMHandler::HandleSaveDump(const base::Value::List&) {
+void MemoryInternalsDOMHandler::HandleSaveDump(const base::ListValue&) {
   base::FilePath default_file = base::FilePath().AppendASCII(
       base::StringPrintf("trace_with_heap_dump.json.gz"));
 
@@ -256,7 +267,7 @@ void MemoryInternalsDOMHandler::HandleSaveDump(const base::Value::List&) {
 }
 
 void MemoryInternalsDOMHandler::HandleStartProfiling(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
   CHECK_EQ(args.size(), 2u);
   const base::Value& callback_id = args[0];
@@ -291,7 +302,7 @@ void MemoryInternalsDOMHandler::RequestProcessList(base::Value callback_id,
     return;
   }
 
-  std::vector<base::Value::List> result;
+  std::vector<base::ListValue> result;
 
   // The only non-renderer child processes that currently support out-of-process
   // heap profiling are GPU and UTILITY.
@@ -323,12 +334,12 @@ void MemoryInternalsDOMHandler::RequestProcessList(base::Value callback_id,
 
 void MemoryInternalsDOMHandler::ReturnProcessListOnUIThread(
     const base::Value& callback_id,
-    std::vector<base::Value::List> children,
+    std::vector<base::ListValue> children,
     std::vector<base::ProcessId> profiled_pids) {
   // This function will be called with the child processes that are not
   // renderers. It will fill in the browser and renderer processes on the UI
   // thread (RenderProcessHost is UI-thread only) and return the full list.
-  base::Value::List process_list;
+  base::ListValue process_list;
 
   // Add browser process.
   process_list.Append(MakeProcessInfo(base::GetCurrentProcId(), "Browser"));
@@ -357,7 +368,7 @@ void MemoryInternalsDOMHandler::ReturnProcessListOnUIThread(
 
   // Append whether each process is being profiled.
   for (base::Value& value : process_list) {
-    base::Value::List& list = value.GetList();
+    base::ListValue& list = value.GetList();
     DCHECK_EQ(list.size(), 2u);
 
     base::ProcessId pid = static_cast<base::ProcessId>(list[0].GetInt());
@@ -367,7 +378,7 @@ void MemoryInternalsDOMHandler::ReturnProcessListOnUIThread(
   }
 
   // Pass the results in a dictionary.
-  base::Value::Dict result;
+  base::DictValue result;
   result.Set("message", GetMessageString());
   result.Set("processes", std::move(process_list));
 

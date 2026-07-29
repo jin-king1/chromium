@@ -37,12 +37,14 @@ class CORE_EXPORT WorkletPendingTasks final
   // Decrements |counter_| and resolves the promise if the counter becomes 0.
   void DecrementCounter();
 
-  virtual void Trace(Visitor*) const;
+  void Trace(Visitor*) const;
 
  private:
-  // The number of pending tasks. -1 indicates these tasks are aborted and
-  // |resolver_| already rejected the promise.
-  int counter_;
+  // -2: Uninitialized.
+  // -1: Aborted.
+  // 0: Resolved.
+  // > 0: Number of pending tasks.
+  int counter_ = -2;
 
   Member<ScriptPromiseResolver<IDLUndefined>> resolver_;
 

@@ -8,12 +8,15 @@
 #include <memory>
 #include <string>
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "content/public/browser/render_process_host_observer.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "headless/lib/browser/headless_window.h"
+#include "headless/lib/browser/headless_window_delegate.h"
 #include "headless/lib/browser/headless_window_tree_host.h"
 #include "headless/public/headless_export.h"
 #include "headless/public/headless_web_contents.h"
@@ -31,9 +34,11 @@ class Rect;
 
 namespace headless {
 class HeadlessBrowserImpl;
+class HeadlessBrowserContextImpl;
 
 // Exported for tests.
-class HEADLESS_EXPORT HeadlessWebContentsImpl : public HeadlessWebContents {
+class HEADLESS_EXPORT HeadlessWebContentsImpl : public HeadlessWebContents,
+                                                public HeadlessWindowDelegate {
  public:
   HeadlessWebContentsImpl(const HeadlessWebContentsImpl&) = delete;
   HeadlessWebContentsImpl& operator=(const HeadlessWebContentsImpl&) = delete;
@@ -44,7 +49,7 @@ class HEADLESS_EXPORT HeadlessWebContentsImpl : public HeadlessWebContents {
   static HeadlessWebContentsImpl* From(content::WebContents* web_contents);
 
   static std::unique_ptr<HeadlessWebContentsImpl> Create(
-      HeadlessWebContents::Builder* builder);
+      const HeadlessWebContents::CreateParams& params);
 
   // Takes ownership of |child_contents|.
   static std::unique_ptr<HeadlessWebContentsImpl> CreateForChildContents(
@@ -66,10 +71,14 @@ class HEADLESS_EXPORT HeadlessWebContentsImpl : public HeadlessWebContents {
     return window_tree_host_.get();
   }
   int window_id() const { return window_id_; }
-  HeadlessWindowState window_state() const { return window_state_; }
 
-  // Set the WebContent's platform window state and visibility.
+  // Set the WebContent's platform window visibility.
+  void SetVisible(bool visible);
+
+  // Set the WebContent's platform window state.
   void SetWindowState(HeadlessWindowState window_state);
+
+  HeadlessWindowState GetWindowState() const;
 
   // Set bounds of WebContent's platform window.
   void SetBounds(const gfx::Rect& bounds);
@@ -89,12 +98,19 @@ class HEADLESS_EXPORT HeadlessWebContentsImpl : public HeadlessWebContents {
                   bool capture_screenshot,
                   FrameFinishedCallback frame_finished_callback);
 
+  // HeadlessWindowDelegate:
+  void OnVisibilityChanged() override;
+  void OnBoundsChanged(const gfx::Rect& old_bounds) override;
+  void OnWindowStateChanged(HeadlessWindowState old_window_state) override;
+
  private:
   explicit HeadlessWebContentsImpl(
       std::unique_ptr<content::WebContents> web_contents);
 
   void InitializeWindow(const gfx::Rect& bounds,
                         HeadlessWindowState window_state);
+
+  void SetFocus(bool focus);
 
   uint64_t begin_frame_sequence_number_ =
       viz::BeginFrameArgs::kStartingFrameNumber;
@@ -103,9 +119,10 @@ class HEADLESS_EXPORT HeadlessWebContentsImpl : public HeadlessWebContents {
   class Delegate;
   std::unique_ptr<Delegate> web_contents_delegate_;
   std::unique_ptr<HeadlessWindowTreeHost> window_tree_host_;
+  std::unique_ptr<HeadlessWindow> headless_window_;
   int window_id_ = 0;
-  HeadlessWindowState window_state_ = HeadlessWindowState::kNormal;
   std::unique_ptr<content::WebContents> const web_contents_;
+  bool restore_minimized_window_focus_ = false;
 
   class PendingFrame;
   base::WeakPtr<PendingFrame> pending_frame_;

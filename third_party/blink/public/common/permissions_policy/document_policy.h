@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_PUBLIC_COMMON_PERMISSIONS_POLICY_DOCUMENT_POLICY_H_
 #define THIRD_PARTY_BLINK_PUBLIC_COMMON_PERMISSIONS_POLICY_DOCUMENT_POLICY_H_
 
+#include <array>
 #include <memory>
 
 #include "base/containers/flat_map.h"
@@ -26,7 +27,7 @@ namespace blink {
 // which embeds the document.
 //
 // See
-// https://github.com/w3c/webappsec-permissions-policy/blob/master/document-policy-explainer.md
+// https://github.com/WICG/document-policy/blob/main/document-policy-explainer.md
 //
 // Key concepts:
 //
@@ -70,6 +71,12 @@ class BLINK_COMMON_EXPORT DocumentPolicy {
   struct ParsedDocumentPolicy {
     DocumentPolicyFeatureState feature_state;
     FeatureEndpointMap endpoint_map;
+  };
+
+  struct DocumentPolicyBundle {
+    ParsedDocumentPolicy policy;
+    // The Report-Only Document-Policy header value.
+    std::string report_only_header;
   };
 
   static std::unique_ptr<DocumentPolicy> CreateWithHeaderPolicy(

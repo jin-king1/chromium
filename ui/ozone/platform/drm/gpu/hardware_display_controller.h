@@ -158,7 +158,7 @@ class HardwareDisplayController {
   std::vector<uint64_t> GetFormatModifiersForTestModeset(
       uint32_t fourcc_format);
 
-  void UpdatePreferredModifierForFormat(gfx::BufferFormat buffer_format,
+  void UpdatePreferredModifierForFormat(viz::SharedImageFormat format,
                                         uint64_t modifier);
 
   // Moves the hardware cursor to |location|.
@@ -170,7 +170,10 @@ class HardwareDisplayController {
   void AddCrtc(std::unique_ptr<CrtcController> controller);
   std::unique_ptr<CrtcController> RemoveCrtc(
       const scoped_refptr<DrmDevice>& drm,
-      uint32_t crtc);
+      uint32_t crtc,
+      CommitRequest* commit_request = nullptr);
+  void RemoveAllCrtcs(CommitRequest* commit_request);
+
   bool HasCrtc(const scoped_refptr<DrmDevice>& drm, uint32_t crtc) const;
   // Returns true if the controllers are configured for hardware mirroring. Note
   // that controllers for tiled display will not support hardware mirroring.

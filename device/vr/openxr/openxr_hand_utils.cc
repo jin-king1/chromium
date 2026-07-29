@@ -9,6 +9,7 @@
 
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/trace_event/trace_event.h"
 #include "device/vr/public/mojom/xr_hand_tracking_data.mojom.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/geometry/vector3d_f.h"
@@ -161,12 +162,23 @@ constexpr size_t kPinkyStartIndex =
     static_cast<size_t>(mojom::XRHandJoint::kPinkyFingerMetacarpal);
 
 struct XRFingerMapping {
+  // Enforce compile-time construction so that this struct remains a literal
+  // type and can be used in constexpr arrays.
+  consteval XRFingerMapping(size_t origin,
+                            size_t start,
+                            base::span<const float> sizes)
+      : origin_index(origin), start_index(start), standard_joint_sizes(sizes) {}
+
   // The index of the "origin" of the finger. This value will not be remapped.
   const size_t origin_index;
   // The first joint of the finger to be remapped.
   const size_t start_index;
 
-  // TODO(367764863) Rewrite to base::raw_span.
+  // This member points to static constant data (e.g. kThumbDistances) that
+  // resides in read-only memory and is never freed. Because the lifetime of
+  // the pointed-to data is static, there is no risk of use-after-free, and
+  // MiraclePtr protection is not needed. RAW_PTR_EXCLUSION is required here
+  // because base::raw_span is not constexpr-compatible.
   RAW_PTR_EXCLUSION const base::span<const float> standard_joint_sizes;
 
   size_t JointCount() const { return standard_joint_sizes.size(); }
@@ -182,6 +194,7 @@ constexpr std::array<XRFingerMapping, 5> kHandMapping({
 }  // namespace
 
 bool AnonymizeHand(base::span<mojom::XRHandJointDataPtr> hand_data) {
+  TRACE_EVENT0("xr", "AnonymizeHand");
   // First set all of the radii to their intended values.
   for (const auto& joint : hand_data) {
     joint->radius = kJointRadii[static_cast<uint32_t>(joint->joint)];

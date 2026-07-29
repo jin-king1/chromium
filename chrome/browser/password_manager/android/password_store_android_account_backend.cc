@@ -4,22 +4,20 @@
 
 #include "chrome/browser/password_manager/android/password_store_android_account_backend.h"
 
-#include "base/android/build_info.h"
+#include <variant>
+
 #include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
-#include "chrome/browser/password_manager/android/password_manager_eviction_util.h"
 #include "chrome/browser/password_manager/android/password_manager_lifecycle_helper_impl.h"
 #include "chrome/browser/password_manager/android/password_sync_controller_delegate_android.h"
 #include "chrome/browser/password_manager/android/password_sync_controller_delegate_bridge_impl.h"
-#include "components/password_manager/core/browser/affiliation/affiliated_match_helper.h"
 #include "components/password_manager/core/browser/features/password_features.h"
-#include "components/password_manager/core/browser/password_store/get_logins_with_affiliations_request_handler.h"
 #include "components/password_manager/core/browser/password_store/password_data_type_controller_delegate_android.h"
 #include "components/password_manager/core/browser/password_store/password_store_backend_error.h"
 #include "components/password_manager/core/browser/password_store/password_store_backend_metrics_recorder.h"
+#include "components/password_manager/core/browser/password_store/password_store_util.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
-#include "components/password_manager/core/browser/split_stores_and_local_upm.h"
-#include "components/password_manager/core/common/password_manager_pref_names.h"
+#include "components/password_manager/core/browser/sync/password_proto_utils.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
@@ -28,33 +26,11 @@ namespace password_manager {
 
 namespace {
 
-constexpr char kUPMActiveHistogram[] =
-    "PasswordManager.UnifiedPasswordManager.ActiveStatus2";
-
 std::string GetSyncingAccount(const syncer::SyncService* sync_service) {
   CHECK(sync_service);
   return password_manager::sync_util::HasChosenToSyncPasswords(sync_service)
              ? sync_service->GetAccountInfo().email
              : std::string();
-}
-
-void LogUPMActiveStatus(syncer::SyncService* sync_service, PrefService* prefs) {
-  if (!password_manager::sync_util::HasChosenToSyncPasswords(sync_service)) {
-    base::UmaHistogramEnumeration(
-        kUPMActiveHistogram,
-        UnifiedPasswordManagerActiveStatus::kInactiveSyncOff);
-    return;
-  }
-
-  if (password_manager_upm_eviction::IsCurrentUserEvicted(prefs)) {
-    base::UmaHistogramEnumeration(
-        kUPMActiveHistogram,
-        UnifiedPasswordManagerActiveStatus::kInactiveUnenrolledDueToErrors);
-    return;
-  }
-
-  base::UmaHistogramEnumeration(kUPMActiveHistogram,
-                                UnifiedPasswordManagerActiveStatus::kActive);
 }
 
 template <typename Response, typename CallbackType>
@@ -65,13 +41,10 @@ void ReplyWithEmptyList(CallbackType callback) {
 
 }  // namespace
 
-PasswordStoreAndroidAccountBackend::PasswordStoreAndroidAccountBackend(
-    PrefService* prefs,
-    password_manager::IsAccountStore is_account_store)
+PasswordStoreAndroidAccountBackend::PasswordStoreAndroidAccountBackend()
     : PasswordStoreAndroidBackend(
-          PasswordStoreAndroidBackendBridgeHelper::Create(is_account_store),
-          std::make_unique<PasswordManagerLifecycleHelperImpl>(),
-          prefs) {
+          PasswordStoreAndroidBackendBridgeHelper::Create(kAccountStore),
+          std::make_unique<PasswordManagerLifecycleHelperImpl>()) {
   sync_controller_delegate_ =
       std::make_unique<PasswordSyncControllerDelegateAndroid>(
           std::make_unique<PasswordSyncControllerDelegateBridgeImpl>());
@@ -88,11 +61,9 @@ PasswordStoreAndroidAccountBackend::PasswordStoreAndroidAccountBackend(
     std::unique_ptr<PasswordStoreAndroidBackendBridgeHelper> bridge_helper,
     std::unique_ptr<PasswordManagerLifecycleHelper> lifecycle_helper,
     std::unique_ptr<PasswordSyncControllerDelegateAndroid>
-        sync_controller_delegate,
-    PrefService* prefs)
+        sync_controller_delegate)
     : PasswordStoreAndroidBackend(std::move(bridge_helper),
-                                  std::move(lifecycle_helper),
-                                  prefs) {
+                                  std::move(lifecycle_helper)) {
   sync_controller_delegate_ = std::move(sync_controller_delegate);
   sync_controller_delegate_->SetSyncObserverCallbacks(
       base::BindRepeating(
@@ -106,13 +77,11 @@ PasswordStoreAndroidAccountBackend::~PasswordStoreAndroidAccountBackend() =
     default;
 
 void PasswordStoreAndroidAccountBackend::InitBackend(
-    AffiliatedMatchHelper* affiliated_match_helper,
     RemoteChangesReceived remote_form_changes_received,
     base::RepeatingClosure sync_enabled_or_disabled_cb,
     base::OnceCallback<void(bool)> completion) {
   Init(std::move(remote_form_changes_received));
   CHECK(completion);
-  affiliated_match_helper_ = affiliated_match_helper;
   sync_enabled_or_disabled_cb_ = std::move(sync_enabled_or_disabled_cb);
   std::move(completion).Run(/*success*/ true);
 }
@@ -120,50 +89,41 @@ void PasswordStoreAndroidAccountBackend::InitBackend(
 void PasswordStoreAndroidAccountBackend::Shutdown(
     base::OnceClosure shutdown_completed) {
   weak_ptr_factory_.InvalidateWeakPtrs();
-  affiliated_match_helper_ = nullptr;
   sync_service_ = nullptr;
   PasswordStoreAndroidBackend::Shutdown(std::move(shutdown_completed));
 }
 
-bool PasswordStoreAndroidAccountBackend::IsAbleToSavePasswords() {
+ActionableError PasswordStoreAndroidAccountBackend::GetError() {
   base::UmaHistogramBoolean(
       "PasswordManager.PasswordSavingDisabledDueToGMSCoreError",
-      should_disable_saving_due_to_error_);
-  return sync_service_ != nullptr && !should_disable_saving_due_to_error_;
+      !IsAbleToSavePasswords(last_error()));
+  return sync_service_ ? last_error() : ActionableError::kInactionable;
 }
 
 void PasswordStoreAndroidAccountBackend::GetAllLoginsAsync(
-    LoginsOrErrorReply callback) {
+    BackendLoginsOrErrorReply callback) {
   if (!password_manager::sync_util::HasChosenToSyncPasswords(sync_service_)) {
-    ReplyWithEmptyList<LoginsResult>(std::move(callback));
+    ReplyWithEmptyList<BackendLoginsResult>(std::move(callback));
     return;
   }
   GetAllLoginsInternal(GetSyncingAccount(sync_service_), std::move(callback));
 }
 
 void PasswordStoreAndroidAccountBackend::
-    GetAllLoginsWithAffiliationAndBrandingAsync(LoginsOrErrorReply callback) {
+    GetAllLoginsWithAffiliationAndBrandingAsync(
+        BackendLoginsOrErrorReply callback) {
   if (!password_manager::sync_util::HasChosenToSyncPasswords(sync_service_)) {
-    ReplyWithEmptyList<LoginsResult>(std::move(callback));
+    ReplyWithEmptyList<BackendLoginsResult>(std::move(callback));
     return;
   }
-  if (bridge_helper()->CanUseGetAllLoginsWithBrandingInfoAPI()) {
-    GetAllLoginsWithAffiliationAndBrandingInternal(
-        GetSyncingAccount(sync_service_), std::move(callback));
-    return;
-  }
-  auto affiliation_injection =
-      base::BindOnce(&PasswordStoreAndroidAccountBackend::
-                         InjectAffiliationAndBrandingInformation,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback));
-  GetAllLoginsInternal(GetSyncingAccount(sync_service_),
-                       std::move(affiliation_injection));
+  GetAllLoginsWithAffiliationAndBrandingInternal(
+      GetSyncingAccount(sync_service_), std::move(callback));
 }
 
 void PasswordStoreAndroidAccountBackend::GetAutofillableLoginsAsync(
-    LoginsOrErrorReply callback) {
+    BackendLoginsOrErrorReply callback) {
   if (!password_manager::sync_util::HasChosenToSyncPasswords(sync_service_)) {
-    ReplyWithEmptyList<LoginsResult>(std::move(callback));
+    ReplyWithEmptyList<BackendLoginsResult>(std::move(callback));
     return;
   }
   GetAutofillableLoginsInternal(GetSyncingAccount(sync_service_),
@@ -171,11 +131,11 @@ void PasswordStoreAndroidAccountBackend::GetAutofillableLoginsAsync(
 }
 
 void PasswordStoreAndroidAccountBackend::FillMatchingLoginsAsync(
-    LoginsOrErrorReply callback,
+    BackendLoginsOrErrorReply callback,
     bool include_psl,
     const std::vector<PasswordFormDigest>& forms) {
   if (!password_manager::sync_util::HasChosenToSyncPasswords(sync_service_)) {
-    ReplyWithEmptyList<LoginsResult>(std::move(callback));
+    ReplyWithEmptyList<BackendLoginsResult>(std::move(callback));
     return;
   }
   FillMatchingLoginsInternal(GetSyncingAccount(sync_service_),
@@ -184,60 +144,53 @@ void PasswordStoreAndroidAccountBackend::FillMatchingLoginsAsync(
 
 void PasswordStoreAndroidAccountBackend::GetGroupedMatchingLoginsAsync(
     const PasswordFormDigest& form_digest,
-    LoginsOrErrorReply callback) {
+    BackendLoginsOrErrorReply callback) {
   if (!password_manager::sync_util::HasChosenToSyncPasswords(sync_service_)) {
-    ReplyWithEmptyList<LoginsResult>(std::move(callback));
+    ReplyWithEmptyList<BackendLoginsResult>(std::move(callback));
     return;
   }
-  if (bridge_helper()->CanUseGetAffiliatedPasswordsAPI()) {
-    GetGroupedMatchingLoginsInternal(GetSyncingAccount(sync_service_),
-                                     form_digest, std::move(callback));
-    return;
-  }
-
-  GetLoginsWithAffiliationsRequestHandler(
-      form_digest, this, affiliated_match_helper_.get(), std::move(callback));
+  GetGroupedMatchingLoginsInternal(GetSyncingAccount(sync_service_),
+                                   form_digest, std::move(callback));
 }
 
 void PasswordStoreAndroidAccountBackend::AddLoginAsync(
-    const PasswordForm& form,
+    StoredCredential cred,
     PasswordChangesOrErrorReply callback) {
   CHECK(password_manager::sync_util::HasChosenToSyncPasswords(sync_service_));
-  AddLoginInternal(GetSyncingAccount(sync_service_), form, std::move(callback));
+  AddLoginInternal(GetSyncingAccount(sync_service_), std::move(cred),
+                   std::move(callback));
 }
 
 void PasswordStoreAndroidAccountBackend::UpdateLoginAsync(
-    const PasswordForm& form,
+    StoredCredential cred,
     PasswordChangesOrErrorReply callback) {
   CHECK(password_manager::sync_util::HasChosenToSyncPasswords(sync_service_));
-  UpdateLoginInternal(GetSyncingAccount(sync_service_), form,
+  UpdateLoginInternal(GetSyncingAccount(sync_service_), std::move(cred),
                       std::move(callback));
 }
 
 void PasswordStoreAndroidAccountBackend::RemoveLoginAsync(
     const base::Location& location,
-    const PasswordForm& form,
+    StoredCredential cred,
     PasswordChangesOrErrorReply callback) {
   if (!password_manager::sync_util::HasChosenToSyncPasswords(sync_service_)) {
     ReplyWithEmptyList<PasswordStoreChangeList>(std::move(callback));
     return;
   }
-  RemoveLoginInternal(GetSyncingAccount(sync_service_), form,
-                      std::move(callback));
+  RemoveLoginInternal(GetSyncingAccount(sync_service_), std::move(cred),
+                      location, std::move(callback));
 }
 
 void PasswordStoreAndroidAccountBackend::RemoveLoginsCreatedBetweenAsync(
     const base::Location& location,
     base::Time delete_begin,
     base::Time delete_end,
-    base::OnceCallback<void(bool)> sync_completion,
     PasswordChangesOrErrorReply callback) {
-  CHECK(!sync_completion);
   if (!password_manager::sync_util::HasChosenToSyncPasswords(sync_service_)) {
     ReplyWithEmptyList<PasswordStoreChangeList>(std::move(callback));
     return;
   }
-  RemoveLoginsCreatedBetweenInternal(GetSyncingAccount(sync_service_),
+  RemoveLoginsCreatedBetweenInternal(GetSyncingAccount(sync_service_), location,
                                      delete_begin, delete_end,
                                      std::move(callback));
 }
@@ -271,12 +224,6 @@ void PasswordStoreAndroidAccountBackend::RecoverOnError(
   if (error == AndroidBackendAPIErrorCode::kPassphraseRequired) {
     sync_service_->SendExplicitPassphraseToPlatformClient();
   }
-  should_disable_saving_due_to_error_ = true;
-}
-
-void PasswordStoreAndroidAccountBackend::OnCallToGMSCoreSucceeded() {
-  // Since the API call has succeeded, it's safe to reenable saving.
-  should_disable_saving_due_to_error_ = false;
 }
 
 std::string PasswordStoreAndroidAccountBackend::GetAccountToRetryOperation() {
@@ -296,40 +243,10 @@ void PasswordStoreAndroidAccountBackend::OnSyncServiceInitialized(
   // without a need for it. If it is don't repeatedly initialize the sync
   // service to make it clear that it's not needed to do so for future readers
   // of the code.
-  if (!sync_service_) {
-    LogUPMActiveStatus(sync_service, prefs());
-  }
   sync_service_ = sync_service;
   sync_controller_delegate_->OnSyncServiceInitialized(sync_service);
 }
 
-void PasswordStoreAndroidAccountBackend::
-    RecordAddLoginAsyncCalledFromTheStore() {
-  base::UmaHistogramBoolean(
-      "PasswordManager.PasswordStore.AccountBackend.AddLoginCalledOnStore",
-      true);
-}
-
-void PasswordStoreAndroidAccountBackend::
-    RecordUpdateLoginAsyncCalledFromTheStore() {
-  base::UmaHistogramBoolean(
-      "PasswordManager.PasswordStore.AccountBackend.UpdateLoginCalledOnStore",
-      true);
-}
-
-void PasswordStoreAndroidAccountBackend::
-    InjectAffiliationAndBrandingInformation(
-        LoginsOrErrorReply callback,
-        LoginsResultOrError forms_or_error) {
-  if (!affiliated_match_helper_ ||
-      absl::holds_alternative<PasswordStoreBackendError>(forms_or_error) ||
-      absl::get<LoginsResult>(forms_or_error).empty()) {
-    std::move(callback).Run(std::move(forms_or_error));
-    return;
-  }
-  affiliated_match_helper_->InjectAffiliationAndBrandingInformation(
-      std::move(absl::get<LoginsResult>(forms_or_error)), std::move(callback));
-}
 
 void PasswordStoreAndroidAccountBackend::OnPasswordsSyncStateChanged() {
   // Invoke `sync_enabled_or_disabled_cb_` only if M4 feature flag is enabled

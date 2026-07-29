@@ -78,6 +78,19 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="Path FileInfo Failed"/>
 </enum>
 
+<!-- LINT.IfChange(ContentSecurityPolicyInlineType) -->
+
+<enum name="ContentSecurityPolicyInlineType">
+  <int value="0" label="Navigation"/>
+  <int value="1" label="Script"/>
+  <int value="2" label="ScriptAttribute"/>
+  <int value="3" label="ScriptSpeculationRules"/>
+  <int value="4" label="Style"/>
+  <int value="5" label="StyleAttribute"/>
+</enum>
+
+<!-- LINT.ThenChange(//third_party/blink/renderer/core/frame/csp/content_security_policy.h:InlineType) -->
+
 <enum name="CrossProcessTimeDelta">
   <int value="0" label="Normal time delta measured"/>
   <int value="1" label="Unexpectedly negative time delta measured"/>
@@ -115,6 +128,40 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="kWarmedUp"/>
 </enum>
 
+<!-- LINT.IfChange(OpenWindowUrlScheme) -->
+
+<enum name="OpenWindowUrlScheme">
+  <int value="0" label="kUnknown"/>
+  <int value="1" label="kAboutBlank"/>
+  <int value="2" label="kAboutSrcDoc"/>
+  <int value="3" label="kBlob"/>
+  <int value="4" label="kContent"/>
+  <int value="5" label="kData"/>
+  <int value="6" label="kFile"/>
+  <int value="7" label="kFileSystem"/>
+  <int value="8" label="kFtp"/>
+  <int value="9" label="kHttp"/>
+  <int value="10" label="kHttps"/>
+  <int value="11" label="kJavascript"/>
+  <int value="12" label="kMailTo"/>
+  <int value="13" label="kTel"/>
+  <int value="14" label="kWs"/>
+  <int value="15" label="kWss"/>
+</enum>
+
+<!-- LINT.ThenChange(//third_party/blink/renderer/modules/service_worker/service_worker_clients.cc:OpenWindowUrlScheme) -->
+
+<!-- LINT.IfChange(RaceNetworkRequestDataTransferResult) -->
+
+<enum name="RaceNetworkRequestDataTransferResult">
+  <int value="0" label="BothCompleted"/>
+  <int value="1" label="NetworkCompletedFetchHandlerNotCompleted"/>
+  <int value="2" label="FetchHandlerCompletedNetworkNotCompleted"/>
+  <int value="3" label="BothNotCompleted"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/common/service_worker/race_network_request_url_loader_client.cc:DataTransferCompletionResult) -->
+
 <enum name="ServiceWorkerDatabaseStatus">
   <int value="0" label="OK"/>
   <int value="1" label="Not Found Error"/>
@@ -135,6 +182,15 @@ chromium-metrics-reviews@google.com.
   <int value="0" label="Should Fallback"/>
   <int value="1" label="Got Response"/>
 </enum>
+
+<!-- LINT.IfChange(ServiceWorkerFetchHandlerInitiatorType) -->
+
+<enum name="ServiceWorkerFetchHandlerInitiatorType">
+  <int value="0" label="kFetchHandler"/>
+  <int value="1" label="kRaceNetworkAndFetchHandler"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/browser/service_worker/service_worker_main_resource_loader.cc:ServiceWorkerFetchHandlerInitiatorType) -->
 
 <enum name="ServiceWorkerFetchHandlerSkipReason">
   <int value="0" label="No Fetch Handler"/>
@@ -165,6 +221,33 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="SubresourceLoader is handling redirect"/>
   <int value="4" label="AutoPreload is handling fallback"/>
 </enum>
+
+<!-- LINT.IfChange(ServiceWorkerIPAddressSpace) -->
+
+<enum name="ServiceWorkerIPAddressSpace">
+  <int value="0" label="Loopback"/>
+  <int value="1" label="Local"/>
+  <int value="2" label="Public"/>
+  <int value="3" label="Unknown"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/services/storage/service_worker/service_worker_database.cc:ServiceWorkerIPAddressSpace) -->
+
+<enum name="ServiceWorkerMainScriptUrlValidationResult">
+  <int value="0" label="OK"/>
+  <int value="1" label="Forged URL"/>
+  <int value="2" label="Forged Destination"/>
+  <int value="3" label="Forged Mode"/>
+</enum>
+
+<!-- LINT.IfChange(ServiceWorkerMessageDispatchContextValidationResult) -->
+
+<enum name="ServiceWorkerMessageDispatchContextValidationResult">
+  <int value="0" label="Allowed"/>
+  <int value="1" label="Disallowed"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/browser/service_worker/service_worker_metrics.h:ServiceWorkerMessageDispatchContextValidationResult) -->
 
 <enum name="ServiceWorkerMetrics.EventType">
   <int value="0" label="ACTIVATE"/>
@@ -216,6 +299,22 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Read data error"/>
 </enum>
 
+<!-- LINT.IfChange(ServiceWorkerRegistrationDeleteInitiator) -->
+
+<enum name="ServiceWorkerRegistrationDeleteInitiator">
+  <int value="0" label="Triggered by navigator.serviceWorker.unregister()"/>
+  <int value="1" label="Triggered by clearing site data"/>
+  <int value="2" label="Triggered by an emergency force-delete"/>
+  <int value="3" label="Triggered by a registration failure"/>
+  <int value="4"
+      label="Triggered via the public C++ API (e.g., extensions, DevTools)"/>
+  <int value="5"
+      label="Triggered by a user action on chrome://serviceworker-internals"/>
+  <int value="6" label="Triggered from a test"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/browser/service_worker/service_worker_registration.h:DeleteInitiator) -->
+
 <enum name="ServiceWorkerRouterEvaluatorErrorEnums">
   <int value="0" label="kNoError"/>
   <int value="1" label="kInvalidType"/>
@@ -230,11 +329,54 @@ chromium-metrics-reviews@google.com.
   <int value="10" label="kFetchSourceWithoutFetchHandler"/>
 </enum>
 
+<!-- LINT.IfChange(ServiceWorkerStartWorkerContextValidationDifference) -->
+
+<enum name="ServiceWorkerStartWorkerContextValidationDifference">
+  <int value="0" label="Both Allowed"/>
+  <int value="1" label="Old Allowed, New Disallowed"/>
+  <int value="2" label="Old Disallowed, New Allowed"/>
+  <int value="3" label="Both Disallowed"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/browser/service_worker/service_worker_metrics.h:ServiceWorkerStartWorkerContextValidationDifference) -->
+
 <enum name="ServiceWorkerWriteResponseResult">
   <int value="0" label="OK"/>
   <int value="1" label="Write headers error"/>
   <int value="2" label="Write data error"/>
 </enum>
+
+<!-- LINT.IfChange(SyntheticResponseBlockedSrcType) -->
+
+<enum name="SyntheticResponseBlockedSrcType">
+  <int value="0" label="Unspecified"/>
+  <int value="1" label="ScriptSrcElm"/>
+  <int value="2" label="WorkerSrc"/>
+</enum>
+
+<!-- LINT.ThenChange(//third_party/blink/renderer/core/frame/csp/content_security_policy.h:SyntheticResponseBlockedSrcType) -->
+
+<!-- LINT.IfChange(SyntheticResponseEligibility) -->
+
+<enum name="SyntheticResponseEligibility">
+  <int value="0" label="Eligible"/>
+  <int value="1" label="NotEligibleByReload"/>
+  <int value="2" label="NotEligibleByNoHeaderStored"/>
+  <int value="3" label="NotEligibleByIntercepted"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/browser/service_worker/service_worker_metrics.h:SyntheticResponseEligibility) -->
+
+<!-- LINT.IfChange(SyntheticResponseReloadReason) -->
+
+<enum name="SyntheticResponseReloadReason">
+  <int value="0" label="CachedResponseHeadCleared"/>
+  <int value="1" label="HeaderInconsistent"/>
+  <int value="2" label="Redirect"/>
+  <int value="3" label="Intercepted"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/browser/service_worker/service_worker_synthetic_response_manager.cc:SyntheticResponseReloadReason) -->
 
 <enum name="WorkerOrWorkletInterfaceNameType">
   <int value="0" label="kOther"/>

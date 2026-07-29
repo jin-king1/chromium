@@ -11,8 +11,9 @@
 
 #include "base/json/json_reader.h"
 #include "base/values.h"
-#include "chrome/browser/extensions/permissions/permissions_test_util.h"
 #include "chrome/common/extensions/api/permissions.h"
+#include "extensions/browser/permissions/permissions_test_util.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/permissions/permission_set.h"
 #include "extensions/common/permissions/permissions_info.h"
@@ -22,6 +23,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using extensions::api::permissions::Permissions;
 using extensions::mojom::APIPermissionID;
@@ -61,9 +64,9 @@ TEST(PermissionsApiHelpersTest, Pack) {
 // Tests various error conditions and edge cases when unpacking Dicts
 // into PermissionSets.
 TEST(PermissionsApiHelpersTest, Unpack_Basic) {
-  base::Value::List apis;
+  base::ListValue apis;
   apis.Append("tabs");
-  base::Value::List origins;
+  base::ListValue origins;
   origins.Append("http://a.com/*");
 
   std::unique_ptr<const PermissionSet> permissions;
@@ -79,7 +82,7 @@ TEST(PermissionsApiHelpersTest, Unpack_Basic) {
 
   // Origins shouldn't have to be present.
   {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("permissions", apis.Clone());
     auto permissions_object = Permissions::FromValue(dict);
     EXPECT_TRUE(permissions_object);
@@ -97,7 +100,7 @@ TEST(PermissionsApiHelpersTest, Unpack_Basic) {
 
   // The api permissions don't need to be present either.
   {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("origins", origins.Clone());
     auto permissions_object = Permissions::FromValue(dict);
     EXPECT_TRUE(permissions_object);
@@ -114,8 +117,8 @@ TEST(PermissionsApiHelpersTest, Unpack_Basic) {
 
   // Throw errors for non-string API permissions.
   {
-    base::Value::Dict dict;
-    base::Value::List invalid_apis = apis.Clone();
+    base::DictValue dict;
+    base::ListValue invalid_apis = apis.Clone();
     invalid_apis.Append(3);
     dict.Set("permissions", std::move(invalid_apis));
     auto permissions_object = Permissions::FromValue(dict);
@@ -124,8 +127,8 @@ TEST(PermissionsApiHelpersTest, Unpack_Basic) {
 
   // Throw errors for non-string origins.
   {
-    base::Value::Dict dict;
-    base::Value::List invalid_origins = origins.Clone();
+    base::DictValue dict;
+    base::ListValue invalid_origins = origins.Clone();
     invalid_origins.Append(3);
     dict.Set("origins", std::move(invalid_origins));
     auto permissions_object = Permissions::FromValue(dict);
@@ -134,14 +137,14 @@ TEST(PermissionsApiHelpersTest, Unpack_Basic) {
 
   // Throw errors when "origins" or "permissions" are not list values.
   {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("origins", 2);
     auto permissions_object = Permissions::FromValue(dict);
     EXPECT_FALSE(permissions_object);
   }
 
   {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("permissions", 2);
     auto permissions_object = Permissions::FromValue(dict);
     EXPECT_FALSE(permissions_object);
@@ -149,7 +152,7 @@ TEST(PermissionsApiHelpersTest, Unpack_Basic) {
 
   // Additional fields should be allowed.
   {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("origins", origins.Clone());
     dict.Set("random", 3);
     auto permissions_object = Permissions::FromValue(dict);
@@ -167,8 +170,8 @@ TEST(PermissionsApiHelpersTest, Unpack_Basic) {
 
   // Unknown permissions should throw an error.
   {
-    base::Value::Dict dict;
-    base::Value::List invalid_apis = apis.Clone();
+    base::DictValue dict;
+    base::ListValue invalid_apis = apis.Clone();
     invalid_apis.Append("unknown_permission");
     dict.Set("permissions", std::move(invalid_apis));
     auto permissions_object = Permissions::FromValue(dict);
@@ -463,7 +466,8 @@ TEST(PermissionsApiHelpersTest, Unpack_UsbDevicePermission) {
   constexpr char kUsbDevicesPermissionJson[] =
       R"(usbDevices|[{"productId":2,"vendorId":1}])";
 
-  auto device_list = base::JSONReader::Read(kDeviceListJson);
+  auto device_list = base::JSONReader::Read(
+      kDeviceListJson, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(device_list) << "Failed to parse device list JSON.";
 
   auto usb_device_permission = std::make_unique<UsbDevicePermission>(

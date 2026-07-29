@@ -11,9 +11,11 @@
 #import "base/strings/utf_string_conversions.h"
 #import "base/values.h"
 #import "components/image_fetcher/core/image_data_fetcher.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/web/model/image_fetch/image_fetch_java_script_feature.h"
 #import "ios/web/common/referrer_util.h"
-#import "ios/web/public/browser_state.h"
+#import "ios/web/public/js_messaging/web_frame.h"
+#import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/thread/web_task_traits.h"
 #import "ios/web/public/thread/web_thread.h"
@@ -25,13 +27,13 @@ const char kUmaGetImageDataByJsResult[] =
 namespace {
 // Key for image_fetcher
 const char kImageFetcherKeyName[] = "0";
-// Timeout for GetImageDataByJs in milliseconds.
-const int kGetImageDataByJsTimeout = 300;
+// Timeout for GetImageDataByJs.
+constexpr base::TimeDelta kGetImageDataByJsTimeout = base::Milliseconds(300);
 
 // Wrapper class for image_fetcher::IOSImageDataFetcherWrapper. ImageFetcher is
-// attached to web::BrowserState instead of web::WebState, because if a user
-// closes the tab immediately after Copy/Save image, the web::WebState will be
-// destroyed thus fail the download.
+// attached to ProfileIOS instead of web::WebState, because if a user closes the
+// tab immediately after Copy/Save image, the web::WebState will be destroyed
+// thus fail the download.
 class ImageFetcher : public image_fetcher::ImageDataFetcher,
                      public base::SupportsUserData::Data {
  public:
@@ -44,15 +46,25 @@ class ImageFetcher : public image_fetcher::ImageDataFetcher,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
       : image_fetcher::ImageDataFetcher(url_loader_factory) {}
 
-  static ImageFetcher* FromBrowserState(web::BrowserState* browser_state) {
-    if (!browser_state->GetUserData(&kImageFetcherKeyName)) {
-      browser_state->SetUserData(
-          &kImageFetcherKeyName,
-          std::make_unique<ImageFetcher>(
-              browser_state->GetSharedURLLoaderFactory()));
+  // Helper that retrieves the ImageFetcher attached to the WebState's profile.
+  static ImageFetcher* FromWebState(web::WebState* web_state) {
+    return FromProfile(
+        ProfileIOS::FromBrowserState(web_state->GetBrowserState()));
+  }
+
+  // Retrieves the ImageFetcher for `profile` creating it first if it does
+  // not exist yet.
+  static ImageFetcher* FromProfile(ProfileIOS* profile) {
+    if (ImageFetcher* image_fetcher = static_cast<ImageFetcher*>(
+            profile->GetUserData(&kImageFetcherKeyName))) {
+      return image_fetcher;
     }
+
+    profile->SetUserData(
+        &kImageFetcherKeyName,
+        std::make_unique<ImageFetcher>(profile->GetSharedURLLoaderFactory()));
     return static_cast<ImageFetcher*>(
-        browser_state->GetUserData(&kImageFetcherKeyName));
+        profile->GetUserData(&kImageFetcherKeyName));
   }
 };
 }  // namespace
@@ -86,25 +98,35 @@ void ImageFetchTabHelper::WebStateDestroyed(web::WebState* web_state) {
 
 void ImageFetchTabHelper::GetImageData(const GURL& url,
                                        const web::Referrer& referrer,
+                                       const std::string& frame_id,
+                                       const url::Origin& frame_origin,
                                        ImageDataCallback callback) {
+  web::WebFrame* frame = ImageFetchJavaScriptFeature::GetInstance()
+                             ->GetWebFramesManager(web_state_)
+                             ->GetFrameWithId(frame_id);
+  if (!frame) {
+    FetchImageDataWithFetcher(url, referrer, callback);
+    return;
+  }
+
+  if (frame->GetSecurityOrigin() != frame_origin) {
+    FetchImageDataWithFetcher(url, referrer, callback);
+    return;
+  }
+
   // `this` is captured into the callback of GetImageDataByJs, which will always
   // be invoked before the `this` is destroyed, so it's safe.
   GetImageDataByJs(
-      url, base::Milliseconds(kGetImageDataByJsTimeout),
+      url, frame, kGetImageDataByJsTimeout,
       base::BindOnce(&ImageFetchTabHelper::JsCallbackOfGetImageData,
                      base::Unretained(this), url, referrer, callback));
 }
 
-void ImageFetchTabHelper::JsCallbackOfGetImageData(
+void ImageFetchTabHelper::FetchImageDataWithFetcher(
     const GURL& url,
     const web::Referrer& referrer,
-    ImageDataCallback callback,
-    const std::string* data) {
-  if (data) {
-    callback([NSData dataWithBytes:data->c_str() length:data->size()]);
-    return;
-  }
-  ImageFetcher::FromBrowserState(web_state_->GetBrowserState())
+    ImageDataCallback callback) {
+  ImageFetcher::FromWebState(web_state_)
       ->FetchImageData(
           url,
           base::BindOnce(^(const std::string& image_data,
@@ -118,9 +140,27 @@ void ImageFetchTabHelper::JsCallbackOfGetImageData(
           /*send_cookies=*/true);
 }
 
+void ImageFetchTabHelper::JsCallbackOfGetImageData(
+    const GURL& url,
+    const web::Referrer& referrer,
+    ImageDataCallback callback,
+    const std::string* data) {
+  if (data) {
+    callback([NSData dataWithBytes:data->c_str() length:data->size()]);
+    return;
+  }
+  FetchImageDataWithFetcher(url, referrer, callback);
+}
+
 void ImageFetchTabHelper::GetImageDataByJs(const GURL& url,
+                                           web::WebFrame* frame,
                                            base::TimeDelta timeout,
                                            JsCallback&& callback) {
+  if (!frame) {
+    std::move(callback).Run(nullptr);
+    return;
+  }
+
   ++call_id_;
   DCHECK_EQ(js_callbacks_.count(call_id_), 0UL);
   js_callbacks_.insert({call_id_, std::move(callback)});
@@ -131,7 +171,7 @@ void ImageFetchTabHelper::GetImageDataByJs(const GURL& url,
                           weak_ptr_factory_.GetWeakPtr(), call_id_),
       timeout);
 
-  ImageFetchJavaScriptFeature::GetInstance()->GetImageData(web_state_, call_id_,
+  ImageFetchJavaScriptFeature::GetInstance()->GetImageData(frame, call_id_,
                                                            url);
 }
 
@@ -180,5 +220,3 @@ void ImageFetchTabHelper::OnJsTimeout(int call_id) {
     RecordGetImageDataByJsResult(ContextMenuGetImageDataByJsResult::kTimeout);
   }
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(ImageFetchTabHelper)

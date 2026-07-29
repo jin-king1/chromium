@@ -8,8 +8,6 @@
 
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/payments/payment_request_views_util.h"
-#include "third_party/skia/include/core/SkColor.h"
-#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -18,7 +16,7 @@
 #include "ui/views/border.h"
 #include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/layout/table_layout.h"
+#include "ui/views/property_effects.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
@@ -85,7 +83,7 @@ void PaymentRequestRowView::SetClickable(bool clickable) {
   }
   clickable_ = clickable;
   UpdateButtonState();
-  OnPropertyChanged(&clickable_, views::PropertyEffects::kPropertyEffectsPaint);
+  OnPropertyChanged(&clickable_, views::PropertyEffects::kPaint);
 }
 
 base::WeakPtr<PaymentRequestRowView> PaymentRequestRowView::AsWeakPtr() {
@@ -102,8 +100,7 @@ void PaymentRequestRowView::SetRowInsets(const gfx::Insets& row_insets) {
   }
   row_insets_ = row_insets;
   UpdateBottomSeparatorVisualState();
-  OnPropertyChanged(&row_insets_,
-                    views::PropertyEffects::kPropertyEffectsPaint);
+  OnPropertyChanged(&row_insets_, views::PropertyEffects::kPaint);
 }
 
 void PaymentRequestRowView::SetBottomSeparatorVisible(bool visible) {

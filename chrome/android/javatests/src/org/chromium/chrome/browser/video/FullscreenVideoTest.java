@@ -9,6 +9,7 @@ import android.graphics.Rect;
 import androidx.test.espresso.Espresso;
 import androidx.test.filters.MediumTest;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.uiautomator.UiDevice;
 
 import org.hamcrest.Matchers;
 import org.junit.Assert;
@@ -22,18 +23,25 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
+import org.chromium.base.test.util.Features;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.app.ChromeActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.FullscreenTestUtils;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.content_public.browser.test.util.TestTouchUtils;
 import org.chromium.media.MediaSwitches;
-import org.chromium.net.test.EmbeddedTestServerRule;
+import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.test.util.DeviceRestriction;
 
 import java.util.concurrent.TimeoutException;
 
@@ -41,21 +49,22 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
     ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    MediaSwitches.AUTOPLAY_NO_GESTURE_REQUIRED_POLICY
+    MediaSwitches.AUTOPLAY_NO_GESTURE_REQUIRED_POLICY,
 })
+@Features.EnableFeatures(ChromeFeatureList.DISPLAY_EDGE_TO_EDGE_FULLSCREEN)
 @Batch(Batch.PER_CLASS)
 public class FullscreenVideoTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
-
-    @Rule public EmbeddedTestServerRule mTestServerRule = new EmbeddedTestServerRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     private ChromeActivity mActivity;
+    private WebPageStation mPage;
 
     @Before
     public void setUp() throws InterruptedException {
-        mActivityTestRule.startMainActivityOnBlankPage();
-        mActivity = mActivityTestRule.getActivity();
+        mPage = mActivityTestRule.startOnBlankPage();
+        mActivity = mPage.getActivity();
     }
 
     /**
@@ -64,7 +73,7 @@ public class FullscreenVideoTest {
      */
     @Test
     @MediumTest
-    @DisabledTest(message = "Flaky https://crbug.com/458368 https://crbug.com/1331504")
+    @DisabledTest(message = "Flaky https://crbug.com/41157404 https://crbug.com/40843959")
     public void testExitFullscreenNotifiesTabObservers() {
         testExitFullscreenNotifiesTabObserversInternal();
     }
@@ -80,7 +89,7 @@ public class FullscreenVideoTest {
                     Assert.assertEquals(
                             "URL mismatch after exiting fullscreen video",
                             url,
-                            mActivity.getActivityTab().getUrl().getSpec());
+                            mActivityTestRule.getActivityTab().getUrl().getSpec());
                 });
     }
 
@@ -88,17 +97,36 @@ public class FullscreenVideoTest {
     @Test
     @MediumTest
     public void testFullscreenDimensions() throws TimeoutException {
-        String url =
-                mTestServerRule.getServer().getURL("/content/test/data/media/video-player.html");
+        loadUrlAndEnterFullscreen("/content/test/data/media/video-player.html");
+    }
+
+    /** Tests that the PIP transition can be done. */
+    @Test
+    @MediumTest
+    @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO) // PiP not supported on AAOS.
+    // Fullscreen PiP disabled on Desktop crbug.com/486262122#comment5.
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM)
+    public void testFullscreenToPip() throws TimeoutException {
+        loadUrlAndEnterFullscreen("/content/test/data/media/video-player-pip.html");
+        // Test framework requirement. This will prevent visual transition but should keep all the
+        // activity flags set.
+        ChromeActivity.interceptMoveTaskToBackForTesting();
+        pressHomeButton();
+        FullscreenTestUtils.waitForPictureInPicture(true, mActivity);
+        Assert.assertTrue(mActivity.isInPictureInPictureMode());
+    }
+
+    private void loadUrlAndEnterFullscreen(String relativeUrl) throws TimeoutException {
+        String url = mActivityTestRule.getTestServer().getURL(relativeUrl);
         String video = "video";
         Rect expectedSize = new Rect(0, 0, 320, 180);
 
         mActivityTestRule.loadUrl(url);
 
-        final Tab tab = mActivity.getActivityTab();
+        final Tab tab = mActivityTestRule.getActivityTab();
 
         // Start playback to guarantee it's properly loaded.
-        WebContents webContents = mActivity.getCurrentWebContents();
+        WebContents webContents = mActivityTestRule.getWebContents();
         Assert.assertTrue(DOMUtils.isMediaPaused(webContents, video));
         DOMUtils.playMedia(webContents, video);
         DOMUtils.waitForMediaPlay(webContents, video);
@@ -120,11 +148,11 @@ public class FullscreenVideoTest {
 
     private String launchOnFullscreenMode() {
         String url =
-                mTestServerRule
-                        .getServer()
+                mActivityTestRule
+                        .getTestServer()
                         .getURL("/chrome/test/data/android/media/video-fullscreen.html");
         mActivityTestRule.loadUrl(url);
-        final Tab tab = mActivity.getActivityTab();
+        final Tab tab = mActivityTestRule.getActivityTab();
 
         TestTouchUtils.singleClickView(
                 InstrumentationRegistry.getInstrumentation(), tab.getView(), 500, 500);
@@ -133,10 +161,17 @@ public class FullscreenVideoTest {
     }
 
     void waitForVideoToEnterFullscreen() {
-        FullscreenTestUtils.waitForFullscreenFlag(mActivity.getActivityTab(), true, mActivity);
+        FullscreenTestUtils.waitForFullscreenFlag(
+                mActivityTestRule.getActivityTab(), true, mActivity);
     }
 
     void waitForTabToExitFullscreen() {
-        FullscreenTestUtils.waitForFullscreenFlag(mActivity.getActivityTab(), false, mActivity);
+        FullscreenTestUtils.waitForFullscreenFlag(
+                mActivityTestRule.getActivityTab(), false, mActivity);
+    }
+
+    public void pressHomeButton() {
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        device.pressHome();
     }
 }

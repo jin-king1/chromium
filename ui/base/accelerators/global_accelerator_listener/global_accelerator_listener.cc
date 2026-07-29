@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "base/check.h"
-#include "base/not_fatal_until.h"
 #include "ui/base/accelerators/accelerator.h"
 
 namespace ui {
@@ -48,17 +47,15 @@ bool GlobalAcceleratorListener::RegisterAccelerator(
 void GlobalAcceleratorListener::UnregisterAccelerator(
     const ui::Accelerator& accelerator,
     Observer* observer) {
-  if (IsShortcutHandlingSuspended()) {
-    return;
-  }
-
   auto it = accelerator_map_.find(accelerator);
   // We should never get asked to unregister something that we didn't register.
-  CHECK(it != accelerator_map_.end(), base::NotFatalUntil::M130);
+  CHECK(it != accelerator_map_.end());
   // The caller should call this function with the right observer.
   DCHECK(it->second == observer);
 
-  StopListeningForAccelerator(accelerator);
+  if (!shortcut_handling_suspended_) {
+    StopListeningForAccelerator(accelerator);
+  }
   accelerator_map_.erase(it);
   if (accelerator_map_.empty()) {
     StopListening();
@@ -66,17 +63,10 @@ void GlobalAcceleratorListener::UnregisterAccelerator(
 }
 
 void GlobalAcceleratorListener::UnregisterAccelerators(Observer* observer) {
-  if (IsShortcutHandlingSuspended()) {
-    return;
-  }
-
-  std::vector<ui::Accelerator> removed_accelerators;
-
   auto it = accelerator_map_.begin();
   while (it != accelerator_map_.end()) {
     if (it->second == observer) {
       auto to_remove = it++;
-      removed_accelerators.emplace_back(to_remove->first);
       UnregisterAccelerator(to_remove->first, observer);
     } else {
       ++it;

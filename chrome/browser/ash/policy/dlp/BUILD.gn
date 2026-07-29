@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("dlp") {
@@ -32,23 +30,26 @@ static_library("dlp") {
 
   public_deps = [
     "//chrome/browser:browser_public_dependencies",
-    "//chrome/browser/ui:browser_list",
     "//chromeos/ash/experiences/screenshot_area",
   ]
 
   deps = [
     "//ash",
+    "//ash/constants",
     "//ash/public/cpp",
-    "//ash/webui/system_apps/public:system_web_app_type",
     "//base",
     "//chrome/app:generated_resources",
+    "//chrome/browser/ash/browser_delegate",
     "//chrome/browser/ash/drive",
     "//chrome/browser/ash/policy/dlp/dialogs",
     "//chrome/browser/chromeos/policy/dlp",
     "//chrome/browser/chromeos/policy/dlp/dialogs",
+    "//chrome/browser/notifications",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_manager",
     "//chrome/common",
     "//chrome/common:chrome_features",
+    "//chromeos/ash/components/system_web_apps:system_web_app_type",
     "//chromeos/dbus/dlp",
     "//chromeos/dbus/dlp:dlp_proto",
     "//chromeos/ui/base",
@@ -79,10 +80,10 @@ static_library("dlp") {
     # TODO(b/354095042): Use targets having headers directly included from
     # chrome/browser/ash/policy/dlp/files_policy_notification_manager.cc
     # instead after fixing cyclic dependency.
-    "//chrome/app/vector_icons:vector_icons",
+    "//chrome/app/vector_icons",
     "//chromeos/ash/components/dbus:vm_applications_apps_proto",
     "//chromeos/ash/components/drivefs",
-    "//chromeos/ash/experiences/arc/mojom:mojom",
+    "//chromeos/ash/experiences/arc/mojom",
     "//components/paint_preview/buildflags",
 
     # TODO(b/354095042): Use targets having headers directly included from
@@ -120,6 +121,7 @@ source_set("unit_tests") {
     "//chrome/browser",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/apps/app_service:test_support",
+    "//chrome/browser/ash/browser_delegate:impl",
     "//chrome/browser/ash/file_manager",
     "//chrome/browser/ash/fileapi",
     "//chrome/browser/ash/login/users:test_support",
@@ -131,6 +133,7 @@ source_set("unit_tests") {
     "//chrome/browser/chromeos/policy/dlp/test:test_support",
     "//chrome/browser/enterprise/data_controls",
     "//chrome/browser/enterprise/data_controls:test_support",
+    "//chrome/browser/policy:test_support",
     "//chrome/browser/ui",
     "//chrome/common:chrome_features",
     "//chrome/test:test_support",
@@ -160,6 +163,10 @@ source_set("unit_tests") {
     "//ui/base",
     "//url",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("browser_tests") {
@@ -176,11 +183,13 @@ source_set("browser_tests") {
 
   deps = [
     ":dlp",
+    "//ash/constants",
     "//ash/webui/file_manager:file_manager_ui",
     "//base",
     "//base/test:test_support",
     "//chrome/browser",
     "//chrome/browser:browser_process",
+    "//chrome/browser:file_select_helper",
     "//chrome/browser/ash/crostini",
     "//chrome/browser/ash/crostini:test_support",
     "//chrome/browser/ash/extensions/file_manager",
@@ -200,6 +209,7 @@ source_set("browser_tests") {
     "//chrome/browser/enterprise/data_controls",
     "//chrome/browser/enterprise/data_controls:test_support",
     "//chrome/browser/extensions",
+    "//chrome/browser/media:access_handler",
     "//chrome/browser/media/webrtc",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
@@ -230,12 +240,18 @@ source_set("browser_tests") {
     "//ui/aura",
     "//ui/base",
     "//ui/base/clipboard",
+    "//ui/base/clipboard:clipboard_test_support",
     "//ui/base/clipboard:clipboard_types",
     "//ui/base/data_transfer_policy",
+    "//ui/events:test_support",
     "//ui/gfx/geometry",
     "//ui/message_center/public/cpp",
     "//ui/shell_dialogs:test_support",
     "//ui/views",
     "//url",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

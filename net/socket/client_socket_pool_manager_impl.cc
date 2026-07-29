@@ -8,11 +8,14 @@
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/feature_list.h"
 #include "base/values.h"
+#include "net/base/features.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_server.h"
 #include "net/base/proxy_string_util.h"
 #include "net/http/http_network_session.h"
+#include "net/socket/socket_pool_additional_capacity.h"
 #include "net/socket/socks_connect_job.h"
 #include "net/socket/ssl_connect_job.h"
 #include "net/socket/transport_client_socket_pool.h"
@@ -63,10 +66,10 @@ ClientSocketPool* ClientSocketPoolManagerImpl::GetSocketPool(
   if (it != socket_pools_.end())
     return it->second.get();
 
-  int sockets_per_proxy_chain;
-  int sockets_per_group;
+  size_t sockets_per_proxy_chain;
+  size_t sockets_per_group;
   if (proxy_chain.is_direct()) {
-    sockets_per_proxy_chain = max_sockets_per_pool(pool_type_);
+    sockets_per_proxy_chain = socket_soft_cap_per_pool(pool_type_);
     sockets_per_group = max_sockets_per_group(pool_type_);
   } else {
     sockets_per_proxy_chain = max_sockets_per_proxy_chain(pool_type_);
@@ -77,16 +80,16 @@ ClientSocketPool* ClientSocketPoolManagerImpl::GetSocketPool(
   std::unique_ptr<ClientSocketPool> new_pool;
 
   // Use specialized WebSockets pool for WebSockets when no proxies are in use.
-  if (pool_type_ == HttpNetworkSession::WEBSOCKET_SOCKET_POOL &&
+  if (pool_type_ == HttpNetworkSession::SocketPoolType::kWebSocket &&
       proxy_chain.is_direct()) {
     new_pool = std::make_unique<WebSocketTransportClientSocketPool>(
-        sockets_per_proxy_chain, sockets_per_group, proxy_chain,
+        sockets_per_proxy_chain, proxy_chain,
         &websocket_common_connect_job_params_);
   } else {
     new_pool = std::make_unique<TransportClientSocketPool>(
         sockets_per_proxy_chain, sockets_per_group,
         unused_idle_socket_timeout(pool_type_), proxy_chain,
-        pool_type_ == HttpNetworkSession::WEBSOCKET_SOCKET_POOL,
+        pool_type_ == HttpNetworkSession::SocketPoolType::kWebSocket,
         &common_connect_job_params_, cleanup_on_ip_address_change_);
   }
 
@@ -96,7 +99,7 @@ ClientSocketPool* ClientSocketPoolManagerImpl::GetSocketPool(
 }
 
 base::Value ClientSocketPoolManagerImpl::SocketPoolInfoToValue() const {
-  base::Value::List list;
+  base::ListValue list;
   for (const auto& socket_pool : socket_pools_) {
     // TODO(menke): Is this really needed?
     const char* type;

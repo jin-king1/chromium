@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/browser/compositor/viz_process_transport_factory.h"
 
 #include <utility>
@@ -25,7 +20,6 @@
 #include "cc/mojo_embedder/async_layer_tree_frame_sink.h"
 #include "cc/raster/single_thread_task_graph_runner.h"
 #include "cc/tiles/image_decode_cache_utils.h"
-#include "cc/trees/raster_context_provider_wrapper.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
 #include "components/viz/common/switches.h"
@@ -53,11 +47,17 @@
 #include "services/viz/privileged/mojom/compositing/display_private.mojom.h"
 #include "services/viz/privileged/mojom/compositing/external_begin_frame_controller.mojom.h"
 #include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
+#include "ui/base/device_form_factor.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/ui_base_features.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "ui/gfx/win/rendering_window_manager.h"
+#endif
+
+#if BUILDFLAG(IS_MAC)
+#include "ui/compositor/display_link_mac_mojo.h"
+#include "ui/display/mac/display_link_mac.h"
 #endif
 
 namespace content {
@@ -70,25 +70,16 @@ constexpr uint32_t kBrowserClientId = 0u;
 scoped_refptr<viz::ContextProviderCommandBuffer> CreateContextProvider(
     scoped_refptr<gpu::GpuChannelHost> gpu_channel_host,
     bool supports_locking,
-    bool supports_gpu_rasterization,
     viz::command_buffer_metrics::ContextType type) {
   constexpr bool kAutomaticFlushes = false;
-
-  gpu::ContextCreationAttribs attributes;
-  attributes.bind_generates_resource = false;
-  attributes.lose_context_when_out_of_memory = true;
-  attributes.enable_gles2_interface = false;
-  attributes.enable_raster_interface = true;
-  attributes.enable_gpu_rasterization = supports_gpu_rasterization;
 
   gpu::SharedMemoryLimits memory_limits =
       gpu::SharedMemoryLimits::ForDisplayCompositor();
 
   GURL url("chrome://gpu/VizProcessTransportFactory::CreateContextProvider");
-  return base::MakeRefCounted<viz::ContextProviderCommandBuffer>(
+  return viz::ContextProviderCommandBuffer::CreateForRaster(
       std::move(gpu_channel_host), kGpuStreamIdDefault, kGpuStreamPriorityUI,
-      std::move(url), kAutomaticFlushes, supports_locking, memory_limits,
-      attributes, type);
+      std::move(url), kAutomaticFlushes, supports_locking, memory_limits, type);
 }
 
 bool IsContextLost(viz::RasterContextProvider* context_provider) {
@@ -110,11 +101,11 @@ class HostDisplayClient : public viz::HostDisplayClient {
   HostDisplayClient& operator=(const HostDisplayClient&) = delete;
 
   // viz::HostDisplayClient:
-#if BUILDFLAG(IS_LINUX) && BUILDFLAG(IS_OZONE_X11)
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_X11)
   void DidCompleteSwapWithNewSize(const gfx::Size& size) override {
     compositor_->OnCompleteSwapWithNewSize(size);
   }
-#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(IS_OZONE_X11)
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_X11)
 
 #if BUILDFLAG(IS_WIN)
   void AddChildWindowToBrowser(gpu::SurfaceHandle child_window) override {
@@ -202,6 +193,10 @@ void VizProcessTransportFactory::CreateLayerTreeFrameSink(
       compositor->widget());
 #endif
 
+#if BUILDFLAG(IS_MAC)
+  CreateDisplayLinkMacMojoIfNeeded(compositor);
+#endif
+
   gpu_channel_establish_factory_->EstablishGpuChannel(
       base::BindOnce(&VizProcessTransportFactory::OnEstablishedGpuChannel,
                      weak_ptr_factory_.GetWeakPtr(), compositor));
@@ -240,11 +235,6 @@ void VizProcessTransportFactory::RemoveCompositor(ui::Compositor* compositor) {
 #endif
 
   compositor_data_map_.erase(compositor);
-}
-
-gpu::GpuMemoryBufferManager*
-VizProcessTransportFactory::GetGpuMemoryBufferManager() {
-  return gpu_channel_establish_factory_->GetGpuMemoryBufferManager();
 }
 
 cc::TaskGraphRunner* VizProcessTransportFactory::GetTaskGraphRunner() {
@@ -299,7 +289,7 @@ void VizProcessTransportFactory::DisableGpuCompositing(
   compositing_mode_reporter_->SetUsingSoftwareCompositing();
 
   // Drop our reference on the gpu contexts for the compositors.
-  worker_context_provider_wrapper_.reset();
+  worker_context_provider_.reset();
   main_context_provider_.reset();
 
   // ReleaseAcceleratedWidget() removes an entry from |compositor_data_map_|,
@@ -335,54 +325,12 @@ void VizProcessTransportFactory::DisableGpuCompositing(
 void VizProcessTransportFactory::OnGpuProcessLost() {
   // Reconnect HostFrameSinkManager to new GPU process.
   ConnectHostFrameSinkManager();
-}
 
-scoped_refptr<gpu::GpuChannelHost>
-VizProcessTransportFactory::GetGpuChannelHostForSoftwareCompositing() {
-  scoped_refptr<gpu::GpuChannelHost> gpu_channel_host;
-
-  // The browser UI thread may have not received child process disconnect signal
-  // yet. Manually remove it before EstablishGpuChannel again. More in
-  // crbug.com/322909915.
-  auto* gpu_process_host = GpuProcessHost::Get();
-  if (gpu_process_host) {
-    gpu_process_host->GpuProcessHost::ForceShutdown();
+#if BUILDFLAG(IS_MAC)
+  if (display_link_mac_mojo_) {
+    display_link_mac_mojo_->OnGpuProcessLost(GetHostFrameSinkManager());
   }
-
-  // Keep retrying for 3 seconds with 150ms each time before letting it
-  // crash. If UMA shows the first retry has already worked or the loop of
-  // retries does not help when the first retry fails, the loop can be removed.
-  constexpr int kMaxRetriesAllowed = 20;
-  int num_of_retries = 0;
-  while (!gpu_channel_host) {
-    ++num_of_retries;
-    gpu_channel_host =
-        gpu_channel_establish_factory_->EstablishGpuChannelSync();
-
-    // Record how many retries it takes before successfully establishing gpu
-    // channel.
-    if (gpu_channel_host || num_of_retries >= kMaxRetriesAllowed) {
-      // Reserve the last number "21" for no success at all in retries.
-      int retries =
-          gpu_channel_host ? num_of_retries : (kMaxRetriesAllowed + 1);
-      UMA_HISTOGRAM_EXACT_LINEAR("GPU.EstablishGpuChannelSyncRetry.Software",
-                                 retries,
-                                 /*exclusive_max=*/(kMaxRetriesAllowed + 2));
-    }
-
-    if (!gpu_channel_host) {
-      if (num_of_retries < kMaxRetriesAllowed) {
-        // Wait for 150ms and retry later.
-        base::PlatformThread::Sleep(base::Milliseconds(150));
-      } else {
-        // Just let it crash after no success in retries.
-        CHECK(false) << "Fails to Establish GpuChannel for Software "
-                        "Compositing after retries.";
-      }
-    }
-  }
-
-  return gpu_channel_host;
+#endif
 }
 
 void VizProcessTransportFactory::OnEstablishedGpuChannel(
@@ -411,17 +359,22 @@ void VizProcessTransportFactory::OnEstablishedGpuChannel(
 
   if (!gpu_compositing && !gpu_channel_host) {
     // gpu_channel_host is needed for creating ClientSharedImageInterface in the
-    // software compositing mode.
-    gpu_channel_host = GetGpuChannelHostForSoftwareCompositing();
+    // software compositing mode. Because failing EstablishGpuChannel is
+    // extremely rare that we don't see any crash report or histogram
+    // GPU.EstablishGpuChannelSyncRetry.Software data as of Mar 2025. If we do
+    // see this CHECK being triggered later, we can retry the same way as gpu
+    // compositing does: GpuProcessHost::ForceShutdown() then
+    // gpu_channel_establish_factory_->EstablishGpuChannelSync().
+
+    LOG(FATAL) << "Software Compositing: gpu_channel_host is null!";
   }
 
   scoped_refptr<viz::RasterContextProvider> context_provider;
-  scoped_refptr<cc::RasterContextProviderWrapper>
-      worker_context_provider_wrapper;
+  scoped_refptr<viz::RasterContextProvider> worker_context_provider;
   if (gpu_compositing) {
     // Only pass the contexts to the compositor if it will use gpu compositing.
     context_provider = main_context_provider_;
-    worker_context_provider_wrapper = worker_context_provider_wrapper_;
+    worker_context_provider = worker_context_provider_;
   }
 
 #if BUILDFLAG(IS_WIN)
@@ -455,6 +408,8 @@ void VizProcessTransportFactory::OnEstablishedGpuChannel(
       root_params->external_begin_frame_controller_client =
           factory->CreateExternalBeginFrameControllerClient();
     }
+    root_params->wait_for_all_frame_sinks =
+        compositor->wait_for_all_frame_sinks();
   }
 
   root_params->frame_sink_id = compositor->frame_sink_id();
@@ -465,10 +420,14 @@ void VizProcessTransportFactory::OnEstablishedGpuChannel(
   root_params->renderer_settings = viz::CreateRendererSettings();
 #if BUILDFLAG(IS_MAC)
   root_params->renderer_settings.display_id = compositor->display_id();
+  root_params->refresh_rate = compositor->refresh_rate();
 #endif
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   if (command_line->HasSwitch(switches::kDisableFrameRateLimit))
     root_params->disable_frame_rate_limit = true;
+
+  // Enable VideoConferenceMatcher on desktop platforms.
+  root_params->enable_video_conference_matcher = true;
 
 #if BUILDFLAG(IS_WIN)
   const bool using_direct_composition = GpuDataManagerImpl::GetInstance()
@@ -506,13 +465,12 @@ void VizProcessTransportFactory::OnEstablishedGpuChannel(
   params.pipes.compositor_frame_sink_associated_remote = std::move(sink_remote);
   params.pipes.client_receiver = std::move(client_receiver);
 
-  scoped_refptr<gpu::ClientSharedImageInterface> shared_image_interface =
+  scoped_refptr<gpu::SharedImageInterface> shared_image_interface =
       gpu_channel_host->CreateClientSharedImageInterface();
 
   auto frame_sink =
       std::make_unique<cc::mojo_embedder::AsyncLayerTreeFrameSink>(
-          std::move(context_provider),
-          std::move(worker_context_provider_wrapper),
+          std::move(context_provider), std::move(worker_context_provider),
           std::move(shared_image_interface), &params);
   compositor->SetLayerTreeFrameSink(std::move(frame_sink),
                                     std::move(display_private));
@@ -520,15 +478,6 @@ void VizProcessTransportFactory::OnEstablishedGpuChannel(
     compositor->SetExternalBeginFrameController(
         std::move(external_begin_frame_controller));
   }
-
-#if BUILDFLAG(IS_WIN)
-  // Windows using the ANGLE D3D backend for compositing needs to disable swap
-  // on resize to avoid D3D scaling the framebuffer texture. This isn't a
-  // problem with software compositing or ANGLE D3D with direct composition.
-  const bool using_angle_d3d_compositing =
-      gpu_compositing && !using_direct_composition;
-  compositor->SetShouldDisableSwapUntilResize(using_angle_d3d_compositing);
-#endif
 }
 
 gpu::ContextResult
@@ -567,37 +516,26 @@ VizProcessTransportFactory::TryCreateContextsForGpuCompositing(
   if (gpu_compositing_status != gpu::kGpuFeatureStatusEnabled)
     return gpu::ContextResult::kFatalFailure;
 
-  if (worker_context_provider_wrapper_ &&
-      IsWorkerContextLost(
-          worker_context_provider_wrapper_->GetContext().get())) {
-    worker_context_provider_wrapper_.reset();
+  if (worker_context_provider_ &&
+      IsWorkerContextLost(worker_context_provider_.get())) {
+    worker_context_provider_.reset();
   }
 
-  const bool enable_gpu_rasterization =
-      features::IsUiGpuRasterizationEnabled() &&
-      gpu_feature_info
-              .status_values[gpu::GPU_FEATURE_TYPE_GPU_TILE_RASTERIZATION] ==
-          gpu::kGpuFeatureStatusEnabled;
-
-  if (!worker_context_provider_wrapper_) {
+  if (!worker_context_provider_) {
     // If the worker context supports GPU rasterization then UI tiles will be
     // rasterized on the GPU.
     auto worker_context_provider = CreateContextProvider(
-        gpu_channel_host, /*supports_locking=*/true, enable_gpu_rasterization,
-        viz::command_buffer_metrics::ContextType::BROWSER_WORKER);
+        gpu_channel_host, /*supports_locking=*/true,
+        viz::command_buffer_metrics::ContextType::BROWSER_RASTER_WORKER);
 
-    // Don't observer context loss on |worker_context_provider_wrapper_| here,
+    // Don't observer context loss on |worker_context_provider_| here,
     // that is already observed by LayerTreeFrameSink. The lost context will
     // be caught when recreating LayerTreeFrameSink(s).
     auto context_result = worker_context_provider->BindToCurrentSequence();
     if (context_result != gpu::ContextResult::kSuccess)
       return context_result;
 
-    worker_context_provider_wrapper_ =
-        base::MakeRefCounted<cc::RasterContextProviderWrapper>(
-            std::move(worker_context_provider), /*dark_mode_filter=*/nullptr,
-            cc::ImageDecodeCacheUtils::GetWorkingSetBytesForImageDecode(
-                /*for_renderer=*/false));
+    worker_context_provider_ = worker_context_provider;
   }
 
   if (main_context_provider_ && IsContextLost(main_context_provider_.get())) {
@@ -610,7 +548,6 @@ VizProcessTransportFactory::TryCreateContextsForGpuCompositing(
     // enabled for tiles.
     main_context_provider_ = CreateContextProvider(
         std::move(gpu_channel_host), /*supports_locking=*/false,
-        enable_gpu_rasterization,
         viz::command_buffer_metrics::ContextType::BROWSER_MAIN_THREAD);
     main_context_provider_->SetDefaultTaskRunner(resize_task_runner_);
 
@@ -623,6 +560,51 @@ VizProcessTransportFactory::TryCreateContextsForGpuCompositing(
 
   return gpu::ContextResult::kSuccess;
 }
+
+#if BUILDFLAG(IS_MAC)
+void VizProcessTransportFactory::CreateDisplayLinkMacMojoIfNeeded(
+    base::WeakPtr<ui::Compositor> compositor) {
+  // Headless mode (use_external_begin_frame_control()) does not use
+  // CADisplayLink.
+  if (compositor->use_external_begin_frame_control() ||
+      !ui::DisplayLinkMac::SupportsDisplayLinkMacInBrowser()) {
+    return;
+  }
+
+  // Create only one CADisplayLinkMojo/VSyncThread.
+  if (vsync_thread_task_posted_ || display_link_mac_mojo_) {
+    return;
+  }
+
+  // Create DisplayLinkMacMojo only after FrameSinkManager and display::Screen
+  // are available. FrameSinkManager is established in
+  // ConnectHostFrameSinkManager(), but display::Screen is not available in that
+  // function in Content Shell. (Note: display::Screen is available and not an
+  // issue there when running on Chrome.)
+  if (ui::NoDelayForVSyncThread()) {
+    display_link_mac_mojo_ =
+        std::make_unique<ui::DisplayLinkMacMojo>(GetHostFrameSinkManager());
+  } else {
+    vsync_thread_task_posted_ = true;
+
+    // Delay the creation of DisplayLinkMacMojo (which starts the dedicated
+    // browser-side VSyncThread) to prevent desktop startup performance
+    // regressions.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](base::WeakPtr<VizProcessTransportFactory> weak_this) {
+              if (weak_this && !weak_this->display_link_mac_mojo_) {
+                weak_this->display_link_mac_mojo_ =
+                    std::make_unique<ui::DisplayLinkMacMojo>(
+                        weak_this->GetHostFrameSinkManager());
+              }
+            },
+            weak_ptr_factory_.GetWeakPtr()),
+        base::Seconds(60));
+  }
+}
+#endif
 
 VizProcessTransportFactory::CompositorData::CompositorData() = default;
 VizProcessTransportFactory::CompositorData::CompositorData(

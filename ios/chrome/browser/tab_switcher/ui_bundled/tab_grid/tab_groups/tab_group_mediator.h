@@ -8,7 +8,7 @@
 #import <Foundation/Foundation.h>
 
 #import "base/memory/weak_ptr.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/base_grid_mediator.h"
+#import "ios/chrome/browser/tab_switcher/tab_grid/base_grid/coordinator/base_grid_mediator.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_mutator.h"
 
 namespace collaboration {
@@ -26,6 +26,7 @@ namespace tab_groups {
 class TabGroupSyncService;
 }  // namespace tab_groups
 
+@protocol FacePileProviding;
 class ShareKitService;
 class TabGroup;
 @protocol TabCollectionConsumer;
@@ -35,28 +36,15 @@ class TabGroup;
 @class TabGroupMediator;
 class WebStateList;
 
-// Delegate for the mediator.
-@protocol TabGroupMediatorDelegate
+@protocol TabGroupMediatorDelegate <NSObject>
 
-// Called when the:
-// * last tab is closed,
-// * user is the OWNER of the tab group.
-- (void)tabGroupMediatorCloseLastTabAsOwner:(TabGroupMediator*)mediator
-                          lastTabIdentifier:(web::WebStateID)identifier;
-
-// Called when the:
-// * last tab is closed,
-// * user is a MEMBER of the tab group.
-- (void)tabGroupMediatorCloseLastTabAsMember:(TabGroupMediator*)mediator
-                           lastTabIdentifier:(web::WebStateID)identifier;
+// Returns a FacePile provider for `groupID`.
+- (id<FacePileProviding>)facePileProviderForGroupID:(const std::string&)groupID;
 
 @end
 
 // Tab group mediator in charge to handle model update for one group.
 @interface TabGroupMediator : BaseGridMediator <TabGroupMutator>
-
-// The delegate for this mediator.
-@property(nonatomic, weak) id<TabGroupMediatorDelegate> tabGroupDelegate;
 
 - (instancetype)
     initWithWebStateList:(WebStateList*)webStateList
@@ -69,8 +57,9 @@ class WebStateList;
                 consumer:(id<TabGroupConsumer>)consumer
             gridConsumer:(id<TabCollectionConsumer>)gridConsumer
               modeHolder:(TabGridModeHolder*)modeHolder
-        messagingService:(collaboration::messaging::MessagingBackendService*)
-                             messagingService;
+        messagingService:
+            (collaboration::messaging::MessagingBackendService*)messagingService
+        tabGroupDelegate:(id<TabGroupMediatorDelegate>)tabGroupDelegate;
 
 @end
 

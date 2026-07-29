@@ -7,9 +7,11 @@
 #include <memory>
 
 #include "base/files/file_util.h"
-#include "base/hash/md5.h"
 #include "base/json/json_reader.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/values.h"
+#include "crypto/obsolete/md5.h"
 #include "media/base/test_data_util.h"
 #include "media/gpu/macros.h"
 
@@ -95,9 +97,9 @@ bool Image::Load() {
   }
 
   // Verify that the image's checksum matches the checksum in the metadata.
-  base::MD5Digest digest;
-  base::MD5Sum(mapped_file_.bytes(), &digest);
-  if (base::MD5DigestToBase16(digest) != checksum_) {
+  const std::string actual_checksum = base::HexEncodeLower(
+      crypto::obsolete::Md5::HashForTesting(mapped_file_.bytes()));
+  if (actual_checksum != checksum_) {
     LOG(ERROR) << "Image checksum not matching metadata";
     return false;
   }
@@ -133,14 +135,14 @@ bool Image::LoadMetadata() {
     return false;
   }
 
-  auto metadata_result =
-      base::JSONReader::ReadAndReturnValueWithError(json_data);
+  auto metadata_result = base::JSONReader::ReadAndReturnValueWithError(
+      json_data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!metadata_result.has_value()) {
     VLOGF(1) << "Failed to parse image metadata: " << json_path << ": "
              << metadata_result.error().message;
     return false;
   }
-  const base::Value::Dict& metadata = metadata_result->GetDict();
+  const base::DictValue& metadata = metadata_result->GetDict();
 
   // Get the pixel format from the json data.
   const std::string* pixel_format = metadata.FindString("pixel_format");
@@ -171,10 +173,9 @@ bool Image::LoadMetadata() {
   // These values are not in json data if all the image data is in the visible
   // area.
   visible_rect_ = gfx::Rect(size_);
-  const base::Value::List* visible_rect_info =
-      metadata.FindList("visible_rect");
+  const base::ListValue* visible_rect_info = metadata.FindList("visible_rect");
   if (visible_rect_info) {
-    const base::Value::List& values = *visible_rect_info;
+    const base::ListValue& values = *visible_rect_info;
     if (values.size() != 4) {
       VLOGF(1) << "unexpected json format for visible rectangle";
       return false;
@@ -227,12 +228,8 @@ bool Image::IsMetadataLoaded() const {
   return pixel_format_ != PIXEL_FORMAT_UNKNOWN;
 }
 
-uint8_t* Image::Data() const {
-  return mapped_file_.data();
-}
-
-size_t Image::DataSize() const {
-  return mapped_file_.length();
+base::span<const uint8_t> Image::DataSpan() const {
+  return mapped_file_.bytes();
 }
 
 VideoPixelFormat Image::PixelFormat() const {

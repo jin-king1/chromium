@@ -14,7 +14,8 @@ import type {DomRepeat} from '//resources/polymer/v3_0/polymer/polymer_bundled.m
 
 import {BrowserProxyImpl} from './browser_proxy.js';
 import type {BrowserProxy} from './browser_proxy.js';
-import {type CursorTooltipData, CursorTooltipType} from './cursor_tooltip.js';
+import {CursorTooltipType} from './cursor_tooltip.js';
+import type {CursorTooltipData} from './cursor_tooltip.js';
 import {findWordsInRegion} from './find_words_in_region.js';
 import {CenterRotatedBox_CoordinateType} from './geometry.mojom-webui.js';
 import type {CenterRotatedBox} from './geometry.mojom-webui.js';
@@ -22,13 +23,15 @@ import {bestHit} from './hit.js';
 import {SemanticEvent, UserAction} from './lens.mojom-webui.js';
 import {INVOCATION_SOURCE} from './lens_overlay_app.js';
 import {recordLensOverlayInteraction, recordLensOverlaySemanticEvent} from './metrics_utils.js';
-import type {CursorData, SelectedRegionContextMenuData, SelectedTextContextMenuData} from './selection_overlay.js';
+import type {SelectedRegionContextMenuData, SelectedTextContextMenuData} from './selection_overlay.js';
+import type {CursorData} from './selection_overlay_base.js';
 import {CursorType} from './selection_utils.js';
 import type {GestureEvent} from './selection_utils.js';
 import type {BackgroundImageData, Line, Paragraph, Text, TranslatedLine, TranslatedParagraph, Word} from './text.mojom-webui.js';
 import {Alignment, WritingDirection} from './text.mojom-webui.js';
+import type {HighlightedLine} from './text_highlights.js';
 import {getTemplate} from './text_layer.html.js';
-import type {TextLayerBase} from './text_layer_base.js';
+import type {TextCopyCallback, TextLayerBase} from './text_layer_base.js';
 import {getTextSeparator, isWordRenderable, translateWords} from './text_rendering.js';
 import type {TranslateState} from './translate_button.js';
 import {toPercent} from './values_converter.js';
@@ -89,14 +92,6 @@ export interface TextLayerElement {
   };
 }
 
-interface HighlightedLine {
-  height: number;
-  left: number;
-  top: number;
-  width: number;
-  rotation: number;
-}
-
 interface TranslatedLineData {
   alignment: Alignment;
   contentLanguage: string;
@@ -124,6 +119,7 @@ export class TextLayerElement extends PolymerElement implements TextLayerBase {
 
   static get properties() {
     return {
+      currentTranslateLanguage: String,
       renderedWords: {
         type: Array,
         value: () => [],
@@ -133,6 +129,7 @@ export class TextLayerElement extends PolymerElement implements TextLayerBase {
         reflectToAttribute: true,
       },
       highlightedLines: Array,
+      renderedTranslateLines: Array,
       selectionStartIndex: {
         type: Number,
         value: -1,
@@ -162,17 +159,17 @@ export class TextLayerElement extends PolymerElement implements TextLayerBase {
   // text.
   private context: CanvasRenderingContext2D;
   // The words rendered in this layer.
-  private renderedWords: Word[];
+  declare private renderedWords: Word[];
   // Whether to render the translated text received on the overlay rather than
   // the detected text.
-  private shouldRenderTranslateWords: boolean;
+  declare private shouldRenderTranslateWords: boolean;
   // The current target language the user requested to translate to.
-  private currentTranslateLanguage: string;
+  declare private currentTranslateLanguage: string;
   // All of the translated words returned in OnTextReceived with failed
   // translations replaced with their non-translated counterpart.
   private renderedTranslateWords: Word[];
   // The rendered translated lines in order from OnTextReceived.
-  private renderedTranslateLines: TranslatedLineData[];
+  declare private renderedTranslateLines: TranslatedLineData[];
   // The rendered translated paragraphs keyed by the paragraph number.
   private renderedTranslateParagraphs:
       {[paragraphNumber: number]: TranslatedParagraph};
@@ -181,18 +178,19 @@ export class TextLayerElement extends PolymerElement implements TextLayerBase {
   // detected words when rendering the translated text.
   private detectedWordToTranslateIndex: {[detectedWordIndex: number]: number};
   // The currently selected lines.
-  private highlightedLines: HighlightedLine[];
+  declare private highlightedLines: HighlightedLine[];
   // The index of the word in renderedWords at the start of the current
   // selection. -1 if no current selection.
-  private selectionStartIndex: number;
+  declare private selectionStartIndex: number;
   // The index of the word in renderedWords at the end of the current selection.
   // -1 if no current selection.
-  private selectionEndIndex: number;
+  declare private selectionEndIndex: number;
+  declare private debugMode: boolean;
   // Whether the user is currently selecting text.
-  private isSelectingText: boolean;
+  declare private isSelectingText: boolean;
   // The bounds of the parent element. This is updated by the parent to avoid
   // this class needing to call getBoundingClientRect()
-  private selectionOverlayRect: DOMRect;
+  declare private selectionOverlayRect: DOMRect;
 
   // An array that corresponds 1:1 to renderedWords, where lineNumbers[i] is the
   // line number for renderedWords[i]. In addition, the index at lineNumbers[i]
@@ -1222,7 +1220,7 @@ export class TextLayerElement extends PolymerElement implements TextLayerBase {
   private getBlobUrlFromImageData(imageData: BackgroundImageData): string {
     const imageBytesBuffer = imageData.backgroundImage;
     assert(imageBytesBuffer.invalidBuffer !== true);
-    let bytes: Uint8Array = new Uint8Array();
+    let bytes: Uint8Array<ArrayBuffer> = new Uint8Array();
     if (imageBytesBuffer.bytes !== undefined) {
       bytes = new Uint8Array(imageBytesBuffer.bytes);
     } else if (imageBytesBuffer.sharedMemory !== undefined) {
@@ -1321,6 +1319,11 @@ export class TextLayerElement extends PolymerElement implements TextLayerBase {
       return 'ltr';
     }
     return isRtlLanguage(language) ? 'rtl' : 'ltr';
+  }
+
+  onCopyDetectedText(
+      _startIndex: number, _endIndex: number, _callbackFn: TextCopyCallback) {
+    // This layer does not support copying detected text. Only selected text.
   }
 
   getElementForTesting(): Element {

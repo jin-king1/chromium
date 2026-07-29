@@ -21,9 +21,8 @@ struct EnumTraits<viz::mojom::CompositorFrameTransitionDirectiveType,
   static viz::mojom::CompositorFrameTransitionDirectiveType ToMojom(
       viz::CompositorFrameTransitionDirective::Type type);
 
-  static bool FromMojom(
-      viz::mojom::CompositorFrameTransitionDirectiveType input,
-      viz::CompositorFrameTransitionDirective::Type* out);
+  static viz::CompositorFrameTransitionDirective::Type FromMojom(
+      viz::mojom::CompositorFrameTransitionDirectiveType input);
 };
 
 template <>
@@ -77,6 +76,11 @@ struct StructTraits<viz::mojom::CompositorFrameTransitionDirectiveDataView,
   static const gfx::DisplayColorSpaces& display_color_spaces(
       const viz::CompositorFrameTransitionDirective& directive) {
     return directive.display_color_spaces();
+  }
+
+  static bool delay_layer_tree_view_deletion(
+      const viz::CompositorFrameTransitionDirective& directive) {
+    return directive.delay_layer_tree_view_deletion();
   }
 
   static bool Read(viz::mojom::CompositorFrameTransitionDirectiveDataView data,

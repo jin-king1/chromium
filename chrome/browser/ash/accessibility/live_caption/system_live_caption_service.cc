@@ -6,17 +6,18 @@
 
 #include "ash/accessibility/caption_bubble_context_ash.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
-#include "base/functional/callback_forward.h"
+#include "base/check_deref.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/accessibility/live_caption/live_caption_controller_factory.h"
-#include "chrome/browser/accessibility/live_translate_controller_factory.h"
+#include "chrome/browser/accessibility/live_caption/live_translate_controller_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/speech/speech_recognition_client_browser_interface.h"
 #include "chrome/browser/speech/speech_recognition_client_browser_interface_factory.h"
 #include "chrome/browser/speech/speech_recognizer_delegate.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/live_caption/live_caption_controller.h"
 #include "components/live_caption/pref_names.h"
 #include "components/live_caption/translation_util.h"
@@ -25,7 +26,6 @@
 #include "components/soda/constants.h"
 #include "media/audio/audio_device_description.h"
 #include "media/base/media_switches.h"
-#include "media/mojo/mojom/speech_recognition.mojom-forward.h"
 #include "media/mojo/mojom/speech_recognition.mojom.h"
 #include "system_live_caption_service.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -106,11 +106,12 @@ void SystemLiveCaptionService::OnSpeechResult(
                              target_language, result->is_final));
     } else {
       exec_result = controller_->DispatchTranscription(
-          &context_,
+          /*web_contents=*/nullptr, &context_,
           media::SpeechRecognitionResult(cached_translation, result->is_final));
     }
   } else {
-    exec_result = controller_->DispatchTranscription(&context_, *result);
+    exec_result = controller_->DispatchTranscription(
+        /*web_contents=*/nullptr, &context_, *result);
   }
 
   if (!exec_result) {
@@ -130,7 +131,8 @@ void SystemLiveCaptionService::OnLanguageIdentificationEvent(
       media::mojom::AsrSwitchResult::kSwitchSucceeded) {
     source_language_ = event->language;
   }
-  controller_->OnLanguageIdentificationEvent(&context_, std::move(event));
+  controller_->OnLanguageIdentificationEvent(
+      /*web_contents=*/nullptr, &context_, std::move(event));
 }
 
 void SystemLiveCaptionService::OnSpeechSoundLevelChanged(int16_t level) {}
@@ -180,7 +182,7 @@ void SystemLiveCaptionService::OnSpeechRecognitionStateChanged(
 
 void SystemLiveCaptionService::OnSpeechRecognitionStopped() {
   if (controller_) {
-    controller_->OnAudioStreamEnd(&context_);
+    controller_->OnAudioStreamEnd(/*web_contents=*/nullptr, &context_);
   }
   client_.reset();
 }
@@ -278,6 +280,11 @@ void SystemLiveCaptionService::OnNonChromeOutputStopped() {
   output_running_ = false;
 }
 
+media::mojom::RecognizerClientType
+SystemLiveCaptionService::GetRecognizerClientType() {
+  return media::mojom::RecognizerClientType::kLiveCaption;
+}
+
 void SystemLiveCaptionService::StopTimeoutFinished() {
   StopRecognizing();
   // At this point, we can count the number of chars translated for this
@@ -308,8 +315,7 @@ void SystemLiveCaptionService::CreateClient() {
       media::mojom::SpeechRecognitionOptions::New(
           media::mojom::SpeechRecognitionMode::kCaption,
           /*enable_formatting=*/true, GetPrimaryLanguageCode(),
-          /*is_server_based=*/false,
-          media::mojom::RecognizerClientType::kLiveCaption,
+          /*is_server_based=*/false, GetRecognizerClientType(),
           /*skip_continuously_empty_audio=*/true));
 }
 
@@ -357,7 +363,8 @@ void SystemLiveCaptionService::OnTranslationCallback(
 void SystemLiveCaptionService::AttemptDispatch(const std::string& text,
                                                bool is_final) {
   if (!controller_->DispatchTranscription(
-          &context_, media::SpeechRecognitionResult(text, is_final))) {
+          /*web_contents=*/nullptr, &context_,
+          media::SpeechRecognitionResult(text, is_final))) {
     StopRecognizing();
   }
 }
@@ -378,8 +385,10 @@ std::string SystemLiveCaptionService::GetPrimaryLanguageCode() const {
 }
 
 void SystemLiveCaptionService::OpenCaptionSettings() {
-  chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      profile_, chromeos::settings::mojom::kAudioAndCaptionsSubpagePath);
+  ash::SettingsAppManager::Get()->Open(
+      CHECK_DEREF(
+          BrowserContextHelper::Get()->GetUserByBrowserContext(profile_)),
+      {.sub_page = chromeos::settings::mojom::kAudioAndCaptionsSubpagePath});
 }
 
 uint32_t SystemLiveCaptionService::GetNumberOfNonChromeOutputStreams() {

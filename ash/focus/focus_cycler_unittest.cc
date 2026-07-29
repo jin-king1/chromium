@@ -31,13 +31,12 @@ using aura::Window;
 
 namespace {
 
-StatusAreaWidgetDelegate* GetStatusAreaWidgetDelegate(views::Widget* widget) {
-  return static_cast<StatusAreaWidgetDelegate*>(widget->GetContentsView());
-}
-
 class PanedWidgetDelegate : public views::WidgetDelegate {
  public:
-  PanedWidgetDelegate(views::Widget* widget) : widget_(widget) {}
+  PanedWidgetDelegate() = default;
+  ~PanedWidgetDelegate() override = default;
+  PanedWidgetDelegate(const PanedWidgetDelegate&) = delete;
+  PanedWidgetDelegate& operator=(const PanedWidgetDelegate&) = delete;
 
   void SetAccessiblePanes(
       const std::vector<raw_ptr<views::View, VectorExperimental>>& panes) {
@@ -48,11 +47,8 @@ class PanedWidgetDelegate : public views::WidgetDelegate {
   void GetAccessiblePanes(std::vector<views::View*>* panes) override {
     std::ranges::copy(accessible_panes_, std::back_inserter(*panes));
   }
-  views::Widget* GetWidget() override { return widget_; }
-  const views::Widget* GetWidget() const override { return widget_; }
 
  private:
-  raw_ptr<views::Widget, DanglingUntriaged> widget_;
   std::vector<raw_ptr<views::View, VectorExperimental>> accessible_panes_;
 };
 
@@ -61,55 +57,36 @@ class PanedWidgetDelegate : public views::WidgetDelegate {
 class FocusCyclerTest : public AshTestBase {
  public:
   FocusCyclerTest() = default;
-
   FocusCyclerTest(const FocusCyclerTest&) = delete;
   FocusCyclerTest& operator=(const FocusCyclerTest&) = delete;
-
-  void SetUp() override {
-    AshTestBase::SetUp();
-
-    focus_cycler_ = std::make_unique<FocusCycler>();
-  }
-
-  void TearDown() override {
-    GetStatusAreaWidgetDelegate(GetPrimaryStatusAreaWidget())
-        ->SetFocusCyclerForTesting(nullptr);
-
-    GetPrimaryShelf()->shelf_widget()->SetFocusCycler(nullptr);
-
-    focus_cycler_.reset();
-
-    AshTestBase::TearDown();
-  }
+  ~FocusCyclerTest() override = default;
 
  protected:
   // Setup the system tray focus cycler.
-  void SetUpTrayFocusCycle() {
+  void SetUpFocusCycle() {
+    // Start with clean state.
+    focus_cycler()->ResetForTesting();
     views::Widget* system_tray_widget = GetPrimaryStatusAreaWidget();
     ASSERT_TRUE(system_tray_widget);
-    focus_cycler_->AddWidget(system_tray_widget);
-    GetStatusAreaWidgetDelegate(system_tray_widget)
-        ->SetFocusCyclerForTesting(focus_cycler());
+    focus_cycler()->AddWidget(system_tray_widget);
+    focus_cycler()->AddWidget(GetPrimaryShelf()->hotseat_widget());
   }
 
   views::Widget* GetPrimaryStatusAreaWidget() {
     return GetPrimaryShelf()->GetStatusAreaWidget();
   }
 
-  FocusCycler* focus_cycler() { return focus_cycler_.get(); }
-
-  void InstallFocusCycleOnShelf() {
-    // Add the shelf.
-    GetPrimaryShelf()->hotseat_widget()->SetFocusCycler(focus_cycler());
-  }
+  FocusCycler* focus_cycler() { return Shell::Get()->focus_cycler(); }
 
  private:
   std::unique_ptr<FocusCycler> focus_cycler_;
 };
 
 TEST_F(FocusCyclerTest, CycleFocusBrowserOnly) {
+  focus_cycler()->ResetForTesting();
+
   // Create a single test window.
-  std::unique_ptr<Window> window0(CreateTestWindowInShellWithId(0));
+  std::unique_ptr<Window> window0(CreateTestWindowInShell({.window_id = 0}));
   wm::ActivateWindow(window0.get());
   EXPECT_TRUE(wm::IsActiveWindow(window0.get()));
 
@@ -119,12 +96,10 @@ TEST_F(FocusCyclerTest, CycleFocusBrowserOnly) {
 }
 
 TEST_F(FocusCyclerTest, CycleFocusForward) {
-  SetUpTrayFocusCycle();
-
-  InstallFocusCycleOnShelf();
+  SetUpFocusCycle();
 
   // Create a single test window.
-  std::unique_ptr<Window> window0(CreateTestWindowInShellWithId(0));
+  std::unique_ptr<Window> window0(CreateTestWindowInShell({.window_id = 0}));
   wm::ActivateWindow(window0.get());
   EXPECT_TRUE(wm::IsActiveWindow(window0.get()));
 
@@ -142,12 +117,10 @@ TEST_F(FocusCyclerTest, CycleFocusForward) {
 }
 
 TEST_F(FocusCyclerTest, CycleFocusBackward) {
-  SetUpTrayFocusCycle();
-
-  InstallFocusCycleOnShelf();
+  SetUpFocusCycle();
 
   // Create a single test window.
-  std::unique_ptr<Window> window0(CreateTestWindowInShellWithId(0));
+  std::unique_ptr<Window> window0(CreateTestWindowInShell({.window_id = 0}));
   wm::ActivateWindow(window0.get());
   EXPECT_TRUE(wm::IsActiveWindow(window0.get()));
 
@@ -165,12 +138,10 @@ TEST_F(FocusCyclerTest, CycleFocusBackward) {
 }
 
 TEST_F(FocusCyclerTest, CycleFocusForwardBackward) {
-  SetUpTrayFocusCycle();
-
-  InstallFocusCycleOnShelf();
+  SetUpFocusCycle();
 
   // Create a single test window.
-  std::unique_ptr<Window> window0(CreateTestWindowInShellWithId(0));
+  std::unique_ptr<Window> window0(CreateTestWindowInShell({.window_id = 0}));
   wm::ActivateWindow(window0.get());
   EXPECT_TRUE(wm::IsActiveWindow(window0.get()));
 
@@ -200,9 +171,7 @@ TEST_F(FocusCyclerTest, CycleFocusForwardBackward) {
 }
 
 TEST_F(FocusCyclerTest, CycleFocusNoBrowser) {
-  SetUpTrayFocusCycle();
-
-  InstallFocusCycleOnShelf();
+  SetUpFocusCycle();
 
   // Add the shelf and focus it.
   focus_cycler()->FocusWidget(GetPrimaryShelf()->hotseat_widget());
@@ -230,13 +199,13 @@ TEST_F(FocusCyclerTest, CycleFocusNoBrowser) {
 
 // Tests that focus cycles from the active browser to the status area and back.
 TEST_F(FocusCyclerTest, Shelf_CycleFocusForward) {
-  SetUpTrayFocusCycle();
-  InstallFocusCycleOnShelf();
+  SetUpFocusCycle();
+
   GetPrimaryShelf()->hotseat_widget()->Hide();
 
   // Create two test windows.
-  std::unique_ptr<Window> window0(CreateTestWindowInShellWithId(0));
-  std::unique_ptr<Window> window1(CreateTestWindowInShellWithId(1));
+  std::unique_ptr<Window> window0(CreateTestWindowInShell({.window_id = 0}));
+  std::unique_ptr<Window> window1(CreateTestWindowInShell({.window_id = 1}));
   wm::ActivateWindow(window1.get());
   wm::ActivateWindow(window0.get());
   EXPECT_TRUE(wm::IsActiveWindow(window0.get()));
@@ -255,12 +224,12 @@ TEST_F(FocusCyclerTest, Shelf_CycleFocusForward) {
 }
 
 TEST_F(FocusCyclerTest, Shelf_CycleFocusBackwardInvisible) {
-  SetUpTrayFocusCycle();
-  InstallFocusCycleOnShelf();
+  SetUpFocusCycle();
+
   GetPrimaryShelf()->hotseat_widget()->Hide();
 
   // Create a single test window.
-  std::unique_ptr<Window> window0(CreateTestWindowInShellWithId(0));
+  std::unique_ptr<Window> window0(CreateTestWindowInShell({.window_id = 0}));
   wm::ActivateWindow(window0.get());
   EXPECT_TRUE(wm::IsActiveWindow(window0.get()));
 
@@ -274,14 +243,11 @@ TEST_F(FocusCyclerTest, Shelf_CycleFocusBackwardInvisible) {
 }
 
 TEST_F(FocusCyclerTest, CycleFocusThroughWindowWithPanes) {
-  SetUpTrayFocusCycle();
-
-  InstallFocusCycleOnShelf();
+  SetUpFocusCycle();
 
   std::unique_ptr<PanedWidgetDelegate> test_widget_delegate;
   std::unique_ptr<views::Widget> browser_widget(new views::Widget);
-  test_widget_delegate =
-      std::make_unique<PanedWidgetDelegate>(browser_widget.get());
+  test_widget_delegate = std::make_unique<PanedWidgetDelegate>();
   views::Widget::InitParams widget_params(
       views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW);
@@ -381,14 +347,12 @@ TEST_F(FocusCyclerTest, CycleFocusThroughWindowWithPanes) {
 }
 
 TEST_F(FocusCyclerTest, CycleFocusThroughWindowWithPanes_MoveOntoNext) {
-  SetUpTrayFocusCycle();
-
-  InstallFocusCycleOnShelf();
+  SetUpFocusCycle();
 
   std::unique_ptr<views::Widget> browser_widget =
       std::make_unique<views::Widget>();
   std::unique_ptr<PanedWidgetDelegate> test_widget_delegate =
-      std::make_unique<PanedWidgetDelegate>(browser_widget.get());
+      std::make_unique<PanedWidgetDelegate>();
   views::Widget::InitParams widget_params(
       views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW);
@@ -456,24 +420,24 @@ TEST_F(FocusCyclerTest, RemoveWidgetOnDisplayRemoved) {
   UpdateDisplay("800x700");
 
   // Create a single test window.
-  std::unique_ptr<Window> window(CreateTestWindowInShellWithId(0));
+  std::unique_ptr<Window> window(CreateTestWindowInShell({.window_id = 0}));
   wm::ActivateWindow(window.get());
   EXPECT_TRUE(wm::IsActiveWindow(window.get()));
 
   // Cycle focus to the navigation widget.
-  Shell::Get()->focus_cycler()->RotateFocus(FocusCycler::FORWARD);
+  focus_cycler()->RotateFocus(FocusCycler::FORWARD);
   EXPECT_TRUE(GetPrimaryShelf()->navigation_widget()->IsActive());
 
   // Cycle focus to the hotseat widget.
-  Shell::Get()->focus_cycler()->RotateFocus(FocusCycler::FORWARD);
+  focus_cycler()->RotateFocus(FocusCycler::FORWARD);
   EXPECT_TRUE(GetPrimaryShelf()->hotseat_widget()->IsActive());
 
   // Cycle focus to the status area.
-  Shell::Get()->focus_cycler()->RotateFocus(FocusCycler::FORWARD);
+  focus_cycler()->RotateFocus(FocusCycler::FORWARD);
   EXPECT_TRUE(GetPrimaryStatusAreaWidget()->IsActive());
 
   // Cycle focus should go back to the browser.
-  Shell::Get()->focus_cycler()->RotateFocus(FocusCycler::FORWARD);
+  focus_cycler()->RotateFocus(FocusCycler::FORWARD);
   EXPECT_TRUE(wm::IsActiveWindow(window.get()));
 }
 

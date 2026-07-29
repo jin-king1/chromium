@@ -13,8 +13,7 @@
 #include "base/strings/cstring_view.h"
 #include "base/time/time.h"
 #include "content/common/content_export.h"
-#include "content/public/browser/btm_redirect_info.h"
-#include "content/public/browser/cookie_access_details.h"
+#include "content/public/browser/btm_redirect.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/render_frame_host.h"
@@ -123,9 +122,7 @@ std::ostream& operator<<(std::ostream& os, TimestampRange type);
 
 // Values for a site in the `bounces` table.
 struct StateValue {
-  TimestampRange site_storage_times;
   TimestampRange user_activation_times;
-  TimestampRange stateful_bounce_times;
   TimestampRange bounce_times;
   TimestampRange web_authn_assertion_times;
 };
@@ -138,30 +135,10 @@ struct PopupsStateValue {
   bool is_authentication_interaction;
 };
 
-struct PopupWithTime {
-  std::string opener_site;
-  std::string popup_site;
-  base::Time last_popup_time;
-};
-
-// These values are emitted in metrics and should not be renumbered. This one
-// type is used for both of the IsAdTagged and HasSameSiteIframe UKM enums.
-enum class OptionalBool {
-  kUnknown = 0,
-  kFalse = 1,
-  kTrue = 2,
-};
-
-inline OptionalBool ToOptionalBool(bool b) {
-  return b ? OptionalBool::kTrue : OptionalBool::kFalse;
-}
-
 inline bool operator==(const StateValue& lhs, const StateValue& rhs) {
-  return std::tie(lhs.site_storage_times, lhs.user_activation_times,
-                  lhs.stateful_bounce_times, lhs.bounce_times,
+  return std::tie(lhs.user_activation_times, lhs.bounce_times,
                   lhs.web_authn_assertion_times) ==
-         std::tie(rhs.site_storage_times, rhs.user_activation_times,
-                  rhs.stateful_bounce_times, rhs.bounce_times,
+         std::tie(rhs.user_activation_times, rhs.bounce_times,
                   rhs.web_authn_assertion_times);
 }
 
@@ -179,20 +156,14 @@ CONTENT_EXPORT std::string GetSiteForBtm(const url::Origin& origin);
 // belongs to the same site as `url`.
 bool HasSameSiteIframe(WebContents* web_contents, const GURL& url);
 
-// Returns whether the provided cookie access was ad-tagged, based on the cookie
-// settings overrides. Returns Unknown if kSkipTpcdMitigationsForAdsHeuristics
-// is false and the override is not set regardless.
-CONTENT_EXPORT OptionalBool
-IsAdTaggedCookieForHeuristics(const CookieAccessDetails& details);
-
 CONTENT_EXPORT bool HasCHIPS(
     const net::CookieAccessResultList& cookie_access_result_list);
 
 // Returns `True` iff the `navigation_handle` represents a navigation
 // happening in an iframe of the primary frame tree.
-inline bool IsInPrimaryPageIFrame(NavigationHandle* navigation_handle) {
-  return navigation_handle && navigation_handle->GetParentFrame()
-             ? navigation_handle->GetParentFrame()->GetPage().IsPrimary()
+inline bool IsInPrimaryPageIFrame(NavigationHandle& navigation_handle) {
+  return navigation_handle.GetParentFrame()
+             ? navigation_handle.GetParentFrame()->GetPage().IsPrimary()
              : false;
 }
 
@@ -205,37 +176,32 @@ inline bool IsSameSiteForBtm(const GURL& url1, const GURL& url2) {
 // Returns `True` iff the `navigation_handle` represents a navigation happening
 // in any frame of the primary page.
 // NOTE: This does not include fenced frames.
-inline bool IsInPrimaryPage(NavigationHandle* navigation_handle) {
-  return navigation_handle && navigation_handle->GetParentFrame()
-             ? navigation_handle->GetParentFrame()->GetPage().IsPrimary()
-             : navigation_handle->IsInPrimaryMainFrame();
+inline bool IsInPrimaryPage(NavigationHandle& navigation_handle) {
+  return navigation_handle.GetParentFrame()
+             ? navigation_handle.GetParentFrame()->GetPage().IsPrimary()
+             : navigation_handle.IsInPrimaryMainFrame();
 }
 
 // Returns `True` iff the 'rfh' exists and represents a frame in the primary
 // page.
-inline bool IsInPrimaryPage(RenderFrameHost* rfh) {
-  return rfh && rfh->GetPage().IsPrimary();
+inline bool IsInPrimaryPage(RenderFrameHost& rfh) {
+  return rfh.GetPage().IsPrimary();
 }
 
 // Returns the last committed or the to be committed url of the main frame of
 // the page containing the `navigation_handle`.
-inline std::optional<GURL> GetFirstPartyURL(
-    NavigationHandle* navigation_handle) {
-  if (!navigation_handle) {
-    return std::nullopt;
-  }
-  return navigation_handle->GetParentFrame()
-             ? navigation_handle->GetParentFrame()
+inline const GURL& GetFirstPartyURL(NavigationHandle& navigation_handle) {
+  return navigation_handle.GetParentFrame()
+             ? navigation_handle.GetParentFrame()
                    ->GetMainFrame()
                    ->GetLastCommittedURL()
-             : navigation_handle->GetURL();
+             : navigation_handle.GetURL();
 }
 
 // Returns an optional last committed url of the main frame of the page
 // containing the `rfh`.
-inline std::optional<GURL> GetFirstPartyURL(RenderFrameHost* rfh) {
-  return rfh ? std::optional<GURL>(rfh->GetMainFrame()->GetLastCommittedURL())
-             : std::nullopt;
+inline const GURL& GetFirstPartyURL(RenderFrameHost& rfh) {
+  return rfh.GetMainFrame()->GetLastCommittedURL();
 }
 
 // The amount of time since a page last received user activation before a
@@ -257,7 +223,6 @@ enum class BtmInteractionType {
 };
 
 enum class BtmRecordedEvent {
-  kStorage,
   kUserActivation,
   kWebAuthnAssertion,
 };

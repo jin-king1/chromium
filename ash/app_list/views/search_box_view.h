@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ash/app_list/app_list_model_provider.h"
@@ -17,14 +18,11 @@
 #include "ash/app_list/model/search/search_box_model.h"
 #include "ash/app_list/model/search/search_box_model_observer.h"
 #include "ash/ash_export.h"
-#include "ash/assistant/ui/assistant_view_delegate.h"
-#include "ash/assistant/ui/main_stage/launcher_search_iph_view.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "ash/search_box/search_box_view_base.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
-#include "ui/accessibility/platform/ax_platform_node_id.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 
 namespace views {
@@ -48,12 +46,21 @@ using QueryChangedCallback = base::RepeatingCallback<void()>;
 // contents and selection model of the Textfield.
 class ASH_EXPORT SearchBoxView : public SearchBoxViewBase,
                                  public AppListModelProvider::Observer,
-                                 public SearchBoxModelObserver,
-                                 public LauncherSearchIphView::Delegate,
-                                 public AssistantViewDelegateObserver {
+                                 public SearchBoxModelObserver {
   METADATA_HEADER(SearchBoxView, SearchBoxViewBase)
 
  public:
+  static constexpr std::string_view kGeminiSearchBoxIconHistogramName =
+      "Apps.AppList.GeminiSearchBoxIcon";
+
+  // LINT.IfChange(SearchBoxIconEvent)
+  enum class SearchBoxIconEvent {
+    kImpression = 0,
+    kClick = 1,
+    kMaxValue = kClick,
+  };
+  // LINT.ThenChange(/tools/metrics/histograms/metadata/apps/enums.xml:SearchBoxIconEvent)
+
   enum class PlaceholderTextType {
     kShortcuts = 0,
     kTabs = 1,
@@ -91,7 +98,6 @@ class ASH_EXPORT SearchBoxView : public SearchBoxViewBase,
   static int GetFocusRingSpacing();
 
   // Overridden from SearchBoxViewBase:
-  void UpdateSearchTextfieldAccessibleActiveDescendantId() override;
   void UpdateKeyboardVisibility() override;
   void HandleQueryChange(std::u16string_view query,
                          bool initiated_by_user) override;
@@ -112,13 +118,6 @@ class ASH_EXPORT SearchBoxView : public SearchBoxViewBase,
   void OnThemeChanged() override;
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
   void AddedToWidget() override;
-
-  // LauncherSearchIphView::Delegate:
-  void RunLauncherSearchQuery(std::u16string_view query) override;
-  void OpenAssistantPage() override;
-
-  // AssistantViewDelegateObserver:
-  void OnLauncherSearchChipPressed(std::u16string_view query) override;
 
   // Shows the category filter menu that allows users to enable/disable specific
   // search categories.
@@ -169,12 +168,11 @@ class ASH_EXPORT SearchBoxView : public SearchBoxViewBase,
   // Clears the search query and de-activate the search box.
   void ClearSearchAndDeactivateSearchBox();
 
-  // Sets the view accessibility ID of the search box's active descendant.
+  // Sets the view accessibility active descendant of the search box textfield.
   // The active descendant should be the currently selected result view in the
   // search results list.
-  // `nullopt` indicates no active descendant, i.e. that no result is selected.
-  void SetA11yActiveDescendant(
-      const std::optional<ui::AXPlatformNodeId>& active_descendant);
+  // `nullptr` indicates no active descendant, i.e. that no result is selected.
+  void SetA11yActiveDescendant(views::View* active_descendant);
 
   // Refreshes the placeholder text with a fixed one rather than the one picked
   // up randomly
@@ -207,12 +205,8 @@ class ASH_EXPORT SearchBoxView : public SearchBoxViewBase,
   // Called when the close button within the search box gets pressed.
   void CloseButtonPressed();
 
-  // Called when the assistant button within the search box gets pressed.
-  void AssistantButtonPressed();
-
-  // Called when the assistant new entry point button within the search box gets
-  // pressed.
-  void AssistantNewEntryPointButtonPressed();
+  // Called when Gemini button within the search box gets pressed.
+  void GeminiButtonPressed();
 
   // Called when the sunfish launcher button within the search box gets pressed.
   void SunfishButtonPressed();
@@ -259,8 +253,7 @@ class ASH_EXPORT SearchBoxView : public SearchBoxViewBase,
 
   // Overridden from SearchBoxModelObserver:
   void SearchEngineChanged() override;
-  void ShowAssistantChanged() override;
-  void ShowAssistantNewEntryPointChanged() override;
+  void ShowGeminiButtonChanged() override;
   // Updates the visibility and the icon of the Sunfish-session button.
   void SunfishButtonVisibilityChanged() override;
 
@@ -280,6 +273,11 @@ class ASH_EXPORT SearchBoxView : public SearchBoxViewBase,
 
   // Updates the search box's text value.
   void SetText(std::u16string_view text);
+
+  // Updates the accessible active descendant on the search textfield to the
+  // given view.
+  void UpdateSearchTextfieldAccessibleActiveDescendantId(
+      views::View* active_descendant);
 
   // Builds the menu model for the category filter menu. This returns a vector
   // of AppListSearchControlCategory that is shown in the filter menu.
@@ -332,19 +330,9 @@ class ASH_EXPORT SearchBoxView : public SearchBoxViewBase,
   std::unique_ptr<ui::SimpleMenuModel> filter_menu_model_;
   std::unique_ptr<FilterMenuAdapter> filter_menu_adapter_;
 
-  // Set by SearchResultPageView when the accessibility selection moves to a
-  // search result view - the value is the ID of the currently selected result
-  // view.
-  std::optional<ui::AXPlatformNodeId> a11y_active_descendant_;
-
   // Owned by AppListSearchView.
   raw_ptr<ResultSelectionController, DanglingUntriaged>
       result_selection_controller_ = nullptr;
-
-  // The timestamp taken when the search box model's query is updated by the
-  // user. Used in metrics. Metrics are only recorded for search model updates
-  // that occur after a search has been initiated.
-  base::TimeTicks user_initiated_model_update_time_;
 
   // If true, `SelectPlaceholderText()` always returns a fixed placeholder text
   // instead of the one picked randomly.
@@ -352,9 +340,6 @@ class ASH_EXPORT SearchBoxView : public SearchBoxViewBase,
 
   base::ScopedObservation<SearchBoxModel, SearchBoxModelObserver>
       search_box_model_observer_{this};
-
-  base::ScopedObservation<AssistantViewDelegate, AssistantViewDelegateObserver>
-      assistant_view_delegate_observer_{this};
 
   base::WeakPtrFactory<SearchBoxView> weak_ptr_factory_{this};
 };

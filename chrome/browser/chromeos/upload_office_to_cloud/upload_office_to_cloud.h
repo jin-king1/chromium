@@ -20,9 +20,9 @@ bool IsEligibleAndEnabledUploadOfficeToCloud(const Profile* profile);
 
 namespace cloud_upload {
 
-constexpr char kCloudUploadPolicyAllowed[] = "allowed";
-constexpr char kCloudUploadPolicyDisallowed[] = "disallowed";
-constexpr char kCloudUploadPolicyAutomated[] = "automated";
+inline constexpr char kCloudUploadPolicyAllowed[] = "allowed";
+inline constexpr char kCloudUploadPolicyDisallowed[] = "disallowed";
+inline constexpr char kCloudUploadPolicyAutomated[] = "automated";
 
 void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
@@ -37,23 +37,25 @@ bool IsMicrosoftOfficeOneDriveIntegrationAutomated(const Profile* profile);
 // If `kUploadOfficeToCloudForEnterprise` is disabled, returns true if
 // IsEligibleAndEnabledUploadOfficeToCloud() is true.
 // Otherwise returns true if IsEligibleAndEnabledUploadOfficeToCloud() is true
-// and `prefs::kMicrosoftOfficeCloudUpload` is set to `allowed` or `automated`.
+// and `ash::prefs::kMicrosoftOfficeCloudUpload` is set to `allowed` or
+// `automated`.
 bool IsMicrosoftOfficeCloudUploadAllowed(Profile* profile);
 
 // If `kUploadOfficeToCloudForEnterprise` is disabled, returns false.
 // Otherwise returns true if IsEligibleAndEnabledUploadOfficeToCloud() is true
-// and `prefs::kMicrosoftOfficeCloudUpload` is set to `automated`.
+// and `ash::prefs::kMicrosoftOfficeCloudUpload` is set to `automated`.
 bool IsMicrosoftOfficeCloudUploadAutomated(Profile* profile);
 
 // If `kUploadOfficeToCloudForEnterprise` is disabled, returns true if
 // IsEligibleAndEnabledUploadOfficeToCloud() is true.
 // Otherwise returns true if IsEligibleAndEnabledUploadOfficeToCloud() is true
-// and `prefs::kGoogleWorkspaceCloudUpload` is set to `allowed` or `automated`.
+// and `ash::prefs::kGoogleWorkspaceCloudUpload` is set to `allowed` or
+// `automated`.
 bool IsGoogleWorkspaceCloudUploadAllowed(Profile* profile);
 
 // If `kUploadOfficeToCloudForEnterprise` is disabled, returns false.
 // Otherwise returns true if IsEligibleAndEnabledUploadOfficeToCloud() is true
-// and `prefs::kGoogleWorkspaceCloudUpload` is set to `automated`.
+// and `ash::prefs::kGoogleWorkspaceCloudUpload` is set to `automated`.
 bool IsGoogleWorkspaceCloudUploadAutomated(Profile* profile);
 
 }  // namespace cloud_upload

@@ -4,10 +4,17 @@
 
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
 
+#include "base/i18n/time_formatting.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/form_parsing/form_data_parser.h"
+#include "components/password_manager/core/browser/passkey_credential.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/well_known_change_password/well_known_change_password_util.h"
 #include "components/url_formatter/elide_url.h"
 
@@ -66,10 +73,16 @@ CredentialUIEntry::CredentialUIEntry(const PasswordForm& form)
     : username(form.username_value),
       password(form.password_value),
       federation_origin(form.federation_origin),
+      creation_time(form.date_created),
       password_issues(form.password_issues),
       note(form.GetNoteWithEmptyUniqueDisplayName()),
       blocked_by_user(form.blocked_by_user),
       last_used_time(form.date_last_used) {
+  if (form.GetPasswordBackup()) {
+    backup_password = {
+        .value = form.GetPasswordBackup().value(),
+        .creation_timestamp = form.GetPasswordBackupDateCreated().value()};
+  }
   CredentialFacet facet;
   facet.display_name = form.app_display_name;
   facet.url = form.url;
@@ -95,6 +108,7 @@ CredentialUIEntry::CredentialUIEntry(const std::vector<PasswordForm>& forms) {
   password_issues = forms[0].password_issues;
   blocked_by_user = forms[0].blocked_by_user;
   last_used_time = forms[0].date_last_used;
+  creation_time = forms[0].date_created;
 
   // For cases when the notes differ within grouped passwords (e.g: a
   // credential exists in both account and profile stores), respective notes
@@ -122,14 +136,30 @@ CredentialUIEntry::CredentialUIEntry(const std::vector<PasswordForm>& forms) {
     if (form.IsUsingProfileStore()) {
       stored_in.insert(PasswordForm::Store::kProfileStore);
     }
+    // TODO(crbug.com/407501259): instead of saving the last non-empty backup,
+    // consider storing all backups in the credential UI entry and create a
+    // separate card for each of them.
+    if (form.GetPasswordBackup()) {
+      backup_password = {
+          .value = form.GetPasswordBackup().value(),
+          .creation_timestamp = form.GetPasswordBackupDateCreated().value()};
+    }
   }
 }
+
+CredentialUIEntry::CredentialUIEntry(StoredCredential cred)
+    : CredentialUIEntry(ToPasswordForm(std::move(cred))) {}
+
+CredentialUIEntry::CredentialUIEntry(std::vector<StoredCredential> creds)
+    : CredentialUIEntry(ToPasswordForms(std::move(creds))) {}
 
 CredentialUIEntry::CredentialUIEntry(const PasskeyCredential& passkey)
     : passkey_credential_id(passkey.credential_id()),
       username(base::UTF8ToUTF16(passkey.username())),
       user_display_name(base::UTF8ToUTF16(passkey.display_name())),
-      creation_time(passkey.creation_time()) {
+      creation_time(passkey.creation_time()),
+      hidden(passkey.hidden()),
+      rp_id(passkey.rp_id()) {
   CHECK(!passkey.credential_id().empty());
   CredentialFacet facet;
   facet.url = GURL(base::StrCat(
@@ -224,18 +254,16 @@ GURL CredentialUIEntry::GetURL() const {
 
 std::optional<GURL> CredentialUIEntry::GetChangePasswordURL() const {
   GURL change_password_origin;
-  auto facetUri = password_manager::FacetURI::FromPotentiallyInvalidSpec(
-      GetFirstSignonRealm());
+  auto facetUri = FacetURI::FromPotentiallyInvalidSpec(GetFirstSignonRealm());
 
   if (facetUri.IsValidAndroidFacetURI()) {
     // Change url needs special handling for Android. Here we use
     // affiliation information instead of the origin.
     if (!GetAffiliatedWebRealm().empty()) {
-      return password_manager::CreateChangePasswordUrl(
-          GURL(GetAffiliatedWebRealm()));
+      return CreateChangePasswordUrl(GURL(GetAffiliatedWebRealm()));
     }
   } else if (GetURL().is_valid()) {
-    return password_manager::CreateChangePasswordUrl(GetURL());
+    return CreateChangePasswordUrl(GetURL());
   }
 
   return std::nullopt;
@@ -292,7 +320,7 @@ std::string CreateSortKey(const CredentialUIEntry& credential) {
   }
 
   // Add a scheme to distinguish between http and https websites.
-  key += credential.GetURL().scheme();
+  key += credential.GetURL().GetScheme();
 
   if (!credential.blocked_by_user) {
     key += kSortKeyPartsSeparator + base::UTF16ToUTF8(credential.username) +
@@ -316,10 +344,6 @@ std::string CreateSortKey(const CredentialUIEntry& credential) {
 
 bool operator==(const CredentialUIEntry& lhs, const CredentialUIEntry& rhs) {
   return CreateSortKey(lhs) == CreateSortKey(rhs);
-}
-
-bool operator!=(const CredentialUIEntry& lhs, const CredentialUIEntry& rhs) {
-  return !(lhs == rhs);
 }
 
 bool operator<(const CredentialUIEntry& lhs, const CredentialUIEntry& rhs) {

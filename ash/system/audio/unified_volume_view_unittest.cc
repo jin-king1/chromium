@@ -83,7 +83,6 @@ TEST_F(UnifiedVolumeViewTest, SliderButtonComponents) {
   EXPECT_EQ(unified_volume_view()->children()[0]->GetClassName(),
             "QuickSettingsSlider");
 
-  // TODO(b/257151067): Updates the a11y name id and tooltip text.
   auto* live_caption_button =
       static_cast<IconButton*>(unified_volume_view()->children()[1]);
   EXPECT_EQ(live_caption_button->GetClassName(), "IconButton");
@@ -135,7 +134,7 @@ TEST_F(UnifiedVolumeViewTest, MoreButton) {
   GetPrimaryUnifiedSystemTray()->CloseBubble();
 
   // Create and trusted pin a window.
-  std::unique_ptr<aura::Window> window(CreateTestWindow());
+  std::unique_ptr<aura::Window> window = CreateWindowWithAppType();
   wm::ActivateWindow(window.get());
   window_util::PinWindow(window.get(), /*trusted=*/true);
 

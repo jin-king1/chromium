@@ -29,18 +29,20 @@ class MODULES_EXPORT InstalledAppController final
   InstalledAppController(const InstalledAppController&) = delete;
   InstalledAppController& operator=(const InstalledAppController&) = delete;
 
-  virtual ~InstalledAppController();
+  ~InstalledAppController();
 
   // Gets a list of related apps from the current page's manifest that belong
   // to the current underlying platform, and are installed.
-  void GetInstalledRelatedApps(
-      ScriptPromiseResolver<IDLSequence<RelatedApplication>>*);
-
-  static InstalledAppController* From(LocalDOMWindow&);
+  static ScriptPromise<IDLSequence<RelatedApplication>> getInstalledRelatedApps(
+      ScriptState*,
+      Navigator&,
+      ExceptionState& exception_state);
 
   void Trace(Visitor*) const override;
 
  private:
+  static InstalledAppController* From(LocalDOMWindow&);
+
   // Callback for the result of GetInstalledRelatedApps.
   //
   // Takes a set of related applications and filters them by those which belong

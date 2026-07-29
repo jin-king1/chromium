@@ -5,14 +5,18 @@
 #ifndef ASH_SYSTEM_BRIGHTNESS_UNIFIED_BRIGHTNESS_VIEW_H_
 #define ASH_SYSTEM_BRIGHTNESS_UNIFIED_BRIGHTNESS_VIEW_H_
 
+#include <array>
+
 #include "ash/ash_export.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/system/brightness/unified_brightness_slider_controller.h"
 #include "ash/system/night_light/night_light_controller_impl.h"
 #include "ash/system/unified/unified_slider_view.h"
 #include "ash/system/unified/unified_system_tray_model.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/scoped_observation.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 
 namespace ash {
@@ -34,18 +38,22 @@ class ASH_EXPORT UnifiedBrightnessView
 
   // UnifiedSystemTrayModel::Observer:
   void OnDisplayBrightnessChanged(bool by_user) override;
+  void OnLidStateChanged() override;
 
   // References to the icons that correspond to different brightness levels.
   // Used in the `QuickSettingsSlider`. Defined as a public member to be used in
   // tests.
-  static constexpr const gfx::VectorIcon* kBrightnessLevelIcons[] = {
+  // clang-format off
+  static constexpr std::array<const gfx::VectorIcon*, 3>
+    kBrightnessLevelIcons = {
       &kUnifiedMenuBrightnessLowIcon,     // Low brightness.
       &kUnifiedMenuBrightnessMediumIcon,  // Medium brightness.
       &kUnifiedMenuBrightnessHighIcon,    // High brightness.
   };
+  // clang-format on
 
   // The maximum index of `kBrightnessLevelIcons`.
-  static constexpr int kBrightnessLevels = std::size(kBrightnessLevelIcons) - 1;
+  static constexpr int kBrightnessLevels = kBrightnessLevelIcons.size() - 1;
 
   IconButton* more_button() { return more_button_; }
 
@@ -53,6 +61,7 @@ class ASH_EXPORT UnifiedBrightnessView
 
  private:
   friend class UnifiedBrightnessViewTest;
+  FRIEND_TEST_ALL_PREFIXES(UnifiedBrightnessViewTest, SliderButtonClickThrough);
 
   // Get vector icon reference that corresponds to the given brightness level.
   // `level` is between 0.0 to 1.0.
@@ -64,6 +73,9 @@ class ASH_EXPORT UnifiedBrightnessView
   // Updates the icon and tooltip of `night_light_button_`.
   void UpdateNightLightButton();
 
+  // Enable or disable the brightness slider view.
+  void UpdateBrightnessSlider();
+
   // UnifiedSliderView::
   void VisibilityChanged(View* starting_from, bool is_visible) override;
 
@@ -72,6 +84,10 @@ class ASH_EXPORT UnifiedBrightnessView
   // Owned by the views hierarchy.
   raw_ptr<IconButton> night_light_button_ = nullptr;
   raw_ptr<IconButton> more_button_ = nullptr;
+
+  base::ScopedObservation<UnifiedSystemTrayModel,
+                          UnifiedSystemTrayModel::Observer>
+      unified_system_tray_model_observation_{this};
 };
 
 }  // namespace ash

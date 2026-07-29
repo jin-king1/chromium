@@ -7,7 +7,6 @@
 #import <algorithm>
 
 #import "base/check.h"
-#import "base/containers/contains.h"
 #import "base/containers/flat_set.h"
 #import "base/functional/bind.h"
 #import "base/memory/raw_ptr.h"
@@ -17,15 +16,19 @@
 #import "base/task/thread_pool.h"
 #import "components/password_manager/core/browser/features/password_manager_features_util.h"
 #import "components/password_manager/core/browser/form_parsing/form_data_parser.h"
+#import "components/password_manager/core/browser/generation/password_generator.h"
 #import "components/password_manager/core/browser/password_form.h"
 #import "components/password_manager/core/browser/password_manager_util.h"
+#import "components/password_manager/core/browser/password_requirements_service.h"
 #import "components/password_manager/core/browser/password_sync_util.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "ios/chrome/browser/passwords/model/password_check_observer_bridge.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/add_password_details_consumer.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/add_password_mediator_delegate.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/password_details/add_password_metrics.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/add_password_view_controller_delegate.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/password_manager_ui_features.h"
 #import "net/base/apple/url_conversions.h"
 
 using base::SysNSStringToUTF16;
@@ -57,12 +60,12 @@ bool CheckForDuplicates(
 @interface AddPasswordMediator () <AddPasswordViewControllerDelegate> {
   // Password Check manager.
   raw_ptr<IOSChromePasswordCheckManager> _manager;
-  // Pref service.
-  raw_ptr<PrefService> _prefService;
   // Sync service.
   raw_ptr<syncer::SyncService> _syncService;
   // Used to create and run validation tasks.
   std::unique_ptr<base::CancelableTaskTracker> _validationTaskTracker;
+  raw_ptr<password_manager::PasswordRequirementsService>
+      _passwordRequirementsService;
 }
 
 // Delegate for this mediator.
@@ -75,24 +78,27 @@ bool CheckForDuplicates(
 // Stores the url entered in the website field.
 @property(nonatomic, assign) GURL URL;
 
+@property(nonatomic, copy) NSString* suggestedPassword;
+
 @end
 
 @implementation AddPasswordMediator
 
 - (instancetype)initWithDelegate:(id<AddPasswordMediatorDelegate>)delegate
             passwordCheckManager:(IOSChromePasswordCheckManager*)manager
-                     prefService:(PrefService*)prefService
-                     syncService:(syncer::SyncService*)syncService {
+                     syncService:(syncer::SyncService*)syncService
+     passwordRequirementsService:
+         (password_manager::PasswordRequirementsService*)
+             passwordRequirementsService {
   DCHECK(delegate);
   DCHECK(manager);
-  DCHECK(prefService);
   DCHECK(syncService);
   self = [super init];
   if (self) {
     _delegate = delegate;
     _manager = manager;
-    _prefService = prefService;
     _syncService = syncService;
+    _passwordRequirementsService = passwordRequirementsService;
     _sequencedTaskRunner = base::ThreadPool::CreateSequencedTaskRunner(
         {base::MayBlock(), base::TaskPriority::USER_BLOCKING});
     _validationTaskTracker = std::make_unique<base::CancelableTaskTracker>();
@@ -106,8 +112,7 @@ bool CheckForDuplicates(
   }
   _consumer = consumer;
   std::optional<std::string> account =
-      password_manager::sync_util::GetAccountForSaving(_prefService,
-                                                       _syncService);
+      password_manager::sync_util::GetAccountForSaving(_syncService);
   if (account) {
     CHECK(!account->empty());
     [_consumer setAccountSavingPasswords:SysUTF8ToNSString(*account)];
@@ -139,10 +144,14 @@ bool CheckForDuplicates(
   std::string signonRealm = password_manager::GetSignonRealm(self.URL);
   credential.username = SysNSStringToUTF16(username);
   credential.password = SysNSStringToUTF16(password);
+
+  base::UmaHistogramBoolean(
+      kPasswordManagerPasswordSettingsiOSSavedPasswordIsGenerated,
+      [password isEqualToString:_suggestedPassword]);
+
   credential.note = SysNSStringToUTF16(note);
   credential.stored_in = {
-      password_manager::features_util::IsAccountStorageEnabled(_prefService,
-                                                               _syncService)
+      password_manager::features_util::IsAccountStorageActive(_syncService)
           ? password_manager::PasswordForm::Store::kAccountStore
           : password_manager::PasswordForm::Store::kProfileStore};
 
@@ -206,8 +215,29 @@ bool CheckForDuplicates(
 }
 
 - (BOOL)isTLDMissing {
-  std::string hostname = self.URL.host();
-  return !base::Contains(hostname, '.');
+  std::string hostname = self.URL.GetHost();
+  return !hostname.contains('.');
+}
+
+- (BOOL)shouldShowSuggestPasswordItem {
+  // Only show the field `suggestPasswordItem` to user who are signed in and
+  // syncing password to their Google Account.
+  return password_manager::features_util::IsAccountStorageActive(_syncService);
+}
+
+// Requests a generated password and calls the completion block with the result.
+- (void)requestGeneratedPasswordWithCompletion:
+    (void (^)(NSString* password))completion {
+  __weak __typeof(self) weakSelf = self;
+  password_manager::FetchPasswordRequirementsSpecCallback callback =
+      base::BindOnce(^(autofill::PasswordRequirementsSpec spec) {
+        NSString* generatedPassword =
+            base::SysUTF16ToNSString(autofill::GeneratePassword(spec));
+        weakSelf.suggestedPassword = generatedPassword;
+        completion(generatedPassword);
+      });
+  _passwordRequirementsService->FetchPasswordRequirementsSpec(
+      self.URL, std::move(callback));
 }
 
 @end

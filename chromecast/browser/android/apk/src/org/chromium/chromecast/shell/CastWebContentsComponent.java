@@ -14,10 +14,15 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.chromecast.base.Controller;
+import org.chromium.chromecast.base.Observable;
+import org.chromium.chromecast.base.Observer;
+import org.chromium.chromecast.base.OwnedScope;
 import org.chromium.content_public.browser.WebContents;
 
 /**
  * A layer of indirection between CastContentWindowAndroid and CastWebContents(Activity|Service).
+ * CastWebContentsActivity is expected to be created by cast_core, CastWebContentsComponent can only
+ * send updates after the activity is created.
  */
 public class CastWebContentsComponent {
     /**
@@ -36,12 +41,10 @@ public class CastWebContentsComponent {
     /** Params to start WebContents in activity or service. */
     static class StartParams {
         public final WebContents webContents;
-        public final String appId;
         public final boolean shouldRequestAudioFocus;
 
-        public StartParams(WebContents webContents, String appId, boolean shouldRequestAudioFocus) {
+        public StartParams(WebContents webContents, boolean shouldRequestAudioFocus) {
             this.webContents = webContents;
-            this.appId = appId;
             this.shouldRequestAudioFocus = shouldRequestAudioFocus;
         }
 
@@ -56,7 +59,8 @@ public class CastWebContentsComponent {
             }
 
             StartParams params = (StartParams) other;
-            return params.webContents == this.webContents && params.appId.equals(this.appId);
+            return params.webContents == this.webContents
+                    && params.shouldRequestAudioFocus == this.shouldRequestAudioFocus;
         }
     }
 
@@ -92,9 +96,10 @@ public class CastWebContentsComponent {
     private final String mSessionId;
     private final SurfaceEventHandler mSurfaceEventHandler;
     private final Controller<WebContents> mHasWebContentsState = new Controller<>();
+    private final Controller<StartParams> mStartParams = new Controller<>();
+    private final OwnedScope mSubscription = new OwnedScope();
     private boolean mStarted;
     private boolean mEnableTouchInput;
-    private boolean mMediaPlaying;
     private final boolean mTurnOnScreen;
     private final boolean mKeepScreenOn;
 
@@ -121,24 +126,33 @@ public class CastWebContentsComponent {
         mTurnOnScreen = turnOnScreen;
         mKeepScreenOn = keepScreenOn;
 
-        mHasWebContentsState.subscribe(
-                x -> {
-                    final IntentFilter filter = new IntentFilter();
-                    Uri instanceUri = CastWebContentsIntentUtils.getInstanceUri(sessionId);
-                    filter.addDataScheme(instanceUri.getScheme());
-                    filter.addDataAuthority(instanceUri.getAuthority(), null);
-                    filter.addDataPath(instanceUri.getPath(), PatternMatcher.PATTERN_LITERAL);
-                    filter.addAction(CastWebContentsIntentUtils.ACTION_ACTIVITY_STOPPED);
-                    filter.addAction(CastWebContentsIntentUtils.ACTION_ON_VISIBILITY_CHANGE);
-                    filter.addAction(
-                            CastWebContentsIntentUtils.ACTION_REQUEST_MEDIA_PLAYING_STATUS);
-                    return new LocalBroadcastReceiverScope(filter, this::onReceiveIntent);
-                });
+        mSubscription.set(
+                mHasWebContentsState
+                        .subscribe(
+                                x -> {
+                                    final IntentFilter filter = new IntentFilter();
+                                    Uri instanceUri =
+                                            CastWebContentsIntentUtils.getInstanceUri(sessionId);
+                                    filter.addDataScheme(instanceUri.getScheme());
+                                    filter.addDataAuthority(instanceUri.getAuthority(), null);
+                                    filter.addDataPath(
+                                            instanceUri.getPath(), PatternMatcher.PATTERN_LITERAL);
+                                    filter.addAction(
+                                            CastWebContentsIntentUtils.ACTION_ACTIVITY_STOPPED);
+                                    filter.addAction(
+                                            CastWebContentsIntentUtils.ACTION_ON_VISIBILITY_CHANGE);
+                                    return new LocalBroadcastReceiverScope(
+                                            filter, this::onReceiveIntent);
+                                })
+                        .and(
+                                observeActivityStarted()
+                                        .ignoreAnd(mStartParams)
+                                        .subscribe(Observer.onOpen(this::startInternal))));
     }
 
     private void onReceiveIntent(Intent intent) {
         if (CastWebContentsIntentUtils.isIntentOfActivityStopped(intent)) {
-            Log.d(TAG, "Activity stopped: sessionId=" + mSessionId);
+            Log.d(TAG, "Activity stopped: sessionId=%s", mSessionId);
             if (mComponentClosedHandler != null) {
                 mComponentClosedHandler.onComponentClosed();
             }
@@ -152,15 +166,18 @@ public class CastWebContentsComponent {
             if (mSurfaceEventHandler != null) {
                 mSurfaceEventHandler.onVisibilityChange(visibilityType);
             }
-        } else if (CastWebContentsIntentUtils.isIntentOfRequestMediaPlayingStatus(intent)) {
-            Log.d(
-                    TAG,
-                    "Activity media play state requested: sessionId=%s, mediaPlaying=%b",
-                    mSessionId,
-                    mMediaPlaying);
-            // Just broadcast current value.
-            setMediaPlaying(mMediaPlaying);
         }
+    }
+
+    private Observable<?> observeActivityStarted() {
+        return observer -> {
+            Controller<Intent> controller = new Controller<>();
+            final IntentFilter filter = new IntentFilter();
+            filter.addAction(CastWebContentsIntentUtils.ACTION_ON_ACTIVITY_STARTED_BY_CAST_CORE);
+            return controller
+                    .subscribe(observer)
+                    .and(new LocalBroadcastReceiverScope(filter, controller::set));
+        };
     }
 
     @VisibleForTesting
@@ -169,11 +186,14 @@ public class CastWebContentsComponent {
     }
 
     public void start(StartParams params) {
+        mStartParams.set(params);
+    }
+
+    private void startInternal(StartParams params) {
         Log.d(
                 TAG,
-                "Starting Cast activity: sessionId=%s, appId=%s, audioFocus=%b",
+                "Starting Cast activity: sessionId=%s, audioFocus=%b",
                 mSessionId,
-                params.appId,
                 params.shouldRequestAudioFocus);
 
         mHasWebContentsState.set(params.webContents);
@@ -190,33 +210,26 @@ public class CastWebContentsComponent {
             return;
         }
 
-        Log.d(TAG, "Stopping WebContents: sessionId" + mSessionId);
+        Log.d(TAG, "Stopping WebContents: sessionId=%s", mSessionId);
+        mStartParams.reset();
         mHasWebContentsState.reset();
         sendStopWebContentEvent();
         mStarted = false;
     }
 
+    public void destroy() {
+        mSubscription.close();
+        Log.d(TAG, "CastWebContentsComponent destroyed.");
+    }
+
     public void enableTouchInput(boolean enabled) {
-        Log.d(TAG, "Touch input updated: enabled=" + enabled);
+        Log.d(TAG, "Touch input updated: enabled=%b", enabled);
         mEnableTouchInput = enabled;
         sendIntentSync(CastWebContentsIntentUtils.enableTouchInput(mSessionId, enabled));
     }
 
-    public void setAllowPictureInPicture(boolean allowPictureInPicture) {
-        Log.d(TAG, "PiP updated: allowed=" + allowPictureInPicture);
-        sendIntentSync(
-                CastWebContentsIntentUtils.allowPictureInPicture(
-                        mSessionId, allowPictureInPicture));
-    }
-
-    public void setMediaPlaying(boolean mediaPlaying) {
-        Log.d(TAG, "Media playing updated: playing=" + mediaPlaying);
-        mMediaPlaying = mediaPlaying;
-        sendIntentSync(CastWebContentsIntentUtils.mediaPlaying(mSessionId, mMediaPlaying));
-    }
-
     public static void onComponentClosed(String sessionId) {
-        Log.d(TAG, "Component closed: sessionId=" + sessionId);
+        Log.d(TAG, "Component closed: sessionId=%s", sessionId);
         sendIntentSync(CastWebContentsIntentUtils.onActivityStopped(sessionId));
     }
 

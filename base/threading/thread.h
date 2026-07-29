@@ -26,6 +26,10 @@
 
 namespace base {
 
+namespace sequence_manager {
+struct SequenceManagerSettings;
+}
+
 class MessagePump;
 class RunLoop;
 
@@ -85,10 +89,6 @@ class BASE_EXPORT Thread : PlatformThread::Delegate {
     // This is ignored if message_pump_factory.is_null() is false.
     MessagePumpType message_pump_type = MessagePumpType::DEFAULT;
 
-    // An unbound Delegate that will be bound to the thread. Ownership
-    // of |delegate| will be transferred to the thread.
-    std::unique_ptr<Delegate> delegate = nullptr;
-
     // Used to create the MessagePump for the MessageLoop. The callback is Run()
     // on the thread. If message_pump_factory.is_null(), then a MessagePump
     // appropriate for |message_pump_type| is created. Setting this forces the
@@ -110,7 +110,13 @@ class BASE_EXPORT Thread : PlatformThread::Delegate {
     // can't be destroyed or Stop()'ed).
     // TODO(gab): allow non-joinable instances to be deleted without causing
     // user-after-frees (proposal @ https://crbug.com/629139#c14)
+    // TODO(crbug.com/40476967): Consider combining with Restartable trait.
     bool joinable = true;
+
+    // Custom settings for the SequenceManager created for this thread, if any.
+    // Allows overriding default SequenceManager behavior.
+    std::unique_ptr<base::sequence_manager::SequenceManagerSettings>
+        sequence_manager_settings;
 
     bool IsValid() const { return !moved_from; }
 
@@ -120,9 +126,17 @@ class BASE_EXPORT Thread : PlatformThread::Delegate {
     bool moved_from = false;
   };
 
+  // Allows the thread to be Start()-ed after being Stop()-ed.
+  struct Restartable {};
+
   // Constructor.
   // name is a display string to identify the thread.
-  explicit Thread(const std::string& name);
+  explicit Thread(const std::string& name, Restartable);
+
+  // When a custom delegate is provided, the thread can not be restarted because
+  // the delegate doesn't support being bound twice.
+  explicit Thread(const std::string& name,
+                  std::unique_ptr<Delegate> delegate = nullptr);
 
   Thread(const Thread&) = delete;
   Thread& operator=(const Thread&) = delete;
@@ -283,6 +297,10 @@ class BASE_EXPORT Thread : PlatformThread::Delegate {
   };
 #endif
 
+  Thread(const std::string& name,
+         std::unique_ptr<Delegate> delegate,
+         bool restartable);
+
   // PlatformThread::Delegate methods:
   void ThreadMain() override;
 
@@ -297,15 +315,21 @@ class BASE_EXPORT Thread : PlatformThread::Delegate {
   // on Stop() -- non-joinable threads can't be joined (must be leaked).
   bool joinable_ = true;
 
-  // If true, we're in the middle of stopping, and shouldn't access
-  // |message_loop_|. It may non-nullptr and invalid.
-  // Should be written on the thread that created this thread. Also read data
-  // could be wrong on other threads.
-  bool stopping_ = false;
+  // If true, the thread can be Start()-ed after being Stop()-ed.
+  const bool restartable_ = false;
 
-  // True while inside of Run().
-  bool running_ = false;
-  mutable base::Lock running_lock_;  // Protects |running_|.
+  enum class State {
+    kInitial,
+    kRunning,
+    kStopping,
+    kStopped,
+  };
+
+  // Indicates the current state of the thread. If kStopping, |message_loop_|
+  // shouldn't be accessed; It may non-nullptr and invalid. Should be written on
+  // the thread that created this thread. Also read data could be wrong on other
+  // threads.
+  State state_ = State::kInitial;
 
   // The thread's handle.
   PlatformThreadHandle thread_;

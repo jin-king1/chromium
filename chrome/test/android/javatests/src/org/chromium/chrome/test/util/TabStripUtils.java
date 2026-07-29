@@ -34,18 +34,6 @@ public class TabStripUtils {
      * @param activity The main activity that contains the TabStrips.
      * @return The TabStrip for the specified model.
      */
-    public static StripLayoutHelper getActiveStripLayoutHelper(ChromeTabbedActivity activity) {
-        StripLayoutHelperManager manager = getStripLayoutHelperManager(activity);
-        if (manager != null) {
-            return manager.getActiveStripLayoutHelper();
-        }
-        return null;
-    }
-
-    /**
-     * @param activity The main activity that contains the TabStrips.
-     * @return The TabStrip for the specified model.
-     */
     public static StripLayoutHelperManager getStripLayoutHelperManager(
             ChromeTabbedActivity activity) {
         StripLayoutHelperManager manager =
@@ -79,7 +67,7 @@ public class TabStripUtils {
                 new Runnable() {
                     @Override
                     public void run() {
-                        manager.simulateClick(x, y, false, 0);
+                        manager.simulateClick(x, y, 0, 0);
                     }
                 });
     }
@@ -100,28 +88,7 @@ public class TabStripUtils {
                 new Runnable() {
                     @Override
                     public void run() {
-                        manager.simulateClick(x, y, false, 0);
-                    }
-                });
-    }
-
-    /**
-     * Long press a compositor button.
-     * @param button The button to long press.
-     * @param activity the ChromeTabbedActivity.
-     */
-    public static void longPressCompositorButton(
-            CompositorButton button,
-            Instrumentation instrumentation,
-            ChromeTabbedActivity activity) {
-        final StripLayoutHelperManager manager = getStripLayoutHelperManager(activity);
-        final float x = button.getDrawX() + button.getWidth() / 2;
-        final float y = button.getDrawY() + button.getHeight() / 2;
-        instrumentation.runOnMainSync(
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        manager.simulateLongPress(x, y);
+                        manager.simulateClick(x, y, 0, 0);
                     }
                 });
     }

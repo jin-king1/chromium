@@ -10,6 +10,7 @@
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/viz/client/frame_evictor.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_image_transport_factory.h"
@@ -51,6 +52,15 @@ class DelegatedFrameHostTest : public testing::Test {
   }
 
   void SetUp() override;
+
+  void TearDown() override {
+    if (delegated_frame_host_) {
+      delegated_frame_host_->DetachFromCompositor();
+    }
+    delegated_frame_host_.reset();
+    compositor_.reset();
+    ImageTransportFactory::Terminate();
+  }
 
  private:
   BrowserTaskEnvironment task_environment_{
@@ -104,14 +114,24 @@ TEST_F(DelegatedFrameHostTest, NoCopyOutputRequestWithNoValidSurface) {
   base::RunLoop run_loop;
   dfh->CopyFromCompositingSurface(
       /*src_subrect=*/gfx::Rect(),
-      /*output_size=*/gfx::Size(),
+      /*output_size=*/gfx::Size(), base::TimeDelta(),
       base::BindOnce(
-          [](base::RepeatingClosure quit_closure, const SkBitmap& bitmap) {
-            EXPECT_TRUE(bitmap.empty());
+          [](base::RepeatingClosure quit_closure,
+             const content::CopyFromSurfaceResult& result) {
+            EXPECT_FALSE(result.has_value());
             quit_closure.Run();
           },
           run_loop.QuitClosure()));
   run_loop.Run();
+}
+
+TEST_F(DelegatedFrameHostTest, ForceSpecifiedDeadline) {
+  auto* dfh = delegated_frame_host();
+  EXPECT_EQ(std::nullopt, dfh->GetForceSpecifiedDeadlineForTesting());
+  dfh->SetForceSpecifiedDeadline(5);
+  EXPECT_EQ(5u, dfh->GetForceSpecifiedDeadlineForTesting());
+  dfh->SetForceSpecifiedDeadline(std::nullopt);
+  EXPECT_EQ(std::nullopt, dfh->GetForceSpecifiedDeadlineForTesting());
 }
 
 }  // namespace content

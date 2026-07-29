@@ -4,6 +4,8 @@
 
 #include "components/browsing_data/content/browsing_data_model_test_util.h"
 
+#include <variant>
+
 #include "components/browsing_data/content/browsing_data_model.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -32,39 +34,6 @@ std::string DataKeyDebugStringVisitor::operator()<blink::StorageKey>(
   return debug_string.str();
 }
 
-template <>
-std::string DataKeyDebugStringVisitor::operator()<
-    content::InterestGroupManager::InterestGroupDataKey>(
-    const content::InterestGroupManager::InterestGroupDataKey&
-        interest_group_data_key) {
-  std::stringstream debug_string;
-  debug_string << "InterestGroupDataKey: ";
-  debug_string << "{owner: " << interest_group_data_key.owner.Serialize();
-  debug_string << " joining_origin: ";
-  debug_string << interest_group_data_key.joining_origin.Serialize() << "}";
-  return debug_string.str();
-}
-
-template <>
-std::string
-DataKeyDebugStringVisitor::operator()<content::AttributionDataModel::DataKey>(
-    const content::AttributionDataModel::DataKey& attribution_data_key) {
-  std::stringstream debug_string;
-  debug_string << "AttributionDataKey: ";
-  debug_string << attribution_data_key.reporting_origin();
-  return debug_string.str();
-}
-
-template <>
-std::string DataKeyDebugStringVisitor::operator()<
-    content::PrivateAggregationDataModel::DataKey>(
-    const content::PrivateAggregationDataModel::DataKey&
-        private_aggregation_data_key) {
-  std::stringstream debug_string;
-  debug_string << "PrivateAggregationDataKey: ";
-  debug_string << private_aggregation_data_key.reporting_origin();
-  return debug_string.str();
-}
 
 template <>
 std::string
@@ -192,10 +161,10 @@ bool BrowsingDataEntry::operator==(const BrowsingDataEntry& other) const {
 std::string BrowsingDataEntry::ToDebugString() const {
   std::stringstream debug_string;
   debug_string << "Data Owner: ";
-  debug_string << absl::visit(DataOwnerDebugStringVisitor(), data_owner);
+  debug_string << std::visit(DataOwnerDebugStringVisitor(), data_owner);
 
   debug_string << " Data Key: ";
-  debug_string << absl::visit(DataKeyDebugStringVisitor(), data_key);
+  debug_string << std::visit(DataKeyDebugStringVisitor(), data_key);
 
   debug_string << " Storage Types: ";
   debug_string << data_details.storage_types.ToEnumBitmask();

@@ -2,21 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "mojo/core/ipcz_driver/shared_buffer.h"
 
 #include <array>
 #include <cstdint>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/files/scoped_file.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted.h"
+#include "base/notreached.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
+#include "mojo/core/ipcz_driver/validate_enum.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
 #include "third_party/ipcz/include/ipcz/ipcz.h"
 
@@ -29,6 +28,10 @@ enum class BufferMode : uint32_t {
   kReadOnly,
   kWritable,
   kUnsafe,
+
+  // For ValidateEnum().
+  kMinValue = kReadOnly,
+  kMaxValue = kUnsafe,
 };
 
 // The wire representation of a serialized shared buffer.
@@ -155,7 +158,7 @@ scoped_refptr<SharedBuffer> SharedBuffer::CreateForMojoWrapper(
   }
 
   auto handle = CreateRegionHandleFromPlatformHandles(
-      {&handles[0], mojo_platform_handles.size()}, mode);
+      UNSAFE_TODO({&handles[0], mojo_platform_handles.size()}), mode);
   auto region = base::subtle::PlatformSharedMemoryRegion::Take(
       std::move(handle), mode, size, guid.value());
   if (!region.IsValid()) {
@@ -251,6 +254,9 @@ scoped_refptr<SharedBuffer> SharedBuffer::Deserialize(
   if (header_size < sizeof(BufferHeader) || header_size % 8 != 0) {
     return nullptr;
   }
+  if (!ValidateEnum(header.mode)) {
+    return nullptr;
+  }
 
   base::subtle::PlatformSharedMemoryRegion::Mode mode;
   switch (header.mode) {
@@ -264,7 +270,7 @@ scoped_refptr<SharedBuffer> SharedBuffer::Deserialize(
       mode = base::subtle::PlatformSharedMemoryRegion::Mode::kUnsafe;
       break;
     default:
-      return nullptr;
+      NOTREACHED();
   }
 
   std::optional<base::UnguessableToken> guid =
@@ -274,13 +280,18 @@ scoped_refptr<SharedBuffer> SharedBuffer::Deserialize(
   }
 
   auto handle = CreateRegionHandleFromPlatformHandles(handles, mode);
-  auto region = base::subtle::PlatformSharedMemoryRegion::Take(
+  auto maybe_region = base::subtle::PlatformSharedMemoryRegion::TakeOrFail(
       std::move(handle), mode, header.buffer_size, guid.value());
-  if (!region.IsValid()) {
+  if (!maybe_region.has_value()) {
+    return nullptr;
+    LOG(ERROR) << "Failed to deserialize platform shared memory region: "
+               << static_cast<int>(maybe_region.error());
+  }
+  if (!maybe_region->IsValid()) {
     return nullptr;
   }
 
-  return base::MakeRefCounted<SharedBuffer>(std::move(region));
+  return base::MakeRefCounted<SharedBuffer>(std::move(*maybe_region));
 }
 
 }  // namespace mojo::core::ipcz_driver

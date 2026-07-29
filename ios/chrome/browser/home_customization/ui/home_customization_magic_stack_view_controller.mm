@@ -38,6 +38,8 @@
 @synthesize collectionView = _collectionView;
 @synthesize diffableDataSource = _diffableDataSource;
 @synthesize page = _page;
+@synthesize additionalViewWillTransitionToSizeHandler =
+    _additionalViewWillTransitionToSizeHandler;
 
 - (void)viewDidLoad {
   [super viewDidLoad];
@@ -60,6 +62,14 @@
   [_collectionConfigurator configureNavigationBar];
 }
 
+- (void)viewWillTransitionToSize:(CGSize)size
+       withTransitionCoordinator:
+           (id<UIViewControllerTransitionCoordinator>)coordinator {
+  if (_additionalViewWillTransitionToSizeHandler) {
+    _additionalViewWillTransitionToSizeHandler(size, coordinator);
+  }
+}
+
 #pragma mark - Private
 
 // Registers the different cells used by the collection view.
@@ -69,7 +79,7 @@
       registrationWithCellClass:[HomeCustomizationToggleCell class]
            configurationHandler:^(HomeCustomizationToggleCell* cell,
                                   NSIndexPath* indexPath,
-                                  NSNumber* itemIdentifier) {
+                                  NSString* itemIdentifier) {
              CustomizationToggleType toggleType =
                  (CustomizationToggleType)[itemIdentifier integerValue];
              BOOL enabled = self.toggleMap.at(toggleType);
@@ -87,9 +97,9 @@
 }
 
 // Creates a data snapshot representing the content of the collection view.
-- (NSDiffableDataSourceSnapshot<CustomizationSection*, NSNumber*>*)
+- (NSDiffableDataSourceSnapshot<CustomizationSection*, NSString*>*)
     dataSnapshot {
-  NSDiffableDataSourceSnapshot<CustomizationSection*, NSNumber*>* snapshot =
+  NSDiffableDataSourceSnapshot<CustomizationSection*, NSString*>* snapshot =
       [[NSDiffableDataSourceSnapshot alloc] init];
 
   // Create toggles section and add items to it.
@@ -122,7 +132,7 @@
 }
 
 - (UICollectionViewCell*)configuredCellForIndexPath:(NSIndexPath*)indexPath
-                                     itemIdentifier:(NSNumber*)itemIdentifier {
+                                     itemIdentifier:(NSString*)itemIdentifier {
   return [_collectionView
       dequeueConfiguredReusableCellWithRegistration:_toggleCellRegistration
                                        forIndexPath:indexPath
@@ -144,7 +154,7 @@
 
   // Recreate the snapshot with the new items to take into account all the
   // changes of items presence (add/remove).
-  NSDiffableDataSourceSnapshot<CustomizationSection*, NSNumber*>* snapshot =
+  NSDiffableDataSourceSnapshot<CustomizationSection*, NSString*>* snapshot =
       [self dataSnapshot];
 
   // Reconfigure all present items to ensure that they are updated in case their
@@ -159,12 +169,12 @@
 
 // Returns an array of identifiers for a map of toggle types, which can be
 // used by the snapshot.
-- (NSMutableArray<NSNumber*>*)identifiersForToggleMap:
+- (NSMutableArray<NSString*>*)identifiersForToggleMap:
     (std::map<CustomizationToggleType, BOOL>)types {
-  NSMutableArray<NSNumber*>* toggleDataIdentifiers =
+  NSMutableArray<NSString*>* toggleDataIdentifiers =
       [[NSMutableArray alloc] init];
   for (auto const& [key, value] : types) {
-    [toggleDataIdentifiers addObject:@((int)key)];
+    [toggleDataIdentifiers addObject:[@((int)key) stringValue]];
   }
   return toggleDataIdentifiers;
 }

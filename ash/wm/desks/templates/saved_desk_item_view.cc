@@ -4,6 +4,7 @@
 
 #include "ash/wm/desks/templates/saved_desk_item_view.h"
 
+#include <optional>
 #include <string>
 
 #include "ash/accessibility/accessibility_controller.h"
@@ -29,7 +30,10 @@
 #include "ash/wm/overview/overview_session.h"
 #include "ash/wm/overview/overview_utils.h"
 #include "ash/wm/wm_constants.h"
+#include "base/i18n/icubridge/date_time_formatter.h"
+#include "base/i18n/icubridge/icu_bridge.h"
 #include "base/i18n/time_formatting.h"
+#include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -49,13 +53,16 @@
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/flex_layout_view.h"
-#include "ui/views/metadata/view_factory_internal.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 
 namespace ash {
 namespace {
+
+using ::base::i18n::DateTimeFormatterOptions;
+using ::base::i18n::IcuBridge;
 
 // The padding values of the SavedDeskItemView.
 constexpr int kVerticalPaddingDp = 14;
@@ -87,21 +94,30 @@ constexpr int kFadeDurationMs = 100;
 std::u16string GetTimeStr(base::Time timestamp) {
   // `ui::TimeFormat::RelativeDate()` returns an empty string if `timestamp` is
   // out of relative date range, which is yesterday and today as of now.
-  const std::u16string date = ui::TimeFormat::RelativeDate(timestamp, nullptr);
+  const std::u16string date =
+      ui::TimeFormat::RelativeDate(timestamp, std::nullopt);
   return date.empty()
              // Syntax `yMMMdjmm` is used by the File App if it's not a relative
              // date. Please note, this might be slightly different for
              // different locales. Examples:
              //  `en-US` - `Jan 1, 2022, 10:30 AM`
              //  `zh-CN` - `2022年1月1日 10:30`
-             ? base::LocalizedTimeFormatWithPattern(timestamp, "yMMMdjmm")
+             ? IcuBridge::GetInstance().date_time_formatter().Format(
+                   timestamp,
+                   base::i18n::datetime_options::YMDT::Medium()
+                       .with_time_precision(
+                           DateTimeFormatterOptions::TimePrecision::kMinute))
              // If it's a relative date, just append `jmm` to it.
              // Please note, this might be slightly different for different
              // locales. Examples:
              //  `en-US` - `Today 10:30 AM`
              //  `zh-CN` - `今天 10:30`
              : (date + u" " +
-                base::LocalizedTimeFormatWithPattern(timestamp, "jmm"));
+                IcuBridge::GetInstance().date_time_formatter().Format(
+                    timestamp,
+                    base::i18n::datetime_options::T::Medium()
+                        .with_time_precision(
+                            DateTimeFormatterOptions::TimePrecision::kMinute)));
 }
 
 }  // namespace
@@ -129,9 +145,8 @@ SavedDeskItemView::SavedDeskItemView(std::unique_ptr<DeskTemplate> saved_desk)
               .CopyAddressTo(&background_view)
               .SetPreferredSize(kPreferredSize)
               .SetUseDefaultFillLayout(true)
-              .SetBackground(views::CreateRoundedRectBackground(
-                  cros_tokens::kCrosSysSystemBaseElevated,
-                  kSaveDeskCornerRadius)),
+              .SetBackground(views::CreateSolidBackground(
+                  cros_tokens::kCrosSysSystemBaseElevated)),
           views::Builder<views::FlexLayoutView>()
               .SetOrientation(views::LayoutOrientation::kVertical)
               .CopyAddressTo(&box_layout_view)
@@ -224,8 +239,7 @@ SavedDeskItemView::SavedDeskItemView(std::unique_ptr<DeskTemplate> saved_desk)
       this, SystemShadow::Type::kElevation12);
   shadow_->SetRoundedCornerRadius(kSaveDeskCornerRadius);
 
-  if (features::IsBackgroundBlurEnabled() &&
-      chromeos::features::IsSystemBlurEnabled()) {
+  if (chromeos::features::IsSystemBlurEnabled()) {
     background_view->SetPaintToLayer();
     background_view->layer()->SetFillsBoundsOpaquely(false);
     background_view->layer()->SetBackgroundBlur(

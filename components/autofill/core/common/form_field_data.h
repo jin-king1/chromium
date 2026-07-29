@@ -12,12 +12,14 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <variant>
 #include <vector>
 
 #include "base/i18n/rtl.h"
 #include "base/types/optional_ref.h"
 #include "build/build_config.h"
 #include "components/autofill/core/common/autocomplete_parsing_util.h"
+#include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/html_field_types.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "components/autofill/core/common/signatures.h"
@@ -31,6 +33,15 @@ class PickleIterator;
 }  // namespace base
 
 namespace autofill {
+
+// Represents a form field modification performed by custom JavaScript autofill.
+struct JavaScriptFieldModification {
+  FieldGlobalId field_id;
+  mojom::JavaScriptModificationType modification_type;
+
+  friend bool operator==(const JavaScriptFieldModification&,
+                         const JavaScriptFieldModification&) = default;
+};
 
 class LogBuffer;
 
@@ -59,10 +70,16 @@ enum FieldPropertiesFlags : uint32_t {
   // Whether a change password filled was autofilled as part of change password
   // process. Filling happens on page-load although it's initiated by a user.
   kAutofilledChangePasswordFormOnPageLoad = 1u << 7,
+  // Whether a username or password field was autofilled as a result
+  // of a request to the actor login component.
+  kAutofilledActorLogin = 1u << 8,
   // A value was autofilled on any of the triggers.
   kAutofilled = kAutofilledOnUserTrigger | kAutofilledOnPageLoad |
                 kAutofilledPasswordFormFilledViaManualFallback |
-                kAutofilledChangePasswordFormOnPageLoad,
+                kAutofilledChangePasswordFormOnPageLoad | kAutofilledActorLogin
+
+  // IMPORTANT: Make sure to keep this enum in sync with the server-side enum
+  // with the same name in classification_utils.h.
 };
 
 // FieldPropertiesMask is used to contain combinations of FieldPropertiesFlags
@@ -87,87 +104,6 @@ struct SelectOption {
   std::u16string text;
 };
 
-// Stores information about the section of the field.
-class Section {
- public:
-  struct Autocomplete {
-    friend auto operator<=>(const Autocomplete& lhs,
-                            const Autocomplete& rhs) = default;
-    friend bool operator==(const Autocomplete& lhs,
-                           const Autocomplete& rhs) = default;
-
-    std::string section;
-    HtmlFieldMode mode = HtmlFieldMode::kNone;
-  };
-
-  using Default = absl::monostate;
-
-  struct FieldIdentifier {
-    FieldIdentifier() = default;
-    FieldIdentifier(std::string field_name,
-                    size_t local_frame_id,
-                    FieldRendererId field_renderer_id)
-        : field_name(std::move(field_name)),
-          local_frame_id(local_frame_id),
-          field_renderer_id(field_renderer_id) {}
-
-    friend auto operator<=>(const FieldIdentifier& lhs,
-                            const FieldIdentifier& rhs) = default;
-    friend bool operator==(const FieldIdentifier& lhs,
-                           const FieldIdentifier& rhs) = default;
-
-    std::string field_name;
-    size_t local_frame_id;
-    FieldRendererId field_renderer_id;
-  };
-
-  static Section FromAutocomplete(Autocomplete autocomplete);
-  static Section FromFieldIdentifier(
-      const FormFieldData& field,
-      base::flat_map<LocalFrameToken, size_t>& frame_token_ids);
-
-  Section();
-  Section(const Section& section);
-  ~Section();
-
-  // `absl::variant` does not implement `operator<=>` - therefore the ordering
-  // needs to be specified manually. Once `absl::variant` is `std::variant`,
-  // this return type can become `auto`.
-  friend std::strong_ordering operator<=>(const Section& lhs,
-                                          const Section& rhs) = default;
-  friend bool operator==(const Section& lhs, const Section& rhs) = default;
-  explicit operator bool() const;
-
-  bool is_from_autocomplete() const;
-  bool is_from_fieldidentifier() const;
-  bool is_default() const;
-
-  // Reconstructs `this` to a string. The string representation of the section
-  // is used in the renderer.
-  // TODO(crbug.com/40200532): Remove when fixed.
-  std::string ToString() const;
-
- private:
-  // Represents the section's origin:
-  //  - `Default` is the empty, initial value before running any sectioning
-  //     algorithm,
-  //  - `Autocomplete` represents a section derived from the autocomplete
-  //     attribute,
-  //  - `FieldIdentifier` represents a section generated based on the first
-  //     field in the section.
-  using SectionValue = absl::variant<Default, Autocomplete, FieldIdentifier>;
-
-  friend struct mojo::StructTraits<autofill::mojom::SectionDataView,
-                                   autofill::Section>;
-  friend struct mojo::UnionTraits<autofill::mojom::SectionValueDataView,
-                                  autofill::Section::SectionValue>;
-
-  SectionValue value_;
-};
-
-LogBuffer& operator<<(LogBuffer& buffer, const Section& section);
-std::ostream& operator<<(std::ostream& os, const Section& section);
-
 using FormControlType = mojom::FormControlType;
 
 LogBuffer& operator<<(LogBuffer& buffer, FormControlType type);
@@ -182,32 +118,41 @@ class FormFieldData {
 
   struct FillData;
 
-  // Returns true if many members of fields |a| and |b| are identical.
+  enum class Exclusion {
+    // Excludes all attributes related to the field value from the comparison.
+    kValue = 0,
+    // Excludes all attributes that should not count towards triggering a
+    // refill. This would be attributes that cannot influence field predictions
+    // and cannot influence the value to be filled in a field.
+    kNotRefillRelated = 1,
+    kMaxValue = kNotRefillRelated
+  };
+
+  // Returns true if `a` and `b` represent DOM elements that are
+  // - identical: they were computed from the same DOM element; and
+  // - equivalent: they have the same attributes.
   //
-  // "Many" is intended to be "all", but currently the following members are not
-  // being compared:
+  // NOTE: Most usecases should compare FormFieldData::global_id() instead,
+  // which checks for identity.
   //
-  // - FormFieldData::value,
-  // - FormFieldData::aria_label,
-  // - FormFieldData::aria_description,
-  // - FormFieldData::host_frame,
-  // - FormFieldData::host_form_id,
-  // - FormFieldData::host_form_signature,
-  // - FormFieldData::origin,
-  // - FormFieldData::force_override,
-  // - FormFieldData::form_control_ax_id,
-  // - FormFieldData::section,
-  // - FormFieldData::is_autofilled,
-  // - FormFieldData::is_user_edited,
-  // - FormFieldData::properties_mask,
-  // - FormFieldData::is_enabled,
-  // - FormFieldData::is_readonly,
-  // - FormFieldData::user_input,
-  // - FormFieldData::options,
-  // - FormFieldData::label_source,
-  // - FormFieldData::bounds,
-  // - FormFieldData::datalist_options.
-  static bool DeepEqual(const FormFieldData& a, const FormFieldData& b);
+  // Because DOM elements can change dynamically, "identical" and "equivalent"
+  // do not imply one another.
+  //
+  // For example, if `a` and `b` represent the two <input> elements in
+  //   <form> <input name=f> <input name=f> </form>,
+  // then the function returns false because the DOM elements are not identical
+  // (they have different renderer IDs).
+  //
+  // On the other hand, if `a` is the <input> element from
+  //   <form> <input name=f> </form>
+  // and later, the same DOM element has evolved to
+  //   <form> <input name=f value=Foo> </form>
+  // and `b` is that <input>, then the function returns true iff `exclude`
+  // contains `kValue`.
+  [[nodiscard]] static bool IdenticalAndEquivalentDomElements(
+      const FormFieldData& a,
+      const FormFieldData& b,
+      DenseSet<Exclusion> exclude = {});
 
   FormFieldData();
   FormFieldData(const FormFieldData&);
@@ -220,8 +165,8 @@ class FormFieldData {
   //
   // It does *not* uniquely identify this FormFieldData object (there is no such
   // kind of identifier because FormFieldData is a value type). In particular,
-  // they're not guaranteed to be unique FormData::fields; see FormData::fields
-  // for details.
+  // it does uniquely identify an element of FormData::fields; see
+  // FormData::fields for details.
   //
   // Must not be leaked to renderer process. See FieldGlobalId for details.
   FieldGlobalId global_id() const { return {host_frame(), renderer_id()}; }
@@ -234,10 +179,6 @@ class FormFieldData {
   FormGlobalId renderer_form_id() const {
     return {host_frame(), host_form_id()};
   }
-
-  // TODO(crbug.com/40183094): This function is deprecated. Use
-  // FormFieldData::DeepEqual() instead.
-  bool SameFieldAs(const FormFieldData& field) const;
 
   // Returns true for all of textfield-looking types: text, password,
   // search, email, url, and number. It must work the same way as Blink function
@@ -258,15 +199,6 @@ class FormFieldData {
   // support synthetic select fields, Autofill intentionally fills unfocusable
   // <select> elements.
   bool IsSelectElement() const;
-
-  // Returns true if the field is focusable to the user.
-  // This is an approximation of visibility with false positives.
-  bool IsFocusable() const {
-    return is_focusable() && role() != RoleAttribute::kPresentation;
-  }
-
-  // NOTE: Update `SameFieldAs()` and `FormFieldDataAndroid::SimilarFieldAs()`
-  // if needed when adding new a member.
 
   // The name by which autofill knows this field. This is generally either the
   // name attribute or the id_attribute value, which-ever is non-empty with
@@ -292,7 +224,7 @@ class FormFieldData {
   // FormFieldData::form_control_type().
   //
   // To get a field's initial value or the value for submission, see
-  // AutofillField::value() and AutofillField::value_for_import().
+  // AutofillField::initial_value() and AutofillField::value_for_import().
   //
   // A note on FormFieldData objects of type FormControlType::kSelect*, i.e.,
   // <select> elements:
@@ -308,23 +240,43 @@ class FormFieldData {
   //   FormFieldData::value() may not be the ideal human-readable representation
   //   of a <select> element. The selected option's text is usually the better
   //   string to display to the user (e.g., during form import). For further
-  //   details, see SelectOption and FormFieldData::selected_option().
+  //   details, see `SelectOption` documentation.
   //
   // Truncated at `kMaxStringLength`.
   // TODO(crbug.com/40941640): Extract the value of contenteditables on iOS.
   const std::u16string& value() const { return value_; }
   void set_value(std::u16string value) { value_ = std::move(value); }
 
-  // Returns the (first) selected option. Returns std::nullopt if none is found.
-  // The only field types that come with options are FormControlType::kSelect*
-  // and FormControlType::kInput* with a datalist. But even their `value()` may
-  // mismatch all `options()`, e.g., when JavaScript set the value to a
-  // different value or when the number or string length of the options exceeded
-  // limits during extraction.
-  base::optional_ref<const SelectOption> selected_option() const;
+  // The visible text of the currently selected <option> for <select> elements.
+  // Returns std::nullopt if no text is available or if the field is not a
+  // select element.
+  //
+  // Distinctions from similar properties:
+  //
+  // * vs. `value()`: `value()` returns the underlying technical value of the
+  //   option (the IDL "value" attribute), whereas `selected_option_text()`
+  //   returns the human-readable string displayed to the user in the UI.
+  //   For example, given `<option value="US">United States</option>`,
+  //   `value()` is "US", but `selected_option_text()` is "United States".
+  //   Effectively the difference is similar to the difference between
+  //   `SelectOption::value` and `SelectOption::text` (see `SelectOption`
+  //   documentation for more details).
+  //
+  // * vs. `selected_text()`: `selected_text()` refers to the string of text
+  //   actively highlighted by the user's cursor within a text field or
+  //   contenteditable. `selected_option_text()` strictly refers to the label
+  //   of a chosen dropdown option, regardless of the user's cursor.
+  const std::optional<std::u16string>& selected_option_text() const {
+    return selected_option_text_;
+  }
+  void set_selected_option_text(std::u16string selected_option_text) {
+    selected_option_text_ = std::move(selected_option_text);
+  }
 
-  // The selected text, or the empty string if no text is selected.
+  // The selected (highlighted text in a text input element or contenteditable)
+  // text, or the empty string if no text is selected.
   // Truncated at `50 * kMaxStringLength`.
+  //
   // This is not necessarily a substring of `value` because both strings are
   // truncated, and because for rich-text contenteditables the selection and
   // text content differ in whitespace.
@@ -352,15 +304,28 @@ class FormFieldData {
     parsed_autocomplete_ = std::move(parsed_autocomplete);
   }
 
-  // The value of the form control element's "pattern" attribute. The string
+  // The value of the form control element's `pattern` attribute. The string
   // comes from the renderer without any further validation. There are no
   // guarantees about the format of the string.
   const std::u16string& pattern() const { return pattern_; }
   void set_pattern(std::u16string pattern) { pattern_ = std::move(pattern); }
 
+  // The value of the form control element's `placeholder` attribute. The value
+  // might be inferred from other elements if the value of the placeholder is
+  // missing or is of low quality. Do not take a dependency on the value
+  // matching the placeholder HTML attribute.
+  // If that's needed, use `placeholder_attribute` instead.
   const std::u16string& placeholder() const { return placeholder_; }
   void set_placeholder(std::u16string placeholder) {
     placeholder_ = std::move(placeholder);
+  }
+
+  // The value of the form control element's `placeholder` attribute.
+  const std::u16string& placeholder_attribute() const {
+    return placeholder_attribute_;
+  }
+  void set_placeholder_attribute(std::u16string placeholder_attribute) {
+    placeholder_attribute_ = std::move(placeholder_attribute);
   }
   const std::u16string& css_classes() const { return css_classes_; }
   void set_css_classes(std::u16string css_classes) {
@@ -374,11 +339,11 @@ class FormFieldData {
   void set_aria_description(std::u16string aria_description) {
     aria_description_ = std::move(aria_description);
   }
+  const std::u16string& nonce() const { return nonce_; }
+  void set_nonce(std::u16string nonce) { nonce_ = std::move(nonce); }
 
   // A unique identifier of the containing frame. This value is not serialized
   // because LocalFrameTokens must not be leaked to other renderer processes.
-  // It is not persistent between page loads and therefore not used in
-  // comparison in SameFieldAs().
   const LocalFrameToken& host_frame() const { return host_frame_; }
   void set_host_frame(LocalFrameToken host_frame) {
     host_frame_ = std::move(host_frame);
@@ -422,15 +387,10 @@ class FormFieldData {
     form_control_ax_id_ = form_control_ax_id;
   }
 
-  // The unique identifier of the section (e.g. billing vs. shipping address)
-  // of this field.
-  const Section& section() const { return section_; }
-  void set_section(Section section) { section_ = std::move(section); }
-
   // The default value for text fields that have no maxlength attribute
-  // specified. We choose the maximum 32 bit, rather than 64 bit, number because
-  // so we don't need to worry about integer overflows when doing arithmetic
-  // with FormFieldData::max_length.
+  // specified. We choose the maximum 32 bit, rather than 64 bit, number so we
+  // don't need to worry about integer overflows when doing arithmetic with
+  // FormFieldData::max_length.
   static constexpr size_t kDefaultMaxLength =
       std::numeric_limits<uint32_t>::max();
 
@@ -450,31 +410,12 @@ class FormFieldData {
   uint64_t max_length() const { return max_length_; }
   void set_max_length(uint64_t max_length) { max_length_ = max_length; }
 
-  bool is_autofilled() const { return is_autofilled_; }
-  void set_is_autofilled(bool is_autofilled) { is_autofilled_ = is_autofilled; }
-
-  // Whether the user has edited this field since page load or resetting the
-  // field.
-  //
-  // Examples that count as edits:
-  // - Typing into a text control.
-  // - Pasting into a text control.
-  // - Clicking and selecting an option of a <select> counts.
-  // - Unfocusing a <select> using TAB (because of the keydown event).
-  //
-  // Examples that do not count as edits:
-  // - Autofill.
-  // - Typing into a contenteditable.
-  // - Setting the field's value directly in JavaScript.
-  // - Untrusted events (see JavaScript's Event.isTrusted).
-  //
-  // The property is sticky: a user-edited field becomes non-user-edited only
-  // when the form is reset (JavaScript's HTMLFormElement.reset()).
-  // TODO(crbug.com/40941928): On iOS, also non-trusted events reset the
-  // property.
-  bool is_user_edited() const { return is_user_edited_; }
-  void set_is_user_edited(bool is_user_edited) {
-    is_user_edited_ = is_user_edited;
+  bool is_autofilled_according_to_renderer() const {
+    return is_autofilled_according_to_renderer_;
+  }
+  void set_is_autofilled_according_to_renderer(
+      bool is_autofilled_according_to_renderer) {
+    is_autofilled_according_to_renderer_ = is_autofilled_according_to_renderer;
   }
 
   CheckStatus check_status() const { return check_status_; }
@@ -501,7 +442,7 @@ class FormFieldData {
   }
 
   // Data members from the next block are used for parsing only, they are not
-  // serialised for storage.
+  // serialized for storage.
   bool is_enabled() const { return is_enabled_; }
   void set_is_enabled(bool is_enabled) { is_enabled_ = is_enabled; }
   bool is_readonly() const { return is_readonly_; }
@@ -537,9 +478,11 @@ class FormFieldData {
     label_source_ = label_source;
   }
 
-  // The bounds of this field in current frame coordinates at the
-  // form-extraction time. It is valid if not empty, will not be synced to the
-  // server side or be used for field comparison and isn't in serialize methods.
+  // The bounds of the field
+  // - in the browser process: in the outermost main frame's coordinate system;
+  // - in the renderer process: in the field's host frame's coordinate system.
+  // (The conversion happens in AutofillDriver.)
+  // It is not populated on Bling.
   const gfx::RectF& bounds() const { return bounds_; }
   void set_bounds(gfx::RectF bounds) { bounds_ = std::move(bounds); }
 
@@ -562,33 +505,37 @@ class FormFieldData {
   }
 
  private:
+  // Also consider updating `FormFieldDataAndroid::SimilarFieldAs()` when adding
+  // new a member.
+  // LINT.IfChange(FormFieldDataMembers)
   std::u16string name_;
   std::u16string id_attribute_;
   std::u16string name_attribute_;
   std::u16string label_;
   std::u16string value_;
+  std::optional<std::u16string> selected_option_text_;
   std::u16string selected_text_;
   FormControlType form_control_type_ = FormControlType::kInputText;
   std::string autocomplete_attribute_;
   std::optional<AutocompleteParsingResult> parsed_autocomplete_;
   std::u16string pattern_;
   std::u16string placeholder_;
+  std::u16string placeholder_attribute_;
   std::u16string css_classes_;
   std::u16string aria_label_;
   std::u16string aria_description_;
+  std::u16string nonce_;
   LocalFrameToken host_frame_;
   FieldRendererId renderer_id_;
   FormRendererId host_form_id_;
   FormSignature host_form_signature_;
   url::Origin origin_;
   int32_t form_control_ax_id_ = 0;
-  uint64_t max_length_ = std::numeric_limits<uint32_t>::max();
-  Section section_;
-  bool is_autofilled_ = false;
-  bool is_user_edited_ = false;
+  uint64_t max_length_ = kDefaultMaxLength;
+  bool is_autofilled_according_to_renderer_ = false;
   CheckStatus check_status_ = CheckStatus::kNotCheckable;
   bool is_focusable_ = true;
-  bool is_visible_ = true;  // See `features::kAutofillDetectFieldVisibility`.
+  bool is_visible_ = true;
   bool should_autocomplete_ = true;
   RoleAttribute role_ = RoleAttribute::kOther;
   base::i18n::TextDirection text_direction_ = base::i18n::UNKNOWN_DIRECTION;
@@ -602,6 +549,8 @@ class FormFieldData {
   gfx::RectF bounds_;
   std::vector<SelectOption> datalist_options_;
   bool force_override_ = false;
+  // LINT.ThenChange(form_field_data.cc:IdenticalAndEquivalentDomElements,
+  // autofill_test_utils.cc:FormFieldDataEq)
 };
 
 // Structure containing necessary information to be sent from the browser to the
@@ -612,11 +561,14 @@ struct FormFieldData::FillData {
   explicit FillData(const FormFieldData& field);
   FillData(const FillData&);
   FillData& operator=(const FillData&);
-
   ~FillData();
 
   // The field value to be set by the renderer.
   std::u16string value;
+
+  // The `SelectOption::text` value of the option to be selected in a select
+  // field.
+  std::optional<std::u16string> selected_option_text;
 
   // Uniquely identifies the DOM element that this field represents among the
   // field DOM elements in the same document.
@@ -626,11 +578,6 @@ struct FormFieldData::FillData {
   // elements in the same document (or the collection of unowned fields of the
   // DOM in case this ID is null).
   FormRendererId host_form_id;
-
-  // The unique identifier of the section (e.g. billing vs. shipping address)
-  // of this field. This is only used on iOS.
-  // TODO(crbug.com/40266549): Remove when Undo Autofill launches on iOS.
-  Section section;
 
   // Whether the renderer should mark the field as autofilled or not. In most
   // filling cases this will be true. However for the case of UndoAutofill we
@@ -662,11 +609,17 @@ void SerializeFormFieldData(const FormFieldData& form_field_data,
 bool DeserializeFormFieldData(base::PickleIterator* pickle_iterator,
                               FormFieldData* form_field_data);
 
-// So we can compare FormFieldDatas with EXPECT_EQ().
 std::ostream& operator<<(std::ostream& os, const FormFieldData& field);
 
 // Produces a <table> element with information about the form.
 LogBuffer& operator<<(LogBuffer& buffer, const FormFieldData& form);
+
+namespace internal {
+std::ostream& PrintWithIndentation(std::ostream& os,
+                                   const FormFieldData& field,
+                                   int indentation = 0,
+                                   std::string_view title = "FormFieldData");
+}  // namespace internal
 
 }  // namespace autofill
 

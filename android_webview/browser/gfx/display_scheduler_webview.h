@@ -37,7 +37,8 @@ class DisplaySchedulerWebView : public viz::DisplaySchedulerBase,
   // DisplaySchedulerBase implementation.
   void SetVisible(bool visible) override {}
   void ForceImmediateSwapIfPossible() override;
-  void SetNeedsOneBeginFrame(bool needs_draw) override;
+  void SetNeedsOneBeginFrame(const viz::BeginFrameArgs& args,
+                             bool needs_draw) override;
   void DidSwapBuffers() override;
   void DidReceiveSwapBuffersAck() override {}
   void OutputSurfaceLost() override;
@@ -47,9 +48,16 @@ class DisplaySchedulerWebView : public viz::DisplaySchedulerBase,
       base::flat_set<base::PlatformThreadId> renderer_main_thread_ids,
       base::TimeTicks draw_start,
       viz::HintSession::BoostType boost_type) override {}
+  void OnPresentationFeedback(
+      const gfx::PresentationFeedback& feedback,
+      int64_t choreographer_vsync_id,
+      base::TimeTicks frame_time,
+      base::TimeDelta interval,
+      std::optional<viz::PossibleDeadline> deadline) override {}
 
   // DisplayDamageTracker::Delegate implementation.
-  void OnDisplayDamaged(viz::SurfaceId surface_id) override;
+  void OnDisplayDamaged(viz::SurfaceId surface_id,
+                        viz::BeginFrameId frame_id) override;
   void OnRootFrameMissing(bool missing) override {}
   void OnPendingSurfacesChanged() override {}
 
@@ -65,10 +73,6 @@ class DisplaySchedulerWebView : public viz::DisplaySchedulerBase,
 
   const raw_ptr<RootFrameSink> root_frame_sink_;
 
-  // This count how many times specific sink damaged display. It's incremented
-  // in OnDisplayDamaged and decremented in DidSwapBuffers.
-  std::map<viz::FrameSinkId, int> damaged_frames_;
-
   // Due to destruction order in viz::Display this might be not safe to use in
   // destructor of this class.
   const raw_ptr<OverlaysInfoProvider, DanglingUntriaged>
@@ -78,8 +82,6 @@ class DisplaySchedulerWebView : public viz::DisplaySchedulerBase,
       surface_manager_observation_{this};
   base::ScopedObservation<viz::FrameSinkManagerImpl, viz::FrameSinkObserver>
       frame_sink_manager_observation_{this};
-
-  const bool use_new_invalidate_heuristic_;
 
   THREAD_CHECKER(thread_checker_);
 };

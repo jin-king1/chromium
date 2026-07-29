@@ -4,7 +4,6 @@
 
 #include "chrome/browser/performance_manager/policies/memory_saver_mode_policy.h"
 
-#include "base/containers/contains.h"
 #include "base/notreached.h"
 #include "chrome/browser/performance_manager/policies/page_discarding_helper.h"
 #include "components/performance_manager/public/decorators/tab_page_decorator.h"
@@ -195,7 +194,7 @@ void MemorySaverModePolicy::DiscardPageTimerCallback(
         ->GetRegisteredObjectAs<PageDiscardingHelper>()
         ->ImmediatelyDiscardMultiplePages(
             {tab_handle->page_node()},
-            PageDiscardingHelper::DiscardReason::PROACTIVE);
+            DiscardEligibilityPolicy::DiscardReason::PROACTIVE);
   }
 }
 
@@ -215,11 +214,11 @@ base::TimeDelta MemorySaverModePolicy::GetTimeBeforeDiscardForCurrentMode()
 int MemorySaverModePolicy::GetMaxNumRevisitsForCurrentMode() const {
   switch (mode_) {
     case MemorySaverModeAggressiveness::kConservative:
-      return 15;
+      return 5;
     case MemorySaverModeAggressiveness::kMedium:
       return 15;
     case MemorySaverModeAggressiveness::kAggressive:
-      return 5;
+      return 15;
   }
   NOTREACHED();
 }

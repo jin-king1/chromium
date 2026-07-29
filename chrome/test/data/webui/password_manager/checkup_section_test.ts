@@ -12,7 +12,7 @@ import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {isVisible} from 'chrome://webui-test/test_util.js';
 
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
-import {createCredentialGroup, makeInsecureCredential, makePasswordCheckStatus} from './test_util.js';
+import {createPasswordEntry, makeInsecureCredential, makePasswordCheckStatus} from './test_util.js';
 
 const PasswordCheckState = chrome.passwordsPrivate.PasswordCheckState;
 
@@ -82,7 +82,7 @@ suite('CheckupSectionTest', function() {
     assertFalse(section.$.refreshButton.disabled);
     assertTrue(isVisible(section.$.checkupStatusSubLabel));
     assertEquals(
-        elapsedTime, section.$.checkupStatusSubLabel.textContent!.trim());
+        elapsedTime, section.$.checkupStatusSubLabel.textContent.trim());
     assertFalse(isVisible(section.$.retryButton));
     assertFalse(isVisible(section.$.spinner));
   });
@@ -102,7 +102,7 @@ suite('CheckupSectionTest', function() {
     assertTrue(isVisible(section.$.checkupStatusSubLabel));
     assertEquals(
         section.i18n('checkupProgress', 4, 10),
-        section.$.checkupStatusSubLabel.textContent!.trim());
+        section.$.checkupStatusSubLabel.textContent.trim());
     assertFalse(isVisible(section.$.retryButton));
     assertTrue(isVisible(section.$.spinner));
   });
@@ -122,7 +122,7 @@ suite('CheckupSectionTest', function() {
     assertEquals(
         section.i18n(
             'checkupErrorNoPasswords', section.i18n('localPasswordManager')),
-        section.$.checkupStatusSubLabel.textContent!.trim());
+        section.$.checkupStatusSubLabel.textContent.trim());
     assertFalse(isVisible(section.$.retryButton));
     assertFalse(isVisible(section.$.spinner));
   });
@@ -144,7 +144,7 @@ suite('CheckupSectionTest', function() {
                  assertTrue(isVisible(section.$.checkupStatusSubLabel));
                  assertEquals(
                      passwordManager.data.checkStatus.elapsedTimeSinceLastCheck,
-                     section.$.checkupStatusSubLabel.textContent!.trim());
+                     section.$.checkupStatusSubLabel.textContent.trim());
                  assertTrue(isVisible(section.$.retryButton));
                  assertFalse(isVisible(section.$.spinner));
                  assertEquals(
@@ -227,8 +227,8 @@ suite('CheckupSectionTest', function() {
     assertFalse(section.$.weakRow.hasAttribute('non-clickable'));
   });
 
-  test('Number of checked sites shown', async function() {
-    passwordManager.data.groups = Array(10).fill(createCredentialGroup());
+  test('Number of checked passwords shown', async function() {
+    passwordManager.data.passwords = Array(10).fill(createPasswordEntry());
     passwordManager.data.checkStatus = makePasswordCheckStatus(
         {state: PasswordCheckState.IDLE, totalNumber: 20});
 
@@ -242,7 +242,7 @@ suite('CheckupSectionTest', function() {
     // getPluralString() for 'checkedPasswords' is called 2 times with 0 and 10.
     assertArrayEquals([0, 10], pluralString.getArgs('checkedPasswords'));
     assertEquals(
-        'checkedPasswords', section.$.checkupStatusLabel.textContent!.trim());
+        'checkedPasswords', section.$.checkupStatusLabel.textContent.trim());
   });
 
   [CheckupSubpage.COMPROMISED, CheckupSubpage.REUSED, CheckupSubpage.WEAK]
@@ -321,8 +321,8 @@ suite('CheckupSectionTest', function() {
         PasswordCheckInteraction.START_CHECK_AUTOMATICALLY, interaction);
   });
 
-  test('changing number of groups changes title', async function() {
-    passwordManager.data.groups = Array(10).fill(createCredentialGroup());
+  test('changing number of passwords changes title', async function() {
+    passwordManager.data.passwords = Array(10).fill(createPasswordEntry());
     passwordManager.data.checkStatus = makePasswordCheckStatus(
         {state: PasswordCheckState.IDLE, totalNumber: 20});
 
@@ -336,9 +336,9 @@ suite('CheckupSectionTest', function() {
     // getPluralString() for 'checkedPasswords' is called 2 times with 0 and 10.
     assertArrayEquals([0, 10], pluralString.getArgs('checkedPasswords'));
 
-    passwordManager.data.groups = Array(9).fill(createCredentialGroup());
     assertTrue(!!passwordManager.listeners.savedPasswordListChangedListener);
-    passwordManager.listeners.savedPasswordListChangedListener([]);
+    passwordManager.listeners.savedPasswordListChangedListener(
+        Array(9).fill(createPasswordEntry()));
 
     await pluralString.whenCalled('checkedPasswords');
     // getPluralString() for 'checkedPasswords' is called 3 times with 0, 10

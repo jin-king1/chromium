@@ -15,14 +15,11 @@ enum class UrlLoadStrategy;
 @protocol HistoryCoordinatorDelegate;
 
 // Coordinator that presents History.
+NS_SWIFT_UI_ACTOR
 @interface HistoryCoordinator : BaseHistoryCoordinator
 
 // Optional: If provided, search terms to filter the displayed history items.
 @property(nonatomic, copy) NSString* searchTerms;
-
-// Indicates if the tabs closure animation for Quick Delete can be performed.
-// Defaults to YES.
-@property(nonatomic, readwrite) BOOL canPerformTabsClosureAnimation;
 
 @end
 

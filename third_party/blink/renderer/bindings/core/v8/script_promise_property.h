@@ -11,7 +11,6 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -108,11 +107,6 @@ class ScriptPromiseProperty final
   template <typename PassRejectedType>
   void Reject(PassRejectedType value) {
     CHECK(!ScriptForbiddenScope::IsScriptForbidden());
-    if (RuntimeEnabledFeatures::BlinkLifecycleScriptForbiddenEnabled()) {
-      CHECK(!ScriptForbiddenScope::WillBeScriptForbidden());
-    } else {
-      DCHECK(!ScriptForbiddenScope::WillBeScriptForbidden());
-    }
     DCHECK_EQ(GetState(), kPending);
     if (!GetExecutionContext()) {
       return;

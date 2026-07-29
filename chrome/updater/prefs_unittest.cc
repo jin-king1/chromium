@@ -17,6 +17,7 @@
 #include "chrome/updater/prefs_impl.h"
 #include "chrome/updater/registration_data.h"
 #include "chrome/updater/test/test_scope.h"
+#include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/update_client/update_client.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -35,12 +36,13 @@ TEST(PrefsTest, PrefsCommitPendingWrites) {
   base::test::TaskEnvironment task_environment;
   auto pref = std::make_unique<TestingPrefServiceSimple>();
   update_client::RegisterPrefs(pref->registry());
+  RegisterPersistedDataPrefs(pref->registry());
   auto metadata = base::MakeRefCounted<PersistedData>(
       GetUpdaterScopeForTesting(), pref.get(), nullptr);
 
   // Writes something to prefs.
   metadata->SetBrandCode("someappid", "brand");
-  EXPECT_STREQ(metadata->GetBrandCode("someappid").c_str(), "brand");
+  EXPECT_EQ(metadata->GetBrandCode("someappid"), "brand");
 
   metadata->SetLang("someappid", "somelang");
 #if BUILDFLAG(IS_WIN)
@@ -62,7 +64,7 @@ TEST(PrefsTest, PrefsCommitPendingWrites) {
                         Wow6432(KEY_SET_VALUE))
           .WriteValue(kRegValueBrandCode, L"nbrnd"),
       ERROR_SUCCESS);
-  EXPECT_STREQ(metadata->GetBrandCode("someappid").c_str(), "nbrnd");
+  EXPECT_EQ(metadata->GetBrandCode("someappid"), "nbrnd");
 
   EXPECT_EQ(
       base::win::RegKey(UpdaterScopeToHKeyRoot(GetUpdaterScopeForTesting()),

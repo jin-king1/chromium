@@ -11,9 +11,11 @@
 
 #import "base/memory/weak_ptr.h"
 #import "base/scoped_observation.h"
+#import "base/types/optional_ref.h"
 #import "components/autofill/core/common/language_code.h"
 #import "components/password_manager/core/browser/leak_detection_dialog_utils.h"
 #import "components/password_manager/core/browser/password_feature_manager_impl.h"
+#import "components/password_manager/core/browser/password_manager.h"
 #import "components/password_manager/core/browser/password_manager_client.h"
 #import "components/password_manager/core/browser/password_manager_client_helper.h"
 #import "components/password_manager/core/browser/password_manager_metrics_recorder.h"
@@ -30,6 +32,10 @@
 #import "services/metrics/public/cpp/ukm_source_id.h"
 
 class ProfileIOS;
+
+namespace device_reauth {
+class DeviceAuthenticator;
+}  // namespace device_reauth
 
 namespace autofill {
 class LogManager;
@@ -90,6 +96,10 @@ class IOSChromePasswordManagerClient
       std::vector<std::unique_ptr<password_manager::PasswordForm>> local_forms,
       const url::Origin& origin,
       CredentialsCallback callback) override;
+  bool IsReauthBeforeFillingRequired(
+      device_reauth::DeviceAuthenticator* authenticator) override;
+  std::unique_ptr<device_reauth::DeviceAuthenticator> GetDeviceAuthenticator()
+      override;
   void AutomaticPasswordSave(
       std::unique_ptr<password_manager::PasswordFormManagerForUI>
           saved_form_manager,
@@ -101,6 +111,7 @@ class IOSChromePasswordManagerClient
       const override;
   PrefService* GetPrefs() const override;
   PrefService* GetLocalStatePrefs() const override;
+  metrics::ProfileMetricsService* GetProfileMetricsService() override;
   const syncer::SyncService* GetSyncService() const override;
   affiliations::AffiliationService* GetAffiliationService() override;
   password_manager::PasswordStoreInterface* GetProfilePasswordStore()
@@ -111,7 +122,6 @@ class IOSChromePasswordManagerClient
       const override;
   password_manager::PasswordChangeServiceInterface* GetPasswordChangeService()
       const override;
-
   void NotifyUserAutoSignin(
       std::vector<std::unique_ptr<password_manager::PasswordForm>> local_forms,
       const url::Origin& origin) override;
@@ -121,12 +131,27 @@ class IOSChromePasswordManagerClient
       std::unique_ptr<password_manager::PasswordFormManagerForUI>
           submitted_manager) override;
   bool IsPasswordChangeOngoing() override;
+  void MaybeReportEnterpriseLoginEvent(
+      const GURL& url,
+      bool is_federated,
+      const url::SchemeHostPort& federated_origin,
+      const std::u16string& login_user_name) const override;
+  void MaybeReportEnterprisePasswordBreachEvent(
+      const std::vector<std::pair<GURL, std::u16string>>& identities)
+      const override;
   void NotifyStorePasswordCalled() override;
   void NotifyUserCredentialsWereLeaked(
       password_manager::LeakedPasswordDetails details) override;
   void NotifyKeychainError() override;
-  bool IsSavingAndFillingEnabled(const GURL& url) const override;
-  bool IsFillingEnabled(const GURL& url) const override;
+  using password_manager::PasswordManagerClient::IsFillingEnabled;
+  using password_manager::PasswordManagerClient::IsSavingAndFillingEnabled;
+  bool IsSavingAndFillingEnabled(
+      const url::Origin& origin,
+      base::optional_ref<const GURL> url) const override;
+  bool IsFillingEnabled(const url::Origin& origin,
+                        base::optional_ref<const GURL> url) const override;
+  bool IsFieldFilledWithOtp(autofill::FormGlobalId form_id,
+                            autofill::FieldGlobalId field_id) override;
   bool IsCommittedMainFrameSecure() const override;
   const GURL& GetLastCommittedURL() const override;
   url::Origin GetLastCommittedOrigin() const override;
@@ -138,15 +163,20 @@ class IOSChromePasswordManagerClient
   password_manager::PasswordManagerMetricsRecorder* GetMetricsRecorder()
       override;
   signin::IdentityManager* GetIdentityManager() override;
+  const signin::IdentityManager* GetIdentityManager() const override;
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() override;
   password_manager::PasswordRequirementsService*
   GetPasswordRequirementsService() override;
   void UpdateFormManagers() override;
   bool IsIsolationForPasswordSitesEnabled() const override;
   bool IsNewTabPage() const override;
-
+  password_manager::WebAuthnCredentialsDelegate*
+  GetWebAuthnCredentialsDelegateForDriver(
+      password_manager::PasswordManagerDriver* driver) override;
   safe_browsing::PasswordProtectionService* GetPasswordProtectionService()
       const override;
+  autofill::AutofillCrowdsourcingManager* GetAutofillCrowdsourcingManager()
+      override;
 
  private:
   __weak id<IOSChromePasswordManagerClientBridge> bridge_;

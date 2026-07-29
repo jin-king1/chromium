@@ -18,13 +18,15 @@ void InstallFunctionHolderTemplate(v8::Isolate*,
 }
 
 const WrapperTypeInfo function_holder_info = {
-    gin::kEmbedderBlink,
+    {gin::kEmbedderBlink},
     InstallFunctionHolderTemplate,
     nullptr,
     "ScriptFunctionHolder",
     nullptr,
-    kDOMWrappersTag,
-    kDOMWrappersTag,
+    static_cast<v8::CppHeapPointerTag>(
+        ScriptWrappableArrayTag::kScriptFunctionHolderTag),
+    static_cast<v8::CppHeapPointerTag>(
+        ScriptWrappableArrayTag::kScriptFunctionHolderTag),
     WrapperTypeInfo::kWrapperTypeNoPrototype,
     WrapperTypeInfo::kCustomWrappableId,
     WrapperTypeInfo::kIdlOtherType,
@@ -60,7 +62,7 @@ class CORE_EXPORT FunctionHolder final : public ScriptWrappable {
 
   explicit FunctionHolder(ScriptFunction* function) : function_(function) {}
 
-  const char* NameInHeapSnapshot() const final { return "ScriptFunction"; }
+  const char* GetHumanReadableName() const final { return "ScriptFunction"; }
 
   void Trace(Visitor* visitor) const override {
     visitor->Trace(function_);

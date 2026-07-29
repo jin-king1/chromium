@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
-import {NetworkTestRunner} from 'network_test_runner';
 import {ConsoleTestRunner} from 'console_test_runner';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
+import {NetworkTestRunner} from 'network_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(
@@ -42,7 +43,7 @@ import {ConsoleTestRunner} from 'console_test_runner';
 
   function step2() {
     imageRequest = NetworkTestRunner.networkRequests().pop();
-    imageRequest.requestContent().then(step3);
+    imageRequest.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(step3);
   }
 
   var originalContentLength;
@@ -59,16 +60,16 @@ import {ConsoleTestRunner} from 'console_test_runner';
   }
 
   function step4(msg) {
-    TestRunner.NetworkAgent.setCacheDisabled(true).then(step5);
+    TestRunner.NetworkAgent.invoke_setCacheDisabled({cacheDisabled: true}).then(step5);
   }
 
   function step5() {
-    TestRunner.NetworkAgent.setCacheDisabled(false).then(step6);
+    TestRunner.NetworkAgent.invoke_setCacheDisabled({cacheDisabled: false}).then(step6);
   }
 
   function step6() {
     delete imageRequest.contentData;
-    imageRequest.requestContent().then(step7);
+    imageRequest.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(step7);
   }
 
   function step7({ content, error, isEncoded }) {

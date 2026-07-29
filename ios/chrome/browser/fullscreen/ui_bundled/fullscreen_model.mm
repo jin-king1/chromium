@@ -8,13 +8,24 @@
 
 #import "base/check_op.h"
 #import "base/memory/raw_ptr.h"
+#import "base/metrics/histogram_functions.h"
+#import "base/metrics/user_metrics.h"
+#import "base/metrics/user_metrics_action.h"
+#import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
+#import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_constants.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_model_observer.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/fullscreen/toolbars_size.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/fullscreen/toolbars_size.h"
 #import "ios/chrome/common/ui/util/ui_util.h"
+#import "ios/public/provider/chrome/browser/fullscreen/fullscreen_api.h"
 #import "ios/web/common/features.h"
 
 namespace {
+
+// Default value of the amount the scroll must exceed to begin entering and
+// exiting fullscreen when the `kFullscreenScrollThreshold` feature is enabled.
+constexpr CGFloat kScrollThresholdDefault = 10;
+
 // Object that increments `counter` by 1 for its lifetime.
 class ScopedIncrementer {
  public:
@@ -29,7 +40,18 @@ class ScopedIncrementer {
 }  // namespace
 
 FullscreenModel::FullscreenModel() {
+  // TODO(crbug.com/500417603): This can be removed once all calls to
+  // FullscreenController are flag guarded.
+  if (IsFullscreenRefactoringEnabled()) {
+    return;
+  }
   UpdateSpeed();
+  if (web::features::IsFullscreenScrollThresholdEnabled()) {
+    scroll_threshold_ = GetFieldTrialParamByFeatureAsDouble(
+        web::features::kFullscreenScrollThreshold,
+        web::features::kFullscreenScrollThresholdAmount,
+        kScrollThresholdDefault);
+  }
 }
 FullscreenModel::~FullscreenModel() {
   [toolbars_size_ removeObserver:this];
@@ -46,8 +68,12 @@ void FullscreenModel::RemoveObserver(FullscreenModelObserver* observer) {
 void FullscreenModel::IncrementDisabledCounter() {
   if (++disabled_counter_ == 1U) {
     ScopedIncrementer disabled_incrementer(&observer_callback_count_);
+    base::WeakPtr<FullscreenModel> weak_this = weak_factory_.GetWeakPtr();
     for (auto& observer : observers_) {
       observer.FullscreenModelEnabledStateChanged(this);
+      if (!weak_this) {
+        return;
+      }
     }
     // Fullscreen observers are expected to show the toolbar when fullscreen is
     // disabled. Update the internal state to match this.
@@ -60,8 +86,12 @@ void FullscreenModel::DecrementDisabledCounter() {
   DCHECK_GT(disabled_counter_, 0U);
   if (!--disabled_counter_) {
     ScopedIncrementer enabled_incrementer(&observer_callback_count_);
+    base::WeakPtr<FullscreenModel> weak_this = weak_factory_.GetWeakPtr();
     for (auto& observer : observers_) {
       observer.FullscreenModelEnabledStateChanged(this);
+      if (!weak_this) {
+        return;
+      }
     }
   }
 }
@@ -72,11 +102,30 @@ void FullscreenModel::ForceEnterFullscreen() {
 
 void FullscreenModel::ResetForNavigation() {
   if (IsForceFullscreenMode()) {
-    return;
+    if (!manually_forced_) {
+      return;
+    }
+    CHECK(IsHideToolbarEnabled());
+    SetForceFullscreenMode(false);
+    SetInsetsUpdateEnabled(true);
+    set_manually_forced(false);
+    DecrementDisabledCounter();
   }
+  base::UmaHistogramEnumeration(kExitFullscreenModeTransitionTriggerHistogram,
+                                FullscreenModeTransitionTrigger::kForcedByCode);
   progress_ = 1.0;
   scrolling_ = false;
-  if (base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault)) {
+  start_scrolling_time_ = std::nullopt;
+  is_scrolling_time_recorded_ = false;
+
+  // Duration metrics are only recorded for user-initiated transitions within
+  // the same page session. Navigations and tab changes reset the start times,
+  // effectively discarding any accumulated duration and starting fresh for the
+  // next page/tab.
+  time_entered_fullscreen_ = std::nullopt;
+  time_exited_fullscreen_ = base::TimeTicks::Now();
+
+  if (ios::provider::IsFullscreenSmoothScrollingSupported()) {
     base_offset_ = NAN;
   }
   ScopedIncrementer reset_incrementer(&observer_callback_count_);
@@ -101,12 +150,16 @@ void FullscreenModel::AnimationEndedWithProgress(CGFloat progress) {
 }
 
 void FullscreenModel::ToolbarsHeightDidChange() {
-  if (base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault)) {
+  if (ios::provider::IsFullscreenSmoothScrollingSupported()) {
     base_offset_ = NAN;
   }
   ScopedIncrementer toolbar_height_incrementer(&observer_callback_count_);
+  base::WeakPtr<FullscreenModel> weak_this = weak_factory_.GetWeakPtr();
   for (auto& observer : observers_) {
     observer.FullscreenModelToolbarHeightsUpdated(this);
+    if (!weak_this) {
+      return;
+    }
   }
 }
 
@@ -158,7 +211,7 @@ void FullscreenModel::SetYContentOffset(CGFloat y_content_offset) {
   if (y_content_offset_ == from_offset) {
     // The scroll did not change `y_content_offset_` (e.g., reached the bottom
     // of the page).
-    fullscreen_scroll_direction_ = FullscreenModelScrollDirection::kNone;
+    SetLastScrollDirection(FullscreenModelScrollDirection::kNone);
   }
   switch (ActionForScrollFromOffset(from_offset)) {
     case ScrollAction::kUpdateBaseOffset:
@@ -167,15 +220,14 @@ void FullscreenModel::SetYContentOffset(CGFloat y_content_offset) {
     case ScrollAction::kUpdateProgress:
       // Updates `scroll_direction_` according to the offset.
       if (y_content_offset_ > from_offset) {
-        fullscreen_scroll_direction_ = FullscreenModelScrollDirection::kDown;
+        SetLastScrollDirection(FullscreenModelScrollDirection::kDown);
       } else if (y_content_offset_ < from_offset) {
-        fullscreen_scroll_direction_ = FullscreenModelScrollDirection::kUp;
+        SetLastScrollDirection(FullscreenModelScrollDirection::kUp);
       }
       UpdateProgress();
       break;
     case ScrollAction::kUpdateBaseOffsetAndProgress:
-      CHECK(
-          base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault));
+      CHECK(ios::provider::IsFullscreenSmoothScrollingSupported());
       UpdateBaseOffset();
       UpdateProgress();
       break;
@@ -195,18 +247,41 @@ void FullscreenModel::SetScrollViewIsScrolling(bool scrolling) {
   }
   scrolling_ = scrolling;
   if (scrolling_) {
+    // Record the start time when the first scroll happened in the current
+    // navigation.
+    if (!start_scrolling_time_.has_value() && can_collapse_toolbar()) {
+      is_scrolling_time_recorded_ = false;
+      start_scrolling_time_ = base::TimeTicks::Now();
+    }
     // Notify observers that the scroll event has begun.
     ScopedIncrementer scroll_started_incrementer(&observer_callback_count_);
+    base::WeakPtr<FullscreenModel> weak_this = weak_factory_.GetWeakPtr();
     for (auto& observer : observers_) {
       observer.FullscreenModelScrollEventStarted(this);
+      if (!weak_this) {
+        return;
+      }
     }
   } else {
+    if (is_scrolled_to_bottom() && !is_scrolling_time_recorded_ &&
+        start_scrolling_time_.has_value()) {
+      // Record the time spent scrolling to the bottom of the page.
+      base::UmaHistogramLongTimes(
+          kFullscreenScrollToTheBottomTime,
+          base::TimeTicks::Now() - start_scrolling_time_.value());
+      // Avoid recording multiple time in the same page.
+      is_scrolling_time_recorded_ = true;
+    }
     // Stop ignoring the current scroll.
     ignoring_current_scroll_ = false;
     // Notify observers that the scroll event has ended.
     ScopedIncrementer scroll_ended_incrementer(&observer_callback_count_);
+    base::WeakPtr<FullscreenModel> weak_this = weak_factory_.GetWeakPtr();
     for (auto& observer : observers_) {
       observer.FullscreenModelScrollEventEnded(this);
+      if (!weak_this) {
+        return;
+      }
     }
   }
 }
@@ -229,8 +304,10 @@ void FullscreenModel::SetScrollViewIsDragging(bool dragging) {
   }
   dragging_ = dragging;
   if (dragging_) {
+    SetLastScrollDirection(FullscreenModelScrollDirection::kNone);
     // Update the base offset for each new scroll event.
     UpdateBaseOffset();
+    offset_at_start_of_drag_ = y_content_offset_;
     // Re-rendering events are ignored during scrolls since disabling the model
     // mid-scroll leads to choppy animations.  If the content was re-rendered
     // to be too short to collapse the toolbars, the model should be disabled
@@ -292,10 +369,12 @@ FullscreenModel::ScrollAction FullscreenModel::ActionForScrollFromOffset(
   // - the sroll view is zooming,
   // - the scroll is triggered from a FullscreenModelObserver callback,
   // - there is no toolbar,
-  // - the scroll offset doesn't change.
+  // - the scroll offset doesn't change,
+  // - the scroll has not exceeded the required threshold.
   if (!enabled() || !scrolling_ || zooming_ || observer_callback_count_ ||
       AreCGFloatsEqual(get_toolbar_height_delta(), 0.0) ||
-      AreCGFloatsEqual(y_content_offset_, from_offset)) {
+      AreCGFloatsEqual(y_content_offset_, from_offset) ||
+      !ScrollThresholdExceeded()) {
     return ScrollAction::kUpdateBaseOffset;
   }
 
@@ -310,22 +389,52 @@ FullscreenModel::ScrollAction FullscreenModel::ActionForScrollFromOffset(
   bool scrolling_past_top = y_content_offset_ <= -top_inset_;
   bool content_fits = content_height_ <= scroll_view_height_ - top_inset_;
   bool scrolling_past_bottom =
-      y_content_offset_ + scroll_view_height_ + top_inset_ >= content_height_;
+      y_content_offset_ + scroll_view_height_ + top_inset_ +
+          toolbars_size_.expandedTopToolbarHeight +
+          toolbars_size_.expandedBottomToolbarHeight -
+          (toolbars_size_.collapsedTopToolbarHeight -
+           toolbars_size_.collapsedBottomToolbarHeight) >=
+      content_height_;
+  // When `resizes_scroll_view_` is true, over-scrolls at the bottom boundary
+  // are safely ignored via `scrolling_past_bottom`.
+  // When `resizes_scroll_view_` is false (Smooth Scrolling), the elastic
+  // bounce-back (deceleration) from the bottom limit is mistakenly treated
+  // as a valid "scroll up", raising progress and causing the toolbars to flap.
+  // We completely freeze progress updates while rubber-banding at the bottom
+  // to prevent this UI jump.
+  bool was_scrolled_to_bottom = false;
+  if (!resizes_scroll_view_) {
+    was_scrolled_to_bottom =
+        from_offset + scroll_view_height_ >= content_height_;
+  }
   if (ignoring_current_scroll_ ||
       (scrolling_past_top && !scrolling_content_down) ||
       (content_fits && !scrolling_content_down) ||
-      (resizes_scroll_view_ && scrolling_past_bottom)) {
+      (resizes_scroll_view_ && scrolling_past_bottom) ||
+      (!resizes_scroll_view_ && was_scrolled_to_bottom &&
+       is_scrolled_to_bottom())) {
     return ScrollAction::kIgnore;
   }
 
   // All other scrolls should result in an updated progress value.  If the model
   // doesn't have a base offset, it should also be updated.
-  if (base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault)) {
+  if (ios::provider::IsFullscreenSmoothScrollingSupported()) {
     return has_base_offset() ? ScrollAction::kUpdateProgress
                              : ScrollAction::kUpdateBaseOffsetAndProgress;
   } else {
     return ScrollAction::kUpdateProgress;
   }
+}
+
+void FullscreenModel::SetLastScrollDirection(
+    FullscreenModelScrollDirection direction) {
+  if (direction == fullscreen_scroll_direction_) {
+    return;
+  }
+  if (fullscreen_scroll_direction_ != FullscreenModelScrollDirection::kNone) {
+    UpdateBaseOffset();
+  }
+  fullscreen_scroll_direction_ = direction;
 }
 
 void FullscreenModel::UpdateBaseOffset() {
@@ -334,7 +443,8 @@ void FullscreenModel::UpdateBaseOffset() {
 }
 
 void FullscreenModel::UpdateSpeed() {
-  if (!base::FeatureList::IsEnabled(kFullscreenTransition)) {
+  if (ios::provider::IsFullscreenSmoothScrollingSupported() ||
+      !base::FeatureList::IsEnabled(kFullscreenTransitionSpeed)) {
     return;
   }
   if (FullscreenTransitionSpeedParam() == FullscreenTransitionSpeed::kSlower) {
@@ -345,88 +455,18 @@ void FullscreenModel::UpdateSpeed() {
   }
 }
 
-CGFloat FullscreenModel::UpdateProgressHelper(CGFloat progress_shift,
-                                              CGFloat delta,
-                                              CGFloat delta_shift,
-                                              CGFloat toolbar_height_delta) {
-  CGFloat new_progress =
-      (progress_shift +
-       (delta + distance_offset_ - delta_shift) / toolbar_height_delta);
-  SetProgress(new_progress);
-  return new_progress;
-}
-
-CGFloat FullscreenModel::GetNewDeltaShift(CGFloat delta) const {
-  return delta + distance_offset_;
-}
-
 void FullscreenModel::UpdateProgress() {
   const CGFloat delta = base_offset_ - y_content_offset_;
   const CGFloat toolbar_height_delta = get_toolbar_height_delta();
-  if (base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault) ||
-      !IsFullscreenTransitionSet()) {
+  if (ios::provider::IsFullscreenSmoothScrollingSupported()) {
     SetProgress(1.0 + delta / toolbar_height_delta);
     return;
-  }
-  if (!IsFullscreenTransitionOffsetSet()) {
-    SetProgress(1.0 + (delta * speed_) / toolbar_height_delta);
-    return;
-  }
-  // A distance_offset_ corresponds to a number of pixels before
-  // triggering of fullscreen transition when the user scrolls downward
-  // only. This implies that the same function that maps `delta` to
-  // `progress_` for scrolling downward and upward cannot be used. If the
-  // user changes the direction of scrolling (for any delta) during the
-  // fullscreen transition, a smooth animation must be ensured.
-  // Thus, a function is created to map (`delta`, delta_shift and
-  // progress_shift) to `progress_`. For that the system will keep track of
-  // `scrolling_delay_progress_shift_down_to_up_` and
-  // `scrolling_delay_delta_shift_down_to_up_` (resp.
-  // `scrolling_delay_progress_shift_up_to_down_` and
-  // `scrolling_delay_delta_shift_up_to_down_`) to continue the animation
-  // when the user scrolls upward after scrolling downward (resp.
-  // scrolling downward after scrolling upward) during the fullscreen
-  // transition.
-
-  // Sets a `distance_offset_` equal to the height of the toolbar. It is not
-  // set at the constructor level because the toolbar is not initialized and
-  // thus `get_toolbar_height_delta()` does not return the expected value.
-  distance_offset_ = toolbar_height_delta;
-  if (fullscreen_scroll_direction_ == FullscreenModelScrollDirection::kDown) {
-    if (delta < -distance_offset_) {
-      if (progress_ == 1.0) {
-        scrolling_delay_progress_shift_up_to_down_ = 1.0;
-        scrolling_delay_delta_shift_up_to_down_ = 0.0;
-        SetProgress(1.0 + (delta + distance_offset_) / toolbar_height_delta);
-      } else if (progress_ != 0.0) {
-        scrolling_delay_progress_shift_down_to_up_ = UpdateProgressHelper(
-            scrolling_delay_progress_shift_up_to_down_, delta,
-            scrolling_delay_delta_shift_up_to_down_, toolbar_height_delta);
-        scrolling_delay_delta_shift_down_to_up_ = GetNewDeltaShift(delta);
-      }
+  } else {
+    if (IsFullscreenTransitionSpeedSet()) {
+      SetProgress(1.0 + (delta * speed_) / toolbar_height_delta);
+      return;
     }
-    if (progress_ != 1.0 && scrolling_delay_delta_shift_up_to_down_ != 0.0) {
-      scrolling_delay_progress_shift_down_to_up_ = UpdateProgressHelper(
-          scrolling_delay_progress_shift_up_to_down_, delta,
-          scrolling_delay_delta_shift_up_to_down_, toolbar_height_delta);
-      scrolling_delay_delta_shift_up_to_down_ = GetNewDeltaShift(delta);
-    }
-    return;
-  }
-
-  // `distance_offset_` is only relevant to delay the fullscreen transition on
-  // initial downward scroll.
-  if (progress_ != 1.0 &&
-      fullscreen_scroll_direction_ == FullscreenModelScrollDirection::kUp) {
-    if (progress_ == 0.0) {
-      scrolling_delay_progress_shift_down_to_up_ = 0.0;
-      scrolling_delay_delta_shift_down_to_up_ =
-          -toolbar_height_delta + distance_offset_;
-    }
-    scrolling_delay_progress_shift_up_to_down_ = UpdateProgressHelper(
-        scrolling_delay_progress_shift_down_to_up_, delta,
-        scrolling_delay_delta_shift_up_to_down_, toolbar_height_delta);
-    scrolling_delay_delta_shift_up_to_down_ = GetNewDeltaShift(delta);
+    SetProgress(1.0 + delta / toolbar_height_delta);
   }
 }
 
@@ -474,11 +514,34 @@ void FullscreenModel::UpdateDisabledCounterForContentHeight() {
 }
 
 void FullscreenModel::SetProgress(CGFloat progress) {
-  progress = std::min(static_cast<CGFloat>(1.0), progress);
-  progress = std::max(static_cast<CGFloat>(0.0), progress);
+  progress = std::clamp(progress, static_cast<CGFloat>(0.0),
+                        static_cast<CGFloat>(1.0));
   if (AreCGFloatsEqual(progress_, progress)) {
     return;
   }
+
+  if (progress == 0.0 && progress_ > 0.0) {
+    base::UmaHistogramEnumeration(
+        kEnterFullscreenModeTransitionTriggerHistogram,
+        FullscreenModeTransitionTrigger::kUserControlled);
+    time_entered_fullscreen_ = base::TimeTicks::Now();
+    if (time_exited_fullscreen_.has_value()) {
+      base::UmaHistogramLongTimes(
+          kTimeNotInFullscreenHistogram,
+          base::TimeTicks::Now() - time_exited_fullscreen_.value());
+    }
+  } else if (progress == 1.0 && progress_ < 1.0) {
+    base::UmaHistogramEnumeration(
+        kExitFullscreenModeTransitionTriggerHistogram,
+        FullscreenModeTransitionTrigger::kUserControlled);
+    time_exited_fullscreen_ = base::TimeTicks::Now();
+    if (time_entered_fullscreen_.has_value()) {
+      base::UmaHistogramLongTimes(
+          kTimeInFullscreenHistogram,
+          base::TimeTicks::Now() - time_entered_fullscreen_.value());
+    }
+  }
+
   progress_ = progress;
 
   // Prevent observer callbacks from recursively setting progress.
@@ -487,14 +550,18 @@ void FullscreenModel::SetProgress(CGFloat progress) {
   }
   setting_progress_ = true;
   ScopedIncrementer progress_incrementer(&observer_callback_count_);
+  base::WeakPtr<FullscreenModel> weak_this = weak_factory_.GetWeakPtr();
   for (auto& observer : observers_) {
     observer.FullscreenModelProgressUpdated(this);
+    if (!weak_this) {
+      return;
+    }
   }
   setting_progress_ = false;
 }
 
 void FullscreenModel::OnScrollViewSizeBroadcasted(CGSize scroll_view_size) {
-  CHECK(base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault));
+  CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
   SetScrollViewHeight(scroll_view_size.height);
 }
 
@@ -504,27 +571,27 @@ void FullscreenModel::OnScrollViewContentSizeBroadcasted(CGSize content_size) {
 
 void FullscreenModel::OnScrollViewContentInsetBroadcasted(
     UIEdgeInsets content_inset) {
-  CHECK(base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault));
+  CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
   SetTopContentInset(content_inset.top);
 }
 
 void FullscreenModel::OnContentScrollOffsetBroadcasted(CGFloat offset) {
-  CHECK(base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault));
+  CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
   SetYContentOffset(offset);
 }
 
 void FullscreenModel::OnScrollViewIsScrollingBroadcasted(bool scrolling) {
-  CHECK(base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault));
+  CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
   SetScrollViewIsScrolling(scrolling);
 }
 
 void FullscreenModel::OnScrollViewIsZoomingBroadcasted(bool zooming) {
-  CHECK(base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault));
+  CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
   SetScrollViewIsZooming(zooming);
 }
 
 void FullscreenModel::OnScrollViewIsDraggingBroadcasted(bool dragging) {
-  CHECK(base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault));
+  CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
   SetScrollViewIsDragging(dragging);
 }
 
@@ -565,4 +632,17 @@ void FullscreenModel::OnTopToolbarHeightChanged() {
 void FullscreenModel::OnBottomToolbarHeightChanged() {
   CHECK(IsRefactorToolbarsSize());
   ToolbarsHeightDidChange();
+}
+
+bool FullscreenModel::ScrollThresholdExceeded() const {
+  if (web::features::IsFullscreenScrollThresholdEnabled()) {
+    // When scrolled to the very top, the threshold should be ignored so that
+    // fullscreen can be smoothly exited.
+    if (y_content_offset_ <= 0.0) {
+      return true;
+    }
+    return std::abs(y_content_offset_ - offset_at_start_of_drag_) >
+           scroll_threshold_;
+  }
+  return true;
 }

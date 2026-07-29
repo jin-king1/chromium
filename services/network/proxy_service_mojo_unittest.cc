@@ -18,7 +18,9 @@
 #include "build/build_config.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/network_delegate_impl.h"
+#include "net/base/network_handle.h"
 #include "net/base/network_isolation_key.h"
+#include "net/base/request_priority.h"
 #include "net/base/test_completion_callback.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/log/net_log.h"
@@ -157,7 +159,8 @@ TEST_F(ProxyServiceMojoTest, Basic) {
       net::ERR_IO_PENDING,
       proxy_resolution_service_->ResolveProxy(
           GURL("http://foo"), std::string(), net::NetworkAnonymizationKey(),
-          &info, callback.callback(), &request, net::NetLogWithSource()));
+          net::handles::kInvalidNetworkHandle, &info, callback.callback(),
+          &request, net::NetLogWithSource(), net::DEFAULT_PRIORITY));
 
   // PAC file fetcher should have a fetch triggered by the first
   // |ResolveProxy()| request.
@@ -179,7 +182,8 @@ TEST_F(ProxyServiceMojoTest, DnsResolution) {
       net::ERR_IO_PENDING,
       proxy_resolution_service_->ResolveProxy(
           GURL("http://foo"), std::string(), net::NetworkAnonymizationKey(),
-          &info, callback.callback(), &request, net::NetLogWithSource()));
+          net::handles::kInvalidNetworkHandle, &info, callback.callback(),
+          &request, net::NetLogWithSource(), net::DEFAULT_PRIORITY));
 
   // PAC file fetcher should have a fetch triggered by the first
   // |ResolveProxy()| request.
@@ -204,7 +208,8 @@ TEST_F(ProxyServiceMojoTest, Error) {
       net::ERR_IO_PENDING,
       proxy_resolution_service_->ResolveProxy(
           GURL("http://foo"), std::string(), net::NetworkAnonymizationKey(),
-          &info, callback.callback(), &request, net_log_with_source));
+          net::handles::kInvalidNetworkHandle, &info, callback.callback(),
+          &request, net_log_with_source, net::DEFAULT_PRIORITY));
 
   // PAC file fetcher should have a fetch triggered by the first
   // |ResolveProxy()| request.
@@ -231,7 +236,8 @@ TEST_F(ProxyServiceMojoTest, ErrorOnInitialization) {
       net::ERR_IO_PENDING,
       proxy_resolution_service_->ResolveProxy(
           GURL("http://foo"), std::string(), net::NetworkAnonymizationKey(),
-          &info, callback.callback(), &request, net::NetLogWithSource()));
+          net::handles::kInvalidNetworkHandle, &info, callback.callback(),
+          &request, net::NetLogWithSource(), net::DEFAULT_PRIORITY));
 
   // PAC file fetcher should have a fetch triggered by the first
   // |ResolveProxy()| request.

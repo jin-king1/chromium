@@ -27,11 +27,11 @@
 
 #include "base/feature_list.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/quota_exceeded_error.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/modules/storage/dom_window_storage.h"
@@ -89,8 +89,8 @@ StorageArea::StorageArea(LocalDOMWindow* window,
   cached_area_->RegisterSource(this);
   if (cached_area_->is_session_storage_for_prerendering()) {
     DomWindow()->document()->AddWillDispatchPrerenderingchangeCallback(
-        WTF::BindOnce(&StorageArea::OnDocumentActivatedForPrerendering,
-                      WrapWeakPersistent(this)));
+        BindOnce(&StorageArea::OnDocumentActivatedForPrerendering,
+                 WrapWeakPersistent(this)));
   }
 }
 
@@ -128,9 +128,9 @@ NamedPropertySetterResult StorageArea::setItem(
     return NamedPropertySetterResult::kIntercepted;
   }
   if (!cached_area_->SetItem(key, value, this)) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kQuotaExceededError,
-        "Setting the value of '" + key + "' exceeded the quota.");
+    QuotaExceededError::Throw(
+        exception_state,
+        StrCat({"Setting the value of '", key, "' exceeded the quota."}));
     return NamedPropertySetterResult::kIntercepted;
   }
   return NamedPropertySetterResult::kIntercepted;
@@ -214,7 +214,7 @@ KURL StorageArea::GetPageUrl() const {
 bool StorageArea::EnqueueStorageEvent(const String& key,
                                       const String& old_value,
                                       const String& new_value,
-                                      const String& url) {
+                                      const KURL& url) {
   if (!should_enqueue_events_)
     return true;
   if (!DomWindow())

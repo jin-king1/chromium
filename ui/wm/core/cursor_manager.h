@@ -8,13 +8,18 @@
 #include <memory>
 
 #include "base/component_export.h"
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/aura/client/cursor_client.h"
 #include "ui/display/display.h"
 #include "ui/gfx/geometry/point.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/wm/core/native_cursor_manager_delegate.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "base/callback_list.h"
+#endif
 
 namespace ui {
 class KeyEvent;
@@ -74,6 +79,10 @@ class COMPONENT_EXPORT(UI_WM) CursorManager
   bool ShouldHideCursorOnKeyEvent(const ui::KeyEvent& event) const override;
   bool ShouldHideCursorOnTouchEvent(const ui::TouchEvent& event) const override;
   gfx::Size GetSystemCursorSize() const override;
+#if BUILDFLAG(IS_WIN)
+  void UpdateSystemCursorVisibilityForTest(bool visible) override;
+  void SetMouseVanishEnabledForTesting(bool enabled);
+#endif
 
  private:
   // Overridden from NativeCursorManagerDelegate:
@@ -84,8 +93,20 @@ class COMPONENT_EXPORT(UI_WM) CursorManager
   void CommitCursorColor(SkColor color) override;
   void CommitMouseEventsEnabled(bool enabled) override;
   void CommitSystemCursorSize(const gfx::Size& cursor_size) override;
+  void CommitSystemCursorVisibility(bool visible) override;
 
   void SetCursorImpl(gfx::NativeCursor cursor, bool forced);
+  void UpdateSystemCursorVisibility(bool visible);
+
+  // Holds one LockCursor request if this object exists.
+  class ScopedCursorLock {
+   public:
+    explicit ScopedCursorLock(CursorManager* cursor_manager);
+    ~ScopedCursorLock();
+
+   private:
+    raw_ptr<CursorManager> cursor_manager_;
+  };
 
   std::unique_ptr<NativeCursorManager> delegate_;
 
@@ -105,11 +126,23 @@ class COMPONENT_EXPORT(UI_WM) CursorManager
   base::ObserverList<aura::client::CursorClientObserver>::
       UncheckedAndDanglingUntriaged observers_;
 
+  // This is used for lock cursor during system cursor is invisible.
+  std::optional<ScopedCursorLock> scoped_cursor_lock_;
+
   // This flag holds the cursor visibility state for the duration of the
   // process. Defaults to true. This flag helps ensure that when a
   // CursorManager instance is created it gets populated with the correct
   // cursor visibility state.
   static bool last_cursor_visibility_state_;
+
+#if BUILDFLAG(IS_WIN)
+  // TODO(oshima): Move Windows-specific cursor handling to subclass.
+  // Cached value of the Windows "Hide pointer while typing" setting.
+  bool mouse_vanish_enabled_ = false;
+
+  // Subscription for WM_SETTINGCHANGE.
+  base::CallbackListSubscription setting_change_subscription_;
+#endif
 };
 
 }  // namespace wm

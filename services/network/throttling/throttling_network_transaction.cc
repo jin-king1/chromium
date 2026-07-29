@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/time/time.h"
@@ -27,30 +28,31 @@ ThrottlingNetworkTransaction::ThrottlingNetworkTransaction(
       network_transaction_(std::move(network_transaction)) {}
 
 ThrottlingNetworkTransaction::~ThrottlingNetworkTransaction() {
-  if (interceptor_ && !throttle_callback_.is_null())
+  if (interceptor_ && !throttle_callback_.is_null()) {
     interceptor_->StopThrottle(throttle_callback_);
+  }
 }
 
-void ThrottlingNetworkTransaction::IOCallback(
-    bool start,
-    int result) {
+void ThrottlingNetworkTransaction::IOCallback(bool start, int result) {
   DCHECK(callback_);
   result = Throttle(start, result);
-  if (result != net::ERR_IO_PENDING)
+  if (result != net::ERR_IO_PENDING) {
     std::move(callback_).Run(result);
+  }
 }
 
-int ThrottlingNetworkTransaction::Throttle(
-    bool start,
-    int result) {
-  if (failed_)
+int ThrottlingNetworkTransaction::Throttle(bool start, int result) {
+  if (failed_) {
     return net::ERR_INTERNET_DISCONNECTED;
-  if (!interceptor_ || result < 0)
+  }
+  if (!interceptor_ || result < 0) {
     return result;
+  }
 
   base::TimeTicks send_end;
   if (start) {
-    throttled_byte_count_ += network_transaction_->GetTotalReceivedBytes();
+    throttled_byte_count_ +=
+        network_transaction_->GetTotalReceivedBytes().InBytes();
     net::LoadTimingInfo load_timing_info;
     if (GetLoadTimingInfo(&load_timing_info)) {
       send_end = load_timing_info.send_end;
@@ -91,8 +93,6 @@ void ThrottlingNetworkTransaction::Fail() {
   DCHECK(started_);
   DCHECK(!failed_);
   failed_ = true;
-  network_transaction_->SetBeforeNetworkStartCallback(
-      BeforeNetworkStartCallback());
   if (interceptor_)
     interceptor_.reset();
 }
@@ -114,7 +114,7 @@ int ThrottlingNetworkTransaction::Start(const net::HttpRequestInfo* request,
   started_ = true;
 
   ThrottlingNetworkInterceptor* interceptor =
-      ThrottlingController::GetInterceptor(net_log.source().id);
+      ThrottlingController::GetInterceptor(net_log.source().id, request->url);
 
   if (interceptor) {
     custom_request_ = std::make_unique<net::HttpRequestInfo>(*request);
@@ -223,15 +223,15 @@ void ThrottlingNetworkTransaction::StopCaching() {
   network_transaction_->StopCaching();
 }
 
-int64_t ThrottlingNetworkTransaction::GetTotalReceivedBytes() const {
+base::ByteSize ThrottlingNetworkTransaction::GetTotalReceivedBytes() const {
   return network_transaction_->GetTotalReceivedBytes();
 }
 
-int64_t ThrottlingNetworkTransaction::GetTotalSentBytes() const {
+base::ByteSize ThrottlingNetworkTransaction::GetTotalSentBytes() const {
   return network_transaction_->GetTotalSentBytes();
 }
 
-int64_t ThrottlingNetworkTransaction::GetReceivedBodyBytes() const {
+base::ByteSize ThrottlingNetworkTransaction::GetReceivedBodyBytes() const {
   return network_transaction_->GetReceivedBodyBytes();
 }
 
@@ -248,14 +248,15 @@ net::LoadState ThrottlingNetworkTransaction::GetLoadState() const {
   return network_transaction_->GetLoadState();
 }
 
-void ThrottlingNetworkTransaction::SetQuicServerInfo(
-    net::QuicServerInfo* quic_server_info) {
-  network_transaction_->SetQuicServerInfo(quic_server_info);
-}
-
 bool ThrottlingNetworkTransaction::GetLoadTimingInfo(
     net::LoadTimingInfo* load_timing_info) const {
   return network_transaction_->GetLoadTimingInfo(load_timing_info);
+}
+
+void ThrottlingNetworkTransaction::PopulateLoadTimingInternalInfo(
+    net::LoadTimingInternalInfo* load_timing_internal_info) const {
+  network_transaction_->PopulateLoadTimingInternalInfo(
+      load_timing_internal_info);
 }
 
 bool ThrottlingNetworkTransaction::GetRemoteEndpoint(
@@ -275,11 +276,6 @@ void ThrottlingNetworkTransaction::SetPriority(net::RequestPriority priority) {
 void ThrottlingNetworkTransaction::SetWebSocketHandshakeStreamCreateHelper(
     net::WebSocketHandshakeStreamBase::CreateHelper* create_helper) {
   network_transaction_->SetWebSocketHandshakeStreamCreateHelper(create_helper);
-}
-
-void ThrottlingNetworkTransaction::SetBeforeNetworkStartCallback(
-    BeforeNetworkStartCallback callback) {
-  network_transaction_->SetBeforeNetworkStartCallback(std::move(callback));
 }
 
 void ThrottlingNetworkTransaction::SetRequestHeadersCallback(
@@ -313,12 +309,6 @@ void ThrottlingNetworkTransaction::SetIsSharedDictionaryReadAllowedCallback(
   NOTREACHED();
 }
 
-int ThrottlingNetworkTransaction::ResumeNetworkStart() {
-  if (CheckFailed())
-    return net::ERR_INTERNET_DISCONNECTED;
-  return network_transaction_->ResumeNetworkStart();
-}
-
 net::ConnectionAttempts ThrottlingNetworkTransaction::GetConnectionAttempts()
     const {
   return network_transaction_->GetConnectionAttempts();
@@ -326,10 +316,6 @@ net::ConnectionAttempts ThrottlingNetworkTransaction::GetConnectionAttempts()
 
 void ThrottlingNetworkTransaction::CloseConnectionOnDestruction() {
   network_transaction_->CloseConnectionOnDestruction();
-}
-
-bool ThrottlingNetworkTransaction::IsMdlMatchForMetrics() const {
-  return network_transaction_->IsMdlMatchForMetrics();
 }
 
 }  // namespace network

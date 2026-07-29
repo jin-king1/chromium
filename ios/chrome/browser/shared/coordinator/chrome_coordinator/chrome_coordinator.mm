@@ -16,12 +16,11 @@
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
                                    browser:(Browser*)browser {
+  CHECK(browser);
   if ((self = [super init])) {
     _baseViewController = viewController;
     _childCoordinators = [MutableCoordinatorArray array];
-    if (browser) {
-      _browser = browser->AsWeakPtr();
-    }
+    _browser = browser->AsWeakPtr();
   }
   return self;
 }
@@ -35,20 +34,24 @@
 }
 
 - (Browser*)browser {
+  // Browser can only be nil after -stop. Coordinators should typically not
+  // execute any code after this point, and definitely should not refer to
+  // browser.
+  CHECK(_browser.get(), base::NotFatalUntil::M155);
   return _browser.get();
 }
 
 - (ProfileIOS*)profile {
-  if (!self.browser) {
-    return nullptr;
-  }
-  return self.browser->GetProfile();
+  ProfileIOS* profile = self.browser->GetProfile();
+  // Profile can only be nil after -stop. Coordinators should typically not
+  // execute any code after this point, and definitely should not refer to
+  // profile.
+  CHECK(profile, base::NotFatalUntil::M155);
+  return profile;
 }
 
 - (BOOL)isOffTheRecord {
-  if (!self.profile) {
-    return NO;
-  }
+  CHECK(self.profile);
   return self.profile->IsOffTheRecord();
 }
 

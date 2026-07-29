@@ -8,8 +8,10 @@
 #include "base/notreached.h"
 #include "third_party/blink/renderer/core/animation/css/compositor_keyframe_value.h"
 #include "third_party/blink/renderer/core/animation/keyframe.h"
+#include "third_party/blink/renderer/core/animation/property_handle.h"
 #include "third_party/blink/renderer/core/animation/typed_interpolation_value.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 
 namespace blink {
 
@@ -21,18 +23,36 @@ namespace blink {
 // attributes) or an AtomicString (for custom CSS properties).
 class CORE_EXPORT TransitionKeyframe : public Keyframe {
  public:
-  TransitionKeyframe(const PropertyHandle& property) : property_(property) {
-    DCHECK(!property.IsSVGAttribute());
-  }
+  class CORE_EXPORT IterableTransitionKeyframeProperty
+      : public Keyframe::IterableProperties {
+   public:
+    explicit IterableTransitionKeyframeProperty(const PropertyHandle& property)
+        : property_(property) {}
+    ~IterableTransitionKeyframeProperty() override = default;
+    PropertyIteratorWrapper begin() const override;
+    size_t size() const override { return 1u; }
+    bool IsTransitionProperties() const override { return true; }
+
+   private:
+    friend class TransitionKeyframe;
+
+    const PropertyHandle property_;
+  };
+
+  explicit TransitionKeyframe(const PropertyHandle& property)
+      : Keyframe(MakeGarbageCollected<IterableTransitionKeyframeProperty>(
+            property)) {}
 
   TransitionKeyframe(const TransitionKeyframe& copy_from)
-      : Keyframe(copy_from.offset_,
+      : Keyframe(MakeGarbageCollected<IterableTransitionKeyframeProperty>(
+                     copy_from.Property()),
+                 copy_from.offset_,
                  copy_from.timeline_offset_,
                  copy_from.composite_,
                  copy_from.easing_),
-        property_(copy_from.property_),
         value_(copy_from.value_->Clone()),
-        compositor_value_(copy_from.compositor_value_) {}
+        compositor_value_(copy_from.compositor_value_),
+        is_attr_tainted_(copy_from.is_attr_tainted_) {}
 
   void SetValue(TypedInterpolationValue* value) {
     // Speculative CHECK to help investigate crbug.com/826627. The theory is
@@ -44,8 +64,9 @@ class CORE_EXPORT TransitionKeyframe : public Keyframe {
     value_ = value;
   }
   void SetCompositorValue(CompositorKeyframeValue*);
-  PropertyHandleSet Properties() const final;
-
+  void SetIsAttrTainted(bool is_attr_tainted) {
+    is_attr_tainted_ = is_attr_tainted;
+  }
   void AddKeyframePropertiesToV8Object(V8ObjectBuilder&,
                                        Element*) const override;
 
@@ -57,12 +78,14 @@ class CORE_EXPORT TransitionKeyframe : public Keyframe {
                              scoped_refptr<TimingFunction> easing,
                              EffectModel::CompositeOperation composite,
                              TypedInterpolationValue* value,
-                             CompositorKeyframeValue* compositor_value)
+                             CompositorKeyframeValue* compositor_value,
+                             bool is_attr_tainted)
         : Keyframe::PropertySpecificKeyframe(offset,
                                              std::move(easing),
                                              composite),
           value_(value),
-          compositor_value_(compositor_value) {}
+          compositor_value_(compositor_value),
+          is_attr_tainted_(is_attr_tainted) {}
 
     const CompositorKeyframeValue* GetCompositorKeyframeValue() const final {
       return compositor_value_.Get();
@@ -71,6 +94,7 @@ class CORE_EXPORT TransitionKeyframe : public Keyframe {
     bool IsNeutral() const final { return false; }
     bool IsRevert() const final { return false; }
     bool IsRevertLayer() const final { return false; }
+    bool IsRevertRule() const final { return false; }
     Keyframe::PropertySpecificKeyframe* NeutralKeyframe(
         double offset,
         scoped_refptr<TimingFunction> easing) const final {
@@ -78,7 +102,8 @@ class CORE_EXPORT TransitionKeyframe : public Keyframe {
     }
     Interpolation* CreateInterpolation(
         const PropertyHandle&,
-        const Keyframe::PropertySpecificKeyframe& other) const final;
+        const Keyframe::PropertySpecificKeyframe& other,
+        const Keyframe::PropertySpecificKeyframe* final_keyframe) const final;
 
     bool IsTransitionPropertySpecificKeyframe() const final { return true; }
 
@@ -87,18 +112,17 @@ class CORE_EXPORT TransitionKeyframe : public Keyframe {
     void Trace(Visitor*) const override;
 
    private:
-    Keyframe::PropertySpecificKeyframe* CloneWithOffset(
-        double offset) const final {
-      return MakeGarbageCollected<PropertySpecificKeyframe>(
-          offset, easing_, composite_, value_->Clone(), compositor_value_);
-    }
-
     Member<TypedInterpolationValue> value_;
     Member<CompositorKeyframeValue> compositor_value_;
+    bool is_attr_tainted_;
   };
 
  private:
   bool IsTransitionKeyframe() const final { return true; }
+
+  const PropertyHandle& Property() const {
+    return To<IterableTransitionKeyframeProperty>(&Properties())->property_;
+  }
 
   Keyframe* Clone() const final {
     return MakeGarbageCollected<TransitionKeyframe>(*this);
@@ -109,9 +133,9 @@ class CORE_EXPORT TransitionKeyframe : public Keyframe {
       EffectModel::CompositeOperation effect_composite,
       double offset) const final;
 
-  PropertyHandle property_;
   Member<TypedInterpolationValue> value_;
   Member<CompositorKeyframeValue> compositor_value_;
+  bool is_attr_tainted_ = false;
 };
 
 using TransitionPropertySpecificKeyframe =
@@ -127,6 +151,12 @@ template <>
 struct DowncastTraits<TransitionPropertySpecificKeyframe> {
   static bool AllowFrom(const Keyframe::PropertySpecificKeyframe& value) {
     return value.IsTransitionPropertySpecificKeyframe();
+  }
+};
+template <>
+struct DowncastTraits<TransitionKeyframe::IterableTransitionKeyframeProperty> {
+  static bool AllowFrom(const Keyframe::IterableProperties& properties) {
+    return properties.IsTransitionProperties();
   }
 };
 

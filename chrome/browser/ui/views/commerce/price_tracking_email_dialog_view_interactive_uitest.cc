@@ -11,7 +11,6 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/commerce/mock_commerce_ui_tab_helper.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bubble_view.h"
 #include "chrome/browser/ui/views/commerce/price_tracking_email_dialog_view.h"
@@ -26,6 +25,7 @@
 #include "components/commerce/core/test_utils.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/feature_engagement/test/scoped_iph_feature_list.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -49,7 +49,7 @@ class PriceTrackingEmailDialogConsentViewInteractiveTest
     : public InteractiveBrowserTest {
  public:
   void SetUp() override {
-    MockCommerceUiTabHelper::ReplaceFactory();
+    commerce_ui_override_ = MockCommerceUiTabHelper::ReplaceFactory();
     test_iph_features_.InitForDemo(
         feature_engagement::kIPHPriceTrackingEmailConsentFeature);
 
@@ -92,7 +92,7 @@ class PriceTrackingEmailDialogConsentViewInteractiveTest
 
   void ApplyMetaToBookmark() {
     bookmarks::BookmarkModel* model =
-        BookmarkModelFactory::GetForBrowserContext(browser()->profile());
+        BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
     const bookmarks::BookmarkNode* node =
         model->GetMostRecentlyAddedUserNodeForURL(
             embedded_test_server()->GetURL(kShoppingURL));
@@ -111,7 +111,7 @@ class PriceTrackingEmailDialogConsentViewInteractiveTest
     EXPECT_TRUE(is_browser_context_services_created_);
     auto* mock_shopping_service = static_cast<commerce::MockShoppingService*>(
         commerce::ShoppingServiceFactory::GetForBrowserContext(
-            browser()->profile()));
+            browser()->GetProfile()));
     MockCommerceUiTabHelper* mock_tab_helper =
         static_cast<MockCommerceUiTabHelper*>(browser()
                                                   ->GetActiveTabInterface()
@@ -130,6 +130,7 @@ class PriceTrackingEmailDialogConsentViewInteractiveTest
     mock_shopping_service->SetIsSubscribedCallbackValue(true);
   }
 
+  ui::UserDataFactory::ScopedOverride commerce_ui_override_;
   base::WeakPtrFactory<PriceTrackingEmailDialogConsentViewInteractiveTest>
       weak_ptr_factory_{this};
 };
@@ -137,8 +138,8 @@ class PriceTrackingEmailDialogConsentViewInteractiveTest
 IN_PROC_BROWSER_TEST_F(PriceTrackingEmailDialogConsentViewInteractiveTest,
                        EmailConsentDialogShown) {
   signin::MakePrimaryAccountAvailable(
-      IdentityManagerFactory::GetForProfile(browser()->profile()),
-      "test@example.com", signin::ConsentLevel::kSync);
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
+      "test@example.com", signin::ConsentLevel::kSignin);
 
   RunTestSequence(
       InstrumentTab(kShoppingTab),

@@ -8,10 +8,13 @@
 #include <memory>
 
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
+#include "chrome/browser/ui/find_bar/find_bar_controller.h"
+#include "chrome/browser/ui/views/find_bar_owner.h"
 #include "chrome/browser/ui/views/find_bar_view.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/focus/external_focus_tracker.h"
 #include "ui/views/focus/focus_manager.h"
@@ -47,7 +50,7 @@ class FindBarHost : public FindBar,
                     public views::AnimationDelegateViews,
                     public views::WidgetDelegate {
  public:
-  explicit FindBarHost(BrowserView* browser_view);
+  explicit FindBarHost(FindBarOwner* find_bar_owner);
 
   FindBarHost(const FindBarHost&) = delete;
   FindBarHost& operator=(const FindBarHost&) = delete;
@@ -60,22 +63,22 @@ class FindBarHost : public FindBar,
   // was forwarded, false if not.
   bool MaybeForwardKeyEventToWebpage(const ui::KeyEvent& key_event);
 
+  // Ensures the owner widget is active if it is not already, since the find bar
+  // is not activatable. See crbug.com/40616214.
+  void ActivateOwnerWidgetIfNecessary();
+
   // Returns true if the find bar view is visible, or false otherwise.
   bool IsVisible() const;
 
-  // TODO(https://crbug.com/40183900): Remove this and migrate the caller to
-  // something more specific.
-  BrowserView* browser_view() { return browser_view_; }
+  FindBarOwner* find_bar_owner() { return find_bar_owner_; }
 
-#if BUILDFLAG(IS_MAC)
   // Get the host widget.
   views::Widget* GetHostWidget() override;
-#endif
 
   // FindBar implementation:
   FindBarController* GetFindBarController() const override;
   void SetFindBarController(FindBarController* find_bar_controller) override;
-  void Show(bool animate) override;
+  void Show(bool animate, bool focus) override;
   void Hide(bool animate) override;
   void SetFocusAndSelection() override;
   void ClearResults(
@@ -94,8 +97,10 @@ class FindBarHost : public FindBar,
   void RestoreSavedFocus() override;
   bool HasGlobalFindPasteboard() const override;
   void UpdateFindBarForChangedWebContents() override;
+  bool CanPopulateFromSelectedText() override;
   const FindBarTesting* GetFindBarTesting() const override;
   bool HasFocus() const override;
+  void CloseOverlappingBubbles() override;
 
   // Overridden from ui::AcceleratorTarget
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
@@ -113,11 +118,20 @@ class FindBarHost : public FindBar,
   std::u16string GetAccessibleWindowTitle() const override;
 
   FindBarView* GetFindBarViewForTesting();
-  static void SetEnableAnimationsForTesting(bool enable_animations);
+
+  // static
+  static base::AutoReset<bool> SetEnableAnimationsForTesting(
+      bool enable_animation);
 
  private:
   friend class FindInPageTest;
   friend class LegacyFindInPageTest;
+
+  // Return the current web contents.
+  content::WebContents* web_contents() {
+    return find_bar_controller_ ? find_bar_controller_->web_contents()
+                                : nullptr;
+  }
 
   // Allows implementation to tweak widget position.
   void GetWidgetPositionNative(gfx::Rect* avoid_overlapping_rect);
@@ -137,6 +151,11 @@ class FindBarHost : public FindBar,
   // Takes the focus tracker from a WebContents and restores it to the
   // FindBarHost. If no focus tracker is set, creates one.
   void RestoreOrCreateFocusTracker();
+
+  // Call when the find bar gains or loses focus on current tab. Used to restore
+  // focus state in tab switching. i.e. the focus state should not change after
+  // switching away and then back to the current tab.
+  void SetFindBarIsFocusedOnCurrentTab(bool focused);
 
   // Called when `is_visible_` changes.
   void OnVisibilityChanged();
@@ -170,8 +189,6 @@ class FindBarHost : public FindBar,
   // views::FocusChangeListener:
   void OnWillChangeFocus(views::View* focused_before,
                          views::View* focused_now) override;
-  void OnDidChangeFocus(views::View* focused_before,
-                        views::View* focused_now) override;
 
   // views::AnimationDelegateViews:
   void AnimationProgressed(const gfx::Animation* animation) override;
@@ -197,8 +214,8 @@ class FindBarHost : public FindBar,
   // the state of the widget can be out of sync.
   bool is_visible_ = false;
 
-  // The BrowserView that created us.
-  const raw_ptr<BrowserView, DanglingUntriaged> browser_view_;
+  // The FindBarOwner that created us.
+  const raw_ptr<FindBarOwner, DanglingUntriaged> find_bar_owner_;
 
   // The focus manager we register with to keep track of focus changes.
   raw_ptr<views::FocusManager, DanglingUntriaged> focus_manager_ = nullptr;
@@ -210,6 +227,10 @@ class FindBarHost : public FindBar,
   // or any of its children. Used to restore focus once the FindBarHost's view
   // is closed.
   std::unique_ptr<views::ExternalFocusTracker> focus_tracker_;
+
+  // Observation over the host's FocusManager.
+  base::ScopedObservation<views::FocusManager, views::FocusChangeListener>
+      focus_manager_observation_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FIND_BAR_HOST_H_

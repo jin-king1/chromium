@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/policy/policy_test_utils.h"
@@ -13,7 +12,6 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/policy_constants.h"
-#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -23,7 +21,7 @@ namespace policy {
 
 class PolicyTestAutomaticFullscreen : public PolicyTest {
  public:
-  content::EvalJsResult FullscreenWithoutGesture() {
+  ::testing::AssertionResult FullscreenWithoutGesture() {
     constexpr char kScript[] = R"(
       (async () => {
         if (navigator.userActivation.isActive)
@@ -32,7 +30,8 @@ class PolicyTestAutomaticFullscreen : public PolicyTest {
       })();
     )";
     auto* tab = chrome_test_utils::GetActiveWebContents(this);
-    return EvalJs(tab, kScript, content::EXECUTE_SCRIPT_NO_USER_GESTURE);
+    return content::ExecJs(tab, kScript,
+                           content::EXECUTE_SCRIPT_NO_USER_GESTURE);
   }
 
   ContentSetting GetDefaultContentSetting() {
@@ -49,10 +48,6 @@ class PolicyTestAutomaticFullscreen : public PolicyTest {
     return HostContentSettingsMapFactory::GetForProfile(
         chrome_test_utils::GetProfile(this));
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kAutomaticFullscreenContentSetting};
 };
 
 IN_PROC_BROWSER_TEST_F(PolicyTestAutomaticFullscreen, Default) {
@@ -63,7 +58,7 @@ IN_PROC_BROWSER_TEST_F(PolicyTestAutomaticFullscreen, Default) {
   // Fullscreen transient activation requirements are enforced by default.
   EXPECT_EQ(CONTENT_SETTING_BLOCK, GetDefaultContentSetting());
   EXPECT_EQ(CONTENT_SETTING_BLOCK, GetContentSetting(url));
-  EXPECT_THAT(FullscreenWithoutGesture(), content::EvalJsResult::IsError());
+  EXPECT_FALSE(FullscreenWithoutGesture());
 }
 
 IN_PROC_BROWSER_TEST_F(PolicyTestAutomaticFullscreen, AllowedForUrls) {
@@ -71,7 +66,7 @@ IN_PROC_BROWSER_TEST_F(PolicyTestAutomaticFullscreen, AllowedForUrls) {
   const GURL url(embedded_test_server()->GetURL("/empty.html"));
 
   PolicyMap policies;
-  base::Value::List list;
+  base::ListValue list;
   list.Append(url.spec());
   SetPolicy(&policies, key::kAutomaticFullscreenAllowedForUrls,
             base::Value(std::move(list)));
@@ -81,7 +76,7 @@ IN_PROC_BROWSER_TEST_F(PolicyTestAutomaticFullscreen, AllowedForUrls) {
   // Fullscreen transient activation requirements are waived for this origin.
   EXPECT_EQ(CONTENT_SETTING_BLOCK, GetDefaultContentSetting());
   EXPECT_EQ(CONTENT_SETTING_ALLOW, GetContentSetting(url));
-  EXPECT_THAT(FullscreenWithoutGesture(), content::EvalJsResult::IsOk());
+  EXPECT_TRUE(FullscreenWithoutGesture());
 }
 
 IN_PROC_BROWSER_TEST_F(PolicyTestAutomaticFullscreen, BlockedForUrls) {
@@ -89,7 +84,7 @@ IN_PROC_BROWSER_TEST_F(PolicyTestAutomaticFullscreen, BlockedForUrls) {
   const GURL url(embedded_test_server()->GetURL("/empty.html"));
 
   PolicyMap policies;
-  base::Value::List list;
+  base::ListValue list;
   list.Append(url.spec());
   SetPolicy(&policies, key::kAutomaticFullscreenBlockedForUrls,
             base::Value(std::move(list)));
@@ -97,7 +92,7 @@ IN_PROC_BROWSER_TEST_F(PolicyTestAutomaticFullscreen, BlockedForUrls) {
   ASSERT_TRUE(NavigateToUrl(url, this));
 
   // Fullscreen transient activation requirements are enforced for this origin.
-  EXPECT_THAT(FullscreenWithoutGesture(), content::EvalJsResult::IsError());
+  EXPECT_FALSE(FullscreenWithoutGesture());
   EXPECT_EQ(CONTENT_SETTING_BLOCK, GetDefaultContentSetting());
   EXPECT_EQ(CONTENT_SETTING_BLOCK, GetContentSetting(url));
 }

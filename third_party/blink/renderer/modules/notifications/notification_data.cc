@@ -105,8 +105,7 @@ mojom::blink::NotificationDataPtr CreateNotificationData(
         VibrationController::SanitizeVibrationPattern(options->vibrate());
   }
   notification_data->vibration_pattern = Vector<int32_t>();
-  notification_data->vibration_pattern->AppendSpan(
-      base::span(vibration_pattern));
+  notification_data->vibration_pattern->append_range(vibration_pattern);
 
   notification_data->timestamp =
       options->hasTimestamp()
@@ -134,7 +133,8 @@ mojom::blink::NotificationDataPtr CreateNotificationData(
     }
 
     notification_data->data = Vector<uint8_t>();
-    notification_data->data->AppendSpan(serialized_script_value->GetWireData());
+    notification_data->data->append_range(
+        serialized_script_value->GetWireData());
   }
 
   Vector<mojom::blink::NotificationActionPtr> actions;
@@ -148,13 +148,14 @@ mojom::blink::NotificationDataPtr CreateNotificationData(
     notification_action->action = action->action();
     notification_action->title = action->title();
 
-    if (action->type() == "button") {
-      notification_action->type = mojom::blink::NotificationActionType::BUTTON;
-    } else if (action->type() == "text") {
-      notification_action->type = mojom::blink::NotificationActionType::TEXT;
-    } else {
-      NOTREACHED() << "Unknown action type: "
-                   << IDLEnumAsString(action->type());
+    switch (action->type().AsEnum()) {
+      case V8NotificationActionType::Enum::kButton:
+        notification_action->type =
+            mojom::blink::NotificationActionType::BUTTON;
+        break;
+      case V8NotificationActionType::Enum::kText:
+        notification_action->type = mojom::blink::NotificationActionType::TEXT;
+        break;
     }
 
     if (!action->placeholder().IsNull() &&

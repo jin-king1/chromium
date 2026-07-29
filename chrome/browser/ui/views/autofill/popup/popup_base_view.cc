@@ -4,46 +4,40 @@
 
 #include "chrome/browser/ui/views/autofill/popup/popup_base_view.h"
 
-#include <algorithm>
 #include <memory>
 #include <string_view>
 #include <utility>
 
 #include "base/dcheck_is_on.h"
 #include "base/feature_list.h"
-#include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
-#include "base/location.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/themes/theme_service.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/views/autofill/popup/custom_cursor_suppressor.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_view_utils.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/accessibility/ax_enums.mojom.h"
-#include "ui/accessibility/platform/ax_platform_node.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
-#include "ui/color/color_provider.h"
 #include "ui/display/screen.h"
 #include "ui/events/base_event_utils.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/scrollbar_size.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_border.h"
-#include "ui/views/controls/menu/menu_config.h"
 #include "ui/views/focus/focus_manager.h"
-#include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/layout_provider.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget.h"
 
 #if DCHECK_IS_ON()
@@ -77,12 +71,11 @@ std::unique_ptr<views::Border> CreateBorder() {
   auto border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
   border->SetColor(ui::kColorDropdownBackground);
-  border->SetCornerRadius(PopupBaseView::GetCornerRadius());
+  border->set_rounded_corners(
+      gfx::RoundedCornersF(PopupBaseView::GetCornerRadius()));
   border->set_md_shadow_elevation(
       ChromeLayoutProvider::Get()->GetShadowElevationMetric(
-          base::FeatureList::IsEnabled(features::kAutofillMoreProminentPopup)
-              ? views::Emphasis::kMaximum
-              : views::Emphasis::kMedium));
+          views::Emphasis::kMedium));
   return border;
 }
 
@@ -125,10 +118,7 @@ class PopupBaseView::Widget : public views::Widget {
     // setups is not consistent). This is not required for regular autofill
     // popup use, but it makes certain attacks (those based on the popup being
     // obscured) less practical.
-    if (base::FeatureList::IsEnabled(
-            features::kAutofillPopupZOrderSecuritySurface)) {
-      params.z_order = ui::ZOrderLevel::kSecuritySurface;
-    }
+    params.z_order = ui::ZOrderLevel::kSecuritySurface;
 
     Init(std::move(params));
     AddObserver(popup_base_view());
@@ -149,7 +139,7 @@ class PopupBaseView::Widget : public views::Widget {
     }
 
     return &ThemeService::GetThemeProviderForProfile(
-        popup_base_view()->GetBrowser()->profile());
+        popup_base_view()->GetBrowser()->GetProfile());
   }
 
   views::Widget* GetPrimaryWindowWidget() override {
@@ -197,7 +187,7 @@ class PopupBaseView::Widget : public views::Widget {
       // Save the synthesized event position to use it for the exit event
       // later.
       last_synthesized_parent_mouse_move_position_ =
-          display::Screen::GetScreen()->GetCursorScreenPoint();
+          display::Screen::Get()->GetCursorScreenPoint();
     } else if (!parent_content_view->IsMouseHovered() &&
                last_synthesized_parent_mouse_move_position_.has_value()) {
       // Generate the exit event after a set of move events as there is no one
@@ -250,11 +240,24 @@ PopupBaseView::~PopupBaseView() {
   CHECK(!IsInObserverList());
 }
 
-Browser* PopupBaseView::GetBrowser() {
-  if (content::WebContents* web_contents = GetWebContents()) {
-    return chrome::FindBrowserWithTab(web_contents);
+BrowserWindowInterface* PopupBaseView::GetBrowser() {
+  // When the browser is destroyed during test teardown (e.g.,
+  // PopupViewViewsBrowsertest.SearchBarViewProvided), the browser's owned
+  // popup widget is closed via Widget::ForEachOwnedWidget → CloseNow.
+  // Destroying the popup's HWND triggers a WM_WINDOWPOSCHANGED message,
+  // which calls GetPrimaryWindowWidget() → GetBrowser(). At that point,
+  // FindBrowserWithTab() would access a partially torn-down Browser and
+  // hang. Returning nullptr here is safe because callers (GetThemeProvider,
+  // GetPrimaryWindowWidget) already handle a null return gracefully.
+  if (GetWidget() && GetWidget()->IsClosed()) {
+    return nullptr;
   }
-  return nullptr;
+  content::WebContents* web_contents = GetWebContents();
+  if (!web_contents) {
+    return nullptr;
+  }
+  return GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+      web_contents);
 }
 
 bool PopupBaseView::DoShow() {
@@ -297,7 +300,7 @@ bool PopupBaseView::DoShow() {
   // immediate hiding of the popup). Only start observing after shown.
   if (initialize_widget) {
     CHECK(!focus_observation_.IsObserving());
-    focus_observation_.Observe(views::WidgetFocusManager::GetInstance());
+    focus_observation_.Observe(views::NativeViewFocusManager::GetInstance());
   }
 
   return true;
@@ -310,19 +313,29 @@ void PopupBaseView::DoHide() {
     // navigates into the menu, otherwise some screen readers will ignore
     // any focus events outside of the menu, including a focus event on
     // the form control itself.
-    NotifyAccessibilityEventDeprecated(ax::mojom::Event::kMenuPopupEnd, true);
-    NotifyAccessibilityEventDeprecated(ax::mojom::Event::kMenuEnd, true);
-    GetViewAccessibility().EndPopupFocusOverride();
-
-    // Also fire an accessible focus event on what currently has focus,
-    // typically the widget associated with this popup.
-    if (parent_widget_) {
-      if (views::FocusManager* focus_manager =
-              parent_widget_->GetFocusManager()) {
-        if (View* focused_view = focus_manager->GetFocusedView()) {
-          focused_view->GetViewAccessibility().FireFocusAfterMenuClose();
-        }
-      }
+    if (!TrackAndRun(
+            this,
+            [this]() {
+              NotifyAccessibilityEventDeprecated(
+                  ax::mojom::Event::kMenuPopupEnd, true);
+            },
+            [this]() {
+              NotifyAccessibilityEventDeprecated(ax::mojom::Event::kMenuEnd,
+                                                 true);
+            },
+            [this]() { GetViewAccessibility().EndPopupFocusOverride(); },
+            [this]() {
+              if (parent_widget_) {
+                if (views::FocusManager* focus_manager =
+                        parent_widget_->GetFocusManager()) {
+                  if (View* focused_view = focus_manager->GetFocusedView()) {
+                    focused_view->GetViewAccessibility()
+                        .FireFocusAfterMenuClose();
+                  }
+                }
+              }
+            })) {
+      return;
     }
   }
 
@@ -334,7 +347,7 @@ void PopupBaseView::DoHide() {
   if (GetWidget()) {
     // Don't call CloseNow() because some of the functions higher up the stack
     // assume the the widget is still valid after this point.
-    // http://crbug.com/229224
+    // http://crbug.com/40312043
     // NOTE: This deletes |this|.
     GetWidget()->Close();
   } else {
@@ -343,30 +356,51 @@ void PopupBaseView::DoHide() {
 }
 
 void PopupBaseView::NotifyAXSelection(views::View& selected_view) {
+  views::ViewTracker selected_view_tracker(&selected_view);
   if (!is_ax_menu_start_event_fired_) {
     // Fire the menu start event once, right before the first item is selected.
     // By firing these and the matching kMenuEnd events, we are telling screen
     // readers that the focus is only changing temporarily, and the screen
     // reader will restore the focus back to the appropriate textfield when the
     // menu closes.
-    NotifyAccessibilityEventDeprecated(ax::mojom::Event::kMenuStart, true);
-    NotifyAccessibilityEventDeprecated(ax::mojom::Event::kMenuPopupStart, true);
+    if (!TrackAndRun(
+            this,
+            [this]() {
+              NotifyAccessibilityEventDeprecated(ax::mojom::Event::kMenuStart,
+                                                 true);
+            },
+            [this]() {
+              NotifyAccessibilityEventDeprecated(
+                  ax::mojom::Event::kMenuPopupStart, true);
+            })) {
+      return;
+    }
 
     is_ax_menu_start_event_fired_ = true;
   }
+
+  // Ensure the selected view was not destroyed, as e.g. firing native
+  // accessibility events on Windows can synchronously re-enter the browser
+  // thread and destroy the view.
+  // TODO(crbug.com/514228954): Consider removing accessibility event calls.
+  if (!selected_view_tracker.view()) {
+    return;
+  }
+
   selected_view.GetViewAccessibility().SetPopupFocusOverride();
 #if DCHECK_IS_ON()
-  // TODO(crbug.com/362445293, crbug.com/379045422): Update the automation
-  // handler once the Typescript migration is complete.
   constexpr auto kDerivedClasses = base::MakeFixedFlatSet<std::string_view>(
       {"PopupSuggestionView", "PopupPasswordSuggestionView", "PopupFooterView",
        "PopupSeparatorView", "PopupWarningView", "PopupBaseView",
        "PasswordGenerationPopupViewViews::GeneratedPasswordBox", "PopupRowView",
-       "PopupRowWithButtonView", "PopupRowContentView", "MdTextButton"});
+       "PopupRowWithButtonView", "PopupRowContentView", "MdTextButton",
+       "PopupBnplFootnoteView", "PopupAtMemoryAiDisclosureView",
+       "PopupPersonalContextNoticeView"});
   DCHECK(kDerivedClasses.contains(selected_view.GetClassName()))
       << "If you add a new derived class from AutofillPopupRowView, add it "
          "here and to onSelection(evt) in "
-         "chrome/browser/resources/chromeos/accessibility/chromevox/background/"
+         "chrome/browser/resources/chromeos/accessibility/chromevox/mv2/"
+         "background/"
          "event/desktop_automation_handler.js to ensure that ChromeVox "
          "announces the item when selected. Missing class: "
       << selected_view.GetClassName();
@@ -414,9 +448,7 @@ void PopupBaseView::RemoveWidgetObservers() {
 void PopupBaseView::UpdateClipPath() {
   SkRect local_bounds = gfx::RectToSkRect(GetLocalBounds());
   SkScalar radius = SkIntToScalar(GetCornerRadius());
-  SkPath clip_path;
-  clip_path.addRoundRect(local_bounds, radius, radius);
-  SetClipPath(clip_path);
+  SetClipPath(SkPath::RRect(SkRRect::MakeRectXY(local_bounds, radius, radius)));
 }
 
 gfx::Rect PopupBaseView::GetContentAreaBounds() const {
@@ -452,7 +484,7 @@ gfx::Rect PopupBaseView::GetTopWindowBounds() const {
 
 gfx::Rect PopupBaseView::GetOptimalPositionAndPlaceArrowOnPopup(
     const gfx::Rect& element_bounds,
-    const gfx::Rect& max_bounds_for_popup,
+    const gfx::Rect& visible_content_area_bounds,
     const gfx::Size& preferred_size,
     base::span<const views::BubbleArrowSide> preferred_popup_sides) {
   views::BubbleBorder* border = static_cast<views::BubbleBorder*>(
@@ -461,21 +493,16 @@ gfx::Rect PopupBaseView::GetOptimalPositionAndPlaceArrowOnPopup(
 
   gfx::Rect popup_bounds;
 
-  int maximum_pixel_offset_to_center =
-      base::FeatureList::IsEnabled(features::kAutofillMoreProminentPopup)
-          ? features::kAutofillMoreProminentPopupMaxOffsetToCenterParam.Get()
-          : kMaximumPixelsToMoveSuggestionToCenter;
-
   // Deduce the arrow and the position.
   views::BubbleBorder::Arrow arrow = GetOptimalPopupPlacement(
-      /*content_area_bounds=*/max_bounds_for_popup,
+      /*visible_content_area_bounds=*/visible_content_area_bounds,
       /*element_bounds=*/element_bounds,
       /*popup_preferred_size=*/preferred_size,
       /*right_to_left=*/delegate_->GetElementTextDirection() ==
           base::i18n::TextDirection::RIGHT_TO_LEFT,
       /*scrollbar_width=*/gfx::scrollbar_size(),
       /*maximum_pixel_offset_to_center=*/
-      maximum_pixel_offset_to_center,
+      kMaximumPixelsToMoveSuggestionToCenter,
       /*maximum_width_percentage_to_center=*/
       kMaximumWidthPercentageToMoveTheSuggestionToCenter,
       /*popup_bounds=*/popup_bounds, preferred_popup_sides,
@@ -491,7 +518,7 @@ gfx::Rect PopupBaseView::GetOptimalPositionAndPlaceArrowOnPopup(
     border->set_arrow(arrow);
     border->AddArrowToBubbleCornerAndPointTowardsAnchor(
         element_bounds, popup_bounds,
-        max_bounds_for_popup.y() - kMaxPopupWebContentsTopYOverflow);
+        visible_content_area_bounds.y() - kMaxPopupWebContentsTopYOverflow);
   }
 
   return popup_bounds;
@@ -507,16 +534,21 @@ bool PopupBaseView::DoUpdateBoundsAndRedrawPopup() {
       PopupMayExceedContentAreaBounds(GetWebContents()) ? top_window_bounds
                                                         : content_area_bounds;
 
+  // Intersect with the current monitor's work area to avoid showing popups
+  // outside the screen.
+  gfx::Rect visible_content_area_bounds =
+      IntersectWithDisplayBounds(GetWebContents(), max_bounds_for_popup);
+
   gfx::Rect element_bounds = gfx::ToEnclosingRect(delegate_->element_bounds());
 
-  // An element that is contained by the `content_area_bounds` (even if empty,
-  // which means either the height or the width is 0) is never outside the
-  // content area. An empty element case can happen with caret bounds, which
-  // sometimes has 0 width.
-  if (!content_area_bounds.Contains(element_bounds)) {
-    // If the element exceeds the content area, ensure that the popup is still
-    // visually attached to the input element.
-    element_bounds.Intersect(content_area_bounds);
+  // An element is never outside the content area if it is contained by the
+  // `visible_content_area_bounds`. This also applies if the element is empty,
+  // which means that either the height or the width is 0. An element can be
+  // empty in case the popup is anchored to a caret, which has a 0 width.
+  if (!visible_content_area_bounds.Contains(element_bounds)) {
+    // If the element exceeds the visible content area, ensure that the popup
+    // is still visually attached to the input element.
+    element_bounds.Intersect(visible_content_area_bounds);
     if (element_bounds.IsEmpty()) {
       HideController(SuggestionHidingReason::kElementOutsideOfContentArea);
       return false;
@@ -528,18 +560,27 @@ bool PopupBaseView::DoUpdateBoundsAndRedrawPopup() {
   element_bounds.Inset(
       gfx::Insets::VH(/*vertical=*/-kElementBorderPadding, /*horizontal=*/0));
 
-  // At least one row of the popup should be shown in the bounds of the content
-  // area so that the user notices the presence of the popup.
+  // At least one row of the popup should be shown in the bounds of the
+  // visible content area so that the user notices the presence of the popup.
   int item_height =
       children().size() > 0 ? children()[0]->GetPreferredSize().height() : 0;
-  if (!CanShowDropdownHere(item_height, max_bounds_for_popup, element_bounds)) {
+  // That function checks whether the popup element has enough place to render
+  // either to the top of the focused element or to the bottom of the focused
+  // element.
+  if (!CanShowDropdownHere(item_height, visible_content_area_bounds,
+                           element_bounds)) {
     HideController(SuggestionHidingReason::kInsufficientSpace);
     return false;
   }
 
   gfx::Rect popup_bounds = GetOptimalPositionAndPlaceArrowOnPopup(
-      element_bounds, max_bounds_for_popup, preferred_size,
+      element_bounds, visible_content_area_bounds, preferred_size,
       kDefaultPreferredPopupSides);
+
+  if (OverlapsWithAnotherPrompt(popup_bounds)) {
+    HideController(SuggestionHidingReason::kOverlappingWithAnotherPrompt);
+    return false;
+  }
 
   if (BoundsOverlapWithPictureInPictureWindow(popup_bounds)) {
     HideController(
@@ -555,6 +596,33 @@ bool PopupBaseView::DoUpdateBoundsAndRedrawPopup() {
   UpdateClipPath();
   SchedulePaint();
   return true;
+}
+
+bool PopupBaseView::OverlapsWithAnotherPrompt(
+    const gfx::Rect& popup_bounds) const {
+  content::WebContents* web_contents = GetWebContents();
+  if (!web_contents) {
+    return false;
+  }
+
+  if (BoundsOverlapWithAnyOpenPrompt(popup_bounds, web_contents)) {
+    return true;
+  }
+  // On Windows, due to platform-specific implementation details, the previous
+  // check isn't reliable, and fails to detect open prompts. Since the most
+  // critical bubble is the permission bubble, we check for that specifically.
+  if (BoundsOverlapWithOpenPermissionsPrompt(popup_bounds, web_contents)) {
+    return true;
+  }
+
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillPopupCheckHtmlFormPopupOverlap)) {
+    if (BoundsOverlapWithHtmlFormPopup(popup_bounds, web_contents)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 void PopupBaseView::OnNativeFocusChanged(gfx::NativeView focused_now) {

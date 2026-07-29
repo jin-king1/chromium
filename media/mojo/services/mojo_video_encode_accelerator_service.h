@@ -25,9 +25,7 @@
 #include "media/mojo/services/media_mojo_export.h"
 #include "media/video/video_encode_accelerator.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
-#include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
-#include "mojo/public/cpp/bindings/remote.h"
 
 namespace media {
 
@@ -42,7 +40,8 @@ class MEDIA_MOJO_EXPORT MojoVideoEncodeAcceleratorService
       base::RepeatingCallback<scoped_refptr<CommandBufferHelper>()>;
   // Create and initialize a VEA. Returns nullptr if either part fails.
   using CreateAndInitializeVideoEncodeAcceleratorCallback =
-      base::OnceCallback<std::unique_ptr<::media::VideoEncodeAccelerator>(
+      base::OnceCallback<::media::EncoderStatus::Or<
+          std::unique_ptr<::media::VideoEncodeAccelerator>>(
           const ::media::VideoEncodeAccelerator::Config& config,
           Client* client,
           const gpu::GpuPreferences& gpu_preferences,

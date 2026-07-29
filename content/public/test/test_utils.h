@@ -88,8 +88,8 @@ bool IsOriginAgentClusterEnabledForOrigin(SiteInstance* site_instance,
 
 // Returns true if the process model only allows a SiteInstance to contain
 // a single site.
-// TODO(crbug.com/390571607, yangsharon): Rename this function and use for
-// default SiteInstanceGroups.
+// TODO(crbug.com/390571607): Rename this function and use for default
+// SiteInstanceGroups.
 bool AreStrictSiteInstancesEnabled();
 
 // Returns true if a test needs to register an origin for isolation to ensure
@@ -127,10 +127,6 @@ bool WillSameSiteNavigationChangeRenderFrameHosts(bool is_main_frame,
 // Note that unlike WillSameSiteNavigationChangeRenderFrameHosts()
 // above, this will not be true when RenderDocument for main-frame is enabled.
 bool CanSameSiteMainFrameNavigationsChangeSiteInstances();
-
-// Returns true if navigation queueing is fully enabled, where we will queue new
-// navigations that happen when there is an existing pending commit navigation.
-bool IsNavigationQueueingEnabled();
 
 // Makes sure that navigations that start in |rfh| won't result in a proactive
 // BrowsingInstance swap (note they might still result in a normal
@@ -397,7 +393,7 @@ class EffectiveURLContentBrowserClientHelper {
   ~EffectiveURLContentBrowserClientHelper();
 
   void AddTranslation(const GURL& url_to_modify, const GURL& url_to_return);
-  GURL GetEffectiveURL(const GURL& url);
+  std::optional<GURL> GetEffectiveURL(const GURL& url);
   bool DoesSiteRequireDedicatedProcess(BrowserContext* browser_context,
                                        const GURL& effective_site_url);
 
@@ -434,8 +430,8 @@ class EffectiveURLContentBrowserClient : public ContentBrowserClient {
   void AddTranslation(const GURL& url_to_modify, const GURL& url_to_return);
 
  private:
-  GURL GetEffectiveURL(BrowserContext* browser_context,
-                       const GURL& url) override;
+  std::optional<GURL> GetEffectiveURL(BrowserContext* browser_context,
+                                      const GURL& url) override;
   bool DoesSiteRequireDedicatedProcess(BrowserContext* browser_context,
                                        const GURL& effective_site_url) override;
 

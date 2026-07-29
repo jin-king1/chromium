@@ -12,7 +12,6 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.build.annotations.MockedInTests;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.omnibox.GroupsProto.GroupsInfo;
@@ -24,7 +23,6 @@ import java.util.Collections;
 import java.util.List;
 
 /** AutocompleteResult encompasses and manages autocomplete results. */
-@MockedInTests
 @NullMarked
 public class AutocompleteResult {
     @IntDef({
@@ -67,7 +65,7 @@ public class AutocompleteResult {
      * @param suggestions List of AutocompleteMatch objects.
      * @param groupsInfo Additional information about the AutocompleteMatch groups.
      */
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public AutocompleteResult(
             long nativeResult,
             @Nullable List<AutocompleteMatch> suggestions,
@@ -115,7 +113,7 @@ public class AutocompleteResult {
      *     content of this array must match the length and IDs of the |groupIds|.
      * @return AutocompleteResult object encompassing supplied information.
      */
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     @CalledByNative
     static AutocompleteResult fromNative(
             long nativeAutocompleteResult,
@@ -139,7 +137,7 @@ public class AutocompleteResult {
         Collections.addAll(mSuggestions, suggestions);
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     @CalledByNative
     void notifyNativeDestroyed() {
         mNativeAutocompleteResult = 0;

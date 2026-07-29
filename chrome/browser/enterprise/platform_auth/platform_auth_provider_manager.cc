@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
@@ -38,6 +37,8 @@
 #include "chrome/browser/enterprise/platform_auth/cloud_ap_provider_win.h"
 #elif BUILDFLAG(IS_MAC)
 #include "chrome/browser/enterprise/platform_auth/extensible_enterprise_sso_provider_mac.h"
+#elif BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/enterprise/platform_auth/entra_provider_android.h"
 #endif
 
 namespace enterprise_auth {
@@ -49,8 +50,10 @@ std::unique_ptr<PlatformAuthProvider> MakeProvider() {
   return std::make_unique<CloudApProviderWin>();
 #elif BUILDFLAG(IS_MAC)
   return std::make_unique<ExtensibleEnterpriseSSOProvider>();
+#elif BUILDFLAG(IS_ANDROID)
+  return std::make_unique<EntraProviderAndroid>();
 #else
-  return nullptr;
+#error Unsupported platform
 #endif
 }
 
@@ -71,8 +74,9 @@ void PlatformAuthProviderManager::SetEnabled(bool enabled,
   on_enable_complete_.Reset();
 
   // Drop origins if previously enabled.
-  if (!enabled && !origins_.empty())
+  if (!enabled && !origins_.empty()) {
     origins_.clear();
+  }
 
   enabled_ = enabled;
 
@@ -99,7 +103,7 @@ bool PlatformAuthProviderManager::IsEnabledFor(const GURL& url) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   return !supports_origin_filtering_ ||
-         base::Contains(origins_, url::Origin::Create(url));
+         origins_.contains(url::Origin::Create(url));
 }
 
 void PlatformAuthProviderManager::GetData(const GURL& url,
@@ -107,11 +111,9 @@ void PlatformAuthProviderManager::GetData(const GURL& url,
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(url.is_valid());
 
-  // In general, callers should only request data for requests that are headed
-  // toward one of the origins stored in `origins_`. Given the async nature of
-  // changes to the set of origins, it's possible that a request could come in
-  // after the manager had been disabled or after a change to the set of
-  // origins.
+  // Note: given the async nature of changes to the set of origins, it's
+  // possible that a request could come in after the manager had been disabled
+  // or after a change to the set of origins.
   if (!IsEnabledFor(url)) {
     std::move(callback).Run(net::HttpRequestHeaders());
   } else {
@@ -158,11 +160,13 @@ void PlatformAuthProviderManager::OnOrigins(
     new_origins = base::flat_set<url::Origin>(std::move(*origins));
   }
 
-  if (origins_ != new_origins)
+  if (origins_ != new_origins) {
     origins_ = std::move(new_origins);
+  }
 
-  if (on_enable_complete_)
+  if (on_enable_complete_) {
     std::move(on_enable_complete_).Run();
+  }
 }
 
 std::unique_ptr<PlatformAuthProvider>

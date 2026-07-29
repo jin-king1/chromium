@@ -9,7 +9,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/task/task_runner.h"
 #include "base/task/thread_pool.h"
-#include "chrome/browser/safe_browsing/cloud_content_scanning/multipart_uploader.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/multipart_uploader.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/base/net_errors.h"
@@ -62,7 +62,7 @@ class DownloadFeedbackImpl : public DownloadFeedback {
   std::string ping_request_;
   std::string ping_response_;
 
-  std::unique_ptr<ConnectorUploadRequest> uploader_;
+  std::unique_ptr<enterprise_connectors::ConnectorUploadRequest> uploader_;
 };
 
 DownloadFeedbackImpl::DownloadFeedbackImpl(
@@ -155,7 +155,8 @@ void DownloadFeedbackImpl::Start(base::OnceClosure finish_callback) {
       url_loader_factory_, GURL(kSbFeedbackURL), metadata_string, file_path_,
       file_size_, false, "DownloadFeedback", traffic_annotation,
       base::BindOnce(&DownloadFeedbackImpl::FinishedUpload,
-                     base::Unretained(this), std::move(finish_callback)));
+                     base::Unretained(this), std::move(finish_callback)),
+      content::GetUIThreadTaskRunner({}));
   uploader_->Start();
 }
 

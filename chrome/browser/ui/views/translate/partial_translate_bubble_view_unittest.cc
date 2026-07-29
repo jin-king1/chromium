@@ -10,6 +10,7 @@
 #include "chrome/browser/ui/translate/partial_translate_bubble_ui_action_logger.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/actions/actions.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/views/test/button_test_api.h"
@@ -64,6 +65,11 @@ class FakePartialTranslateBubbleModel : public PartialTranslateBubbleModel {
     return target_name_;
   }
 
+  std::optional<size_t> GetTargetLanguageIndexForCode(
+      const std::string& language_code) const override {
+    return 1;
+  }
+
   int GetSourceLanguageIndex() const override { return 1; }
 
   void UpdateSourceLanguageIndex(int index) override {}
@@ -105,7 +111,7 @@ class PartialTranslateBubbleViewTest : public ChromeViewsTestBase {
 
     // The bubble needs the parent as an anchor.
     anchor_widget_ =
-        CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+        CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET,
                          views::Widget::InitParams::TYPE_WINDOW);
     anchor_widget_->Show();
 
@@ -115,9 +121,9 @@ class PartialTranslateBubbleViewTest : public ChromeViewsTestBase {
 
   void CreateAndShowBubble() {
     std::unique_ptr<PartialTranslateBubbleModel> model(mock_model_);
-    bubble_ = new PartialTranslateBubbleView(anchor_widget_->GetContentsView(),
-                                             std::move(model), nullptr,
-                                             base::DoNothing());
+    bubble_ = new PartialTranslateBubbleView(
+        views::BubbleAnchor(anchor_widget_->GetContentsView()),
+        std::move(model), nullptr, base::DoNothing());
     views::BubbleDialogDelegateView::CreateBubble(bubble_)->Show();
   }
 
@@ -130,7 +136,9 @@ class PartialTranslateBubbleViewTest : public ChromeViewsTestBase {
   }
 
   void TearDown() override {
-    bubble_->GetWidget()->CloseNow();
+    if (bubble_) {
+      bubble_->GetWidget()->CloseNow();
+    }
     anchor_widget_.reset();
 
     ChromeViewsTestBase::TearDown();
@@ -210,4 +218,14 @@ TEST_F(PartialTranslateBubbleViewTest, TranslateFullPageButton) {
   CreateAndShowBubble();
   PressButton(PartialTranslateBubbleView::BUTTON_ID_FULL_PAGE_TRANSLATE);
   EXPECT_TRUE(mock_model_->full_page_translate_called_);
+}
+
+TEST_F(PartialTranslateBubbleViewTest, TranslatedTextIsSelectable) {
+  CreateAndShowBubble();
+  // Switch to the translated view.
+  bubble_->SwitchView(PartialTranslateBubbleModel::VIEW_STATE_AFTER_TRANSLATE);
+
+  // Verify the translated text is selectable for copying.
+  ASSERT_NE(bubble_->partial_text_label_, nullptr);
+  EXPECT_TRUE(bubble_->partial_text_label_->GetSelectable());
 }

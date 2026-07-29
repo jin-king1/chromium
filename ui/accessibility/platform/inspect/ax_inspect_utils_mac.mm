@@ -4,6 +4,8 @@
 
 #include "ui/accessibility/platform/inspect/ax_inspect_utils_mac.h"
 
+#include <ApplicationServices/ApplicationServices.h>
+#import <Cocoa/Cocoa.h>
 #include <CoreGraphics/CoreGraphics.h>
 
 #include <ostream>
@@ -11,18 +13,19 @@
 #include "base/apple/bridging.h"
 #include "base/apple/foundation_util.h"
 #include "base/containers/fixed_flat_set.h"
-#include "base/debug/stack_trace.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/memory/scoped_policy.h"
 #include "base/strings/pattern.h"
 #include "base/strings/sys_string_conversions.h"
+#include "ui/accessibility/platform/ax_platform_node.h"
+#include "ui/accessibility/platform/ax_platform_tree_manager.h"
 #include "ui/accessibility/platform/ax_private_attributes_mac.h"
 #include "ui/accessibility/platform/inspect/ax_element_wrapper_mac.h"
 
-// error: 'accessibilityAttributeNames' is deprecated: first deprecated in
-// macOS 10.10 - Use the NSAccessibility protocol methods instead (see
-// NSAccessibilityProtocols.h
+using base::apple::CFToNSPtrCast;
+
+// TODO(https://crbug.com/406190900): Remove this deprecation pragma.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
@@ -35,7 +38,7 @@ const char kChromiumTitle[] = "Chromium";
 const char kFirefoxTitle[] = "Firefox";
 const char kSafariTitle[] = "Safari";
 
-NSArray* AXChildrenOf(const id node) {
+NSArray* AXChildrenOf(id node) {
   return AXElementWrapper(node).Children();
 }
 
@@ -50,12 +53,13 @@ bool HasIDOrClass(const std::string& idOrClass, const AXUIElementRef node) {
   AXElementWrapper nsNode((__bridge id)node);
   NSString* nsIDOrClass = base::SysUTF8ToNSString(idOrClass);
   NSString* idValue =
-      *nsNode.GetAttributeValue(NSAccessibilityDOMIdentifierAttribute);
+      *nsNode.GetAttributeValue(CFToNSPtrCast(kAXDOMIdentifierAttribute));
   if ([idValue isEqualToString:nsIDOrClass]) {
     return true;
   }
 
-  NSArray* classList = *nsNode.GetAttributeValue(NSAccessibilityDOMClassList);
+  NSArray* classList =
+      *nsNode.GetAttributeValue(CFToNSPtrCast(kAXDOMClassListAttribute));
   return [classList containsObject:nsIDOrClass];
 }
 
@@ -63,50 +67,50 @@ bool HasIDOrClass(const std::string& idOrClass, const AXUIElementRef node) {
 
 bool IsValidAXAttribute(const std::string& attribute) {
   static NSSet<NSString*>* valid_attributes = [NSSet setWithArray:@[
-    NSAccessibilityAccessKeyAttribute,
-    NSAccessibilityARIAAtomicAttribute,
+    CFToNSPtrCast(kAXAccessKeyAttribute),
+    CFToNSPtrCast(kAXARIAAtomicAttribute),
     NSAccessibilityARIABusyAttribute,
-    NSAccessibilityARIAColumnCountAttribute,
-    NSAccessibilityARIAColumnIndexAttribute,
-    NSAccessibilityARIACurrentAttribute,
-    NSAccessibilityARIALiveAttribute,
-    NSAccessibilityARIAPosInSetAttribute,
-    NSAccessibilityARIARelevantAttribute,
-    NSAccessibilityARIARowCountAttribute,
-    NSAccessibilityARIARowIndexAttribute,
-    NSAccessibilityARIASetSizeAttribute,
+    CFToNSPtrCast(kAXARIAColumnCountAttribute),
+    CFToNSPtrCast(kAXARIAColumnIndexAttribute),
+    CFToNSPtrCast(kAXARIACurrentAttribute),
+    CFToNSPtrCast(kAXARIALiveAttribute),
+    CFToNSPtrCast(kAXARIAPosInSetAttribute),
+    CFToNSPtrCast(kAXARIARelevantAttribute),
+    CFToNSPtrCast(kAXARIARowCountAttribute),
+    CFToNSPtrCast(kAXARIARowIndexAttribute),
+    CFToNSPtrCast(kAXARIASetSizeAttribute),
     NSAccessibilityAutocompleteValueAttribute,
     NSAccessibilityBlockQuoteLevelAttribute,
-    NSAccessibilityBrailleLabelAttribute,
-    NSAccessibilityBrailleRoleDescription,
+    CFToNSPtrCast(kAXBrailleLabelAttribute),
+    CFToNSPtrCast(kAXBrailleRoleDescriptionAttribute),
     NSAccessibilityChromeAXNodeIdAttribute,
     NSAccessibilityColumnHeaderUIElementsAttribute,
     NSAccessibilityDescriptionAttribute,
     NSAccessibilityDetailsElementsAttribute,
-    NSAccessibilityDOMClassList,
-    NSAccessibilityDropEffectsAttribute,
-    NSAccessibilityElementBusyAttribute,
-    NSAccessibilityFocusableAncestorAttribute,
-    NSAccessibilityGrabbedAttribute,
-    NSAccessibilityHasPopupAttribute,
-    NSAccessibilityInvalidAttribute,
+    CFToNSPtrCast(kAXDOMClassListAttribute),
+    CFToNSPtrCast(kAXDropEffectsAttribute),
+    CFToNSPtrCast(kAXElementBusyAttribute),
+    CFToNSPtrCast(kAXFocusableAncestorAttribute),
+    CFToNSPtrCast(kAXGrabbedAttribute),
+    CFToNSPtrCast(kAXHasPopupAttribute),
+    CFToNSPtrCast(kAXInvalidAttribute),
     NSAccessibilityIsMultiSelectable,
-    NSAccessibilityKeyShortcutsValueAttribute,
-    NSAccessibilityLoadedAttribute,
-    NSAccessibilityLoadingProgressAttribute,
-    NSAccessibilityMathFractionNumeratorAttribute,
-    NSAccessibilityMathFractionDenominatorAttribute,
-    NSAccessibilityMathRootRadicandAttribute,
-    NSAccessibilityMathRootIndexAttribute,
-    NSAccessibilityMathBaseAttribute,
-    NSAccessibilityMathSubscriptAttribute,
-    NSAccessibilityMathSuperscriptAttribute,
-    NSAccessibilityMathUnderAttribute,
-    NSAccessibilityMathOverAttribute,
-    NSAccessibilityMathPostscriptsAttribute,
-    NSAccessibilityMathPrescriptsAttribute,
-    NSAccessibilityOwnsAttribute,
-    NSAccessibilityPopupValueAttribute,
+    CFToNSPtrCast(kAXKeyShortcutsAttribute),
+    CFToNSPtrCast(kAXLoadedAttribute),
+    CFToNSPtrCast(kAXLoadingProgressAttribute),
+    CFToNSPtrCast(kAXMathBaseAttribute),
+    CFToNSPtrCast(kAXMathFractionDenominatorAttribute),
+    CFToNSPtrCast(kAXMathFractionNumeratorAttribute),
+    CFToNSPtrCast(kAXMathOverAttribute),
+    CFToNSPtrCast(kAXMathPostscriptsAttribute),
+    CFToNSPtrCast(kAXMathPrescriptsAttribute),
+    CFToNSPtrCast(kAXMathRootIndexAttribute),
+    CFToNSPtrCast(kAXMathRootRadicandAttribute),
+    CFToNSPtrCast(kAXMathSubscriptAttribute),
+    CFToNSPtrCast(kAXMathSuperscriptAttribute),
+    CFToNSPtrCast(kAXMathUnderAttribute),
+    CFToNSPtrCast(kAXOwnsAttribute),
+    CFToNSPtrCast(kAXPopupValueAttribute),
     NSAccessibilityRequiredAttribute,
     NSAccessibilityRoleDescriptionAttribute,
     NSAccessibilitySelectedAttribute,
@@ -256,6 +260,23 @@ base::apple::ScopedCFTypeRef<AXUIElementRef> FindAXWindowChild(
   }
 
   return base::apple::ScopedCFTypeRef<AXUIElementRef>();
+}
+
+AXPlatformNode* GetAXPlatformNode(
+    AXUIElementRef element,
+    base::WeakPtr<AXPlatformTreeManager> manager) {
+  if (!element || !manager) {
+    return nullptr;
+  }
+
+  AXElementWrapper wrapper((__bridge id)element);
+  NSString* chrome_node_id =
+      *wrapper.GetAttributeValue(NSAccessibilityChromeAXNodeIdAttribute);
+  if (!chrome_node_id) {
+    return nullptr;
+  }
+
+  return manager->GetPlatformNodeFromTree([chrome_node_id intValue]);
 }
 
 }  // namespace ui

@@ -26,7 +26,7 @@ UChar32 TokenCodePoint(const String& text_content) {
   if ((content_length > 2) || (content_length == 0) ||
       (content_length == 1 && !U16_IS_SINGLE(text_content[0])) ||
       (content_length == 2 && !U16_IS_LEAD(text_content[0])))
-    return kNonCharacter;
+    return uchar::kNonCharacter;
 
   UChar32 character;
   unsigned offset = 0;
@@ -50,7 +50,7 @@ void MathMLTokenElement::CollectStyleForPresentationAttribute(
     const AtomicString& value,
     HeapVector<CSSPropertyValue, 8>& style) {
   if (name == mathml_names::kMathvariantAttr &&
-      EqualIgnoringASCIICase(value, "normal")) {
+      EqualIgnoringAsciiCase(value, "normal")) {
     AddPropertyToPresentationAttributeStyle(
         style, CSSPropertyID::kTextTransform, CSSValueID::kNone);
   } else {
@@ -91,10 +91,9 @@ void MathMLTokenElement::ChildrenChanged(
 
 LayoutObject* MathMLTokenElement::CreateLayoutObject(
     const ComputedStyle& style) {
-  if (!style.IsDisplayMathType()) {
-    return MathMLElement::CreateLayoutObject(style);
-  }
-  return MakeGarbageCollected<LayoutMathMLBlockFlow>(this);
+  return style.IsDisplayMath()
+             ? MakeGarbageCollected<LayoutMathMLBlockFlow>(this)
+             : MathMLElement::CreateLayoutObject(style);
 }
 
 }  // namespace blink

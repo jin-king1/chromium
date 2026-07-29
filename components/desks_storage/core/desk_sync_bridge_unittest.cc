@@ -23,6 +23,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/types/strong_alias.h"
 #include "base/uuid.h"
 #include "components/account_id/account_id.h"
@@ -34,7 +35,6 @@
 #include "components/desks_storage/core/desk_test_util.h"
 #include "components/desks_storage/core/saved_desk_builder.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
-#include "components/services/app_service/public/cpp/features.h"
 #include "components/sync/model/entity_change.h"
 #include "components/sync/model/in_memory_metadata_change_list.h"
 #include "components/sync/model/metadata_batch.h"
@@ -752,7 +752,7 @@ class DeskSyncBridgeTest : public testing::Test {
             "admin template 1", AdvanceAndGetTime()));
 
     std::string policy_json;
-    base::Value::List template_list;
+    base::ListValue template_list;
     template_list.Append(
         desk_template_conversion::SerializeDeskTemplateAsBaseValue(
             admin_template1.get(), cache_.get()));
@@ -1648,6 +1648,12 @@ TEST_F(DeskSyncBridgeTest, ApplyIncrementalSyncChangesDeleteNonexistent) {
 TEST_F(DeskSyncBridgeTest, MergeFullSyncDataWithTwoEntries) {
   InitializeBridge();
 
+  // This test future is used to check that `MergeFullSyncData` triggers the
+  // callback set via `SetOnMergeFullSyncDataCallback`.
+  base::test::TestFuture<void> merge_full_sync_data_future;
+  bridge()->SetOnMergeFullSyncDataCallback(
+      merge_full_sync_data_future.GetCallback());
+
   const WorkspaceDeskSpecifics template1 = CreateWorkspaceDeskSpecifics(1);
   const WorkspaceDeskSpecifics template2 = CreateWorkspaceDeskSpecifics(2);
 
@@ -1656,10 +1662,17 @@ TEST_F(DeskSyncBridgeTest, MergeFullSyncDataWithTwoEntries) {
   bridge()->MergeFullSyncData(std::move(metadata_change_list),
                               EntityAddList({template1, template2}));
   EXPECT_EQ(2ul, bridge()->GetAllEntryUuids().size());
+  EXPECT_TRUE(merge_full_sync_data_future.Wait());
 }
 
 TEST_F(DeskSyncBridgeTest, MergeFullSyncDataUploadsLocalOnlyEntries) {
   InitializeBridge();
+
+  // This test future is used to check that `MergeFullSyncData` triggers the
+  // callback set via `SetOnMergeFullSyncDataCallback`.
+  base::test::TestFuture<void> merge_full_sync_data_future;
+  bridge()->SetOnMergeFullSyncDataCallback(
+      merge_full_sync_data_future.GetCallback());
 
   // Seed two templates.
   // Seeded templates will be "template 1" and "template 2".
@@ -1685,6 +1698,22 @@ TEST_F(DeskSyncBridgeTest, MergeFullSyncDataUploadsLocalOnlyEntries) {
 
   // Merged data should contain 3 templtes.
   EXPECT_EQ(3ul, bridge()->GetAllEntryUuids().size());
+  EXPECT_TRUE(merge_full_sync_data_future.Wait());
+}
+
+TEST_F(DeskSyncBridgeTest, MergeFullSyncDataCallbackSetLate) {
+  InitializeBridge();
+  auto metadata_change_list = std::make_unique<InMemoryMetadataChangeList>();
+  bridge()->MergeFullSyncData(std::move(metadata_change_list),
+                              EntityAddList({CreateWorkspaceDeskSpecifics(1)}));
+
+  // Check that the callback set via `SetOnMergeFullSyncDataCallback` will be
+  // called even when we set the callback after `MergeFullSyncData` was already
+  // executed.
+  base::test::TestFuture<void> merge_full_sync_data_future;
+  bridge()->SetOnMergeFullSyncDataCallback(
+      merge_full_sync_data_future.GetCallback());
+  EXPECT_TRUE(merge_full_sync_data_future.Wait());
 }
 
 TEST_F(DeskSyncBridgeTest,
@@ -1738,7 +1767,7 @@ TEST_F(DeskSyncBridgeTest, GetTemplateJsonShouldReturnList) {
         EXPECT_TRUE(parsed_result);
 
         // Content of the conversion is tested in:
-        // components/desks_storage/core/desk_template_conversion_unittests.cc
+        // components/desks_storage/core/desk_template_conversion_unittest.cc
         loop.Quit();
       }));
   loop.Run();

@@ -51,7 +51,6 @@ class RenderThreadManager : public CompositorFrameConsumer {
       ParentCompositorDrawConstraints* constraints,
       viz::FrameSinkId* frame_sink_id,
       viz::FrameTimingDetailsMap* timing_details,
-      uint32_t* frame_token,
       base::TimeDelta* preferred_frame_interval) override;
   ChildFrameQueue PassUncommittedFrameOnUI() override;
 
@@ -64,7 +63,6 @@ class RenderThreadManager : public CompositorFrameConsumer {
       const ParentCompositorDrawConstraints& parent_draw_constraints,
       const viz::FrameSinkId& frame_sink_id,
       viz::FrameTimingDetailsMap timing_details,
-      uint32_t frame_token,
       base::TimeDelta preferred_frame_interval);
   void InsertReturnedResourcesOnRT(std::vector<viz::ReturnedResource> resources,
                                    const viz::FrameSinkId& frame_sink_id,
@@ -73,11 +71,10 @@ class RenderThreadManager : public CompositorFrameConsumer {
   void CommitFrameOnRT();
   void SetVulkanContextProviderOnRT(AwVulkanContextProvider* context_provider);
   void UpdateViewTreeForceDarkStateOnRT(bool view_tree_force_dark_state);
-  void DrawOnRT(bool save_restore,
-                const HardwareRendererDrawParams& params,
+  void DrawOnRT(const HardwareRendererDrawParams& params,
                 const OverlaysParams& overlays_params,
                 ReportRenderingThreadsCallback report_rendering_threads);
-  void DestroyHardwareRendererOnRT(bool save_restore, bool abandon_context);
+  void DestroyHardwareRendererOnRT(bool abandon_context);
   void RemoveOverlaysOnRT(OverlaysParams::MergeTransactionFn merge_transaction);
 
   // May be created on either thread.
@@ -135,7 +132,6 @@ class RenderThreadManager : public CompositorFrameConsumer {
   ParentCompositorDrawConstraints parent_draw_constraints_;
   viz::FrameSinkId frame_sink_id_for_presentation_feedbacks_;
   viz::FrameTimingDetailsMap timing_details_;
-  uint32_t presented_frame_token_ = 0u;
   base::TimeDelta preferred_frame_interval_;
 
   base::WeakPtrFactory<RenderThreadManager> weak_factory_on_ui_thread_{this};

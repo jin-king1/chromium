@@ -4,11 +4,23 @@
 
 #include "components/autofill/core/browser/payments/mandatory_reauth_manager.h"
 
-#include "base/strings/utf_string_conversions.h"
+#include <optional>
+#include <string>
+#include <utility>
+#include <variant>
+
+#include "base/check.h"
+#include "base/check_op.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/notreached.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
+#include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/metrics/payments/mandatory_reauth_metrics.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
+#include "components/device_reauth/device_authenticator.h"
 #include "components/strings/grit/components_branded_strings.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -22,20 +34,16 @@ using device_reauth::BiometricStatus;
 #endif
 
 MandatoryReauthManager::MandatoryReauthManager(AutofillClient* client)
-    : client_(client) {
-  if (client_) {
-    device_authenticator_ = client_->GetDeviceAuthenticator();
-  }
-}
+    : client_(client) {}
 
 MandatoryReauthManager::~MandatoryReauthManager() = default;
 
 // static
 NonInteractivePaymentMethodType
 MandatoryReauthManager::GetNonInteractivePaymentMethodType(
-    absl::variant<CreditCard::RecordType, Iban::RecordType> record_type) {
+    std::variant<CreditCard::RecordType, Iban::RecordType> record_type) {
   if (CreditCard::RecordType* type =
-          absl::get_if<CreditCard::RecordType>(&record_type)) {
+          std::get_if<CreditCard::RecordType>(&record_type)) {
     switch (*type) {
       case CreditCard::RecordType::kLocalCard:
         return NonInteractivePaymentMethodType::kLocalCard;
@@ -47,11 +55,11 @@ MandatoryReauthManager::GetNonInteractivePaymentMethodType(
         return NonInteractivePaymentMethodType::kMaskedServerCard;
     }
   } else {
-    if (absl::get<Iban::RecordType>(record_type) ==
+    if (std::get<Iban::RecordType>(record_type) ==
         Iban::RecordType::kLocalIban) {
       return NonInteractivePaymentMethodType::kLocalIban;
     } else {
-      CHECK_NE(absl::get<Iban::RecordType>(record_type),
+      CHECK_NE(std::get<Iban::RecordType>(record_type),
                Iban::RecordType::kUnknown);
       return NonInteractivePaymentMethodType::kServerIban;
     }
@@ -60,20 +68,25 @@ MandatoryReauthManager::GetNonInteractivePaymentMethodType(
 
 void MandatoryReauthManager::Authenticate(
     device_reauth::DeviceAuthenticator::AuthenticateCallback callback) {
-  CHECK(device_authenticator_);
-  device_authenticator_->AuthenticateWithMessage(
-      u"", base::BindOnce(&MandatoryReauthManager::OnAuthenticationCompleted,
-                          weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  AuthenticateWithMessage(u"", std::move(callback));
 }
 
 void MandatoryReauthManager::AuthenticateWithMessage(
     const std::u16string& message,
     device_reauth::DeviceAuthenticator::AuthenticateCallback callback) {
-  CHECK(device_authenticator_);
-  device_authenticator_->AuthenticateWithMessage(
-      message,
-      base::BindOnce(&MandatoryReauthManager::OnAuthenticationCompleted,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
+      client_->GetDeviceAuthenticator();
+  CHECK(authenticator);
+
+  auto* authenticator_ptr = authenticator.get();
+  auto wrapped_callback = base::BindOnce(
+      [](std::unique_ptr<device_reauth::DeviceAuthenticator> auth,
+         device_reauth::DeviceAuthenticator::AuthenticateCallback cb,
+         bool success) { std::move(cb).Run(success); },
+      std::move(authenticator), std::move(callback));
+
+  authenticator_ptr->AuthenticateWithMessage(message,
+                                             std::move(wrapped_callback));
 }
 
 void MandatoryReauthManager::StartDeviceAuthentication(
@@ -87,10 +100,7 @@ void MandatoryReauthManager::StartDeviceAuthentication(
   // device will prevent them from using payments autofill. In the settings
   // page, we signal to the user through various means that they need to turn
   // the device's authentication on in order to use re-auth.
-  if (authentication_method ==
-          payments::MandatoryReauthAuthenticationMethod::kUnknown ||
-      authentication_method ==
-          payments::MandatoryReauthAuthenticationMethod::kUnsupportedMethod) {
+  if (!IsDeviceAuthenticationSupported()) {
     LogMandatoryReauthCheckoutFlowUsageEvent(
         non_interactive_payment_method_type, authentication_method,
         autofill_metrics::MandatoryReauthAuthenticationFlowEvent::kFlowSkipped);
@@ -102,7 +112,7 @@ void MandatoryReauthManager::StartDeviceAuthentication(
       non_interactive_payment_method_type, authentication_method,
       autofill_metrics::MandatoryReauthAuthenticationFlowEvent::kFlowStarted);
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
   AuthenticateWithMessage(
       l10n_util::GetStringUTF16(IDS_PAYMENTS_AUTOFILL_FILLING_MANDATORY_REAUTH),
       std::move(authentication_complete_callback));
@@ -116,10 +126,18 @@ void MandatoryReauthManager::StartDeviceAuthentication(
 #endif
 }
 
-void MandatoryReauthManager::OnAuthenticationCompleted(
-    device_reauth::DeviceAuthenticator::AuthenticateCallback callback,
-    bool success) {
-  std::move(callback).Run(success);
+bool MandatoryReauthManager::IsDeviceAuthenticationSupported() {
+  MandatoryReauthAuthenticationMethod authentication_method =
+      GetAuthenticationMethod();
+  switch (authentication_method) {
+    case MandatoryReauthAuthenticationMethod::kUnknown:
+    case MandatoryReauthAuthenticationMethod::kUnsupportedMethod:
+      return false;
+    case MandatoryReauthAuthenticationMethod::kBiometric:
+    case MandatoryReauthAuthenticationMethod::kScreenLock:
+      return true;
+  }
+  NOTREACHED();
 }
 
 bool MandatoryReauthManager::ShouldOfferOptin(
@@ -144,13 +162,15 @@ bool MandatoryReauthManager::ShouldOfferOptin(
   // If the device authenticator is not present or we can not authenticate with
   // biometric or screen lock, there will be no way to re-auth if the user
   // enrolls, so return that we should not offer mandatory re-auth opt-in.
-  bool is_auth_available =
-      device_authenticator_ &&
+  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
+      client_->GetDeviceAuthenticator();
+  bool is_auth_available = authenticator &&
 #if BUILDFLAG(IS_ANDROID)
-      device_authenticator_->GetBiometricAvailabilityStatus() !=
-          BiometricStatus::kUnavailable;
+                           authenticator->GetBiometricAvailabilityStatus() !=
+                               BiometricStatus::kUnavailable;
 #else
-      device_authenticator_->CanAuthenticateWithBiometricOrScreenLock();
+                           authenticator
+                               ->CanAuthenticateWithBiometricOrScreenLock();
 #endif  // BUILDFLAG(IS_ANDROID)
   if (!is_auth_available) {
     LogMandatoryReauthOfferOptInDecision(
@@ -226,7 +246,7 @@ void MandatoryReauthManager::OnUserAcceptedOptInPrompt() {
       opt_in_source_,
       /*opt_in=*/true,
       autofill_metrics::MandatoryReauthAuthenticationFlowEvent::kFlowStarted);
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
   AuthenticateWithMessage(
       l10n_util::GetStringUTF16(IDS_PAYMENTS_AUTOFILL_MANDATORY_REAUTH_PROMPT),
       base::BindOnce(
@@ -275,12 +295,13 @@ void MandatoryReauthManager::OnUserClosedOptInPrompt() {
 
 MandatoryReauthAuthenticationMethod
 MandatoryReauthManager::GetAuthenticationMethod() {
-  if (!device_authenticator_) {
+  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
+      client_->GetDeviceAuthenticator();
+  if (!authenticator) {
     return MandatoryReauthAuthenticationMethod::kUnknown;
   }
 #if BUILDFLAG(IS_ANDROID)
-  switch (device_authenticator_->GetBiometricAvailabilityStatus()) {
-    case BiometricStatus::kRequired:
+  switch (authenticator->GetBiometricAvailabilityStatus()) {
     case BiometricStatus::kBiometricsAvailable:
       return MandatoryReauthAuthenticationMethod::kBiometric;
     case BiometricStatus::kOnlyLskfAvailable:
@@ -290,10 +311,10 @@ MandatoryReauthManager::GetAuthenticationMethod() {
   }
 #else
   // Order matters here.
-  if (device_authenticator_->CanAuthenticateWithBiometrics()) {
+  if (authenticator->CanAuthenticateWithBiometrics()) {
     return MandatoryReauthAuthenticationMethod::kBiometric;
   }
-  if (device_authenticator_->CanAuthenticateWithBiometricOrScreenLock()) {
+  if (authenticator->CanAuthenticateWithBiometricOrScreenLock()) {
     return MandatoryReauthAuthenticationMethod::kScreenLock;
   }
   return MandatoryReauthAuthenticationMethod::kUnsupportedMethod;

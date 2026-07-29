@@ -5,9 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_ACCESSIBILITY_AX_ENUMS_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_ACCESSIBILITY_AX_ENUMS_H_
 
-#include <stdint.h>
-
-#include <utility>
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/modules/modules_export.h"
 
 namespace blink {
 
@@ -28,12 +27,6 @@ enum AccessibilityExpanded {
   kExpandedUndefined = 0,
   kExpandedCollapsed,
   kExpandedExpanded,
-};
-
-enum AccessibilityGrabbedState {
-  kGrabbedStateUndefined = 0,
-  kGrabbedStateFalse,
-  kGrabbedStateTrue,
 };
 
 enum AccessibilitySelectedState {
@@ -85,12 +78,6 @@ enum AXObjectInclusion {
   kDefaultBehavior,
 };
 
-enum AccessibilityOptionalBool {
-  kOptionalBoolUndefined = 0,
-  kOptionalBoolTrue,
-  kOptionalBoolFalse
-};
-
 // The potential native host-language-based text (name, description or
 // placeholder) sources for an element.  See
 // https://w3c.github.io/html-aam/#accessible-name-and-description-computation
@@ -123,8 +110,12 @@ enum AXIgnoredReason {
   kAXNotVisible,
   kAXPresentational,
   kAXProbablyPresentational,
+  kAXInactiveCarouselTabContent,
   kAXUninteresting
 };
+
+// Returns a string representation of the given ignored reason.
+MODULES_EXPORT String IgnoredReasonName(AXIgnoredReason reason);
 
 // The following represent functions that could be used as callbacks for
 // DeferTreeUpdate. Every enum value represents a function that would be
@@ -137,7 +128,6 @@ enum class TreeUpdateReason : uint8_t {
   // These updates are always associated with a DOM Node:
   kActiveDescendantChanged,
   kAriaExpandedChanged,
-  kAriaOwnsChanged,
   kAriaPressedChanged,
   kAriaSelectedChanged,
   kCSSAnchorChanged,

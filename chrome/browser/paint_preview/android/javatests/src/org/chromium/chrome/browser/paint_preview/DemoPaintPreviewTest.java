@@ -14,7 +14,6 @@ import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -31,9 +30,11 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuCoordinator;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuTestSupport;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.paintpreview.player.PlayerManager;
+import org.chromium.ui.test.util.MockitoHelper;
 
 import java.util.concurrent.ExecutionException;
 
@@ -42,17 +43,14 @@ import java.util.concurrent.ExecutionException;
 @EnableFeatures({ChromeFeatureList.PAINT_PREVIEW_DEMO})
 @Batch(PER_CLASS)
 public class DemoPaintPreviewTest {
-    @ClassRule
-    public static ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
-
     @Rule
-    public final BlankCTATabInitialStateRule mInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, true);
+    public final AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.autoResetCtaActivityRule();
 
     private static final String TEST_URL = "/chrome/test/data/android/about.html";
 
     private static PaintPreviewTabService sMockService;
+    private WebPageStation mPage;
 
     @BeforeClass
     public static void setUp() {
@@ -70,7 +68,9 @@ public class DemoPaintPreviewTest {
 
     @Before
     public void setup() {
-        sActivityTestRule.loadUrl(sActivityTestRule.getTestServer().getURL(TEST_URL));
+        mPage =
+                mActivityTestRule.startOnWebPage(
+                        mActivityTestRule.getTestServer().getURL(TEST_URL));
     }
 
     /**
@@ -85,7 +85,7 @@ public class DemoPaintPreviewTest {
 
         // When PaintPreviewTabService#captureTab is called, return true for future calls to
         // PaintPreviewTabService#hasCaptureForTab and call the success callback with true.
-        ArgumentCaptor<Callback<Boolean>> callbackCaptor = ArgumentCaptor.forClass(Callback.class);
+        ArgumentCaptor<Callback<Boolean>> callbackCaptor = MockitoHelper.callbackCaptor();
         Mockito.doAnswer(
                         invocation -> {
                             Mockito.doReturn(true)
@@ -97,7 +97,7 @@ public class DemoPaintPreviewTest {
                 .when(sMockService)
                 .captureTab(Mockito.any(Tab.class), callbackCaptor.capture());
 
-        AppMenuCoordinator coordinator = sActivityTestRule.getAppMenuCoordinator();
+        AppMenuCoordinator coordinator = mActivityTestRule.getAppMenuCoordinator();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     AppMenuTestSupport.showAppMenu(coordinator, null, false);
@@ -108,7 +108,7 @@ public class DemoPaintPreviewTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> AppMenuTestSupport.callOnItemClick(coordinator, R.id.paint_preview_show_id));
 
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         TabbedPaintPreview tabbedPaintPreview =
                 ThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
         assertAttachedAndShown(tabbedPaintPreview, true, true);

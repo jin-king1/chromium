@@ -25,13 +25,17 @@ import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule;
 import org.chromium.chrome.browser.customtabs.CustomTabsIntentTestUtils;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
+import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.net.test.EmbeddedTestServerRule;
 
@@ -40,6 +44,11 @@ import java.util.concurrent.TimeoutException;
 /** Instrumentation tests for HTTP headers sent to GAIA server when user is signed in. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DoNotBatch(
+        reason =
+                "Requires setting the --gaia-url command-line flag dynamically based on the"
+                        + " ephemeral EmbeddedTestServer port, which is parsed once at native"
+                        + " process startup.")
 public class SigninHeaderTest {
     private static final String PACKAGE_NAME =
             ContextUtils.getApplicationContext().getPackageName();
@@ -47,8 +56,8 @@ public class SigninHeaderTest {
     @Rule public final SigninTestRule mSigninTestRule = new SigninTestRule();
 
     @Rule
-    public ChromeTabbedActivityTestRule mChromeActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mChromeActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule
     public CustomTabActivityTestRule mCustomTabActivityTestRule = new CustomTabActivityTestRule();
@@ -56,6 +65,7 @@ public class SigninHeaderTest {
     @Rule public EmbeddedTestServerRule mEmbeddedTestServerRule = new EmbeddedTestServerRule();
 
     private String mGAIAUrl;
+    private WebPageStation mInitialPage;
 
     private void launchTrustedWebActivity(Intent intent) throws TimeoutException {
         String url = intent.getData().toString();
@@ -72,8 +82,8 @@ public class SigninHeaderTest {
         // Specify a Gaia url path.
         CommandLine.getInstance()
                 .appendSwitchWithValue("gaia-url", mEmbeddedTestServerRule.getServer().getURL("/"));
-        mChromeActivityTestRule.startMainActivityOnBlankPage();
-        mSigninTestRule.addTestAccountThenSignin();
+        mInitialPage = mChromeActivityTestRule.startOnBlankPage();
+        mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
 
         mGAIAUrl = mEmbeddedTestServerRule.getServer().getURL("/echoheader?X-Chrome-Connected");
     }
@@ -84,7 +94,7 @@ public class SigninHeaderTest {
             throws TimeoutException {
         Intent intent = createTrustedWebActivityIntent(mGAIAUrl);
         launchTrustedWebActivity(intent);
-        Tab tab = mCustomTabActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mCustomTabActivityTestRule.getActivityTab();
         String output =
                 JavaScriptUtils.executeJavaScriptAndWaitForResult(
                         tab.getWebContents(), "document.body.innerText");
@@ -99,7 +109,7 @@ public class SigninHeaderTest {
                 CustomTabsIntentTestUtils.createMinimalCustomTabIntent(
                         ContextUtils.getApplicationContext(), mGAIAUrl);
         mCustomTabActivityTestRule.startCustomTabActivityWithIntent(intent);
-        Tab tab = mCustomTabActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mCustomTabActivityTestRule.getActivityTab();
         String output =
                 JavaScriptUtils.executeJavaScriptAndWaitForResult(
                         tab.getWebContents(), "document.body.innerText");
@@ -111,7 +121,7 @@ public class SigninHeaderTest {
     public void testXChromeConnectedHeader_InNonCct_ReturnsModeWithIncognitoOn()
             throws TimeoutException {
         mChromeActivityTestRule.loadUrl(mGAIAUrl);
-        Tab tab = mChromeActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mChromeActivityTestRule.getActivityTab();
         String output =
                 JavaScriptUtils.executeJavaScriptAndWaitForResult(
                         tab.getWebContents(), "document.body.innerText");

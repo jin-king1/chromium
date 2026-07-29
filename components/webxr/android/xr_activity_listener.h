@@ -12,6 +12,10 @@
 #include "base/functional/callback.h"
 #include "device/vr/android/xr_activity_state_handler.h"
 
+namespace content {
+struct GlobalRenderFrameHostId;
+}  // namespace content
+
 namespace webxr {
 
 // This is the native equivalent of XrActivityListener.java. Creating this class
@@ -22,15 +26,14 @@ namespace webxr {
 // class and not to have multiple listeners.
 class XrActivityListener : public device::XrActivityStateHandler {
  public:
-  explicit XrActivityListener(int render_process_id, int render_frame_id);
+  explicit XrActivityListener(const content::GlobalRenderFrameHostId& frame_id);
   ~XrActivityListener() override;
 
   // XrActivityStateHandler
   void SetResumedHandler(base::RepeatingClosure resumed_handler) override;
 
   // XrActivityListener JNI interface.
-  void OnActivityResumed(JNIEnv* env,
-                         const base::android::JavaParamRef<jobject>& obj);
+  void OnActivityResumed(JNIEnv* env);
 
  private:
   base::android::ScopedJavaGlobalRef<jobject> j_xr_activity_listener_;
@@ -43,7 +46,7 @@ class XrActivityListenerFactory : public device::XrActivityStateHandlerFactory {
   XrActivityListenerFactory();
   ~XrActivityListenerFactory() override;
   std::unique_ptr<device::XrActivityStateHandler> Create(
-      int render_process_id,
+      network::RendererProcessId render_process_id,
       int render_frame_id) override;
 };
 

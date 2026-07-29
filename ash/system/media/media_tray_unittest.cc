@@ -14,7 +14,6 @@
 #include "ash/system/tray/tray_bubble_wrapper.h"
 #include "ash/test/ash_test_base.h"
 #include "base/memory/raw_ptr.h"
-#include "components/media_message_center/media_notification_view_impl.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event.h"
@@ -37,6 +36,7 @@ class MediaTrayTest : public AshTestBase {
   }
 
   void TearDown() override {
+    media_tray_ = nullptr;
     provider_.reset();
     AshTestBase::TearDown();
   }
@@ -74,7 +74,7 @@ class MediaTrayTest : public AshTestBase {
 
  private:
   std::unique_ptr<MockMediaNotificationProvider> provider_;
-  raw_ptr<MediaTray, DanglingUntriaged> media_tray_;
+  raw_ptr<MediaTray> media_tray_;
 };
 
 TEST_F(MediaTrayTest, MediaTrayVisibilityTest) {

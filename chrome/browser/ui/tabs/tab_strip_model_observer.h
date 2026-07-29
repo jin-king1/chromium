@@ -8,19 +8,25 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <variant>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
+#include "chrome/browser/tab_list/tab_removed_reason.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "components/sessions/core/session_id.h"
+#include "components/split_tabs/split_tab_id.h"
+#include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "components/tabs/public/tab_interface.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 #include "ui/base/models/list_selection_model.h"
 
 class TabStripModel;
+namespace tabs {
+class TabGroupTabCollection;
+}  // namespace tabs
 
 namespace content {
 class WebContents;
@@ -50,19 +56,10 @@ class TabStripModelChange {
  public:
   enum Type { kSelectionOnly, kInserted, kRemoved, kMoved, kReplaced };
 
-  // Used to specify what will happen with the tab after it is removed.
-  enum class RemoveReason {
-    // Tab will be deleted.
-    kDeleted,
-
-    // Tab got detached from a TabStrip and inserted into another TabStrip.
-    kInsertedIntoOtherTabStrip
-  };
-
   struct RemovedTab {
     RemovedTab(tabs::TabInterface* tab,
                int index,
-               RemoveReason remove_reason,
+               TabRemovedReason remove_reason,
                tabs::TabInterface::DetachReason tab_detach_reason,
                std::optional<SessionID> session_id);
     virtual ~RemovedTab();
@@ -73,7 +70,7 @@ class TabStripModelChange {
     raw_ptr<tabs::TabInterface> tab = nullptr;
     raw_ptr<content::WebContents> contents = nullptr;
     int index;
-    RemoveReason remove_reason;
+    TabRemovedReason remove_reason;
     tabs::TabInterface::DetachReason tab_detach_reason;
     std::optional<SessionID> session_id;
   };
@@ -86,7 +83,7 @@ class TabStripModelChange {
     void WriteIntoTrace(perfetto::TracedValue context) const;
   };
 
-  // WebContents were inserted. This implicitly changes the existing selection
+  // Tabs were inserted. This implicitly changes the existing selection
   // model by calling IncrementFrom(index) on each index in |contents[i].index|.
   struct Insert {
     Insert();
@@ -121,7 +118,7 @@ class TabStripModelChange {
     void WriteIntoTrace(perfetto::TracedValue context) const;
   };
 
-  // WebContents were removed at |indices_before_removal|. This implicitly
+  // Tabs were removed at |indices_before_removal|. This implicitly
   // changes the existing selection model by calling DecrementFrom(index).
   struct Remove {
     Remove();
@@ -149,7 +146,7 @@ class TabStripModelChange {
     // { F, 5 }, { C, 2 }, { B, 1 }
     //
     // Therefore all observers which store indices of tabs should update them
-    // in the order the tabs appear in `contents`. Observers should  not do
+    // in the order the tabs appear in `contents`. Observers should not do
     // index-based queries based on their own internally-stored indices until
     // after processing all of `contents`.
     std::vector<RemovedTab> contents;
@@ -198,7 +195,7 @@ class TabStripModelChange {
   void WriteIntoTrace(perfetto::TracedValue context) const;
 
  private:
-  using Delta = absl::variant<Insert, Remove, Move, Replace>;
+  using Delta = std::variant<Insert, Remove, Move, Replace>;
 
   TabStripModelChange(Type type, Delta delta);
 
@@ -229,8 +226,6 @@ struct TabStripSelectionChange {
     return old_contents != new_contents;
   }
 
-  // TODO(sangwoo.ko) Do we need something to indicate that the change
-  // was made implicitly?
   bool selection_changed() const {
     return selected_tabs_were_removed || old_model != new_model;
   }
@@ -287,23 +282,29 @@ struct TabGroupChange {
   };
 
   struct CreateChange : public Delta {
-    explicit CreateChange(TabGroupCreationReason reason);
+    CreateChange(TabGroupCreationReason reason,
+                 tabs::TabGroupTabCollection* detached_group);
     ~CreateChange() override;
 
     TabGroupCreationReason reason() const { return reason_; }
+    std::vector<tabs::TabInterface*> GetDetachedTabs() const;
 
    private:
     TabGroupCreationReason reason_;
+    raw_ptr<tabs::TabGroupTabCollection> detached_group_;
   };
 
   struct CloseChange : public Delta {
-    explicit CloseChange(TabGroupClosureReason reason);
+    CloseChange(TabGroupClosureReason reason,
+                tabs::TabGroupTabCollection* detached_group);
     ~CloseChange() override;
 
     TabGroupClosureReason reason() const { return reason_; }
+    std::vector<tabs::TabInterface*> GetDetachedTabs() const;
 
    private:
     TabGroupClosureReason reason_;
+    raw_ptr<tabs::TabGroupTabCollection> detached_group_;
   };
 
   TabGroupChange(TabStripModel* model,
@@ -327,6 +328,146 @@ struct TabGroupChange {
   const CloseChange* GetCloseChange() const;
 
   tab_groups::TabGroupId group;
+  raw_ptr<TabStripModel> model;
+  Type type;
+
+ private:
+  std::unique_ptr<Delta> delta;
+};
+
+struct SplitTabChange {
+  enum class Type { kAdded, kVisualsChanged, kContentsChanged, kRemoved };
+
+  enum class SplitTabAddReason {
+    kNewSplitTabAdded,
+    kSplitTabUpdated,
+    kInsertedFromAnotherTabstrip
+  };
+
+  enum class SplitTabRemoveReason {
+    kSplitTabRemoved,
+    kSplitTabUpdated,
+    kDetachedToAnotherTabstrip
+  };
+
+  enum class SplitVisualChangeReason {
+    kLayoutUpdated,
+    kRatioUpdated,
+  };
+
+  // Base class for all changes. Similar to TabStripModelChange::Delta.
+  struct Delta {
+    virtual ~Delta() = default;
+  };
+
+  struct AddedChange : public Delta {
+    AddedChange(const std::vector<std::pair<tabs::TabInterface*, int>>& tabs,
+                SplitTabAddReason reason,
+                const split_tabs::SplitTabVisualData& visual_data);
+    ~AddedChange() override;
+    AddedChange(const AddedChange&);
+
+    const std::vector<std::pair<tabs::TabInterface*, int>>& tabs() const {
+      return tabs_;
+    }
+    const split_tabs::SplitTabVisualData& visual_data() const {
+      return visual_data_;
+    }
+    SplitTabAddReason reason() const { return reason_; }
+
+   private:
+    std::vector<std::pair<tabs::TabInterface*, int>> tabs_;
+    SplitTabAddReason reason_;
+    split_tabs::SplitTabVisualData visual_data_;
+  };
+
+  struct VisualsChange : public Delta {
+    VisualsChange(const split_tabs::SplitTabVisualData& old_visual_data,
+                  const split_tabs::SplitTabVisualData& new_visual_data,
+                  SplitVisualChangeReason reason,
+                  bool is_intermediate = false);
+    ~VisualsChange() override;
+
+    const split_tabs::SplitTabVisualData& old_visual_data() const {
+      return old_visual_data_;
+    }
+    const split_tabs::SplitTabVisualData& new_visual_data() const {
+      return new_visual_data_;
+    }
+
+    SplitVisualChangeReason reason() const { return reason_; }
+    bool is_intermediate() const { return is_intermediate_; }
+
+   private:
+    split_tabs::SplitTabVisualData old_visual_data_;
+    split_tabs::SplitTabVisualData new_visual_data_;
+    SplitVisualChangeReason reason_;
+
+    // True if the visual change is the result of a user drag-resizing the split
+    // group. False once the drag-resizing operation has finished.
+    bool is_intermediate_;
+  };
+
+  struct ContentsChange : public Delta {
+    ContentsChange(
+        const std::vector<std::pair<tabs::TabInterface*, int>>& prev_tabs,
+        const std::vector<std::pair<tabs::TabInterface*, int>>& new_tabs);
+    ~ContentsChange() override;
+    ContentsChange(const ContentsChange&);
+
+    const std::vector<std::pair<tabs::TabInterface*, int>>& prev_tabs() const {
+      return prev_tabs_;
+    }
+    const std::vector<std::pair<tabs::TabInterface*, int>>& new_tabs() const {
+      return new_tabs_;
+    }
+
+   private:
+    std::vector<std::pair<tabs::TabInterface*, int>> prev_tabs_;
+    std::vector<std::pair<tabs::TabInterface*, int>> new_tabs_;
+  };
+
+  struct RemovedChange : public Delta {
+    RemovedChange(const std::vector<std::pair<tabs::TabInterface*, int>>& tabs,
+                  SplitTabRemoveReason reason);
+    ~RemovedChange() override;
+    RemovedChange(const RemovedChange&);
+
+    const std::vector<std::pair<tabs::TabInterface*, int>>& tabs() const {
+      return tabs_;
+    }
+    SplitTabRemoveReason reason() const { return reason_; }
+
+   private:
+    std::vector<std::pair<tabs::TabInterface*, int>> tabs_;
+    SplitTabRemoveReason reason_;
+  };
+
+  SplitTabChange(TabStripModel* model,
+                 split_tabs::SplitTabId split_id,
+                 Type type,
+                 std::unique_ptr<Delta> deltap);
+  SplitTabChange(TabStripModel* model,
+                 split_tabs::SplitTabId split_id,
+                 AddedChange deltap);
+  SplitTabChange(TabStripModel* model,
+                 split_tabs::SplitTabId split_id,
+                 VisualsChange deltap);
+  SplitTabChange(TabStripModel* model,
+                 split_tabs::SplitTabId split_id,
+                 ContentsChange deltap);
+  SplitTabChange(TabStripModel* model,
+                 split_tabs::SplitTabId split_id,
+                 RemovedChange deltap);
+
+  ~SplitTabChange();
+
+  const AddedChange* GetAddedChange() const;
+  const VisualsChange* GetVisualsChange() const;
+  const ContentsChange* GetContentsChange() const;
+  const RemovedChange* GetRemovedChange() const;
+
+  split_tabs::SplitTabId split_id;
   raw_ptr<TabStripModel> model;
   Type type;
 
@@ -376,7 +517,7 @@ class TabStripModelObserver {
   // activation changes. |selection| is determined by comparing the state of
   // TabStripModel before the |change| and after the |change| are applied.
   // When only selection/activation was changed without any change about
-  // WebContents, |change| can be empty.
+  // the Tab, |change| can be empty.
   virtual void OnTabStripModelChanged(TabStripModel* tab_strip_model,
                                       const TabStripModelChange& change,
                                       const TabStripSelectionChange& selection);
@@ -393,41 +534,23 @@ class TabStripModelObserver {
   // supported is the drag controller completing a drag before a tab is removed.
   // TODO(crbug.com/40838330): Unify and generalize this and OnTabWillBeAdded,
   // e.g. via OnTabStripModelWillChange().
-  virtual void OnTabWillBeRemoved(content::WebContents* contents, int index);
+  virtual void OnTabWillBeRemoved(tabs::TabInterface* tab, int index);
 
-  // |change| is a change in the Tab Group model or metadata. These
-  // changes may cause repainting of some Tab Group UI. They are
-  // independent of the tabstrip model and do not affect any tab state.
-  virtual void OnTabGroupChanged(const TabGroupChange& change);
+  // Called when a tab is attempted to be closed but the closure is not
+  // permitted by the `TabStripModel::IsTabClosable` oracle.
+  virtual void OnTabCloseCancelled(const tabs::TabInterface* tab);
 
-  // Notfies us when a Tab Group is added to the Tab Group Model.
-  virtual void OnTabGroupAdded(const tab_groups::TabGroupId& group_id);
-
-  // Notfies us when a Tab Group will be removed from the Tab Group Model.
-  virtual void OnTabGroupWillBeRemoved(const tab_groups::TabGroupId& group_id);
-
-  // Notification that a new split view has been added to the TabStripModel.
-  virtual void OnSplitViewAdded(std::vector<tabs::TabInterface*> tabs);
-
-  // The specified WebContents at |index| changed in some way. |contents|
+  // The specified Tab at |index| changed in some way. |tab|
   // may be an entirely different object and the old value is no longer
   // available by the time this message is delivered.
   //
   // See tab_change_type.h for a description of |change_type|.
-  virtual void TabChangedAt(content::WebContents* contents,
-                            int index,
-                            TabChangeType change_type);
+  virtual void OnTabChangedAt(tabs::TabInterface* tab,
+                              int index,
+                              TabChangeType change_type);
 
   // Invoked when the pinned state of a tab changes.
-  virtual void TabPinnedStateChanged(TabStripModel* tab_strip_model,
-                                     content::WebContents* contents,
-                                     int index);
-
-  // Invoked when the blocked state of a tab changes.
-  // NOTE: This is invoked when a tab becomes blocked/unblocked by a tab modal
-  // window.
-  virtual void TabBlockedStateChanged(content::WebContents* contents,
-                                      int index);
+  virtual void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index);
 
   // Called when the tab at `index` is added to the group with id `new_group` or
   // removed from a group with id `old_group`.
@@ -438,14 +561,31 @@ class TabStripModelObserver {
       tabs::TabInterface* tab,
       int index);
 
+  // |change| is a change in the Tab Group model or metadata. These
+  // changes may cause repainting of some Tab Group UI. They are
+  // independent of the tabstrip model and do not affect any tab state.
+  virtual void OnTabGroupChanged(const TabGroupChange& change);
+
+  // Called when the "GroupFocused" state changes. This will happen before the
+  // group is fully destroyed.
+  virtual void OnTabGroupFocusChanged(
+      std::optional<tab_groups::TabGroupId> new_focused_group_id,
+      std::optional<tab_groups::TabGroupId> old_focused_group_id);
+
+  // Notfies us when a Tab Group is added to the Tab Group Model.
+  virtual void OnTabGroupAdded(const tab_groups::TabGroupId& group_id);
+
+  // Notfies us when a Tab Group will be removed from the Tab Group Model.
+  virtual void OnTabGroupWillBeRemoved(const tab_groups::TabGroupId& group_id);
+
+  // Notifies us when there is a change to split tab state in the TabStripModel.
+  // The |change| provides details of the change to split tab.
+  virtual void OnSplitTabChanged(const SplitTabChange& change);
+
   // The TabStripModel now no longer has any tabs. The implementer may
   // use this as a trigger to try and close the window containing the
   // TabStripModel, for example...
   virtual void TabStripEmpty();
-
-  // Called when a tab is attempted to be closed but the closure is not
-  // permitted by the `TabStripModel::IsTabClosable` oracle.
-  virtual void TabCloseCancelled(const content::WebContents* contents);
 
   // Sent any time an attempt is made to close all the tabs. This is not
   // necessarily the result of CloseAllTabs(). For example, if the user closes
@@ -459,11 +599,6 @@ class TabStripModelObserver {
   virtual void WillCloseAllTabs(TabStripModel* tab_strip_model);
   virtual void CloseAllTabsStopped(TabStripModel* tab_strip_model,
                                    CloseAllStoppedReason reason);
-
-  // The specified tab at |index| requires the display of a UI indication to the
-  // user that it needs their attention. The UI indication is set iff
-  // |attention| is true.
-  virtual void SetTabNeedsAttentionAt(int index, bool attention);
 
   // Called when an observed TabStripModel is beginning destruction.
   virtual void OnTabStripModelDestroyed(TabStripModel* tab_strip_model);

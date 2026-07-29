@@ -7,8 +7,10 @@
 
 #include <memory>
 #include <optional>
+#include <variant>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/app/startup_timestamps.h"
@@ -32,8 +34,7 @@ class MainThreadStackSamplingProfiler;
 // Chrome implementation of ContentMainDelegate.
 class ChromeMainDelegate : public content::ContentMainDelegate {
  public:
-  static const char* const kNonWildcardDomainNonPortSchemes[];
-  static const size_t kNonWildcardDomainNonPortSchemesSize;
+  static base::span<const char* const> GetNonWildcardDomainNonPortSchemes();
 
 #if BUILDFLAG(IS_ANDROID)
   ChromeMainDelegate();
@@ -55,7 +56,7 @@ class ChromeMainDelegate : public content::ContentMainDelegate {
   std::optional<int> BasicStartupComplete() override;
   void PreSandboxStartup() override;
   void SandboxInitialized(const std::string& process_type) override;
-  absl::variant<int, content::MainFunctionParams> RunProcess(
+  std::variant<int, content::MainFunctionParams> RunProcess(
       const std::string& process_type,
       content::MainFunctionParams main_function_params) override;
   void ProcessExiting(const std::string& process_type) override;
@@ -65,6 +66,7 @@ class ChromeMainDelegate : public content::ContentMainDelegate {
   void ZygoteForked() override;
 #endif
   std::optional<int> PreBrowserMain() override;
+  variations::VariationsIdsProvider* CreateVariationsIdsProvider() override;
   std::optional<int> PostEarlyInitialization(InvokedIn invoked_in) override;
   bool ShouldCreateFeatureList(InvokedIn invoked_in) override;
   bool ShouldInitializeMojo(InvokedIn invoked_in) override;
@@ -80,7 +82,7 @@ class ChromeMainDelegate : public content::ContentMainDelegate {
   content::ContentUtilityClient* CreateContentUtilityClient() override;
 
   // Initialization that happens in all process types.
-  void CommonEarlyInitialization(InvokedIn invoked_in);
+  void CommonEarlyInitialization();
 
   // Initializes |tracing_sampler_profiler_|. Deletes any existing
   // |tracing_sampler_profiler_| as well.
@@ -93,6 +95,8 @@ class ChromeMainDelegate : public content::ContentMainDelegate {
 #endif  // BUILDFLAG(IS_MAC)
 
   void InitializeMemorySystem();
+
+  bool IsInitFeatureListEarly() override;
 
   std::unique_ptr<ChromeContentBrowserClient> chrome_content_browser_client_;
   std::unique_ptr<ChromeContentUtilityClient> chrome_content_utility_client_;

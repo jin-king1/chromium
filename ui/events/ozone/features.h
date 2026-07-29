@@ -10,11 +10,6 @@
 #include "base/metrics/field_trial_params.h"
 
 namespace ui {
-COMPONENT_EXPORT(EVENTS_OZONE)
-BASE_DECLARE_FEATURE(kBlockTelephonyDevicePhoneMute);
-
-COMPONENT_EXPORT(EVENTS_OZONE)
-BASE_DECLARE_FEATURE(kEnableFastTouchpadClick);
 
 COMPONENT_EXPORT(EVENTS_OZONE)
 BASE_DECLARE_FEATURE(kEnableHeatmapPalmDetection);
@@ -29,24 +24,10 @@ COMPONENT_EXPORT(EVENTS_OZONE)
 BASE_DECLARE_FEATURE(kEnableNeuralPalmDetectionFilter);
 
 COMPONENT_EXPORT(EVENTS_OZONE)
-BASE_DECLARE_FEATURE(kEnableNeuralPalmAdaptiveHold);
-
-COMPONENT_EXPORT(EVENTS_OZONE)
-BASE_DECLARE_FEATURE(kEnableEdgeDetection);
-
-COMPONENT_EXPORT(EVENTS_OZONE) BASE_DECLARE_FEATURE(kEnableOrdinalMotion);
-
-COMPONENT_EXPORT(EVENTS_OZONE) BASE_DECLARE_FEATURE(kEnablePalmOnMaxTouchMajor);
-
-COMPONENT_EXPORT(EVENTS_OZONE) BASE_DECLARE_FEATURE(kEnablePalmOnToolTypePalm);
-
-COMPONENT_EXPORT(EVENTS_OZONE)
 extern const base::FeatureParam<std::string> kNeuralPalmModelVersion;
 
 COMPONENT_EXPORT(EVENTS_OZONE)
 extern const base::FeatureParam<std::string> kNeuralPalmRadiusPolynomial;
-
-COMPONENT_EXPORT(EVENTS_OZONE) BASE_DECLARE_FEATURE(kEnablePalmSuppression);
 
 COMPONENT_EXPORT(EVENTS_OZONE)
 extern const base::FeatureParam<double> kHeuristicCancelThresholdSeconds;

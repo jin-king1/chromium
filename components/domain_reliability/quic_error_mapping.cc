@@ -2,21 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "components/domain_reliability/quic_error_mapping.h"
+
+#include <array>
 
 namespace domain_reliability {
 
 namespace {
 
-const struct QuicErrorMapping {
+struct QuicErrorMapping {
   quic::QuicErrorCode quic_error;
   const char* beacon_quic_error;
-} kQuicErrorMap[] = {
+};
+const auto kQuicErrorMap = std::to_array<QuicErrorMapping>({
     // Connection has reached an invalid state.
     {quic::QUIC_INTERNAL_ERROR, "quic.internal_error"},
     // There were data frames after the a fin or reset.
@@ -118,6 +117,10 @@ const struct QuicErrorMapping {
     // The peer received an invalid flow control window.
     {quic::QUIC_FLOW_CONTROL_INVALID_WINDOW,
      "quic.flow_control.invalid_window"},
+    // The peer sent a RESET_STREAM or STREAM frame indicating a change in the
+    // final size for the stream.
+    {quic::QUIC_FLOW_CONTROL_FINAL_SIZE_CHANGED,
+     "quic.flow_control.final_size_changed"},
     // The connection has been IP pooled into an existing connection.
     {quic::QUIC_CONNECTION_IP_POOLED, "quic.connection.ip_pooled"},
     // The connection has too many outstanding sent packets.
@@ -293,7 +296,7 @@ const struct QuicErrorMapping {
     {quic::QUIC_INVALID_PATH_CHALLENGE_DATA,
      "quic.invalid.path_challenge_data"},
     {quic::QUIC_INVALID_PATH_RESPONSE_DATA, "quic.invalid.path_response_data"},
-    {quic::QUIC_INVALID_MESSAGE_DATA, "quic.invalid.message_data"},
+    {quic::QUIC_INVALID_DATAGRAM_DATA, "quic.invalid.datagram_data"},
     {quic::IETF_QUIC_PROTOCOL_VIOLATION, "quic.ietf.protocol_violation"},
     {quic::QUIC_INVALID_NEW_TOKEN, "quic.invalid_new_token"},
     {quic::QUIC_DATA_RECEIVED_ON_WRITE_UNIDIRECTIONAL_STREAM,
@@ -511,8 +514,13 @@ const struct QuicErrorMapping {
     {quic::QUIC_HANDSHAKE_FAILED_CID_COLLISION,
      "quic.quic_handshake_failed_cid_collision"},
 
+    // Connection idle timeout detected when about to send a new request.
+    {quic::QUIC_CLIENT_REQUEST_IDLE_TIMEOUT,
+     "quic.quic_client_request_idle_timeout"},
+
     // No error. Used as bound while iterating.
-    {quic::QUIC_LAST_ERROR, "quic.last_error"}};
+    {quic::QUIC_LAST_ERROR, "quic.last_error"},
+});
 
 // Must be updated any time a quic::QuicErrorCode is deprecated in
 // net/third_party/quiche/src/quiche/quic/core/quic_error_codes.h.

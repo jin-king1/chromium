@@ -10,24 +10,23 @@
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "chrome/browser/data_sharing/data_sharing_service_factory.h"
-#include "chrome/browser/profiles/incognito_helpers.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/tab_group_sync/feature_utils.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "components/collaboration/internal/messaging/configuration.h"
 #include "components/collaboration/internal/messaging/data_sharing_change_notifier_impl.h"
-#include "components/collaboration/internal/messaging/empty_messaging_backend_service.h"
+#include "components/collaboration/internal/messaging/instant_message_processor_impl.h"
 #include "components/collaboration/internal/messaging/messaging_backend_service_impl.h"
 #include "components/collaboration/internal/messaging/storage/empty_messaging_backend_database.h"
 #include "components/collaboration/internal/messaging/storage/messaging_backend_database_impl.h"
 #include "components/collaboration/internal/messaging/storage/messaging_backend_store_impl.h"
 #include "components/collaboration/internal/messaging/tab_group_change_notifier_impl.h"
 #include "components/collaboration/public/features.h"
+#include "components/collaboration/public/messaging/empty_messaging_backend_service.h"
+#include "components/collaboration/public/messaging/messaging_backend_service.h"
 #include "components/data_sharing/public/features.h"
-#include "components/saved_tab_groups/public/features.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
-#include "components/sync/model/data_type_store_service.h"
 
 namespace collaboration::messaging {
 
@@ -66,8 +65,7 @@ MessagingBackendServiceFactory::BuildServiceInstanceForBrowserContext(
 
   // This service requires the data sharing and tab group sync service features
   // to be enabled.
-  if (!base::FeatureList::IsEnabled(
-          data_sharing::features::kDataSharingFeature) ||
+  if (!data_sharing::features::IsDataSharingFunctionalityEnabled() ||
       !tab_groups::IsTabGroupSyncEnabled(profile->GetPrefs()) ||
       !base::FeatureList::IsEnabled(
           collaboration::features::kCollaborationMessaging)) {
@@ -96,6 +94,8 @@ MessagingBackendServiceFactory::BuildServiceInstanceForBrowserContext(
 
   auto messaging_backend_store = std::make_unique<MessagingBackendStoreImpl>(
       std::move(messaging_backend_database));
+  auto instant_message_processor =
+      std::make_unique<InstantMessageProcessorImpl>();
 
   // This configuration object allows us to control platform specific behavior.
   MessagingBackendConfiguration configuration;
@@ -107,8 +107,8 @@ MessagingBackendServiceFactory::BuildServiceInstanceForBrowserContext(
   auto service = std::make_unique<MessagingBackendServiceImpl>(
       configuration, std::move(tab_group_change_notifier),
       std::move(data_sharing_change_notifier),
-      std::move(messaging_backend_store), tab_group_sync_service,
-      data_sharing_service, identity_manager);
+      std::move(messaging_backend_store), std::move(instant_message_processor),
+      tab_group_sync_service, data_sharing_service, identity_manager);
 
   return std::move(service);
 }

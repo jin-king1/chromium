@@ -24,6 +24,8 @@ class GL_EXPORT GLContextEGL : public GLContextReal {
   GLContextEGL(const GLContextEGL&) = delete;
   GLContextEGL& operator=(const GLContextEGL&) = delete;
 
+  static void EnablePerThreadVirtualizationGroup();
+
   // Implement GLContext.
   bool InitializeImpl(GLSurface* compatible_surface,
                       const GLContextAttribs& attribs) override;
@@ -43,7 +45,6 @@ class GL_EXPORT GLContextEGL : public GLContextReal {
 
  private:
   void Destroy();
-  void ReleaseBackpressureFences();
 
   EGLContext context_ = nullptr;
   raw_ptr<GLDisplayEGL> gl_display_ = nullptr;

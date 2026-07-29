@@ -22,8 +22,7 @@ extern const char kAddFakeIdentitiesAtStartup[];
 // Switch used to simulate a post device restore in EG tests.
 extern const char kSimulatePostDeviceRestore[];
 
-// Switch used to enable FakeTabGroupSyncService for testing. The feature
-// kTabGroupSync should be enabled as well.
+// Switch used to enable FakeTabGroupSyncService for testing.
 extern const char kEnableFakeTabGroupSyncService[];
 
 // Switch used to force the status of fetching the Google Family for the user in
@@ -33,6 +32,15 @@ extern const char kFamilyStatus[];
 // Switch used to enable a certain IPH for testing. The value should be the IPH
 // feature to enable. Leave blank/empty value to enable all IPH in testing.
 extern const char kEnableIPH[];
+
+// Switch used to install a mock ShoppingService.
+extern const char kMockShoppingService[];
+
+// Switch used to indicate that the test will run with minimal UI.
+extern const char kLoadMinimalAppUI[];
+
+// Switch to use the default infobar duration instead a longer one for EGTests.
+extern const char kUseDefaultInfobarDuration[];
 
 }  // namespace test_switches
 

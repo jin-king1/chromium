@@ -9,7 +9,6 @@
 
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/views/message_view.h"
-#include "ui/views/metadata/view_factory_internal.h"
 
 using MessageView = message_center::MessageView;
 using Notification = message_center::Notification;
@@ -59,7 +58,6 @@ class ASH_EXPORT ConversationNotificationView
 
   // message_center::MessageView:
   bool IsExpanded() const override;
-  void OnThemeChanged() override;
   void UpdateWithNotification(
       const message_center::Notification& notification) override;
   message_center::NotificationControlButtonsView* GetControlButtonsView()
@@ -92,6 +90,8 @@ class ASH_EXPORT ConversationNotificationView
   raw_ptr<views::Label> title_ = nullptr;
   raw_ptr<views::Label> app_name_view_ = nullptr;
   raw_ptr<views::Label> app_name_divider_ = nullptr;
+
+  base::WeakPtrFactory<ConversationNotificationView> weak_factory_{this};
 };
 }  // namespace ash
 

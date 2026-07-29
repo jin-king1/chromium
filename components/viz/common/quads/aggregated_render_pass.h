@@ -12,7 +12,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/functional/callback.h"
 #include "base/hash/hash.h"
 #include "base/types/id_type.h"
 #include "cc/base/list_container.h"
@@ -29,6 +28,7 @@
 
 namespace viz {
 class AggregatedRenderPass;
+class CompositorRenderPass;
 class CompositorRenderPassDrawQuad;
 class AggregatedRenderPassDrawQuad;
 
@@ -57,17 +57,17 @@ class VIZ_COMMON_EXPORT AggregatedRenderPass : public RenderPassInternal {
               const gfx::Rect& output_rect,
               const gfx::Rect& damage_rect,
               const gfx::Transform& transform_to_root_target,
-              const cc::FilterOperations& filters,
-              const cc::FilterOperations& backdrop_filters,
-              const std::optional<gfx::RRectF>& backdrop_filter_bounds,
               gfx::ContentColorUsage color_usage,
               bool has_transparent_background,
               bool cache_render_pass,
               bool has_damage_from_contributing_content,
               bool generate_mipmap);
 
+  // TODO(crbug.com/444264038): Remove the `render_pass` parameter once the
+  // filter data is moved to CompositorRenderPassDrawQuad.
   AggregatedRenderPassDrawQuad* CopyFromAndAppendRenderPassDrawQuad(
       const CompositorRenderPassDrawQuad* quad,
+      const CompositorRenderPass& render_pass,
       AggregatedRenderPassId render_pass_id);
   AggregatedRenderPassDrawQuad* CopyFromAndAppendRenderPassDrawQuad(
       const AggregatedRenderPassDrawQuad* quad);
@@ -100,9 +100,6 @@ class VIZ_COMMON_EXPORT AggregatedRenderPass : public RenderPassInternal {
 
   // The type of color content present in this RenderPass.
   gfx::ContentColorUsage content_color_usage = gfx::ContentColorUsage::kSRGB;
-
-  // Indicates current RenderPass is a color conversion pass.
-  bool is_color_conversion_pass = false;
 
   // |true| if this render pass, prior to aggregation, was the root pass of a
   // surface's resolved frame.

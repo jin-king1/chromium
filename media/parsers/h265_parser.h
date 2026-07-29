@@ -4,17 +4,14 @@
 //
 // This file contains an implementation of an H265 Annex-B video stream parser.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #ifndef MEDIA_PARSERS_H265_PARSER_H_
 #define MEDIA_PARSERS_H265_PARSER_H_
 
 #include <stdint.h>
 #include <sys/types.h>
 
+#include <array>
+#include <variant>
 #include <vector>
 
 #include "base/containers/flat_map.h"
@@ -26,12 +23,7 @@
 #include "media/parsers/h264_bit_reader.h"
 #include "media/parsers/h264_parser.h"
 #include "media/parsers/h265_nalu_parser.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
-
-namespace gfx {
-struct HdrMetadataCta861_3;
-struct HdrMetadataSmpteSt2086;
-}  // namespace gfx
+#include "media/parsers/h26x_parser.h"
 
 namespace media {
 
@@ -47,6 +39,7 @@ enum {
 
 struct MEDIA_EXPORT H265ProfileTierLevel {
   H265ProfileTierLevel();
+  bool operator==(const H265ProfileTierLevel&) const = default;
 
   enum H265ProfileIdc {
     kProfileIdcMain = 1,
@@ -80,6 +73,7 @@ struct MEDIA_EXPORT H265ProfileTierLevel {
 
 struct MEDIA_EXPORT H265ScalingListData {
   H265ScalingListData();
+  bool operator==(const H265ScalingListData&) const = default;
 
   enum {
     kDefaultScalingListSize0Values = 16,  // Table 7-5, all values are 16
@@ -92,16 +86,20 @@ struct MEDIA_EXPORT H265ScalingListData {
   // are actually used. Also change it in the accelerator delegate if that is
   // done.
   // Syntax elements.
-  uint8_t scaling_list_dc_coef_16x16[kNumScalingListMatrices] = {};
-  uint8_t scaling_list_dc_coef_32x32[kNumScalingListMatrices] = {};
-  uint8_t scaling_list_4x4[kNumScalingListMatrices][kScalingListSizeId0Count] =
-      {};
-  uint8_t scaling_list_8x8[kNumScalingListMatrices]
-                          [kScalingListSizeId1To3Count] = {};
-  uint8_t scaling_list_16x16[kNumScalingListMatrices]
-                            [kScalingListSizeId1To3Count] = {};
-  uint8_t scaling_list_32x32[kNumScalingListMatrices]
-                            [kScalingListSizeId1To3Count] = {};
+  std::array<uint8_t, kNumScalingListMatrices> scaling_list_dc_coef_16x16 = {};
+  std::array<uint8_t, kNumScalingListMatrices> scaling_list_dc_coef_32x32 = {};
+  std::array<std::array<uint8_t, kScalingListSizeId0Count>,
+             kNumScalingListMatrices>
+      scaling_list_4x4 = {};
+  std::array<std::array<uint8_t, kScalingListSizeId1To3Count>,
+             kNumScalingListMatrices>
+      scaling_list_8x8 = {};
+  std::array<std::array<uint8_t, kScalingListSizeId1To3Count>,
+             kNumScalingListMatrices>
+      scaling_list_16x16 = {};
+  std::array<std::array<uint8_t, kScalingListSizeId1To3Count>,
+             kNumScalingListMatrices>
+      scaling_list_32x32 = {};
 
   // The following methods provide a raster scan order view into the matrix
   // represented by the corresponding |scaling_list_NxN[matrix_id]| array (which
@@ -117,13 +115,15 @@ struct MEDIA_EXPORT H265ScalingListData {
 };
 
 struct MEDIA_EXPORT H265StRefPicSet {
+  bool operator==(const H265StRefPicSet&) const = default;
+
   // Syntax elements.
   int num_negative_pics = 0;
   int num_positive_pics = 0;
-  int delta_poc_s0[kMaxShortTermRefPicSets] = {};
-  int used_by_curr_pic_s0[kMaxShortTermRefPicSets] = {};
-  int delta_poc_s1[kMaxShortTermRefPicSets] = {};
-  int used_by_curr_pic_s1[kMaxShortTermRefPicSets] = {};
+  std::array<int, kMaxShortTermRefPicSets> delta_poc_s0 = {};
+  std::array<int, kMaxShortTermRefPicSets> used_by_curr_pic_s0 = {};
+  std::array<int, kMaxShortTermRefPicSets> delta_poc_s1 = {};
+  std::array<int, kMaxShortTermRefPicSets> used_by_curr_pic_s1 = {};
 
   // Calculated fields.
   int num_delta_pocs = 0;
@@ -133,6 +133,7 @@ struct MEDIA_EXPORT H265StRefPicSet {
 struct MEDIA_EXPORT H265VUIParameters {
   H265VUIParameters();
   H265VUIParameters(H265VUIParameters&&) noexcept;
+  bool operator==(const H265VUIParameters&) const = default;
 
   // Syntax elements.
   int sar_width = 0;
@@ -165,9 +166,9 @@ struct MEDIA_EXPORT H265VPS {
   int vps_max_sub_layers_minus1 = 0;
   bool vps_temporal_id_nesting_flag = false;
   H265ProfileTierLevel profile_tier_level;
-  int vps_max_dec_pic_buffering_minus1[kMaxSubLayers] = {};
-  int vps_max_num_reorder_pics[kMaxSubLayers] = {};
-  int vps_max_latency_increase_plus1[kMaxSubLayers] = {};
+  std::array<int, kMaxSubLayers> vps_max_dec_pic_buffering_minus1 = {};
+  std::array<int, kMaxSubLayers> vps_max_num_reorder_pics = {};
+  std::array<int, kMaxSubLayers> vps_max_latency_increase_plus1 = {};
   int vps_max_layer_id = 0;
   int vps_num_layer_sets_minus1 = 0;
 
@@ -180,6 +181,7 @@ struct MEDIA_EXPORT H265VPS {
 struct MEDIA_EXPORT H265SPS {
   H265SPS();
   H265SPS(H265SPS&&) noexcept;
+  bool operator==(const H265SPS&) const = default;
 
   // Syntax elements.
   int sps_video_parameter_set_id = 0;
@@ -198,9 +200,9 @@ struct MEDIA_EXPORT H265SPS {
   int bit_depth_luma_minus8 = 0;
   int bit_depth_chroma_minus8 = 0;
   int log2_max_pic_order_cnt_lsb_minus4 = 0;
-  int sps_max_dec_pic_buffering_minus1[kMaxSubLayers] = {};
-  int sps_max_num_reorder_pics[kMaxSubLayers] = {};
-  uint32_t sps_max_latency_increase_plus1[kMaxSubLayers] = {};
+  std::array<int, kMaxSubLayers> sps_max_dec_pic_buffering_minus1 = {};
+  std::array<int, kMaxSubLayers> sps_max_num_reorder_pics = {};
+  std::array<uint32_t, kMaxSubLayers> sps_max_latency_increase_plus1 = {};
   int log2_min_luma_coding_block_size_minus3 = 0;
   int log2_diff_max_min_luma_coding_block_size = 0;
   int log2_min_luma_transform_block_size_minus2 = 0;
@@ -213,19 +215,20 @@ struct MEDIA_EXPORT H265SPS {
   bool amp_enabled_flag = false;
   bool sample_adaptive_offset_enabled_flag = false;
   bool pcm_enabled_flag = false;
-  int pcm_sample_bit_depth_luma_minus1 = {};
-  int pcm_sample_bit_depth_chroma_minus1 = {};
+  int pcm_sample_bit_depth_luma_minus1 = 0;
+  int pcm_sample_bit_depth_chroma_minus1 = 0;
   int log2_min_pcm_luma_coding_block_size_minus3 = 0;
   int log2_diff_max_min_pcm_luma_coding_block_size = 0;
   bool pcm_loop_filter_disabled_flag = false;
   int num_short_term_ref_pic_sets = 0;
-  H265StRefPicSet st_ref_pic_set[kMaxShortTermRefPicSets];
+  std::array<H265StRefPicSet, kMaxShortTermRefPicSets> st_ref_pic_set;
   bool long_term_ref_pics_present_flag = false;
   int num_long_term_ref_pics_sps = 0;
-  int lt_ref_pic_poc_lsb_sps[kMaxLongTermRefPicSets] = {};
-  bool used_by_curr_pic_lt_sps_flag[kMaxLongTermRefPicSets] = {};
+  std::array<int, kMaxLongTermRefPicSets> lt_ref_pic_poc_lsb_sps = {};
+  std::array<bool, kMaxLongTermRefPicSets> used_by_curr_pic_lt_sps_flag = {};
   bool sps_temporal_mvp_enabled_flag = false;
   bool strong_intra_smoothing_enabled_flag = false;
+  bool vui_parameters_present_flag = false;
   H265VUIParameters vui_parameters;
 
   // Extension extra elements.
@@ -258,7 +261,7 @@ struct MEDIA_EXPORT H265SPS {
   int pic_size_in_ctbs_y = 0;
   int wp_offset_half_range_y = 0;
   int wp_offset_half_range_c = 0;
-  uint32_t sps_max_latency_pictures[kMaxSubLayers] = {};
+  std::array<uint32_t, kMaxSubLayers> sps_max_latency_pictures = {};
 
   // Helpers to compute frequently-used values. They do not verify that the
   // results are in-spec for the given profile or level.
@@ -303,8 +306,8 @@ struct MEDIA_EXPORT H265PPS {
   int num_tile_columns_minus1 = 0;
   int num_tile_rows_minus1 = 0;
   bool uniform_spacing_flag = false;
-  int column_width_minus1[kMaxNumTileColumnWidth] = {};
-  int row_height_minus1[kMaxNumTileRowHeight] = {};
+  std::array<int, kMaxNumTileColumnWidth> column_width_minus1 = {};
+  std::array<int, kMaxNumTileRowHeight> row_height_minus1 = {};
   bool loop_filter_across_tiles_enabled_flag = false;
   bool pps_loop_filter_across_slices_enabled_flag = false;
   bool deblocking_filter_control_present_flag = false;
@@ -329,8 +332,8 @@ struct MEDIA_EXPORT H265PPS {
   bool chroma_qp_offset_list_enabled_flag = false;
   int diff_cu_chroma_qp_offset_depth = 0;
   int chroma_qp_offset_list_len_minus1 = 0;
-  int cb_qp_offset_list[6] = {};
-  int cr_qp_offset_list[6] = {};
+  std::array<int, 6> cb_qp_offset_list = {};
+  std::array<int, 6> cr_qp_offset_list = {};
   int log2_sao_offset_scale_luma = 0;
   int log2_sao_offset_scale_chroma = 0;
 
@@ -341,9 +344,9 @@ struct MEDIA_EXPORT H265PPS {
 struct MEDIA_EXPORT H265RefPicListsModifications {
   // Syntax elements.
   bool ref_pic_list_modification_flag_l0 = false;
-  int list_entry_l0[kMaxRefIdxActive] = {};
+  std::array<int, kMaxRefIdxActive> list_entry_l0 = {};
   bool ref_pic_list_modification_flag_l1 = false;
-  int list_entry_l1[kMaxRefIdxActive] = {};
+  std::array<int, kMaxRefIdxActive> list_entry_l1 = {};
 };
 
 struct MEDIA_EXPORT H265PredWeightTable {
@@ -353,14 +356,14 @@ struct MEDIA_EXPORT H265PredWeightTable {
   int luma_log2_weight_denom = 0;
   int delta_chroma_log2_weight_denom = 0;
   int chroma_log2_weight_denom = 0;
-  int delta_luma_weight_l0[kMaxRefIdxActive] = {};
-  int luma_offset_l0[kMaxRefIdxActive] = {};
-  int delta_chroma_weight_l0[kMaxRefIdxActive][2] = {};
-  int delta_chroma_offset_l0[kMaxRefIdxActive][2] = {};
-  int delta_luma_weight_l1[kMaxRefIdxActive] = {};
-  int luma_offset_l1[kMaxRefIdxActive] = {};
-  int delta_chroma_weight_l1[kMaxRefIdxActive][2] = {};
-  int delta_chroma_offset_l1[kMaxRefIdxActive][2] = {};
+  std::array<int, kMaxRefIdxActive> delta_luma_weight_l0 = {};
+  std::array<int, kMaxRefIdxActive> luma_offset_l0 = {};
+  std::array<std::array<int, 2>, kMaxRefIdxActive> delta_chroma_weight_l0 = {};
+  std::array<std::array<int, 2>, kMaxRefIdxActive> delta_chroma_offset_l0 = {};
+  std::array<int, kMaxRefIdxActive> delta_luma_weight_l1 = {};
+  std::array<int, kMaxRefIdxActive> luma_offset_l1 = {};
+  std::array<std::array<int, 2>, kMaxRefIdxActive> delta_chroma_weight_l1 = {};
+  std::array<std::array<int, 2>, kMaxRefIdxActive> delta_chroma_offset_l1 = {};
 };
 
 struct MEDIA_EXPORT H265SliceHeader {
@@ -390,6 +393,7 @@ struct MEDIA_EXPORT H265SliceHeader {
   int slice_pic_parameter_set_id = 0;
   bool dependent_slice_segment_flag = false;
   int slice_segment_address = 0;
+  int nuh_layer_id = 0;
   // Do not move any of the above fields below or vice-versa, everything after
   // this is copied as a block.
   int slice_type = 0;
@@ -403,10 +407,10 @@ struct MEDIA_EXPORT H265SliceHeader {
   int short_term_ref_pic_set_idx = 0;
   int num_long_term_sps = 0;
   int num_long_term_pics = 0;
-  int poc_lsb_lt[kMaxLongTermRefPicSets] = {};
-  bool used_by_curr_pic_lt[kMaxLongTermRefPicSets] = {};
-  bool delta_poc_msb_present_flag[kMaxLongTermRefPicSets] = {};
-  int delta_poc_msb_cycle_lt[kMaxLongTermRefPicSets] = {};
+  std::array<int, kMaxLongTermRefPicSets> poc_lsb_lt = {};
+  std::array<bool, kMaxLongTermRefPicSets> used_by_curr_pic_lt = {};
+  std::array<bool, kMaxLongTermRefPicSets> delta_poc_msb_present_flag = {};
+  std::array<int, kMaxLongTermRefPicSets> delta_poc_msb_cycle_lt = {};
   bool slice_temporal_mvp_enabled_flag = false;
   bool slice_sao_luma_flag = false;
   bool slice_sao_chroma_flag = false;
@@ -461,31 +465,11 @@ struct MEDIA_EXPORT H265SEIAlphaChannelInfo {
   bool alpha_channel_clip_type_flag = false;
 };
 
-struct MEDIA_EXPORT H265SEIContentLightLevelInfo {
-  uint16_t max_content_light_level;
-  uint16_t max_picture_average_light_level;
-
-  gfx::HdrMetadataCta861_3 ToGfx() const;
-};
-
-struct MEDIA_EXPORT H265SEIMasteringDisplayInfo {
-  enum {
-    kNumDisplayPrimaries = 3,
-    kDisplayPrimaryComponents = 2,
-  };
-
-  uint16_t display_primaries[kNumDisplayPrimaries][kDisplayPrimaryComponents];
-  uint16_t white_points[2];
-  uint32_t max_luminance;
-  uint32_t min_luminance;
-
-  gfx::HdrMetadataSmpteSt2086 ToGfx() const;
-};
-
-using H265SEIMessage = absl::variant<absl::monostate,
-                                     H265SEIAlphaChannelInfo,
-                                     H265SEIContentLightLevelInfo,
-                                     H265SEIMasteringDisplayInfo>;
+using H265SEIMessage = std::variant<std::monostate,
+                                    H265SEIAlphaChannelInfo,
+                                    H26xSEIContentLightLevelInfo,
+                                    H26xSEIMasteringDisplayInfo,
+                                    H26xSEIUserDataRegisteredT35>;
 
 struct MEDIA_EXPORT H265SEI {
   H265SEI();

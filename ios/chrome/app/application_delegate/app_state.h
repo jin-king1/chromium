@@ -11,11 +11,13 @@
 #import "ios/chrome/app/application_delegate/app_state_agent.h"
 #import "ios/chrome/app/application_delegate/app_state_observer.h"
 #import "ios/chrome/app/background_refresh/background_refresh_app_agent_audience.h"
+#import "ios/chrome/app/task_orchestrator.h"
+#import "ios/chrome/browser/device_orientation/ui_bundled/portait_orientation_manager.h"
 #import "ios/chrome/browser/scoped_ui_blocker/ui_bundled/ui_blocker_manager.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state_observer.h"
-#import "ios/chrome/browser/ui/device_orientation/portait_orientation_manager.h"
 
 @class CommandDispatcher;
+@class ProfileState;
 @class SceneState;
 @class DeferredInitializationRunner;
 @protocol StartupInformation;
@@ -55,8 +57,8 @@ enum class PostCrashAction {
 // Container for startup information.
 @property(nonatomic, weak) id<StartupInformation> startupInformation;
 
-// YES if the sign-in upgrade promo has been presented to the user, once.
-@property(nonatomic) BOOL signinUpgradePromoPresentedOnce;
+// YES if the fullscreen sign-in promo has been presented to the user, once.
+@property(nonatomic) BOOL fullscreenSigninPromoPresentedOnce;
 
 // Indicates what action, if any, is taken after a crash (stash tabs, show NTP,
 // show safe mode).
@@ -79,6 +81,9 @@ enum class PostCrashAction {
 // Can be used to schedule deferred initialization tasks.
 @property(nonatomic, readonly) DeferredInitializationRunner* deferredRunner;
 
+// Can be used to schedule tasks received from the OS.
+@property(nonatomic, readonly) TaskOrchestrator* taskOrchestrator;
+
 // Returns the foreground and active scene, if there is one.
 - (SceneState*)foregroundActiveScene;
 
@@ -89,15 +94,27 @@ enum class PostCrashAction {
 // active.
 - (NSArray<SceneState*>*)foregroundScenes;
 
+// Returns a list of all known ProfileStates.
+- (NSArray<ProfileState*>*)profileStates;
+
 // Adds an observer to this app state. The observers will be notified about
 // app state changes per AppStateObserver protocol.
 // The observer will be *immediately* notified about the latest init stage
 // transition, if any such transitions happened (didTransitionFromInitStage),
 // before this method returns.
 - (void)addObserver:(id<AppStateObserver>)observer;
+
 // Removes the observer. It's safe to call this at any time, including from
 // AppStateObserver callbacks.
 - (void)removeObserver:(id<AppStateObserver>)observer;
+
+// Informs the AppState of the connection/disconnection of a SceneState.
+- (void)sceneStateConnected:(SceneState*)sceneState;
+- (void)sceneStateDisconnected:(SceneState*)sceneState;
+
+// Informs the AppState of the creation/destruction of a ProfileState.
+- (void)profileStateCreated:(ProfileState*)profileState;
+- (void)profileStateDestroyed:(ProfileState*)profileState;
 
 // Adds a new agent. Agents are owned by the app state.
 // This automatically sets the app state on the `agent`.

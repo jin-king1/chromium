@@ -5,7 +5,7 @@
 #include "chrome/browser/ash/floating_sso/cookie_sync_data_type_controller.h"
 
 #include "base/functional/bind.h"
-#include "chrome/common/pref_names.h"
+#include "chromeos/constants/pref_names.h"
 #include "components/sync/service/sync_service.h"
 
 namespace ash::floating_sso {
@@ -13,16 +13,18 @@ namespace ash::floating_sso {
 CookieSyncDataTypeController::CookieSyncDataTypeController(
     std::unique_ptr<syncer::DataTypeControllerDelegate>
         delegate_for_full_sync_mode,
+    std::unique_ptr<syncer::DataTypeControllerDelegate>
+        delegate_for_transport_mode,
     syncer::SyncService* sync_service,
     PrefService* prefs)
     : syncer::DataTypeController(syncer::COOKIES,
                                  std::move(delegate_for_full_sync_mode),
-                                 /*delegate_for_transport_mode=*/nullptr),
+                                 std::move(delegate_for_transport_mode)),
       sync_service_(sync_service),
       prefs_(prefs) {
   pref_change_registrar_.Init(prefs_);
   pref_change_registrar_.Add(
-      prefs::kFloatingSsoEnabled,
+      chromeos::prefs::kFloatingSsoEnabled,
       base::BindRepeating(
           &CookieSyncDataTypeController::OnFloatingSsoPrefChanged,
           base::Unretained(this)));
@@ -31,10 +33,11 @@ CookieSyncDataTypeController::CookieSyncDataTypeController(
 CookieSyncDataTypeController::~CookieSyncDataTypeController() = default;
 
 syncer::DataTypeController::PreconditionState
-CookieSyncDataTypeController::GetPreconditionState() const {
+CookieSyncDataTypeController::GetPreconditionState(
+    const PreconditionContext& context) const {
   DCHECK(CalledOnValidThread());
 
-  if (!prefs_->GetBoolean(prefs::kFloatingSsoEnabled)) {
+  if (!prefs_->GetBoolean(chromeos::prefs::kFloatingSsoEnabled)) {
     return PreconditionState::kMustStopAndClearData;
   }
 

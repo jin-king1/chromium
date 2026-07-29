@@ -5,12 +5,9 @@
 #ifndef CHROME_BROWSER_WEB_APPLICATIONS_WEB_APP_NAVIGATION_CAPTURING_BROWSERTEST_BASE_H_
 #define CHROME_BROWSER_WEB_APPLICATIONS_WEB_APP_NAVIGATION_CAPTURING_BROWSERTEST_BASE_H_
 
-#include <vector>
-
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
 #include "components/webapps/common/web_app_id.h"
-#include "third_party/blink/public/mojom/manifest/manifest_launch_handler.mojom-shared.h"
 
 class Browser;
 class GURL;
@@ -40,9 +37,6 @@ class WebAppNavigationCapturingBrowserTestBase : public WebAppBrowserTestBase {
 
   void WaitForLaunchParams(content::WebContents* contents,
                            int min_launch_params_to_wait_for);
-
-  std::vector<GURL> GetLaunchParams(content::WebContents* contents,
-                                    const std::string& params);
 
  private:
   void CallWindowOpen(content::WebContents* contents,

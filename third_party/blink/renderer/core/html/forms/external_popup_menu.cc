@@ -42,12 +42,14 @@
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+#include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/forms/html_opt_group_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_option_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/html_hr_element.h"
+#include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/page.h"
@@ -58,20 +60,28 @@
 
 namespace blink {
 
-namespace {
-
-float GetDprForSizeAdjustment(const Element& owner_element) {
+// static
+float ExternalPopupMenu::GetDprForSizeAdjustment(const Element& owner_element) {
   float dpr = 1.0f;
   // Android doesn't need these adjustments and it makes tests fail.
 #ifndef OS_ANDROID
   LocalFrame* frame = owner_element.GetDocument().GetFrame();
   const Page* page = frame ? frame->GetPage() : nullptr;
-  dpr = page->GetChromeClient().GetScreenInfo(*frame).device_scale_factor;
+  // DevTools devicePixelRatio emulation only applies to the outermost
+  // main frame and local frames within it. If the current frame is
+  // cross-origin in relation to the outmost frame, we need to use the original
+  // device scale factor instead of the value emulated for the outermost main
+  // frame to correctly place the select menu.
+  if (frame->IsCrossOriginToOutermostMainFrame()) {
+    dpr = page->GetChromeClient()
+              .GetOriginalScreenInfo(*frame)
+              .device_scale_factor;
+  } else {
+    dpr = page->GetChromeClient().GetScreenInfo(*frame).device_scale_factor;
+  }
 #endif
   return dpr;
 }
-
-}  // namespace
 
 ExternalPopupMenu::ExternalPopupMenu(LocalFrame& frame,
                                      HTMLSelectElement& owner_element)
@@ -128,6 +138,25 @@ bool ExternalPopupMenu::ShowInternal() {
     float dpr = GetDprForSizeAdjustment(*owner_element_);
     if (dpr != 1.0) {
       rect_in_viewport = gfx::ScaleToRoundedRect(rect_in_viewport, 1 / dpr);
+    }
+
+    // Adjust anchor position to stay within web contents, otherwise the popup
+    // could be rendered entirely outside of the web contents. If this select
+    // is in a cross-origin iframe, then the anchor will be confined to the
+    // bounds of the iframe rather than the entire web contents. If the select
+    // doesn't intersect with the viewport, which can happen with oopifs, then
+    // the picker won't be opened.
+    if (RuntimeEnabledFeatures::SelectAnchorInViewportEnabled() &&
+        local_frame_->GetPage()) {
+      gfx::Rect viewport_rect =
+          local_frame_->LocalFrameRoot().IsOutermostMainFrame()
+              ? gfx::Rect(local_frame_->GetPage()->GetVisualViewport().Size())
+              : local_frame_->LocalFrameRoot().RemoteViewportIntersection();
+      if (!viewport_rect.Intersects(rect_in_viewport)) {
+        DidCancel();
+        return false;
+      }
+      rect_in_viewport.Intersect(viewport_rect);
     }
 
     gfx::Rect bounds =
@@ -191,8 +220,8 @@ void ExternalPopupMenu::UpdateFromElement(UpdateReason reason) {
       needs_update_ = true;
       owner_element_->GetDocument()
           .GetTaskRunner(TaskType::kUserInteraction)
-          ->PostTask(FROM_HERE, WTF::BindOnce(&ExternalPopupMenu::Update,
-                                              WrapPersistent(this)));
+          ->PostTask(FROM_HERE, BindOnce(&ExternalPopupMenu::Update,
+                                         WrapPersistent(this)));
       break;
 
     case kByStyleChange:
@@ -250,7 +279,20 @@ void ExternalPopupMenu::DidAcceptIndices(const Vector<int32_t>& indices) {
     list_indices.reserve(list_count);
     for (wtf_size_t i = 0; i < list_count; ++i)
       list_indices.push_back(ToPopupMenuItemIndex(indices[i], *owner_element));
-    owner_element->SelectMultipleOptionsByPopup(list_indices);
+    owner_element->SelectMultipleOptions(list_indices);
+  }
+
+  if (RuntimeEnabledFeatures::ExternalPopupMenuClickEventEnabled()) {
+    WebMouseEvent event;
+    event.SetFrameScale(1);
+    PhysicalRect bounding_box = owner_element->BoundingBox();
+    event.SetPositionInWidget(bounding_box.X(), bounding_box.Y());
+    event.SetTimeStamp(base::TimeTicks::Now());
+    if (LocalFrame* frame = owner_element->GetDocument().GetFrame()) {
+      frame->GetEventHandler().HandleTargetedMouseEvent(
+          owner_element, event, event_type_names::kClick,
+          Vector<WebMouseEvent>(), Vector<WebMouseEvent>());
+    }
   }
   Reset();
 }

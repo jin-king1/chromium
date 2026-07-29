@@ -10,7 +10,7 @@
 #include "base/command_line.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/chrome_extension_frame_host.h"
-#include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/window_controller.h"
 #include "chrome/common/url_constants.h"
 #include "content/public/browser/browser_context.h"
@@ -19,12 +19,14 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_switches.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
-#include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/switches.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -86,9 +88,7 @@ void ChromeExtensionWebContentsObserver::ReloadIfTerminated(
   //            extensions. It seems to be fast enough, but there is a race.
   //            We should delay loading until the extension has reloaded.
   if (registry->terminated_extensions().GetByID(extension_id)) {
-    ExtensionSystem::Get(browser_context())
-        ->extension_service()
-        ->ReloadExtension(extension_id);
+    ExtensionRegistrar::Get(browser_context())->ReloadExtension(extension_id);
   }
 }
 
@@ -128,6 +128,12 @@ void ChromeExtensionWebContentsObserver::SetUpRenderFrameHost(
     policy->GrantRequestOrigin(
         process_id,
         url::Origin::Create(GURL(chrome::kChromeUIExtensionIconURL)));
+  }
+
+  // Allow specific allowlisted component extensions to use Mojo JS bindings.
+  if (util::IsMojoJsEnabledForExtension(
+          extension->id(), render_frame_host->GetBrowserContext())) {
+    render_frame_host->EnableMojoJsBindings(/*features=*/nullptr);
   }
 }
 

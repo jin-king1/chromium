@@ -4,7 +4,9 @@
 
 #include "device/bluetooth/floss/floss_sdp_types.h"
 
-#include "base/containers/contains.h"
+#include <type_traits>
+#include <variant>
+
 
 namespace floss {
 
@@ -53,37 +55,30 @@ constexpr char kSdpDipRecordPropProduct[] = "product";
 constexpr char kSdpDipRecordPropVersion[] = "version";
 constexpr char kSdpDipRecordPropPrimaryRecord[] = "primary_record";
 
-std::optional<floss::BtSdpHeaderOverlay> GetHeaderOverlayFromSdpRecord(
+floss::BtSdpHeaderOverlay GetHeaderOverlayFromSdpRecord(
     const floss::BtSdpRecord& record) {
-  if (absl::holds_alternative<floss::BtSdpHeaderOverlay>(record)) {
-    return absl::get<floss::BtSdpHeaderOverlay>(record);
-  } else if (absl::holds_alternative<floss::BtSdpMasRecord>(record)) {
-    return absl::get<floss::BtSdpMasRecord>(record).hdr;
-  } else if (absl::holds_alternative<floss::BtSdpMnsRecord>(record)) {
-    return absl::get<floss::BtSdpMnsRecord>(record).hdr;
-  } else if (absl::holds_alternative<floss::BtSdpPseRecord>(record)) {
-    return absl::get<floss::BtSdpPseRecord>(record).hdr;
-  } else if (absl::holds_alternative<floss::BtSdpPceRecord>(record)) {
-    return absl::get<floss::BtSdpPceRecord>(record).hdr;
-  } else if (absl::holds_alternative<floss::BtSdpOpsRecord>(record)) {
-    return absl::get<floss::BtSdpOpsRecord>(record).hdr;
-  } else if (absl::holds_alternative<floss::BtSdpSapRecord>(record)) {
-    return absl::get<floss::BtSdpSapRecord>(record).hdr;
-  } else if (absl::holds_alternative<floss::BtSdpDipRecord>(record)) {
-    return absl::get<floss::BtSdpDipRecord>(record).hdr;
-  } else {
-    return std::nullopt;
-  }
+  return std::visit(
+      [](const auto& r) -> floss::BtSdpHeaderOverlay {
+        using T = std::decay_t<decltype(r)>;
+        if constexpr (std::is_same_v<T, floss::BtSdpHeaderOverlay>) {
+          return r;
+        } else if constexpr (std::is_same_v<T, floss::BtSdpMasRecord> ||
+                             std::is_same_v<T, floss::BtSdpMnsRecord> ||
+                             std::is_same_v<T, floss::BtSdpPseRecord> ||
+                             std::is_same_v<T, floss::BtSdpPceRecord> ||
+                             std::is_same_v<T, floss::BtSdpOpsRecord> ||
+                             std::is_same_v<T, floss::BtSdpSapRecord> ||
+                             std::is_same_v<T, floss::BtSdpDipRecord>) {
+          return r.hdr;
+        } else {
+          static_assert(false, "Non-exhaustive visitor!");
+        }
+      },
+      record);
 }
 
-std::optional<device::BluetoothUUID> GetUUIDFromSdpRecord(
-    const floss::BtSdpRecord& record) {
-  std::optional<floss::BtSdpHeaderOverlay> header =
-      GetHeaderOverlayFromSdpRecord(record);
-  if (!header.has_value()) {
-    return std::nullopt;
-  }
-  return header->uuid;
+device::BluetoothUUID GetUUIDFromSdpRecord(const floss::BtSdpRecord& record) {
+  return GetHeaderOverlayFromSdpRecord(record).uuid;
 }
 
 template <>
@@ -423,12 +418,12 @@ bool FlossDBusClient::ReadDBusParam(dbus::MessageReader* reader,
     unparsed_args[key] = std::move(entry_reader);
   }
 
-  if (!base::Contains(unparsed_args, kTypeKey)) {
+  if (!unparsed_args.contains(kTypeKey)) {
     LOG(ERROR) << "BtSdpRecord did not contain type identifier";
     return false;
   }
 
-  if (!base::Contains(unparsed_args, kVariantValueKey)) {
+  if (!unparsed_args.contains(kVariantValueKey)) {
     LOG(ERROR) << "BtSdpRecord did not contain argument #0";
     return false;
   }
@@ -526,47 +521,34 @@ void FlossDBusClient::WriteDBusParam(dbus::MessageWriter* writer,
   dbus::MessageWriter array_writer(nullptr);
   writer->OpenArray("{sv}", &array_writer);
 
-  if (absl::holds_alternative<BtSdpHeaderOverlay>(record)) {
-    WriteDictEntry(&array_writer, kTypeKey,
-                   static_cast<uint32_t>(BtSdpType::kRaw));
-    WriteDictEntry(&array_writer, kVariantValueKey,
-                   absl::get<BtSdpHeaderOverlay>(record));
-  } else if (absl::holds_alternative<BtSdpMasRecord>(record)) {
-    WriteDictEntry(&array_writer, kTypeKey,
-                   static_cast<uint32_t>(BtSdpType::kMapMas));
-    WriteDictEntry(&array_writer, kVariantValueKey,
-                   absl::get<BtSdpMasRecord>(record));
-  } else if (absl::holds_alternative<BtSdpMnsRecord>(record)) {
-    WriteDictEntry(&array_writer, kTypeKey,
-                   static_cast<uint32_t>(BtSdpType::kMapMns));
-    WriteDictEntry(&array_writer, kVariantValueKey,
-                   absl::get<BtSdpMnsRecord>(record));
-  } else if (absl::holds_alternative<BtSdpPseRecord>(record)) {
-    WriteDictEntry(&array_writer, kTypeKey,
-                   static_cast<uint32_t>(BtSdpType::kPbapPse));
-    WriteDictEntry(&array_writer, kVariantValueKey,
-                   absl::get<BtSdpPseRecord>(record));
-  } else if (absl::holds_alternative<BtSdpPceRecord>(record)) {
-    WriteDictEntry(&array_writer, kTypeKey,
-                   static_cast<uint32_t>(BtSdpType::kPbapPce));
-    WriteDictEntry(&array_writer, kVariantValueKey,
-                   absl::get<BtSdpPceRecord>(record));
-  } else if (absl::holds_alternative<BtSdpOpsRecord>(record)) {
-    WriteDictEntry(&array_writer, kTypeKey,
-                   static_cast<uint32_t>(BtSdpType::kOppServer));
-    WriteDictEntry(&array_writer, kVariantValueKey,
-                   absl::get<BtSdpOpsRecord>(record));
-  } else if (absl::holds_alternative<BtSdpSapRecord>(record)) {
-    WriteDictEntry(&array_writer, kTypeKey,
-                   static_cast<uint32_t>(BtSdpType::kSapServer));
-    WriteDictEntry(&array_writer, kVariantValueKey,
-                   absl::get<BtSdpSapRecord>(record));
-  } else if (absl::holds_alternative<BtSdpDipRecord>(record)) {
-    WriteDictEntry(&array_writer, kTypeKey,
-                   static_cast<uint32_t>(BtSdpType::kDip));
-    WriteDictEntry(&array_writer, kVariantValueKey,
-                   absl::get<BtSdpDipRecord>(record));
-  }
+  std::visit(
+      [&array_writer](const auto& r) {
+        using T = std::decay_t<decltype(r)>;
+        BtSdpType sdp_type;
+        if constexpr (std::is_same_v<T, BtSdpHeaderOverlay>) {
+          sdp_type = BtSdpType::kRaw;
+        } else if constexpr (std::is_same_v<T, BtSdpMasRecord>) {
+          sdp_type = BtSdpType::kMapMas;
+        } else if constexpr (std::is_same_v<T, BtSdpMnsRecord>) {
+          sdp_type = BtSdpType::kMapMns;
+        } else if constexpr (std::is_same_v<T, BtSdpPseRecord>) {
+          sdp_type = BtSdpType::kPbapPse;
+        } else if constexpr (std::is_same_v<T, BtSdpPceRecord>) {
+          sdp_type = BtSdpType::kPbapPce;
+        } else if constexpr (std::is_same_v<T, BtSdpOpsRecord>) {
+          sdp_type = BtSdpType::kOppServer;
+        } else if constexpr (std::is_same_v<T, BtSdpSapRecord>) {
+          sdp_type = BtSdpType::kSapServer;
+        } else if constexpr (std::is_same_v<T, BtSdpDipRecord>) {
+          sdp_type = BtSdpType::kDip;
+        } else {
+          static_assert(false, "Non-exhaustive visitor!");
+        }
+        WriteDictEntry(&array_writer, kTypeKey,
+                       static_cast<uint32_t>(sdp_type));
+        WriteDictEntry(&array_writer, kVariantValueKey, r);
+      },
+      record);
 
   writer->CloseContainer(&array_writer);
 }

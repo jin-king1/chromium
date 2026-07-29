@@ -24,7 +24,7 @@ public final class ResourceRequestBody {
      * different from the value passed as an argument of
      * ResourceRequestBody.createFromBytes method below).
      */
-    private byte[] mEncodedNativeForm;
+    private final byte[] mEncodedNativeForm;
 
     // ResourceRequestBody Java objects can only be constructed by
     // - ResourceRequestBody::createFromBytes(byte[])
@@ -45,7 +45,7 @@ public final class ResourceRequestBody {
         return new ResourceRequestBody(encodedNativeForm);
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     @CalledByNative
     public byte[] getEncodedNativeForm() {
         return mEncodedNativeForm;
@@ -61,6 +61,10 @@ public final class ResourceRequestBody {
         byte[] encodedNativeForm =
                 ResourceRequestBodyJni.get().createResourceRequestBodyFromBytes(httpBody);
         return createFromEncodedNativeForm(encodedNativeForm);
+    }
+
+    public static void setNativesForTesting(Natives natives) {
+        ResourceRequestBodyJni.setInstanceForTesting(natives);
     }
 
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)

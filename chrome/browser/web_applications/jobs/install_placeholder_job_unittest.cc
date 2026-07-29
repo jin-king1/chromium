@@ -21,6 +21,7 @@
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/fake_web_contents_manager.h"
 #include "chrome/browser/web_applications/test/mock_data_retriever.h"
+#include "chrome/browser/web_applications/test/test_web_app_url_loader.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
@@ -34,6 +35,7 @@
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
 #include "components/webapps/common/web_app_id.h"
 #include "net/http/http_status_code.h"
+#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -49,7 +51,8 @@ class InstallPlaceholderJobWrapperCommand
       Profile* profile,
       const ExternalInstallOptions& install_options,
       InstallPlaceholderJob::InstallAndReplaceCallback callback,
-      std::unique_ptr<WebAppDataRetriever> data_retriever = nullptr)
+      std::unique_ptr<WebAppDataRetriever> data_retriever = nullptr,
+      std::unique_ptr<webapps::WebAppUrlLoader> url_loader = nullptr)
       : WebAppCommand<SharedWebContentsWithAppLock,
                       webapps::InstallResultCode,
                       webapps::AppId>(
@@ -65,7 +68,8 @@ class InstallPlaceholderJobWrapperCommand
                             webapps::AppId())),
         profile_(*profile),
         install_options_(install_options),
-        data_retriever_(std::move(data_retriever)) {}
+        data_retriever_(std::move(data_retriever)),
+        url_loader_(std::move(url_loader)) {}
 
   ~InstallPlaceholderJobWrapperCommand() override = default;
 
@@ -78,6 +82,10 @@ class InstallPlaceholderJobWrapperCommand
             &InstallPlaceholderJobWrapperCommand::OnPlaceholderInstalled,
             weak_factory_.GetWeakPtr()),
         *lock_);
+    if (url_loader_) {
+      install_placeholder_job_->SetUrlLoaderForTesting(std::move(url_loader_));
+    }
+
     if (data_retriever_) {
       install_placeholder_job_->SetDataRetrieverForTesting(
           std::move(data_retriever_));
@@ -96,6 +104,7 @@ class InstallPlaceholderJobWrapperCommand
   raw_ref<Profile> profile_;
   ExternalInstallOptions install_options_;
   std::unique_ptr<WebAppDataRetriever> data_retriever_;
+  std::unique_ptr<webapps::WebAppUrlLoader> url_loader_;
 
   std::unique_ptr<SharedWebContentsWithAppLock> lock_;
 
@@ -106,7 +115,8 @@ class InstallPlaceholderJobWrapperCommand
 
 class InstallPlaceholderJobTest : public WebAppTest {
  public:
-  static constexpr int kIconSize = 96;
+  InstallPlaceholderJobTest()
+      : WebAppTest(WebAppTest::WithTestUrlLoaderFactory()) {}
   const GURL kInstallUrl = GURL("https://example.com");
 
   void SetUp() override {
@@ -139,51 +149,43 @@ TEST_F(InstallPlaceholderJobTest, InstallPlaceholder) {
   const webapps::AppId app_id = future.Get<1>();
   EXPECT_TRUE(provider()->registrar_unsafe().IsPlaceholderApp(
       app_id, WebAppManagement::kPolicy));
-  std::optional<proto::WebAppOsIntegrationState> os_state =
+  std::optional<proto::os_state::WebAppOsIntegration> os_state =
       provider()->registrar_unsafe().GetAppCurrentOsIntegrationState(app_id);
   ASSERT_TRUE(os_state.has_value());
   EXPECT_TRUE(os_state->has_shortcut());
   EXPECT_EQ(os_state->run_on_os_login().run_on_os_login_mode(),
-            proto::RunOnOsLoginMode::NOT_RUN);
+            proto::os_state::RunOnOsLogin::MODE_NOT_RUN);
 }
 
 TEST_F(InstallPlaceholderJobTest, InstallPlaceholderWithOverrideIconUrl) {
+  data_decoder::test::InProcessDataDecoder data_decoder;
   ExternalInstallOptions options(kInstallUrl, mojom::UserDisplayMode::kBrowser,
                                  ExternalInstallSource::kExternalPolicy);
-  const GURL icon_url("https://example.com/test.png");
+  const GURL icon_url("https://somedifferentoriginexample.com/test.png");
   options.override_icon_url = icon_url;
   base::test::TestFuture<webapps::InstallResultCode, webapps::AppId> future;
 
-  auto data_retriever =
-      std::make_unique<testing::StrictMock<MockDataRetriever>>();
+  auto url_loader = std::make_unique<web_app::TestWebAppUrlLoader>();
+  url_loader->SetNextLoadUrlResult(kInstallUrl,
+                                   webapps::WebAppUrlLoaderResult::kUrlLoaded);
 
-  bool skip_page_favicons = true;
-  bool fail_all_if_any_fail = false;
-  SkBitmap bitmap;
-  std::vector<gfx::Size> icon_sizes(1, gfx::Size(kIconSize, kIconSize));
-  bitmap.allocN32Pixels(kIconSize, kIconSize);
-  bitmap.eraseColor(SK_ColorRED);
-  IconsMap icons = {{icon_url, {bitmap}}};
-  const IconUrlWithSize icon_metadata =
-      IconUrlWithSize::CreateForUnspecifiedSize(icon_url);
-  DownloadedIconsHttpResults http_result = {
-      {icon_metadata, net::HttpStatusCode::HTTP_OK}};
-  EXPECT_CALL(*data_retriever,
-              GetIcons(testing::_, testing::ElementsAre(icon_metadata),
-                       skip_page_favicons, fail_all_if_any_fail,
-                       base::test::IsNotNullCallback()))
-      .WillOnce(base::test::RunOnceCallback<4>(
-          IconsDownloadedResult::kCompleted, std::move(icons), http_result));
+  std::string png_bytes =
+      "\x89\x50\x4E\x47\x0D\x0A\x1A\x0A\x00\x00\x00\x0D\x49\x48\x44\x52\x00\x00"
+      "\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90\x77\x53\xDE\x00\x00\x00"
+      "\x0C\x49\x44\x41\x54\x78\x9C\x63\xF8\xCF\xC0\x00\x00\x03\x01\x01\x00\x18"
+      "\xDD\x8D\xB0\x00\x00\x00\x00\x49\x45\x4E\x44\xAE\x42\x60\x82";
+  profile_url_loader_factory().AddResponse(icon_url.spec(), png_bytes);
 
   auto command = std::make_unique<InstallPlaceholderJobWrapperCommand>(
-      profile(), options, future.GetCallback(), std::move(data_retriever));
+      profile(), options, future.GetCallback(), /*data_retriever=*/nullptr,
+      std::move(url_loader));
   provider()->command_manager().ScheduleCommand(std::move(command));
 
   EXPECT_EQ(future.Get<0>(), webapps::InstallResultCode::kSuccessNewInstall);
   const webapps::AppId app_id = future.Get<1>();
   EXPECT_TRUE(provider()->registrar_unsafe().IsPlaceholderApp(
       app_id, WebAppManagement::kPolicy));
-  std::optional<proto::WebAppOsIntegrationState> os_state =
+  std::optional<proto::os_state::WebAppOsIntegration> os_state =
       provider()->registrar_unsafe().GetAppCurrentOsIntegrationState(app_id);
   ASSERT_TRUE(os_state.has_value());
   EXPECT_TRUE(os_state->has_shortcut());

@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_USER_MANAGER_USER_MANAGER_IMPL_H_
 #define COMPONENTS_USER_MANAGER_USER_MANAGER_IMPL_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -22,7 +21,6 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/account_id/account_id.h"
-#include "components/user_manager/multi_user/multi_user_sign_in_policy_controller.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_manager_export.h"
@@ -103,10 +101,6 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
     // Overrides the home directory path for the `primary_user`.
     virtual void OverrideDirHome(const User& primary_user) = 0;
 
-    // Returns UserType for the DeviceLocalAccount of the given `email`.
-    virtual std::optional<UserType> GetDeviceLocalAccountUserType(
-        std::string_view email) = 0;
-
     // Verifies the Profile's state for the given `user` on login.
     virtual void CheckProfileOnLogin(const User& user) = 0;
 
@@ -119,9 +113,13 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
 
   // Creates UserManagerImpl on UI thread with given `local_state`.
   // `local_state` must outlive this UserManager.
+  UserManagerImpl(std::unique_ptr<Delegate> delegate, PrefService* local_state);
+
+  // DEPRECATED. Kept only for the compatibility with existing tests.
+  // To be removed after tests are cleaned up.
   UserManagerImpl(std::unique_ptr<Delegate> delegate,
                   PrefService* local_state,
-                  ash::CrosSettings* cros_settings);
+                  ash::CrosSettings* /*unused*/);
 
   UserManagerImpl(const UserManagerImpl&) = delete;
   UserManagerImpl& operator=(const UserManagerImpl&) = delete;
@@ -151,9 +149,7 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
 
   const AccountId& GetLastSessionActiveAccountId() const override;
   void UserLoggedIn(const AccountId& account_id,
-                    const std::string& user_id_hash,
-                    bool browser_restart,
-                    bool is_child) override;
+                    const std::string& user_id_hash) override;
   bool EnsureUser(const AccountId& account_id,
                   UserType user_type,
                   bool is_ephemeral) override;
@@ -210,9 +206,10 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
   bool IsLoggedInAsChildUser() const override;
   bool IsLoggedInAsManagedGuestSession() const override;
   bool IsLoggedInAsGuest() const override;
-  bool IsLoggedInAsKioskApp() const override;
-  bool IsLoggedInAsWebKioskApp() const override;
+  bool IsLoggedInAsKioskChromeApp() const override;
+  bool IsLoggedInAsKioskWebApp() const override;
   bool IsLoggedInAsKioskIWA() const override;
+  bool IsLoggedInAsKioskArcvmApp() const override;
   bool IsLoggedInAsAnyKioskApp() const override;
   bool IsLoggedInAsStub() const override;
   bool IsUserNonCryptohomeDataEphemeral(
@@ -235,13 +232,13 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
   void NotifyUserProfileImageUpdated(
       const User& user,
       const gfx::ImageSkia& profile_image) override;
-  void NotifyUsersSignInConstraintsChanged() override;
   void NotifyUserAffiliationUpdated(const User& user) override;
   void NotifyUserToBeRemoved(const AccountId& account_id) override;
   void NotifyUserRemoved(const AccountId& account_id,
                          UserRemovalReason reason) override;
   void NotifyUserNotAllowed(const std::string& user_email) final;
   bool IsGuestSessionAllowed() const override;
+  void SetGuestSessionAllowed(bool value) override;
   bool IsGaiaUserAllowed(const User& user) const override;
   bool IsUserAllowed(const User& user) const override;
   PrefService* GetLocalState() const final;
@@ -260,16 +257,17 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
   // Helper function that converts users from |users_list| to |users_vector| and
   // |users_set|. Duplicates and users already present in |existing_users| are
   // skipped.
-  void ParseUserList(const base::Value::List& users_list,
+  void ParseUserList(const base::ListValue& users_list,
                      const std::set<AccountId>& existing_users,
                      std::vector<AccountId>* users_vector,
                      std::set<AccountId>* users_set);
 
+  // Implementation of UserManager::RecordOwner.
+  static void RecordOwner(PrefService& local_state,
+                          std::string_view user_email);
+
  protected:
   friend class ash::UserManagerTest;
-
-  ash::CrosSettings* cros_settings() { return cros_settings_; }
-  const ash::CrosSettings* cros_settings() const { return cros_settings_; }
 
   // Add a new regular user with a Gaia account. Returns the created user.
   // `user_type` must be kRegular or kChild, which can hold a Gaia account.
@@ -310,9 +308,6 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
   // Notifies that user has logged in.
   virtual void NotifyOnLogin();
 
-  // Notifies observers that another user was added to the session.
-  void NotifyUserAddedToSession(const User* added_user);
-
   // Removes a regular or supervised user from the user list.
   // Returns the user if found or NULL otherwise.
   // Also removes the user from the persistent user list.
@@ -334,6 +329,9 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
   // |RemoveNonOwnerUserInternal|.
   void RemoveUserInternal(const AccountId& account_id,
                           UserRemovalReason reason);
+  void RemoveUserInternalWithOwnerAccountId(const AccountId& account_id,
+                                            UserRemovalReason reason,
+                                            const AccountId& owner_account_id);
 
   // Removes data stored or cached outside the user's cryptohome (wallpaper,
   // avatar, OAuth token status, display name, display email).
@@ -345,6 +343,8 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
   void SetEphemeralModeConfig(
       EphemeralModeConfig ephemeral_mode_config) override;
 
+  void SetShowUsersOnSignIn(bool value) override;
+
   virtual void ResetOwnerId();
   void SetOwnerId(const AccountId& owner_account_id) override;
 
@@ -353,7 +353,12 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
   void RegularUserLoggedInAsEphemeral(const AccountId& account_id,
                                       const UserType user_type);
 
-  base::ObserverList<UserManager::Observer>::Unchecked observer_list_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      UserManager::Observer,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observer_list_;
 
   // A list of User instances taking their ownership.
   // Following members can refer User instances in this vector.
@@ -441,9 +446,6 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
   // Sends metrics in response to a user with gaia account (regular) logging in.
   void SendGaiaUserLoginMetrics(const AccountId& account_id);
 
-  // Sends metrics for multi user sign-in.
-  void SendMultiUserSignInMetrics();
-
   // Updates user account after locale was resolved.
   void DoUpdateAccountLocale(const AccountId& account_id,
                              const std::string& resolved_locale);
@@ -464,8 +466,11 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
 
   const raw_ptr<PrefService, DanglingUntriaged> local_state_;
 
-  // Interface to the signed settings store.
-  const raw_ptr<ash::CrosSettings> cros_settings_;
+  // Whether or not guest session is allowed.
+  bool guest_session_allowed_ = false;
+
+  // Whether or not to show the users on sign-in page.
+  bool show_users_on_sign_in_ = true;
 
   // Cached flag of whether the currently logged-in user existed before this
   // login.
@@ -492,7 +497,7 @@ class USER_MANAGER_EXPORT UserManagerImpl : public UserManager {
       pending_owner_callbacks_;
 
   // TODO(nkostylev): Merge with session state refactoring CL.
-  base::ObserverList<UserManager::UserSessionStateObserver>::Unchecked
+  base::ObserverList<UserManager::UserSessionStateObserver>
       session_state_observer_list_;
 
   // Time at which this object was created.

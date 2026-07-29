@@ -17,6 +17,7 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
+#include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/file_system_access/features.h"
 #include "content/browser/file_system_access/file_system_access_manager_impl.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
@@ -183,7 +184,6 @@ class FileSystemAccessLockManagerTest : public RenderViewHostTestHarness {
   const storage::BucketLocator kTestBucketLocator =
       storage::BucketLocator(storage::BucketId(1),
                              kTestStorageKey,
-                             blink::mojom::StorageType::kTemporary,
                              /*is_default=*/false);
 
   // Default initializing kFrameId simulates a frame that is always active.
@@ -279,7 +279,6 @@ TEST_F(FileSystemAccessLockManagerTest, SandboxedFilesSamePath) {
       kTestStorageKey, storage::kFileSystemTypeTemporary, path);
   const storage::BucketLocator kOtherBucketLocator(
       storage::BucketId(2), kOtherStorageKey,
-      blink::mojom::StorageType::kTemporary,
       /*is_default=*/false);
   url2.SetBucket(kOtherBucketLocator);
 
@@ -308,7 +307,6 @@ TEST_F(FileSystemAccessLockManagerTest, SandboxedFilesDifferentBucket) {
       kTestStorageKey, storage::kFileSystemTypeTemporary, path);
   const storage::BucketLocator kOtherBucketLocator(
       storage::BucketId(2), kTestStorageKey,
-      blink::mojom::StorageType::kTemporary,
       /*is_default=*/false);
   url2.SetBucket(kOtherBucketLocator);
 

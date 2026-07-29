@@ -16,15 +16,15 @@ import {
 } from 'chrome://resources/mwc/lit/index.js';
 
 import {usePlatformHandler} from '../core/lit/context.js';
-import {ModelState} from '../core/on_device_model/types.js';
+import type {ModelState} from '../core/on_device_model/types.js';
 import {ReactiveLitElement} from '../core/reactive/lit.js';
 import {currentRoute} from '../core/state/route.js';
 import {settings} from '../core/state/settings.js';
 import {assertExists} from '../core/utils/assert.js';
 
-import {MainPage} from './main-page.js';
-import {PlaybackPage} from './playback-page.js';
-import {RecordPage} from './record-page.js';
+import type {MainPage} from './main-page.js';
+import type {PlaybackPage} from './playback-page.js';
+import type {RecordPage} from './record-page.js';
 
 function toBoolean(s: string|null): boolean {
   return s === 'true';
@@ -75,7 +75,8 @@ export class RecorderApp extends ReactiveLitElement {
     const titleState = this.platformHandler.titleSuggestionModelLoader.state;
 
     function isAvailable(state: ModelState) {
-      return state.kind !== 'unavailable' && state.kind !== 'error';
+      return state.kind !== 'unavailable' && state.kind !== 'error' &&
+        state.kind !== 'needsReboot';
     }
 
     this.platformHandler.eventsSender.sendStartSessionEvent({

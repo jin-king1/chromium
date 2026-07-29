@@ -4,11 +4,14 @@
 
 #include "remoting/host/desktop_display_info.h"
 
+#include <algorithm>
+
 #include "base/check.h"
 #include "build/build_config.h"
 #include "remoting/base/constants.h"
 #include "remoting/base/logging.h"
 #include "remoting/proto/control.pb.h"
+#include "remoting/protocol/coordinate_conversion.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_types.h"
 
 namespace remoting {
@@ -36,6 +39,14 @@ DisplayGeometry::DisplayGeometry(webrtc::ScreenId id,
 DisplayGeometry::DisplayGeometry(const DisplayGeometry&) = default;
 DisplayGeometry& DisplayGeometry::operator=(const DisplayGeometry&) = default;
 DisplayGeometry::~DisplayGeometry() = default;
+
+bool DisplayGeometry::Contains(
+    const webrtc::DesktopVector& global_absolute_coordinate) const {
+  return global_absolute_coordinate.x() >= x &&
+         global_absolute_coordinate.x() < static_cast<int>(x + width) &&
+         global_absolute_coordinate.y() >= y &&
+         global_absolute_coordinate.y() < static_cast<int>(y + height);
+}
 
 DesktopDisplayInfo::DesktopDisplayInfo() = default;
 DesktopDisplayInfo::DesktopDisplayInfo(DesktopDisplayInfo&&) = default;
@@ -89,6 +100,7 @@ webrtc::DesktopSize DesktopDisplayInfo::CalcSizeDips(webrtc::DesktopSize size,
 
 void DesktopDisplayInfo::Reset() {
   displays_.clear();
+  pixel_type_.reset();
 }
 
 int DesktopDisplayInfo::NumDisplays() const {
@@ -200,10 +212,26 @@ void DesktopDisplayInfo::AddDisplayFrom(
                          /* is_default */ false, track.display_name());
 }
 
+std::optional<protocol::FractionalCoordinate>
+DesktopDisplayInfo::ToFractionalCoordinate(
+    const webrtc::DesktopVector& global_absolute_coordinate) const {
+  auto it = std::find_if(
+      displays_.begin(), displays_.end(),
+      [&global_absolute_coordinate](const DisplayGeometry& display) {
+        return display.Contains(global_absolute_coordinate);
+      });
+  if (it == displays_.end()) {
+    return std::nullopt;
+  }
+  return protocol::ToFractionalCoordinate(
+      it->id, {static_cast<int>(it->width), static_cast<int>(it->height)},
+      {global_absolute_coordinate.x() - it->x,
+       global_absolute_coordinate.y() - it->y});
+}
+
 std::unique_ptr<protocol::VideoLayout> DesktopDisplayInfo::GetVideoLayoutProto()
     const {
   auto layout = std::make_unique<protocol::VideoLayout>();
-  HOST_LOG << "Displays loaded:";
   for (const auto& display : displays()) {
     protocol::VideoTrackLayout* track = layout->add_video_track();
     track->set_position_x(display.x);
@@ -214,11 +242,6 @@ std::unique_ptr<protocol::VideoLayout> DesktopDisplayInfo::GetVideoLayoutProto()
     track->set_y_dpi(display.dpi);
     track->set_screen_id(display.id);
     track->set_display_name(display.display_name);
-    HOST_LOG << "   Display: " << display.x << "," << display.y << " "
-             << display.width << "x" << display.height << " @ " << display.dpi
-             << ", id=" << display.id << ", bpp=" << display.bpp
-             << ", primary=" << display.is_default
-             << ", display_name=" << display.display_name;
     if (display.is_default) {
       if (layout->has_primary_screen_id()) {
         LOG(WARNING) << "Multiple primary displays found";
@@ -226,7 +249,39 @@ std::unique_ptr<protocol::VideoLayout> DesktopDisplayInfo::GetVideoLayoutProto()
       layout->set_primary_screen_id(display.id);
     }
   }
+  if (pixel_type_.has_value()) {
+    switch (*pixel_type_) {
+      case PixelType::LOGICAL:
+        layout->set_pixel_type(
+            protocol::VideoLayout::PixelType::VideoLayout_PixelType_LOGICAL);
+        break;
+      case PixelType::PHYSICAL:
+        layout->set_pixel_type(
+            protocol::VideoLayout::PixelType::VideoLayout_PixelType_PHYSICAL);
+        break;
+    }
+  }
   return layout;
+}
+
+void DesktopDisplayInfo::CopyFromVideoLayoutProto(
+    const protocol::VideoLayout& layout) {
+  Reset();
+  if (layout.has_pixel_type()) {
+    switch (layout.pixel_type()) {
+      case protocol::VideoLayout::LOGICAL:
+        pixel_type_ = PixelType::LOGICAL;
+        break;
+      case protocol::VideoLayout::PHYSICAL:
+        pixel_type_ = PixelType::PHYSICAL;
+        break;
+      default:
+        break;
+    }
+  }
+  for (const auto& track : layout.video_track()) {
+    AddDisplayFrom(track);
+  }
 }
 
 std::ostream& operator<<(std::ostream& out, const DisplayGeometry& geo) {

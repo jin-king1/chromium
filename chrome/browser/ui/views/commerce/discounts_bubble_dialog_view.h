@@ -5,6 +5,11 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_COMMERCE_DISCOUNTS_BUBBLE_DIALOG_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_COMMERCE_DISCOUNTS_BUBBLE_DIALOG_VIEW_H_
 
+#include <memory>
+#include <string>
+
+#include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ui/views/commerce/discounts_coupon_code_label_view.h"
 #include "chrome/browser/ui/views/controls/page_switcher_view.h"
@@ -28,7 +33,7 @@ DECLARE_ELEMENT_IDENTIFIER_VALUE(kDiscountsBubbleTermsAndConditionPageId);
 class DiscountsBubbleDialogView : public LocationBarBubbleDelegateView {
   METADATA_HEADER(DiscountsBubbleDialogView, LocationBarBubbleDelegateView)
  public:
-  DiscountsBubbleDialogView(View* anchor_view,
+  DiscountsBubbleDialogView(views::BubbleAnchor anchor,
                             content::WebContents* web_contents,
                             const commerce::DiscountInfo& discount_info);
   ~DiscountsBubbleDialogView() override;
@@ -62,13 +67,14 @@ class DiscountsBubbleDialogView : public LocationBarBubbleDelegateView {
 
 class DiscountsBubbleCoordinator : public views::WidgetObserver {
  public:
-  explicit DiscountsBubbleCoordinator(views::View* anchor_view);
+  DiscountsBubbleCoordinator();
   ~DiscountsBubbleCoordinator() override;
 
   // WidgetObserver:
   void OnWidgetDestroying(views::Widget* widget) override;
 
-  void Show(content::WebContents* web_contents,
+  void Show(views::BubbleAnchor anchor,
+            content::WebContents* web_contents,
             const commerce::DiscountInfo& discount_info,
             base::OnceClosure on_dialog_closing_callback);
   void Hide();
@@ -77,7 +83,6 @@ class DiscountsBubbleCoordinator : public views::WidgetObserver {
  private:
   bool IsShowing();
 
-  const raw_ptr<views::View> anchor_view_;
   views::ViewTracker tracker_;
   base::ScopedObservation<views::Widget, views::WidgetObserver>
       bubble_widget_observation_{this};

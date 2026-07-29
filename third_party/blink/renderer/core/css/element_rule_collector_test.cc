@@ -6,6 +6,8 @@
 
 #include <optional>
 
+#include "base/test/tracing/trace_event_analyzer.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/css/css_style_rule.h"
 #include "third_party/blink/renderer/core/css/css_test_helpers.h"
@@ -13,6 +15,7 @@
 #include "third_party/blink/renderer/core/css/resolver/element_resolve_context.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/css/selector_filter.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
@@ -21,8 +24,10 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_style_element.h"
+#include "third_party/blink/renderer/core/inspector/invalidation_set_to_selector_map.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 
 namespace blink {
@@ -38,8 +43,10 @@ static RuleSet* RuleSetFromSingleRule(Document& document, const String& text) {
   RuleSet* rule_set = MakeGarbageCollected<RuleSet>();
   MediaQueryEvaluator* medium =
       MakeGarbageCollected<MediaQueryEvaluator>(document.GetFrame());
+  RuleSet::ApplyMixinsStack apply_mixins_stack;
   rule_set->AddStyleRule(style_rule, /*parent_rule=*/nullptr, *medium,
-                         kRuleHasNoSpecialState, /*within_mixin=*/false);
+                         /*mixins=*/{}, kRuleHasNoSpecialState,
+                         apply_mixins_stack);
   rule_set->CompactRulesIfNeeded();
   return rule_set;
 }
@@ -266,11 +273,11 @@ TEST_F(ElementRuleCollectorTest, LinkMatchTypeHostContext) {
   ShadowRoot& unvisited_root =
       unvisited_host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
 
-  visited_root.setInnerHTML(R"HTML(
+  visited_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style id=style></style>
     <div id=div></div>
   )HTML");
-  unvisited_root.setInnerHTML(R"HTML(
+  unvisited_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style id=style></style>
     <div id=div></div>
   )HTML");
@@ -350,12 +357,13 @@ TEST_F(ElementRuleCollectorTest, MatchesNonUniversalHighlights) {
     }
     MediaQueryEvaluator* medium =
         MakeGarbageCollected<MediaQueryEvaluator>(GetDocument().GetFrame());
-    RuleSet& rules = sheet->EnsureRuleSet(*medium);
+    RuleSet& rules = sheet->EnsureRuleSet(*medium, /*mixins=*/{});
     auto* rule = To<StyleRule>(CSSParser::ParseRule(
         sheet->ParserContext(), sheet, CSSNestingType::kNone,
         /*parent_rule_for_nesting=*/nullptr, selector + " { color: green }"));
-    rules.AddStyleRule(rule, /*parent_rule=*/nullptr, *medium,
-                       kRuleHasNoSpecialState, /*within_mixin=*/false);
+    RuleSet::ApplyMixinsStack apply_mixins_stack;
+    rules.AddStyleRule(rule, /*parent_rule=*/nullptr, *medium, /*mixins=*/{},
+                       kRuleHasNoSpecialState, apply_mixins_stack);
 
     MatchResult result;
     ElementResolveContext context{element};
@@ -564,15 +572,330 @@ TEST_F(ElementRuleCollectorTest, FindStyleRuleWithNesting) {
 
   RuleIndexList* foo_css_rules = GetMatchedCSSRuleList(foo, rule_set);
   ASSERT_EQ(2u, foo_css_rules->size());
-  CSSRule* foo_css_rule_1 = foo_css_rules->at(0).first;
-  EXPECT_EQ("#foo", DynamicTo<CSSStyleRule>(foo_css_rule_1)->selectorText());
-  CSSRule* foo_css_rule_2 = foo_css_rules->at(1).first;
-  EXPECT_EQ("&.a", DynamicTo<CSSStyleRule>(foo_css_rule_2)->selectorText());
+  CSSRule* foo_css_rule_1 = foo_css_rules->at(0).rule.Get();
+  ASSERT_TRUE(IsA<CSSStyleRule>(foo_css_rule_1));
+  EXPECT_EQ("#foo", To<CSSStyleRule>(*foo_css_rule_1).selectorText());
+  CSSRule* foo_css_rule_2 = foo_css_rules->at(1).rule.Get();
+  ASSERT_TRUE(IsA<CSSStyleRule>(foo_css_rule_2));
+  EXPECT_EQ("&.a", To<CSSStyleRule>(*foo_css_rule_2).selectorText());
 
   RuleIndexList* bar_css_rules = GetMatchedCSSRuleList(bar, rule_set);
   ASSERT_EQ(1u, bar_css_rules->size());
-  CSSRule* bar_css_rule_1 = bar_css_rules->at(0).first;
-  EXPECT_EQ("& > .b", DynamicTo<CSSStyleRule>(bar_css_rule_1)->selectorText());
+  CSSRule* bar_css_rule_1 = bar_css_rules->at(0).rule.Get();
+  ASSERT_TRUE(IsA<CSSStyleRule>(bar_css_rule_1));
+  EXPECT_EQ("& > .b", To<CSSStyleRule>(*bar_css_rule_1).selectorText());
+}
+
+TEST_F(ElementRuleCollectorTest, EmptyStyleNotUseCounted) {
+  // Test to ensure that we do not count any pseudos in the UA styelsheet.
+  SetBodyInnerHTML(R"HTML(
+    <div>Some text</div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kFirstLinePseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kFirstLetterPseudoElement));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kCheckMarkPseudoElement));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kBeforePseudoElement));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kAfterPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kPickerIconPseudoElement));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kMarkerPseudoElement));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kBackdropPseudoElement));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kSelectionPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kSearchTextPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kTargetTextPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kCustomHighlightPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kSpellingErrorPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kGrammarErrorPseudoElement));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kColumnPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kScrollButtonPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kScrollMarkerPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kInterestButtonPseudoElement));
+}
+
+TEST_F(ElementRuleCollectorTest, FirstLineUseCounted) {
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kFirstLinePseudoElement));
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      div::first-line {
+        text-decoration: underline;
+      }
+    </style>
+    <div>Some text</div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kFirstLinePseudoElement));
+}
+
+TEST_F(ElementRuleCollectorTest, FirstLetterUseCounted) {
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kFirstLetterPseudoElement));
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      div::first-letter {
+        text-decoration: underline;
+      }
+    </style>
+    <div>Some text</div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kFirstLetterPseudoElement));
+}
+
+TEST_F(ElementRuleCollectorTest, CheckMarkAndPickerIconUseCounted) {
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kCheckMarkPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kPickerIconPseudoElement));
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      select,
+      ::picker(select) {
+        appearance: base-select;
+      }
+      select::picker-icon {
+        color: #999999;
+        transition: 0.4s rotate;
+        content: "X";
+      }
+      li::checkmark {
+        order: 1;
+        margin-left: auto;
+        content: "X";
+      }
+    </style>
+    <select>
+      <option>Dog</option>
+      <option>Cat</option>
+      <option>Donkey</option>
+    </select>
+    <ul>
+      <li>Item></li>
+    </ul>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCheckMarkPseudoElement));
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kPickerIconPseudoElement));
+}
+
+// Force recompile
+TEST_F(ElementRuleCollectorTest, InterestButtonUseCounted) {
+  ScopedHTMLInterestForInterestButtonPseudoForTest scoped_feature(true);
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kInterestButtonPseudoElement));
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      button[interestfor]::interest-button {
+        content: "X";
+        color: #999999;
+      }
+    </style>
+    <button interestfor="foo">Click</button>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kInterestButtonPseudoElement));
+}
+
+TEST_F(ElementRuleCollectorTest, BeforeAfterUseCounted) {
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kBeforePseudoElement));
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kAfterPseudoElement));
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      p::before {
+        content: "Before";
+      }
+      p::after {
+        content: "After";
+      }
+    </style>
+    <p>Some text</p>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kBeforePseudoElement));
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kAfterPseudoElement));
+}
+
+TEST_F(ElementRuleCollectorTest, MarkerUseCounted) {
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kMarkerPseudoElement));
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      ::marker {
+        color: green;
+      }
+    </style>
+    <ul>
+      <li>Some text</li>
+    </ul>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kMarkerPseudoElement));
+}
+
+TEST_F(ElementRuleCollectorTest, BackdropUseCounted) {
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kBackdropPseudoElement));
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      ::backdrop {
+        background-color: green;
+      }
+    </style>
+    <p>Some text</p>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kBackdropPseudoElement));
+}
+
+TEST_F(ElementRuleCollectorTest, HighlightsUseCounted) {
+  EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kSelectionPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kSearchTextPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kTargetTextPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kCustomHighlightPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kSpellingErrorPseudoElement));
+  EXPECT_FALSE(
+      GetDocument().IsUseCounted(WebFeature::kGrammarErrorPseudoElement));
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      ::selection {
+        background-color: green;
+      }
+      ::search-text {
+        background-color: blue;
+      }
+      ::target-text {
+        background-color: red;
+      }
+      ::highlight(foo) {
+        background-color: purple;
+      }
+      ::spelling-error {
+        background-color: yellow;
+      }
+      ::grammar-error {
+        background-color: cyan;
+      }
+    </style>
+    <p>Some text</p>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kSelectionPseudoElement));
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kSearchTextPseudoElement));
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kTargetTextPseudoElement));
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kCustomHighlightPseudoElement));
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kSpellingErrorPseudoElement));
+  EXPECT_TRUE(
+      GetDocument().IsUseCounted(WebFeature::kGrammarErrorPseudoElement));
+}
+
+CORE_EXPORT const CSSStyleSheet* FindStyleSheet(
+    const TreeScope* tree_scope_containing_rule,
+    const Document& document,
+    const StyleRule* rule);
+
+TEST_F(ElementRuleCollectorTest, FindStyleSheet) {
+  base::test::TracingEnvironment tracing_environment;
+  trace_analyzer::Start(
+      TRACE_DISABLED_BY_DEFAULT("devtools.timeline.invalidationTracking"));
+  InvalidationSetToSelectorMap::StartOrStopTrackingIfNeeded(
+      GetDocument(), GetDocument().GetStyleEngine());
+  EXPECT_TRUE(InvalidationSetToSelectorMap::IsTracking());
+
+  SetBodyInnerHTML(R"HTML(
+    <style id=target>
+      .a .b { color: red; }
+    </style>
+  )HTML");
+
+  const CSSStyleSheet* author_sheet =
+      To<HTMLStyleElement>(GetElementById("target"))->sheet();
+  const StyleRule* author_rule =
+      To<StyleRule>(author_sheet->Contents()->ChildRules()[0].Get());
+  EXPECT_EQ(FindStyleSheet(&GetDocument(), GetDocument(), author_rule),
+            author_sheet);
+
+  StyleSheetContents* user_contents = MakeGarbageCollected<StyleSheetContents>(
+      MakeGarbageCollected<CSSParserContext>(GetDocument()));
+  user_contents->ParseString(".c .d { color: green; }");
+  StyleSheetKey user_key("user");
+  GetDocument().GetStyleEngine().InjectSheet(user_key, user_contents,
+                                             WebCssOrigin::kUser);
+  UpdateAllLifecyclePhasesForTest();
+  const StyleRule* user_rule =
+      To<StyleRule>(user_contents->ChildRules()[0].Get());
+  EXPECT_EQ(FindStyleSheet(nullptr, GetDocument(), user_rule)->Contents(),
+            user_contents);
+
+  const StyleRule* rule_not_in_sheet = To<StyleRule>(
+      css_test_helpers::ParseRule(GetDocument(), ".e .f { color: blue; }"));
+  EXPECT_EQ(FindStyleSheet(nullptr, GetDocument(), rule_not_in_sheet), nullptr);
+
+  trace_analyzer::Stop();
+  InvalidationSetToSelectorMap::StartOrStopTrackingIfNeeded(
+      GetDocument(), GetDocument().GetStyleEngine());
+  EXPECT_FALSE(InvalidationSetToSelectorMap::IsTracking());
+}
+
+// https://crbug.com/416699692
+TEST_F(ElementRuleCollectorTest, TraceRuleIndexList) {
+  SetBodyInnerHTML(R"HTML(
+    <style id=style>
+      #e {
+        color: green;
+      }
+    </style>
+    <thing id=e></thing>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Persistent<RuleIndexList> rule_index_list;
+
+  // All of this stuff should go out of scope, except `rule_index_list`.
+  {
+    Element* sheet_element =
+        GetDocument().getElementById(AtomicString("style"));
+    ASSERT_TRUE(sheet_element);
+    CSSStyleSheet* sheet = To<HTMLStyleElement>(sheet_element)->sheet();
+    RuleSet* rule_set = &sheet->Contents()->GetRuleSet();
+    ASSERT_TRUE(rule_set);
+    Element* e = GetDocument().getElementById(AtomicString("e"));
+    ASSERT_TRUE(e);
+    rule_index_list = GetMatchedCSSRuleList(e, rule_set);
+  }
+
+  {
+    ASSERT_TRUE(rule_index_list);
+    ASSERT_EQ(1u, rule_index_list->size());
+    CSSRule* css_rule = rule_index_list->at(0).rule.Get();
+    ASSERT_TRUE(IsA<CSSStyleRule>(css_rule));
+    EXPECT_EQ("#e", To<CSSStyleRule>(*css_rule).selectorText());
+  }
+
+  ThreadState::Current()->CollectAllGarbageForTesting();
+
+  // After collecting garbage, the objects reachable from `rule_index_list`
+  // must still be valid. (crbug.com/416699692)
+  {
+    ASSERT_TRUE(rule_index_list);
+    ASSERT_EQ(1u, rule_index_list->size());
+    CSSRule* css_rule = rule_index_list->at(0).rule.Get();
+    ASSERT_TRUE(IsA<CSSStyleRule>(css_rule));
+    EXPECT_EQ("#e", To<CSSStyleRule>(*css_rule).selectorText());
+  }
 }
 
 }  // namespace blink

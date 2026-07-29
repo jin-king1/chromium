@@ -9,7 +9,6 @@
 
 #include "base/bits.h"
 #include "base/containers/span.h"
-#include "base/files/file_util.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
@@ -91,7 +90,7 @@ const char* help_msg =
     "  --vmodule             enable verbose mode for the specified module.\n";
 
 base::FilePath BuildSourceFilePath(const base::FilePath& filename) {
-  return media::g_source_directory.Append(filename);
+  return media::GetSourceDir().Append(filename);
 }
 
 constexpr char kNV12Image720P[] =
@@ -118,14 +117,18 @@ bool SupportsNecessaryGLExtension() {
 
   return gl_context->HasExtension("GL_EXT_YUV_target");
 }
-scoped_refptr<VideoFrame> CreateNV12Frame(const gfx::Size& size,
-                                          VideoFrame::StorageType type) {
+scoped_refptr<VideoFrame> CreateNV12Frame(
+    const gfx::Size& size,
+    VideoFrame::StorageType type,
+    gpu::TestSharedImageInterface* test_sii) {
   const gfx::Rect visible_rect(size);
   constexpr base::TimeDelta kNullTimestamp;
-  if (type == VideoFrame::STORAGE_GPU_MEMORY_BUFFER) {
-    return CreateGpuMemoryBufferVideoFrame(
-        VideoPixelFormat::PIXEL_FORMAT_NV12, size, visible_rect, size,
-        kNullTimestamp, gfx::BufferUsage::SCANOUT_CPU_READ_WRITE);
+  if (type == VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE) {
+    CHECK(test_sii);
+    return CreateMappableSharedImageVideoFrame(
+        VideoPixelFormat::PIXEL_FORMAT_NV12, gfx::ColorSpace::CreateREC709(),
+        size, visible_rect, size, kNullTimestamp,
+        gfx::BufferUsage::SCANOUT_CPU_READ_WRITE, test_sii);
   } else if (type == VideoFrame::STORAGE_DMABUFS) {
     return CreatePlatformVideoFrame(VideoPixelFormat::PIXEL_FORMAT_NV12, size,
                                     visible_rect, size, kNullTimestamp,
@@ -144,7 +147,8 @@ scoped_refptr<VideoFrame> CreateRandomMM21Frame(const gfx::Size& size,
   DCHECK_EQ(size.height(), base::bits::AlignUpDeprecatedDoNotUse(
                                size.height(), kMM21TileHeight));
 
-  scoped_refptr<VideoFrame> frame = CreateNV12Frame(size, type);
+  scoped_refptr<VideoFrame> frame =
+      CreateNV12Frame(size, type, /*test_sii=*/nullptr);
   if (!frame) {
     LOG(ERROR) << "Failed to create MM21 frame";
     return nullptr;
@@ -251,7 +255,8 @@ class ImageProcessorPerfTest : public ::testing::Test {
 
     ASSERT_EQ(test_type == kMM21Detiling, output_size == test_image_size_);
     output_frame_ =
-        CreateNV12Frame(output_size, VideoFrame::STORAGE_GPU_MEMORY_BUFFER);
+        CreateNV12Frame(output_size, VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE,
+                        test_sii_.get());
     ASSERT_TRUE(output_frame_) << "Error creating output frame";
 
     test_sii_ = base::MakeRefCounted<gpu::TestSharedImageInterface>();
@@ -287,7 +292,7 @@ class ImageProcessorPerfTest : public ::testing::Test {
     input_image_frame_ = test::CloneVideoFrame(
         tmp_video_frame.get(), *input_layout, test_sii_.get(),
         use_cpu_memory ? VideoFrame::STORAGE_OWNED_MEMORY
-                       : VideoFrame::STORAGE_GPU_MEMORY_BUFFER,
+                       : VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE,
         gfx::BufferUsage::SCANOUT_CPU_READ_WRITE);
     ASSERT_TRUE(input_image_frame_) << "Error creating input frame.";
 
@@ -576,13 +581,14 @@ TEST_F(ImageProcessorPerfTest, GLNV12ScalingComparisonTest) {
   ASSERT_TRUE(gl_downscaling_image_processor)
       << "Error creating GLImageProcessor";
 
-  scoped_refptr<VideoFrame> gl_upscaling_output_frame =
-      CreateNV12Frame(gfx::Size(kUpScalingOutputWidth, kUpScalingOutputHeight),
-                      VideoFrame::STORAGE_GPU_MEMORY_BUFFER);
+  scoped_refptr<VideoFrame> gl_upscaling_output_frame = CreateNV12Frame(
+      gfx::Size(kUpScalingOutputWidth, kUpScalingOutputHeight),
+      VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE, test_sii_.get());
   ASSERT_TRUE(gl_upscaling_output_frame) << "Error creating GL output frame";
 
   scoped_refptr<VideoFrame> gl_downscaling_output_frame = CreateNV12Frame(
-      input_image_frame_->coded_size(), VideoFrame::STORAGE_GPU_MEMORY_BUFFER);
+      input_image_frame_->coded_size(),
+      VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE, test_sii_.get());
   ASSERT_TRUE(gl_downscaling_output_frame) << "Error creating GL output frame";
 
   ImageProcessor::FrameReadyCB gl_callback2 =
@@ -605,7 +611,7 @@ TEST_F(ImageProcessorPerfTest, GLNV12ScalingComparisonTest) {
 
   const std::unique_ptr<VideoFrameMapper> output_frame_mapper =
       VideoFrameMapperFactory::CreateMapper(
-          PIXEL_FORMAT_NV12, VideoFrame::STORAGE_GPU_MEMORY_BUFFER,
+          PIXEL_FORMAT_NV12, VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE,
           /*force_linear_buffer_mapper=*/true);
   ASSERT_TRUE(output_frame_mapper);
 
@@ -871,9 +877,9 @@ int main(int argc, char** argv) {
     }
 
     if (it->first == "source_directory") {
-      media::g_source_directory = base::FilePath(it->second);
+      media::GetSourceDir() = base::FilePath(it->second);
     } else if (it->first == "output_directory") {
-      media::g_output_directory = base::FilePath(it->second);
+      media::GetOutputDir() = base::FilePath(it->second);
     } else {
       std::cout << "unknown option: --" << it->first << "\n"
                 << media::usage_msg;

@@ -4,15 +4,16 @@
 
 package org.chromium.chrome.browser.lens;
 
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 
 import androidx.annotation.DrawableRes;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.embedder_support.contextmenu.ChipRenderParams;
 import org.chromium.ui.base.WindowAndroid;
 
@@ -21,6 +22,7 @@ import org.chromium.ui.base.WindowAndroid;
  * correct implementation of {@link LensControllerDelegate} will be determined at compile time via
  * {@link ServiceLoaderUtil}.
  */
+@NullMarked
 public class LensControllerDelegate {
     /**
      * @see {@link LensController#isSdkAvailable()}
@@ -55,8 +57,10 @@ public class LensControllerDelegate {
     public void getChipRenderParams(
             LensQueryParams lensQueryParams, Callback<ChipRenderParams> chipRenderParamsCallback) {}
 
-    /** @see {@link LensController#getShareWithGoogleLensIntent()} */
-    public Intent getShareWithGoogleLensIntent(
+    /**
+     * @see {@link LensController#getShareWithGoogleLensIntent()}
+     */
+    public @Nullable Intent getShareWithGoogleLensIntent(
             Uri imageUri,
             boolean isIncognito,
             String srcUrl,
@@ -66,14 +70,25 @@ public class LensControllerDelegate {
         return null;
     }
 
-    /** @see {@link LensController#startLens(WindowAndroid, Intent)} */
+    /**
+     * @see {@link LensController#startLens(WindowAndroid, Intent)}
+     */
     public void startLens(WindowAndroid window, Intent intent) {}
 
-    /** @see {@link LensController#startLens(WindowAndroid, Intent, LensIntentParams)} */
+    /**
+     * @see {@link LensController#startLens(WindowAndroid, Intent, LensIntentParams)}
+     */
     public void startLens(WindowAndroid window, LensIntentParams lensIntentParams) {}
 
-    /** @see {@link LensCOntroller#isLensEnabled(LensQueryParams)} */
-    public boolean isLensEnabled(@NonNull LensQueryParams lensQueryParams) {
+    /**
+     * @see {@link LensController#startLens(Context, LensIntentParams)}
+     */
+    public void startLens(Context context, LensIntentParams lensIntentParams) {}
+
+    /**
+     * @see {@link LensController#isLensEnabled(LensQueryParams)}
+     */
+    public boolean isLensEnabled(LensQueryParams lensQueryParams) {
         return false;
     }
 
@@ -86,11 +101,12 @@ public class LensControllerDelegate {
     }
 
     /**
-     * Retrieve the Lens icon resource id.
-     * Need to put the resource id on the base class to suppress the UnusedResources warning.
+     * Retrieve the Lens icon resource id. Need to put the resource id on the base class to suppress
+     * the UnusedResources warning.
+     *
      * @return The resource id for Lens icon.
      */
-    protected @DrawableRes int getLensIconResourceId() {
+    public @DrawableRes int getLensIconResourceId() {
         return R.drawable.lens_icon;
     }
 

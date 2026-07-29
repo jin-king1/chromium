@@ -10,6 +10,7 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_renderer_host.h"
@@ -19,8 +20,6 @@
 
 using base::Bucket;
 using password_manager::PasswordForm;
-using password_manager::metrics_util::
-    SharedPasswordsNotificationBubbleInteractions;
 using testing::Each;
 using testing::Field;
 using testing::Return;
@@ -78,8 +77,8 @@ class SharedPasswordsNotificationBubbleControllerTest : public ::testing::Test {
     std::unique_ptr<password_manager::PasswordForm> shared_credentials2 =
         CreateUnnoitifiedSharedPasswordForm(u"username2");
 
-    store_->AddLogin(*shared_credentials1);
-    store_->AddLogin(*shared_credentials2);
+    store_->AddLogin(password_manager::FromPasswordForm(*shared_credentials1));
+    store_->AddLogin(password_manager::FromPasswordForm(*shared_credentials2));
 
     RunUntilIdle();
 
@@ -114,9 +113,6 @@ class SharedPasswordsNotificationBubbleControllerTest : public ::testing::Test {
 
 TEST_F(SharedPasswordsNotificationBubbleControllerTest, HasTitle) {
   EXPECT_FALSE(controller()->GetTitle().empty());
-  histogram_tester().ExpectUniqueSample(
-      "PasswordManager.SharedPasswordsNotificationBubble.UserAction",
-      SharedPasswordsNotificationBubbleInteractions::kNotificationDisplayed, 1);
 }
 
 TEST_F(SharedPasswordsNotificationBubbleControllerTest,
@@ -127,17 +123,8 @@ TEST_F(SharedPasswordsNotificationBubbleControllerTest,
 
   RunUntilIdle();
 
-  EXPECT_THAT(store().stored_passwords().at(GURL(kUrl).spec()),
+  EXPECT_THAT(GetAllLoginsSync(&store()).at(GURL(kUrl).spec()),
               Each(Field(&PasswordForm::sharing_notification_displayed, true)));
-  EXPECT_THAT(
-      histogram_tester().GetAllSamples(
-          "PasswordManager.SharedPasswordsNotificationBubble.UserAction"),
-      BucketsAre(Bucket(SharedPasswordsNotificationBubbleInteractions::
-                            kNotificationDisplayed,
-                        1),
-                 Bucket(SharedPasswordsNotificationBubbleInteractions::
-                            kManagePasswordsButtonClicked,
-                        1)));
 }
 
 TEST_F(SharedPasswordsNotificationBubbleControllerTest,
@@ -148,17 +135,8 @@ TEST_F(SharedPasswordsNotificationBubbleControllerTest,
 
   RunUntilIdle();
 
-  EXPECT_THAT(store().stored_passwords().at(GURL(kUrl).spec()),
+  EXPECT_THAT(GetAllLoginsSync(&store()).at(GURL(kUrl).spec()),
               Each(Field(&PasswordForm::sharing_notification_displayed, true)));
-  EXPECT_THAT(
-      histogram_tester().GetAllSamples(
-          "PasswordManager.SharedPasswordsNotificationBubble.UserAction"),
-      BucketsAre(Bucket(SharedPasswordsNotificationBubbleInteractions::
-                            kNotificationDisplayed,
-                        1),
-                 Bucket(SharedPasswordsNotificationBubbleInteractions::
-                            kGotItButtonClicked,
-                        1)));
 }
 
 TEST_F(SharedPasswordsNotificationBubbleControllerTest,
@@ -169,17 +147,8 @@ TEST_F(SharedPasswordsNotificationBubbleControllerTest,
 
   RunUntilIdle();
 
-  EXPECT_THAT(store().stored_passwords().at(GURL(kUrl).spec()),
+  EXPECT_THAT(GetAllLoginsSync(&store()).at(GURL(kUrl).spec()),
               Each(Field(&PasswordForm::sharing_notification_displayed, true)));
-  EXPECT_THAT(
-      histogram_tester().GetAllSamples(
-          "PasswordManager.SharedPasswordsNotificationBubble.UserAction"),
-      BucketsAre(Bucket(SharedPasswordsNotificationBubbleInteractions::
-                            kNotificationDisplayed,
-                        1),
-                 Bucket(SharedPasswordsNotificationBubbleInteractions::
-                            kCloseButtonClicked,
-                        1)));
 }
 
 TEST_F(SharedPasswordsNotificationBubbleControllerTest,

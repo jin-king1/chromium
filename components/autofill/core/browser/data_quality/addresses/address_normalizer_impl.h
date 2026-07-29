@@ -12,6 +12,7 @@
 
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/data_quality/addresses/address_normalizer.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -53,12 +54,12 @@ class AddressNormalizerImpl : public AddressNormalizer {
 
   void LoadRulesForAddressNormalization(
       JNIEnv* env,
-      const base::android::JavaParamRef<jstring>& region_code);
+      const base::android::JavaRef<jstring>& region_code);
   void StartAddressNormalization(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& jprofile,
-      jint jtimeout_seconds,
-      const base::android::JavaParamRef<jobject>& jdelegate);
+      const base::android::JavaRef<jobject>& jprofile,
+      int32_t jtimeout_seconds,
+      const base::android::JavaRef<jobject>& jdelegate);
 #endif  // BUILDFLAG(IS_ANDROID)
 
  private:

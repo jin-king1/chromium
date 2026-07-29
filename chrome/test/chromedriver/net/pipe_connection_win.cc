@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/test/chromedriver/net/pipe_connection_win.h"
 
 #include <windows.h>
@@ -18,11 +13,13 @@
 #include <memory>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/threading/thread.h"
 #include "base/values.h"
 #include "chrome/test/chromedriver/net/command_id.h"
@@ -40,7 +37,7 @@ void DetermineRecipient(const std::string& message,
                         bool* send_to_chromedriver) {
   std::optional<base::Value> message_value =
       base::JSONReader::Read(message, base::JSON_REPLACE_INVALID_CHARACTERS);
-  base::Value::Dict* message_dict =
+  base::DictValue* message_dict =
       message_value ? message_value->GetIfDict() : nullptr;
   if (!message_dict) {
     *send_to_chromedriver = true;
@@ -181,8 +178,8 @@ class PipeReader {
     }
     while (bytes_read < size) {
       DWORD size_read = 0;
-      bool had_error = !ReadFile(file, buffer + bytes_read, size - bytes_read,
-                                 &size_read, nullptr);
+      bool had_error = !ReadFile(file, UNSAFE_TODO(buffer + bytes_read),
+                                 size - bytes_read, &size_read, nullptr);
       if (had_error) {
         if (!shutting_down_.IsSet()) {
           VLOG(logging::LOGGING_ERROR)
@@ -364,8 +361,8 @@ class PipeWriter {
       }
       DWORD bytes_written = 0;
       bool had_error =
-          !WriteFile(file, bytes + total_written, static_cast<DWORD>(length),
-                     &bytes_written, nullptr);
+          !WriteFile(file, UNSAFE_TODO(bytes + total_written),
+                     static_cast<DWORD>(length), &bytes_written, nullptr);
       if (had_error) {
         if (!shutting_down_.IsSet()) {
           VLOG(logging::LOGGING_ERROR) << "Could not write into pipe";

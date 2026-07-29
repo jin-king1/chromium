@@ -5,6 +5,7 @@
 package org.chromium.ui.util;
 
 import android.content.Context;
+import android.content.res.Resources.NotFoundException;
 import android.content.res.TypedArray;
 import android.graphics.Typeface;
 import android.text.TextPaint;
@@ -13,6 +14,8 @@ import androidx.annotation.StyleRes;
 import androidx.annotation.StyleableRes;
 import androidx.core.content.res.ResourcesCompat;
 
+import org.chromium.base.DeviceInfo;
+import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.R;
 
@@ -21,6 +24,7 @@ import org.chromium.ui.R;
 public class StyleUtils {
     private static final String TAG = "StyleUtils";
     private static final int INVALID_RESOURCE_ID = -1;
+    private static final String FALLBACK_FONT_FAMILY_NAME = "sans-serif";
 
     /**
      * Applies attributes extracted from a TextAppearance style to a TextPaint object.
@@ -49,7 +53,12 @@ public class StyleUtils {
             @StyleableRes int fontStyleableRes = R.styleable.TextAppearance_android_fontFamily;
             int fontRes = appearance.getResourceId(fontStyleableRes, INVALID_RESOURCE_ID);
             if (fontRes != INVALID_RESOURCE_ID) {
-                typeface = ResourcesCompat.getFont(context, fontRes);
+                try {
+                    typeface = ResourcesCompat.getFont(context, fontRes);
+                } catch (NotFoundException e) {
+                    Log.e(TAG, "Reading fontRes failed.", e);
+                    typeface = Typeface.create(FALLBACK_FONT_FAMILY_NAME, Typeface.NORMAL);
+                }
             } else {
                 String fontFamily = appearance.getString(fontStyleableRes);
                 typeface = Typeface.create(fontFamily, Typeface.NORMAL);
@@ -67,13 +76,19 @@ public class StyleUtils {
         }
 
         if (applyTextColor) {
-            int textColor =
-                    appearance.getColor(
-                            R.styleable.TextAppearance_android_textColor, INVALID_RESOURCE_ID);
-            assert textColor != INVALID_RESOURCE_ID : "textColor is not defined in style.";
-            textPaint.setColor(textColor);
+            var textColorStateList =
+                    appearance.getColorStateList(R.styleable.TextAppearance_android_textColor);
+            assert textColorStateList != null : "textColor is not defined in style.";
+            textPaint.setColor(textColorStateList.getDefaultColor());
         }
 
         appearance.recycle();
+    }
+
+    /**
+     * Returns Whether the desktop density should be applied.
+     */
+    public static boolean shouldApplyDesktopDensity() {
+        return DeviceInfo.isDesktop();
     }
 }

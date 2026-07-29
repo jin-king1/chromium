@@ -4,19 +4,17 @@
 
 package org.chromium.chrome.browser.page_info;
 
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
-import static org.hamcrest.CoreMatchers.allOf;
 import static org.junit.Assert.assertNotNull;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.view.View;
 
 import androidx.test.filters.MediumTest;
 
-import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -26,15 +24,16 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.app.ChromeActivity;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.page_info.PageInfoController;
 import org.chromium.components.page_info.PageInfoController.OpenedFromSource;
 import org.chromium.content_public.common.ContentSwitches;
@@ -56,22 +55,26 @@ import java.io.IOException;
     ChromeSwitches.DISABLE_STARTUP_PROMOS,
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"
 })
-@DisableIf.Device(DeviceFormFactor.TABLET) // crbug.com/338978357, crbug.com/384775466
+@DisableIf.Device(
+        DeviceFormFactor.TABLET_OR_DESKTOP) // https://crbug.com/338978357, crbug.com/384775466,
+// crbug.com/394675204
 public class PageInfoViewDarkModeTest {
     private static final String sSimpleHtml = "/chrome/test/data/android/simple.html";
 
     @Rule
-    public final ChromeTabbedActivityTestRule mActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public final FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule public EmbeddedTestServerRule mTestServerRule = new EmbeddedTestServerRule();
 
     @Rule
     public RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(5)
+                    .setRevision(6)
                     .setBugComponent(RenderTestRule.Component.UI_BROWSER_BUBBLES_PAGE_INFO)
                     .build();
+
+    private WebPageStation mStartingPage;
 
     private void loadUrlAndOpenPageInfo(String url) {
         mActivityTestRule.loadUrl(url);
@@ -80,7 +83,7 @@ public class PageInfoViewDarkModeTest {
 
     private void openPageInfo() {
         ChromeActivity activity = mActivityTestRule.getActivity();
-        Tab tab = activity.getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     new ChromePageInfo(
@@ -92,10 +95,7 @@ public class PageInfoViewDarkModeTest {
                                     null)
                             .show(tab, ChromePageInfoHighlight.noHighlight());
                 });
-        onViewWaiting(
-                allOf(withId(R.id.page_info_url_wrapper), isDisplayed()),
-                true // Put Focus on dialog to fix flakiness in api 29+ with espresso 3.2.
-                );
+        waitForView(withId(R.id.page_info_url_wrapper));
     }
 
     private View getPageInfoView() {
@@ -117,23 +117,21 @@ public class PageInfoViewDarkModeTest {
                     ChromeNightModeTestUtils.setUpNightModeForChromeActivity(
                             /* nightModeEnabled= */ true);
                 });
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mStartingPage = mActivityTestRule.startOnBlankPage();
     }
 
-    @After
-    public void tearDown() {
+    @AfterClass
+    public static void tearDownAfterActivityDestroyed() {
+        // Flip the night-mode pref only after the activity is gone; otherwise the live
+        // activity recreates and strands entries in AsyncTabParamsManager.
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    ChromeNightModeTestUtils.setUpNightModeForChromeActivity(
-                            /* nightModeEnabled= */ false);
-                });
+                ChromeNightModeTestUtils::tearDownNightModeAfterChromeActivityDestroyed);
     }
 
     /** Tests the PageInfo UI on a secure website in dark mode. */
     @Test
     @MediumTest
     @Feature({"RenderTest"})
-    @DisableFeatures(ChromeFeatureList.TRACKING_PROTECTION_3PCD)
     public void testShowOnSecureWebsiteDark() throws IOException {
         loadUrlAndOpenPageInfo(mTestServerRule.getServer().getURL(sSimpleHtml));
         mRenderTestRule.render(getPageInfoView(), "PageInfo_SecureWebsiteDark");

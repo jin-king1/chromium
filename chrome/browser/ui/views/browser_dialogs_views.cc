@@ -9,8 +9,9 @@
 #include "chrome/browser/media/webrtc/select_audio_output_picker.h"
 #include "chrome/browser/task_manager/task_manager_metrics_recorder.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_editor_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/select_audio_output/select_audio_output_views.h"
@@ -36,7 +37,7 @@ void BookmarkEditor::Show(gfx::NativeWindow parent_window,
   editor.release();  // BookmarkEditorView is self-deleting
 }
 
-void ChromeDevicePermissionsPrompt::ShowDialog() {
+void ChromeUsbDevicePermissionsPrompt::ShowDialog() {
   ShowDialogViews();
 }
 
@@ -47,7 +48,6 @@ std::unique_ptr<SelectAudioOutputPicker> SelectAudioOutputPicker::Create(
 
 namespace chrome {
 
-#if !BUILDFLAG(IS_MAC)
 task_manager::TaskManagerTableModel* ShowTaskManager(
     Browser* browser,
     task_manager::StartAction start_action) {
@@ -57,30 +57,29 @@ task_manager::TaskManagerTableModel* ShowTaskManager(
 void HideTaskManager() {
   task_manager::TaskManagerView::Hide();
 }
-#endif
 
-views::Widget* ShowBrowserModal(Browser* browser,
+views::Widget* ShowBrowserModal(BrowserWindowInterface* browser,
                                 std::unique_ptr<ui::DialogModel> dialog_model) {
   return constrained_window::ShowBrowserModal(
-      std::move(dialog_model), browser->window()->GetNativeWindow());
+      std::move(dialog_model), browser->GetWindow()->GetNativeWindow());
 }
 
 // TODO(pbos): Move bubble showing out of this file (like ShowBrowserModal) so
 // that this code can be used for showing bubbles outside Browser too.
-void ShowBubble(Browser* browser,
+void ShowBubble(ui::ElementContext element_context,
                 ui::ElementIdentifier anchor_element_id,
                 std::unique_ptr<ui::DialogModel> dialog_model) {
   views::View* const anchor_view =
       views::ElementTrackerViews::GetInstance()->GetUniqueView(
-          anchor_element_id,
-          views::ElementTrackerViews::GetContextForView(
-              BrowserView::GetBrowserViewForBrowser(browser)));
+          anchor_element_id, element_context);
   DCHECK(anchor_view);
   // TODO(pbos): Add a version of BubbleBorder::Arrow that infers position
   // automatically based on the anchor's position relative to its widget.
   auto bubble = std::make_unique<views::BubbleDialogModelHost>(
       std::move(dialog_model), anchor_view, views::BubbleBorder::TOP_RIGHT);
-  views::BubbleDialogDelegate::CreateBubble(std::move(bubble))->Show();
+  views::BubbleDialogDelegate::CreateBubbleDeprecated(
+      std::move(bubble), views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET)
+      ->Show();
 }
 
 }  // namespace chrome

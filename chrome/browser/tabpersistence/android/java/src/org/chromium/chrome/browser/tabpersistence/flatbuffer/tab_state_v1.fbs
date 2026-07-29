@@ -48,5 +48,11 @@ table TabStateFlatBufferV1 {
 
     // Tab has sensitive content.
     tab_has_sensitive_content:bool;
+
+    // Tab is in pinned state.
+    is_pinned:bool;
+
+    // Represents the current URL of the tab.
+    url:string;
 }
 

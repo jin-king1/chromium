@@ -14,6 +14,7 @@ export class MockSpeechRecognizer {
     this.session_client_ = null;
     this.error_ = null;
     this.lastSetTimeout_ = null;
+    this.startParams_ = null;
 
     this.task_queue_ = [];
 
@@ -31,6 +32,7 @@ export class MockSpeechRecognizer {
     this.session_ = null;
     this.session_client_ = null;
     this.error_ = null;
+    this.startParams_ = null;
   }
 
   addMockSpeechRecognitionResult(transcript, confidence) {
@@ -78,6 +80,7 @@ export class MockSpeechRecognizer {
   }
 
   start(params) {
+    this.startParams_ = params;
     this.session_ = new MockSpeechRecognitionSession(params.sessionReceiver, this);
     this.session_client_ = params.client;
 
@@ -90,11 +93,15 @@ export class MockSpeechRecognizer {
     this.dispatchResult();
   }
 
-  onDeviceWebSpeechAvailable(params) {
-    return Promise.resolve(false);
+  startParams() {
+    return this.startParams_;
   }
 
-  installOnDeviceSpeechRecognition(params) {
+  onDeviceWebSpeechAvailable(lang) {
+    return Promise.resolve("available");
+  }
+
+  installOnDeviceSpeechRecognition(lang) {
     return Promise.resolve(false);
   }
 }

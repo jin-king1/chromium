@@ -13,12 +13,19 @@
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/unguessable_token.h"
-#include "chromeos/crosapi/mojom/video_conference.mojom-shared.h"
-#include "chromeos/crosapi/mojom/video_conference.mojom.h"
+#include "components/search_engines/template_url.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
 class SkBitmap;
+
+namespace ash {
+enum class CaptureModeImageSearchResult;
+enum class CaptureModeTextDetectionResult;
+struct VideoConferenceMediaUsageStatus;
+enum class VideoConferenceMediaDevice : int;
+class VideoConferenceManagerClient;
+}  // namespace ash
 
 namespace aura {
 class Window;
@@ -71,6 +78,10 @@ using OnTextDetectionComplete =
 // `LensOverlayQueryController::RunInteractionCallbackForError()`.
 using OnSearchUrlFetchedCallback = base::RepeatingCallback<void(GURL url)>;
 
+using OnLensErrorCallback =
+    base::OnceCallback<void(ash::CaptureModeImageSearchResult,
+                            ash::CaptureModeTextDetectionResult)>;
+
 // Defines the interface for the delegate of CaptureModeController, that can be
 // implemented by an ash client (e.g. Chrome). The CaptureModeController owns
 // the instance of this delegate.
@@ -107,11 +118,13 @@ class ASH_PUBLIC_EXPORT CaptureModeDelegate {
   virtual bool Uses24HourFormat() const = 0;
 
   // Called when capture mode is being started to check if there are any content
-  // currently on the screen that are restricted by DLP. `callback` will be
-  // triggered by the DLP manager with `proceed` set to true if capture mode
-  // initialization is allowed to continue, or set to false if it should be
-  // aborted.
+  // currently on the screen that are restricted by DLP.`shutting_down` is true
+  // if the lock state controller has received a request to shut down, and false
+  // otherwise. `callback` will be triggered by the DLP manager with `proceed`
+  // set to true if capture mode initialization is allowed to continue, or set
+  // to false if it should be aborted.
   virtual void CheckCaptureModeInitRestrictionByDlp(
+      bool shutting_down,
       OnCaptureModeDlpRestrictionChecked callback) = 0;
 
   // Checks whether capture of the region defined by |window| and |bounds|
@@ -208,7 +221,7 @@ class ASH_PUBLIC_EXPORT CaptureModeDelegate {
   // Registers the given `client` as a video conference manager client with the
   // provided `client_id`.
   virtual void RegisterVideoConferenceManagerClient(
-      crosapi::mojom::VideoConferenceManagerClient* client,
+      VideoConferenceManagerClient* client,
       const base::UnguessableToken& client_id) = 0;
 
   // Unregisters the client whose ID is the given `client_id` from the video
@@ -219,13 +232,13 @@ class ASH_PUBLIC_EXPORT CaptureModeDelegate {
   // Updates the video conference manager with the given media usage `status`.
   // This will in-turn update the video conference panel on the shelf.
   virtual void UpdateVideoConferenceManager(
-      crosapi::mojom::VideoConferenceMediaUsageStatusPtr status) = 0;
+      VideoConferenceMediaUsageStatus status) = 0;
 
   // Requests that the video conference manager notifies the user that the given
   // `device` (e.g. a camera or microphone) is being used for a screen recording
   // while the device is disabled.
   virtual void NotifyDeviceUsedWhileDisabled(
-      crosapi::mojom::VideoConferenceMediaDevice device) = 0;
+      VideoConferenceMediaDevice device) = 0;
 
   // Requests to finalize the location for the saved file, e.g. move it to cloud
   // storage if it was saved to a temporary local location. `callback` will be
@@ -252,26 +265,17 @@ class ASH_PUBLIC_EXPORT CaptureModeDelegate {
   virtual void DetectTextInImage(const SkBitmap& image,
                                  OnTextDetectionComplete callback) = 0;
 
-  // Gets the OAuth2 access token for the user's primary account, used for
-  // making a Lens Web API POST request.
-  virtual void GetPrimaryAccountAccessToken(
-      base::RepeatingCallback<void(const std::string& access_token)>
-          callback) = 0;
-
-  // Sends the captured `region` and `image` to the backend. Invokes `callback`
-  // when the response is fetched.
-  virtual void SendRegionSearch(const SkBitmap& image,
-                                const gfx::Rect& region,
-                                OnSearchUrlFetchedCallback search_callback,
-                                OnTextDetectionComplete text_callback) = 0;
-
-  // Sends the captured `image`, `region`, and search box `text` to the backend.
-  // Invokes `callback` when the response is fetched.
-  virtual void SendMultimodalSearch(
-      const SkBitmap& image,
-      const gfx::Rect& region,
-      const std::string& text,
-      ash::OnSearchUrlFetchedCallback callback) = 0;
+  // Sends the captured `image` to the Lens Web API for image search and text
+  // detection (if enabled). Invokes `search_callback` when the image search
+  // response is fetched, then `text_callback` when the text detection response
+  // is fetched. Invokes `error_callback` if an error occurs or an unexpected
+  // response is received.
+  virtual void SendLensWebRegionSearch(
+      const gfx::Image& image,
+      const bool is_standalone_session,
+      OnSearchUrlFetchedCallback search_callback,
+      OnTextDetectionComplete text_callback,
+      OnLensErrorCallback error_callback) = 0;
 
   // Returns true if the network is currently in an offline or unknown state.
   virtual bool IsNetworkConnectionOffline() const = 0;
@@ -279,6 +283,10 @@ class ASH_PUBLIC_EXPORT CaptureModeDelegate {
   // Deletes the remote file under `path` and calls `callback` with result.
   virtual void DeleteRemoteFile(const base::FilePath& path,
                                 base::OnceCallback<void(bool)> callback) = 0;
+
+  // Returns true if Google is the default search engine for the active user,
+  // and false otherwise.
+  virtual bool ActiveUserDefaultSearchProviderIsGoogle() const = 0;
 };
 
 }  // namespace ash

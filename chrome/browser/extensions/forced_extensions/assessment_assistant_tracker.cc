@@ -4,14 +4,18 @@
 
 #include "chrome/browser/extensions/forced_extensions/assessment_assistant_tracker.h"
 
-#include "chrome/browser/extensions/forced_extensions/install_stage_tracker.h"
+#include "base/logging.h"
 #include "chrome/browser/extensions/forced_extensions/install_stage_tracker_factory.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_factory.h"
 #include "extensions/browser/extensions_browser_client.h"
+#include "extensions/browser/forced_extensions/install_stage_tracker.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace {
 inline constexpr char kAssessmentAssistantExtensionId[] =

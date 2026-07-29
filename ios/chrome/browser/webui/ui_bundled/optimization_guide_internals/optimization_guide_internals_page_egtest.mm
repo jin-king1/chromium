@@ -9,6 +9,7 @@
 #import "base/test/ios/wait_util.h"
 #import "components/optimization_guide/core/optimization_guide_switches.h"
 #import "components/optimization_guide/optimization_guide_internals/webui/url_constants.h"
+#import "components/webui/chrome_urls/pref_names.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_test_app_interface.h"
 #import "ios/chrome/browser/webui/ui_bundled/web_ui_test_utils.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -27,15 +28,20 @@
   return config;
 }
 
+- (void)setUp {
+  [super setUp];
+  // Enables internal only UIs.
+  [ChromeEarlGrey setBoolValue:YES
+             forLocalStatePref:chrome_urls::kInternalOnlyUisEnabled];
+}
+
 // Tests that chrome://optimization-guide-internals loads when debug logs flag
 // is enabled, and that logs get added to #log-message-container on the page.
 - (void)testChromeOptimizationGuideInternalsSite {
   GURL url = WebUIPageUrlWithHost(
       optimization_guide_internals::kChromeUIOptimizationGuideInternalsHost);
   [ChromeEarlGrey loadURL:url];
-
-  GREYAssert(WaitForOmniboxURLString(url.spec(), false),
-             @"Omnibox did not contain URL.");
+  [ChromeEarlGrey waitForWebStateVisibleURL:url];
 
   // Validates that some of the expected text on the page exists.
   [ChromeEarlGrey waitForWebStateContainingText:"Optimization Guide Internals"];
@@ -46,8 +52,7 @@
   [ChromeEarlGrey openNewTab];
   GURL fooURL = GURL("https://foo");
   [ChromeEarlGrey loadURL:fooURL];
-  GREYAssert(WaitForOmniboxURLString(fooURL.spec(), false),
-             @"Omnibox did not contain URL.");
+  [ChromeEarlGrey waitForWebStateVisibleURL:fooURL];
   // Call `-canApplyOptimization:type:metadata:` for its side-effect of logging
   // to HintsManager. The event logged should then become visible in the WebUI.
   [OptimizationGuideTestAppInterface

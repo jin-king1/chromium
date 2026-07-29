@@ -9,6 +9,7 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/supports_user_data.h"
 #include "components/collaboration/public/collaboration_controller_delegate.h"
+#include "components/collaboration/public/collaboration_flow_type.h"
 
 namespace collaboration {
 
@@ -17,7 +18,7 @@ class CollaborationControllerDelegateAndroid
     : public CollaborationControllerDelegate {
  public:
   explicit CollaborationControllerDelegateAndroid(
-      const base::android::JavaParamRef<jobject>& j_object);
+      const base::android::JavaRef<jobject>& j_object);
   ~CollaborationControllerDelegateAndroid() override;
 
   // CollaborationControllerDelegate.
@@ -25,7 +26,7 @@ class CollaborationControllerDelegateAndroid
                      ResultCallback result) override;
   void ShowError(const ErrorInfo& error, ResultCallback result) override;
   void Cancel(ResultCallback result) override;
-  void ShowAuthenticationUi(ResultCallback result) override;
+  void ShowAuthenticationUi(FlowType flow_type, ResultCallback result) override;
   void NotifySignInAndSyncStatusChange() override;
   void ShowJoinDialog(const data_sharing::GroupToken& token,
                       const data_sharing::SharedDataPreview& preview_data,
@@ -38,6 +39,10 @@ class CollaborationControllerDelegateAndroid
                          const GURL& url,
                          ResultCallback result) override;
   void ShowManageDialog(const tab_groups::EitherGroupID& either_id,
+                        ResultCallback result) override;
+  void ShowLeaveDialog(const tab_groups::EitherGroupID& either_id,
+                       ResultCallback result) override;
+  void ShowDeleteDialog(const tab_groups::EitherGroupID& either_id,
                         ResultCallback result) override;
   void PromoteTabGroup(const data_sharing::GroupId& group_id,
                        ResultCallback result) override;

@@ -43,10 +43,12 @@ std::string CreateServerResponse(const std::vector<uint8_t>& expected_output) {
 }
 
 bool AreRequestsEqual(const std::string& json_a, const std::string& json_b) {
-  std::optional<base::Value> parsed_a = base::JSONReader::Read(json_a);
-  std::optional<base::Value> parsed_b = base::JSONReader::Read(json_b);
-  base::Value::Dict& dict_a = parsed_a->GetDict();
-  base::Value::Dict& dict_b = parsed_b->GetDict();
+  std::optional<base::Value> parsed_a =
+      base::JSONReader::Read(json_a, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  std::optional<base::Value> parsed_b =
+      base::JSONReader::Read(json_b, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  base::DictValue& dict_a = parsed_a->GetDict();
+  base::DictValue& dict_b = parsed_b->GetDict();
 
   const std::optional<double> rate_a =
       dict_a.FindDoubleByDottedPath(kSpeechFactorPath);

@@ -20,6 +20,7 @@ class SharedURLLoaderFactory;
 
 namespace ash::boca {
 
+class SharedCrdSessionWrapper;
 // Defines the interface for sub features to access hub Events
 class BocaAppClient : public signin::IdentityManager::Observer {
  public:
@@ -40,6 +41,9 @@ class BocaAppClient : public signin::IdentityManager::Observer {
   // Launch Boca App.
   virtual void LaunchApp();
 
+  // Returns the number of open app instances.
+  virtual int GetAppInstanceCount();
+
   // Add `BocaSessionManager` instance for the current profile.
   virtual void AddSessionManager(BocaSessionManager* session_manager);
 
@@ -53,6 +57,11 @@ class BocaAppClient : public signin::IdentityManager::Observer {
   virtual std::string GetSchoolToolsServerBaseUrl();
 
   virtual void OpenFeedbackDialog();
+
+  // TODO(crbug.com/447355422): Make it pure.
+  // Gets a new `SharedCrdSessionWrapper` instance for the current profile.
+  virtual std::unique_ptr<SharedCrdSessionWrapper>
+  CreateSharedCrdSessionWrapper();
 
   // IdentityManager overrides.
   void OnIdentityManagerShutdown(

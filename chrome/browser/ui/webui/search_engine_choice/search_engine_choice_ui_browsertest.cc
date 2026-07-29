@@ -6,7 +6,6 @@
 #include <string>
 #include <vector>
 
-#include "base/functional/callback_forward.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -30,15 +29,18 @@
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_prepopulate_data.h"
 #include "components/search_engines/template_url_service.h"
+#include "components/signin/public/base/signin_switches.h"
+#include "components/variations/variations_switches.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/widget/any_widget_observer.h"
 
 // Tests for the chrome://search-engine-choice WebUI page.
@@ -92,13 +94,7 @@ class MockSearchEngineChoiceDialogService
         // engines.
         choice.prepopulate_id = i + 1;
         choice.SetShortName(kShortName);
-        if (i % 2 == 0) {
-          // The bing icon should be bundled with Chrome.
-          choice.SetKeyword(TemplateURLPrepopulateData::bing.keyword);
-        } else {
-          // Uses the default generic favicon.
-          choice.SetKeyword(TemplateURLPrepopulateData::incredibar.keyword);
-        }
+        choice.SetKeyword(u"incredibar");
         choices_.push_back(std::make_unique<TemplateURL>(choice));
       }
     }
@@ -116,9 +112,13 @@ struct TestParam {
   bool select_first_search_engine = false;
   bool first_snippet_text_larger = false;
   bool display_info_dialog = false;
-  bool wait_for_banners_displayed = true;
+  bool wait_for_background_displayed = true;
   bool is_guest_session = false;
-  gfx::Size dialog_dimensions = gfx::Size(988, 900);
+  // If not set, the test will use default feature set, otherwise will be
+  // explicitly enabled / disabled.
+  std::optional<bool> use_refreshed_ui;
+  // (1001px, 900px) to make the background shapes in refreshed UI visible.
+  gfx::Size dialog_dimensions = gfx::Size(1001, 900);
 };
 
 // To be passed as 4th argument to `INSTANTIATE_TEST_SUITE_P()`, allows the test
@@ -135,20 +135,19 @@ const TestParam kTestParams[] = {
     {.test_suffix = "DarkTheme", .use_dark_theme = true},
     {.test_suffix = "RightToLeft", .use_right_to_left_language = true},
     {.test_suffix = "MediumSize",
-     .wait_for_banners_displayed = false,
+     .wait_for_background_displayed = false,
      .dialog_dimensions = gfx::Size(800, 700)},
     {.test_suffix = "NarrowSize",
-     .wait_for_banners_displayed = false,
+     .wait_for_background_displayed = false,
      .dialog_dimensions = gfx::Size(300, 900)},
     {.test_suffix = "ShortAndNarrowSize",
-     .wait_for_banners_displayed = false,
+     .wait_for_background_displayed = false,
      .dialog_dimensions = gfx::Size(500, 500)},
     {.test_suffix = "LargerFirstEngineSnippet",
      .first_snippet_text_larger = true},
-    // TODO(b/360286412): This test case is flaky.
-    // {.test_suffix = "FirstEngineSelectedWithLargerSnippet",
-    //  .select_first_search_engine = true,
-    //  .first_snippet_text_larger = true},
+    {.test_suffix = "FirstEngineSelectedWithLargerSnippet",
+     .select_first_search_engine = true,
+     .first_snippet_text_larger = true},
     {.test_suffix = "InfoDialog", .display_info_dialog = true},
     {.test_suffix = "InfoDialogDarkTheme",
      .use_dark_theme = true,
@@ -161,8 +160,16 @@ const TestParam kTestParams[] = {
     // We enable the test on platforms other than Windows with the smallest
     // height due to a small maximum window height set by the operating system.
     // The test will crash if we exceed that height.
-    {.test_suffix = "ShortSize", .dialog_dimensions = gfx::Size(988, 376)},
-};
+    {.test_suffix = "ShortSize",
+     .use_refreshed_ui = false,
+     .dialog_dimensions = gfx::Size(988, 376)},
+    // Explicitly enable refreshed UI due to difference in behavior. For the old
+    // flow, the banners would've appeared but for the refresh - the background
+    // wouldn't and we can't have unified call to WaitForBackgroundDisplayed().
+    {.test_suffix = "ShortSizeRefreshedUI",
+     .wait_for_background_displayed = false,
+     .use_refreshed_ui = true,
+     .dialog_dimensions = gfx::Size(988, 376)}};
 
 class SearchEngineChoiceNavigationObserver
     : public content::TestNavigationObserver {
@@ -181,61 +188,140 @@ class SearchEngineChoiceNavigationObserver
   raw_ptr<content::WebContents> web_contents_;
 };
 
-const char kSelectFirstSearchEngineJsString[] =
-    "(() => {"
-    "  const app = document.querySelector('search-engine-choice-app');"
-    "  const searchEngineList = app.shadowRoot.querySelectorAll("
-    "      'cr-radio-button');"
-    "  searchEngineList[0].click();"
-    "  return true;"
-    "})();";
+std::string_view GetSelectFirstSearchEngineJsString() {
+  if (base::FeatureList::IsEnabled(switches::kFirstRunDesktopRefresh) &&
+      base::FeatureList::IsEnabled(
+          switches::kFirstRunDesktopChoiceScreenRefresh)) {
+    return "(() => {"
+           "  const app = "
+           "      document.querySelector('search-engine-choice-app-refresh');"
+           "  const searchEngineList = app.shadowRoot.querySelectorAll("
+           "      'cr-radio-button');"
+           "  searchEngineList[0].click();"
+           "  return true;"
+           "})();";
+  }
 
-const char kMakeFirstSnippetLargerJsString[] =
-    "(() => {"
-    "const app = document.querySelector('search-engine-choice-app');"
-    "const marketingSnippet = "
-    "app.shadowRoot.querySelectorAll('.marketing-snippet');"
-    "marketingSnippet[0].textContent = "
-    "marketingSnippet[0].textContent.repeat(3);"
-    "return true;"
-    "})();";
+  return "(() => {"
+         "  const app = document.querySelector('search-engine-choice-app');"
+         "  const searchEngineList = app.shadowRoot.querySelectorAll("
+         "      'cr-radio-button');"
+         "  searchEngineList[0].click();"
+         "  return true;"
+         "})();";
+}
 
-const char kDisplayInfoDialogJsString[] =
-    "(() => {"
-    "const app = document.querySelector('search-engine-choice-app');"
-    "app.shadowRoot.querySelector('#infoLink').click();"
-    "return true;"
-    "})();";
+std::string_view GetMakeFirstSnippetLargerJsString() {
+  if (base::FeatureList::IsEnabled(switches::kFirstRunDesktopRefresh) &&
+      base::FeatureList::IsEnabled(
+          switches::kFirstRunDesktopChoiceScreenRefresh)) {
+    return "(() => {"
+           "  const app = "
+           "      document.querySelector('search-engine-choice-app-refresh');"
+           "  const marketingSnippet = "
+           "      app.shadowRoot.querySelectorAll('.marketing-snippet');"
+           "  marketingSnippet[0].textContent = "
+           "      marketingSnippet[0].textContent.repeat(3);"
+           "  return true;"
+           "})();";
+  }
+
+  return "(() => {"
+         "  const app = document.querySelector('search-engine-choice-app');"
+         "  const marketingSnippet = "
+         "      app.shadowRoot.querySelectorAll('.marketing-snippet');"
+         "  marketingSnippet[0].textContent = "
+         "      marketingSnippet[0].textContent.repeat(3);"
+         "  return true;"
+         "})();";
+}
+
+std::string_view GetDisplayInfoDialogJsString() {
+  if (base::FeatureList::IsEnabled(switches::kFirstRunDesktopRefresh) &&
+      base::FeatureList::IsEnabled(
+          switches::kFirstRunDesktopChoiceScreenRefresh)) {
+    return "(() => {"
+           "  const app = "
+           "      document.querySelector('search-engine-choice-app-refresh');"
+           "  app.shadowRoot.querySelector('#infoLink').click();"
+           "  return true;"
+           "})();";
+  }
+
+  return "(() => {"
+         "  const app = document.querySelector('search-engine-choice-app');"
+         "  app.shadowRoot.querySelector('#infoLink').click();"
+         "  return true;"
+         "})();";
+}
 
 // We remove the hover property to prevent the test from being flaky.
-const char kRemoveHoverPropertyJsString[] =
-    "(() => {"
-    "const app = document.querySelector('search-engine-choice-app');"
-    "const radioButtons = app.shadowRoot.querySelectorAll('cr-radio-button');"
-    "radioButtons.forEach(button => button.classList.remove('hoverable'));"
-    "return true;"
-    "})();";
+std::string_view GetRemoveHoverPropertyJsString() {
+  if (base::FeatureList::IsEnabled(switches::kFirstRunDesktopRefresh) &&
+      base::FeatureList::IsEnabled(
+          switches::kFirstRunDesktopChoiceScreenRefresh)) {
+    return "(() => {"
+           "  const app = "
+           "      document.querySelector('search-engine-choice-app-refresh');"
+           "  const radioButtons = "
+           "      app.shadowRoot.querySelectorAll('cr-radio-button');"
+           "  radioButtons.forEach(button => "
+           "      button.classList.remove('hoverable'));"
+           "  return true;"
+           "})();";
+  }
 
-const char kAreBannersDisplayedJsString[] =
-    "(() => {"
-    "const app = document.querySelector('search-engine-choice-app');"
-    "const leftBannerStyle = "
-    "getComputedStyle(app.shadowRoot.querySelector('#leftBanner'));"
-    "const rightBannerStyle = "
-    "getComputedStyle(app.shadowRoot.querySelector('#rightBanner'));"
-    "return rightBannerStyle.display === 'block' && leftBannerStyle.display "
-    "=== 'block';"
-    "})();";
+  return "(() => {"
+         "  const app = document.querySelector('search-engine-choice-app');"
+         "  const radioButtons = "
+         "      app.shadowRoot.querySelectorAll('cr-radio-button');"
+         "  radioButtons.forEach(button => "
+         "      button.classList.remove('hoverable'));"
+         "  return true;"
+         "})();";
+}
 
-void WaitForBannersDisplayed(content::WebContents* web_contents,
-                             base::OnceClosure quit_closure) {
-  if (content::EvalJs(web_contents, kAreBannersDisplayedJsString) == true) {
+std::string_view GetIsBackgroundDisplayedJsString() {
+  if (base::FeatureList::IsEnabled(switches::kFirstRunDesktopRefresh) &&
+      base::FeatureList::IsEnabled(
+          switches::kFirstRunDesktopChoiceScreenRefresh)) {
+    return "(() => {"
+           "  const app = "
+           "      document.querySelector('search-engine-choice-app-refresh');"
+           "  const rightBgStyle = "
+           "      "
+           "getComputedStyle(app.shadowRoot.querySelector('#background-right'))"
+           "      ;"
+           "  const bottomBgStyle = "
+           "      "
+           "getComputedStyle(app.shadowRoot.querySelector('#background-bottom')"
+           "      );"
+           "  return rightBgStyle.display === 'block' && bottomBgStyle.display "
+           "      === 'block';"
+           "})();";
+  }
+
+  return "(() => {"
+         "  const app = document.querySelector('search-engine-choice-app');"
+         "  const leftBannerStyle = "
+         "      getComputedStyle(app.shadowRoot.querySelector('#leftBanner'));"
+         "  const rightBannerStyle = "
+         "      getComputedStyle(app.shadowRoot.querySelector('#rightBanner'));"
+         "  return rightBannerStyle.display === 'block' && "
+         "      leftBannerStyle.display === 'block';"
+         "})();";
+}
+
+void WaitForBackgroundDisplayed(content::WebContents* web_contents,
+                                base::OnceClosure quit_closure) {
+  if (content::EvalJs(web_contents, GetIsBackgroundDisplayedJsString()) ==
+      true) {
     std::move(quit_closure).Run();
     return;
   }
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
-      base::BindOnce(&WaitForBannersDisplayed, web_contents,
+      base::BindOnce(&WaitForBackgroundDisplayed, web_contents,
                      std::move(quit_closure)),
       TestTimeouts::tiny_timeout());
 }
@@ -253,7 +339,14 @@ class SearchEngineChoiceUIPixelTest
                                               /*force_chrome_build=*/true)),
         pixel_test_mixin_(&mixin_host_,
                           GetParam().use_dark_theme,
-                          GetParam().use_right_to_left_language) {}
+                          GetParam().use_right_to_left_language) {
+    if (GetParam().use_refreshed_ui.has_value()) {
+      scoped_feature_list_.InitWithFeatureStates(
+          {{switches::kFirstRunDesktopRefresh, *GetParam().use_refreshed_ui},
+           {switches::kFirstRunDesktopChoiceScreenRefresh,
+            *GetParam().use_refreshed_ui}});
+    }
+  }
 
   ~SearchEngineChoiceUIPixelTest() override = default;
 
@@ -261,17 +354,16 @@ class SearchEngineChoiceUIPixelTest
     InProcessBrowserTest::SetUpOnMainThread();
 
     if (GetParam().is_guest_session) {
-      ui_test_utils::BrowserChangeObserver browser_added_observer(
-          nullptr, ui_test_utils::BrowserChangeObserver::ChangeType::kAdded);
+      ui_test_utils::BrowserCreatedObserver browser_created_observer;
 
       CreateGuestBrowser();
-      Browser* new_browser = browser_added_observer.Wait();
+      Browser* new_browser = browser_created_observer.Wait();
       ASSERT_TRUE(new_browser);
       ASSERT_NE(new_browser, browser());
-      ASSERT_TRUE(new_browser->profile()->IsGuestSession());
+      ASSERT_TRUE(new_browser->GetProfile()->IsGuestSession());
 
       CloseBrowserSynchronously(browser());
-      SelectFirstBrowser();
+      SetBrowser(new_browser);
       ASSERT_EQ(new_browser, browser());
     }
   }
@@ -280,6 +372,8 @@ class SearchEngineChoiceUIPixelTest
     InProcessBrowserTest::SetUpInProcessBrowserTestFixture();
     base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
         switches::kSearchEngineChoiceCountry, "BE");
+    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+        variations::switches::kVariationsOverrideCountry, "be");
     create_services_subscription_ =
         BrowserContextDependencyManager::GetInstance()
             ->RegisterCreateServicesCallbackForTesting(
@@ -294,8 +388,8 @@ class SearchEngineChoiceUIPixelTest
 
   // TestBrowserDialog
   void ShowUi(const std::string& name) override {
-    ui::ScopedAnimationDurationScaleMode disable_animation(
-        ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+    gfx::ScopedAnimationDurationScaleMode disable_animation(
+        gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
     SearchEngineChoiceDialogService::SetDialogDisabledForTests(
         /*dialog_disabled=*/false);
 
@@ -323,7 +417,7 @@ class SearchEngineChoiceUIPixelTest
       dialog_height = kMaximumHeight;
     }
 
-    ShowSearchEngineChoiceDialog(
+    SearchEngineChoiceDialog::Show(
         *browser(), gfx::Size(dialog_width, dialog_height), zoom_factor);
     widget_waiter.WaitIfNeededAndGet();
 
@@ -331,26 +425,26 @@ class SearchEngineChoiceUIPixelTest
     CHECK(web_contents);
 
     EXPECT_EQ(true,
-              content::EvalJs(web_contents, kRemoveHoverPropertyJsString));
+              content::EvalJs(web_contents, GetRemoveHoverPropertyJsString()));
 
     if (GetParam().select_first_search_engine) {
       EXPECT_EQ(true, content::EvalJs(web_contents,
-                                      kSelectFirstSearchEngineJsString));
+                                      GetSelectFirstSearchEngineJsString()));
     }
 
     if (GetParam().first_snippet_text_larger) {
-      EXPECT_EQ(true,
-                content::EvalJs(web_contents, kMakeFirstSnippetLargerJsString));
+      EXPECT_EQ(true, content::EvalJs(web_contents,
+                                      GetMakeFirstSnippetLargerJsString()));
     }
 
     if (GetParam().display_info_dialog) {
       EXPECT_EQ(true,
-                content::EvalJs(web_contents, kDisplayInfoDialogJsString));
+                content::EvalJs(web_contents, GetDisplayInfoDialogJsString()));
     }
 
-    if (GetParam().wait_for_banners_displayed) {
+    if (GetParam().wait_for_background_displayed) {
       base::RunLoop run_loop;
-      WaitForBannersDisplayed(web_contents, run_loop.QuitClosure());
+      WaitForBackgroundDisplayed(web_contents, run_loop.QuitClosure());
       run_loop.Run();
     }
 
@@ -359,13 +453,19 @@ class SearchEngineChoiceUIPixelTest
 
  private:
   base::AutoReset<bool> scoped_chrome_build_override_;
-  base::test::ScopedFeatureList feature_list_{
-      switches::kSearchEngineChoiceGuestExperience};
   PixelTestConfigurationMixin pixel_test_mixin_;
   base::CallbackListSubscription create_services_subscription_;
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_P(SearchEngineChoiceUIPixelTest, InvokeUi_default) {
+#if BUILDFLAG(IS_WIN)
+  if (GetParam().test_suffix == "NarrowSize" &&
+      base::FeatureList::IsEnabled(features::kInitialWebUI)) {
+    GTEST_SKIP() << "Skipping NarrowSize test on Windows with InitialWebUI "
+                    "enabled. See crbug.com/477426026.";
+  }
+#endif
   ShowAndVerifyUi();
 }
 

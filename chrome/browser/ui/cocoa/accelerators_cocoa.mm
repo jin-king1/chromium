@@ -102,8 +102,8 @@ const struct AcceleratorMapping {
     {IDC_BOOKMARK_ALL_TABS, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
      ui::VKEY_D},
     {IDC_MINIMIZE_WINDOW, ui::EF_COMMAND_DOWN, ui::VKEY_M},
-    {IDC_SELECT_NEXT_TAB, ui::EF_CONTROL_DOWN, ui::VKEY_TAB},
-    {IDC_SELECT_PREVIOUS_TAB, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
+    {IDC_CYCLE_TO_NEXT_TAB, ui::EF_CONTROL_DOWN, ui::VKEY_TAB},
+    {IDC_CYCLE_TO_PREV_TAB, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
      ui::VKEY_TAB},
     {IDC_HELP_PAGE_VIA_MENU, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
      ui::VKEY_OEM_2},
@@ -114,6 +114,8 @@ const struct AcceleratorMapping {
      ui::VKEY_I},
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
     {IDC_TAB_SEARCH, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_A},
+    {IDC_TOGGLE_VERTICAL_TABS_COLLAPSE, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+     ui::VKEY_L},
 };
 
 ui::Accelerator AcceleratorForCloseWindow() {
@@ -127,14 +129,8 @@ ui::Accelerator AcceleratorForCloseWindow() {
 }
 
 ui::Accelerator AcceleratorForEnterFullscreen() {
-  int modifiers = ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN;
-
-  // The default keyboard accelerator for Enter Full Screen changed in macOS 12.
-  if (base::mac::MacOSMajorVersion() >= 12) {
-    modifiers = ui::EF_FUNCTION_DOWN;
-  }
-
-  return ui::Accelerator(ui::VKEY_F, modifiers);
+  return ui::Accelerator(ui::VKEY_F, ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN |
+                                         ui::EF_FUNCTION_DOWN);
 }
 
 }  // namespace

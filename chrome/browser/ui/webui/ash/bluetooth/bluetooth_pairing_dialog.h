@@ -9,22 +9,14 @@
 #include <string>
 #include <string_view>
 
+#include "ash/constants/webui_url_constants.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom-forward.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/web_dialogs/web_dialog_ui.h"
-
-namespace color_change_listener::mojom {
-class PageHandler;
-}  // namespace color_change_listener::mojom
-
-namespace ui {
-class ColorChangeHandler;
-}  //  namespace ui
 
 namespace ash {
 
@@ -69,7 +61,7 @@ class BluetoothPairingDialogUIConfig
  public:
   BluetoothPairingDialogUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
-                           chrome::kChromeUIBluetoothPairingHost) {}
+                           ash::kChromeUIBluetoothPairingHost) {}
 };
 
 // A WebUI to host the Bluetooth device pairing web UI.
@@ -88,15 +80,7 @@ class BluetoothPairingDialogUI : public ui::MojoWebDialogUI {
       mojo::PendingReceiver<ash::bluetooth_config::mojom::CrosBluetoothConfig>
           receiver);
 
-  // Instantiates the implementor of the mojom::PageHandler mojo interface
-  // passing the pending receiver that will be internally bound.
-  void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          receiver);
-
  private:
-  std::unique_ptr<ui::ColorChangeHandler> color_change_handler_;
-
   WEB_UI_CONTROLLER_TYPE_DECL();
 };
 

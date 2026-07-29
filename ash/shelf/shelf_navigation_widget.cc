@@ -4,6 +4,7 @@
 
 #include "ash/shelf/shelf_navigation_widget.h"
 
+#include "ash/accessibility/ui/accessibility_focusable_widget_delegate.h"
 #include "ash/focus/focus_cycler.h"
 #include "ash/public/cpp/metrics_util.h"
 #include "ash/public/cpp/shelf_config.h"
@@ -31,11 +32,12 @@
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/layer_delegate.h"
 #include "ui/compositor/paint_recorder.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/transform_util.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/bounds_animator.h"
 #include "ui/views/view.h"
@@ -98,7 +100,8 @@ bool IsBackButtonShown(bool horizontal_alignment) {
   if (!ShelfConfig::Get()->shelf_controls_shown())
     return false;
 
-  return Shell::Get()->IsInTabletMode() && ShelfConfig::Get()->is_in_app();
+  return display::Screen::Get()->InTabletMode() &&
+         ShelfConfig::Get()->is_in_app();
 }
 
 bool IsHomeButtonShown() {
@@ -253,15 +256,17 @@ class ASH_EXPORT NavigationButtonAnimationMetricsReporter {
       weak_ptr_factory_{this};
 };
 
-class ShelfNavigationWidget::Delegate : public views::AccessiblePaneView,
-                                        public views::WidgetDelegate {
+class ShelfNavigationWidgetDelegate
+    : public views::AccessiblePaneView,
+      public AccessibilityFocusableWidgetDelegate {
  public:
-  Delegate(Shelf* shelf, ShelfView* shelf_view);
+  ShelfNavigationWidgetDelegate(Shelf* shelf, ShelfView* shelf_view);
 
-  Delegate(const Delegate&) = delete;
-  Delegate& operator=(const Delegate&) = delete;
+  ShelfNavigationWidgetDelegate(const ShelfNavigationWidgetDelegate&) = delete;
+  ShelfNavigationWidgetDelegate& operator=(
+      const ShelfNavigationWidgetDelegate&) = delete;
 
-  ~Delegate() override;
+  ~ShelfNavigationWidgetDelegate() override;
 
   // views::View:
   FocusTraversable* GetPaneFocusTraversable() override;
@@ -270,7 +275,6 @@ class ShelfNavigationWidget::Delegate : public views::AccessiblePaneView,
   View* GetDefaultFocusableChild() override;
 
   // views::WidgetDelegate:
-  bool CanActivate() const override;
   views::Widget* GetWidget() override { return View::GetWidget(); }
   const views::Widget* GetWidget() const override { return View::GetWidget(); }
 
@@ -293,9 +297,12 @@ class ShelfNavigationWidget::Delegate : public views::AccessiblePaneView,
   raw_ptr<Shelf> shelf_ = nullptr;
 };
 
-ShelfNavigationWidget::Delegate::Delegate(Shelf* shelf, ShelfView* shelf_view)
-    : shelf_(shelf) {
-  SetOwnedByWidget(true);
+ShelfNavigationWidgetDelegate::ShelfNavigationWidgetDelegate(
+    Shelf* shelf,
+    ShelfView* shelf_view)
+    : AccessibilityFocusableWidgetDelegate(/*register_widget=*/false),
+      shelf_(shelf) {
+  SetOwnedByWidget(OwnedByWidgetPassKey());
 
   set_allow_deactivate_on_esc(true);
 
@@ -330,26 +337,20 @@ ShelfNavigationWidget::Delegate::Delegate(Shelf* shelf, ShelfView* shelf_view)
   RefreshAccessibilityWidgetNextPreviousFocus(shelf);
 }
 
-ShelfNavigationWidget::Delegate::~Delegate() = default;
-
-bool ShelfNavigationWidget::Delegate::CanActivate() const {
-  // We don't want mouse clicks to activate us, but we need to allow
-  // activation when the user is using the keyboard (FocusCycler).
-  return Shell::Get()->focus_cycler()->widget_activating() == GetWidget();
-}
+ShelfNavigationWidgetDelegate::~ShelfNavigationWidgetDelegate() = default;
 
 views::FocusTraversable*
-ShelfNavigationWidget::Delegate::GetPaneFocusTraversable() {
+ShelfNavigationWidgetDelegate::GetPaneFocusTraversable() {
   return this;
 }
 
-views::View* ShelfNavigationWidget::Delegate::GetDefaultFocusableChild() {
+views::View* ShelfNavigationWidgetDelegate::GetDefaultFocusableChild() {
   return default_last_focusable_child_ ? GetLastFocusableChild()
                                        : GetFirstFocusableChild();
 }
 
-void ShelfNavigationWidget::Delegate::
-    RefreshAccessibilityWidgetNextPreviousFocus(Shelf* shelf) {
+void ShelfNavigationWidgetDelegate::RefreshAccessibilityWidgetNextPreviousFocus(
+    Shelf* shelf) {
   if (!shelf || !shelf->shelf_widget()) {
     return;
   }
@@ -385,13 +386,14 @@ views::BoundsAnimator* ShelfNavigationWidget::TestApi::GetBoundsAnimator() {
 }
 
 views::View* ShelfNavigationWidget::TestApi::GetWidgetDelegateView() {
-  return static_cast<Delegate*>(navigation_widget_->widget_delegate());
+  return static_cast<ShelfNavigationWidgetDelegate*>(
+      navigation_widget_->widget_delegate());
 }
 
 ShelfNavigationWidget::ShelfNavigationWidget(Shelf* shelf,
                                              ShelfView* shelf_view)
     : shelf_(shelf),
-      delegate_(new ShelfNavigationWidget::Delegate(shelf, shelf_view)),
+      delegate_(new ShelfNavigationWidgetDelegate(shelf, shelf_view)),
       bounds_animator_(
           std::make_unique<views::BoundsAnimator>(delegate_,
                                                   /*use_transforms=*/true)),
@@ -599,7 +601,7 @@ void ShelfNavigationWidget::UpdateLayout(bool animate) {
   if (animate) {
     if (bounds_animator_->GetTargetBounds(home_button) != home_button_bounds) {
       bounds_animator_->SetAnimationDuration(
-          ui::ScopedAnimationDurationScaleMode::duration_multiplier() *
+          gfx::ScopedAnimationDurationScaleMode::duration_multiplier() *
           animation_duration);
       bounds_animator_->AnimateViewTo(
           home_button, home_button_bounds,
@@ -687,7 +689,7 @@ void ShelfNavigationWidget::UpdateButtonVisibility(
 
 gfx::Rect ShelfNavigationWidget::CalculateClipRectAfterRTL() const {
   gfx::Rect clip_bounds;
-  if (Shell::Get()->IsInTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     clip_bounds = gfx::Rect(CalculateIdealSize(/*only_visible_area=*/true));
   } else {
     clip_bounds = gfx::Rect(target_bounds_.size());
@@ -713,7 +715,7 @@ gfx::Size ShelfNavigationWidget::CalculateIdealSize(
   int controls_space = 0;
   const int control_size = ShelfConfig::Get()->control_size();
 
-  if (Shell::Get()->IsInTabletMode() && !only_visible_area) {
+  if (display::Screen::Get()->InTabletMode() && !only_visible_area) {
     // There are home button and back button. So the maximum is 2.
     controls_space = control_size * 2 + ShelfConfig::Get()->button_spacing();
   } else {

@@ -8,7 +8,6 @@
 #include <string>
 #include <vector>
 
-#include "base/feature_list.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/ref_counted.h"
 #include "build/build_config.h"
@@ -20,6 +19,7 @@
 #include "net/cert/ct_log_verifier.h"
 #include "net/cert/ct_policy_enforcer.h"
 #include "net/cert/ct_verifier.h"
+#include "net/cert/require_ct_delegate.h"
 #include "net/net_buildflags.h"
 #include "third_party/boringssl/src/pki/parsed_certificate.h"
 
@@ -42,6 +42,7 @@ typedef std::vector<scoped_refptr<X509Certificate>> CertificateList;
 class NET_EXPORT CertVerifyProc
     : public base::RefCountedThreadSafe<CertVerifyProc> {
  public:
+  // LINT.IfChange(CertVerifyProc.VerifyFlags)
   enum VerifyFlags {
     // If set, enables online revocation checking via CRLs and OCSP for the
     // certificate chain.
@@ -55,21 +56,22 @@ class NET_EXPORT CertVerifyProc
     // Note: has no effect if VERIFY_DISABLE_NETWORK_FETCHES is set.
     VERIFY_REV_CHECKING_REQUIRED_LOCAL_ANCHORS = 1 << 1,
 
-    // If set, certificates with SHA-1 signatures will be allowed, but only if
-    // they are issued by non-public trust anchors.
-    VERIFY_ENABLE_SHA1_LOCAL_ANCHORS = 1 << 2,
-
     // Disable network fetches during verification. This will override
     // VERIFY_REV_CHECKING_ENABLED and
     // VERIFY_REV_CHECKING_REQUIRED_LOCAL_ANCHORS if they are also specified.
     // (Note that this entirely disables the online revocation/AIA code paths.
     // Theoretically we could still check for cached results.)
-    VERIFY_DISABLE_NETWORK_FETCHES = 1 << 3,
+    VERIFY_DISABLE_NETWORK_FETCHES = 1 << 2,
+
+    // If set, Certificate Transparency requirements are evaluated in a
+    // stricter fashion as required by Signed Exchanges.
+    VERIFY_SXG_CT_REQUIREMENTS = 1 << 3,
 
     // Also update GetNetConstants() in net/log/net_log_util.cc when updating
     // this enum.
-    VERIFY_FLAGS_LAST = VERIFY_DISABLE_NETWORK_FETCHES
+    VERIFY_FLAGS_LAST = VERIFY_SXG_CT_REQUIREMENTS
   };
+  // LINT.ThenChange(/net/log/net_log_util.cc:CertVerifyProc.VerifyFlags)
 
   // The set factory parameters that are variable over time, but are expected to
   // be consistent between multiple verifiers that are created. For example,
@@ -92,6 +94,7 @@ class NET_EXPORT CertVerifyProc
     std::optional<network_time::TimeTracker> time_tracker;
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
     std::optional<net::ChromeRootStoreData> root_store_data;
+    std::optional<net::ChromeRootStoreMtcMetadata> root_store_mtc_metadata;
 #endif
 #if BUILDFLAG(CHROME_ROOT_STORE_OPTIONAL)
     bool use_chrome_root_store;
@@ -170,6 +173,10 @@ class NET_EXPORT CertVerifyProc
     // This only has an impact if the Chrome Root Store is being used.
     bool include_system_trust_store = true;
 #endif
+
+    // Delegate that determines whether CT is required for each verification.
+    // May be nullptr if CT is not enabled.
+    scoped_refptr<const RequireCTDelegate> require_ct_delegate;
   };
 
   // These values are persisted to logs. Entries should not be renumbered and
@@ -182,8 +189,7 @@ class NET_EXPORT CertVerifyProc
     kMaxValue = kChainLengthOne
   };
 
-#if !(BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_LINUX) || \
-      BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(CHROME_ROOT_STORE_ONLY))
+#if !(BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(CHROME_ROOT_STORE_ONLY))
   // Creates and returns a CertVerifyProc that uses the system verifier.
   // |cert_net_fetcher| may not be used, depending on the implementation.
   static scoped_refptr<CertVerifyProc> CreateSystemVerifyProc(
@@ -212,6 +218,7 @@ class NET_EXPORT CertVerifyProc
       std::unique_ptr<CTVerifier> ct_verifier,
       scoped_refptr<CTPolicyEnforcer> ct_policy_enforcer,
       const ChromeRootStoreData* root_store_data,
+      const ChromeRootStoreMtcMetadata* root_store_mtc_metadata,
       const InstanceParams instance_params,
       std::optional<network_time::TimeTracker> time_tracker);
 #endif
@@ -249,6 +256,25 @@ class NET_EXPORT CertVerifyProc
              CertVerifyResult* verify_result,
              const NetLogWithSource& net_log);
 
+  // Performs 2-QWAC verification, if implemented by the subclass. Returns
+  // the verified 2-QWAC chain if `binding` is a valid 2-QWAC binding that
+  // binds `tls_cert`. The default implementation always fails.
+  virtual scoped_refptr<X509Certificate> Verify2QwacBinding(
+      std::string_view binding,
+      const std::string& hostname,
+      base::span<const uint8_t> tls_cert,
+      const NetLogWithSource& net_log);
+
+  // TODO(crbug.com/436300895): remove this (make internal to
+  // CertVerifyProcBuiltin), since it is only used internally by
+  // Verify2QwacBinding.
+  // Performs 2-QWAC verification, if implemented by the subclass. The default
+  // implementation always fails.
+  virtual int Verify2Qwac(X509Certificate* cert,
+                          const std::string& hostname,
+                          CertVerifyResult* verify_result,
+                          const NetLogWithSource& net_log);
+
  protected:
   explicit CertVerifyProc(scoped_refptr<CRLSet> crl_set);
   virtual ~CertVerifyProc();
@@ -278,7 +304,6 @@ class NET_EXPORT CertVerifyProc
   // Implementations are expected to fill in all applicable fields, excluding:
   //
   // * ocsp_result
-  // * has_sha1
   //
   // which will be filled in by |Verify()|. If an error code is returned,
   // |verify_result->cert_status| should be non-zero, indicating an
@@ -303,7 +328,7 @@ class NET_EXPORT CertVerifyProc
   // (which are hashes of SubjectPublicKeyInfo structures) has name constraints
   // imposed on it and the names in |dns_names| are not permitted.
   static bool HasNameConstraintsViolation(
-      const HashValueVector& public_key_hashes,
+      const std::vector<SHA256HashValue>& public_key_hashes,
       const std::string& common_name,
       const std::vector<std::string>& dns_names,
       const std::vector<std::string>& ip_addrs);

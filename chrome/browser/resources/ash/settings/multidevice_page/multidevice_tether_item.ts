@@ -71,7 +71,7 @@ class SettingsMultideviceTetherItemElement extends
       /**
        * Alias for allowing Polymer bindings to routes.
        */
-      routes: {
+      routesEnum_: {
         type: Object,
         value: routes,
         readonly: true,
@@ -90,10 +90,10 @@ class SettingsMultideviceTetherItemElement extends
     };
   }
 
-  private activeNetworkState_: OncMojo.NetworkStateProperties|undefined;
-  private deviceState_: OncMojo.DeviceStateProperties|undefined;
+  declare private activeNetworkState_: OncMojo.NetworkStateProperties|undefined;
+  declare private deviceState_: OncMojo.DeviceStateProperties|undefined;
   private networkConfig_: CrosNetworkConfigInterface;
-  private showTechnologyBadge_: boolean;
+  declare private showTechnologyBadge_: boolean;
 
   constructor() {
     super();

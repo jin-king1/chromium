@@ -6,14 +6,17 @@
 #define IOS_CHROME_BROWSER_POLICY_MODEL_PROFILE_POLICY_CONNECTOR_H_
 
 #include <memory>
+#include <string>
 #include <vector>
 
+#import "base/containers/flat_set.h"
 #import "base/memory/raw_ptr.h"
-#include "components/policy/core/common/local_test_policy_provider.h"
+#import "components/policy/core/common/local_test_policy_provider.h"
 
 class BrowserPolicyConnectorIOS;
 
 namespace policy {
+class CloudPolicyStore;
 class ConfigurationPolicyProvider;
 class PolicyService;
 class SchemaRegistry;
@@ -35,7 +38,12 @@ class ProfilePolicyConnector {
   // Initializes this connector.
   void Init(policy::SchemaRegistry* schema_registry,
             BrowserPolicyConnectorIOS* browser_policy_connector,
-            policy::ConfigurationPolicyProvider* user_policy_provider);
+            policy::ConfigurationPolicyProvider* user_policy_provider,
+            policy::CloudPolicyStore* policy_store);
+
+  // Returns true if this Profile is under any kind of policy management. You
+  // must call this method only when the policies system is fully initialized.
+  bool IsManaged() const;
 
   // Sets the local_test_policy_provider as active and all other policy
   // providers to inactive.
@@ -44,8 +52,8 @@ class ProfilePolicyConnector {
   // Reverts the effects of UseLocalTestPolicyProvider.
   void RevertUseLocalTestPolicyProvider();
 
-  // Shuts this connector down in preparation for destruction.
-  void Shutdown();
+  // Returns true if policies from chrome://policy/test are applied.
+  bool IsUsingLocalTestPolicyProvider() const;
 
   // Returns the PolicyService managed by this connector.  This is never
   // nullptr.
@@ -55,6 +63,10 @@ class ProfilePolicyConnector {
 
   // Returns the SchemaRegistry associated with this connector.
   policy::SchemaRegistry* GetSchemaRegistry() const { return schema_registry_; }
+
+  // Returns affiliation IDs contained in the PolicyData corresponding to the
+  // profile.
+  base::flat_set<std::string> GetUserAffiliationIds() const;
 
  private:
   friend class ProfilePolicyConnectorMock;
@@ -72,6 +84,8 @@ class ProfilePolicyConnector {
 
   raw_ptr<policy::LocalTestPolicyProvider> local_test_policy_provider_ =
       nullptr;
+
+  raw_ptr<const policy::CloudPolicyStore> policy_store_ = nullptr;
 
   // The PolicyService that manages policy for this connector's Profile.
   std::unique_ptr<policy::PolicyService> policy_service_;

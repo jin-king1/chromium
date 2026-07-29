@@ -11,6 +11,7 @@
 #include "base/time/time.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom-blink.h"
+#include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/frame/embedded_content_view.h"
 #include "third_party/blink/renderer/core/frame/frame_view.h"
 #include "third_party/blink/renderer/core/layout/natural_sizing_info.h"
@@ -29,12 +30,12 @@ class Vector2d;
 
 namespace blink {
 class CullRect;
-class GraphicsContext;
 class LocalFrameView;
 class RemoteFrame;
 
-class RemoteFrameView final : public GarbageCollected<RemoteFrameView>,
-                              public FrameView {
+class CORE_EXPORT RemoteFrameView final
+    : public GarbageCollected<RemoteFrameView>,
+      public FrameView {
  public:
   explicit RemoteFrameView(RemoteFrame*);
   ~RemoteFrameView() override;
@@ -53,23 +54,26 @@ class RemoteFrameView final : public GarbageCollected<RemoteFrameView>,
   void SetFrameRect(const gfx::Rect&) override;
   void PropagateFrameRects() override;
   void ZoomFactorChanged(float zoom_factor) override;
-  void Paint(GraphicsContext&,
-             PaintFlags,
+  void Paint(const PaintInfo&,
              const CullRect&,
              const gfx::Vector2d& paint_offset) const override;
   void UpdateGeometry() override;
   void Hide() override;
   void Show() override;
 
-  bool UpdateViewportIntersectionsForSubtree(
+  void SetNeedsOcclusionTracking(bool);
+
+  void UpdateIntersectionObserverStatus() override;
+  void UpdateViewportIntersectionsForSubtree(
       unsigned parent_flags,
       ComputeIntersectionsContext&) override;
-  void SetNeedsOcclusionTracking(bool);
-  bool NeedsOcclusionTracking() const { return needs_occlusion_tracking_; }
+  bool HasActiveIntersectionObservations() const override;
+  bool NeedsOcclusionTracking() const override;
 
   std::optional<NaturalSizingInfo> GetNaturalDimensions() const override;
 
   void SetNaturalDimensions(const NaturalSizingInfo& size_info);
+  void ClearNaturalDimensions() override;
 
   bool CanThrottleRendering() const override;
   void VisibilityForThrottlingChanged() override;
@@ -91,6 +95,8 @@ class RemoteFrameView final : public GarbageCollected<RemoteFrameView>,
   void Trace(Visitor*) const override;
 
   void ResetFrozenSize() { frozen_size_ = std::nullopt; }
+
+  mojom::blink::WebFeature SvgFilterPaintedCounter() const override;
 
  protected:
   bool NeedsViewportOffset() const override { return true; }

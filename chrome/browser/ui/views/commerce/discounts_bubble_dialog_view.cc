@@ -4,29 +4,32 @@
 
 #include "chrome/browser/ui/views/commerce/discounts_bubble_dialog_view.h"
 
-#include "base/functional/callback_forward.h"
+#include <memory>
+#include <string>
+#include <utility>
+
 #include "base/i18n/time_formatting.h"
 #include "chrome/browser/ui/commerce/commerce_ui_tab_helper.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
-#include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/commerce/discounts_coupon_code_label_view.h"
 #include "chrome/browser/ui/views/controls/page_switcher_view.h"
 #include "chrome/browser/ui/views/controls/subpage_view.h"
-#include "chrome/grit/theme_resources.h"
+#include "chrome/grit/browser_resources.h"
 #include "components/commerce/core/commerce_types.h"
 #include "components/commerce/core/metrics/discounts_metric_collector.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/url_formatter/elide_url.h"
 #include "content/public/browser/web_contents.h"
-#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_tracker.h"
 #include "url/gurl.h"
@@ -38,10 +41,10 @@ DEFINE_ELEMENT_IDENTIFIER_VALUE(kDiscountsBubbleTermsAndConditionPageId);
 
 // DiscountsBubbleDialogView
 DiscountsBubbleDialogView::DiscountsBubbleDialogView(
-    View* anchor_view,
+    views::BubbleAnchor anchor,
     content::WebContents* web_contents,
     const commerce::DiscountInfo& discount_info)
-    : LocationBarBubbleDelegateView(anchor_view, web_contents, true),
+    : LocationBarBubbleDelegateView(anchor, web_contents, true),
       discount_info_(discount_info),
       ukm_source_id_(
           web_contents->GetPrimaryMainFrame()->GetPageUkmSourceId()) {
@@ -79,11 +82,12 @@ std::unique_ptr<views::View>
 DiscountsBubbleDialogView::CreateMainPageHeaderView() {
   ui::ResourceBundle& bundle = ui::ResourceBundle::GetSharedInstance();
 
-  return std::make_unique<ThemeTrackingNonAccessibleImageView>(
-      *bundle.GetImageSkiaNamed(IDR_DISCOUNTS_BUBBLE_HEADER_LIGHT),
-      *bundle.GetImageSkiaNamed(IDR_DISCOUNTS_BUBBLE_HEADER_DARK),
-      base::BindRepeating(&views::BubbleDialogDelegate::background_color,
-                          base::Unretained(this)));
+  auto image_view =
+      std::make_unique<views::ImageView>(bundle.GetThemedLottieImageNamed(
+          IDR_SHOPPING_DISCOUNTS_AVAILABLE_LOTTIE));
+  image_view->GetViewAccessibility().SetIsInvisible(true);
+
+  return image_view;
 }
 
 std::unique_ptr<views::View> DiscountsBubbleDialogView::CreateMainPageTitleView(
@@ -130,10 +134,13 @@ std::unique_ptr<views::View> DiscountsBubbleDialogView::CreateMainPageContent(
           .SetHorizontalAlignment(gfx::ALIGN_LEFT)
           .Build());
 
-  auto additional_info_text = l10n_util::GetStringFUTF16(
-      IDS_DISCOUNT_USE_THIS_CODE_AT_CHECKOUT_WITH_EXPIRATION_DATE,
-      TimeFormatShortDate(base::Time::FromSecondsSinceUnixEpoch(
-          discount_info.expiry_time_sec)));
+  auto additional_info_text =
+      discount_info.expiry_time_sec.has_value()
+          ? l10n_util::GetStringFUTF16(
+                IDS_DISCOUNT_USE_THIS_CODE_AT_CHECKOUT_WITH_EXPIRATION_DATE,
+                TimeFormatShortDate(base::Time::FromSecondsSinceUnixEpoch(
+                    discount_info.expiry_time_sec.value())))
+          : l10n_util::GetStringUTF16(IDS_DISCOUNT_USE_THIS_CODE_AT_CHECKOUT);
 
   if (discount_info.terms_and_conditions.has_value() &&
       !discount_info.terms_and_conditions.value().empty()) {
@@ -251,8 +258,7 @@ BEGIN_METADATA(DiscountsBubbleDialogView)
 END_METADATA
 
 // DiscountsBubbleCoordinator
-DiscountsBubbleCoordinator::DiscountsBubbleCoordinator(views::View* anchor_view)
-    : anchor_view_(anchor_view) {}
+DiscountsBubbleCoordinator::DiscountsBubbleCoordinator() = default;
 
 DiscountsBubbleCoordinator::~DiscountsBubbleCoordinator() = default;
 
@@ -265,6 +271,7 @@ void DiscountsBubbleCoordinator::OnWidgetDestroying(views::Widget* widget) {
 }
 
 void DiscountsBubbleCoordinator::Show(
+    views::BubbleAnchor anchor,
     content::WebContents* web_contents,
     const commerce::DiscountInfo& discount_info,
     base::OnceClosure on_dialog_closing_callback) {
@@ -273,7 +280,7 @@ void DiscountsBubbleCoordinator::Show(
   on_dialog_closing_callback_ = std::move(on_dialog_closing_callback);
 
   auto bubble = std::make_unique<DiscountsBubbleDialogView>(
-      anchor_view_, web_contents, discount_info);
+      anchor, web_contents, discount_info);
   tracker_.SetView(bubble.get());
   auto* widget = DiscountsBubbleDialogView::CreateBubble(std::move(bubble));
   bubble_widget_observation_.Observe(widget);

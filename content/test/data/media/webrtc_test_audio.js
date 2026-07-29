@@ -16,10 +16,34 @@ async function ensureAudioPlaying(audioTrack) {
 
 // Uses WebAudio's analyser of the on peerConnection's media stream to find
 // out whether audio is muted on the connection.
-async function ensureAudioSilence(audioTrack) {
+async function ensureSilence(audioTrack) {
   const result = await ensureSilenceOrPlayingForAudioTrack(
       audioTrack, /*checkPlaying*/ false);
   assertTrue(result);
+}
+
+async function isSilentAudioBlob(blob) {
+  console.log('Blob size:' + blob.size);
+  const arrayBuffer = await blob.arrayBuffer();
+
+  const audioCtx = new AudioContext();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+  let silent = true;
+  for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+    const channelData = audioBuffer.getChannelData(ch);
+    for (let i = 0; i < channelData.length; i++) {
+      if (Math.abs(channelData[i]) >
+          1e-5) {  // threshold to ignore tiny float errors
+        silent = false;
+        break;
+      }
+    }
+    if (!silent)
+      break;
+  }
+
+  return silent;
 }
 
 /**
@@ -45,6 +69,8 @@ async function ensureSilenceOrPlayingForAudioTrack(audioTrack, checkPlaying) {
 
   console.log('checkPlaying: ' + checkPlaying);
 
+  assertEquals(audioTrack.readyState, 'live');
+
   // Configure the analyser
   analyser.fftSize = 512;
   const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -53,8 +79,9 @@ async function ensureSilenceOrPlayingForAudioTrack(audioTrack, checkPlaying) {
   mediaStreamSource.connect(analyser);
 
   return new Promise((resolve) => {
-    let detectionCount = 0;
     let attempts = 0;
+    let silentCount = 0;
+
     const checkSilence = () => {
       analyser.getByteFrequencyData(dataArray);
 
@@ -63,28 +90,22 @@ async function ensureSilenceOrPlayingForAudioTrack(audioTrack, checkPlaying) {
       const average = sum / dataArray.length;
       const decibels = 20 * Math.log10(average / 255);
 
-      if (checkPlaying && decibels > threshold) {
-        detectionCount++;
-      } else if (!checkPlaying && decibels < threshold) {
-        detectionCount++;
+      if (decibels < threshold) {
+        silentCount++;
       }
 
-      if (detectionCount == 1) {
-        attempts = 0;
-      }
       attempts++;
 
       console.log(
-          'decibels: ' + decibels + ' detectionCount: ' + detectionCount);
+          'decibels: ' + decibels + ' silentCount: ' + silentCount,
+          'attempts: ' + attempts);
 
-      if (detectionCount === maxAttempts) {
-        // Once silence or playing is detected, it keeps the state.
-        assertEquals(attempts, maxAttempts);
-
-        console.log(
-            checkPlaying ? 'Playing detected consistently.' :
-                           'Silence detected consistently.');
-        close();
+      if (silentCount === maxAttempts) {
+        console.log('Silence detected consistently.');
+        close(!checkPlaying);
+      } else if (attempts >= maxAttempts) {
+        console.log('Playing detected consistently.');
+        close(checkPlaying);
       }
     };
 
@@ -98,11 +119,11 @@ async function ensureSilenceOrPlayingForAudioTrack(audioTrack, checkPlaying) {
       resolve(false);
     };
 
-    function close() {
+    function close(result) {
       audioContext.close().then(() => {
         console.log('AudioContext closed.');
         clearInterval(intervalId);
-        resolve(true);
+        resolve(result);
       });
     }
   });

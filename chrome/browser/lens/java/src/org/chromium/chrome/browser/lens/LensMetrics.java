@@ -11,6 +11,7 @@ import androidx.annotation.IntDef;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -29,7 +30,6 @@ public class LensMetrics {
         LensSupportStatus.ACTIVITY_NOT_ACCESSIBLE,
         LensSupportStatus.OUT_OF_DATE,
         LensSupportStatus.SEARCH_BY_IMAGE_UNAVAILABLE,
-        LensSupportStatus.LEGACY_OS,
         LensSupportStatus.INVALID_PACKAGE,
         LensSupportStatus.LENS_SHOP_SUPPORTED,
         LensSupportStatus.LENS_SHOP_AND_SEARCH_SUPPORTED,
@@ -41,13 +41,13 @@ public class LensMetrics {
         LensSupportStatus.DISABLED_FOR_ENTERPRISE_USER
     })
     @Retention(RetentionPolicy.SOURCE)
-    public static @interface LensSupportStatus {
+    public @interface LensSupportStatus {
         int LENS_SEARCH_SUPPORTED = 0;
         int NON_GOOGLE_SEARCH_ENGINE = 1;
         int ACTIVITY_NOT_ACCESSIBLE = 2;
         int OUT_OF_DATE = 3;
         int SEARCH_BY_IMAGE_UNAVAILABLE = 4;
-        int LEGACY_OS = 5;
+        // Deprecated: int LEGACY_OS = 5;
         int INVALID_PACKAGE = 6;
         int LENS_SHOP_SUPPORTED = 7;
         int LENS_SHOP_AND_SEARCH_SUPPORTED = 8;
@@ -84,7 +84,7 @@ public class LensMetrics {
         AmbientSearchEntryPoint.NUM_ENTRIES
     })
     @Retention(RetentionPolicy.SOURCE)
-    public static @interface AmbientSearchEntryPoint {
+    public @interface AmbientSearchEntryPoint {
         int CONTEXT_MENU_SEARCH_IMAGE_WITH_GOOGLE_LENS = 0;
         int CONTEXT_MENU_SEARCH_IMAGE_WITH_WEB = 1;
         int CONTEXT_MENU_SEARCH_REGION_WITH_GOOGLE_LENS = 2;
@@ -126,7 +126,7 @@ public class LensMetrics {
         CameraOpenEntryPoint.NUM_ENTRIES
     })
     @Retention(RetentionPolicy.SOURCE)
-    public static @interface CameraOpenEntryPoint {
+    public @interface CameraOpenEntryPoint {
         int OMNIBOX = 0;
         int NEW_TAB_PAGE = 1;
         int QUICK_ACTION_SEARCH_WIDGET = 2;
@@ -183,10 +183,24 @@ public class LensMetrics {
             case LensEntryPoint.GOOGLE_BOTTOM_BAR:
                 return "CustomTabs.GoogleBottomBar.LensSupportStatus";
             case LensEntryPoint.CONTEXT_MENU_CHIP:
+            case LensEntryPoint.TIPS_NOTIFICATIONS:
             default:
                 assert false : "Method not implemented.";
         }
         return assumeNonNull(null);
+    }
+
+    /**
+     * Record Lens support status for a Lens Page Search invocation source.
+     *
+     * @param reason The support status reason.
+     */
+    public static void recordPageSearchSupportStatus(@LensSupportStatus int reason) {
+        // This histogram tracks the availability of the "Page Search" intent flow.
+        // It unifies metrics across the App Menu, Page Context Menu, and Omnibox Page Action
+        // ("Ask Google about this page") entry points to avoid polluting other intent-type
+        // specific histograms (like Lens.Omnibox, which is reserved for camera opens).
+        recordLensSupportStatus("Lens.PageSearch.LensSupportStatus", reason);
     }
 
     /** Record the time spent between Lens started and Lens dismissed. */
@@ -221,7 +235,7 @@ public class LensMetrics {
         RecordUserAction.record("MobileOmniboxFocusedLensShown");
     }
 
-    private static String getShownActionName(@LensEntryPoint int lensEntryPoint) {
+    private static @Nullable String getShownActionName(@LensEntryPoint int lensEntryPoint) {
         switch (lensEntryPoint) {
             case LensEntryPoint.NEW_TAB_PAGE:
                 return "NewTabPage.SearchBox.LensShown";
@@ -229,17 +243,20 @@ public class LensMetrics {
                 return "MobileOmniboxLensShown";
             case LensEntryPoint.TASKS_SURFACE:
                 return "TasksSurface.FakeBox.LensShown";
+            case LensEntryPoint.TIPS_NOTIFICATIONS:
+                return "Notifications.Tips.LensShown";
             case LensEntryPoint.CONTEXT_MENU_SEARCH_MENU_ITEM:
             case LensEntryPoint.CONTEXT_MENU_SHOP_MENU_ITEM:
             case LensEntryPoint.CONTEXT_MENU_CHIP:
             case LensEntryPoint.GOOGLE_BOTTOM_BAR:
+                return null;
             default:
                 assert false : "Method not implemented.";
         }
-        return assumeNonNull(null);
+        return null;
     }
 
-    private static String getClickedActionName(@LensEntryPoint int lensEntryPoint) {
+    private static @Nullable String getClickedActionName(@LensEntryPoint int lensEntryPoint) {
         switch (lensEntryPoint) {
             case LensEntryPoint.NEW_TAB_PAGE:
                 return "NewTabPage.SearchBox.Lens";
@@ -247,13 +264,16 @@ public class LensMetrics {
                 return "MobileOmniboxLens";
             case LensEntryPoint.TASKS_SURFACE:
                 return "TasksSurface.FakeBox.Lens";
+            case LensEntryPoint.TIPS_NOTIFICATIONS:
+                return "Notifications.Tips.Lens";
             case LensEntryPoint.CONTEXT_MENU_SEARCH_MENU_ITEM:
             case LensEntryPoint.CONTEXT_MENU_SHOP_MENU_ITEM:
             case LensEntryPoint.CONTEXT_MENU_CHIP:
             case LensEntryPoint.GOOGLE_BOTTOM_BAR:
+                return null;
             default:
                 assert false : "Method not implemented.";
         }
-        return assumeNonNull(null);
+        return null;
     }
 }

@@ -6,6 +6,7 @@
 
 #include "base/json/json_writer.h"
 #include "base/logging.h"
+#include "base/strings/string_util.h"
 #include "base/values.h"
 #include "net/test/embedded_test_server/websocket_connection.h"
 
@@ -22,7 +23,7 @@ void WebSocketEchoRequestHeadersHandler::OnHandshake(
     const HttpRequest& request) {
   CHECK(connection());
 
-  base::Value::Dict headers_dict;
+  base::DictValue headers_dict;
 
   // Convert headers to lowercase keys while retaining original values.
   for (const auto& header : request.headers) {

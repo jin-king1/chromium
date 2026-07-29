@@ -7,15 +7,16 @@
 #include <string_view>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/logging.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/accessibility/non_accessible_image_view.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/controls/rich_hover_button.h"
+#include "chrome/browser/ui/views/download/bubble/download_bubble_navigation_handler.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_row_list_view.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/safe_browsing/core/common/features.h"
@@ -23,6 +24,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/paint_vector_icon.h"
@@ -63,9 +65,11 @@ class ShowAllDownloadsButton : public RichHoverButton {
             l10n_util::GetStringUTF16(IDS_DOWNLOAD_BUBBLE_FOOTER_LABEL),
             /*subtitle_text=*/std::u16string(),
             ui::ImageModel::FromVectorIcon(
-                vector_icons::kLaunchChromeRefreshIcon,
+                features::IsRoundedIconsEnabled()
+                    ? vector_icons::kOpenInNewFlippableIcon
+                    : vector_icons::kLaunchChromeRefreshOldIcon,
                 kColorDownloadBubbleShowAllDownloadsIcon,
-                GetLayoutConstant(DOWNLOAD_ICON_SIZE))) {
+                GetLayoutConstant(LayoutConstant::kDownloadIconSize))) {
     // Override the table layout from RichHoverButton, in order to control the
     // spacing/padding. Code below is copied from rich_hover_button.cc but with
     // padding columns rearranged.
@@ -84,7 +88,7 @@ class ShowAllDownloadsButton : public RichHoverButton {
                    views::LayoutAlignment::kCenter,
                    views::TableLayout::kFixedSize,
                    views::TableLayout::ColumnSize::kFixed,
-                   GetLayoutConstant(DOWNLOAD_ICON_SIZE), 0)
+                   GetLayoutConstant(LayoutConstant::kDownloadIconSize), 0)
         // TODO(chlily): Look into whether the is necessary to have the empty
         // padding column.
         .AddPaddingColumn(views::TableLayout::kFixedSize, 0)
@@ -149,8 +153,10 @@ void DownloadDialogView::AddHeader() {
       header->AddChildView(views::CreateVectorImageButtonWithNativeTheme(
           base::BindRepeating(&DownloadDialogView::CloseBubble,
                               base::Unretained(this)),
-          vector_icons::kCloseChromeRefreshIcon,
-          GetLayoutConstant(DOWNLOAD_ICON_SIZE)));
+          features::IsRoundedIconsEnabled()
+              ? vector_icons::kCloseIcon
+              : vector_icons::kCloseChromeRefreshOldIcon,
+          GetLayoutConstant(LayoutConstant::kDownloadIconSize)));
   InstallCircleHighlightPathGenerator(close_button_);
   close_button_->SetTooltipText(l10n_util::GetStringUTF16(IDS_APP_CLOSE));
   close_button_->SetProperty(views::kCrossAxisAlignmentKey,

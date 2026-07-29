@@ -63,7 +63,6 @@ COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kArcTosHostForTests[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kArcVmMountDebugFs[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kArcVmUreadaheadMode[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kArcVmUseHugePages[];
-COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kAshClearFastInkBuffer[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kAshConstrainPointerToRoot[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kAshContextualNudgesInterval[];
@@ -152,12 +151,17 @@ extern const char kOOBESkipNetworkSetupForTesting[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kDisableOOBENetworkScreenSkippingForTesting[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kDisablePerUserTimezone[];
+COMPONENT_EXPORT(ASH_CONSTANTS)
+extern const char kDisablePowerButtonInTabletMode[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kDisableRollbackOption[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kDisableVolumeAdjustSound[];
+COMPONENT_EXPORT(ASH_CONSTANTS)
+extern const char kDisableWelcomeRecapForFactoryTest[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kEnableArc[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kEnableArcVm[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kEnableArcVmDlc[];
-COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kEnableArcVmRtVcpu[];
+COMPONENT_EXPORT(ASH_CONSTANTS)
+extern const char kArcVmDlcHardwareRequirementSatisfied[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kEnableBirchWeatherApiForTestingOverride[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kEnableCastReceiver[];
@@ -181,17 +185,9 @@ COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kEnterpriseDisableArc[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kEnterpriseForceManualEnrollmentInTestBuilds[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
-extern const char kEnterpriseEnableForcedReEnrollment[];
-COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kEnterpriseEnableForcedReEnrollmentOnFlex[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kEnterpriseEnableUnifiedStateDetermination[];
-COMPONENT_EXPORT(ASH_CONSTANTS)
-extern const char kEnterpriseEnableInitialEnrollment[];
-COMPONENT_EXPORT(ASH_CONSTANTS)
-extern const char kEnterpriseEnrollmentInitialModulus[];
-COMPONENT_EXPORT(ASH_CONSTANTS)
-extern const char kEnterpriseEnrollmentModulusLimit[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kDisallowPolicyBlockDevMode[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
@@ -296,6 +292,7 @@ extern const char kOobeTimezoneOverrideForTests[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kOobeTriggerSyncTimeoutForTests[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kOverviewButtonForTests[];
+COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kOverscanInsetsOverride[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kHiddenNetworkMigrationInterval[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
@@ -322,7 +319,6 @@ COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kRmaNotAllowed[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kSafeMode[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kSamlPasswordChangeUrl[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kScannerUpdateKey[];
-COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kSealKey[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kScheduledRebootGracePeriodInSecondsForTesting[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
@@ -353,6 +349,7 @@ COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kTelemetryExtensionDirectory[];
 extern const char kTemporaryAllowEmptyPasswordsInTests[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kTestEncryptionMigrationUI[];
+COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kTestName[];
 COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kTestWallpaperServer[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kTetherHostScansIgnoreWiredConnections[];
@@ -377,6 +374,13 @@ COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kAllowDefaultShelfPinLayoutIgnoringSync[];
 COMPONENT_EXPORT(ASH_CONSTANTS)
 extern const char kForceRefreshRateThrottle[];
+COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kAppModeAuthCode[];
+COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kAppModeOAuth2Token[];
+COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kMonitoringDestinationID[];
+COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kSystemLogUploadFrequency[];
+COMPONENT_EXPORT(ASH_CONSTANTS)
+extern const char kCustomAndroidMessagesDomain[];
+COMPONENT_EXPORT(ASH_CONSTANTS) extern const char kNearbyShareVerboseLogging[];
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -401,6 +405,11 @@ COMPONENT_EXPORT(ASH_CONSTANTS) bool ShouldSkipNewUserCheckForTesting();
 
 // Returns true if we should skip all other OOBE pages after user login.
 COMPONENT_EXPORT(ASH_CONSTANTS) bool ShouldSkipOobePostLogin();
+
+// Returns true if we should disable pre-consent metrics for testing. Consent
+// won't be enabled by CrosPreConsentMetricsManager.
+COMPONENT_EXPORT(ASH_CONSTANTS)
+bool ShouldDisablePreConsentMetricsForTesting();
 
 // Returns true if we should skip split modifier check on the split modifier
 // info screen.
@@ -480,7 +489,6 @@ COMPONENT_EXPORT(ASH_CONSTANTS)
 std::optional<base::TimeDelta> ContextualNudgesInterval();
 COMPONENT_EXPORT(ASH_CONSTANTS) bool ContextualNudgesResetShownCount();
 COMPONENT_EXPORT(ASH_CONSTANTS) bool IsUsingShelfAutoDim();
-COMPONENT_EXPORT(ASH_CONSTANTS) bool ShouldClearFastInkBuffer();
 
 // Returns whether the device has hps hardware.
 COMPONENT_EXPORT(ASH_CONSTANTS) bool HasHps();
@@ -503,13 +511,18 @@ COMPONENT_EXPORT(ASH_CONSTANTS)
 bool IsCampbellSecretKeyMatched();
 
 COMPONENT_EXPORT(ASH_CONSTANTS)
-bool IsMantisSecretKeyMatched();
-
-COMPONENT_EXPORT(ASH_CONSTANTS)
 bool IsScannerUpdateSecretKeyMatched();
 
 COMPONENT_EXPORT(ASH_CONSTANTS)
 base::AutoReset<bool> SetIgnoreScannerUpdateSecretKeyForTest();
+
+// Returns true if per-user timezone preferences are enabled.
+COMPONENT_EXPORT(ASH_CONSTANTS)
+bool IsPerUserTimezoneEnabled();
+
+// Returns true if fine-grained time zone detection is enabled.
+COMPONENT_EXPORT(ASH_CONSTANTS)
+bool IsFineGrainedTimeZoneDetectionEnabled();
 
 }  // namespace ash::switches
 

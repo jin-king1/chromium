@@ -6,7 +6,7 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/check_op.h"
-#import "ios/chrome/browser/bookmarks/ui_bundled/bookmark_ui_constants.h"
+#import "ios/chrome/browser/bookmarks/public/bookmarks_ui_constants.h"
 #import "ios/chrome/browser/bookmarks/ui_bundled/bookmark_utils_ios.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -30,9 +30,8 @@
 
 #pragma mark TableViewItem
 
-- (void)configureCell:(TableViewCell*)tableCell
-           withStyler:(ChromeTableViewStyler*)styler {
-  [super configureCell:tableCell withStyler:styler];
+- (void)configureCell:(LegacyTableViewCell*)tableCell {
+  [super configureCell:tableCell];
 
   BookmarkTextFieldCell* cell =
       base::apple::ObjCCastStrict<BookmarkTextFieldCell>(tableCell);
@@ -53,7 +52,7 @@
 #pragma mark UIControlEventEditingChanged
 
 - (void)textFieldDidChange:(UITextField*)textField {
-  DCHECK_EQ(textField.tag, self.type);
+  CHECK_EQ(textField.tag, self.type, base::NotFatalUntil::M152);
   self.text = textField.text;
   [self.delegate textDidChangeForItem:self];
 }
@@ -130,33 +129,15 @@
 
   [self applyContentSizeCategoryStyles];
 
-  if (@available(iOS 17, *)) {
-    NSArray<UITrait>* traits = TraitCollectionSetForTraits(
-        @[ UITraitPreferredContentSizeCategory.class ]);
-    [self registerForTraitChanges:traits
-                       withAction:@selector(applyContentSizeCategoryStyles)];
-  }
+  [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+                     withAction:@selector(applyContentSizeCategoryStyles)];
 
   return self;
 }
 
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-
-  if (self.traitCollection.preferredContentSizeCategory !=
-      previousTraitCollection.preferredContentSizeCategory) {
-    [self applyContentSizeCategoryStyles];
-  }
-}
-#endif
-
 - (void)applyContentSizeCategoryStyles {
   if (UIContentSizeCategoryIsAccessibilityCategory(
-          UIScreen.mainScreen.traitCollection.preferredContentSizeCategory)) {
+          self.traitCollection.preferredContentSizeCategory)) {
     self.stackView.axis = UILayoutConstraintAxisVertical;
     self.stackView.alignment = UIStackViewAlignmentLeading;
     self.textField.textAlignment = NSTextAlignmentLeft;

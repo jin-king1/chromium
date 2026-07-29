@@ -12,9 +12,8 @@
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "content/browser/cache_storage/cache_storage_histogram_utils.h"
 #include "content/browser/cache_storage/cache_storage_operation.h"
@@ -54,9 +53,7 @@ bool OpPointerLessThan(const std::unique_ptr<CacheStorageOperation>& left,
 
 // Enables support for parallel cache_storage operations via the
 // "max_shared_ops" fieldtrial parameter.
-BASE_FEATURE(kCacheStorageParallelOps,
-             "CacheStorageParallelOps",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kCacheStorageParallelOps, base::FEATURE_ENABLED_BY_DEFAULT);
 
 CacheStorageScheduler::CacheStorageScheduler(
     CacheStorageSchedulerClient client_type,
@@ -98,7 +95,7 @@ void CacheStorageScheduler::CompleteOperationAndRunNext(
     CacheStorageSchedulerId id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   auto it = running_operations_.find(id);
-  CHECK(it != running_operations_.end(), base::NotFatalUntil::M130);
+  CHECK(it != running_operations_.end());
   DCHECK_EQ(it->second->id(), id);
 
   if (it->second->mode() == CacheStorageSchedulerMode::kShared) {

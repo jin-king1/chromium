@@ -4,27 +4,31 @@
 
 package org.chromium.chrome.browser.privacy_sandbox;
 
+import android.content.Context;
 import android.os.Bundle;
 import android.view.View;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.annotation.StringRes;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceCategory;
 
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.ChromeManagedPreferenceDelegate;
+import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.components.browser_ui.settings.ClickableSpansTextMessagePreference;
+import org.chromium.components.browser_ui.settings.SettingsFragment;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.settings.TextMessagePreference;
+import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
@@ -34,6 +38,7 @@ import org.chromium.ui.text.SpanApplier;
 import java.util.List;
 
 /** Fragment for the Privacy Sandbox -> Topic preferences. */
+@NullMarked
 public class TopicsFragment extends PrivacySandboxSettingsBaseFragment
         implements Preference.OnPreferenceChangeListener, Preference.OnPreferenceClickListener {
     private static final String TOPICS_TOGGLE_PREFERENCE = "topics_toggle";
@@ -57,7 +62,8 @@ public class TopicsFragment extends PrivacySandboxSettingsBaseFragment
     private Preference mActiveTopicsPreference;
     private Preference mBlockedTopicsPreference;
     private Preference mManageTopicsPreference;
-    private final ObservableSupplierImpl<String> mPageTitle = new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<String> mPageTitle =
+            ObservableSuppliers.createMonotonic();
 
     static boolean isTopicsPrefEnabled(Profile profile) {
         PrefService prefService = UserPrefs.get(profile);
@@ -103,49 +109,21 @@ public class TopicsFragment extends PrivacySandboxSettingsBaseFragment
                                 "</link1>",
                                 new ChromeClickableSpan(
                                         getContext(), this::onManagingAdPrivacyClicked))));
-        mTopicsPageFooterPreference.setSummary(
-                SpanApplier.applySpans(
-                        getResources().getString(R.string.settings_topics_page_footer_new),
-                        new SpanApplier.SpanInfo(
-                                "<link1>",
-                                "</link1>",
-                                new ChromeClickableSpan(
-                                        getContext(), this::onFledgeSettingsLinkClicked)),
-                        new SpanApplier.SpanInfo(
-                                "<link2>",
-                                "</link2>",
-                                new ChromeClickableSpan(getContext(), this::onCookieSettingsLink)),
-                        new SpanApplier.SpanInfo(
-                                "<link3>",
-                                "</link3>",
-                                new ChromeClickableSpan(
-                                        getContext(), this::onManagingAdPrivacyClicked))));
         maybeApplyAdTopicsContentParity();
         maybeApplyAdsApiUxEnhancements();
     }
 
     @Override
-    public ObservableSupplier<String> getPageTitle() {
+    public MonotonicObservableSupplier<String> getPageTitle() {
         return mPageTitle;
     }
 
     private void maybeApplyAdTopicsContentParity() {
-        if (!ChromeFeatureList.isEnabled(
-                ChromeFeatureList.PRIVACY_SANDBOX_AD_TOPICS_CONTENT_PARITY)) {
-            return;
-        }
         mTopicsTogglePreference.setSummary(
                 getResources().getString(R.string.settings_ad_topics_page_toggle_sub_label));
-        mActiveTopicsPreference.setSummary(
-                getResources()
-                        .getString(R.string.settings_ad_topics_page_active_topics_description));
     }
 
     private void maybeApplyAdsApiUxEnhancements() {
-        if (!ChromeFeatureList.isEnabled(
-                ChromeFeatureList.PRIVACY_SANDBOX_ADS_API_UX_ENHANCEMENTS)) {
-            return;
-        }
         mTopicsPageFooterPreference.setSummary(
                 SpanApplier.applySpans(
                         getResources().getString(R.string.settings_ad_topics_page_footer_v2),
@@ -159,18 +137,12 @@ public class TopicsFragment extends PrivacySandboxSettingsBaseFragment
                                 "</link2>",
                                 new ChromeClickableSpan(
                                         getContext(), this::onCookieSettingsLink))));
-        @StringRes int disclaimerStringResId = R.string.settings_ad_topics_page_disclaimer_clank;
-        // Use the updated disclaimer text if the Ad Topics Content Parity feature is enabled.
-        if (ChromeFeatureList.isEnabled(
-                ChromeFeatureList.PRIVACY_SANDBOX_AD_TOPICS_CONTENT_PARITY)) {
-            disclaimerStringResId = R.string.settings_ad_topics_page_disclaimer_v2_clank;
-        }
         ClickableSpansTextMessagePreference disclaimerPreference =
                 findPreference(TOPICS_DISCLAIMER);
-        disclaimerPreference.setVisible(true);
         disclaimerPreference.setSummary(
                 SpanApplier.applySpans(
-                        getResources().getString(disclaimerStringResId),
+                        getResources()
+                                .getString(R.string.settings_ad_topics_page_disclaimer_v2_clank),
                         new SpanApplier.SpanInfo(
                                 "<link>",
                                 "</link>",
@@ -202,7 +174,7 @@ public class TopicsFragment extends PrivacySandboxSettingsBaseFragment
     }
 
     @Override
-    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+    public void onViewCreated(View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
         // Disable animations of preference changes.
@@ -210,14 +182,14 @@ public class TopicsFragment extends PrivacySandboxSettingsBaseFragment
     }
 
     @Override
-    public void onResume() {
-        super.onResume();
+    public void onStart() {
+        super.onStart();
         populateCurrentTopics();
         updatePreferenceVisibility();
     }
 
     @Override
-    public boolean onPreferenceChange(@NonNull Preference preference, Object value) {
+    public boolean onPreferenceChange(Preference preference, Object value) {
         if (preference.getKey().equals(TOPICS_TOGGLE_PREFERENCE)) {
             boolean enabled = (boolean) value;
             RecordUserAction.record(
@@ -234,7 +206,7 @@ public class TopicsFragment extends PrivacySandboxSettingsBaseFragment
     }
 
     @Override
-    public boolean onPreferenceClick(@NonNull Preference preference) {
+    public boolean onPreferenceClick(Preference preference) {
         if (preference instanceof TopicPreference) {
             getPrivacySandboxBridge()
                     .setTopicAllowed(((TopicPreference) preference).getTopic(), false);
@@ -276,6 +248,7 @@ public class TopicsFragment extends PrivacySandboxSettingsBaseFragment
         boolean topicsEnabled = isTopicsPrefEnabled(getProfile());
         boolean topicsEmpty = mCurrentTopicsCategory.getPreferenceCount() == 0;
 
+        updateIndexedPreferencesVisibility(topicsEnabled, /* refreshResult= */ true);
 
         // TODO(crbug.com/362973179): Set default values in xml.
         // Always not visible.
@@ -303,5 +276,67 @@ public class TopicsFragment extends PrivacySandboxSettingsBaseFragment
                 return false;
             }
         };
+    }
+
+    @Override
+    public @SettingsFragment.AnimationType int getAnimationType() {
+        return SettingsFragment.AnimationType.PROPERTY;
+    }
+
+    public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
+            new ChromeBaseSearchIndexProvider(
+                    TopicsFragment.class.getName(), R.xml.topics_preference) {
+                @Override
+                public void updateDynamicPreferences(
+                        Context context, SettingsIndexData indexData, Profile profile) {
+                    boolean isDeprecationEnabled =
+                            ChromeFeatureList.isEnabled(
+                                    ChromeFeatureList.PRIVACY_SANDBOX_AD_PRIVACY_UX_DEPRECATION);
+                    if (isDeprecationEnabled) {
+                        indexData.removeEntry(getUniqueId(TOPICS_TOGGLE_PREFERENCE));
+                    }
+
+                    indexData.removeEntry(getUniqueId(DISABLED_TOPICS_PREFERENCE));
+                    indexData.removeEntry(getUniqueId(EMPTY_TOPICS_PREFERENCE));
+                    indexData.removeEntry(getUniqueId(CURRENT_TOPICS_PREFERENCE));
+                    indexData.removeEntry(getUniqueId(TOPICS_EXPLANATION_PREFERENCE));
+                    indexData.removeEntry(getUniqueId(TOPICS_PAGE_FOOTER_PREFERENCE));
+                    indexData.removeEntry(getUniqueId(TOPICS_DISCLAIMER));
+
+                    boolean topicsEnabled = !isDeprecationEnabled && isTopicsPrefEnabled(profile);
+                    updateIndexedPreferencesVisibility(topicsEnabled, /* refreshResult= */ false);
+                }
+            };
+
+    private static void updateIndexedPreferencesVisibility(
+            boolean topicsEnabled, boolean refreshResult) {
+        var indexData = SettingsIndexData.getInstance();
+        if (indexData == null) return;
+
+        String prefFrag = TopicsFragment.class.getName();
+        boolean hasRemovedEntries = false;
+        if (topicsEnabled) {
+            if (indexData.getEntryForKey(prefFrag, ACTIVE_TOPICS_PREFERENCE) == null
+                    || indexData.getEntryForKey(prefFrag, BLOCKED_TOPICS_PREFERENCE) == null
+                    || indexData.getEntryForKey(prefFrag, MANAGE_TOPICS_PREFERENCE) == null) {
+                indexData.setNeedsIndexing();
+            }
+        } else {
+            if (indexData.getEntryForKey(prefFrag, ACTIVE_TOPICS_PREFERENCE) != null
+                    || indexData.getEntryForKey(prefFrag, BLOCKED_TOPICS_PREFERENCE) != null
+                    || indexData.getEntryForKey(prefFrag, MANAGE_TOPICS_PREFERENCE) != null) {
+                // This ensures something was being removed, to avoid resolving the index
+                // unnecessarily.
+                hasRemovedEntries = true;
+            }
+            indexData.removeEntryForKey(prefFrag, ACTIVE_TOPICS_PREFERENCE);
+            indexData.removeEntryForKey(prefFrag, BLOCKED_TOPICS_PREFERENCE);
+            indexData.removeEntryForKey(prefFrag, MANAGE_TOPICS_PREFERENCE);
+        }
+
+        if (hasRemovedEntries) {
+            indexData.resolveIndex();
+        }
+        if (refreshResult) indexData.setRefreshResult(true);
     }
 }

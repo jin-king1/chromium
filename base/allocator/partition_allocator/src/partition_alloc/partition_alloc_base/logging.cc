@@ -4,20 +4,16 @@
 
 #include "partition_alloc/partition_alloc_base/logging.h"
 
-// TODO(crbug.com/40158212): After finishing copying //base files to PA library,
-// remove defined(BASE_CHECK_H_) from here.
-#if defined(                                                                                 \
-    BASE_ALLOCATOR_PARTITION_ALLOCATOR_SRC_PARTITION_ALLOC_PARTITION_ALLOC_BASE_CHECK_H_) || \
-    defined(BASE_CHECK_H_) ||                                                                \
-    defined(                                                                                 \
-        BASE_ALLOCATOR_PARTITION_ALLOCATOR_SRC_PARTITION_ALLOC_PARTITION_ALLOC_CHECK_H_)
+#include "partition_alloc/partition_alloc_base/compiler_specific.h"
+
+#if defined(PARTITION_ALLOC_PARTITION_ALLOC_BASE_CHECK_H_) || \
+    defined(PARTITION_ALLOC_PARTITION_ALLOC_CHECK_H_)
 #error "logging.h should not include check.h"
 #endif
 
-#include <algorithm>
-
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/partition_alloc_base/component_export.h"
+#include "partition_alloc/partition_alloc_base/cxx_wrapper/algorithm.h"
 #include "partition_alloc/partition_alloc_base/debug/alias.h"
 #include "partition_alloc/partition_alloc_base/immediate_crash.h"
 
@@ -49,7 +45,7 @@ void WriteToStderr(const char* data, size_t length) {
   size_t bytes_written = 0;
   int rv;
   while (bytes_written < length) {
-    rv = WrapEINTR(write)(STDERR_FILENO, data + bytes_written,
+    rv = WrapEINTR(write)(STDERR_FILENO, PA_UNSAFE_TODO(data + bytes_written),
                           length - bytes_written);
     if (rv < 0) {
       // Give up, nothing we can do now.
@@ -62,7 +58,7 @@ void WriteToStderr(const char* data, size_t length) {
 void WriteToStderr(const char* data, size_t length) {
   HANDLE handle = ::GetStdHandle(STD_ERROR_HANDLE);
   const char* ptr = data;
-  const char* ptr_end = data + length;
+  const char* ptr_end = PA_UNSAFE_TODO(data + length);
   while (ptr < ptr_end) {
     DWORD bytes_written = 0;
     if (!::WriteFile(handle, ptr, ptr_end - ptr, &bytes_written, nullptr) ||
@@ -70,7 +66,7 @@ void WriteToStderr(const char* data, size_t length) {
       // Give up, nothing we can do now.
       break;
     }
-    ptr += bytes_written;
+    PA_UNSAFE_TODO(ptr += bytes_written);
   }
 }
 #endif  // !PA_BUILDFLAG(IS_WIN)
@@ -107,7 +103,7 @@ void RawLog(int level, const char* message) {
 #endif  // !PA_BUILDFLAG(IS_WIN)
     WriteToStderr(message, message_len);
 
-    if (message_len > 0 && message[message_len - 1] != '\n') {
+    if (message_len > 0 && PA_UNSAFE_TODO(message[message_len - 1]) != '\n') {
       WriteToStderr("\n", 1);
     }
   }

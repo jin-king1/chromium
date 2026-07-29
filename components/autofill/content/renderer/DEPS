@@ -5,6 +5,8 @@ include_rules = [
   "+components/password_manager/core/common/password_manager_features.h",
   "+components/password_manager/core/common/password_manager_util.h",
   "+components/safe_browsing/buildflags.h",
+  "+components/signin/public/base/signin_switches.h",
+  "+components/signin/public/base/signin_buildflags.h",
   "+third_party/re2",
   # Allow inclusion of WebKit API files.
   "+third_party/blink/public/common",
@@ -12,3 +14,9 @@ include_rules = [
   "+third_party/blink/public/web",
   "+third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
 ]
+
+specific_include_rules = {
+  ".*test.*": [
+    "+v8/include",
+  ],
+}

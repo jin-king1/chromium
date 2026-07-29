@@ -29,6 +29,8 @@ std::optional<protocol::Preload::RuleSetErrorType> GetProtocolRuleSetErrorType(
       return protocol::Preload::RuleSetErrorTypeEnum::SourceIsNotJsonObject;
     case SpeculationRuleSetErrorType::kInvalidRulesSkipped:
       return protocol::Preload::RuleSetErrorTypeEnum::InvalidRulesSkipped;
+    case SpeculationRuleSetErrorType::kInvalidRulesetLevelTag:
+      return protocol::Preload::RuleSetErrorTypeEnum::InvalidRulesetLevelTag;
   }
 }
 
@@ -38,6 +40,7 @@ String GetProtocolRuleSetErrorMessage(const SpeculationRuleSet& rule_set) {
       return String();
     case SpeculationRuleSetErrorType::kSourceIsNotJsonObject:
     case SpeculationRuleSetErrorType::kInvalidRulesSkipped:
+    case SpeculationRuleSetErrorType::kInvalidRulesetLevelTag:
       return rule_set.error_message();
   }
 }
@@ -48,20 +51,22 @@ String GetProtocolRuleSetErrorMessage(const SpeculationRuleSet& rule_set) {
 struct PreloadingAttemptKey {
   mojom::blink::SpeculationAction action;
   KURL url;
+  bool form_submission;
   mojom::blink::SpeculationTargetHint target_hint;
 };
 
 bool operator==(const PreloadingAttemptKey& a, const PreloadingAttemptKey& b) {
-  return std::tie(a.action, a.url, a.target_hint) ==
-         std::tie(b.action, b.url, b.target_hint);
+  return std::tie(a.action, a.url, a.form_submission, a.target_hint) ==
+         std::tie(b.action, b.url, b.form_submission, b.target_hint);
 }
 
 struct PreloadingAttemptKeyHashTraits
-    : WTF::GenericHashTraits<PreloadingAttemptKey> {
+    : GenericHashTraits<PreloadingAttemptKey> {
   static unsigned GetHash(const PreloadingAttemptKey& key) {
-    unsigned hash = WTF::GetHash(key.action);
-    hash = WTF::HashInts(hash, WTF::GetHash(key.url));
-    hash = WTF::HashInts(hash, WTF::GetHash(key.target_hint));
+    unsigned hash = blink::GetHash(key.action);
+    hash = HashInts(hash, blink::GetHash(key.url));
+    hash = HashInts(hash, blink::GetHash(key.form_submission));
+    hash = HashInts(hash, blink::GetHash(key.target_hint));
     return hash;
   }
 
@@ -69,20 +74,23 @@ struct PreloadingAttemptKeyHashTraits
 
   static PreloadingAttemptKey EmptyValue() {
     return {mojom::blink::SpeculationAction::kPrefetch, KURL(),
+            /*form_submission=*/false,
             mojom::blink::SpeculationTargetHint::kNoHint};
   }
 
   static bool IsDeletedValue(const PreloadingAttemptKey& key) {
     const PreloadingAttemptKey deleted_value = {
         mojom::blink::SpeculationAction::kPrerender, KURL(),
+        /*form_submission=*/false,
         mojom::blink::SpeculationTargetHint::kNoHint};
     return key == deleted_value;
   }
 
   static void ConstructDeletedValue(PreloadingAttemptKey& slot) {
-    new (&slot) PreloadingAttemptKey{
-        mojom::blink::SpeculationAction::kPrerender, KURL(),
-        mojom::blink::SpeculationTargetHint::kNoHint};
+    new (&slot)
+        PreloadingAttemptKey{mojom::blink::SpeculationAction::kPrerender,
+                             KURL(), /*form_submission=*/false,
+                             mojom::blink::SpeculationTargetHint::kNoHint};
   }
 };
 
@@ -93,8 +101,8 @@ protocol::Preload::SpeculationAction GetProtocolSpeculationAction(
       return protocol::Preload::SpeculationActionEnum::Prerender;
     case mojom::blink::SpeculationAction::kPrefetch:
       return protocol::Preload::SpeculationActionEnum::Prefetch;
-    case mojom::blink::SpeculationAction::kPrefetchWithSubresources:
-      NOTREACHED();
+    case mojom::blink::SpeculationAction::kPrerenderUntilScript:
+      return protocol::Preload::SpeculationActionEnum::PrerenderUntilScript;
   }
 }
 
@@ -120,6 +128,11 @@ BuildProtocolPreloadingAttemptKey(const PreloadingAttemptKey& key,
           .setAction(GetProtocolSpeculationAction(key.action))
           .setUrl(key.url)
           .build();
+
+  if (key.form_submission) {
+    preloading_attempt_key->setFormSubmission(key.form_submission);
+  }
+
   std::optional<String> target_hint_str =
       GetProtocolSpeculationTargetHint(key.target_hint);
   if (target_hint_str) {
@@ -193,6 +206,10 @@ std::unique_ptr<protocol::Preload::RuleSet> BuildProtocolRuleSet(
     builder->setErrorMessage(GetProtocolRuleSetErrorMessage(rule_set));
   }
 
+  if (!rule_set.tag().IsNull()) {
+    builder->setTag(rule_set.tag());
+  }
+
   return builder;
 }
 
@@ -238,32 +255,24 @@ void InspectorPreloadAgent::SpeculationCandidatesUpdated(
     return;
   }
 
-  HeapHashMap<PreloadingAttemptKey,
-              Member<HeapVector<Member<SpeculationCandidate>>>,
+  HeapHashMap<PreloadingAttemptKey, HeapVector<Member<SpeculationCandidate>>,
               PreloadingAttemptKeyHashTraits>
       preloading_attempts;
   for (SpeculationCandidate* candidate : candidates) {
-    // We are explicitly not reporting candidates for kPrefetchWithSubresources
-    // to clients, they are currently only interested in kPrefetch and
-    // kPrerender.
-    if (candidate->action() ==
-        mojom::blink::SpeculationAction::kPrefetchWithSubresources) {
-      continue;
-    }
     PreloadingAttemptKey key = {candidate->action(), candidate->url(),
+                                candidate->form_submission(),
                                 candidate->target_hint()};
-    auto& value = preloading_attempts.insert(key, nullptr).stored_value->value;
-    if (!value) {
-      value = MakeGarbageCollected<HeapVector<Member<SpeculationCandidate>>>();
-    }
-    value->push_back(candidate);
+    auto& value = preloading_attempts
+                      .insert(key, HeapVector<Member<SpeculationCandidate>>())
+                      .stored_value->value;
+    value.push_back(candidate);
   }
 
   auto preloading_attempt_sources = std::make_unique<
       protocol::Array<protocol::Preload::PreloadingAttemptSource>>();
   for (auto it : preloading_attempts) {
     preloading_attempt_sources->push_back(
-        BuildProtocolPreloadingAttemptSource(it.key, *(it.value), document));
+        BuildProtocolPreloadingAttemptSource(it.key, it.value, document));
   }
 
   GetFrontend()->preloadingAttemptSourcesUpdated(

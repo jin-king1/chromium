@@ -3,14 +3,8 @@
 // found in the LICENSE file.
 
 import {DeviceOperator} from '../mojo/device_operator.js';
-import {
-  Facing,
-  FpsRangeList,
-  MaxFpsInfo,
-  Resolution,
-  ResolutionList,
-  VideoConfig,
-} from '../type.js';
+import type {Facing, FpsRangeList, MaxFpsInfo, ResolutionList, VideoConfig} from '../type.js';
+import {Resolution} from '../type.js';
 
 /**
  * Groups resolutions with same ratio into same list.
@@ -97,12 +91,20 @@ export class Camera3DeviceInfo {
 
   private pairedPreviewCaptureResolutions(captureRs: Resolution[]):
       CapturePreviewPairs {
+    const previewRatios = groupResolutionRatio(this.videoResolutions);
+    const captureRatios = groupResolutionRatio(captureRs);
+
     // Filters out preview resolution greater than 1920x1080 and 1600x1200 for
     // preventing performance issue.
-    const previewRs = this.videoResolutions.filter(
-        ({width, height}) => width <= 1920 && height <= 1200);
-    const previewRatios = groupResolutionRatio(previewRs);
-    const captureRatios = groupResolutionRatio(captureRs);
+    for (const [ratio, previewResolutions] of previewRatios) {
+      const filteredResolutions = previewResolutions.filter(
+          ({width, height}) => width <= 1920 && height <= 1200);
+      // If there are no smaller resolutions for this aspect ratio, keep the
+      // original list of resolutions. See b/398045792.
+      if (filteredResolutions.length > 0) {
+        previewRatios.set(ratio, filteredResolutions);
+      }
+    }
     // Pairing preview and capture resolution with same aspect ratio.
     const pairedResolutions: CapturePreviewPairs = [];
     for (const [ratio, captureResolutions] of captureRatios) {

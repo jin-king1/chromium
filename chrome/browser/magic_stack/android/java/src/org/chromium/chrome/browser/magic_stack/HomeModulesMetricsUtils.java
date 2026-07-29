@@ -4,21 +4,33 @@
 
 package org.chromium.chrome.browser.magic_stack;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.ADDRESS_BAR_PLACEMENT_PROMO;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.AUXILIARY_SEARCH;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.DEFAULT_BROWSER_PROMO;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.DEPRECATED_EDUCATIONAL_TIP;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.DEPRECATED_TAB_RESUMPTION;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.DEPRECATED_TIPS_NOTIFICATIONS_PROMO;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.ENHANCED_SAFE_BROWSING_PROMO;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.HISTORY_SYNC_PROMO;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.NTP_THEME_PROMO;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.PASSWORD_CHECKUP_PROMO;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.PRICE_CHANGE;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.QUICK_DELETE_PROMO;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.SAFETY_HUB;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.SAVE_PASSWORDS_PROMO;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.SETUP_LIST_CELEBRATORY_PROMO;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.SETUP_LIST_TWO_CELL_CONTAINER;
+import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.SIGN_IN_PROMO;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.SINGLE_TAB;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.TAB_GROUP_PROMO;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.TAB_GROUP_SYNC_PROMO;
-import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.TAB_RESUMPTION;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.chrome.browser.util.BrowserUiUtils.ModuleTypeOnStartAndNtp;
@@ -26,6 +38,7 @@ import org.chromium.chrome.browser.util.BrowserUiUtils.ModuleTypeOnStartAndNtp;
 import java.util.HashSet;
 
 /** The utility class for logging the magic stack's metrics. */
+@NullMarked
 public class HomeModulesMetricsUtils {
     @VisibleForTesting public static final String HISTOGRAM_PREFIX = "MagicStack.Clank.NewTabPage";
     @VisibleForTesting public static final String HISTOGRAM_MAGIC_STACK_MODULE = ".Module.";
@@ -99,6 +112,8 @@ public class HomeModulesMetricsUtils {
     static final String HISTOGRAM_EDUCATIONAL_TIP_MODULE_IMPRESSION_COUNT_BEFORE_INTERACTION =
             ".ImpressionCountBeforeInteraction";
 
+    private static final String TAG = "HomeModules";
+
     /**
      * Returns a string name of a module. Remember to update the variant ModuleType in
      * tools/metrics/histograms/metadata/magic_stack/histograms.xml when adding a new module type
@@ -109,8 +124,6 @@ public class HomeModulesMetricsUtils {
                 return "SingleTab";
             case PRICE_CHANGE:
                 return "PriceChange";
-            case TAB_RESUMPTION:
-                return "TabResumption";
             case SAFETY_HUB:
                 return "SafetyHub";
             case AUXILIARY_SEARCH:
@@ -123,9 +136,27 @@ public class HomeModulesMetricsUtils {
                 return "TabGroupSyncPromo";
             case QUICK_DELETE_PROMO:
                 return "QuickDeletePromo";
+            case NTP_THEME_PROMO:
+                return "NtpThemePromo";
+            case HISTORY_SYNC_PROMO:
+                return "HistorySyncPromo";
+            case ENHANCED_SAFE_BROWSING_PROMO:
+                return "EnhancedSafeBrowsingPromo";
+            case ADDRESS_BAR_PLACEMENT_PROMO:
+                return "AddressBarPlacementPromo";
+            case SETUP_LIST_TWO_CELL_CONTAINER:
+                return "SetupListContainer";
+            case SIGN_IN_PROMO:
+                return "SignInPromo";
+            case SAVE_PASSWORDS_PROMO:
+                return "SavePasswordsPromo";
+            case PASSWORD_CHECKUP_PROMO:
+                return "PasswordCheckupPromo";
+            case SETUP_LIST_CELEBRATORY_PROMO:
+                return "SetupListCelebratoryPromo";
             default:
                 assert false : "Module type not supported!";
-                return null;
+                return assumeNonNull(null);
         }
     }
 
@@ -135,8 +166,6 @@ public class HomeModulesMetricsUtils {
                 return SINGLE_TAB;
             case "PriceChange":
                 return PRICE_CHANGE;
-            case "TabResumption":
-                return TAB_RESUMPTION;
             case "SafetyHub":
                 return SAFETY_HUB;
             case "AuxiliarySearch":
@@ -149,8 +178,26 @@ public class HomeModulesMetricsUtils {
                 return TAB_GROUP_SYNC_PROMO;
             case "QuickDeletePromo":
                 return QUICK_DELETE_PROMO;
+            case "HistorySyncPromo":
+                return HISTORY_SYNC_PROMO;
+            case "EnhancedSafeBrowsingPromo":
+                return ENHANCED_SAFE_BROWSING_PROMO;
+            case "AddressBarPlacementPromo":
+                return ADDRESS_BAR_PLACEMENT_PROMO;
+            case "SetupListContainer":
+                return SETUP_LIST_TWO_CELL_CONTAINER;
+            case "SignInPromo":
+                return SIGN_IN_PROMO;
+            case "SavePasswordsPromo":
+                return SAVE_PASSWORDS_PROMO;
+            case "PasswordCheckupPromo":
+                return PASSWORD_CHECKUP_PROMO;
+            case "SetupListCelebratoryPromo":
+                return SETUP_LIST_CELEBRATORY_PROMO;
+            case "NtpThemePromo":
+                return NTP_THEME_PROMO;
             default:
-                assert false : "Module type not supported!";
+                Log.i(TAG, "Module type %s not supported!", label);
                 return ModuleType.NUM_ENTRIES;
         }
     }
@@ -159,7 +206,9 @@ public class HomeModulesMetricsUtils {
     static HashSet<Integer> getAllActiveModulesForTesting() {
         HashSet<Integer> set = new HashSet<>();
         for (@ModuleType int moduleType = 0; moduleType < ModuleType.NUM_ENTRIES; moduleType++) {
-            if (moduleType == DEPRECATED_EDUCATIONAL_TIP) {
+            if (moduleType == DEPRECATED_EDUCATIONAL_TIP
+                    || moduleType == DEPRECATED_TAB_RESUMPTION
+                    || moduleType == DEPRECATED_TIPS_NOTIFICATIONS_PROMO) {
                 continue;
             }
             set.add(moduleType);
@@ -355,11 +404,6 @@ public class HomeModulesMetricsUtils {
                         : HISTOGRAM_CONFIGURATION_TURN_OFF_MODULE;
         RecordHistogram.recordEnumeratedHistogram(
                 HISTOGRAM_OS_PREFIX + umaName, moduleType, ModuleType.NUM_ENTRIES);
-    }
-
-    /** Returns whether a magic stack is enabled on Start surface. */
-    public static boolean useMagicStack() {
-        return ChromeFeatureList.sMagicStackAndroid.isEnabled();
     }
 
     /**

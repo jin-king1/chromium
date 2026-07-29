@@ -113,6 +113,12 @@ public class RenderFrameHostImpl implements RenderFrameHost {
     }
 
     @Override
+    public boolean isOutermostMainFrame() {
+        if (mNativeRenderFrameHostAndroid == 0) return false;
+        return RenderFrameHostImplJni.get().isOutermostMainFrame(mNativeRenderFrameHostAndroid);
+    }
+
+    @Override
     public void getCanonicalUrlForSharing(Callback<@Nullable GURL> callback) {
         if (mNativeRenderFrameHostAndroid == 0) {
             callback.onResult(null);
@@ -123,8 +129,8 @@ public class RenderFrameHostImpl implements RenderFrameHost {
     }
 
     @Override
-    public @Nullable List<RenderFrameHost> getAllRenderFrameHosts() {
-        if (mNativeRenderFrameHostAndroid == 0) return null;
+    public List<RenderFrameHost> getAllRenderFrameHosts() {
+        if (mNativeRenderFrameHostAndroid == 0) return List.of();
         return RenderFrameHostImplJni.get().getAllRenderFrameHosts(mNativeRenderFrameHostAndroid);
     }
 
@@ -212,6 +218,8 @@ public class RenderFrameHostImpl implements RenderFrameHost {
             String relyingPartyId,
             Origin effectiveOrigin,
             boolean isPaymentCredentialGetAssertion,
+            @Nullable Origin remoteDesktopClientOverrideOrigin,
+            @Nullable String appId,
             Callback<RenderFrameHost.WebAuthSecurityChecksResults> callback) {
         if (mNativeRenderFrameHostAndroid == 0) {
             var result =
@@ -226,6 +234,8 @@ public class RenderFrameHostImpl implements RenderFrameHost {
                         relyingPartyId,
                         effectiveOrigin,
                         isPaymentCredentialGetAssertion,
+                        remoteDesktopClientOverrideOrigin,
+                        appId,
                         callback);
     }
 
@@ -245,6 +255,8 @@ public class RenderFrameHostImpl implements RenderFrameHost {
             String relyingPartyId,
             Origin effectiveOrigin,
             boolean isPaymentCredentialCreation,
+            @Nullable Origin remoteDesktopClientOverrideOrigin,
+            @Nullable String appId,
             Callback<RenderFrameHost.WebAuthSecurityChecksResults> callback) {
         if (mNativeRenderFrameHostAndroid == 0) {
             var result =
@@ -260,7 +272,27 @@ public class RenderFrameHostImpl implements RenderFrameHost {
                         relyingPartyId,
                         effectiveOrigin,
                         isPaymentCredentialCreation,
+                        remoteDesktopClientOverrideOrigin,
+                        appId,
                         callback);
+    }
+
+    @Override
+    public void performReportWebAuthSecurityChecks(
+            String relyingPartyId,
+            Origin effectiveOrigin,
+            Callback<WebAuthSecurityChecksResults> callback) {
+        if (mNativeRenderFrameHostAndroid == 0) {
+            var result =
+                    new WebAuthSecurityChecksResults(
+                            AuthenticatorStatus.UNKNOWN_ERROR, /* isCrossOrigin= */ false);
+            callback.onResult(result);
+            return;
+        }
+
+        RenderFrameHostImplJni.get()
+                .performReportWebAuthSecurityChecks(
+                        mNativeRenderFrameHostAndroid, relyingPartyId, effectiveOrigin, callback);
     }
 
     @Override
@@ -292,6 +324,17 @@ public class RenderFrameHostImpl implements RenderFrameHost {
                         mNativeRenderFrameHostAndroid, script, worldId, callback);
     }
 
+    @Override
+    public boolean hasHitTestDataForTesting() {
+        return RenderFrameHostImplJni.get()
+                .hasHitTestDataForTesting(mNativeRenderFrameHostAndroid); // IN-TEST
+    }
+
+    @Override
+    public void viewSource() {
+        RenderFrameHostImplJni.get().viewSource(mNativeRenderFrameHostAndroid);
+    }
+
     @NativeMethods
     interface Natives {
         GURL getLastCommittedURL(long nativeRenderFrameHostAndroid);
@@ -300,8 +343,12 @@ public class RenderFrameHostImpl implements RenderFrameHost {
 
         RenderFrameHost getMainFrame(long nativeRenderFrameHostAndroid);
 
+        boolean isOutermostMainFrame(long nativeRenderFrameHostAndroid);
+
         void getCanonicalUrlForSharing(
-                long nativeRenderFrameHostAndroid, Callback<@Nullable GURL> callback);
+                long nativeRenderFrameHostAndroid,
+                @JniType("base::OnceCallback<void(const std::optional<GURL>&)>")
+                        Callback<@Nullable GURL> callback);
 
         @JniType("std::vector")
         List<RenderFrameHost> getAllRenderFrameHosts(long nativeRenderFrameHostAndroid);
@@ -334,6 +381,8 @@ public class RenderFrameHostImpl implements RenderFrameHost {
                 String relyingPartyId,
                 Origin effectiveOrigin,
                 boolean isPaymentCredentialGetAssertion,
+                @Nullable Origin remoteDesktopClientOverrideOrigin,
+                @Nullable String appId,
                 Callback<RenderFrameHost.WebAuthSecurityChecksResults> callback);
 
         void performMakeCredentialWebAuthSecurityChecks(
@@ -341,17 +390,30 @@ public class RenderFrameHostImpl implements RenderFrameHost {
                 String relyingPartyId,
                 Origin effectiveOrigin,
                 boolean isPaymentCredentialCreation,
+                @Nullable Origin remoteDesktopClientOverrideOrigin,
+                @Nullable String appId,
+                Callback<RenderFrameHost.WebAuthSecurityChecksResults> callback);
+
+        void performReportWebAuthSecurityChecks(
+                long nativeRenderFrameHostAndroid,
+                String relyingPartyId,
+                Origin effectiveOrigin,
                 Callback<RenderFrameHost.WebAuthSecurityChecksResults> callback);
 
         int getLifecycleState(long nativeRenderFrameHostAndroid);
 
         void insertVisualStateCallback(
-                long nativeRenderFrameHostAndroid, Callback<Boolean> callback);
+                long nativeRenderFrameHostAndroid,
+                @JniType("base::OnceCallback<void(bool)>") Callback<Boolean> callback);
 
         void executeJavaScriptInIsolatedWorld(
                 long nativeRenderFrameHostAndroid,
                 String stript,
                 int isolatedWorldId,
                 @Nullable JavaScriptCallback callback);
+
+        boolean hasHitTestDataForTesting(long nativeRenderFrameHostAndroid);
+
+        void viewSource(long nativeRenderFrameHostAndroid);
     }
 }

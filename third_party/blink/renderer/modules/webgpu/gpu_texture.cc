@@ -6,32 +6,35 @@
 
 #include "base/containers/heap_array.h"
 #include "gpu/command_buffer/client/webgpu_interface.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_feature_name.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_texture_descriptor.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_texture_view_descriptor.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_union_gputextureviewdimension_undefined.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/modules/webgpu/dawn_conversions.h"
 #include "third_party/blink/renderer/modules/webgpu/gpu_device.h"
+#include "third_party/blink/renderer/modules/webgpu/gpu_supported_features.h"
 #include "third_party/blink/renderer/modules/webgpu/gpu_texture_usage.h"
 #include "third_party/blink/renderer/modules/webgpu/gpu_texture_view.h"
 #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_mailbox_texture.h"
-#include "third_party/blink/renderer/platform/graphics/gpu/webgpu_resource_provider_cache.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/webgpu_shared_image_wrapper_cache.h"
 
 namespace blink {
 
 namespace {
 
-bool ConvertToDawn(const GPUTextureDescriptor* in,
-                   wgpu::TextureDescriptor* out,
-                   wgpu::TextureBindingViewDimensionDescriptor*
-                       out_texture_binding_view_dimension,
-                   std::string* label,
-                   base::HeapArray<wgpu::TextureFormat>* view_formats,
-                   GPUDevice* device,
-                   ExceptionState& exception_state) {
+bool ConvertToDawn(
+    const GPUTextureDescriptor* in,
+    wgpu::TextureDescriptor* out,
+    wgpu::TextureBindingViewDimension* out_texture_binding_view_dimension,
+    std::string* label,
+    base::HeapArray<wgpu::TextureFormat>* view_formats,
+    GPUDevice* device,
+    ExceptionState& exception_state) {
   DCHECK(in);
   DCHECK(out);
   DCHECK(out_texture_binding_view_dimension);
@@ -70,37 +73,71 @@ bool ConvertToDawn(const GPUTextureDescriptor* in,
   return ConvertToDawn(in->size(), &out->size, device, exception_state);
 }
 
-wgpu::TextureViewDescriptor AsDawnType(
-    const GPUTextureViewDescriptor* webgpu_desc,
-    std::string* label) {
+void ConvertToDawnType(const GPUTextureViewDescriptor* webgpu_desc,
+                       OwnedTextureViewDescriptor* dawn_desc_info) {
   DCHECK(webgpu_desc);
-  DCHECK(label);
+  DCHECK(dawn_desc_info);
 
-  wgpu::TextureViewDescriptor dawn_desc = {};
   if (webgpu_desc->hasFormat()) {
-    dawn_desc.format = AsDawnEnum(webgpu_desc->format());
+    dawn_desc_info->dawn_desc.format = AsDawnEnum(webgpu_desc->format());
   }
   if (webgpu_desc->hasDimension()) {
-    dawn_desc.dimension = AsDawnEnum(webgpu_desc->dimension());
+    dawn_desc_info->dawn_desc.dimension = AsDawnEnum(webgpu_desc->dimension());
   }
-  dawn_desc.baseMipLevel = webgpu_desc->baseMipLevel();
+  dawn_desc_info->dawn_desc.baseMipLevel = webgpu_desc->baseMipLevel();
   if (webgpu_desc->hasMipLevelCount()) {
-    dawn_desc.mipLevelCount = webgpu_desc->mipLevelCount();
+    dawn_desc_info->dawn_desc.mipLevelCount = webgpu_desc->mipLevelCount();
   }
-  dawn_desc.baseArrayLayer = webgpu_desc->baseArrayLayer();
+  dawn_desc_info->dawn_desc.baseArrayLayer = webgpu_desc->baseArrayLayer();
   if (webgpu_desc->hasArrayLayerCount()) {
-    dawn_desc.arrayLayerCount = webgpu_desc->arrayLayerCount();
+    dawn_desc_info->dawn_desc.arrayLayerCount = webgpu_desc->arrayLayerCount();
   }
-  dawn_desc.aspect = AsDawnEnum(webgpu_desc->aspect());
-  *label = webgpu_desc->label().Utf8();
-  if (!label->empty()) {
-    dawn_desc.label = label->c_str();
+  dawn_desc_info->dawn_desc.aspect = AsDawnEnum(webgpu_desc->aspect());
+  if (!webgpu_desc->label().empty()) {
+    dawn_desc_info->label = webgpu_desc->label().Utf8();
+    dawn_desc_info->dawn_desc.label = dawn_desc_info->label.c_str();
   }
   if (webgpu_desc->hasUsage()) {
-    dawn_desc.usage = static_cast<wgpu::TextureUsage>(webgpu_desc->usage());
+    dawn_desc_info->dawn_desc.usage =
+        static_cast<wgpu::TextureUsage>(webgpu_desc->usage());
+  }
+  const auto& swizzle = webgpu_desc->swizzle();
+  // Only pass the swizzle descriptor to Dawn if swizzle is non-default because
+  // the C API will produce validation errors if a chained struct is passed
+  // without its feature being enabled.
+  if (swizzle != "rgba") {
+    dawn_desc_info->swizzle_desc =
+        std::make_unique<wgpu::TextureComponentSwizzleDescriptor>();
+    dawn_desc_info->swizzle_desc->swizzle.r = AsDawnEnum(swizzle[0]);
+    dawn_desc_info->swizzle_desc->swizzle.g = AsDawnEnum(swizzle[1]);
+    dawn_desc_info->swizzle_desc->swizzle.b = AsDawnEnum(swizzle[2]);
+    dawn_desc_info->swizzle_desc->swizzle.a = AsDawnEnum(swizzle[3]);
+    dawn_desc_info->dawn_desc.nextInChain = dawn_desc_info->swizzle_desc.get();
+  }
+}
+
+// Validate swizzle must be a four-character string that only includes "r", "g",
+// "b", "a", "0", or "1".
+bool ValidateSwizzle(const String& swizzle, ExceptionState& exception_state) {
+  if (swizzle.length() != 4) {
+    exception_state.ThrowTypeError(
+        StrCat({"Swizzle ('", swizzle,
+                "') must be exactly a four-character string."}));
+    return false;
   }
 
-  return dawn_desc;
+  if (AsDawnEnum(swizzle[0]) == wgpu::ComponentSwizzle::Undefined ||
+      AsDawnEnum(swizzle[1]) == wgpu::ComponentSwizzle::Undefined ||
+      AsDawnEnum(swizzle[2]) == wgpu::ComponentSwizzle::Undefined ||
+      AsDawnEnum(swizzle[3]) == wgpu::ComponentSwizzle::Undefined) {
+    exception_state.ThrowTypeError(
+        StrCat({"Swizzle ('", swizzle,
+                "') must contain only 'r', 'g', 'b', 'a', '0', "
+                "or '1' characters."}));
+    return false;
+  }
+
+  return true;
 }
 
 // Dawn represents `undefined` as the special uint32_t value (0xFFFF'FFFF).
@@ -148,8 +185,7 @@ GPUTexture* GPUTexture::Create(GPUDevice* device,
   DCHECK(webgpu_desc);
 
   wgpu::TextureDescriptor dawn_desc;
-  wgpu::TextureBindingViewDimensionDescriptor
-      texture_binding_view_dimension_desc;
+  wgpu::TextureBindingViewDimension texture_binding_view_dimension_desc;
 
   std::string label;
   base::HeapArray<wgpu::TextureFormat> view_formats;
@@ -183,7 +219,7 @@ GPUTexture* GPUTexture::Create(GPUDevice* device,
 
   return MakeGarbageCollected<GPUTexture>(
       device, device->GetHandle().CreateTexture(desc),
-      String::FromUTF8(desc->label));
+      String::FromUtf8(desc->label));
 }
 
 // static
@@ -193,7 +229,7 @@ GPUTexture* GPUTexture::CreateError(GPUDevice* device,
   DCHECK(desc);
   return MakeGarbageCollected<GPUTexture>(
       device, device->GetHandle().CreateErrorTexture(desc),
-      String::FromUTF8(desc->label));
+      String::FromUtf8(desc->label));
 }
 
 GPUTexture::GPUTexture(GPUDevice* device,
@@ -201,6 +237,8 @@ GPUTexture::GPUTexture(GPUDevice* device,
                        const String& label)
     : DawnObject<wgpu::Texture>(device, std::move(texture), label),
       dimension_(GetHandle().GetDimension()),
+      texture_binding_view_dimension_(
+          GetHandle().GetTextureBindingViewDimension()),
       format_(GetHandle().GetFormat()),
       usage_(GetHandle().GetUsage()) {}
 
@@ -219,6 +257,10 @@ GPUTexture::GPUTexture(GPUDevice* device,
 
   // Mailbox textures are all 2d texture.
   dimension_ = wgpu::TextureDimension::e2D;
+  texture_binding_view_dimension_ =
+      device->features()->Has(V8GPUFeatureName::Enum::kCoreFeaturesAndLimits)
+          ? wgpu::TextureViewDimension::Undefined
+          : wgpu::TextureViewDimension::e2D;
 }
 
 GPUTextureView* GPUTexture::createView(
@@ -231,6 +273,10 @@ GPUTextureView* GPUTexture::createView(
     return nullptr;
   }
 
+  if (!ValidateSwizzle(webgpu_desc->swizzle(), exception_state)) {
+    return nullptr;
+  }
+
   std::string error = ValidateTextureMipLevelAndArrayLayerCounts(webgpu_desc);
   if (!error.empty()) {
     device()->InjectError(wgpu::ErrorType::Validation, error.c_str());
@@ -238,10 +284,11 @@ GPUTextureView* GPUTexture::createView(
         device(), GetHandle().CreateErrorView(nullptr), String());
   }
 
-  std::string label;
-  wgpu::TextureViewDescriptor dawn_desc = AsDawnType(webgpu_desc, &label);
+  OwnedTextureViewDescriptor dawn_desc_info;
+  ConvertToDawnType(webgpu_desc, &dawn_desc_info);
   GPUTextureView* view = MakeGarbageCollected<GPUTextureView>(
-      device_, GetHandle().CreateView(&dawn_desc), webgpu_desc->label());
+      device_, GetHandle().CreateView(&dawn_desc_info.dawn_desc),
+      webgpu_desc->label());
   return view;
 }
 
@@ -290,6 +337,19 @@ V8GPUTextureDimension GPUTexture::dimension() const {
   return FromDawnEnum(GetHandle().GetDimension());
 }
 
+V8UnionGPUTextureViewDimensionOrUndefined::Ret
+GPUTexture::textureBindingViewDimension(ScriptState* script_state) const {
+  wgpu::TextureViewDimension viewDimension =
+      GetHandle().GetTextureBindingViewDimension();
+  if (viewDimension == wgpu::TextureViewDimension::Undefined) {
+    return V8UnionGPUTextureViewDimensionOrUndefined::Ret(
+        script_state, ToV8UndefinedGenerator());
+  } else {
+    return V8UnionGPUTextureViewDimensionOrUndefined::Ret(
+        script_state, FromDawnEnum(viewDimension));
+  }
+}
+
 V8GPUTextureFormat GPUTexture::format() const {
   return FromDawnEnum(GetHandle().GetFormat());
 }
@@ -298,11 +358,13 @@ uint32_t GPUTexture::usage() const {
   return static_cast<uint32_t>(GetHandle().GetUsage());
 }
 
-void GPUTexture::DissociateMailbox() {
+gpu::SyncToken GPUTexture::DissociateMailbox() {
+  gpu::SyncToken sync_token;
   if (mailbox_texture_) {
-    mailbox_texture_->Dissociate();
+    sync_token = mailbox_texture_->Dissociate();
     mailbox_texture_ = nullptr;
   }
+  return sync_token;
 }
 
 scoped_refptr<WebGPUMailboxTexture> GPUTexture::GetMailboxTexture() {

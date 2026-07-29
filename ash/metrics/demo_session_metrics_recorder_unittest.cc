@@ -72,6 +72,9 @@ class DemoSessionMetricsRecorderTest : public AshTestBase {
   }
 
   void TearDown() override {
+    histogram_tester_.reset();
+    // mock_timer owned by metrics_recorder_
+    mock_timer_ = nullptr;
     metrics_recorder_.reset();
     AshTestBase::TearDown();
   }
@@ -98,9 +101,10 @@ class DemoSessionMetricsRecorderTest : public AshTestBase {
 
   // Creates a browser window.
   std::unique_ptr<aura::Window> CreateBrowserWindow() {
-    std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithDelegate(
-        aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(), 0,
-        gfx::Rect(0, 0, 10, 10)));
+    std::unique_ptr<aura::Window> window(CreateTestWindowInShell(
+        {.delegate =
+             aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+         .bounds = {10, 10}}));
     window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::BROWSER);
     return window;
   }
@@ -108,9 +112,10 @@ class DemoSessionMetricsRecorderTest : public AshTestBase {
   // Creates a browser window associated with a hosted app.
   std::unique_ptr<aura::Window> CreateHostedAppBrowserWindow(
       const std::string& app_id) {
-    std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithDelegate(
-        aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(), 0,
-        gfx::Rect(0, 0, 10, 10)));
+    std::unique_ptr<aura::Window> window(CreateTestWindowInShell(
+        {.delegate =
+             aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+         .bounds = {10, 10}}));
     window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::BROWSER);
     window->SetProperty(
         kShelfIDKey,
@@ -121,9 +126,10 @@ class DemoSessionMetricsRecorderTest : public AshTestBase {
   // Creates a normal Chrome platform app window.
   std::unique_ptr<aura::Window> CreateChromeAppWindow(
       const std::string& app_id) {
-    std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithDelegate(
-        aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(), 0,
-        gfx::Rect(0, 0, 10, 10)));
+    std::unique_ptr<aura::Window> window(CreateTestWindowInShell(
+        {.delegate =
+             aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+         .bounds = {10, 10}}));
     window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::CHROME_APP);
     window->SetProperty(
         kShelfIDKey,
@@ -134,9 +140,10 @@ class DemoSessionMetricsRecorderTest : public AshTestBase {
   // Creates a normal ARC++ app window.
   std::unique_ptr<aura::Window> CreateArcWindow(
       const std::string& package_name) {
-    std::unique_ptr<aura::Window> window(CreateTestWindowInShellWithDelegate(
-        aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(), 0,
-        gfx::Rect(0, 0, 10, 10)));
+    std::unique_ptr<aura::Window> window(CreateTestWindowInShell(
+        {.delegate =
+             aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+         .bounds = {10, 10}}));
     window->SetProperty(chromeos::kAppTypeKey, chromeos::AppType::ARC_APP);
 
     // ARC++ shelf app IDs are hashes of package_name#activity_name formatted as
@@ -152,10 +159,12 @@ class DemoSessionMetricsRecorderTest : public AshTestBase {
 
   // Creates a popup type window.
   std::unique_ptr<aura::Window> CreatePopupWindow() {
-    std::unique_ptr<aura::Window> window(
-        CreateTestWindowInShellWithDelegateAndType(
-            aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
-            aura::client::WINDOW_TYPE_POPUP, 0, gfx::Rect(0, 0, 10, 10)));
+    std::unique_ptr<aura::Window> window(CreateTestWindowInShell(
+        {.delegate =
+             aura::test::TestWindowDelegate::CreateSelfDestroyingDelegate(),
+         .bounds = {10, 10},
+         .window_type = aura::client::WINDOW_TYPE_POPUP,
+         .window_id = 0}));
     return window;
   }
 
@@ -199,7 +208,7 @@ class DemoSessionMetricsRecorderTest : public AshTestBase {
   std::unique_ptr<DemoSessionMetricsRecorder> metrics_recorder_;
 
   // Owned by metics_recorder_.
-  raw_ptr<base::MockRepeatingTimer, DanglingUntriaged> mock_timer_ = nullptr;
+  raw_ptr<base::MockRepeatingTimer> mock_timer_ = nullptr;
 };
 
 // Verify samples are correct when one app window is active.
@@ -732,7 +741,7 @@ TEST_F(DemoSessionMetricsRecorderTest, DwellTime) {
   histogram_tester_->ExpectUniqueSample("DemoMode.DwellTime", 10, 1);
 }
 
-TEST_F(DemoSessionMetricsRecorderTest, ShopperSessionDwellTime) {
+TEST_F(DemoSessionMetricsRecorderTest, SignedInShopperSessionDwellTime) {
   // Simulate a signed-in demo session.
   DemoSessionMetricsRecorder::SetCurrentSessionType(
       DemoSessionMetricsRecorder::SessionType::kSignedInDemoSession);
@@ -767,6 +776,44 @@ TEST_F(DemoSessionMetricsRecorderTest, ShopperSessionDwellTime) {
   // The recorded dwell time should be 12 seconds again.
   histogram_tester_->ExpectUniqueSample("DemoMode.SignedIn.Shopper.DwellTime",
                                         12, 2);
+}
+
+TEST_F(DemoSessionMetricsRecorderTest,
+       SignedInMGSFallbackShopperSessionDwellTime) {
+  // Simulate a sign-in failure. It falls back to a managed guest session.
+  DemoSessionMetricsRecorder::SetCurrentSessionType(
+      DemoSessionMetricsRecorder::SessionType::kFallbackMGS);
+
+  // Simulate user activities for 12 seconds.
+  SendUserActivity();
+
+  task_environment()->FastForwardBy(base::Seconds(4));
+  SendUserActivity();
+
+  task_environment()->FastForwardBy(base::Seconds(8));
+  SendUserActivity();
+
+  // Simulate a shopper session "timing out" after 90 seconds.
+  task_environment()->FastForwardBy(base::Seconds(90));
+  DemoSessionMetricsRecorder::Get()->ReportShopperSessionDwellTime();
+
+  // The recorded dwell time should be 12 seconds.
+  histogram_tester_->ExpectUniqueSample(
+      "DemoMode.SignedIn.MGSFallback.Shopper.DwellTime", 12, 1);
+
+  // Simulate user activity in another shopper session for 12 seconds.
+  SendUserActivity();
+
+  task_environment()->FastForwardBy(base::Seconds(12));
+  SendUserActivity();
+
+  // Simulate exiting the shopper and cros sessions after 90 seconds.
+  task_environment()->FastForwardBy(base::Seconds(90));
+  DeleteMetricsRecorder();
+
+  // The recorded dwell time should be 12 seconds again.
+  histogram_tester_->ExpectUniqueSample(
+      "DemoMode.SignedIn.MGSFallback.Shopper.DwellTime", 12, 2);
 }
 
 TEST_F(DemoSessionMetricsRecorderTest, ZeroDwellTime) {

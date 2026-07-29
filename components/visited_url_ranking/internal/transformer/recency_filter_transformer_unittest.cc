@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/metrics/field_trial_params.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
@@ -55,8 +56,7 @@ class RecencyFilterTransformerTest : public URLVisitAggregatesTransformerTest {
     base::FieldTrialParams params = {
         {features::kURLAggregateCountLimit,
          base::StringPrintf("%u", kTestCountLimit)}};
-    base::test::ScopedFeatureList feature_list1;
-    feature_list1.InitWithFeaturesAndParameters(
+    feature_list_.InitWithFeaturesAndParameters(
         {{features::kVisitedURLRankingService, params}}, {});
     transformer_ = std::make_unique<RecencyFilterTransformer>();
   }
@@ -121,6 +121,9 @@ class RecencyFilterTransformerTest : public URLVisitAggregatesTransformerTest {
     tab_data.last_active = time;
     return tab_data;
   }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(RecencyFilterTransformerTest, SortAndFilter) {

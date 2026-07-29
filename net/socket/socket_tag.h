@@ -5,6 +5,8 @@
 #ifndef NET_SOCKET_SOCKET_TAG_H_
 #define NET_SOCKET_SOCKET_TAG_H_
 
+#include <iosfwd>
+
 #include "build/build_config.h"
 #include "net/base/net_export.h"
 #include "net/socket/socket_descriptor.h"
@@ -38,7 +40,6 @@ class NET_EXPORT SocketTag {
 
   bool operator<(const SocketTag& other) const;
   bool operator==(const SocketTag& other) const;
-  bool operator!=(const SocketTag& other) const { return !(*this == other); }
 
   // Apply this tag to |socket|.
   void Apply(SocketDescriptor socket) const;
@@ -62,6 +63,9 @@ class NET_EXPORT SocketTag {
 #endif  // BUILDFLAG(IS_ANDROID)
   // Copying and assignment are allowed.
 };
+
+// Allows for logging of SocketTag.
+NET_EXPORT std::ostream& operator<<(std::ostream& os, const SocketTag& tag);
 
 }  // namespace net
 

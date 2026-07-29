@@ -19,7 +19,6 @@
 #include <thread>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -36,6 +35,7 @@
 #include "base/trace_event/trace_event.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/windows_version.h"
+#include "gpu/ipc/common/dxgi_helpers.h"
 #include "media/base/media_switches.h"
 #include "media/base/win/color_space_util_win.h"
 #include "media/capture/mojom/image_capture_types.h"
@@ -44,7 +44,7 @@
 #include "media/capture/video/win/sink_filter_win.h"
 #include "media/capture/video/win/video_capture_device_utils_win.h"
 #include "ui/gfx/color_space.h"
-#include "ui/gfx/gpu_memory_buffer.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
 
 using base::Location;
 using base::win::ScopedCoMem;
@@ -53,7 +53,6 @@ using Microsoft::WRL::ComPtr;
 namespace media {
 
 BASE_FEATURE(kMediaFoundationVideoCaptureForwardSampleTimestamps,
-             "MediaFoundationVideoCaptureForwardSampleTimestamps",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 ULONGLONG CaptureModeToExtendedPlatformFlags(
@@ -526,14 +525,16 @@ HRESULT ConvertToVideoSinkMediaType(IMFMediaType* source_media_type,
   // nominal range attribute from source to sink instead of rewriting it to
   // limited range. See https://crbug.com/1449570 for more details.
   if (base::FeatureList::IsEnabled(media::kWebRTCColorAccuracy)) {
-    hr = CopyAttribute(source_media_type, sink_media_type,
-                       MF_MT_VIDEO_NOMINAL_RANGE);
+    // Not checking return value, since the attribute may be missing.
+    CopyAttribute(source_media_type, sink_media_type,
+                  MF_MT_VIDEO_NOMINAL_RANGE);
   } else {
     hr = sink_media_type->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE,
                                     MFNominalRange_16_235);
+    if (FAILED(hr)) {
+      return hr;
+    }
   }
-  if (FAILED(hr))
-    return hr;
 
   // Next three attributes may be missing, unless a HDR video is captured so
   // ignore errors.
@@ -690,11 +691,7 @@ HRESULT CopyTextureToGpuMemoryBuffer(ID3D11Texture2D* texture,
 
   Microsoft::WRL::ComPtr<ID3D11Device1> device1;
   HRESULT hr = texture_device.As(&device1);
-  if (FAILED(hr)) {
-    DLOG(ERROR) << "Failed to get ID3D11Device1: "
-                << logging::SystemErrorCodeToString(hr);
-    return hr;
-  }
+  CHECK_EQ(hr, S_OK);
 
   // Open shared resource from GpuMemoryBuffer on source texture D3D11 device
   Microsoft::WRL::ComPtr<ID3D11Texture2D> target_texture;
@@ -708,25 +705,31 @@ HRESULT CopyTextureToGpuMemoryBuffer(ID3D11Texture2D* texture,
   Microsoft::WRL::ComPtr<ID3D11DeviceContext> device_context;
   texture_device->GetImmediateContext(&device_context);
 
-  Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyed_mutex;
-  hr = target_texture.As(&keyed_mutex);
-  CHECK(SUCCEEDED(hr));
-
-  hr = keyed_mutex->AcquireSync(0, INFINITE);
-  // Can't check for FAILED(hr) because AcquireSync may return e.g.
-  // WAIT_ABANDONED.
-  if (hr != S_OK) {
-    DLOG(ERROR) << "Failed to acquire the mutex:"
-                << logging::SystemErrorCodeToString(hr);
-    return E_FAIL;
-  }
   device_context->CopySubresourceRegion(target_texture.Get(), 0, 0, 0, 0,
                                         texture, 0, nullptr);
-  keyed_mutex->ReleaseSync(0);
 
-  // Need to flush context to ensure that other devices receive updated contents
-  // of shared resource
-  device_context->Flush();
+  // Wait here for copy completion for D3D11/D3D12 interop, due to:
+  // 1) For D3D12 access in GPU process, D3D12 runtime is not aware of the
+  // simultaneous D3D11 write-access by capture module, so capture module
+  // must ensure copy completion before handing over to D3D12;
+  // 2) For D3D11 access in GPU process, if we add a D3D11Fence here and
+  // deliver that in GMB for access in GPU process, it will not work as GPU
+  // process is on a different D3D11 device/context, though they may be on
+  // the same adapter.
+  Microsoft::WRL::ComPtr<IDXGIDevice2> dxgi_device2;
+  hr = texture_device.As(&dxgi_device2);
+  CHECK_EQ(hr, S_OK);
+  base::WaitableEvent event;
+
+  hr = dxgi_device2->EnqueueSetEvent(event.handle());
+  if (SUCCEEDED(hr)) {
+    TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("video_and_image_capture"),
+                 "CopyTextureToGpuMemoryBufferSync");
+    event.Wait();
+  } else {
+    LOG(WARNING) << "Failed to set event: "
+                 << logging::SystemErrorCodeToString(hr);
+  }
 
   return S_OK;
 }
@@ -2364,10 +2367,7 @@ HRESULT VideoCaptureDeviceMFWin::DeliverExternalBufferToClient(
     // It's failed to get valid |private_data|, create and set a new value.
     Microsoft::WRL::ComPtr<IDXGIResource1> dxgi_resource;
     hr = texture->QueryInterface(IID_PPV_ARGS(&dxgi_resource));
-    if (FAILED(hr)) {
-      DLOG(ERROR) << logging::SystemErrorCodeToString(hr);
-      return hr;
-    }
+    CHECK_EQ(hr, S_OK);
     HANDLE texture_handle;
     hr = dxgi_resource->CreateSharedHandle(
         nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
@@ -2392,9 +2392,7 @@ HRESULT VideoCaptureDeviceMFWin::DeliverExternalBufferToClient(
   frame_metadata.background_blur = GetBackgroundBlurState();
 
   // Set reused |token| and |share_handle| to gmb handle.
-  gfx::GpuMemoryBufferHandle gmb_handle;
-  gmb_handle.type = gfx::GpuMemoryBufferType::DXGI_SHARED_HANDLE;
-  gmb_handle.set_dxgi_handle(private_data->CloneHandle());
+  gfx::GpuMemoryBufferHandle gmb_handle(private_data->CloneHandle());
 
   media::CapturedExternalVideoBuffer external_buffer =
       media::CapturedExternalVideoBuffer(
@@ -2407,7 +2405,7 @@ HRESULT VideoCaptureDeviceMFWin::DeliverExternalBufferToClient(
   client_->OnIncomingCapturedExternalBuffer(
       std::move(external_buffer), reference_time, timestamp,
       MaybeForwardCaptureBeginTime(capture_begin_time), gfx::Rect(texture_size),
-      frame_metadata);
+      texture_size, frame_metadata);
   return hr;
 }
 

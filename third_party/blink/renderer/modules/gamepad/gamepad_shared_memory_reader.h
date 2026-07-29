@@ -18,9 +18,7 @@ class ReadOnlySharedMemoryRegion;
 }
 
 namespace device {
-template <class T>
-class GamepadImpl;
-using Gamepad = GamepadImpl<void>;
+class Gamepad;
 class Gamepads;
 }  // namespace device
 
@@ -55,6 +53,8 @@ class GamepadSharedMemoryReader
                         const device::Gamepad& gamepad) override;
   void GamepadDisconnected(uint32_t index,
                            const device::Gamepad& gamepad) override;
+  void GamepadRawInputChanged(uint32_t index,
+                              const device::Gamepad& gamepad) override;
 
   base::ReadOnlySharedMemoryRegion renderer_shared_buffer_region_;
   base::ReadOnlySharedMemoryMapping renderer_shared_buffer_mapping_;

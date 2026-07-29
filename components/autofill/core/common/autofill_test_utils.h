@@ -128,9 +128,6 @@ FormData CreateFormDataForFrame(FormData form, LocalFrameToken frame_token);
 // Returns a copy of `form` with cleared values.
 FormData WithoutValues(FormData form);
 
-// Returns a copy of `form` with `is_autofilled` set as specified.
-FormData AsAutofilled(FormData form, bool is_autofilled = true);
-
 // Strips those members from `form` and `field` that are not serialized via
 // mojo, i.e., resets them to `{}`.
 FormData WithoutUnserializedData(FormData form);
@@ -149,11 +146,17 @@ inline constexpr char kIbanValue_2[] = "CH93 0076 2011 6238 5295 7";
                                                 std::string_view value,
                                                 FormControlType type);
 
+[[nodiscard]] FormFieldData CreateTestFormField(std::u16string_view label,
+                                                std::u16string_view name,
+                                                std::u16string_view value,
+                                                FormControlType type);
+
 [[nodiscard]] FormFieldData CreateTestFormField(std::string_view label,
                                                 std::string_view name,
                                                 std::string_view value,
                                                 FormControlType type,
                                                 std::string_view autocomplete);
+
 [[nodiscard]] FormFieldData CreateTestFormField(std::string_view label,
                                                 std::string_view name,
                                                 std::string_view value,
@@ -212,6 +215,18 @@ inline constexpr char kIbanValue_2[] = "CH93 0076 2011 6238 5295 7";
     std::string_view value = kIbanValue,
     bool is_https = true);
 
+// Populates `form_data` with data corresponding to a loyalty card form (a form
+// with a single loyalty card field).
+[[nodiscard]] FormData CreateTestLoyaltyCardFormData();
+
+// Populates `form_data` with data corresponding to an email or loyalty card
+// field (a form with a single field).
+[[nodiscard]] FormData CreateTestEmailOrLoyaltyCardFormData();
+
+// Populates `form_data` with data corresponding to a merchant promo code form
+// (a form with a single merchant promo code field).
+[[nodiscard]] FormData CreateTestMerchantPromoCodeFormData();
+
 // Creates a `FormData` with a username and a password field.
 [[nodiscard]] FormData CreateTestPasswordFormData();
 
@@ -222,11 +237,22 @@ inline constexpr char kIbanValue_2[] = "CH93 0076 2011 6238 5295 7";
 // Creates a `FormData` with a single unclassified field.
 [[nodiscard]] FormData CreateTestUnclassifiedFormData();
 
-MATCHER_P(DeepEqualsFormData,
-          form_data,
-          negation ? "does not equal" : "equals") {
-  return FormData::DeepEqual(arg, form_data);
-}
+// Usage:
+//   EXPECT_THAT(actual_field, FormFieldDataEq(expected_field));
+//   EXPECT_THAT(actual_form, FormDataEq(expected_form));
+//
+// For partial comparisons, normalize the values before matching. For example:
+//   EXPECT_THAT(test::WithoutUnserializedData(actual),
+//               test::FormDataEq(test::WithoutUnserializedData(expected)));
+
+// Uses property matchers for detailed mismatch information, and
+// IdenticalAndEquivalentDomElements() as a backstop for the members it
+// compares.
+testing::Matcher<FormFieldData> FormFieldDataEq(const FormFieldData& expected);
+
+// Like FormFieldDataEq(), but recursively compares fields with
+// FormFieldDataEq().
+testing::Matcher<FormData> FormDataEq(const FormData& expected);
 
 }  // namespace test
 

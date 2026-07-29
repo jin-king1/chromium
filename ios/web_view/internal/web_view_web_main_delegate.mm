@@ -7,6 +7,7 @@
 #import "base/apple/bundle_locations.h"
 #import "base/base_paths.h"
 #import "base/logging.h"
+#import "base/logging/logging_settings.h"
 #import "components/component_updater/component_updater_paths.h"
 
 // Dummy class used to locate the containing NSBundle.
@@ -29,8 +30,8 @@ void WebViewWebMainDelegate::BasicStartupComplete() {
   // Sets up logging so logging levels can be controlled.
   logging::InitLogging(logging::LoggingSettings());
 
-  component_updater::RegisterPathProvider(
-      base::DIR_APP_DATA, base::DIR_APP_DATA, base::DIR_APP_DATA);
+  component_updater::RegisterPathProvider(base::DIR_APP_DATA,
+                                          base::DIR_APP_DATA);
 }
 
 }  // namespace ios_web_view

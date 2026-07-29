@@ -7,12 +7,16 @@
 
 #import <Foundation/Foundation.h>
 
+#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
+#include "google_apis/gaia/core_account_id.h"
+#include "ios/chrome/browser/signin/model/fake_system_identity_details.h"
+#include "ios/chrome/browser/signin/model/system_identity_interaction_manager.h"
 #include "ios/chrome/browser/signin/model/system_identity_manager.h"
 #include "ios/chrome/browser/signin/model/system_identity_manager_observer.h"
 
@@ -35,16 +39,16 @@ class FakeSystemIdentityManager final : public SystemIdentityManager {
   ~FakeSystemIdentityManager() final;
 
   // Converts `manager` into a `FakeSystemIdentityManager*` if possible
-  // or fail if the conversion is not valid. Must be used to get access
+  // or fails if the conversion is not valid. Must be used to get access
   // to FakeSystemIdentityManager API in tests.
   static FakeSystemIdentityManager* FromSystemIdentityManager(
       SystemIdentityManager* manager);
 
-  // Adds `identity` to the available idendities.
+  // Adds `identity` to the available identities.
   // DCHECK failure will be triggered if the identity was already added.
   void AddIdentity(id<SystemIdentity> identity);
 
-  // Adds `identity` to the available idendities without setting up
+  // Adds `identity` to the available identities without setting up
   // capabilities.
   // DCHECK failure will be triggered if the identity was already added.
   void AddIdentityWithUnknownCapabilities(id<SystemIdentity> identity);
@@ -58,6 +62,16 @@ class FakeSystemIdentityManager final : public SystemIdentityManager {
 
   // Simulates `identity` removed from another application.
   void ForgetIdentityFromOtherApplication(id<SystemIdentity> identity);
+
+  // Updates the avatar for an identity.
+  // If `avatar` is nil, the avatar is reset. GetCachedAvatarForIdentity() will
+  // return nil, and a fetch is needed to have the final avatar.
+  // If `send_notification` is true, a notification is sent to notify that the
+  // identity was updated. Otherwise, no notification is sent and the new avatar
+  // is returned for any new avatar query.
+  void UpdateSystemIdentityAvatar(const GaiaId& gaia_id,
+                                  UIImage* avatar,
+                                  bool send_notification = true);
 
   // Returns a test object that enables changes to capability state.
   AccountCapabilitiesTestMutator* GetPendingCapabilitiesMutator(
@@ -95,6 +109,23 @@ class FakeSystemIdentityManager final : public SystemIdentityManager {
   // Returns YES if the identity was already added.
   bool ContainsIdentity(id<SystemIdentity> identity);
 
+  // Simulates a persistent authentication error for an account. After calling
+  // this method, token requests for the corresponding account will fail with an
+  // auth error.
+  void SetPersistentAuthErrorForAccount(const CoreAccountId& accountId);
+
+  // Simulates a persistent authentication error being resolved for an account.
+  // After calling this method, token requests for the corresponding account
+  // will succeed.
+  void ClearPersistentAuthErrorForAccount(const CoreAccountId& accountId);
+
+  // Sets a callback to be called whenever an access token the specified
+  // account is requested.
+  void SetGetAccessTokenCallback(const CoreAccountId& accountId,
+                                 GetAccessTokenCallback callback);
+  void SetGetAccessTokenCallback(const CoreAccountId& accountId,
+                                 GetAccessTokenRequestCallback callback);
+
   // Simulates a failure next time the access token for `identity` would be
   // fetched and return the error that would be sent to the observers. The
   // callback will be invoked each time `HandleMDMNotification()` is called
@@ -121,11 +152,16 @@ class FakeSystemIdentityManager final : public SystemIdentityManager {
       PresentDialogConfiguration configuration) final;
   DismissViewCallback PresentLinkedServicesSettingsDetailsController(
       PresentDialogConfiguration configuration) final;
+
+  // Sets the factory for creating SystemIdentityInteractionManager instances.
+  void SetInteractionManagerFactory(
+      base::RepeatingCallback<id<SystemIdentityInteractionManager>()> factory);
   id<SystemIdentityInteractionManager> CreateInteractionManager() final;
+
   void IterateOverIdentities(IdentityIteratorCallback callback) final;
   void ForgetIdentity(id<SystemIdentity> identity,
                       ForgetIdentityCallback callback) final;
-  bool IdentityRemovedByUser(NSString* gaia_id) final;
+  bool IdentityRemovedByUser(const GaiaId& gaia_id) final;
   void GetAccessToken(id<SystemIdentity> identity,
                       const std::set<std::string>& scopes,
                       AccessTokenCallback callback) final;
@@ -133,6 +169,13 @@ class FakeSystemIdentityManager final : public SystemIdentityManager {
                       const std::string& client_id,
                       const std::set<std::string>& scopes,
                       AccessTokenCallback callback) final;
+  void GetAccessToken(id<SystemIdentity> identity,
+                      const std::set<std::string>& scopes,
+                      AccessTokenRequestCallback callback) final;
+  void GetAccessToken(id<SystemIdentity> identity,
+                      const std::string& client_id,
+                      const std::set<std::string>& scopes,
+                      AccessTokenRequestCallback callback) final;
   void FetchAvatarForIdentity(id<SystemIdentity> identity) final;
   UIImage* GetCachedAvatarForIdentity(id<SystemIdentity> identity) final;
   void GetHostedDomain(id<SystemIdentity> identity,
@@ -141,10 +184,27 @@ class FakeSystemIdentityManager final : public SystemIdentityManager {
   void FetchCapabilities(id<SystemIdentity> identity,
                          const std::vector<std::string>& names,
                          FetchCapabilitiesCallback callback) final;
+  void FetchCapabilitiesWithPartial(
+      id<SystemIdentity> identity,
+      const std::vector<std::string>& names,
+      FetchCapabilitiesCompletion completion,
+      FetchPartialCapabilitiesCallback partial_callback) final;
+
+  void RegisterExternalPrivacyContextProvider(
+      id<ExternalPrivacyContextUIProvider> provider) final;
+  void UnregisterExternalPrivacyContextProvider(
+      id<ExternalPrivacyContextUIProvider> provider) final;
+  void ExternalPrivacyContextProviderReady(
+      id<ExternalPrivacyContextUIProvider> provider) final;
+
   bool HandleMDMNotification(id<SystemIdentity> identity,
                              NSArray<id<SystemIdentity>>* active_identities,
                              id<RefreshAccessTokenError> error,
                              HandleMDMCallback callback) final;
+  bool DisplayMDMNotification(id<SystemIdentity> identity,
+                              const GoogleServiceAuthError& error,
+                              HandleMDMCallback callback) final;
+  bool IsScopeLimitedError(id<RefreshAccessTokenError> error) final;
   bool IsMDMError(id<SystemIdentity> identity, NSError* error) final;
   void FetchTokenAuthURL(id<SystemIdentity> identity,
                          NSURL* target_url,
@@ -160,8 +220,10 @@ class FakeSystemIdentityManager final : public SystemIdentityManager {
                            bool removed_by_user);
 
   // Helper used to implement the asynchronous part of `GetAccessToken`.
+  void GetAccessTokenAsyncLegacy(id<SystemIdentity> identity,
+                                 AccessTokenCallback callback);
   void GetAccessTokenAsync(id<SystemIdentity> identity,
-                           AccessTokenCallback callback);
+                           AccessTokenRequestCallback callback);
 
   // Helper used to implement the asynchronous part of `FetchAvatarForIdentity`.
   void FetchAvatarForIdentityAsync(id<SystemIdentity> identity);
@@ -174,13 +236,18 @@ class FakeSystemIdentityManager final : public SystemIdentityManager {
   void FetchCapabilitiesAsync(id<SystemIdentity> identity,
                               const std::vector<std::string>& names,
                               FetchCapabilitiesCallback callback);
+  void FetchCapabilitiesWithPartialAsync(
+      id<SystemIdentity> identity,
+      const std::vector<std::string>& names,
+      FetchCapabilitiesCompletion completion,
+      FetchPartialCapabilitiesCallback partial_callback);
 
   // Posts `closure` to be executed asynchronously on the current sequence
   // while maintaining a counter of pending callbacks. The counter is used
   // to implement `WaitForServiceCallbacksToComplete()`.
   void PostClosure(base::Location from_here, base::OnceClosure closure);
 
-  // Runs `closure` updating the counter of pending callbaks. Resume the
+  // Runs `closure` updating the counter of pending callbacks. Resumes the
   // execution of `WaitForServiceCallbacksToComplete()` when the counter
   // reaches 0.
   void ExecuteClosure(base::OnceClosure closure);
@@ -199,7 +266,10 @@ class FakeSystemIdentityManager final : public SystemIdentityManager {
   __strong FakeSystemIdentityManagerStorage* storage_ = nil;
   // List of gaia ids for identities that has been removed by calling
   // `ForgetIdentity()` (instead of `ForgetIdentityFromOtherApplication()`).
-  __strong NSMutableSet<NSString*>* gaia_ids_removed_by_user_ = nil;
+  base::flat_set<GaiaId> gaia_ids_removed_by_user_;
+
+  base::RepeatingCallback<id<SystemIdentityInteractionManager>()>
+      interaction_manager_factory_;
 
   base::WeakPtrFactory<FakeSystemIdentityManager> weak_ptr_factory_{this};
 };

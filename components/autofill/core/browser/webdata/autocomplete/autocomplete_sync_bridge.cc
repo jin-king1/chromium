@@ -4,30 +4,46 @@
 
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_sync_bridge.h"
 
+#include <stdint.h>
+
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
-#include <unordered_set>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/location.h"
 #include "base/memory/raw_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/strings/escape.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "components/autofill/core/browser/proto/autofill_sync.pb.h"
+#include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry.h"
+#include "components/autofill/core/browser/webdata/autocomplete/autocomplete_table.h"
+#include "components/autofill/core/browser/webdata/autofill_change.h"
 #include "components/autofill/core/browser/webdata/autofill_sync_metadata_table.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
+#include "components/sync/base/data_type.h"
 #include "components/sync/base/deletion_origin.h"
 #include "components/sync/model/client_tag_based_data_type_processor.h"
+#include "components/sync/model/data_batch.h"
 #include "components/sync/model/data_type_local_change_processor.h"
+#include "components/sync/model/entity_change.h"
+#include "components/sync/model/model_error.h"
 #include "components/sync/model/mutable_data_batch.h"
 #include "components/sync/model/sync_metadata_store_change_list.h"
+#include "components/sync/protocol/autofill_specifics.pb.h"
 #include "components/sync/protocol/entity_data.h"
 #include "components/webdata/common/web_database.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 using sync_pb::AutofillSpecifics;
 using syncer::ClientTagBasedDataTypeProcessor;
@@ -142,21 +158,14 @@ class SyncDifferenceTracker {
   std::optional<ModelError> IncorporateRemoteSpecifics(
       const std::string& storage_key,
       const AutofillSpecifics& specifics) {
-    if (!specifics.has_value()) {
-      // A long time ago autofill had a different format, and it's possible we
-      // could encounter some of that legacy data. It is not useful to us,
-      // because an autofill entry with no value will not place any text in a
-      // form for the user. So drop all of these on the floor.
-      DVLOG(1) << "Dropping old-style autofill profile change.";
-      return std::nullopt;
-    }
-
     const AutocompleteEntry remote = CreateAutocompleteEntry(specifics);
     DCHECK_EQ(storage_key, GetStorageKeyFromModel(remote.key()));
 
     std::optional<AutocompleteEntry> local;
     if (!ReadEntry(remote.key(), &local))
-      return ModelError(FROM_HERE, "Failed reading from WebDatabase.");
+      return ModelError(
+          FROM_HERE,
+          syncer::ModelError::Type::kAutocompleteFailedToReadEntryFromDatabase);
 
     if (!local) {
       save_to_local_.push_back(remote);
@@ -182,7 +191,9 @@ class SyncDifferenceTracker {
       const std::string& storage_key) {
     AutocompleteKey key;
     if (!ParseStorageKey(storage_key, &key)) {
-      return ModelError(FROM_HERE, "Failed parsing storage key.");
+      return ModelError(
+          FROM_HERE,
+          syncer::ModelError::Type::kAutocompleteFailedToParseStorageKey);
     }
     delete_from_local_.insert(key);
     return std::nullopt;
@@ -192,11 +203,15 @@ class SyncDifferenceTracker {
       AutofillWebDataBackend* web_data_backend) {
     for (const AutocompleteKey& key : delete_from_local_) {
       if (!table_->RemoveFormElement(key.name(), key.value())) {
-        return ModelError(FROM_HERE, "Failed deleting from WebDatabase");
+        return ModelError(FROM_HERE,
+                          syncer::ModelError::Type::
+                              kAutocompleteFailedToDeleteEntriesFromDatabase);
       }
     }
     if (!table_->UpdateAutocompleteEntries(save_to_local_)) {
-      return ModelError(FROM_HERE, "Failed updating WebDatabase");
+      return ModelError(FROM_HERE,
+                        syncer::ModelError::Type::
+                            kAutocompleteFailedToUpdateEntriesInDatabase);
     }
 
     // We do not need to NotifyOnAutofillChangedBySync() because
@@ -217,7 +232,9 @@ class SyncDifferenceTracker {
     }
     if (include_local_only) {
       if (!InitializeIfNeeded()) {
-        return ModelError(FROM_HERE, "Failed reading from WebDatabase.");
+        return ModelError(
+            FROM_HERE,
+            syncer::ModelError::Type::kAutocompleteFailedToReadFromDatabase);
       }
       for (const AutocompleteEntry& entry : unique_to_local_) {
         // This should never be true because only ApplyIncrementalSyncChanges
@@ -305,7 +322,7 @@ class SyncDifferenceTracker {
 void AutocompleteSyncBridge::CreateForWebDataServiceAndBackend(
     AutofillWebDataService* web_data_service,
     AutofillWebDataBackend* web_data_backend) {
-  web_data_service->GetDBUserData()->SetUserData(
+  web_data_service->GetDBUserData().SetUserData(
       AutocompleteSyncBridgeUserDataKey(),
       std::make_unique<AutocompleteSyncBridge>(
           web_data_backend,
@@ -317,7 +334,7 @@ void AutocompleteSyncBridge::CreateForWebDataServiceAndBackend(
 DataTypeSyncBridge* AutocompleteSyncBridge::FromWebDataService(
     AutofillWebDataService* web_data_service) {
   return static_cast<AutocompleteSyncBridge*>(
-      web_data_service->GetDBUserData()->GetUserData(
+      web_data_service->GetDBUserData().GetUserData(
           AutocompleteSyncBridgeUserDataKey()));
 }
 
@@ -355,7 +372,7 @@ std::optional<syncer::ModelError> AutocompleteSyncBridge::MergeFullSyncData(
 
   SyncDifferenceTracker tracker(GetAutocompleteTable());
   for (const auto& change : entity_data) {
-    DCHECK(change->data().specifics.has_autofill());
+    CHECK(IsEntityDataValid(change->data()));
     RETURN_IF_ERROR(tracker.IncorporateRemoteSpecifics(
         change->storage_key(), change->data().specifics.autofill()));
   }
@@ -386,7 +403,7 @@ std::optional<ModelError> AutocompleteSyncBridge::ApplyIncrementalSyncChanges(
     if (change->type() == EntityChange::ACTION_DELETE) {
       RETURN_IF_ERROR(tracker.IncorporateRemoteDelete(change->storage_key()));
     } else {
-      DCHECK(change->data().specifics.has_autofill());
+      CHECK(IsEntityDataValid(change->data()));
       RETURN_IF_ERROR(tracker.IncorporateRemoteSpecifics(
           change->storage_key(), change->data().specifics.autofill()));
     }
@@ -413,16 +430,16 @@ AutocompleteSyncBridge::AutocompleteSyncBridge::GetDataForCommit(
   std::vector<AutocompleteEntry> entries;
   if (!GetAutocompleteTable()->GetAllAutocompleteEntries(&entries)) {
     change_processor()->ReportError(
-        {FROM_HERE, "Failed to load entries from table."});
+        {FROM_HERE, syncer::ModelError::Type::
+                        kAutocompleteFailedToLoadEntriesFromDatabase});
     return nullptr;
   }
 
-  std::unordered_set<std::string> keys_set(storage_keys.begin(),
-                                           storage_keys.end());
+  absl::flat_hash_set<std::string> keys_set(std::from_range, storage_keys);
   auto batch = std::make_unique<MutableDataBatch>();
   for (const AutocompleteEntry& entry : entries) {
     std::string key = GetStorageKeyFromModel(entry.key());
-    if (keys_set.find(key) != keys_set.end()) {
+    if (keys_set.contains(key)) {
       batch->Put(key, CreateEntityData(entry));
     }
   }
@@ -436,7 +453,8 @@ AutocompleteSyncBridge::GetAllDataForDebugging() {
   std::vector<AutocompleteEntry> entries;
   if (!GetAutocompleteTable()->GetAllAutocompleteEntries(&entries)) {
     change_processor()->ReportError(
-        {FROM_HERE, "Failed to load entries from table."});
+        {FROM_HERE, syncer::ModelError::Type::
+                        kAutocompleteFailedToLoadEntriesFromDatabase});
     return nullptr;
   }
 
@@ -465,7 +483,8 @@ void AutocompleteSyncBridge::ActOnLocalChanges(
                                                          change.key().value());
         if (!entry) {
           change_processor()->ReportError(
-              {FROM_HERE, "Failed reading autofill entry from WebDatabase."});
+              {FROM_HERE, syncer::ModelError::Type::
+                              kAutocompleteFailedToReadEntryFromDatabase});
           return;
         }
         change_processor()->Put(storage_key, CreateEntityData(*entry),
@@ -486,8 +505,8 @@ void AutocompleteSyncBridge::ActOnLocalChanges(
         if (!success) {
           change_processor()->ReportError(
               {FROM_HERE,
-               "Failed to clear sync metadata for an expired autofill entry "
-               "from WebDatabase."});
+               syncer::ModelError::Type::
+                   kAutocompleteFailedToClearMetadataForExpiredEntry});
           return;
         }
 
@@ -506,7 +525,8 @@ void AutocompleteSyncBridge::LoadMetadata() {
   if (!web_data_backend_ || !web_data_backend_->GetDatabase() ||
       !GetAutocompleteTable() || !GetSyncMetadataStore()) {
     change_processor()->ReportError(
-        {FROM_HERE, "Failed to load AutofillWebDatabase."});
+        {FROM_HERE, syncer::ModelError::Type::
+                        kAutocompleteFailedToLoadAutofillWebDatabase});
     return;
   }
 
@@ -514,14 +534,15 @@ void AutocompleteSyncBridge::LoadMetadata() {
   if (!GetSyncMetadataStore()->GetAllSyncMetadata(syncer::AUTOFILL,
                                                   batch.get())) {
     change_processor()->ReportError(
-        {FROM_HERE, "Failed reading autofill metadata from WebDatabase."});
+        {FROM_HERE, syncer::ModelError::Type::
+                        kAutocompleteFailedToReadMetadataFromWebDatabase});
     return;
   }
   change_processor()->ModelReadyToSync(std::move(batch));
 }
 
 std::string AutocompleteSyncBridge::GetClientTag(
-    const EntityData& entity_data) {
+    const EntityData& entity_data) const {
   DCHECK(entity_data.specifics.has_autofill());
   // Must have the format "autofill_entry|$name|$value" where $name and $value
   // are URL escaped. This is to maintain compatibility with the previous sync
@@ -531,13 +552,31 @@ std::string AutocompleteSyncBridge::GetClientTag(
 }
 
 std::string AutocompleteSyncBridge::GetStorageKey(
-    const EntityData& entity_data) {
+    const EntityData& entity_data) const {
   DCHECK(entity_data.specifics.has_autofill());
   // Marginally more space efficient than GetClientTag() by omitting the
   // kAutocompleteEntryNamespaceTag prefix and using protobuf serialization
   // instead of URL escaping for Unicode characters.
   const AutofillSpecifics specifics = entity_data.specifics.autofill();
   return BuildSerializedStorageKey(specifics.name(), specifics.value());
+}
+
+sync_pb::EntitySpecifics
+AutocompleteSyncBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
+    const sync_pb::EntitySpecifics& entity_specifics) const {
+  // Clears all fields by default to avoid the memory and I/O overhead of an
+  // additional copy of the data.
+  return sync_pb::EntitySpecifics();
+}
+
+bool AutocompleteSyncBridge::IsEntityDataValid(
+    const EntityData& entity_data) const {
+  CHECK(entity_data.specifics.has_autofill());
+  // A long time ago autofill had a different format, and it's possible we
+  // could encounter some of that legacy data. It is not useful to us,
+  // because an autofill entry with no value will not place any text in a
+  // form for the user. So drop all of these on the floor.
+  return entity_data.specifics.autofill().has_value();
 }
 
 void AutocompleteSyncBridge::AutocompleteEntriesChanged(

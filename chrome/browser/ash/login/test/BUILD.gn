@@ -14,6 +14,8 @@ static_library("test_support") {
     "composite_waiter.h",
     "cryptohome_mixin.cc",
     "cryptohome_mixin.h",
+    "customizable_test_env_browser_test_base.cc",
+    "customizable_test_env_browser_test_base.h",
     "device_state_mixin.cc",
     "device_state_mixin.h",
     "dialog_window_waiter.cc",
@@ -37,8 +39,6 @@ static_library("test_support") {
     "guest_session_mixin.h",
     "js_checker.cc",
     "js_checker.h",
-    "local_state_mixin.cc",
-    "local_state_mixin.h",
     "logged_in_user_mixin.cc",
     "logged_in_user_mixin.h",
     "login_manager_mixin.cc",
@@ -65,8 +65,6 @@ static_library("test_support") {
     "oobe_window_visibility_waiter.h",
     "profile_prepared_waiter.cc",
     "profile_prepared_waiter.h",
-    "scoped_help_app_for_test.cc",
-    "scoped_help_app_for_test.h",
     "scoped_policy_update.cc",
     "scoped_policy_update.h",
     "session_flags_manager.cc",
@@ -103,7 +101,6 @@ static_library("test_support") {
     "//chromeos/ash/components/dbus/userdataauth",
     "//chromeos/ash/components/login/auth",
     "//chromeos/ash/components/login/auth/public:authpublic",
-    "//chromeos/ash/components/network/portal_detector",
     "//chromeos/ash/components/osauth/public",
     "//components/account_id",
     "//components/policy/core/common:test_support",
@@ -126,7 +123,6 @@ static_library("test_support") {
     "//chrome/browser",
     "//chrome/browser:browser_process",
     "//chrome/browser:main_extra_parts",
-    "//chrome/browser/ash/extensions",
     "//chrome/browser/ash/login/session",
     "//chrome/browser/ash/login/session:test_support",
     "//chrome/browser/ash/net",
@@ -135,7 +131,6 @@ static_library("test_support") {
     "//chrome/browser/ash/policy/test_support",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/ash/settings",
-    "//chrome/browser/extensions:test_support",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/ash/login",
     "//chrome/browser/ui/webui/ash/login/osauth",
@@ -151,6 +146,7 @@ static_library("test_support") {
     "//chromeos/ash/components/install_attributes",
     "//chromeos/ash/components/network",
     "//chromeos/ash/components/network:test_support",
+    "//chromeos/ash/components/policy/device_policy:test_support",
     "//chromeos/ash/components/settings",
     "//chromeos/components/onc",
     "//chromeos/dbus/constants",
@@ -174,4 +170,8 @@ static_library("test_support") {
 
   allow_circular_includes_from =
       [ "//chrome/browser/ash/policy/core:test_support" ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

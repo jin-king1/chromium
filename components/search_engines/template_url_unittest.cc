@@ -21,12 +21,16 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/with_feature_override.h"
+#include "build/branding_buildflags.h"
 #include "components/google/core/common/google_util.h"
+#include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/search_engines/regulatory_extension_type.h"
 #include "components/search_engines/search_engines_switches.h"
 #include "components/search_engines/search_terms_data.h"
+#include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_data.h"
+#include "components/search_engines/template_url_data_util.h"
 #include "components/search_engines/testing_search_terms_data.h"
 #include "net/base/url_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -40,6 +44,10 @@ using PolicyOrigin = TemplateURLData::PolicyOrigin;
 using RequestSource = SearchTermsData::RequestSource;
 
 namespace {
+
+const bool kEnableBuiltinSearchProviderAssets =
+    !!BUILDFLAG(ENABLE_BUILTIN_SEARCH_PROVIDER_ASSETS);
+
 bool IsLowerCase(const std::u16string& str) {
   return str == base::i18n::ToLower(str);
 }
@@ -401,6 +409,7 @@ TEST_F(TemplateURLTest, ParsePlayStoreDefinitions) {
       "{google:processedImageDimensions}",
       "{google:searchClient}",
       "{google:searchFieldtrialParameter}",
+      "{google:searchSource}",
       "{google:searchVersion}",
       "{google:sessionToken}",
       "{google:sourceId}",
@@ -541,6 +550,27 @@ TEST_F(TemplateURLTest, URLRefTestEncoding2) {
       TemplateURLRef::SearchTermsArgs(u"X"), search_terms_data_));
   ASSERT_TRUE(result.is_valid());
   EXPECT_EQ("http://fooxxutf-8yutf-8a/", result.spec());
+}
+
+TEST_F(TemplateURLTest, URLRefTestSearchSource) {
+  TemplateURLData data;
+  data.SetURL("http://foo/?q={searchTerms}&{google:searchSource}");
+  TemplateURL url(data);
+  EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
+  ASSERT_TRUE(url.url_ref().SupportsReplacement(search_terms_data_));
+
+  TemplateURLRef::SearchTermsArgs args(u"X");
+  args.page_classification = metrics::OmniboxEventProto::NTP;
+  GURL result_ntp(url.url_ref().ReplaceSearchTerms(args, search_terms_data_));
+  EXPECT_EQ("http://foo/?q=X&source=chrome.ob&", result_ntp.spec());
+
+  args.page_classification = metrics::OmniboxEventProto::NTP_REALBOX;
+  GURL result_rb(url.url_ref().ReplaceSearchTerms(args, search_terms_data_));
+  EXPECT_EQ("http://foo/?q=X&source=chrome.rb&", result_rb.spec());
+
+  args.page_classification = metrics::OmniboxEventProto::ANDROID_HUB;
+  GURL result_other(url.url_ref().ReplaceSearchTerms(args, search_terms_data_));
+  EXPECT_EQ("http://foo/?q=X&", result_other.spec());
 }
 
 TEST_F(TemplateURLTest, URLRefTestSearchTermsUsingTermsData) {
@@ -1007,7 +1037,7 @@ TEST_F(TemplateURLTest, GetRegulatoryExtensionType) {
   }
 
   {
-    data.created_from_play_api = true;
+    data.regulatory_origin = RegulatoryExtensionType::kAndroidEEA;
     TemplateURL url(data);
     EXPECT_EQ(RegulatoryExtensionType::kAndroidEEA,
               url.GetRegulatoryExtensionType());
@@ -1155,60 +1185,6 @@ TEST_F(TemplateURLTest, ReplaceCurrentPageUrl) {
     EXPECT_EQ(entry.expected_result, result.spec());
   }
 }
-
-#if BUILDFLAG(IS_ANDROID)
-// Tests appending attribution parameter to queries originating from Play API
-// search engine.
-TEST_F(TemplateURLTest, PlayAPIAttributionEnabled) {
-  const struct TestData {
-    const char* url;
-    std::u16string terms;
-    bool created_from_play_api;
-    const char* output;
-  } test_data[] = {
-      {"http://foo/?q={searchTerms}", u"bar", false, "http://foo/?q=bar"},
-      {"http://foo/?q={searchTerms}", u"bar", true,
-       "http://foo/?q=bar&chrome_dse_attribution=1"}};
-  TemplateURLData data;
-  for (const auto& entry : test_data) {
-    data.SetURL(entry.url);
-    data.created_from_play_api = entry.created_from_play_api;
-    TemplateURL url(data);
-    EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
-    ASSERT_TRUE(url.url_ref().SupportsReplacement(search_terms_data_));
-    GURL result(url.url_ref().ReplaceSearchTerms(
-        TemplateURLRef::SearchTermsArgs(entry.terms), search_terms_data_));
-    ASSERT_TRUE(result.is_valid());
-    EXPECT_EQ(entry.output, result.spec());
-  }
-}
-
-TEST_F(TemplateURLTest, PlayAPIAttributionDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      switches::kRemoveSearchEngineChoiceAttribution);
-  const struct TestData {
-    const char* url;
-    std::u16string terms;
-    bool created_from_play_api;
-    const char* output;
-  } test_data[] = {
-      {"http://foo/?q={searchTerms}", u"bar", false, "http://foo/?q=bar"},
-      {"http://foo/?q={searchTerms}", u"bar", true, "http://foo/?q=bar"}};
-  TemplateURLData data;
-  for (const auto& entry : test_data) {
-    data.SetURL(entry.url);
-    data.created_from_play_api = entry.created_from_play_api;
-    TemplateURL url(data);
-    EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
-    ASSERT_TRUE(url.url_ref().SupportsReplacement(search_terms_data_));
-    GURL result(url.url_ref().ReplaceSearchTerms(
-        TemplateURLRef::SearchTermsArgs(entry.terms), search_terms_data_));
-    ASSERT_TRUE(result.is_valid());
-    EXPECT_EQ(entry.output, result.spec());
-  }
-}
-#endif
 
 TEST_F(TemplateURLTest, Suggestions) {
   struct TestData {
@@ -1571,6 +1547,55 @@ TEST_F(TemplateURLTest, SuggestClient) {
 #endif
 }
 
+TEST_F(TemplateURLTest, ComposeboxSuggestClient) {
+  base::test::ScopedFeatureList features;
+  const std::string base_url_str("http://google.com/?");
+  const std::string query_params_str("client={google:suggestClient}");
+  const std::string full_url_str = base_url_str + query_params_str;
+  search_terms_data_.set_google_base_url(base_url_str);
+
+  TemplateURLData data;
+  data.SetURL(full_url_str);
+  TemplateURL url(data);
+  EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
+  ASSERT_FALSE(url.url_ref().SupportsReplacement(search_terms_data_));
+  TemplateURLRef::SearchTermsArgs search_terms_args;
+
+  search_terms_args.request_source = RequestSource::COMPOSEBOX;
+  // Check that the URL is correct for `RequestSource::COMPOSEBOX`.
+  features.InitAndEnableFeature(omnibox::kComposeboxUsesChromeComposeClient);
+  GURL result(
+      url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_));
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+  EXPECT_EQ("http://google.com/?client=chrome-mobile-aim", result.spec());
+#else
+  EXPECT_EQ("http://google.com/?client=chrome-compose", result.spec());
+#endif
+}
+
+TEST_F(TemplateURLTest, CoBrowseComposeboxSuggestClient) {
+  base::test::ScopedFeatureList features;
+  const std::string base_url_str("http://google.com/?");
+  const std::string query_params_str("client={google:suggestClient}");
+  const std::string full_url_str = base_url_str + query_params_str;
+  search_terms_data_.set_google_base_url(base_url_str);
+
+  TemplateURLData data;
+  data.SetURL(full_url_str);
+  TemplateURL url(data);
+  EXPECT_TRUE(url.url_ref().IsValid(search_terms_data_));
+  ASSERT_FALSE(url.url_ref().SupportsReplacement(search_terms_data_));
+  TemplateURLRef::SearchTermsArgs search_terms_args;
+
+  search_terms_args.request_source = RequestSource::COMPOSEBOX;
+  search_terms_args.page_classification =
+      metrics::OmniboxEventProto::CO_BROWSING_COMPOSEBOX;
+  // Check that the URL is correct for `RequestSource::COMPOSEBOX`.
+  GURL result(
+      url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_));
+  EXPECT_EQ("http://google.com/?client=chrome-cobrowse-compose", result.spec());
+}
+
 TEST_F(TemplateURLTest, SuggestRequestIdentifier) {
   const std::string base_url_str("http://google.com/?");
   const std::string query_params_str("gs_ri={google:suggestRid}");
@@ -1597,6 +1622,13 @@ TEST_F(TemplateURLTest, SuggestRequestIdentifier) {
 #else
   EXPECT_EQ("http://google.com/?gs_ri=chrome-ext-ansg", result.spec());
 #endif
+
+  search_terms_args.request_source = RequestSource::COMPOSEBOX;
+  // Check that the URL is correct for `RequestSource::COMPOSEBOX`.
+  result = GURL(
+      url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_));
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ("http://google.com/?gs_ri=", result.spec());
 }
 
 TEST_F(TemplateURLTest, ZeroSuggestCacheDuration) {
@@ -2288,7 +2320,7 @@ TEST_F(TemplateURLTest, ContextualSearchParameters) {
   // event.
   TemplateURLRef::SearchTermsArgs::ContextualSearchParams params(
       2, 1, std::string(), 0, 0, false, std::string(), std::string(),
-      std::string(), std::string(), false);
+      std::string(), std::string(), false, false);
   search_terms_args.contextual_search_params = params;
   result = url.url_ref().ReplaceSearchTerms(search_terms_args,
                                             search_terms_data_);
@@ -2302,7 +2334,7 @@ TEST_F(TemplateURLTest, ContextualSearchParameters) {
   search_terms_args.contextual_search_params =
       TemplateURLRef::SearchTermsArgs::ContextualSearchParams(
           2, 2, "CH", 1657713458, 5, false, std::string(), std::string(),
-          std::string(), std::string(), false);
+          std::string(), std::string(), false, false);
   result =
       url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_);
 
@@ -2319,7 +2351,7 @@ TEST_F(TemplateURLTest, ContextualSearchParameters) {
   search_terms_args.contextual_search_params =
       TemplateURLRef::SearchTermsArgs::ContextualSearchParams(
           2, 1, std::string(), 0, 0, true, std::string(), std::string(),
-          std::string(), std::string(), false);
+          std::string(), std::string(), false, false);
   result =
       url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_);
   // Find our param.
@@ -2330,7 +2362,7 @@ TEST_F(TemplateURLTest, ContextualSearchParameters) {
   search_terms_args.contextual_search_params =
       TemplateURLRef::SearchTermsArgs::ContextualSearchParams(
           2, 1, std::string(), 0, 0, true, "es", "de", std::string(),
-          std::string(), false);
+          std::string(), false, false);
   result =
       url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_);
   // Find our params.
@@ -2343,7 +2375,7 @@ TEST_F(TemplateURLTest, ContextualSearchParameters) {
   search_terms_args.contextual_search_params =
       TemplateURLRef::SearchTermsArgs::ContextualSearchParams(
           2, 1, std::string(), 0, 0, true, std::string(), std::string(),
-          "es,de", std::string(), false);
+          "es,de", std::string(), false, false);
   result =
       url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_);
   // Find our param.  These may actually be URL encoded.
@@ -2354,7 +2386,7 @@ TEST_F(TemplateURLTest, ContextualSearchParameters) {
   search_terms_args.contextual_search_params =
       TemplateURLRef::SearchTermsArgs::ContextualSearchParams(
           2, 1, std::string(), 0, 0, true, std::string(), std::string(),
-          std::string(), "1RbCu", false);
+          std::string(), "1RbCu", false, false);
   result =
       url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_);
   // Find our param.
@@ -2365,12 +2397,22 @@ TEST_F(TemplateURLTest, ContextualSearchParameters) {
   search_terms_args.contextual_search_params =
       TemplateURLRef::SearchTermsArgs::ContextualSearchParams(
           2, 1, std::string(), 0, 0, true, std::string(), std::string(),
-          std::string(), std::string(), true);
+          std::string(), std::string(), true, false);
   result =
       url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_);
   // Find our param.
   size_t ctxsl_applylh = result.find("&ctxsl_applylh=1");
   EXPECT_NE(ctxsl_applylh, std::string::npos);
+
+  // Test use_snippet_as_subtitle.
+  search_terms_args.contextual_search_params =
+      TemplateURLRef::SearchTermsArgs::ContextualSearchParams(
+          2, 1, std::string(), 0, 0, true, std::string(), std::string(),
+          std::string(), std::string(), false, true);
+  result =
+      url.url_ref().ReplaceSearchTerms(search_terms_args, search_terms_data_);
+  size_t ctxs_usas = result.find("&ctxs_usas=1");
+  EXPECT_NE(ctxs_usas, std::string::npos);
 }
 
 TEST_F(TemplateURLTest, GenerateKeyword) {
@@ -2543,14 +2585,183 @@ TEST_F(TemplateURLTest, GenerateSearchURL) {
   }
 }
 
-TEST_F(TemplateURLTest, GenerateURL_NoRegulatoryExtensions) {
-#if BUILDFLAG(IS_ANDROID)
-  // Disable the chrome_dse_attribution parameter from being added on Android.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      switches::kRemoveSearchEngineChoiceAttribution);
-#endif
+TEST_F(TemplateURLTest, GenerateURL_WithSuggestPath) {
+  TemplateURLData data;
+  data.suggestions_url = "https://foo/{google:suggestPath}?q={searchTerms}";
 
+  SearchTermsData search_terms_data;
+  TemplateURLRef::SearchTermsArgs search_terms_args(u"user query");
+
+  {
+    omnibox_feature_configs::ScopedConfigForTesting<
+        omnibox_feature_configs::SuggestPathClientConfig>
+        scoped_config;
+    base::test::ScopedFeatureList features;
+    features.InitAndDisableFeature(
+        omnibox_feature_configs::SuggestPathClientConfig::
+            kUseShortSuggestPathV1);
+    scoped_config.Reset();
+
+    TemplateURL turl(data);
+    std::string result_url = turl.suggestions_url_ref().ReplaceSearchTerms(
+        search_terms_args, search_terms_data);
+    EXPECT_EQ("https://foo/search?q=user+query", result_url);
+  }
+
+  {
+    omnibox_feature_configs::ScopedConfigForTesting<
+        omnibox_feature_configs::SuggestPathClientConfig>
+        scoped_config;
+    base::test::ScopedFeatureList features;
+    features.InitAndEnableFeature(
+        omnibox_feature_configs::SuggestPathClientConfig::
+            kUseShortSuggestPathV1);
+    scoped_config.Reset();
+
+    TemplateURL turl(data);
+    std::string result_url = turl.suggestions_url_ref().ReplaceSearchTerms(
+        search_terms_args, search_terms_data);
+    EXPECT_EQ("https://foo/s?q=user+query", result_url);
+  }
+}
+
+// Regression test for crbug.com/509932193.
+// Verifies that structural placeholders can be parsed even when FeatureList is
+// not yet initialized.
+TEST_F(TemplateURLTest, SupportsReplacement_NoFeatureList) {
+  // Use ScopedFeatureList to ensure we restore the original state.
+  base::test::ScopedFeatureList scoped_feature_list;
+
+  // Clear the global FeatureList and FieldTrialList.
+  scoped_feature_list.InitWithNullFeatureAndFieldTrialLists();
+
+  // Reset the early feature access tracker to ensure a clean state.
+  base::FeatureList::ResetEarlyFeatureAccessTrackerForTesting();
+
+  // This is what happens in the browser process to prevent early access.
+  base::FeatureList::FailOnFeatureAccessWithoutFeatureList();
+
+  TemplateURLData data;
+  data.suggestions_url = "https://foo/{google:suggestPath}?q={searchTerms}";
+  TemplateURL turl(data);
+
+  // This should NOT crash.
+  EXPECT_TRUE(
+      turl.suggestions_url_ref().SupportsReplacement(search_terms_data_));
+
+  // Cleanup: Reset EarlyFeatureAccessTracker. ScopedFeatureList will restore
+  // the previous FeatureList instance in its destructor.
+  base::FeatureList::ResetEarlyFeatureAccessTrackerForTesting();
+}
+
+TEST_F(TemplateURLTest, GenerateURL_WithSuggestPathAndClientParam) {
+  TemplateURLData data;
+  data.suggestions_url =
+      "https://foo/"
+      "{google:suggestPath}?q={searchTerms}&client={google:suggestClient}";
+
+  SearchTermsData search_terms_data;
+  TemplateURLRef::SearchTermsArgs search_terms_args(u"user query");
+  search_terms_args.request_source = SearchTermsData::RequestSource::SEARCHBOX;
+  const std::string expected_client =
+      TemplateURL::GetSuggestionClient(search_terms_args);
+
+  {
+    omnibox_feature_configs::ScopedConfigForTesting<
+        omnibox_feature_configs::SuggestPathClientConfig>
+        scoped_config;
+    base::test::ScopedFeatureList features;
+    features.InitAndEnableFeature(
+        omnibox_feature_configs::SuggestPathClientConfig::
+            kUseShortSuggestPathV1);
+    scoped_config.Reset();
+
+    TemplateURL turl(data);
+    std::string result_url = turl.suggestions_url_ref().ReplaceSearchTerms(
+        search_terms_args, search_terms_data);
+    EXPECT_EQ(base::StringPrintf("https://foo/s?q=user+query&client=%s",
+                                 expected_client),
+              result_url);
+  }
+
+  {
+    omnibox_feature_configs::ScopedConfigForTesting<
+        omnibox_feature_configs::SuggestPathClientConfig>
+        scoped_config;
+    base::test::ScopedFeatureList features;
+    features.InitAndEnableFeatureWithParameters(
+        omnibox_feature_configs::SuggestPathClientConfig::
+            kUseShortSuggestPathV1,
+        {{"OmniboxSuggestPathClient",
+          base::StringPrintf("test-client,%s", expected_client)}});
+    scoped_config.Reset();
+
+    TemplateURL turl(data);
+    std::string result_url = turl.suggestions_url_ref().ReplaceSearchTerms(
+        search_terms_args, search_terms_data);
+    EXPECT_EQ(base::StringPrintf("https://foo/s?q=user+query&client=%s",
+                                 expected_client),
+              result_url);
+  }
+
+  {
+    omnibox_feature_configs::ScopedConfigForTesting<
+        omnibox_feature_configs::SuggestPathClientConfig>
+        scoped_config;
+    base::test::ScopedFeatureList features;
+    features.InitAndEnableFeatureWithParameters(
+        omnibox_feature_configs::SuggestPathClientConfig::
+            kUseShortSuggestPathV1,
+        {{"OmniboxSuggestPathClient", "test-client"}});
+    scoped_config.Reset();
+
+    TemplateURL turl(data);
+    std::string result_url = turl.suggestions_url_ref().ReplaceSearchTerms(
+        search_terms_args, search_terms_data);
+    EXPECT_EQ(base::StringPrintf("https://foo/search?q=user+query&client=%s",
+                                 expected_client),
+              result_url);
+  }
+
+  {
+    omnibox_feature_configs::ScopedConfigForTesting<
+        omnibox_feature_configs::SuggestPathClientConfig>
+        scoped_config;
+    base::test::ScopedFeatureList features;
+    features.InitAndEnableFeatureWithParameters(
+        omnibox_feature_configs::SuggestPathClientConfig::
+            kUseShortSuggestPathV1,
+        {{"OmniboxSuggestPathClient", ""}});
+    scoped_config.Reset();
+
+    TemplateURL turl(data);
+    std::string result_url = turl.suggestions_url_ref().ReplaceSearchTerms(
+        search_terms_args, search_terms_data);
+    EXPECT_EQ(base::StringPrintf("https://foo/s?q=user+query&client=%s",
+                                 expected_client),
+              result_url);
+  }
+
+  {
+    omnibox_feature_configs::ScopedConfigForTesting<
+        omnibox_feature_configs::SuggestPathClientConfig>
+        scoped_config;
+    base::test::ScopedFeatureList features;
+    features.InitAndDisableFeature(
+        omnibox_feature_configs::SuggestPathClientConfig::
+            kUseShortSuggestPathV1);
+    scoped_config.Reset();
+
+    TemplateURL turl(data);
+    std::string result_url = turl.suggestions_url_ref().ReplaceSearchTerms(
+        search_terms_args, search_terms_data);
+    EXPECT_EQ(base::StringPrintf("https://foo/search?q=user+query&client=%s",
+                                 expected_client),
+              result_url);
+  }
+}
+
+TEST_F(TemplateURLTest, GenerateURL_NoRegulatoryExtensions) {
   TemplateURLData data;
   data.SetURL("https://search?q={searchTerms}");
   data.suggestions_url = "https://suggest?q={searchTerms}";
@@ -2568,7 +2779,7 @@ TEST_F(TemplateURLTest, GenerateURL_NoRegulatoryExtensions) {
   }
 
   {
-    data.created_from_play_api = true;
+    data.regulatory_origin = RegulatoryExtensionType::kAndroidEEA;
     TemplateURL t_url(data);
 
     EXPECT_EQ(t_url.GenerateSearchURL(search_terms_data_, u"user query").spec(),
@@ -2580,13 +2791,6 @@ TEST_F(TemplateURLTest, GenerateURL_NoRegulatoryExtensions) {
 }
 
 TEST_F(TemplateURLTest, GenerateURL_WithEmptyRegulatoryExtensions) {
-#if BUILDFLAG(IS_ANDROID)
-  // Disable the chrome_dse_attribution parameter from being added on Android.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      switches::kRemoveSearchEngineChoiceAttribution);
-#endif
-
   TemplateURLData::RegulatoryExtension default_ext{
       .variant = RegulatoryExtensionType::kDefault,
   };
@@ -2614,7 +2818,7 @@ TEST_F(TemplateURLTest, GenerateURL_WithEmptyRegulatoryExtensions) {
   }
 
   {
-    data.created_from_play_api = true;
+    data.regulatory_origin = RegulatoryExtensionType::kAndroidEEA;
     TemplateURL t_url(data);
 
     EXPECT_EQ(t_url.GenerateSearchURL(search_terms_data_, u"user query").spec(),
@@ -2626,13 +2830,6 @@ TEST_F(TemplateURLTest, GenerateURL_WithEmptyRegulatoryExtensions) {
 }
 
 TEST_F(TemplateURLTest, GenerateURL_WithFullRegulatoryExtensions) {
-#if BUILDFLAG(IS_ANDROID)
-  // Disable the chrome_dse_attribution parameter from being added on Android.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      switches::kRemoveSearchEngineChoiceAttribution);
-#endif
-
   TemplateURLData::RegulatoryExtension default_ext{
       .variant = RegulatoryExtensionType::kDefault,
       .search_params = "default_search_param=123",
@@ -2675,7 +2872,7 @@ TEST_F(TemplateURLTest, GenerateURL_WithFullRegulatoryExtensions) {
   }
 
   {
-    data.created_from_play_api = true;
+    data.regulatory_origin = RegulatoryExtensionType::kAndroidEEA;
     TemplateURL t_url(data);
     const char* expected_search_url =
         "https://search/?q=user+query&eea_search_param=abc";
@@ -2703,13 +2900,6 @@ TEST_F(TemplateURLTest, GenerateURL_WithFullRegulatoryExtensions) {
 
 TEST_F(TemplateURLTest,
        ReplaceSearchTerms_NoRegulatoryExpansionForUnsupportedUrls) {
-#if BUILDFLAG(IS_ANDROID)
-  // Disable the chrome_dse_attribution parameter from being added on Android.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      switches::kRemoveSearchEngineChoiceAttribution);
-#endif
-
   TemplateURLData::RegulatoryExtension default_ext{
       .variant = RegulatoryExtensionType::kDefault,
       .search_params = "default_search_param=123",
@@ -2756,7 +2946,7 @@ TEST_F(TemplateURLTest,
   }
 
   {
-    data.created_from_play_api = true;
+    data.regulatory_origin = RegulatoryExtensionType::kAndroidEEA;
     TemplateURL t_url(data);
 
     base::HistogramTester histogram_tester;
@@ -2811,7 +3001,7 @@ TEST_F(TemplateURLTest, GenerateURL_RegulatoryExtensionVariantHistograms) {
   }
 
   {
-    data.created_from_play_api = true;
+    data.regulatory_origin = RegulatoryExtensionType::kAndroidEEA;
     TemplateURL t_url(data);
 
     {
@@ -3080,6 +3270,112 @@ TEST_F(TemplateURLTest, ImageSearchBrandingLabel) {
   EXPECT_EQ(u"fooimages", image_branding_url.image_search_branding_label());
 }
 
+TEST_F(TemplateURLTest, GetBuiltinImageResourceId_FromPrepopulatedEngine) {
+  std::unique_ptr<TemplateURLData> t_url_data =
+      TemplateURLDataFromPrepopulatedEngine(TemplateURLPrepopulateData::google);
+  TemplateURL t_url(*t_url_data.get());
+
+  std::string expected_resource_id = kEnableBuiltinSearchProviderAssets
+                                         ? "IDR_SEARCH_ENGINE_GOOGLE_IMAGE"
+                                         : "IDR_DEFAULT_FAVICON";
+  EXPECT_EQ(t_url.GetBuiltinImageResourceId(), expected_resource_id);
+}
+
+TEST_F(TemplateURLTest,
+       GetBuiltinImageResourceId_FromPrepopulatedEngineWithoutResources) {
+  // Relies on Baidu not having built-in resources, the test would start failing
+  // if that changes.
+  std::unique_ptr<TemplateURLData> t_url_data =
+      TemplateURLDataFromPrepopulatedEngine(TemplateURLPrepopulateData::baidu);
+  TemplateURL t_url(*t_url_data.get());
+  EXPECT_EQ(t_url.GetBuiltinImageResourceId(), "IDR_DEFAULT_FAVICON");
+}
+
+TEST_F(TemplateURLTest, GetBuiltinImageResourceId_FromAssignedData) {
+  TemplateURLData data;
+  data.prepopulate_id = TemplateURLPrepopulateData::google.id;
+  TemplateURL t_url(data);
+
+  std::string expected_resource_id = kEnableBuiltinSearchProviderAssets
+                                         ? "IDR_SEARCH_ENGINE_GOOGLE_IMAGE"
+                                         : "IDR_DEFAULT_FAVICON";
+  EXPECT_EQ(t_url.GetBuiltinImageResourceId(), expected_resource_id);
+}
+
+TEST_F(TemplateURLTest, GetBuiltinImageResourceId_FromCustomEngine) {
+  TemplateURLData data;
+  data.SetShortName(TemplateURLPrepopulateData::google.name);
+  data.SetKeyword(TemplateURLPrepopulateData::google.keyword);
+  data.SetURL(TemplateURLPrepopulateData::google.search_url);
+  TemplateURL t_url(data);
+
+  EXPECT_EQ(t_url.GetBuiltinImageResourceId(), "IDR_DEFAULT_FAVICON");
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(TemplateURLTest, GetMarketingSnippet_Custom) {
+  std::u16string engine_name = u"My Custom Engine";
+  TemplateURLData custom_data;
+  custom_data.SetShortName(engine_name);
+  custom_data.SetKeyword(u"custom.com");
+  TemplateURL custom_url(custom_data);
+  EXPECT_NE(custom_url.GetMarketingSnippet().find(engine_name),
+            std::u16string::npos);
+}
+#endif
+
+TEST_F(TemplateURLTest, GetBuiltinImageResourceId_YahooJpBranded) {
+  // Test relevant for this special case of prepopulated search engines data. If
+  // these preconditions turn out false, consider removing the test, and maybe
+  // the associated logic too.
+  ASSERT_EQ(TemplateURLPrepopulateData::yahoo_jp.id,
+            TemplateURLPrepopulateData::yahoo_fr.id);
+  ASSERT_NE(TemplateURLPrepopulateData::yahoo_jp.keyword,
+            TemplateURLPrepopulateData::yahoo_fr.keyword);
+  ASSERT_NE(TemplateURLPrepopulateData::yahoo_jp.base_builtin_resource_id,
+            TemplateURLPrepopulateData::yahoo_fr.base_builtin_resource_id);
+
+  TemplateURLData data;
+  data.prepopulate_id = TemplateURLPrepopulateData::yahoo_jp.id;
+  data.SetKeyword(TemplateURLPrepopulateData::yahoo_jp.keyword);
+  TemplateURL t_url(data);
+
+  if constexpr (kEnableBuiltinSearchProviderAssets) {
+    EXPECT_NE(
+        t_url.GetBuiltinImageResourceId().find(
+            TemplateURLPrepopulateData::yahoo_jp.base_builtin_resource_id),
+        std::u16string::npos);
+  } else {
+    EXPECT_EQ(t_url.GetBuiltinImageResourceId(), "IDR_DEFAULT_FAVICON");
+  }
+}
+
+TEST_F(TemplateURLTest, GetBuiltinImageResourceId_YahooFrBranded) {
+  // Test relevant for this special case of prepopulated search engines data. If
+  // these preconditions turn out false, consider removing the test, and maybe
+  // the associated logic too.
+  ASSERT_EQ(TemplateURLPrepopulateData::yahoo_jp.id,
+            TemplateURLPrepopulateData::yahoo_fr.id);
+  ASSERT_NE(TemplateURLPrepopulateData::yahoo_jp.keyword,
+            TemplateURLPrepopulateData::yahoo_fr.keyword);
+  ASSERT_NE(TemplateURLPrepopulateData::yahoo_jp.base_builtin_resource_id,
+            TemplateURLPrepopulateData::yahoo_fr.base_builtin_resource_id);
+
+  TemplateURLData data;
+  data.prepopulate_id = TemplateURLPrepopulateData::yahoo_fr.id;
+  data.SetKeyword(TemplateURLPrepopulateData::yahoo_fr.keyword);
+  TemplateURL t_url(data);
+
+  if constexpr (kEnableBuiltinSearchProviderAssets) {
+    EXPECT_NE(
+        t_url.GetBuiltinImageResourceId().find(
+            TemplateURLPrepopulateData::yahoo_fr.base_builtin_resource_id),
+        std::u16string::npos);
+  } else {
+    EXPECT_EQ(t_url.GetBuiltinImageResourceId(), "IDR_DEFAULT_FAVICON");
+  }
+}
+
 struct IsBetterThanEngineTestEngine {
   std::u16string keyword;
   PolicyOrigin policy_origin = PolicyOrigin::kNoPolicy;
@@ -3285,4 +3581,40 @@ TEST_P(TemplateURLIsBetterThanEngineTest, Compare) {
   TemplateURL worse = CreateEngineFromTestEngine(GetParam().worse_engine);
   EXPECT_TRUE(better.IsBetterThanConflictingEngine(&worse));
   EXPECT_FALSE(worse.IsBetterThanConflictingEngine(&better));
+}
+
+TEST_F(TemplateURLTest, RequiresRemovalConfirmation) {
+  {
+    TemplateURLData data;
+    data.prepopulate_id = 1;
+    TemplateURL url(data);
+    EXPECT_TRUE(url.RequiresRemovalConfirmation());
+  }
+  {
+    TemplateURLData data;
+    data.prepopulate_id = 0;
+    TemplateURL url(data);
+    EXPECT_FALSE(url.RequiresRemovalConfirmation());
+  }
+  {
+    TemplateURLData data;
+    data.prepopulate_id = 0;
+    data.policy_origin = TemplateURLData::PolicyOrigin::kSiteSearch;
+    TemplateURL url(data);
+    EXPECT_TRUE(url.RequiresRemovalConfirmation());
+  }
+  {
+    TemplateURLData data;
+    data.prepopulate_id = 0;
+    data.policy_origin = TemplateURLData::PolicyOrigin::kDefaultSearchProvider;
+    TemplateURL url(data);
+    EXPECT_FALSE(url.RequiresRemovalConfirmation());
+  }
+  {
+    TemplateURLData data;
+    data.prepopulate_id = 0;
+    data.policy_origin = TemplateURLData::PolicyOrigin::kSearchAggregator;
+    TemplateURL url(data);
+    EXPECT_TRUE(url.RequiresRemovalConfirmation());
+  }
 }

@@ -10,7 +10,8 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.embedder_support.util.Origin;
 
@@ -22,6 +23,7 @@ import org.chromium.components.embedder_support.util.Origin;
  * Thread safety: Methods will only be called on the UI thread.
  * Native: Requires native to be loaded.
  */
+@NullMarked
 public class InstalledWebappBridge {
     private static long sNativeInstalledWebappProvider;
 
@@ -29,19 +31,24 @@ public class InstalledWebappBridge {
      * A POD class to store the combination of a permission setting and the origin the permission is
      * relevant for.
      *
-     * It would make more sense for this to be a subclass of
-     * {@link InstalledWebappPermissionManager} or a top level class. Unfortunately for the JNI
-     * tool to be able to handle passing a class over the JNI boundary the class either needs to be
-     * in this file or imported explicitly. Our presubmits don't like explicitly importing classes
-     * that we don't need to, so it's easier to just let the class live here.
+     * <p>It would make more sense for this to be a subclass of {@link
+     * InstalledWebappPermissionManager} or a top level class. Unfortunately for the JNI tool to be
+     * able to handle passing a class over the JNI boundary the class either needs to be in this
+     * file or imported explicitly. Our presubmits don't like explicitly importing classes that we
+     * don't need to, so it's easier to just let the class live here.
      */
     static class Permission {
         public final Origin origin;
-        public final @ContentSettingValues int setting;
+        // The primary permission setting. For Geolocation, this represents the approximate setting.
+        public final @ContentSetting int setting;
+        // The precise permission setting. Only used for Geolocation.
+        public final @ContentSetting int preciseSetting;
 
-        public Permission(Origin origin, @ContentSettingValues int setting) {
+        public Permission(
+                Origin origin, @ContentSetting int setting, @ContentSetting int preciseSetting) {
             this.origin = origin;
             this.setting = setting;
+            this.preciseSetting = preciseSetting;
         }
     }
 
@@ -52,8 +59,7 @@ public class InstalledWebappBridge {
                 .notifyPermissionsChange(sNativeInstalledWebappProvider, type);
     }
 
-    public static void runPermissionCallback(
-            long callback, @ContentSettingValues int settingValue) {
+    public static void runPermissionCallback(long callback, @ContentSetting int settingValue) {
         if (callback == 0) return;
 
         InstalledWebappBridgeJni.get().runPermissionCallback(callback, settingValue);
@@ -80,6 +86,11 @@ public class InstalledWebappBridge {
     }
 
     @CalledByNative
+    private static int getPreciseSettingFromPermission(Permission permission) {
+        return permission.preciseSetting;
+    }
+
+    @CalledByNative
     private static void decidePermission(
             @ContentSettingsType.EnumType int type,
             @JniType("std::string") String originUrl,
@@ -87,11 +98,12 @@ public class InstalledWebappBridge {
             long callback) {
         Origin origin = Origin.create(Uri.parse(originUrl));
         if (origin == null) {
-            runPermissionCallback(callback, ContentSettingValues.BLOCK);
+            runPermissionCallback(callback, ContentSetting.BLOCK);
             return;
         }
         switch (type) {
             case ContentSettingsType.GEOLOCATION:
+            case ContentSettingsType.GEOLOCATION_WITH_OPTIONS:
                 PermissionUpdater.getLocationPermission(origin, lastCommittedUrl, callback);
                 break;
             case ContentSettingsType.NOTIFICATIONS:
@@ -106,6 +118,6 @@ public class InstalledWebappBridge {
     interface Natives {
         void notifyPermissionsChange(long provider, int type);
 
-        void runPermissionCallback(long callback, @ContentSettingValues int settingValue);
+        void runPermissionCallback(long callback, @ContentSetting int settingValue);
     }
 }

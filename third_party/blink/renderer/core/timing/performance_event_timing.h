@@ -6,10 +6,12 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_PERFORMANCE_EVENT_TIMING_H_
 
 #include "third_party/blink/public/common/input/pointer_id.h"
+#include "third_party/blink/public/common/responsiveness_metrics/user_interaction_latency.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/dom_high_res_time_stamp.h"
 #include "third_party/blink/renderer/core/timing/performance.h"
 #include "third_party/blink/renderer/core/timing/performance_entry.h"
+#include "third_party/blink/renderer/core/timing/performance_timeline_entry_id_generator.h"
 
 namespace perfetto::protos::pbzero {
 class EventTiming;
@@ -17,7 +19,20 @@ class EventTiming;
 
 namespace blink {
 
+class EventTarget;
 class Frame;
+
+enum class FallbackReason {
+  kNone,
+  kUnexpectedFrameSource,
+  kVisibilityChange,
+  kModalDialog,
+  kSwapPromiseBroken,
+  kMacOSArtificialEvent,
+  kDoesNotNeedNextPaint,
+  kWindowDestroyed,
+  kInteractionInterruptedByContextMenu,
+};
 
 class CORE_EXPORT PerformanceEventTiming final : public PerformanceEntry {
   DEFINE_WRAPPERTYPEINFO();
@@ -25,12 +40,16 @@ class CORE_EXPORT PerformanceEventTiming final : public PerformanceEntry {
  public:
   // Information used for event timing reporting purpose only.
   struct EventTimingReportingInfo {
-    // Presentation promise index in which the entry in |event_timing_| was
-    // added.
-    uint64_t presentation_index = 0;
+    // The reason(s) why fallback time was used.
+    FallbackReason fallback_reason = FallbackReason::kNone;
+
+    // |frane_index| in which the entry in |event_timing_| was first created.
+    // This value starts at 1, and increments with each new "frame group".  See
+    // the documentation for |current_frame_index_| in window_performance.cc.
+    uint64_t frame_index = 0;
 
     // The event creation timestamp. This and the times below are the
-    // exact (non-rounded) monotonic timestamps. They are used for repoerting.
+    // exact (non-rounded) monotonic timestamps. They are used for reporting.
     // They should not be exposed to performance observer API entries for
     // security and privacy reasons.
     base::TimeTicks creation_time;
@@ -77,21 +96,28 @@ class CORE_EXPORT PerformanceEventTiming final : public PerformanceEntry {
     bool is_processing_fully_nested_in_another_event = false;
   };
 
-  static PerformanceEventTiming* Create(const AtomicString& event_type,
-                                        EventTimingReportingInfo reporting_info,
-                                        bool cancelable,
-                                        Node* target,
-                                        DOMWindow* source);
+  static PerformanceEventTiming* Create(
+      const AtomicString& event_type,
+      EventTimingReportingInfo,
+      bool cancelable,
+      DOMWindow*,
+      uint64_t navigation_id,
+      std::optional<PerformanceTimelineEntryIdInfo> interaction_id =
+          std::nullopt);
 
   static PerformanceEventTiming* CreateFirstInputTiming(
       PerformanceEventTiming* entry);
 
+  static String FallbackReasonToString(FallbackReason reason);
+
   PerformanceEventTiming(const AtomicString& event_type,
                          const AtomicString& entry_type,
-                         EventTimingReportingInfo repoerting_info,
+                         EventTimingReportingInfo,
                          bool cancelable,
-                         Node* target,
-                         DOMWindow* source);
+                         DOMWindow*,
+                         uint64_t navigation_id,
+                         std::optional<PerformanceTimelineEntryIdInfo>
+                             interaction_id = std::nullopt);
 
   ~PerformanceEventTiming() override;
 
@@ -105,26 +131,44 @@ class CORE_EXPORT PerformanceEventTiming final : public PerformanceEntry {
 
   Node* target() const;
 
-  void SetTarget(Node* target);
+  void SetTarget(EventTarget* target);
+  void SetTargetSelector(const AtomicString& selector);
 
   uint64_t interactionId() const;
+  UserInteractionType InteractionType() const;
 
-  void SetInteractionId(uint64_t interaction_id);
+  std::optional<PerformanceTimelineEntryIdInfo> GetInteractionIdInfo() const {
+    if (reporting_info_.prevent_counting_as_interaction) {
+      return PerformanceTimelineEntryIdInfo::kNone;
+    }
+    return interaction_id_;
+  }
 
-  bool HasKnownInteractionID() const;
+  void SetInteractionIdInfo(PerformanceTimelineEntryIdInfo interaction_id) {
+    interaction_id_ = interaction_id;
+  }
+
+  bool HasInteractionId() const;
+  bool IsInteraction() const {
+    return GetInteractionIdInfo().has_value() &&
+           GetInteractionIdInfo() != PerformanceTimelineEntryIdInfo::kNone;
+  }
+
+  const AtomicString& targetSelector() const;
 
   bool HasKnownEndTime() const;
 
   bool IsReadyForReporting() const;
 
+
+  base::TimeTicks GetStartTime() const;
   base::TimeTicks GetEndTime() const;
 
-  void UpdateFallbackTime(base::TimeTicks fallback_time);
+  base::TimeDelta GetExactDuration() const {
+    return GetEndTime() - GetStartTime();
+  }
 
-  uint32_t interactionOffset() const;
-
-  void SetInteractionIdAndOffset(uint32_t interaction_id,
-                                 uint32_t interaction_offset);
+  void UpdateFallbackTime(base::TimeTicks fallback_time, FallbackReason reason);
 
   void SetDuration(double duration);
 
@@ -143,6 +187,9 @@ class CORE_EXPORT PerformanceEventTiming final : public PerformanceEntry {
   EventTimingReportingInfo* GetEventTimingReportingInfo() {
     return &reporting_info_;
   }
+  const EventTimingReportingInfo* GetEventTimingReportingInfo() const {
+    return &reporting_info_;
+  }
 
   bool NeedsNextPaintMeasurement() const;
 
@@ -152,8 +199,8 @@ class CORE_EXPORT PerformanceEventTiming final : public PerformanceEntry {
   mutable DOMHighResTimeStamp processing_end_ = 0;
   bool cancelable_;
   WeakMember<Node> target_;
-  std::optional<uint64_t> interaction_id_ = std::nullopt;
-  uint32_t interaction_offset_ = 0;
+  AtomicString target_selector_;
+  std::optional<PerformanceTimelineEntryIdInfo> interaction_id_;
 
   EventTimingReportingInfo reporting_info_;
 };

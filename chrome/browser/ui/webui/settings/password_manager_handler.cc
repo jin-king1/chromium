@@ -4,7 +4,8 @@
 
 #include "chrome/browser/ui/webui/settings/password_manager_handler.h"
 
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
 
 namespace settings {
@@ -32,21 +33,22 @@ void PasswordManagerHandler::RegisterMessages() {
 }
 
 void PasswordManagerHandler::HandleShowPasswordManager(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   CHECK_EQ(1U, args.size());
   int page = args[0].GetInt();
 
-  Browser* current_broswer =
-      chrome::FindBrowserWithTab(web_ui()->GetWebContents());
-  CHECK(current_broswer);
+  BrowserWindowInterface* const current_browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+          web_ui()->GetWebContents());
+  CHECK(current_browser);
 
   switch (PasswordManagerPage(page)) {
     case PasswordManagerPage::kPasswords:
-      chrome::ShowPasswordManager(current_broswer);
+      chrome::ShowPasswordManager(current_browser);
       return;
     case PasswordManagerPage::kCheckup:
-      chrome::ShowPasswordCheck(current_broswer);
+      chrome::ShowPasswordCheck(current_browser);
       return;
     default:
       NOTREACHED();

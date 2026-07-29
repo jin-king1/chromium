@@ -8,7 +8,6 @@
 
 #include "ash/public/cpp/accelerator_actions.h"
 #include "ash/public/cpp/accelerators_util.h"
-#include "ash/public/mojom/accelerator_info.mojom-shared.h"
 #include "ash/public/mojom/accelerator_info.mojom.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "base/check_op.h"
@@ -311,6 +310,9 @@ const NonConfigurableActionsMap& GetNonConfigurableActionsMap() {
            NonConfigurableAcceleratorDetails(
                {ui::Accelerator(ui::VKEY_BROWSER_BACK,
                                 ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN)})},
+          {NonConfigurableActions::kBrowserNewSplitView,
+           NonConfigurableAcceleratorDetails({ui::Accelerator(
+               ui::VKEY_N, ui::EF_CONTROL_DOWN | ui::EF_ALT_DOWN)})},
           {NonConfigurableActions::kAmbientOpenRightClickMenu,
            NonConfigurableAcceleratorDetails(
                {ui::Accelerator(ui::VKEY_F10, ui::EF_SHIFT_DOWN)})},
@@ -545,7 +547,7 @@ const AcceleratorLayoutMap& GetAcceleratorLayoutMap() {
             IDS_ASH_ACCELERATOR_DESCRIPTION_ENABLE_SELECT_TO_SPEAK,
             mojom::AcceleratorCategory::kAccessibility,
             mojom::AcceleratorSubcategory::kVisibility,
-            /*locked=*/true, mojom::AcceleratorLayoutStyle::kDefault,
+            /*locked=*/false, mojom::AcceleratorLayoutStyle::kDefault,
             mojom::AcceleratorSource::kAsh)},
        {AcceleratorAction::kEnableOrToggleDictation,
         AcceleratorLayoutDetails(
@@ -559,6 +561,14 @@ const AcceleratorLayoutMap& GetAcceleratorLayoutMap() {
         AcceleratorLayoutDetails(
             AcceleratorAction::kStartAssistant,
             IDS_ASH_ACCELERATOR_DESCRIPTION_START_ASSISTANT,
+            mojom::AcceleratorCategory::kGeneral,
+            mojom::AcceleratorSubcategory::kGeneralControls,
+            /*locked=*/false, mojom::AcceleratorLayoutStyle::kDefault,
+            mojom::AcceleratorSource::kAsh)},
+       {AcceleratorAction::kStartSunfishSession,
+        AcceleratorLayoutDetails(
+            AcceleratorAction::kStartSunfishSession,
+            IDS_ASH_ACCELERATOR_DESCRIPTION_START_SUNFISH_SESSION_ALT,
             mojom::AcceleratorCategory::kGeneral,
             mojom::AcceleratorSubcategory::kGeneralControls,
             /*locked=*/false, mojom::AcceleratorLayoutStyle::kDefault,
@@ -1359,6 +1369,14 @@ const AcceleratorLayoutMap& GetAcceleratorLayoutMap() {
             mojom::AcceleratorSubcategory::kDeveloperTools,
             /*locked=*/true, mojom::AcceleratorLayoutStyle::kDefault,
             mojom::AcceleratorSource::kAmbient)},
+       {NonConfigurableActions::kBrowserNewSplitView,
+        AcceleratorLayoutDetails(NonConfigurableActions::kBrowserNewSplitView,
+                                 IDS_ASH_ACCELERATOR_DESCRIPTION_NEW_SPLIT_VIEW,
+                                 mojom::AcceleratorCategory::kBrowser,
+                                 mojom::AcceleratorSubcategory::kTabs,
+                                 /*locked=*/true,
+                                 mojom::AcceleratorLayoutStyle::kDefault,
+                                 mojom::AcceleratorSource::kAmbient)},
 
        // Text
        {NonConfigurableActions::kAmbientGoToBeginningOfDocument,
@@ -1417,8 +1435,8 @@ const AcceleratorLayoutMap& GetAcceleratorLayoutMap() {
             mojom::AcceleratorSubcategory::kTextEditing,
             /*locked=*/true, mojom::AcceleratorLayoutStyle::kDefault,
             mojom::AcceleratorSource::kAsh)},
-       {AcceleratorAction::kTogglePicker,
-        AcceleratorLayoutDetails(AcceleratorAction::kTogglePicker,
+       {AcceleratorAction::kToggleQuickInsert,
+        AcceleratorLayoutDetails(AcceleratorAction::kToggleQuickInsert,
                                  IDS_ASH_ACCELERATOR_DESCRIPTION_QUICK_INSERT,
                                  mojom::AcceleratorCategory::kText,
                                  mojom::AcceleratorSubcategory::kTextEditing,
@@ -1635,10 +1653,10 @@ const AcceleratorLayoutMap& GetAcceleratorLayoutMap() {
             mojom::AcceleratorSubcategory::kWindows,
             /*locked=*/false, mojom::AcceleratorLayoutStyle::kDefault,
             mojom::AcceleratorSource::kAsh)},
-       {AcceleratorAction::kCreateSnapGroup,
+       {AcceleratorAction::kToggleSnapGroup,
         AcceleratorLayoutDetails(
-            AcceleratorAction::kCreateSnapGroup,
-            IDS_ASH_ACCELERATOR_DESCRIPTION_CREATE_SNAP_GROUP,
+            AcceleratorAction::kToggleSnapGroup,
+            IDS_ASH_ACCELERATOR_DESCRIPTION_TOGGLE_SNAP_GROUP,
             mojom::AcceleratorCategory::kWindowsAndDesks,
             mojom::AcceleratorSubcategory::kWindows,
             /*locked=*/false, mojom::AcceleratorLayoutStyle::kDefault,

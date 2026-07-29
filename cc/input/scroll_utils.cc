@@ -36,4 +36,40 @@ gfx::Vector2dF ScrollUtils::ResolveScrollPercentageToPixels(
                         std::copysign(delta_y, sign_y));
 }
 
+// static
+int ScrollUtils::CalculateMinPageSnap(int length) {
+  const int min_page_step = length * kMinFractionToStepWhenSnapPaging;
+  return std::max(min_page_step, 1);
+}
+
+// static
+int ScrollUtils::CalculateMaxPageSnap(int length) {
+  return std::max(length, 1);
+}
+
+// static
+int ScrollUtils::CalculatePageStep(int length) {
+  const int min_page_step = length * kMinFractionToStepWhenPaging;
+  const int page_step =
+      std::max(min_page_step, length - kMaxOverlapBetweenPages);
+  return std::max(page_step, 1);
+}
+
+// static
+int ScrollUtils::CalculateScrollbarThumbLength(int total_size,
+                                               int visible_size,
+                                               int track_length,
+                                               int minimum_thumb_length) {
+  float proportion = 0.0f;
+  if (total_size > 0) {
+    proportion = static_cast<float>(visible_size) / total_size;
+  }
+  int length = round(proportion * track_length);
+  length = std::max(length, minimum_thumb_length);
+  if (length > track_length) {
+    length = track_length;
+  }
+  return length;
+}
+
 }  // namespace cc

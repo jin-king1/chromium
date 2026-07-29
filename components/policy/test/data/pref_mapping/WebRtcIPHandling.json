@@ -1,26 +1,18 @@
 [
   {
-    "can_be_recommended": false,
     "os": [
       "win",
       "linux",
       "mac",
-      "chromeos_ash",
-      "chromeos_lacros",
+      "chromeos",
       "fuchsia"
     ],
-    "policy_pref_mapping_tests": [
-      {
-        "policies": {
-          "WebRtcIPHandling": "default_public_interface_only"
-        },
-        "prefs": {
-          "webrtc.ip_handling_policy": {
-            "location": "user_profile",
-            "value": "default_public_interface_only"
-          }
-        }
-      }
-    ]
+    "simple_policy_pref_mapping_test": {
+      "pref_name": "webrtc.ip_handling_policy",
+      "default_value": "default",
+      "values_to_test": [
+        "default_public_interface_only"
+      ]
+    }
   }
 ]

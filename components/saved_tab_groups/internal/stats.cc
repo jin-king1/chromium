@@ -40,20 +40,20 @@ void RecordSavedTabGroupMetrics(SavedTabGroupModel* model) {
 
   int pinned_group_count = 0;
   int active_group_count = 0;
+  int open_group_count = 0;
 
   for (const SavedTabGroup& group : model->saved_tab_groups()) {
     base::UmaHistogramCounts10000("TabGroups.SavedTabGroupTabCount",
                                   group.saved_tabs().size());
 
-    const base::TimeDelta duration_saved =
-        current_time - group.creation_time_windows_epoch_micros();
+    const base::TimeDelta duration_saved = current_time - group.creation_time();
     if (!duration_saved.is_negative()) {
       base::UmaHistogramCounts1M("TabGroups.SavedTabGroupAge",
                                  duration_saved.InMinutes());
     }
 
     const base::TimeDelta duration_since_group_modification =
-        current_time - group.update_time_windows_epoch_micros();
+        current_time - group.update_time();
     if (!duration_since_group_modification.is_negative()) {
       base::UmaHistogramCounts1M("TabGroups.SavedTabGroupTimeSinceModification",
                                  duration_since_group_modification.InMinutes());
@@ -65,7 +65,7 @@ void RecordSavedTabGroupMetrics(SavedTabGroupModel* model) {
 
     for (const SavedTabGroupTab& tab : group.saved_tabs()) {
       const base::TimeDelta duration_since_tab_modification =
-          current_time - tab.update_time_windows_epoch_micros();
+          current_time - tab.update_time();
       if (duration_since_tab_modification.is_negative()) {
         continue;
       }
@@ -78,6 +78,10 @@ void RecordSavedTabGroupMetrics(SavedTabGroupModel* model) {
     if (group.is_pinned()) {
       ++pinned_group_count;
     }
+
+    if (group.local_group_id().has_value()) {
+      ++open_group_count;
+    }
   }
 
   base::UmaHistogramCounts10000("TabGroups.SavedTabGroupPinnedCount",
@@ -86,6 +90,8 @@ void RecordSavedTabGroupMetrics(SavedTabGroupModel* model) {
                                 model->Count() - pinned_group_count);
   base::UmaHistogramCounts10000("TabGroups.SavedTabGroupActiveCount",
                                 active_group_count);
+  base::UmaHistogramCounts10000("TabGroups.SavedTabGroupOpenCount",
+                                open_group_count);
 }
 
 void RecordTabCountMismatchOnConnect(size_t tabs_in_saved_group,

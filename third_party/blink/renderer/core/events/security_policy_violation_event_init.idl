@@ -24,4 +24,6 @@ dictionary SecurityPolicyViolationEventInit : EventInit {
     long columnNumber = 0;
 
     DOMString violatedDirective = "";
+    [RuntimeEnabled=CSPHashesV1] DOMString evalHash;
+    [RuntimeEnabled=CSPHashesV1] DOMString urlHash;
 };

@@ -54,10 +54,10 @@ void GainHandler::Process(uint32_t frames_to_process) {
       // Apply sample-accurate gain scaling for precise envelopes, grain
       // windows, etc.
       DCHECK_LE(frames_to_process, sample_accurate_gain_values_.size());
-      float* gain_values = sample_accurate_gain_values_.Data();
-      gain_->CalculateSampleAccurateValues(gain_values, frames_to_process);
-      output_bus->CopyWithSampleAccurateGainValuesFrom(*input_bus, gain_values,
-                                                       frames_to_process);
+      base::span<float> gain_span =
+          sample_accurate_gain_values_.as_span().first(frames_to_process);
+      gain_->CalculateSampleAccurateValues(gain_span);
+      output_bus->CopyWithSampleAccurateGainValuesFrom(*input_bus, gain_span);
 
       return;
     }
@@ -77,17 +77,10 @@ void GainHandler::Process(uint32_t frames_to_process) {
 
 void GainHandler::ProcessOnlyAudioParams(uint32_t frames_to_process) {
   DCHECK(Context()->IsAudioThread());
-  // TODO(crbug.com/40637820): Eventually, the render quantum size will no
-  // longer be hardcoded as 128. At that point, we'll need to switch from
-  // stack allocation to heap allocation.
-  constexpr unsigned render_quantum_frames_expected = 128;
-  CHECK_EQ(GetDeferredTaskHandler().RenderQuantumFrames(),
-           render_quantum_frames_expected);
-  DCHECK_LE(frames_to_process, render_quantum_frames_expected);
+  DCHECK_LE(frames_to_process, sample_accurate_gain_values_.size());
 
-  float values[render_quantum_frames_expected];
-
-  gain_->CalculateSampleAccurateValues(values, frames_to_process);
+  gain_->CalculateSampleAccurateValues(
+      sample_accurate_gain_values_.as_span().first(frames_to_process));
 }
 
 // As soon as we know the channel count of our input, we can lazily initialize.

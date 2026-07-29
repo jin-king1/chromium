@@ -31,11 +31,18 @@
 //components/test/data/viz/backdrop_filter_masked.png
 //components/test/data/viz/backdrop_filter_masked_sw.png
 //components/test/data/viz/backdrop_filter_offset.png
-//components/test/data/viz/backdrop_filter_offset_sw.png
 //components/test/data/viz/backdrop_filter_on_scaled_layer_skia_gl.png
 //components/test/data/viz/backdrop_filter_on_scaled_layer_skia_graphite.png
 //components/test/data/viz/backdrop_filter_on_scaled_layer_skia_vk.png
 //components/test/data/viz/backdrop_filter_on_scaled_layer_sw.png
+//components/test/data/viz/backdrop_filter_quality_0_33skia_gl.png
+//components/test/data/viz/backdrop_filter_quality_0_33skia_graphite.png
+//components/test/data/viz/backdrop_filter_quality_0_33skia_vk.png
+//components/test/data/viz/backdrop_filter_quality_0_33sw.png
+//components/test/data/viz/backdrop_filter_quality_1_0skia_gl.png
+//components/test/data/viz/backdrop_filter_quality_1_0skia_graphite.png
+//components/test/data/viz/backdrop_filter_quality_1_0skia_vk.png
+//components/test/data/viz/backdrop_filter_quality_1_0sw.png
 //components/test/data/viz/backdrop_filter_rotated_skia_gl.png
 //components/test/data/viz/backdrop_filter_rotated_skia_graphite.png
 //components/test/data/viz/backdrop_filter_rotated_skia_vk.png
@@ -62,6 +69,7 @@
 //components/test/data/viz/blur_filter_with_clip_sw.png
 //components/test/data/viz/bypass_render_pass.png
 //components/test/data/viz/bypass_texture.png
+//components/test/data/viz/bypass_texture_backdrop_extent.png
 //components/test/data/viz/bypass_texture_rotated.png
 //components/test/data/viz/bypass_texture_rotated_graphite.png
 //components/test/data/viz/dark_grey.png
@@ -102,6 +110,7 @@
 //components/test/data/viz/green_with_blue_corner.png
 //components/test/data/viz/half_of_one_of_16_color_rects.png
 //components/test/data/viz/heavy_layer_tree.json
+//components/test/data/viz/image_diff.html
 //components/test/data/viz/image_mask_of_layer.png
 //components/test/data/viz/image_mask_with_effect.png
 //components/test/data/viz/inset_bottom_right.png
@@ -154,9 +163,7 @@
 //components/test/data/viz/multi_linear_gradient_render_pass.png
 //components/test/data/viz/no-trail-white.png
 //components/test/data/viz/offset_backdrop_filter_1x.png
-//components/test/data/viz/offset_backdrop_filter_1x_sw.png
 //components/test/data/viz/offset_backdrop_filter_2x.png
-//components/test/data/viz/offset_backdrop_filter_2x_sw.png
 //components/test/data/viz/offset_inset_top_left.png
 //components/test/data/viz/one_of_16_color_rects.png
 //components/test/data/viz/oop_alpha_premul_unpremul.png

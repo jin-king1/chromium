@@ -33,6 +33,7 @@ instrumentation_test_apk("webview_ui_test_app_test_apk") {
     ":webview_ui_test_app_apk_resources",
     "//base:base_java",
     "//base:base_java_test_support",
+    "//base/test:public_transit_java",
     "//third_party/android_deps:espresso_java",
     "//third_party/androidx:androidx_test_monitor_java",
     "//third_party/androidx:androidx_test_runner_java",
@@ -42,7 +43,7 @@ instrumentation_test_apk("webview_ui_test_app_test_apk") {
     "//ui/android:ui_java_test_support",
   ]
   data = [
-    "//third_party/chromium-variations",
+    "//components/variations/test_data/cipd",
     "test/data/",
   ]
 

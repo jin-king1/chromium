@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/policy/model/profile_policy_connector.h"
 
+#import "base/functional/callback_helpers.h"
+#import "components/policy/core/common/cloud/cloud_policy_store.h"
 #import "components/policy/core/common/local_test_policy_provider.h"
 #import "components/policy/core/common/policy_service_impl.h"
 #import "components/policy/core/common/schema_registry.h"
@@ -15,8 +17,10 @@ ProfilePolicyConnector::~ProfilePolicyConnector() = default;
 void ProfilePolicyConnector::Init(
     policy::SchemaRegistry* schema_registry,
     BrowserPolicyConnectorIOS* browser_policy_connector,
-    policy::ConfigurationPolicyProvider* user_policy_provider) {
+    policy::ConfigurationPolicyProvider* user_policy_provider,
+    policy::CloudPolicyStore* policy_store) {
   schema_registry_ = schema_registry;
+  policy_store_ = policy_store;
 
   // The object returned by GetPlatformConnector() may or may not be in the list
   // returned by GetPolicyProviders().  Explicitly add it to `policy_providers_`
@@ -50,6 +54,13 @@ void ProfilePolicyConnector::Init(
       policy_providers_, policy::PolicyServiceImpl::ScopeForMetrics::kMachine);
 }
 
+bool ProfilePolicyConnector::IsManaged() const {
+  if (policy_store_) {
+    return policy_store_->is_managed();
+  }
+  return false;
+}
+
 void ProfilePolicyConnector::UseLocalTestPolicyProvider() {
   for (policy::ConfigurationPolicyProvider* provider : policy_providers_) {
     provider->set_active(false);
@@ -75,4 +86,16 @@ void ProfilePolicyConnector::RevertUseLocalTestPolicyProvider() {
                                    policy::PolicyFetchReason::kTest);
 }
 
-void ProfilePolicyConnector::Shutdown() {}
+bool ProfilePolicyConnector::IsUsingLocalTestPolicyProvider() const {
+  return local_test_policy_provider_ &&
+         local_test_policy_provider_->is_active();
+}
+
+base::flat_set<std::string> ProfilePolicyConnector::GetUserAffiliationIds()
+    const {
+  if (!policy_store_ || !policy_store_->has_policy()) {
+    return {};
+  }
+  const auto& ids = policy_store_->policy()->user_affiliation_ids();
+  return {ids.begin(), ids.end()};
+}

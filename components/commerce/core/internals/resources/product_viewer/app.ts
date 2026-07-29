@@ -35,20 +35,26 @@ export class ProductViewerAppElement extends CrLitElement {
     };
   }
 
-  protected product_: ProductInfo|null = null;
+  protected accessor product_: ProductInfo|null = null;
 
   private commerceInternalsApi_: CommerceInternalsApiProxy =
       CommerceInternalsApiProxy.getInstance();
 
-  protected async loadProduct_() {
-    const productInfo = (await this.commerceInternalsApi_.getProductInfoForUrl({
-                          url: this.$.productUrl.value,
-                        })).info;
+  protected async onLoadProductClick_() {
+    const productInfo = (await this.commerceInternalsApi_.getProductInfoForUrl(
+                             this.$.productUrl.value))
+                            .info;
     if (!productInfo) {
       return;
     }
 
     this.product_ = productInfo;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'product-viewer-app': ProductViewerAppElement;
   }
 }
 

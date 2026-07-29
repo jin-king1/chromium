@@ -6,115 +6,15 @@
 import 'chrome://settings/lazy_load.js';
 
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import type {CrInputElement, SettingsSearchEngineEditDialogElement, SettingsSearchEnginesListElement, SettingsSearchEnginesPageElement} from 'chrome://settings/lazy_load.js';
+import type {SettingsSearchEnginesListElement, SettingsSearchEnginesPageElement} from 'chrome://settings/lazy_load.js';
 import type {SearchEnginesInfo} from 'chrome://settings/settings.js';
-import {SearchEnginesBrowserProxyImpl, SearchEnginesInteractions} from 'chrome://settings/settings.js';
+import {loadTimeData, SearchEnginesBrowserProxyImpl, SearchEnginesInteractions} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {eventToPromise} from 'chrome://webui-test/test_util.js';
+import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {createSampleOmniboxExtension, createSampleSearchEngine, TestSearchEnginesBrowserProxy} from './test_search_engines_browser_proxy.js';
 // clang-format on
-
-suite('AddSearchEngineDialogTests', function() {
-  let dialog: SettingsSearchEngineEditDialogElement;
-  let browserProxy: TestSearchEnginesBrowserProxy;
-
-  setup(function() {
-    browserProxy = new TestSearchEnginesBrowserProxy();
-    SearchEnginesBrowserProxyImpl.setInstance(browserProxy);
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    dialog = document.createElement('settings-search-engine-edit-dialog');
-    document.body.appendChild(dialog);
-  });
-
-  teardown(function() {
-    dialog.remove();
-  });
-
-  // Tests that the dialog calls 'searchEngineEditStarted' and
-  // 'searchEngineEditCancelled' when closed from the 'cancel' button.
-  test('DialogOpenAndCancel', async function() {
-    await browserProxy.whenCalled('searchEngineEditStarted');
-    dialog.$.cancel.click();
-    await browserProxy.whenCalled('searchEngineEditCancelled');
-  });
-
-  // Tests the dialog to add a new search engine. Specifically
-  //  - cr-input elements are empty initially.
-  //  - action button initially disabled.
-  //  - validation is triggered on 'input' event.
-  //  - action button is enabled when all fields are valid.
-  //  - action button triggers appropriate browser signal when tapped.
-  test('DialogAddSearchEngine', async function() {
-    /**
-     * Triggers an 'input' event on the cr-input element and checks that
-     * validation is triggered.
-     */
-    function inputAndValidate(inputId: string): Promise<void> {
-      const inputElement =
-          dialog.shadowRoot!.querySelector<CrInputElement>(`#${inputId}`)!;
-      browserProxy.resetResolver('validateSearchEngineInput');
-      inputElement.dispatchEvent(
-          new CustomEvent('input', {bubbles: true, composed: true}));
-      return inputElement.value !== '' ?
-          // Expecting validation only on non-empty values.
-          browserProxy.whenCalled('validateSearchEngineInput') :
-          Promise.resolve();
-    }
-
-    const actionButton = dialog.$.actionButton;
-
-    await browserProxy.whenCalled('searchEngineEditStarted');
-    assertEquals('', dialog.$.searchEngine.value);
-    assertEquals('', dialog.$.keyword.value);
-    assertEquals('', dialog.$.queryUrl.value);
-    assertFalse(dialog.$.queryUrl.readonly);
-    assertFalse(dialog.$.cancel.disabled);
-    assertTrue(actionButton.disabled);
-    assertEquals(
-        actionButton.textContent!.trim(), loadTimeData.getString('add'));
-    await inputAndValidate('searchEngine');
-    await inputAndValidate('keyword');
-    await inputAndValidate('queryUrl');
-
-    // Manually set the text to a non-empty string for all fields.
-    dialog.$.searchEngine.value = 'foo';
-    dialog.$.keyword.value = 'bar';
-    dialog.$.queryUrl.value = 'baz';
-
-    await inputAndValidate('searchEngine');
-    // Assert that the action button has been enabled now that all
-    // input is valid and non-empty.
-    assertFalse(actionButton.disabled);
-    actionButton.click();
-    await browserProxy.whenCalled('searchEngineEditCompleted');
-  });
-
-  test('DialogCloseWhenEnginesChangedModelEngineNotFound', async function() {
-    dialog.set('model', createSampleSearchEngine({id: 0, name: 'G'}));
-    webUIListenerCallback('search-engines-changed', {
-      defaults: [],
-      actives: [],
-      others: [createSampleSearchEngine({id: 1, name: 'H'})],
-      extensions: [],
-    });
-    await browserProxy.whenCalled('searchEngineEditCancelled');
-  });
-
-  test('DialogValidateInputsWhenEnginesChanged', async function() {
-    dialog.set('model', createSampleSearchEngine({name: 'G'}));
-    dialog.set('keyword_', 'G');
-    webUIListenerCallback('search-engines-changed', {
-      defaults: [],
-      actives: [],
-      others: [createSampleSearchEngine({name: 'G'})],
-      extensions: [],
-    });
-    await browserProxy.whenCalled('validateSearchEngineInput');
-  });
-});
 
 suite('SearchEnginePageTests', function() {
   let page: SettingsSearchEnginesPageElement;
@@ -133,9 +33,9 @@ suite('SearchEnginePageTests', function() {
         id: 1,
         name: 'search_engine_default_B',
         displayName: 'B displayName',
-        isManaged: true,
         keyword: 'default B',
         url: 'https://www.default_b.com/search?q=%s',
+        urlLocked: true,
       }),
       createSampleSearchEngine({
         id: 2,
@@ -143,28 +43,40 @@ suite('SearchEnginePageTests', function() {
         displayName: 'C displayName',
         keyword: 'default C',
         url: 'https://www.default_c.com/search?q=%s',
-        urlLocked: true,
+        default: true,
+        canBeEdited: true,
+        isManaged: true,
       }),
       createSampleSearchEngine({
         id: 3,
         name: 'search_engine_default_D',
         displayName: 'D displayName',
         keyword: 'default D',
-      }),
-      createSampleSearchEngine({
-        id: 4,
-        name: 'search_engine_default_E',
-        displayName: 'E displayName',
-        keyword: 'default E',
-      }),
-      createSampleSearchEngine({
-        id: 5,
-        name: 'search_engine_default_F',
-        displayName: 'F displayName',
-        keyword: 'default F',
+        url: 'https://www.default_d.com/search?q=%s',
+        default: true,
+        isManaged: true,
       }),
     ],
-    actives: [createSampleSearchEngine({id: 6})],
+    actives: [
+      createSampleSearchEngine({id: 4}),
+      createSampleSearchEngine({
+        id: 5,
+        name: 'search_engine_active_E',
+        displayName: 'E displayName',
+        keyword: 'active E',
+        url: 'https://www.active_E.com/search?q=%s',
+        canBeEdited: true,
+        isManaged: true,
+      }),
+      createSampleSearchEngine({
+        id: 6,
+        name: 'search_engine_active_F',
+        displayName: 'F displayName',
+        keyword: 'active F',
+        url: 'https://www.active_F.com/search?q=%s',
+        isManaged: true,
+      }),
+    ],
     others: [
       createSampleSearchEngine({
         id: 7,
@@ -219,7 +131,7 @@ suite('SearchEnginePageTests', function() {
     flush();
   });
 
-  test('testDefaultsList', function() {
+  test('DefaultsList', function() {
     const defaultsListElement = searchEnginesLists[0]!;
 
     // The defaults list should only show the name and shortcut columns.
@@ -241,7 +153,7 @@ suite('SearchEnginePageTests', function() {
     assertEquals(searchEnginesInfo.defaults.length, defaultsEntries!.length);
   });
 
-  test('testActivesList', function() {
+  test('ActivesList', function() {
     const activesListElement = searchEnginesLists[1]!;
 
     // The actives list should only show the name and shortcut columns.
@@ -269,7 +181,7 @@ suite('SearchEnginePageTests', function() {
     assertTrue(expandButton.hasAttribute('hidden'));
   });
 
-  test('testOthersList', function() {
+  test('OthersList', function() {
     const othersListElement = searchEnginesLists[2]!;
 
     // The others list should only show the name and url columns.
@@ -333,7 +245,7 @@ suite('SearchEnginePageTests', function() {
 
     // Check behavior when switching space triggering off.
     radioButtons.item(1).click();
-    await eventToPromise('selected-changed', radioGroup);
+    await eventToPromise('change', radioGroup);
     assertEquals('false', radioGroup.selected);
     let result =
         await browserProxy.whenCalled('recordSearchEnginesPageHistogram');
@@ -342,7 +254,7 @@ suite('SearchEnginePageTests', function() {
 
     // Check behavior when switching space triggering on.
     radioButtons.item(0).click();
-    await eventToPromise('selected-changed', radioGroup);
+    await eventToPromise('change', radioGroup);
     assertEquals('true', radioGroup.selected);
     result = await browserProxy.whenCalled('recordSearchEnginesPageHistogram');
     assertEquals(
@@ -374,7 +286,7 @@ suite('SearchEnginePageTests', function() {
 
   // Tests that the add search engine dialog opens when the corresponding
   // button is tapped.
-  test('AddSearchEngineDialog', function() {
+  test('AddSearchEngineDialog', async function() {
     assertFalse(
         !!page.shadowRoot!.querySelector('settings-search-engine-edit-dialog'));
     const addSearchEngineButton =
@@ -385,6 +297,10 @@ suite('SearchEnginePageTests', function() {
     flush();
     assertTrue(
         !!page.shadowRoot!.querySelector('settings-search-engine-edit-dialog'));
+
+    const interaction =
+        await browserProxy.whenCalled('recordSearchEnginesPageHistogram');
+    assertEquals(SearchEnginesInteractions.ADD_SEARCH_ENGINE, interaction);
   });
 
   test('EditSearchEngineDialog', async function() {
@@ -397,11 +313,14 @@ suite('SearchEnginePageTests', function() {
         anchorElement: page.shadowRoot!.querySelector('#addSearchEngine')!,
       },
     }));
-    const modelIndex = await browserProxy.whenCalled('searchEngineEditStarted');
-    assertEquals(engine.modelIndex, modelIndex);
+    const id = await browserProxy.whenCalled('searchEngineEditStarted');
+    assertEquals(engine.id, id);
     const dialog =
         page.shadowRoot!.querySelector('settings-search-engine-edit-dialog')!;
     assertTrue(!!dialog);
+    const policySubtitleContainer =
+        dialog.shadowRoot!.querySelector('#policySubtitleContainer');
+    assertFalse(!!policySubtitleContainer);
 
     // Check that the cr-input fields are pre-populated.
     assertEquals(engine.name, dialog.$.searchEngine.value);
@@ -413,89 +332,13 @@ suite('SearchEnginePageTests', function() {
     assertFalse(dialog.$.actionButton.hidden);
     assertFalse(dialog.$.actionButton.disabled);
     assertEquals(
-        dialog.$.actionButton.textContent!.trim(),
-        loadTimeData.getString('save'));
-  });
-
-  test('EditSearchEngineDialog_IsManaged', async function() {
-    const engine = searchEnginesInfo.defaults[1]!;
-    page.dispatchEvent(new CustomEvent('view-or-edit-search-engine', {
-      bubbles: true,
-      composed: true,
-      detail: {
-        engine,
-        anchorElement: page.shadowRoot!.querySelector('#addSearchEngine')!,
-      },
-    }));
-    const modelIndex = await browserProxy.whenCalled('searchEngineEditStarted');
-    assertEquals(engine.modelIndex, modelIndex);
-    const dialog =
-        page.shadowRoot!.querySelector('settings-search-engine-edit-dialog')!;
-    assertTrue(!!dialog);
-
-    // Check that the cr-input fields are pre-populated.
-    assertEquals(engine.name, dialog.$.searchEngine.value);
-    assertTrue(dialog.$.searchEngine.readonly);
-    assertEquals(engine.keyword, dialog.$.keyword.value);
-    assertTrue(dialog.$.keyword.readonly);
-    assertEquals(engine.url, dialog.$.queryUrl.value);
-    assertTrue(dialog.$.queryUrl.readonly);
-
-    assertTrue(dialog.$.cancel.hidden);
-    assertFalse(dialog.$.actionButton.hidden);
-    assertFalse(dialog.$.actionButton.disabled);
-    assertEquals(
-        dialog.$.actionButton.textContent!.trim(),
-        loadTimeData.getString('done'));
-
-    // Ensures that field validation is not run for search engines created by
-    // policy (b/348165485).
-    browserProxy.resetResolver('validateSearchEngineInput');
-    dialog.$.keyword.dispatchEvent(
-        new CustomEvent('input', {bubbles: true, composed: true}));
-    assertEquals(0, browserProxy.getCallCount('validateSearchEngineInput'));
-
-    assertTrue(dialog.$.cancel.hidden);
-    assertFalse(dialog.$.actionButton.hidden);
-    assertFalse(dialog.$.actionButton.disabled);
-  });
-
-  test('EditSearchEngineDialog_UrlLocked', async function() {
-    const engine = searchEnginesInfo.defaults[2]!;
-    page.dispatchEvent(new CustomEvent('view-or-edit-search-engine', {
-      bubbles: true,
-      composed: true,
-      detail: {
-        engine,
-        anchorElement: page.shadowRoot!.querySelector('#addSearchEngine')!,
-      },
-    }));
-    const modelIndex = await browserProxy.whenCalled('searchEngineEditStarted');
-    assertEquals(engine.modelIndex, modelIndex);
-    const dialog =
-        page.shadowRoot!.querySelector('settings-search-engine-edit-dialog')!;
-    assertTrue(!!dialog);
-
-    // Check that the cr-input fields are pre-populated.
-    assertEquals(engine.name, dialog.$.searchEngine.value);
-    assertEquals(engine.keyword, dialog.$.keyword.value);
-    assertEquals(engine.url, dialog.$.queryUrl.value);
-    assertTrue(dialog.$.queryUrl.readonly);
-
-    assertFalse(dialog.$.cancel.hidden);
-    assertFalse(dialog.$.cancel.disabled);
-    assertFalse(dialog.$.actionButton.hidden);
-    assertFalse(dialog.$.actionButton.disabled);
-    assertEquals(
-        dialog.$.actionButton.textContent!.trim(),
+        dialog.$.actionButton.textContent.trim(),
         loadTimeData.getString('save'));
   });
 
   // Tests that filtering the three search engines lists works, and that the
   // "no search results" message is shown as expected.
-  test('FilterSearchEngines', function() {
-    flush();
-
+  test('FilterSearchEngines', async function() {
     // TODO: Lookup via array index  may not be the best approach, because
     // changing the order or number of settings-search-engines-list elements
     // can break this test. Maybe we can add an id to every relevant element and
@@ -511,8 +354,10 @@ suite('SearchEnginePageTests', function() {
     }
 
     function assertSearchResults(
-        defaultsCount: number, othersCount: number, extensionsCount: number) {
+        defaultsCount: number, activesCount: number, othersCount: number,
+        extensionsCount: number) {
       assertEquals(defaultsCount, getListItems(0)!.length);
+      assertEquals(activesCount, getListItems(1)!.length);
       assertEquals(othersCount, getListItems(2)!.length);
       assertEquals(extensionsCount, getListItems(3)!.length);
 
@@ -523,37 +368,40 @@ suite('SearchEnginePageTests', function() {
       assertEquals(extensionsCount > 0, noResultsElements[3]!.hidden);
     }
 
-    assertSearchResults(6, 7, 1);
+    assertSearchResults(4, 3, 7, 1);
+
+    const subpage = page.shadowRoot!.querySelector('settings-subpage');
+    assertTrue(!!subpage);
 
     // Search by name
-    page.filter = searchEnginesInfo.defaults[0]!.name;
-    flush();
-    assertSearchResults(1, 0, 0);
+    subpage.searchTerm = searchEnginesInfo.defaults[0]!.name;
+    await microtasksFinished();
+    assertSearchResults(1, 0, 0, 0);
 
     // Search by displayName
-    page.filter = searchEnginesInfo.others[0]!.displayName;
-    flush();
-    assertSearchResults(0, 1, 0);
+    subpage.searchTerm = searchEnginesInfo.others[0]!.displayName;
+    await microtasksFinished();
+    assertSearchResults(0, 0, 1, 0);
 
     // Search by keyword
-    page.filter = searchEnginesInfo.others[1]!.keyword;
-    flush();
-    assertSearchResults(0, 1, 0);
+    subpage.searchTerm = searchEnginesInfo.others[1]!.keyword;
+    await microtasksFinished();
+    assertSearchResults(0, 0, 1, 0);
 
     // Search by URL
-    page.filter = 'search?';
-    flush();
-    assertSearchResults(6, 7, 0);
+    subpage.searchTerm = 'search?';
+    await microtasksFinished();
+    assertSearchResults(4, 3, 7, 0);
 
     // Test case where none of the sublists have results.
-    page.filter = 'does not exist';
-    flush();
-    assertSearchResults(0, 0, 0);
+    subpage.searchTerm = 'does not exist';
+    await microtasksFinished();
+    assertSearchResults(0, 0, 0, 0);
 
     // Test case where an 'extension' search engine matches.
-    page.filter = 'extension';
-    flush();
-    assertSearchResults(0, 0, 1);
+    subpage.searchTerm = 'extension';
+    await microtasksFinished();
+    assertSearchResults(0, 0, 0, 1);
   });
 
   // Test that the "no other search engines" message is shown/hidden as

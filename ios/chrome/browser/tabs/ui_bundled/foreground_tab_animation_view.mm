@@ -4,7 +4,11 @@
 
 #import "ios/chrome/browser/tabs/ui_bundled/foreground_tab_animation_view.h"
 
+#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state.h"
+#import "ios/chrome/browser/shared/ui/util/layout_constants.h"
 #import "ios/chrome/browser/shared/ui/util/property_animator_group.h"
+#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
 
 namespace {
 const NSTimeInterval kAnimationDuration = 0.75;
@@ -15,6 +19,10 @@ const CGFloat kCornerRoundingRelativeDuration = 0.33;
 const CGFloat kInitialTabScale = 0.75;
 const CGFloat kInitialTabCornerRadius = 26.0;
 const CGFloat kPositionCoefficient = 0.25;
+const CGFloat kScrimViewOpacity = 0.40;
+const CGFloat kBackgroundTabScale = 0.80;
+const UIBlurEffectStyle kBackgroundTabBlurStyle =
+    UIBlurEffectStyleSystemUltraThinMaterialDark;
 }  // namespace
 
 @implementation ForegroundTabAnimationView
@@ -32,6 +40,34 @@ const CGFloat kPositionCoefficient = 0.25;
 
   self.backgroundColor = UIColor.clearColor;
 
+  // Setup background view.
+  if (self.backgroundView) {
+    [self.backgroundView removeFromSuperview];
+    self.backgroundView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:self.backgroundView];
+    AddSameConstraints(self, self.backgroundView);
+  }
+
+  // Setup background blur view.
+  UIVisualEffectView* blurView =
+      [[UIVisualEffectView alloc] initWithEffect:nil];
+  blurView.translatesAutoresizingMaskIntoConstraints = NO;
+  [self addSubview:blurView];
+  AddSameConstraints(self, blurView);
+
+  // Setup scrim view.
+  UIView* scrimView = [[UIView alloc] initWithFrame:CGRectZero];
+  scrimView.translatesAutoresizingMaskIntoConstraints = NO;
+  scrimView.backgroundColor = UIColor.blackColor;
+  scrimView.alpha = 0.0;
+  [self addSubview:scrimView];
+  AddSameConstraints(self, scrimView);
+
+  // Ensure contentView is on top.
+  if (self.contentView) {
+    [self bringSubviewToFront:self.contentView];
+  }
+
   // Translate the content view part of the way from the center of this view to
   // `originPoint`.
   CGFloat dx = kPositionCoefficient * (origin.x - self.contentView.center.x);
@@ -44,18 +80,21 @@ const CGFloat kPositionCoefficient = 0.25;
 
   self.contentView.transform = transform;
   self.contentView.alpha = 0;
-  self.contentView.layer.cornerRadius = kInitialTabCornerRadius;
-  self.contentView.clipsToBounds = YES;
+  self.contentView.layer.masksToBounds = YES;
+  [self updateCornerRadius];
 
   // Animation components.
   auto tabResizeAnimation = ^{
     self.contentView.transform = CGAffineTransformIdentity;
+    self.backgroundView.transform =
+        CGAffineTransformMakeScale(kBackgroundTabScale, kBackgroundTabScale);
   };
   auto tabFadeAnimation = ^{
     self.contentView.alpha = 1.0;
   };
   auto backgroundFadeAnimation = ^{
-    self.backgroundColor = UIColor.blackColor;
+    blurView.effect = [UIBlurEffect effectWithStyle:kBackgroundTabBlurStyle];
+    scrimView.alpha = kScrimViewOpacity;
   };
   auto cornerAnimation = ^{
     self.contentView.layer.cornerRadius = 0.0;
@@ -95,9 +134,11 @@ const CGFloat kPositionCoefficient = 0.25;
     [UIView addKeyframeWithRelativeStartTime:0
                             relativeDuration:kBackgroundFadeRelativeDuration
                                   animations:backgroundFadeAnimation];
-    [UIView addKeyframeWithRelativeStartTime:0
-                            relativeDuration:kCornerRoundingRelativeDuration
-                                  animations:cornerAnimation];
+    if (!self.useDeviceCornerRadius) {
+      [UIView addKeyframeWithRelativeStartTime:0
+                              relativeDuration:kCornerRoundingRelativeDuration
+                                    animations:cornerAnimation];
+    }
   };
   UIViewPropertyAnimator* additionalAnimations = [[UIViewPropertyAnimator alloc]
       initWithDuration:kAnimationDuration
@@ -115,11 +156,66 @@ const CGFloat kPositionCoefficient = 0.25;
   [animations addAnimator:additionalAnimations];
 
   [animations addCompletion:^(UIViewAnimatingPosition finalPosition) {
-    self.contentView.clipsToBounds = NO;
+    self.contentView.layer.masksToBounds = NO;
+    self.contentView.layer.cornerRadius = 0.0;
+    self.contentView.layer.mask = nil;
+    self.contentView.layer.maskedCorners =
+        kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner |
+        kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
+    self.backgroundView.transform = CGAffineTransformIdentity;
+    [blurView removeFromSuperview];
+    [scrimView removeFromSuperview];
     completion();
   }];
 
   [animations startAnimation];
+}
+
+#pragma mark - Private
+
+// Updates the corner radius of the content view based on the App Bar position.
+- (void)updateCornerRadius {
+  if (!self.useDeviceCornerRadius) {
+    self.contentView.layer.cornerRadius = kInitialTabCornerRadius;
+    return;
+  }
+  if (self.appBarPosition == AppBarPosition::kLeft ||
+      self.appBarPosition == AppBarPosition::kRight) {
+    CGFloat leftRadius = (self.appBarPosition == AppBarPosition::kLeft)
+                             ? kAppBarCornerRadius
+                             : DeviceCornerRadius();
+    CGFloat rightRadius = (self.appBarPosition == AppBarPosition::kRight)
+                              ? kAppBarCornerRadius
+                              : DeviceCornerRadius();
+    CGRect bounds = self.contentView.bounds;
+
+    UIBezierPath* path = [UIBezierPath bezierPath];
+    [path moveToPoint:CGPointMake(bounds.size.width / 2, 0)];
+    [path addLineToPoint:CGPointMake(bounds.size.width - rightRadius, 0)];
+    [path addArcWithCenter:CGPointMake(bounds.size.width - rightRadius,
+                                       rightRadius)
+                    radius:rightRadius
+                startAngle:-M_PI_2
+                  endAngle:0
+                 clockwise:YES];
+    [path addLineToPoint:CGPointMake(bounds.size.width, bounds.size.height)];
+    [path addLineToPoint:CGPointMake(0, bounds.size.height)];
+    [path addLineToPoint:CGPointMake(0, leftRadius)];
+    [path addArcWithCenter:CGPointMake(leftRadius, leftRadius)
+                    radius:leftRadius
+                startAngle:M_PI
+                  endAngle:-M_PI_2
+                 clockwise:YES];
+    [path closePath];
+
+    CAShapeLayer* maskLayer = [CAShapeLayer layer];
+    maskLayer.path = path.CGPath;
+    self.contentView.layer.mask = maskLayer;
+  } else {
+    self.contentView.layer.cornerRadius = DeviceCornerRadius();
+    self.contentView.layer.maskedCorners =
+        kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+  }
 }
 
 @end

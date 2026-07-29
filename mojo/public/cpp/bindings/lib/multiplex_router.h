@@ -15,12 +15,12 @@
 #include "base/component_export.h"
 #include "base/containers/circular_deque.h"
 #include "base/containers/small_map.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
 #include "base/synchronization/lock.h"
 #include "base/types/pass_key.h"
 #include "mojo/public/cpp/bindings/associated_group_controller.h"
-#include "mojo/public/cpp/bindings/connection_group.h"
 #include "mojo/public/cpp/bindings/connector.h"
 #include "mojo/public/cpp/bindings/interface_id.h"
 #include "mojo/public/cpp/bindings/message_dispatcher.h"
@@ -37,7 +37,12 @@ class SequencedTaskRunner;
 namespace mojo {
 
 class AsyncFlusher;
+class ConnectionGroupRef;
 class PendingFlush;
+
+namespace test {
+class TestableMultiplexRouter;
+}  // namespace test
 
 namespace internal {
 
@@ -109,6 +114,13 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) MultiplexRouter
                   scoped_refptr<base::SequencedTaskRunner> runner,
                   const char* primary_interface_name = "unknown interface");
 
+  MultiplexRouter(base::PassKey<test::TestableMultiplexRouter>,
+                  ScopedMessagePipeHandle message_pipe,
+                  Config config,
+                  bool set_interface_id_namespace_bit,
+                  scoped_refptr<base::SequencedTaskRunner> runner,
+                  const char* primary_interface_name = "unknown interface");
+
   MultiplexRouter(const MultiplexRouter&) = delete;
   MultiplexRouter& operator=(const MultiplexRouter&) = delete;
 
@@ -119,7 +131,7 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) MultiplexRouter
   // Adds this object to a ConnectionGroup identified by |ref|. All receiving
   // pipe endpoints decoded from inbound messages on this MultiplexRouter will
   // be added to the same group.
-  void SetConnectionGroup(ConnectionGroup::Ref ref);
+  void SetConnectionGroup(ConnectionGroupRef ref);
 
   // ---------------------------------------------------------------------------
   // The following public methods are safe to call from any sequence.
@@ -202,12 +214,15 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) MultiplexRouter
     return connector_.SimulateReadMessage(std::move(handle));
   }
 
+  Connector& GetConnectorForTesting() { return connector_; }
+
+ protected:
+  ~MultiplexRouter() override;
+
  private:
   class InterfaceEndpoint;
   class MessageWrapper;
   struct Task;
-
-  ~MultiplexRouter() override;
 
   // Indicates whether `message` can unblock any active external sync waiter.
   bool CanUnblockExternalSyncWait(const Message& message);
@@ -301,8 +316,6 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) MultiplexRouter
   // comments of kInterfaceIdNamespaceMask.
   const bool set_interface_id_namespace_bit_;
 
-  scoped_refptr<base::SequencedTaskRunner> task_runner_;
-
   MessageDispatcher dispatcher_;
   Connector connector_;
 
@@ -336,7 +349,8 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) MultiplexRouter
 
   base::circular_deque<std::unique_ptr<Task>> tasks_;
   // It refers to tasks in |tasks_| and doesn't own any of them.
-  std::map<InterfaceId, base::circular_deque<Task*>> sync_message_tasks_;
+  std::map<InterfaceId, base::circular_deque<raw_ptr<Task>>>
+      sync_message_tasks_;
 
   bool posted_to_process_tasks_ = false;
   scoped_refptr<base::SequencedTaskRunner> posted_to_task_runner_;

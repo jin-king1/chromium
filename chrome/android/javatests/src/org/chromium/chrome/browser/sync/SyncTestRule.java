@@ -29,31 +29,30 @@ import org.chromium.base.IntentUtils;
 import org.chromium.base.Promise;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.AutofillTestHelper;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.CreditCard;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.browser.signin.services.UnifiedConsentServiceBridge;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
 import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
-import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
 import org.chromium.components.prefs.PrefService;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.sync.SyncService;
+import org.chromium.components.sync.UserSelectableType;
 import org.chromium.components.sync.internal.SyncPrefNames;
 import org.chromium.components.sync.protocol.AutofillWalletSpecifics;
 import org.chromium.components.sync.protocol.EntitySpecifics;
 import org.chromium.components.sync.protocol.SyncEntity;
 import org.chromium.components.sync.protocol.WalletMaskedCreditCard;
+import org.chromium.components.trusted_vault.TrustedVaultClient;
 import org.chromium.components.user_prefs.UserPrefs;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.Callable;
 
 /**
@@ -210,42 +209,20 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
      * Adds an account of default account name to AccountManagerFacade and waits for the seeding.
      */
     public CoreAccountInfo addTestAccount() {
-        return addAccount(AccountManagerTestRule.TEST_ACCOUNT_EMAIL);
+        return addAccount(TestAccounts.ACCOUNT1);
     }
 
     /** Adds an account of given account name to AccountManagerFacade and waits for the seeding. */
-    public CoreAccountInfo addAccount(String accountName) {
-        CoreAccountInfo coreAccountInfo = mSigninTestRule.addAccount(accountName);
-        Assert.assertFalse(SyncTestUtil.isSyncFeatureEnabled());
-        return coreAccountInfo;
+    public CoreAccountInfo addAccount(AccountInfo account) {
+        mSigninTestRule.addAccount(account);
+        return account;
     }
 
     /**
-     * @return The primary account of the requested {@link ConsentLevel}.
+     * @return The primary account.
      */
-    public CoreAccountInfo getPrimaryAccount(@ConsentLevel int consentLevel) {
-        return mSigninTestRule.getPrimaryAccount(consentLevel);
-    }
-
-    /**
-     * Set up a test account, sign in and enable sync. FirstSetupComplete bit will be set after
-     * this. For most purposes this function should be used as this emulates the basic sign in flow.
-     *
-     * @return the test account that is signed in.
-     */
-    public CoreAccountInfo setUpAccountAndEnableSyncForTesting() {
-        return setUpAccountAndEnableSyncForTesting(false);
-    }
-
-    /**
-     * Set up a child test account, sign in and enable sync. FirstSetupComplete bit will be set
-     * after this. For most purposes this function should be used as this emulates the basic sign in
-     * flow.
-     *
-     * @return the test account that is signed in.
-     */
-    public CoreAccountInfo setUpChildAccountAndEnableSyncForTesting() {
-        return setUpAccountAndEnableSyncForTesting(true);
+    public CoreAccountInfo getPrimaryAccount() {
+        return mSigninTestRule.getPrimaryAccount();
     }
 
     /**
@@ -255,23 +232,35 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
      */
     public CoreAccountInfo setUpAccountAndEnableHistorySync() {
         mSigninTestRule.addAccountThenSigninAndEnableHistorySync(TestAccounts.ACCOUNT1);
+        SyncTestUtil.waitForSyncTransportActive();
         return TestAccounts.ACCOUNT1;
     }
 
     /**
-     * Set up a test account and sign in. Does not setup sync.
+     * Set up a test account, sign in, and waits for sync machinery to become active.
      *
      * @return the test {@link CoreAccountInfo} that is signed in.
      */
     public CoreAccountInfo setUpAccountAndSignInForTesting() {
+        mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
+        SyncTestUtil.waitForSyncTransportActive();
+        return TestAccounts.ACCOUNT1;
+    }
+
+    /**
+     * Set up a test account and sign in. Use this instead of setUpAccountAndSignInForTesting if
+     * sync can't become active, e.g. because there is a policy preventing it.
+     *
+     * @return the test {@link CoreAccountInfo} that is signed in.
+     */
+    public CoreAccountInfo setUpAccountAndSignInWithoutWaitingForTesting() {
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
         return TestAccounts.ACCOUNT1;
     }
 
     public void signOut() {
         mSigninTestRule.signOut();
-        Assert.assertNull(mSigninTestRule.getPrimaryAccount(ConsentLevel.SYNC));
-        Assert.assertFalse(SyncTestUtil.isSyncFeatureEnabled());
+        Assert.assertNull(mSigninTestRule.getPrimaryAccount());
     }
 
     public void clearServerData() {
@@ -282,45 +271,18 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
         // necessary to invoke triggerSync() explicitly, just like many Java
         // tests do.
         SyncTestUtil.triggerSync();
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    return !SyncTestUtil.getSyncServiceForLastUsedProfile().isSyncFeatureEnabled();
-                },
-                SyncTestUtil.TIMEOUT_MS,
-                SyncTestUtil.INTERVAL_MS);
     }
 
-    /*
-     * Enables the Sync data type in USER_SELECTABLE_TYPES.
+    /**
+     * Sets an individual type selection.
+     *
+     * @param type The type that should be enabled or disabled.
+     * @param isTypeOn Set to true if the type should be enabled, false otherwise.
      */
-    public void enableDataType(final int userSelectableType) {
+    public void setSelectedType(@UserSelectableType int type, boolean isTypeOn) {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Set<Integer> chosenTypes = mSyncService.getSelectedTypes();
-                    chosenTypes.add(userSelectableType);
-                    mSyncService.setSelectedTypes(false, chosenTypes);
-                });
-    }
-
-    /*
-     * Enables the |selectedTypes| in USER_SELECTABLE_TYPES.
-     */
-    public void setSelectedTypes(boolean syncEverything, Set<Integer> selectedTypes) {
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mSyncService.setSelectedTypes(syncEverything, selectedTypes);
-                });
-    }
-
-    /*
-     * Disables the Sync data type in USER_SELECTABLE_TYPES.
-     */
-    public void disableDataType(final int userSelectableType) {
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    Set<Integer> chosenTypes = mSyncService.getSelectedTypes();
-                    chosenTypes.remove(userSelectableType);
-                    mSyncService.setSelectedTypes(false, chosenTypes);
+                    mSyncService.setSelectedType(type, isTypeOn);
                 });
     }
 
@@ -391,13 +353,13 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
                         .setExpMonth(11)
                         .setExpYear(2020)
                         .build();
-        AutofillWalletSpecifics wallet_specifics =
+        AutofillWalletSpecifics walletSpecifics =
                 AutofillWalletSpecifics.newBuilder()
                         .setType(AutofillWalletSpecifics.WalletInfoType.MASKED_CREDIT_CARD)
                         .setMaskedCard(card)
                         .build();
         EntitySpecifics specifics =
-                EntitySpecifics.newBuilder().setAutofillWallet(wallet_specifics).build();
+                EntitySpecifics.newBuilder().setAutofillWallet(walletSpecifics).build();
         SyncEntity entity =
                 SyncEntity.newBuilder()
                         .setName(serverId)
@@ -435,27 +397,6 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
     /** Returns an instance of SyncService that can be overridden by subclasses. */
     protected SyncService createSyncServiceImpl() {
         return null;
-    }
-
-    private static void enableUKM() {
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    // Outside of tests, URL-keyed anonymized data collection is enabled by sign-in
-                    // UI.
-                    UnifiedConsentServiceBridge.setUrlKeyedAnonymizedDataCollectionEnabled(
-                            ProfileManager.getLastUsedRegularProfile(), true);
-                });
-    }
-
-    private CoreAccountInfo setUpAccountAndEnableSyncForTesting(boolean isChildAccount) {
-        CoreAccountInfo accountInfo =
-                mSigninTestRule.addTestAccountThenSigninAndEnableSync(mSyncService, isChildAccount);
-
-        // Enable UKM when enabling sync as it is done by the sync confirmation UI.
-        enableUKM();
-        SyncTestUtil.waitForSyncFeatureActive();
-        SyncTestUtil.triggerSyncAndWaitForCompletion();
-        return accountInfo;
     }
 
     private static PrefService getPrefService() {

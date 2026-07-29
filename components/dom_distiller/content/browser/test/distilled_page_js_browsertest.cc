@@ -5,10 +5,13 @@
 #include <memory>
 #include <string>
 
+#include "base/logging.h"
 #include "base/strings/strcat.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "components/dom_distiller/content/browser/distiller_javascript_utils.h"
 #include "components/dom_distiller/content/browser/test/test_util.h"
+#include "components/dom_distiller/core/dom_distiller_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
@@ -21,8 +24,7 @@ namespace {
 
 class DistilledPageJsTest : public content::ContentBrowserTest {
  protected:
-  explicit DistilledPageJsTest()
-      : content::ContentBrowserTest(), distilled_page_(nullptr) {}
+  explicit DistilledPageJsTest() : distilled_page_(nullptr) {}
   ~DistilledPageJsTest() override = default;
 
   void SetUpOnMainThread() override {
@@ -37,11 +39,22 @@ class DistilledPageJsTest : public content::ContentBrowserTest {
   void LoadAndExecuteTestScript(const std::string& file) {
     distilled_page_->AppendScriptFile(file);
     distilled_page_->Load(embedded_test_server(), shell()->web_contents());
-    EXPECT_TRUE(content::ExecJs(shell()->web_contents(),
-                                "mocha.run(); window.completePromise"));
+    // Listen for messages from domAutomationController.send() for debugging.
+    content::DOMMessageQueue message_queue(shell()->web_contents());
+    // First, run the test.
+    EXPECT_TRUE(content::ExecJs(shell()->web_contents(), "mocha.run()"));
+    // Then, wait for the test to complete.
+    EXPECT_TRUE(
+        content::ExecJs(shell()->web_contents(), "window.completePromise"));
+    std::string message;
+    // Log any messages that were sent from the JavaScript.
+    while (message_queue.PopMessage(&message)) {
+      LOG(INFO) << "JS_DEBUG[" << file << "]: " << message;
+    }
   }
 
   std::unique_ptr<FakeDistilledPage> distilled_page_;
+  base::test::ScopedFeatureList feature_list_;
 };
 
 // Pincher is only used on Android.
@@ -66,6 +79,36 @@ IN_PROC_BROWSER_TEST_F(DistilledPageJsTest, MAYBE_FontSizeSlider) {
 
 IN_PROC_BROWSER_TEST_F(DistilledPageJsTest, SettingsDialogTest) {
   LoadAndExecuteTestScript("settings_dialog_tester.js");
+}
+
+IN_PROC_BROWSER_TEST_F(DistilledPageJsTest, AddClassesToYTIFramesTest) {
+  LoadAndExecuteTestScript("add_classes_to_yt_iframes.js");
+}
+
+// Fails on Fuchsia ASAN.
+// Falky timeout on Linux and ChromeOS MSAN, ASAN and TSAN.
+#if BUILDFLAG(IS_FUCHSIA) && defined(ADDRESS_SANITIZER) ||          \
+    (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) &&              \
+        (defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER) || \
+         defined(THREAD_SANITIZER))
+#define MAYBE_ImageClassifierTest DISABLED_ImageClassifierTest
+#else
+#define MAYBE_ImageClassifierTest ImageClassifierTest
+#endif
+IN_PROC_BROWSER_TEST_F(DistilledPageJsTest, MAYBE_ImageClassifierTest) {
+  LoadAndExecuteTestScript("image_classifier_tester.js");
+}
+
+IN_PROC_BROWSER_TEST_F(DistilledPageJsTest, ListClassifierTest) {
+  LoadAndExecuteTestScript("list_classifier_tester.js");
+}
+
+IN_PROC_BROWSER_TEST_F(DistilledPageJsTest, IdentifyEmptySVGsTest) {
+  LoadAndExecuteTestScript("identify_empty_svgs_tester.js");
+}
+
+IN_PROC_BROWSER_TEST_F(DistilledPageJsTest, WrapTablesTest) {
+  LoadAndExecuteTestScript("wrap_tables_tester.js");
 }
 
 }  // namespace

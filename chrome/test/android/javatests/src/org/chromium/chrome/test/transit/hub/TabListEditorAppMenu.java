@@ -4,14 +4,16 @@
 
 package org.chromium.chrome.test.transit.hub;
 
+import static androidx.test.espresso.matcher.ViewMatchers.withText;
+
 import android.util.Pair;
 
 import org.chromium.base.test.transit.Condition;
 import org.chromium.base.test.transit.ScrollableFacility;
-import org.chromium.base.test.transit.Transition;
+import org.chromium.base.test.transit.Station;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.test.R;
-import org.chromium.chrome.test.transit.AppMenuFacility;
+import org.chromium.chrome.test.transit.CtaAppMenuFacility;
 import org.chromium.chrome.test.transit.SoftKeyboardFacility;
 import org.chromium.chrome.test.transit.tabmodel.TabCountChangedCondition;
 import org.chromium.chrome.test.transit.tabmodel.TabGroupUtil;
@@ -23,21 +25,23 @@ import java.util.List;
  *
  * <p>Differs significantly from the app menu normally shown; the options are operations to change
  * the tab selection or to do something with the selected tabs.
+ *
+ * @param <HostStationT> the type of host {@link Station} this is scoped to.
  */
-public class TabListEditorAppMenu extends AppMenuFacility<TabSwitcherStation> {
+public class TabListEditorAppMenu<HostStationT extends TabSwitcherStation>
+        extends CtaAppMenuFacility<HostStationT> {
 
-    private final TabSwitcherListEditorFacility mListEditor;
-    private Item<Void> mCloseMenuItem;
-    private Item<NewTabGroupDialogFacility> mGroupWithDialogMenuItem;
-    private Item<Pair<TabSwitcherGroupCardFacility, UndoSnackbarFacility>>
-            mGroupWithoutDialogMenuItem;
+    private final TabSwitcherListEditorFacility<HostStationT> mListEditor;
+    private Item mCloseMenuItem;
+    private Item mGroupOrAddTabsMenuItem;
+    private Item mPinMenuItem;
 
-    public TabListEditorAppMenu(TabSwitcherListEditorFacility listEditor) {
+    public TabListEditorAppMenu(TabSwitcherListEditorFacility<HostStationT> listEditor) {
         mListEditor = listEditor;
     }
 
     @Override
-    protected void declareItems(ScrollableFacility<TabSwitcherStation>.ItemsBuilder items) {
+    protected void declareItems(ScrollableFacility<HostStationT>.ItemsBuilder items) {
         String tabOrTabs = mListEditor.getNumTabsSelected() > 1 ? "tabs" : "tab";
 
         // "Select all" usually, or "Deselect all" if all tabs are selected.
@@ -45,31 +49,27 @@ public class TabListEditorAppMenu extends AppMenuFacility<TabSwitcherStation> {
 
         mCloseMenuItem =
                 items.declareItem(
-                        itemViewMatcher("Close " + tabOrTabs),
-                        itemDataMatcher(R.id.tab_list_editor_close_menu_item),
-                        this::doCloseTabs);
+                        withText("Close " + tabOrTabs),
+                        withMenuItemId(R.id.tab_list_editor_close_menu_item));
 
-        if (mListEditor.isAnyGroupSelected()) {
-            mGroupWithoutDialogMenuItem =
-                    items.declareItem(
-                            itemViewMatcher("Group " + tabOrTabs),
-                            itemDataMatcher(R.id.tab_list_editor_group_menu_item),
-                            this::doGroupTabsWithoutDialog);
-        } else {
-            mGroupWithDialogMenuItem =
-                    items.declareItem(
-                            itemViewMatcher("Group " + tabOrTabs),
-                            itemDataMatcher(R.id.tab_list_editor_group_menu_item),
-                            this::doGroupTabs);
-        }
+        // "Group tab(s)" or "Add tab(s) to new group"
+        mGroupOrAddTabsMenuItem =
+                items.declareItem(
+                        withText(String.format("Add %s to new group", tabOrTabs)),
+                        withMenuItemId(R.id.tab_list_editor_add_tab_to_group_menu_item));
 
-        items.declareStubItem(
-                itemViewMatcher("Bookmark " + tabOrTabs),
-                itemDataMatcher(R.id.tab_list_editor_bookmark_menu_item));
+        items.declareItem(
+                withText("Bookmark " + tabOrTabs),
+                withMenuItemId(R.id.tab_list_editor_bookmark_menu_item));
 
-        items.declareStubItem(
-                itemViewMatcher("Share " + tabOrTabs),
-                itemDataMatcher(R.id.tab_list_editor_share_menu_item));
+        mPinMenuItem =
+                items.declareItem(
+                        withText("Pin " + tabOrTabs),
+                        withMenuItemId(R.id.tab_list_editor_pin_menu_item));
+
+        items.declareItem(
+                withText("Share " + tabOrTabs),
+                withMenuItemId(R.id.tab_list_editor_share_menu_item));
     }
 
     /**
@@ -77,21 +77,15 @@ public class TabListEditorAppMenu extends AppMenuFacility<TabSwitcherStation> {
      *
      * @return the "New tab group" dialog as a Facility.
      */
-    public NewTabGroupDialogFacility groupTabs() {
-        return mGroupWithDialogMenuItem.scrollToAndSelect();
-    }
-
-    /** Factory for the result of {@link #groupTabs()}. */
-    private NewTabGroupDialogFacility doGroupTabs(
-            ItemOnScreenFacility<NewTabGroupDialogFacility> itemOnScreen) {
+    public NewTabGroupDialogFacility<HostStationT> groupTabs() {
         SoftKeyboardFacility softKeyboard = new SoftKeyboardFacility();
-        NewTabGroupDialogFacility dialog =
-                new NewTabGroupDialogFacility(mListEditor.getAllTabIdsSelected(), softKeyboard);
-        mHostStation.swapFacilitiesSync(
-                List.of(this, mListEditor, itemOnScreen),
-                List.of(dialog, softKeyboard),
-                itemOnScreen.clickTrigger());
-        return dialog;
+        NewTabGroupDialogFacility<HostStationT> dialog =
+                new NewTabGroupDialogFacility<>(mListEditor.getAllTabIdsSelected(), softKeyboard);
+        return mGroupOrAddTabsMenuItem
+                .scrollToAndSelectTo()
+                .exitFacilityAnd(mListEditor)
+                .enterFacilityAnd(softKeyboard)
+                .enterFacility(dialog);
     }
 
     /**
@@ -102,51 +96,38 @@ public class TabListEditorAppMenu extends AppMenuFacility<TabSwitcherStation> {
      *
      * @return the new group card and the undo snackbar expected to be shown.
      */
-    public Pair<TabSwitcherGroupCardFacility, UndoSnackbarFacility> groupTabsWithoutDialog() {
+    public Pair<TabSwitcherGroupCardFacility, UndoSnackbarFacility<HostStationT>>
+            groupTabsWithoutDialog() {
         assert mListEditor.isAnyGroupSelected();
-        return mGroupWithoutDialogMenuItem.scrollToAndSelect();
-    }
 
-    /** Factory for the result of {@link #groupTabsWithoutDialog()}. */
-    private Pair<TabSwitcherGroupCardFacility, UndoSnackbarFacility> doGroupTabsWithoutDialog(
-            ItemOnScreenFacility<Pair<TabSwitcherGroupCardFacility, UndoSnackbarFacility>>
-                    itemOnScreen) {
         List<Integer> tabIdsSelected = mListEditor.getAllTabIdsSelected();
         String title = TabGroupUtil.getNumberOfTabsString(tabIdsSelected.size());
         String snackbarMessage =
                 TabGroupUtil.getUndoGroupTabsSnackbarMessageString(tabIdsSelected.size());
         var card = new TabSwitcherGroupCardFacility(/* cardIndex= */ null, tabIdsSelected, title);
-        var undoSnackbar = new UndoSnackbarFacility(snackbarMessage);
-        mHostStation.swapFacilitiesSync(
-                List.of(this, mListEditor, itemOnScreen),
-                List.of(card, undoSnackbar),
-                itemOnScreen.clickTrigger());
+        UndoSnackbarFacility<HostStationT> undoSnackbar =
+                new UndoSnackbarFacility<>(snackbarMessage);
+
+        mGroupOrAddTabsMenuItem
+                .scrollToAndSelectTo()
+                .exitFacilityAnd(mListEditor)
+                .enterFacilities(card, undoSnackbar);
         return Pair.create(card, undoSnackbar);
     }
 
-    /**
-     * Select "Close tabs" to close all selected tabs.
-     *
-     * @return the next state of the TabSwitcher as a Station and the newly created tab group card
-     *     as a Facility.
-     */
-    public Void closeTabs() {
-        return mCloseMenuItem.scrollToAndSelect();
+    /** Select "Pin tabs". */
+    public void pinTabs() {
+        mPinMenuItem.scrollToAndSelectTo().exitFacility(mListEditor);
     }
 
-    public Void doCloseTabs(ItemOnScreenFacility<Void> itemOnScreen) {
-        TabModel tabModel =
-                mHostStation
-                        .getTabModelSelectorSupplier()
-                        .get()
-                        .getModel(mHostStation.isIncognito());
+    /** Select "Close tabs" to close all selected tabs. */
+    public void closeTabs() {
+        TabModel tabModel = mHostStation.tabModelElement.value();
         Condition tabCountDecreased =
                 new TabCountChangedCondition(tabModel, -mListEditor.getNumTabsSelected());
-        mHostStation.exitFacilitiesSync(
-                List.of(this, mListEditor, itemOnScreen),
-                Transition.conditionOption(tabCountDecreased),
-                itemOnScreen.clickTrigger());
-
-        return null;
+        mCloseMenuItem
+                .scrollToAndSelectTo()
+                .exitFacilityAnd(mListEditor)
+                .waitFor(tabCountDecreased);
     }
 }

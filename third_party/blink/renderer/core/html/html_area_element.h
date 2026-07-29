@@ -24,10 +24,12 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_HTML_HTML_AREA_ELEMENT_H_
 
 #include <memory>
+
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/html/html_anchor_element.h"
 #include "third_party/blink/renderer/core/layout/geometry/physical_rect.h"
+#include "ui/gfx/geometry/vector2d_f.h"
 
 namespace blink {
 
@@ -41,6 +43,10 @@ class CORE_EXPORT HTMLAreaElement final : public HTMLAnchorElementBase {
   explicit HTMLAreaElement(Document&);
   ~HTMLAreaElement() override;
 
+  ElementType GetElementType() const final {
+    return ElementType::kHTMLAreaElement;
+  }
+
   bool IsDefault() const { return shape_ == kDefault; }
 
   // |containerObject| in the following functions is an object (normally a
@@ -53,7 +59,8 @@ class CORE_EXPORT HTMLAreaElement final : public HTMLAnchorElementBase {
   bool PointInArea(const PhysicalOffset&,
                    const LayoutObject* container_object) const;
   PhysicalRect ComputeAbsoluteRect(const LayoutObject* container_object) const;
-  Path GetPath(const LayoutObject* container_object) const;
+  Path GetPath(const LayoutObject* container_object,
+               const gfx::Vector2dF& path_offset = gfx::Vector2dF()) const;
 
   // The parent map's image.
   HTMLImageElement* ImageElement() const;

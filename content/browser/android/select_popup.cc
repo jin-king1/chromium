@@ -14,9 +14,11 @@
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "content/public/android/content_jni_headers/SelectPopup_jni.h"
+#include "content/public/browser/content_browser_client.h"
+#include "content/public/common/content_client.h"
 
 using base::android::AttachCurrentThread;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace content {
@@ -60,6 +62,7 @@ SelectPopup::~SelectPopup() {
 void SelectPopup::ShowMenu(
     mojo::PendingRemote<blink::mojom::PopupMenuClient> popup_client,
     const gfx::Rect& bounds,
+    double item_font_size,
     std::vector<blink::mojom::MenuItemPtr> items,
     int selected_item,
     bool multiple,
@@ -68,6 +71,11 @@ void SelectPopup::ShowMenu(
   ScopedJavaLocalRef<jobject> j_obj = java_obj_.get(env);
   if (j_obj.is_null())
     return;
+
+  if (!GetContentClient()->browser()->ShouldAllowSystemUiPopups(
+          web_contents_)) {
+    return;
+  }
 
   // Hide the popup menu if the mojo connection is still open.
   if (popup_client_)
@@ -78,33 +86,32 @@ void SelectPopup::ShowMenu(
   // given |selected_item| as is.
   ScopedJavaLocalRef<jintArray> selected_array;
   if (multiple) {
-    auto native_selected_array = base::HeapArray<jint>::WithSize(items.size());
+    auto native_selected_array =
+        base::HeapArray<int32_t>::WithSize(items.size());
     size_t selected_count = 0;
     for (size_t i = 0; i < items.size(); ++i) {
       if (items[i]->checked)
         native_selected_array[selected_count++] = i;
     }
 
-    selected_array =
-        ScopedJavaLocalRef<jintArray>(env, env->NewIntArray(selected_count));
+    selected_array = jni_zero::AdoptRef(env, env->NewIntArray(selected_count));
     env->SetIntArrayRegion(selected_array.obj(), 0, selected_count,
                            native_selected_array.data());
   } else {
-    selected_array = ScopedJavaLocalRef<jintArray>(env, env->NewIntArray(1));
-    jint value = selected_item;
+    selected_array = jni_zero::AdoptRef(env, env->NewIntArray(1));
+    int32_t value = selected_item;
     env->SetIntArrayRegion(selected_array.obj(), 0, 1, &value);
   }
 
-  ScopedJavaLocalRef<jintArray> enabled_array(env,
-                                              env->NewIntArray(items.size()));
+  auto enabled_array = jni_zero::AdoptRef(env, env->NewIntArray(items.size()));
   std::vector<std::string> labels;
   labels.reserve(items.size());
   for (size_t i = 0; i < items.size(); ++i) {
     labels.push_back(items[i]->label.value_or(""));
-    jint enabled = (items[i]->type == blink::mojom::MenuItem::Type::kGroup
-                        ? POPUP_ITEM_TYPE_GROUP
-                        : (items[i]->enabled ? POPUP_ITEM_TYPE_ENABLED
-                                             : POPUP_ITEM_TYPE_DISABLED));
+    int32_t enabled = (items[i]->type == blink::mojom::MenuItem::Type::kGroup
+                           ? POPUP_ITEM_TYPE_GROUP
+                           : (items[i]->enabled ? POPUP_ITEM_TYPE_ENABLED
+                                                : POPUP_ITEM_TYPE_DISABLED));
     env->SetIntArrayRegion(enabled_array.obj(), i, 1, &enabled);
   }
   ScopedJavaLocalRef<jobjectArray> items_array(
@@ -123,9 +130,12 @@ void SelectPopup::ShowMenu(
   gfx::RectF bounds_dip = gfx::RectF(bounds);
   bounds_dip.Scale(1 / web_contents_->GetNativeView()->GetDipScale());
   view->SetAnchorRect(popup_view, bounds_dip);
-  Java_SelectPopup_show(
-      env, j_obj, popup_view, reinterpret_cast<jlong>(popup_client_.get()),
-      items_array, enabled_array, multiple, selected_array, right_aligned);
+
+  int item_height = bounds.height();
+  Java_SelectPopup_show(env, j_obj, popup_view,
+                        reinterpret_cast<int64_t>(popup_client_.get()),
+                        items_array, enabled_array, multiple, selected_array,
+                        right_aligned, item_height, item_font_size);
 }
 
 void SelectPopup::HideMenu() {
@@ -138,14 +148,13 @@ void SelectPopup::HideMenu() {
 }
 
 void SelectPopup::SelectMenuItems(JNIEnv* env,
-                                  const JavaParamRef<jobject>& obj,
-                                  jlong selectPopupDelegate,
-                                  const JavaParamRef<jintArray>& indices) {
+                                  int64_t selectPopupDelegate,
+                                  const JavaRef<jintArray>& indices) {
   blink::mojom::PopupMenuClient* popup_client_raw_ptr =
       reinterpret_cast<blink::mojom::PopupMenuClient*>(selectPopupDelegate);
   DCHECK(popup_client_raw_ptr && popup_client_.get() == popup_client_raw_ptr);
 
-  if (indices == NULL) {
+  if (indices.is_null()) {
     popup_client_->DidCancel();
     return;
   }
@@ -156,3 +165,5 @@ void SelectPopup::SelectMenuItems(JNIEnv* env,
 }
 
 }  // namespace content
+
+DEFINE_JNI(SelectPopup)

@@ -9,7 +9,6 @@
 #include <string_view>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
@@ -33,6 +32,9 @@
 #include "net/url_request/url_request_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+using ::testing::HasSubstr;
+using ::testing::Not;
 
 namespace net {
 
@@ -60,7 +62,7 @@ TEST(NetLogUtil, GetNetInfo) {
 
   // Get NetInfo when there's no cache backend (It's only created on first use).
   EXPECT_FALSE(http_cache->GetCurrentBackend());
-  base::Value::Dict net_info_without_cache(GetNetInfo(context.get()));
+  base::DictValue net_info_without_cache(GetNetInfo(context.get()));
   EXPECT_FALSE(http_cache->GetCurrentBackend());
   EXPECT_GT(net_info_without_cache.size(), 0u);
 
@@ -69,7 +71,7 @@ TEST(NetLogUtil, GetNetInfo) {
       TestGetBackendCompletionCallback().callback());
   EXPECT_EQ(OK, rv);
   EXPECT_TRUE(http_cache->GetCurrentBackend());
-  base::Value::Dict net_info_with_cache = GetNetInfo(context.get());
+  base::DictValue net_info_with_cache = GetNetInfo(context.get());
   EXPECT_GT(net_info_with_cache.size(), 0u);
 
   EXPECT_EQ(net_info_without_cache.size(), net_info_with_cache.size());
@@ -93,7 +95,7 @@ TEST(NetLogUtil, GetNetInfoIncludesFieldTrials) {
 
   // Verify that the returned information reflects the new trial.
   ASSERT_TRUE(net_info.is_dict());
-  base::Value::List* trials =
+  base::ListValue* trials =
       net_info.GetDict().FindList("activeFieldTrialGroups");
   ASSERT_NE(nullptr, trials);
   EXPECT_EQ(1u, trials->size());
@@ -129,12 +131,11 @@ TEST(NetLogUtil, GetNetInfoIncludesDisabledDohProviders) {
     auto context = CreateTestURLRequestContextBuilder()->Build();
     base::Value net_info(GetNetInfo(context.get()));
     ASSERT_TRUE(net_info.is_dict());
-    const base::Value::List* disabled_doh_providers_list =
+    const base::ListValue* disabled_doh_providers_list =
         net_info.GetDict().FindList(kNetInfoDohProvidersDisabledDueToFeature);
     CHECK(disabled_doh_providers_list);
     EXPECT_EQ(!provider_enabled,
-              base::Contains(*disabled_doh_providers_list,
-                             base::Value(kArbitraryProvider)));
+              disabled_doh_providers_list->contains(kArbitraryProvider));
   }
 }
 
@@ -150,9 +151,9 @@ TEST(NetLogUtil, CreateNetLogEntriesForActiveObjectsOneContext) {
   for (size_t num_requests = 0; num_requests < 5; ++num_requests) {
     std::vector<std::unique_ptr<URLRequest>> requests;
     for (size_t i = 0; i < num_requests; ++i) {
-      requests.push_back(context->CreateRequest(GURL("about:life"),
-                                                DEFAULT_PRIORITY, &delegate,
-                                                TRAFFIC_ANNOTATION_FOR_TESTS));
+      requests.push_back(context->CreateRequest(
+          GURL("about:life"), DEFAULT_PRIORITY, &delegate,
+          TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle));
     }
     std::set<URLRequestContext*> contexts;
     contexts.insert(context.get());
@@ -180,9 +181,9 @@ TEST(NetLogUtil, CreateNetLogEntriesForActiveObjectsMultipleContexts) {
     for (size_t i = 0; i < num_requests; ++i) {
       contexts.push_back(CreateTestURLRequestContextBuilder()->Build());
       context_set.insert(contexts[i].get());
-      requests.push_back(
-          contexts[i]->CreateRequest(GURL("about:hats"), DEFAULT_PRIORITY,
-                                     &delegate, TRAFFIC_ANNOTATION_FOR_TESTS));
+      requests.push_back(contexts[i]->CreateRequest(
+          GURL("about:hats"), DEFAULT_PRIORITY, &delegate,
+          TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle));
     }
     RecordingNetLogObserver net_log_observer;
     CreateNetLogEntriesForActiveObjects(context_set, &net_log_observer);
@@ -193,6 +194,28 @@ TEST(NetLogUtil, CreateNetLogEntriesForActiveObjectsMultipleContexts) {
       EXPECT_EQ(entry_list[i].source.id, requests[i]->net_log().source().id);
     }
   }
+}
+
+// Make sure CreateNetLogEntriesForActiveObjects redacts credentials embedded in
+// URLs.
+TEST(NetLogUtil, CreateNetLogEntriesForActiveObjectsRedactsCredentials) {
+  base::test::TaskEnvironment task_environment;
+  const GURL url("https://a:b@c.test/d");
+
+  auto context = CreateTestURLRequestContextBuilder()->Build();
+  TestDelegate delegate;
+  std::vector<std::unique_ptr<URLRequest>> requests;
+  requests.push_back(context->CreateRequest(
+      url, DEFAULT_PRIORITY, &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle));
+  std::set<URLRequestContext*> contexts;
+  contexts.insert(context.get());
+  // The mode of the observer should be ignored.
+  RecordingNetLogObserver net_log_observer(NetLogCaptureMode::kEverything);
+  CreateNetLogEntriesForActiveObjects(contexts, &net_log_observer);
+  std::string json = net_log_observer.GetJson();
+  EXPECT_THAT(json, Not(HasSubstr(url.spec())));
+  EXPECT_THAT(json, HasSubstr("https://c.test/d (credentials redacted)"));
 }
 
 }  // namespace

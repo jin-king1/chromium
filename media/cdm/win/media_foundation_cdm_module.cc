@@ -106,7 +106,7 @@ HRESULT MediaFoundationCdmModule::GetCdmFactory(
 }
 
 HRESULT MediaFoundationCdmModule::ActivateCdmFactory() {
-  DCHECK(initialized_);
+  CHECK(initialized_);
 
   if (activated_) {
     DLOG(ERROR) << "CDM failed to activate previously";
@@ -117,7 +117,7 @@ HRESULT MediaFoundationCdmModule::ActivateCdmFactory() {
 
   // For OS or store CDM, the `cdm_path_` is empty. Just use default creation.
   if (cdm_path_.empty()) {
-    DCHECK(!library_.is_valid());
+    CHECK(!library_.is_valid());
     ComPtr<IMFMediaEngineClassFactory4> class_factory;
     RETURN_IF_FAILED(CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr,
                                       CLSCTX_INPROC_SERVER,

@@ -38,7 +38,7 @@ import org.chromium.ui.base.TestActivity;
 public class SafetyHubAccountPasswordsModuleMediatorTest {
     private static final @DrawableRes int SAFE_ICON = R.drawable.material_ic_check_24dp;
     private static final @DrawableRes int INFO_ICON = R.drawable.btn_info;
-    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_business;
+    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_domain;
     private static final @DrawableRes int WARNING_ICON = R.drawable.ic_error;
 
     private static final String TEST_EMAIL_ADDRESS = "test@email.com";
@@ -89,14 +89,15 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
-                mActivity.getString(R.string.safety_hub_no_compromised_passwords_title);
+                mActivity.getString(R.string.safety_hub_no_compromised_account_passwords_title);
         String expectedSummary =
-                mActivity.getString(
-                        R.string.safety_hub_password_check_time_recently, TEST_EMAIL_ADDRESS);
+                TEST_EMAIL_ADDRESS
+                        + "\n"
+                        + mActivity.getString(R.string.safety_hub_no_compromised_passwords_summary);
         String expectedSecondaryButtonText =
                 mActivity.getString(R.string.safety_hub_passwords_navigation_button);
 
@@ -113,11 +114,11 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
-                mActivity.getString(R.string.safety_hub_no_compromised_passwords_title);
+                mActivity.getString(R.string.safety_hub_no_compromised_account_passwords_title);
         String expectedManagedSummary =
                 mActivity.getString(R.string.safety_hub_no_passwords_summary_managed);
         String expectedSecondaryButtonText =
@@ -139,10 +140,11 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_REUSED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.HAS_REUSED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
-        String expectedTitle = mActivity.getString(R.string.safety_hub_reused_weak_passwords_title);
+        String expectedTitle =
+                mActivity.getString(R.string.safety_hub_reused_weak_account_passwords_title);
         // Reused passwords take priority over weak passwords in the UI.
         String expectedSummary =
                 mActivity
@@ -170,10 +172,11 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_REUSED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.HAS_REUSED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
-        String expectedTitle = mActivity.getString(R.string.safety_hub_reused_weak_passwords_title);
+        String expectedTitle =
+                mActivity.getString(R.string.safety_hub_reused_weak_account_passwords_title);
         String expectedManagedSummary =
                 mActivity.getString(R.string.safety_hub_no_passwords_summary_managed);
         String expectedSecondaryButtonText =
@@ -194,10 +197,11 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_WEAK_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.HAS_WEAK_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
-        String expectedTitle = mActivity.getString(R.string.safety_hub_reused_weak_passwords_title);
+        String expectedTitle =
+                mActivity.getString(R.string.safety_hub_reused_weak_account_passwords_title);
         String expectedSummary =
                 mActivity
                         .getResources()
@@ -223,10 +227,11 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_WEAK_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.HAS_WEAK_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
-        String expectedTitle = mActivity.getString(R.string.safety_hub_reused_weak_passwords_title);
+        String expectedTitle =
+                mActivity.getString(R.string.safety_hub_reused_weak_account_passwords_title);
         String expectedManagedSummary =
                 mActivity.getString(R.string.safety_hub_no_passwords_summary_managed);
         String expectedSecondaryButtonText =
@@ -248,14 +253,15 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
-                mActivity.getString(R.string.safety_hub_no_compromised_passwords_title);
+                mActivity.getString(R.string.safety_hub_no_compromised_account_passwords_title);
         String expectedSummary =
-                mActivity.getString(
-                        R.string.safety_hub_password_check_time_recently, TEST_EMAIL_ADDRESS);
+                TEST_EMAIL_ADDRESS
+                        + "\n"
+                        + mActivity.getString(R.string.safety_hub_no_compromised_passwords_summary);
         String expectedSecondaryButtonText =
                 mActivity.getString(R.string.safety_hub_passwords_navigation_button);
 
@@ -275,11 +281,11 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.NO_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
-                mActivity.getString(R.string.safety_hub_no_compromised_passwords_title);
+                mActivity.getString(R.string.safety_hub_no_compromised_account_passwords_title);
         String expectedManagedSummary =
                 mActivity.getString(R.string.safety_hub_no_passwords_summary_managed);
         String expectedSecondaryButtonText =
@@ -302,14 +308,14 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_COMPROMISED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.HAS_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
                 mActivity
                         .getResources()
                         .getQuantityString(
-                                R.plurals.safety_check_passwords_compromised_exist,
+                                R.plurals.safety_hub_account_passwords_compromised_exist,
                                 compromisedPasswordsCount,
                                 compromisedPasswordsCount);
         String expectedSummary =
@@ -339,14 +345,14 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.HAS_COMPROMISED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.HAS_COMPROMISED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
                 mActivity
                         .getResources()
                         .getQuantityString(
-                                R.plurals.safety_check_passwords_compromised_exist,
+                                R.plurals.safety_hub_account_passwords_compromised_exist,
                                 compromisedPasswordsCount,
                                 compromisedPasswordsCount);
         String expectedManagedSummary =
@@ -367,10 +373,10 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.NO_SAVED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.NO_SAVED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
-        String expectedTitle = mActivity.getString(R.string.safety_hub_no_passwords_title);
+        String expectedTitle = mActivity.getString(R.string.safety_hub_no_account_passwords_title);
         String expectedSummary = mActivity.getString(R.string.safety_hub_no_passwords_summary);
         String expectedSecondaryButtonText =
                 mActivity.getString(R.string.safety_hub_passwords_navigation_button);
@@ -388,10 +394,10 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.NO_SAVED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.NO_SAVED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
-        String expectedTitle = mActivity.getString(R.string.safety_hub_no_passwords_title);
+        String expectedTitle = mActivity.getString(R.string.safety_hub_no_account_passwords_title);
         String expectedManagedSummary =
                 mActivity.getString(R.string.safety_hub_no_passwords_summary_managed);
         String expectedSecondaryButtonText =
@@ -414,11 +420,11 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.UNAVAILABLE_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.UNAVAILABLE_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
-                mActivity.getString(R.string.safety_hub_password_check_unavailable_title);
+                mActivity.getString(R.string.safety_hub_account_password_check_unavailable_title);
         String expectedSummary = mActivity.getString(R.string.safety_hub_unavailable_summary);
         String expectedSecondaryButtonText =
                 mActivity.getString(R.string.safety_hub_passwords_navigation_button);
@@ -440,11 +446,11 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.UNAVAILABLE_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.UNAVAILABLE_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
-                mActivity.getString(R.string.safety_hub_password_check_unavailable_title);
+                mActivity.getString(R.string.safety_hub_account_password_check_unavailable_title);
         String expectedManagedSummary =
                 mActivity.getString(R.string.safety_hub_no_passwords_summary_managed);
         String expectedSecondaryButtonText =
@@ -467,7 +473,8 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.UNAVAILABLE_COMPROMISED_NO_WEAK_REUSED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(
+                ModuleType.UNAVAILABLE_COMPROMISED_NO_WEAK_REUSED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -496,7 +503,8 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(true);
         mockManaged(true);
 
-        mModuleMediator.stateChanged(ModuleType.UNAVAILABLE_COMPROMISED_NO_WEAK_REUSED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(
+                ModuleType.UNAVAILABLE_COMPROMISED_NO_WEAK_REUSED_PASSWORDS);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
@@ -519,11 +527,11 @@ public class SafetyHubAccountPasswordsModuleMediatorTest {
         mockSignedInState(false);
         mockManaged(false);
 
-        mModuleMediator.stateChanged(ModuleType.SIGNED_OUT);
+        mModuleMediator.accountPasswordsStateChanged(ModuleType.SIGNED_OUT);
         verify(mMediatorDelegateMock, times(1)).onUpdateNeeded();
 
         String expectedTitle =
-                mActivity.getString(R.string.safety_hub_password_check_unavailable_title);
+                mActivity.getString(R.string.safety_hub_account_password_check_unavailable_title);
         String expectedSummary =
                 mActivity.getString(R.string.safety_hub_password_check_signed_out_summary);
         String expectedSecondaryButtonText = mActivity.getString(R.string.sign_in_to_chrome);

@@ -5,7 +5,6 @@
 #include "chrome/browser/web_applications/isolated_web_apps/test/bundle_versions_storage.h"
 
 #include "base/check_deref.h"
-#include "base/containers/contains.h"
 #include "base/containers/map_util.h"
 #include "base/containers/to_value_list.h"
 #include "base/json/json_writer.h"
@@ -14,6 +13,7 @@
 #include "base/types/expected_macros.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
+#include "components/webapps/isolated_web_apps/types/update_channel.h"
 
 namespace web_app::test {
 
@@ -28,7 +28,7 @@ std::string GetRelativeUpdateManifestUrl(
 
 std::string GetRelativeWebBundleUrl(
     const web_package::SignedWebBundleId& web_bundle_id,
-    const base::Version& version) {
+    const IwaVersion& version) {
   return base::StringPrintf("%s/%s.swbn", web_bundle_id.id(),
                             version.GetString());
 }
@@ -60,21 +60,35 @@ GURL BundleVersionsStorage::GetUpdateManifestUrl(
   return base_url.Resolve(GetRelativeUpdateManifestUrl(web_bundle_id));
 }
 
+// static
+GURL BundleVersionsStorage::GetBundleUrl(
+    const GURL& base_url,
+    const web_package::SignedWebBundleId& web_bundle_id,
+    const IwaVersion& version) {
+  return base_url.Resolve(GetRelativeWebBundleUrl(web_bundle_id, version));
+}
+
 GURL BundleVersionsStorage::GetUpdateManifestUrl(
     const web_package::SignedWebBundleId& web_bundle_id) const {
   return GetUpdateManifestUrl(*base_url_, web_bundle_id);
 }
 
-base::Value::Dict BundleVersionsStorage::GetUpdateManifest(
+GURL BundleVersionsStorage::GetBundleUrl(
+    const web_package::SignedWebBundleId& web_bundle_id,
+    const IwaVersion& version) const {
+  return GetBundleUrl(*base_url_, web_bundle_id, version);
+}
+
+base::DictValue BundleVersionsStorage::GetUpdateManifest(
     const web_package::SignedWebBundleId& web_bundle_id) const {
   const auto& bundle_versions =
       CHECK_DEREF(base::FindOrNull(bundle_versions_per_id_, web_bundle_id));
-  return base::Value::Dict().Set(
+  return base::DictValue().Set(
       "versions",
       base::ToValueList(bundle_versions, [&](const auto& bundle_meta) {
         const auto& [version, bundle_info] = bundle_meta;
 
-        auto dict = base::Value::Dict()
+        auto dict = base::DictValue()
                         .Set("version", version.GetString())
                         .Set("src", base_url_
                                         ->Resolve(GetRelativeWebBundleUrl(
@@ -95,12 +109,12 @@ GURL BundleVersionsStorage::AddBundle(
     std::optional<std::vector<UpdateChannel>> update_channels) {
   CHECK(base_url_)
       << "SetBaseUrl() must be invoked prior to the first call to AddBundle(). "
-         "If you're using IsolatedWebAppUpdateServerMixin, make sure that "
+         "If you're using IsolatedWebAppTestUpdateServer, make sure that "
          "AddBundle() is called from SetUpOnMainThread() and not from the "
          "constructor.";
 
   auto web_bundle_id = bundle->web_bundle_id();
-  auto version = bundle->version();
+  auto version = IwaVersion::Create(bundle->version().GetString()).value();
   bundle_versions_per_id_[web_bundle_id][version] =
       std::make_unique<BundleInfo>(std::move(bundle),
                                    std::move(update_channels));
@@ -109,21 +123,23 @@ GURL BundleVersionsStorage::AddBundle(
 
 void BundleVersionsStorage::RemoveBundle(
     const web_package::SignedWebBundleId& web_bundle_id,
-    const base::Version& version) {
-  CHECK(base::Contains(bundle_versions_per_id_, web_bundle_id));
-  auto& bundle_versions = bundle_versions_per_id_[web_bundle_id];
-  CHECK(base::Contains(bundle_versions, version));
-  bundle_versions.erase(version);
+    const IwaVersion& version) {
+  auto bundle_versions_per_id_it = bundle_versions_per_id_.find(web_bundle_id);
+  CHECK(bundle_versions_per_id_it != bundle_versions_per_id_.end());
+  auto& bundle_versions = bundle_versions_per_id_it->second;
+  auto bundle_versions_it = bundle_versions.find(version);
+  CHECK(bundle_versions_it != bundle_versions.end());
+  bundle_versions.erase(bundle_versions_it);
   if (bundle_versions.empty()) {
-    bundle_versions_per_id_.erase(web_bundle_id);
+    bundle_versions_per_id_.erase(bundle_versions_per_id_it);
   }
 }
 
 std::optional<BundleVersionsStorage::BundleOrUpdateManifest>
 BundleVersionsStorage::GetResource(const std::string& route) {
   // Parses /<web_bundle_id>/<file_name> into { <web_bundle_id>, <file_name> }.
-  auto pieces = base::SplitString(route, "/", base::TRIM_WHITESPACE,
-                                  base::SPLIT_WANT_NONEMPTY);
+  const std::vector<std::string_view> pieces = base::SplitStringPiece(
+      route, "/", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
   if (pieces.size() != 2) {
     return std::nullopt;
   }
@@ -139,13 +155,14 @@ BundleVersionsStorage::GetResource(const std::string& route) {
     return std::nullopt;
   }
 
-  const auto& path = pieces[1];
+  const std::string_view path = pieces[1];
   if (path == kUpdateManifestFileName) {
     return GetUpdateManifest(web_bundle_id);
   } else if (path.ends_with(".swbn")) {
-    base::Version version(path.substr(0, path.size() - 5));
-    if (version.IsValid()) {
-      if (auto* bundle_info = base::FindPtrOrNull(*bundle_versions, version)) {
+    auto iwa_version = IwaVersion::Create(path.substr(0, path.size() - 5));
+    if (iwa_version.has_value()) {
+      if (auto* bundle_info =
+              base::FindPtrOrNull(*bundle_versions, *std::move(iwa_version))) {
         return bundle_info->bundle.get();
       }
     }

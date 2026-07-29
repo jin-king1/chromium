@@ -21,7 +21,6 @@
 #include "ash/system/unified/unified_system_tray_controller.h"
 #include "ash/test/ash_test_base.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "components/user_manager/user_type.h"
 #include "ui/views/view_utils.h"
 
@@ -29,11 +28,7 @@ namespace ash {
 
 class FocusModeFeaturePodControllerTest : public AshTestBase {
  public:
-  FocusModeFeaturePodControllerTest() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kFocusMode},
-        /*disabled_features=*/{});
-  }
+  FocusModeFeaturePodControllerTest() = default;
   ~FocusModeFeaturePodControllerTest() override = default;
 
   // AshTestBase:
@@ -91,7 +86,6 @@ class FocusModeFeaturePodControllerTest : public AshTestBase {
   }
 
  protected:
-  base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<FocusModeFeaturePodController> controller_;
   std::unique_ptr<FeatureTile> tile_;
 };
@@ -123,8 +117,8 @@ TEST_F(FocusModeFeaturePodControllerTest, TileVisibilityForUserTypes) {
       {"child", user_manager::UserType::kChild, true},
       {"guest", user_manager::UserType::kGuest, false},
       {"public account", user_manager::UserType::kPublicAccount, false},
-      {"kiosk app", user_manager::UserType::kKioskApp, false},
-      {"web kiosk app", user_manager::UserType::kWebKioskApp, false},
+      {"kiosk app", user_manager::UserType::kKioskChromeApp, false},
+      {"web kiosk app", user_manager::UserType::kKioskWebApp, false},
   };
 
   for (const auto& test_case : kUserTypeTestCases) {

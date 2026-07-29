@@ -1,12 +1,6 @@
 // Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/filters/ffmpeg_video_decoder.h"
 
 #include <stddef.h>
@@ -16,10 +10,12 @@
 #include <numeric>
 
 #include "base/bits.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
-#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_span.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "media/base/decoder_buffer.h"
@@ -43,13 +39,11 @@ namespace {
 struct OpaqueData {
   OpaqueData(void* fb,
              scoped_refptr<FrameBufferPool> pool,
-             uint8_t* d,
-             size_t z,
+             base::span<uint8_t> data,
              VideoFrameLayout l)
       : fb_priv(fb),
         frame_pool(std::move(pool)),
-        data(d),
-        size(z),
+        data(data),
         layout(std::move(l)) {}
 
   // FrameBufferPool key that we'll free when the AVBuffer is unused.
@@ -58,11 +52,8 @@ struct OpaqueData {
   // Pool which owns `fb_priv`.
   scoped_refptr<FrameBufferPool> frame_pool;
 
-  // Data pointer from `fb_priv`.  This is owned by `fb_priv`; do not free it.
-  raw_ptr<uint8_t> data = nullptr;
-
-  // Size of `data`.
-  size_t size = 0;
+  // Span pointing at `fb_priv`.  This is owned by `fb_priv`.
+  base::raw_span<uint8_t> data;
 
   // Layout used to compute the size / stride / etc.
   VideoFrameLayout layout;
@@ -130,8 +121,8 @@ bool FFmpegVideoDecoder::IsCodecSupported(VideoCodec codec) {
   return codec == VideoCodec::kH264 && IsDecoderBuiltInVideoCodec(codec);
 }
 
-FFmpegVideoDecoder::FFmpegVideoDecoder(MediaLog* media_log)
-    : media_log_(media_log), timestamp_map_(128) {
+FFmpegVideoDecoder::FFmpegVideoDecoder(std::unique_ptr<MediaLog> media_log)
+    : media_log_(std::move(media_log)) {
   DVLOG(1) << __func__;
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
@@ -153,14 +144,21 @@ int FFmpegVideoDecoder::GetVideoBuffer(struct AVCodecContext* codec_context,
   if (format == PIXEL_FORMAT_UNKNOWN)
     return AVERROR(EINVAL);
   DCHECK(format == PIXEL_FORMAT_I420 || format == PIXEL_FORMAT_I422 ||
-         format == PIXEL_FORMAT_I444 || format == PIXEL_FORMAT_YUV420P9 ||
-         format == PIXEL_FORMAT_YUV420P10 || format == PIXEL_FORMAT_YUV422P9 ||
-         format == PIXEL_FORMAT_YUV422P10 || format == PIXEL_FORMAT_YUV444P9 ||
-         format == PIXEL_FORMAT_YUV444P10 || format == PIXEL_FORMAT_YUV420P12 ||
-         format == PIXEL_FORMAT_YUV422P12 || format == PIXEL_FORMAT_YUV444P12);
+         format == PIXEL_FORMAT_I444 || format == PIXEL_FORMAT_YUV420P10 ||
+         format == PIXEL_FORMAT_YUV422P10 || format == PIXEL_FORMAT_YUV444P10 ||
+         format == PIXEL_FORMAT_YUV420P12 || format == PIXEL_FORMAT_YUV422P12 ||
+         format == PIXEL_FORMAT_YUV444P12);
+
+  // FFmpeg has all sorts of peculiarities around how it wants its frames sized,
+  // so replicate what is done inside the default get_video_buffer() logic.
+  int aligned_width = frame->width;
+  int aligned_height = frame->height;
+  std::array<int, AV_NUM_DATA_POINTERS> linesize_align = {};
+  avcodec_align_dimensions2(codec_context, &aligned_width, &aligned_height,
+                            linesize_align.data());
 
   // Do not trust `codec_context` sizes either.  Use whatever `frame` requests.
-  gfx::Size coded_size(frame->width, frame->height);
+  gfx::Size coded_size(aligned_width, aligned_height);
   const int ret =
       av_image_check_size(coded_size.width(), coded_size.height(), 0, nullptr);
   if (ret < 0)
@@ -192,8 +190,14 @@ int FFmpegVideoDecoder::GetVideoBuffer(struct AVCodecContext* codec_context,
   const size_t num_planes = layout->planes().size();
   size_t allocation_size = layout->buffer_addr_align();
   for (size_t plane = 0; plane < num_planes; plane++) {
+    // This should be guaranteed by how strides are computed during the call to
+    // CreateFullySpecifiedLayoutWithStrides() above.
+    CHECK_EQ(layout->planes()[plane].stride % linesize_align[plane], 0u);
     allocation_size += layout->planes()[plane].size;
   }
+
+  // FFmpeg seems to add some extra padding; see update_frame_pool().
+  allocation_size += 16 + limits::kFFmpegBufferAddressAlignment - 1;
 
   // Round up the allocation, but keep `allocation_size` as the usable
   // allocation after aligning `data`.
@@ -203,16 +207,24 @@ int FFmpegVideoDecoder::GetVideoBuffer(struct AVCodecContext* codec_context,
     return AVERROR(ENOMEM);
   }
 
-  uint8_t* data = base::bits::AlignUp(span.data(), layout->buffer_addr_align());
+  uintptr_t span_ptr = reinterpret_cast<uintptr_t>(span.data());
+  uintptr_t aligned_span_ptr =
+      base::bits::AlignUp(span_ptr, layout->buffer_addr_align());
+  auto aligned_span = span.subspan(aligned_span_ptr - span_ptr);
 
+  // SAFETY: This CHECK makes sure that we don't go out of bounds accessing
+  // `AVFrame::data` and `AVFrame::linesize`.
+  // `AV_NUM_DATA_POINTERS` is their size.
+  CHECK_LE(base::saturated_cast<int>(num_planes), AV_NUM_DATA_POINTERS);
   for (size_t plane = 0; plane < num_planes; ++plane) {
-    frame->data[plane] = data + layout->planes()[plane].offset;
-    frame->linesize[plane] = layout->planes()[plane].stride;
+    UNSAFE_BUFFERS(frame->data[plane]) =
+        aligned_span.subspan(layout->planes()[plane].offset).data();
+    UNSAFE_BUFFERS(frame->linesize[plane]) = layout->planes()[plane].stride;
   }
 
   // This will be freed by `ReleaseVideoBufferImpl`.
-  auto* opaque = new OpaqueData(fb_priv, frame_pool_, data, allocation_size,
-                                std::move(*layout));
+  auto* opaque =
+      new OpaqueData(fb_priv, frame_pool_, aligned_span, std::move(*layout));
 
   frame->buf[0] = av_buffer_create(
       frame->data[0], VideoFrame::AllocationSize(format, coded_size),
@@ -326,6 +338,7 @@ void FFmpegVideoDecoder::Reset(base::OnceClosure closure) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   avcodec_flush_buffers(codec_context_.get());
+  hdr_metadata_reordering_map_.Clear();
   state_ = DecoderState::kNormal;
   error_status_ = DecoderStatus::Codes::kFailed;
 
@@ -352,19 +365,17 @@ bool FFmpegVideoDecoder::FFmpegDecode(const DecoderBuffer& buffer) {
   // not want to allow on-stack allocation of AVPackets.
   AVPacket* packet = av_packet_alloc();
   if (buffer.end_of_stream()) {
-    packet->data = NULL;
+    packet->data = nullptr;
     packet->size = 0;
   } else {
-    packet->data = const_cast<uint8_t*>(buffer.data());
-    packet->size = buffer.size();
+    hdr_metadata_reordering_map_.Insert(buffer);
+    auto buffer_span = base::span(buffer);
+    packet->data = const_cast<uint8_t*>(buffer_span.data());
+    packet->size = base::checked_cast<int>(buffer_span.size());
+    packet->pts = ConvertToTimeBase(codec_context_->pkt_timebase, buffer.timestamp());
 
     DCHECK(packet->data);
     DCHECK_GT(packet->size, 0);
-
-    const int64_t timestamp = buffer.timestamp().InMicroseconds();
-    const TimestampId timestamp_id = timestamp_id_generator_.GenerateNextId();
-    timestamp_map_.Put(std::make_pair(timestamp_id, timestamp));
-    packet->opaque = reinterpret_cast<void*>(timestamp_id.GetUnsafeValue());
   }
   FFmpegDecodingLoop::DecodeStatus decode_status = decoding_loop_->DecodePacket(
       packet, base::BindRepeating(&FFmpegVideoDecoder::OnNewFrame,
@@ -411,7 +422,6 @@ bool FFmpegVideoDecoder::OnNewFrame(AVFrame* frame) {
   // practice `height` can be smaller.  They are advertised as the coded size,
   // though, so that's how we use them here.  `crop*` take this difference into
   // account, and are meant to be applied to `width` and `height` as they are.
-  const gfx::Size coded_size(frame->width, frame->height);
   const gfx::Rect visible_rect(frame->crop_left, frame->crop_top,
                                frame->width - frame->crop_right,
                                frame->height - frame->crop_bottom);
@@ -424,15 +434,9 @@ bool FFmpegVideoDecoder::OnNewFrame(AVFrame* frame) {
   }
   gfx::Size natural_size = aspect_ratio.GetNaturalSize(visible_rect);
 
-  const auto ts_id = TimestampId(reinterpret_cast<size_t>(frame->opaque));
-  const auto ts_lookup = timestamp_map_.Get(ts_id);
-  if (ts_lookup == timestamp_map_.end()) {
-    return false;
-  }
-  const auto pts = base::Microseconds(std::get<1>(*ts_lookup));
+  const auto pts = ConvertFromTimeBase(codec_context_->pkt_timebase, frame->pts);
   auto video_frame = VideoFrame::WrapExternalDataWithLayout(
-      opaque->layout, visible_rect, natural_size, opaque->data, opaque->size,
-      pts);
+      opaque->layout, visible_rect, natural_size, opaque->data, pts);
   if (!video_frame) {
     return false;
   }
@@ -467,6 +471,11 @@ bool FFmpegVideoDecoder::OnNewFrame(AVFrame* frame) {
   // Prefer the frame color space over what's in the config.
   video_frame->set_color_space(color_space.IsValid() ? color_space : config_cs);
 
+  gfx::HDRMetadata hdr_metadata = config_.hdr_metadata();
+  hdr_metadata_reordering_map_.MergeAndEraseMetadataForTimestamp(pts,
+                                                                 hdr_metadata);
+  video_frame->set_hdr_metadata(hdr_metadata);
+
   video_frame->metadata().power_efficient = false;
   video_frame->AddDestructionObserver(
       frame_pool_->CreateFrameCallback(opaque->fb_priv));
@@ -477,6 +486,7 @@ bool FFmpegVideoDecoder::OnNewFrame(AVFrame* frame) {
 void FFmpegVideoDecoder::ReleaseFFmpegResources() {
   decoding_loop_.reset();
   codec_context_.reset();
+  hdr_metadata_reordering_map_.Clear();
 }
 
 bool FFmpegVideoDecoder::ConfigureDecoder(const VideoDecoderConfig& config,
@@ -488,7 +498,7 @@ bool FFmpegVideoDecoder::ConfigureDecoder(const VideoDecoderConfig& config,
   ReleaseFFmpegResources();
 
   // Initialize AVCodecContext structure.
-  codec_context_.reset(avcodec_alloc_context3(NULL));
+  codec_context_.reset(avcodec_alloc_context3(nullptr));
   VideoDecoderConfigToAVCodecContext(config, codec_context_.get());
 
   codec_context_->thread_count = GetFFmpegVideoDecoderThreadCount(config);
@@ -499,12 +509,12 @@ bool FFmpegVideoDecoder::ConfigureDecoder(const VideoDecoderConfig& config,
   codec_context_->get_buffer2 = GetVideoBufferImpl;
   codec_context_->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
 
-  if (decode_nalus_) {
-    codec_context_->flags2 |= AV_CODEC_FLAG2_CHUNKS;
-  }
+  // Timebase must be at most 1us because of web-facing APIs with
+  // microsecond-level precision such as VideoFrame.timestamp.
+  codec_context_->pkt_timebase = AVRational{1, 1000000};
 
   const AVCodec* codec = avcodec_find_decoder(codec_context_->codec_id);
-  if (!codec || avcodec_open2(codec_context_.get(), codec, NULL) < 0) {
+  if (!codec || avcodec_open2(codec_context_.get(), codec, nullptr) < 0) {
     ReleaseFFmpegResources();
     return false;
   }

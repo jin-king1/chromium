@@ -9,6 +9,7 @@
 
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "net/base/address_list.h"
 #include "net/base/net_errors.h"
@@ -31,14 +32,20 @@ std::string_view TcpStreamAttempt::StateToString(State state) {
 
 TcpStreamAttempt::TcpStreamAttempt(const StreamAttemptParams* params,
                                    IPEndPoint ip_endpoint,
+                                   handles::NetworkHandle target_network,
+                                   perfetto::Track track,
                                    const NetLogWithSource* net_log)
     : StreamAttempt(params,
                     ip_endpoint,
+                    target_network,
+                    track,
                     NetLogSourceType::TCP_STREAM_ATTEMPT,
                     NetLogEventType::TCP_STREAM_ATTEMPT_ALIVE,
                     net_log) {}
 
-TcpStreamAttempt::~TcpStreamAttempt() = default;
+TcpStreamAttempt::~TcpStreamAttempt() {
+  MaybeRecordConnectEnd(ERR_ABORTED);
+}
 
 LoadState TcpStreamAttempt::GetLoadState() const {
   switch (next_state_) {
@@ -49,8 +56,8 @@ LoadState TcpStreamAttempt::GetLoadState() const {
   }
 }
 
-base::Value::Dict TcpStreamAttempt::GetInfoAsValue() const {
-  base::Value::Dict dict;
+base::DictValue TcpStreamAttempt::GetInfoAsValue() const {
+  base::DictValue dict;
   dict.Set("next_state", StateToString(next_state_));
   return dict;
 }
@@ -69,7 +76,8 @@ int TcpStreamAttempt::StartInternal() {
 
   std::unique_ptr<TransportClientSocket> stream_socket =
       params().client_socket_factory->CreateTransportClientSocket(
-          AddressList(ip_endpoint()), std::move(socket_performance_watcher),
+          AddressList(ip_endpoint()), target_network(),
+          std::move(socket_performance_watcher),
           params().network_quality_estimator, net_log().net_log(),
           net_log().source());
 
@@ -82,24 +90,26 @@ int TcpStreamAttempt::StartInternal() {
       FROM_HERE, kTcpHandshakeTimeout,
       base::BindOnce(&TcpStreamAttempt::OnTimeout, base::Unretained(this)));
 
+  TRACE_EVENT_BEGIN("net.stream", "TcpConnect", track());
   net_log().AddEventReferencingSource(
       NetLogEventType::TCP_STREAM_ATTEMPT_CONNECT,
       socket_ptr->NetLog().source());
   int rv = socket_ptr->Connect(
       base::BindOnce(&TcpStreamAttempt::OnIOComplete, base::Unretained(this)));
   if (rv != ERR_IO_PENDING) {
-    HandleCompletion();
+    HandleCompletion(rv);
   }
   return rv;
 }
 
-base::Value::Dict TcpStreamAttempt::GetNetLogStartParams() {
-  base::Value::Dict dict;
+base::DictValue TcpStreamAttempt::GetNetLogStartParams() {
+  base::DictValue dict;
   dict.Set("ip_endpoint", ip_endpoint().ToString());
   return dict;
 }
 
-void TcpStreamAttempt::HandleCompletion() {
+void TcpStreamAttempt::HandleCompletion(int rv) {
+  MaybeRecordConnectEnd(rv);
   next_state_ = State::kNone;
   timeout_timer_.Stop();
   mutable_connect_timing().connect_end = base::TimeTicks::Now();
@@ -107,7 +117,7 @@ void TcpStreamAttempt::HandleCompletion() {
 
 void TcpStreamAttempt::OnIOComplete(int rv) {
   CHECK_NE(rv, ERR_IO_PENDING);
-  HandleCompletion();
+  HandleCompletion(rv);
   NotifyOfCompletion(rv);
 }
 
@@ -116,6 +126,13 @@ void TcpStreamAttempt::OnTimeout() {
   // TODO(bashi): The error code should be ERR_CONNECTION_TIMED_OUT but use
   // ERR_TIMED_OUT for consistency with ConnectJobs.
   OnIOComplete(ERR_TIMED_OUT);
+}
+
+void TcpStreamAttempt::MaybeRecordConnectEnd(int rv) {
+  if (!timeout_timer_.IsRunning()) {
+    return;
+  }
+  TRACE_EVENT_END("net.stream", track(), "result", rv);
 }
 
 }  // namespace net

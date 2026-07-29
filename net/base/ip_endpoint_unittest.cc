@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/base/ip_endpoint.h"
 
 #include <string.h>
@@ -16,6 +11,7 @@
 #include <tuple>
 
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
@@ -28,6 +24,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
+#include "third_party/abseil-cpp/absl/hash/hash_testing.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <winsock2.h>
@@ -83,13 +80,13 @@ uint32_t FakeNameToIndexFunc(const char* name) {
   return index;
 }
 
-char* FakeIndexToNameFunc(unsigned int index, char* ifname) {
+char* FakeIndexToNameFunc(unsigned int index, base::span<char>ifname) {
   if (index > kMaxFakeInterfaceIndex) {
     return nullptr;
   }
   std::string name = base::NumberToString(index);
   ifname[0] = name[0];
-  return ifname;
+  return ifname.data();
 }
 
 struct TestData {
@@ -203,8 +200,7 @@ TEST_F(IPEndPointTest, ToSockAddrBufTooSmall) {
 }
 
 TEST_F(IPEndPointTest, FromSockAddrBufTooSmall) {
-  struct sockaddr_in addr;
-  memset(&addr, 0, sizeof(addr));
+  struct sockaddr_in addr = {};
   addr.sin_family = AF_INET;
   IPEndPoint ip_endpoint;
   struct sockaddr* sockaddr = reinterpret_cast<struct sockaddr*>(&addr);
@@ -228,8 +224,7 @@ SOCKADDR_BTH BuildBluetoothSockAddr(const IPAddress& ip_address,
                                     uint32_t port) {
   SOCKADDR_BTH addr = {};
   addr.addressFamily = AF_BTH;
-  DCHECK_LE(ip_address.bytes().size(), sizeof(addr.btAddr));
-  memcpy(&addr.btAddr, ip_address.bytes().data(), ip_address.bytes().size());
+  base::byte_span_from_ref(addr.btAddr).copy_prefix_from(ip_address.bytes());
   addr.port = port;
   return addr;
 }
@@ -501,6 +496,35 @@ TEST_F(IPEndPointTest, FromMalformedValues) {
   *invalid_address_v4.GetDict().Find("address") =
       base::Value("::ffff:169.254.0.1");
   EXPECT_FALSE(IPEndPoint::FromValue(invalid_scope_id).has_value());
+}
+
+TEST_F(IPEndPointTest, CopyWithPort) {
+  IPEndPoint ipv4_endpoint(IPAddress(192, 168, 1, 1), 80);
+  EXPECT_EQ(IPEndPoint(IPAddress(192, 168, 1, 1), 443),
+            ipv4_endpoint.CopyWithPort(443));
+
+  IPEndPoint ipv6_endpoint(
+      IPAddress(0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1), 0,
+      /*scope_id=*/5);
+  IPEndPoint copied = ipv6_endpoint.CopyWithPort(8443);
+  EXPECT_EQ(8443, copied.port());
+  EXPECT_EQ(std::optional<uint32_t>(5), copied.scope_id());
+}
+
+TEST_F(IPEndPointTest, SupportsAbslHash) {
+  constexpr IPAddress kIPv4Address(192, 168, 0, 1);
+  constexpr IPAddress kIPv6Address(0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0,
+                                   0, 0, 0, 0, 0x42);
+  constexpr IPAddress kIPv6LinkLocalAddress(0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0,
+                                            0, 0, 0, 0, 0, 1);
+  EXPECT_TRUE(absl::VerifyTypeImplementsAbslHashCorrectly({
+      IPEndPoint(),
+      IPEndPoint(kIPv4Address, 80),
+      IPEndPoint(kIPv4Address, 8080),
+      IPEndPoint(kIPv6Address, 80),
+      IPEndPoint(kIPv6LinkLocalAddress, 80, 1),
+      IPEndPoint(kIPv6LinkLocalAddress, 80, 2),
+  }));
 }
 
 }  // namespace

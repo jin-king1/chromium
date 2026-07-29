@@ -32,7 +32,9 @@
 #include <string_view>
 #include <utility>
 
+#include "base/memory/memory_pressure_listener.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "services/metrics/public/cpp/mojo_ukm_recorder.h"
 #include "third_party/blink/public/common/features.h"
@@ -46,6 +48,7 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
+#include "third_party/blink/renderer/platform/loader/fetch/cross_origin_attribute_value.h"
 #include "third_party/blink/renderer/platform/loader/fetch/early_hints_preload_entry.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
 #include "third_party/blink/renderer/platform/loader/fetch/loader_freeze_mode.h"
@@ -100,8 +103,7 @@ struct ResourceLoaderOptions;
 // keep a ResourceFetcher alive past detach if scripts still reference the
 // Document.
 class PLATFORM_EXPORT ResourceFetcher
-    : public GarbageCollected<ResourceFetcher>,
-      public MemoryPressureListener {
+    : public GarbageCollected<ResourceFetcher> {
   USING_PRE_FINALIZER(ResourceFetcher, ClearPreloads);
 
  public:
@@ -134,8 +136,8 @@ class PLATFORM_EXPORT ResourceFetcher
   explicit ResourceFetcher(const ResourceFetcherInit&);
   ResourceFetcher(const ResourceFetcher&) = delete;
   ResourceFetcher& operator=(const ResourceFetcher&) = delete;
-  ~ResourceFetcher() override;
-  void Trace(Visitor*) const override;
+  ~ResourceFetcher();
+  void Trace(Visitor*) const;
 
   // - This function returns the same object throughout this fetcher's
   //   entire life.
@@ -183,6 +185,11 @@ class PLATFORM_EXPORT ResourceFetcher
     return freezable_task_runner_;
   }
 
+  const scoped_refptr<base::SingleThreadTaskRunner>& GetUnfreezableTaskRunner()
+      const {
+    return unfreezable_task_runner_;
+  }
+
   // Create a loader. This cannot be called after ClearContext is called.
   std::unique_ptr<URLLoader> CreateURLLoader(
       const network::ResourceRequest&,
@@ -212,9 +219,6 @@ class PLATFORM_EXPORT ResourceFetcher
   const DocumentResourceMap& AllResources() const {
     return cached_resources_map_;
   }
-
-  const HeapHashSet<Member<Resource>> MoveResourceStrongReferences();
-  bool HasStrongReferenceForTesting(Resource* resource);
 
   enum class ImageLoadBlockingPolicy {
     kDefault,
@@ -252,6 +256,44 @@ class PLATFORM_EXPORT ResourceFetcher
   void ScheduleWarnUnusedPreloads(
       base::OnceCallback<void(Vector<KURL> unused_preloads)> callback);
 
+  // Information about a <link rel=preload> for the SpeculationMeasurement API.
+  struct PreloadInfo {
+    String as;
+    CrossOriginAttributeValue crossorigin = kCrossOriginAttributeNotSet;
+    bool early_hints = false;
+    // Timestamp when the preload was matched/used, or nullopt if unused.
+    std::optional<base::TimeTicks> used_time;
+  };
+
+  // Returns a map from URL to PreloadInfo for all <link rel=preload> preloads.
+  const HashMap<KURL, PreloadInfo>& GetPreloadRecords() const {
+    return preload_records_;
+  }
+
+  // Information about a preconnect for the SpeculationMeasurement API.
+  struct PreconnectInfo {
+    // The serialized origin the connection was opened to.
+    String origin;
+    // The reflected crossorigin attribute value of the preconnect.
+    CrossOriginAttributeValue crossorigin = kCrossOriginAttributeNotSet;
+    // Whether the preconnect was delivered via an Early Hints response.
+    bool early_hints = false;
+  };
+
+  // Records a developer-initiated preconnect for the SpeculationMeasurement
+  // API. `crossorigin` is the reflected crossorigin attribute value.
+  // Preconnects are deduped by (origin, crossorigin); a duplicate that arrives
+  // via Early Hints upgrades the existing entry's `early_hints` flag to true.
+  void RecordPreconnect(const KURL& url,
+                        CrossOriginAttributeValue crossorigin,
+                        bool early_hints);
+
+  // Returns a map keyed by (origin, crossorigin) to PreconnectInfo for all
+  // developer-initiated preconnects.
+  const HashMap<String, PreconnectInfo>& GetPreconnectRecords() const {
+    return preconnect_records_;
+  }
+
   MHTMLArchive* Archive() const { return archive_.Get(); }
 
   // Set the deferring state of each loader owned by this ResourceFetcher. This
@@ -283,6 +325,9 @@ class PLATFORM_EXPORT ResourceFetcher
   // If `skip_service_worker` is true, the identifier won't be a ServiceWorker's
   // identifier to keep the cache separated.
   String GetCacheIdentifier(const KURL& url, bool skip_service_worker) const;
+  String GetCacheIdentifier(ResourceType type,
+                            const KURL& url,
+                            bool skip_service_worker) const;
 
   // If `url` exists as a resource in a subresource bundle in this frame,
   // returns its UnguessableToken; otherwise, returns std::nullopt.
@@ -321,7 +366,7 @@ class PLATFORM_EXPORT ResourceFetcher
   // counting.
   void PrepareForLeakDetection();
 
-  using ResourceFetcherSet = HeapHashSet<WeakMember<ResourceFetcher>>;
+  using ResourceFetcherSet = GCedHeapHashSet<WeakMember<ResourceFetcher>>;
   static const ResourceFetcherSet& MainThreadFetchers();
 
   mojom::blink::BlobRegistry* GetBlobRegistry();
@@ -360,9 +405,7 @@ class PLATFORM_EXPORT ResourceFetcher
   }
 
   void SetEarlyHintsPreloadedResources(
-      HashMap<KURL, EarlyHintsPreloadEntry> resources) {
-    unused_early_hints_preloaded_resources_ = std::move(resources);
-  }
+      HashMap<KURL, EarlyHintsPreloadEntry> resources);
 
   // Access the UKMRecorder.
   ukm::MojoUkmRecorder* UkmRecorder();
@@ -370,14 +413,17 @@ class PLATFORM_EXPORT ResourceFetcher
   void CancelWebBundleSubresourceLoadersFor(
       const base::UnguessableToken& web_bundle_token);
 
-  void OnMemoryPressure(
-      base::MemoryPressureListener::MemoryPressureLevel) override;
-
   void MaybeRecordLCPPSubresourceMetrics(const KURL& document_url);
 
   // For every image resource that was deferred, check to see if state has
   // changed such that the load should no longer be deferred.
   void ReloadImagesIfNotDeferred();
+
+  void StartSpeculativeImageDecodes();
+
+  // Populates the provided request's permissions policy.
+  void PopulateResourceRequestPermissionsPolicy(
+      network::ResourceRequest* request);
 
   // Check if a resource is preloaded by earlyhints when response received.
   void MarkEarlyHintConsumedIfNeeded(uint64_t inspector_id,
@@ -387,6 +433,7 @@ class PLATFORM_EXPORT ResourceFetcher
   void EnableDeferUnusedPreloadForTesting() {
     defer_unused_preload_enabled_for_testing_ = true;
   }
+
   using LcppDeferUnusedPreloadPreloadedReason =
       features::LcppDeferUnusedPreloadPreloadedReason;
   void SetDeferUnusedPreloadPreloadedReasonForTesting(
@@ -400,6 +447,11 @@ class PLATFORM_EXPORT ResourceFetcher
       LcppDeferUnusedPreloadExcludedResourceType excluded_resource_type) {
     defer_unused_preload_excluded_resource_type_for_testing_ =
         excluded_resource_type;
+  }
+
+  base::TimeDelta total_taken_time_for_did_load_resource_from_memory_cache()
+      const {
+    return total_taken_time_for_did_load_resource_from_memory_cache_;
   }
 
  private:
@@ -483,9 +535,6 @@ class PLATFORM_EXPORT ResourceFetcher
 
   void MaybeSaveResourceToStrongReference(Resource* resource);
 
-  void MaybeStartSpeculativeImageDecode();
-  void SpeculativeImageDecodeFinished();
-
   enum class RevalidationPolicy {
     kUse,
     kRevalidate,
@@ -531,8 +580,7 @@ class PLATFORM_EXPORT ResourceFetcher
                                       const Resource& existing_resource,
                                       bool is_static_data) const;
 
-  void MakePreloadedResourceBlockOnloadIfNeeded(Resource*,
-                                                const FetchParameters&);
+  void MakePreloadedResourceBlockIfNeeded(Resource*, const FetchParameters&);
   void MoveResourceLoaderToNonBlocking(ResourceLoader*);
   void RemoveResourceLoader(ResourceLoader*);
 
@@ -557,8 +605,7 @@ class PLATFORM_EXPORT ResourceFetcher
                               RevalidationPolicyForMetrics,
                               const FetchParameters&,
                               const ResourceFactory&,
-                              bool is_static_data,
-                              bool same_top_frame_site_resource_cached) const;
+                              bool is_static_data) const;
 
   void ScheduleStaleRevalidate(Resource* stale_resource);
   void RevalidateStaleResource(Resource* stale_resource);
@@ -634,11 +681,6 @@ class PLATFORM_EXPORT ResourceFetcher
   // that have not been previously emulated.
   DocumentResourceMap emulated_load_started_for_inspector_resources_map_;
 
-  // document_resource_strong_refs_ keeps strong references for fonts, images,
-  // scripts and stylesheets within their freshness lifetime.
-  HeapHashSet<Member<Resource>> document_resource_strong_refs_;
-  size_t document_resource_strong_refs_total_size_ = 0;
-
   // |not_loaded_image_resources_| is a subset of all image resources for the
   // document where |Resource::IsLoaded| might be false. The is used for
   // performance optimizations and might still contain images which are actually
@@ -648,6 +690,14 @@ class PLATFORM_EXPORT ResourceFetcher
 
   HeapHashMap<PreloadKey, Member<Resource>> preloads_;
   HeapVector<Member<Resource>> matched_preloads_;
+
+  // Records of all preloads (used and unused) for the SpeculationMeasurement
+  // API.
+  HashMap<KURL, PreloadInfo> preload_records_;
+
+  // Records of all developer-initiated preconnects for the
+  // SpeculationMeasurement API, keyed by (origin, credentials).
+  HashMap<String, PreconnectInfo> preconnect_records_;
 
   // Keeps preloads which are deferred to start loading based on the LCPP
   // signal of potentially unused preloads, in order to prevent subsequent
@@ -698,9 +748,7 @@ class PLATFORM_EXPORT ResourceFetcher
   bool allow_stale_resources_ : 1;
   bool image_fetched_ : 1;
   bool stale_while_revalidate_enabled_ : 1;
-  const bool transparent_image_optimization_enabled_ : 1;
-  bool speculative_decode_in_flight_ : 1;
-  // 26 bits left (decrease the count when you add bit fields above)
+  // 28 bits left (decrease the count when you add bit fields above)
 
   static constexpr uint32_t kKeepaliveInflightBytesQuota = 64 * 1024;
 
@@ -708,16 +756,8 @@ class PLATFORM_EXPORT ResourceFetcher
 
   SubresourceLoadMetrics subresource_load_metrics_;
 
-  // Number of of not-small images that get a priority boost.
-  // TODO(http://crbug.com/1431169): change this to a const after the
-  // feature flag is removed.
-  uint32_t boosted_image_target_ = 0;
-
   // Number of images that have had their priority boosted by heuristics.
   uint32_t boosted_image_count_ = 0;
-
-  // Area (in pixels) below which an image is considered "small"
-  uint32_t small_image_max_size_ = 0;
 
   // Number of resources that have had their priority boosted based on LCPP
   // signals.
@@ -728,6 +768,9 @@ class PLATFORM_EXPORT ResourceFetcher
       defer_unused_preload_preloaded_reason_for_testing_;
   features::LcppDeferUnusedPreloadExcludedResourceType
       defer_unused_preload_excluded_resource_type_for_testing_;
+
+  // The accumulated time taken by `DidLoadResourceFromMemoryCache()`.
+  base::TimeDelta total_taken_time_for_did_load_resource_from_memory_cache_;
 };
 
 class ResourceCacheValidationSuppressor {

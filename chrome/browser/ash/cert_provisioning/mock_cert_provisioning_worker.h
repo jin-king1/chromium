@@ -44,7 +44,7 @@ class MockCertProvisioningWorkerFactory : public CertProvisioningWorkerFactory {
               (CertScope cert_scope,
                Profile* profile,
                PrefService* pref_service,
-               const base::Value::Dict& saved_worker,
+               const base::DictValue& saved_worker,
                CertProvisioningClient* cert_provisioning_client,
                std::unique_ptr<CertProvisioningInvalidator> invalidator,
                base::RepeatingClosure state_change_callback,
@@ -86,7 +86,7 @@ class MockCertProvisioningWorker : public CertProvisioningWorker {
               (),
               (const override));
   MOCK_METHOD(base::Time, GetLastUpdateTime, (), (const override));
-  MOCK_METHOD(std::string, GetFailureMessage, (), (const override));
+  MOCK_METHOD(std::string, GetFailureMessageWithPii, (), (const override));
 
   void SetExpectations(testing::Cardinality do_step_times,
                        bool is_waiting,

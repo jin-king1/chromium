@@ -35,7 +35,7 @@ class VaapiJpegDecoder : public VaapiImageDecoder {
   ~VaapiJpegDecoder() override;
 
   // VaapiImageDecoder implementation.
-  gpu::ImageDecodeAcceleratorType GetType() const override;
+  ImageDecodeAcceleratorType GetType() const override;
   SkYUVColorSpace GetYUVColorSpace() const override;
 
   // Get the decoded data from the last Decode() call as a ScopedVAImage. The
@@ -45,10 +45,6 @@ class VaapiJpegDecoder : public VaapiImageDecoder {
   // nullptr on failure and sets *|status| to the reason for failure.
   std::unique_ptr<ScopedVAImage> GetImage(uint32_t preferred_image_fourcc,
                                           VaapiImageDecodeStatus* status);
-
-  // Returns the supported image profile.
-  static std::optional<gpu::ImageDecodeAcceleratorSupportedProfile>
-  GetSupportedProfile();
 
  private:
   friend class fuzzing::VaapiJpegDecoderWrapper;

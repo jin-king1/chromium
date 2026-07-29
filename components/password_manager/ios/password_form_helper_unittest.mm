@@ -13,6 +13,7 @@
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/test_future.h"
 #import "base/values.h"
 #import "components/autofill/core/browser/logging/log_manager.h"
 #import "components/autofill/core/common/field_data_manager.h"
@@ -23,7 +24,7 @@
 #import "components/autofill/ios/common/field_data_manager_factory_ios.h"
 #import "components/autofill/ios/form_util/autofill_test_with_web_state.h"
 #import "components/autofill/ios/form_util/form_handlers_java_script_feature.h"
-#import "components/autofill/ios/form_util/form_util_java_script_feature.h"
+#import "components/autofill/ios/form_util/renderer_id_test_util.h"
 #import "components/password_manager/core/browser/mock_password_manager.h"
 #import "components/password_manager/core/browser/password_manager_driver.h"
 #import "components/password_manager/core/browser/password_manager_interface.h"
@@ -52,6 +53,7 @@
 #import "testing/gtest_mac.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "url/origin.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -85,10 +87,13 @@ class PasswordFormHelperTest : public AutofillTestWithWebState {
       : AutofillTestWithWebState(std::make_unique<web::FakeWebClient>()) {
     web::FakeWebClient* web_client =
         static_cast<web::FakeWebClient*>(GetWebClient());
+    renderer_id_feature_ =
+        autofill::test::CreateRendererIdTestJavaScriptFeature();
     web_client->SetJavaScriptFeatures(
         {autofill::FormHandlersJavaScriptFeature::GetInstance(),
-         autofill::FormUtilJavaScriptFeature::GetInstance(),
-         password_manager::PasswordManagerJavaScriptFeature::GetInstance()});
+         autofill::AutofillJavaScriptFeature::GetInstance(),
+         password_manager::PasswordManagerJavaScriptFeature::GetInstance(),
+         renderer_id_feature_.get()});
   }
 
   PasswordFormHelperTest(const PasswordFormHelperTest&) = delete;
@@ -149,11 +154,11 @@ class PasswordFormHelperTest : public AutofillTestWithWebState {
   std::unique_ptr<base::Value> ValidFormSubmittedMessageBody(
       std::string frame_id) {
     return std::make_unique<base::Value>(
-        base::Value::Dict()
+        base::DictValue()
             .Set("name", "test_form")
             .Set("origin", BaseUrl())
-            .Set("fields", base::Value::List().Append(
-                               base::Value::Dict()
+            .Set("fields", base::ListValue().Append(
+                               base::DictValue()
                                    .Set("name", "test_field")
                                    .Set("form_control_type", "password")))
             .Set("host_frame", frame_id));
@@ -164,13 +169,14 @@ class PasswordFormHelperTest : public AutofillTestWithWebState {
     return web::ScriptMessage(std::move(body),
                               /*is_user_interacting=*/true,
                               /*is_main_frame=*/true,
-                              /*request_url=*/std::nullopt);
+                              /*request_url=*/std::nullopt, url::Origin());
   }
 
  protected:
   // PasswordFormHelper for testing.
   PasswordFormHelper* helper_;
   password_manager::MockPasswordManager password_manager_;
+  std::unique_ptr<web::JavaScriptFeature> renderer_id_feature_;
 };
 
 struct FindPasswordFormTestData {
@@ -343,6 +349,7 @@ TEST_F(PasswordFormHelperTest, FillPasswordFormWithFillData_Success) {
   [helper_ fillPasswordFormWithFillData:fill_data
                                 inFrame:frame
                        triggeredOnField:username_field_id
+                      triggerSubmission:NO
                       completionHandler:^(BOOL success) {
                         called = true;
                         succeeded = success;
@@ -413,6 +420,7 @@ TEST_F(PasswordFormHelperTest, FillPasswordFormWithFillData_Success_NoFill) {
   [helper_ fillPasswordFormWithFillData:fill_data
                                 inFrame:GetMainFrame()
                        triggeredOnField:username_field_id
+                      triggerSubmission:NO
                       completionHandler:^(BOOL success) {
                         called = true;
                         succeeded = success;
@@ -478,6 +486,7 @@ TEST_F(PasswordFormHelperTest, FillPasswordFormWithFillData_Failure) {
   [helper_ fillPasswordFormWithFillData:fill_data
                                 inFrame:frame
                        triggeredOnField:username_field_id
+                      triggerSubmission:NO
                       completionHandler:^(BOOL success) {
                         called = true;
                         succeeded = success;
@@ -565,6 +574,7 @@ TEST_F(PasswordFormHelperTest,
   [helper_ fillPasswordFormWithFillData:fill_data
                                 inFrame:GetMainFrame()
                        triggeredOnField:password_field_id
+                      triggerSubmission:NO
                       completionHandler:^(BOOL success) {
                         called = YES;
                         succeeded = success;
@@ -617,6 +627,7 @@ TEST_F(PasswordFormHelperTest,
   [helper_ fillPasswordFormWithFillData:fill_data
                                 inFrame:GetMainFrame()
                        triggeredOnField:username_field_id
+                      triggerSubmission:NO
                       completionHandler:^(BOOL success) {
                         called = true;
                         succeeded = success;
@@ -688,11 +699,11 @@ TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_MissingFillResultField) {
   PasswordFormHelper* helper =
       [[PasswordFormHelper alloc] initWithWebState:&fake_web_state];
 
-  // Test the missing did_fill_username field.
+  // Test the missing didFillUsername field.
   {
-    auto result = base::Value(base::Value::Dict()
-                                  .Set("did_fill_password", base::Value(true))
-                                  .Set("did_attempt_fill", base::Value(true)));
+    auto result = base::Value(base::DictValue()
+                                  .Set("didFillPassword", base::Value(true))
+                                  .Set("didAttemptFill", base::Value(true)));
     main_frame_ptr->AddJsResultForFunctionCall(&result,
                                                "passwords.fillPasswordForm");
     __block bool called = false;
@@ -700,6 +711,7 @@ TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_MissingFillResultField) {
     [helper fillPasswordFormWithFillData:fill_data
                                  inFrame:main_frame_ptr
                         triggeredOnField:username_field_id
+                       triggerSubmission:NO
                        completionHandler:^(BOOL success) {
                          called = true;
                          succeeded = success;
@@ -709,9 +721,9 @@ TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_MissingFillResultField) {
     EXPECT_FALSE(succeeded);
   }
 
-  // Test the missing did_fill_password field.
+  // Test the missing didFillPassword field.
   {
-    auto result = base::Value(base::Value::Dict()
+    auto result = base::Value(base::DictValue()
                                   .Set("did_fill_username", base::Value(true))
                                   .Set("did_attempt_fill", base::Value(true)));
     main_frame_ptr->AddJsResultForFunctionCall(&result,
@@ -721,6 +733,7 @@ TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_MissingFillResultField) {
     [helper fillPasswordFormWithFillData:fill_data
                                  inFrame:main_frame_ptr
                         triggeredOnField:username_field_id
+                       triggerSubmission:NO
                        completionHandler:^(BOOL success) {
                          called = true;
                          succeeded = success;
@@ -730,11 +743,11 @@ TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_MissingFillResultField) {
     EXPECT_FALSE(succeeded);
   }
 
-  // Test the missing did_attempt_fill field.
+  // Test the missing didAttemptFill field.
   {
-    auto result = base::Value(base::Value::Dict()
-                                  .Set("did_fill_username", base::Value(true))
-                                  .Set("did_fill_password", base::Value(true)));
+    auto result = base::Value(base::DictValue()
+                                  .Set("didFillUsername", base::Value(true))
+                                  .Set("didFillPassword", base::Value(true)));
     main_frame_ptr->AddJsResultForFunctionCall(&result,
                                                "passwords.fillPasswordForm");
     __block bool called = false;
@@ -742,6 +755,7 @@ TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_MissingFillResultField) {
     [helper fillPasswordFormWithFillData:fill_data
                                  inFrame:main_frame_ptr
                         triggeredOnField:username_field_id
+                       triggerSubmission:NO
                        completionHandler:^(BOOL success) {
                          called = true;
                          succeeded = success;
@@ -761,6 +775,7 @@ TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_MissingFillResultField) {
     [helper fillPasswordFormWithFillData:fill_data
                                  inFrame:main_frame_ptr
                         triggeredOnField:username_field_id
+                       triggerSubmission:NO
                        completionHandler:^(BOOL success) {
                          called = true;
                          succeeded = success;
@@ -779,6 +794,7 @@ TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_MissingFillResultField) {
     [helper fillPasswordFormWithFillData:fill_data
                                  inFrame:main_frame_ptr
                         triggeredOnField:username_field_id
+                       triggerSubmission:NO
                        completionHandler:^(BOOL success) {
                          called = true;
                          succeeded = success;
@@ -787,6 +803,73 @@ TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_MissingFillResultField) {
     ASSERT_TRUE(called);
     EXPECT_FALSE(succeeded);
   }
+}
+
+// Tests that `passwords.fillPasswordFormAndSubmit` is called when
+// `triggerSubmission` is true.
+TEST_F(PasswordFormHelperTest, FillUsernameAndPassword_TriggerSubmission) {
+  const std::string base_url = BaseUrl();
+  web::FakeWebState fake_web_state;
+  auto* feature =
+      password_manager::PasswordManagerJavaScriptFeature::GetInstance();
+  web::ContentWorld content_world = feature->GetSupportedContentWorld();
+
+  web::test::OverrideJavaScriptFeatures(GetBrowserState(), {feature});
+
+  auto web_frames_manager = std::make_unique<web::FakeWebFramesManager>();
+  auto* web_frames_manager_ptr = web_frames_manager.get();
+  fake_web_state.SetWebFramesManager(content_world,
+                                     std::move(web_frames_manager));
+  fake_web_state.SetBrowserState(GetBrowserState());
+  fake_web_state.SetContentIsHTML(true);
+  fake_web_state.SetCurrentURL(GURL(base_url));
+
+  std::unique_ptr<web::FakeWebFrame> main_frame =
+      web::FakeWebFrame::Create("frameID", true, GURL(base_url));
+  main_frame->set_browser_state(GetBrowserState());
+  auto* main_frame_ptr = main_frame.get();
+  web_frames_manager_ptr->AddWebFrame(std::move(main_frame));
+
+  IOSPasswordManagerDriverFactory::CreateForWebState(
+      &fake_web_state, OCMStrictClassMock([SharedPasswordController class]),
+      &password_manager_);
+
+  EXPECT_CALL(password_manager_, UpdateStateOnUserInput)
+      .Times(testing::AnyNumber());
+
+  FieldRendererId username_field_id(2);
+  FieldRendererId password_field_id(3);
+  FillData fill_data;
+  SetFillData(base_url, 1, username_field_id.value(), "test-user",
+              password_field_id.value(), "test-pass", &fill_data);
+
+  PasswordFormHelper* helper =
+      [[PasswordFormHelper alloc] initWithWebState:&fake_web_state];
+
+  auto result = base::Value(base::DictValue()
+                                .Set("didFillUsername", base::Value(true))
+                                .Set("didFillPassword", base::Value(true))
+                                .Set("didAttemptFill", base::Value(true)));
+  main_frame_ptr->AddJsResultForFunctionCall(
+      &result, "passwords.fillPasswordFormAndSubmit");
+
+  base::test::TestFuture<bool> future;
+  auto* future_ptr = &future;
+  [helper fillPasswordFormWithFillData:fill_data
+                               inFrame:main_frame_ptr
+                      triggeredOnField:username_field_id
+                     triggerSubmission:YES
+                     completionHandler:^(BOOL success) {
+                       future_ptr->SetValue(success);
+                     }];
+
+  EXPECT_TRUE(future.Get());
+
+  // Verify that the JS call fired was the one that triggers submission.
+  std::u16string last_call = main_frame_ptr->GetLastJavaScriptCall();
+  EXPECT_TRUE(last_call.find(u"fillPasswordFormAndSubmit") !=
+              std::u16string::npos)
+      << "\nLast call: " << last_call;
 }
 
 // Tests that extractPasswordFormData extracts wanted form on page with mutiple
@@ -969,7 +1052,7 @@ TEST_F(PasswordFormHelperTest, HandleFormSubmittedMessage_CantExtractFormData) {
   LoadHtml(@"<p>");
 
   auto incomplete_message_body = std::make_unique<base::Value>(
-      base::Value::Dict().Set("host_frame", GetMainFrame()->GetFrameId()));
+      base::DictValue().Set("host_frame", GetMainFrame()->GetFrameId()));
 
   // Set a message with an incomplete body that misses the required keys to be
   // parsed to form data.
@@ -980,6 +1063,28 @@ TEST_F(PasswordFormHelperTest, HandleFormSubmittedMessage_CantExtractFormData) {
       [helper_ handleFormSubmittedMessage:submit_message];
 
   EXPECT_EQ(HandleSubmittedFormStatus::kRejectedCantExtractFormData, status);
+
+  EXPECT_OCMOCK_VERIFY(delegate);
+}
+
+// Tests that the form submit message isn't handled when user interaction is
+// absent.
+TEST_F(PasswordFormHelperTest, HandleFormSubmittedMessage_NoUserInteraction) {
+  id delegate = OCMStrictProtocolMock(@protocol(PasswordFormHelperDelegate));
+  helper_.delegate = delegate;
+
+  LoadHtml(@"<p>");
+
+  web::ScriptMessage submit_message(
+      ValidFormSubmittedMessageBody(GetMainFrame()->GetFrameId()),
+      /*is_user_interacting=*/false,
+      /*is_main_frame=*/true,
+      /*request_url=*/std::nullopt, url::Origin());
+
+  HandleSubmittedFormStatus status =
+      [helper_ handleFormSubmittedMessage:submit_message];
+
+  EXPECT_EQ(HandleSubmittedFormStatus::kRejectedNoUserInteraction, status);
 
   EXPECT_OCMOCK_VERIFY(delegate);
 }

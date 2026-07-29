@@ -64,21 +64,19 @@ public class ThumbnailDiskStorage implements ThumbnailGeneratorCallback {
     // background thread.
     // It is static because cached thumbnails are shared across all instances of the class.
     @VisibleForTesting
-    static final LinkedHashSet<Pair<String, Integer>> sDiskLruCache =
-            new LinkedHashSet<Pair<String, Integer>>();
+    static final LinkedHashSet<Pair<String, Integer>> sDiskLruCache = new LinkedHashSet<>();
 
     // Maps content ID to a set of the requested sizes (maximum required dimension of the smaller
     // side) of the thumbnail with that ID.
     @VisibleForTesting
-    static final HashMap<String, HashSet<Integer>> sIconSizesMap =
-            new HashMap<String, HashSet<Integer>>();
+    static final HashMap<String, HashSet<Integer>> sIconSizesMap = new HashMap<>();
 
     @VisibleForTesting final ThumbnailGenerator mThumbnailGenerator;
 
     // This should be initialized once.
     private @Nullable File mDirectory;
 
-    private ThumbnailStorageDelegate mDelegate;
+    private final ThumbnailStorageDelegate mDelegate;
 
     // Maximum size in bytes for the disk cache.
     private final int mMaxCacheBytes;
@@ -87,20 +85,15 @@ public class ThumbnailDiskStorage implements ThumbnailGeneratorCallback {
     @VisibleForTesting long mSizeBytes;
 
     // These references allow tests to wait on tasks instead of polling with CriteriaHelper.
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    AsyncTask<Void> mInitTask;
+    @VisibleForTesting AsyncTask<Void> mInitTask;
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    @Nullable AsyncTask<Void> mLastClearTask;
+    @VisibleForTesting @Nullable AsyncTask<Void> mLastClearTask;
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    @Nullable AsyncTask<Void> mLastCacheThumbnailTask;
+    @VisibleForTesting @Nullable AsyncTask<Void> mLastCacheThumbnailTask;
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    @Nullable AsyncTask<@Nullable Bitmap> mLastGetThumbnailTask;
+    @VisibleForTesting @Nullable AsyncTask<@Nullable Bitmap> mLastGetThumbnailTask;
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    @Nullable AsyncTask<Void> mLastRemoveThumbnailTask;
+    @VisibleForTesting @Nullable AsyncTask<Void> mLastRemoveThumbnailTask;
 
     // Whether or not this class has been destroyed and should not be used.
     private boolean mDestroyed;
@@ -184,7 +177,7 @@ public class ThumbnailDiskStorage implements ThumbnailGeneratorCallback {
 
             // Create a copy of the set of icon sizes because they can't be removed from the set
             // while iterating through the set
-            ArrayList<Integer> iconSizes = new ArrayList<Integer>(sIconSizesMap.get(mContentId));
+            ArrayList<Integer> iconSizes = new ArrayList<>(sIconSizesMap.get(mContentId));
             for (int iconSize : iconSizes) {
                 removeFromDiskHelper(Pair.create(mContentId, iconSize));
             }
@@ -257,7 +250,7 @@ public class ThumbnailDiskStorage implements ThumbnailGeneratorCallback {
                     new CacheThumbnailTask(contentId, bitmap, iconSizePx)
                             .executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
         }
-        mDelegate.onThumbnailRetrieved(contentId, bitmap);
+        mDelegate.onThumbnailRetrieved(contentId, bitmap, iconSizePx);
     }
 
     /**
@@ -298,7 +291,7 @@ public class ThumbnailDiskStorage implements ThumbnailGeneratorCallback {
                 if (sIconSizesMap.containsKey(contentId)) {
                     sIconSizesMap.get(contentId).add(iconSizePx);
                 } else {
-                    HashSet<Integer> iconSizes = new HashSet<Integer>();
+                    HashSet<Integer> iconSizes = new HashSet<>();
                     iconSizes.add(iconSizePx);
                     sIconSizesMap.put(contentId, iconSizes);
                 }
@@ -312,12 +305,13 @@ public class ThumbnailDiskStorage implements ThumbnailGeneratorCallback {
     /**
      * Adds thumbnail to disk as most recent. Thumbnail with an existing content ID in cache will be
      * replaced by the newly added. Invoked on background thread.
+     *
+     * <p>TODO(angelashao): Use a DB to store thumbnail-related data. (crbug.com/41334944)
+     *
      * @param contentId Content ID for the thumbnail to cache to disk.
      * @param bitmap The thumbnail to cache.
      * @param iconSizePx Requested size (maximum required dimension (pixel) of the smaller side) of
-     * the thumbnail.
-     *
-     * TODO(angelashao): Use a DB to store thumbnail-related data. (crbug.com/747555)
+     *     the thumbnail.
      */
     @VisibleForTesting
     void addToDisk(String contentId, Bitmap bitmap, int iconSizePx) {
@@ -356,7 +350,7 @@ public class ThumbnailDiskStorage implements ThumbnailGeneratorCallback {
             if (sIconSizesMap.containsKey(contentId)) {
                 sIconSizesMap.get(contentId).add(iconSizePx);
             } else {
-                HashSet<Integer> iconSizes = new HashSet<Integer>();
+                HashSet<Integer> iconSizes = new HashSet<>();
                 iconSizes.add(iconSizePx);
                 sIconSizesMap.put(contentId, iconSizes);
             }

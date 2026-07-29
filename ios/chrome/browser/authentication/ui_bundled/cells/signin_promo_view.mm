@@ -13,6 +13,7 @@
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_delegate.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/ui/image/image_names.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -231,8 +232,7 @@ constexpr CGFloat kNonProfileBackgroundImageCompactHeightWidth = 54.0;
     UIImageSymbolConfiguration* config = [UIImageSymbolConfiguration
         configurationWithPointSize:kCloseButtonWidthHeight
                             weight:UIImageSymbolWeightSemibold];
-    UIImage* closeButtonImage =
-        DefaultSymbolWithConfiguration(@"xmark", config);
+    UIImage* closeButtonImage = SymbolWithConfiguration(SymbolXMark, config);
     [_closeButton setImage:closeButtonImage forState:UIControlStateNormal];
     _closeButton.tintColor = [UIColor colorNamed:kTextTertiaryColor];
     _closeButton.hidden = YES;
@@ -373,7 +373,7 @@ constexpr CGFloat kNonProfileBackgroundImageCompactHeightWidth = 54.0;
 
 // Configures primary button with a standard font.
 - (void)configurePrimaryButtonWithTitle:(NSString*)title {
-  CHECK_GT(title.length, 0ul, base::NotFatalUntil::M135);
+  CHECK_GT(title.length, 0ul);
   // Declaring variables that are used throughout different switch cases.
   UIFont* font;
   NSAttributedString* attributedTitle;
@@ -401,7 +401,7 @@ constexpr CGFloat kNonProfileBackgroundImageCompactHeightWidth = 54.0;
   self.primaryButton.configuration = buttonConfiguration;
 }
 
-#pragma mark - NSObject(Accessibility)
+#pragma mark - UIAccessibility
 
 - (void)setAccessibilityLabel:(NSString*)accessibilityLabel {
   NOTREACHED();
@@ -418,6 +418,14 @@ constexpr CGFloat kNonProfileBackgroundImageCompactHeightWidth = 54.0;
   }
   NOTREACHED();
 }
+
+- (NSArray<NSString*>*)accessibilityUserInputLabels {
+  // The name for Voice Control includes only
+  // `self.primaryButton.titleLabel.text`.
+  return @[ [self primaryButtonTitle] ];
+}
+
+#pragma mark - UIAccessibilityAction
 
 - (BOOL)accessibilityActivate {
   if (!self.primaryButton.enabled) {
@@ -451,20 +459,6 @@ constexpr CGFloat kNonProfileBackgroundImageCompactHeightWidth = 54.0;
     [actions addObject:closeCustomAction];
   }
   return actions;
-}
-
-- (NSArray<NSString*>*)accessibilityUserInputLabels {
-  // The name for Voice Control includes only
-  // `self.primaryButton.titleLabel.text`.
-  NSString* buttonTitle = [self primaryButtonTitle];
-  if (!buttonTitle) {
-    // TODO(crbug.com/365995361): At M135, this `if` can be removed.
-    // Before M135, the CHECK in `-[SigninPromoView primaryButtonTitle]` is
-    // non fatal if the title was not set. So to avoid a fatal exception,
-    // this `if` is required.
-    return @[];
-  }
-  return @[ buttonTitle ];
 }
 
 #pragma mark - Setters
@@ -590,7 +584,7 @@ constexpr CGFloat kNonProfileBackgroundImageCompactHeightWidth = 54.0;
 - (NSString*)primaryButtonTitle {
   NSString* buttonTitle = self.primaryButton.configuration.title;
   // The primary button should always be set.
-  CHECK_GT(buttonTitle.length, 0ul, base::NotFatalUntil::M135);
+  CHECK_GT(buttonTitle.length, 0ul);
   return buttonTitle;
 }
 
@@ -722,11 +716,11 @@ constexpr CGFloat kNonProfileBackgroundImageCompactHeightWidth = 54.0;
 // Updates promo for no accounts mode.
 - (void)activateNoAccountsMode {
   DCHECK_EQ(self.mode, SigninPromoViewModeNoAccounts);
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   UIImage* logo = [UIImage imageNamed:kChromeSigninPromoLogoImage];
 #else
   UIImage* logo = [UIImage imageNamed:kChromiumSigninPromoLogoImage];
-#endif  // BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#endif  // BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   DCHECK(logo);
   self.imageView.image = logo;
   self.secondaryButton.hidden = YES;

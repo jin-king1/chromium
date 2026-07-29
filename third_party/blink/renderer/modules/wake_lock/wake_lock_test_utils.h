@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WAKE_LOCK_WAKE_LOCK_TEST_UTILS_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WAKE_LOCK_WAKE_LOCK_TEST_UTILS_H_
 
+#include <array>
 #include <optional>
 
 #include "base/functional/callback.h"
@@ -14,6 +15,7 @@
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "services/device/public/mojom/wake_lock.mojom-blink.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom-blink.h"
+#include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/wake_lock/wake_lock.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
@@ -88,7 +90,7 @@ class MockWakeLockService : public mojom::blink::WakeLockService {
       const String& description,
       mojo::PendingReceiver<device::mojom::blink::WakeLock> receiver) override;
 
-  MockWakeLock mock_wake_lock_[V8WakeLockType::kEnumSize];
+  std::array<MockWakeLock, V8WakeLockType::kEnumSize> mock_wake_lock_;
   mojo::ReceiverSet<mojom::blink::WakeLockService> receivers_;
 };
 
@@ -117,23 +119,23 @@ class MockPermissionService final : public mojom::blink::PermissionService {
                      HasPermissionCallback) override;
   void RegisterPageEmbeddedPermissionControl(
       Vector<mojom::blink::PermissionDescriptorPtr> permissions,
+      mojom::blink::EmbeddedPermissionRequestDescriptorPtr descriptor,
       mojo::PendingRemote<mojom::blink::EmbeddedPermissionControlClient> client)
       override;
   void RequestPageEmbeddedPermission(
+      Vector<mojom::blink::PermissionDescriptorPtr> descriptors,
       mojom::blink::EmbeddedPermissionRequestDescriptorPtr permissions,
       RequestPageEmbeddedPermissionCallback) override;
   void RequestPermission(mojom::blink::PermissionDescriptorPtr permission,
-                         bool user_gesture,
                          RequestPermissionCallback) override;
   void RequestPermissions(
       Vector<mojom::blink::PermissionDescriptorPtr> permissions,
-      bool user_gesture,
       RequestPermissionsCallback) override;
   void RevokePermission(mojom::blink::PermissionDescriptorPtr permission,
                         RevokePermissionCallback) override;
   void AddPermissionObserver(
       mojom::blink::PermissionDescriptorPtr permission,
-      mojom::blink::PermissionStatus last_known_status,
+      mojom::blink::PermissionStatusWithDetailsPtr last_known_status,
       mojo::PendingRemote<mojom::blink::PermissionObserver>) override;
   void AddPageEmbeddedPermissionObserver(
       mojom::blink::PermissionDescriptorPtr permission,
@@ -147,10 +149,12 @@ class MockPermissionService final : public mojom::blink::PermissionService {
 
   mojo::Receiver<mojom::blink::PermissionService> receiver_{this};
 
-  std::optional<mojom::blink::PermissionStatus>
-      permission_responses_[V8WakeLockType::kEnumSize];
+  std::array<std::optional<mojom::blink::PermissionStatus>,
+             V8WakeLockType::kEnumSize>
+      permission_responses_;
 
-  base::OnceClosure request_permission_callbacks_[V8WakeLockType::kEnumSize];
+  std::array<base::OnceClosure, V8WakeLockType::kEnumSize>
+      request_permission_callbacks_;
 };
 
 // Overrides requests for WakeLockService with MockWakeLockService instances.

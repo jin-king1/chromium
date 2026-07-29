@@ -4,6 +4,8 @@
 
 #include "chrome/renderer/accessibility/read_anything/read_aloud_traversal_utils.h"
 
+#include <string_view>
+
 #include "ui/accessibility/ax_text_utils.h"
 
 namespace a11y {
@@ -78,7 +80,8 @@ ReadAloudCurrentGranularity::GetSegmentsForRange(int start_index,
 }
 
 void ReadAloudCurrentGranularity::CalculatePlaceholderPhrases() {
-  if (text.size() == 0) {
+  std::u16string_view text_view = text;
+  if (text_view.size() == 0) {
     phrase_boundaries.clear();
     return;
   }
@@ -91,17 +94,17 @@ void ReadAloudCurrentGranularity::CalculatePlaceholderPhrases() {
     if (count % 3 == 0) {
       phrase_boundaries.push_back(start);
     }
-    int next_word = GetNextWord(text.substr(start));
+    int next_word = GetNextWord(text_view.substr(start));
     if (next_word == 0) {
       break;
     }
     start += next_word;
     ++count;
-    if (start >= text.size()) {
+    if (start >= text_view.size()) {
       break;
     }
   } while (start);
-  phrase_boundaries.push_back(text.size());
+  phrase_boundaries.push_back(text_view.size());
 }
 
 }  // namespace a11y
@@ -110,7 +113,7 @@ namespace {
 
 // Returns the index of the next granularity of the given text, such that the
 // next granularity is equivalent to text.substr(0, <returned_index>).
-int GetNextGranularity(const std::u16string& text,
+int GetNextGranularity(std::u16string_view text,
                        ax::mojom::TextBoundary boundary) {
   // TODO(crbug.com/40927698): Investigate providing correct line breaks
   // or alternatively making adjustments to ax_text_utils to return boundaries
@@ -123,28 +126,11 @@ int GetNextGranularity(const std::u16string& text,
 
 }  // namespace
 
-int GetNextSentence(const std::u16string& text, bool is_pdf) {
-  std::u16string filtered_string(text);
-  // When we receive text from a pdf node, there are return characters at each
-  // visual line break in the page. If these aren't filtered before calling
-  // GetNextGranularity on the text, text part of the same sentence will be
-  // read as separate segments, which causes speech to sound choppy.
-  // e.g. without filtering
-  // 'This is a long sentence with \n\r a line break.'
-  // will read and highlight "This is a long sentence with" and "a line break"
-  // separately.
-  if (is_pdf && filtered_string.size() > 0) {
-    size_t pos = filtered_string.find_first_of(u"\n\r");
-    while (pos != std::string::npos && pos < filtered_string.size() - 2) {
-      filtered_string.replace(pos, 1, u" ");
-      pos = filtered_string.find_first_of(u"\n\r");
-    }
-  }
-  return GetNextGranularity(filtered_string,
-                            ax::mojom::TextBoundary::kSentenceStart);
+int GetNextSentence(std::u16string_view text) {
+  return GetNextGranularity(text, ax::mojom::TextBoundary::kSentenceStart);
 }
 
-int GetNextWord(const std::u16string& text) {
+int GetNextWord(std::u16string_view text) {
   return GetNextGranularity(text, ax::mojom::TextBoundary::kWordStart);
 }
 
@@ -155,23 +141,23 @@ bool ArePositionsEqual(const ui::AXNodePosition::AXPositionInstance& position,
          (position->text_offset() == other->text_offset());
 }
 
+// Returns either the anchor node or the lowest platform ancestor of the node,
+// if it's a leaf.
 ui::AXNode* GetAnchorNode(
     const ui::AXNodePosition::AXPositionInstance& position) {
+  // For editable text fields, we want to read the text inside, even if it's
+  // technically a child of a leaf. However, this shouldn't be done for links
+  // if the lowest platform anchor is also text to avoid speaking duplicate
+  // text.
+  if (position->GetAnchor()->HasState(ax::mojom::State::kEditable) &&
+      position->GetAnchor()->IsText() &&
+      !position->GetAnchor()->GetLowestPlatformAncestor()->IsText()) {
+    return position->GetAnchor();
+  }
   bool is_leaf = position->GetAnchor()->IsChildOfLeaf();
   // If the node is a leaf, use the parent node instead.
   return is_leaf ? position->GetAnchor()->GetLowestPlatformAncestor()
                  : position->GetAnchor();
-}
-
-// Returns either the node or the lowest platform ancestor of the node, if it's
-// a leaf.
-ui::AXNode* GetNextNodeFromPosition(
-    const ui::AXNodePosition::AXPositionInstance& ax_position) {
-  if (ax_position->GetAnchor()->IsChildOfLeaf()) {
-    return ax_position->GetAnchor()->GetLowestPlatformAncestor();
-  }
-
-  return ax_position->GetAnchor();
 }
 
 // TODO(crbug.com/40927698): See if we can use string util here.

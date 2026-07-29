@@ -24,7 +24,7 @@
 
   const kIframeURLPath = "support/frame-with-csp.sub.html";
 
-  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy/Sources#unsafe-inline
+  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy#unsafe-inline
   document.getElementById("iframeWithScriptSrcUnsafeInline").src =
     encodeURIWithApostrophes(kIframeURLPath + "?csp=script-src 'unsafe-inline'");
   document.getElementById("iframeWithScriptSrcNone").src =
@@ -113,11 +113,11 @@
             { once: true }
           );
 
-          targetWindow.addEventListener("securitypolicyviolation", e => {
+          targetWindow.addEventListener("securitypolicyviolation", t.step_func(e => {
             assert_equals(e.violatedDirective, "script-src-elem");
             assert_equals(e.blockedURI, "inline");
             resolve();
-          }, { once : true });
+          }), { once : true });
 
           assignJavascriptURLToInjectionSink(testCase);
         })}, `Should not have executed the javascript URL for

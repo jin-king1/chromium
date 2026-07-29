@@ -12,9 +12,7 @@
 #include <vector>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/numerics/checked_math.h"
 #include "base/sequence_checker.h"
@@ -27,6 +25,8 @@
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "net/base/url_util.h"
 #include "services/network/public/cpp/network_switches.h"
+#include "third_party/abseil-cpp/absl/container/inlined_vector.h"
+#include "url/gurl.h"
 #include "url/origin.h"
 #include "url/scheme_host_port.h"
 #include "url/url_canon.h"
@@ -43,7 +43,7 @@ namespace {
 // taken from a GURL (e.g., "1.2.3.4").  This excludes things like
 // "0x1.0x2.0x3.0x4", since GURL will map that to 1.2.3.4. Can potentially
 // incorrectly return true cases with extra 0's (e.g., "*.2.3.00").
-bool PatternCanMatchIpV4Host(const std::string& hostname_pattern) {
+bool PatternCanMatchIpV4Host(std::string_view hostname_pattern) {
   // This method doesn't expect to receive empty strings, since
   // IsValidWildcardPattern() ensures there is at least one '*'.
   DCHECK(!hostname_pattern.empty());
@@ -57,23 +57,22 @@ bool PatternCanMatchIpV4Host(const std::string& hostname_pattern) {
   // Create a copy of the original string, with components exactly matching "*"
   // replaced with 0. Leave components with *'s and non-*'s alone. They'll be
   // rejected when trying to parse the resulting string as an IPv4 IP.
-  std::string wildcards_replaced;
-  for (const auto& component : components) {
-    if (!wildcards_replaced.empty())
-      wildcards_replaced += ".";
-
+  absl::InlinedVector<std::string_view, 4> string_pieces;
+  for (const std::string_view component : components) {
     if (component == "*") {
-      wildcards_replaced += "0";
+      string_pieces.push_back("0");
     } else {
-      wildcards_replaced += component;
+      string_pieces.push_back(component);
     }
   }
 
   // If there are fewer than 4 components, add components until there are, as a
   // wildcard can match multiple components.
   for (size_t i = components.size(); i < 4; ++i) {
-    wildcards_replaced += ".0";
+    string_pieces.push_back("0");
   }
+
+  std::string wildcards_replaced = base::JoinString(string_pieces, ".");
 
   net::IPAddress ip_address;
   return ip_address.AssignFromIPLiteral(wildcards_replaced) &&
@@ -85,7 +84,7 @@ bool PatternCanMatchIpV4Host(const std::string& hostname_pattern) {
 // 1.) A string matching |hostname_pattern| is a valid hostname.
 // 2.) Wildcards only appear beyond the eTLD+1. "*.foo.com" is considered
 //     valid but "*.com" is not.
-bool IsValidWildcardPattern(const std::string& hostname_pattern) {
+bool IsValidWildcardPattern(std::string_view hostname_pattern) {
   // Replace wildcards with dummy values to check whether a matching origin is
   // valid. Use "z" so it won't potentially map to a hex digit, since IPv4 IPs
   // are tested by PatternCanMatchIpV4Ip().
@@ -123,18 +122,18 @@ bool IsValidWildcardPattern(const std::string& hostname_pattern) {
   // If there is no component before the registrar portion, or if the component
   // immediately preceding the registrar portion contains a wildcard, the
   // pattern is not considered valid.
-  std::string host_before_registrar =
+  std::string_view host_before_registrar =
       hostname_pattern.substr(0, hostname_pattern.size() - registry_length);
-  std::vector<std::string> components =
-      base::SplitString(host_before_registrar, ".", base::KEEP_WHITESPACE,
-                        base::SPLIT_WANT_NONEMPTY);
+  std::vector<std::string_view> components =
+      base::SplitStringPiece(host_before_registrar, ".", base::KEEP_WHITESPACE,
+                             base::SPLIT_WANT_NONEMPTY);
   if (components.size() == 0)
     return false;
   if (components.back().find("*") != std::string::npos)
     return false;
   // If a wildcard is a part of a component or there is adjacent wildcards, the
   // pattern is not considered valid.
-  for (const std::string& component : components) {
+  for (const std::string_view component : components) {
     if (component.find('*') != std::string::npos && component != "*")
       return false;
   }
@@ -145,7 +144,7 @@ bool IsValidWildcardPattern(const std::string& hostname_pattern) {
 // wildcard components or components that fail canonicalization. For example,
 // given a |hostname_pattern| of "TeSt.*.%46oo.com", the output will be
 // "test.*.foo.com".
-std::string CanonicalizePatternComponents(const std::string& hostname_pattern) {
+std::string CanonicalizePatternComponents(std::string_view hostname_pattern) {
   std::string canonical_host;  // Do not modify outside of canon_output.
   canonical_host.reserve(hostname_pattern.length());
   url::StdStringCanonOutput canon_output(&canonical_host);
@@ -159,15 +158,11 @@ std::string CanonicalizePatternComponents(const std::string& hostname_pattern) {
       current = hostname_pattern.length();
 
     // Try to append the canonicalized version of this component.
-    int current_len = base::checked_cast<int>(current - begin);
-    if (hostname_pattern.substr(begin, current_len) == "*" ||
-        !url::CanonicalizeHostSubstring(
-            hostname_pattern.data(),
-            url::Component(base::checked_cast<int>(begin), current_len),
-            &canon_output)) {
+    std::string_view hostname = hostname_pattern.substr(begin, current - begin);
+    if (hostname == "*" ||
+        !url::CanonicalizeHostSubstring(hostname, &canon_output)) {
       // Failed to canonicalize this component; append as-is.
-      canon_output.Append(hostname_pattern.substr(begin, current_len).data(),
-                          current_len);
+      canon_output.Append(hostname);
     }
 
     if (current < hostname_pattern.length())
@@ -249,7 +244,7 @@ std::vector<std::string> ParseSecureOriginAllowlistFromCmdline() {
 
 bool IsAllowlisted(const std::vector<std::string>& allowlist,
                    const url::Origin& origin) {
-  if (base::Contains(allowlist, origin.Serialize()))
+  if (std::ranges::contains(allowlist, origin.Serialize()))
     return true;
 
   for (const std::string& origin_or_pattern : allowlist) {
@@ -277,8 +272,8 @@ bool IsSchemeConsideredAuthenticated(std::string_view scheme) {
   //   content::ContentClient::Schemes::secure_schemes
   // - url::AddLocalScheme
   // - url::AddSecureScheme
-  return base::Contains(url::GetSecureSchemes(), scheme) ||
-         base::Contains(url::GetLocalSchemes(), scheme);
+  return std::ranges::contains(url::GetSecureSchemes(), scheme) ||
+         std::ranges::contains(url::GetLocalSchemes(), scheme);
 }
 
 }  // namespace
@@ -350,7 +345,7 @@ bool IsUrlPotentiallyTrustworthy(const GURL& url) {
   //    context in which they were created. Therefore, blobs created in a
   //    trustworthy origin will themselves be potentially trustworthy.
   url::Origin origin = url::Origin::Create(url);
-  if (origin.opaque() && IsSchemeConsideredAuthenticated(url.scheme_piece())) {
+  if (origin.opaque() && IsSchemeConsideredAuthenticated(url.scheme())) {
     // Authenticated schemes should be treated as trustworthy, even if they
     // translate into an opaque origin (e.g. because some of them might also be
     // registered as a no-access, like the //content-layer chrome-error:// or

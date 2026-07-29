@@ -8,20 +8,26 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
+#include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "base/sequence_checker.h"
 #include "components/policy/policy_export.h"
 #include "components/prefs/persistent_pref_store.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 // For more imformation about this file please read
 // //components/policy/core/common/management/management_service.md
 
 class PrefService;
 class PrefRegistrySimple;
+
+namespace gfx {
+class Image;
+}
 
 namespace ui {
 class ImageModel;
@@ -31,6 +37,10 @@ namespace policy {
 
 class ManagementService;
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(ManagementAuthorityTrustworthiness)
 enum class ManagementAuthorityTrustworthiness {
   NONE = 0,           // No management authority found
   LOW = 1,            // Local device management authority
@@ -39,12 +49,13 @@ enum class ManagementAuthorityTrustworthiness {
                       // ChromeOS
   kMaxValue = FULLY_TRUSTED
 };
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml:ManagementAuthorityTrustworthiness)
 
 enum EnterpriseManagementAuthority : int {
   NONE = 0,
   COMPUTER_LOCAL =
       1 << 0,  // local GPO or registry, /etc files, local root profile
-  DOMAIN_LOCAL = 1 << 1,  // AD joined, puppet
+  DOMAIN_LOCAL = 1 << 1,  // AD joined
   CLOUD = 1 << 2,         // MDM, GSuite user
   CLOUD_DOMAIN = 1 << 3   // Azure AD, CBCM, CrosEnrolled
 };
@@ -75,6 +86,15 @@ class POLICY_EXPORT ManagementStatusProvider {
   // This value is never ached and may required blocking I/O to get.
   virtual EnterpriseManagementAuthority FetchAuthority() = 0;
 
+  // The default implementation uses `base::Unretained(this)` when
+  // posting to the `ThreadPool`. This is safe for `PlatformManagementService`
+  // but introduces a Use-After-Free risk if used by destructible providers.
+  // Destructible caching providers should override this method.
+  virtual void FetchAuthorityAsync(
+      base::OnceCallback<void(std::pair<ManagementStatusProvider*,
+                                        EnterpriseManagementAuthority>)>
+          callback);
+
   bool RequiresCache() const;
   void UpdateCache(EnterpriseManagementAuthority authority);
 
@@ -85,15 +105,27 @@ class POLICY_EXPORT ManagementStatusProvider {
   const std::string& cache_pref_name() const { return cache_pref_name_; }
 
  private:
-  absl::variant<PrefService*, scoped_refptr<PersistentPrefStore>> cache_ =
+  // TODO(crbug.com/531448879): Remove this when AzureAD logic migration is
+  // complete.
+  friend class ManagementService;
+
+  std::variant<PrefService*, scoped_refptr<PersistentPrefStore>> cache_ =
       nullptr;
   const std::string cache_pref_name_;
+  base::WeakPtrFactory<ManagementStatusProvider> weak_factory_{this};
 };
 
 // Interface to gives information related to an entity's management state.
 // This class must be used on the main thread at all times.
 class POLICY_EXPORT ManagementService {
  public:
+  // Observers observing updates to the enterprise custom or default work label.
+  class POLICY_EXPORT Observer : public base::CheckedObserver {
+   public:
+    virtual void OnEnterpriseLabelUpdated() {}
+    virtual void OnEnterpriseLogoUpdatedForBrowser() {}
+  };
+
   explicit ManagementService(
       std::vector<std::unique_ptr<ManagementStatusProvider>> providers);
   virtual ~ManagementService();
@@ -112,12 +144,20 @@ class POLICY_EXPORT ManagementService {
   virtual void RefreshCache(CacheRefreshCallback callback);
 
   virtual ui::ImageModel* GetManagementIconForProfile();
+  virtual gfx::Image* GetManagementIconForBrowser();
 
   // Returns true if `authority` is are actively managed.
   bool HasManagementAuthority(EnterpriseManagementAuthority authority);
 
   // Returns the highest trustworthiness of the active management authorities.
   ManagementAuthorityTrustworthiness GetManagementAuthorityTrustworthiness();
+
+  // TODO(crbug.com/531448879): Remove this function when AzureAD logic
+  // migration is complete. Returns the trustworthiness of active management
+  // authorities for policy loading. By default, returns
+  // `GetManagementAuthorityTrustworthiness()`.
+  ManagementAuthorityTrustworthiness
+  GetManagementAuthorityTrustworthinessForPolicyLoading();
 
   // Returns whether there is any management authority at all.
   bool IsManaged();
@@ -134,10 +174,17 @@ class POLICY_EXPORT ManagementService {
     return management_authorities_for_testing_;
   }
 
+  // Add / remove observers.
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
+
   void SetManagementAuthoritiesForTesting(int management_authorities);
   void ClearManagementAuthoritiesForTesting();
   void SetManagementStatusProviderForTesting(
       std::vector<std::unique_ptr<ManagementStatusProvider>> providers);
+  virtual void TriggerPolicyStatusChangedForTesting() {}
+  virtual void SetBrowserManagementIconForTesting(
+      const gfx::Image& management_icon) {}
 
   static void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
 
@@ -149,21 +196,32 @@ class POLICY_EXPORT ManagementService {
   void AddManagementStatusProvider(
       std::unique_ptr<ManagementStatusProvider> provider);
 
+  void NotifyEnterpriseLabelUpdated();
+  void NotifyEnterpriseLogoForBrowserUpdated();
+
   const std::vector<std::unique_ptr<ManagementStatusProvider>>&
   management_status_providers() {
     return management_status_providers_;
   }
+
+  void OnAuthFetched(
+      CacheRefreshCallback callback,
+      ManagementAuthorityTrustworthiness previous,
+      std::vector<std::pair<ManagementStatusProvider*,
+                            EnterpriseManagementAuthority>> results);
 
  private:
   // Returns a bitset of with the active `EnterpriseManagementAuthority` on the
   // managed entity.
   int GetManagementAuthorities();
 
+  base::ObserverList<ManagementService::Observer> observers_;
   std::optional<int> management_authorities_for_testing_;
   std::vector<std::unique_ptr<ManagementStatusProvider>>
       management_status_providers_;
 
   SEQUENCE_CHECKER(sequence_checker_);
+  base::WeakPtrFactory<ManagementService> weak_factory_{this};
 };
 
 }  // namespace policy

@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.bookmarks.BookmarkItem;
 
 /**
@@ -13,6 +14,7 @@ import org.chromium.components.bookmarks.BookmarkItem;
  * bookmarkModelChanged. Unless noted otherwise, all the functions won't be called during extensive
  * change.
  */
+@NullMarked
 public abstract class BookmarkModelObserver {
     /**
      * Invoked when a node has moved.
@@ -32,8 +34,9 @@ public abstract class BookmarkModelObserver {
      *
      * @param parent The parent of the node being added.
      * @param index The index of the added node.
+     * @param addedByUser Whether the bookmark was added by the user of this device.
      */
-    public void bookmarkNodeAdded(BookmarkItem parent, int index) {
+    public void bookmarkNodeAdded(BookmarkItem parent, int index, boolean addedByUser) {
         bookmarkModelChanged();
     }
 
@@ -73,7 +76,7 @@ public abstract class BookmarkModelObserver {
     }
 
     /**
-     * Invoked when the title or url of a node changes.
+     * Invoked when the favicon, title, or url of a node changes.
      *
      * @param node The node being changed.
      */

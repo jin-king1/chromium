@@ -6,21 +6,28 @@
 
 #include <stddef.h>
 
+#include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
-#include "base/cancelable_callback.h"
+#include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_helpers.h"
 #include "base/location.h"
-#include "base/memory/ptr_util.h"
+#include "base/memory/weak_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/data_quality/addresses/address_normalizer.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/address_i18n.h"
 #include "components/autofill/core/browser/geo/phone_number_i18n.h"
 #include "third_party/libaddressinput/chromium/chrome_address_validator.h"
@@ -277,15 +284,15 @@ AddressNormalizerImpl::GetJavaObject() {
 
 void AddressNormalizerImpl::LoadRulesForAddressNormalization(
     JNIEnv* env,
-    const base::android::JavaParamRef<jstring>& jregion_code) {
+    const base::android::JavaRef<jstring>& jregion_code) {
   LoadRulesForRegion(base::android::ConvertJavaStringToUTF8(env, jregion_code));
 }
 
 void AddressNormalizerImpl::StartAddressNormalization(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& jprofile,
-    jint jtimeout_seconds,
-    const base::android::JavaParamRef<jobject>& jdelegate) {
+    const base::android::JavaRef<jobject>& jprofile,
+    int32_t jtimeout_seconds,
+    const base::android::JavaRef<jobject>& jdelegate) {
   // TODO(crbug.com/40282123): Check if existing profile needs to be passed.
   AutofillProfile profile = AutofillProfile::CreateFromJavaObject(
       jprofile, /*existing_profile=*/nullptr, app_locale_);
@@ -360,3 +367,7 @@ void AddressNormalizerImpl::AddNormalizationRequestForRegion(
 }
 
 }  // namespace autofill
+
+#if BUILDFLAG(IS_ANDROID)
+DEFINE_JNI(AddressNormalizer)
+#endif

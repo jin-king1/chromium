@@ -7,17 +7,21 @@
 #import <memory>
 
 #import "base/apple/foundation_util.h"
+#import "base/feature_list.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/google/core/common/google_util.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/sync/base/command_line_switches.h"
+#import "components/sync/base/features.h"
 #import "components/sync/service/sync_prefs.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_user_settings.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/settings/ui_bundled/sync/sync_create_passphrase_table_view_controller.h"
+#import "ios/chrome/browser/settings/ui_bundled/sync/sync_encryption_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/sync/sync_encryption_passphrase_table_view_controller.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
@@ -53,9 +57,13 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 }  // namespace
 
-@interface SyncEncryptionTableViewController () <SyncObserverModelBridge> {
+@interface SyncEncryptionTableViewController () <
+    SyncEncryptionPassphraseTableViewControllerPresentationDelegate,
+    SyncObserverModelBridge> {
   std::unique_ptr<SyncObserverBridge> _syncObserver;
   BOOL _isUsingExplicitPassphrase;
+  SyncCreatePassphraseTableViewController*
+      _syncCreatePassphraseTableViewController;
 
   // Whether Settings have been dismissed.
   BOOL _settingsAreDismissed;
@@ -128,10 +136,12 @@ typedef NS_ENUM(NSInteger, ItemType) {
 - (TableViewItem*)passphraseItem {
   DCHECK(syncer::IsSyncAllowedByFlag());
   NSString* text = l10n_util::GetNSString(IDS_SYNC_FULL_ENCRYPTION_DATA);
-  return [self itemWithType:ItemTypePassphrase
-                       text:text
-                    checked:_isUsingExplicitPassphrase
-                    enabled:!_isUsingExplicitPassphrase];
+  TableViewItem* result = [self itemWithType:ItemTypePassphrase
+                                        text:text
+                                     checked:_isUsingExplicitPassphrase
+                                     enabled:!_isUsingExplicitPassphrase];
+  result.accessibilityIdentifier = kSyncFullEncryptionAccessibilityIdentifier;
+  return result;
 }
 
 // Returns a footer item with a link.
@@ -142,8 +152,13 @@ typedef NS_ENUM(NSInteger, ItemType) {
       l10n_util::GetNSString(IDS_IOS_SYNC_ENCRYPTION_PASSPHRASE_HINT_UNO);
   footerItem.urls = @[ [[CrURL alloc]
       initWithGURL:google_util::AppendGoogleLocaleParam(
-                       GURL(kSyncGoogleDashboardURL),
-                       GetApplicationContext()->GetApplicationLocale())] ];
+                       GURL(base::FeatureList::IsEnabled(
+                                syncer::kSyncEnableNewSyncDashboardUrl)
+                                ? kNewSyncGoogleDashboardURL
+                                : kLegacySyncGoogleDashboardURL),
+                       GetApplicationContext()
+                           ->GetApplicationLocaleStorage()
+                           ->Get())] ];
   return footerItem;
 }
 
@@ -178,17 +193,23 @@ typedef NS_ENUM(NSInteger, ItemType) {
       ProfileIOS* profile = self.browser->GetProfile();
       syncer::SyncService* service = SyncServiceFactory::GetForProfile(profile);
       if (service->IsEngineInitialized() &&
-          !service->GetUserSettings()->IsUsingExplicitPassphrase()) {
-        SyncCreatePassphraseTableViewController* controller =
+          !service->GetUserSettings()->IsUsingExplicitPassphrase() &&
+          !service->GetUserSettings()->IsTrustedVaultKeyRequired() &&
+          !_syncCreatePassphraseTableViewController) {
+        _syncCreatePassphraseTableViewController =
             [[SyncCreatePassphraseTableViewController alloc]
                 initWithBrowser:self.browser];
+        _syncCreatePassphraseTableViewController.presentationDelegate = self;
         // Loading the Sync Create Passphrase view will start a UIBlocker with
         // the current scene as target. There is no need to check whether it is
         // possible to in order for the Sync Encryption view to be displayed, a
         // UIBlocker is already started with the current target.
 
-        [self configureHandlersForRootViewController:controller];
-        [self.navigationController pushViewController:controller animated:YES];
+        [self configureHandlersForRootViewController:
+                  _syncCreatePassphraseTableViewController];
+        [self.navigationController
+            pushViewController:_syncCreatePassphraseTableViewController
+                      animated:YES];
       }
       break;
     }
@@ -199,6 +220,16 @@ typedef NS_ENUM(NSInteger, ItemType) {
   }
 
   [tableView deselectRowAtIndexPath:indexPath animated:NO];
+}
+
+#pragma mark - UIView
+
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
+  if (self.isMovingFromParentViewController) {
+    [self.presentationDelegate
+        syncEncryptionTableViewControllerDidDismiss:self];
+  }
 }
 
 #pragma mark - SettingsControllerProtocol callbacks
@@ -251,6 +282,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
                        checked:(BOOL)checked
                        enabled:(BOOL)enabled {
   TableViewTextItem* item = [[TableViewTextItem alloc] initWithType:type];
+  item.titleNumberOfLines = 0;
   item.accessibilityTraits |= UIAccessibilityTraitButton;
   item.text = text;
   item.accessoryType = checked ? UITableViewCellAccessoryCheckmark
@@ -259,6 +291,17 @@ typedef NS_ENUM(NSInteger, ItemType) {
                            : [UIColor colorNamed:kTextSecondaryColor];
   item.enabled = enabled;
   return item;
+}
+
+#pragma mark - SyncEncryptionPassphraseTableViewControllerPresentationDelegate
+
+- (void)syncEncryptionPassphraseTableViewControllerDidDisappear:
+    (SyncEncryptionPassphraseTableViewController*)viewController {
+  CHECK_EQ(_syncCreatePassphraseTableViewController, viewController,
+           base::NotFatalUntil::M142);
+  _syncCreatePassphraseTableViewController.presentationDelegate = nil;
+  [_syncCreatePassphraseTableViewController settingsWillBeDismissed];
+  _syncCreatePassphraseTableViewController = nil;
 }
 
 @end

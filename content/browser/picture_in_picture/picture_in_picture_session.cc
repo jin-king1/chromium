@@ -56,9 +56,14 @@ void PictureInPictureSession::Update(
   GetController().SetShowPlayPauseButton(show_play_pause_button);
 }
 
+void PictureInPictureSession::UpdateMediaPosition(
+    const media_session::MediaPosition& media_position) {
+  GetController().SetMediaPosition(media_position);
+}
+
 void PictureInPictureSession::OnPlayerGone() {
   player_id_.reset();
-  GetController().SetShowPlayPauseButton(false);
+  GetController().SetPlaybackControlsVisibility(false);
 }
 
 void PictureInPictureSession::NotifyWindowResized(const gfx::Size& size) {

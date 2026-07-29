@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#import "base/functional/callback_helpers.h"
 #import "base/test/scoped_mock_clock_override.h"
 #import "base/test/task_environment.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/feature_constants.h"
+#import "components/feature_engagement/public/group_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/feature_engagement/test/scoped_iph_feature_list.h"
 #import "components/feature_engagement/test/test_tracker.h"
@@ -33,6 +35,18 @@ class FeatureEngagementTest : public PlatformTest {
  public:
   FeatureEngagementTest();
   ~FeatureEngagementTest() override;
+
+  std::map<std::string, std::string> BadgedReaderModeParams() {
+    std::map<std::string, std::string> params;
+    params["event_trigger"] = "name:ios_iph_badged_reader_mode_triggered;"
+                              "comparator:==0;window:1095;storage:"
+                              "1095";
+    params["event_used"] =
+        "name:ios_reader_mode_used;comparator:==0;window:90;storage:90";
+    params["session_rate"] = "==0";
+    params["availability"] = "any";
+    return params;
+  }
 
   std::map<std::string, std::string> BadgedReadingListParams() {
     std::map<std::string, std::string> params;
@@ -191,6 +205,61 @@ class FeatureEngagementTest : public PlatformTest {
         "name:default_site_view_shown;comparator:==0;window:720;storage:720";
     params["event_1"] =
         "name:desktop_version_requested;comparator:>=3;window:60;storage:60";
+    return params;
+  }
+
+  std::map<std::string, std::string> IPHiOSHomepageLensNewBadgeParams() {
+    std::map<std::string, std::string> params;
+    params["availability"] = "any";
+    params["session_rate"] = "<1";
+    params["used"] = "name:ios_lens_button_used;"
+                     "comparator:==0;window:3650;storage:3650";
+    params["trigger"] = "name:ios_homepage_lens_badge_trigger;comparator:<3;"
+                        "window:3650;storage:3650";
+    params["groups"] = "IPH_iOSHomepageNewBadgesGroup";
+    return params;
+  }
+
+  std::map<std::string, std::string>
+  IPHiOSHomepageCustomizationNewBadgeParams() {
+    std::map<std::string, std::string> params;
+    params["availability"] = "any";
+    params["session_rate"] = "<1";
+    params["used"] =
+        "name:ios_homepage_customization_badge_used;comparator:any;"
+        "window:3650;storage:3650";
+    params["trigger"] =
+        "name:ios_homepage_customization_badge_trigger;comparator:<3;window:"
+        "3650;storage:3650";
+    params["groups"] = "IPH_iOSHomepageNewBadgesGroup";
+    return params;
+  }
+
+  std::map<std::string, std::string> HomepageNewBadgesGroupParams() {
+    std::map<std::string, std::string> params;
+    params["session_rate"] = "<1";
+    params["trigger"] =
+        "name:homepage_new_badges_group_trigger;comparator:<1;window:1;storage:"
+        "365";
+    params["event_1"] = "name:ios_fre_badge_holdback_period_elapsed;comparator:"
+                        ">=1;window:3650;storage:3650";
+    return params;
+  }
+
+  std::map<std::string, std::string> HomeBackgroundCustomizationPromoParams() {
+    std::map<std::string, std::string> params;
+    params["availability"] = "any";
+    params["session_rate"] = "any";
+    params["used"] = "name:ios_home_background_customization_menu_used;"
+                     "comparator:==0;window:3650;storage:3650";
+    params["trigger"] = "name:background_customization_promo_trigger;"
+                        "comparator:==0;window:3650;storage:3650";
+    params["event_1"] = "name:home_customization_menu_iph_triggered;"
+                        "comparator:==0;window:30;storage:30";
+    params["event_2"] = "name:home_customization_menu_iph_triggered_2;"
+                        "comparator:==0;window:30;storage:30";
+    params["event_3"] = "name:ios_first_run_complete;"
+                        "comparator:==0;window:3;storage:3";
     return params;
   }
 
@@ -1155,4 +1224,392 @@ TEST_F(
   EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
       feature_engagement::
           kIPHiOSReminderNotificationsOverflowMenuNewBadgeFeature));
+}
+
+// Verifies that the Homepage Lens New Badge IPH triggers.
+TEST_F(FeatureEngagementTest, TestHomepageLensNewBadge_ShouldTrigger) {
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{{feature_engagement::kIPHiOSHomepageLensNewBadge,
+                     IPHiOSHomepageLensNewBadgeParams()},
+                    {feature_engagement::kiOSHomepageNewBadgesGroup,
+                     HomepageNewBadgesGroupParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+
+  // Notify that the holdback period has elapsed.
+  tracker->NotifyEvent(
+      feature_engagement::events::kIOSFREBadgeHoldbackPeriodElapsed);
+
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+  tracker->Dismissed(feature_engagement::kIPHiOSHomepageLensNewBadge);
+}
+
+// Verifies that the Homepage Lens New Badge IPH does not trigger after being
+// used.
+TEST_F(FeatureEngagementTest,
+       TestHomepageLensNewBadge_ShouldNotTriggerWhenUsed) {
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{{feature_engagement::kIPHiOSHomepageLensNewBadge,
+                     IPHiOSHomepageLensNewBadgeParams()},
+                    {feature_engagement::kiOSHomepageNewBadgesGroup,
+                     HomepageNewBadgesGroupParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // Notify that the holdback period has elapsed.
+  tracker->NotifyEvent(
+      feature_engagement::events::kIOSFREBadgeHoldbackPeriodElapsed);
+
+  // Assume it would trigger initially.
+  ASSERT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+
+  tracker->Dismissed(feature_engagement::kIPHiOSHomepageLensNewBadge);
+
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+}
+
+// Verifies that the Homepage Customization New Badge IPH triggers.
+TEST_F(FeatureEngagementTest, TestHomepageCustomizationNewBadge_ShouldTrigger) {
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{{feature_engagement::kIPHiOSHomepageCustomizationNewBadge,
+                     IPHiOSHomepageCustomizationNewBadgeParams()},
+                    {feature_engagement::kiOSHomepageNewBadgesGroup,
+                     HomepageNewBadgesGroupParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // Notify that the holdback period has elapsed.
+  tracker->NotifyEvent(
+      feature_engagement::events::kIOSFREBadgeHoldbackPeriodElapsed);
+
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageCustomizationNewBadge));
+  tracker->Dismissed(feature_engagement::kIPHiOSHomepageCustomizationNewBadge);
+}
+
+// Verifies that the Lens new badge takes priority over the Customization new
+// badge.
+TEST_F(FeatureEngagementTest, TestHomepageNewBadgesGroup_LensTakesPriority) {
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{
+          {feature_engagement::kIPHiOSHomepageLensNewBadge,
+           IPHiOSHomepageLensNewBadgeParams()},  // Assumes higher priority.
+          {feature_engagement::kIPHiOSHomepageCustomizationNewBadge,
+           IPHiOSHomepageCustomizationNewBadgeParams()},  // Assumes lower
+          // priority.
+          {feature_engagement::kiOSHomepageNewBadgesGroup,
+           HomepageNewBadgesGroupParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // Notify that the holdback period has elapsed.
+  tracker->NotifyEvent(
+      feature_engagement::events::kIOSFREBadgeHoldbackPeriodElapsed);
+
+  // Lens should trigger due to priority/order.
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+  tracker->Dismissed(feature_engagement::kIPHiOSHomepageLensNewBadge);
+
+  // Customization should not trigger because Lens triggered first and group
+  // limits apply.
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageCustomizationNewBadge));
+}
+
+// Verifies that only one badge from the group is shown per session.
+TEST_F(FeatureEngagementTest, TestHomepageNewBadgesGroup_OneBadgePerSession) {
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{
+          {feature_engagement::kIPHiOSHomepageLensNewBadge,
+           IPHiOSHomepageLensNewBadgeParams()},
+          {feature_engagement::kIPHiOSHomepageCustomizationNewBadge,
+           IPHiOSHomepageCustomizationNewBadgeParams()},
+          {feature_engagement::kiOSHomepageNewBadgesGroup,
+           HomepageNewBadgesGroupParams()}  // Assumes session limit.
+      });
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+  // Make sure tracker is initialized.
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // Notify that the holdback period has elapsed.
+  tracker->NotifyEvent(
+      feature_engagement::events::kIOSFREBadgeHoldbackPeriodElapsed);
+
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+  tracker->Dismissed(feature_engagement::kIPHiOSHomepageLensNewBadge);
+
+  // Mark Lens badge as used so it won't be shown again.
+  tracker->NotifyEvent(feature_engagement::events::kIOSLensButtonUsed);
+
+  // Customization badge should not be shown in the same session due to group
+  // limits.
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageCustomizationNewBadge));
+}
+
+// Verifies that no badge is shown immediately after the First Run Experience.
+TEST_F(FeatureEngagementTest, TestHomepageNewBadgesGroup_NoBadgeAfterFRE) {
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{{feature_engagement::kIPHiOSHomepageLensNewBadge,
+                     IPHiOSHomepageLensNewBadgeParams()},
+                    {feature_engagement::kiOSHomepageNewBadgesGroup,
+                     HomepageNewBadgesGroupParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // Assuming FRE completion prevents immediate triggering.
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+}
+
+// Verifies that a badge can be shown after the holdback period has elapsed.
+TEST_F(FeatureEngagementTest,
+       TestHomepageNewBadgesGroup_BadgeShownAfterHoldbackElapsed) {
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{{feature_engagement::kIPHiOSHomepageLensNewBadge,
+                     IPHiOSHomepageLensNewBadgeParams()},
+                    {feature_engagement::kiOSHomepageNewBadgesGroup,
+                     HomepageNewBadgesGroupParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // The badge shouldn't be shown initially.
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+
+  // Notify that the holdback period has elapsed.
+  tracker->NotifyEvent(
+      feature_engagement::events::kIOSFREBadgeHoldbackPeriodElapsed);
+
+  // Now the badge should be shown.
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+  tracker->Dismissed(feature_engagement::kIPHiOSHomepageLensNewBadge);
+}
+
+// Verifies that the Homepage Lens New Badge IPH does not trigger after the Lens
+// button is used.
+TEST_F(FeatureEngagementTest,
+       TestHomepageLensNewBadge_ShouldNotTriggerAfterLensButtonUsed) {
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{{feature_engagement::kIPHiOSHomepageLensNewBadge,
+                     IPHiOSHomepageLensNewBadgeParams()},
+                    {feature_engagement::kiOSHomepageNewBadgesGroup,
+                     HomepageNewBadgesGroupParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // Notify that the holdback period has elapsed.
+  tracker->NotifyEvent(
+      feature_engagement::events::kIOSFREBadgeHoldbackPeriodElapsed);
+
+  // The badge should be shown initially.
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+  tracker->Dismissed(feature_engagement::kIPHiOSHomepageLensNewBadge);
+
+  // Simulate the user using the Lens button while the badge is displayed.
+  tracker->NotifyEvent(feature_engagement::events::kIOSLensButtonUsed);
+
+  // The badge should no longer trigger.
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSHomepageLensNewBadge));
+}
+
+TEST_F(FeatureEngagementTest, TestReaderModeNewBadge_TriggeredBeforeUseOnly) {
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{{feature_engagement::kIPHBadgedReaderModeFeature,
+                     BadgedReaderModeParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // The badge should be shown initially.
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHBadgedReaderModeFeature));
+  tracker->Dismissed(feature_engagement::kIPHBadgedReaderModeFeature);
+
+  // Simulate the user using Reading Mode while the badge is displayed.
+  tracker->NotifyEvent(feature_engagement::events::kIOSReaderModeUsed);
+
+  // The badge should no longer trigger.
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHBadgedReaderModeFeature));
+}
+
+// Verifies that the Home Background Customization promo triggers when
+// conditions are met.
+TEST_F(FeatureEngagementTest,
+       TestHomeBackgroundCustomizationPromo_ShouldTrigger) {
+  base::ScopedMockClockOverride scoped_clock;
+  scoped_clock.Advance(base::Time::UnixEpoch() - base::Time());
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{
+          {feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature,
+           HomeBackgroundCustomizationPromoParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // The promo should be shown initially if enough time (3 days) has passed
+  // since first run.
+  scoped_clock.Advance(base::Days(4));
+
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature));
+  tracker->Dismissed(
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature);
+}
+
+// Verifies that the Home Background Customization promo doesn't trigger if
+// the customization menu was used.
+TEST_F(FeatureEngagementTest,
+       TestHomeBackgroundCustomizationPromo_ShouldNotTriggerWhenUsed) {
+  base::ScopedMockClockOverride scoped_clock;
+  scoped_clock.Advance(base::Time::UnixEpoch() - base::Time());
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{
+          {feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature,
+           HomeBackgroundCustomizationPromoParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  scoped_clock.Advance(base::Days(4));
+
+  // Notify that the menu was used.
+  tracker->NotifyEvent(
+      feature_engagement::events::kHomeBackgroundCustomizationMenuUsed);
+
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature));
+}
+
+// Verifies that the Home Background Customization promo doesn't trigger if
+// the old customization promo was triggered recently.
+TEST_F(FeatureEngagementTest,
+       TestHomeBackgroundCustomizationPromo_ShouldNotTriggerIfOldPromoRecent) {
+  base::ScopedMockClockOverride scoped_clock;
+  scoped_clock.Advance(base::Time::UnixEpoch() - base::Time());
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{
+          {feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature,
+           HomeBackgroundCustomizationPromoParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  scoped_clock.Advance(base::Days(4));
+
+  // Notify that the old promo was triggered.
+  tracker->NotifyEvent(
+      feature_engagement::events::kHomeCustomizationPromoTriggered);
+
+  // Should not trigger yet.
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature));
+
+  // Advance 31 days.
+  scoped_clock.Advance(base::Days(31));
+
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature));
+  tracker->Dismissed(
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature);
+}
+
+// Verifies that the Home Background Customization promo doesn't trigger if
+// FRE was too recent.
+TEST_F(FeatureEngagementTest,
+       TestHomeBackgroundCustomizationPromo_ShouldNotTriggerIfFRERecent) {
+  base::ScopedMockClockOverride scoped_clock;
+  scoped_clock.Advance(base::Time::UnixEpoch() - base::Time());
+  feature_engagement::test::ScopedIphFeatureList list;
+  list.InitAndEnableFeaturesWithParameters(
+      /*features=*/{
+          {feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature,
+           HomeBackgroundCustomizationPromoParams()}});
+
+  std::unique_ptr<feature_engagement::Tracker> tracker =
+      feature_engagement::CreateTestTracker();
+
+  tracker->AddOnInitializedCallback(BoolArgumentQuitClosure());
+  run_loop_.Run();
+
+  // Notify that FRE is complete.
+  tracker->NotifyEvent(feature_engagement::events::kIOSFirstRunComplete);
+
+  // Advance only 2 days.
+  scoped_clock.Advance(base::Days(2));
+
+  EXPECT_FALSE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature));
+
+  // Advance another 2 days (4 total).
+  scoped_clock.Advance(base::Days(2));
+
+  EXPECT_TRUE(tracker->ShouldTriggerHelpUI(
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature));
+  tracker->Dismissed(
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature);
 }

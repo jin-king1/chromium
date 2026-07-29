@@ -8,7 +8,7 @@
 
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 #include "media/base/media_switches.h"
 #include "media/base/video_codecs.h"
 #include "media/base/win/mf_helpers.h"
@@ -38,6 +38,18 @@ PendingInputBuffer::~PendingInputBuffer() = default;
 
 MediaFoundationStreamWrapper::MediaFoundationStreamWrapper() = default;
 MediaFoundationStreamWrapper::~MediaFoundationStreamWrapper() = default;
+
+IFACEMETHODIMP_(ULONG) MediaFoundationStreamWrapper::Release() {
+  ULONG ref_count = InternalRelease();
+  if (ref_count == 0) {
+    if (!task_runner_->RunsTasksInCurrentSequence()) {
+      task_runner_->DeleteSoon(FROM_HERE, this);
+    } else {
+      delete this;
+    }
+  }
+  return ref_count;
+}
 
 /*static*/
 HRESULT MediaFoundationStreamWrapper::Create(
@@ -79,13 +91,19 @@ HRESULT MediaFoundationStreamWrapper::RuntimeClassInitialize(
   {
     base::AutoLock auto_lock(lock_);
     parent_source_ = parent_source;
+    auto* mf_source = static_cast<MediaFoundationSourceWrapper*>(parent_source);
+    has_cdm_ = mf_source && mf_source->HasCdm();
+    demuxer_stream_ = demuxer_stream;
   }
-  demuxer_stream_ = demuxer_stream;
   stream_id_ = stream_id;
-  stream_type_ = demuxer_stream_->type();
+  stream_type_ = demuxer_stream->type();
+  is_encrypted_ = (stream_type_ == DemuxerStream::Type::VIDEO)
+                      ? demuxer_stream->video_decoder_config().is_encrypted()
+                      : demuxer_stream->audio_decoder_config().is_encrypted();
 
   DVLOG_FUNC(1) << "stream_id=" << stream_id
-                << ", stream_type=" << DemuxerStream::GetTypeName(stream_type_);
+                << ", stream_type=" << DemuxerStream::GetTypeName(stream_type_)
+                << ", is_encrypted=" << is_encrypted_;
 
   media_log_ = std::move(media_log);
   if (base::FeatureList::IsEnabled(kMediaFoundationBatchRead)) {
@@ -127,6 +145,7 @@ void MediaFoundationStreamWrapper::DetachDemuxerStream() {
   DVLOG_FUNC(1);
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
+  base::AutoLock auto_lock(lock_);
   demuxer_stream_ = nullptr;
 }
 
@@ -135,6 +154,13 @@ void MediaFoundationStreamWrapper::SetSelected(bool selected) {
 
   base::AutoLock auto_lock(lock_);
   selected_ = selected;
+
+  // If the stream isn't selected, reset the buffering_post_flush_samples_ state
+  // because no samples should be received until the stream is selected and
+  // starts.
+  if (!selected) {
+    buffering_post_flush_samples_ = false;
+  }
 }
 
 bool MediaFoundationStreamWrapper::IsSelected() {
@@ -164,17 +190,23 @@ void MediaFoundationStreamWrapper::SetEnabled(bool enabled) {
   ProcessRequestsIfPossible();
 }
 
-void MediaFoundationStreamWrapper::SetFlushed(bool flushed) {
-  DVLOG_FUNC(2) << "flushed=" << flushed;
+void MediaFoundationStreamWrapper::Flush() {
+  DVLOG_FUNC(2);
 
   base::AutoLock auto_lock(lock_);
-  flushed_ = flushed;
-  if (flushed_) {
-    DVLOG_FUNC(2) << "flush buffer_queue_";
-    buffer_queue_.clear();
-    while (!post_flush_buffers_.empty()) {
-      post_flush_buffers_.pop();
-    }
+
+  // buffering_post_flush_samples_ state is only relevant when the stream is
+  // selected. No samples should be received until the stream is selected and
+  // starts.
+  if (selected_) {
+    DVLOG_FUNC(2) << "buffering_post_flush_samples_=true";
+    buffering_post_flush_samples_ = true;
+  }
+
+  DVLOG_FUNC(2) << "flush buffer_queue_";
+  buffer_queue_.clear();
+  while (!post_flush_buffers_.empty()) {
+    post_flush_buffers_.pop();
   }
 }
 
@@ -191,7 +223,7 @@ void MediaFoundationStreamWrapper::SetLastStartPosition(
   // time. Only VT_I8 will be used based on start of presentation:
   // https://learn.microsoft.com/en-us/windows/win32/api/mfidl/nf-mfidl-imfmediasession-start
   if (start_position->vt == VT_I8) {
-    base::AutoLock auto_lock(lock_);
+    lock_.AssertAcquired();
     last_start_time_ = start_position->hVal.QuadPart;
   }
 }
@@ -199,10 +231,13 @@ void MediaFoundationStreamWrapper::SetLastStartPosition(
 HRESULT MediaFoundationStreamWrapper::QueueStartedEvent(
     const PROPVARIANT* start_position) {
   DVLOG_FUNC(2);
+  base::AutoLock auto_lock(lock_);
 
   // Save the new start position in the stream.
   SetLastStartPosition(start_position);
 
+  DVLOG_FUNC(2) << "buffering_post_flush_samples_=false";
+  buffering_post_flush_samples_ = false;
   state_ = State::kStarted;
   RETURN_IF_FAILED(mf_media_event_queue_->QueueEventParamVar(
       MEStreamStarted, GUID_NULL, S_OK, start_position));
@@ -212,10 +247,13 @@ HRESULT MediaFoundationStreamWrapper::QueueStartedEvent(
 HRESULT MediaFoundationStreamWrapper::QueueSeekedEvent(
     const PROPVARIANT* start_position) {
   DVLOG_FUNC(2);
+  base::AutoLock auto_lock(lock_);
 
   // Save the new start position in the stream.
   SetLastStartPosition(start_position);
 
+  DVLOG_FUNC(2) << "buffering_post_flush_samples_=false";
+  buffering_post_flush_samples_ = false;
   state_ = State::kStarted;
   RETURN_IF_FAILED(mf_media_event_queue_->QueueEventParamVar(
       MEStreamSeeked, GUID_NULL, S_OK, start_position));
@@ -379,7 +417,7 @@ bool MediaFoundationStreamWrapper::ServicePostFlushSampleRequest() {
   HRESULT hr = S_OK;
 
   base::AutoLock auto_lock(lock_);
-  if (flushed_ && state_ == State::kStarted &&
+  if (buffering_post_flush_samples_ && state_ == State::kStarted &&
       last_start_time_ != kInvalidTime) {
     // Video may freeze during consecutive backward seek since MF does not
     // cancel previous pending seek, while Chromium's source starts new seek
@@ -407,7 +445,7 @@ bool MediaFoundationStreamWrapper::ServicePostFlushSampleRequest() {
     }
     return false;
 
-  } else if ((flushed_ && state_ != State::kStarted) ||
+  } else if ((buffering_post_flush_samples_ && state_ != State::kStarted) ||
              post_flush_buffers_.empty()) {
     return false;
   }
@@ -461,7 +499,7 @@ void MediaFoundationStreamWrapper::OnDemuxerStreamRead(
 
       // Push |buffer| to process later if needed. Otherwise, process it
       // immediately.
-      if (flushed_ || !post_flush_buffers_.empty()) {
+      if (buffering_post_flush_samples_ || !post_flush_buffers_.empty()) {
         DVLOG_FUNC(3) << "push buffer.";
         post_flush_buffers_.push(buffer);
       } else {
@@ -604,7 +642,16 @@ HRESULT MediaFoundationStreamWrapper::QueueEvent(MediaEventType type,
 }
 
 HRESULT MediaFoundationStreamWrapper::GenerateStreamDescriptor() {
-  DVLOG_FUNC(2);
+  bool has_cdm = false;
+  {
+    base::AutoLock auto_lock(lock_);
+    has_cdm = has_cdm_;
+  }
+  const auto is_encrypted = IsEncrypted();
+  const bool is_video_stream = stream_type_ == DemuxerStream::Type::VIDEO;
+
+  DVLOG_FUNC(3) << "is_encrypted=" << is_encrypted << ", has_cdm=" << has_cdm
+                << ", is_video_stream=" << is_video_stream;
 
   ComPtr<IMFMediaType> media_type;
   IMFMediaType** mediaTypes = &media_type;
@@ -613,7 +660,18 @@ HRESULT MediaFoundationStreamWrapper::GenerateStreamDescriptor() {
   RETURN_IF_FAILED(MFCreateStreamDescriptor(stream_id_, 1, mediaTypes,
                                             &mf_stream_descriptor_));
 
-  if (IsEncrypted()) {
+  // For clear video playback, the initial stream might not be marked as
+  // encrypted. However, if a CDM is attached to the pipeline, we anticipate
+  // encryption later in the stream. We limit this logic to video streams
+  // (`is_video_stream`) to avoid the significant performance and memory
+  // overhead of instantiating an unnecessary audio decryptor MFT for streams
+  // that remain clear. Normal "clear lead" audio still works because the
+  // initial config evaluates to encrypted directly from the container metadata
+  // (meaning `is_encrypted` is true). The only scenario that would fail is
+  // playing a clear ad audio stream followed by an encrypted movie audio
+  // stream, which is not currently a common pipeline flow in the wild.
+  if (is_encrypted || (has_cdm && is_video_stream)) {
+    DVLOG_FUNC(1) << "Setting stream descriptor to protected.";
     RETURN_IF_FAILED(mf_stream_descriptor_->SetUINT32(MF_SD_PROTECTED, 1));
   }
 
@@ -622,6 +680,10 @@ HRESULT MediaFoundationStreamWrapper::GenerateStreamDescriptor() {
 
 bool MediaFoundationStreamWrapper::AreFormatChangesEnabled() {
   return true;
+}
+
+bool MediaFoundationStreamWrapper::IsEncrypted() const {
+  return is_encrypted_;
 }
 
 GUID MediaFoundationStreamWrapper::GetLastKeyId() const {

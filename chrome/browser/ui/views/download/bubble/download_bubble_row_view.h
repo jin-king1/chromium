@@ -14,17 +14,20 @@
 #include "base/timer/timer.h"
 #include "chrome/browser/download/download_commands.h"
 #include "chrome/browser/download/download_ui_model.h"
+#include "chrome/browser/picture_in_picture/picture_in_picture_occlusion_observer.h"
+#include "chrome/browser/picture_in_picture/scoped_picture_in_picture_occlusion_observation.h"
 #include "chrome/browser/ui/download/download_bubble_row_view_info.h"
 #include "chrome/browser/ui/download/download_item_mode.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_row_list_view.h"
-#include "chrome/browser/ui/views/download/bubble/download_toolbar_button_view.h"
 #include "components/download/public/common/download_item.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/view.h"
+
+class Browser;
 
 namespace ui {
 class Event;
@@ -41,12 +44,13 @@ class FlexLayoutView;
 class InkDropContainerView;
 }  // namespace views
 
-class DownloadShelfContextMenuView;
+class DownloadUiContextMenuView;
 class DownloadBubbleUIController;
 
 class DownloadBubbleRowView : public views::View,
                               public views::ContextMenuController,
                               public views::FocusChangeListener,
+                              public PictureInPictureOcclusionObserver,
                               public DownloadBubbleRowViewInfoObserver {
   METADATA_HEADER(DownloadBubbleRowView, views::View)
 
@@ -78,7 +82,6 @@ class DownloadBubbleRowView : public views::View,
 
   // Overrides views::FocusChangeListener
   void OnWillChangeFocus(views::View* before, views::View* now) override;
-  void OnDidChangeFocus(views::View* before, views::View* now) override {}
 
   // Update the row and its elements for hover and focus events.
   void UpdateRowForHover(bool hovered);
@@ -93,6 +96,9 @@ class DownloadBubbleRowView : public views::View,
   // Overrides ui::AcceleratorTarget
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
   bool CanHandleAccelerators() const override;
+
+  // PictureInPictureOcclusionObserver:
+  void OnOcclusionStateChanged(bool occluded) override;
 
   // Returns the transparent button that is activated when the row is clicked.
   views::Button* transparent_button() { return transparent_button_; }
@@ -205,8 +211,8 @@ class DownloadBubbleRowView : public views::View,
   // The model controlling this object's state.
   raw_ref<const DownloadBubbleRowViewInfo> info_;
 
-  // Reuse the download shelf context menu in the bubble.
-  std::unique_ptr<DownloadShelfContextMenuView> context_menu_;
+  // Context menu offering additional actions for a particular download.
+  std::unique_ptr<DownloadUiContextMenuView> context_menu_;
 
   // Controller for keeping track of downloads.
   base::WeakPtr<DownloadBubbleUIController> bubble_controller_ = nullptr;
@@ -245,6 +251,10 @@ class DownloadBubbleRowView : public views::View,
 
   // Mitigates the risk of clickjacking by enforcing a delay in click input.
   std::unique_ptr<views::InputEventActivationProtector> input_protector_;
+
+  // Observes PiP windows in order to deactivate the button controls when
+  // occluded by a PiP, to prevent clickjacking.
+  ScopedPictureInPictureOcclusionObservation pip_occlusion_observation_{this};
 
   // TODO(crbug.com/40233803): The size constraint is not passed down from the
   // views tree in the first round of layout, so setting a fixed width to bound

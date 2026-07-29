@@ -87,7 +87,8 @@ void It2MeCliHost::Start() {
 }
 
 void It2MeCliHost::PostMessageFromNativeHost(const std::string& message) {
-  auto message_dict = base::JSONReader::ReadDict(message);
+  auto message_dict =
+      base::JSONReader::ReadDict(message, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!message_dict) {
     OnProtocolBroken("Message is not a dictionary");
     return;
@@ -142,13 +143,12 @@ void It2MeCliHost::CloseChannel(const std::string& error_message) {
 }
 
 void It2MeCliHost::SendMessageToHost(const std::string& type,
-                                     base::Value::Dict params) {
-  std::string message_json;
+                                     base::DictValue params) {
   params.Set(kMessageType, type);
-  base::JSONWriter::Write(params, &message_json);
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(&It2MeCliHost::DoSendMessage,
-                                weak_factory_.GetWeakPtr(), message_json));
+      FROM_HERE,
+      base::BindOnce(&It2MeCliHost::DoSendMessage, weak_factory_.GetWeakPtr(),
+                     base::WriteJson(params).value_or("")));
 }
 
 void It2MeCliHost::DoSendMessage(const std::string& json) {
@@ -172,7 +172,7 @@ void It2MeCliHost::StartCRDHostAndGetCode(OAuthTokenGetter::Status status,
   DCHECK(!host_);
 
   // Store all parameters for future connect call.
-  connect_params_ = base::Value::Dict()
+  connect_params_ = base::DictValue()
                         .Set(kUserName, user_email)
                         .Set(kAccessToken, access_token);
 
@@ -182,7 +182,7 @@ void It2MeCliHost::StartCRDHostAndGetCode(OAuthTokenGetter::Status status,
   host_ = CreateNativeMessagingHost(ui_task_runner_);
   host_->Start(this);
 
-  SendMessageToHost(kHelloMessage, base::Value::Dict());
+  SendMessageToHost(kHelloMessage, base::DictValue());
 }
 
 void It2MeCliHost::ShutdownHost() {
@@ -214,7 +214,7 @@ void It2MeCliHost::OnDisconnectResponse() {
 }
 
 void It2MeCliHost::OnStateError(const std::string& error_state,
-                                const base::Value::Dict& message) {
+                                const base::DictValue& message) {
   std::string error_message;
   if (error_state == kHostStateDomainError) {
     error_message = "CRD Error : Invalid domain";
@@ -235,7 +235,7 @@ void It2MeCliHost::OnStateError(const std::string& error_state,
   ShutdownHost();
 }
 
-void It2MeCliHost::OnStateRemoteConnected(const base::Value::Dict& message) {
+void It2MeCliHost::OnStateRemoteConnected(const base::DictValue& message) {
   remote_connected_ = true;
   const std::string* client = message.FindString(kClient);
   if (client) {
@@ -252,17 +252,17 @@ void It2MeCliHost::OnStateRemoteDisconnected() {
   remote_connected_ = false;
   // Remote has disconnected, time to send "disconnect" that would result
   // in shutting down the host.
-  SendMessageToHost(kDisconnectMessage, base::Value::Dict());
+  SendMessageToHost(kDisconnectMessage, base::DictValue());
 }
 
-void It2MeCliHost::OnStateReceivedAccessCode(const base::Value::Dict& message) {
+void It2MeCliHost::OnStateReceivedAccessCode(const base::DictValue& message) {
   if (!command_awaiting_crd_access_code_) {
     if (!remote_connected_) {
       // We have already sent the access code back to the server which initiated
       // this CRD session through a remote command, and we can not send a new
       // access code. Assuming that the old access code is no longer valid, we
       // can only terminate the current CRD session.
-      SendMessageToHost(kDisconnectMessage, base::Value::Dict());
+      SendMessageToHost(kDisconnectMessage, base::DictValue());
     }
     return;
   }

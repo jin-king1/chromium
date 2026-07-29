@@ -34,12 +34,14 @@ CLANG_PLATFORM_TO_PACKAGE_FILES = {
         'clang-tidy',
         'clangd',
         'llvm-code-coverage',
+        'llvmobjdump',
     ],
     'Mac_arm64': [
         'clang',
         'clang-tidy',
         'clangd',
         'llvm-code-coverage',
+        'llvmobjdump',
     ],
     'Win': [
         'clang',
@@ -72,12 +74,12 @@ def GetDepsObjectInfo(object_name: str) -> str:
   #     ETag:                   COvj8aXjj4YDEAE=
   #     Generation:             1715780189975019
   #     Metageneration:         1
-  generation = re.search('Generation:\s+([0-9]+)', output).group(1)
-  size_bytes = re.search('Content-Length:\s+([0-9]+)', output).group(1)
+  generation = re.search(r'Generation:\s+([0-9]+)', output).group(1)
+  size_bytes = re.search(r'Content-Length:\s+([0-9]+)', output).group(1)
   with tempfile.NamedTemporaryFile() as f:
     DownloadUrl(url, f)
     f.seek(0)
-    sha256sum = hashlib.file_digest(f, 'sha256').hexdigest()
+    sha256sum = hashlib.sha256(f.read()).hexdigest()
 
   return f'{object_name},{sha256sum},{size_bytes},{generation}'
 
@@ -91,6 +93,15 @@ def GetRustObjectNames() -> list:
     object_names.append(f'{object_name}.tar.xz')
   return object_names
 
+
+def GetLibclangObjectNames() -> list:
+  object_names = []
+  for host_os in ['Linux_x64', 'Mac', 'Mac_arm64', 'Win']:
+    rust_version = (f'{RUST_REVISION}-{RUST_SUB_REVISION}')
+    clang_revision = CLANG_REVISION
+    object_name = f'{host_os}/rust-libclang-{rust_version}-{clang_revision}'
+    object_names.append(f'{object_name}.tar.xz')
+  return object_names
 
 def GetClangObjectNames() -> list:
   object_names = []
@@ -112,6 +123,14 @@ def main():
   rust_deps_entry_path = 'src/third_party/rust-toolchain'
   setdep_revisions.append(
       f'--revision={rust_deps_entry_path}@{rust_object_infos_string}')
+
+  libclang_object_infos = [
+      GetDepsObjectInfo(o) for o in sorted(GetLibclangObjectNames())
+  ]
+  libclang_object_infos_string = '?'.join(libclang_object_infos)
+  libclang_deps_entry_path = 'src/third_party/llvm-libclang'
+  setdep_revisions.append(
+      f'--revision={libclang_deps_entry_path}@{libclang_object_infos_string}')
 
   clang_object_infos = [
       GetDepsObjectInfo(o) for o in sorted(GetClangObjectNames())

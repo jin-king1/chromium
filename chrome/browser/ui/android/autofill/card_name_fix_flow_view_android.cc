@@ -14,7 +14,7 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/AutofillNameFixFlowBridge_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace autofill {
@@ -25,7 +25,6 @@ CardNameFixFlowViewAndroid::CardNameFixFlowViewAndroid(
     : controller_(controller), web_contents_(web_contents) {}
 
 void CardNameFixFlowViewAndroid::OnUserAccept(JNIEnv* env,
-                                              const JavaParamRef<jobject>& obj,
                                               const std::u16string& name) {
   controller_->OnNameAccepted(name);
 }
@@ -34,9 +33,7 @@ void CardNameFixFlowViewAndroid::OnUserDismiss(JNIEnv* env) {
   controller_->OnDismissed();
 }
 
-void CardNameFixFlowViewAndroid::PromptDismissed(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+void CardNameFixFlowViewAndroid::PromptDismissed(JNIEnv* env) {
   delete this;
 }
 
@@ -93,3 +90,5 @@ CardNameFixFlowViewAndroid::GetOrCreateJavaObject() {
 }
 
 }  // namespace autofill
+
+DEFINE_JNI(AutofillNameFixFlowBridge)

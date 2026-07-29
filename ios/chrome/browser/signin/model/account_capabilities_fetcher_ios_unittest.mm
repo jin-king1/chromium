@@ -10,7 +10,6 @@
 #import "base/memory/raw_ptr.h"
 #import "base/run_loop.h"
 #import "base/strings/sys_string_conversions.h"
-#import "base/test/task_environment.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
@@ -20,6 +19,7 @@
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
@@ -28,13 +28,10 @@ namespace {
 
 const char kTestEmail[] = "janedoe@chromium.org";
 
-void CheckHaveEmailAddressDisplayed(
-    signin::Tribool capability_expected,
-    const CoreAccountId& account_id,
-    const std::optional<AccountCapabilities>& capabilities) {
-  ASSERT_TRUE(capabilities.has_value());
-  ASSERT_EQ(capabilities->can_have_email_address_displayed(),
-            capability_expected);
+void CheckCapability(signin::Tribool capability_expected,
+                     const CoreAccountId& account_id,
+                     const AccountCapabilities& capabilities) {
+  ASSERT_EQ(capabilities.can_fetch_family_member_info(), capability_expected);
 }
 
 }  // anonymous namespace
@@ -66,7 +63,7 @@ class AccountCapabilitiesFetcherIOSTest : public PlatformTest {
     // Register a fake identity and set the expected capabilities.
     id<SystemIdentity> identity = [FakeSystemIdentity
         identityWithEmail:base::SysUTF8ToNSString(account_info.email)
-                   gaiaID:account_info.gaia.ToNSString()];
+                   gaiaID:account_info.gaia];
     system_identity_manager->AddIdentity(identity);
 
     if (capability_fetched.has_value() &&
@@ -76,7 +73,7 @@ class AccountCapabilitiesFetcherIOSTest : public PlatformTest {
           system_identity_manager->GetPendingCapabilitiesMutator(identity);
       bool has_capability =
           capability_fetched.value() == SystemIdentityCapabilityResult::kTrue;
-      mutator->set_can_have_email_address_displayed(has_capability);
+      mutator->set_can_fetch_family_member_info(has_capability);
     }
 
     // Check that the capabilities are correctly converted.
@@ -84,15 +81,17 @@ class AccountCapabilitiesFetcherIOSTest : public PlatformTest {
     ios::AccountCapabilitiesFetcherIOS fetcher(
         account_info, AccountCapabilitiesFetcher::FetchPriority::kForeground,
         account_manager_service_,
-        base::BindOnce(&CheckHaveEmailAddressDisplayed, capability_expected)
-            .Then(run_loop.QuitClosure()));
+        base::BindRepeating(&CheckCapability, capability_expected),
+        base::BindOnce([](base::RunLoop* run_loop,
+                          const CoreAccountId&) { run_loop->Quit(); },
+                       &run_loop));
 
     fetcher.Start();
     run_loop.Run();
   }
 
  private:
-  base::test::TaskEnvironment task_environment_;
+  web::WebTaskEnvironment task_environment_;
   signin::IdentityTestEnvironment identity_test_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   raw_ptr<ChromeAccountManagerService> account_manager_service_;

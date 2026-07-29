@@ -10,34 +10,20 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
 #include "media/midi/midi_device_android.h"
-#include "media/midi/midi_manager_usb.h"
 #include "media/midi/midi_output_port_android.h"
 #include "media/midi/midi_service.h"
-#include "media/midi/midi_switches.h"
 #include "media/midi/task_service.h"
-#include "media/midi/usb_midi_device_factory_android.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "media/midi/midi_jni_headers/MidiManagerAndroid_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using midi::mojom::PortState;
 using midi::mojom::Result;
 
 namespace midi {
 
 namespace {
-
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-//
-// LINT.IfChange(MidiBackendType)
-enum class BackendType {
-  kAndroidMidi = 0,
-  kAndroidUsb = 1,
-  kMaxValue = kAndroidUsb,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:MidiBackendType)
 
 bool HasSystemFeatureMidi() {
   // Check if the MIDI service actually runs on the system.
@@ -47,17 +33,16 @@ bool HasSystemFeatureMidi() {
 
 }  // namespace
 
-MidiManager* MidiManager::Create(MidiService* service) {
-  const BackendType type = HasSystemFeatureMidi() ? BackendType::kAndroidMidi
-                                                  : BackendType::kAndroidUsb;
-  base::UmaHistogramEnumeration("Media.Midi.BackendType", type);
+bool HasSystemFeatureMidiForTesting() {
+  return HasSystemFeatureMidi();
+}
 
-  if (type == BackendType::kAndroidMidi) {
+MidiManager* MidiManager::Create(MidiService* service) {
+  if (HasSystemFeatureMidi()) {
     return new MidiManagerAndroid(service);
   }
 
-  return new MidiManagerUsb(service,
-                            std::make_unique<UsbMidiDeviceFactoryAndroid>());
+  return new MidiManager(service);
 }
 
 MidiManagerAndroid::MidiManagerAndroid(MidiService* service)
@@ -90,15 +75,21 @@ void MidiManagerAndroid::DispatchSendMidiData(MidiManagerClient* client,
                                               uint32_t port_index,
                                               const std::vector<uint8_t>& data,
                                               base::TimeTicks timestamp) {
-  if (port_index >= all_output_ports_.size()) {
-    // |port_index| is provided by a renderer so we can't believe that it is
-    // in the valid range.
-    return;
+  MidiOutputPortAndroid* port = nullptr;
+  {
+    base::AutoLock auto_lock(lock_);
+    if (port_index >= all_output_ports_.size()) {
+      // |port_index| is provided by a renderer so we can't believe that it is
+      // in the valid range.
+      return;
+    }
+    port = all_output_ports_[port_index];
   }
+
   if (GetOutputPortState(port_index) == PortState::CONNECTED) {
     // We treat send call as implicit open.
     // TODO(yhirano): Implement explicit open operation from the renderer.
-    if (all_output_ports_[port_index]->Open()) {
+    if (port->Open()) {
       SetOutputPortState(port_index, PortState::OPENED);
     } else {
       // We cannot open the port. It's useless to send data to such a port.
@@ -113,7 +104,7 @@ void MidiManagerAndroid::DispatchSendMidiData(MidiManagerClient* client,
   service()->task_service()->PostBoundDelayedTask(
       TaskService::kDefaultRunnerId,
       base::BindOnce(&MidiOutputPortAndroid::Send,
-                     base::Unretained(all_output_ports_[port_index]), data),
+                     base::Unretained(port), data),
       delay);
   service()->task_service()->PostBoundDelayedTask(
       TaskService::kDefaultRunnerId,
@@ -123,18 +114,21 @@ void MidiManagerAndroid::DispatchSendMidiData(MidiManagerClient* client,
 }
 
 void MidiManagerAndroid::OnReceivedData(MidiInputPortAndroid* port,
-                                        const uint8_t* data,
-                                        size_t size,
+                                        base::span<const uint8_t> data,
                                         base::TimeTicks timestamp) {
-  const auto i = input_port_to_index_.find(port);
-  DCHECK(input_port_to_index_.end() != i);
-  ReceiveMidiData(i->second, data, size, timestamp);
+  size_t index = 0;
+  {
+    base::AutoLock auto_lock(lock_);
+    const auto i = input_port_to_index_.find(port);
+    DCHECK(input_port_to_index_.end() != i);
+    index = i->second;
+  }
+  ReceiveMidiData(index, data, timestamp);
 }
 
-void MidiManagerAndroid::OnInitialized(
-    JNIEnv* env,
-    const JavaParamRef<jobjectArray>& devices) {
-  for (auto raw_device : devices.ReadElements<jobject>()) {
+void MidiManagerAndroid::OnInitialized(JNIEnv* env,
+                                       const JavaRef<jobjectArray>& devices) {
+  for (auto raw_device : devices.CreateView(env)) {
     AddDevice(std::make_unique<MidiDeviceAndroid>(env, raw_device, this));
   }
   service()->task_service()->PostBoundTask(
@@ -151,12 +145,13 @@ void MidiManagerAndroid::OnInitializationFailed(JNIEnv* env) {
 }
 
 void MidiManagerAndroid::OnAttached(JNIEnv* env,
-                                    const JavaParamRef<jobject>& raw_device) {
+                                    const JavaRef<jobject>& raw_device) {
   AddDevice(std::make_unique<MidiDeviceAndroid>(env, raw_device, this));
 }
 
 void MidiManagerAndroid::OnDetached(JNIEnv* env,
-                                    const JavaParamRef<jobject>& raw_device) {
+                                    const JavaRef<jobject>& raw_device) {
+  base::AutoLock auto_lock(lock_);
   for (auto& device : devices_) {
     if (device->HasRawDevice(env, raw_device)) {
       for (auto& port : device->input_ports()) {
@@ -176,6 +171,7 @@ void MidiManagerAndroid::OnDetached(JNIEnv* env,
 }
 
 void MidiManagerAndroid::AddDevice(std::unique_ptr<MidiDeviceAndroid> device) {
+  base::AutoLock auto_lock(lock_);
   for (auto& port : device->input_ports()) {
     // We implicitly open input ports here, because there are no signal
     // from the renderer when to open.
@@ -214,3 +210,5 @@ void MidiManagerAndroid::AddDevice(std::unique_ptr<MidiDeviceAndroid> device) {
 }
 
 }  // namespace midi
+
+DEFINE_JNI(MidiManagerAndroid)

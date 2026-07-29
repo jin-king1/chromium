@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 
+#include "google_apis/gaia/fake_device_management_error_details.h"
 #include "net/base/net_errors.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -24,16 +25,18 @@ TEST(GoogleServiceAuthErrorTest, State) {
       error = GoogleServiceAuthError::FromScopeLimitedUnrecoverableErrorReason(
           GoogleServiceAuthError::ScopeLimitedUnrecoverableErrorReason::
               kInvalidScope);
+    } else if (i == GoogleServiceAuthError::DEVICE_MANAGEMENT_ERROR) {
+      error = GoogleServiceAuthError::FromDeviceManagementError(
+          std::make_unique<gaia::FakeDeviceManagementErrorDetails>());
     } else {
       error = GoogleServiceAuthError(i);
     }
     EXPECT_EQ(i, error.state());
     EXPECT_TRUE(error.error_message().empty());
 
-    if (i == GoogleServiceAuthError::CONNECTION_FAILED)
-      EXPECT_EQ(net::ERR_FAILED, error.network_error());
-    else
-      EXPECT_EQ(net::OK, error.network_error());
+    if (i == GoogleServiceAuthError::CONNECTION_FAILED) {
+      EXPECT_EQ(net::ERR_FAILED, error.GetNetworkError());
+    }
 
     if (i == GoogleServiceAuthError::NONE) {
       EXPECT_FALSE(error.IsTransientError());
@@ -64,7 +67,7 @@ TEST(GoogleServiceAuthErrorTest, FromConnectionError) {
   GoogleServiceAuthError error =
       GoogleServiceAuthError::FromConnectionError(net::ERR_TIMED_OUT);
   EXPECT_EQ(GoogleServiceAuthError::CONNECTION_FAILED, error.state());
-  EXPECT_EQ(net::ERR_TIMED_OUT, error.network_error());
+  EXPECT_EQ(net::ERR_TIMED_OUT, error.GetNetworkError());
 }
 
 TEST(GoogleServiceAuthErrorTest, FromServiceError) {

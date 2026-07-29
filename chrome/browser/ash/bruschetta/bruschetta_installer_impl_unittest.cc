@@ -11,6 +11,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/run_loop.h"
 #include "base/system/sys_info.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_amount_of_physical_memory_override.h"
@@ -22,7 +23,6 @@
 #include "chrome/browser/ash/bruschetta/bruschetta_service_factory.h"
 #include "chrome/browser/ash/guest_os/dbus_test_helper.h"
 #include "chrome/browser/profiles/profile_key.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/dbus/attestation/attestation_client.h"
@@ -34,6 +34,7 @@
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "components/prefs/pref_service.h"
+#include "components/prefs/testing_pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest-spi.h"
@@ -95,25 +96,30 @@ class StubDownload : public BruschettaDownload {
 class BruschettaInstallerTest : public testing::TestWithParam<int>,
                                 protected guest_os::FakeVmServicesHelper {
  public:
-  BruschettaInstallerTest() : fake_20gb_memory(20ULL * 1024 * 1024) {}
+  BruschettaInstallerTest()
+      : fake_20gb_memory(
+            // TODO(crbug.com/429140103): This was migrated as-is to 20TiB in
+            // ByteSize, but the legacy code potentially intended 20GiB, needs
+            // investigation.
+            base::GiBU(20 * 1024)) {}
   BruschettaInstallerTest(const BruschettaInstallerTest&) = delete;
   BruschettaInstallerTest& operator=(const BruschettaInstallerTest&) = delete;
   ~BruschettaInstallerTest() override = default;
 
  protected:
   void BuildPrefValues() {
-    base::Value::Dict vtpm;
+    base::DictValue vtpm;
     vtpm.Set(prefs::kPolicyVTPMEnabledKey, true);
     vtpm.Set(prefs::kPolicyVTPMUpdateActionKey,
              static_cast<int>(
                  prefs::PolicyUpdateAction::FORCE_SHUTDOWN_IF_MORE_RESTRICTED));
-    base::Value::Dict image;
+    base::DictValue image;
     image.Set(prefs::kPolicyURLKey, kVmConfigUrl);
     image.Set(prefs::kPolicyHashKey, kVmConfigHash);
-    base::Value::List oem_strings;
+    base::ListValue oem_strings;
     oem_strings.Append("OEM string");
 
-    base::Value::Dict config;
+    base::DictValue config;
 
     config.Set(prefs::kPolicyEnabledKey,
                static_cast<int>(prefs::PolicyEnabledState::RUN_ALLOWED));
@@ -146,7 +152,7 @@ class BruschettaInstallerTest : public testing::TestWithParam<int>,
     ash::disks::DiskMountManager::InitializeForTesting(&*disk_mount_manager_);
 
     installer_ = std::make_unique<BruschettaInstallerImpl>(
-        &profile_, *local_state_.Get(),
+        &profile_, *TestingBrowserProcess::GetGlobal()->GetTestingLocalState(),
         base::BindOnce(&BruschettaInstallerTest::CloseCallback,
                        base::Unretained(this)));
 
@@ -193,7 +199,7 @@ class BruschettaInstallerTest : public testing::TestWithParam<int>,
     return [this]() { run_loop_.Quit(); };
   }
 
-  auto PrefsCallback(const base::Value::Dict& value) {
+  auto PrefsCallback(const base::DictValue& value) {
     return [this, &value]() {
       profile_.GetPrefs()->SetDict(prefs::kBruschettaVMConfiguration,
                                    value.Clone());
@@ -269,6 +275,22 @@ class BruschettaInstallerTest : public testing::TestWithParam<int>,
       } else {
         FakeConciergeClient()->set_start_vm_response(std::nullopt);
       }
+    };
+  }
+
+  auto LaunchTerminalCallback() {
+    return [this]() {
+      this->expect_vm_registered_ = false;
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce([]() {
+            vm_tools::concierge::VmInstallStateSignal signal;
+            signal.set_state(
+                vm_tools::concierge::VmInstallStateSignal::SUCCEEDED);
+            for (auto& observer :
+                 ash::FakeConciergeClient::Get()->vm_observer_list()) {
+              observer.OnVmInstallState(signal);
+            }
+          }));
     };
   }
 
@@ -588,8 +610,8 @@ class BruschettaInstallerTest : public testing::TestWithParam<int>,
     EXPECT_CALL(observer_,
                 StateChanged(BruschettaInstaller::State::kLaunchTerminal))
         .Times(1)
-        .InSequence(seq);
-    // Dialog closes after this without further action from us
+        .InSequence(seq)
+        .WillOnce(InvokeWithoutArgs(LaunchTerminalCallback()));
 
     // Make sure all input steps other then kMaxSteps got handled earlier.
     if (n != 0) {
@@ -603,11 +625,10 @@ class BruschettaInstallerTest : public testing::TestWithParam<int>,
 
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  ScopedTestingLocalState local_state_{TestingBrowserProcess::GetGlobal()};
 
   base::RunLoop run_loop_, run_loop_2_;
 
-  base::Value::Dict prefs_installable_no_pflash_, prefs_installable_,
+  base::DictValue prefs_installable_no_pflash_, prefs_installable_,
       prefs_not_installable_;
 
   TestingProfile profile_;

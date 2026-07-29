@@ -19,6 +19,7 @@
 
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_resource_container.h"
 
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_info.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_resources.h"
 #include "third_party/blink/renderer/core/style/reference_clip_path_operation.h"
@@ -85,8 +86,7 @@ SVGLayoutResult LayoutSVGResourceContainer::UpdateSVGLayout(
   // Another object may reference this resource (e.g. a <rect> referencing a
   // clip-path), ensure that these clients have paint-invalidation issued if we
   // re-layout due to a viewport dependence.
-  if (RuntimeEnabledFeatures::SvgViewportOptimizationEnabled() &&
-      layout_info.viewport_changed && result.has_viewport_dependence) {
+  if (layout_info.viewport_changed && result.has_viewport_dependence) {
     RemoveAllClientsFromCache();
   }
 
@@ -176,8 +176,9 @@ gfx::RectF LayoutSVGResourceContainer::ResolveRectangle(
 void LayoutSVGResourceContainer::InvalidateClientsIfActiveResource() {
   NOT_DESTROYED();
   // Avoid doing unnecessary work if the document is being torn down.
-  if (DocumentBeingDestroyed())
+  if (GetDocument().Lifecycle().GetState() >= DocumentLifecycle::kStopping) {
     return;
+  }
   // If this is the 'active' resource (the first element with the specified 'id'
   // in tree order), notify any clients that they need to reevaluate the
   // resource's contents.
@@ -196,9 +197,11 @@ void LayoutSVGResourceContainer::WillBeDestroyed() {
 
 void LayoutSVGResourceContainer::StyleDidChange(
     StyleDifference diff,
-    const ComputedStyle* old_style) {
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutSVGHiddenContainer::StyleDidChange(diff, old_style);
+  LayoutSVGHiddenContainer::StyleDidChange(diff, old_style,
+                                           style_change_context);
   if (old_style)
     return;
   // The resource has been attached.
@@ -374,7 +377,7 @@ void LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(
     bool needs_layout) {
   DCHECK(object.GetNode());
 
-  if (needs_layout && !object.DocumentBeingDestroyed()) {
+  if (needs_layout) {
     object.SetNeedsLayoutAndFullPaintInvalidation(
         layout_invalidation_reason::kSvgResourceInvalidated);
   }

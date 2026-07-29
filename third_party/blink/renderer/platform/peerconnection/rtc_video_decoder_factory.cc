@@ -12,7 +12,7 @@
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "media/base/media_util.h"
 #include "media/base/platform_features.h"
@@ -39,9 +39,7 @@ namespace blink {
 namespace {
 
 // Kill-switch for HW AV1 decoding.
-BASE_FEATURE(kWebRtcHwAv1Decoding,
-             "WebRtcHwAv1Decoding",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kWebRtcHwAv1Decoding, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // The default fps and default size are used when querying gpu_factories_ to see
 // if a codec profile is supported. 1280x720 at 30 fps corresponds to level 3.1
@@ -76,11 +74,11 @@ std::optional<webrtc::SdpVideoFormat> VdcToWebRtcFormat(
   switch (config.codec()) {
     case media::VideoCodec::kAV1:
       if (base::FeatureList::IsEnabled(kWebRtcHwAv1Decoding)) {
-        return webrtc::SdpVideoFormat(cricket::kAv1CodecName);
+        return webrtc::SdpVideoFormat(webrtc::kAv1CodecName);
       }
       return std::nullopt;
     case media::VideoCodec::kVP8:
-      return webrtc::SdpVideoFormat(cricket::kVp8CodecName);
+      return webrtc::SdpVideoFormat(webrtc::kVp8CodecName);
     case media::VideoCodec::kVP9: {
       webrtc::VP9Profile vp9_profile;
       switch (config.profile()) {
@@ -98,8 +96,8 @@ std::optional<webrtc::SdpVideoFormat> VdcToWebRtcFormat(
           return std::nullopt;
       }
       return webrtc::SdpVideoFormat(
-          cricket::kVp9CodecName, {{webrtc::kVP9FmtpProfileId,
-                                    webrtc::VP9ProfileToString(vp9_profile)}});
+          webrtc::kVp9CodecName, {{webrtc::kVP9FmtpProfileId,
+                                   webrtc::VP9ProfileToString(vp9_profile)}});
     }
     case media::VideoCodec::kH264: {
       webrtc::H264Profile h264_profile;
@@ -135,10 +133,10 @@ std::optional<webrtc::SdpVideoFormat> VdcToWebRtcFormat(
         return std::nullopt;
       }
 
-      webrtc::SdpVideoFormat format(cricket::kH264CodecName);
+      webrtc::SdpVideoFormat format(webrtc::kH264CodecName);
       format.parameters = {
-          {cricket::kH264FmtpProfileLevelId, *h264_profile_level_string},
-          {cricket::kH264FmtpLevelAsymmetryAllowed, "1"}};
+          {webrtc::kH264FmtpProfileLevelId, *h264_profile_level_string},
+          {webrtc::kH264FmtpLevelAsymmetryAllowed, "1"}};
       return format;
     }
     case media::VideoCodec::kHEVC: {
@@ -169,15 +167,15 @@ std::optional<webrtc::SdpVideoFormat> VdcToWebRtcFormat(
           h265_profile, webrtc::H265Tier::kTier0,
           h265_level.value_or(webrtc::H265Level::kLevel1));
 
-      webrtc::SdpVideoFormat format(cricket::kH265CodecName);
+      webrtc::SdpVideoFormat format(webrtc::kH265CodecName);
       format.parameters = {
-          {cricket::kH265FmtpProfileId,
+          {webrtc::kH265FmtpProfileId,
            webrtc::H265ProfileToString(profile_tier_level.profile)},
-          {cricket::kH265FmtpTierFlag,
+          {webrtc::kH265FmtpTierFlag,
            webrtc::H265TierToString(profile_tier_level.tier)},
-          {cricket::kH265FmtpLevelId,
+          {webrtc::kH265FmtpLevelId,
            webrtc::H265LevelToString(profile_tier_level.level)},
-          {cricket::kH265FmtpTxMode, "SRST"}};
+          {webrtc::kH265FmtpTxMode, "SRST"}};
       return format;
 #else
       return std::nullopt;
@@ -292,7 +290,7 @@ RTCVideoDecoderFactory::GetSupportedFormats() const {
         const std::array<std::string, 2> kH264PacketizationModes = {{"1", "0"}};
         for (const auto& mode : kH264PacketizationModes) {
           webrtc::SdpVideoFormat h264_format = *format;
-          h264_format.parameters[cricket::kH264FmtpPacketizationMode] = mode;
+          h264_format.parameters[webrtc::kH264FmtpPacketizationMode] = mode;
           supported_formats.push_back(h264_format);
         }
       } else {
@@ -306,7 +304,7 @@ RTCVideoDecoderFactory::GetSupportedFormats() const {
   // of BP, we can report support for both. It is safe to do so when SW fallback
   // is available.
   // TODO(emircan): Remove this when the bug referred above is fixed.
-  cricket::AddH264ConstrainedBaselineProfileToSupportedFormats(
+  webrtc::AddH264ConstrainedBaselineProfileToSupportedFormats(
       &supported_formats);
 
 #if BUILDFLAG(RTC_USE_H265)
@@ -376,8 +374,10 @@ RTCVideoDecoderFactory::GetSupportedFormats() const {
 }
 
 webrtc::VideoDecoderFactory::CodecSupport
-RTCVideoDecoderFactory::QueryCodecSupport(const webrtc::SdpVideoFormat& format,
-                                          bool reference_scaling) const {
+RTCVideoDecoderFactory::QueryCodecSupport(
+    const webrtc::SdpVideoFormat& format,
+    bool reference_scaling,
+    std::optional<webrtc::Resolution> resolution) const {
   CheckAndWaitDecoderSupportStatusIfNeeded();
 
   media::VideoCodec codec =
@@ -387,6 +387,12 @@ RTCVideoDecoderFactory::QueryCodecSupport(const webrtc::SdpVideoFormat& format,
   if (codec == media::VideoCodec::kHEVC &&
       !base::FeatureList::IsEnabled(::features::kWebRtcAllowH265Receive) &&
       !override_disabled_profiles_) {
+    return {false, false};
+  }
+
+  // If WebRtcHwAv1Decoding is not enabled, report AV1 as unsupported.
+  if (codec == media::VideoCodec::kAV1 &&
+      !base::FeatureList::IsEnabled(kWebRtcHwAv1Decoding)) {
     return {false, false};
   }
 
@@ -408,11 +414,15 @@ RTCVideoDecoderFactory::QueryCodecSupport(const webrtc::SdpVideoFormat& format,
 
   media::VideoCodecProfile codec_profile =
       WebRtcVideoFormatToMediaVideoCodecProfile(format);
+
+  const gfx::Size size = resolution
+                             ? gfx::Size(resolution->width, resolution->height)
+                             : kDefaultSize;
+
   media::VideoDecoderConfig config(
       codec, codec_profile, media::VideoDecoderConfig::AlphaMode::kIsOpaque,
-      media::VideoColorSpace(), media::kNoTransformation, kDefaultSize,
-      gfx::Rect(kDefaultSize), kDefaultSize, media::EmptyExtraData(),
-      media::EncryptionScheme::kUnencrypted);
+      media::VideoColorSpace(), media::kNoTransformation, size, gfx::Rect(size),
+      size, media::EmptyExtraData(), media::EncryptionScheme::kUnencrypted);
 
   webrtc::VideoDecoderFactory::CodecSupport codec_support;
   // Check gpu_factories for powerEfficient.

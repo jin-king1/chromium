@@ -5,12 +5,14 @@
 #ifndef ASH_APP_LIST_MODEL_SEARCH_SEARCH_BOX_MODEL_H_
 #define ASH_APP_LIST_MODEL_SEARCH_SEARCH_BOX_MODEL_H_
 
+#include <optional>
 #include <string>
 
 #include "ash/app_list/model/app_list_model_export.h"
 #include "ash/public/cpp/app_list/app_list_client.h"
-#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "ui/base/models/image_model.h"
+#include "ui/gfx/image/image.h"
 
 namespace ash {
 
@@ -27,21 +29,27 @@ class APP_LIST_MODEL_EXPORT SearchBoxModel {
     kShownWithSunfishIcon = 2,
   };
 
+  // Display text and icon for an icon button in search box. This is currently
+  // used only for Gemini button.
+  struct SearchBoxIconButton {
+    std::string display_name;
+    gfx::Image icon;
+  };
+
   SearchBoxModel();
   SearchBoxModel(const SearchBoxModel&) = delete;
   SearchBoxModel& operator=(const SearchBoxModel&) = delete;
   ~SearchBoxModel();
 
-  void SetShowAssistantButton(bool show);
-  bool show_assistant_button() const { return show_assistant_button_; }
+  // TODO: crbug.com/388361414 - Delete.
+  bool show_assistant_button() const { return false; }
 
-  void SetShowAssistantNewEntryPointButton(bool show, const std::string& name);
-  bool show_assistant_new_entry_point_button() const {
-    return show_assistant_new_entry_point_button_;
-  }
-
-  std::string assistant_new_entry_point_name() const {
-    return assistant_new_entry_point_name_;
+  // Show gemini button with display name and icon specified in
+  // `search_box_icon_button`. Passing `std::nullopt` hides the button.
+  void SetGeminiButtonVisibility(
+      std::optional<SearchBoxIconButton> search_box_icon_button);
+  std::optional<SearchBoxIconButton> gemini_button() const {
+    return gemini_search_box_icon_button_;
   }
 
   void SetSunfishButtonVisibility(SunfishButtonVisibility show);
@@ -60,9 +68,7 @@ class APP_LIST_MODEL_EXPORT SearchBoxModel {
 
  private:
   bool search_engine_is_google_ = false;
-  bool show_assistant_button_ = false;
-  bool show_assistant_new_entry_point_button_ = false;
-  std::string assistant_new_entry_point_name_;
+  std::optional<SearchBoxIconButton> gemini_search_box_icon_button_;
   SunfishButtonVisibility sunfish_button_visibility_ =
       SunfishButtonVisibility::kHidden;
 

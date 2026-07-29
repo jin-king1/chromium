@@ -6,7 +6,10 @@
 
 #include <memory>
 
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/sequence_checker.h"
+#include "base/strings/strcat.h"
 #include "chromeos/ash/components/boca/babelorca/babel_orca_translation_dispatcher.h"
 #include "chromeos/ash/components/boca/boca_metrics_util.h"
 #include "components/live_caption/translation_dispatcher.h"
@@ -15,24 +18,16 @@
 #include "ui/base/l10n/l10n_util.h"
 
 namespace ash::babelorca {
-
 namespace {
+
+using ::base::i18n::LanguageTag;
+using ::base::i18n::LanguageTagConverter;
 
 bool IsNonIdeographicSourceOrIdeographicTarget(
     const std::string& source_language,
     const std::string& target_language) {
   return !::captions::IsIdeographicLocale(source_language) ||
          ::captions::IsIdeographicLocale(target_language);
-}
-
-bool AreLanguagesTheSame(const std::string& source_language,
-                         const std::string& target_language) {
-  std::string source_language_component =
-      l10n_util::GetLanguage(source_language);
-  std::string target_language_component =
-      l10n_util::GetLanguage(target_language);
-
-  return source_language_component == target_language_component;
 }
 
 }  // namespace
@@ -55,8 +50,12 @@ void BabelOrcaCaptionTranslator::Translate(
     return;
   }
 
-  if (!l10n_util::IsValidLocaleSyntax(source_language) ||
-      !l10n_util::IsValidLocaleSyntax(target_language)) {
+  std::optional<LanguageTag> source_language_tag =
+      LanguageTagConverter::GetInstance().FromString(source_language);
+  std::optional<LanguageTag> target_language_tag =
+      LanguageTagConverter::GetInstance().FromString(target_language);
+
+  if (!source_language_tag.has_value() || !target_language_tag.has_value()) {
     VLOG(1) << "Invalid source or target language syntax.  Will not translate";
     std::move(callback).Run(recognition_result);
     return;
@@ -64,7 +63,8 @@ void BabelOrcaCaptionTranslator::Translate(
 
   // If the languages are the same then immediately
   // pass the recognition_result to the callback.
-  if (AreLanguagesTheSame(source_language, target_language)) {
+  if (source_language_tag->language_subtag() ==
+      target_language_tag->language_subtag()) {
     std::move(callback).Run(recognition_result);
     return;
   }
@@ -72,21 +72,19 @@ void BabelOrcaCaptionTranslator::Translate(
   // Check that if the languages have changed in between calls that we then
   // record the language switch metrics.
   if ((current_source_language_.has_value() &&
-       !AreLanguagesTheSame(source_language,
-                            current_source_language_.value())) ||
+       current_source_language_ != source_language_tag) ||
       (current_target_language_.has_value() &&
-       !AreLanguagesTheSame(target_language,
-                            current_target_language_.value()))) {
+       current_target_language_ != target_language_tag)) {
     boca::RecordBabelOrcaTranslationLanguageSwitched();
   }
 
   // If the target language changed record it here.
   if (current_target_language_.has_value() &&
-      !AreLanguagesTheSame(target_language, current_target_language_.value())) {
+      current_target_language_ != target_language_tag) {
     boca::RecordBabelOrcaTranslationLanguage(target_language);
   }
-  current_source_language_ = source_language;
-  current_target_language_ = target_language;
+  current_source_language_ = source_language_tag;
+  current_target_language_ = target_language_tag;
 
   // Enqueue the dispatch, we might have to wait until a pending translation is
   // completed before dispatching the current one.
@@ -104,8 +102,10 @@ void BabelOrcaCaptionTranslator::Translate(
 void BabelOrcaCaptionTranslator::SetDefaultLanguagesForTesting(
     const std::string& default_source,
     const std::string& default_target) {
-  current_source_language_ = default_source;
-  current_target_language_ = default_target;
+  current_source_language_ =
+      LanguageTagConverter::GetInstance().FromString(default_source);
+  current_target_language_ =
+      LanguageTagConverter::GetInstance().FromString(default_target);
 }
 
 void BabelOrcaCaptionTranslator::UnsetCurrentLanguagesForTesting() {

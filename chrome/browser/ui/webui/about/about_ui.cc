@@ -39,7 +39,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/chrome_urls/chrome_urls_ui.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/branded_strings.h"
@@ -49,7 +48,6 @@
 #include "components/strings/grit/components_locale_settings.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/webui/about/credit_utils.h"
-#include "components/webui/chrome_urls/features.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
@@ -68,16 +66,16 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include <map>
 
+#include "ash/constants/webui_url_constants.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/base64.h"
 #include "base/strings/strcat.h"
-#include "chrome/browser/ash/borealis/borealis_credits.h"
 #include "chrome/browser/ash/crostini/crostini_features.h"
 #include "chrome/browser/ash/crostini/crostini_manager.h"
 #include "chrome/browser/ash/customization/customization_document.h"
 #include "chrome/browser/ash/login/demo_mode/demo_setup_controller.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/browser_process_platform_part_ash.h"
-#include "chrome/browser/ui/webui/chrome_web_ui_controller_factory.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "components/component_updater/ash/component_manager_ash.h"
@@ -98,6 +96,13 @@ constexpr char kStringsJsPath[] = "strings.js";
 #if BUILDFLAG(IS_CHROMEOS)
 
 constexpr char kTerminaCreditsPath[] = "about_os_credits.html";
+
+// Source for chrome://os-credits. On some devices, this will be compressed.
+// Check both.
+constexpr char kChromeOSCreditsPath[] =
+    "/opt/google/chrome/resources/about_os_credits.html";
+constexpr char kChromeOSCreditsCompressedPath[] =
+    "/opt/google/chrome/resources/about_os_credits.html.gz";
 
 // Loads bundled terms of service contents (Eula, OEM Eula, Play Store Terms).
 // The online version of terms is fetched in OOBE screen javascript. This is
@@ -123,22 +128,22 @@ class ChromeOSTermsHandler
                        content::URLDataSource::GotDataCallback callback)
       : path_(path),
         callback_(std::move(callback)),
-        // Previously we were using "initial locale" http://crbug.com/145142
+        // Previously we were using "initial locale" http://crbug.com/40915798
         locale_(g_browser_process->GetApplicationLocale()) {}
 
   virtual ~ChromeOSTermsHandler() = default;
 
   void StartOnUIThread() {
     DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    if (path_ == chrome::kOemEulaURLPath) {
+    if (path_ == ash::kChromeUITermsOemEulaURLPath) {
       // Load local OEM EULA from the disk.
       base::ThreadPool::PostTaskAndReply(
           FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
           base::BindOnce(&ChromeOSTermsHandler::LoadOemEulaFileAsync, this),
           base::BindOnce(&ChromeOSTermsHandler::ResponseOnUIThread, this));
-    } else if (path_ == chrome::kArcTermsURLPath) {
+    } else if (path_ == ash::kChromeUITermsArcTermsURLPath) {
       LOG(WARNING) << "Could not load offline Play Store ToS.";
-    } else if (path_ == chrome::kArcPrivacyPolicyURLPath) {
+    } else if (path_ == ash::kChromeUITermsArcPrivacyPolicyURLPath) {
       LOG(WARNING) << "Could not load offline Play Store privacy policy.";
     } else {
       NOTREACHED();
@@ -231,10 +236,10 @@ class ChromeOSCreditsHandler
   // ResponseOnUIThread.
   void LoadCreditsFileAsync() {
     if (prefix_.empty()) {
-      prefix_ = base::FilePath(chrome::kChromeOSCreditsPath).DirName();
+      prefix_ = base::FilePath(kChromeOSCreditsPath).DirName();
     }
     base::FilePath credits =
-        prefix_.Append(base::FilePath(chrome::kChromeOSCreditsPath).BaseName());
+        prefix_.Append(base::FilePath(kChromeOSCreditsPath).BaseName());
     if (base::ReadFileToString(credits, &contents_)) {
       // Decompressed present; return.
       return;
@@ -242,7 +247,7 @@ class ChromeOSCreditsHandler
 
     // Decompressed not present; load compressed.
     base::FilePath compressed_credits = prefix_.Append(
-        base::FilePath(chrome::kChromeOSCreditsCompressedPath).BaseName());
+        base::FilePath(kChromeOSCreditsCompressedPath).BaseName());
     std::string compressed;
     if (!base::ReadFileToString(compressed_credits, &compressed)) {
       // File with credits not found, ResponseOnUIThread will load credits
@@ -283,21 +288,6 @@ class ChromeOSCreditsHandler
   // Directory containing files to read.
   base::FilePath prefix_;
 };
-
-void OnBorealisCreditsLoaded(content::URLDataSource::GotDataCallback callback,
-                             std::string credits_html) {
-  if (credits_html.empty()) {
-    credits_html = l10n_util::GetStringUTF8(IDS_BOREALIS_CREDITS_PLACEHOLDER);
-  }
-  std::move(callback).Run(
-      base::MakeRefCounted<base::RefCountedString>(std::move(credits_html)));
-}
-
-void HandleBorealisCredits(Profile* profile,
-                           content::URLDataSource::GotDataCallback callback) {
-  borealis::LoadBorealisCredits(
-      profile, base::BindOnce(&OnBorealisCreditsLoaded, std::move(callback)));
-}
 
 class CrostiniCreditsHandler
     : public base::RefCountedThreadSafe<CrostiniCreditsHandler> {
@@ -416,86 +406,6 @@ using about_ui::AppendHeader;
 
 namespace {
 
-bool CompareConfigInfos(const content::WebUIConfigInfo& config1,
-                        const content::WebUIConfigInfo& config2) {
-  // Schemes must be either chrome:// or chrome-untrusted://
-  CHECK(config1.origin.scheme() == content::kChromeUIScheme ||
-        config1.origin.scheme() == content::kChromeUIUntrustedScheme);
-  CHECK(config2.origin.scheme() == content::kChromeUIScheme ||
-        config2.origin.scheme() == content::kChromeUIUntrustedScheme);
-  // Sort chrome:// before chrome-untrusted://. If the schemes are not equal,
-  // given the check above one must be chrome:// and one chrome-untrusted://.
-  if (config1.origin.scheme() != config2.origin.scheme()) {
-    return config1.origin.scheme() == content::kChromeUIScheme;
-  }
-  return config1.origin.host() < config2.origin.host();
-}
-
-std::string ChromeURLs(content::BrowserContext* browser_context) {
-  std::string html;
-  AppendHeader(&html, "Chrome URLs");
-  AppendBody(&html);
-
-  html += "<h2>List of Chrome URLs</h2>\n<ul>\n";
-  const base::span<const base::cstring_view> hosts = chrome::ChromeURLHosts();
-  std::vector<content::WebUIConfigInfo> infos;
-  for (base::cstring_view host : hosts) {
-    GURL url(base::StrCat(
-        {content::kChromeUIScheme, url::kStandardSchemeSeparator, host}));
-    infos.push_back({.origin = url::Origin::Create(url), .enabled = true});
-  }
-
-  // Add any extra hosts found in the config map
-  auto& map = content::WebUIConfigMap::GetInstance();
-  for (const content::WebUIConfigInfo& config_info :
-       map.GetWebUIConfigList(browser_context)) {
-    if (config_info.origin.scheme() == content::kChromeUIUntrustedScheme ||
-        std::find(hosts.begin(), hosts.end(), config_info.origin.host()) ==
-            hosts.end()) {
-      infos.push_back(config_info);
-    }
-  }
-
-  // Sort the URLs.
-  std::sort(infos.begin(), infos.end(), &CompareConfigInfos);
-
-  {
-    for (const content::WebUIConfigInfo& info : infos) {
-      std::string host = info.origin.host();
-      std::string scheme = info.origin.scheme();
-      std::string url =
-          base::StrCat({scheme, url::kStandardSchemeSeparator, host});
-      html +=
-          info.enabled
-              ? base::StrCat({"<li><a href='", url, "/'>", url, "</a></li>\n"})
-              : base::StrCat({"<li>", url, "</li>\n"});
-    }
-  }
-
-#if BUILDFLAG(ENABLE_SESSION_SERVICE)
-  // Add the session service internals page to the end.
-  html += base::StrCat(
-      {"<li><a href='chrome://internals/",
-       chrome::kChromeUISessionServiceInternalsPath, "'>chrome://internals/",
-       chrome::kChromeUISessionServiceInternalsPath, "</a></li>\n"});
-#endif  // BUILDFLAG(ENABLE_SESSION_SERVICE)
-
-  html +=
-      "</ul>\n<h2>For Debug</h2>\n"
-      "<p>The following pages are for debugging purposes only. Because they "
-      "crash or hang the renderer, they're not linked directly; you can type "
-      "them into the address bar if you need them.</p>\n<ul>";
-  {
-    for (base::cstring_view url : chrome::ChromeDebugURLs()) {
-      html += base::StrCat({"<li>", url, "</li>\n"});
-    }
-  }
-  html += "</ul>\n";
-
-  AppendFooter(&html);
-  return html;
-}
-
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_OPENBSD)
 std::string AboutLinuxProxyConfig() {
   std::string data;
@@ -518,18 +428,6 @@ std::string AboutLinuxProxyConfig() {
 AboutUIConfigBase::AboutUIConfigBase(std::string_view host)
     : DefaultWebUIConfig(content::kChromeUIScheme, host) {}
 
-ChromeURLsUIConfig::ChromeURLsUIConfig()
-    : WebUIConfig(content::kChromeUIScheme, chrome::kChromeUIChromeURLsHost) {}
-
-std::unique_ptr<content::WebUIController>
-ChromeURLsUIConfig::CreateWebUIController(content::WebUI* web_ui,
-                                          const GURL& url) {
-  if (base::FeatureList::IsEnabled(chrome_urls::kInternalOnlyUisPref)) {
-    return std::make_unique<chrome_urls::ChromeUrlsUI>(web_ui);
-  }
-  return std::make_unique<AboutUI>(web_ui, url);
-}
-
 CreditsUIConfig::CreditsUIConfig()
     : AboutUIConfigBase(chrome::kChromeUICreditsHost) {}
 
@@ -544,14 +442,10 @@ LinuxProxyConfigUI::LinuxProxyConfigUI()
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
-OSCreditsUI::OSCreditsUI()
-    : AboutUIConfigBase(chrome::kChromeUIOSCreditsHost) {}
-
-BorealisCreditsUI::BorealisCreditsUI()
-    : AboutUIConfigBase(chrome::kChromeUIBorealisCreditsHost) {}
+OSCreditsUI::OSCreditsUI() : AboutUIConfigBase(ash::kChromeUIOSCreditsHost) {}
 
 CrostiniCreditsUI::CrostiniCreditsUI()
-    : AboutUIConfigBase(chrome::kChromeUICrostiniCreditsHost) {}
+    : AboutUIConfigBase(ash::kChromeUICrostiniCreditsHost) {}
 #endif
 
 // AboutUIHTMLSource ----------------------------------------------------------
@@ -575,9 +469,7 @@ void AboutUIHTMLSource::StartDataRequest(
   const std::string path = content::URLDataSource::URLToRequestPath(url);
   std::string response;
   // Add your data source here, in alphabetical order.
-  if (source_name_ == chrome::kChromeUIChromeURLsHost) {
-    response = ChromeURLs(profile_);
-  } else if (source_name_ == chrome::kChromeUICreditsHost) {
+  if (source_name_ == chrome::kChromeUICreditsHost) {
     int idr = IDR_ABOUT_UI_CREDITS_HTML;
     if (path == kCreditsJsPath) {
       idr = IDR_ABOUT_UI_CREDITS_JS;
@@ -595,9 +487,8 @@ void AboutUIHTMLSource::StartDataRequest(
     response = AboutLinuxProxyConfig();
 #endif
 #if BUILDFLAG(IS_CHROMEOS)
-  } else if (source_name_ == chrome::kChromeUIOSCreditsHost ||
-             source_name_ == chrome::kChromeUICrostiniCreditsHost ||
-             source_name_ == chrome::kChromeUIBorealisCreditsHost) {
+  } else if (source_name_ == ash::kChromeUIOSCreditsHost ||
+             source_name_ == ash::kChromeUICrostiniCreditsHost) {
     int idr = IDR_ABOUT_UI_CREDITS_HTML;
     if (path == kCreditsJsPath) {
       idr = IDR_ABOUT_UI_CREDITS_JS;
@@ -605,13 +496,11 @@ void AboutUIHTMLSource::StartDataRequest(
       idr = IDR_ABOUT_UI_CREDITS_CSS;
     }
     if (idr == IDR_ABOUT_UI_CREDITS_HTML) {
-      if (source_name_ == chrome::kChromeUIOSCreditsHost) {
+      if (source_name_ == ash::kChromeUIOSCreditsHost) {
         ChromeOSCreditsHandler::Start(path, std::move(callback),
                                       os_credits_prefix_);
-      } else if (source_name_ == chrome::kChromeUICrostiniCreditsHost) {
+      } else if (source_name_ == ash::kChromeUICrostiniCreditsHost) {
         CrostiniCreditsHandler::Start(profile(), path, std::move(callback));
-      } else if (source_name_ == chrome::kChromeUIBorealisCreditsHost) {
-        HandleBorealisCredits(profile(), std::move(callback));
       } else {
         NOTREACHED();
       }
@@ -645,7 +534,7 @@ void AboutUIHTMLSource::FinishDataRequest(
 }
 
 std::string AboutUIHTMLSource::GetMimeType(const GURL& url) {
-  const std::string_view path = url.path_piece().substr(1);
+  const std::string_view path = url.path().substr(1);
   if (path == kCreditsJsPath || path == kStatsJsPath ||
       path == kStringsJsPath) {
     return "application/javascript";
@@ -663,7 +552,7 @@ std::string AboutUIHTMLSource::GetAccessControlAllowOriginForOrigin(
 #if BUILDFLAG(IS_CHROMEOS)
   // Allow chrome://oobe to load chrome://terms via XHR.
   if (source_name_ == chrome::kChromeUITermsHost &&
-      base::StartsWith(chrome::kChromeUIOobeURL, origin,
+      base::StartsWith(ash::kChromeUIOobeURL, origin,
                        base::CompareCase::SENSITIVE)) {
     return origin;
   }
@@ -681,5 +570,5 @@ AboutUI::AboutUI(content::WebUI* web_ui, const GURL& url)
 #endif
 
   content::URLDataSource::Add(
-      profile, std::make_unique<AboutUIHTMLSource>(url.host(), profile));
+      profile, std::make_unique<AboutUIHTMLSource>(url.GetHost(), profile));
 }

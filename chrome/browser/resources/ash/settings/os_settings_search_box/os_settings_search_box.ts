@@ -12,7 +12,6 @@ import 'chrome://resources/js/focus_row.js';
 import 'chrome://resources/polymer/v3_0/iron-dropdown/iron-dropdown.js';
 import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
 import 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import './os_search_result_row.js';
 
@@ -20,7 +19,6 @@ import {getInstance as getAnnouncerInstance} from 'chrome://resources/ash/common
 import type {CrToolbarSearchFieldElement} from 'chrome://resources/ash/common/cr_elements/cr_toolbar/cr_toolbar_search_field.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {assert} from 'chrome://resources/js/assert.js';
-import {stringToMojoString16} from 'chrome://resources/js/mojo_type_util.js';
 import type {IronListElement} from 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
 import {afterNextRender, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -47,7 +45,7 @@ const USER_ACTION_ON_SEARCH_RESULTS_SHOWN_METRIC_NAME =
     'ChromeOS.Settings.UserActionOnSearchResultsShown';
 
 /**
- * These values are persisted to logs and should not be renumbered or re-used.
+ * These values are persisted to logs and should not be renumbered or reused.
  * See tools/metrics/histograms/enums.xml.
  */
 enum OsSettingSearchRequestTypes {
@@ -57,7 +55,7 @@ enum OsSettingSearchRequestTypes {
 }
 
 /**
- * These values are persisted to logs and should not be renumbered or re-used.
+ * These values are persisted to logs and should not be renumbered or reused.
  * See tools/metrics/histograms/enums.xml.
  */
 enum OsSettingSearchBoxUserAction {
@@ -181,19 +179,19 @@ export class OsSettingsSearchBoxElement extends OsSettingsSearchBoxElementBase
     };
   }
 
-  narrow: boolean;
-  showingSearch: boolean;
-  hasSearchQuery: boolean;
-  spinnerActive: boolean;
-  private selectedItem_: SearchResult;
-  private lastSelectedItem_: SearchResult|null;
-  private searchResults_: SearchResult[];
-  private shouldHideFeedbackButton_: boolean;
-  private shouldShowDropdown_: boolean;
-  private searchResultsExist_: boolean;
-  private lastFocused_: HTMLElement|null;
-  private listBlurred_: boolean;
-  private searchRequestCount_: number;
+  declare narrow: boolean;
+  declare showingSearch: boolean;
+  declare hasSearchQuery: boolean;
+  declare spinnerActive: boolean;
+  declare private selectedItem_: SearchResult;
+  declare private lastSelectedItem_: SearchResult|null;
+  declare private searchResults_: SearchResult[];
+  declare private shouldHideFeedbackButton_: boolean;
+  declare private shouldShowDropdown_: boolean;
+  declare private searchResultsExist_: boolean;
+  declare private lastFocused_: HTMLElement|null;
+  declare private listBlurred_: boolean;
+  declare private searchRequestCount_: number;
 
   private settingsSearchResultObserverReceiver_: SearchResultsObserverReceiver|
       null;
@@ -326,14 +324,9 @@ export class OsSettingsSearchBoxElement extends OsSettingsSearchBoxElementBase
 
     this.spinnerActive = true;
 
-    // The C++ layer uses std::u16string, which use 16 bit characters. JS
-    // strings support either 8 or 16 bit characters, and must be converted to
-    // an array of 16 bit character codes that match std::u16string.
-    const queryMojoString16 = stringToMojoString16(query);
     const timeOfSearchRequest = Date.now();
     combinedSearch(
-        queryMojoString16, MAX_NUM_SEARCH_RESULTS,
-        ParentResultBehavior.kAllowParentResults)
+        query, MAX_NUM_SEARCH_RESULTS, ParentResultBehavior.kAllowParentResults)
         .then(response => {
           const latencyMs = Date.now() - timeOfSearchRequest;
           chrome.metricsPrivate.recordTime(

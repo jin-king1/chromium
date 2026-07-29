@@ -5,7 +5,6 @@
 #ifndef ASH_WM_DESKS_DESK_ACTION_CONTEXT_MENU_H_
 #define ASH_WM_DESKS_DESK_ACTION_CONTEXT_MENU_H_
 
-#include "ash/public/cpp/desk_profiles_delegate.h"
 #include "ash/wm/desks/desk_mini_view.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
@@ -35,18 +34,6 @@ class DeskActionContextMenu : public views::ContextMenuController,
     Config& operator=(Config&&);
 
     views::MenuAnchorPosition anchor_position;
-
-    // A list of the currently available lacros profiles. When this has two or
-    // more elements, the menu will show the profiles, as well as an entry for
-    // bringing up the profile manager.
-    std::vector<LacrosProfileSummary> profiles;
-
-    // Identifies the currently selected lacros profile. Only used when lacros
-    // profiles are shown.
-    uint64_t current_lacros_profile_id = 0;
-
-    // Invoked with the lacros profile id if the user picks a profile.
-    base::RepeatingCallback<void(uint64_t)> set_lacros_profile_id;
 
     // If set, the option to save the selected desk as a template is shown.
     std::optional<std::u16string> save_template_target_name;
@@ -81,11 +68,6 @@ class DeskActionContextMenu : public views::ContextMenuController,
     // Saves target desk in DesksController and gives user option to undo the
     // desk before the desk is fully removed and its windows are closed.
     kCloseAll,
-    // Shows the lacros profile manager. Only available when desk profiles is
-    // enabled.
-    kShowProfileManager,
-    // Start of dynamic IDs used for lacros profiles.
-    kDynamicProfileStart,
   };
 
   DeskActionContextMenu(Config config, DeskMiniView* mini_view);
@@ -104,10 +86,6 @@ class DeskActionContextMenu : public views::ContextMenuController,
 
  private:
   friend class DesksTestApi;
-
-  // Invokes `config_.set_lacros_profile_id` if `command_id` refers to a lacros
-  // profile.
-  void MaybeSetLacrosProfileId(int command_id);
 
   // views::ContextMenuController:
   void ShowContextMenuForViewImpl(

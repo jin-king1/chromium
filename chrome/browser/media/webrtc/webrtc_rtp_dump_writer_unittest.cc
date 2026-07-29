@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "chrome/browser/media/webrtc/webrtc_rtp_dump_writer.h"
 
 #include <stddef.h>
@@ -15,6 +10,7 @@
 
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span_reader.h"
 #include "base/containers/span_writer.h"
 #include "base/files/file_util.h"
@@ -154,7 +150,8 @@ class WebRtcRtpDumpWriterTest : public testing::Test {
     size_t dump_pos = 0;
 
     // Verifies the first line.
-    EXPECT_EQ(memcmp(dump.data(), kFirstLine, std::size(kFirstLine) - 1), 0);
+    UNSAFE_TODO(EXPECT_EQ(
+        memcmp(dump.data(), kFirstLine, std::size(kFirstLine) - 1), 0));
 
     dump_pos += std::size(kFirstLine) - 1;
     EXPECT_GT(dump.size(), dump_pos);
@@ -295,7 +292,7 @@ TEST_F(WebRtcRtpDumpWriterTest, WriteAndFlushSmallSizeDump) {
   VerifyDumps(1, 1);
 }
 
-// Flaky test disabled on Windows (https://crbug.com/1044271).
+// Flaky test disabled on Windows (https://crbug.com/40669633).
 #if BUILDFLAG(IS_WIN)
 #define MAYBE_WriteOverMaxLimit DISABLED_WriteOverMaxLimit
 #else

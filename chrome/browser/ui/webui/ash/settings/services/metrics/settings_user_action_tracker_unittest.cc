@@ -22,22 +22,23 @@
 #include "components/metrics/metrics_state_manager.h"
 #include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/metrics/test/test_metrics_service_client.h"
+#include "components/prefs/testing_pref_service.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
 class TestUserMetricsServiceClient
     : public ::metrics::TestMetricsServiceClient {
  public:
-  std::optional<bool> GetCurrentUserMetricsConsent() const override {
-    return current_user_metrics_consent_;
+  std::optional<bool> GetCurrentUserMetricsChoice() const override {
+    return current_user_choice_;
   }
 
-  void UpdateCurrentUserMetricsConsent(bool metrics_consent) override {
-    current_user_metrics_consent_ = metrics_consent;
+  void UpdateCurrentUserMetricsChoice(bool user_choice) override {
+    current_user_choice_ = user_choice;
   }
 
  private:
-  bool current_user_metrics_consent_ = true;
+  bool current_user_choice_ = true;
 };
 }  // namespace
 

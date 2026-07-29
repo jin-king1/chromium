@@ -7,6 +7,7 @@
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/task_environment.h"
 #import "components/signin/public/base/signin_metrics.h"
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/drive/model/drive_list.h"
 #import "ios/chrome/browser/drive_file_picker/coordinator/fake_drive_file_picker_handler.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -19,6 +20,8 @@
 #import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
 #import "ios/chrome/browser/web/model/choose_file/fake_choose_file_controller.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -37,6 +40,8 @@ class RootDriveFilePickerCoordinatorTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
     handler_ = [[FakeDriveFilePickerHandler alloc] init];
@@ -44,21 +49,25 @@ class RootDriveFilePickerCoordinatorTest : public PlatformTest {
     [dispatcher startDispatchingToTarget:handler_
                              forProtocol:@protocol(DriveFilePickerCommands)];
     fake_web_state_ = std::make_unique<web::FakeWebState>();
+    ChooseFileTabHelper::CreateForWebState(fake_web_state_.get());
     coordinator_ = [[RootDriveFilePickerCoordinator alloc]
         initWithBaseViewController:base_view_controller_
                            browser:browser_.get()
-                          webState:fake_web_state_.get()];
+                          webState:fake_web_state_.get()
+                     forComposebox:NO];
     StartChoosingFiles();
   }
 
   // Starts file selection in the WebState.
   void StartChoosingFiles() {
     ChooseFileTabHelper* tab_helper =
-        ChooseFileTabHelper::GetOrCreateForWebState(fake_web_state_.get());
+        ChooseFileTabHelper::FromWebState(fake_web_state_.get());
     auto controller = std::make_unique<FakeChooseFileController>(
-        ChooseFileEvent(false /*allow_multiple_files*/,
-                        false /*has_selected_file*/, std::vector<std::string>{},
-                        std::vector<std::string>{}, fake_web_state_.get()));
+        ChooseFileEvent::Builder()
+            .SetAllowMultipleFiles(false)
+            .SetHasSelectedFile(false)
+            .SetWebState(fake_web_state_.get())
+            .Build());
     tab_helper->StartChoosingFiles(std::move(controller));
   }
 
@@ -71,7 +80,8 @@ class RootDriveFilePickerCoordinatorTest : public PlatformTest {
     system_identity_manager->AddIdentity(fake_identity);
     AuthenticationService* auth_service =
         AuthenticationServiceFactory::GetForProfile(profile_.get());
-    auth_service->SignIn(fake_identity, signin_metrics::AccessPoint::kUnknown);
+    auth_service->SignIn(fake_identity,
+                         signin_metrics::AccessPoint::kStartPage);
   }
 
   void TearDown() final {

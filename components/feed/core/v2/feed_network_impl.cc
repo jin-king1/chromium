@@ -5,11 +5,14 @@
 #include "components/feed/core/v2/feed_network_impl.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include "base/base64.h"
 #include "base/base64url.h"
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
@@ -36,7 +39,6 @@
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_access_token_fetcher.h"
-#include "components/signin/public/identity_manager/scope_set.h"
 #include "components/variations/net/variations_http_headers.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "net/base/isolation_info.h"
@@ -50,6 +52,7 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "third_party/protobuf/src/google/protobuf/io/coded_stream.h"
 #include "third_party/zlib/google/compression_utils.h"
 
@@ -59,14 +62,9 @@ constexpr char kApplicationXProtobuf[] = "application/x-protobuf";
 constexpr base::TimeDelta kNetworkTimeout = base::Seconds(30);
 constexpr char kDiscoverHost[] = "https://discover-pa.googleapis.com/";
 
-signin::ScopeSet GetAuthScopes() {
-  return {GaiaConstants::kFeedOAuth2Scope};
-}
-
 int EstimateFeedQueryRequestSize(const network::ResourceRequest& request) {
   int total_size = 14 +  // GET <path> HTTP/1.1
-                   request.url.path_piece().size() +
-                   request.url.query_piece().size();
+                   request.url.path().size() + request.url.query().size();
   for (const net::HttpRequestHeaders::HeaderKeyValuePair& header :
        request.headers.GetHeaderVector()) {
     total_size += header.key.size() + header.value.size() + 2;
@@ -83,7 +81,6 @@ GURL GetFeedQueryURL(feedwire::FeedQuery::RequestReason reason) {
   // Add URLs for Bling when it is supported.
   switch (reason) {
     case feedwire::FeedQuery::SCHEDULED_REFRESH:
-    case feedwire::FeedQuery::PREFETCHED_WEB_FEED:
     case feedwire::FeedQuery::APP_CLOSE_REFRESH:
       return GURL(
           "https://www.google.com/httpservice/noretry/TrellisClankService/"
@@ -93,7 +90,6 @@ GURL GetFeedQueryURL(feedwire::FeedQuery::RequestReason reason) {
           "https://www.google.com/httpservice/retry/TrellisClankService/"
           "NextPageQuery");
     case feedwire::FeedQuery::MANUAL_REFRESH:
-    case feedwire::FeedQuery::INTERACTIVE_WEB_FEED:
       return GURL(
           "https://www.google.com/httpservice/retry/TrellisClankService/"
           "FeedQuery");
@@ -174,9 +170,9 @@ int PopulateRequestBody(const std::string& request_body,
 GURL OverrideUrlSchemeHostPort(const GURL& url,
                                const GURL& override_scheme_host_port) {
   GURL::Replacements replacements;
-  replacements.SetSchemeStr(override_scheme_host_port.scheme_piece());
-  replacements.SetHostStr(override_scheme_host_port.host_piece());
-  replacements.SetPortStr(override_scheme_host_port.port_piece());
+  replacements.SetSchemeStr(override_scheme_host_port.scheme());
+  replacements.SetHostStr(override_scheme_host_port.host());
+  replacements.SetPortStr(override_scheme_host_port.port());
   return url.ReplaceComponents(replacements);
 }
 
@@ -236,7 +232,7 @@ class FeedNetworkImpl::NetworkFetch {
   void StartAccessTokenFetch() {
     DVLOG(1) << "Feed access token fetch started.";
     token_fetcher_ = std::make_unique<signin::PrimaryAccountAccessTokenFetcher>(
-        "feed", identity_manager_, GetAuthScopes(),
+        signin::OAuthConsumerId::kFeedNetwork, identity_manager_,
         base::BindOnce(&NetworkFetch::AccessTokenFetchFinished, GetWeakPtr(),
                        base::TimeTicks::Now()),
         signin::PrimaryAccountAccessTokenFetcher::Mode::kWaitUntilAvailable,
@@ -419,7 +415,7 @@ class FeedNetworkImpl::NetworkFetch {
                                        signed_in_status, &request);
   }
 
-  void OnSimpleLoaderComplete(std::unique_ptr<std::string> response) {
+  void OnSimpleLoaderComplete(std::optional<std::string> response) {
     const network::mojom::URLResponseHead* loader_response_info =
         simple_loader_->ResponseInfo();
     std::optional<network::URLLoaderCompletionStatus> completion_status =
@@ -436,7 +432,8 @@ class FeedNetworkImpl::NetworkFetch {
     }
     response_info.loader_start_time_ticks = loader_only_start_ticks_;
     response_info.encoded_size_bytes =
-        completion_status ? completion_status->encoded_data_length : 0;
+        completion_status ? completion_status->encoded_data_length.InBytes()
+                          : 0;
 
     if (loader_response_info) {
       size_t iter = 0;
@@ -469,14 +466,14 @@ class FeedNetworkImpl::NetworkFetch {
           loader_response_info->headers->response_code();
       response_info.response_body_bytes = response->size();
 
-      response_body = std::move(*response);
+      response_body = std::move(response).value();
 
       if (response_info.status_code == net::HTTP_UNAUTHORIZED) {
         CoreAccountId account_id = identity_manager_->GetPrimaryAccountId(
             signin::ConsentLevel::kSignin);
         if (!account_id.empty()) {
           identity_manager_->RemoveAccessTokenFromCache(
-              account_id, GetAuthScopes(), access_token_);
+              account_id, signin::OAuthConsumerId::kFeedNetwork, access_token_);
         }
       }
     }
@@ -577,16 +574,16 @@ void FeedNetworkImpl::SendQueryRequest(
     GURL override_host_url(host_override);
     if (override_host_url.is_valid()) {
       GURL::Replacements replacements;
-      replacements.SetSchemeStr(override_host_url.scheme_piece());
-      replacements.SetHostStr(override_host_url.host_piece());
-      replacements.SetPortStr(override_host_url.port_piece());
+      replacements.SetSchemeStr(override_host_url.scheme());
+      replacements.SetHostStr(override_host_url.host());
+      replacements.SetPortStr(override_host_url.port());
       // Allow the host override to also add a prefix for the path. Ignore
       // trailing slashes if they are provided, as the path part of |url| will
       // always include "/".
-      std::string_view trimmed_path_prefix = base::TrimString(
-          override_host_url.path_piece(), "/", base::TRIM_TRAILING);
+      std::string_view trimmed_path_prefix =
+          base::TrimString(override_host_url.path(), "/", base::TRIM_TRAILING);
       std::string replacement_path =
-          base::StrCat({trimmed_path_prefix, url.path_piece()});
+          base::StrCat({trimmed_path_prefix, url.path()});
 
       replacements.SetPathStr(replacement_path);
 
@@ -618,7 +615,8 @@ void FeedNetworkImpl::Send(const GURL& url,
                            bool is_feed_query,
                            base::OnceCallback<void(RawResponse)> callback) {
   TRACE_EVENT_BEGIN("android.ui.jank", "FeedNetwork",
-                    perfetto::Track::FromPointer(this), "url", url);
+                    perfetto::NamedTrack::FromPointer("FeedNetwork", this),
+                    "url", url);
   auto fetch = std::make_unique<NetworkFetch>(
       url, request_method, std::move(request_body), delegate_,
       identity_manager_, loader_factory_.get(), api_key_, account_info,
@@ -674,7 +672,8 @@ void FeedNetworkImpl::SendComplete(
     base::OnceCallback<void(RawResponse)> callback,
     RawResponse raw_response) {
   DCHECK_EQ(1UL, pending_requests_.count(fetch));
-  TRACE_EVENT_END("android.ui.jank", perfetto::Track::FromPointer(this),
+  TRACE_EVENT_END("android.ui.jank",
+                  perfetto::NamedTrack::FromPointer("FeedNetwork", this),
                   "bytes", raw_response.response_info.response_body_bytes);
   pending_requests_.erase(fetch);
 

@@ -13,7 +13,10 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/sequence_checker.h"
+#include "base/time/time.h"
 #include "base/values.h"
+#include "build/build_config.h"
+#include "chrome/updater/registration_data.h"
 #include "chrome/updater/updater_scope.h"
 #include "components/update_client/persisted_data.h"
 
@@ -26,7 +29,6 @@ class PrefRegistrySimple;
 
 namespace base {
 class FilePath;
-class Time;
 class Version;
 }  // namespace base
 
@@ -36,8 +38,6 @@ struct CategorizedError;
 }  // namespace update_client
 
 namespace updater {
-
-struct RegistrationRequest;
 
 // PersistedData uses the PrefService to persist updater data that outlives
 // the updater processes.
@@ -95,6 +95,9 @@ class PersistedData : public base::RefCountedThreadSafe<PersistedData>,
   // into the persistent data store.
   void RegisterApp(const RegistrationRequest& rq);
 
+  // This function returns true if and only if the specified app is registered.
+  bool HasApp(const std::string& id);
+
   // This function removes a registered application from the persistent store.
   bool RemoveApp(const std::string& id);
 
@@ -107,11 +110,22 @@ class PersistedData : public base::RefCountedThreadSafe<PersistedData>,
   bool GetHadApps() const;
   void SetHadApps();
 
-  // UsageStatsEnabled reflects whether the updater as a whole is allowed to
-  // send usage stats, and is set or reset periodically based on the usage
-  // stats opt-in state of each product.
-  bool GetUsageStatsEnabled() const;
-  void SetUsageStatsEnabled(bool usage_stats_enabled);
+  struct Cookie {
+    std::string value;
+    base::Time expiration;
+
+    auto operator<=>(const Cookie&) const = default;
+  };
+  // RemoteLoggingCookie stores the logging cookie provided by the remote
+  // logging server in a successful POST request.
+  std::optional<Cookie> GetRemoteLoggingCookie() const;
+  void SetRemoteLoggingCookie(const Cookie& logging_cookie);
+  void ClearRemoteLoggingCookie();
+
+  // NextAllowedLoggingAttemptTime maintains the next time the updater is
+  // allowed to attempt to log events to a remote endpoint.
+  base::Time GetNextAllowedLoggingAttemptTime() const;
+  void SetNextAllowedLoggingAttemptTime(base::Time time);
 
   // EulaRequired reflects whether some user responsible for this system has
   // accepted a EULA that covers the updater's operation or not. EulaRequired
@@ -187,11 +201,11 @@ class PersistedData : public base::RefCountedThreadSafe<PersistedData>,
   ~PersistedData() override;
 
   // Returns nullptr if the app key does not exist.
-  const base::Value::Dict* GetAppKey(const std::string& id) const;
+  const base::DictValue* GetAppKey(const std::string& id) const;
 
   // Returns an existing or newly created app key under a root pref.
-  base::Value::Dict* GetOrCreateAppKey(const std::string& id,
-                                       base::Value::Dict& root);
+  base::DictValue* GetOrCreateAppKey(const std::string& id,
+                                     base::DictValue& root);
 
   std::optional<int> GetInteger(const std::string& id,
                                 const std::string& key) const;

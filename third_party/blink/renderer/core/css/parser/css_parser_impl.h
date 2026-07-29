@@ -8,18 +8,16 @@
 #include <memory>
 #include <optional>
 
-#include "base/gtest_prod_util.h"
 #include "css_at_rule_id.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
-#include "third_party/blink/renderer/core/css/css_property_source_data.h"
 #include "third_party/blink/renderer/core/css/css_property_value.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/css_selector.h"
 #include "third_party/blink/renderer/core/css/parser/allowed_rules.h"
 #include "third_party/blink/renderer/core/css/parser/css_nesting_type.h"
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
-#include "third_party/blink/renderer/core/css/style_rule_keyframe.h"
+#include "third_party/blink/renderer/core/css/style_rule_font_feature_values.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -31,6 +29,7 @@ class CSSLazyParsingState;
 class CSSParserContext;
 class CSSParserObserver;
 class CSSParserTokenStream;
+struct CSSUrlRequestModifiers;
 class StyleRule;
 class StyleRuleViewTransition;
 class StyleRuleBase;
@@ -45,12 +44,15 @@ class StyleRuleKeyframe;
 class StyleRuleKeyframes;
 class StyleRuleMedia;
 class StyleRuleNamespace;
+class StyleRuleNavigation;
 class StyleRulePage;
 class StyleRulePositionTry;
 class StyleRuleProperty;
+class StyleRuleRoute;
 class StyleRuleSupports;
 class StyleSheetContents;
 class Element;
+struct KeyframeOffset;
 
 enum class ParseSheetResult {
   kSucceeded,
@@ -80,6 +82,8 @@ class CORE_EXPORT CSSParserImpl {
           CSSAtRuleID::kCSSAtRulePage,
           CSSAtRuleID::kCSSAtRulePositionTry,
           CSSAtRuleID::kCSSAtRuleProperty,
+          CSSAtRuleID::kCSSAtRuleRoute,
+          CSSAtRuleID::kCSSAtRuleNavigation,
           CSSAtRuleID::kCSSAtRuleContainer,
           CSSAtRuleID::kCSSAtRuleCounterStyle,
           CSSAtRuleID::kCSSAtRuleScope,
@@ -89,6 +93,7 @@ class CORE_EXPORT CSSParserImpl {
           CSSAtRuleID::kCSSAtRuleFontFeatureValues,
           CSSAtRuleID::kCSSAtRuleFunction,
           CSSAtRuleID::kCSSAtRuleMixin,
+          CSSAtRuleID::kCSSAtRuleCustomMedia,
       };
 
   // A few rules are only valid top-level. For example, you may not specify
@@ -142,9 +147,12 @@ class CORE_EXPORT CSSParserImpl {
       CSSAtRuleID::kCSSAtRuleMedia,
       CSSAtRuleID::kCSSAtRuleSupports,
       CSSAtRuleID::kCSSAtRuleContainer,
+      CSSAtRuleID::kCSSAtRuleNavigation,
   };
 
   // Rules that are valid when nested within a style rule.
+  // Note that this is not a strict subset of kRegularRules
+  // (in particular, @apply is not valid at top level).
   //
   // https://drafts.csswg.org/css-nesting/#nested-group-rules
   static constexpr AllowedRules kNestedGroupRules =
@@ -241,6 +249,7 @@ class CORE_EXPORT CSSParserImpl {
   bool ConsumeSupportsDeclaration(CSSParserTokenStream&);
   void ConsumeErroneousAtRule(CSSParserTokenStream& stream, CSSAtRuleID id);
   const CSSParserContext* GetContext() const { return context_; }
+  StyleSheetContents* GetStyleSheet() const { return style_sheet_; }
 
   static void ParseDeclarationListForInspector(const String&,
                                                const CSSParserContext*,
@@ -288,7 +297,8 @@ class CORE_EXPORT CSSParserImpl {
                                              CSSParserTokenStream& stream);
   StyleRuleCharset* ConsumeCharsetRule(CSSParserTokenStream&);
   StyleRuleImport* ConsumeImportRule(const AtomicString& prelude_uri,
-                                     CSSParserTokenStream&);
+                                     CSSParserTokenStream&,
+                                     const CSSUrlRequestModifiers&);
   StyleRuleNamespace* ConsumeNamespaceRule(CSSParserTokenStream&);
   StyleRuleMedia* ConsumeMediaRule(CSSParserTokenStream& stream,
                                    CSSNestingType,
@@ -307,10 +317,18 @@ class CORE_EXPORT CSSParserImpl {
       CSSParserTokenStream&);
   StyleRuleFontFeature* ConsumeFontFeatureRule(CSSAtRuleID,
                                                CSSParserTokenStream&);
+  StyleRuleFontFeature* ConsumeFontFeatureRuleBlock(
+      StyleRuleFontFeature::FeatureType feature_type,
+      CSSParserTokenStream& stream);
   StyleRuleKeyframes* ConsumeKeyframesRule(bool webkit_prefixed,
                                            CSSParserTokenStream&);
   StyleRulePage* ConsumePageRule(CSSParserTokenStream&);
   StyleRuleProperty* ConsumePropertyRule(CSSParserTokenStream&);
+  StyleRuleRoute* ConsumeRouteRule(CSSParserTokenStream&);
+  StyleRuleNavigation* ConsumeNavigationRule(
+      CSSParserTokenStream&,
+      CSSNestingType,
+      StyleRule* parent_rule_for_nesting);
   StyleRuleCounterStyle* ConsumeCounterStyleRule(CSSParserTokenStream&);
   StyleRuleBase* ConsumeScopeRule(CSSParserTokenStream&,
                                   CSSNestingType,
@@ -329,7 +347,11 @@ class CORE_EXPORT CSSParserImpl {
   std::optional<HeapVector<StyleRuleFunction::Parameter>>
   ConsumeFunctionParameters(CSSParserTokenStream& stream);
   StyleRuleMixin* ConsumeMixinRule(CSSParserTokenStream& stream);
+  StyleRuleResult* ConsumeResultRule(CSSParserTokenStream& stream);
   StyleRuleApplyMixin* ConsumeApplyMixinRule(CSSParserTokenStream& stream);
+  StyleRuleContentsStatement* ConsumeContentsRule(CSSParserTokenStream& stream);
+  StyleRuleCustomMedia* ConsumeCustomMediaRule(CSSParserTokenStream& stream);
+  StyleRule* ConsumeDeclarationListForMixins(CSSParserTokenStream& stream);
 
   StyleRuleKeyframe* ConsumeKeyframeStyleRule(
       std::unique_ptr<Vector<KeyframeOffset>> key_list,
@@ -436,7 +458,7 @@ class CORE_EXPORT CSSParserImpl {
   // [1] https://drafts.csswg.org/css-nesting-1/#nested-declarations-rule
 
   // Creates a new "nested declarations rule", consisting of the declarations
-  // (parsed_properties_) in the range [start_index, end_index).
+  // (parsed_properties_) in the range from start_index to the end.
   // or (depending on `nesting_type`) a "function declarations rule",
   // which works similarly, but contains function descriptors rather
   // than regular properties.
@@ -448,8 +470,7 @@ class CORE_EXPORT CSSParserImpl {
   // https://drafts.csswg.org/css-mixins-1/#cssfunctiondeclarations
   StyleRuleBase* CreateDeclarationsRule(CSSNestingType nesting_type,
                                         const CSSSelector* selector_list,
-                                        wtf_size_t start_index,
-                                        wtf_size_t end_index);
+                                        wtf_size_t start_index);
 
   // Adds a new "nested declarations rule" to child_rules, consisting of
   // the declarations (parsed_properties_) from start_index until the end.
@@ -480,6 +501,9 @@ class CORE_EXPORT CSSParserImpl {
 
   // True when parsing a StyleRule via ConsumeNestedRule.
   bool in_nested_style_rule_ = false;
+
+  // True when parsing a @mixin.
+  bool in_mixin_ = false;
 
   HeapHashMap<String, Member<const MediaQuerySet>> media_query_cache_;
 };

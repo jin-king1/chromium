@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ui/ozone/demo/surfaceless_gl_renderer.h"
 
@@ -22,6 +18,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
 #include "ui/display/types/display_snapshot.h"
 #include "ui/gfx/frame_data.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -96,7 +93,7 @@ bool SurfacelessGlRenderer::BufferWrapper::Initialize(
   glGenFramebuffersEXT(1, &gl_fb_);
   glGenTextures(1, &gl_tex_);
 
-  gfx::BufferFormat format = display::DisplaySnapshot::PrimaryFormat();
+  auto format = display::DisplaySnapshot::PrimaryFormat();
   pixmap_ = OzonePlatform::GetInstance()
                 ->GetSurfaceFactoryOzone()
                 ->CreateNativePixmap(widget, nullptr, size, format,
@@ -104,11 +101,14 @@ bool SurfacelessGlRenderer::BufferWrapper::Initialize(
 
   glBindFramebufferEXT(GL_FRAMEBUFFER, gl_fb_);
 
+  // The imported pixmap can be externally sampled i.e. does not provide
+  // per-plane textures but provides a unified single texture object.
   pixmap_gl_binding_ =
       OzonePlatform::GetInstance()
           ->GetSurfaceFactoryOzone()
           ->GetCurrentGLOzone()
-          ->ImportNativePixmap(pixmap_, format, gfx::BufferPlane::DEFAULT, size,
+          ->ImportNativePixmap(pixmap_, format,
+                               /*plane_index=*/std::nullopt, size,
                                gfx::ColorSpace(), GL_TEXTURE_2D, gl_tex_);
 
   if (!pixmap_gl_binding_) {
@@ -190,9 +190,8 @@ bool SurfacelessGlRenderer::Initialize() {
 
   if (command_line->HasSwitch("enable-overlay")) {
     int requested_overlay_cnt;
-    base::StringToInt(
-        command_line->GetSwitchValueASCII("enable-overlay").c_str(),
-        &requested_overlay_cnt);
+    base::StringToInt(command_line->GetSwitchValueASCII("enable-overlay"),
+                      &requested_overlay_cnt);
     overlay_cnt_ = std::clamp(requested_overlay_cnt, 1, kMaxLayers);
 
     const gfx::Size overlay_size =
@@ -333,7 +332,6 @@ void SurfacelessGlRenderer::PostRenderFrameTask(
       break;
     case gfx::SwapResult::SWAP_SKIPPED:
     case gfx::SwapResult::SWAP_FAILED:
-    case gfx::SwapResult::SWAP_NON_SIMPLE_OVERLAYS_FAILED:
       LOG(FATAL) << "Failed to swap buffers";
   }
 }

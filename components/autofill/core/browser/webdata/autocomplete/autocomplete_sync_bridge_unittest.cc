@@ -17,6 +17,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/protobuf_matchers.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry.h"
@@ -44,6 +45,7 @@
 using base::ScopedTempDir;
 using base::Time;
 using base::UTF8ToUTF16;
+using base::test::EqualsProto;
 using sync_pb::AutofillSpecifics;
 using sync_pb::DataTypeState;
 using sync_pb::EntityMetadata;
@@ -437,6 +439,21 @@ TEST_F(AutocompleteSyncBridgeTest, GetAllData) {
   VerifyAllData({specifics1, specifics2, specifics3});
 }
 
+// If has_value() returns true, then the specifics are determined to be valid.
+TEST_F(AutocompleteSyncBridgeTest, IsEntityDataValidHasValue) {
+  AutofillSpecifics input = CreateSpecifics(1, {2, 3});
+  EXPECT_TRUE(bridge()->IsEntityDataValid(SpecificsToEntity(input)));
+}
+
+// If has_value() returns false, then the specifics are determined to be old
+// style and invalid.
+TEST_F(AutocompleteSyncBridgeTest, IsEntityDataValidNoValue) {
+  AutofillSpecifics input = CreateSpecifics(1, {2, 3});
+  input.clear_value();
+
+  EXPECT_FALSE(bridge()->IsEntityDataValid(SpecificsToEntity(input)));
+}
+
 TEST_F(AutocompleteSyncBridgeTest, ApplyIncrementalSyncChangesEmpty) {
   // TODO(skym, crbug.com/672619): Ideally would like to verify that the db is
   // not accessed.
@@ -446,7 +463,7 @@ TEST_F(AutocompleteSyncBridgeTest, ApplyIncrementalSyncChangesEmpty) {
 TEST_F(AutocompleteSyncBridgeTest, ApplyIncrementalSyncChangesSimple) {
   AutofillSpecifics specifics1 = CreateSpecifics(1);
   AutofillSpecifics specifics2 = CreateSpecifics(2);
-  ASSERT_NE(specifics1.SerializeAsString(), specifics2.SerializeAsString());
+  ASSERT_THAT(specifics1, Not(EqualsProto(specifics2)));
   ASSERT_NE(GetStorageKey(specifics1), GetStorageKey(specifics2));
 
   EXPECT_CALL(*backend(), CommitChanges());
@@ -514,15 +531,6 @@ TEST_F(AutocompleteSyncBridgeTest, ApplyIncrementalSyncChangesRepeatedTime) {
 TEST_F(AutocompleteSyncBridgeTest, ApplyIncrementalSyncChangesNoTime) {
   ApplyAdds({CreateSpecifics(1, std::vector<int>())});
   VerifyAllData({CreateSpecifics(1, {0})});
-}
-
-// If has_value() returns false, then the specifics are determined to be old
-// style and ignored.
-TEST_F(AutocompleteSyncBridgeTest, ApplyIncrementalSyncChangesNoValue) {
-  AutofillSpecifics input = CreateSpecifics(1, {2, 3});
-  input.clear_value();
-  ApplyAdds({input});
-  VerifyAllData(std::vector<AutofillSpecifics>());
 }
 
 // Should be treated the same as an empty string name. This inconsistency is

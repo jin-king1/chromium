@@ -11,19 +11,21 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "components/password_manager/core/browser/generation/password_generator.h"
 #import "components/password_manager/core/browser/password_form.h"
+#import "components/password_manager/core/browser/password_requirements_service.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/settings_image_detail_text_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/add_password_view_controller_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/credential_details.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/password_details_consumer.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/password_manager_ui_features.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_edit_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_controller_test.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
-#import "ios/chrome/test/app/password_test_util.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
@@ -49,14 +51,13 @@ constexpr char kPassword[] = "test";
 // Whether `showExistingCredential` was called.
 @property(nonatomic) BOOL showExistingCredentialCalled;
 
+@property(nonatomic, copy) NSString* suggestedPassword;
+
+@property(nonatomic, strong) TableViewTextEditItem* passwordCell;
+
 @end
 
 @implementation FakeAddPasswordDelegate
-
-- (void)addPasswordViewController:(AddPasswordViewController*)viewController
-         didEditCredentialDetails:(CredentialDetails*)credential {
-  self.credential = credential;
-}
 
 - (void)addPasswordViewController:(AddPasswordViewController*)viewController
             didAddPasswordDetails:(NSString*)username
@@ -83,6 +84,18 @@ constexpr char kPassword[] = "test";
 
 - (BOOL)isTLDMissing {
   return NO;
+}
+
+- (BOOL)shouldShowSuggestPasswordItem {
+  return YES;
+}
+
+- (void)requestGeneratedPasswordWithCompletion:
+    (void (^)(NSString* password))completion {
+  autofill::PasswordRequirementsSpec defaultSpec;
+  _suggestedPassword =
+      base::SysUTF16ToNSString(autofill::GeneratePassword(defaultSpec));
+  [_passwordCell setTextFieldValue:_suggestedPassword];
 }
 
 @end
@@ -166,7 +179,7 @@ TEST_F(AddPasswordViewControllerTest, TestSectionsInAdd) {
   EXPECT_EQ(5, NumberOfSections());
   EXPECT_EQ(1, NumberOfItemsInSection(0));
   EXPECT_EQ(0, NumberOfItemsInSection(1));
-  EXPECT_EQ(3, NumberOfItemsInSection(2));
+  EXPECT_EQ(4, NumberOfItemsInSection(2));
 
   CheckSectionFooter(
       [NSString stringWithFormat:@"%@\n\n%@",
@@ -194,7 +207,7 @@ TEST_F(AddPasswordViewControllerTest, TestSectionsInAddDuplicated) {
   EXPECT_EQ(6, NumberOfSections());
   EXPECT_EQ(1, NumberOfItemsInSection(0));
   EXPECT_EQ(0, NumberOfItemsInSection(1));
-  EXPECT_EQ(3, NumberOfItemsInSection(2));
+  EXPECT_EQ(4, NumberOfItemsInSection(2));
   EXPECT_EQ(2, NumberOfItemsInSection(3));
 }
 
@@ -240,4 +253,34 @@ TEST_F(AddPasswordViewControllerTest, TestShowDuplicatedCredential) {
 
   // Validate the delegate was asked to show the existing credential.
   EXPECT_TRUE(delegate_.showExistingCredentialCalled);
+}
+
+// Tests for testing suggest strong password.
+TEST_F(AddPasswordViewControllerTest, TestSuggestStrongPassword) {
+  AddPasswordViewController* passwords_controller =
+      static_cast<AddPasswordViewController*>(controller());
+  [passwords_controller loadModel];
+
+  // Get the password cell.
+  NSIndexPath* password_index_path = [NSIndexPath indexPathForRow:1
+                                                        inSection:2];
+  TableViewTextEditItem* password_cell = static_cast<TableViewTextEditItem*>(
+      GetTableViewItem(password_index_path.section, password_index_path.row));
+  EXPECT_TRUE(password_cell);
+
+  delegate_.passwordCell = password_cell;
+  password_cell.textFieldValue = @"";
+  // Verify it's secure text entry initially.
+  EXPECT_TRUE(password_cell.textFieldSecureTextEntry);
+
+  // Simulate tapping the suggest strong password cell.
+  [passwords_controller didTapSuggestStrongPassword:nil];
+
+  // Get the password cell again after suggestion to get the updated value.
+  NSString* suggested_password_value = password_cell.textFieldValue;
+  EXPECT_TRUE(
+      [suggested_password_value isEqualToString:delegate_.suggestedPassword]);
+  // Should not be masked password anymore.
+  EXPECT_FALSE(password_cell.textFieldSecureTextEntry);
+  EXPECT_FALSE([suggested_password_value isEqualToString:kMaskedPassword]);
 }

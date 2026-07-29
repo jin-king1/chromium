@@ -51,7 +51,7 @@ export class OnboardingChooseWipeDevicePage extends
       /**
        * Used to refer to the enum values in HTML file.
        */
-      wipeDeviceOption: {
+      wipeDeviceOptionEnum: {
         type: Object,
         value: WipeDeviceOption,
       },
@@ -62,9 +62,9 @@ export class OnboardingChooseWipeDevicePage extends
     };
   }
 
-  allButtonsDisabled: boolean;
+  declare allButtonsDisabled: boolean;
   shimlessRmaService: ShimlessRmaServiceInterface = getShimlessRmaService();
-  protected selectedWipeDeviceOption: string;
+  declare protected selectedWipeDeviceOption: string;
 
   override ready() {
     super.ready();

@@ -4,18 +4,21 @@
 
 #include "chrome/browser/ash/login/screens/gaia_screen.h"
 
+#include <algorithm>
+
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/public/cpp/reauth_reason.h"
 #include "ash/shell.h"
-#include "base/containers/contains.h"
+#include "base/check_deref.h"
+#include "base/check_is_test.h"
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "chrome/browser/ash/login/demo_mode/demo_setup_controller.h"
+#include "chrome/browser/ash/login/startup_utils.h"
 #include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/ash/policy/enrollment/account_status_check_fetcher.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
@@ -37,7 +40,8 @@ constexpr char kUserActionReloadGaia[] = "reloadGaia";
 constexpr char kUserActionEnterIdentifier[] = "identifierEntered";
 constexpr char kUserActionQuickStartButtonClicked[] = "activateQuickStart";
 
-bool ShouldPrepareForRecovery(const AccountId& account_id) {
+bool ShouldPrepareForRecovery(PrefService& local_state,
+                              const AccountId& account_id) {
   if (!account_id.is_valid()) {
     return false;
   }
@@ -55,10 +59,10 @@ bool ShouldPrepareForRecovery(const AccountId& account_id) {
       static_cast<int>(ReauthReason::kCryptohomeRecovery),
       static_cast<int>(ReauthReason::kOther),
   };
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(&local_state);
   std::optional<int> reauth_reason = known_user.FindReauthReason(account_id);
   return reauth_reason.has_value() &&
-         base::Contains(kPossibleReasons, reauth_reason.value());
+         std::ranges::contains(kPossibleReasons, reauth_reason.value());
 }
 
 bool ShouldUseReauthEndpoint(const AccountId& account_id) {
@@ -83,18 +87,30 @@ std::string GaiaScreen::GetResultString(Result result) {
       return "EnterpriseEnroll";
     case Result::ENTER_QUICK_START:
       return "EnterQuickStart";
+    case Result::ERROR_OOBE_NOT_COMPLETED:
     case Result::QUICK_START_ONGOING:
       return BaseScreen::kNotApplicable;
   }
   // LINT.ThenChange(//tools/metrics/histograms/metadata/oobe/histograms.xml)
 }
 
-GaiaScreen::GaiaScreen(base::WeakPtr<TView> view,
-                       const ScreenExitCallback& exit_callback)
+GaiaScreen::GaiaScreen(
+    PrefService* local_state,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    policy::DeviceManagementService* device_management_service,
+    base::WeakPtr<TView> view,
+    const ScreenExitCallback& exit_callback)
     : BaseScreen(GaiaView::kScreenId, OobeScreenPriority::DEFAULT),
+      local_state_(CHECK_DEREF(local_state)),
+      shared_url_loader_factory_(std::move(shared_url_loader_factory)),
+      device_management_service_(device_management_service),
       auth_factor_editor_(UserDataAuthClient::Get()),
       view_(std::move(view)),
-      exit_callback_(exit_callback) {}
+      exit_callback_(exit_callback) {
+  if (!device_management_service_) {
+    CHECK_IS_TEST();
+  }
+}
 
 GaiaScreen::~GaiaScreen() {
   backlights_forced_off_observation_.Reset();
@@ -106,6 +122,12 @@ bool GaiaScreen::MaybeSkip(WizardContext& context) {
       context.gaia_config.gaia_path !=
           WizardContext::GaiaPath::kQuickStartFallback) {
     exit_callback_.Run(Result::QUICK_START_ONGOING);
+    return true;
+  }
+
+  if (features::IsOobeAutoEnrollmentCheckForcedEnabled() &&
+      !StartupUtils::IsOobeCompleted(local_state_.get())) {
+    exit_callback_.Run(Result::ERROR_OOBE_NOT_COMPLETED);
     return true;
   }
 
@@ -243,7 +265,7 @@ void GaiaScreen::HideImpl() {
   backlights_forced_off_observation_.Reset();
 }
 
-void GaiaScreen::OnUserAction(const base::Value::List& args) {
+void GaiaScreen::OnUserAction(const base::ListValue& args) {
   const std::string& action_id = args[0].GetString();
   if (action_id == kUserActionBack) {
     WizardContext::GaiaPath gaiaPath = context()->gaia_config.gaia_path;
@@ -291,10 +313,13 @@ void GaiaScreen::OnScreenBacklightStateChanged(
 
 void GaiaScreen::HandleIdentifierEntered(const std::string& user_email) {
   if (ShouldFetchEnrollmentNudgePolicy(user_email)) {
+    CHECK(device_management_service_);
     view_->ToggleLoadingUI(true);
     account_status_fetcher_.reset();
     account_status_fetcher_ =
-        std::make_unique<policy::AccountStatusCheckFetcher>(user_email);
+        std::make_unique<policy::AccountStatusCheckFetcher>(
+            shared_url_loader_factory_, device_management_service_.get(),
+            user_email);
     account_status_fetcher_->Fetch(
         base::BindOnce(&GaiaScreen::OnAccountStatusFetched,
                        base::Unretained(this), user_email),
@@ -313,6 +338,19 @@ void GaiaScreen::HandleIdentifierEntered(const std::string& user_email) {
 void GaiaScreen::OnGetAuthFactorsConfiguration(
     std::unique_ptr<UserContext> user_context,
     std::optional<AuthenticationError> error) {
+  if (!view_) {
+    LOG(WARNING) << "The view is nullptr during OnGetAuthFactorsConfiguration";
+    return;
+  }
+
+  if (is_hidden()) {
+    LOG(WARNING) << "The Gaia screen is already hidden";
+    return;
+  } else {
+    CHECK(context());
+  }
+
+  CHECK(user_context);
   bool is_recovery_configured = false;
   bool is_gaia_password_configured = true;
   if (error.has_value()) {
@@ -325,8 +363,10 @@ void GaiaScreen::OnGetAuthFactorsConfiguration(
         config.HasConfiguredFactor(cryptohome::AuthFactorType::kRecovery);
     auto* password_factor =
         config.FindFactorByType(cryptohome::AuthFactorType::kPassword);
-    is_gaia_password_configured =
-        password_factor && auth::IsGaiaPassword(*password_factor);
+    if (password_factor != nullptr) {
+      is_gaia_password_configured =
+          password_factor && auth::IsGaiaPassword(*password_factor);
+    }
   }
 
   // Disallow passwordless login when Gaia password is configured during
@@ -339,12 +379,18 @@ void GaiaScreen::OnGetAuthFactorsConfiguration(
   }
 
   const AccountId& account_id = user_context->GetAccountId();
-  WizardContext::GaiaPath& gaia_path = LoginDisplayHost::default_host()
-                                           ->GetWizardContext()
-                                           ->gaia_config.gaia_path;
-  WizardContext::GaiaScreenMode& screen_mode = LoginDisplayHost::default_host()
-                                                   ->GetWizardContext()
-                                                   ->gaia_config.screen_mode;
+  CHECK(account_id.is_valid());
+
+  LoginDisplayHost* login_display_host = LoginDisplayHost::default_host();
+  CHECK(login_display_host);
+
+  WizardContext* wizard_context = login_display_host->GetWizardContext();
+  CHECK(wizard_context);
+
+  WizardContext::GaiaConfig& gaia_config = wizard_context->gaia_config;
+  WizardContext::GaiaPath& gaia_path = gaia_config.gaia_path;
+  WizardContext::GaiaScreenMode& screen_mode = gaia_config.screen_mode;
+
   if (GaiaScreenHandler::GetGaiaScreenMode(account_id.GetUserEmail()) ==
       WizardContext::GaiaScreenMode::kSamlRedirect) {
     gaia_path = WizardContext::GaiaPath::kSamlRedirect;
@@ -354,7 +400,8 @@ void GaiaScreen::OnGetAuthFactorsConfiguration(
     screen_mode = WizardContext::GaiaScreenMode::kDefault;
   }
 
-  if (ShouldPrepareForRecovery(account_id) && is_recovery_configured) {
+  if (ShouldPrepareForRecovery(local_state_.get(), account_id) &&
+      is_recovery_configured) {
     FetchGaiaReauthToken(account_id);
   } else {
     view_->LoadGaiaAsync(account_id);
@@ -363,6 +410,7 @@ void GaiaScreen::OnGetAuthFactorsConfiguration(
 
 void GaiaScreen::FetchGaiaReauthToken(const AccountId& account) {
   gaia_reauth_token_fetcher_ = std::make_unique<GaiaReauthTokenFetcher>(
+      shared_url_loader_factory_,
       base::BindOnce(&GaiaScreen::OnGaiaReauthTokenFetched,
                      weak_ptr_factory_.GetWeakPtr(), account));
   gaia_reauth_token_fetcher_->Fetch();

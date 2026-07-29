@@ -7,7 +7,7 @@
 #include <memory>
 
 #include "base/android/jni_android.h"
-#include "base/android/jni_array.h"
+#include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
@@ -15,6 +15,7 @@
 #include "base/run_loop.h"
 #include "content/public/browser/client_certificate_delegate.h"
 #include "content/public/test/browser_task_environment.h"
+#include "content/public/browser/javascript_dialog_manager.h"
 #include "net/cert/x509_certificate.h"
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/ssl/ssl_private_key.h"
@@ -40,7 +41,7 @@ namespace {
 // Tests the android_webview contents client bridge.
 class AwContentsClientBridgeTest : public Test {
  public:
-  AwContentsClientBridgeTest() {}
+  AwContentsClientBridgeTest() = default;
 
   // Callback method called when a cert is selected.
   void CertSelected(scoped_refptr<X509Certificate> cert,
@@ -88,8 +89,7 @@ void AwContentsClientBridgeTest::SetUp() {
   env_ = AttachCurrentThread();
   ASSERT_THAT(env_, NotNull());
   jbridge_.Reset(
-      env_,
-      Java_MockAwContentsClientBridge_getAwContentsClientBridge(env_).obj());
+      env_, Java_MockAwContentsClientBridge_getAwContentsClientBridge(env_));
   bridge_ = std::make_unique<AwContentsClientBridge>(env_, jbridge_);
   selected_cert_ = nullptr;
   cert_selected_callbacks_ = 0;
@@ -125,11 +125,9 @@ void AwContentsClientBridgeTest::TestSignatureAlgorithms(
       std::make_unique<TestClientCertificateDelegate>(this));
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(0, cert_selected_callbacks_);
-  ScopedJavaLocalRef<jobjectArray> key_types =
+  std::vector<std::string> key_types =
       Java_MockAwContentsClientBridge_getKeyTypes(env_, jbridge_);
-  std::vector<std::string> vec;
-  base::android::AppendJavaStringArrayToStringVector(env_, key_types, &vec);
-  EXPECT_EQ(expected_names, vec);
+  EXPECT_EQ(expected_names, key_types);
 }
 
 // Verify that ProvideClientCertificateResponse works properly when the client
@@ -142,8 +140,7 @@ TEST_F(AwContentsClientBridgeTest,
       cert_request_info_.get(),
       base::WrapUnique(new TestClientCertificateDelegate(this)));
   bridge_->ProvideClientCertificateResponse(
-      env_, jbridge_,
-      Java_MockAwContentsClientBridge_getRequestId(env_, jbridge_),
+      env_, Java_MockAwContentsClientBridge_getRequestId(env_, jbridge_),
       Java_MockAwContentsClientBridge_createTestCertChain(env_, jbridge_),
       nullptr);
   base::RunLoop().RunUntilIdle();
@@ -162,12 +159,42 @@ TEST_F(AwContentsClientBridgeTest,
       cert_request_info_.get(),
       base::WrapUnique(new TestClientCertificateDelegate(this)));
   int requestId = Java_MockAwContentsClientBridge_getRequestId(env_, jbridge_);
-  bridge_->ProvideClientCertificateResponse(env_, jbridge_, requestId, nullptr,
-                                            nullptr);
+  bridge_->ProvideClientCertificateResponse(env_, requestId, nullptr, nullptr);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(nullptr, selected_cert_.get());
   EXPECT_EQ(nullptr, selected_key_.get());
   EXPECT_EQ(1, cert_selected_callbacks_);
 }
 
+TEST_F(AwContentsClientBridgeTest, PendingJsDialogsCanceledOnDestruction) {
+  bool callback_called = false;
+  bool success_result = true;
+  std::u16string user_input_result;
+
+  auto callback = base::BindOnce(
+      [](bool* callback_called, bool* success_result,
+         std::u16string* user_input_result, bool success,
+         const std::u16string& user_input) {
+        *callback_called = true;
+        *success_result = success;
+        *user_input_result = user_input;
+      },
+      &callback_called, &success_result, &user_input_result);
+
+  bridge_->RunJavaScriptDialog(content::JAVASCRIPT_DIALOG_TYPE_ALERT,
+                               GURL("https://example.com"), std::u16string(),
+                               std::u16string(), std::move(callback));
+
+  // Destroy the bridge. This should trigger the callback with success=false.
+  bridge_.reset();
+
+  EXPECT_TRUE(callback_called)
+      << "The dialog callback should be invoked when the bridge is destroyed.";
+  EXPECT_FALSE(success_result)
+      << "The dialog callback should return false for success when dropped "
+      << "due to bridge destruction.";
+}
+
 }  // namespace android_webview
+
+DEFINE_JNI(MockAwContentsClientBridge)

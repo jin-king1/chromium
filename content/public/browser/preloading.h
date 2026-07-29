@@ -52,13 +52,11 @@ enum class PreloadingType {
   // resources with the no-store cache-control header.
   kNoStatePrefetch = 5,
 
-  // Link-Preview loads a page with prerendering infrastructures in a dedicated
-  // mini tab so that users can take a look at the content before visiting it.
-  // TODO(b:291867362): This is not used by the current implementation,
-  // but might be reused in the future.
-  kLinkPreview = 6,
+  // Like prerendering, it fetches resources in advance; but unlike prerendering
+  // it does not execute JavaScript. It is designed to replace kNoStatePrefetch.
+  kPrerenderUntilScript = 7,
 };
-// LINT.ThenChange()
+// LINT.ThenChange(//tools/metrics/histograms/metadata/preloading/histograms.xml:PreloadingType)
 
 // Defines various triggering mechanisms which triggers different preloading
 // operations mentioned in preloading.h. The integer portion is used for UKM
@@ -141,10 +139,21 @@ inline constexpr PreloadingPredictor kPreloadingHeuristicsMLModel(
     5,
     "PreloadingHeuristicsMLModel");
 
-// Preloading is triggered by a deterministic viewport-based heuristic.
-inline constexpr PreloadingPredictor kViewportHeuristic(6, "ViewportHeuristic");
+// Preloading is triggered by a deterministic viewport-based heuristic for
+// the "moderate" eagerness. Note that this predictor does nothing for the other
+// eagerness like "eager" while the name of this predictor is general for
+// historical reasons.
+inline constexpr PreloadingPredictor kModerateViewportHeuristic(
+    6,
+    "ViewportHeuristic");
+
+// Preloading is triggered by a deterministic viewport-based heuristic for
+// the "eager" eagerness.
+inline constexpr PreloadingPredictor kEagerViewportHeuristic(
+    7,
+    "EagerViewportHeuristic");
 }  // namespace preloading_predictor
-// LINT.ThenChange()
+// LINT.ThenChange(//tools/metrics/histograms/metadata/preloading/histograms.xml:PreloadingPredictor)
 
 // Defines if a preloading operation is eligible for a given preloading
 // trigger.
@@ -241,7 +250,33 @@ enum class PreloadingEligibility {
   // for details.
   // kV8OptimizerDisabled = 21,
 
+  // The initial URL is controlled by a ServiceWorker and then redirected
+  // (https://crbug.com/399819894).
+  kRedirectFromServiceWorker = 22,
+
+  // The initial URL is redirected to a URL controlled by a ServiceWorker
+  // (https://crbug.com/399819894).
+  // This case was previously counted as `kUserHasServiceWorker`.
+  kRedirectToServiceWorker = 23,
+
+  // The url was not eligible to be prefetched because there was a registered
+  // service worker with no fetch handler.
+  // This case was previously counted as `kUserHasServiceWorker`.
+  // Even after the initial ServiceWorker support (https://crbug.com/40947546),
+  // this will be still used for ServiceWorker-ineligible prefetches.
+  kUserHasServiceWorkerNoFetchHandler = 24,
+
+  // The URL is not allowed by connection allowlist.
+  // See https://github.com/WICG/connection-allowlists.
+  kBlockedByConnectionAllowlist = 25,
+
+  // ##########################################################################
+  // The range 50-99 is reserved for corresponding values in `PrefetchStatus`.
   // See corresponding values in PrefetchStatus for documentation.
+  // Note: The values outside this range also can have corresponding values in
+  // `PrefetchStatus`, e.g. `kDataSaverEnabled`.
+  // When adding a new prefetch-related `PreloadingEligibility` value, add it
+  // outside this range, because this range 50-99 is already full.
   kUserHasCookies = 55,
   kUserHasServiceWorker = 56,
   // This is similar to `kHttpsOnly`, but separately defined here to keep
@@ -256,13 +291,15 @@ enum class PreloadingEligibility {
   //  OBSOLETE: kBrowserContextOffTheRecord = 89,
   kSameSiteCrossOriginPrefetchRequiredProxy = 96,
 
+  // ##########################################################################
+  // The range 100-199 is reserved for embedders.
   // This constant is used to define the value beyond which embedders can add
   // more enums.
   kPreloadingEligibilityContentEnd = 100,
 
-  // This is another range reserved for content internal values, namely
-  // `PrerenderBackNavigationEligibility`. Embedders may add more values
-  // beyond this range.
+  // ##########################################################################
+  // The range 200-249 is another range reserved for content internal values,
+  // namely `PrerenderBackNavigationEligibility`.
   kPreloadingEligibilityContentStart2 = 200,
   kPreloadingEligibilityContentEnd2 = 250,
 };

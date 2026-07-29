@@ -8,12 +8,15 @@
 #include <memory>
 
 #include "content/browser/webid/identity_registry.h"
-#include "content/public/browser/identity_request_dialog_controller.h"
+#include "content/public/browser/webid/identity_request_dialog_controller.h"
 #include "content/public/test/content_browser_test_content_browser_client.h"
 
 namespace content {
-
 class DigitalIdentityProvider;
+}  // namespace content
+
+namespace content::webid {
+
 class IdentityRegistryDelegate;
 
 // Implements ContentBrowserClient to allow calls out to the Chrome layer to
@@ -60,6 +63,6 @@ class WebIdTestContentBrowserClient
   std::unique_ptr<DigitalIdentityProvider> test_digital_identity_provider_;
 };
 
-}  // namespace content
+}  // namespace content::webid
 
 #endif  // CONTENT_BROWSER_WEBID_TEST_WEBID_TEST_CONTENT_BROWSER_CLIENT_H_

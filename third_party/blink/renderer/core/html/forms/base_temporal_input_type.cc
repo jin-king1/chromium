@@ -31,10 +31,12 @@
 #include "third_party/blink/renderer/core/html/forms/base_temporal_input_type.h"
 
 #include <limits>
+
 #include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/renderer/core/html/forms/chooser_only_temporal_input_type_view.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/forms/multiple_fields_temporal_input_type_view.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 #include "third_party/blink/renderer/platform/wtf/date_math.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
@@ -82,8 +84,7 @@ void BaseTemporalInputType::SetValueAsDouble(
     double new_value,
     TextFieldEventBehavior event_behavior,
     ExceptionState& exception_state) const {
-  SetValueAsDecimal(Decimal::FromDouble(new_value), event_behavior,
-                    exception_state);
+  SetValueAsDecimal(Decimal::FromDouble(new_value), event_behavior);
 }
 
 bool BaseTemporalInputType::TypeMismatchFor(const String& value) const {
@@ -215,12 +216,12 @@ bool BaseTemporalInputType::MayTriggerVirtualKeyboard() const {
 
 bool BaseTemporalInputType::ShouldHaveSecondField(
     const DateComponents& date) const {
+  static constexpr int kMillisecondsPerMinute =
+      static_cast<int>(base::Minutes(1).InMilliseconds());
   StepRange step_range = CreateStepRange(kAnyIsDefaultStep);
   return date.Second() || date.Millisecond() ||
-         !step_range.Minimum()
-              .Remainder(static_cast<int>(kMsPerMinute))
-              .IsZero() ||
-         !step_range.Step().Remainder(static_cast<int>(kMsPerMinute)).IsZero();
+         !step_range.Minimum().Remainder(kMillisecondsPerMinute).IsZero() ||
+         !step_range.Step().Remainder(kMillisecondsPerMinute).IsZero();
 }
 
 }  // namespace blink

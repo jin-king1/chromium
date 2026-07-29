@@ -5,7 +5,6 @@
 #include "chrome/browser/permissions/permission_blocked_dialog_controller_android.h"
 
 #include "base/android/jni_string.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
@@ -86,6 +85,21 @@ void PermissionBlockedDialogController::DismissDialog() {
   }
 }
 
+void PermissionBlockedDialogController::ShowPageInfo() {
+  if (!web_contents_ || web_contents_->GetNativeView() == nullptr ||
+      web_contents_->GetNativeView()->GetWindowAndroid() == nullptr) {
+    // TODO(crbug.com/458351800): Add a histogram to track how often this
+    // happens.
+    return;
+  }
+
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_PermissionBlockedDialog_showPageInfo(
+      env, web_contents_->GetNativeView()->GetWindowAndroid()->GetJavaObject(),
+      web_contents_->GetJavaWebContents(),
+      static_cast<int>(delegate_->GetContentSettingsType()));
+}
+
 base::android::ScopedJavaGlobalRef<jobject>
 PermissionBlockedDialogController::GetOrCreateJavaObject() {
   if (java_object_) {
@@ -103,3 +117,5 @@ PermissionBlockedDialogController::GetOrCreateJavaObject() {
              env, reinterpret_cast<intptr_t>(this),
              view_android->GetWindowAndroid()->GetJavaObject());
 }
+
+DEFINE_JNI(PermissionBlockedDialog)

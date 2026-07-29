@@ -10,13 +10,12 @@
 #import "ios/chrome/app/application_delegate/url_opener_params.h"
 #import "ios/chrome/app/profile/profile_init_stage.h"
 #import "ios/chrome/app/profile/profile_state.h"
-#import "ios/chrome/browser/main/ui_bundled/browser_view_wrangler.h"
+#import "ios/chrome/app/profile/profile_state_test_utils.h"
 #import "ios/chrome/browser/main/ui_bundled/wrangled_browser.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller_testing.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
-#import "ios/chrome/browser/shared/coordinator/scene/test/stub_browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
@@ -41,10 +40,10 @@ using HandleLaunchOptions = void (^)(id,
 class TabOpenerTest : public PlatformTest {
  protected:
   void TearDown() override {
-    if (scene_controller_) {
-      [scene_controller_ teardownUI];
-      scene_controller_ = nil;
-    }
+    [scene_controller_ teardownUI];
+    scene_controller_ = nil;
+    [scene_state_ shutdown];
+    scene_state_ = nil;
     PlatformTest::TearDown();
   }
 
@@ -80,11 +79,10 @@ class TabOpenerTest : public PlatformTest {
     if (!scene_controller_) {
       profile_ = TestProfileIOS::Builder().Build();
 
-      profile_state_ = OCMClassMock([ProfileState class]);
-      OCMStub([profile_state_ initStage]).andReturn(ProfileInitStage::kFinal);
+      profile_state_ = [[ProfileState alloc] initWithAppState:nil];
+      SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
 
-      scene_state_ = [[FakeSceneState alloc] initWithAppState:nil
-                                                      profile:profile_.get()];
+      scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
       scene_state_.profileState = profile_state_;
 
       SceneController* controller =
@@ -106,7 +104,7 @@ class TabOpenerTest : public PlatformTest {
   web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   ProfileState* profile_state_;
-  SceneState* scene_state_;
+  FakeSceneState* scene_state_;
   SceneController* scene_controller_;
 
   BOOL swizzle_block_executed_;

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromeos/process_proxy/process_proxy.h"
 
 #include <stddef.h>
@@ -17,8 +12,10 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/file_descriptor_posix.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
@@ -166,13 +163,17 @@ void ProcessProxy::Write(const std::string& text,
     return std::move(callback).Run(false);
 
   // Use ThreadPool for write to avoid deadlock on registry TaskRunner.
+  base::ScopedFD dup_fd(HANDLE_EINTR(dup(pt_pair_[PT_MASTER_FD])));
+  if (!dup_fd.is_valid()) {
+    return std::move(callback).Run(false);
+  }
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
       base::BindOnce(
-          [](int fd, const std::string& text) {
-            return base::WriteFileDescriptor(fd, text);
+          [](base::ScopedFD fd, const std::string& text) {
+            return base::WriteFileDescriptor(fd.get(), text);
           },
-          pt_pair_[PT_MASTER_FD], text),
+          std::move(dup_fd), text),
       std::move(callback));
 }
 
@@ -197,13 +198,15 @@ bool ProcessProxy::CreatePseudoTerminalPair(int *pt_pair) {
   ClearFdPair(pt_pair);
 
   // Open Master.
-  pt_pair[PT_MASTER_FD] = HANDLE_EINTR(posix_openpt(O_RDWR | O_NOCTTY));
-  if (pt_pair[PT_MASTER_FD] == -1)
+  UNSAFE_TODO(pt_pair[PT_MASTER_FD]) =
+      HANDLE_EINTR(posix_openpt(O_RDWR | O_NOCTTY));
+  if (UNSAFE_TODO(pt_pair[PT_MASTER_FD]) == -1) {
     return false;
+  }
 
   if (grantpt(pt_pair_[PT_MASTER_FD]) != 0 ||
       unlockpt(pt_pair_[PT_MASTER_FD]) != 0) {
-    CloseFd(&pt_pair[PT_MASTER_FD]);
+    CloseFd(&UNSAFE_TODO(pt_pair[PT_MASTER_FD]));
     return false;
   }
   char* slave_name = NULL;
@@ -275,8 +278,8 @@ bool ProcessProxy::LaunchProcess(const base::CommandLine& cmdline,
 }
 
 void ProcessProxy::CloseFdPair(int* pipe) {
-  CloseFd(&(pipe[PT_MASTER_FD]));
-  CloseFd(&(pipe[PT_SLAVE_FD]));
+  CloseFd(&(UNSAFE_TODO(pipe[PT_MASTER_FD])));
+  CloseFd(&(UNSAFE_TODO(pipe[PT_SLAVE_FD])));
 }
 
 void ProcessProxy::CloseFd(int* fd) {
@@ -288,8 +291,8 @@ void ProcessProxy::CloseFd(int* fd) {
 }
 
 void ProcessProxy::ClearFdPair(int* pipe) {
-  pipe[PT_MASTER_FD] = base::kInvalidFd;
-  pipe[PT_SLAVE_FD] = base::kInvalidFd;
+  UNSAFE_TODO(pipe[PT_MASTER_FD]) = base::kInvalidFd;
+  UNSAFE_TODO(pipe[PT_SLAVE_FD]) = base::kInvalidFd;
 }
 
 const base::Process* ProcessProxy::GetProcessForTesting() {

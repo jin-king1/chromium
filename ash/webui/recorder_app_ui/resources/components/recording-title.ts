@@ -8,18 +8,16 @@ import './cra/cra-icon.js';
 import './cra/cra-icon-button.js';
 import './recording-title-suggestion.js';
 
-import {
-  Snackbar,
-} from 'chrome://resources/cros_components/snackbar/snackbar.js';
+import type {Snackbar} from 'chrome://resources/cros_components/snackbar/snackbar.js';
 import {
   Textfield,
 } from 'chrome://resources/cros_components/textfield/textfield.js';
+import type {PropertyDeclarations} from 'chrome://resources/mwc/lit/index.js';
 import {
   createRef,
   css,
   html,
   nothing,
-  PropertyDeclarations,
   ref,
 } from 'chrome://resources/mwc/lit/index.js';
 
@@ -33,13 +31,13 @@ import {
   ScopedAsyncComputed,
 } from '../core/reactive/lit.js';
 import {computed, signal} from '../core/reactive/signal.js';
-import {RecordingMetadata} from '../core/recording_data_manager.js';
+import type {RecordingMetadata} from '../core/recording_data_manager.js';
 import {settings, SummaryEnableState} from '../core/state/settings.js';
 import {assertExists, assertInstanceof} from '../core/utils/assert.js';
 
-import {CraIconButton} from './cra/cra-icon-button.js';
+import type {CraIconButton} from './cra/cra-icon-button.js';
 import {withTooltip} from './directives/with-tooltip.js';
-import {RecordingTitleSuggestion} from './recording-title-suggestion.js';
+import type {RecordingTitleSuggestion} from './recording-title-suggestion.js';
 
 /**
  * The title of the recording in playback page of Recorder App.
@@ -61,8 +59,15 @@ export class RecordingTitle extends ReactiveLitElement {
       position-anchor: --title-textfield;
       position-area: bottom span-right;
       margin-top: 4.5px;
-      max-width: 402px;
+
+      /* Prevents overflow and excessive resizing beyond content size. */
+      max-width: calc-size(
+        fit-content,
+        /* Excludes page margins, icon-button size, and header padding. */
+        min(size, 100vw - 16px * 2 - 44px - var(--header-padding))
+      );
       min-width: 360px;
+      width: fit-content;
     }
 
     #title {
@@ -311,7 +316,7 @@ export class RecordingTitle extends ReactiveLitElement {
         @focus=${this.startEditTitle}
         @click=${this.startEditTitle}
         ${ref(this.renameContainer)}
-        ${withTooltip(i18n.titleRenameTooltip)}
+        ${withTooltip(i18n.titleEditTooltip)}
       >
         ${this.recordingMetadata?.title ?? ''}
       </div>
@@ -321,7 +326,7 @@ export class RecordingTitle extends ReactiveLitElement {
   override render(): RenderResult {
     return html`
       <cros-snackbar
-        message=${i18n.titleRenameSnackbarMessage}
+        message=${i18n.titleEditSnackbarMessage}
         timeoutMs="4000"
         ${ref(this.snackBar)}
       ></cros-snackbar>

@@ -25,6 +25,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/display/screen.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/image_view.h"
 
 namespace ash {
 
@@ -34,9 +35,9 @@ NotificationCenterTray::NotificationCenterTray(Shelf* shelf)
                          RoundedCornerBehavior::kStartRounded),
       notification_grouping_controller_(
           std::make_unique<NotificationGroupingController>(this)),
-      popup_collection_(std::make_unique<AshMessagePopupCollection>(
-          display::Screen::GetScreen(),
-          shelf)),
+      popup_collection_(
+          std::make_unique<AshMessagePopupCollection>(display::Screen::Get(),
+                                                      shelf)),
       notification_metrics_recorder_(
           std::make_unique<NotificationMetricsRecorder>(this)),
       notification_icons_controller_(
@@ -135,11 +136,9 @@ void NotificationCenterTray::Initialize() {
   // only added by host views.
   notification_icons_controller_->AddNotificationTrayItems(tray_container());
 
-  // Privacy indicator is only enabled when Video Conference is disabled.
-  if (!features::IsVideoConferenceEnabled()) {
-    privacy_indicators_view_ = tray_container()->AddChildView(
-        std::make_unique<PrivacyIndicatorsTrayItemView>(shelf()));
-  }
+  privacy_indicators_view_ = tray_container()->AddChildView(
+      std::make_unique<PrivacyIndicatorsTrayItemView>(shelf()));
+
   for (views::View* tray_item : tray_container()->children()) {
     static_cast<TrayItemView*>(tray_item)->AddObserver(this);
   }

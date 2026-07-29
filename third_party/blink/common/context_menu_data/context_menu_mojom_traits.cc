@@ -9,21 +9,7 @@
 
 namespace mojo {
 
-// static
-bool StructTraits<blink::mojom::FormRendererIdDataView, uint64_t>::Read(
-    blink::mojom::FormRendererIdDataView data,
-    uint64_t* out) {
-  *out = data.id();
-  return true;
-}
 
-// static
-bool StructTraits<blink::mojom::FieldRendererIdDataView, uint64_t>::Read(
-    blink::mojom::FieldRendererIdDataView data,
-    uint64_t* out) {
-  *out = data.id();
-  return true;
-}
 
 // static
 bool StructTraits<blink::mojom::UntrustworthyContextMenuParamsDataView,
@@ -33,7 +19,6 @@ bool StructTraits<blink::mojom::UntrustworthyContextMenuParamsDataView,
   if (!data.ReadMediaType(&out->media_type) ||
       !data.ReadLinkUrl(&out->link_url) ||
       !data.ReadLinkText(&out->link_text) ||
-      !data.ReadImpression(&out->impression) ||
       !data.ReadUnfilteredLinkUrl(&out->unfiltered_link_url) ||
       !data.ReadSrcUrl(&out->src_url) ||
       !data.ReadSelectionText(&out->selection_text) ||
@@ -66,7 +51,9 @@ bool StructTraits<blink::mojom::UntrustworthyContextMenuParamsDataView,
   out->writing_direction_right_to_left = data.writing_direction_right_to_left();
   out->edit_flags = data.edit_flags();
   out->selection_start_offset = data.selection_start_offset();
-  out->opened_from_highlight = data.opened_from_highlight();
+  out->annotation_type = data.annotation_type();
+  out->opened_from_interest_for = data.opened_from_interest_for();
+  out->interest_for_node_id = data.interest_for_node_id();
   out->is_content_editable_for_autofill =
       data.is_content_editable_for_autofill();
   return true;

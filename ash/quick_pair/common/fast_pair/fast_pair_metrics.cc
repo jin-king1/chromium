@@ -7,7 +7,6 @@
 #include "ash/quick_pair/common/device.h"
 #include "ash/quick_pair/common/protocol.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/sparse_histogram.h"
 #include "base/strings/string_number_conversions.h"
 #include "components/cross_device/logging/logging.h"
@@ -922,8 +921,7 @@ GetEngagementFunnelRetroactiveDeviceTypeNotificationTypeMetric(
 
 }  // namespace
 
-namespace ash {
-namespace quick_pair {
+namespace ash::quick_pair {
 
 void RecordFastPairDeviceAndNotificationSpecificEngagementFlow(
     const Device& device,
@@ -1666,5 +1664,4 @@ void RecordStructuredPairFailure(const Device& device, PairFailure failure) {
                     .SetFastPairVersion(version)));
 }
 
-}  // namespace quick_pair
-}  // namespace ash
+}  // namespace ash::quick_pair

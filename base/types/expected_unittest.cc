@@ -4,11 +4,12 @@
 
 #include "base/types/expected.h"
 
+#include <concepts>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/strings/to_string.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/gtest_util.h"
@@ -24,6 +25,19 @@ namespace {
 // proposal.
 static_assert(!std::is_convertible_v<int, expected<int, int>>);
 static_assert(!std::is_convertible_v<long, expected<bool, long>>);
+
+// operator bool is conditionally enabled: only when the value type T is not
+// constructible from bool, to avoid bug-prone usage when the value type is
+// convertible to bool, see e.g. https://abseil.io/tips/141.
+//
+// Enabled cases (T is NOT constructible from bool):
+static_assert(std::constructible_from<bool, expected<std::string, int>>);
+static_assert(std::constructible_from<bool, expected<void, int>>);
+//
+// Disabled cases (T IS constructible from bool):
+static_assert(!std::constructible_from<bool, expected<int, int>>);
+static_assert(!std::constructible_from<bool, expected<bool, int>>);
+static_assert(!std::constructible_from<bool, expected<double, int>>);
 
 template <typename T>
 struct Strong {
@@ -64,6 +78,10 @@ struct WeakMoveOnly {
 enum class Error {
   kFail,
 };
+
+// Additional enabled cases that require locally-defined types:
+static_assert(std::is_constructible_v<bool, expected<Strong<int>, int>>);
+static_assert(std::is_constructible_v<bool, expected<Error, int>>);
 
 enum class CvRef {
   kNone,
@@ -213,20 +231,14 @@ TEST(Expected, CopyConstructor) {
     constexpr expected<int, Error> ex1 = 42;
     constexpr expected<int, Error> ex2 = ex1;
     static_assert(ex2.has_value());
-    // Note: In theory this could be constexpr, but is currently not due to
-    // implementation details of absl::get [1].
-    // TODO: Make this a static_assert once this is fixed in Abseil, or we use
-    // std::variant. Similarly in the tests below.
-    // [1]
-    // https://github.com/abseil/abseil-cpp/blob/50739/absl/types/internal/variant.h#L548
-    EXPECT_EQ(ex2.value(), 42);
+    static_assert(ex2.value() == 42);
   }
 
   {
     constexpr expected<int, Error> ex1 = unexpected(Error::kFail);
     constexpr expected<int, Error> ex2 = ex1;
     static_assert(!ex2.has_value());
-    EXPECT_EQ(ex2.error(), Error::kFail);
+    static_assert(ex2.error() == Error::kFail);
   }
 }
 
@@ -510,21 +522,65 @@ TEST(Expected, EmplaceList) {
 }
 
 TEST(Expected, MemberSwap) {
-  expected<int, int> ex1(42);
-  expected<int, int> ex2 = unexpected(123);
+  {
+    expected<int, int> ex1(42);
+    expected<int, int> ex2 = unexpected(123);
 
-  ex1.swap(ex2);
-  EXPECT_THAT(ex1, test::ErrorIs(123));
-  EXPECT_THAT(ex2, test::ValueIs(42));
+    ex1.swap(ex2);
+    EXPECT_THAT(ex1, test::ErrorIs(123));
+    EXPECT_THAT(ex2, test::ValueIs(42));
+  }
+
+  {
+    expected<int, int> ex1(42);
+    expected<int, int> ex2(123);
+
+    ex1.swap(ex2);
+
+    EXPECT_THAT(ex1, test::ValueIs(123));
+    EXPECT_THAT(ex2, test::ValueIs(42));
+  }
+
+  {
+    expected<int, int> ex1 = unexpected(42);
+    expected<int, int> ex2 = unexpected(123);
+
+    ex1.swap(ex2);
+
+    EXPECT_THAT(ex1, test::ErrorIs(123));
+    EXPECT_THAT(ex2, test::ErrorIs(42));
+  }
 }
 
 TEST(Expected, FreeSwap) {
-  expected<int, int> ex1(42);
-  expected<int, int> ex2 = unexpected(123);
+  {
+    expected<int, int> ex1(42);
+    expected<int, int> ex2 = unexpected(123);
 
-  swap(ex1, ex2);
-  EXPECT_THAT(ex1, test::ErrorIs(123));
-  EXPECT_THAT(ex2, test::ValueIs(42));
+    swap(ex1, ex2);
+    EXPECT_THAT(ex1, test::ErrorIs(123));
+    EXPECT_THAT(ex2, test::ValueIs(42));
+  }
+
+  {
+    expected<int, int> ex1(42);
+    expected<int, int> ex2(123);
+
+    swap(ex1, ex2);
+
+    EXPECT_THAT(ex1, test::ValueIs(123));
+    EXPECT_THAT(ex2, test::ValueIs(42));
+  }
+
+  {
+    expected<int, int> ex1 = unexpected(42);
+    expected<int, int> ex2 = unexpected(123);
+
+    swap(ex1, ex2);
+
+    EXPECT_THAT(ex1, test::ErrorIs(123));
+    EXPECT_THAT(ex2, test::ErrorIs(42));
+  }
 }
 
 TEST(Expected, OperatorArrow) {
@@ -563,6 +619,19 @@ TEST(Expected, HasValue) {
   static_assert(!unex.has_value());
 }
 
+TEST(Expected, OperatorBool) {
+  // Test with a type that is NOT constructible from bool, so operator bool is
+  // enabled.
+
+  constexpr expected<std::string, int> ex;
+  static_assert(ex.has_value());
+  static_assert(static_cast<bool>(ex));
+
+  constexpr expected<std::string, int> unex = unexpected(0);
+  static_assert(!unex.has_value());
+  static_assert(!static_cast<bool>(unex));
+}
+
 TEST(Expected, Value) {
   expected<int, int> ex;
   EXPECT_EQ(ex.value(), 0);
@@ -599,12 +668,12 @@ TEST(Expected, ToString) {
   // `expected` should have a custom string representation that prints the
   // contained value/error.
   const std::string value_str = ToString(expected<int, int>(123456));
-  EXPECT_FALSE(base::Contains(value_str, "-byte object at "));
-  EXPECT_TRUE(base::Contains(value_str, "123456"));
+  EXPECT_FALSE(value_str.contains("-byte object at "));
+  EXPECT_TRUE(value_str.contains("123456"));
   const std::string error_str =
       ToString(expected<int, int>(unexpected(123456)));
-  EXPECT_FALSE(base::Contains(error_str, "-byte object at "));
-  EXPECT_TRUE(base::Contains(error_str, "123456"));
+  EXPECT_FALSE(error_str.contains("-byte object at "));
+  EXPECT_TRUE(error_str.contains("123456"));
 }
 
 TEST(Expected, ValueOr) {
@@ -612,8 +681,9 @@ TEST(Expected, ValueOr) {
     expected<int, int> ex;
     EXPECT_EQ(ex.value_or(123), 0);
 
-    expected<int, int> unex = unexpected(0);
+    expected<int, int> unex = unexpected(1);
     EXPECT_EQ(unex.value_or(123), 123);
+    EXPECT_EQ(unex.value_or({}), 0);
   }
 
   {
@@ -627,8 +697,9 @@ TEST(Expected, ValueOr) {
 
 TEST(Expected, ErrorOr) {
   {
-    expected<int, int> ex;
+    expected<int, int> ex(1);
     EXPECT_EQ(ex.error_or(123), 123);
+    EXPECT_EQ(ex.error_or({}), 0);
 
     expected<int, int> unex = unexpected(0);
     EXPECT_EQ(unex.error_or(123), 0);
@@ -872,6 +943,17 @@ TEST(Expected, EqualityOperators) {
   EXPECT_NE(unexpected(123), ExInt(123));
 }
 
+TEST(Expected, RvalueConversionToViewType) {
+  expected<std::string, int> ex =
+      "初めまして。Chromeです。よろしくお願いします。";
+  expected<std::string_view, int> ex_with_ref = std::move(ex);
+  // `ex` is moved-from, but this should not yoink the storage from underneath
+  // `ex_with_ref`. Conversions like this may happen during function calls with
+  // temporaries.
+  EXPECT_EQ("初めまして。Chromeです。よろしくお願いします。",
+            ex_with_ref.value());
+}
+
 TEST(ExpectedDeathTest, UseAfterMove) {
   using ExpectedInt = expected<int, int>;
   using ExpectedDouble = expected<double, double>;
@@ -1049,21 +1131,65 @@ TEST(ExpectedVoid, Emplace) {
 }
 
 TEST(ExpectedVoid, MemberSwap) {
-  expected<void, int> ex1;
-  expected<void, int> ex2 = unexpected(123);
+  {
+    expected<void, int> ex1;
+    expected<void, int> ex2 = unexpected(123);
 
-  ex1.swap(ex2);
-  EXPECT_THAT(ex1, test::ErrorIs(123));
-  ASSERT_TRUE(ex2.has_value());
+    ex1.swap(ex2);
+    EXPECT_THAT(ex1, test::ErrorIs(123));
+    EXPECT_THAT(ex2, test::HasValue());
+  }
+
+  {
+    expected<void, int> ex1;
+    expected<void, int> ex2;
+
+    ex1.swap(ex2);
+
+    EXPECT_THAT(ex1, test::HasValue());
+    EXPECT_THAT(ex2, test::HasValue());
+  }
+
+  {
+    expected<void, int> ex1 = unexpected(42);
+    expected<void, int> ex2 = unexpected(123);
+
+    ex1.swap(ex2);
+
+    EXPECT_THAT(ex1, test::ErrorIs(123));
+    EXPECT_THAT(ex2, test::ErrorIs(42));
+  }
 }
 
 TEST(ExpectedVoid, FreeSwap) {
-  expected<void, int> ex1;
-  expected<void, int> ex2 = unexpected(123);
+  {
+    expected<void, int> ex1;
+    expected<void, int> ex2 = unexpected(123);
 
-  swap(ex1, ex2);
-  EXPECT_THAT(ex1, test::ErrorIs(123));
-  ASSERT_TRUE(ex2.has_value());
+    swap(ex1, ex2);
+    EXPECT_THAT(ex1, test::ErrorIs(123));
+    EXPECT_THAT(ex2, test::HasValue());
+  }
+
+  {
+    expected<void, int> ex1;
+    expected<void, int> ex2;
+
+    swap(ex1, ex2);
+
+    EXPECT_THAT(ex1, test::HasValue());
+    EXPECT_THAT(ex2, test::HasValue());
+  }
+
+  {
+    expected<void, int> ex1 = unexpected(42);
+    expected<void, int> ex2 = unexpected(123);
+
+    swap(ex1, ex2);
+
+    EXPECT_THAT(ex1, test::ErrorIs(123));
+    EXPECT_THAT(ex2, test::ErrorIs(42));
+  }
 }
 
 TEST(ExpectedVoid, OperatorStar) {
@@ -1078,6 +1204,16 @@ TEST(ExpectedVoid, HasValue) {
 
   constexpr expected<void, int> unex = unexpected(0);
   static_assert(!unex.has_value());
+}
+
+TEST(ExpectedVoid, OperatorBool) {
+  constexpr expected<void, int> ex;
+  static_assert(ex.has_value());
+  static_assert(static_cast<bool>(ex));
+
+  constexpr expected<void, int> unex = unexpected(0);
+  static_assert(!unex.has_value());
+  static_assert(!static_cast<bool>(unex));
 }
 
 TEST(ExpectedVoid, Value) {
@@ -1106,11 +1242,11 @@ TEST(ExpectedVoid, ToString) {
   // `expected<void, ...>` should have a custom string representation (that
   // prints the contained error, if applicable).
   const std::string value_str = ToString(expected<void, int>());
-  EXPECT_FALSE(base::Contains(value_str, "-byte object at "));
+  EXPECT_FALSE(value_str.contains("-byte object at "));
   const std::string error_str =
       ToString(expected<void, int>(unexpected(123456)));
-  EXPECT_FALSE(base::Contains(error_str, "-byte object at "));
-  EXPECT_TRUE(base::Contains(error_str, "123456"));
+  EXPECT_FALSE(error_str.contains("-byte object at "));
+  EXPECT_TRUE(error_str.contains("123456"));
 }
 
 TEST(ExpectedVoid, ErrorOr) {

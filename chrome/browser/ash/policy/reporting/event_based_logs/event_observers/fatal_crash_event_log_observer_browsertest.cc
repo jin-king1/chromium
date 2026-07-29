@@ -7,21 +7,22 @@
 #include <optional>
 #include <set>
 
+#include "base/check_deref.h"
 #include "base/command_line.h"
-#include "base/functional/callback_forward.h"
 #include "base/run_loop.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
+#include "chrome/browser/ash/login/test/scoped_policy_update.h"
 #include "chrome/browser/ash/policy/affiliation/affiliation_mixin.h"
 #include "chrome/browser/ash/policy/affiliation/affiliation_test_helper.h"
+#include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_test_helper.h"
 #include "chrome/browser/ash/policy/reporting/event_based_logs/event_based_log_uploader.h"
 #include "chrome/browser/ash/policy/reporting/metrics_reporting/metric_reporting_manager.h"
-#include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
-#include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/browser_process_platform_part_ash.h"
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/policy/messaging_layer/proto/synced/log_upload_event.pb.h"
 #include "chrome/browser/support_tool/data_collection_module.pb.h"
@@ -67,17 +68,25 @@ class FatalCrashEventLogObserverBrowserTest
     scoped_feature_list_.InitAndEnableFeature(
         reporting::kEnableFatalCrashEventsObserver);
     policy::SetDMTokenForTesting(policy::DMToken::CreateValidToken("token"));
-    // Enable reporting policy to receive notification for crash events.
-    scoped_testing_cros_settings_.device_settings()->SetBoolean(
-        ::ash::kReportDeviceCrashReportInfo, true);
-    scoped_testing_cros_settings_.device_settings()->SetBoolean(
-        ::ash::kSystemLogUploadEnabled, true);
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     policy::AffiliationTestHelper::AppendCommandLineSwitchesForLoginManager(
         command_line);
     policy::DevicePolicyCrosBrowserTest::SetUpCommandLine(command_line);
+  }
+
+  void SetUpInProcessBrowserTestFixture() override {
+    policy::DevicePolicyCrosBrowserTest::SetUpInProcessBrowserTestFixture();
+
+    // Enable reporting policy to receive notification for crash events.
+    auto device_policy_update = device_state_.RequestDevicePolicyUpdate();
+    device_policy_update->policy_payload()
+        ->mutable_device_reporting()
+        ->set_report_crash_report_info(true);
+    device_policy_update->policy_payload()
+        ->mutable_device_log_upload_settings()
+        ->set_system_log_upload_enabled(true);
   }
 
   // healthd emits a crash.
@@ -97,13 +106,12 @@ class FatalCrashEventLogObserverBrowserTest
   }
 
  private:
+  base::test::ScopedFeatureList scoped_feature_list_;
   policy::DevicePolicyCrosTestHelper test_helper_;
   // Set up device affiliation. No need to set up or log in as an affiliated
   // user, because reporting fatal crash events is controlled by a device
   // policy.
   policy::AffiliationMixin affiliation_mixin_{&mixin_host_, &test_helper_};
-  ash::ScopedTestingCrosSettings scoped_testing_cros_settings_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 }  // namespace
@@ -121,12 +129,16 @@ IN_PROC_BROWSER_TEST_F(FatalCrashEventLogObserverBrowserTest,
       .WillOnce(
           DoAll(WithArg<2>([&](std::optional<std::string> upload_id) {
                   // The triggered upload must have an upload ID attached.
-                  EXPECT_TRUE(upload_id.has_value());
+                  ASSERT_TRUE(upload_id.has_value());
                   EXPECT_FALSE(upload_id.value().empty());
                 }),
                 base::test::RunOnceCallback<3>(reporting::Status::StatusOK())));
 
-  policy::FatalCrashEventLogObserver event_observer;
+  policy::FatalCrashEventLogObserver event_observer(
+      g_browser_process->local_state(),
+      CHECK_DEREF(g_browser_process->platform_part()
+                      ->browser_policy_connector_ash()
+                      ->GetDeviceCloudPolicyManager()));
   event_observer.SetLogUploaderForTesting(std::move(mock_uploader));
 
   EmitFakeCrashEvent();

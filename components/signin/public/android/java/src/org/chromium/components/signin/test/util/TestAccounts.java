@@ -13,6 +13,7 @@ import androidx.appcompat.content.res.AppCompatResources;
 import org.chromium.base.ContextUtils;
 import org.chromium.components.signin.base.AccountCapabilities;
 import org.chromium.components.signin.base.AccountInfo;
+import org.chromium.google_apis.gaia.GaiaId;
 
 /**
  * This class provides tests accounts to be used for signing in tests.
@@ -33,7 +34,10 @@ public class TestAccounts {
                     .accountImage(createAvatar())
                     .build();
 
-    /* Use ACCOUNT2 when signing in or adding a default adult user to the device as a secondary user.*/
+    /*
+     * Use ACCOUNT2 when signing in or adding a default adult user to the device as a secondary
+     * user.
+     */
     public static final AccountInfo ACCOUNT2 =
             new AccountInfo.Builder(
                             "test2@gmail.com", FakeAccountManagerFacade.toGaiaId("test2@gmail.com"))
@@ -42,13 +46,9 @@ public class TestAccounts {
                     .accountImage(createAvatar())
                     .build();
 
-    /* Use CHILD_ACCOUNT when you need a supervised user signed in */
+    /* Use CHILD_ACCOUNT when you need a supervised user signed in. */
     public static final AccountInfo CHILD_ACCOUNT =
-            new AccountInfo.Builder(
-                            FakeAccountManagerFacade.generateChildEmail(ACCOUNT1.getEmail()),
-                            FakeAccountManagerFacade.toGaiaId(
-                                    FakeAccountManagerFacade.generateChildEmail(
-                                            ACCOUNT1.getEmail())))
+            new AccountInfo.Builder("child.test@gmail.com", new GaiaId("child-gaia-id"))
                     .fullName("Test1 Full")
                     .givenName("Test1 Given")
                     .accountImage(createAvatar())
@@ -72,9 +72,7 @@ public class TestAccounts {
      * displayable email.
      */
     public static final AccountInfo CHILD_ACCOUNT_NON_DISPLAYABLE_EMAIL =
-            new AccountInfo.Builder(
-                            generateChildEmail("test@gmail.com"),
-                            FakeAccountManagerFacade.toGaiaId("test@gmail.com"))
+            new AccountInfo.Builder("child.test@gmail.com", new GaiaId("child-gaia-id"))
                     .fullName("Test1 Full")
                     .givenName("Test1 Given")
                     .accountImage(createAvatar())
@@ -89,10 +87,8 @@ public class TestAccounts {
      * To be used in test cases where we want to test Signin flows for accounts that don't have a
      * displayable name or email.
      */
-    public static final AccountInfo TEST_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME =
-            new AccountInfo.Builder(
-                            generateChildEmail("test@gmail.com"),
-                            FakeAccountManagerFacade.toGaiaId("test@gmail.com"))
+    public static final AccountInfo CHILD_ACCOUNT_NON_DISPLAYABLE_EMAIL_AND_NO_NAME =
+            new AccountInfo.Builder("child.test@gmail.com", new GaiaId("child-gaia-id"))
                     .accountImage(createAvatar())
                     .accountCapabilities(
                             new AccountCapabilitiesBuilder()
@@ -148,16 +144,11 @@ public class TestAccounts {
                     .givenName("Managed Given")
                     .hostedDomain("example.com")
                     .accountImage(createAvatar())
+                    .accountCapabilities(
+                            new AccountCapabilitiesBuilder()
+                                    .setIsSubjectToEnterpriseFeatures(true)
+                                    .build())
                     .build();
-
-    /**
-     * Creates an email used to identify child accounts in tests. A child-specific prefix will be
-     * appended to the base name so that the created account will be considered as {@link
-     * ChildAccountStatus#REGULAR_CHILD} in {@link FakeAccountManagerFacade}.
-     */
-    private static String generateChildEmail(String baseName) {
-        return FakeAccountManagerFacade.generateChildEmail(baseName);
-    }
 
     /** Returns an avatar image created from test resource. */
     private static Bitmap createAvatar() {

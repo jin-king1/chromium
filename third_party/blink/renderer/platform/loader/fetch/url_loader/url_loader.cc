@@ -12,14 +12,18 @@
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -36,8 +40,8 @@
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/encoded_body_length.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
-#include "services/network/public/mojom/url_response_head.mojom-forward.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/blink/public/common/loader/mime_sniffing_throttle.h"
 #include "third_party/blink/public/common/loader/referrer_utils.h"
 #include "third_party/blink/public/common/loader/url_loader_throttle.h"
@@ -62,6 +66,7 @@
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/url_loader_client.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
+#include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 
 using base::Time;
 using base::TimeTicks;
@@ -119,7 +124,7 @@ class URLLoader::Context : public ResourceRequestClient {
       network::mojom::URLResponseHeadPtr head,
       mojo::ScopedDataPipeConsumerHandle body,
       std::optional<mojo_base::BigBuffer> cached_metadata) override;
-  void OnTransferSizeUpdated(int transfer_size_diff) override;
+  void OnTransferSizeUpdated(base::ByteSize transfer_size_diff) override;
   void OnCompletedRequest(
       const network::URLLoaderCompletionStatus& status) override;
 
@@ -200,8 +205,8 @@ URLLoader::Context::GetMaybeUnfreezableTaskRunner() {
 }
 
 void URLLoader::Context::Cancel() {
-  TRACE_EVENT_WITH_FLOW0("loading", "URLLoader::Context::Cancel", this,
-                         TRACE_EVENT_FLAG_FLOW_IN);
+  TRACE_EVENT("loading", "URLLoader::Context::Cancel",
+              perfetto::TerminatingFlow::FromPointer(this));
   if (request_id_ != -1) {
     // TODO(https://crbug.com/1137682): Change this to use
     // |unfreezable_task_runner_| instead?
@@ -286,8 +291,8 @@ void URLLoader::Context::Start(
     return;
   }
 
-  TRACE_EVENT_WITH_FLOW0("loading", "URLLoader::Context::Start", this,
-                         TRACE_EVENT_FLAG_FLOW_OUT);
+  TRACE_EVENT("loading", "URLLoader::Context::Start",
+              perfetto::Flow::FromPointer(this));
   net::NetworkTrafficAnnotationTag tag =
       FetchUtils::GetTrafficAnnotationTag(*request);
   request_id_ = resource_request_sender_->SendAsync(
@@ -321,9 +326,8 @@ void URLLoader::Context::OnReceivedRedirect(
     return;
   }
 
-  TRACE_EVENT_WITH_FLOW0("loading", "URLLoader::Context::OnReceivedRedirect",
-                         this,
-                         TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
+  TRACE_EVENT("loading", "URLLoader::Context::OnReceivedRedirect",
+              perfetto::Flow::FromPointer(this));
 
   WebURLResponse response = WebURLResponse::Create(
       url_, *head, has_devtools_request_id_, request_id_);
@@ -333,10 +337,10 @@ void URLLoader::Context::OnReceivedRedirect(
   net::HttpRequestHeaders modified_headers;
   if (client_->WillFollowRedirect(
           url_, redirect_info.new_site_for_cookies,
-          WebString::FromUTF8(redirect_info.new_referrer),
+          WebString::FromUtf8(redirect_info.new_referrer),
           ReferrerUtils::NetToMojoReferrerPolicy(
               redirect_info.new_referrer_policy),
-          WebString::FromUTF8(redirect_info.new_method), response,
+          WebString::FromUtf8(redirect_info.new_method), response,
           has_devtools_request_id_, &removed_headers, modified_headers,
           redirect_info.insecure_scheme_was_upgraded)) {
     std::move(follow_redirect_callback)
@@ -352,9 +356,8 @@ void URLLoader::Context::OnReceivedResponse(
     return;
   }
 
-  TRACE_EVENT_WITH_FLOW0("loading", "URLLoader::Context::OnReceivedResponse",
-                         this,
-                         TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
+  TRACE_EVENT("loading", "URLLoader::Context::OnReceivedResponse",
+              perfetto::Flow::FromPointer(this));
 
   // These headers must be stripped off before entering into the renderer
   // (see also https://crbug.com/1019732).
@@ -368,26 +371,29 @@ void URLLoader::Context::OnReceivedResponse(
                               std::move(cached_metadata));
 }
 
-void URLLoader::Context::OnTransferSizeUpdated(int transfer_size_diff) {
-  client_->DidReceiveTransferSizeUpdate(transfer_size_diff);
+void URLLoader::Context::OnTransferSizeUpdated(
+    base::ByteSize transfer_size_diff) {
+  client_->DidReceiveTransferSizeUpdate(
+      base::checked_cast<int>(transfer_size_diff.InBytes()));
 }
 
 void URLLoader::Context::OnCompletedRequest(
     const network::URLLoaderCompletionStatus& status) {
-  int64_t total_transfer_size = status.encoded_data_length;
-  int64_t encoded_body_size = status.encoded_body_length;
+  int64_t total_transfer_size = status.encoded_data_length.InBytes();
+  int64_t encoded_body_size = status.encoded_body_length.InBytes();
 
   if (client_) {
-    TRACE_EVENT_WITH_FLOW0("loading", "URLLoader::Context::OnCompletedRequest",
-                           this, TRACE_EVENT_FLAG_FLOW_IN);
+    TRACE_EVENT("loading", "URLLoader::Context::OnCompletedRequest",
+                perfetto::TerminatingFlow::FromPointer(this));
 
     if (status.error_code != net::OK) {
       client_->DidFail(WebURLError::Create(status, url_),
                        status.completion_time, total_transfer_size,
-                       encoded_body_size, status.decoded_body_length);
+                       encoded_body_size, status.decoded_body_length.InBytes());
     } else {
       client_->DidFinishLoading(status.completion_time, total_transfer_size,
-                                encoded_body_size, status.decoded_body_length);
+                                encoded_body_size,
+                                status.decoded_body_length.InBytes());
     }
   }
 }
@@ -442,6 +448,12 @@ void URLLoader::LoadSynchronously(
   if (!context_) {
     return;
   }
+
+  base::ElapsedTimer timer;
+  absl::Cleanup record_time = [&]() {
+    base::UmaHistogramMediumTimes("Blink.LoadURLSynchronouslyDuration",
+                                  timer.Elapsed());
+  };
 
   TRACE_EVENT0("loading", "URLLoader::loadSynchronously");
   SyncLoadResponse sync_load_response;
@@ -515,8 +527,8 @@ void URLLoader::LoadAsynchronously(
     return;
   }
 
-  TRACE_EVENT_WITH_FLOW0("loading", "URLLoader::loadAsynchronously", this,
-                         TRACE_EVENT_FLAG_FLOW_OUT);
+  TRACE_EVENT("loading", "URLLoader::loadAsynchronously",
+              perfetto::Flow::FromPointer(this));
   DCHECK(!context_->client());
 
   context_->set_client(client);

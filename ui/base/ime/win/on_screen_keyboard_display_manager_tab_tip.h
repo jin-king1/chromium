@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/component_export.h"
-#include "base/gtest_prod_util.h"
 #include "base/observer_list.h"
 #include "ui/base/ime/virtual_keyboard_controller.h"
 #include "ui/gfx/geometry/rect.h"
@@ -54,8 +53,7 @@ class COMPONENT_EXPORT(UI_BASE_IME_WIN)
   bool IsKeyboardAttachedToDevice(HWND hwnd);
 
   std::unique_ptr<OnScreenKeyboardDetector> keyboard_detector_;
-  base::ObserverList<VirtualKeyboardControllerObserver, false>::Unchecked
-      observers_;
+  base::ObserverList<VirtualKeyboardControllerObserver, false> observers_;
   HWND hwnd_;
 
   // The location of TabTip.exe.

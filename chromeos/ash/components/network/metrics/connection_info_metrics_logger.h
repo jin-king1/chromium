@@ -11,6 +11,7 @@
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
+#include "base/scoped_observation.h"
 #include "chromeos/ash/components/network/network_connection_observer.h"
 #include "chromeos/ash/components/network/network_state_handler_observer.h"
 
@@ -96,7 +97,8 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) ConnectionInfoMetricsLogger
   };
 
   // NetworkStateHandlerObserver::
-  void ConnectToNetworkRequested(const std::string& service_path) override;
+  ConnectToNetworkRequestVerdict ConnectToNetworkRequested(
+      const std::string& service_path) override;
   void NetworkListChanged() override;
   void NetworkConnectionStateChanged(const NetworkState* network) override;
   void OnShuttingDown() override;
@@ -118,9 +120,10 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) ConnectionInfoMetricsLogger
       const std::optional<std::string>& shill_error) const;
 
   raw_ptr<NetworkStateHandler> network_state_handler_ = nullptr;
-  raw_ptr<NetworkConnectionHandler> network_connection_handler_ = nullptr;
 
   NetworkStateHandlerScopedObservation network_state_handler_observer_{this};
+  base::ScopedObservation<NetworkConnectionHandler, NetworkConnectionObserver>
+      network_connection_handler_observer_{this};
 
   // Stores connection information for all networks.
   base::flat_map<std::string, ConnectionInfo> guid_to_connection_info_;

@@ -114,12 +114,14 @@ export class SettingsDropdownV2Element extends SettingsDropdownV2ElementBase {
     ];
   }
 
-  options: DropdownOptionList;
+  declare ariaDescription: string;
+  declare ariaLabel: string;
+  declare options: DropdownOptionList;
   override validPrefTypes: chrome.settingsPrivate.PrefType[] = [
     chrome.settingsPrivate.PrefType.NUMBER,
     chrome.settingsPrivate.PrefType.STRING,
   ];
-  value?: DropdownOption['value'];
+  declare value?: DropdownOption['value'];
 
   override focus(): void {
     this.$.select.focus();

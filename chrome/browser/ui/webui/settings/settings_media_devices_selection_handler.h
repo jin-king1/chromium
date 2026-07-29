@@ -10,6 +10,8 @@
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
 #include "components/media_effects/media_device_info.h"
 
+class Profile;
+
 namespace settings {
 
 // Handler for media devices selection in content settings.
@@ -42,12 +44,12 @@ class MediaDevicesSelectionHandler
 
  private:
   // Requests initialization of the devices menu.
-  void InitializeCaptureDevices(const base::Value::List& args);
+  void InitializeCaptureDevices(const base::ListValue& args);
 
   // Sets the preferred audio/video capture device for media. |args| includes
   // the media type (kAuudio/kVideo) and the unique id of the new default device
   // that the user has chosen.
-  void SetPreferredCaptureDevice(const base::Value::List& args);
+  void SetPreferredCaptureDevice(const base::ListValue& args);
 
   // Helpers methods to update the device menus.
   void UpdateDevicesMenu(

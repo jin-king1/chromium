@@ -22,9 +22,11 @@
 #include "ash/wm/splitview/split_view_controller.h"
 #include "ash/wm/work_area_insets.h"
 #include "base/functional/bind.h"
+#include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/aura/client/drag_drop_client.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/compositor/layer.h"
@@ -57,7 +59,7 @@ constexpr char kDockedMagnifierViewportWindowName[] =
 
 // Returns the current cursor location in screen coordinates.
 inline gfx::Point GetCursorScreenPoint() {
-  return display::Screen::GetScreen()->GetCursorScreenPoint();
+  return display::Screen::Get()->GetCursorScreenPoint();
 }
 
 // Updates the workarea of the display associated with |window| such that the
@@ -110,9 +112,18 @@ DockedMagnifierController::~DockedMagnifierController() {
 // static
 void DockedMagnifierController::RegisterProfilePrefs(
     PrefRegistrySimple* registry) {
-  registry->RegisterBooleanPref(prefs::kDockedMagnifierEnabled, false);
+  const uint32_t registration_flags_batch3 =
+      base::FeatureList::IsEnabled(features::kOsSyncAccessibilitySettingsBatch3)
+          ? user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF
+          : 0;
+  registry->RegisterBooleanPref(prefs::kDockedMagnifierEnabled, false,
+                                registration_flags_batch3);
   registry->RegisterDoublePref(prefs::kDockedMagnifierScale,
-                               kDefaultMagnifierScale);
+                               kDefaultMagnifierScale,
+                               registration_flags_batch3);
+  // Screen height divisor is not synced as it may result in undesired behavior
+  // when synced across devices with screens that have different physical
+  // dimensions.
   registry->RegisterDoublePref(prefs::kDockedMagnifierScreenHeightDivisor,
                                kDefaultScreenHeightDivisor);
 }
@@ -192,7 +203,7 @@ void DockedMagnifierController::CenterOnPoint(
   if (!GetEnabled())
     return;
 
-  auto* screen = display::Screen::GetScreen();
+  auto* screen = display::Screen::Get();
   auto* window = screen->GetWindowAtScreenPoint(point_in_screen);
   if (!window) {
     // In tests and sometimes initially on signin screen, |point_in_screen|
@@ -671,8 +682,8 @@ void DockedMagnifierController::CreateMagnifierViewport() {
 
   // 2- Create the separator layer right below the viwport widget, parented to
   //    the layer of the root window.
-  separator_layer_ = std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
-  separator_layer_->SetColor(SK_ColorBLACK);
+  separator_layer_ = std::make_unique<ui::LayerSolidColor>();
+  separator_layer_->SetColor(SkColors::kBlack);
   separator_layer_->SetBounds(
       SeparatorBoundsFromViewportBounds(viewport_bounds));
   aura::Window* const separator_parent =
@@ -681,9 +692,8 @@ void DockedMagnifierController::CreateMagnifierViewport() {
 
   // 3- Create a background layer that will show a dark gray color behind the
   //    magnifier layer. It has the same bounds as the viewport.
-  viewport_background_layer_ =
-      std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
-  viewport_background_layer_->SetColor(SK_ColorDKGRAY);
+  viewport_background_layer_ = std::make_unique<ui::LayerSolidColor>();
+  viewport_background_layer_->SetColor(SkColors::kDkGray);
   viewport_background_layer_->SetBounds(viewport_bounds);
   aura::Window* viewport_window = viewport_widget_->GetNativeView();
   ui::Layer* viewport_layer = viewport_window->layer();
@@ -691,8 +701,7 @@ void DockedMagnifierController::CreateMagnifierViewport() {
 
   // 4- Create the layer in which the contents of the screen will be mirrored
   //    and magnified.
-  viewport_magnifier_layer_ =
-      std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
+  viewport_magnifier_layer_ = std::make_unique<ui::LayerSolidColor>();
   // There are situations that the content rect for the magnified container gets
   // larger than its bounds (e.g. shelf stretches beyond the screen to allow it
   // being dragged up, or contents of mouse pointer might go beyond screen when

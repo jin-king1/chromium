@@ -19,25 +19,26 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
 
 class BookmarksPageHandler;
-
 namespace commerce {
 class ShoppingListContextMenuController;
 class ShoppingServiceHandler;
 class PriceTrackingHandler;
 }  // namespace commerce
 
-namespace ui {
-class ColorChangeHandler;
-}
-
 namespace page_image_service {
 class ImageServiceHandler;
-}
+}  // namespace page_image_service
 
 class BookmarksSidePanelUI;
+
+// Merge nodes Side Panel IDs. Those IDs do not map to any real bookmark ID.
+extern const char kSidePanelRootBookmarkID[];
+extern const char kSidePanelBookmarkBarID[];
+extern const char kSidePanelOtherBookmarksID[];
+extern const char kSidePanelMobileBookmarksID[];
+extern const char kSidePanelManagedBookmarksID[];
 
 class BookmarksSidePanelUIConfig
     : public DefaultTopChromeWebUIConfig<BookmarksSidePanelUI> {
@@ -76,21 +77,20 @@ class BookmarksSidePanelUI
           receiver);
 
   void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          pending_receiver);
-
-  void BindInterface(
       mojo::PendingReceiver<page_image_service::mojom::PageImageServiceHandler>
           pending_image_handler);
 
   commerce::ShoppingListContextMenuController*
   GetShoppingListContextMenuController();
 
-  static constexpr std::string GetWebUIName() { return "BookmarksSidePanel"; }
+  static constexpr std::string_view GetWebUIName() {
+    return "BookmarksSidePanel";
+  }
 
  private:
   // side_panel::mojom::BookmarksPageHandlerFactory:
   void CreateBookmarksPageHandler(
+      mojo::PendingRemote<side_panel::mojom::BookmarksPage> page,
       mojo::PendingReceiver<side_panel::mojom::BookmarksPageHandler> receiver)
       override;
 
@@ -116,7 +116,6 @@ class BookmarksSidePanelUI
   std::unique_ptr<commerce::PriceTrackingHandler> price_tracking_handler_;
   mojo::Receiver<commerce::price_tracking::mojom::PriceTrackingHandlerFactory>
       price_tracking_factory_receiver_{this};
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
   std::unique_ptr<page_image_service::ImageServiceHandler>
       image_service_handler_;
   std::unique_ptr<commerce::ShoppingListContextMenuController>

@@ -15,29 +15,38 @@
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/supervised_user/supervised_user_settings_service_factory.h"
+#include "chrome/browser/supervised_user/family_link_settings_service_factory.h"
 #include "chrome/common/buildflags.h"
 #include "components/content_settings/core/browser/content_settings_pref_provider.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/permissions/features.h"
+#include "components/supervised_user/core/browser/family_link_settings_service.h"
 #include "components/supervised_user/core/browser/supervised_user_content_settings_provider.h"
-#include "components/supervised_user/core/browser/supervised_user_settings_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/webui/webui_allowlist_provider.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "base/trace_event/trace_event.h"
 #include "extensions/browser/api/content_settings/content_settings_custom_extension_provider.h"  // nogncheck
 #include "extensions/browser/api/content_settings/content_settings_service.h"  // nogncheck
-#endif
+#include "extensions/browser/content_settings_extension_install_time_permission_provider.h"
+#include "extensions/browser/extension_registrar_factory.h"
+#include "extensions/browser/extension_registry.h"
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/content_settings/javascript_optimizer_provider_android.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/notifications/notification_channels_provider_android.h"
+#include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
 #include "chrome/browser/webapps/installable/installed_webapp_provider.h"
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/chromeos/extensions/component_extension_content_settings/component_extension_content_settings_allowlist_factory.h"
+#include "chrome/browser/chromeos/extensions/component_extension_content_settings/component_extension_content_settings_provider.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_SESSION_SERVICE)
 #include "chrome/browser/sessions/exit_type_service_factory.h"
@@ -57,14 +66,21 @@ HostContentSettingsMapFactory::HostContentSettingsMapFactory()
               // Ash Internals.
               .WithAshInternals(ProfileSelection::kOwnInstance)
               .Build()) {
-  DependsOn(SupervisedUserSettingsServiceFactory::GetInstance());
+  DependsOn(supervised_user::FamilyLinkSettingsServiceFactory::GetInstance());
 #if BUILDFLAG(IS_ANDROID)
+  DependsOn(
+      safe_browsing::AdvancedProtectionStatusManagerFactory::GetInstance());
   DependsOn(TemplateURLServiceFactory::GetInstance());
 #endif
   DependsOn(OneTimePermissionsTrackerFactory::GetInstance());
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   DependsOn(extensions::ContentSettingsService::GetFactoryInstance());
+  DependsOn(extensions::ExtensionRegistrarFactory::GetInstance());
 #endif
+#if BUILDFLAG(IS_CHROMEOS)
+  DependsOn(extensions::ComponentExtensionContentSettingsAllowlistFactory::
+                GetInstance());
+#endif  // BUILDFLAG(IS_CHROMEOS)
   // Used by way of ShouldRestoreOldSessionCookies().
 #if BUILDFLAG(ENABLE_SESSION_SERVICE)
   DependsOn(ExitTypeServiceFactory::GetInstance());
@@ -116,7 +132,16 @@ scoped_refptr<RefcountedKeyedService>
   settings_map->RegisterProvider(ProviderType::kWebuiAllowlistProvider,
                                  std::move(allowlist_provider));
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(IS_CHROMEOS)
+  auto component_extension_provider =
+      std::make_unique<extensions::ComponentExtensionContentSettingsProvider>(
+          extensions::ComponentExtensionContentSettingsAllowlistFactory::
+              GetForBrowserContext(profile));
+  settings_map->RegisterProvider(ProviderType::kComponentExtensionProvider,
+                                 std::move(component_extension_provider));
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // These must be registered before before the HostSettings are passed over to
   // the IOThread.  Simplest to do this on construction.
   settings_map->RegisterProvider(
@@ -129,15 +154,22 @@ scoped_refptr<RefcountedKeyedService>
           // the case where profile->IsOffTheRecord() is true? And what is the
           // interaction with profile->IsGuestSession()?
           false));
-#endif // BUILDFLAG(ENABLE_EXTENSIONS)
-  supervised_user::SupervisedUserSettingsService* supervised_service =
-      SupervisedUserSettingsServiceFactory::GetForKey(profile->GetProfileKey());
+
+  settings_map->RegisterProvider(
+      ProviderType::kExtensionInstallTimePermissionProvider,
+      std::make_unique<extensions::ExtensionInstallTimePermissionProvider>(
+          context, extensions::ExtensionRegistry::Get(context)));
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
+  supervised_user::FamilyLinkSettingsService* family_link_settings_service =
+      supervised_user::FamilyLinkSettingsServiceFactory::GetForKey(
+          profile->GetProfileKey());
   // This may be null in testing.
-  if (supervised_service) {
+  if (family_link_settings_service) {
     std::unique_ptr<supervised_user::SupervisedUserContentSettingsProvider>
         supervised_provider(
             new supervised_user::SupervisedUserContentSettingsProvider(
-                supervised_service));
+                family_link_settings_service));
     settings_map->RegisterProvider(ProviderType::kSupervisedProvider,
                                    std::move(supervised_provider));
   }
@@ -164,7 +196,7 @@ scoped_refptr<RefcountedKeyedService>
   settings_map->RegisterProvider(
       ProviderType::kJavascriptOptimizerAndroidProvider,
       std::make_unique<JavascriptOptimizerProviderAndroid>(
-          should_record_metrics));
+          profile, should_record_metrics));
 #endif  // defined (OS_ANDROID)
   auto one_time_permission_provider =
       std::make_unique<OneTimePermissionProvider>(

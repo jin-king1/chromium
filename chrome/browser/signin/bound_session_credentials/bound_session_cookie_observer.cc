@@ -49,7 +49,7 @@ void BoundSessionCookieObserver::StartGetCookieList() {
 
   cookie_manager->GetCookieList(
       url_, net::CookieOptions::MakeAllInclusive(),
-      net::CookiePartitionKeyCollection::Todo(),
+      net::CookiePartitionKeyCollection(),
       base::BindOnce(&BoundSessionCookieObserver::OnGetCookieList,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -68,10 +68,11 @@ void BoundSessionCookieObserver::OnGetCookieList(
 void BoundSessionCookieObserver::OnCookieChange(
     const net::CookieChangeInfo& change) {
   DCHECK_EQ(change.cookie.Name(), cookie_name_);
-  DCHECK(change.cookie.IsDomainMatch(url_.host()));
+  DCHECK(change.cookie.IsDomainMatch(url_.GetHost()));
   switch (change.cause) {
     // The cookie was inserted.
     case net::CookieChangeCause::INSERTED:
+    case net::CookieChangeCause::INSERTED_NO_VALUE_CHANGE_OVERWRITE:
       callback_.Run(cookie_name_, change.cookie.ExpiryDate());
       break;
 
@@ -80,6 +81,11 @@ void BoundSessionCookieObserver::OnCookieChange(
     // delete + set operation, so we get an extra notification.
     case net::CookieChangeCause::OVERWRITE:
       // Skip the notification as `change.value` contains the old cookie value.
+      break;
+
+    // This can only happen if the expiration of the cookie was not updated in
+    // the change.
+    case net::CookieChangeCause::INSERTED_NO_CHANGE_OVERWRITE:
       break;
 
     // Cookie removed/expired.

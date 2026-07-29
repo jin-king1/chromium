@@ -4,25 +4,30 @@
 
 package org.chromium.chrome.browser.tasks;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.chrome.browser.incognito.reauth.IncognitoReauthControllerImpl.isFromUpdate;
+
 import android.content.Intent;
 import android.content.res.Resources;
 import android.graphics.Point;
 import android.os.Bundle;
+import android.os.PersistableBundle;
 import android.text.TextUtils;
 import android.text.format.DateUtils;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeInactivityTracker;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.magic_stack.HomeModulesMetricsUtils;
 import org.chromium.chrome.browser.ntp.NewTabPage;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
@@ -31,21 +36,22 @@ import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
 import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.chrome.browser.util.BrowserUiUtils.ModuleTypeOnStartAndNtp;
 import org.chromium.components.cached_flags.IntCachedFeatureParam;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.content_public.browser.LoadUrlParams;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.Locale;
 
 /**
  * This is a utility class for managing features related to returning to Chrome after haven't used
  * Chrome for a while.
  */
+@NullMarked
 public final class ReturnToChromeUtil {
     /**
      * The reasons of failing to show the home surface UI on a NTP.
@@ -118,9 +124,17 @@ public final class ReturnToChromeUtil {
 
     /** Returns whether should show a NTP as the home surface at startup. */
     public static boolean shouldShowNtpAsHomeSurfaceAtStartup(
-            Intent intent, Bundle bundle, ChromeInactivityTracker inactivityTracker) {
+            Intent intent,
+            Bundle bundle,
+            PersistableBundle persistableBundle,
+            ChromeInactivityTracker inactivityTracker) {
+        // If the device is android desktop, don't show a NTP homepage.
+        if (DeviceInfo.isDesktop()) {
+            return false;
+        }
+
         // If the current session is due to recreated, don't show a NTP homepage.
-        if (isFromRecreate(bundle)) {
+        if (isFromRecreate(bundle) || isFromUpdate(persistableBundle)) {
             return false;
         }
 
@@ -153,18 +167,25 @@ public final class ReturnToChromeUtil {
      * @param lastActiveTab The object of the last active Tab. It is non-null after TabModel is
      *     initialized, e.g., in warm startup.
      */
-    public static Tab createNewTabAndShowHomeSurfaceUi(
-            @NonNull TabCreator tabCreator,
-            @NonNull HomeSurfaceTracker homeSurfaceTracker,
+    public static @Nullable Tab createNewTabAndShowHomeSurfaceUi(
+            TabCreator tabCreator,
+            HomeSurfaceTracker homeSurfaceTracker,
             @Nullable TabModelSelector tabModelSelector,
             @Nullable String lastActiveTabUrl,
             @Nullable Tab lastActiveTab) {
         assert lastActiveTab != null || lastActiveTabUrl != null;
 
+        Profile profile =
+                tabModelSelector == null ? null : tabModelSelector.getCurrentModel().getProfile();
+        UrlConstantResolver urlConstantResolver = UrlConstantResolverFactory.getForProfile(profile);
+
         // Creates a new Tab if doesn't find an existing to reuse.
         Tab ntpTab =
                 tabCreator.createNewTab(
-                        new LoadUrlParams(UrlConstants.NTP_URL), TabLaunchType.FROM_STARTUP, null);
+                        new LoadUrlParams(urlConstantResolver.getNtpUrl()),
+                        TabLaunchType.FROM_STARTUP,
+                        null);
+        assumeNonNull(ntpTab);
         boolean isNtpUrl = UrlUtilities.isNtpUrl(ntpTab.getUrl());
         assert isNtpUrl : "The URL of the newly created NTP doesn't match NTP URL!";
         if (!isNtpUrl) {
@@ -179,22 +200,13 @@ public final class ReturnToChromeUtil {
             // find the Tab instance with the given last active Tab's URL. The last active Tab is
             // always the first one to be restored.
             assert lastActiveTabUrl != null;
+            assumeNonNull(tabModelSelector);
             TabModelObserver observer =
                     new TabModelObserver() {
                         @Override
                         public void willAddTab(Tab tab, int type) {
                             boolean isTabExpected =
                                     TextUtils.equals(lastActiveTabUrl, tab.getUrl().getSpec());
-                            assert isTabExpected
-                                    : String.format(
-                                            Locale.ENGLISH,
-                                            "The URL of first Tab restored doesn't match the URL of"
-                                                + " the last active Tab read from the Tab state"
-                                                + " metadata file! Existing Tab count = %d. Last"
-                                                + " active tab = %s. First tab = %s.",
-                                            tabModelSelector.getModel(false).getCount(),
-                                            lastActiveTabUrl,
-                                            tab.getUrl().getSpec());
                             if (!isTabExpected) {
                                 return;
                             }
@@ -249,11 +261,14 @@ public final class ReturnToChromeUtil {
                 homeSurfaceTracker.updateHomeSurfaceAndTrackingTabs(lastActiveTab, null);
             }
         } else {
+            UrlConstantResolver resolver =
+                    UrlConstantResolverFactory.getForProfile(currentTabModel.getProfile());
             int indexOfFirstNtp =
-                    TabModelUtils.getTabIndexByUrl(currentTabModel, UrlConstants.NTP_URL);
+                    TabModelUtils.getTabIndexByUrl(currentTabModel, resolver.getNtpUrl());
             if (indexOfFirstNtp != TabModel.INVALID_TAB_INDEX) {
                 Tab ntpTab = currentTabModel.getTabAt(indexOfFirstNtp);
                 assert indexOfFirstNtp != index;
+                assumeNonNull(ntpTab);
                 boolean isNtpUrl = UrlUtilities.isNtpUrl(ntpTab.getUrl());
                 assert isNtpUrl
                         : "The URL of the first NTP found onResume doesn't match a NTP URL!";
@@ -329,7 +344,7 @@ public final class ReturnToChromeUtil {
         }
 
         // It is possible to get null after casting ntpTab.getNativePage() to NewTabPage, early
-        // exit here. See https://crbug.com/1449900.
+        // exit here. See https://crbug.com/40915054.
         if (!(nativePage instanceof NewTabPage)) {
             recordFailToShowHomeSurfaceReasonUma(FailToShowHomeSurfaceReason.NOT_A_NTP_NATIVE_PAGE);
             if (nativePage.isFrozen()) {
@@ -342,11 +357,7 @@ public final class ReturnToChromeUtil {
         // This cast is now guaranteed to succeed to a non-null value.
         NewTabPage newTabPage = (NewTabPage) nativePage;
         homeSurfaceTracker.updateHomeSurfaceAndTrackingTabs(ntpTab, lastActiveTab);
-        if (HomeModulesMetricsUtils.useMagicStack()) {
-            newTabPage.showMagicStack(lastActiveTab);
-        } else {
-            newTabPage.showHomeSurfaceUi(lastActiveTab);
-        }
+        newTabPage.showHomeSurfaceUiOnNtp(lastActiveTab);
     }
 
     // TODO(crbug.com/40270227): Removes this histogram once we understand the root cause of

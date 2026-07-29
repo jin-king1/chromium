@@ -11,7 +11,9 @@ import android.view.View.OnClickListener;
 
 import androidx.annotation.IntDef;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.tab.state.ShoppingPersistedTabData;
+import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -19,6 +21,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** List of properties used by TabGridSecondaryItem. */
+@NullMarked
 class MessageCardViewProperties {
     /** An enum interface to specify where the message card can be shown. */
     @IntDef({MessageCardScope.REGULAR, MessageCardScope.INCOGNITO, MessageCardScope.BOTH})
@@ -32,7 +35,7 @@ class MessageCardViewProperties {
         int BOTH = 2;
     }
 
-    /** This corresponds to the {@link MessageService.MessageType}. */
+    /** This corresponds to the {@link MessageType}. */
     public static final PropertyModel.ReadableIntPropertyKey MESSAGE_TYPE =
             new PropertyModel.ReadableIntPropertyKey();
 
@@ -48,19 +51,16 @@ class MessageCardViewProperties {
             new PropertyModel.WritableObjectPropertyKey<>();
     public static final PropertyModel.WritableObjectPropertyKey<MessageCardView.IconProvider>
             ICON_PROVIDER = new PropertyModel.WritableObjectPropertyKey<>();
-    public static final PropertyModel.WritableObjectPropertyKey<
-                    MessageCardView.ReviewActionProvider>
+    public static final PropertyModel.WritableObjectPropertyKey<MessageCardView.ActionProvider>
             UI_ACTION_PROVIDER = new PropertyModel.WritableObjectPropertyKey<>();
-    public static final PropertyModel.WritableObjectPropertyKey<
-                    MessageCardView.DismissActionProvider>
+    public static final PropertyModel.WritableObjectPropertyKey<MessageCardView.ActionProvider>
             UI_DISMISS_ACTION_PROVIDER = new PropertyModel.WritableObjectPropertyKey<>();
     public static final PropertyModel.WritableObjectPropertyKey<OnClickListener>
             SECONDARY_ACTION_BUTTON_CLICK_HANDLER = new PropertyModel.WritableObjectPropertyKey<>();
-    public static final PropertyModel.WritableObjectPropertyKey<
-                    MessageCardView.ReviewActionProvider>
+    public static final PropertyModel.WritableObjectPropertyKey<MessageCardView.ActionProvider>
             MESSAGE_SERVICE_ACTION_PROVIDER = new PropertyModel.WritableObjectPropertyKey<>();
     public static final PropertyModel.WritableObjectPropertyKey<
-                    MessageCardView.DismissActionProvider>
+                    MessageCardView.ServiceDismissActionProvider<@MessageType Integer>>
             MESSAGE_SERVICE_DISMISS_ACTION_PROVIDER =
                     new PropertyModel.WritableObjectPropertyKey<>();
     public static final PropertyModel.WritableObjectPropertyKey<String>

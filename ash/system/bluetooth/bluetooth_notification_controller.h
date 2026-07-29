@@ -12,7 +12,7 @@
 
 #include "ash/ash_export.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/bluetooth_device.h"
@@ -67,11 +67,10 @@ class ASH_EXPORT BluetoothNotificationController
   friend class BluetoothNotificationControllerTest;
 
   static const char kBluetoothDeviceDiscoverableToastId[];
-  // Identifier for the pairing notification; the Bluetooth code ensures we
-  // only receive one pairing request at a time, so a single id is sufficient
-  // and means we "update" one notification if not handled rather than
-  // continually bugging the user.
-  static const char kBluetoothDevicePairingNotificationId[];
+  static const char kBluetoothDevicePairingNotificationIdPrefix[];
+
+  // Returns a unique notification ID keyed by remote device address.
+  static std::string GetPairingNotificationId(const std::string& address);
 
   // Internal method called by BluetoothAdapterFactory to provide the adapter
   // object.

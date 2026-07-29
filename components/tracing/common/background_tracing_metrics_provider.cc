@@ -4,48 +4,64 @@
 
 #include "components/tracing/common/background_tracing_metrics_provider.h"
 
+#include "base/barrier_closure.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
-#include "components/metrics/content/gpu_metrics_provider.h"
+#include "build/blink_buildflags.h"
 #include "components/metrics/cpu_metrics_provider.h"
 #include "components/metrics/metrics_features.h"
 #include "components/metrics/metrics_log.h"
-#include "content/public/browser/background_tracing_manager.h"
+#include "services/tracing/public/cpp/background_tracing/background_tracing_manager.h"
 #include "third_party/metrics_proto/chrome_user_metrics_extension.pb.h"
 #include "third_party/metrics_proto/trace_log.pb.h"
 
+#if BUILDFLAG(USE_BLINK)
+#include "components/metrics/content/gpu_metrics_provider.h"
+#endif
+
 namespace tracing {
+namespace {
 
-BackgroundTracingMetricsProvider::BackgroundTracingMetricsProvider() = default;
-BackgroundTracingMetricsProvider::~BackgroundTracingMetricsProvider() = default;
-
-void BackgroundTracingMetricsProvider::Init() {
-  system_profile_providers_.emplace_back(
-      std::make_unique<metrics::CPUMetricsProvider>());
-  system_profile_providers_.emplace_back(
-      std::make_unique<metrics::GPUMetricsProvider>());
-
-  content::BackgroundTracingManager::GetInstance().SetSystemProfileRecorder(
-      base::BindRepeating(
-          [](base::WeakPtr<BackgroundTracingMetricsProvider> self) {
-            if (self) {
-              return self->RecordSystemProfileMetrics();
-            }
-            return std::string();
-          },
-          weak_factory_.GetWeakPtr()));
-
-  DoInit();
+base::RepeatingCallback<void(metrics::SystemProfileProto&)>&
+GetSystemProfileMetricsRecorder() {
+  static base::NoDestructor<
+      base::RepeatingCallback<void(metrics::SystemProfileProto&)>>
+      recorder;
+  return *recorder;
 }
 
-std::string BackgroundTracingMetricsProvider::RecordSystemProfileMetrics() {
-  metrics::SystemProfileProto system_profile_proto;
-  RecordCoreSystemProfileMetrics(&system_profile_proto);
-  // RecordCoreSystemProfileMetrics is overridden by subclasses in
-  // Chrome/WebView to provide core system profile metrics.
+}  // namespace
+
+base::RepeatingCallback<void(metrics::SystemProfileProto&)>
+BackgroundTracingMetricsProvider::GetSystemProfileMetricsRecorder() {
+  return tracing::GetSystemProfileMetricsRecorder();
+}
+
+BackgroundTracingMetricsProvider::BackgroundTracingMetricsProvider() {
+  system_profile_providers_.emplace_back(
+      std::make_unique<metrics::CPUMetricsProvider>());
+#if BUILDFLAG(USE_BLINK)
+  system_profile_providers_.emplace_back(
+      std::make_unique<metrics::GPUMetricsProvider>());
+#endif
+  tracing::GetSystemProfileMetricsRecorder() = base::BindRepeating(
+      [](base::WeakPtr<BackgroundTracingMetricsProvider> self,
+         metrics::SystemProfileProto& system_profile_proto) {
+        if (self) {
+          self->RecordSystemProfileMetrics(system_profile_proto);
+        }
+      },
+      weak_factory_.GetWeakPtr());
+}
+
+BackgroundTracingMetricsProvider::~BackgroundTracingMetricsProvider() = default;
+
+void BackgroundTracingMetricsProvider::RecordSystemProfileMetrics(
+    metrics::SystemProfileProto& system_profile_proto) {
+  RecordCoreSystemProfileMetrics(system_profile_proto);
   // BackgroundTracingManager stores the returned system profile together with
   // the trace in the trace database at trace recording time.
   // ProvideIndependentMetrics() later overrides the system_profile in the log
@@ -55,13 +71,19 @@ std::string BackgroundTracingMetricsProvider::RecordSystemProfileMetrics() {
     provider->ProvideSystemProfileMetricsWithLogCreationTime(
         base::TimeTicks::Now(), &system_profile_proto);
   }
-  std::string serialized_system_profile;
-  system_profile_proto.SerializeToString(&serialized_system_profile);
-  return serialized_system_profile;
+}
+
+void BackgroundTracingMetricsProvider::AsyncInit(
+    base::OnceClosure done_callback) {
+  base::RepeatingClosure barrier = base::BarrierClosure(
+      system_profile_providers_.size(), std::move(done_callback));
+  for (auto& provider : system_profile_providers_) {
+    provider->AsyncInit(barrier);
+  }
 }
 
 bool BackgroundTracingMetricsProvider::HasIndependentMetrics() {
-  return content::BackgroundTracingManager::GetInstance().HasTraceToUpload();
+  return tracing::BackgroundTracingManager::GetInstance().HasTraceToUpload();
 }
 
 void BackgroundTracingMetricsProvider::ProvideIndependentMetrics(
@@ -71,7 +93,7 @@ void BackgroundTracingMetricsProvider::ProvideIndependentMetrics(
     base::HistogramSnapshotManager* snapshot_manager) {
   auto task_runner = base::SequencedTaskRunner::GetCurrentDefault();
   auto provide_embedder_metrics = GetEmbedderMetricsProvider();
-  content::BackgroundTracingManager::GetInstance().GetTraceToUpload(
+  tracing::BackgroundTracingManager::GetInstance().GetTraceToUpload(
       base::BindOnce(
           [](base::OnceCallback<bool(metrics::ChromeUserMetricsExtension*,
                                      std::string&&)> provide_embedder_metrics,
@@ -101,10 +123,11 @@ void BackgroundTracingMetricsProvider::ProvideIndependentMetrics(
                 {base::TaskPriority::USER_VISIBLE,
                  base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
                 std::move(serialize_log_callback)
-                    .Then(std::move(upload_complete))
                     .Then(base::BindPostTask(
                         task_runner,
-                        base::BindOnce(std::move(done_callback), true))));
+                        base::BindOnce(std::move(done_callback)
+                                           .Then(std::move(upload_complete)),
+                                       true))));
           },
           std::move(provide_embedder_metrics),
           std::move(serialize_log_callback), std::move(done_callback),
@@ -124,9 +147,6 @@ BackgroundTracingMetricsProvider::GetEmbedderMetricsProvider() {
 void BackgroundTracingMetricsProvider::SetTrace(
     metrics::TraceLog* log,
     std::string&& compressed_trace) {
-  base::UmaHistogramCounts100000("Tracing.Background.UploadingTraceSizeInKB",
-                                 compressed_trace.size() / 1024);
-
   log->set_raw_data(std::move(compressed_trace));
   log->set_compression_type(metrics::TraceLog::COMPRESSION_TYPE_ZLIB);
 }

@@ -15,6 +15,7 @@
 
 #include "base/containers/id_map.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
@@ -26,7 +27,6 @@
 #include "build/build_config.h"
 #include "content/child/blink_platform_impl.h"
 #include "content/common/content_export.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/shared_remote.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
@@ -61,8 +61,9 @@ namespace content {
 
 class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
  public:
-  explicit RendererBlinkPlatformImpl(
-      blink::scheduler::WebThreadScheduler* main_thread_scheduler);
+  RendererBlinkPlatformImpl(
+      blink::scheduler::WebThreadScheduler* main_thread_scheduler,
+      scoped_refptr<base::SingleThreadTaskRunner> io_thread_task_runner);
 
   RendererBlinkPlatformImpl(const RendererBlinkPlatformImpl&) = delete;
   RendererBlinkPlatformImpl& operator=(const RendererBlinkPlatformImpl&) =
@@ -90,7 +91,10 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
                                   uint64_t salt) override;
   blink::WebString UserAgent() override;
   blink::UserAgentMetadata UserAgentMetadata() override;
-  bool IsRedirectSafe(const GURL& from_url, const GURL& to_url) override;
+  bool IsRedirectSafe(
+      const GURL& from_url,
+      const GURL& to_url,
+      const std::optional<url::Origin>& request_initiator) override;
   void AppendVariationsThrottles(
       const url::Origin& top_origin,
       std::vector<std::unique_ptr<blink::URLLoaderThrottle>>* throttles)
@@ -100,11 +104,13 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
       blink::URLLoaderThrottleProviderType provider_type) override;
   void CreateWebGPUGraphicsContext3DProviderAsync(
       const blink::WebURL& document_url,
+      WebGPUReplyThread reply_thread,
       base::OnceCallback<
           void(std::unique_ptr<blink::WebGraphicsContext3DProvider>)> callback)
       override;
   void OnGpuChannelEstablished(
       const blink::WebURL& document_url,
+      WebGPUReplyThread reply_thread,
       base::OnceCallback<
           void(std::unique_ptr<blink::WebGraphicsContext3DProvider>)> callback,
       scoped_refptr<gpu::GpuChannelHost> gpu_channel_host);
@@ -114,7 +120,7 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
       const blink::WebURL& request_url) const override;
   bool IsolateStartsInBackground() override;
   blink::WebString DefaultLocale() override;
-  void SuddenTerminationChanged(bool enabled) override;
+  void SetSuddenTerminationAllowed(bool allowed) override;
   viz::FrameSinkId GenerateFrameSinkId() override;
   bool IsLockedToSite() const override;
   bool IsThreadedAnimationEnabled() override;
@@ -125,7 +131,10 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   SkCanvas* SynchronousCompositorGetSkCanvasForAndroidWebView() override;
 #endif
   bool IsLcdTextEnabled() override;
-  bool IsElasticOverscrollEnabled() override;
+  bool IsElasticOverscrollEnabledOnRoot() override;
+  bool IsElasticOverscrollSupported() override;
+  bool IsElasticOverscrollEnabledForSubscroll() override;
+
   bool IsScrollAnimatorEnabled() override;
   double AudioHardwareSampleRate() override;
   size_t AudioHardwareBufferSize() override;
@@ -135,18 +144,21 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
       const blink::WebAudioSinkDescriptor& sink_descriptor,
       unsigned number_of_output_channels,
       const blink::WebAudioLatencyHint& latency_hint,
+      std::optional<float> context_sample_rate,
       media::AudioRendererSink::RenderCallback* callback) override;
-  bool DecodeAudioFileData(blink::WebAudioBus* destination_bus,
-                           const char* audio_file_data,
-                           size_t data_size) override;
+  std::unique_ptr<blink::WebAudioBus> DecodeAudioFileData(
+      base::span<const char> audio_file_data) override;
   scoped_refptr<media::AudioCapturerSource> NewAudioCapturerSource(
       blink::WebLocalFrame* web_frame,
       const media::AudioSourceParameters& params) override;
   scoped_refptr<viz::RasterContextProvider> SharedMainThreadContextProvider()
       override;
-  scoped_refptr<cc::RasterContextProviderWrapper>
+  scoped_refptr<viz::RasterContextProvider>
   SharedCompositorWorkerContextProvider(
       cc::RasterDarkModeFilter* dark_mode_filter) override;
+  void SharedMediaContextProvider(
+      base::OnceCallback<void(scoped_refptr<viz::RasterContextProvider>)>
+          callback) override;
   bool IsGpuRemoteDisconnected() override;
   scoped_refptr<gpu::GpuChannelHost> EstablishGpuChannelSync() override;
   void EstablishGpuChannel(EstablishGpuChannelCallback callback) override;
@@ -174,21 +186,29 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   bool AllowsLoopbackInPeerConnection() override;
   blink::WebVideoCaptureImplManager* GetVideoCaptureImplManager() override;
   std::unique_ptr<blink::WebGraphicsContext3DProvider>
-  CreateOffscreenGraphicsContext3DProvider(
-      const blink::Platform::ContextAttributes& attributes,
+  CreateWebGLGraphicsContextProvider(
+      bool prefer_low_power_gpu,
+      bool fail_if_major_performance_caveat,
+      blink::Platform::WebGLContextType context_type,
       const blink::WebURL& document_url,
-      blink::Platform::GraphicsInfo* gl_info) override;
+      blink::Platform::WebGLContextInfo* gl_info) override;
+  std::unique_ptr<blink::WebGraphicsContext3DProvider>
+  CreateRasterGraphicsContextProvider(
+      const blink::WebURL& document_url,
+      blink::Platform::RasterContextType context_type) override;
   std::unique_ptr<blink::WebGraphicsContext3DProvider>
   CreateSharedOffscreenGraphicsContext3DProvider() override;
   std::unique_ptr<blink::WebGraphicsContext3DProvider>
   CreateWebGPUGraphicsContext3DProvider(
-      const blink::WebURL& document_url) override;
-  gpu::GpuMemoryBufferManager* GetGpuMemoryBufferManager() override;
+      const blink::WebURL& document_url,
+      WebGPUReplyThread reply_thread) override;
   blink::WebString ConvertIDNToUnicode(const blink::WebString& host) override;
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   void SetThreadType(base::PlatformThreadId thread_id,
                      base::ThreadType) override;
 #endif
+  std::optional<int> GetWebUIBundledCodeCacheResourceId(
+      const GURL& webui_resource_url) override;
   std::unique_ptr<blink::WebDedicatedWorkerHostFactoryClient>
   CreateDedicatedWorkerHostFactoryClient(
       blink::WebDedicatedWorker*,
@@ -222,6 +242,10 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
       blink::MediaInspectorContext* inspector_context,
       scoped_refptr<base::SingleThreadTaskRunner> owner_task_runner,
       bool is_on_worker) override;
+  void AddCreateRemoteChildrenEvent(
+      const std::optional<base::UnguessableToken>& navigation_metrics_token,
+      const base::TimeTicks& start_time,
+      const base::TimeDelta& elapsed_time) override;
   media::GpuVideoAcceleratorFactories* GetGpuFactories() override;
   scoped_refptr<base::SequencedTaskRunner> MediaThreadTaskRunner() override;
   base::WeakPtr<media::DecoderFactory> GetMediaDecoderFactory() override;
@@ -230,6 +254,7 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   void SetActiveURL(const blink::WebURL& url,
                     const blink::WebString& top_url) override;
   SkBitmap* GetSadPageBitmap() override;
+  blink::mojom::PerformanceTier GetCpuPerformanceTier() override;
   std::unique_ptr<blink::WebV8ValueConverter> CreateWebV8ValueConverter()
       override;
   bool DisallowV8FeatureFlagOverrides() const override;
@@ -245,30 +270,31 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   void SetPrivateMemoryFootprint(
       uint64_t private_memory_footprint_bytes) override;
   bool IsUserLevelMemoryPressureSignalEnabled() override;
-  std::pair<base::TimeDelta, base::TimeDelta>
-  InertAndMinimumIntervalOfUserLevelMemoryPressureSignal() override;
 #endif  // BUILDFLAG(IS_ANDROID)
+  void OnV8HeapLastResortGC() override;
 
   // Tells this platform that the renderer is locked to a site (i.e., a scheme
   // plus eTLD+1, such as https://google.com), or to a more specific origin.
   void SetIsLockedToSite();
 
+  void set_webui_resource_to_code_cache_id_map(
+      const base::flat_map<GURL, int>& resource_map) {
+    webui_resource_to_code_cache_id_map_ = resource_map;
+  }
+
  private:
   bool CheckPreparsedJsCachingEnabled() const;
 
-  void Collect3DContextInformation(blink::Platform::GraphicsInfo* gl_info,
-                                   const gpu::GPUInfo& gpu_info) const;
+  void CollectWebGLContextInfo(blink::Platform::WebGLContextInfo* gl_info,
+                               const gpu::GPUInfo& gpu_info) const;
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
     BUILDFLAG(IS_WIN)
   std::unique_ptr<blink::WebSandboxSupport> sandbox_support_;
 #endif
 
-  // This counter keeps track of the number of times sudden termination is
-  // enabled or disabled. It starts at 0 (enabled) and for every disable
-  // increments by 1, for every enable decrements by 1. When it reaches 0,
-  // we tell the browser to enable fast termination.
-  int sudden_termination_disables_;
+  // Number of active process-level sudden termination disablers.
+  int sudden_termination_disables_ = 0;
 
   // If true, the renderer process is locked to a site.
   bool is_locked_to_site_;
@@ -289,6 +315,10 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   // [std::numeric_limits<int32_t>::max() + 1,
   // std::numeric_limits<uint32_t>::max()] range.
   uint32_t next_frame_sink_id_;
+
+  // Maps WebUI resource URLs to the resource ID of their associated bundled
+  // code cache.
+  base::flat_map<GURL, int> webui_resource_to_code_cache_id_map_;
 
   THREAD_CHECKER(main_thread_checker_);
 

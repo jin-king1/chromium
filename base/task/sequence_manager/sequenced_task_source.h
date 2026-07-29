@@ -8,12 +8,12 @@
 #include <optional>
 
 #include "base/base_export.h"
-#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/pending_task.h"
 #include "base/task/common/lazy_now.h"
 #include "base/task/sequence_manager/task_queue.h"
 #include "base/task/sequence_manager/tasks.h"
+#include "build/build_config.h"
 
 namespace perfetto {
 class EventContext;
@@ -36,6 +36,7 @@ class SequencedTaskSource {
     SelectedTask(Task& task,
                  TaskExecutionTraceLogger task_execution_trace_logger,
                  TaskQueue::QueuePriority priority,
+                 ThreadType thread_type,
                  QueueName task_queue_name);
     ~SelectedTask();
 
@@ -47,6 +48,7 @@ class SequencedTaskSource {
     TaskExecutionTraceLogger task_execution_trace_logger =
         TaskExecutionTraceLogger();
     TaskQueue::QueuePriority priority;
+    ThreadType thread_type;
     QueueName task_queue_name;
   };
 
@@ -86,9 +88,11 @@ class SequencedTaskSource {
     return GetPendingWakeUp(lazy_now, SelectTaskOption::kDefault);
   }
 
-  // Return true if there are any pending tasks in the task source which require
-  // high resolution timing.
-  virtual bool HasPendingHighResolutionTasks() = 0;
+#if BUILDFLAG(IS_WIN)
+  // Return true if the next wakeup requires Windows' high-resolution timer to
+  // be enabled.
+  virtual bool NextWakeUpNeedsHighRes() = 0;
+#endif
 
   // Indicates that work that has mutual exclusion expectations with tasks from
   // this `SequencedTaskSource` will start running.

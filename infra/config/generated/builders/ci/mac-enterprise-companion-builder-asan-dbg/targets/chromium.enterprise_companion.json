@@ -4,18 +4,20 @@
       "chrome/enterprise_companion:all"
     ]
   },
-  "mac12-x64-enterprise-companion-tester-asan-dbg": {
+  "mac14-x64-enterprise-companion-tester-asan-dbg": {
     "gtest_tests": [
       {
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//chrome/enterprise_companion:enterprise_companion_integration_tests",
+        "module_scheme": "gtest",
         "name": "enterprise_companion_integration_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
-            "os": "Mac-12",
-            "pool": "chromium.updater.mac"
+            "os": "Mac-14",
+            "pool": "chromium.tests.updater"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
@@ -26,12 +28,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//chrome/enterprise_companion:enterprise_companion_tests",
+        "module_scheme": "gtest",
         "name": "enterprise_companion_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
-            "os": "Mac-12",
-            "pool": "chromium.updater.mac"
+            "os": "Mac-14",
+            "pool": "chromium.tests.updater"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },

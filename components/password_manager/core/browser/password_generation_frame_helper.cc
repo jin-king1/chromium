@@ -8,6 +8,7 @@
 
 #include "base/containers/flat_map.h"
 #include "base/strings/string_util.h"
+#include "components/autofill/core/browser/autofill_server_prediction.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/proto/password_requirements.pb.h"
@@ -26,6 +27,7 @@
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "url/gurl.h"
 
+using autofill::AutofillServerPrediction;
 using autofill::AutofillType;
 using autofill::CalculateFieldSignatureForField;
 using autofill::CalculateFormSignature;
@@ -69,8 +71,8 @@ void PasswordGenerationFrameHelper::PrefetchSpec(const GURL& origin) {
 
 void PasswordGenerationFrameHelper::ProcessPasswordRequirements(
     const FormData& form,
-    const base::flat_map<autofill::FieldGlobalId,
-                         AutofillType::ServerPrediction>& predictions) {
+    const base::flat_map<autofill::FieldGlobalId, AutofillServerPrediction>&
+        predictions) {
   // IsGenerationEnabled is called multiple times and it is sufficient to
   // log debug data once.
   if (!IsGenerationEnabled(/*log_debug_data=*/false)) {
@@ -117,28 +119,18 @@ bool PasswordGenerationFrameHelper::IsGenerationEnabled(
 
   if (!password_manager_util::IsAbleToSavePasswords(client_)) {
     if (logger) {
-      logger->LogMessage(
-          Logger::STRING_GENERATION_DISABLED_NOT_ABLE_TO_SAVE_PASSWORDS);
+      logger->LogMessage(Logger::STRING_GENERATION_DISABLED_STORE_ERROR);
     }
     return false;
   }
 
-  if (!client_->IsSavingAndFillingEnabled(url)) {
+  if (!client_->IsSavingAndFillingEnabled(driver_->GetLastCommittedOrigin(),
+                                          url)) {
     if (logger) {
-      logger->LogMessage(Logger::STRING_GENERATION_DISABLED_SAVING_DISABLED);
+      logger->LogMessage(Logger::STRING_GENERATION_DISABLED_BY_USER_OR_POLICY);
     }
     return false;
   }
-
-#if BUILDFLAG(IS_ANDROID)
-  if (client_->GetPasswordFeatureManager()->ShouldUpdateGmsCore()) {
-    if (logger) {
-      logger->LogMessage(
-          Logger::STRING_GENERATION_DISABLED_CHROME_DOES_NOT_SYNC_PASSWORDS);
-    }
-    return false;
-  }
-#endif
 
   if (client_->GetPasswordFeatureManager()->IsGenerationEnabled()) {
     return true;
@@ -160,7 +152,8 @@ void PasswordGenerationFrameHelper::AddManualGenerationEnabledField(
   generation_enabled_fields_.insert(field_renderer_id);
 }
 
-std::u16string PasswordGenerationFrameHelper::GeneratePassword(
+autofill::PasswordRequirementsSpec
+PasswordGenerationFrameHelper::GetPasswordRequirementsSpec(
     const GURL& last_committed_url,
     PasswordGenerationType generation_type,
     autofill::FormSignature form_signature,
@@ -198,7 +191,18 @@ std::u16string PasswordGenerationFrameHelper::GeneratePassword(
         field_signature, spec);
   }
 
-  return autofill::GeneratePassword(spec);
+  return spec;
+}
+
+std::u16string PasswordGenerationFrameHelper::GeneratePassword(
+    const GURL& last_committed_url,
+    PasswordGenerationType generation_type,
+    autofill::FormSignature form_signature,
+    autofill::FieldSignature field_signature,
+    uint64_t max_length) {
+  return autofill::GeneratePassword(
+      GetPasswordRequirementsSpec(last_committed_url, generation_type,
+                                  form_signature, field_signature, max_length));
 }
 
 }  // namespace password_manager

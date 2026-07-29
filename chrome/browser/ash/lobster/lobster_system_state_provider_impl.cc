@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/lobster/lobster_system_state_provider_impl.h"
 
 #include <array>
+#include <utility>
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
@@ -13,9 +14,6 @@
 #include "ash/public/cpp/lobster/lobster_system_state.h"
 #include "ash/public/cpp/lobster/lobster_text_input_context.h"
 #include "base/containers/fixed_flat_set.h"
-#include "base/types/cxx23_to_underlying.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/editor_consent_status.h"
 #include "chromeos/ash/components/specialized_features/feature_access_checker.h"
 #include "components/prefs/pref_service.h"
@@ -23,20 +21,21 @@
 #include "net/base/network_change_notifier.h"
 #include "ui/base/ime/ash/extension_ime_util.h"
 #include "ui/base/ime/ash/input_method_manager.h"
+#include "ui/display/screen.h"
+#include "ui/display/tablet_state.h"
 
 namespace {
 
 ash::LobsterConsentStatus GetConsentStatusFromInteger(int status_value) {
   switch (status_value) {
-    case base::to_underlying(
-        chromeos::editor_menu::EditorConsentStatus::kUnset):
-    case base::to_underlying(
+    case std::to_underlying(chromeos::editor_menu::EditorConsentStatus::kUnset):
+    case std::to_underlying(
         chromeos::editor_menu::EditorConsentStatus::kPending):
       return ash::LobsterConsentStatus::kUnset;
-    case base::to_underlying(
+    case std::to_underlying(
         chromeos::editor_menu::EditorConsentStatus::kApproved):
       return ash::LobsterConsentStatus::kApproved;
-    case base::to_underlying(
+    case std::to_underlying(
         chromeos::editor_menu::EditorConsentStatus::kDeclined):
       return ash::LobsterConsentStatus::kDeclined;
     default:
@@ -113,14 +112,16 @@ specialized_features::FeatureAccessConfig CreateFeatureAccessConfig() {
 
 LobsterSystemStateProviderImpl::LobsterSystemStateProviderImpl(
     PrefService* pref,
-    signin::IdentityManager* identity_manager)
+    signin::IdentityManager* identity_manager,
+    specialized_features::FeatureAccessChecker::VariationsServiceCallback
+        variations_service_callback,
+    bool is_in_demo_mode)
     : pref_(pref),
       access_checker_(CreateFeatureAccessConfig(),
                       pref_,
                       identity_manager,
-                      /*variations_service_callback=*/base::BindRepeating([]() {
-                        return g_browser_process->variations_service();
-                      })) {}
+                      std::move(variations_service_callback)),
+      is_in_demo_mode_(is_in_demo_mode) {}
 
 LobsterSystemStateProviderImpl::~LobsterSystemStateProviderImpl() = default;
 
@@ -156,10 +157,11 @@ ash::LobsterSystemState LobsterSystemStateProviderImpl::GetSystemState(
     system_state.failed_checks.Put(ash::LobsterSystemCheck::kInvalidRegion);
   }
 
-  // Performs account capabilities check
-  if (access_checker_failure_set.Has(
-          specialized_features::FeatureAccessFailure::
-              kAccountCapabilitiesCheckFailed)) {
+  // TODO: b:406915099 - Migrate demo mode check into the shared feature checker module.
+  // Performs account capabilities check in non-demo mode only
+  if (!is_in_demo_mode_ && access_checker_failure_set.Has(
+                               specialized_features::FeatureAccessFailure::
+                                   kAccountCapabilitiesCheckFailed)) {
     system_state.status = ash::LobsterStatus::kBlocked;
     system_state.failed_checks.Put(
         ash::LobsterSystemCheck::kInvalidAccountCapabilities);
@@ -179,6 +181,20 @@ ash::LobsterSystemState LobsterSystemStateProviderImpl::GetSystemState(
     system_state.failed_checks.Put(ash::LobsterSystemCheck::kInvalidInputField);
   }
 
+  if (!ash::features::IsLobsterEnabledForManagedUsers() &&
+      pref_->IsManagedPreference(
+          ash::prefs::kLobsterEnterprisePolicySettings)) {
+    system_state.status = ash::LobsterStatus::kBlocked;
+    system_state.failed_checks.Put(
+        ash::LobsterSystemCheck::kForcedDisabledOnManagedUsers);
+  }
+
+  if (pref_->GetInteger(ash::prefs::kLobsterEnterprisePolicySettings) ==
+      std::to_underlying(ash::LobsterEnterprisePolicyValue::kDisabled)) {
+    system_state.status = ash::LobsterStatus::kBlocked;
+    system_state.failed_checks.Put(ash::LobsterSystemCheck::kUnsupportedPolicy);
+  }
+
   if (!pref_->GetBoolean(ash::prefs::kLobsterEnabled)) {
     system_state.status = ash::LobsterStatus::kBlocked;
     system_state.failed_checks.Put(ash::LobsterSystemCheck::kSettingsOff);
@@ -191,8 +207,16 @@ ash::LobsterSystemState LobsterSystemStateProviderImpl::GetSystemState(
         ash::LobsterSystemCheck::kNoInternetConnection);
   }
 
+  // Performs a tablet mode check
+  if (is_in_tablet_mode_) {
+    system_state.status = ash::LobsterStatus::kBlocked;
+    system_state.failed_checks.Put(
+        ash::LobsterSystemCheck::kUnsupportedFormFactor);
+  }
+
   // Performs an IME check
-  if (!IsImeAllowed(GetCurrentImeEngineId())) {
+  if (ash::features::IsLobsterDisabledByInvalidIME() &&
+      !IsImeAllowed(GetCurrentImeEngineId())) {
     system_state.status = ash::LobsterStatus::kBlocked;
     system_state.failed_checks.Put(
         ash::LobsterSystemCheck::kInvalidInputMethod);
@@ -214,4 +238,9 @@ ash::LobsterSystemState LobsterSystemStateProviderImpl::GetSystemState(
   }
 
   return system_state;
+}
+
+void LobsterSystemStateProviderImpl::OnDisplayTabletStateChanged(
+    display::TabletState state) {
+  is_in_tablet_mode_ = (state == display::TabletState::kInTabletMode);
 }

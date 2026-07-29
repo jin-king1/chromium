@@ -19,7 +19,6 @@
 #include "chrome/browser/device_identity/device_oauth2_token_service.h"
 #include "chrome/browser/device_identity/device_oauth2_token_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
@@ -38,6 +37,7 @@ namespace ash {
 using kiosk::test::CurrentProfile;
 using kiosk::test::EnterpriseKioskAppV1;
 using kiosk::test::TheKioskChromeApp;
+using kiosk::test::WaitKioskLaunched;
 
 namespace {
 
@@ -124,7 +124,7 @@ class KioskIdentityTest : public MixinBasedInProcessBrowserTest {
     // Needed so requests reach the fake GAIA server.
     host_resolver()->AddRule("*", "127.0.0.1");
 
-    ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+    ASSERT_TRUE(WaitKioskLaunched());
   }
 
   FakeGaia& fake_gaia() { return CHECK_DEREF(fake_gaia_.fake_gaia()); }

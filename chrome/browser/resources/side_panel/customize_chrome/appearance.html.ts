@@ -10,7 +10,7 @@ export function getHtml(this: AppearanceElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
 <customize-chrome-theme-snapshot id="themeSnapshot"
-    @edit-theme-click="${this.onEditThemeClicked_}"
+    @edit-theme-click="${this.onEditThemeClick_}"
     ?hidden="${!this.showThemeSnapshot_}">
 </customize-chrome-theme-snapshot>
 <customize-chrome-hover-button id="thirdPartyThemeLinkButton"
@@ -32,8 +32,18 @@ export function getHtml(this: AppearanceElement) {
     label="$i18n{yourSearchedImage}"
     label-description="$i18n{currentTheme}">
 </customize-chrome-hover-button>
-<div id="editButtonsContainer" ?hidden="${!this.isSourceTabFirstPartyNtp_}">
-  <cr-button id="editThemeButton" @click="${this.onEditThemeClicked_}"
+${this.showManagedButton_ ? html`
+  <customize-chrome-hover-button id="thirdPartyManageLinkButton"
+      aria-button-label="${this.i18n('newTabPageManagedByA11yLabel',
+                           this.managedByName_)}"
+      class="link-out-button theme-button"
+      @click="${this.onNewTabPageManageByButtonClick_}"
+      label="${this.managedByName_}"
+      label-description="${this.managedByDesc_}">
+  </customize-chrome-hover-button>
+  `: ''}
+<div id="editButtonsContainer" ?hidden="${!this.showEditTheme_}">
+  <cr-button id="editThemeButton" @click="${this.onEditThemeClick_}"
       class="floating-button">
     <div id="editThemeIcon" class="cr-icon edit-theme-icon" slot="prefix-icon"
         ?hidden="${this.wallpaperSearchButtonEnabled_}"></div>
@@ -41,25 +51,14 @@ export function getHtml(this: AppearanceElement) {
   </cr-button>
   ${this.wallpaperSearchButtonEnabled_ ? html`
     <cr-button id="wallpaperSearchButton"
-        @click="${this.onWallpaperSearchClicked_}" class="floating-button">
+        @click="${this.onWallpaperSearchClick_}" class="floating-button">
       <div id="wallpaperSearchIcon" class="cr-icon edit-theme-icon"
           slot="prefix-icon"></div>
       $i18n{wallpaperSearchTileLabel}
     </cr-button>
   ` : ''}
 </div>
-<hr class="sp-hr" ?hidden="${!this.isSourceTabFirstPartyNtp_}">
-${(!this.isSourceTabFirstPartyNtp_ && this.ntpManagedByName_ !== '') ? html`
-  <customize-chrome-hover-button id="thirdPartyManageLinkButton"
-      aria-button-label="${this.i18n('newTabPageManagedByA11yLabel',
-                           this.ntpManagedByName_)}"
-      class="link-out-button theme-button"
-      @click="${this.onNewTabPageManageByButtonClicked_}"
-      label-description="${this.i18n('newTabPageManagedBy',
-                           this.ntpManagedByName_)}">
-  </customize-chrome-hover-button>
-  <hr class="sp-hr">
-  `: ''}
+<hr class="sp-hr" ?hidden="${!this.showEditTheme_}">
 <customize-color-scheme-mode></customize-color-scheme-mode>
 <cr-theme-color-picker id="chromeColors" ?hidden="${!this.showColorPicker_}">
 </cr-theme-color-picker>
@@ -75,10 +74,10 @@ ${(!this.isSourceTabFirstPartyNtp_ && this.ntpManagedByName_ !== '') ? html`
 <customize-chrome-hover-button id="setClassicChromeButton"
     ?hidden="${!this.showClassicChromeButton_}"
     label="$i18n{resetToClassicChrome}"
-    @click="${this.onSetClassicChromeClicked_}">
+    @click="${this.onSetClassicChromeClick_}">
 </customize-chrome-hover-button>
 ${this.showManagedDialog_ ? html`
-  <managed-dialog @close="${this.onManagedDialogClosed_}"
+  <managed-dialog @close="${this.onManagedDialogClose_}"
       title="$i18n{managedColorsTitle}"
       body="$i18n{managedColorsBody}">
   </managed-dialog>

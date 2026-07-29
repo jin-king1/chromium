@@ -6,6 +6,9 @@ package org.chromium.components.autofill;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -16,6 +19,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.app.Activity;
 import android.content.Context;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -35,26 +39,28 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.invocation.InvocationOnMock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.mockito.stubbing.Answer;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features;
 import org.chromium.content.browser.RenderCoordinatesImpl;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.ImmutableWeakReference;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
 
+import java.lang.ref.WeakReference;
 import java.util.Arrays;
 import java.util.Collections;
 
 /** The unit tests for AutofillProvider. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@Features.EnableFeatures({AndroidAutofillFeatures.ANDROID_AUTOFILL_BOTTOM_SHEET_WORKAROUND_NAME})
+@Features.EnableFeatures({
+    AndroidAutofillFeatures.ANDROID_AUTOFILL_IMPROVED_VISIBILITY_DETECTION_NAME
+})
 public class AutofillProviderTest {
     private static final float EXPECTED_DIP_SCALE = 2;
     private static final int SCROLL_X = 15;
@@ -68,10 +74,11 @@ public class AutofillProviderTest {
     private ViewGroup mContainerView;
     private AutofillProvider mAutofillProvider;
     private DisplayAndroid mDisplayAndroid;
-    private long mMockedNativeAndroidAutofillProvider = 1;
+    private final long mMockedNativeAndroidAutofillProvider = 1;
 
     // Virtual Id of the field with focus.
     private int mFocusVirtualId;
+    private Rect mFocusBounds;
 
     // Virtual Id of the field to show the bottom sheet for.
     private int mDialogVirtualId;
@@ -84,9 +91,16 @@ public class AutofillProviderTest {
 
     /** AutofillManagerWrapper which keeps track of the virtual id of the field with focus. */
     private class TestAutofillManagerWrapper extends AutofillManagerWrapper {
+        private boolean mDestroyed;
 
         public TestAutofillManagerWrapper(Context context) {
             super(context);
+        }
+
+        @Override
+        public void destroy() {
+            super.destroy();
+            mDestroyed = true;
         }
 
         @Override
@@ -99,6 +113,7 @@ public class AutofillProviderTest {
         @Override
         public void notifyVirtualViewEntered(View parent, int childId, Rect absBounds) {
             mFocusVirtualId = childId;
+            mFocusBounds = absBounds;
             super.notifyVirtualViewEntered(parent, childId, absBounds);
         }
 
@@ -120,13 +135,14 @@ public class AutofillProviderTest {
         mContainerView = Mockito.mock(ViewGroup.class);
 
         AutofillProvider.setAutofillManagerWrapperFactoryForTesting(
-                (context) -> {
-                    return new TestAutofillManagerWrapper(context);
-                });
+                (context) -> new TestAutofillManagerWrapper(context));
 
         mAutofillProvider =
                 new AutofillProvider(
-                        mContext, mContainerView, mWebContents, "AutofillProviderTest") {
+                        new WeakReference<>(mContext),
+                        mContainerView,
+                        mWebContents,
+                        "AutofillProviderTest") {
                     @Override
                     protected void initializeNativeAutofillProvider(WebContents webContents) {
                         setNativeAutofillProvider(mMockedNativeAndroidAutofillProvider);
@@ -139,23 +155,61 @@ public class AutofillProviderTest {
         when(mContainerView.getScrollX()).thenReturn(SCROLL_X);
         when(mContainerView.getScrollY()).thenReturn(SCROLL_Y);
         doAnswer(
-                        new Answer<Void>() {
-                            @Override
-                            public Void answer(InvocationOnMock invocation) {
-                                Object[] args = invocation.getArguments();
-                                int[] location = (int[]) args[0];
-                                location[0] = LOCATION_X;
-                                location[1] = LOCATION_Y;
-                                return null;
-                            }
+                        invocation -> {
+                            int[] location = invocation.getArgument(0);
+                            location[0] = LOCATION_X;
+                            location[1] = LOCATION_Y;
+                            return null;
                         })
                 .when(mContainerView)
                 .getLocationOnScreen(any());
+
+        doAnswer(
+                        invocation -> {
+                            Rect rect = invocation.getArgument(0);
+                            rect.set(0, 0, 2000, 2000);
+                            return true;
+                        })
+                .when(mContainerView)
+                .getGlobalVisibleRect(any(Rect.class));
+
+        doAnswer(
+                        invocation -> {
+                            int[] location = invocation.getArgument(0);
+                            location[0] = LOCATION_X;
+                            location[1] = LOCATION_Y;
+                            return null;
+                        })
+                .when(mContainerView)
+                .getLocationInWindow(any());
 
         RenderCoordinatesImpl.setInstanceForTesting(mRenderCoordinates);
         when(mRenderCoordinates.getContentOffsetYPixInt()).thenReturn(0);
 
         AutofillProviderJni.setInstanceForTesting(mNativeMock);
+    }
+
+    @Test
+    public void testContextChangeReinitializesAutofillManager() {
+        TestAutofillManagerWrapper oldManager =
+                (TestAutofillManagerWrapper) mAutofillProvider.getAutofillManagerWrapper();
+        assertFalse(oldManager.mDestroyed);
+
+        // Change context
+        Context newContext = Mockito.mock(Activity.class);
+        when(newContext.getSystemService(AutofillManager.class)).thenReturn(mAutofillManager);
+        mAutofillProvider.switchToContext(new WeakReference<>(newContext));
+
+        // The old manager is destroyed and replaced with a new one.
+        assertTrue(oldManager.mDestroyed);
+        assertNotSame(oldManager, mAutofillProvider.getAutofillManagerWrapper());
+    }
+
+    @Test
+    public void testHandlesNullContextGracefully() {
+        mAutofillProvider.switchToContext(new ImmutableWeakReference<>(null));
+
+        assertNotNull(mAutofillProvider.getAutofillManagerWrapper());
     }
 
     @Test
@@ -191,7 +245,8 @@ public class AutofillProviderTest {
     public void testTransformToWindowBounds() {
         RectF source = new RectF(10, 20, 300, 400);
         final int offsetY = 10;
-        Rect result = mAutofillProvider.transformToWindowBoundsWithOffsetY(source, offsetY);
+        when(mRenderCoordinates.getContentOffsetYPixInt()).thenReturn(offsetY);
+        Rect result = mAutofillProvider.transformToWindowBounds(source);
         assertEquals(10 * EXPECTED_DIP_SCALE + LOCATION_X, result.left, 0);
         assertEquals(20 * EXPECTED_DIP_SCALE + LOCATION_Y + offsetY, result.top, 0);
         assertEquals(300 * EXPECTED_DIP_SCALE + LOCATION_X, result.right, 0);
@@ -233,7 +288,7 @@ public class AutofillProviderTest {
         assertFalse(formData.mFields.get(1).isAutofilled());
         assertFalse(formData.mFields.get(2).isAutofilled());
 
-        SparseArray fillResult = new SparseArray(2);
+        SparseArray<AutofillValue> fillResult = new SparseArray<>(2);
         fillResult.put(mFocusVirtualId, AutofillValue.forText("text"));
         mAutofillProvider.autofill(fillResult);
 
@@ -389,19 +444,214 @@ public class AutofillProviderTest {
         verify(mNativeMock, never()).onShowBottomSheetResult(anyLong(), anyBoolean(), anyBoolean());
     }
 
+    @Test
+    public void testCallsNativeToTriggerPasskeys() {
+        mAutofillProvider.triggerPasskeyRequest();
+        verify(mNativeMock).onTriggerPasskeyRequest(eq(mMockedNativeAndroidAutofillProvider));
+    }
+
+    @Test
+    public void testCallsNativeToProvidePasskeyAvailability() {
+        mAutofillProvider.shouldOfferPasskeyEntry();
+        verify(mNativeMock).hasPasskeyRequest(eq(mMockedNativeAndroidAutofillProvider));
+    }
+
+    @Test
+    public void testSuppressNotificationOutsideBounds() {
+        // Mock container view to be at [0, 0, 100, 100] on screen
+        doAnswer(
+                        invocation -> {
+                            Rect rect = invocation.getArgument(0);
+                            rect.set(0, 0, 100, 100);
+                            return true;
+                        })
+                .when(mContainerView)
+                .getGlobalVisibleRect(any(Rect.class));
+
+        doAnswer(
+                        invocation -> {
+                            int[] location = invocation.getArgument(0);
+                            location[0] = 0;
+                            location[1] = 0;
+                            return null;
+                        })
+                .when(mContainerView)
+                .getLocationOnScreen(any());
+
+        doAnswer(
+                        invocation -> {
+                            int[] location = invocation.getArgument(0);
+                            location[0] = 0;
+                            location[1] = 0;
+                            return null;
+                        })
+                .when(mContainerView)
+                .getLocationInWindow(any());
+
+        // Reset mFocusVirtualId and mFocusBounds
+        mFocusVirtualId = 0;
+        mFocusBounds = null;
+
+        FormFieldDataBuilder field1Builder = new FormFieldDataBuilder();
+        FormFieldDataBuilder field2Builder = new FormFieldDataBuilder();
+        FormData formData =
+                new FormData(
+                        123,
+                        /* name= */ null,
+                        /* host= */ null,
+                        Arrays.asList(field1Builder.build(), field2Builder.build()));
+
+        // Case 1: Field is entirely outside (above)
+        // transformed: [0, -60, 100, -20] (if x=0, y=-30, w=50, h=20, dipScale=2, offsetY=0)
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 0,
+                /* x= */ 0,
+                /* y= */ -30,
+                /* width= */ 50,
+                /* height= */ 20,
+                /* hasServerPrediction= */ false);
+
+        // Should be suppressed
+        assertEquals(0, mFocusVirtualId);
+        assertNull(mFocusBounds);
+
+        // Case 2: Field is partially visible (top portion is cut off)
+        // transformed: [0, -10, 100, 30] (if x=0, y=-5, w=50, h=20)
+        // Intersect with [0, 0, 100, 100] -> [0, 0, 100, 30]
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 1,
+                /* x= */ 0,
+                /* y= */ -5,
+                /* width= */ 50,
+                /* height= */ 20,
+                /* hasServerPrediction= */ false);
+
+        // Should NOT be suppressed
+        assertEquals(FormData.toFieldVirtualId(123, (short) 1), mFocusVirtualId);
+        // Bounds should be clamped
+        assertNotNull(mFocusBounds);
+        assertEquals(new Rect(0, 0, 100, 30), mFocusBounds);
+    }
+
+    @Test
+    public void testSuppressNotificationOutsideBoundsWithOffsetY() {
+        // Mock container view to be at [0, 0, 100, 100] on screen.
+        doAnswer(
+                        invocation -> {
+                            Rect rect = invocation.getArgument(0);
+                            rect.set(0, 0, 100, 100);
+                            return true;
+                        })
+                .when(mContainerView)
+                .getGlobalVisibleRect(any(Rect.class));
+
+        doAnswer(
+                        invocation -> {
+                            int[] location = invocation.getArgument(0);
+                            location[0] = 0;
+                            location[1] = 0;
+                            return null;
+                        })
+                .when(mContainerView)
+                .getLocationOnScreen(any());
+
+        doAnswer(
+                        invocation -> {
+                            int[] location = invocation.getArgument(0);
+                            location[0] = 0;
+                            location[1] = 0;
+                            return null;
+                        })
+                .when(mContainerView)
+                .getLocationInWindow(any());
+
+        // Set offset Y to 40. Effective visible bounds top should be 40.
+        when(mRenderCoordinates.getContentOffsetYPixInt()).thenReturn(40);
+
+        // Reset mFocusVirtualId and mFocusBounds.
+        mFocusVirtualId = 0;
+        mFocusBounds = null;
+
+        FormFieldDataBuilder field1Builder = new FormFieldDataBuilder();
+        FormFieldDataBuilder field2Builder = new FormFieldDataBuilder();
+        FormData formData =
+                new FormData(
+                        123,
+                        /* name= */ null,
+                        /* host= */ null,
+                        Arrays.asList(field1Builder.build(), field2Builder.build()));
+
+        // Case 1: Field is in the "offset" area (under toolbar) and should be suppressed.
+        //
+        // Input bounds: [x=0, y=-30, w=50, h=20] -> [left=0, top=-30, right=50, bottom=-10].
+        // 1. Scale by dipScale=2: [left=0, top=-60, right=100, bottom=-20].
+        // 2. Translate by container location [0,0] and add offsetY=40:
+        //    [left=0, top=-20, right=100, bottom=20].
+        //
+        // Effective visible bounds top is 40.
+        // Suppressed because the field's bottom (20) < effective top (40).
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 0,
+                /* x= */ 0,
+                /* y= */ -30,
+                /* width= */ 50,
+                /* height= */ 20,
+                /* hasServerPrediction= */ false);
+
+        assertEquals(0, mFocusVirtualId);
+        assertNull(mFocusBounds);
+
+        // Case 2: Field is partially visible (crosses the effective top boundary).
+        //
+        // Input bounds: [x=0, y=-5, w=50, h=15] -> [left=0, top=-5, right=50, bottom=10].
+        // 1. Scale by dipScale=2: [left=0, top=-10, right=100, bottom=20].
+        // 2. Translate by container location [0,0] and add offsetY=40:
+        //    [left=0, top=30, right=100, bottom=60].
+        //
+        // Intersect [0, 30, 100, 60] with effective visible bounds
+        // [0, 40, 100, 100] -> [0, 40, 100, 60].
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 1,
+                /* x= */ 0,
+                /* y= */ -5,
+                /* width= */ 50,
+                /* height= */ 15,
+                /* hasServerPrediction= */ false);
+
+        // Should NOT be suppressed.
+        assertEquals(FormData.toFieldVirtualId(123, (short) 1), mFocusVirtualId);
+        // Bounds should be clamped.
+        assertNotNull(mFocusBounds);
+        assertEquals(new Rect(0, 40, 100, 60), mFocusBounds);
+    }
+
+    @Test
+    public void testCallsNativeToProvidePasskeyAvailability_nativeNull() {
+        mAutofillProvider.setNativeAutofillProvider(0);
+        assertFalse(mAutofillProvider.shouldOfferPasskeyEntry());
+        verify(mNativeMock, never()).hasPasskeyRequest(anyLong());
+    }
+
     FormData setupPrefillRequest(int sessionId) {
         FormFieldDataBuilder field1Builder = new FormFieldDataBuilder();
         field1Builder.mBounds =
                 new RectF(/* left= */ 10, /* top= */ 20, /* right= */ 300, /* bottom= */ 60);
+        field1Builder.mOrigin = "https://field.host.com/";
+
         FormFieldDataBuilder field2Builder = new FormFieldDataBuilder();
         field2Builder.mBounds =
                 new RectF(/* left= */ 20, /* top= */ 100, /* right= */ 400, /* bottom= */ 200);
+        field2Builder.mOrigin = "https://field2.host.com/";
 
         FormData formData =
                 new FormData(
                         sessionId,
                         /* name= */ null,
-                        /* host= */ null,
+                        /* host= */ "https://host.com/",
                         Arrays.asList(field1Builder.build(), field2Builder.build()));
         mAutofillProvider.sendPrefillRequest(formData);
 

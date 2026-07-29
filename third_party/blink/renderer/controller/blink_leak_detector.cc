@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/controller/blink_leak_detector.h"
 
 #include "base/command_line.h"
+#include "base/dcheck_is_on.h"
 #include "base/task/single_thread_task_runner.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "third_party/blink/public/common/switches.h"
@@ -56,7 +57,7 @@ void BlinkLeakDetector::PerformLeakDetection(
   Thread::MainThread()
       ->Scheduler()
       ->ToMainThreadScheduler()
-      ->ForEachMainThreadIsolate(WTF::BindRepeating([](v8::Isolate* isolate) {
+      ->ForEachMainThreadIsolate([](v8::Isolate* isolate) {
         v8::HandleScope handle_scope(isolate);
 
         // Instruct V8 to drop its non-essential internal caches. In contrast to
@@ -76,14 +77,15 @@ void BlinkLeakDetector::PerformLeakDetection(
         // FIXME: HTML5 Notification should be closed because notification
         // affects the result of number of DOM objects.
         V8PerIsolateData::From(isolate)->ClearScriptRegexpContext();
-      }));
+      });
 
   // Clear lazily loaded style sheets.
   CSSDefaultStyleSheets::Instance().PrepareForLeakDetection();
 
   // Stop keepalive loaders that may persist after page navigation.
-  for (auto resource_fetcher : ResourceFetcher::MainThreadFetchers())
+  for (auto& resource_fetcher : ResourceFetcher::MainThreadFetchers()) {
     resource_fetcher->PrepareForLeakDetection();
+  }
 
   Page::PrepareForLeakDetection();
 
@@ -172,7 +174,7 @@ void BlinkLeakDetector::ReportResult() {
   result->number_of_live_resource_fetchers =
       InstanceCounters::CounterValue(InstanceCounters::kResourceFetcherCounter);
 
-#ifndef NDEBUG
+#if DCHECK_IS_ON()
   ShowLiveDocumentInstances();
 #endif
 

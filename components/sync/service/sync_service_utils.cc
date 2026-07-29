@@ -5,7 +5,6 @@
 #include "components/sync/service/sync_service_utils.h"
 
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "components/sync/base/passphrase_enums.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
@@ -36,12 +35,15 @@ UploadState GetUploadToGoogleState(const SyncService* sync_service,
     return UploadState::NOT_ACTIVE;
   }
 
-  // Persistent auth errors always map to NOT_ACTIVE because the transport is
-  // guaranteed to be PAUSED.
-  if (sync_service->GetAuthError().IsPersistentError()) {
-    DCHECK_EQ(sync_service->GetTransportState(),
-              SyncService::TransportState::PAUSED);
-  }
+  // Persistent auth errors always map to NOT_ACTIVE because they cause the
+  // transport state to be PAUSED (unless sync was DISABLED afterwards).
+  CHECK(!sync_service->GetAuthError().IsPersistentError() ||
+        sync_service->GetTransportState() ==
+            SyncService::TransportState::PAUSED ||
+        sync_service->GetTransportState() ==
+            SyncService::TransportState::DISABLED)
+      << "Invalid transport state: "
+      << static_cast<int>(sync_service->GetTransportState());
 
   // SyncService never reports transient errors.
   DCHECK(!sync_service->GetAuthError().IsTransientError());
@@ -73,13 +75,14 @@ UploadState GetUploadToGoogleState(const SyncService* sync_service,
   NOTREACHED();
 }
 
-void RecordKeyRetrievalTrigger(TrustedVaultUserActionTriggerForUMA trigger) {
+void RecordKeyRetrievalTrigger(
+    trusted_vault::TrustedVaultUserActionTriggerForUMA trigger) {
   base::UmaHistogramEnumeration("Sync.TrustedVaultKeyRetrievalTrigger",
                                 trigger);
 }
 
 void RecordRecoverabilityDegradedFixTrigger(
-    TrustedVaultUserActionTriggerForUMA trigger) {
+    trusted_vault::TrustedVaultUserActionTriggerForUMA trigger) {
   base::UmaHistogramEnumeration(
       "Sync.TrustedVaultRecoverabilityDegradedFixTrigger", trigger);
 }

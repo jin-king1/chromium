@@ -2,20 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "extensions/browser/api/guest_view/web_view/web_view_internal_api.h"
 
 #include <memory>
-#include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/check_deref.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -43,7 +39,9 @@
 #include "extensions/common/mojom/run_location.mojom-shared.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/user_script.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "url/origin.h"
 
 using content::WebContents;
 using extensions::ExtensionResource;
@@ -59,15 +57,18 @@ namespace web_view_internal = extensions::api::web_view_internal;
 
 namespace {
 
-const char kCacheKey[] = "cache";
-const char kCookiesKey[] = "cookies";
-const char kSessionCookiesKey[] = "sessionCookies";
-const char kPersistentCookiesKey[] = "persistentCookies";
-const char kFileSystemsKey[] = "fileSystems";
-const char kIndexedDBKey[] = "indexedDB";
-const char kLocalStorageKey[] = "localStorage";
-const char kWebSQLKey[] = "webSQL";
-const char kSinceKey[] = "since";
+// Kill switch for the fix for https://crbug.com/496016840
+// TODO(crbug.com/496016840): Remove in M151 or later.
+BASE_FEATURE(kWebviewScriptFileOriginCheck, base::FEATURE_ENABLED_BY_DEFAULT);
+
+constexpr std::string_view kCacheKey = "cache";
+constexpr std::string_view kCookiesKey = "cookies";
+constexpr std::string_view kSessionCookiesKey = "sessionCookies";
+constexpr std::string_view kPersistentCookiesKey = "persistentCookies";
+constexpr std::string_view kFileSystemsKey = "fileSystems";
+constexpr std::string_view kIndexedDBKey = "indexedDB";
+constexpr std::string_view kLocalStorageKey = "localStorage";
+constexpr std::string_view kSinceKey = "since";
 const char kLoadFileError[] = "Failed to load file: \"*\". ";
 const char kHostIDError[] = "Failed to generate HostID.";
 const char kViewInstanceIdError[] = "view_instance_id is missing.";
@@ -76,23 +77,28 @@ const char kDuplicatedContentScriptNamesError[] =
 
 const char kGeneratedScriptFilePrefix[] = "generated_script_file:";
 
-uint32_t MaskForKey(const char* key) {
-  if (strcmp(key, kCacheKey) == 0)
+uint32_t MaskForKey(std::string_view key) {
+  if (key == kCacheKey) {
     return webview::WEB_VIEW_REMOVE_DATA_MASK_CACHE;
-  if (strcmp(key, kSessionCookiesKey) == 0)
+  }
+  if (key == kSessionCookiesKey) {
     return webview::WEB_VIEW_REMOVE_DATA_MASK_SESSION_COOKIES;
-  if (strcmp(key, kPersistentCookiesKey) == 0)
+  }
+  if (key == kPersistentCookiesKey) {
     return webview::WEB_VIEW_REMOVE_DATA_MASK_PERSISTENT_COOKIES;
-  if (strcmp(key, kCookiesKey) == 0)
+  }
+  if (key == kCookiesKey) {
     return webview::WEB_VIEW_REMOVE_DATA_MASK_COOKIES;
-  if (strcmp(key, kFileSystemsKey) == 0)
+  }
+  if (key == kFileSystemsKey) {
     return webview::WEB_VIEW_REMOVE_DATA_MASK_FILE_SYSTEMS;
-  if (strcmp(key, kIndexedDBKey) == 0)
+  }
+  if (key == kIndexedDBKey) {
     return webview::WEB_VIEW_REMOVE_DATA_MASK_INDEXEDDB;
-  if (strcmp(key, kLocalStorageKey) == 0)
+  }
+  if (key == kLocalStorageKey) {
     return webview::WEB_VIEW_REMOVE_DATA_MASK_LOCAL_STORAGE;
-  if (strcmp(key, kWebSQLKey) == 0)
-    return webview::WEB_VIEW_REMOVE_DATA_MASK_WEBSQL;
+  }
   return 0;
 }
 
@@ -105,9 +111,9 @@ std::optional<extensions::mojom::HostID> GenerateHostIDFromEmbedder(
   }
 
   if (embedder_rfh && embedder_rfh->GetMainFrame()->GetWebUI()) {
-    const GURL& url = embedder_rfh->GetSiteInstance()->GetSiteURL();
     return extensions::mojom::HostID(
-        extensions::mojom::HostID::HostType::kWebUi, url.spec());
+        extensions::mojom::HostID::HostType::kWebUi,
+        embedder_rfh->GetLastCommittedOrigin().Serialize());
   }
 
   if (embedder_rfh->GetWebExposedIsolationLevel() >=
@@ -133,6 +139,10 @@ void ParseScriptFiles(const GURL& owner_base_url,
   if (items.files) {
     for (const std::string& relative : *items.files) {
       GURL url = owner_base_url.Resolve(relative);
+      if (!url::IsSameOriginWith(owner_base_url, url) &&
+          base::FeatureList::IsEnabled(kWebviewScriptFileOriginCheck)) {
+        continue;
+      }
       if (extension) {
         ExtensionResource resource = extension->GetResource(relative);
         contents->push_back(UserScript::Content::CreateFile(
@@ -166,7 +176,7 @@ std::unique_ptr<extensions::UserScript> ParseContentScript(
   if (script_value.matches.empty())
     return nullptr;
 
-  std::unique_ptr<extensions::UserScript> script(new extensions::UserScript());
+  auto script = std::make_unique<extensions::UserScript>();
 
   // The default for WebUI is not having special access, but we can change that
   // if needed.
@@ -267,7 +277,7 @@ std::unique_ptr<extensions::UserScriptList> ParseContentScripts(
 
   std::unique_ptr<extensions::UserScriptList> result(
       new extensions::UserScriptList());
-  std::set<std::string> names;
+  absl::flat_hash_set<std::string_view> names;
   for (const ContentScriptDetails& script_value : content_script_list) {
     const std::string& name = script_value.name;
     if (!names.insert(name).second) {
@@ -366,13 +376,10 @@ bool WebViewInternalCaptureVisibleRegionFunction::ShouldSkipQuotaLimiting()
   return user_gesture();
 }
 
-WebContentsCaptureClient::ScreenshotAccess
+base::expected<void, ScreenshotAccessError>
 WebViewInternalCaptureVisibleRegionFunction::GetScreenshotAccess(
     content::WebContents* web_contents) const {
-  if (ExtensionsBrowserClient::Get()->IsScreenshotRestricted(web_contents))
-    return ScreenshotAccess::kDisabledByDlp;
-
-  return ScreenshotAccess::kEnabled;
+  return ExtensionsBrowserClient::Get()->IsScreenshotRestricted(web_contents);
 }
 
 bool WebViewInternalCaptureVisibleRegionFunction::ClientAllowsTransparency() {
@@ -544,6 +551,11 @@ bool WebViewInternalExecuteCodeFunction::LoadFileForEmbedder(
   GURL owner_base_url(guest->GetOwnerSiteURL().GetWithEmptyPath());
   GURL file_url(owner_base_url.Resolve(file_src));
 
+  if (!url::IsSameOriginWith(owner_base_url, file_url) &&
+      base::FeatureList::IsEnabled(kWebviewScriptFileOriginCheck)) {
+    return false;
+  }
+
   switch (host_id().type) {
     case mojom::HostID::HostType::kExtensions:
       NOTREACHED();
@@ -566,11 +578,10 @@ bool WebViewInternalExecuteCodeFunction::LoadFileForEmbedder(
 void WebViewInternalExecuteCodeFunction::DidLoadFileForEmbedder(
     const std::string& file,
     bool success,
-    std::unique_ptr<std::string> data) {
-  std::vector<std::unique_ptr<std::string>> data_list;
+    std::string data) {
+  std::vector<std::string> data_list;
   std::optional<std::string> error;
   if (success) {
-    DCHECK(data);
     data_list.push_back(std::move(data));
   } else {
     error = base::StringPrintf("Failed to load file '%s'.", file.c_str());
@@ -623,8 +634,12 @@ WebViewInternalAddContentScriptsFunction::Run() {
   if (!params->instance_id)
     return RespondNow(Error(kViewInstanceIdError));
 
-  GURL owner_base_url(
-      render_frame_host()->GetSiteInstance()->GetSiteURL().GetWithEmptyPath());
+  // Use GetTupleOrPrecursorTupleIfOpaque() so that this works properly if
+  // the owner is in a sandboxed frame, which has an opaque origin.
+  GURL owner_base_url(render_frame_host()
+                          ->GetLastCommittedOrigin()
+                          .GetTupleOrPrecursorTupleIfOpaque()
+                          .GetURL());
   std::optional<extensions::mojom::HostID> host_id =
       GenerateHostIDFromEmbedder(extension(), render_frame_host());
   if (!host_id) {
@@ -827,7 +842,7 @@ WebViewInternalFindFunction::WebViewInternalFindFunction() {
 WebViewInternalFindFunction::~WebViewInternalFindFunction() {
 }
 
-void WebViewInternalFindFunction::ForwardResponse(base::Value::Dict results) {
+void WebViewInternalFindFunction::ForwardResponse(base::DictValue results) {
   Respond(WithArguments(std::move(results)));
 }
 
@@ -850,7 +865,10 @@ ExtensionFunction::ResponseAction WebViewInternalFindFunction::Run() {
         params->options->match_case ? *params->options->match_case : false;
   }
 
-  GetGuest().StartFind(search_text, std::move(options), this);
+  GetGuest().StartFind(
+      search_text, std::move(options),
+      base::BindOnce(&WebViewInternalFindFunction::ForwardResponse, this));
+
   // It is possible that StartFind has already responded.
   return did_respond() ? AlreadyResponded() : RespondLater();
 }
@@ -1151,8 +1169,9 @@ uint32_t WebViewInternalClearDataFunction::GetRemovalMask() {
       bad_message_ = true;
       return 0;
     }
-    if (kv.second.GetBool())
-      remove_mask |= MaskForKey(kv.first.c_str());
+    if (kv.second.GetBool()) {
+      remove_mask |= MaskForKey(kv.first);
+    }
   }
 
   return remove_mask;

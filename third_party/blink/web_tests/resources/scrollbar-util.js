@@ -1,20 +1,13 @@
 // Contains helpers for calculating the dimensions for the various
 // scrollbar parts.
 
-// Should be the same value as `kFluentScrollbarThickness` in
-// ui\native_theme\native_theme_constants_fluent.h
-// Used to provide overlay scrollbars track width, as the current calculation
-// method would return 0.
-const FLUENT_TRACK_WIDTH = 15;
-function fluentOverlayScrollbarsEnabled() {
-  return internals.runtimeFlags.fluentOverlayScrollbarsEnabled;
-}
-
 // Helper to calculate track-width for non-custom standard
 // scrollbars.
 function calculateScrollbarThickness() {
-    if (fluentOverlayScrollbarsEnabled()) {
-      return FLUENT_TRACK_WIDTH;
+    if (internals.overlayScrollbarsEnabled) {
+      // LINT.IfChange(FluentScrollbarThickness)
+      return 15;
+      // LINT.ThenChange(//ui/native_theme/native_theme_fluent.h:FluentScrollbarThickness)
     }
 
     var container = document.createElement("div");
@@ -41,7 +34,7 @@ function calculateScrollbarThickness() {
 // Returns the width of a acrollbar button. On platforms where there are no
 // scrollbar buttons (i.e. there are overlay scrollbars) returns 0.
 function calculateScrollbarButtonWidth() {
-  if (fluentOverlayScrollbarsEnabled()) {
+  if (internals.overlayScrollbarsEnabled) {
     // Fluent overlay scrollbars have a little margin over the scrollbar's
     // button that causes the button to be separated from the edges of the
     // screen.
@@ -119,7 +112,7 @@ function isMainFrameScroller(scroller) {
   return scroller == scroller.ownerDocument.scrollingElement;
 }
 
-// TODO(arakeri): Add helpers for arrow widths.
+// TODO(gastonr): Add helpers for arrow widths.
 /*
   Getters for the center point in a scroller's scrollbar buttons (CSS visual
   coordinates). An empty argument requests the point for the main frame's

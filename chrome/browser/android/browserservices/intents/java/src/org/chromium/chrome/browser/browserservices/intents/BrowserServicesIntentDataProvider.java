@@ -8,24 +8,36 @@ import static androidx.browser.customtabs.CustomTabsIntent.ACTIVITY_SIDE_SHEET_D
 import static androidx.browser.customtabs.CustomTabsIntent.ACTIVITY_SIDE_SHEET_POSITION_END;
 import static androidx.browser.customtabs.CustomTabsIntent.ACTIVITY_SIDE_SHEET_ROUNDED_CORNERS_POSITION_NONE;
 import static androidx.browser.customtabs.CustomTabsIntent.CLOSE_BUTTON_POSITION_DEFAULT;
+import static androidx.browser.customtabs.CustomTabsIntent.OPEN_IN_BROWSER_STATE_OFF;
+import static androidx.browser.customtabs.CustomTabsIntent.SHARE_STATE_OFF;
 
 import android.app.PendingIntent;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.Drawable;
 import android.widget.RemoteViews;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.Px;
+import androidx.browser.customtabs.CustomContentAction;
 import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.browser.customtabs.CustomTabsIntent.CloseButtonPosition;
+import androidx.browser.customtabs.CustomTabsIntent.OpenInBrowserState;
+import androidx.browser.trusted.FileHandlingData;
+import androidx.browser.trusted.LaunchHandlerClientMode;
 import androidx.browser.trusted.TrustedWebActivityDisplayMode;
 import androidx.browser.trusted.sharing.ShareData;
 import androidx.browser.trusted.sharing.ShareTarget;
 
+import org.chromium.blink.mojom.DisplayMode;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ActivityType;
+import org.chromium.chrome.browser.flags.CustomTabProfileType;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.util.WindowFeatures;
 import org.chromium.components.embedder_support.util.Origin;
 import org.chromium.device.mojom.ScreenOrientationLockType;
 import org.chromium.net.NetId;
@@ -35,31 +47,36 @@ import java.lang.annotation.RetentionPolicy;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /** Base class for model classes which parse incoming intent for customization data. */
+@NullMarked
 public abstract class BrowserServicesIntentDataProvider {
     // The type of UI for Custom Tab to use.
     @IntDef({
         CustomTabsUiType.DEFAULT,
         CustomTabsUiType.MEDIA_VIEWER,
         CustomTabsUiType.INFO_PAGE,
-        CustomTabsUiType.READER_MODE,
         CustomTabsUiType.MINIMAL_UI_WEBAPP,
         CustomTabsUiType.OFFLINE_PAGE,
         CustomTabsUiType.AUTH_TAB,
-        CustomTabsUiType.NETWORK_BOUND_TAB
+        CustomTabsUiType.NETWORK_BOUND_TAB,
+        CustomTabsUiType.POPUP,
+        CustomTabsUiType.TRUSTED_WEB_ACTIVITY,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface CustomTabsUiType {
         int DEFAULT = 0;
         int MEDIA_VIEWER = 1;
         int INFO_PAGE = 2;
-        int READER_MODE = 3;
+        // int READER_MODE = 3; // Deprecated.
         int MINIMAL_UI_WEBAPP = 4;
         int OFFLINE_PAGE = 5;
-        int READ_LATER = 6;
+        // int READ_LATER = 6; // Unused.
         int AUTH_TAB = 7;
         int NETWORK_BOUND_TAB = 8;
+        int POPUP = 9;
+        int TRUSTED_WEB_ACTIVITY = 10;
     }
 
     // The type of Disclosure for TWAs to use.
@@ -83,20 +100,81 @@ public abstract class BrowserServicesIntentDataProvider {
     @Retention(RetentionPolicy.SOURCE)
     public @interface ActivitySideSheetSlideInBehavior {}
 
-    // The type of Profile and UI that is used by the custom tab.
+    /**
+     * Represents apps that launch Incognito CCT. DO NOT reorder items in this interface, because
+     * it's mirrored to UMA (as {@link IncognitoCctCallerId}). Values should be enumerated from 0.
+     * When removing items, comment them out and keep existing numeric values stable.
+     */
     @IntDef({
-        CustomTabProfileType.REGULAR,
-        CustomTabProfileType.INCOGNITO,
-        CustomTabProfileType.EPHEMERAL
+        IncognitoCctCallerId.OTHER_APPS,
+        IncognitoCctCallerId.GOOGLE_APPS,
+        IncognitoCctCallerId.OTHER_CHROME_FEATURES,
+        IncognitoCctCallerId.READ_LATER,
+        IncognitoCctCallerId.EPHEMERAL_TAB,
+        IncognitoCctCallerId.DOWNLOAD_HOME,
+        IncognitoCctCallerId.CONTEXTUAL_POPUP,
     })
     @Retention(RetentionPolicy.SOURCE)
-    public @interface CustomTabProfileType {
-        // The normal user profile.
-        int REGULAR = 0;
-        // An off-the-record profile with incognito UI.
-        int INCOGNITO = 1;
-        // An off-the-record profile without references to incognito mode.
-        int EPHEMERAL = 2;
+    public @interface IncognitoCctCallerId {
+        int OTHER_APPS = 0;
+        int GOOGLE_APPS = 1;
+        // This should not be used, it's a fallback for Chrome features that didn't identify
+        // themselves. Please see {@link
+        // IncognitoCustomTabIntentDataProvider#addIncognitoExtrasForChromeFeatures}
+        int OTHER_CHROME_FEATURES = 2;
+
+        // Chrome Features
+        // int READER_MODE = 3; // Deprecated.
+        int READ_LATER = 4;
+
+        // An ephemeral custom tab without incognito branding.
+        int EPHEMERAL_TAB = 5;
+
+        // Chrome feature.
+        // The Download Home UI may launch a CCT to display a help page for a download.
+        // If the file was downloaded in an Incognito profile, the CCT for the help page should
+        // likewise be an Incognito tab.
+        int DOWNLOAD_HOME = 6;
+
+        // Contextual popups launched with a |window.open()| JavaScript call.
+        int CONTEXTUAL_POPUP = 7;
+
+        // Update {@link IncognitoCctCallerId} in enums.xml when adding new items.
+        int NUM_ENTRIES = 8;
+    }
+
+    /**
+     * Defines whether the page title on the toolbar should be Visible, Hidden, or Visible only in
+     * Desktop Mode.
+     */
+    @IntDef({TitleVisibility.HIDDEN, TitleVisibility.VISIBLE, TitleVisibility.VISIBLE_IN_DESKTOP})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface TitleVisibility {
+        // Always hide
+        int HIDDEN = 0;
+        // Always show
+        int VISIBLE = 1;
+        // Only show in Desktop Mode
+        int VISIBLE_IN_DESKTOP = 2;
+    }
+
+    /**
+     * Converts from AndroidX's {@link CustomTabsIntent} values of title bar visibility to {@link
+     * TitleVisibility}.
+     *
+     * @see CustomTabsIntent.EXTRA_TITLE_VISIBILITY_STATE
+     */
+    public static @TitleVisibility int customTabIntentTitleBarVisibility(
+            int intentValue, boolean isTWA) {
+        switch (intentValue) {
+            case CustomTabsIntent.NO_TITLE:
+                if (isTWA) return TitleVisibility.VISIBLE_IN_DESKTOP;
+                else return TitleVisibility.HIDDEN;
+            case CustomTabsIntent.SHOW_PAGE_TITLE:
+                return TitleVisibility.VISIBLE;
+            default:
+                return TitleVisibility.HIDDEN;
+        }
     }
 
     /**
@@ -183,12 +261,10 @@ public abstract class BrowserServicesIntentDataProvider {
     }
 
     /**
-     * @return The URL that should be used from this intent.
-     * Must be called only after native has loaded.
+     * @return The URL that should be used from this intent. Must be called only after native has
+     *     loaded.
      */
-    public @Nullable String getUrlToLoad() {
-        return null;
-    }
+    public abstract @Nullable String getUrlToLoad();
 
     /**
      * @return Whether url bar hiding should be enabled in the custom tab.
@@ -207,19 +283,19 @@ public abstract class BrowserServicesIntentDataProvider {
     /**
      * @return ColorProvider to be used.
      */
-    public abstract @NonNull ColorProvider getColorProvider();
+    public abstract ColorProvider getColorProvider();
 
     /**
      * @return ColorProvider when the system is in light mode.
      */
-    public @NonNull ColorProvider getLightColorProvider() {
+    public ColorProvider getLightColorProvider() {
         return getColorProvider();
     }
 
     /**
      * @return ColorProvider when the system is in dark mode.
      */
-    public @NonNull ColorProvider getDarkColorProvider() {
+    public ColorProvider getDarkColorProvider() {
         return getColorProvider();
     }
 
@@ -233,8 +309,8 @@ public abstract class BrowserServicesIntentDataProvider {
     /**
      * @return The title visibility state for the toolbar.
      */
-    public int getTitleVisibilityState() {
-        return CustomTabsIntent.NO_TITLE;
+    public @TitleVisibility int getTitleVisibilityState() {
+        return TitleVisibility.HIDDEN;
     }
 
     /**
@@ -276,8 +352,7 @@ public abstract class BrowserServicesIntentDataProvider {
     /**
      * @return A array of {@link View} ids, of which the onClick event is handled by the Activity.
      */
-    @Nullable
-    public int[] getClickableViewIDs() {
+    public int @Nullable [] getClickableViewIDs() {
         return null;
     }
 
@@ -398,8 +473,11 @@ public abstract class BrowserServicesIntentDataProvider {
         return getActivityType() == ActivityType.WEB_APK;
     }
 
-    /** Returns {@link TrustedWebActivityDisplayMode} supplied in the intent. */
-    public @Nullable TrustedWebActivityDisplayMode getTwaDisplayMode() {
+    /**
+     * Returns {@link TrustedWebActivityDisplayMode} supplied in the intent. This a raw display mode
+     * that's not altered in any way.
+     */
+    public @Nullable TrustedWebActivityDisplayMode getProvidedTwaDisplayMode() {
         return null;
     }
 
@@ -426,8 +504,7 @@ public abstract class BrowserServicesIntentDataProvider {
     /**
      * @return Additional origins associated with a Trusted Web Activity client app.
      */
-    @Nullable
-    public List<String> getTrustedWebActivityAdditionalOrigins() {
+    public @Nullable List<String> getTrustedWebActivityAdditionalOrigins() {
         return null;
     }
 
@@ -435,8 +512,7 @@ public abstract class BrowserServicesIntentDataProvider {
      * @return All origins associated with a TrustedWebActivity client app, including the initially
      *     loaded origin.
      */
-    @Nullable
-    public Set<Origin> getAllTrustedWebActivityOrigins() {
+    public @Nullable Set<Origin> getAllTrustedWebActivityOrigins() {
         return null;
     }
 
@@ -532,8 +608,7 @@ public abstract class BrowserServicesIntentDataProvider {
         return TwaDisclosureUi.DEFAULT;
     }
 
-    @Nullable
-    public int[] getGsaExperimentIds() {
+    public int @Nullable [] getGsaExperimentIds() {
         return null;
     }
 
@@ -620,8 +695,16 @@ public abstract class BrowserServicesIntentDataProvider {
     }
 
     /**
+     * Returns the background color in ARGB format. For now, used only by Partial Custom Tabs to
+     * have a transparency to keep the host app visible while the page is loading.
+     */
+    public @ColorInt int getTranslucentBackgroundColor(Context context) {
+        return 0;
+    }
+
+    /**
      * @return true, as by default having a PCCT launched still allows interaction with the
-     * background application
+     *     background application
      */
     public boolean canInteractWithBackground() {
         return false;
@@ -642,8 +725,13 @@ public abstract class BrowserServicesIntentDataProvider {
         return ACTIVITY_SIDE_SHEET_POSITION_END;
     }
 
-    /** Return whether calling package should be allowed to present an interactive Omnibox. */
+    /** Return whether omnibox is allowed to be displayed in the CCT. */
     public boolean isInteractiveOmniboxAllowed() {
+        return false;
+    }
+
+    /** Return whether omnibox should be enabled for the calling package. */
+    public boolean isInteractiveOmniboxEnabled() {
         return false;
     }
 
@@ -675,17 +763,115 @@ public abstract class BrowserServicesIntentDataProvider {
     }
 
     /** Return the custom redirect scheme for AuthTab. */
-    public String getAuthRedirectScheme() {
+    public @Nullable String getAuthRedirectScheme() {
         return null;
     }
 
     /** Return the https redirect URL host (origin) for AuthTab. */
-    public String getAuthRedirectHost() {
+    public @Nullable String getAuthRedirectHost() {
         return null;
     }
 
     /** Return the https redirect URL path for AuthTab. */
-    public String getAuthRedirectPath() {
+    public @Nullable String getAuthRedirectPath() {
         return null;
     }
+
+    /** Return the client mode for Launch Handler API. */
+    public @LaunchHandlerClientMode.ClientMode int getLaunchHandlerClientMode() {
+        return LaunchHandlerClientMode.AUTO;
+    }
+
+    /**
+     * Return {@link FileHandlingData} which contains the URIs of the opened files for Launch
+     * Handler API.
+     */
+    public @Nullable FileHandlingData getFileHandlingData() {
+        return null;
+    }
+
+    /**
+     * Calculates the closest supported display mode to the provided one. To get provided display
+     * mode use {@link WebappExtras#displayMode} or {@link #getProvidedTwaDisplayMode()}.
+     *
+     * <p>A caller is guaranteed of the following fallback chain: <lo>
+     * <li>Fullscreen
+     * <li>Standalone
+     * <li>Minimal UI
+     * <li>Browser </lo>
+     *
+     * @return {@link DisplayMode} that the browser should be running PWA in.
+     */
+    public @DisplayMode.EnumType int getResolvedDisplayMode() {
+        return DisplayMode.BROWSER;
+    }
+
+    /**
+     * Returns the desired developer options for Open in Browser button in the custom tab's toolbar.
+     *
+     * @return {@link OpenInBrowserState} the desired settings for the Open in Browser button.
+     */
+    public @OpenInBrowserState int getOpenInBrowserButtonState() {
+        return OPEN_IN_BROWSER_STATE_OFF;
+    }
+
+    /**
+     * @return the developer option specified for Share action button in the custom tab toolbar.
+     */
+    public int getShareButtonState() {
+        return SHARE_STATE_OFF;
+    }
+
+    /**
+     * @return {@link List<CustomContentAction>} the developer defined contextual menu items.
+     */
+    public List<CustomContentAction> getCustomContentActions() {
+        return List.of();
+    }
+
+    /**
+     * @return if optional button on the toolbar can be shown.
+     */
+    public boolean isOptionalButtonSupported() {
+        return false;
+    }
+
+    /**
+     * @return the TWA startup timestamp associated with an intent in the uptimeMillis timebase, or
+     *     zero.
+     */
+    public long getTwaStartupUptimeMillis() {
+        return 0;
+    }
+
+    /**
+     * @return the version code of android_browser_helper, or zero.
+     */
+    public int getAndroidBrowserHelperVersion() {
+        return 0;
+    }
+
+    /**
+     * @return properties of window bounds requested by the opener if this CCT is a popup.
+     */
+    public @Nullable WindowFeatures getRequestedWindowFeatures() {
+        return null;
+    }
+
+    /**
+     * @return the reason the CCT was launched with an off-the-record profile.
+     */
+    public @IncognitoCctCallerId int getFeatureIdForMetricsCollection() {
+        return IncognitoCctCallerId.OTHER_APPS;
+    }
+
+    /**
+     * Adds additional content to the Intent, if present.
+     *
+     * @param tabProvider The tab provider for which the content should be retrieved.
+     * @param outboundIntent The intent to add the content to.
+     * @param viewId The ID of the view clicked.
+     */
+    public void maybeAddAdditionalContentExtrasToOutboundIntent(
+            Supplier<@Nullable Tab> tabProvider, Intent outboundIntent, int viewId) {}
 }

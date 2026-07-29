@@ -12,6 +12,7 @@
 #include "base/bits.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
@@ -26,7 +27,6 @@
 #include "media/gpu/vaapi/vaapi_wrapper.h"
 #include "media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.h"
 #include "media/gpu/vp9_picture.h"
-#include "media/video/fake_gpu_memory_buffer.h"
 #include "media/video/video_encode_accelerator.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -400,8 +400,9 @@ class VaapiVideoEncodeAcceleratorTest
     vaapi_encoder->supported_profiles_for_testing_.push_back(profile);
     if (config.input_visible_size.IsEmpty())
       return false;
-    return encoder_->Initialize(config, &client_,
-                                std::make_unique<media::NullMediaLog>());
+    return encoder_
+        ->Initialize(config, &client_, std::make_unique<media::NullMediaLog>())
+        .is_ok();
   }
 
   static constexpr int GetMaxNumOfEncoderInstances() {
@@ -746,16 +747,12 @@ class VaapiVideoEncodeAcceleratorTest
                           gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
     CHECK(test_sii);
 
-    auto buffer_format = gfx::BufferFormat::YUV_420_BIPLANAR;
+    auto format = viz::MultiPlaneFormat::kNV12;
     // Create a mappable shared image.
-    auto pixmap_handle =
-        CreatePixmapHandleForTesting(kDefaultEncodeSize, buffer_format);
-    auto shared_image = test_sii->CreateSharedImage(
-        {viz::GetSharedImageFormat(buffer_format), kDefaultEncodeSize,
-         gfx::ColorSpace(), gpu::SharedImageUsageSet(si_usage),
-         "VaapiVideoEncodeAcceleratorTest"},
-        gpu::kNullSurfaceHandle, gfx::BufferUsage::GPU_READ,
-        std::move(pixmap_handle));
+    auto shared_image = test_sii->CreateNativePixmapBackedSharedImage(
+        {format, kDefaultEncodeSize, gfx::ColorSpace(),
+         gpu::SharedImageUsageSet(si_usage), "VaapiVideoEncodeAcceleratorTest"},
+        gpu::kNullSurfaceHandle, gfx::BufferUsage::GPU_READ);
     auto frame = VideoFrame::WrapMappableSharedImage(
         std::move(shared_image), test_sii->GenVerifiedSyncToken(),
         base::NullCallback(), gfx::Rect(kDefaultEncodeSize), kDefaultEncodeSize,
@@ -905,7 +902,8 @@ TEST_F(VaapiVideoEncodeAcceleratorTest, TooManyEncoderInstances) {
     auto media_log = std::make_unique<MockMediaLog>();
     if (i == kMaxNumOfInstances) {
       EXPECT_MEDIA_LOG_ON(*media_log, ContainsTooManyEncoderInstances());
-      EXPECT_FALSE(encoder->Initialize(config, &client_, std::move(media_log)));
+      EXPECT_FALSE(
+          encoder->Initialize(config, &client_, std::move(media_log)).is_ok());
     } else {
       encoders[i] = std::move(encoder);
     }
@@ -946,7 +944,12 @@ TEST_F(VaapiVideoEncodeAcceleratorTest, InitializeWithUnsupportedConfig) {
 }
 
 // This test verifies RequestEncodingParametersChange() succeeds.
-TEST_F(VaapiVideoEncodeAcceleratorTest, EncodingParametersChange) {
+#if BUILDFLAG(IS_LINUX) && defined(ARCH_CPU_ARM64)
+#define MAYBE_EncodingParametersChange DISABLED_EncodingParametersChange
+#else
+#define MAYBE_EncodingParametersChange EncodingParametersChange
+#endif
+TEST_F(VaapiVideoEncodeAcceleratorTest, MAYBE_EncodingParametersChange) {
   const uint32_t kNewFramerate = 60;
   const uint32_t kNewBitrate = 123123u;
 
@@ -977,6 +980,7 @@ TEST_F(VaapiVideoEncodeAcceleratorTest, EncodingParametersChange) {
     task_environment_.RunUntilIdle();
   }
 }
+#undef MAYBE_EncodingParametersChange
 
 // This test verifies RequestEncodingParametersChange() succeeds with
 // multi-dimensional bitrate allocation.

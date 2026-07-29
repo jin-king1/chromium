@@ -8,7 +8,6 @@ import static org.chromium.base.test.util.CriteriaHelper.DEFAULT_POLLING_INTERVA
 
 import android.view.KeyEvent;
 
-import androidx.test.core.app.ApplicationProvider;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.hamcrest.Matchers;
@@ -17,44 +16,46 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.KeyUtils;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.content_public.browser.test.util.Coordinates;
 import org.chromium.content_public.browser.test.util.DOMUtils;
-import org.chromium.content_public.browser.test.util.KeyUtils;
-import org.chromium.net.test.EmbeddedTestServer;
 
 /** Tests for zooming into & out of a selected & deselected editable text field. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
     ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
 })
+@Batch(Batch.PER_CLASS)
 public class FocusedEditableTextFieldZoomTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.autoResetCtaActivityRule();
 
     private static final int TEST_TIMEOUT = 5000;
     private static final String TEXTFIELD_DOM_ID = "textfield";
     private static final float FLOAT_DELTA = 0.01f;
     private static final float INITIAL_SCALE = 0.5f;
 
-    private EmbeddedTestServer mTestServer;
     private Coordinates mCoordinates;
 
     @Before
     public void setUp() {
-        mTestServer =
-                EmbeddedTestServer.createAndStartServer(
-                        ApplicationProvider.getApplicationContext());
-        mActivityTestRule.startMainActivityWithURL(
-                mTestServer.getURL("/chrome/test/data/android/focused_editable_zoom.html"));
+        String url =
+                mActivityTestRule
+                        .getTestServer()
+                        .getURL("/chrome/test/data/android/focused_editable_zoom.html");
+        mActivityTestRule.startOnWebPage(url);
         mCoordinates = Coordinates.createFor(mActivityTestRule.getWebContents());
         waitForInitialZoom();
     }
@@ -89,7 +90,7 @@ public class FocusedEditableTextFieldZoomTest {
      * @LargeTest
      */
     @Test
-    @DisabledTest(message = "Broken by subpixel precision changes crbug.com/371119")
+    @DisabledTest(message = "Broken by subpixel precision changes crbug.com/41106056")
     @Feature({"TabContents"})
     public void testZoomInToSelected() throws Throwable {
         // This should focus the text field and initiate a zoom in.
@@ -106,7 +107,7 @@ public class FocusedEditableTextFieldZoomTest {
      * @LargeTest
      */
     @Test
-    @DisabledTest(message = "Broken by subpixel precision changes crbug.com/371119")
+    @DisabledTest(message = "Broken by subpixel precision changes crbug.com/41106056")
     @Feature({"TabContents"})
     public void testZoomOutOfSelectedIfOnlyBackPressed() throws Throwable {
         final Tab tab = mActivityTestRule.getActivity().getActivityTab();

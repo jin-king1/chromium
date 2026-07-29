@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/shared_memory_mapping.h"
 #include "base/task/single_thread_task_runner.h"
@@ -25,7 +24,6 @@
 #include "components/viz/service/display/skia_renderer.h"
 #include "components/viz/service/display/software_renderer.h"
 #include "components/viz/test/test_gpu_service_holder.h"
-#include "gpu/command_buffer/client/gpu_memory_buffer_manager.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/sync_point_manager.h"
 #include "gpu/ipc/in_process_command_buffer.h"
@@ -37,7 +35,7 @@ class CopyOutputResult;
 class DirectRenderer;
 class DisplayResourceProvider;
 class GpuServiceImpl;
-}
+}  // namespace viz
 
 namespace cc {
 class FakeOutputSurfaceClient;
@@ -54,8 +52,6 @@ class PixelTest : public testing::Test {
     kSkiaVulkan,
     // SkiaRenderer with the Skia Graphite on Dawn will be used.
     kSkiaGraphiteDawn,
-    // SkiaRenderer with the Skia Graphite on Metal will be used.
-    kSkiaGraphiteMetal,
   };
 
   explicit PixelTest(GraphicsBackend backend = kDefault);
@@ -71,6 +67,10 @@ class PixelTest : public testing::Test {
 
   bool RunPixelTest(viz::AggregatedRenderPassList* pass_list,
                     SkBitmap ref_bitmap,
+                    const PixelComparator& comparator);
+
+  bool RunPixelTest(viz::AggregatedRenderPassList* pass_list,
+                    viz::AggregatedRenderPassList* ref_pass_list,
                     const PixelComparator& comparator);
 
   bool RunPixelTestWithCopyOutputRequest(
@@ -124,6 +124,12 @@ class PixelTest : public testing::Test {
   std::unique_ptr<viz::DirectRenderer> renderer_;
   raw_ptr<viz::SoftwareRenderer> software_renderer_ = nullptr;
   std::unique_ptr<SkBitmap> result_bitmap_;
+  // The tracked element rects that will be passed into renderer_->DrawFrame().
+  // They should be in the coordinate space of the root render pass.
+  viz::TrackedElementRects initial_tracked_element_rects_;
+  // The tracked element rects that are returned in the CopyOutputResult. They
+  // should be in the coordinate space of the output bitmap.
+  viz::TrackedElementRects result_tracked_element_rects_;
 
   void SetUpSkiaRenderer(gfx::SurfaceOrigin output_surface_origin);
   void SetUpSoftwareRenderer();
@@ -131,8 +137,7 @@ class PixelTest : public testing::Test {
   void TearDown() override;
 
   bool use_skia_graphite() const {
-    return graphics_backend_ == GraphicsBackend::kSkiaGraphiteDawn ||
-           graphics_backend_ == GraphicsBackend::kSkiaGraphiteMetal;
+    return graphics_backend_ == GraphicsBackend::kSkiaGraphiteDawn;
   }
 
  private:

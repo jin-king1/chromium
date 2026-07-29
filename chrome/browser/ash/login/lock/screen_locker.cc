@@ -13,7 +13,6 @@
 #include "ash/public/cpp/login_screen_model.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/lazy_instance.h"
@@ -27,6 +26,9 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
+#include "chrome/browser/ash/certificate_provider/certificate_provider_service_factory.h"
+#include "chrome/browser/ash/certificate_provider/pin_dialog_manager.h"
 #include "chrome/browser/ash/login/helper.h"
 #include "chrome/browser/ash/login/lock/views_screen_locker.h"
 #include "chrome/browser/ash/login/login_auth_recorder.h"
@@ -39,17 +41,15 @@
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_utils.h"
 #include "chrome/browser/ash/login/session/user_session_manager.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/certificate_provider/certificate_provider_service.h"
-#include "chrome/browser/certificate_provider/certificate_provider_service_factory.h"
-#include "chrome/browser/certificate_provider/pin_dialog_manager.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/browser_process_platform_part.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "chrome/browser/ui/ash/session/session_controller_client_impl.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/biod/constants.pb.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
@@ -177,7 +177,9 @@ ScreenLocker* ScreenLocker::screen_locker_ = nullptr;  // Only on UI thread
 // ScreenLocker, public:
 
 ScreenLocker::ScreenLocker(const user_manager::UserList& users)
-    : users_(users) {
+    : users_(users),
+      // TODO(crbug.com/404133029): Avoid using g_browser_process.
+      challenge_response_auth_keys_loader_(g_browser_process->local_state()) {
   CHECK(base::CurrentUIThread::IsSet());
   CHECK(!screen_locker_);
   screen_locker_ = this;
@@ -215,7 +217,17 @@ void ScreenLocker::Init() {
 
   // Create ViewScreenLocker that calls into the views-based lock screen via
   // mojo.
-  views_screen_locker_ = std::make_unique<ViewsScreenLocker>();
+  // TODO(crbug.com/404133029): Avoid using g_browser_process.
+  PrefService* local_state = g_browser_process->local_state();
+  ApplicationLocaleStorage* application_locale_storage =
+      g_browser_process->GetFeatures()->application_locale_storage();
+  scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory =
+      g_browser_process->shared_url_loader_factory();
+  policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash =
+      g_browser_process->platform_part()->browser_policy_connector_ash();
+  views_screen_locker_ = std::make_unique<ViewsScreenLocker>(
+      local_state, application_locale_storage,
+      std::move(shared_url_loader_factory), browser_policy_connector_ash);
 
   // Create and display lock screen.
   CHECK(LoginScreenClientImpl::HasInstance());
@@ -416,7 +428,9 @@ void ScreenLocker::AuthenticateWithChallengeResponse(
     return;
   }
 
-  if (!ChallengeResponseAuthKeysLoader::CanAuthenticateUser(account_id)) {
+  // TODO(crbug.com/404133029): Avoid using g_browser_process.
+  if (!ChallengeResponseAuthKeysLoader::CanAuthenticateUser(
+          CHECK_DEREF(g_browser_process->local_state()), account_id)) {
     LOG(ERROR)
         << "Challenge-response authentication isn't supported for the user";
     if (auth_status_consumer_) {
@@ -563,7 +577,7 @@ void ScreenLocker::HandleShowLockScreenRequest() {
     // completed all sign-in steps yet, log out instead. The latter is done to
     // avoid complications with displaying the lock screen over the login
     // screen while remaining secure in the case the user walks away during
-    // the sign-in steps. See crbug.com/112225 and crbug.com/110933.
+    // the sign-in steps. See crbug.com/40715945 and crbug.com/40707945.
     VLOG(1) << "The user session cannot be locked, logging out";
     SessionTerminationManager::Get()->StopSession(
         login_manager::SessionStopReason::FAILED_TO_LOCK);
@@ -656,7 +670,7 @@ void ScreenLocker::ScheduleDeletion() {
 
 bool ScreenLocker::IsAuthTemporarilyDisabledForUser(
     const AccountId& account_id) {
-  return base::Contains(users_with_temporarily_disabled_auth_, account_id);
+  return users_with_temporarily_disabled_auth_.contains(account_id);
 }
 
 void ScreenLocker::SetAuthenticatorsForTesting(
@@ -846,7 +860,7 @@ void ScreenLocker::OnAuthScanDone(
   }
 
   UserContext user_context(*primary_user);
-  if (!base::Contains(matches, primary_user->username_hash())) {
+  if (!matches.contains(primary_user->username_hash())) {
     LOG(ERROR) << "Fingerprint unlock failed because it does not match primary"
                << " user's record";
     OnFingerprintAuthFailure(*primary_user);

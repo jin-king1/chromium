@@ -10,6 +10,7 @@
 #include "base/check.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/numerics/safe_conversions.h"
 
 namespace media {
 
@@ -55,7 +56,14 @@ NdkMediaCodecWrapper::NdkMediaCodecWrapper(
   weak_this_ = weak_factory_.GetWeakPtr();
 }
 
-NdkMediaCodecWrapper::~NdkMediaCodecWrapper() = default;
+NdkMediaCodecWrapper::~NdkMediaCodecWrapper() {
+  CHECK(!started_);
+
+  // Stop() should ensure the the codec is idle by this point, but to be safe,
+  // force destruction of the MediaCodec before the WeakPtrFactory is destroyed
+  // to ensure no new callbacks can be generated.
+  media_codec_.reset();
+}
 
 bool NdkMediaCodecWrapper::HasInput() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -121,8 +129,34 @@ void NdkMediaCodecWrapper::Stop() {
     return;
   }
 
-  started_ = false;
   AMediaCodec_stop(media_codec_.get());
+
+  started_ = false;
+  output_buffers_.clear();
+  input_buffers_.clear();
+}
+
+base::span<uint8_t> NdkMediaCodecWrapper::GetInputBuffer(size_t idx) {
+  size_t capacity = 0;
+  uint8_t* buf_data = AMediaCodec_getInputBuffer(codec(), idx, &capacity);
+  // SAFETY: `AMediaCodec_getInputBuffer` returns buffer size as the out param.
+  return UNSAFE_BUFFERS(base::span<uint8_t>(buf_data, capacity));
+}
+
+base::span<uint8_t> NdkMediaCodecWrapper::GetOutputBuffer(
+    const OutputInfo& info) {
+  size_t capacity = 0;
+  const size_t size = base::saturated_cast<size_t>(info.info.size);
+  // `AMediaCodec_getOutputBuffer()` already took `info.info.offset` into
+  // account, we don't need to do it again here.
+
+  // SAFETY: `AMediaCodec_getOutputBuffer` returns buffer size as the out param.
+  uint8_t* buf_data =
+      AMediaCodec_getOutputBuffer(codec(), info.buffer_index, &capacity);
+  if (size > capacity) {
+    return {};
+  }
+  return UNSAFE_BUFFERS(base::span<uint8_t>(buf_data, capacity)).first(size);
 }
 
 void NdkMediaCodecWrapper::OnAsyncInputAvailable(AMediaCodec* codec,

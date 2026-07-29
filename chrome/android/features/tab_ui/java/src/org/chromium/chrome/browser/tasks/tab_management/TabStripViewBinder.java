@@ -7,28 +7,28 @@ package org.chromium.chrome.browser.tasks.tab_management;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.Drawable;
-import android.support.annotation.ColorInt;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 
-import androidx.annotation.Nullable;
+import androidx.annotation.ColorInt;
+import androidx.annotation.DrawableRes;
 import androidx.annotation.StringRes;
 import androidx.appcompat.content.res.AppCompatResources;
-import androidx.core.content.res.ResourcesCompat;
 import androidx.core.view.ViewCompat;
 
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
-import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabActionButtonData;
 import org.chromium.chrome.tab_ui.R;
-import org.chromium.components.browser_ui.styles.ChromeColors;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.ViewLookupCachingFrameLayout;
 
 /** {@link org.chromium.ui.modelutil.SimpleRecyclerViewMcp.ViewBinder} for tab strip. */
+@NullMarked
 class TabStripViewBinder {
     /**
      * Partially or fully update the given ViewHolder based on the given model over propertyKey.
@@ -48,16 +48,14 @@ class TabStripViewBinder {
         }
         if (TabProperties.IS_SELECTED == propertyKey) {
             ImageButton button = view.fastFindViewById(R.id.tab_strip_item_button);
+            @DrawableRes
             int selectedDrawableId =
                     model.get(TabProperties.IS_INCOGNITO)
                             ? R.drawable.tab_strip_selected_ring_incognito
                             : R.drawable.tab_strip_selected_ring;
             view.setForeground(
                     model.get(TabProperties.IS_SELECTED)
-                            ? ResourcesCompat.getDrawable(
-                                    view.getResources(),
-                                    selectedDrawableId,
-                                    view.getContext().getTheme())
+                            ? AppCompatResources.getDrawable(view.getContext(), selectedDrawableId)
                             : null);
 
             if (model.get(TabProperties.IS_SELECTED)) {
@@ -66,13 +64,21 @@ class TabStripViewBinder {
                             TabActionButtonData data =
                                     model.get(TabProperties.TAB_ACTION_BUTTON_DATA);
                             assert data.type != TabActionButtonData.TabActionButtonType.OVERFLOW;
-                            data.tabActionListener.run(v, model.get(TabProperties.TAB_ID));
+                            if (data.tabActionListener != null) {
+                                data.tabActionListener.run(
+                                        v,
+                                        model.get(TabProperties.TAB_ID),
+                                        /* triggeringMotion= */ null);
+                            }
                         });
             } else {
                 button.setOnClickListener(
                         v -> {
                             model.get(TabProperties.TAB_CLICK_LISTENER)
-                                    .run(v, model.get(TabProperties.TAB_ID));
+                                    .run(
+                                            v,
+                                            model.get(TabProperties.TAB_ID),
+                                            /* triggeringMotion= */ null);
                         });
             }
             setContentDescription(view, model);
@@ -95,7 +101,7 @@ class TabStripViewBinder {
         } else if (TabProperties.HAS_NOTIFICATION_BUBBLE == propertyKey) {
             ImageView notificationView = view.fastFindViewById(R.id.tab_strip_notification_bubble);
 
-            if (ChromeFeatureList.isEnabled(ChromeFeatureList.DATA_SHARING)) {
+            if (TabUiUtils.isDataSharingFunctionalityEnabled()) {
                 int visibility =
                         model.get(TabProperties.HAS_NOTIFICATION_BUBBLE) ? View.VISIBLE : View.GONE;
                 notificationView.setVisibility(visibility);
@@ -132,8 +138,10 @@ class TabStripViewBinder {
 
     /** Returns true if the favicon was successfully set. */
     private static boolean setFavicon(
-            ViewLookupCachingFrameLayout view, PropertyModel model, Drawable faviconDrawable) {
-        @Nullable ImageButton button = view.fastFindViewById(R.id.tab_strip_item_button);
+            ViewLookupCachingFrameLayout view,
+            PropertyModel model,
+            @Nullable Drawable faviconDrawable) {
+        ImageButton button = view.fastFindViewById(R.id.tab_strip_item_button);
         if (button == null) return false;
 
         button.setBackgroundResource(R.drawable.tabstrip_favicon_background);
@@ -141,13 +149,10 @@ class TabStripViewBinder {
         final ColorStateList backgroundTint;
         if (model.get(TabProperties.IS_INCOGNITO)) {
             backgroundTint =
-                    AppCompatResources.getColorStateList(
-                            view.getContext(), R.color.default_bg_color_dark_elev_6_baseline);
+                    view.getContext().getColorStateList(R.color.tab_strip_favicon_bg_incognito);
         } else {
             @ColorInt
-            int faviconBgColor =
-                    ChromeColors.getSurfaceColor(
-                            button.getContext(), R.dimen.tab_strip_favicon_background_elevation);
+            int faviconBgColor = SemanticColorUtils.getColorSurfaceContainer(button.getContext());
             backgroundTint = ColorStateList.valueOf(faviconBgColor);
         }
         ViewCompat.setBackgroundTintList(button, backgroundTint);
@@ -166,7 +171,7 @@ class TabStripViewBinder {
         if (model.get(TabProperties.IS_SELECTED)) {
             contentDescRes = R.string.accessibility_tabstrip_btn_close_tab;
         } else {
-            if (ChromeFeatureList.isEnabled(ChromeFeatureList.DATA_SHARING)
+            if (TabUiUtils.isDataSharingFunctionalityEnabled()
                     && model.get(TabProperties.HAS_NOTIFICATION_BUBBLE)) {
                 contentDescRes = R.string.accessibility_tabstrip_tab_notification;
             } else {

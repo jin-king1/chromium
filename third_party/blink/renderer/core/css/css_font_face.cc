@@ -31,6 +31,7 @@
 #include "third_party/blink/renderer/core/css/css_font_face_source.h"
 #include "third_party/blink/renderer/core/css/css_font_selector.h"
 #include "third_party/blink/renderer/core/css/css_segmented_font_face.h"
+#include "third_party/blink/renderer/core/css/font_face.h"
 #include "third_party/blink/renderer/core/css/font_face_set_document.h"
 #include "third_party/blink/renderer/core/css/font_face_set_worker.h"
 #include "third_party/blink/renderer/core/css/font_size_functions.h"
@@ -58,6 +59,10 @@ void CSSFontFace::RemoveSegmentedFontFace(
     CSSSegmentedFontFace* segmented_font_face) {
   DCHECK(segmented_font_faces_.Contains(segmented_font_face));
   segmented_font_faces_.erase(segmented_font_face);
+}
+
+void CSSFontFace::UpdateRanges(HeapVector<UnicodeRange>&& ranges) {
+  ranges_ = MakeGarbageCollected<UnicodeRangeSet>(std::move(ranges));
 }
 
 void CSSFontFace::DidBeginLoad() {
@@ -139,6 +144,15 @@ const SimpleFontData* CSSFontFace::GetFontData(
                 font_face_->GetSizeAdjust())
           : font_description;
 
+  if (RuntimeEnabledFeatures::FontFeatureSettingsDescriptorEnabled()) {
+    size_adjusted_description.MergeFontFeatureSettingsWithDescriptor(
+        font_face_->GetFontFeatureSettings().get());
+  }
+  if (RuntimeEnabledFeatures::FontVariationSettingsDescriptorEnabled()) {
+    size_adjusted_description.MergeFontVariationSettingsWithDescriptor(
+        font_face_->GetFontVariationSettings().get());
+  }
+
   // https://www.w3.org/TR/css-fonts-4/#src-desc
   // "When a font is needed the user agent iterates over the set of references
   // listed, using the first one it can successfully activate."
@@ -204,7 +218,7 @@ bool CSSFontFace::MaybeLoadFont(const FontDescription& font_description,
   // only checks if the first character of the text is included in the font's
   // unicode range. If this font is needed by subsequent characters, load is
   // kicked off in layout phase.
-  UChar32 character = text.CharacterStartingAt(0);
+  UChar32 character = text.CodePointAtOrZero(0);
   if (ranges_->Contains(character)) {
     if (LoadStatus() == FontFace::kUnloaded) {
       Load(font_description);
@@ -227,8 +241,8 @@ bool CSSFontFace::MaybeLoadFont(const FontDescription& font_description,
 
 void CSSFontFace::Load() {
   FontDescription font_description;
-  font_description.SetFamily(
-      FontFamily(font_face_->family(), FontFamily::Type::kFamilyName));
+  font_description.SetFamily(FontFamily(font_face_->familyNameUnquoted(),
+                                        FontFamily::Type::kFamilyName));
   Load(font_description);
 }
 

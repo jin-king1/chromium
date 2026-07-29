@@ -9,9 +9,9 @@
 #include "ash/constants/ash_features.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -163,7 +163,7 @@ class OneDriveUploadHandlerTest : public InProcessBrowserTest,
   }
 
   void RemoveObservers() {
-    NotificationDisplayServiceFactory::GetForProfile(browser()->profile())
+    NotificationDisplayServiceFactory::GetForProfile(browser()->GetProfile())
         ->RemoveObserver(this);
   }
 
@@ -270,7 +270,7 @@ class OneDriveUploadHandlerTest : public InProcessBrowserTest,
     on_notification_displayed_callback_ = std::move(callback);
   }
 
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
 
  protected:
   base::FilePath my_files_dir_;
@@ -304,7 +304,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest, UploadFromMyFiles) {
   // Start the upload workflow and end the test once the upload has completed
   // successfully.
   auto one_drive_upload_handler = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url,
+      profile(), source_file_url, UploadType::kMove,
       base::BindOnce(&OneDriveUploadHandlerTest::OnUploadSuccessful,
                      base::Unretained(this),
                      /*expected_task_result=*/OfficeTaskResult::kMoved),
@@ -333,7 +333,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest, UploadTrimsFileName) {
   // Start the upload workflow and end the test once the upload has completed
   // successfully.
   auto one_drive_upload_handler = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url,
+      profile(), source_file_url, UploadType::kMove,
       base::BindOnce(&OneDriveUploadHandlerTest::OnUploadSuccessful,
                      base::Unretained(this),
                      /*expected_task_result=*/OfficeTaskResult::kMoved),
@@ -363,7 +363,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest,
   // Start the upload workflow and end the test once the upload has completed
   // successfully.
   auto one_drive_upload_handler = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url,
+      profile(), source_file_url, UploadType::kCopy,
       base::BindOnce(&OneDriveUploadHandlerTest::OnUploadSuccessful,
                      base::Unretained(this),
                      /*expected_task_result=*/OfficeTaskResult::kCopied),
@@ -416,7 +416,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest,
       });
   SetOnNotificationDisplayedCallback(std::move(on_notification));
   auto one_drive_upload_handler = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url,
+      profile(), source_file_url, UploadType::kMove,
       base::BindOnce(
           &OneDriveUploadHandlerTest::OnUploadFailedOrAbandoned,
           base::Unretained(this),
@@ -466,7 +466,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest,
   SetOnNotificationDisplayedCallback(std::move(on_notification));
   SetUpRunLoop(/*conditions_to_end_wait=*/2);
   auto one_drive_upload_handler = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url,
+      profile(), source_file_url, UploadType::kMove,
       base::BindOnce(
           &OneDriveUploadHandlerTest::OnUploadFailedOrAbandoned,
           base::Unretained(this),
@@ -511,7 +511,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest, FailToUploadDueToInvalidUrl) {
       }));
   SetUpRunLoop(/*conditions_to_end_wait=*/2);
   auto one_drive_upload_handler = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url,
+      profile(), source_file_url, UploadType::kMove,
       base::BindOnce(
           &OneDriveUploadHandlerTest::OnUploadFailedOrAbandoned,
           base::Unretained(this),
@@ -573,7 +573,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest_ReauthEnabled,
           }));
 
   auto one_drive_upload_handler = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url,
+      profile(), source_file_url, UploadType::kMove,
       base::BindOnce(&OneDriveUploadHandlerTest::OnUploadSuccessful,
                      base::Unretained(this),
                      /*expected_task_result=*/OfficeTaskResult::kMoved),
@@ -626,7 +626,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest,
   SetOnNotificationDisplayedCallback(std::move(on_notification));
   SetUpRunLoop(/*conditions_to_end_wait=*/2);
   auto one_drive_upload_handler = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url,
+      profile(), source_file_url, UploadType::kMove,
       base::BindOnce(
           &OneDriveUploadHandlerTest::OnUploadFailedOrAbandoned,
           base::Unretained(this),
@@ -675,7 +675,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest,
       });
   SetOnNotificationDisplayedCallback(std::move(on_notification));
   auto one_drive_upload_handler = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url,
+      profile(), source_file_url, UploadType::kMove,
       base::BindOnce(
           &OneDriveUploadHandlerTest::OnUploadFailedOrAbandoned,
           base::Unretained(this),
@@ -714,7 +714,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest, UnrelatedUploads) {
   provided_file_system_->SetCreateFileCallback(
       base::BindLambdaForTesting([&]() {
         one_drive_upload_handler2 = std::make_unique<OneDriveUploadHandler>(
-            profile(), source_file_url2,
+            profile(), source_file_url2, UploadType::kMove,
             base::BindOnce(&OneDriveUploadHandlerTest::OnUploadSuccessful,
                            base::Unretained(this),
                            /*expected_task_result=*/OfficeTaskResult::kMoved),
@@ -724,7 +724,7 @@ IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest, UnrelatedUploads) {
 
   // Start the first upload.
   auto one_drive_upload_handler1 = std::make_unique<OneDriveUploadHandler>(
-      profile(), source_file_url1,
+      profile(), source_file_url1, UploadType::kMove,
       base::BindOnce(&OneDriveUploadHandlerTest::OnUploadSuccessful,
                      base::Unretained(this),
                      /*expected_task_result=*/OfficeTaskResult::kMoved),

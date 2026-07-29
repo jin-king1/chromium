@@ -25,11 +25,11 @@
 #include "base/test/simple_test_clock.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/transform.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/window_util.h"
 
@@ -117,7 +117,7 @@ class HomeToOverviewNudgeControllerTest : public NoSessionAshTestBase {
 
     for (int i = 0; i < count; ++i) {
       std::unique_ptr<aura::Window> window =
-          CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+          CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
       WindowState::Get(window.get())->Minimize();
       windows.push_back(std::move(window));
     }
@@ -190,10 +190,10 @@ TEST_F(HomeToOverviewNudgeControllerWithNudgesDisabledTest,
   SimulateUserLogin(kRegularUserLoginInfo);
 
   std::unique_ptr<aura::Window> window_1 =
-      CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   WindowState::Get(window_1.get())->Minimize();
   std::unique_ptr<aura::Window> window_2 =
-      CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   WindowState::Get(window_2.get())->Minimize();
 
   EXPECT_FALSE(GetPrimaryShelf()
@@ -262,7 +262,7 @@ TEST_F(HomeToOverviewNudgeControllerTest, ShownOnHomeScreen) {
 
   // Create and minimize another test window to force a transition to home.
   std::unique_ptr<aura::Window> window =
-      CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   wm::ActivateWindow(window.get());
   WindowState::Get(window.get())->Minimize();
 
@@ -301,7 +301,7 @@ TEST_F(HomeToOverviewNudgeControllerTest, ShownLimitedNumberOfTimes) {
     ASSERT_TRUE(GetNudgeController()->nudge_for_testing());
 
     std::unique_ptr<aura::Window> window =
-        CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+        CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
     wm::ActivateWindow(window.get());
     test_clock_.Advance(base::Hours(25));
     WindowState::Get(window.get())->Minimize();
@@ -362,8 +362,8 @@ TEST_F(HomeToOverviewNudgeControllerTest,
   EXPECT_FALSE(GetNudgeController()->nudge_for_testing());
   ASSERT_TRUE(GetNudgeController()->HasShowTimerForTesting());
 
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   GetNudgeController()->FireShowTimerForTesting();
   ASSERT_TRUE(GetNudgeWidget()->GetLayer()->GetAnimator()->is_animating());
@@ -414,7 +414,7 @@ TEST_F(HomeToOverviewNudgeControllerTest, InAppShelfShownBeforeShowTimer) {
   EXPECT_TRUE(GetNudgeController()->HasShowTimerForTesting());
 
   std::unique_ptr<aura::Window> window =
-      CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   wm::ActivateWindow(window.get());
 
   EXPECT_FALSE(GetNudgeController()->nudge_for_testing());
@@ -440,8 +440,8 @@ TEST_F(HomeToOverviewNudgeControllerTest, NudgeHiddenDuringShowAnimation) {
   ASSERT_TRUE(GetNudgeController());
   ASSERT_TRUE(GetNudgeController()->HasShowTimerForTesting());
 
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   GetNudgeController()->FireShowTimerForTesting();
   ASSERT_TRUE(GetNudgeWidget()->GetLayer()->GetAnimator()->is_animating());
@@ -453,7 +453,7 @@ TEST_F(HomeToOverviewNudgeControllerTest, NudgeHiddenDuringShowAnimation) {
   WidgetCloseObserver widget_close_observer(nudge_widget);
 
   std::unique_ptr<aura::Window> window =
-      CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   wm::ActivateWindow(window.get());
 
   EXPECT_FALSE(GetNudgeWidget());
@@ -496,7 +496,7 @@ TEST_F(HomeToOverviewNudgeControllerTest, NoCrashIfNudgeWidgetGetsClosed) {
   EXPECT_FALSE(GetNudgeController()->nudge_for_testing());
 
   std::unique_ptr<aura::Window> window =
-      CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   wm::ActivateWindow(window.get());
   EXPECT_FALSE(GetNudgeController()->nudge_for_testing());
 }
@@ -536,8 +536,8 @@ TEST_F(HomeToOverviewNudgeControllerTest, TapOnTheNudgeDuringShowAnimation) {
   ASSERT_TRUE(GetNudgeController());
   ASSERT_TRUE(GetNudgeController()->HasShowTimerForTesting());
 
-  ui::ScopedAnimationDurationScaleMode test_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode test_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   GetNudgeController()->FireShowTimerForTesting();
   ASSERT_TRUE(GetNudgeWidget()->GetLayer()->GetAnimator()->is_animating());
@@ -712,7 +712,25 @@ TEST_F(HomeToOverviewNudgeControllerTest,
   }
 }
 
+// Home to Overview Nudge should not be shown when shelf controls are enabled
+// after user login. Only Spoken Feedback is synced between OOBE and new user
+// profile.
+TEST_F(HomeToOverviewNudgeControllerTest, DisableNudgesForShelfControls) {
+  // Enabling accessibility shelf controls should disable the nudge.
+  Shell::Get()->session_controller()->GetActivePrefService()->SetBoolean(
+      prefs::kAccessibilitySpokenFeedbackEnabled, true);
+
+  // Enters tablet mode and sets up two minimized windows. This should not
+  // trigger the nudge show timer because shelf controls are on.
+  TabletModeControllerTestApi().EnterTabletMode();
+  SimulateNewUserFirstLogin("test@gmail.com");
+  ScopedWindowList windows = CreateAndMinimizeWindows(2);
+
+  EXPECT_FALSE(GetNudgeController());
+}
+
 // Home to Overview Nudge should be hidden when shelf controls are enabled.
+// See ShelfConfig::ShelfControlsForcedShownForAccessibility.
 TEST_P(HomeToOverviewNudgeControllerTestWithA11yPrefs,
        HideNudgesForShelfControls) {
   SCOPED_TRACE(testing::Message() << "Pref=" << GetParam());
@@ -735,22 +753,5 @@ TEST_P(HomeToOverviewNudgeControllerTestWithA11yPrefs,
       ->GetLastActiveUserPrefService()
       ->SetBoolean(GetParam(), true);
   EXPECT_FALSE(GetNudgeController()->nudge_for_testing());
-}
-
-// Home to Overview Nudge should not be shown when shelf controls are enabled.
-TEST_P(HomeToOverviewNudgeControllerTestWithA11yPrefs,
-       DisableNudgesForShelfControls) {
-  SCOPED_TRACE(testing::Message() << "Pref=" << GetParam());
-  // Enabling accessibility shelf controls should disable the nudge.
-  Shell::Get()->session_controller()->GetActivePrefService()->SetBoolean(
-      GetParam(), true);
-
-  // Enters tablet mode and sets up two minimized windows. This should not
-  // trigger the nudge show timer because shelf controls are on.
-  TabletModeControllerTestApi().EnterTabletMode();
-  SimulateNewUserFirstLogin("test@gmail.com");
-  ScopedWindowList windows = CreateAndMinimizeWindows(2);
-
-  EXPECT_FALSE(GetNudgeController());
 }
 }  // namespace ash

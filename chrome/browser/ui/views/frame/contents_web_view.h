@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/memory/raw_ptr.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/views/frame/web_contents_close_handler_delegate.h"
 #include "chrome/common/buildflags.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -16,6 +17,7 @@
 #include "ui/views/controls/webview/webview.h"
 
 class StatusBubbleViews;
+class WebContentsCloseHandler;
 
 namespace ui {
 class LayerTreeOwner;
@@ -34,10 +36,8 @@ class ContentsWebView : public views::WebView,
   ContentsWebView& operator=(const ContentsWebView&) = delete;
   ~ContentsWebView() override;
 
-  // Sets the status bubble, which should be repositioned every time
-  // this view changes visible bounds.
-  void SetStatusBubble(StatusBubbleViews* status_bubble);
   StatusBubbleViews* GetStatusBubble() const;
+  WebContentsCloseHandler* GetWebContentsCloseHandler() const;
 
   // Toggles whether the background is visible.
   void SetBackgroundVisible(bool background_visible);
@@ -45,12 +45,32 @@ class ContentsWebView : public views::WebView,
   const gfx::RoundedCornersF& GetBackgroundRadii() const;
   void SetBackgroundRadii(const gfx::RoundedCornersF& radii);
 
+  void set_use_default_deadline_when_animating_bounds(
+      bool use_default_deadline) {
+    use_default_deadline_when_animating_ = use_default_deadline;
+  }
+
+  void SetIsAnimatingBounds(bool is_animating);
+
+  // Update the blocked state based on the tab's modal dialog status.
+  void UpdateIsBlockedByModal();
+
   // WebView overrides:
   bool GetNeedsNotificationWhenVisibleBoundsChange() const override;
   void OnVisibleBoundsChanged() override;
   void OnThemeChanged() override;
   void RenderViewReady() override;
   void OnLetterboxingChanged() override;
+  void SetWebContents(content::WebContents* web_contents) override;
+
+  // content::WebContentsObserver overrides:
+  // Overridden to track physical interactions (mouse/touch) on the WebContents.
+  // This allows the browser to force focus synchronization in split view even
+  // when native OS focus gets stuck on a different window (like a permission
+  // prompt).
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  void DidGetUserInteraction(const blink::WebInputEvent& event) override;
+#endif
 
   // ui::View overrides:
   std::unique_ptr<ui::Layer> RecreateLayer() override;
@@ -61,9 +81,12 @@ class ContentsWebView : public views::WebView,
 
  private:
   void UpdateBackgroundColor();
-  raw_ptr<StatusBubbleViews> status_bubble_;
+  std::unique_ptr<StatusBubbleViews> status_bubble_;
+  std::unique_ptr<WebContentsCloseHandler> web_contents_close_handler_;
 
   bool background_visible_ = true;
+  bool is_animating_bounds_ = false;
+  bool use_default_deadline_when_animating_ = false;
 
   std::unique_ptr<ui::LayerTreeOwner> cloned_layer_tree_;
 };

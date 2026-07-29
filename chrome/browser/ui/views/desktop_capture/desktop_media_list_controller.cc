@@ -45,13 +45,17 @@ DesktopMediaListController::DesktopMediaListController(
       auto_select_window_(
           base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
               switches::kAutoSelectWindowCaptureSourceByTitle)),
+      auto_select_any_screen_(base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kAutoSelectScreenCaptureSource)),
       auto_select_source_(
           base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
               switches::kAutoSelectDesktopCaptureSource)),
       auto_accept_this_tab_capture_(ShouldAutoAcceptThisTabCapture()),
       auto_reject_this_tab_capture_(
           base::CommandLine::ForCurrentProcess()->HasSwitch(
-              switches::kThisTabCaptureAutoReject)) {
+              switches::kThisTabCaptureAutoReject)),
+      auto_reject_capture_(base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kCaptureAutoReject)) {
   DCHECK(dialog_);
   DCHECK(media_list_);
 }
@@ -107,6 +111,18 @@ void DesktopMediaListController::StartUpdatingInternal() {
   is_updating_ = true;
   media_list_->SetViewDialogWindowId(dialog_window_id_);
   media_list_->StartUpdating(this);
+}
+
+void DesktopMediaListController::OnAudioShareToggled(bool audio_shared) {
+#if BUILDFLAG(IS_MAC)
+  // For delegated source lists on macOS (such as SCContentSharingPicker), the
+  // action button to launch the system picker is drawn within the delegated
+  // list view itself. We propagate the audio-shared state to dynamically update
+  // this button's label in sync with the user's toggle choice.
+  if (view_ && media_list_->IsSourceListDelegated()) {
+    view_->SetAudioShared(audio_shared);
+  }
+#endif
 }
 
 void DesktopMediaListController::FocusView() {
@@ -316,6 +332,9 @@ bool DesktopMediaListController::ShouldAutoAccept(
              source.name.find(base::ASCIIToUTF16(auto_select_window_)) !=
                  std::u16string::npos) {
     return true;
+  } else if (auto_select_any_screen_ && media_list_->GetMediaListType() ==
+                                            DesktopMediaList::Type::kScreen) {
+    return true;
   }
 
   return (!auto_select_source_.empty() &&
@@ -328,5 +347,5 @@ bool DesktopMediaListController::ShouldAutoReject(
   if (media_list_->GetMediaListType() == DesktopMediaList::Type::kCurrentTab) {
     return auto_reject_this_tab_capture_;
   }
-  return false;
+  return auto_reject_capture_;
 }

@@ -4,23 +4,8 @@
 
 import {html, nothing} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import type {ClientTraceReport} from './trace_report.mojom-webui.js';
 import type {TraceReportListElement} from './trace_report_list.js';
-
-function getReportHtml(this: TraceReportListElement) {
-  // clang-format off
-  if (!this.hasTraces_()) {
-    return html`
-    <div class="empty-message">
-      <cr-icon icon="cr:warning"></cr-icon>
-      <h1>Could not find any traces saved locally.</h1>
-    </div>`;
-  }
-
-  return html`${this.traces_.map((traceReport: ClientTraceReport) => html`
-    <trace-report .trace="${traceReport}"></trace-report>`)}`;
-  // clang-format on
-}
+import type {ClientTraceReport} from './traces_internals.mojom-webui.js';
 
 export function getHtml(this: TraceReportListElement) {
   // clang-format off
@@ -49,7 +34,21 @@ export function getHtml(this: TraceReportListElement) {
   <div class="loading-spinner"><div class="spinner"></div></div>` :
   html`
   <div class="report-list-container">
-    ${getReportHtml.bind(this)()}
+    ${!this.hasTraces_() ? html`
+      <div class="empty-message">
+        <cr-icon icon="cr:warning"></cr-icon>
+        <h1>Could not find any traces saved locally.</h1>
+      </div>
+    ` : html`
+      <trace-report .isHeader="${true}"></trace-report>
+      ${this.traces_.map((traceReport: ClientTraceReport) => html`
+        <trace-report
+            .trace="${traceReport}"
+            @show-toast="${this.onShowToast_}"
+            @refresh-traces-request="${this.onRefreshTracesRequest_}">
+        </trace-report>
+      `)}
+    `}
   </div>`}
   <cr-toast id="toast" duration="5000" ?hidden="${!this.notification_}">
     <div id="notification-card">

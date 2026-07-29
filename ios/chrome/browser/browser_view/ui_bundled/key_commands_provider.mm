@@ -16,19 +16,19 @@
 #import "components/sessions/core/tab_restore_service_helper.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
-#import "ios/chrome/browser/find_in_page/model/abstract_find_tab_helper.h"
+#import "ios/chrome/browser/find_in_page/model/find_tab_helper.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
+#import "ios/chrome/browser/reader_mode/model/features.h"
+#import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_browser_agent.h"
 #import "ios/chrome/browser/sessions/model/ios_chrome_tab_restore_service_factory.h"
-#import "ios/chrome/browser/settings/ui_bundled/clear_browsing_data/features.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/bookmarks_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/find_in_page_commands.h"
@@ -36,8 +36,10 @@
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
 #import "ios/chrome/browser/shared/public/commands/reading_list_add_command.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
-#import "ios/chrome/browser/shared/ui/util/keyboard_observer_helper.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
@@ -85,7 +87,10 @@ using base::UserMetricsAction;
 
 @end
 
-@implementation KeyCommandsProvider
+@implementation KeyCommandsProvider {
+  // Whether the keyboard is visible or not.
+  BOOL _keyboardVisible;
+}
 
 #pragma mark - Public
 
@@ -94,6 +99,16 @@ using base::UserMetricsAction;
   self = [super init];
   if (self) {
     _browser = browser->AsWeakPtr();
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(keyboardDidShow)
+               name:UIKeyboardDidShowNotification
+             object:nil];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(keyboardDidHide)
+               name:UIKeyboardDidHideNotification
+             object:nil];
   }
   return self;
 }
@@ -195,6 +210,21 @@ using base::UserMetricsAction;
       sel_isEqual(action, @selector(keyCommand_showPreviousTab))) {
     return self.tabsCount > 0;
   }
+
+  web::WebState* currentWebState =
+      _browser->GetWebStateList()->GetActiveWebState();
+  if (currentWebState) {
+    auto* readerModeTabHelper =
+        ReaderModeTabHelper::FromWebState(currentWebState);
+    bool readerModeActive = IsReaderModeAvailable() && readerModeTabHelper &&
+                            readerModeTabHelper->IsActive();
+    if (readerModeActive &&
+        (sel_isEqual(action, @selector(keyCommand_addToBookmarks)) ||
+         sel_isEqual(action, @selector(keyCommand_addToReadingList)))) {
+      return NO;
+    }
+  }
+
   if (sel_isEqual(action, @selector(keyCommand_find))) {
     return self.findInPageAvailable;
   }
@@ -234,19 +264,25 @@ using base::UserMetricsAction;
 // Changes the title to display the most appropriate string in the shortcut
 // menu.
 - (void)validateCommand:(UICommand*)command {
+  NSString* newTitle;
   if (command.action == @selector(keyCommand_find)) {
-    command.discoverabilityTitle =
-        l10n_util::GetNSStringWithFixup(IDS_IOS_KEYBOARD_FIND_IN_PAGE);
+    newTitle = l10n_util::GetNSStringWithFixup(IDS_IOS_KEYBOARD_FIND_IN_PAGE);
   }
   if (command.action == @selector(keyCommand_select1)) {
-    command.discoverabilityTitle =
-        l10n_util::GetNSStringWithFixup(IDS_IOS_KEYBOARD_FIRST_TAB);
+    newTitle = l10n_util::GetNSStringWithFixup(IDS_IOS_KEYBOARD_FIRST_TAB);
   }
   if (command.action == @selector(keyCommand_addToBookmarks)) {
     if ([self isBookmarkedPage]) {
-      command.discoverabilityTitle =
+      newTitle =
           l10n_util::GetNSStringWithFixup(IDS_IOS_KEYBOARD_EDIT_BOOKMARK);
+      command.image = SymbolWithConfiguration(SymbolPencil, nil);
     }
+  }
+  // If a new title was determined, set it on the command.
+  if (newTitle.length > 0) {
+    command.title = newTitle;
+    // Keep the discoverability title in sync.
+    command.discoverabilityTitle = newTitle;
   }
   [super validateCommand:command];
 }
@@ -274,15 +310,14 @@ using base::UserMetricsAction;
 
 - (void)keyCommand_openNewWindow {
   RecordAction(UserMetricsAction("MobileKeyCommandOpenNewWindow"));
-  [_applicationHandler
-      openNewWindowWithActivity:ActivityToLoadURL(
-                                    WindowActivityKeyCommandOrigin,
-                                    GURL(kChromeUINewTabURL))];
+  [_sceneHandler openNewWindowWithActivity:ActivityToLoadURL(
+                                               WindowActivityKeyCommandOrigin,
+                                               GURL(kChromeUINewTabURL))];
 }
 
 - (void)keyCommand_openNewIncognitoWindow {
   RecordAction(UserMetricsAction("MobileKeyCommandOpenNewIncognitoWindow"));
-  [_applicationHandler
+  [_sceneHandler
       openNewWindowWithActivity:ActivityToLoadURL(
                                     WindowActivityKeyCommandOrigin,
                                     GURL(kChromeUINewTabURL), web::Referrer(),
@@ -306,7 +341,7 @@ using base::UserMetricsAction;
     return;
   }
 
-  [_applicationHandler openURLInNewTab:[OpenNewTabCommand command]];
+  [_sceneHandler openURLInNewTab:[OpenNewTabCommand command]];
   RestoreTab(entry->id, WindowOpenDisposition::CURRENT_TAB, _browser.get());
 }
 
@@ -327,7 +362,7 @@ using base::UserMetricsAction;
 
 - (void)keyCommand_openLocation {
   RecordAction(UserMetricsAction("MobileKeyCommandOpenLocation"));
-  [_omniboxHandler focusOmnibox];
+  [self.browserCoordinatorHandler showComposebox];
 }
 
 - (void)keyCommand_closeTab {
@@ -413,7 +448,7 @@ using base::UserMetricsAction;
 
 - (void)keyCommand_showHistory {
   RecordAction(UserMetricsAction("MobileKeyCommandShowHistory"));
-  [_applicationHandler showHistory];
+  [_sceneHandler showHistory];
 }
 
 - (void)keyCommand_voiceSearch {
@@ -421,12 +456,12 @@ using base::UserMetricsAction;
   [LayoutGuideCenterForBrowser(_browser.get())
       referenceView:nil
           underName:kVoiceSearchButtonGuide];
-  [_applicationHandler startVoiceSearch];
+  [_browserCoordinatorHandler startVoiceSearch];
 }
 
 - (void)keyCommand_showSettings {
   RecordAction(UserMetricsAction("MobileKeyCommandShowSettings"));
-  [_applicationHandler showSettingsFromViewController:_viewController];
+  [_sceneHandler showSettingsFromViewController:_viewController];
 }
 
 - (void)keyCommand_stop {
@@ -491,7 +526,7 @@ using base::UserMetricsAction;
 
 - (void)keyCommand_reportAnIssue {
   RecordAction(UserMetricsAction("MobileKeyCommandReportAnIssue"));
-  [_applicationHandler
+  [_sceneHandler
       showReportAnIssueFromViewController:_viewController
                                    sender:UserFeedbackSender::KeyCommand];
 }
@@ -523,8 +558,8 @@ using base::UserMetricsAction;
 
 - (void)keyCommand_goToTabGrid {
   RecordAction(UserMetricsAction("MobileKeyCommandGoToTabGrid"));
-  [_applicationHandler prepareTabSwitcher];
-  [_applicationHandler displayTabGridInMode:TabGridOpeningMode::kDefault];
+  [_sceneHandler prepareTabSwitcher];
+  [_sceneHandler displayTabGridInMode:TabGridOpeningMode::kDefault];
 }
 
 - (void)keyCommand_clearBrowsingData {
@@ -534,11 +569,7 @@ using base::UserMetricsAction;
       browsing_data::DeleteBrowsingDataDialogAction::
           kKeyboardEntryPointSelected);
 
-  if (IsIosQuickDeleteEnabled()) {
-    [_quickDeleteHandler showQuickDeleteAndCanPerformTabsClosureAnimation:YES];
-  } else {
-    [_settingsHandler showClearBrowsingDataSettings];
-  }
+  [_quickDeleteHandler showQuickDeleteAndCanPerformRadialWipeAnimation:YES];
 }
 
 #pragma mark - Private
@@ -554,7 +585,7 @@ using base::UserMetricsAction;
     return NO;
   }
 
-  auto* helper = GetConcreteFindTabHelperFromWebState(currentWebState);
+  FindTabHelper* helper = FindTabHelper::FromWebState(currentWebState);
   return (helper && helper->CurrentPageSupportsFindInPage());
 }
 
@@ -565,7 +596,7 @@ using base::UserMetricsAction;
     return NO;
   }
 
-  auto* helper = GetConcreteFindTabHelperFromWebState(currentWebState);
+  FindTabHelper* helper = FindTabHelper::FromWebState(currentWebState);
   return (helper && helper->IsFindUIActive());
 }
 
@@ -576,21 +607,20 @@ using base::UserMetricsAction;
 - (BOOL)isEditingText {
   UIResponder* firstResponder = GetFirstResponder();
   return [firstResponder isKindOfClass:[UITextField class]] ||
-         [firstResponder isKindOfClass:[UITextView class]] ||
-         [[KeyboardObserverHelper sharedKeyboardObserver] isKeyboardVisible];
+         [firstResponder isKindOfClass:[UITextView class]] || _keyboardVisible;
 }
 
 - (void)openNewRegularTab {
   OpenNewTabCommand* newTabCommand = [OpenNewTabCommand command];
   newTabCommand.shouldFocusOmnibox = YES;
-  [_applicationHandler openURLInNewTab:newTabCommand];
+  [_sceneHandler openURLInNewTab:newTabCommand];
 }
 
 - (void)openNewIncognitoTab {
   OpenNewTabCommand* newIncognitoTabCommand =
       [OpenNewTabCommand incognitoTabCommand];
   newIncognitoTabCommand.shouldFocusOmnibox = YES;
-  [_applicationHandler openURLInNewTab:newIncognitoTabCommand];
+  [_sceneHandler openURLInNewTab:newIncognitoTabCommand];
 }
 
 - (void)showTabAtIndex:(NSUInteger)index {
@@ -622,6 +652,16 @@ using base::UserMetricsAction;
   bookmarks::BookmarkModel* bookmarkModel =
       ios::BookmarkModelFactory::GetForProfile(_browser->GetProfile());
   return bookmarkModel->IsBookmarked(url);
+}
+
+// Updates keyboard visibility when the keyboard is visible.
+- (void)keyboardDidShow {
+  _keyboardVisible = YES;
+}
+
+// Updates keyboard visibility when the keyboard is hidden.
+- (void)keyboardDidHide {
+  _keyboardVisible = NO;
 }
 
 @end

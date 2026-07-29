@@ -28,7 +28,6 @@ class NormalGetUpdatesRequestEvent : public ProtocolEvent {
                                DataTypeSet nudged_types,
                                DataTypeSet notified_types,
                                DataTypeSet refresh_requested_types,
-                               bool is_retry,
                                sync_pb::ClientToServerMessage request);
 
   NormalGetUpdatesRequestEvent(const NormalGetUpdatesRequestEvent&) = delete;
@@ -43,14 +42,13 @@ class NormalGetUpdatesRequestEvent : public ProtocolEvent {
   base::Time GetTimestamp() const override;
   std::string GetType() const override;
   std::string GetDetails() const override;
-  base::Value::Dict GetProtoMessage(bool include_specifics) const override;
+  base::DictValue GetProtoMessage(bool include_specifics) const override;
 
   const base::Time timestamp_;
 
   const DataTypeSet nudged_types_;
   const DataTypeSet notified_types_;
   const DataTypeSet refresh_requested_types_;
-  const bool is_retry_;
 
   const sync_pb::ClientToServerMessage request_;
 };

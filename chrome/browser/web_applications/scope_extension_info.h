@@ -13,13 +13,11 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 
-namespace base {
-class Value;
-}  // namespace base
-
 namespace web_app {
 
-class WebAppScopeExtensionProto;
+namespace proto {
+class WebAppScopeExtension;
+}  // namespace proto
 
 // Contains information about a web app's scope extension information derived
 // from its web app manifest.
@@ -28,13 +26,19 @@ struct ScopeExtensionInfo {
   ScopeExtensionInfo(const ScopeExtensionInfo&) = default;
   ScopeExtensionInfo& operator=(const ScopeExtensionInfo&) = default;
 
+  friend bool operator==(const ScopeExtensionInfo&,
+                         const ScopeExtensionInfo&) = default;
+
+  friend auto operator<=>(const ScopeExtensionInfo&,
+                          const ScopeExtensionInfo&) = default;
+
   static ScopeExtensionInfo CreateForOrigin(url::Origin origin,
                                             bool has_origin_wildcard = false);
   static ScopeExtensionInfo CreateForScope(GURL scope,
                                            bool has_origin_wildcard = false);
   // Used specifically in WebAppDatabase::CreateWebAppProto
   static ScopeExtensionInfo CreateForProto(
-      const WebAppScopeExtensionProto& web_app_scope_extension_proto);
+      const proto::WebAppScopeExtension& web_app_scope_extension_proto);
 
   // Reset the scope extension to its default state.
   REINITIALIZES_AFTER_MOVE void Reset();
@@ -53,17 +57,6 @@ struct ScopeExtensionInfo {
  private:
   ScopeExtensionInfo(url::Origin origin, GURL scope, bool has_origin_wildcard);
 };
-
-bool operator==(const ScopeExtensionInfo& scope_extension1,
-                const ScopeExtensionInfo& scope_extension2);
-
-bool operator!=(const ScopeExtensionInfo& scope_extension1,
-                const ScopeExtensionInfo& scope_extension2);
-
-// Allow ScopeExtensionInfo to be used as a key in STL (for example, a std::set
-// or std::map).
-bool operator<(const ScopeExtensionInfo& scope_extension1,
-               const ScopeExtensionInfo& scope_extension2);
 
 using ScopeExtensions = base::flat_set<ScopeExtensionInfo>;
 using ScopeExtensionMap = std::unordered_map<std::string, ScopeExtensionInfo>;

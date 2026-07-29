@@ -6,16 +6,14 @@
 
 #include "base/feature_list.h"
 #include "base/power_monitor/power_monitor.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 
 namespace base::sequence_manager::internal {
 
 namespace {
 
 // Activate the power management events that affect task scheduling.
-BASE_FEATURE(kUsePowerMonitorWithThreadController,
-             "UsePowerMonitorWithThreadController",
-             FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kUsePowerMonitorWithThreadController, FEATURE_ENABLED_BY_DEFAULT);
 
 // TODO(crbug.com/40127966): Remove this when the experiment becomes the
 // default.

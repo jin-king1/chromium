@@ -71,13 +71,13 @@ used when committed.
     Fuchsia target (on a Linux host)
 *   [iOS Build Instructions](ios/build_instructions.md) - iOS target (on a MacOS
     host)
+*   [Gerrit Guide](gerrit_guide.md) - Setup Gerrit access
+*   [Gerrit ReAuth](gerrit_reauth.md) - Gerrit ReAuth guide
 *   [Chrome OS Build Instructions](chromeos_build_instructions.md) - Chrome OS
 *   [Linux Chromium ARM Recipes](linux/chromium_arm.md) - Recipes for building
     Chromium for ARM on Linux.
 *   [Chrome Component Build](component_build.md) - Faster builds using more
     libraries
-*   [Using the BuildRunner](using_build_runner.md) - Scripts that extract build
-    stops from builders and runs them locally on a slave
 *   [Cr User Manual](cr_user_manual.md) - Manual for `cr`, a tool that tries to
     hide some of the tools used for working on Chromium behind an abstraction
     layer
@@ -175,7 +175,8 @@ used when committed.
     build, fork, integration of stock Chromium, or are building ChromiumOS (for
     login).
 *   [User Education](../components/user_education/README.md) - Create
-    in-product help (IPH) and tutorials to call out Chromium features
+    in-product help (IPH) and tutorials to call out Chromium features.
+*   [User-Agent](./user_agent/README.md) - User-Agent and User-Agent Client Hints.
 
 ### Testing
 *   [Running and Debugging Web Tests](testing/web_tests.md)
@@ -199,12 +200,13 @@ used when committed.
 *   [Test Descriptions](testing/test_descriptions.md) - Unit test targets that can be
     built, with associated descriptions.
 *   [Fuzz Testing](../testing/libfuzzer/README.md) - Fuzz testing in Chromium.
-*   [IPC Fuzzer](testing/ipc_fuzzer.md) - Fuzz testing of Chromium IPC interfaces.
 *   [Running Chrome tests with AddressSanitizer (asan) and LeakSanitizer (lsan)](testing/linux_running_asan_tests.md) -
     Run Chrome tests with ASAN and LSAN builds to detect addressability issues and memory leaks.
 *   [Code Coverage](testing/code_coverage.md) - Code coverage for Chromium.
 *   [Code Coverage in Gerrit](testing/code_coverage_in_gerrit.md) - Per-CL code
     coverage in Gerrit to assist code reviews.
+*   [Chrome for Testing](chrome_for_testing/README.md) - The functional and behavioral differences of Chrome for Testing from standard Chrome.
+*   [Chrome for Testing configuration](chrome_for_testing/chrome_for_testing_configuration.md) - Customizing Chrome for Testing required components installation and UI behavior.
 
 ### Configuration Docs
 
@@ -213,6 +215,7 @@ used when committed.
 *   [Runtime Enabled Features](https://chromium.googlesource.com/chromium/src/+/main/third_party/blink/renderer/platform/RuntimeEnabledFeatures.md)
 *   [Initialization of Blink runtime features in content layer](initialize_blink_features.md)
 *   [Integrating a feature with the origin trials framework](origin_trials_integration.md)
+*   [Custom Type Helpers for Origin-Trial-Controlled HTML Elements](custom_type_helpers_for_origin_trial_elements.md)
 
 ### GPU-related docs
 *   [GPU Pixel Wrangling](gpu/pixel_wrangling.md) - Instructions for GPU
@@ -258,7 +261,7 @@ used when committed.
     related tools.
 *   [Chroot Notes](linux/using_a_chroot.md) - Setting up a chroot to work around
     libfreetype differences in some versions of Linux.
-*   [Linux Sandboxing](linux/sandboxing.md) - The Linux multi-process model to
+*   [Linux Sandboxing](../sandbox/linux/README.md) - The Linux multi-process model to
     isolate browser components with different privileges.
 *   [Zygote Process](linux/zygote.md) - How the Linux Zygote process, used to
     spawn new processes, works.
@@ -275,7 +278,6 @@ used when committed.
     with clang/ninja
 *   [Cocoa tips and tricks](cocoa_tips_and_tricks.md) - A collection of idioms
     used when writing Cocoa views and controllers
-*   [MacViews Release Plan](ui/views/macviews_release.md)
 
 ### Misc Windows-Specific Docs
 *   [Handling cygwin rebaseall failures](cygwin_dll_remapping_failure.md)
@@ -309,7 +311,7 @@ used when committed.
     coverage data with the EMMA tool.
 *   [Dynamic Feature Modules (DFMs)](android_dynamic_feature_modules.md) - What
     are they and how to create new ones.
-*   [Other build-related Android docs](../build/android/docs/index.md)
+*   [Other build-related Android docs](../build/android/docs/README.md)
 *   [Chrome for Android UI](ui/android/overview.md) - Resources and best practices for
     developing UI
 
@@ -353,7 +355,7 @@ used when committed.
 *   [Piranha Plant](piranha_plant.md) - Future architecture of MediaStreams
 *   [Media Capture](media/capture/README.md) - Features and APIs that enable the
     browser to capture pixels and audio from itself or the underlying OS.
-*   [Video Encode Accelerator Tests](media/gpu/veatest_usage.md) - How to
+*   [Video Encode Accelerator Tests](media/gpu/video_encoder_test_usage.md) - How to
     use the accelerated video encoder test program.
 *   [Video Decoder Tests](media/gpu/video_decoder_test_usage.md) - Running the
     video decoder tests.
@@ -435,12 +437,15 @@ used when committed.
     in Chrome to bootstrap CrOS services' Mojo connection.
 
 ### Security
-*   [The Rule Of 2](security/rule-of-2.md) - An imoportant security rule when
+*   [The Rule Of 2](security/rule-of-2.md) - An important security rule when
     handling untrustworthy contents (like anything downloaded from the web).
 
 ### Speed
 *   [Chrome Speed](speed/README.md) - Documentation for performance measurements and regressions in Chrome.
 *   [Chrome Speed Metrics](speed_metrics/README.md) - Documentation about user experience metrics on the web and their JavaScript APIs.
+
+### Stability
+*   [Overview of stability/crash metrics and reporting](stability.md) - Describes the different ways Chrome monitors stability and attempts to improve stability.
 
 ### UI
 *   [Chromium UI Platform](ui/index.md) - All things user interface
@@ -471,8 +476,8 @@ a video series of interviews with Chromium software engineers.
 *   [WebView Policies](webview_policies.md)
 *   [Linux Profiling](linux/profiling.md) - How to profile Chromium on Linux
 *   [Linux Graphics Pipeline](linux/graphics_pipeline.md)
-*   [Linux `SUID` Sandbox](linux/suid_sandbox.md) - Sandboxing renderers using a
-    SUID binary on Linux
+*   [Linux `SUID` Sandbox](../sandbox/linux/README.md) - Sandboxing renderers
+    using a SUID binary on Linux
 *   [Linux `SUID` Sandbox Development](linux/suid_sandbox_development.md) -
     Development on the above system.
 *   [Linux PID Namespace Support](linux/pid_namespace_support.md)

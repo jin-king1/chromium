@@ -14,6 +14,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_path_override.h"
 #include "base/test/test_suite.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
@@ -21,8 +22,10 @@
 #include "chrome/browser/metrics/perf/metric_provider.h"
 #include "chrome/browser/metrics/perf/perf_events_collector.h"
 #include "chrome/browser/metrics/perf/profile_provider_chromeos.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
+#include "components/variations/variations_associated_data.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
@@ -189,7 +192,7 @@ class ProfileProviderRealCollectionTest : public testing::Test {
     ash::LoginState::Shutdown();
     chromeos::PowerManagerClient::Shutdown();
     ash::DBusThreadManager::Shutdown();
-    variations::testing::ClearAllVariationParams();
+    variations::test::ClearAllVariationParams();
   }
 
   void AssertProfileData(SampledProfile::TriggerEvent trigger_event) {
@@ -271,6 +274,7 @@ class ProfileProviderRealCollectionTest : public testing::Test {
 
   std::unique_ptr<aura::Env> aura_env_;
   std::unique_ptr<TestProfileProvider> profile_provider_;
+  base::ScopedPathOverride override_user_data_dir_{chrome::DIR_USER_DATA};
 };
 
 // Flaky on chromeos: crbug.com/1184119

@@ -4,193 +4,166 @@
 
 package org.chromium.chrome.test.transit.hub;
 
-import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
-import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
-import static org.hamcrest.CoreMatchers.allOf;
 import static org.hamcrest.CoreMatchers.containsString;
 
-import static org.chromium.base.test.transit.Condition.whether;
-import static org.chromium.base.test.transit.ViewSpec.viewSpec;
+import static org.chromium.base.test.transit.ViewElement.unscopedOption;
 
-import androidx.annotation.Nullable;
-import androidx.test.espresso.Espresso;
-import androidx.test.espresso.NoMatchingViewException;
+import android.view.View;
 
-import org.chromium.base.supplier.Supplier;
-import org.chromium.base.test.transit.Condition;
-import org.chromium.base.test.transit.ConditionStatus;
-import org.chromium.base.test.transit.Elements;
-import org.chromium.base.test.transit.Station;
-import org.chromium.base.test.transit.Transition;
-import org.chromium.base.test.transit.TravelException;
-import org.chromium.base.test.transit.UiThreadCondition;
+import com.google.android.material.tabs.TabLayout;
+
+import org.chromium.base.test.transit.Facility;
+import org.chromium.base.test.transit.Trip;
+import org.chromium.base.test.transit.TripBuilder;
 import org.chromium.base.test.transit.ViewElement;
-import org.chromium.base.test.transit.ViewSpec;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.hub.HubToolbarView;
 import org.chromium.chrome.browser.hub.PaneId;
-import org.chromium.chrome.browser.hub.R;
-import org.chromium.chrome.browser.layouts.LayoutManager;
+import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
-import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.test.transit.ChromeActivityTabModelBoundStation;
+import org.chromium.chrome.test.transit.SoftKeyboardFacility;
 import org.chromium.chrome.test.transit.layouts.LayoutTypeVisibleCondition;
-import org.chromium.chrome.test.transit.page.PageStation;
-import org.chromium.chrome.test.transit.tabmodel.TabModelSelectorCondition;
+import org.chromium.ui.base.DeviceFormFactor;
 
 /** The base station for Hub, with several panes and a toolbar. */
-public abstract class HubBaseStation extends Station<ChromeTabbedActivity> {
-    public static final ViewSpec HUB_TOOLBAR = viewSpec(withId(R.id.hub_toolbar));
-    public static final ViewSpec HUB_PANE_HOST = viewSpec(withId(R.id.hub_pane_host));
-    public static final ViewSpec HUB_MENU_BUTTON =
-            HUB_TOOLBAR.descendant(withId(org.chromium.chrome.R.id.menu_button));
-    public static final ViewSpec HUB_PANE_SWITCHER =
-            HUB_TOOLBAR.descendant(withId(R.id.pane_switcher));
-
-    // The non-regular toggle tab button contentDescription is a substring found in the string:
-    // R.string.accessibility_tab_switcher_standard_stack.
-    public static final ViewSpec REGULAR_TOGGLE_TAB_BUTTON =
-            viewSpec(withContentDescription(containsString("standard tab")));
-
-    public static final ViewSpec INCOGNITO_TOGGLE_TAB_BUTTON =
-            viewSpec(withContentDescription(R.string.accessibility_tab_switcher_incognito_stack));
-
-    protected Supplier<TabModelSelector> mTabModelSelectorSupplier;
-    protected @Nullable ViewElement mRegularTabsButton;
-    protected @Nullable ViewElement mIncognitoTabsButton;
+public abstract class HubBaseStation
+        extends ChromeActivityTabModelBoundStation<ChromeTabbedActivity> {
+    public final ViewElement<HubToolbarView> toolbarElement;
+    public final ViewElement<View> paneHostElement;
+    public ViewElement<View> viewHolderElement;
+    public final ViewElement<View> menuButtonElement;
+    public final ViewElement<TabLayout> paneSwitcherElement;
+    public final @Nullable ViewElement<View> regularTabsButtonElement;
+    public final @Nullable ViewElement<View> incognitoTabsButtonElement;
+    protected final boolean mIsStandaloneIncognitoWindow;
     protected final boolean mIncognitoTabsExist;
     protected final boolean mRegularTabsExist;
 
-    public HubBaseStation(boolean regularTabsExist, boolean incognitoTabsExist) {
-        super(ChromeTabbedActivity.class);
+    public HubBaseStation(
+            boolean isIncognito,
+            boolean regularTabsExist,
+            boolean incognitoTabsExist,
+            boolean hasMenuButton) {
+        super(ChromeTabbedActivity.class, isIncognito);
         mRegularTabsExist = regularTabsExist;
         mIncognitoTabsExist = incognitoTabsExist;
+
+        toolbarElement = declareView(HubToolbarView.class, withId(R.id.hub_toolbar));
+        paneHostElement = declareView(withId(R.id.hub_pane_host));
+        viewHolderElement = declareView(withId(R.id.tab_switcher_view_holder));
+        menuButtonElement =
+                hasMenuButton
+                        ? declareView(toolbarElement.descendant(withId(R.id.menu_button)))
+                        : null;
+
+        mIsStandaloneIncognitoWindow = IncognitoUtils.shouldOpenIncognitoAsWindow() && isIncognito;
+        paneSwitcherElement =
+                mIsStandaloneIncognitoWindow
+                        ? null
+                        : declareView(
+                                toolbarElement.descendant(
+                                        TabLayout.class, withId(R.id.pane_switcher)));
+
+        // TODO(crbug.com/386819654): Add a member of type ViewElement representing tab group pane
+        // The non-regular toggle tab button contentDescription is a substring found in the string:
+        // R.string.accessibility_tab_switcher_standard_stack.
+        regularTabsButtonElement =
+                mIsStandaloneIncognitoWindow
+                        ? null
+                        : declareView(withContentDescription(containsString("standard tab")));
+        if (mIncognitoTabsExist && !mIsStandaloneIncognitoWindow) {
+            incognitoTabsButtonElement =
+                    declareView(
+                            withContentDescription(
+                                    R.string.accessibility_tab_switcher_incognito_stack));
+        } else {
+            incognitoTabsButtonElement = null;
+        }
+
+        declareEnterCondition(new LayoutTypeVisibleCondition(mActivityElement, LayoutType.HUB));
     }
 
     /** Returns the station's {@link PaneId}. */
     public abstract @PaneId int getPaneId();
-
-    @Override
-    public void declareElements(Elements.Builder elements) {
-        super.declareElements(elements);
-        mTabModelSelectorSupplier =
-                elements.declareEnterCondition(new TabModelSelectorCondition(mActivityElement));
-
-        elements.declareView(HUB_TOOLBAR);
-        elements.declareView(HUB_PANE_HOST);
-        elements.declareView(HUB_MENU_BUTTON);
-
-        // TODO(crbug.com/386819654): Add a member of type ViewElement representing tab group pane
-        if (ChromeFeatureList.sTabGroupPaneAndroid.isEnabled()) {
-            mRegularTabsButton = elements.declareView(REGULAR_TOGGLE_TAB_BUTTON);
-            if (mIncognitoTabsExist) {
-                mIncognitoTabsButton = elements.declareView(INCOGNITO_TOGGLE_TAB_BUTTON);
-            }
-        } else {
-            if (mIncognitoTabsExist) {
-                mRegularTabsButton = elements.declareView(REGULAR_TOGGLE_TAB_BUTTON);
-                mIncognitoTabsButton = elements.declareView(INCOGNITO_TOGGLE_TAB_BUTTON);
-            }
-        }
-
-        elements.declareEnterCondition(new HubLayoutNotInTransition());
-        elements.declareEnterCondition(
-                new LayoutTypeVisibleCondition(mActivityElement, LayoutType.TAB_SWITCHER));
-    }
-
-    /** Returns the {@link Condition} that acts as {@link Supplier<TabModelSelector>}. */
-    public Supplier<TabModelSelector> getTabModelSelectorSupplier() {
-        return mTabModelSelectorSupplier;
-    }
-
-    /**
-     * Returns to the previous tab via the back button.
-     *
-     * @return the {@link PageStation} that Hub returned to.
-     */
-    public <T extends PageStation> T leaveHubToPreviousTabViaBack(T destination) {
-        return travelToSync(destination, Transition.retryOption(), () -> Espresso.pressBack());
-    }
 
     /**
      * Selects the tab switcher pane on the Hub.
      *
      * @return the corresponding subclass of {@link HubBaseStation}.
      */
-    public <T extends HubBaseStation> T selectPane(
+    private <T extends HubBaseStation> T selectPane(
             @PaneId int paneId, Class<T> expectedDestination) {
-        recheckActiveConditions();
-
         if (getPaneId() == paneId) {
             return expectedDestination.cast(this);
         }
+
+        return selectPaneTo(paneId, expectedDestination).complete().get(expectedDestination);
+    }
+
+    private <T extends HubBaseStation> TripBuilder selectPaneTo(
+            int paneId, Class<T> expectedDestination) {
+        recheckActiveConditions();
 
         T destinationStation =
                 expectedDestination.cast(
                         HubStationUtils.createHubStation(
                                 paneId, mRegularTabsExist, mIncognitoTabsExist));
 
-        try {
-            HUB_PANE_SWITCHER.onView().check(matches(isDisplayed()));
-        } catch (NoMatchingViewException e) {
-            throw TravelException.newTravelException(
-                    "Hub pane switcher is not visible to switch to " + paneId);
-        }
-
         String contentDescription =
                 HubStationUtils.getContentDescriptionSubstringForIdPaneSelection(paneId);
-        return travelToSync(
-                destinationStation,
-                () -> {
-                    clickPaneSwitcherForPaneWithContentDescription(contentDescription);
-                });
+        SwitchPaneButtonFacility button =
+                noopTo().enterFacility(new SwitchPaneButtonFacility(contentDescription));
+        return button.buttonElement.clickTo().arriveAtAnd(destinationStation);
     }
 
     /** Convenience method to select the Regular Tab Switcher pane. */
-    public RegularTabSwitcherStation selectRegularTabList() {
+    public RegularTabSwitcherStation selectRegularTabsPane() {
         return selectPane(PaneId.TAB_SWITCHER, RegularTabSwitcherStation.class);
     }
 
     /** Convenience method to select the Incognito Tab Switcher pane. */
-    public IncognitoTabSwitcherStation selectIncognitoTabList() {
+    public IncognitoTabSwitcherStation selectIncognitoTabsPane() {
         return selectPane(PaneId.INCOGNITO_TAB_SWITCHER, IncognitoTabSwitcherStation.class);
     }
 
-    private void clickPaneSwitcherForPaneWithContentDescription(String contentDescription) {
-        // TODO(crbug.com/40287437): Content description seems reasonable for now, this might get
-        // harder once we use a recycler view with text based buttons.
-        onView(
-                        allOf(
-                                isDescendantOfA(HUB_PANE_SWITCHER.getViewMatcher()),
-                                withContentDescription(containsString(contentDescription))))
-                .perform(click());
+    /** Convenience method to select the Tab Groups pane. */
+    public TabGroupPaneStation selectTabGroupsPane() {
+        return selectPane(PaneId.TAB_GROUPS, TabGroupPaneStation.class);
     }
 
-    private class HubLayoutNotInTransition extends UiThreadCondition {
-        private HubLayoutNotInTransition() {
-            dependOnSupplier(mActivityElement, "ChromeTabbedActivity");
+    /** Convenience method to select the History pane. */
+    public HistoryPaneStation selectHistoryPane() {
+        if (getPaneId() == PaneId.HISTORY) {
+            return HistoryPaneStation.class.cast(this);
         }
 
-        @Override
-        protected ConditionStatus checkWithSuppliers() {
-            LayoutManager layoutManager = mActivityElement.get().getLayoutManager();
-            boolean startingToShow = layoutManager.isLayoutStartingToShow(LayoutType.TAB_SWITCHER);
-            boolean startingToHide = layoutManager.isLayoutStartingToHide(LayoutType.TAB_SWITCHER);
-            return whether(
-                    !startingToShow && !startingToHide,
-                    "startingToShow=%b, startingToHide=%b",
-                    startingToShow,
-                    startingToHide);
+        TripBuilder tripBuilder = selectPaneTo(PaneId.HISTORY, HistoryPaneStation.class);
+        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(getActivity())) {
+            Trip trip = tripBuilder.enterFacilityAnd(new SoftKeyboardFacility()).complete();
+            trip.get(SoftKeyboardFacility.class).close();
+            return trip.get(HistoryPaneStation.class);
+        } else {
+            return tripBuilder.complete().get(HistoryPaneStation.class);
         }
+    }
 
-        @Override
-        public String buildDescription() {
-            return "LayoutManager is not in transition to or from TAB_SWITCHER (Hub)";
+    public class SwitchPaneButtonFacility extends Facility<HubBaseStation> {
+        public final ViewElement<View> buttonElement;
+
+        public SwitchPaneButtonFacility(String contentDescription) {
+            // TODO(crbug.com/40287437): Content description seems reasonable for now, this might
+            // get harder once we use a recycler view with text based buttons.
+            buttonElement =
+                    declareView(
+                            paneSwitcherElement.descendant(
+                                    withContentDescription(containsString(contentDescription))),
+                            unscopedOption());
         }
     }
 }

@@ -8,9 +8,11 @@
 #include <stdint.h>
 
 #include <set>
+#include <string>
 
 #include "base/files/file.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/services/font/public/mojom/font_service.mojom.h"
@@ -66,8 +68,8 @@ class FontServiceThread : public base::RefCountedThreadSafe<FontServiceThread> {
   bool FontRenderStyleForStrike(
       std::string family,
       uint32_t size,
-      bool is_italic,
       bool is_bold,
+      bool is_italic,
       float device_scale_factor,
       font_service::mojom::FontRenderStylePtr* out_font_render_style);
   bool MatchFontByPostscriptNameOrFullFontName(
@@ -147,8 +149,8 @@ class FontServiceThread : public base::RefCountedThreadSafe<FontServiceThread> {
       base::WaitableEvent* done_event,
       std::string family,
       uint32_t size,
-      bool is_italic,
       bool is_bold,
+      bool is_italic,
       float device_scale_factor,
       bool* out_valid,
       mojom::FontRenderStylePtr* out_font_render_style);

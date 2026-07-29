@@ -20,7 +20,6 @@ class PageloadForegroundDurationTabHelper
   ~PageloadForegroundDurationTabHelper() override;
 
  private:
-  WEB_STATE_USER_DATA_KEY_DECL();
   friend class web::WebStateUserData<PageloadForegroundDurationTabHelper>;
   explicit PageloadForegroundDurationTabHelper(web::WebState* web_state);
 
@@ -33,10 +32,6 @@ class PageloadForegroundDurationTabHelper
                            web::NavigationContext* navigation_context) override;
   void RenderProcessGone(web::WebState* web_state) override;
   void WebStateDestroyed(web::WebState* web_state) override;
-  void WebStateRealized(web::WebState* web_state) override;
-
-  // Helper used to create notification observers.
-  void CreateNotificationObservers();
 
   // Indicates to this tab helper that the app has entered a foreground state.
   void UpdateForAppWillForeground();

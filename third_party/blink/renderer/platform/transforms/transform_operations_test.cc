@@ -22,13 +22,11 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/transforms/transform_operations.h"
 
+#include <array>
+
+#include "base/compiler_specific.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/transforms/interpolated_transform_operation.h"
 #include "third_party/blink/renderer/platform/transforms/matrix_3d_transform_operation.h"
@@ -116,14 +114,16 @@ TEST(TransformOperationsTest, AbsoluteAnimatedTranslatedBoundsTest) {
 }
 
 TEST(TransformOperationsTest, EmpiricalAnimatedTranslatedBoundsTest) {
-  float test_transforms[][2][3] = {{{0, 0, 0}, {10, 10, 0}},
-                                   {{-100, 202.5, -32.6}, {43.2, 56.1, 89.75}},
-                                   {{43.2, 56.1, 89.75}, {-100, 202.5, -32.6}}};
+  std::array<std::array<std::array<float, 3>, 2>, 3> test_transforms = {{
+      {{{0, 0, 0}, {10, 10, 0}}},
+      {{{-100, 202.5, -32.6}, {43.2, 56.1, 89.75}}},
+      {{{43.2, 56.1, 89.75}, {-100, 202.5, -32.6}}},
+  }};
 
   // All progressions for animations start and end at 0, 1 respectively,
   // we can go outside of these bounds, but will always at least contain
   // [0,1].
-  float progress[][2] = {{0, 1}, {-.25, 1.25}};
+  auto progress = std::to_array<std::array<float, 2>>({{0, 1}, {-.25, 1.25}});
 
   for (size_t i = 0; i < std::size(test_transforms); ++i) {
     for (size_t j = 0; j < std::size(progress); ++j) {
@@ -175,15 +175,17 @@ TEST(TransformOperationsTest, AbsoluteAnimatedScaleBoundsTest) {
 }
 
 TEST(TransformOperationsTest, EmpiricalAnimatedScaleBoundsTest) {
-  float test_transforms[][2][3] = {{{1, 1, 1}, {10, 10, -32}},
-                                   {{1, 2, 5}, {-1, -2, -4}},
-                                   {{0, 0, 0}, {1, 2, 3}},
-                                   {{0, 0, 0}, {0, 0, 0}}};
+  std::array<std::array<std::array<float, 3>, 2>, 4> test_transforms = {{
+      {{{1, 1, 1}, {10, 10, -32}}},
+      {{{1, 2, 5}, {-1, -2, -4}}},
+      {{{0, 0, 0}, {1, 2, 3}}},
+      {{{0, 0, 0}, {0, 0, 0}}},
+  }};
 
   // All progressions for animations start and end at 0, 1 respectively,
   // we can go outside of these bounds, but will always at least contain
   // [0,1].
-  float progress[][2] = {{0, 1}, {-.25f, 1.25f}};
+  auto progress = std::to_array<std::array<float, 2>>({{0, 1}, {-.25f, 1.25f}});
 
   for (size_t i = 0; i < std::size(test_transforms); ++i) {
     for (size_t j = 0; j < std::size(progress); ++j) {
@@ -315,14 +317,15 @@ TEST(TransformOperationsTest, AbsoluteAnimatedProblematicAxisRotationBounds) {
   float dim2 = sqrt(2.0f);
   float dim3 = 2 * dim2;
 
-  ProblematicAxisTest tests[] = {
+  auto tests = std::to_array<ProblematicAxisTest>({
       {0, 0, 0, gfx::BoxF(1, 1, 1, 0, 0, 0)},
       {1, 0, 0, gfx::BoxF(1, -dim2, -dim2, 0, dim3, dim3)},
       {0, 1, 0, gfx::BoxF(-dim2, 1, -dim2, dim3, 0, dim3)},
       {0, 0, 1, gfx::BoxF(-dim2, -dim2, 1, dim3, dim3, 0)},
       {1, 1, 0, gfx::BoxF(dim1, dim1, -1, dim2, dim2, 2)},
       {0, 1, 1, gfx::BoxF(-1, dim1, dim1, 2, dim2, dim2)},
-      {1, 0, 1, gfx::BoxF(dim1, -1, dim1, dim2, 2, dim2)}};
+      {1, 0, 1, gfx::BoxF(dim1, -1, dim1, dim2, 2, dim2)},
+  });
 
   for (size_t i = 0; i < std::size(tests); ++i) {
     float x = tests[i].x;
@@ -345,17 +348,41 @@ TEST(TransformOperationsTest, AbsoluteAnimatedProblematicAxisRotationBounds) {
 }
 
 TEST(TransformOperationsTest, BlendedBoundsForRotationEmpiricalTests) {
-  float axes[][3] = {{1, 1, 1},  {-1, -1, -1}, {-1, 2, 3},  {1, -2, 3},
-                     {0, 0, 0},  {1, 0, 0},    {0, 1, 0},   {0, 0, 1},
-                     {1, 1, 0},  {0, 1, 1},    {1, 0, 1},   {-1, 0, 0},
-                     {0, -1, 0}, {0, 0, -1},   {-1, -1, 0}, {0, -1, -1},
-                     {-1, 0, -1}};
+  auto axes = std::to_array<std::array<float, 3>>({
+      {1, 1, 1},
+      {-1, -1, -1},
+      {-1, 2, 3},
+      {1, -2, 3},
+      {0, 0, 0},
+      {1, 0, 0},
+      {0, 1, 0},
+      {0, 0, 1},
+      {1, 1, 0},
+      {0, 1, 1},
+      {1, 0, 1},
+      {-1, 0, 0},
+      {0, -1, 0},
+      {0, 0, -1},
+      {-1, -1, 0},
+      {0, -1, -1},
+      {-1, 0, -1},
+  });
 
-  float angles[][2] = {{5, 100},     {10, 5},       {0, 360},   {20, 180},
-                       {-20, -180},  {180, -220},   {220, 320}, {1020, 1120},
-                       {-3200, 120}, {-9000, -9050}};
+  auto angles = std::to_array<std::array<float, 2>>({
+      {5, 100},
+      {10, 5},
+      {0, 360},
+      {20, 180},
+      {-20, -180},
+      {180, -220},
+      {220, 320},
+      {1020, 1120},
+      {-3200, 120},
+      {-9000, -9050},
+  });
 
-  float progress[][2] = {{0, 1}, {-0.25f, 1.25f}};
+  auto progress =
+      std::to_array<std::array<float, 2>>({{0, 1}, {-0.25f, 1.25f}});
 
   for (size_t i = 0; i < std::size(axes); ++i) {
     for (size_t j = 0; j < std::size(angles); ++j) {
@@ -402,10 +429,13 @@ TEST(TransformOperationsTest, AbsoluteAnimatedPerspectiveBoundsTest) {
 }
 
 TEST(TransformOperationsTest, EmpiricalAnimatedPerspectiveBoundsTest) {
-  float depths[][2] = {
-      {600, 400}, {800, 1000}, {800, std::numeric_limits<float>::infinity()}};
+  auto depths = std::to_array<std::array<float, 2>>({
+      {600, 400},
+      {800, 1000},
+      {800, std::numeric_limits<float>::infinity()},
+  });
 
-  float progress[][2] = {{0, 1}, {-0.1f, 1.1f}};
+  auto progress = std::to_array<std::array<float, 2>>({{0, 1}, {-0.1f, 1.1f}});
 
   for (size_t i = 0; i < std::size(depths); ++i) {
     for (size_t j = 0; j < std::size(progress); ++j) {
@@ -807,6 +837,374 @@ TEST(TranformOperationsTest, DisallowBlockSizeDependent_Disallowed) {
           from_ops, matching_prefix_length, progress,
           TransformOperations::BoxSizeDependentMatrixBlending::kDisallow);
   EXPECT_EQ(blended_op, nullptr);
+}
+
+// Helper: apply Accumulate(delta) n times sequentially on |base|.
+static TransformOperations AccumulateSequential(
+    const TransformOperations& base,
+    const TransformOperations& delta,
+    int n) {
+  TransformOperations result = base;
+  for (int i = 0; i < n; i++) {
+    result = result.Accumulate(delta);
+  }
+  return result;
+}
+
+// Helper: compare two TransformOperations by applying them and checking the
+// resulting matrices are approximately equal.
+static void ExpectTransformOperationsNear(const TransformOperations& a,
+                                          const TransformOperations& b,
+                                          float tolerance = 1e-5f) {
+  gfx::Transform matrix_a;
+  a.Apply(gfx::SizeF(100, 100), matrix_a);
+  gfx::Transform matrix_b;
+  b.Apply(gfx::SizeF(100, 100), matrix_b);
+  EXPECT_TRANSFORM_NEAR(matrix_a, matrix_b, tolerance);
+}
+
+TEST(TransformOperationsTest, AccumulateNZero) {
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<TranslateTransformOperation>(
+      Length::Fixed(10), Length::Fixed(20), 0, TransformOperation::kTranslate));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<TranslateTransformOperation>(
+          Length::Fixed(5), Length::Fixed(3), 0,
+          TransformOperation::kTranslate));
+
+  TransformOperations result = ops.AccumulateN(delta, 0);
+  ExpectTransformOperationsNear(result, ops);
+}
+
+TEST(TransformOperationsTest, AccumulateNOne) {
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<TranslateTransformOperation>(
+      Length::Fixed(10), Length::Fixed(20), 0, TransformOperation::kTranslate));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<TranslateTransformOperation>(
+          Length::Fixed(5), Length::Fixed(3), 0,
+          TransformOperation::kTranslate));
+
+  TransformOperations result_n = ops.AccumulateN(delta, 1);
+  TransformOperations result_seq = ops.Accumulate(delta);
+  ExpectTransformOperationsNear(result_n, result_seq);
+}
+
+TEST(TransformOperationsTest, AccumulateNBothEmpty) {
+  TransformOperations ops;
+  TransformOperations delta;
+  TransformOperations result = ops.AccumulateN(delta, 5);
+  EXPECT_EQ(result.size(), 0u);
+}
+
+TEST(TransformOperationsTest, AccumulateNShorterBase) {
+  // Base=[translate], delta=[translate, scale].
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<TranslateTransformOperation>(
+      Length::Fixed(10), Length::Fixed(20), 0, TransformOperation::kTranslate));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<TranslateTransformOperation>(
+          Length::Fixed(5), Length::Fixed(3), 0,
+          TransformOperation::kTranslate));
+  delta.Operations().push_back(MakeGarbageCollected<ScaleTransformOperation>(
+      2, 3, 1, TransformOperation::kScale3D));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNShorterDelta) {
+  // Base=[translate, scale], delta=[translate].
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<TranslateTransformOperation>(
+      Length::Fixed(10), Length::Fixed(20), 0, TransformOperation::kTranslate));
+  ops.Operations().push_back(MakeGarbageCollected<ScaleTransformOperation>(
+      2, 3, 1, TransformOperation::kScale3D));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<TranslateTransformOperation>(
+          Length::Fixed(5), Length::Fixed(3), 0,
+          TransformOperation::kTranslate));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNMismatchedTypes) {
+  // Base=[translate], delta=[rotate]. Types don't match, so both are collapsed
+  // to Matrix3D before accumulating.
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<TranslateTransformOperation>(
+      Length::Fixed(10), Length::Fixed(20), 0, TransformOperation::kTranslate));
+
+  TransformOperations delta;
+  delta.Operations().push_back(MakeGarbageCollected<RotateTransformOperation>(
+      0, 0, 1, 30, TransformOperation::kRotate3D));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq, 1e-4f);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNTranslate) {
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<TranslateTransformOperation>(
+      Length::Fixed(10), Length::Fixed(20), 5,
+      TransformOperation::kTranslate3D));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<TranslateTransformOperation>(
+          Length::Fixed(3), Length::Fixed(7), 2,
+          TransformOperation::kTranslate3D));
+
+  for (int n : {2, 5, 10, 100}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNTranslatePercent) {
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<TranslateTransformOperation>(
+      Length::Percent(10), Length::Percent(20), 0,
+      TransformOperation::kTranslate));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<TranslateTransformOperation>(
+          Length::Percent(5), Length::Percent(3), 0,
+          TransformOperation::kTranslate));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNScale) {
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<ScaleTransformOperation>(
+      2, 3, 1, TransformOperation::kScale3D));
+
+  TransformOperations delta;
+  delta.Operations().push_back(MakeGarbageCollected<ScaleTransformOperation>(
+      1.5, 0.5, 2, TransformOperation::kScale3D));
+
+  for (int n : {2, 5, 10, 100}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNRotateSameAxis) {
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<RotateTransformOperation>(
+      0, 0, 1, 45, TransformOperation::kRotate3D));
+
+  TransformOperations delta;
+  delta.Operations().push_back(MakeGarbageCollected<RotateTransformOperation>(
+      0, 0, 1, 30, TransformOperation::kRotate3D));
+
+  for (int n : {2, 5, 10, 100}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNRotateDifferentAxes) {
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<RotateTransformOperation>(
+      1, 0, 0, 45, TransformOperation::kRotate3D));
+
+  TransformOperations delta;
+  delta.Operations().push_back(MakeGarbageCollected<RotateTransformOperation>(
+      0, 1, 0, 30, TransformOperation::kRotate3D));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq, 1e-4f);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNSkew) {
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<SkewTransformOperation>(
+      10, 20, TransformOperation::kSkew));
+
+  TransformOperations delta;
+  delta.Operations().push_back(MakeGarbageCollected<SkewTransformOperation>(
+      5, 3, TransformOperation::kSkew));
+
+  for (int n : {2, 5, 10, 100}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNPerspective) {
+  TransformOperations ops;
+  ops.Operations().push_back(
+      MakeGarbageCollected<PerspectiveTransformOperation>(500));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<PerspectiveTransformOperation>(1000));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNPerspectiveNone) {
+  // Base is none (infinite perspective).
+  TransformOperations ops;
+  ops.Operations().push_back(
+      MakeGarbageCollected<PerspectiveTransformOperation>(std::nullopt));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<PerspectiveTransformOperation>(500));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+
+  // Delta is none (infinite perspective).
+  TransformOperations ops2;
+  ops2.Operations().push_back(
+      MakeGarbageCollected<PerspectiveTransformOperation>(500));
+
+  TransformOperations delta2;
+  delta2.Operations().push_back(
+      MakeGarbageCollected<PerspectiveTransformOperation>(std::nullopt));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops2.AccumulateN(delta2, n);
+    TransformOperations result_seq = AccumulateSequential(ops2, delta2, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNMatrix) {
+  gfx::Transform base_matrix;
+  base_matrix.Translate3d(10, 20, 30);
+  base_matrix.RotateAboutZAxis(45);
+
+  gfx::Transform delta_matrix;
+  delta_matrix.Scale3d(1.5, 2.0, 1.0);
+  delta_matrix.Translate3d(5, 10, 0);
+
+  TransformOperations ops;
+  ops.Operations().push_back(
+      MakeGarbageCollected<Matrix3DTransformOperation>(base_matrix));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<Matrix3DTransformOperation>(delta_matrix));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq, 1e-4f);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNMixedList) {
+  // Test with a list of [translate, scale] to test matching prefix behavior.
+  TransformOperations ops;
+  ops.Operations().push_back(MakeGarbageCollected<TranslateTransformOperation>(
+      Length::Fixed(10), Length::Fixed(20), 0, TransformOperation::kTranslate));
+  ops.Operations().push_back(MakeGarbageCollected<ScaleTransformOperation>(
+      2, 3, 1, TransformOperation::kScale3D));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<TranslateTransformOperation>(
+          Length::Fixed(5), Length::Fixed(3), 0,
+          TransformOperation::kTranslate));
+  delta.Operations().push_back(MakeGarbageCollected<ScaleTransformOperation>(
+      1.5, 0.5, 1, TransformOperation::kScale3D));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNPerspectiveBothNone) {
+  TransformOperations ops;
+  ops.Operations().push_back(
+      MakeGarbageCollected<PerspectiveTransformOperation>(std::nullopt));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<PerspectiveTransformOperation>(std::nullopt));
+
+  for (int n : {1, 2, 5}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq);
+  }
+}
+
+TEST(TransformOperationsTest, AccumulateNMatrix2D) {
+  gfx::Transform base_matrix;
+  base_matrix.Translate(10, 20);
+  base_matrix.RotateAboutZAxis(30);
+
+  gfx::Transform delta_matrix;
+  delta_matrix.Scale(1.5, 2.0);
+
+  TransformOperations ops;
+  ops.Operations().push_back(
+      MakeGarbageCollected<MatrixTransformOperation>(base_matrix));
+
+  TransformOperations delta;
+  delta.Operations().push_back(
+      MakeGarbageCollected<MatrixTransformOperation>(delta_matrix));
+
+  for (int n : {2, 5, 10}) {
+    TransformOperations result_n = ops.AccumulateN(delta, n);
+    TransformOperations result_seq = AccumulateSequential(ops, delta, n);
+    ExpectTransformOperationsNear(result_n, result_seq, 1e-4f);
+  }
+}
+
+TEST(TransformOperationsTest, BlendWithVeryLargeMatrixShouldNotCrash) {
+  TransformOperations from_ops;
+  TransformOperations to_ops;
+
+  from_ops.Operations().push_back(
+      MakeGarbageCollected<MatrixTransformOperation>(1.8e+300, 1.8e+300, 0, -1,
+                                                     0, -1));
+  to_ops.Blend(from_ops, 0.5);
 }
 
 }  // namespace blink

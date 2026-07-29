@@ -11,6 +11,7 @@
 #include "base/memory/weak_ptr.h"
 #include "content/browser/permissions/permission_service_context.h"
 #include "content/public/browser/permission_request_description.h"
+#include "content/public/browser/permission_result.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom.h"
 #include "url/origin.h"
@@ -42,34 +43,34 @@ class PermissionServiceImpl : public blink::mojom::PermissionService {
  private:
   friend class PermissionServiceImplTest;
 
-  using PermissionStatusCallback =
-      base::OnceCallback<void(blink::mojom::PermissionStatus)>;
+  using InternalRequestPermissionsCallback =
+      base::OnceCallback<void(const std::vector<PermissionResult>&)>;
 
   class PendingRequest;
   using RequestsMap = base::IDMap<std::unique_ptr<PendingRequest>>;
 
   // blink::mojom::PermissionService.
   void HasPermission(blink::mojom::PermissionDescriptorPtr permission,
-                     PermissionStatusCallback callback) override;
+                     HasPermissionCallback callback) override;
   void RegisterPageEmbeddedPermissionControl(
       std::vector<blink::mojom::PermissionDescriptorPtr> permissions,
+      blink::mojom::EmbeddedPermissionRequestDescriptorPtr descriptor,
       mojo::PendingRemote<blink::mojom::EmbeddedPermissionControlClient> client)
       override;
   void RequestPageEmbeddedPermission(
+      std::vector<blink::mojom::PermissionDescriptorPtr> permissions,
       blink::mojom::EmbeddedPermissionRequestDescriptorPtr descriptor,
       RequestPageEmbeddedPermissionCallback callback) override;
   void RequestPermission(blink::mojom::PermissionDescriptorPtr permission,
-                         bool user_gesture,
-                         PermissionStatusCallback callback) override;
+                         RequestPermissionCallback callback) override;
   void RequestPermissions(
       std::vector<blink::mojom::PermissionDescriptorPtr> permissions,
-      bool user_gesture,
       RequestPermissionsCallback callback) override;
   void RevokePermission(blink::mojom::PermissionDescriptorPtr permission,
-                        PermissionStatusCallback callback) override;
+                        RevokePermissionCallback callback) override;
   void AddPermissionObserver(
       blink::mojom::PermissionDescriptorPtr permission,
-      blink::mojom::PermissionStatus last_known_status,
+      blink::mojom::PermissionStatusWithDetailsPtr last_known_status,
       mojo::PendingRemote<blink::mojom::PermissionObserver> observer) override;
   void AddPageEmbeddedPermissionObserver(
       blink::mojom::PermissionDescriptorPtr permission,
@@ -81,13 +82,16 @@ class PermissionServiceImpl : public blink::mojom::PermissionService {
 
   void RequestPermissionsInternal(
       BrowserContext* browser_context,
-      const std::vector<blink::mojom::PermissionDescriptorPtr>& permissions,
       PermissionRequestDescription request_description,
-      RequestPermissionsCallback callback);
+      InternalRequestPermissionsCallback callback);
+
+  int CreatePendingRequest(
+      const std::vector<blink::mojom::PermissionDescriptorPtr>& permissions,
+      InternalRequestPermissionsCallback callback);
 
   void OnRequestPermissionsResponse(
       int pending_request_id,
-      const std::vector<blink::mojom::PermissionStatus>& result);
+      const std::vector<PermissionResult>& result);
 
   void OnPageEmbeddedPermissionControlRegistered(
       std::vector<blink::mojom::PermissionDescriptorPtr> permissions,
@@ -95,11 +99,11 @@ class PermissionServiceImpl : public blink::mojom::PermissionService {
       const mojo::Remote<blink::mojom::EmbeddedPermissionControlClient>&
           client);
 
-  blink::mojom::PermissionStatus GetPermissionStatus(
+  PermissionResult GetPermissionResult(
       const blink::mojom::PermissionDescriptorPtr& permission);
-  blink::mojom::PermissionStatus GetPermissionStatusFromType(
-      blink::PermissionType type);
-  blink::mojom::PermissionStatus GetCombinedPermissionAndDeviceStatus(
+  PermissionResult GetPermissionResultForCurrentContext(
+      const blink::mojom::PermissionDescriptorPtr& permission);
+  PermissionResult GetCombinedPermissionAndDeviceResult(
       const blink::mojom::PermissionDescriptorPtr& permission);
   void ResetPermissionStatus(blink::PermissionType type);
   void ReceivedBadMessage();

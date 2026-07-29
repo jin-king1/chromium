@@ -21,6 +21,7 @@ class FeatureContext;
 // a single dimension.
 // When adding a new variable the string equivalent needs to be added to
 // |GetVariableName|.
+// LINT.IfChange(UADefinedVariable)
 enum class UADefinedVariable {
   // The safe area insets are four environment variables that define a
   // rectangle by its top, right, bottom, and left insets from the edge of
@@ -62,8 +63,9 @@ enum class UADefinedVariable {
   kTitlebarAreaHeight,
 
   // The text scale as chosen by the user in the OS accessibility settings.
-  kPreferredTextScale
+  kPreferredTextScale,
 };
+// LINT.ThenChange(//third_party/blink/renderer/core/inspector/inspector_css_agent.cc:EnvironmentVariables)
 
 enum class UADefinedTwoDimensionalVariable {
   // The viewport segment variables describe logically distinct regions of the
@@ -135,7 +137,7 @@ class CORE_EXPORT StyleEnvironmentVariables
   // Resolve the variable |name| by traversing the tree of
   // |StyleEnvironmentVariables|.
   virtual CSSVariableData* ResolveVariable(const AtomicString& name,
-                                           WTF::Vector<unsigned> indices);
+                                           Vector<unsigned> indices);
 
   // Detach |this| from |parent|.
   void DetachFromParent();
@@ -170,12 +172,13 @@ class CORE_EXPORT StyleEnvironmentVariables
   virtual void InvalidateVariable(const AtomicString& name);
 
  private:
-  typedef HeapVector<HeapVector<Member<CSSVariableData>>>
-      TwoDimensionVariableValues;
+  using TwoDimensionVariableValues =
+      GCedHeapVector<HeapVector<Member<CSSVariableData>>>;
 
   HeapVector<Member<StyleEnvironmentVariables>> children_;
   HeapHashMap<AtomicString, Member<CSSVariableData>> data_;
-  HeapHashMap<AtomicString, TwoDimensionVariableValues> two_dimension_data_;
+  HeapHashMap<AtomicString, Member<TwoDimensionVariableValues>>
+      two_dimension_data_;
   Member<StyleEnvironmentVariables> parent_;
 };
 

@@ -28,6 +28,7 @@ import org.chromium.android_webview.AwSettings;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.TestThreadUtils;
+import org.chromium.content_public.browser.test.util.WebContentsUtils;
 
 import java.util.Locale;
 
@@ -59,16 +60,16 @@ public class AwZoomTest extends AwParameterizedTest {
         return String.format(
                 Locale.US,
                 """
-            <html>
-              <head>
-                <meta name="viewport" content="width=device-width,
-                      minimum-scale=%f, maximum-scale=%f, initial-scale=%f"/>
-              </head>
-              <body style='margin:0'>
-                <div style='width:%d%%;height:100px;border:1px solid black'>Zoomable</div>
-              </body>
-            </html>
-            """,
+                <html>
+                  <head>
+                    <meta name="viewport" content="width=device-width,
+                          minimum-scale=%f, maximum-scale=%f, initial-scale=%f"/>
+                  </head>
+                  <body style='margin:0'>
+                    <div style='width:%d%%;height:100px;border:1px solid black'>Zoomable</div>
+                  </body>
+                </html>
+                """,
                 scale,
                 MAXIMUM_SCALE,
                 scale,
@@ -79,16 +80,16 @@ public class AwZoomTest extends AwParameterizedTest {
         // This page can't be zoomed because its viewport fully occupies
         // view area and is explicitly made non user-scalable.
         return """
-            <html>
-              <head>
-                <meta name="viewport" content="width=device-width,height=device-height,
-                      initial-scale=1,maximum-scale=1,user-scalable=no">
-              </head>
-              <body>
-                Non-zoomable
-              </body>
-            </html>
-            """;
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width,height=device-height,
+                  initial-scale=1,maximum-scale=1,user-scalable=no">
+          </head>
+          <body>
+            Non-zoomable
+          </body>
+        </html>
+        """;
     }
 
     private boolean isMultiTouchZoomSupportedOnUiThread() throws Throwable {
@@ -380,6 +381,10 @@ public class AwZoomTest extends AwParameterizedTest {
     @Feature({"AndroidWebView"})
     @SkipMutations(reason = "This test depends on AwSettings.setSupportZoom(true)")
     public void testCtrlPlusMouseScrollZoomsIn() throws Throwable {
+        testCtrlPlusMouseScrollZoomsInImpl();
+    }
+
+    private void testCtrlPlusMouseScrollZoomsInImpl() throws Throwable {
         mActivityTestRule.getAwSettingsOnUiThread(mAwContents).setSupportZoom(true);
         mActivityTestRule.getAwSettingsOnUiThread(mAwContents).setUseWideViewPort(true);
         Assert.assertFalse(
@@ -393,6 +398,8 @@ public class AwZoomTest extends AwParameterizedTest {
                 getZoomableHtml(pageMinimumScale),
                 "text/html",
                 false);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> WebContentsUtils.simulateEndOfPaintHolding(mAwContents.getWebContents()));
         waitForScaleToBecome(pageMinimumScale);
 
         Assert.assertTrue(
@@ -405,8 +412,8 @@ public class AwZoomTest extends AwParameterizedTest {
         Assert.assertTrue(webSettings.supportZoom());
 
         // Simulate scroll event by sending it to the center of the View.
-        float mCurrentX = mContainerView.getWidth() / 2f;
-        float mCurrentY = mContainerView.getHeight() / 2f;
+        float currentX = mContainerView.getWidth() / 2f;
+        float currentY = mContainerView.getHeight() / 2f;
 
         int ctrlMetaState = KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_RIGHT_ON;
         // Positive vertical scroll value for zoom in.
@@ -414,7 +421,7 @@ public class AwZoomTest extends AwParameterizedTest {
 
         float previousScale = mActivityTestRule.getPixelScaleOnUiThread(mAwContents);
 
-        mouseScroll(mContainerView, mCurrentX, mCurrentY, ctrlMetaState, vScrollValue);
+        mouseScroll(mContainerView, currentX, currentY, ctrlMetaState, vScrollValue);
 
         // Page should zoom in.
         waitForScaleChange(previousScale);
@@ -430,14 +437,14 @@ public class AwZoomTest extends AwParameterizedTest {
     @SkipMutations(reason = "This test depends on AwSettings.setSupportZoom(true)")
     public void testCtrlPlusMouseScrollZoomsOut() throws Throwable {
         // Page has to be zoomed in before zooming out.
-        testCtrlPlusMouseScrollZoomsIn();
+        testCtrlPlusMouseScrollZoomsInImpl();
 
         Assert.assertTrue(
                 "Should be able to zoom out", mActivityTestRule.canZoomOutOnUiThread(mAwContents));
 
         // Simulate scroll event by sending it to the center of the View.
-        float mCurrentX = mContainerView.getWidth() / 2f;
-        float mCurrentY = mContainerView.getHeight() / 2f;
+        float currentX = mContainerView.getWidth() / 2f;
+        float currentY = mContainerView.getHeight() / 2f;
 
         int ctrlMetaState = KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_RIGHT_ON;
         // Negative vertical scroll value for zoom out.
@@ -445,7 +452,7 @@ public class AwZoomTest extends AwParameterizedTest {
 
         final float previousScale = mActivityTestRule.getPixelScaleOnUiThread(mAwContents);
 
-        mouseScroll(mContainerView, mCurrentX, mCurrentY, ctrlMetaState, vScrollValue);
+        mouseScroll(mContainerView, currentX, currentY, ctrlMetaState, vScrollValue);
 
         // Page should zoom out.
         waitForScaleChange(previousScale);

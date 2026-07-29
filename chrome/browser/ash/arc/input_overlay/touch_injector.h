@@ -45,12 +45,12 @@ class TouchInjectorObserver;
 // If the following touch move sent immediately, the touch move event is not
 // processed correctly by apps. This is a delayed time to send touch move
 // event.
-constexpr base::TimeDelta kSendTouchMoveDelay = base::Milliseconds(50);
+inline constexpr base::TimeDelta kSendTouchMoveDelay = base::Milliseconds(50);
 
 gfx::RectF CalculateWindowContentBounds(aura::Window* window);
 
 // Maximum default action ID. User-added actions have ID > kMaxDefaultActionID.
-constexpr int kMaxDefaultActionID = 9999;
+inline constexpr int kMaxDefaultActionID = 9999;
 
 // TouchInjector includes all the touch actions related to the specific window
 // and performs as a bridge between the ArcInputOverlayManager and the touch
@@ -79,7 +79,7 @@ class TouchInjector : public ui::EventRewriter {
   //     ...
   //   ]
   // }
-  void ParseActions(const base::Value::Dict& root);
+  void ParseActions(const base::DictValue& root);
   // Update the flags after loading data finished. `is_o4c` is true if the game
   // is optimized for ChromeOS.
   void UpdateFlags(bool is_o4c);
@@ -205,7 +205,7 @@ class TouchInjector : public ui::EventRewriter {
   //   "key": "KeyA",
   //   "modifier": [""]
   // }
-  void ParseMouseLock(const base::Value::Dict& dict);
+  void ParseMouseLock(const base::DictValue& dict);
 
   void FlipMouseLockFlag();
   // Check if the event located on menu entry. `press_required` tells whether or
@@ -315,6 +315,9 @@ class TouchInjector : public ui::EventRewriter {
 
   // Use default position if it is null.
   std::optional<gfx::Vector2dF> menu_entry_location_;
+
+  // Used to track whether the game has been played with Game Controls.
+  bool played_with_game_controls_ = false;
 
   base::WeakPtrFactory<TouchInjector> weak_ptr_factory_{this};
 };

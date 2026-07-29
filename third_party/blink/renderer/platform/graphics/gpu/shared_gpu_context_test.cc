@@ -8,15 +8,15 @@
 
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/null_task_runner.h"
-#include "components/viz/test/test_gles2_interface.h"
-#include "gpu/command_buffer/client/gles2_interface.h"
+#include "components/viz/test/test_raster_interface.h"
 #include "gpu/command_buffer/common/capabilities.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_non_2d_resource_provider.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
+#include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
-#include "third_party/blink/renderer/platform/graphics/test/fake_canvas_resource_host.h"
 #include "third_party/blink/renderer/platform/graphics/test/fake_gles2_interface.h"
 #include "third_party/blink/renderer/platform/graphics/test/fake_web_graphics_context_3d_provider.h"
 #include "third_party/blink/renderer/platform/graphics/test/gpu_test_utils.h"
@@ -38,65 +38,6 @@ class AcceleratedCompositingTestPlatform
   bool IsGpuCompositingDisabled() const override { return false; }
 };
 
-template <class GLES2InterfaceType>
-class SharedGpuContextTestBase : public Test {
- public:
-  void SetUp() override {
-    accelerated_compositing_scope_ = std::make_unique<
-        ScopedTestingPlatformSupport<AcceleratedCompositingTestPlatform>>();
-    task_runner_ = base::MakeRefCounted<base::NullTaskRunner>();
-    handle_ =
-        std::make_unique<base::SingleThreadTaskRunner::CurrentDefaultHandle>(
-            task_runner_);
-    auto factory = [](GLES2InterfaceType* gl)
-        -> std::unique_ptr<WebGraphicsContext3DProvider> {
-      gl->SetIsContextLost(false);
-      auto fake_context =
-          std::make_unique<FakeWebGraphicsContext3DProvider>(gl);
-      gpu::Capabilities capabilities;
-      capabilities.max_texture_size = 20;
-      fake_context->SetCapabilities(capabilities);
-      return fake_context;
-    };
-    SharedGpuContext::SetContextProviderFactoryForTesting(
-        WTF::BindRepeating(factory, WTF::Unretained(&gl_)));
-  }
-
-  void TearDown() override {
-    handle_.reset();
-    task_runner_.reset();
-    SharedGpuContext::Reset();
-    accelerated_compositing_scope_ = nullptr;
-  }
-
-  GLES2InterfaceType& GlInterface() { return gl_; }
-
- private:
-  scoped_refptr<base::NullTaskRunner> task_runner_;
-  std::unique_ptr<base::SingleThreadTaskRunner::CurrentDefaultHandle> handle_;
-  GLES2InterfaceType gl_;
-  std::unique_ptr<
-      ScopedTestingPlatformSupport<AcceleratedCompositingTestPlatform>>
-      accelerated_compositing_scope_;
-};
-
-class TestGLES2Interface : public FakeGLES2Interface {
- public:
-  GLuint CreateAndTexStorage2DSharedImageCHROMIUM(const GLbyte*) override {
-    return ++texture_id;
-  }
-  GLuint texture_id = 0u;
-};
-
-class SharedGpuContextTest
-    : public SharedGpuContextTestBase<TestGLES2Interface> {};
-
-class MailboxMockGLES2Interface : public TestGLES2Interface {
- public:
-  MOCK_METHOD1(GenSyncTokenCHROMIUM, void(GLbyte*));
-  MOCK_METHOD1(GenUnverifiedSyncTokenCHROMIUM, void(GLbyte*));
-};
-
 // Test fixure that simulate a graphics context creation failure, when using gpu
 // compositing.
 class BadSharedGpuContextTest : public Test {
@@ -112,7 +53,7 @@ class BadSharedGpuContextTest : public Test {
       return nullptr;
     };
     SharedGpuContext::SetContextProviderFactoryForTesting(
-        WTF::BindRepeating(factory));
+        BindRepeating(factory));
   }
 
   void TearDown() override {
@@ -142,7 +83,7 @@ class SoftwareCompositingTest : public Test {
       return std::make_unique<FakeWebGraphicsContext3DProvider>(gl);
     };
     SharedGpuContext::SetContextProviderFactoryForTesting(
-        WTF::BindRepeating(factory, WTF::Unretained(&gl_)));
+        BindRepeating(factory, Unretained(&gl_)));
   }
 
   void TearDown() override { SharedGpuContext::Reset(); }
@@ -150,17 +91,20 @@ class SoftwareCompositingTest : public Test {
   FakeGLES2Interface gl_;
 };
 
-class SharedGpuContextTestViz : public Test {
+class SharedGpuContextTest : public Test {
  public:
   void SetUp() override {
+    accelerated_compositing_scope_ = std::make_unique<
+        ScopedTestingPlatformSupport<AcceleratedCompositingTestPlatform>>();
     task_runner_ = base::MakeRefCounted<base::NullTaskRunner>();
     handle_ =
         std::make_unique<base::SingleThreadTaskRunner::CurrentDefaultHandle>(
             task_runner_);
-    test_context_provider_ = viz::TestContextProvider::Create();
-    InitializeSharedGpuContextGLES2(test_context_provider_.get(),
-                                    /*cache = */ nullptr,
-                                    SetIsContextLost::kSetToFalse);
+    test_context_provider_ = viz::TestContextProvider::CreateRaster();
+
+    InitializeSharedGpuContext(test_context_provider_.get(),
+                               /*cache = */ nullptr,
+                               SetIsContextLost::kSetToFalse);
   }
 
   void TearDown() override {
@@ -171,14 +115,17 @@ class SharedGpuContextTestViz : public Test {
   scoped_refptr<base::NullTaskRunner> task_runner_;
   std::unique_ptr<base::SingleThreadTaskRunner::CurrentDefaultHandle> handle_;
   scoped_refptr<viz::TestContextProvider> test_context_provider_;
+  std::unique_ptr<
+      ScopedTestingPlatformSupport<AcceleratedCompositingTestPlatform>>
+      accelerated_compositing_scope_;
 };
 
 TEST_F(SharedGpuContextTest, contextLossAutoRecovery) {
   EXPECT_NE(SharedGpuContext::ContextProviderWrapper(), nullptr);
   base::WeakPtr<WebGraphicsContext3DProviderWrapper> context =
       SharedGpuContext::ContextProviderWrapper();
-  GlInterface().SetIsContextLost(true);
-  EXPECT_FALSE(SharedGpuContext::IsValidWithoutRestoring());
+  test_context_provider_->GetTestRasterInterface()->set_context_lost(true);
+  EXPECT_FALSE(SharedGpuContext::IsValidWithoutRestoringForTesting());
   EXPECT_TRUE(!!context);
 
   // Context recreation results in old provider being discarded.
@@ -186,41 +133,28 @@ TEST_F(SharedGpuContextTest, contextLossAutoRecovery) {
   EXPECT_FALSE(!!context);
 }
 
-TEST_F(SharedGpuContextTest, GetRasterModeAutoRecovery) {
-  // Verifies that after a context loss, getting the raster mode from
-  // CanvasResourceHost will restore the context and succeed.
-  GlInterface().SetIsContextLost(true);
-  EXPECT_FALSE(SharedGpuContext::IsValidWithoutRestoring());
-  gfx::Size size(10, 10);
-  std::unique_ptr<FakeCanvasResourceHost> host =
-      std::make_unique<FakeCanvasResourceHost>(size);
-  host->SetPreferred2DRasterMode(RasterModeHint::kPreferGPU);
-  EXPECT_EQ(host->GetRasterMode(), RasterMode::kGPU);
-  EXPECT_TRUE(SharedGpuContext::IsValidWithoutRestoring());
-}
-
 TEST_F(SharedGpuContextTest, IsValidWithoutRestoring) {
   EXPECT_NE(SharedGpuContext::ContextProviderWrapper(), nullptr);
-  EXPECT_TRUE(SharedGpuContext::IsValidWithoutRestoring());
+  EXPECT_TRUE(SharedGpuContext::IsValidWithoutRestoringForTesting());
 }
 
 TEST_F(BadSharedGpuContextTest, IsValidWithoutRestoring) {
-  EXPECT_FALSE(SharedGpuContext::IsValidWithoutRestoring());
+  EXPECT_FALSE(SharedGpuContext::IsValidWithoutRestoringForTesting());
 }
 
 TEST_F(BadSharedGpuContextTest, AllowSoftwareToAcceleratedCanvasUpgrade) {
-  EXPECT_FALSE(SharedGpuContext::AllowSoftwareToAcceleratedCanvasUpgrade());
+  EXPECT_FALSE(AllowSoftwareToAcceleratedCanvasUpgrade(
+      SharedGpuContext::ContextProviderWrapper().get()));
 }
 
 TEST_F(BadSharedGpuContextTest, AccelerateImageBufferSurfaceCreationFails) {
   // With a bad shared context, AccelerateImageBufferSurface should fail and
   // return a nullptr provider
-  std::unique_ptr<CanvasResourceProvider> resource_provider =
-      CanvasResourceProvider::CreateSharedImageProvider(
+  std::unique_ptr<CanvasNon2DResourceProvider> resource_provider =
+      CanvasNon2DResourceProvider::Create(
           gfx::Size(10, 10), GetN32FormatForCanvas(), kPremul_SkAlphaType,
-          gfx::ColorSpace::CreateSRGB(),
-          CanvasResourceProvider::ShouldInitialize::kNo,
-          SharedGpuContext::ContextProviderWrapper(), RasterMode::kGPU,
+          gfx::ColorSpace::CreateSRGB(), gfx::HDRMetadata(),
+          SharedGpuContext::ContextProviderWrapper(),
           gpu::SharedImageUsageSet());
   EXPECT_FALSE(resource_provider);
 }
@@ -237,21 +171,20 @@ TEST_F(SoftwareCompositingTest, CompositingMode) {
   EXPECT_FALSE(SharedGpuContext::IsGpuCompositingEnabled());
 }
 
-TEST_F(SharedGpuContextTestViz, AccelerateImageBufferSurfaceAutoRecovery) {
+TEST_F(SharedGpuContextTest, AccelerateImageBufferSurfaceAutoRecovery) {
   // Verifies that after a context loss, attempting to allocate an
   // AcceleratedImageBufferSurface will restore the context and succeed
-  test_context_provider_->TestContextGL()->set_context_lost(true);
-  EXPECT_FALSE(SharedGpuContext::IsValidWithoutRestoring());
-  std::unique_ptr<CanvasResourceProvider> resource_provider =
-      CanvasResourceProvider::CreateSharedImageProvider(
+  test_context_provider_->GetTestRasterInterface()->set_context_lost(true);
+  EXPECT_FALSE(SharedGpuContext::IsValidWithoutRestoringForTesting());
+  std::unique_ptr<CanvasNon2DResourceProvider> resource_provider =
+      CanvasNon2DResourceProvider::Create(
           gfx::Size(10, 10), GetN32FormatForCanvas(), kPremul_SkAlphaType,
-          gfx::ColorSpace::CreateSRGB(),
-          CanvasResourceProvider::ShouldInitialize::kNo,
-          SharedGpuContext::ContextProviderWrapper(), RasterMode::kGPU,
+          gfx::ColorSpace::CreateSRGB(), gfx::HDRMetadata(),
+          SharedGpuContext::ContextProviderWrapper(),
           gpu::SharedImageUsageSet());
   EXPECT_TRUE(resource_provider && resource_provider->IsValid());
-  EXPECT_TRUE(resource_provider->IsAccelerated());
-  EXPECT_TRUE(SharedGpuContext::IsValidWithoutRestoring());
+  EXPECT_FALSE(resource_provider->IsSoftware());
+  EXPECT_TRUE(SharedGpuContext::IsValidWithoutRestoringForTesting());
 }
 
 }  // unnamed namespace

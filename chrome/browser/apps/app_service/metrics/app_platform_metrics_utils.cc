@@ -20,9 +20,10 @@
 #include "chrome/browser/metrics/usertype_by_devicetype_metrics_provider.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/extensions/application_launch.h"
+#include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "chromeos/components/mgs/managed_guest_session_utils.h"
 #include "chromeos/ui/base/app_types.h"
@@ -176,8 +177,11 @@ AppTypeName GetAppTypeNameForWebApp(Profile* profile,
 }
 
 bool IsAshBrowserWindow(aura::Window* window) {
-  Browser* browser = chrome::FindBrowserWithWindow(window->GetToplevelWindow());
-  if (!browser || browser->is_type_app() || browser->is_type_app_popup()) {
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithWindow(
+          window->GetToplevelWindow());
+  if (!browser || browser->GetType() == BrowserWindowInterface::TYPE_APP ||
+      browser->GetType() == BrowserWindowInterface::TYPE_APP_POPUP) {
     return false;
   }
   return true;
@@ -318,7 +322,7 @@ std::string GetInstallReason(InstallReason install_reason) {
 
 bool ShouldRecordAppKM(Profile* profile) {
   // Bypass AppKM App Sync check for Demo Mode devices to collect app metrics.
-  if (ash::DemoSession::IsDeviceInDemoMode()) {
+  if (ash::demo_mode::IsDeviceInDemoMode()) {
     return true;
   }
 

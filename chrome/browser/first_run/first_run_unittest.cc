@@ -3,13 +3,12 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/first_run/first_run.h"
+
 #include "base/command_line.h"
-#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_path_override.h"
-#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/first_run/first_run_internal.h"
 #include "chrome/common/chrome_constants.h"

@@ -4,8 +4,10 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/run_loop.h"
+#include "base/test/test_future.h"
 #include "base/test/values_test_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/domain_reliability/service_factory.h"
@@ -24,7 +26,6 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/test/browser_test.h"
-#include "mojo/public/cpp/bindings/sync_call_restrictions.h"
 #include "net/base/net_errors.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
@@ -37,6 +38,22 @@
 #include "url/gurl.h"
 
 namespace domain_reliability {
+
+class TestDomainReliabilityServiceDelegate
+    : public domain_reliability::DomainReliabilityServiceDelegate {
+ public:
+  TestDomainReliabilityServiceDelegate() = default;
+  ~TestDomainReliabilityServiceDelegate() override = default;
+
+  bool IsDomainReliabilityAllowed() const override {
+    return g_browser_process->local_state()->GetBoolean(
+        domain_reliability::prefs::kDomainReliabilityAllowedByPolicy);
+  }
+
+  bool IsMetricsAndCrashReportingEnabled() const override {
+    return ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled();
+  }
+};
 
 class DomainReliabilityBrowserTest : public InProcessBrowserTest {
  public:
@@ -73,7 +90,7 @@ class DomainReliabilityBrowserTest : public InProcessBrowserTest {
 
   network::mojom::NetworkContext* GetNetworkContext() {
     return browser()
-        ->profile()
+        ->GetProfile()
         ->GetDefaultStoragePartition()
         ->GetNetworkContext();
   }
@@ -142,7 +159,8 @@ IN_PROC_BROWSER_TEST_F(DomainReliabilityPolicyTest,
   // Confirm behavior with policy true and metrics enabled
   SetAndUpdateDomainReliabilityAllowedPolicy(true);
   SetAndUpdateIsMetricsReporting(true);
-  EXPECT_TRUE(domain_reliability::ShouldCreateService());
+  TestDomainReliabilityServiceDelegate delegate;
+  EXPECT_TRUE(domain_reliability::ShouldCreateService(&delegate));
   ChromeMetricsServiceAccessor::SetMetricsAndCrashReportingForTesting(nullptr);
 }
 
@@ -151,7 +169,8 @@ IN_PROC_BROWSER_TEST_F(DomainReliabilityPolicyTest,
   // Confirm behavior with policy true and metrics disabled
   SetAndUpdateDomainReliabilityAllowedPolicy(true);
   SetAndUpdateIsMetricsReporting(false);
-  EXPECT_FALSE(domain_reliability::ShouldCreateService());
+  TestDomainReliabilityServiceDelegate delegate;
+  EXPECT_FALSE(domain_reliability::ShouldCreateService(&delegate));
   ChromeMetricsServiceAccessor::SetMetricsAndCrashReportingForTesting(nullptr);
 }
 
@@ -160,7 +179,8 @@ IN_PROC_BROWSER_TEST_F(DomainReliabilityPolicyTest,
   // Confirm behavior with policy false and metrics enabled
   SetAndUpdateDomainReliabilityAllowedPolicy(false);
   SetAndUpdateIsMetricsReporting(true);
-  EXPECT_FALSE(domain_reliability::ShouldCreateService());
+  TestDomainReliabilityServiceDelegate delegate;
+  EXPECT_FALSE(domain_reliability::ShouldCreateService(&delegate));
   ChromeMetricsServiceAccessor::SetMetricsAndCrashReportingForTesting(nullptr);
 }
 
@@ -169,17 +189,20 @@ IN_PROC_BROWSER_TEST_F(DomainReliabilityPolicyTest,
   // Confirm behavior with policy false and metrics disabled
   SetAndUpdateDomainReliabilityAllowedPolicy(false);
   SetAndUpdateIsMetricsReporting(false);
-  EXPECT_FALSE(domain_reliability::ShouldCreateService());
+  TestDomainReliabilityServiceDelegate delegate;
+  EXPECT_FALSE(domain_reliability::ShouldCreateService(&delegate));
   ChromeMetricsServiceAccessor::SetMetricsAndCrashReportingForTesting(nullptr);
 }
 
 IN_PROC_BROWSER_TEST_F(DomainReliabilityDisabledBrowserTest,
                        ServiceNotCreated) {
-  EXPECT_FALSE(domain_reliability::ShouldCreateService());
+  TestDomainReliabilityServiceDelegate delegate;
+  EXPECT_FALSE(domain_reliability::ShouldCreateService(&delegate));
 }
 
 IN_PROC_BROWSER_TEST_F(DomainReliabilityBrowserTest, ServiceCreated) {
-  EXPECT_TRUE(domain_reliability::ShouldCreateService());
+  TestDomainReliabilityServiceDelegate delegate;
+  EXPECT_TRUE(domain_reliability::ShouldCreateService(&delegate));
 }
 
 static const char kUploadPath[] = "/domainreliability/upload";
@@ -222,9 +245,10 @@ IN_PROC_BROWSER_TEST_F(DomainReliabilityBrowserTest, Upload) {
   GURL upload_url = test_server()->GetURL(kUploadPath);
 
   {
-    mojo::ScopedAllowSyncCallForTesting allow_sync_call;
+    base::test::TestFuture<void> future;
     GetNetworkContext()->AddDomainReliabilityContextForTesting(  // IN-TEST
-        test_server()->GetOrigin(), upload_url);
+        test_server()->GetOrigin(), upload_url, future.GetCallback());
+    EXPECT_TRUE(future.Wait());
   }
 
   // Trigger an error.
@@ -232,8 +256,10 @@ IN_PROC_BROWSER_TEST_F(DomainReliabilityBrowserTest, Upload) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), error_url));
 
   {
-    mojo::ScopedAllowSyncCallForTesting allow_sync_call;
-    GetNetworkContext()->ForceDomainReliabilityUploadsForTesting();
+    base::test::TestFuture<void> future;
+    GetNetworkContext()->ForceDomainReliabilityUploadsForTesting(
+        future.GetCallback());
+    EXPECT_TRUE(future.Wait());
   }
 
   run_loop.Run();
@@ -241,13 +267,14 @@ IN_PROC_BROWSER_TEST_F(DomainReliabilityBrowserTest, Upload) {
   EXPECT_EQ(1, request_count);
   EXPECT_NE("", last_request_content);
 
-  auto body = base::JSONReader::Read(last_request_content);
+  auto body = base::JSONReader::Read(last_request_content,
+                                     base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(body);
   ASSERT_TRUE(body->is_dict());
 
-  const base::Value::Dict& dict = body->GetDict();
+  const base::DictValue& dict = body->GetDict();
 
-  const base::Value::List* entries = dict.FindList("entries");
+  const base::ListValue* entries = dict.FindList("entries");
   ASSERT_TRUE(entries);
   ASSERT_EQ(1u, entries->size());
 
@@ -262,17 +289,21 @@ IN_PROC_BROWSER_TEST_F(DomainReliabilityBrowserTest, UploadAtShutdown) {
 
   GURL upload_url = test_server()->GetURL("/hung");
   {
-    mojo::ScopedAllowSyncCallForTesting allow_sync_call;
+    base::test::TestFuture<void> future;
     GetNetworkContext()->AddDomainReliabilityContextForTesting(  // IN-TEST
-        url::Origin::Create(GURL("https://localhost/")), upload_url);
+        url::Origin::Create(GURL("https://localhost/")), upload_url,
+        future.GetCallback());
+    EXPECT_TRUE(future.Wait());
   }
 
   ASSERT_TRUE(
       ui_test_utils::NavigateToURL(browser(), GURL("https://localhost/")));
 
   {
-    mojo::ScopedAllowSyncCallForTesting allow_sync_call;
-    GetNetworkContext()->ForceDomainReliabilityUploadsForTesting();
+    base::test::TestFuture<void> future;
+    GetNetworkContext()->ForceDomainReliabilityUploadsForTesting(
+        future.GetCallback());
+    EXPECT_TRUE(future.Wait());
   }
 
   // At this point, there is an upload pending. If everything goes well, the
@@ -288,21 +319,24 @@ IN_PROC_BROWSER_TEST_F(DomainReliabilityBrowserTest, RequestAtShutdown) {
 
   GURL hung_url = test_server()->GetURL("/hung");
   {
-    mojo::ScopedAllowSyncCallForTesting allow_sync_call;
+    base::test::TestFuture<void> future;
     GetNetworkContext()->AddDomainReliabilityContextForTesting(  // IN-TEST
-        url::Origin::Create(hung_url), hung_url);
+        url::Origin::Create(hung_url), hung_url, future.GetCallback());
+    EXPECT_TRUE(future.Wait());
   }
 
   // Use a SimpleURLLoader so we can leak the mojo pipe, ensuring that URLLoader
   // doesn't see a connection error before NetworkContext does.
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = hung_url;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   auto simple_loader = network::SimpleURLLoader::Create(
       std::move(resource_request), TRAFFIC_ANNOTATION_FOR_TESTS);
-  auto* storage_partition = browser()->profile()->GetDefaultStoragePartition();
-  simple_loader->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+  auto* storage_partition =
+      browser()->GetProfile()->GetDefaultStoragePartition();
+  simple_loader->DownloadHeadersOnly(
       storage_partition->GetURLLoaderFactoryForBrowserProcess().get(),
-      base::BindOnce([](std::unique_ptr<std::string> body) {}));
+      base::DoNothing());
 
   simple_loader.release();
 }

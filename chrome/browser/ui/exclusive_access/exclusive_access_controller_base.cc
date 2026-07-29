@@ -16,12 +16,10 @@ ExclusiveAccessControllerBase::ExclusiveAccessControllerBase(
 
 ExclusiveAccessControllerBase::~ExclusiveAccessControllerBase() = default;
 
-GURL ExclusiveAccessControllerBase::GetExclusiveAccessBubbleURL() const {
-  return manager_->GetExclusiveAccessBubbleURL();
-}
-
-GURL ExclusiveAccessControllerBase::GetURLForExclusiveAccessBubble() const {
-  return exclusive_access_tab() ? exclusive_access_tab()->GetURL() : GURL();
+url::Origin ExclusiveAccessControllerBase::GetOriginForExclusiveAccessBubble()
+    const {
+  return url::Origin::Create(
+      exclusive_access_tab() ? exclusive_access_tab()->GetURL() : GURL());
 }
 
 void ExclusiveAccessControllerBase::OnTabDeactivated(
@@ -42,7 +40,12 @@ void ExclusiveAccessControllerBase::OnTabClosing(WebContents* web_contents) {
     return;
   }
 
+  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   ExitExclusiveAccessIfNecessary();
+
+  if (!weak_ptr) {
+    return;
+  }
 
   // The call to exit exclusive access may result in asynchronous notification
   // of state change (e.g. fullscreen change on Linux). We don't want to rely

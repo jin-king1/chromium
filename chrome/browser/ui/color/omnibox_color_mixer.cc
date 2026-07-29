@@ -24,7 +24,8 @@ namespace {
 // The contrast for omnibox colors in high contrast mode.
 constexpr float kOmniboxHighContrastRatio = 6.0f;
 
-// Apply updates to the Omnibox text color tokens per GM3 spec.
+// Apply updates to the Omnibox text color tokens per GM3 spec. Not called when
+// using high contrast mode or a custom theme.
 void ApplyGM3OmniboxTextColor(ui::ColorMixer& mixer,
                               const ui::ColorProviderKey& key) {
   mixer[kColorOmniboxText] = {ui::kColorSysOnSurface};
@@ -55,8 +56,12 @@ void ApplyGM3OmniboxTextColor(ui::ColorMixer& mixer,
       kColorOmniboxResultsTextPositive};
   mixer[kColorOmniboxResultsTextSecondarySelected] = {
       kColorOmniboxResultsTextSecondary};
+
+  // Context menu text colors.
+  mixer[kColorOmniboxContextEntrypointText] = {ui::kColorSysOnSurface};
 }
 
+// Not called when using high contrast mode or a custom theme.
 void ApplyCR2023OmniboxIconColors(ui::ColorMixer& mixer,
                                   const ui::ColorProviderKey& key) {
   mixer[kColorOmniboxActionIcon] = {ui::kColorSysOnSurfaceSubtle};
@@ -81,6 +86,7 @@ void ApplyCR2023OmniboxIconColors(ui::ColorMixer& mixer,
 }
 
 // Apply updates to the Omnibox "expanded state" color tokens per CR2023 spec.
+// Not called when using high contrast mode or a custom theme.
 void ApplyCR2023OmniboxExpandedStateColors(ui::ColorMixer& mixer,
                                            const ui::ColorProviderKey& key) {
   // Update focus bar color.
@@ -88,10 +94,14 @@ void ApplyCR2023OmniboxExpandedStateColors(ui::ColorMixer& mixer,
 
   // Update omnibox popup background color.
   mixer[kColorOmniboxResultsBackground] = {ui::kColorSysBase};
+  mixer[kColorOmniboxResultsBackgroundIph] = {ui::kColorSysSurface2};
 
   // Update suggestion hover fill colors.
   mixer[kColorOmniboxResultsBackgroundHovered] = ui::GetResultingPaintColor(
       ui::kColorSysStateHoverOnSubtle, kColorOmniboxResultsBackground);
+  // Set to RGBA alpha channel color so hover does not block the glow animation.
+  mixer[kColorOmniboxResultsBackgroundHoverOverlay] = {
+      ui::kColorSysStateHoverOnSubtle};
   mixer[kColorOmniboxResultsBackgroundSelected] = {
       kColorOmniboxResultsBackgroundHovered};
 
@@ -112,6 +122,9 @@ void ApplyCR2023OmniboxExpandedStateColors(ui::ColorMixer& mixer,
   // Update suggestion vector icon color.
   mixer[kColorOmniboxResultsIcon] = {ui::kColorSysOnSurfaceSubtle};
   mixer[kColorOmniboxResultsIconSelected] = {kColorOmniboxResultsIcon};
+  // Aligns with default InkDropHighlight::visible_opacity_.
+  mixer[kColorOmniboxResultsIconHovered] =
+      ui::SetAlpha({kColorOmniboxResultsIcon}, std::ceil(0.128f * 255.0f));
 
   // Update chip colors.
   mixer[kColorOmniboxResultsButtonBorder] = {kColorOmniboxKeywordSeparator};
@@ -133,6 +146,23 @@ void ApplyCR2023OmniboxExpandedStateColors(ui::ColorMixer& mixer,
 
   // Update starter pack icon color.
   mixer[kColorOmniboxResultsStarterPackIcon] = {ui::kColorSysOnTonalContainer};
+
+  // Composebox-specific colors.
+  mixer[kColorOmniboxComposeboxChipBackground] = {ui::kColorSysSurface3};
+  mixer[kColorOmniboxComposeboxDivider] = {ui::kColorSysDivider};
+  mixer[kColorOmniboxComposeboxFaviconBackground] = {ui::kColorSysSurface};
+  mixer[kColorOmniboxComposeboxFileThumbnailOverlay] = {
+      ui::kColorSysStateScrim};
+
+  // TODO(b/478054110): Using sys/white is a temporary solution. Revert to
+  // sys/on-error once the dark theme color is fixed.
+  mixer[kColorOmniboxComposeboxFileThumbnailOverlayIcon] = {ui::kColorSysWhite};
+
+  mixer[kColorOmniboxForegroundDisabled] = {ui::kColorSysStateDisabled};
+  mixer[kColorOmniboxComposeboxPrimaryAction] = {ui::kColorSysPrimary};
+  mixer[kColorOmniboxComposeboxSubmitButtonBackground] = {
+      kColorOmniboxComposeboxPrimaryAction};
+  mixer[kColorOmniboxComposeboxSubmitButtonIcon] = {ui::kColorSysOnPrimary};
 }
 
 // Apply fallback Omnibox color mappings for CR2023 clients who are not eligible
@@ -144,6 +174,9 @@ void ApplyOmniboxCR2023FallbackColors(ui::ColorMixer& mixer,
   mixer[kColorOmniboxResultsTextAnswer] = {ui::kColorSysOnSurfacePrimary};
 
   // Fallbacks for colors set in `ApplyCR2023OmniboxExpandedStateColors()`:
+  mixer[kColorOmniboxResultsBackgroundHoverOverlay] = {
+      ui::SetAlpha(ui::GetColorWithMaxContrast(kColorOmniboxResultsBackground),
+                   std::ceil(0.08f * 255.0f))};
 
   // Action chip hover & select colors for hovered suggestion rows (e.g. via
   // mouse cursor).
@@ -157,6 +190,45 @@ void ApplyOmniboxCR2023FallbackColors(ui::ColorMixer& mixer,
       kColorOmniboxResultsButtonInkDropSelected, std::ceil(0.10f * 255.0f))};
   mixer[kColorOmniboxResultsButtonInkDropSelectedRowSelected] = {ui::SetAlpha(
       kColorOmniboxResultsButtonInkDropSelected, std::ceil(0.16f * 255.0f))};
+
+  // Context entrypoint fallbacks.
+  mixer[kColorOmniboxContextEntrypointText] =
+      ui::GetColorWithMaxContrast(kColorToolbarBackgroundSubtleEmphasis);
+
+  // Composebox-specific fallbacks.
+  mixer[kColorOmniboxComposeboxFileThumbnailOverlay] = {
+      ui::SetAlpha(SK_ColorBLACK, 0x99)};
+  mixer[kColorOmniboxComposeboxFileThumbnailOverlayIcon] = {ui::kColorSysWhite};
+}
+
+// Applies specific baseline colors for the composebox submit button, per
+// EnergyEffect design specs. These override CR2023 colors when the user
+// doesn't have a custom theme or user color set.
+void ApplyComposeboxBaselineColors(ui::ColorMixer& mixer,
+                                   const ui::ColorProviderKey& key) {
+  if (key.custom_theme || key.user_color.has_value()) {
+    return;
+  }
+
+  constexpr SkColor kComposeboxSubmitButtonBackgroundDark =
+      SkColorSetRGB(0xA8, 0xC7, 0xFA);
+  constexpr SkColor kComposeboxSubmitButtonBackgroundLight =
+      SkColorSetRGB(0x33, 0x6E, 0xF3);
+  constexpr SkColor kComposeboxSubmitButtonIconDark =
+      SkColorSetRGB(0x06, 0x2E, 0x6F);
+  constexpr SkColor kComposeboxSubmitButtonEnergy =
+      SkColorSetRGB(0x77, 0x9C, 0xFF);
+
+  mixer[kColorOmniboxComposeboxSubmitButtonBackground] =
+      ui::SelectBasedOnDarkInput(kColorOmniboxResultsBackground,
+                                 kComposeboxSubmitButtonBackgroundDark,
+                                 kComposeboxSubmitButtonBackgroundLight);
+  mixer[kColorOmniboxComposeboxSubmitButtonEnergy] = ui::SelectBasedOnDarkInput(
+      kColorOmniboxResultsBackground, SK_ColorTRANSPARENT,
+      kComposeboxSubmitButtonEnergy);
+  mixer[kColorOmniboxComposeboxSubmitButtonIcon] = ui::SelectBasedOnDarkInput(
+      kColorOmniboxResultsBackground, kComposeboxSubmitButtonIconDark,
+      SK_ColorWHITE);
 }
 
 // Apply updates to the Omnibox color tokens per CR2023 guidelines.
@@ -232,13 +304,17 @@ void AddOmniboxColorMixer(ui::ColorProvider* provider,
   // Results background, chip, button, and focus colors.
   mixer[kColorOmniboxResultsBackground] =
       ui::GetColorWithMaxContrast(kColorOmniboxText);
-  mixer[kColorOmniboxResultsBackgroundIPH] = {ui::kColorSysSurface2};
+  mixer[kColorOmniboxResultsBackgroundIph] = {
+      kColorOmniboxResultsBackgroundHovered};
   mixer[kColorOmniboxResultsBackgroundHovered] = ui::BlendTowardMaxContrast(
       kColorOmniboxResultsBackground, gfx::kGoogleGreyAlpha200);
   mixer[kColorOmniboxResultsBackgroundSelected] = ui::BlendTowardMaxContrast(
       ui::GetColorWithMaxContrast(kColorOmniboxResultsTextSelected),
       gfx::kGoogleGreyAlpha200);
   mixer[kColorOmniboxResultsChipBackground] = {ui::kColorSysNeutralContainer};
+  mixer[kColorOmniboxComposeboxContextEntrypointBackground] =
+      ui::AlphaBlend({ui::kColorSysStateHoverOnSubtle},
+                     {kColorOmniboxResultsBackground}, 0xFF);
   mixer[kColorOmniboxResultsButtonBorder] = ui::BlendTowardMaxContrast(
       kColorToolbarBackgroundSubtleEmphasis, gfx::kGoogleGreyAlpha400);
   mixer[kColorOmniboxResultsButtonIcon] = {kColorOmniboxResultsIcon};
@@ -265,6 +341,9 @@ void AddOmniboxColorMixer(ui::ColorProvider* provider,
     mixer[kColorOmniboxResultsIconSelected] =
         results_icon(kColorOmniboxResultsTextSelected,
                      kColorOmniboxResultsBackgroundSelected);
+    // Aligns with default InkDropHighlight::visible_opacity_.
+    mixer[kColorOmniboxResultsIconHovered] =
+        ui::SetAlpha({kColorOmniboxResultsIcon}, std::ceil(0.128f * 255.0f));
     mixer[kColorOmniboxResultsStarterPackIcon] = ui::BlendForMinContrast(
         gfx::kGoogleBlue600, kColorOmniboxResultsBackground, std::nullopt,
         color_utils::kMinimumVisibleContrastRatio);
@@ -418,6 +497,25 @@ void AddOmniboxColorMixer(ui::ColorProvider* provider,
   mixer[kColorOmniboxIconPressed] = {
       ui::SetAlpha(kColorOmniboxText, std::ceil(0.16f * 255.0f))};
 
+  // Composebox-specific colors.
+  mixer[kColorOmniboxComposeboxChipBackground] = ui::SelectBasedOnDarkInput(
+      kColorOmniboxResultsBackground, gfx::kGoogleGrey900, SK_ColorWHITE);
+  mixer[kColorOmniboxComposeboxDivider] = ui::SelectBasedOnDarkInput(
+      kColorOmniboxResultsBackground, gfx::kGoogleGrey700, gfx::kGoogleGrey200);
+  mixer[kColorOmniboxComposeboxFaviconBackground] = {
+      kColorOmniboxComposeboxChipBackground};
+  mixer[kColorOmniboxForegroundDisabled] = {kColorOmniboxTextDimmed};
+  mixer[kColorOmniboxComposeboxPrimaryAction] = ui::SelectBasedOnDarkInput(
+      kColorOmniboxResultsBackground, gfx::kGoogleBlue200, gfx::kGoogleBlue600);
+  mixer[kColorOmniboxComposeboxSubmitButtonBackground] = {
+      kColorOmniboxComposeboxPrimaryAction};
+  mixer[kColorOmniboxComposeboxSubmitButtonEnergy] = {SK_ColorTRANSPARENT};
+  mixer[kColorOmniboxComposeboxSubmitButtonIcon] = ui::SelectBasedOnDarkInput(
+      kColorOmniboxResultsBackground, gfx::kGoogleGrey900, gfx::kGoogleBlue200);
+
   // Override omnibox colors per CR2023 spec.
   ApplyOmniboxCR2023Colors(mixer, key);
+
+  // Apply specific baseline colors for the composebox submit button.
+  ApplyComposeboxBaselineColors(mixer, key);
 }

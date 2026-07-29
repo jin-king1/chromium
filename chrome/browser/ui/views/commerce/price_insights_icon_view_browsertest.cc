@@ -2,37 +2,34 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/ui/views/commerce/price_insights_icon_view.h"
-
+#include "base/strings/string_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/commerce/mock_commerce_ui_tab_helper.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
+#include "chrome/browser/ui/views/commerce/price_insights_page_action_view_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "chrome/browser/ui/views/page_action/page_action_container_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/commerce/core/commerce_feature_list.h"
 #include "components/commerce/core/test_utils.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
-#include "ui/base/interaction/element_identifier.h"
-#include "ui/base/interaction/element_tracker.h"
-#include "ui/views/interaction/element_tracker_views.h"
 
 namespace {
 const char kTestURL[] = "about:blank";
 }  // namespace
 
-class PriceInsightsIconViewBrowserTest : public UiBrowserTest {
+class PriceInsightsIconViewBaseBrowserTest : public UiBrowserTest {
  public:
-  PriceInsightsIconViewBrowserTest() {
-    MockCommerceUiTabHelper::ReplaceFactory();
-    test_features_.InitWithFeatures({commerce::kPriceInsights}, {});
+  PriceInsightsIconViewBaseBrowserTest() {
+    commerce_ui_override_ = MockCommerceUiTabHelper::ReplaceFactory();
   }
 
   // UiBrowserTest:
@@ -74,6 +71,15 @@ class PriceInsightsIconViewBrowserTest : public UiBrowserTest {
 
   void ShowUi(const std::string& name) override {
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kTestURL)));
+
+    MockCommerceUiTabHelper* mock_tab_helper = getTabHelper();
+    commerce::PriceInsightsPageActionViewController::From(
+        *browser()->GetActiveTabInterface())
+        ->UpdatePageActionIcon(
+            mock_tab_helper->ShouldShowPriceInsightsIconView(),
+            mock_tab_helper->ShouldExpandPageActionIcon(
+                PageActionIconType::kPriceInsights),
+            mock_tab_helper->GetPriceInsightsIconLabelTypeForPage());
   }
 
   bool VerifyUi() override {
@@ -93,34 +99,43 @@ class PriceInsightsIconViewBrowserTest : public UiBrowserTest {
 
   void WaitForUserDismissal() override {
     // Consider closing the browser to be dismissal.
-    ui_test_utils::WaitForBrowserToClose();
+    ui_test_utils::BrowserDestroyedObserver().Wait();
   }
 
  protected:
   std::optional<commerce::PriceInsightsInfo> price_insights_info_;
 
-  PriceInsightsIconView* GetChip() {
-    const ui::ElementContext context =
-        views::ElementTrackerViews::GetContextForView(GetLocationBarView());
-    views::View* matched_view =
-        views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-            kPriceInsightsChipElementId, context);
-
-    return matched_view
-               ? views::AsViewClass<PriceInsightsIconView>(matched_view)
-               : nullptr;
+  IconLabelBubbleView* GetChip() {
+    return GetLocationBarView()->page_action_container()->GetPageActionView(
+        kActionCommercePriceInsights);
   }
 
  private:
-  base::test::ScopedFeatureList test_features_;
-
   BrowserView* GetBrowserView() {
     return BrowserView::GetBrowserViewForBrowser(browser());
   }
 
   LocationBarView* GetLocationBarView() {
-    return GetBrowserView()->toolbar()->location_bar();
+    return GetBrowserView()->toolbar()->location_bar_view();
   }
+
+  ui::UserDataFactory::ScopedOverride commerce_ui_override_;
+};
+
+class PriceInsightsIconViewBrowserTest
+    : public PriceInsightsIconViewBaseBrowserTest {
+ public:
+  PriceInsightsIconViewBrowserTest() {
+    test_features_.InitWithFeaturesAndParameters(
+        /*enabled_features=*/
+        {
+            {commerce::kPriceInsights, {}},
+        },
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList test_features_;
 };
 
 IN_PROC_BROWSER_TEST_F(PriceInsightsIconViewBrowserTest,
@@ -129,18 +144,24 @@ IN_PROC_BROWSER_TEST_F(PriceInsightsIconViewBrowserTest,
 }
 
 class PriceInsightsIconViewWithLabelBrowserTest
-    : public PriceInsightsIconViewBrowserTest {
+    : public PriceInsightsIconViewBaseBrowserTest {
  public:
   PriceInsightsIconViewWithLabelBrowserTest() {
     test_features_.InitAndEnableFeaturesWithParameters(
-        {{commerce::kPriceInsights,
-          {{commerce::kPriceInsightsChipLabelExpandOnHighPriceParam, "true"}}},
-         {feature_engagement::kIPHPriceInsightsPageActionIconLabelFeature, {}}},
-        {});
+        /*allow_and_enable_features=*/
+        {
+            {commerce::kPriceInsights,
+             {{commerce::kPriceInsightsChipLabelExpandOnHighPriceParam,
+               "true"}}},
+            {feature_engagement::kIPHPriceInsightsPageActionIconLabelFeature,
+             {}},
+        },
+        /*disable_features=*/{});
   }
+
   // UiBrowserTest:
   void PreShow() override {
-    PriceInsightsIconViewBrowserTest::PreShow();
+    PriceInsightsIconViewBaseBrowserTest::PreShow();
 
     std::string test_name =
         testing::UnitTest::GetInstance()->current_test_info()->name();
@@ -167,17 +188,15 @@ class PriceInsightsIconViewWithLabelBrowserTest
         testing::UnitTest::GetInstance()->current_test_info()->name();
     if (test_name == "InvokeUi_show_price_insights_icon_with_low_price_label") {
       EXPECT_TRUE(price_insights_chip->ShouldShowLabel());
-      EXPECT_EQ(
-          base::ToLowerASCII(price_insights_chip->GetIconLabelForTesting()),
-          u"price is low");
+      EXPECT_EQ(base::ToLowerASCII(price_insights_chip->GetText()),
+                u"price is low");
 
       // TODO(meiliang): Add pixel test.
     } else if (test_name ==
                "InvokeUi_show_price_insights_icon_with_high_price_label") {
       EXPECT_TRUE(price_insights_chip->ShouldShowLabel());
-      EXPECT_EQ(
-          base::ToLowerASCII(price_insights_chip->GetIconLabelForTesting()),
-          u"price is high");
+      EXPECT_EQ(base::ToLowerASCII(price_insights_chip->GetText()),
+                u"price is high");
 
       // TODO(meiliang): Add pixel test.
     }

@@ -75,24 +75,20 @@ export class SettingsInternetDetailMenuElement extends
         type: String,
         value: '',
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kCellularRenameESimNetwork,
-          Setting.kCellularRemoveESimNetwork,
-        ]),
-      },
     };
   }
 
-  deviceState: OncMojo.DeviceStateProperties|undefined;
-  private eSimNetworkState_: OncMojo.NetworkStateProperties|null;
-  private isGuest_: boolean;
-  private guid_: string;
+  declare deviceState: OncMojo.DeviceStateProperties|undefined;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kCellularRenameESimNetwork,
+    Setting.kCellularRemoveESimNetwork,
+  ]);
+
+  declare private eSimNetworkState_: OncMojo.NetworkStateProperties|null;
+  declare private isGuest_: boolean;
+  declare private guid_: string;
 
   /**
    * Overridden from DeepLinkingMixin.

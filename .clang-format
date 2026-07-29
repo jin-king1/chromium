@@ -5,7 +5,7 @@ BasedOnStyle: Chromium
 # 'vector<vector<int> >' in existing files gets formatted to
 # 'vector<vector<int>>'. ('Auto' means that clang-format will only use
 # 'int>>' if the file already contains at least one such instance.)
-Standard: Cpp11
+Standard: Latest
 
 # TODO(crbug.com/1392808): Remove when InsertBraces has been upstreamed into
 # the Chromium style (is implied by BasedOnStyle: Chromium).
@@ -49,8 +49,8 @@ IncludeCategories:
     Priority:        5
 # ref: https://clang.llvm.org/docs/ClangFormatStyleOptions.html#includeismainregex
 IncludeIsMainRegex: "\
-(_(32|64|android|apple|chromeos|freebsd|fuchsia|fuzzer|ios|linux|mac|nacl|openbsd|posix|stubs?|win))?\
-(_(unit|browser|perf)?tests?)?$"
+(_(32|64|android|apple|chromeos|freebsd|fuchsia|fuzzer|ios|linux|mac|openbsd|posix|stubs?|win))?\
+(_(unit|browser|perf|interactive_ui)?tests?)?$"
 
 # Make sure code like:
 # IPC_BEGIN_MESSAGE_MAP()
@@ -65,17 +65,12 @@ CR_BEGIN_MSG_MAP_EX|\
 IPC_BEGIN_MESSAGE_MAP|\
 IPC_BEGIN_MESSAGE_MAP_WITH_PARAM|\
 IPC_PROTOBUF_MESSAGE_TRAITS_BEGIN|\
-IPC_STRUCT_BEGIN|\
-IPC_STRUCT_BEGIN_WITH_PARENT|\
 IPC_STRUCT_TRAITS_BEGIN|\
-POLPARAMS_BEGIN|\
-PPAPI_BEGIN_MESSAGE_MAP$"
+POLPARAMS_BEGIN$"
 MacroBlockEnd: "^\
 CR_END_MSG_MAP|\
 END_MSG_MAP|\
 IPC_END_MESSAGE_MAP|\
 IPC_PROTOBUF_MESSAGE_TRAITS_END|\
-IPC_STRUCT_END|\
 IPC_STRUCT_TRAITS_END|\
-POLPARAMS_END|\
-PPAPI_END_MESSAGE_MAP$"
+POLPARAMS_END$"

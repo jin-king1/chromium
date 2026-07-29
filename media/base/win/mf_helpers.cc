@@ -1,12 +1,6 @@
 // Copyright 2016 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/base/win/mf_helpers.h"
 
 #include <initguid.h>
@@ -21,24 +15,77 @@
 #include <mmreg.h>
 #include <wrl.h>
 
+#include <algorithm>
+#include <string_view>
+
 #include "base/check_op.h"
+#include "base/containers/span.h"
+#include "base/containers/span_writer.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/trace_event/trace_event.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/windows_version.h"
+#include "gpu/command_buffer/service/shared_context_state.h"
+#include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
+#include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+#include "gpu/ipc/common/dxgi_helpers.h"
+#include "gpu/ipc/service/shared_image_stub.h"
 #include "media/base/audio_codecs.h"
 #include "media/base/audio_decoder_config.h"
 #include "media/base/channel_layout.h"
 #include "media/base/win/mf_helpers.h"
-#if BUILDFLAG(ENABLE_PLATFORM_AC4_AUDIO)
-#include "media/formats/mp4/ac4.h"
-#endif  // BUILDFLAG(ENABLE_PLATFORM_AC4_AUDIO)
-#include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
-#include "gpu/ipc/common/dxgi_helpers.h"
 #include "media/gpu/command_buffer_helper.h"
 #include "media/media_buildflags.h"
 #include "third_party/libyuv/include/libyuv.h"
 
+#if BUILDFLAG(ENABLE_PLATFORM_AC4_AUDIO)
+#include "media/formats/mp4/ac4.h"
+#endif  // BUILDFLAG(ENABLE_PLATFORM_AC4_AUDIO)
+
 namespace media {
+
+namespace {
+
+void DestroySharedImageResourcesOnGpuThread(
+    std::unique_ptr<gpu::VideoImageRepresentation> representation,
+    std::unique_ptr<gpu::VideoImageRepresentation::ScopedReadAccess>
+        scoped_read_access,
+    scoped_refptr<gpu::SharedContextState> context_state,
+    std::unique_ptr<gpu::MemoryTypeTracker> tracker) {
+  const bool context_current =
+      context_state && context_state->MakeCurrent(nullptr, /*needs_gl=*/true);
+  if (representation && !context_current) {
+    representation->OnContextLost();
+  }
+  scoped_read_access.reset();
+  representation.reset();
+  tracker.reset();
+}
+
+}  // namespace
+
+SharedImageReadLock::SharedImageReadLock(
+    std::unique_ptr<gpu::VideoImageRepresentation> representation,
+    std::unique_ptr<gpu::VideoImageRepresentation::ScopedReadAccess>
+        scoped_read_access,
+    scoped_refptr<VideoFrame> frame,
+    scoped_refptr<gpu::SharedContextState> context_state,
+    std::unique_ptr<gpu::MemoryTypeTracker> tracker)
+    : representation_(std::move(representation)),
+      scoped_read_access_(std::move(scoped_read_access)),
+      frame_(std::move(frame)),
+      context_state_(std::move(context_state)),
+      tracker_(std::move(tracker)),
+      task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {}
+
+SharedImageReadLock::~SharedImageReadLock() {
+  task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&DestroySharedImageResourcesOnGpuThread,
+                     std::move(representation_), std::move(scoped_read_access_),
+                     std::move(context_state_), std::move(tracker_)));
+}
 
 using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::MakeAndInitialize;
@@ -271,16 +318,20 @@ Microsoft::WRL::ComPtr<IMFSample> CreateEmptySampleWithBuffer(
 }
 
 MediaBufferScopedPointer::MediaBufferScopedPointer(IMFMediaBuffer* media_buffer)
-    : media_buffer_(media_buffer),
-      buffer_(nullptr),
-      max_length_(0),
-      current_length_(0) {
-  HRESULT hr = media_buffer_->Lock(&buffer_.AsEphemeralRawAddr(), &max_length_,
-                                   &current_length_);
+    : media_buffer_(media_buffer) {
+  uint8_t* buffer;
+  DWORD max_length;
+
+  HRESULT hr = media_buffer_->Lock(&buffer, &max_length, nullptr);
   CHECK(SUCCEEDED(hr));
+
+  // SAFETY: `IMFMediaBuffer::Lock` docs states that `max_length` is the maximum
+  // amount of data that can be written to the buffer.
+  data_ = UNSAFE_BUFFERS(base::raw_span<uint8_t>(buffer, max_length));
 }
 
 MediaBufferScopedPointer::~MediaBufferScopedPointer() {
+  data_ = {};
   HRESULT hr = media_buffer_->Unlock();
   CHECK(SUCCEEDED(hr));
 }
@@ -290,12 +341,24 @@ HRESULT CopyCoTaskMemWideString(LPCWSTR in_string, LPWSTR* out_string) {
     return E_INVALIDARG;
   }
 
-  size_t size = (wcslen(in_string) + 1) * sizeof(wchar_t);
+  std::wstring_view input_str_view = in_string;
+  // `wstring_view::size()` doesn't count the null-terminator.
+  const size_t size_in_chars = input_str_view.size() + 1;
+  const size_t size = size_in_chars * sizeof(wchar_t);
   LPWSTR copy = reinterpret_cast<LPWSTR>(CoTaskMemAlloc(size));
-  if (!copy)
+  if (!copy) {
     return E_OUTOFMEMORY;
+  }
 
-  wcscpy(copy, in_string);
+  // SAFETY: We've just allocated sufficient memory with `CoTaskMemAlloc`
+  // to fit `size_in_chars` characters.
+  auto out_span = UNSAFE_BUFFERS(base::span(copy, size_in_chars));
+
+  // Put a null-terminator at the end of the string.
+  *out_span.rbegin() = 0;
+  // Copy the real characters.
+  out_span.copy_prefix_from(base::span(input_str_view));
+
   *out_string = copy;
   return S_OK;
 }
@@ -354,12 +417,12 @@ ChannelLayout ChannelConfigToChannelLayout(ChannelConfig config) {
 // GUID is little endian. The byte array in network order is big endian.
 std::vector<uint8_t> ByteArrayFromGUID(REFGUID guid) {
   std::vector<uint8_t> byte_array(sizeof(GUID));
-  GUID* reversed_guid = reinterpret_cast<GUID*>(byte_array.data());
-  *reversed_guid = guid;
-  reversed_guid->Data1 = _byteswap_ulong(guid.Data1);
-  reversed_guid->Data2 = _byteswap_ushort(guid.Data2);
-  reversed_guid->Data3 = _byteswap_ushort(guid.Data3);
+  auto writer = base::SpanWriter(base::span(byte_array));
+  CHECK(writer.WriteU32BigEndian(guid.Data1));
+  CHECK(writer.WriteU16BigEndian(guid.Data2));
+  CHECK(writer.WriteU16BigEndian(guid.Data3));
   // Data4 is already a byte array so no need to byte swap.
+  writer.remaining_span().copy_from(base::span(guid.Data4));
   return byte_array;
 }
 
@@ -456,14 +519,14 @@ HRESULT GetAacAudioType(const AudioDecoderConfig& decoder_config,
   ComPtr<IMFMediaType> media_type;
   RETURN_IF_FAILED(GetDefaultAudioType(decoder_config, &media_type));
 
-  // On Windows `extra_data` is not populated for AAC in `decoder_config`. Use
-  // `aac_extra_data` instead. See crbug.com/1245123.
-  const auto& extra_data = decoder_config.aac_extra_data();
+  const auto& extra_data = decoder_config.extra_data();
 
   size_t wave_format_size = sizeof(HEAACWAVEINFO) + extra_data.size();
   std::vector<uint8_t> wave_format_buffer(wave_format_size);
+  // TODO(crbug.com/40285824): Spanify this usage. This is somewhat iffy from
+  // alignment point of view.
   HEAACWAVEINFO* aac_wave_format =
-      reinterpret_cast<HEAACWAVEINFO*>(wave_format_buffer.data());
+      UNSAFE_TODO(reinterpret_cast<HEAACWAVEINFO*>(wave_format_buffer.data()));
 
   aac_wave_format->wfx.wFormatTag = WAVE_FORMAT_MPEG_HEAAC;
   aac_wave_format->wfx.nChannels = decoder_config.channels();
@@ -483,8 +546,9 @@ HRESULT GetAacAudioType(const AudioDecoderConfig& decoder_config,
   aac_wave_format->dwReserved2 = 0;
 
   if (!extra_data.empty()) {
-    memcpy(reinterpret_cast<uint8_t*>(aac_wave_format) + sizeof(HEAACWAVEINFO),
-           extra_data.data(), extra_data.size());
+    base::span(wave_format_buffer)
+        .subspan(sizeof(HEAACWAVEINFO))
+        .copy_from(extra_data);
   }
 
   RETURN_IF_FAILED(MFInitMediaTypeFromWaveFormatEx(
@@ -603,7 +667,7 @@ GUID VideoPixelFormatToMFSubtype(VideoPixelFormat video_pixel_format) {
     case VideoPixelFormat::PIXEL_FORMAT_ABGR:
       if (base::win::GetVersion() < base::win::Version::WIN10_RS5) {
         // For a long time, there was no MFVideoFormat specific to BGR
-        // in Media Foundaiton.  BGR formats were only handled as
+        // in Media Foundation.  BGR formats were only handled as
         // textures, and both the DirectX Video Processor and pixel
         // shaders handled these fine because they operate off of the
         // texture format and not the MF media type. Use of the
@@ -671,14 +735,16 @@ HRESULT GenerateSampleFromDecoderBuffer(
   RETURN_IF_FAILED(mf_sample->SetSampleTime(sample_time));
 
   ComPtr<IMFMediaBuffer> mf_buffer;
-  size_t data_size = buffer->size();
-  RETURN_IF_FAILED(MFCreateMemoryBuffer(buffer->size(), &mf_buffer));
+  auto buffer_span = base::span(*buffer);
+  RETURN_IF_FAILED(MFCreateMemoryBuffer(buffer_span.size(), &mf_buffer));
 
   BYTE* mf_buffer_data = nullptr;
   DWORD max_length = 0;
   RETURN_IF_FAILED(mf_buffer->Lock(&mf_buffer_data, &max_length, 0));
-  memcpy(mf_buffer_data, buffer->data(), data_size);
-  RETURN_IF_FAILED(mf_buffer->SetCurrentLength(data_size));
+  // SAFETY: `IMFMediaBuffer::Lock` returns buffer size via `max_length`
+  auto mf_buffer_span = UNSAFE_BUFFERS(base::span(mf_buffer_data, max_length));
+  mf_buffer_span.copy_prefix_from(buffer_span);
+  RETURN_IF_FAILED(mf_buffer->SetCurrentLength(buffer_span.size()));
   RETURN_IF_FAILED(mf_buffer->Unlock());
 
   RETURN_IF_FAILED(mf_sample->AddBuffer(mf_buffer.Get()));
@@ -741,7 +807,9 @@ HRESULT CreateDecryptConfigFromSample(
   if (!iv) {
     return E_OUTOFMEMORY;
   }
-  ZeroMemory(iv, iv_length * sizeof(BYTE));
+  // SAFETY: `IMFSample::GetBlobSize` returns size via `iv_length`.
+  auto iv_span = UNSAFE_BUFFERS(base::span(iv.get(), iv_length));
+  std::ranges::fill(iv_span, 0);
   RETURN_IF_FAILED(mf_sample->GetBlob(MFSampleExtension_Encryption_SampleID, iv,
                                       iv_length, nullptr));
 
@@ -756,22 +824,24 @@ HRESULT CreateDecryptConfigFromSample(
           MFSampleExtension_Encryption_SubSample_Mapping,
           reinterpret_cast<uint8_t**>(&subsample_mappings),
           &subsample_mappings_size))) {
-    if (subsample_mappings_size >= sizeof(MediaFoundationSubsampleEntry)) {
-      uint32_t subsample_count =
-          subsample_mappings_size / sizeof(MediaFoundationSubsampleEntry);
-      for (uint32_t i = 0; i < subsample_count; ++i) {
-        DVLOG(3) << __func__ << ": subsample_mappings[" << i
-                 << "].clear_bytes=" << subsample_mappings[i].clear_bytes
-                 << ", cipher_bytes=" << subsample_mappings[i].cipher_bytes;
-        subsamples.emplace_back(subsample_mappings[i].clear_bytes,
-                                subsample_mappings[i].cipher_bytes);
-      }
+    // SAFETY: `IMFSample::GetAllocatedBlob` returns the size in bytes via
+    // `subsample_mappings_size`, we get the number of entries by dividing
+    // it by the entry size.
+    auto mappings_span = UNSAFE_BUFFERS(base::span(
+        subsample_mappings.get(),
+        subsample_mappings_size / sizeof(MediaFoundationSubsampleEntry)));
+
+    for (MediaFoundationSubsampleEntry& entry : mappings_span) {
+      DVLOG(3) << __func__ << ": subsample_mapping"
+               << ".clear_bytes=" << entry.clear_bytes
+               << ", cipher_bytes=" << entry.cipher_bytes;
+      subsamples.emplace_back(entry.clear_bytes, entry.cipher_bytes);
     }
   }
 
   // Key ID
   const auto key_id_string = GetStringFromGUID(key_id);
-  const auto iv_string = std::string(iv.get(), iv.get() + iv_length);
+  const auto iv_string = std::string(iv_span.begin(), iv_span.end());
   DVLOG(3) << __func__ << ": key_id_string=" << key_id_string
            << ", iv_string=" << iv_string
            << ", iv_string.size()=" << iv_string.size();
@@ -792,7 +862,12 @@ HRESULT CreateDecryptConfigFromSample(
             MFSampleExtension_Encryption_CryptByteBlock, &crypt_byte_block)) &&
         SUCCEEDED(mf_sample->GetUINT32(
             MFSampleExtension_Encryption_SkipByteBlock, &skip_byte_block))) {
-      encryption_pattern = EncryptionPattern(crypt_byte_block, skip_byte_block);
+      auto pattern =
+          EncryptionPattern::Create(crypt_byte_block, skip_byte_block);
+      if (!pattern) {
+        return MF_E_INVALID_STREAM_DATA;
+      }
+      encryption_pattern = *pattern;
     }
 
     DVLOG(3) << __func__ << ": encryption_pattern=" << encryption_pattern;
@@ -807,7 +882,7 @@ constexpr size_t kOneMicrosecondInMFSampleTimeUnits = 10;
 
 HRESULT InitializeSampleFromTexture(const VideoFrame* frame,
                                     ID3D11Texture2D* input_texture,
-                                    IMFSample* sample) {
+                                    Microsoft::WRL::ComPtr<IMFSample> sample) {
   Microsoft::WRL::ComPtr<IMFMediaBuffer> mf_buffer;
   HRESULT hr = MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D),
                                          input_texture, 0, FALSE, &mf_buffer);
@@ -834,6 +909,75 @@ HRESULT InitializeSampleFromTexture(const VideoFrame* frame,
   return S_OK;
 }
 
+Microsoft::WRL::ComPtr<IMFSample> CreateSampleFromTexture(
+    Microsoft::WRL::ComPtr<ID3D11Device> device,
+    scoped_refptr<VideoFrame> frame,
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture,
+    bool need_perform_copy) {
+  CHECK(device);
+  CHECK(frame);
+  CHECK(input_texture);
+
+  HRESULT hr;
+  if (need_perform_copy) {
+    if (frame->format() == PIXEL_FORMAT_NV12 ||
+        frame->format() == PIXEL_FORMAT_I420 ||
+        frame->format() == PIXEL_FORMAT_YV12 ||
+        frame->format() == PIXEL_FORMAT_NV21) {
+      const gfx::Rect& visible_rect = frame->visible_rect();
+      if (visible_rect.x() % 2 != 0 || visible_rect.y() % 2 != 0 ||
+          visible_rect.width() % 2 != 0 || visible_rect.height() % 2 != 0) {
+        DLOG(ERROR) << "Source visible_rect is not properly aligned for 4:2:0 "
+                       "subsampled format.";
+        return nullptr;
+      }
+    } else {
+      NOTREACHED();
+    }
+    D3D11_TEXTURE2D_DESC desc;
+    input_texture->GetDesc(&desc);
+    desc.Width = static_cast<UINT>(frame->visible_rect().width());
+    desc.Height = static_cast<UINT>(frame->visible_rect().height());
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_VIDEO_ENCODER;
+    desc.ArraySize = 1;
+    desc.CPUAccessFlags = 0;
+    desc.MiscFlags = 0;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> copied_texture;
+    hr = device->CreateTexture2D(&desc, nullptr, &copied_texture);
+    if (FAILED(hr)) {
+      LOG(ERROR) << "Failed to create d3d11 texture: "
+                 << logging::SystemErrorCodeToString(hr);
+      return nullptr;
+    }
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> device_context;
+    device->GetImmediateContext(&device_context);
+    D3D11_BOX src_box = {static_cast<UINT>(frame->visible_rect().x()),
+                         static_cast<UINT>(frame->visible_rect().y()),
+                         0,
+                         static_cast<UINT>(frame->visible_rect().right()),
+                         static_cast<UINT>(frame->visible_rect().bottom()),
+                         1};
+    device_context->CopySubresourceRegion(copied_texture.Get(), 0, 0, 0, 0,
+                                          input_texture.Get(), 0, &src_box);
+    input_texture = copied_texture;
+  }
+
+  Microsoft::WRL::ComPtr<IMFSample> sample;
+  hr = MFCreateSample(&sample);
+  if (FAILED(hr)) {
+    LOG(ERROR) << "Failed to create MF Sample: "
+               << logging::SystemErrorCodeToString(hr);
+    return nullptr;
+  }
+
+  if (FAILED(InitializeSampleFromTexture(frame.get(), input_texture.Get(),
+                                         sample))) {
+    return nullptr;
+  }
+  return sample;
+}
+
 HRESULT GenerateSampleFromVideoFrame(
     const VideoFrame* frame,
     DXGIDeviceManager* dxgi_device_manager,
@@ -841,26 +985,21 @@ HRESULT GenerateSampleFromVideoFrame(
     Microsoft::WRL::ComPtr<ID3D11Texture2D>* staging_texture,
     DWORD buffer_alignment,
     IMFSample** sample_out) {
-  // A shared image sample cannot be created synchronously.  Use
-  // GenerateSampleFromSharedImageVideoFrame. Note that this is not true for
-  // mappable shared image since it has a GpuMemoryBufferHandle. So skipping the
-  // CHECK when frame has a mappable buffer.
-  if (!frame->HasMappableGpuBuffer()) {
-    CHECK(!frame->HasSharedImage());
-  }
+  // A shared image sample for a non-mappable SharedImage cannot be created
+  // synchronously; instead, GenerateSampleFromSharedImageVideoFrame should be
+  // used.
+  CHECK(!frame->HasSharedImage() || frame->HasMappableSharedImage());
 
   HRESULT hr;
   Microsoft::WRL::ComPtr<IMFSample> sample;
   hr = MFCreateSample(&sample);
   RETURN_ON_HR_FAILURE(hr, "Failed to create sample", hr);
 
-  if (frame->storage_type() ==
-          VideoFrame::StorageType::STORAGE_GPU_MEMORY_BUFFER &&
-      dxgi_device_manager != nullptr) {
+  if (frame->HasMappableSharedImage() && dxgi_device_manager != nullptr) {
     gfx::GpuMemoryBufferHandle buffer_handle =
         frame->GetGpuMemoryBufferHandle();
     if (buffer_handle.is_null()) {
-      LOG(ERROR) << "Failed to get GMB for input frame";
+      LOG(ERROR) << "Failed to get GMB handle for input frame";
       return MF_E_INVALID_STREAM_DATA;
     }
 
@@ -874,17 +1013,17 @@ HRESULT GenerateSampleFromVideoFrame(
 
     Microsoft::WRL::ComPtr<ID3D11Device1> device1;
     hr = d3d_device.As(&device1);
-    RETURN_ON_HR_FAILURE(hr, "Failed to query ID3D11Device1", hr);
+    CHECK_EQ(hr, S_OK);
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture;
     hr = device1->OpenSharedResource1(
         buffer_handle.dxgi_handle().buffer_handle(),
         IID_PPV_ARGS(&input_texture));
-    RETURN_ON_HR_FAILURE(hr, "Failed to open shared GMB D3D texture", hr);
+    RETURN_ON_HR_FAILURE(
+        hr, "Failed to open shared D3D texture from GMB handle", hr);
 
     if (use_dxgi_buffer) {
-      hr =
-          InitializeSampleFromTexture(frame, input_texture.Get(), sample.Get());
+      hr = InitializeSampleFromTexture(frame, input_texture.Get(), sample);
       RETURN_ON_HR_FAILURE(hr, "Failed to initialize sample from texture", hr);
     } else {
       Microsoft::WRL::ComPtr<IMFMediaBuffer> input_buffer;
@@ -898,9 +1037,9 @@ HRESULT GenerateSampleFromVideoFrame(
           hr, "Failed to create memory buffer for input sample", hr);
 
       MediaBufferScopedPointer scoped_buffer(input_buffer.Get());
-      bool copy_succeeded = gpu::CopyD3D11TexToMem(
-          input_texture.Get(), scoped_buffer.get(), scoped_buffer.max_length(),
-          d3d_device.Get(), staging_texture);
+      bool copy_succeeded =
+          gpu::CopyD3D11TexToMem(input_texture.Get(), scoped_buffer.as_span(),
+                                 d3d_device.Get(), staging_texture);
       if (!copy_succeeded) {
         LOG(ERROR) << "Failed to copy sample to memory.";
         return E_FAIL;
@@ -930,7 +1069,7 @@ HRESULT GenerateSampleFromVideoFrame(
           frame->format(), i, frame->visible_rect().size());
       libyuv::CopyPlane(frame->visible_data(i),
                         frame->layout().planes()[i].stride,
-                        scoped_buffer.get() + buffer_offset,
+                        scoped_buffer.as_span().subspan(buffer_offset).data(),
                         frame->layout().planes()[i].stride, plane_size.width(),
                         plane_size.height());
       buffer_offset +=
@@ -959,75 +1098,202 @@ HRESULT GenerateSampleFromVideoFrame(
   return S_OK;
 }
 
-void GenerateSampleOnSyncTokenReleased(
+void GenerateResourceOnSyncTokenReleased(
     scoped_refptr<VideoFrame> frame,
-    Microsoft::WRL::ComPtr<ID3D11Device> d3d_device,
+    Microsoft::WRL::ComPtr<ID3D11Device> encoder_device,
     scoped_refptr<CommandBufferHelper> command_buffer_helper,
-    SampleAvailableCB sample_available_cb) {
+    ResourceAvailableCB sample_available_cb) {
+  TRACE_EVENT0("media", "GenerateResourceOnSyncTokenReleased");
+
+#define RETURN_ON_FAILURE_WITH_CALLBACK(hr, message)                         \
+  if (FAILED(hr)) {                                                          \
+    LOG(ERROR) << message << ": " << logging::SystemErrorCodeToString(hr);   \
+    std::move(sample_available_cb)                                           \
+        .Run(std::move(frame), nullptr, std::nullopt, nullptr, std::nullopt, \
+             hr);                                                            \
+    return;                                                                  \
+  }
+
+  auto* shared_image_stub = command_buffer_helper->GetSharedImageStub();
+  if (!shared_image_stub) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "Invalid shared image stub");
+  }
+
+  auto shared_context_state = shared_image_stub->shared_context_state();
+  if (!shared_context_state) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "Invalid shared context state");
+  }
+
+  if (!shared_context_state->MakeCurrent(nullptr, /*needs_gl=*/true)) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "Failed to make context current");
+  }
+
+  Microsoft::WRL::ComPtr<ID3D11Device> shared_d3d11_device =
+      shared_context_state->GetD3D11Device();
+  HRESULT hr = shared_d3d11_device ? S_OK : E_FAIL;
+  RETURN_ON_FAILURE_WITH_CALLBACK(hr, "Invalid shared d3d11 device");
+  bool use_same_device = (encoder_device.Get() == shared_d3d11_device.Get());
   gpu::SharedImageManager* shared_image_manager =
       command_buffer_helper->GetSharedImageManager();
+  auto tracker = std::make_unique<gpu::MemoryTypeTracker>(
+      base::WrapRefCounted(shared_image_stub->memory_tracker()));
   std::unique_ptr<gpu::VideoImageRepresentation> image_representation =
       shared_image_manager->ProduceVideo(
-          d3d_device, frame->shared_image()->mailbox(),
-          command_buffer_helper->GetMemoryTypeTracker());
-  auto scoped_read_access = image_representation->BeginScopedReadAccess();
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture =
-      scoped_read_access->GetD3D11Texture();
+          shared_d3d11_device, frame->shared_image()->mailbox(), tracker.get());
+  RETURN_ON_FAILURE_WITH_CALLBACK(image_representation ? S_OK : E_FAIL,
+                                  "Failed to produce video");
 
-  if (frame->format() == PIXEL_FORMAT_NV12) {
-    // If this texture is going to be fed directly to the encoder (NV12), create
-    // a copy of it.  Hardware encoders are not guaranteed to be done with
-    // the texture when ProcessInput is finished.
-    D3D11_TEXTURE2D_DESC texture_desc;
-    input_texture->GetDesc(&texture_desc);
+  if (image_representation->size() != frame->coded_size()) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "SharedImage size mismatch");
+  }
+
+  auto scoped_read_access = image_representation->BeginScopedReadAccess();
+  if (!scoped_read_access) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_FAIL, "Failed to begin read access");
+  }
+  ComPtr<SharedImageReadLock> si_lock =
+      Microsoft::WRL::Make<SharedImageReadLock>(
+          std::move(image_representation), std::move(scoped_read_access), frame,
+          std::move(shared_context_state), std::move(tracker));
+  if (!si_lock) {
+    RETURN_ON_FAILURE_WITH_CALLBACK(E_OUTOFMEMORY,
+                                    "Failed to create SharedImageReadLock");
+  }
+
+  gpu::D3D11TextureAndArrayIndex input_texture =
+      si_lock->access()->GetD3D11Texture();
+
+  D3D11_TEXTURE2D_DESC texture_desc;
+  input_texture.texture->GetDesc(&texture_desc);
+  bool is_texture_array = texture_desc.ArraySize > 1;
+  // Array index must be 0 if input is not texture array.
+  CHECK(is_texture_array || !input_texture.array_index);
+
+  // If same device, and input is not texture array, pass the generated
+  // IMFSample directly.
+  if (use_same_device && !is_texture_array) {
+    // If this texture is NV12 and going to be fed directly to the encoder,
+    // create a copy of it. Hardware encoders are not guaranteed to be done
+    // with the texture when ProcessInput returns.
+    ComPtr<IMFSample> sample = CreateSampleFromTexture(
+        shared_d3d11_device, frame, input_texture.texture,
+        frame->format() == PIXEL_FORMAT_NV12);
+    RETURN_ON_FAILURE_WITH_CALLBACK(sample != nullptr ? S_OK : E_FAIL,
+                                    "Failed to create MF sample");
+    std::move(sample_available_cb)
+        .Run(std::move(frame), std::move(sample), std::nullopt,
+             std::move(si_lock), std::nullopt, S_OK);
+    return;
+  }
+
+  TRACE_EVENT0("media", "CreateSharedHandleOnSyncTokenReleased");
+  bool input_texture_has_been_copied = false;
+  Microsoft::WRL::ComPtr<IDXGIResource1> dxgi_resource;
+  hr = input_texture.texture.As(&dxgi_resource);
+  CHECK_EQ(hr, S_OK);
+  HANDLE shared_handle;
+
+  // MFVP & HMFT is not expecting texture array as input.
+  if (!is_texture_array) {
+    hr = dxgi_resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ,
+                                           nullptr, &shared_handle);
+  }
+  if (FAILED(hr) || is_texture_array) {
+    if (frame->format() == PIXEL_FORMAT_NV12 ||
+        frame->format() == PIXEL_FORMAT_I420 ||
+        frame->format() == PIXEL_FORMAT_YV12 ||
+        frame->format() == PIXEL_FORMAT_NV21) {
+      const gfx::Rect& visible_rect = frame->visible_rect();
+      if (visible_rect.x() % 2 != 0 || visible_rect.y() % 2 != 0 ||
+          visible_rect.width() % 2 != 0 || visible_rect.height() % 2 != 0) {
+        RETURN_ON_FAILURE_WITH_CALLBACK(
+            E_INVALIDARG,
+            "Source visible_rect is not properly aligned for "
+            "4:2:0 subsampled format.");
+      }
+    } else {
+      NOTREACHED();
+    }
+    TRACE_EVENT0("media", "CopyTextureOnCreateSharedHandleFailed");
     texture_desc.Usage = D3D11_USAGE_DEFAULT;
     texture_desc.BindFlags =
-        D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
     texture_desc.ArraySize = 1;
     texture_desc.CPUAccessFlags = 0;
-    texture_desc.MiscFlags = 0;
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> copied_texture;
-    HRESULT hr =
-        d3d_device->CreateTexture2D(&texture_desc, nullptr, &copied_texture);
-    if (FAILED(hr)) {
-      std::move(sample_available_cb).Run(std::move(frame), nullptr, hr);
-      return;
-    }
+    texture_desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
+                             D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    texture_desc.Width = static_cast<UINT>(frame->visible_rect().width());
+    texture_desc.Height = static_cast<UINT>(frame->visible_rect().height());
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> shared_texture;
+    hr = shared_d3d11_device->CreateTexture2D(&texture_desc, nullptr,
+                                              &shared_texture);
+    RETURN_ON_FAILURE_WITH_CALLBACK(hr, "Failed to create shared texture");
+
+    Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyed_mutex;
+    hr = shared_texture.As(&keyed_mutex);
+    RETURN_ON_FAILURE_WITH_CALLBACK(hr, "Failed to get mutex");
+    CHECK(SUCCEEDED(keyed_mutex->AcquireSync(0, INFINITE)));
+    gpu::DXGIScopedReleaseKeyedMutex scoped_keyed_mutex(keyed_mutex, 0);
 
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> device_context;
-    d3d_device->GetImmediateContext(&device_context);
+    shared_d3d11_device->GetImmediateContext(&device_context);
     D3D11_BOX src_box = {static_cast<UINT>(frame->visible_rect().x()),
                          static_cast<UINT>(frame->visible_rect().y()),
                          0,
                          static_cast<UINT>(frame->visible_rect().right()),
                          static_cast<UINT>(frame->visible_rect().bottom()),
                          1};
-    device_context->CopySubresourceRegion(copied_texture.Get(), 0, 0, 0, 0,
-                                          input_texture.Get(), 0, &src_box);
-    input_texture = copied_texture;
+    device_context->CopySubresourceRegion(shared_texture.Get(), 0, 0, 0, 0,
+                                          input_texture.texture.Get(),
+                                          input_texture.array_index, &src_box);
+    Microsoft::WRL::ComPtr<IDXGIResource1> shared_dxgi_resource;
+    hr = shared_texture.As(&shared_dxgi_resource);
+    CHECK_EQ(hr, S_OK);
+    hr = shared_dxgi_resource->CreateSharedHandle(
+        nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &shared_handle);
+    RETURN_ON_FAILURE_WITH_CALLBACK(hr, "Failed to create shared handle");
+    input_texture_has_been_copied = true;
   }
+  base::win::ScopedHandle scoped_shared_handle(shared_handle);
 
-  ComPtr<IMFSample> mf_sample;
-  HRESULT hr = MFCreateSample(&mf_sample);
+  // If the producer and consumer are different d3d11 device, we need to
+  // guarantee all previous operations on producer device are finished before
+  // using the texture.
+  base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
+                            base::WaitableEvent::InitialState::NOT_SIGNALED);
+  Microsoft::WRL::ComPtr<IDXGIDevice2> dxgi_device2;
+  hr = shared_d3d11_device.As(&dxgi_device2);
+  CHECK_EQ(hr, S_OK);
+  hr = dxgi_device2->EnqueueSetEvent(event.handle());
   if (SUCCEEDED(hr)) {
-    hr = InitializeSampleFromTexture(frame.get(), input_texture.Get(),
-                                     mf_sample.Get());
+    event.Wait();
+  } else {
+    LOG(WARNING) << "Failed to set event: "
+                 << logging::SystemErrorCodeToString(hr);
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3d11_context;
+    shared_d3d11_device->GetImmediateContext(&d3d11_context);
+    if (d3d11_context) {
+      d3d11_context->Flush();
+    }
   }
 
   std::move(sample_available_cb)
-      .Run(std::move(frame), std::move(mf_sample), hr);
+      .Run(std::move(frame), nullptr, std::move(scoped_shared_handle),
+           std::move(si_lock), input_texture_has_been_copied, S_OK);
+#undef RETURN_ON_FAILURE_WITH_CALLBACK
 }
 
-void GenerateSampleFromSharedImageVideoFrame(
+void GenerateResourceFromSharedImageVideoFrame(
     scoped_refptr<VideoFrame> frame,
-    Microsoft::WRL::ComPtr<ID3D11Device> d3d_device,
+    Microsoft::WRL::ComPtr<ID3D11Device> encoder_device,
     scoped_refptr<CommandBufferHelper> command_buffer_helper,
-    SampleAvailableCB sample_available_cb) {
+    ResourceAvailableCB sample_available_cb) {
   gpu::SyncToken acquire_sync_token = frame->acquire_sync_token();
   command_buffer_helper->WaitForSyncToken(
       acquire_sync_token,
-      base::BindOnce(&GenerateSampleOnSyncTokenReleased, std::move(frame),
-                     std::move(d3d_device), std::move(command_buffer_helper),
+      base::BindOnce(&GenerateResourceOnSyncTokenReleased, std::move(frame),
+                     std::move(encoder_device),
+                     std::move(command_buffer_helper),
                      std::move(sample_available_cb)));
 }
 

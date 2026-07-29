@@ -6,15 +6,10 @@
 #       instructions on how to regenerate. Otherwise, do not edit.
 data/quic_http_response_cache_data/test.example.com/index.html
 data/quic_http_response_cache_data/test.example.com/map.html
-data/quic_http_response_cache_data_with_push/test.example.com/favicon.ico
-data/quic_http_response_cache_data_with_push/test.example.com/index.html
-data/quic_http_response_cache_data_with_push/test.example.com/index2.html
-data/quic_http_response_cache_data_with_push/test.example.com/kitten-1.jpg
 data/ssl/certificates/2029_globalsign_com_cert.pem
 data/ssl/certificates/2_client_certs_1_key.p12
 data/ssl/certificates/BUILD.gn
 data/ssl/certificates/README
-data/ssl/certificates/bad_validity.pem
 data/ssl/certificates/can_sign_http_exchanges_draft_extension.pem
 data/ssl/certificates/can_sign_http_exchanges_draft_extension_invalid.pem
 data/ssl/certificates/client-empty-password.p12
@@ -59,6 +54,11 @@ data/ssl/certificates/client_7.p12
 data/ssl/certificates/client_7.pem
 data/ssl/certificates/client_7.pk8
 data/ssl/certificates/client_7_ca.pem
+data/ssl/certificates/client_8.key
+data/ssl/certificates/client_8.p12
+data/ssl/certificates/client_8.pem
+data/ssl/certificates/client_8.pk8
+data/ssl/certificates/client_8_ca.pem
 data/ssl/certificates/client_root_ca.pem
 data/ssl/certificates/client_with_ec_key.p12
 data/ssl/certificates/common_name_only.pem
@@ -107,6 +107,7 @@ data/ssl/certificates/google.pem_pkcs7.p7b
 data/ssl/certificates/google.single.der
 data/ssl/certificates/google.single.pem
 data/ssl/certificates/google_diginotar.pem
+data/ssl/certificates/google_wildcard.pem
 data/ssl/certificates/intermediate_ca_cert.pem
 data/ssl/certificates/invalid_key_usage_cert.der
 data/ssl/certificates/key_usage_p256.key
@@ -119,11 +120,9 @@ data/ssl/certificates/key_usage_rsa_both.pem
 data/ssl/certificates/key_usage_rsa_digitalsignature.pem
 data/ssl/certificates/key_usage_rsa_keyencipherment.pem
 data/ssl/certificates/key_usage_rsa_no_extension.pem
-data/ssl/certificates/leaf_from_known_root.pem
 data/ssl/certificates/lets-encrypt-dst-x3-root.pem
 data/ssl/certificates/lets-encrypt-isrg-x1-root.pem
 data/ssl/certificates/localhost_cert.pem
-data/ssl/certificates/may_2018.pem
 data/ssl/certificates/mit.davidben.der
 data/ssl/certificates/multi-root-A-by-B.pem
 data/ssl/certificates/multi-root-B-by-C.pem
@@ -171,7 +170,7 @@ data/ssl/certificates/rsa-2048-3.key
 data/ssl/certificates/rsa-768-1.key
 data/ssl/certificates/rsa-768-2.key
 data/ssl/certificates/rsa-768-3.key
-data/ssl/certificates/rsa-8200-1.key
+data/ssl/certificates/rsa-8000-1.key
 data/ssl/certificates/salesforce_com_test.pem
 data/ssl/certificates/self-signed-invalid-name.pem
 data/ssl/certificates/self-signed-invalid-sig.pem
@@ -186,18 +185,6 @@ data/ssl/certificates/unittest.key.bin
 data/ssl/certificates/unittest.selfsigned.der
 data/ssl/certificates/verisign_intermediate_ca_2011.pem
 data/ssl/certificates/verisign_intermediate_ca_2016.pem
-data/ssl/certificates/weak_digest_md2_ee.pem
-data/ssl/certificates/weak_digest_md2_intermediate.pem
-data/ssl/certificates/weak_digest_md2_root.pem
-data/ssl/certificates/weak_digest_md4_ee.pem
-data/ssl/certificates/weak_digest_md4_intermediate.pem
-data/ssl/certificates/weak_digest_md4_root.pem
-data/ssl/certificates/weak_digest_md5_ee.pem
-data/ssl/certificates/weak_digest_md5_intermediate.pem
-data/ssl/certificates/weak_digest_md5_root.pem
-data/ssl/certificates/weak_digest_sha1_ee.pem
-data/ssl/certificates/weak_digest_sha1_intermediate.pem
-data/ssl/certificates/weak_digest_sha1_root.pem
 data/ssl/certificates/websocket_cacert.pem
 data/ssl/certificates/websocket_client_cert.p12
 data/ssl/certificates/wildcard.pem

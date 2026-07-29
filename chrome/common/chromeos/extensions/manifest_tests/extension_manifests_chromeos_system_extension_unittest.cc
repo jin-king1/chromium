@@ -16,7 +16,8 @@
 namespace chromeos {
 namespace {
 
-using ExtensionManifestChromeOSSystemExtensionTest = ChromeManifestTest;
+using ExtensionManifestChromeOSSystemExtensionTest =
+    extensions::ChromeManifestTest;
 
 TEST_F(ExtensionManifestChromeOSSystemExtensionTest,
        InvalidChromeOSSystemExtension) {
@@ -67,6 +68,14 @@ TEST_F(ExtensionManifestChromeOSSystemExtensionTest,
        ValidChromeOSSystemExtension_Allowlisted_Lenovo) {
   scoped_refptr<extensions::Extension> extension(
       LoadAndExpectSuccess("chromeos_system_extension_lenovo.json"));
+  EXPECT_TRUE(extension->is_chromeos_system_extension());
+  EXPECT_TRUE(extension->install_warnings().empty());
+}
+
+TEST_F(ExtensionManifestChromeOSSystemExtensionTest,
+       ValidChromeOSSystemExtension_Allowlisted_ASUS_CTP) {
+  scoped_refptr<extensions::Extension> extension(
+      LoadAndExpectSuccess("chromeos_system_extension_asus_ctp.json"));
   EXPECT_TRUE(extension->is_chromeos_system_extension());
   EXPECT_TRUE(extension->install_warnings().empty());
 }

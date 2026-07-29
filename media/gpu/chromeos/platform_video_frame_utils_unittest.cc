@@ -4,26 +4,28 @@
 
 #include "media/gpu/chromeos/platform_video_frame_utils.h"
 
+#include <linux/memfd.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include <optional>
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_file.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
+#include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "media/base/color_plane_layout.h"
 #include "media/base/format_utils.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_frame_layout.h"
 #include "media/base/video_types.h"
-#include "media/video/fake_gpu_memory_buffer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/geometry/rect.h"
@@ -41,26 +43,32 @@ scoped_refptr<VideoFrame> CreateMockDmaBufVideoFrame(
     const gfx::Size& coded_size,
     const gfx::Rect& visible_rect,
     const gfx::Size& natural_size) {
-  const std::optional<VideoFrameLayout> layout =
-      VideoFrameLayout::Create(pixel_format, coded_size);
-  if (!layout) {
-    LOG(ERROR) << "Failed to create video frame layout";
-    return nullptr;
-  }
+  size_t num_planes = VideoFrame::NumPlanes(pixel_format);
+  std::vector<ColorPlaneLayout> planes;
   std::vector<base::ScopedFD> dmabuf_fds;
-  for (size_t i = 0; i < layout->num_planes(); i++) {
-    base::File file(base::FilePath("/dev/null"),
-                    base::File::FLAG_OPEN | base::File::FLAG_READ);
-    if (!file.IsValid()) {
-      LOG(ERROR) << "Failed to open a file";
-      return nullptr;
-    }
-    dmabuf_fds.emplace_back(file.TakePlatformFile());
+  for (size_t i = 0; i < num_planes; i++) {
+    const gfx::Size plane_size_in_bytes =
+        VideoFrame::PlaneSize(pixel_format, i, coded_size);
+    // Placeholder plane fd.
+    base::ScopedFD fd(memfd_create("test_shared_image", MFD_CLOEXEC));
+    CHECK(fd.is_valid());
+    CHECK_EQ(ftruncate(fd.get(), plane_size_in_bytes.GetArea()), 0);
+    dmabuf_fds.emplace_back(std::move(fd));
     if (!dmabuf_fds.back().is_valid()) {
       LOG(ERROR) << "The FD taken from file is not valid";
       return nullptr;
     }
+
+    planes.emplace_back(plane_size_in_bytes.width(), /*offset=*/0,
+                        plane_size_in_bytes.GetArea());
   }
+  const std::optional<VideoFrameLayout> layout =
+      VideoFrameLayout::CreateWithPlanes(pixel_format, coded_size, planes);
+  if (!layout) {
+    LOG(ERROR) << "Failed to create video frame layout";
+    return nullptr;
+  }
+
   return VideoFrame::WrapExternalDmabufs(*layout, visible_rect, natural_size,
                                          std::move(dmabuf_fds),
                                          base::TimeDelta());
@@ -100,9 +108,9 @@ TEST(PlatformVideoFrameUtilsTest, CreateNativePixmapDmaBuf) {
   constexpr VideoPixelFormat kPixelFormat = PIXEL_FORMAT_NV12;
   constexpr gfx::Size kCodedSize(320, 240);
 
-  const std::optional<gfx::BufferFormat> gfx_format =
-      VideoPixelFormatToGfxBufferFormat(kPixelFormat);
-  ASSERT_TRUE(gfx_format) << "Invalid pixel format: " << kPixelFormat;
+  const std::optional<viz::SharedImageFormat> si_format =
+      VideoPixelFormatToSharedImageFormat(kPixelFormat);
+  ASSERT_TRUE(si_format) << "Invalid pixel format: " << kPixelFormat;
 
   scoped_refptr<VideoFrame> video_frame = CreateMockDmaBufVideoFrame(
       kPixelFormat, kCodedSize, gfx::Rect(kCodedSize), kCodedSize);
@@ -112,8 +120,8 @@ TEST(PlatformVideoFrameUtilsTest, CreateNativePixmapDmaBuf) {
   scoped_refptr<gfx::NativePixmapDmaBuf> native_pixmap =
       CreateNativePixmapDmaBuf(video_frame.get());
   ASSERT_TRUE(native_pixmap);
-  EXPECT_EQ(native_pixmap->GetBufferFormat(), *gfx_format);
-  EXPECT_EQ(native_pixmap->GetBufferFormatModifier(),
+  EXPECT_EQ(native_pixmap->GetSharedImageFormat(), *si_format);
+  EXPECT_EQ(native_pixmap->GetFormatModifier(),
             video_frame->layout().modifier());
 
   // Verify the DMA Buf layouts are the same.
@@ -132,22 +140,24 @@ TEST(PlatformVideoFrameUtilsTest, CreateNativePixmapDmaBuf) {
 
 // TODO(b/230370976): remove this #if/#endif guard. To do so, we need to be able
 // to mock/fake the allocator used by CreatePlatformVideoFrame() and
-// CreateGpuMemoryBufferVideoFrame() so that those functions return a
+// CreateMappableSharedImageVideoFrame() so that those functions return a
 // non-nullptr frame on platforms where allocating NV12 buffers is not
 // supported.
 #if BUILDFLAG(IS_CHROMEOS)
 TEST(PlatformVideoFrameUtilsTest, CreateVideoFrame) {
+  auto test_sii = base::MakeRefCounted<gpu::TestSharedImageInterface>();
   constexpr VideoPixelFormat kPixelFormat = PIXEL_FORMAT_NV12;
   constexpr gfx::Size kCodedSize(320, 240);
   constexpr gfx::Rect kVisibleRect(kCodedSize);
   constexpr gfx::Size kNaturalSize(kCodedSize);
+  constexpr gfx::ColorSpace kColorSpace(gfx::ColorSpace::CreateREC709());
   constexpr auto kTimeStamp = base::Milliseconds(1234);
   constexpr gfx::BufferUsage kBufferUsage =
       gfx::BufferUsage::VEA_READ_CAMERA_AND_CPU_READ_WRITE;
 
   const VideoFrame::StorageType storage_types[] = {
       VideoFrame::STORAGE_DMABUFS,
-      VideoFrame::STORAGE_GPU_MEMORY_BUFFER,
+      VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE,
   };
   for (const auto& storage_type : storage_types) {
     scoped_refptr<VideoFrame> frame;
@@ -157,10 +167,10 @@ TEST(PlatformVideoFrameUtilsTest, CreateVideoFrame) {
             CreatePlatformVideoFrame(kPixelFormat, kCodedSize, kVisibleRect,
                                      kNaturalSize, kTimeStamp, kBufferUsage);
         break;
-      case VideoFrame::STORAGE_GPU_MEMORY_BUFFER:
-        frame = CreateGpuMemoryBufferVideoFrame(kPixelFormat, kCodedSize,
-                                                kVisibleRect, kNaturalSize,
-                                                kTimeStamp, kBufferUsage);
+      case VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE:
+        frame = CreateMappableSharedImageVideoFrame(
+            kPixelFormat, kColorSpace, kCodedSize, kVisibleRect, kNaturalSize,
+            kTimeStamp, kBufferUsage, test_sii.get());
         break;
       default:
         NOTREACHED();
@@ -178,8 +188,8 @@ TEST(PlatformVideoFrameUtilsTest, CreateVideoFrame) {
       case VideoFrame::STORAGE_DMABUFS:
         EXPECT_FALSE(frame->NumDmabufFds() == 0);
         break;
-      case VideoFrame::STORAGE_GPU_MEMORY_BUFFER:
-        EXPECT_TRUE(frame->GetGpuMemoryBufferForTesting());
+      case VideoFrame::STORAGE_MAPPABLE_SHARED_IMAGE:
+        EXPECT_FALSE(frame->GetGpuMemoryBufferHandle().is_null());
         break;
       default:
         NOTREACHED();

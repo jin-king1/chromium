@@ -10,10 +10,15 @@
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
+#include "media/base/capture_version.h"
 #include "media/base/media_export.h"
 #include "media/base/video_transformation.h"
 #include "media/gpu/buildflags.h"
 #include "ui/gfx/geometry/rect.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "gpu/vulkan/vulkan_ycbcr_info.h"
+#endif
 
 namespace media {
 
@@ -81,12 +86,10 @@ struct MEDIA_EXPORT VideoFrameMetadata {
   // https://crbug.com/1327560.
   std::optional<gfx::Rect> region_capture_rect;
 
-  // Whenever cropTo() or restrictTo() are called, Blink increments the
-  // sub_capture_target_version and records a Promise as associated with that
-  // sub_capture_target_version. When Blink observes a frame with this new
-  // version or a later one, Blink resolves the Promise. Frames associated with
-  // a source which cannot be cropped will always have this value set to zero.
-  uint32_t sub_capture_target_version = 0;
+  // Represents the version of the capture according to which this frame
+  // was produced. For an explanation of how that versioning works, see
+  // the documentation of `media::CaptureVersion`.
+  media::CaptureVersion capture_version;
 
   // Indicates that mailbox created in one context, is also being used in a
   // different context belonging to another share group and video frames are
@@ -134,11 +137,12 @@ struct MEDIA_EXPORT VideoFrameMetadata {
   // Indicates that the frame has a rotation and/or flip.
   std::optional<VideoTransformation> transformation;
 
-  // Android only: if set, then this frame is not suitable for overlay, even
-  // if ALLOW_OVERLAY is set.  However, it allows us to process the overlay
-  // to see if it would have been promoted, if it were backed by a SurfaceView
-  // instead.  This lets us figure out when SurfaceViews are appropriate.
-  bool texture_owner = false;
+  // Android only: For legacy overlays (SurfaceView/Dialog based) this is
+  // required for the frame to be suitable for overlays, even if `allow_overlay`
+  // is set. if `allow_overlay` is set, but `in_surface_view` is not Display
+  // Compositor will process frame and generate appropriate overlay promotion
+  // hints, but will still composite video.
+  bool in_surface_view = false;
 
   // Android & Windows only: if set, then this frame's resource would like to
   // be notified about its promotability to an overlay.
@@ -205,7 +209,7 @@ struct MEDIA_EXPORT VideoFrameMetadata {
   std::optional<base::TimeDelta> processing_time;
 
   // The RTP timestamp associated with this video frame. Stored as a double
-  // since base::Value::Dict doesn't have a uint32_t type.
+  // since base::DictValue doesn't have a uint32_t type.
   //
   // https://w3c.github.io/webrtc-pc/#dom-rtcrtpcontributingsource-rtptimestamp
   std::optional<double> rtp_timestamp;
@@ -237,6 +241,13 @@ struct MEDIA_EXPORT VideoFrameMetadata {
 
   // Information about any background blur effect applied to the frame.
   std::optional<EffectInfo> background_blur;
+
+#if BUILDFLAG(IS_ANDROID)
+  // Vulkan sampler conversion information for shared images backed by
+  // multiplanar hardware buffers, such as those obtained from MediaCodec
+  // or Camera2 via ImageReader.
+  std::optional<gpu::VulkanYCbCrInfo> ycbcr_info;
+#endif
 };
 
 }  // namespace media

@@ -10,20 +10,12 @@
  */
 
 import {assertNotReached} from './assert.js';
-import {Point} from './geometry.js';
+import type {Point} from './geometry.js';
 import * as localDev from './local_dev.js';
 import {getCameraDirectory, getObjectURL} from './models/file_system.js';
 import {ChromeHelper, getInstanceImpl} from './mojo/chrome_helper.js';
-import {
-  AspectRatio,
-  EventsSenderRemote,
-  LidState,
-  OcrResult,
-  PdfBuilderRemote,
-  ScreenState,
-  StorageMonitorStatus,
-  WifiConfig,
-} from './mojo/type.js';
+import type {EventsSenderRemote, FileType, OcrResult, PdfBuilderRemote, WifiConfig} from './mojo/type.js';
+import {AspectRatio, LidState, ScreenState, StorageMonitorStatus} from './mojo/type.js';
 import {fakeEndpoint} from './mojo/util.js';
 import {expandPath} from './util.js';
 
@@ -31,7 +23,7 @@ export class ChromeHelperFake extends ChromeHelper {
   // This class contains methods that overrides ChromeHelper, and async-ness
   // should follow the ChromeHelper class. We can manually write
   // Promise.resolve(...) instead but it's more verbose without much gain.
-  /* eslint-disable @typescript-eslint/require-await */
+
   override async initTabletModeMonitor(_onChange: (isTablet: boolean) => void):
       Promise<boolean> {
     return false;
@@ -106,9 +98,17 @@ export class ChromeHelperFake extends ChromeHelper {
     return false;
   }
 
-  override sendNewCaptureBroadcast(_args: {isVideo: boolean, name: string}):
-      void {
-    /* Do nothing. */
+  override async processCapturedLocalFile(
+      _fileName: string, _fileType: FileType): Promise<boolean> {
+    return false;
+  }
+
+  override async processCapturedFileForCloudUpload(
+      _fileName: string,
+      _fileType: FileType,
+      _thumbnail: Blob,
+      ): Promise<boolean> {
+    return false;
   }
 
   override async monitorFileDeletion(_name: string, _callback: () => void):
@@ -194,7 +194,6 @@ export class ChromeHelperFake extends ChromeHelper {
       AspectRatio.kOthers,
     ];
   }
-  /* eslint-enable @typescript-eslint/require-await */
 }
 
 localDev.setOverride(getInstanceImpl, () => new ChromeHelperFake());

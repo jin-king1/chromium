@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/browser/media/media_internals.h"
 
 #include <stddef.h>
@@ -24,7 +19,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -47,12 +41,12 @@
 #include "media/base/audio_parameters.h"
 #include "media/base/media_log_record.h"
 #include "media/base/media_switches.h"
-#include "media/webrtc/webrtc_features.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "sandbox/policy/features.h"
 #include "sandbox/policy/sandbox_type.h"
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "base/time/time.h"
 #include "media/filters/decrypting_video_decoder.h"
 #endif
 
@@ -78,6 +72,11 @@ std::string EffectsToString(int effects) {
       {media::AudioParameters::ECHO_CANCELLER, "ECHO_CANCELLER"},
       {media::AudioParameters::DUCKING, "DUCKING"},
       {media::AudioParameters::HOTWORD, "HOTWORD"},
+      {media::AudioParameters::NOISE_SUPPRESSION, "NOISE_SUPPRESSION"},
+      {media::AudioParameters::AUTOMATIC_GAIN_CONTROL,
+       "AUTOMATIC_GAIN_CONTROL"},
+      {media::AudioParameters::DEEP_NOISE_SUPPRESSION,
+       "DEEP_NOISE_SUPPRESSION"},
   });
 
   std::string ret;
@@ -196,11 +195,11 @@ class MediaInternals::AudioLogImpl : public media::mojom::AudioLog,
 
   void SendSingleStringUpdate(const std::string& key, const std::string& value);
 
-  void StoreComponentMetadata(base::Value::Dict* dict);
+  void StoreComponentMetadata(base::DictValue* dict);
   std::string FormatCacheKey();
 
   static void SendWebContentsTitleHelper(const std::string& cache_key,
-                                         base::Value::Dict dict,
+                                         base::DictValue dict,
                                          int render_process_id,
                                          int render_frame_id);
 
@@ -236,7 +235,7 @@ MediaInternals::AudioLogImpl::~AudioLogImpl() {
 void MediaInternals::AudioLogImpl::OnCreated(
     const media::AudioParameters& params,
     const std::string& device_id) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   StoreComponentMetadata(&dict);
 
   dict.Set(kAudioLogStatusKey, "created");
@@ -262,7 +261,7 @@ void MediaInternals::AudioLogImpl::OnStopped() {
 }
 
 void MediaInternals::AudioLogImpl::OnClosed() {
-  base::Value::Dict dict;
+  base::DictValue dict;
   StoreComponentMetadata(&dict);
   dict.Set(kAudioLogStatusKey, "closed");
   media_internals_->UpdateAudioLog(MediaInternals::UPDATE_AND_DELETE,
@@ -275,7 +274,7 @@ void MediaInternals::AudioLogImpl::OnError() {
 }
 
 void MediaInternals::AudioLogImpl::OnSetVolume(double volume) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   StoreComponentMetadata(&dict);
   dict.Set("volume", volume);
   media_internals_->UpdateAudioLog(MediaInternals::UPDATE_IF_EXISTS,
@@ -295,7 +294,7 @@ void MediaInternals::AudioLogImpl::OnLogMessage(const std::string& message) {
 void MediaInternals::AudioLogImpl::SetWebContentsTitle() {
   if (render_process_id_ < 0 || render_frame_id_ < 0)
     return;
-  base::Value::Dict dict;
+  base::DictValue dict;
   StoreComponentMetadata(&dict);
   SendWebContentsTitleHelper(FormatCacheKey(), std::move(dict),
                              render_process_id_, render_frame_id_);
@@ -303,13 +302,13 @@ void MediaInternals::AudioLogImpl::SetWebContentsTitle() {
 
 std::string MediaInternals::AudioLogImpl::FormatCacheKey() {
   return base::StringPrintf("%d:%d:%d", owner_id_,
-                            base::to_underlying(component_), component_id_);
+                            std::to_underlying(component_), component_id_);
 }
 
 // static
 void MediaInternals::AudioLogImpl::SendWebContentsTitleHelper(
     const std::string& cache_key,
-    base::Value::Dict dict,
+    base::DictValue dict,
     int render_process_id,
     int render_frame_id) {
   // Page title information can only be retrieved from the UI thread.
@@ -338,7 +337,7 @@ void MediaInternals::AudioLogImpl::SendWebContentsTitleHelper(
 void MediaInternals::AudioLogImpl::SendSingleStringUpdate(
     const std::string& key,
     const std::string& value) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   StoreComponentMetadata(&dict);
   dict.Set(key, value);
   media_internals_->UpdateAudioLog(MediaInternals::UPDATE_IF_EXISTS,
@@ -347,10 +346,10 @@ void MediaInternals::AudioLogImpl::SendSingleStringUpdate(
 }
 
 void MediaInternals::AudioLogImpl::StoreComponentMetadata(
-    base::Value::Dict* dict) {
+    base::DictValue* dict) {
   dict->Set("owner_id", owner_id_);
   dict->Set("component_id", component_id_);
-  dict->Set("component_type", base::to_underlying(component_));
+  dict->Set("component_type", std::to_underlying(component_));
 }
 
 MediaInternals* MediaInternals::GetInstance() {
@@ -390,9 +389,9 @@ static bool ConvertEventToUpdate(int render_process_id,
                                  std::u16string* update) {
   DCHECK(update);
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("renderer", render_process_id);
-  dict.Set("player", event.id);
+  dict.Set("player", static_cast<int>(event.id.value()));
 
   // TODO(dalecurtis): This is technically not correct.  TimeTicks "can't" be
   // converted to to a human readable time format.  See base/time/time.h.
@@ -400,7 +399,7 @@ static bool ConvertEventToUpdate(int render_process_id,
   const double ticks_millis = ticks / base::Time::kMicrosecondsPerMillisecond;
   dict.Set("ticksMillis", ticks_millis);
 
-  base::Value::Dict cloned_params = event.params.Clone();
+  base::DictValue cloned_params = event.params.Clone();
   switch (event.type) {
     case media::MediaLogRecord::Type::kMessage:
       dict.Set("type", "MEDIA_LOG_ENTRY");
@@ -417,7 +416,7 @@ static bool ConvertEventToUpdate(int render_process_id,
     }
     case media::MediaLogRecord::Type::kMediaStatus:
       dict.Set("type", "PIPELINE_ERROR");
-      base::Value::Dict wrapped_parameters;
+      base::DictValue wrapped_parameters;
       wrapped_parameters.Set("error", std::move(cloned_params));
       cloned_params = std::move(wrapped_parameters);
       break;
@@ -486,7 +485,7 @@ void MediaInternals::SendHistoricalMediaEvents() {
 }
 
 void MediaInternals::SendGeneralAudioInformation() {
-  base::Value::Dict audio_info_data;
+  base::DictValue audio_info_data;
 
   // Audio feature information.
   auto set_feature_data = [&audio_info_data](auto& feature) {
@@ -504,7 +503,6 @@ void MediaInternals::SendGeneralAudioInformation() {
 
   set_feature_data(features::kAudioServiceOutOfProcess);
 
-  set_feature_data(features::kAudioServiceLaunchOnStartup);
   set_explicit_feature_data(
       features::kAudioServiceSandbox,
       GetContentClient()->browser()->ShouldSandboxAudioService());
@@ -513,6 +511,12 @@ void MediaInternals::SendGeneralAudioInformation() {
       media::IsChromeWideEchoCancellationEnabled() ? "Enabled" : "Disabled";
   audio_info_data.Set(media::kChromeWideEchoCancellation.name,
                       base::Value(chrome_wide_echo_cancellation_value_string));
+#endif
+#if (BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN))
+  std::string system_echo_cancellation_value_string =
+      media::IsSystemEchoCancellationEnforced() ? "Enabled" : "Disabled";
+  audio_info_data.Set(media::kEnforceSystemEchoCancellation.name,
+                      base::Value(system_echo_cancellation_value_string));
 #endif
   std::u16string audio_info_update =
       SerializeUpdate("media.updateGeneralAudioInformation", audio_info_data);
@@ -555,8 +559,8 @@ void MediaInternals::UpdateVideoCaptureDeviceCapabilities(
   video_capture_capabilities_cached_data_.clear();
 
   for (const auto& device_format_pair : descriptors_and_formats) {
-    base::Value::List control_support;
-    base::Value::List format_list;
+    base::ListValue control_support;
+    base::ListValue format_list;
     // TODO(nisse): Representing format information as a string, to be
     // parsed by the javascript handler, is brittle. Consider passing
     // a list of mappings instead.
@@ -574,7 +578,7 @@ void MediaInternals::UpdateVideoCaptureDeviceCapabilities(
     for (const auto& format : supported_formats)
       format_list.Append(media::VideoCaptureFormat::ToString(format));
 
-    base::Value::Dict device_dict;
+    base::DictValue device_dict;
     device_dict.Set("id", descriptor.device_id);
     device_dict.Set("name", descriptor.GetNameAndModel());
     device_dict.Set("controlSupport", std::move(control_support));
@@ -589,7 +593,8 @@ void MediaInternals::UpdateVideoCaptureDeviceCapabilities(
 std::unique_ptr<media::AudioLog> MediaInternals::CreateAudioLog(
     AudioComponent component,
     int component_id) {
-  return CreateAudioLogImpl(component, component_id, -1, MSG_ROUTING_NONE);
+  return CreateAudioLogImpl(component, component_id, -1,
+                            IPC::mojom::kRoutingIdNone);
 }
 
 mojo::PendingRemote<media::mojom::AudioLog> MediaInternals::CreateMojoAudioLog(
@@ -634,7 +639,7 @@ MediaInternals::CreateAudioLogImpl(
     int render_frame_id) {
   base::AutoLock auto_lock(lock_);
   return std::make_unique<AudioLogImpl>(
-      owner_ids_[base::to_underlying(component)]++, component, this,
+      owner_ids_[std::to_underlying(component)]++, component, this,
       component_id, render_process_id, render_frame_id);
 }
 
@@ -659,7 +664,7 @@ void MediaInternals::SaveEvent(int process_id,
   if (saved_events.size() > media::MediaLog::kLogLimit) {
     // Remove all events for a given player as soon as we have to remove a
     // single event for that player to avoid showing incomplete players.
-    const int id_to_remove = saved_events.front().id;
+    const media::MediaPlayerLoggingID id_to_remove = saved_events.front().id;
     std::erase_if(saved_events, [&](const media::MediaLogRecord& event) {
       return event.id == id_to_remove;
     });
@@ -668,6 +673,12 @@ void MediaInternals::SaveEvent(int process_id,
 
 void MediaInternals::EraseSavedEvents(RenderProcessHost* host) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  // Orderly cleanup can be expensive if there are a lot of active players, so
+  // just skip it during shutdown -- it'll be cleared up by the process kill.
+  if (GetContentClient()->browser()->IsShuttingDown()) {
+    return;
+  }
+
   // TODO(sandersd): Send a termination event before clearing the log.
   saved_events_by_process_.erase(host->GetDeprecatedID());
 }
@@ -675,7 +686,7 @@ void MediaInternals::EraseSavedEvents(RenderProcessHost* host) {
 void MediaInternals::UpdateAudioLog(AudioLogUpdateType type,
                                     std::string_view cache_key,
                                     std::string_view function,
-                                    const base::Value::Dict& value) {
+                                    const base::DictValue& value) {
   {
     base::AutoLock auto_lock(lock_);
     const bool has_entry = audio_streams_cached_data_.Find(cache_key);
@@ -689,7 +700,7 @@ void MediaInternals::UpdateAudioLog(AudioLogUpdateType type,
           audio_streams_cached_data_.Extract(cache_key);
       CHECK(out_value.has_value());
     } else {
-      base::Value::Dict* existing_dict =
+      base::DictValue* existing_dict =
           audio_streams_cached_data_.FindDict(cache_key);
       CHECK(existing_dict);
       existing_dict->Merge(value.Clone());

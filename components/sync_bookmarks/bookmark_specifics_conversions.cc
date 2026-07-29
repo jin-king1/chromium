@@ -4,13 +4,13 @@
 
 #include "components/sync_bookmarks/bookmark_specifics_conversions.h"
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/hash/sha1.h"
@@ -18,6 +18,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
@@ -26,6 +27,8 @@
 #include "components/bookmarks/browser/bookmark_uuids.h"
 #include "components/bookmarks/common/bookmark_metrics.h"
 #include "components/favicon/core/favicon_service.h"
+#include "components/sync/base/client_tag_hash.h"
+#include "components/sync/base/server_defined_unique_tags.h"
 #include "components/sync/base/unique_position.h"
 #include "components/sync/protocol/bookmark_specifics.pb.h"
 #include "components/sync/protocol/entity_data.h"
@@ -195,7 +198,7 @@ std::string InferGuidForLegacyBookmark(
 }
 
 bool IsForbiddenTitleWithMaybeTrailingSpaces(const std::string& title) {
-  return base::Contains(
+  return std::ranges::contains(
       kForbiddenTitles,
       base::TrimWhitespaceASCII(title, base::TrimPositions::TRIM_TRAILING));
 }
@@ -229,21 +232,26 @@ void MoveAllChildren(BookmarkModelView* model,
   }
 
   // This code relies on the underlying type to store children in the
-  // BookmarkModel which is vector. It moves the last child from |old_parent| to
-  // the end of |new_parent| step by step (which reverses the order of
-  // children). After that all children must be reordered to keep the original
-  // order in |new_parent|.
+  // BookmarkModel which is vector. It moves children from |old_parent| to
+  // the end of |new_parent| one by one, from last to first (which reverses the
+  // order of children). After that all children must be reordered to keep the
+  // original order in |new_parent|.
   // This algorithm is used because of performance reasons.
-  std::vector<const bookmarks::BookmarkNode*> children_order(
-      old_parent->children().size(), nullptr);
-  for (size_t i = old_parent->children().size(); i > 0; --i) {
-    const size_t old_index = i - 1;
-    const bookmarks::BookmarkNode* child_to_move =
-        old_parent->children()[old_index].get();
-    children_order[old_index] = child_to_move;
-    model->Move(child_to_move, new_parent, new_parent->children().size());
+  std::vector<const bookmarks::BookmarkNode*> children_in_original_order;
+  children_in_original_order.reserve(old_parent->children().size());
+  for (const auto& child : old_parent->children()) {
+    children_in_original_order.push_back(child.get());
   }
-  model->ReorderChildren(new_parent, children_order);
+
+  // Move children one by one, from last to first, to avoid O(n^2) performance.
+  while (!old_parent->children().empty()) {
+    model->Move(old_parent->children().back().get(), new_parent,
+                new_parent->children().size());
+  }
+
+  // The children are now in reversed order in `new_parent`. Restore original
+  // order.
+  model->ReorderChildren(new_parent, children_in_original_order);
 }
 
 }  // namespace
@@ -326,7 +334,8 @@ sync_pb::EntitySpecifics CreateSpecificsFromBookmarkNode(
   }
 
   if (favicon_bytes.get() && favicon_bytes->size() != 0) {
-    bm_specifics->set_favicon(favicon_bytes->data(), favicon_bytes->size());
+    bm_specifics->set_favicon(
+        base::as_string_view(base::span<const uint8_t>(*favicon_bytes)));
     // Avoid sync-ing favicon URLs that are unreasonably large, as determined by
     // |kMaxFaviconUrlSize|. Most notably, URLs prefixed with the data: scheme
     // to embed the content of the image itself in the URL may be arbitrarily
@@ -589,6 +598,46 @@ bool HasExpectedBookmarkGuid(const sync_pb::BookmarkSpecifics& specifics,
   return base::Uuid::ParseLowercase(specifics.guid()) ==
          InferGuidFromLegacyOriginatorId(originator_cache_guid,
                                          originator_client_item_id);
+}
+
+base::Uuid GetPermanentFolderUuidForServerDefinedUniqueTag(
+    const std::string& server_defined_unique_tag) {
+  DCHECK(!server_defined_unique_tag.empty());
+
+  if (server_defined_unique_tag == syncer::kBookmarkBarTag) {
+    return base::Uuid::ParseLowercase(bookmarks::kBookmarkBarNodeUuid);
+  }
+  if (server_defined_unique_tag == syncer::kOtherBookmarksTag) {
+    return base::Uuid::ParseLowercase(bookmarks::kOtherBookmarksNodeUuid);
+  }
+  if (server_defined_unique_tag == syncer::kSyncedBookmarksTag) {
+    return base::Uuid::ParseLowercase(bookmarks::kMobileBookmarksNodeUuid);
+  }
+
+  return base::Uuid();
+}
+
+syncer::ClientTagHash GetOrInferClientTagHashInUpdate(
+    const syncer::EntityData& update_entity) {
+  if (!update_entity.client_tag_hash.value().empty()) {
+    return update_entity.client_tag_hash;
+  }
+  if (!update_entity.originator_client_item_id.empty()) {
+    return syncer::ClientTagHash::FromUnhashed(
+        syncer::BOOKMARKS,
+        InferGuidFromLegacyOriginatorId(update_entity.originator_cache_guid,
+                                        update_entity.originator_client_item_id)
+            .AsLowercaseString());
+  }
+  if (!update_entity.server_defined_unique_tag.empty()) {
+    const base::Uuid uuid = GetPermanentFolderUuidForServerDefinedUniqueTag(
+        update_entity.server_defined_unique_tag);
+    if (uuid.is_valid()) {
+      return syncer::ClientTagHash::FromUnhashed(syncer::BOOKMARKS,
+                                                 uuid.AsLowercaseString());
+    }
+  }
+  return syncer::ClientTagHash();
 }
 
 }  // namespace sync_bookmarks

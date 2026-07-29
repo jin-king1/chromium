@@ -6,30 +6,33 @@
 
 #include <functional>
 #include <memory>
+#include <ostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <variant>
 
 #include "base/functional/callback_helpers.h"
-#include "base/functional/overloaded.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_run_loop_timeout.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/interaction_sequence.h"
 #include "ui/base/interaction/interaction_test_util.h"
+#include "ui/base/interaction/interactive_test_definitions.h"
 #include "ui/base/interaction/interactive_test_internal.h"
 
 namespace ui::test {
 
 using internal::kInteractiveTestPivotElementId;
 
-InteractiveTestApi::InteractiveTestApi(
-    std::unique_ptr<internal::InteractiveTestPrivate> private_test_impl)
-    : private_test_impl_(std::move(private_test_impl)) {}
+InteractiveTestApi::InteractiveTestApi()
+    : private_test_impl_(std::make_unique<internal::InteractiveTestPrivate>()) {
+}
 InteractiveTestApi::~InteractiveTestApi() = default;
 
 InteractionSequence::StepBuilder InteractiveTestApi::PressButton(
@@ -37,7 +40,7 @@ InteractionSequence::StepBuilder InteractiveTestApi::PressButton(
     InputType input_type) {
   StepBuilder builder;
   builder.SetDescription("PressButton()");
-  internal::SpecifyElement(builder, button);
+  builder.SetElement(button);
   builder.SetMustRemainVisible(false);
   builder.SetStartCallback(base::BindOnce(
       [](InputType input_type, InteractiveTestApi* test,
@@ -56,7 +59,7 @@ InteractionSequence::StepBuilder InteractiveTestApi::SelectMenuItem(
   RequireInteractiveTest();
   StepBuilder builder;
   builder.SetDescription("SelectMenuItem()");
-  internal::SpecifyElement(builder, menu_item);
+  builder.SetElement(menu_item);
   builder.SetMustRemainVisible(false);
   builder.SetStartCallback(base::BindOnce(
       [](InputType input_type, InteractiveTestApi* test,
@@ -66,15 +69,6 @@ InteractionSequence::StepBuilder InteractiveTestApi::SelectMenuItem(
             test->test_util().SelectMenuItem(el, input_type));
       },
       input_type, base::Unretained(this)));
-
-  // TODO(https://crbug.com/359252812): On Linux, sometimes a SelectMenuItem is
-  // interrupted by a spurious focus change, even on tests designed to run
-  // single-thread, single-process. Once the culprit has been tracked down and
-  // eliminated, remove this #if.
-#if BUILDFLAG(IS_LINUX)
-  builder.SetStepStartMode(InteractionSequence::StepStartMode::kImmediate);
-#endif
-
   return builder;
 }
 
@@ -83,7 +77,7 @@ InteractionSequence::StepBuilder InteractiveTestApi::DoDefaultAction(
     InputType input_type) {
   StepBuilder builder;
   builder.SetDescription("DoDefaultAction()");
-  internal::SpecifyElement(builder, element);
+  builder.SetElement(element);
   builder.SetMustRemainVisible(false);
   builder.SetStartCallback(base::BindOnce(
       [](InputType input_type, InteractiveTestApi* test,
@@ -99,18 +93,23 @@ InteractionSequence::StepBuilder InteractiveTestApi::DoDefaultAction(
 InteractionSequence::StepBuilder InteractiveTestApi::SelectTab(
     ElementSpecifier tab_collection,
     size_t tab_index,
-    InputType input_type) {
+    InputType input_type,
+    std::optional<size_t> expected_index_after_selection) {
   StepBuilder builder;
   builder.SetDescription(base::StringPrintf("SelectTab( %zu )", tab_index));
-  internal::SpecifyElement(builder, tab_collection);
+  builder.SetElement(tab_collection);
   builder.SetStartCallback(base::BindOnce(
-      [](size_t index, InputType input_type, InteractiveTestApi* test,
-         InteractionSequence* seq, TrackedElement* el) {
+      [](size_t index, InputType input_type,
+         std::optional<size_t> expected_index_after_selection,
+         InteractiveTestApi* test, InteractionSequence* seq,
+         TrackedElement* el) {
         test->private_test_impl().HandleActionResult(
             seq, el, "SelectTab",
-            test->test_util().SelectTab(el, index, input_type));
+            test->test_util().SelectTab(el, index, input_type,
+                                        expected_index_after_selection));
       },
-      tab_index, input_type, base::Unretained(this)));
+      tab_index, input_type, expected_index_after_selection,
+      base::Unretained(this)));
   return builder;
 }
 
@@ -127,7 +126,7 @@ InteractionSequence::StepBuilder InteractiveTestApi::SelectDropdownItem(
 
   StepBuilder builder;
   builder.SetDescription(base::StringPrintf("SelectDropdownItem( %zu )", item));
-  internal::SpecifyElement(builder, collection);
+  builder.SetElement(collection);
   builder.SetStartCallback(base::BindOnce(
       [](size_t item, InputType input_type, InteractiveTestApi* test,
          InteractionSequence* seq, TrackedElement* el) {
@@ -146,7 +145,7 @@ InteractionSequence::StepBuilder InteractiveTestApi::EnterText(
   StepBuilder builder;
   builder.SetDescription(base::StringPrintf("EnterText( \"%s\" )",
                                             base::UTF16ToUTF8(text).c_str()));
-  internal::SpecifyElement(builder, element);
+  builder.SetElement(element);
   builder.SetStartCallback(base::BindOnce(
       [](std::u16string text, TextEntryMode mode, InteractiveTestApi* test,
          InteractionSequence* seq, TrackedElement* el) {
@@ -163,12 +162,28 @@ InteractionSequence::StepBuilder InteractiveTestApi::ActivateSurface(
   RequireInteractiveTest();
   StepBuilder builder;
   builder.SetDescription("ActivateSurface()");
-  internal::SpecifyElement(builder, element);
+  builder.SetElement(element);
   builder.SetStartCallback(base::BindOnce(
       [](InteractiveTestApi* test, InteractionSequence* seq,
          TrackedElement* el) {
         test->private_test_impl().HandleActionResult(
             seq, el, "ActivateSurface", test->test_util().ActivateSurface(el));
+      },
+      base::Unretained(this)));
+  return builder;
+}
+
+InteractionSequence::StepBuilder InteractiveTestApi::FocusElement(
+    ElementSpecifier element) {
+  RequireInteractiveTest();
+  StepBuilder builder;
+  builder.SetDescription("FocusElement()");
+  builder.SetElement(element);
+  builder.SetStartCallback(base::BindOnce(
+      [](InteractiveTestApi* test, InteractionSequence* seq,
+         TrackedElement* el) {
+        test->private_test_impl().HandleActionResult(
+            seq, el, "FocusElement", test->test_util().FocusElement(el));
       },
       base::Unretained(this)));
   return builder;
@@ -182,7 +197,7 @@ InteractionSequence::StepBuilder InteractiveTestApi::SendAccelerator(
   builder.SetDescription(base::StringPrintf(
       "SendAccelerator( %s )",
       base::UTF16ToUTF8(accelerator.GetShortcutText()).c_str()));
-  internal::SpecifyElement(builder, element);
+  builder.SetElement(element);
   builder.SetStartCallback(base::BindOnce(
       [](Accelerator accelerator, InteractiveTestApi* test,
          InteractionSequence* seq, TrackedElement* el) {
@@ -193,13 +208,34 @@ InteractionSequence::StepBuilder InteractiveTestApi::SendAccelerator(
       accelerator, base::Unretained(this)));
   return builder;
 }
+
+InteractionSequence::StepBuilder InteractiveTestApi::SendKeyPress(
+    ElementSpecifier element,
+    KeyboardCode key,
+    int flags) {
+  StepBuilder builder;
+  std::ostringstream oss;
+  oss << "SendKeyPress( " << key << ", " << flags << " )";
+  builder.SetDescription(oss.str());
+  builder.SetElement(element);
+  builder.SetStartCallback(base::BindOnce(
+      [](KeyboardCode key, int flags, InteractiveTestApi* test,
+         InteractionSequence* seq, TrackedElement* el) {
+        test->private_test_impl().HandleActionResult(
+            seq, el, "SendKeyPress",
+            test->test_util().SendKeyPress(el, key, flags));
+      },
+      key, flags, base::Unretained(this)));
+  return builder;
+}
+
 #endif  // !BUILDFLAG(IS_IOS)
 
 InteractionSequence::StepBuilder InteractiveTestApi::Confirm(
     ElementSpecifier element) {
   StepBuilder builder;
   builder.SetDescription("Confirm()");
-  internal::SpecifyElement(builder, element);
+  builder.SetElement(element);
   builder.SetStartCallback(base::BindOnce(
       [](InteractiveTestApi* test, InteractionSequence* seq,
          TrackedElement* el) {
@@ -234,7 +270,7 @@ InteractionSequence::StepBuilder InteractiveTestApi::WaitForShow(
     bool transition_only_on_event) {
   StepBuilder step;
   step.SetDescription("WaitForShow()");
-  internal::SpecifyElement(step, element);
+  step.SetElement(element);
   step.SetTransitionOnlyOnEvent(transition_only_on_event);
   return step;
 }
@@ -245,19 +281,9 @@ InteractionSequence::StepBuilder InteractiveTestApi::WaitForHide(
     bool transition_only_on_event) {
   StepBuilder step;
   step.SetDescription("WaitForHide()");
-  internal::SpecifyElement(step, element);
+  step.SetElement(element);
   step.SetType(InteractionSequence::StepType::kHidden);
   step.SetTransitionOnlyOnEvent(transition_only_on_event);
-  return step;
-}
-
-// static
-InteractionSequence::StepBuilder InteractiveTestApi::WaitForActivate(
-    ElementSpecifier element) {
-  StepBuilder step;
-  step.SetDescription("WaitForActivate()");
-  internal::SpecifyElement(step, element);
-  step.SetType(InteractionSequence::StepType::kActivated);
   return step;
 }
 
@@ -268,7 +294,7 @@ InteractionSequence::StepBuilder InteractiveTestApi::WaitForEvent(
   StepBuilder step;
   step.SetDescription(
       base::StringPrintf("WaitForEvent( %s )", event.GetName().c_str()));
-  internal::SpecifyElement(step, element);
+  step.SetElement(element);
   step.SetType(InteractionSequence::StepType::kCustomEvent, event);
   return step;
 }
@@ -388,6 +414,22 @@ bool InteractiveTestApi::RunTestSequenceImpl(
                     InteractionSequence::AbortedReason::kSequenceTimedOut);
                 oss << internal::kInteractiveTestFailedMessagePrefix << data;
                 context = data.context;
+                if (data.step_type != InteractionSequence::StepType::kHidden &&
+                    context && !data.element && data.element_id) {
+                  const size_t elements_in_context =
+                      ui::ElementTracker::GetElementTracker()
+                          ->GetAllMatchingElements(data.element_id, context)
+                          .size();
+                  const size_t total_elements =
+                      ui::ElementTracker::GetElementTracker()
+                          ->GetAllMatchingElementsInAnyContext(data.element_id)
+                          .size();
+                  if (elements_in_context == 0U && total_elements > 0U) {
+                    oss << "\nNote that there were matching elements in other "
+                           "contexts; did you forget InSameContext() or "
+                           "InAnyContext()?";
+                  }
+                }
               } else {
                 oss << "Interactive test: timeout after test sequence "
                        "destroyed; a failure message may already have been "
@@ -402,6 +444,12 @@ bool InteractiveTestApi::RunTestSequenceImpl(
                   }
                 }
                 impl->DebugDumpElements(context).PrintTo(oss);
+                if (!impl->deferred_failures_.empty()) {
+                  oss << "\nSome previous steps failed:";
+                  for (const auto& failure : impl->deferred_failures_) {
+                    oss << "\n" << failure;
+                  }
+                }
               }
               return oss.str();
             },
@@ -419,7 +467,7 @@ InteractiveTestApi::FindElementCallback
 InteractiveTestApi::GetFindElementCallback(AbsoluteElementSpecifier spec) {
   using ContextCallback = base::OnceCallback<TrackedElement*(ElementContext)>;
   return std::visit(
-      base::Overloaded{
+      absl::Overload{
           [](TrackedElement* el) {
             CHECK(el) << "NameView(TrackedElement*): view must be set.";
             return base::BindOnce(

@@ -7,11 +7,11 @@
 
 #include <stdint.h>
 
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
@@ -21,15 +21,14 @@
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
 #include "net/base/request_priority.h"
-#include "net/http/http_request_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/fetch_api.mojom-forward.h"
 #include "services/network/public/mojom/url_response_head.mojom-forward.h"
 #include "third_party/blink/public/common/loader/url_loader_throttle.h"
 #include "third_party/blink/public/mojom/blob/blob_registry.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/code_cache.mojom-blink-forward.h"
-#include "third_party/blink/public/mojom/loader/resource_load_info.mojom-shared.h"
 #include "third_party/blink/public/mojom/loader/resource_load_info.mojom.h"
 #include "third_party/blink/public/mojom/navigation/renderer_eviction_reason.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/web_common.h"
@@ -137,7 +136,7 @@ class BLINK_PLATFORM_EXPORT ResourceRequestSender {
       scoped_refptr<base::SequencedTaskRunner> task_runner);
 
   // Called when the transfer size is updated.
-  virtual void OnTransferSizeUpdated(int32_t transfer_size_diff);
+  virtual void OnTransferSizeUpdated(base::ByteSize transfer_size_diff);
 
   // Called as upload progress is made.
   virtual void OnUploadProgress(int64_t position, int64_t size);
@@ -181,7 +180,6 @@ class BLINK_PLATFORM_EXPORT ResourceRequestSender {
     // The url, method and referrer of the latest response even in case of
     // redirection.
     KURL response_url;
-    bool has_pending_redirect = false;
     base::TimeTicks local_request_start;
     base::TimeTicks local_response_start;
     base::TimeTicks remote_request_start;
@@ -195,17 +193,16 @@ class BLINK_PLATFORM_EXPORT ResourceRequestSender {
     std::unique_ptr<ThrottlingURLLoader> url_loader;
     std::unique_ptr<MojoURLLoaderClient> url_loader_client;
 
-    // The Client Hints headers that need to be removed from a redirect.
-    //
-    // May also include the `Shared-Storage-Writable` header in the case that
-    // permission has been revoked on a redirect.
-    std::vector<std::string> removed_headers
-        ALLOW_DISCOURAGED_TYPE("Matches Chrome net API");
+    // The pending redirect information (`has_pending_redirect` and headers)
+    // is set in `ResourceRequestSender::OnFollowRedirectCallback()` and is
+    // used/cleared in `ResourceRequestSender::FollowPendingRedirect()`.
+    bool has_pending_redirect = false;
 
-    // Headers that need to be added or updated, e.g. the
-    // `Shared-Storage-Writable` header in the case that permission has been
-    // restored on a redirect.
-    net::HttpRequestHeaders modified_headers;
+    // Headers that need to be added or updated upon the pending redirect.
+    // Used for Client Hints headers, `Shared-Storage-Writable` header in the
+    // case that permission has been restored/revoked on a redirect, while this
+    // comment might be outdated.
+    network::HttpRequestHeadersUpdateParams headers_update_params;
 
     // Used to notify the loading stats.
     std::unique_ptr<ResourceLoadInfoNotifierWrapper>
@@ -226,7 +223,7 @@ class BLINK_PLATFORM_EXPORT ResourceRequestSender {
       net::HttpRequestHeaders modified_headers);
 
   // Follows redirect, if any, for the given request.
-  void FollowPendingRedirect(PendingRequestInfo* request_info);
+  void FollowPendingRedirect();
 
   // Converts remote times in the response head to local times. Returns the
   // converted response start time.
@@ -249,6 +246,10 @@ class BLINK_PLATFORM_EXPORT ResourceRequestSender {
   bool latency_critical_operation_deferred_ = false;
   bool used_code_cache_fetcher_ = false;
 
+  // Set to true when OnReceivedResponse of the client is called.
+  // This is used to prevent OnReceivedResponse from being called twice.
+  bool response_sent_to_client_ = false;
+
   scoped_refptr<base::SequencedTaskRunner> loading_task_runner_;
 
   // `pending_tasks_` are queued while waiting for the response from the
@@ -256,7 +257,7 @@ class BLINK_PLATFORM_EXPORT ResourceRequestSender {
   // such deferring logic. However, it is difficult because the current code for
   // ScriptCachedMetadataHandler is written with the assumption that metadata
   // comes first.
-  WTF::Vector<base::OnceClosure> pending_tasks_;
+  Vector<base::OnceClosure> pending_tasks_;
 
   scoped_refptr<CodeCacheFetcher> code_cache_fetcher_;
 

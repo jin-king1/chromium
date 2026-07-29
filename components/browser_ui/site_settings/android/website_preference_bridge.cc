@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <set>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/android/callback_android.h"
@@ -15,7 +16,6 @@
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
@@ -24,30 +24,40 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/notreached.h"
+#include "base/strings/string_util.h"
+#include "components/browser_ui/site_settings/android/site_settings_jni_headers/GeolocationSetting_jni.h"
+#include "components/browser_ui/site_settings/android/site_settings_jni_headers/PermissionSetting_jni.h"
 #include "components/browser_ui/site_settings/android/storage_info_fetcher.h"
 #include "components/browser_ui/site_settings/android/website_preference_bridge_util.h"
 #include "components/browsing_data/content/cookie_helper.h"
 #include "components/browsing_data/content/local_storage_helper.h"
 #include "components/cdm/browser/media_drm_storage_impl.h"
 #include "components/content_settings/browser/ui/cookie_controls_util.h"
+#include "components/content_settings/core/browser/content_settings_registry.h"
+#include "components/content_settings/core/browser/content_settings_uma_util.h"
+#include "components/content_settings/core/browser/content_settings_utils.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/browser/permission_settings_registry.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_constraints.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/permissions/features.h"
 #include "components/permissions/object_permission_context_base.h"
+#include "components/permissions/permission_actions_history.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permission_manager.h"
 #include "components/permissions/permission_uma_util.h"
 #include "components/permissions/permission_util.h"
 #include "components/permissions/permissions_client.h"
+#include "components/site_isolation/site_isolation_policy.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/android/browser_context_handle.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/permission_controller.h"
-#include "content/public/browser/permission_result.h"
+#include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/storage_partition.h"
 #include "net/cookies/cookie_util.h"
 #include "net/extras/shared_dictionary/shared_dictionary_usage_info.h"
@@ -69,20 +79,53 @@ using base::android::AttachCurrentThread;
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF16ToJavaString;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
 using base::android::JavaRef;
 using base::android::ScopedJavaGlobalRef;
 using base::android::ScopedJavaLocalRef;
 using content::BrowserContext;
 using content::BrowserThread;
 using content_settings::CookieControlsUtil;
+using content_settings::PermissionSettingsRegistry;
+using content_settings::ToContentSetting;
+using content_settings::ToPermissionOption;
+using permissions::PermissionActionsHistory;
+using permissions::PermissionDecisionAutoBlocker;
+
+namespace jni_zero {
+
+template <>
+GeolocationSetting FromJniType<GeolocationSetting>(
+    JNIEnv* env,
+    const JavaRef<jobject>& input) {
+  return GeolocationSetting{
+      .approximate = ToPermissionOption(static_cast<ContentSetting>(
+          Java_GeolocationSetting_approximate(env, input))),
+      .precise = ToPermissionOption(static_cast<ContentSetting>(
+          Java_GeolocationSetting_precise(env, input))),
+  };
+}
+
+template <>
+ScopedJavaLocalRef<jobject> ToJniType<GeolocationSetting>(
+    JNIEnv* env,
+    const GeolocationSetting& input) {
+  return Java_GeolocationSetting_Constructor(
+      env, ToContentSetting(input.approximate),
+      ToContentSetting(input.precise));
+}
+
+}  // namespace jni_zero
 
 namespace {
 
 const char kHttpPortSuffix[] = ":80";
 const char kHttpsPortSuffix[] = ":443";
+const char kExtensionSlashSuffix[] = "/";
+constexpr char kHttpsPrefix[] = "https://";
+constexpr char kHttpPrefix[] = "http://";
+constexpr char kExtensionPrefix[] = "chrome-extension://";
 
-BrowserContext* unwrap(const JavaParamRef<jobject>& jbrowser_context_handle) {
+BrowserContext* unwrap(const JavaRef<jobject>& jbrowser_context_handle) {
   return content::BrowserContextFromJavaHandle(jbrowser_context_handle);
 }
 
@@ -92,14 +135,30 @@ HostContentSettingsMap* GetHostContentSettingsMap(
 }
 
 HostContentSettingsMap* GetHostContentSettingsMap(
-    const JavaParamRef<jobject>& jbrowser_context_handle) {
+    const JavaRef<jobject>& jbrowser_context_handle) {
   return GetHostContentSettingsMap(unwrap(jbrowser_context_handle));
 }
 
-permissions::PermissionDecisionAutoBlocker* GetPermissionDecisionAutoBlocker(
+PermissionDecisionAutoBlocker* GetPermissionDecisionAutoBlocker(
     BrowserContext* browser_context) {
   return permissions::PermissionsClient::Get()
       ->GetPermissionDecisionAutoBlocker(browser_context);
+}
+
+PermissionActionsHistory* GetPermissionActionsHistory(
+    BrowserContext* browser_context) {
+  return permissions::PermissionsClient::Get()->GetPermissionActionsHistory(
+      browser_context);
+}
+
+void ResetHeuristicData(BrowserContext* browser_context,
+                        const GURL& url,
+                        ContentSettingsType permission) {
+  if (base::FeatureList::IsEnabled(
+          permissions::features::kPermissionHeuristicAutoGrant)) {
+    GetPermissionActionsHistory(browser_context)
+        ->ResetHeuristicData(url, permission);
+  }
 }
 
 ScopedJavaLocalRef<jstring> ConvertOriginToJavaString(
@@ -113,18 +172,24 @@ ScopedJavaLocalRef<jstring> ConvertOriginToJavaString(
   // HostContentSettingsMap: once to get all the 'interesting' hosts, and once
   // (on SingleWebsitePreferences) to find permission patterns which match
   // each of these hosts.
-  if (base::StartsWith(origin, url::kHttpsScheme,
+  if (base::StartsWith(origin, kHttpsPrefix,
                        base::CompareCase::INSENSITIVE_ASCII) &&
       base::EndsWith(origin, kHttpsPortSuffix,
                      base::CompareCase::INSENSITIVE_ASCII)) {
     return ConvertUTF8ToJavaString(
         env, origin.substr(0, origin.size() - strlen(kHttpsPortSuffix)));
-  } else if (base::StartsWith(origin, url::kHttpScheme,
+  } else if (base::StartsWith(origin, kHttpPrefix,
                               base::CompareCase::INSENSITIVE_ASCII) &&
              base::EndsWith(origin, kHttpPortSuffix,
                             base::CompareCase::INSENSITIVE_ASCII)) {
     return ConvertUTF8ToJavaString(
         env, origin.substr(0, origin.size() - strlen(kHttpPortSuffix)));
+  } else if (base::StartsWith(origin, kExtensionPrefix,
+                              base::CompareCase::INSENSITIVE_ASCII) &&
+             base::EndsWith(origin, kExtensionSlashSuffix,
+                            base::CompareCase::INSENSITIVE_ASCII)) {
+    return ConvertUTF8ToJavaString(
+        env, origin.substr(0, origin.size() - strlen(kExtensionSlashSuffix)));
   } else {
     return ConvertUTF8ToJavaString(env, origin);
   }
@@ -136,15 +201,14 @@ typedef void (*InfoListInsertionFunction)(
     const base::android::JavaRef<jobject>&,
     const base::android::JavaRef<jstring>&,
     const base::android::JavaRef<jstring>&,
-    jboolean,
-    JniIntWrapper);
+    bool);
 
 void GetOrigins(JNIEnv* env,
-                const JavaParamRef<jobject>& jbrowser_context_handle,
+                const JavaRef<jobject>& jbrowser_context_handle,
                 ContentSettingsType content_type,
                 InfoListInsertionFunction insertionFunc,
                 const JavaRef<jobject>& list,
-                jboolean managedOnly) {
+                bool managedOnly) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   HostContentSettingsMap* content_settings_map =
       GetHostContentSettingsMap(browser_context);
@@ -154,19 +218,12 @@ void GetOrigins(JNIEnv* env,
   ContentSettingsForOneType embargo_settings =
       content_settings_map->GetSettingsForOneType(
           ContentSettingsType::PERMISSION_AUTOBLOCKER_DATA);
-  ContentSetting default_content_setting =
-      content_settings_map->GetDefaultContentSetting(content_type, nullptr);
 
   // Use a vector since the overall number of origins should be small.
   std::vector<std::string> seen_origins;
 
   // Now add all origins that have a non-default setting to the list.
   for (const auto& settings_it : all_settings) {
-    if (!base::FeatureList::IsEnabled(
-            permissions::features::kPermissionSiteSettingsRadioButton) &&
-        settings_it.GetContentSetting() == default_content_setting) {
-      continue;
-    }
     if (managedOnly &&
         settings_it.source != content_settings::ProviderType::kPolicyProvider) {
       continue;
@@ -179,27 +236,27 @@ void GetOrigins(JNIEnv* env,
     const std::string embedder = settings_it.secondary_pattern.ToString();
 
     ScopedJavaLocalRef<jstring> jembedder;
-    if (embedder != origin)
+    if (embedder != origin) {
       jembedder = ConvertUTF8ToJavaString(env, embedder);
+    }
 
     seen_origins.push_back(origin);
     insertionFunc(env, static_cast<int>(content_type), list,
                   ConvertOriginToJavaString(env, origin), jembedder,
-                  /*is_embargoed=*/false,
-                  static_cast<int>(settings_it.metadata.session_model()));
+                  /*is_embargoed=*/false);
   }
 
   // Add any origins which have a default content setting value (thus skipped
   // above), but have been automatically blocked for this permission type.
   // We use an empty embedder since embargo doesn't care about it.
-  permissions::PermissionDecisionAutoBlocker* auto_blocker =
+  PermissionDecisionAutoBlocker* auto_blocker =
       permissions::PermissionsClient::Get()->GetPermissionDecisionAutoBlocker(
           unwrap(jbrowser_context_handle));
   ScopedJavaLocalRef<jstring> jembedder;
 
   for (const auto& settings_it : embargo_settings) {
     const std::string origin = settings_it.primary_pattern.ToString();
-    if (base::Contains(seen_origins, origin)) {
+    if (std::ranges::contains(seen_origins, origin)) {
       // This origin has already been added to the list, so don't add it again.
       continue;
     }
@@ -208,58 +265,43 @@ void GetOrigins(JNIEnv* env,
       seen_origins.push_back(origin);
       insertionFunc(env, static_cast<int>(content_type), list,
                     ConvertOriginToJavaString(env, origin), jembedder,
-                    /*is_embargoed=*/true, /*is_one_time=*/false);
+                    /*is_embargoed=*/true);
     }
   }
 }
 
-ContentSetting GetPermissionSettingForOrigin(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    ContentSettingsType content_type,
-    jstring origin,
-    jstring embedder) {
-  GURL requesting_origin(ConvertJavaStringToUTF8(env, origin));
-  std::string embedder_str = ConvertJavaStringToUTF8(env, embedder);
-  GURL embedding_origin;
-  // TODO(raymes): This check to see if '*' is the embedder is a hack that fixes
-  // crbug.com/738377. In general querying the settings for patterns is broken
-  // and needs to be fixed. See crbug.com/738757.
-  if (embedder_str == "*")
-    embedding_origin = requesting_origin;
-  else
-    embedding_origin = GURL(embedder_str);
-
-  // If `content_type` is permission, then we need to apply a set of
-  // verifications before reading its value in `HostContentSettingsMap`.
-  if (permissions::PermissionUtil::IsPermission(content_type)) {
-    BrowserContext* browser_context = unwrap(jbrowser_context_handle);
-    content::PermissionController* permission_controller =
-        browser_context->GetPermissionController();
-    content::PermissionResult result =
-        permission_controller->GetPermissionResultForOriginWithoutContext(
-            permissions::PermissionUtil::ContentSettingsTypeToPermissionType(
-                content_type),
-            url::Origin::Create(requesting_origin),
-            url::Origin::Create(embedding_origin));
-    return permissions::PermissionUtil::PermissionStatusToContentSetting(
-        result.status);
-  } else {
-    // If `content_type` is not permission, then we can directly read its value
-    // from `HostContentSettingsMap`.
-    HostContentSettingsMap* host_content_settings_map =
-        GetHostContentSettingsMap(jbrowser_context_handle);
-    return host_content_settings_map->GetContentSetting(
-        requesting_origin, embedding_origin, content_type);
+PermissionSetting GetPermissionSettingWithEmbargo(
+    BrowserContext* browser_context,
+    ContentSettingsType type,
+    GURL origin_url,
+    GURL embedder_url,
+    content_settings::SettingInfo* info = nullptr) {
+  content_settings::SettingInfo local_info;
+  if (!info) {
+    info = &local_info;
   }
+  PermissionSetting setting =
+      GetHostContentSettingsMap(browser_context)
+          ->GetPermissionSetting(origin_url, embedder_url, type, info);
+
+  if (PermissionDecisionAutoBlocker::IsEnabledForContentSetting(type) &&
+      info->source == content_settings::SettingSource::kUser) {
+    if (GetPermissionDecisionAutoBlocker(browser_context)
+            ->IsEmbargoed(origin_url, type)) {
+      auto* permission_info =
+          PermissionSettingsRegistry::GetInstance()->Get(type);
+      setting = permission_info->delegate().ApplyPermissionEmbargo(setting);
+    }
+  }
+  return setting;
 }
 
 void SetPermissionSettingForOrigin(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     ContentSettingsType content_type,
-    jstring origin,
-    jstring embedder,
+    const base::android::JavaRef<jstring>& origin,
+    const base::android::JavaRef<jstring>& embedder,
     ContentSetting setting) {
   GURL origin_url(ConvertJavaStringToUTF8(env, origin));
   GURL embedder_url =
@@ -279,17 +321,21 @@ void SetPermissionSettingForOrigin(
         ->RemoveEmbargoAndResetCounts(origin_url, content_type);
   }
 
+  if (setting != CONTENT_SETTING_ALLOW) {
+    ResetHeuristicData(browser_context, origin_url, content_type);
+  }
+
   permissions::PermissionUmaUtil::ScopedRevocationReporter
       scoped_revocation_reporter(
           browser_context, origin_url, embedder_url, content_type,
           permissions::PermissionSourceUI::SITE_SETTINGS);
   GetHostContentSettingsMap(browser_context)
-      ->SetContentSettingDefaultScope(origin_url, embedder_url, content_type,
-                                      setting);
+      ->SetPermissionSettingDefaultScope(origin_url, embedder_url, content_type,
+                                         setting);
 }
 
 permissions::ObjectPermissionContextBase* GetChooserContext(
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     ContentSettingsType type) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   return permissions::PermissionsClient::Get()->GetChooserContext(
@@ -301,59 +347,65 @@ bool OriginMatcher(const url::Origin& origin, const GURL& other) {
 }
 
 bool GetBooleanForContentSetting(
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     ContentSettingsType type) {
   HostContentSettingsMap* content_settings =
       GetHostContentSettingsMap(jbrowser_context_handle);
-  switch (content_settings->GetDefaultContentSetting(type, nullptr)) {
-    case CONTENT_SETTING_BLOCK:
-      return false;
-    case CONTENT_SETTING_ALLOW:
-    case CONTENT_SETTING_ASK:
-    default:
-      return true;
-  }
+  auto* info = PermissionSettingsRegistry::GetInstance()->Get(type);
+
+  return !info->delegate().IsBlocked(
+      content_settings->GetDefaultPermissionSetting(type, nullptr));
 }
 
-bool IsContentSettingManaged(
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+content_settings::SettingSource GetDefaultContentSettingProviderSource(
+    const JavaRef<jobject>& jbrowser_context_handle,
     ContentSettingsType content_settings_type) {
   HostContentSettingsMap* content_settings =
       GetHostContentSettingsMap(jbrowser_context_handle);
-  content_settings::ProviderType provider;
-  content_settings->GetDefaultContentSetting(content_settings_type, &provider);
-  return provider == content_settings::ProviderType::kPolicyProvider;
-}
-
-bool IsContentSettingManagedByCustodian(
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    ContentSettingsType content_settings_type) {
-  HostContentSettingsMap* content_settings =
-      GetHostContentSettingsMap(jbrowser_context_handle);
-  content_settings::ProviderType provider;
-  content_settings->GetDefaultContentSetting(content_settings_type, &provider);
-  return provider == content_settings::ProviderType::kSupervisedProvider;
+  content_settings::ProviderType provider_type;
+  content_settings->GetDefaultPermissionSetting(
+      static_cast<ContentSettingsType>(content_settings_type), &provider_type);
+  return content_settings::GetSettingSourceFromProviderType(provider_type);
 }
 
 bool IsContentSettingUserModifiable(
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     ContentSettingsType content_settings_type) {
   HostContentSettingsMap* content_settings =
       GetHostContentSettingsMap(jbrowser_context_handle);
   content_settings::ProviderType provider;
-  content_settings->GetDefaultContentSetting(content_settings_type, &provider);
+  content_settings->GetDefaultPermissionSetting(content_settings_type,
+                                                &provider);
   return provider >= content_settings::ProviderType::kPrefProvider;
+}
+
+void SetEphemeralGrantForTesting(  // IN-TEST
+    JNIEnv* env,
+    const JavaRef<jobject>& jbrowser_context_handle,
+    ContentSettingsType content_settings_type,
+    const JavaRef<jobject>& jprimary_url,
+    const JavaRef<jobject>& jsecondary_url,
+    const PermissionSetting& setting) {
+  BrowserContext* browser_context = unwrap(jbrowser_context_handle);
+  content_settings::ContentSettingConstraints constraints;
+  constraints.set_session_model(
+      content_settings::mojom::SessionModel::ONE_TIME);
+  GetHostContentSettingsMap(browser_context)
+      ->SetPermissionSettingDefaultScope(
+          url::GURLAndroid::ToNativeGURL(env, jprimary_url),
+          url::GURLAndroid::ToNativeGURL(env, jsecondary_url),
+          content_settings_type, setting, constraints);
 }
 
 }  // anonymous namespace
 
-static jboolean JNI_WebsitePreferenceBridge_IsNotificationEmbargoedForOrigin(
+static bool JNI_WebsitePreferenceBridge_IsNotificationEmbargoedForOrigin(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& origin) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& origin) {
   GURL origin_url(ConvertJavaStringToUTF8(env, origin));
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
-  permissions::PermissionDecisionAutoBlocker* auto_blocker =
+  PermissionDecisionAutoBlocker* auto_blocker =
       GetPermissionDecisionAutoBlocker(browser_context);
 
   return auto_blocker->IsEmbargoed(origin_url,
@@ -362,9 +414,9 @@ static jboolean JNI_WebsitePreferenceBridge_IsNotificationEmbargoedForOrigin(
 
 static void SetNotificationSettingForOrigin(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& origin,
-    jint value) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& origin,
+    int32_t value) {
   // Note: For Android O+, SetNotificationSettingForOrigin is only called when:
   //  1) the "Clear & Reset" button in Site Settings is pressed,
   //  2) the notification permission is blocked by embargo, so no notification
@@ -396,9 +448,9 @@ static void SetNotificationSettingForOrigin(
 // We detect this change and explicitly report it back for UMA reporting.
 static void JNI_WebsitePreferenceBridge_ReportNotificationRevokedForOrigin(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& origin,
-    jint new_setting_value) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& origin,
+    int32_t new_setting_value) {
   GURL url = GURL(ConvertJavaStringToUTF8(env, origin));
 
   ContentSetting setting = static_cast<ContentSetting>(new_setting_value);
@@ -410,27 +462,57 @@ static void JNI_WebsitePreferenceBridge_ReportNotificationRevokedForOrigin(
       url.DeprecatedGetOriginAsURL(), unwrap(jbrowser_context_handle));
 }
 
-static jint JNI_WebsitePreferenceBridge_GetPermissionSettingForOrigin(
+static ScopedJavaLocalRef<jobject>
+JNI_WebsitePreferenceBridge_GetPermissionSettingWithEmbargo(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    jint content_settings_type,
-    const JavaParamRef<jstring>& origin,
-    const JavaParamRef<jstring>& embedder) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    int32_t content_settings_type,
+    const JavaRef<jstring>& origin,
+    const JavaRef<jstring>& embedder) {
   ContentSettingsType type =
       static_cast<ContentSettingsType>(content_settings_type);
-  return GetPermissionSettingForOrigin(env, jbrowser_context_handle, type,
-                                       origin, embedder);
+  CHECK(content_settings::PermissionSettingsRegistry::GetInstance()->Get(type))
+      << type;
+
+  GURL requesting_origin(ConvertJavaStringToUTF8(env, origin));
+  std::string embedder_str = ConvertJavaStringToUTF8(env, embedder);
+  GURL embedding_origin =
+      (embedder_str == "*") ? requesting_origin : GURL(embedder_str);
+
+  content_settings::SettingInfo info;
+  PermissionSetting setting = GetPermissionSettingWithEmbargo(
+      unwrap(jbrowser_context_handle), type, requesting_origin,
+      embedding_origin, &info);
+
+  ScopedJavaLocalRef<jobject> j_geo_setting;
+  std::optional<int32_t> c_setting;
+  if (GeolocationSetting* geo_setting =
+          std::get_if<GeolocationSetting>(&setting)) {
+    j_geo_setting = Java_GeolocationSetting_Constructor(
+        env, ToContentSetting(geo_setting->approximate),
+        ToContentSetting(geo_setting->precise));
+  } else {
+    c_setting = static_cast<int32_t>(std::get<ContentSetting>(setting));
+  }
+
+  bool is_one_time = info.metadata.session_model() ==
+                     content_settings::mojom::SessionModel::ONE_TIME;
+
+  return Java_PermissionSetting_Constructor(
+      env, j_geo_setting, jni_zero::ToJniType(env, c_setting), is_one_time);
 }
 
 static void JNI_WebsitePreferenceBridge_SetPermissionSettingForOrigin(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    jint content_settings_type,
-    const JavaParamRef<jstring>& origin,
-    const JavaParamRef<jstring>& embedder,
-    jint value) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    int32_t content_settings_type,
+    const JavaRef<jstring>& origin,
+    const JavaRef<jstring>& embedder,
+    int32_t value) {
   ContentSettingsType type =
       static_cast<ContentSettingsType>(content_settings_type);
+  CHECK(content_settings::ContentSettingsRegistry::GetInstance()->Get(type))
+      << type;
 
   switch (type) {
     case ContentSettingsType::NOTIFICATIONS:
@@ -448,48 +530,137 @@ static void JNI_WebsitePreferenceBridge_SetPermissionSettingForOrigin(
   }
 }
 
+static bool
+JNI_WebsitePreferenceBridge_CanAddExceptionsForJavascriptOptimizerSetting(
+    JNIEnv* env) {
+  // If origin isolation for JavaScript-optimization exceptions is disabled,
+  // Javascript-optimization exceptions only work for TLDs (ex foo.com) and not
+  // for suborigins (ex bar.foo.com).
+  return site_isolation::SiteIsolationPolicy::
+      IsOriginIsolationForJsOptExceptionsSupported();
+}
+
+static void JNI_WebsitePreferenceBridge_SetGeolocationSettingForOrigin(
+    JNIEnv* env,
+    const JavaRef<jobject>& jbrowser_context_handle,
+    int32_t content_settings_type,
+    const JavaRef<jstring>& origin,
+    const JavaRef<jstring>& embedder,
+    int32_t approximate,
+    int32_t precise) {
+  GURL origin_url(ConvertJavaStringToUTF8(env, origin));
+  GURL embedder_url =
+      embedder ? GURL(ConvertJavaStringToUTF8(env, embedder)) : GURL();
+  ContentSettingsType type =
+      static_cast<ContentSettingsType>(content_settings_type);
+
+  BrowserContext* browser_context = unwrap(jbrowser_context_handle);
+
+  std::optional<PermissionSetting> setting;
+  if (approximate != CONTENT_SETTING_DEFAULT) {
+    CHECK_NE(precise, CONTENT_SETTING_DEFAULT);
+    setting = GeolocationSetting{
+        ToPermissionOption(static_cast<ContentSetting>(approximate)),
+        ToPermissionOption(static_cast<ContentSetting>(precise))};
+  }
+
+  // The permission may have been blocked due to being under embargo, so if it
+  // was changed away from BLOCK, clear embargo status if it exists.
+  if (!setting || std::get<GeolocationSetting>(*setting).approximate !=
+                      PermissionOption::kDenied) {
+    GetPermissionDecisionAutoBlocker(browser_context)
+        ->RemoveEmbargoAndResetCounts(origin_url, type);
+  }
+
+  // Clear heuristic data if the new setting isn't allow.
+  if (!setting || std::get<GeolocationSetting>(*setting).approximate !=
+                      PermissionOption::kAllowed) {
+    ResetHeuristicData(browser_context, origin_url, type);
+  }
+
+  permissions::PermissionUmaUtil::ScopedRevocationReporter
+      scoped_revocation_reporter(
+          browser_context, origin_url, embedder_url, type,
+          permissions::PermissionSourceUI::SITE_SETTINGS);
+
+  GetHostContentSettingsMap(browser_context)
+      ->SetPermissionSettingDefaultScope(origin_url, embedder_url, type,
+                                         setting);
+}
+
 static void JNI_WebsitePreferenceBridge_SetEphemeralGrantForTesting(  // IN-TEST
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    jint content_settings_type,
-    const JavaParamRef<jobject>& jprimary_url,
-    const JavaParamRef<jobject>& jsecondary_url) {
-  BrowserContext* browser_context = unwrap(jbrowser_context_handle);
-  content_settings::ContentSettingConstraints constraints;
-  constraints.set_session_model(
-      content_settings::mojom::SessionModel::ONE_TIME);
-  GetHostContentSettingsMap(browser_context)
-      ->SetContentSettingDefaultScope(
-          url::GURLAndroid::ToNativeGURL(env, jprimary_url),
-          url::GURLAndroid::ToNativeGURL(env, jsecondary_url),
-          static_cast<ContentSettingsType>(content_settings_type),
-          CONTENT_SETTING_ALLOW, constraints);
+    const JavaRef<jobject>& jbrowser_context_handle,
+    int32_t content_settings_type,
+    const JavaRef<jobject>& jprimary_url,
+    const JavaRef<jobject>& jsecondary_url) {
+  SetEphemeralGrantForTesting(  // IN-TEST
+      env, jbrowser_context_handle,
+      static_cast<ContentSettingsType>(content_settings_type), jprimary_url,
+      jsecondary_url, ContentSetting::CONTENT_SETTING_ALLOW);
+}
+
+static void
+JNI_WebsitePreferenceBridge_SetGeolocationEphemeralGrantForTesting(  // IN-TEST
+    JNIEnv* env,
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jorigin,
+    const GeolocationSetting& geolocation_setting) {
+  SetEphemeralGrantForTesting(env, jbrowser_context_handle,  // IN-TEST
+                              ContentSettingsType::GEOLOCATION_WITH_OPTIONS,
+                              jorigin, jorigin, geolocation_setting);
+}
+
+static bool JNI_WebsitePreferenceBridge_HasHeuristicDataForTesting(  // IN-TEST
+    JNIEnv* env,
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jorigin,
+    int32_t content_settings_type) {
+  GURL origin_url(ConvertJavaStringToUTF8(env, jorigin));
+  ContentSettingsType type =
+      static_cast<ContentSettingsType>(content_settings_type);
+  return GetPermissionActionsHistory(unwrap(jbrowser_context_handle))
+             ->GetTemporaryGrantCountForTesting(origin_url, type) > 0;
+}
+
+static void
+JNI_WebsitePreferenceBridge_RecordHeuristicActionForTesting(  // IN-TEST
+    JNIEnv* env,
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jorigin,
+    int32_t content_settings_type,
+    int32_t action) {
+  GURL origin_url(ConvertJavaStringToUTF8(env, jorigin));
+  ContentSettingsType type =
+      static_cast<ContentSettingsType>(content_settings_type);
+  GetPermissionActionsHistory(unwrap(jbrowser_context_handle))
+      ->RecordTemporaryGrant(origin_url, type);
 }
 
 static void JNI_WebsitePreferenceBridge_GetOriginsForPermission(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    jint content_settings_type,
-    const JavaParamRef<jobject>& list,
-    jboolean managedOnly) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    int32_t content_settings_type,
+    const JavaRef<jobject>& list,
+    bool managedOnly) {
   GetOrigins(env, jbrowser_context_handle,
              static_cast<ContentSettingsType>(content_settings_type),
              &Java_WebsitePreferenceBridge_insertPermissionInfoIntoList, list,
              managedOnly);
 }
 
-static jboolean JNI_WebsitePreferenceBridge_IsContentSettingsPatternValid(
+static bool JNI_WebsitePreferenceBridge_IsContentSettingsPatternValid(
     JNIEnv* env,
-    const JavaParamRef<jstring>& pattern) {
+    const JavaRef<jstring>& pattern) {
   return ContentSettingsPattern::FromString(
              ConvertJavaStringToUTF8(env, pattern))
       .IsValid();
 }
 
-static jboolean JNI_WebsitePreferenceBridge_UrlMatchesContentSettingsPattern(
+static bool JNI_WebsitePreferenceBridge_UrlMatchesContentSettingsPattern(
     JNIEnv* env,
-    const JavaParamRef<jstring>& jurl,
-    const JavaParamRef<jstring>& jpattern) {
+    const JavaRef<jstring>& jurl,
+    const JavaRef<jstring>& jpattern) {
   ContentSettingsPattern pattern = ContentSettingsPattern::FromString(
       ConvertJavaStringToUTF8(env, jpattern));
   return pattern.Matches(GURL(ConvertJavaStringToUTF8(env, jurl)));
@@ -497,17 +668,18 @@ static jboolean JNI_WebsitePreferenceBridge_UrlMatchesContentSettingsPattern(
 
 static void JNI_WebsitePreferenceBridge_GetChosenObjects(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    jint content_settings_type,
-    const JavaParamRef<jobject>& list) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    int32_t content_settings_type,
+    const JavaRef<jobject>& list) {
   ContentSettingsType type =
       static_cast<ContentSettingsType>(content_settings_type);
   permissions::ObjectPermissionContextBase* context =
       GetChooserContext(jbrowser_context_handle, type);
   // The ObjectPermissionContextBase can be null if the embedder doesn't support
   // the given ContentSettingsType.
-  if (!context)
+  if (!context) {
     return;
+  }
   for (const auto& object : context->GetAllGrantedObjects()) {
     // Remove the trailing slash so that origins are matched correctly in
     // SingleWebsitePreferences.mergePermissionInfoForTopLevelOrigin.
@@ -525,7 +697,7 @@ static void JNI_WebsitePreferenceBridge_GetChosenObjects(
     ScopedJavaLocalRef<jstring> jserialized =
         ConvertUTF8ToJavaString(env, serialized);
 
-    jboolean jis_managed =
+    bool jis_managed =
         object->source == content_settings::SettingSource::kPolicy;
 
     Java_WebsitePreferenceBridge_insertChosenObjectInfoIntoList(
@@ -536,14 +708,15 @@ static void JNI_WebsitePreferenceBridge_GetChosenObjects(
 
 static void JNI_WebsitePreferenceBridge_RevokeObjectPermission(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    jint content_settings_type,
-    const JavaParamRef<jstring>& jorigin,
-    const JavaParamRef<jstring>& jobject) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    int32_t content_settings_type,
+    const JavaRef<jstring>& jorigin,
+    const JavaRef<jstring>& jobject) {
   GURL origin(ConvertJavaStringToUTF8(env, jorigin));
   DCHECK(origin.is_valid());
   std::optional<base::Value> object =
-      base::JSONReader::Read(ConvertJavaStringToUTF8(env, jobject));
+      base::JSONReader::Read(ConvertJavaStringToUTF8(env, jobject),
+                             base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   DCHECK(object && object->is_dict());
   permissions::ObjectPermissionContextBase* context = GetChooserContext(
       jbrowser_context_handle,
@@ -558,7 +731,7 @@ void OnCookiesReceived(network::mojom::CookieManager* cookie_manager,
                        const GURL& domain,
                        const std::vector<net::CanonicalCookie>& cookies) {
   for (const auto& cookie : cookies) {
-    if (cookie.IsDomainMatch(domain.host())) {
+    if (cookie.IsDomainMatch(domain.GetHost())) {
       cookie_manager->DeleteCanonicalCookie(cookie, base::DoNothing());
     }
   }
@@ -590,12 +763,13 @@ void OnStorageInfoReady(const ScopedJavaGlobalRef<jobject>& java_callback,
 
   storage::UsageInfoEntries::const_iterator i;
   for (i = entries.begin(); i != entries.end(); ++i) {
-    if (i->usage <= 0)
+    if (i->usage <= 0) {
       continue;
+    }
     ScopedJavaLocalRef<jstring> host = ConvertUTF8ToJavaString(env, i->host);
 
-    Java_WebsitePreferenceBridge_insertStorageInfoIntoList(
-        env, list, host, static_cast<jint>(i->type), i->usage);
+    Java_WebsitePreferenceBridge_insertStorageInfoIntoList(env, list, host,
+                                                           i->usage);
   }
 
   base::android::RunObjectCallbackAndroid(java_callback, list);
@@ -682,8 +856,8 @@ void OnSharedDictionaryInfoLoaded(
 
 static void JNI_WebsitePreferenceBridge_FetchCookiesInfo(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jobject>& java_callback) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& java_callback) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   auto cookie_helper = base::MakeRefCounted<browsing_data::CookieHelper>(
       browser_context->GetDefaultStoragePartition(), base::NullCallback());
@@ -693,9 +867,9 @@ static void JNI_WebsitePreferenceBridge_FetchCookiesInfo(
 
 static void JNI_WebsitePreferenceBridge_FetchLocalStorageInfo(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jobject>& java_callback,
-    jboolean fetch_important) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& java_callback,
+    bool fetch_important) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   auto local_storage_helper =
       base::MakeRefCounted<browsing_data::LocalStorageHelper>(
@@ -707,8 +881,8 @@ static void JNI_WebsitePreferenceBridge_FetchLocalStorageInfo(
 
 static void JNI_WebsitePreferenceBridge_FetchStorageInfo(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jobject>& java_callback) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& java_callback) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
 
   auto storage_info_fetcher =
@@ -719,8 +893,8 @@ static void JNI_WebsitePreferenceBridge_FetchStorageInfo(
 
 static void JNI_WebsitePreferenceBridge_FetchSharedDictionaryInfo(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jobject>& java_callback) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& java_callback) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   browser_context->GetDefaultStoragePartition()
       ->GetNetworkContext()
@@ -731,9 +905,9 @@ static void JNI_WebsitePreferenceBridge_FetchSharedDictionaryInfo(
 
 static void JNI_WebsitePreferenceBridge_ClearLocalStorageData(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& jorigin,
-    const JavaParamRef<jobject>& java_callback) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jorigin,
+    const JavaRef<jobject>& java_callback) {
   ClearLocalStorageHelper::ClearLocalStorage(
       unwrap(jbrowser_context_handle),
       url::Origin::Create(GURL(ConvertJavaStringToUTF8(env, jorigin))),
@@ -743,10 +917,10 @@ static void JNI_WebsitePreferenceBridge_ClearLocalStorageData(
 
 static void JNI_WebsitePreferenceBridge_ClearSharedDictionary(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& jorigin,
-    const JavaParamRef<jstring>& jtop_level_site,
-    const JavaParamRef<jobject>& java_callback) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jorigin,
+    const JavaRef<jstring>& jtop_level_site,
+    const JavaRef<jobject>& java_callback) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   browser_context->GetDefaultStoragePartition()
       ->GetNetworkContext()
@@ -766,25 +940,23 @@ static void JNI_WebsitePreferenceBridge_ClearSharedDictionary(
 
 static void JNI_WebsitePreferenceBridge_ClearStorageData(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& jhost,
-    jint type,
-    const JavaParamRef<jobject>& java_callback) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jhost,
+    const JavaRef<jobject>& java_callback) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   std::string host = ConvertJavaStringToUTF8(env, jhost);
 
   auto storage_info_fetcher =
       base::MakeRefCounted<browser_ui::StorageInfoFetcher>(browser_context);
   storage_info_fetcher->ClearStorage(
-      host, static_cast<blink::mojom::StorageType>(type),
-      base::BindOnce(&OnStorageInfoCleared,
-                     ScopedJavaGlobalRef<jobject>(java_callback)));
+      host, base::BindOnce(&OnStorageInfoCleared,
+                           ScopedJavaGlobalRef<jobject>(java_callback)));
 }
 
 static void JNI_WebsitePreferenceBridge_ClearCookieData(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& jorigin) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jorigin) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   GURL url(ConvertJavaStringToUTF8(env, jorigin));
 
@@ -796,8 +968,8 @@ static void JNI_WebsitePreferenceBridge_ClearCookieData(
 
 static void JNI_WebsitePreferenceBridge_ClearBannerData(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& jorigin) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jorigin) {
   GetHostContentSettingsMap(jbrowser_context_handle)
       ->SetWebsiteSettingDefaultScope(
           GURL(ConvertJavaStringToUTF8(env, jorigin)), GURL(),
@@ -806,8 +978,8 @@ static void JNI_WebsitePreferenceBridge_ClearBannerData(
 
 static void JNI_WebsitePreferenceBridge_ClearMediaLicenses(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& jorigin) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jorigin) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   url::Origin origin =
       url::Origin::Create(GURL(ConvertJavaStringToUTF8(env, jorigin)));
@@ -817,19 +989,18 @@ static void JNI_WebsitePreferenceBridge_ClearMediaLicenses(
       base::DoNothing());
 }
 
-static jboolean JNI_WebsitePreferenceBridge_IsDSEOrigin(
+static bool JNI_WebsitePreferenceBridge_IsDseOrigin(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& jorigin) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const GURL& jorigin) {
   return permissions::PermissionsClient::Get()->IsDseOrigin(
-      unwrap(jbrowser_context_handle),
-      url::Origin::Create(GURL(ConvertJavaStringToUTF8(env, jorigin))));
+      unwrap(jbrowser_context_handle), url::Origin::Create(jorigin));
 }
 
-static jboolean JNI_WebsitePreferenceBridge_GetAdBlockingActivated(
+static bool JNI_WebsitePreferenceBridge_GetAdBlockingActivated(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& jorigin) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jorigin) {
   GURL url(ConvertJavaStringToUTF8(env, jorigin));
   return permissions::PermissionsClient::Get()->IsSubresourceFilterActivated(
       unwrap(jbrowser_context_handle), url);
@@ -839,32 +1010,23 @@ static jboolean JNI_WebsitePreferenceBridge_GetAdBlockingActivated(
 // and so are persisted across tests. This function resets them.
 static void JNI_WebsitePreferenceBridge_ResetNotificationsSettingsForTest(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle) {
+    const JavaRef<jobject>& jbrowser_context_handle) {
   GetHostContentSettingsMap(jbrowser_context_handle)
       ->ClearSettingsForOneType(ContentSettingsType::NOTIFICATIONS);
 }
 
-static jboolean JNI_WebsitePreferenceBridge_IsContentSettingManaged(
+static bool JNI_WebsitePreferenceBridge_IsCookieDeletionDisabled(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    int content_settings_type) {
-  return IsContentSettingManaged(
-      jbrowser_context_handle,
-      static_cast<ContentSettingsType>(content_settings_type));
-}
-
-static jboolean JNI_WebsitePreferenceBridge_IsCookieDeletionDisabled(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
-    const JavaParamRef<jstring>& jorigin) {
+    const JavaRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jstring>& jorigin) {
   std::string origin = ConvertJavaStringToUTF8(env, jorigin);
   return permissions::PermissionsClient::Get()->IsCookieDeletionDisabled(
       unwrap(jbrowser_context_handle), GURL(origin));
 }
 
-static jboolean JNI_WebsitePreferenceBridge_IsContentSettingEnabled(
+static bool JNI_WebsitePreferenceBridge_IsContentSettingEnabled(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type) {
   ContentSettingsType type =
       static_cast<ContentSettingsType>(content_settings_type);
@@ -874,12 +1036,13 @@ static jboolean JNI_WebsitePreferenceBridge_IsContentSettingEnabled(
 
 static void JNI_WebsitePreferenceBridge_SetContentSettingEnabled(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type,
-    jboolean allow) {
+    bool allow) {
   ContentSettingsType type =
       static_cast<ContentSettingsType>(content_settings_type);
-  base::UmaHistogramEnumeration("Permissions.SiteSettingsChanged", type);
+  content_settings_uma_util::RecordContentSettingsHistogram(
+      "Permissions.SiteSettingsChanged", type);
 
   if (type == ContentSettingsType::SOUND) {
     if (allow) {
@@ -901,20 +1064,26 @@ static void JNI_WebsitePreferenceBridge_SetContentSettingEnabled(
       case ContentSettingsType::CLIPBOARD_READ_WRITE:
       case ContentSettingsType::FILE_SYSTEM_WRITE_GUARD:
       case ContentSettingsType::GEOLOCATION:
+      case ContentSettingsType::GEOLOCATION_WITH_OPTIONS:
       case ContentSettingsType::HAND_TRACKING:
       case ContentSettingsType::IDLE_DETECTION:
+      case ContentSettingsType::LOCAL_NETWORK:
+      case ContentSettingsType::LOOPBACK_NETWORK:
       case ContentSettingsType::MEDIASTREAM_CAMERA:
       case ContentSettingsType::MEDIASTREAM_MIC:
       case ContentSettingsType::NFC:
       case ContentSettingsType::NOTIFICATIONS:
+      case ContentSettingsType::SERIAL_GUARD:
       case ContentSettingsType::STORAGE_ACCESS:
       case ContentSettingsType::USB_GUARD:
       case ContentSettingsType::VR:
+      case ContentSettingsType::WINDOW_MANAGEMENT:
         value = CONTENT_SETTING_ASK;
         break;
       case ContentSettingsType::ADS:
       case ContentSettingsType::ANTI_ABUSE:
       case ContentSettingsType::AUTO_DARK_WEB_CONTENT:
+      case ContentSettingsType::AUTO_PICTURE_IN_PICTURE:
       case ContentSettingsType::BACKGROUND_SYNC:
       case ContentSettingsType::COOKIES:
       case ContentSettingsType::FEDERATED_IDENTITY_API:
@@ -931,16 +1100,22 @@ static void JNI_WebsitePreferenceBridge_SetContentSettingEnabled(
     }
   }
 
+  content_settings_uma_util::RecordContentSettingChange(value, type);
+
   GetHostContentSettingsMap(jbrowser_context_handle)
-      ->SetDefaultContentSetting(type, value);
+      ->SetDefaultPermissionSetting(type,
+                                    PermissionSettingsRegistry::GetInstance()
+                                        ->Get(type)
+                                        ->delegate()
+                                        .ToPermissionSetting(value));
 }
 
 static void JNI_WebsitePreferenceBridge_SetContentSettingDefaultScope(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type,
-    const JavaParamRef<jobject>& jprimary_url,
-    const JavaParamRef<jobject>& jsecondary_url,
+    const JavaRef<jobject>& jprimary_url,
+    const JavaRef<jobject>& jsecondary_url,
     int setting) {
   GURL primary_url = url::GURLAndroid::ToNativeGURL(env, jprimary_url);
   if (setting != CONTENT_SETTING_BLOCK) {
@@ -949,6 +1124,12 @@ static void JNI_WebsitePreferenceBridge_SetContentSettingDefaultScope(
             primary_url,
             static_cast<ContentSettingsType>(content_settings_type));
   }
+
+  if (setting != CONTENT_SETTING_ALLOW) {
+    ResetHeuristicData(unwrap(jbrowser_context_handle), primary_url,
+                       static_cast<ContentSettingsType>(content_settings_type));
+  }
+
   GetHostContentSettingsMap(jbrowser_context_handle)
       ->SetContentSettingDefaultScope(
           primary_url, url::GURLAndroid::ToNativeGURL(env, jsecondary_url),
@@ -958,10 +1139,10 @@ static void JNI_WebsitePreferenceBridge_SetContentSettingDefaultScope(
 
 static void JNI_WebsitePreferenceBridge_SetContentSettingCustomScope(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type,
-    const JavaParamRef<jstring>& primary_pattern,
-    const JavaParamRef<jstring>& secondary_pattern,
+    const JavaRef<jstring>& primary_pattern,
+    const JavaRef<jstring>& secondary_pattern,
     int setting) {
   std::string primary_pattern_string =
       ConvertJavaStringToUTF8(env, primary_pattern);
@@ -971,6 +1152,11 @@ static void JNI_WebsitePreferenceBridge_SetContentSettingCustomScope(
         ->RemoveEmbargoAndResetCounts(
             primary_url,
             static_cast<ContentSettingsType>(content_settings_type));
+  }
+
+  if (setting != CONTENT_SETTING_ALLOW && primary_url.is_valid()) {
+    ResetHeuristicData(unwrap(jbrowser_context_handle), primary_url,
+                       static_cast<ContentSettingsType>(content_settings_type));
   }
 
   std::string secondary_pattern_string =
@@ -987,10 +1173,10 @@ static void JNI_WebsitePreferenceBridge_SetContentSettingCustomScope(
 
 static int JNI_WebsitePreferenceBridge_GetContentSetting(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type,
-    const JavaParamRef<jobject>& jprimary_url,
-    const JavaParamRef<jobject>& jsecondary_url) {
+    const JavaRef<jobject>& jprimary_url,
+    const JavaRef<jobject>& jsecondary_url) {
   return GetHostContentSettingsMap(jbrowser_context_handle)
       ->GetContentSetting(
           url::GURLAndroid::ToNativeGURL(env, jprimary_url),
@@ -998,12 +1184,12 @@ static int JNI_WebsitePreferenceBridge_GetContentSetting(
           static_cast<ContentSettingsType>(content_settings_type));
 }
 
-static jboolean JNI_WebsitePreferenceBridge_IsContentSettingGlobal(
+static bool JNI_WebsitePreferenceBridge_IsContentSettingGlobal(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type,
-    const JavaParamRef<jobject>& jprimary_url,
-    const JavaParamRef<jobject>& jsecondary_url) {
+    const JavaRef<jobject>& jprimary_url,
+    const JavaRef<jobject>& jsecondary_url) {
   content_settings::SettingInfo setting_info;
   GetHostContentSettingsMap(jbrowser_context_handle)
       ->GetContentSetting(
@@ -1017,9 +1203,9 @@ static jboolean JNI_WebsitePreferenceBridge_IsContentSettingGlobal(
 
 static void JNI_WebsitePreferenceBridge_GetContentSettingsExceptions(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type,
-    const JavaParamRef<jobject>& list) {
+    const JavaRef<jobject>& list) {
   BrowserContext* browser_context = unwrap(jbrowser_context_handle);
   std::vector<std::string> seen_origins;
   for (const ContentSettingPatternSource& entry :
@@ -1049,8 +1235,9 @@ static void JNI_WebsitePreferenceBridge_GetContentSettingsExceptions(
               static_cast<ContentSettingsType>(content_settings_type));
   ScopedJavaLocalRef<jstring> jembedder;
   for (const GURL& embargoed_origin : embargoed_origins) {
-    if (base::Contains(seen_origins, embargoed_origin.spec()))
+    if (std::ranges::contains(seen_origins, embargoed_origin.spec())) {
       continue;
+    }
     std::string embargoed_origin_pattern =
         ContentSettingsPattern::FromURLNoWildcard(embargoed_origin).ToString();
     Java_WebsitePreferenceBridge_addContentSettingExceptionToList(
@@ -1063,59 +1250,79 @@ static void JNI_WebsitePreferenceBridge_GetContentSettingsExceptions(
   }
 }
 
-static jint JNI_WebsitePreferenceBridge_GetDefaultContentSetting(
+static int32_t JNI_WebsitePreferenceBridge_GetDefaultContentSetting(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type) {
+  auto type = static_cast<ContentSettingsType>(content_settings_type);
+  if (type == ContentSettingsType::GEOLOCATION_WITH_OPTIONS) {
+    GeolocationSetting setting = std::get<GeolocationSetting>(
+        GetHostContentSettingsMap(jbrowser_context_handle)
+            ->GetDefaultPermissionSetting(type));
+    // Currently it is not possible to set default settings where precise and
+    // approximate have different values.
+    DCHECK_EQ(setting.precise, setting.approximate);
+    return ToContentSetting(setting.precise);
+  }
   return GetHostContentSettingsMap(jbrowser_context_handle)
-      ->GetDefaultContentSetting(
-          static_cast<ContentSettingsType>(content_settings_type), nullptr);
+      ->GetDefaultContentSetting(type);
 }
 
 static void JNI_WebsitePreferenceBridge_SetDefaultContentSetting(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type,
-    int setting) {
+    int content_setting) {
+  auto type = static_cast<ContentSettingsType>(content_settings_type);
+  auto setting = static_cast<ContentSetting>(content_setting);
+  std::optional<PermissionSetting> permission_setting = setting;
+  if (type == ContentSettingsType::GEOLOCATION_WITH_OPTIONS) {
+    if (setting != CONTENT_SETTING_DEFAULT) {
+      permission_setting = GeolocationSetting{ToPermissionOption(setting),
+                                              ToPermissionOption(setting)};
+    }
+  }
   GetHostContentSettingsMap(jbrowser_context_handle)
-      ->SetDefaultContentSetting(
-          static_cast<ContentSettingsType>(content_settings_type),
-          static_cast<ContentSetting>(setting));
+      ->SetDefaultPermissionSetting(type, permission_setting);
 }
 
-static jboolean JNI_WebsitePreferenceBridge_IsContentSettingUserModifiable(
+static bool JNI_WebsitePreferenceBridge_IsContentSettingUserModifiable(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type) {
   return IsContentSettingUserModifiable(
       jbrowser_context_handle,
       static_cast<ContentSettingsType>(content_settings_type));
 }
 
-static jboolean JNI_WebsitePreferenceBridge_IsContentSettingManagedByCustodian(
+static int32_t
+JNI_WebsitePreferenceBridge_GetDefaultContentSettingProviderSource(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle,
+    const JavaRef<jobject>& jbrowser_context_handle,
     int content_settings_type) {
-  return IsContentSettingManagedByCustodian(
+  return static_cast<int32_t>(GetDefaultContentSettingProviderSource(
       jbrowser_context_handle,
-      static_cast<ContentSettingsType>(content_settings_type));
+      static_cast<ContentSettingsType>(content_settings_type)));
 }
 
-static jboolean JNI_WebsitePreferenceBridge_GetLocationAllowedByPolicy(
+static bool JNI_WebsitePreferenceBridge_GetLocationAllowedByPolicy(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jbrowser_context_handle) {
-  if (!IsContentSettingManaged(jbrowser_context_handle,
-                               ContentSettingsType::GEOLOCATION))
+    const JavaRef<jobject>& jbrowser_context_handle) {
+  auto type = permissions::PermissionUtil::GetGeolocationType();
+  if (GetDefaultContentSettingProviderSource(jbrowser_context_handle, type) !=
+      content_settings::SettingSource::kPolicy) {
     return false;
-  return GetHostContentSettingsMap(jbrowser_context_handle)
-             ->GetDefaultContentSetting(ContentSettingsType::GEOLOCATION,
-                                        nullptr) == CONTENT_SETTING_ALLOW;
+  }
+  auto* info = PermissionSettingsRegistry::GetInstance()->Get(type);
+  return info->delegate().IsAnyPermissionAllowed(
+      GetHostContentSettingsMap(jbrowser_context_handle)
+          ->GetDefaultPermissionSetting(type, nullptr));
 }
 
 static ScopedJavaLocalRef<jstring>
 JNI_WebsitePreferenceBridge_ToDomainWildcardPattern(
     JNIEnv* env,
-    const JavaParamRef<jstring>& pattern) {
+    const JavaRef<jstring>& pattern) {
   std::string pattern_string = ConvertJavaStringToUTF8(env, pattern);
   ContentSettingsPattern original_pattern =
       ContentSettingsPattern::FromString(pattern_string);
@@ -1130,12 +1337,15 @@ JNI_WebsitePreferenceBridge_ToDomainWildcardPattern(
 }
 
 static ScopedJavaLocalRef<jstring>
-JNI_WebsitePreferenceBridge_ToHostOnlyPattern(
-    JNIEnv* env,
-    const JavaParamRef<jstring>& pattern) {
+JNI_WebsitePreferenceBridge_ToHostOnlyPattern(JNIEnv* env,
+                                              const JavaRef<jstring>& pattern) {
   std::string pattern_string = ConvertJavaStringToUTF8(env, pattern);
   ContentSettingsPattern host_only_pattern =
       ContentSettingsPattern::ToHostOnlyPattern(
           ContentSettingsPattern::FromString(pattern_string));
   return ConvertUTF8ToJavaString(env, host_only_pattern.ToString());
 }
+
+DEFINE_JNI(GeolocationSetting)
+DEFINE_JNI(PermissionSetting)
+DEFINE_JNI(WebsitePreferenceBridge)

@@ -4,13 +4,17 @@
 
 package org.chromium.components.browser_ui.accessibility;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
+import org.chromium.components.dom_distiller.core.DistilledPagePrefs;
 import org.chromium.content_public.browser.BrowserContextHandle;
 
 /**
  * An interface implemented by the embedder that allows the Accessibility Settings UI to access
  * embedder-specific logic.
  */
+@NullMarked
 public interface AccessibilitySettingsDelegate {
     /** An interface to control a single integer preference. */
     interface IntegerPreferenceDelegate {
@@ -64,8 +68,42 @@ public interface AccessibilitySettingsDelegate {
 
     /**
      * @return the BooleanPreferenceDelegate instance that should be used for reading and setting
+     *     the touchpad overscroll history navigation value for accessibility settings. Return null
+     *     to omit the preference.
+     */
+    BooleanPreferenceDelegate getTouchpadOverscrollHistoryNavigationAccessibilityDelegate();
+
+    /**
+     * @return the BooleanPreferenceDelegate instance that should be used for reading and setting
      *     the reader (simplified view) value for accessibility settings. Return null to omit the
      *     preference.
      */
     BooleanPreferenceDelegate getReaderAccessibilityDelegate();
+
+    /** Returns an instance of DistilledPagePrefs. */
+    DistilledPagePrefs getDistilledPagePrefs();
+
+    /**
+     * Returns whether the material slider should be used for the page zoom preference.
+     *
+     * @return True if the slider should be used, false otherwise.
+     */
+    boolean shouldUseSlider();
+
+    /**
+     * Returns whether caret browsing is enabled.
+     *
+     * @return boolean - Whether caret browsing is enabled.
+     */
+    boolean isCaretBrowsingEnabled();
+
+    /** Sets whether caret browsing is enabled. */
+    void setCaretBrowsingEnabled(boolean enabled);
+
+    /**
+     * @return String preference key for caret browsing.
+     */
+    default @Nullable String getCaretBrowsingPreferenceKey() {
+        return null;
+    }
 }

@@ -6,8 +6,9 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/optimization_guide/core/model_execution/on_device_capability.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_validator.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_model_executor.h"
 #include "components/prefs/pref_service.h"
 #include "components/version_info/version_info.h"
 
@@ -55,8 +56,7 @@ OnDeviceModelAccessController::OnDeviceModelAccessController(
     pref_service_->SetString(kOnDeviceModelChromeVersion,
                              version_info::GetVersionNumber());
     if (features::ShouldOnDeviceModelClearValidationOnVersionChange()) {
-      pref_service_->SetDict(kOnDeviceModelValidationResult,
-                             base::Value::Dict());
+      pref_service_->SetDict(kOnDeviceModelValidationResult, base::DictValue());
     } else {
       // If the full validation result is not cleared, at least reset the
       // attempt count to allow validation to continue.
@@ -99,8 +99,10 @@ void OnDeviceModelAccessController::OnResponseCompleted() {
   next_attempt_time_after_crash_ = base::Time::Now();
 }
 
-void OnDeviceModelAccessController::OnDisconnectedFromRemote() {
+base::Time OnDeviceModelAccessController::OnDisconnectedFromRemote() {
   int crash_count = pref_service_->GetInteger(kOnDeviceModelCrashCount) + 1;
+  base::UmaHistogramCounts100(
+      "OptimizationGuide.ModelExecution.OnDeviceModelCrashCount", crash_count);
   pref_service_->SetInteger(kOnDeviceModelCrashCount, crash_count);
   // If the model will be disabled because of crash count, use exponential
   // backoff to re-enable.
@@ -108,13 +110,31 @@ void OnDeviceModelAccessController::OnDisconnectedFromRemote() {
       crash_count, features::GetOnDeviceModelCrashCountBeforeDisable(),
       features::GetOnDeviceModelCrashBackoffBaseTime(),
       features::GetOnDeviceModelMaxCrashBackoffTime());
+  return next_attempt_time_after_crash_;
 }
 
 void OnDeviceModelAccessController::OnGpuBlocked() {
   is_gpu_blocked_ = true;
 }
 
-bool OnDeviceModelAccessController::ShouldValidateModel(
+bool OnDeviceModelAccessController::HasRemainingValidationAttempts(
+    std::string_view version) const {
+  if (!features::IsOnDeviceModelValidationEnabled()) {
+    return false;
+  }
+  ValidationState state = GetValidationState();
+  if (state.component_version != version) {
+    state = ValidationState();
+  }
+  // Don't need to re-validate on success.
+  if (state.result == OnDeviceModelValidationResult::kSuccess) {
+    return false;
+  }
+  return state.attempt_count <
+         features::GetOnDeviceModelValidationAttemptCount();
+}
+
+bool OnDeviceModelAccessController::MaybeBeginValidation(
     std::string_view component_version) {
   if (!features::IsOnDeviceModelValidationEnabled()) {
     return false;
@@ -168,7 +188,7 @@ OnDeviceModelAccessController::GetValidationState() const {
 
 void OnDeviceModelAccessController::SetValidationState(
     const ValidationState& state) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set(kResultKey, static_cast<int>(state.result));
   dict.Set(kAttemptCountKey, state.attempt_count);
   dict.Set(kComponentVersionKey, state.component_version);

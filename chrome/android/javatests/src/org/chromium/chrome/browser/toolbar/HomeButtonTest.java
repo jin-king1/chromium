@@ -25,10 +25,12 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
 import org.chromium.chrome.R;
@@ -36,6 +38,8 @@ import org.chromium.chrome.browser.homepage.HomepageManager;
 import org.chromium.chrome.browser.homepage.HomepageTestRule;
 import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
+import org.chromium.chrome.browser.tabmodel.IncognitoStateProvider;
+import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.home_button.HomeButton;
 import org.chromium.chrome.browser.toolbar.home_button.HomeButtonCoordinator;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -58,9 +62,12 @@ public class HomeButtonTest {
 
     private static Activity sActivity;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public HomepageTestRule mHomepageTestRule = new HomepageTestRule();
 
     @Mock private SettingsNavigation mSettingsNavigation;
+    @Mock private ThemeColorProvider mThemeColorProvider;
+    @Mock private IncognitoStateProvider mIncognitoStateProvider;
 
     private HomeButtonCoordinator mHomeButtonCoordinator;
     private int mIdHomeButton;
@@ -72,7 +79,6 @@ public class HomeButtonTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
 
         // Set the default test status for homepage button tests.
         // By default, the homepage is <b>enabled</b> and with customized URL.
@@ -89,16 +95,19 @@ public class HomeButtonTest {
                     // accessibility to prevent failures from AccessibilityChecks. Do not do this
                     // for views outside tests.
                     homeButton.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-                    ObservableSupplierImpl<Boolean> homepagePolicySupplier =
-                            new ObservableSupplierImpl<>();
-                    homepagePolicySupplier.set(false);
+                    NonNullObservableSupplier<Boolean> homepagePolicySupplier =
+                            ObservableSuppliers.alwaysFalse();
                     homeButton.setId(mIdHomeButton);
                     mHomeButtonCoordinator =
                             new HomeButtonCoordinator(
                                     sActivity,
                                     homeButton,
+                                    (metaState, buttonState) -> {},
                                     HomepageManager.getInstance()::onMenuClick,
-                                    () -> false);
+                                    () -> false,
+                                    mThemeColorProvider,
+                                    mIncognitoStateProvider,
+                                    /* actionRegistry= */ null);
                     SettingsNavigationFactory.setInstanceForTesting(mSettingsNavigation);
 
                     content.addView(homeButton);

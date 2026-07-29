@@ -18,7 +18,6 @@
 
 using testing::_;
 using testing::Exactly;
-using testing::Invoke;
 using testing::InvokeWithoutArgs;
 
 namespace video_capture {
@@ -42,14 +41,13 @@ TEST_F(VideoCaptureServiceTest, FakeDeviceFactoryEnumeratesThreeDevices) {
   size_t num_devices_enumerated = 0;
   EXPECT_CALL(device_info_receiver_, Run)
       .Times(Exactly(1))
-      .WillOnce(
-          Invoke([&wait_loop, &num_devices_enumerated](
-                     GetSourceInfosResult result,
-                     const std::vector<media::VideoCaptureDeviceInfo>& infos) {
-            EXPECT_EQ(result, GetSourceInfosResult::kSuccess);
-            num_devices_enumerated = infos.size();
-            wait_loop.Quit();
-          }));
+      .WillOnce([&wait_loop, &num_devices_enumerated](
+                    GetSourceInfosResult result,
+                    const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+        EXPECT_EQ(result, GetSourceInfosResult::kSuccess);
+        num_devices_enumerated = infos.size();
+        wait_loop.Quit();
+      });
 
   video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
   wait_loop.Run();
@@ -59,27 +57,26 @@ TEST_F(VideoCaptureServiceTest, FakeDeviceFactoryEnumeratesThreeDevices) {
 // Tests that an added virtual device will be returned in the callback
 // when calling GetSourceInfos.
 TEST_F(VideoCaptureServiceTest, VirtualDeviceEnumeratedAfterAdd) {
-  const std::string virtual_device_id = "/virtual/device";
+  const std::string virtual_device_id = "virtual-chromium-device";
   auto device_context = AddSharedMemoryVirtualDevice(virtual_device_id);
 
   base::RunLoop wait_loop;
   EXPECT_CALL(device_info_receiver_, Run)
       .Times(Exactly(1))
-      .WillOnce(
-          Invoke([&wait_loop, virtual_device_id](
-                     GetSourceInfosResult result,
-                     const std::vector<media::VideoCaptureDeviceInfo>& infos) {
-            EXPECT_EQ(result, GetSourceInfosResult::kSuccess);
-            bool virtual_device_enumerated = false;
-            for (const auto& info : infos) {
-              if (info.descriptor.device_id == virtual_device_id) {
-                virtual_device_enumerated = true;
-                break;
-              }
-            }
-            EXPECT_TRUE(virtual_device_enumerated);
-            wait_loop.Quit();
-          }));
+      .WillOnce([&wait_loop, virtual_device_id](
+                    GetSourceInfosResult result,
+                    const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+        EXPECT_EQ(result, GetSourceInfosResult::kSuccess);
+        bool virtual_device_enumerated = false;
+        for (const auto& info : infos) {
+          if (info.descriptor.device_id == virtual_device_id) {
+            virtual_device_enumerated = true;
+            break;
+          }
+        }
+        EXPECT_TRUE(virtual_device_enumerated);
+        wait_loop.Quit();
+      });
   video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
   wait_loop.Run();
 }
@@ -97,33 +94,38 @@ TEST_F(VideoCaptureServiceTest,
   std::unique_ptr<SharedMemoryVirtualDeviceContext> device_context_1;
   {
     base::RunLoop run_loop;
-    EXPECT_CALL(mock_observer, OnDevicesChanged())
-        .WillOnce(Invoke([&run_loop]() { run_loop.Quit(); }));
-    device_context_1 = AddSharedMemoryVirtualDevice("TestDevice1");
+    EXPECT_CALL(mock_observer, OnDevicesChanged()).WillOnce([&run_loop]() {
+      run_loop.Quit();
+    });
+    device_context_1 =
+        AddSharedMemoryVirtualDevice("virtual-chromium-TestDevice1");
     run_loop.Run();
   }
 
   mojo::PendingRemote<mojom::TextureVirtualDevice> device_context_2;
   {
     base::RunLoop run_loop;
-    EXPECT_CALL(mock_observer, OnDevicesChanged())
-        .WillOnce(Invoke([&run_loop]() { run_loop.Quit(); }));
-    device_context_2 = AddTextureVirtualDevice("TestDevice2");
+    EXPECT_CALL(mock_observer, OnDevicesChanged()).WillOnce([&run_loop]() {
+      run_loop.Quit();
+    });
+    device_context_2 = AddTextureVirtualDevice("virtual-chromium-TestDevice2");
     run_loop.Run();
   }
 
   {
     base::RunLoop run_loop;
-    EXPECT_CALL(mock_observer, OnDevicesChanged())
-        .WillOnce(Invoke([&run_loop]() { run_loop.Quit(); }));
+    EXPECT_CALL(mock_observer, OnDevicesChanged()).WillOnce([&run_loop]() {
+      run_loop.Quit();
+    });
     device_context_1.reset();
     run_loop.Run();
   }
 
   {
     base::RunLoop run_loop;
-    EXPECT_CALL(mock_observer, OnDevicesChanged())
-        .WillOnce(Invoke([&run_loop]() { run_loop.Quit(); }));
+    EXPECT_CALL(mock_observer, OnDevicesChanged()).WillOnce([&run_loop]() {
+      run_loop.Quit();
+    });
     device_context_2.reset();
     run_loop.Run();
   }
@@ -144,7 +146,7 @@ TEST_F(VideoCaptureServiceTest,
   // Disconnect observer
   observer_receiver.reset();
 
-  auto device_context = AddTextureVirtualDevice("TestDevice");
+  auto device_context = AddTextureVirtualDevice("virtual-chromium-TestDevice");
   device_context.reset();
 }
 
@@ -168,7 +170,7 @@ TEST_F(VideoCaptureServiceTest,
 
   EXPECT_CALL(create_push_subscription_remote_callback, Run)
       .Times(1)
-      .WillOnce(Invoke(
+      .WillOnce(
           [&wait_loop](mojom::CreatePushSubscriptionResultCodePtr result_code,
                        const media::VideoCaptureParams& param) {
             ASSERT_TRUE(result_code->is_error_code());
@@ -176,7 +178,7 @@ TEST_F(VideoCaptureServiceTest,
                 result_code->get_error_code(),
                 media::VideoCaptureError::kVideoCaptureSystemDeviceIdNotFound);
             wait_loop.Quit();
-          }));
+          });
   video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
 
   video_source_provider_->GetVideoSource(
@@ -195,7 +197,7 @@ TEST_F(VideoCaptureServiceTest,
 // subscription for an added virtual device.
 TEST_F(VideoCaptureServiceTest, CreateDeviceSuccessForVirtualDevice) {
   base::RunLoop wait_loop;
-  const std::string virtual_device_id = "/virtual/device";
+  const std::string virtual_device_id = "virtual-chromium-device";
   auto device_context = AddSharedMemoryVirtualDevice(virtual_device_id);
 
   mojo::PendingRemote<video_capture::mojom::VideoFrameHandler> subscriber;
@@ -210,13 +212,12 @@ TEST_F(VideoCaptureServiceTest, CreateDeviceSuccessForVirtualDevice) {
       create_push_subscription_remote_callback;
 
   EXPECT_CALL(create_push_subscription_remote_callback, Run)
-      .Times(1)
-      .WillOnce(Invoke(
+      .WillOnce(
           [&wait_loop](mojom::CreatePushSubscriptionResultCodePtr result_code,
                        const media::VideoCaptureParams& param) {
             EXPECT_TRUE(result_code->is_success_code());
             wait_loop.Quit();
-          }));
+          });
 
   video_source_provider_->GetVideoSource(
       virtual_device_id, video_source_remote.BindNewPipeAndPassReceiver());
@@ -228,6 +229,247 @@ TEST_F(VideoCaptureServiceTest, CreateDeviceSuccessForVirtualDevice) {
       create_push_subscription_remote_callback.Get());
 
   wait_loop.Run();
+}
+
+// Tests that a virtual device cannot be added with the same ID as an active
+// physical device.
+TEST_F(VideoCaptureServiceTest,
+       CannotAddVirtualDeviceWhilePhysicalDeviceActive) {
+  // Retrieve the active physical devices.
+  base::RunLoop get_infos_loop;
+  std::vector<media::VideoCaptureDeviceInfo> physical_devices;
+  EXPECT_CALL(device_info_receiver_, Run)
+      .WillOnce([&get_infos_loop, &physical_devices](
+                    GetSourceInfosResult result,
+                    const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+        physical_devices = infos;
+        get_infos_loop.Quit();
+      });
+  video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
+  get_infos_loop.Run();
+  const std::string physical_device_id =
+      physical_devices[0].descriptor.device_id;
+
+  // Start the physical device by creating a subscription.
+  mojo::Remote<mojom::VideoSource> video_source_remote;
+  video_source_provider_->GetVideoSource(
+      physical_device_id, video_source_remote.BindNewPipeAndPassReceiver());
+
+  mojo::PendingRemote<video_capture::mojom::VideoFrameHandler> subscriber;
+  MockVideoFrameHandler mock_video_frame_handler(
+      subscriber.InitWithNewPipeAndPassReceiver());
+  mojo::Remote<video_capture::mojom::PushVideoStreamSubscription> subscription;
+
+  base::RunLoop start_device_loop;
+  base::MockCallback<mojom::VideoSource::CreatePushSubscriptionCallback>
+      create_push_subscription_callback;
+  EXPECT_CALL(create_push_subscription_callback, Run)
+      .WillOnce([&start_device_loop](
+                    mojom::CreatePushSubscriptionResultCodePtr result_code,
+                    const media::VideoCaptureParams& param) {
+        start_device_loop.Quit();
+      });
+
+  video_source_remote->CreatePushSubscription(
+      std::move(subscriber), requestable_settings_,
+      /*force_reopen_with_new_settings=*/false,
+      subscription.BindNewPipeAndPassReceiver(),
+      create_push_subscription_callback.Get());
+  start_device_loop.Run();
+
+  // Attempt to add a virtual device with the same ID.
+  auto virtual_device_context =
+      AddSharedMemoryVirtualDevice(physical_device_id);
+
+  // Verify that the virtual device is rejected and its pipe is disconnected.
+  base::RunLoop disconnect_loop;
+  virtual_device_context->device.set_disconnect_handler(
+      disconnect_loop.QuitClosure());
+  disconnect_loop.Run();
+
+  EXPECT_FALSE(virtual_device_context->device.is_connected());
+
+  // Verify that GetSourceInfos() returns ONLY 1 entry for the device ID
+  // (registration failed).
+  base::RunLoop verify_infos_loop;
+  EXPECT_CALL(device_info_receiver_, Run)
+      .WillOnce([&verify_infos_loop, physical_device_id](
+                    GetSourceInfosResult result,
+                    const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+        size_t occurrences = 0;
+        for (const auto& info : infos) {
+          if (info.descriptor.device_id == physical_device_id) {
+            occurrences++;
+          }
+        }
+        EXPECT_EQ(1u, occurrences);
+        verify_infos_loop.Quit();
+      });
+  video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
+  verify_infos_loop.Run();
+
+  // Cleanup
+  subscription.reset();
+  video_source_remote.reset();
+  base::RunLoop cleanup_loop;
+  video_source_provider_->GetSourceInfos(base::BindOnce(
+      [](base::RunLoop* run_loop, GetSourceInfosResult result,
+         const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+        run_loop->Quit();
+      },
+      &cleanup_loop));
+  cleanup_loop.Run();
+}
+
+// Tests that a virtual device cannot be added with the same ID as an idle
+// physical device.
+TEST_F(VideoCaptureServiceTest, CannotAddVirtualDeviceWhilePhysicalDeviceIdle) {
+  // Retrieve physical device IDs.
+  base::RunLoop get_infos_loop;
+  std::vector<media::VideoCaptureDeviceInfo> physical_devices;
+  EXPECT_CALL(device_info_receiver_, Run)
+      .WillOnce([&get_infos_loop, &physical_devices](
+                    GetSourceInfosResult result,
+                    const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+        physical_devices = infos;
+        get_infos_loop.Quit();
+      });
+  video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
+  get_infos_loop.Run();
+  const std::string physical_device_id =
+      physical_devices[0].descriptor.device_id;
+
+  // Add a virtual device with the same ID.
+  auto virtual_device_context =
+      AddSharedMemoryVirtualDevice(physical_device_id);
+
+  // Verify that the virtual device is rejected and its pipe is disconnected.
+  base::RunLoop disconnect_loop;
+  virtual_device_context->device.set_disconnect_handler(
+      disconnect_loop.QuitClosure());
+  disconnect_loop.Run();
+
+  EXPECT_FALSE(virtual_device_context->device.is_connected());
+
+  // Verify that GetSourceInfos() returns ONLY 1 entry for the device ID
+  // (registration failed).
+  base::RunLoop verify_infos_loop;
+  EXPECT_CALL(device_info_receiver_, Run)
+      .WillOnce([&verify_infos_loop, physical_device_id](
+                    GetSourceInfosResult result,
+                    const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+        size_t occurrences = 0;
+        for (const auto& info : infos) {
+          if (info.descriptor.device_id == physical_device_id) {
+            occurrences++;
+          }
+        }
+        EXPECT_EQ(1u, occurrences);
+        verify_infos_loop.Quit();
+      });
+  video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
+  verify_infos_loop.Run();
+}
+
+// Tests that a texture virtual device cannot be added with the same ID as an
+// idle physical device.
+TEST_F(VideoCaptureServiceTest,
+       CannotAddTextureVirtualDeviceWhilePhysicalDeviceIdle) {
+  // Retrieve physical device IDs.
+  base::RunLoop get_infos_loop;
+  std::vector<media::VideoCaptureDeviceInfo> physical_devices;
+  EXPECT_CALL(device_info_receiver_, Run)
+      .WillOnce([&get_infos_loop, &physical_devices](
+                    GetSourceInfosResult result,
+                    const std::vector<media::VideoCaptureDeviceInfo>& infos) {
+        physical_devices = infos;
+        get_infos_loop.Quit();
+      });
+  video_source_provider_->GetSourceInfos(device_info_receiver_.Get());
+  get_infos_loop.Run();
+
+  ASSERT_FALSE(physical_devices.empty());
+  const std::string physical_device_id =
+      physical_devices[0].descriptor.device_id;
+
+  // Add a texture virtual device with the same ID.
+  auto texture_device = AddTextureVirtualDevice(physical_device_id);
+
+  // Verify that the texture virtual device is rejected and its pipe is
+  // disconnected.
+  mojo::Remote<mojom::TextureVirtualDevice> remote_device(
+      std::move(texture_device));
+  base::RunLoop disconnect_loop;
+  remote_device.set_disconnect_handler(disconnect_loop.QuitClosure());
+  disconnect_loop.Run();
+
+  EXPECT_FALSE(remote_device.is_connected());
+}
+
+TEST_F(VideoCaptureServiceTest, VirtualDeviceCanBeReopenedAfterClosing) {
+  const std::string virtual_device_id = "virtual-chromium-device";
+  auto device_context = AddSharedMemoryVirtualDevice(virtual_device_id);
+
+  mojo::Remote<mojom::VideoSource> video_source_remote;
+  video_source_provider_->GetVideoSource(
+      virtual_device_id, video_source_remote.BindNewPipeAndPassReceiver());
+
+  // First subscription
+  {
+    base::RunLoop wait_loop;
+    mojo::PendingRemote<video_capture::mojom::VideoFrameHandler> subscriber;
+    auto dummy = std::make_unique<video_capture::MockVideoFrameHandler>(
+        subscriber.InitWithNewPipeAndPassReceiver());
+    mojo::Remote<video_capture::mojom::PushVideoStreamSubscription>
+        subscription;
+
+    base::MockCallback<mojom::VideoSource::CreatePushSubscriptionCallback>
+        callback;
+    EXPECT_CALL(callback, Run)
+        .WillOnce(
+            [&wait_loop](mojom::CreatePushSubscriptionResultCodePtr result_code,
+                         const media::VideoCaptureParams& param) {
+              EXPECT_TRUE(result_code->is_success_code());
+              wait_loop.Quit();
+            });
+
+    video_source_remote->CreatePushSubscription(
+        std::move(subscriber), requestable_settings_,
+        false /*force_reopen_with_new_settings*/,
+        subscription.BindNewPipeAndPassReceiver(), callback.Get());
+    wait_loop.Run();
+
+    // Close the first subscription
+    base::RunLoop close_loop;
+    subscription->Close(close_loop.QuitClosure());
+    close_loop.Run();
+  }
+
+  // Second subscription on the same video source
+  {
+    base::RunLoop wait_loop;
+    mojo::PendingRemote<video_capture::mojom::VideoFrameHandler> subscriber;
+    auto dummy = std::make_unique<video_capture::MockVideoFrameHandler>(
+        subscriber.InitWithNewPipeAndPassReceiver());
+    mojo::Remote<video_capture::mojom::PushVideoStreamSubscription>
+        subscription;
+
+    base::MockCallback<mojom::VideoSource::CreatePushSubscriptionCallback>
+        callback;
+    EXPECT_CALL(callback, Run)
+        .WillOnce(
+            [&wait_loop](mojom::CreatePushSubscriptionResultCodePtr result_code,
+                         const media::VideoCaptureParams& param) {
+              EXPECT_TRUE(result_code->is_success_code());
+              wait_loop.Quit();
+            });
+
+    video_source_remote->CreatePushSubscription(
+        std::move(subscriber), requestable_settings_,
+        false /*force_reopen_with_new_settings*/,
+        subscription.BindNewPipeAndPassReceiver(), callback.Get());
+    wait_loop.Run();
+  }
 }
 
 }  // namespace video_capture

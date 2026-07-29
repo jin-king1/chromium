@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+
 #ifndef MEDIA_GPU_V4L2_MT21_MT21_UTIL_H_
 #define MEDIA_GPU_V4L2_MT21_MT21_UTIL_H_
 
@@ -21,6 +22,8 @@
 // portable. We only used Neon because Highway's OrderedTruncate2To(), which we
 // need for implementing NarrowToU8, was not released at the time of writing.
 
+#include "base/compiler_specific.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "build/build_config.h"
 
 #if !defined(ARCH_CPU_ARM_FAMILY)
@@ -370,7 +373,7 @@ void DecompressSubblock(MT21BitstreamReader& reader,
   if (k == 8) {
     // This is a solid color block, set everything equal to the top right corner
     // value.
-    memset(dest, dest[width - 1], width * kMT21SubblockHeight);
+    UNSAFE_TODO(memset(dest, dest[width - 1], width * kMT21SubblockHeight));
     return;
   }
 
@@ -506,7 +509,7 @@ __attribute__((always_inline)) uint8x16_t NarrowToU8(uint32x4_t& vec1,
 // any documentation for how many cycles that is on a Cortex A72 or A53.
 __attribute__((always_inline)) uint32_t LoadUnalignedDword(uint32_t* ptr) {
   uint32_t ret;
-  memcpy(&ret, ptr, sizeof(uint32_t));
+  UNSAFE_TODO(memcpy(&ret, ptr, sizeof(uint32_t)));
   return ret;
 }
 
@@ -590,7 +593,7 @@ __attribute__((always_inline)) uint8x16_t VectorReadGolombRiceSymbol(
             vshlq_u32(
                 vshlq_u32(accumulator[i], vreinterpretq_s32_u32(unary_len[i])),
                 vsubq_s32(vreinterpretq_s32_u32(binary_len[i]),
-                          dword_literal_32)));
+                          vreinterpretq_s32_u32(dword_literal_32))));
       },
       4)
 
@@ -747,7 +750,7 @@ __attribute__((always_inline)) uint8x16_t VectorFirstColPrediction(
   const uint8x16_t min_pred = vminq_u8(up, right);
   const uint8x16_t max_pred = vmaxq_u8(up, right);
   const uint8x16_t right_grad = vreinterpretq_u8_s8(vaddq_s8(
-      right, vsubq_s8(vreinterpretq_s8_u8(up), vreinterpretq_s8_u8(up_right))));
+      vreinterpretq_s8_u8(right), vsubq_s8(vreinterpretq_s8_u8(up), vreinterpretq_s8_u8(up_right))));
   const uint8x16_t up_right_above_max = vcgtq_u8(up_right, max_pred);
   const uint8x16_t up_right_below_min = vcltq_u8(up_right, min_pred);
   uint8x16_t pred = vbslq_u8(up_right_above_max, max_pred, min_pred);
@@ -806,8 +809,9 @@ void SubblockGather(const std::vector<T>& subblock_list,
     aligned_scratch_memory += kMT21SubblockSize;
     for (size_t j = 0; j < subblock_list[i + start_idx].len;
          j += kMT21SubblockWidth) {
-      memcpy(compressed_ptr[i] + 3 * kMT21SubblockWidth - j,
-             subblock_list[i + start_idx].src + j, kMT21SubblockWidth);
+      UNSAFE_TODO(memcpy(compressed_ptr[i] + 3 * kMT21SubblockWidth - j,
+                         subblock_list[i + start_idx].src + j,
+                         kMT21SubblockWidth));
     }
     compressed_ptr[i] += kMT21SubblockSize - sizeof(uint32_t);
   }

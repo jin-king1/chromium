@@ -5,33 +5,34 @@
 #ifndef CHROME_BROWSER_UI_LENS_LENS_OVERLAY_QUERY_CONTROLLER_H_
 #define CHROME_BROWSER_UI_LENS_LENS_OVERLAY_QUERY_CONTROLLER_H_
 
+#include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/time/time.h"
 #include "chrome/browser/lens/core/mojom/lens.mojom.h"
 #include "chrome/browser/lens/core/mojom/overlay_object.mojom.h"
 #include "chrome/browser/lens/core/mojom/text.mojom.h"
 #include "chrome/browser/ui/lens/lens_overlay_gen204_controller.h"
-#include "chrome/browser/ui/lens/lens_overlay_request_id_generator.h"
-#include "chrome/browser/ui/lens/lens_overlay_url_builder.h"
-#include "chrome/browser/ui/lens/ref_counted_lens_overlay_client_logs.h"
 #include "components/endpoint_fetcher/endpoint_fetcher.h"
 #include "components/lens/lens_overlay_invocation_source.h"
 #include "components/lens/lens_overlay_mime_type.h"
+#include "components/lens/lens_overlay_request_id_generator.h"
+#include "components/lens/lens_upload_chunker.h"
 #include "components/lens/proto/server/lens_overlay_response.pb.h"
+#include "components/lens/ref_counted_lens_overlay_client_logs.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "third_party/lens_server_proto/lens_overlay_client_context.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_cluster_info.pb.h"
-#include "third_party/lens_server_proto/lens_overlay_image_crop.pb.h"
-#include "third_party/lens_server_proto/lens_overlay_image_data.pb.h"
-#include "third_party/lens_server_proto/lens_overlay_interaction_request_metadata.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_selection_type.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_server.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_service_deps.pb.h"
+#include "third_party/lens_server_proto/lens_overlay_visual_search_interaction_data.pb.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "url/gurl.h"
 
@@ -46,6 +47,11 @@ class VariationsClient;
 }  // namespace variations
 
 namespace lens {
+
+class ImageCrop;
+class ImageData;
+class LensComposeboxController;
+struct ImageCropAndBitmap;
 
 // Data struct representing content data to be sent to the Lens server.
 struct PageContent {
@@ -70,12 +76,9 @@ using LensOverlayUrlResponseCallback =
 // Callback type alias for the lens overlay interaction response.
 using LensOverlayInteractionResponseCallback =
     base::RepeatingCallback<void(lens::mojom::TextPtr)>;
-// Callback type alias for the lens overlay suggest inputs response.
-using LensOverlaySuggestInputsCallback =
-    base::RepeatingCallback<void(lens::proto::LensOverlaySuggestInputs)>;
 // Callback type alias for the thumbnail image creation.
 using LensOverlayThumbnailCreatedCallback =
-    base::RepeatingCallback<void(const std::string&)>;
+    base::RepeatingCallback<void(const std::string&, const SkBitmap&)>;
 // Callback type alias for the OAuth headers created.
 using OAuthHeadersCreatedCallback =
     base::OnceCallback<void(std::vector<std::string>)>;
@@ -83,13 +86,12 @@ using UploadProgressCallback =
     base::RepeatingCallback<void(uint64_t position, uint64_t total)>;
 
 // Manages queries on behalf of a Lens overlay.
-class LensOverlayQueryController {
+class LensOverlayQueryController : public lens::LensUploadChunker::Delegate {
  public:
   LensOverlayQueryController(
       LensOverlayFullImageResponseCallback full_image_callback,
       LensOverlayUrlResponseCallback url_callback,
       LensOverlayInteractionResponseCallback interaction_callback,
-      LensOverlaySuggestInputsCallback suggest_inputs_callback,
       LensOverlayThumbnailCreatedCallback thumbnail_created_callback,
       UploadProgressCallback page_content_upload_progress_callback,
       variations::VariationsClient* variations_client,
@@ -98,7 +100,7 @@ class LensOverlayQueryController {
       lens::LensOverlayInvocationSource invocation_source,
       bool use_dark_mode,
       lens::LensOverlayGen204Controller* gen204_controller);
-  virtual ~LensOverlayQueryController();
+  ~LensOverlayQueryController() override;
 
   // Starts a query flow by sending a request to Lens using the screenshot,
   // returning the response to the full image callback. Should be called
@@ -106,11 +108,13 @@ class LensOverlayQueryController {
   // testing.
   virtual void StartQueryFlow(
       const SkBitmap& screenshot,
+      const SkBitmap& initial_image,
       GURL page_url,
       std::optional<std::string> page_title,
       std::vector<lens::mojom::CenterRotatedBoxPtr> significant_region_boxes,
       base::span<const PageContent> underlying_page_contents,
       lens::MimeType primary_content_type,
+      std::optional<uint32_t> pdf_current_page,
       float ui_scale_factor,
       base::TimeTicks invocation_time);
 
@@ -144,6 +148,8 @@ class LensOverlayQueryController {
           underlying_page_contents,
       std::optional<lens::MimeType> primary_content_type,
       std::optional<GURL> new_page_url,
+      std::optional<std::string> new_page_title,
+      std::optional<uint32_t> pdf_current_page,
       const SkBitmap& screenshot);
 
   // Sends a request to the server with a portion of the page content.
@@ -157,6 +163,7 @@ class LensOverlayQueryController {
   // the region out of the screenshot. This should be used to provide a higher
   // definition image than image cropping would provide.
   virtual void SendRegionSearch(
+      base::Time query_start_time,
       lens::mojom::CenterRotatedBoxPtr region,
       lens::LensOverlaySelectionType lens_selection_type,
       std::map<std::string, std::string> additional_search_query_params,
@@ -164,6 +171,7 @@ class LensOverlayQueryController {
 
   // Sends a text-only interaction. Expected to be called multiple times.
   virtual void SendTextOnlyQuery(
+      base::Time query_start_time,
       const std::string& query_text,
       lens::LensOverlaySelectionType lens_selection_type,
       std::map<std::string, std::string> additional_search_query_params);
@@ -171,12 +179,14 @@ class LensOverlayQueryController {
   // Sends a text query interaction contextualized to the current page. Expected
   // to be called multiple times.
   virtual void SendContextualTextQuery(
+      base::Time query_start_time,
       const std::string& query_text,
       lens::LensOverlaySelectionType lens_selection_type,
       std::map<std::string, std::string> additional_search_query_params);
 
   // Sends a multimodal interaction. Expected to be called multiple times.
   virtual void SendMultimodalRequest(
+      base::Time query_start_time,
       lens::mojom::CenterRotatedBoxPtr region,
       const std::string& query_text,
       lens::LensOverlaySelectionType lens_selection_type,
@@ -191,10 +201,27 @@ class LensOverlayQueryController {
       lens::mojom::SemanticEvent event);
 
   bool IsPageContentUploadInProgress() const {
-    return page_content_endpoint_fetcher_.get() != nullptr;
+    return page_content_request_in_progress_ ||
+           page_content_endpoint_fetcher_.get() != nullptr ||
+           upload_chunker_.get() != nullptr;
   }
 
+  // Returns whether the query controller is off.
+  virtual bool IsOff();
+
+  // Returns the suggest inputs for the current query flow.
+  virtual const lens::proto::LensOverlaySuggestInputs& GetLensSuggestInputs()
+      const;
+
+  // Sets a callback that will be called when the suggest inputs are ready.
+  virtual void SetSuggestInputsReadyCallback(base::RepeatingClosure callback);
+
   uint64_t gen204_id() const { return gen204_id_; }
+
+  // Returns the search session id for the current query flow.
+  std::string search_session_id() const {
+    return cluster_info_->search_session_id();
+  }
 
   // Testing method to reset the cluster info state.
   void ResetRequestClusterInfoStateForTesting();
@@ -204,21 +231,50 @@ class LensOverlayQueryController {
   // request id generator or analytics id.
   std::string GetVsridForNewTab();
 
+  // Returns the latest visual search interaction data sent to the server.
+  // This does not take into account whether the selection was cleared by the
+  // user.
+  std::optional<lens::LensOverlayVisualSearchInteractionData>
+  GetVisualSearchInteractionData() {
+    return visual_search_interaction_data_;
+  }
+
+  // After this is called, for the remainder of the current session, requests do
+  // not need to check prefs for whether the user has granted permissions
+  // permanently.
+  void GrantPermissionForSession();
+
+  // Returns true if either GrantPermissionForSession() has been called or the
+  // user has granted permissions permanently.
+  bool HasPermissionForSession();
+
   base::TimeTicks partial_page_contents_request_start_time_for_testing() const {
     return partial_page_contents_request_start_time_;
   }
 
+  lens::LensOverlayRequestIdGenerator* request_id_generator_for_testing() {
+    return request_id_generator_.get();
+  }
+
+  size_t total_chunk_progress_for_testing() { return total_chunk_progress_; }
+
+  size_t total_chunk_upload_size_for_testing() {
+    return total_chunk_upload_size_;
+  }
+
+  friend class lens::LensComposeboxController;
+
  protected:
   // Returns the EndpointFetcher to use with the given params. Protected to
   // allow overriding in tests to mock server responses.
-  virtual std::unique_ptr<EndpointFetcher> CreateEndpointFetcher(
-      lens::LensOverlayServerRequest* request,
-      const GURL& fetch_url,
-      const HttpMethod& http_method,
-      const base::TimeDelta& timeout,
-      const std::vector<std::string>& request_headers,
-      const std::vector<std::string>& cors_exempt_headers,
-      const UploadProgressCallback upload_progress_callback);
+  virtual std::unique_ptr<endpoint_fetcher::EndpointFetcher>
+  CreateEndpointFetcher(std::string request_string,
+                        const GURL& fetch_url,
+                        endpoint_fetcher::HttpMethod http_method,
+                        base::TimeDelta timeout,
+                        const std::vector<std::string>& request_headers,
+                        const std::vector<std::string>& cors_exempt_headers,
+                        UploadProgressCallback upload_progress_callback);
 
   // Sends a latency Gen204 ping if enabled, calculating the latency duration
   // from the start time ticks and base::TimeTicks::Now(). The encoded request
@@ -247,6 +303,18 @@ class LensOverlayQueryController {
       lens::mojom::SemanticEvent event,
       std::optional<lens::LensOverlayRequestId> request_id);
 
+  // Updates the request id based on the given update mode and returns the
+  // request id proto. Also updates the suggest signals with the new request id
+  // and runs the suggest inputs callback.
+  std::unique_ptr<lens::LensOverlayRequestId> GetNextRequestId(
+      lens::RequestIdUpdateMode update_mode,
+      lens::LensOverlayRequestId::MediaType media_type);
+
+  // Updates the suggest inputs with the feature params and latest cluster info
+  // response, then runs the callback. The request id in the suggest inputs will
+  // if the parameter is not null.
+  virtual void RunSuggestInputsCallback();
+
   // The callback for full image requests, including upon query flow start
   // and interaction retries.
   LensOverlayFullImageResponseCallback full_image_callback_;
@@ -254,9 +322,8 @@ class LensOverlayQueryController {
   // The callback for interaction requests, including text received.
   LensOverlayInteractionResponseCallback interaction_response_callback_;
 
-  // Suggest inputs callback, used for sending Lens suggest data to the
-  // search box.
-  LensOverlaySuggestInputsCallback suggest_inputs_callback_;
+  // Callback for when the suggest inputs are ready.
+  base::RepeatingClosure suggest_inputs_ready_callback_;
 
   // Callback for when a thumbnail image is created from a region selection.
   LensOverlayThumbnailCreatedCallback thumbnail_created_callback_;
@@ -265,6 +332,21 @@ class LensOverlayQueryController {
   UploadProgressCallback page_content_upload_progress_callback_;
 
  private:
+  // lens::LensUploadChunker::Delegate:
+  void UploadChunk(
+      const lens::LensOverlayUploadChunkRequest& request,
+      base::RepeatingCallback<void(uint64_t position, uint64_t total)>
+          progress_callback,
+      base::OnceCallback<
+          void(std::unique_ptr<endpoint_fetcher::EndpointResponse>)>
+          completion_callback) override;
+  void OnPageContentPayloadReady(const lens::LensOverlayRequestId& request_id,
+                                 lens::Payload payload) override;
+  void OnChunkUploadError(
+      lens::LensUploadChunker::ErrorType error_type) override;
+  void OnUploadProgress(uint64_t position, uint64_t total) override;
+  lens::LensOverlayClientContext GetClientContext() override;
+
   enum class QueryControllerState {
     // StartQueryFlow has not been called and the query controller is
     // inactive.
@@ -285,6 +367,9 @@ class LensOverlayQueryController {
     kReceivedFullImageErrorResponse = 5,
     // The cluster info has expired and a new query flow needs to be started.
     kClusterInfoExpired = 6,
+    // Permissions have not yet been granted, and a new query flow needs to be
+    // started after they are granted.
+    kWaitingForPermissions = 7,
   };
 
   // Data class for constructing a fetch request to the Lens servers.
@@ -320,12 +405,6 @@ class LensOverlayQueryController {
     std::optional<base::OnceClosure> request_sent_callback_;
   };
 
-  // Updates the request id based on the given update mode and returns the
-  // request id proto. Also updates the suggest signals with the new request id
-  // and runs the suggest inputs callback.
-  std::unique_ptr<lens::LensOverlayRequestId> GetNextRequestId(
-      RequestIdUpdateMode update_mode);
-
   // Makes a LensOverlayServerClusterInfoRequest to get the cluster info. Will
   // continue to the FullImageRequest once a response is received.
   void FetchClusterInfoRequest();
@@ -340,7 +419,7 @@ class LensOverlayQueryController {
   // tried, just without the server session id.
   void ClusterInfoFetchResponseHandler(
       base::TimeTicks query_start_time,
-      std::unique_ptr<EndpointResponse> response);
+      std::unique_ptr<endpoint_fetcher::EndpointResponse> response);
 
   // Processes the screenshot and fetches a full image request.
   void PrepareAndFetchFullImageRequest();
@@ -389,7 +468,7 @@ class LensOverlayQueryController {
   // Handles the endpoint fetch response for the full image request.
   void FullImageFetchResponseHandler(
       int request_sequence_id,
-      std::unique_ptr<EndpointResponse> response);
+      std::unique_ptr<endpoint_fetcher::EndpointResponse> response);
 
   // Runs the full image callback with empty response data, for errors.
   void RunFullImageCallbackForError();
@@ -398,9 +477,17 @@ class LensOverlayQueryController {
   // then sends the request.
   void PrepareAndFetchPageContentRequest();
 
+  // Starts the chunked upload flow after OAuth headers are fetched.
+  void StartChunkedUpload(lens::LensOverlayRequestId request_id,
+                          std::vector<std::string> headers);
+
   // Creates the PageContentRequest that is sent to the server and performs the
   // request. Prefer to use PrepareAndFetchPageContentRequest() directly since
-  // it calls this method after doing the necessary preprocessing.
+  // it calls this method after doing the necessary preprocessing. By this
+  // point, the preprocessing should be complete and it is expected that the
+  // request will be sent. If a check needs to be done before sending the
+  // request, it myst be done in PrepareAndFetchPageContentRequest() instead of
+  // this method.
   void PrepareAndFetchPageContentRequestPart2(
       lens::LensOverlayRequestId request_id,
       lens::Payload payload);
@@ -411,11 +498,22 @@ class LensOverlayQueryController {
                                  std::vector<std::string> headers);
 
   // Handles the endpoint fetch response for the page content request.
-  void PageContentResponseHandler(lens::LensOverlayRequestId request_id,
-                                  std::unique_ptr<EndpointResponse> response);
+  void PageContentResponseHandler(
+      lens::LensOverlayRequestId request_id,
+      std::unique_ptr<endpoint_fetcher::EndpointResponse> response);
+
+  // Retry the page content upload if necessary. Returns whether or not the
+  // page content upload was retried.
+  bool MaybeRetryPageContentUpload(
+      std::unique_ptr<endpoint_fetcher::EndpointResponse> response);
+
+  // Sends a page content upload latency Gen204 ping if enabled.
+  void MaybeSendPageContentUploadLatencyGen204(
+      lens::LensOverlayRequestId request_id);
 
   // Handles the prgress of the page content upload request.
   void PageContentUploadProgressHandler(uint64_t position, uint64_t total);
+
 
   // Marks that the page content upload is no longer in progress and sends the
   // pending contextual query.
@@ -433,17 +531,19 @@ class LensOverlayQueryController {
   // Handles the endpoint fetch response for the partial page content request.
   void PartialPageContentResponseHandler(
       lens::LensOverlayRequestId request_id,
-      std::unique_ptr<EndpointResponse> response);
+      std::unique_ptr<endpoint_fetcher::EndpointResponse> response);
 
   // Sends the interaction data, triggering async image cropping and fetching
   // the request.
   void SendInteraction(
+      base::Time query_start_time,
       lens::mojom::CenterRotatedBoxPtr region,
       std::optional<std::string> query_text,
       std::optional<std::string> object_id,
       lens::LensOverlaySelectionType selection_type,
       std::map<std::string, std::string> additional_search_query_params,
-      std::optional<SkBitmap> region_bytes);
+      std::optional<SkBitmap> region_bytes,
+      lens::LensOverlayRequestId::MediaType media_type);
 
   // Creates the interaction request that is sent to the server and tries to
   // perform the interaction request. If not all asynchronous flows have
@@ -455,7 +555,7 @@ class LensOverlayQueryController {
       std::optional<std::string> query_text,
       std::optional<std::string> object_id,
       scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs,
-      std::optional<lens::ImageCrop> image_crop);
+      std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap);
 
   // Creates the OAuth headers that get attached to the interaction request to
   // authenticate the user. After, tries to perform the interaction request. If
@@ -491,6 +591,7 @@ class LensOverlayQueryController {
 
   // Creates the URL to load in the side panel and sends it to the callback.
   void CreateSearchUrlAndSendToCallback(
+      base::Time query_start_time,
       std::optional<std::string> query_text,
       std::map<std::string, std::string> additional_search_query_params,
       lens::LensOverlaySelectionType selection_type,
@@ -499,7 +600,7 @@ class LensOverlayQueryController {
   // Handles the endpoint fetch response for an interaction request.
   void InteractionFetchResponseHandler(
       int sequence_id,
-      std::unique_ptr<EndpointResponse> response);
+      std::unique_ptr<endpoint_fetcher::EndpointResponse> response);
 
   // Runs the interaction callback with empty response data, for errors.
   void RunInteractionCallbackForError();
@@ -517,19 +618,31 @@ class LensOverlayQueryController {
       std::string vit_query_param_value,
       std::optional<lens::LensOverlayRequestId> request_id);
 
+  // Performs the given server request.
+  void PerformFetchRequest(
+      lens::LensOverlayServerRequest* request,
+      std::vector<std::string>* request_headers,
+      base::TimeDelta timeout,
+      base::OnceCallback<
+          void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
+          fetcher_created_callback,
+      endpoint_fetcher::EndpointFetcherCallback response_received_callback,
+      UploadProgressCallback upload_progress_callback = base::NullCallback());
+
   // Creates an endpoint fetcher with the given request_headers to perform the
   // given request. Calls fetcher_created_callback when the EndpointFetcher is
   // created to keep it alive while the request is being made.
   // response_received_callback is invoked once the request returns a response.
   void PerformFetchRequest(
-      lens::LensOverlayServerRequest* request,
+      std::string request_string,
       std::vector<std::string>* request_headers,
-      const base::TimeDelta& timeout,
-      base::OnceCallback<void(std::unique_ptr<EndpointFetcher>)>
+      base::TimeDelta timeout,
+      base::OnceCallback<
+          void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
           fetcher_created_callback,
-      EndpointFetcherCallback response_received_callback,
-      const UploadProgressCallback upload_progress_callback =
-          base::NullCallback());
+      endpoint_fetcher::EndpointFetcherCallback response_received_callback,
+      UploadProgressCallback upload_progress_callback,
+      GURL fetch_url);
 
   // Creates a client context proto to be attached to a server request.
   lens::LensOverlayClientContext CreateClientContext();
@@ -541,10 +654,17 @@ class LensOverlayQueryController {
   std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
   CreateOAuthHeadersAndContinue(OAuthHeadersCreatedCallback callback);
 
-  // Gets the visual search interaction log data param as a base64url
-  // encoded string.
-  std::string GetEncodedVisualSearchInteractionLogData(
+  // Builds the LensOverlayVisualSearchInteractionData proto from the given
+  // parameters.
+  lens::LensOverlayVisualSearchInteractionData
+  BuildVisualSearchInteractionLogData(
+      const std::optional<std::string>& selected_text,
       lens::LensOverlaySelectionType selection_type);
+
+  // Encodes the LensOverlayVisualSearchInteractionData proto to a base64url
+  // encoded string.
+  std::string EncodeVisualSearchInteractionLogData(
+      const lens::LensOverlayVisualSearchInteractionData& interaction_data);
 
   // Creates the metadata for an interaction request using the latest
   // interaction and image crop data.
@@ -558,11 +678,6 @@ class LensOverlayQueryController {
   // Resets the request cluster info state.
   void ResetRequestClusterInfoState();
 
-  // Updates the suggest inputs with the feature params and latest cluster info
-  // response, then runs the callback. The request id in the suggest inputs will
-  // if the parameter is not null.
-  void RunSuggestInputsCallback();
-
   // Callback for when the interaction response returned text that should be
   // passed to the overlay.
   void RunInteractionResponseTextReceivedCallback(lens::mojom::TextPtr text);
@@ -570,27 +685,33 @@ class LensOverlayQueryController {
   // Callback for when the full image endpoint fetcher is created.
   void OnFullImageEndpointFetcherCreated(
       lens::LensOverlayRequestId request_id,
-      std::unique_ptr<EndpointFetcher> endpoint_fetcher);
+      std::unique_ptr<endpoint_fetcher::EndpointFetcher> endpoint_fetcher);
 
   // Callback for when the page content endpoint fetcher is created.
   void OnPageContentEndpointFetcherCreated(
       lens::LensOverlayRequestId request_id,
-      std::unique_ptr<EndpointFetcher> endpoint_fetcher);
+      std::unique_ptr<endpoint_fetcher::EndpointFetcher> endpoint_fetcher);
 
   // Callback for when the partial page content endpoint fetcher is created.
   void OnPartialPageContentEndpointFetcherCreated(
       lens::LensOverlayRequestId request_id,
-      std::unique_ptr<EndpointFetcher> endpoint_fetcher);
+      std::unique_ptr<endpoint_fetcher::EndpointFetcher> endpoint_fetcher);
 
   // Callback for when the interaction endpoint fetcher is created.
   void OnInteractionEndpointFetcherCreated(
       lens::LensOverlayRequestId request_id,
-      std::unique_ptr<EndpointFetcher> endpoint_fetcher);
+      std::unique_ptr<endpoint_fetcher::EndpointFetcher> endpoint_fetcher);
+
+  // Callback for when a chunk upload endpoint fetcher is created.
+  void OnChunkUploadEndpointFetcherCreated(
+      lens::LensOverlayRequestId request_id,
+      std::unique_ptr<endpoint_fetcher::EndpointFetcher> endpoint_fetcher);
 
   // Returns whether or not the contextual search query should be sent now or
   // held until the full page content upload is finished. This is only true if
-  // the page content upload is in progress and the partial page content upload
-  // will not yield detailed enough results.
+  // the page content upload is finished and the cluster info is available. If
+  // the cluster info is not available, the query should be held until the
+  // cluster info becomes available.
   bool ShouldSendContextualSearchQuery();
 
   // Returns whether the partial page content contains enough text to yield
@@ -603,6 +724,11 @@ class LensOverlayQueryController {
   // The original screenshot image.
   SkBitmap original_screenshot_;
 
+  // Screenshot to be sent for the initial query, which may differ from
+  // `original_screenshot_` during the non-blocking context menu image search
+  // flow.
+  SkBitmap initial_image_;
+
   // The dimensions of the resized bitmap. Needed in case geometry needs to be
   // recaclulated. For example, in the case of translated words.
   gfx::Size resized_bitmap_size_;
@@ -612,6 +738,9 @@ class LensOverlayQueryController {
 
   // The page title, if it is allowed to be shared.
   std::optional<std::string> page_title_;
+
+  // The current page of the PDF document if page_content_type_ is kPdf.
+  std::optional<uint32_t> pdf_current_page_;
 
   // Options needed to send a translate request with the proper parameters.
   struct TranslateOptions {
@@ -648,7 +777,7 @@ class LensOverlayQueryController {
   LensOverlayUrlResponseCallback url_callback_;
 
   // The last received cluster info.
-  std::optional<lens::LensOverlayClusterInfo> cluster_info_ = std::nullopt;
+  std::optional<lens::LensOverlayClusterInfo> cluster_info_;
 
   // The callback for issuing a pending interaction request. Will be used to
   // send the interaction request after the cluster info is available and the
@@ -666,6 +795,10 @@ class LensOverlayQueryController {
   // The access token fetcher used for getting OAuth for full image requests.
   std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
       full_image_access_token_fetcher_;
+
+  // The access token fetcher used for getting OAuth for chunk upload requests.
+  std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
+      chunk_upload_access_token_fetcher_;
 
   // The access token fetcher used for getting OAuth for page content requests.
   std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
@@ -694,21 +827,32 @@ class LensOverlayQueryController {
   std::unique_ptr<LensServerFetchRequest> latest_interaction_request_data_;
 
   // The endpoint fetcher used for the cluster info request.
-  std::unique_ptr<EndpointFetcher> cluster_info_endpoint_fetcher_;
+  std::unique_ptr<endpoint_fetcher::EndpointFetcher>
+      cluster_info_endpoint_fetcher_;
 
   // The endpoint fetcher used for the full image request.
-  std::unique_ptr<EndpointFetcher> full_image_endpoint_fetcher_;
+  std::unique_ptr<endpoint_fetcher::EndpointFetcher>
+      full_image_endpoint_fetcher_;
 
   // The endpoint fetcher used for the page content request.
-  std::unique_ptr<EndpointFetcher> page_content_endpoint_fetcher_;
+  std::unique_ptr<endpoint_fetcher::EndpointFetcher>
+      page_content_endpoint_fetcher_;
 
   // The endpoint fetcher used for the partial page content request.
-  std::unique_ptr<EndpointFetcher> partial_page_content_endpoint_fetcher_;
+  std::unique_ptr<endpoint_fetcher::EndpointFetcher>
+      partial_page_content_endpoint_fetcher_;
 
   // The endpoint fetcher used for the interaction request. Only the last
   // endpoint fetcher is kept; additional fetch requests will discard
   // earlier unfinished requests.
-  std::unique_ptr<EndpointFetcher> interaction_endpoint_fetcher_;
+  std::unique_ptr<endpoint_fetcher::EndpointFetcher>
+      interaction_endpoint_fetcher_;
+
+  // The endpoint fetchers used for the chunk upload requests.
+  std::vector<std::unique_ptr<endpoint_fetcher::EndpointFetcher>>
+      chunk_upload_endpoint_fetchers_;
+  // Headers to be sent with each upload chunk request.
+  std::vector<std::string> pending_upload_chunk_headers_;
 
   // Task runner used to compress page content bytes on a separate thread.
   scoped_refptr<base::TaskRunner> compression_task_runner_;
@@ -730,6 +874,11 @@ class LensOverlayQueryController {
   // response is received) and the overlay controller notified via the
   // suggest inputs callback.
   lens::proto::LensOverlaySuggestInputs suggest_inputs_;
+
+  // The current visual search interaction data. This is used to send the vsint
+  // param with the interaction request.
+  std::optional<lens::LensOverlayVisualSearchInteractionData>
+      visual_search_interaction_data_;
 
   // Owned by Profile, and thus guaranteed to outlive this instance.
   const raw_ptr<variations::VariationsClient> variations_client_;
@@ -759,6 +908,15 @@ class LensOverlayQueryController {
 
   // Whether or not a page content upload request is in progress.
   bool page_content_request_in_progress_ = false;
+
+  // Chunker helper for uploading large page contents (like PDFs).
+  std::unique_ptr<lens::LensUploadChunker> upload_chunker_;
+
+  // The sum of the last reported upload progress position of each chunk.
+  size_t total_chunk_progress_ = 0;
+
+  // Total size of data being uploaded during a chunk upload.
+  size_t total_chunk_upload_size_ = 0;
 
   // Callback for a pending contextual query that is waiting for the page
   // content request to finish uploading.
@@ -813,6 +971,24 @@ class LensOverlayQueryController {
   // latency events that should only be logged once per query flow.
   base::flat_set<lens::LensOverlayGen204Controller::LatencyType>
       sent_initial_latency_request_events_;
+
+  // True if permission has been granted for the current session, so requests do
+  // not need to check prefs for whether the user has granted permissions
+  // permanently.
+  bool has_permission_for_session_ = false;
+
+  // True if the session began without permanent permissions in a flow requiring
+  // restricted initial uploads (e.g. image context menu search).
+  bool initial_query_restricted_ = false;
+
+  // True if the initial page content upload was blocked because the user
+  // performed a context menu image search but had not granted permissions
+  // permanently.
+  bool initial_page_content_blocked_ = false;
+
+  // True if the full screenshot and page context have been sent after the
+  // initial query of the non-blocking image context menu search flow.
+  bool deferred_screenshot_and_page_context_sent_ = false;
 
   base::WeakPtrFactory<LensOverlayQueryController> weak_ptr_factory_{this};
 };

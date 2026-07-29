@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_custom_element_form_associated_callback.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_custom_element_form_disabled_callback.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_custom_element_form_state_restore_callback.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_custom_element_tool_fill_callback.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_element.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_form_state_restore_mode.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_function.h"
@@ -48,7 +49,8 @@ ScriptCustomElementDefinition::ScriptCustomElementDefinition(
       form_associated_callback_(data.form_associated_callback_),
       form_reset_callback_(data.form_reset_callback_),
       form_disabled_callback_(data.form_disabled_callback_),
-      form_state_restore_callback_(data.form_state_restore_callback_) {
+      form_state_restore_callback_(data.form_state_restore_callback_),
+      tool_fill_callback_(data.tool_fill_callback_) {
   DCHECK(data.registry_);
 }
 
@@ -64,15 +66,17 @@ void ScriptCustomElementDefinition::Trace(Visitor* visitor) const {
   visitor->Trace(form_reset_callback_);
   visitor->Trace(form_disabled_callback_);
   visitor->Trace(form_state_restore_callback_);
+  visitor->Trace(tool_fill_callback_);
   CustomElementDefinition::Trace(visitor);
 }
 
 HTMLElement* ScriptCustomElementDefinition::CreateAutonomousCustomElementSync(
     Document& document,
-    const QualifiedName& tag_name) {
+    const QualifiedName& tag_name,
+    CustomElementRegistry* registry) {
   DCHECK(CustomElement::ShouldCreateCustomElement(tag_name)) << tag_name;
   if (!script_state_->ContextIsValid())
-    return CustomElement::CreateFailedElement(document, tag_name);
+    return CustomElement::CreateFailedElement(document, tag_name, registry);
   ScriptState::Scope scope(script_state_);
   v8::Isolate* isolate = script_state_->GetIsolate();
   v8::TryCatch try_catch(isolate);
@@ -83,29 +87,31 @@ HTMLElement* ScriptCustomElementDefinition::CreateAutonomousCustomElementSync(
   // TODO(dominicc): Implement step 5 which constructs customized
   // built-in elements.
 
+  // 5.1.3 Run these steps while catching any exceptions
   Element* element = nullptr;
   {
+    // 5.1.3.1 Set result to the result of constructing with no arguments
     element = CallConstructor();
     if (try_catch.HasCaught()) {
-      // 6.1."If any of these subsubsteps threw an exception".1
-      // Report the exception.
+      // If any of these subsubsteps threw an exception
+      // 1 Report the exception.
       V8ScriptRunner::ReportException(isolate, try_catch.Exception());
-      // ... .2 Return HTMLUnknownElement.
-      return CustomElement::CreateFailedElement(document, tag_name);
+      // 2 Return HTMLUnknownElement.
+      return CustomElement::CreateFailedElement(document, tag_name, registry);
     }
   }
 
-  // 6.1.3. through 6.1.9.
+  // 5.1.3.3 through 5.1.3.8
   CheckConstructorResult(element, document, tag_name,
                          PassThroughException(isolate));
   if (try_catch.HasCaught()) {
-    // 6.1."If any of these subsubsteps threw an exception".1
-    // Report the exception.
+    // If any of these subsubsteps threw an exception
+    // 1 Report the exception.
     V8ScriptRunner::ReportException(isolate, try_catch.Exception());
-    // ... .2 Return HTMLUnknownElement.
-    return CustomElement::CreateFailedElement(document, tag_name);
+    // 2 Return HTMLUnknownElement.
+    return CustomElement::CreateFailedElement(document, tag_name, registry);
   }
-  // 6.1.10. Set result’s namespace prefix to prefix.
+  // 5.1.3.9 Set result’s namespace prefix to prefix.
   if (element->prefix() != tag_name.Prefix())
     element->SetTagNameForCreateElementNS(tag_name);
   DCHECK_EQ(element->GetCustomElementState(), CustomElementState::kCustom);
@@ -208,6 +214,10 @@ bool ScriptCustomElementDefinition::HasFormStateRestoreCallback() const {
   return form_state_restore_callback_ != nullptr;
 }
 
+bool ScriptCustomElementDefinition::HasToolFillCallback() const {
+  return tool_fill_callback_ != nullptr;
+}
+
 void ScriptCustomElementDefinition::RunConnectedCallback(Element& element) {
   if (!connected_callback_)
     return;
@@ -280,6 +290,14 @@ void ScriptCustomElementDefinition::RunFormStateRestoreCallback(
     return;
   form_state_restore_callback_->InvokeAndReportException(
       &element, value, V8FormStateRestoreMode::Create(mode).value());
+}
+
+void ScriptCustomElementDefinition::RunToolFillCallback(Element& element,
+                                                        const String& value) {
+  if (!tool_fill_callback_) {
+    return;
+  }
+  tool_fill_callback_->InvokeAndReportException(&element, value);
 }
 
 }  // namespace blink

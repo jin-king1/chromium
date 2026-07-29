@@ -13,36 +13,34 @@ import org.chromium.build.annotations.NullMarked;
 /**
  * Java accessor for base/feature_list.h state.
  *
- * This class provides methods to access values of feature flags registered in
+ * <p>This class provides methods to access values of feature flags registered in
  * |kFeaturesExposedToJava| in components/external_intents/android/external_intents_features.cc.
- *
  */
 @JNINamespace("external_intents")
 @NullMarked
-public class ExternalIntentsFeatures extends Features {
+public class ExternalIntentsFeatures {
     public static final String EXTERNAL_NAVIGATION_DEBUG_LOGS_NAME = "ExternalNavigationDebugLogs";
-    public static final String BLOCK_FRAME_RENAVIGATIONS_NAME = "BlockFrameRenavigations3";
-    public static final String BLOCK_INTENTS_TO_SELF_NAME = "BlockIntentsToSelf";
+    public static final String DONT_CLOBBER_TABS_WITH_CHROME_APP_ID_NAME =
+            "DontClobberTabsWithChromeAppId";
 
-    public static final ExternalIntentsFeatures EXTERNAL_NAVIGATION_DEBUG_LOGS =
-            new ExternalIntentsFeatures(0, EXTERNAL_NAVIGATION_DEBUG_LOGS_NAME);
+    public static final ExternalIntentsFeature EXTERNAL_NAVIGATION_DEBUG_LOGS =
+            new ExternalIntentsFeature(0, EXTERNAL_NAVIGATION_DEBUG_LOGS_NAME);
 
-    public static final ExternalIntentsFeatures BLOCK_FRAME_RENAVIGATIONS =
-            new ExternalIntentsFeatures(1, BLOCK_FRAME_RENAVIGATIONS_NAME);
+    public static final ExternalIntentsFeature DONT_CLOBBER_TABS_WITH_CHROME_APP_ID =
+            new ExternalIntentsFeature(1, DONT_CLOBBER_TABS_WITH_CHROME_APP_ID_NAME);
 
-    public static final ExternalIntentsFeatures BLOCK_INTENTS_TO_SELF =
-            new ExternalIntentsFeatures(2, BLOCK_INTENTS_TO_SELF_NAME);
+    public static class ExternalIntentsFeature extends Features {
+        private final int mOrdinal;
 
-    private final int mOrdinal;
+        private ExternalIntentsFeature(int ordinal, String name) {
+            super(name);
+            mOrdinal = ordinal;
+        }
 
-    private ExternalIntentsFeatures(int ordinal, String name) {
-        super(name);
-        mOrdinal = ordinal;
-    }
-
-    @Override
-    protected long getFeaturePointer() {
-        return ExternalIntentsFeaturesJni.get().getFeature(mOrdinal);
+        @Override
+        protected long getFeaturePointer() {
+            return ExternalIntentsFeaturesJni.get().getFeature(mOrdinal);
+        }
     }
 
     @NativeMethods

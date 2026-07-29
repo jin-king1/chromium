@@ -9,19 +9,19 @@
 
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "components/download/database/download_db_entry.h"
 #include "components/download/database/in_progress/download_entry.h"
 #include "components/download/public/common/download_export.h"
 #include "components/download/public/common/download_interrupt_reasons.h"
 #include "components/download/public/common/download_item.h"
-#include "components/download/public/common/download_item_impl.h"
-#include "components/download/public/common/download_source.h"
 #include "components/download/public/common/resume_mode.h"
 #include "net/base/net_errors.h"
 #include "net/cert/cert_status_flags.h"
 #include "net/http/http_response_headers.h"
-#include "services/network/public/mojom/url_response_head.mojom.h"
+#include "services/network/public/mojom/url_response_head.mojom-forward.h"
+#include "url/gurl.h"
 
 namespace net {
 class HttpRequestHeaders;
@@ -32,9 +32,10 @@ struct ResourceRequest;
 }
 
 namespace download {
+class DownloadItemImpl;
+class DownloadUrlParameters;
 struct DownloadCreateInfo;
 struct DownloadSaveInfo;
-class DownloadUrlParameters;
 
 // Used to check if the URL is safe. For most cases, this is
 // ChildProcessSecurityPolicy::CanRequestURL.
@@ -43,12 +44,16 @@ using URLSecurityPolicy =
 
 // Handle the url request completion status and return the interrupt reasons.
 // |cert_status| is ignored if error_code is not net::ERR_ABORTED.
+// |is_served_from_service_worker| reinterprets a net::ERR_ABORTED completion as
+// a resumable network failure rather than a user cancellation (see the function
+// body for rationale).
 COMPONENTS_DOWNLOAD_EXPORT DownloadInterruptReason
 HandleRequestCompletionStatus(net::Error error_code,
                               bool has_strong_validators,
                               net::CertStatus cert_status,
                               bool is_partial_request,
-                              DownloadInterruptReason abort_reason);
+                              DownloadInterruptReason abort_reason,
+                              bool is_served_from_service_worker);
 
 // Parse the HTTP server response code.
 // If |fetch_error_body| is true, most of HTTP response codes will be accepted
@@ -129,6 +134,14 @@ void DetermineLocalPath(DownloadItem* download,
                         const base::FilePath& virtual_path,
                         LocalPathCallback callback);
 
+#if BUILDFLAG(IS_ANDROID)
+// Determine the file path for the save package file given the `suggested_path`.
+COMPONENTS_DOWNLOAD_EXPORT
+void DetermineSavePackagePath(const GURL& url,
+                              const base::FilePath& suggested_path,
+                              LocalPathCallback callback);
+#endif
+
 // Finch parameter key value for number of bytes used for content validation
 // during resumption.
 constexpr char kDownloadContentValidationLengthFinchKey[] =
@@ -136,10 +149,6 @@ constexpr char kDownloadContentValidationLengthFinchKey[] =
 
 // Get the number of bytes to validate from finch configuration.
 int64_t GetDownloadValidationLengthConfig();
-
-// Finch parameter key value for the time to delete expired downloads in days.
-constexpr char kExpiredDownloadDeleteTimeFinchKey[] =
-    "expired_download_delete_days";
 
 // Finch parameter key value for the time to delete expired downloads in days.
 constexpr char kOverwrittenDownloadDeleteTimeFinchKey[] =
@@ -168,6 +177,15 @@ bool IsInterruptedDownloadAutoResumable(download::DownloadItem* download_item,
 COMPONENTS_DOWNLOAD_EXPORT
 bool IsContentDispositionAttachmentInHead(
     const network::mojom::URLResponseHead& response_head);
+
+// Truncates large `data:` URLs in the URL chain to save memory. If the `data:`
+// url is base64 encoded, ensures the truncated URL is a valid
+// (strictly-decodable) URL.
+COMPONENTS_DOWNLOAD_EXPORT void TruncateDataUrlAtTheEndIfNeeded(
+    GURL& url);
+
+COMPONENTS_DOWNLOAD_EXPORT void TruncateDataUrlAtTheEndIfNeeded(
+    std::vector<GURL>* url_chain);
 
 }  // namespace download
 

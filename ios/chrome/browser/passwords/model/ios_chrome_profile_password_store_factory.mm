@@ -7,26 +7,24 @@
 #import <memory>
 #import <utility>
 
-#import "base/command_line.h"
 #import "base/functional/callback_helpers.h"
 #import "base/no_destructor.h"
+#import "base/time/time.h"
 #import "components/affiliations/core/browser/affiliation_service.h"
 #import "components/keyed_service/core/service_access_type.h"
+#import "components/password_manager/core/browser/affiliation/affiliated_match_helper.h"
 #import "components/password_manager/core/browser/affiliation/password_affiliation_source_adapter.h"
-#import "components/password_manager/core/browser/features/password_features.h"
 #import "components/password_manager/core/browser/password_store/login_database.h"
+#import "components/password_manager/core/browser/password_store/password_store.h"
 #import "components/password_manager/core/browser/password_store/password_store_built_in_backend.h"
+#import "components/password_manager/core/browser/password_store/password_store_interface.h"
 #import "components/password_manager/core/browser/password_store_factory_util.h"
-#import "components/password_manager/core/common/password_manager_features.h"
-#import "components/sync/service/sync_service.h"
+#import "components/sync/model/wipe_model_upon_sync_disabled_behavior.h"
 #import "ios/chrome/browser/affiliations/model/ios_chrome_affiliation_service_factory.h"
 #import "ios/chrome/browser/passwords/model/credentials_cleaner_runner_factory.h"
-#import "ios/chrome/browser/passwords/model/ios_password_store_utils.h"
+#import "ios/chrome/browser/passwords/model/ios_password_store.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/signin/model/signin_util.h"
-#import "ios/chrome/browser/sync/model/sync_service_factory.h"
-#import "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace {
 
@@ -61,7 +59,7 @@ IOSChromeProfilePasswordStoreFactory::GetInstance() {
 
 IOSChromeProfilePasswordStoreFactory::IOSChromeProfilePasswordStoreFactory()
     : RefcountedProfileKeyedServiceFactoryIOS(
-          "PasswordStore",
+          "ProfilePasswordStore",
           ProfileSelection::kRedirectedInIncognito,
           TestingCreation::kNoServiceForTests) {
   DependsOn(CredentialsCleanerRunnerFactory::GetInstance());
@@ -72,44 +70,30 @@ IOSChromeProfilePasswordStoreFactory::~IOSChromeProfilePasswordStoreFactory() {}
 
 scoped_refptr<RefcountedKeyedService>
 IOSChromeProfilePasswordStoreFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
-
+    ProfileIOS* profile) const {
   std::unique_ptr<password_manager::LoginDatabase> login_db(
-      password_manager::CreateLoginDatabaseForProfileStorage(
-          profile->GetStatePath(), profile->GetPrefs()));
-
-  os_crypt_async::OSCryptAsync* os_crypt_async =
-      base::FeatureList::IsEnabled(
-          password_manager::features::kUseAsyncOsCryptInLoginDatabase)
-          ? GetApplicationContext()->GetOSCryptAsync()
-          : nullptr;
-
-  scoped_refptr<password_manager::PasswordStore> store =
-      base::MakeRefCounted<password_manager::PasswordStore>(
-          std::make_unique<password_manager::PasswordStoreBuiltInBackend>(
-              std::move(login_db),
-              syncer::WipeModelUponSyncDisabledBehavior::kNever,
-              profile->GetPrefs(), os_crypt_async));
-
+      password_manager::CreateLoginDatabase(password_manager::kProfileStore,
+                                            profile->GetStatePath(),
+                                            profile->GetPrefs()));
   AffiliationService* affiliation_service =
       IOSChromeAffiliationServiceFactory::GetForProfile(profile);
-  std::unique_ptr<AffiliatedMatchHelper> affiliated_match_helper =
-      std::make_unique<AffiliatedMatchHelper>(affiliation_service);
-  std::unique_ptr<password_manager::PasswordAffiliationSourceAdapter>
-      password_affiliation_adapter = std::make_unique<
-          password_manager::PasswordAffiliationSourceAdapter>();
-
-  store->Init(profile->GetPrefs(), std::move(affiliated_match_helper));
-
+  std::unique_ptr<password_manager::PasswordStoreBackend> backend =
+      std::make_unique<password_manager::PasswordStoreBuiltInBackend>(
+          std::move(login_db),
+          syncer::WipeModelUponSyncDisabledBehavior::kNever,
+          profile->GetPrefs(), GetApplicationContext()->GetOSCryptAsync(),
+          std::make_unique<password_manager::AffiliatedMatchHelper>(
+              affiliation_service));
+  scoped_refptr<password_manager::PasswordStoreIOS> store =
+      base::MakeRefCounted<password_manager::PasswordStoreIOS>(
+          std::move(backend), profile);
+  store->Init();
   password_manager::SanitizeAndMigrateCredentials(
       CredentialsCleanerRunnerFactory::GetForProfile(profile), store,
       password_manager::kProfileStore, profile->GetPrefs(), base::Seconds(60),
       base::NullCallback());
-  if (!profile->IsOffTheRecord()) {
-    DelayReportingPasswordStoreMetrics(profile);
-  }
-
+  auto password_affiliation_adapter =
+      std::make_unique<password_manager::PasswordAffiliationSourceAdapter>();
   password_affiliation_adapter->RegisterPasswordStore(store.get());
   affiliation_service->RegisterSource(std::move(password_affiliation_adapter));
   return store;

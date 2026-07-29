@@ -28,11 +28,9 @@ class OmniboxMatchCellView : public views::View {
   // `OmniboxMatchCellView`.
   static constexpr int kMarginLeft = 4;
 
-  // Probably intended to be the gap between the popup's right edge (assuming no
-  // buttons) and the text cut off. But this isn't used by
-  // `OmniboxMatchCellView`. `OmniboxMatchCellView::GetInsets()` hardcodes 7; so
-  // 8 here is probably wrong.
-  static constexpr int kMarginRight = 8;
+  // The gap between the popup's right edge (assuming no buttons) and the text
+  // cut off.
+  static constexpr int kMarginRight = 7;
 
   // The height of the standard 1-line match row. Multiline & IPH matches have
   // larger heights.
@@ -82,6 +80,9 @@ class OmniboxMatchCellView : public views::View {
   void OnMatchUpdate(const OmniboxResultView* result_view,
                      const AutocompleteMatch& match);
 
+  // Notifies the view that the visibility of the secondary text has changed.
+  void OnSecondaryTextVisibilityChanged();
+
   // Set's the `icon_view_` image, possibly with a rounded square background.
   void SetIcon(const gfx::ImageSkia& image, const AutocompleteMatch& match);
 
@@ -101,6 +102,7 @@ class OmniboxMatchCellView : public views::View {
   void Layout(PassKey) override;
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override;
+  gfx::Size GetMinimumSize() const override;
 
  private:
   enum class LayoutStyle {
@@ -109,6 +111,7 @@ class OmniboxMatchCellView : public views::View {
     SEARCH_SUGGESTION_WITH_IMAGE,
     IPH_SUGGESTION,
     HISTORY_EMBEDDING_ANSWER,
+    TOOLBELT,
   };
 
   // How far to indent the icon, entity, or answer image from the left side of

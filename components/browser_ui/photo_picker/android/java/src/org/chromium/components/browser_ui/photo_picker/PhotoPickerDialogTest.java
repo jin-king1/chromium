@@ -30,7 +30,6 @@ import org.mockito.Mockito;
 import org.chromium.base.MathUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
-import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
@@ -42,9 +41,11 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.widget.RecyclerViewTestUtils;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate.SelectionObserver;
+import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.content_public.browser.test.util.TouchCommon;
 import org.chromium.ui.base.ActivityWindowAndroid;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.IntentRequestTracker;
 import org.chromium.ui.base.PhotoPickerListener;
 import org.chromium.ui.base.WindowAndroid;
@@ -58,7 +59,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /** Tests for the PhotoPickerDialog class. */
-@RunWith(BaseJUnit4ClassRunner.class)
+@RunWith(ContentJUnit4ClassRunner.class)
 public class PhotoPickerDialogTest
         implements PhotoPickerListener,
                 SelectionObserver<PickerBitmap>,
@@ -99,11 +100,11 @@ public class PhotoPickerDialogTest
     private Uri[] mLastSelectedPhotos;
 
     // A list of view IDs we receive from an animating event in the order the events occurred.
-    private List<Long> mLastViewAnimatingIds = new ArrayList();
+    private final List<Long> mLastViewAnimatingIds = new ArrayList<>();
 
     // A list of view alpha values we receive from an animating event in the order the events
     // occurred.
-    private List<Float> mLastViewAnimatingAlphas = new ArrayList();
+    private final List<Float> mLastViewAnimatingAlphas = new ArrayList<>();
 
     // The list of currently selected photos (built piecemeal).
     private List<PickerBitmap> mCurrentPhotoSelection;
@@ -148,7 +149,7 @@ public class PhotoPickerDialogTest
                                     IntentRequestTracker.createFromActivity(
                                             mActivityTestRule.getActivity()),
                                     /* insetObserver= */ null,
-                                    /* trackOcclusion= */ true);
+                                    /* occlusionTrackingAllowed= */ true);
                         });
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -303,7 +304,7 @@ public class PhotoPickerDialogTest
     public void onAnimationRepeat(Animation animation) {}
 
     private RecyclerView getRecyclerView() {
-        return (RecyclerView) mDialog.findViewById(R.id.selectable_list_recycler_view);
+        return mDialog.findViewById(R.id.selectable_list_recycler_view);
     }
 
     private PhotoPickerDialog createDialogWithContentResolver(
@@ -319,7 +320,8 @@ public class PhotoPickerDialogTest
                                     contentResolver,
                                     PhotoPickerDialogTest.this,
                                     multiselect,
-                                    mimeTypes);
+                                    mimeTypes,
+                                    /* shouldPadForContent= */ false);
                     dialog.show();
                     mSelectionDelegate =
                             dialog.getCategoryViewForTesting().getSelectionDelegateForTesting();
@@ -365,8 +367,8 @@ public class PhotoPickerDialogTest
     private void clickDone() throws Exception {
         mLastActionRecorded = PhotoPickerAction.NUM_ENTRIES;
 
-        PhotoPickerToolbar toolbar = (PhotoPickerToolbar) mDialog.findViewById(R.id.action_bar);
-        Button done = (Button) toolbar.findViewById(R.id.done);
+        PhotoPickerToolbar toolbar = mDialog.findViewById(R.id.action_bar);
+        Button done = toolbar.findViewById(R.id.done);
         int callCount = mOnActionCallback.getCallCount();
         TouchCommon.singleClickView(done);
         mOnActionCallback.waitForCallback(callCount, 1);
@@ -554,6 +556,7 @@ public class PhotoPickerDialogTest
     @Test
     @LargeTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.O) // Video is only supported on O+.
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/479879586
     public void testVideoPlayerPlayAndRestart() throws Throwable {
         // Requesting to play a video is not a case of an accidental disk read on the UI thread.
         StrictMode.ThreadPolicy oldPolicy =
@@ -613,6 +616,7 @@ public class PhotoPickerDialogTest
     @Test
     @LargeTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.O) // Video is only supported on O+.
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/479879586
     public void testVideoPlayerPlayAndBackPress() throws Throwable {
         // Requesting to play a video is not a case of an accidental disk read on the UI thread.
         StrictMode.ThreadPolicy oldPolicy =

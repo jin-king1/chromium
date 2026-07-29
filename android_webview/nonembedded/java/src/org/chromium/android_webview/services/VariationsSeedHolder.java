@@ -41,7 +41,7 @@ public class VariationsSeedHolder {
     private static void writeSeedWithoutClosing(SeedInfo seed, ParcelFileDescriptor destination) {
         // writeSeed() will close "out", but closing "out" will not close "destination".
         FileOutputStream out = new FileOutputStream(destination.getFileDescriptor());
-        VariationsUtils.writeSeed(out, seed);
+        VariationsUtils.writeSeed(out, seed, AwEntropyState.getLowEntropySource());
     }
 
     // Use mSeedHandler to send tasks to mSeedThread.
@@ -58,12 +58,12 @@ public class VariationsSeedHolder {
 
     // A Runnable which handles an individual request for the seed. Must run on mSeedThread.
     private class SeedWriter implements Runnable {
-        private ParcelFileDescriptor mDestination;
+        private final ParcelFileDescriptor mDestination;
 
         // mDestinationDate is the date field of the requester's current seed, in milliseconds since
         // epoch, or Long.MIN_VALUE if the requester has no seed. Only write our seed if our seed is
         // newer than mDestinationDate.
-        private long mDestinationDate;
+        private final long mDestinationDate;
 
         public SeedWriter(ParcelFileDescriptor destination, long date) {
             mDestination = destination;
@@ -100,8 +100,8 @@ public class VariationsSeedHolder {
 
     // A Runnable which updates both mSeed and the service's seed file. Must run on mSeedThread.
     private class SeedUpdater implements Runnable {
-        private SeedInfo mNewSeed;
-        private Runnable mOnFinished;
+        private final SeedInfo mNewSeed;
+        private final Runnable mOnFinished;
 
         public SeedUpdater(SeedInfo newSeed, Runnable onFinished) {
             mNewSeed = newSeed;
@@ -123,7 +123,7 @@ public class VariationsSeedHolder {
                     Log.e(TAG, "Failed to open seed file " + newSeedFile + " for update");
                     return;
                 }
-                if (!VariationsUtils.writeSeed(out, VariationsSeedHolder.this.mSeed)) {
+                if (!VariationsUtils.writeSeed(out, VariationsSeedHolder.this.mSeed, -1)) {
                     Log.e(TAG, "Failed to write seed file " + newSeedFile + " for update");
                     return;
                 }
@@ -138,6 +138,7 @@ public class VariationsSeedHolder {
 
     @VisibleForTesting
     protected VariationsSeedHolder() {
+        AwEntropyState.ensureLowEntropySourceInitialized();
         mSeedThread = new HandlerThread(/* name= */ "seed_holder");
         mSeedThread.start();
         mSeedHandler = new Handler(mSeedThread.getLooper());

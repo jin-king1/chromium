@@ -4,14 +4,16 @@
 
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_delegate_chromeos.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "build/build_config.h"
+#include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "components/account_manager_core/account.h"
 #include "components/signin/internal/identity_manager/account_tracker_service.h"
 #include "components/signin/public/base/signin_client.h"
@@ -138,6 +140,23 @@ ProfileOAuth2TokenServiceDelegateChromeOS::
       is_regular_profile_(is_regular_profile),
       weak_factory_(this) {
   network_connection_tracker_->AddNetworkConnectionObserver(this);
+
+  // In production, AccountManagerFactory should always outlive `this`, but in
+  // tests, it may be destroyed before `this` and `account_manager_facade_` may
+  // dangle. So, observe AccountManagerFactory and reset the raw_ptr on its
+  // destruction.
+  // TODO(crbug.com/421058020): Fix tests to properly mimic the production
+  // construction/destruction order, and remove the observer.
+  account_manager_factory_cb_subscription_ =
+      CHECK_DEREF(ash::AccountManagerFactory::Get())
+          .AddOnDestructionCallback(base::BindOnce(
+              [](base::WeakPtr<ProfileOAuth2TokenServiceDelegateChromeOS>
+                     self) {
+                if (self) {
+                  self->account_manager_facade_ = nullptr;
+                }
+              },
+              weak_factory_.GetWeakPtr()));
 }
 
 ProfileOAuth2TokenServiceDelegateChromeOS::
@@ -201,9 +220,9 @@ bool ProfileOAuth2TokenServiceDelegateChromeOS::RefreshTokenIsAvailable(
 
   // We intentionally do NOT check if the refresh token associated with
   // |account_id| is valid or not. See crbug.com/919793 for details.
-  return base::Contains(GetOAuthAccountIdsFromAccountKeys(
-                            account_keys_, account_tracker_service_),
-                        account_id);
+  return std::ranges::contains(GetOAuthAccountIdsFromAccountKeys(
+                                   account_keys_, account_tracker_service_),
+                               account_id);
 }
 
 // Note: This method should use the same logic for filtering accounts as
@@ -223,8 +242,7 @@ ProfileOAuth2TokenServiceDelegateChromeOS::GetAccounts() const {
 }
 
 void ProfileOAuth2TokenServiceDelegateChromeOS::LoadCredentialsInternal(
-    const CoreAccountId& primary_account_id,
-    bool is_syncing) {
+    const CoreAccountId& primary_account_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (load_credentials_state() !=
@@ -257,7 +275,8 @@ void ProfileOAuth2TokenServiceDelegateChromeOS::LoadCredentialsInternal(
 
 void ProfileOAuth2TokenServiceDelegateChromeOS::UpdateCredentialsInternal(
     const CoreAccountId& account_id,
-    const std::string& refresh_token) {
+    const std::string& refresh_token,
+    const signin::TokenBindingInfo& token_binding_info) {
   // UpdateCredentials should not be called on Chrome OS. Credentials should be
   // updated through Chrome OS Account Manager.
   NOTREACHED();
@@ -364,18 +383,14 @@ void ProfileOAuth2TokenServiceDelegateChromeOS::FinishAddingPendingAccount(
 
   // Call the parent method - which will not report the error back to
   // `AccountManagerFacade` and result in this instance getting notified again -
-  // unlike `ProfileOAuth2TokenServiceDelegateChromeOS::UpdateAuthError`.
+  // unlike `ProfileOAuth2TokenServiceDelegateChromeOS::UpdateAuthError()`.
   // Additionally, don't call `FireAuthErrorChanged`
-  // (/*fire_auth_error_changed=*/false), since we call it at the end of this
-  // function.
+  // (/*fire_auth_error_changed=*/false), since `FireRefreshTokenAvailable()` is
+  // going to call it at the end of this function.
   ProfileOAuth2TokenServiceDelegate::UpdateAuthError(
       account_id, error, /*fire_auth_error_changed=*/false);
 
   FireRefreshTokenAvailable(account_id);
-  // See |ProfileOAuth2TokenServiceObserver::OnAuthErrorChanged|.
-  // |OnAuthErrorChanged| must be always called after
-  // |OnRefreshTokenAvailable|, when refresh token is updated.
-  FireAuthErrorChanged(account_id, error);
 }
 
 void ProfileOAuth2TokenServiceDelegateChromeOS::OnAccountUpserted(
@@ -482,8 +497,7 @@ void ProfileOAuth2TokenServiceDelegateChromeOS::UpdateAuthError(
                                                      fire_auth_error_changed);
   if (!RefreshTokenIsAvailable(account_id)) {
     // Account has been removed.
-    DCHECK_EQ(error, GoogleServiceAuthError(
-                         GoogleServiceAuthError::USER_NOT_SIGNED_UP));
+    DCHECK_EQ(error, GoogleServiceAuthError::CreateAccountNotFound());
     return;
   }
 
@@ -495,7 +509,7 @@ void ProfileOAuth2TokenServiceDelegateChromeOS::UpdateAuthError(
 }
 
 void ProfileOAuth2TokenServiceDelegateChromeOS::OnConnectionChanged(
-    network::mojom::ConnectionType type) {
+    net::NetworkChangeNotifier::ConnectionType type) {
   ResetBackOffEntry();
 }
 

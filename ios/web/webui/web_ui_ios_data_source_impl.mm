@@ -6,6 +6,7 @@
 
 #import <string>
 
+#import "base/containers/map_util.h"
 #import "base/functional/bind.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/ref_counted_memory.h"
@@ -19,7 +20,7 @@
 namespace web {
 
 // static
-WebUIIOSDataSource* WebUIIOSDataSource::Create(const std::string& source_name) {
+WebUIIOSDataSource* WebUIIOSDataSource::Create(std::string_view source_name) {
   return new WebUIIOSDataSourceImpl(source_name);
 }
 
@@ -39,10 +40,10 @@ class WebUIIOSDataSourceImpl::InternalDataSource : public URLDataSourceIOS {
 
   // URLDataSourceIOS implementation.
   std::string GetSource() const override { return parent_->GetSource(); }
-  std::string GetMimeType(const std::string& path) const override {
+  std::string GetMimeType(std::string_view path) const override {
     return parent_->GetMimeType(path);
   }
-  void StartDataRequest(const std::string& path,
+  void StartDataRequest(std::string_view path,
                         URLDataSourceIOS::GotDataCallback callback) override {
     return parent_->StartDataRequest(path, std::move(callback));
   }
@@ -61,7 +62,7 @@ class WebUIIOSDataSourceImpl::InternalDataSource : public URLDataSourceIOS {
   raw_ptr<WebUIIOSDataSourceImpl> parent_;
 };
 
-WebUIIOSDataSourceImpl::WebUIIOSDataSourceImpl(const std::string& source_name)
+WebUIIOSDataSourceImpl::WebUIIOSDataSourceImpl(std::string_view source_name)
     : URLDataSourceIOSImpl(source_name, new InternalDataSource(this)),
       source_name_(source_name),
       default_resource_(-1),
@@ -92,7 +93,7 @@ void WebUIIOSDataSourceImpl::AddLocalizedString(const std::string& name,
 }
 
 void WebUIIOSDataSourceImpl::AddLocalizedStrings(
-    const base::Value::Dict& localized_strings) {
+    const base::DictValue& localized_strings) {
   localized_strings_.Merge(localized_strings.Clone());
   ui::TemplateReplacementsFromDictionaryValue(localized_strings,
                                               &replacements_);
@@ -150,7 +151,7 @@ std::string WebUIIOSDataSourceImpl::GetSource() const {
   return source_name_;
 }
 
-std::string WebUIIOSDataSourceImpl::GetMimeType(const std::string& path) const {
+std::string WebUIIOSDataSourceImpl::GetMimeType(std::string_view path) const {
   if (base::EndsWith(path, ".js", base::CompareCase::INSENSITIVE_ASCII)) {
     return "application/javascript";
   }
@@ -180,14 +181,14 @@ void WebUIIOSDataSourceImpl::EnsureLoadTimeDataDefaultsAdded() {
   }
 
   load_time_data_defaults_added_ = true;
-  base::Value::Dict defaults;
+  base::DictValue defaults;
   webui::SetLoadTimeDataDefaults(web::GetWebClient()->GetApplicationLocale(),
                                  &defaults);
   AddLocalizedStrings(defaults);
 }
 
 void WebUIIOSDataSourceImpl::StartDataRequest(
-    const std::string& path,
+    std::string_view path,
     URLDataSourceIOS::GotDataCallback callback) {
   EnsureLoadTimeDataDefaultsAdded();
 
@@ -215,9 +216,9 @@ void WebUIIOSDataSourceImpl::SendLocalizedStringsAsJSON(
       base::MakeRefCounted<base::RefCountedString>(std::move(template_data)));
 }
 
-int WebUIIOSDataSourceImpl::PathToIdrOrDefault(const std::string& path) const {
-  auto it = path_to_idr_map_.find(path);
-  return it == path_to_idr_map_.end() ? default_resource_ : it->second;
+int WebUIIOSDataSourceImpl::PathToIdrOrDefault(std::string_view path) const {
+  const int* idr = base::FindOrNull(path_to_idr_map_, path);
+  return idr ? *idr : default_resource_;
 }
 
 }  // namespace web

@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_HTML_PARSER_LITERAL_BUFFER_H_
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <memory>
 #include <type_traits>
@@ -14,8 +15,10 @@
 #include "base/compiler_specific.h"
 #include "base/containers/checked_iterators.h"
 #include "base/containers/span.h"
+#include "base/numerics/checked_math.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_encoding.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
@@ -33,9 +36,9 @@
 // it avoids unnecessary register spills. See https://crbug.com/1205338.
 // Use one of the concrete implementations: LCharLiteralBuffer or
 // UCharLiteralBuffer.
-template <typename T, wtf_size_t kInlineSize>
+template <typename T, blink::wtf_size_t kInlineSize>
 class LiteralBufferBase {
-  static_assert(std::is_same<LChar, T>::value || std::is_same<UChar, T>::value,
+  static_assert(std::is_same_v<blink::LChar, T> || std::is_same_v<UChar, T>,
                 "T must be a character type");
 
  public:
@@ -43,28 +46,33 @@ class LiteralBufferBase {
 
   ~LiteralBufferBase() {
     if (!is_stored_inline())
-      WTF::Partitions::BufferFree(begin_);
+      blink::Partitions::BufferFree(begin_);
   }
 
   ALWAYS_INLINE const T* data() const { return begin_; }
-  ALWAYS_INLINE wtf_size_t size() const {
-    return base::checked_cast<wtf_size_t>(end_ - begin_);
+  ALWAYS_INLINE blink::wtf_size_t size() const {
+    return base::checked_cast<blink::wtf_size_t>(end_ - begin_);
   }
 
   // Iterators, so this type meets the requirements of
   // `std::ranges::contiguous_range`.
   ALWAYS_INLINE iterator begin() const {
-    return UNSAFE_TODO(iterator(begin_, end_));
+    // SAFETY: The iterator is constructed with the start and end of the
+    // allocated buffer, so it is safe.
+    return UNSAFE_BUFFERS(iterator(begin_, end_));
   }
   ALWAYS_INLINE iterator end() const {
-    return UNSAFE_TODO(iterator(begin_, end_, end_));
+    // SAFETY: The iterator is constructed with the start and end of the
+    // allocated buffer, so it is safe.
+    return UNSAFE_BUFFERS(iterator(begin_, end_, end_));
   }
 
   ALWAYS_INLINE bool IsEmpty() const { return begin_ == end_; }
 
-  ALWAYS_INLINE const T& operator[](wtf_size_t index) const {
+  ALWAYS_INLINE const T& operator[](blink::wtf_size_t index) const {
     CHECK_GT(size(), index);
-    // SAFETY: Check above.
+    // SAFETY: The CHECK_GT above ensures that `index` is within the bounds of
+    // the buffer.
     return UNSAFE_BUFFERS(begin_[index]);
   }
 
@@ -76,67 +84,91 @@ class LiteralBufferBase {
 
   ALWAYS_INLINE void AddCharImpl(T val) {
     if (end_ == end_of_storage_) [[unlikely]] {
-      end_ = Grow();
+      Grow();
     }
-    UNSAFE_TODO(*end_++) = val;
+    // SAFETY: The `Grow()` call above ensures that there is always at least one
+    // byte of available capacity, so `end_` will never be equal to
+    // `end_of_storage_` at this point. Therefore, it is safe to write to
+    // `*end_` and increment it.
+    UNSAFE_BUFFERS(*end_++) = val;
   }
 
-  template <typename OtherT, wtf_size_t kOtherSize>
+  template <typename OtherT, blink::wtf_size_t kOtherSize>
+
   void AppendLiteralImpl(const LiteralBufferBase<OtherT, kOtherSize>& val) {
     static_assert(sizeof(T) >= sizeof(OtherT),
                   "T is not big enough to contain OtherT");
-    size_t count = val.size();
-    size_t new_size = size() + count;
-    if (capacity() < new_size)
+    blink::wtf_size_t count = val.size();
+    blink::wtf_size_t new_size =
+        (base::CheckedNumeric<blink::wtf_size_t>(size()) + count).ValueOrDie();
+    if (capacity() < new_size) {
       Grow(new_size);
-    std::copy_n(val.data(), count, end_);
-    UNSAFE_TODO(end_ += count);
+    }
+    // SAFETY: The `Grow()` call above ensures that there is enough capacity to
+    // append `count` characters, or the program would have crashed due to
+    // overflow.
+    UNSAFE_BUFFERS(end_ = std::ranges::copy(base::span(val), end_).out);
   }
 
-  template <wtf_size_t kOtherInlineSize>
+  template <blink::wtf_size_t kOtherInlineSize>
   void Copy(const LiteralBufferBase<T, kOtherInlineSize>& other) {
-    wtf_size_t other_size = other.size();
+    blink::wtf_size_t other_size = other.size();
     if (capacity() < other_size) {
       // Create large-enough heap-allocated storage.
       if (!is_stored_inline())
-        WTF::Partitions::BufferFree(begin_);
-      begin_ = static_cast<T*>(WTF::Partitions::BufferMalloc(
+        blink::Partitions::BufferFree(begin_);
+      begin_ = static_cast<T*>(blink::Partitions::BufferMalloc(
           AllocationSize(other_size), "LiteralBufferBase"));
-      end_of_storage_ = UNSAFE_TODO(begin_ + other_size);
+      // SAFETY: `begin_` was just allocated with `other_size` capacity.
+      UNSAFE_BUFFERS(end_of_storage_ = begin_ + other_size);
     }
-    std::copy_n(other.data(), other_size, begin_);
-    end_ = UNSAFE_TODO(begin_ + other_size);
+    // SAFETY: The `Grow()` call above ensures that there is enough capacity to
+    // copy `other_size` characters, or the program would have crashed due to
+    // overflow.
+    UNSAFE_BUFFERS(base::span(begin_, other_size)).copy_from(base::span(other));
+    // SAFETY: `begin_` has at least `other_size` capacity, and `end_` is
+    // updated to point to the end of the copied range.
+    UNSAFE_BUFFERS(end_ = begin_ + other_size);
   }
 
   void Move(LiteralBufferBase&& other) {
     DCHECK_NE(this, &other);
     if (!other.is_stored_inline()) {
       if (!is_stored_inline())
-        WTF::Partitions::BufferFree(begin_);
+        blink::Partitions::BufferFree(begin_);
       begin_ = other.begin_;
       end_ = other.end_;
       end_of_storage_ = other.end_of_storage_;
-      other.begin_ = &other.inline_storage[0];
+      other.begin_ = other.inline_storage.data();
       other.end_ = other.begin_;
-      other.end_of_storage_ =
-          UNSAFE_TODO(other.begin_ + BUFFER_INLINE_CAPACITY);
+      // SAFETY: We are resetting the `other` buffer to its inline storage.
+      // This pointer arithmetic is safe because `other.begin_` points to the
+      // start of `other.inline_storage` and `BUFFER_INLINE_CAPACITY` is the
+      // size of that array.
+      UNSAFE_BUFFERS(other.end_of_storage_ =
+                         other.begin_ + BUFFER_INLINE_CAPACITY);
     } else {
       DCHECK_GE(capacity(), other.size());  // Sanity check.
-      wtf_size_t other_size = other.size();
-      std::copy_n(other.data(), other_size, begin_);
-      end_ = UNSAFE_TODO(begin_ + other_size);
+      blink::wtf_size_t other_size = other.size();
+      // SAFETY: The `DCHECK_GE` above ensures that there is enough capacity to
+      // copy `other_size` characters.
+      UNSAFE_BUFFERS(
+          base::span(begin_, other_size).copy_from(base::span(other)));
+      UNSAFE_BUFFERS(end_ = begin_ + other_size);
     }
   }
 
  private:
   size_t AllocationSize(size_t capacity) {
-    return WTF::PartitionAllocator::QuantizedSize<T>(capacity);
+    return blink::PartitionAllocator::QuantizedSize<T>(capacity);
   }
 
-  ALWAYS_INLINE size_t capacity() const { return end_of_storage_ - begin_; }
+  ALWAYS_INLINE blink::wtf_size_t capacity() const {
+    return base::checked_cast<blink::wtf_size_t>(end_of_storage_ - begin_);
+  }
 
   ALWAYS_INLINE bool is_stored_inline() const {
-    return begin_ == &inline_storage[0];
+    return begin_ == inline_storage.data();
   }
 
   size_t RoundUpToPowerOfTwo(size_t value) {
@@ -157,16 +189,22 @@ class LiteralBufferBase {
   NOINLINE T* Grow(size_t min_capacity) {
     DCHECK_GE(end_, begin_);
     size_t in_use = end_ - begin_;
-    size_t new_capacity =
-        RoundUpToPowerOfTwo(std::max(min_capacity, 2 * capacity()));
-    T* new_storage = static_cast<T*>(WTF::Partitions::BufferMalloc(
+    size_t new_capacity = RoundUpToPowerOfTwo(
+        std::max(min_capacity, 2 * static_cast<size_t>(capacity())));
+    T* new_storage = static_cast<T*>(blink::Partitions::BufferMalloc(
         AllocationSize(new_capacity), "LiteralBufferBase"));
-    std::copy_n(begin_, in_use, new_storage);
+    // SAFETY: The new storage is allocated with `new_capacity`, which is
+    // guaranteed to be large enough to hold `in_use` characters.
+    UNSAFE_BUFFERS(base::span(new_storage, new_capacity)
+                       .copy_prefix_from(base::span(*this)));
     if (!is_stored_inline())
-      WTF::Partitions::BufferFree(begin_);
+      blink::Partitions::BufferFree(begin_);
     begin_ = new_storage;
-    end_ = UNSAFE_TODO(new_storage + in_use);
-    end_of_storage_ = UNSAFE_TODO(new_storage + new_capacity);
+    // SAFETY: `new_storage` was allocated with `new_capacity` and `in_use`
+    // is less than or equal to `new_capacity`.
+    UNSAFE_BUFFERS(end_ = new_storage + in_use);
+    // SAFETY: `end_of_storage_` is set to the end of the allocated storage.
+    UNSAFE_BUFFERS(end_of_storage_ = new_storage + new_capacity;);
     return end_;
   }
 
@@ -174,14 +212,16 @@ class LiteralBufferBase {
   // of tuple (begin, size, capacity). This makes access of the next characters
   // faster when `AddChar` is inlined, since `end_` is readily available in a
   // register.
-  T* begin_ = &inline_storage[0];
+  std::array<T, BUFFER_INLINE_CAPACITY> inline_storage{};
+  T* begin_ = inline_storage.data();
   T* end_ = begin_;
-  T* end_of_storage_ = UNSAFE_TODO(begin_ + BUFFER_INLINE_CAPACITY);
-  T inline_storage[BUFFER_INLINE_CAPACITY];
+  // SAFETY: `begin_` points to the start of `inline_storage` and
+  // `BUFFER_INLINE_CAPACITY` is the size of that array.
+  T* end_of_storage_ = UNSAFE_BUFFERS(begin_ + BUFFER_INLINE_CAPACITY);
 };
 
-template <wtf_size_t kInlineSize>
-class LCharLiteralBuffer : public LiteralBufferBase<LChar, kInlineSize> {
+template <blink::wtf_size_t kInlineSize>
+class LCharLiteralBuffer : public LiteralBufferBase<blink::LChar, kInlineSize> {
  public:
   LCharLiteralBuffer() = default;
   LCharLiteralBuffer(const LCharLiteralBuffer& other) { *this = other; }
@@ -189,7 +229,7 @@ class LCharLiteralBuffer : public LiteralBufferBase<LChar, kInlineSize> {
 
   ~LCharLiteralBuffer() = default;
 
-  template <wtf_size_t kOtherInlineSize>
+  template <blink::wtf_size_t kOtherInlineSize>
   LCharLiteralBuffer& operator=(
       const LCharLiteralBuffer<kOtherInlineSize>& other) {
     if (this->data() != other.data())
@@ -206,12 +246,12 @@ class LCharLiteralBuffer : public LiteralBufferBase<LChar, kInlineSize> {
   // Clear without freeing any storage.
   ALWAYS_INLINE void clear() { this->ClearImpl(); }
 
-  ALWAYS_INLINE void AddChar(LChar val) { this->AddCharImpl(val); }
+  ALWAYS_INLINE void AddChar(blink::LChar val) { this->AddCharImpl(val); }
 
-  String AsString() const { return String(*this); }
+  blink::String AsString() const { return blink::String(*this); }
 };
 
-template <wtf_size_t kInlineSize>
+template <blink::wtf_size_t kInlineSize>
 class UCharLiteralBuffer : public LiteralBufferBase<UChar, kInlineSize> {
  public:
   UCharLiteralBuffer() = default;
@@ -220,13 +260,13 @@ class UCharLiteralBuffer : public LiteralBufferBase<UChar, kInlineSize> {
 
   ~UCharLiteralBuffer() = default;
 
-  template <wtf_size_t kOtherInlineSize>
+  template <blink::wtf_size_t kOtherInlineSize>
   UCharLiteralBuffer& operator=(
       const UCharLiteralBuffer<kOtherInlineSize>& other) {
     if (this->data() == other.data())
       return *this;
     this->Copy(other);
-    is_8bit_ = other.is_8bit_;
+    bitwise_or_all_chars_ = other.bitwise_or_all_chars_;
     return *this;
   }
 
@@ -234,60 +274,62 @@ class UCharLiteralBuffer : public LiteralBufferBase<UChar, kInlineSize> {
     if (this == &other)
       return *this;
     this->Copy(other);
-    is_8bit_ = other.is_8bit_;
+    bitwise_or_all_chars_ = other.bitwise_or_all_chars_;
     return *this;
   }
 
   UCharLiteralBuffer& operator=(UCharLiteralBuffer&& other) {
     if (this == &other)
       return *this;
-    const bool other_is_8bit = other.is_8bit_;
+    const UChar other_bitwise_or_all_chars = other.bitwise_or_all_chars_;
     this->Move(std::move(other));
-    is_8bit_ = other_is_8bit;
+    bitwise_or_all_chars_ = other_bitwise_or_all_chars;
     return *this;
   }
 
   // Clear without freeing any storage.
   ALWAYS_INLINE void clear() {
     this->ClearImpl();
-    is_8bit_ = true;
+    bitwise_or_all_chars_ = 0;
   }
 
   ALWAYS_INLINE void AddChar(UChar val) {
     this->AddCharImpl(val);
-    is_8bit_ &= (val <= 0xFF);
+    bitwise_or_all_chars_ |= val;
   }
 
-  template <wtf_size_t kOtherSize>
+  template <blink::wtf_size_t kOtherSize>
   void AppendLiteral(const LCharLiteralBuffer<kOtherSize>& val) {
     this->AppendLiteralImpl(val);
   }
 
-  String AsString() const {
+  blink::String AsString() const {
     if (Is8Bit()) {
-      return String::Make8BitFrom16BitSource(base::span(*this));
+      return blink::String::Make8BitFrom16BitSource(base::span(*this));
     }
-    return String(*this);
+    return blink::String(*this);
   }
 
-  String AsString8() const {
-    return String::Make8BitFrom16BitSource(base::span(*this));
+  blink::AtomicString AsAtomicString() const {
+    return blink::AtomicString(
+        *this, Is8Bit() ? blink::AtomicStringUCharEncoding::kIs8Bit
+                        : blink::AtomicStringUCharEncoding::kIs16Bit);
   }
 
-  AtomicString AsAtomicString() const {
-    return AtomicString(*this, Is8Bit()
-                                   ? WTF::AtomicStringUCharEncoding::kIs8Bit
-                                   : WTF::AtomicStringUCharEncoding::kIs16Bit);
+  ALWAYS_INLINE bool Is8Bit() const {
+    return (bitwise_or_all_chars_ & ~0xff) == 0;
   }
-
-  ALWAYS_INLINE bool Is8Bit() const { return is_8bit_; }
 
  private:
   // Needed for operator=.
-  template <wtf_size_t kOtherInlineSize>
+  template <blink::wtf_size_t kOtherInlineSize>
   friend class UCharLiteralBuffer;
 
-  bool is_8bit_ = true;
+  // Bitwise OR of all characters in our buffer. We actually
+  // only ever care if anyone of them have any high (>= 8) bits set,
+  // but just checking that at the end is faster than branching
+  // all the time.
+  UChar bitwise_or_all_chars_ = 0;
 };
 
 #undef BUFFER_INLINE_CAPACITY

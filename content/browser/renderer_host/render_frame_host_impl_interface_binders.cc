@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 
+#include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -13,17 +14,15 @@
 #include "base/metrics/metrics_hashes.h"
 #include "base/task/single_thread_task_runner.h"
 #include "content/browser/accessibility/render_accessibility_host.h"
-#include "content/browser/attribution_reporting/attribution_host.h"
+#include "content/browser/back_forward_cache/back_forward_cache_impl.h"
 #include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/file_system/file_system_manager_impl.h"
 #include "content/browser/geolocation/geolocation_service_impl.h"
 #include "content/browser/manifest/manifest_manager_host.h"
-#include "content/browser/renderer_host/back_forward_cache_impl.h"
 #include "content/browser/renderer_host/page_lifecycle_state_manager.h"
 #include "content/browser/renderer_host/render_frame_host_delegate.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
-#include "content/browser/shared_storage/shared_storage_document_service_impl.h"
 #include "content/common/dom_automation_controller.mojom.h"
 #include "content/common/frame.mojom.h"
 #include "content/public/browser/active_url_message_filter.h"
@@ -35,7 +34,6 @@
 #include "mojo/public/cpp/bindings/message.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "net/base/features.h"
-#include "ppapi/buildflags/buildflags.h"
 #include "services/device/public/mojom/screen_orientation.mojom.h"
 #include "services/network/public/cpp/features.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
@@ -49,12 +47,6 @@
 #include "third_party/blink/public/mojom/frame/frame.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest_observer.mojom.h"
 #include "third_party/blink/public/mojom/page/display_cutout.mojom.h"
-#include "third_party/blink/public/mojom/shared_storage/shared_storage.mojom.h"
-
-#if BUILDFLAG(ENABLE_PPAPI)
-#include "content/browser/renderer_host/render_frame_host_impl_ppapi_support.h"
-#include "content/common/pepper_plugin.mojom.h"
-#endif
 
 namespace content {
 
@@ -97,7 +89,7 @@ class MessageFilterChain final : public mojo::MessageFilter {
 };
 
 // This class can be added as a MessageFilter to a mojo receiver to detect
-// messages received while the the associated frame is in the Back-Forward
+// messages received while the associated frame is in the Back-Forward
 // Cache. Documents that are in the bfcache should not be sending mojo messages
 // back to the browser.
 class BackForwardCacheMessageFilter : public mojo::MessageFilter {
@@ -149,7 +141,7 @@ class BackForwardCacheMessageFilter : public mojo::MessageFilter {
   void DidDispatchOrReject(mojo::Message* message, bool accepted) override {}
 
   // TODO(crbug.com/40147948): Remove once a well-behaved frozen
-  // RenderFrame never send IPCs messages, even if there are active pages in the
+  // RenderFrame never sends IPC messages, even if there are active pages in the
   // process.
   bool ProcessHoldsNonCachedPages() {
     return RenderViewHostImpl::HasNonBackForwardCachedInstancesForProcess(
@@ -220,27 +212,6 @@ void RenderFrameHostImpl::SetUpMojoConnection() {
           },
           base::Unretained(this)));
 
-  if (base::FeatureList::IsEnabled(network::features::kSharedStorageAPI)) {
-    associated_registry_->AddInterface<
-        blink::mojom::SharedStorageDocumentService>(base::BindRepeating(
-        [](RenderFrameHostImpl* impl,
-           mojo::PendingAssociatedReceiver<
-               blink::mojom::SharedStorageDocumentService> receiver) {
-          if (SharedStorageDocumentServiceImpl::GetForCurrentDocument(impl)) {
-            // The renderer somehow requested two shared storage worklets
-            // associated with the same document. This could indicate a
-            // compromised renderer, so let's terminate it.
-            mojo::ReportBadMessage(
-                "Attempted to request two shared storage worklets associated "
-                "with the same document.");
-            return;
-          }
-
-          SharedStorageDocumentServiceImpl::GetOrCreateForCurrentDocument(impl)
-              ->Bind(std::move(receiver));
-        },
-        base::Unretained(this)));
-  }
 
   if (is_main_frame()) {
     associated_registry_->AddInterface<blink::mojom::LocalMainFrameHost>(
@@ -278,18 +249,10 @@ void RenderFrameHostImpl::SetUpMojoConnection() {
           base::Unretained(this)));
 
   file_system_manager_.reset(new FileSystemManagerImpl(
-      GetProcess()->GetDeprecatedID(),
+      ChildProcessSecurityPolicyImpl::GetInstance()->CreateHandle(
+          GetProcess()->GetID()),
       GetProcess()->GetStoragePartition()->GetFileSystemContext(),
       ChromeBlobStorageContext::GetFor(GetProcess()->GetBrowserContext())));
-
-#if BUILDFLAG(ENABLE_PPAPI)
-  associated_registry_->AddInterface<mojom::PepperHost>(base::BindRepeating(
-      [](RenderFrameHostImpl* impl,
-         mojo::PendingAssociatedReceiver<mojom::PepperHost> receiver) {
-        impl->GetPpapiSupport().Bind(std::move(receiver));
-      },
-      base::Unretained(this)));
-#endif
 
   associated_registry_->AddInterface<media::mojom::MediaPlayerHost>(
       base::BindRepeating(
@@ -307,15 +270,6 @@ void RenderFrameHostImpl::SetUpMojoConnection() {
              mojo::PendingAssociatedReceiver<blink::mojom::DisplayCutoutHost>
                  receiver) {
             impl->delegate()->BindDisplayCutoutHost(impl, std::move(receiver));
-          },
-          base::Unretained(this)));
-
-  associated_registry_->AddInterface<blink::mojom::AttributionHost>(
-      base::BindRepeating(
-          [](RenderFrameHostImpl* impl,
-             mojo::PendingAssociatedReceiver<blink::mojom::AttributionHost>
-                 receiver) {
-            AttributionHost::BindReceiver(std::move(receiver), impl);
           },
           base::Unretained(this)));
 
@@ -378,16 +332,18 @@ void RenderFrameHostImpl::TearDownMojoConnection() {
   non_associated_local_frame_host_receiver_.reset();
   local_main_frame_host_receiver_.reset();
 
-  broker_receiver_.reset();
+  if (broker_holder_) {
+    if (base::FeatureList::IsEnabled(features::kLazyBrowserInterfaceBroker)) {
+      broker_holder_.reset();
+    } else {
+      broker_holder_->broker_receiver().reset();
+    }
+  }
 
   render_accessibility_.reset();
   render_accessibility_host_.Reset();
 
   dom_automation_controller_receiver_.reset();
-
-#if BUILDFLAG(ENABLE_PPAPI)
-  ppapi_support_.reset();
-#endif
 
   // Audio stream factories are tied to a live RenderFrame: see
   // //content/browser/media/forwarding_audio_stream_factory.h.

@@ -101,6 +101,7 @@
 
     <PropertyRef Id="WIX_ACCOUNT_LOCALSYSTEM" />
     <PropertyRef Id="WIX_ACCOUNT_ADMINISTRATORS" />
+    <PropertyRef Id="WIX_ACCOUNT_USERS" />
 
     <!-- Note that Windows10 reports its version as 6.3 rather than 10.0 via
         the VersionNT WXS var for back-compat reasons. -->
@@ -216,10 +217,18 @@
       </Component>
 
       <Component Id="remote_assistance_host_uiaccess" Guid="*">
-          <File Id="remote_assistance_host_uiaccess.exe"
+        <File Id="remote_assistance_host_uiaccess.exe"
               DiskId="1"
               KeyPath="yes"
               Name="remote_assistance_host_uiaccess.exe"
+              Vital="yes"/>
+      </Component>
+
+      <Component Id="remoting_crashpad_handler" Guid="*">
+        <File Id="remoting_crashpad_handler.exe"
+              DiskId="1"
+              KeyPath="yes"
+              Name="remoting_crashpad_handler.exe"
               Vital="yes"/>
       </Component>
 
@@ -715,6 +724,20 @@
 
     </DirectoryRef>
 
+    <DirectoryRef Id="config_files">
+      <Component Id="config_files_dir" Guid="72f0991d-068a-4db3-bc12-f0896faea886">
+        <CreateFolder>
+          <Permission User="[WIX_ACCOUNT_LOCALSYSTEM]"
+                      GenericAll="yes" />
+          <Permission User="[WIX_ACCOUNT_ADMINISTRATORS]"
+                      GenericAll="yes" />
+          <Permission User="[WIX_ACCOUNT_USERS]"
+                      GenericRead="yes"
+                      GenericExecute="yes" />
+        </CreateFolder>
+      </Component>
+    </DirectoryRef>
+
     <!-- Register with Sawbuck. See http://code.google.com/p/sawbuck/. -->
     <DirectoryRef Id="TARGETDIR">
       <Component Id="sawbuck_provider" Guid="*" Win64="no">
@@ -782,6 +805,7 @@
     <UIRef Id="WixUI_ErrorProgressText" />
 
     <Feature Id="chromoting_host" Level="1" Title="$(var.ChromotingHost)">
+      <ComponentRef Id="config_files_dir"/>
       <ComponentRef Id="credits"/>
       <?if $(var.OfficialBuild) != 0 ?>
         <ComponentRef Id="omaha_registration"/>
@@ -810,6 +834,7 @@
       <ComponentRef Id="remote_security_key_registration"/>
       <ComponentRef Id="remoting_native_messaging_host"/>
       <ComponentRef Id="remoting_core"/>
+      <ComponentRef Id="remoting_crashpad_handler"/>
       <ComponentRef Id="remoting_desktop"/>
       <ComponentRef Id="remoting_host"/>
       <ComponentRef Id="remoting_lib"/>

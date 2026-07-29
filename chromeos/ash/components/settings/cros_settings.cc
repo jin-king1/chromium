@@ -37,16 +37,15 @@ CrosSettings* CrosSettings::Get() {
   return g_cros_settings;
 }
 
-// static
-void CrosSettings::SetInstance(CrosSettings* cros_settings) {
-  CHECK(!g_cros_settings || !cros_settings);
-  g_cros_settings = cros_settings;
+CrosSettings::CrosSettings() {
+  CHECK(!g_cros_settings);
+  g_cros_settings = this;
 }
-
-CrosSettings::CrosSettings() = default;
 
 CrosSettings::~CrosSettings() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK_EQ(g_cros_settings, this);
+  g_cros_settings = nullptr;
 }
 
 bool CrosSettings::IsCrosSettings(std::string_view path) {
@@ -117,7 +116,7 @@ bool CrosSettings::GetString(std::string_view path,
 }
 
 bool CrosSettings::GetList(std::string_view path,
-                           const base::Value::List** out_value) const {
+                           const base::ListValue** out_value) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   const base::Value* value = GetPref(path);
   if (value && value->is_list()) {
@@ -128,7 +127,7 @@ bool CrosSettings::GetList(std::string_view path,
 }
 
 bool CrosSettings::GetDictionary(std::string_view path,
-                                 const base::Value::Dict** out_value) const {
+                                 const base::DictValue** out_value) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   const base::Value* value = GetPref(path);
   if (value && value->is_dict()) {
@@ -165,7 +164,7 @@ bool CrosSettings::FindEmailInList(const std::string& path,
                                    bool* wildcard_match) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  const base::Value::List* list;
+  const base::ListValue* list;
   if (!GetList(path, &list)) {
     if (wildcard_match)
       *wildcard_match = false;
@@ -176,7 +175,7 @@ bool CrosSettings::FindEmailInList(const std::string& path,
 }
 
 // static
-bool CrosSettings::FindEmailInList(const base::Value::List& list,
+bool CrosSettings::FindEmailInList(const base::ListValue& list,
                                    const std::string& email,
                                    bool* wildcard_match) {
   std::string canonicalized_email(
@@ -253,7 +252,7 @@ std::unique_ptr<CrosSettingsProvider> CrosSettings::RemoveSettingsProvider(
 }
 
 base::CallbackListSubscription CrosSettings::AddSettingsObserver(
-    const std::string& path,
+    std::string_view path,
     base::RepeatingClosure callback) {
   DCHECK(!path.empty());
   DCHECK(callback);
@@ -261,16 +260,8 @@ base::CallbackListSubscription CrosSettings::AddSettingsObserver(
   DCHECK(GetProvider(path));
 
   // Get the callback registry associated with the path.
-  base::RepeatingClosureList* registry = nullptr;
-  auto observer_iterator = settings_observers_.find(path);
-  if (observer_iterator == settings_observers_.end()) {
-    settings_observers_[path] = std::make_unique<base::RepeatingClosureList>();
-    registry = settings_observers_[path].get();
-  } else {
-    registry = observer_iterator->second.get();
-  }
-
-  return registry->Add(std::move(callback));
+  auto it = settings_observers_.try_emplace(std::string(path)).first;
+  return it->second.Add(std::move(callback));
 }
 
 CrosSettingsProvider* CrosSettings::GetProvider(std::string_view path) const {
@@ -285,10 +276,11 @@ CrosSettingsProvider* CrosSettings::GetProvider(std::string_view path) const {
 void CrosSettings::FireObservers(const std::string& path) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   auto observer_iterator = settings_observers_.find(path);
-  if (observer_iterator == settings_observers_.end())
+  if (observer_iterator == settings_observers_.end()) {
     return;
+  }
 
-  observer_iterator->second->Notify();
+  observer_iterator->second.Notify();
 }
 
 }  // namespace ash

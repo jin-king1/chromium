@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "content/renderer/render_process_impl.h"
 
 #include "build/build_config.h"
@@ -29,6 +24,7 @@
 #include "base/debug/crash_logging.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/system/sys_info.h"
@@ -81,15 +77,6 @@ GetThreadPoolInitParams() {
   size_t desired_num_threads =
       std::max(kMaxNumThreadsInForegroundPoolLowerBound,
                content::GetMinForegroundThreadsInRendererThreadPool());
-  if (base::FeatureList::IsEnabled(base::kThreadPoolCap2)) {
-    // Cap the threadpool to an initial fixed size.
-    // Note: The size can still grow beyond the value set here
-    // when tasks are blocked for a certain period of time.
-    const int max_allowed_workers_per_pool =
-        base::kThreadPoolCapRestrictedCount.Get();
-    desired_num_threads = std::min(
-        desired_num_threads, static_cast<size_t>(max_allowed_workers_per_pool));
-  }
   return std::make_unique<base::ThreadPoolInstance::InitParams>(
       desired_num_threads);
 }
@@ -154,14 +141,17 @@ RenderProcessImpl::RenderProcessImpl()
 
     SetV8FlagIfOverridden(features::kV8VmFuture, "--future", "--no-future");
 
+#if BUILDFLAG(IS_ANDROID)
+    SetV8FlagIfOverridden(features::kV8AndroidDesktopHighEndConfig,
+                          "--high-end-android", "--no-high-end-android");
+#endif
+
     SetV8FlagIfOverridden(features::kWebAssemblyBaseline, "--liftoff",
                           "--no-liftoff");
 
-    // V8's Wasm stack switching support is sufficient to enable JavaScript
-    // Promise Integration.
-    SetV8FlagIfOverridden(features::kEnableExperimentalWebAssemblyJSPI,
-                          "--experimental-wasm-jspi",
-                          "--no-experimental-wasm-jspi");
+    SetV8FlagIfOverridden(
+        features::kEnableExperimentalWebAssemblySharedEverything,
+        "--experimental-wasm-shared", "--no-experimental-wasm-shared");
 
     SetV8FlagIfOverridden(features::kWebAssemblyLazyCompilation,
                           "--wasm-lazy-compilation",
@@ -174,9 +164,19 @@ RenderProcessImpl::RenderProcessImpl()
                           "--wasm-dynamic-tiering",
                           "--no-wasm-dynamic-tiering");
 
-    SetV8FlagIfOverridden(blink::features::kWebAssemblyJSStringBuiltins,
-                          "--experimental-wasm-imported-strings",
-                          "--no-experimental-wasm-imported-strings");
+    SetV8FlagIfOverridden(features::kWebAssemblyStackSwitching,
+                          "--experimental-wasm-wasmfx",
+                          "--no-experimental-wasm-wasmfx");
+
+    SetV8FlagIfOverridden(blink::features::kJavaScriptSourcePhaseImports,
+                          "--js-source-phase-imports",
+                          "--no-js-source-phase-imports");
+
+    SetV8FlagIfOverridden(blink::features::kJavaScriptImportText,
+                          "--js-import-text", "--no-js-import-text");
+
+    SetV8FlagIfOverridden(features::kDevToolsLiveEdit, "--inspector-live-edit",
+                          "--no-inspector-live-edit");
   }
 
   bool enable_shared_array_buffer_unconditionally =

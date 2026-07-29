@@ -4,6 +4,7 @@
 
 #include "ash/ash_element_identifiers.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/ash/interactive/interactive_ash_test.h"
 #include "chrome/test/base/ash/interactive/settings/interactive_uitest_elements.h"
@@ -31,7 +32,7 @@ constexpr char kVpnHostname[] = "vpn_host_name";
 constexpr char kOpenVpnUsername[] = "username";
 constexpr char kOpenVpnPassword[] = "password123";
 
-void CheckPropertyStringValue(const base::Value::Dict* dict,
+void CheckPropertyStringValue(const base::DictValue* dict,
                               const std::string& key,
                               const std::string& expected) {
   const std::string* actual = dict->FindString(key);
@@ -175,11 +176,11 @@ IN_PROC_BROWSER_TEST_F(VpnUiInteractiveUiTest,
                 ->GetTestInterface()
                 ->FindServiceMatchingName(kVpnServiceName);
         ASSERT_FALSE(vpn_service_path.empty());
-        const base::Value::Dict* properties =
+        const base::DictValue* properties =
             ShillServiceClient::Get()->GetTestInterface()->GetServiceProperties(
                 vpn_service_path);
         ASSERT_TRUE(properties);
-        const base::Value::Dict* provider =
+        const base::DictValue* provider =
             properties->FindDict(shill::kProviderProperty);
         ASSERT_TRUE(provider);
         CheckPropertyStringValue(provider, shill::kHostProperty, kVpnHostname);

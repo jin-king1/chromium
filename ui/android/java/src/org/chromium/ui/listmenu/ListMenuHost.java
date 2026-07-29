@@ -4,8 +4,7 @@
 
 package org.chromium.ui.listmenu;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
+import android.app.Activity;
 import android.content.res.TypedArray;
 import android.graphics.Color;
 import android.graphics.Rect;
@@ -15,20 +14,32 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 
+import androidx.annotation.VisibleForTesting;
+
+import org.chromium.base.ContextUtils;
 import org.chromium.base.ObserverList;
 import org.chromium.base.ResettersForTesting;
-import org.chromium.build.annotations.EnsuresNonNull;
+import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.R;
+import org.chromium.ui.hierarchicalmenu.FlyoutController;
+import org.chromium.ui.hierarchicalmenu.FlyoutController.FlyoutHandler;
+import org.chromium.ui.hierarchicalmenu.HierarchicalMenuController;
+import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.widget.AnchoredPopupWindow;
+import org.chromium.ui.widget.FlyoutPopupSpecCalculator;
+import org.chromium.ui.widget.RectProvider;
+
+import java.util.List;
 
 /**
  * The host class that makes a view capable of triggering list menu. The core logic is extracted
  * from ListMenuButton.
  */
 @NullMarked
-public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
+public class ListMenuHost
+        implements AnchoredPopupWindow.LayoutObserver, FlyoutHandler<AnchoredPopupWindow> {
     /** A listener that is notified when the popup menu is shown or dismissed. */
     @FunctionalInterface
     public interface PopupMenuShownListener {
@@ -37,8 +48,13 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
         default void onPopupMenuDismissed() {}
     }
 
+    public interface PressedStateSetter {
+        void setPressedState(boolean pressed);
+    }
+
+    @VisibleForTesting
     @FunctionalInterface
-    interface PopupMenuHelper {
+    public interface PopupMenuHelper {
         /**
          * Called when the popup menu is requested to be shown or dismissed, then inject a test
          * value.
@@ -57,12 +73,19 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
 
     private int mMenuMaxWidth;
 
-    private @Nullable AnchoredPopupWindow mPopupMenu;
+    // Nullable for lazy initialization.
+    private @MonotonicNonNull HierarchicalMenuController<AnchoredPopupWindow>
+            mHierarchicalMenuController;
+
     private @Nullable ListMenuDelegate mDelegate;
-    private ObserverList<PopupMenuShownListener> mPopupListeners = new ObserverList<>();
+    private final ObserverList<PopupMenuShownListener> mPopupListeners = new ObserverList<>();
     private boolean mTryToFitLargestItem;
     private final boolean mPositionedAtStart;
     private final boolean mPositionedAtEnd;
+
+    private final @Nullable PressedStateSetter mPressedStateSetter;
+    private @Nullable CharSequence mOriginalTooltip;
+    private boolean mTooltipCleared;
 
     /**
      * Creates a new {@link ListMenuHost}.
@@ -71,6 +94,20 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
      * @param attrs The specific {@link AttributeSet} used to set read styles.
      */
     public ListMenuHost(View view, @Nullable AttributeSet attrs) {
+        this(view, attrs, null);
+    }
+
+    /**
+     * Creates a new {@link ListMenuHost}.
+     *
+     * @param view The {@link View} used to trigger list menu.
+     * @param attrs The specific {@link AttributeSet} used to set read styles.
+     * @param pressedStateSetter The interface used to set the "pressed" state to the button.
+     */
+    public ListMenuHost(
+            View view,
+            @Nullable AttributeSet attrs,
+            @Nullable PressedStateSetter pressedStateSetter) {
         mView = view;
 
         TypedArray a = view.getContext().obtainStyledAttributes(attrs, R.styleable.ListMenuButton);
@@ -84,6 +121,7 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
                 a.getBoolean(R.styleable.ListMenuButton_menuVerticalOverlapAnchor, true);
         mPositionedAtStart = a.getBoolean(R.styleable.ListMenuButton_menuPositionedAtStart, false);
         mPositionedAtEnd = a.getBoolean(R.styleable.ListMenuButton_menuPositionedAtEnd, false);
+        mPressedStateSetter = pressedStateSetter;
 
         assert !(mPositionedAtStart && mPositionedAtEnd)
                 : "menuPositionedAtStart and menuPositionedAtEnd are both true.";
@@ -99,7 +137,7 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
      * @param overrideOnClickListener Whether to override the click listener which can trigger the
      *     popup menu.
      */
-    public void setDelegate(ListMenuDelegate delegate, boolean overrideOnClickListener) {
+    public void setDelegate(@Nullable ListMenuDelegate delegate, boolean overrideOnClickListener) {
         dismiss();
         mDelegate = delegate;
         if (overrideOnClickListener) {
@@ -107,24 +145,74 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
         }
     }
 
+    /** A getter for {@link HierarchicalMenuController} for lazy initialization. */
+    private HierarchicalMenuController<AnchoredPopupWindow>
+            getHierarchicalMenuControllerInternal() {
+        if (mHierarchicalMenuController == null) {
+            mHierarchicalMenuController =
+                    ListMenuUtils.createHierarchicalMenuController(mView.getContext());
+        }
+        return mHierarchicalMenuController;
+    }
+
     /** Called to dismiss any popup menu that might be showing for this button. */
     public void dismiss() {
-        if (mPopupMenu != null) {
-            mPopupMenu.dismiss();
-            mPopupMenu = null;
-
-            if (sPopupMenuHelperForTesting != null) {
-                mPopupMenu = sPopupMenuHelperForTesting.injectPopupMenu(null);
-            }
+        if (mPressedStateSetter != null) {
+            mPressedStateSetter.setPressedState(false);
         }
+
+        if (mTooltipCleared) {
+            mView.setTooltipText(mOriginalTooltip);
+            mTooltipCleared = false;
+            mOriginalTooltip = null;
+        }
+
+        if (mHierarchicalMenuController == null
+                || mHierarchicalMenuController.getFlyoutController() == null) {
+            return;
+        }
+        mHierarchicalMenuController.destroyFlyoutController();
+
+        if (sPopupMenuHelperForTesting != null) {
+            sPopupMenuHelperForTesting.injectPopupMenu(null);
+        }
+    }
+
+    /** Returns whether the popup menu is currently showing. */
+    public boolean isMenuShowing() {
+        if (mHierarchicalMenuController == null) {
+            return false;
+        }
+        FlyoutController<AnchoredPopupWindow> controller =
+                mHierarchicalMenuController.getFlyoutController();
+        if (controller == null) {
+            return false;
+        }
+
+        return controller.getNumberOfPopups() > 0;
     }
 
     /** Shows a popupWindow built by ListMenuButton */
     public void showMenu() {
         if (!mView.isAttachedToWindow()) return;
         dismiss();
+
+        // Clear the tooltip on the anchor view so Android Framework's TooltipPopup
+        // doesn't persist over the newly shown menu window on systems with mouse/hover support.
+        mOriginalTooltip = mView.getTooltipText();
+        mView.setTooltipText(null);
+        mTooltipCleared = true;
+
         initPopupWindow();
-        mPopupMenu.show();
+
+        FlyoutController<AnchoredPopupWindow> controller =
+                getHierarchicalMenuControllerInternal().getFlyoutController();
+        assert controller != null;
+        controller.getMainPopup().show();
+
+        if (mPressedStateSetter != null) {
+            mPressedStateSetter.setPressedState(true);
+        }
         notifyPopupListeners(true);
     }
 
@@ -138,7 +226,6 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
     }
 
     /** Init the popup window with provided attributes, called before {@link #showMenu()} */
-    @EnsuresNonNull("mPopupMenu")
     private void initPopupWindow() {
         if (mDelegate == null) throw new IllegalStateException("Delegate was not set.");
 
@@ -151,39 +238,125 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
         if (viewParent instanceof ViewGroup) {
             ((ViewGroup) viewParent).removeView(contentView);
         }
-        mPopupMenu =
-                new AnchoredPopupWindow(
-                        mView.getContext(),
-                        mView,
-                        new ColorDrawable(Color.TRANSPARENT),
-                        contentView,
-                        mDelegate.getRectProvider(mView));
 
-        if (sPopupMenuHelperForTesting != null) {
-            mPopupMenu = sPopupMenuHelperForTesting.injectPopupMenu(mPopupMenu);
-        }
+        AnchoredPopupWindow.Builder builder =
+                new AnchoredPopupWindow.Builder(
+                                mView.getContext(),
+                                mView,
+                                new ColorDrawable(Color.TRANSPARENT),
+                                () -> contentView,
+                                mDelegate.getRectProvider(mView))
+                        .setDismissOnScreenSizeChange(true)
+                        .setVerticalOverlapAnchor(mMenuVerticalOverlapAnchor)
+                        .setHorizontalOverlapAnchor(mMenuHorizontalOverlapAnchor)
+                        .setMaxWidth(mMenuMaxWidth)
+                        .setFocusable(true)
+                        .setAnimateFromAnchor(true)
+                        .addOnDismissListener(
+                                () -> {
+                                    notifyPopupListeners(false);
+                                    dismiss();
+                                })
+                        // This should be called explicitly since it is not a default behavior on
+                        // Android S in split-screen mode. See crbug.com/1246956.
+                        .setOutsideTouchable(true);
 
-        mPopupMenu.setVerticalOverlapAnchor(mMenuVerticalOverlapAnchor);
-        mPopupMenu.setHorizontalOverlapAnchor(mMenuHorizontalOverlapAnchor);
-        mPopupMenu.setMaxWidth(mMenuMaxWidth);
         if (mTryToFitLargestItem) {
             // Content width includes the padding around the items, so add it here.
             final int lateralPadding = contentView.getPaddingLeft() + contentView.getPaddingRight();
-            mPopupMenu.setDesiredContentWidth(menu.getMaxItemWidth() + lateralPadding);
+            builder.setDesiredContentWidth(menu.getMaxItemWidth() + lateralPadding);
         }
-        mPopupMenu.setFocusable(true);
-        mPopupMenu.setAnimateFromAnchor(true);
+
         if (mPositionedAtStart || mPositionedAtEnd) {
-            mPopupMenu.setLayoutObserver(this);
+            builder.setLayoutObserver(this);
         }
-        mPopupMenu.addOnDismissListener(
-                () -> {
-                    mPopupMenu = null;
-                    notifyPopupListeners(false);
-                });
-        // This should be called explicitly since it is not a default behavior on Android S
-        // in split-screen mode. See crbug.com/1246956.
-        mPopupMenu.setOutsideTouchable(true);
+
+        AnchoredPopupWindow popupMenu = builder.build();
+        getHierarchicalMenuControllerInternal()
+                .setupFlyoutController(
+                        /* flyoutHandler= */ this,
+                        popupMenu,
+                        menu::addOnScrollListener,
+                        /* drillDownOverrideValue= */ null);
+
+        if (sPopupMenuHelperForTesting != null) {
+            AnchoredPopupWindow spiedPopupMenu =
+                    sPopupMenuHelperForTesting.injectPopupMenu(popupMenu);
+            FlyoutController<AnchoredPopupWindow> flyoutController =
+                    getHierarchicalMenuControllerInternal().getFlyoutController();
+            assert flyoutController != null;
+            flyoutController.setMainPopupForTest(spiedPopupMenu);
+        }
+    }
+
+    @Override
+    public Rect getPopupRect(AnchoredPopupWindow popupWindow) {
+        View contentView = popupWindow.getContentView();
+
+        if (contentView == null) {
+            return new Rect();
+        }
+
+        return ListMenuUtils.getViewRectRelativeToItsRootView(contentView);
+    }
+
+    @Override
+    public void dismissPopup(AnchoredPopupWindow popupWindow) {
+        popupWindow.dismiss();
+    }
+
+    @Override
+    public AnchoredPopupWindow createAndShowFlyoutPopup(
+            List<ListItem> items,
+            View view,
+            Runnable dismissRunnable,
+            View.OnScrollChangeListener scrollListener) {
+        if (mDelegate == null) throw new IllegalStateException("Delegate was not set.");
+        ListMenu menu = mDelegate.getListMenuFromItems(items);
+        assert menu != null;
+
+        final View contentView = menu.getContentView();
+
+        final int lateralPadding = contentView.getPaddingLeft() + contentView.getPaddingRight();
+
+        Activity activity = ContextUtils.activityFromContext(mView.getContext());
+        assert activity != null;
+        View rootView = activity.getWindow().getDecorView().getRootView();
+
+        AnchoredPopupWindow popupMenu =
+                new AnchoredPopupWindow.Builder(
+                                mView.getContext(),
+                                rootView,
+                                new ColorDrawable(Color.TRANSPARENT),
+                                () -> contentView,
+                                new RectProvider(
+                                        FlyoutController.calculateFlyoutAnchorRect(view, rootView)))
+                        .setVerticalOverlapAnchor(true)
+                        .setHorizontalOverlapAnchor(false)
+                        .setMaxWidth(mMenuMaxWidth)
+                        .setFocusable(true)
+                        .setTouchModal(false)
+                        .setAnimateFromAnchor(false)
+                        .setAnimationStyle(R.style.PopupWindowAnimFade)
+                        .setSpecCalculator(new FlyoutPopupSpecCalculator())
+                        .setDesiredContentWidth(menu.getMaxItemWidth() + lateralPadding)
+                        .addOnDismissListener(
+                                () -> {
+                                    dismissRunnable.run();
+                                })
+                        .build();
+
+        menu.addOnScrollListener(scrollListener);
+        popupMenu.show();
+        return popupMenu;
+    }
+
+    @Override
+    public void setWindowFocus(AnchoredPopupWindow popupWindow, boolean hasFocus) {
+        ViewGroup contentView = (ViewGroup) popupWindow.getContentView();
+        if (contentView == null) return;
+
+        HierarchicalMenuController.setWindowFocusForFlyoutMenus(contentView, hasFocus);
     }
 
     /**
@@ -208,12 +381,18 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
     @Override
     public void onPreLayoutChange(
             boolean positionBelow, int x, int y, int width, int height, Rect anchorRect) {
-        assumeNonNull(mPopupMenu);
+        FlyoutController<AnchoredPopupWindow> controller =
+                getHierarchicalMenuControllerInternal().getFlyoutController();
+        assert controller != null;
+
+        // This animation style is only for the main pane, not for flyout popups.
+        AnchoredPopupWindow popupMenu = controller.getMainPopup();
+
         if (mPositionedAtEnd) {
-            mPopupMenu.setAnimationStyle(
+            popupMenu.setAnimationStyle(
                     positionBelow ? R.style.EndIconMenuAnim : R.style.EndIconMenuAnimBottom);
         } else if (mPositionedAtStart) {
-            mPopupMenu.setAnimationStyle(
+            popupMenu.setAnimationStyle(
                     positionBelow ? R.style.StartIconMenuAnim : R.style.StartIconMenuAnimBottom);
         }
     }
@@ -238,7 +417,7 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
      * @param shown Whether the popup menu was shown or dismissed.
      */
     private void notifyPopupListeners(boolean shown) {
-        for (var l : mPopupListeners.mObservers) {
+        for (var l : mPopupListeners) {
             if (shown) {
                 l.onPopupMenuShown();
             } else {
@@ -247,7 +426,16 @@ public class ListMenuHost implements AnchoredPopupWindow.LayoutObserver {
         }
     }
 
-    static void setMenuChangedListenerForTesting(PopupMenuHelper listener) {
+    /**
+     * Gets the {@link HierarchicalMenuController}.
+     *
+     * @return The {@link HierarchicalMenuController} for this object.
+     */
+    public HierarchicalMenuController<AnchoredPopupWindow> getHierarchicalMenuController() {
+        return getHierarchicalMenuControllerInternal();
+    }
+
+    public static void setMenuChangedListenerForTesting(PopupMenuHelper listener) {
         sPopupMenuHelperForTesting = listener;
         ResettersForTesting.register(() -> sPopupMenuHelperForTesting = null);
     }

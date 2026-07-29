@@ -33,7 +33,7 @@ static SharedSampler::QuerySystemInformationForTest
     g_query_system_information_for_test = nullptr;
 
 // static
-void SharedSampler::SetQuerySystemInformationForTest(
+void SharedSampler::SetQuerySystemInformationForTesting(
     QuerySystemInformationForTest query_system_information) {
   g_query_system_information_for_test = query_system_information;
 }
@@ -78,18 +78,6 @@ class ByteBuffer {
 
 // Wrapper for NtQuerySystemProcessInformation with buffer reallocation logic.
 bool QuerySystemProcessInformation(ByteBuffer* buffer) {
-  HMODULE ntdll = ::GetModuleHandle(L"ntdll.dll");
-  if (!ntdll) {
-    NOTREACHED();
-  }
-
-  NTQUERYSYSTEMINFORMATION nt_query_system_information_ptr =
-      reinterpret_cast<NTQUERYSYSTEMINFORMATION>(
-          ::GetProcAddress(ntdll, "NtQuerySystemInformation"));
-  if (!nt_query_system_information_ptr) {
-    NOTREACHED();
-  }
-
   NTSTATUS result;
 
   // There is a potential race condition between growing the buffer and new
@@ -104,8 +92,8 @@ bool QuerySystemProcessInformation(ByteBuffer* buffer) {
       result =
           (data_size > buffer_size) ? STATUS_BUFFER_TOO_SMALL : STATUS_SUCCESS;
     } else {
-      result = nt_query_system_information_ptr(
-          SystemProcessInformation, span.data(), buffer_size, &data_size);
+      result = ::NtQuerySystemInformation(SystemProcessInformation, span.data(),
+                                          buffer_size, &data_size);
     }
 
     if (result == STATUS_SUCCESS) {
@@ -293,7 +281,7 @@ void SharedSampler::Refresh(base::ProcessId process_id, int64_t refresh_flags) {
         FROM_HERE, base::BindOnce(&SharedSampler::RefreshOnWorkerThread, this),
         base::BindOnce(&SharedSampler::OnRefreshDone, this));
   } else {
-    // http://crbug.com/678471
+    // http://crbug.com/40500128
     // A group of consecutive Refresh calls should all specify the same refresh
     // flags. Rarely RefreshOnWorkerThread could take a long time (> 1 sec),
     // long enough for a next refresh cycle to start before results are ready
@@ -335,8 +323,6 @@ SharedSampler::AllSamplingResults SharedSampler::RefreshOnWorkerThread() {
 
 /* static */
 std::vector<base::FilePath> SharedSampler::GetSupportedImageNames() {
-  const wchar_t kNacl64Exe[] = L"nacl64.exe";
-
   std::vector<base::FilePath> supported_names;
 
   base::FilePath current_exe;
@@ -345,7 +331,6 @@ std::vector<base::FilePath> SharedSampler::GetSupportedImageNames() {
 
   supported_names.push_back(
       base::FilePath(chrome::kBrowserProcessExecutableName));
-  supported_names.push_back(base::FilePath(kNacl64Exe));
 
   return supported_names;
 }

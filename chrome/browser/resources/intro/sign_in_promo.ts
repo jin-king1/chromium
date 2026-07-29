@@ -44,6 +44,28 @@ export class SignInPromoElement extends SignInPromoElementBase {
     return 'sign-in-promo';
   }
 
+  static override get styles() {
+    return getCss();
+  }
+
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
+    return {
+      /**
+       * The list of benefits the user will get when signed in to Chrome
+       */
+      benefitCards_: {type: Array},
+
+      managedDeviceDisclaimer_: {type: String},
+      isDeviceManaged_: {type: Boolean},
+      anyButtonClicked_: {type: Boolean},
+      usePrimaryAndTonalButtons_: {type: Boolean},
+    };
+  }
+
   constructor() {
     super();
     this.benefitCards_ = [
@@ -65,35 +87,16 @@ export class SignInPromoElement extends SignInPromoElementBase {
     ];
   }
 
-  static override get styles() {
-    return getCss();
-  }
-
-  override render() {
-    return getHtml.bind(this)();
-  }
-
-  static override get properties() {
-    return {
-      /**
-       * The list of benefits the user will get when signed in to Chrome
-       */
-      benefitCards_: {type: Array},
-
-      managedDeviceDisclaimer_: {type: String},
-      isDeviceManaged_: {type: Boolean},
-      anyButtonClicked_: {type: Boolean},
-    };
-  }
-
   private browserProxy_: IntroBrowserProxy =
       IntroBrowserProxyImpl.getInstance();
-  protected benefitCards_: BenefitCard[];
+  protected accessor benefitCards_: BenefitCard[];
   private divisionLineResizeObserver_: ResizeObserver|null = null;
-  protected managedDeviceDisclaimer_: string = '';
-  protected isDeviceManaged_: boolean =
+  protected accessor managedDeviceDisclaimer_: string = '';
+  protected accessor isDeviceManaged_: boolean =
       loadTimeData.getBoolean('isDeviceManaged');
-  private anyButtonClicked_: boolean = false;
+  private accessor anyButtonClicked_: boolean = false;
+  private accessor usePrimaryAndTonalButtons_: boolean =
+      loadTimeData.getBoolean('usePrimaryAndTonalButtonsForPromos');
 
   override connectedCallback() {
     super.connectedCallback();
@@ -190,6 +193,10 @@ export class SignInPromoElement extends SignInPromoElementBase {
   protected getDisclaimerVisibilityClass_() {
     return this.managedDeviceDisclaimer_.length === 0 ? 'temporarily-hidden' :
                                                         'fast-fade-in';
+  }
+
+  protected getDeclineButtonClass_(): string {
+    return this.usePrimaryAndTonalButtons_ ? 'tonal-button' : '';
   }
 }
 

@@ -31,7 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SCRIPT_VALUE_H_
 #define THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SCRIPT_VALUE_H_
 
-#include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/world_safe_v8_reference.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -108,8 +107,6 @@ class CORE_EXPORT ScriptValue final {
       return false;
     return value_ == value.value_;
   }
-
-  bool operator!=(const ScriptValue& value) const { return !operator==(value); }
 
   // This creates a new local Handle; Don't use this in performance-sensitive
   // places.
@@ -214,30 +211,22 @@ class CORE_EXPORT ScriptObject final {
     return object_ == object.object_;
   }
 
-  bool operator!=(const ScriptObject& object) const {
-    return !operator==(object);
-  }
-
   void Trace(Visitor* visitor) const { visitor->Trace(object_); }
 
  private:
   ScriptValue object_;
 };
 
-}  // namespace blink
-
-namespace WTF {
-
 // VectorTraits for ScriptValue depend entirely on
 // WorldSafeV8Reference<v8::Value>.
 template <>
-struct VectorTraits<blink::ScriptValue>
-    : VectorTraits<blink::WorldSafeV8Reference<v8::Value>> {};
+struct VectorTraits<ScriptValue>
+    : VectorTraits<WorldSafeV8Reference<v8::Value>> {};
 
 template <>
-struct VectorTraits<blink::ScriptObject>
-    : VectorTraits<blink::WorldSafeV8Reference<v8::Value>> {};
+struct VectorTraits<ScriptObject>
+    : VectorTraits<WorldSafeV8Reference<v8::Value>> {};
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_BINDINGS_CORE_V8_SCRIPT_VALUE_H_

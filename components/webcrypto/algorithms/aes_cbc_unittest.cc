@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -15,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/values.h"
 #include "components/webcrypto/algorithm_dispatch.h"
@@ -98,28 +94,6 @@ std::string DecryptMustFail(blink::WebCryptoKey key,
 }
 
 class WebCryptoAesCbcTest : public WebCryptoTestBase {};
-
-TEST_F(WebCryptoAesCbcTest, InputTooLarge) {
-  std::vector<uint8_t> output;
-
-  std::vector<uint8_t> iv(16);
-
-  // Give an input that is too large. It would cause integer overflow when
-  // narrowing the ciphertext size to an int, since OpenSSL operates on signed
-  // int lengths NOT unsigned.
-  //
-  // Pretend the input is large. Don't pass data pointer as NULL in case that
-  // is special cased; the implementation shouldn't actually dereference the
-  // data.
-  base::span<const uint8_t> input(iv.data(), size_t{INT_MAX} - 3);
-
-  EXPECT_EQ(
-      Status::ErrorDataTooLarge(),
-      Encrypt(CreateAesCbcAlgorithm(iv), GetTestAesCbcKey(), input, &output));
-  EXPECT_EQ(
-      Status::ErrorDataTooLarge(),
-      Decrypt(CreateAesCbcAlgorithm(iv), GetTestAesCbcKey(), input, &output));
-}
 
 TEST_F(WebCryptoAesCbcTest, ExportKeyUnsupportedFormat) {
   std::vector<uint8_t> output;
@@ -450,11 +424,11 @@ TEST_F(WebCryptoAesCbcTest, ImportKeyEmptyUsage) {
 // If key_ops is specified but empty, no key usages are allowed for the key.
 TEST_F(WebCryptoAesCbcTest, ImportKeyJwkEmptyKeyOps) {
   blink::WebCryptoKey key;
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("kty", "oct");
   dict.Set("ext", false);
   dict.Set("k", "GADWrMRHwQfoNaXU5fZvTg");
-  dict.Set("key_ops", base::Value::List());
+  dict.Set("key_ops", base::ListValue());
 
   // The JWK does not contain encrypt usages.
   EXPECT_EQ(Status::ErrorJwkKeyopsInconsistent(),
@@ -472,7 +446,7 @@ TEST_F(WebCryptoAesCbcTest, ImportKeyJwkEmptyKeyOps) {
 // If key_ops is missing, then any key usages can be specified.
 TEST_F(WebCryptoAesCbcTest, ImportKeyJwkNoKeyOps) {
   blink::WebCryptoKey key;
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("kty", "oct");
   dict.Set("k", "GADWrMRHwQfoNaXU5fZvTg");
 
@@ -492,10 +466,10 @@ TEST_F(WebCryptoAesCbcTest, ImportKeyJwkNoKeyOps) {
 
 TEST_F(WebCryptoAesCbcTest, ImportKeyJwkKeyOpsEncryptDecrypt) {
   blink::WebCryptoKey key;
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("kty", "oct");
   dict.Set("k", "GADWrMRHwQfoNaXU5fZvTg");
-  base::Value::List* key_ops = dict.EnsureList("key_ops");
+  base::ListValue* key_ops = dict.EnsureList("key_ops");
 
   key_ops->Append("encrypt");
 
@@ -529,10 +503,10 @@ TEST_F(WebCryptoAesCbcTest, ImportKeyJwkKeyOpsEncryptDecrypt) {
 // Test failure if input usage is NOT a strict subset of the JWK usage.
 TEST_F(WebCryptoAesCbcTest, ImportKeyJwkKeyOpsNotSuperset) {
   blink::WebCryptoKey key;
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("kty", "oct");
   dict.Set("k", "GADWrMRHwQfoNaXU5fZvTg");
-  base::Value::List key_ops;
+  base::ListValue key_ops;
   key_ops.Append("encrypt");
   dict.Set("key_ops", std::move(key_ops));
 
@@ -546,7 +520,7 @@ TEST_F(WebCryptoAesCbcTest, ImportKeyJwkKeyOpsNotSuperset) {
 
 TEST_F(WebCryptoAesCbcTest, ImportKeyJwkUseEnc) {
   blink::WebCryptoKey key;
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("kty", "oct");
   dict.Set("k", "GADWrMRHwQfoNaXU5fZvTg");
 
@@ -604,11 +578,11 @@ TEST_F(WebCryptoAesCbcTest, ImportJwkInvalidJson) {
 TEST_F(WebCryptoAesCbcTest, ImportJwkKeyOpsLacksUsages) {
   blink::WebCryptoKey key;
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("kty", "oct");
   dict.Set("k", "GADWrMRHwQfoNaXU5fZvTg");
 
-  base::Value::List key_ops;
+  base::ListValue key_ops;
   key_ops.Append("foo");
   dict.Set("key_ops", std::move(key_ops));
   EXPECT_EQ(Status::ErrorJwkKeyopsInconsistent(),

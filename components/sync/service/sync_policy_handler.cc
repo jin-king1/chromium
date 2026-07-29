@@ -13,6 +13,7 @@
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_value_map.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/sync/base/features.h"
 #include "components/sync/base/pref_names.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_prefs.h"
@@ -30,6 +31,16 @@ void DisableSyncType(const std::string& type_name, PrefValueMap* prefs) {
     if (*type == UserSelectableType::kAutofill) {
       syncer::SyncPrefs::SetTypeDisabledByPolicy(prefs,
                                                  UserSelectableType::kPayments);
+    }
+
+    // If tabs are disabled, also disable saved tab groups, and vice-versa.
+    if (*type == UserSelectableType::kTabs) {
+      syncer::SyncPrefs::SetTypeDisabledByPolicy(
+          prefs, UserSelectableType::kSavedTabGroups);
+    }
+    if (*type == UserSelectableType::kSavedTabGroups) {
+      syncer::SyncPrefs::SetTypeDisabledByPolicy(prefs,
+                                                 UserSelectableType::kTabs);
     }
   }
 
@@ -62,7 +73,7 @@ bool SyncPolicyHandler::CheckPolicySettings(const policy::PolicyMap& policies,
   const base::Value* disabled_sync_types_value = policies.GetValue(
       policy::key::kSyncTypesListDisabled, base::Value::Type::LIST);
   if (disabled_sync_types_value) {
-    const base::Value::List& list = disabled_sync_types_value->GetList();
+    const base::ListValue& list = disabled_sync_types_value->GetList();
     for (const base::Value& type_name : list) {
       if (!type_name.is_string()) {
         errors->AddError(policy::key::kSyncTypesListDisabled,
@@ -95,7 +106,7 @@ void SyncPolicyHandler::ApplyPolicySettings(const policy::PolicyMap& policies,
   const base::Value* disabled_sync_types_value = policies.GetValue(
       policy::key::kSyncTypesListDisabled, base::Value::Type::LIST);
   if (disabled_sync_types_value) {
-    const base::Value::List& list = disabled_sync_types_value->GetList();
+    const base::ListValue& list = disabled_sync_types_value->GetList();
     for (const base::Value& type_name : list) {
       if (!type_name.is_string()) {
         continue;

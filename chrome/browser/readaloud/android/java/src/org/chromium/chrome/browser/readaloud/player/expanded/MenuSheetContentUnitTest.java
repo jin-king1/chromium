@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.readaloud.player.expanded;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -19,14 +20,15 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
-import org.chromium.base.supplier.ObservableSupplierImpl;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.readaloud.player.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
@@ -36,6 +38,7 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class MenuSheetContentUnitTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private BottomSheetController mBottomSheetController;
     @Mock private ExpandedPlayerSheetContent mBottomSheetContent;
     private Activity mActivity;
@@ -70,7 +73,6 @@ public class MenuSheetContentUnitTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mContext = ApplicationProvider.getApplicationContext();
         mActivity = Robolectric.buildActivity(AppCompatActivity.class).setup().get();
         // Need to set theme before inflating layout.
@@ -160,12 +162,13 @@ public class MenuSheetContentUnitTest {
 
     @Test
     public void testGetBackPressStateChangedSupplier() {
-        ObservableSupplierImpl<Boolean> supplier = mContent.getBackPressStateChangedSupplier();
-        assertTrue(supplier.get());
+        assertTrue(mContent.getBackPressStateChangedSupplier().get());
     }
 
     @Test
-    public void testCanSuppressInAnyState() {
-        assertTrue(mContent.canSuppressInAnyState());
+    public void testCanBeSuppressed() {
+        BottomSheetContent newContent = mock(BottomSheetContent.class);
+        when(newContent.getPriority()).thenReturn(BottomSheetContent.ContentPriority.HIGH);
+        assertTrue(mContent.canBeSuppressed(newContent));
     }
 }

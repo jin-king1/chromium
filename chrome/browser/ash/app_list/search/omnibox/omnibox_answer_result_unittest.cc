@@ -10,6 +10,7 @@
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "base/json/json_reader.h"
 #include "base/values.h"
+#include "chrome/browser/ash/app_list/search/omnibox/omnibox_types.h"
 #include "chrome/browser/ash/app_list/search/omnibox/omnibox_util.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
@@ -66,8 +67,7 @@ TEST_F(OmniboxAnswerResultTest, CalculatorResult) {
   ASSERT_EQ(details.GetType(), ash::SearchResultTextItemType::kString);
   EXPECT_EQ(details.GetText(), u"4");
   EXPECT_TRUE(details.GetTextTags().empty());
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kCalculator);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kCalculator);
 
   std::stringstream out;
   out << result;
@@ -100,8 +100,7 @@ TEST_F(OmniboxAnswerResultTest, CalculatorResultNoDescription) {
   ASSERT_EQ(details.GetType(), ash::SearchResultTextItemType::kString);
   EXPECT_EQ(details.GetText(), u"4");
   EXPECT_TRUE(details.GetTextTags().empty());
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kCalculator);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kCalculator);
 }
 
 TEST_F(OmniboxAnswerResultTest, WeatherResult) {
@@ -118,7 +117,8 @@ TEST_F(OmniboxAnswerResultTest, WeatherResult) {
       "              \"t\": [{ \"t\": \"-5°C\", \"tt\": 8 }], "
       "              \"at\": { \"t\": \"additional two\", \"tt\": 42 } } } "
       "] }";
-  std::optional<base::Value> value = base::JSONReader::Read(json);
+  std::optional<base::Value> value =
+      base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(value && value->is_dict());
   // Create weather result when ACMatch has |answer_template| populated.
   omnibox::RichAnswerTemplate answer_template;
@@ -158,8 +158,7 @@ TEST_F(OmniboxAnswerResultTest, WeatherResult) {
   EXPECT_EQ(details.GetText(), u"additional two");
   EXPECT_TRUE(details.GetTextTags().empty());
 
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kWeather);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kWeather);
 }
 
 TEST_F(OmniboxAnswerResultTest, AnswerResult) {
@@ -179,7 +178,8 @@ TEST_F(OmniboxAnswerResultTest, AnswerResult) {
       "  { \"il\": { \"t\": [{ \"t\": \"text two\", \"tt\": 5 }], "
       "              \"at\": { \"t\": \"additional two\", \"tt\": 6 } } } "
       "] }";
-  std::optional<base::Value> value = base::JSONReader::Read(json);
+  std::optional<base::Value> value =
+      base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(value && value->is_dict());
   // Create result when ACMatch has |answer_template| populated.
   omnibox::RichAnswerTemplate answer_template;
@@ -232,8 +232,7 @@ TEST_F(OmniboxAnswerResultTest, AnswerResult) {
               testing::UnorderedElementsAre(
                   TagEquals(Tag(Tag::Style::GREEN, 0, length))));
 
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kFinance);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kFinance);
 }
 
 TEST_F(OmniboxAnswerResultTest, DictionaryResultMultiline) {
@@ -247,7 +246,8 @@ TEST_F(OmniboxAnswerResultTest, DictionaryResultMultiline) {
       "  { \"il\": { \"t\": [{ \"t\": \"text one\", \"tt\": 8 }] } }, "
       "  { \"il\": { \"t\": [{ \"t\": \"text two\", \"tt\": 5 }] } } "
       "] }";
-  std::optional<base::Value> value = base::JSONReader::Read(json);
+  std::optional<base::Value> value =
+      base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(value && value->is_dict());
   // Dictionary result when ACMatch has |answer_template| populated.
   omnibox::RichAnswerTemplate answer_template;
@@ -261,8 +261,7 @@ TEST_F(OmniboxAnswerResultTest, DictionaryResultMultiline) {
                          AutocompleteInput()),
       u"query");
   EXPECT_TRUE(result.multiline_details());
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kDictionary);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kDictionary);
 }
 
 TEST_F(OmniboxAnswerResultTest, TranslationResult) {
@@ -278,8 +277,7 @@ TEST_F(OmniboxAnswerResultTest, TranslationResult) {
       CreateAnswerResult(match, /*controller=*/nullptr, u"hello in Spanish",
                          AutocompleteInput()),
       u"hello in Spanish");
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kTranslation);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kTranslation);
 }
 
 TEST_F(OmniboxAnswerResultTest, CurrencyResult) {
@@ -295,8 +293,7 @@ TEST_F(OmniboxAnswerResultTest, CurrencyResult) {
       CreateAnswerResult(match, /*controller=*/nullptr, u"100 usd in aud",
                          AutocompleteInput()),
       u"100 usd in aud");
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kCurrency);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kCurrency);
 }
 
 TEST_F(OmniboxAnswerResultTest, SunriseResult) {
@@ -312,25 +309,7 @@ TEST_F(OmniboxAnswerResultTest, SunriseResult) {
       CreateAnswerResult(match, /*controller=*/nullptr,
                          u"sunrise time in Sydney", AutocompleteInput()),
       u"sunrise time in Sydney");
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kSunrise);
-}
-
-TEST_F(OmniboxAnswerResultTest, WhenIsResult) {
-  AutocompleteMatch match;
-  match.answer_type = omnibox::ANSWER_TYPE_WHEN_IS;
-  // When is result when ACMatch has |answer_template| populated.
-  omnibox::RichAnswerTemplate answer_template;
-  answer_template.add_answers();
-  match.answer_template = answer_template;
-
-  OmniboxAnswerResult result(
-      /*profile=*/nullptr, /*list_controller=*/nullptr,
-      CreateAnswerResult(match, /*controller=*/nullptr, u"when is christmas",
-                         AutocompleteInput()),
-      u"when is christmas");
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kWhenIs);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kSunrise);
 }
 
 }  // namespace app_list::test

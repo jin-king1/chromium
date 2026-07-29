@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/sequence_checker.h"
 #include "base/strings/cstring_view.h"
 #include "base/time/clock.h"
 #include "base/time/default_clock.h"
@@ -26,13 +27,22 @@ namespace content {
 // Encapsulates an SQL database that holds DIPS info.
 class CONTENT_EXPORT BtmDatabase {
  public:
+  enum class BounceFilterType {
+    // Filter for bounces with either user activations or WebAuthn assertions.
+    kProtectiveEvent,
+    // Filter for bounces with user activations.
+    kUserActivation,
+    // Filter for bounces with WebAuthn assertions.
+    kWebAuthnAssertion,
+  };
+
   // Version number of the database schema.
   // NOTE: When changing the version, add a new golden file for the new version
   // at `//chrome/test/data/dips/v<N>.sql`.
-  static constexpr int kLatestSchemaVersion = 9;
+  static constexpr int kLatestSchemaVersion = 11;
 
   // The minimum database schema version this Chrome code is compatible with.
-  static constexpr int kMinCompatibleSchemaVersion = 9;
+  static constexpr int kMinCompatibleSchemaVersion = 11;
 
   static constexpr char kPrepopulatedKey[] = "prepopulated";
 
@@ -57,9 +67,7 @@ class CONTENT_EXPORT BtmDatabase {
 
   // DIPS Bounce table functions -----------------------------------------------
   bool Write(const std::string& site,
-             const TimestampRange& storage_times,
              const TimestampRange& user_activation_times,
-             const TimestampRange& stateful_bounce_times,
              const TimestampRange& bounce_times,
              const TimestampRange& web_authn_assertion_times);
 
@@ -70,38 +78,25 @@ class CONTENT_EXPORT BtmDatabase {
                   bool is_current_interaction,
                   bool is_authentication_interaction);
 
-  // This is implicitly `inline`. Don't move its definition to the .cc file.
-  bool HasExpired(std::optional<base::Time> time) {
-    return time.has_value() &&
-           (time.value() + features::kBtmInteractionTtl.Get()) < clock_->Now();
-  }
-
   std::optional<StateValue> Read(const std::string& site);
 
   std::optional<PopupsStateValue> ReadPopup(const std::string& opener_site,
                                             const std::string& popup_site);
 
-  // Returns all entries from the `popups` table with a current interaction,
-  // where the last popup time was more recent than `lookback` ago.
-  std::vector<PopupWithTime> ReadRecentPopupsWithInteraction(
-      const base::TimeDelta& lookback);
-
   // Note: this doesn't clear expired interactions from the database unlike
   // the other database querying methods.
   std::vector<std::string> GetAllSitesForTesting(const BtmDatabaseTable table);
 
-  // Returns the subset of sites in |sites| WITH a protective event recorded.
-  // A protective event is a user activation or successful WebAuthn assertion.
+  // Returns the subset of sites in `sites` WITH some property recorded, as
+  // determined by the filtering condition.
+  //
+  // (For example, a protective event is a user activation or successful
+  // WebAuthn assertion.)
   //
   // NOTE: This method's main procedure is performed after calling
   // `ClearExpiredRows()`.
-  //
-  // TODO(njeunje): Consider making a method FilterSites(set<string> sites,
-  // FilterType filter) that we call from this method, where FilterType lets us
-  // specify if we want to filter out user activations, WebAuthn assertions, or
-  // both. There may be other criteria that we want to filter for in the future.
-  std::set<std::string> FilterSitesWithProtectiveEvent(
-      const std::set<std::string>& sites);
+  std::set<std::string> FilterSites(const std::set<std::string>& sites,
+                                    BounceFilterType filter);
 
   // Returns all sites which bounced the user and aren't protected from DIPS.
   //
@@ -114,33 +109,6 @@ class CONTENT_EXPORT BtmDatabase {
   // NOTE: This method's main procedure is performed after calling
   // `ClearExpiredRows()`.
   std::vector<std::string> GetSitesThatBounced(base::TimeDelta grace_period);
-
-  // Returns all sites which used storage and aren't protected from DIPS.
-  //
-  // A site can be protected in several ways:
-  // - it's still in its grace period after the first storage
-  // - it received user activation or WAA before the first storage
-  // - it received user activation or WAA in the grace period after the first
-  // storage.
-  //
-  // NOTE: This method's main procedure is performed after calling
-  // `ClearExpiredRows()`.
-  std::vector<std::string> GetSitesThatUsedStorage(
-      base::TimeDelta grace_period);
-
-  // Returns all sites which statefully bounced the user and aren't protected
-  // from DIPS.
-  //
-  // A site can be protected in several ways:
-  // - it's still in its grace period after the first stateful bounce
-  // - it received user activation or WAA before the first stateful bounce
-  // - it received user activation or WAA in the grace period after the first
-  // stateful bounce.
-  //
-  // NOTE: This method's main procedure is performed after calling
-  // `ClearExpiredRows()`.
-  std::vector<std::string> GetSitesThatBouncedWithState(
-      base::TimeDelta grace_period);
 
   // Deletes all rows in the database whose interactions have expired out.
   //
@@ -160,7 +128,7 @@ class CONTENT_EXPORT BtmDatabase {
   //
   // NOTE: This method's main procedure is performed after calling
   // `ClearExpiredRows()`.
-  bool RemoveRow(const BtmDatabaseTable table, const std::string& site);
+  bool RemoveRow(const BtmDatabaseTable table, std::string_view site);
 
   bool RemoveRows(const BtmDatabaseTable table,
                   const std::vector<std::string>& sites);
@@ -275,6 +243,9 @@ class CONTENT_EXPORT BtmDatabase {
   bool SetConfigValue(std::string_view key, int64_t value);
   // Get the value for `key` from the config table, or nullopt if absent.
   std::optional<int64_t> GetConfigValue(std::string_view key);
+
+  // Checks if a given timestamp is missing or past its BTM interaction TTL.
+  bool IsNullOrExpired(std::optional<base::Time> time);
 
   // When the number of entries in the database exceeds |max_entries_|, purge
   // down to |max_entries_| - |purge_entries_|.

@@ -5,6 +5,7 @@
 #include "media/base/decoder_buffer.h"
 
 #include <sstream>
+#include <variant>
 
 #include "base/containers/heap_array.h"
 #include "base/debug/alias.h"
@@ -142,6 +143,10 @@ scoped_refptr<DecoderBuffer> DecoderBuffer::FromExternalMemory(
 // static
 scoped_refptr<DecoderBuffer> DecoderBuffer::CreateEOSBuffer(
     std::optional<ConfigVariant> next_config) {
+  if (next_config) {
+    std::visit([](auto&& config_type) { CHECK(config_type.IsValidConfig()); },
+               *next_config);
+  }
   return base::MakeRefCounted<DecoderBuffer>(base::PassKey<DecoderBuffer>(),
                                              DecoderBufferType::kEndOfStream,
                                              std::move(next_config));
@@ -167,7 +172,7 @@ bool DecoderBuffer::DoSubsamplesMatch(const DecoderBuffer& buffer) {
 }
 
 void DecoderBuffer::set_discard_padding(const DiscardPadding& discard_padding) {
-  DCHECK(!end_of_stream());
+  CHECK(!end_of_stream());
   if (!side_data_ && discard_padding == DiscardPadding()) {
     return;
   }
@@ -175,7 +180,7 @@ void DecoderBuffer::set_discard_padding(const DiscardPadding& discard_padding) {
 }
 
 DecoderBufferSideData& DecoderBuffer::WritableSideData() {
-  DCHECK(!end_of_stream());
+  CHECK(!end_of_stream());
   if (!side_data()) {
     side_data_ = std::make_unique<DecoderBufferSideData>();
   }
@@ -184,7 +189,7 @@ DecoderBufferSideData& DecoderBuffer::WritableSideData() {
 
 void DecoderBuffer::set_side_data(
     std::unique_ptr<DecoderBufferSideData> side_data) {
-  DCHECK(!end_of_stream());
+  CHECK(!end_of_stream());
   side_data_ = std::move(side_data);
 }
 
@@ -194,7 +199,7 @@ bool DecoderBuffer::MatchesMetadataForTesting(
     return false;
   }
 
-  // Note: We use `side_data_` directly to avoid DCHECKs for EOS buffers.
+  // Note: We use `side_data_` directly to avoid CHECKs for EOS buffers.
   if (side_data_ && !side_data_->Matches(*buffer.side_data_)) {
     return false;
   }
@@ -224,7 +229,7 @@ bool DecoderBuffer::MatchesForTesting(const DecoderBuffer& buffer) const {
   if (end_of_stream())
     return true;
 
-  DCHECK(!buffer.end_of_stream());
+  CHECK(!buffer.end_of_stream());
   return base::span(*this) == base::span(buffer);
 }
 
@@ -236,10 +241,10 @@ std::string DecoderBuffer::AsHumanReadableString(bool verbose) const {
 
     std::string config;
     const auto nc = next_config().value();
-    if (const auto* ac = absl::get_if<media::AudioDecoderConfig>(&nc)) {
+    if (const auto* ac = std::get_if<media::AudioDecoderConfig>(&nc)) {
       config = ac->AsHumanReadableString();
     } else {
-      config = absl::get<media::VideoDecoderConfig>(nc).AsHumanReadableString();
+      config = std::get<media::VideoDecoderConfig>(nc).AsHumanReadableString();
     }
 
     return base::StringPrintf("EOS config=(%s)", config.c_str());
@@ -270,7 +275,7 @@ std::string DecoderBuffer::AsHumanReadableString(bool verbose) const {
 }
 
 void DecoderBuffer::set_timestamp(base::TimeDelta timestamp) {
-  DCHECK(!end_of_stream());
+  CHECK(!end_of_stream());
   timestamp_ = timestamp;
 }
 
@@ -298,6 +303,15 @@ size_t DecoderBuffer::GetMemoryUsage() const {
   }
 
   return memory_usage;
+}
+
+DecoderBuffer::UnownedExternalMemory::UnownedExternalMemory(
+    base::span<const uint8_t> span)
+    : span_(span) {}
+
+const base::span<const uint8_t> DecoderBuffer::UnownedExternalMemory::Span()
+    const {
+  return span_;
 }
 
 }  // namespace media

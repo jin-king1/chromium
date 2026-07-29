@@ -4,15 +4,16 @@
 
 package org.chromium.chrome.browser.compositor.layouts.phone;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
-import static org.chromium.chrome.browser.compositor.layouts.phone.NewBackgroundTabFakeTabSwitcherButton.ANIMATION_DURATION_MS;
+import static org.chromium.chrome.browser.compositor.layouts.phone.NewBackgroundTabAnimationHostView.CROSS_FADE_DURATION_MS;
+import static org.chromium.chrome.browser.compositor.layouts.phone.NewBackgroundTabFakeTabSwitcherButton.SCALE_DOWN_DURATION_MS;
+import static org.chromium.chrome.browser.compositor.layouts.phone.NewBackgroundTabFakeTabSwitcherButton.SHRINK_DURATION_MS;
+import static org.chromium.chrome.browser.compositor.layouts.phone.NewBackgroundTabFakeTabSwitcherButton.TRANSLATE_DURATION_MS;
 
 import android.animation.Animator.AnimatorListener;
 import android.animation.AnimatorSet;
 import android.app.Activity;
+import android.content.res.Resources;
 import android.view.LayoutInflater;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -35,6 +36,7 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.compositor.layouts.phone.NewBackgroundTabFakeTabSwitcherButton.TranslateDirection;
+import org.chromium.chrome.browser.theme.ThemeUtils;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.ui.interpolators.Interpolators;
 import org.chromium.ui.test.util.BlankUiTestActivity;
@@ -54,7 +56,7 @@ public class NewBackgroundTabFakeTabSwitcherButtonRenderTest {
     public RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.UI_BROWSER_MOBILE_HUB)
-                    .setRevision(0)
+                    .setRevision(2)
                     .build();
 
     private FrameLayout mRootView;
@@ -74,11 +76,15 @@ public class NewBackgroundTabFakeTabSwitcherButtonRenderTest {
         runOnUiThreadBlocking(
                 () -> {
                     mRootView = new FrameLayout(sActivity);
-                    sActivity.setContentView(
-                            mRootView,
-                            new ViewGroup.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ViewGroup.LayoutParams.MATCH_PARENT));
+
+                    // {@link NewBackgroundTabFakeTabSwitcherButton} has "match_parent" for width
+                    // and height. To avoid large renders, we limit the content view to match {@link
+                    // NewBackgroundTabFakeTabSwitcherButton#mInnerContainer}.
+                    Resources res = sActivity.getResources();
+                    int width = res.getDimensionPixelSize(R.dimen.toolbar_button_width);
+                    int height = res.getDimensionPixelSize(R.dimen.toolbar_height_no_shadow);
+                    sActivity.setContentView(mRootView, new ViewGroup.LayoutParams(width, height));
+
                     mFakeTabSwitcherButton =
                             (NewBackgroundTabFakeTabSwitcherButton)
                                     LayoutInflater.from(sActivity)
@@ -129,7 +135,10 @@ public class NewBackgroundTabFakeTabSwitcherButtonRenderTest {
     public void testRenderFakeTabSwitcherButton_Incognito() throws Exception {
         Runnable updateRunnable =
                 () -> {
-                    mFakeTabSwitcherButton.setBrandedColorScheme(BrandedColorScheme.INCOGNITO);
+                    mFakeTabSwitcherButton.setBrandedColorScheme(
+                            BrandedColorScheme.INCOGNITO,
+                            ThemeUtils.getThemedToolbarIconTint(
+                                    sActivity, BrandedColorScheme.INCOGNITO));
                     mFakeTabSwitcherButton.setTabCount(/* tabCount= */ 4, /* isIncognito= */ true);
                 };
         runUpdateOnUiThreadAndPerformRender(updateRunnable, "fake_tab_switcher_button_4_incognito");
@@ -138,16 +147,65 @@ public class NewBackgroundTabFakeTabSwitcherButtonRenderTest {
     @Test
     @MediumTest
     @Feature({"RenderTest"})
-    public void testRenderFakeTabSwitcherButton_Rotate() throws Exception {
+    public void testRenderFakeTabSwitcherButton_Ntp() throws Exception {
+        Runnable updateRunnable =
+                () -> {
+                    mFakeTabSwitcherButton.setTabCount(/* tabCount= */ 7, /* isIncognito= */ false);
+                    mFakeTabSwitcherButton.setUpNtpAnimation(/* incrementCount= */ false);
+                    mFakeTabSwitcherButton.setTabSwitcherButtonViewAlphaForTesting(1f);
+                };
+        runUpdateOnUiThreadAndPerformRender(updateRunnable, "fake_tab_switcher_button_ntp_7");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"RenderTest"})
+    public void testRenderFakeTabSwitcherButton_Shrink() throws Exception {
         AnimatorSet animator =
                 runOnUiThreadBlocking(
                         () -> {
                             mFakeTabSwitcherButton.setTabCount(
                                     /* tabCount= */ 1, /* isIncognito= */ false);
-                            return mFakeTabSwitcherButton.getRotateAnimator(
+                            return mFakeTabSwitcherButton.getShrinkAnimator(
                                     /* incrementCount= */ true);
                         });
-        runAnimatorAndPerformRenders(animator, "fake_tab_switcher_button_rotate_1+");
+        runAnimatorAndPerformRenders(
+                animator, "fake_tab_switcher_button_shrink_1+", SHRINK_DURATION_MS);
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"RenderTest"})
+    public void testRenderFakeTabSwitcherButton_ScaleFade() throws Exception {
+        AnimatorSet animator =
+                runOnUiThreadBlocking(
+                        () -> {
+                            mFakeTabSwitcherButton.setTabCount(
+                                    /* tabCount= */ 2, /* isIncognito= */ false);
+                            mFakeTabSwitcherButton.setUpNtpAnimation(/* incrementCount= */ false);
+
+                            return mFakeTabSwitcherButton.getScaleFadeAnimator();
+                        });
+        runAnimatorAndPerformRenders(
+                animator, "fake_tab_switcher_button_scale_fade_2", CROSS_FADE_DURATION_MS);
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"RenderTest"})
+    public void testRenderFakeTabSwitcherButton_ScaleDown() throws Exception {
+        AnimatorSet animator =
+                runOnUiThreadBlocking(
+                        () -> {
+                            mFakeTabSwitcherButton.setTabCount(
+                                    /* tabCount= */ 2, /* isIncognito= */ false);
+                            mFakeTabSwitcherButton.setUpNtpAnimation(/* incrementCount= */ true);
+                            mFakeTabSwitcherButton.setTabSwitcherButtonViewAlphaForTesting(1f);
+
+                            return mFakeTabSwitcherButton.getScaleDownAnimator();
+                        });
+        runAnimatorAndPerformRenders(
+                animator, "fake_tab_switcher_button_scale_down_2+", SCALE_DOWN_DURATION_MS);
     }
 
     @Test
@@ -159,10 +217,14 @@ public class NewBackgroundTabFakeTabSwitcherButtonRenderTest {
                         () -> {
                             mFakeTabSwitcherButton.setTabCount(
                                     /* tabCount= */ 10, /* isIncognito= */ false);
+                            mFakeTabSwitcherButton.setUpNtpAnimation(/* incrementCount= */ true);
+                            mFakeTabSwitcherButton.setTabSwitcherButtonViewAlphaForTesting(1f);
+
                             return mFakeTabSwitcherButton.getTranslateAnimator(
-                                    TranslateDirection.UP, /* incrementCount= */ true);
+                                    TranslateDirection.UP);
                         });
-        runAnimatorAndPerformRenders(animator, "fake_tab_switcher_button_translate_up_10+");
+        runAnimatorAndPerformRenders(
+                animator, "fake_tab_switcher_button_translate_up_10+", TRANSLATE_DURATION_MS);
     }
 
     @Test
@@ -174,10 +236,14 @@ public class NewBackgroundTabFakeTabSwitcherButtonRenderTest {
                         () -> {
                             mFakeTabSwitcherButton.setTabCount(
                                     /* tabCount= */ 7, /* isIncognito= */ false);
+                            mFakeTabSwitcherButton.setUpNtpAnimation(/* incrementCount= */ false);
+                            mFakeTabSwitcherButton.setTabSwitcherButtonViewAlphaForTesting(1f);
+
                             return mFakeTabSwitcherButton.getTranslateAnimator(
-                                    TranslateDirection.DOWN, /* incrementCount= */ false);
+                                    TranslateDirection.DOWN);
                         });
-        runAnimatorAndPerformRenders(animator, "fake_tab_switcher_button_translate_down_7");
+        runAnimatorAndPerformRenders(
+                animator, "fake_tab_switcher_button_translate_down_7", TRANSLATE_DURATION_MS);
     }
 
     private void runUpdateOnUiThreadAndPerformRender(Runnable r, String renderTitle)
@@ -195,16 +261,12 @@ public class NewBackgroundTabFakeTabSwitcherButtonRenderTest {
         mRenderTestRule.render(mFakeTabSwitcherButton, renderTitle);
     }
 
-    private void runAnimatorAndPerformRenders(AnimatorSet animator, String renderTitlePrefix)
-            throws Exception {
+    private void runAnimatorAndPerformRenders(
+            AnimatorSet animator, String renderTitlePrefix, long duration) throws Exception {
         // Use a linear interpolator so the behavior is easier to follow.
         animator.setInterpolator(Interpolators.LINEAR_INTERPOLATOR);
 
-        Callback<Long> advanceToTime =
-                (time) -> {
-                    assertTrue(mFakeTabSwitcherButton.hasOutstandingAnimator());
-                    animator.setCurrentPlayTime(time);
-                };
+        Callback<Long> advanceToTime = animator::setCurrentPlayTime;
         Runnable startRunnable =
                 () -> {
                     // Calling start will cause the animation to begin playing which will mean we
@@ -218,18 +280,14 @@ public class NewBackgroundTabFakeTabSwitcherButtonRenderTest {
         runUpdateOnUiThreadAndPerformRender(startRunnable, renderTitlePrefix + "_start");
 
         runUpdateOnUiThreadAndPerformRender(
-                advanceToTime.bind((long) Math.round(ANIMATION_DURATION_MS / 2f)),
+                advanceToTime.bind((long) Math.round(duration / 2f)),
                 renderTitlePrefix + "_midpoint");
-
-        runUpdateOnUiThreadAndPerformRender(
-                advanceToTime.bind(ANIMATION_DURATION_MS), renderTitlePrefix + "_before_end");
 
         Runnable endRunnable =
                 () -> {
-                    // This calls the listeners and resets everything.
+                    advanceToTime.onResult(duration);
                     animator.end();
-                    assertFalse(mFakeTabSwitcherButton.hasOutstandingAnimator());
                 };
-        runUpdateOnUiThreadAndPerformRender(endRunnable, renderTitlePrefix + "_after_reset");
+        runUpdateOnUiThreadAndPerformRender(endRunnable, renderTitlePrefix + "_end");
     }
 }

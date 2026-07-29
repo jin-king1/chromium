@@ -6,6 +6,9 @@ package org.chromium.chrome.browser.browserservices.permissiondelegation;
 
 import static android.Manifest.permission.ACCESS_COARSE_LOCATION;
 import static android.Manifest.permission.ACCESS_FINE_LOCATION;
+import static android.Manifest.permission.READ_CONTACTS;
+
+import static org.chromium.components.permissions.PermissionUtil.getGeolocationType;
 
 import android.app.Activity;
 import android.content.pm.ApplicationInfo;
@@ -14,7 +17,6 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.text.TextUtils;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.UiThread;
 import androidx.annotation.VisibleForTesting;
 import androidx.browser.trusted.Token;
@@ -22,9 +24,11 @@ import androidx.browser.trusted.Token;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.webapps.WebappRegistry;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.embedder_support.util.Origin;
 
@@ -40,6 +44,7 @@ import java.util.Set;
  * <p>Lifecycle: This is a singleton. Thread safety: Only call methods on the UI thread as this
  * class may call into native. Native: Does not require native.
  */
+@NullMarked
 public class InstalledWebappPermissionManager {
     private static final String TAG = "PermissionManager";
 
@@ -56,7 +61,7 @@ public class InstalledWebappPermissionManager {
 
     static InstalledWebappBridge.Permission[] getPermissions(
             @ContentSettingsType.EnumType int type) {
-        if (type == ContentSettingsType.GEOLOCATION) {
+        if (type == getGeolocationType()) {
             if (!isRunningTwa()) {
                 return new InstalledWebappBridge.Permission[0];
             }
@@ -69,10 +74,22 @@ public class InstalledWebappPermissionManager {
                     : "Found unparsable Origins in the Permission Store : " + originAsString;
             if (origin == null) continue;
 
-            @ContentSettingValues int setting = getPermission(type, origin);
+            @ContentSetting int setting = getPermission(type, origin);
 
-            if (setting != ContentSettingValues.DEFAULT) {
-                permissions.add(new InstalledWebappBridge.Permission(origin, setting));
+            if (setting != ContentSetting.DEFAULT) {
+                @ContentSetting int preciseSetting = setting;
+                if (type == ContentSettingsType.GEOLOCATION_WITH_OPTIONS) {
+                    String packageName = getDelegatePackageName(origin);
+                    Boolean fineEnabled = hasAndroidFineLocationPermission(packageName);
+                    if (setting == ContentSetting.ALLOW) {
+                        preciseSetting =
+                                (fineEnabled != null && fineEnabled)
+                                        ? ContentSetting.ALLOW
+                                        : ContentSetting.BLOCK;
+                    }
+                }
+                permissions.add(
+                        new InstalledWebappBridge.Permission(origin, setting, preciseSetting));
             }
         }
 
@@ -88,17 +105,18 @@ public class InstalledWebappPermissionManager {
     }
 
     @UiThread
-    @Nullable
-    public static Set<Token> getAllDelegateApps(Origin origin) {
+    public static @Nullable Set<Token> getAllDelegateApps(Origin origin) {
         return getStore().getAllDelegateApps(origin);
     }
 
     @UiThread
     public static void updatePermission(
             Origin origin,
-            String packageName,
+            @Nullable String packageName,
             @ContentSettingsType.EnumType int type,
-            @ContentSettingValues int settingValue) {
+            @ContentSetting int settingValue) {
+        if (packageName == null) return;
+
         String appName = getAppNameForPackage(packageName);
         if (appName == null) return;
 
@@ -126,6 +144,7 @@ public class InstalledWebappPermissionManager {
 
         InstalledWebappBridge.notifyPermissionsChange(ContentSettingsType.NOTIFICATIONS);
         InstalledWebappBridge.notifyPermissionsChange(ContentSettingsType.GEOLOCATION);
+        InstalledWebappBridge.notifyPermissionsChange(ContentSettingsType.GEOLOCATION_WITH_OPTIONS);
     }
 
     @UiThread
@@ -174,13 +193,12 @@ public class InstalledWebappPermissionManager {
     }
 
     @VisibleForTesting
-    @ContentSettingValues
+    @ContentSetting
     static int getPermission(@ContentSettingsType.EnumType int type, Origin origin) {
         switch (type) {
             case ContentSettingsType.NOTIFICATIONS:
                 {
-                    @ContentSettingValues
-                    Integer settingValue = getStore().getPermission(type, origin);
+                    @ContentSetting Integer settingValue = getStore().getPermission(type, origin);
                     if (settingValue == null) {
                         Log.w(TAG, "Origin %s is known but has no permission set.", origin);
                         break;
@@ -188,6 +206,7 @@ public class InstalledWebappPermissionManager {
                     return settingValue;
                 }
             case ContentSettingsType.GEOLOCATION:
+            case ContentSettingsType.GEOLOCATION_WITH_OPTIONS:
                 {
                     String packageName = getDelegatePackageName(origin);
                     Boolean enabled = hasAndroidLocationPermission(packageName);
@@ -195,38 +214,62 @@ public class InstalledWebappPermissionManager {
                     // Skip if the delegated app did not enable location delegation.
                     if (enabled == null) break;
 
-                    @ContentSettingValues
+                    @ContentSetting
                     Integer storedPermission = getStore().getPermission(type, origin);
 
                     // Return |ASK| if is the first time (no previous state), and is not enabled.
-                    if (storedPermission == null && !enabled) return ContentSettingValues.ASK;
+                    if (storedPermission == null && !enabled) return ContentSetting.ASK;
 
                     // This is a temperate solution for the new Android one-time permission. Since
                     // we are not able to detect if use is changing the setting to "ask every
                     // time", when there is no permission, return ASK to let the client app decide
                     // whether to show the prompt.
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        if (!enabled) return ContentSettingValues.ASK;
+                        if (!enabled) return ContentSetting.ASK;
                     }
 
-                    @ContentSettingValues
-                    int settingValue =
-                            enabled ? ContentSettingValues.ALLOW : ContentSettingValues.BLOCK;
+                    @ContentSetting
+                    int settingValue = enabled ? ContentSetting.ALLOW : ContentSetting.BLOCK;
 
-                    updatePermission(
-                            origin, packageName, ContentSettingsType.GEOLOCATION, settingValue);
+                    updatePermission(origin, packageName, getGeolocationType(), settingValue);
 
                     return settingValue;
                 }
         }
-        return ContentSettingValues.DEFAULT;
+        return ContentSetting.DEFAULT;
+    }
+
+    /**
+     * Returns whether the delegate application for the origin has Android contacts permission, or
+     * {@code null} if it does not exist or did not request contacts permission.
+     */
+    public static @Nullable Boolean hasAndroidContactsPermission(@Nullable String packageName) {
+        return hasAndroidPermissions(packageName, new String[] {READ_CONTACTS});
     }
 
     /**
      * Returns whether the delegate application for the origin has Android location permission, or
      * {@code null} if it does not exist or did not request location permission.
-     **/
-    public static @Nullable Boolean hasAndroidLocationPermission(String packageName) {
+     */
+    public static @Nullable Boolean hasAndroidLocationPermission(@Nullable String packageName) {
+        return hasAndroidPermissions(
+                packageName, new String[] {ACCESS_COARSE_LOCATION, ACCESS_FINE_LOCATION});
+    }
+
+    /**
+     * Returns whether the delegate application for the origin has Android fine location permission,
+     * or {@code null} if it does not exist or did not request fine location permission.
+     */
+    public static @Nullable Boolean hasAndroidFineLocationPermission(@Nullable String packageName) {
+        return hasAndroidPermissions(packageName, new String[] {ACCESS_FINE_LOCATION});
+    }
+
+    /**
+     * Returns whether the delegate application for the origin has any of specific Android
+     * permissions, or {@code null} if it does not exist or did not request those permissions.
+     */
+    public static @Nullable Boolean hasAndroidPermissions(
+            @Nullable String packageName, String[] permissions) {
         if (packageName == null) return null;
 
         try {
@@ -237,22 +280,27 @@ public class InstalledWebappPermissionManager {
             String[] requestedPermissions = packageInfo.requestedPermissions;
             int[] requestedPermissionsFlags = packageInfo.requestedPermissionsFlags;
 
-            if (requestedPermissions != null) {
-                boolean locationRequested = false;
-                for (int i = 0; i < requestedPermissions.length; ++i) {
-                    if (ACCESS_COARSE_LOCATION.equals(requestedPermissions[i])
-                            || ACCESS_FINE_LOCATION.equals(requestedPermissions[i])) {
-                        if ((requestedPermissionsFlags[i]
-                                        & PackageInfo.REQUESTED_PERMISSION_GRANTED)
-                                != 0) {
+            if (requestedPermissions == null) {
+                return null;
+            }
+
+            boolean requested = false;
+            for (int i = 0; i < requestedPermissions.length; ++i) {
+                for (String permission : permissions) {
+                    if (permission.equals(requestedPermissions[i])) {
+                        if (requestedPermissionsFlags != null
+                                && ((requestedPermissionsFlags[i]
+                                                & PackageInfo.REQUESTED_PERMISSION_GRANTED)
+                                        != 0)) {
                             return true;
                         }
-                        locationRequested = true;
+                        requested = true;
+                        break;
                     }
                 }
-                // Coarse or fine Location requested but not granted.
-                if (locationRequested) return false;
             }
+            // Permissions requested but not granted.
+            if (requested) return false;
         } catch (PackageManager.NameNotFoundException e) {
             Log.e(TAG, "Couldn't find name for client package: %s", packageName);
         }

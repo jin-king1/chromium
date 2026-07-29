@@ -5,14 +5,19 @@
 #import <UIKit/UIKit.h>
 #import <XCTest/XCTest.h>
 
-#import "base/ios/ios_util.h"
+#import "base/strings/string_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
-#import "ios/chrome/browser/browser_container/ui_bundled/edit_menu_app_interface.h"
+#import "ios/chrome/browser/browser_content/ui_bundled/edit_menu_app_interface.h"
+#import "ios/chrome/browser/browser_content/ui_bundled/edit_menu_matchers.h"
+#import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
+#import "ios/chrome/browser/reader_mode/model/features.h"
+#import "ios/chrome/browser/reader_mode/ui/constants.h"
 #import "ios/chrome/browser/search_engines/model/search_engines_app_interface.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
+#import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
@@ -24,7 +29,12 @@
 
 namespace {
 
-const char kElementToLongPress[] = "selectid";
+const char kCSSSelectorToLongPress[] = "em";
+
+// Returns an ElementSelector for `ElementToLongPress`.
+ElementSelector* ElementToLongPressSelector() {
+  return [ElementSelector selectorWithCSSSelector:kCSSSelectorToLongPress];
+}
 
 // An HTML template that puts some text in a simple span element.
 const char kBasicSelectionUrl[] = "/basic";
@@ -37,7 +47,19 @@ const char kBasicSelectionHtmlTemplate[] =
     "  </head>"
     "  <body>"
     "    Page Loaded <br/><br/>"
-    "    This text contains a <span id='selectid'>text</span>.<br/><br/><br/>"
+    "    This text contains a <em>text</em>.<br/><br/><br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
+    "    Other very interesting text<br/>"
     "  </body>"
     "</html>";
 
@@ -64,9 +86,9 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   http_response->set_code(net::HTTP_OK);
   GURL request_url = request.GetURL();
 
-  if (request_url.path_piece() == kBasicSelectionUrl) {
+  if (request_url.path() == kBasicSelectionUrl) {
     http_response->set_content(kBasicSelectionHtmlTemplate);
-  } else if (request_url.path_piece() == kSearchResultUrl) {
+  } else if (request_url.path() == kSearchResultUrl) {
     std::string html = kSearchResultHtmlTemplate;
     std::string query;
     bool has_query = net::GetValueForKeyInQuery(request_url, "q", &query);
@@ -81,74 +103,22 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
   return std::move(http_response);
 }
 
-// Go through the pages and find the element with accessibility
-// `accessibility_label`. Returns whether the action can be found.
-bool FindEditMenuAction(NSString* accessibility_label) {
-  // The menu should be visible.
-  [[EarlGrey selectElementWithMatcher:[EditMenuAppInterface editMenuMatcher]]
-      assertWithMatcher:grey_sufficientlyVisible()];
-
-  // Start on first screen (previous not visible or disabled).
-  NSError* error = nil;
-  [[EarlGrey selectElementWithMatcher:[EditMenuAppInterface
-                                          editMenuPreviousButtonMatcher]]
-      assertWithMatcher:grey_allOf(grey_enabled(), grey_sufficientlyVisible(),
-                                   nil)
-                  error:&error];
-  GREYAssert(error, @"FindEditMenuAction not called on the first page.");
-  error = nil;
-  [[[EarlGrey
-      selectElementWithMatcher:
-          grey_allOf(
-              [EditMenuAppInterface
-                  editMenuActionWithAccessibilityLabel:accessibility_label],
-              grey_sufficientlyVisible(), nil)]
-         usingSearchAction:grey_tap()
-      onElementWithMatcher:[EditMenuAppInterface editMenuNextButtonMatcher]]
-      assertWithMatcher:grey_sufficientlyVisible()
-                  error:&error];
-  return !error;
-}
-
-// Long presses on `element_id`.
-void LongPressElement(const char* element_id) {
-  // Use triggers_context_menu = true as this is really "triggers_browser_menu".
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
-      performAction:chrome_test_util::LongPressElementForContextMenu(
-                        [ElementSelector selectorWithElementID:element_id],
-                        true)];
-}
-
-// Convenient function to trigger the Edit Menu on `kElementToLongPress`.
-// TODO(crbug.com/40264849): extract this function and have all edit menu
-// tests use it.
-void TriggerEditMenu() {
-  [[EarlGrey selectElementWithMatcher:[EditMenuAppInterface editMenuMatcher]]
-      assertWithMatcher:grey_notVisible()];
-  LongPressElement(kElementToLongPress);
-
-  NSError* error = nil;
-  [[EarlGrey selectElementWithMatcher:[EditMenuAppInterface editMenuMatcher]]
-      assertWithMatcher:grey_sufficientlyVisible()
-                  error:&error];
-  if (error) {
-    // If edit is not visible, try to tap the element again.
-    // This is possible on inputs when the first long press just selects the
-    // input.
-    LongPressElement(kElementToLongPress);
-    [[EarlGrey selectElementWithMatcher:[EditMenuAppInterface editMenuMatcher]]
-        assertWithMatcher:grey_sufficientlyVisible()];
-  }
-}
-
 }  // namespace
 
 // Tests for the Search With Edit menu entry.
 @interface SearchWithMediatorTestCase : ChromeTestCase
-@property(nonatomic, strong) NSString* defaultSearchEngine;
+@property(nonatomic, copy) NSString* defaultSearchEngine;
 @end
 
 @implementation SearchWithMediatorTestCase
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+
+  if ([self isRunningTest:@selector(testSearchWithReaderMode)]) {
+    config.features_enabled.push_back(kEnableReaderModeInUS);
+  }
+  return config;
+}
 
 - (void)setUp {
   [super setUp];
@@ -179,18 +149,12 @@ void TriggerEditMenu() {
 }
 
 - (void)testSearchWith {
-  if (!base::ios::IsRunningOnIOS16OrLater()) {
-    // Feature disabled on iOS15-.
-    EARL_GREY_TEST_SKIPPED(@"Test disabled on iOS15-");
-  }
   [self loadPage];
-  TriggerEditMenu();
-  bool found = FindEditMenuAction(@"Search with test");
-  GREYAssertTrue(found, @"Search Web button not found");
-  [[EarlGrey selectElementWithMatcher:
-                 [EditMenuAppInterface
-                     editMenuActionWithAccessibilityLabel:@"Search with test"]]
-      performAction:grey_tap()];
+  [ChromeEarlGreyUI triggerEditMenu:ElementToLongPressSelector()];
+  id<GREYMatcher> matcher =
+      FindEditMenuActionWithAccessibilityLabel(@"Search with test");
+  GREYAssertNotEqual(matcher, nil, @"Search Web button not found");
+  [[EarlGrey selectElementWithMatcher:matcher] performAction:grey_tap()];
   [ChromeEarlGrey waitForWebStateContainingText:"Search Result"];
   [ChromeEarlGrey waitForWebStateContainingText:"text"];
   GREYAssertEqual(2UL, [ChromeEarlGrey mainTabCount],
@@ -198,24 +162,42 @@ void TriggerEditMenu() {
 }
 
 - (void)testSearchWithIncognito {
-  if (!base::ios::IsRunningOnIOS16OrLater()) {
-    // Feature disabled on iOS15-.
-    EARL_GREY_TEST_SKIPPED(@"Test disabled on iOS15-");
-  }
   [ChromeEarlGrey openNewIncognitoTab];
   [self loadPage];
-  TriggerEditMenu();
-  bool found = FindEditMenuAction(@"Search with test");
-  GREYAssertTrue(found, @"Search Web button not found");
-  [[EarlGrey selectElementWithMatcher:
-                 [EditMenuAppInterface
-                     editMenuActionWithAccessibilityLabel:@"Search with test"]]
-      performAction:grey_tap()];
+  [ChromeEarlGreyUI triggerEditMenu:ElementToLongPressSelector()];
+  id<GREYMatcher> matcher =
+      FindEditMenuActionWithAccessibilityLabel(@"Search with test");
+  GREYAssertNotEqual(matcher, nil, @"Search Web button not found");
+  [[EarlGrey selectElementWithMatcher:matcher] performAction:grey_tap()];
   [ChromeEarlGrey waitForWebStateContainingText:"Search Result"];
   [ChromeEarlGrey waitForWebStateContainingText:"text"];
   GREYAssertTrue([ChromeEarlGrey isIncognitoMode],
                  @"Incognito search should stay in incognito");
   GREYAssertEqual(2UL, [ChromeEarlGrey incognitoTabCount],
+                  @"Search Should be in new tab");
+}
+
+- (void)testSearchWithReaderMode {
+  [self loadPage];
+
+  // Open Reader Mode UI.
+  GREYAssertTrue(
+      [ChromeEarlGrey showReaderModeAndWaitUntilReaderModeWebStateIsReady],
+      @"Reader mode content could not be loaded");
+
+  // Wait for Reader Mode UI to appear on-screen.
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:
+          grey_accessibilityID(kReaderModeViewAccessibilityIdentifier)];
+
+  [ChromeEarlGreyUI triggerEditMenu:ElementToLongPressSelector()];
+  id<GREYMatcher> matcher =
+      FindEditMenuActionWithAccessibilityLabel(@"Search with test");
+  GREYAssertNotEqual(matcher, nil, @"Search Web button not found");
+  [[EarlGrey selectElementWithMatcher:matcher] performAction:grey_tap()];
+  [ChromeEarlGrey waitForWebStateContainingText:"Search Result"];
+  [ChromeEarlGrey waitForWebStateContainingText:"text"];
+  GREYAssertEqual(2UL, [ChromeEarlGrey mainTabCount],
                   @"Search Should be in new tab");
 }
 

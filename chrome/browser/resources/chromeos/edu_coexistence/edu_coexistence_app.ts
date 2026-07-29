@@ -51,6 +51,7 @@ export class EduCoexistenceApp extends EduCoexistenceAppBase {
     };
   }
 
+  declare isErrorShown: boolean;
   currentScreen: Screens;
 
   override ready() {

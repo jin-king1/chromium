@@ -10,10 +10,10 @@
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
-#include "chrome/browser/web_applications/web_app_utils.h"
 #include "components/grit/components_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/webapps/browser/android/webapk/webapk_types.h"
+#include "components/webapps/browser/web_app_error_page_constants.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -64,7 +64,7 @@ content::mojom::AlternativeErrorPageOverrideInfoPtr GetOfflinePageInfo(
   auto alternative_error_page_info =
       content::mojom::AlternativeErrorPageOverrideInfo::New();
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   for (size_t i = 0; i < resource_strings.size(); ++i) {
     WebApkDetailsForDefaultOfflinePage field_id =
         (WebApkDetailsForDefaultOfflinePage)fields[i];
@@ -89,3 +89,5 @@ content::mojom::AlternativeErrorPageOverrideInfoPtr GetOfflinePageInfo(
 }
 
 }  // namespace web_app
+
+DEFINE_JNI(WebApkDataProvider)

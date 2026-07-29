@@ -7,13 +7,14 @@ package org.chromium.chrome.browser.feedback;
 import android.os.SystemClock;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.net.ConnectionType;
 import org.chromium.net.NetworkChangeNotifier;
@@ -25,9 +26,10 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * A utility class for checking if the device is currently connected to the Internet by using
- * both available network stacks, and checking over both HTTP and HTTPS.
+ * A utility class for checking if the device is currently connected to the Internet by using both
+ * available network stacks, and checking over both HTTP and HTTPS.
  */
+@NullMarked
 public class ConnectivityTask {
     private static final String TAG = "feedback";
 
@@ -218,12 +220,12 @@ public class ConnectivityTask {
         }
 
         /**
-         * Starts the current task by calling the appropriate method on the
-         * {@link ConnectivityChecker}.
-         * The result will be put in {@link #mResult} when it comes back from the network stack.
+         * Starts the current task by calling the appropriate method on the {@link
+         * ConnectivityChecker}. The result will be put in {@link #mResult} when it comes back from
+         * the network stack.
          */
         public void start(Profile profile, int timeoutMs) {
-            Log.v(TAG, "Starting task for " + mType);
+            Log.v(TAG, "Starting task for %d", mType);
             switch (mType) {
                 case Type.CHROME_HTTP:
                     ConnectivityChecker.checkConnectivityChromeNetworkStack(
@@ -249,10 +251,9 @@ public class ConnectivityTask {
             ThreadUtils.assertOnUiThread();
             Log.v(
                     TAG,
-                    "Got result for "
-                            + getHumanReadableType(mType)
-                            + ": result = "
-                            + getHumanReadableResult(result));
+                    "Got result for %s: result = %s",
+                    getHumanReadableType(mType),
+                    getHumanReadableResult(result));
             mResult.put(mType, result);
             if (isDone()) postCallbackResult();
         }
@@ -272,11 +273,11 @@ public class ConnectivityTask {
 
     private final Map<Integer, Integer> mResult = new HashMap<>();
     private final int mTimeoutMs;
-    private final ConnectivityResult mCallback;
+    private final @Nullable ConnectivityResult mCallback;
     private final long mStartCheckTimeMs;
 
     @VisibleForTesting
-    ConnectivityTask(Profile profile, int timeoutMs, ConnectivityResult callback) {
+    ConnectivityTask(Profile profile, int timeoutMs, @Nullable ConnectivityResult callback) {
         mTimeoutMs = timeoutMs;
         mCallback = callback;
         mStartCheckTimeMs = SystemClock.elapsedRealtime();

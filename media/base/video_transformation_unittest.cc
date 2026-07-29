@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/base/video_transformation.h"
 
@@ -42,42 +38,42 @@ class VideoTransformationTest : public testing::Test {
 // }
 TEST_F(VideoTransformationTest, MatrixToVideoTransformation) {
   std::array<int32_t, 4> mat = {65536, 0, 0, 65536};
-  auto t = VideoTransformation(mat.data());
+  auto t = VideoTransformation(mat);
   EXPECT_EQ(t.rotation, VIDEO_ROTATION_0);
   EXPECT_FALSE(t.mirrored);
 
   mat = {-65536, 0, 0, 65536};
-  t = VideoTransformation(mat.data());
+  t = VideoTransformation(mat);
   EXPECT_EQ(t.rotation, VIDEO_ROTATION_0);
   EXPECT_TRUE(t.mirrored);
 
   mat = {0, 65536, -65536, 0};
-  t = VideoTransformation(mat.data());
+  t = VideoTransformation(mat);
   EXPECT_EQ(t.rotation, VIDEO_ROTATION_90);
   EXPECT_FALSE(t.mirrored);
 
   mat = {0, 65536, 65536, 0};
-  t = VideoTransformation(mat.data());
+  t = VideoTransformation(mat);
   EXPECT_EQ(t.rotation, VIDEO_ROTATION_90);
   EXPECT_TRUE(t.mirrored);
 
   mat = {-65536, 0, 0, -65536};
-  t = VideoTransformation(mat.data());
+  t = VideoTransformation(mat);
   EXPECT_EQ(t.rotation, VIDEO_ROTATION_180);
   EXPECT_FALSE(t.mirrored);
 
   mat = {65536, 0, 0, -65536};
-  t = VideoTransformation(mat.data());
+  t = VideoTransformation(mat);
   EXPECT_EQ(t.rotation, VIDEO_ROTATION_180);
   EXPECT_TRUE(t.mirrored);
 
   mat = {0, -65536, 65536, 0};
-  t = VideoTransformation(mat.data());
+  t = VideoTransformation(mat);
   EXPECT_EQ(t.rotation, VIDEO_ROTATION_270);
   EXPECT_FALSE(t.mirrored);
 
   mat = {0, -65536, -65536, 0};
-  t = VideoTransformation(mat.data());
+  t = VideoTransformation(mat);
   EXPECT_EQ(t.rotation, VIDEO_ROTATION_270);
   EXPECT_TRUE(t.mirrored);
 }
@@ -85,36 +81,36 @@ TEST_F(VideoTransformationTest, MatrixToVideoTransformation) {
 TEST_F(VideoTransformationTest, ComputeMatrix) {
   // Standard 90 degree increments with no rotation all end up rotated normally
   VideoTransformation transformation = VideoTransformation(VIDEO_ROTATION_0);
-  EXPECT_EQ(VideoTransformation(transformation.GetMatrix().data()),
+  EXPECT_EQ(VideoTransformation(transformation.GetMatrix()),
             VideoTransformation(VIDEO_ROTATION_0, false));
 
   transformation = VideoTransformation(VIDEO_ROTATION_90, false);
-  EXPECT_EQ(VideoTransformation(transformation.GetMatrix().data()),
+  EXPECT_EQ(VideoTransformation(transformation.GetMatrix()),
             VideoTransformation(VIDEO_ROTATION_90, false));
 
   transformation = VideoTransformation(VIDEO_ROTATION_180);
-  EXPECT_EQ(VideoTransformation(transformation.GetMatrix().data()),
+  EXPECT_EQ(VideoTransformation(transformation.GetMatrix()),
             VideoTransformation(VIDEO_ROTATION_180, false));
 
   transformation = VideoTransformation(VIDEO_ROTATION_270);
-  EXPECT_EQ(VideoTransformation(transformation.GetMatrix().data()),
+  EXPECT_EQ(VideoTransformation(transformation.GetMatrix()),
             VideoTransformation(VIDEO_ROTATION_270, false));
 
   // Test the mirrored cases
   transformation = VideoTransformation(VIDEO_ROTATION_0, true);
-  EXPECT_EQ(VideoTransformation(transformation.GetMatrix().data()),
+  EXPECT_EQ(VideoTransformation(transformation.GetMatrix()),
             VideoTransformation(VIDEO_ROTATION_0, true));
 
   transformation = VideoTransformation(VIDEO_ROTATION_90, true);
-  EXPECT_EQ(VideoTransformation(transformation.GetMatrix().data()),
+  EXPECT_EQ(VideoTransformation(transformation.GetMatrix()),
             VideoTransformation(VIDEO_ROTATION_90, true));
 
   transformation = VideoTransformation(VIDEO_ROTATION_180, true);
-  EXPECT_EQ(VideoTransformation(transformation.GetMatrix().data()),
+  EXPECT_EQ(VideoTransformation(transformation.GetMatrix()),
             VideoTransformation(VIDEO_ROTATION_180, true));
 
   transformation = VideoTransformation(VIDEO_ROTATION_270, true);
-  EXPECT_EQ(VideoTransformation(transformation.GetMatrix().data()),
+  EXPECT_EQ(VideoTransformation(transformation.GetMatrix()),
             VideoTransformation(VIDEO_ROTATION_270, true));
 }
 
@@ -197,6 +193,25 @@ TEST_F(VideoTransformationTest, Add) {
   EXPECT_EQ(VideoTransformation(VIDEO_ROTATION_90, true)
                 .add(VideoTransformation(VIDEO_ROTATION_270, true)),
             VideoTransformation(VIDEO_ROTATION_180, false));
+}
+
+TEST_F(VideoTransformationTest, IsOrthogonal) {
+  // Test standalone IsOrthogonal(VideoRotation)
+  EXPECT_FALSE(IsOrthogonal(VIDEO_ROTATION_0));
+  EXPECT_TRUE(IsOrthogonal(VIDEO_ROTATION_90));
+  EXPECT_FALSE(IsOrthogonal(VIDEO_ROTATION_180));
+  EXPECT_TRUE(IsOrthogonal(VIDEO_ROTATION_270));
+
+  // Test member VideoTransformation::IsOrthogonal()
+  EXPECT_FALSE(VideoTransformation(VIDEO_ROTATION_0, false).IsOrthogonal());
+  EXPECT_TRUE(VideoTransformation(VIDEO_ROTATION_90, false).IsOrthogonal());
+  EXPECT_FALSE(VideoTransformation(VIDEO_ROTATION_180, false).IsOrthogonal());
+  EXPECT_TRUE(VideoTransformation(VIDEO_ROTATION_270, false).IsOrthogonal());
+
+  EXPECT_FALSE(VideoTransformation(VIDEO_ROTATION_0, true).IsOrthogonal());
+  EXPECT_TRUE(VideoTransformation(VIDEO_ROTATION_90, true).IsOrthogonal());
+  EXPECT_FALSE(VideoTransformation(VIDEO_ROTATION_180, true).IsOrthogonal());
+  EXPECT_TRUE(VideoTransformation(VIDEO_ROTATION_270, true).IsOrthogonal());
 }
 
 }  // namespace media

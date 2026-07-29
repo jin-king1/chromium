@@ -16,17 +16,16 @@
 #include <utility>
 #include <vector>
 
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/extensions_activity.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/time.h"
 #include "components/sync/base/unique_position.h"
 #include "components/sync/engine/active_devices_invalidation_info.h"
@@ -35,8 +34,8 @@
 #include "components/sync/engine/cycle/sync_cycle_context.h"
 #include "components/sync/engine/data_type_activation_response.h"
 #include "components/sync/engine/forwarding_data_type_processor.h"
+#include "components/sync/engine/keystore_keys_handler.h"
 #include "components/sync/engine/net/server_connection_manager.h"
-#include "components/sync/engine/nigori/keystore_keys_handler.h"
 #include "components/sync/engine/sync_scheduler_impl.h"
 #include "components/sync/engine/syncer_proto_util.h"
 #include "components/sync/protocol/bookmark_specifics.pb.h"
@@ -45,8 +44,8 @@
 #include "components/sync/protocol/preference_specifics.pb.h"
 #include "components/sync/protocol/sync.pb.h"
 #include "components/sync/protocol/sync_enums.pb.h"
+#include "components/sync/test/fake_connection_manager.h"
 #include "components/sync/test/fake_sync_encryption_handler.h"
-#include "components/sync/test/mock_connection_manager.h"
 #include "components/sync/test/mock_data_type_processor.h"
 #include "components/sync/test/mock_debug_info_getter.h"
 #include "components/sync/test/mock_nudge_handler.h"
@@ -59,6 +58,7 @@ namespace {
 
 using testing::ElementsAre;
 using testing::IsEmpty;
+using testing::SizeIs;
 using testing::UnorderedElementsAre;
 
 sync_pb::EntitySpecifics MakeSpecifics(DataType data_type) {
@@ -119,7 +119,6 @@ class SyncerTest : public testing::Test,
     }
   }
 
-  void OnReceivedGuRetryDelay(const base::TimeDelta& delay) override {}
   void OnReceivedMigrationRequest(DataTypeSet types) override {}
   void OnReceivedQuotaParamsForExtensionTypes(
       std::optional<int> max_tokens,
@@ -163,7 +162,7 @@ class SyncerTest : public testing::Test,
   }
 
   void SetUp() override {
-    mock_server_ = std::make_unique<MockConnectionManager>();
+    mock_server_ = std::make_unique<FakeConnectionManager>();
     debug_info_getter_ = std::make_unique<MockDebugInfoGetter>();
     std::vector<SyncEngineEventListener*> listeners;
     listeners.push_back(this);
@@ -245,7 +244,7 @@ class SyncerTest : public testing::Test,
   FakeSyncEncryptionHandler encryption_handler_;
   scoped_refptr<ExtensionsActivity> extensions_activity_ =
       new ExtensionsActivity;
-  std::unique_ptr<MockConnectionManager> mock_server_;
+  std::unique_ptr<FakeConnectionManager> mock_server_;
   CancelationSignal cancelation_signal_;
   std::map<DataType, MockDataTypeProcessor> mock_data_type_processors_;
 
@@ -939,10 +938,6 @@ TEST_F(SyncerTest, ShouldNotPopulateTooManyFcmRegistrationTokens) {
 
 TEST_F(SyncerTest,
        ShouldNotPopulateOptimizationFlagsIfDeviceInfoRecentlyUpdated) {
-  base::test::ScopedFeatureList override_features;
-  override_features.InitAndEnableFeature(
-      kSkipInvalidationOptimizationsWhenDeviceInfoUpdated);
-
   EnableDatatype(DEVICE_INFO);
   mock_server_->AddUpdateSpecifics("id", /*parent_id=*/"", "name",
                                    /*version=*/1, /*sync_ts=*/10,
@@ -1092,13 +1087,14 @@ TEST_F(SyncerTest, ConfigureDownloadsTwoBatchesSuccess) {
 
   // The type should have received the initial updates.
   EXPECT_EQ(1U, GetProcessor(PREFERENCES)->GetNumUpdateResponses());
+  EXPECT_THAT(mock_server_->requests(), SizeIs(2));
 }
 
 // Same as the above case, but this time the second batch fails to download.
 TEST_F(SyncerTest, ConfigureFailsDontApplyUpdates) {
-  // The scenario: we have two batches of updates with one update each.  A
-  // normal confgure step would download all the updates one batch at a time and
-  // apply them.  This configure will succeed in downloading the first batch
+  // The scenario: we have two batches of updates with one update each. A
+  // normal configure step would download all the updates one batch at a time
+  // and apply them. This configure will succeed in downloading the first batch
   // then fail when downloading the second.
   mock_server_->FailNthPostBufferToPathCall(2);
 
@@ -1187,6 +1183,31 @@ TEST_F(SyncerTest, CommitOnlyTypes) {
   EXPECT_EQ(2, commit.entries_size());
   EXPECT_TRUE(commit.entries(0).specifics().has_extension());
   EXPECT_TRUE(commit.entries(1).specifics().has_user_event());
+}
+
+TEST_F(SyncerTest, ShouldEarlyExitDownloadIfRequested) {
+  // Construct the first GetUpdates response.
+  mock_server_->AddUpdatePref("id1", "", "one", 1, 10);
+  mock_server_->SetChangesRemaining(1);
+  mock_server_->NextUpdateBatch();
+
+  // Construct the second GetUpdates response.
+  mock_server_->AddUpdatePref("id2", "", "two", 2, 20);
+
+  ASSERT_EQ(0U, GetProcessor(PREFERENCES)->GetNumUpdateResponses());
+
+  // Request early exit. The first GetUpdates response should be downloaded, but
+  // the second one should be skipped.
+  cancelation_signal_.Signal();
+  SyncShareConfigure();
+
+  // No updates should be applied to the processor but there should be a single
+  // GetUpdates request.
+  EXPECT_EQ(0U, GetProcessor(PREFERENCES)->GetNumUpdateResponses());
+  EXPECT_THAT(mock_server_->requests(), SizeIs(1));
+
+  // One update is still pending.
+  mock_server_->ClearUpdatesQueue();
 }
 
 enum {

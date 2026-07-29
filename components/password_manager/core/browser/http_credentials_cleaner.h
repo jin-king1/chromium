@@ -14,7 +14,7 @@
 
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "components/password_manager/core/browser/credentials_cleaner.h"
 #include "components/password_manager/core/browser/hsts_query.h"
@@ -86,15 +86,16 @@ class HttpCredentialCleaner : public PasswordStoreConsumer,
   using FormKey = std::tuple<std::string, PasswordForm::Scheme, std::u16string>;
 
   // PasswordStoreConsumer:
-  void OnGetPasswordStoreResults(
-      std::vector<std::unique_ptr<PasswordForm>> results) override;
+  void OnGetPasswordStoreResultsOrErrorFrom(
+      PasswordStoreInterface* store,
+      LoginsResultOrError results_or_error) override;
 
   // This function will inform us using |hsts_result| parameter if the |form|'s
   // host has HSTS enabled. |key| is |form|'s encoding which is used for
   // matching |form| with an HTTPS credential with the same FormKey.
   // Inside the function the metric counters are updated and, if needed, the
   // |form| is removed or migrated to HTTPS.
-  void OnHSTSQueryResult(std::unique_ptr<PasswordForm> form,
+  void OnHSTSQueryResult(PasswordForm form,
                          FormKey key,
                          HSTSResult hsts_result);
 

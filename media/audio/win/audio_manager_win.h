@@ -31,13 +31,13 @@ class MEDIA_EXPORT AudioManagerWin : public AudioManagerBase {
   // Implementation of AudioManager.
   bool HasAudioOutputDevices() override;
   bool HasAudioInputDevices() override;
-  void GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
-  void GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
+  bool GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
+  bool GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
   AudioParameters GetInputStreamParameters(
       const std::string& device_id) override;
   std::string GetAssociatedOutputDeviceID(
       const std::string& input_device_id) override;
-  const char* GetName() override;
+  const std::string_view GetName() override;
 
   // Implementation of AudioManagerBase.
   AudioOutputStream* MakeLinearOutputStream(
@@ -55,16 +55,16 @@ class MEDIA_EXPORT AudioManagerWin : public AudioManagerBase {
       const AudioParameters& params,
       const std::string& device_id,
       const LogCallback& log_callback) override;
+#if BUILDFLAG(ENABLE_PASSTHROUGH_AUDIO_CODECS)
   AudioOutputStream* MakeBitstreamOutputStream(
       const AudioParameters& params,
       const std::string& device_id,
       const LogCallback& log_callback) override;
+#endif
   std::string GetDefaultInputDeviceID() override;
   std::string GetDefaultOutputDeviceID() override;
   std::string GetCommunicationsInputDeviceID() override;
   std::string GetCommunicationsOutputDeviceID() override;
-
-  bool IsEchoCancellationSupported(const std::string& audio_device_id);
 
  protected:
   void ShutdownOnAudioThread() override;
@@ -80,7 +80,7 @@ class MEDIA_EXPORT AudioManagerWin : public AudioManagerBase {
   // thread instead of on the UI thread which AudioManager is constructed on.
   void InitializeOnAudioThread();
 
-  void GetAudioDeviceNamesImpl(bool input, AudioDeviceNames* device_names);
+  bool GetAudioDeviceNamesImpl(bool input, AudioDeviceNames* device_names);
 
   AudioOutputStream* MakeOutputStream(const AudioParameters& params,
                                       const std::string& device_id,

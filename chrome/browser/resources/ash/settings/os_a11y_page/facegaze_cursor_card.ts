@@ -134,13 +134,23 @@ export class FaceGazeCursorCardElement extends FaceGazeCursorCardElementBase {
     ];
   }
 
-  private syntheticCombinedCursorSpeedPref_:
+  declare cursorSpeedTicks: number[];
+  declare maxCursorSpeed: number;
+  declare maxCursorTuning: number;
+  declare minCursorSpeed: number;
+  declare minCursorTuning: number;
+  declare velocityThresholdTicks: number[];
+  declare private readonly precisionClickSpeedFactorOptions_:
+      Array<{value: number, name: string}>;
+  declare private syntheticCombinedCursorSpeedPref_:
       chrome.settingsPrivate.PrefObject<number>;
-  private shouldAnnounceA11yCursorSettingsReset_ = false;
-  private resetAlert_ = '';
+  declare private shouldAnnounceA11yCursorSettingsReset_: boolean;
+  declare private resetAlert_: string;
 
   constructor() {
     super();
+    this.shouldAnnounceA11yCursorSettingsReset_ = false;
+    this.resetAlert_ = '';
   }
 
   override ready(): void {

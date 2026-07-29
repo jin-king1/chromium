@@ -46,14 +46,15 @@ std::unique_ptr<LayerImpl> NinePatchThumbScrollbarLayerImpl::CreateLayerImpl(
       tree_impl, id(), orientation(), is_left_side_vertical_scrollbar());
 }
 
-void NinePatchThumbScrollbarLayerImpl::PushPropertiesTo(LayerImpl* layer) {
-  ScrollbarLayerImplBase::PushPropertiesTo(layer);
+void NinePatchThumbScrollbarLayerImpl::CopyPropertiesTo(
+    LayerImpl* layer) const {
+  ScrollbarLayerImplBase::CopyPropertiesTo(layer);
 
   NinePatchThumbScrollbarLayerImpl* scrollbar_layer =
       static_cast<NinePatchThumbScrollbarLayerImpl*>(layer);
 
   scrollbar_layer->SetThumbThickness(thumb_thickness_);
-  scrollbar_layer->SetThumbLength(thumb_length_);
+  scrollbar_layer->SetMinimumThumbLength(minimum_thumb_length_);
   scrollbar_layer->SetTrackStart(track_start_);
   scrollbar_layer->SetTrackLength(track_length_);
 
@@ -93,10 +94,9 @@ void NinePatchThumbScrollbarLayerImpl::AppendThumbQuads(
       thumb_ui_resource_id_ &&
       layer_tree_impl()->ResourceIdForUIResource(thumb_ui_resource_id_);
   bool are_contents_opaque =
-      is_resource
-          ? layer_tree_impl()->IsUIResourceOpaque(thumb_ui_resource_id_) ||
-                contents_opaque()
-          : false;
+      is_resource &&
+      (layer_tree_impl()->IsUIResourceOpaque(thumb_ui_resource_id_) ||
+       contents_opaque());
   PopulateSharedQuadState(shared_quad_state, are_contents_opaque);
   AppendDebugBorderQuad(render_pass, gfx::Rect(bounds()), shared_quad_state,
                         append_quads_data);
@@ -153,53 +153,60 @@ void NinePatchThumbScrollbarLayerImpl::AppendTrackAndButtonsQuads(
       gfx::ScaleToEnclosingRect(visible_track_quad_rect, 1.f);
 
   bool needs_blending = !contents_opaque();
-  bool premultipled_alpha = true;
   gfx::PointF uv_top_left(0.f, 0.f);
-  gfx::PointF uv_bottom_right(1.f, 1.f);
+
+  const gfx::Size resource_size =
+      layer_tree_impl()->GetUIResourceSize(track_and_buttons_ui_resource_id_);
+
   viz::TextureDrawQuad* quad =
       render_pass->CreateAndAppendDrawQuad<viz::TextureDrawQuad>();
   quad->SetNew(shared_quad_state, scaled_track_quad_rect,
                scaled_visible_track_quad_rect, needs_blending,
-               track_resource_id, premultipled_alpha, uv_top_left,
-               uv_bottom_right, SkColors::kTransparent, nearest_neighbor,
-               /*secure_output_only=*/false, gfx::ProtectedVideoType::kClear);
+               track_resource_id, uv_top_left,
+               gfx::PointF(resource_size.width(), resource_size.height()),
+               SkColors::kTransparent, nearest_neighbor,
+               /*secure_output=*/false, gfx::ProtectedVideoType::kClear,
+               /*is_tex_coords_normalized=*/false);
   ValidateQuadResources(quad);
 }
 
-void NinePatchThumbScrollbarLayerImpl::SetThumbThickness(int thumb_thickness) {
+void NinePatchThumbScrollbarLayerImpl::SetThumbThickness(
+    int32_t thumb_thickness) {
   if (thumb_thickness_ == thumb_thickness)
     return;
   thumb_thickness_ = thumb_thickness;
   NoteLayerPropertyChanged();
 }
 
-int NinePatchThumbScrollbarLayerImpl::ThumbThickness() const {
+int32_t NinePatchThumbScrollbarLayerImpl::ThumbThickness() const {
   return thumb_thickness_;
 }
 
-void NinePatchThumbScrollbarLayerImpl::SetThumbLength(int thumb_length) {
-  if (thumb_length_ == thumb_length)
+void NinePatchThumbScrollbarLayerImpl::SetMinimumThumbLength(
+    int32_t minimum_thumb_length) {
+  if (minimum_thumb_length_ == minimum_thumb_length) {
     return;
-  thumb_length_ = thumb_length;
+  }
+  minimum_thumb_length_ = minimum_thumb_length;
   NoteLayerPropertyChanged();
 }
 
-int NinePatchThumbScrollbarLayerImpl::ThumbLength() const {
-  return thumb_length_;
+int32_t NinePatchThumbScrollbarLayerImpl::MinimumThumbLength() const {
+  return minimum_thumb_length_;
 }
 
-void NinePatchThumbScrollbarLayerImpl::SetTrackStart(int track_start) {
+void NinePatchThumbScrollbarLayerImpl::SetTrackStart(int32_t track_start) {
   if (track_start_ == track_start)
     return;
   track_start_ = track_start;
   NoteLayerPropertyChanged();
 }
 
-int NinePatchThumbScrollbarLayerImpl::TrackStart() const {
+int32_t NinePatchThumbScrollbarLayerImpl::TrackStart() const {
   return track_start_;
 }
 
-void NinePatchThumbScrollbarLayerImpl::SetTrackLength(int track_length) {
+void NinePatchThumbScrollbarLayerImpl::SetTrackLength(int32_t track_length) {
   if (track_length_ == track_length)
     return;
   track_length_ = track_length;

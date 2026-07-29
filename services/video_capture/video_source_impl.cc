@@ -86,16 +86,6 @@ void VideoSourceImpl::CreatePushSubscription(
   }
 }
 
-void VideoSourceImpl::RegisterVideoEffectsProcessor(
-    mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor> remote) {
-  pending_video_effects_processor_ = std::move(remote);
-}
-
-void VideoSourceImpl::RegisterReadonlyVideoEffectsManager(
-    mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager> remote) {
-  pending_readonly_video_effects_manager_ = std::move(remote);
-}
-
 void VideoSourceImpl::OnClientDisconnected() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!receivers_.empty()) {
@@ -149,11 +139,8 @@ void VideoSourceImpl::OnCreateDeviceResponse(
       scoped_trace->AddStep("StartDevice");
 
     // Device was created successfully.
-    info.device->StartInProcess(
-        device_start_settings_, broadcaster_.GetWeakPtr(),
-        media::VideoEffectsContext(
-            std::move(pending_video_effects_processor_),
-            std::move(pending_readonly_video_effects_manager_)));
+    info.device->StartInProcess(device_start_settings_,
+                                broadcaster_.GetWeakPtr());
     UmaHistogramTimes("Media.VideoCapture.StartSourceSuccessLatency",
                       base::TimeTicks::Now() - device_startup_start_time_);
     device_status_ = DeviceStatus::kStarted;
@@ -223,8 +210,8 @@ void VideoSourceImpl::StopDeviceAsynchronously() {
 
   // Stop the device by closing the connection to it. Stopping is complete when
   // OnStopDeviceComplete() gets invoked.
-  device_factory_->StopDevice(device_id_);
   device_status_ = DeviceStatus::kStoppingAsynchronously;
+  device_factory_->StopDevice(device_id_);
 }
 
 void VideoSourceImpl::OnStopDeviceComplete() {

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "content/public/browser/permission_result.h"
 #include "device/vr/public/mojom/vr_service.mojom-shared.h"
 #include "device/vr/public/mojom/xr_session.mojom-shared.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"

@@ -139,8 +139,9 @@ size_t ResizeObserver::GatherObservations(size_t deeper_than) {
 
   size_t min_observed_depth = ResizeObserverController::kDepthBottom;
   for (auto& observation : observations_) {
-    if (!observation->ObservationSizeOutOfSync())
+    if (!observation->ObservationSizeOutOfSync()) {
       continue;
+    }
     auto depth = observation->TargetDepth();
     if (depth > deeper_than) {
       active_observations_.push_back(*observation);

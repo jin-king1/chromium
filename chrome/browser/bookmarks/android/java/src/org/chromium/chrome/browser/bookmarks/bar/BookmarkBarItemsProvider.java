@@ -4,10 +4,12 @@
 
 package org.chromium.chrome.browser.bookmarks.bar;
 
-import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import static org.chromium.build.NullUtil.assumeNonNull;
 
+import androidx.annotation.IntDef;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.BookmarkModelObserver;
 import org.chromium.chrome.browser.bookmarks.ScopedBookmarkModelObservation;
@@ -24,13 +26,14 @@ import java.util.List;
  * they involve top-level bookmark bar items. Internally, it concatenates bookmark items from both
  * account and local sources.
  */
+@NullMarked
 class BookmarkBarItemsProvider extends BookmarkModelObserver
         implements ScopedBookmarkModelObservation.Observer {
 
     /** Enumeration of IDs for top-level bookmark bar item observations. */
     @IntDef({ObservationId.ACCOUNT, ObservationId.LOCAL})
     @Retention(RetentionPolicy.SOURCE)
-    public static @interface ObservationId {
+    public @interface ObservationId {
         int ACCOUNT = 0;
         int LOCAL = 1;
     }
@@ -39,7 +42,7 @@ class BookmarkBarItemsProvider extends BookmarkModelObserver
      * An observer to which events are propagated if and only if they involve top-level bookmark bar
      * items from the supplied bookmark model.
      */
-    public static interface Observer extends ScopedBookmarkModelObservation.Observer {
+    public interface Observer extends ScopedBookmarkModelObservation.Observer {
         /**
          * Invoked when top-level bookmark bar items are added to the supplied bookmark model.
          *
@@ -47,8 +50,8 @@ class BookmarkBarItemsProvider extends BookmarkModelObserver
          * @param items the top-level bookmark bar items that were added.
          * @param index the index at which the top-level bookmark bar items were added.
          */
-        public void onBookmarkItemsAdded(
-                @ObservationId int observationId, @NonNull List<BookmarkItem> items, int index);
+        void onBookmarkItemsAdded(
+                @ObservationId int observationId, List<BookmarkItem> items, int index);
 
         /**
          * Invoked when top-level bookmark items are removed from the supplied bookmark model.
@@ -57,7 +60,7 @@ class BookmarkBarItemsProvider extends BookmarkModelObserver
          * @param index the index at which the top-level bookmark bar items were removed.
          * @param count the count of top-level bookmark bar items that were removed.
          */
-        public void onBookmarkItemsRemoved(@ObservationId int observationId, int index, int count);
+        void onBookmarkItemsRemoved(@ObservationId int observationId, int index, int count);
 
         /**
          * NOTE: {@link #onBookmarkItemsChanged()} events are never propagated and so this method
@@ -66,8 +69,8 @@ class BookmarkBarItemsProvider extends BookmarkModelObserver
          * changed events.
          */
         @Override
-        public default void onBookmarkItemsChanged(
-                @ObservationId int observationId, @NonNull List<BookmarkItem> items) {}
+        default void onBookmarkItemsChanged(
+                @ObservationId int observationId, List<BookmarkItem> items) {}
     }
 
     private final ScopedBookmarkModelObservation mLocalFolderObservation;
@@ -84,7 +87,7 @@ class BookmarkBarItemsProvider extends BookmarkModelObserver
      * @param model the model to observe.
      * @param observer the observer to which events are propagated.
      */
-    public BookmarkBarItemsProvider(@NonNull BookmarkModel model, @NonNull Observer observer) {
+    public BookmarkBarItemsProvider(BookmarkModel model, Observer observer) {
         assert model.isBookmarkModelLoaded();
 
         mObserver = observer;
@@ -98,7 +101,7 @@ class BookmarkBarItemsProvider extends BookmarkModelObserver
         mLocalFolderObservation =
                 createObservation(
                         ObservationId.LOCAL,
-                        mModel.getDesktopFolderId(),
+                        assumeNonNull(mModel.getDesktopFolderId()),
                         mModel,
                         /* observer= */ this);
     }
@@ -130,7 +133,7 @@ class BookmarkBarItemsProvider extends BookmarkModelObserver
     }
 
     @Override
-    public void onBookmarkItemAdded(int observationId, @NonNull BookmarkItem item, int index) {
+    public void onBookmarkItemAdded(int observationId, BookmarkItem item, int index) {
         incrementSize(observationId, 1);
         mObserver.onBookmarkItemAdded(observationId, item, index + getStartIndex(observationId));
     }
@@ -150,12 +153,12 @@ class BookmarkBarItemsProvider extends BookmarkModelObserver
     }
 
     @Override
-    public void onBookmarkItemUpdated(int observationId, @NonNull BookmarkItem item, int index) {
+    public void onBookmarkItemUpdated(int observationId, BookmarkItem item, int index) {
         mObserver.onBookmarkItemUpdated(observationId, item, index + getStartIndex(observationId));
     }
 
     @Override
-    public void onBookmarkItemsChanged(int observationId, @NonNull List<BookmarkItem> items) {
+    public void onBookmarkItemsChanged(int observationId, List<BookmarkItem> items) {
         final int index = getStartIndex(observationId);
         final int oldSize = setSize(observationId, items.size());
         if (oldSize != 0) mObserver.onBookmarkItemsRemoved(observationId, index, oldSize);
@@ -172,11 +175,11 @@ class BookmarkBarItemsProvider extends BookmarkModelObserver
      * @param observer the observer to which events are propagated.
      * @return the created observation.
      */
-    protected @NonNull ScopedBookmarkModelObservation createObservation(
+    protected ScopedBookmarkModelObservation createObservation(
             @ObservationId int observationId,
-            @NonNull BookmarkId folderId,
-            @NonNull BookmarkModel model,
-            @NonNull ScopedBookmarkModelObservation.Observer observer) {
+            BookmarkId folderId,
+            BookmarkModel model,
+            ScopedBookmarkModelObservation.Observer observer) {
         return new ScopedBookmarkModelObservation(observationId, folderId, model, observer);
     }
 

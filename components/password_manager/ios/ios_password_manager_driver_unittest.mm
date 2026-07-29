@@ -4,6 +4,7 @@
 
 #import "components/password_manager/ios/ios_password_manager_driver.h"
 
+#import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/scoped_refptr.h"
 #import "base/strings/sys_string_conversions.h"
@@ -14,6 +15,7 @@
 #import "components/password_manager/core/browser/stub_password_manager_client.h"
 #import "components/password_manager/ios/ios_password_manager_driver_factory.h"
 #import "components/password_manager/ios/shared_password_controller.h"
+#import "components/test/ios/test_utils.h"
 #import "ios/web/public/test/fakes/fake_web_frame.h"
 #import "ios/web/public/test/fakes/fake_web_frames_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -22,17 +24,11 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 
-using autofill::AutofillJavaScriptFeature;
-using base::SysNSStringToUTF8;
-using password_manager::PasswordManager;
-using testing::Return;
-
-#define andCompareStringAtIndex(expected_string, index) \
-  andDo(^(NSInvocation * invocation) {                  \
-    const std::string* param;                           \
-    [invocation getArgument:&param atIndex:index + 2];  \
-    EXPECT_EQ(*param, expected_string);                 \
-  })
+using ::autofill::AutofillJavaScriptFeature;
+using ::base::SysNSStringToUTF8;
+using ::password_manager::PasswordManager;
+using ::testing::_;
+using ::testing::Return;
 
 // This is a workaround for returning const GURL&, for which .andReturn and
 // .andReturnValue don’t work.
@@ -55,7 +51,7 @@ class MockPasswordManagerClient
  public:
   MOCK_METHOD(bool,
               IsSavingAndFillingEnabled,
-              (const GURL&),
+              (const url::Origin&, base::optional_ref<const GURL>),
               (const, override));
   MOCK_METHOD(password_manager::PasswordStoreInterface*,
               GetProfilePasswordStore,
@@ -94,7 +90,7 @@ class IOSPasswordManagerDriverTest : public PlatformTest {
   }
 
  protected:
-  raw_ptr<web::FakeWebFramesManager> web_frames_manager_;
+  raw_ptr<web::FakeWebFramesManager, DanglingUntriaged> web_frames_manager_;
   web::FakeWebState web_state_;
   raw_ptr<IOSPasswordManagerDriver> driver_;
   raw_ptr<IOSPasswordManagerDriver> driver2_;
@@ -106,8 +102,8 @@ class IOSPasswordManagerDriverTest : public PlatformTest {
 
 // Tests that the drivers have the correct ids.
 TEST_F(IOSPasswordManagerDriverTest, GetId) {
-  ASSERT_EQ(driver_->GetId(), 0);
-  ASSERT_EQ(driver2_->GetId(), 1);
+  ASSERT_EQ(driver_->GetId(), password_manager::DriverId(1));
+  ASSERT_EQ(driver2_->GetId(), password_manager::DriverId(2));
 }
 
 // Tests the IsInPrimaryMainFrame method.
@@ -116,8 +112,8 @@ TEST_F(IOSPasswordManagerDriverTest, IsInPrimaryMainFrame) {
   ASSERT_FALSE(driver2_->IsInPrimaryMainFrame());
 }
 
-// Tests the SetPasswordFillData method.
-TEST_F(IOSPasswordManagerDriverTest, SetPasswordFillData) {
+// Tests the PropagateFillDataOnParsingCompletion method.
+TEST_F(IOSPasswordManagerDriverTest, PropagateFillDataOnParsingCompletion) {
   autofill::PasswordFormFillData form_data;
 
   OCMExpect([[password_controller_ ignoringNonObjectArgs]
@@ -125,8 +121,8 @@ TEST_F(IOSPasswordManagerDriverTest, SetPasswordFillData) {
                                  forFrameId:""
                                 isMainFrame:driver_->IsInPrimaryMainFrame()
                           forSecurityOrigin:driver_->security_origin()])
-      .andCompareStringAtIndex(driver_->web_frame_id(), 1);
-  driver_->SetPasswordFillData(form_data);
+      .andCompareObjectAtIndex(driver_->web_frame_id(), 1);
+  driver_->PropagateFillDataOnParsingCompletion(form_data);
 
   EXPECT_OCMOCK_VERIFY(password_controller_);
 }
@@ -136,8 +132,9 @@ TEST_F(IOSPasswordManagerDriverTest, InformNoSavedCredentials) {
   const std::string main_frame_id = SysNSStringToUTF8(@"main-frame");
   OCMExpect([[password_controller_ ignoringNonObjectArgs]
                 onNoSavedCredentialsWithFrameId:""])
-      .andCompareStringAtIndex(main_frame_id, 0);
-  driver_->InformNoSavedCredentials();
+      .andCompareObjectAtIndex(main_frame_id, 0);
+  driver_->InformNoSavedCredentials(
+      /*should_show_popup_without_passwords=*/false);
 
   EXPECT_OCMOCK_VERIFY(password_controller_);
 }
@@ -153,12 +150,12 @@ TEST_F(IOSPasswordManagerDriverTest, FormEligibleForGenerationFound) {
       base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
   EXPECT_CALL(password_manager_client_, GetProfilePasswordStore)
       .WillRepeatedly(testing::Return(store.get()));
-  EXPECT_CALL(*store, IsAbleToSavePasswords)
+  EXPECT_CALL(*store, GetError)
       .Times(3)
-      .WillRepeatedly(Return(true));
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
 
   // Enable password saving and generation in the client.
-  EXPECT_CALL(password_manager_client_, IsSavingAndFillingEnabled(GURL()))
+  EXPECT_CALL(password_manager_client_, IsSavingAndFillingEnabled(_, _))
       .Times(3)
       .WillRepeatedly(Return(true));
   EXPECT_CALL(*password_manager_client_.GetPasswordFeatureManager(),
@@ -198,7 +195,8 @@ TEST_F(IOSPasswordManagerDriverTest, FormEligibleForGenerationFound) {
                                       forFrameId:""]);
   OCMExpect([[password_controller_ ignoringNonObjectArgs]
       onNoSavedCredentialsWithFrameId:""]);
-  driver_->InformNoSavedCredentials();
+  driver_->InformNoSavedCredentials(
+      /*should_show_popup_without_passwords=*/false);
 
   // Inform the driver again that an eligible form for generation was found.
   // Verify that the listeners for proactive generation are immediately attached
@@ -222,12 +220,12 @@ TEST_F(IOSPasswordManagerDriverTest,
       base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
   EXPECT_CALL(password_manager_client_, GetProfilePasswordStore)
       .WillRepeatedly(testing::Return(store.get()));
-  EXPECT_CALL(*store, IsAbleToSavePasswords)
+  EXPECT_CALL(*store, GetError)
       .Times(21)
-      .WillRepeatedly(Return(true));
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
 
   // Enable password saving and generation in the client.
-  EXPECT_CALL(password_manager_client_, IsSavingAndFillingEnabled(GURL()))
+  EXPECT_CALL(password_manager_client_, IsSavingAndFillingEnabled(_, _))
       .Times(21)
       .WillRepeatedly(Return(true));
   EXPECT_CALL(*password_manager_client_.GetPasswordFeatureManager(),
@@ -266,7 +264,8 @@ TEST_F(IOSPasswordManagerDriverTest,
   }
   OCMExpect([[password_controller_ ignoringNonObjectArgs]
       onNoSavedCredentialsWithFrameId:""]);
-  driver_->InformNoSavedCredentials();
+  driver_->InformNoSavedCredentials(
+      /*should_show_popup_without_passwords=*/false);
 
   // Inform the driver again that an eligible form for generation was found.
   // Since the queue is now cleared, verify that the listeners for proactive
@@ -277,6 +276,53 @@ TEST_F(IOSPasswordManagerDriverTest,
                                       forFrameId:""]);
 
   driver_->FormEligibleForGenerationFound(form);
+
+  EXPECT_OCMOCK_VERIFY(password_controller_);
+}
+
+// Tests that FillField on the driver correctly forwards to the bridge.
+TEST_F(IOSPasswordManagerDriverTest, FillField) {
+  autofill::FieldRendererId field_id(42);
+  std::u16string value = u"test_password";
+  std::string frame_id = driver_->web_frame_id();
+
+  OCMExpect([password_controller_ fillField:field_id
+                                  withValue:value
+                                 forFrameId:frame_id
+                          completionHandler:[OCMArg any]])
+      .ignoringNonObjectArgs()
+      .andDo(^(NSInvocation* invocation) {
+        std::remove_reference_t<decltype(field_id)> param;
+        [invocation getArgument:&param atIndex:2];
+        EXPECT_EQ(param, field_id);
+      })
+      .andCompareObjectAtIndex(value, 1)
+      .andCompareObjectAtIndex(frame_id, 2);
+
+  driver_->FillField(field_id, value, autofill::FieldPropertiesFlags::kNoFlags,
+                     base::DoNothing());
+
+  EXPECT_OCMOCK_VERIFY(password_controller_);
+}
+
+// Tests that CheckViewAreaVisible on the driver correctly forwards to the
+// bridge.
+TEST_F(IOSPasswordManagerDriverTest, CheckViewAreaVisible) {
+  autofill::FieldRendererId field_id(42);
+  std::string frame_id = driver_->web_frame_id();
+
+  OCMExpect([password_controller_ scrollAndCheckViewAreaVisible:field_id
+                                                     forFrameId:frame_id
+                                              completionHandler:[OCMArg any]])
+      .ignoringNonObjectArgs()
+      .andDo(^(NSInvocation* invocation) {
+        std::remove_reference_t<decltype(field_id)> param;
+        [invocation getArgument:&param atIndex:2];
+        EXPECT_EQ(param, field_id);
+      })
+      .andCompareObjectAtIndex(frame_id, 1);
+
+  driver_->CheckViewAreaVisible(field_id, base::DoNothing());
 
   EXPECT_OCMOCK_VERIFY(password_controller_);
 }

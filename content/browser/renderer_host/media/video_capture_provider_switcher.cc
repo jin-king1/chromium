@@ -8,7 +8,6 @@
 
 #include "base/functional/bind.h"
 #include "content/public/browser/video_capture_device_launcher.h"
-#include "services/video_effects/public/mojom/video_effects_processor.mojom-forward.h"
 
 namespace content {
 
@@ -24,18 +23,13 @@ class VideoCaptureDeviceLauncherSwitcher : public VideoCaptureDeviceLauncher {
 
   ~VideoCaptureDeviceLauncherSwitcher() override {}
 
-  void LaunchDeviceAsync(
-      const std::string& device_id,
-      blink::mojom::MediaStreamType stream_type,
-      const media::VideoCaptureParams& params,
-      base::WeakPtr<media::VideoFrameReceiver> receiver,
-      base::OnceClosure connection_lost_cb,
-      Callbacks* callbacks,
-      base::OnceClosure done_cb,
-      mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor>
-          video_effects_processor,
-      mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager>
-          readonly_video_effects_manager) override {
+  void LaunchDeviceAsync(const std::string& device_id,
+                         blink::mojom::MediaStreamType stream_type,
+                         const media::VideoCaptureParams& params,
+                         base::WeakPtr<media::VideoFrameReceiver> receiver,
+                         base::OnceClosure connection_lost_cb,
+                         Callbacks* callbacks,
+                         base::OnceClosure done_cb) override {
     if (stream_type == blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE) {
       // Use of Unretained() is safe, because |media_device_launcher_| is owned
       // by |this|.
@@ -44,9 +38,7 @@ class VideoCaptureDeviceLauncherSwitcher : public VideoCaptureDeviceLauncher {
                          base::Unretained(media_device_launcher_.get()));
       return media_device_launcher_->LaunchDeviceAsync(
           device_id, stream_type, params, std::move(receiver),
-          std::move(connection_lost_cb), callbacks, std::move(done_cb),
-          std::move(video_effects_processor),
-          std::move(readonly_video_effects_manager));
+          std::move(connection_lost_cb), callbacks, std::move(done_cb));
     }
     // Use of Unretained() is safe, because |other_types_launcher_| is owned by
     // |this|.
@@ -55,9 +47,7 @@ class VideoCaptureDeviceLauncherSwitcher : public VideoCaptureDeviceLauncher {
                        base::Unretained(other_types_launcher_.get()));
     return other_types_launcher_->LaunchDeviceAsync(
         device_id, stream_type, params, std::move(receiver),
-        std::move(connection_lost_cb), callbacks, std::move(done_cb),
-        std::move(video_effects_processor),
-        std::move(readonly_video_effects_manager));
+        std::move(connection_lost_cb), callbacks, std::move(done_cb));
   }
 
   void AbortLaunch() override {
@@ -100,15 +90,28 @@ void VideoCaptureProviderSwitcher::OpenNativeScreenCapturePicker(
     base::OnceCallback<void(DesktopMediaID::Id)> created_callback,
     base::OnceCallback<void(webrtc::DesktopCapturer::Source)> picker_callback,
     base::OnceCallback<void()> cancel_callback,
-    base::OnceCallback<void()> error_callback) {
+    base::OnceCallback<void()> error_callback,
+    base::OnceCallback<void(DesktopMediaID::Id)> stop_audio_callback) {
   other_types_capture_provider_->OpenNativeScreenCapturePicker(
       type, std::move(created_callback), std::move(picker_callback),
-      std::move(cancel_callback), std::move(error_callback));
+      std::move(cancel_callback), std::move(error_callback),
+      std::move(stop_audio_callback));
 }
 
 void VideoCaptureProviderSwitcher::CloseNativeScreenCapturePicker(
     DesktopMediaID device_id) {
   other_types_capture_provider_->CloseNativeScreenCapturePicker(device_id);
 }
+
+#if BUILDFLAG(IS_MAC)
+void VideoCaptureProviderSwitcher::GetApplicationAudioCaptureId(
+    DesktopMediaID::Id session_id,
+    base::OnceCallback<
+        void(const std::optional<desktop_capture::ApplicationAudioCaptureId>&)>
+        callback) {
+  other_types_capture_provider_->GetApplicationAudioCaptureId(
+      session_id, std::move(callback));
+}
+#endif
 
 }  // namespace content

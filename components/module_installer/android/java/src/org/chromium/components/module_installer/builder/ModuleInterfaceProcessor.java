@@ -52,7 +52,7 @@ public class ModuleInterfaceProcessor extends AbstractProcessor {
             Set<? extends TypeElement> annotations, RoundEnvironment roundEnvironment) {
         // Do nothing on an empty round.
         if (annotations.isEmpty()) {
-            return true;
+            return false;
         }
 
         for (Element e : roundEnvironment.getElementsAnnotatedWith(MODULE_INTERFACE_CLASS)) {
@@ -73,7 +73,7 @@ public class ModuleInterfaceProcessor extends AbstractProcessor {
             }
         }
 
-        return true;
+        return false;
     }
 
     private TypeSpec createModuleClassSpec(
@@ -94,6 +94,12 @@ public class ModuleInterfaceProcessor extends AbstractProcessor {
                 ClassName.get("org.chromium.components.module_installer.engine", "InstallEngine");
         TypeName contextClassName = ClassName.get("android.content", "Context");
 
+        FieldSpec splitNameString =
+                FieldSpec.builder(ClassName.get(String.class), "SPLIT_NAME")
+                        .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+                        .initializer("$S", moduleName)
+                        .build();
+
         FieldSpec classNameString =
                 FieldSpec.builder(ClassName.get(String.class), "sModuleClassString")
                         .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
@@ -105,9 +111,8 @@ public class ModuleInterfaceProcessor extends AbstractProcessor {
                 FieldSpec.builder(moduleClassName, "sModule")
                         .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
                         .initializer(
-                                "new $T($S, $T.class, sModuleClassString)",
+                                "new $T(SPLIT_NAME, $T.class, sModuleClassString)",
                                 moduleClassName,
-                                moduleName,
                                 moduleInterface)
                         .build();
 
@@ -174,6 +179,7 @@ public class ModuleInterfaceProcessor extends AbstractProcessor {
 
         return TypeSpec.classBuilder(fooModuleClassName)
                 .addModifiers(Modifier.PUBLIC)
+                .addField(splitNameString)
                 .addField(classNameString)
                 .addField(module)
                 .addMethod(constructor)

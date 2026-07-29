@@ -16,7 +16,7 @@
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
 #include "url/gurl.h"
@@ -28,7 +28,7 @@ class BoundsChangeWaiter final : public views::WidgetObserver {
  public:
   BoundsChangeWaiter(Browser* browser, int move_by, int resize_by)
       : widget_(views::Widget::GetWidgetForNativeWindow(
-            browser->window()->GetNativeWindow())),
+            browser->GetWindow()->GetNativeWindow())),
         move_by_(move_by),
         resize_by_(resize_by),
         initial_bounds_(widget_->GetWindowBoundsInScreen()) {}
@@ -140,8 +140,8 @@ void PopupTestBase::SetUpWindowManagement(Browser* browser) {
 // static
 display::Display PopupTestBase::GetDisplayNearestBrowser(
     const Browser* browser) {
-  return display::Screen::GetScreen()->GetDisplayNearestWindow(
-      browser->window()->GetNativeWindow());
+  return display::Screen::Get()->GetDisplayNearestWindow(
+      browser->GetWindow()->GetNativeWindow());
 }
 
 // static

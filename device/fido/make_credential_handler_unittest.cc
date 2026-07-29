@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
@@ -32,25 +31,25 @@
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
 #include "device/fido/authenticator_get_info_response.h"
 #include "device/fido/authenticator_make_credential_response.h"
-#include "device/fido/authenticator_selection_criteria.h"
 #include "device/fido/authenticator_supported_options.h"
 #include "device/fido/ctap_make_credential_request.h"
 #include "device/fido/device_response_converter.h"
 #include "device/fido/fake_fido_discovery.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/fido_device.h"
 #include "device/fido/fido_device_authenticator.h"
 #include "device/fido/fido_discovery_base.h"
 #include "device/fido/fido_parsing_utils.h"
 #include "device/fido/fido_test_data.h"
-#include "device/fido/fido_transport_protocol.h"
-#include "device/fido/fido_types.h"
 #include "device/fido/make_credential_request_handler.h"
 #include "device/fido/make_credential_task.h"
 #include "device/fido/mock_fido_device.h"
-#include "device/fido/public_key_credential_params.h"
-#include "device/fido/public_key_credential_rp_entity.h"
-#include "device/fido/public_key_credential_user_entity.h"
+#include "device/fido/public/authenticator_selection_criteria.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_transport_protocol.h"
+#include "device/fido/public/fido_types.h"
+#include "device/fido/public/public_key_credential_params.h"
+#include "device/fido/public/public_key_credential_rp_entity.h"
+#include "device/fido/public/public_key_credential_user_entity.h"
 #include "device/fido/virtual_ctap2_device.h"
 #include "device/fido/virtual_fido_device.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -62,7 +61,6 @@
 
 using ::testing::_;
 using ::testing::DoAll;
-using ::testing::Invoke;
 using ::testing::Return;
 using ::testing::WithoutArgs;
 
@@ -89,9 +87,11 @@ class FidoMakeCredentialHandlerTest : public ::testing::Test {
   }
 
   void ForgeDiscoveries() {
-    discovery_ = fake_discovery_factory_->ForgeNextHidDiscovery();
-    nfc_discovery_ = fake_discovery_factory_->ForgeNextNfcDiscovery();
-    platform_discovery_ = fake_discovery_factory_->ForgeNextPlatformDiscovery();
+    discovery_ = fake_discovery_factory_->ForgeNextHidDiscovery()->GetWeakPtr();
+    nfc_discovery_ =
+        fake_discovery_factory_->ForgeNextNfcDiscovery()->GetWeakPtr();
+    platform_discovery_ =
+        fake_discovery_factory_->ForgeNextPlatformDiscovery()->GetWeakPtr();
   }
 
   std::unique_ptr<MakeCredentialRequestHandler> CreateMakeCredentialHandler(
@@ -127,17 +127,17 @@ class FidoMakeCredentialHandlerTest : public ::testing::Test {
       MakeCredentialRequestHandler* request_handler,
       base::flat_set<FidoTransportProtocol> transports) {
     using Transport = FidoTransportProtocol;
-    if (base::Contains(transports, Transport::kUsbHumanInterfaceDevice))
+    if (transports.contains(Transport::kUsbHumanInterfaceDevice))
       discovery()->WaitForCallToStartAndSimulateSuccess();
-    if (base::Contains(transports, Transport::kNearFieldCommunication))
+    if (transports.contains(Transport::kNearFieldCommunication))
       nfc_discovery()->WaitForCallToStartAndSimulateSuccess();
 
     task_environment_.FastForwardUntilNoTasksRemain();
     EXPECT_FALSE(future().IsReady());
 
-    if (!base::Contains(transports, Transport::kUsbHumanInterfaceDevice))
+    if (!transports.contains(Transport::kUsbHumanInterfaceDevice))
       EXPECT_FALSE(discovery()->is_start_requested());
-    if (!base::Contains(transports, Transport::kNearFieldCommunication))
+    if (!transports.contains(Transport::kNearFieldCommunication))
       EXPECT_FALSE(nfc_discovery()->is_start_requested());
 
     EXPECT_THAT(
@@ -145,8 +145,10 @@ class FidoMakeCredentialHandlerTest : public ::testing::Test {
         ::testing::UnorderedElementsAreArray(transports));
   }
 
-  test::FakeFidoDiscovery* discovery() const { return discovery_; }
-  test::FakeFidoDiscovery* nfc_discovery() const { return nfc_discovery_; }
+  test::FakeFidoDiscovery* discovery() const { return discovery_.get(); }
+  test::FakeFidoDiscovery* nfc_discovery() const {
+    return nfc_discovery_.get();
+  }
   TestMakeCredentialRequestFuture& future() { return future_; }
 
   void set_mock_platform_device(std::unique_ptr<MockFidoDevice> device) {
@@ -163,10 +165,9 @@ class FidoMakeCredentialHandlerTest : public ::testing::Test {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   std::unique_ptr<test::FakeFidoDiscoveryFactory> fake_discovery_factory_ =
       std::make_unique<test::FakeFidoDiscoveryFactory>();
-  raw_ptr<test::FakeFidoDiscovery, AcrossTasksDanglingUntriaged> discovery_;
-  raw_ptr<test::FakeFidoDiscovery, AcrossTasksDanglingUntriaged> nfc_discovery_;
-  raw_ptr<test::FakeFidoDiscovery, AcrossTasksDanglingUntriaged>
-      platform_discovery_;
+  base::WeakPtr<test::FakeFidoDiscovery> discovery_;
+  base::WeakPtr<test::FakeFidoDiscovery> nfc_discovery_;
+  base::WeakPtr<test::FakeFidoDiscovery> platform_discovery_;
   scoped_refptr<::testing::NiceMock<MockBluetoothAdapter>> mock_adapter_;
   std::unique_ptr<MockFidoDevice> pending_mock_platform_device_;
   TestMakeCredentialRequestFuture future_;
@@ -518,8 +519,7 @@ TEST_F(FidoMakeCredentialHandlerTest, ResidentKeyCancel) {
   auto device = MockFidoDevice::MakeCtapWithGetInfoExpectation();
   const FidoDevice::CancelToken token = 10;
   EXPECT_CALL(*device, DeviceTransactPtr(IsResidentKeyRequest(), _))
-      .WillOnce(
-          DoAll(WithoutArgs(Invoke(delete_request_handler)), Return(token)));
+      .WillOnce(DoAll(WithoutArgs(delete_request_handler), Return(token)));
   EXPECT_CALL(*device, Cancel(token));
 
   discovery()->WaitForCallToStartAndSimulateSuccess();
@@ -817,7 +817,7 @@ TEST_F(FidoMakeCredentialHandlerTest, DeviceFailsImmediately) {
           IsCtap2Command(CtapRequestCommand::kAuthenticatorMakeCredential), _))
       .WillOnce(::testing::DoAll(
           ::testing::WithArg<1>(
-              ::testing::Invoke([this](FidoDevice::DeviceCallback& callback) {
+              [this](FidoDevice::DeviceCallback& callback) {
                 std::vector<uint8_t> response = {static_cast<uint8_t>(
                     CtapDeviceResponseCode::kCtap2ErrInvalidCBOR)};
                 base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -830,7 +830,7 @@ TEST_F(FidoMakeCredentialHandlerTest, DeviceFailsImmediately) {
                     CtapRequestCommand::kAuthenticatorMakeCredential,
                     test_data::kTestMakeCredentialResponse);
                 discovery()->AddDevice(std::move(working_device));
-              })),
+              }),
           ::testing::Return(0)));
 
   auto request_handler = CreateMakeCredentialHandler();
@@ -847,7 +847,8 @@ TEST_F(FidoMakeCredentialHandlerTest, PinUvAuthTokenPreTouchFailure) {
   config.pin_uv_auth_token_support = true;
   config.internal_uv_support = true;
   config.override_response_map[CtapRequestCommand::kAuthenticatorClientPin] =
-      CtapDeviceResponseCode::kCtap2ErrOther;
+      std::make_pair(device::CtapDeviceResponseCode::kCtap2ErrOther,
+                     std::nullopt);
   auto state = base::MakeRefCounted<VirtualFidoDevice::State>();
   state->fingerprints_enrolled = true;
 
@@ -889,7 +890,7 @@ TEST_F(FidoMakeCredentialHandlerTest, ReportTransportMetric) {
 #if BUILDFLAG(IS_WIN)
 TEST_F(FidoMakeCredentialHandlerTest, ReportTransportMetricWin) {
   FakeWinWebAuthnApi win_api;
-  win_api.set_version(WEBAUTHN_API_VERSION_3);
+  win_api.set_version(WEBAUTHN_API_VERSION_6);
   win_api.set_transport(WEBAUTHN_CTAP_TRANSPORT_BLE);
   WinWebAuthnApi::ScopedOverride win_webauthn_api_override(&win_api);
   base::HistogramTester histograms;

@@ -12,10 +12,12 @@ import android.view.ViewGroup;
 
 import androidx.annotation.IntDef;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.mostvisited.MostVisitedTileViewBinder;
 import org.chromium.components.browser_ui.widget.tile.TileView;
+import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
@@ -26,6 +28,7 @@ import java.lang.annotation.RetentionPolicy;
  * ViewBuilder for the Carousel suggestion. Its sole responsibility is to inflate appropriate view
  * layouts for supplied view type.
  */
+@NullMarked
 public class BaseCarouselSuggestionItemViewBuilder {
     /**
      * ViewType defines a list of Views that are understood by the Carousel. Views below can be used
@@ -35,31 +38,53 @@ public class BaseCarouselSuggestionItemViewBuilder {
     @Retention(RetentionPolicy.SOURCE)
     public @interface ViewType {
         /** Carousel item is a TileView instance. */
-        public int TILE_VIEW = 0;
+        int TILE_VIEW = 0;
     }
 
     /**
      * Create standard Carousel Suggestion View capable of hosting any of the ViewTypes.
      *
      * @param parent ViewGroup that will host the Carousel view.
+     * @param resourceProvider Provider for omnibox resources.
      * @return BaseCarouselSuggestionView.
      */
-    public static BaseCarouselSuggestionView createView(ViewGroup parent) {
+    public static BaseCarouselSuggestionView createView(
+            ViewGroup parent, OmniboxResourceProvider resourceProvider) {
+        if (!OmniboxFeatures.sAsyncViewInflation.isEnabled()) {
+            assert resourceProvider != null;
+            return new BaseCarouselSuggestionView(
+                    parent.getContext(), createAdapter(resourceProvider));
+        }
+
+        // Defer adapter creation to UI thread to avoid ThreadChecker crashes.
+        return new BaseCarouselSuggestionView(parent.getContext(), null);
+    }
+
+    /**
+     * Create the adapter for the Carousel Suggestion View. Must be called on the UI thread.
+     *
+     * @param resourceProvider Provider for omnibox resources.
+     * @return SimpleRecyclerViewAdapter.
+     */
+    public static SimpleRecyclerViewAdapter createAdapter(
+            OmniboxResourceProvider resourceProvider) {
         SimpleRecyclerViewAdapter adapter = new SimpleRecyclerViewAdapter(new ModelList());
         adapter.registerType(
                 ViewType.TILE_VIEW,
-                BaseCarouselSuggestionItemViewBuilder::createTileView,
-                MostVisitedTileViewBinder::bind);
-        return new BaseCarouselSuggestionView(parent.getContext(), adapter);
+                (parent) -> createTileView(parent, resourceProvider),
+                new MostVisitedTileViewBinder(resourceProvider));
+        return adapter;
     }
 
     /**
      * Create a standard TileView element.
      *
      * @param parent ViewGroup that will host the Tile.
+     * @param resourceProvider Provider for omnibox resources.
      * @return A TileView element for the individual URL suggestion.
      */
-    private static TileView createTileView(ViewGroup parent) {
+    private static TileView createTileView(
+            ViewGroup parent, OmniboxResourceProvider resourceProvider) {
         Context context = parent.getContext();
         TileView tile =
                 (TileView)
@@ -70,8 +95,7 @@ public class BaseCarouselSuggestionItemViewBuilder {
 
         // Update the background color of the solid circle around the icon (typically a favicon).
         Drawable modernizedBackground =
-                OmniboxResourceProvider.getDrawable(
-                        context, R.drawable.tile_view_icon_background_modern_updated);
+                resourceProvider.getDrawable(R.drawable.tile_view_icon_background_modern_updated);
         View iconBackground = tile.findViewById(R.id.tile_view_icon_background);
         iconBackground.setBackground(modernizedBackground);
 

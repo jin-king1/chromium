@@ -16,6 +16,7 @@ import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitio
 import org.chromium.chrome.browser.notifications.channels.SiteChannelsManager;
 import org.chromium.components.url_formatter.SchemeDisplay;
 import org.chromium.components.url_formatter.UrlFormatter;
+import org.chromium.content_public.browser.BrowserStartupController;
 
 /** Interface for native code to interact with Android notification channels. */
 @NullMarked
@@ -38,8 +39,12 @@ public class NotificationSettingsBridge {
 
     @CalledByNative
     private static void getSiteChannels(final long callbackId) {
-        SiteChannel[] channels = SiteChannelsManager.getInstance().getSiteChannels();
-        NotificationSettingsBridgeJni.get().onGetSiteChannelsDone(callbackId, channels);
+        SiteChannelsManager.getInstance()
+                .getSiteChannelsAsync(
+                        (channels) -> {
+                            NotificationSettingsBridgeJni.get()
+                                    .onGetSiteChannelsDone(callbackId, channels);
+                        });
     }
 
     @CalledByNative
@@ -65,22 +70,22 @@ public class NotificationSettingsBridge {
             mStatus = status;
         }
 
-        @CalledByNative("SiteChannel")
+        @CalledByNative
         public long getTimestamp() {
             return mTimestamp;
         }
 
-        @CalledByNative("SiteChannel")
+        @CalledByNative
         public @JniType("std::string") String getOrigin() {
             return mOrigin;
         }
 
-        @CalledByNative("SiteChannel")
+        @CalledByNative
         public @NotificationChannelStatus int getStatus() {
             return mStatus;
         }
 
-        @CalledByNative("SiteChannel")
+        @CalledByNative
         public @JniType("std::string") String getId() {
             return mId;
         }
@@ -99,8 +104,22 @@ public class NotificationSettingsBridge {
         }
     }
 
+    public static void onNotificationChannelStateChanged(String channelId, boolean blocked) {
+        if (!BrowserStartupController.getInstance().isFullBrowserStarted()) {
+            return;
+        }
+        if (!SiteChannelsManager.isValidSiteChannelId(channelId)) {
+            return;
+        }
+        NotificationSettingsBridgeJni.get()
+                .onChannelStateChanged(
+                        channelId, SiteChannelsManager.toSiteOrigin(channelId), blocked);
+    }
+
     @NativeMethods
     interface Natives {
         void onGetSiteChannelsDone(long callbackId, SiteChannel[] channels);
+
+        void onChannelStateChanged(String channelId, String origin, boolean blocked);
     }
 }

@@ -2,27 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/media_router/common/providers/cast/certificate/cast_crl.h"
 
 #include <memory>
-#include <unordered_map>
-#include <unordered_set>
 
 #include "base/build_time.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/memory/singleton.h"
+#include "base/strings/string_view_util.h"
 #include "base/time/time.h"
 #include "components/media_router/common/providers/cast/certificate/cast_fallback_crl.h"
+#include "crypto/evp.h"
 #include "crypto/sha2.h"
 #include "net/cert/time_conversions.h"
 #include "net/cert/x509_util.h"
-#include "third_party/boringssl/src/include/openssl/bytestring.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/boringssl/src/include/openssl/digest.h"
 #include "third_party/boringssl/src/include/openssl/evp.h"
 #include "third_party/boringssl/src/pki/cert_errors.h"
@@ -146,11 +143,9 @@ bool VerifyCRL(const Crl& crl,
     return false;
   }
 
-  CBS spki;
-  CBS_init(&spki, parsed_cert->tbs().spki_tlv.data(),
-           parsed_cert->tbs().spki_tlv.size());
-  bssl::UniquePtr<EVP_PKEY> pubkey(EVP_parse_public_key(&spki));
-  if (!pubkey || CBS_len(&spki) != 0) {
+  bssl::UniquePtr<EVP_PKEY> pubkey =
+      crypto::evp::PublicKeyFromBytes(parsed_cert->tbs().spki_tlv);
+  if (!pubkey) {
     VLOG(2) << "CRL - Parsing public key failed";
 #ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
     return false;
@@ -297,12 +292,12 @@ class CastCRLImpl : public CastCRL {
 
   // Revoked public key hashes.
   // The values consist of the SHA256 hash of the SubjectPublicKeyInfo.
-  std::unordered_set<std::string> revoked_hashes_;
+  absl::flat_hash_set<std::string> revoked_hashes_;
 
   // Revoked serial number ranges indexed by issuer public key hash.
   // The key is the SHA256 hash of issuer's SubjectPublicKeyInfo.
   // The value is a list of revoked serial number ranges.
-  std::unordered_map<std::string, std::vector<SerialNumberRange>>
+  absl::flat_hash_map<std::string, std::vector<SerialNumberRange>>
       revoked_serial_numbers_;
 };
 
@@ -369,13 +364,14 @@ bool CastCRLImpl::CheckRevocation(
     const bssl::der::Input& spki_tlv = trusted_chain[i]->tbs().spki_tlv;
 
     // Calculate the public key's hash to check for revocation.
-    std::string spki_hash = crypto::SHA256HashString(spki_tlv.AsString());
+    std::string spki_hash =
+        crypto::SHA256HashString(base::as_string_view(spki_tlv));
 #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
     // Revocation data (if any) was saved in the constructor using this fake
     // hash code.
     spki_hash = kFakeHashForFuzzing;
 #endif
-    if (revoked_hashes_.find(spki_hash) != revoked_hashes_.end()) {
+    if (revoked_hashes_.contains(spki_hash)) {
       VLOG(2) << "Public key is revoked.";
       return false;
     }
@@ -459,9 +455,7 @@ std::unique_ptr<CastCRL> ParseAndVerifyCRLUsingCustomTrustStore(
 std::unique_ptr<CastCRL> ParseAndVerifyFallbackCRLUsingCustomTrustStore(
     const base::Time& time,
     bssl::TrustStore* trust_store) {
-  std::string fallback_serialized_crl(
-      kCastFallbackCRLs, kCastFallbackCRLs + sizeof kCastFallbackCRLs /
-                                                 sizeof kCastFallbackCRLs[0]);
+  std::string fallback_serialized_crl(base::as_string_view(kCastFallbackCRLs));
   return ParseAndVerifyCRLUsingCustomTrustStore(
       fallback_serialized_crl, time, trust_store, true /* is_fallback_crl */);
 }

@@ -14,7 +14,10 @@
 #include "base/values.h"
 #include "extensions/browser/api/web_request/form_data_parser.h"
 #include "extensions/browser/api/web_request/web_request_api_constants.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/base/upload_file_element_reader.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace keys = extension_web_request_api_constants;
 
@@ -22,13 +25,13 @@ namespace {
 
 // Takes |dictionary| of <string, list of strings> pairs, and gets the list
 // for |key|, creating it if necessary.
-base::Value::List& GetOrCreateList(base::Value::Dict& dictionary,
-                                   const std::string& key) {
-  base::Value::List* list = dictionary.FindList(key);
+base::ListValue& GetOrCreateList(base::DictValue& dictionary,
+                                 const std::string& key) {
+  base::ListValue* list = dictionary.FindList(key);
   if (list) {
     return *list;
   }
-  return dictionary.Set(key, base::Value::List())->GetList();
+  return dictionary.Set(key, base::ListValue())->GetList();
 }
 
 }  // namespace
@@ -39,8 +42,8 @@ namespace subtle {
 
 void AppendKeyValuePair(const char* key,
                         base::Value value,
-                        base::Value::List& list) {
-  base::Value::Dict dictionary;
+                        base::ListValue& list) {
+  base::DictValue dictionary;
   dictionary.Set(key, std::move(value));
   list.Append(std::move(dictionary));
 }
@@ -103,8 +106,7 @@ void ParsedDataPresenter::FeedBytes(std::string_view bytes) {
 
   FormDataParser::Result result;
   while (parser_->GetNextNameValue(&result)) {
-    base::Value::List& list =
-        GetOrCreateList(dictionary_.value(), result.name());
+    base::ListValue& list = GetOrCreateList(dictionary_.value(), result.name());
     list.Append(result.take_value());
   }
 }

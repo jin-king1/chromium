@@ -15,13 +15,12 @@
 #include "chrome/browser/ash/login/users/avatar/user_image_manager_test_util.h"
 #include "chrome/browser/ash/login/users/default_user_image/default_user_images.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/account_id/account_id.h"
-#include "components/user_manager/fake_user_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user.h"
 #include "content/public/test/browser_task_environment.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -53,6 +52,7 @@ class UserImageManagerImplTest : public testing::Test {
     mock_user_image_loader_delegate_ = mock_user_image_loader_delegate.get();
 
     user_image_manager_registry_ = std::make_unique<UserImageManagerRegistry>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
         fake_chrome_user_manager(), std::move(mock_user_image_loader_delegate));
   }
 
@@ -100,10 +100,8 @@ class UserImageManagerImplTest : public testing::Test {
   }
 
  private:
-  ScopedTestingLocalState local_state_{TestingBrowserProcess::GetGlobal()};
   content::BrowserTaskEnvironment task_environment_;
-  TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal(),
-                                         &local_state_};
+  TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
   user_manager::TypedScopedUserManager<FakeChromeUserManager>
       fake_chrome_user_manager_{std::make_unique<FakeChromeUserManager>()};
   raw_ptr<testing::StrictMock<test::MockUserImageLoaderDelegate>>
@@ -129,9 +127,7 @@ TEST_F(UserImageManagerImplTest, RecordsUserImageLoggedInHistogram) {
   fake_chrome_user_manager()->SetIsCurrentUserNew(false);
   fake_chrome_user_manager()->UserLoggedIn(
       account_id, /*user_id_hash=*/
-      user_manager::FakeUserManager::GetFakeUsernameHash(account_id),
-      /*browser_restart=*/false,
-      /*is_child=*/false);
+      user_manager::TestHelper::GetFakeUsernameHash(account_id));
 
   histogram_tester.ExpectUniqueSample(
       UserImageManagerImpl::kUserImageLoggedInHistogramName,

@@ -61,7 +61,9 @@ constexpr perfetto::protos::pbzero::EventLatency::EventType ToProtoEnum(
     CASE(kGesturePinchUpdate, GESTURE_PINCH_UPDATE);
     CASE(kInertialGestureScrollUpdate, INERTIAL_GESTURE_SCROLL_UPDATE);
     CASE(kMouseMoved, MOUSE_MOVED_EVENT);
+    CASE(kInertialGestureScrollEnd, INERTIAL_GESTURE_SCROLL_END);
   }
+#undef CASE
 }
 
 const char* GetVizBreakdownToPresentationName(
@@ -72,8 +74,6 @@ const char* GetVizBreakdownToPresentationName(
     case CompositorFrameReporter::VizBreakdown::kLatchToSwapEnd:
       return "LatchToPresentation";
     default:
-      base::UmaHistogramEnumeration(
-          "Compositing.VizBreakdownToPresentationUnexpected", breakdown);
       return "Unknown";
   }
 }
@@ -159,6 +159,12 @@ const char* EventLatencyTracingRecorder::GetDispatchToCompositorBreakdownName(
         case CompositorFrameReporter::StageType::
             kSubmitCompositorFrameToPresentationCompositorFrame:
           return "RendererCompositorFinishedToSubmitCompositorFrame";
+        case CompositorFrameReporter::StageType::
+            kEndActivateToSubmitUpdateDisplayTree:
+          return "RendererCompositorFinishedToSubmitUpdateDisplayTree";
+        case CompositorFrameReporter::StageType::
+            kSubmitUpdateDisplayTreeToPresentationCompositorFrame:
+          return "RendererCompositorFinishedToPresentationCompositorFrame";
         default:
           NOTREACHED() << "Invalid CC stage after compositor thread: "
                        << static_cast<int>(compositor_stage);
@@ -182,6 +188,12 @@ const char* EventLatencyTracingRecorder::GetDispatchToCompositorBreakdownName(
         case CompositorFrameReporter::StageType::
             kSubmitCompositorFrameToPresentationCompositorFrame:
           return "RendererMainFinishedToSubmitCompositorFrame";
+        case CompositorFrameReporter::StageType::
+            kEndActivateToSubmitUpdateDisplayTree:
+          return "RendererMainFinishedToSubmitUpdateDisplayTree";
+        case CompositorFrameReporter::StageType::
+            kSubmitUpdateDisplayTreeToPresentationCompositorFrame:
+          return "RendererMainFinishedToPresentationCompositorFrame";
         default:
           NOTREACHED() << "Invalid CC stage after main thread: "
                        << static_cast<int>(compositor_stage);
@@ -206,7 +218,8 @@ const char* EventLatencyTracingRecorder::GetDispatchToTerminationBreakdownName(
     case EventMetrics::DispatchStage::kRendererMainFinished:
       return "RendererMainFinishedToTermination";
     default:
-      NOTREACHED();
+      NOTREACHED() << "Invalid CC stage before termination: "
+                   << static_cast<int>(dispatch_stage);
   }
 }
 
@@ -243,37 +256,57 @@ void EventLatencyTracingRecorder::RecordEventLatencyTraceEvent(
       [&](perfetto::EventContext context) {
         auto* event =
             context.event<perfetto::protos::pbzero::ChromeTrackEvent>();
-        auto* event_latency = event->set_event_latency();
-        event_latency->set_event_type(ToProtoEnum(event_metrics->type()));
-        static constexpr auto kHighLatencyThreshold = base::Milliseconds(90);
-        bool has_high_latency =
-            (termination_time - generated_timestamp) > kHighLatencyThreshold;
-        event_latency->set_has_high_latency(has_high_latency);
-        for (auto stage : event_metrics->GetHighLatencyStages()) {
-          // TODO(crbug.com/40228308): Consider changing the high_latency_stage
-          // type from a string to enum type in chrome_track_event.proto,
-          // similar to event_type.
-          event_latency->add_high_latency_stage(stage);
-        }
-        if (event_metrics->trace_id().has_value()) {
-          event_latency->set_event_latency_id(
-              event_metrics->trace_id()->value());
+        {
+          auto* event_latency = event->set_event_latency();
+          event_latency->set_event_type(ToProtoEnum(event_metrics->type()));
+          static constexpr auto kHighLatencyThreshold = base::Milliseconds(90);
+          bool has_high_latency =
+              (termination_time - generated_timestamp) > kHighLatencyThreshold;
+          event_latency->set_has_high_latency(has_high_latency);
+          for (const auto& stage : event_metrics->GetHighLatencyStages()) {
+            // TODO(crbug.com/40228308): Consider changing the
+            // high_latency_stage type from a string to enum type in
+            // chrome_track_event.proto, similar to event_type.
+            event_latency->add_high_latency_stage(stage);
+          }
+          if (event_metrics->trace_id().has_value()) {
+            event_latency->set_event_latency_id(
+                event_metrics->trace_id()->value());
+          }
+
+          if (const auto* scroll_metrics = event_metrics->AsScroll()) {
+            event_latency->set_scroll_begin_arrival_us(
+                scroll_metrics->scroll_begin_arrival_timestamp()
+                    .since_origin()
+                    .InMicroseconds());
+          }
+
+          const ScrollUpdateEventMetrics* scroll_update =
+              event_metrics->AsScrollUpdate();
+          if (scroll_update &&
+              scroll_update->is_janky_scrolled_frame().has_value()) {
+            event_latency->set_is_janky_scrolled_frame(
+                scroll_update->is_janky_scrolled_frame().value());
+          }
+          if (args) {
+            event_latency->set_vsync_interval_ms(
+                args->interval.InMillisecondsF());
+            event_latency->set_surface_frame_trace_id(args->trace_id);
+          }
+          if (display_trace_id) {
+            event_latency->set_display_trace_id(*display_trace_id);
+          }
         }
 
-        const ScrollUpdateEventMetrics* scroll_update =
-            event_metrics->AsScrollUpdate();
-        if (scroll_update &&
-            scroll_update->is_janky_scrolled_frame().has_value()) {
-          event_latency->set_is_janky_scrolled_frame(
-              scroll_update->is_janky_scrolled_frame().value());
-        }
-        if (args) {
-          event_latency->set_vsync_interval_ms(
-              args->interval.InMillisecondsF());
-          event_latency->set_surface_frame_trace_id(args->trace_id);
-        }
-        if (display_trace_id) {
-          event_latency->set_display_trace_id(*display_trace_id);
+        // Important: Writing to `event_latency` and `scroll_jank_v4` CANNOT be
+        // interleaved. This is due to Perfetto's ProtoZero limitations. See
+        // https://perfetto.dev/docs/design-docs/protozero.
+        if (const auto* scroll_metrics = event_metrics->AsScroll();
+            scroll_metrics != nullptr &&
+            scroll_metrics->scroll_jank_v4_result_id().has_value()) {
+          auto* scroll_jank_v4 = event->set_scroll_jank_v4();
+          scroll_jank_v4->set_result_id(
+              *scroll_metrics->scroll_jank_v4_result_id());
         }
       });
 
@@ -349,9 +382,12 @@ void EventLatencyTracingRecorder::RecordEventLatencyTraceEvent(
         TRACE_EVENT_BEGIN(kTracingCategory, perfetto::StaticString{stage_name},
                           trace_track, stage_it->start_time);
 
-        if (stage_it->stage_type ==
-            CompositorFrameReporter::StageType::
-                kSubmitCompositorFrameToPresentationCompositorFrame) {
+        if ((stage_it->stage_type ==
+             CompositorFrameReporter::StageType::
+                 kSubmitCompositorFrameToPresentationCompositorFrame) ||
+            (stage_it->stage_type ==
+             CompositorFrameReporter::StageType::
+                 kSubmitUpdateDisplayTreeToPresentationCompositorFrame)) {
           DCHECK(viz_breakdown);
           for (auto it = viz_breakdown->CreateIterator(true); it.IsValid();
                it.Advance()) {
@@ -406,13 +442,6 @@ void EventLatencyTracingRecorder::RecordEventLatencyTraceEvent(
     TRACE_EVENT_END(kTracingCategory, trace_track, termination_time);
   }
   TRACE_EVENT_END(kTracingCategory, trace_track, termination_time);
-}
-
-// static
-bool EventLatencyTracingRecorder::IsEventLatencyTracingEnabled() {
-  return IsTracingEnabled() ||
-         !base::FeatureList::IsEnabled(
-             ::features::kMetricsTracingCalculationReduction);
 }
 
 }  // namespace cc

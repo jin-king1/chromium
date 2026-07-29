@@ -4,44 +4,40 @@
 
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "chrome/browser/extensions/extension_apitest.h"
+#include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/process_map.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/file_util.h"
 #include "extensions/test/result_catcher.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
+#include "services/network/public/cpp/web_sandbox_flags.h"
 #include "third_party/blink/public/common/features.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/extensions/extension_platform_apitest.h"
-#else
-#include "chrome/browser/extensions/extension_apitest.h"
-#endif
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
 enum class ManifestVersion { TWO, THREE };
 
-#if BUILDFLAG(IS_ANDROID)
-using ExtensionApiTestBase = ExtensionPlatformApiTest;
-#else
-using ExtensionApiTestBase = ExtensionApiTest;
-#endif
-
 class SandboxedPagesTest
-    : public ExtensionApiTestBase,
+    : public ExtensionApiTest,
       public ::testing::WithParamInterface<ManifestVersion> {
  public:
   SandboxedPagesTest() = default;
 
   void SetUpOnMainThread() override {
-    ExtensionApiTestBase::SetUpOnMainThread();
+    ExtensionApiTest::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
   }
 
@@ -90,7 +86,7 @@ class SandboxedPagesTest
 // in the extension's manifest. This class is parameterized on
 // kIsolateSandboxedIframes so that it tests both in-process and
 // process-isolated sandboxed frames.
-class SandboxAPIMetricsTest : public ExtensionApiTestBase,
+class SandboxAPIMetricsTest : public ExtensionApiTest,
                               public ::testing::WithParamInterface<bool> {
  public:
   SandboxAPIMetricsTest() {
@@ -104,7 +100,7 @@ class SandboxAPIMetricsTest : public ExtensionApiTestBase,
   }
 
   void SetUpOnMainThread() override {
-    ExtensionApiTestBase::SetUpOnMainThread();
+    ExtensionApiTest::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
   }
 
@@ -445,11 +441,6 @@ IN_PROC_BROWSER_TEST_P(SandboxedPagesTest, WebAccessibleResourcesTest) {
   auto test_frame_with_fetch = [&](const char* frame_url, const char* fetch_url,
                                    bool is_web_accessible_resource, int count,
                                    std::string expected_frame_origin) {
-    // Prepare histogram.
-    base::HistogramTester histograms;
-    const char* kHistogramName =
-        "Extensions.SandboxedPageLoad.IsWebAccessibleResource";
-
     // Fetch and test resource.
     content::WebContents* web_contents = GetActiveWebContents();
     ASSERT_TRUE(content::NavigateToURL(web_contents,
@@ -466,8 +457,6 @@ IN_PROC_BROWSER_TEST_P(SandboxedPagesTest, WebAccessibleResourcesTest) {
                   content::JsReplace(kFetchScriptTemplate,
                                      extension->GetResourceURL(fetch_url))),
               fetch_url);
-    histograms.ExpectBucketCount(kHistogramName, is_web_accessible_resource,
-                                 count);
     EXPECT_EQ(expected_frame_origin, web_contents->GetPrimaryMainFrame()
                                          ->GetLastCommittedOrigin()
                                          .Serialize());
@@ -488,6 +477,106 @@ IN_PROC_BROWSER_TEST_P(SandboxedPagesTest, WebAccessibleResourcesTest) {
   // Sandboxed extension page fetching a web accessible resource.
   test_frame_with_fetch("sandboxed_page.html", "web_accessible_resource.html",
                         true, 1, "null");
+}
+
+// Verifies that MV3 sandboxed pages don't have access to extension messaging
+// APIs.
+IN_PROC_BROWSER_TEST_F(SandboxedPagesTest,
+                       ManifestV3MessagingBindingsWithheld) {
+  static constexpr char kManifest[] =
+      R"({
+           "name": "Sandboxed API exposure test",
+           "version": "0.1",
+           "manifest_version": 3,
+           "sandbox": { "pages": ["sandboxed.html"] }
+         })";
+  static constexpr char kSandboxedHtml[] =
+      R"(<html><body>Sandboxed Page</body></html>)";
+
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("sandboxed.html"), kSandboxedHtml);
+
+  const Extension* extension = LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents, extension->GetResourceURL("sandboxed.html")));
+
+  EXPECT_EQ("undefined",
+            content::EvalJs(web_contents, "typeof chrome.runtime"));
+
+  // Sandboxed pages are hosted in a process that isn't tracked in the
+  // process map.
+  EXPECT_FALSE(ProcessMap::Get(profile())->Contains(
+      extension->id(),
+      web_contents->GetPrimaryMainFrame()->GetProcess()->GetID()));
+}
+
+// Pages that are sandboxed with the HTML5 `sandbox` attribute are treated
+// differently from pages specified in the "sandbox" attribute in the manifest.
+// These pages *do* get extension APIs.
+IN_PROC_BROWSER_TEST_F(SandboxedPagesTest,
+                       Html5SandboxedIframeMessagingBindingsExposed) {
+  // Load an extension with an HTML5-sandbox'd page that ping-pongs a message to
+  // its service worker.
+  static constexpr char kManifest[] =
+      R"({
+           "name": "HTML5 Sandboxed API exposure test",
+           "version": "0.1",
+           "manifest_version": 3,
+           "background": {"service_worker": "background.js"}
+         })";
+  static constexpr char kBackgroundJs[] =
+      R"(chrome.runtime.onMessage.addListener(
+             (message, sender, sendResponse) => {
+           sendResponse(`ack ${message}`);
+         });)";
+  static constexpr char kMainHtml[] =
+      R"(<html>
+           <body>
+             <h1>Main Page</h1>
+             <iframe sandbox="allow-scripts" src="child.html"></iframe>
+           </body>
+         </html>)";
+  static constexpr char kChildHtml[] =
+      R"(<html>
+           <body>Child Page</body>
+           <script src="child.js"></script>
+         </html>)";
+  static constexpr char kChildJs[] =
+      R"(chrome.runtime.sendMessage('hello', (response) => {
+           domAutomationController.send(response);
+         });)";
+
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackgroundJs);
+  test_dir.WriteFile(FILE_PATH_LITERAL("main.html"), kMainHtml);
+  test_dir.WriteFile(FILE_PATH_LITERAL("child.html"), kChildHtml);
+  test_dir.WriteFile(FILE_PATH_LITERAL("child.js"), kChildJs);
+
+  const Extension* extension = LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  content::DOMMessageQueue message_queue;
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateToURL(web_contents,
+                                     extension->GetResourceURL("main.html")));
+
+  std::string message;
+  ASSERT_TRUE(message_queue.WaitForMessage(&message));
+  EXPECT_EQ(R"("ack hello")", message);
+
+  // Unlike manifest-sandboxed pages, pages sandboxed with the HTML5 attribute
+  // are hosted in the normal extension process and do have access to the
+  // messaging APIs.
+  content::RenderFrameHost* main_frame = web_contents->GetPrimaryMainFrame();
+  content::RenderFrameHost* child_frame = content::ChildFrameAt(main_frame, 0);
+  EXPECT_EQ(main_frame->GetProcess(), child_frame->GetProcess());
+  EXPECT_TRUE(ProcessMap::Get(profile())->Contains(
+      extension->id(), child_frame->GetProcess()->GetID()));
 }
 
 }  // namespace extensions

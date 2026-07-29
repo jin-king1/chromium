@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_MOCK_PASSWORD_MANAGER_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_MOCK_PASSWORD_MANAGER_H_
 
+#include "components/autofill/core/browser/autofill_server_prediction.h"
 #include "components/autofill/core/common/field_data_manager.h"
 #include "components/password_manager/core/browser/password_manager_interface.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -88,14 +89,13 @@ class MockPasswordManager : public password_manager::PasswordManagerInterface {
                const autofill::FormData&,
                const std::u16string&),
               (override));
-  MOCK_METHOD(
-      void,
-      ProcessAutofillPredictions,
-      (PasswordManagerDriver*,
-       const autofill::FormData&,
-       (const base::flat_map<autofill::FieldGlobalId,
-                             autofill::AutofillType::ServerPrediction>&)),
-      (override));
+  MOCK_METHOD(void,
+              ProcessAutofillPredictions,
+              (PasswordManagerDriver&,
+               const autofill::FormData&,
+               (const base::flat_map<autofill::FieldGlobalId,
+                                     autofill::AutofillServerPrediction>&)),
+              (override));
   MOCK_METHOD(
       void,
       ProcessClassificationModelPredictions,
@@ -149,6 +149,8 @@ class MockPasswordManager : public password_manager::PasswordManagerInterface {
               (override));
 #endif
   MOCK_METHOD(bool, IsFormManagerPendingPasswordUpdate, (), (const override));
+  MOCK_METHOD(void, AddObserver, (Observer*), (override));
+  MOCK_METHOD(void, RemoveObserver, (Observer*), (override));
 };
 }  // namespace password_manager
 

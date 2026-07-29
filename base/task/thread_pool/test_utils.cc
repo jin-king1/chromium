@@ -5,11 +5,11 @@
 #include "base/task/thread_pool/test_utils.h"
 
 #include <utility>
+#include <variant>
 
 #include "base/check.h"
 #include "base/debug/leak_annotations.h"
 #include "base/functional/bind.h"
-#include "base/functional/overloaded.h"
 #include "base/memory/raw_ptr.h"
 #include "base/synchronization/condition_variable.h"
 #include "base/task/thread_pool/pooled_parallel_task_runner.h"
@@ -18,7 +18,7 @@
 #include "base/threading/scoped_blocking_call_internal.h"
 #include "base/threading/thread_restrictions.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 
 namespace base::internal::test {
 
@@ -109,8 +109,8 @@ scoped_refptr<Sequence> CreateSequenceWithTask(
     const TaskTraits& traits,
     scoped_refptr<SequencedTaskRunner> task_runner,
     TaskSourceExecutionMode execution_mode) {
-  scoped_refptr<Sequence> sequence =
-      MakeRefCounted<Sequence>(traits, task_runner.get(), execution_mode);
+  scoped_refptr<Sequence> sequence = MakeRefCounted<Sequence>(
+      traits, task_runner.get(), execution_mode, ThreadType::kDefault);
   auto transaction = sequence->BeginTransaction();
   transaction.WillPushImmediateTask();
   transaction.PushImmediateTask(std::move(task));
@@ -139,16 +139,20 @@ scoped_refptr<TaskRunner> CreatePooledTaskRunnerWithExecutionMode(
 
 scoped_refptr<TaskRunner> CreatePooledTaskRunner(
     const TaskTraits& traits,
-    MockPooledTaskRunnerDelegate* mock_pooled_task_runner_delegate) {
+    MockPooledTaskRunnerDelegate* mock_pooled_task_runner_delegate,
+    bool inherit_task_importance_by_default) {
   return MakeRefCounted<PooledParallelTaskRunner>(
-      traits, mock_pooled_task_runner_delegate);
+      traits, mock_pooled_task_runner_delegate,
+      inherit_task_importance_by_default);
 }
 
 scoped_refptr<SequencedTaskRunner> CreatePooledSequencedTaskRunner(
     const TaskTraits& traits,
-    MockPooledTaskRunnerDelegate* mock_pooled_task_runner_delegate) {
+    MockPooledTaskRunnerDelegate* mock_pooled_task_runner_delegate,
+    bool inherit_task_importance_by_default) {
   return MakeRefCounted<PooledSequencedTaskRunner>(
-      traits, mock_pooled_task_runner_delegate);
+      traits, mock_pooled_task_runner_delegate,
+      inherit_task_importance_by_default);
 }
 
 MockPooledTaskRunnerDelegate::MockPooledTaskRunnerDelegate(
@@ -270,12 +274,12 @@ MockJobTask::MockJobTask(
     size_t num_tasks_to_run)
     : task_(std::move(worker_task)),
       remaining_num_tasks_to_run_(num_tasks_to_run) {
-  CHECK(!absl::get<decltype(worker_task)>(task_).is_null());
+  CHECK(!std::get<decltype(worker_task)>(task_).is_null());
 }
 
 MockJobTask::MockJobTask(base::OnceClosure worker_task)
     : task_(std::move(worker_task)), remaining_num_tasks_to_run_(1) {
-  CHECK(!absl::get<decltype(worker_task)>(task_).is_null());
+  CHECK(!std::get<decltype(worker_task)>(task_).is_null());
 }
 
 void MockJobTask::SetNumTasksToRun(size_t num_tasks_to_run) {
@@ -283,7 +287,7 @@ void MockJobTask::SetNumTasksToRun(size_t num_tasks_to_run) {
     remaining_num_tasks_to_run_ = 0;
     return;
   }
-  if (auto* closure = absl::get_if<base::OnceClosure>(&task_); closure) {
+  if (auto* closure = std::get_if<base::OnceClosure>(&task_); closure) {
     // 0 is already handled above, so this can only be an attempt to set to
     // a non-zero value for a OnceClosure. In that case, the only permissible
     // value is 1, and the closure must not be null.
@@ -301,8 +305,8 @@ size_t MockJobTask::GetMaxConcurrency(size_t /* worker_count */) const {
 }
 
 void MockJobTask::Run(JobDelegate* delegate) {
-  absl::visit(
-      base::Overloaded{
+  std::visit(
+      absl::Overload{
           [](OnceClosure& closure) { std::move(closure).Run(); },
           [delegate](const RepeatingCallback<void(JobDelegate*)>& callback) {
             callback.Run(delegate);
@@ -316,7 +320,8 @@ scoped_refptr<JobTaskSource> MockJobTask::GetJobTaskSource(
     const TaskTraits& traits,
     PooledTaskRunnerDelegate* delegate) {
   return MakeRefCounted<JobTaskSource>(
-      from_here, traits, base::BindRepeating(&test::MockJobTask::Run, this),
+      from_here, traits, ThreadType::kDefault,
+      base::BindRepeating(&test::MockJobTask::Run, this),
       base::BindRepeating(&test::MockJobTask::GetMaxConcurrency, this),
       delegate);
 }

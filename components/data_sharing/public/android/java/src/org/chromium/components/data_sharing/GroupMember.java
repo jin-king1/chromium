@@ -8,15 +8,18 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.data_sharing.member_role.MemberRole;
-import org.chromium.components.signin.base.GaiaId;
+import org.chromium.google_apis.gaia.GaiaId;
 import org.chromium.url.GURL;
 
 import java.util.Objects;
 
 /** Information about a member of a group. */
 @JNINamespace("data_sharing")
+@NullMarked
 public class GroupMember {
     public final GaiaId gaiaId;
     public final String displayName;
@@ -43,7 +46,7 @@ public class GroupMember {
 
     @CalledByNative
     private static GroupMember createGroupMember(
-            GaiaId gaiaId,
+            @JniType("GaiaId") GaiaId gaiaId,
             String displayName,
             String email,
             @MemberRole int role,

@@ -9,16 +9,21 @@ include_rules = [
 
   "+third_party/leveldatabase",
   "+v8/include/v8-value-serializer-version.h",
+
+  "+components/base32",
+
+  "+third_party/snappy",
+  "+third_party/zstd",
 ]
 
 specific_include_rules = {
   '.*browsertest.cc': [
     "+content",
   ],
-  '.*test.cc': [
+  '.*test.*': [
     "+content/browser/indexed_db/instance",
   ],
-  '.*internals_ui\..*': [
+  '.*internals_ui\\..*': [
     "+content",
   ],
   'indexed_db_context_impl.*': [

@@ -15,13 +15,18 @@ import android.widget.TextView;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceViewHolder;
 
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
 import org.chromium.chrome.browser.signin.services.ProfileDataCache;
+import org.chromium.components.browser_ui.widget.containment.ContainmentItem;
 import org.chromium.components.signin.base.CoreAccountInfo;
 
 /** A dedicated preference for the account settings top avatar. */
-public class CentralAccountCardPreference extends Preference implements ProfileDataCache.Observer {
+@NullMarked
+public class CentralAccountCardPreference extends Preference
+        implements ProfileDataCache.Observer, ContainmentItem {
     private CoreAccountInfo mAccountInfo;
     private ProfileDataCache mProfileDataCache;
 
@@ -31,12 +36,18 @@ public class CentralAccountCardPreference extends Preference implements ProfileD
         setLayoutResource(R.layout.central_account_card_view);
     }
 
+    @Override
+    public @BackgroundStyle int getCustomBackgroundStyle() {
+        return BackgroundStyle.NONE;
+    }
+
     /**
      * Initialize the dependencies for the CentralAccountCardPreference.
      *
      * <p>Must be called before the preference is attached, which is called from the containing
      * settings screen's onViewCreated method.
      */
+    @Initializer
     public void initialize(CoreAccountInfo accountInfo, ProfileDataCache profileDataCache) {
         mAccountInfo = accountInfo;
         mProfileDataCache = profileDataCache;
@@ -60,8 +71,7 @@ public class CentralAccountCardPreference extends Preference implements ProfileD
     public void onBindViewHolder(PreferenceViewHolder holder) {
         super.onBindViewHolder(holder);
 
-        DisplayableProfileData profileData =
-                mProfileDataCache.getProfileDataOrDefault(mAccountInfo.getEmail());
+        DisplayableProfileData profileData = mProfileDataCache.getById(mAccountInfo.getId());
 
         ImageView imageView = (ImageView) holder.findViewById(R.id.central_account_image);
         imageView.setImageDrawable(profileData.getImage());
@@ -83,7 +93,7 @@ public class CentralAccountCardPreference extends Preference implements ProfileD
 
     /** ProfileDataCache.Observer implementation. */
     @Override
-    public void onProfileDataUpdated(String accountEmail) {
+    public void onProfileDataUpdated(DisplayableProfileData profileData) {
         notifyChanged();
     }
 

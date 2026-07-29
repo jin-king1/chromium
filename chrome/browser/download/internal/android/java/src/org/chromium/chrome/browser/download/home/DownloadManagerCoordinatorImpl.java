@@ -15,9 +15,9 @@ import org.chromium.base.Callback;
 import org.chromium.base.DiscardableReferencePool;
 import org.chromium.base.ObserverList;
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.download.home.filter.Filters;
 import org.chromium.chrome.browser.download.home.filter.Filters.FilterType;
 import org.chromium.chrome.browser.download.home.list.DateOrderedListCoordinator;
@@ -32,14 +32,19 @@ import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.offline_items_collection.OfflineContentProvider;
+import org.chromium.components.offline_items_collection.OfflineItem;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.io.Closeable;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Supplier;
 
 /**
- * The top level coordinator for the download home UI.  This is currently an in progress class and
- * is not fully fleshed out yet.
+ * The top level coordinator for the download home UI. This is currently an in progress class and is
+ * not fully fleshed out yet.
  */
+@NullMarked
 class DownloadManagerCoordinatorImpl
         implements DownloadManagerCoordinator, ToolbarCoordinator.ToolbarActionDelegate {
     private final ObserverList<Observer> mObservers = new ObserverList<>();
@@ -65,14 +70,16 @@ class DownloadManagerCoordinatorImpl
             Callback<Context> settingsNavigation,
             SnackbarManager snackbarManager,
             ModalDialogManager modalDialogManager,
+            DownloadHelpPageLauncher helpPageLauncher,
             Tracker tracker,
             FaviconProvider faviconProvider,
             OfflineContentProvider provider,
+            Callback<OfflineItem> openWithHandler,
             DiscardableReferencePool discardableReferencePool) {
         mActivity = activity;
         mSettingsNavigation = settingsNavigation;
         mDeleteCoordinator = new DeleteUndoCoordinator(snackbarManager);
-        mSelectionDelegate = new SelectionDelegate<ListItem>();
+        mSelectionDelegate = new SelectionDelegate<>();
         mListCoordinator =
                 new DateOrderedListCoordinator(
                         mActivity,
@@ -84,15 +91,18 @@ class DownloadManagerCoordinatorImpl
                         this::notifyFilterChanged,
                         createDateOrderedListObserver(),
                         modalDialogManager,
+                        helpPageLauncher,
                         faviconProvider,
+                        openWithHandler,
                         discardableReferencePool);
         mToolbarCoordinator =
                 new ToolbarCoordinator(
                         mActivity,
                         this,
-                        mListCoordinator,
+                        /* listActionDelegate= */ mListCoordinator,
+                        /* listContentView= */ mListCoordinator.getView(),
                         mSelectionDelegate,
-                        config.isSeparateActivity,
+                        config,
                         tracker);
 
         initializeView();
@@ -100,10 +110,22 @@ class DownloadManagerCoordinatorImpl
             updateForUrl(Filters.toUrl(Filters.FilterType.PREFETCHED));
         }
         RecordUserAction.record("Android.DownloadManager.Open");
-        mBackPressHandlers =
-                new BackPressHandler[] {
-                    mListCoordinator.getBackPressHandler(), mToolbarCoordinator
-                };
+
+        mBackPressHandlers = createBackPressHandlers();
+    }
+
+    private BackPressHandler[] createBackPressHandlers() {
+        List<BackPressHandler> handlers = new ArrayList<>();
+        BackPressHandler searchHandler = mListCoordinator.getSearchBackPressHandler();
+
+        if (searchHandler != null) {
+            handlers.add(searchHandler);
+        }
+
+        handlers.add(mListCoordinator.getBackPressHandler());
+        handlers.add(mToolbarCoordinator);
+
+        return handlers.toArray(new BackPressHandler[0]);
     }
 
     /**
@@ -199,6 +221,11 @@ class DownloadManagerCoordinatorImpl
     public void openSettings() {
         RecordUserAction.record("Android.DownloadManager.Settings");
         mSettingsNavigation.onResult(mActivity);
+    }
+
+    @Override
+    public ViewGroup getListViewForTesting() {
+        return mListCoordinator.getListViewForTesting();
     }
 
     private void notifyFilterChanged(@FilterType int filter) {

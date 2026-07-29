@@ -7,6 +7,7 @@
 #include "base/bits.h"
 #include "base/containers/span.h"
 #include "base/numerics/byte_conversions.h"
+#include "media/parsers/h264_parser.h"
 
 namespace media {
 
@@ -127,9 +128,9 @@ void H26xAnnexBBitstreamBuilder::AppendBool(bool val) {
 
 void H26xAnnexBBitstreamBuilder::AppendSE(int val) {
   if (val > 0)
-    AppendUE(val * 2 - 1);
+    AppendUE(static_cast<unsigned int>(val) * 2 - 1);
   else
-    AppendUE(-val * 2);
+    AppendUE(-static_cast<unsigned int>(val) * 2);
 }
 
 void H26xAnnexBBitstreamBuilder::AppendUE(unsigned int val) {
@@ -155,7 +156,7 @@ void H26xAnnexBBitstreamBuilder::BeginNALU(H264NALU::Type nalu_type,
   DCHECK(!in_nalu_);
   DCHECK_FINISHED();
 
-  DCHECK_LE(nalu_type, H264NALU::kEOStream);
+  DCHECK(nalu_type <= H264NALU::kEOStream || nalu_type == H264NALU::kPrefix);
   DCHECK_GE(nal_ref_idc, 0);
   DCHECK_LE(nal_ref_idc, 3);
 
@@ -172,7 +173,7 @@ void H26xAnnexBBitstreamBuilder::BeginNALU(H265NALU::Type nalu_type) {
   DCHECK(!in_nalu_);
   DCHECK_FINISHED();
 
-  DCHECK_LE(nalu_type, H265NALU::Type::EOS_NUT);
+  DCHECK_LE(nalu_type, H265NALU::Type::SUFFIX_SEI_NUT);
 
   AppendBits(32, 0x00000001);
   Flush();

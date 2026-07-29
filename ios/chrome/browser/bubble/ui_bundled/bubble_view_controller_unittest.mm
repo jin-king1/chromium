@@ -62,6 +62,7 @@ TEST_F(BubbleViewControllerTest, BubbleTypeDefaultContent) {
                                   arrowDirection:arrow_direction_
                                        alignment:alignment_
                                   bubbleViewType:BubbleViewTypeDefault
+                                 pageControlPage:BubblePageControlPageNone
                                         delegate:nil];
   ExpectBubbleViewContent(bubble_view_controller, false, false, false);
 }
@@ -75,6 +76,7 @@ TEST_F(BubbleViewControllerTest, BubbleTypeWithCloseContent) {
                                   arrowDirection:arrow_direction_
                                        alignment:alignment_
                                   bubbleViewType:BubbleViewTypeWithClose
+                                 pageControlPage:BubblePageControlPageNone
                                         delegate:nil];
   ExpectBubbleViewContent(bubble_view_controller, true, false, false);
 }
@@ -88,19 +90,7 @@ TEST_F(BubbleViewControllerTest, BubbleTypeRichContent) {
                                   arrowDirection:arrow_direction_
                                        alignment:alignment_
                                   bubbleViewType:BubbleViewTypeRich
+                                 pageControlPage:BubblePageControlPageNone
                                         delegate:nil];
   ExpectBubbleViewContent(bubble_view_controller, false, true, false);
-}
-
-// Tests that with BubbleViewTypeRichWithSnooze, bubble view contains the
-// expected subviews.
-TEST_F(BubbleViewControllerTest, BubbleTypeRichWithSnoozeContent) {
-  BubbleViewController* bubble_view_controller =
-      [[BubbleViewController alloc] initWithText:text_
-                                           title:title_text_
-                                  arrowDirection:arrow_direction_
-                                       alignment:alignment_
-                                  bubbleViewType:BubbleViewTypeRichWithSnooze
-                                        delegate:nil];
-  ExpectBubbleViewContent(bubble_view_controller, false, true, true);
 }

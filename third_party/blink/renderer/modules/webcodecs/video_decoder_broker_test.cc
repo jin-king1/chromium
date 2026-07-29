@@ -9,10 +9,10 @@
 
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "gpu/command_buffer/common/mailbox_holder.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/decoder_status.h"
 #include "media/base/media_switches.h"
@@ -36,8 +36,8 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+
 using ::testing::_;
-using ::testing::Invoke;
 using ::testing::Return;
 
 namespace blink {
@@ -61,14 +61,21 @@ class FakeGpuVideoDecoder : public media::FakeVideoDecoder {
 
   scoped_refptr<media::VideoFrame> MakeVideoFrame(
       const media::DecoderBuffer& buffer) override {
+    gpu::SharedImageMetadata metadata;
+    metadata.format = viz::SinglePlaneFormat::kRGBA_8888;
+    metadata.size = current_config_.coded_size();
+    metadata.color_space = gfx::ColorSpace::CreateSRGB();
+    metadata.surface_origin = kTopLeft_GrSurfaceOrigin;
+    metadata.alpha_type = kOpaque_SkAlphaType;
+    metadata.usage = gpu::SharedImageUsageSet();
     scoped_refptr<gpu::ClientSharedImage> shared_image =
-        gpu::ClientSharedImage::CreateForTesting();
+        gpu::ClientSharedImage::CreateForTesting(metadata);
     scoped_refptr<media::VideoFrame> frame = media::VideoFrame::WrapSharedImage(
-        media::PIXEL_FORMAT_ARGB, shared_image, gpu::SyncToken(),
-        media::VideoFrame::ReleaseMailboxCB(), current_config_.coded_size(),
-        current_config_.visible_rect(), current_config_.natural_size(),
-        buffer.timestamp());
+        media::PIXEL_FORMAT_ABGR, shared_image, gpu::SyncToken(),
+        media::VideoFrame::ReleaseMailboxCB(), current_config_.visible_rect(),
+        current_config_.natural_size(), buffer.timestamp());
     frame->metadata().power_efficient = true;
+    frame->set_color_space(shared_image->color_space());
     return frame;
   }
 
@@ -89,8 +96,8 @@ class FakeMojoMediaClient : public media::MojoMediaClient {
       media::mojom::CommandBufferIdPtr command_buffer_id,
       media::RequestOverlayInfoCB request_overlay_info_cb,
       const gfx::ColorSpace& target_color_space,
-      mojo::PendingRemote<media::stable::mojom::StableVideoDecoder>
-          oop_video_decoder) override {
+      mojo::PendingRemote<media::mojom::VideoDecoder> oop_video_decoder)
+      override {
     return std::make_unique<FakeGpuVideoDecoder>();
   }
 };
@@ -105,8 +112,8 @@ class FakeInterfaceFactory : public media::mojom::InterfaceFactory {
   void BindRequest(mojo::ScopedMessagePipeHandle handle) {
     receiver_.Bind(mojo::PendingReceiver<media::mojom::InterfaceFactory>(
         std::move(handle)));
-    receiver_.set_disconnect_handler(WTF::BindOnce(
-        &FakeInterfaceFactory::OnConnectionError, base::Unretained(this)));
+    receiver_.set_disconnect_handler(
+        BindOnce(&FakeInterfaceFactory::OnConnectionError, Unretained(this)));
   }
 
   void OnConnectionError() { receiver_.reset(); }
@@ -116,24 +123,22 @@ class FakeInterfaceFactory : public media::mojom::InterfaceFactory {
   // FakeMojoMediaClient will create a FakeGpuVideoDecoder.
   void CreateVideoDecoder(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
-      mojo::PendingRemote<media::stable::mojom::StableVideoDecoder>
-          dst_video_decoder) override {
+      mojo::PendingRemote<media::mojom::VideoDecoder> dst_video_decoder)
+      override {
     video_decoder_receivers_.Add(
         std::make_unique<media::MojoVideoDecoderService>(
             &mojo_media_client_, &cdm_service_context_,
-            mojo::PendingRemote<media::stable::mojom::StableVideoDecoder>()),
+            mojo::PendingRemote<media::mojom::VideoDecoder>()),
         std::move(receiver));
   }
 
+  // Stub out other mojom::InterfaceFactory interfaces.
 #if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-  void CreateStableVideoDecoder(
-      mojo::PendingReceiver<media::stable::mojom::StableVideoDecoder>
-          video_decoder) override {
-    // TODO(b/327268445): we'll need to complete this for GTFO OOP-VD testing.
+  void CreateVideoDecoderWithTracker(
+      mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
+      mojo::PendingRemote<media::mojom::VideoDecoderTracker> tracker) override {
   }
 #endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-
-  // Stub out other mojom::InterfaceFactory interfaces.
   void CreateAudioDecoder(
       mojo::PendingReceiver<media::mojom::AudioDecoder> receiver) override {}
   void CreateAudioEncoder(
@@ -147,12 +152,6 @@ class FakeInterfaceFactory : public media::mojom::InterfaceFactory {
       mojo::PendingReceiver<media::mojom::Renderer> receiver) override {}
 #endif
 #if BUILDFLAG(IS_ANDROID)
-  void CreateMediaPlayerRenderer(
-      mojo::PendingRemote<media::mojom::MediaPlayerRendererClientExtension>
-          client_extension_remote,
-      mojo::PendingReceiver<media::mojom::Renderer> receiver,
-      mojo::PendingReceiver<media::mojom::MediaPlayerRendererExtension>
-          renderer_extension_receiver) override {}
   void CreateFlingingRenderer(
       const std::string& presentation_id,
       mojo::PendingRemote<media::mojom::FlingingRendererClientExtension>
@@ -170,10 +169,7 @@ class FakeInterfaceFactory : public media::mojom::InterfaceFactory {
       mojo::PendingRemote<media::mojom::MediaLog> media_log_remote,
       mojo::PendingReceiver<media::mojom::Renderer> receiver,
       mojo::PendingReceiver<media::mojom::MediaFoundationRendererExtension>
-          renderer_extension_receiver,
-      mojo::PendingRemote<
-          ::media::mojom::MediaFoundationRendererClientExtension>
-          client_extension_remote) override {}
+          renderer_extension_receiver) override {}
 #endif  // BUILDFLAG(IS_WIN)
  private:
   media::MojoCdmServiceContext cdm_service_context_;
@@ -235,8 +231,8 @@ class VideoDecoderBrokerTest : public testing::Test {
     EXPECT_TRUE(
         Platform::Current()->GetBrowserInterfaceBroker()->SetBinderForTesting(
             media::mojom::InterfaceFactory::Name_,
-            WTF::BindRepeating(&FakeInterfaceFactory::BindRequest,
-                               base::Unretained(interface_factory_.get()))));
+            BindRepeating(&FakeInterfaceFactory::BindRequest,
+                          Unretained(interface_factory_.get()))));
 
     // |gpu_factories_| requires API calls be made using it's GetTaskRunner().
     // We use a separate |media_thread_| (as opposed to a separate task runner
@@ -257,10 +253,10 @@ class VideoDecoderBrokerTest : public testing::Test {
             Return(media::GpuVideoAcceleratorFactories::Supported::kTrue));
     EXPECT_CALL(*gpu_factories_, GetChannelToken(_))
         .WillRepeatedly(
-            Invoke([](base::OnceCallback<void(const base::UnguessableToken&)>
-                          callback) {
+            [](base::OnceCallback<void(const base::UnguessableToken&)>
+                   callback) {
               std::move(callback).Run(base::UnguessableToken());
-            }));
+            });
   }
 
   void ConstructDecoder(ExecutionContext& execution_context) {
@@ -281,10 +277,10 @@ class VideoDecoderBrokerTest : public testing::Test {
     }
     decoder_broker_->Initialize(
         config, false /*low_delay*/, nullptr /* cdm_context */,
-        WTF::BindOnce(&VideoDecoderBrokerTest::OnInitWithClosure,
-                      WTF::Unretained(this), run_loop.QuitClosure()),
-        WTF::BindRepeating(&VideoDecoderBrokerTest::OnOutput,
-                           WTF::Unretained(this)),
+        blink::BindOnce(&VideoDecoderBrokerTest::OnInitWithClosure,
+                        Unretained(this), run_loop.QuitClosure()),
+        blink::BindRepeating(&VideoDecoderBrokerTest::OnOutput,
+                             Unretained(this)),
         media::WaitingCB());
     run_loop.Run();
     testing::Mock::VerifyAndClearExpectations(this);
@@ -296,8 +292,9 @@ class VideoDecoderBrokerTest : public testing::Test {
     base::RunLoop run_loop;
     EXPECT_CALL(*this, OnDecodeDone(HasStatusCode(expected_status)));
     decoder_broker_->Decode(
-        buffer, WTF::BindOnce(&VideoDecoderBrokerTest::OnDecodeDoneWithClosure,
-                              WTF::Unretained(this), run_loop.QuitClosure()));
+        buffer,
+        blink::BindOnce(&VideoDecoderBrokerTest::OnDecodeDoneWithClosure,
+                        Unretained(this), run_loop.QuitClosure()));
     run_loop.Run();
     testing::Mock::VerifyAndClearExpectations(this);
   }
@@ -306,8 +303,8 @@ class VideoDecoderBrokerTest : public testing::Test {
     base::RunLoop run_loop;
     EXPECT_CALL(*this, OnResetDone());
     decoder_broker_->Reset(
-        WTF::BindOnce(&VideoDecoderBrokerTest::OnResetDoneWithClosure,
-                      WTF::Unretained(this), run_loop.QuitClosure()));
+        blink::BindOnce(&VideoDecoderBrokerTest::OnResetDoneWithClosure,
+                        Unretained(this), run_loop.QuitClosure()));
     run_loop.Run();
     testing::Mock::VerifyAndClearExpectations(this);
   }
@@ -413,6 +410,10 @@ TEST_F(VideoDecoderBrokerTest, Init_DenyAcceleration) {
 }
 
 TEST_F(VideoDecoderBrokerTest, Decode_MultipleAccelerationPreferences) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures({media::kResolutionBasedDecoderPriority,
+                                    media::kWebCodecsDecoderFlushOptimizations},
+                                   {});
   V8TestingScope v8_scope;
   ExecutionContext* execution_context = v8_scope.GetExecutionContext();
 
@@ -449,17 +450,22 @@ TEST_F(VideoDecoderBrokerTest, Decode_MultipleAccelerationPreferences) {
   ASSERT_EQ(3U, output_frames_.size());
   EXPECT_TRUE(IsPlatformDecoder());
 
+  // Reinitializing with a smaller resolution will prefer existing decoder.
   auto normal_config = media::TestVideoConfig::Normal(media::VideoCodec::kVP8);
   InitializeDecoder(normal_config);
-  // VideoDecoderBroker doesn't have any inherent preference for software
-  // decoders based on resolution, so we'll still end up with a hardware
-  // decoder even though this is a small size clip.
-  // TODO(crbug.com/361823989): We should update the VideoDecoderBroker to
-  // always enable resolution based priority in DecoderSelector.
   DecodeBuffer(media::CreateFakeVideoBufferForTest(
       normal_config, base::TimeDelta(), base::Milliseconds(33)));
   DecodeBuffer(media::DecoderBuffer::CreateEOSBuffer());
   ASSERT_EQ(4U, output_frames_.size());
+  EXPECT_TRUE(IsPlatformDecoder());
+
+  // But changing the preference to kSoftware will switch back to software.
+  decoder_broker_->SetHardwarePreference(HardwarePreference::kPreferSoftware);
+  InitializeDecoder(normal_config);
+  DecodeBuffer(media::ReadTestDataFile("vp8-I-frame-320x120"));
+  DecodeBuffer(media::DecoderBuffer::CreateEOSBuffer());
+  ASSERT_EQ(5U, output_frames_.size());
+  EXPECT_FALSE(IsPlatformDecoder());
 
   ResetDecoder();
 }

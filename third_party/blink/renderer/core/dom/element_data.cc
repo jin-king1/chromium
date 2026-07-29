@@ -30,7 +30,6 @@
 
 #include "third_party/blink/renderer/core/dom/element_data.h"
 
-#include "base/compiler_specific.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/dom/qualified_name.h"
 #include "third_party/blink/renderer/platform/wtf/size_assertions.h"
@@ -130,13 +129,15 @@ void ElementData::TraceAfterDispatch(blink::Visitor* visitor) const {
 ShareableElementData::ShareableElementData(
     const Vector<Attribute, kAttributePrealloc>& attributes)
     : ElementData(attributes.size()) {
-  for (unsigned i = 0; i < bit_field_.get<ArraySize>(); ++i)
-    UNSAFE_TODO(new (&attribute_array_[i]) Attribute(attributes[i]));
+  for (wtf_size_t i = 0; i < attributes.size(); ++i) {
+    new (&AttributesSpan()[i]) Attribute(attributes[i]);
+  }
 }
 
 ShareableElementData::~ShareableElementData() {
-  for (unsigned i = 0; i < bit_field_.get<ArraySize>(); ++i)
-    UNSAFE_TODO(attribute_array_[i]).~Attribute();
+  for (auto& attribute : AttributesSpan()) {
+    attribute.~Attribute();
+  }
 }
 
 ShareableElementData::ShareableElementData(const UniqueElementData& other)
@@ -149,9 +150,8 @@ ShareableElementData::ShareableElementData(const UniqueElementData& other)
         other.presentation_attribute_style_->ImmutableCopyIfNeeded();
   }
 
-  for (unsigned i = 0; i < bit_field_.get<ArraySize>(); ++i) {
-    UNSAFE_TODO(new (&attribute_array_[i])
-                    Attribute(other.attribute_vector_.at(i)));
+  for (unsigned i = 0; i < other.attribute_vector_.size(); ++i) {
+    new (&AttributesSpan()[i]) Attribute(other.attribute_vector_.at(i));
   }
 }
 
@@ -176,7 +176,7 @@ UniqueElementData::UniqueElementData(const UniqueElementData& other)
 }
 
 UniqueElementData::UniqueElementData(const ShareableElementData& other)
-    : ElementData(other, true) {
+    : ElementData(other, true), attribute_vector_(other.AttributesSpan()) {
   // An ShareableElementData should never have a mutable inline
   // CSSPropertyValueSet attached. Same for presentation attribute style.
   DCHECK(!other.inline_style_ || !other.inline_style_->IsMutable());
@@ -184,12 +184,6 @@ UniqueElementData::UniqueElementData(const ShareableElementData& other)
   DCHECK(!other.presentation_attribute_style_ ||
          !other.presentation_attribute_style_->IsMutable());
   presentation_attribute_style_ = other.presentation_attribute_style_;
-
-  unsigned length = other.Attributes().size();
-  attribute_vector_.reserve(length);
-  for (unsigned i = 0; i < length; ++i) {
-    attribute_vector_.UncheckedAppend(UNSAFE_TODO(other.attribute_array_[i]));
-  }
 }
 
 ShareableElementData* UniqueElementData::MakeShareableCopy() const {

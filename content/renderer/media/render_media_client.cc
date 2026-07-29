@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/no_destructor.h"
 #include "base/time/default_tick_clock.h"
 #include "content/public/common/content_client.h"
 #include "content/public/renderer/content_renderer_client.h"
@@ -50,11 +51,10 @@ void UpdateDecoderAudioTypesInternal(
 #if BUILDFLAG(PLATFORM_HAS_OPTIONAL_HEVC_ENCODE_SUPPORT)
 void UpdateEncoderVideoProfilesInternal(
     const media::VideoEncodeAccelerator::SupportedProfiles& supported_configs) {
-  base::flat_set<media::VideoCodecProfile> media_profiles;
-  for (const auto& config : supported_configs) {
-    media_profiles.insert(
-        static_cast<media::VideoCodecProfile>(config.profile));
-  }
+  auto media_profiles = base::MakeFlatSet<media::VideoCodecProfile>(
+      supported_configs, /*comp=*/{}, [&](const auto& config) {
+        return static_cast<media::VideoCodecProfile>(config.profile);
+      });
   media::UpdateDefaultEncoderSupportedVideoProfiles(media_profiles);
 }
 #endif  // BUILDFLAG(PLATFORM_HAS_OPTIONAL_HEVC_ENCODE_SUPPORT)
@@ -63,9 +63,18 @@ void UpdateEncoderVideoProfilesInternal(
 
 namespace content {
 
+static RenderMediaClient* GetRenderMediaClient() {
+  static base::NoDestructor<RenderMediaClient> client;
+  return client.get();
+}
+
 void RenderMediaClient::Initialize() {
-  static RenderMediaClient* client = new RenderMediaClient();
-  media::SetMediaClient(client);
+  media::SetMediaClient(GetRenderMediaClient());
+}
+
+void RenderMediaClient::SetGpuFeatureInfo(
+    const gpu::GpuFeatureInfo& gpu_feature_info) {
+  GetRenderMediaClient()->SetGpuFeatureInfoInternal(gpu_feature_info);
 }
 
 RenderMediaClient::RenderMediaClient()
@@ -88,38 +97,6 @@ RenderMediaClient::RenderMediaClient()
   // asynchronously. If IsDecoderSupportedVideoType() is called before we get a
   // response, that method will block if its not on the main thread or fall
   // back to querying the video decoder configurations synchronously otherwise.
-
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-  switch (media::GetOutOfProcessVideoDecodingMode()) {
-    case media::OOPVDMode::kEnabledWithoutGpuProcessAsProxy: {
-      mojo::SharedRemote<media::stable::mojom::StableVideoDecoder>
-          stable_video_decoder_remote;
-      interface_factory_for_supported_profiles_->CreateStableVideoDecoder(
-          stable_video_decoder_remote.BindNewPipeAndPassReceiver());
-      stable_video_decoder_remote.set_disconnect_handler(
-          base::BindOnce(&RenderMediaClient::OnGetSupportedVideoDecoderConfigs,
-                         // base::Unretained(this) is safe because the
-                         // RenderMediaClient is never destructed.
-                         base::Unretained(this),
-                         media::SupportedVideoDecoderConfigs(),
-                         media::VideoDecoderType::kUnknown),
-          main_task_runner_);
-      stable_video_decoder_remote->GetSupportedConfigs(
-          base::BindOnce(&RenderMediaClient::OnGetSupportedVideoDecoderConfigs,
-                         // base::Unretained(this) is safe because the
-                         // RenderMediaClient is never destructed.
-                         base::Unretained(this)));
-      video_decoder_for_supported_profiles_.emplace<
-          mojo::SharedRemote<media::stable::mojom::StableVideoDecoder>>(
-          std::move(stable_video_decoder_remote));
-      return;
-    }
-    case media::OOPVDMode::kEnabledWithGpuProcessAsProxy:
-    case media::OOPVDMode::kDisabled:
-      break;
-  }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-
   mojo::SharedRemote<media::mojom::VideoDecoder> video_decoder_remote;
   interface_factory_for_supported_profiles_->CreateVideoDecoder(
       video_decoder_remote.BindNewPipeAndPassReceiver(),
@@ -135,9 +112,7 @@ RenderMediaClient::RenderMediaClient()
                      // base::Unretained(this) is safe because the
                      // RenderMediaClient is never destructed.
                      base::Unretained(this)));
-  video_decoder_for_supported_profiles_
-      .emplace<mojo::SharedRemote<media::mojom::VideoDecoder>>(
-          std::move(video_decoder_remote));
+  video_decoder_for_supported_profiles_ = std::move(video_decoder_remote);
 #endif  // BUILDFLAG(PLATFORM_HAS_OPTIONAL_HEVC_DECODE_SUPPORT)
 
 #if BUILDFLAG(ENABLE_MOJO_AUDIO_DECODER)
@@ -194,19 +169,8 @@ bool RenderMediaClient::IsDecoderSupportedVideoType(
       DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
       media::SupportedVideoDecoderConfigs configs;
       media::VideoDecoderType video_decoder_type;
-      if ((absl::holds_alternative<
-               mojo::SharedRemote<media::mojom::VideoDecoder>>(
-               video_decoder_for_supported_profiles_) &&
-           !absl::get<mojo::SharedRemote<media::mojom::VideoDecoder>>(
-                video_decoder_for_supported_profiles_)
-                ->GetSupportedConfigs(&configs, &video_decoder_type)) ||
-          (absl::holds_alternative<
-               mojo::SharedRemote<media::stable::mojom::StableVideoDecoder>>(
-               video_decoder_for_supported_profiles_) &&
-           !absl::get<
-                mojo::SharedRemote<media::stable::mojom::StableVideoDecoder>>(
-                video_decoder_for_supported_profiles_)
-                ->GetSupportedConfigs(&configs, &video_decoder_type))) {
+      if (!video_decoder_for_supported_profiles_->GetSupportedConfigs(
+              &configs, &video_decoder_type)) {
         configs.clear();
       }
       OnGetSupportedVideoDecoderConfigs(configs, video_decoder_type);
@@ -240,6 +204,10 @@ bool RenderMediaClient::IsEncoderSupportedVideoType(
 bool RenderMediaClient::IsSupportedBitstreamAudioCodec(
     media::AudioCodec codec) {
   return GetContentClient()->renderer()->IsSupportedBitstreamAudioCodec(codec);
+}
+
+bool RenderMediaClient::ShouldSuppressAudioTracks() {
+  return GetContentClient()->renderer()->ShouldSuppressAudioTracks();
 }
 
 std::optional<::media::AudioRendererAlgorithmParameters>
@@ -322,8 +290,7 @@ void RenderMediaClient::OnGetSupportedVideoDecoderConfigs(
   UpdateDecoderVideoProfilesInternal(configs);
   did_video_decoder_update_.Signal();
 
-  video_decoder_for_supported_profiles_
-      .emplace<mojo::SharedRemote<media::mojom::VideoDecoder>>();
+  video_decoder_for_supported_profiles_.reset();
 #if BUILDFLAG(ENABLE_MOJO_AUDIO_DECODER)
   if (did_audio_decoder_update_.IsSignaled()) {
     interface_factory_for_supported_profiles_.reset();
@@ -373,6 +340,28 @@ void RenderMediaClient::OnGetSupportedVideoEncoderConfigs(
 
 media::ExternalMemoryAllocator* RenderMediaClient::GetMediaAllocator() {
   return GetContentClient()->renderer()->GetMediaAllocator();
+}
+
+void RenderMediaClient::SetGpuFeatureInfoInternal(
+    const gpu::GpuFeatureInfo& gpu_feature_info) {
+  DCHECK(main_task_runner_->BelongsToCurrentThread());
+  if (gpu_feature_info.IsInitialized()) {
+    if (gpu_feature_info
+            .status_values[gpu::GPU_FEATURE_TYPE_ACCELERATED_VIDEO_DECODE] !=
+        gpu::kGpuFeatureStatusEnabled) {
+      media::UpdateDefaultDecoderSupportedVideoProfiles({});
+    }
+    if (gpu_feature_info
+            .status_values[gpu::GPU_FEATURE_TYPE_ACCELERATED_VIDEO_ENCODE] !=
+        gpu::kGpuFeatureStatusEnabled) {
+      media::UpdateDefaultEncoderSupportedVideoProfiles({});
+    }
+  } else {
+    // Purge everything since we no longer have a GPU.
+    media::UpdateDefaultDecoderSupportedVideoProfiles({});
+    media::UpdateDefaultDecoderSupportedAudioTypes({});
+    media::UpdateDefaultEncoderSupportedVideoProfiles({});
+  }
 }
 
 }  // namespace content

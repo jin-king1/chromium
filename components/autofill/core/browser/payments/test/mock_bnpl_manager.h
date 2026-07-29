@@ -5,16 +5,20 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_TEST_MOCK_BNPL_MANAGER_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_PAYMENTS_TEST_MOCK_BNPL_MANAGER_H_
 
-#include "components/autofill/core/browser/foundations/test_autofill_client.h"
+#include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/payments/bnpl_manager.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
+#include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace autofill {
 
+class TestBrowserAutofillManager;
+
 class MockBnplManager : public payments::BnplManager {
  public:
-  explicit MockBnplManager(TestAutofillClient* test_autofill_client);
+  explicit MockBnplManager(
+      TestBrowserAutofillManager* test_browser_autofill_manager);
   ~MockBnplManager() override;
 
   MOCK_METHOD(void,
@@ -23,15 +27,37 @@ class MockBnplManager : public payments::BnplManager {
               (override));
 
   MOCK_METHOD(void,
-              OnSuggestionsShown,
+              OnCreditCardSuggestionsShown,
               (base::span<const Suggestion>,
                payments::UpdateSuggestionsCallback),
               (override));
 
   MOCK_METHOD(void,
-              OnAmountExtractionReturned,
-              (const std::optional<uint64_t>&),
+              OnSuggestionsHidden,
+              (AutofillManager&, SuggestionHidingReason),
               (override));
+
+  MOCK_METHOD(void,
+              OnAmountExtractionReturned,
+              (const std::optional<int64_t>&, bool),
+              (override));
+
+  MOCK_METHOD(void,
+              OnAmountExtractionReturnedFromAi,
+              (const payments::AiAmountExtractionResult::ResultType result),
+              (override));
+
+  MOCK_METHOD(void,
+              OnUserDecisionToUseBnpl,
+              (std::optional<int64_t> final_checkout_amount,
+               OnBnplVcnFetchedCallback on_bnpl_vcn_fetched_callback),
+              (override));
+
+  MOCK_METHOD(void, OnIssuerAccepted, (BnplIssuer), (override));
+
+  MOCK_METHOD(void, OnUserDecisionToUseSavedCards, (), (override));
+
+  MOCK_METHOD(void, CancelOngoingRequests, (), (override));
 };
 
 }  // namespace autofill

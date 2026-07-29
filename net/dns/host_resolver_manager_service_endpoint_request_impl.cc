@@ -4,11 +4,17 @@
 
 #include "net/dns/host_resolver_manager_service_endpoint_request_impl.h"
 
+#include <sstream>
+
+#include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "base/memory/safe_ref.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/types/optional_util.h"
+#include "net/base/features.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/dns/dns_alias_utility.h"
 #include "net/dns/dns_task_results_manager.h"
 #include "net/dns/host_cache.h"
@@ -37,18 +43,22 @@ HostResolverManager::ServiceEndpointRequestImpl::FinalizedResult::operator=(
     FinalizedResult&&) = default;
 
 HostResolverManager::ServiceEndpointRequestImpl::ServiceEndpointRequestImpl(
-    url::SchemeHostPort scheme_host_port,
+    HostResolver::Host host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     ResolveHostParameters parameters,
     base::WeakPtr<ResolveContext> resolve_context,
     base::WeakPtr<HostResolverManager> manager,
     const base::TickClock* tick_clock)
-    : host_(std::move(scheme_host_port)),
+    : host_(std::move(host)),
       network_anonymization_key_(
-          NetworkAnonymizationKey::IsPartitioningEnabled()
+          NetworkAnonymizationKey::IsPartitioningEnabled() &&
+                  base::FeatureList::IsEnabled(
+                      features::kSplitHostCacheByNetworkAnonymizationKey)
               ? std::move(network_anonymization_key)
               : NetworkAnonymizationKey()),
+      target_network_(target_network),
       net_log_(std::move(net_log)),
       parameters_(std::move(parameters)),
       resolve_context_(std::move(resolve_context)),
@@ -83,13 +93,15 @@ int HostResolverManager::ServiceEndpointRequestImpl::Start(Delegate* delegate) {
 
   if (!resolve_context_) {
     error_info_ = ResolveErrorInfo(ERR_CONTEXT_SHUT_DOWN);
-    return ERR_CONTEXT_SHUT_DOWN;
+    return HostResolver::SquashErrorCode(ERR_CONTEXT_SHUT_DOWN);
   }
 
   delegate_ = delegate;
 
   next_state_ = State::kCheckIPv6Reachability;
-  return DoLoop(OK);
+  // Squash the error code like asynchronous completions. The detailed error
+  // is available via GetResolveErrorInfo().
+  return HostResolver::SquashErrorCode(DoLoop(OK));
 }
 
 const HostCache::EntryStaleness*
@@ -98,7 +110,7 @@ HostResolverManager::ServiceEndpointRequestImpl::GetStaleInfo() const {
   return base::OptionalToPtr(stale_info_);
 }
 
-bool HostResolverManager::ServiceEndpointRequestImpl::IsStaleWhileRefresing()
+bool HostResolverManager::ServiceEndpointRequestImpl::IsStaleWhileRefreshing()
     const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return parameters_.cache_usage == ResolveHostParameters::CacheUsage::
@@ -106,7 +118,7 @@ bool HostResolverManager::ServiceEndpointRequestImpl::IsStaleWhileRefresing()
          stale_info_.has_value() && stale_info_.value().is_stale();
 }
 
-const std::vector<ServiceEndpoint>&
+base::span<const ServiceEndpoint>
 HostResolverManager::ServiceEndpointRequestImpl::GetEndpointResults() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -127,8 +139,7 @@ HostResolverManager::ServiceEndpointRequestImpl::GetEndpointResults() {
     return job_.value()->dns_task_results_manager()->GetCurrentEndpoints();
   }
 
-  static const base::NoDestructor<std::vector<ServiceEndpoint>> kEmptyEndpoints;
-  return *kEmptyEndpoints.get();
+  return {};
 }
 
 const std::set<std::string>&
@@ -151,18 +162,29 @@ bool HostResolverManager::ServiceEndpointRequestImpl::EndpointsCryptoReady() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (finalized_result_.has_value()) {
-    return true;
+    // If there are no endpoints in the finalized result, `this` is not ready
+    // for cryptographic handshakes.
+    return !finalized_result_->endpoints.empty();
   }
 
   if (job_ && job_.value()->dns_task_results_manager()) {
     return job_.value()->dns_task_results_manager()->IsMetadataReady();
   }
 
-  return true;
+  // If there is no running DnsTask, `this` is not ready for cryptographic
+  // handshakes until receiving the final results.
+  return false;
+}
+
+std::optional<ResolutionDetails>
+HostResolverManager::ServiceEndpointRequestImpl::GetResolutionDetails() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return resolution_details_;
 }
 
 ResolveErrorInfo
 HostResolverManager::ServiceEndpointRequestImpl::GetResolveErrorInfo() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return error_info_;
 }
 
@@ -176,6 +198,20 @@ void HostResolverManager::ServiceEndpointRequestImpl::ChangeRequestPriority(
   job_.value()->ChangeServiceEndpointRequestPriority(this, priority);
 }
 
+std::string HostResolverManager::ServiceEndpointRequestImpl::DebugString()
+    const {
+  std::stringstream ss;
+  ss << "it=[";
+  for (const auto& task : initial_tasks_) {
+    ss << base::strict_cast<int>(task) << ",";
+  }
+  ss << "],j=" << job_.has_value();
+  if (job_) {
+    ss << ",rm=" << (!!job_.value()->dns_task_results_manager());
+  }
+  return ss.str();
+}
+
 void HostResolverManager::ServiceEndpointRequestImpl::AssignJob(
     base::SafeRef<Job> job) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -185,12 +221,16 @@ void HostResolverManager::ServiceEndpointRequestImpl::AssignJob(
 
 void HostResolverManager::ServiceEndpointRequestImpl::OnJobCompleted(
     const HostCache::Entry& results,
-    bool obtained_securely) {
+    bool obtained_securely,
+    ResolutionDetails resolution_details) {
   CHECK(job_);
   CHECK(delegate_);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   job_.reset();
+  if (results.error() == OK) {
+    resolution_details_ = resolution_details;
+  }
   SetFinalizedResultFromLegacyResults(results);
   MaybeClearStaleResults();
 
@@ -279,7 +319,8 @@ int HostResolverManager::ServiceEndpointRequestImpl::DoCheckIPv6Reachability() {
   // HostResolverManager::RequestImpl::DoIPv6Reachability().
   if (parameters_.source == HostResolverSource::LOCAL_ONLY) {
     int rv = manager_->StartIPv6ReachabilityCheck(
-        net_log_, GetClientSocketFactory(), base::DoNothingAs<void(int)>());
+        target_network_, net_log_, GetClientSocketFactory(),
+        base::DoNothingAs<void(int)>());
     if (rv == ERR_IO_PENDING) {
       next_state_ = State::kNone;
       finalized_result_ = FinalizedResult(/*endpoints=*/{}, /*dns_aliases=*/{});
@@ -289,7 +330,7 @@ int HostResolverManager::ServiceEndpointRequestImpl::DoCheckIPv6Reachability() {
     return OK;
   }
   return manager_->StartIPv6ReachabilityCheck(
-      net_log_, GetClientSocketFactory(),
+      target_network_, net_log_, GetClientSocketFactory(),
       base::BindOnce(&ServiceEndpointRequestImpl::OnIOComplete,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -301,7 +342,7 @@ int HostResolverManager::ServiceEndpointRequestImpl::
 }
 
 int HostResolverManager::ServiceEndpointRequestImpl::DoResolveLocally() {
-  job_key_ = JobKey(host_, resolve_context_.get());
+  job_key_ = JobKey(host_, target_network_, resolve_context_.get());
   IPAddress ip_address;
   manager_->InitializeJobKeyAndIPAddress(
       network_anonymization_key_, parameters_, net_log_, *job_key_, ip_address);
@@ -326,8 +367,7 @@ int HostResolverManager::ServiceEndpointRequestImpl::DoResolveLocally() {
       only_ipv6_reachable, *job_key_, ip_address, cache_usage,
       parameters_.secure_dns_policy, parameters_.source, net_log_, host_cache(),
       &tasks_, &stale_info_);
-  bool is_stale = results.error() == OK && stale_info_.has_value() &&
-                  stale_info_->is_stale();
+  bool is_stale = stale_info_.has_value() && stale_info_->is_stale();
 
   if (is_stale && stale_allowed_while_refreshing) {
     // When a stale result is found, ResolveLocally() returns the stale result
@@ -357,15 +397,29 @@ int HostResolverManager::ServiceEndpointRequestImpl::DoResolveLocally() {
   }
 
   if (is_stale && stale_allowed_while_refreshing) {
-    stale_endpoints_ = results.ConvertToServiceEndpoints(host_.GetPort());
+    if (results.error() == OK &&
+        results.network_changes() == host_cache()->network_changes()) {
+      // Allow using stale results only when there is no network change.
+      // TODO(crbug.com/383174960): This also excludes results that are obtained
+      // from the same network but the device got disconnected/connected
+      // events. Ideally we should be able to use such results.
+      // TODO(crbug.com/485672648): Consider setting resolution details for
+      // stale endpoints.
+      stale_endpoints_ = results.ConvertToServiceEndpoints(host_.GetPort());
+    } else {
+      // A stale negative result or a stale result from a different network
+      // isn't useful as an intermediate result. Clear the stale info so that
+      // `this` isn't considered to be serving stale results while refreshing.
+      stale_info_.reset();
+    }
     if (!stale_endpoints_.empty()) {
       net_log_.AddEvent(
           NetLogEventType::HOST_RESOLVER_SERVICE_ENDPOINTS_STALE_RESULTS, [&] {
-            base::Value::List endpoints;
+            base::ListValue endpoints;
             for (const auto& endpoint : stale_endpoints_) {
               endpoints.Append(endpoint.ToValue());
             }
-            return base::Value::Dict().Set("endpoints", std::move(endpoints));
+            return base::DictValue().Set("endpoints", std::move(endpoints));
           });
 
       // Notify delegate of stale results asynchronously because notifying
@@ -379,6 +433,12 @@ int HostResolverManager::ServiceEndpointRequestImpl::DoResolveLocally() {
   } else if (results.error() != ERR_DNS_CACHE_MISS ||
              parameters_.source == HostResolverSource::LOCAL_ONLY ||
              tasks_.empty()) {
+    if (results.error() == OK) {
+      ResolutionDetails details;
+      details.source = stale_info_.has_value() ? ResolutionSource::kCache
+                                               : ResolutionSource::kLocal;
+      resolution_details_ = details;
+    }
     SetFinalizedResultFromLegacyResults(results);
     error_info_ = ResolveErrorInfo(results.error());
     return results.error();
@@ -389,13 +449,33 @@ int HostResolverManager::ServiceEndpointRequestImpl::DoResolveLocally() {
 }
 
 int HostResolverManager::ServiceEndpointRequestImpl::DoStartJob() {
+  initial_tasks_ = base::ToVector(tasks_);
   manager_->CreateAndStartJobForServiceEndpointRequest(std::move(*job_key_),
                                                        std::move(tasks_), this);
   return ERR_IO_PENDING;
 }
 
 void HostResolverManager::ServiceEndpointRequestImpl::OnIOComplete(int rv) {
-  DoLoop(rv);
+  if (!resolve_context_) {
+    // The ResolveContext was shut down while `this` was waiting for an
+    // asynchronous check. Fail the request without accessing the context.
+    next_state_ = State::kNone;
+    finalized_result_ = FinalizedResult(/*endpoints=*/{}, /*dns_aliases=*/{});
+    error_info_ = ResolveErrorInfo(ERR_CONTEXT_SHUT_DOWN);
+    rv = ERR_CONTEXT_SHUT_DOWN;
+  } else {
+    rv = DoLoop(rv);
+  }
+  if (rv != ERR_IO_PENDING) {
+    // The request finished synchronously in DoLoop() (e.g. resolved locally
+    // after an asynchronous IPv6 reachability check). Start() has already
+    // returned ERR_IO_PENDING, so the delegate needs to be notified of the
+    // completion here.
+    CHECK(delegate_);
+    delegate_->OnServiceEndpointRequestFinished(
+        HostResolver::SquashErrorCode(rv));
+    // Do not add code below. `this` may be deleted at this point.
+  }
 }
 
 void HostResolverManager::ServiceEndpointRequestImpl::

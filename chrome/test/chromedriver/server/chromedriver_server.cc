@@ -2,15 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
+#include <algorithm>
 #include <array>
 #include <locale>
 #include <memory>
@@ -21,7 +17,7 @@
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -84,23 +80,12 @@ void SendResponseOnCmdThread(
 }
 
 void HandleRequestOnCmdThread(
-    HttpHandler* handler,
-    const std::vector<net::IPAddress>& allowed_ips,
+    base::WeakPtr<HttpHandler> handler,
     const net::HttpServerRequestInfo& request,
     const HttpResponseSenderFunc& send_response_func) {
-  if (!allowed_ips.empty()) {
-    const net::IPAddress& peer_address = request.peer.address();
-    if (!base::Contains(allowed_ips, peer_address)) {
-      LOG(WARNING) << "unauthorized access from " << request.peer.ToString();
-      std::unique_ptr<net::HttpServerResponseInfo> response(
-          new net::HttpServerResponseInfo(net::HTTP_UNAUTHORIZED));
-      response->SetBody("Unauthorized access", "text/plain");
-      send_response_func.Run(std::move(response));
-      return;
-    }
+  if (handler) {
+    handler->Handle(request, send_response_func);
   }
-
-  handler->Handle(request, send_response_func);
 }
 
 void HandleRequestOnIOThread(
@@ -192,7 +177,7 @@ void StartServerOnIOThread(
   } else {
 // Currently, the network layer provides no way for us to control dual-protocol
 // bind option, or to query the current setting of that option, so we do our
-// best to determine the current setting. See https://crbug.com/858892.
+// best to determine the current setting. See https://crbug.com/41398711.
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
     // On Linux, dual-protocol bind is controlled by a system file.
     // ChromeOS builds also have OS_LINUX defined, so the code below applies.
@@ -248,8 +233,8 @@ void StartServerOnIOThread(
   base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
   if (!cmd_line->HasSwitch("silent") &&
       cmd_line->GetSwitchValueASCII("log-level") != "OFF") {
-    printf("%s was started successfully on port %u.\n",
-           kChromeDriverProductShortName, port);
+    UNSAFE_TODO(printf("%s was started successfully on port %u.\n",
+                       kChromeDriverProductShortName, port));
   }
   if (cmd_line->HasSwitch("log-path")) {
     VLOG(0) << kChromeDriverProductShortName
@@ -274,7 +259,7 @@ void RunServer(uint16_t port,
   HttpHandler handler(cmd_run_loop.QuitClosure(), io_thread.task_runner(),
                       main_task_executor.task_runner(), url_base, adb_port);
   HttpRequestHandlerFunc handle_request_func =
-      base::BindRepeating(&HandleRequestOnCmdThread, &handler, allowed_ips);
+      base::BindRepeating(&HandleRequestOnCmdThread, handler.WeakPtr());
 
   io_thread.task_runner()->PostTask(
       FROM_HERE,
@@ -347,7 +332,7 @@ int main(int argc, char *argv[]) {
         "add readable timestamps to log",
         "enable-chrome-logs",
         "show logs from the browser (overrides other logging options)",
-        "bidi-mapper-path",
+        "bidi-mapper-path=PATH",
         "custom bidi mapper path",
 #if BUILDFLAG(IS_LINUX)
         "disable-dev-shm-usage",
@@ -379,12 +364,14 @@ int main(int argc, char *argv[]) {
         "dangerous!\n",
         "allowed-origins=LIST", kChromeDriverProductShortName);
 
-    printf("Usage: %s [OPTIONS]\n\nOptions\n%s", argv[0], options.c_str());
+    UNSAFE_TODO(
+        printf("Usage: %s [OPTIONS]\n\nOptions\n%s", argv[0], options.c_str()));
     return 0;
   }
   bool early_exit = false;
   if (cmd_line->HasSwitch("v") || cmd_line->HasSwitch("version")) {
-    printf("%s %s\n", kChromeDriverProductFullName, kChromeDriverVersion);
+    UNSAFE_TODO(
+        printf("%s %s\n", kChromeDriverProductFullName, kChromeDriverVersion));
     early_exit = true;
   }
   if (early_exit)
@@ -461,8 +448,9 @@ int main(int argc, char *argv[]) {
 
   if (!cmd_line->HasSwitch("silent") &&
       cmd_line->GetSwitchValueASCII("log-level") != "OFF") {
-    printf("Starting %s %s on port %u\n", kChromeDriverProductShortName,
-           kChromeDriverVersion, port);
+    UNSAFE_TODO(printf("Starting %s %s on port %u\n",
+                       kChromeDriverProductShortName, kChromeDriverVersion,
+                       port));
     if (!allow_remote) {
       printf("Only local connections are allowed.\n");
     } else if (!allowed_ips.empty()) {
@@ -471,7 +459,7 @@ int main(int argc, char *argv[]) {
     } else {
       printf("All remote connections are allowed. Use an allowlist instead!\n");
     }
-    printf("%s\n", GetPortProtectionMessage());
+    UNSAFE_TODO(printf("%s\n", GetPortProtectionMessage()));
     fflush(stdout);
   }
 

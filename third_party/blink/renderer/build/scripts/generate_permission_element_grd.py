@@ -107,13 +107,25 @@ kStringMapCcSuffix = '''
 '''
 
 
+def get_message_id(raw_content):
+    presentable_content = ""
+    for child in raw_content.childNodes:
+        if child.nodeType == child.TEXT_NODE:
+            presentable_content += child.data
+        elif child.nodeType == child.ELEMENT_NODE and child.tagName == "ph":
+            presentable_content += child.getAttribute("name")
+    # Text nodes include extra whitespace resulting from potential XML formatting;
+    # collapse each run of consecutive whitespace characters into a single space.
+    cleaned_content = ' '.join(presentable_content.split())
+    return tclib.GenerateMessageId(cleaned_content)
+
 def get_message_id_map_and_orderings(input_base_dir):
     dom = parse(input_base_dir + "permission_element_strings.grd")
     dic = {}
     messages = dom.getElementsByTagName("message")
     for message in messages:
-        dic[tclib.GenerateMessageId(
-            message.firstChild.data.strip())] = message.getAttribute("name")
+        dic[get_message_id(message)] = message.getAttribute("name")
+
     # The returned orderings are used to help sort keys for the fixed flat map.
     # Empirically, resource IDs appear to be allocated in the order the messages
     # are listed in the grd.
@@ -137,7 +149,9 @@ def generate_grd_file(id_map, file_list, output_file_path):
         for translated_message in translated_messages:
             message_name_prefix = id_map[translated_message.getAttribute("id")]
             generated_message_name = message_name_prefix + "_" + message_name_suffix
-            message = translated_message.firstChild.data.strip()
+            message = "".join([
+                child.toxml() for child in translated_message.childNodes
+            ]).strip()
             new_message_node = doc.createElement("message")
             new_message_node.setAttribute("name", generated_message_name)
             new_message_node.setAttribute("translateable", "false")
@@ -147,6 +161,20 @@ def generate_grd_file(id_map, file_list, output_file_path):
 
     with open(output_file_path, 'wb') as output_file:
         output_file.write(doc.toxml(encoding='UTF-8'))
+
+
+# Generate the shortest string containing both `long` and `short` as
+# substrings. The full n-string problem is NP-complete, but we only use a crude
+# greedy heuristic.
+def superstring(long, short):
+    if long.find(short) >= 0:
+        return long
+    for i in range(len(short), 0, -1):
+        if long[-i:] == short[:i]:
+            return long + short[i:]
+        if short[-i:] == long[:i]:
+            return short + long[i:]
+    return long + short
 
 
 def generate_cpp_mapping(orderings, input_file_path, output_file_path):
@@ -161,8 +189,7 @@ def generate_cpp_mapping(orderings, input_file_path, output_file_path):
         # this code will use `pt-pt` (Portuguese from Portugal).
         custom_locale_mappings = {"en-gb": "en", "pt-pt": "pt", "zh-cn": "zh"}
 
-        langs = ''
-        lang_map = {}
+        locales = set()
         message_map = []
         for message in messages:
             message_name = message.getAttribute('name')
@@ -171,19 +198,19 @@ def generate_cpp_mapping(orderings, input_file_path, output_file_path):
                 '_', 1)[1].lower().replace("_", "-")
             if locale in custom_locale_mappings:
                 locale = custom_locale_mappings[locale]
-            if locale not in lang_map:
-                # String concatenation is inefficientin Python, since strings
-                # are immutable. However, maintaining a list of chars and
-                # re-implementing find() is also unpleasant.
-                langs_idx = langs.find(locale)
-                if langs_idx < 0:
-                    lang_map[locale] = (len(langs), len(locale))
-                    langs += locale
-                else:
-                    # If locale is already a substring in the existing list,
-                    # the substring can simply be reused to save some space.
-                    lang_map[locale] = (langs_idx, len(locale))
+            # Add all locales first since iteration order is non-deterministic.
+            locales.add(locale)
             message_map.append((locale, base_message, message_name))
+
+        langs = ''
+        locales = sorted(locales, key=lambda x: (-len(x), x))
+        # Sort by length so that we add `ab-cd` before `ab` and `cd`
+        for locale in locales:
+            langs = superstring(langs, locale)
+
+        lang_map = {}
+        for locale in locales:
+            lang_map[locale] = langs.find(locale), len(locale)
 
         output_file.write(kStringMapCcPrefix)
         output_file.write(f'    "{langs}";\n')
@@ -207,7 +234,7 @@ def main(argv):
     input_base_dir_position = argv.index('--input_base_dir')
     input_base_dir = argv[input_base_dir_position + 1]
     id_map, orderings = get_message_id_map_and_orderings(input_base_dir)
-    translated_files = list(
+    translated_files = sorted(
         glob.glob(input_base_dir +
                   "translations/permission_element_strings_*"))
     generate_grd_file(id_map, translated_files,

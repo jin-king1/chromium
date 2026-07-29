@@ -18,7 +18,7 @@ public interface ListMenu {
     /** Delegate handling list item click event of {@link ListMenu}. */
     @FunctionalInterface
     interface Delegate {
-        void onItemSelected(PropertyModel item);
+        void onItemSelected(PropertyModel item, View view);
     }
 
     /**
@@ -35,4 +35,11 @@ public interface ListMenu {
      * @return Width of the largest item in the list.
      */
     int getMaxItemWidth();
+
+    /**
+     * Adds a scroll listener to the list menu.
+     *
+     * @param listener The listener to add.
+     */
+    default void addOnScrollListener(View.OnScrollChangeListener listener) {}
 }

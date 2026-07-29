@@ -8,12 +8,12 @@
 #include <optional>
 #include <string_view>
 
-#include "base/containers/contains.h"
 #include "base/functional/callback.h"
+#include "base/strings/string_util.h"
+#include "base/unguessable_token.h"
 #include "chrome/browser/apps/app_service/app_install/app_install_service.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/apps/link_capturing/link_capturing_navigation_throttle.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/url_constants.h"
@@ -22,9 +22,8 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/gfx/native_ui_types.h"
 #include "url/url_util.h"
-#include "base/unguessable_token.h"
-#include "ui/gfx/native_widget_types.h"
 
 static_assert(BUILDFLAG(IS_CHROMEOS));
 
@@ -70,21 +69,13 @@ std::optional<AppInstallService::WindowIdentifier> GetAnchorWindow(
   return web_contents->GetTopLevelNativeWindow();
 }
 
-bool IsNavigationUserInitiated(content::NavigationHandle* handle) {
-  if (!handle->IsRendererInitiated()) {
+bool IsNavigationUserInitiated(content::NavigationThrottleRegistry& registry) {
+  content::NavigationHandle& handle = registry.GetNavigationHandle();
+  if (!handle.IsRendererInitiated()) {
     return true;
   }
 
-  switch (handle->GetNavigationInitiatorActivationAndAdStatus()) {
-    case blink::mojom::NavigationInitiatorActivationAndAdStatus::
-        kDidNotStartWithTransientActivation:
-      return false;
-    case blink::mojom::NavigationInitiatorActivationAndAdStatus::
-        kStartedWithTransientActivationFromNonAd:
-    case blink::mojom::NavigationInitiatorActivationAndAdStatus::
-        kStartedWithTransientActivationFromAd:
-      return true;
-  }
+  return handle.StartedWithTransientActivation();
 }
 
 }  // namespace
@@ -97,18 +88,17 @@ AppInstallNavigationThrottle::MaybeCreateCallbackForTesting() {
 }
 
 // static
-std::unique_ptr<content::NavigationThrottle>
-AppInstallNavigationThrottle::MaybeCreate(content::NavigationHandle* handle) {
-  std::unique_ptr<content::NavigationThrottle> throttle;
-  if (IsNavigationUserInitiated(handle)) {
-    throttle = std::make_unique<apps::AppInstallNavigationThrottle>(handle);
+void AppInstallNavigationThrottle::MaybeCreateAndAdd(
+    content::NavigationThrottleRegistry& registry) {
+  bool create = IsNavigationUserInitiated(registry);
+  if (create) {
+    registry.AddThrottle(
+        std::make_unique<apps::AppInstallNavigationThrottle>(registry));
   }
 
   if (MaybeCreateCallbackForTesting()) {
-    std::move(MaybeCreateCallbackForTesting()).Run(static_cast<bool>(throttle));
+    std::move(MaybeCreateCallbackForTesting()).Run(create);
   }
-
-  return throttle;
 }
 
 AppInstallNavigationThrottle::QueryParams::QueryParams() = default;
@@ -141,9 +131,9 @@ AppInstallNavigationThrottle::ExtractQueryParams(std::string_view query) {
 
     auto decode_value = [&]() {
       url::RawCanonOutputW<kMaxDecodeLength> decoded_value;
-      url::DecodeURLEscapeSequences(
+      url::DecodeUrlEscapeSequences(
           query.substr(value_slice.begin, value_slice.len),
-          url::DecodeURLMode::kUTF8OrIsomorphic, &decoded_value);
+          url::DecodeUrlMode::kUtf8OrIsomorphic, &decoded_value);
 
       // TODO(b/299825321): Make DecodeURLEscapeSequences() work with
       // RawCanonOutput to avoid this redundant UTF8 -> UTF16 -> UTF8
@@ -164,8 +154,8 @@ AppInstallNavigationThrottle::ExtractQueryParams(std::string_view query) {
 }
 
 AppInstallNavigationThrottle::AppInstallNavigationThrottle(
-    content::NavigationHandle* navigation_handle)
-    : content::NavigationThrottle(navigation_handle) {}
+    content::NavigationThrottleRegistry& registry)
+    : content::NavigationThrottle(registry) {}
 
 AppInstallNavigationThrottle::~AppInstallNavigationThrottle() = default;
 
@@ -190,12 +180,12 @@ ThrottleCheckResult AppInstallNavigationThrottle::HandleRequest() {
 
   // We accept `cros-apps:install-app` or `cros-apps://install-app`, when parsed
   // with an opaque path (no host, path starts with //) or not.
-  if (url.host() != kAppInstallHost && url.path_piece() != kAppInstallHost &&
-      url.path_piece() != kAppInstallPath) {
+  if (url.GetHost() != kAppInstallHost && url.path() != kAppInstallHost &&
+      url.path() != kAppInstallPath) {
     return content::NavigationThrottle::PROCEED;
   }
 
-  QueryParams query_params = ExtractQueryParams(url.query_piece());
+  QueryParams query_params = ExtractQueryParams(url.query());
   if (!query_params.serialized_package_id.has_value()) {
     return content::NavigationThrottle::CANCEL_AND_IGNORE;
   }

@@ -21,9 +21,9 @@
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/translate/translate_bubble_model.h"
 #include "chrome/browser/ui/translate/translate_bubble_test_utils.h"
-#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/autofill/core/common/autofill_util.h"
+#include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -86,8 +86,8 @@ gfx::Point GetCenter(const ElementExpr& e,
           )",
       e->c_str(), event_name.c_str(), event_name.c_str());
   content::EvalJsResult result = content::EvalJs(execution_target, script);
-  if (!result.error.empty()) {
-    return AssertionFailure() << __func__ << "(): " << result.error;
+  if (!result.is_ok()) {
+    return AssertionFailure() << __func__ << "(): " << result;
   } else if (false == result) {
     return AssertionFailure()
            << __func__ << "(): couldn't trigger " << event_name << " on " << *e;
@@ -134,6 +134,7 @@ struct ShowAutofillSuggestionsParams {
     ShowAutofillSuggestionsParams p) {
   constexpr auto kSuggest = ObservedUiEvents::kSuggestionsShown;
   constexpr auto kPreview = ObservedUiEvents::kPreviewFormData;
+  constexpr auto kHide = ObservedUiEvents::kSuggestionsHidden;
 
   content::ToRenderFrameHost execution_target =
       p.execution_target.value_or(test->GetWebContents());
@@ -164,11 +165,16 @@ struct ShowAutofillSuggestionsParams {
     return test->test_delegate()->Wait();
   };
 
+  auto Escape = [&](std::list<ObservedUiEvents> exp) {
+    return test->SendKeyToPopupAndWait(ui::DomKey::ESCAPE, std::move(exp),
+                                       view->GetRenderWidgetHost(), p.timeout);
+  };
+
   // It seems that due to race conditions with Blink's layouting
-  // (crbug.com/1175735#c9), the below focus events are sometimes too early:
-  // Autofill closes the popup right away because it is outside of the content
-  // area. To work around this, we attempt to bring up the Autofill popup
-  // multiple times, with some delay.
+  // (crbug.com/40168071#comment10), the below focus events are sometimes too
+  // early: Autofill closes the popup right away because it is outside of the
+  // content area. To work around this, we attempt to bring up the Autofill
+  // popup multiple times, with some delay.
   testing::Message m;
   m << __func__ << "(): with " << p.num_profile_suggestions
     << " profile suggestions.";
@@ -176,7 +182,7 @@ struct ShowAutofillSuggestionsParams {
   for (size_t i = 1; i <= p.max_tries; ++i) {
     m << "\nIteration " << i << "/" << p.max_tries << ". ";
     // A Translate bubble may overlap with the Autofill popup, which causes
-    // flakiness. See crbug.com/1175735#c10.
+    // flakiness. See crbug.com/40168071#comment11.
     // Also, the address-save prompts and others may overlap with the Autofill
     // popup. So we preemptively close all bubbles, which however is not
     // reliable on Windows.
@@ -194,6 +200,26 @@ struct ShowAutofillSuggestionsParams {
         if (AssertionResult b = FocusField(e, rfh); !b) {
           m << b.message();
         }
+      }
+    }
+
+    // AutofillAgent throttles AskForValuesToFill() calls at 1 per 100 ms.
+    // The FocusField() call above may have already called AskForValuesToFill()
+    // -- namely when a screen reader is enabled. We therefore wait the throttle
+    // period out.
+    test->DoNothingAndWaitAndIgnoreEvents(base::Milliseconds(200));
+
+    // `AutofillAgent::HandleFocusChangeComplete` shows the suggestions
+    // immediately after the field is focused if a screen reader is enabled
+    // or --force-renderer-accessibility is set. This breaks the logic that
+    // follows, which expects the popup to not yet be showing.
+    if (content::BrowserAccessibilityState::GetInstance()
+            ->GetAccessibilityMode()
+            .has_mode(ui::AXMode::kScreenReader)) {
+      if (Escape({kHide})) {
+        m << "Closed existing Autofill popup. ";
+      } else {
+        m << "No existing Autofill popup to close. ";
       }
     }
 

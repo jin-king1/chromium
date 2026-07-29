@@ -16,7 +16,7 @@ namespace blink {
 class ExceptionState;
 class XRCPUDepthInformation;
 class XRWebGLDepthInformation;
-class XRFrame;
+class XRView;
 class XRViewData;
 
 // Helper class, used to separate the code related to depth buffer processing
@@ -31,11 +31,11 @@ class XRDepthManager : public GarbageCollected<XRDepthManager> {
   void ProcessDepthInformation(device::mojom::blink::XRDepthDataPtr depth_data);
 
   XRCPUDepthInformation* GetCpuDepthInformation(
-      const XRFrame* xr_frame,
+      const XRView* xr_view,
       ExceptionState& exception_state);
 
   XRWebGLDepthInformation* GetWebGLDepthInformation(
-      const XRFrame* xr_frame,
+      const XRView* xr_view,
       ExceptionState& exception_state);
 
   void Trace(Visitor* visitor) const;
@@ -50,6 +50,7 @@ class XRDepthManager : public GarbageCollected<XRDepthManager> {
   // Cached version of the depth buffer data. If not null, contains the same
   // information as |depth_data_.pixel_data| buffer.
   Member<DOMArrayBuffer> data_;
+  bool data_dirty_ = true;
 
   void EnsureData();
 };

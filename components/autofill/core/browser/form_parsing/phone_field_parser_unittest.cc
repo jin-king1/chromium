@@ -9,12 +9,13 @@
 #include <memory>
 #include <vector>
 
-#include "base/containers/contains.h"
+#include "base/containers/to_vector.h"
 #include "base/memory/ptr_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/autofill/core/browser/autofill_field.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_parsing/autofill_scanner.h"
 #include "components/autofill/core/browser/form_parsing/parsing_test_utils.h"
 #include "components/autofill/core/browser/form_parsing/regex_patterns.h"
@@ -27,7 +28,7 @@ using base::ASCIIToUTF16;
 namespace autofill {
 namespace {
 
-const FormControlType kFieldTypes[] = {
+constexpr FormControlType kFieldTypes[] = {
     FormControlType::kInputText,
     FormControlType::kInputTelephone,
     FormControlType::kInputNumber,
@@ -42,7 +43,7 @@ class PhoneFieldParserTest : public testing::Test {
  protected:
   // Downcast for tests.
   static std::unique_ptr<PhoneFieldParser> Parse(ParsingContext& context,
-                                                 AutofillScanner* scanner) {
+                                                 AutofillScanner& scanner) {
     // An empty page_language means the language is unknown and patterns of all
     // languages are used.
     std::unique_ptr<FormFieldParser> field =
@@ -82,7 +83,7 @@ class PhoneFieldParserTest : public testing::Test {
 
   void Clear();
 
-  std::vector<std::unique_ptr<AutofillField>> list_;
+  std::vector<FormFieldData> list_;
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -111,8 +112,8 @@ FieldGlobalId PhoneFieldParserTest::AppendField(
   }
   field.set_options(std::move(options));
   field.set_renderer_id(MakeFieldRendererId());
-  list_.push_back(std::make_unique<AutofillField>(field));
-  return list_.back()->global_id();
+  list_.push_back(field);
+  return list_.back().global_id();
 }
 
 void PhoneFieldParserTest::RunParsingTest(
@@ -127,16 +128,16 @@ void PhoneFieldParserTest::RunParsingTest(
   }
 
   // Parse.
-  AutofillScanner scanner(list_);
-  ParsingContext context(GeoIpCountryCode(""), LanguageCode(""),
-                         *GetActivePatternFile());
-  field_ = Parse(context, &scanner);
+  AutofillScanner scanner(list_, [](const FormFieldData&) { return true; });
+  ParsingContext context(list_, GeoIpCountryCode(""), LanguageCode(""),
+                         *GetActivePatternFile(), /*active_features=*/{},
+                         /*log_manager=*/nullptr);
+  field_ = Parse(context, scanner);
   ASSERT_EQ(expect_success, field_.get() != nullptr);
 
-  // Verify expecations.
   if (expect_success) {
     field_->AddClassificationsForTesting(field_candidates_map_);
-    for (size_t i = 0; i < fields.size(); i++) {
+    for (size_t i = 0; i < fields.size(); ++i) {
       CheckField(global_ids[i], fields[i].expected_type);
     }
   }
@@ -157,7 +158,7 @@ TEST_F(PhoneFieldParserTest, Empty) {
 }
 
 TEST_F(PhoneFieldParserTest, NonParse) {
-  list_.push_back(std::make_unique<AutofillField>());
+  list_.emplace_back();
   RunParsingTest({}, /*expect_success=*/false);
 }
 
@@ -173,11 +174,20 @@ TEST_F(PhoneFieldParserTest, ParseOneLinePhoneWithDefaultToCityAndNumber) {
   }
 }
 
-TEST_F(PhoneFieldParserTest, ParseTwoLinePhone) {
+TEST_F(PhoneFieldParserTest, ParseTwoLinePhone_CityCode) {
   for (FormControlType field_type : kFieldTypes) {
     RunParsingTest(
         {{field_type, u"Area Code", u"area code", PHONE_HOME_CITY_CODE},
          {field_type, u"Phone", u"phone", PHONE_HOME_NUMBER}});
+  }
+}
+
+TEST_F(PhoneFieldParserTest, ParseTwoLinePhone_CountryCode) {
+  for (FormControlType field_type : kFieldTypes) {
+    RunParsingTest(
+        {{field_type, u"Country Code", u"country code",
+          PHONE_HOME_COUNTRY_CODE},
+         {field_type, u"Phone", u"phone", PHONE_HOME_CITY_AND_NUMBER}});
   }
 }
 
@@ -237,13 +247,17 @@ TEST_F(PhoneFieldParserTest, GrammarMetrics) {
 // Tests if the country code, city code and phone number fields are correctly
 // classified by the heuristic when the phone code is a select element.
 TEST_F(PhoneFieldParserTest, CountryCodeIsSelectElement) {
-  RunParsingTest({{FormControlType::kSelectOne, u"Phone Country Code", u"ccode",
-                   PHONE_HOME_COUNTRY_CODE},
-                  {FormControlType::kInputText, u"Phone City Code", u"areacode",
-                   PHONE_HOME_CITY_CODE,
-                   /*max_length=*/3},
-                  {FormControlType::kInputText, u"Phone Number", u"phonenumber",
-                   PHONE_HOME_NUMBER}});
+  std::vector<const char*> augmented_field_options = {
+      "India(+91) ",    "Germany(+49)",  "United States(+1)", "Egypt(+20)",
+      "Bahamas(+1242)", "Ecuador(+593)", "Russia(+7)"};
+  RunParsingTest(
+      {{FormControlType::kSelectOne, u"Phone Country Code", u"phonecountry",
+        PHONE_HOME_COUNTRY_CODE, 0, augmented_field_options},
+       {FormControlType::kInputText, u"Phone City Code", u"areacode",
+        PHONE_HOME_CITY_CODE,
+        /*max_length=*/3},
+       {FormControlType::kInputText, u"Phone Number", u"phonenumber",
+        PHONE_HOME_NUMBER}});
 }
 
 // Tests if the country code, city code and phone number fields are correctly
@@ -286,7 +300,7 @@ TEST_F(PhoneFieldParserTest, IsPhoneCountryCodeField) {
        "+30",   "+31",
        "+32",   "+33",
        "+34",   "+51",
-       "52",    "+673",
+       "+52",   "+673",
        "+674",  "+81",
        "+82",   "Please select an option"},
 
@@ -315,13 +329,36 @@ TEST_F(PhoneFieldParserTest, IsPhoneCountryCodeField) {
       {"00  91", "00  49", "00   1", "00  20", "001242", "00 593", "00   7"},
 
       // Options with the phone country code preceded by '00'.
-      {"0091", "0049", "001", "0020", "001242", "00593", "007"}};
+      {"0091", "0049", "001", "0020", "001242", "00593", "007"},
+
+      // Options that have a dash in between the country code digits, and have
+      // flags as identifiers.
+      {"+1-242 🇧🇸", "+1-246 🇧🇧", "+1-264 🇦🇮", "+1-268 🇦🇬", "+1-284 🇻🇬",
+       "+1-649 🇹🇨", "+1-664 🇲🇸", "+1-671 🇬🇺", "+1-684 🇦🇸"},
+
+      // Options that have a dash and whitespaces in between the country code
+      // digits, and have flags as identifiers.
+      {"+1 - 242 🇧🇸", "+1 - 246 🇧🇧", "+1 - 264 🇦🇮", "+1 - 268 🇦🇬",
+       "+1 - 284 🇻🇬", "+1 - 649 🇹🇨", "+1 - 664 🇲🇸", "+1 - 671 🇬🇺",
+       "+1 - 684 🇦🇸"},
+
+      // Options that have a whitespace in between the country code digits, and
+      // have flags as identifiers.
+      {"+1 242 🇧🇸", "+1 246 🇧🇧", "+1 264 🇦🇮", "+1 268 🇦🇬", "+1 284 🇻🇬",
+       "+1 649 🇹🇨", "+1 664 🇲🇸", "+1 671 🇬🇺", "+1 684 🇦🇸"},
+
+      // Options that wrap part of the country code digits in parenthesis, and
+      // have flags as identifiers.
+      {"+1 (242) 🇧🇸", "+1 (246) 🇧🇧", "+1 (264) 🇦🇮", "+1 (268) 🇦🇬",
+       "+1 (284) 🇻🇬", "+1 (649) 🇹🇨", "+1 (664) 🇲🇸", "+1 (671) 🇬🇺",
+       "+1 (684) 🇦🇸"},
+  };
 
   for (size_t i = 0; i < augmented_field_options_list.size(); ++i) {
     // TODO(crbug.com/40158319): The country code check fails in iteration 4.
-    if (i == 4)
+    if (i == 4) {
       continue;
-
+    }
     SCOPED_TRACE(testing::Message() << "i = " << i);
     RunParsingTest(
         {{FormControlType::kSelectOne, u"PC", u"PC", PHONE_HOME_COUNTRY_CODE, 0,

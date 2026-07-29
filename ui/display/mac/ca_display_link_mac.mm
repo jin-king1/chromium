@@ -7,26 +7,16 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CADisplayLink.h>
 
+#include "base/containers/flat_set.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/trace_event/trace_event.h"
-
-namespace {
-
-NSScreen* GetNSScreenFromDisplayID(CGDirectDisplayID display_id) {
-  for (NSScreen* screen in NSScreen.screens) {
-    CGDirectDisplayID screenNumber =
-        [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
-    if (screenNumber == display_id) {
-      return screen;
-    }
-  }
-
-  return nullptr;
-}
-
-}  // namespace
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#include "ui/display/mac/screen_utils_mac.h"
 
 API_AVAILABLE(macos(14.0))
 @interface CADisplayLinkTarget : NSObject {
@@ -51,32 +41,50 @@ API_AVAILABLE(macos(14.0))
 namespace ui {
 
 namespace {
+struct CADisplayLinkGlobals {
+  CADisplayLinkGlobals() = default;
+  base::Lock lock;
+
+  // Indicates whether the display creation has been logged within the
+  // 'Viz.ExternalBeginFrameSourceMac.DisplayLink.Create2' histogram.
+  absl::flat_hash_set<CGDirectDisplayID> recorded_displays GUARDED_BY(lock);
+
+  static CADisplayLinkGlobals& Get() {
+    static base::NoDestructor<CADisplayLinkGlobals> instance;
+    return *instance;
+  }
+};
+
 API_AVAILABLE(macos(14.0))
-ui::VSyncParamsMac ComputeVSyncParametersMac(CADisplayLink* display_link) {
+ui::VSyncParamsMac ComputeVSyncParametersMac(CADisplayLink* display_link,
+                                             CGDirectDisplayID display_id) {
   // The time interval that represents when the last frame displayed.
   base::TimeTicks callback_time =
       base::TimeTicks() + base::Seconds(display_link.timestamp);
   // The time interval that represents when the next frame displays.
-  base::TimeTicks next_callback_time =
+  base::TimeTicks target_time =
       base::TimeTicks() + base::Seconds(display_link.targetTimestamp);
 
-  bool times_valid = true;
-  base::TimeDelta current_interval = next_callback_time - callback_time;
+  base::TimeDelta interval = base::Seconds(1) * display_link.duration;
 
-  // Sanity check.
-  if (callback_time.is_null() || next_callback_time.is_null() ||
-      !current_interval.is_positive()) {
-    times_valid = false;
+  // Sanity check. Inputs should always be valid. Use the default values if this
+  // is not the case.
+  if (!interval.is_positive()) {
+    interval = display::GetCGRefreshInterval(display_id);
+  }
+  if (callback_time.is_null() || target_time.is_null()) {
+    callback_time = base::TimeTicks() + base::Seconds(CACurrentMediaTime());
+    target_time = callback_time + interval;
   }
 
   ui::VSyncParamsMac params;
-  params.callback_times_valid = times_valid;
+  params.callback_times_valid = true;
   params.callback_timebase = callback_time;
-  params.callback_interval = current_interval;
+  params.callback_interval = interval;
 
-  params.display_times_valid = times_valid;
-  params.display_timebase = next_callback_time + 0.5 * current_interval;
-  params.display_interval = current_interval;
+  params.display_times_valid = true;
+  params.display_timebase = target_time;
+  params.display_interval = interval;
 
   return params;
 }
@@ -88,147 +96,73 @@ struct ObjCState {
 };
 
 void CADisplayLinkMac::Step() {
-  TRACE_EVENT0("ui", "CADisplayLinkCallback");
+  TRACE_EVENT0("gpu", "CADisplayLinkCallback");
 
   if (@available(macos 14.0, *)) {
-    // Allow extra callbacks before stopping CADisplayLink.
     if (!vsync_callback_) {
-      consecutive_vsyncs_with_no_callbacks_ += 1;
-      if (consecutive_vsyncs_with_no_callbacks_ >=
-          VSyncCallbackMac::kMaxExtraVSyncs) {
-        // It's time to stop CADisplayLink.
-        objc_state_->display_link.paused = YES;
-      }
       return;
     }
 
-    consecutive_vsyncs_with_no_callbacks_ = 0;
-
     ui::VSyncParamsMac params =
-        ComputeVSyncParametersMac(objc_state_->display_link);
+        ComputeVSyncParametersMac(objc_state_->display_link, display_id_);
 
     // UnregisterCallback() might be called while running the callbacks.
     vsync_callback_->callback_for_displaylink_thread_.Run(params);
   }
 }
 
-double CADisplayLinkMac::GetRefreshRate() const {
-  if (@available(macos 12.0, *)) {
-    NSScreen* screen = GetNSScreenFromDisplayID(display_id_);
-    return 1.0 / screen.minimumRefreshInterval;
-  }
-  return 0;
+base::TimeDelta CADisplayLinkMac::GetRefreshInterval() const {
+  return display::GetCGRefreshInterval(display_id_);
 }
 
 void CADisplayLinkMac::GetRefreshIntervalRange(
     base::TimeDelta& min_interval,
     base::TimeDelta& max_interval,
     base::TimeDelta& granularity) const {
-  if (@available(macos 12.0, *)) {
-    NSScreen* screen = GetNSScreenFromDisplayID(display_id_);
-    min_interval = base::Seconds(1) * screen.minimumRefreshInterval;
-    max_interval = base::Seconds(1) * screen.maximumRefreshInterval;
-    granularity = base::Seconds(1) * screen.displayUpdateGranularity;
-  }
-}
-
-void CADisplayLinkMac::SetPreferredInterval(base::TimeDelta interval) {
-  return SetPreferredIntervalRange(interval, interval, interval);
-}
-
-void CADisplayLinkMac::SetPreferredIntervalRange(
-    base::TimeDelta min_interval,
-    base::TimeDelta max_interval,
-    base::TimeDelta preferred_interval) {
-  if (@available(macos 14.0, *)) {
-    // Sanity check for the order.
-    DCHECK(preferred_interval <= max_interval &&
-           preferred_interval >= min_interval);
-
-    // The |preferred_interval| must be a supported interval if a fixed refresh
-    // rate is requested, otherwise CVDisplayLink terminates app due to uncaught
-    // exception 'NSInvalidArgumentException', reason: 'invalid range'.
-    if (min_interval == max_interval && min_interval == preferred_interval) {
-      preferred_interval = AdjustedToSupportedInterval(preferred_interval);
-    }
-
-    NSScreen* screen = GetNSScreenFromDisplayID(display_id_);
-    base::TimeDelta ns_screen_min_interval =
-        base::Seconds(1) * screen.minimumRefreshInterval;
-    base::TimeDelta ns_screen_max_interval =
-        base::Seconds(1) * screen.maximumRefreshInterval;
-
-    // Cap the intervals to the upper bound and the lower bound.
-    if (max_interval > ns_screen_max_interval) {
-      max_interval = ns_screen_max_interval;
-    }
-    if (min_interval < ns_screen_min_interval) {
-      min_interval = ns_screen_min_interval;
-    }
-    if (preferred_interval > max_interval) {
-      preferred_interval = max_interval;
-    }
-    if (preferred_interval < min_interval) {
-      preferred_interval = min_interval;
-    }
-
-    // No interval changes.
-    if (preferred_interval_ == preferred_interval &&
-        max_interval_ == max_interval && min_interval_ == min_interval) {
-      return;
-    }
-
-    min_interval_ = min_interval;
-    max_interval_ = max_interval;
-    preferred_interval_ = preferred_interval;
-
-    float min_refresh_rate = base::Seconds(1) / max_interval;
-    float max_refresh_rate = base::Seconds(1) / min_interval;
-    float preferred_refresh_rate = base::Seconds(1) / preferred_interval;
-    [objc_state_->display_link
-        setPreferredFrameRateRange:CAFrameRateRange{
-                                       .minimum = min_refresh_rate,
-                                       .maximum = max_refresh_rate,
-                                       .preferred = preferred_refresh_rate}];
-  }
-}
-
-base::TimeDelta CADisplayLinkMac::AdjustedToSupportedInterval(
-    base::TimeDelta interval) {
-  base::TimeDelta min_interval;
-  base::TimeDelta max_interval;
-  base::TimeDelta granularity;
-  GetRefreshIntervalRange(min_interval, max_interval, granularity);
-
-  // The screen supports any update rate between the minimum and maximum refresh
-  // intervals if granularity is 0.
-  if (granularity.is_zero()) {
-    return interval;
-  }
-
-  auto multiplier = std::round((interval - min_interval) / granularity);
-  base::TimeDelta target_interval = min_interval + granularity * multiplier;
-
-  if (target_interval <= min_interval) {
-    return min_interval;
-  }
-  if (target_interval >= max_interval) {
-    return max_interval;
-  }
-
-  return target_interval;
+  display::GetNSScreenRefreshIntervalRange(display_id_, min_interval,
+                                           max_interval, granularity);
 }
 
 // static
-scoped_refptr<DisplayLinkMac> CADisplayLinkMac::GetForDisplayOnCurrentThread(
-    CGDirectDisplayID display_id) {
+// This function is called from both the GPU and the Browser process.
+void CADisplayLinkMac::TryRecordDisplayLinkCreation(
+    CGDirectDisplayID display_id,
+    bool success,
+    bool in_gpu_process) {
+  auto& globals = CADisplayLinkGlobals::Get();
+  base::AutoLock lock(globals.lock);
+  auto [it, inserted] = globals.recorded_displays.insert(display_id);
+  if (inserted) {
+    if (in_gpu_process) {
+      // Recorded from the GpuMain (CompositorGpuThread) or VizCompositor
+      // threads in the GPU process.
+      UMA_HISTOGRAM_BOOLEAN("Viz.DisplayLink.Create.GPU.CADisplayLink",
+                            success);
+
+    } else {
+      // Created only from the VSyncThread of the Browser process.
+      // Viz.ExternalBeginFrameSourceMac.DisplayLink.Create2 is used to compare
+      // CADisplayLink in Browser with CVDisplayLink.
+      RecordDisplayLinkCreation(success);
+    }
+  }
+}
+
+// static
+scoped_refptr<DisplayLinkMac> CADisplayLinkMac::GetForDisplay(
+    CGDirectDisplayID display_id,
+    bool in_gpu_process) {
   if (@available(macos 14.0, *)) {
+    TRACE_EVENT("gpu", "CADisplayLinkMac::GetForDisplay");
+
     scoped_refptr<CADisplayLinkMac> display_link(
         new CADisplayLinkMac(display_id));
     auto* objc_state = display_link->objc_state_.get();
 
-    NSScreen* screen = GetNSScreenFromDisplayID(display_id);
+    NSScreen* screen = display::GetNSScreenFromDisplayID(display_id);
     if (!screen) {
+      TryRecordDisplayLinkCreation(display_id, /*success=*/false,
+                                   in_gpu_process);
       return nullptr;
     }
 
@@ -237,19 +171,15 @@ scoped_refptr<DisplayLinkMac> CADisplayLinkMac::GetForDisplayOnCurrentThread(
                                                     selector:@selector(step:)];
 
     if (!objc_state->display_link) {
+      TryRecordDisplayLinkCreation(display_id, /*success=*/false,
+                                   in_gpu_process);
       return nullptr;
     }
 
+    TryRecordDisplayLinkCreation(display_id, /*success=*/true, in_gpu_process);
+
     // Pause CADisplaylink callback until a request for start.
     objc_state->display_link.paused = YES;
-
-    // Set the default refresh rate
-    float refresh_rate = 1.0 / screen.minimumRefreshInterval;
-
-    objc_state->display_link.preferredFrameRateRange =
-        CAFrameRateRange{.minimum = refresh_rate,
-                         .maximum = refresh_rate,
-                         .preferred = refresh_rate};
 
     // This display link interface requires the task executor of the current
     // thread (CrGpuMain or VizCompositorThread) to run with
@@ -258,18 +188,13 @@ scoped_refptr<DisplayLinkMac> CADisplayLinkMac::GetForDisplayOnCurrentThread(
     // There will be no callbacks (CADisplayLinkTarget::step()) at all if
     // MessagePumpType NS_RUNLOOP is not chosen during thread initialization.
     [objc_state->display_link addToRunLoop:NSRunLoop.currentRunLoop
-                                   forMode:NSDefaultRunLoopMode];
+                                   forMode:NSRunLoopCommonModes];
 
     // Set the CADisplayLinkTarget's callback to call back into the C++ code.
     [objc_state->target
         setCallback:base::BindRepeating(
                         &CADisplayLinkMac::Step,
                         display_link->weak_factory_.GetWeakPtr())];
-
-    display_link->min_interval_ =
-        base::Seconds(1) * screen.minimumRefreshInterval;
-    display_link->max_interval_ = display_link->min_interval_;
-    display_link->preferred_interval_ = display_link->min_interval_;
 
     return display_link;
   }
@@ -297,6 +222,7 @@ CADisplayLinkMac::~CADisplayLinkMac() {
 
 std::unique_ptr<VSyncCallbackMac> CADisplayLinkMac::RegisterCallback(
     VSyncCallbackMac::Callback callback) {
+  TRACE_EVENT("gpu", "CADisplayLinkMac::RegisterCallback");
   // Make CADisplayLink callbacks to run on the same RUNLOOP of the register
   // thread without PostTask accross threads.
   auto new_callback = base::WrapUnique(new VSyncCallbackMac(
@@ -314,7 +240,11 @@ std::unique_ptr<VSyncCallbackMac> CADisplayLinkMac::RegisterCallback(
 }
 
 void CADisplayLinkMac::UnregisterCallback(VSyncCallbackMac* callback) {
+  TRACE_EVENT("gpu", "CADisplayLinkMac::UnregisterCallback");
   vsync_callback_ = nullptr;
+  if (@available(macos 14.0, *)) {
+    objc_state_->display_link.paused = YES;
+  }
 }
 
 }  // namespace ui

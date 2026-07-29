@@ -35,17 +35,14 @@ class PlatformSensorAndroid : public PlatformSensor {
   PlatformSensorConfiguration GetDefaultConfiguration() override;
   double GetMaximumSupportedFrequency() override;
 
-  void NotifyPlatformSensorError(JNIEnv*,
-                                 const base::android::JavaRef<jobject>& caller);
+  void NotifyPlatformSensorError(JNIEnv*);
 
-  void UpdatePlatformSensorReading(
-      JNIEnv*,
-      const base::android::JavaRef<jobject>& caller,
-      jdouble timestamp,
-      jdouble value1,
-      jdouble value2,
-      jdouble value3,
-      jdouble value4);
+  void UpdatePlatformSensorReading(JNIEnv*,
+                                   double timestamp,
+                                   double value1,
+                                   double value2,
+                                   double value3,
+                                   double value4);
 
   base::android::ScopedJavaGlobalRef<jobject> GetJavaObjectForTesting() {
     return j_object_;
@@ -57,7 +54,7 @@ class PlatformSensorAndroid : public PlatformSensor {
   // (reading_index + 0.1).
   static void SimulateSensorEventFromJavaForTesting(
       base::android::ScopedJavaGlobalRef<jobject> j_object_,
-      jint reading_values_length);
+      int32_t reading_values_length);
 
  protected:
   ~PlatformSensorAndroid() override;

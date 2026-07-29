@@ -15,5 +15,9 @@ static_library("external_loader") {
     "device_local_account_external_policy_loader.h",
   ]
 
-  public_deps = [ "//base" ]
+  public_deps = [
+    "//base",
+    "//chrome/browser/extensions:external_loader",
+    "//extensions/buildflags",
+  ]
 }

@@ -39,16 +39,14 @@
 #include "third_party/blink/renderer/core/dom/events/simulated_click_options.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/theme_types.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-
-namespace WTF {
-class String;
-}  // namespace WTF
+#include "third_party/blink/renderer/platform/wtf/forward.h"
 
 namespace blink {
+
+enum class DisabledChangedReason;
 
 class AXObject;
 class BeforeTextInsertedEvent;
@@ -86,15 +84,17 @@ class CORE_EXPORT InputTypeView : public GarbageCollectedMixin {
   virtual ~InputTypeView();
   void Trace(Visitor*) const override;
 
-  virtual bool SizeShouldIncludeDecoration(int default_size,
-                                           int& preferred_size) const;
+  virtual bool GetSizeWithDecoration(int default_size,
+                                     int& preferred_size) const;
 
   // Event handling functions
 
   virtual void HandleClickEvent(MouseEvent&);
   virtual void HandleMouseDownEvent(MouseEvent&);
-  virtual ClickHandlingState* WillDispatchClick();
-  virtual void DidDispatchClick(Event&, const ClickHandlingState&);
+  // https://html.spec.whatwg.org/C#the-input-element:legacy-pre-activation-behavior.
+  virtual ClickHandlingState* LegacyPreActivationBehavior();
+  // https://html.spec.whatwg.org/C#input-activation-behavior.
+  virtual void RunInputActivationBehavior(Event&, const ClickHandlingState&);
   virtual void HandleKeydownEvent(KeyboardEvent&);
   virtual void HandleKeypressEvent(KeyboardEvent&);
   virtual void HandleKeyupEvent(KeyboardEvent&);
@@ -137,7 +137,7 @@ class CORE_EXPORT InputTypeView : public GarbageCollectedMixin {
   virtual bool NeedsShadowSubtree() const;
   virtual void DestroyShadowSubtree();
   virtual HTMLInputElement* UploadButton() const;
-  virtual WTF::String FileStatusText() const;
+  virtual String FileStatusText() const;
 
   virtual void MinOrMaxAttributeChanged();
   virtual void StepAttributeChanged();
@@ -145,11 +145,11 @@ class CORE_EXPORT InputTypeView : public GarbageCollectedMixin {
   virtual void SrcAttributeChanged();
   virtual void UpdateView();
   virtual void MultipleAttributeChanged();
-  virtual void DisabledAttributeChanged();
+  virtual void DisabledAttributeChanged(DisabledChangedReason);
   virtual void ReadonlyAttributeChanged();
   virtual void RequiredAttributeChanged();
   virtual void ValueAttributeChanged();
-  virtual void DidSetValue(const WTF::String&, bool value_changed);
+  virtual void DidSetValue(const String&, bool value_changed);
   virtual void ListAttributeTargetChanged();
   virtual void CapsLockStateMayHaveChanged();
   virtual bool ShouldDrawCapsLockIndicator() const;

@@ -7,10 +7,11 @@
 
 #include <vector>
 
+#include "base/containers/circular_deque.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "gpu/config/gpu_preferences.h"
-#include "gpu/gpu_export.h"
+#include "gpu/ipc/common/gpu_ipc_common_export.h"
 #include "gpu/ipc/common/gpu_preferences.mojom-shared.h"
 
 #if BUILDFLAG(IS_OZONE)
@@ -21,7 +22,8 @@
 namespace mojo {
 
 template <>
-struct GPU_EXPORT EnumTraits<gpu::mojom::GrContextType, gpu::GrContextType> {
+struct GPU_IPC_COMMON_EXPORT EnumTraits<gpu::mojom::GrContextType,
+                                        gpu::GrContextType> {
   static gpu::mojom::GrContextType ToMojom(gpu::GrContextType input) {
     switch (input) {
       case gpu::GrContextType::kNone:
@@ -32,37 +34,27 @@ struct GPU_EXPORT EnumTraits<gpu::mojom::GrContextType, gpu::GrContextType> {
         return gpu::mojom::GrContextType::kVulkan;
       case gpu::GrContextType::kGraphiteDawn:
         return gpu::mojom::GrContextType::kGraphiteDawn;
-      case gpu::GrContextType::kGraphiteMetal:
-        return gpu::mojom::GrContextType::kGraphiteMetal;
     }
     NOTREACHED();
   }
-  static bool FromMojom(gpu::mojom::GrContextType input,
-                        gpu::GrContextType* out) {
+  static gpu::GrContextType FromMojom(gpu::mojom::GrContextType input) {
     switch (input) {
       case gpu::mojom::GrContextType::kNone:
-        *out = gpu::GrContextType::kNone;
-        return true;
+        return gpu::GrContextType::kNone;
       case gpu::mojom::GrContextType::kGL:
-        *out = gpu::GrContextType::kGL;
-        return true;
+        return gpu::GrContextType::kGL;
       case gpu::mojom::GrContextType::kVulkan:
-        *out = gpu::GrContextType::kVulkan;
-        return true;
+        return gpu::GrContextType::kVulkan;
       case gpu::mojom::GrContextType::kGraphiteDawn:
-        *out = gpu::GrContextType::kGraphiteDawn;
-        return true;
-      case gpu::mojom::GrContextType::kGraphiteMetal:
-        *out = gpu::GrContextType::kGraphiteMetal;
-        return true;
+        return gpu::GrContextType::kGraphiteDawn;
     }
-    return false;
+    NOTREACHED();
   }
 };
 
 template <>
-struct GPU_EXPORT EnumTraits<gpu::mojom::VulkanImplementationName,
-                             gpu::VulkanImplementationName> {
+struct GPU_IPC_COMMON_EXPORT EnumTraits<gpu::mojom::VulkanImplementationName,
+                                        gpu::VulkanImplementationName> {
   static gpu::mojom::VulkanImplementationName ToMojom(
       gpu::VulkanImplementationName input) {
     switch (input) {
@@ -77,29 +69,25 @@ struct GPU_EXPORT EnumTraits<gpu::mojom::VulkanImplementationName,
     }
     NOTREACHED();
   }
-  static bool FromMojom(gpu::mojom::VulkanImplementationName input,
-                        gpu::VulkanImplementationName* out) {
+  static gpu::VulkanImplementationName FromMojom(
+      gpu::mojom::VulkanImplementationName input) {
     switch (input) {
       case gpu::mojom::VulkanImplementationName::kNone:
-        *out = gpu::VulkanImplementationName::kNone;
-        return true;
+        return gpu::VulkanImplementationName::kNone;
       case gpu::mojom::VulkanImplementationName::kNative:
-        *out = gpu::VulkanImplementationName::kNative;
-        return true;
+        return gpu::VulkanImplementationName::kNative;
       case gpu::mojom::VulkanImplementationName::kForcedNative:
-        *out = gpu::VulkanImplementationName::kForcedNative;
-        return true;
+        return gpu::VulkanImplementationName::kForcedNative;
       case gpu::mojom::VulkanImplementationName::kSwiftshader:
-        *out = gpu::VulkanImplementationName::kSwiftshader;
-        return true;
+        return gpu::VulkanImplementationName::kSwiftshader;
     }
-    return false;
+    NOTREACHED();
   }
 };
 
 template <>
-struct GPU_EXPORT
-    EnumTraits<gpu::mojom::WebGPUAdapterName, gpu::WebGPUAdapterName> {
+struct GPU_IPC_COMMON_EXPORT EnumTraits<gpu::mojom::WebGPUAdapterName,
+                                        gpu::WebGPUAdapterName> {
   static gpu::mojom::WebGPUAdapterName ToMojom(gpu::WebGPUAdapterName input) {
     switch (input) {
       case gpu::WebGPUAdapterName::kDefault:
@@ -113,29 +101,24 @@ struct GPU_EXPORT
     }
     NOTREACHED();
   }
-  static bool FromMojom(gpu::mojom::WebGPUAdapterName input,
-                        gpu::WebGPUAdapterName* out) {
+  static gpu::WebGPUAdapterName FromMojom(gpu::mojom::WebGPUAdapterName input) {
     switch (input) {
       case gpu::mojom::WebGPUAdapterName::kDefault:
-        *out = gpu::WebGPUAdapterName::kDefault;
-        return true;
+        return gpu::WebGPUAdapterName::kDefault;
       case gpu::mojom::WebGPUAdapterName::kD3D11:
-        *out = gpu::WebGPUAdapterName::kD3D11;
-        return true;
+        return gpu::WebGPUAdapterName::kD3D11;
       case gpu::mojom::WebGPUAdapterName::kOpenGLES:
-        *out = gpu::WebGPUAdapterName::kOpenGLES;
-        return true;
+        return gpu::WebGPUAdapterName::kOpenGLES;
       case gpu::mojom::WebGPUAdapterName::kSwiftShader:
-        *out = gpu::WebGPUAdapterName::kSwiftShader;
-        return true;
+        return gpu::WebGPUAdapterName::kSwiftShader;
     }
-    return false;
+    NOTREACHED();
   }
 };
 
 template <>
-struct GPU_EXPORT
-    EnumTraits<gpu::mojom::WebGPUPowerPreference, gpu::WebGPUPowerPreference> {
+struct GPU_IPC_COMMON_EXPORT EnumTraits<gpu::mojom::WebGPUPowerPreference,
+                                        gpu::WebGPUPowerPreference> {
   static gpu::mojom::WebGPUPowerPreference ToMojom(
       gpu::WebGPUPowerPreference input) {
     switch (input) {
@@ -153,32 +136,27 @@ struct GPU_EXPORT
     NOTREACHED();
   }
 
-  static bool FromMojom(gpu::mojom::WebGPUPowerPreference input,
-                        gpu::WebGPUPowerPreference* out) {
+  static gpu::WebGPUPowerPreference FromMojom(
+      gpu::mojom::WebGPUPowerPreference input) {
     switch (input) {
       case gpu::mojom::WebGPUPowerPreference::kNone:
-        *out = gpu::WebGPUPowerPreference::kNone;
-        return true;
+        return gpu::WebGPUPowerPreference::kNone;
       case gpu::mojom::WebGPUPowerPreference::kDefaultLowPower:
-        *out = gpu::WebGPUPowerPreference::kDefaultLowPower;
-        return true;
+        return gpu::WebGPUPowerPreference::kDefaultLowPower;
       case gpu::mojom::WebGPUPowerPreference::kDefaultHighPerformance:
-        *out = gpu::WebGPUPowerPreference::kDefaultHighPerformance;
-        return true;
+        return gpu::WebGPUPowerPreference::kDefaultHighPerformance;
       case gpu::mojom::WebGPUPowerPreference::kForceLowPower:
-        *out = gpu::WebGPUPowerPreference::kForceLowPower;
-        return true;
+        return gpu::WebGPUPowerPreference::kForceLowPower;
       case gpu::mojom::WebGPUPowerPreference::kForceHighPerformance:
-        *out = gpu::WebGPUPowerPreference::kForceHighPerformance;
-        return true;
+        return gpu::WebGPUPowerPreference::kForceHighPerformance;
     }
-    return false;
+    NOTREACHED();
   }
 };
 
 template <>
-struct GPU_EXPORT EnumTraits<gpu::mojom::DawnBackendValidationLevel,
-                             gpu::DawnBackendValidationLevel> {
+struct GPU_IPC_COMMON_EXPORT EnumTraits<gpu::mojom::DawnBackendValidationLevel,
+                                        gpu::DawnBackendValidationLevel> {
   static gpu::mojom::DawnBackendValidationLevel ToMojom(
       gpu::DawnBackendValidationLevel input) {
     switch (input) {
@@ -191,26 +169,23 @@ struct GPU_EXPORT EnumTraits<gpu::mojom::DawnBackendValidationLevel,
     }
     NOTREACHED();
   }
-  static bool FromMojom(gpu::mojom::DawnBackendValidationLevel input,
-                        gpu::DawnBackendValidationLevel* out) {
+  static gpu::DawnBackendValidationLevel FromMojom(
+      gpu::mojom::DawnBackendValidationLevel input) {
     switch (input) {
       case gpu::mojom::DawnBackendValidationLevel::kDisabled:
-        *out = gpu::DawnBackendValidationLevel::kDisabled;
-        return true;
+        return gpu::DawnBackendValidationLevel::kDisabled;
       case gpu::mojom::DawnBackendValidationLevel::kPartial:
-        *out = gpu::DawnBackendValidationLevel::kPartial;
-        return true;
+        return gpu::DawnBackendValidationLevel::kPartial;
       case gpu::mojom::DawnBackendValidationLevel::kFull:
-        *out = gpu::DawnBackendValidationLevel::kFull;
-        return true;
+        return gpu::DawnBackendValidationLevel::kFull;
     }
-    return false;
+    NOTREACHED();
   }
 };
 
 template <>
-struct GPU_EXPORT
-    StructTraits<gpu::mojom::GpuPreferencesDataView, gpu::GpuPreferences> {
+struct GPU_IPC_COMMON_EXPORT StructTraits<gpu::mojom::GpuPreferencesDataView,
+                                          gpu::GpuPreferences> {
   static bool Read(gpu::mojom::GpuPreferencesDataView prefs,
                    gpu::GpuPreferences* out) {
     out->disable_accelerated_video_decode =
@@ -239,7 +214,6 @@ struct GPU_EXPORT
         prefs.enable_gpu_driver_debug_logging();
     out->disable_gpu_program_cache = prefs.disable_gpu_program_cache();
     out->enforce_gl_minimums = prefs.enforce_gl_minimums();
-    out->force_gpu_mem_available_bytes = prefs.force_gpu_mem_available_bytes();
     out->force_gpu_mem_discardable_limit_bytes =
         prefs.force_gpu_mem_discardable_limit_bytes();
     out->force_max_texture_size = prefs.force_max_texture_size();
@@ -248,15 +222,22 @@ struct GPU_EXPORT
     out->enable_threaded_texture_mailboxes =
         prefs.enable_threaded_texture_mailboxes();
     out->gl_shader_interm_output = prefs.gl_shader_interm_output();
-    out->enable_android_surface_control =
-        prefs.enable_android_surface_control();
+    out->perform_graphite_precompilation =
+        prefs.perform_graphite_precompilation();
     out->enable_gpu_service_logging = prefs.enable_gpu_service_logging();
     out->enable_gpu_service_tracing = prefs.enable_gpu_service_tracing();
     out->use_passthrough_cmd_decoder = prefs.use_passthrough_cmd_decoder();
 
     out->ignore_gpu_blocklist = prefs.ignore_gpu_blocklist();
+    if (!prefs.ReadIgnoredGpuBlocklistEntries(
+            &out->ignored_gpu_blocklist_entries)) {
+      return false;
+    }
     out->watchdog_starts_backgrounded = prefs.watchdog_starts_backgrounded();
     if (!prefs.ReadGrContextType(&out->gr_context_type)) {
+      return false;
+    }
+    if (!prefs.ReadFallbackGrContextTypes(&out->fallback_gr_context_types)) {
       return false;
     }
     if (!prefs.ReadUseVulkan(&out->use_vulkan)) {
@@ -371,10 +352,6 @@ struct GPU_EXPORT
   static bool enforce_gl_minimums(const gpu::GpuPreferences& prefs) {
     return prefs.enforce_gl_minimums;
   }
-  static uint32_t force_gpu_mem_available_bytes(
-      const gpu::GpuPreferences& prefs) {
-    return prefs.force_gpu_mem_available_bytes;
-  }
   static uint32_t force_gpu_mem_discardable_limit_bytes(
       const gpu::GpuPreferences& prefs) {
     return prefs.force_gpu_mem_discardable_limit_bytes;
@@ -395,8 +372,9 @@ struct GPU_EXPORT
   static bool gl_shader_interm_output(const gpu::GpuPreferences& prefs) {
     return prefs.gl_shader_interm_output;
   }
-  static bool enable_android_surface_control(const gpu::GpuPreferences& prefs) {
-    return prefs.enable_android_surface_control;
+  static bool perform_graphite_precompilation(
+      const gpu::GpuPreferences& prefs) {
+    return prefs.perform_graphite_precompilation;
   }
   static bool enable_gpu_service_logging(const gpu::GpuPreferences& prefs) {
     return prefs.enable_gpu_service_logging;
@@ -410,11 +388,19 @@ struct GPU_EXPORT
   static bool ignore_gpu_blocklist(const gpu::GpuPreferences& prefs) {
     return prefs.ignore_gpu_blocklist;
   }
+  static const std::vector<uint32_t>& ignored_gpu_blocklist_entries(
+      const gpu::GpuPreferences& prefs) {
+    return prefs.ignored_gpu_blocklist_entries;
+  }
   static bool watchdog_starts_backgrounded(const gpu::GpuPreferences& prefs) {
     return prefs.watchdog_starts_backgrounded;
   }
   static gpu::GrContextType gr_context_type(const gpu::GpuPreferences& prefs) {
     return prefs.gr_context_type;
+  }
+  static const base::circular_deque<gpu::GrContextType>&
+  fallback_gr_context_types(const gpu::GpuPreferences& prefs) {
+    return prefs.fallback_gr_context_types;
   }
   static gpu::VulkanImplementationName use_vulkan(
       const gpu::GpuPreferences& prefs) {

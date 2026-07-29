@@ -17,6 +17,7 @@
 #include "build/build_config.h"
 #include "components/signin/public/base/list_accounts_test_utils.h"
 #include "components/signin/public/base/multilogin_parameters.h"
+#include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/test_signin_client.h"
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -97,6 +98,14 @@ class AccountsCookieMutatorTest
   void PrepareURLLoaderResponsesForAction(AccountsCookiesMutatorAction action) {
     switch (action) {
       case AccountsCookiesMutatorAction::kSetAccountsInCookie:
+        // Simulate GetCheckConnectionInfo response to avoid triggering
+        // timeouts.
+        GetTestURLLoaderFactory()->AddResponse(
+            GaiaUrls::GetInstance()
+                ->GetCheckConnectionInfoURLWithSource(
+                    GaiaConstants::kChromeSource)
+                .spec(),
+            "cc_result");
         GetTestURLLoaderFactory()->AddResponse(
             GaiaUrls::GetInstance()
                 ->oauth_multilogin_url()
@@ -150,6 +159,17 @@ class AccountsCookieMutatorTest
   network::mojom::CookieManager* GetCookieManagerForPartition() override {
     return &cookie_manager_for_partition_;
   }
+
+  PartitionSuffix GetPartitionSuffix() const override {
+    return PartitionSuffix::kTest;
+  }
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  network::mojom::DeviceBoundSessionManager*
+  GetDeviceBoundSessionManagerForPartition() override {
+    return nullptr;
+  }
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
   base::test::TaskEnvironment task_environment_;
   sync_preferences::TestingPrefServiceSyncable prefs_;

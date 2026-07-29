@@ -20,9 +20,6 @@
 #include "media/base/supported_types.h"
 #include "media/base/video_decoder_config.h"
 #include "media/media_buildflags.h"
-#include "third_party/blink/public/common/privacy_budget/identifiability_metric_builder.h"
-#include "third_party/blink/public/common/privacy_budget/identifiability_study_settings.h"
-#include "third_party/blink/public/common/privacy_budget/identifiable_surface.h"
 #include "third_party/blink/public/platform/web_media_source.h"
 #include "third_party/blink/public/platform/web_source_buffer.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_decoder_config.h"
@@ -35,6 +32,7 @@
 #include "third_party/blink/renderer/core/html/media/html_media_element.h"
 #include "third_party/blink/renderer/core/html/track/audio_track_list.h"
 #include "third_party/blink/renderer/core/html/track/video_track_list.h"
+#include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/modules/mediasource/attachment_creation_pass_key_provider.h"
 #include "third_party/blink/renderer/modules/mediasource/cross_thread_media_source_attachment.h"
 #include "third_party/blink/renderer/modules/mediasource/handle_attachment_provider.h"
@@ -53,10 +51,9 @@
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/network/mime/content_type.h"
 #include "third_party/blink/renderer/platform/network/mime/mime_type_registry.h"
-#include "third_party/blink/renderer/platform/privacy_budget/identifiability_digest_helpers.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 using blink::WebMediaSource;
 using blink::WebSourceBuffer;
@@ -77,14 +74,9 @@ bool IsMp2tCodecSupported(std::string_view codec_id) {
     return true;
   }
 
-  auto audio_codec = media::AudioCodec::kUnknown;
-  bool is_codec_ambiguous = false;
-  if (media::ParseAudioCodecString("", codec_id, &is_codec_ambiguous,
-                                   &audio_codec)) {
-    if (is_codec_ambiguous) {
-      return false;
-    }
-
+  if (auto audio_type = media::ParseAudioCodecString(
+          "", codec_id, /*allow_ambiguous_matches=*/false)) {
+    const auto& audio_codec = audio_type->codec;
     if (audio_codec != media::AudioCodec::kAAC &&
         audio_codec != media::AudioCodec::kMP3) {
       return false;
@@ -103,10 +95,10 @@ static AtomicString ReadyStateToString(MediaSource::ReadyState state) {
   AtomicString result;
   switch (state) {
     case MediaSource::ReadyState::kOpen:
-      result = AtomicString("open");
+      result = keywords::kOpen;
       break;
     case MediaSource::ReadyState::kClosed:
-      result = AtomicString("closed");
+      result = keywords::kClosed;
       break;
     case MediaSource::ReadyState::kEnded:
       result = AtomicString("ended");
@@ -184,6 +176,12 @@ void MediaSource::LogAndThrowDOMException(ExceptionState& exception_state,
   exception_state.ThrowDOMException(error, message);
 }
 
+void MediaSource::LogAndThrowQuotaExceededError(ExceptionState& exception_state,
+                                                const String& message) {
+  DVLOG(1) << __func__ << " (message=" << message << ")";
+  QuotaExceededError::Throw(exception_state, message);
+}
+
 void MediaSource::LogAndThrowTypeError(ExceptionState& exception_state,
                                        const String& message) {
   DVLOG(1) << __func__ << " (message=" << message << ")";
@@ -211,7 +209,7 @@ SourceBuffer* MediaSource::addSourceBuffer(const String& type,
           false /* Allow underspecified codecs in |type| */)) {
     LogAndThrowDOMException(
         exception_state, DOMExceptionCode::kNotSupportedError,
-        "The type provided ('" + type + "') is unsupported.");
+        StrCat({"The type provided ('", type, "') is unsupported."}));
     return nullptr;
   }
 
@@ -230,11 +228,11 @@ SourceBuffer* MediaSource::addSourceBuffer(const String& type,
   SourceBuffer* source_buffer = nullptr;
 
   // Note, here we must be open, therefore we must have an attachment.
-  if (!RunUnlessElementGoneOrClosingUs(WTF::BindOnce(
+  if (!RunUnlessElementGoneOrClosingUs(blink::BindOnce(
           &MediaSource::AddSourceBuffer_Locked, WrapPersistent(this), type,
           nullptr /* audio_config */, nullptr /* video_config */,
-          WTF::Unretained(&exception_state),
-          WTF::Unretained(&source_buffer)))) {
+          blink::subtle::UnretainedException(&exception_state),
+          blink::subtle::UnretainedException(&source_buffer)))) {
     // TODO(https://crbug.com/878133): Determine in specification what the
     // specific, app-visible, exception should be for this case.
     LogAndThrowDOMException(exception_state,
@@ -352,11 +350,11 @@ SourceBuffer* MediaSource::AddSourceBufferUsingConfig(
   String null_type;
 
   // Note, here we must be open, therefore we must have an attachment.
-  if (!RunUnlessElementGoneOrClosingUs(WTF::BindOnce(
+  if (!RunUnlessElementGoneOrClosingUs(blink::BindOnce(
           &MediaSource::AddSourceBuffer_Locked, WrapPersistent(this), null_type,
           std::move(audio_config), std::move(video_config),
-          WTF::Unretained(&exception_state),
-          WTF::Unretained(&source_buffer)))) {
+          blink::subtle::UnretainedException(&exception_state),
+          blink::subtle::UnretainedException(&source_buffer)))) {
     // TODO(https://crbug.com/878133): Determine in specification what the
     // specific, app-visible, exception should be for this case.
     LogAndThrowDOMException(exception_state,
@@ -446,8 +444,8 @@ void MediaSource::removeSourceBuffer(SourceBuffer* buffer,
   // case). Note, we must not be closed (since closing clears our SourceBuffer
   // collections), therefore we must have an attachment.
   if (!RunUnlessElementGoneOrClosingUs(
-          WTF::BindOnce(&MediaSource::RemoveSourceBuffer_Locked,
-                        WrapPersistent(this), WrapPersistent(buffer)))) {
+          blink::BindOnce(&MediaSource::RemoveSourceBuffer_Locked,
+                          WrapPersistent(this), WrapPersistent(buffer)))) {
     // TODO(https://crbug.com/878133): Determine in specification what the
     // specific, app-visible, exception should be for this case.
     LogAndThrowDOMException(exception_state,
@@ -624,8 +622,7 @@ bool MediaSource::IsTypeSupportedInternal(ExecutionContext* context,
     std::string filtered_type =
         mime_type.Ascii() + "; codecs=\"" + filtered_codecs + "\"";
     DVLOG(1) << __func__ << " filtered_type=" << filtered_type;
-    filtered_content_type =
-        ContentType(String::FromUTF8(filtered_type.c_str()));
+    filtered_content_type = ContentType(String::FromUtf8(filtered_type));
   }
 #endif  // BUILDFLAG(ENABLE_PLATFORM_ENCRYPTED_DOLBY_VISION)
 
@@ -639,7 +636,6 @@ bool MediaSource::IsTypeSupportedInternal(ExecutionContext* context,
     DVLOG(1) << __func__ << "(" << type << ", "
              << base::ToString(enforce_codec_specificity)
              << ") -> false (not supported by HTMLMediaElement)";
-    RecordIdentifiabilityMetric(context, type, false);
     return false;
   }
 
@@ -667,28 +663,12 @@ bool MediaSource::IsTypeSupportedInternal(ExecutionContext* context,
   DVLOG(2) << __func__ << "(" << type << ", "
            << base::ToString(enforce_codec_specificity) << ") -> "
            << base::ToString(result);
-  RecordIdentifiabilityMetric(context, type, result);
   return result;
 }
 
 // static
 bool MediaSource::canConstructInDedicatedWorker(ExecutionContext* context) {
   return true;
-}
-
-void MediaSource::RecordIdentifiabilityMetric(ExecutionContext* context,
-                                              const String& type,
-                                              bool result) {
-  if (!IdentifiabilityStudySettings::Get()->ShouldSampleType(
-          blink::IdentifiableSurface::Type::kMediaSource_IsTypeSupported)) {
-    return;
-  }
-  blink::IdentifiabilityMetricBuilder(context->UkmSourceID())
-      .Add(blink::IdentifiableSurface::FromTypeAndToken(
-               blink::IdentifiableSurface::Type::kMediaSource_IsTypeSupported,
-               IdentifiabilityBenignStringToken(type)),
-           result)
-      .Record(context->UkmRecorder());
 }
 
 const AtomicString& MediaSource::InterfaceName() const {
@@ -767,17 +747,8 @@ void MediaSource::CompleteAttachingToMediaElement(
 
     DCHECK_EQ(!attachment_tracer_, !IsMainThread());
 
-    if (attachment_tracer_) {
-      // Use of a tracer means we must be using same-thread attachment.
-      TRACE_EVENT_NESTABLE_ASYNC_END0(
-          "media", "MediaSource::StartAttachingToMediaElement",
-          TRACE_ID_LOCAL(this));
-    } else {
-      // Otherwise, we must be using a cross-thread MSE-in-Workers attachment.
-      TRACE_EVENT_NESTABLE_ASYNC_END0(
-          "media", "MediaSource::StartWorkerAttachingToMainThreadMediaElement",
-          TRACE_ID_LOCAL(this));
-    }
+    TRACE_EVENT_END(
+        "media", perfetto::NamedTrack::FromPointer("blink::MediaSource", this));
     DCHECK(web_media_source);
     DCHECK(!web_media_source_);
     DCHECK(media_source_attachment_);
@@ -973,9 +944,9 @@ void MediaSource::setDuration(double duration,
   // Do remainder of steps only if attachment is usable and underlying demuxer
   // is protected from destruction (applicable especially for MSE-in-Worker
   // case). Note, we must be open, therefore we must have an attachment.
-  if (!RunUnlessElementGoneOrClosingUs(WTF::BindOnce(
+  if (!RunUnlessElementGoneOrClosingUs(blink::BindOnce(
           &MediaSource::DurationChangeAlgorithm, WrapPersistent(this), duration,
-          WTF::Unretained(&exception_state)))) {
+          blink::subtle::UnretainedException(&exception_state)))) {
     // TODO(https://crbug.com/878133): Determine in specification what the
     // specific, app-visible, exception should be for this case.
     LogAndThrowDOMException(exception_state,
@@ -990,12 +961,12 @@ double MediaSource::duration() {
     return duration_result;
 
   // Note, here we must be open or ended, therefore we must have an attachment.
-  if (!RunUnlessElementGoneOrClosingUs(WTF::BindOnce(
+  if (!RunUnlessElementGoneOrClosingUs(BindOnce(
           [](MediaSource* self, double* result,
              MediaSourceAttachmentSupplement::ExclusiveKey pass_key) {
             *result = self->GetDuration_Locked(pass_key);
           },
-          WrapPersistent(this), WTF::Unretained(&duration_result)))) {
+          WrapPersistent(this), Unretained(&duration_result)))) {
     // TODO(https://crbug.com/878133): Determine in specification what the
     // specific, app-visible, result should be in this case. It seems reasonable
     // to behave is if we are in "closed" readyState and report NaN to the app
@@ -1032,20 +1003,13 @@ void MediaSource::DurationChangeAlgorithm(
   }
 
   if (new_duration < highest_buffered_presentation_timestamp) {
-    if (RuntimeEnabledFeatures::MediaSourceNewAbortAndDurationEnabled()) {
-      LogAndThrowDOMException(
-          *exception_state, DOMExceptionCode::kInvalidStateError,
-          "Setting duration below highest presentation timestamp of any "
-          "buffered coded frames is disallowed. Instead, first do asynchronous "
-          "remove(newDuration, oldDuration) on all sourceBuffers, where "
-          "newDuration < oldDuration.");
-      return;
-    }
-
-    Deprecation::CountDeprecation(
-        GetExecutionContext(),
-        WebFeature::kMediaSourceDurationTruncatingBuffered);
-    // See also deprecated remove(new duration, old duration) behavior below.
+    LogAndThrowDOMException(
+        *exception_state, DOMExceptionCode::kInvalidStateError,
+        "Setting duration below highest presentation timestamp of any "
+        "buffered coded frames is disallowed. Instead, first do asynchronous "
+        "remove(newDuration, oldDuration) on all sourceBuffers, where "
+        "newDuration < oldDuration.");
+    return;
   }
 
   DCHECK_LE(highest_buffered_presentation_timestamp,
@@ -1055,17 +1019,6 @@ void MediaSource::DurationChangeAlgorithm(
   // Done for step 1 above, already.
   // 4. Update duration to new duration.
   web_media_source_->SetDuration(new_duration);
-
-  if (!RuntimeEnabledFeatures::MediaSourceNewAbortAndDurationEnabled() &&
-      new_duration < old_duration) {
-    // Deprecated behavior: if the new duration is less than old duration,
-    // then call remove(new duration, old duration) on all all objects in
-    // sourceBuffers.
-    for (unsigned i = 0; i < source_buffers_->length(); ++i) {
-      source_buffers_->item(i)->Remove_Locked(new_duration, old_duration,
-                                              &ASSERT_NO_EXCEPTION, pass_key);
-    }
-  }
 
   // 5. If a user agent is unable to partially render audio frames or text cues
   //    that start before and end after the duration, then run the following
@@ -1142,7 +1095,7 @@ void MediaSource::endOfStream(std::optional<V8EndOfStreamError> error,
   // Do remainder of steps only if attachment is usable and underlying demuxer
   // is protected from destruction (applicable especially for MSE-in-Worker
   // case). Note, we must be open, therefore we must have an attachment.
-  if (!RunUnlessElementGoneOrClosingUs(WTF::BindOnce(
+  if (!RunUnlessElementGoneOrClosingUs(blink::BindOnce(
           &MediaSource::EndOfStreamAlgorithm, WrapPersistent(this), status))) {
     // TODO(https://crbug.com/878133): Determine in specification what the
     // specific, app-visible, exception should be for this case.
@@ -1182,8 +1135,8 @@ void MediaSource::setLiveSeekableRange(double start,
 
   // Note, here we must be open, therefore we must have an attachment.
   if (!RunUnlessElementGoneOrClosingUs(
-          WTF::BindOnce(&MediaSource::SetLiveSeekableRange_Locked,
-                        WrapPersistent(this), start, end))) {
+          blink::BindOnce(&MediaSource::SetLiveSeekableRange_Locked,
+                          WrapPersistent(this), start, end))) {
     // TODO(https://crbug.com/878133): Determine in specification what the
     // specific, app-visible, exception should be for this case.
     LogAndThrowDOMException(exception_state,
@@ -1223,7 +1176,7 @@ void MediaSource::clearLiveSeekableRange(ExceptionState& exception_state) {
     return;
 
   // Note, here we must be open, therefore we must have an attachment.
-  if (!RunUnlessElementGoneOrClosingUs(WTF::BindOnce(
+  if (!RunUnlessElementGoneOrClosingUs(blink::BindOnce(
           &MediaSource::ClearLiveSeekableRange_Locked, WrapPersistent(this)))) {
     // TODO(https://crbug.com/878133): Determine in specification what the
     // specific, app-visible, exception should be for this case.
@@ -1404,9 +1357,9 @@ MediaSourceTracer* MediaSource::StartAttachingToMediaElement(
   DCHECK(!context_already_destroyed_);
   DCHECK(IsClosed());
 
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("media",
-                                    "MediaSource::StartAttachingToMediaElement",
-                                    TRACE_ID_LOCAL(this));
+  TRACE_EVENT_BEGIN(
+      "media", "MediaSource::StartAttachingToMediaElement",
+      perfetto::NamedTrack::FromPointer("blink::MediaSource", this));
   media_source_attachment_ = attachment;
   attachment_tracer_ =
       MakeGarbageCollected<SameThreadMediaSourceTracer>(element, this);
@@ -1431,9 +1384,9 @@ bool MediaSource::StartWorkerAttachingToMainThreadMediaElement(
   }
 
   DCHECK(IsClosed());
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
+  TRACE_EVENT_BEGIN(
       "media", "MediaSource::StartWorkerAttachingToMainThreadMediaElement",
-      TRACE_ID_LOCAL(this));
+      perfetto::NamedTrack::FromPointer("blink::MediaSource", this));
   media_source_attachment_ = attachment;
   return true;
 }
@@ -1541,17 +1494,17 @@ void MediaSource::ContextDestroyed() {
   // doing this detachment.
   bool cb_ran = attachment->RunExclusively(
       true /* abort if unsafe to use underlying demuxer */,
-      WTF::BindOnce(&MediaSource::DetachWorkerOnContextDestruction_Locked,
-                    WrapPersistent(this),
-                    true /* safe to notify underlying demuxer */));
+      blink::BindOnce(&MediaSource::DetachWorkerOnContextDestruction_Locked,
+                      WrapPersistent(this),
+                      true /* safe to notify underlying demuxer */));
 
   if (!cb_ran) {
     // Main-thread is already detaching or destructing the underlying demuxer.
     CHECK(attachment->RunExclusively(
         false /* do not abort */,
-        WTF::BindOnce(&MediaSource::DetachWorkerOnContextDestruction_Locked,
-                      WrapPersistent(this),
-                      false /* do not notify underlying demuxer */)));
+        blink::BindOnce(&MediaSource::DetachWorkerOnContextDestruction_Locked,
+                        WrapPersistent(this),
+                        false /* do not notify underlying demuxer */)));
   }
 }
 
@@ -1667,8 +1620,8 @@ std::unique_ptr<WebSourceBuffer> MediaSource::CreateWebSourceBuffer(
       // then throw a NotSupportedError exception and abort these steps.
       LogAndThrowDOMException(
           exception_state, DOMExceptionCode::kNotSupportedError,
-          "The type provided ('" + type +
-              "') is not supported for SourceBuffer creation.");
+          StrCat({"The type provided ('", type,
+                  "') is not supported for SourceBuffer creation."}));
       return nullptr;
     case WebMediaSource::kAddStatusReachedIdLimit:
       DCHECK(!web_source_buffer);
@@ -1676,11 +1629,11 @@ std::unique_ptr<WebSourceBuffer> MediaSource::CreateWebSourceBuffer(
       // https://dvcs.w3.org/hg/html-media/raw-file/default/media-source/media-source.html#widl-MediaSource-addSourceBuffer-SourceBuffer-DOMString-type
       // Step 3: If the user agent can't handle any more SourceBuffer objects
       // then throw a QuotaExceededError exception and abort these steps.
-      LogAndThrowDOMException(exception_state,
-                              DOMExceptionCode::kQuotaExceededError,
-                              "This MediaSource has reached the limit of "
-                              "SourceBuffer objects it can handle. No "
-                              "additional SourceBuffer objects may be added.");
+      LogAndThrowQuotaExceededError(
+          exception_state,
+          "This MediaSource has reached the limit of "
+          "SourceBuffer objects it can handle. No "
+          "additional SourceBuffer objects may be added.");
       return nullptr;
   }
 

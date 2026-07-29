@@ -2,14 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/task_manager/sampling/task_manager_impl.h"
+
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/task_manager/common/task_manager_features.h"
 #include "chrome/browser/task_manager/providers/task.h"
-#include "chrome/browser/task_manager/sampling/task_manager_impl.h"
 #include "chrome/browser/task_manager/task_manager_observer.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -147,8 +149,8 @@ TEST_F(TaskManagerImplTest, SortingTypes) {
   EXPECT_EQ(
       "Browser\n"
       "Gpu Process\n"
-      "ARC\n"
       "Crostini\n"
+      "ARC\n"
       "Zygote\n"
       "Utility One\n"
       "Utility Two\n"
@@ -215,7 +217,7 @@ TEST_F(TaskManagerImplTest, SortingCycles) {
               /*tab_id=*/SessionID::InvalidValue());
   lollipop5->SetParent(cycle3);
   base::WeakPtr<FakeTask> lollipop6 =
-      AddTask(700, Task::PLUGIN, "Child of Cycle 4",
+      AddTask(700, Task::GUEST, "Child of Cycle 4",
               /*tab_id=*/SessionID::InvalidValue());
   lollipop6->SetParent(cycle4);
 
@@ -225,8 +227,8 @@ TEST_F(TaskManagerImplTest, SortingCycles) {
   self_cycle->SetParent(self_cycle);
 
   // Add a plugin child to tab1 and tab2.
-  AddTask(900, Task::PLUGIN, "Plugin: Tab 2", kTabId2)->SetParent(tab1);
-  AddTask(901, Task::PLUGIN, "Plugin: Tab 1", kTabId1)->SetParent(tab1);
+  AddTask(900, Task::GUEST, "Guest: Tab 2", kTabId2)->SetParent(tab1);
+  AddTask(901, Task::GUEST, "Guest: Tab 1", kTabId1)->SetParent(tab1);
 
   // Finish with a normal renderer task.
   AddTask(903, Task::RENDERER, "Tab: Normal Renderer", kTabId4);
@@ -239,8 +241,8 @@ TEST_F(TaskManagerImplTest, SortingCycles) {
       "Subframe in Tab 2: Process 200\n"
       "Tab 2: Process 300\n"
       "Subframe in Tab 1: Process 300\n"
-      "Plugin: Tab 1\n"
-      "Plugin: Tab 2\n"
+      "Guest: Tab 1\n"
+      "Guest: Tab 2\n"
       "Tab: Normal Renderer\n"
       "Cycle 2\n"           // ARC
       "Cycle 1\n"           // Child of 2

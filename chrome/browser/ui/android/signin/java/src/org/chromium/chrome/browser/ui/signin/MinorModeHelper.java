@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.ui.signin;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.os.SystemClock;
 
 import androidx.annotation.IntDef;
@@ -11,14 +13,17 @@ import androidx.annotation.IntDef;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
+import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.Tribool;
 import org.chromium.components.signin.base.AccountCapabilities;
 import org.chromium.components.signin.base.AccountInfo;
-import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
-import org.chromium.components.signin.metrics.SyncButtonClicked;
 import org.chromium.components.signin.metrics.SyncButtonsType;
+import org.chromium.google_apis.gaia.CoreAccountId;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -40,6 +45,7 @@ import java.lang.annotation.RetentionPolicy;
  *
  * <p>Use {@link resolveMinorMode} as an entry point.
  */
+@NullMarked
 public class MinorModeHelper implements IdentityManager.Observer {
 
     /** Screen modes indicated by capability. */
@@ -82,10 +88,10 @@ public class MinorModeHelper implements IdentityManager.Observer {
 
     private final IdentityManager mIdentityManager;
 
-    private final CoreAccountInfo mPrimaryAccount;
+    private final CoreAccountId mPrimaryAccountId;
 
     // Disposable updater which is executed only once.
-    private UiUpdater mUiUpdater;
+    private @Nullable UiUpdater mUiUpdater;
 
     /**
      * Waits for the capability to be loaded. When this happens, the ui is updated in minor-mode
@@ -96,19 +102,24 @@ public class MinorModeHelper implements IdentityManager.Observer {
      * account.
      *
      * @param identityManager The {@link IdentityManager} for the profile
-     * @param primaryAccount {@link CoreAccountInfo} for the primary account.
+     * @param primaryAccountId {@link CoreAccountId} for the primary account Id.
      * @param uiUpdater Callback method to be run when the {@link CAPABILITY_TIMEOUT_MS} is reached
      *     or capability is retrieved.
      */
     public static void resolveMinorMode(
-            IdentityManager identityManager, CoreAccountInfo primaryAccount, UiUpdater uiUpdater) {
+            IdentityManager identityManager, CoreAccountId primaryAccountId, UiUpdater uiUpdater) {
         if (uiUpdater == null) {
             throw new IllegalArgumentException("uiUpdater must not be null.");
         }
         AccountInfo accountInfo =
-                identityManager.findExtendedAccountInfoByEmailAddress(primaryAccount.getEmail());
+                identityManager.findExtendedAccountInfoByAccountId(primaryAccountId);
 
-        if (hasCapabilities(accountInfo)) {
+        boolean skipRefreshTokenSwitch =
+                SigninFeatureMap.isEnabled(
+                        SigninFeatures.SKIP_REFRESH_TOKEN_CHECK_IN_IDENTITY_MANAGER);
+
+        if ((skipRefreshTokenSwitch || accountInfo != null)
+                && hasCapabilities(assumeNonNull(accountInfo))) {
             uiUpdater.onScreenModeReady(
                     screenModeFromCapabilities(accountInfo.getAccountCapabilities()));
             recordImmediateAvailability();
@@ -117,7 +128,7 @@ public class MinorModeHelper implements IdentityManager.Observer {
 
         recordNoImmediateAvailability();
         identityManager.addObserver(
-                new MinorModeHelper(identityManager, primaryAccount, uiUpdater));
+                new MinorModeHelper(identityManager, primaryAccountId, uiUpdater));
     }
 
     /**
@@ -128,16 +139,6 @@ public class MinorModeHelper implements IdentityManager.Observer {
      */
     public static void recordButtonsShown(@SyncButtonsType int type) {
         SigninMetricsUtils.recordButtonsShown(type);
-    }
-
-    /**
-     * Records which buttons (accept or decline) were clicked on sync screen and history sync and
-     * whether the buttons were equally weighted.
-     *
-     * @param type See {@link SyncButtonClicked}
-     */
-    public static void recordButtonClicked(@SyncButtonClicked int type) {
-        SigninMetricsUtils.recordButtonTypeClicked(type);
     }
 
     /**
@@ -167,9 +168,9 @@ public class MinorModeHelper implements IdentityManager.Observer {
     }
 
     private MinorModeHelper(
-            IdentityManager identityManager, CoreAccountInfo primaryAccount, UiUpdater uiUpdater) {
+            IdentityManager identityManager, CoreAccountId primaryAccountId, UiUpdater uiUpdater) {
         this.mIdentityManager = identityManager;
-        this.mPrimaryAccount = primaryAccount;
+        this.mPrimaryAccountId = primaryAccountId;
         mUiUpdater = uiUpdater;
 
         // When the sDisableHistorySyncOptInTimeoutForTesting is enabled in tests, the buttons
@@ -181,7 +182,7 @@ public class MinorModeHelper implements IdentityManager.Observer {
 
     @Override
     public void onExtendedAccountInfoUpdated(AccountInfo accountInfo) {
-        if (!mPrimaryAccount.getId().equals(accountInfo.getId())) {
+        if (!mPrimaryAccountId.equals(accountInfo.getId())) {
             // Update intended for different account.
             return;
         }

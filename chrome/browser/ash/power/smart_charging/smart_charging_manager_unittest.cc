@@ -12,6 +12,7 @@
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power_manager/user_charging_event.pb.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 
@@ -115,14 +116,14 @@ class SmartChargingManagerTest : public ChromeRenderViewHostTestHarness {
   }
 
   void ReportLidEvent(const chromeos::PowerManagerClient::LidState state) {
-    chromeos::FakePowerManagerClient::Get()->SetLidState(
-        state, base::TimeTicks::UnixEpoch());
+    chromeos::FakePowerManagerClient::Get()->SetLidState(state,
+                                                         base::TimeTicks());
   }
 
   void ReportTabletModeEvent(
       const chromeos::PowerManagerClient::TabletMode mode) {
-    chromeos::FakePowerManagerClient::Get()->SetTabletMode(
-        mode, base::TimeTicks::UnixEpoch());
+    chromeos::FakePowerManagerClient::Get()->SetTabletMode(mode,
+                                                           base::TimeTicks());
   }
 
   void ReportVideoStart() { smart_charging_manager_->OnVideoActivityStarted(); }
@@ -186,7 +187,8 @@ class SmartChargingManagerTest : public ChromeRenderViewHostTestHarness {
                                                     0);
 
  private:
-  session_manager::SessionManager session_manager_;
+  session_manager::SessionManager session_manager_{
+      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
   std::unique_ptr<SmartChargingManager> smart_charging_manager_;
 };
 

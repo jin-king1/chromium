@@ -23,7 +23,6 @@
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
-#import "components/signin/public/identity_manager/signin_constants.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
@@ -34,8 +33,6 @@
 #import "testing/platform_test.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/time_format.h"
-
-using signin::constants::kNoHostedDomainFound;
 
 namespace {
 
@@ -65,9 +62,10 @@ class UserCloudPolicyStatusProviderTest
   void SetUp() override {
     RegisterLocalStatePrefs(local_state_.registry());
 
-    user_store_ = std::make_unique<policy::MockUserCloudPolicyStore>();
+    user_store_ = std::make_unique<policy::MockUserCloudPolicyStore>(
+        policy::dm_protocol::GetChromeUserPolicyType());
     user_core_ = std::make_unique<policy::CloudPolicyCore>(
-        policy::dm_protocol::kChromeUserPolicyType, std::string(),
+        policy::dm_protocol::GetChromeUserPolicyType(), std::string(),
         user_store_.get(), base::SingleThreadTaskRunner::GetCurrentDefault(),
         network::TestNetworkConnectionTracker::CreateGetter());
 
@@ -82,14 +80,16 @@ class UserCloudPolicyStatusProviderTest
 
   // UserCloudPolicyStatusProvider::Delegate implementation:
   MOCK_METHOD0(GetDeviceAffiliationIds, base::flat_set<std::string>());
+  MOCK_METHOD0(GetProfileId, std::optional<std::string>());
 
   void SetPrimaryAccountAsFlex() {
     AccountInfo account = identity_test_env_.MakePrimaryAccountAvailable(
         kTestUsername, signin::ConsentLevel::kSignin);
 
-    AccountCapabilitiesTestMutator mutator(&account.capabilities);
-    mutator.set_is_subject_to_enterprise_policies(true);
-    account.hosted_domain = kNoHostedDomainFound;
+    AccountCapabilitiesTestMutator mutator(&account);
+    mutator.set_is_subject_to_enterprise_features(true);
+    account =
+        AccountInfo::Builder(account).SetHostedDomain(std::string()).Build();
     identity_test_env_.UpdateAccountInfoForAccount(account);
   }
 
@@ -157,6 +157,11 @@ TEST_F(UserCloudPolicyStatusProviderTest, GetStatus_Full) {
         return affiliation_ids;
       });
 
+  constexpr char kProfileId[] = "test-profile-id";
+  ON_CALL(*this, GetProfileId).WillByDefault([kProfileId]() {
+    return kProfileId;
+  });
+
   // Set clients as managed.
   user_client()->SetStatus(policy::DM_STATUS_SUCCESS);
   user_client()->SetDMToken("test-dm-token");
@@ -178,8 +183,8 @@ TEST_F(UserCloudPolicyStatusProviderTest, GetStatus_Full) {
   task_environment_.FastForwardBy(time_since_last_success_fetch);
 
   // Set expected status.
-  const base::Value::Dict expected_status =
-      base::Value::Dict()
+  const base::DictValue expected_status =
+      base::DictValue()
           .Set(policy::kClientIdKey, kTestClientId)
           .Set(policy::kDirectoryApiIdKey, kTestDirectoryApiId)
           .Set(policy::kUsernameKey, kTestUsername)
@@ -195,10 +200,11 @@ TEST_F(UserCloudPolicyStatusProviderTest, GetStatus_Full) {
                time_since_last_success_fetch_formatted)
           .Set(policy::kDomainKey, kTestDomain)
           .Set("isAffiliated", true)
+          .Set("profileId", kProfileId)
           .Set(policy::kFlexOrgWarningKey, false)
           .Set(policy::kPolicyDescriptionKey, "statusUser");
 
-  base::Value::Dict returned_status = status_provider_->GetStatus();
+  base::DictValue returned_status = status_provider_->GetStatus();
   EXPECT_EQ(expected_status, returned_status);
 }
 
@@ -208,7 +214,7 @@ TEST_F(UserCloudPolicyStatusProviderTest, GetStatus_NoDomainIfNoUsername) {
   // status payload and process the policy data.
   SetMinimalViableUserPolicyData();
 
-  base::Value::Dict returned_status = status_provider_->GetStatus();
+  base::DictValue returned_status = status_provider_->GetStatus();
   EXPECT_FALSE(returned_status.FindString(policy::kDomainKey));
   // Sanity check to make sure that there is the other status information even
   // if the domain isn't set.
@@ -218,7 +224,7 @@ TEST_F(UserCloudPolicyStatusProviderTest, GetStatus_NoDomainIfNoUsername) {
 // Test that the returned status information is empty when there is no active
 // policy data and no flex account.
 TEST_F(UserCloudPolicyStatusProviderTest, GetStatus_NotManaged) {
-  base::Value::Dict returned_status = status_provider_->GetStatus();
+  base::DictValue returned_status = status_provider_->GetStatus();
   EXPECT_TRUE(returned_status.empty());
 }
 
@@ -246,7 +252,7 @@ TEST_F(UserCloudPolicyStatusProviderTest, GetStatus_AffiliationIds_NoMatch) {
   user_client()->SetStatus(policy::DM_STATUS_SUCCESS);
   user_client()->SetDMToken("test-dm-token");
 
-  base::Value::Dict returned_status = status_provider_->GetStatus();
+  base::DictValue returned_status = status_provider_->GetStatus();
   auto affiliation_value = returned_status.FindBool("isAffiliated");
   ASSERT_TRUE(affiliation_value);
   EXPECT_FALSE(*affiliation_value);
@@ -258,7 +264,7 @@ TEST_F(UserCloudPolicyStatusProviderTest, GetStatus_FlexWarning) {
   SetPrimaryAccountAsFlex();
 
   // Test flex status.
-  base::Value::Dict returned_status = status_provider_->GetStatus();
+  base::DictValue returned_status = status_provider_->GetStatus();
   auto flex_warning_value =
       returned_status.FindBool(policy::kFlexOrgWarningKey);
   ASSERT_TRUE(flex_warning_value);
@@ -331,10 +337,11 @@ TEST_F(UserCloudPolicyStatusProviderTest, ConnectNewClient) {
   observation.Observe(status_provider_.get());
 
   // Disconnect the current client.
+  user_client_ = nullptr;
   user_core()->Disconnect();
   // Connect a new client.
-  policy::MockCloudPolicyClient* new_client =
-      ConnectNewMockClient(user_core_.get());
+  user_client_ = ConnectNewMockClient(user_core_.get());
+  policy::MockCloudPolicyClient* new_client = user_client_;
 
   // Verify that the status provider listens to the new client and can observe
   // client errors.

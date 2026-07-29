@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.ui.searchactivityutils;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.SEARCH_WIDGET_ACCOUNT_EMAIL;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.SEARCH_WIDGET_IS_GOOGLE_LENS_AVAILABLE;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.SEARCH_WIDGET_IS_INCOGNITO_AVAILABLE;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.SEARCH_WIDGET_IS_VOICE_SEARCH_AVAILABLE;
@@ -13,8 +15,6 @@ import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.SEARC
 import android.content.Context;
 import android.text.TextUtils;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ObserverList;
@@ -22,6 +22,8 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.lens.LensController;
 import org.chromium.chrome.browser.lens.LensEntryPoint;
@@ -30,10 +32,12 @@ import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionUtil;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
+import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.search_engines.TemplateUrlService.LoadListener;
 import org.chromium.components.search_engines.TemplateUrlService.TemplateUrlServiceObserver;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.permissions.AndroidPermissionDelegate;
 import org.chromium.url.GURL;
@@ -42,14 +46,18 @@ import java.util.Arrays;
 import java.util.function.Consumer;
 
 /** Facilitates access to and updates of the cached SearchActivityPreferences. */
+@NullMarked
 public class SearchActivityPreferencesManager implements LoadListener, TemplateUrlServiceObserver {
     /** Data-only class representiing current SearchActivity preferences. */
     public static final class SearchActivityPreferences {
+        /** Signed-in account email. */
+        public final @Nullable String accountEmail;
+
         /** Name of the Default Search Engine. */
         public final @Nullable String searchEngineName;
 
         /** URL of the Default Search Engine. */
-        public final @NonNull GURL searchEngineUrl;
+        public final GURL searchEngineUrl;
 
         /** Whether Voice Search functionality is available. */
         public final boolean voiceSearchAvailable;
@@ -60,13 +68,15 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
         /** Whether Incognito browsing functionality is available. */
         public final boolean incognitoAvailable;
 
-        @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+        @VisibleForTesting
         public SearchActivityPreferences(
+                @Nullable String accountEmail,
                 @Nullable String searchEngineName,
                 @Nullable GURL searchEngineUrl,
                 boolean voiceSearchAvailable,
                 boolean googleLensAvailable,
                 boolean incognitoAvailable) {
+            this.accountEmail = accountEmail;
             this.searchEngineName = searchEngineName;
             this.searchEngineUrl = searchEngineUrl != null ? searchEngineUrl : GURL.emptyGURL();
             this.voiceSearchAvailable = voiceSearchAvailable;
@@ -84,7 +94,8 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
                     && googleLensAvailable == other.googleLensAvailable
                     && incognitoAvailable == other.incognitoAvailable
                     && TextUtils.equals(searchEngineName, other.searchEngineName)
-                    && searchEngineUrl.equals(other.searchEngineUrl);
+                    && searchEngineUrl.equals(other.searchEngineUrl)
+                    && TextUtils.equals(accountEmail, other.accountEmail);
         }
 
         @Override
@@ -95,7 +106,8 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
                         searchEngineUrl,
                         voiceSearchAvailable,
                         googleLensAvailable,
-                        incognitoAvailable
+                        incognitoAvailable,
+                        accountEmail
                     });
         }
     }
@@ -110,9 +122,10 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
     private static final boolean DEFAULT_INCOGNITO_AVAILABILITY = true;
 
     private static @Nullable SearchActivityPreferencesManager sInstance;
-    private final @NonNull ObserverList<Consumer<SearchActivityPreferences>> mObservers =
+    private final ObserverList<Consumer<SearchActivityPreferences>> mObservers =
             new ObserverList<>();
-    private @NonNull SearchActivityPreferences mCurrentlyLoadedPreferences;
+
+    private @Nullable SearchActivityPreferences mCurrentlyLoadedPreferences;
 
     /**
      * Initialize instance of SearchActivityPreferencesManager. Note that the class operates as a
@@ -133,8 +146,10 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
     }
 
     /** Returns current knowh SharedActivityPreferences values. */
-    public static @NonNull SearchActivityPreferences getCurrent() {
-        return get().mCurrentlyLoadedPreferences;
+    public static SearchActivityPreferences getCurrent() {
+        SearchActivityPreferences ret = get().mCurrentlyLoadedPreferences;
+        assert ret != null;
+        return ret;
     }
 
     /**
@@ -162,6 +177,7 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
 
         setCurrentlyLoadedPreferences(
                 new SearchActivityPreferences(
+                        manager.readString(SEARCH_WIDGET_ACCOUNT_EMAIL, null),
                         manager.readString(SEARCH_WIDGET_SEARCH_ENGINE_SHORTNAME, null),
                         url,
                         manager.readBoolean(
@@ -182,6 +198,7 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
      */
     public static void resetCachedValues() {
         SharedPreferencesManager manager = ChromeSharedPreferences.getInstance();
+        manager.removeKey(SEARCH_WIDGET_ACCOUNT_EMAIL);
         manager.removeKey(SEARCH_WIDGET_SEARCH_ENGINE_SHORTNAME);
         manager.removeKey(SEARCH_WIDGET_SEARCH_ENGINE_URL);
         manager.removeKey(SEARCH_WIDGET_IS_VOICE_SEARCH_AVAILABLE);
@@ -197,11 +214,12 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
      * @param prefs Current preferences.
      * @param updateStorage Whether to update on-disk cache.
      */
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    static void setCurrentlyLoadedPreferences(
-            @NonNull SearchActivityPreferences prefs, boolean updateStorage) {
+    @VisibleForTesting
+    public static void setCurrentlyLoadedPreferences(
+            SearchActivityPreferences prefs, boolean updateStorage) {
         SearchActivityPreferencesManager self = get();
-        if (prefs.equals(self.mCurrentlyLoadedPreferences)) return;
+        if (self.mCurrentlyLoadedPreferences != null
+                && prefs.equals(self.mCurrentlyLoadedPreferences)) return;
         self.mCurrentlyLoadedPreferences = prefs;
 
         // Notify all listeners about update.
@@ -212,6 +230,7 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
                     // builds.
                     if (updateStorage) {
                         SharedPreferencesManager manager = ChromeSharedPreferences.getInstance();
+                        manager.writeString(SEARCH_WIDGET_ACCOUNT_EMAIL, prefs.accountEmail);
                         manager.writeString(
                                 SEARCH_WIDGET_SEARCH_ENGINE_SHORTNAME, prefs.searchEngineName);
                         manager.writeString(
@@ -237,12 +256,13 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
      *
      * @param observer The observer to be added.
      */
-    public static void addObserver(@NonNull Consumer<SearchActivityPreferences> observer) {
+    public static void addObserver(Consumer<SearchActivityPreferences> observer) {
         ThreadUtils.assertOnUiThread();
         SearchActivityPreferencesManager self = get();
-        if (!self.mObservers.hasObserver(observer)) {
-            self.mObservers.addObserver(observer);
-            observer.accept(self.mCurrentlyLoadedPreferences);
+        if (self.mObservers.addObserver(observer)) {
+            if (self.mCurrentlyLoadedPreferences != null) {
+                observer.accept(self.mCurrentlyLoadedPreferences);
+            }
         }
     }
 
@@ -270,9 +290,24 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
      */
     public static void updateFeatureAvailability(
             Context context, AndroidPermissionDelegate permissionDelegate) {
+        var profile = ProfileManager.getLastUsedRegularProfile();
+
+        String email = null;
+        var identityManager = IdentityServicesProvider.get().getIdentityManager(profile);
+        if (identityManager != null) {
+            @Nullable AccountInfo accountInfo = identityManager.getPrimaryAccountInfo();
+            if (accountInfo != null) {
+                email = accountInfo.getEmail();
+                if (TextUtils.isEmpty(email)) {
+                    email = null;
+                }
+            }
+        }
+
         SearchActivityPreferences prefs = getCurrent();
         setCurrentlyLoadedPreferences(
                 new SearchActivityPreferences(
+                        email,
                         prefs.searchEngineName,
                         prefs.searchEngineUrl,
                         VoiceRecognitionUtil.isVoiceSearchEnabled(permissionDelegate),
@@ -285,8 +320,7 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
                                                                 .isNonMultiDisplayContextOnTablet(
                                                                         context))
                                                 .build()),
-                        IncognitoUtils.isIncognitoModeEnabled(
-                                ProfileManager.getLastUsedRegularProfile())),
+                        IncognitoUtils.isIncognitoModeEnabled(profile)),
                 true);
     }
 
@@ -306,8 +340,10 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
 
         GURL url = new GURL(service.getSearchEngineUrlFromTemplateUrl(dseTemplateUrl.getKeyword()));
 
+        assumeNonNull(mCurrentlyLoadedPreferences);
         setCurrentlyLoadedPreferences(
                 new SearchActivityPreferences(
+                        mCurrentlyLoadedPreferences.accountEmail,
                         dseTemplateUrl.getShortName(),
                         url.getOrigin(),
                         mCurrentlyLoadedPreferences.voiceSearchAvailable,

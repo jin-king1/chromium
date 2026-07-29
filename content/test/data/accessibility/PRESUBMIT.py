@@ -10,13 +10,15 @@ for more details about the presubmit API built into depot_tools.
 When adding/modify an accessibility test, the following rules apply:
 
 1.  If [name].html file exists, then at least one [name]-expected*.txt file must also exist,
-    and vice-versa.
+    and vice-versa, excluding crash related tests.
 
     This is not enforced for the /html/frame/ and /aria/frames/ directories, which
     contain .html files referenced by other .html files and don't have their own expectations.
 
     Note: This is not enforced for the /mac/ and /win/ directories (see TODOs).
     Note: This looks for files within a CL, not in the repo, which may cause false positives (see TODOs).
+    Note: Crash related tests have "crash" in the html file name and should be placed under /crash/ folder
+    without any corresponding expectations.
     See: CheckAccessibilityHtmlExpectationsPair
 
 2.  Every txt file must be suffixed with one of the following:
@@ -134,7 +136,6 @@ When adding/modify an accessibility test, the following rules apply:
 #                      as the other expectation file requirements are met.
 # TODO(accessibility): Fix Test #7 - [Maybe] This test should consider matching against more platforms.
 #
-# TODO(accessibility): Create rules (and sub-directory) for crash tests, or add expectations for them.
 # TODO(accessibility): Create rules (and sub-directory) for android-only tests, or add expectations for them.
 # TODO(accessibility): Combine the /frame(s)/ directories, and/or give them consistent naming.
 # TODO(accessibility): Investigate and determine rules for remaining folders (e.g. /mathml/, /form-controls/)
@@ -320,10 +321,10 @@ def CheckAccessibilityTestExpectationFilenames(input_api, output_api):
     problems = []
 
     for f in input_api.AffectedFiles(file_filter=FileFilter):
-      if f.Action() == 'D':
-          continue
-      if not any(f.LocalPath().endswith(suffix) for suffix in valid_suffixes):
-        problems.append(f.LocalPath())
+        if f.Action() == 'D':
+            continue
+        if not any(f.LocalPath().endswith(suffix) for suffix in valid_suffixes):
+            problems.append(f.LocalPath())
 
     if problems:
         return [
@@ -361,10 +362,10 @@ def CheckAccessibilityTestExpectationFilenamesMacWin(input_api, output_api):
     problems = []
 
     for f in input_api.AffectedFiles(file_filter=FileFilter):
-      if f.Action() == 'D':
-          continue
-      if not any(f.LocalPath().endswith(suffix) for suffix in valid_suffixes):
-        problems.append(f.LocalPath())
+        if f.Action() == 'D':
+            continue
+        if not any(f.LocalPath().endswith(suffix) for suffix in valid_suffixes):
+            problems.append(f.LocalPath())
 
     if problems:
         return [
@@ -426,30 +427,34 @@ def CheckAccessibilityHtmlFileTest(input_api, output_api):
 
     def FileFilter(affected_file):
         return input_api.FilterSourceFile(
-            affected_file, files_to_check=[r"content/test/data/accessibility/.+\.(html|txt)"]
+            affected_file,
+            files_to_check=[
+                r"content/test/data/accessibility/(?!aria/apg-patterns-thirdparty/).+\.(html|txt)"
+            ],
         )
 
     html_files = {}  # Store HTML files and their base names
-    android_txt_files = {} # Store android txt files
+    android_txt_files = []  # Store android txt files
     problems = []
 
     for f in input_api.AffectedFiles(file_filter=FileFilter):
+        if f.Action() == 'D':
+            continue
         if f.LocalPath().endswith(".html"):
-          html_files[input_api.os_path.basename(f.LocalPath())] = f.LocalPath()
+            html_files[input_api.os_path.basename(f.LocalPath())] = f.LocalPath()
         if f.LocalPath().endswith(".txt"):
             if "-expected-android-" in f.LocalPath():
-                android_txt_files[input_api.os_path.basename(f.LocalPath())] = f.LocalPath()
+                android_txt_files.append(f.LocalPath())
 
     # If any Android txt files were found, check for Java file changes
-    for txt_file_name, txt_file_path in android_txt_files.items():
+    for txt_file_path in android_txt_files:
         ################
-        # txt_file_name: example-expected-android-external.txt
         # txt_file_path: content/test/data/accessibility/html/example-expected-android-external.txt
-        # name:          example
         # html_path:     content/test/data/accessibility/html/example.html
+        # html_name:     example.html
         ################
-        name = txt_file_name.split("-expected-android")[0]
-        html_path = txt_file_path.split("-expected-android")[0] + ".html"
+        html_path = _ComputeAccessibilityHtmlFilePath(txt_file_path, input_api)
+        html_name = input_api.os_path.basename(html_path)
 
         java_test_suite_file = None
         readable_file_name = None
@@ -477,7 +482,7 @@ def CheckAccessibilityHtmlFileTest(input_api, output_api):
         if java_test_suite_file is not None:
             try:
                 test_contents = input_api.ReadFile(os.path.join(input_api.change.RepositoryRoot(), java_test_suite_file))
-                expected_addition = f"{name}.html"
+                expected_addition = f"{html_name}"
                 if expected_addition not in test_contents:
                     problems.append(f"{expected_addition} (missing reference in {readable_file_name})")
             except Exception as e:
@@ -527,6 +532,34 @@ def CheckAccessibilityHtmlFileTest(input_api, output_api):
     return []
 
 
+def _ComputeAccessibilityHtmlFilePath(txt_file_path, input_api):
+    """Compute the HTML file path based on the expectation file path."""
+    txt_file_name = input_api.os_path.basename(txt_file_path)
+    txt_file_dir = input_api.os_path.dirname(txt_file_path)
+
+    # If the expectation file name is
+    # 'foo-expanded-awesome-feature-expected-android.txt', the
+    # HTML file name is either 'foo-expanded.html' or 'foo.html' depending on
+    # whether the feature is called 'awesome-feature' or
+    # 'expanded-awesome-feature' respectively.
+    FEATURE_DELIMITER = "-feature-expected-android"
+    if FEATURE_DELIMITER in txt_file_name:
+        hyphen_index = txt_file_name.find(FEATURE_DELIMITER)
+        while hyphen_index >= 0:
+            html_file_name = txt_file_name[0:hyphen_index] + ".html"
+            html_file_path = os.path.join(txt_file_dir, html_file_name)
+            abs_html_file_path = os.path.join(
+                input_api.change.RepositoryRoot(), html_file_path)
+            if input_api.os_path.exists(abs_html_file_path):
+                return html_file_path
+
+            hyphen_index = txt_file_name.rfind('-', 0, hyphen_index)
+
+    DEFAULT_DELIMITER = "-expected-android"
+    html_file_name = txt_file_name.split(DEFAULT_DELIMITER)[0]
+    return input_api.os_path.join(txt_file_dir, html_file_name) + ".html"
+
+
 # TODO(accessibility) Check the current directory for the html file,
 # instead of just added/modified files (if possible).
 def CheckAccessibilityHtmlExpectationsPair(input_api, output_api):
@@ -535,7 +568,10 @@ def CheckAccessibilityHtmlExpectationsPair(input_api, output_api):
 
     def FileFilter(affected_file):
         return input_api.FilterSourceFile(
-            affected_file, files_to_check=[r"content/test/data/accessibility/(?!(mac|win)/).+\.(html|txt)"]
+            affected_file,
+            files_to_check=[
+                r"content/test/data/accessibility/(?!(mac|win|aria/apg-patterns-thirdparty)/).+\.(html|txt)"
+            ],
         )
 
     problems = []
@@ -557,6 +593,25 @@ def CheckAccessibilityHtmlExpectationsPair(input_api, output_api):
 
     # Check HTML files for corresponding expectations
     for name, html_path in html_files.items():
+        # Crash related HTMLs do not have expectations files but need to be placed in the right folder
+        is_crash_test = "-crash" in name
+        is_in_crash_dir = "content/test/data/accessibility/crash/" in html_path
+
+        if is_crash_test:
+            if not is_in_crash_dir:
+                problems.append(
+                    f"{html_path} (has the name suggesting crash test but is not in "
+                    f"'content/test/data/accessibility/crash/' directory)"
+                )
+            # We skip the expectation file check for crash related tests
+            continue
+        elif is_in_crash_dir:
+            # Non-crash tests should not be placed in crash folder
+            problems.append(
+                f"{html_path} (is in 'content/test/data/accessibility/crash/' directory "
+                f"but the name suggests it is not a crash test)"
+            )
+            continue
         hasMatch = False
         for key, _ in txt_files.items():
             if name in key:
@@ -567,6 +622,15 @@ def CheckAccessibilityHtmlExpectationsPair(input_api, output_api):
 
     # Check expectation files for corresponding HTML
     for name, txt_path in txt_files.items():
+        # Crash related HTMLs do not have expectations files and should raise warning if they are found
+        is_crash_test = "-crash" in name
+        is_in_crash_dir = "content/test/data/accessibility/crash/" in txt_path
+
+        if is_crash_test and is_in_crash_dir:
+            problems.append(
+                f"Unexpected crash related expectation file found: {txt_path}"
+            )
+            continue
         hasMatch = False
         for key, _ in html_files.items():
             if key in name:
@@ -578,8 +642,10 @@ def CheckAccessibilityHtmlExpectationsPair(input_api, output_api):
     if problems:
         return [
             output_api.PresubmitPromptWarning(
-                "HTML accessibility test files must have a corresponding"
-                "\nexpectation file (and vice-versa). Note this may be a"
+                "HTML accessibility test files, excluding crash related"
+                "\ntests, must have a corresponding expectation file"
+                "\n(and vice-versa). Crash tests should be placed in"
+                "\nthe separate crash folders. Note this may be a"
                 "\nfalse positive if the html file already existed."
                 "\nProblems found:\n",
                 problems,

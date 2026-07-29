@@ -8,10 +8,10 @@
 #include <cstddef>
 #include <optional>
 
+#include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/extensions/api/platform_keys/verify_trust_api_base.h"
-#include "chrome/browser/extensions/api/platform_keys/verify_trust_api_v1.h"
-#include "chrome/browser/extensions/api/platform_keys/verify_trust_api_v2.h"
+#include "chrome/browser/extensions/api/platform_keys/verify_trust_api_impl.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 
 namespace content {
@@ -20,9 +20,8 @@ class BrowserContext;
 
 namespace extensions {
 
-// Service which decides which implementation of
-// VerifyTrustApiBase to use based on `kVerifyTLSServerCertificateUseNetFetcher`
-// from chrome/browser/extensions/api/platform_keys/verify_trust_api_base.h
+// This keyed service is used by the platformKeys.verifyTLSServerCertificate
+// for certificate verification.
 class VerifyTrustApiService : public BrowserContextKeyedAPI,
                               public VerifyTrustApiBase {
  public:

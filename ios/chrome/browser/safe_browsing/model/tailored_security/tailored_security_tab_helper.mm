@@ -4,17 +4,20 @@
 
 #import "ios/chrome/browser/safe_browsing/model/tailored_security/tailored_security_tab_helper.h"
 
+#import "base/check.h"
 #import "components/prefs/pref_service.h"
 #import "components/safe_browsing/core/browser/tailored_security_service/tailored_security_notification_result.h"
 #import "components/safe_browsing/core/browser/tailored_security_service/tailored_security_service.h"
 #import "components/safe_browsing/core/browser/tailored_security_service/tailored_security_service_observer_util.h"
 #import "components/safe_browsing/core/browser/tailored_security_service/tailored_security_service_util.h"
 #import "components/safe_browsing/core/common/safe_browsing_prefs.h"
+#import "ios/chrome/browser/first_run/public/best_features_item.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/safe_browsing/model/tailored_security/tailored_security_service_infobar_delegate.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/welcome_back/model/features.h"
 #import "ios/components/security_interstitials/safe_browsing/safe_browsing_tab_helper.h"
 #import "ios/web/public/navigation/navigation_context.h"
 
@@ -24,30 +27,23 @@ TailoredSecurityTabHelper::TailoredSecurityTabHelper(
     web::WebState* web_state,
     safe_browsing::TailoredSecurityService* service)
     : service_(service), web_state_(web_state) {
-  bool focused = false;
-
+  CHECK(web_state_);
   if (service_) {
-    service_->AddObserver(this);
+    tailored_security_service_observation_.Observe(service_);
   }
 
-  if (web_state_) {
-    web_state_->AddObserver(this);
-    focused = web_state_->IsVisible();
-    UpdateFocusAndURL(focused, web_state_->GetLastCommittedURL());
-  }
+  web_state_observation_.Observe(web_state_);
+  UpdateFocusAndURL(web_state_->IsVisible(), web_state_->GetLastCommittedURL());
 }
 
 TailoredSecurityTabHelper::~TailoredSecurityTabHelper() {
   if (service_) {
-    service_->RemoveObserver(this);
     if (has_query_request_) {
       service_->RemoveQueryRequest();
       has_query_request_ = false;
     }
   }
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(TailoredSecurityTabHelper)
 
 #pragma mark - TailoredSecurityServiceObserver
 
@@ -76,7 +72,7 @@ void TailoredSecurityTabHelper::OnTailoredSecurityBitChanged(
 }
 
 void TailoredSecurityTabHelper::OnTailoredSecurityServiceDestroyed() {
-  service_->RemoveObserver(this);
+  tailored_security_service_observation_.Reset();
   service_ = nullptr;
 }
 
@@ -86,6 +82,10 @@ void TailoredSecurityTabHelper::OnSyncNotificationMessageRequest(
   if (!web_state_->IsVisible()) {
     return;
   }
+
+  // When this object goes out of scope, the service's flag will be reset.
+  safe_browsing::TailoredSecurityService::ScopedSyncNotificationGuard guard(
+      *service_);
 
   ProfileIOS* profile =
       ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
@@ -98,6 +98,11 @@ void TailoredSecurityTabHelper::OnSyncNotificationMessageRequest(
   if (is_enabled) {
     ShowInfoBar(safe_browsing::TailoredSecurityServiceMessageState::
                     kConsentedAndFlowEnabled);
+    // Notify Welcome Back to remove Enhanced Safe Browsing from the eligible
+    // features.
+    if (IsWelcomeBackEnabled()) {
+      MarkWelcomeBackFeatureUsed(BestFeaturesItemType::kEnhancedSafeBrowsing);
+    }
   } else {
     ShowInfoBar(safe_browsing::TailoredSecurityServiceMessageState::
                     kConsentedAndFlowDisabled);
@@ -110,6 +115,7 @@ void TailoredSecurityTabHelper::OnSyncNotificationMessageRequest(
 }
 
 #pragma mark - web::WebStateObserver
+
 void TailoredSecurityTabHelper::DidFinishNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
@@ -128,7 +134,7 @@ void TailoredSecurityTabHelper::WasHidden(web::WebState* web_state) {
 }
 
 void TailoredSecurityTabHelper::WebStateDestroyed(web::WebState* web_state) {
-  web_state->RemoveObserver(this);
+  web_state_observation_.Reset();
   web_state_ = nullptr;
 }
 

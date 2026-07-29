@@ -15,7 +15,7 @@ import {setAccessibilityFeaturesForTesting} from 'chrome://scanning/mojo_interfa
 import type {ScanPreviewElement} from 'chrome://scanning/scan_preview.js';
 import {AppState} from 'chrome://scanning/scanning_app_types.js';
 import {ScanningBrowserProxyImpl} from 'chrome://scanning/scanning_browser_proxy.js';
-import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {MockController} from 'chrome://webui-test/chromeos/mock_controller.m.js';
 import {isVisible} from 'chrome://webui-test/chromeos/test_util.js';
 import {flushTasks, waitAfterNextRender} from 'chrome://webui-test/polymer_test_util.js';
@@ -131,11 +131,11 @@ suite('scanPreviewTest', function() {
         strictQuery('#progressText', scanPreview.shadowRoot, HTMLElement);
     assertEquals(
         scanPreview.i18n('scanPreviewProgressText', 1),
-        progressText.textContent!.trim());
+        progressText.textContent.trim());
     scanPreview.setPageNumberForTesting(2);
     assertEquals(
         scanPreview.i18n('scanPreviewProgressText', 2),
-        progressText.textContent!.trim());
+        progressText.textContent.trim());
   });
 
   // Tests that the correct element is showing in the preview pane depending on
@@ -302,17 +302,17 @@ suite('scanPreviewTest', function() {
     assertEquals(
         'Remove page?',
         strictQuery('#dialogTitle', scanPreview.shadowRoot, HTMLElement)
-            .textContent!.trim());
+            .textContent.trim());
     assertEquals(
         'Remove',
         strictQuery('#actionButton', scanPreview.shadowRoot, HTMLElement)
-            .textContent!.trim());
+            .textContent.trim());
     assertEquals(
         loadTimeData.getStringF(
             'removePageConfirmationText', pageIndexToRemove + 1),
         strictQuery(
             '#dialogConfirmationText', scanPreview.shadowRoot, HTMLElement)
-            .textContent!.trim());
+            .textContent.trim());
 
     strictQuery('#actionButton', scanPreview.shadowRoot, HTMLElement).click();
     assertFalse(
@@ -375,12 +375,12 @@ suite('scanPreviewTest', function() {
     assertEquals(
         'Rescan page ' + (pageIndex + 1) + '?',
         strictQuery('#dialogTitle', scanPreview.shadowRoot, HTMLElement)
-            .textContent!.trim());
+            .textContent.trim());
     assertEquals(
         loadTimeData.getStringF('rescanPageConfirmationText', pageIndex),
         strictQuery(
             '#dialogConfirmationText', scanPreview.shadowRoot, HTMLElement)
-            .textContent!.trim());
+            .textContent.trim());
   });
 
   // Tests that for multi-page scans, resizing the app window triggers the

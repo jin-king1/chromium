@@ -6,8 +6,10 @@
 
 #include <algorithm>
 
+#include "base/check_is_test.h"
 #include "base/notreached.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/strings/strcat.h"
+#include "base/trace_event/trace_event.h"
 #include "chrome/browser/predictors/lcp_critical_path_predictor/lcp_critical_path_predictor_util.h"
 #include "chrome/browser/predictors/loading_predictor.h"
 #include "chrome/browser/predictors/loading_predictor_factory.h"
@@ -101,7 +103,7 @@ void RemoveFetchedSubresourceUrlsAfterLCP(
 }
 
 bool IsSameSite(const GURL& url1, const GURL& url2) {
-  return url1.SchemeIs(url2.scheme()) &&
+  return url1.SchemeIs(url2.GetScheme()) &&
          net::registry_controlled_domains::SameDomainOrHost(
              url1, url2,
              net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
@@ -215,12 +217,15 @@ void MaybeReportConfidenceUMAs(
   const predictors::LcppStat& prelearn =
       lcpp_stat_prelearn ? *lcpp_stat_prelearn : predictors::LcppStat();
 
+  const auto& locator =
+      GetLcpElementLocatorForCriticalPathPredictor(lcpp_data_inputs);
   const std::string& actual_lcp_element_locator =
-      lcpp_data_inputs.lcp_element_locator;
+      locator ? *locator : std::string();
   if (!actual_lcp_element_locator.empty()) {
     const auto record_frequency_of_actual_positives = [](double frequency) {
-      // The maximum count is defined by `lcpp_histogram_sliding_window_size`.
-      // The default value is 1000.
+      // The maximum count is defined by
+      // `kLCPCriticalPathPredictorHistogramSlidingWindowSize`. The default
+      // value is 1000.
       base::UmaHistogramCounts1000(
           internal::kHistogramLCPPImageLoadingPriorityFrequencyOfActualPositive,
           frequency);
@@ -351,8 +356,9 @@ void MaybeReportConfidenceUMAs(
   {
     const auto record_frequency_of_actual_positives = [](double frequency,
                                                          bool is_same_site) {
-      // The maximum count is defined by `lcpp_histogram_sliding_window_size`.
-      // The default value is 1000.
+      // The maximum count is defined by
+      // `kLCPCriticalPathPredictorHistogramSlidingWindowSize`. The default
+      // value is 1000.
       base::UmaHistogramCounts1000(
           internal::kHistogramLCPPSubresourceFrequencyOfActualPositive,
           frequency);
@@ -617,10 +623,17 @@ LcpCriticalPathPredictorPageLoadMetricsObserver::OnCommit(
     content::NavigationHandle* navigation_handle) {
   const blink::mojom::LCPCriticalPathPredictorNavigationTimeHintPtr& hint =
       navigation_handle->GetLCPPNavigationHint();
-  if (hint && (!hint->lcp_element_locators.empty() ||
-               !hint->lcp_influencer_scripts.empty() ||
-               !hint->preconnect_origins.empty())) {
-    is_lcpp_hinted_navigation_ = true;
+  if (hint) {
+    if (!hint->lcp_element_locators.empty() ||
+        !hint->lcp_element_locators_all.empty() ||
+        !hint->lcp_influencer_scripts.empty() ||
+        !hint->preconnect_origins.empty()) {
+      is_lcpp_hinted_navigation_ = true;
+    }
+    if (hint->for_testing) {
+      CHECK_IS_TEST();
+      is_testing_ = true;
+    }
   }
 
   initiator_origin_ = navigation_handle->GetInitiatorOrigin();
@@ -666,6 +679,20 @@ LcpCriticalPathPredictorPageLoadMetricsObserver::
   return STOP_OBSERVING;
 }
 
+predictors::ResourcePrefetchPredictor*
+LcpCriticalPathPredictorPageLoadMetricsObserver::GetPredictor() {
+  // `loading_predictor` is nullptr in
+  // `LcpCriticalPathPredictorPageLoadMetricsObserverTest`, or if the profile
+  // `IsOffTheRecord`.
+  if (auto* loading_predictor =
+          predictors::LoadingPredictorFactory::GetForProfile(
+              Profile::FromBrowserContext(
+                  GetDelegate().GetWebContents()->GetBrowserContext()))) {
+    return loading_predictor->resource_prefetch_predictor();
+  }
+  return nullptr;
+}
+
 void LcpCriticalPathPredictorPageLoadMetricsObserver::FinalizeLCP() {
   if (!commit_url_) {
     return;
@@ -683,24 +710,13 @@ void LcpCriticalPathPredictorPageLoadMetricsObserver::FinalizeLCP() {
   }
 
   // * Finalize the staged LCPP signals to the database.
-  predictors::ResourcePrefetchPredictor* predictor = nullptr;
-  // `loading_predictor` is nullptr in
-  // `LcpCriticalPathPredictorPageLoadMetricsObserverTest`, or if the profile
-  // `IsOffTheRecord`.
-  if (auto* loading_predictor =
-          predictors::LoadingPredictorFactory::GetForProfile(
-              Profile::FromBrowserContext(
-                  GetDelegate().GetWebContents()->GetBrowserContext()))) {
-    predictor = loading_predictor->resource_prefetch_predictor();
-  }
+  predictors::ResourcePrefetchPredictor* predictor = GetPredictor();
   // Take the learned LCPP here so that we can report it after overwriting it
   // with the new data below.
   std::optional<predictors::LcppStat> lcpp_stat_prelearn =
       predictor ? predictor->GetLcppStat(initiator_origin_, *commit_url_)
                 : std::nullopt;
 
-  // TODO(crbug.com/40517495): kSpeculativePreconnectFeature flag can also
-  // affect this. Unflag the feature.
   if (lcpp_data_inputs_.has_value()
       // Don't learn LCPP when prerender to avoid data skew. Activation LCP
       // should be much shorter than regular LCP.
@@ -711,6 +727,8 @@ void LcpCriticalPathPredictorPageLoadMetricsObserver::FinalizeLCP() {
     ReportSubresourceUMA(*commit_url_, lcpp_stat_prelearn, *lcpp_data_inputs_);
     MaybeReportConfidenceUMAs(*commit_url_, lcpp_stat_prelearn,
                               *lcpp_data_inputs_);
+    base::UmaHistogramCounts10000("Blink.LCPP.PreconnectCount",
+                                  lcpp_data_inputs_->preconnect_origins.size());
     predictor->LearnLcpp(initiator_origin_, *commit_url_, *lcpp_data_inputs_);
   }
 
@@ -747,17 +765,30 @@ void LcpCriticalPathPredictorPageLoadMetricsObserver::
 }
 
 void LcpCriticalPathPredictorPageLoadMetricsObserver::OnLcpUpdated(
-    const std::optional<std::string>& lcp_element_locator,
-    bool is_image_element,
-    std::optional<uint32_t> predicted_lcp_index) {
-  if (lcp_element_locator) {
+    blink::mojom::LcpElementPtr lcp_element) {
+  if (lcp_element->locator) {
     if (!lcpp_data_inputs_) {
       lcpp_data_inputs_.emplace();
     }
-    lcpp_data_inputs_->lcp_element_locator = *lcp_element_locator;
+    lcpp_data_inputs_->lcp_element_locator = *lcp_element->locator;
+    if (lcp_element->is_image) {
+      lcpp_data_inputs_->lcp_element_locator_image = *lcp_element->locator;
+    }
   }
-  is_lcp_element_image_ = is_image_element;
-  predicted_lcp_indexes_.push_back(predicted_lcp_index);
+  is_lcp_element_image_ = lcp_element->is_image;
+  predicted_lcp_indexes_.push_back(lcp_element->predicted_index);
+
+  if (is_testing_) {
+    CHECK_IS_TEST();
+    GetPredictor()->OnLcpUpdatedForTesting(lcp_element->locator);
+  }
+}
+
+void LcpCriticalPathPredictorPageLoadMetricsObserver::
+    OnLcpTimingPredictedForTesting(
+        const std::optional<std::string>& element_locator) {
+  CHECK_IS_TEST();
+  GetPredictor()->OnLcpTimingPredictedForTesting(element_locator);
 }
 
 void LcpCriticalPathPredictorPageLoadMetricsObserver::AppendFetchedFontUrl(
@@ -797,18 +828,6 @@ void LcpCriticalPathPredictorPageLoadMetricsObserver::
   if (!lcpp_data_inputs_) {
     lcpp_data_inputs_.emplace();
   }
-  if (lcpp_data_inputs_->subresource_urls.empty()) {
-    base::UmaHistogramMediumTimes(
-        "Blink.LCPP.NavigationToStartPreload.MainFrame.FirstSubresource.Time",
-        subresource_load_start);
-    const base::TimeTicks navigation_start = GetDelegate().GetNavigationStart();
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN_WITH_TIMESTAMP1(
-        "loading", "NavigationToStartFirstPreload", TRACE_ID_LOCAL(this),
-        navigation_start, "url", subresource_url);
-    TRACE_EVENT_NESTABLE_ASYNC_END_WITH_TIMESTAMP0(
-        "loading", "NavigationToStartFirstPreload", TRACE_ID_LOCAL(this),
-        navigation_start + subresource_load_start);
-  }
   base::UmaHistogramMediumTimes(
       "Blink.LCPP.NavigationToStartPreload.MainFrame.EachSubresource.Time",
       subresource_load_start);
@@ -828,12 +847,20 @@ void LcpCriticalPathPredictorPageLoadMetricsObserver::
   lcpp_data_inputs_->lcp_influencer_scripts = lcp_influencer_scripts;
 }
 
-void LcpCriticalPathPredictorPageLoadMetricsObserver::SetPreconnectOrigins(
-    const std::vector<GURL>& origins) {
+void LcpCriticalPathPredictorPageLoadMetricsObserver::AddPreconnectOrigin(
+    const url::Origin& origin) {
   if (!lcpp_data_inputs_) {
     lcpp_data_inputs_.emplace();
   }
-  lcpp_data_inputs_->preconnect_origins = origins;
+
+  std::set<url::Origin>& preconnect_origins =
+      lcpp_data_inputs_->preconnect_origins;
+  if (blink::features::kLCPPAutoPreconnectRecordAllOrigins.Get()) {
+    preconnect_origins.insert(origin);
+  } else {
+    preconnect_origins.clear();
+    preconnect_origins.insert(origin);
+  }
 }
 
 void LcpCriticalPathPredictorPageLoadMetricsObserver::SetUnusedPreloads(
@@ -867,7 +894,7 @@ void LcpCriticalPathPredictorPageLoadMetricsObserver::
 
   // This value existence indicates failure because predicted LCP should be the
   // last.
-  std::optional<uint32_t> first_valid_index_except_last = std::nullopt;
+  std::optional<uint32_t> first_valid_index_except_last;
   for (size_t i = 0; i < predicted_lcp_indexes_.size() - 1; i++) {
     const std::optional<uint32_t>& maybe_index = predicted_lcp_indexes_[i];
     if (maybe_index) {

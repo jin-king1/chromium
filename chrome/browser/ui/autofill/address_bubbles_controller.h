@@ -41,18 +41,14 @@ class AddressBubblesController
   // Sets up the controller and offers to save or the `profile`. If
   // `original_profile` is not nullptr, it will be updated if the user accepts
   // the offer. `callback` will be invoked once the user makes a decision with
-  // respect to the prompt. `is_migration_to_account` is relevant for the save
-  // case only and makes the bubble open in a special mode for saving `profile`
-  // in user's Google account.
+  // respect to the prompt. `save_address_bubble_type` differentiates saving
+  // the `profile` in browser or in user's Google account.
   static void SetUpAndShowSaveOrUpdateAddressBubble(
       content::WebContents* web_contents,
       const AutofillProfile& profile,
       const AutofillProfile* original_profile,
-      bool is_migration_to_account,
-      AutofillClient::AddressProfileSavePromptCallback callback);
-
-  static void SetUpAndShowAddNewAddressBubble(
-      content::WebContents* web_contents,
+      AutofillClient::SaveAddressBubbleType save_address_bubble_type,
+      bool user_has_any_profile_saved,
       AutofillClient::AddressProfileSavePromptCallback callback);
 
   // AddressBubbleControllerDelegate:
@@ -68,16 +64,24 @@ class AddressBubblesController
   // SaveAddressProfileIconController:
   void OnIconClicked() override;
   bool IsBubbleActive() const override;
-  std::u16string GetPageActionIconTootip() const override;
+  std::u16string GetPageActionIconTooltip() const override;
   AutofillBubbleBase* GetBubbleView() const override;
+
+  // BubbleControllerBase:
+  void OnBubbleDiscarded() override {}
+  BubbleType GetBubbleType() const override;
+  base::WeakPtr<BubbleControllerBase> GetBubbleControllerBaseWeakPtr() override;
 
   base::WeakPtr<AddressBubbleControllerDelegate> GetWeakPtr();
 
  protected:
   // AutofillBubbleControllerBase:
   void WebContentsDestroyed() override;
-  PageActionIconType GetPageActionIconType() override;
   void DoShowBubble() override;
+#if !BUILDFLAG(IS_ANDROID)
+  std::optional<actions::ActionId> GetActionIdForPageAction() override;
+  std::optional<std::u16string> GetPageActionTooltipText() override;
+#endif  // !BUILDFLAG(IS_ANDROID)
 
  private:
   using ShowBubbleViewCallback = base::RepeatingCallback<AutofillBubbleBase*(
@@ -91,10 +95,19 @@ class AddressBubblesController
   // TODO(crbug.com/325440757): Remove `profile` and `original_profile`, put
   // them in specific bubble controllers.
   void SetUpAndShowBubble(ShowBubbleViewCallback show_bubble_view_callback,
-                          std::u16string page_action_icon_tootip,
+                          std::u16string page_action_icon_tooltip,
                           bool is_migration_to_account,
+                          bool user_has_any_profile_saved,
                           AutofillClient::AddressProfileSavePromptCallback
                               address_profile_save_prompt_callback);
+
+  // Sets up the controller's state for showing a save/update address bubble.
+  void SetUpBubble(ShowBubbleViewCallback show_bubble_view_callback,
+                   std::u16string page_action_icon_tooltip,
+                   bool is_migration_to_account,
+                   bool user_has_any_profile_saved,
+                   AutofillClient::AddressProfileSavePromptCallback
+                       address_profile_save_prompt_callback);
 
   // Maybe shows the iOS bubble promo after the user accepts to save their
   // address information.
@@ -123,13 +136,16 @@ class AddressBubblesController
   // just saved address to account store.
   bool is_showing_sign_in_promo_ = false;
 
+  // Whether the user has any addresses profile saved.
+  bool user_has_any_profile_saved_ = false;
+
   // The callback to create and show the bubble. It defines the appearance of
   // the bubble and contains some specific logic. The controller doesn't take
   // the ownership of the instance returned (it only hides the bubble),
   // the hosting widget is expected to be the owner.
   ShowBubbleViewCallback show_bubble_view_callback_;
 
-  std::u16string page_action_icon_tootip_;
+  std::u16string page_action_icon_tooltip_;
 
   std::string app_locale_;
 

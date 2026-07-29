@@ -60,7 +60,6 @@
 #include "third_party/blink/renderer/core/workers/worklet_global_scope.h"
 #include "third_party/blink/renderer/platform/bindings/runtime_call_stats.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
-#include "third_party/blink/renderer/platform/bindings/v8_binding_macros.h"
 #include "third_party/blink/renderer/platform/bindings/v8_object_constructor.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/traced_value.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
@@ -118,14 +117,14 @@ static double EnforceRange(double x,
                            ExceptionState& exception_state) {
   if (!std::isfinite(x)) {
     exception_state.ThrowTypeError(
-        "Value is" + String(std::isinf(x) ? " infinite and" : "") +
-        " not of type '" + String(type_name) + "'.");
+        StrCat({"Value is", std::isinf(x) ? " infinite and" : "",
+                " not of type '", type_name, "'."}));
     return 0;
   }
   x = trunc(x);
   if (x < minimum || x > maximum) {
-    exception_state.ThrowTypeError("Value is outside the '" +
-                                   String(type_name) + "' value range.");
+    exception_state.ThrowTypeError(
+        StrCat({"Value is outside the '", type_name, "' value range."}));
     return 0;
   }
   return x;
@@ -184,8 +183,8 @@ static inline T ToSmallerInt(v8::Isolate* isolate,
     if (result >= LimitsTrait::kMinValue && result <= LimitsTrait::kMaxValue)
       return static_cast<T>(result);
     if (configuration == kEnforceRange) {
-      exception_state.ThrowTypeError("Value is outside the '" +
-                                     String(type_name) + "' value range.");
+      exception_state.ThrowTypeError(
+          StrCat({"Value is outside the '", type_name, "' value range."}));
       return 0;
     }
     if (configuration == kClamp)
@@ -252,8 +251,8 @@ static inline T ToSmallerUInt(v8::Isolate* isolate,
     if (result >= 0 && result <= LimitsTrait::kMaxValue)
       return static_cast<T>(result);
     if (configuration == kEnforceRange) {
-      exception_state.ThrowTypeError("Value is outside the '" +
-                                     String(type_name) + "' value range.");
+      exception_state.ThrowTypeError(
+          StrCat({"Value is outside the '", type_name, "' value range."}));
       return 0;
     }
     if (configuration == kClamp)
@@ -438,6 +437,14 @@ int64_t ToInt64Slow(v8::Isolate* isolate,
     return EnforceRange(number_value, -kJSMaxInteger, kJSMaxInteger,
                         "long long", exception_state);
   }
+  if (std::isnan(number_value)) {
+    return 0;
+  }
+
+  if (configuration == kClamp) {
+    return ClampTo<int64_t>(std::nearbyint(number_value), -kJSMaxInteger,
+                            kJSMaxInteger);
+  }
 
   return DoubleToInteger(number_value);
 }
@@ -479,8 +486,9 @@ uint64_t ToUInt64Slow(v8::Isolate* isolate,
   if (std::isnan(number_value))
     return 0;
 
-  if (configuration == kClamp)
-    return ClampTo<uint64_t>(number_value);
+  if (configuration == kClamp) {
+    return ClampTo<uint64_t>(std::nearbyint(number_value), 0, kJSMaxInteger);
+  }
 
   return DoubleToInteger(number_value);
 }
@@ -573,7 +581,7 @@ String ReplaceUnmatchedSurrogates(String string) {
   size_t i = 0;
 
   // 4. Initialize U to be an empty sequence of Unicode characters.
-  StringBuffer<UChar> result(n);
+  StringBuffer<UChar> result(static_cast<wtf_size_t>(n));
   auto u = result.Span();
 
   // 5. While i < n:
@@ -588,13 +596,13 @@ String ReplaceUnmatchedSurrogates(String string) {
     } else if (U16_IS_TRAIL(c)) {
       // 0xDC00 <= c <= 0xDFFF
       // Append to U a U+FFFD REPLACEMENT CHARACTER.
-      u[i] = kReplacementCharacter;
+      u[i] = uchar::kReplacementCharacter;
     } else {
       // 0xD800 <= c <= 0xDBFF
       DCHECK(U16_IS_LEAD(c));
       if (i == n - 1) {
         // 1. If i = n-1, then append to U a U+FFFD REPLACEMENT CHARACTER.
-        u[i] = kReplacementCharacter;
+        u[i] = uchar::kReplacementCharacter;
       } else {
         // 2. Otherwise, i < n-1:
         DCHECK_LT(i, n - 1);
@@ -611,7 +619,7 @@ String ReplaceUnmatchedSurrogates(String string) {
         } else {
           // 3. Otherwise, d < 0xDC00 or d > 0xDFFF. Append to U a U+FFFD
           //    REPLACEMENT CHARACTER.
-          u[i] = kReplacementCharacter;
+          u[i] = uchar::kReplacementCharacter;
         }
       }
     }
@@ -661,7 +669,7 @@ LocalDOMWindow* CurrentDOMWindow(v8::Isolate* isolate) {
 
 ExecutionContext* ToExecutionContext(v8::Local<v8::Context> context) {
   DCHECK(!context.IsEmpty());
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   ScriptState* script_state = ScriptState::MaybeFrom(isolate, context);
   return script_state ? ToExecutionContext(script_state) : nullptr;
 }
@@ -687,7 +695,7 @@ static ScriptState* ToScriptStateImpl(LocalFrame* frame,
   v8::Local<v8::Context> context = ToV8ContextEvenIfDetached(frame, world);
   if (context.IsEmpty())
     return nullptr;
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   ScriptState* script_state = ScriptState::From(isolate, context);
   if (!script_state->ContextIsValid())
     return nullptr;
@@ -802,11 +810,13 @@ v8::Isolate* ToIsolate(const LocalFrame* frame) {
 }
 
 v8::Local<v8::Value> FromJSONString(ScriptState* script_state,
-                                    const String& stringified_json) {
+                                    const String& stringified_json,
+                                    std::optional<v8::ScriptOrigin> origin) {
   auto v8_string = V8String(script_state->GetIsolate(), stringified_json);
   v8::Local<v8::Value> parsed;
-  std::ignore =
-      v8::JSON::Parse(script_state->GetContext(), v8_string).ToLocal(&parsed);
+
+  std::ignore = v8::JSON::Parse(script_state->GetContext(), v8_string, origin)
+                    .ToLocal(&parsed);
   return parsed;
 }
 
@@ -867,23 +877,15 @@ bool IsInParallelAlgorithmRunnable(ExecutionContext* execution_context,
 
 void ApplyContextToException(ScriptState* script_state,
                              v8::Local<v8::Value> exception,
-                             const ExceptionContext& exception_context) {
-  ApplyContextToException(
-      script_state->GetIsolate(), script_state->GetContext(), exception,
-      exception_context.GetType(), exception_context.GetClassName(),
-      exception_context.GetPropertyName());
-}
-
-void ApplyContextToException(v8::Isolate* isolate,
-                             v8::Local<v8::Context> context,
-                             v8::Local<v8::Value> exception,
                              v8::ExceptionContext type,
                              const char* class_name,
                              const String& property_name) {
+  v8::Isolate* isolate = script_state->GetIsolate();
   if (auto* dom_exception = V8DOMException::ToWrappable(isolate, exception)) {
     dom_exception->AddContextToMessages(type, class_name, property_name);
   } else if (exception->IsObject()) {
     v8::TryCatch try_catch(isolate);
+    v8::Local<v8::Context> context = script_state->GetContext();
     v8::Local<v8::String> message_key = V8String(isolate, "message");
     auto exception_object = exception.As<v8::Object>();
     String updated_message = ExceptionMessages::AddContextToMessage(

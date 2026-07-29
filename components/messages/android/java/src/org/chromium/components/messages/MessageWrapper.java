@@ -4,12 +4,11 @@
 
 package org.chromium.components.messages;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.view.View;
 
 import androidx.annotation.DrawableRes;
 import androidx.annotation.VisibleForTesting;
@@ -18,6 +17,7 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.base.WindowAndroid;
@@ -31,10 +31,11 @@ import org.chromium.ui.modelutil.PropertyModel;
 public final class MessageWrapper implements ListMenu.Delegate {
     private long mNativeMessageWrapper;
     private final PropertyModel mMessageProperties;
-    private @Nullable MessageSecondaryMenuItems mMessageSecondaryMenuItems;
+    private @MonotonicNonNull MessageSecondaryMenuItems mMessageSecondaryMenuItems;
 
     /**
      * Creates an instance of MessageWrapper and links it with native MessageWrapper object.
+     *
      * @param nativeMessageWrapper Pointer to native MessageWrapper.
      * @param messageIdentifier Message identifier of the new message.
      * @return reference to created MessageWrapper.
@@ -130,6 +131,18 @@ public final class MessageWrapper implements ListMenu.Delegate {
     }
 
     @CalledByNative
+    String getSecondaryIconContentDescription() {
+        return mMessageProperties.get(MessageBannerProperties.SECONDARY_ICON_CONTENT_DESCRIPTION);
+    }
+
+    @CalledByNative
+    void setSecondaryIconContentDescription(String secondaryIconContentDescription) {
+        mMessageProperties.set(
+                MessageBannerProperties.SECONDARY_ICON_CONTENT_DESCRIPTION,
+                secondaryIconContentDescription);
+    }
+
+    @CalledByNative
     void initializeSecondaryMenu(WindowAndroid windowAndroid, @SecondaryMenuMaxSize int maxSize) {
         Context context = windowAndroid.getActivity().get();
         assert context != null;
@@ -137,7 +150,7 @@ public final class MessageWrapper implements ListMenu.Delegate {
             mMessageProperties.set(MessageBannerProperties.SECONDARY_MENU_MAX_SIZE, maxSize);
             mMessageProperties.set(
                     MessageBannerProperties.SECONDARY_MENU_BUTTON_DELEGATE,
-                    () -> assumeNonNull(mMessageSecondaryMenuItems).createListMenu(context, this));
+                    () -> mMessageSecondaryMenuItems.createListMenu(context, this));
         }
     }
 
@@ -230,6 +243,10 @@ public final class MessageWrapper implements ListMenu.Delegate {
         mNativeMessageWrapper = 0;
     }
 
+    long getNativePtrForTesting() {
+        return mNativeMessageWrapper;
+    }
+
     @CalledByNative
     Bitmap getIconBitmap() {
         Drawable drawable = mMessageProperties.get(MessageBannerProperties.ICON);
@@ -257,7 +274,7 @@ public final class MessageWrapper implements ListMenu.Delegate {
     }
 
     @Override
-    public void onItemSelected(PropertyModel item) {
+    public void onItemSelected(PropertyModel item, View view) {
         assert item.getAllSetProperties().contains(ListMenuItemProperties.MENU_ITEM_ID);
         int itemId = item.get(ListMenuItemProperties.MENU_ITEM_ID);
         MessageWrapperJni.get().handleSecondaryMenuItemSelected(mNativeMessageWrapper, itemId);

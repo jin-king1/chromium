@@ -7,6 +7,8 @@
 #include <cstring>
 #include <memory>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -19,7 +21,7 @@
 #include "cc/paint/skia_paint_canvas.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
-#include "gpu/command_buffer/client/gpu_memory_buffer_manager.h"
+#include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/common/shared_image_capabilities.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/ipc/common/surface_handle.h"
@@ -104,13 +106,13 @@ class BufferStrategy {
 };
 
 // -----------------------------------------------------------------------------
-// GpuMemoryBufferStrategy:
+// MappableSharedImageStrategy:
 
 // Defines a concrete implementation of `BufferStrategy` which creates a
-// `GpuMemoryBuffer` and implements all the operations on it.
-class GpuMemoryBufferStrategy : public BufferStrategy {
+// `MappableSharedImage` and implements all the operations on it.
+class MappableSharedImageStrategy : public BufferStrategy {
  public:
-  explicit GpuMemoryBufferStrategy(const gfx::Size& frame_size)
+  explicit MappableSharedImageStrategy(const gfx::Size& frame_size)
       : client_si_(CreateSharedImage(frame_size)) {
     CHECK(client_si_);
   }
@@ -169,7 +171,7 @@ class SharedMemoryBufferStrategy : public BufferStrategy {
     DCHECK(mapping_.IsValid());
     uint8_t* buffer_ptr = mapping_.GetMemoryAsSpan<uint8_t>().data();
     const int buffer_size = mapping_.size();
-    memset(buffer_ptr, 0, buffer_size);
+    UNSAFE_TODO(memset(buffer_ptr, 0, buffer_size));
     SkBitmap bitmap;
     bitmap.setInfo(
         SkImageInfo::MakeN32Premul(frame_size.width(), frame_size.height()));
@@ -206,9 +208,9 @@ class FakeCameraDevice::Buffer {
             buffer_id, buffer_type, frame_size,
             std::make_unique<SharedMemoryBufferStrategy>(frame_size)));
       case media::VideoCaptureBufferType::kGpuMemoryBuffer:
-        return base::WrapUnique(
-            new Buffer(buffer_id, buffer_type, frame_size,
-                       std::make_unique<GpuMemoryBufferStrategy>(frame_size)));
+        return base::WrapUnique(new Buffer(
+            buffer_id, buffer_type, frame_size,
+            std::make_unique<MappableSharedImageStrategy>(frame_size)));
       default:
         NOTREACHED();
     }
@@ -421,12 +423,6 @@ void FakeCameraDevice::CreatePushSubscription(
       requested_settings);
 }
 
-void FakeCameraDevice::RegisterVideoEffectsProcessor(
-    mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor> remote) {}
-
-void FakeCameraDevice::RegisterReadonlyVideoEffectsManager(
-    mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager> remote) {}
-
 void FakeCameraDevice::OnFinishedConsumingBuffer(int32_t buffer_id) {
   auto iter = buffer_pool_.find(buffer_id);
   if (iter != buffer_pool_.end())
@@ -509,6 +505,7 @@ void FakeCameraDevice::OnNextFrame() {
     info->pixel_format = media::PIXEL_FORMAT_ARGB;
     info->coded_size = current_settings_->requested_format.frame_size;
     info->visible_rect = gfx::Rect(info->coded_size);
+    info->natural_size = info->coded_size;
     info->is_premapped = false;
 
     subscription->OnFrameReadyInBuffer(

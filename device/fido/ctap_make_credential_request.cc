@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "device/fido/ctap_make_credential_request.h"
 
 #include <algorithm>
@@ -15,9 +10,10 @@
 
 #include "base/numerics/safe_conversions.h"
 #include "components/cbor/values.h"
+#include "crypto/hash.h"
 #include "device/fido/device_response_converter.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/fido_parsing_utils.h"
+#include "device/fido/public/fido_constants.h"
 
 namespace device {
 
@@ -173,6 +169,19 @@ std::optional<CtapMakeCredentialRequest> CtapMakeCredentialRequest::Parse(
           return std::nullopt;
         }
         request.hmac_secret = extension.second.GetBool();
+      } else if (extension_name == kExtensionHmacSecretMc) {
+        if (!extension.second.is_map()) {
+          return std::nullopt;
+        }
+        request.hmac_secret_mc = HMACSecret::Parse(extension.second.GetMap());
+        if (!request.hmac_secret_mc) {
+          return std::nullopt;
+        }
+      } else if (extension_name == kExtensionCmtgKey) {
+        if (!extension.second.is_bool()) {
+          return std::nullopt;
+        }
+        request.cmtg_key = extension.second.GetBool();
       } else if (extension_name == kExtensionPRF) {
         if (!extension.second.is_map()) {
           return std::nullopt;
@@ -282,7 +291,7 @@ CtapMakeCredentialRequest::CtapMakeCredentialRequest(
     PublicKeyCredentialUserEntity in_user,
     PublicKeyCredentialParams in_public_key_credential_params)
     : client_data_json(std::move(in_client_data_json)),
-      client_data_hash(fido_parsing_utils::CreateSHA256Hash(client_data_json)),
+      client_data_hash(crypto::hash::Sha256(client_data_json)),
       rp(std::move(in_rp)),
       user(std::move(in_user)),
       public_key_credential_params(std::move(in_public_key_credential_params)) {
@@ -323,6 +332,12 @@ AsCTAPRequestValuePair(const CtapMakeCredentialRequest& request) {
     extensions[cbor::Value(kExtensionHmacSecret)] = cbor::Value(true);
   }
 
+  if (request.hmac_secret_mc) {
+    extensions.emplace(
+        kExtensionHmacSecretMc,
+        request.hmac_secret_mc->AsCBORMapValue(request.pin_protocol));
+  }
+
   if (request.prf) {
     cbor::Value::MapValue prf_ext;
     if (request.prf_input) {
@@ -345,6 +360,10 @@ AsCTAPRequestValuePair(const CtapMakeCredentialRequest& request) {
 
   if (request.large_blob_key) {
     extensions[cbor::Value(kExtensionLargeBlobKey)] = cbor::Value(true);
+  }
+
+  if (request.cmtg_key) {
+    extensions[cbor::Value(kExtensionCmtgKey)] = cbor::Value(true);
   }
 
   if (request.cred_protect) {

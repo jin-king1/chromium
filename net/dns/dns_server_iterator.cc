@@ -22,7 +22,9 @@ DnsServerIterator::DnsServerIterator(size_t nameservers_size,
       max_failures_(max_failures),
       resolve_context_(resolve_context),
       next_index_(starting_index),
-      session_(session) {}
+      session_(session) {
+  CHECK(starting_index < nameservers_size || nameservers_size == 0);
+}
 
 DnsServerIterator::~DnsServerIterator() = default;
 
@@ -158,6 +160,16 @@ bool ClassicDnsServerIterator::AttemptAvailable() {
       return true;
   }
   return false;
+}
+
+size_t PlatformDnsServerIterator::GetNextAttemptIndex() {
+  DCHECK(AttemptAvailable());
+  times_returned_[0]++;
+  return 0;
+}
+
+bool PlatformDnsServerIterator::AttemptAvailable() {
+  return times_returned_[0] < max_times_returned_;
 }
 
 }  // namespace net

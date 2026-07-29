@@ -54,11 +54,11 @@ bool RendererHasDynamicCodeMitigation(RenderProcessHost* rph) {
       }));
   run_loop.Run();
 
-  const base::Value::List* process_list = out_args.GetIfList();
+  const base::ListValue* process_list = out_args.GetIfList();
   CHECK(process_list);
 
   for (const base::Value& process_value : *process_list) {
-    const base::Value::Dict* process = process_value.GetIfDict();
+    const base::DictValue* process = process_value.GetIfDict();
     CHECK(process);
     double pid = *process->FindDouble("processId");
     if (base::checked_cast<base::ProcessId>(pid) != renderer_process_id) {
@@ -94,12 +94,6 @@ class JitPolicyContentBrowserClient
           context, url);
     }
   }
-
-  // Always enable renderer code integrity - without this, ProhibitDynamicCode
-  // never gets applied to the renderer anyway.
-#if BUILDFLAG(IS_WIN)
-  bool IsRendererCodeIntegrityEnabled() override { return true; }
-#endif  // IS_WIN
 };
 
 // This test fixture installs a test ContentBrowserClient which enables JIT for

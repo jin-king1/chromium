@@ -7,16 +7,13 @@
 
 #include <memory>
 
+#include "base/functional/callback.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_countries.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace content {
 class BrowserContext;
-}
-
-namespace views {
-class Widget;
 }
 
 class KeyedService;
@@ -26,33 +23,6 @@ class MockPrivacySandboxService : public PrivacySandboxService {
   MockPrivacySandboxService();
   ~MockPrivacySandboxService() override;
 
-  MOCK_METHOD(PrivacySandboxService::PromptType,
-              GetRequiredPromptType,
-              (PrivacySandboxService::SurfaceType),
-              (override));
-  MOCK_METHOD(void,
-              PromptActionOccurred,
-              (PrivacySandboxService::PromptAction,
-               PrivacySandboxService::SurfaceType),
-              (override));
-#if !BUILDFLAG(IS_ANDROID)
-  MOCK_METHOD(void,
-              PromptOpenedForBrowser,
-              (Browser*, views::Widget*),
-              (override));
-  MOCK_METHOD(void, PromptClosedForBrowser, (Browser*), (override));
-  MOCK_METHOD(bool, IsPromptOpenForBrowser, (Browser*), (override));
-  MOCK_METHOD(
-      void,
-      HoldQueueHandle,
-      (user_education::RequiredNoticePriorityHandle messaging_priority_handle),
-      (override));
-  MOCK_METHOD(void, MaybeQueueNotice, (NoticeQueueState), (override));
-  MOCK_METHOD(bool, IsHoldingHandle, (), (override));
-  MOCK_METHOD(bool, IsNoticeQueued, (), (override));
-  MOCK_METHOD(void, SetSuppressQueue, (bool), (override));
-  MOCK_METHOD(void, MaybeUnqueueNotice, (NoticeQueueState), (override));
-#endif  // !BUILDFLAG(IS_ANDROID)
   MOCK_METHOD(void, ForceChromeBuildForTests, (bool), (override));
   // Mock this method to enable opening the settings page in tests.
   MOCK_METHOD(bool, IsPrivacySandboxRestricted, (), (override));
@@ -64,10 +34,6 @@ class MockPrivacySandboxService : public PrivacySandboxService {
               (const, override));
   MOCK_METHOD(bool,
               IsRelatedWebsiteSetsDataAccessManaged,
-              (),
-              (const, override));
-  MOCK_METHOD((base::flat_map<net::SchemefulSite, net::SchemefulSite>),
-              GetSampleRelatedWebsiteSets,
               (),
               (const, override));
   MOCK_METHOD(std::optional<net::SchemefulSite>,
@@ -114,13 +80,9 @@ class MockPrivacySandboxService : public PrivacySandboxService {
               SetTopicAllowed,
               (privacy_sandbox::CanonicalTopic, bool),
               (override));
-  MOCK_METHOD(bool,
-              PrivacySandboxPrivacyGuideShouldShowAdTopicsCard,
-              (),
-              (override));
   MOCK_METHOD(bool, ShouldUsePrivacyPolicyChinaDomain, (), (override));
   MOCK_METHOD(void, TopicsToggleChanged, (bool), (const, override));
-  MOCK_METHOD(bool, TopicsConsentRequired, (), (const, override));
+  MOCK_METHOD(bool, TopicsConsentRequired, (), (override));
   MOCK_METHOD(bool, TopicsHasActiveConsent, (), (const, override));
   MOCK_METHOD(privacy_sandbox::TopicsConsentUpdateSource,
               TopicsConsentLastUpdateSource,
@@ -128,6 +90,21 @@ class MockPrivacySandboxService : public PrivacySandboxService {
               (const, override));
   MOCK_METHOD(base::Time, TopicsConsentLastUpdateTime, (), (const, override));
   MOCK_METHOD(std::string, TopicsConsentLastUpdateText, (), (const, override));
+  MOCK_METHOD(void, UpdateTopicsApiResult, (bool), (override));
+  MOCK_METHOD(void, UpdateProtectedAudienceApiResult, (bool), (override));
+  MOCK_METHOD(void, UpdateMeasurementApiResult, (bool), (override));
+  MOCK_METHOD(privacy_sandbox::EligibilityLevel,
+              GetTopicsApiEligibility,
+              (),
+              (override));
+  MOCK_METHOD(privacy_sandbox::EligibilityLevel,
+              GetProtectedAudienceApiEligibility,
+              (),
+              (override));
+  MOCK_METHOD(privacy_sandbox::EligibilityLevel,
+              GetAdMeasurementApiEligibility,
+              (),
+              (override));
 };
 
 std::unique_ptr<KeyedService> BuildMockPrivacySandboxService(

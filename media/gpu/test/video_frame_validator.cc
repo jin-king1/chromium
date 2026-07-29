@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/test/video_frame_validator.h"
 
 #include <string_view>
@@ -15,12 +10,13 @@
 #include "base/cpu.h"
 #include "base/files/file.h"
 #include "base/functional/bind.h"
-#include "base/hash/md5.h"
 #include "base/memory/ptr_util.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/system/sys_info.h"
 #include "build/build_config.h"
+#include "crypto/obsolete/md5.h"
 #include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "media/base/video_frame.h"
 #include "media/gpu/buildflags.h"
@@ -32,13 +28,16 @@
 #include "media/gpu/video_frame_mapper_factory.h"
 #include "media/media_buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/gfx/gpu_memory_buffer.h"
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 #include <sys/mman.h>
 #endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 
 namespace media::test {
+
+crypto::obsolete::Md5 MakeMd5HasherForVideoFrameValidation() {
+  return {};
+}
 
 VideoFrameValidator::VideoFrameValidator(
     std::unique_ptr<VideoFrameProcessor> corrupt_frame_processor,
@@ -156,18 +155,21 @@ void VideoFrameValidator::ProcessVideoFrameTask(
   DCHECK_CALLED_ON_VALID_SEQUENCE(validator_thread_sequence_checker_);
 
   scoped_refptr<const VideoFrame> frame = video_frame;
-  // If this is a DMABuf-backed memory frame we need to map it before accessing.
-#if BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
-  if (frame->storage_type() == VideoFrame::STORAGE_GPU_MEMORY_BUFFER) {
+  // If this is a MappableSI-backed memory frame we need to map it before
+  // accessing.
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
+  if (frame->HasMappableSharedImage()) {
     // TODO(andrescj): This is a workaround. ClientNativePixmapFactoryDmabuf
-    // creates ClientNativePixmapOpaque for SCANOUT_VDA_WRITE buffers which
-    // does not allow us to map GpuMemoryBuffers easily for testing.
+    // creates ClientNativePixmapOpaque, which cannot be mapped via MappableSI,
+    // for SCANOUT_VDA_WRITE buffers. However, we need to map the contents of
+    // the frame for verification (see the creation and use of
+    // VideoFrameMapper below).
     // Therefore, we extract the dma-buf FDs. Alternatively, we could consider
     // creating our own ClientNativePixmapFactory for testing.
     frame = CreateDmabufVideoFrame(frame.get());
     if (!frame) {
       LOG(ERROR) << "Failed to create Dmabuf-backed VideoFrame from "
-                 << "GpuMemoryBuffer-based VideoFrame";
+                 << "MappableSI-based VideoFrame";
       return;
     }
   }
@@ -188,9 +190,9 @@ void VideoFrameValidator::ProcessVideoFrameTask(
       return;
     }
   }
-#endif  // BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 
-  ASSERT_TRUE(frame->IsMappable());
+  ASSERT_TRUE(frame->HasDirectCpuAccess());
 
   if (ShouldCrop())
     frame = CloneAndCropFrame(std::move(frame));
@@ -339,8 +341,7 @@ MD5VideoFrameValidator::Validate(scoped_refptr<const VideoFrame> frame,
 std::string MD5VideoFrameValidator::ComputeMD5FromVideoFrame(
     const VideoFrame& video_frame) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(validator_thread_sequence_checker_);
-  base::MD5Context context;
-  base::MD5Init(&context);
+  auto hasher = MakeMd5HasherForVideoFrameValidation();
 
   // VideoFrame::HashFrameForTesting() computes MD5 hash values of the coded
   // area. However, MD5 hash values used in our test only use the visible area
@@ -352,15 +353,12 @@ std::string MD5VideoFrameValidator::ComputeMD5FromVideoFrame(
         VideoFrame::RowBytes(i, format, visible_rect.width());
     const int visible_rows = VideoFrame::Rows(i, format, visible_rect.height());
     const size_t stride = video_frame.stride(i);
+    base::span<const uint8_t> plane = video_frame.data_span(i);
     for (int row = 0; row < visible_rows; ++row) {
-      base::MD5Update(&context, base::span<const uint8_t>(
-                                    video_frame.data(i) + (stride * row),
-                                    visible_row_bytes));
+      hasher.Update(plane.subspan(stride * row, visible_row_bytes));
     }
   }
-  base::MD5Digest digest;
-  base::MD5Final(&digest, &context);
-  return MD5DigestToBase16(digest);
+  return base::HexEncodeLower(hasher.Finish());
 }
 
 struct RawVideoFrameValidator::RawMismatchedFrameInfo

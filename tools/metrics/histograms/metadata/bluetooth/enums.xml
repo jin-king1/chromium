@@ -149,34 +149,6 @@ chromium-metrics-reviews@google.com.
   <int value="13" label="Keyboard Mouse Combo"/>
 </enum>
 
-<enum name="BluetoothDiscoveryOutcomes">
-  <int value="0" label="Success"/>
-  <int value="1"
-      label="Unknown error; used when we could add code to get more detail"/>
-  <int value="2" label="Function not implemented on this platform"/>
-  <int value="3" label="Adapter not present"/>
-  <int value="4" label="Adapter removed since call chain started"/>
-  <int value="5" label="Discovery session not active"/>
-  <int value="6"
-      label="Attempted to remove a discovery session with another pending
-             request"/>
-  <int value="7"
-      label="Active BluetoothDiscoverySession wasn't found in
-             BluetoothAdapter"/>
-  <int value="8" label="Failed without a more specific reason"/>
-  <int value="9" label="(BlueZ) DBus failed to find the adapter"/>
-  <int value="10" label="(BlueZ) DBus didn't return an error code"/>
-  <int value="11" label="(BlueZ) org.bluez.Error.InProgress"/>
-  <int value="12" label="(BlueZ) org.bluez.Error.NotReady"/>
-  <int value="13"
-      label="(BlueZ) org.bluez.Error.Failed inside SetDiscoveryFilter, maybe
-             indicating an unsupported transport"/>
-  <int value="14"
-      label="(BlueZ) org.bluez.Error.NotSupported inside SetDiscoverFilter,
-             indicating a kernel that does not support Start Service
-             Discovery."/>
-</enum>
-
 <enum name="BluetoothGattServiceGattErrorCode">
   <int value="0" label="Unknown"/>
   <int value="1" label="Failed"/>
@@ -374,7 +346,7 @@ chromium-metrics-reviews@google.com.
       label="PocketLab 1; f000aa14-0451-4000-b000-000000000000"/>
   <int value="61502349"
       label="PocketLab; f000aa2c-0452-4000-b000-000000000000"/>
-  <int value="64893984" label="local_east_coordinate.xml"/>
+  <int value="64893984" label="local_east_coordinate"/>
   <int value="67768539" label="alert_category_id_bit_mask"/>
   <int value="79560451" label="sc_control_point"/>
   <int value="81699382"
@@ -1494,6 +1466,7 @@ chromium-metrics-reviews@google.com.
   <int value="20" label="Wakelock error"/>
   <int value="21" label="Unexpected state"/>
   <int value="22" label="Socket error"/>
+  <int value="23" label="Not Allowed"/>
 </enum>
 
 <enum name="WebBluetoothGATTOperationOutcome">
@@ -1511,6 +1484,7 @@ chromium-metrics-reviews@google.com.
   <int value="11" label="Not Paired"/>
   <int value="12" label="Not Supported"/>
   <int value="13" label="Blocklisted"/>
+  <int value="14" label="Not Allowed"/>
 </enum>
 
 <enum name="WebBluetoothRSSISignalStrengthLevel">

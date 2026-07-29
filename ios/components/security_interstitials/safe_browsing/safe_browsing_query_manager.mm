@@ -15,8 +15,6 @@
 
 using security_interstitials::UnsafeResource;
 
-WEB_STATE_USER_DATA_KEY_IMPL(SafeBrowsingQueryManager)
-
 namespace {
 // Creates a unique ID for a new Query.
 size_t CreateQueryID() {
@@ -36,7 +34,8 @@ SafeBrowsingQueryManager::SafeBrowsingQueryManager(web::WebState* web_state,
 }
 
 SafeBrowsingQueryManager::~SafeBrowsingQueryManager() {
-  for (auto& observer : observers_) {
+  // SafeBrowsingQueryManager may be deteted while handling `UrlCheckFinished`.
+  for (auto& observer : observers_.GetReentrantRange()) {
     observer.SafeBrowsingQueryManagerDestroyed(this);
   }
 }

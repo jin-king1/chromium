@@ -60,7 +60,7 @@ int FakeDataTypeControllerDelegate::clear_metadata_count() const {
 }
 
 void FakeDataTypeControllerDelegate::SetNodesForDebugging(
-    base::Value::List nodes) {
+    base::ListValue nodes) {
   all_nodes_for_debugging_ = std::move(nodes);
 }
 
@@ -97,9 +97,9 @@ void FakeDataTypeControllerDelegate::OnSyncStopping(
   sync_started_ = false;
 }
 
-void FakeDataTypeControllerDelegate::HasUnsyncedData(
-    base::OnceCallback<void(bool)> callback) {
-  std::move(callback).Run(false);
+void FakeDataTypeControllerDelegate::GetUnsyncedDataCount(
+    base::OnceCallback<void(size_t)> callback) {
+  std::move(callback).Run(/*count=*/0);
 }
 
 void FakeDataTypeControllerDelegate::GetAllNodesForDebugging(
@@ -138,7 +138,8 @@ void FakeDataTypeControllerDelegate::ClearMetadataIfStopped() {
 }
 
 void FakeDataTypeControllerDelegate::ReportBridgeErrorForTest() {
-  SimulateModelError(ModelError(FROM_HERE, "Report error for test"));
+  SimulateModelError(
+      ModelError(FROM_HERE, syncer::ModelError::Type::kGenericTestError));
 }
 
 }  // namespace syncer

@@ -19,7 +19,6 @@
 #import "base/uuid.h"
 #import "components/bookmarks/browser/bookmark_model.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
-#import "components/keyed_service/ios/browser_state_dependency_manager.h"
 #import "components/policy/core/common/cloud/user_cloud_policy_manager.h"
 #import "components/policy/core/common/configuration_policy_provider.h"
 #import "components/policy/core/common/schema_registry.h"
@@ -29,9 +28,9 @@
 #import "components/profile_metrics/browser_profile_type.h"
 #import "components/proxy_config/ios/proxy_service_factory.h"
 #import "components/proxy_config/pref_proxy_config_tracker.h"
+#import "components/supervised_user/core/browser/family_link_settings_service.h"
 #import "components/supervised_user/core/browser/supervised_user_content_settings_provider.h"
 #import "components/supervised_user/core/browser/supervised_user_pref_store.h"
-#import "components/supervised_user/core/browser/supervised_user_settings_service.h"
 #import "components/supervised_user/core/common/features.h"
 #import "components/sync_preferences/pref_service_syncable.h"
 #import "components/user_prefs/user_prefs.h"
@@ -48,14 +47,10 @@
 #import "ios/chrome/browser/shared/model/paths/paths_internal.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/supervised_user/model/supervised_user_settings_service_factory.h"
+#import "ios/chrome/browser/shared/model/profile/features.h"
+#import "ios/chrome/browser/shared/model/profile/profile_dependency_manager_ios.h"
+#import "ios/chrome/browser/supervised_user/model/family_link_settings_service_factory.h"
 #import "ios/web/public/thread/web_thread.h"
-
-// TODO(crbug.com/369296278): Remove when MaybeMigrateSyncingUserToSignedIn()
-// is no longer used (i.e. ~one year after kForceMigrateSyncingUserToSignedIn
-// is fully launched).
-#import "base/task/bind_post_task.h"
-#import "components/browser_sync/sync_to_signin_migration.h"
 
 namespace {
 
@@ -242,7 +237,7 @@ ProfileIOSImpl::ProfileIOSImpl(
       pref_registry_(new user_prefs::PrefRegistrySyncable),
       io_data_(new ProfileIOSImplIOData::Handle(this)) {
   DCHECK(!profile_name.empty());
-  BrowserStateDependencyManager::GetInstance()->MarkBrowserStateLive(this);
+  ProfileDependencyManagerIOS::GetInstance()->MarkProfileLive(this);
 
   profile_metrics::SetBrowserProfileType(
       this, profile_metrics::BrowserProfileType::kRegular);
@@ -271,21 +266,24 @@ ProfileIOSImpl::ProfileIOSImpl(
       base::BindRepeating(&ApplicationContext::GetNetworkConnectionTracker,
                           base::Unretained(GetApplicationContext())));
 
-  policy_connector_ =
-      BuildProfilePolicyConnector(policy_schema_registry_.get(), connector,
-                                  user_cloud_policy_manager_.get());
+  policy_connector_ = BuildProfilePolicyConnector(
+      policy_schema_registry_.get(), connector,
+      user_cloud_policy_manager_.get(),
+      user_cloud_policy_manager_ && user_cloud_policy_manager_->core()
+          ? user_cloud_policy_manager_->core()->store()
+          : nullptr);
 
   // Register Profile preferences.
   RegisterProfilePrefs(pref_registry_.get());
-  BrowserStateDependencyManager::GetInstance()
-      ->RegisterBrowserStatePrefsForServices(pref_registry_.get());
+  ProfileDependencyManagerIOS::GetInstance()->RegisterProfilePrefsForServices(
+      pref_registry_.get());
 
   // Create a SupervisedUserPrefStore and initialize it with empty data.
-  // The pref store will load SupervisedUserSettingsService disk data after
+  // The pref store will load Family Link Settings Service disk data after
   // the creation of PrefService.
   scoped_refptr<SupervisedUserPrefStore> supervised_user_prefs =
       base::MakeRefCounted<SupervisedUserPrefStore>();
-  supervised_user_prefs->OnNewSettingsAvailable(base::Value::Dict());
+  supervised_user_prefs->OnNewSettingsAvailable(base::DictValue());
   DCHECK(supervised_user_prefs->IsInitializationComplete());
 
   prefs_ = CreateProfilePrefs(
@@ -318,9 +316,16 @@ ProfileIOSImpl::ProfileIOSImpl(
 
 ProfileIOSImpl::~ProfileIOSImpl() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  BrowserStateDependencyManager::GetInstance()->DestroyBrowserStateServices(
-      this);
-  // Warning: the order for shutting down the BrowserState objects is important
+  // Notify the callback of the profile destruction before destroying anything.
+  NotifyProfileDestroyed();
+
+  if (base::FeatureList::IsEnabled(kDestroyOTRProfileEarly)) {
+    // Destroy OTR profile first.
+    DestroyOffTheRecordProfile();
+  }
+
+  ProfileDependencyManagerIOS::GetInstance()->DestroyProfileServices(this);
+  // Warning: the order for shutting down the Profile's objects is important
   // because of interdependencies. Ideally the order for shutting down the
   // objects should be backward of their declaration in class attributes.
 
@@ -328,16 +333,13 @@ ProfileIOSImpl::~ProfileIOSImpl() {
     pref_proxy_config_tracker_->DetachFromPrefService();
   }
 
-  // Here, (1) the profile services may depend on `policy_connector_` and
-  // `user_cloud_policy_manager_`, and (2) `policy_connector_` depends on
-  // `user_cloud_policy_manager_`. The dependencies have to be shut down
-  // backward.
-  policy_connector_->Shutdown();
   if (user_cloud_policy_manager_) {
     user_cloud_policy_manager_->Shutdown();
   }
 
-  DestroyOffTheRecordProfile();
+  if (!base::FeatureList::IsEnabled(kDestroyOTRProfileEarly)) {
+    DestroyOffTheRecordProfile();
+  }
 }
 
 ProfileIOS* ProfileIOSImpl::GetOriginalProfile() {
@@ -440,19 +442,21 @@ void ProfileIOSImpl::PrefsInitStage1(InitInfo init_info, bool success) {
   // invoked when the data has been read from disk (PrefsInitStage1).
 
   // Initialize the settings service and have the pref store subscribe to it.
-  supervised_user::SupervisedUserSettingsService* supervised_user_settings =
-      SupervisedUserSettingsServiceFactory::GetForProfile(this);
+  supervised_user::FamilyLinkSettingsService* family_link_settings_service =
+      supervised_user::FamilyLinkSettingsServiceFactory::GetForProfile(this);
 
   const base::FilePath& state_path = GetStatePath();
-  supervised_user_settings->Init(
+  family_link_settings_service->Init(
       state_path, GetIOTaskRunner(),
       init_info.creation_mode == CreationMode::kSynchronous);
 
-  init_info.supervised_user_prefs->Init(supervised_user_settings);
+  init_info.supervised_user_prefs->Init(
+      family_link_settings_service,
+      GetApplicationContext()->GetDeviceParentalControls());
 
   auto supervised_provider =
       std::make_unique<supervised_user::SupervisedUserContentSettingsProvider>(
-          supervised_user_settings);
+          family_link_settings_service);
 
   ios::HostContentSettingsMapFactory::GetForProfile(this)->RegisterProvider(
       content_settings::ProviderType::kSupervisedProvider,
@@ -466,14 +470,14 @@ void ProfileIOSImpl::PrefsInitStage1(InitInfo init_info, bool success) {
   io_data_->Init(cookie_path, init_info.cache_path, cache_max_size, state_path);
 
   // If the initialisation is asynchronous, then we also need to wait for
-  // the SupervisedUserSettingsService to complete its initialisation, if
+  // the FamilyLinkSettingsService to complete its initialisation, if
   // is not yet complete.
   if (init_info.creation_mode == CreationMode::kAsynchronous) {
-    if (!supervised_user_settings->IsReady()) {
+    if (!family_link_settings_service->IsReady()) {
       // It is safe to use base::Unretained(...) here since `this` owns the
-      // SupervisedUserSettingsService and the callback will not be invoked
-      // after destruction of the SupervisedUserSettingsService.
-      supervised_user_settings->WaitUntilReadyToSync(
+      // FamilyLinkSettingsService and the callback will not be invoked
+      // after destruction of the FamilyLinkSettingsService.
+      family_link_settings_service->WaitUntilReadyToSync(
           base::BindOnce(&ProfileIOSImpl::PrefsInitStage2,
                          base::Unretained(this), init_info, success));
       return;
@@ -492,22 +496,6 @@ void ProfileIOSImpl::PrefsInitStage2(InitInfo init_info, bool success) {
   // Migrate the preferences, unless the profile has just been created.
   if (!init_info.is_new_profile) {
     MigrateObsoleteProfilePrefs(prefs_.get());
-
-    // TODO(crbug.com/369296278): Remove ~one year after the full launch of
-    // kForceMigrateSyncingUserToSignedIn (also remove the corresponding
-    // tests and -signinAndEnableLegacySyncFeature: test helper).
-    //
-    // MaybeMigrateSyncingUserToSignedIn(...) may perform disk IO which is
-    // not permitted if the Profile is loaded asynchronously.
-    if (init_info.creation_mode == CreationMode::kAsynchronous) {
-      browser_sync::MaybeMigrateSyncingUserToSignedInAsync(
-          GetStatePath(), GetPrefs(),
-          base::BindOnce(&ProfileIOSImpl::PrefsInitStage3,
-                         weak_ptr_factory_.GetWeakPtr(), init_info, success));
-      return;
-    }
-
-    browser_sync::MaybeMigrateSyncingUserToSignedIn(GetStatePath(), GetPrefs());
   }
 
   // Either the operation was synchronous or unnecessary, move to the
@@ -527,8 +515,7 @@ void ProfileIOSImpl::PrefsInitStage3(InitInfo init_info, bool success) {
 
   // The initialisation of the ProfileIOS is now complete and the services
   // can be safely created.
-  BrowserStateDependencyManager::GetInstance()->CreateBrowserStateServices(
-      this);
+  ProfileDependencyManagerIOS::GetInstance()->CreateProfileServices(this);
 
   if (delegate_) {
     delegate_->OnProfileCreationFinished(this, init_info.creation_mode,

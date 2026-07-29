@@ -23,6 +23,7 @@
 #include "ui/compositor/layer.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/label_button.h"
@@ -32,6 +33,7 @@
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout_view.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/unique_widget_ptr.h"
@@ -261,7 +263,7 @@ views::UniqueWidgetPtr MagicBoostDisclaimerView::CreateWidget(
   params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
   params.activatable = views::Widget::InitParams::Activatable::kYes;
   params.shadow_elevation = 2;
-  params.corner_radius = kRadius;
+  params.rounded_corners = gfx::RoundedCornersF(kRadius);
   params.shadow_type = views::Widget::InitParams::ShadowType::kDrop;
   params.z_order = ui::ZOrderLevel::kFloatingUIElement;
   params.name = GetWidgetName();

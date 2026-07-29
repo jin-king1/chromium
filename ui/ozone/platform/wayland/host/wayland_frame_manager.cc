@@ -8,19 +8,22 @@
 #include <sync/sync.h>
 
 #include <cstdint>
+#include <variant>
 
 #include "base/containers/adapters.h"
 #include "base/containers/fixed_flat_set.h"
+#include "base/logging.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/typed_macros.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rrect_f.h"
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/overlay_priority_hint.h"
 #include "ui/gfx/swap_result.h"
-#include "ui/ozone/platform/wayland/host/wayland_buffer_backing.h"
+#include "ui/ozone/platform/wayland/host/begin_frame_source_wayland.h"
 #include "ui/ozone/platform/wayland/host/wayland_buffer_factory.h"
 #include "ui/ozone/platform/wayland/host/wayland_buffer_handle.h"
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
@@ -196,7 +199,11 @@ void WaylandFrameManager::MaybeProcessPendingFrame() {
     if (!ValidateRect(config.bounds_rect)) {
       fatal_error_message_ = kBoundsRectNanOrInf;
     } else {
+      auto weak_this = weak_factory_.GetWeakPtr();
       window_->OnSequencePoint(frame->seq);
+      if (!weak_this) {
+        return;
+      }
       // During a tab dragging session, OnSequencePoint() can implicitly invoke
       // Hide(). |pending_frames_| will be cleared and we should return
       // directly.
@@ -358,8 +365,8 @@ void WaylandFrameManager::PlayBackFrame(std::unique_ptr<WaylandFrame> frame) {
 
   DCHECK(empty_frame || !connection_->presentation() ||
          frame->pending_feedback || frame->feedback.has_value());
-  TRACE_EVENT_NESTABLE_ASYNC_BEGIN0(
-      "wayland", "WaylandFrameManager.PlaybackFrame", frame->frame_id);
+  TRACE_EVENT_BEGIN("wayland", "WaylandFrameManager.PlaybackFrame",
+                    perfetto::Track(frame->frame_id));
   root_surface->Commit(true);
 
   frame->root_config = wl::WaylandOverlayConfig();
@@ -404,16 +411,16 @@ std::optional<bool> WaylandFrameManager::ApplySurfaceConfigure(
   // Besides the actual wayland surface scale, `config.surface_scale_factor`
   // also contains chromium's ui scale, which is irrelevant to the wayland
   // compositor, thus it must be factored out here. This assumes that:
-  // - window's ui_scale will always be set to 1 when neither per-surface
-  // scaling nor kWaylandUiScale feature is enabled.
+  // - window's ui_scale will always be set to 1 when per-surface scaling is not
+  //   enabled.
   // - frame's window state has already been latched, which is usually done in
   // `MaybeProcessSubmittedFrames`, before calling into this function.
   const float surface_buffer_scale =
       config.surface_scale_factor / window_->latched_state().ui_scale;
 
   surface->set_buffer_transform(
-      absl::holds_alternative<gfx::OverlayTransform>(config.transform)
-          ? absl::get<gfx::OverlayTransform>(config.transform)
+      std::holds_alternative<gfx::OverlayTransform>(config.transform)
+          ? std::get<gfx::OverlayTransform>(config.transform)
           : gfx::OverlayTransform::OVERLAY_TRANSFORM_NONE);
   surface->set_surface_buffer_scale(surface_buffer_scale);
   surface->set_buffer_crop(config.crop_rect);
@@ -424,8 +431,9 @@ std::optional<bool> WaylandFrameManager::ApplySurfaceConfigure(
   surface->set_contains_video(
       config.priority_hint == gfx::OverlayPriorityHint::kHardwareProtection ||
       config.priority_hint == gfx::OverlayPriorityHint::kVideo);
-  surface->set_color_space(
-      config.color_space.value_or(gfx::ColorSpace::CreateSRGB()));
+  surface->SetImageDescription(
+      config.color_space.value_or(gfx::ColorSpace::CreateSRGB()),
+      config.hdr_metadata);
   if (set_opaque_region) {
     auto region_px =
         config.enable_blend
@@ -465,12 +473,6 @@ std::optional<bool> WaylandFrameManager::ApplySurfaceConfigure(
 
   bool needs_commit = false;
 
-  // If it's a solid color buffer, do not set a release callback as it's not
-  // required to wait for this buffer - Wayland compositor only uses that to
-  // produce a config for the quad.
-  const bool is_solid_color_buffer =
-      buffer_handle->backing_type() ==
-      WaylandBufferBacking::BufferBackingType::kSolidColor;
   if (will_attach) {
     // Setup frame callback if wayland_surface will commit this buffer.
     // On Mutter, we don't receive frame.callback acks if we don't attach a
@@ -495,16 +497,24 @@ std::optional<bool> WaylandFrameManager::ApplySurfaceConfigure(
       needs_commit = true;
     }
 
-    if (!is_solid_color_buffer) {
-      if (connection_->SupportsExplicitSync()) {
+    switch (buffer_handle->sync_method()) {
+      case WaylandBufferHandle::SyncMethod::kNone:
+        break;
+      case WaylandBufferHandle::SyncMethod::kSyncobj:
         surface->RequestExplicitRelease(
             base::BindOnce(&WaylandFrameManager::OnExplicitBufferRelease,
                            weak_factory_.GetWeakPtr(), surface));
-      }
-      buffer_handle->set_buffer_released_callback(
-          base::BindOnce(&WaylandFrameManager::OnWlBufferRelease,
-                         weak_factory_.GetWeakPtr(), surface),
-          surface);
+        [[fallthrough]];
+      case WaylandBufferHandle::SyncMethod::kDMAFence:
+        [[fallthrough]];
+      case WaylandBufferHandle::SyncMethod::kImplicit:
+        buffer_handle->set_buffer_released_callback(
+            base::BindOnce(&WaylandFrameManager::OnWlBufferRelease,
+                           weak_factory_.GetWeakPtr(), surface),
+            surface);
+        break;
+      default:
+        NOTREACHED();
     }
   }
 
@@ -520,7 +530,7 @@ std::optional<bool> WaylandFrameManager::ApplySurfaceConfigure(
     needs_commit = true;
   }
 
-  if (!is_solid_color_buffer) {
+  if (buffer_handle->sync_method() != WaylandBufferHandle::SyncMethod::kNone) {
     // If we have submitted this buffer in a previous frame and it is not
     // released yet, submitting the buffer again will not make wayland
     // compositor to release it twice. Remove it from the previous frame.
@@ -562,6 +572,19 @@ void WaylandFrameManager::OnFrameDone(void* data,
 }
 
 void WaylandFrameManager::HandleFrameCallback(wl_callback* callback) {
+  if (no_damage_frame_callback_.get() == callback) {
+    // "Empty" frame callbacks are issued for no damage if the begin
+    // frame source driver is enabled. These do not need to be processed,
+    // only relayed to the frame source to trigger the next frame.
+    no_damage_frame_callback_.reset();
+    TRACE_EVENT("wayland", "HandleFrameCallback (no damage)");
+    auto time = base::TimeTicks::Now();
+    if (frame_timing_observer_) {
+      frame_timing_observer_->OnFrameCallback(time);
+    }
+    return;
+  }
+
   if (frame_callback_freeze_detected_ &&
       submitted_frames_.back()->wl_frame_callback.get() != callback) {
     // If there is a frame callback freeze, frames are still submitted without
@@ -579,6 +602,12 @@ void WaylandFrameManager::HandleFrameCallback(wl_callback* callback) {
   frame_callback_timer_.Stop();
   frame_callback_freeze_detected_ = false;
   EvaluateShouldSkipFrameCallbacks();
+
+  auto time = base::TimeTicks::Now();
+  if (frame_timing_observer_) {
+    frame_timing_observer_->OnFrameCallback(time);
+  }
+
   MaybeProcessPendingFrame();
 }
 
@@ -646,6 +675,11 @@ void WaylandFrameManager::HandlePresentationFeedback(
     }
     CHECK_NE(frame.get(), submitted_frames_.back().get());
   }
+
+  if (frame_timing_observer_) {
+    frame_timing_observer_->OnPresentationFeedback(feedback);
+  }
+
   MaybeProcessSubmittedFrames();
 }
 
@@ -753,7 +787,8 @@ void WaylandFrameManager::OnExplicitBufferRelease(WaylandSurface* surface,
 }
 
 void WaylandFrameManager::OnWlBufferRelease(WaylandSurface* surface,
-                                            wl_buffer* buffer) {
+                                            wl_buffer* buffer,
+                                            bool is_destruct) {
   DCHECK(buffer);
 
   // Releases may not necessarily come in order, so search the submitted
@@ -762,7 +797,8 @@ void WaylandFrameManager::OnWlBufferRelease(WaylandSurface* surface,
     auto result = frame->submitted_buffers.find(surface);
     if (result != frame->submitted_buffers.end() &&
         result->second->buffer() == buffer) {
-      if (connection_->UseImplicitSyncInterop()) {
+      if (!is_destruct && result->second->sync_method() ==
+                              WaylandBufferHandle::SyncMethod::kDMAFence) {
         base::ScopedFD fence =
             connection_->buffer_manager_host()->ExtractReleaseFence(
                 result->second->id());
@@ -781,7 +817,9 @@ void WaylandFrameManager::OnWlBufferRelease(WaylandSurface* surface,
       TRACE_EVENT_INSTANT("wayland", "OnWlBufferRelease", "frame_id",
                           frame->frame_id, "buffer_id", result->second->id());
       frame->submitted_buffers.erase(result);
-      break;
+      if (!is_destruct) {
+        break;
+      }
     }
   }
 
@@ -878,8 +916,8 @@ void WaylandFrameManager::MaybeProcessSubmittedFrames() {
 
       // The presentation info entries are sent with the last OnSubmission()
       // call.
-      TRACE_EVENT_NESTABLE_ASYNC_END0(
-          "wayland", "WaylandFrameManager.PlaybackFrame", (*iter)->frame_id);
+      TRACE_EVENT_END("wayland", /*"WaylandFrameManager.PlaybackFrame"*/
+                      perfetto::Track((*iter)->frame_id));
       auto swap_result = (*iter)->swap_result_recreate_buffers
                              ? gfx::SwapResult::SWAP_NAK_RECREATE_BUFFERS
                              : gfx::SwapResult::SWAP_ACK;
@@ -963,6 +1001,34 @@ void WaylandFrameManager::FrameCallbackTimeout() {
            << " frame callback timed out";
   frame_callback_freeze_detected_ = true;
   EvaluateShouldSkipFrameCallbacks();
+}
+
+void WaylandFrameManager::AddFrameTimingObserver(
+    WaylandFrameTimingObserver* observer) {
+  DCHECK(!frame_timing_observer_);
+  frame_timing_observer_ = observer;
+}
+
+void WaylandFrameManager::RemoveFrameTimingObserver(
+    WaylandFrameTimingObserver* observer) {
+  DCHECK_EQ(frame_timing_observer_, observer);
+  frame_timing_observer_ = nullptr;
+}
+
+void WaylandFrameManager::RequestFrameCallback() {
+  if (no_damage_frame_callback_ ||
+      (!submitted_frames_.empty() &&
+       submitted_frames_.back()->wl_frame_callback)) {
+    return;
+  }
+
+  auto* surface = window_->root_surface();
+  static constexpr wl_callback_listener kFrameCallbackListener = {
+      .done = &OnFrameDone};
+  no_damage_frame_callback_.reset(wl_surface_frame(surface->surface()));
+  wl_callback_add_listener(no_damage_frame_callback_.get(),
+                           &kFrameCallbackListener, this);
+  surface->Commit();
 }
 
 void WaylandFrameManager::FreezeTimeout() {

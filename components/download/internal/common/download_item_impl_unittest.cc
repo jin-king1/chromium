@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/download/public/common/download_item_impl.h"
 
 #include <stdint.h>
@@ -17,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/containers/circular_deque.h"
 #include "base/containers/queue.h"
 #include "base/files/file_util.h"
@@ -25,7 +21,9 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_move_support.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -49,9 +47,9 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 using ::testing::_;
+using ::testing::AnyNumber;
 using ::testing::ByMove;
 using ::testing::DoAll;
-using ::testing::Invoke;
 using ::testing::InvokeWithoutArgs;
 using ::testing::NiceMock;
 using ::testing::Property;
@@ -216,15 +214,15 @@ ACTION_P3(ScheduleCallbackWithParams, param1, param2, task_runner) {
                         base::BindOnce(std::move(arg0), param1, param2));
 }
 
-const char kTestData1[] = {'M', 'a', 'r', 'y', ' ', 'h', 'a', 'd',
-                           ' ', 'a', ' ', 'l', 'i', 't', 't', 'l',
-                           'e', ' ', 'l', 'a', 'm', 'b', '.'};
+static constexpr auto kTestData1 = std::to_array<uint8_t>(
+    {'M', 'a', 'r', 'y', ' ', 'h', 'a', 'd', ' ', 'a', ' ', 'l',
+     'i', 't', 't', 'l', 'e', ' ', 'l', 'a', 'm', 'b', '.'});
 
 // SHA256 hash of TestData1
-const uint8_t kHashOfTestData1[] = {
-    0xd2, 0xfc, 0x16, 0xa1, 0xf5, 0x1a, 0x65, 0x3a, 0xa0, 0x19, 0x64,
-    0xef, 0x9c, 0x92, 0x33, 0x36, 0xe1, 0x06, 0x53, 0xfe, 0xc1, 0x95,
-    0xf4, 0x93, 0x45, 0x8b, 0x3b, 0x21, 0x89, 0x0e, 0x1b, 0x97};
+static constexpr auto kHashOfTestData1 = std::to_array<uint8_t>(
+    {0xd2, 0xfc, 0x16, 0xa1, 0xf5, 0x1a, 0x65, 0x3a, 0xa0, 0x19, 0x64,
+     0xef, 0x9c, 0x92, 0x33, 0x36, 0xe1, 0x06, 0x53, 0xfe, 0xc1, 0x95,
+     0xf4, 0x93, 0x45, 0x8b, 0x3b, 0x21, 0x89, 0x0e, 0x1b, 0x97});
 
 class DownloadItemTest : public testing::Test {
  public:
@@ -1637,7 +1635,7 @@ TEST_F(DownloadItemTest, DestinationError_NoRestartRequired) {
 
   std::unique_ptr<crypto::SecureHash> hash(
       crypto::SecureHash::Create(crypto::SecureHash::SHA256));
-  hash->Update(kTestData1, sizeof(kTestData1));
+  hash->Update(kTestData1);
 
   EXPECT_CALL(*download_file, Detach());
   as_observer->DestinationError(DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, 1,
@@ -1646,9 +1644,8 @@ TEST_F(DownloadItemTest, DestinationError_NoRestartRequired) {
   EXPECT_TRUE(observer.CheckAndResetDownloadUpdated());
   EXPECT_EQ(DownloadItem::INTERRUPTED, item->GetState());
   EXPECT_EQ(DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, item->GetLastReason());
-  EXPECT_EQ(
-      std::string(std::begin(kHashOfTestData1), std::end(kHashOfTestData1)),
-      item->GetHash());
+  EXPECT_EQ(std::string(base::as_string_view(kHashOfTestData1)),
+            item->GetHash());
   histogram_tester.ExpectBucketCount(
       "Download.InterruptedReason",
       ToHistogramSample<DownloadInterruptReason>(
@@ -1671,7 +1668,7 @@ TEST_F(DownloadItemTest, DestinationError_RestartRequired) {
 
   std::unique_ptr<crypto::SecureHash> hash(
       crypto::SecureHash::Create(crypto::SecureHash::SHA256));
-  hash->Update(kTestData1, sizeof(kTestData1));
+  hash->Update(kTestData1);
 
   EXPECT_CALL(*download_file, Cancel());
   as_observer->DestinationError(DOWNLOAD_INTERRUPT_REASON_FILE_FAILED, 1,
@@ -1711,7 +1708,7 @@ TEST_F(DownloadItemTest, DestinationCompleted) {
 
   std::unique_ptr<crypto::SecureHash> hash(
       crypto::SecureHash::Create(crypto::SecureHash::SHA256));
-  hash->Update(kTestData1, sizeof(kTestData1));
+  hash->Update(kTestData1);
 
   EXPECT_CALL(*mock_delegate(), ShouldCompleteDownload_(_, _));
   as_observer->DestinationCompleted(10, std::move(hash));
@@ -2237,7 +2234,7 @@ std::vector<EventList> DistributeObservationsIntoEvents(
     int event_count) {
   std::vector<EventList> all_event_lists;
   for (auto partition = begin;; ++partition) {
-    ObservationList first_group_of_observations(begin, partition);
+    ObservationList UNSAFE_TODO(first_group_of_observations(begin, partition));
     if (event_count > 1) {
       std::vector<EventList> list_of_subsequent_events =
           DistributeObservationsIntoEvents(partition, end, event_count - 1);
@@ -2507,6 +2504,245 @@ TEST_P(DownloadItemDestinationUpdateRaceTest, IntermediateRenameSucceeds) {
 
   item_->Cancel(true);
   task_environment_.RunUntilIdle();
+}
+
+// Regression test for crbug.com/500510384. ResumeInterruptedDownload should
+// reset the hash state when clamping the offset to 0.
+TEST_F(DownloadItemTest, ResumptionClampingClearsHashState) {
+  base::test::ScopedFeatureList feature_list;
+  std::map<std::string, std::string> params;
+  params["download_validation_length"] = "1024";
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kAllowDownloadResumptionWithoutStrongValidators, params);
+
+  // 1. Create an interrupted download with some hash state.
+  create_info()->etag.clear();
+  create_info()->last_modified.clear();
+  DownloadItemImpl* item = CreateDownloadItem();
+
+  // We need to start the download to get it into a state where it can be
+  // interrupted.
+  MockDownloadFile* download_file =
+      DoIntermediateRename(item, DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
+  ASSERT_EQ(DownloadItem::IN_PROGRESS, item->GetState());
+
+  std::unique_ptr<crypto::SecureHash> hash_state =
+      crypto::SecureHash::Create(crypto::SecureHash::SHA256);
+  hash_state->Update(kHashOfTestData1);
+
+  // 2. Resume the download.
+  // We expect ResumeInterruptedDownload to be called on the delegate.
+  // We want to inspect the DownloadUrlParameters it receives.
+  // Note: For FILE_TOO_SHORT, auto-resumption might happen immediately.
+  int64_t captured_offset = -1;
+  bool captured_has_hash_state = false;
+  base::RunLoop run_loop;
+  EXPECT_CALL(*mock_delegate(), MockResumeInterruptedDownload(_))
+      .WillOnce([&](DownloadUrlParameters* params) {
+        captured_offset = params->offset();
+        captured_has_hash_state =
+            (params->TakeSaveInfo().hash_state != nullptr);
+        run_loop.Quit();
+      });
+
+  // Interrupt the download at offset 500 (which is < 1024).
+  // Use FILE_TOO_SHORT which forces a RESTART.
+  EXPECT_CALL(*download_file, Cancel()).Times(AnyNumber());
+  EXPECT_CALL(*download_file, Detach()).Times(AnyNumber());
+  item->DestinationObserverAsWeakPtr()->DestinationError(
+      DOWNLOAD_INTERRUPT_REASON_FILE_TOO_SHORT, 500, std::move(hash_state));
+  run_loop.Run();
+
+  // The offset should be clamped to 0 because 500 < 1024 and no strong
+  // validators.
+  EXPECT_EQ(0, captured_offset);
+
+  // Verification that the hash state was cleared.
+  EXPECT_FALSE(captured_has_hash_state);
+}
+
+TEST_F(DownloadItemTest, DataUrlNotTruncatedWhileInProgress) {
+  std::string large_data_url = "data:text/plain,";
+  large_data_url.append(2000, 'a');
+  create_info()->url_chain.clear();
+  create_info()->url_chain.emplace_back(large_data_url);
+
+  DownloadItemImpl* item = CreateDownloadItem();
+  MockDownloadFile* file =
+      DoIntermediateRename(item, DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
+
+  ASSERT_EQ(DownloadItem::IN_PROGRESS, item->GetState());
+  EXPECT_EQ(large_data_url, item->GetURL().spec());
+
+  CleanupItem(item, file, DownloadItem::IN_PROGRESS);
+}
+
+TEST_F(DownloadItemTest, TruncateDataUrlAfterComplete) {
+  std::string large_data_url = "data:text/plain,";
+  large_data_url.append(2000, 'a');
+  create_info()->url_chain.clear();
+  create_info()->url_chain.emplace_back(large_data_url);
+
+  DownloadItemImpl* item = CreateDownloadItem();
+  MockDownloadFile* download_file =
+      DoIntermediateRename(item, DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
+
+  ASSERT_EQ(DownloadItem::IN_PROGRESS, item->GetState());
+  EXPECT_EQ(large_data_url, item->GetURL().spec());
+
+  DoDestinationComplete(item, download_file);
+
+  EXPECT_EQ(DownloadItem::COMPLETE, item->GetState());
+  EXPECT_EQ(1024u, item->GetURL().spec().length());
+  EXPECT_EQ(large_data_url.substr(0, 1024), item->GetURL().spec());
+}
+
+TEST_F(DownloadItemTest, TruncateDataUrlAfterCancel) {
+  std::string large_data_url = "data:text/plain,";
+  large_data_url.append(2000, 'a');
+  create_info()->url_chain.clear();
+  create_info()->url_chain.emplace_back(large_data_url);
+
+  DownloadItemImpl* item = CreateDownloadItem();
+  download::DownloadTargetCallback target_callback;
+  MockDownloadFile* download_file =
+      CallDownloadItemStart(item, &target_callback);
+
+  EXPECT_CALL(*download_file, Cancel());
+
+  item->Cancel(true);
+
+  EXPECT_EQ(DownloadItem::CANCELLED, item->GetState());
+  EXPECT_EQ(1024u, item->GetURL().spec().length());
+  EXPECT_EQ(large_data_url.substr(0, 1024), item->GetURL().spec());
+}
+
+TEST_F(DownloadItemTest, TruncateBase64DataUrlToValidUrl) {
+  std::string large_data_url = "data:text/plain;base64,";
+  large_data_url.append(2000, 'a');
+  create_info()->url_chain.clear();
+  create_info()->url_chain.emplace_back(large_data_url);
+
+  DownloadItemImpl* item = CreateDownloadItem();
+  MockDownloadFile* download_file =
+      DoIntermediateRename(item, DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
+
+  ASSERT_EQ(DownloadItem::IN_PROGRESS, item->GetState());
+  EXPECT_EQ(large_data_url, item->GetURL().spec());
+
+  DoDestinationComplete(item, download_file);
+
+  std::string valid_base64_truncated_url = "data:text/plain;base64,";
+  // The base64 string can be at most 1001(1024-23) characters, but needs to be
+  // a multiple of 4.
+  valid_base64_truncated_url.append(1000, 'a');
+  EXPECT_EQ(DownloadItem::COMPLETE, item->GetState());
+  EXPECT_EQ(valid_base64_truncated_url.length(), item->GetURL().spec().length());
+  EXPECT_EQ(valid_base64_truncated_url, item->GetURL().spec());
+}
+
+
+TEST_F(DownloadItemTest, SmallDataUrlNotTruncatedAfterComplete) {
+  std::string small_data_url = "data:text/plain,small";
+  create_info()->url_chain.clear();
+  create_info()->url_chain.emplace_back(small_data_url);
+
+  DownloadItemImpl* item = CreateDownloadItem();
+  MockDownloadFile* download_file =
+      DoIntermediateRename(item, DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
+
+  DoDestinationComplete(item, download_file);
+
+  EXPECT_EQ(DownloadItem::COMPLETE, item->GetState());
+  EXPECT_EQ(small_data_url, item->GetURL().spec());
+}
+
+TEST_F(DownloadItemTest, LargeHttpUrlNotTruncatedAfterComplete) {
+  std::string large_http_url = "http://example.com/download?";
+  large_http_url.append(2000, 'a');
+  create_info()->url_chain.clear();
+  create_info()->url_chain.emplace_back(large_http_url);
+
+  DownloadItemImpl* item = CreateDownloadItem();
+  MockDownloadFile* download_file =
+      DoIntermediateRename(item, DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
+
+  DoDestinationComplete(item, download_file);
+
+  EXPECT_EQ(DownloadItem::COMPLETE, item->GetState());
+  EXPECT_EQ(large_http_url, item->GetURL().spec());
+}
+
+// On resume of a network-fetched download, the params handed to the delegate
+// must opt out of Service Worker interception. The SW would otherwise
+// produce a fresh full-body response that would be appended to the partial
+// bytes already on disk.
+TEST_F(DownloadItemTest, ResumeOfNetworkFetchedDownloadSkipsServiceWorker) {
+  create_info()->fetched_via_service_worker = false;
+  DownloadItemImpl* item = CreateDownloadItem();
+  MockDownloadFile* download_file =
+      DoIntermediateRename(item, DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
+  ASSERT_EQ(DownloadItem::IN_PROGRESS, item->GetState());
+
+  bool captured_skip_sw = false;
+  int64_t captured_offset = -1;
+  base::RunLoop run_loop;
+  EXPECT_CALL(*mock_delegate(), MockResumeInterruptedDownload(_))
+      .WillOnce([&](DownloadUrlParameters* params) {
+        captured_skip_sw = params->skip_service_worker_interception();
+        captured_offset = params->offset();
+        run_loop.Quit();
+      });
+
+  EXPECT_CALL(*download_file, Detach()).Times(AnyNumber());
+  EXPECT_CALL(*download_file, FullPath())
+      .WillRepeatedly(ReturnRefOfCopy(base::FilePath()));
+  // FILE_TRANSIENT_ERROR is a continuable interrupt — preserves the offset.
+  item->DestinationObserverAsWeakPtr()->DestinationError(
+      DOWNLOAD_INTERRUPT_REASON_FILE_TRANSIENT_ERROR, 100,
+      std::unique_ptr<crypto::SecureHash>());
+  run_loop.Run();
+
+  EXPECT_TRUE(captured_skip_sw);
+  EXPECT_EQ(100, captured_offset);
+}
+
+// On resume of a Service-Worker-fetched download, the resume must restart
+// from offset 0 (SW responses can't be range-served) and re-dispatch the
+// fetch event — i.e. NOT skip SW interception.
+TEST_F(DownloadItemTest, ResumeOfSWFetchedDownloadRestartsAndKeepsSW) {
+  create_info()->fetched_via_service_worker = true;
+  DownloadItemImpl* item = CreateDownloadItem();
+  ASSERT_TRUE(item->fetched_via_service_worker());
+  MockDownloadFile* download_file =
+      DoIntermediateRename(item, DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
+  ASSERT_EQ(DownloadItem::IN_PROGRESS, item->GetState());
+
+  bool captured_skip_sw = true;  // Default to opposite of expected.
+  int64_t captured_offset = -1;
+  base::RunLoop run_loop;
+  EXPECT_CALL(*mock_delegate(), MockResumeInterruptedDownload(_))
+      .WillOnce([&](DownloadUrlParameters* params) {
+        captured_skip_sw = params->skip_service_worker_interception();
+        captured_offset = params->offset();
+        run_loop.Quit();
+      });
+
+  // Interrupt with a normally continuable reason. Even so, the SW-fetched
+  // flag must force a restart.
+  EXPECT_CALL(*download_file, Cancel()).Times(AnyNumber());
+  EXPECT_CALL(*download_file, Detach()).Times(AnyNumber());
+  EXPECT_CALL(*download_file, FullPath())
+      .WillRepeatedly(ReturnRefOfCopy(base::FilePath()));
+  item->DestinationObserverAsWeakPtr()->DestinationError(
+      DOWNLOAD_INTERRUPT_REASON_FILE_TRANSIENT_ERROR, 100,
+      std::unique_ptr<crypto::SecureHash>());
+  run_loop.Run();
+
+  // Restart cleared the offset; SW interception remains enabled so the SW
+  // fetch handler can re-run from scratch.
+  EXPECT_EQ(0, captured_offset);
+  EXPECT_FALSE(captured_skip_sw);
 }
 
 }  // namespace

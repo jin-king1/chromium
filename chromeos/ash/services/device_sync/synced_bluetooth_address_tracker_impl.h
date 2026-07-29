@@ -9,8 +9,9 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "chromeos/ash/services/device_sync/synced_bluetooth_address_tracker.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 
@@ -78,6 +79,10 @@ class SyncedBluetoothAddressTrackerImpl
 
   scoped_refptr<device::BluetoothAdapter> bluetooth_adapter_;
   std::vector<BluetoothAddressCallback> pending_callbacks_during_init_;
+
+  base::ScopedObservation<device::BluetoothAdapter,
+                          device::BluetoothAdapter::Observer>
+      bluetooth_adapter_observation_{this};
 
   base::WeakPtrFactory<SyncedBluetoothAddressTrackerImpl> weak_ptr_factory_{
       this};

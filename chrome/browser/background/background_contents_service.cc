@@ -6,11 +6,14 @@
 
 #include <utility>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/observer_list.h"
 #include "base/one_shot_event.h"
 #include "base/strings/string_util.h"
@@ -24,15 +27,14 @@
 #include "chrome/browser/background/background_contents_service_factory.h"
 #include "chrome/browser/background/background_contents_service_observer.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/notifications/notification_common.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
@@ -41,6 +43,7 @@
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_host.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/image_loader.h"
 #include "extensions/common/constants.h"
@@ -51,7 +54,6 @@
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
 #include "extensions/grit/extensions_browser_resources.h"
-#include "ipc/ipc_message.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/image/image.h"
@@ -114,7 +116,7 @@ class CrashNotificationDelegate : public message_center::NotificationDelegate {
                           bool is_platform_app,
                           std::string extension_id,
                           Profile* profile) {
-    // http://crbug.com/247790 involves a crash notification balloon being
+    // http://crbug.com/41016660 involves a crash notification balloon being
     // clicked while the extension isn't in the TERMINATED state. In that case,
     // any of the "reload" methods called below can unload the extension, which
     // indirectly destroys the CrashNotificationDelegate, invalidating all its
@@ -131,9 +133,8 @@ class CrashNotificationDelegate : public message_center::NotificationDelegate {
     } else if (is_platform_app) {
       apps::AppLoadService::Get(profile)->RestartApplication(extension_id);
     } else {
-      extensions::ExtensionSystem::Get(profile)
-          ->extension_service()
-          ->ReloadExtension(extension_id);
+      extensions::ExtensionRegistrar::Get(profile)->ReloadExtension(
+          extension_id);
     }
 
     CloseBalloon(extension_id, profile);
@@ -149,18 +150,22 @@ class CrashNotificationDelegate : public message_center::NotificationDelegate {
   extensions::ExtensionId extension_id_;
 };
 
-void ReloadExtension(const std::string& extension_id, Profile* profile) {
-  if (g_browser_process->IsShuttingDown() ||
-      !g_browser_process->profile_manager()->IsValidProfile(profile)) {
+void ReloadExtension(const std::string& extension_id,
+                     base::WeakPtr<Profile> profile) {
+  if (!profile) {
     return;
   }
 
-  extensions::ExtensionSystem* extension_system =
-      extensions::ExtensionSystem::Get(profile);
-  extensions::ExtensionRegistry* extension_registry =
-      extensions::ExtensionRegistry::Get(profile);
-  if (!extension_system || !extension_system->extension_service() ||
-      !extension_registry) {
+  if (g_browser_process->IsShuttingDown() ||
+      !g_browser_process->profile_manager() ||
+      !g_browser_process->profile_manager()->IsValidProfile(profile.get())) {
+    return;
+  }
+
+  auto* extension_registrar =
+      extensions::ExtensionRegistrar::Get(profile.get());
+  auto* extension_registry = extensions::ExtensionRegistry::Get(profile.get());
+  if (!extension_registrar || !extension_registry) {
     return;
   }
 
@@ -169,19 +174,19 @@ void ReloadExtension(const std::string& extension_id, Profile* profile) {
     // been restarted successfully by someone else (the user).
     return;
   }
-  extension_system->extension_service()->ReloadExtension(extension_id);
+  extension_registrar->ReloadExtension(extension_id);
 }
 
 }  // namespace
 
 // Keys for the information we store about individual BackgroundContents in
-// prefs. There is one top-level base::Value::Dict (stored at
+// prefs. There is one top-level base::DictValue (stored at
 // prefs::kRegisteredBackgroundContents). Information about each
-// BackgroundContents is stored under that top-level base::Value::Dict, keyed
+// BackgroundContents is stored under that top-level base::DictValue, keyed
 // by the parent application ID for easy lookup.
 //
 // kRegisteredBackgroundContents:
-//    base::Value::Dict {
+//    base::DictValue {
 //       <appid_1>: { "url": <url1>, "name": <frame_name> },
 //       <appid_2>: { "url": <url2>, "name": <frame_name> },
 //         ... etc ...
@@ -202,6 +207,8 @@ const net::BackoffEntry::Policy kExtensionReloadBackoffPolicy = {
 };
 
 int BackgroundContentsService::restart_delay_in_ms_ = 3000;  // 3 seconds.
+// Used to simulate browser shutdown without destroying the real browser
+// process in browser tests.
 
 BackgroundContentsService::BackgroundContentsService(Profile* profile)
     : profile_(profile) {
@@ -247,6 +254,7 @@ void BackgroundContentsService::ShowBalloonForTesting(
 std::vector<BackgroundContents*>
 BackgroundContentsService::GetBackgroundContents() const {
   std::vector<BackgroundContents*> contents;
+  contents.reserve(contents_map_.size());
   for (auto it = contents_map_.begin(); it != contents_map_.end(); ++it)
     contents.push_back(it->second.contents.get());
   return contents;
@@ -415,7 +423,8 @@ void BackgroundContentsService::RestartForceInstalledExtensionOnCrash(
   // OnExtensionUnloaded() notification and checked the unload reason.
   DCHECK_GT(restart_delay, 0);
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE, base::BindOnce(&ReloadExtension, extension->id(), profile_),
+      FROM_HERE,
+      base::BindOnce(&ReloadExtension, extension->id(), profile_->GetWeakPtr()),
       base::Milliseconds(restart_delay));
 }
 
@@ -423,7 +432,7 @@ void BackgroundContentsService::RestartForceInstalledExtensionOnCrash(
 void BackgroundContentsService::LoadBackgroundContentsFromPrefs() {
   if (!prefs_)
     return;
-  const base::Value::Dict& contents =
+  const base::DictValue& contents =
       prefs_->GetDict(prefs::kRegisteredBackgroundContents);
   extensions::ExtensionRegistry* extension_registry =
       extensions::ExtensionRegistry::Get(profile_);
@@ -486,24 +495,24 @@ void BackgroundContentsService::LoadBackgroundContentsForExtension(
   // Now look in the prefs.
   if (!prefs_)
     return;
-  const base::Value::Dict& contents =
+  const base::DictValue& contents =
       prefs_->GetDict(prefs::kRegisteredBackgroundContents);
   LoadBackgroundContentsFromDictionary(extension_id, contents);
 }
 
 void BackgroundContentsService::LoadBackgroundContentsFromDictionary(
     const std::string& extension_id,
-    const base::Value::Dict& contents) {
+    const base::DictValue& contents) {
   extensions::ExtensionService* extensions_service =
       extensions::ExtensionSystem::Get(profile_)->extension_service();
   DCHECK(extensions_service);
 
-  const base::Value::Dict* dict = contents.FindDict(extension_id);
+  const base::DictValue* dict = contents.FindDict(extension_id);
   if (!dict)
     return;
 
-  const std::string* maybe_frame_name = dict->FindString(kUrlKey);
-  const std::string* maybe_url = dict->FindString(kFrameNameKey);
+  const std::string* maybe_url = dict->FindString(kUrlKey);
+  const std::string* maybe_frame_name = dict->FindString(kFrameNameKey);
   std::string frame_name = maybe_frame_name ? *maybe_frame_name : std::string();
   std::string url = maybe_url ? *maybe_url : std::string();
 
@@ -581,17 +590,15 @@ void BackgroundContentsService::RegisterBackgroundContents(
 
   // We store the first URL we receive for a given application. If there's
   // already an entry for this application, no need to do anything.
-  // TODO(atwilson): Verify that this is the desired behavior based on developer
-  // feedback (http://crbug.com/47118).
   ScopedDictPrefUpdate update(prefs_, prefs::kRegisteredBackgroundContents);
-  base::Value::Dict& pref = update.Get();
+  base::DictValue& pref = update.Get();
   const std::string& appid = GetParentApplicationId(background_contents);
   if (pref.FindDict(appid)) {
     return;
   }
 
   // No entry for this application yet, so add one.
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set(kUrlKey, background_contents->GetURL().spec());
   dict.Set(kFrameNameKey, contents_map_[appid].frame_name);
   pref.Set(appid, std::move(dict));
@@ -601,7 +608,7 @@ bool BackgroundContentsService::HasRegisteredBackgroundContents(
     const std::string& app_id) {
   if (!prefs_)
     return false;
-  const base::Value::Dict& contents =
+  const base::DictValue& contents =
       prefs_->GetDict(prefs::kRegisteredBackgroundContents);
   return contents.Find(app_id);
 }
@@ -677,11 +684,14 @@ void BackgroundContentsService::AddWebContents(
     WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool* was_blocked) {
-  Browser* browser = chrome::FindLastActiveWithProfile(
-      Profile::FromBrowserContext(new_contents->GetBrowserContext()));
+  BrowserWindowInterface* const browser =
+      ProfileBrowserCollection::GetForProfile(
+          Profile::FromBrowserContext(new_contents->GetBrowserContext()))
+          ->GetLastActiveBrowser();
   if (browser) {
-    chrome::AddWebContents(browser, nullptr, std::move(new_contents),
-                           target_url, disposition, window_features);
+    chrome::AddWebContents(browser->GetBrowserForMigrationOnly(), nullptr,
+                           std::move(new_contents), target_url, disposition,
+                           window_features);
   }
 }
 

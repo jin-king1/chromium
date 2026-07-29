@@ -71,6 +71,13 @@ class TabGroupSyncBridgeMediatorTest : public testing::Test {
         prefs::kDidEnableSharedTabGroupsInLastSession, true);
     ON_CALL(mock_shared_processor_, IsTrackingMetadata)
         .WillByDefault(Return(true));
+    ON_CALL(mock_shared_processor_, GetPossiblyTrimmedRemoteSpecifics(_))
+        .WillByDefault(
+            testing::ReturnRef(sync_pb::EntitySpecifics::default_instance()));
+    ON_CALL(mock_saved_processor_, GetPossiblyTrimmedRemoteSpecifics(_))
+        .WillByDefault(
+            testing::ReturnRef(sync_pb::EntitySpecifics::default_instance()));
+
     InitializeModelAndMediator();
   }
 
@@ -244,7 +251,7 @@ TEST_F(TabGroupSyncBridgeMediatorTest, ShouldResolveDuplicatesOnLoad) {
   SavedTabGroup shared_group_1(u"shared group 1",
                                tab_groups::TabGroupColorId::kBlue, /*urls=*/{},
                                /*position=*/std::nullopt);
-  shared_group_1.SetCollaborationId(CollaborationId(kCollaborationId));
+  shared_group_1.SetCollaborationId(syncer::CollaborationId(kCollaborationId));
   SavedTabGroupTab shared_tab_1(GURL("http://google.com/1"), u"shared tab 1",
                                 shared_group_1.saved_guid(),
                                 /*position=*/std::nullopt);
@@ -257,7 +264,7 @@ TEST_F(TabGroupSyncBridgeMediatorTest, ShouldResolveDuplicatesOnLoad) {
   SavedTabGroup shared_group_2(u"shared group 2",
                                tab_groups::TabGroupColorId::kBlue, /*urls=*/{},
                                /*position=*/std::nullopt);
-  shared_group_2.SetCollaborationId(CollaborationId(kCollaborationId));
+  shared_group_2.SetCollaborationId(syncer::CollaborationId(kCollaborationId));
   SavedTabGroupTab shared_tab_3(GURL("http://google.com/3"), u"shared tab 3",
                                 shared_group_2.saved_guid(),
                                 /*position=*/std::nullopt);

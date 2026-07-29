@@ -11,8 +11,13 @@
         ],
         "experiment_percentage": 100,
         "merge": {
+          "args": [
+            "--upload-skia-json"
+          ],
           "script": "//tools/perf/process_perf_results.py"
         },
+        "module_name": "//tools/perf/contrib/vr_benchmarks:vr_perf_tests",
+        "module_scheme": "flat",
         "name": "xr.webxr.static",
         "swarming": {
           "containment_type": "AUTO",

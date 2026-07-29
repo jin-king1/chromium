@@ -5,9 +5,14 @@
 #include "chrome/browser/apps/app_service/app_install/web_app_installer.h"
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <variant>
 
 #include "base/barrier_callback.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
+#include "base/strings/to_string.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/commands/install_app_from_verified_manifest_command.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom-shared.h"
@@ -95,20 +100,19 @@ void RecordCommandResultMetric(apps::AppInstallSurface surface,
 
 namespace apps {
 
-WebAppInstaller::WebAppInstaller(Profile* profile) : profile_(profile) {
-}
+WebAppInstaller::WebAppInstaller(Profile* profile) : profile_(profile) {}
 
 WebAppInstaller::~WebAppInstaller() = default;
 
 void WebAppInstaller::InstallApp(AppInstallSurface surface,
                                  AppInstallData data,
                                  WebAppInstalledCallback callback) {
-  CHECK(absl::holds_alternative<WebAppInstallData>(data.app_type_data));
+  CHECK(std::holds_alternative<WebAppInstallData>(data.app_type_data));
 
   // Retrieve web manifest
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url =
-      absl::get<WebAppInstallData>(data.app_type_data).proxied_manifest_url;
+      std::get<WebAppInstallData>(data.app_type_data).proxied_manifest_url;
 
   if (!resource_request->url.is_valid()) {
     LOG(ERROR) << "Manifest URL for " << data.name
@@ -142,7 +146,7 @@ void WebAppInstaller::OnManifestRetrieved(
     AppInstallData data,
     WebAppInstalledCallback callback,
     std::unique_ptr<network::SimpleURLLoader> url_loader,
-    std::unique_ptr<std::string> response) {
+    std::optional<std::string> response) {
   if (url_loader->NetError() != net::OK) {
     LOG(ERROR) << "Downloading manifest failed for " << data.name
                << " with error code: " << GetResponseCode(url_loader.get());
@@ -162,10 +166,20 @@ void WebAppInstaller::OnManifestRetrieved(
     return;
   }
 
-  webapps::AppId expected_app_id =
-      web_app::GenerateAppIdFromManifestId(GURL(data.package_id.identifier()));
+  std::optional<webapps::ManifestId> manifest_id =
+      webapps::ManifestId::Create(GURL(data.package_id.identifier()));
+  if (!manifest_id.has_value()) {
+    LOG(ERROR) << "Invalid manifest_id: " << data.package_id.identifier();
+    RecordInstallResultMetric(surface,
+                              WebAppInstallResult::kInvalidManifestId);
+    std::move(callback).Run(/*success=*/false);
+    return;
+  }
 
-  auto& web_app_data = absl::get<WebAppInstallData>(data.app_type_data);
+  webapps::AppId expected_app_id =
+      web_app::GenerateAppIdFromManifestId(*manifest_id);
+
+  auto& web_app_data = std::get<WebAppInstallData>(data.app_type_data);
 
   auto* provider = web_app::WebAppProvider::GetForWebApps(profile_);
 

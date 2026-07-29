@@ -57,6 +57,10 @@ class DesktopMediaListController : public DesktopMediaListObserver,
 
     virtual void ClearSelection() = 0;
 
+    // Updates the action button label based on whether audio sharing is
+    // currently enabled.
+    virtual void SetAudioShared(bool audio_shared) {}
+
    protected:
     ListView() = default;
     ~ListView() override = default;
@@ -94,6 +98,10 @@ class DesktopMediaListController : public DesktopMediaListObserver,
   bool SupportsReselectButton() const;
 
   void OnReselectRequested();
+
+  // Called when the user toggles the audio sharing checkbox.
+  // Propagates this update to the underlying view.
+  void OnAudioShareToggled(bool audio_shared);
 
   // Returns whether or not the reselect button (if supported), should be
   // enabled.
@@ -171,9 +179,11 @@ class DesktopMediaListController : public DesktopMediaListObserver,
   // Auto-selection. Used only in tests.
   const std::string auto_select_tab_;        // Only tabs, by title.
   const std::string auto_select_window_;     // Only windows, by title.
+  const bool auto_select_any_screen_;        // Any screen.
   const std::string auto_select_source_;     // Any source by its title.
   const bool auto_accept_this_tab_capture_;  // Only for current-tab capture.
   const bool auto_reject_this_tab_capture_;  // Only for current-tab capture.
+  const bool auto_reject_capture_;           // Applies to any capture.
 
   base::WeakPtrFactory<DesktopMediaListController> weak_factory_{this};
 };

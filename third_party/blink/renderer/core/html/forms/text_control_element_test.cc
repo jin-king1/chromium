@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/text.h"
@@ -16,6 +17,7 @@
 #include "third_party/blink/renderer/core/html/forms/html_text_area_element.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 
@@ -64,7 +66,7 @@ void TextControlElementTest::SetUp() {
       std::make_unique<DummyPageHolder>(gfx::Size(800, 600), nullptr);
 
   document_ = &dummy_page_holder_->GetDocument();
-  document_->documentElement()->setInnerHTML(
+  document_->documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<body><textarea id=textarea></textarea><input id=input /></body>");
   UpdateAllLifecyclePhases();
   text_control_ =
@@ -78,7 +80,9 @@ TEST_F(TextControlElementTest, SetSelectionRange) {
   EXPECT_EQ(0u, TextControl().selectionStart());
   EXPECT_EQ(0u, TextControl().selectionEnd());
 
-  TextControl().SetInnerEditorValue("Hello, text form.");
+  TextControl().SetValue("Hello, text form.",
+                         TextFieldEventBehavior::kDispatchNoEvent,
+                         TextControlSetValueSelection::kSetSelectionToStart);
   EXPECT_EQ(0u, TextControl().selectionStart());
   EXPECT_EQ(0u, TextControl().selectionEnd());
 
@@ -155,7 +159,7 @@ TEST_F(TextControlElementTest, PlaceholderElement) {
 }
 
 TEST_F(TextControlElementTest, PlaceholderElementNewlineBehavior) {
-  GetDocument().body()->setInnerHTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<input id='p0' placeholder='first line &#13;&#10;second line'>"
       "<input id='p1' placeholder='&#13;'>");
   UpdateAllLifecyclePhases();
@@ -164,7 +168,7 @@ TEST_F(TextControlElementTest, PlaceholderElementNewlineBehavior) {
 }
 
 TEST_F(TextControlElementTest, TextAreaPlaceholderElementNewlineBehavior) {
-  GetDocument().body()->setInnerHTML(
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<textarea id='p0' placeholder='first line &#13;&#10;second line'>"
       "</textarea><textarea id='p1' placeholder='&#10;'></textarea>"
       "<textarea id='p2' placeholder='&#13;'></textarea>");
@@ -172,6 +176,29 @@ TEST_F(TextControlElementTest, TextAreaPlaceholderElementNewlineBehavior) {
   AssertPlaceholderTextIs("p0", "first line \nsecond line");
   AssertPlaceholderTextIs("p1", "\n");
   AssertPlaceholderTextIs("p1", "\n");
+}
+
+TEST_F(TextControlElementTest, TrackPasswordTrackingElementRectJSHeuristic) {
+  ScopedAIPageContentTrackedElementsPasswordForTest scoped_feature(true);
+
+  viz::TrackedElementFeature tracking_feature =
+      viz::TrackedElementFeature::kPasswordTracking;
+
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      "<input id=test type=text>");
+  auto* input =
+      To<HTMLInputElement>(GetDocument().getElementById(AtomicString("test")));
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_FALSE(input->GetTrackedElementSubRect(tracking_feature));
+
+  // Programmatic value change to a masked pattern should trigger tracking.
+  input->SetValue("****a");
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_TRUE(input->GetTrackedElementSubRect(tracking_feature));
+
+  input->SetValue(AtomicString(""));
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_FALSE(input->GetTrackedElementSubRect(tracking_feature));
 }
 
 }  // namespace blink

@@ -9,6 +9,8 @@
 
 #include "third_party/blink/renderer/core/animation/element_animations.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/paint/paint_flags.h"
+#include "third_party/blink/renderer/platform/geometry/contoured_rect.h"
 #include "third_party/blink/renderer/platform/geometry/path.h"
 #include "ui/gfx/geometry/rect_f.h"
 
@@ -23,6 +25,8 @@ class CORE_EXPORT ClipPathClipper {
   STATIC_ONLY(ClipPathClipper);
 
  public:
+  // Composited Clip Path Animation Functions
+
   // Value used for HasCompositeClipPathAnimation to determine what, if any
   // update is required.
   enum class CompositedStateResolutionType {
@@ -61,14 +65,47 @@ class CORE_EXPORT ClipPathClipper {
       CompositedStateResolutionType state);
 
   // Sets a potential composited clip path animation to be not composited.
-  // Called during pre-paint, currently in the case of fragmented layouts.
+  // Called early during pre-paint, before the paint properties have finished
+  // populating. At this point, some state that would normally be a fallback
+  // reason in CheckCanStartAnimationOnCompositor is not available.
+  // Additionally, there are some reasons where we need to force a fallback
+  // immediately rather than waiting to be set compositor pending again. This
+  // method covers those cases.
+  // TODO(crbug.com/488268869): The handling of fragmentation here shouldn't be
+  // necessary, layout has already produced the required information.
+  // TODO(crbug.com/489619758): Most of these reasons should be moved to be
+  // handled elsewhere. This method has been the source of bugs, see
+  // crbug.com/488090095
   static void FallbackClipPathAnimationIfNecessary(
       const LayoutObject& layout_object,
-      bool is_in_block_fragmentation);
+      bool should_force_fallback = false);
+
+  // Called by the paint property tree builder if a maximum clip area can't be
+  // sufficiently determined.
+  // TODO(crbug.com/489619758): This should be merged with
+  // FallbackClipPathAnimationIfNecessary or removed.
+  static void FallbackClipPathAnimationDueToAbsentBounds(
+      const LayoutObject& layout_object);
+
+  // General clip-related functions
+
+  static bool UsesZoomedReferenceBox(const LayoutObject& clip_path_owner);
+
+  static ContouredRect RoundedReferenceBox(GeometryBox geometry_box,
+                                           const LayoutObject& object);
 
   static void PaintClipPathAsMaskImage(GraphicsContext&,
                                        const LayoutObject&,
-                                       const DisplayItemClient&);
+                                       const DisplayItemClient&,
+                                       PaintFlags);
+
+  // Returns the local reference box for a given operation. Useful for
+  // when the desired operation is already known, or clip-path is not currently
+  // set in style (e.g. with a cc clip path animation.)
+  static gfx::RectF CalcLocalReferenceBox(
+      const LayoutObject& object,
+      const ClipPathOperation::OperationType clip_path_operation,
+      GeometryBox geometry_box);
 
   // Returns the reference box used by CSS clip-path.
   static gfx::RectF LocalReferenceBox(const LayoutObject&);
@@ -84,7 +121,8 @@ class CORE_EXPORT ClipPathClipper {
   // same as the layout object getting clipped, but in the case of nested
   // clip-path, it could be one of the SVG clip path in the chain.
   // Returns the path if the clip-path can use path-based clip.
-  static std::optional<Path> PathBasedClip(const LayoutObject& clip_path_owner);
+  static std::optional<Path> PathBasedClip(const LayoutObject& clip_path_owner,
+                                           const gfx::Vector2dF& clip_offset);
 
   // Returns true if `location` intersects the `clip_path_owner`'s clip-path.
   // `reference_box`, which should be calculated from `reference_box_object`, is
@@ -97,6 +135,13 @@ class CORE_EXPORT ClipPathClipper {
   // Like the above, but derives the reference box from the LayoutObject using
   // `LocalReferenceBox()`.
   static bool HitTest(const LayoutObject&, const HitTestLocation& location);
+
+ private:
+  static std::optional<Path> PathBasedClipInternal(
+      const LayoutObject& clip_path_owner,
+      const gfx::RectF& reference_box,
+      const LayoutObject& reference_box_object,
+      const gfx::Vector2dF& clip_offset);
 };
 
 }  // namespace blink

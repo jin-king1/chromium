@@ -26,8 +26,7 @@ DEFINE_BINARY_PROTO_FUZZER(const Input& input) {
           {Input::kHTMLStandardMode, blink::kHTMLStandardMode},
           {Input::kHTMLQuirksMode, blink::kHTMLQuirksMode},
           {Input::kSVGAttributeMode, blink::kSVGAttributeMode},
-          {Input::kCSSFontFaceRuleMode, blink::kCSSFontFaceRuleMode},
-          {Input::kUASheetMode, blink::kUASheetMode}};
+          {Input::kCSSFontFaceRuleMode, blink::kCSSFontFaceRuleMode}};
 
   static std::unordered_map<Input::SecureContextMode, blink::SecureContextMode>
       secure_context_mode_map = {
@@ -43,7 +42,7 @@ DEFINE_BINARY_PROTO_FUZZER(const Input& input) {
 
   auto* style_sheet =
       blink::MakeGarbageCollected<blink::StyleSheetContents>(context);
-  WTF::String style_sheet_string(
+  blink::String style_sheet_string(
       converter.Convert(input.style_sheet()).c_str());
   const blink::CSSDeferPropertyParsing defer_property_parsing =
       input.defer_property_parsing() ? blink::CSSDeferPropertyParsing::kYes

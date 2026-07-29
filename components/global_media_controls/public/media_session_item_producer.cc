@@ -4,9 +4,7 @@
 
 #include "components/global_media_controls/public/media_session_item_producer.h"
 
-#include "base/containers/contains.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
 #include "base/observer_list.h"
 #include "components/global_media_controls/public/media_item_manager.h"
 #include "components/global_media_controls/public/media_item_ui.h"
@@ -271,6 +269,8 @@ void MediaSessionItemProducer::OnFocusGained(
     it->second.item()->SetController(std::move(item_controller),
                                      std::move(session->session_info));
   } else {
+    bool always_hidden =
+        is_id_blocked_callback_ && is_id_blocked_callback_.Run(id);
     sessions_.emplace(
         std::piecewise_construct, std::forward_as_tuple(id),
         std::forward_as_tuple(
@@ -278,7 +278,7 @@ void MediaSessionItemProducer::OnFocusGained(
             std::make_unique<MediaSessionNotificationItem>(
                 this, id, session->source_name.value_or(std::string()),
                 session->source_id, std::move(item_controller),
-                std::move(session->session_info)),
+                std::move(session->session_info), always_hidden),
             std::move(session_controller)));
   }
 }
@@ -292,8 +292,8 @@ void MediaSessionItemProducer::OnFocusLost(
     return;
 
   // If we're not currently showing this item, then we can just remove it.
-  if (!base::Contains(active_controllable_session_ids_, id) &&
-      !base::Contains(frozen_session_ids_, id)) {
+  if (!active_controllable_session_ids_.contains(id) &&
+      !frozen_session_ids_.contains(id)) {
     RemoveItem(id);
     return;
   }
@@ -363,12 +363,12 @@ void MediaSessionItemProducer::OnItemShown(const std::string& id,
 
 bool MediaSessionItemProducer::IsItemActivelyPlaying(const std::string& id) {
   const auto it = sessions_.find(id);
-  return it == sessions_.end() ? false : it->second.IsPlaying();
+  return it != sessions_.end() && it->second.IsPlaying();
 }
 
 void MediaSessionItemProducer::ActivateItem(const std::string& id) {
   DCHECK(HasSession(id));
-  if (base::Contains(inactive_session_ids_, id))
+  if (inactive_session_ids_.contains(id))
     return;
 
   active_controllable_session_ids_.insert(id);
@@ -392,14 +392,14 @@ void MediaSessionItemProducer::RemoveItem(const std::string& id) {
 
 void MediaSessionItemProducer::RefreshItem(const std::string& id) {
   DCHECK(HasSession(id));
-  if (base::Contains(inactive_session_ids_, id))
+  if (inactive_session_ids_.contains(id))
     return;
 
   item_manager_->RefreshItem(id);
 }
 
 bool MediaSessionItemProducer::HasSession(const std::string& id) const {
-  return base::Contains(sessions_, id);
+  return sessions_.contains(id);
 }
 
 void MediaSessionItemProducer::LogMediaSessionActionButtonPressed(
@@ -412,7 +412,7 @@ void MediaSessionItemProducer::LogMediaSessionActionButtonPressed(
 void MediaSessionItemProducer::SetAudioSinkId(const std::string& id,
                                               const std::string& sink_id) {
   auto it = sessions_.find(id);
-  CHECK(it != sessions_.end(), base::NotFatalUntil::M130);
+  CHECK(it != sessions_.end());
   it->second.SetAudioSinkId(sink_id);
 }
 
@@ -428,15 +428,20 @@ MediaSessionItemProducer::RegisterIsAudioOutputDeviceSwitchingSupportedCallback(
     const std::string& id,
     base::RepeatingCallback<void(bool)> callback) {
   auto it = sessions_.find(id);
-  CHECK(it != sessions_.end(), base::NotFatalUntil::M130);
+  CHECK(it != sessions_.end());
 
   return it->second.RegisterIsAudioDeviceSwitchingSupportedCallback(
       std::move(callback));
 }
 
+void MediaSessionItemProducer::SetIsIdBlockedCallback(
+    base::RepeatingCallback<bool(const std::string&)> callback) {
+  is_id_blocked_callback_ = std::move(callback);
+}
+
 void MediaSessionItemProducer::UpdateMediaItemSourceOrigin(
     const std::string& id,
-    const url::Origin& origin) {
+    const std::optional<url::Origin>& origin) {
   auto it = sessions_.find(id);
   if (it != sessions_.end())
     it->second.item()->UpdatePresentationRequestOrigin(origin);
@@ -449,10 +454,10 @@ MediaSessionItemProducer::Session* MediaSessionItemProducer::GetSession(
 }
 
 void MediaSessionItemProducer::OnSessionBecameActive(const std::string& id) {
-  DCHECK(base::Contains(inactive_session_ids_, id));
+  DCHECK(inactive_session_ids_.contains(id));
 
   auto it = sessions_.find(id);
-  CHECK(it != sessions_.end(), base::NotFatalUntil::M130);
+  CHECK(it != sessions_.end());
 
   inactive_session_ids_.erase(id);
 
@@ -466,7 +471,7 @@ void MediaSessionItemProducer::OnSessionBecameActive(const std::string& id) {
 
 void MediaSessionItemProducer::OnSessionBecameInactive(const std::string& id) {
   // If this session is already marked inactive, then there's nothing to do.
-  if (base::Contains(inactive_session_ids_, id))
+  if (inactive_session_ids_.contains(id))
     return;
 
   inactive_session_ids_.insert(id);

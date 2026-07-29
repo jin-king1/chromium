@@ -4,21 +4,23 @@
 
 source_set("elements") {
   sources = [
+    "blue_dot_util.h",
+    "blue_dot_util.mm",
     "crossfade_label.h",
     "crossfade_label.mm",
-    "custom_highlight_button.h",
-    "custom_highlight_button.mm",
     "extended_touch_target_button.h",
     "extended_touch_target_button.mm",
     "fade_truncating_label+Testing.h",
     "fade_truncating_label.h",
     "fade_truncating_label.mm",
-    "gray_highlight_button.h",
-    "gray_highlight_button.mm",
     "home_waiting_view.h",
     "home_waiting_view.mm",
+    "invisible_arrow_popover_background_view.h",
+    "invisible_arrow_popover_background_view.mm",
     "new_feature_badge_view.h",
     "new_feature_badge_view.mm",
+    "passthrough_stack_view.h",
+    "passthrough_stack_view.mm",
     "self_sizing_table_view.h",
     "self_sizing_table_view.mm",
     "text_field_configuration.h",
@@ -40,7 +42,6 @@ source_set("elements") {
     "//ios/chrome/common/ui/colors",
     "//ios/chrome/common/ui/util",
     "//ios/chrome/common/ui/util:dynamic_type_util",
-    "//ios/third_party/material_components_ios",
     "//ui/base",
   ]
 }
@@ -70,7 +71,7 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "activity_overlay_coordinator_unittest.mm",
-    "chrome_activity_overlay_coordinator_unittest.mm",
+    "blue_dot_util_unittest.mm",
     "crossfade_label_unittest.mm",
     "fade_truncating_label_unittest.mm",
     "text_field_configuration_unittest.mm",
@@ -87,6 +88,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/common/ui/colors",
     "//ios/chrome/test:test_support",
+    "//ios/web/public/test",
     "//testing/gtest",
     "//third_party/ocmock",
   ]
@@ -98,21 +100,15 @@ source_set("elements_internal") {
     "activity_overlay_view.mm",
     "activity_overlay_view_controller.h",
     "activity_overlay_view_controller.mm",
-    "chrome_activity_overlay_coordinator.h",
-    "chrome_activity_overlay_coordinator.mm",
-    "chrome_activity_overlay_view_controller.h",
-    "chrome_activity_overlay_view_controller.mm",
   ]
   deps = [
     ":constants",
     "//base",
-    "//ios/chrome/browser/scoped_ui_blocker/ui_bundled:ui_bundled",
     "//ios/chrome/browser/shared/coordinator/chrome_coordinator",
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/ui/util",
     "//ios/chrome/common/ui/colors",
     "//ios/chrome/common/ui/util",
-    "//ios/third_party/material_components_ios",
   ]
   frameworks = [ "UIKit.framework" ]
 }

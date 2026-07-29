@@ -8,8 +8,8 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
+import android.view.LayoutInflater;
 import android.view.View;
-import android.widget.FrameLayout;
 
 import androidx.preference.PreferenceViewHolder;
 
@@ -61,13 +61,17 @@ public class SettingsPromoCardPreferenceTest {
         when(mMockDefaultBrowserPromoUtils.shouldShowNonRoleManagerPromo(any())).thenReturn(true);
         when(mTestTracker.shouldTriggerHelpUi(any())).thenReturn(false);
 
-        SettingsPromoCardPreference preference =
-                new SettingsPromoCardPreference(mActivity, null, mTestTracker);
-        View itemView = new FrameLayout(mActivity);
+        SettingsPromoCardPreference preference = new SettingsPromoCardPreference(mActivity, null);
+        preference.initialize(mTestTracker);
+        Assert.assertFalse(
+                "Preference should be hidden immediately after initialize()",
+                preference.isVisible());
+
+        View itemView = LayoutInflater.from(mActivity).inflate(R.layout.settings_promo_card, null);
         PreferenceViewHolder viewHolder = PreferenceViewHolder.createInstanceForTests(itemView);
         preference.onBindViewHolder(viewHolder);
-
-        Assert.assertFalse(preference.isVisible());
+        Assert.assertFalse(
+                "Preference should remain hidden after onBindViewHolder()", preference.isVisible());
     }
 
     @Test
@@ -75,15 +79,23 @@ public class SettingsPromoCardPreferenceTest {
         when(mTestTracker.shouldTriggerHelpUi(any())).thenReturn(true);
         when(mMockDefaultBrowserPromoUtils.shouldShowNonRoleManagerPromo(any())).thenReturn(true);
 
-        SettingsPromoCardPreference preference =
-                new SettingsPromoCardPreference(mActivity, null, mTestTracker);
-        Assert.assertTrue(preference.isVisible());
+        SettingsPromoCardPreference preference = new SettingsPromoCardPreference(mActivity, null);
+        preference.initialize(mTestTracker);
+        Assert.assertTrue(
+                "Preference should be visible immediately after initialize()",
+                preference.isVisible());
+
+        View itemView = LayoutInflater.from(mActivity).inflate(R.layout.settings_promo_card, null);
+        PreferenceViewHolder viewHolder = PreferenceViewHolder.createInstanceForTests(itemView);
+        preference.onBindViewHolder(viewHolder);
+        Assert.assertTrue(
+                "Preference should remain visible after onBindViewHolder()",
+                preference.isVisible());
 
         when(mMockDefaultBrowserPromoUtils.shouldShowNonRoleManagerPromo(any())).thenReturn(false);
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    preference.updatePreferences();
-                });
-        Assert.assertFalse(preference.isVisible());
+        ThreadUtils.runOnUiThreadBlocking(() -> preference.updatePreferences());
+        Assert.assertFalse(
+                "Preference should be hidden after updatePreferences() when no longer eligible",
+                preference.isVisible());
     }
 }

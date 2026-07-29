@@ -4,29 +4,37 @@
 
 #include "chrome/browser/ui/views/toolbar/home_button.h"
 
+#include <memory>
 #include <string_view>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/toolbar/pinned_action_toolbar_button_menu_model.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_prefs/user_prefs.h"
-#include "components/vector_icons/vector_icons.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
+#include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/styled_label.h"
@@ -36,13 +44,14 @@
 
 // HomePageUndoBubble ---------------------------------------------------------
 
-namespace {
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(HomePageUndoBubbleCoordinator,
+                                      kHomePageUndoBubbleMainViewId);
 
 class HomePageUndoBubble : public views::BubbleDialogDelegateView {
   METADATA_HEADER(HomePageUndoBubble, views::BubbleDialogDelegateView)
 
  public:
-  HomePageUndoBubble(views::View* anchor_view,
+  HomePageUndoBubble(views::BubbleAnchor anchor,
                      PrefService* prefs,
                      const GURL& undo_url,
                      bool undo_value_is_ntp);
@@ -62,15 +71,17 @@ class HomePageUndoBubble : public views::BubbleDialogDelegateView {
   bool undo_value_is_ntp_;
 };
 
-HomePageUndoBubble::HomePageUndoBubble(views::View* anchor_view,
+HomePageUndoBubble::HomePageUndoBubble(views::BubbleAnchor anchor,
                                        PrefService* prefs,
                                        const GURL& undo_url,
                                        bool undo_value_is_ntp)
-    : BubbleDialogDelegateView(anchor_view, views::BubbleBorder::TOP_LEFT),
+    : BubbleDialogDelegateView(anchor, views::BubbleBorder::TOP_LEFT),
       prefs_(prefs),
       undo_url_(undo_url),
       undo_value_is_ntp_(undo_value_is_ntp) {
   DCHECK(prefs_);
+  SetProperty(views::kElementIdentifierKey,
+              HomePageUndoBubbleCoordinator::kHomePageUndoBubbleMainViewId);
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   set_margins(
       ChromeLayoutProvider::Get()->GetInsetsMetric(views::INSETS_DIALOG));
@@ -108,39 +119,45 @@ void HomePageUndoBubble::UndoClicked() {
 BEGIN_METADATA(HomePageUndoBubble)
 END_METADATA
 
-}  // namespace
-
 // HomePageUndoBubbleCoordinator ----------------------------------------------
 
-HomePageUndoBubbleCoordinator::HomePageUndoBubbleCoordinator(
-    views::View* anchor_view,
-    PrefService* prefs)
-    : anchor_view_(anchor_view), prefs_(prefs) {}
+HomePageUndoBubbleCoordinator::HomePageUndoBubbleCoordinator(PrefService* prefs)
+    : prefs_(prefs) {}
 
 HomePageUndoBubbleCoordinator::~HomePageUndoBubbleCoordinator() = default;
 
 void HomePageUndoBubbleCoordinator::Show(const GURL& undo_url,
-                                         bool undo_value_is_ntp) {
+                                         bool undo_value_is_ntp,
+                                         const views::BubbleAnchor& anchor) {
   if (tracker_.view()) {
     tracker_.view()->GetWidget()->Close();
   }
 
   auto undo_bubble = std::make_unique<HomePageUndoBubble>(
-      anchor_view_, prefs_, undo_url, undo_value_is_ntp);
+      anchor, prefs_, undo_url, undo_value_is_ntp);
+
   tracker_.SetView(undo_bubble.get());
   views::BubbleDialogDelegateView::CreateBubble(std::move(undo_bubble))->Show();
 }
 
 // HomeButton -----------------------------------------------------------------
-
-HomeButton::HomeButton(PressedCallback callback, PrefService* prefs)
-    : ToolbarButton(std::move(callback)),
-      prefs_(prefs),
-      coordinator_(this, prefs) {
+HomeButton::HomeButton(BrowserWindowInterface* browser_window_interface,
+                       PressedCallback callback)
+    : ToolbarButton(std::move(callback),
+                    std::make_unique<PinnedActionToolbarButtonMenuModel>(
+                        browser_window_interface,
+                        kActionHome),
+                    nullptr),
+      prefs_(browser_window_interface->GetProfile()->GetPrefs()),
+      coordinator_(prefs_) {
   SetProperty(views::kElementIdentifierKey, kToolbarHomeButtonElementId);
   SetTriggerableEventFlags(ui::EF_LEFT_MOUSE_BUTTON |
                            ui::EF_MIDDLE_MOUSE_BUTTON);
-  SetVectorIcons(kNavigateHomeChromeRefreshIcon, kNavigateHomeTouchIcon);
+  SetVectorIcons(features::IsRoundedIconsEnabled()
+                     ? kHomeIcon
+                     : kNavigateHomeChromeRefreshOldIcon,
+                 features::IsRoundedIconsEnabled() ? kHomeIcon
+                                                   : kNavigateHomeTouchOldIcon);
   SetTooltipText(l10n_util::GetStringUTF16(IDS_TOOLTIP_HOME));
   GetViewAccessibility().SetName(l10n_util::GetStringUTF16(IDS_ACCNAME_HOME));
   SetID(VIEW_ID_HOME_BUTTON);
@@ -174,16 +191,24 @@ void HomeButton::UpdateHomePage(
     const ui::DropTargetEvent& event,
     ui::mojom::DragOperation& output_drag_op,
     std::unique_ptr<ui::LayerTreeOwner> drag_image_layer_owner) {
-  std::optional<ui::OSExchangeData::UrlInfo> url_info =
-      event.data().GetURLAndTitle(ui::FilenameToURLPolicy::CONVERT_FILENAMES);
-  if (url_info.has_value() && url_info->url.is_valid() && prefs_) {
+  const std::vector<ui::ClipboardUrlInfo> url_infos =
+      event.data().GetURLs(ui::FilenameToURLPolicy::CONVERT_FILENAMES);
+  if (!url_infos.empty() && prefs_) {
+    GURL new_homepage = url_infos.front().url;
+    CHECK(new_homepage.is_valid());
+
+    // Disallow javascript: URLs to prevent self-XSS.
+    if (new_homepage.SchemeIs(url::kJavaScriptScheme)) {
+      return;
+    }
+
     GURL old_homepage(prefs_->GetString(prefs::kHomePage));
     bool old_is_ntp = prefs_->GetBoolean(prefs::kHomePageIsNewTabPage);
 
-    prefs_->SetString(prefs::kHomePage, url_info->url.spec());
+    prefs_->SetString(prefs::kHomePage, new_homepage.spec());
     prefs_->SetBoolean(prefs::kHomePageIsNewTabPage, false);
 
-    coordinator_.Show(old_homepage, old_is_ntp);
+    coordinator_.Show(old_homepage, old_is_ntp, views::BubbleAnchor(this));
   }
   output_drag_op = ui::mojom::DragOperation::kNone;
 }

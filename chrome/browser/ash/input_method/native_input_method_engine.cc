@@ -9,7 +9,6 @@
 #include "ash/constants/ash_features.h"
 #include "ash/lobster/lobster_controller.h"
 #include "base/feature_list.h"
-#include "base/metrics/histogram_macros.h"
 #include "chrome/browser/ash/input_method/assistive_suggester_client_filter.h"
 #include "chrome/browser/ash/input_method/assistive_suggester_switch.h"
 #include "chrome/browser/ash/input_method/autocorrect_manager.h"
@@ -30,8 +29,7 @@ namespace ash {
 namespace input_method {
 namespace {
 bool ShouldRouteToFirstPartyVietnameseInput(std::string_view engine_id) {
-  return base::FeatureList::IsEnabled(features::kFirstPartyVietnameseInput) &&
-         (engine_id == "vkd_vi_vni" || engine_id == "vkd_vi_telex");
+  return engine_id == "vkd_vi_vni" || engine_id == "vkd_vi_telex";
 }
 }  // namespace
 

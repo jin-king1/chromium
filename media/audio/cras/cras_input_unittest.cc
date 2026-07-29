@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "base/run_loop.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/test/test_message_loop.h"
@@ -36,6 +37,8 @@ using testing::StrictMock;
 
 namespace media {
 
+using Error = AudioInputStream::AudioInputCallback::Error;
+
 class MockAudioInputCallback : public AudioInputStream::AudioInputCallback {
  public:
   MOCK_METHOD4(OnData,
@@ -43,7 +46,7 @@ class MockAudioInputCallback : public AudioInputStream::AudioInputCallback {
                     base::TimeTicks,
                     double,
                     const AudioGlitchInfo& glitch_info));
-  MOCK_METHOD0(OnError, void());
+  MOCK_METHOD1(OnError, void(Error));
 };
 
 class MockAudioManagerCrasInput : public AudioManagerCrasBase {
@@ -56,18 +59,20 @@ class MockAudioManagerCrasInput : public AudioManagerCrasBase {
 
   MOCK_METHOD1(DeregisterSystemAecDumpSource, void(AecdumpRecordingSource*));
 
-  bool HasAudioOutputDevices() { return true; }
-  bool HasAudioInputDevices() { return true; }
+  bool HasAudioOutputDevices() override { return true; }
+  bool HasAudioInputDevices() override { return true; }
   AudioParameters GetPreferredOutputStreamParameters(
       const std::string& output_device_id,
-      const AudioParameters& input_params) {
+      const AudioParameters& input_params) override {
     return AudioParameters(AudioParameters::AUDIO_PCM_LINEAR,
                            ChannelLayoutConfig::Stereo(), 44100, 1000);
   }
   bool IsDefault(const std::string& device_id, bool is_input) override {
     return true;
   }
-  enum CRAS_CLIENT_TYPE GetClientType() { return CRAS_CLIENT_TYPE_UNKNOWN; }
+  enum CRAS_CLIENT_TYPE GetClientType() override {
+    return CRAS_CLIENT_TYPE_UNKNOWN;
+  }
 
   // We need to override this function in order to skip checking the number
   // of active output streams. It is because the number of active streams
@@ -206,16 +211,18 @@ TEST_F(CrasInputStreamTest, CaptureFrames) {
                                 44100, 48000, 96000, 192000};
 
   for (unsigned int i = 0; i < ARRAY_SIZE(rates); i++) {
-    SCOPED_TRACE(testing::Message() << "Mono " << rates[i] << "Hz");
+    SCOPED_TRACE(testing::Message()
+                 << "Mono " << UNSAFE_TODO(rates[i]) << "Hz");
     AudioParameters params_mono(kTestFormat, ChannelLayoutConfig::Mono(),
-                                rates[i], kTestFramesPerPacket);
+                                UNSAFE_TODO(rates[i]), kTestFramesPerPacket);
     CaptureSomeFrames(params_mono, kTestCaptureDurationMs);
   }
 
   for (unsigned int i = 0; i < ARRAY_SIZE(rates); i++) {
-    SCOPED_TRACE(testing::Message() << "Stereo " << rates[i] << "Hz");
+    SCOPED_TRACE(testing::Message()
+                 << "Stereo " << UNSAFE_TODO(rates[i]) << "Hz");
     AudioParameters params_stereo(kTestFormat, ChannelLayoutConfig::Stereo(),
-                                  rates[i], kTestFramesPerPacket);
+                                  UNSAFE_TODO(rates[i]), kTestFramesPerPacket);
     CaptureSomeFrames(params_stereo, kTestCaptureDurationMs);
   }
 }
@@ -225,6 +232,34 @@ TEST_F(CrasInputStreamTest, CaptureLoopback) {
       CreateStream(ChannelLayoutConfig::Stereo(), kTestFramesPerPacket,
                    AudioDeviceDescription::kLoopbackInputDeviceId);
   EXPECT_EQ(test_stream->Open(), AudioInputStream::OpenOutcome::kSuccess);
+  test_stream->Close();
+}
+
+// Verifies that restarting the stream works correctly and continues to deliver
+// callbacks, which requires the persistent proxy to survive stop/start cycles.
+TEST_F(CrasInputStreamTest, RestartedStreamKeepsCapturing) {
+  CrasInputStream* test_stream = CreateStream(ChannelLayoutConfig::Mono());
+  MockAudioInputCallback mock_callback;
+
+  EXPECT_CALL(*mock_manager_.get(), RegisterSystemAecDumpSource(_)).Times(3);
+  EXPECT_CALL(*mock_manager_.get(), DeregisterSystemAecDumpSource(_)).Times(3);
+
+  ASSERT_EQ(test_stream->Open(), AudioInputStream::OpenOutcome::kSuccess);
+
+  base::WaitableEvent event(base::WaitableEvent::ResetPolicy::AUTOMATIC,
+                            base::WaitableEvent::InitialState::NOT_SIGNALED);
+
+  EXPECT_CALL(mock_callback, OnData(_, _, _, _))
+      .WillRepeatedly(InvokeWithoutArgs(&event, &base::WaitableEvent::Signal));
+
+  // Restart the same stream several times. Each cycle must keep producing
+  // callbacks.
+  for (int i = 0; i < 3; ++i) {
+    test_stream->Start(&mock_callback);
+    EXPECT_TRUE(event.TimedWait(TestTimeouts::action_timeout()));
+    test_stream->Stop();
+  }
+
   test_stream->Close();
 }
 

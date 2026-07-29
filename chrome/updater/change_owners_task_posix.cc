@@ -11,12 +11,13 @@
 #include <utility>
 #include <vector>
 
+#include "base/files/file.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "chrome/updater/persisted_data.h"
 #include "chrome/updater/updater_scope.h"

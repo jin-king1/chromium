@@ -7,7 +7,6 @@
 #include <memory>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/system/eche/eche_tray.h"
 #include "ash/system/status_area_widget_test_helper.h"
 #include "ash/test/ash_test_base.h"
@@ -20,7 +19,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "chromeos/ash/components/multidevice/logging/logging.h"
 #include "chromeos/ash/components/test/ash_test_suite.h"
@@ -170,15 +168,11 @@ class EcheSignalerTest : public AshTestBase {
 
   // AshTestBase:
   void SetUp() override {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kEcheNetworkConnectionState},
-        /*disabled_features=*/{});
     DCHECK(test_web_view_factory_.get());
     ui::ResourceBundle::CleanupSharedInstance();
     AshTestSuite::LoadTestResources();
     AshTestBase::SetUp();
 
-    eche_tray_ = StatusAreaWidgetTestHelper::GetStatusAreaWidget()->eche_tray();
     eche_connection_status_handler_ =
         std::make_unique<eche_app::EcheConnectionStatusHandler>();
     apps_launch_info_provider_ = std::make_unique<AppsLaunchInfoProvider>(
@@ -247,10 +241,8 @@ class EcheSignalerTest : public AshTestBase {
 
   TaskRunner task_runner_;
   FakeEcheConnector fake_connector_{&task_runner_};
-  base::test::ScopedFeatureList feature_list_;
 
  private:
-  raw_ptr<EcheTray, DanglingUntriaged> eche_tray_ = nullptr;
   secure_channel::FakeConnectionManager fake_connection_manager_;
   std::unique_ptr<EcheConnectionStatusHandler> eche_connection_status_handler_;
   std::unique_ptr<AppsLaunchInfoProvider> apps_launch_info_provider_;

@@ -8,9 +8,11 @@
 #include <memory>
 #include <string>
 
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ref.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "chrome/browser/ui/ash/editor_menu/utils/pre_target_handler.h"
@@ -26,6 +28,7 @@
 #include "chromeos/components/mahi/public/cpp/mahi_web_contents_manager.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "chromeos/ui/vector_icons/vector_icons.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_node_data.h"
@@ -33,6 +36,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/display/screen.h"
 #include "ui/events/event.h"
@@ -58,6 +62,7 @@
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/layout/layout_types.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
@@ -106,8 +111,8 @@ void StyleMenuButton(views::LabelButton* button, const gfx::VectorIcon& icon) {
   auto color_id = button->GetEnabled() ? ui::kColorSysTonalOutline
                                        : ui::kColorButtonBorderDisabled;
   button->SetBorder(views::CreatePaddedBorder(
-      views::CreateThemedRoundedRectBorder(kButtonBorderThickness,
-                                           kButtonCornerRadius, color_id),
+      views::CreateRoundedRectBorder(kButtonBorderThickness,
+                                     kButtonCornerRadius, color_id),
       kButtonPadding));
 }
 
@@ -199,9 +204,13 @@ class MahiMenuView::MenuTextfieldController
   base::WeakPtr<MahiMenuView> menu_view_;
 };
 
-MahiMenuView::MahiMenuView(ButtonStatus button_status, Surface surface)
+MahiMenuView::MahiMenuView(
+    const ApplicationLocaleStorage* application_locale_storage,
+    ButtonStatus button_status,
+    Surface surface)
     : chromeos::editor_menu::PreTargetHandlerView(
           chromeos::editor_menu::CardType::kMahiDefaultMenu),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)),
       surface_(surface) {
   SetBackground(views::CreateRoundedRectBackground(
       ui::kColorPrimaryBackground,
@@ -246,7 +255,9 @@ MahiMenuView::MahiMenuView(ButtonStatus button_status, Surface surface)
           base::BindRepeating(&MahiMenuView::OnButtonPressed,
                               weak_ptr_factory_.GetWeakPtr(),
                               ButtonType::kSettings),
-          vector_icons::kSettingsOutlineIcon,
+          ::features::IsRoundedIconsEnabled()
+              ? vector_icons::kSettingsIcon
+              : vector_icons::kSettingsOutlineOldIcon,
           l10n_util::GetStringUTF16(IDS_EDITOR_MENU_SETTINGS_TOOLTIP)));
   settings_button_->SetID(ViewID::kSettingsButton);
 
@@ -338,6 +349,7 @@ MahiMenuView::~MahiMenuView() {
 
 // static
 views::UniqueWidgetPtr MahiMenuView::CreateWidget(
+    const ApplicationLocaleStorage* application_locale_storage,
     const gfx::Rect& anchor_view_bounds,
     const ButtonStatus& button_status,
     Surface surface) {
@@ -355,8 +367,9 @@ views::UniqueWidgetPtr MahiMenuView::CreateWidget(
 
   views::UniqueWidgetPtr widget =
       std::make_unique<MahiMenuWidget>(std::move(params));
-  MahiMenuView* mahi_menu_view = widget->SetContentsView(
-      std::make_unique<MahiMenuView>(button_status, surface));
+  MahiMenuView* mahi_menu_view =
+      widget->SetContentsView(std::make_unique<MahiMenuView>(
+          application_locale_storage, button_status, surface));
   mahi_menu_view->UpdateBounds(anchor_view_bounds);
 
   return widget;
@@ -378,7 +391,8 @@ void MahiMenuView::UpdateBounds(const gfx::Rect& anchor_view_bounds) {
   // TODO(b/318733414): Move `editor_menu::GetEditorMenuBounds` to a common
   // place for use
   GetWidget()->SetBounds(editor_menu::GetEditorMenuBounds(
-      anchor_view_bounds, this, editor_menu::CardType::kMahiDefaultMenu));
+      anchor_view_bounds, this, application_locale_storage_->Get(),
+      editor_menu::CardType::kMahiDefaultMenu));
 }
 
 void MahiMenuView::OnWidgetVisibilityChanged(views::Widget* widget,
@@ -392,7 +406,7 @@ void MahiMenuView::OnWidgetVisibilityChanged(views::Widget* widget,
 }
 
 void MahiMenuView::OnButtonPressed(ButtonType button_type) {
-  auto display = display::Screen::GetScreen()->GetDisplayNearestWindow(
+  auto display = display::Screen::Get()->GetDisplayNearestWindow(
       GetWidget()->GetNativeWindow());
   if (surface_ == Surface::kBrowser) {
     chromeos::MahiWebContentsManager::Get()->OnContextMenuClicked(
@@ -439,7 +453,7 @@ void MahiMenuView::OnButtonPressed(ButtonType button_type) {
 }
 
 void MahiMenuView::OnQuestionSubmitted() {
-  auto display = display::Screen::GetScreen()->GetDisplayNearestWindow(
+  auto display = display::Screen::Get()->GetDisplayNearestWindow(
       GetWidget()->GetNativeWindow());
   if (surface_ == Surface::kBrowser) {
     chromeos::MahiWebContentsManager::Get()->OnContextMenuClicked(
@@ -495,13 +509,17 @@ std::unique_ptr<views::FlexLayoutView> MahiMenuView::CreateInputContainer() {
                   .SetCallback(
                       base::BindRepeating(&MahiMenuView::OnQuestionSubmitted,
                                           weak_ptr_factory_.GetWeakPtr()))
-                  .SetImageModel(
-                      views::Button::STATE_NORMAL,
-                      ui::ImageModel::FromVectorIcon(vector_icons::kSendIcon))
-                  .SetImageModel(
-                      views::Button::STATE_DISABLED,
-                      ui::ImageModel::FromVectorIcon(
-                          vector_icons::kSendIcon, ui::kColorSysStateDisabled))
+                  .SetImageModel(views::Button::STATE_NORMAL,
+                                 ui::ImageModel::FromVectorIcon(
+                                     ::features::IsRoundedIconsEnabled()
+                                         ? vector_icons::kSendIcon
+                                         : vector_icons::kSendOldIcon))
+                  .SetImageModel(views::Button::STATE_DISABLED,
+                                 ui::ImageModel::FromVectorIcon(
+                                     ::features::IsRoundedIconsEnabled()
+                                         ? vector_icons::kSendIcon
+                                         : vector_icons::kSendOldIcon,
+                                     ui::kColorSysStateDisabled))
                   .SetAccessibleName(l10n_util::GetStringUTF16(
                       IDS_MAHI_MENU_INPUT_SEND_BUTTON_ACCESSIBLE_NAME))
                   .SetProperty(views::kMarginsKey, kTextfieldButtonPadding)

@@ -13,6 +13,14 @@ std::optional<PrivateKeySource> ToPrivateKeySource(
       return PrivateKeySource::kUnexportableKey;
     case client_certificates_pb::PrivateKey::PRIVATE_SOFTWARE_KEY:
       return PrivateKeySource::kSoftwareKey;
+    case client_certificates_pb::PrivateKey::PRIVATE_OS_SOFTWARE_KEY:
+      return PrivateKeySource::kOsSoftwareKey;
+    case client_certificates_pb::PrivateKey::PRIVATE_ANDROID_KEY:
+      return PrivateKeySource::kAndroidKey;
+    case client_certificates_pb::PrivateKey::PRIVATE_CHROME_OS_HW_KEY:
+      return PrivateKeySource::kChromeOsHwKey;
+    case client_certificates_pb::PrivateKey::PRIVATE_CHROME_OS_SW_KEY:
+      return PrivateKeySource::kChromeOsSwKey;
     default:
       return std::nullopt;
   }
@@ -25,6 +33,14 @@ client_certificates_pb::PrivateKey::PrivateKeySource ToProtoKeySource(
       return client_certificates_pb::PrivateKey::PRIVATE_UNEXPORTABLE_KEY;
     case PrivateKeySource::kSoftwareKey:
       return client_certificates_pb::PrivateKey::PRIVATE_SOFTWARE_KEY;
+    case PrivateKeySource::kOsSoftwareKey:
+      return client_certificates_pb::PrivateKey::PRIVATE_OS_SOFTWARE_KEY;
+    case PrivateKeySource::kAndroidKey:
+      return client_certificates_pb::PrivateKey::PRIVATE_ANDROID_KEY;
+    case PrivateKeySource::kChromeOsHwKey:
+      return client_certificates_pb::PrivateKey::PRIVATE_CHROME_OS_HW_KEY;
+    case PrivateKeySource::kChromeOsSwKey:
+      return client_certificates_pb::PrivateKey::PRIVATE_CHROME_OS_SW_KEY;
   }
 }
 
@@ -34,6 +50,14 @@ std::optional<PrivateKeySource> ToPrivateKeySource(int pref_key_source) {
       return PrivateKeySource::kUnexportableKey;
     case 1:
       return PrivateKeySource::kSoftwareKey;
+    case 2:
+      return PrivateKeySource::kOsSoftwareKey;
+    case 3:
+      return PrivateKeySource::kAndroidKey;
+    case 4:
+      return PrivateKeySource::kChromeOsHwKey;
+    case 5:
+      return PrivateKeySource::kChromeOsSwKey;
     default:
       return std::nullopt;
   }

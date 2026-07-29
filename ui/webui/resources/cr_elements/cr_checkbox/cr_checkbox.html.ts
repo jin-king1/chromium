@@ -9,10 +9,11 @@ import type {CrCheckboxElement} from './cr_checkbox.js';
 export function getHtml(this: CrCheckboxElement) {
   return html`
 <div id="checkbox" tabindex="${this.tabIndex}" role="checkbox"
-    @keydown="${this.onKeyDown_}" @keyup="${this.onKeyUp_}"
+    @keydown="${this.onKeydown_}" @keyup="${this.onKeyup_}"
     aria-disabled="${this.getAriaDisabled_()}"
     aria-checked="${this.getAriaChecked_()}"
-    aria-labelledby="labelContainer"
+    aria-label="${this.ariaLabelOverride || nothing}"
+    aria-labelledby="${this.ariaLabelOverride ? nothing : 'labelContainer'}"
     aria-describedby="ariaDescription">
   <!-- Inline SVG paints faster than loading it from a separate file. -->
   <svg id="checkmark" width="12" height="12" viewBox="0 0 12 12"
@@ -22,8 +23,7 @@ export function getHtml(this: CrCheckboxElement) {
   </svg>
   <div id="hover-layer"></div>
 </div>
-<div id="labelContainer" aria-hidden="true"
-    aria-label="${this.ariaLabelOverride || nothing}" part="label-container">
+<div id="labelContainer" part="label-container">
   <slot></slot>
 </div>
 <div id="ariaDescription" aria-hidden="true">${this.ariaDescription}</div>`;

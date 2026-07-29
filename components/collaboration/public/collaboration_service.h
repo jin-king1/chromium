@@ -9,6 +9,7 @@
 #include "base/supports_user_data.h"
 #include "build/build_config.h"
 #include "components/collaboration/public/collaboration_controller_delegate.h"
+#include "components/collaboration/public/collaboration_flow_entry_point.h"
 #include "components/collaboration/public/service_status.h"
 #include "components/data_sharing/public/data_sharing_service.h"
 #include "components/data_sharing/public/group_data.h"
@@ -19,6 +20,10 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
 #endif  // BUILDFLAG(IS_ANDROID)
+
+namespace syncer {
+class SyncService;
+}  // namespace syncer
 
 namespace collaboration {
 
@@ -76,10 +81,24 @@ class CollaborationService : public KeyedService,
   // tab group id or a sync id.
   virtual void StartShareOrManageFlow(
       std::unique_ptr<CollaborationControllerDelegate> delegate,
-      const tab_groups::EitherGroupID& either_id) = 0;
+      const tab_groups::EitherGroupID& either_id,
+      CollaborationServiceShareOrManageEntryPoint entry) = 0;
+
+  // Starts a new leave or delete flow. This will cancel all existing ongoing
+  // flows in the same browser instance.
+  virtual void StartLeaveOrDeleteFlow(
+      std::unique_ptr<CollaborationControllerDelegate> delegate,
+      const tab_groups::EitherGroupID& either_id,
+      CollaborationServiceLeaveOrDeleteEntryPoint entry) = 0;
+
+  // Cancels all the flows currently displayed.
+  virtual void CancelAllFlows() = 0;
 
   // Get the current ServiceStatus.
   virtual ServiceStatus GetServiceStatus() = 0;
+
+  // Invoked on startup to start observing sync service for sync status changes.
+  virtual void OnSyncServiceInitialized(syncer::SyncService* sync_service) = 0;
 
   // Get the group member information of the current user.
   virtual data_sharing::MemberRole GetCurrentUserRoleForGroup(
@@ -101,6 +120,15 @@ class CollaborationService : public KeyedService,
   // successfully deleted.
   virtual void LeaveGroup(const data_sharing::GroupId& group_id,
                           base::OnceCallback<void(bool success)> callback) = 0;
+
+  // Check if the given URL should be intercepted.
+  virtual bool ShouldInterceptNavigationForShareURL(const GURL& url) = 0;
+
+  // Called when a data sharing type URL has been intercepted.
+  virtual void HandleShareURLNavigationIntercepted(
+      const GURL& url,
+      std::unique_ptr<data_sharing::ShareURLInterceptionContext> context,
+      CollaborationServiceJoinEntryPoint entry) = 0;
 };
 
 }  // namespace collaboration

@@ -12,11 +12,16 @@
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "components/autofill/core/browser/autofill_type.h"
+#include "components/autofill/core/browser/proto/password_requirements.pb.h"
 #include "components/autofill/core/common/password_generation_util.h"
 #include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
 
 class GURL;
+
+namespace autofill {
+struct AutofillServerPrediction;
+}
 
 namespace password_manager {
 
@@ -52,8 +57,7 @@ class PasswordGenerationFrameHelper {
   void ProcessPasswordRequirements(
       const autofill::FormData& form,
       const base::flat_map<autofill::FieldGlobalId,
-                           autofill::AutofillType::ServerPrediction>&
-          predictions);
+                           autofill::AutofillServerPrediction>& predictions);
 
   // Determines current state of password generation
   // `log_debug_data` determines whether log entries are sent to the
@@ -69,6 +73,14 @@ class PasswordGenerationFrameHelper {
   // Adds `field_renderer_id` to `generation_enabled_fields_` set.
   virtual void AddManualGenerationEnabledField(
       autofill::FieldRendererId field_renderer_id);
+
+  // Returns password requirements spec based on provided input.
+  virtual autofill::PasswordRequirementsSpec GetPasswordRequirementsSpec(
+      const GURL& last_committed_url,
+      autofill::password_generation::PasswordGenerationType generation_type,
+      autofill::FormSignature form_signature,
+      autofill::FieldSignature field_signature,
+      uint64_t max_length);
 
   // Returns a randomly generated password that should (but is not guaranteed
   // to) match the requirements of the site.
@@ -99,11 +111,11 @@ class PasswordGenerationFrameHelper {
 
   // The PasswordManagerClient instance associated with this instance. Must
   // outlive this instance.
-  const raw_ptr<PasswordManagerClient> client_;
+  const raw_ptr<PasswordManagerClient, DanglingUntriaged> client_;
 
   // The PasswordManagerDriver instance associated with this instance. Must
   // outlive this instance.
-  const raw_ptr<PasswordManagerDriver> driver_;
+  const raw_ptr<PasswordManagerDriver, DanglingUntriaged> driver_;
 
   // The fields that have manual generation enabled. This includes fields that
   // have type="text".

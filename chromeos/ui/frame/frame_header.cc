@@ -4,12 +4,11 @@
 
 #include "chromeos/ui/frame/frame_header.h"
 
+#include <algorithm>
 #include <vector>
 
-#include "base/logging.h"  // DCHECK
 #include "chromeos/ui/frame/caption_buttons/frame_caption_button_container_view.h"
 #include "chromeos/ui/frame/caption_buttons/frame_center_button.h"
-#include "chromeos/ui/frame/frame_utils.h"
 #include "chromeos/ui/vector_icons/vector_icons.h"
 #include "ui/base/class_property.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -17,22 +16,21 @@
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/color/color_id.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/layer_tree_owner.h"
 #include "ui/compositor/layer_type.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_utils.h"
 #include "ui/gfx/font_list.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/scoped_canvas.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/views/background.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/native_widget_aura.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/window/caption_button_layout_constants.h"
-#include "ui/views/window/non_client_view.h"
+#include "ui/views/window/frame_view.h"
 
 DEFINE_UI_CLASS_PROPERTY_TYPE(chromeos::FrameHeader*)
 
@@ -192,7 +190,7 @@ FrameHeader* FrameHeader::Get(views::Widget* widget) {
 
 // static
 views::View::Views FrameHeader::GetAdjustedChildrenInZOrder(
-    views::NonClientFrameView* frame_view) {
+    views::FrameView* frame_view) {
   views::View::Views paint_order = frame_view->children();
   views::ClientView* client_view = frame_view->GetWidget()
                                        ? frame_view->GetWidget()->client_view()
@@ -300,8 +298,15 @@ void FrameHeader::SetHeaderCornerRadius(int radius) {
     return;
   }
 
+  // If the frame header's radius is reduced, the area encompassing the
+  // curvature of both corners must be repainted.
+  const gfx::Size repaint_area(std::max(radius, corner_radius_),
+                               std::max(radius, corner_radius_));
   corner_radius_ = radius;
-  view_->SchedulePaint();
+
+  view_->SchedulePaintInRect(gfx::Rect(repaint_area));
+  view_->SchedulePaintInRect(
+      gfx::Rect(gfx::Point(view_->width() - corner_radius_, 0), repaint_area));
 }
 
 void FrameHeader::SetLeftHeaderView(views::View* left_header_view) {
@@ -339,12 +344,21 @@ const chromeos::CaptionButtonModel* FrameHeader::GetCaptionButtonModel() const {
 
 void FrameHeader::SetFrameTextOverride(
     const std::u16string& frame_text_override) {
+  if (frame_text_override_ == frame_text_override) {
+    return;
+  }
+
   frame_text_override_ = frame_text_override;
   SchedulePaintForTitle();
 }
 
-SkPath FrameHeader::GetWindowMaskForFrameHeader(const gfx::Size& size) {
-  return SkPath();
+void FrameHeader::SetPaintTitleBar(bool paint_title_bar) {
+  if (paint_title_bar_ == paint_title_bar) {
+    return;
+  }
+
+  paint_title_bar_ = paint_title_bar;
+  SchedulePaintForTitle();
 }
 
 ui::ColorId FrameHeader::GetColorIdForCurrentMode() const {
@@ -427,6 +441,9 @@ void FrameHeader::UpdateCaptionButtonColors(
 }
 
 void FrameHeader::PaintTitleBar(gfx::Canvas* canvas) {
+  if (!paint_title_bar_) {
+    return;
+  }
   std::u16string text = frame_text_override_;
   views::WidgetDelegate* target_widget_delegate =
       target_widget_->widget_delegate();

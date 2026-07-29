@@ -7,6 +7,7 @@
 #include "android_webview/browser/aw_browser_context.h"
 #include "base/android/jni_android.h"
 #include "base/i18n/rtl.h"
+#include "base/strings/string_number_conversions.h"
 #include "components/grit/components_resources.h"
 #include "components/prefs/pref_service.h"
 #include "components/security_interstitials/content/security_interstitial_controller_client.h"
@@ -104,7 +105,7 @@ void AwSupervisedUserBlockingPage::CommandReceived(const std::string& command) {
 }
 
 void AwSupervisedUserBlockingPage::PopulateInterstitialStrings(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   load_time_data.Set(
       "primaryParagraph",
       l10n_util::GetStringUTF16(IDS_SUPERVISED_USER_URL_BLOCKED_MESSAGE));
@@ -112,3 +113,5 @@ void AwSupervisedUserBlockingPage::PopulateInterstitialStrings(
                      l10n_util::GetStringUTF16(IDS_SUPERVISED_USER_LEARN_MORE));
 }
 }  // namespace android_webview
+
+DEFINE_JNI(AwSupervisedUserHelper)

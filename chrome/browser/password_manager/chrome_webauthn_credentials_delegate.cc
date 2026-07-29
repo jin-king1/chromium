@@ -17,7 +17,7 @@
 #include "components/password_manager/core/browser/passkey_credential.h"
 #include "components/password_manager/core/browser/password_ui_utils.h"
 #include "content/public/browser/web_contents.h"
-#include "device/fido/fido_types.h"
+#include "device/fido/public/fido_types.h"
 #include "ui/base/l10n/l10n_util.h"
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -51,8 +51,9 @@ using OnPasskeySelectedCallback =
     password_manager::WebAuthnCredentialsDelegate::OnPasskeySelectedCallback;
 
 ChromeWebAuthnCredentialsDelegate::ChromeWebAuthnCredentialsDelegate(
-    content::WebContents* web_contents)
-    : web_contents_(web_contents) {}
+    content::RenderFrameHost* frame_host)
+    : frame_host_(frame_host),
+      web_contents_(content::WebContents::FromRenderFrameHost(frame_host)) {}
 
 ChromeWebAuthnCredentialsDelegate::~ChromeWebAuthnCredentialsDelegate() =
     default;
@@ -68,8 +69,8 @@ void ChromeWebAuthnCredentialsDelegate::LaunchSecurityKeyOrHybridFlow() {
       ->TransitionToModalWebAuthnRequest();
 #else
   if (WebAuthnRequestDelegateAndroid* delegate =
-          WebAuthnRequestDelegateAndroid::GetRequestDelegate(web_contents_)) {
-    delegate->ShowHybridSignIn();
+          WebAuthnRequestDelegateAndroid::GetRequestDelegate(frame_host_)) {
+    delegate->OnHybridSignInSelected();
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
 }
@@ -86,7 +87,7 @@ void ChromeWebAuthnCredentialsDelegate::SelectPasskey(
 #if BUILDFLAG(IS_ANDROID)
   std::move(callback).Run();
   auto* request_delegate =
-      WebAuthnRequestDelegateAndroid::GetRequestDelegate(web_contents_);
+      WebAuthnRequestDelegateAndroid::GetRequestDelegate(frame_host_);
   if (!request_delegate) {
     return;
   }
@@ -101,8 +102,6 @@ void ChromeWebAuthnCredentialsDelegate::SelectPasskey(
   if (passkey_selected_callback_) {
     // The user tapped on another passkey while the enclave was loading. Ignore
     // the tap.
-    // TODO(crbug.com/344950143): Disable the rows that are not supposed to be
-    // clicked.
     return;
   }
   passkey_selected_callback_ = std::move(callback);
@@ -117,6 +116,23 @@ void ChromeWebAuthnCredentialsDelegate::SelectPasskey(
     std::move(passkey_selected_callback_).Run();
   }
 #endif  // BUILDFLAG(IS_ANDROID)
+}
+
+std::optional<std::string> ChromeWebAuthnCredentialsDelegate::GetCableQrString()
+    const {
+#if !BUILDFLAG(IS_ANDROID)
+  ChromeAuthenticatorRequestDelegate* authenticator_delegate =
+      AuthenticatorRequestScheduler::GetRequestDelegate(web_contents_);
+  if (!authenticator_delegate || !authenticator_delegate->dialog_model()) {
+    return std::nullopt;
+  }
+  if (!authenticator_delegate->dialog_model()->ble_adapter_is_powered) {
+    return std::nullopt;
+  }
+  return authenticator_delegate->dialog_model()->cable_qr_string;
+#else
+  return std::nullopt;
+#endif
 }
 
 base::expected<const std::vector<PasskeyCredential>*,

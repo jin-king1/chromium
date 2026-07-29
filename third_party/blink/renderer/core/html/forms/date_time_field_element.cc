@@ -93,8 +93,10 @@ void DateTimeFieldElement::DefaultKeyboardEventHandler(
       return;
     // FIXME: We'd like to use FocusController::advanceFocus(FocusDirectionLeft,
     // ...) but it doesn't work for shadow nodes. webkit.org/b/104650
-    if (!LocaleForOwner().IsRTL() && field_owner_->FocusOnPreviousField(*this))
+    if (!LocaleForOwner().IsRtl() &&
+        field_owner_->FocusOnPreviousField(*this)) {
       keyboard_event.SetDefaultHandled();
+    }
     return;
   }
 
@@ -104,8 +106,9 @@ void DateTimeFieldElement::DefaultKeyboardEventHandler(
     // FIXME: We'd like to use
     // FocusController::advanceFocus(FocusDirectionRight, ...)
     // but it doesn't work for shadow nodes. webkit.org/b/104650
-    if (!LocaleForOwner().IsRTL() && field_owner_->FocusOnNextField(*this))
+    if (!LocaleForOwner().IsRtl() && field_owner_->FocusOnNextField(*this)) {
       keyboard_event.SetDefaultHandled();
+    }
     return;
   }
 
@@ -113,8 +116,9 @@ void DateTimeFieldElement::DefaultKeyboardEventHandler(
     return;
 
   if (key == *key_mapper.LineUnder()) {
-    if (keyboard_event.getModifierState("Alt"))
+    if (keyboard_event.altKey()) {
       return;
+    }
     keyboard_event.SetDefaultHandled();
     StepDown();
     return;
@@ -139,7 +143,7 @@ void DateTimeFieldElement::SetFocused(bool value,
     if (value) {
       field_owner_->DidFocusOnField(focus_type);
       GetDocument().GetFrame()->Selection().SetSelection(
-          SelectionInDOMTree::Builder()
+          SelectionInDomTree::Builder()
               .Collapse(Position::FirstPositionInNode(*this))
               .Build(),
           SetSelectionOptions::Builder()
@@ -207,8 +211,9 @@ AtomicString DateTimeFieldElement::LocaleIdentifier() const {
 }
 
 float DateTimeFieldElement::MaximumWidth(const ComputedStyle&) {
-  const float kPaddingLeftAndRight = 2;  // This should match to html.css.
-  return kPaddingLeftAndRight;
+  // This should be equal to twice the padding set in input_multiple_fields.css.
+  const float kPaddingLeftAndRightCSSPixels = 2;
+  return kPaddingLeftAndRightCSSPixels * GetDocument().DevicePixelRatio();
 }
 
 void DateTimeFieldElement::SetDisabled() {

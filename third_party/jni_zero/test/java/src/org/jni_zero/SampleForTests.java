@@ -6,6 +6,7 @@ package org.jni_zero;
 
 import android.graphics.Rect;
 
+import org.jni_zero.extrapackage.ImportsTinySample;
 import org.jni_zero.internal.Nullable;
 
 import java.util.ArrayList;
@@ -49,6 +50,7 @@ class SampleForTests {
     }
 
     public void doStuff() {
+        class TestDuplicateClassName {}
         // This will call CPPClass::Method() using nativePtr as a pointer to the object. This must
         // be done to:
         // * avoid leaks.
@@ -60,6 +62,7 @@ class SampleForTests {
     // private native void thisShouldNotExist();
 
     public void finishExample() {
+        class TestDuplicateClassName {}
         // We're done, so let's destroy nativePtr object.
         SampleForTestsJni.get().destroy(mNativeCPPObject, this, new byte[0]);
     }
@@ -188,7 +191,7 @@ class SampleForTests {
             mString = s;
         }
 
-        @CalledByNative("InnerStructA")
+        @CalledByNative
         private static InnerStructA create(long l, int i, String s) {
             return new InnerStructA(l, i, s);
         }
@@ -198,7 +201,7 @@ class SampleForTests {
 
     @CalledByNative
     private SampleForTests.@Nullable InnerStructA addStructA(
-            SampleForTests.@Nullable InnerStructA a) {
+            SampleForTests.@Nullable InnerStructA a, @Nullable ImportsTinySample b) {
         // Called by the native side to append another element.
         mListInnerStructA.add(a);
         return null;
@@ -227,12 +230,12 @@ class SampleForTests {
             mValue = v;
         }
 
-        @CalledByNative("InnerStructB")
+        @CalledByNative
         private long getKey() {
             return mKey;
         }
 
-        @CalledByNative("InnerStructB")
+        @CalledByNative
         private String getValue() {
             return mValue;
         }
@@ -264,7 +267,7 @@ class SampleForTests {
 
     // Test overloads (causes names to be mangled).
     @CalledByNative
-    static InnerEnum getInnerEnum(int a) {
+    static ImportsTinySample getInnerEnum(int a) {
         return null;
     }
 
@@ -305,7 +308,7 @@ class SampleForTests {
         long init(
                 SampleForTests caller,
                 String param,
-                @JniType("jni_zero::ByteArrayView") byte[] bytes,
+                byte[] bytes,
                 @JniType("jni_zero::tests::CPPClass*") SampleForTests convertedType,
                 @JniType("std::vector") SampleForTests[] nonConvertedArray);
 
@@ -375,6 +378,9 @@ class SampleForTests {
                 @JniType("std::vector<int64_t>") long[] l,
                 @JniType("std::vector<float>") float[] f,
                 @JniType("std::vector<double>") double[] d);
+
+        @JniType("MyEnum")
+        int returnFromEnum();
 
         // Similar to nativeMethod above, but here the C++ fully qualified class name is taken from
         // the annotation rather than parameter name, which can thus be chosen freely.

@@ -26,11 +26,11 @@ namespace blink {
 
 RTCEncodedUnderlyingSourceWrapper::RTCEncodedUnderlyingSourceWrapper(
     ScriptState* script_state,
-    WTF::CrossThreadOnceClosure disconnect_callback)
+    CrossThreadOnceClosure disconnect_callback)
     : UnderlyingSourceBase(script_state), script_state_(script_state) {}
 
 void RTCEncodedUnderlyingSourceWrapper::CreateAudioUnderlyingSource(
-    WTF::CrossThreadOnceClosure disconnect_callback_source,
+    CrossThreadOnceClosure disconnect_callback_source,
     base::UnguessableToken owner_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(!video_from_encoder_underlying_source_);
@@ -43,7 +43,7 @@ void RTCEncodedUnderlyingSourceWrapper::CreateAudioUnderlyingSource(
 }
 
 void RTCEncodedUnderlyingSourceWrapper::CreateVideoUnderlyingSource(
-    WTF::CrossThreadOnceClosure disconnect_callback_source,
+    CrossThreadOnceClosure disconnect_callback_source,
     base::UnguessableToken owner_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(!audio_from_encoder_underlying_source_);
@@ -58,7 +58,7 @@ void RTCEncodedUnderlyingSourceWrapper::CreateVideoUnderlyingSource(
 RTCEncodedUnderlyingSourceWrapper::VideoTransformer
 RTCEncodedUnderlyingSourceWrapper::GetVideoTransformer() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return WTF::CrossThreadBindRepeating(
+  return CrossThreadBindRepeating(
       &RTCEncodedVideoUnderlyingSource::OnFrameFromSource,
       WrapCrossThreadPersistent(video_from_encoder_underlying_source_.Get()));
 }
@@ -66,7 +66,7 @@ RTCEncodedUnderlyingSourceWrapper::GetVideoTransformer() {
 RTCEncodedUnderlyingSourceWrapper::AudioTransformer
 RTCEncodedUnderlyingSourceWrapper::GetAudioTransformer() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return WTF::CrossThreadBindRepeating(
+  return CrossThreadBindRepeating(
       &RTCEncodedAudioUnderlyingSource::OnFrameFromSource,
       WrapCrossThreadPersistent(audio_from_encoder_underlying_source_.Get()));
 }

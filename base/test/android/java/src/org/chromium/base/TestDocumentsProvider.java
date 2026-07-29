@@ -26,14 +26,45 @@ import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 
 /**
- * DocumentsProvider that reads files into memory when requested and returns an AssetFileDescriptor
- * to the memory-backed contents rather than to the local file. This is used for testing how
- * DocumentProviders which do not use local files will behave.
+ * A {@link DocumentsProvider} implementation for testing purposes that simulates a provider that
+ * does not grant direct file access for read operations.
+ *
+ * <p><b>Behavior:</b>
+ *
+ * <ul>
+ *   <li><b>File Storage:</b> All files and directories are physically stored in the application's
+ *       cache directory (see {@link Context#getCacheDir()}).
+ *   <li><b>Document ID:</b> The {@code documentId} for any file or directory is its relative path
+ *       from the cache directory.
+ *   <li><b>Read Operations:</b> When a document is opened for reading, this provider reads the
+ *       entire file content into a memory buffer and streams it back to the client through a pipe
+ *       ({@link ContentProvider#openPipeHelper}). This is useful for testing client code against
+ *       providers (e.g., cloud storage providers) that do not return a direct file descriptor to a
+ *       local file.
+ *   <li><b>Write Operations:</b> When a document is opened for writing, a direct file descriptor to
+ *       the underlying file in the cache directory is returned.
+ *   <li><b>Authority:</b> The provider's authority is dynamically constructed as {@code
+ *       <app_package_name>.docprov}.
+ * </ul>
  */
 public class TestDocumentsProvider extends DocumentsProvider {
-    private static final String AUTHORITY = "org.chromium.native_test.docprov";
+    private static final String[] DEFAULT_PROJECTION_FOR_TEST =
+            new String[] {
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                DocumentsContract.Document.COLUMN_FLAGS,
+            };
 
-    private PipeDataWriter mPipeDataWriter =
+    // The authority cannot be static as its initialization depends on a Context. A ContentProvider
+    // can be created before Application.onCreate() is called, which is where the static
+    // application context in ContextUtils is set. Therefore, we must wait until the provider's
+    // own onCreate() is called to safely get a context.
+    private String mAuthority;
+
+    private final PipeDataWriter<byte[]> mPipeDataWriter =
             new ContentProvider.PipeDataWriter<byte[]>() {
                 @Override
                 public void writeDataToPipe(
@@ -55,6 +86,7 @@ public class TestDocumentsProvider extends DocumentsProvider {
 
     @Override
     public boolean onCreate() {
+        mAuthority = getContext().getPackageName() + ".docprov";
         return true;
     }
 
@@ -77,13 +109,19 @@ public class TestDocumentsProvider extends DocumentsProvider {
         return file.getAbsolutePath().substring(mCacheDir.getAbsolutePath().length() + 1);
     }
 
+    /**
+     * Return all available columns when the projection is null to follow the contract of
+     * DocumentsProvider#queryDocument and so on
+     * https://developer.android.com/reference/android/provider/DocumentsProvider.
+     */
     public Cursor query(String[] projection, File[] files) {
-        MatrixCursor cursor = new MatrixCursor(projection != null ? projection : new String[0]);
+        String[] resolvedProjection = projection == null ? DEFAULT_PROJECTION_FOR_TEST : projection;
+        MatrixCursor cursor = new MatrixCursor(resolvedProjection);
         for (File file : files) {
             if (file.exists()) {
-                Object[] row = new Object[projection != null ? projection.length : 0];
-                for (int i = 0; i < projection.length; i++) {
-                    String colName = projection[i];
+                Object[] row = new Object[resolvedProjection.length];
+                for (int i = 0; i < resolvedProjection.length; i++) {
+                    String colName = resolvedProjection[i];
                     if (DocumentsContract.Document.COLUMN_DOCUMENT_ID.equals(colName)) {
                         row[i] = getDocumentId(file);
                     } else if (DocumentsContract.Document.COLUMN_DISPLAY_NAME.equals(colName)) {
@@ -94,6 +132,14 @@ public class TestDocumentsProvider extends DocumentsProvider {
                         row[i] = file.length();
                     } else if (DocumentsContract.Document.COLUMN_LAST_MODIFIED.equals(colName)) {
                         row[i] = file.lastModified();
+                    } else if (DocumentsContract.Document.COLUMN_FLAGS.equals(colName)) {
+                        int flags = DocumentsContract.Document.FLAG_SUPPORTS_DELETE;
+                        if (file.isDirectory()) {
+                            flags |= DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE;
+                        } else {
+                            flags |= DocumentsContract.Document.FLAG_SUPPORTS_WRITE;
+                        }
+                        row[i] = flags;
                     }
                 }
                 cursor.addRow(row);
@@ -125,10 +171,19 @@ public class TestDocumentsProvider extends DocumentsProvider {
     public ParcelFileDescriptor openDocument(
             String documentId, String mode, CancellationSignal signal)
             throws FileNotFoundException {
+        if (mode.contains("w")) {
+            File file = getFile(documentId);
+            if (file.isDirectory()) {
+                throw new FileNotFoundException("Cannot open a directory with mode: " + mode);
+            }
+            int accessMode = ParcelFileDescriptor.parseMode(mode);
+            return ParcelFileDescriptor.open(file, accessMode);
+        }
+
         try (FileInputStream fis = new FileInputStream(getFile(documentId))) {
             byte[] buf = FileUtils.readStream(fis);
             return openPipeHelper(
-                    DocumentsContract.buildDocumentUri(AUTHORITY, documentId),
+                    DocumentsContract.buildDocumentUri(mAuthority, documentId),
                     null,
                     null,
                     buf,

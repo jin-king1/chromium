@@ -32,13 +32,14 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.CriteriaNotSatisfiedException;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.content_public.browser.MessagePayload;
 import org.chromium.content_public.browser.MessagePort;
 import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer;
+import org.chromium.content_public.browser.test.util.WebContentsUtils;
 import org.chromium.net.test.util.TestWebServer;
 
 import java.util.List;
@@ -178,7 +179,6 @@ public class PopupWindowTest extends AwParameterizedTest {
                         mParentContents, mParentContentsClient, "navigator.userAgent");
 
         final String popupPath = "/popup.html";
-        final String myUserAgentString = "myUserAgent";
         final String parentPageHtml =
                 CommonResources.makeHtmlPageFrom(
                         "",
@@ -247,7 +247,6 @@ public class PopupWindowTest extends AwParameterizedTest {
                 "tryOpenWindow()");
 
         PopupInfo popupInfo = mActivityTestRule.createPopupContents(mParentContents);
-        TestAwContentsClient popupContentsClient = popupInfo.popupContentsClient;
         final AwContents popupContents = popupInfo.popupContents;
 
         // Override the user agent string for the popup window.
@@ -264,13 +263,9 @@ public class PopupWindowTest extends AwParameterizedTest {
 
         CriteriaHelper.pollUiThread(
                 () -> {
-                    try {
-                        Criteria.checkThat(
-                                mActivityTestRule.getTitleOnUiThread(popupContents),
-                                Matchers.is(myUserAgentString));
-                    } catch (Exception e) {
-                        throw new CriteriaNotSatisfiedException(e);
-                    }
+                    Criteria.checkThat(
+                            mActivityTestRule.getTitleOnUiThread(popupContents),
+                            Matchers.is(myUserAgentString));
                 });
     }
 
@@ -364,8 +359,7 @@ public class PopupWindowTest extends AwParameterizedTest {
         final String popupPageHtml =
                 CommonResources.makeHtmlPageFrom(
                         "<title>" + POPUP_TITLE + "</title>",
-                        "<span id=\"plain_text\" class=\"full_view\">This is a popup"
-                                + " window.</span>");
+                        "<span id=\"plain_text\">This is a popup window.</span>");
 
         mActivityTestRule.triggerPopup(
                 mParentContents,
@@ -434,12 +428,12 @@ public class PopupWindowTest extends AwParameterizedTest {
                         hasOpener ? "" : "rel=\"noopener noreferrer\"");
         final String mainHtml = CommonResources.makeHtmlPageFrom("", body);
         final String openerUrl = mWebServer.setResponse("/popupOpener.html", mainHtml, null);
-        final String popupUrl =
-                mWebServer.setResponse(
-                        "/popup.html",
-                        CommonResources.makeHtmlPageFrom(
-                                "<title>" + POPUP_TITLE + "</title>", "This is a popup window"),
-                        null);
+
+        mWebServer.setResponse(
+                "/popup.html",
+                CommonResources.makeHtmlPageFrom(
+                        "<title>" + POPUP_TITLE + "</title>", "This is a popup window"),
+                null);
 
         mParentContentsClient.getOnCreateWindowHelper().setReturnValue(true);
         mActivityTestRule.loadUrlSync(
@@ -488,12 +482,12 @@ public class PopupWindowTest extends AwParameterizedTest {
     }
 
     private static class TestWebMessageListener implements WebMessageListener {
-        private LinkedBlockingQueue<Data> mQueue = new LinkedBlockingQueue<>();
+        private final LinkedBlockingQueue<Data> mQueue = new LinkedBlockingQueue<>();
 
         public static class Data {
-            public String mMessage;
-            public boolean mIsMainFrame;
-            public JsReplyProxy mReplyProxy;
+            public final String mMessage;
+            public final boolean mIsMainFrame;
+            public final JsReplyProxy mReplyProxy;
 
             public Data(String message, boolean isMainFrame, JsReplyProxy replyProxy) {
                 mMessage = message;
@@ -539,6 +533,7 @@ public class PopupWindowTest extends AwParameterizedTest {
     @Feature({"AndroidWebView"})
     @SkipMutations(
             reason = "This test depends on a combination of AwSettings, see crbug.com/1494038")
+    @DisabledTest(message = "Flaky, see crbug.com/468684305")
     public void testSingleWindowModeJsInjection() throws Throwable {
         // Choose a free port which is different from |mWebServer| so they have different origins.
         TestWebServer crossOriginWebServer = TestWebServer.startAdditional();
@@ -630,6 +625,10 @@ public class PopupWindowTest extends AwParameterizedTest {
         // term we plan to switch to JSUtils to avoid this
         // https://crbug.com/1334843
         mParentContentsClient.getOnPageCommitVisibleHelper().waitForOnly();
+
+        // Force an end of paint-holding which is irrelevant here and can block input events.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> WebContentsUtils.simulateEndOfPaintHolding(mParentContents.getWebContents()));
 
         // Step 4. Click iframe_link to give user gesture.
         DOMUtils.clickRect(mParentContents.getWebContents(), rect);

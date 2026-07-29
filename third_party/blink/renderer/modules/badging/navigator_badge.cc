@@ -111,7 +111,7 @@ ScriptPromise<IDLUndefined> NavigatorBadge::SetAppBadgeHelper(
     return EmptyPromise();
   }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_FUCHSIA)
   // TODO(crbug.com/1413916): The service is implemented in Chrome, so it may
   // not be provided in other embedders. Ensure that case is handled properly.
   From(script_state).badge_service()->SetBadge(std::move(badge_value));
@@ -125,15 +125,15 @@ ScriptPromise<IDLUndefined> NavigatorBadge::SetAppBadgeHelper(
                   kBadgeSetWithoutNotificationPermissionInBrowserWindow
             : mojom::blink::WebFeature::
                   kBadgeSetWithoutNotificationPermissionInWorker;
-    if (context->IsWindow()) {
-      LocalFrame* frame = DynamicTo<LocalDOMWindow>(context)->GetFrame();
+    if (auto* window = DynamicTo<LocalDOMWindow>(context)) {
+      LocalFrame* frame = window->GetFrame();
       if (frame && frame->GetSettings() &&
           !frame->GetSettings()->GetWebAppScope().empty()) {
         feature = mojom::blink::WebFeature::
             kBadgeSetWithoutNotificationPermissionInAppWindow;
       }
     }
-    NotificationManager::From(context)->GetPermissionStatusAsync(WTF::BindOnce(
+    NotificationManager::From(context)->GetPermissionStatusAsync(BindOnce(
         [](mojom::blink::WebFeature feature, UseCounter* counter,
            mojom::blink::PermissionStatus status) {
           if (status != mojom::blink::PermissionStatus::GRANTED) {
@@ -156,7 +156,7 @@ ScriptPromise<IDLUndefined> NavigatorBadge::ClearAppBadgeHelper(
     return EmptyPromise();
   }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_FUCHSIA)
   // TODO(crbug.com/1413916): The service is implemented in Chrome, so it may
   // not be provided in other embedders. Ensure that case is handled properly.
   From(script_state).badge_service()->ClearBadge();

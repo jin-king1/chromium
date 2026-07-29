@@ -5,6 +5,7 @@
 #include "chrome/browser/apps/app_service/publishers/app_publisher.h"
 
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "components/services/app_service/public/cpp/capability_access.h"
@@ -86,7 +87,7 @@ void AppPublisher::LaunchAppWithIntent(const std::string& app_id,
                                        WindowInfoPtr window_info,
                                        LaunchCallback callback) {
   NOTIMPLEMENTED();
-  std::move(callback).Run(LaunchResult(State::kFailed));
+  std::move(callback).Run(LaunchResult::kFailed);
 }
 
 void AppPublisher::SetPermission(const std::string& app_id,

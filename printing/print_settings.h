@@ -32,7 +32,8 @@
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chromeos/crosapi/mojom/local_printer.mojom.h"
+#include "printing/cups_printer_status_reason_ash.h"
+#include "printing/printing_features.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace printing {
@@ -44,7 +45,7 @@ inline constexpr char kMacSystemPrintDialogDataDestinationType[] =
     "destination_type";
 inline constexpr char kMacSystemPrintDialogDataDestinationFormat[] =
     "destination_format";
-inline constexpr char kMacSystemPrintDialogDataDestinationLocation[] =
+inline constexpr char kMacSystemPrintDialogDataDestinationFileUrl[] =
     "destination_location";
 inline constexpr char kMacSystemPrintDialogDataPageFormat[] = "page_format";
 inline constexpr char kMacSystemPrintDialogDataPrintSettings[] =
@@ -52,10 +53,20 @@ inline constexpr char kMacSystemPrintDialogDataPrintSettings[] =
 #endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_LINUX)
+// Used by PrintDialogGtk
 inline constexpr char kLinuxSystemPrintDialogDataPrinter[] = "printer_name";
 inline constexpr char kLinuxSystemPrintDialogDataPrintSettings[] =
     "print_settings";
 inline constexpr char kLinuxSystemPrintDialogDataPageSetup[] = "page_setup";
+
+// Used by PrintDialogLinuxPortal.
+inline constexpr char kLinuxSystemPrintDialogDataPrintSettingsBin[] =
+    "print_settings_bin";
+inline constexpr char kLinuxSystemPrintDialogDataPageSetupBin[] =
+    "page_setup_bin";
+inline constexpr char kLinuxSystemPrintDialogDataPrintToken[] = "print_token";
+inline constexpr char kLinuxSystemPrintDialogDataParentHandle[] =
+    "parent_handle";
 #endif  // BUILDFLAG(IS_LINUX)
 
 #endif  // BUILDFLAG(ENABLE_OOP_PRINTING_NO_OOP_BASIC_PRINT_DIALOG)
@@ -115,11 +126,22 @@ class COMPONENT_EXPORT(PRINTING_SETTINGS) PrintSettings {
   // Reinitialize the settings to the default values.
   void Clear();
 
-  void SetCustomMargins(const PageMargins& requested_margins_in_points);
-  const PageMargins& requested_custom_margins_in_points() const {
-    return requested_custom_margins_in_points_;
+  void SetCustomMargins(const PageMargins& requested_margins_in_microns);
+#if BUILDFLAG(IS_CHROMEOS)
+  // This sets margins and sets `margin_type` to `kPrecomputedMarginsForBackend`
+  // For more details, see the documentation for `kPrecomputedMarginsForBackend`
+  // in `print.mojom`.
+  void SetCustomMarginsForBackend(
+      const PageMargins& requested_margins_in_microns);
+#endif  // BUILDFLAG(IS_CHROMEOS)
+  const PageMargins& requested_custom_margins_in_microns() const {
+    return requested_custom_margins_in_microns_;
   }
   void set_margin_type(mojom::MarginType margin_type) {
+#if BUILDFLAG(IS_CHROMEOS)
+    CHECK_NE(margin_type,
+             printing::mojom::MarginType::kPrecomputedMarginsForBackend);
+#endif  // BUILDFLAG(IS_CHROMEOS)
     margin_type_ = margin_type;
   }
   mojom::MarginType margin_type() const { return margin_type_; }
@@ -313,20 +335,27 @@ class COMPONENT_EXPORT(PRINTING_SETTINGS) PrintSettings {
   bool printer_manually_selected() const { return printer_manually_selected_; }
 
   void set_printer_status_reason(
-      crosapi::mojom::StatusReason::Reason printer_status_reason) {
+      CupsPrinterStatusReason printer_status_reason) {
     printer_status_reason_ = printer_status_reason;
   }
-  std::optional<crosapi::mojom::StatusReason::Reason> printer_status_reason()
-      const {
+  std::optional<CupsPrinterStatusReason> printer_status_reason() const {
     return printer_status_reason_;
   }
+
+  void set_print_scaling(mojom::PrintScalingType print_scaling) {
+    print_scaling_ = print_scaling;
+  }
+  mojom::PrintScalingType print_scaling() const { return print_scaling_; }
+
+  void set_quality(mojom::Quality quality) { quality_ = quality; }
+  mojom::Quality quality() const { return quality_; }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_OOP_PRINTING_NO_OOP_BASIC_PRINT_DIALOG)
-  void set_system_print_dialog_data(base::Value::Dict data) {
+  void set_system_print_dialog_data(base::DictValue data) {
     system_print_dialog_data_ = std::move(data);
   }
-  const base::Value::Dict& system_print_dialog_data() const {
+  const base::DictValue& system_print_dialog_data() const {
     return system_print_dialog_data_;
   }
 #endif
@@ -383,7 +412,7 @@ class COMPONENT_EXPORT(PRINTING_SETTINGS) PrintSettings {
   // Platform-specific print settings captured from a system print dialog.
   // The settings are captured in the browser process for transmission to
   // the Print Backend service for OOP printing.
-  base::Value::Dict system_print_dialog_data_;
+  base::DictValue system_print_dialog_data_;
 #endif
 
   // Media requested by the user.
@@ -424,7 +453,7 @@ class COMPONENT_EXPORT(PRINTING_SETTINGS) PrintSettings {
   bool is_modifiable_;
 
   // If margin type is custom, this is what was requested.
-  PageMargins requested_custom_margins_in_points_;
+  PageMargins requested_custom_margins_in_microns_;
 
   // Number of pages per sheet.
   int pages_per_sheet_;
@@ -453,11 +482,18 @@ class COMPONENT_EXPORT(PRINTING_SETTINGS) PrintSettings {
 
   // True if the user selects to print to a different printer than the original
   // destination shown when Print Preview opens.
-  bool printer_manually_selected_;
+  bool printer_manually_selected_ = false;
 
   // The printer status reason shown for the selected printer at the time print
   // is requested. Only local CrOS printers set printer statuses.
-  std::optional<crosapi::mojom::StatusReason::Reason> printer_status_reason_;
+  std::optional<CupsPrinterStatusReason> printer_status_reason_;
+
+  // Print scaling type.
+  mojom::PrintScalingType print_scaling_ =
+      mojom::PrintScalingType::kUnknownPrintScalingType;
+
+  // Print qulity for the printer to use.
+  mojom::Quality quality_ = mojom::Quality::kUnknownQuality;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 };
 

@@ -4,6 +4,8 @@
 
 #include "components/paint_preview/common/serial_utils.h"
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/path_service.h"
@@ -14,7 +16,7 @@
 #include "third_party/skia/include/codec/SkBmpDecoder.h"
 #include "third_party/skia/include/codec/SkGifDecoder.h"
 #include "third_party/skia/include/codec/SkJpegDecoder.h"
-#include "third_party/skia/include/codec/SkPngDecoder.h"
+#include "third_party/skia/include/codec/SkPngRustDecoder.h"
 #include "third_party/skia/include/codec/SkWebpDecoder.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -71,7 +73,7 @@ TEST(PaintPreviewSerialUtils, TestTransformedPictureProcs) {
 
   // Check that serializing then deserialize the picture works produces a
   // correct clip rect.
-  sk_sp<SkData> serial_pic_data =
+  auto serial_pic_data =
       serial_procs.fPictureProc(pic.get(), serial_procs.fPictureCtx);
   sk_sp<SkPicture> deserial_pic = deserial_procs.fPictureProc(
       serial_pic_data->data(), serial_pic_data->size(),
@@ -165,8 +167,13 @@ TEST(PaintPreviewSerialUtils, TestSerialAndroidSystemTypeface) {
   EXPECT_GT(typeface_ctx.finished.count(typeface->uniqueID()), 0U);
   auto original_data = typeface->serialize();
   ASSERT_EQ(original_data->size(), final_data->size());
-  ASSERT_EQ(
-      0, memcmp(original_data->data(), final_data->data(), final_data->size()));
+  // SAFETY: Skia's `serialize()` returns a valid data buffer and size.
+  ASSERT_EQ(UNSAFE_BUFFERS(base::span(
+                static_cast<const uint8_t*>(original_data->data()),
+                original_data->size())),
+            UNSAFE_BUFFERS(
+                base::span(static_cast<const uint8_t*>(final_data->data()),
+                           final_data->size())));
 }
 #endif
 
@@ -212,8 +219,13 @@ TEST(PaintPreviewSerialUtils, TestImageContextLimitBudget) {
   PictureSerializationContext picture_ctx;
   TypefaceUsageMap usage_map;
   TypefaceSerializationContext typeface_ctx(&usage_map);
+
+  // Set the `remaining_image_size` budget to a value that will allow
+  // 2 images (rather than all 3 images).  This value depends on the
+  // implementation details of a PNG encoder (and therefore may need
+  // to be tweaked after changing the encoder or encoding settings).
   ImageSerializationContext ictx;
-  ictx.remaining_image_size = 200;
+  ictx.remaining_image_size = 220;
 
   SkSerialProcs serial_procs =
       MakeSerialProcs(&picture_ctx, &typeface_ctx, &ictx);
@@ -227,9 +239,10 @@ TEST(PaintPreviewSerialUtils, TestImageContextLimitBudget) {
   SkDeserialProcs deserial_procs;
   size_t deserialized_images = 0;
   deserial_procs.fImageCtx = &deserialized_images;
-  deserial_procs.fImageProc = [](const void* data, size_t length,
-                                 void* ctx) -> sk_sp<SkImage> {
-    if (length > 0U) {
+  deserial_procs.fImageDataProc = [](sk_sp<SkData> data,
+                                     std::optional<SkAlphaType>,
+                                     void* ctx) -> sk_sp<SkImage> {
+    if (data && data->size() > 0U) {
       size_t* images = reinterpret_cast<size_t*>(ctx);
       *images += 1;
     }
@@ -275,9 +288,10 @@ TEST(PaintPreviewSerialUtils, TestImageContextLimitSize) {
   SkDeserialProcs deserial_procs;
   size_t deserialized_images = 0;
   deserial_procs.fImageCtx = &deserialized_images;
-  deserial_procs.fImageProc = [](const void* data, size_t length,
-                                 void* ctx) -> sk_sp<SkImage> {
-    if (length > 0U) {
+  deserial_procs.fImageDataProc = [](sk_sp<SkData> data,
+                                     std::optional<SkAlphaType>,
+                                     void* ctx) -> sk_sp<SkImage> {
+    if (data && data->size() > 0U) {
       size_t* images = reinterpret_cast<size_t*>(ctx);
       *images += 1;
     }
@@ -291,7 +305,7 @@ namespace {
 
 struct DeserialImageContext {
   size_t image_count = 0;
-  SkDeserialImageProc deserial_image_proc = nullptr;
+  SkDeserialImageFromDataProc deserial_image_proc = nullptr;
 };
 
 static void TrySerialAndDeserial(sk_sp<SkData> image_data) {
@@ -322,24 +336,25 @@ static void TrySerialAndDeserial(sk_sp<SkData> image_data) {
   DeserializationContext deserial_ctx;
   SkDeserialProcs deserial_procs = MakeDeserialProcs(&deserial_ctx);
   EXPECT_EQ(deserial_procs.fPictureCtx, &deserial_ctx);
-  EXPECT_NE(deserial_procs.fImageProc, nullptr);
+  EXPECT_NE(deserial_procs.fImageDataProc, nullptr);
 
-  // Spy on the operation by taking `fImageProc` (`DeserializeImage`) from the
-  // production procs and wrapping it as part of the `DeserialImageContext`.
-  // This allows end-to-end validation of its behavior.
+  // Spy on the operation by taking `fImageDataProc` (`DeserializeImage`) from
+  // the production procs and wrapping it as part of the
+  // `DeserialImageContext`. This allows end-to-end validation of its behavior.
   DeserialImageContext deserial_image_ctx;
-  deserial_image_ctx.deserial_image_proc = deserial_procs.fImageProc;
+  deserial_image_ctx.deserial_image_proc = deserial_procs.fImageDataProc;
   deserial_procs.fImageCtx = &deserial_image_ctx;
-  deserial_procs.fImageProc = [](const void* data, size_t length,
-                                 void* ctx) -> sk_sp<SkImage> {
-    if (length == 0U) {
+  deserial_procs.fImageDataProc = [](sk_sp<SkData> data,
+                                     std::optional<SkAlphaType> at,
+                                     void* ctx) -> sk_sp<SkImage> {
+    if (!data || data->size() == 0U) {
       return nullptr;
     }
     DeserialImageContext* deserial_image_ctx =
         reinterpret_cast<DeserialImageContext*>(ctx);
     deserial_image_ctx->image_count += 1;
     sk_sp<SkImage> image =
-        (*(deserial_image_ctx->deserial_image_proc))(data, length, nullptr);
+        (*(deserial_image_ctx->deserial_image_proc))(data, at, nullptr);
     EXPECT_NE(image, nullptr) << "Invalid decoded image.";
     return image;
   };
@@ -356,7 +371,7 @@ TEST(PaintPreviewSerialUtils, TestImageContextEncodeAndDecodePng) {
       path.AppendASCII("components/test/data/paint_preview/test.png"),
       base::File::FLAG_OPEN | base::File::FLAG_READ));
 
-  SkCodecs::Register(SkPngDecoder::Decoder());
+  SkCodecs::Register(SkPngRustDecoder::Decoder());
   TrySerialAndDeserial(SkData::MakeFromStream(&stream, stream.length()));
 }
 

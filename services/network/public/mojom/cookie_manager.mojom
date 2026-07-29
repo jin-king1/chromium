@@ -11,6 +11,7 @@ import "sandbox/policy/mojom/context.mojom";
 import "services/network/public/mojom/cookie_partition_key.mojom";
 import "services/network/public/mojom/first_party_sets.mojom";
 import "services/network/public/mojom/schemeful_site.mojom";
+import "url/mojom/origin.mojom";
 import "url/mojom/url.mojom";
 
 // Parameters for constructing a cookie manager.
@@ -18,24 +19,27 @@ struct CookieManagerParams {
   // Whether or not third party cookies should be blocked.
   bool block_third_party_cookies = false;
 
-  // Whether tracking protection for 3PCD (prefs + UX) is enabled.
-  bool tracking_protection_enabled_for_3pcd = false;
-
-  // Whether Third Party Cookie Deprecation mitigations efforts such as Third
-  // Party Cookie Deprecation Metadata grants are permitted.
-  bool mitigations_enabled_for_3pcd = false;
-
   // Content settings for CookieManager.
   map<content_settings.mojom.ContentSettingsType,
     array<content_settings.mojom.ContentSettingPatternSource>> content_settings;
 
   // Schemes that unconditionally allow cookies from secure origins.
+  // Note: ContentBrowserClient::ShouldTreatURLSchemeAsFirstPartyWhenTopLevel()
+  // needs to be aware of the schemes set here in order to work correctly for
+  // embedded frames.
   array<string> secure_origin_cookies_allowed_schemes;
+
+  // Origins that unconditionally allow cookies from secure origins.
+  // Note: Opaque origins are not allowed and will be ignored.
+  array<url.mojom.Origin> secure_origin_cookies_allowed_origins;
 
   // Schemes that unconditionally allow cookies from the same scheme.
   array<string> matching_scheme_cookies_allowed_schemes;
 
   // Schemes that unconditionally allow third party cookies.
+  // Note: ContentBrowserClient::ShouldTreatURLSchemeAsFirstPartyWhenTopLevel()
+  // needs to be aware of the schemes set here in order to work correctly for
+  // embedded frames.
   array<string> third_party_cookies_allowed_schemes;
 
   // Whether or not to allow cookies for file:// URLs. Can be overridden by
@@ -95,10 +99,10 @@ enum CookieEffectiveSameSite {
 enum CookieExemptionReason {
     kNone = 0,
     kUserSetting = 1,
-    k3PCDMetadata = 2,
-    k3PCDDeprecationTrial = 3,
-    kTopLevel3PCDDeprecationTrial = 4,
-    k3PCDHeuristics = 5,
+    // k3PCDMetadata = 2,  // Deprecated
+    // k3PCDDeprecationTrial = 3,  // Deprecated
+    // kTopLevel3PCDDeprecationTrial = 4,  // Deprecated
+    // k3PCDHeuristics = 5,  // Deprecated
     kEnterprisePolicy = 6,
     kStorageAccess = 7,
     kTopLevelStorageAccess = 8,
@@ -121,7 +125,6 @@ enum CookieSameSiteContextMetadataDowngradeType {
 };
 
 enum CookieSourceType {
-  kUnknown,
   kHTTP,
   kScript,
   kOther,
@@ -209,7 +212,7 @@ struct CanonicalCookie {
   // -1 because of url::PORT_UNSPECIFIED
   // url/third_party/mozilla/url_parse.h
   int32 source_port = -1;
-  CookieSourceType source_type = kUnknown;
+  CookieSourceType source_type = kOther;
 };
 
 struct ExclusionReasons {
@@ -280,7 +283,22 @@ enum CookieChangeCause {
   // The cookie was automatically evicted during garbage collection.
   EVICTED,
   // The cookie was overwritten with an already-expired expiration date.
-  EXPIRED_OVERWRITE
+  EXPIRED_OVERWRITE,
+  // The cookie was inserted but resulted in an overwrite with no change
+  // that is observable to the site. (i.e. the new cookie set has exactly
+  // the same name, value, expiry, secure attribute etc.)
+  INSERTED_NO_CHANGE_OVERWRITE,
+  // The cookie was inserted with a web observable overwrite, but it doesn't
+  // change the existing cookie's value. However, it may change the other
+  // attribute (expiry, secure, same-site, http-only).
+  // For example, given that the cookie is set to a=1 with expiry=19:00, and
+  // there is another cookie write:
+  // - if it's setting a=2, then it will trigger `INSERTED`.
+  // - if it's setting a=1 with expiry=19:01, then it will trigger
+  // `INSERTED_NO_VALUE_CHANGE_OVERWRITE`.
+  // - if it's setting a=1 with expiry=19:00, then it will trigger
+  // `INSERTED_NO_CHANGE_OVERWRITE`.
+  INSERTED_NO_VALUE_CHANGE_OVERWRITE
 };
 
 struct CookieChangeInfo {
@@ -437,17 +455,6 @@ interface CookieManager {
   // Delete a cookie. Returns true if a cookie was deleted.
   DeleteCanonicalCookie(CanonicalCookie cookie) => (bool success);
 
-  // Returns true if a site has cookies in a separate partition than the
-  // current site's partition.
-  // If a nullopt is returned, it means either the partition key wasn't set
-  // or the cookie store isn't fully initialized yet.
-  // Note: Calls here do not follow normal sequencing rules. The results
-  // are processed and returned to the caller as soon as requests
-  // are received.
-  SiteHasCookieInOtherPartition(SchemefulSite schemeful_site,
-                                CookiePartitionKey? partition_key)
-                                  => (bool? site_has_cookie_in_other_partition);
-
   // Delete a set of cookies matching the passed filter.
   // Returns the number of cookies deleted.
   DeleteCookies(CookieDeletionFilter filter) => (uint32 num_deleted);
@@ -523,12 +530,6 @@ interface CookieManager {
 
   // Enables/Disables blocking of third-party cookies.
   BlockThirdPartyCookies(bool block);
-
-  // Enables/Disables mitigations for third-party cookies deprecation.
-  SetMitigationsEnabledFor3pcd(bool enable);
-
-  // Enables/Disables tracking protection for 3PCD (prefs + UX).
-  SetTrackingProtectionEnabledFor3pcd(bool enable);
 
   // Adds a pre-commit delay to the cookie database sqlite persistent store.
   // This delay occurs before every commit and blocks the background task

@@ -5,11 +5,12 @@
 #include "components/search_engines/template_url_fetcher.h"
 
 #include <algorithm>
+#include <optional>
+#include <string>
 
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -79,7 +80,7 @@ class TemplateURLFetcher::RequestDelegate {
 
   // If data contains a valid OSDD, a TemplateURL is created and added to
   // the TemplateURLService.
-  void OnSimpleLoaderComplete(std::unique_ptr<std::string> response_body);
+  void OnSimpleLoaderComplete(std::optional<std::string> response_body);
 
   // URL of the OSDD.
   GURL url() const { return osdd_url_; }
@@ -136,7 +137,8 @@ TemplateURLFetcher::RequestDelegate::RequestDelegate(
   resource_request->resource_type =
       /* blink::mojom::ResourceType::kSubResource */ 6;
   resource_request->destination = network::mojom::RequestDestination::kEmpty;
-  resource_request->site_for_cookies = net::SiteForCookies::FromUrl(osdd_url);
+  resource_request->site_for_cookies =
+      net::SiteForCookies::FromOrigin(initiator);
   simple_url_loader_ = network::SimpleURLLoader::Create(
       std::move(resource_request), kTrafficAnnotation);
   simple_url_loader_->SetAllowHttpErrorResults(true);
@@ -181,7 +183,7 @@ void TemplateURLFetcher::RequestDelegate::OnLoaded() {
 }
 
 void TemplateURLFetcher::RequestDelegate::OnSimpleLoaderComplete(
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   // Validation checks.
   // Make sure we can still replace the keyword, i.e. the fetch was successful.
   if (!response_body) {
@@ -191,8 +193,8 @@ void TemplateURLFetcher::RequestDelegate::OnSimpleLoaderComplete(
   }
 
   TemplateURLParser::Parse(
-      &fetcher_->template_url_service_->search_terms_data(),
-      *response_body.get(), TemplateURLParser::ParameterFilter(),
+      &fetcher_->template_url_service_->search_terms_data(), *response_body,
+      TemplateURLParser::ParameterFilter(),
       base::BindOnce(&RequestDelegate::OnTemplateURLParsed,
                      weak_factory_.GetWeakPtr()));
 }
@@ -281,6 +283,6 @@ void TemplateURLFetcher::ScheduleDownload(
 void TemplateURLFetcher::RequestCompleted(RequestDelegate* request) {
   auto i = std::ranges::find(requests_, request,
                              &std::unique_ptr<RequestDelegate>::get);
-  CHECK(i != requests_.end(), base::NotFatalUntil::M130);
+  CHECK(i != requests_.end());
   requests_.erase(i);
 }

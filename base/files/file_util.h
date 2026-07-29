@@ -94,14 +94,12 @@ MakeAbsoluteFilePathNoResolveSymbolicLinks(const FilePath& input);
 BASE_EXPORT int64_t ComputeDirectorySize(const FilePath& root_path);
 
 // Deletes the given path, whether it's a file or a directory.
-// If it's a directory, it's perfectly happy to delete all of the directory's
-// contents, but it will not recursively delete subdirectories and their
-// contents.
+// Directories will only be successfully deleted if empty.
 // Returns true if successful, false otherwise. It is considered successful to
 // attempt to delete a file that does not exist.
 //
-// In POSIX environment and if |path| is a symbolic link, this deletes only
-// the symlink. (even if the symlink points to a non-existent file)
+// It does not traverse symlinks or Windows reparse points (e.g., directory
+// junctions), but instead deletes the link or reparse point itself.
 BASE_EXPORT bool DeleteFile(const FilePath& path);
 
 // Deletes the given path, whether it's a file or a directory.
@@ -110,8 +108,8 @@ BASE_EXPORT bool DeleteFile(const FilePath& path);
 // Returns true if successful, false otherwise. It is considered successful
 // to attempt to delete a file that does not exist.
 //
-// In POSIX environment and if |path| is a symbolic link, this deletes only
-// the symlink. (even if the symlink points to a non-existent file)
+// It does not traverse symlinks or Windows reparse points (e.g., directory
+// junctions), but instead deletes the link or reparse point itself.
 //
 // WARNING: USING THIS EQUIVALENT TO "rm -rf", SO USE WITH CAUTION.
 BASE_EXPORT bool DeletePathRecursively(const FilePath& path);
@@ -303,8 +301,11 @@ BASE_EXPORT bool ReadFromFD(int fd, span<char> buffer);
 // wrapped in a ScopedFILE.
 // The caller is responsible for deleting the file `path` points to, if
 // appropriate.
-BASE_EXPORT ScopedFD CreateAndOpenFdForTemporaryFileInDir(const FilePath& dir,
-                                                          FilePath* path);
+// `name_prefix`: refer to `CreateAndOpenTemporaryFileInDir` for details.
+BASE_EXPORT ScopedFD
+CreateAndOpenFdForTemporaryFileInDir(const FilePath& dir,
+                                     FilePath::StringViewType name_prefix,
+                                     FilePath* path);
 
 #endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 
@@ -409,8 +410,41 @@ BASE_EXPORT FilePath GetHomeDir();
 // NOTE: Exclusivity is unique to Windows. On Windows, the returned file
 // supports File::DeleteOnClose. On other platforms, the caller is responsible
 // for deleting the file `temp_file` points to, if appropriate.
-BASE_EXPORT File CreateAndOpenTemporaryFileInDir(const FilePath& dir,
-                                                 FilePath* temp_file);
+//
+// On Windows, `additional_flags` will be combined with the default flags when
+// opening the file.
+//
+// `name_prefix`, when non-empty, is incorporated into the generated temporary
+// file name. On Windows it is prepended directly to the generated file name; on
+// POSIX it is appended after the platform-specific fixed prefix used by
+// FormatTemporaryFileName().
+BASE_EXPORT File
+CreateAndOpenTemporaryFileInDir(const FilePath& dir,
+                                FilePath* temp_file,
+                                uint32_t additional_flags = 0,
+                                FilePath::StringViewType name_prefix = {});
+
+#if BUILDFLAG(IS_WIN)
+// Similar to `CreateAndOpenTemporaryFileInDir`, but allows the caller to
+// specify custom `base::File::Flags` (defined in base/files/file.h) when
+// opening the file.
+// The `base::File::FLAG_CREATE` flag is automatically added to ensure atomic
+// creation (i.e. it will fail if the file already exists).
+// These custom |flags| completely replace the default flags used by
+// `CreateAndOpenTemporaryFileInDir`.
+// `name_prefix`: refer to `CreateAndOpenTemporaryFileInDir` for details.
+BASE_EXPORT File CreateAndOpenTemporaryFileInDirWithFlags(
+    const FilePath& dir,
+    FilePath* temp_file,
+    uint32_t flags,
+    FilePath::StringViewType name_prefix = {});
+#endif
+
+// Returns the non-empty name prefix that can be inferred from `temp_file`
+// if the file is generated using CreateAndOpenTemporaryFileInDir(). Returns
+// nullopt for files with an empty prefix.
+BASE_EXPORT std::optional<FilePath::StringType> GetNamePrefixForTemporaryFile(
+    const FilePath& temp_file);
 
 // Creates a temporary file. The full path is placed in `path`, and the
 // function returns true if was successful in creating the file. The file will
@@ -426,9 +460,9 @@ BASE_EXPORT bool CreateTemporaryFileInDir(const FilePath& dir,
                                           FilePath* temp_file);
 
 // Returns the file name for a temporary file by using a platform-specific
-// naming scheme that incorporates |identifier|.
+// naming scheme that incorporates |identifier|. |hidden| is ignored on Windows.
 BASE_EXPORT FilePath
-FormatTemporaryFileName(FilePath::StringViewType identifier);
+FormatTemporaryFileName(FilePath::StringViewType identifier, bool hidden);
 
 // Create and open a temporary file stream for exclusive read, write, and delete
 // access. The full path is placed in `path`. Returns the opened file stream, or
@@ -448,7 +482,6 @@ BASE_EXPORT ScopedFILE CreateAndOpenTemporaryStreamInDir(const FilePath& dir,
 //
 // Create a new directory. If prefix is provided, the new directory name is in
 // the format of prefixyyyy.
-// NOTE: prefix is ignored in the POSIX implementation.
 // If success, return true and output the full path of the directory created.
 //
 // For Windows, this directory is usually created in a secure location if the
@@ -456,7 +489,7 @@ BASE_EXPORT ScopedFILE CreateAndOpenTemporaryStreamInDir(const FilePath& dir,
 // insecure, since low privilege users can get the path of folders under %TEMP%
 // after creation and are able to create subfolders and files within these
 // folders which can lead to privilege escalation.
-BASE_EXPORT bool CreateNewTempDirectory(const FilePath::StringType& prefix,
+BASE_EXPORT bool CreateNewTempDirectory(FilePath::StringViewType prefix,
                                         FilePath* new_temp_path);
 
 // Create a directory within another directory.
@@ -466,11 +499,14 @@ BASE_EXPORT bool CreateTemporaryDirInDir(const FilePath& base_dir,
                                          FilePath::StringViewType prefix,
                                          FilePath* new_dir);
 
-// Creates a directory, as well as creating any parent directories, if they
-// don't exist. Returns 'true' on successful creation, or if the directory
-// already exists.  The directory is only readable by the current user.
-// Returns true on success, leaving *error unchanged.
-// Returns false on failure and sets *error appropriately, if it is non-NULL.
+// Ensures a directory exists, if necessary, creating it and parent directories.
+// Returns true if the directory already existed or was created, leaving *error
+// unchanged.
+// Returns false on failure and sets *error appropriately if it is non-NULL.
+//
+// The created directories can only be accessed by the current user, except on
+// ChromeOS, where the directories created under `~/MyFiles` or `/media` can
+// also be accessed by ChromeOS services.
 BASE_EXPORT bool CreateDirectoryAndGetError(const FilePath& full_path,
                                             File::Error* error);
 
@@ -485,18 +521,27 @@ BASE_EXPORT OnceCallback<std::optional<int64_t>()> GetFileSizeCallback(
     const FilePath& path);
 
 // Sets |real_path| to |path| with symbolic links and junctions expanded.
-// On Windows, the function ensures that the resulting |real_path| starts with a
-// drive letter.
 //
 // The |path| parameter can reference either a file or a directory. The function
-// will fail if |path| points to a nonexistent path or to a volume that isn't
-// mapped to a drive letter on Windows.
+// will fail if |path| points to a nonexistent path.
 //
 // In addition, on Windows this function will fail if the resulting |real_path|
 // would exceed 'MAX_PATH' characters in length.
 BASE_EXPORT bool NormalizeFilePath(const FilePath& path, FilePath* real_path);
 
 #if BUILDFLAG(IS_WIN)
+
+// Returns `SystemTemp` (or `DIR_PROGRAM_FILES` if SystemTemp does not exist)
+// for security reasons if the caller is the default admin (i.e., no split
+// token, such as the SYSTEM user or the built-in administrator) to avoid
+// attacks from lower privilege processes. For non-default-admin cases, returns
+// `%TEMP%`. An override of `DIR_SYSTEM_TEMP` by tests is respected.
+BASE_EXPORT bool GetSecureTempDirectory(FilePath* temp_dir);
+
+// Removes the Windows extended-length path prefix from a prefixed path.
+// Exported for testing. Refer to the function implementation for details.
+BASE_EXPORT FilePath
+RemoveWindowsExtendedPathPrefixForTesting(std::wstring_view prefixed_path);
 
 // Given a path in NT native form ("\Device\HarddiskVolumeXX\..."),
 // return in |drive_letter_path| the equivalent path that starts with
@@ -518,6 +563,17 @@ BASE_EXPORT FilePath MakeLongFilePath(const FilePath& input);
 // Returns true if the hard link is created, false if it fails.
 BASE_EXPORT bool CreateWinHardLink(const FilePath& to_file,
                                    const FilePath& from_file);
+
+// Like GetFileInfo(), but for cloud-backed placeholder files (e.g., OneDrive
+// Files On-Demand), opens the file to force the cloud provider to hydrate (and,
+// for files protected with a sensitivity label, decrypt) it before reading the
+// size, so the returned info reflects the full logical content rather than a
+// stub/placeholder size. For non-placeholder files, this behaves like
+// GetFileInfo(). May open the file and therefore block or trigger a network
+// download; only call from a context that allows blocking. Returns false on
+// failure.
+BASE_EXPORT bool GetHydratedFileInfo(const FilePath& file_path,
+                                     File::Info* info);
 #endif
 
 // This function will return if the given file is a symlink or not.
@@ -534,7 +590,7 @@ BASE_EXPORT bool TouchFile(const FilePath& path,
 // Wrapper for fopen-like calls. Returns non-NULL FILE* on success. The
 // underlying file descriptor (POSIX) or handle (Windows) is unconditionally
 // configured to not be propagated to child processes.
-BASE_EXPORT FILE* OpenFile(const FilePath& filename, const char* mode);
+BASE_EXPORT FILE* OpenFile(const FilePath& filename, base::cstring_view mode);
 
 // Closes file opened by OpenFile. Returns true on success.
 BASE_EXPORT bool CloseFile(FILE* file);
@@ -727,6 +783,35 @@ BASE_EXPORT int GetMaximumPathComponentLength(const base::FilePath& path);
 BASE_EXPORT bool GetShmemTempDir(bool executable, FilePath* path);
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
+// Resolves this FilePath to a content URI if it represents a virtual
+// document path or is already a content URI. Returns std::nullopt otherwise.
+BASE_EXPORT std::optional<FilePath> ResolveToContentUri(const FilePath& path);
+
+// Resolves this FilePath to a virtual document path if it's a content URI
+// representing a document tree or is already a virtual document path. Returns
+// std::nullopt otherwise.
+BASE_EXPORT std::optional<FilePath> ResolveToVirtualDocumentPath(
+    const FilePath& path);
+
+// Copies a file from app-private storage into the public Downloads collection.
+// Returns the public content URI string on success, or std::nullopt on failure.
+BASE_EXPORT std::optional<std::string> CopyFileToDownloadsCollection(
+    const FilePath& file_path,
+    const std::string& mime_type);
+
+#endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+// Returns whether the specified file name is a reserved name on Windows.
+// This includes names like "com2.zip" (which correspond to devices) and
+// desktop.ini and thumbs.db which have special meaning to the Windows shell.
+// Even on other platforms, this will return whether or not a file name is
+// reserved on Windows.
+BASE_EXPORT bool IsReservedNameOnWindows(
+    const base::FilePath::StringType& filename);
+#endif
+
 // Internal --------------------------------------------------------------------
 
 namespace internal {
@@ -742,6 +827,11 @@ BASE_EXPORT bool MoveUnsafe(const FilePath& from_path, const FilePath& to_path);
 // This function is not transactional.
 BASE_EXPORT bool CopyAndDeleteDirectory(const FilePath& from_path,
                                         const FilePath& to_path);
+
+// Returns true if the user is an administrator with default elevation type,
+// i.e., no split token, such as the SYSTEM user or the built-in
+// administrator.
+BASE_EXPORT bool IsUserDefaultAdmin();
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)

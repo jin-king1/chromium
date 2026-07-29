@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "third_party/blink/public/platform/web_icon_sizes_parser.h"
 
@@ -37,7 +33,7 @@ static bool IsNotWhitespace(UChar c) {
 }
 
 static bool IsNonDigit(UChar c) {
-  return !IsASCIIDigit(c);
+  return !IsAsciiDigit(c);
 }
 
 static inline wtf_size_t FindEndOfWord(const String& string, wtf_size_t start) {
@@ -47,10 +43,9 @@ static inline wtf_size_t FindEndOfWord(const String& string, wtf_size_t start) {
 static inline int PartialStringToInt(const String& string,
                                      wtf_size_t start,
                                      wtf_size_t end) {
-  return WTF::VisitCharacters(
-      StringView(string, start, end - start), [](auto chars) {
-        return CharactersToInt(chars, WTF::NumberParsingOptions(), nullptr);
-      });
+  return StringToInt(StringView(string, start, end - start),
+                     NumberParsingOptions())
+      .value_or(0);
 }
 
 }  // namespace
@@ -71,7 +66,7 @@ std::vector<gfx::Size> WebIconSizesParser::ParseIconSizes(
       break;
 
     // See if the current size is "any".
-    if (sizes_string.Substring(i, 3).StartsWithIgnoringASCIICase("any") &&
+    if (sizes_string.substr(i, 3).StartsWithIgnoringAsciiCase("any") &&
         (i + 3 == length || IsWhitespace(sizes_string[i + 3]))) {
       icon_sizes.push_back(gfx::Size());
       i = i + 3;

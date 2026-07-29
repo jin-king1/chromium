@@ -22,17 +22,4 @@ struct CORE_EXPORT CustomEventMessage {
 
 }  // namespace blink
 
-namespace WTF {
-
-template <>
-struct CrossThreadCopier<blink::CustomEventMessage> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = blink::CustomEventMessage;
-  static Type Copy(Type pointer) {
-    return pointer;  // This is in fact a move.
-  }
-};
-
-}  // namespace WTF
-
 #endif  // THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_CUSTOM_EVENT_MESSAGE_H_

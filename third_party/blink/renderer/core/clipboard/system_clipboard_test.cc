@@ -7,15 +7,24 @@
 #include <memory>
 
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/renderer/core/clipboard/clipboard_mime_types.h"
+#include "third_party/blink/renderer/core/clipboard/data_object_item.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/frame/platform_event_controller.h"
+#include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
+#include "ui/base/clipboard/clipboard_constants.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -24,7 +33,7 @@ namespace blink {
 namespace {
 
 mojom::blink::ClipboardFilesPtr CreateFiles(int count) {
-  WTF::Vector<mojom::blink::DataTransferFilePtr> vec;
+  Vector<mojom::blink::DataTransferFilePtr> vec;
   for (int i = 0; i < count; ++i) {
     vec.emplace_back(mojom::blink::DataTransferFile::New(
         base::FilePath(FILE_PATH_LITERAL("path")),
@@ -36,6 +45,24 @@ mojom::blink::ClipboardFilesPtr CreateFiles(int count) {
   return mojom::blink::ClipboardFiles::New(std::move(vec), "file_system_id");
 }
 
+// Mock event controller to verify change notifications
+class MockPlatformEventController
+    : public GarbageCollected<MockPlatformEventController>,
+      public PlatformEventController {
+ public:
+  explicit MockPlatformEventController(LocalDOMWindow& window)
+      : PlatformEventController(window) {}
+
+  MOCK_METHOD(void, DidUpdateData, (), (override));
+  MOCK_METHOD(void, RegisterWithDispatcher, (), (override));
+  MOCK_METHOD(void, UnregisterWithDispatcher, (), (override));
+  MOCK_METHOD(bool, HasLastData, (), (override));
+
+  void Trace(Visitor* visitor) const override {
+    PlatformEventController::Trace(visitor);
+  }
+};
+
 }  // namespace
 
 class SystemClipboardTest : public testing::Test {
@@ -45,6 +72,8 @@ class SystemClipboardTest : public testing::Test {
     clipboard_provider_ =
         std::make_unique<PageTestBase::MockClipboardHostProvider>(
             page_holder_.get()->GetFrame().GetBrowserInterfaceBroker());
+    controller_ = MakeGarbageCollected<MockPlatformEventController>(
+        *page_holder_->GetFrame().DomWindow());
   }
 
  protected:
@@ -66,11 +95,48 @@ class SystemClipboardTest : public testing::Test {
     EXPECT_TRUE(
         system_clipboard().IsValidBufferType(system_clipboard().buffer_));
   }
+  void SetSelectionBufferAvailable(bool available) {
+    system_clipboard().is_selection_buffer_available_ = available;
+  }
 
   void RunUntilIdle() { test::RunPendingTasks(); }
 
+  MockPlatformEventController* controller() { return controller_.Get(); }
+
+  LocalDOMWindow* dom_window() { return page_holder_->GetFrame().DomWindow(); }
+
+  // Helper to register controller, process events, and return a cleanup guard
+  class ScopedControllerRegistration {
+   public:
+    ScopedControllerRegistration(SystemClipboard* clipboard,
+                                 MockPlatformEventController* controller,
+                                 LocalDOMWindow* window)
+        : clipboard_(clipboard), controller_(controller) {
+      clipboard_->AddController(controller, window);
+      test::RunPendingTasks();
+    }
+
+    ~ScopedControllerRegistration() {
+      if (clipboard_ && controller_) {
+        clipboard_->RemoveController(controller_);
+        test::RunPendingTasks();
+      }
+    }
+
+   private:
+    WeakPersistent<SystemClipboard> clipboard_;
+    WeakPersistent<MockPlatformEventController> controller_;
+  };
+
+  // Helper to trigger clipboard change notification and wait for processing
+  void TriggerClipboardChangeAndWait() {
+    mock_clipboard_host()->OnClipboardDataChangedForTesting();
+    RunUntilIdle();
+  }
+
  private:
   test::TaskEnvironment task_environment;
+  Persistent<MockPlatformEventController> controller_;
 
   std::unique_ptr<DummyPageHolder> page_holder_;
   std::unique_ptr<PageTestBase::MockClipboardHostProvider> clipboard_provider_;
@@ -176,7 +242,7 @@ TEST_F(SystemClipboardTest, Rtf) {
   EXPECT_EQ(system_clipboard().ReadRTF(), "");
 
   // Setting text in the host is visible in system.
-  mock_clipboard_host()->WriteRtf("first");
+  mock_clipboard_host()->WriteRtfForTesting("first");
   EXPECT_EQ(system_clipboard().ReadRTF(), "first");
 
   // Inside a snapshot scope, the first read from the system clipboard
@@ -184,10 +250,10 @@ TEST_F(SystemClipboardTest, Rtf) {
   {
     ScopedSystemClipboardSnapshot snapshot(system_clipboard());
 
-    mock_clipboard_host()->WriteRtf("second");
+    mock_clipboard_host()->WriteRtfForTesting("second");
     EXPECT_EQ(system_clipboard().ReadRTF(), "second");
 
-    mock_clipboard_host()->WriteRtf("third");
+    mock_clipboard_host()->WriteRtfForTesting("third");
     EXPECT_EQ(system_clipboard().ReadRTF(), "second");
   }
 
@@ -261,7 +327,7 @@ TEST_F(SystemClipboardTest, Files) {
   EXPECT_EQ(files->files.size(), 0u);
 
   // Setting file in the host is visible in system.
-  mock_clipboard_host()->WriteFiles(CreateFiles(1));
+  mock_clipboard_host()->WriteFilesForTesting(CreateFiles(1));
   EXPECT_EQ(system_clipboard().ReadFiles()->files.size(), 1u);
 
   // Inside a snapshot scope, the first read from the system clipboard
@@ -269,10 +335,10 @@ TEST_F(SystemClipboardTest, Files) {
   {
     ScopedSystemClipboardSnapshot snapshot(system_clipboard());
 
-    mock_clipboard_host()->WriteFiles(CreateFiles(2));
+    mock_clipboard_host()->WriteFilesForTesting(CreateFiles(2));
     EXPECT_EQ(system_clipboard().ReadFiles()->files.size(), 2u);
 
-    mock_clipboard_host()->WriteFiles(CreateFiles(3));
+    mock_clipboard_host()->WriteFilesForTesting(CreateFiles(3));
     EXPECT_EQ(system_clipboard().ReadFiles()->files.size(), 2u);
   }
 
@@ -394,7 +460,7 @@ TEST_F(SystemClipboardTest, ReadRtfWithUnboundClipboardHost) {
   EXPECT_EQ(system_clipboard().ReadRTF(), "");
 
   // Setting text in the host is visible in system clipboard.
-  mock_clipboard_host()->WriteRtf("first");
+  mock_clipboard_host()->WriteRtfForTesting("first");
   EXPECT_EQ(system_clipboard().ReadRTF(), "first");
 
   reset_remote_and_validate_buffer();
@@ -402,7 +468,7 @@ TEST_F(SystemClipboardTest, ReadRtfWithUnboundClipboardHost) {
   // Now the Reads should return null string.
   EXPECT_EQ(system_clipboard().ReadRTF(), String());
   // Writes will fail since the mojo remote is unbound.
-  mock_clipboard_host()->WriteRtf("second");
+  mock_clipboard_host()->WriteRtfForTesting("second");
   EXPECT_EQ(system_clipboard().ReadRTF(), String());
 }
 
@@ -447,7 +513,7 @@ TEST_F(SystemClipboardTest, ReadFilesWithUnboundClipboardHost) {
   EXPECT_EQ(files->files.size(), 0u);
 
   // Setting file in the host is visible in system clipboard.
-  mock_clipboard_host()->WriteFiles(CreateFiles(1));
+  mock_clipboard_host()->WriteFilesForTesting(CreateFiles(1));
   EXPECT_EQ(system_clipboard().ReadFiles()->files.size(), 1u);
 
   reset_remote_and_validate_buffer();
@@ -455,7 +521,7 @@ TEST_F(SystemClipboardTest, ReadFilesWithUnboundClipboardHost) {
   // Now the Reads should return null pointer to files.
   EXPECT_TRUE(system_clipboard().ReadFiles().is_null());
   // Writes will fail since the mojo remote is unbound.
-  mock_clipboard_host()->WriteFiles(CreateFiles(1));
+  mock_clipboard_host()->WriteFilesForTesting(CreateFiles(1));
   EXPECT_TRUE(system_clipboard().ReadFiles().is_null());
 }
 
@@ -512,4 +578,243 @@ TEST_F(SystemClipboardTest, SequenceNumberWithUnboundClipboardHost) {
   auto sequence_number_after_reset = system_clipboard().SequenceNumber();
   EXPECT_NE(sequence_number_after_write, sequence_number_after_reset);
 }
+
+TEST_F(SystemClipboardTest, ClipboardChangeNotification) {
+  auto* mock_controller = controller();
+
+  // EXPECT: Controller should receive exactly one update notification
+  EXPECT_CALL(*mock_controller, DidUpdateData()).Times(1);
+
+  // WHEN: Controller is registered and clipboard data changes
+  {
+    ScopedControllerRegistration registration(&system_clipboard(),
+                                              mock_controller, dom_window());
+    TriggerClipboardChangeAndWait();
+  }
+  // Controller automatically unregistered when scope ends
+}
+
+TEST_F(SystemClipboardTest, ClipboardChangeNotification_MultipleRegistrations) {
+  auto* mock_controller = controller();
+
+  // EXPECT: Controller should receive notifications after each registration
+  EXPECT_CALL(*mock_controller, DidUpdateData()).Times(2);
+
+  // WHEN: First registration cycle
+  {
+    ScopedControllerRegistration registration(&system_clipboard(),
+                                              mock_controller, dom_window());
+    TriggerClipboardChangeAndWait();
+  }
+
+  // AND WHEN: Second registration cycle
+  {
+    ScopedControllerRegistration registration(&system_clipboard(),
+                                              mock_controller, dom_window());
+    TriggerClipboardChangeAndWait();
+  }
+}
+
+TEST_F(SystemClipboardTest, ScopedSnapshotReadWriteBehavior) {
+  // Clipboard starts empty.
+  EXPECT_EQ(system_clipboard().ReadPlainText(), "");
+
+  // Inside a snapshot scope, the first read from the system clipboard
+  // remembers the result, even if the underlying clipboard host changes.
+  {
+    // Create a snapshot to cache clipboard reads.
+    ScopedSystemClipboardSnapshot snapshot(system_clipboard());
+
+    // Write "first" to the clipboard and read it.
+    // This value should be cached in the snapshot.
+    clipboard_host()->WriteText("first");
+    EXPECT_EQ(system_clipboard().ReadPlainText(), "first");
+
+    // Write "second" to the clipboard.
+    // The snapshot should still return the cached value ("first").
+    clipboard_host()->WriteText("second");
+    EXPECT_EQ(system_clipboard().ReadPlainText(), "first");
+
+    // Write "third" to the clipboard using the system clipboard directly.
+    // This bypasses the snapshot and updates the clipboard state.
+    system_clipboard().WritePlainText("third");
+    // Ensure all pending tasks (e.g., clipboard writes) are processed before
+    // the next read. This is necessary because clipboard operations involve
+    // asynchronous tasks.
+    RunUntilIdle();
+    EXPECT_EQ(system_clipboard().ReadPlainText(), "third");
+
+    // Modify the clipboard host to write "mocked".
+    // The snapshot should still return the cached value ("third").
+    clipboard_host()->WriteText("mocked");
+    EXPECT_EQ(system_clipboard().ReadPlainText(), "third");
+  }
+
+  // Now that the snapshot is out of scope, reads from the system clipboard
+  // reflect the state of the clipboard host.
+  EXPECT_EQ(system_clipboard().ReadPlainText(), "mocked");
+}
+
+#if BUILDFLAG(IS_MAC)
+TEST_F(SystemClipboardTest, GetPlatformPermissionStateCallback) {
+  // Test callback is called with the permission state
+  bool callback_called = false;
+  mojom::blink::PlatformClipboardPermissionState received_state;
+
+  mock_clipboard_host()->SetPlatformPermissionStateForTesting(
+      mojom::blink::PlatformClipboardPermissionState::kAllow);
+  system_clipboard().GetPlatformPermissionState(BindOnce(
+      [](bool* called, mojom::blink::PlatformClipboardPermissionState* state,
+         mojom::blink::PlatformClipboardPermissionState result) {
+        *called = true;
+        *state = result;
+      },
+      Unretained(&callback_called), Unretained(&received_state)));
+
+  test::RunPendingTasks();
+
+  EXPECT_TRUE(callback_called);
+  EXPECT_EQ(received_state,
+            mojom::blink::PlatformClipboardPermissionState::kAllow);
+}
+#endif  // BUILDFLAG(IS_MAC)
+
+// Regression test for crbug.com/501920294
+TEST_F(SystemClipboardTest, DataObjectItemGetAsFileSequenceNumberValidation) {
+  // 1. Initial clipboard state: "image 1"
+  SkBitmap bitmap1;
+  ASSERT_TRUE(bitmap1.tryAllocPixelsFlags(
+      SkImageInfo::Make(4, 3, kN32_SkColorType, kOpaque_SkAlphaType), 0));
+  clipboard_host()->WriteImage(bitmap1);
+  clipboard_host()->CommitWrite();
+
+  auto sequence_number1 = system_clipboard().SequenceNumber();
+
+  // 2. Create DataObjectItem from this clipboard state.
+  DataObjectItem* item = DataObjectItem::CreateFromClipboard(
+      &system_clipboard(), ui::kMimeTypePng, sequence_number1);
+
+  // 3. Update clipboard state: "image 2".
+  // This increments the sequence number on the clipboard host.
+  SkBitmap bitmap2;
+  ASSERT_TRUE(bitmap2.tryAllocPixelsFlags(
+      SkImageInfo::Make(40, 30, kN32_SkColorType, kOpaque_SkAlphaType), 0));
+  clipboard_host()->WriteImage(bitmap2);
+  clipboard_host()->CommitWrite();
+
+  auto sequence_number2 = system_clipboard().SequenceNumber();
+  ASSERT_NE(sequence_number1, sequence_number2);
+
+  // 4. Try to read from the OLD DataObjectItem.
+  // This must return nullptr because the sequence number has changed,
+  // preventing a TOCTOU vulnerability.
+  File* file = item->GetAsFile();
+  EXPECT_EQ(file, nullptr);
+}
+
+TEST_F(SystemClipboardTest, DataObjectItemGetAsStringSequenceNumberValidation) {
+  // 1. Initial clipboard state: "text 1"
+  clipboard_host()->WriteText("text 1");
+  clipboard_host()->CommitWrite();
+
+  auto sequence_number1 = system_clipboard().SequenceNumber();
+
+  // 2. Create DataObjectItem from this clipboard state.
+  DataObjectItem* item = DataObjectItem::CreateFromClipboard(
+      &system_clipboard(), ui::kMimeTypePlainText, sequence_number1);
+
+  // 3. Update clipboard state: "text 2".
+  clipboard_host()->WriteText("text 2");
+  clipboard_host()->CommitWrite();
+
+  auto sequence_number2 = system_clipboard().SequenceNumber();
+  ASSERT_NE(sequence_number1, sequence_number2);
+
+  // 4. Try to read from the OLD DataObjectItem.
+  // It should return an empty string because the sequence number has changed.
+  String data = item->GetAsString();
+  EXPECT_TRUE(data.empty());
+}
+
+TEST_F(SystemClipboardTest, CrossBufferSnapshotIsolation) {
+  SetSelectionBufferAvailable(true);
+
+  // Populate standard clipboard text.
+  clipboard_host()->WriteText("standard_text");
+  clipboard_host()->CommitWrite();
+
+  // Enter snapshot scope.
+  ScopedSystemClipboardSnapshot snapshot(system_clipboard());
+
+  // 1. Read plain text from kStandard.
+  // This should call MockClipboardHost::ReadText.
+  int initial_calls = mock_clipboard_host()->ReadTextCallCountForTesting();
+  EXPECT_EQ(system_clipboard().ReadPlainText(
+                mojom::blink::ClipboardBuffer::kStandard),
+            "standard_text");
+  EXPECT_EQ(mock_clipboard_host()->ReadTextCallCountForTesting(),
+            initial_calls + 1);
+
+  // 2. Read plain text from kStandard again.
+  // This must hit the cache and not call MockClipboardHost::ReadText.
+  EXPECT_EQ(system_clipboard().ReadPlainText(
+                mojom::blink::ClipboardBuffer::kStandard),
+            "standard_text");
+  EXPECT_EQ(mock_clipboard_host()->ReadTextCallCountForTesting(),
+            initial_calls + 1);
+
+  // 3. Read plain text from kSelection.
+  // Because they are in different buffers, the cache must not hit across
+  // buffers. This should call MockClipboardHost::ReadText.
+  EXPECT_EQ(system_clipboard().ReadPlainText(
+                mojom::blink::ClipboardBuffer::kSelection),
+            "standard_text");
+  EXPECT_EQ(mock_clipboard_host()->ReadTextCallCountForTesting(),
+            initial_calls + 2);
+}
+
+#if BUILDFLAG(IS_OZONE)
+TEST_F(SystemClipboardTest, DataObjectItemGetAsFileRespectsSelectionMode) {
+  ScopedClipboardPasteImageRespectBufferForTest scoped_feature(true);
+  dom_window()->GetFrame()->GetSettings()->SetSelectionClipboardBufferAvailable(
+      true);
+
+  // 1. Initial clipboard state: Write an image.
+  SkBitmap bitmap;
+  ASSERT_TRUE(bitmap.tryAllocPixelsFlags(
+      SkImageInfo::Make(4, 3, kN32_SkColorType, kOpaque_SkAlphaType), 0));
+  clipboard_host()->WriteImage(bitmap);
+  clipboard_host()->CommitWrite();
+
+  auto sequence_number = system_clipboard().SequenceNumber();
+
+  // 2. Create DataObjectItem from this clipboard state.
+  DataObjectItem* item = DataObjectItem::CreateFromClipboard(
+      &system_clipboard(), ui::kMimeTypePng, sequence_number);
+
+  // 3. Enable selection mode.
+  system_clipboard().SetSelectionMode(true);
+
+  // 4. Retrieve the file from the item.
+  File* file = item->GetAsFile();
+  EXPECT_NE(file, nullptr);
+
+  // 5. Verify that the PNG read was made against the kSelection buffer.
+  EXPECT_EQ(mock_clipboard_host()->LastReadPngBuffer(),
+            mojom::blink::ClipboardBuffer::kSelection);
+
+  // 6. Disable selection mode and retrieve the file again (forcing sequence
+  // number to match for simplicity of the test, though in real life
+  // SequenceNumber updates; but since we don't commit a new write, it stays
+  // the same).
+  system_clipboard().SetSelectionMode(false);
+  file = item->GetAsFile();
+  EXPECT_NE(file, nullptr);
+
+  // 7. Verify that the PNG read was made against the kStandard buffer.
+  EXPECT_EQ(mock_clipboard_host()->LastReadPngBuffer(),
+            mojom::blink::ClipboardBuffer::kStandard);
+}
+#endif
+
 }  // namespace blink

@@ -12,6 +12,10 @@
 #include "gpu/command_buffer/service/decoder_context.h"
 #include "gpu/gpu_gles2_export.h"
 
+namespace cc {
+class SharedImageProvider;
+}  // namespace cc
+
 namespace gpu {
 
 class DecoderClient;
@@ -35,13 +39,13 @@ namespace raster {
 class GPU_GLES2_EXPORT RasterDecoder : public DecoderContext,
                                        public CommonDecoder {
  public:
-  static RasterDecoder* Create(
+  static std::unique_ptr<RasterDecoder> Create(
       DecoderClient* client,
       CommandBufferServiceBase* command_buffer_service,
       gles2::Outputter* outputter,
       const GpuFeatureInfo& gpu_feature_info,
       const GpuPreferences& gpu_preferences,
-      MemoryTracker* memory_tracker,
+      scoped_refptr<MemoryTracker> memory_tracker,
       SharedImageManager* shared_image_manager,
       scoped_refptr<SharedContextState> shared_context_state,
       bool is_priviliged);
@@ -82,12 +86,17 @@ class GPU_GLES2_EXPORT RasterDecoder : public DecoderContext,
   gles2::Outputter* outputter() const override;
   bool log_commands() const { return log_commands_; }
 
+  virtual gpu::ContextResult Initialize(
+      bool lose_context_when_out_of_memory) = 0;
+
   virtual int DecoderIdForTest() = 0;
   virtual ServiceTransferCache* GetTransferCacheForTest() = 0;
 
   virtual void SetUpForRasterCHROMIUMForTest() = 0;
   virtual void SetOOMErrorForTest() = 0;
   virtual void DisableFlushWorkaroundForTest() = 0;
+
+  virtual cc::SharedImageProvider* GetSharedImageProviderForTest() const = 0;
 
  protected:
   RasterDecoder(DecoderClient* client,

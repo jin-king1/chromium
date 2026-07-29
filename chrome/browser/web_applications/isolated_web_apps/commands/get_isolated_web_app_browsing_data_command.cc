@@ -7,11 +7,8 @@
 #include <memory>
 #include <optional>
 
-#include "base/barrier_callback.h"
-#include "base/barrier_closure.h"
 #include "base/check.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/functional/concurrent_callbacks.h"
 #include "base/memory/raw_ptr.h"
@@ -21,9 +18,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/browser/web_applications/commands/computed_app_size.h"
-#include "chrome/browser/web_applications/isolated_web_apps/commands/isolated_web_app_install_command_helper.h"
-#include "chrome/browser/web_applications/isolated_web_apps/jobs/get_isolated_web_app_size_job.h"
+#include "chrome/browser/web_applications/jobs/compute_app_size_job.h"
 #include "chrome/browser/web_applications/locks/all_apps_lock.h"
+#include "chrome/browser/web_applications/web_app_isolation_delegate.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/browsing_data/content/browsing_data_model.h"
 #include "components/webapps/common/web_app_id.h"
@@ -50,27 +47,28 @@ void GetIsolatedWebAppBrowsingDataCommand::StartWithLock(
     std::unique_ptr<AllAppsLock> lock) {
   lock_ = std::move(lock);
 
-  const auto isolated_web_apps = GetInstalledIwas(lock_->registrar());
-  if (!isolated_web_apps.empty()) {
-    auto result_callback =
-        base::BarrierCallback<std::optional<ComputedAppSizeWithOrigin>>(
-            isolated_web_apps.size(),
-            base::BindOnce(
-                &GetIsolatedWebAppBrowsingDataCommand::CompleteCommand,
-                weak_factory_.GetWeakPtr()));
-    for (const auto& [bundle_id, isolated_web_app] : isolated_web_apps) {
-      get_isolated_web_app_size_jobs_.push_back(
-          std::make_unique<GetIsolatedWebAppSizeJob>(
-              &profile_.get(), isolated_web_app.get().app_id(),
-              GetMutableDebugValue(), result_callback));
-    }
+  auto concurrent =
+      base::ConcurrentCallbacks<std::optional<ComputedAppSizeWithOrigin>>();
 
-    for (auto& get_isolated_web_app_size_job :
-         get_isolated_web_app_size_jobs_) {
-      get_isolated_web_app_size_job->Start(lock_.get());
-    }
-  } else {
-    CompleteCommand(/*app_size_results=*/{});
+  std::vector<
+      base::OnceCallback<void(std::optional<ComputedAppSizeWithOrigin>)>>
+      callbacks;
+  for (const auto& iwa :
+       lock_->registrar().GetApps(WebAppFilter::IsIsolatedApp())) {
+    get_isolated_web_app_size_jobs_.push_back(
+        lock_->isolation_delegate().CreateComputeAppSizeJob(
+            iwa.app_id(), GetMutableDebugValue()));
+    callbacks.push_back(concurrent.CreateCallback());
+  }
+
+  std::move(concurrent)
+      .Done(
+          base::BindOnce(&GetIsolatedWebAppBrowsingDataCommand::CompleteCommand,
+                         weak_factory_.GetWeakPtr()));
+
+  for (size_t i = 0; i < get_isolated_web_app_size_jobs_.size(); ++i) {
+    get_isolated_web_app_size_jobs_[i]->Start(lock_.get(),
+                                              std::move(callbacks[i]));
   }
 }
 

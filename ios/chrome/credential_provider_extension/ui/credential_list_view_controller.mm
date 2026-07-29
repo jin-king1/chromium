@@ -15,16 +15,19 @@
 #import "ios/chrome/common/ui/favicon/favicon_view.h"
 #import "ios/chrome/common/ui/table_view/favicon_table_view_cell.h"
 #import "ios/chrome/common/ui/util/pointer_interaction_util.h"
+#import "ios/chrome/credential_provider_extension/favicon_util.h"
+#import "ios/chrome/credential_provider_extension/generated_localized_strings.h"
 #import "ios/chrome/credential_provider_extension/metrics_util.h"
 #import "ios/chrome/credential_provider_extension/ui/credential_list_global_header_view.h"
 #import "ios/chrome/credential_provider_extension/ui/credential_list_header_view.h"
+#import "ios/chrome/credential_provider_extension/ui/ui_util.h"
 
 namespace {
 
 // Reuse Identifiers for table views.
-NSString* kHeaderIdentifier = @"clvcHeader";
-NSString* kCredentialCellIdentifier = @"clvcCredentialCell";
-NSString* kNewPasswordCellIdentifier = @"clvcNewPasswordCell";
+NSString* const kHeaderIdentifier = @"clvcHeader";
+NSString* const kCredentialCellIdentifier = @"clvcCredentialCell";
+NSString* const kNewPasswordCellIdentifier = @"clvcNewPasswordCell";
 
 const CGFloat kNewCredentialHeaderHeight = 35;
 // Add extra space to offset the top of the table view from the search bar.
@@ -52,8 +55,8 @@ UIColor* BackgroundColor() {
 
 @end
 
-@interface CredentialListViewController () <UITableViewDataSource,
-                                            UISearchResultsUpdating>
+@interface CredentialListViewController () <UISearchResultsUpdating,
+                                            UITableViewDataSource>
 
 // Search controller that contains search bar.
 @property(nonatomic, strong) UISearchController* searchController;
@@ -85,9 +88,7 @@ UIColor* BackgroundColor() {
 - (void)viewDidLoad {
   [super viewDidLoad];
 
-  self.title = NSLocalizedString(
-      @"IDS_IOS_CREDENTIAL_PROVIDER_CREDENTIAL_LIST_BRANDED_TITLE",
-      @"Google Password Manager");
+  self.title = CredentialProviderCredentialListBrandedTitleString();
 
   self.view.backgroundColor = BackgroundColor();
   self.navigationItem.leftBarButtonItem = [self navigationCancelButton];
@@ -183,9 +184,7 @@ UIColor* BackgroundColor() {
                                     reuseIdentifier:kNewPasswordCellIdentifier];
     }
     cell.backgroundColor = [UIColor colorNamed:kBackgroundColor];
-    cell.textLabel.text =
-        NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_CREATE_PASSWORD_ROW",
-                          @"Add New Password");
+    cell.textLabel.text = CredentialProviderCreatePasswordRowString();
     cell.textLabel.textColor = [UIColor colorNamed:kBlueColor];
     return cell;
   }
@@ -237,33 +236,19 @@ UIColor* BackgroundColor() {
   id<Credential> credential = [self credentialForIndexPath:indexPath];
   DCHECK(credential);
   DCHECK(cell);
-  CredentialListCell* credentialCell =
+  __weak CredentialListCell* credentialCell =
       base::apple::ObjCCastStrict<CredentialListCell>(cell);
   NSString* serviceIdentifier = credential.serviceIdentifier;
 
-  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-    NSURL* filePath = [app_group::SharedFaviconAttributesFolder()
-        URLByAppendingPathComponent:credential.favicon
-                        isDirectory:NO];
-    NSError* error = nil;
-    NSData* data = [NSData dataWithContentsOfURL:filePath
-                                         options:0
-                                           error:&error];
-    if (data && !error) {
-      NSKeyedUnarchiver* unarchiver =
-          [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:nil];
-      unarchiver.requiresSecureCoding = NO;
-      FaviconAttributes* attributes =
-          [unarchiver decodeObjectForKey:NSKeyedArchiveRootObjectKey];
-      // Only set favicon if the cell hasn't been reused.
-      if ([credentialCell.uniqueIdentifier isEqualToString:serviceIdentifier]) {
-        // Update the UI on the main thread.
-        dispatch_async(dispatch_get_main_queue(), ^{
-          if (attributes) {
-            [credentialCell.faviconView configureWithAttributes:attributes];
-          }
-        });
-      }
+  FetchFaviconAsync(credential.favicon, ^(FaviconAttributes* attributes) {
+    // Only set favicon if the cell hasn't been reused.
+    if ([credentialCell.uniqueIdentifier isEqualToString:serviceIdentifier]) {
+      // Update the UI on the main thread.
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (attributes) {
+          [credentialCell.faviconView configureWithAttributes:attributes];
+        }
+      });
     }
   });
 }
@@ -316,9 +301,6 @@ UIColor* BackgroundColor() {
 
 - (void)updateSearchResultsForSearchController:
     (UISearchController*)searchController {
-  if (searchController.searchBar.text.length) {
-    UpdateUMACountForKey(app_group::kCredentialExtensionSearchCount);
-  }
   [self.delegate updateResultsWithFilter:searchController.searchBar.text];
 }
 
@@ -336,8 +318,7 @@ UIColor* BackgroundColor() {
 
 // Creates a button to be displayed as accessory of the credential row item.
 - (UIView*)infoIconButton {
-  UIImage* image = [UIImage imageNamed:@"info_icon"];
-  image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+  UIImage* image = GetCredentialInfoIcon();
 
   HighlightButton* button = [HighlightButton buttonWithType:UIButtonTypeCustom];
   button.frame = CGRectMake(0.0, 0.0, image.size.width, image.size.height);
@@ -346,9 +327,8 @@ UIColor* BackgroundColor() {
   [button addTarget:self
                 action:@selector(infoIconButtonTapped:event:)
       forControlEvents:UIControlEventTouchUpInside];
-  button.accessibilityLabel = NSLocalizedString(
-      @"IDS_IOS_CREDENTIAL_PROVIDER_SHOW_DETAILS_ACCESSIBILITY_LABEL",
-      @"Show Details.");
+  button.accessibilityLabel =
+      CredentialProviderShowDetailsAccessibilityLabelString();
 
   button.pointerInteractionEnabled = YES;
   button.pointerStyleProvider = ^UIPointerStyle*(
@@ -447,17 +427,14 @@ UIColor* BackgroundColor() {
 // Returns the title of the given section
 - (NSString*)titleForHeaderInSection:(NSInteger)section {
   if ([self isEmptyTable]) {
-    return NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_NO_SEARCH_RESULTS",
-                             @"No search results found");
+    return CredentialProviderNoSearchResultsString();
   } else if ([self isSuggestedCredentialSection:section]) {
     return nil;
   } else if ([self.allCredentials count] > 0 &&
              self.allCredentials[0].isPasskey) {
-    return NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_ALL_PASSKEYS",
-                             @"All Passkeys");
+    return CredentialProviderAllPasskeysString();
   } else {
-    return NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_ALL_PASSWORDS",
-                             @"All Passwords");
+    return CredentialProviderAllPasswordsString();
   }
 }
 

@@ -3,7 +3,8 @@
 // found in the LICENSE file.
 
 #include "device/bluetooth/test/fake_local_gatt_service.h"
-#include "base/containers/contains.h"
+
+#include "base/notimplemented.h"
 
 namespace bluetooth {
 
@@ -22,7 +23,7 @@ FakeLocalGattCharacteristic* FakeLocalGattService::AddFakeCharacteristic(
     const device::BluetoothUUID& characteristic_uuid,
     device::BluetoothGattCharacteristic::Properties properties,
     device::BluetoothGattCharacteristic::Permissions permissions) {
-  CHECK(!base::Contains(uuid_to_fake_characteristic_map_, characteristic_uuid));
+  CHECK(!uuid_to_fake_characteristic_map_.contains(characteristic_uuid));
   auto fake_characteristic = std::make_unique<FakeLocalGattCharacteristic>(
       /*characteristic_id=*/characteristic_id,
       /*characteristic_uuid=*/characteristic_uuid, /*service=*/this, properties,

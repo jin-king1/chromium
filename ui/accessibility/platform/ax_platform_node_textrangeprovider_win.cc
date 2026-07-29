@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/accessibility/platform/ax_platform_node_textrangeprovider_win.h"
 
 #include <utility>
@@ -16,6 +11,7 @@
 #include "base/debug/dump_without_crashing.h"
 #include "base/i18n/string_search.h"
 #include "base/memory/raw_ptr.h"
+#include "base/numerics/checked_math.h"
 #include "base/win/scoped_safearray.h"
 #include "base/win/scoped_variant.h"
 #include "base/win/variant_vector.h"
@@ -24,31 +20,31 @@
 #include "ui/accessibility/platform/ax_platform_node_delegate.h"
 #include "ui/accessibility/platform/ax_platform_tree_manager.h"
 
-#define UIA_VALIDATE_TEXTRANGEPROVIDER_CALL()                  \
-  if (!GetOwner() || !GetOwner()->GetDelegate() || !start() || \
-      !start()->GetAnchor() || !end() || !end()->GetAnchor())  \
-    return UIA_E_ELEMENTNOTAVAILABLE;                          \
-  SetStart(start()->AsValidPosition());                        \
+#define UIA_VALIDATE_TEXTRANGEPROVIDER_CALL()                 \
+  if (!GetOwner() || GetOwner()->IsDestroyed() || !start() || \
+      !start()->GetAnchor() || !end() || !end()->GetAnchor()) \
+    return UIA_E_ELEMENTNOTAVAILABLE;                         \
+  SetStart(start()->AsValidPosition());                       \
   SetEnd(end()->AsValidPosition());
-#define UIA_VALIDATE_TEXTRANGEPROVIDER_CALL_1_IN(in)           \
-  if (!GetOwner() || !GetOwner()->GetDelegate() || !start() || \
-      !start()->GetAnchor() || !end() || !end()->GetAnchor())  \
-    return UIA_E_ELEMENTNOTAVAILABLE;                          \
-  if (!in)                                                     \
-    return E_POINTER;                                          \
-  SetStart(start()->AsValidPosition());                        \
+#define UIA_VALIDATE_TEXTRANGEPROVIDER_CALL_1_IN(in)          \
+  if (!GetOwner() || GetOwner()->IsDestroyed() || !start() || \
+      !start()->GetAnchor() || !end() || !end()->GetAnchor()) \
+    return UIA_E_ELEMENTNOTAVAILABLE;                         \
+  if (!in)                                                    \
+    return E_POINTER;                                         \
+  SetStart(start()->AsValidPosition());                       \
   SetEnd(end()->AsValidPosition());
-#define UIA_VALIDATE_TEXTRANGEPROVIDER_CALL_1_OUT(out)         \
-  if (!GetOwner() || !GetOwner()->GetDelegate() || !start() || \
-      !start()->GetAnchor() || !end() || !end()->GetAnchor())  \
-    return UIA_E_ELEMENTNOTAVAILABLE;                          \
-  if (!out)                                                    \
-    return E_POINTER;                                          \
-  *out = {};                                                   \
-  SetStart(start()->AsValidPosition());                        \
+#define UIA_VALIDATE_TEXTRANGEPROVIDER_CALL_1_OUT(out)        \
+  if (!GetOwner() || GetOwner()->IsDestroyed() || !start() || \
+      !start()->GetAnchor() || !end() || !end()->GetAnchor()) \
+    return UIA_E_ELEMENTNOTAVAILABLE;                         \
+  if (!out)                                                   \
+    return E_POINTER;                                         \
+  *out = {};                                                  \
+  SetStart(start()->AsValidPosition());                       \
   SetEnd(end()->AsValidPosition());
 #define UIA_VALIDATE_TEXTRANGEPROVIDER_CALL_1_IN_1_OUT(in, out) \
-  if (!GetOwner() || !GetOwner()->GetDelegate() || !start() ||  \
+  if (!GetOwner() || GetOwner()->IsDestroyed() || !start() ||   \
       !start()->GetAnchor() || !end() || !end()->GetAnchor())   \
     return UIA_E_ELEMENTNOTAVAILABLE;                           \
   if (!in || !out)                                              \
@@ -98,9 +94,48 @@ class AXRangePhysicalPixelRectDelegate : public AXRangeRectDelegate {
   raw_ptr<AXPlatformNodeTextRangeProviderWin> host_;
 };
 
-AXPlatformNodeTextRangeProviderWin::AXPlatformNodeTextRangeProviderWin() {}
+AXPlatformNodeTextRangeProviderWin::AXPlatformNodeTextRangeProviderWin(
+    AXPositionInstance start,
+    AXPositionInstance end) {
+  SetStart(std::move(start));
+  SetEnd(std::move(end));
+}
 
 AXPlatformNodeTextRangeProviderWin::~AXPlatformNodeTextRangeProviderWin() {}
+
+IFACEMETHODIMP_(ULONG) AXPlatformNodeTextRangeProviderWin::AddRef() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  ref_count_ = base::CheckAdd(ref_count_, 1).ValueOrDie();
+  return ref_count_;
+}
+
+IFACEMETHODIMP_(ULONG) AXPlatformNodeTextRangeProviderWin::Release() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  ULONG ref_count = base::CheckSub(ref_count_, 1).ValueOrDie();
+  ref_count_ = ref_count;
+  if (ref_count == 0) {
+    delete this;
+  }
+  return ref_count;
+}
+
+IFACEMETHODIMP AXPlatformNodeTextRangeProviderWin::QueryInterface(
+    REFIID iid,
+    void** ppvObject) {
+  if (!ppvObject) {
+    return E_INVALIDARG;
+  }
+  *ppvObject = nullptr;
+  if (iid == __uuidof(IUnknown) || iid == __uuidof(ITextRangeProvider)) {
+    *ppvObject = static_cast<ITextRangeProvider*>(this);
+  } else if (iid == __uuidof(AXPlatformNodeTextRangeProviderWin)) {
+    *ppvObject = this;
+  } else {
+    return E_NOINTERFACE;
+  }
+  AddRef();
+  return S_OK;
+}
 
 void AXPlatformNodeTextRangeProviderWin::CreateTextRangeProvider(
     AXPositionInstance start,
@@ -108,18 +143,9 @@ void AXPlatformNodeTextRangeProviderWin::CreateTextRangeProvider(
     ITextRangeProvider** text_range_provider) {
   DCHECK(text_range_provider);
   DCHECK_EQ(*text_range_provider, nullptr);
-  *text_range_provider = nullptr;
 
-  CComObject<AXPlatformNodeTextRangeProviderWin>* text_range_provider_win =
-      nullptr;
-  if (SUCCEEDED(CComObject<AXPlatformNodeTextRangeProviderWin>::CreateInstance(
-          &text_range_provider_win))) {
-    DCHECK(text_range_provider_win);
-    text_range_provider_win->SetStart(std::move(start));
-    text_range_provider_win->SetEnd(std::move(end));
-    text_range_provider_win->AddRef();
-    *text_range_provider = text_range_provider_win;
-  }
+  *text_range_provider =
+      new AXPlatformNodeTextRangeProviderWin(std::move(start), std::move(end));
 }
 
 void AXPlatformNodeTextRangeProviderWin::CreateTextRangeProviderForTesting(
@@ -128,12 +154,8 @@ void AXPlatformNodeTextRangeProviderWin::CreateTextRangeProviderForTesting(
     AXPositionInstance end,
     ITextRangeProvider** text_range_provider) {
   CreateTextRangeProvider(start->Clone(), end->Clone(), text_range_provider);
-  Microsoft::WRL::ComPtr<AXPlatformNodeTextRangeProviderWin>
-      text_range_provider_win;
-  if (SUCCEEDED((*text_range_provider)
-                    ->QueryInterface(IID_PPV_ARGS(&text_range_provider_win)))) {
-    text_range_provider_win->SetOwnerForTesting(owner);  // IN-TEST
-  }
+  static_cast<AXPlatformNodeTextRangeProviderWin*>(*text_range_provider)
+      ->SetOwnerForTesting(owner);  // IN-TEST
 }
 
 //
@@ -174,6 +196,8 @@ HRESULT AXPlatformNodeTextRangeProviderWin::CompareEndpoints(
     ITextRangeProvider* other,
     TextPatternRangeEndpoint other_endpoint,
     int* result) {
+  ScopedAXEmbeddedObjectBehaviorSetter ax_embedded_object_behavior(
+      AXEmbeddedObjectBehavior::kUIAExposeCharacterForTextContent);
   UIA_VALIDATE_TEXTRANGEPROVIDER_CALL_1_IN_1_OUT(other, result);
   WIN_ACCESSIBILITY_API_HISTOGRAM(UMA_API_TEXTRANGE_COMPAREENDPOINTS);
   WIN_ACCESSIBILITY_API_PERF_HISTOGRAM(UMA_API_TEXTRANGE_COMPAREENDPOINTS);
@@ -629,6 +653,7 @@ HRESULT AXPlatformNodeTextRangeProviderWin::GetAttributeValue(
   for (auto it = normalized_start->AsLeafTextPosition();
        it->anchor_id() != end->anchor_id() || it->tree_id() != end->tree_id();
        it = it->CreateNextAnchorPosition()) {
+    DCHECK(it);
     // If the iterator creates a null position, then it has likely overrun the
     // range, return failure. This is unexpected but may happen if the range
     // became inverted.
@@ -637,7 +662,7 @@ HRESULT AXPlatformNodeTextRangeProviderWin::GetAttributeValue(
       return E_FAIL;
 
     AXPlatformNodeDelegate* delegate = GetDelegate(it.get());
-    DCHECK(it && delegate);
+    DCHECK(delegate);
 
     AXPlatformNodeWin* platform_node = static_cast<AXPlatformNodeWin*>(
         delegate->GetFromNodeID(it->anchor_id()));
@@ -694,37 +719,36 @@ HRESULT AXPlatformNodeTextRangeProviderWin::GetBoundingRectangles(
   AXRangePhysicalPixelRectDelegate rect_delegate(this);
   std::vector<gfx::Rect> rects = range.GetRects(&rect_delegate);
 
+  size_t num_safe_array_elems = rects.size() * 4;
   // 4 array items per rect: left, top, width, height
-  SAFEARRAY* safe_array = SafeArrayCreateVector(
-      VT_R8 /* element type */, 0 /* lower bound */, rects.size() * 4);
+  base::win::ScopedSafearray safe_array(::SafeArrayCreateVector(
+      /*element_type=*/VT_R8, /*lower bound=*/0, num_safe_array_elems));
 
-  if (!safe_array)
+  if (!safe_array.Get()) {
     return E_OUTOFMEMORY;
+  }
 
   if (rects.size() > 0) {
-    double* double_array = nullptr;
-    HRESULT hr = SafeArrayAccessData(safe_array,
-                                     reinterpret_cast<void**>(&double_array));
+    auto locked_array = safe_array.CreateLockScope<VT_R8>();
 
-    if (SUCCEEDED(hr)) {
+    if (locked_array) {
+      auto double_span = base::span(*locked_array);
+
       for (size_t rect_index = 0; rect_index < rects.size(); rect_index++) {
         const gfx::Rect& rect = rects[rect_index];
-        double_array[rect_index * 4] = rect.x();
-        double_array[rect_index * 4 + 1] = rect.y();
-        double_array[rect_index * 4 + 2] = rect.width();
-        double_array[rect_index * 4 + 3] = rect.height();
-      }
-      hr = SafeArrayUnaccessData(safe_array);
-    }
+        size_t base_idx = rect_index * 4;
 
-    if (FAILED(hr)) {
-      DCHECK(safe_array);
-      SafeArrayDestroy(safe_array);
+        double_span[base_idx] = rect.x();
+        double_span[base_idx + 1] = rect.y();
+        double_span[base_idx + 2] = rect.width();
+        double_span[base_idx + 3] = rect.height();
+      }
+    } else {
       return E_FAIL;
     }
   }
 
-  *screen_physical_pixel_rectangles = safe_array;
+  *screen_physical_pixel_rectangles = safe_array.Release();
   return S_OK;
 }
 
@@ -822,11 +846,17 @@ HRESULT AXPlatformNodeTextRangeProviderWin::Move(TextUnit unit,
         succeeded_move = SUCCEEDED(hr) && end_units_moved == 1;
       }
 
-      // Because Windows ATs behave undesirably when the start and end endpoints
-      // are not in the same anchor (for character and word navigation), make
-      // sure to bring back the end endpoint to the end of the start's anchor.
+      // Character, word, and format moves must span the enclosing unit
+      // precisely. Sometimes, when the move operation moves the end position at
+      // the end of the anchor, it actually is located at the start of the next
+      // anchor. Expanding to the enclosing unit solves this issue by bringing
+      // the end position to the end of the previous anchor, as necessary.
+      // Without this, Windows ATs behave incorrectly because, when they fetch
+      // attributes within the specified range, it also queries the attributes
+      // of the next anchor that technically shouldn't be included in the range.
       if (start()->anchor_id() != end()->anchor_id() &&
-          (unit == TextUnit_Character || unit == TextUnit_Word)) {
+          (unit == TextUnit_Character || unit == TextUnit_Word ||
+           unit == TextUnit_Format)) {
         ExpandToEnclosingUnitImpl(unit);
       }
     }
@@ -1061,7 +1091,7 @@ HRESULT AXPlatformNodeTextRangeProviderWin::ScrollIntoView(BOOL align_to_top) {
   // Return early when we're trying to scroll in a View.
   // TODO(accessibility): Investigate if Views support scrolling and how to
   // implement it.
-  if (!GetOwner()->GetDelegate()->IsWebContent()) {
+  if (!GetOwner()->IsWebContent()) {
     return S_OK;
   }
 
@@ -1106,7 +1136,6 @@ HRESULT AXPlatformNodeTextRangeProviderWin::ScrollIntoView(BOOL align_to_top) {
   DCHECK(common_ancestor_platform_node);
   AXPlatformNodeDelegate* common_ancestor_delegate =
       common_ancestor_platform_node->GetDelegate();
-  DCHECK(common_ancestor_delegate);
   const gfx::Rect text_range_container_frame_bounds =
       common_ancestor_delegate->GetBoundsRect(AXCoordinateSystem::kFrame,
                                               AXClippingBehavior::kUnclipped);
@@ -1179,27 +1208,26 @@ HRESULT AXPlatformNodeTextRangeProviderWin::GetChildren(SAFEARRAY** children) {
   descendants = common_delegate->GetUIADirectChildrenInRange(start_delegate,
                                                              end_delegate);
 
-  SAFEARRAY* safe_array =
-      SafeArrayCreateVector(VT_UNKNOWN, 0, descendants.size());
+  base::win::ScopedSafearray safe_array(
+      ::SafeArrayCreateVector(VT_UNKNOWN, 0, descendants.size()));
 
-  if (!safe_array)
-    return E_OUTOFMEMORY;
-
-  if (safe_array->rgsabound->cElements != descendants.size()) {
-    DCHECK(safe_array);
-    SafeArrayDestroy(safe_array);
+  if (!safe_array.Get()) {
     return E_OUTOFMEMORY;
   }
 
+  auto locked_array = safe_array.CreateLockScope<VT_UNKNOWN>();
+  if (!locked_array) {
+    return E_FAIL;
+  }
+  auto locked_span = base::span(*locked_array);
   LONG i = 0;
   for (const gfx::NativeViewAccessible& descendant : descendants) {
-    IRawElementProviderSimple* raw_provider;
+    Microsoft::WRL::ComPtr<IRawElementProviderSimple> raw_provider;
     descendant->QueryInterface(IID_PPV_ARGS(&raw_provider));
-    SafeArrayPutElement(safe_array, &i, raw_provider);
-    ++i;
+    locked_span[i++] = raw_provider.Detach();
   }
 
-  *children = safe_array;
+  *children = safe_array.Release();
   return S_OK;
 }
 
@@ -1290,7 +1318,7 @@ AXPlatformNodeWin* AXPlatformNodeTextRangeProviderWin::GetOwner() const {
   const AXNode* anchor = position->GetAnchor();
   DCHECK(anchor);
   const AXTreeManager* ax_tree_manager = position->GetManager();
-  if (ax_tree_manager && ax_tree_manager->IsPlatformTreeManager()) {
+  if (ax_tree_manager && ax_tree_manager->is_platform_tree_manager()) {
     const AXPlatformTreeManager* platform_tree_manager =
         static_cast<const AXPlatformTreeManager*>(ax_tree_manager);
     DCHECK(platform_tree_manager);

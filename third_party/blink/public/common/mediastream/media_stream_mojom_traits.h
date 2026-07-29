@@ -98,10 +98,6 @@ struct BLINK_COMMON_EXPORT
     return controls.video;
   }
 
-  static bool hotword_enabled(const blink::StreamControls& controls) {
-    return controls.hotword_enabled;
-  }
-
   static bool disable_local_echo(const blink::StreamControls& controls) {
     return controls.disable_local_echo;
   }
@@ -111,8 +107,17 @@ struct BLINK_COMMON_EXPORT
     return controls.suppress_local_audio_playback;
   }
 
+  static bool restrict_own_audio(const blink::StreamControls& controls) {
+    return controls.restrict_own_audio;
+  }
+
   static bool exclude_system_audio(const blink::StreamControls& controls) {
     return controls.exclude_system_audio;
+  }
+
+  static blink::mojom::WindowAudioPreference window_audio_preference(
+      const blink::StreamControls& controls) {
+    return controls.window_audio_preference;
   }
 
   static bool exclude_self_browser_surface(
@@ -142,6 +147,10 @@ struct BLINK_COMMON_EXPORT
   static bool exclude_monitor_type_surfaces(
       const blink::StreamControls& controls) {
     return controls.exclude_monitor_type_surfaces;
+  }
+
+  static bool audio_selection_preferred(const blink::StreamControls& controls) {
+    return controls.audio_selection_preferred;
   }
 
   static bool Read(blink::mojom::StreamControlsDataView input,

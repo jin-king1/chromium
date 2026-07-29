@@ -10,6 +10,7 @@
 #include <string>
 
 #include "base/files/file_path.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
@@ -58,7 +59,7 @@ class SigninDataCollector : public DataCollector {
   void OnPIIRedacted(base::FilePath target_directory,
                      DataCollectorDoneCallback on_exported_callback,
                      std::string json);
-  void CollectAccountIds(base::Value::List* accountList);
+  void CollectAccountIds(base::ListValue* accountList);
 
   SEQUENCE_CHECKER(sequence_checker_);
   PIIMap pii_map_;

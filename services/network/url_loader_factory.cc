@@ -12,20 +12,20 @@
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
+#include "base/time/time.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "net/base/isolation_info.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/url_request/url_request_context.h"
-#include "services/network/attribution/attribution_request_helper.h"
 #include "services/network/cookie_manager.h"
 #include "services/network/cookie_settings.h"
 #include "services/network/cors/cors_url_loader_factory.h"
 #include "services/network/network_context.h"
 #include "services/network/network_service.h"
+#include "services/network/observer_wrapper.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -40,6 +40,42 @@
 #include "url/origin.h"
 
 namespace network {
+
+namespace {
+
+// Helper function template to create ObserverWrapper instances.
+// Encapsulates the logic of potentially moving a PendingRemote from
+// TrustedParams based on a member pointer, or using a fallback pointer.
+template <typename T>
+ObserverWrapper<T> CreateObserverWrapper(
+    const std::optional<ResourceRequest::TrustedParams>& trusted_params,
+    mojo::PendingRemote<T> ResourceRequest::TrustedParams::* remote_member_ptr,
+    T* fallback_ptr) {
+  mojo::PendingRemote<T> remote_to_pass;
+  if (trusted_params) {
+    auto& remote_member =
+        const_cast<ResourceRequest::TrustedParams*>(&trusted_params.value())
+            ->*remote_member_ptr;
+    if (remote_member.is_valid()) {
+      remote_to_pass = std::move(remote_member);
+    }
+  }
+  return ObserverWrapper<T>(std::move(remote_to_pass), fallback_ptr);
+}
+
+// Overload of CreateObserverWrapper that takes a mojo::Remote reference
+// for the fallback, simplifying calls where the fallback is held in a Remote.
+template <typename T>
+ObserverWrapper<T> CreateObserverWrapper(
+    const std::optional<ResourceRequest::TrustedParams>& trusted_params,
+    mojo::PendingRemote<T> ResourceRequest::TrustedParams::* remote_member_ptr,
+    mojo::Remote<T>& remote_for_fallback_ptr) {
+  return CreateObserverWrapper<T>(
+      trusted_params, remote_member_ptr,
+      remote_for_fallback_ptr ? remote_for_fallback_ptr.get() : nullptr);
+}
+
+}  // namespace
 
 constexpr int URLLoaderFactory::kMaxKeepaliveConnections;
 constexpr int URLLoaderFactory::kMaxKeepaliveConnectionsPerTopLevelFrame;
@@ -59,9 +95,14 @@ URLLoaderFactory::URLLoaderFactory(
       trust_token_observer_(std::move(params_->trust_token_observer)),
       devtools_observer_(std::move(params_->devtools_observer)),
       device_bound_session_observer_(
-          std::move(params_->device_bound_session_observer)) {
+          params_->device_bound_session_observer
+              ? base::MakeRefCounted<
+                    RefCountedDeviceBoundSessionAccessObserverRemote>(
+                    mojo::Remote<mojom::DeviceBoundSessionAccessObserver>(
+                        std::move(params_->device_bound_session_observer)))
+              : nullptr) {
   DCHECK(context);
-  DCHECK_NE(mojom::kInvalidProcessId, params_->process_id);
+  DCHECK(params_->process_id);
   DCHECK(!params_->factory_override);
   // Only non-navigation IsolationInfos should be bound to URLLoaderFactories.
   DCHECK_EQ(net::IsolationInfo::RequestType::kOther,
@@ -179,9 +220,10 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
     }
 
     // Load a subresource from a WebBundle.
+    // TODO(crbug.com/379869738) Remove GetUnsafeValue.
     context_->GetWebBundleManager().StartSubresourceRequest(
         std::move(receiver), resource_request, std::move(client),
-        params_->process_id, std::move(trusted_header_client));
+        params_->process_id.GetUnsafeValue(), std::move(trusted_header_client));
     return;
   }
 
@@ -296,47 +338,29 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
     }
   }
 
-  mojo::PendingRemote<mojom::CookieAccessObserver> cookie_observer;
-  if (resource_request.trusted_params &&
-      resource_request.trusted_params->cookie_observer) {
-    cookie_observer =
-        std::move(const_cast<mojo::PendingRemote<mojom::CookieAccessObserver>&>(
-            resource_request.trusted_params->cookie_observer));
-  }
-  mojo::PendingRemote<mojom::TrustTokenAccessObserver> trust_token_observer;
-  if (resource_request.trusted_params &&
-      resource_request.trusted_params->trust_token_observer) {
-    trust_token_observer = std::move(
-        const_cast<mojo::PendingRemote<mojom::TrustTokenAccessObserver>&>(
-            resource_request.trusted_params->trust_token_observer));
-  }
-  mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>
-      url_loader_network_observer;
-  if (resource_request.trusted_params &&
-      resource_request.trusted_params->url_loader_network_observer) {
-    url_loader_network_observer =
-        std::move(const_cast<
-                  mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>&>(
-            resource_request.trusted_params->url_loader_network_observer));
-  }
-
-  mojo::PendingRemote<mojom::DevToolsObserver> devtools_observer;
-  if (resource_request.trusted_params &&
-      resource_request.trusted_params->devtools_observer) {
-    devtools_observer =
-        std::move(const_cast<mojo::PendingRemote<mojom::DevToolsObserver>&>(
-            resource_request.trusted_params->devtools_observer));
-  }
-
-  mojo::PendingRemote<mojom::DeviceBoundSessionAccessObserver>
-      device_bound_session_observer;
-  if (resource_request.trusted_params &&
-      resource_request.trusted_params->device_bound_session_observer) {
-    device_bound_session_observer = std::move(
-        const_cast<
-            mojo::PendingRemote<mojom::DeviceBoundSessionAccessObserver>&>(
-            resource_request.trusted_params->device_bound_session_observer));
-  }
+  auto cookie_observer = CreateObserverWrapper<mojom::CookieAccessObserver>(
+      resource_request.trusted_params,
+      &ResourceRequest::TrustedParams::cookie_observer, cookie_observer_);
+  auto trust_token_observer =
+      CreateObserverWrapper<mojom::TrustTokenAccessObserver>(
+          resource_request.trusted_params,
+          &ResourceRequest::TrustedParams::trust_token_observer,
+          trust_token_observer_);
+  auto url_loader_network_observer =
+      CreateObserverWrapper<mojom::URLLoaderNetworkServiceObserver>(
+          resource_request.trusted_params,
+          &ResourceRequest::TrustedParams::url_loader_network_observer,
+          GetURLLoaderNetworkServiceObserver());
+  auto devtools_observer = CreateObserverWrapper<mojom::DevToolsObserver>(
+      resource_request.trusted_params,
+      &ResourceRequest::TrustedParams::devtools_observer, devtools_observer_);
+  auto device_bound_session_observer =
+      CreateObserverWrapper<mojom::DeviceBoundSessionAccessObserver>(
+          resource_request.trusted_params,
+          &ResourceRequest::TrustedParams::device_bound_session_observer,
+          device_bound_session_observer_
+              ? device_bound_session_observer_->data.get()
+              : nullptr);
 
   mojo::PendingRemote<mojom::AcceptCHFrameObserver> accept_ch_frame_observer;
   if (resource_request.trusted_params &&
@@ -346,9 +370,24 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
             resource_request.trusted_params->accept_ch_frame_observer));
   }
 
-  std::unique_ptr<AttributionRequestHelper> attribution_request_helper =
-      AttributionRequestHelper::CreateIfNeeded(
-          resource_request.attribution_reporting_eligibility);
+  std::unique_ptr<DevtoolsDurableMessageWriter> maybe_durable_message_writer;
+  if (context_->network_service() &&
+      resource_request.devtools_request_id.has_value() &&
+      resource_request.throttling_profile_id.has_value()) {
+    maybe_durable_message_writer =
+        context_->network_service()->MaybeCreateDurableMessageWriter(
+            resource_request.throttling_profile_id.value(),
+            resource_request.devtools_request_id.value());
+  }
+
+  mojo::ScopedDataPipeProducerHandle provided_response_body_stream;
+  if (base::FeatureList::IsEnabled(
+          features::kURLLoaderUseProvidedResponseBodyStream) &&
+      resource_request.trusted_params &&
+      resource_request.trusted_params->response_body_stream) {
+    provided_response_body_stream =
+        std::move(resource_request.trusted_params->response_body_stream->pipe);
+  }
 
   auto loader = std::make_unique<URLLoader>(
       *this,
@@ -364,8 +403,9 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
       std::move(trust_token_observer), std::move(url_loader_network_observer),
       std::move(devtools_observer), std::move(device_bound_session_observer),
       std::move(accept_ch_frame_observer),
-      std::move(attribution_request_helper),
-      resource_request.shared_storage_writable_eligible);
+      *context_->GetSharedResourceChecker(),
+      std::move(maybe_durable_message_writer),
+      std::move(provided_response_body_stream));
 
   cors_url_loader_factory_->OnURLLoaderCreated(std::move(loader));
 }
@@ -382,27 +422,9 @@ mojom::DevToolsObserver* URLLoaderFactory::GetDevToolsObserver() const {
   return nullptr;
 }
 
-mojom::DeviceBoundSessionAccessObserver*
-URLLoaderFactory::GetDeviceBoundSessionAccessObserver() const {
-  if (device_bound_session_observer_) {
-    return device_bound_session_observer_.get();
-  }
-  return nullptr;
-}
-
-mojom::CookieAccessObserver* URLLoaderFactory::GetCookieAccessObserver() const {
-  if (cookie_observer_) {
-    return cookie_observer_.get();
-  }
-  return nullptr;
-}
-
-mojom::TrustTokenAccessObserver* URLLoaderFactory::GetTrustTokenAccessObserver()
-    const {
-  if (trust_token_observer_) {
-    return trust_token_observer_.get();
-  }
-  return nullptr;
+scoped_refptr<RefCountedDeviceBoundSessionAccessObserverRemote>
+URLLoaderFactory::GetDeviceBoundSessionAccessObserverSharedRemote() const {
+  return device_bound_session_observer_;
 }
 
 mojom::URLLoaderNetworkServiceObserver*

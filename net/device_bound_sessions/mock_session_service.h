@@ -12,6 +12,7 @@
 #include "net/device_bound_sessions/registration_fetcher_param.h"
 #include "net/device_bound_sessions/session_challenge_param.h"
 #include "net/device_bound_sessions/session_service.h"
+#include "net/ssl/ssl_cert_request_info.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "url/gurl.h"
@@ -33,20 +34,21 @@ class SessionServiceMock : public SessionService {
               (override));
   MOCK_METHOD(std::optional<SessionService::DeferralParams>,
               ShouldDefer,
-              (URLRequest * request,
+              (DbscRequest & request,
+               HttpRequestHeaders* extra_headers,
                const FirstPartySetMetadata& first_party_set_metadata),
               (override));
   MOCK_METHOD(void,
               DeferRequestForRefresh,
-              (URLRequest * request,
+              (DbscRequest & request,
                DeferralParams deferral,
-               RefreshCompleteCallback restart_callback,
-               RefreshCompleteCallback continue_callback),
+               RefreshCompleteCallback callback),
               (override));
   MOCK_METHOD(void,
               SetChallengeForBoundSession,
               (OnAccessCallback on_access_callback,
-               const GURL& request_url,
+               DbscRequest& request,
+               const FirstPartySetMetadata& first_party_set_metadata,
                const SessionChallengeParam& challenge_param),
               (override));
   MOCK_METHOD(
@@ -54,15 +56,21 @@ class SessionServiceMock : public SessionService {
       GetAllSessionsAsync,
       (base::OnceCallback<void(const std::vector<SessionKey>&)> callback),
       (override));
+  MOCK_METHOD(
+      void,
+      GetAllSessionDisplaysAsync,
+      (base::OnceCallback<void(const std::vector<SessionDisplay>&)> callback),
+      (override));
   MOCK_METHOD(void,
               DeleteSessionAndNotify,
-              (const SchemefulSite& site,
-               const Session::Id& id,
+              (DeletionReason reason,
+               const SessionKey& session_key,
                SessionService::OnAccessCallback per_request_callback),
               (override));
   MOCK_METHOD(void,
               DeleteAllSessions,
-              (std::optional<base::Time> created_after_time,
+              (DeletionReason reason,
+               std::optional<base::Time> created_after_time,
                std::optional<base::Time> created_before_time,
                base::RepeatingCallback<bool(const url::Origin&,
                                             const net::SchemefulSite&)>
@@ -73,6 +81,50 @@ class SessionServiceMock : public SessionService {
               AddObserver,
               (const GURL& url,
                base::RepeatingCallback<void(const SessionAccess&)> callback),
+              (override));
+  MOCK_METHOD(base::CallbackListSubscription,
+              AddEventObserver,
+              (base::RepeatingCallback<void(const SessionEvent&)> callback),
+              (override));
+  MOCK_METHOD(const Session*,
+              GetSession,
+              (const SessionKey& session_key),
+              (const override));
+  MOCK_METHOD(void,
+              AddSession,
+              (const SchemefulSite& site,
+               SessionParams params,
+               base::span<const uint8_t> wrapped_key,
+               base::OnceCallback<void(SessionError::ErrorType)> callback),
+              (override));
+  MOCK_METHOD(const SignedRefreshChallenge*,
+              GetLatestSignedRefreshChallenge,
+              (const SessionKey& session_key),
+              (override));
+  MOCK_METHOD(void,
+              SetLatestSignedRefreshChallenge,
+              (SessionKey session_key,
+               SignedRefreshChallenge signed_refresh_challenge),
+              (override));
+  MOCK_METHOD(bool,
+              SigningQuotaExceeded,
+              (const SchemefulSite& site),
+              (override));
+  MOCK_METHOD(void,
+              AddSigningOccurrence,
+              (const SchemefulSite& site),
+              (override));
+  MOCK_METHOD(void,
+              HandleResponseHeaders,
+              (DbscRequest & request,
+               HttpResponseHeaders* headers,
+               const FirstPartySetMetadata& first_party_set_metadata),
+              (override));
+  MOCK_METHOD(void,
+              SelectClientCertificate,
+              (const GURL& url,
+               scoped_refptr<SSLCertRequestInfo> cert_info,
+               SelectClientCertificateCallback callback),
               (override));
 };
 

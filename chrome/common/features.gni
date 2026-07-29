@@ -7,9 +7,7 @@ import("//build/config/compiler/compiler.gni")
 import("//build/config/dcheck_always_on.gni")
 import("//build/config/features.gni")
 import("//components/compose/features.gni")
-import("//components/nacl/features.gni")
 import("//components/safe_browsing/buildflags.gni")
-import("//components/sharing_message/buildflags.gni")
 import("//components/signin/features.gni")
 import("//components/supervised_user/buildflags.gni")
 import("//content/public/common/features.gni")
@@ -19,14 +17,18 @@ import("//extensions/buildflags/buildflags.gni")
 import("//media/media_options.gni")
 import("//net/features.gni")
 import("//pdf/features.gni")
-import("//ppapi/buildflags/buildflags.gni")
 import("//printing/buildflags/buildflags.gni")
 import("//services/screen_ai/buildflags/features.gni")
+import("//services/webnn/public/webnn_features.gni")
 import("//ui/base/ui_features.gni")
 import("//ui/webui/webui_features.gni")
 
 assert(use_blink, "Chromium without blink shouldn't use anything in //chrome")
 
+# IMPORTANT
+# We are not accepting any new build flags in //chrome. See
+# docs/chrome_browser_design_principles.md.
+#
 # Please keep features in alphabetical order.
 declare_args() {
   # Enables the build to have logging enabled by default.
@@ -45,16 +47,22 @@ declare_args() {
   enable_background_mode = !is_android && !is_chromeos
 
   # Enables usage of notifications via Chrome's MessageCenter.
-  enable_chrome_notifications = is_mac || is_win || is_linux || is_fuchsia
+  enable_chrome_notifications = is_mac || is_win || is_linux
 
-  # Enables inclusion of glic in the build.
-  enable_glic = is_mac || is_win || is_linux
+  # Skips unmigrated actor files in the build on Android. This is temporary, and
+  # will eventually be removed once migration is done. Adding this flag likely
+  # means the code needs to be adapted for Android. Once adapted, the final code
+  # should use BUILDFLAG(IS_ANDROID) for Android specific implementation.
+  # TODO(debug.com/470475787): Remove this after migration.
+  skip_android_unmigrated_actor_files = is_android
 
   # Hangout services is an extension that adds extra features to Hangouts.
   # It is enableable separately to facilitate testing.
-  enable_hangout_services_extension = is_chrome_branded
+  enable_hangout_services_extension = enable_src_internal
 
-  enable_service_discovery = (enable_mdns && !is_android) || is_mac
+  # TODO(crbug.com/429684535): Document this argument. It's not immediately
+  # clear what it controls.
+  enable_service_discovery = enable_mdns
 
   # Enables use of the session service, which is enabled by default.
   # Android stores them separately on the Java side.
@@ -85,11 +93,9 @@ chrome_grit_defines = [
   "enable_printing=$enable_printing",
   "enable_extensions=$enable_extensions",
   "enable_extensions_core=$enable_extensions_core",
-  "enable_glic=$enable_glic",
   "enable_hangout_services_extension=$enable_hangout_services_extension",
-  "enable_ink=$enable_ink",
   "enable_pdf_ink2=$enable_pdf_ink2",
-  "enable_nacl=$enable_nacl",
+  "enable_pdf_save_to_drive=$enable_pdf_save_to_drive",
   "enable_dice_support=$enable_dice_support",
   "enable_pdf=$enable_pdf",
   "enable_print_preview=$enable_print_preview",
@@ -97,10 +103,12 @@ chrome_grit_defines = [
   "enable_supervised_users=$enable_supervised_users",
   "enable_vr=$enable_vr",
   "enable_webui_certificate_viewer=$enable_webui_certificate_viewer",
-  "enable_webui_tab_strip=$enable_webui_tab_strip",
+  "enable_webui_contextual_tasks_composebox=$enable_webui_contextual_tasks_composebox",
+  "enable_webui_ntp=$enable_webui_ntp",
   "is_official_build=$is_official_build",
   "safe_browsing_mode=$safe_browsing_mode",
   "optimize_webui=$optimize_webui",
   "chrome_root_store_cert_management_ui=$chrome_root_store_cert_management_ui",
   "use_nss_certs=$use_nss_certs",
+  "webnn_enable_graph_dump=$webnn_enable_graph_dump",
 ]

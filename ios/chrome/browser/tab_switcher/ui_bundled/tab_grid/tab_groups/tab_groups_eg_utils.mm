@@ -4,13 +4,17 @@
 
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_groups_eg_utils.h"
 
+#import "base/test/ios/wait_util.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_groups_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
+#import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ui/base/l10n/l10n_util.h"
 
+using base::test::ios::kWaitForUIElementTimeout;
+using base::test::ios::WaitUntilConditionOrTimeout;
 using chrome_test_util::ContextMenuItemWithAccessibilityLabelId;
 using chrome_test_util::CreateTabGroupTextField;
 using chrome_test_util::TabGridCellAtIndex;
@@ -29,9 +33,10 @@ id<GREYMatcher> NewTabGroupButton() {
 // tab at `index`.
 void OpenTabGroupCreationViewUsingLongPressForCellAtIndex(int index,
                                                           bool first_group) {
+  base::PlatformThread::Sleep(base::Seconds(1));
   [[EarlGrey selectElementWithMatcher:TabGridCellAtIndex(index)]
-      performAction:grey_longPress()];
-
+      performAction:grey_longPressWithDuration(base::Seconds(1))];
+  base::PlatformThread::Sleep(base::Seconds(1));
   if (first_group) {
     [[EarlGrey selectElementWithMatcher:
                    grey_text(l10n_util::GetPluralNSStringF(
@@ -71,6 +76,8 @@ void CreateTabGroupAtIndex(int index, NSString* group_name, bool first_group) {
   SetTabGroupCreationName(group_name);
 
   // Validate the creation.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:CreateTabGroupCreateButton()];
   [[EarlGrey selectElementWithMatcher:CreateTabGroupCreateButton()]
       performAction:grey_tap()];
   [ChromeEarlGrey
@@ -85,6 +92,18 @@ void OpenTabGroupAtIndex(int group_cell_index) {
   [ChromeEarlGrey
       waitForUIElementToAppearWithMatcher:grey_accessibilityID(
                                               kTabGroupViewTitleIdentifier)];
+}
+
+// Long presses a tab group cell.
+void LongPressTabGroupCellAtIndex(unsigned int index) {
+  // Make sure the cell has appeared. Otherwise, long pressing can be flaky.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:TabGridGroupCellAtIndex(index)];
+  // It happens that on certain bots, the grey_longPress action doesn't return
+  // an error for EarlGrey, but the context menu doesn't open accordingly.
+  // Long press for a pre-determined duration to force the context menu to open.
+  [[EarlGrey selectElementWithMatcher:TabGridGroupCellAtIndex(index)]
+      performAction:grey_longPressWithDuration(base::Seconds(1))];
 }
 
 }  // namespace chrome_test_util

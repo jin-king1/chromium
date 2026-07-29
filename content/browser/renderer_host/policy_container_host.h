@@ -9,14 +9,17 @@
 #include <memory>
 #include <vector>
 
-#include "content/browser/child_process_host_impl.h"
+#include "base/memory/ref_counted.h"
+#include "base/types/pass_key.h"
+#include "content/browser/agent_cluster_key.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/child_process_host.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
-#include "mojo/public/cpp/bindings/pending_associated_remote.h"
-#include "mojo/public/cpp/bindings/unique_receiver_set.h"
+#include "services/network/public/cpp/connection_allowlist.h"
 #include "services/network/public/cpp/cross_origin_embedder_policy.h"
 #include "services/network/public/cpp/cross_origin_opener_policy.h"
 #include "services/network/public/cpp/document_isolation_policy.h"
+#include "services/network/public/cpp/integrity_policy.h"
 #include "services/network/public/cpp/web_sandbox_flags.h"
 #include "services/network/public/mojom/content_security_policy.mojom-forward.h"
 #include "services/network/public/mojom/ip_address_space.mojom-shared.h"
@@ -29,6 +32,8 @@
 namespace content {
 
 class ContentBrowserClient;
+class NavigationPolicyContainerBuilder;
+class RenderFrameHostImpl;
 
 // The contents of a PolicyContainerHost.
 struct CONTENT_EXPORT PolicyContainerPolicies {
@@ -37,17 +42,21 @@ struct CONTENT_EXPORT PolicyContainerPolicies {
   PolicyContainerPolicies(
       network::mojom::ReferrerPolicy referrer_policy,
       network::mojom::IPAddressSpace ip_address_space,
+      bool allow_non_secure_local_network_access,
       bool is_web_secure_context,
+      network::ConnectionAllowlists connection_allowlists,
       std::vector<network::mojom::ContentSecurityPolicyPtr>
           content_security_policies,
       const network::CrossOriginOpenerPolicy& cross_origin_opener_policy,
       const network::CrossOriginEmbedderPolicy& cross_origin_embedder_policy,
       const network::DocumentIsolationPolicy& document_isolation_policy,
+      network::IntegrityPolicy integrity_policy,
+      network::IntegrityPolicy integrity_policy_report_only,
       network::mojom::WebSandboxFlags sandbox_flags,
       bool is_credentialless,
       bool can_navigate_top_without_user_gesture,
-      bool allow_cross_origin_isolation,
-      bool cross_origin_isolation_enabled_by_dip);
+      bool cross_origin_isolation_enabled_by_dip,
+      const std::optional<AgentClusterKey::CrossOriginIsolationKey>& coi_key);
 
   explicit PolicyContainerPolicies(
       const blink::mojom::PolicyContainerPolicies& policies,
@@ -80,6 +89,11 @@ struct CONTENT_EXPORT PolicyContainerPolicies {
   blink::mojom::PolicyContainerPoliciesPtr ToMojoPolicyContainerPolicies()
       const;
 
+  // PolicyContainerPolicies structs are comparable for equality.
+  CONTENT_EXPORT friend bool operator==(const PolicyContainerPolicies&,
+                                        const PolicyContainerPolicies&) =
+      default;
+
   // The referrer policy for the associated document. If not overwritten via a
   // call to SetReferrerPolicy (for example after parsing the Referrer-Policy
   // header or a meta tag), the default referrer policy will be applied to the
@@ -93,6 +107,14 @@ struct CONTENT_EXPORT PolicyContainerPolicies {
   network::mojom::IPAddressSpace ip_address_space =
       network::mojom::IPAddressSpace::kUnknown;
 
+  // Whether non-secure contexts are allowed to issue Local Network Access
+  // requests.  Even if allowed, they are still bound by permission
+  // requirements.
+  //
+  // Only relevant if network::features::kLocalNetworkAccessChecks is enabled
+  // and blocking.
+  bool allow_non_secure_local_network_access = false;
+
   // Whether the document is a secure context.
   //
   // See: https://html.spec.whatwg.org/C/#secure-contexts.
@@ -101,6 +123,10 @@ struct CONTENT_EXPORT PolicyContainerPolicies {
   //  - |network::IsUrlPotentiallyTrustworthy()|
   //  - |network::IsOriginPotentiallyTrustworthy()|
   bool is_web_secure_context = false;
+
+  // The set of connection allowlists for the associated context.
+  // https://github.com/mikewest/anti-exfil
+  network::ConnectionAllowlists connection_allowlists;
 
   // The content security policies of the associated document.
   std::vector<network::mojom::ContentSecurityPolicyPtr>
@@ -121,6 +147,19 @@ struct CONTENT_EXPORT PolicyContainerPolicies {
   // https://github.com/explainers-by-googlers/document-isolation-policy
   network::DocumentIsolationPolicy document_isolation_policy;
 
+  // This is used on Android WebView, as Android WebView currently does not
+  // support any kind of SiteInstance switching. So we cannot rely on the
+  // AgentClusterKey in the SiteInstance to properly track the cross-origin
+  // isolation state, and instead rely on an override stored in the
+  // PolicyContainer.
+  // TODO(crbug.com/419595581): Remove this once default SiteInstanceGroups
+  // ships on Android WebView.
+  std::optional<AgentClusterKey::CrossOriginIsolationKey>
+      cross_origin_isolation_key_override;
+
+  network::IntegrityPolicy integrity_policy;
+  network::IntegrityPolicy integrity_policy_report_only;
+
   // Tracks the sandbox flags which are in effect on this document. This
   // includes any flags which have been set by a Content-Security-Policy header,
   // in addition to those which are set by the embedding frame.
@@ -140,17 +179,6 @@ struct CONTENT_EXPORT PolicyContainerPolicies {
   // will always have this value set to true.
   bool can_navigate_top_without_user_gesture = true;
 
-  // The top-level initial empty document opened as a popup by a cross-origin
-  // iframe might inherit the COOP policies of the top-level document but it
-  // shouldn't have crossOriginIsolated capabilities if COOP was initially set
-  // by another origin. Hence, we pass down this boolean to tell the renderer to
-  // restrict those capabilities. For more detail, see
-  // https://github.com/hemeryar/coi-with-popups/blob/main/docs/cross_origin_iframe_popup.MD
-  // TODO(crbug.com/393522283): Ensure the COI status of a context is properly
-  // computed in the browser process and just pass it instead of passing several
-  // booleans to the renderer process and having it do the computation.
-  bool allow_cross_origin_isolation = false;
-
   // Whether crossOriginIsolation was enabled by DocumentIsolationPolicy. We
   // pass this to the renderer process, because crossOriginIsolation enabled by
   // DocumentIsolationPolicy is not subject to the CrossOriginIoslation
@@ -160,12 +188,6 @@ struct CONTENT_EXPORT PolicyContainerPolicies {
   // booleans to the renderer process and having it do the computation.
   bool cross_origin_isolation_enabled_by_dip = false;
 };
-
-// PolicyContainerPolicies structs are comparable for equality.
-CONTENT_EXPORT bool operator==(const PolicyContainerPolicies& lhs,
-                               const PolicyContainerPolicies& rhs);
-CONTENT_EXPORT bool operator!=(const PolicyContainerPolicies& lhs,
-                               const PolicyContainerPolicies& rhs);
 
 // Streams a human-readable string representation of |policies| to |out|.
 CONTENT_EXPORT std::ostream& operator<<(
@@ -203,14 +225,11 @@ class CONTENT_EXPORT PolicyContainerHost
   PolicyContainerHost(const PolicyContainerHost&) = delete;
   PolicyContainerHost& operator=(const PolicyContainerHost&) = delete;
 
-  // AssociateWithFrameToken must be called as soon as this PolicyContainerHost
-  // becomes owned by a RenderFrameHost.
-  void AssociateWithFrameToken(
-      const blink::LocalFrameToken& token,
-      int process_id = ChildProcessHost::kInvalidUniqueID);
-
   const PolicyContainerPolicies& policies() const { return policies_; }
 
+  const PolicyContainerPolicies* policies_ptr() const { return &policies_; }
+
+  // Getters for the policies in `policies`.
   network::mojom::ReferrerPolicy referrer_policy() const {
     return policies_.referrer_policy;
   }
@@ -219,7 +238,11 @@ class CONTENT_EXPORT PolicyContainerHost
     return policies_.ip_address_space;
   }
 
-  network::CrossOriginOpenerPolicy& cross_origin_opener_policy() {
+  const network::ConnectionAllowlists& connection_allowlists() const {
+    return policies_.connection_allowlists;
+  }
+
+  const network::CrossOriginOpenerPolicy& cross_origin_opener_policy() const {
     return policies_.cross_origin_opener_policy;
   }
 
@@ -232,46 +255,87 @@ class CONTENT_EXPORT PolicyContainerHost
     return policies_.document_isolation_policy;
   }
 
+  const network::IntegrityPolicy& integrity_policy() const {
+    return policies_.integrity_policy;
+  }
+  const network::IntegrityPolicy& integrity_policy_report_only() const {
+    return policies_.integrity_policy_report_only;
+  }
+
   network::mojom::WebSandboxFlags sandbox_flags() const {
     return policies_.sandbox_flags;
   }
 
-  void AddContentSecurityPolicies(
-      std::vector<network::mojom::ContentSecurityPolicyPtr>
-          content_security_policies) final;
+  // Setters for the policies. Policies on the PolicyContainerHost should not be
+  // changed once a client has been assigned to the PolicyContainerHost, as
+  // doing so will not allow policies to be properly replicated (in the renderer
+  // process, in the InitiatorNavigationState). To avoid such issues, we limit
+  // access to the setters to NavigationPolicyContainerBuilder and
+  // RenderFrameHostImpl.
 
-  void set_cross_origin_opener_policy(
-      const network::CrossOriginOpenerPolicy& policy) {
-    policies_.cross_origin_opener_policy = policy;
-  }
-
-  void set_cross_origin_embedder_policy(
-      const network::CrossOriginEmbedderPolicy& policy) {
-    policies_.cross_origin_embedder_policy = policy;
-  }
-
-  void set_document_isolation_policy(
-      const network::DocumentIsolationPolicy& policy) {
-    policies_.document_isolation_policy = policy;
-  }
+  // The following setters can only be used from RenderFrameHostImpl. They are
+  // called from RenderFrameHostImpl::InitializePolicyContainerHost, where a
+  // newly created frame initializes its PolicyContainerHost. This is safe to do
+  // because this is just before we associate the PolicyContainerHost with the
+  // RenderFameHostimpl.
 
   // Merges the provided sandbox flags with the existing flags.
-  void set_sandbox_flags(network::mojom::WebSandboxFlags sandbox_flags) {
+  void set_sandbox_flags(network::mojom::WebSandboxFlags sandbox_flags,
+                         base::PassKey<RenderFrameHostImpl> pass_key) {
+    CHECK(!client_);
     policies_.sandbox_flags = sandbox_flags;
   }
 
-  void SetIsCredentialless() { policies_.is_credentialless = true; }
+  void SetIsCredentialless(base::PassKey<RenderFrameHostImpl> pass_key) {
+    CHECK(!client_);
+    policies_.is_credentialless = true;
+  }
 
-  void SetCanNavigateTopWithoutUserGesture(bool value) {
+  // The following setters can only be used from
+  // NavigationPolicyContainerBuilder. NavigationPolicyContainerBuilder is the
+  // object that creates the PolicyContainerHost during the navigation before
+  // passing it to RenderFrameHostImpl. Therefore, it is safe for
+  // NavigationPolicyContainerBuilder to modify the policies because the
+  // PolicyContainerHost is not yet associated with a RenderFrameHostImpl.
+  void SetCanNavigateTopWithoutUserGesture(
+      bool value,
+      base::PassKey<NavigationPolicyContainerBuilder> pass_key) {
+    CHECK(!client_);
     policies_.can_navigate_top_without_user_gesture = value;
   }
 
-  void SetAllowCrossOriginIsolation(bool value) {
-    policies_.allow_cross_origin_isolation = value;
+  void set_cross_origin_opener_policy(
+      const network::CrossOriginOpenerPolicy& policy,
+      base::PassKey<NavigationPolicyContainerBuilder> pass_key) {
+    CHECK(!client_);
+    policies_.cross_origin_opener_policy = policy;
   }
 
-  void SetCrossOriginIsolationEnabledByDIP() {
+  void SetCrossOriginIsolationEnabledByDIP(
+      base::PassKey<NavigationPolicyContainerBuilder> pass_key) {
+    CHECK(!client_);
     policies_.cross_origin_isolation_enabled_by_dip = true;
+  }
+
+  // TODO(crbug.com/419595581): Remove this once default SiteInstanceGroups
+  // ships on Android WebView.
+  void set_cross_origin_isolation_key_override(
+      const AgentClusterKey::CrossOriginIsolationKey& coi_key,
+      base::PassKey<NavigationPolicyContainerBuilder> pass_key) {
+    CHECK(!client_);
+    policies_.cross_origin_isolation_key_override = coi_key;
+  }
+
+  // Test-only setters for policies. When used on a PolicyContainerHost
+  // associated with a RenderFrameHostImpl, this may prevent proper
+  // synchronization of policies with the renderer process and the
+  // InitiatorNavigationState.
+  void AddContentSecurityPoliciesForTesting(
+      std::vector<network::mojom::ContentSecurityPolicyPtr>
+          content_security_policies);
+  void set_cross_origin_embedder_policy_for_testing(
+      const network::CrossOriginEmbedderPolicy& policy) {
+    policies_.cross_origin_embedder_policy = policy;
   }
 
   // Return a PolicyContainer containing copies of the policies and a pending
@@ -289,11 +353,33 @@ class CONTENT_EXPORT PolicyContainerHost
   void Bind(
       blink::mojom::PolicyContainerBindParamsPtr policy_container_bind_params);
 
+  // The PolicyContainerHost::Client will be notified when the policies of the
+  // PolicyContainerHost change because of the renderer process.
+  class CONTENT_EXPORT Client {
+   private:
+    friend PolicyContainerHost;
+    virtual void DidChangeReferrerPolicy(
+        network::mojom::ReferrerPolicy referrer_policy) = 0;
+  };
+
+  // This should be called as soon as the PolicyContainerHost gets owned by a
+  // RenderFrameHost so that the RenderFrameHost can be notified about changes
+  // in the PolicyContainerPolicies.
+  void SetClient(Client* client);
+
  private:
   friend class base::RefCounted<PolicyContainerHost>;
   ~PolicyContainerHost() override;
 
+  // blink::mojom::PolicyContainerHost:
+  // Note: these do not require a PassKey unlike setters above because they
+  // handle updates originating from the renderer process for policies the
+  // renderer is allowed to dynamically change (referrer policy and CSP via
+  // <meta> tags).
   void SetReferrerPolicy(network::mojom::ReferrerPolicy referrer_policy) final;
+  void AddContentSecurityPolicies(
+      std::vector<network::mojom::ContentSecurityPolicyPtr>
+          content_security_policies) final;
 
   // The policies of this PolicyContainerHost.
   PolicyContainerPolicies policies_;
@@ -301,8 +387,9 @@ class CONTENT_EXPORT PolicyContainerHost
   mojo::AssociatedReceiver<blink::mojom::PolicyContainerHost>
       policy_container_host_receiver_{this};
 
-  std::optional<blink::LocalFrameToken> frame_token_ = std::nullopt;
-  int process_id_ = ChildProcessHost::kInvalidUniqueID;
+  // Client to notify of updates in the policies. This is the RenderFrameHost
+  // that owns the PolicyContainer, if any.
+  raw_ptr<Client> client_ = nullptr;
 };
 
 }  // namespace content

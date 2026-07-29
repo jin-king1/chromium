@@ -29,26 +29,25 @@
 #include <string>
 #include <string_view>
 
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/memory/scoped_refptr.h"
 #include "net/http/structured_headers.h"
 #include "net/ssl/ssl_info.h"
 #include "services/network/public/cpp/cors/cors.h"
+#include "services/network/public/cpp/integrity_metadata.h"
 #include "services/network/public/mojom/fetch_api.mojom-blink.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink.h"
 #include "third_party/blink/public/platform/web_url_response.h"
-#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_load_timing.h"
 #include "third_party/blink/renderer/platform/loader/fetch/service_worker_router_info.h"
-#include "third_party/blink/renderer/platform/loader/unencoded_digest.h"
 #include "third_party/blink/renderer/platform/network/http_names.h"
 #include "third_party/blink/renderer/platform/network/http_parsers.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/assertions.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 
 namespace blink {
 
@@ -89,6 +88,7 @@ ResourceResponse::ResourceResponse()
       timing_allow_passed_(false),
       was_fetched_via_spdy_(false),
       was_fetched_via_service_worker_(false),
+      from_synthetic_response_(false),
       did_service_worker_navigation_preload_(false),
       did_use_shared_dictionary_(false),
       async_revalidation_requested_(false),
@@ -117,7 +117,7 @@ ResourceResponse& ResourceResponse::operator=(const ResourceResponse&) =
 ResourceResponse::~ResourceResponse() = default;
 
 bool ResourceResponse::IsHTTP() const {
-  return current_request_url_.ProtocolIsInHTTPFamily();
+  return current_request_url_.ProtocolIsInHttpFamily();
 }
 
 bool ResourceResponse::ShouldPopulateResourceTiming() const {
@@ -226,16 +226,16 @@ const AtomicString& ResourceResponse::HttpHeaderField(
 }
 
 void ResourceResponse::UpdateHeaderParsedState(const AtomicString& name) {
-  if (EqualIgnoringASCIICase(name, http_names::kLowerAge)) {
+  if (EqualIgnoringAsciiCase(name, http_names::kLowerAge)) {
     have_parsed_age_header_ = false;
-  } else if (EqualIgnoringASCIICase(name, http_names::kLowerCacheControl) ||
-             EqualIgnoringASCIICase(name, http_names::kLowerPragma)) {
+  } else if (EqualIgnoringAsciiCase(name, http_names::kLowerCacheControl) ||
+             EqualIgnoringAsciiCase(name, http_names::kLowerPragma)) {
     cache_control_header_ = CacheControlHeader();
-  } else if (EqualIgnoringASCIICase(name, http_names::kLowerDate)) {
+  } else if (EqualIgnoringAsciiCase(name, http_names::kLowerDate)) {
     have_parsed_date_header_ = false;
-  } else if (EqualIgnoringASCIICase(name, http_names::kLowerExpires)) {
+  } else if (EqualIgnoringAsciiCase(name, http_names::kLowerExpires)) {
     have_parsed_expires_header_ = false;
-  } else if (EqualIgnoringASCIICase(name, http_names::kLowerLastModified)) {
+  } else if (EqualIgnoringAsciiCase(name, http_names::kLowerLastModified)) {
     have_parsed_last_modified_header_ = false;
   }
 }
@@ -271,8 +271,10 @@ void ResourceResponse::AddHttpHeaderField(const AtomicString& name,
   UpdateHeaderParsedState(name);
 
   HTTPHeaderMap::AddResult result = http_header_fields_.Add(name, value);
-  if (!result.is_new_entry)
-    result.stored_value->value = result.stored_value->value + ", " + value;
+  if (!result.is_new_entry) {
+    String new_value = StrCat({result.stored_value->value, ", ", value});
+    result.stored_value->value = AtomicString(new_value);
+  }
 }
 
 void ResourceResponse::AddHttpHeaderFieldWithMultipleValues(
@@ -360,8 +362,7 @@ base::TimeDelta ResourceResponse::CacheControlStaleWhileRevalidate() const {
 
 static std::optional<base::Time> ParseDateValueInHeader(
     const HTTPHeaderMap& headers,
-    const AtomicString& header_name,
-    UseCounter& use_counter) {
+    const AtomicString& header_name) {
   const AtomicString& header_value = headers.Get(header_name);
   if (header_value.empty())
     return std::nullopt;
@@ -379,18 +380,16 @@ static std::optional<base::Time> ParseDateValueInHeader(
   // Sun, 06 Nov 1994 08:49:37 GMT  ; RFC 822, updated by RFC 1123
   // Sunday, 06-Nov-94 08:49:37 GMT ; RFC 850, obsoleted by RFC 1036
   // Sun Nov  6 08:49:37 1994       ; ANSI C's asctime() format
-  std::optional<base::Time> date = ParseDate(header_value, use_counter);
+  std::optional<base::Time> date = ParseDate(header_value);
 
   if (date && date.value().is_max())
     return std::nullopt;
   return date;
 }
 
-std::optional<base::Time> ResourceResponse::Date(
-    UseCounter& use_counter) const {
+std::optional<base::Time> ResourceResponse::Date() const {
   if (!have_parsed_date_header_) {
-    date_ = ParseDateValueInHeader(http_header_fields_, http_names::kLowerDate,
-                                   use_counter);
+    date_ = ParseDateValueInHeader(http_header_fields_, http_names::kLowerDate);
     have_parsed_date_header_ = true;
   }
   return date_;
@@ -400,74 +399,67 @@ std::optional<base::TimeDelta> ResourceResponse::Age() const {
   if (!have_parsed_age_header_) {
     const AtomicString& header_value =
         http_header_fields_.Get(http_names::kLowerAge);
-    bool ok;
-    double seconds = header_value.ToDouble(&ok);
-    if (!ok) {
+    auto seconds = StringToDouble(header_value);
+    if (!seconds) {
       age_ = std::nullopt;
     } else {
-      age_ = base::Seconds(seconds);
+      age_ = base::Seconds(*seconds);
     }
     have_parsed_age_header_ = true;
   }
   return age_;
 }
 
-std::optional<base::Time> ResourceResponse::Expires(
-    UseCounter& use_counter) const {
+std::optional<base::Time> ResourceResponse::Expires() const {
   if (!have_parsed_expires_header_) {
-    expires_ = ParseDateValueInHeader(http_header_fields_,
-                                      http_names::kLowerExpires, use_counter);
+    expires_ =
+        ParseDateValueInHeader(http_header_fields_, http_names::kLowerExpires);
     have_parsed_expires_header_ = true;
   }
   return expires_;
 }
 
-std::optional<base::Time> ResourceResponse::LastModified(
-    UseCounter& use_counter) const {
+std::optional<base::Time> ResourceResponse::LastModified() const {
   if (!have_parsed_last_modified_header_) {
-    last_modified_ = ParseDateValueInHeader(
-        http_header_fields_, http_names::kLowerLastModified, use_counter);
+    last_modified_ = ParseDateValueInHeader(http_header_fields_,
+                                            http_names::kLowerLastModified);
     have_parsed_last_modified_header_ = true;
   }
   return last_modified_;
 }
 
-std::optional<UnencodedDigest> ResourceResponse::UnencodedDigest(
-    const FeatureContext* feature_context) const {
-  if (!RuntimeEnabledFeatures::UnencodedDigestEnabled(feature_context)) {
-    return std::nullopt;
-  }
-  return UnencodedDigest::Create(HttpHeaderFields());
-}
-
 bool ResourceResponse::IsAttachment() const {
   static const char kAttachmentString[] = "attachment";
-  String value = http_header_fields_.Get(http_names::kContentDisposition);
-  wtf_size_t loc = value.find(';');
-  if (loc != kNotFound)
-    value = value.Left(loc);
-  value = value.StripWhiteSpace();
-  return EqualIgnoringASCIICase(value, kAttachmentString);
+  const AtomicString& header_value =
+      http_header_fields_.Get(http_names::kContentDisposition);
+  const StringView attachment_value = StringView(header_value)
+                                          .substr(0, header_value.find(';'))
+                                          .StripWhiteSpace();
+  return EqualIgnoringAsciiCase(attachment_value, kAttachmentString);
 }
 
 AtomicString ResourceResponse::HttpContentType() const {
   return ExtractMIMETypeFromMediaType(
-      HttpHeaderField(http_names::kContentType).LowerASCII());
+      HttpHeaderField(http_names::kContentType).ToAsciiLower());
 }
 
 AtomicString ResourceResponse::GetFilteredHttpContentEncoding() const {
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, multiple_value,
+                                  ("multiple"));
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, unknown_value,
+                                  ("@unknown"));
   String content_encoding =
-      HttpHeaderField(http_names::kContentEncoding).LowerASCII();
+      HttpHeaderField(http_names::kContentEncoding).ToAsciiLower();
   if (content_encoding.IsNull() || content_encoding.empty()) {
     return g_empty_atom;
   }
   if (kSupportedContentEncodingValues.contains(content_encoding.Ascii())) {
     return AtomicString(content_encoding);
   }
-  if (content_encoding.find(',') != kNotFound) {
-    return AtomicString("multiple");
+  if (content_encoding.contains(',')) {
+    return multiple_value;
   }
-  return AtomicString("unknown");
+  return unknown_value;
 }
 
 bool ResourceResponse::WasCached() const {
@@ -548,6 +540,16 @@ ResourceResponse::GetCrossOriginEmbedderPolicy() const {
   } else {
     return network::mojom::CrossOriginEmbedderPolicyValue::kNone;
   }
+}
+
+const Vector<network::IntegrityMetadata>&
+ResourceResponse::GetUnencodedDigests() const {
+  return unencoded_digests_;
+}
+
+void ResourceResponse::SetUnencodedDigests(
+    Vector<network::IntegrityMetadata> digests) {
+  unencoded_digests_ = std::move(digests);
 }
 
 STATIC_ASSERT_ENUM(WebURLResponse::kHTTPVersionUnknown,

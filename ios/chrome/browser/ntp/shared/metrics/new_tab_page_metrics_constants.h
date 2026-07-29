@@ -14,21 +14,24 @@ extern const char kNTPEntrypointTappedAction[];
 extern const char kNTPIdentityDiscTappedAction[];
 extern const char kNTPCustomizationNewBadgeShownAction[];
 extern const char kNTPCustomizationNewBadgeTappedAction[];
+extern const char kNTPMIAEntryPointTappedAction[];
+extern const char kNTPIncognitoButtonTappedAction[];
+extern const char kNTPAIMPlusButtonTappedAction[];
 
 #pragma mark - Histograms
 
 extern const char kActionOnNTPHistogram[];
 extern const char kActionOnStartHistogram[];
+extern const char kActionOnHomeHistogram[];
 extern const char kNTPTimeSpentHistogram[];
 extern const char kStartTimeSpentHistogram[];
 extern const char kNTPImpressionHistogram[];
 extern const char kStartImpressionHistogram[];
+extern const char kHomeImpressionHistogram[];
 extern const char kNTPImpressionCustomizationStateHistogram[];
 extern const char kNTPOverscrollActionHistogram[];
-extern const char kMagicStackSetUpListEnabledHistogram[];
 extern const char kMagicStackSafetyCheckEnabledHistogram[];
 extern const char kMagicStackTabResumptionEnabledHistogram[];
-extern const char kMagicStackParcelTrackingEnabledHistogram[];
 extern const char kMagicStackTipsEnabledHistogram[];
 extern const char kHomeCustomizationOpenedHistogram[];
 

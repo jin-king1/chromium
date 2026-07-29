@@ -13,7 +13,6 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/inactive_tabs/inactive_tabs_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/test/query_title_server_util.h"
-#import "ios/chrome/browser/tabs/model/inactive_tabs/features.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
@@ -38,13 +37,13 @@ using chrome_test_util::TabGridOtherDevicesPanelButton;
 using chrome_test_util::TabGridSearchCancelButton;
 using chrome_test_util::TabGridSearchModeToolbar;
 using chrome_test_util::TabGridSearchTabsButton;
-using chrome_test_util::TabGridThirdPanelButton;
+using chrome_test_util::TabGridTabGroupsPanelButton;
 
 namespace {
 
 // Hides the tab switcher by tapping the switcher button.  Works on both phone
 // and tablet.
-void ShowTabViewController() {
+void HideTabGrid() {
   id<GREYMatcher> matcher = TabGridDoneButton();
   [[EarlGrey selectElementWithMatcher:matcher] performAction:grey_tap()];
 }
@@ -92,6 +91,13 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
 // to fail.
 @implementation TabSwitcherTransitionTestCase
 
+- (AppLaunchConfiguration)appConfigurationForTestCase {
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  config.features_enabled.push_back(kChromeNextIa);
+  config.features_enabled.push_back(kFullscreenRefactoring);
+  return config;
+}
+
 - (void)setUp {
   [super setUp];
 
@@ -103,11 +109,13 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
 // Rotate the device back to portrait if needed, since some tests attempt to run
 // in landscape.
 - (void)tearDownHelper {
-  [EarlGrey rotateDeviceToOrientation:UIDeviceOrientationPortrait error:nil];
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationPortrait
+                                   error:nil];
 
   // Release the histogram tester.
   chrome_test_util::GREYAssertErrorNil(
       [MetricsAppInterface releaseHistogramTester]);
+  [ChromeEarlGrey removeUserDefaultsObjectForKey:@"InactiveTabsTestMode"];
   [super tearDownHelper];
 }
 
@@ -182,9 +190,8 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
 
   // Enter and leave the switcher.
   [ChromeEarlGrey showTabSwitcher];
-  ShowTabViewController();
+  HideTabGrid();
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 1);
@@ -209,7 +216,6 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   id<GREYMatcher> matcher = TabGridNewTabButton();
   [[EarlGrey selectElementWithMatcher:matcher] performAction:grey_tap()];
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 1);
@@ -239,7 +245,6 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   id<GREYMatcher> matcher = TabGridNewIncognitoTabButton();
   [[EarlGrey selectElementWithMatcher:matcher] performAction:grey_tap()];
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 1);
@@ -285,7 +290,6 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [[EarlGrey selectElementWithMatcher:TabGridNewTabButton()]
       performAction:grey_tap()];
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 1);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 1);
@@ -339,7 +343,6 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [ChromeEarlGrey
       waitForWebStateContainingText:base::SysNSStringToUTF8(tab3_title)];
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 3);
@@ -391,7 +394,6 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [ChromeEarlGrey
       waitForWebStateContainingText:base::SysNSStringToUTF8(tab3_title)];
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 0);
   ExpectIdleHistogramBucketCount(
@@ -436,7 +438,6 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [ChromeEarlGrey
       waitForWebStateContainingText:base::SysNSStringToUTF8(incognito_title)];
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 1);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 1);
@@ -447,8 +448,8 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
 }
 
 // Tests exiting the tab switcher after switch back and forth between the normal
-// page and the third page.
-- (void)testLeaveSwitcherAfterVisitingThirdPanel {
+// page and the tab groups page.
+- (void)testLeaveSwitcherAfterVisitingTabGroups {
   [self setUpTestServer];
 
   NSString* tab1_title = @"NormalTab1";
@@ -457,17 +458,15 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [ChromeEarlGrey loadURL:[self makeURLForTitle:tab1_title]];
 
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 0);
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
 
   [ChromeEarlGrey showTabSwitcher];
 
-  // Switch to the third panel.
-  [[EarlGrey selectElementWithMatcher:TabGridThirdPanelButton()]
+  // Switch to the tab groups page.
+  [[EarlGrey selectElementWithMatcher:TabGridTabGroupsPanelButton()]
       performAction:grey_tap()];
 
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 0);
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
 
   // Switch back to the regular tabs panel and open the selected tab.
@@ -475,17 +474,8 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
       performAction:grey_tap()];
 
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 0);
-  if ([ChromeEarlGrey isTabGroupSyncEnabled]) {
-    ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 1);
-    ExpectIdleHistogramBucketCount(kUMATabSwitcherIdleTabGroupsHistogram, 1,
-                                   YES);
-    ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
-  } else {
-    ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 1);
-    ExpectIdleHistogramBucketCount(kUMATabSwitcherIdleRecentTabsHistogram, 1,
-                                   YES);
-    ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
-  }
+  ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 1);
+  ExpectIdleHistogramBucketCount(kUMATabSwitcherIdleTabGroupsHistogram, 1, YES);
 
   SelectTab(tab1_title);
 
@@ -493,17 +483,8 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 1);
   ExpectIdleHistogramBucketCount(kUMATabSwitcherIdleRegularTabGridPageHistogram,
                                  1, YES);
-  if ([ChromeEarlGrey isTabGroupSyncEnabled]) {
-    ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 1);
-    ExpectIdleHistogramBucketCount(kUMATabSwitcherIdleTabGroupsHistogram, 1,
-                                   YES);
-    ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
-  } else {
-    ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 1);
-    ExpectIdleHistogramBucketCount(kUMATabSwitcherIdleRecentTabsHistogram, 1,
-                                   YES);
-    ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
-  }
+  ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 1);
+  ExpectIdleHistogramBucketCount(kUMATabSwitcherIdleTabGroupsHistogram, 1, YES);
 }
 
 // Tests deleting a tab and exiting the tab switcher after switch back and forth
@@ -538,7 +519,6 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
       performAction:grey_tap()];
   SelectTab(tab2_title);
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 1);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 0);
@@ -586,7 +566,6 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [ChromeEarlGrey
       waitForWebStateContainingText:base::SysNSStringToUTF8(tab1_title)];
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 2);
@@ -620,7 +599,6 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [[EarlGrey selectElementWithMatcher:TabGridNewIncognitoTabButton()]
       performAction:grey_tap()];
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 1);
@@ -643,9 +621,8 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [[EarlGrey selectElementWithMatcher:TabGridSearchCancelButton()]
       performAction:grey_tap()];
   // Leave switcher by tap "Done" button.
-  ShowTabViewController();
+  HideTabGrid();
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 1);
@@ -672,9 +649,8 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
       performAction:grey_tap()];
   [ChromeEarlGrey
       waitForSufficientlyVisibleElementWithMatcher:TabGridDoneButton()];
-  ShowTabViewController();
+  HideTabGrid();
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 1);
@@ -691,10 +667,10 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [self setUpTestServer];
   [ChromeEarlGrey loadURL:[self makeURLForTitle:title]];
 
-  // Relaunch with inactive tabs enabled.
+  // Relaunch with inactive tabs in test mode  (i.e. considers tabs as inactive
+  // immediately).
   AppLaunchConfiguration config;
   config.relaunch_policy = ForceRelaunchByCleanShutdown;
-  config.features_enabled.push_back(kInactiveTabsIPadFeature);
   config.additional_args.push_back("-InactiveTabsTestMode");
   config.additional_args.push_back("true");
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
@@ -711,14 +687,15 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
       performAction:grey_tap()];
   [[EarlGrey selectElementWithMatcher:testing::NavigationBarBackButton()]
       performAction:grey_tap()];
-  ShowTabViewController();
+  HideTabGrid();
 
-  ExpectIdleHistogramCount(kUMATabSwitcherIdleRecentTabsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleTabGroupsHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleIncognitoTabGridPageHistogram, 0);
   ExpectIdleHistogramCount(kUMATabSwitcherIdleRegularTabGridPageHistogram, 1);
   ExpectIdleHistogramBucketCount(kUMATabSwitcherIdleRegularTabGridPageHistogram,
                                  1, NO);
+  [ChromeEarlGrey
+      removeUserDefaultsObjectForKey:kInactiveTabsUserEducationShownOnceKey];
 }
 
 // Tests switching back and forth between the normal and incognito BVCs.
@@ -746,22 +723,24 @@ void ExpectIdleHistogramBucketCount(const char* histogram,
   [ChromeEarlGrey loadURL:[self makeURLForTitle:tab_title]];
 
   // Show the tab switcher and return to the BVC, in portrait.
-  [EarlGrey rotateDeviceToOrientation:UIDeviceOrientationPortrait error:nil];
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationPortrait
+                                   error:nil];
   [ChromeEarlGrey showTabSwitcher];
   SelectTab(tab_title);
   [ChromeEarlGrey
       waitForWebStateContainingText:base::SysNSStringToUTF8(tab_title)];
 
   // Show the tab switcher and return to the BVC, in landscape.
-  [EarlGrey rotateDeviceToOrientation:UIDeviceOrientationLandscapeLeft
-                                error:nil];
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationLandscapeLeft
+                                   error:nil];
   [ChromeEarlGrey showTabSwitcher];
   SelectTab(tab_title);
   [ChromeEarlGrey
       waitForWebStateContainingText:base::SysNSStringToUTF8(tab_title)];
 
   // Show the tab switcher and return to the BVC, in portrait.
-  [EarlGrey rotateDeviceToOrientation:UIDeviceOrientationPortrait error:nil];
+  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationPortrait
+                                   error:nil];
   [ChromeEarlGrey showTabSwitcher];
   SelectTab(tab_title);
   [ChromeEarlGrey

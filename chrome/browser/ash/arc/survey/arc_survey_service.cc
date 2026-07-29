@@ -9,7 +9,8 @@
 
 #include "base/json/json_reader.h"
 #include "base/logging.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
+#include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/ash/hats/hats_config.h"
@@ -38,11 +39,12 @@ class ArcSurveyServiceFactory
   static constexpr const char* kName = "ArcSurveyServiceFactory";
 
   static ArcSurveyServiceFactory* GetInstance() {
-    return base::Singleton<ArcSurveyServiceFactory>::get();
+    static base::NoDestructor<ArcSurveyServiceFactory> instance;
+    return instance.get();
   }
 
  private:
-  friend struct base::DefaultSingletonTraits<ArcSurveyServiceFactory>;
+  friend base::NoDestructor<ArcSurveyServiceFactory>;
   ArcSurveyServiceFactory() = default;
   ~ArcSurveyServiceFactory() override = default;
 };
@@ -92,14 +94,16 @@ ArcSurveyService::~ArcSurveyService() {
 }
 
 bool ArcSurveyService::LoadSurveyData(std::string survey_data) {
-  std::optional<base::Value> root = base::JSONReader::Read(survey_data);
+  std::optional<base::Value> root =
+      base::JSONReader::Read(survey_data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!root) {
     LOG(ERROR) << "Unable to find JSON root. Trying char substitutions.";
     base::ReplaceSubstringsAfterOffset(&survey_data, 0, R"(\{@})", ":");
     base::ReplaceSubstringsAfterOffset(&survey_data, 0, R"(\{~})", ",");
     base::ReplaceSubstringsAfterOffset(&survey_data, 0, R"(\{%})", ".");
     DVLOG(1) << "Data after substitution: " << survey_data;
-    root = base::JSONReader::Read(survey_data);
+    root = base::JSONReader::Read(survey_data,
+                                  base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     if (!root) {
       LOG(ERROR) << "Unable to find JSON root after substitution";
       return false;
@@ -118,8 +122,7 @@ bool ArcSurveyService::LoadSurveyData(std::string survey_data) {
   }
 
   // Load package names
-  const base::Value::List* list =
-      root->GetDict().FindList(kJSONKeyPackageNames);
+  const base::ListValue* list = root->GetDict().FindList(kJSONKeyPackageNames);
   if (!list) {
     VLOG(1) << "List of package names not found in the survey data.";
     return false;

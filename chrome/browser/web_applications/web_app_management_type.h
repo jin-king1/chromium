@@ -54,7 +54,7 @@ enum Type {
   // TODO(dmurph): Add a new source here so that the
   // AndroidSmsAppSetupControllerImpl has its own source, and migrate those
   // installations to have the new source.
-  // https://crbug.com/1314055
+  // https://crbug.com/40832630
   kDefault,
   kMaxValue = kDefault,
 };
@@ -65,9 +65,7 @@ bool IsIwaType(WebAppManagement::Type type);
 
 }  // namespace WebAppManagement
 
-using WebAppManagementTypes = base::EnumSet<WebAppManagement::Type,
-                                            WebAppManagement::kMinValue,
-                                            WebAppManagement::kMaxValue>;
+using WebAppManagementTypes = base::EnumSet<WebAppManagement::Type>;
 
 // Management types that can be uninstalled by the user.
 // Note: These work directly with the `webapps::IsUserUninstall` function - any
@@ -85,6 +83,7 @@ inline constexpr WebAppManagementTypes kUserUninstallableSources = {
     WebAppManagement::kOem,
     WebAppManagement::kOneDriveIntegration,
     WebAppManagement::kIwaUserInstalled,
+    WebAppManagement::kIwaShimlessRma,
 };
 
 // Management types that resulted from a user web app install.

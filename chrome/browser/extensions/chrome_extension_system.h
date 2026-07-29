@@ -13,6 +13,9 @@
 #include "build/chromeos_buildflags.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/unloaded_extension_reason.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 class Profile;
 
@@ -73,8 +76,6 @@ class ChromeExtensionSystem : public ExtensionSystem {
   const base::OneShotEvent& ready() const override;
   bool is_ready() const override;
   ContentVerifier* content_verifier() override;  // shared
-  std::unique_ptr<ExtensionSet> GetDependentExtensions(
-      const Extension* extension) override;
   void InstallUpdate(const std::string& extension_id,
                      const std::string& public_key,
                      const base::FilePath& unpacked_dir,
@@ -82,9 +83,7 @@ class ChromeExtensionSystem : public ExtensionSystem {
                      InstallUpdateCallback install_update_callback) override;
   void PerformActionBasedOnOmahaAttributes(
       const std::string& extension_id,
-      const base::Value::Dict& attributes) override;
-  bool FinishDelayedInstallationIfReady(const std::string& extension_id,
-                                        bool install_immediately) override;
+      const base::DictValue& attributes) override;
 
  private:
   friend class ChromeExtensionSystemSharedFactory;

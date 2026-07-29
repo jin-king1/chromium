@@ -14,17 +14,13 @@
 #import "components/content_settings/core/common/content_settings_pattern.h"
 #import "components/content_settings/core/common/pref_names.h"
 #import "components/prefs/pref_service.h"
-#import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/settings/ui_bundled/elements/enterprise_info_popover_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/utils/content_setting_backed_boolean.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_text_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_info_button_cell.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_info_button_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_cell.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
@@ -53,13 +49,15 @@ typedef NS_ENUM(NSInteger, ItemType) {
 @interface BlockPopupsTableViewController () <
     BooleanObserver,
     PopoverLabelViewControllerDelegate> {
-  raw_ptr<ProfileIOS> _profile;  // weak
+  raw_ptr<HostContentSettingsMap> _settingsMap;  // weak
+
+  raw_ptr<PrefService> _prefService;  // weak
 
   // List of url patterns that are allowed to display popups.
-  base::Value::List _exceptions;
+  base::ListValue _exceptions;
 
   // List of url patterns set by policy that are allowed to display popups.
-  base::Value::List _allowPopupsByPolicy;
+  base::ListValue _allowPopupsByPolicy;
 
   // The observable boolean that binds to the "Disable Popups" setting state.
   ContentSettingBackedBoolean* _disablePopupsSetting;
@@ -75,14 +73,16 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 @implementation BlockPopupsTableViewController
 
-- (instancetype)initWithProfile:(ProfileIOS*)profile {
-  DCHECK(profile);
+- (instancetype)initWithHostContentSettingsMap:
+                    (HostContentSettingsMap*)settingsMap
+                                   prefService:(PrefService*)prefService {
+  DCHECK(settingsMap);
+  DCHECK(prefService);
 
   self = [super initWithStyle:ChromeTableViewStyle()];
   if (self) {
-    _profile = profile;
-    HostContentSettingsMap* settingsMap =
-        ios::HostContentSettingsMapFactory::GetForProfile(_profile);
+    _settingsMap = settingsMap;
+    _prefService = prefService;
     _disablePopupsSetting = [[ContentSettingBackedBoolean alloc]
         initWithHostContentSettingsMap:settingsMap
                              settingID:ContentSettingsType::POPUPS
@@ -115,8 +115,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   // Block popups switch.
   [model addSectionWithIdentifier:SectionIdentifierMainSwitch];
 
-  if (_profile->GetPrefs()->IsManagedPreference(
-          prefs::kManagedDefaultPopupsSetting)) {
+  if (_prefService->IsManagedPreference(prefs::kManagedDefaultPopupsSetting)) {
     _blockPopupsManagedItem = [self blockPopupsManagedItem];
     [model addItem:_blockPopupsManagedItem
         toSectionWithIdentifier:SectionIdentifierMainSwitch];
@@ -125,6 +124,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
         [[TableViewSwitchItem alloc] initWithType:ItemTypeMainSwitch];
     _blockPopupsItem.text = l10n_util::GetNSString(IDS_IOS_BLOCK_POPUPS);
     _blockPopupsItem.on = [_disablePopupsSetting value];
+    _blockPopupsItem.target = self;
+    _blockPopupsItem.selector = @selector(blockPopupsSwitchChanged:);
     _blockPopupsItem.accessibilityIdentifier = @"blockPopupsContentView_switch";
     [model addItem:_blockPopupsItem
         toSectionWithIdentifier:SectionIdentifierMainSwitch];
@@ -162,40 +163,11 @@ typedef NS_ENUM(NSInteger, ItemType) {
           : l10n_util::GetNSString(IDS_IOS_SETTING_OFF);
   blockPopupsManagedItem.accessibilityHint =
       l10n_util::GetNSString(IDS_IOS_TOGGLE_SETTING_MANAGED_ACCESSIBILITY_HINT);
+  blockPopupsManagedItem.target = self;
+  blockPopupsManagedItem.selector = @selector(didTapManagedUIInfoButton:);
   blockPopupsManagedItem.accessibilityIdentifier =
       @"blockPopupsContentView_managed";
   return blockPopupsManagedItem;
-}
-
-#pragma mark - UITableViewDataSource
-
-- (UITableViewCell*)tableView:(UITableView*)tableView
-        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  UITableViewCell* cell = [super tableView:tableView
-                     cellForRowAtIndexPath:indexPath];
-  switch ([self.tableViewModel itemTypeForIndexPath:indexPath]) {
-    case ItemTypeHeader:
-    case ItemTypeException:
-      break;
-    case ItemTypeMainSwitch: {
-      TableViewSwitchCell* switchCell =
-          base::apple::ObjCCastStrict<TableViewSwitchCell>(cell);
-      [switchCell.switchView addTarget:self
-                                action:@selector(blockPopupsSwitchChanged:)
-                      forControlEvents:UIControlEventValueChanged];
-      break;
-    }
-    case ItemTypeManaged: {
-      TableViewInfoButtonCell* managedCell =
-          base::apple::ObjCCastStrict<TableViewInfoButtonCell>(cell);
-      [managedCell.trailingButton
-                 addTarget:self
-                    action:@selector(didTapManagedUIInfoButton:)
-          forControlEvents:UIControlEventTouchUpInside];
-      break;
-    }
-  }
-  return cell;
 }
 
 - (BOOL)tableView:(UITableView*)tableView
@@ -258,6 +230,9 @@ typedef NS_ENUM(NSInteger, ItemType) {
   // Update the item.
   _blockPopupsItem.on = [_disablePopupsSetting value];
 
+  // Update the cell.
+  [self reconfigureCellsForItems:@[ _blockPopupsItem ]];
+
   // Update the rest of the UI.
   [self setEditing:NO animated:YES];
   [self updateUIForEditState];
@@ -301,11 +276,10 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
     // Remove the exception for the site by resetting its popup setting to the
     // default.
-    ios::HostContentSettingsMapFactory::GetForProfile(_profile)
-        ->SetContentSettingCustomScope(
-            ContentSettingsPattern::FromString(urlToRemove),
-            ContentSettingsPattern::Wildcard(), ContentSettingsType::POPUPS,
-            CONTENT_SETTING_DEFAULT);
+    _settingsMap->SetContentSettingCustomScope(
+        ContentSettingsPattern::FromString(urlToRemove),
+        ContentSettingsPattern::Wildcard(), ContentSettingsType::POPUPS,
+        CONTENT_SETTING_DEFAULT);
 
     // Remove the site from `_exceptions`.
     _exceptions.erase(_exceptions.begin() + urlIndex);
@@ -345,8 +319,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   // chrome/browser/ui/webui/options/content_settings_handler.cc and simplified
   // to only deal with urls/patterns that allow popups.
   ContentSettingsForOneType entries =
-      ios::HostContentSettingsMapFactory::GetForProfile(_profile)
-          ->GetSettingsForOneType(ContentSettingsType::POPUPS);
+      _settingsMap->GetSettingsForOneType(ContentSettingsType::POPUPS);
   for (size_t i = 0; i < entries.size(); ++i) {
     // Skip default settings from extensions and policy, and the default content
     // settings; all of them will affect the default setting UI.

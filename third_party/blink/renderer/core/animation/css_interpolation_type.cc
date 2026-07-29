@@ -16,6 +16,7 @@
 #include "third_party/blink/renderer/core/css/css_inherited_value.h"
 #include "third_party/blink/renderer/core/css/css_initial_value.h"
 #include "third_party/blink/renderer/core/css/css_revert_layer_value.h"
+#include "third_party/blink/renderer/core/css/css_revert_rule_value.h"
 #include "third_party/blink/renderer/core/css/css_revert_value.h"
 #include "third_party/blink/renderer/core/css/css_unparsed_declaration_value.h"
 #include "third_party/blink/renderer/core/css/css_unset_value.h"
@@ -57,11 +58,10 @@ class ResolvedValueChecker : public CSSInterpolationType::ConversionChecker {
   }
 
  private:
-  bool IsValid(const InterpolationEnvironment& environment,
+  bool IsValid(const CSSInterpolationEnvironment& environment,
                const InterpolationValue&) const final {
-    const auto& css_environment = To<CSSInterpolationEnvironment>(environment);
-    const CSSValue* resolved_value = css_environment.Resolve(
-        property_, unresolved_value_, keyframe_tree_scope_);
+    const CSSValue* resolved_value =
+        environment.Resolve(property_, unresolved_value_, keyframe_tree_scope_);
     return base::ValuesEquivalent(resolved_value_.Get(), resolved_value);
   }
 
@@ -90,14 +90,13 @@ class ResolvedVariableChecker : public CSSInterpolationType::ConversionChecker {
   }
 
  private:
-  bool IsValid(const InterpolationEnvironment& environment,
+  bool IsValid(const CSSInterpolationEnvironment& environment,
                const InterpolationValue&) const final {
-    const auto& css_environment = To<CSSInterpolationEnvironment>(environment);
     // TODO(alancutter): Just check the variables referenced instead of doing a
     // full CSSValue resolve.
     const CSSValue* resolved_value =
-        css_environment.Resolve(PropertyHandle(CSSProperty::Get(property_)),
-                                variable_reference_, keyframe_tree_scope_);
+        environment.Resolve(PropertyHandle(CSSProperty::Get(property_)),
+                            variable_reference_, keyframe_tree_scope_);
     return base::ValuesEquivalent(resolved_value_.Get(), resolved_value);
   }
 
@@ -159,11 +158,10 @@ class ResolvedRegisteredCustomPropertyChecker
   }
 
  private:
-  bool IsValid(const InterpolationEnvironment& environment,
+  bool IsValid(const CSSInterpolationEnvironment& environment,
                const InterpolationValue&) const final {
-    const auto& css_environment = To<CSSInterpolationEnvironment>(environment);
     const CSSValue* resolved =
-        css_environment.Resolve(property_, value_, keyframe_tree_scope_);
+        environment.Resolve(property_, value_, keyframe_tree_scope_);
     CSSVariableData* resolved_tokens = nullptr;
     if (const auto* decl = DynamicTo<CSSUnparsedDeclarationValue>(resolved)) {
       resolved_tokens = decl->VariableDataValue();
@@ -183,8 +181,10 @@ class RevertChecker : public CSSInterpolationType::ConversionChecker {
  public:
   static_assert(
       std::is_same<RevertValueType, cssvalue::CSSRevertValue>::value ||
-          std::is_same<RevertValueType, cssvalue::CSSRevertLayerValue>::value,
-      "RevertCheck only accepts CSSRevertValue and CSSRevertLayerValue");
+          std::is_same<RevertValueType, cssvalue::CSSRevertLayerValue>::value ||
+          std::is_same<RevertValueType, cssvalue::CSSRevertRuleValue>::value,
+      "RevertCheck only accepts CSSRevertValue, CSSRevertLayerValue,"
+      "and CSSRevertRuleValue");
 
   RevertChecker(const PropertyHandle& property_handle,
                 const CSSValue* resolved_value,
@@ -200,12 +200,11 @@ class RevertChecker : public CSSInterpolationType::ConversionChecker {
   }
 
  private:
-  bool IsValid(const InterpolationEnvironment& environment,
+  bool IsValid(const CSSInterpolationEnvironment& environment,
                const InterpolationValue&) const final {
-    const auto& css_environment = To<CSSInterpolationEnvironment>(environment);
     const CSSValue* current_resolved_value =
-        css_environment.Resolve(property_handle_, RevertValueType::Create(),
-                                keyframe_tree_scope_.Get());
+        environment.Resolve(property_handle_, RevertValueType::Create(),
+                            keyframe_tree_scope_.Get());
     return base::ValuesEquivalent(resolved_value_.Get(),
                                   current_resolved_value);
   }
@@ -225,7 +224,7 @@ CSSInterpolationType::CSSInterpolationType(
 
 InterpolationValue CSSInterpolationType::MaybeConvertSingle(
     const PropertySpecificKeyframe& keyframe,
-    const InterpolationEnvironment& environment,
+    const CSSInterpolationEnvironment& environment,
     const InterpolationValue& underlying,
     ConversionCheckers& conversion_checkers) const {
   InterpolationValue result = MaybeConvertSingleInternal(
@@ -241,14 +240,13 @@ InterpolationValue CSSInterpolationType::MaybeConvertSingle(
 
 InterpolationValue CSSInterpolationType::MaybeConvertSingleInternal(
     const PropertySpecificKeyframe& keyframe,
-    const InterpolationEnvironment& environment,
+    const CSSInterpolationEnvironment& environment,
     const InterpolationValue& underlying,
     ConversionCheckers& conversion_checkers) const {
   const auto& property_specific = To<CSSPropertySpecificKeyframe>(keyframe);
   const CSSValue* value = property_specific.Value();
   const TreeScope* keyframe_tree_scope = property_specific.GetTreeScope();
-  const auto& css_environment = To<CSSInterpolationEnvironment>(environment);
-  const StyleResolverState& state = css_environment.GetState();
+  const StyleResolverState& state = environment.GetState();
 
   if (!value)
     return MaybeConvertNeutral(underlying, conversion_checkers);
@@ -260,7 +258,7 @@ InterpolationValue CSSInterpolationType::MaybeConvertSingleInternal(
 
   if (value->IsUnparsedDeclaration() || value->IsPendingSubstitutionValue()) {
     const CSSValue* resolved_value =
-        css_environment.Resolve(GetProperty(), value, keyframe_tree_scope);
+        environment.Resolve(GetProperty(), value, keyframe_tree_scope);
 
     DCHECK(resolved_value);
     conversion_checkers.push_back(MakeGarbageCollected<ResolvedVariableChecker>(
@@ -273,7 +271,7 @@ InterpolationValue CSSInterpolationType::MaybeConvertSingleInternal(
     // and those functions can make the value invalid at computed-value time
     // if they reference an invalid anchor and also don't have a fallback.
     const CSSValue* resolved_value =
-        css_environment.Resolve(GetProperty(), value, keyframe_tree_scope);
+        environment.Resolve(GetProperty(), value, keyframe_tree_scope);
     DCHECK(resolved_value);
     conversion_checkers.push_back(MakeGarbageCollected<ResolvedValueChecker>(
         GetProperty(), /* unresolved_value */ value, resolved_value,
@@ -282,7 +280,7 @@ InterpolationValue CSSInterpolationType::MaybeConvertSingleInternal(
   }
 
   if (value->IsRevertValue()) {
-    value = css_environment.Resolve(GetProperty(), value, keyframe_tree_scope);
+    value = environment.Resolve(GetProperty(), value, keyframe_tree_scope);
     DCHECK(value);
     conversion_checkers.push_back(
         MakeGarbageCollected<RevertChecker<cssvalue::CSSRevertValue>>(
@@ -290,10 +288,18 @@ InterpolationValue CSSInterpolationType::MaybeConvertSingleInternal(
   }
 
   if (value->IsRevertLayerValue()) {
-    value = css_environment.Resolve(GetProperty(), value, keyframe_tree_scope);
+    value = environment.Resolve(GetProperty(), value, keyframe_tree_scope);
     DCHECK(value);
     conversion_checkers.push_back(
         MakeGarbageCollected<RevertChecker<cssvalue::CSSRevertLayerValue>>(
+            GetProperty(), value, keyframe_tree_scope));
+  }
+
+  if (value->IsRevertRuleValue()) {
+    value = environment.Resolve(GetProperty(), value, keyframe_tree_scope);
+    DCHECK(value);
+    conversion_checkers.push_back(
+        MakeGarbageCollected<RevertChecker<cssvalue::CSSRevertRuleValue>>(
             GetProperty(), value, keyframe_tree_scope));
   }
 
@@ -306,22 +312,29 @@ InterpolationValue CSSInterpolationType::MaybeConvertSingleInternal(
     return MaybeConvertInherit(state, conversion_checkers);
   }
 
-  return MaybeConvertValue(*value, &state, conversion_checkers);
+  return MaybeConvertValue(*value, state, conversion_checkers);
 }
 
 InterpolationValue CSSInterpolationType::MaybeConvertCustomPropertyDeclaration(
     const CSSValue& declaration,
     const TreeScope* keyframe_tree_scope,
-    const InterpolationEnvironment& environment,
+    const CSSInterpolationEnvironment& environment,
     ConversionCheckers& conversion_checkers) const {
-  const auto& css_environment = To<CSSInterpolationEnvironment>(environment);
-  const StyleResolverState& state = css_environment.GetState();
+  const StyleResolverState& state = environment.GetState();
 
   AtomicString name = GetProperty().CustomPropertyName();
 
   const CSSValue* value = &declaration;
-  value = css_environment.Resolve(GetProperty(), value, keyframe_tree_scope);
-  DCHECK(value) << "CSSVarCycleInterpolationType should have handled nullptr";
+  value = environment.Resolve(GetProperty(), value, keyframe_tree_scope);
+
+  if (!value) {
+    // The custom property is in a cycle. This is supposed to be handled
+    // by CSSVarCycleInterpolationType, but we can still reach here when
+    // neutral keyframes are involved.
+    //
+    // TODO(crbug.com/40753334): Handle cycles in a better way.
+    value = cssvalue::CSSUnsetValue::Create();
+  }
 
   if (declaration.IsRevertValue()) {
     conversion_checkers.push_back(
@@ -331,6 +344,11 @@ InterpolationValue CSSInterpolationType::MaybeConvertCustomPropertyDeclaration(
   if (declaration.IsRevertLayerValue()) {
     conversion_checkers.push_back(
         MakeGarbageCollected<RevertChecker<cssvalue::CSSRevertLayerValue>>(
+            GetProperty(), value, keyframe_tree_scope));
+  }
+  if (declaration.IsRevertRuleValue()) {
+    conversion_checkers.push_back(
+        MakeGarbageCollected<RevertChecker<cssvalue::CSSRevertRuleValue>>(
             GetProperty(), value, keyframe_tree_scope));
   }
   if (const auto* resolved_declaration =
@@ -373,21 +391,29 @@ InterpolationValue CSSInterpolationType::MaybeConvertCustomPropertyDeclaration(
           DynamicTo<CSSUnparsedDeclarationValue>(value)) {
     DCHECK(
         !resolved_declaration->VariableDataValue()->NeedsVariableResolution());
+    CSSParserLocalContext local_context(GetProperty().GetCSSPropertyName(),
+                                        CSSPropertyID::kInvalid,
+                                        /*custom_function_name=*/g_null_atom);
     value = resolved_declaration->VariableDataValue()->ParseForSyntax(
         registration_->Syntax(),
-        state.GetDocument().GetExecutionContext()->GetSecureContextMode());
+        state.GetDocument().GetExecutionContext()->GetSecureContextMode(),
+        local_context);
     if (!value)
       return nullptr;
   }
 
   DCHECK(value);
-  return MaybeConvertValue(*value, &state, conversion_checkers);
+  return MaybeConvertValue(*value, state, conversion_checkers);
+}
+
+void CSSInterpolationType::Trace(Visitor* v) const {
+  InterpolationType::Trace(v);
+  v->Trace(registration_);
 }
 
 InterpolationValue CSSInterpolationType::MaybeConvertUnderlyingValue(
-    const InterpolationEnvironment& environment) const {
-  const auto& css_environment = To<CSSInterpolationEnvironment>(environment);
-  const ComputedStyle& style = css_environment.BaseStyle();
+    const CSSInterpolationEnvironment& environment) const {
+  const ComputedStyle& style = environment.BaseStyle();
   if (!GetProperty().IsCSSCustomProperty()) {
     return MaybeConvertStandardPropertyUnderlyingValue(style);
   }
@@ -398,22 +424,18 @@ InterpolationValue CSSInterpolationType::MaybeConvertUnderlyingValue(
       style.GetVariableValue(name, Registration().Inherits());
   if (!underlying_value)
     return nullptr;
-  // TODO(alancutter): Remove the need for passing in conversion checkers.
-  ConversionCheckers dummy_conversion_checkers;
-  return MaybeConvertValue(*underlying_value,
-                           css_environment.GetOptionalState(),
-                           dummy_conversion_checkers);
+  return MaybeConvertCustomPropertyUnderlyingValue(*underlying_value);
 }
 
 void CSSInterpolationType::Apply(
     const InterpolableValue& interpolable_value,
     const NonInterpolableValue* non_interpolable_value,
-    InterpolationEnvironment& environment) const {
-  StyleResolverState& state =
-      To<CSSInterpolationEnvironment>(environment).GetState();
+    CSSInterpolationEnvironment& environment) const {
+  StyleResolverState& state = environment.GetState();
 
   if (GetProperty().IsCSSCustomProperty()) {
-    ApplyCustomPropertyValue(interpolable_value, non_interpolable_value, state);
+    ApplyCustomPropertyValue(interpolable_value, non_interpolable_value,
+                             environment);
     return;
   }
 
@@ -430,14 +452,22 @@ void CSSInterpolationType::Apply(
 void CSSInterpolationType::ApplyCustomPropertyValue(
     const InterpolableValue& interpolable_value,
     const NonInterpolableValue* non_interpolable_value,
-    StyleResolverState& state) const {
+    CSSInterpolationEnvironment& environment) const {
   DCHECK(GetProperty().IsCSSCustomProperty());
 
+  StyleResolverState& state = environment.GetState();
   const CSSValue* css_value =
       CreateCSSValue(interpolable_value, non_interpolable_value, state);
   DCHECK(!css_value->IsUnparsedDeclaration());
+  CSSProperty::ValueModeFlags value_mode_flags =
+      static_cast<CSSProperty::ValueModeFlags>(
+          StyleBuilder::ValueMode::kAnimated);
+  if (environment.IsAttrTainted()) {
+    value_mode_flags |= static_cast<CSSProperty::ValueModeFlags>(
+        StyleBuilder::ValueMode::kAttrTainted);
+  }
   StyleBuilder::ApplyProperty(GetProperty().GetCSSPropertyName(), state,
-                              *css_value, StyleBuilder::ValueMode::kAnimated);
+                              *css_value, value_mode_flags);
 }
 
 }  // namespace blink

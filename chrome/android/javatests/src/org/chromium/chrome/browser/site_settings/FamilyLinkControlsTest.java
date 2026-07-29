@@ -16,8 +16,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
-import android.os.Build;
-
 import androidx.preference.PreferenceFragmentCompat;
 import androidx.preference.PreferenceScreen;
 import androidx.test.filters.SmallTest;
@@ -29,39 +27,40 @@ import org.junit.Test;
 import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.DoNotBatch;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.SettingsActivity;
 import org.chromium.chrome.browser.signin.SigninCheckerProvider;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
-import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
+import org.chromium.components.browser_ui.site_settings.BinaryStatePermissionPreference;
 import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridgeJni;
+import org.chromium.components.content_settings.ContentSettingSource;
 import org.chromium.components.content_settings.ContentSettingsType;
-import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
 
 /** Tests family link controls are reflected in UI */
-@DoNotBatch(
-        reason = "Activity must be destroyed between tests to ensure the child account is removed.")
+@Batch(Batch.PER_CLASS)
 @RunWith(ChromeJUnit4ClassRunner.class)
-@DisableIf.Build(sdk_equals = Build.VERSION_CODES.S_V2, message = "crbug.com/41488000")
 public class FamilyLinkControlsTest {
 
     public final SigninTestRule mSigninTestRule = new SigninTestRule();
-    private CoreAccountInfo mAccountInfo;
+
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     @Rule
     public final RuleChain mRuleChain =
@@ -71,14 +70,13 @@ public class FamilyLinkControlsTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
 
         // Initialize the browser.
         SiteSettingsTestUtils.startSiteSettingsMenu("").finish();
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> SigninCheckerProvider.get(ProfileManager.getLastUsedRegularProfile()));
-        mAccountInfo = mSigninTestRule.addChildTestAccountThenWaitForSignin();
+        mSigninTestRule.addChildTestAccountThenWaitForSignin();
 
         // Wait for SigninChecker to be initialized
         CriteriaHelper.pollUiThread(
@@ -86,7 +84,7 @@ public class FamilyLinkControlsTest {
                         IdentityServicesProvider.get()
                                 .getSigninManager(ProfileManager.getLastUsedRegularProfile())
                                 .getIdentityManager()
-                                .hasPrimaryAccount(ConsentLevel.SIGNIN));
+                                .hasPrimaryAccount());
     }
 
     @Test
@@ -98,28 +96,20 @@ public class FamilyLinkControlsTest {
         PreferenceFragmentCompat preferenceFragment =
                 (PreferenceFragmentCompat) settingsActivity.getMainFragment();
         PreferenceScreen preferenceScreen = preferenceFragment.getPreferenceScreen();
-        ChromeSwitchPreference binary_toggle = preferenceScreen.findPreference("binary_toggle");
+        BinaryStatePermissionPreference binaryRadioButton =
+                preferenceScreen.findPreference("binary_radio_button");
 
         // When deleting cookies are blocked through Family Link, the toggle will be checked and
         // disabled
-        Assert.assertTrue(binary_toggle.isChecked());
-        Assert.assertFalse(binary_toggle.isEnabled());
-        onView(
-                        allOf(
-                                withId(android.R.id.summary),
-                                hasSibling(
-                                        allOf(
-                                                withText(
-                                                        org.chromium.chrome.test.R.string
-                                                                .site_data_page_title),
-                                                withId(android.R.id.title)))))
+        Assert.assertTrue(binaryRadioButton.isChecked());
+        Assert.assertFalse(binaryRadioButton.isEnabled());
+        onView(allOf(withId(android.R.id.summary), hasSibling(withId(R.id.radio_button_layout))))
                 .check(
                         matches(
                                 withText(
                                         containsString(
                                                 settingsActivity.getString(
-                                                        org.chromium.chrome.test.R.string
-                                                                .managed_by_your_parent)))));
+                                                        R.string.managed_by_your_parent)))));
         settingsActivity.finish();
     }
 
@@ -127,9 +117,9 @@ public class FamilyLinkControlsTest {
     @SmallTest
     public void testDeletingOnDeviceDataAllowedForSupervisedUsers() throws InterruptedException {
         WebsitePreferenceBridgeJni.setInstanceForTesting(mWebsitePreferenceBridgeJniMock);
-        when(mWebsitePreferenceBridgeJniMock.isContentSettingManagedByCustodian(
+        when(mWebsitePreferenceBridgeJniMock.getDefaultContentSettingProviderSource(
                         any(), eq(ContentSettingsType.COOKIES)))
-                .thenReturn(false);
+                .thenReturn(ContentSettingSource.USER);
         when(mWebsitePreferenceBridgeJniMock.isContentSettingEnabled(
                         any(), eq(ContentSettingsType.COOKIES)))
                 .thenReturn(false);
@@ -140,10 +130,10 @@ public class FamilyLinkControlsTest {
         PreferenceFragmentCompat preferenceFragment =
                 (PreferenceFragmentCompat) settingsActivity.getMainFragment();
         PreferenceScreen preferenceScreen = preferenceFragment.getPreferenceScreen();
-        ChromeSwitchPreference binary_toggle = preferenceScreen.findPreference("binary_toggle");
+        BinaryStatePermissionPreference radioButton =
+                preferenceScreen.findPreference("binary_radio_button");
+        Assert.assertTrue(radioButton.isEnabled());
 
-        // When deleting cookies are not blocked through Family Link the toggle will be enabled
-        Assert.assertTrue(binary_toggle.isEnabled());
         settingsActivity.finish();
     }
 }

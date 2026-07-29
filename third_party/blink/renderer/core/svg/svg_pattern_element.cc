@@ -38,7 +38,6 @@ namespace blink {
 SVGPatternElement::SVGPatternElement(Document& document)
     : SVGElement(svg_names::kPatternTag, document),
       SVGURIReference(this),
-      SVGTests(this),
       SVGFitToViewBox(this),
       x_(MakeGarbageCollected<SVGAnimatedLength>(
           this,
@@ -84,9 +83,9 @@ void SVGPatternElement::Trace(Visitor* visitor) const {
   visitor->Trace(pattern_units_);
   visitor->Trace(pattern_content_units_);
   visitor->Trace(target_id_observer_);
+  visitor->Trace(tests_);
   SVGElement::Trace(visitor);
   SVGURIReference::Trace(visitor);
-  SVGTests::Trace(visitor);
   SVGFitToViewBox::Trace(visitor);
 }
 
@@ -109,22 +108,19 @@ void SVGPatternElement::ClearResourceReferences() {
 void SVGPatternElement::SvgAttributeChanged(
     const SvgAttributeChangedParams& params) {
   const QualifiedName& attr_name = params.name;
-  bool is_length_attr =
-      attr_name == svg_names::kXAttr || attr_name == svg_names::kYAttr ||
-      attr_name == svg_names::kWidthAttr || attr_name == svg_names::kHeightAttr;
 
   if (attr_name == svg_names::kPatternTransformAttr) {
     UpdatePresentationAttributeStyle(*pattern_transform_);
   }
 
-  if (is_length_attr || attr_name == svg_names::kPatternUnitsAttr ||
+  if (attr_name == svg_names::kXAttr || attr_name == svg_names::kYAttr ||
+      attr_name == svg_names::kWidthAttr ||
+      attr_name == svg_names::kHeightAttr ||
+      attr_name == svg_names::kPatternUnitsAttr ||
       attr_name == svg_names::kPatternContentUnitsAttr ||
       attr_name == svg_names::kPatternTransformAttr ||
       SVGFitToViewBox::IsKnownAttribute(attr_name) ||
       SVGTests::IsKnownAttribute(attr_name)) {
-    if (is_length_attr)
-      UpdateRelativeLengthsInformation();
-
     InvalidatePattern();
     return;
   }
@@ -189,8 +185,9 @@ static void SetPatternAttributes(const SVGPatternElement& element,
   if (!attributes.HasHeight() && element.height()->IsSpecified())
     attributes.SetHeight(element.height()->CurrentValue());
 
-  if (!attributes.HasViewBox() && element.HasValidViewBox())
-    attributes.SetViewBox(element.viewBox()->CurrentValue()->Rect());
+  if (!attributes.HasViewBox() && element.HasValidViewBox()) {
+    attributes.SetViewBox(element.viewBox()->CurrentValue());
+  }
 
   if (!attributes.HasPreserveAspectRatio() &&
       element.preserveAspectRatio()->IsSpecified()) {
@@ -297,15 +294,14 @@ SVGAnimatedPropertyBase* SVGPatternElement::PropertyFromAttribute(
     return pattern_units_.Get();
   } else if (attribute_name == svg_names::kPatternContentUnitsAttr) {
     return pattern_content_units_.Get();
+  } else if (SVGTests::IsKnownAttribute(attribute_name)) {
+    return EnsureSvgTests().PropertyFromAttribute(this, attribute_name);
   } else {
     SVGAnimatedPropertyBase* ret;
     if (ret = SVGURIReference::PropertyFromAttribute(attribute_name); ret) {
       return ret;
     }
     if (ret = SVGFitToViewBox::PropertyFromAttribute(attribute_name); ret) {
-      return ret;
-    }
-    if (ret = SVGTests::PropertyFromAttribute(attribute_name); ret) {
       return ret;
     }
     return SVGElement::PropertyFromAttribute(attribute_name);
@@ -322,7 +318,9 @@ void SVGPatternElement::SynchronizeAllSVGAttributes() const {
                                    pattern_content_units_.Get()};
   SynchronizeListOfSVGAttributes(attrs);
   SVGURIReference::SynchronizeAllSVGAttributes();
-  SVGTests::SynchronizeAllSVGAttributes();
+  if (tests_) {
+    tests_->SynchronizeAllSVGAttributes();
+  }
   SVGFitToViewBox::SynchronizeAllSVGAttributes();
   SVGElement::SynchronizeAllSVGAttributes();
 }
@@ -331,6 +329,21 @@ void SVGPatternElement::CollectExtraStyleForPresentationAttribute(
     HeapVector<CSSPropertyValue, 8>& style) {
   AddAnimatedPropertyToPresentationAttributeStyle(*pattern_transform_, style);
   SVGElement::CollectExtraStyleForPresentationAttribute(style);
+}
+
+SVGStringListTearOff* SVGPatternElement::requiredExtensions() {
+  return EnsureSvgTests().requiredExtensions(this);
+}
+
+SVGStringListTearOff* SVGPatternElement::systemLanguage() {
+  return EnsureSvgTests().systemLanguage(this);
+}
+
+SVGTests& SVGPatternElement::EnsureSvgTests() const {
+  if (!tests_) {
+    tests_ = MakeGarbageCollected<SVGTests>();
+  }
+  return *tests_;
 }
 
 }  // namespace blink

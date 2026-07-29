@@ -34,9 +34,9 @@ class ExtensionOptionsGuest
   // GuestViewBase implementation.
   void CreateInnerPage(std::unique_ptr<GuestViewBase> owned_this,
                        scoped_refptr<content::SiteInstance> site_instance,
-                       const base::Value::Dict& create_params,
+                       const base::DictValue& create_params,
                        GuestPageCreatedCallback callback) final;
-  void DidInitialize(const base::Value::Dict& create_params) final;
+  void DidInitialize(const base::DictValue& create_params) final;
   void DidAttachToEmbedder() final;
   void MaybeRecreateGuestContents(
       content::RenderFrameHost* outer_contents_frame) final;
@@ -70,6 +70,7 @@ class ExtensionOptionsGuest
                          const content::ContextMenuParams& params) final;
   bool ShouldResumeRequestsForCreatedWindow() override;
   bool IsWebContentsCreationOverridden(
+      content::RenderFrameHost* opener,
       content::SiteInstance* source_site_instance,
       content::mojom::WindowContainerType window_container_type,
       const GURL& opener_url,
@@ -82,6 +83,8 @@ class ExtensionOptionsGuest
       const GURL& opener_url,
       const std::string& frame_name,
       const GURL& target_url,
+      WindowOpenDisposition disposition,
+      const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
       content::SessionStorageNamespace* session_storage_namespace) final;
 

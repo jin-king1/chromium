@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/wm/desks/desks_util.h"
 
 #include <array>
@@ -83,14 +78,24 @@ std::vector<aura::Window*> GetDesksContainers(aura::Window* root) {
 const char* GetDeskContainerName(int container_id) {
   CHECK(IsDeskContainerId(container_id));
 
-  static const char* kDeskContainerNames[] = {
-      "Desk_Container_A", "Desk_Container_B", "Desk_Container_C",
-      "Desk_Container_D", "Desk_Container_E", "Desk_Container_F",
-      "Desk_Container_G", "Desk_Container_H", "Desk_Container_I",
-      "Desk_Container_J", "Desk_Container_K", "Desk_Container_L",
-      "Desk_Container_M", "Desk_Container_N", "Desk_Container_O",
+  static constexpr auto kDeskContainerNames = std::to_array<const char*>({
+      "Desk_Container_A",
+      "Desk_Container_B",
+      "Desk_Container_C",
+      "Desk_Container_D",
+      "Desk_Container_E",
+      "Desk_Container_F",
+      "Desk_Container_G",
+      "Desk_Container_H",
+      "Desk_Container_I",
+      "Desk_Container_J",
+      "Desk_Container_K",
+      "Desk_Container_L",
+      "Desk_Container_M",
+      "Desk_Container_N",
+      "Desk_Container_O",
       "Desk_Container_P",
-  };
+  });
   return kDeskContainerNames[container_id - kShellWindowId_DeskContainerA];
 }
 
@@ -157,15 +162,6 @@ ASH_EXPORT bool BelongsToDesk(aura::Window* window, const Desk* desk) {
   return desk_container && desk_container->GetId() == desk->container_id();
 }
 
-std::optional<uint64_t> GetActiveDeskLacrosProfileId() {
-  std::optional<uint64_t> id;
-  if (auto* desk_controller = DesksController::Get();
-      desk_controller && chromeos::features::IsDeskProfilesEnabled()) {
-    id = desk_controller->active_desk()->lacros_profile_id();
-  }
-  return id;
-}
-
 aura::Window* GetDeskContainerForContext(aura::Window* context) {
   DCHECK(context);
 
@@ -206,7 +202,7 @@ bool ShouldDesksBarBeCreated() {
 
   // If it is in tablet mode, hide the desk bar in split view. Otherwise, only
   // show desk bar with more than one desks.
-  if (display::Screen::GetScreen()->InTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     for (auto& root : Shell::GetAllRootWindows()) {
       if (SplitViewController::Get(root)->InSplitViewMode()) {
         return false;

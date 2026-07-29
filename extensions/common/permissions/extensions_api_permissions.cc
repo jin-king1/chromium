@@ -15,8 +15,7 @@
 
 using extensions::mojom::APIPermissionID;
 
-namespace extensions {
-namespace api_permissions {
+namespace extensions::api_permissions {
 
 namespace {
 
@@ -64,6 +63,10 @@ constexpr APIPermissionInfo::InitInfo permissions_to_register[] = {
     {APIPermissionID::kDeclarativeNetRequestWithHostAccess,
      "declarativeNetRequestWithHostAccess"},
     {APIPermissionID::kDeclarativeWebRequest, "declarativeWebRequest"},
+    {APIPermissionID::kDevtools, "devtools",
+     APIPermissionInfo::kFlagImpliesFullURLAccess |
+         APIPermissionInfo::kFlagCannotBeOptional |
+         APIPermissionInfo::kFlagInternal},
     {APIPermissionID::kDiagnostics, "diagnostics",
      APIPermissionInfo::kFlagCannotBeOptional},
     {APIPermissionID::kDns, "dns"},
@@ -128,6 +131,9 @@ constexpr APIPermissionInfo::InitInfo permissions_to_register[] = {
      APIPermissionInfo::kFlagRequiresManagementUIWarning},
     {APIPermissionID::kPrintingMetrics, "printingMetrics",
      APIPermissionInfo::kFlagRequiresManagementUIWarning},
+    {APIPermissionID::kProxy, "proxy",
+     APIPermissionInfo::kFlagImpliesFullURLAccess |
+         APIPermissionInfo::kFlagCannotBeOptional},
     {APIPermissionID::kSerial, "serial",
      APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
     {APIPermissionID::kSocket, "socket",
@@ -193,5 +199,5 @@ base::span<const Alias> GetPermissionAliases() {
   return base::span(aliases);
 }
 
-}  // namespace api_permissions
-}  // namespace extensions
+} // namespace extensions::api_permissions
+

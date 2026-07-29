@@ -14,7 +14,7 @@
 #include "base/time/default_clock.h"
 #include "components/commerce/core/proto/merchant_trust.pb.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/optimization_guide/core/optimization_guide_decision.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/page_info/core/page_info_types.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "url/origin.h"
@@ -26,10 +26,6 @@ namespace optimization_guide {
 class OptimizationGuideDecider;
 class OptimizationMetadata;
 }  // namespace optimization_guide
-
-namespace user_prefs {
-class PrefRegistrySyncable;
-}
 
 namespace page_info {
 
@@ -49,7 +45,7 @@ enum class MerchantTrustInteraction {
   kSidePanelOpened = 2,
   kBubbleClosed = 3,
   kSidePanelClosed = 4,
-  kBubbleOpenedFromLocationBarChip = 5,
+  // kBubbleOpenedFromLocationBarChip = 5, // Deprecated: never launched.
   kSidePanelOpenedOnSameTabNavigation = 6,
   kSidePanelClosedOnSameTabNavigation = 7,
   kMaxValue = kSidePanelClosedOnSameTabNavigation
@@ -61,13 +57,8 @@ static constexpr double kMerchantFamiliarityThreshold = 5;
 // Provides merchant information for a web site.
 class MerchantTrustService : public KeyedService {
  public:
-  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
-
   class Delegate {
    public:
-    // Launches the evaluation survey based on the experiment state.
-    virtual void ShowEvaluationSurvey() = 0;
-
     virtual double GetSiteEngagementScore(const GURL url) = 0;
 
     virtual ~Delegate() = default;
@@ -90,10 +81,6 @@ class MerchantTrustService : public KeyedService {
   // Asynchronously fetches merchant trust information for the given URL.
   virtual void GetMerchantTrustInfo(const GURL& url,
                             MerchantDataCallback callback) const;
-
-  // Attempt to show an evaluation survey if the conditions apply. It will show
-  // either a control or an experiment survey depending on the feature state.
-  virtual void MaybeShowEvaluationSurvey();
 
   virtual void RecordMerchantTrustInteraction(
       const GURL& url,
@@ -126,10 +113,6 @@ class MerchantTrustService : public KeyedService {
 
   std::optional<page_info::MerchantData> GetMerchantDataFromProto(
       const std::optional<commerce::MerchantTrustSignalsV2>& metadata) const;
-
-  // Whether the evaluation survey should be shown based on how long ago user
-  // interacted with the feature.
-  bool CanShowEvaluationSurvey();
 
   void RecordEngagementScore(const GURL& url,
                              MerchantTrustInteraction interaction) const;

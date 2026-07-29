@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/platform/fonts/text_fragment_paint_info.h"
 #include "third_party/blink/renderer/platform/testing/font_test_base.h"
 #include "third_party/blink/renderer/platform/testing/font_test_helpers.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/text/tab_size.h"
 #include "third_party/blink/renderer/platform/text/text_direction.h"
@@ -100,6 +101,8 @@ TEST_F(FontTest, IdeographicFullWidthCjkFull) {
 }
 
 TEST_F(FontTest, IdeographicFullWidthCjkNarrow) {
+  ScopedNoFontAntialiasingForTest disable_no_font_antialiasing_for_test(false);
+
   Font* font = CreateTestFont(AtomicString("CSSHWOrientationTest"),
                               blink::test::BlinkWebTestsFontsTestDataPath(
                                   "adobe-fonts/CSSHWOrientationTest.otf"),
@@ -107,7 +110,7 @@ TEST_F(FontTest, IdeographicFullWidthCjkNarrow) {
   const SimpleFontData* font_data = font->PrimaryFont();
   ASSERT_TRUE(font_data);
   EXPECT_TRUE(font_data->IdeographicInlineSize().has_value());
-  EXPECT_EQ(*font_data->IdeographicInlineSize(), 8);
+  EXPECT_FLOAT_EQ(*font_data->IdeographicInlineSize(), 8.0f);
 }
 
 // A font that does not have the CJK "water" glyph.
@@ -165,8 +168,9 @@ TEST_F(FontTest, TextIntercepts) {
   std::tuple<float, float> below_baseline_bounds = std::make_tuple(2, 4);
   Vector<Font::TextIntercept> text_intercepts;
   // 4 intercept ranges for below baseline p glyphs in the test string
-  font->GetTextIntercepts(text_paint_info, default_paint, below_baseline_bounds,
-                          text_intercepts);
+  font->GetTextIntercepts(text_paint_info,
+                          Font::InkSkipCJKHandling::kExcludeCJK, default_paint,
+                          below_baseline_bounds, text_intercepts);
   EXPECT_EQ(text_intercepts.size(), 4u);
   for (auto text_intercept : text_intercepts) {
     EXPECT_GT(text_intercept.end_, text_intercept.begin_);
@@ -174,12 +178,21 @@ TEST_F(FontTest, TextIntercepts) {
 
   std::tuple<float, float> above_baseline_bounds = std::make_tuple(-4, -2);
   // 5 intercept ranges for the above baseline E ACUTE glyphs
-  font->GetTextIntercepts(text_paint_info, default_paint, above_baseline_bounds,
-                          text_intercepts);
+  font->GetTextIntercepts(text_paint_info,
+                          Font::InkSkipCJKHandling::kExcludeCJK, default_paint,
+                          above_baseline_bounds, text_intercepts);
   EXPECT_EQ(text_intercepts.size(), 5u);
   for (auto text_intercept : text_intercepts) {
     EXPECT_GT(text_intercept.end_, text_intercept.begin_);
   }
+}
+
+TEST_F(FontTest, TabWidthNegativePosition) {
+  Font* font = CreateTestFont(AtomicString("Ahem"),
+                              test::PlatformTestDataPath("Ahem.woff"), 10);
+  TabSize tab_size(8);
+  EXPECT_EQ(font->TabWidth(tab_size, -12.0f), 12.0f);
+  EXPECT_EQ(font->TabWidth(tab_size, LayoutUnit(-12.0f)), LayoutUnit(12.0f));
 }
 
 TEST_F(FontTest, TabWidthZero) {
@@ -188,6 +201,23 @@ TEST_F(FontTest, TabWidthZero) {
   TabSize tab_size(8);
   EXPECT_EQ(font->TabWidth(tab_size, .0f), .0f);
   EXPECT_EQ(font->TabWidth(tab_size, LayoutUnit()), LayoutUnit());
+}
+
+TEST_F(FontTest, TabWidthWithSpacing) {
+  Font* font = CreateTestFont(AtomicString("Ahem"),
+                              test::PlatformTestDataPath("Ahem.woff"), 10);
+
+  auto& font_description =
+      const_cast<FontDescription&>(font->GetFontDescription());
+  font_description.SetLetterSpacing(Length::Fixed(3));
+  font_description.SetWordSpacing(Length::Fixed(20));
+  TabSize tab_size(8);
+
+  const float kTolerance = 1.0f / LayoutUnit::kFixedPointDenominator;
+  float expected = 8 * (10 + 3 + 20);
+  EXPECT_FLOAT_EQ(font->TabWidth(tab_size, .0f), expected);
+  EXPECT_NEAR(font->TabWidth(tab_size, LayoutUnit()), LayoutUnit(expected),
+              kTolerance);
 }
 
 TEST_F(FontTest, NullifyPrimaryFontForTesting) {

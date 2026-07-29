@@ -10,37 +10,49 @@
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"
 #include "chrome/browser/file_system_access/file_system_access_features.h"
 #include "chrome/browser/file_system_access/file_system_access_permission_context_factory.h"
-#include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/page_info/chrome_page_info_ui_delegate.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/accessibility/non_accessible_image_view.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/controls/rich_hover_button.h"
 #include "chrome/browser/ui/views/file_system_access/file_system_access_scroll_panel.h"
 #include "chrome/browser/ui/views/page_info/page_info_view_factory.h"
+#include "chrome/browser/ui/views/sub_apps_permission_explanation.h"
+#include "components/content_settings/core/browser/permission_settings_registry.h"
 #include "components/page_info/page_info.h"
 #include "components/permissions/permission_util.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
-#include "third_party/blink/public/common/features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/button/toggle_button.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/controls/separator.h"
 #include "ui/views/layout/flex_layout.h"
 
-#if !BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/ui/views/media_preview/media_preview_feature.h"
-#endif
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoPermissionContentView,
+                                      kStateLabelElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoPermissionContentView,
+                                      kRememberCheckboxElementId);
+
+namespace {
+std::u16string PageInfoSubpageText(ContentSettingsType type) {
+  // Without this, the title and toggle accessibility text inside the submenu of
+  // |CAPTURED_SURFACE_CONTROL| permission type would be the same as in the main
+  // page info. This block sets the submenu text to a different one.
+  return (type == ContentSettingsType::CAPTURED_SURFACE_CONTROL)
+             ? l10n_util::GetStringUTF16(
+                   IDS_SITE_SETTINGS_TYPE_CAPTURED_SURFACE_CONTROL_SUB_MENU)
+             : PageInfoUI::PermissionTypeToUIString(type);
+}
+}  // namespace
 
 PageInfoPermissionContentView::PageInfoPermissionContentView(
     PageInfo* presenter,
@@ -54,9 +66,11 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
   ChromeLayoutProvider* layout_provider = ChromeLayoutProvider::Get();
   const int bottom_margin =
       layout_provider->GetDistanceMetric(DISTANCE_CONTENT_LIST_VERTICAL_MULTI);
-  // The last view is a RichHoverButton, which overrides the bottom
-  // dialog inset in favor of its own.
-  SetProperty(views::kMarginsKey, gfx::Insets::TLBR(0, 0, bottom_margin, 0));
+
+  auto* layout_manager =
+      SetLayoutManager(std::make_unique<views::FlexLayout>());
+  layout_manager->SetOrientation(views::LayoutOrientation::kVertical);
+  layout_manager->SetInteriorMargin(gfx::Insets::TLBR(0, 0, bottom_margin, 0));
 
   // Use the same insets as buttons and permission rows in the main page for
   // consistency.
@@ -64,10 +78,6 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
       layout_provider->GetInsetsMetric(INSETS_PAGE_INFO_HOVER_BUTTON);
   const int controls_spacing = layout_provider->GetDistanceMetric(
       views::DISTANCE_RELATED_CONTROL_VERTICAL);
-
-  auto* layout_manager =
-      SetLayoutManager(std::make_unique<views::FlexLayout>());
-  layout_manager->SetOrientation(views::LayoutOrientation::kVertical);
 
   auto* permission_info_container =
       AddChildView(std::make_unique<views::View>());
@@ -81,26 +91,20 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
 
   auto* label_wrapper = permission_info_container->AddChildView(
       PageInfoViewFactory::CreateLabelWrapper());
-  title_ = label_wrapper->AddChildView(
-      std::make_unique<views::Label>(PageInfoUI::PermissionTypeToUIString(type),
-                                     views::style::CONTEXT_DIALOG_BODY_TEXT));
+  title_ = label_wrapper->AddChildView(std::make_unique<views::Label>(
+      PageInfoSubpageText(type), views::style::CONTEXT_DIALOG_BODY_TEXT));
   title_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   title_->SetTextStyle(views::style::STYLE_BODY_3_MEDIUM);
   title_->SetEnabledColor(kColorPageInfoForeground);
-
-  // Without this, the title text inside the submenu of
-  // |CAPTURED_SURFACE_CONTROL| permission type would be the same as in the main
-  // page info. This block sets the submenu title text to a different one.
-  if (type == ContentSettingsType::CAPTURED_SURFACE_CONTROL) {
-    title_->SetText(l10n_util::GetStringUTF16(
-        IDS_SITE_SETTINGS_TYPE_CAPTURED_SURFACE_CONTROL_SUB_MENU));
-  }
 
   state_label_ = label_wrapper->AddChildView(std::make_unique<views::Label>(
       std::u16string(), views::style::CONTEXT_LABEL,
       views::style::STYLE_BODY_4));
   state_label_->SetEnabledColor(kColorPageInfoSubtitleForeground);
   state_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  state_label_->SetID(
+      PageInfoViewFactory::VIEW_ID_PAGE_INFO_PERMISSION_SUBTITLE_LABEL);
+  state_label_->SetProperty(views::kElementIdentifierKey, kStateLabelElementId);
 
   // Add extra details as sublabel.
   std::u16string detail = ui_delegate_->GetPermissionDetail(type);
@@ -120,8 +124,8 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
         FileSystemAccessPermissionContextFactory::GetForProfileIfExists(
             web_contents->GetBrowserContext());
     if (context) {
-      granted_file_paths = context->GetGrantedPaths(
-          url::Origin::Create(web_contents->GetLastCommittedURL()));
+      granted_file_paths =
+          context->GetGrantedPaths(url::Origin::Create(presenter_->site_url()));
     }
     if (!granted_file_paths.empty()) {
       std::unique_ptr<views::ScrollView> scroll_panel =
@@ -143,6 +147,8 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
   remember_setting_->SetID(
       PageInfoViewFactory::
           VIEW_ID_PAGE_INFO_PERMISSION_SUBPAGE_REMEMBER_CHECKBOX);
+  remember_setting_->SetProperty(views::kElementIdentifierKey,
+                                 kRememberCheckboxElementId);
   remember_setting_->SetProperty(views::kMarginsKey,
                                  gfx::Insets::TLBR(controls_spacing, 0, 0, 0));
 
@@ -152,16 +158,15 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
       std::make_unique<views::ToggleButton>(base::BindRepeating(
           &PageInfoPermissionContentView::OnToggleButtonPressed,
           base::Unretained(this))));
-  toggle_button_->GetViewAccessibility().SetName(
-      l10n_util::GetStringFUTF16(IDS_PAGE_INFO_SELECTOR_TOOLTIP,
-                                 PageInfoUI::PermissionTypeToUIString(type)));
+  toggle_button_->GetViewAccessibility().SetName(l10n_util::GetStringFUTF16(
+      IDS_PAGE_INFO_SELECTOR_TOOLTIP, PageInfoSubpageText(type)));
   toggle_button_->SetPreferredSize(
       gfx::Size(toggle_button_->GetPreferredSize().width(), title_height));
 
   // Calculate difference between label height and icon size to align icons
   // and label in the first row.
   const int margin =
-      (title_height - GetLayoutConstant(PAGE_INFO_ICON_SIZE)) / 2;
+      (title_height - GetLayoutConstant(LayoutConstant::kPageInfoIconSize)) / 2;
   icon_->SetProperty(views::kMarginsKey, gfx::Insets::VH(margin, 0));
   toggle_button_->SetProperty(views::kMarginsKey, gfx::Insets::VH(margin, 0));
 
@@ -170,6 +175,27 @@ PageInfoPermissionContentView::PageInfoPermissionContentView(
           DISTANCE_HORIZONTAL_SEPARATOR_PADDING_PAGE_INFO_VIEW)));
 
   MaybeAddMediaPreview(web_contents, *separator);
+
+  if (web_contents_.MaybeValid()) {
+    if (std::optional<std::u16string> explanation =
+            GetSubAppsPermissionExplanation(web_contents_.get())) {
+      auto* custom_label = AddChildView(std::make_unique<views::Label>(
+          *explanation, views::style::CONTEXT_DIALOG_BODY_TEXT,
+          views::style::STYLE_BODY_4));
+      custom_label->SetMultiLine(true);
+      custom_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+      custom_label->SetProperty(views::kCrossAxisAlignmentKey,
+                                views::LayoutAlignment::kStretch);
+      custom_label->SetProperty(
+          views::kMarginsKey,
+          gfx::Insets::VH(ChromeLayoutProvider::Get()->GetDistanceMetric(
+                              views::DISTANCE_RELATED_CONTROL_VERTICAL),
+                          0));
+      custom_label->SetMaximumWidth(
+          ChromeLayoutProvider::Get()->GetDistanceMetric(
+              views::DISTANCE_BUBBLE_PREFERRED_WIDTH));
+    }
+  }
 
   // TODO(crbug.com/40775890): Consider to use permission specific text.
   auto* subpage_manage_button = AddChildView(std::make_unique<RichHoverButton>(
@@ -241,25 +267,30 @@ void PageInfoPermissionContentView::SetPermissionInfo(
   if (type_ == ContentSettingsType::FILE_SYSTEM_WRITE_GUARD &&
       base::FeatureList::IsEnabled(
           features::kFileSystemAccessPersistentPermissions)) {
+    ContentSetting setting = std::get<ContentSetting>(
+        permission_.setting.value_or(CONTENT_SETTING_DEFAULT));
     if (web_contents_.MaybeValid()) {
       auto* context =
           FileSystemAccessPermissionContextFactory::GetForProfileIfExists(
               web_contents_->GetBrowserContext());
-      remember_setting_->SetVisible(context && permission_.setting !=
-                                                   CONTENT_SETTING_BLOCK);
+      remember_setting_->SetVisible(context &&
+                                    setting != CONTENT_SETTING_BLOCK);
       remember_setting_->SetChecked(
-          context && context->OriginHasExtendedPermission(url::Origin::Create(
-                         web_contents_->GetLastCommittedURL())));
+          context && context->OriginHasExtendedPermission(
+                         url::Origin::Create(presenter_->site_url())));
     }
   } else {
+    auto* info =
+        content_settings::PermissionSettingsRegistry::GetInstance()->Get(
+            permission_.type);
     remember_setting_->SetChecked(!permission_.is_one_time &&
-                                  permission_.setting !=
-                                      CONTENT_SETTING_DEFAULT);
+                                  permission_.setting);
     remember_setting_->SetVisible(
         (permissions::PermissionUtil::IsPermission(type_) &&
          permissions::PermissionUtil::DoesSupportTemporaryGrants(
              permission_.type)) &&
-        (permission_.setting != CONTENT_SETTING_BLOCK));
+        permission_.setting &&
+        !info->delegate().IsBlocked(*permission_.setting));
   }
   PreferredSizeChanged();
 }
@@ -344,8 +375,7 @@ void PageInfoPermissionContentView::ToggleFileSystemExtendedPermissions() {
     return;
   }
   bool checkbox_enabled = remember_setting_->GetChecked();
-  const url::Origin site_origin =
-      url::Origin::Create(web_contents_->GetLastCommittedURL());
+  const url::Origin site_origin = url::Origin::Create(presenter_->site_url());
   bool origin_has_extended_permission =
       context->OriginHasExtendedPermission(site_origin);
 
@@ -374,13 +404,6 @@ void PageInfoPermissionContentView::MaybeAddMediaPreview(
   if (type_ != ContentSettingsType::MEDIASTREAM_CAMERA &&
       type_ != ContentSettingsType::MEDIASTREAM_MIC &&
       type_ != ContentSettingsType::CAMERA_PAN_TILT_ZOOM) {
-    return;
-  }
-
-  const GURL& site_url = web_contents->GetLastCommittedURL();
-  if (!media_preview_feature::ShouldShowMediaPreview(
-          *web_contents->GetBrowserContext(), site_url, site_url,
-          media_preview_metrics::UiLocation::kPageInfo)) {
     return;
   }
 

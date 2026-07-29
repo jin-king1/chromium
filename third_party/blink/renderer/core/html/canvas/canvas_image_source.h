@@ -51,15 +51,8 @@ enum SourceImageStatus {
 
 class CORE_EXPORT CanvasImageSource {
  public:
-  enum AlphaDisposition {
-    kPremultiplyAlpha,
-    kDontChangeAlpha,
-  };
-  virtual scoped_refptr<Image> GetSourceImageForCanvas(
-      FlushReason,
-      SourceImageStatus*,
-      const gfx::SizeF&,
-      const AlphaDisposition alpha_disposition) = 0;
+  virtual scoped_refptr<Image> GetSourceImageForCanvas(SourceImageStatus*,
+                                                       const gfx::SizeF&) = 0;
 
   // IMPORTANT: Result must be independent of whether destinationContext is
   // already tainted because this function may be used to determine whether
@@ -67,11 +60,9 @@ class CORE_EXPORT CanvasImageSource {
   // another canvas, which may not be already tainted.
   virtual bool WouldTaintOrigin() const = 0;
 
-  virtual bool IsCSSImageValue() const { return false; }
   virtual bool IsImageElement() const { return false; }
   virtual bool IsVideoElement() const { return false; }
   virtual bool IsCanvasElement() const { return false; }
-  virtual bool IsSVGSource() const { return false; }
   virtual bool IsImageBitmap() const { return false; }
   virtual bool IsOffscreenCanvas() const { return false; }
   virtual bool IsVideoFrame() const { return false; }
@@ -93,7 +84,7 @@ class CORE_EXPORT CanvasImageSource {
       const RespectImageOrientationEnum respect_orientation) const {
     return ElementSize(default_object_size, respect_orientation);
   }
-  virtual const KURL& SourceURL() const { return BlankURL(); }
+  virtual const KURL& SourceURL() const { return BlankUrl(); }
   virtual bool IsOpaque() const { return false; }
   virtual bool IsAccelerated() const = 0;
 

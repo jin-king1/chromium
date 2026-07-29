@@ -4,17 +4,21 @@
 
 #include "components/autofill/core/browser/form_parsing/iban_field_parser.h"
 
-#include "components/autofill/core/browser/autofill_field.h"
-#include "components/autofill/core/common/autofill_regex_constants.h"
+#include <memory>
+#include <optional>
+#include <utility>
+
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_parsing/autofill_scanner.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
+#include "components/autofill/core/browser/form_parsing/field_candidates.h"
+#include "components/autofill/core/browser/form_parsing/form_field_parser.h"
 
 namespace autofill {
 
 // static
 std::unique_ptr<FormFieldParser> IbanFieldParser::Parse(
     ParsingContext& context,
-    AutofillScanner* scanner) {
+    AutofillScanner& scanner) {
   std::optional<FieldAndMatchInfo> match;
   if (ParseField(context, scanner, "IBAN_VALUE", &match)) {
     return std::make_unique<IbanFieldParser>(std::move(*match));
@@ -27,7 +31,8 @@ IbanFieldParser::IbanFieldParser(FieldAndMatchInfo match)
 
 void IbanFieldParser::AddClassifications(
     FieldCandidatesMap& field_candidates) const {
-  AddClassification(match_, IBAN_VALUE, kBaseIbanParserScore, field_candidates);
+  AddClassification(match_, IBAN_VALUE, HeuristicParser::kIban,
+                    field_candidates);
 }
 
 }  // namespace autofill

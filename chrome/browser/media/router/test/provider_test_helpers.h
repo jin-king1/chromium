@@ -31,7 +31,6 @@
 #include "net/base/ip_endpoint.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "third_party/blink/public/mojom/presentation/presentation.mojom.h"
 
 namespace media_router {
 
@@ -98,6 +97,7 @@ class MockDialAppDiscoveryService : public DialAppDiscoveryService {
                void(const MediaSink::Id& sink_id, const std::string& app_name));
 
   DialAppInfoCallback PassCallback();
+  bool HasPendingCallback() const;
 
  private:
   DialAppInfoCallback app_info_cb_;

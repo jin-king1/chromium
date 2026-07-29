@@ -25,7 +25,7 @@ gfx::Size GetLargestDisplaySizeLandscape() {
 
   gfx::Size largest_size;
   uint64_t largest_area = 0u;
-  for (const auto& display : display::Screen::GetScreen()->GetAllDisplays()) {
+  for (const auto& display : display::Screen::Get()->GetAllDisplays()) {
     DVLOG(2) << display.ToString();
     auto next_area = display.GetSizeInPixel().Area64();
     if (next_area > largest_area) {
@@ -113,6 +113,12 @@ manta::proto::Request CreateMantaRequest(
     manta::proto::InputData& rewrite_input_data = *request.add_input_data();
     rewrite_input_data.set_tag("use_query_rewrite");
     rewrite_input_data.set_text("true");
+  }
+  if (query->is_text_query() &&
+      ash::features::IsSeaPenTextInputTranslationEnabled()) {
+    manta::proto::InputData& translation_input_data = *request.add_input_data();
+    translation_input_data.set_tag("use_i18n");
+    translation_input_data.set_text("true");
   }
   return request;
 }

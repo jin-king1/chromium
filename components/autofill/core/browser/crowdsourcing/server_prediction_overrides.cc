@@ -4,11 +4,19 @@
 
 #include "components/autofill/core/browser/crowdsourcing/server_prediction_overrides.h"
 
+#include <stdint.h>
+
 #include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 #include "base/base64.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/json/json_reader.h"
+#include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -16,6 +24,7 @@
 #include "base/values.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/proto/api_v1.pb.h"
+#include "components/autofill/core/browser/proto/server.pb.h"
 #include "components/autofill/core/common/signatures.h"
 
 namespace autofill {
@@ -174,7 +183,7 @@ ParseServerPredictionOverrideJson(const base::Value& value) {
         if (!suggestion_value.is_dict()) {
           return base::unexpected("suggestion_value must be a dict");
         }
-        const base::Value::Dict& suggestion_dict = suggestion_value.GetDict();
+        const base::DictValue& suggestion_dict = suggestion_value.GetDict();
         FieldSuggestion& suggestion =
             result[{form_signature.value(), field_signature.value()}]
                 .emplace_back();
@@ -184,13 +193,14 @@ ParseServerPredictionOverrideJson(const base::Value& value) {
         //     "<field_signature>": [
         //       {
         //         "predictions": [ <raw_field_type> or "<type_name>", ... ],
-        //         "format_string": <format_string>
+        //         "format_string_type": "DATE",
+        //         "format_string": "<format_string>"
         //       },
         //       ...
         //     ]
         //   }
         // }
-        if (const base::Value::List* predictions =
+        if (const base::ListValue* predictions =
                 suggestion_dict.FindList("predictions")) {
           for (const base::Value& prediction : *predictions) {
             if (std::optional<int> raw_field_type = prediction.GetIfInt()) {
@@ -202,9 +212,16 @@ ParseServerPredictionOverrideJson(const base::Value& value) {
             }
           }
         }
+        if (const std::string* format_string_type =
+                suggestion_dict.FindString("format_string_type")) {
+          FormatString_Type type;
+          if (FormatString_Type_Parse(*format_string_type, &type)) {
+            suggestion.mutable_format_string()->set_type(type);
+          }
+        }
         if (const std::string* format_string =
                 suggestion_dict.FindString("format_string")) {
-          suggestion.set_format_string(*format_string);
+          suggestion.mutable_format_string()->set_format_string(*format_string);
         }
       }
     }
@@ -245,7 +262,8 @@ ParseServerPredictionOverrides(std::string_view overrides_as_string,
         return base::unexpected("Base64Decode() failed");
       }
       base::expected<base::Value, base::JSONReader::Error> overrides =
-          base::JSONReader::ReadAndReturnValueWithError(json);
+          base::JSONReader::ReadAndReturnValueWithError(
+              json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
       if (!overrides.has_value()) {
         return base::unexpected(overrides.error().ToString());
       }

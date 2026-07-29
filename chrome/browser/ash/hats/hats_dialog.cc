@@ -12,22 +12,22 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/escape.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/ash/hats/hats_config.h"
 #include "chrome/browser/ash/hats/hats_finch_helper.h"
 #include "chrome/browser/profiles/profile_destroyer.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser_dialogs.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/version/version_loader.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/prefs/pref_service.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/web_contents.h"
 #include "third_party/re2/src/re2/re2.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
@@ -127,10 +127,12 @@ bool HatsDialog::HandleClientTriggeredAction(
     return false;
   }
 
-  // Page asks to be closed after completing the survey.
+  // Response was submitted and the survey was complete.
   if (action == kClientActionComplete) {
     LogHistogram(histogram_name, kSurveyCompleteEnumeration);
-    return true;
+    // Do not close the dialog to show the thank you message.
+    // Subsequent `kClientActionClose` will close the dialog afterwards.
+    return false;
   }
 
   // A question was answered
@@ -189,8 +191,8 @@ void HatsDialog::Show(const std::string& trigger_id,
 
 void HatsDialog::OnLoadingStateChanged(WebContents* source) {
   // Only trigger actions when the URL changes
-  if (action_ != source->GetURL().ref()) {
-    action_ = source->GetURL().ref();
+  if (action_ != source->GetURL().GetRef()) {
+    action_ = source->GetURL().GetRef();
     if (HandleClientTriggeredAction(action_, histogram_name_)) {
       source->ClosePage();
     }

@@ -6,14 +6,27 @@ package org.chromium.chrome.browser.tabmodel;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabDestroyStatus;
 
 /** Package private internal methods for {@link TabModel}. */
+@NullMarked
 @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
 public interface TabModelInternal extends TabModel {
     /**
+     * This method moves the Tab with {@code sourceTabId} out of the group it belongs to in the
+     * specified direction.
+     *
+     * @param sourceTabId The id of the {@link Tab} to get the source group.
+     * @param trailing True if the tab should be placed after the tab group when removed. False if
+     *     it should be placed before.
+     */
+    /*package*/ void moveTabOutOfGroupInDirection(int sourceTabId, boolean trailing);
+
+    /**
      * Closes tabs based on the provided parameters. Refer to {@link TabClosureParams} for different
-     * ways to close tabs. The public API for this is on {@link TabRemover}.
+     * ways to close tabs. The public API for this is {@link TabRemover}.
      *
      * @param tabClosureParams The parameters to follow when closing tabs.
      * @return Whether the tab closure succeeded (only possibly false for single tab closure).
@@ -36,11 +49,7 @@ public interface TabModelInternal extends TabModel {
      */
     /* package */ void setActive(boolean active);
 
-    /**
-     * To be called when this model should be destroyed. The model should no longer be used after
-     * this.
-     *
-     * <p>As a result of this call, all {@link Tab}s owned by this model should be destroyed.
-     */
-    /* package */ void destroy();
+    /** Destroy the model and return the destroy status. */
+    @TabDestroyStatus
+    int destroy();
 }

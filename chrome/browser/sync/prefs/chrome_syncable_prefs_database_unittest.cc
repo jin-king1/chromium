@@ -30,4 +30,21 @@ TEST(ChromeSyncablePrefsDatabaseTest, CheckMetricsEnum) {
   }
 }
 
+TEST(ChromeSyncablePrefsDatabaseTest, IsPreferenceAlwaysSyncing) {
+  browser_sync::ChromeSyncablePrefsDatabase db;
+  EXPECT_TRUE(db.IsPreferenceAlwaysSyncing(
+      sync_preferences::kSyncableAlwaysSyncingPriorityPrefForTesting));
+  EXPECT_FALSE(db.IsPreferenceAlwaysSyncing(
+      sync_preferences::kSyncablePriorityPrefForTesting));
+
+  // Currently, only priority preferences are allowed in the allowlist.
+  const std::map<std::string_view, sync_preferences::SyncablePrefMetadata>
+      syncable_prefs = db.GetAllSyncablePrefsForTest();
+  for (const auto& [pref_name, metadata] : syncable_prefs) {
+    if (db.IsPreferenceAlwaysSyncing(pref_name)) {
+      EXPECT_EQ(metadata.data_type(), syncer::PRIORITY_PREFERENCES);
+    }
+  }
+}
+
 }  // namespace

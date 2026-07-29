@@ -34,6 +34,9 @@
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_system_provider.h"
 #include "extensions/browser/extensions_browser_client.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -136,10 +139,16 @@ HistoryEventRouter::HistoryEventRouter(Profile* profile,
 
 HistoryEventRouter::~HistoryEventRouter() = default;
 
-void HistoryEventRouter::OnURLVisited(history::HistoryService* history_service,
-                                      const history::URLRow& url_row,
-                                      const history::VisitRow& new_visit) {
-  auto args = OnVisited::Create(GetHistoryItem(url_row));
+void HistoryEventRouter::OnURLVisited(
+    history::HistoryService* history_service,
+    const history::VisitedURLInfo& visited_url_info) {
+  // Filter out 404 visits to prevent them from appearing in the UI and
+  // impacting user journeys.
+  if (visited_url_info.response_code_category ==
+      history::VisitResponseCodeCategory::k404) {
+    return;
+  }
+  auto args = OnVisited::Create(GetHistoryItem(visited_url_info.url_row));
   DispatchEvent(profile_, events::HISTORY_ON_VISITED,
                 api::history::OnVisited::kEventName, std::move(args));
 }
@@ -151,8 +160,9 @@ void HistoryEventRouter::OnHistoryDeletions(
   removed.all_history = deletion_info.IsAllHistory();
 
   removed.urls.emplace();
-  for (const auto& row : deletion_info.deleted_rows())
+  for (const auto& row : deletion_info.deleted_rows()) {
     removed.urls->push_back(row.url().spec());
+  }
 
   auto args = OnVisitRemoved::Create(removed);
   DispatchEvent(profile_, events::HISTORY_ON_VISIT_REMOVED,
@@ -162,7 +172,7 @@ void HistoryEventRouter::OnHistoryDeletions(
 void HistoryEventRouter::DispatchEvent(Profile* profile,
                                        events::HistogramValue histogram_value,
                                        const std::string& event_name,
-                                       base::Value::List event_args) {
+                                       base::ListValue event_args) {
   if (profile && EventRouter::Get(profile)) {
     auto event = std::make_unique<Event>(histogram_value, event_name,
                                          std::move(event_args), profile);
@@ -247,25 +257,28 @@ ExtensionFunction::ResponseAction HistoryGetVisitsFunction::Run() {
 
   GURL url;
   std::string error;
-  if (!ValidateUrl(params->details.url, &url, &error))
+  if (!ValidateUrl(params->details.url, &url, &error)) {
     return RespondNow(Error(std::move(error)));
+  }
 
   history::HistoryService* hs = HistoryServiceFactory::GetForProfile(
       GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
-  hs->QueryURL(url,
-               true,  // Retrieve full history of a URL.
-               base::BindOnce(&HistoryGetVisitsFunction::QueryComplete,
-                              base::Unretained(this)),
-               &task_tracker_);
+  // Retrieve full history of a URL.
+  hs->QueryURLAndVisits(url, history::VisitQuery404sPolicy::kExclude404s,
+                        base::BindOnce(&HistoryGetVisitsFunction::QueryComplete,
+                                       base::Unretained(this)),
+                        &task_tracker_);
   AddRef();               // Balanced in QueryComplete().
   return RespondLater();  // QueryComplete() will be called asynchronously.
 }
 
-void HistoryGetVisitsFunction::QueryComplete(history::QueryURLResult result) {
+void HistoryGetVisitsFunction::QueryComplete(
+    history::QueryURLAndVisitsResult result) {
   VisitItemList visit_item_vec;
   if (result.success && !result.visits.empty()) {
-    for (const history::VisitRow& visit : result.visits)
+    for (const history::VisitRow& visit : result.visits) {
       visit_item_vec.push_back(GetVisitItem(visit));
+    }
   }
 
   Respond(ArgumentList(GetVisits::Results::Create(visit_item_vec)));
@@ -281,13 +294,21 @@ ExtensionFunction::ResponseAction HistorySearchFunction::Run() {
   history::QueryOptions options;
   options.SetRecentDayRange(1);
   options.max_count = 100;
+  // TODO: crbug.com/443117133 - Change to `kInclude404s` after
+  //   `history::kVisitedLinksOn404` is enabled everywhere.
+  options.policy_for_404_visits = history::VisitQuery404sPolicy::kExclude404s;
+  // Show GLIC actor visits with SOURCE_ACTOR as part of history.
+  options.include_actor_visits = true;
 
-  if (params->query.start_time)
+  if (params->query.start_time) {
     options.begin_time = GetTime(*params->query.start_time);
-  if (params->query.end_time)
+  }
+  if (params->query.end_time) {
     options.end_time = GetTime(*params->query.end_time);
-  if (params->query.max_results)
+  }
+  if (params->query.max_results) {
     options.max_count = *params->query.max_results;
+  }
 
   history::HistoryService* hs = HistoryServiceFactory::GetForProfile(
       GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
@@ -303,8 +324,9 @@ ExtensionFunction::ResponseAction HistorySearchFunction::Run() {
 void HistorySearchFunction::SearchComplete(history::QueryResults results) {
   HistoryItemList history_item_vec;
   if (!results.empty()) {
-    for (const auto& item : results)
+    for (const auto& item : results) {
       history_item_vec.push_back(GetHistoryItem(item));
+    }
   }
   Respond(ArgumentList(Search::Results::Create(history_item_vec)));
   Release();  // Balanced in Run().
@@ -316,8 +338,9 @@ ExtensionFunction::ResponseAction HistoryAddUrlFunction::Run() {
 
   GURL url;
   std::string error;
-  if (!ValidateUrl(params->details.url, &url, &error))
+  if (!ValidateUrl(params->details.url, &url, &error)) {
     return RespondNow(Error(std::move(error)));
+  }
 
   history::HistoryService* hs = HistoryServiceFactory::GetForProfile(
       GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
@@ -331,12 +354,14 @@ ExtensionFunction::ResponseAction HistoryDeleteUrlFunction::Run() {
   EXTENSION_FUNCTION_VALIDATE(params);
 
   std::string error;
-  if (!VerifyDeleteAllowed(&error))
+  if (!VerifyDeleteAllowed(&error)) {
     return RespondNow(Error(std::move(error)));
+  }
 
   GURL url;
-  if (!ValidateUrl(params->details.url, &url, &error))
+  if (!ValidateUrl(params->details.url, &url, &error)) {
     return RespondNow(Error(std::move(error)));
+  }
 
   history::HistoryService* hs = HistoryServiceFactory::GetForProfile(
       GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
@@ -363,8 +388,9 @@ ExtensionFunction::ResponseAction HistoryDeleteRangeFunction::Run() {
   EXTENSION_FUNCTION_VALIDATE(params);
 
   std::string error;
-  if (!VerifyDeleteAllowed(&error))
+  if (!VerifyDeleteAllowed(&error)) {
     return RespondNow(Error(std::move(error)));
+  }
 
   base::Time start_time = GetTime(params->range.start_time);
   base::Time end_time = GetTime(params->range.end_time);
@@ -398,8 +424,9 @@ void HistoryDeleteRangeFunction::DeleteComplete() {
 
 ExtensionFunction::ResponseAction HistoryDeleteAllFunction::Run() {
   std::string error;
-  if (!VerifyDeleteAllowed(&error))
+  if (!VerifyDeleteAllowed(&error)) {
     return RespondNow(Error(std::move(error)));
+  }
 
   std::set<GURL> restrict_urls;
   history::HistoryService* hs = HistoryServiceFactory::GetForProfile(

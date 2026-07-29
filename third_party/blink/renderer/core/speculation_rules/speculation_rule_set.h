@@ -5,7 +5,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_SPECULATION_RULES_SPECULATION_RULE_SET_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SPECULATION_RULES_SPECULATION_RULE_SET_H_
 
+#include <optional>
+
 #include "base/containers/span.h"
+#include "base/time/time.h"
 #include "base/types/pass_key.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/speculation_rules/speculation_rule.h"
@@ -32,10 +35,28 @@ enum class SpeculationRuleSetErrorType {
   kSourceIsNotJsonObject,
   // An invalid or unsupported rule was ignored.
   kInvalidRulesSkipped,
-  kMaxValue = kInvalidRulesSkipped,
+  // An invalid ruleset-level tag was found.
+  kInvalidRulesetLevelTag,
+  kMaxValue = kInvalidRulesetLevelTag,
 };
 
 enum class BrowserInjectedSpeculationRuleOptOut { kRespect, kIgnore };
+
+// Author-specified overrides for the mobile "moderate" eagerness viewport
+// heuristic, parsed from the ruleset-level "moderate_viewport_heuristics" key.
+// Only populated when the SpeculationRulesModerateViewportHeuristicsControl
+// origin trial is enabled. Unspecified fields fall back to the default
+// (field-trial-derived) values; out-of-range values are clamped when applied.
+struct ModerateViewportHeuristicsParams {
+  // Lower/upper bounds of distance_from_pointer_down_ratio ("distance_from_
+  // pointer_down": [low, high] in JSON).
+  std::optional<double> distance_from_pointer_down_low;
+  std::optional<double> distance_from_pointer_down_high;
+  // How much the largest in-viewport anchor must beat the second largest.
+  std::optional<double> largest_anchor_threshold;
+  // Dwell time before triggering ("delay" in JSON, expressed in milliseconds).
+  std::optional<base::TimeDelta> delay;
+};
 
 // A set of rules generated from a single <script type=speculationrules>, which
 // provides rules to identify URLs and corresponding conditions for speculation,
@@ -117,12 +138,12 @@ class CORE_EXPORT SpeculationRuleSet final
   const HeapVector<Member<SpeculationRule>>& prefetch_rules() const {
     return prefetch_rules_;
   }
-  const HeapVector<Member<SpeculationRule>>& prefetch_with_subresources_rules()
-      const {
-    return prefetch_with_subresources_rules_;
-  }
   const HeapVector<Member<SpeculationRule>>& prerender_rules() const {
     return prerender_rules_;
+  }
+  const HeapVector<Member<SpeculationRule>>& prerender_until_script_rules()
+      const {
+    return prerender_until_script_rules_;
   }
 
   bool has_document_rule() const { return has_document_rule_; }
@@ -147,6 +168,13 @@ class CORE_EXPORT SpeculationRuleSet final
   bool HasWarnings() const;
   bool ShouldReportUMAForError() const;
 
+  const String& tag() const { return tag_; }
+
+  const std::optional<ModerateViewportHeuristicsParams>&
+  moderate_viewport_heuristics_params() const {
+    return moderate_viewport_heuristics_params_;
+  }
+
   void AddConsoleMessageForValidation(ScriptElementBase& script_element);
   void AddConsoleMessageForValidation(Document& element_document,
                                       SpeculationRulesResource& resource);
@@ -158,12 +186,13 @@ class CORE_EXPORT SpeculationRuleSet final
 
  private:
   void SetError(SpeculationRuleSetErrorType error_type, String error_message);
+  void SetTag(String tag);
   void AddWarnings(base::span<const String> warning_messages);
 
   SpeculationRuleSetId inspector_id_;
   HeapVector<Member<SpeculationRule>> prefetch_rules_;
-  HeapVector<Member<SpeculationRule>> prefetch_with_subresources_rules_;
   HeapVector<Member<SpeculationRule>> prerender_rules_;
+  HeapVector<Member<SpeculationRule>> prerender_until_script_rules_;
   // The original source is reused to reparse speculation rule sets when the
   // document base URL changes.
   Member<Source> source_;
@@ -180,6 +209,14 @@ class CORE_EXPORT SpeculationRuleSet final
       SpeculationRuleSetErrorType::kNoError;
   String error_message_;
   Vector<String> warning_messages_;
+
+  String tag_;
+
+  // Set iff the ruleset specified a valid "moderate_viewport_heuristics" object
+  // while the SpeculationRulesModerateViewportHeuristicsControl origin trial
+  // was enabled.
+  std::optional<ModerateViewportHeuristicsParams>
+      moderate_viewport_heuristics_params_;
 };
 
 }  // namespace blink

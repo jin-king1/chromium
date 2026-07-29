@@ -9,6 +9,7 @@ import android.content.Context;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.device.DeviceConditions;
 import org.chromium.components.background_task_scheduler.NativeBackgroundTask;
 import org.chromium.components.background_task_scheduler.TaskIds;
@@ -19,6 +20,7 @@ import org.chromium.net.ConnectionType;
  * Handles servicing of Background Sync background tasks coming via
  * background_task_scheduler component.
  */
+@NullMarked
 public class BackgroundSyncBackgroundTask extends NativeBackgroundTask {
     @Override
     public @StartBeforeNativeResult int onStartTaskBeforeNativeLoaded(
@@ -27,8 +29,8 @@ public class BackgroundSyncBackgroundTask extends NativeBackgroundTask {
 
         // Check that we're called with network connectivity.
         @ConnectionType
-        int current_network_type = DeviceConditions.getCurrentNetConnectionType(context);
-        if (current_network_type == ConnectionType.CONNECTION_NONE) {
+        int currentNetworkType = DeviceConditions.getCurrentNetConnectionType(context);
+        if (currentNetworkType == ConnectionType.CONNECTION_NONE) {
             return StartBeforeNativeResult.RESCHEDULE;
         }
 

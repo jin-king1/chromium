@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "services/network/udp_socket.h"
 
 #include <algorithm>
@@ -97,10 +92,18 @@ class SocketWrapperImpl : public UDPSocket::SocketWrapper {
     return socket_.SetReceiveBufferSize(
         ClampUDPBufferSize(receive_buffer_size));
   }
-  int JoinGroup(const net::IPAddress& group_address) override {
+  int JoinGroup(const net::IPAddress& group_address,
+                const std::optional<net::IPAddress>& source_address) override {
+    if (source_address.has_value()) {
+      return socket_.JoinSourceGroup(group_address, *source_address);
+    }
     return socket_.JoinGroup(group_address);
   }
-  int LeaveGroup(const net::IPAddress& group_address) override {
+  int LeaveGroup(const net::IPAddress& group_address,
+                 const std::optional<net::IPAddress>& source_address) override {
+    if (source_address.has_value()) {
+      return socket_.LeaveSourceGroup(group_address, *source_address);
+    }
     return socket_.LeaveGroup(group_address);
   }
   int Write(
@@ -130,7 +133,8 @@ class SocketWrapperImpl : public UDPSocket::SocketWrapper {
       result = socket_.SetBroadcast(true);
     if (result == net::OK && options->multicast_interface != 0)
       result = socket_.SetMulticastInterface(options->multicast_interface);
-    if (result == net::OK && !options->multicast_loopback_mode) {
+    // Always set multicast loopback mode to the requested value.
+    if (result == net::OK) {
       result =
           socket_.SetMulticastLoopbackMode(options->multicast_loopback_mode);
     }
@@ -146,17 +150,8 @@ class SocketWrapperImpl : public UDPSocket::SocketWrapper {
       result = socket_.SetSendBufferSize(
           ClampUDPBufferSize(options->send_buffer_size));
     }
-    if (result == net::OK) {
-      switch (options->ipv6_only) {
-        case mojom::OptionalBool::kTrue:
-          result = socket_.SetIPv6Only(true);
-          break;
-        case mojom::OptionalBool::kFalse:
-          result = socket_.SetIPv6Only(false);
-          break;
-        default:
-          break;
-      }
+    if (result == net::OK && options->ipv6_only.has_value()) {
+      result = socket_.SetIPv6Only(options->ipv6_only.value());
     }
     return result;
   }
@@ -252,22 +247,24 @@ void UDPSocket::SetReceiveBufferSize(int32_t receive_buffer_size,
 }
 
 void UDPSocket::JoinGroup(const net::IPAddress& group_address,
+                          const std::optional<net::IPAddress>& source_address,
                           JoinGroupCallback callback) {
   if (!is_bound_) {
     std::move(callback).Run(net::ERR_UNEXPECTED);
     return;
   }
-  int net_result = wrapped_socket_->JoinGroup(group_address);
+  int net_result = wrapped_socket_->JoinGroup(group_address, source_address);
   std::move(callback).Run(net_result);
 }
 
 void UDPSocket::LeaveGroup(const net::IPAddress& group_address,
+                           const std::optional<net::IPAddress>& source_address,
                            LeaveGroupCallback callback) {
   if (!is_bound_) {
     std::move(callback).Run(net::ERR_UNEXPECTED);
     return;
   }
-  int net_result = wrapped_socket_->LeaveGroup(group_address);
+  int net_result = wrapped_socket_->LeaveGroup(group_address, source_address);
   std::move(callback).Run(net_result);
 }
 
@@ -354,16 +351,16 @@ void UDPSocket::DoRecvFrom(uint32_t buffer_size) {
   DCHECK_GT(remaining_recv_slots_, 0u);
   DCHECK_GE(kMaxReadSize, buffer_size);
 
-  recvfrom_buffer_ = base::MakeRefCounted<net::IOBufferWithSize>(
-      static_cast<size_t>(buffer_size));
+  recvfrom_buffer_ = base::MakeRefCounted<net::IOBufferWithSize>(buffer_size);
 
   // base::Unretained(this) is safe because socket is owned by |this|.
   int net_result = wrapped_socket_->RecvFrom(
       recvfrom_buffer_.get(), buffer_size, &recvfrom_address_,
       base::BindOnce(&UDPSocket::OnRecvFromCompleted, base::Unretained(this),
                      buffer_size));
-  if (net_result != net::ERR_IO_PENDING)
+  if (net_result != net::ERR_IO_PENDING) {
     OnRecvFromCompleted(buffer_size, net_result);
+  }
 }
 
 void UDPSocket::DoSendToOrWrite(
@@ -383,8 +380,7 @@ void UDPSocket::DoSendToOrWrite(
 
   // |data| points to a range of bytes in the received message and will be
   // freed when this method returns, so copy out the bytes now.
-  auto buffer = base::MakeRefCounted<net::IOBufferWithSize>(data.size());
-  memcpy(buffer.get()->data(), data.data(), data.size());
+  auto buffer = base::MakeRefCounted<net::VectorIOBuffer>(data);
 
   if (send_buffer_.get()) {
     auto request = std::make_unique<PendingSendRequest>();
@@ -404,7 +400,7 @@ void UDPSocket::DoSendToOrWrite(
 
 void UDPSocket::DoSendToOrWriteBuffer(
     const net::IPEndPoint* dest_addr,
-    scoped_refptr<net::IOBufferWithSize> buffer,
+    scoped_refptr<net::IOBuffer> buffer,
     const net::NetworkTrafficAnnotationTag& traffic_annotation,
     SendToCallback callback) {
   DCHECK(!send_buffer_);
@@ -436,9 +432,7 @@ void UDPSocket::OnRecvFromCompleted(uint32_t buffer_size, int net_result) {
     listener_->OnReceived(
         net::OK,
         is_bound_ ? std::make_optional(recvfrom_address_) : std::nullopt,
-        base::span<const uint8_t>(
-            reinterpret_cast<const uint8_t*>(recvfrom_buffer_->data()),
-            static_cast<size_t>(net_result)));
+        recvfrom_buffer_->first(static_cast<size_t>(net_result)));
   } else {
     listener_->OnReceived(net_result, std::nullopt, std::nullopt);
   }

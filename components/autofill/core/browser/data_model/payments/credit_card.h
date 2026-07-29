@@ -5,7 +5,12 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_PAYMENTS_CREDIT_CARD_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_PAYMENTS_CREDIT_CARD_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <iosfwd>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -16,9 +21,11 @@
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/form_group.h"
+#include "components/autofill/core/browser/data_model/payments/enum_types.mojom.h"
 #include "components/autofill/core/browser/data_model/usage_history_information.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "url/gurl.h"
 
 namespace autofill {
@@ -73,72 +80,13 @@ class CreditCard : public FormGroup {
     kVirtualCard,
   };
 
-  // The Issuer for the card. This must stay in sync with the proto enum in
-  // autofill_specifics.proto.
-  enum class Issuer {
-    kIssuerUnknown = 0,
-    kGoogle = 1,
-    kExternalIssuer = 2,
-  };
-
-  // Whether the card has been enrolled in the virtual card feature. This must
-  // stay in sync with the proto enum in autofill_specifics.proto. A java
-  // IntDef@ is generated from this.
-  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.autofill
-  enum class VirtualCardEnrollmentState {
-    // State unspecified. This is the default value of this enum. Should not be
-    // ever used with cards.
-    kUnspecified = 0,
-    // Deprecated. Card is not enrolled and does not have related virtual card.
-    kUnenrolled = 1,
-    // Card is enrolled and has related virtual cards.
-    kEnrolled = 2,
-    // Card is not enrolled and is not eligible for enrollment.
-    kUnenrolledAndNotEligible = 3,
-    // Card is not enrolled but is eligible for enrollment.
-    kUnenrolledAndEligible = 4,
-  };
-
-  // The enrollment type of the virtual card attached to this card, if one is
-  // present. This must stay in sync with the proto enum in
-  // autofill_specifics.proto.
-  enum class VirtualCardEnrollmentType {
-    // Type unspecified. This is the default value of this enum. Should not be
-    // used with cards that have a virtual card enrolled.
-    kTypeUnspecified = 0,
-    // Issuer-level enrollment.
-    kIssuer = 1,
-    // Network-level enrollment.
-    kNetwork = 2,
-  };
-
-  // Whether the card has been enrolled in the card info retrieval feature.
-  //
-  // 'CardInfoRetrieval' is a Payments server-side feature where some
-  // card information (such as card number, expiry, or CVC) may be
-  // dynamically retrieved from the card issuer during an unmasking call.
-  // From the Chrome client side this looks the same (the UnmaskCardRequest
-  // API call returns the full card number and CVC for use by the client),
-  // however whether or not a card is enrolled in this feature may affect
-  // some UX, authentication methods, feature offerings, user guidance, and
-  // logging.
-  //
-  // Local cards cannot be enrolled in `CardInfoRetrieval`, and always have
-  // their card information stored locally.
-  //
-  // This must stay in sync with the proto enum in autofill_specifics.proto.
-  // A java IntDef@ is generated from this.
-  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.autofill
-  enum class CardInfoRetrievalEnrollmentState {
-    // State unspecified. This is the default value of this enum.
-    kRetrievalUnspecified = 0,
-    // Card is enrolled for card info retrieval.
-    kRetrievalEnrolled = 1,
-    // Card is not enrolled and is not eligible for enrollment.
-    kRetrievalUnenrolledAndNotEligible = 2,
-    // Card is not enrolled but is eligible for enrollment.
-    kRetrievalUnenrolledAndEligible = 3,
-  };
+  using Issuer = mojom::Issuer;
+  using BenefitSource = mojom::BenefitSource;
+  using CardCreationSource = mojom::CardCreationSource;
+  using VirtualCardEnrollmentType = mojom::VirtualCardEnrollmentType;
+  using VirtualCardEnrollmentState = mojom::VirtualCardEnrollmentState;
+  using CardInfoRetrievalEnrollmentState =
+      mojom::CardInfoRetrievalEnrollmentState;
 
   // Creates a copy of the passed in credit card, and sets its `record_type` to
   // `CreditCard::RecordType::kVirtualCard`. This is used to differentiate
@@ -159,7 +107,16 @@ class CreditCard : public FormGroup {
       int obfuscation_length,
       const std::u16string& digits);
 
-  CreditCard(const std::string& guid, const std::string& origin);
+  // Conversion between benefit source enum and benefit source in string.
+  // Benefit source in string can be fully migrated to the enum after
+  // feature flag `AutofillEnableCardBenefitsSourceSync` is default-enabled
+  // and cleaned up.
+  static std::string_view GetBenefitSourceStringFromEnum(
+      BenefitSource benefit_source_enum);
+  static BenefitSource GetEnumFromBenefitSourceString(
+      std::string_view benefit_source);
+
+  explicit CreditCard(const std::string& guid);
 
   // Creates a server card. The type must be RecordType::kMaskedServerCard or
   // RecordType::kFullServerCard.
@@ -179,8 +136,13 @@ class CreditCard : public FormGroup {
   std::string guid() const { return guid_; }
   void set_guid(std::string_view guid) { guid_ = guid; }
 
-  std::string origin() const { return origin_; }
-  void set_origin(const std::string& origin) { origin_ = origin; }
+  // A card is user-confirmed if the user saved the card in settings.
+  // Automatic updates of user-confirmed cards are conservatively only if the
+  // card has expired.
+  bool is_user_confirmed() const { return is_user_confirmed_; }
+  void set_is_user_confirmed(bool is_user_confirmed) {
+    is_user_confirmed_ = is_user_confirmed;
+  }
 
   // The user-visible issuer network of the card, e.g. 'Mastercard'.
   static std::u16string NetworkForDisplay(const std::string& network);
@@ -215,18 +177,19 @@ class CreditCard : public FormGroup {
   bool IsDeletable() const;
 
   // FormGroup:
-  void GetMatchingTypes(const std::u16string& text,
-                        const std::string& app_locale,
+  void GetMatchingTypes(std::u16string_view text,
+                        std::string_view app_locale,
                         FieldTypeSet* matching_types) const override;
+  using FormGroup::GetInfo;
   std::u16string GetInfo(const AutofillType& type,
-                         const std::string& app_locale) const override;
+                         std::string_view app_locale) const override;
   std::u16string GetRawInfo(FieldType type) const override;
   void SetRawInfoWithVerificationStatus(FieldType type,
-                                        const std::u16string& value,
+                                        std::u16string_view value,
                                         VerificationStatus status) override;
   bool SetInfoWithVerificationStatus(const AutofillType& type,
-                                     const std::u16string& value,
-                                     const std::string& app_locale,
+                                     std::u16string_view value,
+                                     std::string_view app_locale,
                                      VerificationStatus status) override;
   VerificationStatus GetVerificationStatus(FieldType type) const override;
 
@@ -268,14 +231,14 @@ class CreditCard : public FormGroup {
     issuer_id_ = std::string(issuer_id);
   }
 
-  // If the card numbers for |this| and |imported_card| match, and merging the
+  // If the card numbers for `this` and `imported_card` match, and merging the
   // two wouldn't result in unverified data overwriting verified data,
-  // overwrites |this| card's data with the data in |imported_card|. Returns
+  // overwrites `this` card's data with the data in `imported_card`. Returns
   // true if the card numbers match, false otherwise.
   [[nodiscard]] bool UpdateFromImportedCard(const CreditCard& imported_card,
                                             const std::string& app_locale);
 
-  // Comparison for Sync.  Returns 0 if the card is the same as |this|, or < 0,
+  // Comparison for Sync.  Returns 0 if the card is the same as `this`, or < 0,
   // or > 0 if it is different.  The implied ordering can be used for culling
   // duplicates.  The ordering is based on collation order of the textual
   // contents of the fields.
@@ -304,24 +267,18 @@ class CreditCard : public FormGroup {
   // Returns true if expiration date for `this` card is the same as `other`.
   [[nodiscard]] bool HasSameExpirationDateAs(const CreditCard& other) const;
 
-  // Calculates the ranking score used for ranking the card suggestion. If
-  // `use_frecency` is true we use the new ranking algorithm.
-  double GetRankingScore(base::Time current_time,
-                         bool use_frecency = false) const;
+  // Calculates the ranking score used for ranking the card suggestion.
+  double GetRankingScore(base::Time current_time) const;
 
   // Compares two credit cards and returns if the current card has a greater
   // ranking score than `other`.
   bool HasGreaterRankingThan(const CreditCard& other,
-                             base::Time comparison_time,
-                             bool use_frecency = false) const;
+                             base::Time comparison_time) const;
 
-  // Equality operators compare GUIDs, origins, and the contents.
-  // Usage metadata (use count, use date, modification date) are NOT compared.
+  // Equality operators compare GUIDs, user-confirmation status, and the
+  // contents. Usage metadata (use count, use date, modification date) are NOT
+  // compared.
   bool operator==(const CreditCard& credit_card) const;
-
-  // Returns true if the data in this model was entered directly by the user,
-  // rather than automatically aggregated.
-  bool IsVerified() const;
 
   // How this card is stored.
   RecordType record_type() const { return record_type_; }
@@ -349,14 +306,14 @@ class CreditCard : public FormGroup {
 
   // Returns the card number.
   const std::u16string& number() const { return number_; }
-  // Sets |number_| to |number| and computes the appropriate card issuer
-  // |network_|.
-  void SetNumber(const std::u16string& number);
+  // Sets `number_` to `number` and computes the appropriate card issuer
+  // `network_`.
+  void SetNumber(std::u16string number);
 
   // Logs the number of days since the card was last used and records its use.
   void RecordAndLogUse();
 
-  // Returns whether the card is expired based on |current_time|.
+  // Returns whether the card is expired based on `current_time`.
   bool IsExpired(base::Time current_time) const;
 
   // Returns whether the card is a masked card. Such cards will only have
@@ -375,20 +332,20 @@ class CreditCard : public FormGroup {
     billing_address_id_ = id;
   }
 
-  // Sets |expiration_month_| to the integer conversion of |text| and returns
+  // Sets `expiration_month_` to the integer conversion of `text` and returns
   // whether the operation was successful.
-  bool SetExpirationMonthFromString(const std::u16string& text,
-                                    const std::string& app_locale);
+  bool SetExpirationMonthFromString(std::u16string_view text,
+                                    std::string_view app_locale);
 
-  // Sets |expiration_year_| to the integer conversion of |text|. Will handle
+  // Sets `expiration_year_` to the integer conversion of `text`. Will handle
   // 4-digit year or 2-digit year (eventually converted to 4-digit year).
   // Returns whether the operation was successful.
-  bool SetExpirationYearFromString(const std::u16string& text);
+  bool SetExpirationYearFromString(std::u16string_view text);
 
-  // Sets |expiration_year_| and |expiration_month_| to the integer conversion
-  // of |text|. Will handle mmyy, mmyyyy, mm-yyyy and mm-yy as well as single
+  // Sets `expiration_year_` and `expiration_month_` to the integer conversion
+  // of `text`. Will handle mmyy, mmyyyy, mm-yyyy and mm-yy as well as single
   // digit months, with various separators.
-  void SetExpirationDateFromString(const std::u16string& text);
+  void SetExpirationDateFromString(std::u16string_view text);
 
   // Various display functions.
 
@@ -425,7 +382,7 @@ class CreditCard : public FormGroup {
   // digits of the card.
   std::u16string NetworkAndLastFourDigits(int obfuscation_length = 4) const;
   // A label for this card formatted as 'CardName ****2345', where the name is
-  // that returned by |CardNameForAutofillDisplay|. If the last four digits are
+  // that returned by `CardNameForAutofillDisplay`. If the last four digits are
   // unavailable returns just the card name, and vice-versa.
   std::u16string CardNameAndLastFourDigits(
       std::u16string customized_nickname = std::u16string(),
@@ -449,6 +406,12 @@ class CreditCard : public FormGroup {
   std::u16string CardIdentifierStringAndDescriptiveExpiration(
       const std::string& app_locale,
       std::u16string customized_nickname = std::u16string()) const;
+
+  // A name to identify this card. It is the nickname if available, or the
+  // product description. If neither are available, returns nullopt.
+  std::optional<std::u16string> CardIdentifierForAutofillDisplay(
+      const std::u16string& customized_nickname = std::u16string()) const;
+
   // A label for this card formatted as 'Expires on MM/YY'.
   // This label is used as a second line label when the autofill dropdown
   // uses a two line layout and the credit card number is selected.
@@ -468,7 +431,7 @@ class CreditCard : public FormGroup {
   bool HasNameOnCard() const;
 
   // Returns whether the card has a non-empty nickname that also
-  // passes |IsNicknameValid| checks.
+  // passes `IsNicknameValid` checks.
   bool HasNonEmptyValidNickname() const;
 
   // Should be used ONLY by tests.
@@ -511,6 +474,12 @@ class CreditCard : public FormGroup {
     product_terms_url_ = product_terms_url;
   }
 
+  const std::string& benefit_source() const { return benefit_source_; }
+
+  void set_benefit_source(std::string_view benefit_source) {
+    benefit_source_ = std::string(benefit_source);
+  }
+
   const std::u16string& cvc() const { return cvc_; }
   void clear_cvc() { cvc_.clear(); }
   void set_cvc(const std::u16string& cvc) { cvc_ = cvc; }
@@ -530,8 +499,18 @@ class CreditCard : public FormGroup {
         card_info_retrieval_enrollment_state;
   }
 
+  CardCreationSource card_creation_source() const {
+    return card_creation_source_;
+  }
+  void set_card_creation_source(CardCreationSource card_creation_source) {
+    card_creation_source_ = card_creation_source;
+  }
+
   UsageHistoryInformation& usage_history();
   const UsageHistoryInformation& usage_history() const;
+
+  bool is_bnpl_card() const { return is_bnpl_card_; }
+  void set_is_bnpl_card(bool is_bnpl_card) { is_bnpl_card_ = is_bnpl_card; }
 
  private:
   friend class CreditCardTestApi;
@@ -567,13 +546,7 @@ class CreditCard : public FormGroup {
   // only one of them should be populated based on the `record_type()`.
   std::string guid_;
 
-  // The origin of this data.  This should be
-  //   (a) a web URL for the domain of the form from which the data was
-  //       automatically aggregated, e.g. https://www.example.com/register,
-  //   (b) some other non-empty string, which cannot be interpreted as a web
-  //       URL, identifying the origin for non-aggregated data, or
-  //   (c) an empty string, indicating that the origin for this data is unknown.
-  std::string origin_;
+  bool is_user_confirmed_ = false;
 
   // See enum definition above.
   RecordType record_type_;
@@ -621,10 +594,11 @@ class CreditCard : public FormGroup {
 
   // The issuer id of the card. This is set for server cards only (both actual
   // cards and virtual cards).
+  // TODO(crbug.com/412749171): Change issuer_id_ to use an enum.
   std::string issuer_id_;
 
   // For masked server cards, this is the ID assigned by the server to uniquely
-  // identify this card. |server_id_| is the legacy version of this.
+  // identify this card. `server_id_` is the legacy version of this.
   // TODO(crbug.com/40146355): remove server_id_ after full deprecation
   int64_t instrument_id_;
 
@@ -652,6 +626,10 @@ class CreditCard : public FormGroup {
   // page.
   GURL product_terms_url_;
 
+  // The source of the card benefits. This is set for server cards with
+  // benefits available only (both actual cards and virtual cards).
+  std::string benefit_source_;
+
   // The card verification code of the card. May be empty.
   std::u16string cvc_;
 
@@ -665,7 +643,16 @@ class CreditCard : public FormGroup {
   CardInfoRetrievalEnrollmentState card_info_retrieval_enrollment_state_ =
       CardInfoRetrievalEnrollmentState::kRetrievalUnspecified;
 
+  // The source of the card creation, indicating whether the card was added
+  // through a Chrome-related service, or through an external service (which
+  // includes Android Autofill).
+  CardCreationSource card_creation_source_ =
+      CardCreationSource::kCreationSourceUnspecified;
+
   UsageHistoryInformation usage_history_information_;
+
+  // True if this card was created during the BNPL flow, false otherwise.
+  bool is_bnpl_card_ = false;
 };
 
 // So we can compare CreditCards with EXPECT_EQ().

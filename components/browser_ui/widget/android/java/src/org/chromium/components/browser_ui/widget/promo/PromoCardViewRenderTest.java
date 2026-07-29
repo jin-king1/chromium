@@ -34,8 +34,8 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
+import org.chromium.components.browser_ui.widget.R;
 import org.chromium.components.browser_ui.widget.promo.PromoCardCoordinator.LayoutStyle;
-import org.chromium.components.browser_ui.widget.test.R;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.NightModeTestUtils;
@@ -49,7 +49,7 @@ import java.util.List;
 @Batch(Batch.UNIT_TESTS)
 public class PromoCardViewRenderTest {
     @ClassParameter
-    private static List<ParameterSet> sClassParams =
+    private static final List<ParameterSet> sClassParams =
             new NightModeTestUtils.NightModeParams().getParameters();
 
     @ClassRule

@@ -7,10 +7,10 @@
 #include <memory>
 #include <string_view>
 
-#include "base/i18n/time_formatting.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/time/clock.h"
 #include "base/time/time.h"
 #include "chromeos/ash/components/policy/weekly_time/time_utils.h"
@@ -148,26 +148,71 @@ bool IsFirstActiveUnderNDaysAgo(base::Time active_ts,
 }
 
 std::string FormatTimestampToMidnightGMTString(base::Time ts) {
-  return base::UnlocalizedTimeFormatWithPattern(ts, "yyyy-MM-dd 00:00:00.000 z",
-                                                icu::TimeZone::getGMT());
+  base::Time::Exploded exploded;
+  ts.UTCExplode(&exploded);
+  return base::StringPrintf("%04d-%02d-%02d 00:00:00.000 GMT", exploded.year,
+                            exploded.month, exploded.day_of_month);
 }
 
 std::string TimeToYYYYMMDDString(base::Time ts) {
-  return base::UnlocalizedTimeFormatWithPattern(ts, "yyyyMMdd",
-                                                icu::TimeZone::getGMT());
+  base::Time::Exploded exploded;
+  ts.UTCExplode(&exploded);
+  return base::StringPrintf("%04d%02d%02d", exploded.year, exploded.month,
+                            exploded.day_of_month);
 }
 
 std::string TimeToYYYYMMString(base::Time ts) {
-  return base::UnlocalizedTimeFormatWithPattern(ts, "yyyyMM",
-                                                icu::TimeZone::getGMT());
+  base::Time::Exploded exploded;
+  ts.UTCExplode(&exploded);
+  return base::StringPrintf("%04d%02d", exploded.year, exploded.month);
+}
+
+// The ActivateDate is formatted: YYYY-WW and is generated based on UTC date
+// using `date +%Y-%W`.
+// For week 00, returns Jan 1st of that year.
+// For weeks 01-53, returns the Monday of that week.
+std::optional<base::Time> VpdActivateDateWeekAsTime(int year,
+                                                    int week_of_year) {
+  if (year < 0 || week_of_year < 0 || week_of_year > 53) {
+    LOG(ERROR) << "Invalid year or week of year"
+               << ". Variable year = " << year
+               << ". Variable week_of_year = " << week_of_year;
+    return std::nullopt;
+  }
+
+  // Get the first day of the year.
+  base::Time::Exploded jan1_exploded = {year, 1, 0, 1, 0, 0, 0, 0};
+  base::Time jan1;
+  if (!base::Time::FromUTCExploded(jan1_exploded, &jan1)) {
+    LOG(ERROR) << "Failed to explode first day of year = " << year;
+    return std::nullopt;
+  }
+
+  // Per `date +%W`, week 00 contains the days from Jan 1st until the first
+  // Monday of the year. We will represent this week by its first day.
+  if (week_of_year == 0) {
+    return jan1;
+  }
+
+  // Get day of week for Jan 1st. (Sunday=0, Monday=1, ..)
+  jan1.UTCExplode(&jan1_exploded);
+  int jan1_day_of_week = jan1_exploded.day_of_week;
+
+  // Get the first Monday of the year. Week 01 starts on this day.
+  int days_to_first_monday = (1 - jan1_day_of_week + 7) % 7;
+  base::Time first_monday_of_year = jan1 + base::Days(days_to_first_monday);
+
+  // Week `week_of_year` starts `(week_of_year - 1)` weeks after the first
+  // Monday.
+  return first_monday_of_year + base::Days((week_of_year - 1) * 7);
 }
 
 std::optional<base::Time> GetFirstActiveWeek() {
   std::optional<std::string_view> first_active_week_val =
       system::StatisticsProvider::GetInstance()->GetMachineStatistic(
           system::kActivateDateKey);
-  std::string first_active_week_str =
-      std::string(first_active_week_val.value_or(kActivateDateKeyNotFound));
+  std::string_view first_active_week_str =
+      first_active_week_val.value_or(kActivateDateKeyNotFound);
 
   if (first_active_week_str == kActivateDateKeyNotFound) {
     LOG(ERROR)
@@ -193,8 +238,9 @@ std::optional<base::Time> GetFirstActiveWeek() {
   const int expected_year_size = 4;
   const int expected_weeks_size = 2;
 
-  std::string parsed_year = first_active_week_str.substr(0, expected_year_size);
-  std::string parsed_weeks = first_active_week_str.substr(
+  std::string_view parsed_year =
+      first_active_week_str.substr(0, expected_year_size);
+  std::string_view parsed_weeks = first_active_week_str.substr(
       expected_delimiter_index + 1, expected_weeks_size);
 
   if (parsed_year.empty() || parsed_weeks.empty()) {
@@ -216,16 +262,16 @@ std::optional<base::Time> GetFirstActiveWeek() {
     return std::nullopt;
   }
 
-  auto iso8601_ts =
-      utils::Iso8601DateWeekAsTime(activate_year, activate_week_of_year);
-  if (!iso8601_ts.has_value()) {
-    LOG(ERROR) << "Failed to ISO8601 year and week of year as a timestamp.";
+  auto first_active_ts =
+      VpdActivateDateWeekAsTime(activate_year, activate_week_of_year);
+  if (!first_active_ts.has_value()) {
+    LOG(ERROR) << "Failed to convert year and week of year as a timestamp.";
     RecordIsActivateDateSet(false);
     return std::nullopt;
   }
 
   RecordIsActivateDateSet(true);
-  return iso8601_ts.value();
+  return first_active_ts.value();
 }
 
 std::optional<base::Time> FirstMondayOfISONewYear(int iso_year) {
@@ -264,36 +310,6 @@ std::optional<base::Time> FirstMondayOfISONewYear(int iso_year) {
       base::Days(kThursdayDayOfWeekIndex - kMondayDayOfWeekIndex);
 
   return first_monday_ts;
-}
-
-// The ActivateDate is formatted: YYYY-WW and is generated based on UTC date.
-// Returns the first day of the ISO8601 week.
-std::optional<base::Time> Iso8601DateWeekAsTime(int activate_year,
-                                                int activate_week_of_year) {
-  if (activate_year < 0 || activate_week_of_year <= 0 ||
-      activate_week_of_year > 53) {
-    LOG(ERROR) << "Invalid year or week of year"
-               << ". Variable activate_year = " << activate_year
-               << ". Variable activate_week_of_year = "
-               << activate_week_of_year;
-    return std::nullopt;
-  }
-
-  std::optional<base::Time> first_monday_iso_year =
-      FirstMondayOfISONewYear(activate_year);
-
-  if (!first_monday_iso_year.has_value()) {
-    return std::nullopt;
-  }
-
-  // Get the number of days to the start of a ISO 8601 week standard period
-  // for that year from the years first monday. This is equal to
-  // (activate_week_of_year-1) * 7 days.
-  int days_in_iso_period = 0;
-  days_in_iso_period = (activate_week_of_year - 1) * 7;
-
-  // Add the above two steps to get the start of a ISO 8601 week time.
-  return first_monday_iso_year.value() + base::Days(days_in_iso_period);
 }
 
 std::string ConvertTimeToISO8601String(base::Time ts) {

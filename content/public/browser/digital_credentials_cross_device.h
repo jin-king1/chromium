@@ -5,6 +5,8 @@
 #ifndef CONTENT_PUBLIC_BROWSER_DIGITAL_CREDENTIALS_CROSS_DEVICE_H_
 #define CONTENT_PUBLIC_BROWSER_DIGITAL_CREDENTIALS_CROSS_DEVICE_H_
 
+#include <array>
+#include <variant>
 #include <vector>
 
 #include "base/types/expected.h"
@@ -68,11 +70,11 @@ enum class SystemEvent {
   kReady,
 };
 
-using Error = absl::variant<SystemError, ProtocolError, RemoteError>;
+using Error = std::variant<SystemError, ProtocolError, RemoteError>;
 
 // Events either come from the underlying hybrid connection, or are
 // SystemEvents.
-using Event = absl::variant<device::cablev2::Event, SystemEvent>;
+using Event = std::variant<device::cablev2::Event, SystemEvent>;
 
 // A Response is the response to a cross-device request. At this level of
 // abstraction it's an opaque DigitalCredential taken from the JSON reply.

@@ -7,8 +7,16 @@
 #include "base/numerics/checked_math.h"
 #include "gpu/command_buffer/client/webgpu_interface.h"
 #include "third_party/blink/renderer/modules/webgpu/gpu_device.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 
 namespace blink {
+
+bool IsWebGPUMultithreadedWorker(ExecutionContext* execution_context) {
+  return RuntimeEnabledFeatures::WebGPUMultithreadDawnWireOnWorkersEnabled(
+             execution_context) &&
+         execution_context->IsWorkerGlobalScope();
+}
 
 // DawnObjectBase
 
@@ -24,7 +32,7 @@ DawnObjectBase::GetDawnControlClient() const {
 
 void DawnObjectBase::setLabel(const String& value) {
   label_ = value;
-  setLabelImpl(value);
+  SetLabelImpl(StringUtf8Adaptor(value).AsStringView());
 }
 
 void DawnObjectBase::EnsureFlush(scheduler::EventLoop& event_loop) {
@@ -33,6 +41,10 @@ void DawnObjectBase::EnsureFlush(scheduler::EventLoop& event_loop) {
 
 void DawnObjectBase::FlushNow() {
   dawn_control_client_->Flush();
+}
+
+wgpu::Instance DawnObjectBase::GetInstance() const {
+  return GetDawnControlClient()->GetWGPUInstance();
 }
 
 // DawnObjectImpl

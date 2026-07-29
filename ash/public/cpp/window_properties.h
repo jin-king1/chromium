@@ -6,16 +6,19 @@
 #define ASH_PUBLIC_CPP_WINDOW_PROPERTIES_H_
 
 #include <stdint.h>
+
 #include <string>
 
 #include "ash/public/cpp/arc_game_controls_flag.h"
 #include "ash/public/cpp/arc_resize_lock_type.h"
 #include "ash/public/cpp/ash_public_export.h"
+#include "base/memory/weak_ptr.h"
 #include "ui/base/class_property.h"
 
 class SkRegion;
 
 namespace aura {
+class Window;
 template <typename T>
 using WindowProperty = ui::ClassProperty<T>;
 }  // namespace aura
@@ -96,6 +99,11 @@ ASH_PUBLIC_EXPORT extern const aura::WindowProperty<bool>* const
 ASH_PUBLIC_EXPORT extern const aura::WindowProperty<bool>* const
     kIsDraggingTabsKey;
 
+// A property key to store the address of the source window that the drag
+// originated from if the window is currently in tab-dragging process.
+ASH_PUBLIC_EXPORT extern const aura::WindowProperty<
+    base::WeakPtr<aura::Window>*>* const kTabDraggingSourceWindowKey;
+
 // If true, the window will be ignored when mirroring the desk contents into
 // the desk's mini_view.
 ASH_PUBLIC_EXPORT extern const aura::WindowProperty<bool>* const
@@ -106,11 +114,6 @@ ASH_PUBLIC_EXPORT extern const aura::WindowProperty<bool>* const
 // source.
 ASH_PUBLIC_EXPORT extern const aura::WindowProperty<bool>* const
     kForceVisibleInMiniViewKey;
-
-// Set on lacros browser windows and identifies the lacros profile used to
-// launch the browser. See desk_profiles_delegate.h for more information.
-ASH_PUBLIC_EXPORT extern const aura::WindowProperty<uint64_t>* const
-    kLacrosProfileId;
 
 // A property key to store whether we should minimize a window when a system
 // synthesized back event (back gesture, back button) is processed by this

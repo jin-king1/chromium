@@ -61,28 +61,47 @@ const char* valid_attr_values[] = {
     "attr(p type(<number>+))",
     "attr(p type(<color>#), red)",
     "attr(p px)",
-    "attr(p string)",
+    "attr(p raw-string)",
+    "attr(p number)",
     "attr(p type(<color>))",
     "attr(p type(<color> ))",
     "attr(p type( <color>))",
     "attr(p type(  <color> ))",
     "attr(p type(<color>) )",
-    // clang-format on
-};
-
-const char* invalid_attr_values[] = {
-    // clang-format off
+    "attr(var(--x), attr(data-foo))",
+    "attr(attr(data-foo))",
+    "attr(attr(data-foo),)",
     "attr(p type(< length>))",
     "attr(p type(<angle> !))",
     "attr(p type(<number >))",
     "attr(p type(<number> +))",
     "attr(p type(<transform-list>+))",
     "attr(p type(!))",
-    "attr(p !)",
     "attr(p <px>)",
     "attr(p <string>)",
     "attr(p type(<color>) red)",
+    "attr(p type(<color>), red, red)",
     "attr(p type(<url>))",
+    "attr(p string)",
+    "attr(p, p, p)",
+    "attr(a/**/)",
+    "attr(a/**/, )",
+    "attr(a/**/, a)",
+    "attr(a/* foo */, a)",
+    // clang-format on
+};
+
+const char* invalid_attr_values[] = {
+    // clang-format off
+    "attr(!)",
+    "attr(p !)",
+    "attr(, p)",
+    "attr(p;, p)",
+    "attr()",
+    "attr(/**/)",
+    "attr(/* foo */)",
+    "attr(/**/, a)",
+    "attr(/* foo */, a)",
     // clang-format on
 };
 
@@ -151,6 +170,8 @@ const char* valid_if_values[] = {
     "if(supports(not (transform-origin: 10em 10em 10em)): true_val; else: false_val;)",
     "if(supports((display: table-cell) and (display: list-item)): true_val; else: false_val;)",
     "if(media(screen) and (supports(display: table-cell) or style(--x)): true_val; else: false_val;)",
+    "if(media(min-width : 500px): true_val; else: false_val;)",
+    "if(media((min-color: 1) and (height <= 999999px)): true_value)",
     // clang-format on
 };
 
@@ -167,7 +188,6 @@ const char* invalid_if_values[] = {
     "if(invalid and supports(invalid): true_val')",
     "if(style(--prop: abc) abc; else: cba)",
     "if(style(--prop: abc): abc; else cba)",
-    "if(media(min-width : 500px): true_val; else: false_val;)",
     "if(style(--prop1: abc): abc; style(--prop2: def) cba)",
     "if(style(--prop: abc): if(style(--prop1: def): x); else: if(style(--prop2: ghi) y))",
     // clang-format on
@@ -269,7 +289,6 @@ INSTANTIATE_TEST_SUITE_P(All,
                          testing::ValuesIn(valid_attr_values));
 
 TEST_P(ValidAttrTest, ContainsValidAttr) {
-  ScopedCSSAdvancedAttrFunctionForTest scoped_feature(true);
   SCOPED_TRACE(GetParam());
   CSSParserTokenStream stream{GetParam()};
   auto* context = MakeGarbageCollected<CSSParserContext>(
@@ -289,9 +308,7 @@ INSTANTIATE_TEST_SUITE_P(All,
                          InvalidAttrTest,
                          testing::ValuesIn(invalid_attr_values));
 
-TEST_P(InvalidAttrTest, ContainsValidAttr) {
-  ScopedCSSAdvancedAttrFunctionForTest scoped_feature(true);
-
+TEST_P(InvalidAttrTest, ContainsInvalidAttr) {
   SCOPED_TRACE(GetParam());
   CSSParserTokenStream stream{GetParam()};
   auto* context = MakeGarbageCollected<CSSParserContext>(
@@ -336,7 +353,6 @@ INSTANTIATE_TEST_SUITE_P(
     testing::ValuesIn(invalid_auto_base_values));
 
 TEST_P(InvalidAutoBaseTest, ContainsInvalidFunction) {
-  ScopedCSSAdvancedAttrFunctionForTest scoped_feature(true);
 
   SCOPED_TRACE(GetParam());
   CSSParserTokenStream stream{GetParam()};
@@ -356,10 +372,6 @@ class ValidIfTest : public testing::Test,
 INSTANTIATE_TEST_SUITE_P(All, ValidIfTest, testing::ValuesIn(valid_if_values));
 
 TEST_P(ValidIfTest, ContainsValidIf) {
-  ScopedCSSInlineIfForStyleQueriesForTest scoped_style_feature(true);
-  ScopedCSSInlineIfForMediaQueriesForTest scoped_media_feature(true);
-  ScopedCSSInlineIfForSupportsQueriesForTest scoped_supports_feature(true);
-
   SCOPED_TRACE(GetParam());
   CSSParserTokenStream stream{GetParam()};
   auto* context = MakeGarbageCollected<CSSParserContext>(
@@ -380,10 +392,6 @@ INSTANTIATE_TEST_SUITE_P(All,
                          testing::ValuesIn(invalid_if_values));
 
 TEST_P(InvalidIfTest, ContainsInvalidIf) {
-  ScopedCSSInlineIfForStyleQueriesForTest scoped_style_feature(true);
-  ScopedCSSInlineIfForMediaQueriesForTest scoped_media_feature(true);
-  ScopedCSSInlineIfForSupportsQueriesForTest scoped_supports_feature(true);
-
   SCOPED_TRACE(GetParam());
   CSSParserTokenStream stream{GetParam()};
   auto* context = MakeGarbageCollected<CSSParserContext>(
@@ -488,7 +496,7 @@ TEST_P(CollectDashedFunctionsTest, CollectionTest) {
 
   Vector<AtomicString> actual_result_vector(actual_result);
   std::sort(actual_result_vector.begin(), actual_result_vector.end(),
-            WTF::CodeUnitCompareLessThan);
+            CodeUnitCompareLessThan);
 
   StringBuilder actual_joined;
   for (const AtomicString& a : actual_result_vector) {

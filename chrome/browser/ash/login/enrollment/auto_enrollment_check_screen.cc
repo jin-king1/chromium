@@ -6,9 +6,11 @@
 
 #include <optional>
 
+#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_login_pref_names.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/overloaded.h"
 #include "base/location.h"
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
@@ -23,7 +25,6 @@
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace ash {
 
@@ -38,11 +39,13 @@ std::string AutoEnrollmentCheckScreen::GetResultString(Result result) {
 }
 
 AutoEnrollmentCheckScreen::AutoEnrollmentCheckScreen(
+    PrefService* local_state,
     base::WeakPtr<AutoEnrollmentCheckScreenView> view,
     ErrorScreen* error_screen,
     const base::RepeatingCallback<void(Result result)>& exit_callback)
     : BaseScreen(AutoEnrollmentCheckScreenView::kScreenId,
                  OobeScreenPriority::DEFAULT),
+      local_state_(CHECK_DEREF(local_state)),
       view_(std::move(view)),
       error_screen_(error_screen),
       exit_callback_(exit_callback),
@@ -102,15 +105,12 @@ void AutoEnrollmentCheckScreen::ShowImpl() {
   const bool has_controller_failed =
       auto_enrollment_controller_->state().has_value() &&
       !auto_enrollment_controller_->state().value().has_value();
-  if (has_controller_failed) {
-    // TODO(crbug.com/40805389): Logging as "WARNING" to make sure it's
-    // preserved in the logs.
-    LOG(WARNING) << "AutoEnrollmentCheckScreen::ShowImpl() retrying enrollment"
-                 << " check due to failure.";
-    auto_enrollment_controller_->Retry();
-  } else {
-    auto_enrollment_controller_->Start();
-  }
+  // TODO(crbug.com/40805389): Logging as "WARNING" to make sure it's
+  // preserved in the logs.
+  LOG_IF(WARNING, has_controller_failed)
+      << "AutoEnrollmentCheckScreen::ShowImpl() retrying enrollment"
+      << " check due to failure.";
+  auto_enrollment_controller_->Start();
 }
 
 void AutoEnrollmentCheckScreen::HideImpl() {
@@ -175,7 +175,7 @@ void AutoEnrollmentCheckScreen::UpdateState(
   // Retry if applicable. This is last so eventual callbacks find consistent
   // state.
   if (retry) {
-    auto_enrollment_controller_->Retry();
+    auto_enrollment_controller_->Start();
   }
 }
 
@@ -202,11 +202,6 @@ bool AutoEnrollmentCheckScreen::ShowCaptivePortalState(
 bool AutoEnrollmentCheckScreen::ShowAutoEnrollmentState(
     policy::AutoEnrollmentState new_auto_enrollment_state) {
   if (new_auto_enrollment_state.has_value()) {
-    return false;
-  }
-
-  // Do not  show connection error screen if the error is not blocking.
-  if (!IsBlockingError(new_auto_enrollment_state.error())) {
     return false;
   }
 
@@ -258,55 +253,23 @@ void AutoEnrollmentCheckScreen::SignalCompletion() {
 }
 
 bool AutoEnrollmentCheckScreen::IsCompleted() const {
-  if (!auto_enrollment_controller_->state().has_value()) {
-    return false;
-  }
+  //  `state` is an optional<expected>>.
+  //  The auto enrollment check is complete once there's non-error value.
+  const std::optional<policy::AutoEnrollmentState>& state =
+      auto_enrollment_controller_->state();
 
-  const policy::AutoEnrollmentState state =
-      auto_enrollment_controller_->state().value();
-  if (state.has_value()) {
-    // Decision made, ready to proceed.
-    return true;
-  }
-
-  // Error is considered compliting if it is not blocking.
-  return !IsBlockingError(state.error());
+  return state.has_value() and state.value().has_value();
 }
 
 void AutoEnrollmentCheckScreen::OnConnectRequested() {
-  auto_enrollment_controller_->Retry();
+  auto_enrollment_controller_->Start();
 }
 
-bool AutoEnrollmentCheckScreen::IsBlockingError(
-    const policy::AutoEnrollmentError& error) const {
-  // Connection errors are always blocking. Server errors are blocking for FRE
-  // devices.
-  return absl::visit(
-      base::Overloaded{
-          [](policy::AutoEnrollmentSafeguardTimeoutError) { return true; },
-          [](policy::AutoEnrollmentSystemClockSyncError) { return true; },
-          [](policy::AutoEnrollmentStateKeysRetrievalError) { return true; },
-          [this](const policy::AutoEnrollmentDMServerError& error) {
-            return error.network_error.has_value() ? true
-                                                   : ShouldBlockOnServerError();
-          },
-          [this](policy::AutoEnrollmentStateAvailabilityResponseError error) {
-            return ShouldBlockOnServerError();
-          },
-          [this](policy::AutoEnrollmentPsmError) {
-            return ShouldBlockOnServerError();
-          },
-          [this](policy::AutoEnrollmentStateRetrievalResponseError) {
-            return ShouldBlockOnServerError();
-          },
-      },
-      error);
-}
-
-bool AutoEnrollmentCheckScreen::ShouldBlockOnServerError() const {
-  // TODO(rbug.com/383047722) Replace calls to this function with `true` and
-  // clean up accordingly.
-  return true;
+void AutoEnrollmentCheckScreen::RunExitCallback(Result result) {
+  if (ash::features::IsOobeAutoEnrollmentCheckForcedEnabled()) {
+    local_state_->SetBoolean(ash::prefs::kAutoEnrollmentCheckExited, true);
+  }
+  exit_callback_.Run(result);
 }
 
 }  // namespace ash

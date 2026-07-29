@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
@@ -26,7 +27,8 @@ class WebAppNavigationCapturingAuxContentFocusBrowserTest
       public testing::WithParamInterface<ManifestLaunchHandler_ClientMode> {
  protected:
   GURL GetAppUrl() {
-    return https_server()->GetURL("/web_apps/aux_content_no_focus/index.html");
+    return embedded_https_test_server().GetURL(
+        "/web_apps/aux_content_no_focus/index.html");
   }
 };
 
@@ -66,12 +68,13 @@ IN_PROC_BROWSER_TEST_P(WebAppNavigationCapturingAuxContentFocusBrowserTest,
   EXPECT_EQ(Browser::Type::TYPE_APP, app_browser->type());
 
   WaitForLaunchParams(app_contents, /* min_launch_params_to_wait_for= */ 1);
-  std::vector<GURL> launch_params =
-      GetLaunchParams(app_contents, "launchParamsTargetUrls");
+  std::vector<GURL> launch_params = apps::test::GetLaunchParamUrlsInContents(
+      app_contents, "launchParamsTargetUrls");
   EXPECT_THAT(launch_params, testing::ElementsAre(GetAppUrl()));
 
   std::vector<GURL> aux_launch_params =
-      GetLaunchParams(aux_contents, "launchParamsTargetUrls");
+      apps::test::GetLaunchParamUrlsInContents(aux_contents,
+                                               "launchParamsTargetUrls");
   EXPECT_EQ(0u, aux_launch_params.size());
 }
 

@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/capture/video/mac/uvc_control_mac.h"
 
@@ -14,6 +10,7 @@
 #include "base/apple/bridging.h"
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
+#include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/feature_list.h"
 #include "base/mac/mac_util.h"
@@ -26,9 +23,7 @@ namespace media {
 namespace {
 const unsigned int kRequestTimeoutInMilliseconds = 1000;
 
-BASE_FEATURE(kExposeAllUvcControls,
-             "ExposeAllUvcControls",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kExposeAllUvcControls, base::FEATURE_DISABLED_BY_DEFAULT);
 
 struct PanTilt {
   int32_t pan;
@@ -187,7 +182,7 @@ static bool FindDeviceWithVendorAndProductIds(int vendor_id,
                        base::apple::NSToCFPtrCast(@(product_id)));
 
   kern_return_t kr = IOServiceGetMatchingServices(
-      kIOMasterPortDefault, query_dictionary.release(), usb_iterator);
+      kIOMainPortDefault, query_dictionary.release(), usb_iterator);
   if (kr != kIOReturnSuccess) {
     VLOG(1) << "No devices found with specified Vendor and Product ID.";
     return false;
@@ -276,7 +271,7 @@ std::vector<uint8_t> ExtractControls(IOUSBDescriptorHeader* usb_descriptor) {
     const uint8_t* bytes =
         reinterpret_cast<const uint8_t*>(&descriptor->bmControls[0]);
     const size_t length = descriptor->bControlSize;
-    return std::vector<uint8_t>(bytes, bytes + length);
+    return std::vector<uint8_t>(bytes, UNSAFE_TODO(bytes + length));
   }
   return std::vector<uint8_t>();
 }
@@ -372,12 +367,6 @@ static ScopedIOUSBInterfaceInterface OpenVideoClassSpecificControlInterface(
       (*control_interface.get())->USBInterfaceOpen(control_interface.get());
   if (ret != kIOReturnSuccess) {
     VLOG(1) << "Unable to open control interface";
-
-    // Temporary additional debug logging for crbug.com/1270335
-    VLOG_IF(1, base::mac::MacOSMajorVersion() >= 12 &&
-                   ret == kIOReturnExclusiveAccess)
-        << "Camera USBInterfaceOpen failed with "
-        << "kIOReturnExclusiveAccess";
     return ScopedIOUSBInterfaceInterface();
   }
   return control_interface;

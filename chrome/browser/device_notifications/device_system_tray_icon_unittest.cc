@@ -6,18 +6,18 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/device_notifications/device_system_tray_icon.h"
-#include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -29,6 +29,7 @@
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
@@ -57,12 +58,23 @@ const std::string& GetExpectedOriginName(Profile* profile,
 
 }  // namespace
 
+DeviceSystemTrayIconTestBase::DeviceSystemTrayIconTestBase() = default;
+DeviceSystemTrayIconTestBase::~DeviceSystemTrayIconTestBase() = default;
+
+void DeviceSystemTrayIconTestBase::SetUp() {
+  profile_manager_ = std::make_unique<TestingProfileManager>(
+      TestingBrowserProcess::GetGlobal());
+  ASSERT_TRUE(profile_manager_->SetUp());
+  profile_ = profile_manager_->CreateTestingProfile("default_profile");
+}
+
 void DeviceSystemTrayIconTestBase::TearDown() {
   // In a test environment, g_browser_process is set to null before
   // TestingBrowserProcess is destroyed. This ensures that the tray icon is
   // destroyed before g_browser_process becomes null.
   ResetTestingBrowserProcessSystemTrayIcon();
-  BrowserWithTestWindowTest::TearDown();
+  profile_ = nullptr;
+  profile_manager_.reset();
 }
 
 Profile* DeviceSystemTrayIconTestBase::CreateTestingProfile(
@@ -88,13 +100,13 @@ Profile* DeviceSystemTrayIconTestBase::CreateTestingProfile(
 scoped_refptr<const extensions::Extension>
 DeviceSystemTrayIconTestBase::CreateExtensionWithName(
     const std::string& extension_name) {
-  auto manifest = base::Value::Dict()
+  auto manifest = base::DictValue()
                       .Set("name", extension_name)
                       .Set("description", "For testing.")
                       .Set("version", "0.1")
                       .Set("manifest_version", 2)
                       .Set("web_accessible_resources",
-                           base::Value::List().Append("index.html"));
+                           base::ListValue().Append("index.html"));
   scoped_refptr<const extensions::Extension> extension =
       extensions::ExtensionBuilder(/*name=*/extension_name)
           .MergeManifest(std::move(manifest))
@@ -112,23 +124,17 @@ void DeviceSystemTrayIconTestBase::AddExtensionToProfile(
   extensions::ExtensionService* extension_service =
       extension_system->extension_service();
   if (!extension_service) {
-    extension_service = extension_system->CreateExtensionService(
+    extension_system->CreateExtensionService(
         base::CommandLine::ForCurrentProcess(), base::FilePath(),
         /*autoupdate_enabled=*/false);
   }
-  extension_service->AddExtension(extension);
+  extensions::ExtensionRegistrar::Get(profile)->AddExtension(extension);
 }
 
 void DeviceSystemTrayIconTestBase::UnloadExtensionFromProfile(
     Profile* profile,
     const extensions::Extension* extension) {
-  extensions::TestExtensionSystem* extension_system =
-      static_cast<extensions::TestExtensionSystem*>(
-          extensions::ExtensionSystem::Get(profile));
-  extensions::ExtensionService* extension_service =
-      extension_system->extension_service();
-  CHECK(extension_service);
-  extension_service->UnloadExtension(
+  extensions::ExtensionRegistrar::Get(profile)->RemoveExtension(
       extension->id(), extensions::UnloadedExtensionReason::UNINSTALL);
 }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)

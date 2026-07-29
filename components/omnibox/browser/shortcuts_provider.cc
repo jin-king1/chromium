@@ -19,7 +19,6 @@
 #include "base/i18n/case_conversion.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -52,7 +51,7 @@
 
 #if !BUILDFLAG(IS_IOS)
 #include "components/history_clusters/core/config.h"  // nogncheck
-#endif  // !BUILDFLAG(IS_IOS)
+#endif                                                // !BUILDFLAG(IS_IOS)
 
 constexpr bool kIsDesktop = !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS);
 
@@ -296,21 +295,7 @@ void ShortcutsProvider::DoAutocomplete(const AutocompleteInput& input,
     shortcuts_by_url[stripped_destination_url].push_back(&shortcut);
   }
 
-  if (!input.omit_asynchronous_matches()) {
-    // Inputs like 'http' or 'chrome' might have a more than 100 shortcuts,
-    // which precludes `UMA_HISTOGRAM_EXACT_LINEAR`.
-    UMA_HISTOGRAM_COUNTS_1000(
-        "Omnibox.Shortcuts.NumberOfUniqueShortcutsIterated",
-        shortcuts_by_url.size());
-  }
-
   for (const auto& [url, shortcuts] : shortcuts_by_url) {
-    if (!input.omit_asynchronous_matches()) {
-      UMA_HISTOGRAM_EXACT_LINEAR(
-          "Omnibox.Shortcuts.NumberOfDuplicatesPerShortcutIterated",
-          shortcuts.size(), 11);
-    }
-
     ShortcutMatch shortcut_match = CreateScoredShortcutMatch(
         lower_input.length(), url, shortcuts, max_relevance);
 
@@ -341,7 +326,7 @@ void ShortcutsProvider::DoAutocomplete(const AutocompleteInput& input,
     // Promote the shortcut with most hits to compete for the default slot.
     // Won't necessarily be the highest scoring shortcut, as scoring also
     // depends on visit times and input length. Therefore, has to be done before
-    // the partial sort before to ensure the match isn't erased. The match may
+    // the partial sort below to ensure the match isn't erased. The match may
     // be not-allowed-to-be-default, in which case, it'll be competing for top
     // slot in the URL grouped suggestions. This won't affect the scores of
     // other shortcuts, as they're already scored less than
@@ -369,6 +354,10 @@ void ShortcutsProvider::DoAutocomplete(const AutocompleteInput& input,
                    ? elem1.contents < elem2.contents
                    : elem1.relevance > elem2.relevance;
       });
+  // TODO(manukh): Some inputs have 1000+ shortcuts. Even if
+  //   `IsMlUrlScoringUnlimitedNumCandidatesEnabled()` is enabled, we should use
+  //   some limit, greater than `provider_max_matches_`, but less than 1000.
+  //   Likewise for other providers.
   bool ignore_provider_limit =
       OmniboxFieldTrial::IsMlUrlScoringUnlimitedNumCandidatesEnabled();
   if (!ignore_provider_limit &&
@@ -523,33 +512,35 @@ AutocompleteMatch ShortcutsProvider::ShortcutMatchToACMatch(
       base::StartsWith(base::UTF16ToUTF8(input.text()),
                        base::StrCat({base::UTF16ToUTF8(match.keyword), " "}),
                        base::CompareCase::INSENSITIVE_ASCII);
+  const TemplateURL* default_search_provider =
+      client_->GetTemplateURLService()->GetDefaultSearchProvider();
   if (is_search_type) {
-    const TemplateURL* template_url =
-        client_->GetTemplateURLService()->GetDefaultSearchProvider();
     match.from_keyword =
         // Either the default search provider is disabled,
-        !template_url ||
+        !default_search_provider ||
         // or the match is not from the default search provider,
-        match.keyword != template_url->keyword() ||
+        match.keyword != default_search_provider->keyword() ||
         // or keyword mode was invoked explicitly and the keyword in the input
         // is also of the default search provider.
-        (input.prefer_keyword() && keyword_matches);
+        (input.in_keyword_mode() && keyword_matches);
     match.search_terms_args =
         std::make_unique<TemplateURLRef::SearchTermsArgs>(match.contents);
+    match.search_terms_args->page_classification =
+        input.current_page_classification();
   }
 
   const bool match_has_explicit_keyword =
-      !match
-           .GetSubstitutingExplicitlyInvokedKeyword(
-               client_->GetTemplateURLService())
-           .empty();
+      match.IsExplicitlyInvokedKeyword(client_->GetTemplateURLService());
+  bool match_from_dsp = default_search_provider &&
+                        match.keyword == default_search_provider->keyword();
 
   // If the input is in keyword mode, don't inline a match without or with a
   // different keyword. Otherwise, if the input is not in keyword mode, don't
-  // inline a match with a keyword.
-  if (input.prefer_keyword()
+  // inline a match with a keyword that is not from the default search provider.
+  if (input.in_keyword_mode()
           ? is_search_type && keyword_matches && match_has_explicit_keyword
-          : !match_has_explicit_keyword) {
+          : !match_has_explicit_keyword &&
+                (match.keyword.empty() || match_from_dsp)) {
     if (is_search_type) {
       if (match.fill_into_edit.size() >= input.text().size() &&
           std::equal(match.fill_into_edit.begin(),
@@ -574,11 +565,11 @@ AutocompleteMatch ShortcutsProvider::ShortcutMatchToACMatch(
       bool autocompleted =
           match.type == AutocompleteMatch::Type::DOCUMENT_SUGGESTION
               ? match.TryRichAutocompletion(
-                    u"", ShortcutsBackend::GetSwappedContents(match), input,
+                    input, u"", ShortcutsBackend::GetSwappedContents(match),
                     shortcut.text)
               : match.TryRichAutocompletion(
-                    ShortcutsBackend::GetSwappedContents(match),
-                    ShortcutsBackend::GetSwappedDescription(match), input,
+                    input, ShortcutsBackend::GetSwappedContents(match),
+                    ShortcutsBackend::GetSwappedDescription(match),
                     shortcut.text);
       if (!autocompleted) {
         const size_t inline_autocomplete_offset =

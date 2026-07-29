@@ -5,28 +5,19 @@
 #include "components/user_education/common/feature_promo/feature_promo_precondition.h"
 
 #include "base/check.h"
-#include "base/functional/callback_forward.h"
 #include "components/user_education/common/feature_promo/feature_promo_result.h"
+#include "components/user_education/common/feature_promo/impl/typed_data_collection.h"
 
 namespace user_education {
 
-FeaturePromoPrecondition::ComputedData::ComputedData() = default;
-FeaturePromoPrecondition::ComputedData::ComputedData(ComputedData&&) noexcept =
-    default;
-FeaturePromoPrecondition::ComputedData&
-FeaturePromoPrecondition::ComputedData::operator=(ComputedData&&) noexcept =
-    default;
-FeaturePromoPrecondition::ComputedData::~ComputedData() = default;
-
 FeaturePromoPreconditionBase::FeaturePromoPreconditionBase(
-    Identifier identifier,
+    PreconditionIdentifier identifier,
     std::string description)
-    : identifier_(identifier),
-      description_(std::move(description)) {}
+    : identifier_(identifier), description_(std::move(description)) {}
 
 FeaturePromoPreconditionBase::~FeaturePromoPreconditionBase() = default;
 
-FeaturePromoPreconditionBase::Identifier
+FeaturePromoPreconditionBase::PreconditionIdentifier
 FeaturePromoPreconditionBase::GetIdentifier() const {
   return identifier_;
 }
@@ -36,17 +27,12 @@ const std::string& FeaturePromoPreconditionBase::GetDescription() const {
 }
 
 void FeaturePromoPreconditionBase::ExtractCachedData(
-    internal::PreconditionData::Collection& to_add_to) {
-  for (auto& [id, data] : data_) {
-    const auto result = to_add_to.emplace(id, std::move(data));
-    CHECK(result.second) << "Two different providers for precondition data: "
-                         << id;
-  }
-  data_.clear();
+    OwnedTypedDataCollection& to_add_to) {
+  to_add_to.Append(std::move(data_));
 }
 
 CachingFeaturePromoPrecondition::CachingFeaturePromoPrecondition(
-    Identifier identifier,
+    PreconditionIdentifier identifier,
     std::string description,
     FeaturePromoResult initial_state)
     : FeaturePromoPreconditionBase(identifier, std::move(description)),
@@ -55,24 +41,25 @@ CachingFeaturePromoPrecondition::CachingFeaturePromoPrecondition(
 CachingFeaturePromoPrecondition::~CachingFeaturePromoPrecondition() = default;
 
 FeaturePromoResult CachingFeaturePromoPrecondition::CheckPrecondition(
-    ComputedData&) const {
+    UnownedTypedDataCollection&) const {
   return check_result_;
 }
 
 CallbackFeaturePromoPrecondition::CallbackFeaturePromoPrecondition(
-    Identifier identifier,
+    PreconditionIdentifier identifier,
     std::string description,
     SimpleCallback check_result_callback)
     : FeaturePromoPreconditionBase(identifier, std::move(description)),
-      check_result_callback_(
-          base::BindRepeating([](const SimpleCallback& callback,
-                                 ComputedData& data) { return callback.Run(); },
-                              std::move(check_result_callback))) {
+      check_result_callback_(base::BindRepeating(
+          [](const SimpleCallback& callback, UnownedTypedDataCollection& data) {
+            return callback.Run();
+          },
+          std::move(check_result_callback))) {
   CHECK(!check_result_callback_.is_null());
 }
 
 CallbackFeaturePromoPrecondition::CallbackFeaturePromoPrecondition(
-    Identifier identifier,
+    PreconditionIdentifier identifier,
     std::string description,
     CallbackWithData check_result_callback)
     : FeaturePromoPreconditionBase(identifier, std::move(description)),
@@ -83,29 +70,36 @@ CallbackFeaturePromoPrecondition::CallbackFeaturePromoPrecondition(
 CallbackFeaturePromoPrecondition::~CallbackFeaturePromoPrecondition() = default;
 
 FeaturePromoResult CallbackFeaturePromoPrecondition::CheckPrecondition(
-    ComputedData& data) const {
+    UnownedTypedDataCollection& data) const {
   return check_result_callback_.Run(data);
 }
 
 ForwardingFeaturePromoPrecondition::ForwardingFeaturePromoPrecondition(
     const FeaturePromoPrecondition& source)
-    : source_(source) {}
+    : source_(&source),
+      cached_identifier_(source.GetIdentifier()),
+      cached_description_(source.GetDescription()) {}
 
 ForwardingFeaturePromoPrecondition::~ForwardingFeaturePromoPrecondition() =
     default;
 
-ForwardingFeaturePromoPrecondition::Identifier
+ForwardingFeaturePromoPrecondition::PreconditionIdentifier
 ForwardingFeaturePromoPrecondition::GetIdentifier() const {
-  return source_->GetIdentifier();
+  return source_ ? source_->GetIdentifier() : cached_identifier_;
 }
 
 const std::string& ForwardingFeaturePromoPrecondition::GetDescription() const {
-  return source_->GetDescription();
+  return source_ ? source_->GetDescription() : cached_description_;
 }
 
 FeaturePromoResult ForwardingFeaturePromoPrecondition::CheckPrecondition(
-    ComputedData& data) const {
-  return source_->CheckPrecondition(data);
+    UnownedTypedDataCollection& data) const {
+  return source_ ? source_->CheckPrecondition(data)
+                 : FeaturePromoResult::kError;
+}
+
+void ForwardingFeaturePromoPrecondition::Invalidate() {
+  source_ = nullptr;
 }
 
 FeaturePromoPreconditionList::FeaturePromoPreconditionList(
@@ -116,7 +110,7 @@ FeaturePromoPreconditionList::~FeaturePromoPreconditionList() = default;
 
 FeaturePromoPreconditionList::CheckResult
 FeaturePromoPreconditionList::CheckPreconditions(
-    ComputedData& computed_data) const {
+    UnownedTypedDataCollection& computed_data) const {
   for (const auto& precondition : preconditions_) {
     const auto result = precondition->CheckPrecondition(computed_data);
     if (!result) {
@@ -140,7 +134,7 @@ void FeaturePromoPreconditionList::AddPrecondition(
 }
 
 void FeaturePromoPreconditionList::ExtractCachedData(
-    internal::PreconditionData::Collection& to_add_to) {
+    OwnedTypedDataCollection& to_add_to) {
   for (auto& precondition : preconditions_) {
     precondition->ExtractCachedData(to_add_to);
   }

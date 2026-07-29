@@ -36,7 +36,8 @@ class DirectWritingTrigger implements StylusWritingHandler, StylusApiOption {
     private static final String TAG = "DwTrigger";
 
     private DirectWritingServiceBinder mBinder = new DirectWritingServiceBinder();
-    private DirectWritingServiceConfiguration mConfig = new DirectWritingServiceConfiguration();
+    private final DirectWritingServiceConfiguration mConfig =
+            new DirectWritingServiceConfiguration();
 
     // Track whether DW recognition has been started.
     private boolean mRecognitionStarted;
@@ -74,7 +75,7 @@ class DirectWritingTrigger implements StylusWritingHandler, StylusApiOption {
      */
     @Override
     public void onWebContentsChanged(Context context, WebContents webContents) {
-        updateDwSettings(context);
+        updateDwSettings();
         webContents.setStylusWritingHandler(this);
         mStylusWritingImeCallback = webContents.getStylusWritingImeCallback();
         assumeNonNull(mCallback);
@@ -146,20 +147,16 @@ class DirectWritingTrigger implements StylusWritingHandler, StylusApiOption {
         return false;
     }
 
-    private void updateDwServiceStatus(Context context) {
-        mDwServiceEnabled = isDirectWritingServiceEnabled(context);
+    private void updateDwServiceStatus() {
+        mDwServiceEnabled = isDirectWritingServiceEnabled();
         Log.i(TAG, "updateDwServiceStatus() : isEnabled = " + mDwServiceEnabled);
     }
 
-    /**
-     * Updates whether the Direct writing service is enabled or not.
-     *
-     * @param context current context
-     */
+    /** Updates whether the Direct writing service is enabled or not. */
     @VisibleForTesting
-    void updateDwSettings(Context context) {
+    void updateDwSettings() {
         boolean wasDwEnabled = mDwServiceEnabled;
-        updateDwServiceStatus(context);
+        updateDwServiceStatus();
         if (!wasDwEnabled && mDwServiceEnabled) {
             onDwServiceEnabled();
         }
@@ -200,7 +197,7 @@ class DirectWritingTrigger implements StylusWritingHandler, StylusApiOption {
     @Override
     public void updateHandlerState(Context context, boolean hasWindowFocus) {
         if (hasWindowFocus) {
-            updateDwSettings(context);
+            updateDwSettings();
         } else {
             hideDwToolbar();
         }
@@ -443,8 +440,8 @@ class DirectWritingTrigger implements StylusWritingHandler, StylusApiOption {
         mBinder.onDispatchEvent(me, rootView);
     }
 
-    private boolean isDirectWritingServiceEnabled(Context context) {
-        return DirectWritingSettingsHelper.isEnabled(context);
+    private boolean isDirectWritingServiceEnabled() {
+        return DirectWritingSettingsHelper.isEnabled();
     }
 
     @Override

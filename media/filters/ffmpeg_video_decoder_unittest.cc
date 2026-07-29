@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ref_counted.h"
@@ -62,13 +63,13 @@ MATCHER(ContainsFailedToDecode, "") {
 class FFmpegVideoDecoderTest : public testing::Test {
  public:
   FFmpegVideoDecoderTest()
-      : decoder_(std::make_unique<FFmpegVideoDecoder>(&media_log_)) {
+      : decoder_(std::make_unique<FFmpegVideoDecoder>(media_log_.Clone())) {
     // Initialize various test buffers.
     end_of_stream_buffer_ = DecoderBuffer::CreateEOSBuffer();
     i_frame_buffer_ = ReadTestDataFile("h264-320x180-frame-0");
     corrupt_i_frame_buffer_ = ReadTestDataFile("h264-320x180-frame-0");
-    memset(corrupt_i_frame_buffer_->writable_data(), 0,
-           corrupt_i_frame_buffer_->size() / 2);
+    UNSAFE_TODO(memset(corrupt_i_frame_buffer_->writable_data(), 0,
+                       corrupt_i_frame_buffer_->size() / 2));
   }
 
   FFmpegVideoDecoderTest(const FFmpegVideoDecoderTest&) = delete;

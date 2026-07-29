@@ -2,22 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "components/user_education/common/feature_promo/feature_promo_specification.h"
 
 #include <string>
 #include <variant>
 
-#include "base/containers/flat_set.h"
+#include "base/containers/fixed_flat_set.h"
 #include "base/feature_list.h"
-#include "base/functional/callback_forward.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/user_education/common/feature_promo/feature_promo_precondition.h"
+#include "components/user_education/common/user_education_features.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
@@ -31,106 +27,133 @@ namespace {
 // It is not to be modified except by the Frizzle team.
 bool IsAllowedLegalNotice(const base::Feature& promo_feature) {
   // Add the text names of allowlisted critical promos here:
-  static const char* const kAllowedPromoNames[] = {};
-  for (const auto* promo_name : kAllowedPromoNames) {
-    if (!strcmp(promo_feature.name, promo_name)) {
-      return true;
-    }
-  }
-  return false;
+  static constexpr auto kAllowedPromoNames =
+      base::MakeFixedFlatSet<std::string_view>({
+          "IPH_PdfGlicSummarizeFeature",
+      });
+  return kAllowedPromoNames.contains(promo_feature.name);
 }
 
 bool IsAllowedActionableAlert(const base::Feature& promo_feature) {
   // Add the text names of allowlisted actionable alerts here:
-  static const char* const kAllowedPromoNames[] = {
-      "IPH_DownloadEsbPromo",
-      "IPH_HighEfficiencyMode",
-      "IPH_SupervisedUserProfileSignin",
-  };
-  for (const auto* promo_name : kAllowedPromoNames) {
-    if (!strcmp(promo_feature.name, promo_name)) {
-      return true;
-    }
-  }
-  return false;
+  static constexpr auto kAllowedPromoNames =
+      base::MakeFixedFlatSet<std::string_view>({
+          "IPH_DownloadEsbPromo",
+          "IPH_HighEfficiencyMode",
+          "IPH_iOSEnhancedBrowsingDesktop",
+          "IPH_SignInBenefits",
+          "IPH_SignInBenefitsNewSignin",
+          "IPH_SupervisedUserProfileSignin",
+          "IPH_TabSearchToolbarButton",
+      });
+  return kAllowedPromoNames.contains(promo_feature.name);
 }
 
 bool IsAllowedKeyedNotice(const base::Feature& promo_feature) {
   // Add the text names of allowlisted keyed notices here:
-  static const char* const kAllowedPromoNames[] = {
-      "IPH_DesktopPWAsLinkCapturingLaunch",
-      "IPH_DesktopPWAsLinkCapturingLaunchAppInTab",
-      "IPH_ExplicitBrowserSigninPreferenceRemembered",
-      "IPH_SignoutWebIntercept",
-      "IPH_PwaQuietNotification",
-  };
-  for (const auto* promo_name : kAllowedPromoNames) {
-    if (!strcmp(promo_feature.name, promo_name)) {
-      return true;
-    }
-  }
-  return false;
+  static constexpr auto kAllowedPromoNames =
+      base::MakeFixedFlatSet<std::string_view>({
+          "IPH_DesktopPWAsLinkCapturingLaunch",
+          "IPH_DesktopPWAsLinkCapturingLaunchAppInTab",
+          "IPH_ExplicitBrowserSigninPreferenceRemembered",
+          "IPH_PwaQuietNotification",
+      });
+  return kAllowedPromoNames.contains(promo_feature.name);
 }
 
 bool IsAllowedRotatingPromo(const base::Feature& promo_feature) {
-  // Add the text names of allowlisted keyed notices here:
-  static const char* const kAllowedPromoNames[] = {};
-  for (const auto* promo_name : kAllowedPromoNames) {
-    if (!strcmp(promo_feature.name, promo_name)) {
-      return true;
-    }
-  }
+  // Add the text names of allowlisted rotating promos here:
+  // static constexpr auto kAllowedPromoNames =
+  //     base::MakeFixedFlatSet<std::string_view>({ });
+  // return kAllowedPromoNames.contains(promo_feature.name);
   return false;
+}
+
+bool IsAllowedCustomUiPromo(const base::Feature& promo_feature) {
+  // Test-only features are allowed.
+  if (std::string(promo_feature.name).starts_with("TEST_")) {
+    return true;
+  }
+
+  // IMPORTANT NOTE: Because Custom UI promos can potentially violate
+  // best-practice rules, be sure to include a link to a screenshot or mock of
+  // your UI with a description of how it works in your CL in addition to
+  // requesting an exception here.
+  //
+  // Or better yet, reach out to Frizzle (User Education) Team before adding
+  // code for your new Custom UI promo.
+  //
+  // Add the text names of allowlisted rotating promos here:
+  static constexpr auto kAllowedPromoNames =
+      base::MakeFixedFlatSet<std::string_view>(
+          {"IPH_AutofillAtMemory", "IPH_ExtensionsZeroStatePromo",
+           "IPH_iOSEnhancedBrowsingDesktop", "IPH_iOSLensPromoDesktop",
+           "IPH_iOSPasswordPromoDesktop", "IPH_iOSTabGroupsDesktop",
+           "IPH_iOSPriceTrackingDesktop"});
+  return kAllowedPromoNames.contains(promo_feature.name);
+}
+
+bool IsAllowedToastWithNoTimeout(const base::Feature& promo_feature) {
+  // Test-only features are allowed.
+  if (std::string(promo_feature.name).starts_with("TEST_")) {
+    return true;
+  }
+
+  // This is the allow-list for non-timeout toasts. Please contact Frizzle Team
+  // or a direct OWNERS of this folder if you think you need to add to this
+  // list.
+  static constexpr auto kAllowedPromoNames =
+      base::MakeFixedFlatSet<std::string_view>({"IPH_TabSearchComboButton"});
+  return kAllowedPromoNames.contains(promo_feature.name);
 }
 
 bool IsAllowedLegacyPromo(const base::Feature& promo_feature) {
   // NOTE: LEGACY PROMOS ARE DEPRECATED.
   // NO NEW ITEMS SHOULD BE ADDED TO THIS LIST, EVER.
-  static const char* const kAllowedPromoNames[] = {
-      "IPH_AutofillExternalAccountProfileSuggestion",
-      "IPH_AutofillVirtualCardSuggestion",
-      "IPH_DesktopPwaInstall",
-      "IPH_DesktopSharedHighlighting",
-      "IPH_GMCCastStartStop",
-      "IPH_PriceTrackingInSidePanel",
-      "IPH_ReadingListDiscovery",
-      "IPH_ReadingListInSidePanel",
-      "IPH_TabSearch",
-      "IPH_WebUITabStrip",
-  };
-
-  const std::string name = promo_feature.name;
-  for (const auto* promo_name : kAllowedPromoNames) {
-    if (name == promo_name) {
-      return true;
-    }
-  }
-
-  return false;
+  static constexpr auto kAllowedPromoNames =
+      base::MakeFixedFlatSet<std::string_view>({
+          "IPH_AutofillExternalAccountProfileSuggestion",
+          "IPH_AutofillVirtualCardSuggestion",
+          "IPH_DesktopPwaInstall",
+          "IPH_DesktopSharedHighlighting",
+          "IPH_GMCCastStartStop",
+          "IPH_PriceTrackingInSidePanel",
+          "IPH_ReadingListDiscovery",
+          "IPH_ReadingListInSidePanel",
+          "IPH_TabSearch",
+      });
+  return kAllowedPromoNames.contains(promo_feature.name);
 }
 
 bool IsAllowedToastWithoutScreenreaderText(const base::Feature& promo_feature) {
+  // Features used for tests have this prefix and are excluded.
+  if (std::string_view(promo_feature.name).starts_with("TEST_")) {
+    return true;
+  }
+
   // Some toasts are purely informational and their normal text also works for
   // low-vision users. This is a very small percentage of toasts, and so only
   // specific such promos are allowlisted.
   //
   // TODO(dfried): Merge legacy promos into this category, eliminating the entry
   // point and promo type entirely.
-  static const char* const kAllowedPromoNames[] = {};
 
-  const std::string name = promo_feature.name;
-  for (const auto* promo_name : kAllowedPromoNames) {
-    if (name == promo_name) {
-      return true;
-    }
-  }
+  // TODO(crbug.com/421471598): Remove this exemption once we have a separate
+  // string for screenreader.
+  static constexpr auto kAllowedPromoNames =
+      base::MakeFixedFlatSet<std::string_view>({"IPH_TabSearchToolbarButton"});
+  return kAllowedPromoNames.contains(promo_feature.name);
+}
 
+bool IsAllowedPreconditionExemption(const base::Feature& promo_feature) {
   // Features used for tests have this prefix and are excluded.
-  if (name.starts_with("TEST_")) {
+  if (std::string_view(promo_feature.name).starts_with("TEST_")) {
     return true;
   }
 
-  return false;
+  static constexpr auto kAllowedPromoNames =
+      base::MakeFixedFlatSet<std::string_view>({"IPH_AutofillAiOptIn"});
+  return kAllowedPromoNames.contains(promo_feature.name);
 }
 
 // Common check logic for gating reshow-ability of promos. Generates an error if
@@ -228,6 +251,21 @@ FeaturePromoSpecification::RotatingPromos::operator=(
     RotatingPromos&&) noexcept = default;
 FeaturePromoSpecification::RotatingPromos::~RotatingPromos() = default;
 
+FeaturePromoSpecification::BuildHelpBubbleParams::BuildHelpBubbleParams() =
+    default;
+FeaturePromoSpecification::BuildHelpBubbleParams::BuildHelpBubbleParams(
+    const BuildHelpBubbleParams&) = default;
+FeaturePromoSpecification::BuildHelpBubbleParams::BuildHelpBubbleParams(
+    BuildHelpBubbleParams&&) noexcept = default;
+FeaturePromoSpecification::BuildHelpBubbleParams&
+FeaturePromoSpecification::BuildHelpBubbleParams::operator=(
+    const BuildHelpBubbleParams&) = default;
+FeaturePromoSpecification::BuildHelpBubbleParams&
+FeaturePromoSpecification::BuildHelpBubbleParams::operator=(
+    BuildHelpBubbleParams&&) noexcept = default;
+FeaturePromoSpecification::BuildHelpBubbleParams::~BuildHelpBubbleParams() =
+    default;
+
 // static
 constexpr HelpBubbleArrow FeaturePromoSpecification::kDefaultBubbleArrow;
 
@@ -247,7 +285,7 @@ FeaturePromoSpecification::FeaturePromoSpecification(
       bubble_body_string_id_(bubble_body_string_id),
       custom_action_dismiss_string_id_(IDS_PROMO_DISMISS_BUTTON) {
   DCHECK_NE(promo_type, PromoType::kUnspecified);
-  DCHECK(bubble_body_string_id_);
+  DCHECK(promo_type == PromoType::kCustomUi || bubble_body_string_id_ != 0);
 }
 
 FeaturePromoSpecification& FeaturePromoSpecification::operator=(
@@ -354,8 +392,13 @@ FeaturePromoSpecification FeaturePromoSpecification::CreateForCustomAction(
     CustomActionCallback custom_action_callback) {
   FeaturePromoSpecification spec(&feature, PromoType::kCustomAction,
                                  anchor_element_id, body_text_string_id);
-  spec.custom_action_caption_ =
-      l10n_util::GetStringUTF16(custom_action_string_id);
+
+  if (base::FeatureList::IsEnabled(features::kLazilySetCustomActionCaption)) {
+    spec.custom_action_caption_string_or_id_ = custom_action_string_id;
+  } else {
+    spec.custom_action_caption_string_or_id_ =
+        l10n_util::GetStringUTF16(custom_action_string_id);
+  }
   spec.custom_action_callback_ = custom_action_callback;
   return spec;
 }
@@ -387,6 +430,20 @@ FeaturePromoSpecification FeaturePromoSpecification::CreateForRotatingPromo(
   CHECK(found_rotating_promo);
   spec.rotating_promos_ = std::move(rotating_promos);
 
+  return spec;
+}
+
+// static
+FeaturePromoSpecification FeaturePromoSpecification::CreateForCustomUi(
+    const base::Feature& feature,
+    ui::ElementIdentifier anchor_element_id,
+    WrappedCustomHelpBubbleFactoryCallback bubble_factory_callback,
+    CustomActionCallback custom_action_callback) {
+  CHECK(IsAllowedCustomUiPromo(feature));
+  FeaturePromoSpecification spec(&feature, PromoType::kCustomUi,
+                                 anchor_element_id, 0);
+  spec.custom_ui_factory_callback_ = std::move(bubble_factory_callback);
+  spec.custom_action_callback_ = std::move(custom_action_callback);
   return spec;
 }
 
@@ -435,8 +492,24 @@ FeaturePromoSpecification& FeaturePromoSpecification::SetBubbleIcon(
 
 FeaturePromoSpecification& FeaturePromoSpecification::SetBubbleArrow(
     HelpBubbleArrow bubble_arrow) {
+  CHECK(!bubble_arrow_callback_);
   bubble_arrow_ = bubble_arrow;
   return *this;
+}
+
+FeaturePromoSpecification& FeaturePromoSpecification::SetBubbleArrowCallback(
+    HelpBubbleArrowCallback bubble_arrow_callback) {
+  CHECK(!bubble_arrow_callback_);
+  bubble_arrow_callback_ = std::move(bubble_arrow_callback);
+  return *this;
+}
+
+HelpBubbleArrow FeaturePromoSpecification::GetBubbleArrow(
+    const ui::TrackedElement* anchor_element) const {
+  if (bubble_arrow_callback_) {
+    return bubble_arrow_callback_.Run(anchor_element);
+  }
+  return bubble_arrow_;
 }
 
 FeaturePromoSpecification& FeaturePromoSpecification::OverrideFocusOnShow(
@@ -448,6 +521,15 @@ FeaturePromoSpecification& FeaturePromoSpecification::OverrideFocusOnShow(
           rotating_promo->focus_on_show_override_.value_or(focus_on_show);
     }
   }
+  return *this;
+}
+
+FeaturePromoSpecification&
+FeaturePromoSpecification::OverrideBubbleShouldTimeOut(
+    bool bubble_should_time_out) {
+  CHECK_EQ(promo_type(), PromoType::kToast);
+  CHECK(bubble_should_time_out || IsAllowedToastWithNoTimeout(*feature_));
+  bubble_should_time_out_override_ = bubble_should_time_out;
   return *this;
 }
 
@@ -466,7 +548,8 @@ FeaturePromoSpecification& FeaturePromoSpecification::SetPromoSubtype(
       CHECK(IsAllowedLegalNotice(*feature_));
       break;
     case PromoSubtype::kActionableAlert:
-      CHECK_EQ(promo_type_, PromoType::kCustomAction);
+      CHECK(promo_type_ == PromoType::kCustomAction ||
+            promo_type_ == PromoType::kCustomUi);
       CHECK(feature_);
       CHECK(IsAllowedActionableAlert(*feature_));
       break;
@@ -510,6 +593,13 @@ FeaturePromoSpecification& FeaturePromoSpecification::SetAdditionalConditions(
   return *this;
 }
 
+FeaturePromoSpecification& FeaturePromoSpecification::AddPreconditionExemption(
+    FeaturePromoPrecondition::PreconditionIdentifier exempt_precondition) {
+  CHECK(IsAllowedPreconditionExemption(*feature_));
+  exempt_preconditions_.insert(exempt_precondition);
+  return *this;
+}
+
 FeaturePromoSpecification& FeaturePromoSpecification::SetMetadata(
     Metadata metadata) {
   metadata_ = std::move(metadata);
@@ -518,7 +608,7 @@ FeaturePromoSpecification& FeaturePromoSpecification::SetMetadata(
 
 FeaturePromoSpecification& FeaturePromoSpecification::SetCustomActionIsDefault(
     bool custom_action_is_default) {
-  DCHECK(!custom_action_callback_.is_null());
+  DCHECK(custom_action_callback_);
   custom_action_is_default_ = custom_action_is_default;
   return *this;
 }
@@ -526,7 +616,7 @@ FeaturePromoSpecification& FeaturePromoSpecification::SetCustomActionIsDefault(
 FeaturePromoSpecification&
 FeaturePromoSpecification::SetCustomActionDismissText(
     int custom_action_dismiss_string_id) {
-  DCHECK(promo_type_ == PromoType::kCustomAction);
+  DCHECK_EQ(promo_type_, PromoType::kCustomAction);
   custom_action_dismiss_string_id_ = custom_action_dismiss_string_id;
   return *this;
 }
@@ -543,11 +633,11 @@ ui::TrackedElement* FeaturePromoSpecification::GetAnchorElement(
   if (index) {
     CHECK_EQ(PromoType::kRotating, promo_type_);
     return rotating_promos_.at(*index)->GetAnchorElement(context, std::nullopt);
-  } else {
-    // Should not be called directly on a rotating promo.
-    CHECK_NE(PromoType::kRotating, promo_type_);
-    return AnchorElementProviderCommon::GetAnchorElement(context, index);
   }
+
+  // Should not be called directly on a rotating promo.
+  CHECK_NE(PromoType::kRotating, promo_type_);
+  return AnchorElementProviderCommon::GetAnchorElement(context, std::nullopt);
 }
 
 int FeaturePromoSpecification::GetNextValidIndex(int starting_index) const {
@@ -574,6 +664,14 @@ FeaturePromoSpecification::CreateRotatingPromoForTesting(
   return spec;
 }
 
+FeaturePromoSpecification::CustomHelpBubbleResult
+FeaturePromoSpecification::BuildCustomHelpBubble(
+    const UserEducationContextPtr& from_context,
+    BuildHelpBubbleParams params) const {
+  CHECK_EQ(PromoType::kCustomUi, promo_type_);
+  return custom_ui_factory_callback_.Run(from_context, std::move(params));
+}
+
 std::ostream& operator<<(std::ostream& oss,
                          FeaturePromoSpecification::PromoType promo_type) {
   switch (promo_type) {
@@ -597,6 +695,9 @@ std::ostream& operator<<(std::ostream& oss,
       break;
     case FeaturePromoSpecification::PromoType::kRotating:
       oss << "kRotating";
+      break;
+    case FeaturePromoSpecification::PromoType::kCustomUi:
+      oss << "kCustomUi";
       break;
   }
   return oss;

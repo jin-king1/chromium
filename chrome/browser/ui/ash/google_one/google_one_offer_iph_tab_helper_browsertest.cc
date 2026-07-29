@@ -8,13 +8,13 @@
 
 #include "base/callback_list.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/run_loop.h"
+#include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/ash/login/test/customizable_test_env_browser_test_base.h"
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/ash/login/test/guest_session_mixin.h"
 #include "chrome/browser/ash/login/test/logged_in_user_mixin.h"
-#include "chrome/browser/ash/scalable_iph/customizable_test_env_browser_test_base.h"
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
 #include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
@@ -69,11 +69,11 @@ class GoogleOneOfferIphTabHelperTest
     // called before our `SetUpOnMainThread` as login happens in the method,
     // i.e. profile is not available before it.
     ash::CustomizableTestEnvBrowserTestBase::SetUpOnMainThread();
-    CHECK(browser()->profile());
+    CHECK(browser()->GetProfile());
 
     display_service_tester_ =
         std::make_unique<NotificationDisplayServiceTester>(
-            browser()->profile());
+            browser()->GetProfile());
   }
 
  protected:
@@ -179,7 +179,7 @@ IN_PROC_BROWSER_TEST_F(GoogleOneOfferIphTabHelperTest,
   raw_ptr<feature_engagement::test::MockTracker> mock_tracker =
       static_cast<feature_engagement::test::MockTracker*>(
           feature_engagement::TrackerFactory::GetForBrowserContext(
-              browser()->profile()));
+              browser()->GetProfile()));
   EXPECT_CALL(
       *mock_tracker,
       NotifyEvent(testing::Eq(kIPHGoogleOneOfferNotificationDismissEventName)))
@@ -225,7 +225,7 @@ IN_PROC_BROWSER_TEST_F(GoogleOneOfferIphTabHelperTest, NotificationDismiss) {
   raw_ptr<feature_engagement::test::MockTracker> mock_tracker =
       static_cast<feature_engagement::test::MockTracker*>(
           feature_engagement::TrackerFactory::GetForBrowserContext(
-              browser()->profile()));
+              browser()->GetProfile()));
   EXPECT_CALL(
       *mock_tracker,
       NotifyEvent(testing::Eq(kIPHGoogleOneOfferNotificationGetPerkEventName)))

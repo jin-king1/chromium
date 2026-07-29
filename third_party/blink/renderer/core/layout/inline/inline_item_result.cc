@@ -66,6 +66,8 @@ void InlineItemResult::Trace(Visitor* visitor) const {
   visitor->Trace(layout_result);
   visitor->Trace(ruby_column);
   visitor->Trace(positioned_float);
+  visitor->Trace(exclusion_space_before_position_float);
+  visitor->Trace(text_fit_scale);
 }
 
 String InlineItemResult::ToString(const String& ifc_text_content,
@@ -79,7 +81,7 @@ String InlineItemResult::ToString(const String& ifc_text_content,
   builder.Append(" ");
   if (item->Type() == InlineItem::kText) {
     builder.Append(
-        ifc_text_content.Substring(TextOffset().start, TextOffset().Length())
+        ifc_text_content.subview(TextOffset().start, TextOffset().Length())
             .EncodeForDebugging());
   } else if (IsRubyColumn()) {
     if (item->GetLayoutObject()) {
@@ -88,7 +90,7 @@ String InlineItemResult::ToString(const String& ifc_text_content,
       builder.Append("(anonymous)");
     }
     builder.Append(", base_line: [\n");
-    String child_indent = indent + "\t";
+    String child_indent = StrCat({indent, "\t"});
     for (const auto& r : ruby_column->base_line.Results()) {
       builder.Append(r.ToString(ifc_text_content, child_indent));
       builder.Append("\n");
@@ -109,6 +111,31 @@ String InlineItemResult::ToString(const String& ifc_text_content,
     builder.Append(item->GetLayoutObject()->ToString());
   }
   return builder.ToString();
+}
+
+TextFitBlockScale FindTextScaleInternal(const InlineItemResults& line_items,
+                                        wtf_size_t start_index,
+                                        wtf_size_t initial_nesting_level) {
+  wtf_size_t level = initial_nesting_level;
+  for (wtf_size_t i = start_index; i < line_items.size(); ++i) {
+    auto item_type = line_items[i].item->Type();
+    if (item_type == InlineItem::kOpenTag) {
+      ++level;
+    } else if (item_type == InlineItem::kCloseTag) {
+      if (level == 0) {
+        break;
+      }
+      --level;
+    } else if (item_type == InlineItem::kText) {
+      if (level == 0) {
+        if (const auto* text_fit_scale = line_items[i].text_fit_scale.Get()) {
+          return {text_fit_scale->scale, text_fit_scale->font};
+        }
+        break;
+      }
+    }
+  }
+  return {1.0f, nullptr};
 }
 
 }  // namespace blink

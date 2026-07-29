@@ -12,6 +12,7 @@ from typing import MutableMapping, NamedTuple, Optional, Set, TextIO
 from blinkpy.common.system.log_utils import configure_logging
 from blinkpy.w3c.common import (
     CHANGE_ID_FOOTER,
+    LINK_FOOTER,
     read_credentials,
 )
 from blinkpy.w3c.chromium_exportable_commits import exportable_commits_over_last_n_commits
@@ -49,6 +50,7 @@ class TestExporter:
         self.github = None
         self.graphql = None
         self.gerrit = None
+        self.notifier = None
         self.dry_run = False
         self.local_repo = None
         self.surface_failures_to_gerrit = False
@@ -87,6 +89,8 @@ class TestExporter:
             token=credentials['GH_TOKEN'])
         self.gerrit = self.gerrit or GerritAPI.from_credentials(
             self.host, credentials)
+        self.notifier = ExportNotifier(self.host, self.github, self.gerrit,
+                                       self.dry_run)
         self.local_repo = self.local_repo or self.project_config.local_repo_factory(
             host=self.host, gh_token=credentials['GH_TOKEN'])
 
@@ -122,9 +126,7 @@ class TestExporter:
             if self.surface_failures_to_gerrit:
                 _log.info(
                     'Starting surfacing cross-browser failures to Gerrit.')
-                notifier = ExportNotifier(self.host, self.github, self.gerrit,
-                                          self.dry_run)
-                prs_by_change_id = notifier.main()
+                prs_by_change_id = self.notifier.main()
                 pr_events[PREventType.BLOCKED].update(
                     pr_status.pr_number
                     for pr_status in prs_by_change_id.values())
@@ -262,10 +264,15 @@ class TestExporter:
                 return None
 
             if self.create_draft_pr:
-                pr_response = self.graphql.mark_ready_for_review(
-                    pull_request.node_id)
-                _log.info(f'Marked PR with node ID {pull_request.node_id!r} '
-                          'as ready for review.')
+                if self.dry_run:
+                    _log.info(f'[dry_run] Would have marked PR with node ID '
+                              '{pull_request.node_id!r} as ready for review.')
+                else:
+                    pr_response = self.graphql.mark_ready_for_review(
+                        pull_request.node_id)
+                    _log.info(
+                        f'Marked PR with node ID {pull_request.node_id!r} '
+                        'as ready for review.')
 
             if self.github.provisional_pr_label in pull_request.labels:
                 # If the PR was created from a Gerrit in-flight CL, update the
@@ -335,6 +342,7 @@ class TestExporter:
                 return PREvent(pull_request.number, PREventType.MERGED)
         except MergeError:
             _log.warn('Could not merge PR.')
+            self.notifier.notify_gerrit_of_blocked_pr(pull_request)
             return PREvent(pull_request.number, PREventType.BLOCKED)
         return None
 
@@ -387,8 +395,11 @@ class TestExporter:
         # Change-Id can be deleted from the body of an in-flight CL in Chromium
         # (https://crbug.com/gerrit/12244). We need to add it back. And we've
         # asserted that cl.change_id is present in GerritCL.
-        if not self.github.extract_metadata(CHANGE_ID_FOOTER,
-                                            commit.message()):
+        has_change_id = bool(
+            self.github.extract_metadata(CHANGE_ID_FOOTER, commit.message()))
+        has_link = bool(
+            self.github.extract_metadata(LINK_FOOTER, commit.message()))
+        if not has_change_id and not has_link:
             _log.warn('Adding missing Change-Id back to %s', cl.url)
             footer += '{}{}\n'.format(CHANGE_ID_FOOTER, cl.change_id)
         # Reviewed-on footer is not in the git commit message of in-flight CLs,

@@ -11,17 +11,20 @@
 #import "components/strings/grit/components_strings.h"
 #import "components/tab_groups/tab_group_color.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
+#import "ios/chrome/browser/saved_tab_groups/ui/tab_group_utils.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/elements/top_aligned_image_view.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/browser/shared/ui/util/color_palette/tab_group_color_palette.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/group_tab_info.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/create_or_edit_tab_group_view_controller_delegate.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/group_tab_view.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_creation_mutator.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_gradient_view.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_snapshots_view.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_groups_constants.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_snapshot_and_favicon.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -38,6 +41,7 @@ const CGFloat kDotAndFieldContainerMargin = 24;
 const CGFloat kDotTitleSeparationMargin = 12;
 const CGFloat kContainersMaxWidth = 400;
 const CGFloat kBackgroundAlpha = 0.7;
+const CGFloat kColoredBackgroundAlpha = 0.2;
 const CGFloat kCompactButtonTopMargin = 12;
 const CGFloat kDotAndFieldContainerWidthPercentage = 0.5;
 
@@ -115,16 +119,16 @@ const CGFloat kClearButtonWidthAndHeight = 40;
   UIButton* _selectedButton;
   // Default color.
   tab_groups::TabGroupColorId _defaultColor;
-  // List of tab group pictures.
-  NSArray<GroupTabInfo*>* _tabGroupInfos;
   // Snapshots views container.
   UIView* _snapshotsContainer;
   // Whether it is to edit a group (vs creation).
   BOOL _editMode;
   // Whether the user is syncing tabs.
   BOOL _tabSynced;
-  // Number of selected items.
-  NSInteger _numberOfSelectedItems;
+  // Whether a new tab should be inserted into the new group.
+  BOOL _createNewTabForGroup;
+  // Number of tabs in the group.
+  NSInteger _tabsCount;
   // Title of the group.
   NSString* _title;
 
@@ -147,16 +151,28 @@ const CGFloat kClearButtonWidthAndHeight = 40;
 
   // Scrollview that containts color selection buttons.
   UIScrollView* _colorsScrollView;
+  // Container for the view's background.
+  TabGroupGradientView* _containerBackground;
+  // Container for the dot and title's textField.
+  UIView* _dotAndFieldContainer;
 }
 
-- (instancetype)initWithEditMode:(BOOL)editMode tabSynced:(BOOL)tabSynced {
-  CHECK(IsTabGroupInGridEnabled())
-      << "You should not be able to create a tab group outside the Tab Groups "
-         "experiment.";
+- (instancetype)initWithEditMode:(BOOL)editMode
+                       tabSynced:(BOOL)tabSynced
+            createNewTabForGroup:(BOOL)createNewTabForGroup {
   self = [super init];
   if (self) {
     _editMode = editMode;
     _tabSynced = tabSynced;
+    _createNewTabForGroup = createNewTabForGroup;
+
+    // Create the `_snapshotsView` early. Favicon and snapshot fetches begin
+    // before the view loads, and `_snapshotsView` is updated incrementally as
+    // each item is fetched.
+    _snapshotsView = [[TabGroupSnapshotsView alloc]
+        initWithLightInterface:self.traitCollection.userInterfaceStyle ==
+                               UIUserInterfaceStyleLight
+                          cell:NO];
 
     [self createColorSelectionButtons];
     CHECK_NE([_colorSelectionButtons count], 0u)
@@ -186,11 +202,9 @@ const CGFloat kClearButtonWidthAndHeight = 40;
   [self createConfigurations];
   [self updateViews:self.view previousTraitCollection:nil];
 
-  if (@available(iOS 17, *)) {
-    [self registerForTraitChanges:@[ UITraitVerticalSizeClass.class ]
-                       withAction:@selector(updateViews:
-                                      previousTraitCollection:)];
-  }
+  [self registerForTraitChanges:@[ UITraitVerticalSizeClass.class ]
+                     withAction:@selector(updateViews:
+                                    previousTraitCollection:)];
 
   // To force display the keyboard when the view is shown.
   [_tabGroupTextField becomeFirstResponder];
@@ -199,20 +213,6 @@ const CGFloat kClearButtonWidthAndHeight = 40;
 - (UIStatusBarStyle)preferredStatusBarStyle {
   return UIStatusBarStyleLightContent;
 }
-
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-  if (self.traitCollection.verticalSizeClass !=
-      previousTraitCollection.verticalSizeClass) {
-    [self updateViews:self.view
-        previousTraitCollection:previousTraitCollection];
-  }
-}
-#endif
 
 #pragma mark - Private helpers
 
@@ -231,9 +231,9 @@ const CGFloat kClearButtonWidthAndHeight = 40;
 
   UIButton* clearButton = [UIButton buttonWithType:UIButtonTypeSystem];
   clearButton.translatesAutoresizingMaskIntoConstraints = NO;
-  [clearButton setImage:DefaultSymbolWithPointSize(kXMarkCircleFillSymbol,
-                                                   kClearButtonSize)
-               forState:UIControlStateNormal];
+  [clearButton
+      setImage:SymbolWithPointSize(SymbolXMarkCircleFill, kClearButtonSize)
+      forState:UIControlStateNormal];
   [clearButton setTintColor:[[UIColor colorNamed:kSolidBlackColor]
                                 colorWithAlphaComponent:kClearButtonAlpha]];
   clearButton.accessibilityLabel =
@@ -260,6 +260,8 @@ const CGFloat kClearButtonWidthAndHeight = 40;
 
   tabGroupTextField.accessibilityIdentifier =
       kCreateTabGroupTextFieldIdentifier;
+  tabGroupTextField.accessibilityLabel = l10n_util::GetNSString(
+      IDS_IOS_TAB_GROUP_CREATION_TEXT_FIELD_ACCESSIBILITY_LABEL);
   tabGroupTextField.text = _title;
 
   [tabGroupTextField addTarget:self
@@ -312,7 +314,7 @@ const CGFloat kClearButtonWidthAndHeight = 40;
   tab_groups::TabGroupColorId colorID =
       static_cast<tab_groups::TabGroupColorId>(_selectedButton.tag);
 
-  UIColor* defaultColor = TabGroup::ColorForTabGroupColorId(colorID);
+  UIColor* defaultColor = [TabGroupColorPalette commonColor:colorID];
   _dotView = [self groupDotViewWithColor:defaultColor];
   _tabGroupTextField = [self configuredTabGroupNameTextFieldInput];
 
@@ -487,7 +489,8 @@ const CGFloat kClearButtonWidthAndHeight = 40;
   [_selectedButton setSelected:YES];
   tab_groups::TabGroupColorId colorID =
       static_cast<tab_groups::TabGroupColorId>(_selectedButton.tag);
-  [_dotView setBackgroundColor:TabGroup::ColorForTabGroupColorId(colorID)];
+  [_dotView setBackgroundColor:[TabGroupColorPalette commonColor:colorID]];
+  [self updateSurfaceColors];
 }
 
 // Creates all the available color buttons.
@@ -497,7 +500,7 @@ const CGFloat kClearButtonWidthAndHeight = 40;
       tab_groups::GetTabGroupColorLabelMap();
 
   for (tab_groups::TabGroupColorId colorID :
-       TabGroup::AllPossibleTabGroupColors()) {
+       tab_groups::AllPossibleTabGroupColors()) {
     UIButton* colorButton = [[UIButton alloc] init];
     colorButton.translatesAutoresizingMaskIntoConstraints = NO;
     [colorButton setTag:static_cast<NSInteger>(colorID)];
@@ -509,25 +512,38 @@ const CGFloat kClearButtonWidthAndHeight = 40;
         kColoredButtonContentInset, kColoredButtonContentInset,
         kColoredButtonContentInset, kColoredButtonContentInset);
     colorButton.configuration = buttonConfiguration;
+
     colorButton.accessibilityLabel = l10n_util::GetNSStringF(
         IDS_IOS_TAB_GROUP_CREATION_ACCESSIBILITY_COLOR_SELECTION,
         colorLabelMap.at(colorID));
+
+    if (colorID == tab_groups::TabGroupColorId::kYellow) {
+      // In the tab group color update, the yellow is better described
+      // as lime.
+      if (IsUpdateTabGroupColorsEnabled()) {
+        colorButton.accessibilityLabel = l10n_util::GetNSStringF(
+            IDS_IOS_TAB_GROUP_CREATION_ACCESSIBILITY_COLOR_SELECTION,
+            l10n_util::GetStringUTF16(IDS_TAB_GROUP_COLOR_LIME));
+      }
+    }
 
     UIImageSymbolConfiguration* configuration = [UIImageSymbolConfiguration
         configurationWithPointSize:kColoredButtonSize
                             weight:UIImageSymbolWeightRegular
                              scale:UIImageSymbolScaleDefault];
 
+    UIColor* buttonColor = [TabGroupColorPalette commonColor:colorID];
+
     UIImage* normalSymbolImage =
-        DefaultSymbolWithConfiguration(kCircleFillSymbol, configuration);
+        SymbolWithConfiguration(SymbolCircleFill, configuration);
     normalSymbolImage = [normalSymbolImage
-        imageWithTintColor:TabGroup::ColorForTabGroupColorId(colorID)
+        imageWithTintColor:buttonColor
              renderingMode:UIImageRenderingModeAlwaysOriginal];
 
     UIImage* selectedSymbolImage =
-        DefaultSymbolWithConfiguration(kCircleCircleFillSymbol, configuration);
+        SymbolWithConfiguration(SymbolCircleCircleFill, configuration);
     selectedSymbolImage = [selectedSymbolImage
-        imageWithTintColor:TabGroup::ColorForTabGroupColorId(colorID)
+        imageWithTintColor:buttonColor
              renderingMode:UIImageRenderingModeAlwaysOriginal];
 
     [colorButton setImage:normalSymbolImage forState:UIControlStateNormal];
@@ -639,8 +655,8 @@ const CGFloat kClearButtonWidthAndHeight = 40;
 
 // Configures the view and all subviews when there is enough space.
 - (void)createConfigurations {
-  UIView* dotAndFieldContainer = [self configuredDotAndFieldContainer];
   UILayoutGuide* snapshotsContainerLayoutGuide = [[UILayoutGuide alloc] init];
+  _dotAndFieldContainer = [self configuredDotAndFieldContainer];
   _snapshotsContainer = [self configuredSnapshotsContainer];
   _colorsScrollView = [self listOfColorView];
   _creationButton = [self configuredCreateGroupButtonCompacted:NO];
@@ -648,10 +664,13 @@ const CGFloat kClearButtonWidthAndHeight = 40;
   _creationButtonCompact = [self configuredCreateGroupButtonCompacted:YES];
   _cancelButtonCompact = [self configuredCancelButtonCompacted:YES];
 
+  _containerBackground = [self configuredBackground];
+  [self.view addSubview:_containerBackground];
+
   UIView* container = [[UIView alloc] init];
   container.translatesAutoresizingMaskIntoConstraints = NO;
 
-  [container addSubview:dotAndFieldContainer];
+  [container addSubview:_dotAndFieldContainer];
   [container addSubview:_snapshotsContainer];
   [container addLayoutGuide:snapshotsContainerLayoutGuide];
   [container addSubview:_colorsScrollView];
@@ -672,46 +691,46 @@ const CGFloat kClearButtonWidthAndHeight = 40;
   snapshotLayoutGuideConstraint.priority = UILayoutPriorityDefaultHigh + 1;
 
   _regularConstraints = @[
-    [dotAndFieldContainer.leadingAnchor
+    [_dotAndFieldContainer.leadingAnchor
         constraintGreaterThanOrEqualToAnchor:container.leadingAnchor
                                     constant:kHorizontalMargin],
-    [dotAndFieldContainer.trailingAnchor
+    [_dotAndFieldContainer.trailingAnchor
         constraintLessThanOrEqualToAnchor:container.trailingAnchor
                                  constant:-kHorizontalMargin],
     [_creationButton.widthAnchor
-        constraintEqualToAnchor:dotAndFieldContainer.widthAnchor],
+        constraintEqualToAnchor:_dotAndFieldContainer.widthAnchor],
     [_cancelButton.widthAnchor
-        constraintEqualToAnchor:dotAndFieldContainer.widthAnchor],
+        constraintEqualToAnchor:_dotAndFieldContainer.widthAnchor],
     [_cancelButton.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
                                                constant:-kButtonsMargin],
   ];
 
   _compactConstraints = @[
-    [dotAndFieldContainer.widthAnchor
+    [_dotAndFieldContainer.widthAnchor
         constraintLessThanOrEqualToAnchor:self.view.widthAnchor
                                multiplier:kDotAndFieldContainerWidthPercentage],
     [_cancelButtonCompact.trailingAnchor
-        constraintLessThanOrEqualToAnchor:dotAndFieldContainer.leadingAnchor],
+        constraintLessThanOrEqualToAnchor:_dotAndFieldContainer.leadingAnchor],
     [_creationButtonCompact.leadingAnchor
-        constraintGreaterThanOrEqualToAnchor:dotAndFieldContainer
+        constraintGreaterThanOrEqualToAnchor:_dotAndFieldContainer
                                                  .trailingAnchor],
     [_colorsScrollView.bottomAnchor
         constraintEqualToAnchor:container.bottomAnchor
                        constant:-kColorListBottomMarginCompact],
   ];
 
-  NSLayoutConstraint* dotAndFieldWidth = [dotAndFieldContainer.widthAnchor
+  NSLayoutConstraint* dotAndFieldWidth = [_dotAndFieldContainer.widthAnchor
       constraintEqualToConstant:kContainersMaxWidth];
   dotAndFieldWidth.priority = UILayoutPriorityDefaultHigh;
 
   [NSLayoutConstraint activateConstraints:@[
-    [dotAndFieldContainer.topAnchor
+    [_dotAndFieldContainer.topAnchor
         constraintEqualToAnchor:container.topAnchor
                        constant:kDotAndFieldContainerMargin],
-    [dotAndFieldContainer.heightAnchor
+    [_dotAndFieldContainer.heightAnchor
         constraintGreaterThanOrEqualToConstant:kButtonsHeight],
     dotAndFieldWidth,
-    [dotAndFieldContainer.centerXAnchor
+    [_dotAndFieldContainer.centerXAnchor
         constraintEqualToAnchor:self.view.centerXAnchor],
     [_colorsScrollView.leadingAnchor
         constraintGreaterThanOrEqualToAnchor:container.leadingAnchor],
@@ -752,10 +771,10 @@ const CGFloat kClearButtonWidthAndHeight = 40;
     [snapshotsContainerLayoutGuide.centerXAnchor
         constraintEqualToAnchor:self.view.centerXAnchor],
     [snapshotsContainerLayoutGuide.topAnchor
-        constraintEqualToAnchor:dotAndFieldContainer.bottomAnchor
+        constraintEqualToAnchor:_dotAndFieldContainer.bottomAnchor
                        constant:kSnapshotViewVerticalMargin],
     [snapshotsContainerLayoutGuide.widthAnchor
-        constraintEqualToAnchor:dotAndFieldContainer.widthAnchor],
+        constraintEqualToAnchor:_dotAndFieldContainer.widthAnchor],
     snapshotLayoutGuideConstraint,
 
     [_snapshotsContainer.centerXAnchor
@@ -770,6 +789,8 @@ const CGFloat kClearButtonWidthAndHeight = 40;
                                               .widthAnchor],
     keyboardConstraint,
   ]];
+  AddSameConstraints(self.view, _containerBackground);
+  [self updateSurfaceColors];
 }
 
 // Returns the view which contains all the selected tabs' snapshot which will be
@@ -777,18 +798,12 @@ const CGFloat kClearButtonWidthAndHeight = 40;
 - (UIView*)configuredSnapshotsContainer {
   UIView* snapshotsBackground =
       [[CreateTabGroupSnapshotContainerView alloc] init];
+  snapshotsBackground.hidden = _createNewTabForGroup;
   snapshotsBackground.translatesAutoresizingMaskIntoConstraints = NO;
   snapshotsBackground.backgroundColor = [[UIColor colorNamed:kSolidWhiteColor]
       colorWithAlphaComponent:kBackgroundAlpha];
   snapshotsBackground.layer.cornerRadius = kSnapshotViewCornerRadius;
   snapshotsBackground.opaque = NO;
-
-  _snapshotsView = [[TabGroupSnapshotsView alloc]
-      initWithTabGroupInfos:_tabGroupInfos
-                       size:_numberOfSelectedItems
-                      light:self.traitCollection.userInterfaceStyle ==
-                            UIUserInterfaceStyleLight
-                       cell:NO];
 
   [snapshotsBackground addSubview:_snapshotsView];
 
@@ -836,7 +851,7 @@ const CGFloat kClearButtonWidthAndHeight = 40;
 
 // Activates or deactivates the appropriate constraints.
 - (void)applyConstraints {
-  if (_numberOfSelectedItems == 1) {
+  if (_tabsCount == 1) {
     [NSLayoutConstraint deactivateConstraints:_multipleSnapshotsConstraints];
     [NSLayoutConstraint activateConstraints:_singleSnapshotConstraints];
   } else {
@@ -862,27 +877,53 @@ const CGFloat kClearButtonWidthAndHeight = 40;
   }
 }
 
+// Updates the title, snapshot, and view background colors.
+- (void)updateSurfaceColors {
+  tab_groups::TabGroupColorId colorID =
+      static_cast<tab_groups::TabGroupColorId>(_selectedButton.tag);
+
+  UIColor* titleAndSnapshotBackgroundColor = [[TabGroupColorPalette
+      commonColor:colorID] colorWithAlphaComponent:kColoredBackgroundAlpha];
+  _snapshotsContainer.backgroundColor = titleAndSnapshotBackgroundColor;
+  _dotAndFieldContainer.backgroundColor = titleAndSnapshotBackgroundColor;
+
+  [_containerBackground
+      updateColors:[TabGroupColorPalette gradientBackgroundColors:colorID]];
+}
+
+// Returns the background with a gradient.
+- (TabGroupGradientView*)configuredBackground {
+  tab_groups::TabGroupColorId colorID =
+      static_cast<tab_groups::TabGroupColorId>(_selectedButton.tag);
+  TabGroupGradientView* background = [[TabGroupGradientView alloc]
+      initWithColors:[TabGroupColorPalette gradientBackgroundColors:colorID]];
+  background.translatesAutoresizingMaskIntoConstraints = NO;
+
+  return background;
+}
+
 #pragma mark - TabGroupCreationConsumer
 
 - (void)setDefaultGroupColor:(tab_groups::TabGroupColorId)color {
   _defaultColor = color;
 }
 
-- (void)setTabGroupInfos:(NSArray<GroupTabInfo*>*)tabGroupInfos
-    numberOfSelectedItems:(NSInteger)numberOfSelectedItems {
-  _tabGroupInfos = tabGroupInfos;
-  _numberOfSelectedItems = numberOfSelectedItems;
-  [_snapshotsView
-      configureTabGroupSnapshotsViewWithTabGroupInfos:tabGroupInfos
-                                                 size:_numberOfSelectedItems];
-  [self applyConstraints];
-}
-
 - (void)setGroupTitle:(NSString*)title {
   _title = title;
 }
 
-#pragma mark - Accessibility
+- (void)setSnapshotAndFavicon:(TabSnapshotAndFavicon*)tabSnapshotAndFavicon
+                     tabIndex:(NSInteger)tabIndex {
+  [_snapshotsView configureTabSnapshotAndFavicon:tabSnapshotAndFavicon
+                                        tabIndex:tabIndex];
+}
+
+- (void)setTabsCount:(NSInteger)tabsCount {
+  _snapshotsView.tabsCount = tabsCount;
+  _tabsCount = tabsCount;
+}
+
+#pragma mark - UIAccessibilityAction
 
 - (BOOL)accessibilityPerformEscape {
   [self dismissViewController];
@@ -902,7 +943,7 @@ const CGFloat kClearButtonWidthAndHeight = 40;
 }
 
 - (void)keyCommand_close {
-  base::RecordAction(base::UserMetricsAction("MobileKeyCommandClose"));
+  base::RecordAction(base::UserMetricsAction(kMobileKeyCommandClose));
   [self dismissViewController];
 }
 

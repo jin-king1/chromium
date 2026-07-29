@@ -38,7 +38,10 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerFactory;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
+import org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient;
 import org.chromium.ui.KeyboardVisibilityDelegate;
+import org.chromium.ui.base.ImmutableWeakReference;
+import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.NightModeTestUtils;
 import org.chromium.ui.test.util.RenderTestRule.Component;
@@ -60,7 +63,7 @@ public class NoPasskeysBottomSheetRenderTest {
     private static final String TEST_ORIGIN = "origin.com";
 
     @ParameterAnnotations.ClassParameter
-    private static List<ParameterSet> sClassParams =
+    private static final List<ParameterSet> sClassParams =
             Arrays.asList(
                     new ParameterSet().value(false, false).name("Default"),
                     new ParameterSet().value(false, true).name("RTL"),
@@ -82,6 +85,7 @@ public class NoPasskeysBottomSheetRenderTest {
 
     @Mock NoPasskeysBottomSheetCoordinator.NativeDelegate mNativeDelegate;
 
+    private InsetObserver mInsetObserver;
     private BottomSheetController mBottomSheetController;
     private NoPasskeysBottomSheetCoordinator mCoordinator;
 
@@ -98,6 +102,15 @@ public class NoPasskeysBottomSheetRenderTest {
         ApplicationTestUtils.waitForActivityState(mActivityRule.getActivity(), Stage.RESUMED);
         runOnUiThreadBlocking(
                 () -> {
+                    mInsetObserver =
+                            new InsetObserver(
+                                    new ImmutableWeakReference<>(
+                                            getActivity().getWindow().getDecorView()),
+                                    new ImmutableWeakReference<>(
+                                            getActivity().getApplicationContext()),
+                                    /* enableKeyboardOverlayMode= */ false,
+                                    /* enableExtraEdgeToEdgeLogging= */ false);
+
                     mBottomSheetController = createBottomSheetController();
                     mCoordinator =
                             new NoPasskeysBottomSheetCoordinator(
@@ -134,12 +147,13 @@ public class NoPasskeysBottomSheetRenderTest {
 
     private BottomSheetController createBottomSheetController() {
         ViewGroup activityContentView = getActivity().findViewById(android.R.id.content);
-        ScrimManager scrimManager = new ScrimManager(getActivity(), activityContentView);
+        ScrimManager scrimManager =
+                new ScrimManager(getActivity(), activityContentView, ScrimClient.NONE);
         return BottomSheetControllerFactory.createFullWidthBottomSheetController(
                 () -> scrimManager,
-                (unused) -> {},
                 getActivity().getWindow(),
                 KeyboardVisibilityDelegate.getInstance(),
-                () -> activityContentView);
+                () -> activityContentView,
+                mInsetObserver);
     }
 }

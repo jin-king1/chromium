@@ -48,12 +48,12 @@ public class ScreenshotShareSheetViewTest {
     private PropertyModel mScreenshotModel;
     private PropertyModelChangeProcessor mScreenshotMCP;
 
-    private AtomicBoolean mCloseClicked = new AtomicBoolean();
-    private AtomicBoolean mShareClicked = new AtomicBoolean();
-    private AtomicBoolean mSaveClicked = new AtomicBoolean();
+    private final AtomicBoolean mCloseClicked = new AtomicBoolean();
+    private final AtomicBoolean mShareClicked = new AtomicBoolean();
+    private final AtomicBoolean mSaveClicked = new AtomicBoolean();
 
-    private Callback<Integer> mMockNoArgListener =
-            new Callback<Integer>() {
+    private final Callback<Integer> mMockNoArgListener =
+            new Callback<>() {
                 @Override
                 public void onResult(
                         @ScreenshotShareSheetViewProperties.NoArgOperation Integer operation) {

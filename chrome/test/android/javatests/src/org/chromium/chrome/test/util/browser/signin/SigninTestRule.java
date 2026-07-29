@@ -4,10 +4,18 @@
 
 package org.chromium.chrome.test.util.browser.signin;
 
+import static androidx.test.espresso.matcher.ViewMatchers.withId;
+
 import static org.hamcrest.Matchers.is;
 
-import androidx.annotation.NonNull;
+import android.view.View;
+
 import androidx.annotation.Nullable;
+
+import org.hamcrest.Matcher;
+import org.junit.rules.TestRule;
+import org.junit.runner.Description;
+import org.junit.runners.model.Statement;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Criteria;
@@ -15,60 +23,146 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
-import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
+import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.Tribool;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
+import org.chromium.components.signin.identitymanager.IdentityManagerImpl;
 import org.chromium.components.signin.test.util.AccountCapabilitiesBuilder;
 import org.chromium.components.signin.test.util.FakeAccountManagerFacade;
 import org.chromium.components.signin.test.util.TestAccounts;
-import org.chromium.components.sync.SyncService;
+import org.chromium.google_apis.gaia.CoreAccountId;
+import org.chromium.google_apis.gaia.GoogleServiceAuthError;
 
 /**
  * This test rule mocks AccountManagerFacade and manages sign-in/sign-out.
  *
- * <p>TODO(crbug.com/40228092): Migrate usage of {@link AccountManagerTestRule} that need native to
- * this rule, then inline the methods that call native.
- *
  * <p>Calling the sign-in functions will invoke native code, therefore this should only be used in
- * on-device tests. In Robolectric tests, use the {@link AccountManagerTestRule} instead as a simple
- * AccountManagerFacade mock.
+ * on-device tests. In Robolectric tests, use the {@link AccountManagerTestRule} instead.
  */
-public class SigninTestRule extends AccountManagerTestRule {
+public class SigninTestRule implements TestRule {
+    // The matcher for the add account button in the fake add account activity.
+    public static final Matcher<View> ADD_ACCOUNT_BUTTON_MATCHER =
+            withId(FakeAccountManagerFacade.AddAccountActivityStub.OK_BUTTON_ID);
+    // The matcher for the cancel button in the fake add account activity.
+    public static final Matcher<View> CANCEL_ADD_ACCOUNT_BUTTON_MATCHER =
+            withId(FakeAccountManagerFacade.AddAccountActivityStub.CANCEL_BUTTON_ID);
+
     private boolean mIsSignedIn;
     private final SigninTestUtil.CustomDeviceLockActivityLauncher mDeviceLockActivityLauncher =
             new SigninTestUtil.CustomDeviceLockActivityLauncher();
 
-    public SigninTestRule() {}
+    private final FakeAccountManagerFacade mFakeAccountManagerFacade;
 
-    public SigninTestRule(@NonNull FakeAccountManagerFacade fakeAccountManagerFacade) {
-        super(fakeAccountManagerFacade);
+    public SigninTestRule() {
+        this(new FakeAccountManagerFacade(false));
+    }
+
+    public SigninTestRule(boolean serializeToPrefs) {
+        this(new FakeAccountManagerFacade(serializeToPrefs));
+    }
+
+    public SigninTestRule(FakeAccountManagerFacade fakeAccountManagerFacade) {
+        mFakeAccountManagerFacade = fakeAccountManagerFacade;
     }
 
     @Override
+    public Statement apply(Statement statement, Description description) {
+        return new Statement() {
+            @Override
+            public void evaluate() throws Throwable {
+                setUpRule();
+                try {
+                    statement.evaluate();
+                } finally {
+                    tearDownRule();
+                }
+            }
+        };
+    }
+
     public void setUpRule() {
-        super.setUpRule();
+        AccountManagerFacadeProvider.setInstanceForTests(mFakeAccountManagerFacade);
         DeviceLockActivityLauncherImpl.setInstanceForTesting(mDeviceLockActivityLauncher);
     }
 
-    /** Signs out if user is signed in. */
-    @Override
     public void tearDownRule() {
-        if (mIsSignedIn && getPrimaryAccount(ConsentLevel.SIGNIN) != null) {
-            // For android_browsertests that sign out during the test body, like
-            // UkmBrowserTest.SingleSyncSignoutCheck, we should sign out during tear-down test stage
-            // only if an account is signed in. Otherwise, tearDownRule() ultimately results a crash
-            // in SignoutManager::signOut(). This is because sign out is attempted when a sign-out
-            // operation is already in progress. See crbug/1102746 for more details.
-            //
-            // We call the force sign out version to make it easier for test writers to write tests
-            // which cleanly tear down (eg. for supervised users who otherwise are not allowed to
-            // sign out).
-            forceSignOut();
-        }
         DeviceLockActivityLauncherImpl.setInstanceForTesting(null);
-        super.tearDownRule();
+    }
+
+    /** Adds an account to the fake AccountManagerFacade */
+    public void addAccount(AccountInfo accountInfo) {
+        mFakeAccountManagerFacade.addAccount(accountInfo);
+    }
+
+    /** Updates an account in the fake AccountManagerFacade */
+    public void updateAccount(AccountInfo accountInfo) {
+        mFakeAccountManagerFacade.updateAccount(accountInfo);
+    }
+
+    /**
+     * Initializes the next add account flow with a given account to add.
+     *
+     * @param newAccount The account that should be added by the add account flow.
+     */
+    public void setAddAccountFlowResult(@Nullable AccountInfo newAccount) {
+        mFakeAccountManagerFacade.setAddAccountFlowResult(newAccount);
+    }
+
+    /** Removes an account with the given {@link CoreAccountId}. */
+    public void removeAccount(CoreAccountId accountId) {
+        mFakeAccountManagerFacade.removeAccount(accountId);
+    }
+
+    /** See {@link FakeAccountManagerFacade#setAccountFetchFailed()}. */
+    public void setAccountFetchFailed() {
+        mFakeAccountManagerFacade.setAccountFetchFailed();
+    }
+
+    /** See {@link FakeAccountManagerFacade#blockGetAccounts}. */
+    public FakeAccountManagerFacade.UpdateBlocker blockGetAccountsUpdate() {
+        return mFakeAccountManagerFacade.blockGetAccounts(/* postUnblockCallback= */ null);
+    }
+
+    /** See {@link FakeAccountManagerFacade#blockGetAccountsAndPopulateCache}. */
+    public FakeAccountManagerFacade.UpdateBlocker blockGetAccountsUpdateAndPopulateCache() {
+        return mFakeAccountManagerFacade.blockGetAccountsAndPopulateCache(
+                /* postUnblockCallback= */ null);
+    }
+
+    /**
+     * Sets an error for the given `accountId` when requesting an access token through {@link
+     * AccountManagerFacade}. Future access token requests will return the `authError` provided.
+     * This method will propagate the error to native code as well through {@link
+     * IdentityManagerImpl}.
+     *
+     * <p>If the `authError` has the state {@link GoogleServiceAuthErrorState#NONE} then {@link
+     * AccountManagerFacade} will return valid access tokens instead of returning an error. Errors
+     * must be set through a previous call to {@link #addOrUpdateAccessTokenError} before they can
+     * be cleared this way.
+     *
+     * @param identityManager {@link IdentityManagerImpl} object to pass the error to native.
+     * @param accountId The {@link CoreAccountId} to set the authError to.
+     * @param authError A {@link GoogleServiceAuthError} to return on access token requests.
+     */
+    public void addOrUpdateAccessTokenError(
+            IdentityManagerImpl identityManager,
+            CoreAccountId accountId,
+            GoogleServiceAuthError authError) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mFakeAccountManagerFacade.addOrUpdateAccessTokenError(accountId, authError);
+                    identityManager.updateAuthErrorForTesting(accountId, authError);
+                });
+    }
+
+    /**
+     * Resolves the minor mode of {@param accountInfo} to restricted, so that the UI will be safe to
+     * show to minors.
+     */
+    public void resolveMinorModeToRestricted(CoreAccountId accountId) {
+        mFakeAccountManagerFacade.updateAccountCapabilities(
+                accountId, TestAccounts.MINOR_MODE_REQUIRED);
     }
 
     /**
@@ -79,10 +173,11 @@ public class SigninTestRule extends AccountManagerTestRule {
     @Deprecated
     public CoreAccountInfo addTestAccountThenSignin() {
         assert !mIsSignedIn : "An account is already signed in!";
-        CoreAccountInfo coreAccountInfo = addAccount(TEST_ACCOUNT_EMAIL);
-        SigninTestUtil.signin(coreAccountInfo);
+        AccountInfo accountInfo = TestAccounts.ACCOUNT1;
+        addAccount(accountInfo);
+        SigninTestUtil.signin(accountInfo);
         mIsSignedIn = true;
-        return coreAccountInfo;
+        return accountInfo;
     }
 
     /** Adds and signs in with the provided account. */
@@ -90,6 +185,15 @@ public class SigninTestRule extends AccountManagerTestRule {
         assert !mIsSignedIn : "An account is already signed in!";
         addAccount(accountInfo);
         SigninTestUtil.signin(accountInfo);
+        mIsSignedIn = true;
+    }
+
+    /** Adds and signs in with the provided account with consent level Sync. */
+    // TODO(crbug.com/40066949): Remove once Sync-the-feature is fully removed.
+    public void addAccountThenSigninWithConsentLevelSync(AccountInfo accountInfo) {
+        assert !mIsSignedIn : "An account is already signed in!";
+        addAccount(accountInfo);
+        SigninTestUtil.signinWithConsentLevelSync(accountInfo);
         mIsSignedIn = true;
     }
 
@@ -101,26 +205,6 @@ public class SigninTestRule extends AccountManagerTestRule {
         mIsSignedIn = true;
     }
 
-    /** Adds and signs in an account with the default name and enables sync. */
-    public CoreAccountInfo addTestAccountThenSigninAndEnableSync() {
-        return addTestAccountThenSigninAndEnableSync(
-                SyncTestUtil.getSyncServiceForLastUsedProfile());
-    }
-
-    /**
-     * Adds and signs in an account with the default name and enables sync.
-     *
-     * @param syncService SyncService object to set up sync, if null, sync won't start.
-     */
-    public CoreAccountInfo addTestAccountThenSigninAndEnableSync(
-            @Nullable SyncService syncService) {
-        assert !mIsSignedIn : "An account is already signed in!";
-        CoreAccountInfo coreAccountInfo = addAccount(TEST_ACCOUNT_EMAIL);
-        SigninTestUtil.signinAndEnableSync(coreAccountInfo, syncService);
-        mIsSignedIn = true;
-        return coreAccountInfo;
-    }
-
     /** Waits for the account corresponding to coreAccountInfo to finish signin. */
     public void waitForSignin(CoreAccountInfo coreAccountInfo) {
         CriteriaHelper.pollUiThread(
@@ -128,7 +212,7 @@ public class SigninTestRule extends AccountManagerTestRule {
                     Criteria.checkThat(
                             IdentityServicesProvider.get()
                                     .getIdentityManager(ProfileManager.getLastUsedRegularProfile())
-                                    .getPrimaryAccountInfo(ConsentLevel.SIGNIN),
+                                    .getPrimaryAccountInfo(),
                             is(coreAccountInfo));
                 });
         mIsSignedIn = true;
@@ -161,48 +245,10 @@ public class SigninTestRule extends AccountManagerTestRule {
     }
 
     /**
-     * Adds a child account, waits for auto-signin to complete, and enables sync.
-     *
-     * @param syncService SyncService object to set up sync, if null, sync won't start.
+     * @return The primary account.
      */
-    public CoreAccountInfo addChildTestAccountThenEnableSync(@Nullable SyncService syncService) {
-        CoreAccountInfo coreAccountInfo = addChildTestAccountThenWaitForSignin();
-
-        // The auto sign-in should leave the user in signed-in, non-syncing state - check this and
-        // enable sync.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    assert IdentityServicesProvider.get()
-                                            .getIdentityManager(
-                                                    ProfileManager.getLastUsedRegularProfile())
-                                            .getPrimaryAccountInfo(ConsentLevel.SYNC)
-                                    == null
-                            : "Sync should not be enabled";
-                });
-        SigninTestUtil.signinAndEnableSync(coreAccountInfo, syncService);
-
-        return coreAccountInfo;
-    }
-
-    /**
-     * Adds and signs in an account with the default name and enables sync.
-     *
-     * @param syncService SyncService object to set up sync, if null, sync won't
-     *         start.
-     * @param isChild Whether this is a supervised child account.
-     */
-    public CoreAccountInfo addTestAccountThenSigninAndEnableSync(
-            @Nullable SyncService syncService, boolean isChild) {
-        return isChild
-                ? addChildTestAccountThenEnableSync(syncService)
-                : addTestAccountThenSigninAndEnableSync(syncService);
-    }
-
-    /**
-     * @return The primary account of the requested {@link ConsentLevel}.
-     */
-    public CoreAccountInfo getPrimaryAccount(@ConsentLevel int consentLevel) {
-        return SigninTestUtil.getPrimaryAccount(consentLevel);
+    public CoreAccountInfo getPrimaryAccount() {
+        return SigninTestUtil.getPrimaryAccount();
     }
 
     /** Sign out from the current account. */
@@ -236,7 +282,7 @@ public class SigninTestRule extends AccountManagerTestRule {
                     Criteria.checkThat(
                             IdentityServicesProvider.get()
                                     .getIdentityManager(ProfileManager.getLastUsedRegularProfile())
-                                    .findExtendedAccountInfoByEmailAddress(accountInfo.getEmail())
+                                    .findExtendedAccountInfoByAccountId(accountInfo.getId())
                                     .getAccountCapabilities()
                                     .isSubjectToParentalControls(),
                             is(Tribool.TRUE));

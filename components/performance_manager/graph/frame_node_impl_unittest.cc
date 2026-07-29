@@ -4,9 +4,9 @@
 
 #include "components/performance_manager/graph/frame_node_impl.h"
 
+#include <algorithm>
 #include <optional>
 
-#include "base/containers/contains.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/task/task_traits.h"
@@ -244,6 +244,7 @@ class MockObserver : public MockFrameNodeObserver {
 };
 
 using ::testing::_;
+using ::testing::AnyNumber;
 using ::testing::Eq;
 using ::testing::InSequence;
 using ::testing::Invoke;
@@ -398,7 +399,7 @@ TEST_F(FrameNodeImplTest, ObserverWorks) {
   EXPECT_CALL(obs, OnFrameVisibilityChanged(raw_frame_node, _))
       .WillOnce(InvokeWithoutArgs([&] {
         frame_node->SetPriorityAndReason(PriorityAndReason(
-            base::TaskPriority::USER_BLOCKING, "test priority"));
+            base::Process::Priority::kUserBlocking, "test priority"));
       }));
   EXPECT_CALL(obs, OnPriorityAndReasonChanged(raw_frame_node, _));
   frame_node->SetVisibility(FrameNode::Visibility::kVisible);
@@ -563,6 +564,20 @@ TEST_F(FrameNodeImplTest, IsAdFrame) {
   EXPECT_FALSE(frame_node->IsAdFrame());
 }
 
+TEST_F(FrameNodeImplTest, IsActive) {
+  auto process = CreateNode<ProcessNodeImpl>();
+  auto page = CreateNode<PageNodeImpl>();
+  auto frame_node = CreateFrameNodeAutoId(process.get(), page.get());
+
+  // is_active is true by default from CreateFrameNodeAutoId.
+  EXPECT_TRUE(frame_node->IsActive());
+
+  frame_node->SetIsActive(false);
+  EXPECT_FALSE(frame_node->IsActive());
+  frame_node->SetIsActive(true);
+  EXPECT_TRUE(frame_node->IsActive());
+}
+
 TEST_F(FrameNodeImplTest, IsHoldingWebLock) {
   auto process = CreateNode<ProcessNodeImpl>();
   auto page = CreateNode<PageNodeImpl>();
@@ -621,7 +636,7 @@ TEST_F(FrameNodeImplTest, Priority) {
   MockObserver obs(graph());
 
   // By default the priority should be "lowest".
-  EXPECT_EQ(base::TaskPriority::LOWEST,
+  EXPECT_EQ(base::Process::Priority::kMinValue,
             frame_node->GetPriorityAndReason().priority());
 
   // Changed the reason only.
@@ -629,40 +644,40 @@ TEST_F(FrameNodeImplTest, Priority) {
   EXPECT_CALL(obs,
               OnPriorityAndReasonChanged(
                   frame_node.get(),
-                  PriorityAndReason(base::TaskPriority::LOWEST,
+                  PriorityAndReason(base::Process::Priority::kMinValue,
                                     FrameNodeImpl::kDefaultPriorityReason)));
   frame_node->SetPriorityAndReason(
-      PriorityAndReason(base::TaskPriority::LOWEST, kDummyReason));
-  EXPECT_EQ(PriorityAndReason(base::TaskPriority::LOWEST, kDummyReason),
+      PriorityAndReason(base::Process::Priority::kMinValue, kDummyReason));
+  EXPECT_EQ(PriorityAndReason(base::Process::Priority::kMinValue, kDummyReason),
             frame_node->GetPriorityAndReason());
   testing::Mock::VerifyAndClear(&obs);
 
   // Change the priority only.
-  EXPECT_CALL(obs,
-              OnPriorityAndReasonChanged(
-                  frame_node.get(),
-                  PriorityAndReason(base::TaskPriority::LOWEST, kDummyReason)));
+  EXPECT_CALL(obs, OnPriorityAndReasonChanged(
+                       frame_node.get(),
+                       PriorityAndReason(base::Process::Priority::kMinValue,
+                                         kDummyReason)));
   frame_node->SetPriorityAndReason(
-      PriorityAndReason(base::TaskPriority::HIGHEST, kDummyReason));
-  EXPECT_EQ(PriorityAndReason(base::TaskPriority::HIGHEST, kDummyReason),
+      PriorityAndReason(base::Process::Priority::kMaxValue, kDummyReason));
+  EXPECT_EQ(PriorityAndReason(base::Process::Priority::kMaxValue, kDummyReason),
             frame_node->GetPriorityAndReason());
   testing::Mock::VerifyAndClear(&obs);
 
   // Change neither.
   frame_node->SetPriorityAndReason(
-      PriorityAndReason(base::TaskPriority::HIGHEST, kDummyReason));
-  EXPECT_EQ(PriorityAndReason(base::TaskPriority::HIGHEST, kDummyReason),
+      PriorityAndReason(base::Process::Priority::kMaxValue, kDummyReason));
+  EXPECT_EQ(PriorityAndReason(base::Process::Priority::kMaxValue, kDummyReason),
             frame_node->GetPriorityAndReason());
   testing::Mock::VerifyAndClear(&obs);
 
   // Change both the priority and the reason.
-  EXPECT_CALL(
-      obs, OnPriorityAndReasonChanged(
-               frame_node.get(),
-               PriorityAndReason(base::TaskPriority::HIGHEST, kDummyReason)));
+  EXPECT_CALL(obs, OnPriorityAndReasonChanged(
+                       frame_node.get(),
+                       PriorityAndReason(base::Process::Priority::kMaxValue,
+                                         kDummyReason)));
   frame_node->SetPriorityAndReason(
-      PriorityAndReason(base::TaskPriority::LOWEST, nullptr));
-  EXPECT_EQ(PriorityAndReason(base::TaskPriority::LOWEST, nullptr),
+      PriorityAndReason(base::Process::Priority::kMinValue, nullptr));
+  EXPECT_EQ(PriorityAndReason(base::Process::Priority::kMinValue, nullptr),
             frame_node->GetPriorityAndReason());
   testing::Mock::VerifyAndClear(&obs);
 }
@@ -762,34 +777,28 @@ TEST_F(FrameNodeImplTest, ViewportIntersection) {
 
   MockObserver obs(graph());
 
+  // Ignore OnIsIntersectingLargeArea notifications.
+  EXPECT_CALL(obs, OnIsIntersectingLargeAreaChanged(child_frame_node.get()))
+      .Times(AnyNumber());
+
   // Initially unknown.
-  EXPECT_EQ(child_frame_node->GetViewportIntersection(), std::nullopt);
+  EXPECT_EQ(child_frame_node->GetViewportIntersection(),
+            ViewportIntersection::kUnknown);
 
   EXPECT_CALL(obs, OnViewportIntersectionChanged(child_frame_node.get()));
-  child_frame_node->SetViewportIntersectionForTesting(
-      ViewportIntersection::CreateNotIntersecting());
-  EXPECT_FALSE(child_frame_node->GetViewportIntersection()->is_intersecting());
-  EXPECT_FALSE(child_frame_node->GetViewportIntersection()
-                   ->is_intersecting_large_area());
+  child_frame_node->SetViewportIntersection(
+      ViewportIntersection::kNotIntersecting);
+  EXPECT_EQ(child_frame_node->GetViewportIntersection(),
+            ViewportIntersection::kNotIntersecting);
 
   EXPECT_CALL(obs, OnViewportIntersectionChanged(child_frame_node.get()));
-  child_frame_node->SetViewportIntersectionForTesting(
-      ViewportIntersection::CreateIntersecting(
-          /*is_intersecting_large_area=*/true));
-  EXPECT_TRUE(child_frame_node->GetViewportIntersection()->is_intersecting());
-  EXPECT_TRUE(child_frame_node->GetViewportIntersection()
-                  ->is_intersecting_large_area());
-
-  EXPECT_CALL(obs, OnViewportIntersectionChanged(child_frame_node.get()));
-  child_frame_node->SetViewportIntersectionForTesting(
-      ViewportIntersection::CreateIntersecting(
-          /*is_intersecting_large_area=*/false));
-  EXPECT_TRUE(child_frame_node->GetViewportIntersection()->is_intersecting());
-  EXPECT_FALSE(child_frame_node->GetViewportIntersection()
-                   ->is_intersecting_large_area());
+  child_frame_node->SetViewportIntersection(
+      ViewportIntersection::kIntersecting);
+  EXPECT_EQ(child_frame_node->GetViewportIntersection(),
+            ViewportIntersection::kIntersecting);
 }
 
-TEST_F(FrameNodeImplTest, ViewportIntersection_IsIntersectingLargeArea) {
+TEST_F(FrameNodeImplTest, IsIntersectingLargeArea) {
   auto process = CreateNode<ProcessNodeImpl>();
   auto page = CreateNode<PageNodeImpl>();
   auto main_frame_node = CreateFrameNodeAutoId(process.get(), page.get());
@@ -799,34 +808,42 @@ TEST_F(FrameNodeImplTest, ViewportIntersection_IsIntersectingLargeArea) {
   auto local_root = CreateFrameNodeAutoId(other_process.get(), page.get(),
                                           main_frame_node.get());
 
-  // Set the local root to be intersecting with a large area of the viewport.
-  local_root->SetViewportIntersectionForTesting(
-      ViewportIntersection::CreateIntersecting(
-          /*is_intersecting_large_area=*/true));
-  EXPECT_TRUE(
-      local_root->GetViewportIntersection()->is_intersecting_large_area());
+  MockObserver obs(graph());
 
-  // Create a local child frame that intersects with the viewport.
+  // Ignore OnViewportIntersectionChanged notifications.
+  EXPECT_CALL(obs, OnViewportIntersectionChanged(local_root.get()))
+      .Times(AnyNumber());
 
-  auto local_child =
-      CreateFrameNodeAutoId(other_process.get(), page.get(), local_root.get());
-  local_child->SetViewportIntersectionForTesting(
-      /*is_intersecting_viewport*/ true);
+  // By default, a frame is assumed to be intersecting with a large area of the
+  // viewport.
+  EXPECT_TRUE(local_root->IsIntersectingLargeArea());
 
-  // The child inherited the `is_intersecting_large_area` bit from its parent.
-  EXPECT_TRUE(
-      local_child->GetViewportIntersection()->is_intersecting_large_area());
+  EXPECT_CALL(obs, OnIsIntersectingLargeAreaChanged(local_root.get()));
+  local_root->SetIsIntersectingLargeArea(false);
+  EXPECT_FALSE(local_root->IsIntersectingLargeArea());
 
-  // Make the local root intersecting with a non-large area of the viewport.
-  local_root->SetViewportIntersectionForTesting(
-      ViewportIntersection::CreateIntersecting(
-          /*is_intersecting_large_area=*/false));
-  EXPECT_FALSE(
-      local_root->GetViewportIntersection()->is_intersecting_large_area());
+  EXPECT_CALL(obs, OnIsIntersectingLargeAreaChanged(local_root.get()));
+  local_root->SetIsIntersectingLargeArea(true);
+  EXPECT_TRUE(local_root->IsIntersectingLargeArea());
 
-  // The child inherited the `is_intersecting_large_area` bit from its parent.
-  EXPECT_FALSE(
-      local_child->GetViewportIntersection()->is_intersecting_large_area());
+  // IsIntersectingLargeArea() is false if GetViewportIntersection is
+  // kNotIntersecting.
+  EXPECT_CALL(obs, OnIsIntersectingLargeAreaChanged(local_root.get()));
+  local_root->SetViewportIntersection(ViewportIntersection::kNotIntersecting);
+  EXPECT_FALSE(local_root->IsIntersectingLargeArea());
+
+  // Toggling IsIntersectingLargeArea() while the viewport intersection is
+  // kNotIntersecting doesn't affect its value.
+  local_root->SetIsIntersectingLargeArea(false);
+  EXPECT_FALSE(local_root->IsIntersectingLargeArea());
+  local_root->SetIsIntersectingLargeArea(true);
+  EXPECT_FALSE(local_root->IsIntersectingLargeArea());
+
+  // Change the viewport intersection to kIntersecting and observe the property
+  // change.
+  EXPECT_CALL(obs, OnIsIntersectingLargeAreaChanged(local_root.get()));
+  local_root->SetViewportIntersection(ViewportIntersection::kIntersecting);
+  EXPECT_TRUE(local_root->IsIntersectingLargeArea());
 }
 
 TEST_F(FrameNodeImplTest, Visibility) {
@@ -876,14 +893,12 @@ TEST_F(FrameNodeImplTest, PublicInterface) {
 
   auto child_frame_nodes = public_frame_node->GetChildFrameNodes();
   for (FrameNodeImpl* child : frame_node->child_frame_nodes()) {
-    EXPECT_TRUE(base::Contains(child_frame_nodes, child));
+    EXPECT_TRUE(std::ranges::contains(child_frame_nodes, child));
   }
   EXPECT_EQ(child_frame_nodes.size(), frame_node->child_frame_nodes().size());
 }
 
 TEST_F(FrameNodeImplTest, PageRelationships) {
-  using EmbeddingType = PageNode::EmbeddingType;
-
   auto process = CreateNode<ProcessNodeImpl>();
   auto pageA = CreateNode<PageNodeImpl>();
   auto frameA1 = CreateFrameNodeAutoId(process.get(), pageA.get());
@@ -907,36 +922,30 @@ TEST_F(FrameNodeImplTest, PageRelationships) {
   frameB1->SeverPageRelationshipsAndMaybeReparentForTesting();
 
   // You can't clear an embedder if you don't already have one.
-  EXPECT_DCHECK_DEATH(pageB->ClearEmbedderFrameNodeAndEmbeddingType());
+  EXPECT_DCHECK_DEATH(pageB->ClearEmbedderFrameNode());
 
   // You can't be an embedder for your own frame tree.
-  EXPECT_DCHECK_DEATH(pageA->SetEmbedderFrameNodeAndEmbeddingType(
-      frameA1.get(), EmbeddingType::kGuestView));
+  EXPECT_DCHECK_DEATH(pageA->SetEmbedderFrameNode(frameA1.get()));
 
-  // You can't set a null embedder or an invalid embedded type.
-  EXPECT_DCHECK_DEATH(pageB->SetEmbedderFrameNodeAndEmbeddingType(
-      nullptr, EmbeddingType::kInvalid));
-  EXPECT_DCHECK_DEATH(pageB->SetEmbedderFrameNodeAndEmbeddingType(
-      frameA1.get(), EmbeddingType::kInvalid));
+  // You can't set a null embedder.
+  EXPECT_DCHECK_DEATH(pageB->SetEmbedderFrameNode(nullptr));
 
   EXPECT_EQ(nullptr, pageB->embedder_frame_node());
   EXPECT_EQ(nullptr, ppageB->GetEmbedderFrameNode());
-  EXPECT_EQ(EmbeddingType::kInvalid, ppageB->GetEmbeddingType());
   EXPECT_TRUE(frameA1->embedded_page_nodes().empty());
   EXPECT_TRUE(pframeA1->GetEmbeddedPageNodes().empty());
 
   // Set an embedder relationship.
-  EXPECT_CALL(obs, OnEmbedderFrameNodeChanged(pageB.get(), nullptr,
-                                              EmbeddingType::kInvalid));
-  pageB->SetEmbedderFrameNodeAndEmbeddingType(frameA1.get(),
-                                              EmbeddingType::kGuestView);
+  EXPECT_CALL(obs, OnEmbedderFrameNodeChanged(pageB.get(), nullptr));
+  pageB->SetEmbedderFrameNode(frameA1.get());
   EXPECT_EQ(frameA1.get(), pageB->embedder_frame_node());
   EXPECT_EQ(frameA1.get(), ppageB->GetEmbedderFrameNode());
-  EXPECT_EQ(EmbeddingType::kGuestView, ppageB->GetEmbeddingType());
   EXPECT_EQ(1u, frameA1->embedded_page_nodes().size());
   EXPECT_EQ(1u, pframeA1->GetEmbeddedPageNodes().size());
-  EXPECT_TRUE(base::Contains(frameA1->embedded_page_nodes(), pageB.get()));
-  EXPECT_TRUE(base::Contains(pframeA1->GetEmbeddedPageNodes(), pageB.get()));
+  EXPECT_TRUE(
+      std::ranges::contains(frameA1->embedded_page_nodes(), pageB.get()));
+  EXPECT_TRUE(
+      std::ranges::contains(pframeA1->GetEmbeddedPageNodes(), pageB.get()));
   testing::Mock::VerifyAndClear(&obs);
 
   // Set an opener relationship.
@@ -945,15 +954,14 @@ TEST_F(FrameNodeImplTest, PageRelationships) {
   EXPECT_EQ(frameA1.get(), pageC->opener_frame_node());
   EXPECT_EQ(1u, frameA1->embedded_page_nodes().size());
   EXPECT_EQ(1u, frameA1->opened_page_nodes().size());
-  EXPECT_TRUE(base::Contains(frameA1->embedded_page_nodes(), pageB.get()));
+  EXPECT_TRUE(
+      std::ranges::contains(frameA1->embedded_page_nodes(), pageB.get()));
   testing::Mock::VerifyAndClear(&obs);
 
   // Manually clear the embedder relationship (initiated from the page).
-  EXPECT_CALL(obs, OnEmbedderFrameNodeChanged(pageB.get(), frameA1.get(),
-                                              EmbeddingType::kGuestView));
-  pageB->ClearEmbedderFrameNodeAndEmbeddingType();
+  EXPECT_CALL(obs, OnEmbedderFrameNodeChanged(pageB.get(), frameA1.get()));
+  pageB->ClearEmbedderFrameNode();
   EXPECT_EQ(nullptr, pageB->embedder_frame_node());
-  EXPECT_EQ(EmbeddingType::kInvalid, pageB->GetEmbeddingType());
   EXPECT_EQ(frameA1.get(), pageC->opener_frame_node());
   EXPECT_TRUE(frameA1->embedded_page_nodes().empty());
   testing::Mock::VerifyAndClear(&obs);
@@ -962,7 +970,6 @@ TEST_F(FrameNodeImplTest, PageRelationships) {
   EXPECT_CALL(obs, OnOpenerFrameNodeChanged(pageC.get(), frameA1.get()));
   frameA1->SeverPageRelationshipsAndMaybeReparentForTesting();
   EXPECT_EQ(nullptr, pageC->embedder_frame_node());
-  EXPECT_EQ(EmbeddingType::kInvalid, pageC->GetEmbeddingType());
   EXPECT_TRUE(frameA1->opened_page_nodes().empty());
   EXPECT_TRUE(frameA1->embedded_page_nodes().empty());
   testing::Mock::VerifyAndClear(&obs);
@@ -975,7 +982,7 @@ TEST_F(FrameNodeImplTest, PageRelationships) {
   EXPECT_TRUE(frameA1->embedded_page_nodes().empty());
   EXPECT_EQ(1u, frameA2->opened_page_nodes().size());
   EXPECT_TRUE(frameA2->embedded_page_nodes().empty());
-  EXPECT_TRUE(base::Contains(frameA2->opened_page_nodes(), pageB.get()));
+  EXPECT_TRUE(std::ranges::contains(frameA2->opened_page_nodes(), pageB.get()));
   testing::Mock::VerifyAndClear(&obs);
 
   // Clear it with the helper, and expect it to be reparented to node A1.
@@ -983,7 +990,7 @@ TEST_F(FrameNodeImplTest, PageRelationships) {
   frameA2->SeverPageRelationshipsAndMaybeReparentForTesting();
   EXPECT_EQ(frameA1.get(), pageB->opener_frame_node());
   EXPECT_EQ(1u, frameA1->opened_page_nodes().size());
-  EXPECT_TRUE(base::Contains(frameA1->opened_page_nodes(), pageB.get()));
+  EXPECT_TRUE(std::ranges::contains(frameA1->opened_page_nodes(), pageB.get()));
   EXPECT_TRUE(frameA2->opened_page_nodes().empty());
   testing::Mock::VerifyAndClear(&obs);
 
@@ -1003,7 +1010,7 @@ TEST_F(FrameNodeImplTest, PageRelationships) {
   EXPECT_EQ(frameA2.get(), pageB->opener_frame_node());
   EXPECT_TRUE(frameA1->opened_page_nodes().empty());
   EXPECT_EQ(1u, frameA2->opened_page_nodes().size());
-  EXPECT_TRUE(base::Contains(frameA2->opened_page_nodes(), pageB.get()));
+  EXPECT_TRUE(std::ranges::contains(frameA2->opened_page_nodes(), pageB.get()));
   testing::Mock::VerifyAndClear(&obs);
 
   {

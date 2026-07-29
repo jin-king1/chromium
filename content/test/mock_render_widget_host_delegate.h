@@ -44,6 +44,7 @@ class MockRenderWidgetHostDelegate
       KeyboardEventProcessingResult result) {
     pre_handle_keyboard_event_result_ = result;
   }
+
   void CreateInputEventRouter();
 
   void FlushInkRenderer() { delegated_ink_point_renderer_.FlushForTesting(); }
@@ -65,6 +66,7 @@ class MockRenderWidgetHostDelegate
   input::RenderWidgetHostInputEventRouter* GetInputEventRouter() override;
   RenderWidgetHostImpl* GetFocusedRenderWidgetHost(
       RenderWidgetHostImpl* widget_host) override;
+  RenderWidgetHostImpl* GetRenderWidgetHostWithPageFocus() override;
   void SendScreenRects() override;
   TextInputManager* GetTextInputManager() override;
   bool IsFullscreen() override;
@@ -72,10 +74,10 @@ class MockRenderWidgetHostDelegate
   VisibleTimeRequestTrigger& GetVisibleTimeRequestTrigger() override;
   gfx::mojom::DelegatedInkPointRenderer* GetDelegatedInkRenderer(
       ui::Compositor* compositor) override;
-  void OnInputIgnored(const blink::WebInputEvent& event) override;
 
   //  RenderWidgetHostInputEventRouter::Delegate
   input::TouchEmulator* GetTouchEmulator(bool create_if_necessary) override;
+  void CancelAutoscroll(input::RenderWidgetHostViewInput* view) override;
 
  private:
   std::unique_ptr<input::NativeWebKeyboardEvent> last_event_;

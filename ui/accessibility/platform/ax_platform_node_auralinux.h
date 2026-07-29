@@ -28,6 +28,17 @@ struct AtkAttributeSetDeleter {
   }
 };
 
+// Internal replication of the Atk.Live enum
+// https://docs.gtk.org/atk/enum.Live.html
+// TODO(https://crbug.com/404172321): We replicated this due to build issues
+// likely due to the newness of this enum in the Atk library. Remove this in
+// favor of the Atk library enum when Atk headers are updated internally.
+enum AriaNotificationAtkLive {
+  kNone,
+  kPolite,
+  kAssertive,
+};
+
 using AtkAttributes = std::unique_ptr<AtkAttributeSet, AtkAttributeSetDeleter>;
 
 // Some ATK interfaces require returning a (const gchar*), use
@@ -77,9 +88,8 @@ class ImplementedAtkInterfaces {
 
   void Add(Value other) { value_ |= static_cast<int>(other); }
 
-  bool operator!=(const ImplementedAtkInterfaces& other) {
-    return value_ != other.value_;
-  }
+  friend bool operator==(const ImplementedAtkInterfaces&,
+                         const ImplementedAtkInterfaces&) = default;
 
   int value() const { return value_; }
 
@@ -91,7 +101,6 @@ class ImplementedAtkInterfaces {
 class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeAuraLinux
     : public AXPlatformNodeBase {
  public:
-  ~AXPlatformNodeAuraLinux() override;
   AXPlatformNodeAuraLinux(const AXPlatformNodeAuraLinux&) = delete;
   AXPlatformNodeAuraLinux& operator=(const AXPlatformNodeAuraLinux&) = delete;
 
@@ -106,10 +115,6 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeAuraLinux
 
   // Do asynchronous static initialization.
   static void StaticInitialize();
-
-  // Enables AXMode calling AXPlatformNode::NotifyAddAXModeFlags. It's used
-  // when ATK APIs are called.
-  static void EnableAXMode();
 
   // EnsureAtkObjectIsValid will destroy and recreate |atk_object_| if the
   // interface mask is different. This partially relies on looking at the tree's
@@ -180,6 +185,11 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeAuraLinux
   void OnFocused();
   void OnWindowActivated();
   void OnWindowDeactivated();
+
+  // Event handlers called from NotifyAccessibilityEvent and
+  // BrowserAccessibilityManagerAuraLinux. These handle AT-SPI readiness checks.
+  void HandleWindowActivatedEvent();
+  void HandleWindowDeactivatedEvent();
   void OnMenuPopupStart();
   void OnMenuPopupEnd();
   void OnAllMenusEnded();
@@ -193,6 +203,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeAuraLinux
   void OnSortDirectionChanged();
   void OnInvalidStatusChanged();
   void OnAriaCurrentChanged();
+  void OnAriaNotificationPosted(
+      const std::string& announcement,
+      ax::mojom::AriaNotificationPriority priority_property);
   void OnDocumentTitleChanged();
   void OnSubtreeCreated();
   void OnSubtreeWillBeDeleted();
@@ -232,7 +245,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeAuraLinux
   // relationship between a toplevel frame and its embedded document.
   void SetDocumentParent(AtkObject* new_document_parent);
 
-  int GetCaretOffset();
+  int GetCaretOffset() override;
   bool SetCaretOffset(int offset);
   bool SetTextSelectionForAtkText(int start_offset, int end_offset);
   bool HasSelection();
@@ -275,9 +288,10 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeAuraLinux
 
  protected:
   AXPlatformNodeAuraLinux();
+  ~AXPlatformNodeAuraLinux() override;
 
   // AXPlatformNode overrides.
-  void Init(AXPlatformNodeDelegate* delegate) override;
+  void Init(AXPlatformNodeDelegate& delegate) override;
 
   // Offsets for the AtkText API are calculated in UTF-16 code point offsets,
   // but the ATK APIs want all offsets to be in "characters," which we
@@ -411,7 +425,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNodeAuraLinux
   bool window_activate_event_postponed_ = false;
 
   friend AXPlatformNode::Pointer AXPlatformNode::Create(
-      AXPlatformNodeDelegate* delegate);
+      AXPlatformNodeDelegate& delegate);
 };
 
 }  // namespace ui

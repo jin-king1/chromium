@@ -7,7 +7,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/accessibility/caption_bubble_context_browser.h"
 #include "chrome/browser/accessibility/live_caption/live_caption_controller_factory.h"
@@ -70,7 +69,8 @@ LiveCaptionUnavailabilityNotifier::LiveCaptionUnavailabilityNotifier(
 LiveCaptionUnavailabilityNotifier::~LiveCaptionUnavailabilityNotifier() {
   LiveCaptionController* live_caption_controller = GetLiveCaptionController();
   if (live_caption_controller)
-    live_caption_controller->OnAudioStreamEnd(context_.get());
+    live_caption_controller->OnAudioStreamEnd(&render_frame_host(),
+                                              context_.get());
 }
 
 void LiveCaptionUnavailabilityNotifier::MediaFoundationRendererCreated(
@@ -108,10 +108,9 @@ bool LiveCaptionUnavailabilityNotifier::
 }
 
 bool LiveCaptionUnavailabilityNotifier::ErrorSilencedForOrigin() {
-  return base::Contains(
-      profile_prefs_->GetList(
-          prefs::kLiveCaptionMediaFoundationRendererErrorSilenced),
-      render_frame_host().GetLastCommittedOrigin().Serialize());
+  return profile_prefs_
+      ->GetList(prefs::kLiveCaptionMediaFoundationRendererErrorSilenced)
+      .contains(render_frame_host().GetLastCommittedOrigin().Serialize());
 }
 
 void LiveCaptionUnavailabilityNotifier::DisplayMediaFoundationRendererError() {

@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
-import {SourcesTestRunner} from 'sources_test_runner';
-
 import * as SDK from 'devtools/core/sdk/sdk.js';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import * as Bindings from 'devtools/models/bindings/bindings.js';
 import * as Workspace from 'devtools/models/workspace/workspace.js';
+import {SourcesTestRunner} from 'sources_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(`Tests SourceMap and StyleSheetMapping.\n`);
@@ -79,7 +79,7 @@ import * as Workspace from 'devtools/models/workspace/workspace.js';
     testAndDumpLocation(scssUISourceCode, 4, 11, 4, 11);
     testAndDumpLocation(scssUISourceCode, 4, 13, 4, 15);
     testAndDumpLocation(scssUISourceCode, 4, 17, 4, 20);
-    scssUISourceCode.requestContent().then(didRequestContent);
+    scssUISourceCode.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(didRequestContent);
 
     function didRequestContent({ content, error, isEncoded }) {
       TestRunner.assertEquals(0, content.indexOf('/* Comment */'));

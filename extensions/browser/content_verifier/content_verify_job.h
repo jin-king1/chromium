@@ -16,7 +16,10 @@
 #include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
 #include "base/version.h"
+#include "crypto/hash.h"
+#include "extensions/browser/content_hash_reader.h"
 #include "extensions/browser/content_verifier/content_verifier_key.h"
 #include "extensions/common/extension_id.h"
 #include "mojo/public/c/system/types.h"
@@ -25,19 +28,30 @@ namespace base {
 class FilePath;
 }
 
-namespace crypto {
-class SecureHash;
-}
-
 namespace extensions {
 
 class ContentHash;
-class ContentHashReader;
 class ContentVerifier;
 
 // Objects of this class are responsible for verifying that the actual content
 // read from an extension file matches an expected set of hashes. This class
-// can be created and used on any thread.
+// has complex threading behavior: it can be created on any thread, and some of
+// its methods can be called on any thread, but most of them can only be called
+// on the IO thread.
+//
+// The basic usage flow is like this:
+// 1. Create a ContentVerifyJob on any thread
+// 2. Post a task to the IO thread to call Start() on it
+// 3. If you already have bytes of the data to hash available, pass them in via
+//    BytesRead() (which can be called on any thread)
+// 4. Once verification is done, the failure callback will be run *on an
+//    unspecified thread* - it can be either the IO thread or the thread you
+//    called DoneReading() from. If the failure callback is never run, then
+//    verification succeeded. Your callback must tolerate being run on any
+//    thread and it must tolerate never being run at all.
+//
+// You may want to use BindPostTask() with this class to deal with the
+// unpredictable callback thread.
 class ContentVerifyJob : public base::RefCountedThreadSafe<ContentVerifyJob> {
  public:
   // Used in UMA metrics. Ensure this stays in sync with
@@ -66,6 +80,7 @@ class ContentVerifyJob : public base::RefCountedThreadSafe<ContentVerifyJob> {
   using FailureCallback = base::OnceCallback<void(FailureReason)>;
 
   ContentVerifyJob(const ExtensionId& extension_id,
+                   const base::Version& extension_version,
                    const base::FilePath& extension_root,
                    const base::FilePath& relative_path);
 
@@ -74,9 +89,9 @@ class ContentVerifyJob : public base::RefCountedThreadSafe<ContentVerifyJob> {
 
   // This begins the process of getting expected hashes, so it should be called
   // as early as possible.
-  // The |failure_callback| will be called at most once if there was a failure.
+  // The `failure_callback` will be called at most once if there was a failure.
   void Start(ContentVerifier* verifier,
-             const base::Version& extension_version,
+             const base::Version& current_extension_version,
              int manifest_version,
              FailureCallback failure_callback);
 
@@ -92,20 +107,21 @@ class ContentVerifyJob : public base::RefCountedThreadSafe<ContentVerifyJob> {
   void DoneReading();
 
   const ExtensionId& extension_id() const { return extension_id_; }
+  const base::Version& extension_version() const { return extension_version_; }
+  const base::FilePath& extension_root() const { return extension_root_; }
   const base::FilePath& relative_path() const { return relative_path_; }
 
   class TestObserver : public base::RefCountedThreadSafe<TestObserver> {
    public:
-    virtual void JobStarted(const ExtensionId& extension_id,
-                            const base::FilePath& relative_path) = 0;
-
     virtual void JobFinished(const ExtensionId& extension_id,
                              const base::FilePath& relative_path,
                              FailureReason failure_reason) = 0;
 
-    virtual void OnHashesReady(const ExtensionId& extension_id,
-                               const base::FilePath& relative_path,
-                               const ContentHashReader& hash_reader) = 0;
+    virtual void OnHashesReady(
+        const ExtensionId& extension_id,
+        const base::FilePath& relative_path,
+        const base::expected<ContentHashData, ContentHashReaderInitStatus>&
+            hashes) = 0;
 
    protected:
     virtual ~TestObserver() = default;
@@ -155,38 +171,42 @@ class ContentVerifyJob : public base::RefCountedThreadSafe<ContentVerifyJob> {
   // Indicates whether the caller has told us they are done calling BytesRead.
   bool done_reading_ = false;
 
-  // Set to true once hash_reader_ has read its expected hashes.
+  // Set to true once we have expected hashes.
   bool hashes_ready_ = false;
 
-  // While we're waiting for the callback from the ContentHashReader, we need
-  // to queue up bytes any bytes that are read.
+  // In between when the job is created and when it is started, the caller can
+  // call BytesRead() to start pushing in bytes to verify. In that case, we
+  // queue those bytes here.
   std::string queue_;
 
   // The total bytes we've read.
   int64_t total_bytes_read_ = 0;
 
   // The index of the block we're currently on.
-  int current_block_ = 0;
+  size_t current_block_ = 0;
 
-  // The hash we're building up for the bytes of |current_block_|.
-  std::unique_ptr<crypto::SecureHash> current_hash_;
+  // The hash we're building up for the bytes of `current_block_`.
+  std::optional<crypto::hash::Hasher> current_hash_;
 
-  // The number of bytes we've already input into |current_hash_|.
-  int current_hash_byte_count_ = 0;
+  // The number of bytes we've already input into `current_hash_`.
+  size_t current_hash_byte_count_ = 0;
 
-  // Valid and set after |hashes_ready_| is set to true.
-  std::unique_ptr<const ContentHashReader> hash_reader_;
+  // Valid and set after `hashes_ready_` is set to true.
+  base::expected<ContentHashData, ContentHashReaderInitStatus> hashes_ =
+      base::unexpected(ContentHashReaderInitStatus::FETCH_NOT_ATTEMPTED_YET);
 
   // Resource info for this verify job.
   const ExtensionId extension_id_;
   const base::FilePath extension_root_;
   const base::FilePath relative_path_;
 
-  base::TimeDelta time_spent_;
-
   // The manifest version of the extension associated with the verify job.
   // Used only for metrics purposes.
   int manifest_version_ = 0;
+
+  // The version of the extension associated with the verify job.
+  // Used for comparing against the version from `ContentHash`.
+  const base::Version extension_version_;
 
   // Called once if verification fails.
   FailureCallback failure_callback_;

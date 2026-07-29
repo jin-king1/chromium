@@ -5,6 +5,24 @@
 #ifndef COMPONENTS_OPTIMIZATION_GUIDE_CORE_OPTIMIZATION_GUIDE_FEATURES_H_
 #define COMPONENTS_OPTIMIZATION_GUIDE_CORE_OPTIMIZATION_GUIDE_FEATURES_H_
 
+// Guidelines for adding new features:
+// 1. Don't add new features in this file. Put them somewhere near the thing
+//    they control or the interface they affect the behavior of.
+// 2. Features should be declared with a comment indicating what they are for
+//    and some reference that can be used to decide when they are no longer
+//    needed.
+//     a. Rollout gates should link a tracker bug for the rollout.
+//     b. Killswitches should link a playbook describing their usage scenarios.
+//     c. Speculative parameters and debugging flags should indicate that
+//        status, so they can be removed whenever they are inconvenient to keep.
+// 3. Parameters should not be added to existing features. In general, it's
+//    better to make an independent Feature for each parameter.
+// 4. See //docs/flag_guarding_guidelines.md and //docs/configuration.md for
+//    general best practices and advice for the Chromium repo.
+
+// TODO: crbug.com/514743962 - All of these constants should be moved to more
+// specific files and out of this file.  Do not add anything here.
+
 #include <map>
 #include <optional>
 #include <set>
@@ -12,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/component_export.h"
 #include "base/containers/enum_set.h"
 #include "base/containers/flat_set.h"
@@ -19,11 +38,11 @@
 #include "base/metrics/field_trial_params.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/proto/models.pb.h"
+#include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
 #include "net/nqe/effective_connection_type.h"
 #include "url/gurl.h"
 
@@ -35,15 +54,9 @@ namespace features {
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOptimizationHints);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kRemoteOptimizationGuideFetching);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kRemoteOptimizationGuideFetchingAnonymousDataConsent);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOptimizationGuideFetchingForSRP);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOptimizationTargetPrediction);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kOptimizationGuideModelDownloading);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kPageTextExtraction);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -55,8 +68,6 @@ BASE_DECLARE_FEATURE(kPreventLongRunningPredictionModels);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOverrideNumThreadsForModelExecution);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kOptGuideEnableXNNPACKDelegateWithTFLite);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOptimizationGuidePersonalizedFetching);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOptimizationGuidePredictionModelKillswitch);
@@ -64,8 +75,6 @@ COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOptimizationGuideModelExecution);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOptimizationGuideOnDeviceModel);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kOptimizationGuideComposeOnDeviceEval);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kModelQualityLogging);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -75,16 +84,19 @@ BASE_DECLARE_FEATURE(kTextSafetyClassifier);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kTextSafetyScanLanguageDetection);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kOnDeviceModelValidation);
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 BASE_DECLARE_FEATURE(kOnDeviceModelFetchPerformanceClassEveryStartup);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kAiSettingsPageRefresh);
+BASE_DECLARE_FEATURE(kAiSettingsPageForceAvailable);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kPrivacyGuideAiSettings);
-
+BASE_DECLARE_FEATURE(kAnnotatedPageContentWithActionableElements);
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-extern const base::FeatureParam<bool> kShowAiSettingsForTesting;
+BASE_DECLARE_FEATURE(kAnnotatedPageContentWithMediaData);
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+BASE_DECLARE_FEATURE(kOptimizationGuideProactivePersonalizedHintsFetching);
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+BASE_DECLARE_FEATURE(kOptimizationGuideBypassFormsClassificationAuth);
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+BASE_DECLARE_FEATURE(kOptimizationGuideBypassPasswordChangeAuth);
 
 // Allows setting feature params for model download configuration, such as
 // minimum performance class for download.
@@ -105,13 +117,57 @@ COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 extern const base::FeatureParam<std::string>
     kLowTierPerformanceClassListForOnDeviceModel;
 
+// Comma-separated list of performance classes that have image input enabled.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kOptimizationGuideIconView);
+extern const base::FeatureParam<std::string> kPerformanceClassListForImageInput;
+
+// Whether on device models are downloaded in background prior to feature usage.
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+BASE_DECLARE_FEATURE(kOnDeviceModelBackgroundDownload);
+
+// Comma-separated list of features that are allowed to be downloaded in
+// background.
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+extern const base::FeatureParam<std::string>
+    kOnDeviceModelBackgroundDownloadAllowedFeatures;
+
+// Returns whether the feature is allowed to be downloaded in background.
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+bool IsOnDeviceModelBackgroundDownloadEnabledForFeature(
+    mojom::OnDeviceFeature feature);
+
+
+// Whether model sessions may be brokered to untrusted processes.
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+BASE_DECLARE_FEATURE(kBrokerModelSessionsForUntrustedProcesses);
+
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+BASE_DECLARE_FEATURE(kGetAIPageContentSubframeTimeoutEnabled);
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+extern const base::FeatureParam<base::TimeDelta>
+    kGetAIPageContentSubframeTimeoutParam;
+
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+BASE_DECLARE_FEATURE(kGetAIPageContentMainFrameTimeoutEnabled);
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+extern const base::FeatureParam<base::TimeDelta>
+    kGetAIPageContentMainFrameTimeoutParam;
+
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+BASE_DECLARE_FEATURE(kGetAIPageContentGetImageBytesTimeoutEnabled);
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+extern const base::FeatureParam<base::TimeDelta>
+    kGetAIPageContentGetImageBytesTimeoutParam;
 
 typedef base::EnumSet<proto::RequestContext,
                       proto::RequestContext_MIN,
                       proto::RequestContext_MAX>
     RequestContextSet;
+
+typedef base::EnumSet<proto::OptimizationType,
+                      proto::OptimizationType_MIN,
+                      proto::OptimizationType_MAX>
+    OptimizationTypeSet;
 
 // The grace period duration for how long to give outstanding page text dump
 // requests to respond after DidFinishLoad.
@@ -122,16 +178,6 @@ base::TimeDelta PageTextExtractionOutstandingRequestsGracePeriod();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool ShouldBatchUpdateHintsForActiveTabsAndTopHosts();
 
-// The maximum number of hosts allowed to be requested by the client to the
-// remote Optimization Guide Service.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-size_t MaxHostsForOptimizationGuideServiceHintsFetch();
-
-// The maximum number of URLs allowed to be requested by the client to the
-// remote Optimization Guide Service.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-size_t MaxUrlsForOptimizationGuideServiceHintsFetch();
-
 // Whether hints fetching for search results is enabled.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool IsSRPFetchingEnabled();
@@ -140,23 +186,9 @@ bool IsSRPFetchingEnabled();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 size_t MaxResultsForSRPFetch();
 
-// The maximum number of hosts allowed to be stored as covered by the hints
-// fetcher.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-size_t MaxHostsForRecordingSuccessfullyCovered();
-
-// The amount of time a fetched hint will be considered fresh enough
-// to be used and remain in the OptimizationGuideStore.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta StoredFetchedHintsFreshnessDuration();
-
 // The API key for the One Platform Optimization Guide Service.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 std::string GetOptimizationGuideServiceAPIKey();
-
-// The host for the One Platform Optimization Guide Service for hints.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-GURL GetOptimizationGuideServiceGetHintsURL();
 
 // The host for the One Platform Optimization Guide Service for Models and Host
 // Model Features.
@@ -171,62 +203,9 @@ bool IsOptimizationTargetPredictionEnabled();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool IsOptimizationHintsEnabled();
 
-// Returns true if the feature to fetch from the remote Optimization Guide
-// Service is enabled. This controls the fetching of both hints and models.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool IsRemoteFetchingEnabled();
-
-// Returns true if the feature to fetch data for users that have consented to
-// anonymous data collection is enabled but are not Data Saver users.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool IsRemoteFetchingForAnonymousDataConsentEnabled();
-
 // Returns true if the feature to use push notifications is enabled.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool IsPushNotificationsEnabled();
-
-// The maximum data byte size for a server-provided bloom filter. This is
-// a client-side safety limit for RAM use in case server sends too large of
-// a bloom filter.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-int MaxServerBloomFilterByteSize();
-
-// Returns the duration of the time window before hints expiration during which
-// the hosts should be refreshed. Example: If the hints for a host expire at
-// time T, then they are eligible for refresh at T -
-// GetHostHintsFetchRefreshDuration().
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta GetHostHintsFetchRefreshDuration();
-
-// Returns the duration of the time window between fetches for hints for the
-// URLs opened in active tabs.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta GetActiveTabsFetchRefreshDuration();
-
-// Returns the max duration since the time a tab has to be shown to be
-// considered active for a hints refresh.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta GetActiveTabsStalenessTolerance();
-
-// Returns the max number of concurrent fetches to the remote Optimization Guide
-// Service that should be allowed for batch updates
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-size_t MaxConcurrentBatchUpdateFetches();
-
-// Returns the max number of concurrent fetches to the remote Optimization Guide
-// Service that should be allowed for navigations.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-size_t MaxConcurrentPageNavigationFetches();
-
-// Returns the minimum random delay before starting to fetch for hints for
-// active tabs.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta ActiveTabsHintsFetchRandomMinDelay();
-
-// Returns the maximum random delay before starting to fetch for hints for
-// active tabs.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta ActiveTabsHintsFetchRandomMaxDelay();
 
 // Returns whether fetching hints for active tabs should happen on deferred
 // startup. Otherwise active tabs hints will be fetched after a random interval
@@ -235,56 +214,24 @@ base::TimeDelta ActiveTabsHintsFetchRandomMaxDelay();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool ShouldDeferStartupActiveTabsHintsFetch();
 
-// The amount of time host model features will be considered fresh enough
-// to be used and remain in the OptimizationGuideStore.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta StoredHostModelFeaturesFreshnessDuration();
-
-// The maximum duration for which models can remain in the
-// OptimizationGuideStore without being loaded.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta StoredModelsValidDuration();
-
-// The amount of time URL-keyed hints within the hint cache will be
-// allowed to be used and not be purged.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta URLKeyedHintValidCacheDuration();
-
-// The maximum number of hosts allowed to be requested by the client to the
-// remote Optimization Guide Service for use by prediction models.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-size_t MaxHostsForOptimizationGuideServiceModelsFetch();
-
-// The maximum number of hosts allowed to be maintained in a least-recently-used
-// cache by the prediction manager.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-size_t MaxHostModelFeaturesCacheSize();
-
 // The maximum number of hints allowed to be maintained in a least-recently-used
 // cache for hosts.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 size_t MaxHostKeyedHintCacheSize();
-
-// The maximum number of hints allowed to be maintained in a least-recently-used
-// cache for URLs.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-size_t MaxURLKeyedHintCacheSize();
 
 // Returns true if hints should be persisted to disk. If this is false, hints
 // will just be stored in-memory and evicted if not recently used.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool ShouldPersistHintsToDisk();
 
-// Returns true if the optimization target decision for |optimization_target|
-// should not be propagated to the caller in an effort to fully understand the
-// statistics for the served model and not taint the resulting data.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool ShouldOverrideOptimizationTargetDecisionForMetricsPurposes(
-    proto::OptimizationTarget optimization_target);
-
 // Returns requests contexts for which personalized metadata should be enabled.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 RequestContextSet GetAllowedContextsForPersonalizedMetadata();
+
+// Returns optimization types for which proactive personalization should be
+// enabled.
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+OptimizationTypeSet GetAllowedOptimizationTypesForProactivePersonalization();
 
 // Returns the minimum random delay before starting to fetch for prediction
 // models and host model features.
@@ -325,24 +272,10 @@ bool IsModelExecutionWatchdogEnabled();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 base::TimeDelta ModelExecutionWatchdogDefaultTimeout();
 
-// Whether the ability to download models is enabled.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool IsModelDownloadingEnabled();
-
-// Returns whether unrestricted model downloading is enabled. If true, the
-// client should download models using highest priority.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool IsUnrestrictedModelDownloadingEnabled();
-
 // Returns whether the page entities model should be executed on page content
 // for a user using |locale| as their browser language.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool ShouldExecutePageEntitiesModelOnPageContent(const std::string& locale);
-
-// The time to wait beyond the onload event before sending the hints request for
-// link predictions.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta GetOnloadDelayForHintsFetching();
 
 // Returns whether the metadata validation fetch feature is host keyed.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -353,11 +286,6 @@ bool ShouldMetadataValidationFetchHostKeyed();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 std::optional<int> OverrideNumThreadsForOptTarget(
     proto::OptimizationTarget opt_target);
-
-// Whether XNNPACK should be used with TFLite, on platforms where it is
-// supported. This is a no-op on unsupported platforms.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool TFLiteXNNPACKDelegateEnabled();
 
 // Whether logging of model quality is enabled.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -388,29 +316,6 @@ base::TimeDelta GetOnDeviceModelIdleTimeout();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 base::TimeDelta GetOnDeviceModelExecutionValidationStartupDelay();
 
-// These params determine how context processing works for the on device model.
-// The model will process at least min tokens before responding. While waiting
-// for the ExecuteModel() call, up to max tokens will be processed in chunks of
-// the given size.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-int GetOnDeviceModelMinTokensForContext();
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-int GetOnDeviceModelMaxTokensForContext();
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-int GetOnDeviceModelContextTokenChunkSize();
-
-// The maximum tokens for the input when executing the model.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-int GetOnDeviceModelMaxTokensForExecute();
-
-// The maximum tokens the model will output if the maximum input is given.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-int GetOnDeviceModelMaxTokensForOutput();
-
-// The maximum total tokens, for input and output combined.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-uint32_t GetOnDeviceModelMaxTokens();
-
 // Returns the number of crashes without a successful response before the
 // on-device model won't be used.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -424,11 +329,6 @@ base::TimeDelta GetOnDeviceModelCrashBackoffBaseTime();
 
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 base::TimeDelta GetOnDeviceStartupMetricDelay();
-
-// Returns true if during execution a disconnect is received (which generally
-// means a crash) the message should be sent to the server for processing.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool GetOnDeviceFallbackToServerOnDisconnect();
 
 // Whether any features are enabled that allow launching the on-device
 // service.
@@ -454,21 +354,27 @@ base::TimeDelta GetOnDeviceEligibleModelFeatureRecentUsePeriod();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 base::TimeDelta GetOnDeviceModelRetentionTime();
 
-// Return the disk space (in MiB) required for on device model install.
+// Return the disk space required for on device model install.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-int GetDiskSpaceRequiredInMbForOnDeviceModelInstall();
+base::ByteSize GetDiskSpaceRequiredForOnDeviceModelInstall();
 
 // Whether there is enough free disk space to allow on-device model
 // installation.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool IsFreeDiskSpaceSufficientForOnDeviceModelInstall(
-    int64_t free_disk_space_bytes);
+    base::ByteSize free_disk_space_bytes);
 
 // Whether there is too little disk space to retain the on-device model
 // installation.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 bool IsFreeDiskSpaceTooLowForOnDeviceModelInstall(
-    int64_t free_disk_space_bytes);
+    base::ByteSize free_disk_space_bytes);
+
+// Whether there is enough free disk space to allow on-device model
+// installation proactively in background.
+COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
+bool IsFreeDiskSpaceSufficientForBackgroundOnDeviceModelInstall(
+    base::ByteSize free_disk_space_bytes);
 
 // Returns true if unsafe content should be removed.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
@@ -508,44 +414,22 @@ double GetOnDeviceModelDefaultTemperature();
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
 std::vector<uint32_t> GetOnDeviceModelAllowedAdaptationRanks();
 
-// Whether the on-device model will be validated when updated using a set of
-// prompts with expected output.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool IsOnDeviceModelValidationEnabled();
 
-// Whether on-device sessions should be blocked on validation failures.
+// Returns what the timeout for calls to GetAIPageContent should be for
+// subframes. An empty return value indicates no timeout should be applied.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool ShouldOnDeviceModelBlockOnValidationFailure();
+std::optional<base::TimeDelta> GetSubframeGetAIPageContentTimeout();
 
-// Whether the validation result for a model should be cleared if Chrome's
-// version changes.
+// Returns what the timeout for calls to GetAIPageContent should be for
+// the main frame. An empty return value indicates no timeout should be
+// applied.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool ShouldOnDeviceModelClearValidationOnVersionChange();
+std::optional<base::TimeDelta> GetMainFrameGetAIPageContentTimeout();
 
-// The delay from when a new model is received (or startup if validation has not
-// completed) until the validation is run.
+// Returns what the timeout for calls to GetImageBytes should be.
+// An empty return value indicates no timeout should be applied.
 COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-base::TimeDelta GetOnDeviceModelValidationDelay();
-
-// The maximum number of attempts model validation will be retried.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-int GetOnDeviceModelValidationAttemptCount();
-
-// Returns whether the icon view should be enabled.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool ShouldEnableOptimizationGuideIconView();
-
-// Whether Ai settings page refresh or any dependent feature is enabled.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool IsAiSettingsPageRefreshEnabled();
-
-// Whether Ai settings page integration with Privacy Guide is enabled.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-bool IsPrivacyGuideAiSettingsEnabled();
-
-// Whether policy-disabled AI settings are visible.
-COMPONENT_EXPORT(OPTIMIZATION_GUIDE_FEATURES)
-BASE_DECLARE_FEATURE(kAiSettingsPageEnterpriseDisabledUi);
+std::optional<base::TimeDelta> GetAIPageContentGetImageBytesTimeout();
 
 }  // namespace features
 }  // namespace optimization_guide

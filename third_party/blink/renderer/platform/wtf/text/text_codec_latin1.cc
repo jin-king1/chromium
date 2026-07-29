@@ -23,23 +23,23 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/wtf/text/text_codec_latin1.h"
 
 #include <unicode/utf16.h>
+
 #include <memory>
 
+#include "base/compiler_specific.h"
+#include "base/types/to_address.h"
+#include "third_party/blink/renderer/platform/wtf/text/ascii_fast_path.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_codec_ascii_fast_path.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
-namespace WTF {
+namespace blink {
 
-static const UChar kTable[256] = {
+static constexpr std::array<UChar, 256> kTable = {
     0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007,  // 00-07
     0x0008, 0x0009, 0x000A, 0x000B, 0x000C, 0x000D, 0x000E, 0x000F,  // 08-0F
     0x0010, 0x0011, 0x0012, 0x0013, 0x0014, 0x0015, 0x0016, 0x0017,  // 10-17
@@ -75,39 +75,40 @@ static const UChar kTable[256] = {
 };
 
 void TextCodecLatin1::RegisterEncodingNames(EncodingNameRegistrar registrar) {
+  AtomicString canonical_name("windows-1252");
+
   // Taken from the alias table at https://encoding.spec.whatwg.org/
-  registrar("windows-1252", "windows-1252");
-  registrar("ANSI_X3.4-1968", "windows-1252");
-  registrar("ASCII", "windows-1252");
-  registrar("cp1252", "windows-1252");
-  registrar("cp819", "windows-1252");
-  registrar("csISOLatin1", "windows-1252");
-  registrar("IBM819", "windows-1252");
-  registrar("ISO-8859-1", "windows-1252");
-  registrar("iso-ir-100", "windows-1252");
-  registrar("iso8859-1", "windows-1252");
-  registrar("iso88591", "windows-1252");
-  registrar("iso_8859-1", "windows-1252");
-  registrar("iso_8859-1:1987", "windows-1252");
-  registrar("l1", "windows-1252");
-  registrar("latin1", "windows-1252");
-  registrar("US-ASCII", "windows-1252");
-  registrar("x-cp1252", "windows-1252");
+  registrar("windows-1252", canonical_name);
+  registrar("ANSI_X3.4-1968", canonical_name);
+  registrar("ASCII", canonical_name);
+  registrar("cp1252", canonical_name);
+  registrar("cp819", canonical_name);
+  registrar("csISOLatin1", canonical_name);
+  registrar("IBM819", canonical_name);
+  registrar("ISO-8859-1", canonical_name);
+  registrar("iso-ir-100", canonical_name);
+  registrar("iso8859-1", canonical_name);
+  registrar("iso88591", canonical_name);
+  registrar("iso_8859-1", canonical_name);
+  registrar("iso_8859-1:1987", canonical_name);
+  registrar("l1", canonical_name);
+  registrar("latin1", canonical_name);
+  registrar("US-ASCII", canonical_name);
+  registrar("x-cp1252", canonical_name);
 }
 
 static std::unique_ptr<TextCodec> NewStreamingTextDecoderWindowsLatin1(
-    const TextEncoding&,
-    const void*) {
+    const TextEncoding&) {
   return std::make_unique<TextCodecLatin1>();
 }
 
 void TextCodecLatin1::RegisterCodecs(TextCodecRegistrar registrar) {
-  registrar("windows-1252", NewStreamingTextDecoderWindowsLatin1, nullptr);
+  registrar("windows-1252", NewStreamingTextDecoderWindowsLatin1);
 
   // ASCII and Latin-1 both decode as Windows Latin-1 although they retain
   // unique identities.
-  registrar("ISO-8859-1", NewStreamingTextDecoderWindowsLatin1, nullptr);
-  registrar("US-ASCII", NewStreamingTextDecoderWindowsLatin1, nullptr);
+  registrar("ISO-8859-1", NewStreamingTextDecoderWindowsLatin1);
+  registrar("US-ASCII", NewStreamingTextDecoderWindowsLatin1);
 }
 
 String TextCodecLatin1::Decode(base::span<const uint8_t> bytes,
@@ -121,40 +122,46 @@ String TextCodecLatin1::Decode(base::span<const uint8_t> bytes,
   String result = String::CreateUninitialized(
       base::checked_cast<wtf_size_t>(bytes.size()), characters);
 
-  const uint8_t* source = bytes.data();
-  const uint8_t* end = source + bytes.size();
-  const uint8_t* aligned_end = AlignToMachineWord(end);
-  LChar* destination = characters.data();
+  base::span<const uint8_t> source = bytes;
+  const uint8_t* aligned_end =
+      AlignToMachineWord(base::to_address(source.end()));
+  base::span<LChar> destination = characters;
 
-  while (source < end) {
-    if (IsASCII(*source)) {
+  while (!source.empty()) {
+    if (IsAscii(source[0])) {
       // Fast path for ASCII. Most Latin-1 text will be ASCII.
-      if (IsAlignedToMachineWord(source)) {
-        while (source < aligned_end) {
-          MachineWord chunk = *reinterpret_cast_ptr<const MachineWord*>(source);
+      if (IsAlignedToMachineWord(source.data())) {
+        while (source.data() < aligned_end) {
+          MachineWord chunk =
+              *reinterpret_cast_ptr<const MachineWord*>(source.data());
 
-          if (!IsAllASCII<LChar>(chunk))
+          if (!IsAllAscii<LChar>(chunk)) {
             goto useLookupTable;
+          }
 
-          CopyASCIIMachineWord(destination, source);
-          source += sizeof(MachineWord);
-          destination += sizeof(MachineWord);
+          static constexpr size_t kMachineWordSize = sizeof(MachineWord);
+          CopyAsciiMachineWord(
+              chunk, destination.take_first<kMachineWordSize>().data());
+          source.take_first<kMachineWordSize>();
         }
 
-        if (source == end)
+        if (source.empty()) {
           break;
+        }
+        if (!IsAscii(source[0])) {
+          goto useLookupTable;
+        }
       }
-      *destination = *source;
+      destination.take_first<1u>()[0] = source.take_first_elem();
     } else {
     useLookupTable:
-      if (kTable[*source] > 0xff)
+      if (kTable[source[0]] > 0xff) {
         goto upConvertTo16Bit;
+      }
 
-      *destination = static_cast<LChar>(kTable[*source]);
+      destination.take_first<1u>()[0] =
+          static_cast<LChar>(kTable[source.take_first_elem()]);
     }
-
-    ++source;
-    ++destination;
   }
 
   return result;
@@ -164,46 +171,51 @@ upConvertTo16Bit:
   String result16 = String::CreateUninitialized(
       base::checked_cast<wtf_size_t>(bytes.size()), characters16);
 
-  UChar* destination16 = characters16.data();
-
   // Zero extend and copy already processed 8 bit data
-  LChar* ptr8 = characters.data();
-  LChar* end_ptr8 = destination;
+  const size_t characters_converted =
+      static_cast<size_t>(destination.data() - characters.data());
+  auto source8_span = characters.first(characters_converted);
+  auto [converted_span, destination16] =
+      characters16.split_at(characters_converted);
 
-  while (ptr8 < end_ptr8)
-    *destination16++ = *ptr8++;
+  for (size_t i = 0; i < characters_converted; ++i) {
+    converted_span[i] = source8_span[i];
+  }
 
   // Handle the character that triggered the 16 bit path
-  *destination16 = kTable[*source];
-  ++source;
-  ++destination16;
+  destination16.take_first<1u>()[0] = kTable[source.take_first_elem()];
 
-  while (source < end) {
-    if (IsASCII(*source)) {
+  while (!source.empty()) {
+    if (IsAscii(source[0])) {
       // Fast path for ASCII. Most Latin-1 text will be ASCII.
-      if (IsAlignedToMachineWord(source)) {
-        while (source < aligned_end) {
-          MachineWord chunk = *reinterpret_cast_ptr<const MachineWord*>(source);
+      if (IsAlignedToMachineWord(source.data())) {
+        while (source.data() < aligned_end) {
+          MachineWord chunk =
+              *reinterpret_cast_ptr<const MachineWord*>(source.data());
 
-          if (!IsAllASCII<LChar>(chunk))
+          if (!IsAllAscii<LChar>(chunk)) {
             goto useLookupTable16;
+          }
 
-          CopyASCIIMachineWord(destination16, source);
-          source += sizeof(MachineWord);
-          destination16 += sizeof(MachineWord);
+          static constexpr size_t kMachineWordSize = sizeof(MachineWord);
+          // SAFTEY: `take_first<kMachineWordSize>()` ensures sufficient size.
+          UNSAFE_BUFFERS(CopyAsciiMachineWord(
+              chunk, destination16.take_first<kMachineWordSize>().data()));
+          source.take_first<kMachineWordSize>();
         }
 
-        if (source == end)
+        if (source.empty()) {
           break;
+        }
+        if (!IsAscii(source[0])) {
+          goto useLookupTable16;
+        }
       }
-      *destination16 = *source;
+      destination16.take_first<1u>()[0] = source.take_first_elem();
     } else {
     useLookupTable16:
-      *destination16 = kTable[*source];
+      destination16.take_first<1u>()[0] = kTable[source.take_first_elem()];
     }
-
-    ++source;
-    ++destination16;
   }
 
   return result16;
@@ -213,8 +225,7 @@ template <typename CharType>
 static std::string EncodeComplexWindowsLatin1(
     base::span<const CharType> char_data,
     UnencodableHandling handling) {
-  DCHECK_NE(handling, kNoUnencodables);
-  const auto* characters = char_data.data();
+  DCHECK_NE(handling, UnencodableHandling::kNone);
   const wtf_size_t length = base::checked_cast<wtf_size_t>(char_data.size());
   wtf_size_t target_length = length;
   std::string result;
@@ -224,7 +235,7 @@ static std::string EncodeComplexWindowsLatin1(
     UChar32 c;
     // If CharType is LChar the U16_NEXT call reads a byte and increments;
     // since the convention is that LChar is already latin1 this is safe.
-    U16_NEXT(characters, i, length, c);
+    U16_NEXT(char_data, i, length, c);
     // If input was a surrogate pair (non-BMP character) then we overestimated
     // the length.
     if (c > 0xffff)
@@ -241,12 +252,6 @@ static std::string EncodeComplexWindowsLatin1(
       std::string replacement =
           TextCodec::GetUnencodableReplacement(c, handling);
       DCHECK_GT(replacement.length(), 0UL);
-      // Only one char was initially reserved per input character, so grow if
-      // necessary.
-      target_length += replacement.length() - 1;
-      if (target_length > result.size()) {
-        result.reserve(target_length);
-      }
       result.append(replacement);
       continue;
     }
@@ -288,4 +293,4 @@ std::string TextCodecLatin1::Encode(base::span<const LChar> characters,
   return EncodeCommon(characters, handling);
 }
 
-}  // namespace WTF
+}  // namespace blink

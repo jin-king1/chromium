@@ -7,12 +7,13 @@ package org.chromium.chrome.browser.customtabs;
 import android.content.Context;
 import android.graphics.Color;
 
-import androidx.annotation.Nullable;
-
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.intents.ColorProvider;
 import org.chromium.components.browser_ui.styles.ChromeColors;
 
 /** ColorProvider implementation used for incognito profiles. */
+@NullMarked
 public final class IncognitoCustomTabColorProvider implements ColorProvider {
     private final int mToolbarColor;
     private final int mBottomBarColor;
@@ -20,10 +21,10 @@ public final class IncognitoCustomTabColorProvider implements ColorProvider {
 
     public IncognitoCustomTabColorProvider(Context context) {
         assert context != null;
-        mToolbarColor =
-                mBottomBarColor =
-                        mNavigationBarColor =
-                                ChromeColors.getDefaultThemeColor(context, /* isIncognito= */ true);
+        int themeColor = ChromeColors.getDefaultThemeColor(context, /* isIncognito= */ true);
+        mToolbarColor = themeColor;
+        mBottomBarColor = themeColor;
+        mNavigationBarColor = themeColor;
     }
 
     @Override

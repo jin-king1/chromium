@@ -14,7 +14,7 @@ import org.junit.runner.RunWith;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Batch;
 
-/** Tests for {@link PasswordManagerBackendSupportHelper}. */
+/** Tests for {@link FakePasswordManagerBackendSupportHelper}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Batch(Batch.UNIT_TESTS)
 public class FakePasswordManagerBackendSupportHelperTest {
@@ -31,19 +31,8 @@ public class FakePasswordManagerBackendSupportHelperTest {
     }
 
     @Test
-    public void testUpdateNotNeeded() {
-        assertFalse(mFakeHelper.isUpdateNeeded());
-    }
-
-    @Test
     public void testSetBackendPresentToTrue() {
         mFakeHelper.setBackendPresent(true);
         assertTrue(mFakeHelper.isBackendPresent());
-    }
-
-    @Test
-    public void testSetUpdateNeededToTrue() {
-        mFakeHelper.setUpdateNeeded(true);
-        assertTrue(mFakeHelper.isUpdateNeeded());
     }
 }

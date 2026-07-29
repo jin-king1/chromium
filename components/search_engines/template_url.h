@@ -17,14 +17,18 @@
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "components/lens/proto/server/lens_overlay_response.pb.h"
+#include "components/omnibox/common/input_state.h"
 #include "components/search_engines/search_engine_type.h"
 #include "components/search_engines/search_terms_data.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_id.h"
+#include "components/search_engines/template_url_starter_pack_data.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "third_party/metrics_proto/omnibox_focus_type.pb.h"
 #include "third_party/metrics_proto/omnibox_input_type.pb.h"
 #include "third_party/omnibox_proto/chrome_searchbox_stats.pb.h"
+#include "third_party/omnibox_proto/suggest_inventory.pb.h"
+#include "third_party/omnibox_proto/tool_mode.pb.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 #include "url/third_party/mozilla/url_parse.h"
@@ -123,6 +127,8 @@ class TemplateURLRef {
       // translation is forced using |source_lang|. Note that this only supports
       // Partial Translate and so may only be enabled for select clients on the
       // server.
+      // The |use_snippet_as_subtitle| specifies whether or not the entity
+      // snippet should be used as the subtitle of the card.
       ContextualSearchParams(int version,
                              int contextual_cards_version,
                              std::string home_country,
@@ -133,7 +139,8 @@ class TemplateURLRef {
                              std::string target_lang,
                              std::string fluent_languages,
                              std::string related_searches_stamp,
-                             bool apply_lang_hint);
+                             bool apply_lang_hint,
+                             bool use_snippet_as_subtitle);
       ContextualSearchParams(const ContextualSearchParams& other);
       ~ContextualSearchParams();
 
@@ -182,6 +189,9 @@ class TemplateURLRef {
 
       // Whether hinted language detection should be used on the backend.
       bool apply_lang_hint = false;
+
+      // Whether the snippet should be used as the subtitle.
+      bool use_snippet_as_subtitle = false;
     };
 
     // Estimates dynamic memory usage.
@@ -223,6 +233,15 @@ class TemplateURLRef {
     // the suggest requests.
     std::optional<lens::proto::LensOverlaySuggestInputs>
         lens_overlay_suggest_inputs;
+
+    // Input state. This is specifically the contextual state, with regards to
+    // the tools and models that may be selected.
+    omnibox::InputState input_state;
+
+    // The suggest inventory to be sent as query parameters in the suggest
+    // requests.
+    omnibox::SuggestInventory suggest_inventory =
+        omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT;
 
     // Which omnibox the user used to type the prefix.
     metrics::OmniboxEventProto::PageClassification page_classification =
@@ -287,6 +306,13 @@ class TemplateURLRef {
 
     // The target locale used for image translations.
     std::string image_translate_target_locale;
+
+    // The previously submitted query within this context thread/session.
+    std::string previous_query;
+
+    // The method in which the last input was entered. This is an enum that
+    // gets mapped to third_party/omnibox_proto/chrome_searchbox_stats.proto.
+    int input_method = 0;
   };
 
   TemplateURLRef(const TemplateURL* owner, Type type);
@@ -324,7 +350,7 @@ class TemplateURLRef {
   std::string ReplaceSearchTerms(const SearchTermsArgs& search_terms_args,
                                  const SearchTermsData& search_terms_data,
                                  PostContent* post_content,
-                                 std::string url_override = "") const;
+                                 std::string_view url_override = "") const;
 
   // TODO(jnd): remove the following ReplaceSearchTerms definition which does
   // not have `post_content` parameter once all reference callers pass
@@ -334,7 +360,7 @@ class TemplateURLRef {
   //  `StarterPackExpansion` feature launches/gets cleaned up.
   std::string ReplaceSearchTerms(const SearchTermsArgs& search_terms_args,
                                  const SearchTermsData& search_terms_data,
-                                 std::string url_override = "") const {
+                                 std::string_view url_override = "") const {
     return ReplaceSearchTerms(search_terms_args, search_terms_data, nullptr,
                               url_override);
   }
@@ -455,10 +481,14 @@ class TemplateURLRef {
     GOOGLE_RLZ,
     GOOGLE_SEARCH_CLIENT,
     GOOGLE_SEARCH_FIELDTRIAL_GROUP,
+    // The searchbox source that led to the current search (e.g. omnibox).
+    GOOGLE_SEARCH_SOURCE,
+    // The platform that led to the current search (e.g. Chrome).
     GOOGLE_SEARCH_SOURCE_ID,
     GOOGLE_SEARCH_VERSION,
     GOOGLE_SESSION_TOKEN,
     GOOGLE_SUGGEST_CLIENT,
+    GOOGLE_SUGGEST_PATH,
     GOOGLE_SUGGEST_REQUEST_ID,
     GOOGLE_UNESCAPED_SEARCH_TERMS,
     LANGUAGE,
@@ -534,7 +564,7 @@ class TemplateURLRef {
   // TODO(crbug.com/41494524): Remove the `url_override` when the
   //  `StarterPackExpansion` feature launches/gets cleaned up.
   void ParseIfNecessary(const SearchTermsData& search_terms_data,
-                        std::string url_override = "") const;
+                        std::string_view url_override = "") const;
 
   // Parses a wildcard out of |path|, putting the parsed path in |path_prefix_|
   // and |path_suffix_| and setting |path_wildcard_present_| to true.
@@ -625,9 +655,19 @@ class TemplateURLRef {
 
 // TemplateURL ----------------------------------------------------------------
 
-// A TemplateURL represents a single "search engine", defined primarily as a
-// subset of the Open Search Description Document
-// (http://www.opensearch.org/Specifications/OpenSearch) plus some extensions.
+// A TemplateURL represents a single "search engine". It can hold two sets of
+// data: a "local" value and an "account" value. The local value is stored on
+// the device and is not synced. The account value is synced.
+//
+// When a user is signed in, a TemplateURL can have both local and account
+// values. The `data()` method provides a merged view of these two values, with
+// the more recent one taking precedence. When a search engine is modified, the
+// change is written to both the local and account values (dual-write). This
+// ensures that the change is both synced to the user's account and persists on
+// the device after sign-out.
+//
+// Upon sign-out, the account values are cleared, leaving only the local values.
+//
 // One TemplateURL contains several TemplateURLRefs, which correspond to various
 // different capabilities (e.g. doing searches or getting suggestions), as well
 // as a TemplateURLData containing other details like the name, keyword, etc.
@@ -694,6 +734,7 @@ class TemplateURL {
 
   TemplateURL(const TemplateURL&) = delete;
   TemplateURL& operator=(const TemplateURL&) = delete;
+  TemplateURL(TemplateURL&& other);
 
   ~TemplateURL();
 
@@ -723,6 +764,13 @@ class TemplateURL {
 
   // Generates a favicon URL from the specified url.
   static GURL GenerateFaviconURL(const GURL& url);
+
+  // Returns the suggestion client string for the given search terms args.
+  static std::string GetSuggestionClient(
+      const TemplateURLRef::SearchTermsArgs& search_terms_args);
+
+  // Returns the suggestion path string for the given client name.
+  static std::string GetSuggestionPath(const std::string& client_name);
 
   // Returns true if |t_url| and |data| are equal in all meaningful respects.
   // Static to allow either or both params to be NULL.
@@ -803,7 +851,6 @@ class TemplateURL {
     return data().policy_origin;
   }
   bool enforced_by_policy() const { return data().enforced_by_policy; }
-  bool created_from_play_api() const { return data().created_from_play_api; }
   bool featured_by_policy() const { return data().featured_by_policy; }
 
   int usage_count() const { return data().usage_count; }
@@ -811,13 +858,28 @@ class TemplateURL {
 
   int prepopulate_id() const { return data().prepopulate_id; }
 
+  bool send_x_geo_header() const { return data().send_x_geo_header; }
+
   const std::string& sync_guid() const { return data().sync_guid; }
   void GenerateSyncGUID();
 
   TemplateURLData::ActiveStatus is_active() const { return data().is_active; }
   void set_is_active(TemplateURLData::ActiveStatus active_status);
 
-  int starter_pack_id() const { return data().starter_pack_id; }
+  template_url_starter_pack_data::StarterPackId starter_pack_id() const {
+    return static_cast<template_url_starter_pack_data::StarterPackId>(
+        data().starter_pack_id);
+  }
+  // Some templates (including certain starter packs) are considered
+  // 'ask' types.
+  // This can be used to condition UI text or a11y strings.
+  bool is_ask_type() const {
+    return starter_pack_id() ==
+               template_url_starter_pack_data::StarterPackId::kGemini ||
+           starter_pack_id() ==
+               template_url_starter_pack_data::StarterPackId::kAiMode ||
+           policy_origin() == TemplateURLData::PolicyOrigin::kSearchAggregator;
+  }
 
   const std::vector<TemplateURLRef>& url_refs() const { return url_refs_; }
   const TemplateURLRef& url_ref() const {
@@ -865,6 +927,24 @@ class TemplateURL {
   // this for TemplateURLs of type NORMAL_CONTROLLED_BY_EXTENSION or
   // OMNIBOX_API_EXTENSION.
   std::string GetExtensionId() const;
+
+  // Returns the resource ID base associated with this template URL, if it is
+  // provided from built-in data.
+  std::optional<std::string_view> GetBaseBuiltinResourceId() const;
+
+  // Returns the resource ID for the logo (small / favicon style) associated
+  // with this template URL, or a default image if none is associated with it.
+  std::string GetBuiltinImageResourceId() const;
+
+  // Returns the resource ID for the search engine description string associated
+  // with this template URL, or an empty string if none is associated with it.
+  std::string GetBuiltinDescriptionResourceId() const;
+
+#if !BUILDFLAG(IS_ANDROID)
+  // Returns the marketing snippet string for the search engine, either the
+  // built-in one or a fallback variant.
+  std::u16string GetMarketingSnippet() const;
+#endif
 
   // Returns the type of this search engine, or SEARCH_ENGINE_OTHER if no
   // engines match.
@@ -962,12 +1042,20 @@ class TemplateURL {
   // Returns whether this search engine was created by the Default Search
   // Provider Enterprise policy.
   bool CreatedByDefaultSearchProviderPolicy() const;
-  // Returns whether this search engine was created by an Enterprise policy that
-  // doesn't define the Default Search Provider.
+  // Returns whether this search engine was created by an Enterprise policy,
+  // but not by the Default Search Provider policy (e.g., created by the
+  // SiteSearchSettings or EnterpriseSearchAggregatorSettings policies).
   bool CreatedByNonDefaultSearchProviderPolicy() const;
   // Returns whether this search engine was created by the
   // EnterpriseSearchAggregatorSettings policy.
   bool CreatedByEnterpriseSearchAggregatorPolicy() const;
+  // Returns whether this search engine was created by a regulatory program.
+  bool CreatedByRegulatoryProgram() const;
+
+  // Returns true if the user should be asked to confirm before removing this
+  // engine. Currently, only built-in search engines and non default search
+  // engines created by policy require confirmation before removal.
+  bool RequiresRemovalConfirmation() const;
 
   void SetURL(const std::string& url);
   void SetPrepopulateId(int id);
@@ -986,6 +1074,15 @@ class TemplateURL {
 
   void CopyActiveValueToLocalAndAccount();
 
+  // Returns whether this search engine can be overridden and added to the
+  // overridden keyword pref list. Should be used for engines that are created
+  // by an Enterprise policy that doesn't define the Default Search Provider.
+  bool CanPolicyBeOverridden() const;
+
+  // Gets text shown in the chip at the front of the omnibox when the
+  // user has selected the keyword.
+  std::u16string GetFullName() const;
+
  private:
   // Resizes the |url_refs_| vector, which always holds the search URL as the
   // last item.
@@ -1000,6 +1097,11 @@ class TemplateURL {
                             std::u16string* search_terms,
                             url::Parsed::ComponentType* search_terms_component,
                             url::Component* search_terms_position) const;
+
+  // Returns the built-in marketing snippet string for the search engine, or
+  // `std::nullopt` if a marketing snippets are not included in this build of
+  // unavailable for this search engine.
+  std::optional<std::u16string> GetBuiltinMarketingSnippet() const;
 
   TemplateURLData& active_data();
 
@@ -1027,6 +1129,13 @@ class TemplateURL {
 
   // Caches the computed engine type across successive calls to GetEngineType().
   mutable SearchEngineType engine_type_;
+
+  // Caches the computed base resource ID across successive calls to
+  // `GetBaseBuiltinResourceId()`.
+  // The actual string lives in built-in
+  // `TemplateURLPrepopulateData::PrepopulatedEngine` entries.
+  mutable std::optional<std::optional<std::string_view>>
+      base_builtin_resource_id_;
 
   // TODO(sky): Add date last parsed OSD file.
 };

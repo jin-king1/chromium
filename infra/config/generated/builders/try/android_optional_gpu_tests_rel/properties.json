@@ -13,14 +13,16 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-gpu-fyi-archive",
               "builder_group": "tryserver.chromium.android",
               "execution_mode": "COMPILE_AND_TEST",
               "legacy_android_config": {
-                "config": "main_builder"
+                "config": "base_config"
               },
               "legacy_chromium_config": {
+                "build_config": "Debug",
                 "config": "main_builder",
+                "target_arch": "arm",
+                "target_bits": 32,
                 "target_platform": "android"
               },
               "legacy_gclient_config": {
@@ -41,7 +43,7 @@
         }
       ],
       "retry_failed_shards": false,
-      "targets_spec_directory": "src/infra/config/generated/builders/try/android_optional_gpu_tests_rel/targets"
+      "targets_spec_directory": "infra/config/generated/builders/try/android_optional_gpu_tests_rel/targets"
     }
   },
   "$build/flakiness": {
@@ -54,11 +56,11 @@
       "remote-link"
     ],
     "enable_cloud_monitoring": true,
-    "enable_cloud_profiler": true,
     "enable_cloud_trace": true,
     "experiments": [],
-    "metrics_project": "chromium-reclient-metrics",
+    "keep_going": 3,
     "output_local_strategy": "greedy",
+    "profile_mode": "cloud",
     "project": "rbe-chromium-untrusted",
     "remote_jobs": -1
   },

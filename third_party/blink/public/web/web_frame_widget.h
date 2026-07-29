@@ -64,7 +64,7 @@ class RectF;
 }  // namespace gfx
 
 namespace viz {
-struct FrameTimingDetails;
+class FrameTimingDetails;
 class LocalSurfaceId;
 }  // namespace viz
 
@@ -95,10 +95,12 @@ class WebFrameWidget : public WebWidget {
   // Returns the local root of this WebFrameWidget.
   virtual WebLocalFrame* LocalRoot() const = 0;
 
-  // Converts from Blink coordinate (ie. Viewport/Physical pixels) space to
-  // DIPs.
-  virtual gfx::RectF BlinkSpaceToDIPs(const gfx::RectF& rect) = 0;
-  virtual gfx::Rect BlinkSpaceToEnclosedDIPs(const gfx::Rect& rect) = 0;
+  // Conversions between Blink coordinate (ie. Viewport/Physical pixels) space
+  // and DIPs (Device Independent Pixels).
+  virtual gfx::RectF BlinkSpaceToDIPs(const gfx::RectF&) = 0;
+  virtual gfx::Rect BlinkSpaceToEnclosedDIPs(const gfx::Rect&) = 0;
+  virtual gfx::PointF DIPsToBlinkSpace(const gfx::PointF&) = 0;
+  virtual gfx::RectF DIPsToBlinkSpace(const gfx::RectF& rect) = 0;
 
   // Current instance of the active WebInputMethodController, that is, the
   // WebInputMethodController corresponding to (and owned by) the focused

@@ -20,6 +20,7 @@
 #include "media/audio/apple/audio_manager_apple.h"
 #include "media/audio/audio_manager_base.h"
 #include "media/audio/mac/audio_device_listener_mac.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace base {
 
@@ -32,6 +33,7 @@ namespace media {
 
 class AUAudioInputStream;
 class AUHALStream;
+class CoreAudioUtilMac;
 
 // Mac OS X implementation of the AudioManager singleton. This class is internal
 // to the audio output and only internal users can call methods not exposed by
@@ -49,13 +51,13 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   // Implementation of AudioManager.
   bool HasAudioOutputDevices() override;
   bool HasAudioInputDevices() override;
-  void GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
-  void GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
+  bool GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
+  bool GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
   AudioParameters GetInputStreamParameters(
       const std::string& device_id) override;
   std::string GetAssociatedOutputDeviceID(
       const std::string& input_device_id) override;
-  const char* GetName() override;
+  const std::string_view GetName() override;
 
   // Implementation of AudioManagerBase.
   AudioOutputStream* MakeLinearOutputStream(
@@ -120,13 +122,17 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
       AudioStreamBasicDescription* input_format) override;
 
   static bool GetDefaultInputDevice(AudioDeviceID* input_device);
-  static bool GetDefaultOutputDevice(AudioDeviceID* output_device);
+  static bool GetDefaultOutputDevice(
+      AudioDeviceID* output_device,
+      const LogCallback& log_callback = LogCallback());
   static AudioDeviceID GetAudioDeviceIdByUId(bool is_input,
                                              const std::string& device_id);
 
   // Finds the first subdevice, in an aggregate device, with output streams.
   static AudioDeviceID FindFirstOutputSubdevice(
       AudioDeviceID aggregate_device_id);
+
+  static int GetMinAudioBufferSizeMacOS(int min_buffer_size, int sample_rate);
 
   // Returns a vector with the IDs of all devices related to the given
   // |device_id|. The vector is empty if there are no related devices or
@@ -141,8 +147,8 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   // Streams should consult ShouldDeferStreamStart() and if true check the value
   // again after |kStartDelayInSecsForPowerEvents| has elapsed. If false, the
   // stream may be started immediately.
-  // TODO(henrika): track UMA statistics related to defer start to come up with
-  // a suitable delay value.
+  //
+  // As of Nov 2025, this is still helpful, see https://crbug.com/447640763.
   enum { kStartDelayInSecsForPowerEvents = 5 };
   bool ShouldDeferStreamStart() const override;
 
@@ -168,20 +174,6 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   bool SuppressNoiseReduction(AudioDeviceID device_id) override;
   void UnsuppressNoiseReduction(AudioDeviceID device_id) override;
 
-  // The state of a single device for which we've tried to disable Ambient Noise
-  // Reduction. If the device initially has ANR enabled, it will be turned off
-  // as the suppression count goes from 0 to 1 and turned on again as the count
-  // returns to 0.
-  struct NoiseReductionState {
-    enum State { DISABLED, ENABLED };
-    State initial_state = DISABLED;
-    int suppression_count = 0;
-  };
-
-  // Keep track of the devices that we've changed the Ambient Noise Reduction
-  // setting on.
-  std::map<AudioDeviceID, NoiseReductionState> device_noise_reduction_states_;
-
  protected:
   AudioParameters GetPreferredOutputStreamParameters(
       const std::string& output_device_id,
@@ -195,9 +187,9 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
 
   // Virtual for testing.
 
-  // Returns a vector with the IDs of all audio devices in the system.
-  // The vector is empty if there are no devices or if there is an error.
-  virtual std::vector<AudioObjectID> GetAllAudioDeviceIDs();
+  // Returns an optional vector with the IDs of all audio devices in the system.
+  // If there is an error in retrieving the devices, the optional will be empty.
+  virtual std::optional<std::vector<AudioObjectID>> GetAllAudioDeviceIDs();
 
   // Returns a vector with the IDs of all non-bluetooth devices related to the
   // given |device_id|, which is also a non-bluetooth device. The vector is
@@ -234,6 +226,8 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
 
   std::string GetDefaultDeviceID(bool is_input);
 
+  std::unique_ptr<CoreAudioUtilMac> core_audio_mac_;
+
   std::unique_ptr<AudioDeviceListenerMac> output_device_listener_;
 
   // Track the output sample-rate and the default output device
@@ -252,9 +246,9 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   // We no longer close the streams, so we may be able to get rid of these
   // member variables. They are currently used by MaybeChangeBufferSize().
   // Investigate if we can remove these.
-  std::unordered_set<AudioInputStream*> basic_input_streams_;
-  std::unordered_set<AUAudioInputStream*> low_latency_input_streams_;
-  std::unordered_set<AUHALStream*> output_streams_;
+  absl::flat_hash_set<AudioInputStream*> basic_input_streams_;
+  absl::flat_hash_set<AUAudioInputStream*> low_latency_input_streams_;
+  absl::flat_hash_set<AUHALStream*> output_streams_;
 
   // Used to swizzle SCStreamManager when performing loopback capture.
   std::unique_ptr<base::apple::ScopedObjCClassSwizzler>
@@ -263,6 +257,20 @@ class MEDIA_EXPORT AudioManagerMac : public AudioManagerApple {
   // Set to true in the destructor. Ensures that methods that touches native
   // Core Audio APIs are not executed during shutdown.
   bool in_shutdown_;
+
+  // The state of a single device for which we've tried to disable Ambient Noise
+  // Reduction. If the device initially has ANR enabled, it will be turned off
+  // as the suppression count goes from 0 to 1 and turned on again as the count
+  // returns to 0.
+  struct NoiseReductionState {
+    enum State { DISABLED, ENABLED };
+    State initial_state = DISABLED;
+    int suppression_count = 0;
+  };
+
+  // Keep track of the devices that we've changed the Ambient Noise Reduction
+  // setting on.
+  std::map<AudioDeviceID, NoiseReductionState> device_noise_reduction_states_;
 
   base::WeakPtrFactory<AudioManagerMac> weak_ptr_factory_;
 };

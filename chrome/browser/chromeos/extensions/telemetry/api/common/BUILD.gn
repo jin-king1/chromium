@@ -46,6 +46,7 @@ source_set("util") {
     "//ash/webui/shimless_rma/backend",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui",
+    "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/common",
     "//chromeos/constants",
@@ -53,20 +54,10 @@ source_set("util") {
     "//components/security_state/core",
     "//extensions/common",
   ]
-}
 
-source_set("remote_probe_strategy") {
-  sources = [
-    "remote_probe_service_strategy.cc",
-    "remote_probe_service_strategy.h",
-  ]
-
-  deps = [
-    "//chrome/browser/ash/crosapi:crosapi",
-    "//chromeos/ash/components/telemetry_extension/telemetry",
-    "//chromeos/crosapi/mojom",
-    "//mojo/public/cpp/bindings",
-  ]
+  if (is_mac || is_win || is_linux || is_chromeos) {
+    deps += [ "//components/webapps/isolated_web_apps:scheme" ]
+  }
 }
 
 source_set("hardware_info_delegate") {
@@ -76,9 +67,9 @@ source_set("hardware_info_delegate") {
   ]
 
   deps = [
-    ":remote_probe_strategy",
     "//base",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/services/cros_healthd/public/cpp",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
   ]
 }
 
@@ -94,10 +85,8 @@ source_set("test_support") {
 
   deps = [
     ":common",
-    ":remote_probe_strategy",
     "//base",
     "//chrome/test:test_support",
-    "//chromeos/crosapi/cpp/telemetry:test_support",
     "//content/public/browser",
     "//extensions:test_support",
     "//net",
@@ -119,14 +108,15 @@ source_set("browser_tests") {
   deps = [
     ":common",
     ":hardware_info_delegate",
-    ":remote_probe_strategy",
     ":test_support",
     "//base",
     "//base/test:test_support",
     "//chrome/browser/ash/login/users:test_support",
+    "//chrome/browser/ash/test:test_support",
     "//chrome/common/chromeos/extensions",
     "//chrome/test:test_support_ui",
-    "//chromeos/crosapi/cpp/telemetry:test_support",
+    "//chromeos/ash/services/cros_healthd/public/cpp:test_support",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
     "//components/user_manager",
     "//content/public/browser",
     "//content/test:test_support",
@@ -150,17 +140,18 @@ source_set("unit_tests") {
   deps = [
     ":common",
     ":hardware_info_delegate",
-    ":remote_probe_strategy",
     ":test_support",
     "//ash/webui/shimless_rma/backend",
     "//base",
     "//base/test:test_support",
     "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/extensions:test_support",
+    "//chrome/browser/web_applications:web_applications_test_support",
     "//chrome/common/chromeos/extensions",
     "//chrome/test:test_support",
     "//chromeos/ash/components/browser_context_helper",
-    "//chromeos/crosapi/cpp/telemetry:test_support",
+    "//chromeos/ash/components/mojo_service_manager:test_support",
+    "//chromeos/ash/services/cros_healthd/public/cpp:fakes",
     "//components/sync_preferences:test_support",
     "//components/user_manager",
     "//content/public/browser",

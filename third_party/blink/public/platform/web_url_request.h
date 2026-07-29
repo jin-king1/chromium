@@ -40,7 +40,6 @@
 #include "base/unguessable_token.h"
 #include "net/base/request_priority.h"
 #include "third_party/blink/public/platform/web_common.h"
-#include "ui/base/page_transition_types.h"
 
 // TODO(crbug.com/922875): Need foo.mojom.shared-forward.h.
 namespace network {
@@ -164,10 +163,6 @@ class BLINK_PLATFORM_EXPORT WebURLRequest {
   WebString ReferrerString() const;
   network::mojom::ReferrerPolicy GetReferrerPolicy() const;
 
-  // Sets an HTTP origin header if it is empty and the HTTP method of the
-  // request requires it.
-  void SetHttpOriginIfNeeded(const WebSecurityOrigin&);
-
   // True if the request was user initiated.
   bool HasUserGesture() const;
   void SetHasUserGesture(bool);
@@ -251,19 +246,15 @@ class BLINK_PLATFORM_EXPORT WebURLRequest {
   // Returns true when the request is for revalidation.
   bool IsRevalidating() const;
 
-  // Returns the DevTools ID to throttle the network request.
-  const std::optional<base::UnguessableToken>& GetDevToolsToken() const;
+  // Returns the DevTools token used to throttle the network request.
+  const std::optional<base::UnguessableToken>& GetDevToolsThrottlingToken()
+      const;
 
   // Remembers 'X-Requested-With' header value. Blink should not set this header
   // value until CORS checks are done to avoid running checks even against
   // headers that are internally set.
   const WebString GetRequestedWithHeader() const;
   void SetRequestedWithHeader(const WebString&);
-
-  // Remembers 'Purpose' header value. Blink should not set this header value
-  // until CORS checks are done to avoid running checks even against headers
-  // that are internally set.
-  const WebString GetPurposeHeader() const;
 
   // https://fetch.spec.whatwg.org/#concept-request-window
   // See network::ResourceRequest::fetch_window_id for details.

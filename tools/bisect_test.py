@@ -1,3 +1,4 @@
+#!/usr/bin/env vpython3
 # Copyright 2012 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -1083,14 +1084,34 @@ class AndroidReleaseBuildTest(AndroidBuildTest):
   def test_webview_launch_revision(self, mock_LaunchOnAndroid):
     options = bisect_builds.ParseCommandLine([
         '-r', '-a', 'android-arm64', '-g', '127.0.6533.76', '-b',
-        '127.0.6533.79', '--apk', 'system_webview'
+        '127.0.6533.79', '--apk', 'webview'
     ])
     build = bisect_builds.create_archive_build(options)
     self.assertIsInstance(build, bisect_builds.AndroidReleaseBuild)
     build._launch_revision('temp-dir', None)
-    mock_LaunchOnAndroid.assert_called_once_with(self.device, 'system_webview')
+    mock_LaunchOnAndroid.assert_called_once_with(self.device, 'webview')
     with self.assertRaises(bisect_builds.BisectException):
       build._launch_revision('temp-dir', None, ['args'])
+
+  def test_get_apk_filename_webview(self):
+    """Test _get_apk_filename returns AndroidWebview.apk for webview APK."""
+    options = bisect_builds.ParseCommandLine([
+        '-r', '-a', 'android-arm64', '-g', '127.0.6533.76', '-b',
+        '127.0.6533.79', '--apk', 'webview'
+    ])
+    build = bisect_builds.create_archive_build(options)
+    self.assertIsInstance(build, bisect_builds.AndroidReleaseBuild)
+    self.assertEqual(build._get_apk_filename(), 'AndroidWebview.apk')
+
+  def test_get_apk_filename_chrome(self):
+    """Test _get_apk_filename returns correct filename for chrome APK."""
+    options = bisect_builds.ParseCommandLine([
+        '-r', '-a', 'android-arm64', '-g', '127.0.6533.76', '-b',
+        '127.0.6533.79', '--apk', 'chrome'
+    ])
+    build = bisect_builds.create_archive_build(options)
+    self.assertIsInstance(build, bisect_builds.AndroidReleaseBuild)
+    self.assertEqual(build._get_apk_filename(), 'Monochrome.apk')
 
 
 class AndroidSnapshotBuildTest(AndroidBuildTest):
@@ -1104,8 +1125,7 @@ class AndroidSnapshotBuildTest(AndroidBuildTest):
   @patch('glob.glob', return_value=['Monochrome.apk'])
   def test_install_revision(self, mock_glob, mock_InstallOnAndroid, mock_unzip):
     options = bisect_builds.ParseCommandLine([
-        '-a', 'android-arm64', '-g', '1313161', '-b', '1313210', '--apk',
-        'chrome'
+        '-a', 'android-arm', '-g', '1313161', '-b', '1313210', '--apk', 'chrome'
     ])
     build = bisect_builds.create_archive_build(options)
     self.assertIsInstance(build, bisect_builds.AndroidSnapshotBuild)
@@ -1124,8 +1144,7 @@ class AndroidSnapshotBuildTest(AndroidBuildTest):
   def test_install_revision_with_show_available_apks(self, mock_glob,
                                                      mock_stdout, mock_unzip):
     options = bisect_builds.ParseCommandLine([
-        '-a', 'android-arm64', '-g', '1313161', '-b', '1313210', '--apk',
-        'chrome'
+        '-a', 'android-arm', '-g', '1313161', '-b', '1313210', '--apk', 'chrome'
     ])
     build = bisect_builds.create_archive_build(options)
     self.assertIsInstance(build, bisect_builds.AndroidSnapshotBuild)
@@ -1142,8 +1161,7 @@ class AndroidSnapshotBuildTest(AndroidBuildTest):
   def test_install_revision_with_show_unknown_apks(self, mock_glob, mock_stdout,
                                                    mock_unzip):
     options = bisect_builds.ParseCommandLine([
-        '-a', 'android-arm64', '-g', '1313161', '-b', '1313210', '--apk',
-        'chrome'
+        '-a', 'android-arm', '-g', '1313161', '-b', '1313210', '--apk', 'chrome'
     ])
     build = bisect_builds.create_archive_build(options)
     self.assertIsInstance(build, bisect_builds.AndroidSnapshotBuild)
@@ -1153,7 +1171,8 @@ class AndroidSnapshotBuildTest(AndroidBuildTest):
                   mock_stdout.getvalue())
     self.assertIn("unknown.apks", mock_stdout.getvalue())
 
-class AndroidTrichromeReleaseBuildTest(AndroidBuildTest):
+
+class AndroidArm64HighReleaseBuildTest(AndroidBuildTest):
 
   def setUp(self):
     super().setUp()
@@ -1176,7 +1195,7 @@ class AndroidTrichromeReleaseBuildTest(AndroidBuildTest):
         '129.0.6626.0', '-b', '129.0.6628.0', '--no-local-cache'
     ])
     build = bisect_builds.create_archive_build(options)
-    self.assertIsInstance(build, bisect_builds.AndroidTrichromeReleaseBuild)
+    self.assertIsInstance(build, bisect_builds.AndroidReleaseBuild)
     self.assertEqual(build.get_rev_list(),
                      ['129.0.6626.0', '129.0.6627.0', '129.0.6628.0'])
     print(mock_GsutilList.call_args_list)
@@ -1191,14 +1210,15 @@ class AndroidTrichromeReleaseBuildTest(AndroidBuildTest):
                                     ignore_fail=True)
     self.assertEqual(mock_GsutilList.call_count, 2)
 
-  def test_should_raise_exception_for_PIE(self):
+  def test_should_work_for_PIE(self):
     options = bisect_builds.ParseCommandLine([
         '-r', '-a', 'android-arm64-high', '--apk', 'chrome_stable', '-g',
         '129.0.6626.0', '-b', '129.0.6667.0'
     ])
     self.set_sdk_level(bisect_builds.version_codes.PIE)
-    with self.assertRaises(bisect_builds.BisectException):
-      bisect_builds.create_archive_build(options)
+    build = bisect_builds.create_archive_build(options)
+    self.assertIsInstance(build, bisect_builds.AndroidReleaseBuild)
+    self.assertEqual(build.binary_name, 'MonochromeStable.apk')
 
   def test_get_download_url(self):
     options = bisect_builds.ParseCommandLine([
@@ -1206,7 +1226,7 @@ class AndroidTrichromeReleaseBuildTest(AndroidBuildTest):
         '129.0.6626.0', '-b', '129.0.6628.0'
     ])
     build = bisect_builds.create_archive_build(options)
-    self.assertIsInstance(build, bisect_builds.AndroidTrichromeReleaseBuild)
+    self.assertIsInstance(build, bisect_builds.AndroidReleaseBuild)
     download_urls = build.get_download_url('129.0.6626.0')
     self.maxDiff = 1000
     self.assertDictEqual(
@@ -1230,13 +1250,13 @@ class AndroidTrichromeReleaseBuildTest(AndroidBuildTest):
         '129.0.6626.0', '-b', '129.0.6628.0'
     ])
     build = bisect_builds.create_archive_build(options)
-    self.assertIsInstance(build, bisect_builds.AndroidTrichromeReleaseBuild)
+    self.assertIsInstance(build, bisect_builds.AndroidReleaseBuild)
     build._install_revision(downloads, 'tmp-dir')
     mock_InstallOnAndroid.assert_any_call(self.device, 'some-file.apks')
     mock_InstallOnAndroid.assert_any_call(self.device, 'file2.apk')
 
 
-class AndroidTrichromeOfficialBuildTest(AndroidBuildTest):
+class AndroidArm64HighOfficialBuildTest(AndroidBuildTest):
 
   @maybe_patch('bisect-builds.GsutilList',
                return_value=[
@@ -1249,7 +1269,7 @@ class AndroidTrichromeOfficialBuildTest(AndroidBuildTest):
         '-b', '1334380', '--no-local-cache'
     ])
     build = bisect_builds.create_archive_build(options)
-    self.assertIsInstance(build, bisect_builds.AndroidTrichromeOfficialBuild)
+    self.assertIsInstance(build, bisect_builds.AndroidOfficialBuild)
     self.assertEqual(build.get_rev_list(),
                      [1334339, 1334342, 1334344, 1334345, 1334356])
     mock_GsutilList.assert_called_once_with(
@@ -1262,7 +1282,7 @@ class AndroidTrichromeOfficialBuildTest(AndroidBuildTest):
         '-b', '1334380'
     ])
     build = bisect_builds.create_archive_build(options)
-    self.assertIsInstance(build, bisect_builds.AndroidTrichromeOfficialBuild)
+    self.assertIsInstance(build, bisect_builds.AndroidOfficialBuild)
     self.assertEqual(
         build.get_download_url(1334338),
         'gs://chrome-test-builds/official-by-commit'
@@ -1281,7 +1301,7 @@ class AndroidTrichromeOfficialBuildTest(AndroidBuildTest):
         '-b', '1334380'
     ])
     build = bisect_builds.create_archive_build(options)
-    self.assertIsInstance(build, bisect_builds.AndroidTrichromeOfficialBuild)
+    self.assertIsInstance(build, bisect_builds.AndroidOfficialBuild)
     build._install_revision('download.zip', 'tmp-dir')
     mock_UnzipFilenameToDir.assert_called_once_with('download.zip', 'tmp-dir')
     mock_InstallOnAndroid.assert_any_call(
@@ -1305,7 +1325,7 @@ class AndroidTrichromeOfficialBuildTest(AndroidBuildTest):
         '-b', '1334380'
     ])
     build = bisect_builds.create_archive_build(options)
-    self.assertIsInstance(build, bisect_builds.AndroidTrichromeOfficialBuild)
+    self.assertIsInstance(build, bisect_builds.AndroidOfficialBuild)
     with self.assertRaises(bisect_builds.BisectException):
       build._install_revision('download.zip', 'tmp-dir')
     self.assertIn("The list of available --apk:", mock_stdout.getvalue())
@@ -1322,7 +1342,7 @@ class AndroidTrichromeOfficialBuildTest(AndroidBuildTest):
         '-b', '1334380'
     ])
     build = bisect_builds.create_archive_build(options)
-    self.assertIsInstance(build, bisect_builds.AndroidTrichromeOfficialBuild)
+    self.assertIsInstance(build, bisect_builds.AndroidOfficialBuild)
     download_job = build.get_download_job(1334339)
     zip_file = download_job.start().wait_for()
     with tempfile.TemporaryDirectory(prefix='bisect_tmp') as tempdir:
@@ -1335,6 +1355,73 @@ class AndroidTrichromeOfficialBuildTest(AndroidBuildTest):
         'full-build-linux/apks/TrichromeChromeGoogle6432.minimal.apks$')
     mock_LaunchOnAndroid.assert_called_once_with(self.device, 'chrome')
 
+  @unittest.skipUnless('NO_MOCK_SERVER' in os.environ,
+                       'The test only valid when NO_MOCK_SERVER')
+  @patch('bisect-builds.InstallOnAndroid')
+  @patch('bisect-builds.LaunchOnAndroid')
+  def test_run_revision_with_webview_apk_with_unsupported_versions(
+      self, mock_LaunchOnAndroid, mock_InstallOnAndroid):
+    options = bisect_builds.ParseCommandLine([
+        '-o', '-a', 'android-arm64-high', '--apk', 'webview', '-g', '100000',
+        '-b', '100010'
+    ])
+
+    with self.assertRaises(bisect_builds.BisectException):
+      _ = bisect_builds.create_archive_build(options)
+
+  @unittest.skipUnless('NO_MOCK_SERVER' in os.environ,
+                       'The test only valid when NO_MOCK_SERVER')
+  @patch('bisect-builds.InstallOnAndroid')
+  @patch('bisect-builds.LaunchOnAndroid')
+  def test_webview_launch_revision(self, mock_LaunchOnAndroid,
+                                   mock_InstallOnAndroid):
+    options = bisect_builds.ParseCommandLine([
+        '-o', '-a', 'android-arm64-high', '--apk', 'webview', '-g', '1350000',
+        '-b', '1350010'
+    ])
+
+    build = bisect_builds.create_archive_build(options)
+
+    self.assertIsInstance(build, bisect_builds.AndroidOfficialBuild)
+    download_job = build.get_download_job(1334339)
+    zip_file = download_job.start().wait_for()
+    with tempfile.TemporaryDirectory(prefix='bisect_tmp') as tempdir:
+      build.run_revision(zip_file, tempdir, [])
+    print(mock_InstallOnAndroid.call_args_list)
+    self.assertRegex(mock_InstallOnAndroid.mock_calls[0].args[1],
+                     'full-build-linux/apks/TrichromeLibraryGoogle6432.apk$')
+    self.assertRegex(
+        mock_InstallOnAndroid.mock_calls[1].args[1],
+        'full-build-linux/apks/TrichromeWebViewGoogle6432.minimal.apks$')
+    mock_LaunchOnAndroid.assert_called_once_with(self.device, 'webview')
+
+  @patch('bisect-builds.UnzipFilenameToDir')
+  @patch('bisect-builds.InstallOnAndroid')
+  @patch('sys.stdout', new_callable=io.StringIO)
+  @patch('glob.glob',
+         side_effect=[
+             [],
+             ['temp-dir/full-build-linux/apks/SystemWebView.apk'],
+         ])
+  def test_install_revision_webview_swap_apk_filename(self, mock_glob,
+                                                      mock_stdout,
+                                                      mock_InstallOnAndroid,
+                                                      mock_unzip):
+    options = bisect_builds.ParseCommandLine([
+        'o', '-a', 'android-arm', '-g', '1313161', '-b', '1313210', '--apk',
+        'webview'
+    ])
+    build = bisect_builds.create_archive_build(options)
+    self.assertIsInstance(build, bisect_builds.AndroidSnapshotBuild)
+    self.assertEqual(build.binary_name, 'SystemWebViewGoogle.apk')
+    build._install_revision('webview.zip', 'temp-dir')
+    self.assertEqual(build.binary_name, 'SystemWebView.apk')
+    self.assertEqual(mock_glob.call_count, 2)
+    mock_glob.assert_any_call('temp-dir/*/apks/SystemWebViewGoogle.apk')
+    mock_glob.assert_any_call('temp-dir/*/apks/SystemWebView.apk')
+    mock_InstallOnAndroid.assert_called_once_with(
+        self.device, 'temp-dir/full-build-linux/apks/SystemWebView.apk')
+    self.assertIn('Retrying with SystemWebView.apk', mock_stdout.getvalue())
 
 class LinuxReleaseBuildTest(BisectTestCase):
 
@@ -1672,6 +1759,10 @@ class MethodTest(BisectTestCase):
 
   def test_ParseCommandLine_DetectArchive_with_apk(self):
     opts = bisect_builds.ParseCommandLine(['-o', '--apk', 'chrome', '-g', '1'])
+    self.assertEqual(opts.archive, 'android-arm64-high')
+
+  def test_ParseCommandLine_DetectArchive_with_apk_Snapshot(self):
+    opts = bisect_builds.ParseCommandLine(['-s', '--apk', 'chrome', '-g', '1'])
     self.assertEqual(opts.archive, 'android-arm64')
 
   def test_ParseCommandLine_DetectArchive_with_ipa(self):
@@ -1698,6 +1789,26 @@ class MethodTest(BisectTestCase):
     with self.assertRaises(SystemExit):
       bisect_builds.ParseCommandLine(['-a', 'linux64', '--signed', '-g', '1'])
     self.assertIn('--signed is only supported', mock_stderr.getvalue())
+
+  @patch('sys.stderr', new_callable=io.StringIO)
+  def test_ParseCommandLine_webview_incompatibility_error(self, mock_stderr):
+    with self.assertRaises(SystemExit):
+      _ = bisect_builds.ParseCommandLine([
+          '-r', '-a', 'android-arm64-high', '-g', '127.0.6533.76', '-b',
+          '127.0.6533.79', '--apk', 'webview'
+      ])
+    self.assertIn(
+        'Bisecting WebView for android-arm64-high, please choose official '
+        'builds (-o)', mock_stderr.getvalue())
+
+    opts = bisect_builds.ParseCommandLine([
+        '-o', '-a', 'android-arm64-high', '-g', '1334017', '-b', '1335078',
+        '--apk', 'webview'
+    ])
+    self.assertEqual(opts.apk, 'webview')
+    self.assertEqual(opts.archive, 'android-arm64-high')
+    self.assertEqual(opts.build_type, 'official')
+
 
   @patch('urllib.request.urlopen')
   @patch('builtins.open')
@@ -1779,5 +1890,125 @@ class ChromiumVersionTest(BisectTestCase):
     self.assertEqual(v127_0_6533_75, v127_0_6533_75_with_space)
     self.assertLess(v127, v127_0_6533_74)
 
+
+class GetEarliestBuildVersionFromRevisionTest(BisectTestCase):
+
+  @patch('bisect-builds.FetchJsonFromURL')
+  def test_get_build_versions_from_revision(self, mock_fetch_json):
+    mock_fetch_json.return_value = {'commits': [{'earliest': '144.0.7502.0'}]}
+    version = bisect_builds.GetEarliestBuildVersionFromRevision(1537356)
+    self.assertIsNotNone(version)
+    self.assertEqual(str(version), '144.0.7502.0')
+
+  @patch('bisect-builds.FetchJsonFromURL')
+  def test_get_build_versions_from_revision_multiple_commits(
+      self, mock_fetch_json):
+    mock_fetch_json.return_value = {
+        'commits': [{
+            'earliest': '144.0.7559.3'
+        }, {
+            'earliest': '144.0.7502.0'
+        }]
+    }
+    with self.assertRaises(bisect_builds.BisectException):
+      bisect_builds.GetEarliestBuildVersionFromRevision(1537356)
+
+  @patch('bisect-builds.FetchJsonFromURL')
+  def test_get_build_versions_from_revision_no_commits(self, mock_fetch_json):
+    mock_fetch_json.return_value = {'commits': []}
+    with self.assertRaises(bisect_builds.BisectException):
+      bisect_builds.GetEarliestBuildVersionFromRevision(1537356)
+
+  @patch('bisect-builds.FetchJsonFromURL')
+  def test_get_build_versions_from_revision_no_earliest(self, mock_fetch_json):
+    mock_fetch_json.return_value = {'commits': [{}]}
+    with self.assertRaises(bisect_builds.BisectException):
+      bisect_builds.GetEarliestBuildVersionFromRevision(1537356)
+
+  @patch('bisect-builds.FetchJsonFromURL')
+  def test_get_build_versions_from_revision_non_integer_revision(
+      self, mock_fetch_json):
+    version = bisect_builds.GetEarliestBuildVersionFromRevision('not-a-number')
+    self.assertIsNone(version)
+    mock_fetch_json.assert_not_called()
+
+
+class AndroidDesktopReleaseBuildTest(AndroidBuildTest):
+
+  def setUp(self):
+    super().setUp()
+    self.set_sdk_level(bisect_builds.version_codes.Q)
+
+  @maybe_patch(
+      'bisect-builds.GsutilList',
+      side_effect=
+      [[
+          'gs://chrome-unsigned/android-B0urB0N/%s/' % x for x in [
+              '129.0.6626.0', '129.0.6626.1', '129.0.6627.0', '129.0.6627.1',
+              '129.0.6628.0'
+          ]
+      ],
+       [
+           'gs://chrome-unsigned/android-B0urB0N/129.0.6626.0/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks',
+           'gs://chrome-unsigned/android-B0urB0N/129.0.6626.1/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks',
+           'gs://chrome-unsigned/android-B0urB0N/129.0.6627.0/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks',
+           'gs://chrome-unsigned/android-B0urB0N/129.0.6627.1/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks',
+           'gs://chrome-unsigned/android-B0urB0N/129.0.6628.0/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks'
+       ]])
+  def test_get_rev_list(self, mock_GsutilList):
+    options = bisect_builds.ParseCommandLine([
+        '-r', '-a', 'android-desktop-x64', '--apk', 'chrome_stable', '-g',
+        '129.0.6626.0', '-b', '129.0.6628.0'
+    ])
+    build = bisect_builds.create_archive_build(options)
+    self.assertIsInstance(build, bisect_builds.AndroidDesktopReleaseBuild)
+    self.assertEqual(build.get_rev_list(), [
+        '129.0.6626.0', '129.0.6626.1', '129.0.6627.0', '129.0.6627.1',
+        '129.0.6628.0'
+    ])
+    mock_GsutilList.assert_has_calls([
+        call('gs://chrome-unsigned/android-B0urB0N'),
+        call(
+            'gs://chrome-unsigned/android-B0urB0N/129.0.6626.0/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks',
+            'gs://chrome-unsigned/android-B0urB0N/129.0.6626.1/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks',
+            'gs://chrome-unsigned/android-B0urB0N/129.0.6627.0/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks',
+            'gs://chrome-unsigned/android-B0urB0N/129.0.6627.1/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks',
+            'gs://chrome-unsigned/android-B0urB0N/129.0.6628.0/desktop-x86_64/TrichromeChromeGoogleDesktop64Stable.apks',
+            ignore_fail=True)
+    ])
+
+  def test_get_download_url(self):
+    options = bisect_builds.ParseCommandLine([
+        '-r', '-a', 'android-desktop-x64', '--apk', 'chrome_stable', '-g',
+        '129.0.6626.0', '-b', '129.0.6628.0'
+    ])
+    build = bisect_builds.create_archive_build(options)
+    self.assertIsInstance(build, bisect_builds.AndroidDesktopReleaseBuild)
+    download_urls = build.get_download_url('129.0.6626.0')
+    self.assertDictEqual(
+        download_urls, {
+            'trichrome':
+            ('gs://chrome-unsigned/android-B0urB0N/129.0.6626.0/desktop-x86_64/'
+             'TrichromeChromeGoogleDesktop64Stable.apks'),
+            'trichrome_library':
+            ('gs://chrome-unsigned/android-B0urB0N/129.0.6626.0/desktop-x86_64/'
+             'TrichromeLibraryGoogleDesktop64Stable.apk'),
+        })
+
+  @patch('bisect-builds.InstallOnAndroid')
+  def test_install_revision(self, mock_InstallOnAndroid):
+    downloads = {
+        'trichrome': 'some-file.apks',
+        'trichrome_library': 'file2.apk',
+    }
+    options = bisect_builds.ParseCommandLine([
+        '-r', '-a', 'android-desktop-x64', '--apk', 'chrome_stable', '-g',
+        '129.0.6626.0', '-b', '129.0.6628.0'
+    ])
+    build = bisect_builds.create_archive_build(options)
+    self.assertIsInstance(build, bisect_builds.AndroidDesktopReleaseBuild)
+    build._install_revision(downloads, 'tmp-dir')
+    mock_InstallOnAndroid.assert_any_call(self.device, 'some-file.apks')
+    mock_InstallOnAndroid.assert_any_call(self.device, 'file2.apk')
 if __name__ == '__main__':
   unittest.main()

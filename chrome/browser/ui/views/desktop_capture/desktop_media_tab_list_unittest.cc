@@ -4,8 +4,8 @@
 
 #include "chrome/browser/ui/views/desktop_capture/desktop_media_tab_list.h"
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
-#include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/webrtc/desktop_media_list.h"
 #include "chrome/browser/media/webrtc/fake_desktop_media_list.h"
@@ -19,7 +19,6 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/controls/table/table_view.h"
-#include "ui/views/layout/layout_provider.h"
 #include "ui/views/test/scoped_views_test_helper.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/any_widget_observer.h"
@@ -59,7 +58,7 @@ class DesktopMediaTabListTest : public testing::Test {
                                          "DesktopMediaPickerDialogView");
 
     picker_views_->Show(picker_params, std::move(source_lists),
-                        base::BindOnce([](content::DesktopMediaID id) {}));
+                        base::DoNothing());
     test_api_.set_picker(picker_views_.get());
 
     tab_list_ =

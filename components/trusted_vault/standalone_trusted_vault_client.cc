@@ -4,11 +4,11 @@
 
 #include "components/trusted_vault/standalone_trusted_vault_client.h"
 
+#include <optional>
 #include <utility>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
@@ -24,7 +24,6 @@
 #include "components/trusted_vault/proto/local_trusted_vault.pb.h"
 #include "components/trusted_vault/standalone_trusted_vault_backend.h"
 #include "components/trusted_vault/standalone_trusted_vault_storage.h"
-#include "components/trusted_vault/standalone_trusted_vault_storage_impl.h"
 #include "components/trusted_vault/trusted_vault_access_token_fetcher_impl.h"
 #include "components/trusted_vault/trusted_vault_connection_impl.h"
 #include "components/trusted_vault/trusted_vault_server_constants.h"
@@ -72,6 +71,8 @@ class IdentityManagerObserver : public signin::IdentityManager::Observer {
       signin_metrics::SourceForRefreshTokenOperation token_operation_source)
       override;
   void OnRefreshTokensLoaded() override;
+  void OnIdentityManagerShutdown(
+      signin::IdentityManager* identity_manager) override;
 
  private:
   void UpdatePrimaryAccountIfNeeded();
@@ -84,6 +85,9 @@ class IdentityManagerObserver : public signin::IdentityManager::Observer {
   const scoped_refptr<StandaloneTrustedVaultBackend> backend_;
   const base::RepeatingClosure notify_keys_changed_callback_;
   const raw_ptr<signin::IdentityManager> identity_manager_;
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
   CoreAccountInfo primary_account_;
 };
 
@@ -100,16 +104,14 @@ IdentityManagerObserver::IdentityManagerObserver(
   DCHECK(backend_);
   DCHECK(identity_manager_);
 
-  identity_manager_->AddObserver(this);
+  identity_manager_observation_.Observe(identity_manager_);
   UpdatePrimaryAccountIfNeeded();
   if (identity_manager_->AreRefreshTokensLoaded()) {
     OnRefreshTokensLoaded();
   }
 }
 
-IdentityManagerObserver::~IdentityManagerObserver() {
-  identity_manager_->RemoveObserver(this);
-}
+IdentityManagerObserver::~IdentityManagerObserver() = default;
 
 void IdentityManagerObserver::OnPrimaryAccountChanged(
     const signin::PrimaryAccountChangeEvent& event) {
@@ -165,6 +167,12 @@ void IdentityManagerObserver::OnRefreshTokensLoaded() {
   }
   UpdateAccountsInCookieJarInfoIfNeeded(
       identity_manager_->GetAccountsInCookieJar());
+}
+
+void IdentityManagerObserver::OnIdentityManagerShutdown(
+    signin::IdentityManager* identity_manager) {
+  CHECK_EQ(identity_manager, identity_manager_, base::NotFatalUntil::M142);
+  identity_manager_observation_.Reset();
 }
 
 void IdentityManagerObserver::UpdatePrimaryAccountIfNeeded() {
@@ -225,10 +233,8 @@ IdentityManagerObserver::GetPrimaryAccountRefreshTokenErrorState() const {
 class BackendDelegate : public StandaloneTrustedVaultBackend::Delegate {
  public:
   explicit BackendDelegate(
-      const base::RepeatingClosure& notify_recoverability_degraded_cb,
-      const base::RepeatingClosure& notify_state_changed_cb)
-      : notify_recoverability_degraded_cb_(notify_recoverability_degraded_cb),
-        notify_state_changed_cb_(notify_state_changed_cb) {}
+      const base::RepeatingClosure& notify_recoverability_degraded_cb)
+      : notify_recoverability_degraded_cb_(notify_recoverability_degraded_cb) {}
 
   ~BackendDelegate() override = default;
 
@@ -237,16 +243,16 @@ class BackendDelegate : public StandaloneTrustedVaultBackend::Delegate {
     notify_recoverability_degraded_cb_.Run();
   }
 
-  void NotifyStateChanged() override { notify_state_changed_cb_.Run(); }
-
  private:
   const base::RepeatingClosure notify_recoverability_degraded_cb_;
-  const base::RepeatingClosure notify_state_changed_cb_;
 };
 
 }  // namespace
 
 StandaloneTrustedVaultClient::StandaloneTrustedVaultClient(
+#if BUILDFLAG(IS_MAC)
+    const std::string& icloud_keychain_access_group_prefix,
+#endif
     SecurityDomainId security_domain,
     const base::FilePath& base_dir,
     signin::IdentityManager* identity_manager,
@@ -266,17 +272,16 @@ StandaloneTrustedVaultClient::StandaloneTrustedVaultClient(
   }
 
   backend_ = base::MakeRefCounted<StandaloneTrustedVaultBackend>(
+#if BUILDFLAG(IS_MAC)
+      icloud_keychain_access_group_prefix,
+#endif
       security_domain,
-      std::make_unique<StandaloneTrustedVaultStorageImpl>(base_dir,
-                                                          security_domain),
-      std::make_unique<BackendDelegate>(
-          base::BindPostTaskToCurrentDefault(
-              base::BindRepeating(&StandaloneTrustedVaultClient::
-                                      NotifyRecoverabilityDegradedChanged,
-                                  weak_ptr_factory_.GetWeakPtr())),
-          base::BindPostTaskToCurrentDefault(base::BindRepeating(
-              &StandaloneTrustedVaultClient::NotifyBackendStateChanged,
-              weak_ptr_factory_.GetWeakPtr()))),
+      std::make_unique<StandaloneTrustedVaultStorage>(base_dir,
+                                                      security_domain),
+      std::make_unique<BackendDelegate>(base::BindPostTaskToCurrentDefault(
+          base::BindRepeating(&StandaloneTrustedVaultClient::
+                                  NotifyRecoverabilityDegradedChanged,
+                              weak_ptr_factory_.GetWeakPtr()))),
       std::move(connection));
   backend_task_runner_->PostTask(
       FROM_HERE,
@@ -288,7 +293,7 @@ StandaloneTrustedVaultClient::StandaloneTrustedVaultClient(
       backend_task_runner_, backend_,
       base::BindRepeating(
           &StandaloneTrustedVaultClient::NotifyTrustedVaultKeysChanged,
-          base::Unretained(this)),
+          base::Unretained(this), std::nullopt),
       identity_manager);
 }
 
@@ -325,13 +330,14 @@ void StandaloneTrustedVaultClient::FetchKeys(
 void StandaloneTrustedVaultClient::StoreKeys(
     const GaiaId& gaia_id,
     const std::vector<std::vector<uint8_t>>& keys,
-    int last_key_version) {
+    int last_key_version,
+    std::optional<TrustedVaultUserActionTriggerForUMA> trigger) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(backend_);
   backend_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&StandaloneTrustedVaultBackend::StoreKeys,
                                 backend_, gaia_id, keys, last_key_version));
-  NotifyTrustedVaultKeysChanged();
+  NotifyTrustedVaultKeysChanged(trigger);
 }
 
 void StandaloneTrustedVaultClient::MarkLocalKeysAsStale(
@@ -415,18 +421,6 @@ void StandaloneTrustedVaultClient::FetchIsDeviceRegisteredForTesting(
                      std::move(callback)));
 }
 
-void StandaloneTrustedVaultClient::AddDebugObserverForTesting(
-    DebugObserver* debug_observer) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  debug_observer_list_.AddObserver(debug_observer);
-}
-
-void StandaloneTrustedVaultClient::RemoveDebugObserverForTesting(
-    DebugObserver* debug_observer) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  debug_observer_list_.RemoveObserver(debug_observer);
-}
-
 void StandaloneTrustedVaultClient::
     GetLastAddedRecoveryMethodPublicKeyForTesting(
         base::OnceCallback<void(const std::vector<uint8_t>&)> callback) {
@@ -453,10 +447,11 @@ void StandaloneTrustedVaultClient::GetLastKeyVersionForTesting(
       std::move(callback));
 }
 
-void StandaloneTrustedVaultClient::NotifyTrustedVaultKeysChanged() {
+void StandaloneTrustedVaultClient::NotifyTrustedVaultKeysChanged(
+    std::optional<TrustedVaultUserActionTriggerForUMA> trigger) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (Observer& observer : observer_list_) {
-    observer.OnTrustedVaultKeysChanged();
+    observer.OnTrustedVaultKeysChanged(trigger);
   }
 }
 
@@ -464,13 +459,6 @@ void StandaloneTrustedVaultClient::NotifyRecoverabilityDegradedChanged() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (Observer& observer : observer_list_) {
     observer.OnTrustedVaultRecoverabilityChanged();
-  }
-}
-
-void StandaloneTrustedVaultClient::NotifyBackendStateChanged() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  for (DebugObserver& debug_observer : debug_observer_list_) {
-    debug_observer.OnBackendStateChanged();
   }
 }
 

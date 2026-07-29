@@ -4,17 +4,23 @@
 
 package org.chromium.chrome.browser.suggestions;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.annotation.SuppressLint;
 import android.text.TextUtils;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.url.GURL;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -23,6 +29,7 @@ import java.util.Set;
  * Heuristically scores the similarity between a "key" URL with one or more "candidate" URLs. The
  * main use is to find the best match among "candidate" URLs from a TabList.
  */
+@NullMarked
 public class UrlSimilarityScorer {
 
     /** Return value for findTabWithMostSimilarUrl(). */
@@ -46,6 +53,7 @@ public class UrlSimilarityScorer {
         MvtReselectUrlMatchResult.PARTIAL,
         MvtReselectUrlMatchResult.NUM_ENTRIES
     })
+    @Retention(RetentionPolicy.SOURCE)
     @interface MvtReselectUrlMatchResult {
         int NONE = 0;
         int EXACT = 1;
@@ -70,7 +78,7 @@ public class UrlSimilarityScorer {
     public static final int SCORE_REF_MATCH = 1;
 
     // These are the same ones used in VisitSegmentDatabase::ComputeSegmentName().
-    private static Set<String> sDiscardableHostPrefixes =
+    private static final Set<String> sDiscardableHostPrefixes =
             new HashSet<>(Arrays.asList("www", "m", "mobile", "touch"));
 
     private final GURL mKeyUrl;
@@ -104,7 +112,7 @@ public class UrlSimilarityScorer {
         mLaxQuery = laxQuery;
         mLaxPath = laxPath;
 
-        mCompatibleSchemes = new HashSet<String>();
+        mCompatibleSchemes = new HashSet<>();
         String keyScheme = mKeyUrl.getScheme();
         mCompatibleSchemes.add(keyScheme);
         if (laxSchemeHost && keyScheme.contentEquals(UrlConstants.HTTP_SCHEME)) {
@@ -167,7 +175,7 @@ public class UrlSimilarityScorer {
      * returns the latter's relative depth, with 0 being identical. Otherwise returns null. Both
      * paths must begin and end with "/".
      */
-    static Integer getPathAncestralDepth(String ancestorPath, String path) {
+    static @Nullable Integer getPathAncestralDepth(String ancestorPath, String path) {
         assert ancestorPath.startsWith("/") && ancestorPath.endsWith("/");
         assert path.startsWith("/") && path.endsWith("/");
         if (!path.startsWith(ancestorPath)) return null;
@@ -186,7 +194,11 @@ public class UrlSimilarityScorer {
     }
 
     /** Computes the similarity score of {@param candidateUrl}. */
-    public int scoreSimilarity(GURL candidateUrl) {
+    public int scoreSimilarity(@Nullable GURL candidateUrl) {
+        if (candidateUrl == null) {
+            return MISMATCHED;
+        }
+
         if (candidateUrl.equals(mKeyUrl)) {
             return EXACT;
         }
@@ -242,15 +254,16 @@ public class UrlSimilarityScorer {
     public MatchResult findTabWithMostSimilarUrl(TabList tabList) {
         int bestIndex = TabList.INVALID_TAB_INDEX;
         int bestScore = MISMATCHED;
-        int count = tabList.getCount();
-        for (int i = 0; i < count; ++i) {
-            int score = scoreSimilarity(tabList.getTabAt(i).getUrl());
+        int i = 0;
+        for (Tab tab : tabList) {
+            int score = scoreSimilarity(assumeNonNull(tab).getUrl());
             if (score != MISMATCHED && bestScore < score) {
                 bestScore = score;
                 bestIndex = i;
                 // Early-exit on finding identical match.
                 if (bestScore == EXACT) break;
             }
+            ++i;
         }
         return new MatchResult(bestIndex, bestScore);
     }

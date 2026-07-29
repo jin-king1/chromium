@@ -9,7 +9,7 @@
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_sheet_detent_state.h"
 #import "ios/chrome/browser/lens_overlay/ui/lens_overlay_consent_view_controller.h"
 
-@interface LensOverlayConsentPresenter () <LensOverlayDetentsChangeObserver>
+@interface LensOverlayConsentPresenter () <LensOverlayDetentsManagerDelegate>
 @end
 
 @implementation LensOverlayConsentPresenter {
@@ -47,8 +47,10 @@
   _detentsManager =
       [[LensOverlayDetentsManager alloc] initWithBottomSheet:sheet
                                                       window:window];
-  _detentsManager.observer = self;
+  _detentsManager.delegate = self;
   [_detentsManager adjustDetentsForState:SheetDetentStateConsentDialog];
+
+  [self.delegate lensOverlayConsentPresenterWillShowConsent:self];
   [_presentingViewController
       presentViewController:_presentedConsentViewController
                    animated:YES
@@ -57,6 +59,8 @@
 
 - (void)dismissConsentViewControllerAnimated:(BOOL)animated
                                   completion:(void (^)(void))completion {
+  [self.delegate lensOverlayConsentPresenterWillDismissConsent:self];
+
   // As the presenting view controller is not owned by the presenter it can be
   // released independently. If this is the case, make sure the completion is
   // called before exiting.
@@ -69,17 +73,19 @@
                                                 completion:completion];
 }
 
-#pragma mark - LensOverlayDetentsChangeObserver
+#pragma mark - LensOverlayDetentsManagerDelegate
 
-- (void)onBottomSheetDimensionStateChanged:(SheetDimensionState)state {
-  if (state == SheetDimensionStateHidden) {
+- (void)lensOverlayDetentsManagerDidChangeDimensionState:
+    (LensOverlayDetentsManager*)detentsManager {
+  if (detentsManager.sheetDimension == SheetDimensionState::kHidden) {
     [self.delegate requestDismissalOfConsentDialog:self];
   }
 }
 
-- (BOOL)bottomSheetShouldDismissFromState:(SheetDimensionState)state {
-  DCHECK(state == SheetDimensionStateConsent);
-  return YES;
+- (BOOL)lensOverlayDetentsManagerShouldDismissBottomSheet:
+    (LensOverlayDetentsManager*)detentsManager {
+  DCHECK(detentsManager.sheetDimension == SheetDimensionState::kConsent);
+  return NO;
 }
 
 @end

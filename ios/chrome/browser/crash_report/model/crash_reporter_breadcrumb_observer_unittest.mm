@@ -6,10 +6,8 @@
 
 #import <string_view>
 
-#import "base/containers/contains.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
-#import "base/test/task_environment.h"
 #import "components/breadcrumbs/core/breadcrumb_manager.h"
 #import "components/breadcrumbs/core/breadcrumb_manager_keyed_service.h"
 #import "components/breadcrumbs/core/crash_reporter_breadcrumb_constants.h"
@@ -18,6 +16,7 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/common/crash_report/crash_helper.h"
 #import "ios/testing/scoped_block_swizzler.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
@@ -73,7 +72,7 @@ class CrashReporterBreadcrumbObserverTest : public PlatformTest {
   }
 
  protected:
-  base::test::TaskEnvironment task_environment_;
+  web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestProfileIOS> profile_2_;
 };
@@ -133,7 +132,7 @@ TEST_F(CrashReporterBreadcrumbObserverTest,
 
   std::string breadcrumbs = BreadcrumbAnnotations();
   // 1 incognito
-  EXPECT_TRUE(base::Contains(breadcrumbs, "I Breadcrumb Event"));
+  EXPECT_TRUE(breadcrumbs.contains("I Breadcrumb Event"));
   // 3 total
   auto iter = breadcrumbs.find(event);
   int count = 0;

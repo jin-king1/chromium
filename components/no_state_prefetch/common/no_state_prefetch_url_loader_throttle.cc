@@ -12,17 +12,17 @@
 #include "content/public/common/content_constants.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/load_flags.h"
+#include "net/http/http_response_headers.h"
 #include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/loader/resource_type_util.h"
+#include "third_party/blink/public/common/navigation/preloading_headers.h"
 
 namespace prerender {
 
 namespace {
-
-const char kPurposeHeaderName[] = "Purpose";
-const char kPurposeHeaderValue[] = "prefetch";
 
 void CallCancelNoStatePrefetchForUnsupportedScheme(
     mojo::PendingRemote<prerender::mojom::NoStatePrefetchCanceler> canceler) {
@@ -60,8 +60,12 @@ void NoStatePrefetchURLLoaderThrottle::WillStartRequest(
     network::ResourceRequest* request,
     bool* defer) {
   request->load_flags |= net::LOAD_PREFETCH;
-  request->cors_exempt_headers.SetHeader(kPurposeHeaderName,
-                                         kPurposeHeaderValue);
+
+  if (base::FeatureList::IsEnabled(
+          blink::features::kSecPurposePrefetchHeaderNoStatePrefetch)) {
+    request->headers.SetHeader(blink::kSecPurposeHeaderName,
+                               blink::kSecPurposePrefetchHeaderValue);
+  }
 
   request_destination_ = request->destination;
   // Abort any prerenders that spawn requests that use unsupported HTTP
@@ -120,9 +124,7 @@ void NoStatePrefetchURLLoaderThrottle::WillRedirectRequest(
     net::RedirectInfo* redirect_info,
     const network::mojom::URLResponseHead& response_head,
     bool* defer,
-    std::vector<std::string>* /* to_be_removed_headers */,
-    net::HttpRequestHeaders* /* modified_headers */,
-    net::HttpRequestHeaders* /* modified_cors_exempt_headers */) {
+    network::HttpRequestHeadersUpdateParams* headers_update_params) {
   std::string follow_only_when_prerender_shown_header;
   if (response_head.headers) {
     follow_only_when_prerender_shown_header =

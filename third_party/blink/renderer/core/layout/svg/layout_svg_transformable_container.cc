@@ -98,9 +98,10 @@ SVGTransformChange LayoutSVGTransformableContainer::UpdateLocalTransform(
 
 void LayoutSVGTransformableContainer::StyleDidChange(
     StyleDifference diff,
-    const ComputedStyle* old_style) {
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutSVGContainer::StyleDidChange(diff, old_style);
+  LayoutSVGContainer::StyleDidChange(diff, old_style, style_change_context);
 
   const ComputedStyle& style = StyleRef();
 
@@ -125,10 +126,7 @@ void LayoutSVGTransformableContainer::StyleDidChange(
   }
 
   TransformHelper::UpdateOffsetPath(element, old_style);
-  SetTransformUsesReferenceBox(
-      RuntimeEnabledFeatures::SvgViewportOptimizationEnabled()
-          ? TransformHelper::DependsOnReferenceBox(style)
-          : TransformHelper::UpdateReferenceBoxDependency(*this));
+  SetTransformUsesReferenceBox(TransformHelper::DependsOnReferenceBox(style));
 }
 
 void LayoutSVGTransformableContainer::WillBeDestroyed() {

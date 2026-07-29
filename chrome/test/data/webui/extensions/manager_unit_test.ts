@@ -15,7 +15,7 @@ import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_as
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestService} from './test_service.js';
-import {createExtensionInfo} from './test_util.js';
+import {createExtensionInfo, testVisible} from './test_util.js';
 
 suite('ExtensionManagerUnitTest', function() {
   let manager: ExtensionsManagerElement;
@@ -50,7 +50,7 @@ suite('ExtensionManagerUnitTest', function() {
   }
 
   function getExtensions(): chrome.developerPrivate.ExtensionInfo[] {
-    return manager.$['items-list'].extensions;
+    return manager.$.itemsList.extensions;
   }
 
   function getExtension(index: number): chrome.developerPrivate.ExtensionInfo {
@@ -151,7 +151,7 @@ suite('ExtensionManagerUnitTest', function() {
     const content =
         detailsView.shadowRoot.querySelector('.section .section-content');
     assertTrue(!!content);
-    assertEquals(description, content.textContent!.trim());
+    assertEquals(description, content.textContent.trim());
   });
 
   test(
@@ -195,7 +195,7 @@ suite('ExtensionManagerUnitTest', function() {
         const content =
             detailsView.shadowRoot.querySelector('.section .section-content');
         assertTrue(!!content);
-        assertEquals(newDescription, content.textContent!.trim());
+        assertEquals(newDescription, content.textContent.trim());
       });
 
   test('ProfileSettings', async () => {
@@ -217,13 +217,13 @@ suite('ExtensionManagerUnitTest', function() {
         {isMv2DeprecationNoticeDismissed: true});
     assertTrue(manager.isMv2DeprecationNoticeDismissed);
     await microtasksFinished();
-    assertTrue(manager.$['items-list'].isMv2DeprecationNoticeDismissed);
+    assertTrue(manager.$.itemsList.isMv2DeprecationNoticeDismissed);
 
     service.profileStateChangedTarget.callListeners(
         {isMv2DeprecationNoticeDismissed: false});
     assertFalse(manager.isMv2DeprecationNoticeDismissed);
     await microtasksFinished();
-    assertFalse(manager.$['items-list'].isMv2DeprecationNoticeDismissed);
+    assertFalse(manager.$.itemsList.isMv2DeprecationNoticeDismissed);
   });
 
   test('Uninstall', async () => {
@@ -279,7 +279,7 @@ suite('ExtensionManagerUnitTest', function() {
     await microtasksFinished();
     assertEquals(3, getExtensions().length);
 
-    const itemList = manager.$['items-list'];
+    const itemList = manager.$.itemsList;
 
     service.itemStateChangedTarget.callListeners({
       event_type: chrome.developerPrivate.EventType.UNINSTALLED,
@@ -327,9 +327,39 @@ suite('ExtensionManagerUnitTest', function() {
     assertEquals(0, getExtensions().length);
 
     // The search bar should be focused after all extensions have been removed.
-    // Tests that the fix for crbug.com/1416324 works by not having the focus be
-    // on a deleted element.
+    // Tests that the fix for crbug.com/40063067 works by not having the focus
+    // be on a deleted element.
     assertTrue(manager.$.toolbar.isSearchFocused());
+  });
+
+  test('UninstallRaceCondition', async () => {
+    assertEquals(0, getExtensions().length);
+
+    const extension = createExtensionInfo({
+      location: chrome.developerPrivate.Location.FROM_STORE,
+      name: 'Alpha',
+      id: 'a'.repeat(32),
+    });
+    simulateExtensionInstall(extension);
+    await microtasksFinished();
+    assertEquals(1, getExtensions().length);
+
+    // Simulate uninstall.
+    service.itemStateChangedTarget.callListeners({
+      event_type: chrome.developerPrivate.EventType.UNINSTALLED,
+      item_id: extension.id,
+    });
+    await microtasksFinished();
+    assertEquals(0, getExtensions().length);
+
+    // Simulate lagging UNLOADED event.
+    // This should NOT add the extension back.
+    service.itemStateChangedTarget.callListeners({
+      event_type: chrome.developerPrivate.EventType.UNLOADED,
+      extensionInfo: extension,
+    });
+    await microtasksFinished();
+    assertEquals(0, getExtensions().length);
   });
 
   function assertViewActive(tagName: string) {
@@ -437,4 +467,33 @@ suite('ExtensionManagerUnitTest', function() {
         await microtasksFinished();
         assertEquals(ExtensionState.ENABLED, getExtension(0).state);
       });
+
+  test('CheckDrawerSitePermissionsVisibility', async function() {
+    manager.$.toolbar.narrow = true;
+    const toolbar = manager.$.toolbar.$.toolbar;
+    await microtasksFinished();
+
+    const menuButton =
+        toolbar.shadowRoot.querySelector<HTMLElement>('#menuButton');
+    assertTrue(!!menuButton);
+    menuButton.click();
+
+    await eventToPromise('cr-drawer-opened', manager);
+    const drawer = manager.shadowRoot.querySelector('cr-drawer');
+    assertTrue(!!drawer);
+
+    const sidebar = drawer.querySelector('extensions-sidebar');
+    assertTrue(!!sidebar);
+
+    manager.enableEnhancedSiteControls = false;
+    await microtasksFinished();
+    testVisible(sidebar, '#sectionsSitePermissions', false);
+
+    manager.enableEnhancedSiteControls = true;
+    await microtasksFinished();
+    testVisible(sidebar, '#sectionsSitePermissions', true);
+
+    manager.$.toolbar.narrow = false;
+    await eventToPromise('close', drawer);
+  });
 });

@@ -47,11 +47,16 @@ class TestHelper {
   static void RegisterPublicAccountUser(PrefService& local_state,
                                         std::string_view user_id);
 
+  // Records the `user_email` as the owner of this device.
+  static void RegisterOwner(PrefService& local_state,
+                            std::string_view user_email);
+
   // Returns the fake username hash for testing.
   // Valid AccountId must be used, otherwise CHECKed.
   static std::string GetFakeUsernameHash(const AccountId& account_id);
 
-  explicit TestHelper(UserManager& user_manager);
+  // `user_manager` must outlive the instance of the TestHelper.
+  explicit TestHelper(UserManager* user_manager);
   ~TestHelper();
 
   // Creates and adds a regular (persisted) user, and returns it.
@@ -69,14 +74,23 @@ class TestHelper {
   // On failure, returns nullptr.
   [[nodiscard]] User* AddPublicAccountUser(std::string_view user_id);
 
-  // Creates and adds a new Kiosk user, and returns it.
+  // Creates and adds a new kiosk chrome app user, and returns it.
   // On failure, returns nullptr.
-  [[nodiscard]] User* AddKioskAppUser(std::string_view user_id);
+  [[nodiscard]] User* AddKioskChromeAppUser(std::string_view user_id);
+
+  // Creates and adds a new kiosk web app user, and returns it.
+  // On failure, returns nullptr.
+  [[nodiscard]] User* AddKioskWebAppUser(std::string_view user_id);
+
+  // Creates and adds a new kiosk Isolated Web App (IWA) user, and returns it.
+  // On failure, returns nullptr.
+  [[nodiscard]] User* AddKioskIwaUser(std::string_view user_id);
 
  private:
   User* AddUserInternal(const AccountId& account_id, UserType user_type);
   User* AddDeviceLocalAccountUserInternal(std::string_view user_id,
                                           UserType user_type);
+  User* AddKioskUser(std::string_view user_id, UserType kiosk_type);
 
   raw_ref<UserManager> user_manager_;
 };

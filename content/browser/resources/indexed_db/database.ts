@@ -5,7 +5,6 @@
 import './transaction_table.js';
 
 import {CustomElement} from 'chrome://resources/js/custom_element.js';
-import {mojoString16ToString} from 'chrome://resources/js/mojo_type_util.js';
 import type {UnguessableToken} from 'chrome://resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 
 import type {BucketClientInfo} from './bucket_client_info.mojom-webui.js';
@@ -34,7 +33,7 @@ export class IndexedDbDatabase extends CustomElement {
     const activeConnectionElement = this.$a('.connection-count.active');
     const pendingConnectionElement = this.$a('.connection-count.pending');
 
-    openDatabasesElement.textContent = mojoString16ToString(metadata.name);
+    openDatabasesElement.textContent = metadata.name;
 
     openConnectionElement.hidden = metadata.connectionCount === 0n;
     openConnectionElement.querySelector('.value')!.textContent =
@@ -116,7 +115,7 @@ export class IndexedDbDatabase extends CustomElement {
       const tokenValue = client.documentToken ?
           client.documentToken.value :
           this.getExecutionContextTokenValue(client.contextToken);
-      if (tokenValue && this.tokenToHexString(tokenValue) === token) {
+      if (tokenValue && tokenValue === token) {
         matchedClients.push(client);
       }
     }
@@ -138,14 +137,6 @@ export class IndexedDbDatabase extends CustomElement {
       return token.sharedWorkerToken.value;
     }
     throw new Error('Unrecognized ExecutionContextToken');
-  }
-
-  // This is the equivalent of `base::UnguessableToken::ToString()`.
-  private tokenToHexString(token: UnguessableToken) {
-    // Return the concatenation of the upper-case hexadecimal representations
-    // of high and low, both padded to be 16 characters long.
-    return token.high.toString(16).padStart(16, '0').toUpperCase() +
-        token.low.toString(16).padStart(16, '0').toUpperCase();
   }
 }
 

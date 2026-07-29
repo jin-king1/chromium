@@ -7,6 +7,7 @@
 #include "base/feature_list.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/threading/hang_watcher.h"
 #include "base/threading/platform_thread.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/interface_endpoint_client.h"
@@ -76,16 +77,23 @@ void Thread::CreateAndSetCompositorThread() {
   DCHECK(!GetCompositorThread());
 
   ThreadCreationParams params(ThreadType::kCompositorThread);
-  params.base_thread_type = base::ThreadType::kDisplayCritical;
+  params.base_thread_type = base::ThreadType::kPresentation;
 
   auto compositor_thread =
       std::make_unique<scheduler::CompositorThread>(params);
+
   compositor_thread->Init();
   compositor_thread->GetTaskRunner()->PostTask(
-      FROM_HERE, base::BindOnce([]() {
-        mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics(
-            "Compositor");
-      }));
+      FROM_HERE,
+      base::BindOnce(
+          &scheduler::CompositorThread::InitializeHangWatcherAndThreadName,
+          // It is safe to use base::Unretained here because
+          // `compositor_thread_instance.get()` points to an object that will be
+          // std::move'd into the std::unique_ptr managed by
+          // `GetCompositorThread()`. `GetCompositorThread()` uses
+          // DEFINE_STATIC_LOCAL, ensuring the CompositorThread object lives for
+          // the program's lifetime once assigned.
+          base::Unretained(compositor_thread.get())));
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   compositor_thread->GetTaskRunner()->PostTaskAndReplyWithResult(
@@ -95,7 +103,7 @@ void Thread::CreateAndSetCompositorThread() {
         // changes. This is not possible inside the sandbox, so ask the
         // browser to do it.
         Platform::Current()->SetThreadType(compositor_thread_id,
-                                           base::ThreadType::kDisplayCritical);
+                                           base::ThreadType::kPresentation);
       }));
 #endif
 

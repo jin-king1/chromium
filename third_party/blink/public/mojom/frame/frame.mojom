@@ -6,22 +6,26 @@ module blink.mojom;
 
 import "cc/mojom/browser_controls_state.mojom";
 import "cc/mojom/browser_controls_offset_tag_modifications.mojom";
+import "mojo/public/mojom/base/byte_size.mojom";
 import "mojo/public/mojom/base/byte_string.mojom";
 import "mojo/public/mojom/base/shared_memory.mojom";
 import "mojo/public/mojom/base/string16.mojom";
-import "mojo/public/mojom/base/text_direction.mojom";
 import "mojo/public/mojom/base/time.mojom";
 import "mojo/public/mojom/base/unguessable_token.mojom";
 import "mojo/public/mojom/base/values.mojom";
+import "services/network/public/mojom/connection_allowlist.mojom";
 import "services/network/public/mojom/content_security_policy.mojom";
 import "services/network/public/mojom/cross_origin_opener_policy.mojom";
 import "services/network/public/mojom/fetch_api.mojom";
 import "services/network/public/mojom/load_timing_info.mojom";
 import "services/network/public/mojom/network_types.mojom";
 import "services/network/public/mojom/source_location.mojom";
+import "services/network/public/mojom/storage_access_api.mojom";
 import "services/network/public/mojom/url_loader_completion_status.mojom";
-import "services/network/public/mojom/attribution.mojom";
 import "services/viz/public/mojom/compositing/offset_tag.mojom";
+import "services/viz/public/mojom/compositing/frame_sink_id.mojom";
+import "services/viz/public/mojom/compositing/local_surface_id.mojom";
+import "services/viz/public/mojom/compositing/compositor_frame_sink.mojom";
 import "skia/public/mojom/bitmap.mojom";
 import "skia/public/mojom/skcolor.mojom";
 import "skia/public/mojom/skcolor4f.mojom";
@@ -36,6 +40,8 @@ import "third_party/blink/public/mojom/css/preferred_color_scheme.mojom";
 import "third_party/blink/public/mojom/devtools/console_message.mojom";
 import "third_party/blink/public/mojom/devtools/devtools_agent.mojom";
 import "third_party/blink/public/mojom/devtools/inspector_issue.mojom";
+import "third_party/blink/public/mojom/dom/dom_node_id.mojom";
+import "third_party/blink/public/mojom/dom_storage/storage_area.mojom";
 import "third_party/blink/public/mojom/drag/drag.mojom";
 import "third_party/blink/public/mojom/favicon/favicon_url.mojom";
 import "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom";
@@ -43,6 +49,7 @@ import "third_party/blink/public/mojom/fenced_frame/fenced_frame_config.mojom";
 import "third_party/blink/public/mojom/fetch/fetch_api_request.mojom";
 import "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom";
 import "third_party/blink/public/mojom/frame/frame_owner_properties.mojom";
+import "third_party/blink/public/mojom/unbounded_element/unbounded_element.mojom";
 import "third_party/blink/public/mojom/frame/frame_policy.mojom";
 import "third_party/blink/public/mojom/frame/frame_replication_state.mojom";
 import "third_party/blink/public/mojom/frame/fullscreen.mojom";
@@ -51,7 +58,6 @@ import "third_party/blink/public/mojom/frame/media_player_action.mojom";
 import "third_party/blink/public/mojom/frame/remote_frame.mojom";
 import "third_party/blink/public/mojom/frame/reporting_observer.mojom";
 import "third_party/blink/public/mojom/frame/sudden_termination_disabler_type.mojom";
-import "third_party/blink/public/mojom/frame/text_autosizer_page_info.mojom";
 import "third_party/blink/public/mojom/frame/user_activation_notification_type.mojom";
 import "third_party/blink/public/mojom/frame/user_activation_update_types.mojom";
 import "third_party/blink/public/mojom/frame/view_transition_state.mojom";
@@ -188,7 +194,6 @@ enum NavigationApiEntryRestoreReason {
 };
 
 enum StorageTypeAccessed {
-    kDatabase,
     kCacheStorage,
     kIndexedDB,
     kFileSystem,
@@ -230,14 +235,17 @@ const uint16 kMaxTitleChars = 4096; // 4 * 1024;
 struct IframeAttributes {
   // Parsed value of the 'csp' attribute of the iframe.
   network.mojom.ContentSecurityPolicy? parsed_csp_attribute;
+  // Parsed value of the iframe's 'connectionallowlist' attribute, used for
+  // Connection-Allowlist embedded enforcement. Parsed in the renderer. The
+  // `response-origin` token can't be resolved here (the frame hasn't navigated
+  // yet), so it is carried unresolved via `match_response_origin` and resolved
+  // by the browser against the frame's response origin before enforcement.
+  // Null when the attribute is unset.
+  network.mojom.ConnectionAllowlist? required_connection_allowlist;
   // 'credentialless' attribute of the iframe.
   bool credentialless;
   // 'browsingtopics' attribute of the iframe.
   bool browsing_topics;
-  // 'adauctionheaders' attribute of the iframe.
-  bool ad_auction_headers;
-  // 'sharedstoragewritable' attribute of the iframe.
-  bool shared_storage_writable_opted_in;
   // 'id' attribute of the iframe. This can be optional because id might not be set.
   string? id;
   // 'name' attribute of the iframe. This is different from window.name, which is
@@ -255,6 +263,23 @@ struct LegacyTechEventCodeLocation {
   uint64 line;
   uint64 column;
 };
+
+// Amount of data received during a subframe load, for
+// AddResourceTimingEntryForFailedSubframeNavigation().
+struct SubframeResourceLengths {
+  // Total amount of data received from the network.
+  mojo_base.mojom.ByteSize encoded_data_length;
+  // The length of the response body before removing any content encodings.
+  mojo_base.mojom.ByteSize encoded_body_length;
+  // The length of the response body after decoding.
+  mojo_base.mojom.ByteSize decoded_body_length;
+};
+
+// The maximum allowed size of a crash report storage shared memory buffer. This
+// is used when the renderer requests a shared memory buffer for crash report
+// data; see `CreateCrashReportContext()`.
+const uint64 kMaxCrashReportContextSize = 65536;
+
 
 // Implemented in Browser, this interface defines frame-specific methods that
 // will be invoked from the render process (e.g. content::RenderFrameHostImpl).
@@ -322,17 +347,6 @@ interface LocalFrameHost {
   // frame owner assigns a display: none style.
   VisibilityChanged(blink.mojom.FrameVisibility visibility);
 
-  // Notifies the browser that the associated frame has changed theme color.
-  // This will only be called on main-frames only. |theme_color| is optional
-  // and indicates if a theme color has been specified or not, e.g. removal
-  // of a theme color meta tag will generate a null value.
-  DidChangeThemeColor(skia.mojom.SkColor? theme_color);
-
-  // Notifies the browser that the associated frame has changed its computed CSS
-  // background color. This will be called on main-frames only.
-  // |color_adjust| is true if the background is forced by color adjustments.
-  DidChangeBackgroundColor(skia.mojom.SkColor4f background_color, bool color_adjust);
-
   // Sent when the renderer fails to load with |error_code| which means a net
   // error code.
   DidFailLoadWithError(url.mojom.Url url, int32 error_code);
@@ -398,11 +412,13 @@ interface LocalFrameHost {
   // Tells the browser to navigate back or forward in session history by
   // the given offset (relative to the current position in session
   // history). |has_user_gesture| tells whether or not this is the consequence
-  // of a user action. |soft_navigation_heuristics_task_id| is the task ID of
-  // the initiator of the navigation, if any. It is restricted to same-document
-  // main-frame navigation initiated by the top-level document.
+  // of a user action. |actual_navigation_start| is the time the navigation
+  // began in the renderer process. |soft_navigation_heuristics_task_id| is the
+  // task ID of the initiator of the navigation, if any. It is restricted to
+  // same-document main-frame navigation initiated by the top-level document.
   GoToEntryAtOffset(int32 offset,
                     bool has_user_gesture,
+                    mojo_base.mojom.TimeTicks actual_navigation_start,
                     TaskAttributionId? soft_navigation_heuristics_task_id);
 
   // Tells the browser to navigate back or forward in session history to the
@@ -416,11 +432,13 @@ interface LocalFrameHost {
   // this frame, and that the target FNE is contiguously same-origin and
   // same-site-instance with the current FNE, so navigating via this
   // function is more restrictive than GoToEntryAtOffset().
-  // |soft_navigation_heuristics_task_id| is the task ID of
-  // the initiator of the navigation, if any. It is sent back to the renderer
-  // when the navigation commits, and is limited to same-document
-  // main-frame navigations initiated by the top-level document.
+  // |actual_navigation_start| is the time the navigation began in the renderer
+  // process. |soft_navigation_heuristics_task_id| is the task ID of the
+  // initiator of the navigation, if any. It is sent back to the renderer when
+  // the navigation commits, and is limited to same-document main-frame
+  // navigations initiated by the top-level document.
   NavigateToNavigationApiKey(string key, bool has_user_gesture,
+                    mojo_base.mojom.TimeTicks actual_navigation_start,
                     TaskAttributionId? soft_navigation_heuristics_task_id);
 
   // Called with |true| when the first navigate event handler is added, and with
@@ -430,8 +448,7 @@ interface LocalFrameHost {
   // Changes the title for the page in the UI when the page is navigated or the
   // title changes. Sent for top-level frames. This can be null when loading an
   // initial empty document (and in some tests).
-  UpdateTitle(mojo_base.mojom.String16? title,
-              mojo_base.mojom.TextDirection title_direction);
+  UpdateTitle(mojo_base.mojom.String16? title);
 
   // Updates the application title for a document. If non-empty, a web app
   // displayed in an app window may use this string instead of the regular
@@ -503,7 +520,8 @@ interface LocalFrameHost {
   RunBeforeUnloadConfirm(bool is_reload) => (bool success);
 
   // Notifies that the urls for the favicon of a site has been determined.
-  UpdateFaviconURL(array<FaviconURL> favicon_urls);
+  UpdateFaviconURL(array<FaviconURL> favicon_urls,
+                   FaviconUpdateReason reason);
 
   // Initiates a download based on user actions like 'ALT+click'.
   DownloadURL(DownloadURLParams params);
@@ -517,11 +535,15 @@ interface LocalFrameHost {
   // - bounds_in_frame_widget: The newly focused element's bounds
   //   relative to local root's view, and it will be an empty bounds
   //   if there is no focused element.
-  // - foucus_type: Focus type.
+  // - focus_type: Focus type.
+  // - editable_dom_node_id: If it's editable (including richly editable) this
+  //   is the DOMNodeId of the newly focused element. Otherwise it will be set to
+  //   the null value.
   FocusedElementChanged(bool is_editable_element,
                         bool is_richly_editable_element,
                         gfx.mojom.Rect bounds_in_frame_widget,
-                        blink.mojom.FocusType focus_type);
+                        blink.mojom.FocusType focus_type,
+                        blink.mojom.DOMNodeId editable_dom_node_id);
 
   // Notification that the text selection has changed.
   // Note: The second parameter is the character based offset of the
@@ -622,8 +644,8 @@ interface LocalFrameHost {
   // |untrusted_stack_trace| should only be printed or sent to other services;
   // it's untrusted and should not be parsed to get a structured stack trace.
   // The stack trace is only present if
-  // FrameNavigationControl.SetWantErrorMessageStackTrace has been called for
-  // this frame and the log_level is kError.
+  // content.mojom.Frame.SetWantErrorMessageStackTrace has been called for this
+  // frame and the log_level is kError.
   DidAddMessageToConsole(
       ConsoleMessageLevel log_level,
       mojo_base.mojom.BigString16 msg,
@@ -695,23 +717,6 @@ interface LocalFrameHost {
       url.mojom.Url destination_url,
       bool cross_origin_exposed);
 
-  // See:
-  // https://github.com/WICG/fenced-frame/blob/master/explainer/fenced_frames_with_local_unpartitioned_data_access.md
-  //
-  // This implements the API:
-  // window.fence.disableUntrustedNetwork()
-  //
-  // A document in a fenced frame can invoke the disableUntrustedNetwork API to
-  // disable the frame tree's access to the network (except trusted servers in
-  // the future) and gain access to unpartitioned storage.
-  DisableUntrustedNetworkInFencedFrame() => ();
-
-  // A test-only IPC to exempt `exempted_url` from fenced frames network
-  // revocation immediately above (`DisableUntrustedNetworkInFencedFrame`).
-  // Used primarily to exempt the fenced frames remote context executor pattern
-  // in WPT from network revocation.
-  ExemptUrlFromNetworkRevocationForTesting(url.mojom.Url exempted_url) => ();
-
   // Notify the browser that there is a legacy technology used by the page.
   // The event contains the technology `type` and code location from the
   // ExecutionContext.
@@ -741,15 +746,7 @@ interface LocalFrameHost {
       bool once,
       bool cross_origin_exposed);
 
-  // See:
-  // https://github.com/WICG/turtledove/blob/main/FLEDGE_extended_PA_reporting.md
-  //
-  // This implements the API:
-  // window.fence.reportEvent(eventType)
-  //
-  // A document in a fenced frame can invoke the reportEvent API to request the
-  // browser to send private aggregation requests associated with `event_type`.
-  SendPrivateAggregationRequestsForFencedFrameEvent(string event_type);
+
 
   // Sent by the frame in a renderer process that hosts/owns a <fencedframe>
   // element, to the browser process requesting the creation of a new fenced
@@ -765,14 +762,6 @@ interface LocalFrameHost {
       RemoteFrameInterfacesFromRenderer remote_frame_interfaces,
       blink.mojom.RemoteFrameToken frame_token,
       mojo_base.mojom.UnguessableToken devtools_frame_token);
-
-  // Can be called when a DOM event named `event_type` fires within a fenced
-  // frame's DOM tree. Propagates a censored version of the event to the
-  // embedder that omits privacy-sensitive information like mouse coordinates or
-  // timestamps. User activation is also consumed in the fenced frame tree and
-  // notified to the embedder's DOM tree, if this method determines that
-  // `event_type` should result in the embedder receiving user activation.
-  ForwardFencedFrameEventAndUserActivationToEmbedder(string event_type);
 
   // Notifies when the ViewTransition opt-in state for the current Document
   // changes.
@@ -806,6 +795,23 @@ interface LocalFrameHost {
   // Notify the browser the document readystate has changed to 'interactive'.
   // Sent for top-level frames.
   NotifyDocumentInteractive();
+
+  // This IPC lets the browser initialize memory reserved for crash reporting
+  // API of size `length`. Note that the maximum allowed size is
+  // `kMaxCrashReportContextSize`. In the future, if we decide that shared
+  // memory is to be the backing storage mechanism for this feature, then this
+  // method's async callback will contain an `UnsafeSharedMemoryRegion` that the
+  // renderer can use to write crash report data that the browser will read,
+  // instead of using the two synchronous IPCs below.
+  InitializeCrashReportContext(uint64 length)
+      => (mojo_base.mojom.UnsafeSharedMemoryRegion region);
+
+  // Request the instantiation of an overlay host container with the
+  // provided bounds.
+  RequestUnboundedSurface(
+      pending_associated_receiver<UnboundedSurfaceHost> host,
+      pending_associated_remote<UnboundedSurfaceClient> client,
+      gfx.mojom.Rect bounds);
 };
 
 // Implemented in Browser, this interface defines frame-specific methods
@@ -849,11 +855,23 @@ interface LocalFrame {
       => (mojo_base.mojom.String16 content, uint32 start_offset,
           uint32 end_offset);
 
-  // Creates an intervention report in the frame with contents |id| and
-  // |message|, returns once the report has been queued. |id| identifies the
-  // intervention that occurred. |message| is a human-readable string that
-  // can provide additional context to the cause of the intervention.
-  SendInterventionReport(string id, string message);
+  // Queues an intervention report for this frame or a specific child frame.
+  //
+  // This report is always sent via the context of *this* frame.
+  //
+  // Args:
+  //   `id`: Identifies the intervention type (e.g., "HeavyAdIntervention").
+  //   `message`: A human-readable string providing additional context about
+  //       why the intervention occurred.
+  //   `child_frame_token`:
+  //       - If null, the intervention report pertains directly to *this* frame.
+  //       - If provided, the intervention report pertains to the specified
+  //         child frame (which could be a LocalFrame or RemoteFrame proxy).
+  //         `message` may be augmented with additional info about the child
+  //         frame. The report is still sent from this frame, which contains
+  //         the child frame's owner element.
+  SendInterventionReport(string id, string message,
+                         blink.mojom.FrameToken? child_frame_token);
 
   // Updates this frame's FrameOwner properties, such as scrolling, margin,
   // or allowfullscreen.  This is used when this frame's parent is in
@@ -867,9 +885,15 @@ interface LocalFrame {
   // is used for histograms only.
   NotifyUserActivation(UserActivationNotificationType notification_type);
 
-  // Notifies the |LocalFrame| about the Virtual keyboard rectangle that is occluding the web
-  // content.
+  // Notifies the |LocalFrame| about the virtual keyboard rectangle that is
+  // occluding the web content. The rect is in DIPs relative to the main frame
+  // origin, which corresponds to the WebContents view origin for the main
+  // frame.
   NotifyVirtualKeyboardOverlayRect(gfx.mojom.Rect keyboard_rect);
+
+  // This call will "show interest" in the Element with the provided DOMNodeID,
+  // which is presumed to have an `interestfor` attribute.
+  ShowInterestInElement(int32 nodeID);
 
   // Add message to the frame console.
   AddMessageToConsole(ConsoleMessageLevel level, string message,
@@ -927,6 +951,12 @@ interface LocalFrame {
 
   // Instructs the frame to invoke the beforeunload event handler.
   //
+  // If `force_to_proceed` is true, the renderer must not show a confirmation
+  // dialog or allow the handler to cancel the navigation. This is used when
+  // the browser process has already decided the navigation should proceed,
+  // for example, when beforeunload handlers are being run asynchronously
+  // (see https://crbug.com/475716933).
+  //
   // The closure callback is invoked to acknowledge the browser that
   // the beforeunload event is handled. |proceed| matches the return value
   // of the frame's beforeunload handler: true if the user decided to proceed
@@ -938,9 +968,11 @@ interface LocalFrame {
   // pending, which increases their priority while maintaining ordering
   // guarantees. See also mojo/public/tools/bindings/README.md.
   [SupportsUrgent]
-  BeforeUnload(bool is_reload)
+  BeforeUnload(bool is_reload, bool force_to_proceed)
       => (bool proceed, mojo_base.mojom.TimeTicks before_unload_start_time,
-          mojo_base.mojom.TimeTicks before_unload_end_time);
+          mojo_base.mojom.TimeTicks before_unload_end_time,
+          mojo_base.mojom.TimeTicks before_unload_dialog_opened_time,
+          mojo_base.mojom.TimeTicks before_unload_dialog_closed_time);
 
   // Tells the renderer to perform the given action on the media player location
   // at the given point in the view coordinate space.
@@ -990,23 +1022,30 @@ interface LocalFrame {
   // container policy.
   DidUpdateFramePolicy(blink.mojom.FramePolicy frame_policy);
 
-  // Notifies the renderer process that the associated frame has changed its
-  // visibility status. Visibility status changes occur when the frame moves
-  // in/out of the viewport, or when the render status of the object changes,
-  // e.g. if the frame gets set a "display: none" or "visibility: hidden" style.
-  OnFrameVisibilityChanged(blink.mojom.FrameVisibility visibility);
-
-  // Posts a message from a frame in another process to the current renderer.
+  // Posts a message from a frame in another process to the current renderer:
+  //
   // |source_frame_token| is the frame token of the RemoteFrame in the current
   // renderer representing the frame (from a different renderer) where this
-  // message is coming from. |source_origin| is the origin of the source frame
-  // when the message was sent, and |target_origin| specifies what the origin of
-  // the target frame must be for the message to be dispatched. An empty string
-  // allows the message to be dispatched to any origin. |message| is the encoded
-  // data, and any extra properties such as transferred ports or blobs.
+  // message is coming from.
+  //
+  // |source_origin| is the origin of the source from which the message was
+  // sent. This will usually be the origin of the execution context that posted
+  // a message but can be null in a few cases. Most notably, messages posted
+  // via a `MessagePort` (which includes those posted from Dedicated Workers)
+  // do not set an origin. Certain embedders, like WebView, also provide APIs
+  // which result in messages being posted without an associated origin.
+  //
+  // |target_origin| specifies the origin of the message's intended target. If
+  // the intended origin does not match the destination frame's origin, the
+  // message will be discarded. If |target_origin| is null, then the caller
+  // has specified a wildcard, allowing the message to be delivered regardless
+  // of the destination frame's origin.
+  //
+  // |message| is the encoded data, and any extra properties such as
+  // transferred ports or blobs.
   PostMessageEvent(blink.mojom.RemoteFrameToken? source_frame_token,
-                   mojo_base.mojom.String16 source_origin,
-                   mojo_base.mojom.String16 target_origin,
+                   url.mojom.Origin? source_origin,
+                   url.mojom.Origin? target_origin,
                    blink.mojom.TransferableMessage message);
 
   // Request for the renderer to execute a given JavaScript method on a given
@@ -1067,17 +1106,42 @@ interface LocalFrame {
       bool wants_result,
       int32 world_id) => (mojo_base.mojom.Value result);
 
+  // Invokes a script tool in the frame. Returns true if the tool was found and
+  // invocation started.
+  // TODO(crbug.com/515541906): This method is to be merged with the InvokeTool
+  // method in chrome/common/chrome_render_frame.mojom once //chrome
+  // implementation for script tools is moved to //content.
+  InvokeScriptToolForInspector(mojo_base.mojom.UnguessableToken invocation_id,
+                               string tool_name,
+                               string input_arguments) => (bool success);
+
+  // Notifies the frame that a tool invocation resulted in a navigation to this
+  // document, and requests the result of that invocation. The frame emits
+  // inspector events for the cross document tool result directly to
+  // the Chrome DevTools Protocol client. This method is called by the browser
+  // process when Chrome DevTools Protocol client invokes a script tool and the
+  // browser process detects that a navigation has occurred.
+  // TODO(crbug.com/515541906): This method is to be merged with the
+  // GetCrossDocumentScriptToolResult method in
+  // chrome/common/chrome_render_frame.mojom once //chrome implementation for
+  // script tools is moved to //content.
+  NotifyInspectorOfCrossDocumentScriptToolResult(
+      mojo_base.mojom.UnguessableToken invocation_id);
 
   // Requests the index of a character in the frame's text stream at the given
   // point. The point is in the viewport coordinate space. Replies using
-  // TextInputHost.
+  // TextInputHost. `request_token` is a caller-defined request identifier which
+  // allows matching the request with the TextInputHost response.
   [EnableIf=is_mac]
-  GetCharacterIndexAtPoint(gfx.mojom.Point location);
+  GetCharacterIndexAtPoint(mojo_base.mojom.UnguessableToken request_token,
+                           gfx.mojom.Point location);
 
   // Requests the rectangle for a given character range. Replies using
-  // TextInputHost.
+  // TextInputHost. `request_token` is a caller-defined request identifier which
+  // allows matching the request with the TextInputHost response.
   [EnableIf=is_mac]
-  GetFirstRectForRange(gfx.mojom.Range range);
+  GetFirstRectForRange(mojo_base.mojom.UnguessableToken request_token,
+                       gfx.mojom.Range range);
 
   // Requests the text fragment in a given range.
   [EnableIf=is_mac]
@@ -1193,7 +1257,9 @@ interface LocalFrame {
 
   // Allows the browser to add a resource timing entry for a subframe
   // navigation that has failed before committing - a non-ok object navigation
-  // or a no-content response (204/205).
+  // or a no-content response (204/205). `resource_lengths` contains the amount
+  // of data received before the failure (which may be 0 for a response with no
+  // body) or null if the navigation failed before reading data.
   AddResourceTimingEntryForFailedSubframeNavigation(
     blink.mojom.FrameToken subframe_token,
     url.mojom.Url initial_url,
@@ -1201,6 +1267,7 @@ interface LocalFrame {
     mojo_base.mojom.TimeTicks redirect_time,
     mojo_base.mojom.TimeTicks request_start,
     mojo_base.mojom.TimeTicks response_start,
+    mojo_base.mojom.TimeTicks completion_time,
     uint32 response_code,
     string mime_type,
     network.mojom.LoadTimingInfo load_timing_info,
@@ -1209,8 +1276,15 @@ interface LocalFrame {
     bool is_secure_transport,
     bool is_validated,
     string normalized_server_timing,
-    network.mojom.URLLoaderCompletionStatus completion_status
+    SubframeResourceLengths? resource_lengths
   );
+
+  // Retrieves the scroll position of the frame.
+  GetScrollPosition() => (gfx.mojom.Point scroll_position);
+
+  // Request to perform spell check for full text content.
+  [EnableIf=is_android]
+  PerformFullContentSpellCheck();
 };
 
 // Implemented in Blink, this interface defines main-frame-specific methods that
@@ -1253,8 +1327,7 @@ interface LocalMainFrame {
   //
   InstallCoopAccessMonitor(
       blink.mojom.FrameToken accessed_window,
-      network.mojom.CrossOriginOpenerPolicyReporterParams coop_reporter_info,
-      bool is_in_same_virtual_coop_related_group);
+      network.mojom.CrossOriginOpenerPolicyReporterParams coop_reporter_info);
 
   // Notifies the renderer whether hiding/showing the browser controls is
   // enabled, what the current state should be, and whether or not to
@@ -1288,13 +1361,17 @@ interface LocalMainFrame {
 
   // Replaces the active document with an empty document to free resources,
   // e.g. for supporting tab discard.
-  Discard();
+  Discard() => ();
 
   // Updates the frame's finalized locally differentially private
   // navigation confidence.
   FinalizeNavigationConfidence(
     double randomized_trigger_rate,
     ConfidenceLevel confidence);
+
+  // Called when the related pages set is finalized and cannot change due to
+  // previous page's mutations. Called when this (new page) is being committed.
+  NotifyRelatedPagesFinalized(bool has_other_related_pages);
 };
 
 // Implemented in Browser, this interface defines local-main-frame-specific
@@ -1308,12 +1385,6 @@ interface LocalMainFrameHost {
 
   // Notifies that the preferred size of the view has changed.
   ContentsPreferredSizeChanged(gfx.mojom.Size pref_size);
-
-  // Informs the browser that page metrics relevant to Blink's TextAutosizer
-  // have changed, so that they can be shared with other renderers. The
-  // browser will share this information with other renderers that have frames
-  // in the page.
-  TextAutosizerPageInfoChanged(TextAutosizerPageInfo page_info);
 
   // Asks the browser process to activate the page associated to the main frame.
   FocusPage();
@@ -1333,18 +1404,19 @@ interface LocalMainFrameHost {
   // Frame unload handlers should have already been called before this method is called.
   RequestClose();
 
-  // Causes a window previously opened via content.mojom.FrameHost::CreateNewWindow
-  // to be shown on the screen. This message contains the opener_frame_token
-  // which is always set. This is called on the main frame of the window to be shown.
-  ShowCreatedWindow(blink.mojom.LocalFrameToken opener_frame_token,
-                    ui.mojom.WindowOpenDisposition disposition,
-                    blink.mojom.WindowFeatures window_features,
-                    bool opened_by_user_gesture) => ();
-
-  // Request that the browser change the bounds of the window.
-  // This corresponds to the window.resizeTo() and window.moveTo() APIs, and the browser
-  // may ignore this message.
+  // Request that the browser change the bounds of the window. This is the
+  // legacy window.move*/resize* path used while kMoveResizeWindowToIPCs is
+  // disabled; when that feature is enabled, move*/resize* use the dedicated
+  // MoveWindowTo/ResizeWindowTo messages below instead.
+  // TODO(crbug.com/512533947): Remove this message once the
+  // kMoveResizeWindowToIPCs kill switch is removed.
   SetWindowRect(gfx.mojom.Rect bounds) => ();
+
+  // window.moveTo() / window.moveBy(): change the outer window origin only.
+  MoveWindowTo(gfx.mojom.Point origin) => ();
+
+  // window.resizeTo() / window.resizeBy(): change the outer window size only.
+  ResizeWindowTo(gfx.mojom.Size size) => ();
 
   // Sent once a paint happens after the first non empty layout. In other words,
   // after the frame has painted something.
@@ -1355,20 +1427,36 @@ interface LocalMainFrameHost {
   // pending navigation's URL, because a URL spoof is possible.
   DidAccessInitialMainDocument();
 
+  // Notifies the browser that the associated frame has changed theme color.
+  // |theme_color| is optional and indicates if a theme color has been
+  // specified or not, e.g. removal of a theme color meta tag will generate
+  // a null value.
+  DidChangeThemeColor(skia.mojom.SkColor? theme_color);
+
+  // Notifies the browser that the associated frame has changed its computed CSS
+  // background color. |color_adjust| is true if the background is forced by
+  // color adjustments.
+  DidChangeBackgroundColor(
+      skia.mojom.SkColor4f background_color, bool color_adjust);
+
   // Request browser to maximize window. Link to I2P:
   // https://groups.google.com/a/chromium.org/g/blink-dev/c/oCxWg8q_OQY/m/LUTw0T5cCQAJ
+  [EnableIfNot=is_android|is_ios]
   Maximize();
 
   // Request browser to minimize window. Link to I2P:
   // https://groups.google.com/a/chromium.org/g/blink-dev/c/oCxWg8q_OQY/m/LUTw0T5cCQAJ
+  [EnableIfNot=is_android|is_ios]
   Minimize();
 
   // Request browser to restore window. Link to I2P:
   // https://groups.google.com/a/chromium.org/g/blink-dev/c/oCxWg8q_OQY/m/LUTw0T5cCQAJ
+  [EnableIfNot=is_android|is_ios]
   Restore();
 
   // Set the browser window to resizable or not. Link to I2P:
   // https://groups.google.com/a/chromium.org/g/blink-dev/c/oCxWg8q_OQY/m/LUTw0T5cCQAJ
+  [EnableIfNot=is_android|is_ios]
   SetResizable(bool resizable);
 
   // Notify the browser that the draggable regions defined by the app-region
@@ -1376,5 +1464,14 @@ interface LocalMainFrameHost {
   DraggableRegionsChanged(array<DraggableRegion> regions);
 
   // Called when the main frame did a first contentful paint.
-  OnFirstContentfulPaint();
+  // `presentation_time` is the renderer-side presentation timestamp of the
+  // paint.
+  OnFirstContentfulPaint(mojo_base.mojom.TimeTicks presentation_time);
+
+  // Called when the outermost main frame's largest contentful paint candidate
+  // changed. May be dispatched multiple times as larger elements paint; the
+  // last notification (before user input freezes the metric) corresponds to the
+  // page's largest contentful paint. `presentation_time` is the renderer-side
+  // presentation timestamp of the current candidate.
+  OnLargestContentfulPaint(mojo_base.mojom.TimeTicks presentation_time);
 };

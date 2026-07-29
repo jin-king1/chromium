@@ -29,11 +29,13 @@
 #include <memory>
 #include <utility>
 
+#include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_binding_for_modules.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_idb_get_all_records_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_idb_get_all_options.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_database.h"
+#include "third_party/blink/renderer/modules/indexeddb/idb_get_all_options_helper.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_key.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_object_store.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_request.h"
@@ -41,6 +43,7 @@
 #include "third_party/blink/renderer/modules/indexeddb/indexed_db_blink_mojom_traits.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -193,7 +196,7 @@ IDBRequest* IDBIndex::count(ScriptState* script_state,
   IDBRequest* request = IDBRequest::Create(
       script_state, this, transaction_.Get(), std::move(metrics));
   db().Count(transaction_->Id(), object_store_->Id(), Id(), key_range,
-             WTF::BindOnce(&IDBRequest::OnCount, WrapWeakPersistent(request)));
+             BindOnce(&IDBRequest::OnCount, WrapWeakPersistent(request)));
   return request;
 }
 
@@ -247,59 +250,69 @@ IDBRequest* IDBIndex::get(ScriptState* script_state,
 }
 
 IDBRequest* IDBIndex::getAll(ScriptState* script_state,
-                             const ScriptValue& range,
+                             const ScriptValue& range_or_options,
                              ExceptionState& exception_state) {
-  return getAll(script_state, range, std::numeric_limits<uint32_t>::max(),
-                exception_state);
+  return getAll(script_state, range_or_options,
+                std::numeric_limits<uint32_t>::max(), exception_state);
 }
 
 IDBRequest* IDBIndex::getAll(ScriptState* script_state,
-                             const ScriptValue& range,
+                             const ScriptValue& range_or_options,
                              uint32_t max_count,
                              ExceptionState& exception_state) {
   TRACE_EVENT1("IndexedDB", "IDBIndex::getAllRequestSetup", "index_name",
                metadata_->name.Utf8());
+
+  IDBGetAllOptions* options =
+      IDBGetAllOptionsHelper::CreateFromArgumentsOrDictionary(
+          script_state, range_or_options, max_count, exception_state);
+  if (exception_state.HadException()) {
+    return nullptr;
+  }
   return CreateGetAllRequest(
-      IDBRequest::TypeForMetrics::kIndexGetAll, script_state, range,
-      mojom::blink::IDBGetAllResultType::Values, max_count,
-      mojom::blink::IDBCursorDirection::Next, exception_state);
+      IDBRequest::TypeForMetrics::kIndexGetAll, script_state, *options,
+      mojom::blink::IDBGetAllResultType::Values, exception_state);
 }
 
 IDBRequest* IDBIndex::getAllKeys(ScriptState* script_state,
-                                 const ScriptValue& range,
+                                 const ScriptValue& range_or_options,
                                  ExceptionState& exception_state) {
-  return getAllKeys(script_state, range, std::numeric_limits<uint32_t>::max(),
-                    exception_state);
+  return getAllKeys(script_state, range_or_options,
+                    std::numeric_limits<uint32_t>::max(), exception_state);
 }
 
 IDBRequest* IDBIndex::getAllKeys(ScriptState* script_state,
-                                 const ScriptValue& range,
+                                 const ScriptValue& range_or_options,
                                  uint32_t max_count,
                                  ExceptionState& exception_state) {
   TRACE_EVENT1("IndexedDB", "IDBIndex::getAllKeysRequestSetup", "index_name",
                metadata_->name.Utf8());
+
+  IDBGetAllOptions* options =
+      IDBGetAllOptionsHelper::CreateFromArgumentsOrDictionary(
+          script_state, range_or_options, max_count, exception_state);
+  if (exception_state.HadException()) {
+    return nullptr;
+  }
   return CreateGetAllRequest(
-      IDBRequest::TypeForMetrics::kIndexGetAllKeys, script_state, range,
-      mojom::blink::IDBGetAllResultType::Keys, max_count,
-      mojom::blink::IDBCursorDirection::Next, exception_state);
+      IDBRequest::TypeForMetrics::kIndexGetAllKeys, script_state, *options,
+      mojom::blink::IDBGetAllResultType::Keys, exception_state);
 }
 
 IDBRequest* IDBIndex::getAllRecords(ScriptState* script_state,
-                                    const IDBGetAllRecordsOptions* options,
+                                    const IDBGetAllOptions* options,
                                     ExceptionState& exception_state) {
   TRACE_EVENT1("IndexedDB", "IDBIndex::getAllRecords", "index_name",
                metadata_->name.Utf8());
 
-  uint32_t max_count =
-      options->getCountOr(std::numeric_limits<uint32_t>::max());
+  // Explicitly count `kIndexedDBGetAllRecords` usage because the IDL definition
+  // for `getAllRecords()` already has a [Measure] recording `kIndexedDBRead`.
+  UseCounter::Count(ExecutionContext::From(script_state),
+                    WebFeature::kIndexedDBGetAllRecords);
 
-  mojom::blink::IDBCursorDirection direction =
-      IDBCursor::V8EnumToDirection(options->direction().AsEnum());
-
-  return CreateGetAllRequest(IDBRequest::TypeForMetrics::kIndexGetAllRecords,
-                             script_state, options->query(),
-                             mojom::blink::IDBGetAllResultType::Records,
-                             max_count, direction, exception_state);
+  return CreateGetAllRequest(
+      IDBRequest::TypeForMetrics::kIndexGetAllRecords, script_state, *options,
+      mojom::blink::IDBGetAllResultType::Records, exception_state);
 }
 
 IDBRequest* IDBIndex::getKey(ScriptState* script_state,
@@ -347,22 +360,17 @@ IDBRequest* IDBIndex::GetInternal(ScriptState* script_state,
   IDBRequest* request = IDBRequest::Create(
       script_state, this, transaction_.Get(), std::move(metrics));
   db().Get(transaction_->Id(), object_store_->Id(), Id(), key_range, key_only,
-           WTF::BindOnce(&IDBRequest::OnGet, WrapPersistent(request)));
+           BindOnce(&IDBRequest::OnGet, WrapPersistent(request)));
   return request;
 }
 
 IDBRequest* IDBIndex::CreateGetAllRequest(
     IDBRequest::TypeForMetrics type_for_metrics,
     ScriptState* script_state,
-    const ScriptValue& range,
+    const IDBGetAllOptions& options,
     mojom::blink::IDBGetAllResultType result_type,
-    uint32_t max_count,
-    mojom::blink::IDBCursorDirection direction,
     ExceptionState& exception_state) {
   IDBRequest::AsyncTraceState metrics(type_for_metrics);
-
-  if (!max_count)
-    max_count = std::numeric_limits<uint32_t>::max();
 
   if (IsDeleted()) {
     exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
@@ -377,7 +385,7 @@ IDBRequest* IDBIndex::CreateGetAllRequest(
   }
 
   IDBKeyRange* key_range = IDBKeyRange::FromScriptValue(
-      ExecutionContext::From(script_state), range, exception_state);
+      ExecutionContext::From(script_state), options.query(), exception_state);
   if (exception_state.HadException())
     return nullptr;
   if (!db().IsConnectionOpen()) {
@@ -386,10 +394,14 @@ IDBRequest* IDBIndex::CreateGetAllRequest(
     return nullptr;
   }
 
+  const uint32_t count = IDBGetAllOptionsHelper::GetCount(options);
+  const mojom::blink::IDBCursorDirection direction =
+      IDBCursor::V8EnumToDirection(options.direction().AsEnum());
+
   IDBRequest* request = IDBRequest::Create(
       script_state, this, transaction_.Get(), std::move(metrics));
   db().GetAll(transaction_->Id(), object_store_->Id(), Id(), key_range,
-              result_type, max_count, direction, request);
+              result_type, count, direction, request);
   return request;
 }
 

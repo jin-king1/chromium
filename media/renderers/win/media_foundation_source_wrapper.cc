@@ -35,18 +35,26 @@ MediaFoundationSourceWrapper::~MediaFoundationSourceWrapper() {
   }
 }
 
+IFACEMETHODIMP_(ULONG) MediaFoundationSourceWrapper::Release() {
+  ULONG ref_count = InternalRelease();
+  if (ref_count == 0) {
+    if (!task_runner_->RunsTasksInCurrentSequence()) {
+      task_runner_->DeleteSoon(FROM_HERE, this);
+    } else {
+      delete this;
+    }
+  }
+  return ref_count;
+}
+
 HRESULT MediaFoundationSourceWrapper::RuntimeClassInitialize(
     MediaResource* media_resource,
     MediaLog* media_log,
-    scoped_refptr<base::SequencedTaskRunner> task_runner) {
+    scoped_refptr<base::SequencedTaskRunner> task_runner,
+    bool has_cdm) {
   DVLOG_FUNC(1);
-
-  if (media_resource->GetType() != MediaResource::Type::kStream) {
-    DLOG(ERROR) << "MediaResource is not of Type STREAM";
-    return E_INVALIDARG;
-  }
-
   task_runner_ = task_runner;
+  has_cdm_ = has_cdm;
 
   auto demuxer_streams = media_resource->GetAllStreams();
 
@@ -223,8 +231,10 @@ HRESULT MediaFoundationSourceWrapper::Start(
       continue;
     }
 
+    // TODO(crbug.com/460732308): Need to add unittest coverage to prevent
+    // regression in race condition where stream samples are processed in
+    // parallel just prior to stream start/seek event is sent.
     ComPtr<MediaFoundationStreamWrapper> stream = media_streams_[stream_id];
-    stream->SetFlushed(false);
     if (selected) {
       MediaEventType event_type = MENewStream;
       if (stream->IsSelected()) {
@@ -369,7 +379,7 @@ HRESULT MediaFoundationSourceWrapper::GetInputTrustAuthority(
     DWORD stream_id,
     REFIID riid,
     IUnknown** object_out) {
-  DVLOG_FUNC(1);
+  DVLOG_FUNC(1) << "stream_id=" << stream_id;
 
   if (state_ == State::kShutdown)
     return MF_E_SHUTDOWN;
@@ -383,9 +393,21 @@ HRESULT MediaFoundationSourceWrapper::GetInputTrustAuthority(
   }
 
   if (!media_streams_[stream_id]->IsEncrypted()) {
-    DVLOG_FUNC(1) << "Unprotected stream; stream_id=" << stream_id;
+    DVLOG_FUNC(1) << "Unprotected stream; stream_id=" << stream_id
+                  << " stream_type=" << media_streams_[stream_id]->StreamType();
 
-    return MF_E_NOT_PROTECTED;
+    if (media_streams_[stream_id]->StreamType() != DemuxerStream::VIDEO) {
+      DVLOG_FUNC(1) << "MF_E_NOT_PROTECTED";
+      return MF_E_NOT_PROTECTED;
+    }
+
+    // For video streams, intentionally do not return MF_E_NOT_PROTECTED here.
+    // During clear video playback (e.g., clear pre-roll ads), the initial
+    // stream config is unencrypted. However, if a CDM is attached, we forced
+    // MF_SD_PROTECTED to 1 in GenerateStreamDescriptor() for video streams to
+    // prepare for an eventual clear-to-encrypted transition. Because we marked
+    // it as protected, MF expects us to provide a trust authority. Returning
+    // MF_E_NOT_PROTECTED would cause topology resolution to fail.
   }
 
   // Use |nullptr| for content init_data and |0| for its size.
@@ -588,7 +610,7 @@ void MediaFoundationSourceWrapper::FlushStreams() {
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
   for (auto stream : media_streams_) {
-    stream->SetFlushed(true);
+    stream->Flush();
   }
 }
 

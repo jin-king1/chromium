@@ -6,8 +6,7 @@
 
 #import "base/test/ios/wait_util.h"
 #import "components/autofill/ios/form_util/form_handlers_java_script_feature.h"
-#import "components/autofill/ios/form_util/form_util_java_script_feature.h"
-#include "ios/web/public/js_messaging/web_frame.h"
+#import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/test/js_test_util.h"
 #import "ios/web/public/test/web_test_with_web_state.h"
 #import "ios/web/public/web_client.h"
@@ -25,13 +24,14 @@ void AutofillTestWithWebState::TrackFormMutations(web::WebFrame* frame) {
   // trackFormMutationsComplete after the function is called.
   ExecuteJavaScript(
       @"var trackFormMutationsComplete = false;"
+      @"const formHandlersApi = __gCrWeb.getRegisteredApi('formHandlers');"
       @"var originalTrackFormMutations = "
-      @"__gCrWeb.formHandlers.trackFormMutations;"
-      @"__gCrWeb.formHandlers.trackFormMutations = function() {"
+      @"formHandlersApi.getFunction('trackFormMutations');"
+      @"formHandlersApi.addFunction('trackFormMutations', function() {"
       @"  var result = originalTrackFormMutations.apply(this, arguments);"
       @"  trackFormMutationsComplete = true;"
       @"  return result;"
-      @"};");
+      @"});");
 
   autofill::FormHandlersJavaScriptFeature::GetInstance()->TrackFormMutations(
       frame, kTrackFormMutationsDelayInMs);
@@ -47,7 +47,37 @@ id AutofillTestWithWebState::ExecuteJavaScript(NSString* script) {
   // although `FormHandlersJavaScriptFeature` is specified, all autofill
   // features must live in the same content world so any one of them could be
   // used here.
-  return web::test::ExecuteJavaScriptForFeature(
+  return web::test::ExecuteJavaScriptForFeatureAndReturnResult(
       web_state(), script,
       autofill::FormHandlersJavaScriptFeature::GetInstance());
 }
+
+namespace autofill::test {
+
+NSString* GetAutofillTestPlaceholders(const AutofillPlaceholderConfig& config) {
+  return [NSString stringWithFormat:
+      @"var gCrWebPlaceholderAutofillAcrossIframesEnabled = %s;"
+       "var gCrWebPlaceholderAutofillAcrossIframesThrottling = %s;"
+       "var gCrWebPlaceholderAutofillDisallowMoreHyphenLikeLabels = %s;"
+       "var gCrWebPlaceholderAutofillIgnoreCheckableElements = %s;"
+       "var gCrWebPlaceholderAutofillSupportDateInput = %s;"
+       "var gCrWebPlaceholderAutofillCorrectUserEditedBitInParsedField = %s;"
+       "var gCrWebPlaceholderAutofillAllowDefaultPreventedSubmission = %s;"
+       "var gCrWebPlaceholderAutofillDedupeFormSubmission = %s;"
+       "var gCrWebPlaceholderAutofillEmailVerification = %s;"
+       "var gCrWebPlaceholderAutofillReportFormSubmissionErrors = %s;"
+       "var gCrWebPlaceholderAutofillCountFormSubmissionInRenderer = %s;",
+      config.autofill_across_iframes_enabled ? "true" : "false",
+      config.autofill_across_iframes_throttling ? "true" : "false",
+      config.autofill_disallow_more_hyphen_like_labels ? "true" : "false",
+      config.autofill_ignore_checkable_elements ? "true" : "false",
+      config.autofill_support_date_input ? "true" : "false",
+      config.autofill_correct_user_edited_bit_in_parsed_field ? "true" : "false",
+      config.autofill_allow_default_prevented_submission ? "true" : "false",
+      config.autofill_dedupe_form_submission ? "true" : "false",
+      config.autofill_email_verification ? "true" : "false",
+      config.autofill_report_form_submission_errors ? "true" : "false",
+      config.autofill_count_form_submission_in_renderer ? "true" : "false"];
+}
+
+}  // namespace autofill::test

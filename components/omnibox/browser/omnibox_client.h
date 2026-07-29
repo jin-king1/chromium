@@ -6,25 +6,32 @@
 #define COMPONENTS_OMNIBOX_BROWSER_OMNIBOX_CLIENT_H_
 
 #include <memory>
+#include <optional>
+#include <string>
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "components/lens/contextual_input.h"
 #include "components/omnibox/browser/actions/omnibox_action.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/autocomplete_provider_client.h"
 #include "components/omnibox/browser/omnibox.mojom-shared.h"
 #include "components/omnibox/browser/omnibox_navigation_observer.h"
+#include "components/omnibox/browser/prewarm_trigger.h"
 #include "components/omnibox/common/omnibox_focus_state.h"
 #include "components/security_state/core/security_state.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/gfx/image/image.h"
 
 class AutocompleteResult;
 class GURL;
 class SessionID;
 class SkBitmap;
+class AiModeButtonService;
 class TemplateURL;
 class TemplateURLService;
 struct AutocompleteMatch;
@@ -35,12 +42,14 @@ class BookmarkModel;
 }
 
 namespace gfx {
-class Image;
 struct VectorIcon;
 }  // namespace gfx
 
 class AutocompleteControllerEmitter;
 class PrefService;
+namespace omnibox {
+class OmniboxPopupCloser;
+}  // namespace omnibox
 
 // Interface that allows the omnibox component to interact with its embedder
 // (e.g., getting information about the current page, retrieving objects
@@ -48,12 +57,29 @@ class PrefService;
 // objects under the hood).
 class OmniboxClient {
  public:
+  // The result of an extension-controlled search confirmation dialog.
+  enum class ExtensionControlledDialogResult {
+    // Accept the new extension's search provider.
+    kAccept,
+
+    // Reject the new extension's search provider, and disable the extension,
+    // and search with the previous provider.
+    kReject,
+
+    // Don't search at all.
+    kCancel,
+  };
+
   OmniboxClient() = default;
   virtual ~OmniboxClient() = default;
 
   // Returns an AutocompleteProviderClient specific to the embedder context.
   virtual std::unique_ptr<AutocompleteProviderClient>
   CreateAutocompleteProviderClient() = 0;
+
+  // Returns if the client is ChromeOmniboxClient. Useful for safe downcasting
+  // without RTTI.
+  virtual bool IsChromeOmniboxClient() const;
 
   // Returns whether there is any associated current page.  For example, during
   // startup or shutdown, the omnibox may exist but have no attached page.
@@ -85,6 +111,13 @@ class OmniboxClient {
   // Returns the session ID of the current page.
   virtual SessionID GetSessionID() const = 0;
 
+  // Checks if the default search engine is extension controlled and if so,
+  // shows a confirmation dialog. Returns true if the dialog is shown.
+  // |callback| is run when the dialog is closed.
+  virtual bool ShowConfirmationDialogIfDefaultSearchExtensionControlled(
+      const GURL& url,
+      base::OnceCallback<void(ExtensionControlledDialogResult)> callback);
+
   // Called when the user changes the selected |index| in the result list via
   // mouse down or arrow key down. |match| is the suggestion corresponding to
   // that index. |navigation_predictor| represents the event indicated
@@ -97,10 +130,21 @@ class OmniboxClient {
   virtual PrefService* GetPrefs() = 0;
   virtual const PrefService* GetPrefs() const = 0;
   virtual bookmarks::BookmarkModel* GetBookmarkModel();
+  const bookmarks::BookmarkModel* GetBookmarkModel() const {
+    return const_cast<OmniboxClient*>(this)->GetBookmarkModel();
+  }
   virtual AutocompleteControllerEmitter* GetAutocompleteControllerEmitter() = 0;
   virtual TemplateURLService* GetTemplateURLService();
+  const TemplateURLService* GetTemplateURLService() const {
+    return const_cast<OmniboxClient*>(this)->GetTemplateURLService();
+  }
+  virtual AiModeButtonService* GetAiModeButtonService();
+  const AiModeButtonService* GetAiModeButtonService() const {
+    return const_cast<OmniboxClient*>(this)->GetAiModeButtonService();
+  }
   virtual const AutocompleteSchemeClassifier& GetSchemeClassifier() const = 0;
   virtual AutocompleteClassifier* GetAutocompleteClassifier();
+  virtual omnibox::OmniboxPopupCloser* GetOmniboxPopupCloser();
   virtual bool ShouldDefaultTypedNavigationsToHttps() const = 0;
   // Returns the port used by the embedded https server in tests. This is used
   // to determine the correct port while upgrading typed URLs to https if the
@@ -144,12 +188,26 @@ class OmniboxClient {
   // Returns the URL of the current navigation entry.
   virtual GURL GetNavigationEntryURL() const = 0;
 
+  // Returns true if the current page is a contextual tasks UI page (i.e.
+  // chrome://contextual-tasks/).
+  virtual bool IsContextualTasksPage() const;
+
+  // Returns the inner frame URL for the current contextual tasks page.
+  virtual GURL GetContextualTasksInnerFrameURL() const;
+
   // Classify the current page being viewed as, for example, the new tab
   // page or a normal web page.  Used for logging omnibox events for
   // UMA opted-in users.  Examines the user's profile to determine if the
   // current page is the user's home page.
   virtual metrics::OmniboxEventProto::PageClassification GetPageClassification(
       bool is_prefetch) const = 0;
+
+  // Classify the current page being viewed as, for example, the new tab
+  // page or a normal web page.  Used for logging omnibox events for
+  // UMA opted-in users.  Examines the user's profile to determine if the
+  // current page is the user's home page.
+  virtual metrics::OmniboxEventProto::PageClassification
+  GetOmniboxComposeboxPageClassification() const;
 
   // Returns the security level that the toolbar should display.
   virtual security_state::SecurityLevel GetSecurityLevel() const = 0;
@@ -165,6 +223,10 @@ class OmniboxClient {
   // Returns the LensOverlaySuggestInputs if available.
   virtual std::optional<lens::proto::LensOverlaySuggestInputs>
   GetLensOverlaySuggestInputs() const;
+
+  // Returns ContextualInputData if available.
+  virtual std::optional<lens::ContextualInputData> GetContextualInputData()
+      const;
 
   // Asks the `ExtensionOmniboxEventRouter` to process `match` for it.
   // Some more processing is done to separate the keyword from the
@@ -184,6 +246,9 @@ class OmniboxClient {
   virtual void OnFocusChanged(OmniboxFocusState state,
                               OmniboxFocusChangeReason reason) {}
 
+  // Called to show HaTS survey if the proper criteria is met.
+  virtual void MaybeShowOnFocusHatsSurvey(AutocompleteProviderClient* client) {}
+
   // Called to notify the clients that the user has pasted into the omnibox, and
   // the resulting string in the omnibox is a valid URL.
   virtual void OnUserPastedInOmniboxResultingInValidURL();
@@ -192,30 +257,60 @@ class OmniboxClient {
   // support preloading (currently, prefetching or prerendering) of search
   // results pages should preload only if `should_preload` is true. If the
   // implementation supports fetching of bitmaps for URLs (not all embedders
-  // do), `on_bitmap_fetched` will be called when the bitmap has been fetched.
-  using BitmapFetchedCallback =
-      base::RepeatingCallback<void(int result_index, const SkBitmap& bitmap)>;
+  // do), `on_bitmap_fetched` will be called when the bitmap has been fetched,
+  // with the arguments being the index of the result, the URL of the bitmap,
+  // and the bitmap itself.
+  using BitmapFetchedCallback = base::RepeatingCallback<
+      void(int result_index, const GURL& icon_url, const SkBitmap bitmap)>;
   virtual void OnResultChanged(const AutocompleteResult& result,
                                bool default_match_changed,
                                bool should_preload,
                                const BitmapFetchedCallback& on_bitmap_fetched) {
   }
 
-  // These two methods fetch favicons if the embedder supports it. Not all
-  // embedders do. These methods return the favicon synchronously if possible.
-  // Otherwise, they return an empty gfx::Image and |on_favicon_fetched| may or
-  // may not be called asynchronously later. |on_favicon_fetched| will never be
-  // run synchronously, and will never be run with an empty result.
+  // These methods fetch favicons if the embedder supports it. Not all embedders
+  // do. These methods return the favicon synchronously if possible. Otherwise,
+  // they return an empty `gfx::Image` and `on_favicon_fetched` may or may not
+  // be called asynchronously later. Unless `notify_on_empty` is
+  // true, `on_favicon_fetched` will never be run synchronously and will never
+  // be run with an empty result.
   using FaviconFetchedCallback =
       base::OnceCallback<void(const gfx::Image& favicon)>;
   virtual gfx::Image GetFaviconForPageUrl(
       const GURL& page_url,
       FaviconFetchedCallback on_favicon_fetched);
+  gfx::Image GetFaviconForPageUrl(
+      const GURL& page_url,
+      FaviconFetchedCallback on_favicon_fetched) const {
+    return const_cast<OmniboxClient*>(this)->GetFaviconForPageUrl(
+        page_url, std::move(on_favicon_fetched));
+  }
   virtual gfx::Image GetFaviconForDefaultSearchProvider(
       FaviconFetchedCallback on_favicon_fetched);
+  gfx::Image GetFaviconForDefaultSearchProvider(
+      FaviconFetchedCallback on_favicon_fetched) const {
+    return const_cast<OmniboxClient*>(this)->GetFaviconForDefaultSearchProvider(
+        std::move(on_favicon_fetched));
+  }
   virtual gfx::Image GetFaviconForKeywordSearchProvider(
       const TemplateURL* template_url,
       FaviconFetchedCallback on_favicon_fetched);
+  gfx::Image GetFaviconForKeywordSearchProvider(
+      const TemplateURL* template_url,
+      FaviconFetchedCallback on_favicon_fetched) const {
+    return const_cast<OmniboxClient*>(this)->GetFaviconForKeywordSearchProvider(
+        template_url, std::move(on_favicon_fetched));
+  }
+  virtual gfx::Image GetFaviconForIconUrl(
+      const GURL& icon_url,
+      FaviconFetchedCallback on_favicon_fetched,
+      bool notify_on_empty);
+  gfx::Image GetFaviconForIconUrl(const GURL& icon_url,
+                                  FaviconFetchedCallback on_favicon_fetched,
+                                  bool notify_on_empty) const {
+    return const_cast<OmniboxClient*>(this)->GetFaviconForIconUrl(
+        icon_url, std::move(on_favicon_fetched), notify_on_empty);
+  }
 
   // Called when the text may have changed in the edit.
   virtual void OnTextChanged(const AutocompleteMatch& current_match,
@@ -258,6 +353,12 @@ class OmniboxClient {
       const AutocompleteMatch& match,
       const AutocompleteMatch& alternative_nav_match) = 0;
 
+  // Executes the given `action`.
+  void ExecuteAction(OmniboxAction* action,
+                     WindowOpenDisposition disposition,
+                     base::TimeTicks match_selection_timestamp,
+                     OmniboxAction::Client& action_client);
+
   // Called when the input is accepted with a thumbnail and no user text. This
   // is required because there is no verbatim match when the input is just an
   // image without text.
@@ -272,6 +373,12 @@ class OmniboxClient {
   // Called when the thumbnail image has been removed.
   virtual void OnThumbnailRemoved() {}
 
+  // Navigates to `gurl` with the specified `disposition`. Used for handling
+  // activations of the AI Mode page action icon.
+  virtual void OpenUrl(
+      GURL gurl,
+      WindowOpenDisposition disposition = WindowOpenDisposition::CURRENT_TAB) {}
+
   // Even though IPH suggestions aren't selectable like normal matches, they can
   // have a 'learn more' or next-steps link. `OpenIphLink()` allows opening
   // these in a new tab.
@@ -279,6 +386,17 @@ class OmniboxClient {
 
   // Returns true if history embeddings is enabled and user has opted in.
   virtual bool IsHistoryEmbeddingsEnabled() const;
+
+  // Optionally warm-up for the default search engine so that we can navigate to
+  // the search result page effectively.
+  virtual void MaybePrewarmForDefaultSearchEngine(PrewarmTrigger trigger) {}
+
+  // Whether WebUi Omnibox's aim popup is enabled and the user is eligible to
+  // use it.
+  virtual bool IsAimPopupEnabled() const;
+
+  // Returns the current input state if any.
+  virtual omnibox::InputState GetInputState() const;
 
   virtual base::WeakPtr<OmniboxClient> AsWeakPtr() = 0;
 };

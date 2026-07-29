@@ -11,16 +11,17 @@
 #include "base/scoped_observation.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/plus_addresses/plus_address_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/test/integration/status_change_checker.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "components/plus_addresses/features.h"
-#include "components/plus_addresses/plus_address_service.h"
-#include "components/plus_addresses/plus_address_test_utils.h"
-#include "components/plus_addresses/plus_address_types.h"
-#include "components/plus_addresses/webdata/plus_address_sync_util.h"
+#include "components/plus_addresses/core/browser/plus_address_service.h"
+#include "components/plus_addresses/core/browser/plus_address_test_utils.h"
+#include "components/plus_addresses/core/browser/plus_address_types.h"
+#include "components/plus_addresses/core/browser/webdata/plus_address_sync_util.h"
+#include "components/plus_addresses/core/common/features.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
@@ -77,31 +78,27 @@ class PlusProfileChecker : public StatusChangeChecker,
       scoped_observation_{this};
 };
 
-// PLUS_ADDRESS is supposed to behave the same in and outside of transport mode.
-// These tests are parameterized by whether the test should run in transport
-// mode (true) or not (false).
 class SingleClientPlusAddressSyncTest
     : public SyncTest,
-      public testing::WithParamInterface<bool> {
+      public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
   SingleClientPlusAddressSyncTest() : SyncTest(SINGLE_CLIENT) {
-    features_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{{plus_addresses::features::kPlusAddressesEnabled,
-                               {{plus_addresses::features::
-                                     kEnterprisePlusAddressServerUrl.name,
-                                 "https://not-used.com"}}}},
+    std::vector<base::test::FeatureRefAndParams> enabled_features = {
+        {plus_addresses::features::kPlusAddressesEnabled,
+         {{plus_addresses::features::kEnterprisePlusAddressServerUrl.name,
+           "https://not-used.com"}}}};
+    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
+      enabled_features.push_back(
+          {syncer::kReplaceSyncPromosWithSignInPromos, {}});
+    }
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        enabled_features,
         /*disabled_features=*/{});
   }
 
-  // Sets up the sync client in sync-the-feature or sync-the-transport mode,
-  // depending on `GetParam()`. Returns true if setup succeeded.
-  bool SetupSync() {
-    const bool should_run_in_transport_mode = GetParam();
-    if (should_run_in_transport_mode) {
-      return SetupClients() && GetClient(0)->SignInPrimaryAccount() &&
-             GetClient(0)->AwaitSyncTransportActive();
-    }
-    return SyncTest::SetupSync();
+  // SyncTest overrides.
+  SyncTest::SetupSyncMode GetSetupSyncMode() const override {
+    return GetParam();
   }
 
   PlusAddressService* GetPlusAddressService() {
@@ -119,33 +116,20 @@ class SingleClientPlusAddressSyncTest
   }
 
   // Injects a tombstone for the PLUS_ADDRESS entity with given `client_tag`.
-  void InjectTombstoneToServer(const std::string& client_tag) {
-    const std::string client_tag_hash =
-        syncer::ClientTagHash::FromUnhashed(syncer::PLUS_ADDRESS, client_tag)
-            .value();
+  void InjectTombstoneToServer(std::string_view client_tag) {
     fake_server_->InjectEntity(
-        syncer::PersistentTombstoneEntity::PersistentTombstoneEntity::CreateNew(
-            syncer::LoopbackServerEntity::CreateId(syncer::PLUS_ADDRESS,
-                                                   client_tag_hash),
-            client_tag_hash));
+        syncer::PersistentTombstoneEntity::CreateNewForTest(
+            syncer::PLUS_ADDRESS, client_tag));
   }
 
  private:
-  base::test::ScopedFeatureList features_;
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    SingleClientPlusAddressSyncTest,
-#if BUILDFLAG(IS_CHROMEOS)
-    // On ChromeOS, sync-the-feature gets started automatically once a primary
-    // account is signed in and transport mode is not a thing. As such, only run
-    // the tests in sync-the-feature mode.
-    testing::Values(false)
-#else
-    testing::Bool()
-#endif
-);
+INSTANTIATE_TEST_SUITE_P(,
+                         SingleClientPlusAddressSyncTest,
+                         GetSyncTestModes(),
+                         testing::PrintToStringParamName());
 
 IN_PROC_BROWSER_TEST_P(SingleClientPlusAddressSyncTest, InitialSync) {
   // Start syncing with an existing `plus_profile` on the server.
@@ -213,40 +197,13 @@ IN_PROC_BROWSER_TEST_P(SingleClientPlusAddressSyncTest, Signout_DataCleared) {
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
-// Overwrites the Sync test account with a non-gmail account to treat it as a
-// Dasher account.
-// On Android, `switches::kSyncUserForTest` isn't supported, so it's currently
-// not possible to simulate a non-gmail account.
-#if !BUILDFLAG(IS_ANDROID)
-class SingleClientPlusAddressManagedAccountTest
-    : public SingleClientPlusAddressSyncTest {
- public:
-  SingleClientPlusAddressManagedAccountTest() {
-    // This can't be done in `SetUpCommandLine()` because `SyncTest::SetUp()`
-    // already consumes the parameter.
-    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        switches::kSyncUserForTest, "user@managed-domain.com");
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(SingleClientPlusAddressManagedAccountTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPlusAddressSyncTest,
                        DisabledForManagedAccounts) {
-  ASSERT_TRUE(SetupClients());
   // Sign in with a managed account.
-  ASSERT_TRUE(GetClient(0)->SignInPrimaryAccount(signin::ConsentLevel::kSync));
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(GetProfile(0));
-  const CoreAccountInfo account =
-      identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSync);
-  signin::SimulateSuccessfulFetchOfAccountInfo(
-      identity_manager, account.account_id, account.email, account.gaia,
-      "managed-domain.com", "Full name", "Given name", "en-US",
-      /*picture_url=*/"");
-  ASSERT_TRUE(SyncTest::SetupSync());
+  ASSERT_TRUE(SetupSync(SyncTestAccount::kEnterpriseAccount1));
 
   EXPECT_FALSE(GetSyncService(0)->GetActiveDataTypes().HasAny(
       {syncer::PLUS_ADDRESS, syncer::PLUS_ADDRESS_SETTING}));
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace

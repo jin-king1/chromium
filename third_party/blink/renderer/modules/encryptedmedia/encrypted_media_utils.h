@@ -49,7 +49,7 @@ struct MediaKeysConfig {
 
 constexpr const char* kEncryptedMediaPermissionsPolicyConsoleWarning =
     "Encrypted Media access has been blocked because of a Feature Policy "
-    "applied to the current document. See https://goo.gl/EuHzyv for more "
+    "applied to the current document. See https://crbug.com/414348233 for more "
     "details.";
 
 class ExecutionContext;
@@ -66,7 +66,7 @@ class EncryptedMediaUtils {
   static String ConvertFromInitDataType(media::EmeInitDataType init_data_type);
 
   static WebEncryptedMediaSessionType ConvertToSessionType(
-      const String& session_type);
+      StringView session_type);
   static String ConvertFromSessionType(WebEncryptedMediaSessionType);
 
   static V8MediaKeyStatus ConvertKeyStatusToEnum(

@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_AUTOFILL_CONTENT_RENDERER_PASSWORD_FORM_CONVERSION_UTILS_H_
 #define COMPONENTS_AUTOFILL_CONTENT_RENDERER_PASSWORD_FORM_CONVERSION_UTILS_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -46,8 +45,7 @@ bool IsGaiaWithSkipSavePasswordForm(const blink::WebFormElement& form);
 void ProcessFormDataAfterCreation(
     FormData& form_data,
     blink::WebFormElement web_form,
-    UsernameDetectorCache* username_detector_cache,
-    form_util::ButtonTitlesCache* button_titles_cache);
+    UsernameDetectorCache* username_detector_cache);
 
 std::optional<FormData> CreateFormDataFromWebForm(
     const blink::WebFormElement& web_form,
@@ -64,6 +62,7 @@ std::optional<FormData> CreateFormDataFromUnownedInputElements(
     const FieldDataManager& field_data_manager,
     UsernameDetectorCache* username_detector_cache,
     const CallTimerState& timer_state,
+    form_util::ButtonTitlesCache* button_titles_cache,
     const SynchronousFormCache& form_cache);
 
 // The "Realm" for the sign-on. This is scheme, host, port.

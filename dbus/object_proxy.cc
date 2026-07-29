@@ -9,8 +9,8 @@
 #include <utility>
 
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/debug/alias.h"
+#include "base/debug/crash_logging.h"
 #include "base/debug/leak_annotations.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -210,24 +210,7 @@ void ObjectProxy::CallMethodWithErrorResponse(
   bus_->GetDBusTaskRunner()->PostTask(FROM_HERE, std::move(task));
 }
 
-void ObjectProxy::CallMethodWithErrorCallback(MethodCall* method_call,
-                                              int timeout_ms,
-                                              ResponseCallback callback,
-                                              ErrorCallback error_callback) {
-  auto internal_callback = base::BindOnce(
-      [](ResponseCallback callback, ErrorCallback error_callback,
-         Response* response, ErrorResponse* error_response) {
-        if (response) {
-          std::move(callback).Run(response);
-        } else {
-          std::move(error_callback).Run(error_response);
-        }
-      },
-      std::move(callback), std::move(error_callback));
 
-  CallMethodWithErrorResponse(method_call, timeout_ms,
-                              std::move(internal_callback));
-}
 
 void ObjectProxy::ConnectToSignal(const std::string& interface_name,
                                   const std::string& signal_name,
@@ -594,6 +577,10 @@ void ObjectProxy::OnCallMethod(const std::string& interface_name,
                                ResponseCallback response_callback,
                                Response* response,
                                ErrorResponse* error_response) {
+  // Add crash keys to debug crbug.com/397080280
+  SCOPED_CRASH_KEY_STRING32("ObjectProxy", "interface_name", interface_name);
+  SCOPED_CRASH_KEY_STRING32("ObjectProxy", "method_name", method_name);
+
   if (response) {
     // Method call was successful.
     std::move(response_callback).Run(response);
@@ -623,7 +610,7 @@ bool ObjectProxy::AddMatchRuleWithCallback(
   DCHECK(!absolute_signal_name.empty());
   bus_->AssertOnDBusThread();
 
-  if (!base::Contains(match_rules_, match_rule)) {
+  if (!match_rules_.contains(match_rule)) {
     dbus::Error error;
     bus_->AddMatch(match_rule, &error);
     if (error.IsValid()) {
@@ -651,7 +638,7 @@ bool ObjectProxy::AddMatchRuleWithoutCallback(
   DCHECK(!absolute_signal_name.empty());
   bus_->AssertOnDBusThread();
 
-  if (base::Contains(match_rules_, match_rule)) {
+  if (match_rules_.contains(match_rule)) {
     return true;
   }
 

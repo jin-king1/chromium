@@ -10,15 +10,15 @@ namespace blink {
 TextCluster::TextCluster(const String& text,
                          double x,
                          double y,
-                         unsigned begin,
+                         unsigned start,
                          unsigned end,
-                         V8CanvasTextAlign align,
-                         V8CanvasTextBaseline baseline,
+                         V8CanvasTextAlign::Enum align,
+                         V8CanvasTextBaseline::Enum baseline,
                          TextMetrics& text_metrics)
     : text_(text),
       x_(x),
       y_(y),
-      begin_(begin),
+      start_(start),
       end_(end),
       align_(align),
       baseline_(baseline),
@@ -27,12 +27,12 @@ TextCluster::TextCluster(const String& text,
 TextCluster* TextCluster::Create(const String& text,
                                  double x,
                                  double y,
-                                 unsigned begin,
+                                 unsigned start,
                                  unsigned end,
-                                 V8CanvasTextAlign align,
-                                 V8CanvasTextBaseline baseline,
+                                 V8CanvasTextAlign::Enum align,
+                                 V8CanvasTextBaseline::Enum baseline,
                                  TextMetrics& text_metrics) {
-  return MakeGarbageCollected<TextCluster>(text, x, y, begin, end, align,
+  return MakeGarbageCollected<TextCluster>(text, x, y, start, end, align,
                                            baseline, text_metrics);
 }
 
@@ -47,7 +47,7 @@ void TextCluster::OffsetPosition(double x_offset, double y_offset) {
 }
 
 void TextCluster::OffsetCharacters(unsigned offset) {
-  begin_ += offset;
+  start_ += offset;
   end_ += offset;
 }
 }  // namespace blink

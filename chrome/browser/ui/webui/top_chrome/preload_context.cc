@@ -4,7 +4,7 @@
 
 #include "chrome/browser/ui/webui/top_chrome/preload_context.h"
 
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include <variant>
 
 class Browser;
 class Profile;
@@ -28,20 +28,28 @@ PreloadContext PreloadContext::From(Profile* profile) {
   return context;
 }
 
+Browser* PreloadContext::GetBrowser() {
+  return IsBrowser() ? std::get<Browser*>(store_) : nullptr;
+}
+
 const Browser* PreloadContext::GetBrowser() const {
-  return IsBrowser() ? absl::get<Browser*>(store_) : nullptr;
+  return IsBrowser() ? std::get<Browser*>(store_) : nullptr;
+}
+
+Profile* PreloadContext::GetProfile() {
+  return IsProfile() ? std::get<Profile*>(store_) : nullptr;
 }
 
 const Profile* PreloadContext::GetProfile() const {
-  return IsProfile() ? absl::get<Profile*>(store_) : nullptr;
+  return IsProfile() ? std::get<Profile*>(store_) : nullptr;
 }
 
 bool PreloadContext::IsBrowser() const {
-  return absl::holds_alternative<Browser*>(store_);
+  return std::holds_alternative<Browser*>(store_);
 }
 
 bool PreloadContext::IsProfile() const {
-  return absl::holds_alternative<Profile*>(store_);
+  return std::holds_alternative<Profile*>(store_);
 }
 
 }  // namespace webui

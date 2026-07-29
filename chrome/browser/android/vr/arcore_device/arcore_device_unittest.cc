@@ -126,7 +126,7 @@ class StubXrJavaCoordinator : public XrJavaCoordinator {
   StubXrJavaCoordinator() = default;
 
   void RequestArSession(
-      int render_process_id,
+      network::RendererProcessId render_process_id,
       int render_frame_id,
       bool use_overlay,
       bool can_render_dom_content,
@@ -143,7 +143,7 @@ class StubXrJavaCoordinator : public XrJavaCoordinator {
   }
 
   void RequestVrSession(
-      int render_process_id,
+      network::RendererProcessId render_process_id,
       int render_frame_id,
       const CompositorDelegateProvider& compositor_delegate_provider,
       SurfaceReadyCallback ready_callback,
@@ -169,11 +169,11 @@ class StubXrJavaCoordinator : public XrJavaCoordinator {
     jmethodID getApplication = env->GetMethodID(
         activityThread, "getApplication", "()Landroid/app/Application;");
     jobject context = env->CallObjectMethod(at, getApplication);
-    return base::android::ScopedJavaLocalRef<jobject>(env, context);
+    return jni_zero::AdoptRef(env, context);
   }
 
   base::android::ScopedJavaLocalRef<jobject> GetActivityFrom(
-      int render_process_id,
+      network::RendererProcessId render_process_id,
       int render_frame_id) override {
     return nullptr;
   }
@@ -219,8 +219,9 @@ class StubCompositorFrameSink
   void SetDisplayVSyncParameters(base::TimeTicks timebase,
                                  base::TimeDelta interval) override {}
   void ForceImmediateDrawAndSwapIfPossible() override {}
-  void SetVSyncPaused(bool paused) override {}
   void UpdateRefreshRate(float refresh_rate) override {}
+  void SetAdaptiveRefreshRateInfo(
+      viz::mojom::AdaptiveRefreshRateInfoPtr info) override {}
   void SetSupportedRefreshRates(
       const std::vector<float>& supported_refresh_rates) override {}
   void PreserveChildSurfaceControls() override {}
@@ -239,30 +240,22 @@ class StubCompositorFrameSink
 
   // mojom::CompositorFrameSink:
   void SetNeedsBeginFrame(bool needs_begin_frame) override {}
-  void SetWantsAnimateOnlyBeginFrames() override {}
-  void SetWantsBeginFrameAcks() override {}
-  void SetAutoNeedsBeginFrame() override {}
+  void SetParams(viz::mojom::CompositorFrameSinkParamsPtr params) override {}
   void SubmitCompositorFrame(
       const viz::LocalSurfaceId& local_surface_id,
       viz::CompositorFrame frame,
       std::optional<viz::HitTestRegionList> hit_test_region_list,
       uint64_t submit_time) override {}
   void DidNotProduceFrame(const viz::BeginFrameAck& begin_frame_ack) override {}
-  void SubmitCompositorFrameSync(
-      const viz::LocalSurfaceId& local_surface_id,
-      viz::CompositorFrame frame,
-      std::optional<viz::HitTestRegionList> hit_test_region_list,
-      uint64_t submit_time,
-      SubmitCompositorFrameSyncCallback callback) override {}
-  void InitializeCompositorFrameSinkType(
-      viz::mojom::CompositorFrameSinkType type) override {}
-  void BindLayerContext(viz::mojom::PendingLayerContextPtr context) override {}
+  void NotifyNewLocalSurfaceIdExpectedWhilePaused() override {}
+  void BindLayerContext(viz::mojom::PendingLayerContextPtr context,
+                        viz::mojom::LayerContextSettingsPtr settings) override {
+  }
   void SetThreads(const std::vector<viz::Thread>& threads) override {}
 
   // mojom::ExternalBeginFrameController implementation.
   void IssueExternalBeginFrame(
       const viz::BeginFrameArgs& args,
-      bool force,
       base::OnceCallback<void(const viz::BeginFrameAck&)> callback) override {
     std::move(callback).Run({args, false});
   }
@@ -315,7 +308,9 @@ class StubXrFrameSinkClient : public XrFrameSinkClient {
   scoped_refptr<base::SingleThreadTaskRunner> mojo_thread_task_runner_;
 };
 
-std::unique_ptr<XrFrameSinkClient> FrameSinkClientFactory(int32_t, int32_t) {
+std::unique_ptr<XrFrameSinkClient> FrameSinkClientFactory(
+    network::RendererProcessId,
+    int32_t) {
   return std::make_unique<StubXrFrameSinkClient>();
 }
 
@@ -365,6 +360,9 @@ class ArCoreDeviceTest : public testing::Test {
     mojom::XRRuntimeSessionOptionsPtr options =
         mojom::XRRuntimeSessionOptions::New();
     options->mode = mojom::XRSessionMode::kImmersiveAr;
+    // Stubbed by StubXrJavaCoordinator, so just needs to be a valid value.
+    options->renderer_information =
+        mojom::RendererInformation::New(network::RendererProcessId(1), 0);
     device()->RequestSession(std::move(options),
                              base::BindOnce(&ArCoreDeviceTest::OnSessionCreated,
                                             base::Unretained(this)));

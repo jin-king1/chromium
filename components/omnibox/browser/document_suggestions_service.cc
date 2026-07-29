@@ -19,7 +19,6 @@
 #include "components/signin/public/identity_manager/account_capabilities.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_access_token_fetcher.h"
-#include "components/signin/public/identity_manager/scope_set.h"
 #include "components/variations/net/variations_http_headers.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "net/base/load_flags.h"
@@ -48,14 +47,14 @@ constexpr int chromeOmniboxClientId = 6;
 //       }
 //     }
 std::string BuildDocumentSuggestionRequest(const std::u16string& query) {
-  base::Value::Dict root;
+  base::DictValue root;
   root.Set("query", base::Value(query));
   // The API supports pagination. We're always concerned with the first N
   // results on the first page.
   root.Set("start", base::Value(0));
   root.Set("pageSize", base::Value(10));
 
-  base::Value::Dict request_options;
+  base::DictValue request_options;
   request_options.Set("searchApplicationId",
                       base::Value("searchapplications/chrome"));
   // While the searchApplicationId is a specific config being used by a client
@@ -66,9 +65,7 @@ std::string BuildDocumentSuggestionRequest(const std::u16string& query) {
                       base::Value(base::i18n::GetConfiguredLocale()));
   root.Set("requestOptions", std::move(request_options));
 
-  std::string result;
-  base::JSONWriter::Write(root, &result);
-  return result;
+  return base::WriteJson(root).value_or("");
 }
 
 }  // namespace
@@ -78,8 +75,7 @@ DocumentSuggestionsService::DocumentSuggestionsService(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
     : url_loader_factory_(url_loader_factory),
       identity_manager_(identity_manager),
-      account_is_subject_to_enterprise_policies_(
-          IsAccountSubjectToEnterprisePolicies()),
+      account_is_workspace_managed_(IsAccountWorkspaceManaged()),
       token_fetcher_(nullptr) {
   if (identity_manager_) {
     identity_manager_observation_.Observe(identity_manager_);
@@ -89,8 +85,18 @@ DocumentSuggestionsService::DocumentSuggestionsService(
 DocumentSuggestionsService::~DocumentSuggestionsService() = default;
 
 bool DocumentSuggestionsService::HasPrimaryAccount() {
+  if (has_primary_account_for_testing_) {
+    return true;
+  }
+
   return identity_manager_ &&
          identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin);
+}
+
+void DocumentSuggestionsService::SetAccountStateForTesting(bool valid) {
+  has_primary_account_for_testing_ = valid;
+  account_is_workspace_managed_for_testing_ = valid;
+  account_is_workspace_managed_ = IsAccountWorkspaceManaged();
 }
 
 void DocumentSuggestionsService::CreateDocumentSuggestionsRequest(
@@ -111,7 +117,7 @@ void DocumentSuggestionsService::CreateDocumentSuggestionsRequest(
         semantics {
           sender: "Omnibox"
           description:
-            "Request for Google Drive document suggestions from the omnibox."
+            "Request for Google Drive document suggestions from the omnibox. "
             "User must be signed in and have default search provider set to "
             "Google."
           trigger: "Signed-in user enters text in the omnibox."
@@ -121,8 +127,7 @@ void DocumentSuggestionsService::CreateDocumentSuggestionsRequest(
         policy {
           cookies_allowed: YES
           cookies_store: "user"
-          setting:
-            "Coupled to Google default search plus signed-in"
+          setting: "Coupled to Google default search plus signed-in."
           chrome_policy {
             SearchSuggestEnabled {
                 policy_options {mode: MANDATORY}
@@ -148,11 +153,8 @@ void DocumentSuggestionsService::CreateDocumentSuggestionsRequest(
 
   std::move(creation_callback).Run(request.get());
 
-  // Create and fetch an OAuth2 token.
-  signin::ScopeSet scopes;
-  scopes.insert(GaiaConstants::kCloudSearchQueryOAuth2Scope);
   token_fetcher_ = std::make_unique<signin::PrimaryAccountAccessTokenFetcher>(
-      "document_suggestions_service", identity_manager_, scopes,
+      signin::OAuthConsumerId::kDocumentSuggestionsService, identity_manager_,
       base::BindOnce(&DocumentSuggestionsService::AccessTokenAvailable,
                      base::Unretained(this), std::move(request),
                      std::move(request_body), traffic_annotation,
@@ -166,16 +168,21 @@ void DocumentSuggestionsService::StopCreatingDocumentSuggestionsRequest() {
       token_fetcher_deleter(std::move(token_fetcher_));
 }
 
-signin::Tribool
-DocumentSuggestionsService::IsAccountSubjectToEnterprisePolicies() {
+signin::Tribool DocumentSuggestionsService::IsAccountWorkspaceManaged() {
   if (!HasPrimaryAccount()) {
     return signin::Tribool::kFalse;
   }
+
+  if (account_is_workspace_managed_for_testing_) {
+    return signin::Tribool::kTrue;
+  }
+
   const auto& account_id =
       identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
   const auto& account_info =
       identity_manager_->FindExtendedAccountInfoByAccountId(account_id);
-  return account_info.capabilities.is_subject_to_enterprise_policies();
+  return account_info.GetAccountCapabilities()
+      .is_subject_to_enterprise_features();
 }
 
 void DocumentSuggestionsService::AccessTokenAvailable(
@@ -228,14 +235,13 @@ void DocumentSuggestionsService::StartDownloadAndTransferLoader(
 
 void DocumentSuggestionsService::OnPrimaryAccountChanged(
     const signin::PrimaryAccountChangeEvent& event_details) {
-  account_is_subject_to_enterprise_policies_ =
-      IsAccountSubjectToEnterprisePolicies();
+  account_is_workspace_managed_ = IsAccountWorkspaceManaged();
 }
 
 void DocumentSuggestionsService::OnExtendedAccountInfoUpdated(
     const AccountInfo& account_info) {
-  account_is_subject_to_enterprise_policies_ =
-      account_info.capabilities.is_subject_to_enterprise_policies();
+  account_is_workspace_managed_ =
+      account_info.GetAccountCapabilities().is_subject_to_enterprise_features();
 }
 
 void DocumentSuggestionsService::OnIdentityManagerShutdown(

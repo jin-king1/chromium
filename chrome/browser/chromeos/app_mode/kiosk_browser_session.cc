@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
 #include "base/location.h"
@@ -21,7 +22,6 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -31,12 +31,12 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_data.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/buildflags.h"
 #include "content/public/common/process_type.h"
 #include "content/public/common/webplugininfo.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
-#include "ppapi/buildflags/buildflags.h"
 
 #if BUILDFLAG(ENABLE_PLUGINS)
 #include "chrome/browser/chromeos/app_mode/kiosk_session_plugin_handler.h"
@@ -51,15 +51,6 @@ namespace chromeos {
 
 namespace {
 
-#if BUILDFLAG(ENABLE_PLUGINS)
-bool IsPepperPlugin(const base::FilePath& plugin_path) {
-  content::WebPluginInfo plugin_info;
-  return content::PluginService::GetInstance()->GetPluginInfoByPath(
-             plugin_path, &plugin_info) &&
-         plugin_info.is_pepper_plugin();
-}
-#endif
-
 void RebootDevice() {
   chromeos::PowerManagerClient::Get()->RequestRestart(
       power_manager::REQUEST_RESTART_OTHER, "kiosk app session");
@@ -73,7 +64,7 @@ void DumpPluginProcess(const std::set<int>& child_ids) {
   bool dump_requested = false;
 
   content::BrowserChildProcessHostIterator iter(
-      content::PROCESS_TYPE_PPAPI_PLUGIN);
+      content::PROCESS_TYPE_PPAPI_PLUGIN_DEPRECATED);
   while (!iter.Done()) {
     const content::ChildProcessData& data = iter.GetData();
     if (child_ids.count(data.id) == 1) {
@@ -160,17 +151,7 @@ class KioskBrowserSession::PluginHandlerDelegateImpl
   bool ShouldHandlePlugin(const base::FilePath& plugin_path) const override {
     // Note that BrowserChildProcessHostIterator in DumpPluginProcess also needs
     // to be updated when adding more plugin types here.
-    return IsPepperPlugin(plugin_path);
-  }
-  void OnPluginCrashed(const base::FilePath& plugin_path) override {
-    if (owner_->is_shutting_down()) {
-      return;
-    }
-    owner_->metrics_service_->RecordKioskSessionPluginCrashed();
-    owner_->is_shutting_down_ = true;
-
-    LOG(ERROR) << "Reboot due to plugin crash, path=" << plugin_path.value();
-    RebootDevice();
+    return false;
   }
 
   void OnPluginHung(const std::set<int>& hung_plugins) override {
@@ -220,17 +201,23 @@ std::unique_ptr<KioskBrowserSession> KioskBrowserSession::CreateForTesting(
 
 void KioskBrowserSession::RegisterLocalStatePrefs(
     PrefRegistrySimple* registry) {
-  registry->RegisterDictionaryPref(prefs::kKioskMetrics);
+  registry->RegisterDictionaryPref(ash::prefs::kKioskMetrics);
 }
 
 void KioskBrowserSession::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterBooleanPref(prefs::kNewWindowsInKioskAllowed, false);
-  registry->RegisterBooleanPref(prefs::kKioskTroubleshootingToolsEnabled,
+  registry->RegisterBooleanPref(ash::prefs::kNewWindowsInKioskAllowed, false);
+  registry->RegisterBooleanPref(ash::prefs::kKioskTroubleshootingToolsEnabled,
                                 false);
-  registry->RegisterListPref(prefs::kKioskBrowserPermissionsAllowedForOrigins,
-                             PrefRegistrySimple::NO_REGISTRATION_FLAGS);
-  registry->RegisterBooleanPref(prefs::kKioskWebAppOfflineEnabled, true);
+  registry->RegisterListPref(
+      ash::prefs::kKioskBrowserPermissionsAllowedForOrigins,
+      PrefRegistrySimple::NO_REGISTRATION_FLAGS);
+  registry->RegisterBooleanPref(ash::prefs::kKioskWebAppOfflineEnabled, true);
+  registry->RegisterBooleanPref(ash::prefs::kKioskPinchToZoomAllowed, true);
+  registry->RegisterBooleanPref(ash::prefs::kKioskChromeAppsForceAllowed,
+                                false);
+  registry->RegisterBooleanPref(
+      ash::prefs::kKioskApplicationLogCollectionEnabled, false);
 }
 
 void KioskBrowserSession::InitForChromeAppKiosk(const std::string& app_id) {

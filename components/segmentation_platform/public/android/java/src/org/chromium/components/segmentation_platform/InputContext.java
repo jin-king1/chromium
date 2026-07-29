@@ -4,6 +4,8 @@
 
 package org.chromium.components.segmentation_platform;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
@@ -39,7 +41,7 @@ public class InputContext {
     // END OF PUBLIC API.
 
     @CalledByNative
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     void fillNativeInputContext(long target) {
         int booleanCount = 0;
         int intCount = 0;
@@ -187,16 +189,23 @@ public class InputContext {
     }
 
     /** Merge all inputs from another InputContext object. */
-    public void mergeFrom(InputContext other) {
+    public void mergeFrom(@Nullable InputContext other) {
         if (other == null) return;
 
         for (Entry<String, ProcessedValue> entry : other.mMetadata.entrySet()) {
-            assert !mMetadata.containsKey(entry.getKey());
-            mMetadata.put(entry.getKey(), entry.getValue());
+            String key = entry.getKey();
+            ProcessedValue value = entry.getValue();
+
+            if (!mMetadata.containsKey(key)) {
+                mMetadata.put(key, value);
+            } else {
+                assert assumeNonNull(getEntryValue(key)).equals(value);
+            }
         }
     }
 
-    public @Nullable ProcessedValue getEntryForTesting(String key) {
+    @VisibleForTesting
+    public @Nullable ProcessedValue getEntryValue(String key) {
         return mMetadata.get(key);
     }
 

@@ -10,24 +10,26 @@
 #include "third_party/blink/renderer/core/layout/box_fragment_builder.h"
 #include "third_party/blink/renderer/core/layout/grid/grid_node.h"
 #include "third_party/blink/renderer/core/layout/grid/grid_sizing_tree.h"
+#include "third_party/blink/renderer/core/layout/grid/grid_track_sizing_algorithm.h"
 #include "third_party/blink/renderer/core/layout/layout_algorithm.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
+enum class GridItemContributionType;
 class ConstraintSpace;
 struct GridItemPlacementData;
-
-enum class GridItemContributionType;
-enum class SizingConstraint;
-
-using GridItemDataPtrVector = HeapVector<Member<GridItemData>, 16>;
-using GridSetPtrVector = Vector<GridSet*, 16>;
 
 class CORE_EXPORT GridLayoutAlgorithm
     : public LayoutAlgorithm<GridNode, BoxFragmentBuilder, BlockBreakToken> {
  public:
   explicit GridLayoutAlgorithm(const LayoutAlgorithmParams& params);
+
+  // Expose base class accessors needed by functions in grid_layout_utils.
+  using LayoutAlgorithm::BorderScrollbarPadding;
+  using LayoutAlgorithm::GetConstraintSpace;
+  using LayoutAlgorithm::Node;
+  using LayoutAlgorithm::Style;
 
   const LayoutResult* Layout();
   MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesFloatInput&);
@@ -43,44 +45,83 @@ class CORE_EXPORT GridLayoutAlgorithm
       const GridPlacementData& placement_data,
       const GridLayoutData& layout_data,
       const ComputedStyle& grid_style,
-      const BoxStrut& borders,
-      const LogicalSize& border_box_size,
-      GridItemData* out_of_flow_item);
+      const LogicalRect& padding_box_rect,
+      GridItemData* item);
 
-  // Helper that computes tracks sizes in a given range.
-  static Vector<std::div_t> ComputeTrackSizesInRange(
-      const GridLayoutTrackCollection& track_collection,
-      wtf_size_t range_starting_set_index,
-      wtf_size_t range_set_count);
+  // TODO(layout-dev): It would be cleaner to split out creating the line
+  // resolver and merging it with the parent line names (in the case of
+  // subgrids) as separate methods. This would allow us to skip the latter in
+  // the case of `can_inherit_line_names_from_parent` rather than needing to
+  // pass that in.
+  GridLineResolver BuildGridLineResolver(
+      const GridArea& subgrid_area = GridArea(),
+      const GridLineResolver* opt_parent_line_resolver = nullptr,
+      bool can_inherit_line_names_from_parent = true) const;
+
+  // Builds a sizing track collection for `track_direction` and sets it on
+  // `layout_data`. `sizing_constraint`, `needs_intrinsic_track_size`, and
+  // `opt_virtual_items` are not used in Grid. However, they are needed to
+  // maintain the same method signature as grid lanes for common use.
+  void BuildSizingCollection(
+      GridTrackSizingDirection track_direction,
+      const GridLineResolver& line_resolver,
+      GridItems& grid_items,
+      GridLayoutData& layout_data,
+      SizingConstraint sizing_constraint = SizingConstraint::kLayout,
+      bool needs_intrinsic_track_size = false,
+      VirtualItems** opt_virtual_items = nullptr) const;
+
+  // `containing_grid_area` is an optional out parameter that holds the computed
+  // grid area (offset and size) of the specified grid item.
+  // `opt_fixed_inline_size` isn't used here, but is needed to maintain the same
+  // method signature as grid lanes for common use.
+  ConstraintSpace CreateConstraintSpaceForLayout(
+      const SubgriddedItemData& subgridded_item,
+      const GridLayoutSubtree* opt_layout_subtree = nullptr,
+      LogicalRect* containing_grid_area = nullptr,
+      LayoutUnit unavailable_block_size = LayoutUnit(),
+      bool min_block_size_should_encompass_intrinsic_size = false,
+      std::optional<LayoutUnit> opt_child_block_offset = std::nullopt,
+      std::optional<LayoutUnit> opt_fixed_inline_size = std::nullopt) const;
+
+  LogicalSize GetGridAvailableSize() const { return grid_available_size_; }
+
+  // Initializes the track sizes of a grid sizing subtree.
+  void InitializeTrackSizes(
+      const GridSizingSubtree& sizing_subtree,
+      const SubgriddedItemData& opt_subgrid_data,
+      const std::optional<GridTrackSizingDirection>& opt_track_direction) const;
+
+  // Computes and caches the used track sizes of a grid sizing subtree.
+  void CompleteTrackSizingAlgorithm(const GridSizingSubtree& sizing_subtree,
+                                    const SubgriddedItemData& opt_subgrid_data,
+                                    GridTrackSizingDirection track_direction,
+                                    SizingConstraint sizing_constraint,
+                                    bool* opt_needs_additional_pass) const;
+
+  // Performs the final baseline alignment pass of a grid sizing subtree.
+  void ComputeBaselineAlignment(
+      const GridLayoutTree* layout_tree,
+      const GridSizingSubtree& sizing_subtree,
+      const SubgriddedItemData& opt_subgrid_data,
+      const std::optional<GridTrackSizingDirection>& opt_track_direction,
+      SizingConstraint sizing_constraint) const;
 
  private:
   friend class GridLayoutAlgorithmTest;
 
-  // Aggregate all direct out of flow children from the current grid container
-  // to `opt_oof_children`, unless it's not provided.
-  wtf_size_t BuildGridSizingSubtree(
-      GridSizingTree* sizing_tree,
-      HeapVector<Member<LayoutBox>>* opt_oof_children,
-      const SubgriddedItemData& opt_subgrid_data =
-          SubgriddedItemData::NoSubgriddedItemData(),
-      const GridLineResolver* opt_parent_line_resolver = nullptr,
-      bool must_invalidate_placement_cache = false,
-      bool must_ignore_children = false) const;
-
-  GridSizingTree BuildGridSizingTree(
-      HeapVector<Member<LayoutBox>>* opt_oof_children = nullptr) const;
-  GridSizingTree BuildGridSizingTreeIgnoringChildren() const;
-
   const LayoutResult* LayoutInternal();
 
-  LayoutUnit Baseline(const GridLayoutData& layout_data,
-                      const GridItemData& grid_item,
-                      GridTrackSizingDirection track_direction) const;
-
-  void ComputeGridGeometry(const GridSizingTree& grid_sizing_tree,
-                           LayoutUnit* intrinsic_block_size);
+  const GridLayoutSubtree* ComputeGridGeometry(
+      GridItems** grid_items,
+      LayoutUnit* intrinsic_block_size,
+      HeapVector<Member<LayoutBox>>* oof_children);
 
   LayoutUnit ComputeIntrinsicBlockSizeIgnoringChildren() const;
+
+  wtf_size_t ComputeAutomaticRepetitions(
+      const GridSpan& subgrid_span,
+      GridTrackSizingDirection track_direction) const;
 
   // Returns the size that a grid item will distribute across the tracks with an
   // intrinsic sizing function it spans in the relevant track direction.
@@ -91,10 +132,6 @@ class CORE_EXPORT GridLayoutAlgorithm
       SizingConstraint sizing_constraint,
       GridItemData* grid_item) const;
 
-  wtf_size_t ComputeAutomaticRepetitions(
-      const GridSpan& subgrid_span,
-      GridTrackSizingDirection track_direction) const;
-
   // Subgrids compute auto repetitions differently than standalone grids.
   wtf_size_t ComputeAutomaticRepetitionsForSubgrid(
       wtf_size_t subgrid_span_size,
@@ -102,123 +139,44 @@ class CORE_EXPORT GridLayoutAlgorithm
 
   // Determines the major/minor alignment baselines for each row/column based on
   // each item in `grid_items`, and stores the results in `track_collection`.
-  void ComputeGridItemBaselines(const GridLayoutTreePtr& layout_tree,
+  void ComputeGridItemBaselines(const GridLayoutTree* layout_tree,
                                 const GridSizingSubtree& sizing_subtree,
                                 GridTrackSizingDirection track_direction,
-                                SizingConstraint sizing_constraint) const;
-
-  std::unique_ptr<GridLayoutTrackCollection> CreateSubgridTrackCollection(
-      const SubgriddedItemData& subgrid_data,
-      GridTrackSizingDirection track_direction) const;
-
-  // Initialize the track collections of a given grid sizing data.
-  void InitializeTrackCollection(const SubgriddedItemData& opt_subgrid_data,
-                                 GridTrackSizingDirection track_direction,
-                                 GridLayoutData* layout_data) const;
-
-  // Initializes the track sizes of a grid sizing subtree.
-  void InitializeTrackSizes(
-      const GridSizingSubtree& sizing_subtree,
-      const SubgriddedItemData& opt_subgrid_data,
-      const std::optional<GridTrackSizingDirection>& opt_track_direction) const;
+                                SizingConstraint sizing_constraint,
+                                bool is_track_sizing) const;
 
   // Helper that calls the method above for the entire grid sizing tree.
-  void InitializeTrackSizes(const GridSizingTree& sizing_tree,
+  void InitializeTrackSizes(GridSizingTree* sizing_tree,
                             const std::optional<GridTrackSizingDirection>&
                                 opt_track_direction = std::nullopt) const;
 
-  // Calculates from the min and max track sizing functions the used track size.
+  // Helper that instances a `GridTrackSizingAlgorithm` with a wrapper for
+  // `ContributionSizeForGridItem` to compute the used track sizes.
   void ComputeUsedTrackSizes(const GridSizingSubtree& sizing_subtree,
                              GridTrackSizingDirection track_direction,
-                             SizingConstraint sizing_constraint,
-                             bool* opt_needs_additional_pass) const;
-
-  // Computes and caches the used track sizes of a grid sizing subtree.
-  void CompleteTrackSizingAlgorithm(const GridSizingSubtree& sizing_subtree,
-                                    const SubgriddedItemData& opt_subgrid_data,
-                                    GridTrackSizingDirection track_direction,
-                                    SizingConstraint sizing_constraint,
-                                    bool* opt_needs_additional_pass) const;
+                             SizingConstraint sizing_constraint) const;
 
   // Helper that calls the method above for the entire grid sizing tree.
   void CompleteTrackSizingAlgorithm(
-      const GridSizingTree& sizing_tree,
       GridTrackSizingDirection track_direction,
       SizingConstraint sizing_constraint,
+      GridSizingTree* sizing_tree,
       bool* opt_needs_additional_pass = nullptr) const;
 
-  // Performs the final baseline alignment pass of a grid sizing subtree.
-  void ComputeBaselineAlignment(
-      const GridLayoutTreePtr& layout_tree,
-      const GridSizingSubtree& sizing_subtree,
-      const SubgriddedItemData& opt_subgrid_data,
-      const std::optional<GridTrackSizingDirection>& opt_track_direction,
-      SizingConstraint sizing_constraint) const;
-
   // Helper that calls the method above for the entire grid sizing tree.
-  void CompleteFinalBaselineAlignment(const GridSizingTree& sizing_tree) const;
-
-  // Helper which iterates over the sizing tree, and instantiates a subgrid
-  // algorithm to invoke the callback with.
-  template <typename CallbackFunc>
-  void ForEachSubgrid(const GridSizingSubtree& sizing_subtree,
-                      const CallbackFunc& callback_func,
-                      bool should_compute_min_max_sizes = true) const;
+  void CompleteFinalBaselineAlignment(GridSizingTree* sizing_tree) const;
 
   LayoutUnit ComputeSubgridIntrinsicSize(
       const GridSizingSubtree& sizing_subtree,
       GridTrackSizingDirection track_direction,
       SizingConstraint sizing_constraint) const;
 
-  // TODO(ethavar): Remove these methods once we migrate them over to
-  // `grid_track_sizing_algorithm.cc`.
-  // See https://chromium-review.googlesource.com/c/chromium/src/+/6277752.
-  // These methods implement the steps of the algorithm for intrinsic track size
-  // resolution defined in https://drafts.csswg.org/css-grid-2/#algo-content.
-  void ResolveIntrinsicTrackSizes(const GridSizingSubtree& sizing_subtree,
-                                  GridTrackSizingDirection track_direction,
-                                  SizingConstraint sizing_constraint) const;
-
-  void IncreaseTrackSizesToAccommodateGridItems(
-      base::span<Member<GridItemData>>::iterator group_begin,
-      base::span<Member<GridItemData>>::iterator group_end,
-      const GridSizingSubtree& sizing_subtree,
-      bool is_group_spanning_flex_track,
-      SizingConstraint sizing_constraint,
-      GridItemContributionType contribution_type,
-      GridSizingTrackCollection* track_collection) const;
-
-  void MaximizeTracks(SizingConstraint sizing_constraint,
-                      GridSizingTrackCollection* track_collection) const;
-
-  void StretchAutoTracks(SizingConstraint sizing_constraint,
-                         GridSizingTrackCollection* track_collection) const;
-
-  void ExpandFlexibleTracks(const GridSizingSubtree& sizing_subtree,
-                            GridTrackSizingDirection track_direction,
-                            SizingConstraint sizing_constraint) const;
-
-  LayoutUnit DetermineFreeSpace(
-      SizingConstraint sizing_constraint,
-      const GridSizingTrackCollection& track_collection) const;
-
   ConstraintSpace CreateConstraintSpace(
       LayoutResultCacheSlot cache_slot,
       const GridItemData& grid_item,
       const LogicalSize& containing_grid_area_size,
       const LogicalSize& fixed_available_size,
-      GridLayoutSubtree&& opt_layout_subtree = GridLayoutSubtree(),
-      bool min_block_size_should_encompass_intrinsic_size = false,
-      std::optional<LayoutUnit> opt_child_block_offset = std::nullopt) const;
-
-  // `containing_grid_area` is an optional out parameter that holds the computed
-  // grid area (offset and size) of the specified grid item.
-  ConstraintSpace CreateConstraintSpaceForLayout(
-      const GridItemData& grid_item,
-      const GridLayoutData& layout_data,
-      GridLayoutSubtree&& opt_layout_subtree = GridLayoutSubtree(),
-      LogicalRect* containing_grid_area = nullptr,
-      LayoutUnit unavailable_block_size = LayoutUnit(),
+      const GridLayoutSubtree* opt_layout_subtree = nullptr,
       bool min_block_size_should_encompass_intrinsic_size = false,
       std::optional<LayoutUnit> opt_child_block_offset = std::nullopt) const;
 
@@ -227,18 +185,27 @@ class CORE_EXPORT GridLayoutAlgorithm
       GridTrackSizingDirection track_direction,
       std::optional<LayoutUnit> opt_fixed_inline_size = std::nullopt) const;
 
-  // Layout the |grid_items|, and add them to the builder.
+  // Layout the `grid_items`, and add them to the builder.
   //
-  // If |out_grid_items_placement_data| is present determine the offset for
-  // each of the |grid_items| but *don't* add the resulting fragment to the
+  // If `out_grid_items_placement_data` is present determine the offset for
+  // each of the `grid_items` but *don't* add the resulting fragment to the
   // builder.
   //
   // This is used for fragmentation which requires us to know the final offset
   // of each item before fragmentation occurs.
+  //
+  // Similarly, if `out_unfragmented_gap_geometry` is present compute the
+  // offsets of all gaps in an unfragmented context but don't add the result
+  // to the builder. `out_track_idx_to_set_idx` is present to tell us which
+  // set a particular track index belongs to, which is needed for knowing the
+  // row offset adjustments for each track during fragmentation.
   void PlaceGridItems(
-      const GridSizingTree& sizing_tree,
+      const GridItems& grid_items,
+      const GridLayoutSubtree& layout_subtree,
       Vector<EBreakBetween>* out_row_break_between,
-      Vector<GridItemPlacementData>* out_grid_items_placement_data = nullptr);
+      Vector<GridItemPlacementData>* out_grid_items_placement_data = nullptr,
+      const GapGeometry** out_unfragmented_gap_geometry = nullptr,
+      Vector<wtf_size_t>* out_track_idx_to_set_idx = nullptr);
 
   // Layout the |grid_items| for fragmentation (when there is a known
   // fragmentainer size).
@@ -246,33 +213,18 @@ class CORE_EXPORT GridLayoutAlgorithm
   // This will go through all the grid_items and place fragments which belong
   // within this fragmentainer.
   void PlaceGridItemsForFragmentation(
-      const GridSizingTree& sizing_tree,
+      const GridItems& grid_items,
+      const GridLayoutSubtree& layout_subtree,
       const Vector<EBreakBetween>& row_break_between,
+      const GapGeometry* full_gap_geometry,
+      const Vector<wtf_size_t>* track_idx_to_set_idx,
+      Vector<wtf_size_t>* column_gaps_segment_ranges_start_indices,
       Vector<GridItemPlacementData>* grid_item_placement_data,
       Vector<LayoutUnit>* row_offset_adjustments,
       LayoutUnit* intrinsic_block_size,
-      LayoutUnit* offset_in_stitched_container);
-
-  // Constructs gap geometry for Gap Decorations. Each gap boundary is
-  // determined by its start and end offsets and stored in `gap_geometry`.
-  // For column gaps, the offsets correspond to inline coordinates;
-  // for row gaps, they correspond to block coordinates. The first track,
-  // midpoint of each gap boundary, and last track are stored in
-  // `intersection_points`, which will be used to determine pairs for painting
-  // gap decorations.
-  void BuildGapGeometry(GridTrackSizingDirection track_direction,
-                        const GridLayoutData& layout_data,
-                        HeapVector<LayoutUnit>& intersection_points,
-                        GapFragmentData::GapGeometry* gap_geometry) const;
-  // TODO(samomekarajr): Remove this method when done with the new
-  // implementation.
-  void PopulateGapIntersectionPoints(
-      const HeapVector<LayoutUnit>& intersection_points,
-      GapFragmentData::GapBoundaries& gap_boundaries) const;
-
-  void BuildGapIntersectionPoints(
-      const GridLayoutData& layout_data,
-      GapFragmentData::GapGeometry* gap_geometry) const;
+      LayoutUnit* offset_in_stitched_container,
+      LayoutUnit* cumulative_gap_offset_adjustment,
+      wtf_size_t* first_unprocessed_row_gap_idx);
 
   // Computes the static position, grid area and its offset of out of flow
   // elements in the grid (as provided by `oof_children`).
@@ -280,8 +232,8 @@ class CORE_EXPORT GridLayoutAlgorithm
                            const LayoutUnit block_size,
                            HeapVector<Member<LayoutBox>>& oof_children);
 
-  // Set reading flow nodes so they can be accessed by LayoutBox.
-  void SetReadingFlowNodes(const GridSizingTree& sizing_tree);
+  // Set reading flow nodes so they can be accessed by `LayoutBox`.
+  void SetReadingFlowNodes(const GridItems& grid_items);
 
   LogicalSize grid_available_size_;
   LogicalSize grid_min_available_size_;

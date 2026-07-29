@@ -16,12 +16,12 @@ namespace blink {
 namespace {
 
 // Helper for looking up `std::string_view`-represented mojo interface names in
-// a `WTF::HashMap<String, ...>`.  Mojo interface names are ASCII-only, so
+// a `HashMap<String, ...>`.  Mojo interface names are ASCII-only, so
 // `StringHasher::DefaultConverter` and `StringView(const LChar* chars, unsigned
 // length)` work fine here.
 struct InterfaceNameHashTranslator {
   static unsigned GetHash(std::string_view s) {
-    return StringHasher::HashMemory(base::as_byte_span(s));
+    return StringHasher::HashMemory32(base::as_byte_span(s));
   }
 
   static bool Equal(const String& a, std::string_view b) {

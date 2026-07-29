@@ -41,7 +41,6 @@
 #include <memory>
 #include <optional>
 
-#include "base/gtest_prod_util.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -54,6 +53,10 @@
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
+
+namespace base {
+class Time;
+}
 
 namespace blink {
 namespace mojom {
@@ -78,7 +81,7 @@ class PLATFORM_EXPORT RawData : public ThreadSafeRefCounted<RawData> {
     return base::AdoptRef(new RawData());
   }
 
-  const char* data() const { return data_.data(); }
+  const uint8_t* data() const { return data_.data(); }
   size_t size() const { return data_.size(); }
 
   // Iterators, so this type meets the requirements of
@@ -86,12 +89,12 @@ class PLATFORM_EXPORT RawData : public ThreadSafeRefCounted<RawData> {
   auto begin() const { return data_.begin(); }
   auto end() const { return data_.end(); }
 
-  Vector<char>* MutableData() { return &data_; }
+  Vector<uint8_t>& MutableData() { return data_; }
 
  private:
   RawData();
 
-  Vector<char> data_;
+  Vector<uint8_t> data_;
 };
 
 class PLATFORM_EXPORT BlobData {
@@ -138,7 +141,7 @@ class PLATFORM_EXPORT BlobData {
   }
 
  private:
-  void AppendDataInternal(base::span<const char> data,
+  void AppendDataInternal(base::span<const uint8_t> data,
                           scoped_refptr<RawData> = nullptr);
 
   String content_type_;

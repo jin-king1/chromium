@@ -15,6 +15,9 @@
 // Displays an eligible promo (selected by the Promos Manager) if one exists.
 - (void)showPromo;
 
+// Dismisses the currently displayed promo.
+- (void)dismissCurrentPromo;
+
 // Makes a request to Apple to present the user the App Store Rating Promo.
 - (void)showAppStoreReviewPrompt;
 
@@ -30,8 +33,17 @@
 // Shows the default browser promo after the user tapped Remind Me Later.
 - (void)showDefaultBrowserPromoAfterRemindMeLater;
 
-// Shows the sign-in fullscreen promo.
-- (void)showSigninPromo;
+// Shows the fullscreen sign-in promo.
+- (void)showFullscreenSigninPromo;
+
+// Shows the Welcome Back promo.
+- (void)showWelcomeBackPromo;
+
+// Shows the Home Background Customization Promo.
+- (void)showHomeBackgroundCustomizationPromo;
+
+// Shows the Docking promo.
+- (void)showDockingPromo;
 
 @end
 

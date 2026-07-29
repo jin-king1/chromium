@@ -10,9 +10,7 @@
 #include <vector>
 
 #include "ash/accelerators/keyboard_code_util.h"
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
-#include "ash/public/mojom/accelerator_info.mojom-shared.h"
 #include "ash/public/mojom/accelerator_info.mojom.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
@@ -24,11 +22,12 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "build/branding_buildflags.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/search/common/icon_constants.h"
 #include "chrome/browser/ash/app_list/search/common/search_result_util.h"
-#include "chrome/browser/ui/chrome_pages.h"
+#include "chrome/browser/ui/ash/system_web_apps/system_web_app_utils.h"
 #include "chromeos/ash/components/string_matching/fuzzy_tokenized_string_match.h"
 #include "chromeos/ash/components/string_matching/tokenized_string.h"
 #include "chromeos/ash/components/string_matching/tokenized_string_match.h"
@@ -144,6 +143,8 @@ std::optional<int> GetStringIdForIconCode(IconCode icon_code) {
       return IDS_KEYBOARD_QUICK_INSERT_LABEL;
     case ash::SearchResultTextItem::kKeyboardShortcutDoNotDisturb:
       return IDS_SHORTCUT_CUSTOMIZATION_ICON_LABEL_DO_NOT_DISTURB;
+    case ash::SearchResultTextItem::kKeyboardShortcutCameraAccessToggle:
+      return IDS_SHORTCUT_CUSTOMIZATION_ICON_LABEL_CAMERA_ACCESS_TOGGLE;
   }
 }
 
@@ -282,6 +283,8 @@ std::optional<IconCode> KeyboardShortcutResult::GetIconCodeFromKeyboardCode(
     case (KeyboardCode::VKEY_QUICK_INSERT):
       return IconCode::kKeyboardShortcutKeyboardQuickInsert;
 #endif
+    case (KeyboardCode::VKEY_CAMERA_ACCESS_TOGGLE):
+      return IconCode::kKeyboardShortcutCameraAccessToggle;
     default:
       return std::nullopt;
   }
@@ -308,6 +311,7 @@ KeyboardShortcutResult::GetIconCodeByKeyString(std::u16string_view key_string) {
        {u"BrowserHome", IconCode::kKeyboardShortcutBrowserHome},
        {u"BrowserRefresh", IconCode::kKeyboardShortcutBrowserRefresh},
        {u"BrowserSearch", IconCode::kKeyboardShortcutBrowserSearch},
+       {u"CameraAccessToggle", IconCode::kKeyboardShortcutCameraAccessToggle},
        {u"DoNotDisturb", IconCode::kKeyboardShortcutDoNotDisturb},
        {u"EmojiPicker", IconCode::kKeyboardShortcutEmojiPicker},
        {u"EnableOrToggleDictation", IconCode::kKeyboardShortcutDictationToggle},
@@ -595,12 +599,8 @@ KeyboardShortcutResult::~KeyboardShortcutResult() = default;
 void KeyboardShortcutResult::Open(int event_flags) {
   // Pass the action and category of the selected shortcuts to the app so that
   // the same shortcuts will be displayed in the app.
-  if (ash::features::IsSearchCustomizableShortcutsInLauncherEnabled()) {
-    chrome::ShowShortcutCustomizationApp(profile_, accelerator_action_,
-                                         accelerator_category_);
-  } else {
-    chrome::ShowShortcutCustomizationApp(profile_);
-  }
+  ash::ShowShortcutCustomizationApp(profile_, accelerator_action_,
+                                    accelerator_category_);
 }
 
 void KeyboardShortcutResult::UpdateIcon() {

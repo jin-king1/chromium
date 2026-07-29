@@ -16,20 +16,15 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "components/omnibox/browser/jni_headers/OmniboxActionFactory_jni.h"
 
-namespace {
-
-base::LazyInstance<base::android::ScopedJavaGlobalRef<jobject>>::
-    DestructorAtExit g_java_factory = LAZY_INSTANCE_INITIALIZER;
-}  // namespace
-
-/* static */ void JNI_OmniboxActionFactory_SetFactory(
+base::android::ScopedJavaGlobalRef<jobject> BuildCrossDeviceTabAction(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& factory) {
-  if (factory) {
-    g_java_factory.Get().Reset(factory);
-  } else {
-    g_java_factory.Get().Reset(nullptr);
-  }
+    intptr_t instance,
+    const std::u16string& hint,
+    const std::u16string& accessibility_hint) {
+  return base::android::ScopedJavaGlobalRef<jobject>(
+      Java_OmniboxActionFactory_buildCrossDeviceTabAction(
+          env, instance, base::android::ConvertUTF16ToJavaString(env, hint),
+          base::android::ConvertUTF16ToJavaString(env, accessibility_hint)));
 }
 
 base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxPedal(
@@ -40,10 +35,21 @@ base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxPedal(
     OmniboxPedalId pedal_id) {
   return base::android::ScopedJavaGlobalRef<jobject>(
       Java_OmniboxActionFactory_buildOmniboxPedal(
-          env, g_java_factory.Get(), instance,
-          base::android::ConvertUTF16ToJavaString(env, hint),
+          env, instance, base::android::ConvertUTF16ToJavaString(env, hint),
           base::android::ConvertUTF16ToJavaString(env, accessibility_hint),
           static_cast<int32_t>(pedal_id)));
+}
+
+base::android::ScopedJavaGlobalRef<jobject> BuildSiteSearchAction(
+    JNIEnv* env,
+    intptr_t instance,
+    const std::u16string& hint,
+    const std::u16string& accessibility_hint,
+    const std::u16string& keyword,
+    int starter_pack_id) {
+  return base::android::ScopedJavaGlobalRef<jobject>(
+      Java_OmniboxActionFactory_buildSiteSearchAction(
+          env, instance, hint, accessibility_hint, keyword, starter_pack_id));
 }
 
 base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxActionInSuggest(
@@ -52,25 +58,25 @@ base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxActionInSuggest(
     const std::u16string& hint,
     const std::u16string& accessibility_hint,
     int action_type,
-    const std::string& action_uri) {
+    const std::string& action_uri,
+    int tab_id,
+    ActionPresentationMode presentation_mode) {
   return base::android::ScopedJavaGlobalRef<jobject>(
       Java_OmniboxActionFactory_buildActionInSuggest(
-          env, g_java_factory.Get(), instance,
-          base::android::ConvertUTF16ToJavaString(env, hint),
+          env, instance, base::android::ConvertUTF16ToJavaString(env, hint),
           base::android::ConvertUTF16ToJavaString(env, accessibility_hint),
-          action_type,
-          base::android::ConvertUTF8ToJavaString(env, action_uri)));
+          action_type, base::android::ConvertUTF8ToJavaString(env, action_uri),
+          tab_id, static_cast<int>(presentation_mode)));
 }
 
-base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxAnswerAction(
+base::android::ScopedJavaGlobalRef<jobject> BuildOmniboxLensOverlayAction(
     JNIEnv* env,
     intptr_t instance,
     const std::u16string& hint,
     const std::u16string& accessibility_hint) {
   return base::android::ScopedJavaGlobalRef<jobject>(
-      Java_OmniboxActionFactory_buildOmniboxAnswerAction(
-          env, g_java_factory.Get(), instance,
-          base::android::ConvertUTF16ToJavaString(env, hint),
+      Java_OmniboxActionFactory_buildOmniboxLensOverlayAction(
+          env, instance, base::android::ConvertUTF16ToJavaString(env, hint),
           base::android::ConvertUTF16ToJavaString(env, accessibility_hint)));
 }
 
@@ -79,11 +85,6 @@ std::vector<jni_zero::ScopedJavaLocalRef<jobject>> ToJavaOmniboxActionsList(
     JNIEnv* env,
     const std::vector<scoped_refptr<OmniboxAction>>& actions) {
   std::vector<base::android::ScopedJavaLocalRef<jobject>> ret;
-  // Early return for cases where Action creation is not yet possible, e.g.
-  // if the control is passed from the IntentHandler.
-  if (!g_java_factory.IsCreated() || !g_java_factory.Get()) {
-    return {};
-  }
 
   for (const auto& action : actions) {
     auto jobj = action->GetOrCreateJavaObject(env);
@@ -96,3 +97,5 @@ std::vector<jni_zero::ScopedJavaLocalRef<jobject>> ToJavaOmniboxActionsList(
   // actions were found, but none was applicable to Android.
   return ret;
 }
+
+DEFINE_JNI(OmniboxActionFactory)

@@ -33,8 +33,10 @@ class TabGroupSyncService;
 class BrowserList;
 class FaviconLoader;
 @protocol GridToolbarsMutator;
+@protocol SceneCommands;
 class ShareKitService;
 @protocol TabGridCommands;
+@protocol TabGroupsCommands;
 @protocol TabGroupsPanelConsumer;
 @protocol TabGroupsPanelMediatorDelegate;
 class WebStateList;
@@ -55,6 +57,12 @@ class WebStateList;
 
 // Tab Grid handler.
 @property(nonatomic, weak) id<TabGridCommands> tabGridHandler;
+
+// Scene commands handler.
+@property(nonatomic, weak) id<SceneCommands> sceneHandler;
+
+// Tab Groups command handler.
+@property(nonatomic, weak) id<TabGroupsCommands> tabGroupsCommands;
 
 // - `tabGroupSyncService`: the data source for the Tab Groups panel.
 // - `regularWebStateList`: used to configure the Done button. Must not be null.
@@ -80,12 +88,6 @@ class WebStateList;
 
 // Deletes a synced group for `syncID`.
 - (void)deleteSyncedTabGroup:(const base::Uuid&)syncID;
-
-// Deletes a shared group for `syncID`.
-- (void)deleteSharedTabGroup:(const base::Uuid&)syncID;
-
-// Leaves a shared group for `syncID`.
-- (void)leaveSharedTabGroup:(const base::Uuid&)syncID;
 
 // Disconnects the mediator.
 - (void)disconnect;

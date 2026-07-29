@@ -6,6 +6,7 @@
 #define COMPONENTS_SYNC_SERVICE_GLUE_SYNC_ENGINE_BACKEND_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,19 +22,18 @@
 #include "components/sync/engine/sync_encryption_handler.h"
 #include "components/sync/engine/sync_engine.h"
 #include "components/sync/engine/sync_manager.h"
-#include "google_apis/gaia/core_account_id.h"
+#include "google_apis/gaia/gaia_id.h"
 
 namespace syncer {
 
-class KeyDerivationParams;
+class CustomPassphraseBootstrapToken;
 class DataTypeController;
-class Nigori;
 class SyncEngineImpl;
 
 class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
                           public SyncManager::Observer {
  public:
-  using AllNodesCallback = base::OnceCallback<void(base::Value::List)>;
+  using AllNodesCallback = base::OnceCallback<void(base::ListValue)>;
 
   // Struct that allows passing back data upon init, for data previously
   // produced by SyncEngineBackend (which doesn't itself have the ability to
@@ -122,13 +122,13 @@ class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
   void DoStartSyncing(base::Time last_poll_time);
 
   // Called to set the passphrase for encryption.
-  void DoSetEncryptionPassphrase(
-      const std::string& passphrase,
-      const KeyDerivationParams& key_derivation_params);
+  void DoSetEncryptionPassphrase(const std::string& passphrase);
 
   // Called to decrypt the pending keys using the `key` derived from
   // user-entered passphrase.
-  void DoSetExplicitPassphraseDecryptionKey(std::unique_ptr<Nigori> key);
+  void DoSetDecryptionPassphrase(const std::string& passphrase);
+  void DoSetDecryptionBootstrapToken(
+      const CustomPassphraseBootstrapToken& bootstrap_token);
 
   // Called to decrypt the pending keys using trusted vault keys.
   void DoAddTrustedVaultDecryptionKeys(
@@ -166,7 +166,10 @@ class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
   // invalidations.
   void DoOnStandaloneInvalidationReceived(
       const std::string& payload,
-      const DataTypeSet& interested_data_types);
+      const DataTypeSet& interested_data_types,
+      base::Time arrival_time,
+      std::optional<base::Time> network_time,
+      std::optional<base::TimeDelta> network_time_uncertainty);
 
   // Functions to deal with NIGORI, resembling DataTypeController APIs.
   void DoClearNigoriDataForMigration();
@@ -191,7 +194,10 @@ class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
 
   IncomingInvalidationStatus DoOnStandaloneInvalidationReceivedImpl(
       const std::string& payload,
-      const DataTypeSet& interested_data_types);
+      const DataTypeSet& interested_data_types,
+      base::Time arrival_time,
+      std::optional<base::Time> network_time,
+      std::optional<base::TimeDelta> network_time_uncertainty);
 
   // Name used for debugging.
   const std::string name_;
@@ -209,7 +215,7 @@ class SyncEngineBackend : public base::RefCountedThreadSafe<SyncEngineBackend>,
   std::unique_ptr<SyncManager> sync_manager_;
 
   // Required for `nigori_controller_` LoadModels().
-  CoreAccountId authenticated_account_id_;
+  GaiaId authenticated_gaia_id_;
 
   // Initialized in Init().
   std::unique_ptr<DataTypeController> nigori_controller_;

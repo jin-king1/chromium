@@ -6,6 +6,7 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_UI_ADDRESSES_AUTOFILL_ADDRESS_UTIL_H_
 
 #include <string>
+#include <vector>
 
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_comparator.h"
 #include "components/autofill/core/browser/field_types.h"
@@ -17,6 +18,16 @@ namespace autofill {
 
 class AutofillProfile;
 class PersonalDataManager;
+
+// Enum used to denote the various icon types used in the save/update address
+// prompts.
+enum class AddressUIComponentIconType {
+  kNoIcon = 0,
+  kName,
+  kAddress,
+  kEmail,
+  kPhone
+};
 
 // Autofill internal version of libaddressinput AddressUiComponent struct for
 // storing Autofill specific data.
@@ -134,6 +145,10 @@ std::vector<ProfileValueDifference> GetProfileDifferenceForUi(
 std::u16string GetProfileSummaryForMigrationPrompt(
     const AutofillProfile& profile,
     const std::string& app_locale);
+
+// Returns the appropriate icon for the `field_type`.
+AddressUIComponentIconType GetAddressUIComponentIconTypeForFieldType(
+    FieldType field_type);
 
 }  // namespace autofill
 

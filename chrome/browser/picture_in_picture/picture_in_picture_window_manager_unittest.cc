@@ -20,8 +20,11 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "chrome/browser/picture_in_picture/auto_picture_in_picture_tab_helper.h"
+#include "chrome/browser/picture_in_picture/auto_pip_setting_overlay_view.h"
+#include "chrome/browser/picture_in_picture/picture_in_picture_window.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager_uma_helper.h"
 #include "chrome/browser/picture_in_picture/scoped_disallow_picture_in_picture.h"
+#include "chrome/browser/picture_in_picture/scoped_tuck_picture_in_picture.h"
 #include "media/base/media_switches.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/view.h"
@@ -60,10 +63,35 @@ class MockPictureInPictureWindowController
   MOCK_METHOD(void, CloseAndFocusInitiator, (), (override));
   MOCK_METHOD(void, OnWindowDestroyed, (bool), (override));
   MOCK_METHOD(content::WebContents*, GetWebContents, (), (override));
-  MOCK_METHOD(std::optional<gfx::Rect>, GetWindowBounds, (), (override));
+  MOCK_METHOD(std::optional<gfx::Rect>,
+              GetWindowBoundsInScreen,
+              (),
+              (override));
   MOCK_METHOD(content::WebContents*, GetChildWebContents, (), (override));
   MOCK_METHOD(std::optional<url::Origin>, GetOrigin, (), (override));
 };
+
+#if !BUILDFLAG(IS_ANDROID)
+class MockPictureInPictureWindow : public PictureInPictureWindow {
+ public:
+  MockPictureInPictureWindow() = default;
+  MockPictureInPictureWindow(const MockPictureInPictureWindow&) = delete;
+  MockPictureInPictureWindow& operator=(const MockPictureInPictureWindow&) =
+      delete;
+  ~MockPictureInPictureWindow() override = default;
+
+  bool is_tucking() const { return is_tucking_; }
+
+  // PictureInPictureWindow:
+  void SetForcedTucking(bool tuck) override { is_tucking_ = tuck; }
+#if BUILDFLAG(IS_MAC)
+  void OnAnyBrowserEnteredFullscreen() override {}
+#endif  // BUILDFLAG(IS_MAC)
+
+ private:
+  bool is_tucking_ = false;
+};
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 class PictureInPictureWindowManagerTest
     : public ChromeRenderViewHostTestHarness {
@@ -132,32 +160,6 @@ class PictureInPictureWindowManagerTest
 
 }  // namespace
 
-TEST_F(PictureInPictureWindowManagerTest, RespectsMinAndMaxSize) {
-  // The max window size should be 80% of the screen.
-  display::Display display(/*id=*/1, gfx::Rect(0, 0, 1000, 1000));
-  EXPECT_EQ(gfx::Size(800, 800),
-            PictureInPictureWindowManager::GetMaximumWindowSize(display));
-
-  // The initial bounds of the PiP window should respect that.
-  blink::mojom::PictureInPictureWindowOptions pip_options;
-  pip_options.width = 900;
-  pip_options.height = 900;
-  EXPECT_EQ(
-      gfx::Size(800, 800),
-      PictureInPictureWindowManager::GetInstance()
-          ->CalculateInitialPictureInPictureWindowBounds(pip_options, display)
-          .size());
-
-  // The minimum size should also be respected.
-  pip_options.width = 100;
-  pip_options.height = 500;
-  EXPECT_EQ(
-      gfx::Size(240, 500),
-      PictureInPictureWindowManager::GetInstance()
-          ->CalculateInitialPictureInPictureWindowBounds(pip_options, display)
-          .size());
-}
-
 TEST_F(PictureInPictureWindowManagerTest,
        ExitPictureInPictureReturnsFalseWhenThereIsNoWindow) {
   EXPECT_FALSE(
@@ -184,6 +186,74 @@ TEST_F(PictureInPictureWindowManagerTest, OnEnterVideoPictureInPicture) {
 }
 
 #if !BUILDFLAG(IS_ANDROID)
+TEST_F(PictureInPictureWindowManagerTest, RespectsMinAndMaxSize) {
+  // The max window size should be 80% of the screen.
+  display::Display display(/*id=*/1, gfx::Rect(0, 0, 1000, 1000));
+  EXPECT_EQ(gfx::Size(800, 800),
+            PictureInPictureWindowManager::GetMaximumWindowSize(display));
+
+  // The initial bounds of the PiP window should respect that.
+  blink::mojom::PictureInPictureWindowOptions pip_options;
+  pip_options.width = 900;
+  pip_options.height = 100;
+  EXPECT_EQ(
+      gfx::Size(800, 100),
+      PictureInPictureWindowManager::GetInstance()
+          ->CalculateInitialPictureInPictureWindowBounds(pip_options, display)
+          .size());
+
+  // Additionally, even if the given size is less than the absolute max, it
+  // should be forced to respect the maximum allowed area.
+  pip_options.width = 800;
+  pip_options.height = 800;
+  EXPECT_EQ(
+      gfx::Size(500, 500),
+      PictureInPictureWindowManager::GetInstance()
+          ->CalculateInitialPictureInPictureWindowBounds(pip_options, display)
+          .size());
+
+  // Additionally, even if the given size is less than the absolute max, it
+  // should be forced to respect the maximum allowed area.
+  pip_options.width = 800;
+  pip_options.height = 400;
+  EXPECT_EQ(
+      gfx::Size(707, 353),
+      PictureInPictureWindowManager::GetInstance()
+          ->CalculateInitialPictureInPictureWindowBounds(pip_options, display)
+          .size());
+
+  // If the requested width is so much larger than the height that maintaining
+  // the aspect ratio isn't possible within the min/max bounds, then it should
+  // keep the minimum height and expand the width to the maximum size.
+  pip_options.width = 10000;
+  pip_options.height = 400;
+  EXPECT_EQ(
+      gfx::Size(800, 52),
+      PictureInPictureWindowManager::GetInstance()
+          ->CalculateInitialPictureInPictureWindowBounds(pip_options, display)
+          .size());
+
+  // If the requested height is so much larger than the width that maintaining
+  // the aspect ratio isn't possible within the min/max bounds, then it should
+  // keep the minimum width and expand the height to the maximum size.
+  pip_options.width = 400;
+  pip_options.height = 10000;
+  EXPECT_EQ(
+      gfx::Size(240, 800),
+      PictureInPictureWindowManager::GetInstance()
+          ->CalculateInitialPictureInPictureWindowBounds(pip_options, display)
+          .size());
+
+  // The minimum size should also be respected.
+  pip_options.width = 100;
+  pip_options.height = 500;
+  EXPECT_EQ(
+      gfx::Size(240, 500),
+      PictureInPictureWindowManager::GetInstance()
+          ->CalculateInitialPictureInPictureWindowBounds(pip_options, display)
+          .size());
+}
+
 TEST_F(PictureInPictureWindowManagerTest, OnEnterDocumentPictureInPicture) {
   PictureInPictureWindowManager* picture_in_picture_window_manager =
       PictureInPictureWindowManager::GetInstance();
@@ -248,6 +318,9 @@ TEST_F(PictureInPictureWindowManagerTest, CorrectTypesAreSupported) {
   EXPECT_TRUE(
       PictureInPictureWindowManager::IsSupportedForDocumentPictureInPicture(
           GURL("chrome://newtab")));
+  EXPECT_TRUE(
+      PictureInPictureWindowManager::IsSupportedForDocumentPictureInPicture(
+          GURL("isolated-app://asdf")));
 }
 
 TEST_F(PictureInPictureWindowManagerTest, RecordsInitialSizeHistograms) {
@@ -433,6 +506,103 @@ TEST_F(PictureInPictureWindowManagerTest,
   }
 }
 
+TEST_F(PictureInPictureWindowManagerTest, CanForceTuckPictureInPicture) {
+  {
+    // Force-tucking before opening a picture-in-picture window should tuck it.
+    auto tuck = std::make_unique<ScopedTuckPictureInPicture>();
+    MockPictureInPictureWindow pip_window;
+
+    PictureInPictureWindowManager::GetInstance()->OnPictureInPictureWindowShown(
+        &pip_window);
+    EXPECT_TRUE(pip_window.is_tucking());
+
+    tuck.reset();
+    EXPECT_FALSE(pip_window.is_tucking());
+
+    PictureInPictureWindowManager::GetInstance()
+        ->OnPictureInPictureWindowHidden(&pip_window);
+  }
+
+  {
+    // Force-tucking after opening a picture-in-picture window should tuck it.
+    MockPictureInPictureWindow pip_window;
+    PictureInPictureWindowManager::GetInstance()->OnPictureInPictureWindowShown(
+        &pip_window);
+
+    EXPECT_FALSE(pip_window.is_tucking());
+    auto tuck = std::make_unique<ScopedTuckPictureInPicture>();
+    EXPECT_TRUE(pip_window.is_tucking());
+
+    tuck.reset();
+    EXPECT_FALSE(pip_window.is_tucking());
+
+    PictureInPictureWindowManager::GetInstance()
+        ->OnPictureInPictureWindowHidden(&pip_window);
+  }
+
+  {
+    MockPictureInPictureWindow pip_window;
+    {
+      ScopedTuckPictureInPicture tuck1;
+
+      {
+        // Multiple ScopedTuckPictureInPicture should still tuck
+        // picture-in-picture windows.
+        ScopedTuckPictureInPicture tuck2;
+
+        PictureInPictureWindowManager::GetInstance()
+            ->OnPictureInPictureWindowShown(&pip_window);
+        EXPECT_TRUE(pip_window.is_tucking());
+      }
+
+      // When one of them is destroyed but the other remains, it should still
+      // remain tucked.
+      EXPECT_TRUE(pip_window.is_tucking());
+    }
+
+    // Once both have been destroyed, picture-in-picture windows should be
+    // untucked.
+    EXPECT_FALSE(pip_window.is_tucking());
+
+    PictureInPictureWindowManager::GetInstance()
+        ->OnPictureInPictureWindowHidden(&pip_window);
+  }
+}
+
+TEST_F(PictureInPictureWindowManagerTest,
+       ShouldFileDialogTuckPictureInPicture) {
+  PictureInPictureWindowManager::GetInstance()->EnterDocumentPictureInPicture(
+      web_contents(), child_web_contents());
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(media::kFileDialogsTuckPictureInPicture);
+
+    // With the feature enabled, file dialogs that aren't on a document
+    // picture-in-picture window should tuck picture-in-picture windows.
+    EXPECT_TRUE(PictureInPictureWindowManager::GetInstance()
+                    ->ShouldFileDialogTuckPictureInPicture(web_contents()));
+    EXPECT_FALSE(
+        PictureInPictureWindowManager::GetInstance()
+            ->ShouldFileDialogTuckPictureInPicture(child_web_contents()));
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(media::kFileDialogsTuckPictureInPicture);
+
+    // With the feature disabled, no file dialogs should tuck
+    // picture-in-picture windows.
+    EXPECT_FALSE(PictureInPictureWindowManager::GetInstance()
+                     ->ShouldFileDialogTuckPictureInPicture(web_contents()));
+    EXPECT_FALSE(
+        PictureInPictureWindowManager::GetInstance()
+            ->ShouldFileDialogTuckPictureInPicture(child_web_contents()));
+  }
+
+  PictureInPictureWindowManager::GetInstance()->ExitPictureInPicture();
+}
+
 TEST_F(PictureInPictureWindowManagerTest,
        EnterAndCloseDocumentPip_NormalCloseDoesCommit) {
   base::SimpleTestTickClock test_clock;
@@ -507,6 +677,35 @@ TEST_F(PictureInPictureWindowManagerTest,
       GetHistogramSamplesSinceTestStart(kPictureInPictureTotalTimeHistogram));
   EXPECT_EQ(1, samples->TotalCount());
   EXPECT_EQ(1, samples->GetCount(3000));
+}
+
+TEST_F(PictureInPictureWindowManagerTest,
+       UpdateCachedBounds_IgnoredWhenControllerIsNull) {
+  PictureInPictureWindowManager* picture_in_picture_window_manager =
+      PictureInPictureWindowManager::GetInstance();
+
+  picture_in_picture_window_manager->ExitPictureInPicture();
+  EXPECT_EQ(nullptr, picture_in_picture_window_manager->GetWebContents());
+
+  // Verify that `UpdateCachedBounds()` does not crash when
+  // `pip_window_controller_` is null.
+  picture_in_picture_window_manager->UpdateCachedBounds(
+      gfx::Rect(10, 20, 100, 100), display::Display(1));
+}
+
+TEST_F(PictureInPictureWindowManagerTest,
+       UpdateCachedBounds_IgnoredWhenNotInDocumentPip) {
+  PictureInPictureWindowManager* picture_in_picture_window_manager =
+      PictureInPictureWindowManager::GetInstance();
+
+  picture_in_picture_window_manager->EnterVideoPictureInPicture(web_contents());
+  EXPECT_NE(nullptr, picture_in_picture_window_manager->GetWebContents());
+  EXPECT_EQ(nullptr, picture_in_picture_window_manager->GetChildWebContents());
+
+  // Verify that `UpdateCachedBounds()` does not crash when called while in
+  // Video PiP (where `GetChildWebContents()` is null).
+  picture_in_picture_window_manager->UpdateCachedBounds(
+      gfx::Rect(10, 20, 100, 100), display::Display(1));
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)

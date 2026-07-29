@@ -2,12 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/webui/diagnostics_ui/backend/common/routine_properties.h"
+
+#include "base/compiler_specific.h"
 
 namespace ash::diagnostics {
 
@@ -62,6 +59,12 @@ const RoutineProperties kRoutineProperties[] = {
      /*duration_seconds=*/1, healthd::DiagnosticRoutineEnum::kArcPing},
     {mojom::RoutineType::kArcDnsResolution, "ArcDnsResolutionResult",
      /*duration_seconds=*/1, healthd::DiagnosticRoutineEnum::kArcDnsResolution},
+    // GoogleServicesConnectivity bypasses cros_healthd (uses
+    // SystemRoutineControllerDelegate). healthd_type is kUnknown (unused)
+    // and duration_seconds is 0 (no cros_healthd polling).
+    {mojom::RoutineType::kGoogleServicesConnectivity,
+     "GoogleServicesConnectivityResult",
+     /*duration_seconds=*/0, healthd::DiagnosticRoutineEnum::kUnknown},
 };
 
 const size_t kRoutinePropertiesLength = std::size(kRoutineProperties);
@@ -79,7 +82,7 @@ uint32_t GetExpectedRoutineDurationInSeconds(mojom::RoutineType routine_type) {
 }
 
 const RoutineProperties& GetRoutineProperties(mojom::RoutineType routine_type) {
-  return kRoutineProperties[static_cast<size_t>(routine_type)];
+  return UNSAFE_TODO(kRoutineProperties[static_cast<size_t>(routine_type)]);
 }
 
 }  // namespace ash::diagnostics

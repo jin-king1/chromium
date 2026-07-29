@@ -24,6 +24,7 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/i18n/time_formatting.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/gtest_util.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
@@ -430,7 +431,7 @@ TEST_F(SeaPenWallpaperManagerTest, GetImageAndMetadataInvalidJson) {
   {
     const auto template_query = MakeTemplateQuery();
     // Create valid metadata dict.
-    base::Value::Dict query_dict = SeaPenQueryToDict(MakeTemplateQuery());
+    base::DictValue query_dict = SeaPenQueryToDict(MakeTemplateQuery());
 
     // Rename a necessary field to cause parsing failure.
     ASSERT_TRUE(query_dict.contains("user_visible_query_text"));

@@ -30,6 +30,8 @@
 
 #include "third_party/blink/renderer/core/exported/web_settings_impl.h"
 
+#include <optional>
+
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/platform/web_url.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -155,12 +157,13 @@ void WebSettingsImpl::SetAutoZoomFocusedEditableToLegibleScale(
       auto_zoom_focused_editable_to_legible_scale;
 }
 
-void WebSettingsImpl::SetTextAutosizingEnabled(bool enabled) {
-  dev_tools_emulator_->SetTextAutosizingEnabled(enabled);
+void WebSettingsImpl::SetTextSizeAdjustEnabled(bool enabled) {
+  settings_->SetTextSizeAdjustEnabled(enabled);
 }
 
+// TODO(pdr): Rename this OSTextScaleFactor.
 void WebSettingsImpl::SetAccessibilityFontScaleFactor(float font_scale_factor) {
-  settings_->SetAccessibilityFontScaleFactor(font_scale_factor);
+  dev_tools_emulator_->SetAccessibilityFontScaleFactor(font_scale_factor);
 }
 
 void WebSettingsImpl::SetAccessibilityTextSizeContrastFactor(
@@ -178,10 +181,6 @@ void WebSettingsImpl::SetAccessibilityPasswordValuesEnabled(bool enabled) {
 
 void WebSettingsImpl::SetAccessibilityFontWeightAdjustment(int size) {
   settings_->SetAccessibilityFontWeightAdjustment(size);
-}
-
-void WebSettingsImpl::SetDeviceScaleAdjustment(float device_scale_adjustment) {
-  dev_tools_emulator_->SetDeviceScaleAdjustment(device_scale_adjustment);
 }
 
 void WebSettingsImpl::SetDefaultTextEncodingName(const WebString& encoding) {
@@ -268,7 +267,7 @@ void WebSettingsImpl::SetShouldReuseGlobalForUnownedMainFrame(bool enabled) {
 }
 
 void WebSettingsImpl::SetPluginsEnabled(bool enabled) {
-  dev_tools_emulator_->SetPluginsEnabled(enabled);
+  settings_->SetPluginsEnabled(enabled);
 }
 
 void WebSettingsImpl::SetAvailablePointerTypes(int pointers) {
@@ -325,9 +324,19 @@ void WebSettingsImpl::SetAllowScriptsToCloseWindows(bool allow) {
   settings_->SetAllowScriptsToCloseWindows(allow);
 }
 
+void WebSettingsImpl::SetAllowUnrestrictedWindowFocus(bool allow) {
+  settings_->SetAllowUnrestrictedWindowFocus(allow);
+}
+
 void WebSettingsImpl::SetWideViewportQuirkEnabled(
     bool wide_viewport_quirk_enabled) {
   settings_->SetWideViewportQuirkEnabled(wide_viewport_quirk_enabled);
+}
+
+void WebSettingsImpl::SetScaleAllFontsIfNoMetaTextScaleTag(
+    bool scale_all_fonts_if_no_meta_text_scale_tag) {
+  settings_->SetScaleAllFontsIfNoMetaTextScaleTag(
+      scale_all_fonts_if_no_meta_text_scale_tag);
 }
 
 void WebSettingsImpl::SetUseWideViewport(bool use_wide_viewport) {
@@ -516,6 +525,10 @@ void WebSettingsImpl::SetHighlightAds(bool enabled) {
   settings_->SetHighlightAds(enabled);
 }
 
+void WebSettingsImpl::SetInspectorHighlightAds(bool enabled) {
+  settings_->SetInspectorHighlightAds(enabled);
+}
+
 void WebSettingsImpl::SetHyperlinkAuditingEnabled(bool enabled) {
   settings_->SetHyperlinkAuditingEnabled(enabled);
 }
@@ -540,16 +553,16 @@ void WebSettingsImpl::SetStrictMixedContentCheckingForPlugin(bool enabled) {
   settings_->SetStrictMixedContentCheckingForPlugin(enabled);
 }
 
-void WebSettingsImpl::SetStrictPowerfulFeatureRestrictions(bool enabled) {
-  settings_->SetStrictPowerfulFeatureRestrictions(enabled);
-}
-
 void WebSettingsImpl::SetStrictlyBlockBlockableMixedContent(bool enabled) {
   settings_->SetStrictlyBlockBlockableMixedContent(enabled);
 }
 
-void WebSettingsImpl::SetPasswordEchoEnabled(bool flag) {
-  settings_->SetPasswordEchoEnabled(flag);
+void WebSettingsImpl::SetPasswordEchoEnabledPhysical(bool flag) {
+  settings_->SetPasswordEchoEnabledPhysical(flag);
+}
+
+void WebSettingsImpl::SetPasswordEchoEnabledTouch(bool flag) {
+  settings_->SetPasswordEchoEnabledTouch(flag);
 }
 
 void WebSettingsImpl::SetPasswordEchoDurationInSeconds(
@@ -609,6 +622,10 @@ void WebSettingsImpl::SetWebAppScope(const WebString& scope) {
   settings_->SetWebAppScope(scope);
 }
 
+void WebSettingsImpl::SetIsInitialProfile(bool is_initial_profile) {
+  settings_->SetIsInitialProfile(is_initial_profile);
+}
+
 void WebSettingsImpl::SetPresentationRequiresUserGesture(bool required) {
   settings_->SetPresentationRequiresUserGesture(required);
 }
@@ -619,6 +636,10 @@ void WebSettingsImpl::SetEmbeddedMediaExperienceEnabled(bool enabled) {
 
 void WebSettingsImpl::SetImmersiveModeEnabled(bool enabled) {
   settings_->SetImmersiveModeEnabled(enabled);
+}
+
+void WebSettingsImpl::SetImmersiveVideoPlaybackEnabled(bool enabled) {
+  settings_->SetImmersiveVideoPlaybackEnabled(enabled);
 }
 
 void WebSettingsImpl::SetViewportEnabled(bool enabled) {
@@ -638,8 +659,8 @@ void WebSettingsImpl::SetTargetBlankImpliesNoOpenerEnabledWillBeRemoved(
   settings_->SetTargetBlankImpliesNoOpenerEnabledWillBeRemoved(enabled);
 }
 
-void WebSettingsImpl::SetAllowNonEmptyNavigatorPlugins(bool enabled) {
-  settings_->SetAllowNonEmptyNavigatorPlugins(enabled);
+void WebSettingsImpl::SetIgnorePermissionForDeviceChangedEvent(bool enabled) {
+  settings_->SetIgnorePermissionForDeviceChangedEvent(enabled);
 }
 
 void WebSettingsImpl::SetCaretBrowsingEnabled(bool enabled) {
@@ -789,6 +810,10 @@ void WebSettingsImpl::SetSelectionClipboardBufferAvailable(bool available) {
   settings_->SetSelectionClipboardBufferAvailable(available);
 }
 
+void WebSettingsImpl::SetMiddleClickPasteAllowed(bool allowed) {
+  settings_->SetMiddleClickPasteAllowed(allowed);
+}
+
 void WebSettingsImpl::SetAccessibilityIncludeSvgGElement(bool include) {
   settings_->SetAccessibilityIncludeSvgGElement(include);
 }
@@ -802,11 +827,18 @@ void WebSettingsImpl::SetModalContextMenu(bool is_available) {
   settings_->SetModalContextMenu(is_available);
 }
 
-void WebSettingsImpl::
-    SetRequireTransientActivationAndAuthorizationForSubAppsAPIs(
-        bool is_required) {
-  settings_->SetRequireTransientActivationAndAuthorizationForSubAppsAPI(
-      is_required);
+
+void WebSettingsImpl::SetRootScrollbarThemeColor(
+    std::optional<SkColor> theme_color) {
+  settings_->SetRootScrollbarThemeColor(theme_color);
+}
+
+void WebSettingsImpl::SetBatterySaverEnabled(bool enabled) {
+  settings_->SetBatterySaverEnabled(enabled);
+}
+
+void WebSettingsImpl::SetPreloadingDisabled(bool disabled) {
+  settings_->SetPreloadingDisabled(disabled);
 }
 
 }  // namespace blink

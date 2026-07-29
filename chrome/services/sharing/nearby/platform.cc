@@ -4,6 +4,7 @@
 
 #include "third_party/nearby/src/internal/platform/implementation/platform.h"
 
+#include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/thread_pool.h"
 #include "chrome/services/sharing/nearby/nearby_connections.h"
@@ -36,6 +37,7 @@
 #include "mojo/public/cpp/bindings/shared_remote.h"
 #include "third_party/nearby/src/internal/platform/implementation/atomic_boolean.h"
 #include "third_party/nearby/src/internal/platform/implementation/atomic_reference.h"
+#include "third_party/nearby/src/internal/platform/implementation/awdl.h"
 #include "third_party/nearby/src/internal/platform/implementation/ble.h"
 #include "third_party/nearby/src/internal/platform/implementation/ble_v2.h"
 #include "third_party/nearby/src/internal/platform/implementation/bluetooth_adapter.h"
@@ -174,6 +176,12 @@ ImplementationPlatform::CreateScheduledExecutor() {
 std::unique_ptr<AtomicUint32> ImplementationPlatform::CreateAtomicUint32(
     std::uint32_t initial_value) {
   return std::make_unique<chrome::AtomicUint32>(initial_value);
+}
+
+std::unique_ptr<AwdlMedium> ImplementationPlatform::CreateAwdlMedium() {
+  // This constructor is not supported by Chrome.
+  NOTIMPLEMENTED();
+  return nullptr;
 }
 
 std::unique_ptr<BluetoothAdapter>
@@ -376,7 +384,7 @@ std::unique_ptr<WifiLanMedium> ImplementationPlatform::CreateWifiLanMedium() {
 
   const mojo::SharedRemote<::sharing::mojom::MdnsManager>& mdns_manager =
       nearby_shared_remotes->mdns_manager;
-  if (features::IsNearbyMdnsEnabled() && !mdns_manager.is_bound()) {
+  if (!mdns_manager.is_bound()) {
     LOG(ERROR) << "MdnsManager not bound. Returning null WifiLan medium";
     return nullptr;
   }

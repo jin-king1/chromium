@@ -7,7 +7,7 @@
 
 #include <memory>
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "cc/layers/layer.h"
 
 namespace cc {
@@ -34,11 +34,9 @@ class PushPropertiesCountingLayer : public Layer {
 
  protected:
   // Layer implementation.
-  void PushDirtyPropertiesTo(
-      LayerImpl* layer,
-      uint8_t dirty_flag,
-      const CommitState& commit_state,
-      const ThreadUnsafeCommitState& unsafe_state) override;
+  void PushDirtyPropertiesTo(LayerImpl* layer,
+                             uint8_t dirty_flag,
+                             CommitState& commit_state) override;
 
  private:
   PushPropertiesCountingLayer();

@@ -5,11 +5,13 @@
 #ifndef CHROME_BROWSER_OPTIMIZATION_GUIDE_MODEL_VALIDATOR_KEYED_SERVICE_H_
 #define CHROME_BROWSER_OPTIMIZATION_GUIDE_MODEL_VALIDATOR_KEYED_SERVICE_H_
 
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/optimization_guide/core/optimization_guide_model_executor.h"
+#include "components/optimization_guide/core/model_execution/on_device_capability.h"
+#include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/proto/model_validation.pb.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -54,8 +56,7 @@ class ModelValidatorKeyedService : public KeyedService,
       const signin::PrimaryAccountChangeEvent& event_details) override;
 
   raw_ptr<Profile> profile_;
-  std::unique_ptr<OptimizationGuideModelExecutor::Session>
-      on_device_validation_session_;
+  std::unique_ptr<OnDeviceSession> on_device_validation_session_;
 
   base::ScopedObservation<signin::IdentityManager, ModelValidatorKeyedService>
       identity_manager_observation_{this};

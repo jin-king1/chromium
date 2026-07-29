@@ -4,22 +4,28 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import android.app.Activity;
 import android.content.Context;
 import android.view.LayoutInflater;
 import android.view.View;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
+import org.chromium.base.ApplicationStatus.ActivityStateListener;
+import org.chromium.base.CancelableRunnable;
 import org.chromium.base.lifetime.DestroyChecker;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiPrefs.BookmarkRowDisplayPref;
 import org.chromium.chrome.browser.commerce.PriceTrackingUtils;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
+import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
@@ -40,41 +46,47 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
 /** Coordinates the bottom-sheet saveflow. */
-public class BookmarkSaveFlowCoordinator {
+@NullMarked
+public class BookmarkSaveFlowCoordinator implements ActivityStateListener {
     private static final int AUTO_DISMISS_TIME_MS = 10000;
 
-    private final Context mContext;
+    private final Activity mActivity;
     private final PropertyModel mPropertyModel;
     private final PropertyModelChangeProcessor<PropertyModel, ? extends View, PropertyKey>
             mChangeProcessor;
     private final DestroyChecker mDestroyChecker;
     private final Profile mProfile;
 
-    private BottomSheetController mBottomSheetController;
-    private BookmarkSaveFlowBottomSheetContent mBottomSheetContent;
+    private final BottomSheetController mBottomSheetController;
+    private @Nullable BookmarkSaveFlowBottomSheetContent mBottomSheetContent;
     private BookmarkSaveFlowMediator mMediator;
     private View mBookmarkSaveFlowView;
-    private BookmarkModel mBookmarkModel;
-    private UserEducationHelper mUserEducationHelper;
+    private final BookmarkModel mBookmarkModel;
+    private final UserEducationHelper mUserEducationHelper;
     private boolean mClosedViaRunnable;
+    private @Nullable CancelableRunnable mAutoDismissTask;
 
     /**
-     * @param context The {@link Context} associated with this coordinator.
+     * @param activity The hosting {@link Activity}. The coordinator listens for this activity's
+     *     destruction to release its resources.
      * @param bottomSheetController Allows displaying content in the bottom sheet.
      * @param shoppingService Allows un/subscribing for product updates, used for price-tracking.
      * @param userEducationHelper A means of triggering IPH.
      * @param profile The current chrome profile.
      * @param identityManager The {@link IdentityManager} which supplies the account data.
+     * @param bookmarkManagerOpener Manaages opening bookmarkms.
+     * @param priceDropNotificationManager Manages price drop notifications.
      */
     public BookmarkSaveFlowCoordinator(
-            @NonNull Context context,
-            @NonNull BottomSheetController bottomSheetController,
-            @NonNull ShoppingService shoppingService,
-            @NonNull UserEducationHelper userEducationHelper,
-            @NonNull Profile profile,
-            @NonNull IdentityManager identityManager,
-            @NonNull BookmarkManagerOpener bookmarkManagerOpener) {
-        mContext = context;
+            Activity activity,
+            BottomSheetController bottomSheetController,
+            ShoppingService shoppingService,
+            UserEducationHelper userEducationHelper,
+            Profile profile,
+            IdentityManager identityManager,
+            BookmarkManagerOpener bookmarkManagerOpener,
+            PriceDropNotificationManager priceDropNotificationManager) {
+        mActivity = activity;
         mBottomSheetController = bottomSheetController;
         mUserEducationHelper = userEducationHelper;
         mBookmarkModel = BookmarkModel.getForProfile(profile);
@@ -84,7 +96,7 @@ public class BookmarkSaveFlowCoordinator {
 
         mPropertyModel = new PropertyModel(ImprovedBookmarkSaveFlowProperties.ALL_KEYS);
         mBookmarkSaveFlowView =
-                LayoutInflater.from(mContext)
+                LayoutInflater.from(mActivity)
                         .inflate(R.layout.improved_bookmark_save_flow, /* root= */ null);
         mChangeProcessor =
                 PropertyModelChangeProcessor.create(
@@ -95,24 +107,38 @@ public class BookmarkSaveFlowCoordinator {
         BookmarkImageFetcher bookmarkImageFetcher =
                 new BookmarkImageFetcher(
                         profile,
-                        context,
+                        activity,
                         mBookmarkModel,
                         ImageFetcherFactory.createImageFetcher(
                                 ImageFetcherConfig.DISK_CACHE_ONLY, mProfile.getProfileKey()),
-                        BookmarkUtils.getRoundedIconGenerator(
-                                mContext, BookmarkRowDisplayPref.VISUAL));
+                        BookmarkViewUtils.getRoundedIconGenerator(
+                                mActivity, BookmarkRowDisplayPref.VISUAL));
 
         mMediator =
                 new BookmarkSaveFlowMediator(
                         mBookmarkModel,
                         mPropertyModel,
-                        mContext,
+                        mActivity,
                         this::close,
                         shoppingService,
                         bookmarkImageFetcher,
                         mProfile,
                         identityManager,
-                        bookmarkManagerOpener);
+                        bookmarkManagerOpener,
+                        priceDropNotificationManager);
+
+        // Register for activity destruction so the coordinator (and its observer registration
+        // on the long-lived BookmarkModel via the mediator) is released when the activity dies.
+        ApplicationStatus.registerStateListenerForActivity(this, mActivity);
+    }
+
+    @Override
+    public void onActivityStateChange(Activity activity, @ActivityState int newState) {
+        // The bottom sheet's content destroy() is not called when the activity is torn down,
+        // so do our own cleanup here.
+        if (newState == ActivityState.DESTROYED) {
+            destroy();
+        }
     }
 
     /**
@@ -188,7 +214,7 @@ public class BookmarkSaveFlowCoordinator {
                                     new EmptyBottomSheetObserver() {
                                         @Override
                                         public void onSheetContentChanged(
-                                                BottomSheetContent newContent) {
+                                                @Nullable BottomSheetContent newContent) {
                                             if (newContent == mBottomSheetContent) {
                                                 showShoppingSaveFlowIph();
                                             }
@@ -223,11 +249,23 @@ public class BookmarkSaveFlowCoordinator {
     }
 
     private void setupAutodismiss() {
-        PostTask.postDelayedTask(TaskTraits.UI_USER_VISIBLE, this::close, AUTO_DISMISS_TIME_MS);
+        mAutoDismissTask = new CancelableRunnable(this::close);
+        PostTask.postDelayedTask(
+                TaskTraits.UI_USER_VISIBLE, mAutoDismissTask, AUTO_DISMISS_TIME_MS);
     }
 
+    @SuppressWarnings("NullAway")
     private void destroy() {
         mDestroyChecker.destroy();
+
+        ApplicationStatus.unregisterActivityStateListener(this);
+
+        // Cancel the auto-dismiss task so it stops retaining this coordinator (and the
+        // activity it transitively holds) via the static TaskRunnerImpl task queue.
+        if (mAutoDismissTask != null) {
+            mAutoDismissTask.cancel();
+            mAutoDismissTask = null;
+        }
 
         // The bottom sheet was closed by a means other than one of the edit actions.
         if (mClosedViaRunnable) {
@@ -254,9 +292,8 @@ public class BookmarkSaveFlowCoordinator {
             return mContentView;
         }
 
-        @Nullable
         @Override
-        public View getToolbarView() {
+        public @Nullable View getToolbarView() {
             return null;
         }
 
@@ -276,11 +313,6 @@ public class BookmarkSaveFlowCoordinator {
         }
 
         @Override
-        public int getPeekHeight() {
-            return BottomSheetContent.HeightMode.DISABLED;
-        }
-
-        @Override
         public float getFullHeightRatio() {
             return BottomSheetContent.HeightMode.WRAP_CONTENT;
         }
@@ -291,7 +323,7 @@ public class BookmarkSaveFlowCoordinator {
         }
 
         @Override
-        public @NonNull String getSheetContentDescription(Context context) {
+        public String getSheetContentDescription(Context context) {
             return context.getString(
                     R.string.bookmarks_save_flow_content_description, mMediator.getFolderName());
         }
@@ -303,12 +335,12 @@ public class BookmarkSaveFlowCoordinator {
 
         @Override
         public @StringRes int getSheetHalfHeightAccessibilityStringId() {
-            return R.string.bookmarks_save_flow_opened_half;
+            return R.string.bookmark_save_flow_title;
         }
 
         @Override
         public @StringRes int getSheetFullHeightAccessibilityStringId() {
-            return R.string.bookmarks_save_flow_opened_full;
+            return R.string.bookmark_save_flow_title;
         }
 
         @Override

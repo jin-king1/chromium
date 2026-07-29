@@ -8,13 +8,15 @@
 #include "chrome/browser/ash/app_list/app_sync_ui_state_factory.h"
 #include "chrome/browser/ash/app_list/app_sync_ui_state_observer.h"
 #include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/pending_extension_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "components/prefs/pref_service.h"
+#include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
+#include "components/sync/service/sync_user_settings.h"
 #include "components/user_manager/user_manager.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/pending_extension_manager.h"
 
 namespace {
 
@@ -117,7 +119,9 @@ void AppSyncUIState::SetStatus(Status status) {
 }
 
 void AppSyncUIState::CheckAppSync() {
-  if (!sync_service_ || !sync_service_->IsSyncFeatureEnabled()) {
+  if (!sync_service_ ||
+      !sync_service_->GetUserSettings()->GetSelectedOsTypes().Has(
+          syncer::UserSelectableOsType::kOsApps)) {
     return;
   }
 
@@ -129,7 +133,7 @@ void AppSyncUIState::CheckAppSync() {
     return;
   }
 
-  const bool synced = sync_service_->IsSyncFeatureActive();
+  const bool synced = sync_service_->GetActiveDataTypes().Has(syncer::APP_LIST);
   const bool has_pending_extension =
       extensions::PendingExtensionManager::Get(profile_)
           ->HasPendingExtensionFromSync();
@@ -147,6 +151,11 @@ void AppSyncUIState::OnMaxSyncingTimer() {
 void AppSyncUIState::OnStateChanged(syncer::SyncService* sync) {
   DCHECK(sync_service_);
   CheckAppSync();
+}
+
+void AppSyncUIState::OnSyncShutdown(syncer::SyncService* sync) {
+  // Unreachable, since this service is Shutdown() before the SyncService.
+  NOTREACHED();
 }
 
 void AppSyncUIState::OnExtensionLoaded(content::BrowserContext* browser_context,

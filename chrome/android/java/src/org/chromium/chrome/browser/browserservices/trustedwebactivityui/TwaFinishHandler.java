@@ -5,15 +5,16 @@
 package org.chromium.chrome.browser.browserservices.trustedwebactivityui;
 
 import android.app.Activity;
-import android.os.Build;
 import android.os.Bundle;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.WebApkExtras;
 import org.chromium.chrome.browser.customtabs.CustomTabsConnection;
 import org.chromium.chrome.browser.webapps.WebApkServiceClient;
 
 /** Applies TWA-specific logic when the activity is about to finish. */
+@NullMarked
 public class TwaFinishHandler {
     private static final String FINISH_TASK_COMMAND_NAME = "finishAndRemoveTask";
     private static final String SUCCESS_KEY = "success";
@@ -52,7 +53,7 @@ public class TwaFinishHandler {
 
     private boolean finishAndRemoveTask() {
         WebApkExtras webApkExtras = mIntentDataProvider.getWebApkExtras();
-        if (webApkExtras != null && Build.VERSION.SDK_INT >= 23) {
+        if (webApkExtras != null) {
             WebApkServiceClient.getInstance().finishAndRemoveTaskSdk23(mActivity, webApkExtras);
             return true;
         }

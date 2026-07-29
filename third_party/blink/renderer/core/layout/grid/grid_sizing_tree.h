@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/layout/grid/grid_data.h"
 #include "third_party/blink/renderer/core/layout/grid/grid_item.h"
+#include "third_party/blink/renderer/core/layout/grid_lanes/grid_lanes_item_group.h"
 
 namespace blink {
 
@@ -19,22 +20,22 @@ namespace blink {
 // relative to its parent's area and writing mode) and a pointer to the actual
 // `GridLayoutData` of the grid that directly contains the subgridded item.
 class SubgriddedItemData {
-  DISALLOW_NEW();
+  STACK_ALLOCATED();
 
  public:
   SubgriddedItemData() = default;
 
-  SubgriddedItemData(const GridItemData* item_data_in_parent,
-                     const GridLayoutData& parent_layout_data,
+  SubgriddedItemData(const GridItemData& item_data_in_parent,
+                     const GridLayoutData* parent_layout_data,
                      WritingMode parent_writing_mode)
-      : item_data_in_parent_(item_data_in_parent),
-        parent_layout_data_(&parent_layout_data),
+      : item_data_in_parent_(&item_data_in_parent),
+        parent_layout_data_(parent_layout_data),
         parent_writing_mode_(parent_writing_mode) {}
 
   explicit operator bool() const { return item_data_in_parent_ != nullptr; }
 
   const GridItemData* operator->() const {
-    DCHECK(item_data_in_parent_.Get());
+    DCHECK(item_data_in_parent_);
     return item_data_in_parent_;
   }
 
@@ -46,6 +47,8 @@ class SubgriddedItemData {
 
   const GridLayoutTrackCollection& Columns(
       std::optional<WritingMode> container_writing_mode = std::nullopt) const {
+    DCHECK(parent_layout_data_);
+
     return (!container_writing_mode ||
             IsParallelWritingMode(*container_writing_mode,
                                   parent_writing_mode_))
@@ -55,6 +58,8 @@ class SubgriddedItemData {
 
   const GridLayoutTrackCollection& Rows(
       std::optional<WritingMode> container_writing_mode = std::nullopt) const {
+    DCHECK(parent_layout_data_);
+
     return (!container_writing_mode ||
             IsParallelWritingMode(*container_writing_mode,
                                   parent_writing_mode_))
@@ -62,104 +67,148 @@ class SubgriddedItemData {
                : parent_layout_data_->Columns();
   }
 
-  const GridLayoutData& ParentLayoutData() const {
-    DCHECK(parent_layout_data_);
-    return *parent_layout_data_;
-  }
-
-  static const SubgriddedItemData& NoSubgriddedItemData() {
-    static SubgriddedItemData no_subgridded_item_data;
-    return no_subgridded_item_data;
-  }
-
-  void Trace(Visitor* visitor) const { visitor->Trace(item_data_in_parent_); }
+  const GridLayoutData* ParentLayoutData() const { return parent_layout_data_; }
 
  private:
-  Member<const GridItemData> item_data_in_parent_;
+  const GridItemData* item_data_in_parent_{nullptr};
   const GridLayoutData* parent_layout_data_{nullptr};
   WritingMode parent_writing_mode_{WritingMode::kHorizontalTb};
 };
 
+inline constexpr SubgriddedItemData kNoSubgriddedItemData;
+
 // This class represents a grid tree (see `grid_subtree.h`) and contains the
 // necessary data to perform the track sizing algorithm of its nested subgrids.
 class CORE_EXPORT GridSizingTree {
-  DISALLOW_NEW();
+  STACK_ALLOCATED();
 
  public:
-  struct GridTreeNode : public GarbageCollected<GridTreeNode> {
-   public:
-    void Trace(Visitor* visitor) const { visitor->Trace(grid_items); }
+  struct GridTreeNode {
+    DISALLOW_NEW();
 
-    GridItems& GetGridItems() const {
-      if (!grid_items) {
-        grid_items = MakeGarbageCollected<GridItems>();
-      }
-      return *grid_items;
+    void Trace(Visitor* visitor) const {
+      visitor->Trace(grid_items);
+      visitor->Trace(layout_data);
+      visitor->Trace(virtual_items);
     }
 
-    void SetGridItems(GridItems* new_grid_items) {
-      grid_items = new_grid_items;
-    }
-
-    GridLayoutData layout_data;
+    Member<GridItems> grid_items;
+    // Virtual items are used for grid-lanes as an optimization used to
+    // calculate track sizes before item placement [1].
+    //
+    // [1] https://drafts.csswg.org/css-grid-3/#track-sizing-performance
+    Member<VirtualItems> virtual_items;
+    // TODO(crbug.com/460491953): Make this Member<const GridLayoutData>
+    Member<GridLayoutData> layout_data;
     wtf_size_t subtree_size{1};
-
-   private:
-    mutable Member<GridItems> grid_items;
+    WritingMode writing_mode;
   };
 
   GridSizingTree() = default;
   GridSizingTree(GridSizingTree&&) = default;
+  GridSizingTree(const GridSizingTree&) = delete;
   GridSizingTree& operator=(GridSizingTree&&) = default;
   GridSizingTree& operator=(const GridSizingTree&) = delete;
 
-  GridTreeNode& CreateSizingData(const BlockNode& grid_node);
+  void AddToPreorderTraversal(const BlockNode& grid_node);
 
-  GridTreeNode& At(wtf_size_t index) const {
-    DCHECK_LT(index, tree_data_.size());
-    return *(tree_data_[index]);
+  void SetSizingNodeData(const BlockNode& grid_node,
+                         GridItems* grid_items,
+                         GridLayoutData* layout_data,
+                         VirtualItems* virtual_items = nullptr);
+
+  GridItems& GetGridItems(wtf_size_t index = 0) {
+    return *At(index).grid_items;
   }
 
-  GridSizingTree CopyForFragmentation() const;
+  GridItems& GetVirtualItems(wtf_size_t index = 0) {
+    DCHECK(At(index).virtual_items);
+    return *At(index).virtual_items->items;
+  }
+
+  const GridLanesItemGroups& GetVirtualItemGroups(wtf_size_t index = 0) const {
+    DCHECK(At(index).virtual_items);
+    return At(index).virtual_items->item_groups;
+  }
+
+  GridLayoutData& LayoutData(wtf_size_t index = 0) {
+    return *At(index).layout_data;
+  }
 
   // Creates a copy of the current grid geometry for the entire tree in a new
   // `GridLayoutTree` instance, which doesn't hold the grid items.
-  GridLayoutTreePtr FinalizeTree() const;
+  const GridLayoutTree* FinalizeTree() const;
 
-  wtf_size_t Size() const { return tree_data_.size(); }
-  GridTreeNode& TreeRootData() const { return At(0); }
-
-  wtf_size_t SubtreeSize(wtf_size_t index) const {
-    DCHECK_LT(index, tree_data_.size());
-    return tree_data_[index]->subtree_size;
-  }
-
-  void AddSubgriddedItemLookupData(SubgriddedItemData&& subgridded_item_data);
+  // Same as `FinalizeTree`, but only includes the subtree rooted at
+  // `subtree_root`. The returned `GridLayoutTree` is a fresh, standalone tree
+  // (the subtree's root is at index 0 in the returned tree).
+  const GridLayoutTree* FinalizeSubtreeAt(wtf_size_t subtree_root) const;
 
   SubgriddedItemData LookupSubgriddedItemData(
       const GridItemData& grid_item) const;
 
   wtf_size_t LookupSubgridIndex(const BlockNode& grid_node) const;
 
-  void Trace(Visitor* visitor) const {
-    visitor->Trace(subgrid_index_lookup_map_);
-    visitor->Trace(subgridded_item_data_lookup_map_);
-    visitor->Trace(tree_data_);
+  wtf_size_t Size() const { return tree_data_.size(); }
+
+  wtf_size_t SubtreeSize(wtf_size_t index) const {
+    return At(index).subtree_size;
+  }
+
+  bool HasSubgridWithIndefiniteStandaloneAxis() const {
+    return has_subgrid_with_indefinite_standalone_axis_;
+  }
+
+  void SetSubgridHasIndefiniteStandaloneAxis() {
+    has_subgrid_with_indefinite_standalone_axis_ = true;
+  }
+
+  // True if any grid item in the tree (at any depth) has a contribution that
+  // depends on the block-size of its grid area. This is aggregated as items are
+  // measured.
+  bool HasBlockSizeDependentGridItem() const {
+    return has_block_size_dependent_grid_item_;
+  }
+
+  void SetHasBlockSizeDependentGridItem() {
+    has_block_size_dependent_grid_item_ = true;
   }
 
  private:
+  struct SubgriddedItemIndices {
+    wtf_size_t item_index_in_parent;
+    wtf_size_t parent_grid_index;
+  };
+
+  GridTreeNode& At(wtf_size_t index) {
+    DCHECK_LT(index, tree_data_.size());
+    return tree_data_[index];
+  }
+
+  const GridTreeNode& At(wtf_size_t index) const {
+    DCHECK_LT(index, tree_data_.size());
+    return tree_data_[index];
+  }
+
   // Stores a subgrid's index in the grid sizing tree; this is useful when we
   // want to create a `GridSizingSubtree` for an arbitrary subgrid.
   HeapHashMap<Member<const LayoutBox>, wtf_size_t> subgrid_index_lookup_map_;
 
   // In order to correctly determine the available space of a subgridded item,
   // which might be measured by a different grid than its parent grid, this map
-  // stores the item's `SubgriddedItemData`, whose layout data should be used
+  // recovers the item's `SubgriddedItemData`, whose layout data should be used
   // to compute its span size within its parent grid's tracks.
-  HeapHashMap<Member<const LayoutBox>, SubgriddedItemData>
+  HeapHashMap<Member<const LayoutBox>, SubgriddedItemIndices>
       subgridded_item_data_lookup_map_;
 
-  HeapVector<Member<GridTreeNode>, 16> tree_data_;
+  HeapVector<GridTreeNode, 16> tree_data_;
+  bool tree_has_baselines_{false};
+
+  // True if any subgrid in the tree has an indefinite standalone-axis track.
+  bool has_subgrid_with_indefinite_standalone_axis_{false};
+
+  // True if any grid item in the tree depends on the block-size of its area.
+  bool has_block_size_dependent_grid_item_{false};
 };
 
 // This class represents a subtree in a `GridSizingTree` and provides seamless
@@ -170,10 +219,10 @@ class GridSizingSubtree : public GridSubtree<GridSizingTree> {
  public:
   GridSizingSubtree() = default;
 
-  explicit GridSizingSubtree(const GridSizingTree& sizing_tree,
+  explicit GridSizingSubtree(GridSizingTree* sizing_tree,
                              wtf_size_t subtree_root = 0)
-      : sizing_tree_(&sizing_tree) {
-    SetSubtreeRoot(sizing_tree, subtree_root);
+      : sizing_tree_(sizing_tree) {
+    SetSubtreeRoot(*sizing_tree, subtree_root);
   }
 
   GridSizingSubtree FirstChild() const {
@@ -200,10 +249,9 @@ class GridSizingSubtree : public GridSubtree<GridSizingTree> {
       const GridItemData& subgrid_data) const {
     DCHECK(subgrid_data.IsSubgrid());
 
-    const auto& sizing_tree = SizingTree();
     return GridSizingSubtree(
-        sizing_tree,
-        /*subtree_root=*/sizing_tree.LookupSubgridIndex(subgrid_data.node));
+        sizing_tree_,
+        /*subtree_root=*/SizingTree().LookupSubgridIndex(subgrid_data.node));
   }
 
   // This method is only intended to be used to validate that the given grid
@@ -213,30 +261,53 @@ class GridSizingSubtree : public GridSubtree<GridSizingTree> {
            sizing_tree_->LookupSubgridIndex(grid_node) == subtree_root_;
   }
 
-  GridItems& GetGridItems() const { return SubtreeRoot().GetGridItems(); }
-  GridLayoutData& LayoutData() const { return SubtreeRoot().layout_data; }
+  GridItems& GetGridItems() const {
+    return SizingTree().GetGridItems(subtree_root_);
+  }
+
+  GridItems& GetVirtualItems() const {
+    return SizingTree().GetVirtualItems(subtree_root_);
+  }
+
+  const GridLanesItemGroups& GetVirtualItemGroups() const {
+    return SizingTree().GetVirtualItemGroups(subtree_root_);
+  }
+
+  GridLayoutData& LayoutData() const {
+    return SizingTree().LayoutData(subtree_root_);
+  }
 
   GridSizingTrackCollection& SizingCollection(
       GridTrackSizingDirection track_direction) const {
-    return SubtreeRoot().layout_data.SizingCollection(track_direction);
+    return LayoutData().SizingCollection(track_direction);
+  }
+
+  // Finalizes the current subtree into a fresh `GridLayoutTree` that contains
+  // only this subtree's nodes (the subtree's root is at index 0). See
+  // `GridSizingTree::FinalizeSubtreeAt`.
+  const GridLayoutTree* FinalizeTree() const {
+    return SizingTree().FinalizeSubtreeAt(subtree_root_);
+  }
+
+  void SetSubgridHasIndefiniteStandaloneAxis() const {
+    SizingTree().SetSubgridHasIndefiniteStandaloneAxis();
+  }
+
+  void SetHasBlockSizeDependentGridItem() const {
+    SizingTree().SetHasBlockSizeDependentGridItem();
   }
 
  private:
-  GridSizingSubtree(const GridSizingTree* sizing_tree, GridSubtree subtree)
+  GridSizingSubtree(GridSizingTree* sizing_tree, GridSubtree subtree)
       : GridSubtree(std::move(subtree)), sizing_tree_(sizing_tree) {}
 
-  const GridSizingTree& SizingTree() const {
+  GridSizingTree& SizingTree() const {
     DCHECK(sizing_tree_);
     return *sizing_tree_;
   }
 
-  GridSizingTree::GridTreeNode& SubtreeRoot() const {
-    DCHECK(sizing_tree_);
-    return sizing_tree_->At(subtree_root_);
-  }
-
   // Pointer to the sizing tree shared by multiple subtree instances.
-  const GridSizingTree* sizing_tree_{nullptr};
+  GridSizingTree* sizing_tree_{nullptr};
 };
 
 inline constexpr GridSizingSubtree kNoGridSizingSubtree;

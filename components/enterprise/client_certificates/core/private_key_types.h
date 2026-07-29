@@ -23,7 +23,20 @@ enum class PrivateKeySource {
   // mechanism.
   kSoftwareKey = 1,
 
-  kMaxValue = kSoftwareKey
+  // Key created by the operating system that is not hardware-backed.
+  kOsSoftwareKey = 2,
+
+  // Key created by the Android StrongBox service.
+  kAndroidKey = 3,
+
+  // Hardware-backed (TPM) key managed by Kcer on ChromeOS.
+  kChromeOsHwKey = 4,
+
+  // Software key managed by Kcer on ChromeOS (hardware-backed generation
+  // unavailable, fell back to software).
+  kChromeOsSwKey = 5,
+
+  kMaxValue = kChromeOsSwKey
 };
 
 // Converts a `proto_key_source` from the proto values to the C++ enum values.

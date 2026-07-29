@@ -175,10 +175,6 @@ IN_PROC_BROWSER_TEST_F(FileManagerJsTest, Grid) {
   RunTestURL("foreground/js/ui/grid_unittest.js");
 }
 
-IN_PROC_BROWSER_TEST_F(FileManagerJsTest, InstallLinuxPackageDialogTest) {
-  RunTestURL("foreground/js/ui/install_linux_package_dialog_unittest.js");
-}
-
 IN_PROC_BROWSER_TEST_F(FileManagerJsTest, Id3Parser) {
   RunTestURL("foreground/js/metadata/id3_parser_unittest.js");
 }
@@ -429,6 +425,10 @@ IN_PROC_BROWSER_TEST_F(FileManagerJsTest, DirectoryTreeContainer) {
 
 IN_PROC_BROWSER_TEST_F(FileManagerJsTest, EntryUtils) {
   RunTestURL("common/js/entry_utils_unittest.js");
+}
+
+IN_PROC_BROWSER_TEST_F(FileManagerJsTest, DialogActionController) {
+  RunTestURL("foreground/js/dialog_action_controller_unittest.js");
 }
 
 // Rerun some of the tests above, using CrosComponents.

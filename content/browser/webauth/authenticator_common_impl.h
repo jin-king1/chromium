@@ -14,6 +14,7 @@
 
 #include "base/memory/weak_ptr.h"
 #include "base/types/strong_alias.h"
+#include "content/browser/webauth/authenticator_request_outcome_enums.h"
 #include "content/browser/webauth/client_data_json.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/authenticator_common.h"
@@ -45,7 +46,7 @@ namespace content {
 
 class BrowserContext;
 class RenderFrameHost;
-class WebAuthRequestSecurityChecker;
+class WebAuthRequestSecurityCheckerImpl;
 
 enum class RequestExtension;
 enum class AttestationErasureOption;
@@ -55,6 +56,7 @@ namespace client_capabilities {
 
 // This is the subset of client capabilities computed by the browser. See also
 // //third_party/blink/renderer/modules/credentialmanagement/public_key_credential.cc.
+inline constexpr char kConditionalCreate[] = "conditionalCreate";
 inline constexpr char kConditionalGet[] = "conditionalGet";
 inline constexpr char kHybridTransport[] = "hybridTransport";
 inline constexpr char kPasskeyPlatformAuthenticator[] =
@@ -62,6 +64,12 @@ inline constexpr char kPasskeyPlatformAuthenticator[] =
 inline constexpr char kUserVerifyingPlatformAuthenticator[] =
     "userVerifyingPlatformAuthenticator";
 inline constexpr char kRelatedOrigins[] = "relatedOrigins";
+inline constexpr char kImmediateGet[] = "immediateGet";
+inline constexpr char kAmbientGet[] = "ambientGet";
+inline constexpr char kSignalAllAcceptedCredentials[] =
+    "signalAllAcceptedCredentials";
+inline constexpr char kSignalCurrentUserDetails[] = "signalCurrentUserDetails";
+inline constexpr char kSignalUnknownCredential[] = "signalUnknownCredential";
 
 }  // namespace client_capabilities
 
@@ -78,36 +86,6 @@ class CONTENT_EXPORT AuthenticatorCommonImpl : public AuthenticatorCommon {
     kWebContents,
   };
 
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  enum class CredentialRequestResult {
-    kTimeout = 0,
-    kUserCancelled = 1,
-
-    kWinNativeSuccess = 2,
-    kWinNativeError = 3,
-
-    kTouchIDSuccess = 4,
-    kTouchIDError = 5,
-
-    kChromeOSSuccess = 6,
-    kChromeOSError = 7,
-
-    kPhoneSuccess = 8,
-    kPhoneError = 9,
-
-    kICloudKeychainSuccess = 10,
-    kICloudKeychainError = 11,
-
-    kEnclaveSuccess = 12,
-    kEnclaveError = 13,
-
-    kOtherSuccess = 14,
-    kOtherError = 15,
-
-    kMaxValue = kOtherError,
-  };
-
   // Creates a new AuthenticatorCommonImpl. Callers must ensure that this
   // instance outlives the RenderFrameHost.
   explicit AuthenticatorCommonImpl(RenderFrameHost* render_frame_host,
@@ -122,11 +100,12 @@ class CONTENT_EXPORT AuthenticatorCommonImpl : public AuthenticatorCommon {
   void MakeCredential(
       url::Origin caller_origin,
       blink::mojom::PublicKeyCredentialCreationOptionsPtr options,
+      blink::mojom::PaymentOptionsPtr payment_options,
       blink::mojom::Authenticator::MakeCredentialCallback callback) override;
   void GetCredential(
       url::Origin caller_origin,
-      blink::mojom::PublicKeyCredentialRequestOptionsPtr options,
-      blink::mojom::PaymentOptionsPtr payment,
+      blink::mojom::GetCredentialOptionsPtr options,
+      blink::mojom::PaymentOptionsPtr payment_options,
       blink::mojom::Authenticator::GetCredentialCallback callback) override;
   void IsUserVerifyingPlatformAuthenticatorAvailable(
       url::Origin caller_origin,
@@ -187,6 +166,7 @@ class CONTENT_EXPORT AuthenticatorCommonImpl : public AuthenticatorCommon {
       RequestKey request_key,
       url::Origin caller_origin,
       blink::mojom::PublicKeyCredentialCreationOptionsPtr options,
+      blink::mojom::PaymentOptionsPtr payment_options,
       bool is_cross_origin_iframe,
       blink::mojom::AuthenticatorStatus rp_id_validation_result);
   void ContinueMakeCredentialAfterBrowserPasskeysAvailabilityCheck(
@@ -199,7 +179,7 @@ class CONTENT_EXPORT AuthenticatorCommonImpl : public AuthenticatorCommon {
   void ContinueGetAssertionAfterRpIdCheck(
       RequestKey request_key,
       url::Origin caller_origin,
-      blink::mojom::PublicKeyCredentialRequestOptionsPtr options,
+      blink::mojom::GetCredentialOptionsPtr options,
       blink::mojom::PaymentOptionsPtr payment_options,
       bool is_cross_origin_iframe,
       blink::mojom::AuthenticatorStatus rp_id_validation_result);
@@ -284,8 +264,21 @@ class CONTENT_EXPORT AuthenticatorCommonImpl : public AuthenticatorCommon {
   // Begins a timeout at the beginning of a request.
   void BeginRequestTimeout(std::optional<base::TimeDelta> timeout);
 
-  // Runs when timer expires and cancels all issued requests to a U2fDevice.
+  // Called when a request times out. This is for options.timeout parameter.
   void OnTimeout();
+
+  // Begins a timeout at the beginning of an immediate mediation request.
+  void BeginImmediateRequestTimeout();
+
+  // Called when an immediate mediation request times out.
+  void OnImmediateTimeout();
+
+  // Cancels the immediate mediation timer when the UI is shown.
+  void CancelImmediateTimeout();
+
+  // Cancels the current request if it's an immediate mediation and no immediate
+  // mediation UI was shown.
+  void CancelRequestForImmediateMediation();
 
   // Cancels the currently pending request (if any) with the supplied status.
   void CancelWithStatus(blink::mojom::AuthenticatorStatus status);
@@ -362,9 +355,11 @@ class CONTENT_EXPORT AuthenticatorCommonImpl : public AuthenticatorCommon {
       blink::mojom::WebAuthnDOMExceptionDetailsPtr error,
       blink::mojom::GetAssertionAuthenticatorResponsePtr response);
 
-  void UpdateChallengeFromUrl(
-      ClientDataJsonParams params,
-      std::optional<base::span<const uint8_t>> challenge);
+  void GetPasswordOnlyCredential(
+      url::Origin caller_origin,
+      blink::mojom::GetCredentialOptionsPtr options,
+      blink::mojom::PaymentOptionsPtr payment_options,
+      blink::mojom::Authenticator::GetCredentialCallback callback);
 
   // Get an identifier for the current request. Callbacks that might span a
   // cancelation must hold one of these values to check whether they're still
@@ -375,7 +370,7 @@ class CONTENT_EXPORT AuthenticatorCommonImpl : public AuthenticatorCommon {
 
   const GlobalRenderFrameHostId render_frame_host_id_;
   const ServingRequestsFor serving_requests_for_;
-  const scoped_refptr<WebAuthRequestSecurityChecker> security_checker_;
+  const scoped_refptr<WebAuthRequestSecurityCheckerImpl> security_checker_;
 
   // These members hold state that spans different requests. All
   // request-specific state should go in `RequestState` to ensure that it's

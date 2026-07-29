@@ -7,9 +7,13 @@
 
 #import <UIKit/UIKit.h>
 
-@protocol ApplicationCommands;
+#import "base/memory/weak_ptr.h"
+
+@protocol SceneCommands;
 enum class ShareKitFlowOutcome;
 class TabGroup;
+
+typedef void (^ShareKitShouldUnshareGroupBlock)(BOOL shouldDelete);
 
 // Configuration object for managing a shared group.
 @interface ShareKitManageConfiguration : NSObject
@@ -21,16 +25,29 @@ class TabGroup;
 @property(nonatomic, copy) NSString* collabID;
 
 // Local tab group.
-@property(nonatomic, assign) const TabGroup* tabGroup;
+@property(nonatomic, assign) base::WeakPtr<const TabGroup> tabGroup;
 
 // The group image preview.
 @property(nonatomic, copy) UIImage* groupImage;
 
-// Application commands handler.
-@property(nonatomic, weak) id<ApplicationCommands> applicationHandler;
+// Scene commands handler.
+@property(nonatomic, weak) id<SceneCommands> sceneHandler;
+
+// Whether enterprise sharing is disabled.
+@property(nonatomic, assign) BOOL enterpriseSharingDisabled;
 
 // Executed when the manage flow ended.
 @property(nonatomic, copy) void (^completion)(ShareKitFlowOutcome outcome);
+
+// The completion block to be called when the user requests to delete the group,
+// to know if the deletion should proceed or not, providing an opportunity to
+// act before the collaboration group is deleted.
+@property(nonatomic, copy) void (^willUnshareGroupBlock)
+    (ShareKitShouldUnshareGroupBlock continuationBlock);
+
+// The completion block to be called when the collaboration group has been
+// successfully deleted.
+@property(nonatomic, copy) void (^didUnshareGroupBlock)(NSError* error);
 
 @end
 

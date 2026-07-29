@@ -7,32 +7,76 @@
 
 #import <UIKit/UIKit.h>
 
+#import <memory>
+
 #import "base/ios/block_types.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/transitions/tab_grid_transition_direction.h"
 
-@protocol TabGridTransitionLayoutProviding;
+@protocol TabGridCommands;
+@protocol TabGridTransitionContextProvider;
 
-// Transition types available.
-enum class TabGridTransitionType {
-  kNormal,
-  kReducedMotion,
-  kAnimationDisabled,
+// TabGrid transitions directions available.
+enum class TabGridTransitionDirection {
+  kFromTabGridToBrowser,
+  kFromBrowserToTabGrid,
 };
 
+@class LayoutGuideCenter;
+@class LayoutState;
 @class TabGridTransitionHandler;
+@protocol TabGridTransitionLayoutProviding;
+
+// Parameters for the initialization of the transition handler.
+struct TabGridTransitionHandlerInitParams {
+  TabGridTransitionDirection direction;
+  UIViewController<TabGridTransitionContextProvider>*
+      browser_layout_view_controller;
+  UIViewController* tab_grid_view_controller;
+  UIViewController* parent_view_controller;
+  // The view associated with the AppContent named guide.
+  UIView* app_content_view;
+  id<TabGridCommands> handler;
+
+  TabGridTransitionHandlerInitParams(
+      TabGridTransitionDirection direction,
+      UIViewController<TabGridTransitionContextProvider>*
+          browser_layout_view_controller,
+      UIViewController* tab_grid_view_controller,
+      UIViewController* parent_view_controller,
+      UIView* app_content_view,
+      id<TabGridCommands> handler)
+      : direction(direction),
+        browser_layout_view_controller(browser_layout_view_controller),
+        tab_grid_view_controller(tab_grid_view_controller),
+        parent_view_controller(parent_view_controller),
+        app_content_view(app_content_view),
+        handler(handler) {}
+
+  TabGridTransitionHandlerInitParams() = delete;
+};
 
 // Handler for the transitions between the TabGrid and the Browser.
 @interface TabGridTransitionHandler : NSObject
 
-// Creates the transition object based on the provided `transitionType`,
-// `direction`, `tabGridViewController` and `bvcContainerViewController`.
-- (instancetype)initWithTransitionType:(TabGridTransitionType)transitionType
-                             direction:(TabGridTransitionDirection)direction
-                 tabGridViewController:
-                     (UIViewController<TabGridTransitionLayoutProviding>*)
-                         tabGridViewController
-            bvcContainerViewController:
-                (UIViewController*)bvcContainerViewController
+// Creates a transition handler with full animations.
+- (instancetype)initWithCommonParams:
+                    (std::unique_ptr<TabGridTransitionHandlerInitParams>)params
+     tabGridTransitionLayoutProvider:
+         (id<TabGridTransitionLayoutProviding>)tabGridTransitionLayoutProvider
+            browserLayoutGuideCenter:
+                (LayoutGuideCenter*)browserLayoutGuideCenter
+                 isRegularBrowserNTP:(BOOL)isRegularBrowserNTP
+                           incognito:(BOOL)incognito
+                         layoutState:(LayoutState*)layoutState
+    NS_DESIGNATED_INITIALIZER;
+
+// Creates a transition handler with disabled animations (Reduced Motion).
+- (instancetype)initWithReducedMotionCommonParams:
+    (std::unique_ptr<TabGridTransitionHandlerInitParams>)params
+    NS_DESIGNATED_INITIALIZER;
+
+// Creates a transition handler with no animations.
+- (instancetype)initWithNoAnimationCommonParams:
+    (std::unique_ptr<TabGridTransitionHandlerInitParams>)params
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;

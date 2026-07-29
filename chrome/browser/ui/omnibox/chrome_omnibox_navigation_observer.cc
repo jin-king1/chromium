@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/omnibox/chrome_omnibox_navigation_observer.h"
 
+#include <optional>
+#include <string>
+
 #include "base/functional/bind.h"
 #include "base/trace_event/typed_macros.h"
 #include "chrome/browser/autocomplete/shortcuts_backend_factory.h"
@@ -16,6 +19,7 @@
 #include "components/omnibox/browser/shortcuts_backend.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
+#include "components/search_engines/template_url_starter_pack_data.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_details.h"
@@ -208,7 +212,7 @@ class ChromeOmniboxNavigationObserver::AlternativeNavigationURLLoader {
     // |this| may be deleted at this point.
   }
 
-  void OnURLLoadComplete(std::unique_ptr<std::string> body) {
+  void OnURLLoadComplete(std::optional<std::string> body) {
     int response_code = -1;
     if (loader_->ResponseInfo() && loader_->ResponseInfo()->headers) {
       response_code = loader_->ResponseInfo()->headers->response_code();
@@ -307,8 +311,7 @@ void ChromeOmniboxNavigationObserver::DidFinishNavigation(
 void ChromeOmniboxNavigationObserver::On404() {
   TemplateURLService* template_url_service =
       TemplateURLServiceFactory::GetForProfile(profile_);
-  const TemplateURL* template_url = match_.GetTemplateURL(
-      template_url_service, false /* allow_fallback_to_destination_host */);
+  const TemplateURL* template_url = match_.GetTemplateURL(template_url_service);
   // If the omnibox navigation was to a URL (and hence did not involve a
   // TemplateURL / search at all) or the invoked search engine has been
   // deleted or otherwise modified, doing nothing is the right thing.
@@ -319,7 +322,8 @@ void ChromeOmniboxNavigationObserver::On404() {
   // mess with it.
   if (template_url_service->ShowInDefaultList(template_url) ||
       !template_url->safe_for_autoreplace() ||
-      template_url->starter_pack_id() != 0) {
+      template_url->starter_pack_id() !=
+          template_url_starter_pack_data::StarterPackId::kNone) {
     return;
   }
   // This custom search engine is safe to delete.

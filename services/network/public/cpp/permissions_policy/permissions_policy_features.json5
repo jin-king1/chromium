@@ -3,6 +3,10 @@
   // features are defined here.
   // For more details on adding a new permissions policy, see:
   // https://chromium.googlesource.com/chromium/src/+/main/services/network/public/cpp/permissions_policy/README.md
+  //
+  // Any updates here should be paired with updates to PermissionPolicyFeature
+  // in third_party/blink/public/devtools_protocol/browser_protocol.pdl
+  //
   // TODO(yashard): Add all permissions policy features here.
 
   parameters: {
@@ -54,6 +58,24 @@
       valid_type: "list",
     },
 
+    // "default_value_behind_switch" specifies default_value override values
+    // based on different command-line switches set.
+    //
+    // When multiple switches are set, default_value correspond to the first
+    // switch in the list will be used, e.g.
+    //   default_value_behind_switch: [
+    //    ["A", "EnableForSelf"],
+    //    ["B", "EnableForAll"],
+    //   ]
+    // "EnableForSelf" will be used as default value when both switch A and B are set.
+    //
+    // Note: If a feature also has a default_value_behind_flag specified, that will
+    // take precedence, regardless of whether the flag is enabled.
+    default_value_behind_switch: {
+      default: [],
+      valid_type: "list",
+    },
+
     // "visibility" specifies which contexts a feature should be visible to. If
     // a features is not visibile to a document, it cannot be granted, but also
     // will not be exposed in `document.featurePolicy.features()`.
@@ -80,6 +102,7 @@
     }
   },
 
+  // LINT.IfChange(PermissionsPolicy)
   data: [
     {
       name: "Accelerometer",
@@ -97,10 +120,15 @@
       depends_on: ["SensorExtraClasses"],
     },
     {
-      name: "AttributionReporting",
-      permissions_policy_name: "attribution-reporting",
+      name: "AriaNotify",
+      permissions_policy_name: "aria-notify",
       feature_default: "EnableForAll",
-      depends_on: ["AttributionReporting"],
+      depends_on: ["AriaNotify"],
+    },
+    {
+      name: "Autofill",
+      permissions_policy_name: "autofill",
+      depends_on: ["Autofill"],
     },
     {
       name: "Autoplay",
@@ -192,7 +220,6 @@
       name: "ClientHintUAHighEntropyValues",
       permissions_policy_name: "ch-ua-high-entropy-values",
       feature_default: "EnableForAll",
-      depends_on: ["ClientHintUAHighEntropyValuesPermissionPolicy"],
     },
     {
       name: "ClientHintUAPlatform",
@@ -275,6 +302,16 @@
       depends_on: ["FetchLaterAPI"],
     },
     {
+      name: "DeviceAttributes",
+      permissions_policy_name: "device-attributes",
+      depends_on: ["DeviceAttributes"],
+    },
+    {
+      name: "DigitalCredentialsCreate",
+      permissions_policy_name: "digital-credentials-create",
+      depends_on: ["WebIdentityDigitalCredentialsCreation"],
+    },
+    {
       name: "DigitalCredentialsGet",
       permissions_policy_name: "digital-credentials-get",
       depends_on: ["WebIdentityDigitalCredentials"],
@@ -282,13 +319,6 @@
     {
       name: "DirectSockets",
       permissions_policy_name: "direct-sockets",
-      depends_on: ["DirectSockets"],
-      visibility: "IsolatedContext",
-    },
-    {
-      name: "DirectSocketsPrivate",
-      permissions_policy_name: "direct-sockets-private",
-      depends_on: ["DirectSockets"],
       visibility: "IsolatedContext",
     },
     {
@@ -313,15 +343,9 @@
       depends_on: ["FreezeFramesOnVisibility"],
     },
     {
-      name: "FencedUnpartitionedStorageRead",
-      permissions_policy_name: "fenced-unpartitioned-storage-read",
-      feature_default: "EnableForAll",
-      depends_on: ["FencedFramesLocalUnpartitionedDataAccess"],
-    },
-    {
       name: "FocusWithoutUserActivation",
       permissions_policy_name: "focus-without-user-activation",
-      feature_default: "EnableForSelf",
+      feature_default: "EnableForAll",
       depends_on: ["BlockingFocusWithoutUserActivation"],
     },
     {
@@ -365,13 +389,20 @@
       permissions_policy_name: "join-ad-interest-group",
       feature_default: "EnableForAll",
       depends_on: ["AdInterestGroupAPI"],
-      default_value_behind_flag: [
-        ["AdInterestGroupAPIRestrictedPolicyByDefault", "EnableForSelf"],
-      ],
     },
     {
       name: "KeyboardMap",
       permissions_policy_name: "keyboard-map",
+    },
+    {
+      name: "LanguageDetector",
+      permissions_policy_name: "language-detector",
+      depends_on: ["LanguageDetectionAPI"],
+    },
+    {
+      name: "LanguageModel",
+      permissions_policy_name: "language-model",
+      depends_on: ["AIPromptAPI"],
     },
     {
       name: "LocalFonts",
@@ -379,8 +410,38 @@
       depends_on: ["FontAccess"],
     },
     {
+      name: "LocalNetwork",
+      permissions_policy_name: "local-network",
+      default_value_behind_switch: [
+        ["LocalNetworkAccessPermissionsPolicyDefaultEnabled",
+        "EnableForAll"]
+      ],
+    },
+    {
+      name: "LocalNetworkAccess",
+      permissions_policy_name: "local-network-access",
+      depends_on: [ "LocalNetworkAccessPermissionPolicy" ],
+      default_value_behind_switch: [
+        ["LocalNetworkAccessPermissionsPolicyDefaultEnabled",
+         "EnableForAll"]
+      ],
+    },
+    {
+      name: "LoopbackNetwork",
+      permissions_policy_name: "loopback-network",
+      default_value_behind_switch: [
+        ["LocalNetworkAccessPermissionsPolicyDefaultEnabled",
+         "EnableForAll"]
+      ],
+    },
+    {
       name: "Magnetometer",
       permissions_policy_name: "magnetometer",
+    },
+    {
+      name: "ManualText",
+      permissions_policy_name: "manual-text",
+      depends_on: ["ManualText"],
     },
     {
       name: "MediaPlaybackWhileNotVisible",
@@ -398,20 +459,23 @@
       permissions_policy_name: "midi",
     },
     {
+      name: "MulticastInDirectSockets",
+      permissions_policy_name: "direct-sockets-multicast",
+      visibility: "IsolatedContext",
+    },
+    {
+      name: "OnDeviceSpeechRecognition",
+      permissions_policy_name: "on-device-speech-recognition",
+      depends_on: ["OnDeviceWebSpeechAvailable"],
+    },
+    {
       name: "OTPCredentials",
       permissions_policy_name: "otp-credentials",
       depends_on: ["WebOTPAssertionFeaturePolicy"],
     },
     {
-      name: "PartitionedPopins",
-      permissions_policy_name: "popins",
-      feature_default: "EnableForSelf",
-      depends_on: ["PartitionedPopins"],
-    },
-    {
       name: "Payment",
       permissions_policy_name: "payment",
-      depends_on: ["PaymentRequest"],
     },
     {
       name: "PictureInPicture",
@@ -439,13 +503,21 @@
       permissions_policy_name: "publickey-credentials-get",
     },
     {
+      name: "RecordAdAuctionEvents",
+      permissions_policy_name: "record-ad-auction-events",
+      feature_default: "EnableForAll",
+      depends_on: ["FledgeClickiness"],
+    },
+    {
+      name: "Rewriter",
+      permissions_policy_name: "rewriter",
+      depends_on: ["AIRewriterAPI"],
+    },
+    {
       name: "RunAdAuction",
       permissions_policy_name: "run-ad-auction",
       feature_default: "EnableForAll",
-      depends_on: ["Fledge"],
-      default_value_behind_flag: [
-        ["AdInterestGroupAPIRestrictedPolicyByDefault", "EnableForSelf"],
-      ],
+      depends_on: ["AdInterestGroupAPI"],
     },
     {
       name: "ScreenWakeLock",
@@ -457,11 +529,6 @@
       permissions_policy_name: "serial",
       depends_on: ["Serial"],
       privacy_sensitive: true,
-    },
-    {
-      name: "SharedAutofill",
-      permissions_policy_name: "shared-autofill",
-      depends_on: ["SharedAutofill"],
     },
     {
       name: "SharedStorage",
@@ -494,13 +561,23 @@
     {
       name: "SubApps",
       permissions_policy_name: "sub-apps",
-      depends_on: ["DesktopPWAsSubApps"],
+      depends_on: ["SubApps"],
       visibility: "IsolatedContext",
+    },
+    {
+      name: "Summarizer",
+      permissions_policy_name: "summarizer",
+      depends_on: ["AISummarizationAPI"],
     },
     {
       name: "SyncXHR",
       feature_default: "EnableForAll",
       permissions_policy_name: "sync-xhr",
+    },
+    {
+      name: "Translator",
+      permissions_policy_name: "translator",
+      depends_on: ["TranslationAPI"],
     },
     {
       name: "TrustTokenRedemption",
@@ -539,6 +616,17 @@
       depends_on: ["WebAppInstallation"],
     },
     {
+      name: "Tools",
+      permissions_policy_name: "tools",
+      depends_on: ["WebMCP"],
+      feature_default: "EnableForSelf",
+    },
+    {
+      name: "WebNN",
+      permissions_policy_name: "webnn",
+      depends_on: ["MachineLearningNeuralNetwork"],
+    },
+    {
       name: "WebPrinting",
       permissions_policy_name: "web-printing",
       depends_on: ["WebPrinting"],
@@ -558,5 +646,11 @@
       name: "WindowManagement",
       permissions_policy_name: "window-management",
     },
+    {
+      name: "Writer",
+      permissions_policy_name: "writer",
+      depends_on: ["AIWriterAPI"],
+    },
   ],
+  // LINT.ThenChange(//third_party/blink/public/devtools_protocol/domains/Page.pdl:PermissionsPolicyFeature)
 }

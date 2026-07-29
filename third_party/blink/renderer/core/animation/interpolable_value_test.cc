@@ -15,6 +15,7 @@
 #include "third_party/blink/renderer/core/animation/transition_interpolation.h"
 #include "third_party/blink/renderer/core/css/css_to_length_conversion_data.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
+#include "third_party/blink/renderer/core/css/parser/css_parser_local_context.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_token_stream.h"
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
@@ -30,15 +31,19 @@ class AnimationInterpolableValueTest : public testing::Test {
     // suffices for this, and also means we can ignore the AnimatableValues for
     // the compositor (as z-index isn't compositor-compatible).
     PropertyHandle property_handle(GetCSSPropertyZIndex());
-    CSSNumberInterpolationType interpolation_type(property_handle);
+    CSSNumberInterpolationType* interpolation_type(
+        MakeGarbageCollected<CSSNumberInterpolationType>(property_handle));
     InterpolationValue start(MakeGarbageCollected<InterpolableNumber>(a));
     InterpolationValue end(MakeGarbageCollected<InterpolableNumber>(b));
-    TransitionInterpolation* i = MakeGarbageCollected<TransitionInterpolation>(
-        property_handle, interpolation_type, std::move(start), std::move(end),
-        nullptr, nullptr);
+    TransitionInterpolation* interpolation =
+        MakeGarbageCollected<TransitionInterpolation>(
+            property_handle, interpolation_type, std::move(start),
+            std::move(end), nullptr, nullptr);
 
-    i->Interpolate(0, progress);
-    TypedInterpolationValue* interpolated_value = i->GetInterpolatedValue();
+    interpolation->Interpolate(0, progress,
+                               EffectModel::kIterationCompositeReplace);
+    TypedInterpolationValue* interpolated_value =
+        interpolation->GetInterpolatedValue();
     EXPECT_TRUE(interpolated_value);
     CSSToLengthConversionData length_resolver(/*element=*/nullptr);
     return To<InterpolableNumber>(interpolated_value->GetInterpolableValue())
@@ -190,11 +195,13 @@ TEST_F(AnimationInterpolableValueTest, InterpolableNumberAsExpression) {
   for (const auto& test_case : test_cases) {
     CSSParserTokenStream stream(test_case.input);
 
+    CSSParserLocalContext local_context =
+        CSSParserLocalContext::CreateWithoutPropertyForTest();
     // Test expression evaluation.
     const CSSMathExpressionNode* expression =
         CSSMathExpressionNode::ParseMathFunction(
-            CSSValueID::kCalc, stream, *context, Flags({AllowPercent}),
-            kCSSAnchorQueryTypesNone);
+            CSSValueID::kCalc, stream, *context, local_context,
+            Flags({AllowPercent}), kCSSAnchorQueryTypesNone);
     InterpolableNumber* number = nullptr;
     if (auto* numeric_literal =
             DynamicTo<CSSMathExpressionNumericLiteral>(expression)) {
@@ -226,8 +233,8 @@ TEST_F(AnimationInterpolableValueTest, InterpolableNumberAsExpression) {
     CSSParserTokenStream target_stream(test_case.interpolation_input);
     const CSSMathExpressionNode* target_expression =
         CSSMathExpressionNode::ParseMathFunction(
-            CSSValueID::kCalc, target_stream, *context, Flags({AllowPercent}),
-            kCSSAnchorQueryTypesNone);
+            CSSValueID::kCalc, target_stream, *context, local_context,
+            Flags({AllowPercent}), kCSSAnchorQueryTypesNone);
     InterpolableNumber* target = nullptr;
     if (auto* numeric_literal =
             DynamicTo<CSSMathExpressionNumericLiteral>(target_expression)) {

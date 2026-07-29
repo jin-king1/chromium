@@ -5,11 +5,13 @@
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/test/test_widget_builder.h"
 #include "ui/aura/window.h"
+#include "ui/views/test/test_widget_builder.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
+
+using chromeos::AppType;
 
 using WindowParentingControllerTest = AshTestBase;
 
@@ -17,7 +19,7 @@ using WindowParentingControllerTest = AshTestBase;
 // transient parent.
 TEST_F(WindowParentingControllerTest, TransientParent) {
   // Normal window.
-  auto window = CreateAppWindow();
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP);
 
   // Move the window to a container that isn't a default container.
   aura::Window* shelf = Shell::GetContainer(Shell::GetPrimaryRootWindow(),
@@ -26,7 +28,7 @@ TEST_F(WindowParentingControllerTest, TransientParent) {
 
   // Transient.
   std::unique_ptr<views::Widget> transient_widget =
-      TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetShow(true)
           .SetParent(window.get())
           .BuildOwnsNativeWidget();

@@ -14,9 +14,10 @@
 #include "base/cpu.h"
 #include "base/files/file_path.h"
 #include "base/path_service.h"
-#include "base/scoped_native_library.h"
 #include "base/strings/string_util.h"
 #include "base/system/sys_info.h"
+#include "base/threading/scoped_thread_priority.h"
+#include "base/win/delayload_helpers.h"
 #include "base/win/registry.h"
 #include "base/win/windows_version.h"
 #include "build/build_config.h"
@@ -85,23 +86,20 @@ bool IsUEFISecureBootCapable() {
 }
 
 bool IsTPM20Supported() {
-  // Using dynamic loading instead of using linker support for delay
-  // loading to prevent failed loads being treated as a fatal failure which
-  // can happen in rare cases due to missing or corrupted DLL file.
-  ScopedNativeLibrary tbs_library(LoadSystemLibrary(L"tbs.dll"));
-  if (!tbs_library.is_valid()) {
+  static const bool is_tbs_availabe = [] {
+    SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
+
+    // Resolve all delay-loaded imports for tbs.dll on the first call to
+    // prevent failed loads being treated as a fatal failure later, which
+    // can happen in rare cases due to missing or corrupted DLL file.
+    return LoadAllImportsForDll("tbs.dll").value_or(false);
+  }();
+
+  if (!is_tbs_availabe) {
     return false;
   }
-
-  decltype(Tbsi_GetDeviceInfo)* tbsi_get_device_info_proc =
-      reinterpret_cast<decltype(Tbsi_GetDeviceInfo)*>(
-          tbs_library.GetFunctionPointer("Tbsi_GetDeviceInfo"));
-  if (!tbsi_get_device_info_proc) {
-    return false;
-  }
-
   TPM_DEVICE_INFO tpm_info{};
-  TBS_RESULT result = tbsi_get_device_info_proc(sizeof(tpm_info), &tpm_info);
+  TBS_RESULT result = ::Tbsi_GetDeviceInfo(sizeof(tpm_info), &tpm_info);
   return result == TBS_SUCCESS && tpm_info.tpmVersion >= TPM_VERSION_20;
 }
 
@@ -113,7 +111,9 @@ bool HardwareEvaluationResult::IsEligible() const {
 
 HardwareEvaluationResult EvaluateWin11HardwareRequirements() {
   static constexpr int64_t kMinTotalDiskSpace = 64 * 1024 * 1024;
-  static constexpr uint64_t kMinTotalPhysicalMemory = 4 * 1024 * 1024;
+  // TODO(crbug.com/429140103): This was migrated as-is to 4MiB in ByteSize but
+  // the legacy code potentially intended 4GiB, needs investigation.
+  static constexpr ByteSize kMinTotalPhysicalMemory = MiBU(4);
 
   static const HardwareEvaluationResult evaluate_win11_upgrade_eligibility =
       [] {
@@ -123,13 +123,13 @@ HardwareEvaluationResult EvaluateWin11HardwareRequirements() {
             CPU(), OSInfo::GetInstance()->processor_vendor_name());
 
         result.memory =
-            SysInfo::AmountOfPhysicalMemory() >= kMinTotalPhysicalMemory;
+            SysInfo::AmountOfTotalPhysicalMemory() >= kMinTotalPhysicalMemory;
 
         FilePath system_path;
-        result.disk =
-            PathService::Get(DIR_SYSTEM, &system_path) &&
-            SysInfo::AmountOfTotalDiskSpace(
-                FilePath(system_path.GetComponents()[0])) >= kMinTotalDiskSpace;
+        result.disk = PathService::Get(DIR_SYSTEM, &system_path) &&
+                      SysInfo::AmountOfTotalDiskSpace(
+                          FilePath(system_path.GetComponents()[0]))
+                              .value_or(-1) >= kMinTotalDiskSpace;
 
         result.firmware = IsUEFISecureBootCapable();
 

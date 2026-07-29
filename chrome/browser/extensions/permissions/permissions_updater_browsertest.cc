@@ -2,14 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/extensions/permissions/permissions_updater.h"
+#include "extensions/browser/permissions/permissions_updater.h"
 
-#include "chrome/browser/extensions/extension_platform_browsertest.h"
-#include "chrome/browser/extensions/permissions/permissions_test_util.h"
+#include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/profiles/profile.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/permissions/permissions_test_util.h"
 #include "extensions/browser/script_injection_tracker.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handlers/permissions_parser.h"
 #include "extensions/common/permissions/permissions_data.h"
@@ -19,9 +21,11 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
 namespace extensions {
 
-class PermissionsUpdaterBrowserTest : public ExtensionPlatformBrowserTest {
+class PermissionsUpdaterBrowserTest : public ExtensionBrowserTest {
  public:
   PermissionsUpdaterBrowserTest() = default;
   PermissionsUpdaterBrowserTest(const PermissionsUpdaterBrowserTest&) = delete;
@@ -30,18 +34,15 @@ class PermissionsUpdaterBrowserTest : public ExtensionPlatformBrowserTest {
   ~PermissionsUpdaterBrowserTest() override = default;
 
   void SetUpOnMainThread() override {
-    ExtensionPlatformBrowserTest::SetUpOnMainThread();
+    ExtensionBrowserTest::SetUpOnMainThread();
 
     host_resolver()->AddRule("*", "127.0.0.1");
     content::SetupCrossSiteRedirector(embedded_test_server());
   }
 };
 
-#if !BUILDFLAG(IS_ANDROID)
 // Tests that updating the permissions of a disabled extension doesn't update
 // the renderer.
-// TODO(crbug.com/391921606): Port to desktop Android after chrome.scripting
-// API is ported.
 IN_PROC_BROWSER_TEST_F(PermissionsUpdaterBrowserTest,
                        UpdatePermissions_DisabledExtension) {
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -117,6 +118,5 @@ IN_PROC_BROWSER_TEST_F(PermissionsUpdaterBrowserTest,
   EXPECT_FALSE(ScriptInjectionTracker::DidProcessRunContentScriptFromExtension(
       *web_contents->GetPrimaryMainFrame()->GetProcess(), extension->id()));
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace extensions

@@ -14,10 +14,10 @@
 #include "base/compiler_specific.h"
 #include "base/debug/alias.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/sequence_token.h"
 #include "base/strings/string_util.h"
@@ -31,7 +31,8 @@
 #include "base/threading/sequence_local_storage_map.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
+#include "base/tracing/protos/chrome_track_event.pbzero.h"
 #include "base/values.h"
 #include "build/build_config.h"
 
@@ -39,10 +40,8 @@ namespace base::internal {
 
 namespace {
 
-#if BUILDFLAG(ENABLE_BASE_TRACING)
 using perfetto::protos::pbzero::ChromeThreadPoolTask;
 using perfetto::protos::pbzero::ChromeTrackEvent;
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
 
 constexpr const char* kExecutionModeString[] = {"parallel", "sequenced",
                                                 "single thread", "job"};
@@ -59,7 +58,6 @@ bool HasLogBestEffortTasksSwitch() {
              switches::kLogBestEffortTasks);
 }
 
-#if BUILDFLAG(ENABLE_BASE_TRACING)
 ChromeThreadPoolTask::Priority TaskPriorityToProto(TaskPriority priority) {
   switch (priority) {
     case TaskPriority::BEST_EFFORT:
@@ -96,7 +94,6 @@ ChromeThreadPoolTask::ShutdownBehavior ShutdownBehaviorToProto(
       return ChromeThreadPoolTask::SHUTDOWN_BEHAVIOR_BLOCK_SHUTDOWN;
   }
 }
-#endif  //  BUILDFLAG(ENABLE_BASE_TRACING)
 
 // If this is greater than 0 on a given thread, it will ignore the DCHECK which
 // prevents posting BLOCK_SHUTDOWN tasks after shutdown. There are cases where
@@ -323,7 +320,7 @@ bool TaskTracker::WillPostTask(Task* task,
 }
 
 bool TaskTracker::WillPostTaskNow(const Task& task,
-                                  TaskPriority priority) const {
+                                  ThreadType thread_type) const {
   // Delayed tasks's TaskShutdownBehavior is implicitly capped at
   // SKIP_ON_SHUTDOWN. i.e. it cannot BLOCK_SHUTDOWN, TaskTracker will not wait
   // for a delayed task in a BLOCK_SHUTDOWN TaskSource and will also skip
@@ -333,8 +330,8 @@ bool TaskTracker::WillPostTaskNow(const Task& task,
   }
 
   if (has_log_best_effort_tasks_switch_ &&
-      priority == TaskPriority::BEST_EFFORT) {
-    // A TaskPriority::BEST_EFFORT task is being posted.
+      thread_type == ThreadType::kBackground) {
+    // A ThreadType::kBackground task is being posted.
     LOG(INFO) << task.posted_from.ToString();
   }
   return true;
@@ -353,7 +350,7 @@ RegisteredTaskSource TaskTracker::RegisterTaskSource(
   return RegisteredTaskSource(std::move(task_source), this);
 }
 
-bool TaskTracker::CanRunPriority(TaskPriority priority) const {
+bool TaskTracker::CanRunThreadType(ThreadType thread_type) const {
   auto can_run_policy = can_run_policy_.load();
 
   if (can_run_policy == CanRunPolicy::kAll) {
@@ -361,7 +358,7 @@ bool TaskTracker::CanRunPriority(TaskPriority priority) const {
   }
 
   if (can_run_policy == CanRunPolicy::kForegroundOnly &&
-      priority >= TaskPriority::USER_VISIBLE) {
+      thread_type > ThreadType::kBackground) {
     return true;
   }
 
@@ -377,11 +374,13 @@ RegisteredTaskSource TaskTracker::RunAndPopNextTask(
   // Run the next task in |task_source|.
   std::optional<Task> task;
   TaskTraits traits;
+  ThreadType thread_type;
   {
     auto transaction = task_source->BeginTransaction();
     task = should_run_tasks ? task_source.TakeTask(&transaction)
                             : task_source.Clear(&transaction);
     traits = transaction.traits();
+    thread_type = transaction.thread_type();
   }
 
   if (task) {
@@ -391,7 +390,7 @@ RegisteredTaskSource TaskTracker::RunAndPopNextTask(
     }
 
     // Run the |task| (whether it's a worker task or the Clear() closure).
-    RunTask(std::move(task.value()), task_source.get(), traits);
+    RunTask(std::move(task.value()), task_source.get(), traits, thread_type);
   }
   if (should_run_tasks) {
     AfterRunTask(task_source->shutdown_behavior());
@@ -424,7 +423,8 @@ void TaskTracker::EndFizzlingBlockShutdownTasks() {
 
 void TaskTracker::RunTask(Task task,
                           TaskSource* task_source,
-                          const TaskTraits& traits) {
+                          const TaskTraits& traits,
+                          ThreadType thread_type) {
   DCHECK(task_source);
 
   const auto environment = task_source->GetExecutionEnvironment();
@@ -465,6 +465,7 @@ void TaskTracker::RunTask(Task task,
                              TaskSourceExecutionMode::kSingleThread);
     ScopedSetTaskPriorityForCurrentThread
         scoped_set_task_priority_for_current_thread(traits.priority());
+    internal::CurrentTaskImportanceOverride thread_type_override(thread_type);
 
     // Local storage map used if none is provided by |environment|.
     std::optional<SequenceLocalStorageMap> local_storage_map;
@@ -636,7 +637,6 @@ void TaskTracker::EmitThreadPoolTraceEventMetadata(perfetto::EventContext& ctx,
                                                    const TaskTraits& traits,
                                                    TaskSource* task_source,
                                                    const SequenceToken& token) {
-#if BUILDFLAG(ENABLE_BASE_TRACING)
   if (TRACE_EVENT_CATEGORY_ENABLED("scheduler.flow")) {
     if (token.IsValid()) {
       ctx.event()->add_flow_ids(reinterpret_cast<uint64_t>(this) ^
@@ -657,7 +657,6 @@ void TaskTracker::EmitThreadPoolTraceEventMetadata(perfetto::EventContext& ctx,
       task->set_sequence_token(token.ToInternalValue());
     }
   }
-#endif  //  BUILDFLAG(ENABLE_BASE_TRACING)
 }
 
 NOINLINE void TaskTracker::RunContinueOnShutdown(Task& task,

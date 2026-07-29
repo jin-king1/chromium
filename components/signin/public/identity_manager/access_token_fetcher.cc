@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "components/signin/public/base/consent_level.h"
@@ -16,59 +17,80 @@
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
-namespace signin {
+namespace {
 
-BASE_FEATURE(kRestrictSignoutAccessTokenFetch,
-             "RestrictSignoutAccessTokenFetch",
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#else
-             base::FEATURE_DISABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+// LINT.IfChange(ErrorToString)
+std::string ErrorToString(GoogleServiceAuthError::State error_state) {
+  switch (error_state) {
+    case GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS:
+      return "InvalidGaiaCredentials";
+    case GoogleServiceAuthError::ACCOUNT_NOT_FOUND:
+      return "AccountNotFound";
+    case GoogleServiceAuthError::CONNECTION_FAILED:
+      return "ConnectionFailed";
+    case GoogleServiceAuthError::SERVICE_UNAVAILABLE:
+      return "ServiceUnavailable";
+    case GoogleServiceAuthError::REQUEST_CANCELED:
+      return "RequestCanceled";
+    case GoogleServiceAuthError::UNEXPECTED_SERVICE_RESPONSE:
+      return "UnexpectedServiceResponse";
+    case GoogleServiceAuthError::SERVICE_ERROR:
+      return "ServiceError";
+    case GoogleServiceAuthError::SCOPE_LIMITED_UNRECOVERABLE_ERROR:
+      return "ScopeLimitedUnrecoverableError";
+    case GoogleServiceAuthError::CHALLENGE_RESPONSE_REQUIRED:
+      return "ChallengeResponseRequired";
+    case GoogleServiceAuthError::DEVICE_MANAGEMENT_ERROR:
+      return "DeviceManagementError";
+    default:
+      NOTREACHED() << "Unexpected error state: " << error_state;
+  }
+}
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/histograms.xml:AccessTokenFetchFailureError)
+
+}  // namespace
+
+namespace signin {
 
 AccessTokenFetcher::AccessTokenFetcher(
     const CoreAccountId& account_id,
-    const std::string& oauth_consumer_name,
+    OAuthConsumerId oauth_consumer_id,
+    const OAuthConsumer& oauth_consumer,
     ProfileOAuth2TokenService* token_service,
     PrimaryAccountManager* primary_account_manager,
-    const ScopeSet& scopes,
     TokenCallback callback,
     Mode mode,
-    bool require_sync_consent_for_scope_verification,
     Source token_source)
     : AccessTokenFetcher(account_id,
-                         oauth_consumer_name,
+                         oauth_consumer_id,
+                         oauth_consumer,
                          token_service,
                          primary_account_manager,
                          /*url_loader_factory=*/nullptr,
-                         scopes,
                          std::move(callback),
                          mode,
-                         require_sync_consent_for_scope_verification,
                          token_source) {}
 
 AccessTokenFetcher::AccessTokenFetcher(
     const CoreAccountId& account_id,
-    const std::string& oauth_consumer_name,
+    OAuthConsumerId oauth_consumer_id,
+    const OAuthConsumer& oauth_consumer,
     ProfileOAuth2TokenService* token_service,
     PrimaryAccountManager* primary_account_manager,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    const ScopeSet& scopes,
     TokenCallback callback,
     Mode mode,
-    bool require_sync_consent_for_scope_verification,
     Source token_source)
-    : OAuth2AccessTokenManager::Consumer(oauth_consumer_name),
+    : OAuth2AccessTokenManager::Consumer(oauth_consumer.GetName()),
       account_id_(account_id),
       token_service_(token_service),
       primary_account_manager_(primary_account_manager),
       url_loader_factory_(std::move(url_loader_factory)),
-      scopes_(scopes),
+      scopes_(oauth_consumer.GetScopes()),
       callback_(std::move(callback)),
       mode_(mode),
       token_source_(token_source),
-      require_sync_consent_for_scope_verification_(
-          require_sync_consent_for_scope_verification) {
+      oauth_consumer_id_(oauth_consumer_id) {
   if (mode_ == Mode::kImmediate || IsRefreshTokenAvailable()) {
     StartAccessTokenRequest();
     return;
@@ -90,7 +112,7 @@ void AccessTokenFetcher::VerifyScopeAccess() {
   }
 
   // The consumer has privileged access to all scopes, return early.
-  if (IsPrivilegedOAuth2Consumer(/*consumer_name=*/id())) {
+  if (IsPrivilegedOAuth2Consumer(oauth_consumer_id_)) {
     VLOG(1) << id() << " has access rights to scopes: "
             << base::JoinString(
                    std::vector<std::string>(scopes_.begin(), scopes_.end()),
@@ -101,33 +123,24 @@ void AccessTokenFetcher::VerifyScopeAccess() {
   bool is_signed_in =
       primary_account_manager_->HasPrimaryAccount(ConsentLevel::kSignin);
 
-  bool has_full_access =
-      require_sync_consent_for_scope_verification_
-          ? primary_account_manager_->HasPrimaryAccount(ConsentLevel::kSync)
-          : is_signed_in;
+  // A consumer is allowed to access the requested scopes if EVERY scope is
+  // either allowlisted for this consumer, unrestricted, or satisfies the
+  // sign-in requirements. A mix of allowlisted and unrestricted scopes is
+  // allowed, but any forbidden scope will trigger a CHECK or NOTREACHED.
   for (const std::string& scope : scopes_) {
+    if (IsConsumerAllowlistedForScope(oauth_consumer_id_, scope)) {
+      continue;
+    }
     OAuth2ScopeRestriction restriction = GetOAuth2ScopeRestriction(scope);
     switch (restriction) {
       case OAuth2ScopeRestriction::kNoRestriction:
         continue;
 
       case OAuth2ScopeRestriction::kSignedIn:
-        CHECK(is_signed_in ||
-              !base::FeatureList::IsEnabled(kRestrictSignoutAccessTokenFetch))
-            << base::StringPrintf(
-                   "Consumer '%s' is requesting scope '%s' that requires user "
-                   "to be signed in to the browser. "
-                   "Please check that the user is signed in to the browser "
-                   "before "
-                   "using this API.",
-                   id().c_str(), scope.c_str());
-        break;
-
-      case OAuth2ScopeRestriction::kExplicitConsent:
-        CHECK(has_full_access) << base::StringPrintf(
+        CHECK(is_signed_in) << base::StringPrintf(
             "Consumer '%s' is requesting scope '%s' that requires user "
-            "consent. "
-            "Please check that the user has consented to Sync before "
+            "to be signed in to the browser. "
+            "Please check that the user is signed in to the browser before "
             "using this API.",
             id().c_str(), scope.c_str());
         break;
@@ -219,6 +232,8 @@ void AccessTokenFetcher::OnGetTokenSuccess(
   std::unique_ptr<OAuth2AccessTokenManager::Request> request_deleter(
       std::move(access_token_request_));
 
+  base::UmaHistogramEnumeration("Signin.AccessTokenFetch.Success",
+                                oauth_consumer_id_);
   RunCallbackAndMaybeDie(
       GoogleServiceAuthError::AuthErrorNone(),
       AccessTokenInfo(token_response.access_token,
@@ -234,6 +249,10 @@ void AccessTokenFetcher::OnGetTokenFailure(
   std::unique_ptr<OAuth2AccessTokenManager::Request> request_deleter(
       std::move(access_token_request_));
 
+  CHECK(error.state() != GoogleServiceAuthError::NONE);
+  std::string error_str = ErrorToString(error.state());
+  base::UmaHistogramEnumeration("Signin.AccessTokenFetch.Failure." + error_str,
+                                oauth_consumer_id_);
   RunCallbackAndMaybeDie(error, AccessTokenInfo());
 
   // Potentially dead after the above invocation; nothing to do except return.

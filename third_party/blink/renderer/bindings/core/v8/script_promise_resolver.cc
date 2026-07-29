@@ -7,9 +7,11 @@
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/capture_source_location.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_microtasks_scope.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_throw_dom_exception.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
+#include "third_party/blink/renderer/platform/bindings/lazy_source_location.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
 #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
@@ -25,18 +27,21 @@ namespace blink {
 ScriptPromiseResolverBase::ScriptPromiseResolverBase(
     ScriptState* script_state,
     const ExceptionContext& exception_context)
-    : resolver_(script_state->GetIsolate(),
-                v8::Promise::Resolver::New(script_state->GetContext())
-                    .ToLocalChecked()),
-      state_(kPending),
+    : state_(kPending),
       script_state_(script_state),
       exception_context_(exception_context) {
+  // A call pro Promise::Resolver::New() would reset a pending
+  // excepiton, so make sure we don't get here with one.
+  v8::Isolate* isolate = script_state->GetIsolate();
+  ExceptionState::AssertNoPendingException(isolate);
+  resolver_.Reset(
+      isolate,
+      v8::Promise::Resolver::New(script_state->GetContext()).ToLocalChecked());
   if (RuntimeEnabledFeatures::LongAnimationFrameSourceCharPositionEnabled()) {
-    source_location_ =
-        CapturePartialSourceLocationFromStack(script_state->GetIsolate());
+    lazy_source_location_ = LazySourceLocation::FromCurrentStack(isolate);
   } else {
-    source_location_ = std::make_unique<SourceLocation>(
-        CaptureCurrentScriptUrl(script_state->GetIsolate()), -1);
+    lazy_source_location_ = MakeGarbageCollected<LazySourceLocation>(
+        CaptureCurrentScriptUrl(isolate));
   }
 }
 
@@ -94,7 +99,9 @@ void ScriptPromiseResolverBase::RejectWithDOMException(
   v8::Isolate* isolate = script_state_->GetIsolate();
   auto exception =
       V8ThrowDOMException::CreateOrDie(isolate, exception_code, message);
-  ApplyContextToException(script_state_, exception, exception_context_);
+  ApplyContextToException(
+      script_state_, exception, exception_context_.GetType(),
+      exception_context_.GetClassName(), exception_context_.GetPropertyName());
   Reject(exception);
 }
 
@@ -106,7 +113,9 @@ void ScriptPromiseResolverBase::RejectWithSecurityError(
   auto exception = V8ThrowDOMException::CreateOrDie(
       isolate, DOMExceptionCode::kSecurityError, sanitized_message,
       unsanitized_message);
-  ApplyContextToException(script_state_, exception, exception_context_);
+  ApplyContextToException(
+      script_state_, exception, exception_context_.GetType(),
+      exception_context_.GetClassName(), exception_context_.GetPropertyName());
   Reject(exception);
 }
 
@@ -169,13 +178,13 @@ void ScriptPromiseResolverBase::ResolveOrRejectImmediately() {
   probe::WillHandlePromise(
       GetExecutionContext(), script_state_, state_ == kResolving,
       exception_context_.GetClassName(), exception_context_.GetPropertyName(),
-      source_location_.get());
+      lazy_source_location_.Get());
 
-  v8::MicrotasksScope microtasks_scope(
-      script_state_->GetIsolate(), ToMicrotaskQueue(script_state_),
-      v8::MicrotasksScope::kDoNotRunMicrotasks);
+  V8DoNotRunMicrotasksScope microtasks_scope(script_state_);
   auto resolver = resolver_.Get(script_state_->GetIsolate());
   if (state_ == kResolving) {
+    // TODO(462010740): clean up call sites with pending exceptions.
+    ExceptionState::AssertNoPendingException(script_state_->GetIsolate());
     std::ignore = resolver->Resolve(script_state_->GetContext(),
                                     value_.Get(script_state_->GetIsolate()));
   } else {
@@ -192,10 +201,9 @@ void ScriptPromiseResolverBase::ResolveOrRejectImmediately() {
 void ScriptPromiseResolverBase::ScheduleResolveOrReject() {
   GetExecutionContext()
       ->GetTaskRunner(TaskType::kMicrotask)
-      ->PostTask(
-          FROM_HERE,
-          WTF::BindOnce(&ScriptPromiseResolverBase::ResolveOrRejectDeferred,
-                        WrapPersistent(this)));
+      ->PostTask(FROM_HERE,
+                 BindOnce(&ScriptPromiseResolverBase::ResolveOrRejectDeferred,
+                          WrapPersistent(this)));
 }
 
 void ScriptPromiseResolverBase::ResolveOrRejectDeferred() {
@@ -212,6 +220,7 @@ void ScriptPromiseResolverBase::Trace(Visitor* visitor) const {
   visitor->Trace(script_state_);
   visitor->Trace(resolver_);
   visitor->Trace(value_);
+  visitor->Trace(lazy_source_location_);
 }
 
 ExecutionContext* ScriptPromiseResolverBase::GetExecutionContext() {

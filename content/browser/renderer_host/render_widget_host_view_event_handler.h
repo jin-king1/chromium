@@ -279,10 +279,6 @@ class CONTENT_EXPORT RenderWidgetHostViewEventHandler
   std::unique_ptr<aura::ScopedEnableUnadjustedMouseEvents>
       mouse_locked_unadjusted_movement_;
 
-  // Whether pinch-to-zoom should be enabled and pinch events forwarded to the
-  // renderer.
-  const bool pinch_zoom_enabled_;
-
   // This flag when set ensures that we send over a notification to blink that
   // the current view has focus.
   bool set_focus_on_mouse_down_or_key_event_ = false;
@@ -319,6 +315,9 @@ class CONTENT_EXPORT RenderWidgetHostViewEventHandler
   const raw_ptr<Delegate> delegate_;
   raw_ptr<aura::Window> window_ = nullptr;
   MouseWheelPhaseHandler mouse_wheel_phase_handler_;
+
+  // Used to identify pointing device that can fire fling events.
+  base::flat_set<int> fling_capable_device_ids_;
 };
 
 }  // namespace content

@@ -2,15 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <memory>
 #include <string_view>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/memory/scoped_refptr.h"
@@ -60,12 +56,6 @@ base::FilePath WriteFile(const base::FilePath& directory,
 
 class ExtensionAppsChromeOsBrowserTest
     : public extensions::ExtensionBrowserTest {
- public:
-  ExtensionAppsChromeOsBrowserTest() {
-    feature_list_.InitAndEnableFeature(
-        extensions_features::kExtensionWebFileHandlers);
-  }
-
  protected:
   // Launch the extension from an intent and wait for a result from chrome.test.
   void LaunchExtensionAndCatchResult(const extensions::Extension& extension) {
@@ -76,7 +66,7 @@ class ExtensionAppsChromeOsBrowserTest
     extensions::ResultCatcher catcher;
 
     // Launch app with intent.
-    Profile* const profile = browser()->profile();
+    Profile* const profile = browser()->GetProfile();
     const int32_t event_flags =
         apps::GetEventFlags(WindowOpenDisposition::NEW_WINDOW,
                             /*prefer_container=*/true);
@@ -135,8 +125,6 @@ class ExtensionAppsChromeOsBrowserTest
     intent->files.push_back(std::move(file));
     return intent;
   }
-
-  base::test::ScopedFeatureList feature_list_;
 };
 
 // Open the extension action url when opening a matching file type.
@@ -263,7 +251,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionAppsChromeOsBrowserTest, NavigateExisting) {
   content::WebContents* web_contents[2];
   for (unsigned short i = 0; i < 2; i++) {
     LaunchExtensionAndCatchResult(*extension);
-    web_contents[i] = browser()->tab_strip_model()->GetActiveWebContents();
+    UNSAFE_TODO(web_contents[i]) =
+        browser()->tab_strip_model()->GetActiveWebContents();
   }
 
   // GetWindowIdOfTab() returns -1 for SessionID::InvalidValue().

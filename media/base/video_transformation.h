@@ -10,6 +10,7 @@
 #include <array>
 #include <string>
 
+#include "base/containers/span.h"
 #include "media/base/media_export.h"
 
 namespace media {
@@ -24,11 +25,17 @@ enum VideoRotation : int {
   VIDEO_ROTATION_MAX = VIDEO_ROTATION_270
 };
 
+// Returns true if the rotation is 90 or 270 degrees (orthogonal).
+constexpr bool IsOrthogonal(VideoRotation rotation) {
+  return rotation == VIDEO_ROTATION_90 || rotation == VIDEO_ROTATION_270;
+}
+
 // Stores frame rotation & mirroring values. These are usually calculated from
 // a rotation matrix from a demuxer, and we only support 90 degree rotation
 // increments.
 struct MEDIA_EXPORT VideoTransformation {
-  static VideoTransformation FromFFmpegDisplayMatrix(const int32_t* matrix);
+  static VideoTransformation FromFFmpegDisplayMatrix(
+      base::span<const int32_t, 9> matrix3x3);
 
   constexpr VideoTransformation(VideoRotation rotation, bool mirrored)
       : rotation(rotation), mirrored(mirrored) {}
@@ -42,7 +49,7 @@ struct MEDIA_EXPORT VideoTransformation {
   // [ sin(Θ),  cos(Θ)]
   // A vertical flip is represented by the cosine's having opposite signs
   // and a horizontal flip is represented by the sine's having the same sign.
-  VideoTransformation(const int32_t matrix[4]);
+  explicit VideoTransformation(base::span<const int32_t, 4> matrix);
 
   // Rotation is snapped to the nearest multiple of 90 degrees, rounding ties
   // toward positive infinity.
@@ -54,7 +61,7 @@ struct MEDIA_EXPORT VideoTransformation {
   // Create a matrix based on the rotation and mirrored. Only 8 matrices are
   // valid when limiting to {0,90,180,270} rotations and boolean of hflip (i.e.
   // mirrored).
-  std::array<int32_t, 4> GetMatrix();
+  std::array<int32_t, 4> GetMatrix() const;
 
   // The video rotation value, in 90 degree steps.
   VideoRotation rotation;
@@ -63,6 +70,13 @@ struct MEDIA_EXPORT VideoTransformation {
   // This transformation takes place _after_ rotation, since they are not
   // commutative.
   bool mirrored;
+
+  // Stringifies the rotation and mirrored into a human readable string.
+  std::string ToString() const;
+
+  // Returns true if the video is rotated 90 or 270 degrees (i.e., orthogonal),
+  // which swaps the width and height of the video frame during rendering.
+  constexpr bool IsOrthogonal() const { return media::IsOrthogonal(rotation); }
 };
 
 MEDIA_EXPORT bool operator==(const struct VideoTransformation& first,

@@ -13,22 +13,26 @@
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
 #include "media/audio/android/aaudio_stream_wrapper.h"
+#include "media/audio/android/audio_device.h"
 #include "media/audio/android/muteable_audio_output_stream.h"
 #include "media/base/amplitude_peak_detector.h"
 #include "media/base/audio_parameters.h"
+#include "media/base/audio_timestamp_helper.h"
 
 namespace media {
 
 class AudioManagerAndroid;
+class AudioPullFifo;
 
 // Class which uses the AAudio library to playback output.
-class REQUIRES_ANDROID_API(AAUDIO_MIN_API) AAudioOutputStream
-    : public MuteableAudioOutputStream,
-      public AAudioStreamWrapper::DataCallback {
+class AAudioOutputStream : public MuteableAudioOutputStream,
+                           public AAudioStreamWrapper::DataCallback {
  public:
   AAudioOutputStream(AudioManagerAndroid* manager,
                      const AudioParameters& params,
-                     aaudio_usage_t usage);
+                     android::AudioDevice device,
+                     aaudio_usage_t usage,
+                     AmplitudePeakDetector::PeakDetectedCB peak_detected_cb);
 
   AAudioOutputStream(const AAudioOutputStream&) = delete;
   AAudioOutputStream& operator=(const AAudioOutputStream&) = delete;
@@ -46,11 +50,16 @@ class REQUIRES_ANDROID_API(AAUDIO_MIN_API) AAudioOutputStream
   void SetMute(bool muted) override;
 
   // AAudioStreamWrapper::DataCallback implementation.
-  bool OnAudioDataRequested(void* audio_data, int32_t num_frames) override;
+  bool OnAudioDataRequested(base::span<float> audio_data) override;
   void OnError() override;
   void OnDeviceChange() override;
 
  private:
+  void RefillFifo(int frame_delay, AudioBus* destination);
+  bool PullDataFromSource(base::TimeDelta delay,
+                          base::TimeTicks delay_timestamp,
+                          AudioBus* destination);
+
   SEQUENCE_CHECKER(sequence_checker_);
 
   const raw_ptr<AudioManagerAndroid> audio_manager_;
@@ -59,6 +68,16 @@ class REQUIRES_ANDROID_API(AAUDIO_MIN_API) AAudioOutputStream
   AmplitudePeakDetector peak_detector_;
 
   std::unique_ptr<AudioBus> audio_bus_;
+
+  // Use to handle variable sized callbacks.
+  std::unique_ptr<AudioPullFifo> pull_fifo_;
+
+  // Tracks output delay when a single `OnAudioDataRequested()` spans multiple
+  // `RefillFifo()` calls.
+  AudioTimestampHelper delay_helper_;
+
+  // The time at which the `delay_helper_`'s base timestamp was last updated.
+  base::TimeTicks delay_timestamp_;
 
   AAudioStreamWrapper stream_wrapper_;
 

@@ -4,7 +4,11 @@
 
 package org.chromium.chrome.browser.app.tabmodel;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
+
+import android.os.Looper;
 
 import androidx.test.filters.MediumTest;
 
@@ -12,20 +16,15 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
 
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.DeferredStartupHandler;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.TabArchiveSettings;
@@ -35,7 +34,8 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.CloseAllTabsHelper;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.content_public.browser.LoadUrlParams;
 
 import java.util.ArrayList;
@@ -45,16 +45,13 @@ import java.util.List;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DoNotBatch(reason = "Test interacts with activity shutdown and thus is incompatible with batching")
-@EnableFeatures({
-    ChromeFeatureList.ANDROID_TAB_DECLUTTER,
-    ChromeFeatureList.ANDROID_TAB_DECLUTTER_RESCUE_KILLSWITCH
-})
-@DisableFeatures(ChromeFeatureList.ANDROID_TAB_DECLUTTER_ARCHIVE_ALL_BUT_ACTIVE)
 public class ArchivedTabsTest {
-    private static final String TEST_PATH = "/chrome/test/data/android/about.html";
-
     private static class FakeDeferredStartupHandler extends DeferredStartupHandler {
-        private List<Runnable> mTasks = new ArrayList<>();
+        private final List<Runnable> mTasks = new ArrayList<>();
+
+        FakeDeferredStartupHandler() {
+            super(Looper.getMainLooper().getQueue());
+        }
 
         @Override
         public void addDeferredTask(Runnable task) {
@@ -70,11 +67,10 @@ public class ArchivedTabsTest {
     }
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.LENIENT);
-
-    @Mock private ArchivedTabModelOrchestrator.Observer mObserver;
 
     private Profile mProfile;
     private FakeDeferredStartupHandler mDeferredStartupHandler;
@@ -88,7 +84,7 @@ public class ArchivedTabsTest {
     public void setUp() throws Exception {
         mDeferredStartupHandler = new FakeDeferredStartupHandler();
         DeferredStartupHandler.setInstanceForTests(mDeferredStartupHandler);
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
 
         runOnUiThreadBlocking(
                 () -> {
@@ -107,7 +103,7 @@ public class ArchivedTabsTest {
         runOnUiThreadBlocking(
                 () -> {
                     mDeferredStartupHandler.runAllTasks();
-                    assert mOrchestrator.areTabModelsInitialized();
+                    assertThat(mOrchestrator.areTabModelsInitialized()).isTrue();
                     mOrchestrator.getTabArchiveSettings().resetSettingsForTesting();
                     mArchivedTabModel = mOrchestrator.getTabModelSelector().getModel(false);
                     mRegularTabModel = mActivityTestRule.getActivity().getCurrentTabModel();
@@ -119,7 +115,6 @@ public class ArchivedTabsTest {
 
     @Test
     @MediumTest
-    @DisabledTest(message = "crbug.com/397901349")
     public void testCloseAllTabsAndClickUndo() {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
 
@@ -137,11 +132,11 @@ public class ArchivedTabsTest {
         runOnUiThreadBlocking(
                 () -> {
                     CloseAllTabsHelper.closeAllTabsHidingTabGroups(
-                            cta.getTabModelSelectorSupplier().get(), mRegularTabCreator);
+                            cta.getTabModelSelectorSupplier().get(), /* allowUndo= */ true);
                 });
         CriteriaHelper.pollUiThread(() -> 0 == mArchivedTabModel.getCount());
 
-        TabUiTestHelper.verifyUndoBarShowingAndClickUndo();
+        CriteriaHelper.pollInstrumentationThread(TabUiTestHelper::verifyUndoBarShowingAndClickUndo);
         CriteriaHelper.pollUiThread(() -> 1 == mArchivedTabModel.getCount());
     }
 }

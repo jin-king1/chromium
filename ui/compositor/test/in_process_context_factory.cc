@@ -17,7 +17,6 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "cc/base/switches.h"
-#include "cc/trees/raster_context_provider_wrapper.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/frame_sinks/begin_frame_source.h"
@@ -46,7 +45,6 @@
 #include "ui/compositor/test/direct_layer_tree_frame_sink.h"
 #include "ui/display/display_switches.h"
 #include "ui/display/types/display_constants.h"
-#include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/presentation_feedback.h"
 #include "ui/gfx/switches.h"
@@ -54,6 +52,7 @@
 #include "ui/gl/test/gl_surface_test_support.h"
 
 #if BUILDFLAG(IS_MAC)
+#include "components/viz/service/display/overlay_processor_mac.h"
 #include "ui/accelerated_widget_mac/ca_transaction_observer.h"
 #endif
 
@@ -79,7 +78,6 @@ class StandaloneBeginFrameObserver : public viz::BeginFrameObserverBase {
     return true;
   }
   void OnBeginFrameSourcePausedChanged(bool paused) override {}
-  bool IsRoot() const override { return true; }
 
   void SetBeginFrameSource(viz::BeginFrameSource* begin_frame_source) {
     TearDownObservation();
@@ -130,16 +128,6 @@ class InProcessContextFactory::PerCompositorData
     display_->SetVisible(visible);
   }
   void Resize(const gfx::Size& size) override { display_->Resize(size); }
-#if BUILDFLAG(IS_WIN)
-  bool DisableSwapUntilResize() override {
-    display_->DisableSwapUntilResize(base::OnceClosure());
-    return true;
-  }
-  void DisableSwapUntilResize(
-      DisableSwapUntilResizeCallback callback) override {
-    display_->DisableSwapUntilResize(std::move(callback));
-  }
-#endif
   void SetDisplayColorMatrix(const gfx::Transform& matrix) override {
     output_color_matrix_ = gfx::TransformToSkM44(matrix);
   }
@@ -161,8 +149,9 @@ class InProcessContextFactory::PerCompositorData
       mojo::PendingRemote<viz::mojom::VSyncParameterObserver> observer)
       override {}
 #if BUILDFLAG(IS_ANDROID)
-  void SetVSyncPaused(bool paused) override {}
   void UpdateRefreshRate(float refresh_rate) override {}
+  void SetAdaptiveRefreshRateInfo(
+      viz::mojom::AdaptiveRefreshRateInfoPtr info) override {}
   void PreserveChildSurfaceControls() override {}
   void SetSwapCompletionCallbackEnabled(bool enabled) override {}
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -278,30 +267,21 @@ void InProcessContextFactory::CreateLayerTreeFrameSink(
     base::WeakPtr<Compositor> compositor) {
   // Try to reuse existing shared worker context provider.
   bool shared_worker_context_provider_lost = false;
-  if (shared_worker_context_provider_wrapper_) {
+  if (shared_worker_context_provider_) {
     // Note: If context is lost, delete reference after releasing the lock.
-    const scoped_refptr<viz::RasterContextProvider>& worker_context =
-        shared_worker_context_provider_wrapper_->GetContext();
-    base::AutoLock lock(*worker_context->GetLock());
-    if (worker_context->RasterInterface()->GetGraphicsResetStatusKHR() !=
-        GL_NO_ERROR) {
+    base::AutoLock lock(*shared_worker_context_provider_->GetLock());
+    if (shared_worker_context_provider_->RasterInterface()
+            ->GetGraphicsResetStatusKHR() != GL_NO_ERROR) {
       shared_worker_context_provider_lost = true;
     }
   }
-  if (!shared_worker_context_provider_wrapper_ ||
-      shared_worker_context_provider_lost) {
-    auto shared_worker_context_provider =
+  if (!shared_worker_context_provider_ || shared_worker_context_provider_lost) {
+    shared_worker_context_provider_ =
         base::MakeRefCounted<viz::TestInProcessContextProvider>(
-            viz::TestContextType::kGpuRaster, /*support_locking=*/true);
-    auto result = shared_worker_context_provider->BindToCurrentSequence();
+            viz::TestContextType::kRaster, /*support_locking=*/true);
+    auto result = shared_worker_context_provider_->BindToCurrentSequence();
     if (result != gpu::ContextResult::kSuccess) {
-      shared_worker_context_provider_wrapper_ = nullptr;
-    } else {
-      shared_worker_context_provider_wrapper_ =
-          base::MakeRefCounted<cc::RasterContextProviderWrapper>(
-              std::move(shared_worker_context_provider), nullptr,
-              cc::ImageDecodeCacheUtils::GetWorkingSetBytesForImageDecode(
-                  /*for_renderer=*/false));
+      shared_worker_context_provider_ = nullptr;
     }
   }
 
@@ -321,7 +301,19 @@ void InProcessContextFactory::CreateLayerTreeFrameSink(
       viz::SkiaOutputSurfaceImpl::Create(display_dependency.get(),
                                          renderer_settings_, &debug_settings_);
 
-  auto overlay_processor = std::make_unique<viz::OverlayProcessorStub>();
+  std::unique_ptr<viz::OverlayProcessorInterface> overlay_processor;
+#if BUILDFLAG(IS_MAC)
+  if (output_to_window_) {
+    // On macOS, OverlayProcessorMac is essential for interactive rendering
+    // (e.g., in views_examples) to avoid a blank/white screen, as it handles
+    // the translation of quads to CALayer parameters.
+    overlay_processor = std::make_unique<viz::OverlayProcessorMac>();
+  } else {
+    overlay_processor = std::make_unique<viz::OverlayProcessorStub>();
+  }
+#else
+  overlay_processor = std::make_unique<viz::OverlayProcessorStub>();
+#endif
 
   std::unique_ptr<viz::BeginFrameSource> begin_frame_source;
   if (disable_vsync_) {
@@ -356,9 +348,8 @@ void InProcessContextFactory::CreateLayerTreeFrameSink(
 
   auto layer_tree_frame_sink = std::make_unique<DirectLayerTreeFrameSink>(
       compositor->frame_sink_id(), frame_sink_manager_, data->display(),
-      SharedMainThreadRasterContextProvider(),
-      shared_worker_context_provider_wrapper_, compositor->task_runner(),
-      compositor->widget());
+      SharedMainThreadRasterContextProvider(), shared_worker_context_provider_,
+      compositor->task_runner(), compositor->widget());
   compositor->SetLayerTreeFrameSink(std::move(layer_tree_frame_sink),
                                     std::move(display_private));
 
@@ -375,7 +366,7 @@ InProcessContextFactory::SharedMainThreadRasterContextProvider() {
 
   shared_main_thread_contexts_ =
       base::MakeRefCounted<viz::TestInProcessContextProvider>(
-          viz::TestContextType::kSoftwareRaster, /*support_locking=*/false);
+          viz::TestContextType::kRaster, /*support_locking=*/false);
 
   auto result = shared_main_thread_contexts_->BindToCurrentSequence();
   if (result != gpu::ContextResult::kSuccess) {
@@ -393,11 +384,6 @@ void InProcessContextFactory::RemoveCompositor(Compositor* compositor) {
   frame_sink_manager_->UnregisterBeginFrameSource(data->begin_frame_source());
   DCHECK(data);
   per_compositor_data_.erase(it);
-}
-
-gpu::GpuMemoryBufferManager*
-InProcessContextFactory::GetGpuMemoryBufferManager() {
-  return &gpu_memory_buffer_manager_;
 }
 
 cc::TaskGraphRunner* InProcessContextFactory::GetTaskGraphRunner() {

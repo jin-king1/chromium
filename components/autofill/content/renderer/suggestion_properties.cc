@@ -20,22 +20,23 @@ bool ShouldAutofillOnEmptyValues(
     case AutofillSuggestionTriggerSource::kTextFieldDidReceiveKeyDown:
     case AutofillSuggestionTriggerSource::kOpenTextDataListChooser:
     case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
-    case AutofillSuggestionTriggerSource::kManualFallbackPlusAddresses:
-    case AutofillSuggestionTriggerSource::
-        kShowPromptAfterDialogClosedNonManualFallback:
     case AutofillSuggestionTriggerSource::kComposeDialogLostFocus:
     case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
     case AutofillSuggestionTriggerSource::kTextareaFocusedWithoutClick:
     case AutofillSuggestionTriggerSource::kContentEditableClicked:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
-    case AutofillSuggestionTriggerSource::kAutofillAi:
+    case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGlic:
+    case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
+    case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
+    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       return true;
     case AutofillSuggestionTriggerSource::kTextFieldValueChanged:
+    case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
       return false;
-    // `kShowCardsFromAccount`, `kPasswordManager`, `kiOS`, and
-    // `kPlusAddressUpdatedInBrowserProcess` are not used in the renderer code.
-    // As such, suggestion properties don't apply to them.
-    case AutofillSuggestionTriggerSource::kShowCardsFromAccount:
+    // `kPasswordManager`, `kiOS`, and `kPlusAddressUpdatedInBrowserProcess` are
+    // not used in the renderer code. As such, suggestion properties don't apply
+    // to them.
     case AutofillSuggestionTriggerSource::kPasswordManager:
     case AutofillSuggestionTriggerSource::kiOS:
     case AutofillSuggestionTriggerSource::kPlusAddressUpdatedInBrowserProcess:
@@ -52,20 +53,21 @@ bool ShouldAutofillOnLongValues(
     case AutofillSuggestionTriggerSource::kContentEditableClicked:
     case AutofillSuggestionTriggerSource::kComposeDialogLostFocus:
     case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
+    case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
+    case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
+    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       return true;
     case AutofillSuggestionTriggerSource::kFormControlElementClicked:
     case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
-    case AutofillSuggestionTriggerSource::kManualFallbackPlusAddresses:
     case AutofillSuggestionTriggerSource::kOpenTextDataListChooser:
-    case AutofillSuggestionTriggerSource::
-        kShowPromptAfterDialogClosedNonManualFallback:
     case AutofillSuggestionTriggerSource::kTextFieldValueChanged:
+    case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
     case AutofillSuggestionTriggerSource::kTextFieldDidReceiveKeyDown:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
-    case AutofillSuggestionTriggerSource::kAutofillAi:
     case AutofillSuggestionTriggerSource::kPlusAddressUpdatedInBrowserProcess:
+    case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGlic:
       return false;
-    case AutofillSuggestionTriggerSource::kShowCardsFromAccount:
     case AutofillSuggestionTriggerSource::kPasswordManager:
     case AutofillSuggestionTriggerSource::kiOS:
     case AutofillSuggestionTriggerSource::kUnspecified:
@@ -84,18 +86,19 @@ bool RequiresCaretAtEnd(AutofillSuggestionTriggerSource trigger_source) {
     case AutofillSuggestionTriggerSource::kContentEditableClicked:
     case AutofillSuggestionTriggerSource::kOpenTextDataListChooser:
     case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
-    case AutofillSuggestionTriggerSource::kManualFallbackPlusAddresses:
-    case AutofillSuggestionTriggerSource::
-        kShowPromptAfterDialogClosedNonManualFallback:
     case AutofillSuggestionTriggerSource::kComposeDialogLostFocus:
     case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
-    case AutofillSuggestionTriggerSource::kAutofillAi:
+    case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGlic:
+    case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
+    case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
+    case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
+    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       return false;
-    // `kShowCardsFromAccount`, `kPasswordManager`, `kiOS`, and
-    // `kPlusAddressUpdatedInBrowserProcess` are not used in the renderer code.
-    // As such, suggestion properties don't apply to them.
-    case AutofillSuggestionTriggerSource::kShowCardsFromAccount:
+    // `kPasswordManager`, `kiOS`, and `kPlusAddressUpdatedInBrowserProcess` are
+    // not used in the renderer code. As such, suggestion properties don't apply
+    // to them.
     case AutofillSuggestionTriggerSource::kPasswordManager:
     case AutofillSuggestionTriggerSource::kiOS:
     case AutofillSuggestionTriggerSource::kPlusAddressUpdatedInBrowserProcess:
@@ -121,22 +124,23 @@ bool ShouldShowFullSuggestionListForPasswordManager(
     case AutofillSuggestionTriggerSource::kTextFieldDidReceiveKeyDown:
     case AutofillSuggestionTriggerSource::kOpenTextDataListChooser:
     case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
-    case AutofillSuggestionTriggerSource::kManualFallbackPlusAddresses:
-    case AutofillSuggestionTriggerSource::
-        kShowPromptAfterDialogClosedNonManualFallback:
     case AutofillSuggestionTriggerSource::kComposeDialogLostFocus:
     case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
-    case AutofillSuggestionTriggerSource::kAutofillAi:
+    case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
+    case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
+    case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
+    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       return false;
-    // `kShowCardsFromAccount`, `kPasswordManager`, `kiOS`, and
-    // `kPlusAddressUpdatedInBrowserProcess` are not used in the renderer code.
-    // As such, suggestion properties don't apply to them.
-    // `kPasswordManager` specifically is used to identify password manager
-    // suggestions in the browser process. In the renderer, the logic triggering
-    // suggestions through Blink events is shared. Thus, the return values for
-    // `kFormControlElementClicked` etc. matter for the password manager in the
-    // renderer.
-    case AutofillSuggestionTriggerSource::kShowCardsFromAccount:
+    case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGlic:
+      return true;
+    // `kPasswordManager`, `kiOS`, and `kPlusAddressUpdatedInBrowserProcess`
+    // are not used in the renderer code. As such, suggestion properties
+    // don't apply to them. `kPasswordManager` specifically is used to
+    // identify password manager suggestions in the browser process. In the
+    // renderer, the logic triggering suggestions through Blink events is
+    // shared. Thus, the return values for `kFormControlElementClicked` etc.
+    // matter for the password manager in the renderer.
     case AutofillSuggestionTriggerSource::kPasswordManager:
     case AutofillSuggestionTriggerSource::kiOS:
     case AutofillSuggestionTriggerSource::kPlusAddressUpdatedInBrowserProcess:

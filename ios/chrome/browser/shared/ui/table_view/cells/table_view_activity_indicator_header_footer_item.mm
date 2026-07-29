@@ -4,10 +4,8 @@
 
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_activity_indicator_header_footer_item.h"
 
-#import <MaterialComponents/MaterialActivityIndicator.h>
-
 #import "base/apple/foundation_util.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
+#import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
@@ -24,18 +22,15 @@
   return self;
 }
 
-- (void)configureHeaderFooterView:(UITableViewHeaderFooterView*)headerFooter
-                       withStyler:(ChromeTableViewStyler*)styler {
-  [super configureHeaderFooterView:headerFooter withStyler:styler];
+- (void)configureHeaderFooterView:(UITableViewHeaderFooterView*)headerFooter {
+  [super configureHeaderFooterView:headerFooter];
   TableViewActivityIndicatorHeaderFooterView* header =
       base::apple::ObjCCastStrict<TableViewActivityIndicatorHeaderFooterView>(
           headerFooter);
   header.titleLabel.text = self.text;
   header.subtitleLabel.text = self.subtitleText;
-  // Use colors from styler if available.
-  if (styler.tableViewBackgroundColor) {
-    header.contentView.backgroundColor = styler.tableViewBackgroundColor;
-  }
+  header.contentView.backgroundColor =
+      [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
 }
 
 @end
@@ -73,9 +68,9 @@
     verticalStack.axis = UILayoutConstraintAxisVertical;
 
     // Activity Indicator.
-    MDCActivityIndicator* activityIndicator =
-        [[MDCActivityIndicator alloc] init];
-    activityIndicator.cycleColors = @[ [UIColor colorNamed:kBlueColor] ];
+    UIActivityIndicatorView* activityIndicator =
+        [[UIActivityIndicatorView alloc] init];
+    activityIndicator.color = [UIColor colorNamed:kBlueColor];
     [activityIndicator startAnimating];
     [activityIndicator
         setContentHuggingPriority:UILayoutPriorityDefaultHigh
@@ -105,12 +100,12 @@
     bottomAnchorConstraint.priority = UILayoutPriorityDefaultHigh;
     NSLayoutConstraint* leadingAnchorConstraint = [horizontalStack.leadingAnchor
         constraintEqualToAnchor:self.contentView.leadingAnchor
-                       constant:HorizontalPadding()];
+                       constant:ChromeTableViewHorizontalPadding()];
     leadingAnchorConstraint.priority = UILayoutPriorityDefaultHigh;
     NSLayoutConstraint* trailingAnchorConstraint =
         [horizontalStack.trailingAnchor
             constraintEqualToAnchor:self.contentView.trailingAnchor
-                           constant:-HorizontalPadding()];
+                           constant:-ChromeTableViewHorizontalPadding()];
     trailingAnchorConstraint.priority = UILayoutPriorityDefaultHigh;
 
     // Set and activate constraints.

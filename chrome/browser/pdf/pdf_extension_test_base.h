@@ -7,14 +7,14 @@
 
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/extensions/extension_apitest.h"
-#include "chrome/browser/pdf/test_pdf_viewer_stream_manager.h"
+#include "chrome/browser/pdf/test_mime_handler_stream_manager.h"
 #include "components/guest_view/browser/test_guest_view_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 
 class GURL;
@@ -92,15 +92,18 @@ class PDFExtensionTestBase : public extensions::ExtensionApiTest {
   // `WebContents`.
   content::WebContents* GetEmbedderWebContents();
 
+  // Resets the feature list, can be used when nested feature lists exist.
+  void ResetFeatureList();
+
  protected:
   guest_view::TestGuestViewManager* GetGuestViewManager();
   guest_view::TestGuestViewManager* GetGuestViewManagerForProfile(
       content::BrowserContext* profile);
 
-  pdf::TestPdfViewerStreamManager* GetTestPdfViewerStreamManager(
+  pdf::TestMimeHandlerStreamManager* GetTestMimeHandlerStreamManager(
       content::WebContents* contents);
 
-  void CreateTestPdfViewerStreamManager(content::WebContents* contents);
+  void CreateTestMimeHandlerStreamManager(content::WebContents* contents);
 
   content::RenderFrameHost* GetOnlyPdfExtensionHostEnsureValid();
 
@@ -128,6 +131,9 @@ class PDFExtensionTestBase : public extensions::ExtensionApiTest {
   // TODO(crbug.com/40268279): Remove once only OOPIF PDF viewer is used.
   virtual bool UseOopif() const;
 
+  // Hook to register request handler for test server.
+  virtual void RegisterTestServerRequestHandler();
+
   // Hooks to set up feature flags.
   virtual std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
       const;
@@ -140,9 +146,9 @@ class PDFExtensionTestBase : public extensions::ExtensionApiTest {
   void ValidateFrameTree(content::WebContents* contents);
 
   base::test::ScopedFeatureList feature_list_;
-  absl::variant<absl::monostate,
-                std::unique_ptr<guest_view::TestGuestViewManagerFactory>,
-                std::unique_ptr<pdf::TestPdfViewerStreamManagerFactory>>
+  std::variant<std::monostate,
+               std::unique_ptr<guest_view::TestGuestViewManagerFactory>,
+               std::unique_ptr<pdf::TestMimeHandlerStreamManagerFactory>>
       factory_;
 };
 

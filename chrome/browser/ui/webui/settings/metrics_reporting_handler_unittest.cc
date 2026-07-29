@@ -10,9 +10,9 @@
 #include "base/run_loop.h"
 #include "base/values.h"
 #include "chrome/browser/ui/webui/settings/metrics_reporting_handler.h"
-#include "chrome/test/base/scoped_testing_local_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/metrics/metrics_pref_names.h"
+#include "components/metrics/metrics_reporting_choice_service.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/test/browser_task_environment.h"
@@ -30,10 +30,6 @@ class TestingMetricsReportingHandler : public MetricsReportingHandler {
 class MetricsReportingHandlerTest : public testing::Test {
  public:
   MetricsReportingHandlerTest() {
-    // Local state must be set up before |handler_|.
-    local_state_ = std::make_unique<ScopedTestingLocalState>(
-        TestingBrowserProcess::GetGlobal());
-
     handler_ = std::make_unique<TestingMetricsReportingHandler>();
     handler_->set_web_ui(&test_web_ui_);
   }
@@ -42,7 +38,7 @@ class MetricsReportingHandlerTest : public testing::Test {
     ASSERT_EQ(local_state(), g_browser_process->local_state());
     EXPECT_TRUE(test_web_ui()->call_data().empty());
 
-    base::Value::List args;
+    base::ListValue args;
     args.Append(1);
     handler()->HandleGetMetricsReporting(args);
 
@@ -53,22 +49,21 @@ class MetricsReportingHandlerTest : public testing::Test {
   }
 
   void TearDown() override {
-    // For crbug.com/637068 which only run on official bots with no try jobs.
+    // For crbug.com/41269588 which only run on official bots with no try jobs.
     base::RunLoop().RunUntilIdle();
     handler_.reset();
     base::RunLoop().RunUntilIdle();
-    local_state_.reset();
-    base::RunLoop().RunUntilIdle();
   }
 
-  PrefService* local_state() { return local_state_->Get(); }
+  PrefService* local_state() {
+    return TestingBrowserProcess::GetGlobal()->local_state();
+  }
   TestingMetricsReportingHandler* handler() { return handler_.get(); }
   content::TestWebUI* test_web_ui() { return &test_web_ui_; }
 
  private:
   content::BrowserTaskEnvironment task_environment_;
   content::TestWebUI test_web_ui_;
-  std::unique_ptr<ScopedTestingLocalState> local_state_;
   std::unique_ptr<TestingMetricsReportingHandler> handler_;
 };
 
@@ -76,7 +71,8 @@ TEST_F(MetricsReportingHandlerTest, PrefChangesNotifyPage) {
   // Toggle the pref.
   local_state()->SetBoolean(
       metrics::prefs::kMetricsReportingEnabled,
-      !local_state()->GetBoolean(metrics::prefs::kMetricsReportingEnabled));
+      !metrics::MetricsReportingChoiceService::IsBasicMetricsReportingEnabled(
+          local_state()));
   EXPECT_EQ(1u, test_web_ui()->call_data().size());
 
   test_web_ui()->ClearTrackedCalls();
@@ -85,7 +81,8 @@ TEST_F(MetricsReportingHandlerTest, PrefChangesNotifyPage) {
   // Toggle the pref again, while JavaScript is disabled.
   local_state()->SetBoolean(
       metrics::prefs::kMetricsReportingEnabled,
-      !local_state()->GetBoolean(metrics::prefs::kMetricsReportingEnabled));
+      !metrics::MetricsReportingChoiceService::IsBasicMetricsReportingEnabled(
+          local_state()));
   EXPECT_TRUE(test_web_ui()->call_data().empty());
 }
 

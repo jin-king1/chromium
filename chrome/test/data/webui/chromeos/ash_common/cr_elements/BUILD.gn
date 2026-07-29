@@ -5,6 +5,11 @@
 import("../../../build_webui_tests.gni")
 
 build_webui_tests("build") {
+  cc_test_files = [
+    "ash_common_cr_elements_browsertest.cc",
+    "ash_common_cr_elements_focus_interactive_uitest.cc",
+  ]
+
   files = [
     "cr_a11y_announcer_test.ts",
     "cr_action_menu_test.ts",
@@ -52,7 +57,8 @@ build_webui_tests("build") {
 
   # Using custom config to turn off useDefineForClassFields TS compiler flag
   # which is necessary when defining Polymer elements.
-  ts_tsconfig_base = "tsconfig_base.json"
+  ts_tsconfig_base =
+      "//chrome/test/data/webui/chromeos/ash_common/tsconfig_base.json"
   ts_definitions = [
     "//tools/typescript/definitions/chrome_event.d.ts",
     "//tools/typescript/definitions/settings_private.d.ts",

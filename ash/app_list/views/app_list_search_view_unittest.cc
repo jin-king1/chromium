@@ -34,6 +34,8 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -42,9 +44,9 @@
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/menu/menu_item_view.h"
@@ -56,7 +58,7 @@
 
 namespace {
 
-int kDefaultSearchItems = 3;
+constexpr int kDefaultSearchItems = 3;
 // SearchResultListViewType is 0 indexed so we need to add 1 here.
 const int kResultContainersCount =
     static_cast<int>(
@@ -296,11 +298,8 @@ class SearchViewTabletTest : public AppListSearchViewTest {
 class SearchResultImageViewTest : public SearchViewClamshellAndTabletTest {
  public:
   SearchResultImageViewTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {features::kProductivityLauncherImageSearch,
-         features::kLauncherSearchControl,
-         features::kFeatureManagementLocalImageSearch},
-        {});
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kFeatureManagementLocalImageSearch);
   }
 
   bool IsImageSearchEnabled(PrefService* prefs) {
@@ -510,8 +509,8 @@ TEST_P(SearchResultImageViewTest, PulsingBlocksShowWhenNoResultIcon) {
         SetUpImageSearchResults(results, 1, num_results, ResultIconType::kNone);
       }));
 
-  ui::ScopedAnimationDurationScaleMode non_zero_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Press a key to start a search.
   PressAndReleaseKey(ui::VKEY_A);
@@ -595,8 +594,8 @@ TEST_P(SearchResultImageViewTest, PulsingBlocksShownWithPlaceholdertIcon) {
                                 ResultIconType::kPlaceholder);
       }));
 
-  ui::ScopedAnimationDurationScaleMode non_zero_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Press a key to start a search.
   PressAndReleaseKey(ui::VKEY_A);
@@ -867,7 +866,7 @@ TEST_P(SearchResultImageViewTest, SearchCategoryMenuItemTooltips) {
   check_tooltip(AppListSearchControlCategory::kHelp,
                 u"Key shortcuts, tips for using device, and more");
   check_tooltip(AppListSearchControlCategory::kImages,
-                u"Search for text within images and see image previews");
+                u"Image search by content and image previews");
   check_tooltip(AppListSearchControlCategory::kPlayStore,
                 u"Available apps from the Play Store");
   check_tooltip(AppListSearchControlCategory::kWeb,
@@ -976,8 +975,8 @@ TEST_P(SearchResultImageViewTest, ResultSelectionCycle) {
 
 TEST_P(SearchViewClamshellAndTabletTest, AnimateSearchResultView) {
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   GetAppListTestHelper()->ShowAppList();
 
@@ -1136,8 +1135,8 @@ TEST_P(SearchViewClamshellAndTabletTest,
   ASSERT_TRUE(app_result);
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Press backspace to delete the query and switch back to the apps page.
   PressAndReleaseKey(ui::VKEY_BACK);
@@ -1218,8 +1217,8 @@ TEST_F(SearchViewTabletTest, SearchResultPageShownWhileClosing) {
   ASSERT_TRUE(app_result);
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Press backspace to delete the query and switch back to the apps page.
   PressAndReleaseKey(ui::VKEY_ESCAPE);
@@ -1274,8 +1273,8 @@ TEST_P(SearchViewClamshellAndTabletTest, SelectionChangeDuringHide) {
   }
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Press backspace to delete the query and switch back to the apps page.
   PressAndReleaseKey(ui::VKEY_BACK);

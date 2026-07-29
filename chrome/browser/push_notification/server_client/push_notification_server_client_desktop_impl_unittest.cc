@@ -12,6 +12,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -24,6 +25,7 @@
 #include "chrome/browser/push_notification/server_client/push_notification_desktop_api_call_flow_impl.h"
 #include "chrome/browser/push_notification/server_client/push_notification_server_client.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/sync/base/features.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -139,8 +141,12 @@ class PushNotificationServerClientDesktopImplTest : public testing::Test {
   }
 
   void SetUp() override {
-    identity_test_environment_.MakePrimaryAccountAvailable(
-        kEmail, signin::ConsentLevel::kSync);
+    signin::ConsentLevel consent_level =
+        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
+            ? signin::ConsentLevel::kSignin
+            : signin::ConsentLevel::kSync;
+    identity_test_environment_.MakePrimaryAccountAvailable(kEmail,
+                                                           consent_level);
     std::unique_ptr<FakePushNotificationApiCallFlow> api_call_flow =
         std::make_unique<FakePushNotificationApiCallFlow>();
     api_call_flow_ = api_call_flow.get();
@@ -296,7 +302,7 @@ TEST_F(PushNotificationServerClientDesktopImplTest, FetchAccessTokenFailure) {
       future.GetCallback());
   identity_test_environment_
       .WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
-          GoogleServiceAuthError(GoogleServiceAuthError::SERVICE_UNAVAILABLE));
+          GoogleServiceAuthError::FromServiceUnavailable(""));
   EXPECT_EQ(PushNotificationDesktopApiCallFlow::
                 PushNotificationApiCallFlowError::kAuthenticationError,
             future.Get());
@@ -357,7 +363,7 @@ TEST_F(PushNotificationServerClientDesktopImplTest,
     base::test::TestFuture<
         PushNotificationDesktopApiCallFlow::PushNotificationApiCallFlowError>
         future2;
-    EXPECT_DCHECK_DEATH(client_->RegisterWithPushNotificationService(
+    EXPECT_CHECK_DEATH(client_->RegisterWithPushNotificationService(
         push_notification::proto::NotificationsMultiLoginUpdateRequest(),
         base::BindOnce(
             &NotCalledConstRef<push_notification::proto::
@@ -426,7 +432,7 @@ TEST_F(PushNotificationServerClientDesktopImplTest,
     base::test::TestFuture<
         PushNotificationDesktopApiCallFlow::PushNotificationApiCallFlowError>
         future;
-    EXPECT_DCHECK_DEATH(client_->RegisterWithPushNotificationService(
+    EXPECT_CHECK_DEATH(client_->RegisterWithPushNotificationService(
         push_notification::proto::NotificationsMultiLoginUpdateRequest(),
         base::BindOnce(
             &NotCalledConstRef<push_notification::proto::

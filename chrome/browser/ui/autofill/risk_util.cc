@@ -14,8 +14,10 @@
 #include "build/build_config.h"
 #include "chrome/browser/apps/platform_apps/app_window_registry_util.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/autofill/content/browser/risk/fingerprint.h"
 #include "components/autofill/content/browser/risk/proto/fingerprint.pb.h"
 #include "components/embedder_support/user_agent_utils.h"
@@ -29,8 +31,9 @@
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "ui/base/base_window.h"
@@ -53,9 +56,10 @@ void PassRiskData(base::OnceCallback<void(const std::string&)> callback,
 // window for a platform app.
 ui::BaseWindow* GetBaseWindowForWebContents(
     content::WebContents* web_contents) {
-  Browser* browser = chrome::FindBrowserWithTab(web_contents);
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
   if (browser) {
-    return browser->window();
+    return browser->GetWindow();
   }
 
   gfx::NativeWindow native_window = web_contents->GetTopLevelNativeWindow();
@@ -101,12 +105,13 @@ void LoadRiskDataHelper(uint64_t obfuscated_gaia_id,
       g_browser_process->local_state()->GetInt64(metrics::prefs::kInstallDate));
 
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  risk::GetFingerprint(obfuscated_gaia_id, window_bounds, web_contents,
-                       std::string(version_info::GetVersionNumber()), charset,
-                       accept_languages, install_time,
-                       g_browser_process->GetApplicationLocale(),
-                       embedder_support::GetUserAgent(),
-                       base::BindOnce(PassRiskData, std::move(callback)));
+  risk::GetFingerprint(
+      obfuscated_gaia_id, window_bounds, web_contents,
+      std::string(version_info::GetVersionNumber()), charset, accept_languages,
+      install_time,
+      g_browser_process->GetFeatures()->application_locale_storage()->Get(),
+      embedder_support::GetUserAgent(),
+      base::BindOnce(PassRiskData, std::move(callback)));
 }
 
 }  // namespace autofill::risk_util

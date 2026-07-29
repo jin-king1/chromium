@@ -16,6 +16,7 @@
 #include "third_party/blink/public/common/blob/blob_utils.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
+#include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_network_provider.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -100,7 +101,7 @@ Vector<std::unique_ptr<URLLoaderThrottle>> CreateThrottlesImpl(
   }
   CHECK(network_request);
 
-  return WTF::ToVector(base::RangeAsRvalues(
+  return ToVector(base::RangeAsRvalues(
       throttle_provider->CreateThrottles(local_frame_token, *network_request)));
 }
 
@@ -158,10 +159,10 @@ std::unique_ptr<URLLoader> LoaderFactoryForFrame::CreateURLLoader(
     // a matching prefetched response.
     auto loader = prefetched_signed_exchange_manager_->MaybeCreateURLLoader(
         network_request,
-        WTF::BindOnce(&CreateThrottlesImpl,
-                      WTF::Unretained(GetURLLoaderThrottleProvider()),
-                      window_->GetFrame()->GetLocalFrameToken(),
-                      WTF::Unretained(&network_request)));
+        blink::BindOnce(&CreateThrottlesImpl,
+                        Unretained(GetURLLoaderThrottleProvider()),
+                        window_->GetFrame()->GetLocalFrameToken(),
+                        Unretained(&network_request)));
     if (loader) {
       return loader;
     }
@@ -273,11 +274,7 @@ LoaderFactoryForFrame::MaybeIssueKeepAliveHandle(
     const network::ResourceRequest& network_request) {
   mojo::PendingRemote<mojom::blink::KeepAliveHandle> pending_remote;
   if (network_request.keepalive &&
-      (!base::FeatureList::IsEnabled(features::kKeepAliveInBrowserMigration) ||
-       (network_request.attribution_reporting_eligibility !=
-            network::mojom::AttributionReportingEligibility::kUnset &&
-        !base::FeatureList::IsEnabled(
-            features::kAttributionReportingInBrowserMigration))) &&
+      !base::FeatureList::IsEnabled(features::kKeepAliveInBrowserMigration) &&
       keep_alive_handle_factory_.is_bound() &&
       !network_request.is_fetch_later_api) {
     keep_alive_handle_factory_->IssueKeepAliveHandle(

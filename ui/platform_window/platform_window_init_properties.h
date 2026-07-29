@@ -14,7 +14,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 #if BUILDFLAG(IS_FUCHSIA)
 #include <fuchsia/element/cpp/fidl.h>
@@ -109,7 +109,6 @@ struct COMPONENT_EXPORT(PLATFORM_WINDOW) PlatformWindowInitProperties {
   // See Widget::InitParams for details.
   bool accept_events = true;
   bool activatable = true;
-  bool force_show_in_taskbar;
   bool keep_on_top = false;
   bool is_security_surface = false;
   bool visible_on_all_workspaces = false;
@@ -138,6 +137,9 @@ struct COMPONENT_EXPORT(PLATFORM_WINDOW) PlatformWindowInitProperties {
   // Wayland specific.  Holds the application ID that is used by the window
   // manager to match the desktop entry and group windows.
   std::string wayland_app_id;
+  // The startup ID (or XDG activation token) used to associate the window
+  // with the launch event that created it. Used for both X11 and Wayland.
+  std::string startup_id;
 
   // Specifies the id of the target display the window will be created on.
   std::optional<int64_t> display_id;
@@ -147,6 +149,13 @@ struct COMPONENT_EXPORT(PLATFORM_WINDOW) PlatformWindowInitProperties {
   // Specifies whether the current window requests key-events that matches
   // system shortcuts.
   bool inhibit_keyboard_shortcuts = false;
+
+  // Session Management related properties. Analogue to ui::PlatformSessionData
+  // fields though as separate variables to avoid platform_window => ozone
+  // circular dependency.
+  std::string session_id;
+  int32_t session_window_new_id = 0;
+  std::optional<int32_t> session_window_restore_id;
 #endif
 
   bool enable_compositing_based_throttling = false;

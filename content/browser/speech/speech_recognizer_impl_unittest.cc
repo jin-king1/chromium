@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/374320451): Fix and remove.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/browser/speech/speech_recognizer_impl.h"
 
 #include <stddef.h>
@@ -15,6 +10,7 @@
 #include <memory>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -22,6 +18,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/run_loop.h"
+#include "base/strings/string_view_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread.h"
@@ -39,6 +36,8 @@
 #include "media/audio/test_audio_thread.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_glitch_info.h"
+#include "media/base/audio_sample_types.h"
+#include "media/base/audio_timestamp_helper.h"
 #include "media/base/test_helpers.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
@@ -125,18 +124,19 @@ class SpeechRecognizerImplTest : public SpeechRecognitionEventListener,
                                            kTestingSessionId, false, false,
                                            std::move(sr_engine), std::nullopt);
 
-    int audio_packet_length_bytes =
-        (SpeechRecognizerImpl::kAudioSampleRate *
-         NetworkSpeechRecognitionEngineImpl::kAudioPacketIntervalMs *
-         ChannelLayoutToChannelCount(SpeechRecognizerImpl::kChannelLayout) *
-         SpeechRecognizerImpl::kNumBitsPerAudioSample) /
-        (8 * 1000);
+    const int channels = SpeechRecognizerImpl::kChannelLayoutConfig.channels();
+
+    const int bytes_per_sample =
+        SpeechRecognizerImpl::kNumBitsPerAudioSample / 8;
+
+    const int frames = media::AudioTimestampHelper::TimeToFrames(
+        base::Milliseconds(
+            NetworkSpeechRecognitionEngineImpl::kAudioPacketIntervalMs),
+        SpeechRecognizerImpl::kAudioSampleRate);
+
+    const int audio_packet_length_bytes = frames * channels * bytes_per_sample;
     audio_packet_.resize(audio_packet_length_bytes);
 
-    const int channels =
-        ChannelLayoutToChannelCount(SpeechRecognizerImpl::kChannelLayout);
-    int bytes_per_sample = SpeechRecognizerImpl::kNumBitsPerAudioSample / 8;
-    const int frames = audio_packet_length_bytes / channels / bytes_per_sample;
     audio_bus_ = media::AudioBus::Create(channels, frames);
     audio_bus_->Zero();
   }
@@ -247,8 +247,8 @@ class SpeechRecognizerImplTest : public SpeechRecognitionEventListener,
     static_assert(SpeechRecognizerImpl::kNumBitsPerAudioSample == 16,
                   "FromInterleaved expects 2 bytes.");
     // Copy the created signal into an audio bus in a deinterleaved format.
-    audio_bus_->FromInterleaved<media::SignedInt16SampleTypeTraits>(
-        reinterpret_cast<int16_t*>(audio_packet_.data()), audio_bus_->frames());
+    audio_bus_->FromInterleavedBytes<media::SignedInt16SampleTypeTraits>(
+        audio_packet_);
   }
 
   void FillPacketWithTestWaveform() {
@@ -359,9 +359,8 @@ TEST_F(SpeechRecognizerImplTest, StopBeforeDeviceInfoReceived) {
                             base::WaitableEvent::InitialState::NOT_SIGNALED);
 
   // Block audio thread.
-  audio_manager_->GetTaskRunner()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&base::WaitableEvent::Wait, base::Unretained(&event)));
+  audio_manager_->GetTaskRunner()->PostTask(FROM_HERE,
+                                            event.GetWaitCallbackForTesting());
 
   recognizer_->StartRecognition(
       media::AudioDeviceDescription::kDefaultDeviceId);
@@ -387,9 +386,8 @@ TEST_F(SpeechRecognizerImplTest, CancelBeforeDeviceInfoReceived) {
                             base::WaitableEvent::InitialState::NOT_SIGNALED);
 
   // Block audio thread.
-  audio_manager_->GetTaskRunner()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&base::WaitableEvent::Wait, base::Unretained(&event)));
+  audio_manager_->GetTaskRunner()->PostTask(FROM_HERE,
+                                            event.GetWaitCallbackForTesting());
 
   recognizer_->StartRecognition(
       media::AudioDeviceDescription::kDefaultDeviceId);
@@ -522,8 +520,9 @@ TEST_F(SpeechRecognizerImplTest, StopWithData) {
   proto_alternative->set_transcript("123");
   std::string msg_string;
   proto_event.SerializeToString(&msg_string);
-  msg_string.insert(0u, base::as_string_view(base::U32ToBigEndian(
-                            base::checked_cast<uint32_t>(msg_string.size()))));
+  auto msg_size_bytes =
+      base::U32ToBigEndian(base::checked_cast<uint32_t>(msg_string.size()));
+  msg_string.insert(0u, base::as_string_view(msg_size_bytes));
 
   // Issue the network callback to complete the process.
   const network::TestURLLoaderFactory::PendingRequest* downstream_request;

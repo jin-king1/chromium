@@ -16,7 +16,6 @@
 
 namespace features {
 BASE_FEATURE(kNewBrowsingContextStateOnBrowsingContextGroupSwap,
-             "NewBrowsingContextStateOnBrowsingContextGroupSwap",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BrowsingContextStateImplementationType GetBrowsingContextMode() {
@@ -38,19 +37,17 @@ using perfetto::protos::pbzero::ChromeTrackEvent;
 BrowsingContextState::BrowsingContextState(
     blink::mojom::FrameReplicationStatePtr replication_state,
     RenderFrameHostImpl* parent,
-    std::optional<BrowsingInstanceId> browsing_instance_id,
-    std::optional<base::UnguessableToken> coop_related_group_token)
+    std::optional<BrowsingInstanceId> browsing_instance_id)
     : replication_state_(std::move(replication_state)),
       parent_(parent),
-      browsing_instance_id_(browsing_instance_id),
-      coop_related_group_token_(coop_related_group_token) {
-  TRACE_EVENT_BEGIN("navigation", "BrowsingContextState",
+      browsing_instance_id_(browsing_instance_id) {
+  TRACE_EVENT_BEGIN("navigation.debug", "BrowsingContextState",
                     perfetto::Track::FromPointer(this),
                     "browsing_context_state_when_created", this);
 }
 
 BrowsingContextState::~BrowsingContextState() {
-  TRACE_EVENT_END("navigation", perfetto::Track::FromPointer(this));
+  TRACE_EVENT_END("navigation.debug", perfetto::Track::FromPointer(this));
   CHECK(proxy_hosts_.empty());
 }
 
@@ -78,7 +75,7 @@ RenderFrameProxyHost* BrowsingContextState::GetRenderFrameProxyHostImpl(
     // CHECK to verify that the proxy is being accessed from the correct
     // BrowsingContextState. As both BrowsingContextState (in non-legacy mode)
     // and RenderFrameProxyHost (via SiteInstance) are tied to a given
-    // CoopRelatedGroup, the CoopRelatedGroupId of the BrowsingContextState
+    // BrowsingInstance, the browsing_instance_id of the BrowsingContextState
     // (in the non-legacy mode) and of the SiteInstanceGroup should match. If
     // they do not, the code calling this method has likely chosen the wrong
     // BrowsingContextState (e.g. one from the current RenderFrameHost rather
@@ -89,8 +86,8 @@ RenderFrameProxyHost* BrowsingContextState::GetRenderFrameProxyHostImpl(
     // Note: Outer delegates are an exception, and when we're expecting to
     // interact with one, we should pass in the proper `proxy_access_mode` to
     // not end up in this condition.
-    CHECK_EQ(coop_related_group_token_.value(),
-             site_instance_group->coop_related_group_token());
+    CHECK_EQ(browsing_instance_id_.value(),
+             site_instance_group->browsing_instance_id());
   }
   auto it = proxy_hosts_.find(site_instance_group->GetId());
   if (it != proxy_hosts_.end()) {
@@ -107,8 +104,8 @@ void BrowsingContextState::DeleteRenderFrameProxyHost(
               kSwapForCrossBrowsingInstanceNavigations &&
       proxy_access_mode == ProxyAccessMode::kRegular) {
     // See comments in GetRenderFrameProxyHost for why this check is needed.
-    CHECK_EQ(coop_related_group_token_.value(),
-             site_instance_group->coop_related_group_token());
+    CHECK_EQ(browsing_instance_id_.value(),
+             site_instance_group->browsing_instance_id());
   }
   TRACE_EVENT("navigation", "BrowsingContextState::DeleteRenderFrameProxyHost",
               ChromeTrackEvent::kBrowsingContextState, this,
@@ -133,8 +130,9 @@ RenderFrameProxyHost* BrowsingContextState::CreateRenderFrameProxyHost(
   if (features::GetBrowsingContextMode() ==
       features::BrowsingContextStateImplementationType::
           kLegacyOneToOneWithFrameTreeNode) {
-    DCHECK_EQ(this,
-              frame_tree_node->current_frame_host()->browsing_context_state());
+    CHECK_EQ(this,
+             frame_tree_node->current_frame_host()->browsing_context_state(),
+             base::NotFatalUntil::M152);
   }
 
   if (features::GetBrowsingContextMode() ==
@@ -142,8 +140,8 @@ RenderFrameProxyHost* BrowsingContextState::CreateRenderFrameProxyHost(
               kSwapForCrossBrowsingInstanceNavigations &&
       proxy_access_mode == ProxyAccessMode::kRegular) {
     // See comments in GetRenderFrameProxyHost for why this check is needed.
-    CHECK_EQ(coop_related_group_token_.value(),
-             site_instance_group->coop_related_group_token());
+    CHECK_EQ(browsing_instance_id_.value(),
+             site_instance_group->browsing_instance_id());
   }
 
   auto site_instance_group_id = site_instance_group->GetId();
@@ -245,16 +243,17 @@ void BrowsingContextState::SetFrameName(const std::string& name,
                                         const std::string& unique_name) {
   if (name == replication_state_->name) {
     // |unique_name| shouldn't change unless |name| changes.
-    DCHECK_EQ(unique_name, replication_state_->unique_name);
+    CHECK_EQ(unique_name, replication_state_->unique_name,
+             base::NotFatalUntil::M152);
     return;
   }
 
   if (parent_) {
     // Non-main frames should have a non-empty unique name.
-    DCHECK(!unique_name.empty());
+    CHECK(!unique_name.empty(), base::NotFatalUntil::M152);
   } else {
     // Unique name of main frames should always stay empty.
-    DCHECK(unique_name.empty());
+    CHECK(unique_name.empty(), base::NotFatalUntil::M152);
   }
 
   // Note the unique name should only be able to change before the first real
@@ -319,8 +318,9 @@ void BrowsingContextState::SetInsecureRequestPolicy(
 
 void BrowsingContextState::SetInsecureNavigationsSet(
     const std::vector<uint32_t>& insecure_navigations_set) {
-  DCHECK(std::is_sorted(insecure_navigations_set.begin(),
-                        insecure_navigations_set.end()));
+  CHECK(std::is_sorted(insecure_navigations_set.begin(),
+                       insecure_navigations_set.end()),
+        base::NotFatalUntil::M152);
   if (insecure_navigations_set == replication_state_->insecure_navigations_set)
     return;
   {
@@ -370,6 +370,29 @@ void BrowsingContextState::SetIsAdFrame(bool is_ad_frame) {
   }
 }
 
+bool BrowsingContextState::IsAdFrame() const {
+  return replication_state_->is_ad_frame;
+}
+
+void BrowsingContextState::SetIsSecureContextRoot(bool is_secure_context_root) {
+  if (is_secure_context_root == replication_state_->is_secure_context_root) {
+    return;
+  }
+
+  replication_state_->is_secure_context_root = is_secure_context_root;
+  {
+    TRACE_EVENT("navigation",
+                "BrowsingContextState::SetIsSecureContextRoot broadcast",
+                "is_secure_context_root", is_secure_context_root);
+    ExecuteRemoteFramesBroadcastMethod(
+        [is_secure_context_root](RenderFrameProxyHost* proxy) {
+          proxy->GetAssociatedRemoteFrame()->SetReplicatedIsSecureContextRoot(
+              is_secure_context_root);
+        },
+        /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  }
+}
+
 void BrowsingContextState::ActiveFrameCountIsZero(
     SiteInstanceGroup* site_instance_group) {
   CheckIfSiteInstanceGroupIsUnused(site_instance_group, kActiveFrameCount);
@@ -407,6 +430,15 @@ void BrowsingContextState::CheckIfSiteInstanceGroupIsUnused(
                         ChromeTrackEvent::kRenderFrameProxyHost, proxy);
   }
 
+  // Unregister the RVH from the FrameTree map before deleting the proxy.
+  // After proxy deletion, the RVH would have no proxy or main frame
+  // associated with it. Without this, the stale RVH remains discoverable
+  // in the FrameTree map and can be reused in an uninitialized state,
+  // leading to CHECK failures. This is consistent with the DisallowReuse()
+  // call in RenderFrameHostManager::CommitPending().
+  if (RenderViewHostImpl* rvh = proxy->GetRenderViewHost()) {
+    rvh->DisallowReuse();
+  }
   DeleteRenderFrameProxyHost(site_instance_group);
 }
 
@@ -518,11 +550,6 @@ void BrowsingContextState::WriteIntoTrace(
     perfetto::TracedProto<TraceProto> proto) const {
   if (browsing_instance_id_.has_value()) {
     proto->set_browsing_instance_id(browsing_instance_id_.value().value());
-  }
-
-  if (coop_related_group_token_.has_value()) {
-    proto->set_coop_related_group_token(
-        coop_related_group_token_.value().ToString());
   }
 
   perfetto::TracedDictionary dict = std::move(proto).AddDebugAnnotations();

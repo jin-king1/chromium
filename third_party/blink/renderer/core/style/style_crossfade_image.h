@@ -10,10 +10,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
-
-namespace WTF {
-class String;
-}  // namespace WTF
+#include "third_party/blink/renderer/platform/wtf/forward.h"
 
 namespace blink {
 
@@ -40,7 +37,7 @@ class StyleCrossfadeImage final : public StyleImage {
   bool IsLoading() const override;
   bool IsLoaded() const override;
   bool ErrorOccurred() const override;
-  bool IsAccessAllowed(WTF::String&) const override;
+  bool IsCorsSameOrigin() const override;
 
   NaturalSizingInfo GetNaturalSizingInfo(
       float multiplier,
@@ -55,7 +52,7 @@ class StyleCrossfadeImage final : public StyleImage {
   void RemoveClient(ImageResourceObserver*) override;
 
   scoped_refptr<Image> GetImage(const ImageResourceObserver&,
-                                const Document&,
+                                const Node&,
                                 const ComputedStyle&,
                                 const gfx::SizeF& target_size) const override;
 

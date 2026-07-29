@@ -89,7 +89,7 @@ std::unique_ptr<BnplTosView> CreateAndShowBnplTos(
 // "Save and Fill" suggestion in the credit card dropdown menu. It presents
 // a centered modal dialog where the user can conveniently save a new
 // credit card and simultaneously fill it into the form with a single click.
-base::WeakPtr<SaveAndFillDialogView> CreateAndShowSaveAndFillDialog(
+std::unique_ptr<SaveAndFillDialogView> CreateAndShowSaveAndFillDialog(
     base::WeakPtr<SaveAndFillDialogController> controller,
     content::WebContents* web_contents);
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -97,10 +97,15 @@ base::WeakPtr<SaveAndFillDialogView> CreateAndShowSaveAndFillDialog(
 // Factory function for creating and showing the BNPL issuer selection dialog.
 // This dialog is triggered when the BNPL payment method has been selected and
 // the user needs to select an issuer.
+// `has_seen_ai_terms` indicates whether the user has seen the amount extraction
+// AI terms. In the AI-based amount extraction case, if the user who clicked on
+// the payment form has seen the AI terms, the throbber has to be shown first
+// while the server-side AI is inferencing the final checkout amount.
 std::unique_ptr<payments::SelectBnplIssuerView>
 CreateAndShowBnplIssuerSelectionDialog(
     base::WeakPtr<payments::SelectBnplIssuerDialogController> controller,
-    content::WebContents* web_contents);
+    content::WebContents* web_contents,
+    bool has_seen_ai_terms);
 
 }  // namespace autofill
 

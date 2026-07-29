@@ -200,7 +200,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   ~H264Decoder() override;
 
   // AcceleratedVideoDecoder implementation.
-  void SetStream(int32_t id, const DecoderBuffer& decoder) override;
+  void SetStream(int32_t id, scoped_refptr<DecoderBuffer> decoder) override;
   [[nodiscard]] bool Flush() override;
   void Reset() override;
   [[nodiscard]] DecodeResult Decode() override;
@@ -210,7 +210,6 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   uint8_t GetBitDepth() const override;
   VideoChromaSampling GetChromaSampling() const override;
   VideoColorSpace GetVideoColorSpace() const override;
-  std::optional<gfx::HDRMetadata> GetHDRMetadata() const override;
   size_t GetRequiredNumOfPictures() const override;
   size_t GetNumReferenceFrames() const override;
 
@@ -225,6 +224,12 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   static bool FillH264PictureFromSliceHeader(const H264SPS* sps,
                                              const H264SliceHeader& slice_hdr,
                                              H264Picture* pic);
+
+  void SetCurrPicForTesting(scoped_refptr<H264Picture> pic) { curr_pic_ = pic; }
+  void StoreDPBPicForTesting(scoped_refptr<H264Picture> p);
+  bool ModifyReferencePicListsForTesting(const H264SliceHeader* slice_hdr,
+                                         H264Picture::Vector* ref_pic_list0,
+                                         H264Picture::Vector* ref_pic_list1);
 
  private:
   // Internal state of the decoder.
@@ -250,7 +255,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   };
 
   // Process H264 stream structures.
-  bool ProcessSPS(int sps_id, bool* need_new_buffers);
+  bool ProcessPPSAndSPS(int pps_id, bool* need_new_buffers);
 
   // Processes a CENCv1 encrypted slice header and fills in |curr_slice_hdr_|
   // with the relevant parsed fields.
@@ -351,10 +356,6 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   // Parser in use.
   H264Parser parser_;
 
-  // Most recent call to SetStream().
-  raw_ptr<const uint8_t, DanglingUntriaged> current_stream_ = nullptr;
-  size_t current_stream_size_ = 0;
-
   // Decrypting config for the most recent data passed to SetStream().
   std::unique_ptr<DecryptConfig> current_decrypt_config_;
 
@@ -364,7 +365,10 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
 
   // Keep track of when SetStream() is called so that
   // H264Accelerator::SetStream() can be called.
-  bool current_stream_has_been_changed_ = false;
+  bool decoder_buffer_has_been_changed_ = false;
+
+  // Most recent call to SetStream().
+  scoped_refptr<media::DecoderBuffer> decoder_buffer_;
 
   // DPB in use.
   H264DPB dpb_;
@@ -415,8 +419,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   // Encrypted NALUs preceding a fully encrypted (CENCv1) slice NALU. We need to
   // save these that are part of a single sample so they can all be decrypted
   // together.
-  std::vector<base::raw_span<const uint8_t, DanglingUntriaged>>
-      prior_cencv1_nalus_;
+  std::vector<base::raw_span<const uint8_t>> prior_cencv1_nalus_;
   std::vector<SubsampleEntry> prior_cencv1_subsamples_;
 
   // These are std::nullopt unless get recovery point SEI message after Reset.
@@ -440,7 +443,7 @@ class MEDIA_GPU_EXPORT H264Decoder : public AcceleratedVideoDecoder {
   // Video picture color space of input bitstream.
   VideoColorSpace picture_color_space_;
   // HDR metadata in the bitstream.
-  std::optional<gfx::HDRMetadata> hdr_metadata_;
+  gfx::HDRMetadata hdr_metadata_bitstream_;
 
   // PicOrderCount of the previously outputted frame.
   int last_output_poc_;

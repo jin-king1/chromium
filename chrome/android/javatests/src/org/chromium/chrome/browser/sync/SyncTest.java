@@ -16,23 +16,21 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Matchers;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
 import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
 import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.LocalDataDescription;
 import org.chromium.components.sync.PassphraseType;
+import org.chromium.components.sync.TransportState;
 import org.chromium.components.sync.UserSelectableType;
+import org.chromium.ui.base.DeviceFormFactor;
 
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Set;
 
 /** Test suite for Sync. */
@@ -57,28 +55,26 @@ public class SyncTest {
     @Test
     @LargeTest
     @Feature({"Sync"})
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288619
     public void testStopAndClear() {
-        mSyncTestRule.setUpAccountAndEnableSyncForTesting();
+        mSyncTestRule.getFakeServerHelper().setTrustedVaultNigori(new byte[] {1, 2, 3, 4});
+        mSyncTestRule.setUpAccountAndSignInForTesting();
         CriteriaHelper.pollUiThread(
                 () ->
-                        IdentityServicesProvider.get()
-                                .getIdentityManager(ProfileManager.getLastUsedRegularProfile())
-                                .hasPrimaryAccount(ConsentLevel.SYNC),
-                "Timed out checking that hasPrimaryAccount(ConsentLevel.SYNC) == true",
+                        mSyncTestRule.getSyncService().getPassphraseType()
+                                == PassphraseType.TRUSTED_VAULT_PASSPHRASE,
+                "Timed out checking getPassphraseType() == PassphraseType.TRUSTED_VAULT_PASSPHRASE",
                 SyncTestUtil.TIMEOUT_MS,
                 SyncTestUtil.INTERVAL_MS);
 
         mSyncTestRule.clearServerData();
 
-        // Clearing server data should turn off sync and sign out of chrome.
-        Assert.assertNull(mSyncTestRule.getPrimaryAccount(ConsentLevel.SYNC));
-        Assert.assertFalse(SyncTestUtil.isSyncFeatureEnabled());
+        // Sync should get re-initialized with the default passphrase type, KEYSTORE_PASSPHRASE.
         CriteriaHelper.pollUiThread(
                 () ->
-                        !IdentityServicesProvider.get()
-                                .getIdentityManager(ProfileManager.getLastUsedRegularProfile())
-                                .hasPrimaryAccount(ConsentLevel.SYNC),
-                "Timed out checking that hasPrimaryAccount(ConsentLevel.SYNC) == false",
+                        mSyncTestRule.getSyncService().getPassphraseType()
+                                == PassphraseType.KEYSTORE_PASSPHRASE,
+                "Timed out checking getPassphraseType() == PassphraseType.KEYSTORE_PASSPHRASE",
                 SyncTestUtil.TIMEOUT_MS,
                 SyncTestUtil.INTERVAL_MS);
     }
@@ -87,26 +83,30 @@ public class SyncTest {
     @LargeTest
     @Feature({"Sync"})
     public void testStopAndStartSync() {
-        CoreAccountInfo accountInfo = mSyncTestRule.setUpAccountAndEnableSyncForTesting();
-        Assert.assertEquals(accountInfo, mSyncTestRule.getPrimaryAccount(ConsentLevel.SYNC));
+        CoreAccountInfo accountInfo = mSyncTestRule.setUpAccountAndSignInForTesting();
+        Assert.assertEquals(accountInfo, mSyncTestRule.getPrimaryAccount());
 
         // Signing out should disable sync.
         mSyncTestRule.signOut();
-        Assert.assertFalse(SyncTestUtil.isSyncFeatureEnabled());
-        Assert.assertNull(mSyncTestRule.getPrimaryAccount(ConsentLevel.SYNC));
+        Assert.assertNull(mSyncTestRule.getPrimaryAccount());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Assert.assertEquals(
+                            TransportState.DISABLED,
+                            SyncTestUtil.getSyncServiceForLastUsedProfile().getTransportState());
+                });
 
-        accountInfo = mSyncTestRule.setUpAccountAndEnableSyncForTesting();
-
-        Assert.assertTrue(SyncTestUtil.isSyncFeatureEnabled());
-        Assert.assertEquals(accountInfo, mSyncTestRule.getPrimaryAccount(ConsentLevel.SYNC));
+        accountInfo = mSyncTestRule.setUpAccountAndSignInForTesting();
+        Assert.assertEquals(accountInfo, mSyncTestRule.getPrimaryAccount());
     }
 
     @Test
     @LargeTest
     @Feature({"Sync"})
     public void testIsSyncingUnencryptedUrlsWhileUsingKeystorePassphrase() {
-        mSyncTestRule.setUpAccountAndEnableSyncForTesting();
-        // By default Sync is being setup with KEYSTORE_PASSPHRASE and all types enabled.
+        mSyncTestRule.setUpAccountAndEnableHistorySync();
+
+        // By default Sync is being setup with KEYSTORE_PASSPHRASE.
         CriteriaHelper.pollUiThread(
                 () ->
                         mSyncTestRule.getSyncService().getPassphraseType()
@@ -117,13 +117,12 @@ public class SyncTest {
         waitForIsSyncingUnencryptedUrls(true);
 
         // isSyncingUnencryptedUrls() should return false when history is disabled.
-        mSyncTestRule.disableDataType(UserSelectableType.HISTORY);
+        mSyncTestRule.setSelectedType(UserSelectableType.HISTORY, false);
         waitForIsSyncingUnencryptedUrls(false);
 
-        // Now enable only history datatypes and verify that isSyncingUnencryptedUrls() returns true
+        // Now enable history datatypes and verify that isSyncingUnencryptedUrls() returns true
         // again.
-        mSyncTestRule.setSelectedTypes(
-                false, new HashSet<>(Arrays.asList(UserSelectableType.HISTORY)));
+        mSyncTestRule.setSelectedType(UserSelectableType.HISTORY, true);
         waitForIsSyncingUnencryptedUrls(true);
     }
 
@@ -132,7 +131,7 @@ public class SyncTest {
     @Feature({"Sync"})
     public void testIsSyncingUnencryptedUrlsWhileUsingTrustedVaultPassprhase() {
         mSyncTestRule.getFakeServerHelper().setTrustedVaultNigori(new byte[] {1, 2, 3, 4});
-        mSyncTestRule.setUpAccountAndEnableSyncForTesting();
+        mSyncTestRule.setUpAccountAndEnableHistorySync();
 
         // isSyncingUnencryptedUrls() should treat TRUSTED_VAULT_PASSPHRASE in exactly the same way
         // as KEYSTORE_PASSPHRASE.
@@ -146,13 +145,12 @@ public class SyncTest {
         waitForIsSyncingUnencryptedUrls(true);
 
         // isSyncingUnencryptedUrls() should return false when history is disabled.
-        mSyncTestRule.disableDataType(UserSelectableType.HISTORY);
+        mSyncTestRule.setSelectedType(UserSelectableType.HISTORY, false);
         waitForIsSyncingUnencryptedUrls(false);
 
-        // Now enable only history datatypes and verify that isSyncingUnencryptedUrls() returns true
+        // Now enable history datatype and verify that isSyncingUnencryptedUrls() returns true
         // again.
-        mSyncTestRule.setSelectedTypes(
-                false, new HashSet<>(Arrays.asList(UserSelectableType.HISTORY)));
+        mSyncTestRule.setSelectedType(UserSelectableType.HISTORY, true);
         waitForIsSyncingUnencryptedUrls(true);
     }
 
@@ -160,7 +158,7 @@ public class SyncTest {
     @LargeTest
     @Feature({"Sync"})
     public void testIsSyncingUnencryptedUrlsWhileUsingCustomPassphrase() {
-        mSyncTestRule.setUpAccountAndEnableSyncForTesting();
+        mSyncTestRule.setUpAccountAndSignInForTesting();
         SyncTestUtil.encryptWithPassphrase("passphrase");
         CriteriaHelper.pollUiThread(
                 () ->
@@ -180,7 +178,7 @@ public class SyncTest {
     @Feature({"Sync"})
     public void testGetLocalDataDescription() throws Exception {
         CoreAccountInfo accountInfo = mSyncTestRule.setUpAccountAndSignInForTesting();
-        Assert.assertEquals(accountInfo, mSyncTestRule.getPrimaryAccount(ConsentLevel.SIGNIN));
+        Assert.assertEquals(accountInfo, mSyncTestRule.getPrimaryAccount());
 
         CallbackHelper callbackHelper = new CallbackHelper();
         ThreadUtils.runOnUiThreadBlocking(

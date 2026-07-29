@@ -18,21 +18,22 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/pinned_tabs/pinned_tabs_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/pinned_tabs/pinned_tabs_layout.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_context_menu/tab_context_menu_provider.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/transitions/legacy_grid_transition_layout.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/transitions/tab_grid_transition_item.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/transitions/tab_grid_transition_layout.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_snapshot_and_favicon.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_switcher_item.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_switcher_item_snapshot_and_favicon_data_source.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_utils.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
-#import "ios/public/provider/chrome/browser/modals/modals_api.h"
 #import "ios/web/public/web_state_id.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
 namespace {
 
 // The number of sections for the pinned collection view.
-NSInteger kNumberOfSectionsInPinnedCollection = 1;
+constexpr NSInteger kNumberOfSectionsInPinnedCollection = 1;
 
 // Pinned cell identifier.
 NSString* const kCellIdentifier = @"PinnedCellIdentifier";
@@ -207,47 +208,11 @@ NSIndexPath* CreateIndexPath(NSInteger index) {
   [self dragSessionEnabled:NO];
 }
 
-- (LegacyGridTransitionLayout*)transitionLayout {
-  [self.collectionView layoutIfNeeded];
 
-  LegacyGridTransitionActiveItem* activeItem;
-  LegacyGridTransitionItem* selectionItem;
-
-  NSIndexPath* selectedItemIndexPath =
-      self.collectionView.indexPathsForSelectedItems.firstObject;
-  PinnedCell* selectedCell = base::apple::ObjCCastStrict<PinnedCell>(
-      [self.collectionView cellForItemAtIndexPath:selectedItemIndexPath]);
-  if (!selectedCell) {
-    return nil;
-  }
-
-  if (selectedCell.pinnedItemIdentifier == _selectedItemID) {
-    UICollectionViewLayoutAttributes* attributes = [self.collectionView
-        layoutAttributesForItemAtIndexPath:selectedItemIndexPath];
-    // Normalize frame to window coordinates. The attributes class applies this
-    // change to the other properties such as center, bounds, etc.
-    attributes.frame = [self.collectionView convertRect:attributes.frame
-                                                 toView:nil];
-
-    PinnedTransitionCell* activeCell =
-        [PinnedTransitionCell transitionCellFromCell:selectedCell];
-    activeItem = [LegacyGridTransitionActiveItem itemWithCell:activeCell
-                                                       center:attributes.center
-                                                         size:attributes.size];
-    // If the active item is the last inserted item, it needs to be animated
-    // differently.
-    if (selectedCell.pinnedItemIdentifier == _lastInsertedItemID) {
-      activeItem.isAppearing = YES;
-    }
-
-    selectionItem = [LegacyGridTransitionItem
-        itemWithCell:[PinnedCell transitionSelectionCellFromCell:selectedCell]
-              center:attributes.center];
-  }
-
-  return [LegacyGridTransitionLayout layoutWithInactiveItems:@[]
-                                                  activeItem:activeItem
-                                               selectionItem:selectionItem];
+- (TabGridTransitionLayout*)transitionLayout {
+  return [TabGridTransitionLayout
+      layoutWithActiveCell:self.transitionItemForActiveCell
+                activeGrid:nil];
 }
 
 - (TabGridTransitionItem*)transitionItemForActiveCell {
@@ -272,8 +237,8 @@ NSIndexPath* CreateIndexPath(NSInteger index) {
   attributes.frame = [self.collectionView convertRect:attributes.frame
                                                toView:nil];
 
-  return [TabGridTransitionItem itemWithView:cell
-                               originalFrame:attributes.frame];
+  return [TabGridTransitionItem itemWithSnapshot:cell.snapshot
+                                   originalFrame:attributes.frame];
 }
 
 - (BOOL)isCollectionEmpty {
@@ -414,7 +379,7 @@ NSIndexPath* CreateIndexPath(NSInteger index) {
 }
 
 - (void)dismissModals {
-  ios::provider::DismissModalsForCollectionView(self.collectionView);
+  [self.collectionView.contextMenuInteraction dismissMenu];
 }
 
 #pragma mark - UICollectionViewDataSource
@@ -432,8 +397,7 @@ NSIndexPath* CreateIndexPath(NSInteger index) {
 - (UICollectionViewCell*)collectionView:(UICollectionView*)collectionView
                  cellForItemAtIndexPath:(NSIndexPath*)indexPath {
   NSUInteger itemIndex = base::checked_cast<NSUInteger>(indexPath.item);
-  // TODO(crbug.com/40683330): Remove this when the issue is closed.
-  // This is a preventive fix related to the issue above.
+  // This is a preventive fix related to crbug.com/40683330.
   // Presumably this is a race condition where an item has been deleted at the
   // same time as the collection is doing layout. The assumption is that there
   // will be another, correct layout shortly after the incorrect one.
@@ -842,20 +806,18 @@ NSIndexPath* CreateIndexPath(NSInteger index) {
   if (item) {
     cell.pinnedItemIdentifier = item.identifier;
     cell.title = item.title;
-    [item fetchFavicon:^(TabSwitcherItem* innerItem, UIImage* icon) {
-      // Only update the icon if the cell is not already reused for another
+
+    auto completion = ^(TabSwitcherItem* innerItem,
+                        TabSnapshotAndFavicon* tabSnapshotAndFavicon) {
+      // Only apply changes if the cell is not already reused for another
       // item.
       if (cell.pinnedItemIdentifier == innerItem.identifier) {
-        cell.icon = icon;
+        cell.icon = tabSnapshotAndFavicon.favicon;
+        cell.snapshot = tabSnapshotAndFavicon.snapshot;
       }
-    }];
-    [item fetchSnapshot:^(TabSwitcherItem* innerItem, UIImage* snapshot) {
-      // Only update the icon if the cell is not already reused for another
-      // item.
-      if (cell.pinnedItemIdentifier == innerItem.identifier) {
-        cell.snapshot = snapshot;
-      }
-    }];
+    };
+    [self.snapshotAndfaviconDataSource fetchTabSnapshotAndFavicon:item
+                                                       completion:completion];
   }
 
   cell.accessibilityIdentifier = [NSString

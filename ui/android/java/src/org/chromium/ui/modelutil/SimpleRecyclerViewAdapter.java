@@ -38,7 +38,7 @@ public class SimpleRecyclerViewAdapter
                 mCurrentMcp;
 
         /** The view binder that knows how to apply a model to the view this holder owns. */
-        private ViewBinder<PropertyModel, View, PropertyKey> mBinder;
+        private final ViewBinder<PropertyModel, View, PropertyKey> mBinder;
 
         /** A handle to the model currently held by this view holder. */
         public @Nullable PropertyModel model;
@@ -70,13 +70,16 @@ public class SimpleRecyclerViewAdapter
     /** The observer that watches the data for changes. */
     private final ListObserver<Void> mListObserver;
 
-    /** A map of view types to view binders. */
+    /**
+     * A map of view types to view binders. ViewBinder intentionally omits generic params since
+     * different view types use different params.
+     */
     private final SparseArray<Pair<ViewBuilder, ViewBinder>> mViewBuilderMap = new SparseArray<>();
 
     public SimpleRecyclerViewAdapter(ModelList data) {
         mListData = data;
         mListObserver =
-                new ListObserver<Void>() {
+                new ListObserver<>() {
                     @Override
                     public void onItemRangeInserted(ListObservable source, int index, int count) {
                         notifyItemRangeInserted(index, count);
@@ -142,6 +145,7 @@ public class SimpleRecyclerViewAdapter
         return assumeNonNull(mViewBuilderMap.get(typeId)).first.buildView(parent);
     }
 
+    @SuppressWarnings("unchecked") // .second is missing generics.
     @Override
     public ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
         return new ViewHolder(

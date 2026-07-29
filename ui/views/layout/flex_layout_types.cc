@@ -8,8 +8,11 @@
 #include <tuple>
 #include <utility>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "ui/gfx/geometry/size.h"
@@ -190,6 +193,28 @@ gfx::Size GetPreferredSize(MinimumFlexSizeRule minimum_width_rule,
 
 }  // namespace
 
+// RuleAndPredicate
+// --------------------------------------------------------
+
+RuleAndPredicate::RuleAndPredicate(int order,
+                                   FlexRule rule,
+                                   RuleEnabledPredicate rule_enabled_predicate)
+    : order(order),
+      rule(std::move(rule)),
+      rule_enabled_predicate(std::move(rule_enabled_predicate)) {}
+
+RuleAndPredicate::RuleAndPredicate(const RuleAndPredicate& other) = default;
+
+RuleAndPredicate& RuleAndPredicate::operator=(const RuleAndPredicate& other) =
+    default;
+
+RuleAndPredicate::RuleAndPredicate(RuleAndPredicate&& other) noexcept = default;
+
+RuleAndPredicate& RuleAndPredicate::operator=(
+    RuleAndPredicate&& other) noexcept = default;
+
+RuleAndPredicate::~RuleAndPredicate() = default;
+
 // FlexSpecification -----------------------------------------------------------
 
 FlexSpecification::FlexSpecification()
@@ -202,6 +227,24 @@ FlexSpecification::FlexSpecification()
 
 FlexSpecification::FlexSpecification(FlexRule rule)
     : rule_(std::move(rule)), weight_(1) {}
+
+FlexSpecification::FlexSpecification(
+    std::vector<RuleAndPredicate> rules_and_predicates)
+    : weight_(1), rules_and_predicates_(std::move(rules_and_predicates)) {
+  CHECK(!rules_and_predicates_.empty());
+
+  // These shouldn't be necessary, but best to initialize everything. Done down
+  // here instead of using initializers to be after the CHECK().
+  rule_ = rules_and_predicates_.front().rule;
+  order_ = rules_and_predicates_.front().order;
+
+  // The last rule, and only the last rule, must have a null
+  // `rule_enabled_predicate`.
+  for (size_t i = 0; i < rules_and_predicates_.size(); ++i) {
+    CHECK_EQ(rules_and_predicates_[i].rule_enabled_predicate.is_null(),
+             i == rules_and_predicates_.size() - 1);
+  }
+}
 
 FlexSpecification::FlexSpecification(MinimumFlexSizeRule minimum_size_rule,
                                      MaximumFlexSizeRule maximum_size_rule,
@@ -250,6 +293,9 @@ FlexSpecification FlexSpecification::WithWeight(int weight) const {
 
 FlexSpecification FlexSpecification::WithOrder(int order) const {
   DCHECK_GE(order, 1);
+  // This doesn't do anything meaningful for FlexSpecifications with non-empty
+  // `rules_and_predicates_`.
+  DCHECK(rules_and_predicates_.empty());
   FlexSpecification spec = *this;
   spec.order_ = order;
   return spec;
@@ -262,6 +308,22 @@ FlexSpecification FlexSpecification::WithAlignment(
   return spec;
 }
 
+std::pair<FlexRule, int> FlexSpecification::GetRuleAndOrderForBounds(
+    const SizeBounds& bounds) const {
+  if (rules_and_predicates_.empty()) {
+    return {rule_, order_};
+  }
+  for (const auto& item : rules_and_predicates_) {
+    if (item.rule_enabled_predicate.is_null() ||
+        item.rule_enabled_predicate.Run(bounds)) {
+      return {item.rule, item.order};
+    }
+  }
+  // If `rules_and_predicates_` is non-null, the last one must have a null
+  // `rule_enabled_predicate`.
+  NOTREACHED();
+}
+
 // Inset1D ---------------------------------------------------------------------
 
 void Inset1D::SetInsets(int leading, int trailing) {
@@ -272,20 +334,6 @@ void Inset1D::SetInsets(int leading, int trailing) {
 void Inset1D::Expand(int leading, int trailing) {
   leading_ += leading;
   trailing_ += trailing;
-}
-
-bool Inset1D::operator==(const Inset1D& other) const {
-  return std::tie(leading_, trailing_) ==
-         std::tie(other.leading_, other.trailing_);
-}
-
-bool Inset1D::operator!=(const Inset1D& other) const {
-  return !(*this == other);
-}
-
-bool Inset1D::operator<(const Inset1D& other) const {
-  return std::tie(leading_, trailing_) <
-         std::tie(other.leading_, other.trailing_);
 }
 
 std::string Inset1D::ToString() const {
@@ -358,20 +406,12 @@ void Span::Align(const Span& container,
   }
 }
 
-bool Span::operator==(const Span& other) const {
-  return std::tie(start_, length_) == std::tie(other.start_, other.length_);
-}
-
-bool Span::operator!=(const Span& other) const {
-  return !(*this == other);
-}
-
-bool Span::operator<(const Span& other) const {
-  return std::tie(start_, length_) < std::tie(other.start_, other.length_);
-}
-
 std::string Span::ToString() const {
   return base::StringPrintf("%d [%d]", start(), length());
 }
 
 }  // namespace views
+
+DEFINE_ENUM_CONVERTERS(views::FlexAllocationOrder,
+                       {views::FlexAllocationOrder::kNormal, u"kNormal"},
+                       {views::FlexAllocationOrder::kReverse, u"kReverse"})

@@ -17,6 +17,7 @@
 #include "base/barrier_callback.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
@@ -48,6 +49,7 @@
 #include "components/visited_url_ranking/public/url_visit_schema.h"
 #include "components/visited_url_ranking/public/url_visit_util.h"
 #include "components/visited_url_ranking/public/visited_url_ranking_service.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 
 using segmentation_platform::AnnotatedNumericResult;
 using segmentation_platform::InputContext;
@@ -100,6 +102,8 @@ const char* URLVisitAggregatesTransformTypeName(
       return "SegmentationMetricsData";
     case URLVisitAggregatesTransformType::kHistoryBrowserTypeFilter:
       return "HistoryBrowserTypeFilter";
+    case URLVisitAggregatesTransformType::kTabEventsData:
+      return "TabEventsData";
   }
 }
 
@@ -146,7 +150,7 @@ ComputeURLVisitAggregates(
 
       URLVisitAggregate& aggregate = url_visit_map.at(url_data.first);
       std::visit(
-          URLVisitVariantHelper{
+          absl::Overload{
               [&aggregate](URLVisitAggregate::TabData& tab_data) {
                 aggregate.fetcher_data_map.emplace(
                     tab_data.last_active_tab.session_name.has_value()
@@ -418,6 +422,9 @@ void VisitedURLRankingServiceImpl::RecordAction(
   VLOG(2) << "visited_url_ranking: RecordAction for " << visit_id << " "
           << static_cast<int>(action);
   base::UmaHistogramEnumeration("VisitedURLRanking.ScoredURLAction", action);
+  if (!visited_url_ranking::features::kVisitedURLRankingRecordActions.Get()) {
+    return;
+  }
 
   const char* event_name = EventNameForAction(action);
   segmentation_platform::DatabaseClient::StructuredEvent visit_event = {
@@ -434,7 +441,7 @@ void VisitedURLRankingServiceImpl::RecordAction(
   // would assume if the user clicks on first 5 mins, then it's a success,
   // otherwise failure.
   if (action == ScoredURLUserAction::kSeen) {
-    if (base::RandInt(1, seen_records_sampling_rate_) > 1) {
+    if (base::RandIntInclusive(1, seen_records_sampling_rate_) > 1) {
       return;
     }
     wait_for_activation = seen_record_delay_;
@@ -445,6 +452,15 @@ void VisitedURLRankingServiceImpl::RecordAction(
                      weak_ptr_factory_.GetWeakPtr(), action, visit_id,
                      visit_request_id),
       wait_for_activation);
+}
+
+void VisitedURLRankingServiceImpl::RegisterTransformer(
+    URLVisitAggregatesTransformType type,
+    std::unique_ptr<URLVisitAggregatesTransformer> transformer) {
+  if (transformers_.count(type)) {
+    return;
+  }
+  transformers_.emplace(type, std::move(transformer));
 }
 
 void VisitedURLRankingServiceImpl::TriggerTrainingData(

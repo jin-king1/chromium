@@ -7,28 +7,27 @@
 
 #import <UIKit/UIKit.h>
 
-#import "ios/chrome/browser/search_with/ui_bundled/search_with_delegate.h"
+#import "ios/chrome/browser/browser_content/model/edit_menu_builder.h"
 
-@protocol ApplicationCommands;
+@protocol SceneCommands;
 class TemplateURLService;
-class WebStateList;
 
 // Mediator that mediates between the browser container views and the
 // search with tab helpers.
-@interface SearchWithMediator : NSObject <SearchWithDelegate>
+@interface SearchWithMediator : NSObject <EditMenuBuilder>
 
-// Initializer for a mediator. `webStateList` is the WebStateList for the
-// BrowserContainer that owns this mediator.
-- (instancetype)initWithWebStateList:(WebStateList*)webStateList
-                  templateURLService:(TemplateURLService*)templateURLService
-                           incognito:(BOOL)incognito NS_DESIGNATED_INITIALIZER;
+// Initializer for a mediator.
+- (instancetype)initWithTemplateURLService:
+                    (TemplateURLService*)templateURLService
+                                 incognito:(BOOL)incognito
+    NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 // Disconnects the mediator.
 - (void)shutdown;
 
-// The handler for ApplicationCommands commands.
-@property(nonatomic, weak) id<ApplicationCommands> applicationCommandHandler;
+// The handler for SceneCommands commands.
+@property(nonatomic, weak) id<SceneCommands> sceneHandler;
 
 @end
 

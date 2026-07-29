@@ -6,6 +6,7 @@
 
 #import <memory>
 
+#import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/test/fake_browser_observer.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
@@ -17,10 +18,17 @@
 class BrowserImplTest : public PlatformTest {
  protected:
   BrowserImplTest() {
-    TestProfileIOS::Builder test_cbs_builder;
-    profile_ = std::move(test_cbs_builder).Build();
-    scene_state_ = [[FakeSceneState alloc] initWithAppState:nil
-                                                    profile:profile_.get()];
+    TestProfileIOS::Builder test_profile_builder;
+    test_profile_builder.AddTestingFactory(
+        tab_groups::TabGroupSyncServiceFactory::GetInstance(),
+        tab_groups::TabGroupSyncServiceFactory::GetDefaultFactory());
+    profile_ = std::move(test_profile_builder).Build();
+    scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
+  }
+
+  ~BrowserImplTest() override {
+    [scene_state_ shutdown];
+    scene_state_ = nil;
   }
 
   std::unique_ptr<BrowserImpl> CreateBrowser() {

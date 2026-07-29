@@ -4,9 +4,10 @@
 
 #import "base/ios/ios_util.h"
 #import "base/test/ios/wait_util.h"
+#import "ios/chrome/browser/autofill/manual_fill/test/manual_fill_matchers.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
-#import "ios/chrome/browser/autofill/ui_bundled/manual_fill/manual_fill_matchers.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/common/ui/elements/form_input_accessory_view.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
@@ -79,18 +80,9 @@ void CheckBrandingHasVisiblity(BOOL visibility) {
 // Opens the manual fallback menu by pressing the right keyboard accessory
 // button.
 void OpenManualFallback() {
-  id<GREYMatcher> button_to_tap;
-  if ([AutofillAppInterface isKeyboardAccessoryUpgradeEnabled]) {
-    button_to_tap = grey_allOf(grey_accessibilityLabel(l10n_util::GetNSString(
-                                   IDS_IOS_AUTOFILL_PASSWORD_AUTOFILL_DATA)),
-                               grey_ancestor(grey_accessibilityID(
-                                   kFormInputAccessoryViewAccessibilityID)),
-                               nil);
-  } else {
-    button_to_tap = manual_fill::PasswordIconMatcher();
-  }
-
-  [[EarlGrey selectElementWithMatcher:button_to_tap] performAction:grey_tap()];
+  [[EarlGrey
+      selectElementWithMatcher:manual_fill::PasswordManualFillViewButton()]
+      performAction:grey_tap()];
 }
 
 }  // namespace
@@ -105,6 +97,10 @@ void OpenManualFallback() {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config;
+  // TODO(crbug.com/517130372): Re-enable when FullscreenRefactoring is fixed.
+  if ([self isRunningTest:@selector(testBrandingTwoImpressions)]) {
+    config.features_disabled.push_back(kFullscreenRefactoring);
+  }
   // Relaunch app at each test to rewind the startup state.
   config.relaunch_policy = ForceRelaunchByCleanShutdown;
   return config;
@@ -147,11 +143,6 @@ void OpenManualFallback() {
   BringUpKeyboard();
   CheckBrandingHasVisiblity(YES);
   OpenManualFallback();
-
-  if (!base::ios::IsRunningOnIOS16OrLater() && [ChromeEarlGrey isIPadIdiom]) {
-    [ChromeEarlGreyUI dismissByTappingOnTheWindowOfPopover:
-                          manual_fill::PasswordTableViewMatcher()];
-  }
 
   DismissKeyboard();
   // Second time: branding is still visible after user interacts with a keyboard

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "components/optimization_guide/core/prediction_manager.h"
+#include "components/optimization_guide/core/delivery/prediction_manager.h"
 
 #include <memory>
 
@@ -12,12 +12,12 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
+#include "base/task/thread_pool.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/optimization_guide/browser_test_util.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
@@ -32,16 +32,14 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/component_updater/pref_names.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
-#include "components/optimization_guide/core/model_util.h"
-#include "components/optimization_guide/core/optimization_guide_constants.h"
+#include "components/optimization_guide/core/delivery/model_util.h"
+#include "components/optimization_guide/core/delivery/prediction_model_download_manager.h"
+#include "components/optimization_guide/core/delivery/prediction_model_override.h"
+#include "components/optimization_guide/core/hints/optimization_guide_store.h"
+#include "components/optimization_guide/core/hints/store_update_data.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_store.h"
 #include "components/optimization_guide/core/optimization_guide_switches.h"
-#include "components/optimization_guide/core/optimization_guide_test_util.h"
-#include "components/optimization_guide/core/prediction_model_download_manager.h"
-#include "components/optimization_guide/core/prediction_model_override.h"
-#include "components/optimization_guide/core/store_update_data.h"
 #include "components/optimization_guide/proto/models.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/variations/hashing.h"
@@ -54,7 +52,7 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
 #endif
 
@@ -98,18 +96,17 @@ void SetUpValidModelInfoReceival(ModelFileObserver* model_file_observer,
                   proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD);
         EXPECT_TRUE(model_info.has_value());
 
-        EXPECT_EQ(123, model_info->GetVersion());
-        EXPECT_TRUE(model_info->GetModelFilePath().IsAbsolute());
-        EXPECT_TRUE(base::PathExists(model_info->GetModelFilePath()));
+        EXPECT_EQ(123, model_info->version);
+        EXPECT_TRUE(model_info->model_file_path.IsAbsolute());
+        EXPECT_TRUE(base::PathExists(model_info->model_file_path));
 
         EXPECT_EQ(expected_additional_files.size(),
-                  model_info->GetAdditionalFiles().size());
-        for (const base::FilePath& add_file :
-             model_info->GetAdditionalFiles()) {
+                  model_info->additional_files.size());
+        for (const base::FilePath& add_file : model_info->additional_files) {
           EXPECT_TRUE(add_file.IsAbsolute());
           EXPECT_TRUE(base::PathExists(add_file));
-          EXPECT_TRUE(base::Contains(expected_additional_files,
-                                     add_file.BaseName().value()));
+          EXPECT_TRUE(
+              expected_additional_files.contains(add_file.BaseName().value()));
         }
         run_loop->Quit();
       },
@@ -146,7 +143,7 @@ class PredictionManagerBrowserTestBase : public InProcessBrowserTest {
         net::EmbeddedTestServer::TYPE_HTTPS);
     net::EmbeddedTestServer::ServerCertificateConfig models_server_cert_config;
     models_server_cert_config.dns_names = {
-        GURL(kOptimizationGuideServiceGetModelsDefaultURL).host()};
+        features::GetOptimizationGuideServiceGetModelsURL().GetHost()};
     models_server_cert_config.ip_addresses = {net::IPAddress::IPv4Localhost()};
     models_server_->SetSSLConfig(models_server_cert_config);
     models_server_->ServeFilesFromSourceDirectory(
@@ -188,8 +185,9 @@ class PredictionManagerBrowserTestBase : public InProcessBrowserTest {
     cmd->AppendSwitchASCII(
         switches::kOptimizationGuideServiceGetModelsURL,
         models_server_
-            ->GetURL(GURL(kOptimizationGuideServiceGetModelsDefaultURL).host(),
-                     "/")
+            ->GetURL(
+                features::GetOptimizationGuideServiceGetModelsURL().GetHost(),
+                "/")
             .spec());
     cmd->AppendSwitchASCII("force-variation-ids", "4");
   }
@@ -200,16 +198,19 @@ class PredictionManagerBrowserTestBase : public InProcessBrowserTest {
   }
 
   void RegisterWithKeyedService(ModelFileObserver* model_file_observer) {
-    OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->profile())
+    OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->GetProfile())
         ->AddObserverForOptimizationTargetModel(
             optimization_guide::proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD,
-            std::nullopt, model_file_observer);
+            std::nullopt,
+            base::ThreadPool::CreateSequencedTaskRunner(
+                {base::MayBlock(), base::TaskPriority::BEST_EFFORT}),
+            model_file_observer);
   }
 
   PredictionManager* GetPredictionManager() {
     OptimizationGuideKeyedService* optimization_guide_keyed_service =
         OptimizationGuideKeyedServiceFactory::GetForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     return optimization_guide_keyed_service->GetPredictionManager();
   }
 
@@ -230,6 +231,7 @@ class PredictionManagerBrowserTestBase : public InProcessBrowserTest {
     if (request.GetURL() == model_file_with_good_additional_file_url_) {
       return nullptr;
     }
+
     if (request.GetURL() == model_file_with_nonexistent_additional_file_url_) {
       return nullptr;
     }
@@ -312,7 +314,6 @@ class PredictionManagerBrowserTest : public PredictionManagerBrowserTestBase {
   void InitializeFeatureList() override {
     std::vector<base::test::FeatureRefAndParams> enabled_features = {
         {optimization_guide::features::kOptimizationHints, {}},
-        {optimization_guide::features::kRemoteOptimizationGuideFetching, {}},
         {optimization_guide::features::kOptimizationTargetPrediction,
          {{"fetch_startup_delay_ms", "8000"}}},
     };
@@ -409,7 +410,7 @@ class PredictionManagerModelDownloadingBrowserTest
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     PredictionManagerBrowserTest::SetUpCommandLine(command_line);
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     command_line->AppendSwitch(
         ash::switches::kIgnoreUserProfileMappingForTests);
 #endif
@@ -427,20 +428,20 @@ class PredictionManagerModelDownloadingBrowserTest
 
   void RegisterModelFileObserverWithKeyedService(Profile* profile = nullptr) {
     OptimizationGuideKeyedServiceFactory::GetForProfile(
-        profile ? profile : browser()->profile())
+        profile ? profile : browser()->GetProfile())
         ->AddObserverForOptimizationTargetModel(
             proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD,
-            /*model_metadata=*/std::nullopt, model_file_observer_.get());
+            /*model_metadata=*/std::nullopt,
+            base::ThreadPool::CreateSequencedTaskRunner(
+                {base::MayBlock(), base::TaskPriority::BEST_EFFORT}),
+            model_file_observer_.get());
   }
 
  private:
   void InitializeFeatureList() override {
     std::vector<base::test::FeatureRefAndParams> enabled_features = {
         {features::kOptimizationHints, {}},
-        {features::kRemoteOptimizationGuideFetching, {}},
         {features::kOptimizationTargetPrediction, {}},
-        {features::kOptimizationGuideModelDownloading,
-         {{"unrestricted_model_downloading", "true"}}},
     };
     scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features, {});
   }
@@ -448,7 +449,7 @@ class PredictionManagerModelDownloadingBrowserTest
   std::unique_ptr<ModelFileObserver> model_file_observer_;
 };
 
-// Flaky on various bots. See https://crbug.com/1266318
+// Flaky on various bots. See https://crbug.com/40802033
 IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
                        DISABLED_TestIncognitoUsesModelFromRegularProfile) {
   SetResponseType(
@@ -488,8 +489,8 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
     base::HistogramTester otr_histogram_tester;
     std::unique_ptr<base::RunLoop> run_loop = std::make_unique<base::RunLoop>();
     SetUpValidModelInfoReceival(model_file_observer(), run_loop.get());
-    Browser* otr_browser = CreateIncognitoBrowser(browser()->profile());
-    RegisterModelFileObserverWithKeyedService(otr_browser->profile());
+    Browser* otr_browser = CreateIncognitoBrowser(browser()->GetProfile());
+    RegisterModelFileObserverWithKeyedService(otr_browser->GetProfile());
 
     run_loop->Run();
 
@@ -498,37 +499,6 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
     otr_histogram_tester.ExpectTotalCount(
         "OptimizationGuide.PredictionModelUpdateVersion.PainfulPageLoad", 0);
   }
-}
-
-// TODO(crbug.com/336399137): Flaky on Linux Chromium OS ASan LSan Tests.
-#if BUILDFLAG(IS_CHROMEOS_ASH) && defined(ADDRESS_SANITIZER)
-#define MAYBE_TestIncognitoDoesntFetchModels \
-  DISABLED_TestIncognitoDoesntFetchModels
-#else
-#define MAYBE_TestIncognitoDoesntFetchModels TestIncognitoDoesntFetchModels
-#endif
-IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
-                       MAYBE_TestIncognitoDoesntFetchModels) {
-  base::HistogramTester histogram_tester;
-
-  SetResponseType(PredictionModelsFetcherRemoteResponseType::
-                      kSuccessfulWithInvalidModelFile);
-
-  Browser* otr_browser = CreateIncognitoBrowser(browser()->profile());
-
-  // Registering should not initiate the fetch and the model updated callback
-  // should not be triggered too.
-  RegisterModelFileObserverWithKeyedService(otr_browser->profile());
-
-  SetUpNoModelInfoReceival(model_file_observer());
-  RetryForHistogramUntilCountReached(
-      &histogram_tester, "OptimizationGuide.PredictionManager.StoreInitialized",
-      1);
-
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionModelDownloadManager.DownloadStatus", 0);
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionModelUpdateVersion.PainfulPageLoad", 0);
 }
 
 IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
@@ -886,57 +856,6 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
   CreateBrowser(&profile);
 }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS_ASH)
-// CreateGuestBrowser() is not supported for Android or ChromeOS out of the box.
-IN_PROC_BROWSER_TEST_F(PredictionManagerModelDownloadingBrowserTest,
-                       GuestProfileReceivesModel) {
-  SetResponseType(
-      PredictionModelsFetcherRemoteResponseType::kSuccessfulWithValidModelFile);
-
-  {
-    base::HistogramTester histogram_tester;
-    // Register in the primary profile and ensure the model returns.
-    RegisterModelFileObserverWithKeyedService(browser()->profile());
-
-    std::unique_ptr<base::RunLoop> run_loop = std::make_unique<base::RunLoop>();
-    SetUpValidModelInfoReceival(model_file_observer(), run_loop.get());
-    run_loop->Run();
-    histogram_tester.ExpectUniqueSample(
-        "OptimizationGuide.PredictionModelDownloadManager.DownloadStatus",
-        PredictionModelDownloadStatus::kSuccess, 1);
-  }
-
-  {
-    base::HistogramTester histogram_tester;
-    // Now hook everything up in the guest profile and we should still get the
-    // model back but no additional fetches should be made.
-    Browser* guest_browser = CreateGuestBrowser();
-
-    // To prevent any race, ensure the store has be initialized.
-    RetryForHistogramUntilCountReached(
-        &histogram_tester,
-        "OptimizationGuide.PredictionManager.StoreInitialized", 1);
-    std::unique_ptr<base::RunLoop> run_loop = std::make_unique<base::RunLoop>();
-    ModelFileObserver model_file_observer;
-    SetUpValidModelInfoReceival(&model_file_observer, run_loop.get());
-    OptimizationGuideKeyedServiceFactory::GetForProfile(
-        guest_browser->profile())
-        ->AddObserverForOptimizationTargetModel(
-            proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD,
-            /*model_metadata=*/std::nullopt, &model_file_observer);
-    // Wait until the opt guide is up and the model is loaded as its shared
-    // between profiles.
-    RetryForHistogramUntilCountReached(
-        &histogram_tester,
-        "OptimizationGuide.PredictionModelLoadedVersion.PainfulPageLoad", 1);
-
-    run_loop->Run();
-    histogram_tester.ExpectTotalCount(
-        "OptimizationGuide.PredictionModelDownloadManager.DownloadStatus", 0);
-  }
-}
-#endif
-
 class PredictionManagerModelPackageOverrideTest : public InProcessBrowserTest {
  public:
   PredictionManagerModelPackageOverrideTest() = default;
@@ -966,10 +885,13 @@ IN_PROC_BROWSER_TEST_F(PredictionManagerModelPackageOverrideTest, TestE2E) {
   SetUpValidModelInfoReceival(&model_file_observer, &run_loop,
                               {FILE_PATH_LITERAL("good_additional_file.txt")});
 
-  OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->profile())
+  OptimizationGuideKeyedServiceFactory::GetForProfile(browser()->GetProfile())
       ->AddObserverForOptimizationTargetModel(
           proto::OPTIMIZATION_TARGET_PAINFUL_PAGE_LOAD,
-          /*model_metadata=*/std::nullopt, &model_file_observer);
+          /*model_metadata=*/std::nullopt,
+          base::ThreadPool::CreateSequencedTaskRunner(
+              {base::MayBlock(), base::TaskPriority::BEST_EFFORT}),
+          &model_file_observer);
 
   run_loop.Run();
 }

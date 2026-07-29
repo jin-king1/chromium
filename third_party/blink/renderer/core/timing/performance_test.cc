@@ -18,10 +18,12 @@
 #include "third_party/blink/renderer/core/testing/null_execution_context.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/core/timing/back_forward_cache_restoration.h"
+#include "third_party/blink/renderer/core/timing/dom_window_performance.h"
 #include "third_party/blink/renderer/core/timing/performance_long_task_timing.h"
 #include "third_party/blink/renderer/core/timing/performance_observer.h"
 #include "third_party/blink/renderer/core/timing/window_performance.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 namespace {
@@ -43,7 +45,8 @@ class TestPerformance : public Performance {
                     ExecutionContext::From(script_state)
                         ->CrossOriginIsolatedCapability(),
                     ExecutionContext::From(script_state)
-                        ->GetTaskRunner(TaskType::kPerformanceTimeline)),
+                        ->GetTaskRunner(TaskType::kPerformanceTimeline),
+                    ExecutionContext::From(script_state)),
         execution_context_(ExecutionContext::From(script_state)) {}
   ~TestPerformance() override = default;
 
@@ -77,6 +80,10 @@ class TestPerformance : public Performance {
 };
 
 class PerformanceTest : public PageTestBase {
+ public:
+  PerformanceTest()
+      : PageTestBase(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+
  protected:
   ~PerformanceTest() override { execution_context_->NotifyContextDestroyed(); }
 
@@ -247,12 +254,15 @@ TEST_F(PerformanceTest, InsertEntryOnEmptyBuffer) {
       .processing_start_time = base_->MsAfterTimeOrigin(0),
       .processing_end_time = base_->MsAfterTimeOrigin(0)};
 
-  PerformanceEventTiming* test_entry = PerformanceEventTiming::Create(
-      AtomicString("event"), info, false, nullptr,
-      LocalDOMWindow::From(scope.GetScriptState()));
+  auto* window = LocalDOMWindow::From(scope.GetScriptState());
+  ASSERT_TRUE(window);
+  auto* performance = DOMWindowPerformance::performance(*window);
+  ASSERT_TRUE(performance);
 
-  base_->InsertEntryIntoSortedBuffer(test_buffer_, *test_entry,
-                                     Performance::kDoNotRecordSwaps);
+  PerformanceEventTiming* test_entry = PerformanceEventTiming::Create(
+      AtomicString("event"), info, false, window, performance->NavigationId());
+
+  base_->InsertEntryIntoSortedBuffer(test_buffer_, *test_entry);
 
   PerformanceEntryVector sorted_buffer_;
   sorted_buffer_.push_back(*test_entry);
@@ -264,6 +274,10 @@ TEST_F(PerformanceTest, InsertEntryOnEmptyBuffer) {
 TEST_F(PerformanceTest, InsertEntryOnExistingBuffer) {
   V8TestingScope scope;
   Initialize(scope.GetScriptState());
+  auto* window = LocalDOMWindow::From(scope.GetScriptState());
+  ASSERT_TRUE(window);
+  auto* performance = DOMWindowPerformance::performance(*window);
+  ASSERT_TRUE(performance);
 
   PerformanceEntryVector test_buffer_;
 
@@ -274,9 +288,10 @@ TEST_F(PerformanceTest, InsertEntryOnExistingBuffer) {
         .creation_time = base_->MsAfterTimeOrigin(tmp * i),
         .processing_start_time = base_->MsAfterTimeOrigin(0),
         .processing_end_time = base_->MsAfterTimeOrigin(0)};
-    PerformanceEventTiming* entry = PerformanceEventTiming::Create(
-        AtomicString("event"), info, false, nullptr,
-        LocalDOMWindow::From(scope.GetScriptState()));
+
+    PerformanceEventTiming* entry =
+        PerformanceEventTiming::Create(AtomicString("event"), info, false,
+                                       window, performance->NavigationId());
     test_buffer_.push_back(*entry);
   }
 
@@ -284,15 +299,14 @@ TEST_F(PerformanceTest, InsertEntryOnExistingBuffer) {
       .creation_time = base_->MsAfterTimeOrigin(1),
       .processing_start_time = base_->MsAfterTimeOrigin(0),
       .processing_end_time = base_->MsAfterTimeOrigin(0)};
+
   PerformanceEventTiming* test_entry = PerformanceEventTiming::Create(
-      AtomicString("event"), info, false, nullptr,
-      LocalDOMWindow::From(scope.GetScriptState()));
+      AtomicString("event"), info, false, window, performance->NavigationId());
 
   // Create copy of the test_buffer_.
   PerformanceEntryVector sorted_buffer_ = test_buffer_;
 
-  base_->InsertEntryIntoSortedBuffer(test_buffer_, *test_entry,
-                                     Performance::kDoNotRecordSwaps);
+  base_->InsertEntryIntoSortedBuffer(test_buffer_, *test_entry);
 
   sorted_buffer_.push_back(*test_entry);
   std::sort(sorted_buffer_.begin(), sorted_buffer_.end(),
@@ -305,6 +319,10 @@ TEST_F(PerformanceTest, InsertEntryOnExistingBuffer) {
 TEST_F(PerformanceTest, InsertEntryToFrontOfBuffer) {
   V8TestingScope scope;
   Initialize(scope.GetScriptState());
+  auto* window = LocalDOMWindow::From(scope.GetScriptState());
+  ASSERT_TRUE(window);
+  auto* performance = DOMWindowPerformance::performance(*window);
+  ASSERT_TRUE(performance);
 
   PerformanceEntryVector test_buffer_;
 
@@ -317,9 +335,9 @@ TEST_F(PerformanceTest, InsertEntryToFrontOfBuffer) {
         .processing_start_time = base_->MsAfterTimeOrigin(0),
         .processing_end_time = base_->MsAfterTimeOrigin(0)};
 
-    PerformanceEventTiming* entry = PerformanceEventTiming::Create(
-        AtomicString("event"), info, false, nullptr,
-        LocalDOMWindow::From(scope.GetScriptState()));
+    PerformanceEventTiming* entry =
+        PerformanceEventTiming::Create(AtomicString("event"), info, false,
+                                       window, performance->NavigationId());
     test_buffer_.push_back(*entry);
   }
 
@@ -329,14 +347,12 @@ TEST_F(PerformanceTest, InsertEntryToFrontOfBuffer) {
       .processing_end_time = base_->MsAfterTimeOrigin(0)};
 
   PerformanceEventTiming* test_entry = PerformanceEventTiming::Create(
-      AtomicString("event"), info, false, nullptr,
-      LocalDOMWindow::From(scope.GetScriptState()));
+      AtomicString("event"), info, false, window, performance->NavigationId());
 
   // Create copy of the test_buffer_.
   PerformanceEntryVector sorted_buffer_ = test_buffer_;
 
-  base_->InsertEntryIntoSortedBuffer(test_buffer_, *test_entry,
-                                     Performance::kDoNotRecordSwaps);
+  base_->InsertEntryIntoSortedBuffer(test_buffer_, *test_entry);
 
   sorted_buffer_.push_back(*test_entry);
   std::sort(sorted_buffer_.begin(), sorted_buffer_.end(),
@@ -348,6 +364,10 @@ TEST_F(PerformanceTest, InsertEntryToFrontOfBuffer) {
 TEST_F(PerformanceTest, MergePerformanceEntryVectorsTest) {
   V8TestingScope scope;
   Initialize(scope.GetScriptState());
+  auto* window = LocalDOMWindow::From(scope.GetScriptState());
+  ASSERT_TRUE(window);
+  auto* performance = DOMWindowPerformance::performance(*window);
+  ASSERT_TRUE(performance);
 
   PerformanceEntryVector first_vector;
   PerformanceEntryVector second_vector;
@@ -362,9 +382,9 @@ TEST_F(PerformanceTest, MergePerformanceEntryVectorsTest) {
         .processing_start_time = base_->MsAfterTimeOrigin(0),
         .processing_end_time = base_->MsAfterTimeOrigin(0)};
 
-    PerformanceEventTiming* entry = PerformanceEventTiming::Create(
-        AtomicString("event"), info, false, nullptr,
-        LocalDOMWindow::From(scope.GetScriptState()));
+    PerformanceEventTiming* entry =
+        PerformanceEventTiming::Create(AtomicString("event"), info, false,
+                                       window, performance->NavigationId());
     first_vector.push_back(*entry);
     test_vector.push_back(*entry);
   }
@@ -377,9 +397,9 @@ TEST_F(PerformanceTest, MergePerformanceEntryVectorsTest) {
         .processing_start_time = base_->MsAfterTimeOrigin(0),
         .processing_end_time = base_->MsAfterTimeOrigin(0)};
 
-    PerformanceEventTiming* entry = PerformanceEventTiming::Create(
-        AtomicString("event"), info, false, nullptr,
-        LocalDOMWindow::From(scope.GetScriptState()));
+    PerformanceEventTiming* entry =
+        PerformanceEventTiming::Create(AtomicString("event"), info, false,
+                                       window, performance->NavigationId());
     second_vector.push_back(*entry);
     test_vector.push_back(*entry);
   }
@@ -394,6 +414,50 @@ TEST_F(PerformanceTest, MergePerformanceEntryVectorsTest) {
             PerformanceEntry::StartTimeCompareLessThan);
 
   EXPECT_EQ(all_entries, test_vector);
+}
+
+TEST_F(PerformanceTest, DeclarativePerformanceObserverOptimization) {
+  ScopedDeclarativePerformanceObserverForTest
+      enable_declarative_performance_observer(true);
+
+  V8TestingScope scope;
+  Initialize(scope.GetScriptState());
+
+  int bind_count = 0;
+  scope.GetFrame().GetBrowserInterfaceBroker().SetBinderForTesting(
+      mojom::blink::DeclarativePerformanceObserverHost::Name_,
+      BindRepeating(
+          [](int* count, mojo::ScopedMessagePipeHandle pipe) {
+            (*count)++;
+            // Drop pipe immediately (simulating non-opt-in page)
+          },
+          Unretained(&bind_count)));
+
+  // 1. Call performance.mark()
+  base_->mark(scope.GetScriptState(), AtomicString("mark_1"), nullptr,
+              scope.GetExceptionState());
+  EXPECT_FALSE(scope.GetExceptionState().HadException());
+
+  // Fast-forward to trigger FlushPerformanceEntries and cause the pipe to drop
+  FastForwardBy(Performance::kBufferTimerDelay);
+
+  // The binding attempt should have been made once
+  EXPECT_EQ(bind_count, 1);
+
+  // 2. Call performance.mark() a second time.
+  // Because it was disconnected, it should skip detail conversion & binding,
+  // so bind_count should NOT increase!
+  base_->mark(scope.GetScriptState(), AtomicString("mark_2"), nullptr,
+              scope.GetExceptionState());
+  EXPECT_FALSE(scope.GetExceptionState().HadException());
+
+  FastForwardBy(Performance::kBufferTimerDelay);
+
+  EXPECT_EQ(bind_count, 1);  // Remains 1!
+
+  // Clean up binder
+  scope.GetFrame().GetBrowserInterfaceBroker().SetBinderForTesting(
+      mojom::blink::DeclarativePerformanceObserverHost::Name_, {});
 }
 
 }  // namespace blink

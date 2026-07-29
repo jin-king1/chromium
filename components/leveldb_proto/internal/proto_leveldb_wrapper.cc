@@ -7,7 +7,7 @@
 #include <string>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
+#include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "components/leveldb_proto/internal/leveldb_database.h"
@@ -408,13 +408,6 @@ void ProtoLevelDBWrapper::Destroy(
 
 void ProtoLevelDBWrapper::SetMetricsId(const std::string& id) {
   metrics_id_ = id;
-}
-
-bool ProtoLevelDBWrapper::GetApproximateMemoryUse(uint64_t* approx_mem_use) {
-  if (!db_)
-    return false;
-
-  return db_->GetApproximateMemoryUse(approx_mem_use);
 }
 
 const scoped_refptr<base::SequencedTaskRunner>&

@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/functional/callback_forward.h"
 #include "base/time/time.h"
 #include "mojo/public/cpp/base/big_buffer.h"
@@ -33,7 +34,7 @@ namespace blink {
 // conditions in which they will be called are identical. See url_request.h
 // for more information.
 class BLINK_PLATFORM_EXPORT ResourceRequestClient
-    : public WTF::RefCounted<ResourceRequestClient> {
+    : public RefCounted<ResourceRequestClient> {
  public:
   // Called as upload progress is made.
   // note: only for requests with upload progress enabled.
@@ -64,7 +65,7 @@ class BLINK_PLATFORM_EXPORT ResourceRequestClient
   // response (including both headers and the body) over the network.
   // |transfer_size_diff| is the difference from the value previously reported
   // one (including the one in OnReceivedResponse). It must be positive.
-  virtual void OnTransferSizeUpdated(int transfer_size_diff) = 0;
+  virtual void OnTransferSizeUpdated(base::ByteSize transfer_size_diff) = 0;
 
   // Called when the response is complete.  This method signals completion of
   // the resource load.
@@ -73,7 +74,7 @@ class BLINK_PLATFORM_EXPORT ResourceRequestClient
 
   virtual ~ResourceRequestClient() = default;
 
-  friend class WTF::RefCounted<ResourceRequestClient>;
+  friend class RefCounted<ResourceRequestClient>;
 };
 
 }  // namespace blink

@@ -14,9 +14,9 @@
 #include "media/base/media_export.h"
 #include "media/formats/hls/parse_status.h"
 #include "media/formats/hls/playlist.h"
-#include "media/formats/hls/tag_recorder.h"
 #include "media/formats/hls/tags.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace media::hls {
 
@@ -46,9 +46,6 @@ class MEDIA_EXPORT MediaPlaylist final : public Playlist {
   MediaPlaylist(MediaPlaylist&&) = delete;
   MediaPlaylist& operator=(const MediaPlaylist&) = delete;
   MediaPlaylist& operator=(MediaPlaylist&&) = delete;
-
-  // `Playlist` implementation
-  Kind GetKind() const override;
 
   // Returns all segments in this playlist, in chronological order. This vector
   // may be copied independently of this Playlist.
@@ -143,10 +140,10 @@ class MEDIA_EXPORT MediaPlaylist final : public Playlist {
   // `tag_recorder` is an optional metrics collection helper.
   static ParseStatus::Or<scoped_refptr<MediaPlaylist>> Parse(
       std::string_view source,
-      GURL uri,
+      GURL playlist_uri,
+      url::Origin security_origin,
       types::DecimalInteger version,
-      const MultivariantPlaylist* parent_playlist,
-      TagRecorder* tag_recorder = nullptr);
+      const MultivariantPlaylist* parent_playlist);
 
  private:
   ~MediaPlaylist() override;

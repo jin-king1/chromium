@@ -20,10 +20,11 @@ import org.chromium.android_webview.common.ProductionSupportedFlagList;
 import org.chromium.android_webview.safe_browsing.AwSafeBrowsingSafeModeAction;
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackUtils;
+import org.chromium.base.SelectionActionMenuClientWrapper;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.net.TrafficStatsTag;
 import org.chromium.net.TrafficStatsUid;
 
@@ -46,6 +47,8 @@ public class AwContentsStatics {
 
     private static volatile int sDefaultTrafficStatsTag = TrafficStatsTag.UNSET_TAG;
     private static volatile int sDefaultTrafficStatsUid = TrafficStatsUid.UNSET_UID;
+
+    private static @Nullable SelectionActionMenuClientWrapper sSelectionActionMenuClient;
 
     /** Return the client certificate lookup table. */
     public static ClientCertLookupTable getClientCertLookupTable() {
@@ -165,20 +168,6 @@ public class AwContentsStatics {
                 });
     }
 
-    /**
-     * Return the first substring consisting of the address of a physical location.
-     *
-     * @see {@link android.webkit.WebView#findAddress(String)}
-     * @param addr The string to search for addresses.
-     * @return the address, or if no address is found, return null.
-     */
-    public static String findAddress(String addr) {
-        if (addr == null) {
-            throw new NullPointerException("addr is null");
-        }
-        return FindAddress.findAddress(addr);
-    }
-
     /** Returns true if WebView is running in multi process mode. */
     public static boolean isMultiProcessEnabled() {
         return AwContentsStaticsJni.get().isMultiProcessEnabled();
@@ -186,18 +175,27 @@ public class AwContentsStatics {
 
     /** Returns the variations header used with the X-Client-Data header. */
     public static String getVariationsHeader() {
-        String header = AwContentsStaticsJni.get().getVariationsHeader();
-        RecordHistogram.recordCount100Histogram(
-                "Android.WebView.VariationsHeaderLength", header.length());
-        return header;
+        return AwContentsStaticsJni.get().getVariationsHeader();
     }
 
+    // Note that this can be called before browser process initialization.
     public static void setDefaultTrafficStatsTag(int tag) {
         sDefaultTrafficStatsTag = tag;
     }
 
+    // Note that this can be called before browser process initialization.
     public static void setDefaultTrafficStatsUid(int uid) {
         sDefaultTrafficStatsUid = uid;
+    }
+
+
+    public static void setSelectionActionMenuClient(
+            @Nullable SelectionActionMenuClientWrapper client) {
+        sSelectionActionMenuClient = client;
+    }
+
+    public static @Nullable SelectionActionMenuClientWrapper getSelectionActionMenuClient() {
+        return sSelectionActionMenuClient;
     }
 
     @CalledByNative
@@ -208,6 +206,12 @@ public class AwContentsStatics {
     @CalledByNative
     static int getDefaultTrafficStatsUid() {
         return sDefaultTrafficStatsUid;
+    }
+
+    public static void forceVariationIdsForTesting(
+            List<String> variationIds, String commandLineVariationIds) {
+        AwContentsStaticsJni.get()
+                .forceVariationIdsForTesting(variationIds, commandLineVariationIds); // IN-TEST
     }
 
     @NativeMethods
@@ -234,5 +238,10 @@ public class AwContentsStatics {
 
         @JniType("std::string")
         String getVariationsHeader();
+
+
+        void forceVariationIdsForTesting( // IN-TEST
+                @JniType("std::vector<std::string>") List<String> variationIds,
+                @JniType("std::string") String commandLineVariationIds);
     }
 }

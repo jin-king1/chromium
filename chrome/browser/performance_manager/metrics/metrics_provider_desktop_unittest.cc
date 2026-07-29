@@ -4,6 +4,7 @@
 
 #include "chrome/browser/performance_manager/metrics/metrics_provider_desktop.h"
 
+#include "base/system/sys_info.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/performance_manager/public/user_tuning/user_performance_tuning_manager.h"
@@ -26,6 +27,12 @@ class PerformanceManagerMetricsProviderDesktopTest : public testing::Test {
                                        MemorySaverModeState::kEnabled
                                  : performance_manager::user_tuning::prefs::
                                        MemorySaverModeState::kDisabled));
+  }
+
+  void SetDiskMetricsForTesting(base::ByteSize available,
+                                base::ByteSize total) {
+    provider()->SetDiskMetricsForTesting(
+        base::SysInfo::DiskSpaceInfo{.total = total, .available = available});
   }
 
   void SetBatterySaverEnabled(bool enabled) {
@@ -64,6 +71,8 @@ class PerformanceManagerMetricsProviderDesktopTest : public testing::Test {
     task_environment_.FastForwardBy(delta);
   }
 
+  void RunUntilIdle() { task_environment_.RunUntilIdle(); }
+
  private:
   void SetUp() override {
     performance_manager::user_tuning::prefs::RegisterLocalStatePrefs(
@@ -79,6 +88,7 @@ class PerformanceManagerMetricsProviderDesktopTest : public testing::Test {
   }
 
   void TearDown() override {
+    provider()->SetDiskMetricsForTesting(std::nullopt);
     // Tests may teardown the environment before this is called to make some
     // assertions.
     if (user_performance_tuning_env_) {
@@ -298,4 +308,20 @@ TEST_F(PerformanceManagerMetricsProviderDesktopTest,
   tester.ExpectTotalCount(
       "CPU.Experimental.CpuEstimationTaskWallTime.Performance",
       SHOULD_COLLECT_CPU_FREQUENCY_METRICS() ? 1 : 0);
+}
+
+TEST_F(PerformanceManagerMetricsProviderDesktopTest,
+       RecordDiskMetricsWithZeroTotal) {
+  InitProvider();
+  SetDiskMetricsForTesting(base::ByteSize(0), base::ByteSize(0));
+  // The disk metrics task is posted during InitProvider. Run until it's done.
+  RunUntilIdle();
+
+  base::HistogramTester tester;
+  provider()->ProvideCurrentSessionData(nullptr);
+
+  tester.ExpectTotalCount("PerformanceManager.DiskStats.UserDataDirFreeSpaceMb",
+                          0);
+  tester.ExpectTotalCount(
+      "PerformanceManager.DiskStats.UserDataDirFreeSpacePercent", 0);
 }

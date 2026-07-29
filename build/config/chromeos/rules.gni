@@ -4,7 +4,6 @@
 
 import("//build/config/chrome_build.gni")
 import("//build/config/chromeos/args.gni")
-import("//build/config/chromeos/ui_mode.gni")
 import("//build/config/dcheck_always_on.gni")
 import("//build/config/gclient_args.gni")
 import("//build/config/python.gni")
@@ -32,18 +31,7 @@ if (cros_sdk_version != "") {
   #
   _symlink_map = []
   _symlink_targets_map = []
-
-  if (is_chromeos_ash) {
-    _potential_test_boards = [ cros_board ]
-  } else {
-    _potential_test_boards = []
-    if (cros_boards != "") {
-      _potential_test_boards += string_split(cros_boards, ":")
-    }
-    if (cros_boards_with_qemu_images != "") {
-      _potential_test_boards += string_split(cros_boards_with_qemu_images, ":")
-    }
-  }
+  _potential_test_boards = [ cros_board ]
 
   foreach(b, _potential_test_boards) {
     _cache_path_prefix =
@@ -61,7 +49,8 @@ if (cros_sdk_version != "") {
       # Tast harness & test data.
       rebase_path("${_cache_path_prefix}+autotest_server_package.tar.bz2"),
 
-      # Binutils (and other toolchain tools) used to deploy Chrome to the device.
+      # Binutils (and other toolchain tools) used to deploy Chrome to the
+      # device.
       rebase_path(
           "${_cache_path_prefix}+environment_chromeos-base_chromeos-chrome.tar.xz"),
       rebase_path("${_cache_path_prefix}+target_toolchain"),
@@ -359,13 +348,11 @@ template("generate_runner_script") {
         # Run the test sudo helper.
         executable_args += [ "--run-test-sudo-helper" ]
 
-        if (is_chromeos_ash) {
-          # For ash, it need to first stop the existing ash.
-          executable_args += [ "--stop-ui" ]
+        # It need to first stop the existing chromeos-chrome.
+        executable_args += [ "--stop-ui" ]
 
-          # Use the deployed dbus configs.
-          executable_args += [ "--use-deployed-dbus-configs" ]
-        }
+        # Use the deployed dbus configs.
+        executable_args += [ "--use-deployed-dbus-configs" ]
 
         # Make the tests match the browser's selinux tags so it gets the same
         # security context as the browser would.
@@ -540,7 +527,7 @@ template("tast_test") {
   }
 
   _data_deps = [
-    "//:chromiumos_preflight",  # Builds the browser.
+    "//:chromiumos_preflight_minimal",  # Builds the browser.
     "//chromeos:cros_chrome_deploy",  # Adds additional browser run-time deps.
 
     # Tools used to symbolize Chrome crash dumps.
@@ -550,7 +537,12 @@ template("tast_test") {
     "//third_party/breakpad:minidump_dump",
     "//third_party/breakpad:minidump_stackwalk",
   ]
-  _data = [ "//components/crash/content/tools/generate_breakpad_symbols.py" ]
+  _data = [
+    "//components/crash/content/tools/generate_breakpad_symbols.py",
+    "//chromeos/tast_control_disabled_tests_public_builders.txt",
+    "//chromeos/tast_control_disabled_tests.txt",
+    "//chromeos/tast_control_flaky_tests.txt",
+  ]
 
   if (is_skylab) {
     generate_skylab_tast_filter(target_name) {

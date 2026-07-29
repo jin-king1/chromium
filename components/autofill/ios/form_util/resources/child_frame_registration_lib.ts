@@ -8,9 +8,8 @@
  */
 
 import {CHILD_FRAME_REMOTE_TOKEN_ATTRIBUTE} from '//components/autofill/ios/form_util/resources/fill_constants.js';
-import {generateRandomId, getFrameId} from '//ios/web/public/js_messaging/resources/frame_id.js';
-import {gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
-import {sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.js';
+import {CrWebApi, gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
+import {generateRandomId, sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.js';
 
 /**
  * The name of the message handler in C++ land which will process registration
@@ -59,6 +58,19 @@ const WATCHDOG_INITIAL_RETRY_DELAY_MS = 50;
 const REGISTRATION_LOGBOOK_MAX_CAPACITY = 100;
 
 /**
+ * Retrieves the registered 'remoteFrameRegistration' CrWebApi
+ * instance for use in this file.
+ * TODO(crbug.com/464542835): Remove gCrWeb injections and utilizations
+ * from shared library and utility files.
+ */
+function getRemoteFrameRegistrationApi(): CrWebApi {
+  if (!gCrWeb.hasRegisteredApi('remoteFrameRegistration')) {
+    gCrWeb.registerApi(new CrWebApi('remoteFrameRegistration'));
+  }
+  return gCrWeb.getRegisteredApi('remoteFrameRegistration');
+}
+
+/**
  * A logbook for remote token registration mapping each remote token to the
  * number of registration attempts done so far with the corresponding child
  * frame. Persists the information during all lifetime of the frame so no-op
@@ -67,7 +79,22 @@ const REGISTRATION_LOGBOOK_MAX_CAPACITY = 100;
  * This logbook only tracks registered child frames towards this frame. Meaning
  * that the parent frame will not be in the logbook of the child frame.
  */
-const registrationLogbook: Map<string, number> = new Map();
+function getRegistrationLogbook(): Map<string, number> {
+  const api = getRemoteFrameRegistrationApi();
+  if (!api.hasProperty('registrationLogbook')) {
+    api.addProperty('registrationLogbook', new Map<string, number>());
+  }
+  return api.getProperty('registrationLogbook') as Map<string, number>;
+}
+
+/**
+ * Retrieves the registered 'autofill_form_features' CrWebApi
+ * instance for use in this file.
+ */
+// TODO: crbug.com/464542835 - Remove gCrWeb injections and utilizations
+// from shared library and utility files.
+const autofillFormFeaturesApi =
+  gCrWeb.getRegisteredApi('autofill_form_features');
 
 /**
  * Updates `count` of the corresponding `remoteToken` in the registration
@@ -76,6 +103,7 @@ const registrationLogbook: Map<string, number> = new Map();
  * @param count The new attempts count for the token.
  */
 function updateRegistrationLogbook(remoteToken: string, count: number) {
+  const registrationLogbook = getRegistrationLogbook();
   if (registrationLogbook.size >= REGISTRATION_LOGBOOK_MAX_CAPACITY) {
     return;
   }
@@ -87,9 +115,9 @@ function updateRegistrationLogbook(remoteToken: string, count: number) {
  * Registers the local/remote ID pair with the C++ layer.
  * @param {string} remoteId The ID to be used as the remote frame token.
  */
-function registerSelfWithRemoteToken(remoteId: string): void {
+export function registerSelfWithRemoteToken(remoteId: string): void {
   sendWebKitMessage(NATIVE_MESSAGE_HANDLER, {
-    'local_frame_id': getFrameId(),
+    'local_frame_id': gCrWeb.getFrameId(),
     'remote_frame_id': remoteId,
   });
 }
@@ -98,8 +126,9 @@ function registerSelfWithRemoteToken(remoteId: string): void {
  * Event handler for messages received via window.postMessage.
  * @param {MessageEvent} payload The data sent via postMessage.
  */
-function processChildFrameMessage(payload: MessageEvent): void {
-  if (!gCrWeb.autofill_form_features.isAutofillAcrossIframesEnabled()) {
+export function processChildFrameMessage(payload: MessageEvent): void {
+  if (!autofillFormFeaturesApi.getFunction(
+          'isAutofillAcrossIframesEnabled')()) {
     return;
   }
   const command: unknown = payload.data?.command;
@@ -111,7 +140,7 @@ function processChildFrameMessage(payload: MessageEvent): void {
       payload.source?.postMessage({
         command: REGISTER_AS_CHILD_FRAME_ACK,
         remoteFrameId: remoteId,
-      });
+      }, {targetOrigin: payload.origin});
     }
   } else if (command === REGISTER_AS_CHILD_FRAME_ACK) {
     const remoteId = payload.data?.remoteFrameId;
@@ -131,18 +160,26 @@ function processChildFrameMessage(payload: MessageEvent): void {
  *      cached or a freshly generated one.
  */
 function getRemoteIdForFrame(frame: HTMLIFrameElement): string {
-  if (!gCrWeb.hasOwnProperty('remoteFrameIdRegistrar')) {
-    gCrWeb.remoteFrameIdRegistrar = new Map();
-  }
+  const remoteFrameRegistration = getRemoteFrameRegistrationApi();
 
+  if (!remoteFrameRegistration.hasProperty('remoteFrameIdRegistrar')) {
+    remoteFrameRegistration.addProperty(
+        'remoteFrameIdRegistrar', new WeakMap<HTMLIFrameElement, string>());
+  }
+  const remoteFrameIdRegistrarMap =
+      remoteFrameRegistration.getProperty('remoteFrameIdRegistrar') as
+      WeakMap<HTMLIFrameElement, string>;
   // Return the cached remote token if the frame was already registered.
-  if (gCrWeb.remoteFrameIdRegistrar.has(frame)) {
-    return gCrWeb.remoteFrameIdRegistrar.get(frame);
+
+  let remoteId = remoteFrameIdRegistrarMap.get(frame);
+
+  if (remoteId) {
+    return remoteId;
   }
 
   // Otherwise, create a remote ID for the frame and cache it.
-  const remoteId: string = generateRandomId();
-  gCrWeb.remoteFrameIdRegistrar.set(frame, remoteId);
+  remoteId = generateRandomId();
+  remoteFrameIdRegistrarMap.set(frame, remoteId);
   return remoteId;
 }
 
@@ -156,7 +193,7 @@ function getRemoteIdForFrame(frame: HTMLIFrameElement): string {
  *     should not be assumed that this frame ID will be known to the browser by
  *     the time this function completes.
  */
-function registerChildFrame(frame: HTMLIFrameElement): string {
+export function registerChildFrame(frame: HTMLIFrameElement): string {
   const remoteFrameId: string = getRemoteIdForFrame(frame);
 
   // Store remote frame token in DOM. This way, page content world scripts can
@@ -164,6 +201,7 @@ function registerChildFrame(frame: HTMLIFrameElement): string {
   frame.setAttribute(CHILD_FRAME_REMOTE_TOKEN_ATTRIBUTE, remoteFrameId);
 
   const register = (delayUntilNextRetryMs: number) => {
+    const registrationLogbook = getRegistrationLogbook();
     if ((registrationLogbook.get(remoteFrameId) ?? 0) >=
             MAX_REGISTRATION_ATTEMPTS ||
         registrationLogbook.size >= REGISTRATION_LOGBOOK_MAX_CAPACITY) {
@@ -199,9 +237,3 @@ function registerChildFrame(frame: HTMLIFrameElement): string {
 
   return remoteFrameId;
 }
-
-gCrWeb.remoteFrameRegistration = {
-  processChildFrameMessage,
-  registerChildFrame,
-  registerSelfWithRemoteToken,
-};

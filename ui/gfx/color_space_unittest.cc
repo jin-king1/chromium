@@ -2,17 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/354829279): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
+#include "ui/gfx/color_space.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <tuple>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/gfx/color_space.h"
+#include "ui/gfx/display_color_spaces.h"
 #include "ui/gfx/skia_color_space_util.h"
 
 namespace gfx {
@@ -27,46 +27,46 @@ float Diff(const SkV4& u, const SkV4& v) {
 TEST(ColorSpace, RGBToYUV) {
   const float kEpsilon = 1.0e-3f;
   const size_t kNumTestRGBs = 3;
-  SkV4 test_rgbs[kNumTestRGBs] = {
+  std::array<SkV4, kNumTestRGBs> test_rgbs = {{
       {1.f, 0.f, 0.f, 1.f},
       {0.f, 1.f, 0.f, 1.f},
       {0.f, 0.f, 1.f, 1.f},
-  };
+  }};
 
   const size_t kNumColorSpaces = 4;
-  gfx::ColorSpace color_spaces[kNumColorSpaces] = {
+  std::array<gfx::ColorSpace, kNumColorSpaces> color_spaces = {
       gfx::ColorSpace::CreateREC601(),
       gfx::ColorSpace::CreateREC709(),
       gfx::ColorSpace::CreateJpeg(),
       gfx::ColorSpace::CreateXYZD50(),
   };
 
-  SkV4 expected_yuvs[kNumColorSpaces][kNumTestRGBs] = {
+  std::array<std::array<SkV4, kNumTestRGBs>, kNumColorSpaces> expected_yuvs = {{
       // REC601
-      {
+      {{
           {0.3195f, 0.3518f, 0.9392f, 1.0000f},
           {0.5669f, 0.2090f, 0.1322f, 1.0000f},
           {0.1607f, 0.9392f, 0.4286f, 1.0000f},
-      },
+      }},
       // REC709
-      {
+      {{
           {0.2453f, 0.3994f, 0.9392f, 1.0000f},
           {0.6770f, 0.1614f, 0.1011f, 1.0000f},
           {0.1248f, 0.9392f, 0.4597f, 1.0000f},
-      },
+      }},
       // Jpeg
-      {
+      {{
           {0.2990f, 0.3313f, 1.0000f, 1.0000f},
           {0.5870f, 0.1687f, 0.0813f, 1.0000f},
           {0.1140f, 1.0000f, 0.4187f, 1.0000f},
-      },
+      }},
       // XYZD50
-      {
+      {{
           {1.0000f, 0.0000f, 0.0000f, 1.0000f},
           {0.0000f, 1.0000f, 0.0000f, 1.0000f},
           {0.0000f, 0.0000f, 1.0000f, 1.0000f},
-      },
-  };
+      }},
+  }};
 
   for (size_t i = 0; i < kNumColorSpaces; ++i) {
     SkM44 transfer = color_spaces[i].GetTransferMatrix(/*bit_depth=*/8);
@@ -86,16 +86,16 @@ TEST(ColorSpace, RGBToYUV) {
 TEST(ColorSpace, RangeAdjust) {
   const float kEpsilon = 1.0e-3f;
   const size_t kNumTestYUVs = 2;
-  SkV4 test_yuvs[kNumTestYUVs] = {
+  std::array<SkV4, kNumTestYUVs> test_yuvs = {{
       {1.f, 1.f, 1.f, 1.f},
       {0.f, 0.f, 0.f, 1.f},
-  };
+  }};
 
   const size_t kNumBitDepths = 3;
-  int bit_depths[kNumBitDepths] = {8, 10, 12};
+  std::array<int, kNumBitDepths> bit_depths = {8, 10, 12};
 
   const size_t kNumColorSpaces = 3;
-  ColorSpace color_spaces[kNumColorSpaces] = {
+  std::array<ColorSpace, kNumColorSpaces> color_spaces = {
       ColorSpace::CreateREC601(),
       ColorSpace::CreateJpeg(),
       ColorSpace(ColorSpace::PrimaryID::INVALID,
@@ -103,62 +103,65 @@ TEST(ColorSpace, RangeAdjust) {
                  ColorSpace::RangeID::LIMITED),
   };
 
-  SkV4 expected_yuvs[kNumColorSpaces][kNumBitDepths][kNumTestYUVs] = {
-      // REC601
-      {
-          // 8bpc
-          {
-              {235.f / 255.f, 239.5f / 255.f, 239.5f / 255.f, 1.0000f},
-              {16.f / 255.f, 15.5f / 255.f, 15.5f / 255.f, 1.0000f},
-          },
-          // 10bpc
-          {
-              {940.f / 1023.f, 959.5f / 1023.f, 959.5f / 1023.f, 1.0000f},
-              {64.f / 1023.f, 63.5f / 1023.f, 63.5f / 1023.f, 1.0000f},
-          },
-          // 12bpc
-          {
-              {3760.f / 4095.f, 3839.5f / 4095.f, 3839.5f / 4095.f, 1.0000f},
-              {256.f / 4095.f, 255.5f / 4095.f, 255.5f / 4095.f, 1.0000f},
-          },
-      },
-      // Jpeg
-      {
-          // 8bpc
-          {
-              {1.0000f, 1.0000f, 1.0000f, 1.0000f},
-              {0.0000f, 0.0000f, 0.0000f, 1.0000f},
-          },
-          // 10bpc
-          {
-              {1.0000f, 1.0000f, 1.0000f, 1.0000f},
-              {0.0000f, 0.0000f, 0.0000f, 1.0000f},
-          },
-          // 12bpc
-          {
-              {1.0000f, 1.0000f, 1.0000f, 1.0000f},
-              {0.0000f, 0.0000f, 0.0000f, 1.0000f},
-          },
-      },
-      // YCoCg
-      {
-          // 8bpc
-          {
-              {235.f / 255.f, 235.f / 255.f, 235.f / 255.f, 1.0000f},
-              {16.f / 255.f, 16.f / 255.f, 16.f / 255.f, 1.0000f},
-          },
-          // 10bpc
-          {
-              {940.f / 1023.f, 940.f / 1023.f, 940.f / 1023.f, 1.0000f},
-              {64.f / 1023.f, 64.f / 1023.f, 64.f / 1023.f, 1.0000f},
-          },
-          // 12bpc
-          {
-              {3760.f / 4095.f, 3760.f / 4095.f, 3760.f / 4095.f, 1.0000f},
-              {256.f / 4095.f, 256.f / 4095.f, 256.f / 4095.f, 1.0000f},
-          },
-      },
-  };
+  std::array<std::array<std::array<SkV4, kNumTestYUVs>, kNumBitDepths>,
+             kNumColorSpaces>
+      expected_yuvs = {{
+          // REC601
+          {{
+              // 8bpc
+              {{
+                  {235.f / 255.f, 239.5f / 255.f, 239.5f / 255.f, 1.0000f},
+                  {16.f / 255.f, 15.5f / 255.f, 15.5f / 255.f, 1.0000f},
+              }},
+              // 10bpc
+              {{
+                  {940.f / 1023.f, 959.5f / 1023.f, 959.5f / 1023.f, 1.0000f},
+                  {64.f / 1023.f, 63.5f / 1023.f, 63.5f / 1023.f, 1.0000f},
+              }},
+              // 12bpc
+              {{
+                  {3760.f / 4095.f, 3839.5f / 4095.f, 3839.5f / 4095.f,
+                   1.0000f},
+                  {256.f / 4095.f, 255.5f / 4095.f, 255.5f / 4095.f, 1.0000f},
+              }},
+          }},
+          // Jpeg
+          {{
+              // 8bpc
+              {{
+                  {1.0000f, 1.0000f, 1.0000f, 1.0000f},
+                  {0.0000f, 0.0000f, 0.0000f, 1.0000f},
+              }},
+              // 10bpc
+              {{
+                  {1.0000f, 1.0000f, 1.0000f, 1.0000f},
+                  {0.0000f, 0.0000f, 0.0000f, 1.0000f},
+              }},
+              // 12bpc
+              {{
+                  {1.0000f, 1.0000f, 1.0000f, 1.0000f},
+                  {0.0000f, 0.0000f, 0.0000f, 1.0000f},
+              }},
+          }},
+          // YCoCg
+          {{
+              // 8bpc
+              {{
+                  {235.f / 255.f, 235.f / 255.f, 235.f / 255.f, 1.0000f},
+                  {16.f / 255.f, 16.f / 255.f, 16.f / 255.f, 1.0000f},
+              }},
+              // 10bpc
+              {{
+                  {940.f / 1023.f, 940.f / 1023.f, 940.f / 1023.f, 1.0000f},
+                  {64.f / 1023.f, 64.f / 1023.f, 64.f / 1023.f, 1.0000f},
+              }},
+              // 12bpc
+              {{
+                  {3760.f / 4095.f, 3760.f / 4095.f, 3760.f / 4095.f, 1.0000f},
+                  {256.f / 4095.f, 256.f / 4095.f, 256.f / 4095.f, 1.0000f},
+              }},
+          }},
+      }};
 
   for (size_t i = 0; i < kNumColorSpaces; ++i) {
     for (size_t j = 0; j < kNumBitDepths; ++j) {
@@ -196,7 +199,7 @@ TEST(ColorSpace, ConversionToAndFromSkColorSpace) {
   }};
   skcms_TransferFunction transfer_fn = {2.1f, 1.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 
-  ColorSpace color_spaces[] = {
+  auto color_spaces = std::to_array<ColorSpace>({
       ColorSpace(ColorSpace::PrimaryID::BT709, ColorSpace::TransferID::SRGB),
       ColorSpace(ColorSpace::PrimaryID::ADOBE_RGB,
                  ColorSpace::TransferID::SRGB),
@@ -205,8 +208,8 @@ TEST(ColorSpace, ConversionToAndFromSkColorSpace) {
       ColorSpace::CreateCustom(primary_matrix, transfer_fn),
       // HDR
       ColorSpace::CreateSRGBLinear(),
-  };
-  sk_sp<SkColorSpace> sk_color_spaces[] = {
+  });
+  auto sk_color_spaces = std::to_array<sk_sp<SkColorSpace>>({
       SkColorSpace::MakeSRGB(),
       SkColorSpace::MakeRGB(SkNamedTransferFn::kSRGB, SkNamedGamut::kAdobeRGB),
       SkColorSpace::MakeRGB(SkNamedTransferFn::kLinear,
@@ -215,7 +218,7 @@ TEST(ColorSpace, ConversionToAndFromSkColorSpace) {
       SkColorSpace::MakeRGB(transfer_fn, primary_matrix),
       // HDR
       SkColorSpace::MakeSRGBLinear(),
-  };
+  });
 
   static_assert(std::size(color_spaces) == std::size(sk_color_spaces), "");
 
@@ -241,43 +244,30 @@ TEST(ColorSpace, ConversionToAndFromSkColorSpace) {
 }
 
 TEST(ColorSpace, PQAndHLGToSkColorSpace) {
-  const float kEpsilon = 1.0e-2f;
   const auto hlg = ColorSpace::CreateHLG();
   const auto pq = ColorSpace::CreateHDR10();
 
-  // For each test case, `pq_signal` maps to `pq_nits`.
   constexpr size_t kNumCases = 3;
-  float pq_signal[kNumCases] = {
-      0.508078421517399f,
-      0.5806888810416109f,
-      0.6765848107833876,
-  };
-  float pq_nits[kNumCases] = {
+  std::array<float, kNumCases> pq_nits = {
       100,
       203,
       500,
   };
-  const float kPQSignalFor203Nits = pq_signal[1];
-  const float kHLGSignalFor203Nits = 0.75f;
 
   for (size_t i = 0; i < kNumCases; ++i) {
     const float sdr_white_level = pq_nits[i];
     sk_sp<SkColorSpace> sk_hlg = hlg.ToSkColorSpace(sdr_white_level);
     sk_sp<SkColorSpace> sk_pq = pq.ToSkColorSpace(sdr_white_level);
 
-    // The PQ signal that maps to `sdr_white_level` nits should map to 1.
+    // The SDR white level parameter should get put into a parameter for the PQ
+    // and HLG transfer function.
     skcms_TransferFunction pq_fn = {0};
     sk_pq->transferFn(&pq_fn);
-    EXPECT_NEAR(1.f, skcms_TransferFunction_eval(&pq_fn, pq_signal[i]),
-                kEpsilon);
+    EXPECT_EQ(pq_fn.a, sdr_white_level);
 
-    // The HLG signal value of 0.75 should always map to the same value that
-    // the PQ signal for 203 nits maps to.
     skcms_TransferFunction hlg_fn = {0};
     sk_hlg->transferFn(&hlg_fn);
-    EXPECT_NEAR(skcms_TransferFunction_eval(&pq_fn, kPQSignalFor203Nits),
-                skcms_TransferFunction_eval(&hlg_fn, kHLGSignalFor203Nits),
-                kEpsilon);
+    EXPECT_EQ(hlg_fn.a, sdr_white_level);
   }
 }
 
@@ -360,7 +350,53 @@ TEST(ColorSpaceUtil, SkcmsMatrixConvert) {
   skcms_Matrix3x3 in_m33 = SkNamedGamut::kSRGB;
   SkM44 m44 = SkM44FromSkcmsMatrix3x3(in_m33);
   skcms_Matrix3x3 out_m33 = SkcmsMatrix3x3FromSkM44(m44);
-  EXPECT_EQ(memcmp(&in_m33, &out_m33, sizeof(in_m33)), 0);
+  EXPECT_TRUE(std::ranges::equal(base::span(in_m33.vals),
+                                 base::span(out_m33.vals), std::ranges::equal));
+}
+
+TEST(ColorSpace, AsHDR) {
+  ColorSpace cs;
+  skcms_TransferFunction fn;
+  constexpr float kEpsilon = 0.00001f;
+
+  cs = ColorSpace(ColorSpace::PrimaryID::P3, ColorSpace::TransferID::SRGB);
+  cs = cs.GetAsHDR();
+  EXPECT_EQ(cs.GetTransferID(), ColorSpace::TransferID::SRGB_HDR);
+
+  cs = ColorSpace(ColorSpace::PrimaryID::P3, ColorSpace::TransferID::LINEAR);
+  cs = cs.GetAsHDR();
+  EXPECT_EQ(cs.GetTransferID(), ColorSpace::TransferID::LINEAR_HDR);
+
+  cs = cs.GetWithTransferFunction(ColorSpace::TransferID::GAMMA22);
+  EXPECT_FALSE(cs.IsHDR());
+  cs = cs.GetAsHDR();
+  EXPECT_EQ(cs.GetTransferID(), ColorSpace::TransferID::CUSTOM_HDR);
+  EXPECT_TRUE(cs.GetTransferFunction(&fn));
+  EXPECT_NEAR(fn.g, 2.2, kEpsilon);
+
+  fn.a = 0.5;
+  fn.g = 2.5;
+  cs = cs.GetWithTransferFunction(fn, /*is_hdr=*/true);
+  EXPECT_EQ(cs.GetTransferID(), ColorSpace::TransferID::CUSTOM_HDR);
+  EXPECT_TRUE(cs.GetTransferFunction(&fn));
+  EXPECT_NEAR(fn.a, 0.5, kEpsilon);
+  EXPECT_NEAR(fn.g, 2.5, kEpsilon);
+}
+
+TEST(DisplayColorSpacesTest,
+     RasterAndCompositeColorSpaceForHDRWithCustomLinear) {
+  skcms_Matrix3x3 primaries = SkNamedGamut::kSRGB;
+  skcms_TransferFunction near_linear_fn = {1.0f, 1.0f, 0.0f, 0.0f,
+                                           0.0f, 0.0f, 0.0f};
+  ColorSpace custom_linear_cs =
+      ColorSpace::CreateCustom(primaries, near_linear_fn);
+
+  DisplayColorSpaces display_color_spaces(custom_linear_cs);
+  display_color_spaces.SetHDRMaxLuminanceRelative(2.0f);
+
+  ColorSpace blend_cs = display_color_spaces.GetRasterAndCompositeColorSpace(
+      ContentColorUsage::kHDR);
+  EXPECT_TRUE(blend_cs.IsSuitableForBlending());
 }
 
 }  // namespace

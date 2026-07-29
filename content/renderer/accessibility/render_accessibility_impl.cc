@@ -13,6 +13,7 @@
 #include "base/debug/crash_logging.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/task/common/task_annotator.h"
 #include "base/timer/elapsed_timer.h"
 #include "build/build_config.h"
 #include "content/public/renderer/render_thread.h"
@@ -87,16 +88,20 @@ RenderAccessibilityImpl::RenderAccessibilityImpl(
   render_frame_->GetWebView()
       ->GetSettings()
       ->SetAccessibilityPasswordValuesEnabled(true);
-#elif BUILDFLAG(IS_MAC)
-  // aria-modal currently prunes the accessibility tree on Mac only.
+#endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
+  // aria-modal currently prunes the accessibility tree on Mac and Android only.
   render_frame_->GetWebView()->GetSettings()->SetAriaModalPrunesAXTree(true);
-#elif BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_CHROMEOS)
   // Do not ignore SVG grouping (<g>) elements on ChromeOS, which is needed so
   // Select-to-Speak can read SVG text nodes in natural reading order.
   render_frame_->GetWebView()
       ->GetSettings()
       ->SetAccessibilityIncludeSvgGElement(true);
-#endif
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   ax_annotators_manager_ = std::make_unique<AXAnnotatorsManager>(this);
 }
@@ -133,6 +138,8 @@ void RenderAccessibilityImpl::DidCommitProvisionalLoad(
   ukm_timer_ = std::make_unique<base::ElapsedTimer>();
 
   ax_annotators_manager_->CancelAnnotations();
+  ax_annotators_manager_->AccessibilityModeChanged(ui::AXMode(),
+                                                   accessibility_mode_);
   page_language_.clear();
 
   // New document has started. Do not expect to receive the ACK for a
@@ -372,6 +379,8 @@ void RenderAccessibilityImpl::PerformAction(const ui::AXActionData& data) {
     case ax::mojom::Action::kDoDefault:
     case ax::mojom::Action::kExpand:
     case ax::mojom::Action::kIncrement:
+    case ax::mojom::Action::kReplaceRanges:
+    case ax::mojom::Action::kRequestLayoutBasedAction:
     case ax::mojom::Action::kScrollToPoint:
     case ax::mojom::Action::kScrollToPositionAtRowColumn:
     case ax::mojom::Action::kFocus:
@@ -387,6 +396,8 @@ void RenderAccessibilityImpl::PerformAction(const ui::AXActionData& data) {
     case ax::mojom::Action::kScrollLeft:
     case ax::mojom::Action::kScrollRight:
     case ax::mojom::Action::kStitchChildTree:
+    case ax::mojom::Action::kShowTooltip:
+    case ax::mojom::Action::kHideTooltip:
       target->PerformAction(data);
       break;
     case ax::mojom::Action::kCustomAction:
@@ -403,8 +414,6 @@ void RenderAccessibilityImpl::PerformAction(const ui::AXActionData& data) {
       HandleAXEvent(
           ui::AXEvent(ComputeRoot().AxID(), ax::mojom::Event::kEndOfTest));
       break;
-    case ax::mojom::Action::kShowTooltip:
-    case ax::mojom::Action::kHideTooltip:
     case ax::mojom::Action::kInternalInvalidateTree:
     case ax::mojom::Action::kResumeMedia:
     case ax::mojom::Action::kStartDuckingMedia:
@@ -566,16 +575,18 @@ bool RenderAccessibilityImpl::SendAccessibilitySerialization(
   }
   // Also log the time taken in this function to track serialization
   // performance.
-  UMA_HISTOGRAM_CUSTOM_TIMES(
-      "Accessibility.Performance.SendPendingAccessibilityEvents2",
-      elapsed_time_ms, base::Microseconds(1), base::Seconds(1), 50);
-
-  if (loading_stage_ == LoadingStage::kPostLoad) {
-    // Track serialization after document load in order to measure the
-    // contribution of serialization to interaction latency.
+  if (!accessibility_mode_.has_mode(ui::AXMode::kNativeAdaptedWebContents)) {
     UMA_HISTOGRAM_CUSTOM_TIMES(
-        "Accessibility.Performance.SendPendingAccessibilityEvents.PostLoad2",
+        "Accessibility.Performance.SendPendingAccessibilityEvents2",
         elapsed_time_ms, base::Microseconds(1), base::Seconds(1), 50);
+
+    if (loading_stage_ == LoadingStage::kPostLoad) {
+      // Track serialization after document load in order to measure the
+      // contribution of serialization to interaction latency.
+      UMA_HISTOGRAM_CUSTOM_TIMES(
+          "Accessibility.Performance.SendPendingAccessibilityEvents.PostLoad2",
+          elapsed_time_ms, base::Microseconds(1), base::Seconds(1), 50);
+    }
   }
 
   if (loading_stage_ == LoadingStage::kLoadCompleted) {

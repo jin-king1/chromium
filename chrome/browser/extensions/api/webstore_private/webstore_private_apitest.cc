@@ -9,6 +9,7 @@
 #include "base/auto_reset.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -18,25 +19,27 @@
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
-#include "chrome/browser/extensions/api/webstore_private/webstore_private_api.h"
+#include "chrome/browser/extensions/extension_allowlist_factory.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
-#include "chrome/browser/extensions/extension_service.h"
-#include "chrome/browser/extensions/install_approval.h"
 #include "chrome/browser/extensions/mixin_based_extension_apitest.h"
-#include "chrome/browser/extensions/webstore_installer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/https_upgrades_util.h"
-#include "chrome/browser/supervised_user/supervised_user_extensions_delegate_impl.h"
-#include "chrome/browser/supervised_user/supervised_user_test_util.h"  // nogncheck
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/extensions/extension_install_ui.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/supervised_user/parent_permission_dialog_view.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/extension_test_util.h"
-#include "chrome/test/supervised_user/supervision_mixin.h"
+#include "chrome/common/pref_names.h"
+#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/platform_browser_test.h"
+#include "components/enterprise/browser/reporting/common_pref_names.h"
+#include "components/policy/core/browser/browser_policy_connector.h"
+#include "components/policy/core/common/mock_configuration_policy_provider.h"
+#include "components/policy/policy_constants.h"
+#include "components/policy/proto/device_management_backend.pb.h"
+#if !BUILDFLAG(IS_CHROMEOS)
+#include "components/enterprise/browser/controller/fake_browser_dm_token_storage.h"
+#endif
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/supervised_user/core/common/features.h"
 #include "components/supervised_user/core/common/pref_names.h"
@@ -45,9 +48,15 @@
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/allowlist_state.h"
 #include "extensions/browser/api/management/management_api.h"
+#include "extensions/browser/api/webstore_private/webstore_private_api.h"
 #include "extensions/browser/api_test_utils.h"
+#include "extensions/browser/extension_allowlist.h"
 #include "extensions/browser/extension_dialog_auto_confirm.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/browser/install_approval.h"
+#include "extensions/browser/pref_names.h"
+#include "extensions/browser/webstore_installer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/switches.h"
@@ -57,9 +66,32 @@
 #include "ui/gl/gl_switches.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/supervised_user/chromeos/parent_access_extension_approvals_manager.h"
-#include "chromeos/crosapi/mojom/parent_access.mojom.h"
+#include "chrome/browser/ui/webui/ash/parent_access/fake_parent_access_dialog.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/supervised_user/supervised_user_extensions_metrics_recorder.h"
+#include "extensions/browser/supervised_user_extensions_delegate.h"
+#endif  // BUILDFLAG(IS_ANDROID)
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/supervised_user/supervised_user_extensions_delegate_impl.h"
+#include "chrome/browser/supervised_user/supervised_user_test_util.h"  // nogncheck
+#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/views/supervised_user/parent_permission_dialog_view.h"
+#include "chrome/test/base/mixin_based_in_process_browser_test.h"
+#include "chrome/test/supervised_user/supervision_mixin.h"
+#include "components/enterprise/browser/promotion/promotion_eligibility_checker.h"
+#include "components/enterprise/browser/promotion/promotion_prefs.h"
+#include "components/enterprise/promotion_types.h"
+#include "components/policy/core/common/cloud/cloud_policy_manager.h"
+#include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -71,8 +103,7 @@ constexpr char kExtensionId[] = "enfkhcelefdadlmkffamgdlgplcionje";
 
 class WebstoreInstallListener : public WebstorePrivateApi::Delegate {
  public:
-  WebstoreInstallListener()
-      : received_failure_(false), received_success_(false), waiting_(false) {}
+  WebstoreInstallListener() = default;
 
   void OnExtensionInstallSuccess(const std::string& id) override {
     received_success_ = true;
@@ -115,14 +146,54 @@ class WebstoreInstallListener : public WebstorePrivateApi::Delegate {
   }
 
  private:
-  bool received_failure_;
-  bool received_success_;
-  bool waiting_;
+  bool received_failure_ = false;
+  bool received_success_ = false;
+  bool waiting_ = false;
   WebstoreInstaller::FailureReason last_failure_reason_;
   std::string id_;
   std::string error_;
   base::RunLoop loop_;
 };
+
+#if !BUILDFLAG(IS_ANDROID)
+class FakePromotionEligibilityChecker
+    : public enterprise_promotion::PromotionEligibilityChecker {
+ public:
+  explicit FakePromotionEligibilityChecker(
+      enterprise_management::GetUserEligiblePromotionsResponse response)
+      : enterprise_promotion::PromotionEligibilityChecker("",
+                                                          nullptr,
+                                                          nullptr,
+                                                          "",
+                                                          false),
+        response_(std::move(response)) {}
+
+  // The only logic: immediately run the callback with our stored response.
+  void MaybeCheckPromotionEligibility(
+      PromotionEligibilityCallback callback) override {
+    std::move(callback).Run(response_);
+  }
+
+ private:
+  enterprise_management::GetUserEligiblePromotionsResponse response_;
+};
+
+class FailIfCalledPromotionEligibilityChecker
+    : public enterprise_promotion::PromotionEligibilityChecker {
+ public:
+  FailIfCalledPromotionEligibilityChecker()
+      : enterprise_promotion::PromotionEligibilityChecker("",
+                                                          nullptr,
+                                                          nullptr,
+                                                          "",
+                                                          false) {}
+
+  void MaybeCheckPromotionEligibility(
+      PromotionEligibilityCallback callback) override {
+    ADD_FAILURE() << "Network check should not be called when cache is valid.";
+  }
+};
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 
@@ -140,7 +211,7 @@ class ExtensionWebstorePrivateApiTest : public MixinBasedExtensionApiTest {
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     MixinBasedExtensionApiTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitchASCII(::switches::kAppsGalleryURL,
+    command_line->AppendSwitchASCII(switches::kAppsGalleryURL,
                                     "http://www.example.com/");
     command_line->AppendSwitch(switches::kExtensionTestApiOnWebPages);
   }
@@ -179,10 +250,6 @@ class ExtensionWebstorePrivateApiTest : public MixinBasedExtensionApiTest {
 
     GURL page_url = GetTestServerURL(page);
     return OpenTestURL(page_url);
-  }
-
-  ExtensionService* service() {
-    return ExtensionSystem::Get(browser()->profile())->extension_service();
   }
 
  private:
@@ -273,20 +340,19 @@ IN_PROC_BROWSER_TEST_F(ExtensionWebstorePrivateApiTest, BeginInstall) {
   ASSERT_TRUE(RunInstallTest("begin_install.html", "extension.crx"));
 
   std::unique_ptr<InstallApproval> approval =
-      WebstorePrivateApi::PopApprovalForTesting(browser()->profile(), appId);
+      WebstorePrivateApi::PopApprovalForTesting(profile(), appId);
   EXPECT_EQ(appId, approval->extension_id);
   EXPECT_TRUE(approval->use_app_installed_bubble);
   EXPECT_FALSE(approval->skip_post_install_ui);
   EXPECT_EQ("2", approval->authuser);
-  EXPECT_EQ(browser()->profile(), approval->profile);
+  EXPECT_EQ(profile(), Profile::FromBrowserContext(approval->browser_context));
 
-  approval = WebstorePrivateApi::PopApprovalForTesting(browser()->profile(),
-                                                       kExtensionId);
+  approval = WebstorePrivateApi::PopApprovalForTesting(profile(), kExtensionId);
   EXPECT_EQ(kExtensionId, approval->extension_id);
   EXPECT_FALSE(approval->use_app_installed_bubble);
   EXPECT_FALSE(approval->skip_post_install_ui);
   EXPECT_TRUE(approval->authuser.empty());
-  EXPECT_EQ(browser()->profile(), approval->profile);
+  EXPECT_EQ(profile(), Profile::FromBrowserContext(approval->browser_context));
 }
 
 // Tests that themes are installed without an install prompt.
@@ -305,21 +371,16 @@ IN_PROC_BROWSER_TEST_F(ExtensionWebstorePrivateApiTest, EmptyCrx) {
 }
 
 static constexpr char kTestAppId[] = "iladmdjkfniedhfhcfoefgojhgaiaccc";
-static constexpr char kTestAppVersion[] = "0.1";
+static constexpr char kTestExtensionId[] = "enfkhcelefdadlmkffamgdlgplcionje";
 
-enum class SupervisedUserExtensionManagedBySwitch : int {
-  kPermissions = 0,
-  kExtensions,
-};
+#if !BUILDFLAG(IS_ANDROID)
+
+static constexpr char kTestAppVersion[] = "0.1";
+static constexpr char kTestExtensionVersion[] = "0.5";
 
 // Test fixture for various cases of installation for child accounts.
 class SupervisedUserExtensionWebstorePrivateApiTest
     : public ExtensionWebstorePrivateApiTest,
-      public ::testing::WithParamInterface<
-          SupervisedUserExtensionManagedBySwitch>,
-#if BUILDFLAG(IS_CHROMEOS)
-      public TestExtensionApprovalsManagerObserver,
-#endif
       public TestParentPermissionDialogViewObserver {
  public:
   // The next dialog action to take.
@@ -329,11 +390,7 @@ class SupervisedUserExtensionWebstorePrivateApiTest
   };
 
   SupervisedUserExtensionWebstorePrivateApiTest()
-      :
-#if BUILDFLAG(IS_CHROMEOS)
-        TestExtensionApprovalsManagerObserver(this),
-#endif
-        TestParentPermissionDialogViewObserver(this),
+      : TestParentPermissionDialogViewObserver(this),
         embedded_test_server_(std::make_unique<net::EmbeddedTestServer>()),
         supervision_mixin_(
             mixin_host_,
@@ -343,40 +400,13 @@ class SupervisedUserExtensionWebstorePrivateApiTest
                 .consent_level = signin::ConsentLevel::kSignin,
                 .sign_in_mode =
                     supervised_user::SupervisionMixin::SignInMode::kSupervised,
-            }) {
-
-    std::vector<base::test::FeatureRef> enabled_features;
-    std::vector<base::test::FeatureRef> disabled_features;
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
-    enabled_features.push_back(
-        supervised_user::
-            kEnableExtensionsPermissionsForSupervisedUsersOnDesktop);
-#endif
-
-    if (GetParam() == SupervisedUserExtensionManagedBySwitch::kExtensions) {
-      enabled_features.push_back(
-          supervised_user::
-              kEnableSupervisedUserSkipParentApprovalToInstallExtensions);
-    } else {
-      disabled_features.push_back(
-          supervised_user::
-              kEnableSupervisedUserSkipParentApprovalToInstallExtensions);
-    }
-    feature_list_.InitWithFeatures(enabled_features, disabled_features);
-  }
-
-  ~SupervisedUserExtensionWebstorePrivateApiTest() override {
-    // Reset the feature list explicitly here, as other test members that may
-    // contain it will try to destruct it (e.g. objects contained in
-    // supervision_mixin_).
-    feature_list_.Reset();
-  }
+            }) {}
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     ExtensionWebstorePrivateApiTest::SetUpCommandLine(command_line);
     // Shortens the merge session timeout from 20 to 1 seconds to speed up the
     // test by about 19 seconds.
-    // TODO (crbug.com/995575): figure out why this switch speeds up the test,
+    // TODO (crbug.com/41477104): figure out why this switch speeds up the test,
     // and fix the test setup so this is not required.
 #if BUILDFLAG(IS_CHROMEOS)
     command_line->AppendSwitch(::switches::kShortMergeSessionTimeoutForTest);
@@ -386,8 +416,18 @@ class SupervisedUserExtensionWebstorePrivateApiTest
   void SetUpOnMainThread() override {
     ExtensionWebstorePrivateApiTest::SetUpOnMainThread();
 
-    extensions_delegate_ =
-        std::make_unique<SupervisedUserExtensionsDelegateImpl>(profile());
+    extensions_delegate_ = static_cast<SupervisedUserExtensionsDelegateImpl*>(
+        BrowserContextKeyedAPIFactory<ManagementAPI>::GetIfExists(profile())
+            ->GetSupervisedUserExtensionsDelegate());
+
+#if BUILDFLAG(IS_CHROMEOS)
+    auto dialog_provider =
+        std::make_unique<ash::FakeParentAccessDialogProvider>();
+    fake_parent_access_dialog_provider_ = dialog_provider.get();
+    extensions_delegate_->SetParentAccessExtensionApprovalsManagerForTesting(
+        std::make_unique<extensions::ParentAccessExtensionApprovalsManager>(
+            std::move(dialog_provider)));
+#endif
 
     supervised_user_test_util::
         SetSupervisedUserExtensionsMayRequestPermissionsPref(profile(), true);
@@ -396,7 +436,10 @@ class SupervisedUserExtensionWebstorePrivateApiTest
   }
 
   void TearDownOnMainThread() override {
-    extensions_delegate_.reset();
+#if BUILDFLAG(IS_CHROMEOS)
+    fake_parent_access_dialog_provider_ = nullptr;
+#endif
+    extensions_delegate_ = nullptr;
     ExtensionWebstorePrivateApiTest::TearDownOnMainThread();
   }
 
@@ -429,75 +472,69 @@ class SupervisedUserExtensionWebstorePrivateApiTest
     }
   }
 
+  bool IsParentPermissionDialogAppeared() {
 #if BUILDFLAG(IS_CHROMEOS)
-  // TestExtensionApprovalsManagerObserver override:
-  void OnTestParentAccessDialogCreated() override {
-    parent_permission_dialog_appeared_ = true;
-    if (next_dialog_action_) {
-      switch (next_dialog_action_.value()) {
-        case NextDialogAction::kCancel:
-          SetParentAccessDialogResult(
-              crosapi::mojom::ParentAccessResult::NewCanceled(
-                  crosapi::mojom::ParentAccessCanceledResult::New()));
-          break;
-        case NextDialogAction::kAccept:
-          bool can_request_permission =
-              (GetParam() ==
-               SupervisedUserExtensionManagedBySwitch::kPermissions)
-                  ? browser()->profile()->GetPrefs()->GetBoolean(
-                        prefs::kSupervisedUserExtensionsMayRequestPermissions)
-                  : true;
-
-          if (!can_request_permission) {
-            SetParentAccessDialogResult(
-                crosapi::mojom::ParentAccessResult::NewDisabled(
-                    crosapi::mojom::ParentAccessDisabledResult::New()));
-            break;
-          }
-          SetParentAccessDialogResult(
-              crosapi::mojom::ParentAccessResult::NewApproved(
-                  crosapi::mojom::ParentAccessApprovedResult::New(
-                      "test_token",
-                      base::Time::FromSecondsSinceUnixEpoch(123456L))));
-          break;
-      }
-    }
-  }
+    return bool(fake_parent_access_dialog_provider_->TakeLastParams());
+#else
+    return parent_permission_dialog_appeared_;
 #endif  // BUILDFLAG(IS_CHROMEOS)
+  }
 
   void set_next_dialog_action(NextDialogAction action) {
+#if BUILDFLAG(IS_CHROMEOS)
+    auto result = std::make_unique<ash::ParentAccessDialog::Result>();
+    switch (action) {
+      case NextDialogAction::kCancel:
+        result->status = ash::ParentAccessDialog::Result::Status::kCanceled;
+        break;
+      case NextDialogAction::kAccept:
+        result->status = ash::ParentAccessDialog::Result::Status::kApproved;
+        result->parent_access_token = "test_token";
+        result->parent_access_token_expire_timestamp =
+            base::Time::FromSecondsSinceUnixEpoch(123456L);
+        break;
+    }
+    fake_parent_access_dialog_provider_->SetNextAction(
+        ash::FakeParentAccessDialogProvider::Action::WithResult(
+            std::move(result)));
+#else
     next_dialog_action_ = action;
+#endif
   }
 
  protected:
-  std::unique_ptr<SupervisedUserExtensionsDelegateImpl> extensions_delegate_;
-  bool parent_permission_dialog_appeared_ = false;
+  raw_ptr<SupervisedUserExtensionsDelegateImpl> extensions_delegate_;
 
  private:
   // Create another embedded test server to avoid starting the same one twice.
   std::unique_ptr<net::EmbeddedTestServer> embedded_test_server_;
   supervised_user::SupervisionMixin supervision_mixin_;
   std::optional<NextDialogAction> next_dialog_action_;
-  base::test::ScopedFeatureList feature_list_;
+
+  bool parent_permission_dialog_appeared_ = false;
+#if BUILDFLAG(IS_CHROMEOS)
+  raw_ptr<ash::FakeParentAccessDialogProvider>
+      fake_parent_access_dialog_provider_;
+#endif
 };
 
 // Tests install for a child when parent permission is granted.
-IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
+IN_PROC_BROWSER_TEST_F(SupervisedUserExtensionWebstorePrivateApiTest,
                        ParentPermissionGranted) {
   base::UserActionTester user_action_tester;
   WebstoreInstallListener listener;
   auto delegate_reset = WebstorePrivateApi::SetDelegateForTesting(&listener);
   set_next_dialog_action(NextDialogAction::kAccept);
 
-  ASSERT_TRUE(RunInstallTest("install_child.html", "app.crx"));
+  ASSERT_TRUE(RunInstallTest("install_child.html", "extension.crx"));
   listener.Wait();
   ASSERT_TRUE(listener.received_success());
-  ASSERT_EQ(kTestAppId, listener.id());
+  ASSERT_EQ(kTestExtensionId, listener.id());
 
   scoped_refptr<const Extension> extension =
       extensions::ExtensionBuilder("test extension")
-          .SetID(kTestAppId)
-          .SetVersion(kTestAppVersion)
+          .SetID(kTestExtensionId)
+          .SetVersion(kTestExtensionVersion)
           .Build();
   EXPECT_TRUE(extensions_delegate_->IsExtensionAllowedByParent(*extension));
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
@@ -516,7 +553,7 @@ IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
 
 // Tests no install occurs for a child when the parent permission
 // dialog is canceled.
-IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
+IN_PROC_BROWSER_TEST_F(SupervisedUserExtensionWebstorePrivateApiTest,
                        ParentPermissionCanceled) {
   base::UserActionTester user_action_tester;
   WebstoreInstallListener listener;
@@ -551,7 +588,7 @@ IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
 }
 
 // Tests that no parent permission is required for a child to install a theme.
-IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
+IN_PROC_BROWSER_TEST_F(SupervisedUserExtensionWebstorePrivateApiTest,
                        NoParentPermissionRequiredForTheme) {
   WebstoreInstallListener listener;
   auto delegate_reset = WebstorePrivateApi::SetDelegateForTesting(&listener);
@@ -561,13 +598,9 @@ IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
   ASSERT_EQ("idlfhncioikpdnlhnmcjogambnefbbfp", listener.id());
 }
 
-// Tests that supervised user extension installs are blocked if
-// 1) the "Permissions for sites, apps and extensions" toggle is off and
-// 2) the extensions are managed by this toggle.
-// If the extensions are managed by the "Extensions" toggle (regardless of its
-// value), an extension installation is never blocked.
-IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
-                       InstallBlockedWhenPermissionsToggleOff) {
+// Tests that supervised user extension installs are never blocked.
+IN_PROC_BROWSER_TEST_F(SupervisedUserExtensionWebstorePrivateApiTest,
+                       InstallAlwaysAllowed) {
   base::HistogramTester histogram_tester;
   base::UserActionTester user_action_tester;
 
@@ -583,28 +616,21 @@ IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
 
   // Expect the extension to be blocked or installed normally based on the
   // toggle that manages supervised user extensions.
-  std::string page =
-      GetParam() == SupervisedUserExtensionManagedBySwitch::kPermissions
-          ? "install_blocked_child.html"
-          : "install_child.html";
-  ASSERT_TRUE(RunInstallTest(page, "app.crx"));
+  std::string page = "install_child.html";
+  ASSERT_TRUE(RunInstallTest(page, "extension.crx"));
 
-  if (GetParam() == SupervisedUserExtensionManagedBySwitch::kExtensions) {
-    listener.Wait();
-    ASSERT_TRUE(listener.received_success());
-    ASSERT_EQ(kTestAppId, listener.id());
+  listener.Wait();
+  ASSERT_TRUE(listener.received_success());
+  ASSERT_EQ(kTestExtensionId, listener.id());
 
-    scoped_refptr<const Extension> extension =
-        extensions::ExtensionBuilder("test extension")
-            .SetID(kTestAppId)
-            .SetVersion(kTestAppVersion)
-            .Build();
-    ASSERT_TRUE(extensions_delegate_->IsExtensionAllowedByParent(*extension));
-  }
+  scoped_refptr<const Extension> extension =
+      extensions::ExtensionBuilder("test extension")
+          .SetID(kTestExtensionId)
+          .SetVersion(kTestExtensionVersion)
+          .Build();
+  ASSERT_TRUE(extensions_delegate_->IsExtensionAllowedByParent(*extension));
 
-  int expected_count_failed =
-      GetParam() == SupervisedUserExtensionManagedBySwitch::kPermissions ? 1
-                                                                         : 0;
+  int expected_count_failed = 0;
   histogram_tester.ExpectUniqueSample(
       SupervisedUserExtensionsMetricsRecorder::kEnablementHistogramName,
       SupervisedUserExtensionsMetricsRecorder::EnablementState::kFailedToEnable,
@@ -619,10 +645,8 @@ IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
 }
 
 // Tests a successful install for a child when parent permission can be skipped
-// on installation: 1) when extensions are managed via the dedicated
-// "Extensions" toggle and 2) the toggle is enabled. If extensions are managed
-// via the "Permissions" toggle, the parent approval is required.
-IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
+// on installation (i.e. the "Extensions" toggle in ON).
+IN_PROC_BROWSER_TEST_F(SupervisedUserExtensionWebstorePrivateApiTest,
                        InstallSuccessfulWhenExtensionsToggleOn) {
   base::UserActionTester user_action_tester;
   WebstoreInstallListener listener;
@@ -631,33 +655,27 @@ IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
   // Turn on preference that skips parent approval on extension installations.
   supervised_user_test_util::SetSkipParentApprovalToInstallExtensionsPref(
       profile(), true);
-  if (GetParam() == SupervisedUserExtensionManagedBySwitch::kPermissions) {
-    set_next_dialog_action(NextDialogAction::kAccept);
-  } else {
-    // Turn off the "Permissions for sites, apps and extensions" toggle. It does
-    // not affect the successful installation on this mode.
-    supervised_user_test_util::
-        SetSupervisedUserExtensionsMayRequestPermissionsPref(profile(), false);
-  }
+  // Turn off the "Permissions for sites, apps and extensions" toggle. It does
+  // not affect the successful installation of extensions.
+  supervised_user_test_util::
+      SetSupervisedUserExtensionsMayRequestPermissionsPref(profile(), false);
 
-  ASSERT_TRUE(RunInstallTest("install_child.html", "app.crx"));
+  ASSERT_TRUE(RunInstallTest("install_child.html", "extension.crx"));
   listener.Wait();
   ASSERT_TRUE(listener.received_success());
-  ASSERT_EQ(kTestAppId, listener.id());
+  ASSERT_EQ(kTestExtensionId, listener.id());
 
-  EXPECT_EQ(GetParam() == SupervisedUserExtensionManagedBySwitch::kPermissions,
-            parent_permission_dialog_appeared_);
+  EXPECT_FALSE(IsParentPermissionDialogAppeared());
 
   scoped_refptr<const Extension> extension =
       extensions::ExtensionBuilder("test extension")
-          .SetID(kTestAppId)
-          .SetVersion(kTestAppVersion)
+          .SetID(kTestExtensionId)
+          .SetVersion(kTestExtensionVersion)
           .Build();
   EXPECT_TRUE(extensions_delegate_->IsExtensionAllowedByParent(*extension));
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
-  int parent_approval_dialog_count =
-      GetParam() == SupervisedUserExtensionManagedBySwitch::kExtensions ? 0 : 1;
+  int parent_approval_dialog_count = 0;
   // Parent Approval dialog metrics (when managed by Permissions toggle):
   EXPECT_EQ(parent_approval_dialog_count,
             user_action_tester.GetActionCount(
@@ -669,9 +687,8 @@ IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
           SupervisedUserExtensionsMetricsRecorder::kApprovalGrantedActionName));
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 
-  // Extension Installation dialog metrics (when managed by Extensions toggle):
-  int extension_install_dialog_count =
-      GetParam() == SupervisedUserExtensionManagedBySwitch::kExtensions ? 1 : 0;
+  // Extension Installation dialog metrics.
+  int extension_install_dialog_count = 1;
   EXPECT_EQ(extension_install_dialog_count,
             user_action_tester.GetActionCount(
                 SupervisedUserExtensionsMetricsRecorder::
@@ -681,20 +698,418 @@ IN_PROC_BROWSER_TEST_P(SupervisedUserExtensionWebstorePrivateApiTest,
                 SupervisedUserExtensionsMetricsRecorder::
                     kApprovalGrantedByDefaultName));
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    SupervisedUserExtensionWebstorePrivateApiTest,
-    testing::Values(SupervisedUserExtensionManagedBySwitch::kExtensions,
-                    SupervisedUserExtensionManagedBySwitch::kPermissions),
-    [](const auto& info) {
-      return (info.param) ==
-                     SupervisedUserExtensionManagedBySwitch::kPermissions
-                 ? "ManagedByPermissionsToggle"
-                 : "ManagedByExtensionsToggle";
-    });
+#if BUILDFLAG(IS_ANDROID)
 
-class ExtensionWebstoreGetWebGLStatusTest : public InProcessBrowserTest {
+// Test delegate that overrides the parent approval request for Android.
+class TestSupervisedUserExtensionsDelegateAndroid
+    : public SupervisedUserExtensionsDelegate {
+ public:
+  TestSupervisedUserExtensionsDelegateAndroid() = default;
+  ~TestSupervisedUserExtensionsDelegateAndroid() override = default;
+
+  // SupervisedUserExtensionsDelegate:
+  bool IsChild() const override { return true; }
+  bool IsExtensionAllowedByParent(const Extension& extension) const override {
+    return false;
+  }
+
+  // This method is called to show the parent authentication dialog.
+  void RequestToAddExtensionOrShowError(
+      const Extension& extension,
+      content::WebContents* web_contents,
+      const gfx::ImageSkia& icon,
+      ExtensionApprovalDoneCallback extension_approval_callback) override {
+    // Simulate the parent approval install dialog result.
+    switch (dialog_actions_.value()) {
+      case DialogActions::kDismissParentAuthenticationDialog:
+        // For this case, we will approve the Ask Parent dialog (done by the
+        // scoped_auto_confirm_ set previously). Then cancel the parent
+        // authentication dialog (done by the canceled callback).
+        std::move(extension_approval_callback)
+            .Run(SupervisedExtensionApprovalResult::kCanceled);
+        break;
+      case DialogActions::kDismissExtensionInstallDialog:
+        // For this case, we will approve the Ask Parent dialog (done by the
+        // scoped_auto_confirm_ set previously). Then approve the parent
+        // authentication dialog (done by the approved callback). This will show
+        // the extension install dialog, which is then cancelled by the updated
+        // scoped_auto_confirm_ value.
+        ExtensionInstallPrompt::g_last_prompt_type_for_tests =
+            InstallPromptData::EXTENSION_PARENT_APPROVAL_PROMPT;
+
+        // Set the auto confirm value to cancel the install dialog.
+        scoped_auto_confirm_.reset();
+        scoped_auto_confirm_ = std::make_unique<ScopedTestDialogAutoConfirm>(
+            ScopedTestDialogAutoConfirm::CANCEL);
+
+        // We need to approve the parent authentication dialog in
+        // order to progress to the last extension install dialog.
+        std::move(extension_approval_callback)
+            .Run(SupervisedExtensionApprovalResult::kApproved);
+        break;
+      case DialogActions::kFullInstall:
+        // For this case, all dialogs will be approved.
+        ExtensionInstallPrompt::g_last_prompt_type_for_tests =
+            InstallPromptData::EXTENSION_PARENT_APPROVAL_PROMPT;
+
+        std::move(extension_approval_callback)
+            .Run(SupervisedExtensionApprovalResult::kApproved);
+        break;
+      case DialogActions::kDismissAskParentDialog:
+        NOTREACHED();
+    }
+  }
+
+  // SupervisedUserExtensionsDelegate:
+  void RequestToEnableExtensionOrShowError(
+      const Extension& extension,
+      content::WebContents* web_contents,
+      ExtensionApprovalDoneCallback extension_approval_callback) override {}
+  void UpdateManagementPolicyRegistration() override {}
+  bool CanInstallExtensions() const override { return true; }
+  void AddExtensionApproval(const extensions::Extension& extension) override {}
+  void MaybeRecordPermissionsIncreaseMetrics(
+      const extensions::Extension& extension) override {}
+  void RemoveExtensionApproval(
+      const extensions::Extension& extension) override {}
+  void RecordExtensionEnablementUmaMetrics(bool enabled) const override {}
+  bool CanSkipExtensionParentApprovals() override { return false; }
+  void RecordAskParentDialogUmaMetrics(AskParentDialogState state) override {
+    metrics_recorder_.RecordAskParentDialogUmaMetrics(
+        static_cast<
+            SupervisedUserExtensionsMetricsRecorder::AskParentDialogState>(
+            state));
+  }
+  void RecordEnablementUmaMetrics(EnablementState state) override {
+    metrics_recorder_.RecordEnablementUmaMetrics(
+        static_cast<SupervisedUserExtensionsMetricsRecorder::EnablementState>(
+            state));
+  }
+  ExtensionInstallPromptClient::Observer* GetInstallPromptObserver() override {
+    return &metrics_recorder_;
+  }
+  // The sequence of dialog action to take. A total of 3 dialogs can be shown in
+  // the supervised user extension installation flow:
+  // 1. The Ask Parent dialog
+  // 2. The parent authentication dialog
+  // 3. The extension install dialog
+  enum class DialogActions {
+    // The initial Ask Parent dialog is dismissed.
+    kDismissAskParentDialog,
+    // The parent authentication dialog is dismissed.
+    kDismissParentAuthenticationDialog,
+    // The last extension install dialog is dismissed.
+    kDismissExtensionInstallDialog,
+    // The extension is installed.
+    kFullInstall,
+  };
+
+  void set_dialog_actions(DialogActions action) {
+    scoped_auto_confirm_.reset();
+    scoped_auto_confirm_ = std::make_unique<ScopedTestDialogAutoConfirm>(
+        action == DialogActions::kDismissAskParentDialog
+            ? ScopedTestDialogAutoConfirm::CANCEL
+            : ScopedTestDialogAutoConfirm::ACCEPT);
+
+    dialog_actions_ = action;
+  }
+
+ private:
+  std::optional<DialogActions> dialog_actions_;
+  std::unique_ptr<ScopedTestDialogAutoConfirm> scoped_auto_confirm_;
+  SupervisedUserExtensionsMetricsRecorder metrics_recorder_;
+};
+
+// Test fixture for installation flows for child accounts on Android.
+class SupervisedUserExtensionWebstorePrivateApiTestAndroid
+    : public ExtensionWebstorePrivateApiTest {
+ public:
+  SupervisedUserExtensionWebstorePrivateApiTestAndroid() = default;
+
+  void SetUpOnMainThread() override {
+    ManagementAPI::GetFactoryInstance()->SetTestingFactory(
+        profile(), base::BindRepeating(
+                       &SupervisedUserExtensionWebstorePrivateApiTestAndroid::
+                           CreateManagementAPIWithTestDelegate,
+                       base::Unretained(this)));
+
+    ExtensionWebstorePrivateApiTest::SetUpOnMainThread();
+
+    // Set the profile as a child account.
+    profile()->GetPrefs()->SetString(prefs::kSupervisedUserId,
+                                     supervised_user::kChildAccountSUID);
+    // Enable the "Permissions for sites, apps and extensions" toggle.
+    profile()->GetPrefs()->SetBoolean(
+        prefs::kSupervisedUserExtensionsMayRequestPermissions, true);
+
+    // Force creation of the ManagementAPI service to ensure our test delegate
+    // is initialized.
+    BrowserContextKeyedAPIFactory<ManagementAPI>::Get(profile());
+  }
+
+  std::unique_ptr<KeyedService> CreateManagementAPIWithTestDelegate(
+      content::BrowserContext* context) {
+    std::unique_ptr<ManagementAPI> api =
+        std::make_unique<ManagementAPI>(context);
+    auto delegate =
+        std::make_unique<TestSupervisedUserExtensionsDelegateAndroid>();
+    test_delegate_ = delegate.get();
+    api->set_supervised_user_extensions_delegate_for_test(std::move(delegate));
+    return api;
+  }
+
+  void set_dialog_actions(
+      TestSupervisedUserExtensionsDelegateAndroid::DialogActions action) {
+    ASSERT_TRUE(test_delegate_) << "Test delegate not initialized";
+    test_delegate_->set_dialog_actions(action);
+  }
+
+ private:
+  raw_ptr<TestSupervisedUserExtensionsDelegateAndroid> test_delegate_ = nullptr;
+};
+
+// Tests that the initial InstallAskParent dialog is shown, then dismissed.
+IN_PROC_BROWSER_TEST_F(SupervisedUserExtensionWebstorePrivateApiTestAndroid,
+                       ParentApprovalInstallAskParentDialogShown) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  WebstoreInstallListener listener;
+  auto delegate_reset = WebstorePrivateApi::SetDelegateForTesting(&listener);
+
+  set_dialog_actions(TestSupervisedUserExtensionsDelegateAndroid::
+                         DialogActions::kDismissAskParentDialog);
+  ASSERT_TRUE(RunInstallTest("install_cancel_child.html", "app.crx"));
+
+  listener.Wait();
+  ASSERT_TRUE(listener.received_failure());
+  ASSERT_EQ(kTestAppId, listener.id());
+  ASSERT_EQ(listener.last_failure_reason(),
+            WebstoreInstaller::FailureReason::FAILURE_REASON_CANCELLED);
+
+  // Verify the Ask Parent Dialog metrics.
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kAskParentDialogOpenedActionName));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kAskParentDialogCanceledActionName));
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kAskParentDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::AskParentDialogState::kOpened,
+      1);
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kAskParentDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::AskParentDialogState::kCanceled,
+      1);
+}
+
+// Tests that the parent approval install dialog is NOT shown when the parent
+// authentication is canceled or fails.
+IN_PROC_BROWSER_TEST_F(
+    SupervisedUserExtensionWebstorePrivateApiTestAndroid,
+    ParentApprovalInstallDialogNotShownOnParentAuthenticationCancel) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  // Set the prompt type to ensure we are testing the parent approval install
+  // dialog.
+  ExtensionInstallPrompt::g_last_prompt_type_for_tests =
+      InstallPromptData::UNSET_PROMPT_TYPE;
+
+  WebstoreInstallListener listener;
+  auto delegate_reset = WebstorePrivateApi::SetDelegateForTesting(&listener);
+
+  set_dialog_actions(TestSupervisedUserExtensionsDelegateAndroid::
+                         DialogActions::kDismissParentAuthenticationDialog);
+  ASSERT_TRUE(RunInstallTest("install_cancel_child.html", "app.crx"));
+
+  listener.Wait();
+  ASSERT_TRUE(listener.received_failure());
+  ASSERT_EQ(kTestAppId, listener.id());
+  ASSERT_EQ(listener.last_failure_reason(),
+            WebstoreInstaller::FailureReason::FAILURE_REASON_CANCELLED);
+
+  // Verify that the parent approval install dialog was NOT shown.
+  EXPECT_NE(ExtensionInstallPrompt::g_last_prompt_type_for_tests,
+            InstallPromptData::EXTENSION_PARENT_APPROVAL_PROMPT);
+
+  // Verify the Ask Parent Dialog metrics.
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kAskParentDialogOpenedActionName));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kAskParentDialogApprovedActionName));
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kAskParentDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::AskParentDialogState::kOpened,
+      1);
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kAskParentDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::AskParentDialogState::kApproved,
+      1);
+
+  // Verify the Enablement metrics.
+  EXPECT_EQ(
+      1,
+      user_action_tester.GetActionCount(
+          SupervisedUserExtensionsMetricsRecorder::kFailedToEnableActionName));
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kEnablementHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::EnablementState::kFailedToEnable,
+      1);
+}
+
+// Tests that the parent approval install dialog is shown when the parent
+// authentication is successful, but the installation is cancelled by the user
+// on the dialog.
+IN_PROC_BROWSER_TEST_F(SupervisedUserExtensionWebstorePrivateApiTestAndroid,
+                       ParentApprovalDialogShownAndCancelled) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  // Set the prompt type to ensure we are testing the parent approval install
+  // dialog.
+  ExtensionInstallPrompt::g_last_prompt_type_for_tests =
+      InstallPromptData::UNSET_PROMPT_TYPE;
+
+  WebstoreInstallListener listener;
+  auto delegate_reset = WebstorePrivateApi::SetDelegateForTesting(&listener);
+
+  // The parent approval install dialog
+  // (InstallPromptData::EXTENSION_PARENT_APPROVAL_PROMPT) will be shown
+  // after the parent authentication dialog. Auto-cancel it.
+  set_dialog_actions(TestSupervisedUserExtensionsDelegateAndroid::
+                         DialogActions::kDismissExtensionInstallDialog);
+  ASSERT_TRUE(RunInstallTest("install_blocked_child.html", "app.crx"));
+
+  listener.Wait();
+  ASSERT_TRUE(listener.received_failure());
+  ASSERT_EQ(kTestAppId, listener.id());
+  ASSERT_EQ(listener.last_failure_reason(),
+            WebstoreInstaller::FailureReason::FAILURE_REASON_CANCELLED);
+
+  // Verify that the parent approval install dialog was shown.
+  EXPECT_EQ(ExtensionInstallPrompt::g_last_prompt_type_for_tests,
+            InstallPromptData::EXTENSION_PARENT_APPROVAL_PROMPT);
+
+  // Verify the Ask Parent Dialog metrics.
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kAskParentDialogOpenedActionName));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kAskParentDialogApprovedActionName));
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kAskParentDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::AskParentDialogState::kOpened,
+      1);
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kAskParentDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::AskParentDialogState::kApproved,
+      1);
+
+  // Verify the Extension Install Dialog metrics.
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kExtensionInstallDialogOpenedActionName));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kExtensionInstallDialogChildCanceledActionName));
+  histogram_tester.ExpectBucketCount(SupervisedUserExtensionsMetricsRecorder::
+                                         kExtensionInstallDialogHistogramName,
+                                     SupervisedUserExtensionsMetricsRecorder::
+                                         ExtensionInstallDialogState::kOpened,
+                                     1);
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::
+          kExtensionInstallDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::ExtensionInstallDialogState::
+          kChildCanceled,
+      1);
+
+  // Verify the Enablement metrics.
+  EXPECT_EQ(
+      1,
+      user_action_tester.GetActionCount(
+          SupervisedUserExtensionsMetricsRecorder::kFailedToEnableActionName));
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kEnablementHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::EnablementState::kFailedToEnable,
+      1);
+}
+
+// Tests that the parent approval install dialog is shown when the parent
+// authentication is successful. Then accept the dialog.
+IN_PROC_BROWSER_TEST_F(SupervisedUserExtensionWebstorePrivateApiTestAndroid,
+                       ParentApprovalDialogShownAndAccepted) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  // Set the prompt type to ensure we are testing the parent approval install
+  // dialog.
+  ExtensionInstallPrompt::g_last_prompt_type_for_tests =
+      InstallPromptData::UNSET_PROMPT_TYPE;
+
+  WebstoreInstallListener listener;
+  auto delegate_reset = WebstorePrivateApi::SetDelegateForTesting(&listener);
+
+  // The parent approval install dialog
+  // (InstallPromptData::EXTENSION_PARENT_APPROVAL_PROMPT) will be shown
+  // after the parent authentication dialog. Auto-accept it.
+  set_dialog_actions(
+      TestSupervisedUserExtensionsDelegateAndroid::DialogActions::kFullInstall);
+  ASSERT_TRUE(RunInstallTest("install_child.html", "extension.crx"));
+
+  listener.Wait();
+  ASSERT_TRUE(listener.received_success());
+  ASSERT_EQ(kTestExtensionId, listener.id());
+
+  // Verify that the parent approval install dialog was shown.
+  EXPECT_EQ(ExtensionInstallPrompt::g_last_prompt_type_for_tests,
+            InstallPromptData::EXTENSION_PARENT_APPROVAL_PROMPT);
+
+  // Verify the Ask Parent Dialog metrics.
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kAskParentDialogOpenedActionName));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kAskParentDialogApprovedActionName));
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kAskParentDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::AskParentDialogState::kOpened,
+      1);
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::kAskParentDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::AskParentDialogState::kApproved,
+      1);
+
+  // Verify the Extension Install Dialog metrics.
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kExtensionInstallDialogOpenedActionName));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   SupervisedUserExtensionsMetricsRecorder::
+                       kExtensionInstallDialogChildAcceptedActionName));
+  histogram_tester.ExpectBucketCount(SupervisedUserExtensionsMetricsRecorder::
+                                         kExtensionInstallDialogHistogramName,
+                                     SupervisedUserExtensionsMetricsRecorder::
+                                         ExtensionInstallDialogState::kOpened,
+                                     1);
+  histogram_tester.ExpectBucketCount(
+      SupervisedUserExtensionsMetricsRecorder::
+          kExtensionInstallDialogHistogramName,
+      SupervisedUserExtensionsMetricsRecorder::ExtensionInstallDialogState::
+          kChildAccepted,
+      1);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
+class ExtensionWebstoreGetWebGLStatusTest : public PlatformBrowserTest {
  protected:
   void RunTest(bool webgl_allowed) {
     // If Gpu access is disallowed then WebGL will not be available.
@@ -707,8 +1122,9 @@ class ExtensionWebstoreGetWebGLStatusTest : public InProcessBrowserTest {
     static const char kWebGLStatusBlocked[] = "webgl_blocked";
     scoped_refptr<WebstorePrivateGetWebGLStatusFunction> function =
         new WebstorePrivateGetWebGLStatusFunction();
+    Profile* profile = chrome_test_utils::GetProfile(this);
     std::optional<base::Value> result = utils::RunFunctionAndReturnSingleResult(
-        function.get(), kEmptyArgs, browser()->profile());
+        function.get(), kEmptyArgs, profile);
     ASSERT_TRUE(result);
     EXPECT_EQ(base::Value::Type::STRING, result->type());
     EXPECT_TRUE(result->is_string());
@@ -719,7 +1135,7 @@ class ExtensionWebstoreGetWebGLStatusTest : public InProcessBrowserTest {
 };
 
 // Tests getWebGLStatus function when WebGL is allowed.
-// Flaky on Mac. https://crbug.com/1346413.
+// Flaky on Mac. https://crbug.com/40854135.
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_Allowed DISABLED_Allowed
 #else
@@ -784,7 +1200,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionWebstorePrivateGetReferrerChainApiTest,
 // opted out of SafeBrowsing.
 IN_PROC_BROWSER_TEST_F(ExtensionWebstorePrivateGetReferrerChainApiTest,
                        GetReferrerChainForNonSafeBrowsingUser) {
-  PrefService* pref_service = browser()->profile()->GetPrefs();
+  PrefService* pref_service = profile()->GetPrefs();
   EXPECT_TRUE(pref_service->GetBoolean(prefs::kSafeBrowsingEnabled));
   // Disable SafeBrowsing.
   pref_service->SetBoolean(prefs::kSafeBrowsingEnabled, false);
@@ -797,10 +1213,12 @@ class ExtensionWebstorePrivateApiAllowlistEnforcementTest
     : public ExtensionWebstorePrivateApiTest {
  public:
   ExtensionWebstorePrivateApiAllowlistEnforcementTest() {
-    feature_list_.InitWithFeatures(
-        {extensions_features::kSafeBrowsingCrxAllowlistShowWarnings,
-         extensions_features::kSafeBrowsingCrxAllowlistAutoDisable},
-        {});
+    feature_list_.InitAndEnableFeature(
+        extensions_features::kSafeBrowsingCrxAllowlistAutoDisable);
+  }
+
+  ExtensionAllowlist* GetAllowlist() {
+    return ExtensionAllowlistFactory::GetForBrowserContext(profile());
   }
 
  private:
@@ -810,43 +1228,202 @@ class ExtensionWebstorePrivateApiAllowlistEnforcementTest
 IN_PROC_BROWSER_TEST_F(ExtensionWebstorePrivateApiAllowlistEnforcementTest,
                        EnhancedSafeBrowsingNotAllowlisted) {
   safe_browsing::SetSafeBrowsingState(
-      browser()->profile()->GetPrefs(),
+      profile()->GetPrefs(),
       safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION);
   ASSERT_TRUE(
       RunInstallTest("safebrowsing_not_allowlisted.html", "extension.crx"));
 
   EXPECT_EQ(ALLOWLIST_NOT_ALLOWLISTED,
-            extension_service()->allowlist()->GetExtensionAllowlistState(
-                kExtensionId));
+            GetAllowlist()->GetExtensionAllowlistState(kExtensionId));
   EXPECT_EQ(
       ALLOWLIST_ACKNOWLEDGE_ENABLED_BY_USER,
-      extension_service()->allowlist()->GetExtensionAllowlistAcknowledgeState(
-          kExtensionId));
+      GetAllowlist()->GetExtensionAllowlistAcknowledgeState(kExtensionId));
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionWebstorePrivateApiAllowlistEnforcementTest,
                        EnhancedSafeBrowsingAllowlisted) {
   safe_browsing::SetSafeBrowsingState(
-      browser()->profile()->GetPrefs(),
+      profile()->GetPrefs(),
       safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION);
   ASSERT_TRUE(RunInstallTest("safebrowsing_allowlisted.html", "extension.crx"));
 
   EXPECT_EQ(ALLOWLIST_UNDEFINED,
-            extension_service()->allowlist()->GetExtensionAllowlistState(
-                kExtensionId));
+            GetAllowlist()->GetExtensionAllowlistState(kExtensionId));
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionWebstorePrivateApiAllowlistEnforcementTest,
                        StandardSafeBrowsingNotAllowlisted) {
   safe_browsing::SetSafeBrowsingState(
-      browser()->profile()->GetPrefs(),
+      profile()->GetPrefs(),
       safe_browsing::SafeBrowsingState::STANDARD_PROTECTION);
   ASSERT_TRUE(
       RunInstallTest("safebrowsing_not_allowlisted.html", "extension.crx"));
 
   EXPECT_EQ(ALLOWLIST_UNDEFINED,
-            extension_service()->allowlist()->GetExtensionAllowlistState(
-                kExtensionId));
+            GetAllowlist()->GetExtensionAllowlistState(kExtensionId));
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+class WebstorePrivateEnterprisePromotionApiTest
+    : public MixinBasedInProcessBrowserTest {
+ public:
+  WebstorePrivateEnterprisePromotionApiTest() {
+    feature_list_.InitAndEnableFeature(
+        extensions_features::kEnableShouldShowPromotion);
+  }
+  ~WebstorePrivateEnterprisePromotionApiTest() override = default;
+
+ protected:
+#if BUILDFLAG(IS_CHROMEOS)
+  ash::DeviceStateMixin device_state_{
+      &mixin_host_,
+      ash::DeviceStateMixin::State::OOBE_COMPLETED_CLOUD_ENROLLED};
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(WebstorePrivateEnterprisePromotionApiTest,
+                       DeterminesAndSavesPromotionEligibility) {
+  enterprise_management::GetUserEligiblePromotionsResponse mock_response;
+  mock_response.mutable_promotions()->set_cws_privacy_details_promotion(
+      enterprise_management::CHROME_ENTERPRISE_CORE);
+  auto function = base::MakeRefCounted<
+      WebstorePrivateShouldShowEnterprisePromotionBannerFunction>();
+  function->SetFakePromotionEligibilityCheckerForTesting(
+      std::make_unique<FakePromotionEligibilityChecker>(
+          std::move(mock_response)));
+
+  std::optional<base::Value> result = utils::RunFunctionAndReturnSingleResult(
+      function.get(), "[]", browser()->GetProfile());
+
+  ASSERT_TRUE(result);
+  EXPECT_EQ("CHROME_ENTERPRISE_CORE", result->GetString());
+  EXPECT_EQ(static_cast<int>(enterprise::PromotionType::kChromeEnterpriseCore),
+            browser()->GetProfile()->GetPrefs()->GetInteger(
+                enterprise_promotion::kEnterprisePromotionEligibility));
+}
+
+IN_PROC_BROWSER_TEST_F(WebstorePrivateEnterprisePromotionApiTest,
+                       ReturnsCachedPromotionEligibility) {
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
+  prefs->SetInteger(
+      enterprise_promotion::kEnterprisePromotionEligibility,
+      static_cast<int>(enterprise::PromotionType::kChromeEnterprisePremium));
+  base::Time future_expiration = base::Time::Now() + base::Hours(1);
+  prefs->SetTime(pref_names::kEnterprisePromotionExpirationTime,
+                 future_expiration);
+  auto function = base::MakeRefCounted<
+      WebstorePrivateShouldShowEnterprisePromotionBannerFunction>();
+  // It should return saved prefs and NEVER call this checker.
+  function->SetFakePromotionEligibilityCheckerForTesting(
+      std::make_unique<FailIfCalledPromotionEligibilityChecker>());
+
+  std::optional<base::Value> result = utils::RunFunctionAndReturnSingleResult(
+      function.get(), "[]", browser()->GetProfile());
+
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->is_string());
+  EXPECT_EQ("CHROME_ENTERPRISE_PREMIUM", result->GetString());
+  EXPECT_EQ(
+      static_cast<int>(enterprise::PromotionType::kChromeEnterprisePremium),
+      prefs->GetInteger(enterprise_promotion::kEnterprisePromotionEligibility));
+  EXPECT_EQ(future_expiration,
+            prefs->GetTime(pref_names::kEnterprisePromotionExpirationTime));
+}
+
+IN_PROC_BROWSER_TEST_F(WebstorePrivateEnterprisePromotionApiTest,
+                       ReturnsUnspecifiedResponseWhenBannerWasDismissed) {
+#if !BUILDFLAG(IS_CHROMEOS)
+  policy::CloudPolicyManager* manager =
+      browser()->GetProfile()->GetCloudPolicyManager();
+  auto client = std::make_unique<policy::MockCloudPolicyClient>();
+  client->SetDMToken("fake-dm-token");
+  manager->Connect(g_browser_process->local_state(), std::move(client));
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
+  prefs->SetBoolean(pref_names::kHasDismissedEnterprisePromotion, true);
+  scoped_refptr<WebstorePrivateShouldShowEnterprisePromotionBannerFunction>
+      function = base::MakeRefCounted<
+          WebstorePrivateShouldShowEnterprisePromotionBannerFunction>();
+
+  std::optional<base::Value> result = utils::RunFunctionAndReturnSingleResult(
+      function.get(), "[]", browser()->GetProfile());
+
+  ASSERT_TRUE(result);
+  EXPECT_EQ(
+      api::webstore_private::ToString(
+          api::webstore_private::PromotionType::kPromotionTypeUnspecified),
+      result->GetString());
+  EXPECT_EQ(static_cast<int>(enterprise::PromotionType::kUnspecified),
+            browser()->GetProfile()->GetPrefs()->GetInteger(
+                enterprise_promotion::kEnterprisePromotionEligibility));
+  EXPECT_EQ(
+      static_cast<int>(enterprise::PromotionType::kUnspecified),
+      prefs->GetInteger(enterprise_promotion::kEnterprisePromotionEligibility));
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+class WebstorePrivatePolicyTest : public ExtensionWebstorePrivateApiTest {
+ public:
+  WebstorePrivatePolicyTest() {
+#if !BUILDFLAG(IS_CHROMEOS)
+    browser_dm_token_storage_.SetClientId("client_id");
+    browser_dm_token_storage_.SetEnrollmentToken("enrollment_token");
+    browser_dm_token_storage_.SetDMToken("dm_token");
+    policy::BrowserDMTokenStorage::SetForTesting(&browser_dm_token_storage_);
+#endif
+  }
+
+  void SetUpInProcessBrowserTestFixture() override {
+    ExtensionWebstorePrivateApiTest::SetUpInProcessBrowserTestFixture();
+    provider_.SetDefaultReturns(
+        /*is_initialization_complete_return=*/true,
+        /*is_first_policy_load_complete_return=*/true);
+    policy::BrowserPolicyConnector::SetPolicyProviderForTesting(&provider_);
+  }
+
+ protected:
+#if !BUILDFLAG(IS_CHROMEOS)
+  policy::FakeBrowserDMTokenStorage browser_dm_token_storage_;
+#endif
+  testing::NiceMock<policy::MockConfigurationPolicyProvider> provider_;
+};
+
+IN_PROC_BROWSER_TEST_F(WebstorePrivatePolicyTest, ExtensionRequestPolicy) {
+  // Block all extensions.
+  policy::PolicyMap policies;
+  base::ListValue blocklist;
+  blocklist.Append("*");
+  policies.Set(policy::key::kExtensionInstallBlocklist,
+               policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
+               policy::POLICY_SOURCE_CLOUD, base::Value(std::move(blocklist)),
+               nullptr);
+
+  // Enable extension request.
+  policies.Set(policy::key::kCloudExtensionRequestEnabled,
+               policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
+               policy::POLICY_SOURCE_CLOUD, base::Value(true), nullptr);
+
+  // Enable reporting.
+  policies.Set(policy::key::kCloudReportingEnabled,
+               policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
+               policy::POLICY_SOURCE_CLOUD, base::Value(true), nullptr);
+
+  provider_.UpdateChromePolicy(policies);
+
+  // Auto-confirm the request dialog.
+  ScopedTestDialogAutoConfirm auto_confirm(ScopedTestDialogAutoConfirm::ACCEPT);
+
+  // Run the test.
+  ASSERT_TRUE(RunInstallTest("extension_request.html", "extension.crx"));
+
+  // Verify that the request was recorded in prefs.
+  const base::DictValue& pending_requests = profile()->GetPrefs()->GetDict(
+      enterprise_reporting::kCloudExtensionRequestIds);
+  EXPECT_EQ(1u, pending_requests.size());
+  EXPECT_TRUE(pending_requests.contains(kExtensionId));
 }
 
 }  // namespace extensions

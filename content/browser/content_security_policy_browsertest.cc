@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <string_view>
 #include <tuple>
 
@@ -10,6 +11,9 @@
 #include "base/memory/raw_ref.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
+#include "base/strings/escape.h"
+#include "base/strings/strcat.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
@@ -30,7 +34,6 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
-#include "net/test/spawned_test_server/spawned_test_server.h"
 #include "net/test/test_data_directory.h"
 #include "third_party/blink/public/common/features.h"
 
@@ -48,10 +51,11 @@ IN_PROC_BROWSER_TEST_F(ContentSecurityPolicyBrowserTest,
 
   WebContentsConsoleObserver console_observer(web_contents());
   console_observer.SetPattern(
-      "[Report Only] Refused to compile or instantiate WebAssembly module "
-      "because 'unsafe-eval' is not an allowed source of script in the "
-      "following Content Security Policy directive: \"script-src "
-      "'unsafe-inline'\".\n");
+      "Compiling or instantiating a WebAssembly module violates the following "
+      "Content Security policy directive because 'unsafe-eval' is not an "
+      "allowed source of script: \"script-src 'unsafe-inline'\". The policy is "
+      "report-only, so the violation has been logged but no further action has "
+      "been taken.");
   EXPECT_TRUE(NavigateToURL(shell(), url));
   ASSERT_TRUE(console_observer.Wait());
 }
@@ -113,11 +117,11 @@ IN_PROC_BROWSER_TEST_F(ContentSecurityPolicyBrowserTest,
   GURL url(page);
   WebContentsConsoleObserver console_observer(web_contents());
   console_observer.SetPattern(
-      "Refused to frame '' because it violates the following Content Security "
-      "Policy directive: \"frame-src *\". Note that '*' matches only URLs with "
-      "network schemes ('http', 'https', 'ws', 'wss'), or URLs whose scheme "
-      "matches `self`'s scheme. The scheme 'mailto:' must be added "
-      "explicitly.\n");
+      "Framing '' violates the following Content Security Policy directive: "
+      "\"frame-src *\". The request has been blocked. Note that '*' matches "
+      "only URLs with network schemes ('http', 'https', 'ws', 'wss'), or URLs "
+      "whose scheme matches `self`'s scheme. The scheme 'mailto:' must be "
+      "added explicitly.\n");
   EXPECT_TRUE(NavigateToURL(shell(), url));
   ASSERT_TRUE(console_observer.Wait());
 }
@@ -133,13 +137,13 @@ IN_PROC_BROWSER_TEST_F(ContentSecurityPolicyBrowserTest,
   GURL url(page);
   WebContentsConsoleObserver console_observer(web_contents());
   console_observer.SetPattern(
-      "Refused to load the script 'mailto:arthursonzogni@chromium.org' because "
-      "it violates the following Content Security Policy directive: "
+      "Loading the script 'mailto:arthursonzogni@chromium.org' violates the "
+      "following Content Security Policy directive: "
       "\"script-src *\". Note that 'script-src-elem' was not explicitly set, "
       "so 'script-src' is used as a fallback. Note that '*' matches only URLs "
       "with network schemes ('http', 'https', 'ws', 'wss'), or URLs whose "
       "scheme matches `self`'s scheme. The scheme 'mailto:' must be added "
-      "explicitly.\n");
+      "explicitly. The action has been blocked.");
   EXPECT_TRUE(NavigateToURL(shell(), url));
   ASSERT_TRUE(console_observer.Wait());
 }
@@ -299,32 +303,8 @@ IN_PROC_BROWSER_TEST_F(ContentSecurityPolicyBrowserTest, CSPAttributeTooLong) {
   EXPECT_FALSE(main_frame_host()->child_at(0)->csp_attribute());
 }
 
-class TransparentPlaceholderImageContentSecurityPolicyBrowserTest
-    : public ContentSecurityPolicyBrowserTest,
-      public ::testing::WithParamInterface<bool> {
- public:
-  TransparentPlaceholderImageContentSecurityPolicyBrowserTest() {
-    if (GetParam()) {
-      feature_list_.InitAndEnableFeature(
-          blink::features::kSimplifyLoadingTransparentPlaceholderImage);
-    } else {
-      feature_list_.InitAndDisableFeature(
-          blink::features::kSimplifyLoadingTransparentPlaceholderImage);
-    }
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(
-    TransparentPlaceholderImageContentSecurityPolicyBrowserTest,
-    TransparentPlaceholderImageContentSecurityPolicyBrowserTest,
-    testing::Bool());
-
-IN_PROC_BROWSER_TEST_P(
-    TransparentPlaceholderImageContentSecurityPolicyBrowserTest,
-    ImgSrcPolicyEnforced) {
+IN_PROC_BROWSER_TEST_F(ContentSecurityPolicyBrowserTest,
+                       TransparentPlaceholderImage_ImgSrcPolicyEnforced) {
   const char* page = R"(
     data:text/html,
     <meta http-equiv="Content-Security-Policy" content="img-src 'none';">
@@ -334,25 +314,27 @@ IN_PROC_BROWSER_TEST_P(
   GURL url(page);
   WebContentsConsoleObserver console_observer(web_contents());
   console_observer.SetPattern(
-      "Refused to load the image "
+      "Loading the image "
       "'data:image/gif;base64,R0lGODlhAQABAIAAAP///////"
-      "yH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==' because it violates the following "
-      "Content Security Policy directive: \"img-src 'none'\".\n");
+      "yH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==' violates the following Content "
+      "Security Policy directive: \"img-src 'none'\". The action has been "
+      "blocked.");
   EXPECT_TRUE(NavigateToURL(shell(), url));
   ASSERT_TRUE(console_observer.Wait());
 }
 
-IN_PROC_BROWSER_TEST_P(
-    TransparentPlaceholderImageContentSecurityPolicyBrowserTest,
-    ImgSrcPolicyReported) {
+IN_PROC_BROWSER_TEST_F(ContentSecurityPolicyBrowserTest,
+                       TransparentPlaceholderImage_ImgSrcPolicyReported) {
   GURL url = embedded_test_server()->GetURL("/csp_report_only_data_url.html");
 
   WebContentsConsoleObserver console_observer(web_contents());
   console_observer.SetPattern(
-      "[Report Only] Refused to load the image "
+      "Loading the image "
       "'data:image/gif;base64,R0lGODlhAQABAIAAAP///////"
-      "yH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==' because it violates the following "
-      "Content Security Policy directive: \"img-src 'none'\".\n");
+      "yH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==' violates the following "
+      "Content Security Policy directive: \"img-src 'none'\". The policy is "
+      "report-only, so the violation has been logged but no further action has "
+      "been taken.");
   EXPECT_TRUE(NavigateToURL(shell(), url));
   ASSERT_TRUE(console_observer.Wait());
 }
@@ -466,6 +448,7 @@ IN_PROC_BROWSER_TEST_F(ThirdPartyCookiesContentSecurityPolicyBrowserTest,
 namespace {
 
 constexpr std::string_view kHostA = "a.test";
+constexpr std::string_view kHostSubA = "sub.a.test";
 constexpr std::string_view kHostB = "b.test";
 
 constexpr std::string_view kTopLevelPath = "/top-level.html";
@@ -481,7 +464,7 @@ constexpr std::string_view kHandledPaths[] = {
 std::unique_ptr<net::test_server::HttpResponse>
 ServeCSPSandboxedWithAllowSameSiteNoneCookies(
     const net::test_server::HttpRequest& request) {
-  if (!base::Contains(kHandledPaths, request.relative_url)) {
+  if (!std::ranges::contains(kHandledPaths, request.relative_url)) {
     return nullptr;
   }
 
@@ -812,6 +795,96 @@ IN_PROC_BROWSER_TEST_P(AllowSameSiteNoneCookiesContentSecurityPolicyBrowserTest,
   EXPECT_FALSE(grandchild_iframe->GetCookieSettingOverrides().Has(
       net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox));
   EXPECT_EQ(FetchWithCredentials(grandchild_iframe, grandchild_iframe_url), "");
+}
+
+IN_PROC_BROWSER_TEST_P(AllowSameSiteNoneCookiesContentSecurityPolicyBrowserTest,
+                       NestedIframeNavigationCrossOriginRedirect) {
+  GURL top_level = https_server()->GetURL(kHostA, kTopLevelPath);
+  GURL middle_iframe_url = https_server()->GetURL(kHostA, kCrossSiteIframePath);
+  GURL grandchild_target_url =
+      https_server()->GetURL(kHostSubA, kCrossSiteIframePath);
+  GURL grandchild_redirect_url = https_server()->GetURL(
+      kHostA, "/server-redirect?" +
+                  base::EscapeQueryParamValue(grandchild_target_url.spec(),
+                                              /*use_plus=*/false));
+
+  ASSERT_TRUE(SetCookie(web_contents()->GetBrowserContext(),
+                        https_server()->GetURL(kHostSubA, kTopLevelPath),
+                        "foo=bar;SameSite=None;Secure;"));
+
+  // Top a.test embeds a sandboxed a.test iframe which then embeds an inner
+  // iframe that navigates to a.test and is server-redirected to sub.a.test.
+  ASSERT_TRUE(NavigateToURL(shell(), top_level));
+  ASSERT_TRUE(
+      ExecJs(web_contents()->GetPrimaryMainFrame(),
+             JsReplace(R"(document.body.innerHTML =
+                    '<iframe id="middle" src=$1 sandbox=$2></iframe>';)",
+                       middle_iframe_url.spec(), sandbox_iframe_policy())));
+  WaitForLoadStop(web_contents());
+  RenderFrameHost* middle_iframe = ChildFrameAt(shell(), 0);
+
+  ASSERT_TRUE(ExecJs(middle_iframe, JsReplace(R"(document.body.innerHTML =
+                    '<iframe id="grandchild" src=$1></iframe>';)",
+                                              grandchild_redirect_url.spec())));
+  WaitForLoadStop(web_contents());
+  RenderFrameHost* grandchild_iframe = ChildFrameAt(middle_iframe, 0);
+  ASSERT_TRUE(grandchild_iframe);
+  ASSERT_EQ(grandchild_iframe->GetLastCommittedURL(), grandchild_target_url);
+
+  // The override does not apply to the redirected navigation request because
+  // the grandchild's origin no longer matches each ancestor's origin (or
+  // precursor) after the redirect to sub.a.test.
+  EXPECT_FALSE(grandchild_iframe->GetCookieSettingOverrides().Has(
+      net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox));
+  EXPECT_EQ(EvalJs(grandchild_iframe, "document.body.textContent"), "");
+  EXPECT_EQ(FetchWithCredentials(grandchild_iframe, grandchild_target_url), "");
+}
+
+IN_PROC_BROWSER_TEST_P(AllowSameSiteNoneCookiesContentSecurityPolicyBrowserTest,
+                       NestedIframeNavigationSameOriginRedirect) {
+  GURL top_level = https_server()->GetURL(kHostA, kTopLevelPath);
+  GURL middle_iframe_url = https_server()->GetURL(kHostA, kCrossSiteIframePath);
+  GURL grandchild_target_url =
+      https_server()->GetURL(kHostA, kCrossSiteIframePath);
+  GURL grandchild_redirect_url = https_server()->GetURL(
+      kHostA, "/server-redirect?" +
+                  base::EscapeQueryParamValue(grandchild_target_url.spec(),
+                                              /*use_plus=*/false));
+
+  ASSERT_TRUE(SetCookie(web_contents()->GetBrowserContext(),
+                        https_server()->GetURL(kHostA, kTopLevelPath),
+                        "foo=bar;SameSite=None;Secure;"));
+
+  // Top a.test embeds a sandboxed a.test iframe which then embeds an inner
+  // iframe that navigates to a.test and is server-redirected to another
+  // a.test URL.
+  ASSERT_TRUE(NavigateToURL(shell(), top_level));
+  ASSERT_TRUE(
+      ExecJs(web_contents()->GetPrimaryMainFrame(),
+             JsReplace(R"(document.body.innerHTML =
+                    '<iframe id="middle" src=$1 sandbox=$2></iframe>';)",
+                       middle_iframe_url.spec(), sandbox_iframe_policy())));
+  WaitForLoadStop(web_contents());
+  RenderFrameHost* middle_iframe = ChildFrameAt(shell(), 0);
+
+  ASSERT_TRUE(ExecJs(middle_iframe, JsReplace(R"(document.body.innerHTML =
+                    '<iframe id="grandchild" src=$1></iframe>';)",
+                                              grandchild_redirect_url.spec())));
+  WaitForLoadStop(web_contents());
+  RenderFrameHost* grandchild_iframe = ChildFrameAt(middle_iframe, 0);
+  ASSERT_TRUE(grandchild_iframe);
+  ASSERT_EQ(grandchild_iframe->GetLastCommittedURL(), grandchild_target_url);
+
+  // The override applies to the redirected navigation request because the
+  // grandchild's origin matches each ancestor's origin (or precursor) both
+  // before and after the redirect on a.test.
+  EXPECT_EQ(grandchild_iframe->GetCookieSettingOverrides().Has(
+                net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox),
+            include_allow_same_site_none_cookies());
+  EXPECT_EQ(EvalJs(grandchild_iframe, "document.body.textContent"),
+            include_allow_same_site_none_cookies() ? "foo=bar" : "");
+  EXPECT_EQ(FetchWithCredentials(grandchild_iframe, grandchild_target_url),
+            include_allow_same_site_none_cookies() ? "foo=bar" : "");
 }
 
 }  // namespace content

@@ -9,13 +9,9 @@
 #include <string>
 #include <vector>
 
-#include "base/gtest_prod_util.h"
+#include "base/memory/weak_ptr.h"
 #include "remoting/protocol/authenticator.h"
 #include "remoting/protocol/host_authentication_config.h"
-
-namespace jingle_xmpp {
-struct StaticQName;
-}  // namespace jingle_xmpp
 
 namespace remoting::protocol {
 
@@ -76,23 +72,16 @@ class NegotiatingAuthenticatorBase : public Authenticator {
   RejectionDetails rejection_details() const override;
   const std::string& GetAuthKey() const override;
   const SessionPolicies* GetSessionPolicies() const override;
-  std::unique_ptr<ChannelAuthenticator> CreateChannelAuthenticator()
-      const override;
 
   // Calls |current_authenticator_| to process |message|, passing the supplied
   // |resume_callback|.
-  void ProcessMessageInternal(const jingle_xmpp::XmlElement* message,
+  void ProcessMessageInternal(const JingleAuthentication& message,
                               base::OnceClosure resume_callback);
 
  protected:
   friend class NegotiatingAuthenticatorTest;
 
-  static const jingle_xmpp::StaticQName kMethodAttributeQName;
-  static const jingle_xmpp::StaticQName kSupportedMethodsAttributeQName;
   static const char kSupportedMethodsSeparator;
-
-  static const jingle_xmpp::StaticQName kPairingInfoTag;
-  static const jingle_xmpp::StaticQName kClientIdAttribute;
 
   explicit NegotiatingAuthenticatorBase(Authenticator::State initial_state);
 
@@ -106,7 +95,7 @@ class NegotiatingAuthenticatorBase : public Authenticator {
 
   // Gets the next message from |current_authenticator_|, if any, and fills in
   // the 'method' tag with |current_method_|.
-  virtual std::unique_ptr<jingle_xmpp::XmlElement> GetNextMessageInternal();
+  virtual JingleAuthentication GetNextMessageInternal();
 
   std::vector<AuthenticationMethod> methods_;
   AuthenticationMethod current_method_ = AuthenticationMethod::INVALID;
@@ -114,6 +103,8 @@ class NegotiatingAuthenticatorBase : public Authenticator {
   State state_;
   RejectionReason rejection_reason_ = RejectionReason::INVALID_CREDENTIALS;
   RejectionDetails rejection_details_;
+
+  base::WeakPtrFactory<NegotiatingAuthenticatorBase> weak_factory_{this};
 };
 
 }  // namespace remoting::protocol

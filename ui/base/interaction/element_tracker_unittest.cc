@@ -4,7 +4,6 @@
 
 #include "ui/base/interaction/element_tracker.h"
 
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/test/bind.h"
@@ -26,8 +25,10 @@ DEFINE_ELEMENT_IDENTIFIER_VALUE(kElementIdentifier1);
 const char* const kElementIdentifier1Name = "kElementIdentifier1";
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kElementIdentifier2);
 DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kCustomEventType1);
-const ElementContext kElementContext1(1);
-const ElementContext kElementContext2(2);
+constexpr ElementContext kElementContext1 =
+    ElementContext::CreateFakeContextForTesting(1);
+constexpr ElementContext kElementContext2 =
+    ElementContext::CreateFakeContextForTesting(2);
 
 struct EventTestStruct {
   DECLARE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(kCustomEventType2);
@@ -511,6 +512,26 @@ TEST(ElementTrackerTest, AddCustomEventCallback) {
                                                             kCustomEventType1);
 }
 
+TEST(ElementTrackerTest, AddCustomEventCallbackWithId) {
+  UNCALLED_MOCK_CALLBACK(ElementTracker::Callback, callback);
+  auto subscription =
+      ElementTracker::GetElementTracker()->AddCustomEventCallback(
+          kCustomEventType1, kElementIdentifier1, kElementContext1,
+          callback.Get());
+  test::TestElementPtr e1 = std::make_unique<test::TestElement>(
+      kElementIdentifier1, kElementContext1);
+  test::TestElementPtr e2 = std::make_unique<test::TestElement>(
+      kElementIdentifier2, kElementContext1);
+  e1->Show();
+  e2->Show();
+  EXPECT_CALL_IN_SCOPE(
+      callback, Run(e1.get()),
+      ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(
+          e1.get(), kCustomEventType1));
+  ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(e2.get(),
+                                                            kCustomEventType1);
+}
+
 TEST(ElementTrackerTest, AddCustomEventInAnyContextCallback) {
   UNCALLED_MOCK_CALLBACK(ElementTracker::Callback, callback);
   auto subscription =
@@ -519,9 +540,36 @@ TEST(ElementTrackerTest, AddCustomEventInAnyContextCallback) {
   test::TestElementPtr e1 = std::make_unique<test::TestElement>(
       kElementIdentifier1, kElementContext1);
   test::TestElementPtr e2 = std::make_unique<test::TestElement>(
-      kElementIdentifier1, kElementContext2);
+      kElementIdentifier2, kElementContext2);
   e1->Show();
   e2->Show();
+
+  // These elements have different identifiers and contexts, but should both
+  // trigger the callback.
+  EXPECT_CALL_IN_SCOPE(
+      callback, Run(e1.get()),
+      ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(
+          e1.get(), kCustomEventType1));
+  EXPECT_CALL_IN_SCOPE(
+      callback, Run(e2.get()),
+      ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(
+          e2.get(), kCustomEventType1));
+}
+
+TEST(ElementTrackerTest, AddCustomEventInAnyContextCallbackWithId) {
+  UNCALLED_MOCK_CALLBACK(ElementTracker::Callback, callback);
+  auto subscription =
+      ElementTracker::GetElementTracker()->AddCustomEventInAnyContextCallback(
+          kCustomEventType1, kElementIdentifier1, callback.Get());
+  test::TestElementPtr e1 = std::make_unique<test::TestElement>(
+      kElementIdentifier1, kElementContext1);
+  test::TestElementPtr e2 = std::make_unique<test::TestElement>(
+      kElementIdentifier1, kElementContext2);
+  test::TestElementPtr e3 = std::make_unique<test::TestElement>(
+      kElementIdentifier2, kElementContext2);
+  e1->Show();
+  e2->Show();
+  e3->Show();
 
   // Two of these elements have the specified identifier, but in different
   // contexts, while the other element does not share the identifier and should
@@ -534,6 +582,8 @@ TEST(ElementTrackerTest, AddCustomEventInAnyContextCallback) {
       callback, Run(e2.get()),
       ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(
           e2.get(), kCustomEventType1));
+  ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(e3.get(),
+                                                            kCustomEventType1);
 }
 
 TEST(ElementTrackerTest, AddClassCustomEventCallback) {
@@ -551,10 +601,8 @@ TEST(ElementTrackerTest, AddClassCustomEventCallback) {
 }
 
 TEST(ElementTrackerTest, MultipleCustomEventCallbacks) {
-  // We will test that custom events work with multiple event types, including
-  // in the edge case that the event type is the same as an element identifier
-  // (this should never happen, but should also never break).
-  const CustomElementEventType kCustomEventType2 = kElementIdentifier1;
+  // We will test that custom events work with multiple event types.
+  DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kCustomEventType2);
   UNCALLED_MOCK_CALLBACK(ElementTracker::Callback, callback);
   UNCALLED_MOCK_CALLBACK(ElementTracker::Callback, callback2);
   auto subscription =
@@ -987,7 +1035,9 @@ TEST(SafeElementReferenceTest, CopyOperator) {
 
 class ElementTrackerIdentifierTest : public testing::Test {
  public:
-  void SetUp() override { ElementIdentifier::GetKnownIdentifiers().clear(); }
+  void SetUp() override {
+    internal::UniqueIdentifier::ClearKnownIdentifiersForTesting();
+  }
 };
 
 TEST_F(ElementTrackerIdentifierTest, ShowElementRegistersIdentifier) {

@@ -11,10 +11,9 @@
 #include "base/types/strong_alias.h"
 #include "base/values.h"
 #include "components/signin/public/identity_manager/account_info.h"
+#include "components/sync/service/sync_service.h"
 
 namespace syncer {
-
-class SyncService;
 
 namespace sync_ui_util {
 
@@ -69,12 +68,21 @@ inline constexpr char kOnInvalidationReceived[] = "onInvalidationReceived";
 
 using IncludeSensitiveData =
     base::StrongAlias<class IncludeSensitiveDataTag, bool>;
-// This function returns a base::Value::Dict which contains all the information
+
+// Returns a human-readable string representation of a DisableReasonSet.
+std::string GetDisableReasonsDebugString(
+    SyncService::DisableReasonSet disable_reasons);
+
+// Returns a human-readable string representation for `state`.
+std::string TransportStateStringToDebugString(
+    SyncService::TransportState state);
+
+// This function returns a base::DictValue which contains all the information
 // required to populate the 'About' tab of chrome://sync-internals.
 // Note that `service` may be null.
 // If `include_sensitive_data` is false, Personally Identifiable Information
 // won't be included in the return value.
-base::Value::Dict ConstructAboutInformation(
+base::DictValue ConstructAboutInformation(
     IncludeSensitiveData include_sensitive_data,
     SyncService* service,
     const std::string& channel);

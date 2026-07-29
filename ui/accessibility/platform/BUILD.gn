@@ -31,9 +31,18 @@ component("platform") {
 
   defines = [ "IS_AX_PLATFORM_IMPL" ]
 
-  visibility = [ "//ui/accessibility" ]
+  visibility = [
+    "//chrome/browser/accessibility:*",
+    "//chrome/browser/ui/webui/accessibility",
+    "//ui/accessibility",
+    "//ui/views",
+  ]
 
   sources = [
+    "assistive_tech.cc",
+    "assistive_tech.h",
+    "ax_mode_observer.cc",
+    "ax_mode_observer.h",
     "ax_node_id_delegate.h",
     "ax_platform.cc",
     "ax_platform.h",
@@ -212,6 +221,7 @@ component("platform") {
         "browser_accessibility_manager_win.h",
         "browser_accessibility_win.cc",
         "browser_accessibility_win.h",
+        "iaccessible2/scoped_co_mem_array.cc",
         "iaccessible2/scoped_co_mem_array.h",
         "inspect/ax_call_statement_invoker_win.cc",
         "inspect/ax_call_statement_invoker_win.h",
@@ -228,7 +238,8 @@ component("platform") {
         "inspect/ax_tree_formatter_win.cc",
         "inspect/ax_tree_formatter_win.h",
         "inspect/ax_tree_indexer_win.h",
-        "sequence_affine_com_object_root_win.h",
+        "uia_client_info_source_win.cc",
+        "uia_client_info_source_win.h",
         "uia_registrar_win.cc",
         "uia_registrar_win.h",
       ]
@@ -238,6 +249,8 @@ component("platform") {
         "//third_party/isimpledom",
         "//ui/accessibility/platform:ichromeaccessible",
       ]
+
+      deps += [ "//base/tracing/protos:chrome_track_event_zero" ]
 
       libs = [
         "oleacc.lib",
@@ -261,6 +274,7 @@ component("platform") {
         "ax_utils_mac.mm",
         "browser_accessibility_cocoa.h",
         "browser_accessibility_cocoa.mm",
+        "browser_accessibility_cocoa_test_helpers.h",
         "browser_accessibility_mac.h",
         "browser_accessibility_mac.mm",
         "browser_accessibility_manager_mac.h",
@@ -343,6 +357,7 @@ component("platform") {
 
       if (use_glib) {
         configs += [ "//build/config/linux:glib" ]
+        deps += [ "//ui/base/glib" ]
       }
       if (use_gio) {
         configs += [ "//build/linux:gio_config" ]

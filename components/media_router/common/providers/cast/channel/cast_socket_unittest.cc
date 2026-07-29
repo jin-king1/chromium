@@ -18,6 +18,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/notimplemented.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
@@ -32,10 +33,11 @@
 #include "components/media_router/common/providers/cast/channel/cast_transport.h"
 #include "components/media_router/common/providers/cast/channel/logger.h"
 #include "content/public/test/browser_task_environment.h"
-#include "crypto/rsa_private_key.h"
+#include "crypto/evp.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/address_list.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/socket_test_util.h"
 #include "net/socket/ssl_client_socket.h"
@@ -61,7 +63,6 @@ const int64_t kDistantTimeoutMillis = 100000;  // 100 seconds (never hit).
 using ::testing::_;
 using ::testing::A;
 using ::testing::DoAll;
-using ::testing::Invoke;
 using ::testing::InvokeArgument;
 using ::testing::NotNull;
 using ::testing::Return;
@@ -279,7 +280,7 @@ class TestSocketFactory : public net::ClientSocketFactory {
     AddReadResult(net::MockRead(mode, result));
   }
   void AddReadResultForData(net::IoMode mode, const std::string& data) {
-    AddReadResult(net::MockRead(mode, data.c_str(), data.size()));
+    AddReadResult(net::MockRead(mode, data));
   }
 
   // Helpers for modifying other connection-related behaviors.
@@ -307,17 +308,23 @@ class TestSocketFactory : public net::ClientSocketFactory {
  private:
   std::unique_ptr<net::DatagramClientSocket> CreateDatagramClientSocket(
       net::DatagramSocket::BindType,
+      net::handles::NetworkHandle target_network,
       net::NetLog*,
       const net::NetLogSource&) override {
+    // This is used only for testing in scenarios that do not involve multiple
+    // networks. With that in mind, it's safe to ignore `target_network`.
     NOTIMPLEMENTED();
     return nullptr;
   }
   std::unique_ptr<net::TransportClientSocket> CreateTransportClientSocket(
       const net::AddressList&,
+      net::handles::NetworkHandle target_network,
       std::unique_ptr<net::SocketPerformanceWatcher>,
       net::NetworkQualityEstimator*,
       net::NetLog*,
       const net::NetLogSource&) override {
+    // This is used only for testing in scenarios that do not involve multiple
+    // networks. With that in mind, it's safe to ignore `target_network`.
     if (tcp_client_socket_) {
       return std::move(tcp_client_socket_);
     }
@@ -490,7 +497,7 @@ class SslCastSocketTest : public CastSocketTestBase {
     server_private_key_ = ReadTestKeyFromPEM("self_signed.pem");
     ASSERT_TRUE(server_private_key_);
     server_context_ = CreateSSLServerContext(
-        server_cert_.get(), *server_private_key_, server_ssl_config_);
+        server_cert_.get(), server_private_key_.get(), server_ssl_config_);
 
     tcp_server_socket_ =
         std::make_unique<net::TCPServerSocket>(nullptr, net::NetLogSource());
@@ -500,7 +507,7 @@ class SslCastSocketTest : public CastSocketTestBase {
     ASSERT_EQ(net::OK, tcp_server_socket_->GetLocalAddress(&server_address));
     tcp_client_socket_ = std::make_unique<net::TCPClientSocket>(
         net::AddressList(server_address), nullptr, nullptr, nullptr,
-        net::NetLogSource());
+        net::NetLogSource(), net::handles::kInvalidNetworkHandle);
 
     std::unique_ptr<net::StreamSocket> accepted_socket;
     accept_result_ = tcp_server_socket_->Accept(
@@ -540,8 +547,7 @@ class SslCastSocketTest : public CastSocketTestBase {
 
   void TcpConnectCallback(int result) { connect_result_ = result; }
 
-  std::unique_ptr<crypto::RSAPrivateKey> ReadTestKeyFromPEM(
-      std::string_view name) {
+  bssl::UniquePtr<EVP_PKEY> ReadTestKeyFromPEM(std::string_view name) {
     base::FilePath key_path = GetTestCertsDirectory().AppendASCII(name);
     std::string pem_data;
     if (!base::ReadFileToString(key_path, &pem_data)) {
@@ -553,11 +559,9 @@ class SslCastSocketTest : public CastSocketTestBase {
     if (!pem_tokenizer.GetNext()) {
       return nullptr;
     }
-    std::vector<uint8_t> key_vector(pem_tokenizer.data().begin(),
-                                    pem_tokenizer.data().end());
-    std::unique_ptr<crypto::RSAPrivateKey> key(
-        crypto::RSAPrivateKey::CreateFromPrivateKeyInfo(key_vector));
-    return key;
+
+    return crypto::evp::PrivateKeyFromBytes(
+        base::as_byte_span(pem_tokenizer.data()));
   }
 
   int ReadExactLength(net::IOBuffer* buffer,
@@ -608,7 +612,7 @@ class SslCastSocketTest : public CastSocketTestBase {
   // CastSocket over a real SSL socket.  The other members below are used to
   // initialize `server_socket_`.
   std::unique_ptr<net::SSLServerContext> server_context_;
-  std::unique_ptr<crypto::RSAPrivateKey> server_private_key_;
+  bssl::UniquePtr<EVP_PKEY> server_private_key_;
   scoped_refptr<net::X509Certificate> server_cert_;
   net::SSLServerConfig server_ssl_config_;
 

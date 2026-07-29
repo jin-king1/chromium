@@ -66,6 +66,7 @@ cr-icon-button {
       var(--color-toolbar-search-field-foreground-placeholder,
       var(--cr-secondary-text-color)));
   opacity: 0;
+  transition: opacity 200ms;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -96,10 +97,6 @@ cr-icon-button {
     --cr-spinner-color: var(
         --cr-toolbar-search-field-input-icon-color, white);
   }
-}
-
-#prompt {
-  transition: opacity 200ms;
 }
 
 /* Input field. */
@@ -137,7 +134,6 @@ input {
   color: var(--cr-toolbar-search-field-input-text-color,
       var(--color-toolbar-search-field-foreground,
       var(--cr-fallback-color-on-surface)));
-  cursor: var(--cr-toolbar-search-field-cursor, text);
   font: inherit;
   font-size: 12px;
   font-weight: 500;
@@ -167,7 +163,7 @@ input[type='search']::-webkit-search-cancel-button {
   background: none;
   border-radius:
       var(--cr-toolbar-search-field-border-radius, 46px);
-  cursor: var(--cr-toolbar-search-field-cursor, text);
+  cursor: var(--cr-toolbar-search-field-cursor, default);
   height: 36px;
   max-width: var(--cr-toolbar-field-max-width, none);
   overflow: hidden;
@@ -199,6 +195,14 @@ input[type='search']::-webkit-search-cancel-button {
   pointer-events: none;
   position: absolute;
   z-index: 0;
+}
+
+:host-context([webui-refresh-2026]) {
+  &:host(:not([narrow])) #background {
+    background: var(--cr-toolbar-search-field-background,
+        var(--color-toolbar-search-field-background,
+        var(--cr-fallback-color-surface4)));
+  }
 }
 
 :host([search-focused_]:not([narrow])) {

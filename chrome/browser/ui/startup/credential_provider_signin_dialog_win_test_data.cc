@@ -67,14 +67,14 @@ void CredentialProviderSigninDialogTestDataStorage::SetSigninPassword(
 }
 
 // static
-base::Value::Dict
+base::DictValue
 CredentialProviderSigninDialogTestDataStorage::MakeSignInResponseValue(
     const std::string& id,
     const std::string& password,
     const std::string& email,
     const std::string& access_token,
     const std::string& refresh_token) {
-  base::Value::Dict args;
+  base::DictValue args;
   if (!email.empty()) {
     args.Set(credential_provider::kKeyEmail, email);
   }
@@ -96,7 +96,7 @@ CredentialProviderSigninDialogTestDataStorage::MakeSignInResponseValue(
   return args;
 }
 
-base::Value::Dict
+base::DictValue
 CredentialProviderSigninDialogTestDataStorage::MakeValidSignInResponseValue()
     const {
   return MakeSignInResponseValue(GetSuccessId(), GetSuccessPassword(),
@@ -107,9 +107,7 @@ CredentialProviderSigninDialogTestDataStorage::MakeValidSignInResponseValue()
 std::string
 CredentialProviderSigninDialogTestDataStorage::GetSuccessfulSigninResult()
     const {
-  std::string json;
-  base::JSONWriter::Write(expected_success_signin_result_, &json);
-  return json;
+  return base::WriteJson(expected_success_signin_result_).value_or("");
 }
 
 std::string CredentialProviderSigninDialogTestDataStorage::

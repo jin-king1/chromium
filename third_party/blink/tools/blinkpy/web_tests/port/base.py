@@ -45,6 +45,7 @@ from collections import defaultdict
 from copy import deepcopy
 from datetime import datetime
 from typing import (
+    ByteString,
     Collection,
     Iterator,
     List,
@@ -54,10 +55,8 @@ from typing import (
     Optional,
     Set,
     Tuple,
+    get_args,
 )
-
-import six
-from six.moves import zip_longest
 
 from urllib.parse import urljoin
 
@@ -67,16 +66,19 @@ from blinkpy.common import path_finder
 from blinkpy.common import read_checksum_from_png
 from blinkpy.common.host import Host
 from blinkpy.common.memoized import memoized
-from blinkpy.common.net.web_test_results import BASELINE_EXTENSIONS
+from blinkpy.common.net.web_test_results import (
+    BaselineSuffix,
+    BASELINE_EXTENSIONS,
+)
 from blinkpy.common.system.executive import ScriptError
 from blinkpy.common.system.path import abspath_to_uri
 from blinkpy.w3c.wpt_manifest import (
     FuzzyRange,
     FuzzyParameters,
+    Relation,
     WPTManifest,
     MANIFEST_NAME,
 )
-from blinkpy.web_tests.layout_package.bot_test_expectations import BotTestExpectationsFactory
 from blinkpy.web_tests.models.test_configuration import TestConfiguration
 from blinkpy.web_tests.models.test_run_results import TestRunException
 from blinkpy.web_tests.models.typ_types import (
@@ -92,42 +94,6 @@ from blinkpy.web_tests.servers import pywebsocket
 from blinkpy.web_tests.servers import wptserve
 
 _log = logging.getLogger(__name__)
-
-# Path relative to the build directory.
-CONTENT_SHELL_FONTS_DIR = "test_fonts"
-
-FONT_FILES = [
-    [[CONTENT_SHELL_FONTS_DIR], 'Ahem.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Arimo-Bold.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Arimo-BoldItalic.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Arimo-Italic.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Arimo-Regular.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Cousine-Bold.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Cousine-BoldItalic.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Cousine-Italic.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Cousine-Regular.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'DejaVuSans.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'GardinerModBug.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'GardinerModCat.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Garuda.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Gelasio-Bold.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Gelasio-BoldItalic.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Gelasio-Italic.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Gelasio-Regular.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Lohit-Devanagari.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Lohit-Gurmukhi.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Lohit-Tamil.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'MuktiNarrow.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'NotoColorEmoji.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'NotoSansCJK-VF.otf.ttc', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'NotoSansKhmer-Regular.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'NotoSansSymbols2-Regular.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'NotoSansTibetan-Regular.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Tinos-Bold.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Tinos-BoldItalic.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Tinos-Italic.ttf', None],
-    [[CONTENT_SHELL_FONTS_DIR], 'Tinos-Regular.ttf', None],
-]
 
 # This is the fingerprint of wpt's certificate found in
 # `//third_party/wpt_tools/certs/127.0.0.1.pem`. The following line is updated
@@ -203,33 +169,41 @@ class Port(object):
     # the documentation in docs/testing/web_test_expectations.md when this list
     # changes.
     ALL_SYSTEMS = (
-        ('mac11', 'x86'),
-        ('mac11-arm64', 'arm64'),
-        ('mac12', 'x86_64'),
-        ('mac12-arm64', 'arm64'),
         ('mac13', 'x86_64'),
         ('mac13-arm64', 'arm64'),
         ('mac14', 'x86_64'),
         ('mac14-arm64', 'arm64'),
         ('mac15', 'x86_64'),
         ('mac15-arm64', 'arm64'),
+        ('mac26', 'x86_64'),
+        ('mac26-arm64', 'arm64'),
         ('win10.20h2', 'x86'),
         ('win11-arm64', 'arm64'),
         ('win11', 'x86_64'),
         ('linux', 'x86_64'),
         ('fuchsia', 'x86_64'),
-        ('ios17-simulator', 'x86_64'),
+        ('ios26-simulator', 'x86_64'),
+        ('android', 'x86_64'),
+        ('webview', 'x86_64'),
     )
 
     CONFIGURATION_SPECIFIER_MACROS = {
         'mac': [
-            'mac11', 'mac11-arm64', 'mac12', 'mac12-arm64', 'mac13',
-            'mac13-arm64', 'mac14', 'mac14-arm64', 'mac15', 'mac15-arm64'
+            'mac13',
+            'mac13-arm64',
+            'mac14',
+            'mac14-arm64',
+            'mac15',
+            'mac15-arm64',
+            'mac26',
+            'mac26-arm64',
         ],
-        'ios': ['ios17-simulator'],
+        'ios': ['ios26-simulator'],
         'win': ['win10.20h2', 'win11-arm64', 'win11'],
         'linux': ['linux'],
         'fuchsia': ['fuchsia'],
+        'android': ['android'],
+        'webview': ['webview'],
     }
 
     # List of ports open on the host that the tests will connect to. When tests
@@ -255,7 +229,7 @@ class Port(object):
     FLAG_EXPECTATIONS_PREFIX = 'FlagExpectations'
 
     # The following two constants must match. When adding a new WPT root, also
-    # remember to add an alias rule to external/wpt/.config.json.
+    # remember to add an alias rule to external/wpt/config.tmpl.json.
     # WPT_DIRS maps WPT roots on the file system to URL prefixes on wptserve.
     # The order matters: '/' MUST be the last URL prefix.
     # Consider using port.wpt_dirs() instead.
@@ -328,14 +302,8 @@ class Port(object):
         self._http_server = None
         self._websocket_server = None
         self._wpt_server = None
-        self._image_differ = None
         self.server_process_constructor = server_process.ServerProcess  # This can be overridden for testing.
-        self._http_lock = None  # FIXME: Why does this live on the port object?
         self._dump_reader = None
-        # This is a map of the form dir->[all skipped tests in that dir]
-        # It is used to optimize looking up for a test, as it allows a quick look up of the test dir
-        # while still using the "startwith" function to match with a single entry
-        self._skip_base_test_map = defaultdict(list)
 
         # Configuration and target are always set by PortFactory so this is only
         # relevant in cases where a Port is created without it (testing mostly).
@@ -352,14 +320,11 @@ class Port(object):
         else:
             self.set_option_default('virtual_tests',
                                     not options.no_virtual_tests)
-        self._test_configuration = None
-        self._results_directory = None
-        self._used_expectation_files = None
 
     def __str__(self):
         return 'Port{name=%s, version=%s, architecture=%s, test_configuration=%s}' % (
             self._name, self._version, self._architecture,
-            self._test_configuration)
+            self.test_configuration())
 
     def version(self):
         return self._version
@@ -772,6 +737,23 @@ class Port(object):
 
         return baseline_dict
 
+    def allowed_suffixes(self, test_name: str) -> set[BaselineSuffix]:
+        """Get possible suffixes for the given test."""
+        wpt_type = self.get_wpt_type(test_name)
+        if wpt_type in {'testharness', 'wdspec'}:
+            return {'txt'}
+        elif wpt_type == 'manual':
+            # Some manual tests are run as pixel tests (crbug.com/1114920), so
+            # `png` is allowed in that case.
+            return {'png'}
+        elif wpt_type:
+            return set()
+
+        suffixes = set(get_args(BaselineSuffix))
+        if self.reference_files(test_name):
+            suffixes.discard('png')
+        return suffixes
+
     def output_filename(self, test_name, suffix, extension):
         """Generates the output filename for a test.
 
@@ -1075,8 +1057,10 @@ class Port(object):
                 return True
         return False
 
-    def reference_files(self, test_name):
+    def reference_files(self, test_name: str) -> list[tuple[Relation, str]]:
         """Returns a list of expectation (== or !=) and filename pairs"""
+        if match := self.WPT_REGEX.match(test_name):
+            return self._wpt_references_files(match.group(1), match.group(2))
 
         # Try to find -expected.* or -expected-mismatch.* in the same directory.
         reftest_list = []
@@ -1087,15 +1071,12 @@ class Port(object):
                                               match=(expectation == '=='))
                 if self._filesystem.exists(path):
                     reftest_list.append((expectation, path))
-        if reftest_list:
-            return reftest_list
+        return reftest_list
 
+    def _wpt_references_files(self, wpt_path: str,
+                              path_in_wpt: str) -> list[tuple[Relation, str]]:
         # Try to extract information from MANIFEST.json.
-        match = self.WPT_REGEX.match(test_name)
-        if not match:
-            return []
-        wpt_path = match.group(1)
-        path_in_wpt = match.group(2)
+        reftest_list = []
         for expectation, ref_path_in_wpt in self.wpt_manifest(
                 wpt_path).extract_reference_list(path_in_wpt):
             if ref_path_in_wpt.startswith('about:'):
@@ -1471,10 +1452,9 @@ class Port(object):
         self.set_option('manifest_update', False)
 
     @memoized
-    def wpt_manifest(self,
-                     path: str,
-                     exclude_jsshell: bool = True) -> WPTManifest:
+    def wpt_manifest(self, path: str) -> WPTManifest:
         assert path in self.WPT_DIRS
+        exclude_jsshell = not self.get_option('use_upstream_wpt')
         # Convert '/' to the platform-specific separator.
         path = self._filesystem.normpath(path)
         self._filesystem.maybe_make_directory(
@@ -1494,8 +1474,8 @@ class Port(object):
         contents changed from the last update. The previous hash is cached on
         the filesystem.
         """
-        manifest_path = self._path_finder.path_from_web_tests(
-            path, MANIFEST_NAME)
+        manifest_path = self._filesystem.join(self.web_tests_dir(), path,
+                                              MANIFEST_NAME)
         if not self._filesystem.exists(manifest_path):
             return True
         manifest_update: Optional[bool] = self.get_option('manifest_update')
@@ -1594,12 +1574,15 @@ class Port(object):
                 return wpt_dir, test[len(f'{wpt_dir}/'):]
         return None, test
 
-    def is_wpt_file(self, path):
-        """Returns whether a path is a WPT test file."""
+    def get_wpt_type(self, test_name: str) -> Optional[str]:
+        """Returns the test type of a web platform test."""
 
-        if self.WPT_REGEX.match(path):
-            return self._filesystem.isfile(self.abspath_for_test(path))
-        return False
+        base_test = self.lookup_virtual_test_base(test_name) or test_name
+        wpt_dir, url_from_wpt_dir = self.split_wpt_dir(base_test)
+        if not wpt_dir:
+            return None  # Not a WPT.
+        manifest = self.wpt_manifest(wpt_dir)
+        return manifest.get_test_type(url_from_wpt_dir)
 
     def is_wpt_crash_test(self, test_name):
         """Returns whether a WPT test is a crashtest.
@@ -1889,12 +1872,15 @@ class Port(object):
         return (self.skipped_due_to_smoke_tests(test)
                 or self.skipped_in_never_fix_tests(test)
                 or self.virtual_test_skipped_due_to_platform_config(test)
-                or self.virtual_test_skipped_due_to_disabled(test)
-                or self.skipped_due_to_exclusive_virtual_tests(test)
-                or self.skipped_due_to_skip_base_tests(test))
+                or self.skipped_due_to_exclusive_virtual_tests(test))
 
     @memoized
     def tests_from_file(self, filename: str) -> Set[str]:
+        """Read test patterns (URLs, files, or directories) from the given file.
+
+        The returned patterns are not necessarily valid and need to be resolved
+        to URLs by `Port.tests()` at some point.
+        """
         tests = set()
         file_contents = self._filesystem.read_text_file(filename)
         for line in file_contents.splitlines():
@@ -1903,6 +1889,10 @@ class Port(object):
                 continue
             tests.add(line)
         return tests
+
+    @memoized
+    def _resolved_tests_from_file(self, filename: str) -> List[str]:
+        return self.tests(self.tests_from_file(filename))
 
     def skipped_due_to_manual_test(self, test_name):
         """Checks whether a manual test should be skipped."""
@@ -1926,7 +1916,7 @@ class Port(object):
         smoke_test_filename = self.path_to_smoke_tests_file()
         if not self._filesystem.exists(smoke_test_filename):
             return False
-        smoke_tests = self.tests_from_file(smoke_test_filename)
+        smoke_tests = self._resolved_tests_from_file(smoke_test_filename)
         return test not in smoke_tests
 
     def default_smoke_test_only(self):
@@ -1989,18 +1979,7 @@ class Port(object):
         """
         suite = self._lookup_virtual_suite(test)
         if suite is not None:
-            return self.operating_system() not in suite.platforms
-        return False
-
-    def virtual_test_skipped_due_to_disabled(self, test):
-        """Checks if the virtual test is skipped based on the 'disabled' config.
-
-        Returns True if the virtual test is marked as disabled, due to config in
-        VirtualTestSuites; returns False otherwise.
-        """
-        suite = self._lookup_virtual_suite(test)
-        if suite is not None:
-            return suite.disabled
+            return self.port_name not in suite.platforms
         return False
 
     @memoized
@@ -2063,30 +2042,6 @@ class Port(object):
             for wpt_dir in (None, *self.wpt_dirs())
         }
 
-    @memoized
-    def skipped_due_to_skip_base_tests(self, test):
-        """Checks if the test should be skipped due to the skip_base_test rule
-        of any virtual suite.
-
-        If the test is not a virtual test, it will be skipped if it's in the
-        skip_base_test list of any virtual suite. If the test is a virtual
-        test, it will not be skipped.
-        """
-        # This check doesn't apply to virtual tests
-        if self.lookup_virtual_test_base(test):
-            return False
-
-        # Ensure that this was called at least once, to process all suites
-        # information
-        vts = self.virtual_test_suites()
-        # Our approach of using a map keyed on paths will only work if the test name is not a directory.
-        assert (not self._filesystem.isdir(test))
-        dirname, _ = self.split_test(test)
-        for skipped_base_test in self._skip_base_test_map.get(dirname, []):
-            if test.startswith(skipped_base_test):
-                return True
-        return False
-
     def name(self):
         """Returns a name that uniquely identifies this particular type of port.
 
@@ -2120,12 +2075,10 @@ class Port(object):
         Once blinkpy runs under python3, this can be removed in favour of
         callers using sys.executable.
         """
-        if six.PY3:
-            # Prefer sys.executable when the current script runs under python3.
-            # The current script might be running with vpython3 and in that case
-            # using the same executable will share the same virtualenv.
-            return sys.executable
-        return 'python3'
+        # Prefer sys.executable when the current script runs under python3.
+        # The current script might be running with vpython3 and in that case
+        # using the same executable will share the same virtualenv.
+        return sys.executable
 
     def get_option(self, name, default_value=None):
         return getattr(self._options, name, default_value)
@@ -2238,17 +2191,19 @@ class Port(object):
         # file relative to the target directory.
         return self.build_path('webkit_test_times', 'bot_times_ms.json')
 
-    def results_directory(self):
+    @memoized
+    def results_directory(self) -> str:
         """Returns the absolute path directory which will store all web tests outputted
         files. It may include a sub directory for artifacts and it may store performance test results."""
-        if not self._results_directory:
-            option_val = self.get_option(
-                'results_directory') or self.default_results_directory()
-            assert not self._filesystem.basename(option_val) == 'layout-test-results', (
-                'crbug.com/1026494, crbug.com/1027708: The layout-test-results sub directory should '
-                'not be passed as part of the --results-directory command line argument.')
-            self._results_directory = self._filesystem.abspath(option_val)
-        return self._results_directory
+        option_val = self.get_option(
+            'results_directory') or self.default_results_directory()
+        assert not self._filesystem.basename(
+            option_val
+        ) == 'layout-test-results', (
+            'crbug.com/1026494, crbug.com/1027708: The layout-test-results sub directory should '
+            'not be passed as part of the --results-directory command line argument.'
+        )
+        return self._filesystem.abspath(option_val)
 
     def artifacts_directory(self):
         """Returns path to artifacts sub directory of the results directory. This
@@ -2305,9 +2260,6 @@ class Port(object):
 
     def clean_up_test_run(self):
         """Performs port-specific work at the end of a test run."""
-        if self._image_differ:
-            self._image_differ.stop()
-            self._image_differ = None
 
     def setup_environ_for_server(self):
         # We intentionally copy only a subset of the environment when
@@ -2330,7 +2282,7 @@ class Port(object):
         # CGIs are run directory-relative so they need an absolute TMPDIR
         self.host.environ['TMPDIR'] = self._filesystem.abspath(
             self.host.environ['TMPDIR'])
-        if self.host.platform.is_linux() or self.host.platform.is_freebsd():
+        if self.host.platform.is_linux():
             variables_to_copy += [
                 'XAUTHORITY', 'HOME', 'LANG', 'LD_LIBRARY_PATH',
                 'DBUS_SESSION_BUS_ADDRESS', 'XDG_DATA_DIRS', 'XDG_RUNTIME_DIR'
@@ -2480,8 +2432,7 @@ class Port(object):
         return intentional_syntax_error in output
 
     def http_server_supports_ipv6(self):
-        # Apache < 2.4 on win32 does not support IPv6.
-        return not self.host.platform.is_win()
+        return True
 
     def stop_http_server(self):
         """Shuts down the http server if it is running."""
@@ -2499,13 +2450,11 @@ class Port(object):
     # TEST EXPECTATION-RELATED METHODS
     #
 
-    def test_configuration(self):
+    @memoized
+    def test_configuration(self) -> TestConfiguration:
         """Returns the current TestConfiguration for the port."""
-        if not self._test_configuration:
-            self._test_configuration = TestConfiguration(
-                self._version, self._architecture,
-                self._options.configuration.lower())
-        return self._test_configuration
+        return TestConfiguration(self._version, self._architecture,
+                                 self._options.configuration.lower())
 
     # FIXME: Belongs on a Platform object.
     @memoized
@@ -2613,35 +2562,6 @@ class Port(object):
 
         return expectations
 
-    def bot_expectations(self):
-        if not self.get_option('ignore_flaky_tests'):
-            return {}
-
-        full_port_name = self.determine_full_port_name(
-            self.host, self._options, self.port_name)
-        builder_category = self.get_option('ignore_builder_category', 'layout')
-        step_names = ['blink_web_tests', 'blink_wpt_tests']
-        retval = {}
-        for step_name in step_names:
-            factory = BotTestExpectationsFactory(self.host.builders, step_name)
-            # FIXME: This only grabs release builder's flakiness data. If we're running debug,
-            # when we should grab the debug builder's data.
-            expectations = factory.expectations_for_port(full_port_name,
-                                                         builder_category)
-
-            if not expectations:
-                continue
-
-            ignore_mode = self.get_option('ignore_flaky_tests')
-            if ignore_mode == 'very-flaky' or ignore_mode == 'maybe-flaky':
-                retval.update(expectations.flakes_by_path(ignore_mode == 'very-flaky'))
-            elif ignore_mode == 'unexpected':
-                retval.update(expectations.unexpected_results_by_path())
-            else:
-                _log.warning("Unexpected ignore mode: '%s'.", ignore_mode)
-
-        return retval
-
     def default_expectations_files(self):
         """Returns a list of paths to expectations files that apply by default.
 
@@ -2657,19 +2577,18 @@ class Port(object):
             self._filesystem.join(self.web_tests_dir(), 'SlowTests')
         ])
 
-    def used_expectations_files(self):
+    @memoized
+    def used_expectations_files(self) -> List[str]:
         """Returns a list of paths to expectation files that are used."""
-        if self._used_expectation_files is None:
-            self._used_expectation_files = list(
-                self.default_expectations_files())
-            flag_specific = self._flag_specific_expectations_path()
-            if flag_specific:
-                self._used_expectation_files.append(flag_specific)
-            for path in self.get_option('additional_expectations', []):
-                expanded_path = self._filesystem.expanduser(path)
-                abs_path = self._filesystem.abspath(expanded_path)
-                self._used_expectation_files.append(abs_path)
-        return self._used_expectation_files
+        used_expectation_files = list(self.default_expectations_files())
+        flag_specific = self._flag_specific_expectations_path()
+        if flag_specific:
+            used_expectation_files.append(flag_specific)
+        for path in self.get_option('additional_expectations', []):
+            expanded_path = self._filesystem.expanduser(path)
+            abs_path = self._filesystem.abspath(expanded_path)
+            used_expectation_files.append(abs_path)
+        return used_expectation_files
 
     def extra_expectations_files(self):
         """Returns a list of paths to test expectations not loaded by default.
@@ -2851,7 +2770,13 @@ class Port(object):
             return True
         return False
 
-    def _get_crash_log(self, name, pid, stdout, stderr, newer_than):
+    def get_crash_log(
+        self,
+        name: Optional[str],
+        pid: Optional[str],
+        stdout: ByteString,
+        stderr: ByteString,
+    ) -> Tuple[ByteString, str, Optional[str]]:
         if self.output_contains_sanitizer_messages(stderr):
             # Running the symbolizer script can take a lot of memory, so we need to
             # serialize access to it across all the concurrently running drivers.
@@ -2883,12 +2808,12 @@ class Port(object):
         if stdout:
             stdout_lines = stdout.decode('utf8', 'replace').splitlines()
         else:
-            stdout_lines = [u'<empty>']
+            stdout_lines = ['<empty>']
 
         if stderr:
             stderr_lines = stderr.decode('utf8', 'replace').splitlines()
         else:
-            stderr_lines = [u'<empty>']
+            stderr_lines = ['<empty>']
 
         return (stderr,
                 ('crash log for %s (pid %s):\n%s\n%s\n' %
@@ -2942,19 +2867,6 @@ class Port(object):
                         '{} contains entries with the same prefix: {!r}. Please combine them'
                         .format(path_to_virtual_test_suites, json_config))
                 virtual_test_suites.append(vts)
-                if self.operating_system() in vts.platforms:
-                    for entry in vts.skip_base_tests:
-                        normalized_base = self.normalize_test_name(entry)
-                        # Wpt js file can expand to multiple tests. Remove the "js"
-                        # suffix so that the startswith test can pass. This could
-                        # be inaccurate but is computationally cheap.
-                        if (self.is_wpt_test(normalized_base)
-                                and normalized_base.endswith(".js")):
-                            normalized_base = normalized_base[:-2]
-                        # Update _skip_base_test_map with tests from the current suite's list
-                        test_dir, _ = self.split_test(normalized_base)
-                        self._skip_base_test_map[test_dir].append(
-                            normalized_base)
 
         except ValueError as error:
             raise ValueError('{} is not a valid JSON file: {}'.format(
@@ -3049,32 +2961,6 @@ class Port(object):
             pass
         return True
 
-    def _get_font_files(self):
-        """Returns list of font files that should be used by the test."""
-        # TODO(sergeyu): Currently FONT_FILES is valid only on Linux. Make it
-        # usable on other platforms if necessary.
-        result = []
-        for (font_dirs, font_file, package) in FONT_FILES:
-            exists = False
-            for font_dir in font_dirs:
-                font_path = self._filesystem.join(font_dir, font_file)
-                if not self._filesystem.isabs(font_path):
-                    font_path = self.build_path(font_path)
-                if self._check_file_exists(font_path, '', more_logging=False):
-                    result.append(font_path)
-                    exists = True
-                    break
-            if not exists:
-                message = 'You are missing %s under %s.' % (font_file,
-                                                            font_dirs)
-                if package:
-                    message += ' Try installing %s. See build instructions.' % package
-
-                _log.error(message)
-                raise TestRunException(exit_codes.SYS_DEPS_EXIT_STATUS,
-                                       message)
-        return result
-
 
 class VirtualTestSuite(object):
     def __init__(self,
@@ -3082,11 +2968,9 @@ class VirtualTestSuite(object):
                  platforms=None,
                  bases=None,
                  exclusive_tests=None,
-                 skip_base_tests=None,
                  args=None,
                  owners=None,
-                 expires=None,
-                 disabled=False):
+                 expires=None):
         assert VALID_FILE_NAME_REGEX.match(prefix), \
             "Virtual test suite prefix '{}' contains invalid characters".format(prefix)
         assert isinstance(platforms, list)
@@ -3100,19 +2984,12 @@ class VirtualTestSuite(object):
             exclusive_tests = []
         assert isinstance(exclusive_tests, list)
 
-        if skip_base_tests == "ALL":
-            skip_base_tests = bases
-        elif skip_base_tests is None:
-            skip_base_tests = []
-        assert isinstance(skip_base_tests, list)
         self.prefix = prefix
         self.full_prefix = 'virtual/' + prefix + '/'
         self.platforms = [x.lower() for x in platforms]
         self.bases = bases
         self.exclusive_tests = exclusive_tests
-        self.skip_base_tests = skip_base_tests
         self.expires = expires
-        self.disabled = disabled
         self.args = sorted(args)
         self.owners = owners
         # always put --enable-threaded-compositing at the end of list, so that after appending

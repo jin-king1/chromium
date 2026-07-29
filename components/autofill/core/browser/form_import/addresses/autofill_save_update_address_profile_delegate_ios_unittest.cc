@@ -5,6 +5,7 @@
 #include "components/autofill/core/browser/form_import/addresses/autofill_save_update_address_profile_delegate_ios.h"
 
 #include <memory>
+#include <variant>
 
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
@@ -42,7 +43,7 @@ class AutofillSaveUpdateAddressProfileDelegateIOSTest : public testing::Test {
     profile_ = std::make_unique<AutofillProfile>(test::GetFullProfile());
     if (is_account_profile) {
       test_api(*profile_).set_record_type(
-          autofill::AutofillProfile::RecordType::kAccount);
+          AutofillProfile::RecordType::kAccount);
     }
     return std::make_unique<AutofillSaveUpdateAddressProfileDelegateIOS>(
         *profile_, original_profile, email,
@@ -203,9 +204,10 @@ struct DelegateStringsTestCase {
   bool is_migration;
   bool is_update;
   bool is_account_profile;
+  bool is_home_work_profile;
   int expected_message_action_text_id;
   int expected_message_text_id;
-  absl::variant<int, std::u16string> expected_description_or_id;
+  std::variant<int, std::u16string> expected_description_or_id;
 };
 
 class DelegateStringsTest
@@ -215,12 +217,17 @@ class DelegateStringsTest
   bool is_migration() const { return GetParam().is_migration; }
   bool is_update() const { return GetParam().is_update; }
   bool is_account_profile() const { return GetParam().is_account_profile; }
+  bool is_home_work_profile() const { return GetParam().is_home_work_profile; }
 };
 
 // Tests the message title, subtitle and action text strings.
 TEST_P(DelegateStringsTest, TestStrings) {
   AutofillProfile original_profile = test::GetFullProfile();
   original_profile.SetInfo(NAME_FULL, u"John Doe", "en-US");
+  if (is_home_work_profile()) {
+    test_api(original_profile)
+        .set_record_type(AutofillProfile::RecordType::kAccountHome);
+  }
 
   delegate_ = CreateAutofillSaveUpdateAddressProfileDelegate(
       is_update() ? &original_profile : nullptr, kTestEmail, is_migration(),
@@ -232,14 +239,14 @@ TEST_P(DelegateStringsTest, TestStrings) {
       l10n_util::GetStringUTF16(test_case.expected_message_action_text_id));
   EXPECT_EQ(delegate_->GetMessageText(),
             l10n_util::GetStringUTF16(test_case.expected_message_text_id));
-  if (absl::holds_alternative<int>(test_case.expected_description_or_id)) {
+  if (std::holds_alternative<int>(test_case.expected_description_or_id)) {
     EXPECT_EQ(
         delegate_->GetDescription(),
         l10n_util::GetStringFUTF16(
-            absl::get<int>(test_case.expected_description_or_id), kTestEmail));
+            std::get<int>(test_case.expected_description_or_id), kTestEmail));
   } else {
     EXPECT_EQ(delegate_->GetDescription(),
-              absl::get<std::u16string>(test_case.expected_description_or_id));
+              std::get<std::u16string>(test_case.expected_description_or_id));
   }
 }
 
@@ -249,31 +256,37 @@ INSTANTIATE_TEST_SUITE_P(
     testing::Values(
         // Tests strings for the save profile views.
         DelegateStringsTestCase{
-            false, false, false,
+            false, false, false, false,
             IDS_IOS_AUTOFILL_SAVE_ADDRESS_MESSAGE_PRIMARY_ACTION,
             IDS_IOS_AUTOFILL_SAVE_ADDRESS_MESSAGE_TITLE,
             u"John H. Doe, 666 Erebus St."},
         // Tests strings for the save profile in Google Account views.
         DelegateStringsTestCase{
-            false, false, true,
+            false, false, true, false,
             IDS_IOS_AUTOFILL_SAVE_ADDRESS_MESSAGE_PRIMARY_ACTION,
             IDS_IOS_AUTOFILL_SAVE_ADDRESS_MESSAGE_TITLE,
             IDS_IOS_AUTOFILL_SAVE_ADDRESS_IN_ACCOUNT_MESSAGE_SUBTITLE},
         // Test strings for the migration view.
         DelegateStringsTestCase{
-            true, false, false,
+            true, false, false, false,
             IDS_IOS_AUTOFILL_SAVE_ADDRESS_MESSAGE_PRIMARY_ACTION,
             IDS_IOS_AUTOFILL_SAVE_ADDRESS_IN_ACCOUNT_MESSAGE_TITLE,
             u"You can use it across Google products"},
         // Test strings for the update views.
         DelegateStringsTestCase{
-            false, true, false,
+            false, true, false, false,
             IDS_IOS_AUTOFILL_UPDATE_ADDRESS_MESSAGE_PRIMARY_ACTION,
             IDS_IOS_AUTOFILL_UPDATE_ADDRESS_MESSAGE_TITLE,
             u"John Doe, 666 Erebus St."},
+        // Test strings for the update home/work address view.
+        DelegateStringsTestCase{
+            false, true, false, true,
+            IDS_IOS_AUTOFILL_SAVE_HOME_WORK_ADDRESS_MESSAGE_PRIMARY_ACTION,
+            IDS_IOS_AUTOFILL_SAVE_HOME_WORK_ADDRESS_MESSAGE_TITLE,
+            u"John Doe, 666 Erebus St."},
         // Test strings for the update in Google Account views.
         DelegateStringsTestCase{
-            false, true, true,
+            false, true, true, false,
             IDS_IOS_AUTOFILL_UPDATE_ADDRESS_MESSAGE_PRIMARY_ACTION,
             IDS_IOS_AUTOFILL_UPDATE_ADDRESS_MESSAGE_TITLE,
             u"John Doe, 666 Erebus St."}));

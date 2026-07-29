@@ -27,6 +27,9 @@ class TopChromeWebUIConfig : public content::WebUIConfig {
   TopChromeWebUIConfig(std::string_view scheme, std::string_view host);
   ~TopChromeWebUIConfig() override;
 
+  // Overridden from content::WebUIConfig:
+  bool SupportsInProcessResourceLoadingV2() const override;
+
   // Returns the config given its URL under a browser context.
   // Returns nullptr if `url` is not a top-chrome WebUI, or if it is
   // disabled by IsWebUIEnabled().
@@ -40,7 +43,7 @@ class TopChromeWebUIConfig : public content::WebUIConfig {
   // Common Top Chrome WebUI properties -------------------------------
 
   // Returns the WebUI name used for logging metrics.
-  virtual std::string GetWebUIName() = 0;
+  virtual std::string_view GetWebUIName() = 0;
 
   // Returns true if the host should automatically resize to fit the page size.
   virtual bool ShouldAutoResizeHost() = 0;
@@ -88,7 +91,7 @@ class DefaultTopChromeWebUIConfig : public TopChromeWebUIConfig {
   }
 
   // TopChromeWebUIConfig:
-  std::string GetWebUIName() override { return T::GetWebUIName(); }
+  std::string_view GetWebUIName() override { return T::GetWebUIName(); }
   bool ShouldAutoResizeHost() override { return false; }
   std::unique_ptr<content::WebUIController> CreateWebUIController(
       content::WebUI* web_ui,

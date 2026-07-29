@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/api/tab_capture/tab_capture_registry.h"
 #include "chrome/browser/media/webrtc/capture_policy_utils.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
@@ -21,7 +22,6 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_media_capture_id.h"
 #include "extensions/common/permissions/permissions_data.h"
-#include "third_party/blink/public/mojom/mediastream/media_stream.mojom-shared.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -143,7 +143,7 @@ void TabCaptureAccessHandler::HandleRequest(
   if (!can_show_web_contents.Run(target_web_contents)) {
     std::move(callback).Run(
         blink::mojom::StreamDevicesSet(),
-        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED,
+        blink::mojom::MediaStreamRequestResult::CAPTURE_NOT_ALLOWED_BY_POLICY,
         /*ui=*/nullptr);
     return;
   }
@@ -156,7 +156,8 @@ void TabCaptureAccessHandler::HandleRequest(
           request.render_process_id, request.render_frame_id, extension_id)) {
     std::move(callback).Run(
         blink::mojom::StreamDevicesSet(),
-        blink::mojom::MediaStreamRequestResult::INVALID_STATE, /*ui=*/nullptr);
+        blink::mojom::MediaStreamRequestResult::REGISTRY_REQUEST_UNVERIFIED,
+        /*ui=*/nullptr);
     return;
   }
 
@@ -213,7 +214,7 @@ void TabCaptureAccessHandler::AcceptRequest(
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(web_contents);
 
-  // TOOD(crbug.com/1300883): Generalize to multiple streams.
+  // TOOD(crbug.com/40216442): Generalize to multiple streams.
   blink::mojom::StreamDevicesSet stream_devices_set;
   stream_devices_set.stream_devices.emplace_back(
       blink::mojom::StreamDevices::New());
@@ -250,7 +251,7 @@ void TabCaptureAccessHandler::OnDlpRestrictionChecked(
   } else {
     std::move(pending_request->callback)
         .Run(blink::mojom::StreamDevicesSet(),
-             blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED,
+             blink::mojom::MediaStreamRequestResult::DLP_PERMISSION_DENIED,
              /*ui=*/nullptr);
   }
 }

@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
@@ -16,6 +17,7 @@
 #include "chrome/updater/activity.h"
 #include "chrome/updater/configurator.h"
 #include "chrome/updater/constants.h"
+#include "chrome/updater/get_updater_scope.h"
 #include "chrome/updater/persisted_data.h"
 #include "chrome/updater/remove_uninstalled_apps_task.h"
 #include "chrome/updater/update_service.h"
@@ -169,6 +171,20 @@ void UpdateServiceImpl::RunInstaller(
   delegate_->RunInstaller(app_id, installer_path, install_args, install_data,
                           install_settings, language, state_update,
                           std::move(callback));
+}
+
+void UpdateServiceImpl::GetUpdaterState(
+    base::OnceCallback<void(const UpdaterState&)> callback) {
+  // Asking the updater for updater state is always allowed.
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  delegate_->GetUpdaterState(std::move(callback));
+}
+
+void UpdateServiceImpl::GetPoliciesJson(
+    base::OnceCallback<void(const std::string&)> callback) {
+  // Asking the updater for policies is always allowed.
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  delegate_->GetPoliciesJson(std::move(callback));
 }
 
 void UpdateServiceImpl::AcceptEula() {

@@ -7,9 +7,14 @@
 
 #import <UIKit/UIKit.h>
 
-#import "ios/chrome/browser/ntp/ui_bundled/feed_management/feed_management_navigation_delegate.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_mutator.h"
 
+namespace feature_engagement {
+class Tracker;
+}  // namespace feature_engagement
+namespace image_fetcher {
+class ImageFetcherService;
+}  // namespace image_fetcher
 namespace regional_capabilities {
 class RegionalCapabilitiesService;
 }  // namespace regional_capabilities
@@ -23,41 +28,64 @@ namespace web {
 class WebState;
 }  // namespace web
 
+class AimEligibilityService;
 class AuthenticationService;
+class BrowserViewVisibilityNotifierBrowserAgent;
 class ChromeAccountManagerService;
 class DiscoverFeedService;
+class DiscoverFeedVisibilityBrowserAgent;
+@protocol DiscoverFeedVisibilityObserver;
 @protocol FeedControlDelegate;
 @class FeedMetricsRecorder;
+class HomeBackgroundCustomizationService;
 @protocol NewTabPageConsumer;
 @protocol NewTabPageContentDelegate;
 @protocol NewTabPageHeaderConsumer;
-@class NewTabPageState;
+class NTPBackgroundImageCacheService;
+class PlaceholderService;
 class PrefService;
+@class SearchEngineLogoMediator;
 class TemplateURLService;
 class UrlLoadingBrowserAgent;
+class UserUploadedImageManager;
 @protocol UserAccountImageUpdateDelegate;
 
 // Mediator for the NTP Home panel, handling the interactions with the
 // suggestions.
-@interface NewTabPageMediator
-    : NSObject <FeedManagementNavigationDelegate, NewTabPageMutator>
+@interface NewTabPageMediator : NSObject <NewTabPageMutator>
 
 - (instancetype)
-     initWithTemplateURLService:(TemplateURLService*)templateURLService
-                      URLLoader:(UrlLoadingBrowserAgent*)URLLoader
-                    authService:(AuthenticationService*)authService
-                identityManager:(signin::IdentityManager*)identityManager
-          accountManagerService:
-              (ChromeAccountManagerService*)accountManagerService
-       identityDiscImageUpdater:(id<UserAccountImageUpdateDelegate>)imageUpdater
-                    isIncognito:(BOOL)isIncognito
-            discoverFeedService:(DiscoverFeedService*)discoverFeedService
-                    prefService:(PrefService*)prefService
-                    syncService:(syncer::SyncService*)syncService
-    regionalCapabilitiesService:
-        (regional_capabilities::RegionalCapabilitiesService*)
-            regionalCapabilitiesService
-                     isSafeMode:(BOOL)isSafeMode NS_DESIGNATED_INITIALIZER;
+            initWithTemplateURLService:(TemplateURLService*)templateURLService
+                             URLLoader:(UrlLoadingBrowserAgent*)URLLoader
+                           authService:(AuthenticationService*)authService
+                       identityManager:(signin::IdentityManager*)identityManager
+                 accountManagerService:
+                     (ChromeAccountManagerService*)accountManagerService
+              identityDiscImageUpdater:
+                  (id<UserAccountImageUpdateDelegate>)imageUpdater
+                   discoverFeedService:(DiscoverFeedService*)discoverFeedService
+                           prefService:(PrefService*)prefService
+                           syncService:(syncer::SyncService*)syncService
+           regionalCapabilitiesService:
+               (regional_capabilities::RegionalCapabilitiesService*)
+                   regionalCapabilitiesService
+        backgroundCustomizationService:
+            (HomeBackgroundCustomizationService*)backgroundCustomizationService
+           backgroundImageCacheService:
+               (NTPBackgroundImageCacheService*)backgroundImageCacheService
+                   imageFetcherService:
+                       (image_fetcher::ImageFetcherService*)imageFetcherService
+              userUploadedImageManager:
+                  (UserUploadedImageManager*)userUploadedImageManager
+         browserViewVisibilityNotifier:
+             (BrowserViewVisibilityNotifierBrowserAgent*)
+                 browserViewVisibilityNotifierBrowserAgent
+    discoverFeedVisibilityBrowserAgent:
+        (DiscoverFeedVisibilityBrowserAgent*)discoverFeedVisibilityBrowserAgent
+              featureEngagementTracker:(feature_engagement::Tracker*)tracker
+                 aimEligibilityService:
+                     (AimEligibilityService*)aimEligibilityService
+    NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 
@@ -67,13 +95,33 @@ class UrlLoadingBrowserAgent;
 @property(nonatomic, weak) id<NewTabPageConsumer> consumer;
 // Consumer for NTP header model updates.
 @property(nonatomic, weak) id<NewTabPageHeaderConsumer> headerConsumer;
+// Delegate to update the identity disc image.
+@property(nonatomic, weak) id<UserAccountImageUpdateDelegate> imageUpdater;
+// Observer for feed visibility changes.
+@property(nonatomic, weak) id<DiscoverFeedVisibilityObserver>
+    feedVisibilityObserver;
+// Placeholder service, for placeholder text and image.
+@property(nonatomic, assign) PlaceholderService* placeholderService;
 // Delegate for controlling the current feed.
 @property(nonatomic, weak) id<FeedControlDelegate> feedControlDelegate;
 // Delegate for actions relating to the NTP content.
 @property(nonatomic, weak) id<NewTabPageContentDelegate> NTPContentDelegate;
+// Indicates that the new tab page is visible.
+@property(nonatomic, assign) BOOL NTPVisible;
+// The WebState currently associated with this mediator.
+@property(nonatomic, assign) web::WebState* webState;
+// A pointer to the collection view that currently embeds all the contents on
+// the new tab page.
+@property(nonatomic, weak) UICollectionView* contentCollectionView;
+// The screen size of the scene displaying this NTP, used for downsampling
+// user-uploaded background images. Set by the coordinator.
+@property(nonatomic, assign) CGSize screenSize;
+
+// Mediator for the search engine logo.
+@property(nonatomic, weak) SearchEngineLogoMediator* logoMediator;
+
 // Indicates whether the feed header should be visible.
-@property(nonatomic, readonly, getter=isFeedHeaderVisible)
-    BOOL feedHeaderVisible;
+- (BOOL)isFeedHeaderVisible;
 
 // Inits the mediator.
 - (void)setUp;
@@ -81,15 +129,17 @@ class UrlLoadingBrowserAgent;
 // Cleans the mediator.
 - (void)shutdown;
 
-// Saves the current state of the NTP.
-- (void)saveNTPStateForWebState:(web::WebState*)webState;
+// Saves the current scroll position of the NTP.
+- (void)saveNTPScrollPositionForWebState:(web::WebState*)webState;
 
-// Restores the current state of the NTP.
-- (void)restoreNTPStateForWebState:(web::WebState*)webState;
+// Restores the current scroll position of the NTP.
+- (void)restoreNTPScrollPositionForWebState:(web::WebState*)webState;
 
-// Handles the actions following a tap on the "Learn More" item in the Discover
-// feed menu.
-- (void)handleFeedLearnMoreTapped;
+// Update the background of the NTP.
+- (void)updateBackground;
+
+// Marks the Safari Data Import item in the setup list as completed.
+- (void)markSafariDataImportSetupListItemAsComplete;
 
 @end
 

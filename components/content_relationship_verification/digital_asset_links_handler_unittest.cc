@@ -8,13 +8,13 @@
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/values.h"
 #include "content/public/test/browser_task_environment.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -106,9 +106,8 @@ class DigitalAssetLinksHandlerTest : public ::testing::Test {
 
     auto response_head = network::mojom::URLResponseHead::New();
     std::string status_line =
-        "HTTP/1.1 " + base::NumberToString(response_code) + " " +
-        net::GetHttpReasonPhrase(
-            static_cast<net::HttpStatusCode>(response_code));
+        base::StrCat({"HTTP/1.1 ", base::NumberToString(response_code), " ",
+                      net::GetHttpReasonPhrase(response_code)});
     response_head->headers =
         base::MakeRefCounted<net::HttpResponseHeaders>(status_line);
     int expected_num_invocations = num_invocations_ + 1;
@@ -147,7 +146,6 @@ class DigitalAssetLinksHandlerTest : public ::testing::Test {
   }
 
   content::BrowserTaskEnvironment task_environment_;
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
   network::TestURLLoaderFactory test_url_loader_factory_;
 };
 

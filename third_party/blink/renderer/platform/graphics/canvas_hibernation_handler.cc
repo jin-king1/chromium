@@ -6,7 +6,10 @@
 
 #include "base/feature_list.h"
 #include "base/memory/post_delayed_memory_reduction_task.h"
+#include "base/rand_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/memory_dump_request_args.h"
@@ -16,8 +19,7 @@
 #include "skia/ext/codec_utils.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/bindings/buildflags.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_host.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/memory_managed_paint_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_provider_util.h"
@@ -31,10 +33,11 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/skia/include/codec/SkCodec.h"
-#include "third_party/skia/include/codec/SkPngDecoder.h"
+#include "third_party/skia/include/codec/SkPngRustDecoder.h"
 #include "third_party/skia/include/core/SkAlphaType.h"
 #include "third_party/skia/include/core/SkData.h"
 #include "third_party/skia/include/core/SkImage.h"
+#include "third_party/skia/include/core/SkStream.h"
 #include "third_party/skia/include/core/SkSurface.h"
 
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
@@ -48,9 +51,7 @@ namespace blink {
 // Use ZSTD to compress the snapshot. This is faster to decompress, and much
 // faster to compress. ZSTD may not be available on all platforms, so this
 // feature will be a no-op on those.
-BASE_FEATURE(kCanvasHibernationSnapshotZstd,
-             "CanvasHibernationSnapshotZstd",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kCanvasHibernationSnapshotZstd, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // static
 HibernatedCanvasMemoryDumpProvider&
@@ -121,9 +122,8 @@ HibernatedCanvasMemoryDumpProvider::HibernatedCanvasMemoryDumpProvider() {
           MainThreadTaskRunnerRestricted()));
 }
 
-CanvasHibernationHandler::CanvasHibernationHandler(
-    CanvasResourceHost& resource_host)
-    : resource_host_(resource_host) {}
+CanvasHibernationHandler::CanvasHibernationHandler(Delegate& delegate)
+    : delegate_(delegate) {}
 
 CanvasHibernationHandler::~CanvasHibernationHandler() {
   DCheckInvariant();
@@ -135,10 +135,11 @@ CanvasHibernationHandler::~CanvasHibernationHandler() {
 
 void CanvasHibernationHandler::SaveForHibernation(
     sk_sp<SkImage>&& image,
-    std::unique_ptr<MemoryManagedPaintRecorder> recorder) {
+    std::unique_ptr<MemoryManagedPaintRecorder> recorder,
+    base::MemoryReductionTaskContext context,
+    base::TimeDelta delay) {
   DCheckInvariant();
   DCHECK(image);
-  epoch_++;
   image_ = image;
   recorder_ = std::move(recorder);
 
@@ -175,11 +176,15 @@ void CanvasHibernationHandler::SaveForHibernation(
   // the renderer is idle. In other words, a delayed idle task would not execute
   // as long as the renderer is in background, which completely defeats the
   // purpose.
-  base::PostDelayedMemoryReductionTask(
-      GetMainThreadTaskRunner(), FROM_HERE,
-      base::BindOnce(&CanvasHibernationHandler::OnAfterHibernation,
-                     weak_ptr_factory_.GetWeakPtr(), epoch_),
-      before_compression_delay_);
+  if (context == base::MemoryReductionTaskContext::kProactive) {
+    OnAfterHibernation(epoch_);
+  } else {
+    base::PostDelayedMemoryReductionTask(
+        GetMainThreadTaskRunner(), FROM_HERE,
+        base::BindOnce(&CanvasHibernationHandler::OnAfterHibernation,
+                       weak_ptr_factory_.GetWeakPtr(), epoch_),
+        kBeforeCompressionDelay - delay);
+  }
 }
 
 void CanvasHibernationHandler::OnAfterHibernation(uint64_t epoch) {
@@ -221,20 +226,9 @@ void CanvasHibernationHandler::OnEncoded(
     encoded_ = encoded;
     image_ = nullptr;
   }
-
-  if (on_encoded_callback_for_testing_) {
-    on_encoded_callback_for_testing_.Run();
-  }
 }
 
-scoped_refptr<base::SingleThreadTaskRunner>
-CanvasHibernationHandler::GetMainThreadTaskRunner() const {
-  return main_thread_task_runner_for_testing_
-             ? main_thread_task_runner_for_testing_
-             : Thread::MainThread()->GetTaskRunner(
-                   MainThreadTaskRunnerRestricted());
-}
-
+// static
 void CanvasHibernationHandler::Encode(
     std::unique_ptr<CanvasHibernationHandler::BackgroundTaskParams> params) {
   TRACE_EVENT0("blink", __PRETTY_FUNCTION__);
@@ -250,15 +244,14 @@ void CanvasHibernationHandler::Encode(
       break;
     case CompressionAlgorithm::kZstd: {
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
-      // When the compression level is set to 0, no compression is done. Then we
-      // can pass the result to ZSTD. This won't produce a valid PNG, but it
-      // doesn't matter, as we don't write it to disk, and restore it ourselves.
-      constexpr int kZLibCompressionLevel = 0;
-      sk_sp<SkData> encoded_uncompressed = skia::EncodePngAsSkData(
-          nullptr, params->image.get(), kZLibCompressionLevel);
+      // Do minimal PNG compression and then pass the result to ZSTD. This won't
+      // produce a valid PNG, but it doesn't matter, as we don't write it to
+      // disk, and restore it ourselves.
+      sk_sp<SkData> encoded_uncompressed =
+          skia::FastEncodePngAsSkData(nullptr, params->image.get());
 
-      TRACE_EVENT_BEGIN2("blink", "ZstdCompression", "original_size", 0, "size",
-                         0);
+      TRACE_EVENT_BEGIN("blink", "ZstdCompression", "original_size", 0, "size",
+                        0);
       size_t uncompressed_size = encoded_uncompressed->size();
       size_t buffer_size = ZSTD_compressBound(encoded_uncompressed->size());
       std::vector<char> compressed_buffer(buffer_size);
@@ -277,8 +270,8 @@ void CanvasHibernationHandler::Encode(
       // much smaller.
       encoded_uncompressed = nullptr;
       encoded = SkData::MakeWithCopy(compressed_buffer.data(), compressed_size);
-      TRACE_EVENT_END2("blink", "ZstdCompression", "original_size",
-                       uncompressed_size, "size", compressed_size);
+      TRACE_EVENT_END("blink", "original_size", uncompressed_size, "size",
+                      compressed_size);
       break;
 #else
       NOTREACHED();
@@ -341,12 +334,13 @@ sk_sp<SkImage> CanvasHibernationHandler::GetImage() {
     }
   }
 
-  CHECK(SkPngDecoder::IsPng(png_data->data(), png_data->size()));
+  CHECK(SkPngRustDecoder::IsPng(png_data->data(), png_data->size()));
 
   base::TimeTicks before = base::TimeTicks::Now();
   // Note: not discarding the encoded image.
   sk_sp<SkImage> image = nullptr;
-  std::unique_ptr<SkCodec> codec = SkPngDecoder::Decode(png_data, nullptr);
+  std::unique_ptr<SkCodec> codec = SkPngRustDecoder::Decode(
+      std::make_unique<SkMemoryStream>(std::move(png_data)), nullptr);
   if (codec) {
     image = std::get<0>(codec->getImage());
   }
@@ -359,7 +353,10 @@ sk_sp<SkImage> CanvasHibernationHandler::GetImage() {
 }
 
 void CanvasHibernationHandler::Clear() {
+  DCHECK(IsHibernating());
   DCheckInvariant();
+  // If hibernation is pending, make sure that it gets cancelled.
+  ++epoch_;
   HibernatedCanvasMemoryDumpProvider::GetInstance().Unregister(this);
   encoded_ = nullptr;
   image_ = nullptr;
@@ -389,9 +386,18 @@ size_t CanvasHibernationHandler::original_memory_size() const {
 // static
 void CanvasHibernationHandler::HibernateOrLogFailure(
     base::WeakPtr<CanvasHibernationHandler> handler,
-    base::TimeTicks /*idleDeadline*/) {
+    uint64_t epoch,
+    base::TimeDelta delay,
+    base::MemoryReductionTaskContext context) {
   if (handler) {
-    handler->Hibernate();
+    if (handler->epoch_ == epoch) {
+      handler->Hibernate(context, delay);
+    } else {
+      // If the canvas was hibernated again since the task was posted, let the
+      // next task deal with it, and do nothing.
+      ReportHibernationEvent(
+          HibernationEvent::kHibernationAbortedDueToEpochMismatch);
+    }
   } else {
     ReportHibernationEvent(
         HibernationEvent::
@@ -399,32 +405,38 @@ void CanvasHibernationHandler::HibernateOrLogFailure(
   }
 }
 
-void CanvasHibernationHandler::Hibernate() {
+void CanvasHibernationHandler::Hibernate(
+    base::MemoryReductionTaskContext context,
+    base::TimeDelta delay) {
   TRACE_EVENT0("blink", __PRETTY_FUNCTION__);
   DCHECK(!IsHibernating());
-  DCHECK(hibernation_scheduled_);
 
-  hibernation_scheduled_ = false;
-
-  if (!resource_host_->ResourceProvider()) {
-    ReportHibernationEvent(
-        HibernationEvent::kHibernationAbortedBecauseNoSurface);
+  Canvas2DResourceProvider* provider = delegate_->GetSharedImageProvider();
+  if (!provider) {
+    if (delegate_->HasResourceProvider()) {
+      ReportHibernationEvent(
+          HibernationEvent::
+              kHibernationAbortedDueToSwitchToUnacceleratedRendering);
+    } else {
+      ReportHibernationEvent(
+          HibernationEvent::kHibernationAbortedBecauseNoSurface);
+    }
     return;
   }
 
-  if (resource_host_->IsPageVisible()) {
+  if (delegate_->IsPageVisible()) {
     ReportHibernationEvent(
         HibernationEvent::kHibernationAbortedDueToVisibilityChange);
     return;
   }
 
-  if (!resource_host_->IsResourceValid()) {
+  if (!provider->IsValid() || delegate_->IsContextLost()) {
     ReportHibernationEvent(
         HibernationEvent::kHibernationAbortedDueGpuContextLoss);
     return;
   }
 
-  if (resource_host_->GetRasterMode() == RasterMode::kCPU) {
+  if (!provider->IsAccelerated()) {
     ReportHibernationEvent(
         HibernationEvent::
             kHibernationAbortedDueToSwitchToUnacceleratedRendering);
@@ -435,9 +447,8 @@ void CanvasHibernationHandler::Hibernate() {
   // No HibernationEvent reported on success. This is on purppose to avoid
   // non-complementary stats. Each HibernationScheduled event is paired with
   // exactly one failure or exit event.
-  resource_host_->FlushRecording(FlushReason::kHibernating);
-  scoped_refptr<StaticBitmapImage> snapshot =
-      resource_host_->ResourceProvider()->Snapshot(FlushReason::kHibernating);
+  delegate_->FlushCanvas(FlushReason::kOther);
+  scoped_refptr<StaticBitmapImage> snapshot = provider->Snapshot();
   if (!snapshot) {
     ReportHibernationEvent(
         HibernationEvent::kHibernationAbortedDueSnapshotFailure);
@@ -450,14 +461,14 @@ void CanvasHibernationHandler::Hibernate() {
         HibernationEvent::kHibernationAbortedDueSnapshotFailure);
     return;
   }
-  SaveForHibernation(std::move(sw_image),
-                     resource_host_->ResourceProvider()->ReleaseRecorder());
+  SaveForHibernation(std::move(sw_image), provider->ReleaseRecorder(), context,
+                     delay);
 
-  resource_host_->ReplaceResourceProvider(nullptr);
-  resource_host_->ClearLayerTexture();
+  delegate_->ResetResourceProvider();
+  delegate_->ClearCanvas2DLayerTexture();
 
   // shouldBeDirectComposited() may have changed.
-  resource_host_->SetNeedsCompositingUpdate();
+  delegate_->SetNeedsCompositingUpdate();
 
   // We've just used a large transfer cache buffer to get the snapshot, make
   // sure that it's collected. Calling `SetAggressivelyFreeResources()` also
@@ -468,22 +479,45 @@ void CanvasHibernationHandler::Hibernate() {
           features::kCanvas2DHibernationReleaseTransferMemory)) {
     // Unnecessary since there would be an early return above otherwise, but
     // let's document that.
-    DCHECK(!resource_host_->IsPageVisible());
+    DCHECK(!delegate_->IsPageVisible());
     SetAggressivelyFreeSharedGpuContextResourcesIfPossible(true);
   }
 }
 
 void CanvasHibernationHandler::InitiateHibernationIfNecessary() {
-  if (hibernation_scheduled_) {
-    return;
-  }
-
-  resource_host_->ClearLayerTexture();
+  delegate_->ClearCanvas2DLayerTexture();
   ReportHibernationEvent(HibernationEvent::kHibernationScheduled);
-  hibernation_scheduled_ = true;
-  ThreadScheduler::Current()->PostIdleTask(
-      FROM_HERE, WTF::BindOnce(&CanvasHibernationHandler::HibernateOrLogFailure,
-                               weak_ptr_factory_.GetWeakPtr()));
+  ++epoch_;
+  if (base::FeatureList::IsEnabled(features::kCanvas2DHibernationDefer)) {
+    // When a page contains multiple canvas elements, avoid these clustering and
+    // potentially blocking rendering for an extended-ish period of time. To
+    // mitigate that, make the delay random.
+    constexpr int max_delay_in_ms = kMaxHibernationDelay.InMilliseconds();
+    base::TimeDelta delay = base::Milliseconds(
+        base::RandIntInclusive(max_delay_in_ms / 2, max_delay_in_ms));
+
+    base::PostDelayedMemoryReductionTask(
+        GetMainThreadTaskRunner(), FROM_HERE,
+        base::BindOnce(&CanvasHibernationHandler::HibernateOrLogFailure,
+                       weak_ptr_factory_.GetWeakPtr(), epoch_, delay),
+        delay);
+  } else {
+    ThreadScheduler::Current()->PostIdleTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<CanvasHibernationHandler> handler,
+                          uint64_t epoch, base::TimeTicks deadline) {
+                         HibernateOrLogFailure(
+                             handler, epoch, base::TimeDelta(),
+                             base::MemoryReductionTaskContext::kDelayExpired);
+                       },
+                       weak_ptr_factory_.GetWeakPtr(), epoch_));
+  }
+}
+
+// static
+scoped_refptr<base::SingleThreadTaskRunner>
+CanvasHibernationHandler::GetMainThreadTaskRunner() {
+  return Thread::MainThread()->GetTaskRunner(MainThreadTaskRunnerRestricted());
 }
 
 }  // namespace blink

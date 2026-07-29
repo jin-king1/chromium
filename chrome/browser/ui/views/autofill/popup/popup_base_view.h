@@ -15,16 +15,17 @@
 #include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/autofill/autofill_popup_view_delegate.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/views/autofill/popup/custom_cursor_suppressor.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_row_view.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/bubble/bubble_border_arrow_utils.h"
-#include "ui/views/focus/widget_focus_manager.h"
+#include "ui/views/focus/native_view_focus_manager.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/widget/widget_observer.h"
+
+class BrowserWindowInterface;
 
 namespace autofill {
 
@@ -32,7 +33,7 @@ namespace autofill {
 // class should only be instantiated by sub-classes.
 class PopupBaseView : public PopupRowView::AccessibilitySelectionDelegate,
                       public views::WidgetDelegateView,
-                      public views::WidgetFocusChangeListener,
+                      public views::NativeViewFocusChangeListener,
                       public views::WidgetObserver {
   METADATA_HEADER(PopupBaseView, views::WidgetDelegateView)
 
@@ -60,7 +61,7 @@ class PopupBaseView : public PopupRowView::AccessibilitySelectionDelegate,
   void NotifyAXSelection(views::View& view) override;
 
   // Returns the browser in which this popup is shown.
-  Browser* GetBrowser();
+  BrowserWindowInterface* GetBrowser();
 
  protected:
   PopupBaseView(base::WeakPtr<AutofillPopupViewDelegate> delegate,
@@ -92,6 +93,10 @@ class PopupBaseView : public PopupRowView::AccessibilitySelectionDelegate,
   // testing).
   [[nodiscard]] virtual bool DoUpdateBoundsAndRedrawPopup();
 
+  // Checks whether the popup at `popup_bounds` overlaps with any open prompts,
+  // permission bubbles, or HTML form popups.
+  bool OverlapsWithAnotherPrompt(const gfx::Rect& popup_bounds) const;
+
   // Returns the optimal bounds to place the popup with `preferred_size` and
   // places an arrow on the popup border to point towards `element_bounds`
   // within `max_bounds_for_popup`. The `preferred_popup_sides` are tried
@@ -107,7 +112,7 @@ class PopupBaseView : public PopupRowView::AccessibilitySelectionDelegate,
 
   class Widget;
 
-  // views::WidgetFocusChangeListener implementation.
+  // views::NativeViewFocusChangeListener implementation.
   void OnNativeFocusChanged(gfx::NativeView focused_now) override;
 
   // views::WidgetObserver implementation.
@@ -126,8 +131,8 @@ class PopupBaseView : public PopupRowView::AccessibilitySelectionDelegate,
   content::WebContents* GetWebContents() const;
 
   // Scoped observation for focus events.
-  base::ScopedObservation<views::WidgetFocusManager,
-                          views::WidgetFocusChangeListener>
+  base::ScopedObservation<views::NativeViewFocusManager,
+                          views::NativeViewFocusChangeListener>
       focus_observation_{this};
 
   // Controller for this popup. Weak reference.

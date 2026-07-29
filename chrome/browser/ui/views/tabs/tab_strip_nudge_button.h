@@ -5,29 +5,35 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_TAB_STRIP_NUDGE_BUTTON_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_TAB_STRIP_NUDGE_BUTTON_H_
 
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/views/tabs/tab_strip_control_button.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 
-class TabStripController;
+class BrowserWindowInterface;
+
+namespace gfx {
+class SlideAnimation;
+}
 
 class TabStripNudgeButton : public TabStripControlButton {
   METADATA_HEADER(TabStripNudgeButton, TabStripControlButton)
 
  public:
-  TabStripNudgeButton(TabStripController* tab_strip_controller,
+  TabStripNudgeButton(BrowserWindowInterface* browser_window_interface,
                       PressedCallback pressed_callback,
                       PressedCallback close_pressed_callback,
                       const std::u16string& initial_label_text,
                       const ui::ElementIdentifier& element_identifier,
                       Edge flat_edge,
-                      const gfx::VectorIcon& icon);
+                      const gfx::VectorIcon& icon,
+                      const bool show_close_button);
 
   TabStripNudgeButton(const TabStripNudgeButton&) = delete;
   TabStripNudgeButton& operator=(const TabStripNudgeButton&) = delete;
   ~TabStripNudgeButton() override;
 
   void SetOpacity(float opacity);
-  void SetWidthFactor(float factor);
+  virtual void SetWidthFactor(float factor);
   float width_factor_for_testing() const { return width_factor_; }
 
   // TabStripControlButton:
@@ -37,20 +43,23 @@ class TabStripNudgeButton : public TabStripControlButton {
 
   float GetWidthFactor() const { return width_factor_; }
 
-  void SetIsShowingNudge(bool is_showing);
+  virtual void SetIsShowingNudge(bool is_showing);
+  virtual bool GetIsShowingNudge() const;
 
-  bool GetIsShowingNudge() { return is_showing_nudge_; }
+  virtual gfx::SlideAnimation* GetExpansionAnimationForTesting();
 
  protected:
   // TabStripControlButton:
   int GetCornerRadius() const override;
   int GetFlatCornerRadius() const override;
+  void SetCloseButtonFocusBehavior(views::View::FocusBehavior focus_behavior);
+  bool is_showing_nudge_ = false;
+
+  views::View* close_button() { return close_button_; }
 
  private:
   void SetCloseButton(PressedCallback callback);
   float width_factor_ = 0;
-
-  bool is_showing_nudge_ = false;
 
   // Preferred width multiplier, between 0-1. Used to animate button size.
   raw_ptr<views::LabelButton> close_button_;

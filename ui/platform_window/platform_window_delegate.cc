@@ -6,9 +6,11 @@
 
 #include <sstream>
 
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/owned_window_anchor.h"
+#include "ui/gfx/display_color_spaces.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -112,6 +114,11 @@ gfx::Rect PlatformWindowDelegate::ConvertRectToDIP(
   return rect_in_pixels;
 }
 
+gfx::Point PlatformWindowDelegate::ConvertPointToPixels(
+    const gfx::Point& point_in_dip) const {
+  return point_in_dip;
+}
+
 gfx::PointF PlatformWindowDelegate::ConvertScreenPointToLocalDIP(
     const gfx::Point& screen_in_pixels) const {
   return gfx::PointF(screen_in_pixels);
@@ -120,6 +127,11 @@ gfx::PointF PlatformWindowDelegate::ConvertScreenPointToLocalDIP(
 gfx::Insets PlatformWindowDelegate::ConvertInsetsToPixels(
     const gfx::Insets& insets_dip) const {
   return insets_dip;
+}
+
+void PlatformWindowDelegate::OnDisplayColorSpacesChanged(
+    scoped_refptr<gfx::DisplayColorSpacesRef> color_spaces) {
+  NOTIMPLEMENTED_LOG_ONCE();
 }
 
 }  // namespace ui

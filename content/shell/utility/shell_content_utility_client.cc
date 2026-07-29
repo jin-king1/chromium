@@ -2,18 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "content/shell/utility/shell_content_utility_client.h"
 
 #include <algorithm>
 #include <memory>
 #include <utility>
 
+#include "base/check_is_test.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
@@ -26,8 +23,11 @@
 #include "base/memory/writable_shared_memory_region.h"
 #include "base/process/process.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/allow_check_is_test_for_testing.h"
 #include "build/build_config.h"
 #include "components/services/storage/test_api/test_api.h"
+#include "content/common/pseudonymization_salt.h"
+#include "content/common/skia_utils.h"
 #include "content/public/child/child_thread.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/pseudonymization_util.h"
@@ -128,7 +128,7 @@ class TestUtilityServiceImpl : public mojom::TestService {
     auto mapping = region.Map();
     auto new_region = base::UnsafeSharedMemoryRegion::Create(region.GetSize());
     auto new_mapping = new_region.Map();
-    memcpy(new_mapping.memory(), mapping.memory(), region.GetSize());
+    base::span(new_mapping).copy_from(mapping);
     std::move(callback).Run(std::move(new_region));
   }
 
@@ -142,9 +142,28 @@ class TestUtilityServiceImpl : public mojom::TestService {
         PseudonymizationUtil::PseudonymizeStringForTesting(value));
   }
 
+  void GetPseudonymizationSalt(
+      GetPseudonymizationSaltCallback callback) override {
+    std::move(callback).Run(content::GetPseudonymizationSalt());
+  }
+
+  void IsPseudonymizationSaltInitialized(
+      IsPseudonymizationSaltInitializedCallback callback) override {
+    std::move(callback).Run(content::IsSaltInitialized());
+  }
+
+  void IsSkiaInitialized(IsSkiaInitializedCallback callback) override {
+    std::move(callback).Run(IsSkiaInitializedForTesting());
+  }
+
   void PassWriteableFile(base::File file,
                          PassWriteableFileCallback callback) override {
     std::move(callback).Run();
+  }
+
+  void VerifyCheckIsTest(VerifyCheckIsTestCallback callback) override {
+    CHECK_IS_TEST();
+    std::move(callback).Run(true);
   }
 
   void WriteToPreloadedPipe() override {
@@ -178,6 +197,7 @@ ShellContentUtilityClient::ShellContentUtilityClient(bool is_browsertest) {
   if (is_browsertest &&
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
           switches::kProcessType) == switches::kUtilityProcess) {
+    base::test::AllowCheckIsTestForTesting();
     network_service_test_helper_ = NetworkServiceTestHelper::Create();
     audio_service_test_helper_ = std::make_unique<AudioServiceTestHelper>();
     storage::InjectTestApiImplementation();
@@ -190,7 +210,7 @@ ShellContentUtilityClient::~ShellContentUtilityClient() = default;
 void ShellContentUtilityClient::ExposeInterfacesToBrowser(
     mojo::BinderMap* binders) {
   binders->Add<mojom::PowerMonitorTest>(
-      base::BindRepeating(&PowerMonitorTestImpl::MakeSelfOwnedReceiver),
+      &PowerMonitorTestImpl::MakeSelfOwnedReceiver,
       base::SingleThreadTaskRunner::GetCurrentDefault());
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   if (register_sandbox_status_helper_) {

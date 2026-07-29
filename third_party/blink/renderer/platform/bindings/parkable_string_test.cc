@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/bindings/parkable_string.h"
 
 #include <algorithm>
@@ -14,7 +9,12 @@
 #include <cstring>
 #include <limits>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/memory_coordinator/test_memory_consumer_registry.h"
+#include "base/memory_coordinator/utils.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/task/thread_pool.h"
@@ -34,9 +34,12 @@
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
 #include "third_party/blink/renderer/platform/bindings/parkable_string_manager.h"
 #include "third_party/blink/renderer/platform/disk_data_allocator_test_utils.h"
-#include "third_party/blink/renderer/platform/instrumentation/memory_pressure_listener.h"
 #include "third_party/blink/renderer/platform/scheduler/public/rail_mode_observer.h"
+#include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 using ThreadPoolExecutionMode =
     base::test::TaskEnvironment::ThreadPoolExecutionMode;
@@ -45,12 +48,11 @@ namespace blink {
 
 namespace {
 
-constexpr size_t kSizeKb = 20;
+constexpr wtf_size_t kSizeKb = 20;
 
 // Compressed size of the string returned by |MakeLargeString()|.
 // Update if the assertion in the |CheckCompressedSize()| test fails.
 constexpr size_t kCompressedSizeZlib = 55;
-constexpr size_t kCompressedSizeSnappy = 944;
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
 constexpr size_t kCompressedSizeZstd = 19;
 #endif
@@ -61,7 +63,7 @@ String MakeLargeString(char c = 'a') {
 }
 
 String MakeComplexString(size_t size) {
-  Vector<char> data(size, 'a');
+  Vector<char> data(base::checked_cast<wtf_size_t>(size), 'a');
   // This string should not be compressed too much, but also should not
   // be compressed failed. So make only some parts of this random.
   base::RandBytes(base::as_writable_byte_span(data).first(size / 10u));
@@ -90,19 +92,15 @@ class ParkableStringTest
     switch (algorithm) {
       case ParkableStringImpl::CompressionAlgorithm::kZlib:
         scoped_feature_list_.InitWithFeatures(
-            {}, {features::kUseSnappyForParkableStrings,
-                 features::kUseZstdForParkableStrings});
-        break;
-      case ParkableStringImpl::CompressionAlgorithm::kSnappy:
-        scoped_feature_list_.InitWithFeatures(
-            {features::kUseSnappyForParkableStrings},
+            {features::kCompressParkableStrings},
             {features::kUseZstdForParkableStrings});
         break;
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
       case ParkableStringImpl::CompressionAlgorithm::kZstd:
         scoped_feature_list_.InitWithFeatures(
-            {features::kUseZstdForParkableStrings},
-            {features::kUseSnappyForParkableStrings});
+            {features::kCompressParkableStrings,
+             features::kUseZstdForParkableStrings},
+            {});
         break;
 #endif  // BUILDFLAG(HAS_ZSTD_COMPRESSION)
     }
@@ -165,8 +163,6 @@ class ParkableStringTest
         std::make_unique<InMemoryDataAllocator>());
 
     manager.SetRendererBackgrounded(true);
-    // No string yet, should not post a task since there is nothing to do.
-    ASSERT_EQ(0u, task_environment_.GetPendingMainThreadTaskCount());
   }
 
   void TearDown() override {
@@ -192,12 +188,19 @@ class ParkableStringTest
     ParkableStringManager::Instance().SetDataAllocatorForTesting(nullptr);
   }
 
+  void TriggerCriticalMemoryPressureAndWait() {
+    test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
+        base::kCriticalMemoryPressureThreshold, base::DoNothing());
+    test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
+        task_environment_.QuitClosure());
+    task_environment_.RunUntilQuit();
+  }
+
   size_t GetExpectedCompressedSize() const {
     switch (ParkableStringImpl::GetCompressionAlgorithm()) {
       case ParkableStringImpl::CompressionAlgorithm::kZlib:
         return kCompressedSizeZlib;
-      case ParkableStringImpl::CompressionAlgorithm::kSnappy:
-        return kCompressedSizeSnappy;
+
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
       case ParkableStringImpl::CompressionAlgorithm::kZstd:
         return kCompressedSizeZstd;
@@ -208,13 +211,13 @@ class ParkableStringTest
   bool first_aging_done_ = false;
   base::test::ScopedFeatureList scoped_feature_list_;
   base::test::TaskEnvironment task_environment_;
+  base::TestMemoryConsumerRegistry test_memory_consumer_registry_;
 };
 
 INSTANTIATE_TEST_SUITE_P(
     CompressionAlgorithm,
     ParkableStringTest,
-    ::testing::Values(ParkableStringImpl::CompressionAlgorithm::kZlib,
-                      ParkableStringImpl::CompressionAlgorithm::kSnappy
+    ::testing::Values(ParkableStringImpl::CompressionAlgorithm::kZlib
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
                       ,
                       ParkableStringImpl::CompressionAlgorithm::kZstd
@@ -222,8 +225,7 @@ INSTANTIATE_TEST_SUITE_P(
                       ));
 
 // The main aim of this test is to check that the compressed size of a string
-// doesn't change. If it does, |kCompressedSizeZlib| and/or
-// |kCompressedSizeSnappy| will need to be updated.
+// doesn't change. If it does, |kCompressedSizeZlib| will need to be updated.
 TEST_P(ParkableStringTest, CheckCompressedSize) {
   const size_t kCompressedSize = GetExpectedCompressedSize();
 
@@ -350,10 +352,10 @@ TEST_P(ParkableStringTest, ParkUnparkIdenticalContent) {
 
 TEST_P(ParkableStringTest, DecompressUtf16String) {
   std::array<UChar, 2> emoji_grinning_face = {0xd83d, 0xde00};
-  size_t size_in_chars = 2 * kSizeKb * 1000 / sizeof(UChar);
+  wtf_size_t size_in_chars = 2 * kSizeKb * 1000 / sizeof(UChar);
 
   Vector<UChar> data(size_in_chars);
-  for (size_t i = 0; i < size_in_chars / 2; ++i) {
+  for (wtf_size_t i = 0; i < size_in_chars / 2; ++i) {
     data[i * 2] = emoji_grinning_face[0];
     data[i * 2 + 1] = emoji_grinning_face[1];
   }
@@ -561,12 +563,12 @@ TEST_P(ParkableStringTest, BackgroundUnparkFromMemory) {
   EXPECT_TRUE(manager.IsOnParkedMapForTesting(impl));
 
   // Post unparking task to a background thread.
-  base::ThreadPool::PostTask(FROM_HERE, base::BindOnce(
-                                            [](ParkableStringImpl* string) {
-                                              EXPECT_FALSE(IsMainThread());
-                                              string->ToString();
-                                            },
-                                            base::RetainedRef(impl)));
+  blink::worker_pool::PostTask(FROM_HERE, blink::CrossThreadBindOnce(
+                                              [](ParkableStringImpl* string) {
+                                                EXPECT_FALSE(IsMainThread());
+                                                string->ToString();
+                                              },
+                                              blink::RetainedRef(impl)));
 
   // Wait until the background unpark task is completed.
   while (true) {
@@ -601,12 +603,12 @@ TEST_P(ParkableStringTest, BackgroundUnparkFromDisk) {
   EXPECT_TRUE(manager.IsOnDiskMapForTesting(impl));
 
   // Post unparking task to a background thread.
-  base::ThreadPool::PostTask(FROM_HERE, base::BindOnce(
-                                            [](ParkableStringImpl* string) {
-                                              EXPECT_FALSE(IsMainThread());
-                                              string->ToString();
-                                            },
-                                            base::RetainedRef(impl)));
+  blink::worker_pool::PostTask(FROM_HERE, blink::CrossThreadBindOnce(
+                                              [](ParkableStringImpl* string) {
+                                                EXPECT_FALSE(IsMainThread());
+                                                string->ToString();
+                                              },
+                                              blink::RetainedRef(impl)));
 
   // Wait until the background unpark task is completed.
   while (true) {
@@ -638,8 +640,8 @@ TEST_P(ParkableStringTest, BackgroundDestruct) {
   auto parkable =
       std::make_unique<ParkableStringWrapper>(MakeLargeString().ReleaseImpl());
   EXPECT_TRUE(parkable->string.Impl()->HasOneRef());
-  base::ThreadPool::PostTask(
-      FROM_HERE, base::BindOnce(
+  blink::worker_pool::PostTask(
+      FROM_HERE, blink::CrossThreadBindOnce(
                      [](std::unique_ptr<ParkableStringWrapper> parkable) {
                        EXPECT_FALSE(IsMainThread());
                        EXPECT_TRUE(parkable->string.Impl()->HasOneRef());
@@ -836,9 +838,9 @@ TEST_P(ParkableStringTest, ShouldPark) {
 
 TEST_P(ParkableStringTest, AsanPoisoningTest) {
   ParkableString parkable(MakeLargeString().ReleaseImpl());
-  const LChar* data = parkable.ToString().Characters8();
+  const LChar* data = parkable.ToString().Span8().data();
   EXPECT_TRUE(ParkAndWait(parkable));
-  EXPECT_ASAN_DEATH(EXPECT_NE(0, data[10]), "");
+  UNSAFE_TODO(EXPECT_ASAN_DEATH(EXPECT_NE(0, data[10]), ""));
 }
 
 // Non-regression test for crbug.com/905137.
@@ -1027,7 +1029,7 @@ TEST_P(ParkableStringTest, SynchronousToDisk) {
   parkable.ToString();
 }
 
-TEST_P(ParkableStringTest, OnPurgeMemory) {
+TEST_P(ParkableStringTest, OnReleaseMemory) {
   ParkableString parkable1 = CreateAndParkAll();
   ParkableString parkable2(MakeLargeString('b').ReleaseImpl());
 
@@ -1043,7 +1045,7 @@ TEST_P(ParkableStringTest, OnPurgeMemory) {
   String retained = parkable2.ToString();
   EXPECT_TRUE(parkable2.Impl()->has_compressed_data());
 
-  MemoryPressureListenerRegistry::Instance().OnPurgeMemory();
+  TriggerCriticalMemoryPressureAndWait();
   EXPECT_TRUE(parkable1.Impl()->is_parked());  // Parked synchronously.
   EXPECT_FALSE(parkable2.Impl()->is_parked());
 
@@ -1175,7 +1177,7 @@ TEST_P(ParkableStringTest, CompressionDisabled) {
   WaitForDelayedParking();
   EXPECT_FALSE(parkable.Impl()->may_be_parked());
 
-  MemoryPressureListenerRegistry::Instance().OnPurgeMemory();
+  TriggerCriticalMemoryPressureAndWait();
   EXPECT_FALSE(parkable.Impl()->may_be_parked());
 }
 
@@ -1406,9 +1408,9 @@ TEST_P(ParkableStringTest, ReportTotalDiskTime) {
 }
 
 TEST_P(ParkableStringTest, EncodingAndDeduplication) {
-  size_t size_in_chars = 2 * kSizeKb * 1000 / sizeof(UChar);
+  wtf_size_t size_in_chars = 2 * kSizeKb * 1000 / sizeof(UChar);
   Vector<UChar> data_16(size_in_chars);
-  for (size_t i = 0; i < size_in_chars; ++i) {
+  for (wtf_size_t i = 0; i < size_in_chars; ++i) {
     data_16[i] = 0x2020;
   }
   String large_string_16 = String(data_16);
@@ -1418,7 +1420,7 @@ TEST_P(ParkableStringTest, EncodingAndDeduplication) {
   ASSERT_TRUE(parkable_16.may_be_parked());
 
   Vector<LChar> data_8(2 * size_in_chars);
-  for (size_t i = 0; i < 2 * size_in_chars; ++i) {
+  for (wtf_size_t i = 0; i < 2 * size_in_chars; ++i) {
     data_8[i] = 0x20;
   }
   String large_string_8 = String(base::span(data_8));
@@ -1441,8 +1443,7 @@ class ParkableStringTestWithQueuedThreadPool : public ParkableStringTest {
 INSTANTIATE_TEST_SUITE_P(
     CompressionAlgorithm,
     ParkableStringTestWithQueuedThreadPool,
-    ::testing::Values(ParkableStringImpl::CompressionAlgorithm::kZlib,
-                      ParkableStringImpl::CompressionAlgorithm::kSnappy
+    ::testing::Values(ParkableStringImpl::CompressionAlgorithm::kZlib
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
                       ,
                       ParkableStringImpl::CompressionAlgorithm::kZstd
@@ -1489,8 +1490,7 @@ class ParkableStringTestWithLimitedDiskCapacity : public ParkableStringTest {
 INSTANTIATE_TEST_SUITE_P(
     CompressionAlgorithm,
     ParkableStringTestWithLimitedDiskCapacity,
-    ::testing::Values(ParkableStringImpl::CompressionAlgorithm::kZlib,
-                      ParkableStringImpl::CompressionAlgorithm::kSnappy
+    ::testing::Values(ParkableStringImpl::CompressionAlgorithm::kZlib
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
                       ,
                       ParkableStringImpl::CompressionAlgorithm::kZstd
@@ -1663,8 +1663,7 @@ TEST_P(ParkableStringTestLessAggressiveMode,
 INSTANTIATE_TEST_SUITE_P(
     CompressionAlgorithm,
     ParkableStringTestLessAggressiveMode,
-    ::testing::Values(ParkableStringImpl::CompressionAlgorithm::kZlib,
-                      ParkableStringImpl::CompressionAlgorithm::kSnappy
+    ::testing::Values(ParkableStringImpl::CompressionAlgorithm::kZlib
 #if BUILDFLAG(HAS_ZSTD_COMPRESSION)
                       ,
                       ParkableStringImpl::CompressionAlgorithm::kZstd

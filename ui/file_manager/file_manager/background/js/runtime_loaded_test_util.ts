@@ -103,6 +103,14 @@ test.util.sync.getErrorCount = (): number => {
  */
 test.util.sync.resizeWindow = (width: number, height: number): boolean => {
   window.resizeTo(width, height);
+  // The HTML spec only fires `window` 'resize' when the viewport size
+  // actually changes. A test request like resizeTo(1200, 1200) is clamped
+  // by AdjustWindowRectForDisplay to the work area; on builders whose work
+  // area matches the SWA's current outer bounds the clamp produces a
+  // no-op resize and no 'resize' event is dispatched. Tests that exercise
+  // a 'resize' listener (e.g. tooltip auto-hide) should not depend on the
+  // bot's work-area dimensions, so dispatch the event explicitly here.
+  window.dispatchEvent(new Event('resize'));
   return true;
 };
 
@@ -887,6 +895,8 @@ test.util.async.fakeDragLeaveOrDrop =
           case 1:
             event = new DragEvent('dragend', sourceOptions);
             result = source.dispatchEvent(event);
+            break;
+          default:
             break;
         }
 

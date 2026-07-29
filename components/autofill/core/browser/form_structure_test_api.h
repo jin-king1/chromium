@@ -8,7 +8,6 @@
 #include <string>
 #include <string_view>
 
-#include "base/containers/contains.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "components/autofill/core/browser/form_structure.h"
@@ -19,25 +18,19 @@ namespace autofill {
 // Exposes some testing operations for FormStructure.
 class FormStructureTestApi {
  public:
-  using ShouldBeParsedParams = FormStructure::ShouldBeParsedParams;
-
   explicit FormStructureTestApi(FormStructure& form_structure)
       : form_structure_(form_structure) {}
 
   AutofillField& PushField() {
-    form_structure_->fields_.push_back(std::make_unique<AutofillField>());
-    return *form_structure_->fields_.back();
+    form_structure_->fields_.data().push_back(
+        std::make_unique<AutofillField>());
+    return *form_structure_->fields_.data().back();
   }
 
   AutofillField& PushField(FormFieldData field) {
-    form_structure_->fields_.push_back(
+    form_structure_->fields_.data().push_back(
         std::make_unique<AutofillField>(std::move(field)));
-    return *form_structure_->fields_.back();
-  }
-
-  [[nodiscard]] bool ShouldBeParsed(ShouldBeParsedParams params = {},
-                                    LogManager* log_manager = nullptr) {
-    return form_structure_->ShouldBeParsed(params, log_manager);
+    return *form_structure_->fields_.data().back();
   }
 
   // Set the heuristic and server types for each field. The `heuristic_types`
@@ -66,25 +59,10 @@ class FormStructureTestApi {
                   /*server_types=*/overall_types);
   }
 
-  mojom::SubmissionIndicatorEvent get_submission_event() const {
-    return form_structure_->submission_event_;
-  }
-
-  // Returns a vote type if a field contains a vote relating USERNAME correction
-  // (CREDENTIALS_REUSED, USERNAME_OVERWRITTEN, USERNAME_EDITED). If none,
-  // returns NO_INFORMATION.
-  AutofillUploadContents::Field::VoteType get_username_vote_type();
-
   void AssignSections() { autofill::AssignSections(form_structure_->fields_); }
 
-  FieldCandidatesMap ParseFieldTypesWithPatterns(
-      ParsingContext& context) const {
-    return form_structure_->ParseFieldTypesWithPatterns(context);
-  }
-
-  void AssignBestFieldTypes(const FieldCandidatesMap& field_type_map,
-                            HeuristicSource heuristic_source) {
-    form_structure_->AssignBestFieldTypes(field_type_map, heuristic_source);
+  void UpdateFormData(const FormData& form) {
+    form_structure_->UpdateFormData(form);
   }
 
  private:

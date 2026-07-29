@@ -10,11 +10,13 @@
 
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
+#include "base/process/process.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -33,11 +35,11 @@
 #include "components/prefs/pref_service.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/cookie_access_details.h"
+#include "content/public/browser/first_party_sets_handler.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/network_service_util.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/service_process_host.h"
 #include "content/public/browser/service_process_info.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_features.h"
@@ -47,6 +49,7 @@
 #include "content/public/test/test_utils.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
 #include "net/base/features.h"
+#include "net/base/schemeful_site.h"
 #include "net/cookies/canonical_cookie_test_helpers.h"
 #include "net/cookies/cookie_access_result.h"
 #include "net/cookies/cookie_constants.h"
@@ -64,9 +67,21 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 
+#if BUILDFLAG(IS_WIN)
+#include "base/process/process_info.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "chrome/browser/browser_features.h"
+#include "chrome/common/chrome_version.h"
+#include "content/public/browser/storage_partition.h"
+#endif  // BUILDFLAG(IS_WIN)
+
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 #include "sandbox/policy/linux/sandbox_seccomp_bpf_linux.h"
 #endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_pref_names.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 using SystemNetworkContextManagerBrowsertest = InProcessBrowserTest;
 
@@ -206,14 +221,14 @@ IN_PROC_BROWSER_TEST_F(SystemNetworkContextManagerBrowsertest, AuthParams) {
   // The kerberos.enabled pref is false and the device is not Active Directory
   // managed by default.
   EXPECT_FALSE(dynamic_params->allow_gssapi_library_load);
-  local_state->SetBoolean(prefs::kKerberosEnabled, true);
+  local_state->SetBoolean(ash::prefs::kKerberosEnabled, true);
   dynamic_params =
       SystemNetworkContextManager::GetHttpAuthDynamicParamsForTesting();
   EXPECT_TRUE(dynamic_params->allow_gssapi_library_load);
   EXPECT_TRUE(dynamic_params->patterns_allowed_to_use_all_schemes.empty());
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-  base::Value::List patterns_allowed_to_use_all_schemes;
+  base::ListValue patterns_allowed_to_use_all_schemes;
   patterns_allowed_to_use_all_schemes.Append("*.allowed.google.com");
   patterns_allowed_to_use_all_schemes.Append("*.youtube.com");
   local_state->SetList(prefs::kAllHttpAuthSchemesAllowedForOrigins,
@@ -232,13 +247,13 @@ IN_PROC_BROWSER_TEST_F(SystemNetworkContextManagerBrowsertest, AuthParams) {
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 // GSSAPI is currently incompatible with the network service sandbox
-// (crbug.com/1474362). It isn't known until the browser is already started
+// (crbug.com/40070096). It isn't known until the browser is already started
 // whether GSSAPI is desired, so if Chrome detects that GSSAPI is desired after
 // the network service has already started sandboxed, the network
 // service must be restarted so the sandbox can be removed.
 class SystemNetworkContextManagerNetworkServiceSandboxBrowsertest
     : public SystemNetworkContextManagerBrowsertest,
-      public content::ServiceProcessHost::Observer,
+      public content::NetworkServiceProcessObserver,
       public testing::WithParamInterface<bool> {
  public:
   // On both ChromeOS and Linux, a pref determines whether GSSAPI is desired in
@@ -247,7 +262,7 @@ class SystemNetworkContextManagerNetworkServiceSandboxBrowsertest
   // network service restart to remove the sandbox.
   const char* kGssapiDesiredPref =
 #if BUILDFLAG(IS_CHROMEOS)
-      prefs::kKerberosEnabled;
+      ash::prefs::kKerberosEnabled;
 #elif BUILDFLAG(IS_LINUX)
       prefs::kReceivedHttpAuthNegotiateHeader;
 #endif
@@ -267,15 +282,12 @@ class SystemNetworkContextManagerNetworkServiceSandboxBrowsertest
 
     SystemNetworkContextManagerBrowsertest::SetUpOnMainThread();
 
-    content::ServiceProcessHost::AddObserver(this);
-    auto running_processes =
-        content::ServiceProcessHost::GetRunningProcessInfo();
-    for (const auto& info : running_processes) {
-      if (info.IsService<network::mojom::NetworkService>()) {
-        network_process_ = info.GetProcess().Duplicate();
-        break;
-      }
-    }
+    content::AddNetworkServiceProcessObserver(this);
+  }
+
+  void TearDownOnMainThread() override {
+    content::RemoveNetworkServiceProcessObserver(this);
+    SystemNetworkContextManagerBrowsertest::TearDownOnMainThread();
   }
 
   void WaitForNextLaunch() {
@@ -315,22 +327,17 @@ class SystemNetworkContextManagerNetworkServiceSandboxBrowsertest
   bool sandbox_desired_;
 
  private:
-  void OnServiceProcessLaunched(
-      const content::ServiceProcessInfo& info) override {
-    if (!info.IsService<network::mojom::NetworkService>()) {
-      return;
-    }
+  void OnServiceLaunched(const content::ServiceProcessInfo& info) override {
     network_process_ = info.GetProcess().Duplicate();
     if (launch_run_loop_) {
       launch_run_loop_->Quit();
     }
   }
 
-  void OnServiceProcessTerminatedNormally(
+  void OnServiceTerminatedNormally(
       const content::ServiceProcessInfo& info) override {}
 
-  void OnServiceProcessCrashed(
-      const content::ServiceProcessInfo& info) override {}
+  void OnServiceCrashed(const content::ServiceProcessInfo& info) override {}
 
   base::test::ScopedFeatureList scoped_feature_list_;
   base::Process network_process_;
@@ -400,6 +407,208 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 #endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
+
+#if BUILDFLAG(IS_WIN)
+
+class SystemNetworkContextManagerNetworkServiceSandboxBrowsertest
+    : public SystemNetworkContextManagerBrowsertest,
+      public content::NetworkServiceProcessObserver {
+ public:
+  SystemNetworkContextManagerNetworkServiceSandboxBrowsertest() {
+    scoped_feature_list_.InitWithFeatures(
+        {sandbox::policy::features::kNetworkServiceSandbox,
+         features::kRestartNetworkServiceUnsandboxedForFailedLaunch},
+        {});
+  }
+
+  void SetUpOnMainThread() override {
+    SystemNetworkContextManagerBrowsertest::SetUpOnMainThread();
+    launch_run_loop_.emplace();
+    content::AddNetworkServiceProcessObserver(this);
+  }
+
+  void TearDownOnMainThread() override {
+    content::RemoveNetworkServiceProcessObserver(this);
+  }
+
+ protected:
+  size_t launches_seen_ = 0;
+  bool network_service_sandboxed_;
+  std::optional<base::RunLoop> launch_run_loop_;
+
+ private:
+  void RecordProcessSandboxState(const base::Process& process) {
+    const auto integrity_level = base::GetProcessIntegrityLevel(process.Pid());
+    CHECK_NE(base::INTEGRITY_UNKNOWN, integrity_level);
+    network_service_sandboxed_ = integrity_level < base::MEDIUM_INTEGRITY;
+  }
+
+  void OnServiceLaunched(const content::ServiceProcessInfo& info) override {
+    RecordProcessSandboxState(info.GetProcess());
+    // Expect two launches, first for the restart due to intentional crash, then
+    // for the restart after the intentional crash at startup.
+    if (++launches_seen_ >= 2u) {
+      launch_run_loop_->Quit();
+    }
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// This is a four stage test to verify the early launch crash behavior for the
+// network service sandbox on Windows.
+//
+// In the first stage, the network service is already started as normal during
+// browser launch. The test verifies that the service is currently sandboxed.
+//
+// In the second stage, the artificial early crash is added, then the service is
+// crashed to cause a restart. This results in the service starting, crashing
+// immediately then starting again unsandboxed. The test verifies that the
+// service is now unsandboxed and the pref has been set to mark the sandbox as
+// being disabled.
+//
+// In the third stage, a crash is induced again and it's checked that the
+// unsandboxed state is correctly persisted and used on the second restart.
+//
+// In the fourth stage, the crashing milestone is set to one milestone previous
+// to current, and then the service then crashed again to cause a restart. This
+// time the service will start sandboxed again because the early crash was in a
+// previous milestone.
+#if BUILDFLAG(IS_WIN)
+// TODO(crbug.com/532718529): Re-enable this test on Windows.
+#define MAYBE_NetworkServiceRestartsFailingLaunches \
+  DISABLED_NetworkServiceRestartsFailingLaunches
+#else
+#define MAYBE_NetworkServiceRestartsFailingLaunches \
+  NetworkServiceRestartsFailingLaunches
+#endif
+IN_PROC_BROWSER_TEST_F(
+    SystemNetworkContextManagerNetworkServiceSandboxBrowsertest,
+    MAYBE_NetworkServiceRestartsFailingLaunches) {
+  if (!sandbox::policy::features::IsNetworkSandboxSupported()) {
+    GTEST_SKIP() << "This test requires platform sandbox support.";
+  }
+
+  // Check network service is sandboxed initially.
+  EXPECT_TRUE(network_service_sandboxed_);
+
+  {
+    base::HistogramTester histograms;
+
+    // The next restart will fail to bootstrap correctly.
+    content::SetNetworkServiceCrashOnNextStartupForTesting();
+    // Cause a crash in the network service, which will cause it to restart,
+    // then fail to start, then restart again unsandboxed.
+    SimulateNetworkServiceCrash();
+    // The second restart (unsandboxed) must be ignored otherwise the test will
+    // fail.
+    IgnoreNetworkServiceCrashes();
+    // Make sure the network service is fully up and running after having to
+    // restart twice.
+    browser()
+        ->GetProfile()
+        ->GetDefaultStoragePartition()
+        ->FlushNetworkInterfaceForTesting();
+
+    launch_run_loop_->Run();
+    EXPECT_FALSE(network_service_sandboxed_);
+    EXPECT_TRUE(SystemNetworkContextManager::GetInstance()
+                    ->HasFailedPreviousRecentLaunch());
+    int crashing_major_version = g_browser_process->local_state()->GetInteger(
+        prefs::kNetworkServiceFailedLaunchMajorVersion);
+    CHECK_EQ(crashing_major_version, CHROME_VERSION_MAJOR);
+    histograms.ExpectUniqueSample(
+        "Chrome.SystemNetworkContextManager.NetworkSandboxEarlyLaunchCrashed",
+        true, 1u);
+    // Two sets of histograms are emitted in this part: first the network
+    // service is launched with sandbox enabled, then the second re-launch is
+    // with sandbox disabled because of failed launch. Note these histograms
+    // have varied counts. This is because
+    // Chrome.SystemNetworkContextManager.NetworkSandboxState is logged from
+    // SystemNetworkContextManager::IsNetworkSandboxEnabled which is called from
+    // various places in mojo and service manager. This test merely has to
+    // verify that there exist only entries in the two buckets and no other
+    // bucket.
+    const auto enabled_count = histograms.GetBucketCount(
+        "Chrome.SystemNetworkContextManager.NetworkSandboxState",
+        /*kEnabledByPlatform*/ 1);
+    const auto disabled_because_of_failed_launch_count =
+        histograms.GetBucketCount(
+            "Chrome.SystemNetworkContextManager.NetworkSandboxState",
+            /*kDisabledBecauseOfFailedLaunch*/ 4);
+    CHECK_GT(disabled_because_of_failed_launch_count, 1u);
+    CHECK_GT(enabled_count, 1u);
+    histograms.ExpectTotalCount(
+        "Chrome.SystemNetworkContextManager.NetworkSandboxState",
+        enabled_count + disabled_because_of_failed_launch_count);
+  }
+
+  {
+    base::HistogramTester histograms;
+    // Crash again, this time to verify that the pref persists and causes the
+    // network service to remain unsandboxed even on a second restart.
+    SimulateNetworkServiceCrash();
+
+    // Make sure the network service is fully up and running after having to
+    // restart.
+    browser()
+        ->GetProfile()
+        ->GetDefaultStoragePartition()
+        ->FlushNetworkInterfaceForTesting();
+
+    // Sandbox should still be disabled as the pref stored the state.
+    EXPECT_FALSE(network_service_sandboxed_);
+    EXPECT_TRUE(SystemNetworkContextManager::GetInstance()
+                    ->HasFailedPreviousRecentLaunch());
+    histograms.ExpectTotalCount(
+        "Chrome.SystemNetworkContextManager.NetworkSandboxEarlyLaunchCrashed",
+        0);
+    const auto disabled_because_of_failed_launch_count =
+        histograms.GetBucketCount(
+            "Chrome.SystemNetworkContextManager.NetworkSandboxState",
+            /*kDisabledBecauseOfFailedLaunch*/ 4);
+    CHECK_GT(disabled_because_of_failed_launch_count, 1u);
+    histograms.ExpectTotalCount(
+        "Chrome.SystemNetworkContextManager.NetworkSandboxState",
+        disabled_because_of_failed_launch_count);
+  }
+
+  {
+    base::HistogramTester histograms;
+    // Simulate that a previous milestone was crashing.
+    g_browser_process->local_state()->SetInteger(
+        prefs::kNetworkServiceFailedLaunchMajorVersion,
+        CHROME_VERSION_MAJOR - 1);
+
+    // Crash again, this time to get a sandboxed service again.
+    SimulateNetworkServiceCrash();
+
+    // Make sure the network service is fully up and running after having to
+    // restart.
+    browser()
+        ->GetProfile()
+        ->GetDefaultStoragePartition()
+        ->FlushNetworkInterfaceForTesting();
+
+    // Sandbox should now be engaged again because the major version
+    // incremented.
+    EXPECT_TRUE(network_service_sandboxed_);
+    EXPECT_FALSE(SystemNetworkContextManager::GetInstance()
+                     ->HasFailedPreviousRecentLaunch());
+    histograms.ExpectTotalCount(
+        "Chrome.SystemNetworkContextManager.NetworkSandboxEarlyLaunchCrashed",
+        0);
+    const auto enabled_count = histograms.GetBucketCount(
+        "Chrome.SystemNetworkContextManager.NetworkSandboxState",
+        /*kEnabledByPlatform*/ 1);
+    CHECK_GT(enabled_count, 1u);
+    histograms.ExpectTotalCount(
+        "Chrome.SystemNetworkContextManager.NetworkSandboxState",
+        enabled_count);
+  }
+}
+
+#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_LINUX)
 class SystemNetworkContextManagerHttpNegotiateHeader
@@ -551,6 +760,14 @@ class SystemNetworkContextManagerWithFirstPartySetComponentBrowserTest
   SystemNetworkContextManagerWithFirstPartySetComponentBrowserTest()
       : https_server_(net::EmbeddedTestServer::TYPE_HTTPS) {}
 
+  void WaitForFirstPartySetsInit() {
+    base::test::TestFuture<net::FirstPartySetMetadata> future;
+    net::SchemefulSite site(GURL("https://a.test"));
+    content::FirstPartySetsHandler::GetInstance()->ComputeFirstPartySetMetadata(
+        site, site, net::FirstPartySetsContextConfig(), future.GetCallback());
+    ASSERT_TRUE(future.Wait());
+  }
+
   void SetUpOnMainThread() override {
     SystemNetworkContextManagerBrowsertest::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
@@ -565,9 +782,7 @@ class SystemNetworkContextManagerWithFirstPartySetComponentBrowserTest
     // Since we set kWaitForFirstPartySetsInit, all cookie-carrying network
     // requests are blocked until FPS is initialized.
     feature_list_.InitWithFeatures(
-        {net::features::kWaitForFirstPartySetsInit,
-         net::features::kForceThirdPartyCookieBlocking},
-        {});
+        {net::features::kForceThirdPartyCookieBlocking}, {});
     CHECK(component_dir_.CreateUniqueTempDir());
     base::ScopedAllowBlockingForTesting allow_blocking;
 
@@ -609,8 +824,9 @@ IN_PROC_BROWSER_TEST_F(
     SystemNetworkContextManagerWithFirstPartySetComponentBrowserTest,
     PRE_ReloadsFirstPartySetsAfterCrash) {
   // Network service is not running out of process, so cannot be crashed.
-  if (!content::IsOutOfProcessNetworkService())
+  if (!content::IsOutOfProcessNetworkService()) {
     return;
+  }
 
   // Set a persistent cookie that will still be there after the network service
   // is crashed. We don't use the system network context here (which wouldn't
@@ -619,10 +835,10 @@ IN_PROC_BROWSER_TEST_F(
   // reconfiguration includes setting up First-Party Sets.
   const GURL host_root = https_server()->GetURL(kHostA, "/");
   ASSERT_TRUE(content::SetCookie(
-      browser()->profile(), host_root,
+      browser()->GetProfile(), host_root,
       base::StrCat(
           {kCookieName, "=1; SameSite=None; secure; max-age=2147483647"})));
-  ASSERT_THAT(content::GetCookies(browser()->profile(), host_root),
+  ASSERT_THAT(content::GetCookies(browser()->GetProfile(), host_root),
               net::CookieStringIs(
                   testing::UnorderedElementsAre(testing::Key(kCookieName))));
 }
@@ -631,72 +847,81 @@ IN_PROC_BROWSER_TEST_F(
     SystemNetworkContextManagerWithFirstPartySetComponentBrowserTest,
     ReloadsFirstPartySetsAfterCrash) {
   // Network service is not running out of process, so cannot be crashed.
-  if (!content::IsOutOfProcessNetworkService())
+  if (!content::IsOutOfProcessNetworkService()) {
     return;
+  }
 
-  CookieTracker cookie_tracker(web_contents());
+  WaitForFirstPartySetsInit();
 
-  const GURL url_a = https_server()->GetURL(kHostA, "/title1.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url_a));
-  cookie_tracker.WaitForCookies(2);
-  const CookieAccess expected_first_party_access{
-      content::CookieAccessDetails::Type::kRead, "Cookie", "1",
-      net::CookieAccessResult(
-          net::CookieEffectiveSameSite::NO_RESTRICTION,
-          net::CookieInclusionStatus::MakeFromReasonsForTesting(
-              /*exclusions=*/{},
-              /*warnings=*/{net::CookieInclusionStatus::WarningReason::
-                                WARN_PORT_MISMATCH}),
-          net::CookieAccessSemantics::NONLEGACY,
-          net::CookieScopeSemantics::UNKNOWN, true)};
-  EXPECT_THAT(cookie_tracker.cookie_accesses(),
-              testing::ElementsAre(
-                  // a.test/title1.html
-                  expected_first_party_access,
-                  // a.test/favicon.ico
-                  expected_first_party_access));
-  cookie_tracker.cookie_accesses().clear();
+  {
+    CookieTracker cookie_tracker(web_contents());
+
+    const GURL url_a = https_server()->GetURL(kHostA, "/title1.html");
+    ASSERT_TRUE(content::NavigateToURL(web_contents(), url_a));
+    cookie_tracker.WaitForCookies(2);
+    const CookieAccess expected_first_party_access{
+        content::CookieAccessDetails::Type::kRead, "Cookie", "1",
+        net::CookieAccessResult(
+            net::CookieEffectiveSameSite::NO_RESTRICTION,
+            net::CookieInclusionStatus::MakeFromReasonsForTesting(
+                /*exclusions=*/{},
+                /*warnings=*/{net::CookieInclusionStatus::WarningReason::
+                                  WARN_PORT_MISMATCH}),
+            net::CookieAccessSemantics::NONLEGACY,
+            net::CookieScopeSemantics::NONLEGACY, true)};
+    EXPECT_THAT(cookie_tracker.cookie_accesses(),
+                testing::ElementsAre(
+                    // a.test/title1.html
+                    expected_first_party_access,
+                    // a.test/favicon.ico
+                    expected_first_party_access));
+  }
 
   const GURL url_b_cross_site(https_server()->GetURL(
       kHostB, "/cross_site_iframe_factory.html?b.test(a.test)"));
-  EXPECT_TRUE(NavigateToURL(web_contents(), url_b_cross_site));
-  cookie_tracker.WaitForCookies(2);
-  net::CookieInclusionStatus expected_third_party_inclusion_status;
-  // If the sites are in the same Related Website Sets, we're expecting the
+  // Since the sites are in the same Related Website Sets, we're expecting the
   // EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET exclusion reason.
-  expected_third_party_inclusion_status.AddExclusionReason(
-      net::CookieInclusionStatus::ExclusionReason::
-          EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET);
-  expected_third_party_inclusion_status.AddExclusionReason(
-      net::CookieInclusionStatus::ExclusionReason::
-          EXCLUDE_THIRD_PARTY_PHASEOUT);
-  expected_third_party_inclusion_status.AddWarningReason(
-      net::CookieInclusionStatus::WarningReason::WARN_PORT_MISMATCH);
+  const net::CookieInclusionStatus expected_third_party_inclusion_status =
+      net::CookieInclusionStatus::MakeFromReasonsForTesting(
+          {net::CookieInclusionStatus::ExclusionReason::
+               EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET,
+           net::CookieInclusionStatus::ExclusionReason::
+               EXCLUDE_THIRD_PARTY_PHASEOUT},
+          {net::CookieInclusionStatus::WarningReason::WARN_PORT_MISMATCH});
   const CookieAccess expected_third_party_access{
       content::CookieAccessDetails::Type::kRead, "Cookie", "1",
       net::CookieAccessResult(net::CookieEffectiveSameSite::NO_RESTRICTION,
                               expected_third_party_inclusion_status,
                               net::CookieAccessSemantics::NONLEGACY,
-                              net::CookieScopeSemantics::UNKNOWN, true)};
-  EXPECT_THAT(cookie_tracker.cookie_accesses(),
-              testing::ElementsAre(
-                  // a.test iframe under b.test
-                  expected_third_party_access,
-                  // a.test/tree_parser_util.js in an iframe under b.test
-                  expected_third_party_access));
-  cookie_tracker.cookie_accesses().clear();
+                              net::CookieScopeSemantics::NONLEGACY, true)};
+
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    CookieTracker cookie_tracker(web_contents());
+    EXPECT_TRUE(NavigateToURL(web_contents(), url_b_cross_site));
+    cookie_tracker.WaitForCookies(2);
+    return testing::Value(
+        cookie_tracker.cookie_accesses(),
+        testing::ElementsAre(
+            // a.test iframe under b.test
+            expected_third_party_access,
+            // a.test/tree_parser_util.js in an iframe under b.test
+            expected_third_party_access));
+  }));
 
   SimulateNetworkServiceCrash();
 
-  EXPECT_TRUE(NavigateToURL(web_contents(), url_b_cross_site));
-  cookie_tracker.WaitForCookies(2);
-  EXPECT_THAT(cookie_tracker.cookie_accesses(),
-              testing::ElementsAre(
-                  // a.test iframe under b.test
-                  expected_third_party_access,
-                  // a.test/tree_parser_util.js in an iframe under b.test
-                  expected_third_party_access));
-  cookie_tracker.cookie_accesses().clear();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    CookieTracker cookie_tracker(web_contents());
+    EXPECT_TRUE(NavigateToURL(web_contents(), url_b_cross_site));
+    cookie_tracker.WaitForCookies(2);
+    return testing::Value(
+        cookie_tracker.cookie_accesses(),
+        testing::ElementsAre(
+            // a.test iframe under b.test
+            expected_third_party_access,
+            // a.test/tree_parser_util.js in an iframe under b.test
+            expected_third_party_access));
+  }));
 }
 
 class SystemNetworkContextManagerReferrersFeatureBrowsertest
@@ -763,17 +988,3 @@ IN_PROC_BROWSER_TEST_P(SystemNetworkContextManagerWPADQuickCheckBrowsertest,
 INSTANTIATE_TEST_SUITE_P(All,
                          SystemNetworkContextManagerWPADQuickCheckBrowsertest,
                          ::testing::Bool());
-
-class SystemNetworkContextManagerCertificateTransparencyBrowsertest
-    : public SystemNetworkContextManagerBrowsertest,
-      public testing::WithParamInterface<std::optional<bool>> {
- public:
-  SystemNetworkContextManagerCertificateTransparencyBrowsertest() {
-    SystemNetworkContextManager::SetEnableCertificateTransparencyForTesting(
-        GetParam());
-  }
-  ~SystemNetworkContextManagerCertificateTransparencyBrowsertest() override {
-    SystemNetworkContextManager::SetEnableCertificateTransparencyForTesting(
-        std::nullopt);
-  }
-};

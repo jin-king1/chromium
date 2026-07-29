@@ -21,6 +21,7 @@
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_switches.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/features.h"
@@ -43,9 +44,8 @@ void ReportErrorAndTraceEvent(
     SignedExchangeDevToolsProxy* devtools_proxy,
     const std::string& error_message,
     std::optional<SignedExchangeError::FieldIndexPair> error_field) {
-  TRACE_EVENT_INSTANT1(TRACE_DISABLED_BY_DEFAULT("loading"),
-                       "SignedExchangeError", TRACE_EVENT_SCOPE_THREAD, "error",
-                       error_message);
+  TRACE_EVENT_INSTANT(TRACE_DISABLED_BY_DEFAULT("loading"),
+                      "SignedExchangeError", "error", error_message);
   if (devtools_proxy)
     devtools_proxy->ReportError(error_message, std::move(error_field));
 }
@@ -208,8 +208,8 @@ net::RedirectInfo CreateRedirectInfo(
       outer_request.update_first_party_url_on_redirect
           ? net::RedirectInfo::FirstPartyURLPolicy::UPDATE_URL_ON_REDIRECT
           : net::RedirectInfo::FirstPartyURLPolicy::NEVER_CHANGE_URL,
-      outer_request.referrer_policy, outer_request.referrer.spec(), 303,
-      new_url,
+      outer_request.referrer_policy, outer_request.referrer.spec(),
+      outer_request.request_initiator, 303, new_url,
       net::RedirectUtil::GetReferrerPolicyHeader(outer_response.headers.get()),
       false /* insecure_scheme_was_upgraded */, true /* copy_fragment */,
       is_fallback_redirect);

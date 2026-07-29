@@ -12,6 +12,7 @@
 #include "components/user_education/common/feature_promo/feature_promo_precondition.h"
 #include "components/user_education/common/feature_promo/feature_promo_result.h"
 #include "components/user_education/common/feature_promo/feature_promo_specification.h"
+#include "components/user_education/common/feature_promo/impl/typed_data_collection.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace user_education::test {
@@ -22,7 +23,7 @@ struct TestPreconditionListProvider::PreconditionData {
   void operator=(const PreconditionData&) = delete;
   ~PreconditionData() = default;
 
-  FeaturePromoPrecondition::Identifier identifier;
+  FeaturePromoPrecondition::PreconditionIdentifier identifier;
   std::string description;
   FeaturePromoResult default_result = FeaturePromoResult::Success();
   std::map<const base::Feature*, FeaturePromoResult> overrides;
@@ -37,12 +38,15 @@ class TestPreconditionListProvider::TestPrecondition
   ~TestPrecondition() override = default;
 
   // FeaturePromoPrecondition:
-  Identifier GetIdentifier() const override { return data_->identifier; }
+  PreconditionIdentifier GetIdentifier() const override {
+    return data_->identifier;
+  }
   const std::string& GetDescription() const override {
     return data_->description;
   }
 
-  FeaturePromoResult CheckPrecondition(ComputedData&) const override {
+  FeaturePromoResult CheckPrecondition(
+      UnownedTypedDataCollection&) const override {
     const auto* result =
         base::FindOrNull(data_->overrides, &iph_feature_.get());
     return result ? *result : data_->default_result;
@@ -57,16 +61,19 @@ TestPreconditionListProvider::TestPreconditionListProvider() = default;
 TestPreconditionListProvider::~TestPreconditionListProvider() = default;
 
 void TestPreconditionListProvider::SetExpectedPromoForNextQuery(
-    const FeaturePromoSpecification& spec) {
+    const FeaturePromoSpecification& spec,
+    const UserEducationContextPtr& context) {
   next_query_spec_ = &spec;
+  next_query_context_ = context;
 }
 
 void TestPreconditionListProvider::ClearExpectedPromoForFutureQueries() {
   next_query_spec_.reset();
+  next_query_context_ = nullptr;
 }
 
 void TestPreconditionListProvider::Add(
-    FeaturePromoPrecondition::Identifier identifier,
+    FeaturePromoPrecondition::PreconditionIdentifier identifier,
     std::string description,
     FeaturePromoResult default_result) {
   auto data = std::make_unique<PreconditionData>();
@@ -77,7 +84,7 @@ void TestPreconditionListProvider::Add(
 }
 
 void TestPreconditionListProvider::SetDefault(
-    FeaturePromoPrecondition::Identifier id,
+    FeaturePromoPrecondition::PreconditionIdentifier id,
     FeaturePromoResult default_result) {
   bool found = false;
   for (const auto& entry : data_) {
@@ -92,7 +99,7 @@ void TestPreconditionListProvider::SetDefault(
 
 void TestPreconditionListProvider::SetForFeature(
     const base::Feature& iph_feature,
-    FeaturePromoPrecondition::Identifier id,
+    FeaturePromoPrecondition::PreconditionIdentifier id,
     FeaturePromoResult result) {
   bool found = false;
   for (auto& entry : data_) {
@@ -107,10 +114,15 @@ void TestPreconditionListProvider::SetForFeature(
 
 FeaturePromoPreconditionList TestPreconditionListProvider::GetPreconditions(
     const FeaturePromoSpecification& spec,
-    const FeaturePromoParams& params) const {
+    const FeaturePromoParams& params,
+    const UserEducationContextPtr& context) const {
   if (next_query_spec_.has_value()) {
     EXPECT_EQ(*next_query_spec_, &spec);
     next_query_spec_ = nullptr;
+  }
+  if (next_query_context_) {
+    EXPECT_EQ(next_query_context_, context);
+    next_query_context_ = nullptr;
   }
   EXPECT_EQ(spec.feature(), &params.feature.get());
   FeaturePromoPreconditionList result;

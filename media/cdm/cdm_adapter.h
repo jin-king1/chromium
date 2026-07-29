@@ -13,6 +13,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/functional/callback.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_native_library.h"
@@ -65,7 +66,8 @@ class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
       const SessionClosedCB& session_closed_cb,
       const SessionKeysChangeCB& session_keys_change_cb,
       const SessionExpirationUpdateCB& session_expiration_update_cb,
-      CdmCreatedCB cdm_created_cb);
+      CdmCreatedCB cdm_created_cb,
+      bool is_debugger_attached);
 
   CdmAdapter(base::PassKey<CdmAdapter>,
              const CdmConfig& cdm_config,
@@ -74,7 +76,8 @@ class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
              const SessionMessageCB& session_message_cb,
              const SessionClosedCB& session_closed_cb,
              const SessionKeysChangeCB& session_keys_change_cb,
-             const SessionExpirationUpdateCB& session_expiration_update_cb);
+             const SessionExpirationUpdateCB& session_expiration_update_cb,
+             bool is_debugger_attached);
   CdmAdapter(const CdmAdapter&) = delete;
   CdmAdapter& operator=(const CdmAdapter&) = delete;
 
@@ -125,13 +128,29 @@ class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
   void ResetDecoder(StreamType stream_type) final;
   void DeinitializeDecoder(StreamType stream_type) final;
 
-  // Common cdm::Host_10 and cdm::Host_11 implementation.
+  // cdm::Host_12 implementation
+  void OnResolveKeyStatusPromise(uint32_t promise_id,
+                                 cdm::KeyStatus_2 key_status) override;
+  void OnSessionKeysChange(const char* session_id,
+                           uint32_t session_id_size,
+                           bool has_additional_usable_key,
+                           const cdm::KeyInformation_2* keys_info,
+                           uint32_t keys_info_count) override;
+
+  // cdm::Host_10 and cdm::Host_11 implementation.
+  void OnResolveKeyStatusPromise(uint32_t promise_id,
+                                 cdm::KeyStatus key_status) override;
+  void OnSessionKeysChange(const char* session_id,
+                           uint32_t session_id_size,
+                           bool has_additional_usable_key,
+                           const cdm::KeyInformation* keys_info,
+                           uint32_t keys_info_count) override;
+
+  // Common cdm::Host_10, cdm::Host_11, cdm::Host_12 implementation.
   cdm::Buffer* Allocate(uint32_t capacity) override;
   void SetTimer(int64_t delay_ms, void* context) override;
   cdm::Time GetCurrentWallTime() override;
   void OnInitialized(bool success) override;
-  void OnResolveKeyStatusPromise(uint32_t promise_id,
-                                 cdm::KeyStatus key_status) override;
   void OnResolveNewSessionPromise(uint32_t promise_id,
                                   const char* session_id,
                                   uint32_t session_id_size) override;
@@ -146,11 +165,6 @@ class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
                         cdm::MessageType message_type,
                         const char* message,
                         uint32_t message_size) override;
-  void OnSessionKeysChange(const char* session_id,
-                           uint32_t session_id_size,
-                           bool has_additional_usable_key,
-                           const cdm::KeyInformation* keys_info,
-                           uint32_t keys_info_count) override;
   void OnExpirationChange(const char* session_id,
                           uint32_t session_id_size,
                           cdm::Time new_expiry_time) override;
@@ -177,10 +191,10 @@ class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
   // otherwise.
   void Initialize(std::unique_ptr<media::SimpleCdmPromise> promise);
 
-  // Create an instance of the CDM for |key_system|.
+  // Create an instance of the CDM.
   // Caller owns the returned pointer. Returns nullptr on error, e.g. does not
-  // support |key_system|, does not support an supported interface, etc.
-  CdmWrapper* CreateCdmInstance(const std::string& key_system);
+  // support the key system, does not support a supported interface, etc.
+  CdmWrapper* CreateCdmInstance();
 
   // Helper for SetTimer().
   void TimerExpired(void* context);
@@ -233,6 +247,7 @@ class MEDIA_EXPORT CdmAdapter final : public ContentDecryptionModule,
   // CDM origin and crash key to be used in crash reporting.
   const url::Origin cdm_origin_;
   crash_reporter::ScopedCrashKeyString scoped_crash_key_;
+  crash_reporter::ScopedCrashKeyString debugger_attached_crash_key_;
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   scoped_refptr<AudioBufferMemoryPool> pool_;

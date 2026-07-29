@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/json/json_reader.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lens/core/mojom/translate.mojom-forward.h"
@@ -16,7 +17,6 @@
 #include "chrome/common/channel_info.h"
 #include "google_apis/common/api_key_request_util.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
@@ -100,30 +100,18 @@ void LensOverlayLanguagesController::OnGetSupportedLanguagesResponse(
     return;
   }
 
-  data_decoder::DataDecoder::ParseJsonIsolated(
-      response_body.value(),
-      base::BindOnce(&LensOverlayLanguagesController::OnJsonParsed,
-                     weak_ptr_factory_.GetWeakPtr()));
-}
-
-void LensOverlayLanguagesController::OnJsonParsed(
-    data_decoder::DataDecoder::ValueOrError result) {
-  if (!result.has_value()) {
+  std::optional<base::DictValue> result_dict =
+      base::JSONReader::ReadDict(*response_body, base::JSON_PARSE_RFC);
+  if (!result_dict) {
     std::move(callback_).Run(locale_, std::vector<mojom::LanguagePtr>(),
                              std::vector<mojom::LanguagePtr>());
     return;
   }
 
-  if (!result->is_dict()) {
-    std::move(callback_).Run(locale_, std::vector<mojom::LanguagePtr>(),
-                             std::vector<mojom::LanguagePtr>());
-    return;
-  }
-  const base::Value::Dict& result_dict = result->GetDict();
-  const base::Value::List* source_language_list =
-      result_dict.FindList("sourceLanguages");
-  const base::Value::List* target_language_list =
-      result_dict.FindList("targetLanguages");
+  const base::ListValue* source_language_list =
+      result_dict->FindList("sourceLanguages");
+  const base::ListValue* target_language_list =
+      result_dict->FindList("targetLanguages");
 
   std::vector<lens::mojom::LanguagePtr> source_languages =
       RetrieveLanguagesFromResults(source_language_list);
@@ -138,7 +126,7 @@ void LensOverlayLanguagesController::OnJsonParsed(
 
 std::vector<lens::mojom::LanguagePtr>
 LensOverlayLanguagesController::RetrieveLanguagesFromResults(
-    const base::Value::List* result_list) {
+    const base::ListValue* result_list) {
   if (!result_list) {
     return std::vector<lens::mojom::LanguagePtr>();
   }
@@ -149,7 +137,7 @@ LensOverlayLanguagesController::RetrieveLanguagesFromResults(
       continue;
     }
 
-    const base::Value::Dict& result_language_dict = result_language.GetDict();
+    const base::DictValue& result_language_dict = result_language.GetDict();
     const std::string* language_code =
         result_language_dict.FindString("language");
     const std::string* language_name = result_language_dict.FindString("name");
@@ -170,9 +158,8 @@ LensOverlayLanguagesController::InitializeURLLoader() {
   resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
 
   locale_ = g_browser_process->GetApplicationLocale();
-  const auto country = l10n_util::GetCountry(locale_);
-  const auto language = l10n_util::GetLanguage(locale_);
-  resource_request->url = BuildTranslateLanguagesURL(country, language);
+  resource_request->url = BuildTranslateLanguagesURL(
+      l10n_util::GetCountry(locale_), l10n_util::GetLanguage(locale_));
 
   google_apis::AddDefaultAPIKeyToRequest(*resource_request,
                                          chrome::GetChannel());

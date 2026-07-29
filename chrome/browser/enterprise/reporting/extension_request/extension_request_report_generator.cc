@@ -14,12 +14,13 @@
 #include "chrome/browser/enterprise/reporting/prefs.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/extension_constants.h"
-#include "chrome/common/pref_names.h"
+#include "components/enterprise/browser/reporting/common_pref_names.h"
 #include "components/enterprise/common/proto/synced/extensions_workflow_events.pb.h"
 #include "components/policy/core/common/cloud/cloud_policy_util.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "extensions/browser/managed_installation_mode.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension_urls.h"
 
 namespace enterprise_reporting {
@@ -30,7 +31,7 @@ namespace {
 // add-request.
 std::unique_ptr<ExtensionsWorkflowEvent> GenerateReport(
     const std::string& extension_id,
-    const base::Value::Dict* request_data) {
+    const base::DictValue* request_data) {
   auto report = std::make_unique<ExtensionsWorkflowEvent>();
   report->set_id(extension_id);
   if (request_data) {
@@ -68,8 +69,8 @@ bool ExtensionRequestReportGenerator::ShouldUploadExtensionRequest(
     extensions::ExtensionManagement* extension_management) {
   auto mode = extension_management->GetInstallationMode(extension_id,
                                                         webstore_update_url);
-  return (mode == extensions::ExtensionManagement::INSTALLATION_BLOCKED ||
-          mode == extensions::ExtensionManagement::INSTALLATION_REMOVED) &&
+  return (mode == extensions::ManagedInstallationMode::kBlocked ||
+          mode == extensions::ManagedInstallationMode::kRemoved) &&
          !extension_management->IsInstallationExplicitlyBlocked(extension_id);
 }
 
@@ -94,9 +95,9 @@ ExtensionRequestReportGenerator::GenerateForProfile(Profile* profile) {
   std::string webstore_update_url =
       extension_urls::GetDefaultWebstoreUpdateUrl().spec();
 
-  const base::Value::Dict& pending_requests =
-      profile->GetPrefs()->GetDict(prefs::kCloudExtensionRequestIds);
-  const base::Value::Dict& uploaded_requests =
+  const base::DictValue& pending_requests = profile->GetPrefs()->GetDict(
+      enterprise_reporting::kCloudExtensionRequestIds);
+  const base::DictValue& uploaded_requests =
       profile->GetPrefs()->GetDict(kCloudExtensionRequestUploadedIds);
 
   for (auto [extension_id, request_data] : pending_requests) {

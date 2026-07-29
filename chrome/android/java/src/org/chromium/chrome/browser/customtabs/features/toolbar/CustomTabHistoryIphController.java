@@ -4,12 +4,15 @@
 
 package org.chromium.chrome.browser.customtabs.features.toolbar;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.ActivityTabProvider.ActivityTabTabObserver;
@@ -26,14 +29,17 @@ import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.url.GURL;
 
+import java.util.function.Supplier;
+
 /** Controls showing IPH for Custom Tabs history. */
+@NullMarked
 public class CustomTabHistoryIphController {
     private final Activity mActivity;
     private final ActivityTabProvider mTabProvider;
-    private final Supplier<Profile> mProfileSupplier;
+    private final Supplier<@Nullable Profile> mProfileSupplier;
     private final AppMenuHandler mAppMenuHandler;
-    private ActivityTabTabObserver mTabObserver;
-    private UserEducationHelper mUserEducationHelper;
+    private @Nullable ActivityTabTabObserver mTabObserver;
+    private @Nullable UserEducationHelper mUserEducationHelper;
 
     /**
      * Constructs the controller.
@@ -46,7 +52,7 @@ public class CustomTabHistoryIphController {
     public CustomTabHistoryIphController(
             Activity activity,
             ActivityTabProvider activityTabProvider,
-            Supplier<Profile> profileSupplier,
+            Supplier<@Nullable Profile> profileSupplier,
             AppMenuHandler appMenuHandler) {
         mActivity = activity;
         mTabProvider = activityTabProvider;
@@ -69,9 +75,10 @@ public class CustomTabHistoryIphController {
     }
 
     public void notifyUserEngaged() {
-        if (!mProfileSupplier.hasValue()) return;
+        Profile profile = mProfileSupplier.get();
+        if (profile == null) return;
 
-        var tracker = TrackerFactory.getTrackerForProfile(mProfileSupplier.get());
+        var tracker = TrackerFactory.getTrackerForProfile(profile);
         tracker.addOnInitializedCallback(
                 success -> tracker.notifyEvent(EventConstants.CCT_HISTORY_MENU_ITEM_CLICKED));
     }
@@ -101,9 +108,10 @@ public class CustomTabHistoryIphController {
     private boolean shouldShowIph() {
         if (!ChromeFeatureList.sAppSpecificHistory.isEnabled()) return false;
 
-        if (mProfileSupplier.get().isOffTheRecord()) return false;
+        Profile profile = assumeNonNull(mProfileSupplier.get());
+        if (profile.isOffTheRecord()) return false;
 
-        var tracker = TrackerFactory.getTrackerForProfile(mProfileSupplier.get());
+        var tracker = TrackerFactory.getTrackerForProfile(profile);
         return (tracker.isInitialized()
                 && tracker.wouldTriggerHelpUi(FeatureConstants.CCT_HISTORY_FEATURE));
     }
@@ -116,7 +124,7 @@ public class CustomTabHistoryIphController {
         mAppMenuHandler.clearMenuHighlight();
     }
 
-    ActivityTabTabObserver getTabObserverForTesting() {
+    @Nullable ActivityTabTabObserver getTabObserverForTesting() {
         return mTabObserver;
     }
 

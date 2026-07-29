@@ -21,7 +21,7 @@ namespace blink {
 // static
 PresentationAvailability* PresentationAvailability::Take(
     ExecutionContext* context,
-    const WTF::Vector<KURL>& urls,
+    const Vector<KURL>& urls,
     bool value) {
   PresentationAvailability* presentation_availability =
       MakeGarbageCollected<PresentationAvailability>(context, urls, value);
@@ -31,7 +31,7 @@ PresentationAvailability* PresentationAvailability::Take(
 
 PresentationAvailability::PresentationAvailability(
     ExecutionContext* execution_context,
-    const WTF::Vector<KURL>& urls,
+    const Vector<KURL>& urls,
     bool value)
     : ActiveScriptWrappable<PresentationAvailability>({}),
       ExecutionContextLifecycleStateObserver(execution_context),
@@ -129,18 +129,20 @@ void PresentationAvailability::AddResolver(
 }
 
 void PresentationAvailability::RejectPendingPromises() {
-  for (auto& resolver : availability_resolvers_) {
+  HeapVector<Member<ScriptPromiseResolver<PresentationAvailability>>> resolvers;
+  resolvers.swap(availability_resolvers_);
+  for (auto& resolver : resolvers) {
     resolver->RejectWithDOMException(DOMExceptionCode::kNotSupportedError,
                                      kNotSupportedErrorInfo);
   }
-  availability_resolvers_.clear();
 }
 
 void PresentationAvailability::ResolvePendingPromises() {
-  for (auto& resolver : availability_resolvers_) {
+  HeapVector<Member<ScriptPromiseResolver<PresentationAvailability>>> resolvers;
+  resolvers.swap(availability_resolvers_);
+  for (auto& resolver : resolvers) {
     resolver->Resolve(this);
   }
-  availability_resolvers_.clear();
 }
 
 void PresentationAvailability::Trace(Visitor* visitor) const {

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/autofill/autofill_popup_controller.h"
+
 #include <memory>
 #include <utility>
 
@@ -9,11 +11,11 @@
 #include "build/build_config.h"
 #include "chrome/browser/autofill/autofill_uitest_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/autofill/autofill_popup_controller.h"
 #include "chrome/browser/ui/autofill/autofill_popup_view.h"
 #include "chrome/browser/ui/autofill/autofill_suggestion_controller.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -29,10 +31,10 @@
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/vector2d.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 
 namespace autofill {
 
@@ -67,11 +69,11 @@ class AutofillPopupControllerBrowserTest : public InProcessBrowserTest {
 
     test_api(autofill_manager())
         .SetExternalDelegate(std::make_unique<TestAutofillExternalDelegate>(
-            &autofill_manager(),
-            /*call_parent_methods=*/true));
+            &autofill_manager()));
 
-    disable_animation_ = std::make_unique<ui::ScopedAnimationDurationScaleMode>(
-        ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+    disable_animation_ =
+        std::make_unique<gfx::ScopedAnimationDurationScaleMode>(
+            gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
   }
 
  protected:
@@ -92,7 +94,7 @@ class AutofillPopupControllerBrowserTest : public InProcessBrowserTest {
         autofill_driver().GetAutofillManager());
   }
 
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
 
   TestAutofillExternalDelegate& autofill_external_delegate() {
     return static_cast<TestAutofillExternalDelegate&>(
@@ -101,7 +103,7 @@ class AutofillPopupControllerBrowserTest : public InProcessBrowserTest {
 
  private:
   test::AutofillBrowserTestEnvironment autofill_test_environment_;
-  std::unique_ptr<ui::ScopedAnimationDurationScaleMode> disable_animation_;
+  std::unique_ptr<gfx::ScopedAnimationDurationScaleMode> disable_animation_;
 };
 
 IN_PROC_BROWSER_TEST_F(AutofillPopupControllerBrowserTest,
@@ -110,8 +112,9 @@ IN_PROC_BROWSER_TEST_F(AutofillPopupControllerBrowserTest,
                                         /*expect_popup_to_be_shown=*/true));
 
   // Move the window, which should close the popup.
-  gfx::Rect new_bounds = browser()->window()->GetBounds() - gfx::Vector2d(1, 1);
-  browser()->window()->SetBounds(new_bounds);
+  gfx::Rect new_bounds =
+      browser()->GetWindow()->GetBounds() - gfx::Vector2d(1, 1);
+  browser()->GetWindow()->SetBounds(new_bounds);
 
   autofill_external_delegate().WaitForPopupHidden();
   EXPECT_TRUE(autofill_external_delegate().popup_hidden());
@@ -123,9 +126,9 @@ IN_PROC_BROWSER_TEST_F(AutofillPopupControllerBrowserTest,
                                         /*expect_popup_to_be_shown=*/true));
 
   // Resize the window, which should cause the popup to hide.
-  gfx::Rect new_bounds = browser()->window()->GetBounds();
+  gfx::Rect new_bounds = browser()->GetWindow()->GetBounds();
   new_bounds.Inset(1);
-  browser()->window()->SetBounds(new_bounds);
+  browser()->GetWindow()->SetBounds(new_bounds);
 
   autofill_external_delegate().WaitForPopupHidden();
   EXPECT_TRUE(autofill_external_delegate().popup_hidden());
@@ -136,8 +139,8 @@ IN_PROC_BROWSER_TEST_F(AutofillPopupControllerBrowserTest,
   constexpr float kSize = 100.0f;
   // Set to smallest possible size. The actual minimum size is larger and
   // platform dependent.
-  browser()->window()->SetBounds(gfx::Rect(1, 1));
-  gfx::Rect window_bounds = browser()->window()->GetBounds();
+  browser()->GetWindow()->SetBounds(gfx::Rect(1, 1));
+  gfx::Rect window_bounds = browser()->GetWindow()->GetBounds();
   // Position the popup in the lower right corner so that there is not enough
   // space to display it.
   EXPECT_TRUE(GenerateTestAutofillPopup(
@@ -148,36 +151,38 @@ IN_PROC_BROWSER_TEST_F(AutofillPopupControllerBrowserTest,
 }
 
 // Tests that entering fullscreen hides the popup and, in particular, does not
-// crash (crbug.com/1267047).
+// crash (crbug.com/40204318).
 IN_PROC_BROWSER_TEST_F(AutofillPopupControllerBrowserTest,
                        HidePopupOnWindowEnterFullscreen) {
   EXPECT_TRUE(GenerateTestAutofillPopup(autofill_driver(), profile(),
                                         /*expect_popup_to_be_shown=*/true));
 
   // Enter fullscreen, which should cause the popup to hide.
-  ASSERT_FALSE(browser()->window()->IsFullscreen());
-  content::WebContentsDelegate* wcd = browser();
+  ASSERT_FALSE(browser()->GetWindow()->IsFullscreen());
+  content::WebContentsDelegate* wcd =
+      BrowserWebContentsDelegate::From(browser());
   wcd->EnterFullscreenModeForTab(main_rfh(), {});
-  ASSERT_TRUE(browser()->window()->IsFullscreen());
+  ASSERT_TRUE(browser()->GetWindow()->IsFullscreen());
 
   autofill_external_delegate().WaitForPopupHidden();
   EXPECT_TRUE(autofill_external_delegate().popup_hidden());
 }
 
 // Tests that exiting fullscreen hides the popup and, in particular, does not
-// crash (crbug.com/1267047).
+// crash (crbug.com/40204318).
 IN_PROC_BROWSER_TEST_F(AutofillPopupControllerBrowserTest,
                        HidePopupOnWindowExitFullscreen) {
-  content::WebContentsDelegate* wcd = browser();
+  content::WebContentsDelegate* wcd =
+      BrowserWebContentsDelegate::From(browser());
   wcd->EnterFullscreenModeForTab(main_rfh(), {});
 
   EXPECT_TRUE(GenerateTestAutofillPopup(autofill_driver(), profile(),
                                         /*expect_popup_to_be_shown=*/true));
 
   // Exit fullscreen, which should cause the popup to hide.
-  ASSERT_TRUE(browser()->window()->IsFullscreen());
+  ASSERT_TRUE(browser()->GetWindow()->IsFullscreen());
   wcd->ExitFullscreenModeForTab(web_contents());
-  ASSERT_FALSE(browser()->window()->IsFullscreen());
+  ASSERT_FALSE(browser()->GetWindow()->IsFullscreen());
 
   autofill_external_delegate().WaitForPopupHidden();
   EXPECT_TRUE(autofill_external_delegate().popup_hidden());
@@ -192,20 +197,20 @@ IN_PROC_BROWSER_TEST_F(AutofillPopupControllerBrowserTest,
 
   // Delete the external delegate here so that is gets deleted before popup is
   // hidden. This can happen if the web_contents are destroyed before the popup
-  // is hidden. See http://crbug.com/232475.
+  // is hidden. See http://crbug.com/40077420.
   // To do that, simulate that the RFH is deleted. This causes driver deletion,
   // which deletes the AutofillManager, which deletes the ExternalDelegate.
   ContentAutofillDriverFactory::FromWebContents(web_contents())
       ->RenderFrameDeleted(main_rfh());
 }
 
-// crbug.com/965025
+// crbug.com/40095103
 IN_PROC_BROWSER_TEST_F(AutofillPopupControllerBrowserTest, ResetSelectedLine) {
   EXPECT_TRUE(GenerateTestAutofillPopup(autofill_driver(), profile(),
                                         /*expect_popup_to_be_shown=*/true));
 
   auto* client =
-      autofill::ChromeAutofillClient::FromWebContentsForTesting(web_contents());
+      ChromeAutofillClient::FromWebContentsForTesting(web_contents());
   base::WeakPtr<AutofillSuggestionController> controller =
       client->suggestion_controller_for_testing();
   ASSERT_TRUE(controller);

@@ -18,7 +18,6 @@
 #include "ash/public/cpp/system/anchored_nudge_data.h"
 #include "ash/public/cpp/system/anchored_nudge_manager.h"
 #include "ash/public/cpp/system_tray_client.h"
-#include "ash/public/mojom/input_device_settings.mojom-forward.h"
 #include "ash/public/mojom/input_device_settings.mojom.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/root_window_controller.h"
@@ -30,7 +29,6 @@
 #include "ash/system/input_device_settings/input_device_settings_pref_names.h"
 #include "ash/system/model/system_tray_model.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
@@ -194,10 +192,6 @@ const char kSixPackKeyPageUpRewriteNotificationId[] =
     "page_up_six_pack_rewrite_blocked_by_setting";
 const char kSixPackKeyPageDownRewriteNotificationId[] =
     "page_down_six_pack_rewrite_blocked_by_setting";
-const char kInputDeviceSettingsMousePrefix[] =
-    "peripheral_customization_mouse_";
-const char kInputDeviceSettingsGraphicsTabletPrefix[] =
-    "peripheral_customization_graphics_tablet_";
 const char kWelcomeExperienceNotificationPrefix[] = "welcome_experience";
 const char kDelimiter[] = "_";
 
@@ -270,17 +264,11 @@ std::string GetWelcomeExperienceNotificationId(uint32_t id) {
 }
 
 std::string GetMouseNotificationID(uint32_t id) {
-  if (features::IsWelcomeExperienceEnabled()) {
-    return GetWelcomeExperienceNotificationId(id);
-  }
-  return kInputDeviceSettingsMousePrefix + base::NumberToString(id);
+  return GetWelcomeExperienceNotificationId(id);
 }
 
 std::string GetGraphicsTabletNotificationID(uint32_t id) {
-  if (features::IsWelcomeExperienceEnabled()) {
-    return GetWelcomeExperienceNotificationId(id);
-  }
-  return kInputDeviceSettingsGraphicsTabletPrefix + base::NumberToString(id);
+  return GetWelcomeExperienceNotificationId(id);
 }
 
 // We only display notifications for active user sessions (signed-in/guest with
@@ -302,9 +290,10 @@ bool ShouldBlockNotification() {
   switch (*user_type) {
     case user_manager::UserType::kPublicAccount:
     case user_manager::UserType::kGuest:
-    case user_manager::UserType::kKioskApp:
-    case user_manager::UserType::kWebKioskApp:
+    case user_manager::UserType::kKioskChromeApp:
+    case user_manager::UserType::kKioskWebApp:
     case user_manager::UserType::kKioskIWA:
+    case user_manager::UserType::kKioskArcvmApp:
       return true;
     case user_manager::UserType::kRegular:
     case user_manager::UserType::kChild:
@@ -498,7 +487,7 @@ void ShowPointingStickSettings() {
 }
 
 void OnLearnMoreClicked() {
-  NewWindowDelegate::GetPrimary()->OpenUrl(
+  NewWindowDelegate::GetInstance()->OpenUrl(
       GURL(kKeyboardSettingsLearnMoreLink),
       NewWindowDelegate::OpenUrlFrom::kUserInteraction,
       NewWindowDelegate::Disposition::kNewForegroundTab);
@@ -656,10 +645,8 @@ void InputDeviceSettingsNotificationController::NotifyMouseFirstTimeConnected(
       Shell::Get()->session_controller()->GetActivePrefService();
   CHECK(prefs);
 
-  const char* pref_name = features::IsWelcomeExperienceEnabled()
-                              ? prefs::kWelcomeExperienceNotificationSeen
-                              : prefs::kPeripheralNotificationMiceSeen;
-  if (base::Contains(prefs->GetList(pref_name), mouse.device_key)) {
+  const char* pref_name = prefs::kWelcomeExperienceNotificationSeen;
+  if (prefs->GetList(pref_name).contains(mouse.device_key)) {
     return;
   }
 
@@ -691,10 +678,7 @@ void InputDeviceSettingsNotificationController::
       Shell::Get()->session_controller()->GetActivePrefService();
   CHECK(prefs);
 
-  const char* pref_name =
-      features::IsWelcomeExperienceEnabled()
-          ? prefs::kWelcomeExperienceNotificationSeen
-          : prefs::kPeripheralNotificationGraphicsTabletsSeen;
+  const char* pref_name = prefs::kWelcomeExperienceNotificationSeen;
 
   auto seen_device_list = prefs->GetList(pref_name).Clone();
 
@@ -892,8 +876,8 @@ void InputDeviceSettingsNotificationController::
       Shell::Get()->session_controller()->GetActivePrefService();
   CHECK(prefs);
 
-  if (base::Contains(prefs->GetList(prefs::kWelcomeExperienceNotificationSeen),
-                     keyboard.device_key)) {
+  if (prefs->GetList(prefs::kWelcomeExperienceNotificationSeen)
+          .contains(keyboard.device_key)) {
     return;
   }
 
@@ -920,8 +904,8 @@ void InputDeviceSettingsNotificationController::
       Shell::Get()->session_controller()->GetActivePrefService();
   CHECK(prefs);
 
-  if (base::Contains(prefs->GetList(prefs::kWelcomeExperienceNotificationSeen),
-                     touchpad.device_key)) {
+  if (prefs->GetList(prefs::kWelcomeExperienceNotificationSeen)
+          .contains(touchpad.device_key)) {
     return;
   }
 
@@ -977,8 +961,8 @@ void InputDeviceSettingsNotificationController::
       Shell::Get()->session_controller()->GetActivePrefService();
   CHECK(prefs);
 
-  if (base::Contains(prefs->GetList(prefs::kWelcomeExperienceNotificationSeen),
-                     pointing_stick.device_key)) {
+  if (prefs->GetList(prefs::kWelcomeExperienceNotificationSeen)
+          .contains(pointing_stick.device_key)) {
     return;
   }
 

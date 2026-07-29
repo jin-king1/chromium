@@ -6,7 +6,10 @@
 #define CHROME_BROWSER_UI_WEBUI_ASH_LOGIN_APP_LAUNCH_SPLASH_SCREEN_HANDLER_H_
 
 #include "base/memory/weak_ptr.h"
+#include "base/values.h"
+#include "chrome/browser/ash/login/oobe_screen.h"
 #include "chrome/browser/ui/webui/ash/login/base_screen_handler.h"
+#include "chrome/browser/ui/webui/ash/login/base_webui_handler.h"
 
 namespace ash {
 
@@ -21,6 +24,8 @@ class AppLaunchSplashScreenView {
     kWaitingAppWindow,
     kNetworkWaitTimeout,
     kShowingNetworkConfigureUI,
+    kChromeAppDeprecated,
+    kIsolatedAppNotAllowed
   };
 
   inline constexpr static StaticOobeScreenId kScreenId{"app-launch-splash",
@@ -29,16 +34,15 @@ class AppLaunchSplashScreenView {
   virtual ~AppLaunchSplashScreenView() = default;
 
   // Shows the screen after it's populated with the given `data`.
-  virtual void Show(base::Value::Dict data) = 0;
+  virtual void Show(base::DictValue data) = 0;
 
   // Sets the current app launch state.
   virtual void UpdateAppLaunchText(AppLaunchState state) = 0;
 
-  // Sets whether configure network control is visible.
-  virtual void ToggleNetworkConfig(bool visible) = 0;
+  virtual void HideThrobber() = 0;
 
   // Sets the contents of the screen with the given `data`.
-  virtual void SetAppData(base::Value::Dict data) = 0;
+  virtual void SetAppData(base::DictValue data) = 0;
 
   // Gets a WeakPtr to the instance.
   virtual base::WeakPtr<AppLaunchSplashScreenView> AsWeakPtr() = 0;
@@ -63,10 +67,10 @@ class AppLaunchSplashScreenHandler : public BaseScreenHandler,
       ::login::LocalizedValuesBuilder* builder) override;
 
   // AppLaunchSplashScreenView implementation:
-  void Show(base::Value::Dict data) override;
-  void ToggleNetworkConfig(bool visible) override;
+  void Show(base::DictValue data) override;
   void UpdateAppLaunchText(AppLaunchState state) override;
-  void SetAppData(base::Value::Dict data) override;
+  void HideThrobber() override;
+  void SetAppData(base::DictValue data) override;
 
   // Gets a WeakPtr to the instance.
   base::WeakPtr<AppLaunchSplashScreenView> AsWeakPtr() override;

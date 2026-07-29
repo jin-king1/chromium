@@ -5,7 +5,6 @@
 #ifndef SERVICES_CERT_VERIFIER_CERT_VERIFIER_SERVICE_FACTORY_H_
 #define SERVICES_CERT_VERIFIER_CERT_VERIFIER_SERVICE_FACTORY_H_
 
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -28,6 +27,7 @@
 
 #include "mojo/public/cpp/base/proto_wrapper.h"
 #include "net/cert/internal/trust_store_chrome.h"
+#include "net/cert/root_store_proto_lite/mtc_config.pb.h"
 #endif
 
 namespace cert_verifier {
@@ -68,10 +68,15 @@ class CertVerifierServiceFactoryImpl
   void UpdateCtLogList(std::vector<network::mojom::CTLogInfoPtr> log_list,
                        base::Time update_time,
                        UpdateCtLogListCallback callback) override;
+  void DisableCtEnforcement(DisableCtEnforcementCallback callback) override;
 #endif
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
-  void UpdateChromeRootStore(mojo_base::ProtoWrapper new_root_store,
-                             UpdateChromeRootStoreCallback callback) override;
+  void UpdateChromeRootStore(
+      mojo_base::ProtoWrapper new_root_store,
+      std::optional<mojo_base::ProtoWrapper> new_mtc_config,
+      UpdateChromeRootStoreCallback callback) override;
+  void UpdateMtcMetadata(mojo_base::ProtoWrapper new_mtc_metadata,
+                         UpdateMtcMetadataCallback callback) override;
   // Will not return anchors that are not trusted for the current running
   // version of Chrome.
   void GetChromeRootStoreInfo(GetChromeRootStoreInfoCallback callback) override;
@@ -80,14 +85,21 @@ class CertVerifierServiceFactoryImpl
   void GetPlatformRootStoreInfo(
       GetPlatformRootStoreInfoCallback callback) override;
 #endif
+
+  static std::optional<net::ChromeRootStoreData> ParseChromeRootStoreProto(
+      const mojo_base::ProtoWrapper& new_root_store);
+
+  static std::optional<chrome_root_store::MtcConfig> ParseMtcConfigProto(
+      const std::optional<mojo_base::ProtoWrapper>& new_mtc_config);
 #endif
-  void UpdateNetworkTime(base::Time system_time,
-                         base::TimeTicks system_ticks,
-                         base::Time current_time) override;
 #if BUILDFLAG(CHROME_ROOT_STORE_OPTIONAL)
   void SetUseChromeRootStore(bool use_crs,
                              SetUseChromeRootStoreCallback callback) override;
 #endif
+  void UpdateNetworkTime(base::Time system_time,
+                         base::TimeTicks system_ticks,
+                         base::Time current_time,
+                         base::TimeDelta uncertainty) override;
 
   // Remove a CertVerifyService from needing updates to the Chrome Root Store.
   void RemoveService(internal::CertVerifierServiceImpl* service_impl);
@@ -99,6 +111,8 @@ class CertVerifierServiceFactoryImpl
   base::WeakPtr<CertVerifierServiceFactoryImpl> GetWeakPtr();
 
  private:
+  void InitializeRootStoreDataIfNecessary();
+
   // Update all the `verifier_services_` with the current data.
   void UpdateVerifierServices();
 

@@ -10,9 +10,11 @@
 #include <unistd.h>
 
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "base/base_paths.h"
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/files/file_descriptor_watcher_posix.h"
@@ -25,14 +27,15 @@
 #include "base/posix/eintr_wrapper.h"
 #include "base/process/launch.h"
 #include "base/process/process.h"
-#include "base/strings/stringprintf.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/linux/ipc_constants.h"
 #include "chrome/updater/updater_branding.h"
 #include "chrome/updater/util/posix_util.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 
 namespace updater {
+
 // Allows the utility functions below to join processes. To avoid overzealously
 // granting access to |base::ScopedAllowBaseSyncPrimitives|, this class must
 // continue to live in a `.cc`.
@@ -40,13 +43,19 @@ class [[maybe_unused, nodiscard]] SystemctlLauncherScopedAllowBaseSyncPrimitives
     : public base::ScopedAllowBaseSyncPrimitives {};
 
 namespace {
+
 // Location of system-scoped unit files.
-const base::FilePath kSystemUnitDirectory("/etc/systemd/system");
+const base::FilePath::StringViewType kSystemUnitDirectory(
+    "/etc/systemd/system");
+
 // Location of user-scoped unit files relative to the user's home directory.
-const base::FilePath kUserUnitRelativeDirectory(".local/share/systemd/user");
+const base::FilePath::StringViewType kUserUnitRelativeDirectory(
+    ".local/share/systemd/user");
+
 // Systemd unit names.
 constexpr char kUpdaterServiceName[] = PRODUCT_FULLNAME_STRING ".service";
 constexpr char kUpdaterSocketName[] = PRODUCT_FULLNAME_STRING ".socket";
+
 // Systemd unit definition templates.
 constexpr char kUpdaterServiceDefinitionTemplate[] =
     "[Service]\n"
@@ -194,12 +203,12 @@ bool InstallSystemdUnits(UpdaterScope scope) {
 
   if (!InstallSystemdUnit(
           unit_dir->Append(kUpdaterServiceName),
-          base::StringPrintf(
+          absl::StrFormat(
               kUpdaterServiceDefinitionTemplate,
               GetLauncherCommandLine(scope, *launcher_path).c_str())) ||
       !InstallSystemdUnit(
           unit_dir->Append(kUpdaterSocketName),
-          base::StringPrintf(
+          absl::StrFormat(
               kUpdaterSocketDefinitionTemplate,
               GetActivationSocketPath(scope).AsUTF8Unsafe().c_str()))) {
     // Avoid a partial installation.

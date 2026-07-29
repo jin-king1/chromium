@@ -11,8 +11,10 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.chrome.browser.hub.HubPaneHostProperties.COLOR_SCHEME;
+import static org.chromium.chrome.browser.hub.HubColorMixer.COLOR_MIXER;
 import static org.chromium.chrome.browser.hub.HubPaneHostProperties.PANE_ROOT_VIEW;
+import static org.chromium.chrome.browser.hub.HubPaneHostProperties.SLIDE_ANIMATE_LEFT_TO_RIGHT;
+import static org.chromium.chrome.browser.hub.HubPaneHostProperties.SNACKBAR_CONTAINER_CALLBACK;
 
 import android.view.ViewGroup;
 
@@ -25,35 +27,42 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.shadows.ShadowLooper;
 
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
+import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.modelutil.PropertyObservable;
 
 /** Tests for {@link HubPaneHostMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class HubPaneHostMediatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
+    private final PaneOrderController mPaneOrderController = new DefaultPaneOrderController();
+
     private @Mock Pane mPane;
     private @Mock Pane mIncognitoPane;
-    private @Mock PaneManager mPaneManager;
-    private @Mock FullButtonData mButtonData;
     private @Mock ViewGroup mRootView;
+    private @Mock ViewGroup mSnackbarContainer;
+    private @Mock HubColorMixer mColorMixer;
 
-    private ObservableSupplierImpl<Pane> mPaneSupplier;
+    private final SettableMonotonicObservableSupplier<Pane> mPaneSupplier =
+            ObservableSuppliers.createMonotonic();
+
     private PropertyModel mModel;
 
     @Before
     public void setUp() {
-        mPaneSupplier = new ObservableSupplierImpl<>();
-        mModel = new PropertyModel.Builder(HubPaneHostProperties.ALL_KEYS).build();
+        mModel =
+                new PropertyModel.Builder(HubPaneHostProperties.ALL_KEYS)
+                        .with(COLOR_MIXER, mColorMixer)
+                        .build();
+        mModel.addObserver(this::onPropertyChange);
 
         when(mPane.getRootView()).thenReturn(mRootView);
-
-        when(mPaneManager.getPaneForId(PaneId.TAB_SWITCHER)).thenReturn(mPane);
-        when(mPaneManager.getPaneForId(PaneId.INCOGNITO_TAB_SWITCHER)).thenReturn(mIncognitoPane);
 
         when(mPane.getPaneId()).thenReturn(PaneId.TAB_SWITCHER);
         when(mPane.getColorScheme()).thenReturn(HubColorScheme.DEFAULT);
@@ -61,12 +70,23 @@ public class HubPaneHostMediatorUnitTest {
         when(mIncognitoPane.getColorScheme()).thenReturn(HubColorScheme.INCOGNITO);
     }
 
+    private void onPropertyChange(PropertyObservable<PropertyKey> model, PropertyKey key) {
+        if (key == SNACKBAR_CONTAINER_CALLBACK) {
+            mModel.get(SNACKBAR_CONTAINER_CALLBACK).onResult(mSnackbarContainer);
+        }
+    }
+
     @Test
     @SmallTest
     public void testDestroy() {
         mPaneSupplier.set(mPane);
-        HubPaneHostMediator mediator = new HubPaneHostMediator(mModel, mPaneSupplier);
-        ShadowLooper.idleMainLooper();
+        HubPaneHostMediator mediator =
+                new HubPaneHostMediator(
+                        mModel,
+                        mPaneSupplier,
+                        mPaneOrderController,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        RobolectricUtil.runAllBackgroundAndUi();
         assertNotNull(mModel.get(PANE_ROOT_VIEW));
         assertTrue(mPaneSupplier.hasObservers());
 
@@ -78,14 +98,72 @@ public class HubPaneHostMediatorUnitTest {
     @Test
     @SmallTest
     public void testRootView() {
-        new HubPaneHostMediator(mModel, mPaneSupplier);
+        new HubPaneHostMediator(
+                mModel,
+                mPaneSupplier,
+                mPaneOrderController,
+                /* defaultPaneId= */ PaneId.TAB_SWITCHER);
         assertNull(mModel.get(PANE_ROOT_VIEW));
 
         mPaneSupplier.set(mPane);
         assertEquals(mRootView, mModel.get(PANE_ROOT_VIEW));
+    }
 
-        mPaneSupplier.set(null);
-        assertNull(mModel.get(PANE_ROOT_VIEW));
+    @Test
+    @SmallTest
+    public void testSlideAnimationDirection_NewPaneToTheRight() {
+        // ORDER: PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER
+        new HubPaneHostMediator(
+                mModel,
+                mPaneSupplier,
+                mPaneOrderController,
+                /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        RobolectricUtil.runAllBackgroundAndUi();
+        mPaneSupplier.set(mPane);
+
+        mPaneSupplier.set(mIncognitoPane);
+
+        // PaneId.TAB_SWITCHER -> PaneId.INCOGNITO_TAB_SWITCHER
+        assertFalse(mModel.get(SLIDE_ANIMATE_LEFT_TO_RIGHT));
+    }
+
+    @Test
+    @SmallTest
+    public void testSlideAnimationDirection_NewPaneToTheLeft() {
+        // ORDER: PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER
+        new HubPaneHostMediator(
+                mModel,
+                mPaneSupplier,
+                mPaneOrderController,
+                /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        RobolectricUtil.runAllBackgroundAndUi();
+        mPaneSupplier.set(mIncognitoPane);
+
+        mPaneSupplier.set(mPane);
+
+        // PaneId.TAB_SWITCHER <- PaneId.INCOGNITO_TAB_SWITCHER
+        assertTrue(mModel.get(SLIDE_ANIMATE_LEFT_TO_RIGHT));
+    }
+
+    @Test
+    @SmallTest
+    public void testSlideAnimationDirection_multiplePaneChanges() {
+        // ORDER: PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER
+        new HubPaneHostMediator(
+                mModel,
+                mPaneSupplier,
+                mPaneOrderController,
+                /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        RobolectricUtil.runAllBackgroundAndUi();
+        mPaneSupplier.set(mPane);
+
+        mPaneSupplier.set(mIncognitoPane);
+        // PaneId.TAB_SWITCHER -> PaneId.INCOGNITO_TAB_SWITCHER
+        assertFalse(mModel.get(SLIDE_ANIMATE_LEFT_TO_RIGHT));
+
+        mPaneSupplier.set(mPane);
+        // PaneId.TAB_SWITCHER <- PaneId.INCOGNITO_TAB_SWITCHER
+        assertTrue(mModel.get(SLIDE_ANIMATE_LEFT_TO_RIGHT));
     }
 
     @Test
@@ -93,28 +171,12 @@ public class HubPaneHostMediatorUnitTest {
     public void testRootView_paneAlreadySet() {
         mPaneSupplier.set(mPane);
 
-        new HubPaneHostMediator(mModel, mPaneSupplier);
-        ShadowLooper.idleMainLooper();
+        new HubPaneHostMediator(
+                mModel,
+                mPaneSupplier,
+                mPaneOrderController,
+                /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        RobolectricUtil.runAllBackgroundAndUi();
         assertEquals(mRootView, mModel.get(PANE_ROOT_VIEW));
-    }
-
-    @Test
-    @SmallTest
-    public void testHubColorScheme() {
-        new HubPaneHostMediator(mModel, mPaneSupplier);
-        mPaneSupplier.set(mPane);
-        assertEquals(
-                new HubColorSchemeUpdate(HubColorScheme.DEFAULT, HubColorScheme.DEFAULT),
-                mModel.get(COLOR_SCHEME));
-
-        mPaneSupplier.set(mIncognitoPane);
-        assertEquals(
-                new HubColorSchemeUpdate(HubColorScheme.INCOGNITO, HubColorScheme.DEFAULT),
-                mModel.get(COLOR_SCHEME));
-
-        mPaneSupplier.set(null);
-        assertEquals(
-                new HubColorSchemeUpdate(HubColorScheme.DEFAULT, HubColorScheme.INCOGNITO),
-                mModel.get(COLOR_SCHEME));
     }
 }

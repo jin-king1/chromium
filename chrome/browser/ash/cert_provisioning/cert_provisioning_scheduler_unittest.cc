@@ -4,7 +4,7 @@
 
 #include "chrome/browser/ash/cert_provisioning/cert_provisioning_scheduler.h"
 
-#include "base/containers/contains.h"
+#include "ash/constants/ash_pref_names.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/test/values_test_util.h"
@@ -16,11 +16,10 @@
 #include "chrome/browser/ash/cert_provisioning/mock_cert_provisioning_worker.h"
 #include "chrome/browser/ash/platform_keys/mock_platform_keys_service.h"
 #include "chrome/browser/ash/platform_keys/platform_keys_service.h"
-#include "chrome/browser/chromeos/platform_keys/platform_keys.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/dbus/attestation/fake_attestation_client.h"
 #include "chromeos/ash/components/dbus/attestation/interface.pb.h"
 #include "chromeos/ash/components/network/network_state_test_helper.h"
+#include "chromeos/ash/components/platform_keys/platform_keys.h"
 #include "components/prefs/testing_pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -32,15 +31,13 @@ using testing::_;
 using testing::AtLeast;
 using testing::ByMove;
 using testing::Exactly;
-using testing::Invoke;
 using testing::Mock;
 using testing::Return;
 using testing::ReturnRef;
 using testing::SaveArg;
 using testing::StrictMock;
 
-namespace ash {
-namespace cert_provisioning {
+namespace ash::cert_provisioning {
 namespace {
 
 constexpr char kWifiServiceGuid[] = "wifi_guid";
@@ -317,8 +314,7 @@ TEST_F(CertProvisioningSchedulerTest, WorkerFailed) {
   // Failed worker should be deleted, failed profile ID is saved, no new
   // workers should be created.
   EXPECT_EQ(scheduler.GetWorkers().size(), 0U);
-  EXPECT_TRUE(
-      base::Contains(scheduler.GetFailedCertProfileIds(), kCertProfileId));
+  EXPECT_TRUE(scheduler.GetFailedCertProfileIds().contains(kCertProfileId));
 
   certificate_helper_->AddCert(kCertScope, kCertProfileId);
 
@@ -363,8 +359,7 @@ TEST_F(CertProvisioningSchedulerTest, InitialAndDailyUpdates) {
                               CertProvisioningWorkerState::kFailed);
 
   ASSERT_EQ(scheduler.GetWorkers().size(), 0U);
-  EXPECT_TRUE(
-      base::Contains(scheduler.GetFailedCertProfileIds(), kCertProfileId));
+  EXPECT_TRUE(scheduler.GetFailedCertProfileIds().contains(kCertProfileId));
 
   // No workers should be created yet.
   FastForwardBy(base::Hours(20));
@@ -480,8 +475,7 @@ TEST_F(CertProvisioningSchedulerTest, MultipleWorkers) {
                               CertProvisioningWorkerState::kFailed);
 
   EXPECT_EQ(scheduler.GetWorkers().size(), 1U);
-  EXPECT_TRUE(
-      base::Contains(scheduler.GetFailedCertProfileIds(), kCertProfileId2));
+  EXPECT_TRUE(scheduler.GetFailedCertProfileIds().contains(kCertProfileId2));
 
   certificate_helper_->AddCert(kCertScope, kCertProfileId0);
 
@@ -489,8 +483,7 @@ TEST_F(CertProvisioningSchedulerTest, MultipleWorkers) {
   scheduler.UpdateAllWorkers();
 
   EXPECT_EQ(scheduler.GetWorkers().size(), 1U);
-  EXPECT_TRUE(
-      base::Contains(scheduler.GetFailedCertProfileIds(), kCertProfileId2));
+  EXPECT_TRUE(scheduler.GetFailedCertProfileIds().contains(kCertProfileId2));
 
   // Check one more time that scheduler doesn't create new workers for failed
   // certificate profiles (the factory will fail on an attempt to do so).
@@ -543,11 +536,10 @@ TEST_F(CertProvisioningSchedulerTest, DeserializeWorkers) {
             "profile_id": "cert_profile_1"
           },
           "cert_scope": 0,
-          "invalidation_topic": "",
           "public_key": "fake_public_key_1",
           "state": 1
         })");
-  base::Value::Dict all_saved_workers;
+  base::DictValue all_saved_workers;
   all_saved_workers.Set("cert_profile_1", saved_worker.Clone());
 
   pref_service_.SetDict(GetPrefNameForSerialization(kCertScope),
@@ -570,6 +562,62 @@ TEST_F(CertProvisioningSchedulerTest, DeserializeWorkers) {
   // Now one worker should be created.
   FastForwardBy(base::Seconds(1));
   ASSERT_EQ(scheduler.GetWorkers().size(), 1U);
+}
+
+// Test that the scheduler removes deserialized workers if the cert for them
+// already exists.
+TEST_F(CertProvisioningSchedulerTest, DeserializeWorkerForExistingCert) {
+  const CertScope kCertScope = CertScope::kUser;
+
+  CertProfile cert_profile(kCertProfileId, kCertProfileName,
+                           kCertProfileVersion, KeyType::kRsa,
+                           /*is_va_enabled=*/true, kCertProfileRenewalPeriod,
+                           ProtocolVersion::kStatic);
+
+  // Add 1 certificate profile to the policy (the values are the same as
+  // in |cert_profile|).
+  base::Value cert_profiles = ParseJson(
+      R"([{"name": "Certificate Profile 1",
+           "cert_profile_id":"cert_profile_id_1",
+           "policy_version": "cert_profile_version_1",
+           "key_algorithm":"rsa"}])");
+  pref_service_.Set(GetPrefNameForCertProfiles(kCertScope), cert_profiles);
+  // Add 1 serialized worker for the profile.
+  base::Value saved_worker = ParseJson(
+      R"({
+          "cert_profile": {
+            "policy_version": "cert_profile_version_1",
+            "profile_id": "cert_profile_1"
+          },
+          "cert_scope": 0,
+          "public_key": "fake_public_key_1",
+          "state": 1
+        })");
+  base::DictValue all_saved_workers;
+  all_saved_workers.Set("cert_profile_1", saved_worker.Clone());
+
+  pref_service_.SetDict(GetPrefNameForSerialization(kCertScope),
+                        std::move(all_saved_workers));
+
+  MockCertProvisioningWorker* worker =
+      mock_factory_.ExpectDeserializeReturnMock(kCertScope, saved_worker);
+  worker->SetExpectations(/*do_step_times=*/Exactly(0),
+                          /*is_waiting=*/true, kCertProvId, cert_profile,
+                          /*failure_message=*/"");
+  EXPECT_CALL(*worker, Stop(CertProvisioningWorkerState::kSucceeded));
+
+  // Add an existing cert for the profile id.
+  certificate_helper_->AddCert(kCertScope, kCertProfileId);
+
+  CertProvisioningSchedulerImpl scheduler(
+      kCertScope, GetProfile(), &pref_service_,
+      std::make_unique<MockCertProvisioningClient>(), &platform_keys_service_,
+      network_state_test_helper_.network_state_handler(),
+      MakeFakeInvalidationFactory());
+
+  // Give the scheduler some time to process the worker. The expectations will
+  // be verified at the end of the test.
+  FastForwardBy(base::Seconds(1));
 }
 
 TEST_F(CertProvisioningSchedulerTest, InconsistentDataErrorHandling) {
@@ -815,11 +863,10 @@ TEST_F(CertProvisioningSchedulerTest, DeleteVaKeysOnIdle) {
             "profile_id": "cert_profile_1"
           },
           "cert_scope": 0,
-          "invalidation_topic": "",
           "public_key": "fake_public_key_1",
           "state": 1
         })");
-    base::Value::Dict all_saved_workers;
+    base::DictValue all_saved_workers;
     all_saved_workers.Set("cert_profile_1", saved_worker.Clone());
 
     pref_service_.SetDict(GetPrefNameForSerialization(kCertScope),
@@ -1018,7 +1065,7 @@ TEST_F(CertProvisioningSchedulerTest, PlatformKeysServiceShutDown) {
            "cert_profile_id":"cert_profile_id_1",
            "policy_version":"cert_profile_version_1",
            "key_algorithm":"rsa" }])");
-  pref_service_.Set(prefs::kRequiredClientCertificateForDevice, config);
+  pref_service_.Set(ash::prefs::kRequiredClientCertificateForDevice, config);
 
   // Same as in the policy.
   CertProfile cert_profile{kCertProfileId,          kCertProfileName,
@@ -1134,8 +1181,7 @@ TEST_F(CertProvisioningSchedulerTest, StateChangeNotifications) {
   observer.WaitForOneCall();
 
   EXPECT_EQ(scheduler.GetWorkers().size(), 0U);
-  EXPECT_TRUE(
-      base::Contains(scheduler.GetFailedCertProfileIds(), kCertProfileId1));
+  EXPECT_TRUE(scheduler.GetFailedCertProfileIds().contains(kCertProfileId1));
 }
 
 TEST_F(CertProvisioningSchedulerTest, HoldBackNotifications) {
@@ -1236,11 +1282,6 @@ TEST_F(CertProvisioningSchedulerTest, ResetOneWorker) {
   // From CertProvisioningScheduler::CleanVaKeysIfIdle.
   VerifyDeleteKeysByPrefixCalledOnce(kCertScope);
 
-  // There is no policies yet, |kCertProfileId| will not be found.
-  scheduler.UpdateOneWorker(kCertProfileId);
-  FastForwardBy(base::Seconds(1));
-  ASSERT_TRUE(scheduler.GetWorkers().empty());
-
   MockCertProvisioningWorker* worker =
       mock_factory_.ExpectCreateReturnMock(kCertScope, cert_profile);
   worker->SetExpectations(/*do_step_times=*/Exactly(1),
@@ -1270,6 +1311,127 @@ TEST_F(CertProvisioningSchedulerTest, ResetOneWorker) {
     ASSERT_EQ(scheduler.GetWorkers().size(), 1U);
   }
 }
+
+TEST_F(CertProvisioningSchedulerTest, PolicyChangeClearsFailedWorkers) {
+  const CertScope kCertScope = CertScope::kUser;
+
+  CertProfile cert_profile(kCertProfileId, kCertProfileName,
+                           kCertProfileVersion, KeyType::kRsa,
+                           /*is_va_enabled=*/true, kCertProfileRenewalPeriod,
+                           ProtocolVersion::kStatic);
+
+  // Add 1 certificate profile to the policy (the values are the same as
+  // in |cert_profile|).
+  base::Value config = ParseJson(
+      R"([{"name": "Certificate Profile 1",
+           "cert_profile_id":"cert_profile_id_1",
+           "policy_version":"cert_profile_version_1",
+           "key_algorithm":"rsa"}])");
+  pref_service_.Set(GetPrefNameForCertProfiles(kCertScope), config);
+
+  CertProvisioningSchedulerImpl scheduler(
+      kCertScope, GetProfile(), &pref_service_,
+      std::make_unique<MockCertProvisioningClient>(), &platform_keys_service_,
+      network_state_test_helper_.network_state_handler(),
+      MakeFakeInvalidationFactory());
+
+  TestCertProvisioningSchedulerObserver observer;
+  auto subscription = scheduler.AddObserver(observer.GetCallback());
+
+  // Now one worker should be created.
+  MockCertProvisioningWorker* worker =
+      mock_factory_.ExpectCreateReturnMock(kCertScope, cert_profile);
+  worker->SetExpectations(/*do_step_times=*/AtLeast(1), /*is_waiting=*/false,
+                          kCertProvId0, cert_profile, /*failure_message=*/"");
+  FastForwardBy(base::Seconds(1));
+  ASSERT_EQ(scheduler.GetWorkers().size(), 1U);
+
+  // Emulate callback from the worker.
+  scheduler.OnProfileFinished(cert_profile, kCertProvId0,
+                              CertProvisioningWorkerState::kFailed);
+
+  ASSERT_EQ(scheduler.GetWorkers().size(), 0U);
+  ASSERT_TRUE(scheduler.GetFailedCertProfileIds().contains(kCertProfileId));
+  ASSERT_EQ(observer.ReadAndResetCallCount(), 1U);
+
+  // Change the policy to the empty one, the failed worker should be cleared.
+  base::Value empty_config = ParseJson("[]");
+  pref_service_.Set(GetPrefNameForCertProfiles(kCertScope), empty_config);
+  FastForwardBy(base::Seconds(1));
+
+  ASSERT_EQ(scheduler.GetWorkers().size(), 0U);
+  ASSERT_EQ(scheduler.GetFailedCertProfileIds().size(), 0U);
+  ASSERT_EQ(observer.ReadAndResetCallCount(), 1U);
+}
+
+TEST_F(CertProvisioningSchedulerTest, PolicyUpdateRestartsFailedWorkers) {
+  const CertScope kCertScope = CertScope::kUser;
+  const char kCertProfileVersion2[] = "cert_profile_version_2";
+
+  CertProfile cert_profile(kCertProfileId, kCertProfileName,
+                           kCertProfileVersion, KeyType::kRsa,
+                           /*is_va_enabled=*/true, kCertProfileRenewalPeriod,
+                           ProtocolVersion::kStatic);
+
+  // Add 1 certificate profile to the policy (the values are the same as
+  // in |cert_profile|).
+  base::Value config = ParseJson(
+      R"([{"name": "Certificate Profile 1",
+           "cert_profile_id":"cert_profile_id_1",
+           "policy_version":"cert_profile_version_1",
+           "key_algorithm":"rsa"}])");
+  pref_service_.Set(GetPrefNameForCertProfiles(kCertScope), config);
+
+  CertProvisioningSchedulerImpl scheduler(
+      kCertScope, GetProfile(), &pref_service_,
+      std::make_unique<MockCertProvisioningClient>(), &platform_keys_service_,
+      network_state_test_helper_.network_state_handler(),
+      MakeFakeInvalidationFactory());
+
+  TestCertProvisioningSchedulerObserver observer;
+  auto subscription = scheduler.AddObserver(observer.GetCallback());
+
+  // Now one worker should be created.
+  MockCertProvisioningWorker* worker =
+      mock_factory_.ExpectCreateReturnMock(kCertScope, cert_profile);
+  worker->SetExpectations(/*do_step_times=*/AtLeast(1), /*is_waiting=*/false,
+                          kCertProvId0, cert_profile, /*failure_message=*/"");
+  FastForwardBy(base::Seconds(1));
+  ASSERT_EQ(scheduler.GetWorkers().size(), 1U);
+
+  // Emulate callback from the worker.
+  scheduler.OnProfileFinished(cert_profile, kCertProvId0,
+                              CertProvisioningWorkerState::kFailed);
+
+  ASSERT_EQ(scheduler.GetWorkers().size(), 0U);
+  ASSERT_TRUE(scheduler.GetFailedCertProfileIds().contains(kCertProfileId));
+  ASSERT_EQ(observer.ReadAndResetCallCount(), 1U);
+
+  CertProfile updated_cert_profile(
+      kCertProfileId, kCertProfileName, kCertProfileVersion2, KeyType::kEc,
+      /*is_va_enabled=*/true, kCertProfileRenewalPeriod,
+      ProtocolVersion::kStatic);
+  // One worker should be created when the policy changes.
+  MockCertProvisioningWorker* worker2 =
+      mock_factory_.ExpectCreateReturnMock(kCertScope, updated_cert_profile);
+  worker2->SetExpectations(/*do_step_times=*/AtLeast(1), /*is_waiting=*/false,
+                           kCertProvId0, updated_cert_profile,
+                           /*failure_message=*/"");
+
+  // Change the key type in the policy, the failed worker should be re-created
+  // with the new key type.
+  base::Value updated_config = ParseJson(
+      R"([{"name": "Certificate Profile 1",
+           "cert_profile_id":"cert_profile_id_1",
+           "policy_version":"cert_profile_version_2",
+           "key_algorithm":"ec"}])");
+  pref_service_.Set(GetPrefNameForCertProfiles(kCertScope), updated_config);
+  FastForwardBy(base::Seconds(1));
+
+  ASSERT_TRUE(scheduler.GetWorkers().contains(kCertProfileId));
+  ASSERT_EQ(scheduler.GetFailedCertProfileIds().size(), 0U);
+  ASSERT_GE(observer.ReadAndResetCallCount(), 1U);
+}
+
 }  // namespace
-}  // namespace cert_provisioning
-}  // namespace ash
+}  // namespace ash::cert_provisioning

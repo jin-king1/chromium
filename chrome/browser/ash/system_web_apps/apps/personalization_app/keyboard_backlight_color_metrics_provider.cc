@@ -11,8 +11,13 @@
 #include "ash/system/keyboard_brightness/keyboard_backlight_color_controller.h"
 #include "ash/webui/personalization_app/mojom/personalization_app.mojom-shared.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/stringprintf.h"
 
 using DisplayType = ash::KeyboardBacklightColorController::DisplayType;
+
+constexpr char
+    kPersonalizationKeyboardBacklightDisplayTypeSettledHistogramName[] =
+        "Ash.Personalization.KeyboardBacklight.DisplayType.Settled";
 
 KeyboardBacklightColorMetricsProvider::KeyboardBacklightColorMetricsProvider() =
     default;
@@ -40,16 +45,10 @@ void KeyboardBacklightColorMetricsProvider::ProvideCurrentSessionData(
       base::UmaHistogramEnumeration(
           kPersonalizationKeyboardBacklightDisplayTypeSettledHistogramName,
           DisplayType::kStatic);
-      auto backlight_color =
-          keyboard_backlight_color_controller->GetBacklightColor(account_id);
-      base::UmaHistogramEnumeration(
-          kPersonalizationKeyboardBacklightColorSettledHistogramName,
-          backlight_color);
       return;
     }
     case DisplayType::kMultiZone: {
-      if (!ash::features::IsMultiZoneRgbKeyboardEnabled() ||
-          ash::Shell::Get()->rgb_keyboard_manager()->GetZoneCount() <= 1) {
+      if (ash::Shell::Get()->rgb_keyboard_manager()->GetZoneCount() <= 1) {
         return;
       }
       base::UmaHistogramEnumeration(

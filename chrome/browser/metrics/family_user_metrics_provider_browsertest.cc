@@ -11,18 +11,15 @@
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/ash/login/test/guest_session_mixin.h"
 #include "chrome/browser/ash/login/test/logged_in_user_mixin.h"
-#include "chrome/browser/ash/login/test/scoped_policy_update.h"
 #include "chrome/browser/ash/login/test/user_policy_mixin.h"
 #include "chrome/browser/ash/policy/test_support/embedded_policy_test_server_mixin.h"
-#include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
-#include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
-#include "chromeos/ash/components/settings/cros_settings_names.h"
+#include "chromeos/ash/components/policy/device_policy/cached_device_policy_updater.h"
 #include "components/account_id/account_id.h"
 #include "components/metrics/metrics_service.h"
 #include "components/signin/public/identity_manager/account_info.h"
@@ -111,12 +108,12 @@ IN_PROC_BROWSER_TEST_P(FamilyUserMetricsProviderTest, UserCategory) {
 
   logged_in_user_mixin_.LogInUser();
   signin::WaitForRefreshTokensLoaded(
-      IdentityManagerFactory::GetForProfile(browser()->profile()));
+      IdentityManagerFactory::GetForProfile(browser()->GetProfile()));
 
   if (GetFamilyUserLogSegment() ==
       FamilyUserMetricsProvider::FamilyUserLogSegment::kSupervisedStudent) {
     // Add a secondary EDU account.
-    Profile* profile = browser()->profile();
+    Profile* profile = browser()->GetProfile();
     ASSERT_TRUE(profile);
     signin::IdentityManager* identity_manager =
         IdentityManagerFactory::GetForProfile(profile);
@@ -160,8 +157,8 @@ class FamilyUserMetricsProviderGuestModeTest
   ash::GuestSessionMixin guest_session_mixin_{&mixin_host_};
 };
 
-// Prevents a regression to crbug/1137352. Also tests secondary account metrics
-// not reported in guest mode.
+// Prevents a regression to crbug.com/40152633. Also tests secondary account
+// metrics not reported in guest mode.
 IN_PROC_BROWSER_TEST_F(FamilyUserMetricsProviderGuestModeTest,
                        NoCrashInGuestMode) {
   base::HistogramTester histogram_tester;
@@ -185,16 +182,13 @@ class FamilyUserMetricsProviderEphemeralUserTest
   // MixinBasedInProcessBrowserTest:
   void SetUpInProcessBrowserTestFixture() override {
     MixinBasedInProcessBrowserTest::SetUpInProcessBrowserTestFixture();
-    std::unique_ptr<ash::ScopedDevicePolicyUpdate> device_policy_update =
-        device_state_.RequestDevicePolicyUpdate();
-    device_policy_update->policy_payload()
-        ->mutable_ephemeral_users_enabled()
+    policy::CachedDevicePolicyUpdater updater;
+    updater.payload()
+        .mutable_ephemeral_users_enabled()
         ->set_ephemeral_users_enabled(true);
-
-    device_policy_update.reset();
-
-    scoped_testing_cros_settings_.device_settings()->SetBoolean(
-        ash::kReportDeviceLoginLogout, false);
+    updater.payload().mutable_device_reporting()->set_report_login_logout(
+        false);
+    updater.Commit();
   }
 
   // MixinBasedInProcessBrowserTest:
@@ -202,7 +196,7 @@ class FamilyUserMetricsProviderEphemeralUserTest
     MixinBasedInProcessBrowserTest::SetUpOnMainThread();
     logged_in_user_mixin_.LogInUser();
     signin::WaitForRefreshTokensLoaded(
-        IdentityManagerFactory::GetForProfile(browser()->profile()));
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile()));
   }
 
   ash::DeviceStateMixin device_state_{
@@ -212,8 +206,6 @@ class FamilyUserMetricsProviderEphemeralUserTest
   ash::LoggedInUserMixin logged_in_user_mixin_{
       &mixin_host_, /*test_base=*/this, embedded_test_server(),
       ash::LoggedInUserMixin::LogInType::kConsumer};
-
-  ash::ScopedTestingCrosSettings scoped_testing_cros_settings_;
 };
 
 // Tests that regular ephemeral users report 0 for number of secondary accounts.

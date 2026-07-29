@@ -6,6 +6,7 @@
 #define UI_VIEWS_WIDGET_DESKTOP_AURA_DESKTOP_WINDOW_TREE_HOST_H_
 
 #include <memory>
+#include <set>
 #include <string>
 
 #include "ui/aura/window_event_dispatcher.h"
@@ -48,6 +49,9 @@ class DesktopNativeWidgetAura;
 
 class VIEWS_EXPORT DesktopWindowTreeHost {
  public:
+  using WindowTreeHosts =
+      std::set<raw_ptr<aura::WindowTreeHost, SetExperimental>>;
+
   virtual ~DesktopWindowTreeHost() = default;
 
   static DesktopWindowTreeHost* Create(
@@ -89,6 +93,9 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
   virtual void CloseNow() = 0;
 
   virtual aura::WindowTreeHost* AsWindowTreeHost() = 0;
+
+  // Gets all the owned WindowTreeHosts of this host.
+  virtual WindowTreeHosts GetOwnedWindowTreeHosts();
 
   // There are two distinct ways for DesktopWindowTreeHosts's to be shown:
   // 1. This function is called. As this function is specific to
@@ -165,7 +172,7 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
 
   virtual void SetVisibilityChangedAnimationsEnabled(bool value) = 0;
 
-  virtual std::unique_ptr<NonClientFrameView> CreateNonClientFrameView() = 0;
+  virtual std::unique_ptr<FrameView> CreateFrameView() = 0;
 
   // Determines whether the window should use native title bar and borders.
   virtual bool ShouldUseNativeFrame() const = 0;
@@ -182,6 +189,8 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
   virtual bool IsFullscreen() const = 0;
 
   virtual void SetOpacity(float opacity) = 0;
+
+  virtual void SetBackgroundColor(SkColor background_color) = 0;
 
   // See NativeWidgetPrivate::SetAspectRatio for more information about what
   // `excluded_margin` does.
@@ -222,8 +231,17 @@ class VIEWS_EXPORT DesktopWindowTreeHost {
   virtual void SetAllowScreenshots(bool allow) = 0;
   virtual bool AreScreenshotsAllowed() = 0;
 
+#if BUILDFLAG(IS_WIN)
+  // Exclude this window from screen capture.
+  virtual void SetExcludeFromScreenCapture(bool exclude) {}
+#endif
+
   // Updates window shape by clipping the canvas before paint starts.
   virtual void UpdateWindowShapeIfNeeded(const ui::PaintContext& context);
+
+  // A lifecycle hook invoked when the views::Widget associated with this window
+  // tree host was destroyed by the client.
+  virtual void ClientDestroyedWidget();
 
   virtual DesktopNativeCursorManager* GetSingletonDesktopNativeCursorManager();
 };

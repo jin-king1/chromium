@@ -11,6 +11,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "ash/public/cpp/test/shell_test_api.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -19,7 +20,6 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_command_line.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/login/screen_manager.h"
 #include "chrome/browser/ash/login/test/auth_ui_utils.h"
@@ -33,6 +33,7 @@
 #include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/ash/policy/test_support/embedded_policy_test_server_mixin.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/webui/ash/login/cryptohome_recovery_setup_screen_handler.h"
@@ -40,10 +41,11 @@
 #include "chrome/browser/ui/webui/ash/login/local_password_setup_handler.h"
 #include "chrome/browser/ui/webui/ash/login/password_selection_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/pin_setup_screen_handler.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/cryptohome/constants.h"
 #include "chromeos/ash/components/dbus/userdataauth/fake_userdataauth_client.h"
 #include "chromeos/ash/components/osauth/public/auth_session_storage.h"
+#include "chromeos/ash/services/auth_factor_config/public/mojom/auth_factor_config.mojom.h"
+#include "components/prefs/pref_service.h"
 #include "components/user_manager/user_type.h"
 #include "content/public/test/browser_test.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -82,6 +84,10 @@ const test::UIPath kPinInputField = {kPinSetupScreen, "pinKeyboard",
 const test::UIPath kShowHidePinButton = {kPinSetupScreen, "pinKeyboard",
                                          "pinKeyboard", "showPinButton"};
 
+const test::UIPath kProblemDiv = {kPinSetupScreen, "pinKeyboard", "problemDiv"};
+const test::UIPath kComplexityRequirementDiv = {kPinSetupScreen, "pinKeyboard",
+                                                "complexityRequirement"};
+
 // PasswordSelectionScreen elements.
 const test::UIPath kGaiaPasswordButton = {"password-selection",
                                           "gaiaPasswordButton"};
@@ -90,37 +96,17 @@ const test::UIPath kNextButtonPasswordSelection = {"password-selection",
 const test::UIPath kBackButtonPasswordSelection = {"password-selection",
                                                    "backButton"};
 
-enum class PinPolicy {
-  kUnlock,
-  kWebAuthn,
-};
-
-enum class AllowlistStatus {
-  kPin,
-  kAll,
-  kNone,
-};
-
-// Utility function for setting relevant policy affecting PIN behavior.
-void SetPinPolicy(PinPolicy policy, AllowlistStatus desired_status) {
-  base::Value::List allowlist_status;
-  switch (desired_status) {
-    case AllowlistStatus::kPin:
-      allowlist_status.Append(base::Value("PIN"));
-      break;
-    case AllowlistStatus::kAll:
-      allowlist_status.Append(base::Value("all"));
-      break;
-    case AllowlistStatus::kNone:
-      break;
-  }
-
-  PrefService* prefs = ProfileManager::GetActiveUserProfile()->GetPrefs();
-  const auto* associated_pref = policy == PinPolicy::kWebAuthn
-                                    ? prefs::kWebAuthnFactors
-                                    : prefs::kQuickUnlockModeAllowlist;
-  prefs->SetList(associated_pref, std::move(allowlist_status));
-}
+// The default minimum length for the legacy QuickUnlock PIN check is 6 digits.
+const char kWeakPin[] = "111111";
+const char kStrongPin[] = "978213587623";
+const char kRepeatingPin[] = "11111111";
+const char kOrderedPin[] = "12345678";
+const char kExpectedHighComplexityError[] =
+    "Must be at least 8 digits and can't contain repeating or ordered "
+    "sequences";
+const char kExpectedRepeatingDigitsError[] = "Can't contain repeating digits";
+const char kExpectedOrderedSequenceError[] = "Can't contain ordered sequences";
+const char kExpectedLegacyWeakPinWarning[] = "PIN may be easy to guess";
 
 PinSetupScreen* GetScreen() {
   return WizardController::default_controller()->GetScreen<PinSetupScreen>();
@@ -149,17 +135,17 @@ void TapDoneButton() {
   test::OobeJS().TapOnPath(kDoneButton);
 }
 
-void EnterPin() {
-  test::OobeJS().TypeIntoPath("654321", kPinKeyboardInput);
+void EnterPin(const std::string& pin) {
+  test::OobeJS().TypeIntoPath(pin, kPinKeyboardInput);
 }
 
 void InsertAndConfirmPin() {
-  EnterPin();
+  EnterPin("654321");
   TapNextButton();
   // Wait until the back button is visible to ensure that the UI is showing
   // the 'confirmation' step.
   test::OobeJS().CreateVisibilityWaiter(true, kBackButton)->Wait();
-  EnterPin();
+  EnterPin("654321");
   TapNextButton();
   TapDoneButton();
 }
@@ -185,6 +171,53 @@ void WaitForSetupTitleAndSubtitle(int title_msg_id,
       ->Wait();
   test::OobeJS()
       .CreateElementTextContentWaiter(expected_subtitle, kSetupSubtitle)
+      ->Wait();
+}
+
+void WaitUntilNextButtonEnabled(bool enabled) {
+  test::OobeJS().CreateEnabledWaiter(enabled, kNextButton)->Wait();
+}
+
+void WaitUntilConfirmationStep() {
+  test::OobeJS().CreateVisibilityWaiter(true, kBackButton)->Wait();
+}
+
+void ExpectProblemMessage(bool is_error, const std::string& expected_message) {
+  // Wait for the 'invisible' attribute to be removed.
+  test::OobeJS()
+      .CreateAttributePresenceWaiter("invisible", /*presence=*/false,
+                                     kProblemDiv)
+      ->Wait();
+
+  // Wait for the expected message to appear.
+  test::OobeJS()
+      .CreateElementTextContentWaiter(expected_message, kProblemDiv)
+      ->Wait();
+
+  // Assert the style (error vs. warning).
+  test::OobeJS().ExpectHasClass(is_error ? "error" : "warning", kProblemDiv);
+}
+
+void ExpectNoProblemMessage() {
+  test::OobeJS()
+      .CreateAttributePresenceWaiter("invisible", /*presence=*/true,
+                                     kProblemDiv)
+      ->Wait();
+}
+
+void ExpectComplexityRequirement(const std::string& expected_message) {
+  test::OobeJS()
+      .CreateAttributePresenceWaiter("hidden", /*presence=*/false,
+                                     kComplexityRequirementDiv)
+      ->Wait();
+  test::OobeJS().ExpectElementContainsText(expected_message,
+                                           kComplexityRequirementDiv);
+}
+
+void ExpectNoComplexityRequirement() {
+  test::OobeJS()
+      .CreateAttributePresenceWaiter("hidden", /*presence=*/true,
+                                     kComplexityRequirementDiv)
       ->Wait();
 }
 
@@ -225,6 +258,36 @@ class PinSetupScreenTest : public OobeBaseTest {
         user_policy_mixin_.RequestPolicyUpdate()->policy_payload();
     policy->mutable_quickunlockmodeallowlist()->mutable_value()->add_entries(
         "PIN");
+    policy_server_.UpdateUserPolicy(*policy, FakeGaiaMixin::kEnterpriseUser1);
+  }
+
+  void SetPinAsAllowedLocalAuthFactorForEnterpriseUsers() {
+    enterprise_management::CloudPolicySettings* policy =
+        user_policy_mixin_.RequestPolicyUpdate()->policy_payload();
+    policy->mutable_subproto1()
+        ->mutable_allowedlocalauthfactors()
+        ->mutable_value()
+        ->add_entries("PIN");
+    policy_server_.UpdateUserPolicy(*policy, FakeGaiaMixin::kEnterpriseUser1);
+  }
+
+  void SetPinAndLocalPasswordAsAllowedAuthFactorsForEnterpriseUsers() {
+    enterprise_management::CloudPolicySettings* policy =
+        user_policy_mixin_.RequestPolicyUpdate()->policy_payload();
+    auto* allowed_local_auth_factors = policy->mutable_subproto1()
+                                           ->mutable_allowedlocalauthfactors()
+                                           ->mutable_value();
+    allowed_local_auth_factors->add_entries("PIN");
+    allowed_local_auth_factors->add_entries("LOCAL_PASSWORD");
+    policy_server_.UpdateUserPolicy(*policy, FakeGaiaMixin::kEnterpriseUser1);
+  }
+
+  void ClearQuickUnlockModeAllowListForEnterpriseUsers() {
+    enterprise_management::CloudPolicySettings* policy =
+        user_policy_mixin_.RequestPolicyUpdate()->policy_payload();
+    policy->mutable_quickunlockmodeallowlist()
+        ->mutable_value()
+        ->clear_entries();
     policy_server_.UpdateUserPolicy(*policy, FakeGaiaMixin::kEnterpriseUser1);
   }
 
@@ -295,14 +358,6 @@ class PinSetupScreenTest : public OobeBaseTest {
   void ShowPinSetupScreen() {
     LoginAndWaitForCryptohomeSetupScreenExit();
     CryptohomeRecoverySetupContinue();
-
-    // When the PIN-only setup is not enabled, the PIN screen is only surfaced
-    // at the end of the flow. Trigger those steps here.
-    if (!ash::features::IsAllowPasswordlessSetupEnabled()) {
-      HandlePasswordSelectionScreen();
-      WaitForFingerprintScreenExit();
-      ExpectFingerprintScreenExitedAndContinue();
-    }
   }
 
   void WaitForScreenShown() {
@@ -364,6 +419,16 @@ class PinSetupScreenTest : public OobeBaseTest {
     EXPECT_EQ(GetScreen()->get_skip_reason_for_testing().value(), reason);
   }
 
+  void SetSAMLAuthFlow() {
+    auto* wizard_context =
+        LoginDisplayHost::default_host()->GetWizardContextForTesting();
+    auto user_context = ash::AuthSessionStorage::Get()->BorrowForTests(
+        FROM_HERE, *wizard_context->extra_factors_token);
+    user_context->SetAuthFlow(UserContext::AUTH_FLOW_GAIA_WITH_SAML);
+    wizard_context->extra_factors_token =
+        ash::AuthSessionStorage::Get()->Store(std::move(user_context));
+  }
+
  protected:
   // Whether to login as a regular user, or as an enterprise user.
   bool login_as_enterprise_ = false;
@@ -371,8 +436,6 @@ class PinSetupScreenTest : public OobeBaseTest {
   // Used for simulating that the user went through Gaia signin using a
   // passwordless method.
   bool simulate_passwordless_signin_ = false;
-
-  base::test::ScopedFeatureList scoped_feature_list_;
 
  private:
   base::test::TestFuture<PinSetupScreen::Result> screen_exit_result_waiter_;
@@ -399,265 +462,8 @@ class PinSetupScreenTest : public OobeBaseTest {
   CryptohomeMixin cryptohome_{&mixin_host_};
 };
 
-class PinSetupScreenTestAsSecondaryFactor : public PinSetupScreenTest {
- public:
-  PinSetupScreenTestAsSecondaryFactor() {
-    SetHardwareSupport(true);
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/{ash::features::kAllowPasswordlessSetup});
-  }
-
-  ~PinSetupScreenTestAsSecondaryFactor() override = default;
-};
-
-// By default, OOBE shows the PIN setup screen on supported hardware.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor, ShownByDefault) {
-  ShowPinSetupScreen();
-  WaitForScreenShown();
-
-  TapSkipButton();
-  WaitForScreenExit();
-
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserSkip);
-}
-
-// The screen should be skipped when the 'extra_factors_token' isn't present.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor,
-                       SkipWhenExtraFactorsTokenMissing) {
-  LoginAndWaitForCryptohomeSetupScreenExit();
-  CryptohomeRecoverySetupContinue();
-  HandlePasswordSelectionScreen();
-  WaitForFingerprintScreenExit();
-
-  LoginDisplayHost::default_host()
-      ->GetWizardContextForTesting()
-      ->extra_factors_token.reset();
-
-  ExpectFingerprintScreenExitedAndContinue();
-  WaitForScreenExit();
-
-  ExpectSkipReason(PinSetupScreen::SkipReason::kMissingExtraFactorsToken);
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kNotApplicable);
-}
-
-// The screen should be skipped when the token is invalid.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor,
-                       SkipWhenTokenInvalid) {
-  LoginAndWaitForCryptohomeSetupScreenExit();
-  CryptohomeRecoverySetupContinue();
-  HandlePasswordSelectionScreen();
-  WaitForFingerprintScreenExit();
-
-  ash::AuthSessionStorage::Get()->Invalidate(LoginDisplayHost::default_host()
-                                                 ->GetWizardContextForTesting()
-                                                 ->extra_factors_token.value(),
-                                             base::DoNothing());
-  ExpectFingerprintScreenExitedAndContinue();
-  WaitForScreenExit();
-
-  ExpectSkipReason(PinSetupScreen::SkipReason::kExpiredToken);
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kNotApplicable);
-}
-
-// If the PIN setup screen is shown, auth session should be cleared afterwards.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor,
-                       AuthSessionIsClearedOnManualSkip) {
-  ShowPinSetupScreen();
-  WaitForScreenShown();
-
-  TapSkipButton();
-  WaitForScreenExit();
-
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserSkip);
-  CheckCredentialsWereCleared();
-}
-
-// Oobe should skip the PIN setup screen if policies are set such that PIN
-// cannot be used for both login/unlock and web authn.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor,
-                       SkipWhenNotAllowedByPolicy) {
-  LoginAndWaitForCryptohomeSetupScreenExit();
-
-  SetPinPolicy(PinPolicy::kUnlock, AllowlistStatus::kNone);
-  SetPinPolicy(PinPolicy::kWebAuthn, AllowlistStatus::kNone);
-
-  CryptohomeRecoverySetupContinue();
-  HandlePasswordSelectionScreen();
-  WaitForFingerprintScreenExit();
-  ExpectFingerprintScreenExitedAndContinue();
-
-  WaitForScreenExit();
-  ExpectSkipReason(PinSetupScreen::SkipReason::kNotAllowedByPolicy);
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kNotApplicable);
-}
-
-// The PIN screen should be shown when policy allows PIN for unlock.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor,
-                       ShowWhenPinAllowedForUnlock) {
-  LoginAndWaitForCryptohomeSetupScreenExit();
-
-  SetPinPolicy(PinPolicy::kUnlock, AllowlistStatus::kPin);
-  SetPinPolicy(PinPolicy::kWebAuthn, AllowlistStatus::kNone);
-
-  CryptohomeRecoverySetupContinue();
-  HandlePasswordSelectionScreen();
-  WaitForFingerprintScreenExit();
-  ExpectFingerprintScreenExitedAndContinue();
-
-  TapSkipButton();
-  WaitForScreenExit();
-
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserSkip);
-}
-
-// The PIN screen should be shown when policy allows PIN for WebAuthN.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor,
-                       ShowWhenPinAllowedForWebAuthn) {
-  LoginAndWaitForCryptohomeSetupScreenExit();
-
-  SetPinPolicy(PinPolicy::kUnlock, AllowlistStatus::kNone);
-  SetPinPolicy(PinPolicy::kWebAuthn, AllowlistStatus::kAll);
-
-  CryptohomeRecoverySetupContinue();
-  HandlePasswordSelectionScreen();
-  WaitForFingerprintScreenExit();
-  ExpectFingerprintScreenExitedAndContinue();
-
-  TapSkipButton();
-  WaitForScreenExit();
-
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserSkip);
-}
-
-// Skip the flow in the beginning and expect the proper metrics.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor, ManualSkipOnStart) {
-  ShowPinSetupScreen();
-  WaitForScreenShown();
-
-  TapSkipButton();
-  WaitForScreenExit();
-
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserSkip);
-  ExpectUserActionMetric(PinSetupScreen::UserAction::kSkipButtonClickedOnStart);
-}
-
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor, ManualSkipInFlow) {
-  ShowPinSetupScreen();
-  WaitForScreenShown();
-
-  EnterPin();
-  TapNextButton();
-  // Wait until the back button is visible to ensure that the UI is showing
-  // the 'confirmation' step.
-  test::OobeJS().CreateVisibilityWaiter(true, kBackButton)->Wait();
-
-  TapSkipButton();
-  WaitForScreenExit();
-
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserSkip);
-  ExpectUserActionMetric(PinSetupScreen::UserAction::kSkipButtonClickedInFlow);
-}
-
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor, FinishedFlow) {
-  ShowPinSetupScreen();
-  WaitForScreenShown();
-
-  InsertAndConfirmPin();
-  WaitForScreenExit();
-
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kDoneAsSecondaryFactor);
-  ExpectUserActionMetric(PinSetupScreen::UserAction::kDoneButtonClicked);
-  CheckCredentialsWereCleared();
-}
-
-// Ensures the correct strings when PIN is being offered not as the main factor.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor,
-                       CorrectStringsWhenPinIsNotTheMainFactor) {
-  ShowPinSetupScreen();
-  WaitForScreenShown();
-
-  WaitForSetupTitleAndSubtitle(IDS_DISCOVER_PIN_SETUP_TITLE1,
-                               IDS_DISCOVER_PIN_SETUP_SUBTITLE1);
-  test::OobeJS().ExpectElementText(
-      l10n_util::GetStringUTF8(IDS_DISCOVER_PIN_SETUP_SKIP), kSkipButtonCore);
-}
-
-// The AuthSession should not be kept alive while offering PIN as a secondary
-// factor.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsSecondaryFactor,
-                       AuthSessionIsNotKeptAliveForSecondaryFactorSetup) {
-  ShowPinSetupScreen();
-  WaitForScreenShown();
-
-  // Ensure that there isn't a SessionRefresher keeping the AuthSession alive.
-  EXPECT_FALSE(AuthSessionStorage::Get()->CheckHasKeepAliveForTesting(
-      LoginDisplayHost::default_host()
-          ->GetWizardContext()
-          ->extra_factors_token.value()));
-}
-
-// Fixture to pretend that hardware support for login is not available.
-class PinSetupScreenTestWithoutLoginSupportAsSecondaryFactor
-    : public PinSetupScreenTestAsSecondaryFactor {
- public:
-  PinSetupScreenTestWithoutLoginSupportAsSecondaryFactor() {
-    SetHardwareSupport(false);
-  }
-
-  ~PinSetupScreenTestWithoutLoginSupportAsSecondaryFactor() override = default;
-};
-
-// By default, OOBE should skip the PIN setup screen when hardware support is
-// not available.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestWithoutLoginSupportAsSecondaryFactor,
-                       SkippedByDefault) {
-  ShowPinSetupScreen();
-  WaitForScreenExit();
-
-  ExpectSkipReason(PinSetupScreen::SkipReason::kUsupportedHardware);
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kNotApplicable);
-}
-
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestWithoutLoginSupportAsSecondaryFactor,
-                       AuthSessionIsClearedWhenSkipped) {
-  ShowPinSetupScreen();
-  WaitForScreenExit();
-
-  ExpectSkipReason(PinSetupScreen::SkipReason::kUsupportedHardware);
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kNotApplicable);
-  CheckCredentialsWereCleared();
-}
-
-// The screen should be shown for tablet devices, regardless of the hardware
-// support status.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestWithoutLoginSupportAsSecondaryFactor,
-                       ShowInTabletMode) {
-  SetTabletMode(true);
-  ShowPinSetupScreen();
-  WaitForScreenShown();
-
-  TapSkipButton();
-  WaitForScreenExit();
-
-  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserSkip);
-}
-
-class PinSetupScreenTestAsMainFactor : public PinSetupScreenTest {
- public:
-  PinSetupScreenTestAsMainFactor() {
-    SetHardwareSupport(true);
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{ash::features::kAllowPasswordlessSetup},
-        /*disabled_features=*/{});
-  }
-
-  ~PinSetupScreenTestAsMainFactor() override = default;
-};
-
 // Tests that the strings are correct when setting up PIN as the main factor.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor,
-                       TitleAndSubtitleStrings) {
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTest, TitleAndSubtitleStrings) {
   ShowPinSetupScreen();
   WaitForScreenShown();
 
@@ -674,7 +480,7 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor,
 
 // The password selection screen should be shown when the user does not want to
 // set up a PIN as a main factor.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor,
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTest,
                        SkippingLeadsToPasswordSelectionScreen) {
   ShowPinSetupScreen();
   WaitForScreenShown();
@@ -689,7 +495,7 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor,
 // When PIN is set as a main factor, the flow continues into the fingerprint
 // setup screen, which *always* leads to the PIN setup screen. But when the PIN
 // has already been set, the screen is skipped and the auth flow is finished.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor, MainFactorSet) {
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTest, MainFactorSet) {
   ShowPinSetupScreen();
   WaitForScreenShown();
 
@@ -708,7 +514,7 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor, MainFactorSet) {
 
 // PIN is not offered as a second factor when the user explicitly chooses a
 // password.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor,
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTest,
                        NoAdditionalPinOfferingWhenUserChoosesPassword) {
   ShowPinSetupScreen();
   WaitForScreenShown();
@@ -732,7 +538,7 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor,
 
 // Ensures that the AuthSession is kept alive when PIN is being offered as the
 // main factor.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor,
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTest,
                        AuthSessionIsKeptAliveForMainFactorSetup) {
   ShowPinSetupScreen();
   WaitForScreenShown();
@@ -745,7 +551,7 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor,
 }
 
 // Ensures that the 'eye' icon for showing/hiding the PIN works.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor, ShowHidePin) {
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTest, ShowHidePin) {
   ShowPinSetupScreen();
   WaitForScreenShown();
 
@@ -766,7 +572,7 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor, ShowHidePin) {
 
 // Tests that the 'Back' button logic on the PasswordSelectionScreen can bring
 // the user back to PIN as a main factor setup.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor, BackButtonLogicWorks) {
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTest, BackButtonLogicWorks) {
   ShowPinSetupScreen();
   WaitForScreenShown();
 
@@ -794,19 +600,16 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactor, BackButtonLogicWorks) {
   OobeScreenWaiter(PasswordSelectionScreenView::kScreenId).Wait();
 }
 
-class PinSetupScreenTestAsMainFactorWithoutLoginSupport
-    : public PinSetupScreenTestAsMainFactor {
+class PinSetupScreenTestWithoutLoginSupport : public PinSetupScreenTest {
  public:
-  PinSetupScreenTestAsMainFactorWithoutLoginSupport() {
-    SetHardwareSupport(false);
-  }
+  PinSetupScreenTestWithoutLoginSupport() { SetHardwareSupport(false); }
 
-  ~PinSetupScreenTestAsMainFactorWithoutLoginSupport() override = default;
+  ~PinSetupScreenTestWithoutLoginSupport() override = default;
 };
 
 // Tests that the screen is not shown as a main factor when not supported. When
 // that is the case, the password selection screen should be shown next.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactorWithoutLoginSupport,
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTestWithoutLoginSupport,
                        NotShownWhenNotSupported) {
   ShowPinSetupScreen();
   WaitForScreenExit();
@@ -819,22 +622,34 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactorWithoutLoginSupport,
   CheckCredentialsArePresent();
 }
 
-class PinSetupScreenTestAsMainFactorEnterprise
-    : public PinSetupScreenTestAsMainFactor {
+class PinSetupScreenTestEnterprise : public PinSetupScreenTest {
  public:
-  PinSetupScreenTestAsMainFactorEnterprise() { login_as_enterprise_ = true; }
-  ~PinSetupScreenTestAsMainFactorEnterprise() override = default;
+  PinSetupScreenTestEnterprise(
+      const std::vector<base::test::FeatureRef>& enabled_features,
+      const std::vector<base::test::FeatureRef>& disabled_features)
+      : scoped_feature_list_() {
+    login_as_enterprise_ = true;
+    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
+  }
+  PinSetupScreenTestEnterprise()
+      : PinSetupScreenTestEnterprise(
+            /*enabled_features*/ {},
+            /*disabled_features*/ {features::kManagedLocalPinAndPassword}) {}
+  ~PinSetupScreenTestEnterprise() override = default;
 
   // Set PINs as allowed for unlock.
   void SetUpOnMainThread() override {
-    PinSetupScreenTestAsMainFactor::SetUpOnMainThread();
+    PinSetupScreenTest::SetUpOnMainThread();
     SetAllowPinUnlockPolicyForEnterpriseUsers();
   }
+
+ protected:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Tests that the screen is not shown as a main factor for enterprise users even
 // when PIN is allowed by policy. It is only offered as a secondary factor.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactorEnterprise,
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTestEnterprise,
                        SkippedForEnterpriseUsers) {
   LoginAndWaitForCryptohomeSetupScreenExit();
   CryptohomeRecoverySetupContinue();
@@ -858,20 +673,19 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactorEnterprise,
   CheckCredentialsWereCleared();
 }
 
-class PinSetupScreenTestAsMainFactorPasswordlessSignin
-    : public PinSetupScreenTestAsMainFactor {
+class PinSetupScreenTestPasswordlessSignin : public PinSetupScreenTest {
  public:
-  PinSetupScreenTestAsMainFactorPasswordlessSignin() {
+  PinSetupScreenTestPasswordlessSignin() {
     simulate_passwordless_signin_ = true;
   }
-  ~PinSetupScreenTestAsMainFactorPasswordlessSignin() override = default;
+  ~PinSetupScreenTestPasswordlessSignin() override = default;
 };
 
 // Tests that the 'Back' button logic on the LocalPasswordSetupScreen can bring
 // the user back to PIN as a main factor setup when the user did not have an
 // opportunity to choose between an online vs. local password. This is the case
 // when the user goes through Gaia using a passwordless method.
-IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactorPasswordlessSignin,
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTestPasswordlessSignin,
                        BackButtonLogicWorks) {
   ShowPinSetupScreen();
   WaitForScreenShown();
@@ -899,24 +713,22 @@ IN_PROC_BROWSER_TEST_F(PinSetupScreenTestAsMainFactorPasswordlessSignin,
   OobeScreenWaiter(LocalPasswordSetupView::kScreenId).Wait();
 }
 
-class PinSetupScreenTestAsMainFactorWithoutLoginSupportPasswordlessSignin
-    : public PinSetupScreenTestAsMainFactorWithoutLoginSupport {
+class PinSetupScreenTestWithoutLoginSupportPasswordlessSignin
+    : public PinSetupScreenTestWithoutLoginSupport {
  public:
-  PinSetupScreenTestAsMainFactorWithoutLoginSupportPasswordlessSignin() {
+  PinSetupScreenTestWithoutLoginSupportPasswordlessSignin() {
     simulate_passwordless_signin_ = true;
   }
 
-  ~PinSetupScreenTestAsMainFactorWithoutLoginSupportPasswordlessSignin()
-      override = default;
+  ~PinSetupScreenTestWithoutLoginSupportPasswordlessSignin() override = default;
 };
 
 // Without hardware support, the PIN screen is not shown for setting up a PIN
 // as the main factor. Additionally, when the user goes through Gaia without
 // using a password, they land directly on the LocalPasswordSetupScreen. In that
 // case, there isn't a back button.
-IN_PROC_BROWSER_TEST_F(
-    PinSetupScreenTestAsMainFactorWithoutLoginSupportPasswordlessSignin,
-    NoBackButtonOnLocalPasswordSetup) {
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTestWithoutLoginSupportPasswordlessSignin,
+                       NoBackButtonOnLocalPasswordSetup) {
   ShowPinSetupScreen();
   WaitForScreenExit();
 
@@ -928,6 +740,349 @@ IN_PROC_BROWSER_TEST_F(
 
   // Expect the back button to be hidden.
   test::OobeJS().ExpectHiddenPath(test::LocalPasswordSetupBackActionPath());
+}
+
+class PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled
+    : public PinSetupScreenTestEnterprise {
+ public:
+  PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled()
+      : PinSetupScreenTestEnterprise(
+            /*enabled_features*/ {features::kManagedLocalPinAndPassword},
+            /*disabled_features*/ {}) {}
+
+  ~PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled() override = default;
+};
+
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled,
+                       AllowedForEnterpriseUsersAsMainFactor) {
+  SetPinAsAllowedLocalAuthFactorForEnterpriseUsers();
+  ShowPinSetupScreen();
+  WaitForScreenShown();
+
+  InsertAndConfirmPin();
+  WaitForScreenExit();
+
+  CheckCredentialsArePresent();
+  ExpectExitResultAndMetric(PinSetupScreen::Result::kDoneAsMainFactor);
+  ExpectFingerprintScreenExitedAndContinue();
+
+  CheckCredentialsWereCleared();
+}
+
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled,
+                       NotAllowedForEnterpriseUsersAsMainFactor) {
+  LoginAndWaitForCryptohomeSetupScreenExit();
+  CryptohomeRecoverySetupContinue();
+
+  // PIN will not be offered as a main factor when not allowed by local auth
+  // factors policy.
+  WaitForScreenExit();
+  ExpectSkipReason(
+      PinSetupScreen::SkipReason::kNotAllowedByPolicyAsPrimaryFactor);
+  ExpectExitResultAndMetric(
+      PinSetupScreen::Result::kNotApplicableAsPrimaryFactor);
+
+  WaitForFingerprintScreenExit();
+  ExpectFingerprintScreenExitedAndContinue();
+
+  // PIN should be offered as a secondary factor instead.
+  WaitForScreenShown();
+  TapSkipButton();
+  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserSkip);
+  CheckCredentialsWereCleared();
+}
+
+IN_PROC_BROWSER_TEST_F(
+    PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled,
+    NotAllowedForEnterpriseUsersAsMainFactorOrSecondaryFactor) {
+  ClearQuickUnlockModeAllowListForEnterpriseUsers();
+  LoginAndWaitForCryptohomeSetupScreenExit();
+  CryptohomeRecoverySetupContinue();
+
+  // PIN will not be offered as a main factor when not allowed by local auth
+  // factors policy.
+  WaitForScreenExit();
+  ExpectSkipReason(
+      PinSetupScreen::SkipReason::kNotAllowedByPolicyAsPrimaryFactor);
+  ExpectExitResultAndMetric(
+      PinSetupScreen::Result::kNotApplicableAsPrimaryFactor);
+
+  WaitForFingerprintScreenExit();
+  ExpectFingerprintScreenExitedAndContinue();
+
+  // PIN will also not be offered a secondary factory.
+  WaitForScreenExit();
+  ExpectSkipReason(PinSetupScreen::SkipReason::kNotAllowedByPolicy);
+  CheckCredentialsWereCleared();
+}
+
+IN_PROC_BROWSER_TEST_F(
+    PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled,
+    ShowsPasswordSelectionOnEnterpriseUserSkipWithLocalPasswordAndPinFactorsSet) {
+  SetPinAndLocalPasswordAsAllowedAuthFactorsForEnterpriseUsers();
+  ShowPinSetupScreen();
+  WaitForScreenShown();
+
+  TapSkipButton();
+  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserChosePassword);
+
+  OobeScreenWaiter(PasswordSelectionScreenHandler::kScreenId).Wait();
+}
+
+IN_PROC_BROWSER_TEST_F(
+    PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled,
+    AppliesOnlinePasswordOnEnterpriseUserSkipWithPinFactorsSet) {
+  SetPinAsAllowedLocalAuthFactorForEnterpriseUsers();
+  ShowPinSetupScreen();
+  WaitForScreenShown();
+
+  TapSkipButton();
+  ExpectExitResultAndMetric(PinSetupScreen::Result::kUserChosePassword);
+
+  // Password Selection screen is not shown when only PIN is allowed, rather
+  // `apply-online-password` screen is shown after which the `fingerprint-setup`
+  // screen is shown and the credentials are cleared.
+  WaitForFingerprintScreenExit();
+  ExpectFingerprintScreenExitedAndContinue();
+  CheckCredentialsWereCleared();
+}
+
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled,
+                       SAMLSkipButtonHiddenWhenLocalPasswordNotAllowed) {
+  // Policy allows PIN but NOT Local Password.
+  SetPinAsAllowedLocalAuthFactorForEnterpriseUsers();
+
+  LoginAndWaitForCryptohomeSetupScreenExit();
+  SetSAMLAuthFlow();
+  CryptohomeRecoverySetupContinue();
+  WaitForScreenShown();
+
+  // Skip button should be disabled for SAML users when local password is NOT
+  // allowed.
+  test::OobeJS().ExpectDisabledPath(kSkipButton);
+}
+
+IN_PROC_BROWSER_TEST_F(PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled,
+                       SAMLSkipButtonVisibleWhenLocalPasswordAndPinAllowed) {
+  // Policy allows PIN and Local Password.
+  SetPinAndLocalPasswordAsAllowedAuthFactorsForEnterpriseUsers();
+
+  LoginAndWaitForCryptohomeSetupScreenExit();
+  SetSAMLAuthFlow();
+  CryptohomeRecoverySetupContinue();
+  WaitForScreenShown();
+
+  // Skip button should be enabled for SAML users when local password is
+  // allowed.
+  test::OobeJS().ExpectEnabledPath(kSkipButton);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    PinSetupScreenTestWithManagedLocalPinAndPasswordEnabled,
+    SAMLSkipButtonVisibleWhenQuickUnlockPinAllowedAsSecondaryFactor) {
+  // Quick unlock policy allows PIN.
+  SetAllowPinUnlockPolicyForEnterpriseUsers();
+
+  LoginAndWaitForCryptohomeSetupScreenExit();
+  SetSAMLAuthFlow();
+  CryptohomeRecoverySetupContinue();
+
+  // PIN will not be offered as a main factor as this hasn't been configured by
+  // policy.
+  WaitForScreenExit();
+
+  // No password selection screen for user's where the policy does not allow it.
+  // They must use their online password.
+  WaitForFingerprintScreenExit();
+  ExpectFingerprintScreenExitedAndContinue();
+
+  // PIN should be offered as a secondary factor instead.
+  WaitForScreenShown();
+
+  // Skip button should be enabled for secondary factor setup, even if local
+  // password is NOT allowed for a SAML user.
+  test::OobeJS().ExpectEnabledPath(kSkipButton);
+}
+
+// Test fixture for PIN complexity policies during OOBE setup.
+class PinSetupScreenComplexityTest : public PinSetupScreenTest {
+ public:
+  PinSetupScreenComplexityTest() = default;
+  ~PinSetupScreenComplexityTest() override = default;
+
+  void SetComplexityPolicy(ash::LocalAuthFactorsComplexity complexity) {
+    ProfileManager::GetActiveUserProfile()->GetPrefs()->SetInteger(
+        ash::prefs::kLocalAuthFactorsComplexity, static_cast<int>(complexity));
+  }
+};
+
+// Tests that when the policy is NOT set, the system correctly falls back
+// to the legacy flow where weak PINs trigger a warning but allow submission.
+IN_PROC_BROWSER_TEST_F(PinSetupScreenComplexityTest,
+                       LegacyFlowUsedWhenPolicyUnset) {
+  ShowPinSetupScreen();
+  // Do NOT set the complexity policy, leaving it as kUnset.
+  WaitForScreenShown();
+
+  // Enter a weak PIN.
+  EnterPin(kWeakPin);
+
+  // In the legacy flow, a weak PIN generates a WARNING but still allows the
+  // user to submit and set the PIN. The 'Next' button should be enabled.
+  WaitUntilNextButtonEnabled(true);
+
+  // Verify the user can proceed to the confirmation step.
+  TapNextButton();
+  WaitUntilConfirmationStep();
+}
+
+// Tests that a weak PIN is blocked by the complexity policy and prevents
+// the user from continuing.
+IN_PROC_BROWSER_TEST_F(PinSetupScreenComplexityTest, WeakPinBlocked) {
+  ShowPinSetupScreen();
+  SetComplexityPolicy(ash::LocalAuthFactorsComplexity::kHigh);
+  WaitForScreenShown();
+
+  // Enter a weak PIN.
+  EnterPin(kWeakPin);
+
+  // The complexity check is asynchronous. Wait for the 'Next' button to become
+  // disabled.
+  WaitUntilNextButtonEnabled(false);
+}
+
+// Tests that a weak PIN explicitly displays the correct error message on the UI
+// when blocked by the complexity policy.
+IN_PROC_BROWSER_TEST_F(PinSetupScreenComplexityTest, WeakPinShowsErrorMessage) {
+  ShowPinSetupScreen();
+  SetComplexityPolicy(ash::LocalAuthFactorsComplexity::kHigh);
+  WaitForScreenShown();
+
+  // Requirement should be visible even before typing.
+  ExpectComplexityRequirement(kExpectedHighComplexityError);
+
+  // Enter a repeating PIN.
+  EnterPin(kRepeatingPin);
+
+  // Verify the hard error state and specific message.
+  ExpectProblemMessage(/*is_error=*/true, kExpectedRepeatingDigitsError);
+  // Requirement should still be visible.
+  ExpectComplexityRequirement(kExpectedHighComplexityError);
+}
+
+// Tests that a weak PIN explicitly displays the correct warning message on
+// the UI when the complexity policy is unset (legacy flow).
+IN_PROC_BROWSER_TEST_F(PinSetupScreenComplexityTest,
+                       LegacyFlowWeakPinShowsWarningMessage) {
+  ShowPinSetupScreen();
+  // Do NOT set the complexity policy, leaving it as kUnset.
+  WaitForScreenShown();
+
+  // No policy requirement should be visible.
+  ExpectNoComplexityRequirement();
+
+  // Enter a weak PIN.
+  EnterPin(kWeakPin);
+
+  // In the legacy flow, a weak PIN generates a WARNING but still allows the
+  // user to submit. The 'Next' button should be enabled.
+  WaitUntilNextButtonEnabled(true);
+
+  // Verify the warning state (not an error) and the legacy message.
+  ExpectProblemMessage(/*is_error=*/false, kExpectedLegacyWeakPinWarning);
+}
+
+// Tests that a strong PIN passes the complexity policy and allows
+// the user to continue to the confirmation step.
+IN_PROC_BROWSER_TEST_F(PinSetupScreenComplexityTest, StrongPinAllowed) {
+  ShowPinSetupScreen();
+  SetComplexityPolicy(ash::LocalAuthFactorsComplexity::kHigh);
+  WaitForScreenShown();
+
+  // Enter a known strong PIN that passes the high complexity check.
+  EnterPin(kStrongPin);
+
+  // Wait for the asynchronous check to succeed and enable the 'Next' button.
+  WaitUntilNextButtonEnabled(true);
+  ExpectComplexityRequirement(kExpectedHighComplexityError);
+
+  // Verify the user can actually proceed to the confirmation step.
+  TapNextButton();
+  WaitUntilConfirmationStep();
+}
+
+// Tests that entering a weak PIN shows an error, but subsequently entering
+// a strong PIN clears the error and allows submission.
+IN_PROC_BROWSER_TEST_F(PinSetupScreenComplexityTest,
+                       WeakThenStrongPinClearsError) {
+  ShowPinSetupScreen();
+  SetComplexityPolicy(ash::LocalAuthFactorsComplexity::kHigh);
+  WaitForScreenShown();
+
+  // 1. Enter a repeating PIN and verify it gets blocked.
+  EnterPin(kRepeatingPin);
+  WaitUntilNextButtonEnabled(false);
+  ExpectProblemMessage(/*is_error=*/true, kExpectedRepeatingDigitsError);
+  ExpectComplexityRequirement(kExpectedHighComplexityError);
+
+  // 2. Enter a strong PIN and verify the UI recovers.
+  EnterPin(kStrongPin);
+
+  // The asynchronous check should succeed, enabling the button and hiding the
+  // error.
+  WaitUntilNextButtonEnabled(true);
+  ExpectNoProblemMessage();
+  ExpectComplexityRequirement(kExpectedHighComplexityError);
+
+  // Verify the user can actually proceed to the confirmation step.
+  TapNextButton();
+  WaitUntilConfirmationStep();
+}
+
+// Tests that an ordered sequence PIN is blocked by the complexity policy.
+IN_PROC_BROWSER_TEST_F(PinSetupScreenComplexityTest, OrderedSequenceBlocked) {
+  ShowPinSetupScreen();
+  SetComplexityPolicy(ash::LocalAuthFactorsComplexity::kHigh);
+  WaitForScreenShown();
+
+  // Enter an ordered sequence PIN.
+  EnterPin(kOrderedPin);
+
+  WaitUntilNextButtonEnabled(false);
+  ExpectProblemMessage(/*is_error=*/true, kExpectedOrderedSequenceError);
+  ExpectComplexityRequirement(kExpectedHighComplexityError);
+}
+
+// Tests that navigating back from the confirmation step to the setup step
+// correctly preserves the complexity-based requirement message (4 digits) and
+// does not revert to the legacy requirement message (6 digits).
+IN_PROC_BROWSER_TEST_F(PinSetupScreenComplexityTest,
+                       BackButtonPreservesComplexityMessage) {
+  ShowPinSetupScreen();
+  SetComplexityPolicy(ash::LocalAuthFactorsComplexity::kLow);
+  WaitForScreenShown();
+
+  // Wait for the complexity policy to be fetched and the UI to update.
+  test::OobeJS()
+      .CreateElementTextContentWaiter("4 digits", kComplexityRequirementDiv)
+      ->Wait();
+
+  EnterPin("1234");
+  TapNextButton();
+
+  // Wait for the UI to transition to the confirmation step.
+  test::OobeJS().CreateVisibilityWaiter(true, kBackButton)->Wait();
+
+  // Navigate back to the first step.
+  test::OobeJS().ClickOnPath(kBackButton);
+
+  // Wait for the UI to transition back.
+  test::OobeJS().CreateVisibilityWaiter(false, kBackButton)->Wait();
+
+  // Verification: It must still show the 4-digit requirement.
+  test::OobeJS()
+      .CreateElementTextContentWaiter("4 digits", kComplexityRequirementDiv)
+      ->Wait();
 }
 
 }  // namespace ash

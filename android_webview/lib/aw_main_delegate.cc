@@ -5,13 +5,15 @@
 #include "android_webview/lib/aw_main_delegate.h"
 
 #include <memory>
+#include <optional>
+#include <variant>
 
+#include "android_webview/browser/aw_browser_process.h"
 #include "android_webview/browser/aw_content_browser_client.h"
 #include "android_webview/browser/gfx/aw_draw_fn_impl.h"
 #include "android_webview/browser/gfx/browser_view_renderer.h"
 #include "android_webview/browser/gfx/gpu_service_webview.h"
 #include "android_webview/browser/gfx/viz_compositor_thread_runner_webview.h"
-#include "android_webview/browser/tracing/aw_trace_event_args_allowlist.h"
 #include "android_webview/common/aw_descriptors.h"
 #include "android_webview/common/aw_features.h"
 #include "android_webview/common/aw_paths.h"
@@ -21,11 +23,15 @@
 #include "android_webview/common/crash_reporter/crash_keys.h"
 #include "android_webview/gpu/aw_content_gpu_client.h"
 #include "android_webview/renderer/aw_content_renderer_client.h"
+#include "base/android/android_info.h"
 #include "base/android/apk_assets.h"
-#include "base/android/build_info.h"
+#include "base/android/apk_info.h"
+#include "base/android/pre_freeze_background_memory_trimmer.h"
+#include "base/android/sys_utils.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/cpu.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/i18n/icu_util.h"
 #include "base/i18n/rtl.h"
@@ -34,7 +40,9 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/synchronization/lock.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/time/default_clock.h"
 #include "build/build_config.h"
 #include "cc/base/switches.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -42,8 +50,11 @@
 #include "components/embedder_support/switches.h"
 #include "components/memory_system/initializer.h"
 #include "components/memory_system/parameters.h"
+#include "components/metrics/call_stacks/call_stack_profile_builder.h"
+#include "components/metrics/call_stacks/call_stack_profile_metrics_provider.h"
 #include "components/metrics/unsent_log_store_metrics.h"
 #include "components/safe_browsing/android/safe_browsing_api_handler_bridge.h"
+#include "components/sampling_profiler/process_type.h"
 #include "components/services/heap_profiling/public/cpp/profiling_client.h"
 #include "components/spellcheck/spellcheck_buildflags.h"
 #include "components/variations/variations_ids_provider.h"
@@ -63,8 +74,9 @@
 #include "gpu/command_buffer/service/gpu_switches.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "media/media_buildflags.h"
+#include "mojo/core/embedder/features.h"
 #include "net/base/features.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "services/tracing/public/cpp/perfetto/track_name_recorder.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/switches.h"
 #include "tools/v8_context_snapshot/buildflags.h"
@@ -78,6 +90,19 @@
 #endif  // ENABLE_SPELLCHECK
 
 namespace android_webview {
+namespace {
+class AwPreFreezeDelegate
+    : public base::android::PreFreezeBackgroundMemoryTrimmer::Delegate {
+ public:
+  bool ShouldThawPreFrozenProcess() const override {
+    // WebView cannot use ApplicationStatusListener.
+    // This should not be called from renderers. TODO(yfriedman): This would
+    // fail under native-only renderers especially. Ensure this is properly
+    // evaluated on WebView prior to ramp up on that platform.
+    return !base::android::IsProcessInBackground();
+  }
+};
+}  // namespace
 
 AwMainDelegate::AwMainDelegate() = default;
 
@@ -138,18 +163,16 @@ std::optional<int> AwMainDelegate::BasicStartupComplete() {
   // isn't much point in having the crash dumps there.
   cl->AppendSwitch(switches::kDisableOoprDebugCrashDump);
 
-  // Deemed that performance benefit is not worth the stability cost.
-  // See crbug.com/1309151.
-  cl->AppendSwitch(switches::kDisableGpuShaderDiskCache);
-
   // Keep data: URL support in SVGUseElement for webview until deprecation is
   // completed in the Web Platform.
   cl->AppendSwitch(blink::switches::kDataUrlInSvgUseEnabled);
 
+  // Opt out WebView from kMojoUseEventFd feature. TODO(crbug.com/498421592):
+  // Add support for WebView and remove this override.
+  cl->AppendSwitch(mojo::core::kSuppressEventfdUpgradeForWebview);
+
   if (cl->GetSwitchValueASCII(switches::kProcessType).empty()) {
     // Browser process (no type specified).
-
-    BrowserViewRenderer::CalculateTileMemoryPolicy();
 
     if (AwDrawFnImpl::IsUsingVulkan())
       cl->AppendSwitch(switches::kWebViewDrawFunctorUsesVulkan);
@@ -209,22 +232,11 @@ std::optional<int> AwMainDelegate::BasicStartupComplete() {
 
     // Enabled by default for webview.
     features.EnableIfNotSet(::features::kWebViewThreadSafeMediaDefault);
-
-    // WebView uses kWebViewFrameRateHints to control this. Not using
-    // AwFieldTrials::RegisterFeatureOverrides to avoid misconfiguring
-    // experimients accidentally enabling kUseFrameIntervalDecider for WebView.
-    features.DisableIfNotSet(::features::kUseFrameIntervalDecider);
   }
 
   android_webview::RegisterPathProvider();
 
-  // Used only if the argument filter is enabled in tracing config,
-  // as is the case by default in aw_tracing_controller.cc
-  base::trace_event::TraceLog::GetInstance()->SetArgumentFilterPredicate(
-      base::BindRepeating(&IsTraceEventArgsAllowlisted));
-  base::trace_event::TraceLog::GetInstance()->SetMetadataFilterPredicate(
-      base::BindRepeating(&IsTraceMetadataAllowlisted));
-  base::trace_event::TraceLog::GetInstance()->SetRecordHostAppPackageName(true);
+  tracing::TrackNameRecorder::SetRecordHostAppPackageName(true);
 
   // The TLS slot used by the memlog allocator shim needs to be initialized
   // early to ensure that it gets assigned a low slot number. If it gets
@@ -237,6 +249,9 @@ std::optional<int> AwMainDelegate::BasicStartupComplete() {
   // Have the network service in the browser process even if we have separate
   // renderer processes. See also: switches::kInProcessGPU above.
   content::ForceInProcessNetworkService();
+
+  base::android::PreFreezeBackgroundMemoryTrimmer::SetDelegate(
+      std::make_unique<AwPreFreezeDelegate>());
 
   return std::nullopt;
 }
@@ -260,23 +275,20 @@ void AwMainDelegate::PreSandboxStartup() {
 
   EnableCrashReporter(process_type);
 
-  base::android::BuildInfo* android_build_info =
-      base::android::BuildInfo::GetInstance();
-
   static ::crash_reporter::CrashKeyString<64> app_name_key(
       crash_keys::kAppPackageName);
-  app_name_key.Set(android_build_info->host_package_name());
+  app_name_key.Set(base::android::apk_info::host_package_name());
 
   static ::crash_reporter::CrashKeyString<64> app_version_key(
       crash_keys::kAppPackageVersionCode);
-  app_version_key.Set(android_build_info->host_version_code());
+  app_version_key.Set(base::android::apk_info::host_version_code());
 
   static ::crash_reporter::CrashKeyString<8> sdk_int_key(
       crash_keys::kAndroidSdkInt);
-  sdk_int_key.Set(base::NumberToString(android_build_info->sdk_int()));
+  sdk_int_key.Set(base::NumberToString(base::android::android_info::sdk_int()));
 }
 
-absl::variant<int, content::MainFunctionParams> AwMainDelegate::RunProcess(
+std::variant<int, content::MainFunctionParams> AwMainDelegate::RunProcess(
     const std::string& process_type,
     content::MainFunctionParams main_function_params) {
   // Defer to the default main method outside the browser process.
@@ -297,10 +309,20 @@ void AwMainDelegate::ProcessExiting(const std::string& process_type) {
   logging::CloseLogFile();
 }
 
+std::optional<int> AwMainDelegate::PreBrowserMain() {
+  // This may optionally wait if tracing init was started on a Java thread pool
+  // during factory init.
+  // We need to wait during PreBrowserMain to ensure the task has completed
+  // before we initialize the native task runners, which will move scheduled
+  // tasks to the native task pool.
+  AwBrowserProcess::WaitForBackgroundTracingInit();
+  return std::nullopt;
+}
+
 bool AwMainDelegate::ShouldCreateFeatureList(InvokedIn invoked_in) {
   // In the browser process the FeatureList is created in
   // AwMainDelegate::PostEarlyInitialization().
-  return absl::holds_alternative<InvokedInChildProcess>(invoked_in);
+  return std::holds_alternative<InvokedInChildProcess>(invoked_in);
 }
 
 bool AwMainDelegate::ShouldInitializeMojo(InvokedIn invoked_in) {
@@ -309,14 +331,17 @@ bool AwMainDelegate::ShouldInitializeMojo(InvokedIn invoked_in) {
 
 variations::VariationsIdsProvider*
 AwMainDelegate::CreateVariationsIdsProvider() {
-  return variations::VariationsIdsProvider::Create(
-      variations::VariationsIdsProvider::Mode::kDontSendSignedInVariations);
+  // TODO: crbug.com/442849530 - Use VariationsNetworkClock instead of
+  // base::DefaultClock.
+  return variations::VariationsIdsProvider::CreateInstance(
+      variations::VariationsIdsProvider::Mode::kDontSendSignedInVariations,
+      std::make_unique<base::DefaultClock>());
 }
 
 std::optional<int> AwMainDelegate::PostEarlyInitialization(
     InvokedIn invoked_in) {
   const bool is_browser_process =
-      absl::holds_alternative<InvokedInBrowserProcess>(invoked_in);
+      std::holds_alternative<InvokedInBrowserProcess>(invoked_in);
   if (is_browser_process) {
     InitIcuAndResourceBundleBrowserSide();
     aw_feature_list_creator_->CreateFeatureListAndFieldTrials();
@@ -324,6 +349,7 @@ std::optional<int> AwMainDelegate::PostEarlyInitialization(
   }
 
   InitializeMemorySystem(is_browser_process);
+  base::Lock::InitializeFeatures();
 
   return std::nullopt;
 }
@@ -381,25 +407,56 @@ void AwMainDelegate::InitializeMemorySystem(const bool is_browser_process) {
   const version_info::Channel channel = version_info::android::GetChannel();
   const bool is_canary_dev = (channel == version_info::Channel::CANARY ||
                               channel == version_info::Channel::DEV);
+  const base::CommandLine& command_line =
+      *base::CommandLine::ForCurrentProcess();
   const std::string process_type =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          switches::kProcessType);
+      command_line.GetSwitchValueASCII(switches::kProcessType);
   const bool gwp_asan_boost_sampling = is_canary_dev || is_browser_process;
 
   // Add PoissonAllocationSampler. On Android WebView we do not have obvious
-  // observers of PoissonAllocationSampler. Unfortunately, some potential
-  // candidates are still linked and may sneak in through hidden paths.
-  // Therefore, we include PoissonAllocationSampler unconditionally.
-  // TODO(crbug.com/40062835): Which observers of PoissonAllocationSampler are
-  // really in use on Android WebView? Can we add the sampler conditionally or
-  // remove it completely?
-  memory_system::Initializer()
-      .SetGwpAsanParameters(gwp_asan_boost_sampling, process_type)
+  // observers of PoissonAllocationSampler (unless
+  // kEnableWebViewMemoryProfilingCliient is enabled). Unfortunately, some
+  // potential candidates are still linked and may sneak in through hidden
+  // paths. Therefore, we include PoissonAllocationSampler unconditionally.
+  memory_system::Initializer initializer;
+  initializer.SetGwpAsanParameters(gwp_asan_boost_sampling, process_type)
       .SetDispatcherParameters(memory_system::DispatcherParameters::
                                    PoissonAllocationSamplerInclusion::kEnforce,
                                memory_system::DispatcherParameters::
                                    AllocationTraceRecorderInclusion::kIgnore,
-                               process_type)
-      .Initialize(memory_system_);
+                               process_type);
+  if (base::FeatureList::IsEnabled(features::kWebViewMemoryProfilingClient)) {
+    sampling_profiler::ProfilerProcessType profiler_process_type;
+    if (is_browser_process) {
+      profiler_process_type = sampling_profiler::ProfilerProcessType::kBrowser;
+      metrics::CallStackProfileBuilder::SetBrowserProcessReceiverCallback(
+          base::BindRepeating(
+              &metrics::CallStackProfileMetricsProvider::ReceiveProfile));
+    } else if (process_type == switches::kRendererProcess) {
+      // TODO(crbug.com/40150046): If webview ever supports extensions, exclude
+      // extension renderers.
+      profiler_process_type = sampling_profiler::ProfilerProcessType::kRenderer;
+    } else if (process_type == switches::kUtilityProcess) {
+      // TODO(crbug.com/41412949): If webview ever runs the network service OOP,
+      // detect it and use ProfilerProcessType::kNetworkService.
+      profiler_process_type = sampling_profiler::ProfilerProcessType::kUtility;
+    } else if (process_type == switches::kZygoteProcess) {
+      profiler_process_type = sampling_profiler::ProfilerProcessType::kZygote;
+    } else {
+      profiler_process_type = sampling_profiler::ProfilerProcessType::kUnknown;
+    }
+    initializer.SetProfilingClientParameters(channel, profiler_process_type);
+  }
+  initializer.Initialize(memory_system_);
 }
+
+bool AwMainDelegate::ShouldInitializePerfetto(InvokedIn invoked_in) {
+  const bool is_browser_process =
+      std::holds_alternative<InvokedInBrowserProcess>(invoked_in);
+  if (!is_browser_process) {
+    return true;
+  }
+  return AwBrowserProcess::ShouldInitTracingDuringBrowserMain();
+}
+
 }  // namespace android_webview

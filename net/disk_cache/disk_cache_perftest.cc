@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "net/disk_cache/disk_cache.h"
 
 #include <array>
@@ -25,6 +20,7 @@
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "base/test/test_file_util.h"
 #include "base/test/test_timeouts.h"
@@ -40,6 +36,7 @@
 #include "net/disk_cache/backend_cleanup_tracker.h"
 #include "net/disk_cache/blockfile/backend_impl.h"
 #include "net/disk_cache/blockfile/block_files.h"
+#include "net/disk_cache/buildflags.h"
 #include "net/disk_cache/disk_cache_test_base.h"
 #include "net/disk_cache/disk_cache_test_util.h"
 #include "net/disk_cache/simple/simple_backend_impl.h"
@@ -126,7 +123,11 @@ enum class WhatToRead {
 
 class DiskCachePerfTest : public DiskCacheTestWithCache {
  public:
-  DiskCachePerfTest() { MaybeIncreaseFdLimitTo(kFdLimitForCacheTests); }
+  DiskCachePerfTest()
+      : DiskCacheTestWithCache(
+            base::test::TaskEnvironment::TimeSource::SYSTEM_TIME) {
+    MaybeIncreaseFdLimitTo(kFdLimitForCacheTests);
+  }
 
   const std::vector<TestEntry>& entries() const { return entries_; }
 
@@ -149,6 +150,8 @@ class DiskCachePerfTest : public DiskCacheTestWithCache {
 
   // Complete perf tests.
   void CacheBackendPerformance(const std::string& story);
+
+  void MaybeLoadInMemoryIndex();
 
   const size_t kFdLimitForCacheTests = 8192;
 
@@ -210,8 +213,10 @@ void WriteHandler::CreateNextEntry() {
                           test_entry.data_len);
   disk_cache::EntryResult result =
       cache_->CreateEntry(test_entry.key, net::HIGHEST, callback);
-  if (result.net_error() != net::ERR_IO_PENDING)
-    callback.Run(std::move(result));
+  if (result.net_error() != net::ERR_IO_PENDING) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), std::move(result)));
+  }
 }
 
 void WriteHandler::CreateCallback(int data_len,
@@ -319,7 +324,8 @@ class ReadHandler {
 
   int pending_result_ = net::OK;
 
-  scoped_refptr<net::IOBuffer> read_buffers_[kMaxParallelOperations];
+  std::array<scoped_refptr<net::IOBuffer>, kMaxParallelOperations>
+      read_buffers_;
 };
 
 void ReadHandler::Run() {
@@ -413,7 +419,7 @@ bool DiskCachePerfTest::TimeWrites(const std::string& story) {
   for (size_t i = 0; i < kNumEntries; i++) {
     TestEntry entry;
     entry.key = GenerateKey(true);
-    entry.data_len = base::RandInt(0, kBodySize);
+    entry.data_len = base::RandIntInclusive(0, kBodySize);
     entries_.push_back(entry);
   }
 
@@ -473,7 +479,7 @@ void DiskCachePerfTest::ResetAndEvictSystemDiskCache() {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
   // And, cache directories, on platforms where the eviction utility supports
   // this (currently Linux and Android only).
-  if (simple_cache_mode_) {
+  if (backend_to_test() == BackendToTest::kSimple) {
     ASSERT_TRUE(
         base::EvictFileFromSystemCache(cache_path_.AppendASCII("index-dir")));
   }
@@ -491,28 +497,39 @@ void DiskCachePerfTest::CacheBackendPerformance(const std::string& story) {
   LOG(ERROR) << "Using cache at:" << cache_path_.MaybeAsASCII();
   SetMaxSize(500 * 1024 * 1024);
   InitCache();
+  MaybeLoadInMemoryIndex();
   EXPECT_TRUE(TimeWrites(story));
 
-  disk_cache::FlushCacheThreadForTesting();
+  FlushQueueForTest();
   base::RunLoop().RunUntilIdle();
 
   ResetAndEvictSystemDiskCache();
+  MaybeLoadInMemoryIndex();
   EXPECT_TRUE(TimeReads(WhatToRead::HEADERS_ONLY,
                         kMetricCacheHeadersReadTimeColdMs, story));
   EXPECT_TRUE(TimeReads(WhatToRead::HEADERS_ONLY,
                         kMetricCacheHeadersReadTimeWarmMs, story));
 
-  disk_cache::FlushCacheThreadForTesting();
+  FlushQueueForTest();
   base::RunLoop().RunUntilIdle();
 
   ResetAndEvictSystemDiskCache();
+  MaybeLoadInMemoryIndex();
   EXPECT_TRUE(TimeReads(WhatToRead::HEADERS_AND_BODY,
                         kMetricCacheEntriesReadTimeColdMs, story));
   EXPECT_TRUE(TimeReads(WhatToRead::HEADERS_AND_BODY,
                         kMetricCacheEntriesReadTimeWarmMs, story));
 
-  disk_cache::FlushCacheThreadForTesting();
+  FlushQueueForTest();
   base::RunLoop().RunUntilIdle();
+}
+
+void DiskCachePerfTest::MaybeLoadInMemoryIndex() {
+#if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
+  if (backend_to_test() == BackendToTest::kSql) {
+    LoadInMemoryIndex();
+  }
+#endif  // ENABLE_DISK_CACHE_SQL_BACKEND
 }
 
 #if BUILDFLAG(IS_FUCHSIA)
@@ -533,9 +550,16 @@ TEST_F(DiskCachePerfTest, MAYBE_CacheBackendPerformance) {
 #define MAYBE_SimpleCacheBackendPerformance SimpleCacheBackendPerformance
 #endif
 TEST_F(DiskCachePerfTest, MAYBE_SimpleCacheBackendPerformance) {
-  SetSimpleCacheMode();
+  SetBackendToTest(BackendToTest::kSimple);
   CacheBackendPerformance("simple_cache");
 }
+
+#if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
+TEST_F(DiskCachePerfTest, SqlCacheBackendPerformance) {
+  SetBackendToTest(BackendToTest::kSql);
+  CacheBackendPerformance("sql_cache");
+}
+#endif  // ENABLE_DISK_CACHE_SQL_BACKEND
 
 // Creating and deleting "entries" on a block-file is something quite frequent
 // (after all, almost everything is stored on block files). The operation is
@@ -556,7 +580,7 @@ TEST_F(DiskCachePerfTest, BlockFilesPerformance) {
 
   // Fill up the 32-byte block file (use three files).
   for (auto& addr : address) {
-    int block_size = base::RandInt(1, 4);
+    int block_size = base::RandIntInclusive(1, 4);
     EXPECT_TRUE(files.CreateBlock(disk_cache::RANKINGS, block_size, &addr));
   }
 
@@ -565,8 +589,8 @@ TEST_F(DiskCachePerfTest, BlockFilesPerformance) {
   base::ElapsedTimer random_timer;
 
   for (int i = 0; i < 200000; i++) {
-    int block_size = base::RandInt(1, 4);
-    int entry = base::RandInt(0, kNumBlocks - 1);
+    int block_size = base::RandIntInclusive(1, 4);
+    int entry = base::RandIntInclusive(0, kNumBlocks - 1);
 
     files.DeleteBlock(address[entry], false);
     EXPECT_TRUE(
@@ -590,15 +614,12 @@ TEST_F(DiskCachePerfTest, SimpleCacheInitialReadPortion) {
   // overhead.
   const int kBatchSize = 100;
 
-  SetSimpleCacheMode();
+  SetBackendToTest(BackendToTest::kSimple);
 
   InitCache();
   // Write out the entries, and keep their objects around.
-  auto buffer1 = base::MakeRefCounted<net::IOBufferWithSize>(kHeadersSize);
-  auto buffer2 = base::MakeRefCounted<net::IOBufferWithSize>(kBodySize);
-
-  CacheTestFillBuffer(buffer1->span(), false);
-  CacheTestFillBuffer(buffer2->span(), false);
+  auto buffer1 = CacheTestCreateAndFillBuffer(kHeadersSize, false);
+  auto buffer2 = CacheTestCreateAndFillBuffer(kBodySize, false);
 
   std::array<disk_cache::Entry*, kBatchSize> cache_entry;
   for (int i = 0; i < kBatchSize; ++i) {

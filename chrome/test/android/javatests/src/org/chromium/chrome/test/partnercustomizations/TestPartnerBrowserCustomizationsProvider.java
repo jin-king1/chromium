@@ -14,14 +14,15 @@ import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.TextUtils;
-import android.util.Log;
+
+import org.chromium.base.Log;
 
 /**
- * PartnerBrowserCustomizationsProvider example for testing.
- * Note: if you move or rename this class, make sure you have also updated AndroidManifest.xml.
+ * PartnerBrowserCustomizationsProvider example for testing. Note: if you move or rename this class,
+ * make sure you have also updated AndroidManifest.xml.
  */
 public class TestPartnerBrowserCustomizationsProvider extends ContentProvider {
-    protected String mTag = TestPartnerBrowserCustomizationsProvider.class.getSimpleName();
+    private static final String TAG = "PartnerCustTest";
 
     public static final String HOMEPAGE_URI = "http://127.0.0.1:8000/foo.html";
     public static final String INCOGNITO_MODE_DISABLED_KEY = "disableincognitomode";
@@ -67,7 +68,7 @@ public class TestPartnerBrowserCustomizationsProvider extends ContentProvider {
 
     @Override
     public String getType(Uri uri) {
-        Log.d(mTag, "getType called: " + uri);
+        Log.d(TAG, "getType called: %s", uri);
 
         switch (mUriMatcher.match(uri)) {
             case URI_MATCH_HOMEPAGE:
@@ -88,7 +89,7 @@ public class TestPartnerBrowserCustomizationsProvider extends ContentProvider {
             String selection,
             String[] selectionArgs,
             String sortOrder) {
-        Log.d(mTag, "query called: " + uri);
+        Log.d(TAG, "query called: %s", uri);
 
         switch (mUriMatcher.match(uri)) {
             case URI_MATCH_HOMEPAGE:

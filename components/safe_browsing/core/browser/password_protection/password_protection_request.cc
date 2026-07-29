@@ -5,6 +5,8 @@
 #include "components/safe_browsing/core/browser/password_protection/password_protection_request.h"
 
 #include <cstddef>
+#include <optional>
+#include <string>
 
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
@@ -78,7 +80,8 @@ PasswordProtectionRequest::PasswordProtectionRequest(
     LoginReputationClientRequest::TriggerType type,
     bool password_field_exists,
     PasswordProtectionServiceBase* pps,
-    int request_timeout_in_ms)
+    int request_timeout_in_ms,
+    std::optional<OtpPhishingVerdictCallback> otp_phishing_verdict_callback)
     : base::RefCountedDeleteOnSequence<PasswordProtectionRequest>(
           std::move(ui_task_runner)),
       request_proto_(std::make_unique<LoginReputationClientRequest>()),
@@ -95,11 +98,14 @@ PasswordProtectionRequest::PasswordProtectionRequest(
       password_field_exists_(password_field_exists),
       password_protection_service_(pps),
       request_timeout_in_ms_(request_timeout_in_ms),
-      is_modal_warning_showing_(false) {
+      is_modal_warning_showing_(false),
+      otp_phishing_verdict_callback_(std::move(otp_phishing_verdict_callback)) {
   DCHECK(this->ui_task_runner()->RunsTasksInCurrentSequence());
 
   DCHECK(trigger_type_ == LoginReputationClientRequest::UNFAMILIAR_LOGIN_PAGE ||
-         trigger_type_ == LoginReputationClientRequest::PASSWORD_REUSE_EVENT);
+         trigger_type_ == LoginReputationClientRequest::PASSWORD_REUSE_EVENT ||
+         trigger_type_ ==
+             LoginReputationClientRequest::ONE_TIME_PASSWORD_FIELD_DETECTED);
   DCHECK(trigger_type_ != LoginReputationClientRequest::PASSWORD_REUSE_EVENT ||
          password_type_ != PasswordType::SAVED_PASSWORD ||
          !matching_reused_credentials_.empty());
@@ -233,6 +239,10 @@ void PasswordProtectionRequest::FillRequestProto(bool is_sampled_ping) {
 #endif  // BUILDFLAG(IS_ANDROID)
 
   switch (trigger_type_) {
+    case LoginReputationClientRequest::ONE_TIME_PASSWORD_FIELD_DETECTED: {
+      // No additional fields need to be set.
+      break;
+    }
     case LoginReputationClientRequest::UNFAMILIAR_LOGIN_PAGE: {
       LoginReputationClientRequest::Frame::Form* password_form;
       if (password_form_frame_url_ == main_frame_url_) {
@@ -261,8 +271,9 @@ void PasswordProtectionRequest::FillRequestProto(bool is_sampled_ping) {
         for (const auto& domain : matching_domains_) {
           reuse_event->add_domains_matching_password(domain);
           if (reuse_event->domains_matching_password_size() >=
-              kMaxReusedDomains)
+              kMaxReusedDomains) {
             break;
+          }
         }
       }
       ReusedPasswordAccountType password_account_type_to_add =
@@ -280,7 +291,7 @@ void PasswordProtectionRequest::FillRequestProto(bool is_sampled_ping) {
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   if (IsClientSideDetectionEnabled()) {
-    GetDomFeatures();
+    AddDebuggingMetadata();
   } else if (IsVisualFeaturesEnabled()) {
     MaybeCollectVisualFeatures();
   } else {
@@ -334,7 +345,9 @@ void PasswordProtectionRequest::SendRequestWithToken(
             "phishing."
           trigger:
             "When a user focuses on a password field on a page that they "
-            "haven't visited before and that isn't popular or known to be safe."
+            "haven't visited before and that isn't popular or known to be "
+            "safe, or when a user re-uses their password on a site that isn't "
+            "popular or known to be safe."
           data:
             "URL and referrer of the current page, password form action, and "
             "iframe structure."
@@ -359,11 +372,7 @@ void PasswordProtectionRequest::SendRequestWithToken(
   bool has_access_token = !access_token.empty();
   LogPasswordProtectionRequestTokenHistogram(trigger_type_, has_access_token);
   if (has_access_token) {
-    LogAuthenticatedCookieResets(
-        *resource_request,
-        SafeBrowsingAuthenticatedEndpoint::kPasswordProtection);
-    SetAccessTokenAndClearCookieInResourceRequest(resource_request.get(),
-                                                  access_token);
+    SetAccessToken(resource_request.get(), access_token);
   }
   resource_request->url =
       PasswordProtectionServiceBase::GetPasswordProtectionRequestUrl();
@@ -396,11 +405,12 @@ void PasswordProtectionRequest::StartTimeout() {
 }
 
 void PasswordProtectionRequest::OnURLLoaderComplete(
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   DCHECK(ui_task_runner()->RunsTasksInCurrentSequence());
   int response_code = 0;
-  if (url_loader_->ResponseInfo() && url_loader_->ResponseInfo()->headers)
+  if (url_loader_->ResponseInfo() && url_loader_->ResponseInfo()->headers) {
     response_code = url_loader_->ResponseInfo()->headers->response_code();
+  }
 
   const bool is_success = url_loader_->NetError() == net::OK;
 
@@ -440,6 +450,9 @@ void PasswordProtectionRequest::Finish(
                                                              username_);
     if (trigger_type_ == LoginReputationClientRequest::UNFAMILIAR_LOGIN_PAGE) {
       LogPasswordOnFocusRequestOutcome(outcome);
+    } else if (trigger_type_ ==
+               LoginReputationClientRequest::ONE_TIME_PASSWORD_FIELD_DETECTED) {
+      LogOneTimePasswordFieldDetectedRequestOutcome(outcome);
     } else {
       LogPasswordEntryRequestOutcome(outcome, password_account_type);
 

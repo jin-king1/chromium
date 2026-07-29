@@ -4,6 +4,8 @@
 
 package org.chromium.components.page_info;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
@@ -14,6 +16,8 @@ import android.widget.FrameLayout;
 
 import androidx.annotation.ColorRes;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.omnibox.SecurityStatusIcon;
 import org.chromium.components.security_state.ConnectionSecurityLevel;
@@ -21,24 +25,25 @@ import org.chromium.components.security_state.SecurityStateModel;
 import org.chromium.content_public.browser.WebContents;
 
 /** Class for controlling the page info connection section. */
+@NullMarked
 public class PageInfoConnectionController
         implements PageInfoSubpageController, ConnectionInfoView.ConnectionInfoDelegate {
-    private PageInfoMainController mMainController;
+    private final PageInfoMainController mMainController;
     private final WebContents mWebContents;
     private final PageInfoRowView mRowView;
     private final PageInfoControllerDelegate mDelegate;
-    private final String mContentPublisher;
+    private final @Nullable String mContentPublisher;
     private final boolean mIsInternalPage;
-    private String mTitle;
-    private ConnectionInfoView mInfoView;
-    private ViewGroup mContainer;
+    private @Nullable String mTitle;
+    private @Nullable ConnectionInfoView mInfoView;
+    private @Nullable ViewGroup mContainer;
 
     public PageInfoConnectionController(
             PageInfoMainController mainController,
             PageInfoRowView view,
             WebContents webContents,
             PageInfoControllerDelegate delegate,
-            String publisher,
+            @Nullable String publisher,
             boolean isInternalPage) {
         mMainController = mainController;
         mRowView = view;
@@ -54,7 +59,7 @@ public class PageInfoConnectionController
     }
 
     @Override
-    public String getSubpageTitle() {
+    public @Nullable String getSubpageTitle() {
         return mTitle;
     }
 
@@ -66,8 +71,14 @@ public class PageInfoConnectionController
     }
 
     @Override
+    public @Nullable View getCurrentSubpageView() {
+        return mContainer;
+    }
+
+    @Override
     public void onSubpageRemoved() {
         mContainer = null;
+        assumeNonNull(mInfoView);
         mInfoView.onDismiss();
     }
 
@@ -149,20 +160,30 @@ public class PageInfoConnectionController
     }
 
     private void setConnectionInfo(
-            CharSequence title, CharSequence subtitle, boolean hasClickCallback) {
+            @Nullable CharSequence title,
+            @Nullable CharSequence subtitle,
+            boolean hasClickCallback) {
         PageInfoRowView.ViewParams rowParams = new PageInfoRowView.ViewParams();
         mTitle = title != null ? title.toString() : null;
         rowParams.title = mTitle;
         rowParams.subtitle = subtitle;
         rowParams.visible = rowParams.title != null || rowParams.subtitle != null;
         int securityLevel = SecurityStateModel.getSecurityLevelForWebContents(mWebContents);
+        boolean isShowingHttpsFirstWarning =
+                mDelegate.isHttpsFirstDialogUiEnabled()
+                        && SecurityStateModel.isHttpsOnlyModeUpgradedForWebContents(mWebContents);
+
         // Page info should always show lock icon as the connection security indicator.
         rowParams.iconResId =
                 SecurityStatusIcon.getSecurityIconResource(
                         securityLevel,
+                        () ->
+                                SecurityStateModel.getMaliciousContentStatusForWebContents(
+                                        mWebContents),
                         /* isSmallDevice= */ false,
                         /* skipIconForNeutralState= */ false,
-                        /* useLockIconForSecureState= */ true);
+                        /* useLockIconForSecureState= */ true,
+                        isShowingHttpsFirstWarning);
         rowParams.iconTint = getSecurityIconColor(securityLevel);
         if (hasClickCallback) rowParams.clickCallback = this::launchSubpage;
         mRowView.setParams(rowParams);
@@ -185,4 +206,7 @@ public class PageInfoConnectionController
 
     @Override
     public void updateRowIfNeeded() {}
+
+    @Override
+    public void updateSubpageIfNeeded() {}
 }

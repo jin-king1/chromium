@@ -6,15 +6,15 @@
 
 #include "base/check_op.h"
 #include "base/files/file_path.h"
-#include "base/functional/callback_forward.h"
 #include "base/i18n/message_formatter.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ash/file_manager/copy_or_move_io_task.h"
 #include "chrome/browser/ash/file_manager/delete_io_task.h"
@@ -43,16 +43,14 @@ const int kAlternateUrlPollInterval = 200;
 
 std::string GetTargetAppName(base::FilePath file_path) {
   const std::string extension = base::ToLowerASCII(file_path.FinalExtension());
-  if (base::Contains(file_manager::file_tasks::WordGroupExtensions(),
-                     extension)) {
+  if (file_manager::file_tasks::WordGroupExtensions().contains(extension)) {
     return l10n_util::GetStringUTF8(IDS_OFFICE_FILE_HANDLER_APP_GOOGLE_DOCS);
   }
-  if (base::Contains(file_manager::file_tasks::ExcelGroupExtensions(),
-                     extension)) {
+  if (file_manager::file_tasks::ExcelGroupExtensions().contains(extension)) {
     return l10n_util::GetStringUTF8(IDS_OFFICE_FILE_HANDLER_APP_GOOGLE_SHEETS);
   }
-  if (base::Contains(file_manager::file_tasks::PowerPointGroupExtensions(),
-                     extension)) {
+  if (file_manager::file_tasks::PowerPointGroupExtensions().contains(
+          extension)) {
     return l10n_util::GetStringUTF8(IDS_OFFICE_FILE_HANDLER_APP_GOOGLE_SLIDES);
   }
   return l10n_util::GetStringUTF8(IDS_OFFICE_FILE_HANDLER_APP_GOOGLE_DOCS);
@@ -63,6 +61,7 @@ std::string GetTargetAppName(base::FilePath file_path) {
 DriveUploadHandler::DriveUploadHandler(
     Profile* profile,
     const FileSystemURL& source_url,
+    UploadType upload_type,
     UploadCallback callback,
     base::SafeRef<CloudOpenMetrics> cloud_open_metrics)
     : profile_(profile),
@@ -70,7 +69,7 @@ DriveUploadHandler::DriveUploadHandler(
           file_manager::util::GetFileManagerFileSystemContext(profile)),
       drive_integration_service_(
           drive::DriveIntegrationServiceFactory::FindForProfile(profile)),
-      upload_type_(GetUploadType(profile, source_url)),
+      upload_type_(upload_type),
       notification_manager_(
           base::MakeRefCounted<CloudUploadNotificationManager>(
               profile,
@@ -128,7 +127,7 @@ void DriveUploadHandler::Run() {
   io_task_controller_observer_.Observe(io_task_controller_);
 
   // Observe Drive updates.
-  drive::DriveIntegrationService::Observer::Observe(drive_integration_service_);
+  drive_observation_.Observe(drive_integration_service_);
   drivefs::DriveFsHost::Observer::Observe(
       drive_integration_service_->GetDriveFsHost());
 
@@ -498,6 +497,10 @@ void DriveUploadHandler::OnDriveConnectionStatusChanged(
   }
 }
 
+void DriveUploadHandler::OnDriveIntegrationServiceDestroyed() {
+  drive_observation_.Reset();
+}
+
 void DriveUploadHandler::OnGetDriveMetadata(
     bool timed_out,
     drive::FileError error,
@@ -530,9 +533,9 @@ void DriveUploadHandler::OnGetDriveMetadata(
 
   // URLs for editing Office files in Web Drive all have a "docs.google.com"
   // host.
-  if (hosted_url.host() != "docs.google.com") {
+  if (hosted_url.GetHost() != "docs.google.com") {
     if (timed_out) {
-      if (hosted_url.host() == "drive.google.com" &&
+      if (hosted_url.GetHost() == "drive.google.com" &&
           !file_manager::file_tasks::IsOfficeFileMimeType(
               metadata->content_mime_type)) {
         // The drive.google.com will appear if an uploaded file has an Office
@@ -543,7 +546,7 @@ void DriveUploadHandler::OnGetDriveMetadata(
                   base::unexpected(GetNotAValidDocumentErrorMessage()));
       } else {
         LOG(ERROR) << "Unexpected alternate URL - Drive editing unavailable: "
-                   << hosted_url.host();
+                   << hosted_url.GetHost();
         OnEndCopy(OfficeFilesUploadResult::kUnexpectedAlternateUrlHost);
       }
     } else {

@@ -1,11 +1,13 @@
 set(plugin_sources
   BlinkDataMemberTypeChecker.cpp
   ChromeClassTester.cpp
+  FilteredASTConsumer.cpp
   FindBadConstructsAction.cpp
   FindBadConstructsConsumer.cpp
   CheckIPCVisitor.cpp
   CheckLayoutObjectMethodsVisitor.cpp
   StackAllocatedChecker.cpp
+  StrictDepsPlugin.cpp
   UnsafeBuffersPlugin.cpp
   Util.cpp
 )

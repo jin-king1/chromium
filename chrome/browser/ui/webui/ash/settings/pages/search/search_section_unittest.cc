@@ -20,11 +20,11 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/lobster/lobster_service_provider.h"
 #include "chrome/browser/ash/lobster/mock_lobster_system_state_provider.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/specialized_features/feature_access_checker.h"
@@ -32,7 +32,7 @@
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_state.h"
 #include "chromeos/components/quick_answers/test/fake_quick_answers_state.h"
 #include "components/account_id/account_id.h"
-#include "components/user_manager/fake_user_manager.h"
+#include "components/session_manager/test/test_user_session_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/user_names.h"
 #include "content/public/test/test_web_ui_data_source.h"
@@ -91,56 +91,18 @@ TEST_F(SearchSectionTest,
       content::TestWebUIDataSource::Create("test-search-section");
 
   chromeos::test::FakeMagicBoostState magic_boost_state;
+  magic_boost_state.SetAvailability(true);
 
   search_section_->AddLoadTimeData(html_source->GetWebUIDataSource());
 
   EXPECT_FALSE(html_source->GetLocalizedStrings()
-                   ->FindBool("isLobsterSettingsToggleVisible")
+                   .FindBool("isLobsterSettingsToggleVisible")
                    .value());
-}
-
-TEST_F(SearchSectionTest,
-       DoesNotIncludeSunfishSettingsWhenSunfishFeaturesDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(/*enabled_features=*/{}, /*disabled_features=*/
-                                {
-                                    features::kSunfishFeature,
-                                    features::kScannerUpdate,
-                                    features::kScannerDogfood,
-                                });
-  search_section_ =
-      std::make_unique<SearchSection>(profile(), search_tag_registry());
-  std::unique_ptr<content::TestWebUIDataSource> html_source =
-      content::TestWebUIDataSource::Create("test-search-section");
-  // `AddLoadTimeData` assumes that `chromeos::MagicBoostState::Get()` returns
-  // a non-null pointer, so this cannot be removed.
-  chromeos::test::FakeMagicBoostState magic_boost_state;
-
-  search_section_->AddLoadTimeData(html_source->GetWebUIDataSource());
-
-  EXPECT_FALSE(html_source->GetLocalizedStrings()
-                   ->FindBool("isSunfishSettingsToggleVisible")
-                   .value());
-}
-
-TEST_F(SearchSectionTest, IncludesSunfishSettingsWhenSunfishEnabled) {
-  base::test::ScopedFeatureList feature_list(features::kSunfishFeature);
-  search_section_ =
-      std::make_unique<SearchSection>(profile(), search_tag_registry());
-  std::unique_ptr<content::TestWebUIDataSource> html_source =
-      content::TestWebUIDataSource::Create("test-search-section");
-  chromeos::test::FakeMagicBoostState magic_boost_state;
-
-  search_section_->AddLoadTimeData(html_source->GetWebUIDataSource());
-
-  EXPECT_TRUE(html_source->GetLocalizedStrings()
-                  ->FindBool("isSunfishSettingsToggleVisible")
-                  .value());
 }
 
 // MagicBoost availability check requires an async operation. There is a short
 // period where `MagicBoostState` returns false for its availability even if a
-// user/device is eligible.
+// user/device is eligible, and magic boost is enabled.
 TEST_F(SearchSectionTest,
        QuickAnswersSearchConceptsRemovedIfItBecomesUnavailable) {
   const std::string quick_answers_result_id = base::StrCat(
@@ -148,7 +110,8 @@ TEST_F(SearchSectionTest,
        ",", base::ToString(IDS_OS_SETTINGS_TAG_QUICK_ANSWERS)});
 
   chromeos::test::FakeMagicBoostState magic_boost_state;
-  magic_boost_state.SetMagicBoostAvailability(false);
+  magic_boost_state.SetAvailability(false);
+  magic_boost_state.SetMagicBoostEnabled(true);
   FakeQuickAnswersState quick_answers_state;
   quick_answers_state.SetApplicationLocale("en");
   ASSERT_EQ(QuickAnswersState::FeatureType::kQuickAnswers,
@@ -166,9 +129,8 @@ TEST_F(SearchSectionTest,
          "to kQuickAnswers";
 
   // Simulate that MagicBoost availability check async operation has been
-  // completed and a user has went through MagicBoost consent flow.
-  magic_boost_state.SetMagicBoostAvailability(true);
-  magic_boost_state.SetMagicBoostEnabled(true);
+  // completed.
+  magic_boost_state.SetAvailability(true);
   ASSERT_EQ(QuickAnswersState::FeatureType::kHmr,
             QuickAnswersState::GetFeatureType());
 
@@ -181,7 +143,11 @@ TEST_F(SearchSectionTest,
 class SearchSectionTestWithLobsterEnabled : public SearchSectionTest {
  public:
   void SetUp() override {
+    test_user_session_manager_ =
+        std::make_unique<ash::test::TestUserSessionManager>(
+            TestingBrowserProcess::GetGlobal()->local_state());
     SearchSectionTest::SetUp();
+    magic_boost_state_.SetAvailability(true);
     feature_list_.InitWithFeatures(
         /*enable_features=*/{ash::features::kLobster,
                              ash::features::kFeatureManagementLobster},
@@ -196,6 +162,7 @@ class SearchSectionTestWithLobsterEnabled : public SearchSectionTest {
   void TearDown() override {
     magic_boost_state_.RemoveObserver(search_section_.get());
     SearchSectionTest::TearDown();
+    test_user_session_manager_.reset();
   }
 
   content::TestWebUIDataSource* html_source() { return html_source_.get(); }
@@ -213,14 +180,14 @@ class SearchSectionTestWithLobsterEnabled : public SearchSectionTest {
 
  private:
   void AnnotateAccount() {
-    auto* user = fake_user_manager_->AddUser(user_manager::StubAccountId());
-    fake_user_manager_->LoginUser(user->GetAccountId());
-    ash::AnnotatedAccountId::Set(profile(), user->GetAccountId());
+    const AccountId account_id = user_manager::StubAccountId();
+    ASSERT_TRUE(test_user_session_manager_->AddRegularUser(account_id));
+    test_user_session_manager_->LogIn(account_id);
+    ash::AnnotatedAccountId::Set(profile(), account_id);
   }
 
   base::test::ScopedFeatureList feature_list_;
-  user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
-      fake_user_manager_{std::make_unique<ash::FakeChromeUserManager>()};
+  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
   std::unique_ptr<content::TestWebUIDataSource> html_source_;
   chromeos::test::FakeMagicBoostState magic_boost_state_;
 };
@@ -235,7 +202,7 @@ TEST_F(SearchSectionTestWithLobsterEnabled,
 
   EXPECT_FALSE(html_source()
                    ->GetLocalizedStrings()
-                   ->FindBool("isLobsterSettingsToggleVisible")
+                   .FindBool("isLobsterSettingsToggleVisible")
                    .value());
 }
 
@@ -249,7 +216,7 @@ TEST_F(SearchSectionTestWithLobsterEnabled,
 
   EXPECT_TRUE(html_source()
                   ->GetLocalizedStrings()
-                  ->FindBool("isLobsterSettingsToggleVisible")
+                  .FindBool("isLobsterSettingsToggleVisible")
                   .value());
 }
 
@@ -296,11 +263,12 @@ TEST_F(SearchSectionTestWithScannerEnabled,
   std::unique_ptr<content::TestWebUIDataSource> html_source =
       content::TestWebUIDataSource::Create("test-search-section");
   chromeos::test::FakeMagicBoostState magic_boost_state;
+  magic_boost_state.SetAvailability(true);
 
   search_section->AddLoadTimeData(html_source->GetWebUIDataSource());
 
   EXPECT_FALSE(html_source->GetLocalizedStrings()
-                   ->FindBool("isScannerSettingsToggleVisible")
+                   .FindBool("isScannerSettingsToggleVisible")
                    .value());
 }
 
@@ -320,11 +288,12 @@ TEST_F(
   std::unique_ptr<content::TestWebUIDataSource> html_source =
       content::TestWebUIDataSource::Create("test-search-section");
   chromeos::test::FakeMagicBoostState magic_boost_state;
+  magic_boost_state.SetAvailability(true);
 
   search_section->AddLoadTimeData(html_source->GetWebUIDataSource());
 
   EXPECT_TRUE(html_source->GetLocalizedStrings()
-                  ->FindBool("isScannerSettingsToggleVisible")
+                  .FindBool("isScannerSettingsToggleVisible")
                   .value());
 }
 
@@ -340,11 +309,12 @@ TEST_F(SearchSectionTestWithScannerEnabled,
   std::unique_ptr<content::TestWebUIDataSource> html_source =
       content::TestWebUIDataSource::Create("test-search-section");
   chromeos::test::FakeMagicBoostState magic_boost_state;
+  magic_boost_state.SetAvailability(true);
 
   search_section->AddLoadTimeData(html_source->GetWebUIDataSource());
 
   EXPECT_TRUE(html_source->GetLocalizedStrings()
-                  ->FindBool("isScannerSettingsToggleVisible")
+                  .FindBool("isScannerSettingsToggleVisible")
                   .value());
 }
 

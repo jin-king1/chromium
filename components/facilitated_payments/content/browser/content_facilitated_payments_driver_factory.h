@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/containers/flat_map.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ref.h"
 #include "components/facilitated_payments/content/browser/content_facilitated_payments_driver.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -17,10 +18,6 @@ class WebContents;
 class NavigationHandle;
 class RenderFrameHost;
 }  // namespace content
-
-namespace optimization_guide {
-class OptimizationGuideDecider;
-}  // namespace optimization_guide
 
 namespace payments::facilitated {
 
@@ -32,10 +29,8 @@ class FacilitatedPaymentsClient;
 class ContentFacilitatedPaymentsDriverFactory
     : public content::WebContentsObserver {
  public:
-  ContentFacilitatedPaymentsDriverFactory(
-      content::WebContents* web_contents,
-      FacilitatedPaymentsClient* client,
-      optimization_guide::OptimizationGuideDecider* optimization_guide_decider);
+  ContentFacilitatedPaymentsDriverFactory(content::WebContents* web_contents,
+                                          FacilitatedPaymentsClient* client);
   ContentFacilitatedPaymentsDriverFactory(
       const ContentFacilitatedPaymentsDriverFactory&) = delete;
   ContentFacilitatedPaymentsDriverFactory& operator=(
@@ -48,6 +43,18 @@ class ContentFacilitatedPaymentsDriverFactory
       content::RenderFrameHost* render_frame_host);
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(
+      ContentFacilitatedPaymentsDriverFactoryTest,
+      OnTextCopiedToClipboard_PixCodeInIFrame_DoesNotTriggerPixDetection_PixFlowExitedReasonLogged);
+  FRIEND_TEST_ALL_PREFIXES(
+      ContentFacilitatedPaymentsDriverFactoryTest,
+      OnTextCopiedToClipboard_PixCodeInIFrame_FlagEnabled_PixFlowExitedReasonNotLogged);
+  FRIEND_TEST_ALL_PREFIXES(
+      ContentFacilitatedPaymentsDriverFactoryTest,
+      OnTextCopiedToClipboard_PixCodeInIFrame_FlagEnabled_CorrectIframeUrlPassedToDriver);
+  FRIEND_TEST_ALL_PREFIXES(
+      ContentFacilitatedPaymentsDriverFactoryTest,
+      OnTextCopiedToClipboard_FrameNotActive_DoesNotTriggerPixDetection_PixFlowExitedReasonLogged);
   // content::WebContentsObserver:
   void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
   void RenderFrameHostStateChanged(
@@ -67,11 +74,6 @@ class ContentFacilitatedPaymentsDriverFactory
 
   // Owner.
   const raw_ref<FacilitatedPaymentsClient> client_;
-
-  // The optimization guide decider to help determine whether the current main
-  // frame URL is eligible for facilitated payments.
-  raw_ptr<optimization_guide::OptimizationGuideDecider>
-      optimization_guide_decider_ = nullptr;
 };
 
 }  // namespace payments::facilitated

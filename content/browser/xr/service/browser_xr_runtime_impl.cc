@@ -8,7 +8,6 @@
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/observer_list.h"
@@ -29,10 +28,6 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_types.h"
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-#include "base/android/android_hardware_buffer_compat.h"
 #endif
 
 namespace content {
@@ -74,34 +69,33 @@ device::mojom::XRViewPtr ValidateXRView(const device::mojom::XRView* view) {
   ret->eye = view->eye;
   // FOV
   float kDefaultFOV = 45;
-  ret->field_of_view = device::mojom::VRFieldOfView::New();
-  if (view->field_of_view->up_degrees < 90 &&
-      view->field_of_view->up_degrees > -90 &&
-      view->field_of_view->up_degrees > -view->field_of_view->down_degrees &&
-      view->field_of_view->down_degrees < 90 &&
-      view->field_of_view->down_degrees > -90 &&
-      view->field_of_view->down_degrees > -view->field_of_view->up_degrees &&
-      view->field_of_view->left_degrees < 90 &&
-      view->field_of_view->left_degrees > -90 &&
-      view->field_of_view->left_degrees > -view->field_of_view->right_degrees &&
-      view->field_of_view->right_degrees < 90 &&
-      view->field_of_view->right_degrees > -90 &&
-      view->field_of_view->right_degrees > -view->field_of_view->left_degrees) {
-    ret->field_of_view->up_degrees = view->field_of_view->up_degrees;
-    ret->field_of_view->down_degrees = view->field_of_view->down_degrees;
-    ret->field_of_view->left_degrees = view->field_of_view->left_degrees;
-    ret->field_of_view->right_degrees = view->field_of_view->right_degrees;
+  ret->geometry = device::mojom::XRViewGeometry::New();
+  ret->geometry->field_of_view = device::mojom::VRFieldOfView::New();
+  auto& view_fov = view->geometry->field_of_view;
+  auto& ret_fov = ret->geometry->field_of_view;
+  if (view_fov->up_degrees < 90 && view_fov->up_degrees > -90 &&
+      view_fov->up_degrees > -view_fov->down_degrees &&
+      view_fov->down_degrees < 90 && view_fov->down_degrees > -90 &&
+      view_fov->down_degrees > -view_fov->up_degrees &&
+      view_fov->left_degrees < 90 && view_fov->left_degrees > -90 &&
+      view_fov->left_degrees > -view_fov->right_degrees &&
+      view_fov->right_degrees < 90 && view_fov->right_degrees > -90 &&
+      view_fov->right_degrees > -view_fov->left_degrees) {
+    ret_fov->up_degrees = view_fov->up_degrees;
+    ret_fov->down_degrees = view_fov->down_degrees;
+    ret_fov->left_degrees = view_fov->left_degrees;
+    ret_fov->right_degrees = view_fov->right_degrees;
   } else {
-    ret->field_of_view->up_degrees = kDefaultFOV;
-    ret->field_of_view->down_degrees = kDefaultFOV;
-    ret->field_of_view->left_degrees = kDefaultFOV;
-    ret->field_of_view->right_degrees = kDefaultFOV;
+    ret_fov->up_degrees = kDefaultFOV;
+    ret_fov->down_degrees = kDefaultFOV;
+    ret_fov->left_degrees = kDefaultFOV;
+    ret_fov->right_degrees = kDefaultFOV;
   }
 
-  if (IsValidTransform(view->mojo_from_view)) {
-    ret->mojo_from_view = view->mojo_from_view;
+  if (IsValidTransform(view->geometry->mojo_from_view)) {
+    ret->geometry->mojo_from_view = view->geometry->mojo_from_view;
   }
-  // else, ret->mojo_from_view remains the identity transform
+  // else, ret->geometry->mojo_from_view remains the identity transform
 
   // Renderwidth/height
   int kMaxSize = 16384;
@@ -133,8 +127,6 @@ BrowserXRRuntimeImpl::BrowserXRRuntimeImpl(
 
   runtime_->ListenToDeviceChanges(receiver_.BindNewEndpointAndPassRemote());
 
-  // TODO(crbug.com/40662458): Convert this to a query for the client off of
-  // ContentBrowserClient once BrowserXRRuntimeImpl moves to content.
   auto* integration_client = GetXrIntegrationClient();
 
   if (integration_client) {
@@ -155,7 +147,7 @@ BrowserXRRuntimeImpl::~BrowserXRRuntimeImpl() {
   }
 
   if (install_finished_callback_) {
-    std::move(install_finished_callback_).Run(false);
+    std::move(install_finished_callback_).Run(XrInstallResult::kFailed);
   }
 }
 
@@ -173,7 +165,7 @@ bool BrowserXRRuntimeImpl::SupportsFeature(
      id_ == device::mojom::XRDeviceId::FAKE_DEVICE_ID)
       return true;
 
-  return base::Contains(device_data_->supported_features, feature);
+  return std::ranges::contains(device_data_->supported_features, feature);
 }
 
 bool BrowserXRRuntimeImpl::SupportsAllFeatures(
@@ -279,15 +271,14 @@ void BrowserXRRuntimeImpl::OnServiceRemoved(VRServiceImpl* service) {
   DCHECK(service);
   services_.erase(service);
   if (service == presenting_service_) {
+    // Our presenting service is no longer valid, so we need to clear it before
+    // shutting down the session on the runtime side. Note that while
+    // `ExitPresent` looks similar, it may not be called by the presenting
+    // service, in which case the service needs to be notified after the
+    // shutdown is completed, so we can't simply move the check/clear down into
+    // `ShutdownRuntime`.
     presenting_service_ = nullptr;
-    // Note that we replicate the logic in ExitPresent because we need to clear
-    // our presenting_service_ as it is no longer valid. However, the Runtime
-    // may still need to be notified to terminate its session. ExitPresent may
-    // be called when the service *is* still valid and would need to be notified
-    // of this shutdown.
-    runtime_->ShutdownSession(
-        base::BindOnce(&BrowserXRRuntimeImpl::StopImmersiveSession,
-                       weak_ptr_factory_.GetWeakPtr()));
+    ShutdownRuntime();
   }
 }
 
@@ -295,10 +286,21 @@ void BrowserXRRuntimeImpl::ExitPresent(VRServiceImpl* service) {
   DVLOG(2) << __func__ << ": id=" << id_ << " service=" << service
            << " presenting_service_=" << presenting_service_;
   if (service == presenting_service_) {
-    runtime_->ShutdownSession(
-        base::BindOnce(&BrowserXRRuntimeImpl::StopImmersiveSession,
-                       weak_ptr_factory_.GetWeakPtr()));
+    ShutdownRuntime();
   }
+}
+
+void BrowserXRRuntimeImpl::ShutdownRuntime() {
+  // As part of it's shutdown, the runtime will disconnect this pipe. If we do
+  // not clear the current disconnect handler we'll essentially signal to blink
+  // too early that the session has shutdown. This has led to race conditions in
+  // tests that end the session from blink and then immediately start a new
+  // session where the pending `StopImmersiveSession` callback happens after a
+  // new session was granted and then kills the new session.
+  immersive_session_controller_.set_disconnect_handler(base::DoNothing());
+  runtime_->ShutdownSession(
+      base::BindOnce(&BrowserXRRuntimeImpl::StopImmersiveSession,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void BrowserXRRuntimeImpl::SetFramesThrottled(const VRServiceImpl* service,
@@ -357,10 +359,10 @@ void BrowserXRRuntimeImpl::OnRequestSessionResult(
         }
 
         // The overlay code requires the left and right views to render.
-        if (!base::Contains(views, device::mojom::XREye::kLeft,
-                            &device::mojom::XRView::eye) ||
-            !base::Contains(views, device::mojom::XREye::kRight,
-                            &device::mojom::XRView::eye)) {
+        if (!std::ranges::contains(views, device::mojom::XREye::kLeft,
+                                   &device::mojom::XRView::eye) ||
+            !std::ranges::contains(views, device::mojom::XREye::kRight,
+                                   &device::mojom::XRView::eye)) {
           // Notify the service to cleanup any session that it's started to
           // setup, and when that and our corresponding runtime shutdown have
           // finished, notify the page that the session request failed.
@@ -377,8 +379,8 @@ void BrowserXRRuntimeImpl::OnRequestSessionResult(
       }
 
       immersive_session_has_camera_access_ =
-          base::Contains(session_result->session->enabled_features,
-                         device::mojom::XRSessionFeature::CAMERA_ACCESS);
+          std::ranges::contains(session_result->session->enabled_features,
+                                device::mojom::XRSessionFeature::CAMERA_ACCESS);
       if (immersive_session_has_camera_access_) {
         for (Observer& observer : observers_) {
           observer.WebXRCameraInUseChanged(web_contents, true);
@@ -399,14 +401,13 @@ void BrowserXRRuntimeImpl::OnRequestSessionResult(
 }
 
 void BrowserXRRuntimeImpl::EnsureInstalled(
-    int render_process_id,
-    int render_frame_id,
-    base::OnceCallback<void(bool)> install_callback) {
+    const content::GlobalRenderFrameHostId& frame_id,
+    base::OnceCallback<void(XrInstallResult)> install_callback) {
   DVLOG(2) << __func__;
 
   // If there's no install helper, then we can assume no install is needed.
   if (!install_helper_) {
-    std::move(install_callback).Run(true);
+    std::move(install_callback).Run(XrInstallResult::kSuccessAlreadyInstalled);
     return;
   }
 
@@ -414,7 +415,7 @@ void BrowserXRRuntimeImpl::EnsureInstalled(
   bool had_outstanding_callback = false;
   if (install_finished_callback_) {
     had_outstanding_callback = true;
-    std::move(install_finished_callback_).Run(false);
+    std::move(install_finished_callback_).Run(XrInstallResult::kFailed);
   }
 
   install_finished_callback_ = std::move(install_callback);
@@ -425,15 +426,14 @@ void BrowserXRRuntimeImpl::EnsureInstalled(
     return;
 
   install_helper_->EnsureInstalled(
-      render_process_id, render_frame_id,
-      base::BindOnce(&BrowserXRRuntimeImpl::OnInstallFinished,
-                     weak_ptr_factory_.GetWeakPtr()));
+      frame_id, base::BindOnce(&BrowserXRRuntimeImpl::OnInstallFinished,
+                               weak_ptr_factory_.GetWeakPtr()));
 }
 
-void BrowserXRRuntimeImpl::OnInstallFinished(bool succeeded) {
+void BrowserXRRuntimeImpl::OnInstallFinished(XrInstallResult result) {
   DCHECK(install_finished_callback_);
 
-  std::move(install_finished_callback_).Run(succeeded);
+  std::move(install_finished_callback_).Run(result);
 }
 
 void BrowserXRRuntimeImpl::OnImmersiveSessionError() {

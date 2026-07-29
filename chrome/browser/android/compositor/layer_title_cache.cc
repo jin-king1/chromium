@@ -8,6 +8,7 @@
 
 #include <memory>
 
+#include "base/android/token_android.h"
 #include "cc/layers/layer.h"
 #include "cc/layers/ui_resource_layer.h"
 #include "chrome/browser/android/compositor/decoration_icon_title.h"
@@ -23,7 +24,6 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/LayerTitleCache_jni.h"
 
-using base::android::JavaParamRef;
 using base::android::JavaRef;
 
 namespace android {
@@ -38,16 +38,16 @@ LayerTitleCache* LayerTitleCache::FromJavaObject(const JavaRef<jobject>& jobj) {
 
 LayerTitleCache::LayerTitleCache(JNIEnv* env,
                                  const jni_zero::JavaRef<jobject>& obj,
-                                 jint fade_width,
-                                 jint icon_start_padding,
-                                 jint icon_end_padding,
-                                 jint spinner_resource_id,
-                                 jint spinner_incognito_resource_id,
-                                 jint bubble_inner_dimension,
-                                 jint bubble_outer_dimension,
-                                 jint bubble_offset,
-                                 jint bubble_inner_tint,
-                                 jint bubble_outer_tint,
+                                 int32_t fade_width,
+                                 int32_t icon_start_padding,
+                                 int32_t icon_end_padding,
+                                 int32_t spinner_resource_id,
+                                 int32_t spinner_incognito_resource_id,
+                                 int32_t bubble_inner_dimension,
+                                 int32_t bubble_outer_dimension,
+                                 int32_t bubble_offset,
+                                 int32_t bubble_inner_tint,
+                                 int32_t bubble_outer_tint,
                                  ui::ResourceManager* resource_manager)
     : weak_java_title_cache_(env, obj),
       fade_width_(fade_width),
@@ -67,10 +67,9 @@ void LayerTitleCache::Destroy(JNIEnv* env) {
 }
 
 void LayerTitleCache::UpdateLayer(JNIEnv* env,
-                                  const JavaParamRef<jobject>& obj,
-                                  jint tab_id,
-                                  jint title_resource_id,
-                                  jint icon_resource_id,
+                                  int32_t tab_id,
+                                  int32_t title_resource_id,
+                                  int32_t icon_resource_id,
                                   bool is_incognito,
                                   bool is_rtl,
                                   bool show_bubble) {
@@ -96,35 +95,38 @@ void LayerTitleCache::UpdateLayer(JNIEnv* env,
   }
 }
 
-void LayerTitleCache::UpdateGroupLayer(JNIEnv* env,
-                                       const JavaParamRef<jobject>& obj,
-                                       jint group_root_id,
-                                       jint title_resource_id,
-                                       jint avatar_resource_id,
-                                       jint avatar_padding,
-                                       bool is_incognito,
-                                       bool is_rtl) {
-  DecorationIconTitle* title_layer = group_layer_cache_.Lookup(group_root_id);
-  if (title_layer) {
+void LayerTitleCache::UpdateGroupLayer(
+    JNIEnv* env,
+    const base::android::JavaRef<jobject>& jgroup_token,
+    int32_t title_resource_id,
+    int32_t avatar_resource_id,
+    int32_t avatar_padding,
+    bool is_incognito,
+    bool is_rtl) {
+  const tab_groups::TabGroupId& group_token =
+      tab_groups::TabGroupId::FromRawToken(
+          base::android::TokenAndroid::FromJavaToken(env, jgroup_token));
+  auto it = group_layer_cache_.find(group_token);
+  if (it != group_layer_cache_.end()) {
+    DecorationIconTitle* title_layer = it->second.get();
     if (title_resource_id != ui::Resource::kInvalidResourceId) {
       title_layer->Update(title_resource_id, avatar_resource_id, fade_width_,
                           kEmptyWidth, avatar_padding, is_incognito, is_rtl);
     } else {
-      group_layer_cache_.Remove(group_root_id);
+      group_layer_cache_.erase(it);
     }
   } else {
-    group_layer_cache_.AddWithID(
+    group_layer_cache_.emplace(
+        group_token,
         std::make_unique<DecorationIconTitle>(
             resource_manager_, title_resource_id, avatar_resource_id,
-            fade_width_, kEmptyWidth, avatar_padding, is_incognito, is_rtl),
-        group_root_id);
+            fade_width_, kEmptyWidth, avatar_padding, is_incognito, is_rtl));
   }
 }
 
 void LayerTitleCache::UpdateIcon(JNIEnv* env,
-                                 const JavaParamRef<jobject>& obj,
-                                 jint tab_id,
-                                 jint icon_resource_id,
+                                 int32_t tab_id,
+                                 int32_t icon_resource_id,
                                  bool show_bubble) {
   DecorationTabTitle* title_layer = layer_cache_.Lookup(tab_id);
   if (title_layer && icon_resource_id != ui::Resource::kInvalidResourceId) {
@@ -133,8 +135,7 @@ void LayerTitleCache::UpdateIcon(JNIEnv* env,
 }
 
 void LayerTitleCache::UpdateTabBubble(JNIEnv* env,
-                                      const JavaParamRef<jobject>& obj,
-                                      jint tab_id,
+                                      int32_t tab_id,
                                       bool show_bubble) {
   DecorationTabTitle* title_layer = layer_cache_.Lookup(tab_id);
   if (title_layer) {
@@ -152,15 +153,22 @@ DecorationTabTitle* LayerTitleCache::GetTitleLayer(int tab_id) {
   return layer_cache_.Lookup(tab_id);
 }
 
-DecorationIconTitle* LayerTitleCache::GetGroupTitleLayer(int group_root_id,
-                                                         bool incognito) {
-  if (!group_layer_cache_.Lookup(group_root_id)) {
-    JNIEnv* env = base::android::AttachCurrentThread();
-    Java_LayerTitleCache_buildUpdatedGroupTitle(
-        env, weak_java_title_cache_.get(env), group_root_id, incognito);
+DecorationIconTitle* LayerTitleCache::GetGroupTitleLayer(
+    const tab_groups::TabGroupId& group_token,
+    bool incognito) {
+  auto it = group_layer_cache_.find(group_token);
+  if (it != group_layer_cache_.end()) {
+    return it->second.get();
   }
 
-  return group_layer_cache_.Lookup(group_root_id);
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_LayerTitleCache_buildUpdatedGroupTitle(
+      env, weak_java_title_cache_.get(env),
+      base::android::TokenAndroid::Create(env, group_token.token()), incognito);
+
+  // Retry the find.
+  it = group_layer_cache_.find(group_token);
+  return it == group_layer_cache_.end() ? nullptr : it->second.get();
 }
 
 LayerTitleCache::~LayerTitleCache() = default;
@@ -169,19 +177,20 @@ LayerTitleCache::~LayerTitleCache() = default;
 // Native JNI methods
 // ----------------------------------------------------------------------------
 
-jlong JNI_LayerTitleCache_Init(JNIEnv* env,
-                               const JavaParamRef<jobject>& obj,
-                               jint fade_width,
-                               jint icon_start_padding,
-                               jint icon_end_padding,
-                               jint spinner_resource_id,
-                               jint spinner_incognito_resource_id,
-                               jint bubble_inner_dimension,
-                               jint bubble_outer_dimension,
-                               jint bubble_offset,
-                               jint bubble_inner_tint,
-                               jint bubble_outer_tint,
-                               const JavaParamRef<jobject>& jresource_manager) {
+static int64_t JNI_LayerTitleCache_Init(
+    JNIEnv* env,
+    const JavaRef<jobject>& obj,
+    int32_t fade_width,
+    int32_t icon_start_padding,
+    int32_t icon_end_padding,
+    int32_t spinner_resource_id,
+    int32_t spinner_incognito_resource_id,
+    int32_t bubble_inner_dimension,
+    int32_t bubble_outer_dimension,
+    int32_t bubble_offset,
+    int32_t bubble_inner_tint,
+    int32_t bubble_outer_tint,
+    const JavaRef<jobject>& jresource_manager) {
   ui::ResourceManager* resource_manager =
       ui::ResourceManagerImpl::FromJavaObject(jresource_manager);
   LayerTitleCache* cache = new LayerTitleCache(
@@ -193,3 +202,5 @@ jlong JNI_LayerTitleCache_Init(JNIEnv* env,
 }
 
 }  // namespace android
+
+DEFINE_JNI(LayerTitleCache)

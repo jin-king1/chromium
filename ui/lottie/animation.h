@@ -125,7 +125,8 @@ class COMPONENT_EXPORT(UI_LOTTIE) Animation final {
     PlaybackConfig(std::vector<CycleBoundaries> scheduled_cycles,
                    base::TimeDelta initial_offset,
                    int initial_completed_cycles,
-                   Style style);
+                   Style style,
+                   bool ignore_reduced_motion = false);
     PlaybackConfig(const PlaybackConfig& other);
     PlaybackConfig& operator=(const PlaybackConfig& other);
     ~PlaybackConfig();
@@ -157,6 +158,10 @@ class COMPONENT_EXPORT(UI_LOTTIE) Animation final {
     int initial_completed_cycles = 0;
 
     Style style = Style::kLoop;
+
+    // If true, the animation will play even if the user prefers reduced motion.
+    // This is defaulted to false.
+    bool ignore_reduced_motion = false;
   };
 
   // |frame_data_provider| may be null if it's known that the incoming skottie
@@ -349,7 +354,13 @@ class COMPONENT_EXPORT(UI_LOTTIE) Animation final {
   // The config from the most recent call to Start().
   PlaybackConfig playback_config_;
 
-  base::ObserverList<AnimationObserver> observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      AnimationObserver,
+      /*check_empty=*/false,
+      /*reentrancy=*/
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      observers_;
 
   scoped_refptr<cc::SkottieWrapper> skottie_;
   cc::SkottieColorMap color_map_;

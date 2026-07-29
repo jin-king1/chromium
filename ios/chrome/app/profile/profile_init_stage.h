@@ -14,11 +14,6 @@ enum class ProfileInitStage {
   // Perform all asynch operation to load profile's preferences from disk.
   kLoadProfile,
 
-  // Migrate the session storage for the profile.
-  // TODO(crbug.com/40945317): remove when migrating legacy session storage
-  // is no longer supported (i.e. all users have migrated).
-  kMigrateStorage,
-
   // Delete all data for previously discarded sessions. If no sessions was
   // recently discarded, this will transition immediately to the next stage.
   kPurgeDiscardedSessionsData,
@@ -41,7 +36,10 @@ enum class ProfileInitStage {
   // conditions are already handled, the transition will be instantanous.
   //
   // It is possible to add new stage between kUIReady and kNormalUI to add new
-  // blocking stage if a feature requires it.
+  // blocking stage if a feature requires it. All those transitions must either
+  // be instantaneous or are assumed to require user interaction (and cause the
+  // ProfileController to cancel any in-progress animation related to profile
+  // switching).
 
   // This presents the first run experience. Only presented for new profile
   // (maybe first profile?)

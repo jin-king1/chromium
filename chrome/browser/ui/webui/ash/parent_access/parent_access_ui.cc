@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/webui_url_constants.h"
 #include "ash/webui/common/trusted_types_util.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/profiles/profile.h"
@@ -16,18 +17,17 @@
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_dialog.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_ui.mojom.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_ui_handler_impl.h"
-#include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/browser_resources.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/parent_access_resources.h"
 #include "chrome/grit/parent_access_resources_map.h"
 #include "chrome/grit/supervision_resources.h"
 #include "chrome/grit/supervision_resources_map.h"
+#include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/webui_util.h"
 
 namespace ash {
@@ -62,20 +62,16 @@ void ParentAccessUI::BindInterface(
       std::move(receiver), identity_manager, ParentAccessDialog::GetInstance());
 }
 
-void ParentAccessUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
-}
-
 parent_access_ui::mojom::ParentAccessUiHandler*
 ParentAccessUI::GetHandlerForTest() {
   return mojo_api_handler_.get();
 }
 
 void ParentAccessUI::SetUpResources() {
+  Profile* profile = Profile::FromWebUI(web_ui());
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui()), chrome::kChromeUIParentAccessHost);
+      profile, ash::kChromeUIParentAccessHost);
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
   ash::EnableTrustedTypesCSP(source);
 
   source->EnableReplaceI18nInJS();

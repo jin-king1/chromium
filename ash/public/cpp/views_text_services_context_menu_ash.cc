@@ -6,10 +6,9 @@
 
 #include "ash/public/cpp/clipboard_history_controller.h"
 #include "base/functional/bind.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
-#include "chromeos/crosapi/mojom/clipboard_history.mojom.h"
 #include "chromeos/ui/clipboard_history/clipboard_history_submenu_model.h"
+#include "chromeos/ui/clipboard_history/clipboard_history_types.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/menu_source_utils.h"
 #include "ui/strings/grit/ui_strings.h"
@@ -23,8 +22,8 @@ ViewsTextServicesContextMenuAsh::ViewsTextServicesContextMenuAsh(
     views::Textfield* client)
     : views::ViewsTextServicesContextMenuBase(menu, client) {
   // If the menu has a paste option, add a clipboard history option as well.
-  const std::optional<size_t> paste_index =
-      menu->GetIndexOfCommandId(ui::TouchEditable::kPaste);
+  const std::optional<size_t> paste_index = menu->GetIndexOfCommandId(
+      std::to_underlying(ui::TouchEditable::MenuCommands::kPaste));
 
   if (!paste_index.has_value()) {
     return;
@@ -41,8 +40,7 @@ ViewsTextServicesContextMenuAsh::ViewsTextServicesContextMenuAsh(
   // pointer in the callback.
   submenu_model_ = chromeos::clipboard_history::ClipboardHistorySubmenuModel::
       CreateClipboardHistorySubmenuModel(
-          crosapi::mojom::ClipboardHistoryControllerShowSource::
-              kTextfieldContextSubmenu,
+          chromeos::clipboard_history::ShowSource::kTextfieldContextSubmenu,
           base::BindRepeating(
               &ViewsTextServicesContextMenuAsh::ShowClipboardHistoryMenu,
               base::Unretained(this)));
@@ -60,10 +58,7 @@ bool ViewsTextServicesContextMenuAsh::GetAcceleratorForCommandId(
   if (command_id == IDS_APP_SHOW_CLIPBOARD_HISTORY) {
     // `IDS_APP_SHOW_CLIPBOARD_HISTORY` is in the clipboard history submenu.
     // Therefore, the code below should not be executed.
-    NOTREACHED(base::NotFatalUntil::M135);
-
-    *accelerator = ui::Accelerator(ui::VKEY_V, ui::EF_COMMAND_DOWN);
-    return true;
+    NOTREACHED();
   }
 
   return ViewsTextServicesContextMenuBase::GetAcceleratorForCommandId(
@@ -91,10 +86,7 @@ void ViewsTextServicesContextMenuAsh::ExecuteCommand(int command_id,
   if (command_id == IDS_APP_SHOW_CLIPBOARD_HISTORY) {
     // `IDS_APP_SHOW_CLIPBOARD_HISTORY` is in the clipboard history submenu.
     // Therefore, the code below should not be executed.
-    NOTREACHED(base::NotFatalUntil::M135);
-
-    ShowClipboardHistoryMenu(event_flags);
-    return;
+    NOTREACHED();
   }
 
   ViewsTextServicesContextMenuBase::ExecuteCommand(command_id, event_flags);
@@ -112,8 +104,7 @@ void ViewsTextServicesContextMenuAsh::ShowClipboardHistoryMenu(
     int event_flags) {
   ClipboardHistoryController::Get()->ShowMenu(
       client()->GetCaretBounds(), ui::GetMenuSourceType(event_flags),
-      crosapi::mojom::ClipboardHistoryControllerShowSource::
-          kTextfieldContextMenu);
+      chromeos::clipboard_history::ShowSource::kTextfieldContextMenu);
 }
 
 }  // namespace ash

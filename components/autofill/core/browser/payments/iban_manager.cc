@@ -4,13 +4,19 @@
 
 #include "components/autofill/core/browser/payments/iban_manager.h"
 
-#include "base/containers/contains.h"
+#include <utility>
+#include <variant>
+
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
+#include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
-#include "components/autofill/core/browser/integrators/autofill_optimization_guide.h"
 #include "components/autofill/core/browser/metrics/payments/iban_metrics.h"
-#include "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator.h"
-#include "components/autofill/core/common/autofill_clock.h"
+#include "components/autofill/core/browser/single_field_fillers/single_field_fill_router.h"
+#include "components/autofill/core/browser/suggestions/payments/iban_suggestion_generator.h"
+#include "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator_util.h"
+#include "components/autofill/core/browser/suggestions/suggestion.h"
+#include "components/autofill/core/browser/suggestions/suggestion_generator.h"
+#include "components/autofill/core/common/unique_ids.h"
 
 namespace autofill {
 
@@ -18,62 +24,78 @@ namespace {
 
 using autofill_metrics::IbanSuggestionsEvent;
 
-constexpr int kFieldLengthLimitOnServerIbanSuggestion = 6;
-
 }  // namespace
 
 IbanManager::IbanManager(PaymentsDataManager* payments_data_manager)
     : payments_data_manager_(payments_data_manager) {}
 
-IbanManager::~IbanManager() = default;
+void IbanManager::LogIbanFormFilled() {
+  if (suggestion_status_ == SuggestionStatus::kSelected) {
+    suggestion_status_ = SuggestionStatus::kFilled;
+    autofill_metrics::LogIbanFormEvent(
+        is_local_iban_suggestion_selected_
+            ? autofill_metrics::IbanFormEvent::kLocalIbanFilled
+            : autofill_metrics::IbanFormEvent::kServerIbanFilled);
+  }
+}
+
+void IbanManager::OnWillSubmitFormWithFields() {
+  if (suggestion_status_ == SuggestionStatus::kFilled) {
+    suggestion_status_ = SuggestionStatus::kFormSubmitted;
+    autofill_metrics::LogIbanFormEvent(
+        autofill_metrics::IbanFormEvent::kFormSubmitted);
+  }
+}
 
 bool IbanManager::OnGetSingleFieldSuggestions(
+    const FormStructure& form,
     const FormFieldData& field,
     const AutofillField& autofill_field,
-    const AutofillClient& client,
+    AutofillClient& client,
     SingleFieldFillRouter::OnSuggestionsReturnedCallback&
         on_suggestions_returned) {
-  // The field is eligible only if it's focused on an IBAN field.
-  if (autofill_field.Type().GetStorableType() != IBAN_VALUE) {
-    return false;
-  }
+  IbanSuggestionGenerator iban_suggestion_generator;
+  bool suggestions_generated = false;
 
-  if (!payments_data_manager_ ||
-      !payments_data_manager_->IsAutofillPaymentMethodsEnabled()) {
-    return false;
-  }
+  auto on_suggestions_generated =
+      [&on_suggestions_returned, &field, &suggestions_generated](
+          SuggestionGenerator::ReturnedSuggestions returned_suggestions) {
+        suggestions_generated = !returned_suggestions.second.empty();
+        if (suggestions_generated) {
+          std::move(on_suggestions_returned)
+              .Run(field.global_id(), std::move(returned_suggestions.second));
+        }
+      };
 
-  std::vector<Iban> ibans = payments_data_manager_->GetOrderedIbansToSuggest();
-  if (ibans.empty()) {
-    return false;
-  }
-
-  // AutofillOptimizationGuide will not be present on unsupported platforms.
-  if (auto* autofill_optimization_guide =
-          client.GetAutofillOptimizationGuide()) {
-    if (autofill_optimization_guide->ShouldBlockSingleFieldSuggestions(
-            client.GetLastCommittedPrimaryMainFrameOrigin().GetURL(),
-            &autofill_field)) {
-      autofill_metrics::LogIbanSuggestionBlockListStatusMetric(
-          autofill_metrics::IbanSuggestionBlockListStatus::kBlocked);
-      return false;
-    }
-    autofill_metrics::LogIbanSuggestionBlockListStatusMetric(
-        autofill_metrics::IbanSuggestionBlockListStatus::kAllowed);
-  } else {
-    autofill_metrics::LogIbanSuggestionBlockListStatusMetric(
-        autofill_metrics::IbanSuggestionBlockListStatus::
-            kBlocklistIsNotAvailable);
-  }
-
-  std::move(on_suggestions_returned)
-      .Run(field.global_id(), GetIbanSuggestions(std::move(ibans), field));
-  return true;
+  // Since the `on_suggestions_generated` callback is called synchronously,
+  // we can assume that `suggestions_generated` will hold the correct value.
+  iban_suggestion_generator.GenerateSuggestions(form.ToFormData(), field, &form,
+                                                &autofill_field, client,
+                                                on_suggestions_generated);
+  return suggestions_generated;
 }
 
 void IbanManager::OnSingleFieldSuggestionSelected(
     const Suggestion& suggestion) {
   uma_recorder_.OnIbanSuggestionSelected(suggestion);
+  if (suggestion_status_ == SuggestionStatus::kShown) {
+    suggestion_status_ = SuggestionStatus::kSelected;
+    is_local_iban_suggestion_selected_ =
+        std::holds_alternative<Suggestion::Guid>(suggestion.payload);
+    if (!is_local_iban_suggestion_selected_) {
+      autofill_metrics::LogIbanFormEvent(
+          autofill_metrics::IbanFormEvent::kServerIbanSelected);
+    }
+  }
+}
+
+void IbanManager::OnIbanSuggestionsShown(FieldGlobalId field_global_id) {
+  if (suggestion_status_ == SuggestionStatus::kNotShown) {
+    suggestion_status_ = SuggestionStatus::kShown;
+    autofill_metrics::LogIbanFormEvent(
+        autofill_metrics::IbanFormEvent::kSuggestionShown);
+  }
+  uma_recorder_.OnIbanSuggestionsShown(field_global_id);
 }
 
 void IbanManager::UmaRecorder::OnIbanSuggestionsShown(
@@ -94,7 +116,7 @@ void IbanManager::UmaRecorder::OnIbanSuggestionSelected(
   autofill_metrics::LogIbanSelectedCountry(
       Iban::GetCountryCode(suggestion.main_text.value));
   bool is_local_iban =
-      absl::holds_alternative<Suggestion::Guid>(suggestion.payload);
+      std::holds_alternative<Suggestion::Guid>(suggestion.payload);
   // We log every time the IBAN suggestion is selected.
   autofill_metrics::LogIndividualIbanSuggestionsEvent(
       is_local_iban ? IbanSuggestionsEvent::kLocalIbanSuggestionSelected
@@ -109,43 +131,6 @@ void IbanManager::UmaRecorder::OnIbanSuggestionSelected(
 
   most_recent_suggestion_selected_field_global_id_ =
       most_recent_suggestions_shown_field_global_id_;
-}
-
-std::vector<Suggestion> IbanManager::GetIbanSuggestions(
-    std::vector<Iban> ibans,
-    const FormFieldData& field) {
-  // If the input box content equals any of the available IBANs, then
-  // assume the IBAN has been filled, and don't show any suggestions.
-  if (!field.value().empty() &&
-      base::Contains(ibans, field.value(), &Iban::value)) {
-    return {};
-  }
-
-  FilterIbansToSuggest(field.value(), ibans);
-
-  if (ibans.empty()) {
-    return {};
-  }
-
-  uma_recorder_.OnIbanSuggestionsShown(field.global_id());
-  return GetSuggestionsForIbans(ibans);
-}
-
-void IbanManager::FilterIbansToSuggest(const std::u16string& field_value,
-                                       std::vector<Iban>& ibans) {
-  std::erase_if(ibans, [&](const Iban& iban) {
-    if (iban.record_type() == Iban::kLocalIban) {
-      return !base::StartsWith(iban.value(), field_value);
-    } else {
-      CHECK_EQ(iban.record_type(), Iban::kServerIban);
-      if (iban.prefix().empty()) {
-        return field_value.length() >= kFieldLengthLimitOnServerIbanSuggestion;
-      } else {
-        return !(iban.prefix().starts_with(field_value) ||
-                 field_value.starts_with(iban.prefix()));
-      }
-    }
-  });
 }
 
 }  // namespace autofill

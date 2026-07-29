@@ -11,7 +11,6 @@ import static org.chromium.base.test.util.CriteriaHelper.DEFAULT_POLLING_INTERVA
 import android.app.Activity;
 import android.app.Instrumentation;
 import android.app.Instrumentation.ActivityMonitor;
-import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Point;
@@ -27,21 +26,20 @@ import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Rule;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.browser.app.ChromeActivity;
-import org.chromium.chrome.browser.compositor.bottombar.OverlayPanel.PanelState;
-import org.chromium.chrome.browser.compositor.bottombar.OverlayPanel.StateChangeReason;
-import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelContentProgressObserver;
-import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelManager;
-import org.chromium.chrome.browser.compositor.bottombar.OverlayPanelManagerWrapper;
-import org.chromium.chrome.browser.compositor.bottombar.contextualsearch.ContextualSearchPanel;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManagerImpl;
+import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanel.StateChangeReason;
+import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanelContentProgressObserver;
+import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanelManager;
+import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanelManagerWrapper;
+import org.chromium.chrome.browser.compositor.overlay_panel.contextualsearch.ContextualSearchPanel;
 import org.chromium.chrome.browser.content.WebContentsFactory;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchFakeServer.ContextualSearchTestHost;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchFakeServer.FakeResolveSearch;
@@ -50,12 +48,13 @@ import org.chromium.chrome.browser.firstrun.FirstRunStatus;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.locale.LocaleManagerDelegate;
+import org.chromium.chrome.browser.overlay_panel.PanelState;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.readaloud.ReadAloudController;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.content_public.browser.SelectAroundCaretResult;
 import org.chromium.content_public.browser.SelectionClient;
@@ -74,26 +73,24 @@ import java.util.concurrent.TimeoutException;
 
 /** This is a base class for various Contextual Search instrumentation tests. */
 public class ContextualSearchInstrumentationBase {
-    @ClassRule
-    public static final ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
-    public final BlankCTATabInitialStateRule mInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, false);
+    public final AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     // --------------------------------------------------------------------------------------------
 
     /** ContextualSearchPanel wrapper that prevents native calls. */
     protected static class ContextualSearchPanelWrapper extends ContextualSearchPanel {
         public ContextualSearchPanelWrapper(
-                Context context,
+                ChromeActivity activity,
                 LayoutManagerImpl layoutManager,
                 OverlayPanelManager panelManager,
                 Profile profile,
                 BrowserControlsManager browserControlsManager) {
             super(
-                    context,
+                    activity,
                     layoutManager,
                     panelManager,
                     browserControlsManager,
@@ -104,7 +101,7 @@ public class ContextualSearchInstrumentationBase {
                     null,
                     true,
                     null,
-                    sActivityTestRule.getActivity().getEdgeToEdgeControllerSupplierForTesting(),
+                    activity.getEdgeToEdgeControllerSupplierForTesting(),
                     /* desktopWindowStateManager= */ null,
                     /* bottomControlsStacker= */ null);
         }
@@ -123,6 +120,8 @@ public class ContextualSearchInstrumentationBase {
 
     /** ContextualSearchManager wrapper that prevents network requests and most native calls. */
     protected static class ContextualSearchManagerWrapper extends ContextualSearchManager {
+        private WebContents mWebContents;
+
         public ContextualSearchManagerWrapper(ChromeActivity activity) {
             super(
                     activity,
@@ -137,21 +136,30 @@ public class ContextualSearchInstrumentationBase {
                     activity.getEdgeToEdgeControllerSupplierForTesting());
             setSelectionController(new MockCSSelectionController(activity, this));
             Profile profile = ProfileManager.getLastUsedRegularProfile();
-            WebContents webContents = WebContentsFactory.createWebContents(profile, false, false);
-            ContentView cv = ContentView.createContentView(activity, webContents);
-            webContents.setDelegates(
+            mWebContents = WebContentsFactory.createWebContents(profile, false, false);
+            ContentView cv = ContentView.createContentView(activity, mWebContents);
+            mWebContents.setDelegates(
                     null,
                     ViewAndroidDelegate.createBasicDelegate(cv),
                     null,
                     activity.getWindowAndroid(),
                     WebContents.createDefaultInternalsHolder());
             SelectionPopupController selectionPopupController =
-                    WebContentsUtils.createSelectionPopupController(webContents);
+                    WebContentsUtils.createSelectionPopupController(mWebContents);
             selectionPopupController.setSelectionClient(this.getContextualSearchSelectionClient());
 
             MockContextualSearchPolicy policy =
                     new MockContextualSearchPolicy(profile, getSelectionController());
             setContextualSearchPolicy(policy);
+        }
+
+        @Override
+        public void destroy() {
+            if (mWebContents != null) {
+                mWebContents.destroy();
+                mWebContents = null;
+            }
+            super.destroy();
         }
 
         @Override
@@ -192,7 +200,7 @@ public class ContextualSearchInstrumentationBase {
 
     /** Selection controller that mocks out anything to do with a WebContents. */
     private static class MockCSSelectionController extends ContextualSearchSelectionController {
-        private StubbedSelectionPopupController mPopupController;
+        private final StubbedSelectionPopupController mPopupController;
 
         public MockCSSelectionController(
                 ChromeActivity activity, ContextualSearchSelectionHandler handler) {
@@ -348,7 +356,7 @@ public class ContextualSearchInstrumentationBase {
 
     @Before
     public void setUp() throws Exception {
-        final ChromeActivity activity = sActivityTestRule.getActivity();
+        final ChromeActivity activity = mActivityTestRule.getActivity();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     FirstRunStatus.setFirstRunFlowComplete(true);
@@ -369,14 +377,14 @@ public class ContextualSearchInstrumentationBase {
                                     });
                 });
 
-        mTestServer = sActivityTestRule.getTestServer();
+        mTestServer = mActivityTestRule.getTestServer();
 
-        sActivityTestRule.loadUrl(mTestServer.getURL(mTestPage));
+        mActivityTestRule.loadUrl(mTestServer.getURL(mTestPage));
         // DOMUtils sometimes hits the wrong node due to an incorrect page scale factor,
-        // so wait until that is set. https://crbug.com/1327063
-        sActivityTestRule.assertWaitForPageScaleFactorMatch(1.0f);
+        // so wait until that is set. https://crbug.com/40840940
+        mActivityTestRule.assertWaitForPageScaleFactorMatch(1.0f);
 
-        mManager = sActivityTestRule.getActivity().getContextualSearchManagerForTesting();
+        mManager = mActivityTestRule.getActivity().getContextualSearchManagerForTesting();
         mTestHost = new ContextualSearchInstrumentationTestHost();
 
         Assert.assertNotNull(mManager);
@@ -394,7 +402,7 @@ public class ContextualSearchInstrumentationBase {
                         mManager,
                         mManager.getOverlayPanelContentDelegate(),
                         new OverlayPanelContentProgressObserver(),
-                        sActivityTestRule.getActivity());
+                        mActivityTestRule.getActivity());
 
         mPanel.setOverlayPanelContentFactory(mFakeServer);
         mManager.setNetworkCommunicator(mFakeServer);
@@ -412,15 +420,13 @@ public class ContextualSearchInstrumentationBase {
                                 new Instrumentation.ActivityResult(Activity.RESULT_OK, null),
                                 true);
 
-        mDpToPx = sActivityTestRule.getActivity().getResources().getDisplayMetrics().density;
+        mDpToPx = mActivityTestRule.getActivity().getResources().getDisplayMetrics().density;
 
         // Set the test Features map for all tests regardless of whether they are parameterized.
         // Non-parameterized tests typically override this setting by calling setTestFeatures
         // again.
         // If Related Searches is enabled we need to also set that it's OK to send page content.
         mPolicy.overrideAllowSendingPageUrlForTesting(true);
-
-        MockitoAnnotations.openMocks(this);
     }
 
     @After
@@ -431,6 +437,9 @@ public class ContextualSearchInstrumentationBase {
 
                     if (mManager != null) mManager.dismissContextualSearchBar();
                     if (mPanel != null) mPanel.closePanel(StateChangeReason.UNKNOWN, false);
+                    if (mContextualSearchManager != null) {
+                        mContextualSearchManager.destroy();
+                    }
                 });
         if (mActivityMonitor != null) {
             InstrumentationRegistry.getInstrumentation().removeMonitor(mActivityMonitor);
@@ -514,7 +523,7 @@ public class ContextualSearchInstrumentationBase {
     protected void clearSelection() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    SelectionPopupController.fromWebContents(sActivityTestRule.getWebContents())
+                    SelectionPopupController.fromWebContents(mActivityTestRule.getWebContents())
                             .clearSelection();
                 });
     }
@@ -529,8 +538,7 @@ public class ContextualSearchInstrumentationBase {
      * @param nodeId A string containing the node ID.
      */
     public void longPressNodeWithoutWaiting(String nodeId) throws TimeoutException {
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        DOMUtils.longPressNode(tab.getWebContents(), nodeId);
+        DOMUtils.longPressNode(mActivityTestRule.getWebContents(), nodeId);
     }
 
     /**
@@ -587,7 +595,7 @@ public class ContextualSearchInstrumentationBase {
     }
 
     protected SelectionPopupController getSelectionPopupController() {
-        return SelectionPopupController.fromWebContents(sActivityTestRule.getWebContents());
+        return SelectionPopupController.fromWebContents(mActivityTestRule.getWebContents());
     }
 
     /**
@@ -599,8 +607,7 @@ public class ContextualSearchInstrumentationBase {
      */
     public long longPressNodeWithoutUp(String nodeId) throws TimeoutException {
         long downTime = SystemClock.uptimeMillis();
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        DOMUtils.longPressNodeWithoutUp(tab.getWebContents(), nodeId, downTime);
+        DOMUtils.longPressNodeWithoutUp(mActivityTestRule.getWebContents(), nodeId, downTime);
         waitForSelectActionBarVisible();
         waitForPanelToPeek();
         return downTime;
@@ -622,9 +629,9 @@ public class ContextualSearchInstrumentationBase {
 
         // Drag to the specified position by a DOM node id.
         int stepCount = 100;
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        DOMUtils.dragNodeTo(tab.getWebContents(), startNodeId, endNodeId, stepCount, downTime);
-        DOMUtils.dragNodeEnd(tab.getWebContents(), endNodeId, downTime);
+        WebContents webContents = mActivityTestRule.getWebContents();
+        DOMUtils.dragNodeTo(webContents, startNodeId, endNodeId, stepCount, downTime);
+        DOMUtils.dragNodeEnd(webContents, endNodeId, downTime);
 
         // Make sure the selection controller knows we did a drag.
         // TODO(donnd): figure out how to reliably simulate a drag on all platforms.
@@ -642,8 +649,7 @@ public class ContextualSearchInstrumentationBase {
      * @param nodeId A string containing the node ID.
      */
     public void clickNode(String nodeId) throws TimeoutException {
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        DOMUtils.clickNode(tab.getWebContents(), nodeId);
+        DOMUtils.clickNode(mActivityTestRule.getWebContents(), nodeId);
     }
 
     /**
@@ -1023,7 +1029,7 @@ public class ContextualSearchInstrumentationBase {
     /**
      * Waits for a Normal priority URL to be loaded, or asserts that the load never happened. This
      * is needed when we test with a live internet connection and an invalid url fails to load (as
-     * expected. See crbug.com/682953 for background.
+     * expected. See crbug.com/40502510 for background.
      */
     protected void waitForNormalPriorityUrlLoaded() {
         CriteriaHelper.pollInstrumentationThread(
@@ -1183,22 +1189,22 @@ public class ContextualSearchInstrumentationBase {
      */
     private void fling(float startX, float startY, float endX, float endY, int stepCount) {
         Point size = new Point();
-        sActivityTestRule.getActivity().getWindowManager().getDefaultDisplay().getSize(size);
+        mActivityTestRule.getActivity().getWindowManager().getDefaultDisplay().getSize(size);
         float dragStartX = size.x * startX;
         float dragEndX = size.x * endX;
         float dragStartY = size.y * startY;
         float dragEndY = size.y * endY;
         long downTime = SystemClock.uptimeMillis();
-        TouchCommon.dragStart(sActivityTestRule.getActivity(), dragStartX, dragStartY, downTime);
+        TouchCommon.dragStart(mActivityTestRule.getActivity(), dragStartX, dragStartY, downTime);
         TouchCommon.dragTo(
-                sActivityTestRule.getActivity(),
+                mActivityTestRule.getActivity(),
                 dragStartX,
                 dragEndX,
                 dragStartY,
                 dragEndY,
                 stepCount,
                 downTime);
-        TouchCommon.dragEnd(sActivityTestRule.getActivity(), dragEndX, dragEndY, downTime);
+        TouchCommon.dragEnd(mActivityTestRule.getActivity(), dragEndX, dragEndY, downTime);
     }
 
     /**
@@ -1207,16 +1213,16 @@ public class ContextualSearchInstrumentationBase {
      */
     private void swipe(float startX, float startY, float endX, float endY, int stepCount) {
         Point size = new Point();
-        sActivityTestRule.getActivity().getWindowManager().getDefaultDisplay().getSize(size);
+        mActivityTestRule.getActivity().getWindowManager().getDefaultDisplay().getSize(size);
         float dragStartX = size.x * startX;
         float dragEndX = size.x * endX;
         float dragStartY = size.y * startY;
         float dragEndY = size.y * endY;
         int halfCount = stepCount / 2;
         long downTime = SystemClock.uptimeMillis();
-        TouchCommon.dragStart(sActivityTestRule.getActivity(), dragStartX, dragStartY, downTime);
+        TouchCommon.dragStart(mActivityTestRule.getActivity(), dragStartX, dragStartY, downTime);
         TouchCommon.dragTo(
-                sActivityTestRule.getActivity(),
+                mActivityTestRule.getActivity(),
                 dragStartX,
                 dragEndX,
                 dragStartY,
@@ -1226,14 +1232,14 @@ public class ContextualSearchInstrumentationBase {
         // Generate events in the stationary end position in order to simulate a "pause" in
         // the movement, therefore preventing this gesture from being interpreted as a fling.
         TouchCommon.dragTo(
-                sActivityTestRule.getActivity(),
+                mActivityTestRule.getActivity(),
                 dragEndX,
                 dragEndX,
                 dragEndY,
                 dragEndY,
                 halfCount,
                 downTime);
-        TouchCommon.dragEnd(sActivityTestRule.getActivity(), dragEndX, dragEndY, downTime);
+        TouchCommon.dragEnd(mActivityTestRule.getActivity(), dragEndX, dragEndY, downTime);
     }
 
     /** Flings the panel up to its expanded state. */
@@ -1269,7 +1275,7 @@ public class ContextualSearchInstrumentationBase {
 
     /** Taps the base page at the given x, y position. */
     private void tapBasePage(float x, float y) {
-        View root = sActivityTestRule.getActivity().getWindow().getDecorView().getRootView();
+        View root = mActivityTestRule.getActivity().getWindow().getDecorView().getRootView();
         x *= root.getWidth();
         y *= root.getHeight();
         TouchCommon.singleClickView(root, (int) x, (int) y);
@@ -1359,11 +1365,11 @@ public class ContextualSearchInstrumentationBase {
     /** Updates Read Aloud Controller's active playback tab. */
     protected void changeReadAloudActivePlaybackTab() {
         ReadAloudController readAloudController =
-                sActivityTestRule.getActivity().getReadAloudControllerForTesting();
+                mActivityTestRule.getActivity().getReadAloudControllerForTesting();
 
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
                         readAloudController.setActivePlaybackTab(
-                                sActivityTestRule.getActivity().getActivityTab()));
+                                mActivityTestRule.getActivity().getActivityTab()));
     }
 }

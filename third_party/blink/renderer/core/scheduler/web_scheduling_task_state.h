@@ -6,34 +6,50 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SCHEDULER_WEB_SCHEDULING_TASK_STATE_H_
 
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/scheduler/script_wrappable_task_state.h"
+#include "third_party/blink/renderer/core/scheduler/task_attribution_task_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
 
 namespace blink::scheduler {
 class TaskAttributionInfo;
 }  // namespace blink::scheduler
 
 namespace blink {
-class ExecutionContext;
 class SchedulerTaskContext;
+class ResourceTimingContext;
+class SoftNavigationContext;
+class ScriptToolContext;
 
 class CORE_EXPORT WebSchedulingTaskState final
-    : public GarbageCollected<WebSchedulingTaskState>,
-      public WrappableTaskState {
+    : public TaskAttributionTaskState {
  public:
   WebSchedulingTaskState(scheduler::TaskAttributionInfo*,
                          SchedulerTaskContext*);
 
-  // `WrappableTaskState` implementation:
+  // `TaskAttributionTaskState` implementation:
   scheduler::TaskAttributionInfo* GetTaskAttributionInfo() override;
-  SchedulerTaskContext* GetSchedulerTaskContextFor(
-      const ExecutionContext&) override;
+  SchedulerTaskContext* GetSchedulerTaskContext() override;
+  bool IsWebSchedulingTaskState() const override;
+  TaskAttributionTaskState* ForkAndSetVariable(
+      ResourceTimingContext*) override;
+  TaskAttributionTaskState* ForkAndSetVariable(
+      SoftNavigationContext*) override;
+  TaskAttributionTaskState* ForkAndSetVariable(ScriptToolContext*) override;
+
   void Trace(Visitor*) const override;
 
  private:
   const Member<scheduler::TaskAttributionInfo> subtask_propagatable_task_state_;
   const Member<SchedulerTaskContext> scheduler_task_context_;
+};
+
+template <>
+struct DowncastTraits<WebSchedulingTaskState> {
+  static bool AllowFrom(
+      const TaskAttributionTaskState& task_attribution_task_state) {
+    return task_attribution_task_state.IsWebSchedulingTaskState();
+  }
 };
 
 }  // namespace blink

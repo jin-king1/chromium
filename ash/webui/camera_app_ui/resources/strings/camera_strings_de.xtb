@@ -48,6 +48,7 @@
 <translation id="2761536921376153655">Scantyp</translation>
 <translation id="28682968802727151">Vorschau spiegeln</translation>
 <translation id="2879583609344924966"><ph name="CAMERA" /> ist angeschlossen.</translation>
+<translation id="3063987824612038785">Alle Kameradateien werden in Google Drive gespeichert</translation>
 <translation id="3067436040345934772">Nach rechts schwenken</translation>
 <translation id="3081586908890909590">Zu Videomodus wechseln</translation>
 <translation id="3091480460059548935">Texterkennung in der Vorschau</translation>
@@ -55,7 +56,7 @@
 <translation id="3157038259444425153">Du kannst jetzt Text direkt in dein Foto kopieren</translation>
 <translation id="3158534262962737808">Mit „<ph name="WIFINAME" />“ verbinden?</translation>
 <translation id="3227137524299004712">Mikrofon</translation>
-<translation id="3240426699337459095">Link wurde kopiert.</translation>
+<translation id="3240426699337459095">Link kopiert</translation>
 <translation id="3354465018370944241">Fotoeinstellungen</translation>
 <translation id="3411958449466169012">Timer deaktivieren</translation>
 <translation id="3448774564454087943">Das Video ist zu kurz und wird nicht gespeichert</translation>
@@ -67,6 +68,7 @@
 <translation id="3642192109456033823">Video wird verarbeitet…</translation>
 <translation id="3789724198583203151">Um 90 Grad gegen den Uhrzeigersinn drehen</translation>
 <translation id="3810838688059735925">Video</translation>
+<translation id="386366972082231038">Alle Kameradateien werden in OneDrive gespeichert</translation>
 <translation id="4060608699153044055">Die Aufnahme ist nicht möglich, da zu wenig Gerätespeicherplatz vorhanden ist. Damit du die Aufnahme starten kannst, musst du Speicherplatz auf deinem Gerät freigeben.</translation>
 <translation id="4061162772429051350"><ph name="MAGAPIXELS_AMOUNT" /> MP</translation>
 <translation id="4118525110028899586">Aufnahme pausieren</translation>
@@ -100,6 +102,7 @@
 <translation id="5634947914995388399">Dialogfeld maximieren und Scannen beenden</translation>
 <translation id="5662366948659129155">Seite <ph name="COUNT" /> wird gescannt</translation>
 <translation id="5671277269877808209">Quadrat</translation>
+<translation id="5725797473946373607">Dieses Dialogfeld beim nächsten Mal nicht anzeigen</translation>
 <translation id="574392208103952083">Mittel</translation>
 <translation id="5746169159649715125">Als PDF speichern</translation>
 <translation id="5753488212459587150">Einstellungen für Fortgeschrittene aktivieren</translation>
@@ -130,7 +133,7 @@ Falls sich dein Feedback auf die Bild- oder Videoqualität bezieht, hänge bitte
 <translation id="6778482348691154169">Fotoaufnahme nicht möglich</translation>
 <translation id="6888362557094394345">Wird nach unten verschoben</translation>
 <translation id="695140971690006676">Alle zurücksetzen</translation>
-<translation id="6965382102122355670">Ok</translation>
+<translation id="6965382102122355670">OK</translation>
 <translation id="6965830616442491568">Porträt</translation>
 <translation id="698156982839284926">3 Sekunden</translation>
 <translation id="7134221860976209830">10-Sekunden-Timer</translation>
@@ -139,7 +142,7 @@ Falls sich dein Feedback auf die Bild- oder Videoqualität bezieht, hänge bitte
 <translation id="7337660886763914220">Fehler im Dateisystem.</translation>
 <translation id="7450541714075000668">Text kopiert</translation>
 <translation id="7488619942230388918">GIF-Video aufzeichnen</translation>
-<translation id="7527714402753141485">Zeigt Text und Schaltfläche zum Kopieren an</translation>
+<translation id="7527714402753141485">Zeigt Text und Button zum Kopieren an</translation>
 <translation id="7557677699350329807">Zur nächsten Kamera wechseln</translation>
 <translation id="7607002721634913082">Angehalten</translation>
 <translation id="7608223098072244877">4 mal 4</translation>
@@ -156,6 +159,7 @@ Falls sich dein Feedback auf die Bild- oder Videoqualität bezieht, hänge bitte
 <translation id="7983668134180549431">Text erkannt.</translation>
 <translation id="8079255378695216066">Aufzeichnung kann nicht gestartet werden</translation>
 <translation id="8120146556401698679">Schwenken Neigen Zoomen</translation>
+<translation id="8127459436205030819">Deine Dateien sind möglicherweise für deinen Administrator sichtbar</translation>
 <translation id="8131740175452115882">Bestätigen</translation>
 <translation id="8145038249676204903">Zu Fotomodus wechseln</translation>
 <translation id="8167081290930651932">Als Foto speichern</translation>
@@ -165,6 +169,7 @@ Falls sich dein Feedback auf die Bild- oder Videoqualität bezieht, hänge bitte
 <translation id="8609951387004618906">„<ph name="URL" />“ öffnen</translation>
 <translation id="8629662593426079630">360p</translation>
 <translation id="8711011893539266636">Mikrofonstummschaltung einschalten. Stummschaltung ist aktiviert.</translation>
+<translation id="8712637175834984815">Ok</translation>
 <translation id="8730621377337864115">Fertig</translation>
 <translation id="8732462232047530626">Vorschau der Metadaten anzeigen</translation>
 <translation id="874854738381978209">WLAN gefunden.</translation>

@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -37,7 +38,6 @@
 #include "components/user_education/common/user_education_features.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/interaction_sequence.h"
 
@@ -271,7 +271,7 @@ using BrowserUserEducationServiceBrowserTest = InProcessBrowserTest;
 IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest,
                        FeatureConfigurationConsistencyCheck) {
   // Exceptions to the consistency checks. All of those with crbug.com IDs
-  // should ideally be fixed. See tracking bug at crbug.com/1442977
+  // should ideally be fixed. See tracking bug at crbug.com/40267189
   const std::vector<IPHException> exceptions({
       // Known weird/old/test-only IPH.
       {&feature_engagement::kIPHAutofillExternalAccountProfileSuggestionFeature,
@@ -281,47 +281,39 @@ IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest,
       {&feature_engagement::kIPHGMCCastStartStopFeature,
        IPHFailureReason::kLegacyPromoNoScreenReader, "Known legacy promo."},
       {&feature_engagement::kIPHDesktopPwaInstallFeature,
-       IPHFailureReason::kLegacyPromoNoScreenReader, "crbug.com/1443016"},
+       IPHFailureReason::kLegacyPromoNoScreenReader, "crbug.com/40910901"},
       {&feature_engagement::kIPHReadingListDiscoveryFeature,
-       IPHFailureReason::kLegacyPromoNoScreenReader, "crbug.com/1443020"},
+       IPHFailureReason::kLegacyPromoNoScreenReader, "crbug.com/40910904"},
       {&feature_engagement::kIPHDesktopSharedHighlightingFeature,
-       IPHFailureReason::kLegacyPromoNoScreenReader, "crbug.com/1443071"},
+       IPHFailureReason::kLegacyPromoNoScreenReader, "crbug.com/40910932"},
 
       // Toast IPH that probably need session impact updated.
       {&feature_engagement::kIPHPasswordsManagementBubbleAfterSaveFeature,
-       IPHFailureReason::kWrongSessionImpact, "crbug.com/1442979"},
+       IPHFailureReason::kWrongSessionImpact, "crbug.com/40267191"},
       {&feature_engagement::kIPHPasswordsManagementBubbleDuringSigninFeature,
-       IPHFailureReason::kWrongSessionImpact, "crbug.com/1442979"},
+       IPHFailureReason::kWrongSessionImpact, "crbug.com/40267191"},
       {&feature_engagement::kIPHPasswordsWebAppProfileSwitchFeature,
-       IPHFailureReason::kWrongSessionImpact, "crbug.com/1442979"},
+       IPHFailureReason::kWrongSessionImpact, "crbug.com/40267191"},
       {&feature_engagement::kIPHProfileSwitchFeature,
-       IPHFailureReason::kWrongSessionImpact, "crbug.com/1442979"},
+       IPHFailureReason::kWrongSessionImpact, "crbug.com/40267191"},
       {&feature_engagement::kIPHTabAudioMutingFeature,
-       IPHFailureReason::kWrongSessionImpact, "crbug.com/1442979"},
+       IPHFailureReason::kWrongSessionImpact, "crbug.com/40267191"},
 
       // IPH that limit session rate in other ways. These should probably be
       // revisited in the future.
-      {&feature_engagement::kIPHDesktopCustomizeChromeFeature,
-       IPHFailureReason::kWrongSessionRate, "crbug.com/1443063"},
-      {&feature_engagement::kIPHDesktopCustomizeChromeRefreshFeature,
-       IPHFailureReason::kWrongSessionRate, "crbug.com/1443063"},
-      {&feature_engagement::kIPHDesktopCustomizeChromeRefreshFeature,
-       IPHFailureReason::kWrongSessionImpact, "crbug.com/1443063"},
+      {&feature_engagement::kIPHDesktopCustomizeChromeExperimentFeature,
+       IPHFailureReason::kWrongSessionRate, "crbug.com/40910929"},
       {&feature_engagement::kIPHMemorySaverModeFeature,
-       IPHFailureReason::kWrongSessionRate, "crbug.com/1443063"},
+       IPHFailureReason::kWrongSessionRate, "crbug.com/40910929"},
       {&feature_engagement::kIPHPriceTrackingInSidePanelFeature, std::nullopt,
-       "crbug.com/1443063"},
+       "crbug.com/40910929"},
       {&feature_engagement::kIPHPowerBookmarksSidePanelFeature,
        IPHFailureReason::kWrongSessionRate,
-       "crbug.com/1443067, crbug.com/1443063"},
+       "crbug.com/40910930, crbug.com/40910929"},
 
       // Deprecated; should probably be removed.
       {&feature_engagement::kIPHReadingListInSidePanelFeature, std::nullopt,
-       "crbug.com/1443078"},
-      {&feature_engagement::kIPHTabSearchFeature, std::nullopt,
-       "crbug.com/1443079"},
-      {&feature_engagement::kIPHWebUITabStripFeature, std::nullopt,
-       "crbug.com/1443082"},
+       "crbug.com/40910936"},
   });
 
   // Fetch the list of known IPH from the Feature Engagement system; it is an
@@ -332,7 +324,7 @@ IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest,
   // Fetch the tracker and ensure that it is properly initialized.
   auto* const tracker =
       feature_engagement::TrackerFactory::GetForBrowserContext(
-          browser()->profile());
+          browser()->GetProfile());
   base::RunLoop run_loop;
   tracker->AddOnInitializedCallback(base::BindOnce(
       [](base::OnceClosure callback, bool success) {
@@ -349,7 +341,7 @@ IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest,
 
   // Get the associated feature promo registry.
   const user_education::FeaturePromoRegistry& registry =
-      UserEducationServiceFactory::GetForBrowserContext(browser()->profile())
+      UserEducationServiceFactory::GetForBrowserContext(browser()->GetProfile())
           ->feature_promo_registry();
 
   std::vector<IPHFailure> failures;
@@ -359,7 +351,7 @@ IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest,
   for (const auto& [feature, spec] : registry.feature_data()) {
     // If the feature is not on the known features list, no configuration is
     // possible.
-    if (!base::Contains(known_features, feature)) {
+    if (!known_features.contains(feature)) {
       failures.emplace_back(feature, IPHFailureReason::kUnlisted, nullptr);
       continue;
     }
@@ -398,6 +390,7 @@ IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest,
       case user_education::FeaturePromoSpecification::PromoType::kTutorial:
       case user_education::FeaturePromoSpecification::PromoType::kCustomAction:
       case user_education::FeaturePromoSpecification::PromoType::kSnooze:
+      case user_education::FeaturePromoSpecification::PromoType::kCustomUi:
         switch (spec.promo_subtype()) {
           case user_education::FeaturePromoSpecification::PromoSubtype::kNormal:
             // Standard promos should be session-limited and should limit other
@@ -538,8 +531,8 @@ IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest,
 
   std::vector<TutorialFailure> failures;
 
-  auto* const service =
-      UserEducationServiceFactory::GetForBrowserContext(browser()->profile());
+  auto* const service = UserEducationServiceFactory::GetForBrowserContext(
+      browser()->GetProfile());
   const auto& registry = service->tutorial_registry();
   for (auto identifier : registry.GetTutorialIdentifiers()) {
     const auto* const description = registry.GetTutorialDescription(identifier);
@@ -551,7 +544,7 @@ IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest,
           (step.step_type() == ui::InteractionSequence::StepType::kShown &&
            step.body_text_id());
       const bool is_always_visible =
-          base::Contains(kAlwaysPresentElementIds, step.element_id());
+          kAlwaysPresentElementIds.contains(step.element_id());
       if (is_show_bubble && was_show_bubble && is_always_visible &&
           !step.transition_only_on_event()) {
         failures.push_back(
@@ -574,7 +567,7 @@ IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest,
 IN_PROC_BROWSER_TEST_F(BrowserUserEducationServiceBrowserTest, AutoConfigure) {
   auto* const tracker =
       feature_engagement::TrackerFactory::GetForBrowserContext(
-          browser()->profile());
+          browser()->GetProfile());
   const auto& config = tracker->GetConfigurationForTesting()->GetFeatureConfig(
       feature_engagement::kIPHWebUiHelpBubbleTestFeature);
 
@@ -624,9 +617,9 @@ class BrowserUserEducationServiceNewBadgeBrowserTest
 
     // Make this seem like an old profile so we are not in the new profile
     // grace period.
-    auto& storage_service =
-        UserEducationServiceFactory::GetForBrowserContext(browser()->profile())
-            ->user_education_storage_service();
+    auto& storage_service = UserEducationServiceFactory::GetForBrowserContext(
+                                browser()->GetProfile())
+                                ->user_education_storage_service();
     storage_service.set_profile_creation_time_for_testing(
         storage_service.GetCurrentTime() - base::Days(365));
   }
@@ -641,52 +634,57 @@ INSTANTIATE_TEST_SUITE_P(,
 
 IN_PROC_BROWSER_TEST_P(BrowserUserEducationServiceNewBadgeBrowserTest,
                        ShowsNewBadge) {
+  auto* const user_education = BrowserUserEducationInterface::From(browser());
+
   // Ensure both ways to check the badge work as expected.
-  EXPECT_EQ(GetParam(), browser()->window()->MaybeShowNewBadgeFor(
+  EXPECT_EQ(GetParam(), user_education->MaybeShowNewBadgeFor(
                             user_education::features::kNewBadgeTestFeature));
   EXPECT_EQ(GetParam(), UserEducationService::MaybeShowNewBadge(
-                            browser()->profile(),
+                            browser()->GetProfile(),
                             user_education::features::kNewBadgeTestFeature));
 
   // Ensure that the feature can be marked as used.
   for (int i = 0; i < user_education::features::GetNewBadgeFeatureUsedCount();
        i += 2) {
-    browser()->window()->NotifyNewBadgeFeatureUsed(
+    user_education->NotifyNewBadgeFeatureUsed(
         user_education::features::kNewBadgeTestFeature);
     UserEducationService::MaybeNotifyNewBadgeFeatureUsed(
-        browser()->profile(), user_education::features::kNewBadgeTestFeature);
+        browser()->GetProfile(),
+        user_education::features::kNewBadgeTestFeature);
   }
 
   // The badge should now be blocked.
-  EXPECT_FALSE(browser()->window()->MaybeShowNewBadgeFor(
+  EXPECT_FALSE(user_education->MaybeShowNewBadgeFor(
       user_education::features::kNewBadgeTestFeature));
   EXPECT_FALSE(UserEducationService::MaybeShowNewBadge(
-      browser()->profile(), user_education::features::kNewBadgeTestFeature));
+      browser()->GetProfile(), user_education::features::kNewBadgeTestFeature));
 }
 
 IN_PROC_BROWSER_TEST_P(BrowserUserEducationServiceNewBadgeBrowserTest,
                        IncognitoDoesNotShowBadge) {
   // Both ways to check the badge should return false for an OTR profile.
   auto* const incog = CreateIncognitoBrowser();
-  EXPECT_FALSE(incog->window()->MaybeShowNewBadgeFor(
+  auto* const user_education = BrowserUserEducationInterface::From(incog);
+  EXPECT_FALSE(user_education->MaybeShowNewBadgeFor(
       user_education::features::kNewBadgeTestFeature));
   EXPECT_FALSE(UserEducationService::MaybeShowNewBadge(
-      incog->profile(), user_education::features::kNewBadgeTestFeature));
+      incog->GetProfile(), user_education::features::kNewBadgeTestFeature));
 
   // Ensure that the feature can be marked as used.
   for (int i = 0; i < user_education::features::GetNewBadgeFeatureUsedCount();
        i += 2) {
-    browser()->window()->NotifyNewBadgeFeatureUsed(
+    user_education->NotifyNewBadgeFeatureUsed(
         user_education::features::kNewBadgeTestFeature);
     UserEducationService::MaybeNotifyNewBadgeFeatureUsed(
-        browser()->profile(), user_education::features::kNewBadgeTestFeature);
+        browser()->GetProfile(),
+        user_education::features::kNewBadgeTestFeature);
   }
 
   // The badge should still be blocked.
-  EXPECT_FALSE(incog->window()->MaybeShowNewBadgeFor(
+  EXPECT_FALSE(user_education->MaybeShowNewBadgeFor(
       user_education::features::kNewBadgeTestFeature));
   EXPECT_FALSE(UserEducationService::MaybeShowNewBadge(
-      incog->profile(), user_education::features::kNewBadgeTestFeature));
+      incog->GetProfile(), user_education::features::kNewBadgeTestFeature));
 }
 
 // Tests for the presence or absence of the recent sessions logic based on
@@ -720,7 +718,7 @@ INSTANTIATE_TEST_SUITE_P(,
 IN_PROC_BROWSER_TEST_P(BrowserUserEducationServiceRecentSessionsTest,
                        RecentSessionTrackerDependsOnFlag) {
   auto* const result =
-      UserEducationServiceFactory::GetForBrowserContext(browser()->profile())
+      UserEducationServiceFactory::GetForBrowserContext(browser()->GetProfile())
           ->recent_session_tracker();
   EXPECT_EQ(GetParam(), result != nullptr);
 }

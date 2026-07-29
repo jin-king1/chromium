@@ -1,17 +1,34 @@
-function deleteThenOpen(dbName, upgradeFunc, bodyFunc) {
+function deleteThenRunTest(dbName, upgradeFunc, test) {
   const deleteRequest = indexedDB.deleteDatabase(dbName);
   deleteRequest.onerror = PerfTestRunner.logFatalError.bind('deleteDatabase should not fail');
   deleteRequest.onsuccess = (e) => {
     const openRequest = indexedDB.open(dbName);
     openRequest.onupgradeneeded = () => {
-      upgradeFunc(openRequest.result, openRequest);
-    }
+      upgradeFunc(openRequest.result);
+    };
     openRequest.onsuccess = () => {
-      bodyFunc(openRequest.result, openRequest);
-    }
+      const db = openRequest.result;
+      if (test.databaseWarmOpen) {
+        // Keep a connection to `dbName` alive across iterations so that
+        // each open by the test is warm (i.e., does not perform disk I/O).
+        const storeConnection = (db) => {
+          window.dbConnection = db;
+          db.onversionchange = () => {
+            db.close();
+            const reopenRequest = indexedDB.open(dbName);
+            reopenRequest.onsuccess = () =>
+                storeConnection(reopenRequest.result);
+          };
+        };
+        storeConnection(db);
+      } else {
+        db.close();
+      }
+      PerfTestRunner.measurePageLoadTimeAfterDoneMessage(test);
+    };
     openRequest.onerror = (e) => {
       window.PerfTestRunner.logFatalError("Error setting up database " + dbName + ". Error: " + e.type);
-    }
+    };
   }
 }
 
@@ -48,6 +65,25 @@ function createIncrementalBarrier(callback) {
   }
 }
 
+// These begin a readonly transaction on `db` scoped to `storeName`.
+function getStore(db, storeName) {
+  const transaction = db.transaction(storeName, 'readonly');
+  return transaction.objectStore(storeName);
+}
+function getIndex(db, storeName, indexName) {
+  const store = getStore(db, storeName);
+  return store.index(indexName);
+}
+
+// Promise wrapper for an IDBRequest.
+function wrapRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () =>
+        reject(`Request failed with error: ${request.error}`);
+  });
+}
+
 /**
  * Retrieves a value from an IndexedDB object store.
  *
@@ -63,18 +99,8 @@ function createIncrementalBarrier(callback) {
  *     rejects with an error message.
  */
 function getIDBValue(transaction, storeName, key) {
-  return new Promise((resolve, reject) => {
-    // Access the object store specified by storeName
-    const objectStore = transaction.objectStore(storeName);
-    const request = objectStore.get(key);
-
-    // Resolve the promise with the result on successful retrieval
-    request.onsuccess = () => resolve(request.result);
-
-    // Reject the promise with an error message if the retrieval fails
-    request.onerror = () => reject(`Failed to get '${key}' from '${
-        storeName}' with error '${request.error}'`);
-  });
+  const store = transaction.objectStore(storeName);
+  return wrapRequest(store.get(key));
 }
 
 /**
@@ -94,17 +120,8 @@ function getIDBValue(transaction, storeName, key) {
  *     or rejects on error.
  */
 function getAllIDBValues(transaction, storeName, range = null, batchSize) {
-  return new Promise((resolve, reject) => {
     const store = transaction.objectStore(storeName);
-    const request = store.getAll(range, batchSize);
-
-    // Triggered when the request completes successfully.
-    request.onsuccess = () => resolve(request.result);
-
-    // Triggered when an error occurs during the request.
-    request.onerror = () => reject(`Failed to retrieve data from '${
-        storeName}' with error '${request.error}'`);
-  });
+    return wrapRequest(store.getAll(range, batchSize));
 }
 
 /**
@@ -122,19 +139,56 @@ function getAllIDBValues(transaction, storeName, range = null, batchSize) {
  *     operation, or rejects with an error message
  */
 function putIDBValue(transaction, storeName, value) {
-  return new Promise((resolve, reject) => {
-    // Access the object store specified by storeName
-    const objectStore = transaction.objectStore(storeName);
-    const request = objectStore.put(value);
-
-    // Resolve the promise with the result on successful insertion or update
-    request.onsuccess = () => resolve(request.result);
-
-    // Reject the promise with an error message if the operation fails
-    request.onerror = () => reject(
-        `Failed to put value in '${storeName}' with error '${request.error}'`);
-  });
+  const store = transaction.objectStore(storeName);
+  return wrapRequest(store.put(value));
 }
+
+/**
+ * Retrieves multiple values from an IndexedDB object store by their keys.
+ *
+ * This function fetches records corresponding to the provided keys from the
+ * given object store. If any request fails, the promise is rejected.
+ *
+ * @param {IDBObjectStore} store The object store to query.
+ * @param {Array<IDBValidKey>} keys The keys to retrieve.
+ * @return {Promise<Array<Object|undefined>>} Promise resolving to an array of
+ *     retrieved values in the same order as input keys, or rejecting on
+ * failure.
+ */
+function bulkGetIDBValues(store, keys) {
+  return Promise.all(keys.map(key => wrapRequest(store.get(key))));
+}
+
+/**
+ * Inserts or updates multiple values in an IndexedDB object store.
+ *
+ * This function puts each value into the given object store and resolves when
+ * all operations succeed.
+ *
+ * @param {IDBObjectStore} store The object store to update.
+ * @param {Array<Object>} values The values to insert or update.
+ * @return {Promise<void>} Promise that resolves on success or rejects on
+ *     failure.
+ */
+function bulkPutIDBValues(store, values) {
+  return Promise.all(values.map(value => wrapRequest(store.put(value))));
+}
+
+/**
+ * Deletes multiple entries from an IndexedDB object store by their keys.
+ *
+ * This function removes the records for the given keys from the object store.
+ * If any delete operation fails, the promise is rejected.
+ *
+ * @param {IDBObjectStore} store The object store to delete from.
+ * @param {Array<IDBValidKey>} keys The keys to delete.
+ * @return {Promise<void>} Promise that resolves on success or rejects on
+ *     failure.
+ */
+function bulkDeleteIDBValues(store, keys) {
+  return Promise.all(keys.map(key => wrapRequest(store.delete(key))));
+}
+
 function transactionCompletePromise(txn) {
   return new Promise((resolve, reject) => {
     txn.oncomplete = resolve;
@@ -207,6 +261,11 @@ if (window.PerfTestRunner) {
           window.removeEventListener("message", eventHandler);
         }
         window.addEventListener("message", eventHandler, false);
+
+        // Clean up all database connections from the just-finished iteration so
+        // that the backing store gets shut down (if the test has not set
+        // `databaseWarmOpen`).
+        window.gc();
 
         PerfTestRunner.addRunTestStartMarker();
         startTime = PerfTestRunner.now();

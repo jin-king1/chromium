@@ -9,17 +9,20 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "ash/public/cpp/locale_update_controller.h"
+#include "base/containers/span.h"
 #include "base/gtest_prod_util.h"
 #include "base/lazy_instance.h"
-#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/core/session_manager_observer.h"
 
+class ApplicationLocaleStorage;
 class PrefService;
 class Profile;
 
@@ -31,7 +34,11 @@ namespace ash {
 class LocaleChangeGuard final : public session_manager::SessionManagerObserver,
                                 public DeviceSettingsService::Observer {
  public:
-  LocaleChangeGuard(Profile* profile, PrefService* local_state);
+  // `local_state`, `application_locale_storage`, and `profile` must be non-null
+  // and must outlive `this`.
+  LocaleChangeGuard(PrefService* local_state,
+                    ApplicationLocaleStorage* application_locale_storage,
+                    Profile* profile);
 
   LocaleChangeGuard(const LocaleChangeGuard&) = delete;
   LocaleChangeGuard& operator=(const LocaleChangeGuard&) = delete;
@@ -39,8 +46,8 @@ class LocaleChangeGuard final : public session_manager::SessionManagerObserver,
   ~LocaleChangeGuard() override;
 
   // Called just before changing locale.
-  void PrepareChangingLocale(
-      const std::string& from_locale, const std::string& to_locale);
+  void PrepareChangingLocale(std::string_view from_locale,
+                             std::string_view to_locale);
 
   // Called after login.
   void OnLogin();
@@ -69,15 +76,19 @@ class LocaleChangeGuard final : public session_manager::SessionManagerObserver,
 
   // Whether the user has to be shown a locale update notification when the user
   // preferred locale changes from |from_locale| to |to_locale|.
-  bool RequiresUserConfirmation(const std::string& from_locale,
-                                const std::string& to_locale) const;
+  bool RequiresUserConfirmation(std::string_view from_locale,
+                                std::string_view to_locale) const;
 
   // Returns true if we should notify user about automatic locale change.
-  static bool ShouldShowLocaleChangeNotification(const std::string& from_locale,
-                                                 const std::string& to_locale);
+  static bool ShouldShowLocaleChangeNotification(std::string_view from_locale,
+                                                 std::string_view to_locale);
 
-  static const char* const* GetSkipShowNotificationLanguagesForTesting();
-  static size_t GetSkipShowNotificationLanguagesSizeForTesting();
+  static base::span<const std::string_view>
+  GetSkipShowNotificationLanguagesForTesting();
+
+  const raw_ref<PrefService> local_state_;
+  const raw_ref<ApplicationLocaleStorage> application_locale_storage_;
+  const raw_ref<Profile> profile_;
 
   // Set if the system locale has changed on the user login. If this is true,
   // the `LocaleChangeGuard` will notify `LocaleUpdateController` that the
@@ -88,8 +99,6 @@ class LocaleChangeGuard final : public session_manager::SessionManagerObserver,
 
   std::string from_locale_;
   std::string to_locale_;
-  raw_ptr<Profile> profile_;
-  raw_ptr<PrefService> local_state_;
   bool reverted_ = false;
   base::ScopedObservation<session_manager::SessionManager,
                           session_manager::SessionManagerObserver>

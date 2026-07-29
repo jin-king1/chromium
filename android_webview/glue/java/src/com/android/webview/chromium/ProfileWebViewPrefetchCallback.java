@@ -16,8 +16,8 @@ import java.util.concurrent.Executor;
 @Lifetime.Temporary
 public class ProfileWebViewPrefetchCallback implements AwPrefetchCallback {
 
-    @NonNull private Executor mCallbackExecutor;
-    @NonNull private PrefetchOperationCallback mCallback;
+    @NonNull private final Executor mCallbackExecutor;
+    @NonNull private final PrefetchOperationCallback mCallback;
 
     public ProfileWebViewPrefetchCallback(
             @NonNull Executor callbackExecutor, @NonNull PrefetchOperationCallback callback) {
@@ -29,10 +29,12 @@ public class ProfileWebViewPrefetchCallback implements AwPrefetchCallback {
     public void onStatusUpdated(int statusCode, Bundle extras) {
         PrefetchOperationResult operationResult =
                 PrefetchOperationResult.fromPrefetchStatusCode(statusCode, extras);
-        if (operationResult.statusCode == PrefetchOperationStatusCode.SUCCESS) {
-            mCallbackExecutor.execute(mCallback::onSuccess);
-        } else {
-            resolvePrefetchErrorCallback(operationResult);
+        switch (operationResult.statusCode) {
+            case PrefetchOperationStatusCode.SUCCESS, PrefetchOperationStatusCode.DUPLICATE_REQUEST:
+                mCallbackExecutor.execute(() -> mCallback.onResult(operationResult.statusCode));
+                break;
+            default:
+                resolvePrefetchErrorCallback(operationResult);
         }
     }
 
@@ -45,16 +47,15 @@ public class ProfileWebViewPrefetchCallback implements AwPrefetchCallback {
         assert operationResult.statusCode != PrefetchOperationStatusCode.SUCCESS;
         int errorCode = 0;
         String message;
-        switch (operationResult.statusCode) {
-            case PrefetchOperationStatusCode.FAILURE -> message = "Prefetch request failed";
-            case PrefetchOperationStatusCode.SERVER_FAILURE -> {
-                message = "Server error";
-                errorCode = operationResult.httpResponseStatusCode;
-            }
-            case PrefetchOperationStatusCode.DUPLICATE_REQUEST -> message =
-                    "Duplicate prefetch request";
-            default -> message = "Unexpected error occurred.";
-        }
+        message =
+                switch (operationResult.statusCode) {
+                    case PrefetchOperationStatusCode.FAILURE -> "Prefetch request failed";
+                    case PrefetchOperationStatusCode.SERVER_FAILURE -> {
+                        errorCode = operationResult.httpResponseStatusCode;
+                        yield "Server error";
+                    }
+                    default -> "Unexpected error occurred.";
+                };
         mCallback.onError(operationResult.statusCode, message, errorCode);
     }
 }

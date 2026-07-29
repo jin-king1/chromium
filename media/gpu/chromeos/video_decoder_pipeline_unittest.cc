@@ -4,10 +4,13 @@
 
 #include "media/gpu/chromeos/video_decoder_pipeline.h"
 
+#include <vector>
+
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
@@ -22,8 +25,8 @@
 #include "media/base/mock_media_log.h"
 #include "media/base/status.h"
 #include "media/base/video_decoder_config.h"
-#include "media/gpu/chromeos/default_video_frame_converter.h"
 #include "media/gpu/chromeos/dmabuf_video_frame_pool.h"
+#include "media/gpu/chromeos/frame_resource_converter.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/libdrm/src/include/drm/drm_fourcc.h"
@@ -56,6 +59,29 @@ MATCHER_P(MatchesDecoderBuffer, buffer, "") {
   DCHECK(arg);
   return arg->MatchesForTesting(*buffer);
 }
+
+class FakeFrameResourceConverter : public FrameResourceConverter {
+ public:
+  static std::unique_ptr<FrameResourceConverter> Create() {
+    return base::WrapUnique<FrameResourceConverter>(
+        new FakeFrameResourceConverter());
+  }
+
+  FakeFrameResourceConverter(const FakeFrameResourceConverter&) = delete;
+  FakeFrameResourceConverter& operator=(const FakeFrameResourceConverter&) =
+      delete;
+
+ private:
+  FakeFrameResourceConverter() = default;
+  ~FakeFrameResourceConverter() override = default;
+
+  // FrameResourceConverter overrides.
+  void ConvertFrameImpl(scoped_refptr<FrameResource> frame) override {
+    // It is fine to output a nullptr VideoFrame. The output frames are not
+    // checked.
+    Output(nullptr);
+  }
+};
 
 class MockVideoFramePool : public DmabufVideoFramePool {
  public:
@@ -205,7 +231,7 @@ class VideoDecoderPipelineTest
             std::numeric_limits<int>::max()),
         gpu::GpuDriverBugWorkarounds(),
         base::SingleThreadTaskRunner::GetCurrentDefault(), std::move(pool),
-        DefaultFrameConverter::Create(),
+        FakeFrameResourceConverter::Create(),
         VideoDecoderPipeline::DefaultPreferredRenderableFourccs(),
         std::make_unique<MockMediaLog>(),
         // This callback needs to be configured in the individual tests.
@@ -421,36 +447,47 @@ TEST_P(VideoDecoderPipelineTest, Initialize) {
             !!GetUnderlyingDecoder());
 }
 
-const struct DecoderPipelineTestParams kDecoderPipelineTestParams[] = {
-    // A CreateDecoderFunctionCB that fails to Create() (i.e. returns a
-    // null Decoder)
-    {base::BindRepeating(&VideoDecoderPipelineTest::CreateNullMockDecoder),
-     DecoderStatus::Codes::kFailedToCreateDecoder},
+const std::vector<DecoderPipelineTestParams>& GetDecoderPipelineTestParams() {
+  static const base::NoDestructor<std::vector<DecoderPipelineTestParams>> val(
+      std::vector<DecoderPipelineTestParams>{
+          // A CreateDecoderFunctionCB that fails to Create() (i.e. returns a
+          // null Decoder)
+          {base::BindRepeating(
+               &VideoDecoderPipelineTest::CreateNullMockDecoder),
+           DecoderStatus::Codes::kFailedToCreateDecoder},
 
-    // A CreateDecoderFunctionCB that works fine, i.e. Create()s and
-    // Initialize()s correctly.
-    {base::BindRepeating(&VideoDecoderPipelineTest::CreateGoodMockDecoder),
-     DecoderStatus::Codes::kOk},
+          // A CreateDecoderFunctionCB that works fine, i.e. Create()s and
+          // Initialize()s correctly.
+          {base::BindRepeating(
+               &VideoDecoderPipelineTest::CreateGoodMockDecoder),
+           DecoderStatus::Codes::kOk},
 
 #if BUILDFLAG(IS_CHROMEOS)
-    // A CreateDecoderFunctionCB for transcryption, where Create() is ok, and
-    // the decoder will Initialize OK, but then the pipeline will not create the
-    // transcryptor due to a missing CdmContext. This will succeed if called
-    // through InitializeForTranscrypt where a CdmContext is set.
-    {base::BindRepeating(
-         &VideoDecoderPipelineTest::CreateGoodMockTranscryptDecoder),
-     DecoderStatus::Codes::kUnsupportedEncryptionMode},
+          // A CreateDecoderFunctionCB for transcryption, where Create() is ok,
+          // and
+          // the decoder will Initialize OK, but then the pipeline will not
+          // create
+          // the
+          // transcryptor due to a missing CdmContext. This will succeed if
+          // called
+          // through InitializeForTranscrypt where a CdmContext is set.
+          {base::BindRepeating(
+               &VideoDecoderPipelineTest::CreateGoodMockTranscryptDecoder),
+           DecoderStatus::Codes::kUnsupportedEncryptionMode},
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-    // A CreateDecoderFunctionCB that Create()s ok but fails to Initialize()
-    // correctly.
-    {base::BindRepeating(&VideoDecoderPipelineTest::CreateBadMockDecoder),
-     DecoderStatus::Codes::kFailed},
-};
+          // A CreateDecoderFunctionCB that Create()s ok but fails to
+          // Initialize()
+          // correctly.
+          {base::BindRepeating(&VideoDecoderPipelineTest::CreateBadMockDecoder),
+           DecoderStatus::Codes::kFailed},
+      });
+  return *val;
+}
 
 INSTANTIATE_TEST_SUITE_P(All,
                          VideoDecoderPipelineTest,
-                         testing::ValuesIn(kDecoderPipelineTestParams));
+                         testing::ValuesIn(GetDecoderPipelineTestParams()));
 
 // Verifies that trying to Initialize() with a non-supported config fails.
 TEST_F(VideoDecoderPipelineTest, InitializeFailsDueToNotSupportedConfig) {

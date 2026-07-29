@@ -50,6 +50,7 @@ constexpr char kStubDevicePolicyFileNamePrefix[] = "stub_device_policy";
 constexpr char kStubPerAccountPolicyFileNamePrefix[] = "stub_policy";
 constexpr char kStubStateKeysFileName[] = "stub_state_keys";
 constexpr char kStubExtensionPolicyFileNameFragment[] = "_extension_";
+constexpr char kStubExtensionInstallPolicyFileName[] = "extension_install";
 constexpr char kStubSigninExtensionPolicyFileNameFragment[] =
     "_signin_extension_";
 constexpr char kStubPerAccountPolicyKeyFileName[] = "policy.pub";
@@ -93,15 +94,17 @@ void EnsureFilesDeleted(
 }
 
 // Creates a PolicyDescriptor object to store/retrieve Chrome policy.
-login_manager::PolicyDescriptor MakeChromePolicyDescriptor(
+login_manager::PolicyDescriptor MakePolicyDescriptor(
     login_manager::PolicyAccountType account_type,
+    login_manager::PolicyDomain domain,
     const std::string& account_id) {
   login_manager::PolicyDescriptor descriptor;
   descriptor.set_account_type(account_type);
   descriptor.set_account_id(account_id);
-  descriptor.set_domain(login_manager::POLICY_DOMAIN_CHROME);
+  descriptor.set_domain(domain);
   return descriptor;
 }
+
 
 // Returns true if the policy descriptor points to Chrome device policy.
 bool IsChromeDevicePolicy(const login_manager::PolicyDescriptor& descriptor) {
@@ -149,6 +152,8 @@ std::string GetStubPolicyFilenamePostfix(
       DCHECK(descriptor.has_component_id());
       return kStubSigninExtensionPolicyFileNameFragment +
              descriptor.component_id();
+    case login_manager::POLICY_DOMAIN_EXTENSION_INSTALL:
+      return kStubExtensionInstallPolicyFileName;
   }
   NOTREACHED();
 }
@@ -345,7 +350,7 @@ void FakeSessionManagerClient::LoginScreenStorageRetrieve(
     LoginScreenStorageRetrieveCallback callback) {
   // Default value which is checked in tests.
   std::string data = "Test";
-  if (base::Contains(login_screen_storage_, key)) {
+  if (login_screen_storage_.contains(key)) {
     data = login_screen_storage_[key];
   }
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -430,9 +435,9 @@ void FakeSessionManagerClient::StartRemoteDeviceWipe(
   }
 }
 
-void FakeSessionManagerClient::ClearForcedReEnrollmentVpd(
+void FakeSessionManagerClient::ClearBlockDevmodeVpd(
     chromeos::VoidDBusMethodCallback callback) {
-  clear_forced_re_enrollment_vpd_call_count_++;
+  clear_block_devmode_vpd_call_count_++;
   PostReply(FROM_HERE, std::move(callback), true);
 }
 
@@ -456,21 +461,6 @@ void FakeSessionManagerClient::NotifyLockScreenShown() {
 void FakeSessionManagerClient::NotifyLockScreenDismissed() {
   notify_lock_screen_dismissed_call_count_++;
   screen_is_locked_ = false;
-}
-
-bool FakeSessionManagerClient::BlockingRequestBrowserDataMigration(
-    const cryptohome::AccountIdentifier& cryptohome_id,
-    const std::string& mode) {
-  request_browser_data_migration_called_ = true;
-  request_browser_data_migration_mode_called_ = true;
-  request_browser_data_migration_mode_value_ = mode;
-  return true;
-}
-
-bool FakeSessionManagerClient::BlockingRequestBrowserDataBackwardMigration(
-    const cryptohome::AccountIdentifier& cryptohome_id) {
-  request_browser_data_backward_migration_called_ = true;
-  return true;
 }
 
 void FakeSessionManagerClient::RetrieveActiveSessions(
@@ -527,17 +517,19 @@ RetrievePolicyResponseType FakeSessionManagerClient::BlockingRetrievePolicy(
 void FakeSessionManagerClient::StoreDevicePolicy(
     const std::string& policy_blob,
     chromeos::VoidDBusMethodCallback callback) {
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_DEVICE, kEmptyAccountId);
+  login_manager::PolicyDescriptor descriptor = MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_DEVICE, login_manager::POLICY_DOMAIN_CHROME,
+      kEmptyAccountId);
   StorePolicy(descriptor, policy_blob, std::move(callback));
 }
 
 void FakeSessionManagerClient::StorePolicyForUser(
     const cryptohome::AccountIdentifier& cryptohome_id,
+    login_manager::PolicyDomain domain,
     const std::string& policy_blob,
     chromeos::VoidDBusMethodCallback callback) {
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_USER, cryptohome_id.account_id());
+  login_manager::PolicyDescriptor descriptor = MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_USER, domain, cryptohome_id.account_id());
   StorePolicy(descriptor, policy_blob, std::move(callback));
 }
 
@@ -545,8 +537,9 @@ void FakeSessionManagerClient::StoreDeviceLocalAccountPolicy(
     const std::string& account_id,
     const std::string& policy_blob,
     chromeos::VoidDBusMethodCallback callback) {
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_DEVICE_LOCAL_ACCOUNT, account_id);
+  login_manager::PolicyDescriptor descriptor = MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_DEVICE_LOCAL_ACCOUNT,
+      login_manager::POLICY_DOMAIN_CHROME, account_id);
   StorePolicy(descriptor, policy_blob, std::move(callback));
 }
 
@@ -771,25 +764,23 @@ bool FakeSessionManagerClient::GetFlagsForUser(
   *out_flags_for_user = iter->second.flags;
 
   // Encode feature flags.
-  base::Value::List feature_flag_list;
+  base::ListValue feature_flag_list;
   for (const auto& feature_flag : iter->second.feature_flags) {
     feature_flag_list.Append(feature_flag);
   }
   if (!feature_flag_list.empty()) {
-    std::string encoded;
-    base::JSONWriter::Write(feature_flag_list, &encoded);
+    std::string encoded = base::WriteJson(feature_flag_list).value_or("");
     out_flags_for_user->push_back(base::StringPrintf(
         "--%s=%s", chromeos::switches::kFeatureFlags, encoded.c_str()));
   }
 
   // Encode origin list values.
-  base::Value::Dict origin_list_dict;
+  base::DictValue origin_list_dict;
   for (const auto& entry : iter->second.origin_list_flags) {
     origin_list_dict.Set(entry.first, entry.second);
   }
   if (!origin_list_dict.empty()) {
-    std::string encoded;
-    base::JSONWriter::Write(origin_list_dict, &encoded);
+    std::string encoded = base::WriteJson(origin_list_dict).value_or("");
     out_flags_for_user->push_back(base::StringPrintf(
         "--%s=%s", chromeos::switches::kFeatureFlagsOriginList,
         encoded.c_str()));
@@ -811,8 +802,9 @@ void FakeSessionManagerClient::SetServerBackedStateKeyError(
 }
 
 const std::string& FakeSessionManagerClient::device_policy() const {
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_DEVICE, kEmptyAccountId);
+  login_manager::PolicyDescriptor descriptor = MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_DEVICE, login_manager::POLICY_DOMAIN_CHROME,
+      kEmptyAccountId);
   DCHECK(policy_storage_ == PolicyStorageType::kInMemory);
   auto it = policy_.find(GetMemoryStorageKey(descriptor));
   return it != policy_.end() ? it->second : base::EmptyString();
@@ -821,34 +813,38 @@ const std::string& FakeSessionManagerClient::device_policy() const {
 void FakeSessionManagerClient::set_device_policy(
     const std::string& policy_blob) {
   DCHECK(policy_storage_ == PolicyStorageType::kInMemory);
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_DEVICE, kEmptyAccountId);
+  login_manager::PolicyDescriptor descriptor = MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_DEVICE, login_manager::POLICY_DOMAIN_CHROME,
+      kEmptyAccountId);
   policy_[GetMemoryStorageKey(descriptor)] = policy_blob;
 }
 
 const std::string& FakeSessionManagerClient::user_policy(
-    const cryptohome::AccountIdentifier& cryptohome_id) const {
+    const cryptohome::AccountIdentifier& cryptohome_id,
+    login_manager::PolicyDomain domain) const {
   DCHECK(policy_storage_ == PolicyStorageType::kInMemory);
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_USER, cryptohome_id.account_id());
+  login_manager::PolicyDescriptor descriptor = MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_USER, domain, cryptohome_id.account_id());
   auto it = policy_.find(GetMemoryStorageKey(descriptor));
   return it != policy_.end() ? it->second : base::EmptyString();
 }
 
 void FakeSessionManagerClient::set_user_policy(
     const cryptohome::AccountIdentifier& cryptohome_id,
+    login_manager::PolicyDomain domain,
     const std::string& policy_blob) {
   DCHECK(policy_storage_ == PolicyStorageType::kInMemory);
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_USER, cryptohome_id.account_id());
+  login_manager::PolicyDescriptor descriptor = MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_USER, domain, cryptohome_id.account_id());
   policy_[GetMemoryStorageKey(descriptor)] = policy_blob;
 }
 
 const std::string& FakeSessionManagerClient::device_local_account_policy(
     const std::string& account_id) const {
   DCHECK(policy_storage_ == PolicyStorageType::kInMemory);
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_DEVICE_LOCAL_ACCOUNT, account_id);
+  login_manager::PolicyDescriptor descriptor = MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_DEVICE_LOCAL_ACCOUNT,
+      login_manager::POLICY_DOMAIN_CHROME, account_id);
   auto it = policy_.find(GetMemoryStorageKey(descriptor));
   return it != policy_.end() ? it->second : base::EmptyString();
 }
@@ -857,8 +853,9 @@ void FakeSessionManagerClient::set_device_local_account_policy(
     const std::string& account_id,
     const std::string& policy_blob) {
   DCHECK(policy_storage_ == PolicyStorageType::kInMemory);
-  login_manager::PolicyDescriptor descriptor = MakeChromePolicyDescriptor(
-      login_manager::ACCOUNT_TYPE_DEVICE_LOCAL_ACCOUNT, account_id);
+  login_manager::PolicyDescriptor descriptor = MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_DEVICE_LOCAL_ACCOUNT,
+      login_manager::POLICY_DOMAIN_CHROME, account_id);
   policy_[GetMemoryStorageKey(descriptor)] = policy_blob;
 }
 

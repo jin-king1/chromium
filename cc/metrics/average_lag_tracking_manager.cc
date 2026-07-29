@@ -66,6 +66,8 @@ void AverageLagTrackingManager::CollectScrollEventsFromFrame(
                                    &event_infos);
   AddEventInfoFromEventMetricsList(events_metrics.impl_event_metrics,
                                    &event_infos);
+  AddEventInfoFromEventMetricsList(events_metrics.raster_event_metrics,
+                                   &event_infos);
 
   if (event_infos.size() > 0)
     frame_token_to_info_.emplace_back(frame_token, std::move(event_infos));
@@ -80,8 +82,9 @@ void AverageLagTrackingManager::DidPresentCompositorFrame(
     // still might end up being presented successfully.
     for (auto submitted_frame = frame_token_to_info_.begin();
          submitted_frame != frame_token_to_info_.end(); submitted_frame++) {
-      if (viz::FrameTokenGT(submitted_frame->first, frame_token))
+      if (submitted_frame->first > frame_token) {
         break;
+      }
       if (submitted_frame->first == frame_token) {
         frame_token_to_info_.erase(submitted_frame);
         break;
@@ -96,8 +99,9 @@ void AverageLagTrackingManager::DidPresentCompositorFrame(
   std::vector<AverageLagTracker::EventInfo> infos;
   while (!frame_token_to_info_.empty()) {
     auto& submitted_frame = frame_token_to_info_.front();
-    if (viz::FrameTokenGT(submitted_frame.first, frame_token))
+    if (submitted_frame.first > frame_token) {
       break;
+    }
     if (submitted_frame.first == frame_token)
       infos = std::move(submitted_frame.second);
     frame_token_to_info_.pop_front();

@@ -1,5 +1,7 @@
 # raw_ptr&lt;T&gt; (aka. MiraclePtr, aka. BackupRefPtr, aka. BRP)
 
+For the equivalent of a C++ reference, see [`raw_ref<T>`](./raw_ref.md).
+
 ## Quick rules
 
 Before telling you what `raw_ptr<T>` is, we'd like you to follow one simple
@@ -94,7 +96,7 @@ exclusions via:
       Make sure to look at
       [the "Extra pointer rules" section](#Extra-pointer-rules)
       before resorting to this exclusion.
-- [RawPtrManualPathsToIgnore.h](../../tools/clang/plugins/RawPtrManualPathsToIgnore.h)
+- [RawPtrManualPathsToIgnore.h](../../tools/clang/raw_ptr_plugin/RawPtrManualPathsToIgnore.h)
   to exclude at a directory level (NOTE, use it as last resort, and be aware
   it'll require a Clang plugin roll).  Examples:
     - Renderer-only code (i.e. code in paths that contain `/renderer/` or
@@ -220,7 +222,7 @@ result in compile errors:
   [Rewrite exclusion statistics](https://docs.google.com/document/d/1uAsWnwy8HfIJhDPSh1efohnqfGsv2LJmYTRBj0JzZh8/edit#heading=h.dg4eebu87wg9)
   )
 - Pointers in unions, as well as pointer fields in classes/structs that are used
-  in unions (side note, absl::variant is strongly preferred)
+  in unions (side note, std::variant is strongly preferred)
 - Code that doesn’t depend on `//base` (including non-Chromium repositories and
   third party libraries)
 - Code in `//ppapi`
@@ -241,6 +243,7 @@ Therefore in the following cases raw C++ pointers may be used instead of
 
 ``` none
 third_party/blink/renderer/core/
+third_party/blink/renderer/platform/fonts/
 third_party/blink/renderer/platform/heap/
 third_party/blink/renderer/platform/wtf/
 ```
@@ -260,7 +263,7 @@ Use raw C++ pointers instead of `raw_ptr<T>` in the following scenarios:
   the security benefit of UaF protection is lower for such short-lived
   pointers.)
 - Pointer fields in unions. However, note that a much better, modern alternative
-  is `absl::variant` + `raw_ptr<T>`. If use of C++ union is absolutely
+  is `std::variant` + `raw_ptr<T>`. If use of C++ union is absolutely
   unavoidable, prefer a regular C++ pointer: incorrect management of a
   `raw_ptr<T>` field can easily lead to ref-count corruption.
 - Pointers whose addresses are used only as identifiers and which are
@@ -317,7 +320,10 @@ an obscure crash may occur. Those crashes often manifest themselves as SEGV or
 `RawPtrBackupRefImpl::ReleaseInternal()`, but you may also experience memory
 corruption or a silent drop of UaF protection.
 
-## Pointer Annotations
+## RawPtrTraits
+
+`raw_ptr<T, Traits>` behavior can be customized by passing traits as the second
+template parameter. Multiple traits can be combined using bitwise OR.
 
 ### The AllowPtrArithmetic trait
 
@@ -336,6 +342,23 @@ the result of specific implementation that requires it (e.g. BackupRefPtr),
 or as the result of build flags (to enforce consistency). However, we provide
 an opt-out to allow third-party code to skip this step (where possible). Use
 this trait sparingly.
+
+### Dangling Pointer Detection (`kMayDangle`)
+
+`raw_ptr` checks for dangling pointers during its lifecycle. For legacy
+patterns or architectural constraints where a pointer must outlive its pointee,
+use these `kMayDangle` aliases:
+
+- **`DisableDanglingPtrDetection`**: Known safe dangling pointers. Must be
+  documented.
+- **`DanglingUntriaged`**: Technical debt; identified but not yet triaged.
+  - **`FlakyDanglingUntriaged`**: Dangles inconsistently (e.g., in flaky
+    tests).
+  - **`AcrossTasksDanglingUntriaged`**: Higher-risk pointers that are released
+    across task boundaries.
+  - **`LeakedDanglingUntriaged`**: Pointers that are never released.
+
+For details on the detector, see [docs/dangling_ptr.md](../../docs/dangling_ptr.md).
 
 ## Recoverable compile-time problems {#Recoverable-compile-time-problems}
 
@@ -693,6 +716,14 @@ You will need to make sure that `DoStuff()` is sufficiently trivial and can't
 `dangling_` change its value or get destroyed. If that's the case, the
 `DoOtherStuff()` call may be considered protected. The tool will provide you
 with the stack trace for both the extraction and dereference events.
+
+Note that this becomes significantly more difficult in the presence of
+multiple threads. In order to avoid exploitable race conditions, the
+creation of the `raw_ptr<T>` must be sequenced before the free, and it
+must not be destroyed or change its value before the use. `raw_ptr<T>`
+only prevents exploitation if no possible allocation of sqeuences to
+threads and no possible interleaving of thread operations could result
+in this region having no `raw_ptr<T>`.
 
 #### Not protected
 

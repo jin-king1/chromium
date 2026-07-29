@@ -12,12 +12,14 @@
 #include "components/page_load_metrics/common/page_load_metrics.mojom.h"
 #include "components/page_load_metrics/common/page_load_timing.h"
 #include "components/page_load_metrics/common/test/page_load_metrics_test_util.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 
 namespace page_load_metrics {
 
@@ -43,7 +45,7 @@ class FencedFramesPageLoadMetricsObserverTest
 
     // Add UmaPageLoadMetricsObserver to ensure existing observer's behavior
     // being not changed.
-    tracker->AddObserver(std::make_unique<UmaPageLoadMetricsObserver>(false));
+    tracker->AddObserver(std::make_unique<UmaPageLoadMetricsObserver>());
   }
 
   void PopulateTimingForHistograms(content::RenderFrameHost* rfh) {

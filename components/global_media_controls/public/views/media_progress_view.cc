@@ -11,12 +11,15 @@
 #include "components/strings/grit/components_strings.h"
 #include "services/media_session/public/mojom/media_session.mojom.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "ui/accessibility/ax_action_data.h"
+#include "ui/base/cursor/cursor.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/property_effects.h"
 #include "ui/views/widget/widget.h"
 
 namespace global_media_controls {
@@ -59,8 +62,17 @@ constexpr int kStraightProgressIndicatorGap = 4;
 // and straight lines will take.
 constexpr base::TimeDelta kSlideAnimationDuration = base::Milliseconds(200);
 
-// Defines how frequently the progress will be updated.
-constexpr base::TimeDelta kProgressUpdateFrequency = base::Milliseconds(100);
+// Defines how long the animation for transitioning between a thicker and
+// thinner progress line.
+constexpr base::TimeDelta kThicknessAnimationDuration = base::Milliseconds(150);
+
+// Defines the interval for updating the progress for a squiggly line.
+constexpr base::TimeDelta kSquigglyProgressUpdateInterval =
+    base::Milliseconds(100);
+
+// Defines the interval for updating the progress for a straight line.
+constexpr base::TimeDelta kStraightProgressUpdateInterval =
+    base::Milliseconds(150);
 
 // Defines how long the progress colors should delay switching when the media
 // playback rate is changing.
@@ -103,11 +115,13 @@ MediaProgressView::MediaProgressView(
           std::move(playback_state_change_for_dragging_callback)),
       seek_callback_(std::move(seek_callback)),
       on_update_progress_callback_(std::move(on_update_progress_callback)),
-      slide_animation_(this) {
+      slide_animation_(this),
+      thickness_animation_(this) {
   SetFlipCanvasOnPaintForRTLUI(true);
   SetFocusBehavior(FocusBehavior::ALWAYS);
 
   slide_animation_.SetSlideDuration(kSlideAnimationDuration);
+  thickness_animation_.SetSlideDuration(kThicknessAnimationDuration);
   straight_progress_stroke_width_ = kStrokeWidth;
 
   GetViewAccessibility().SetRole(ax::mojom::Role::kSlider);
@@ -124,9 +138,20 @@ MediaProgressView::~MediaProgressView() = default;
 // gfx::AnimationDelegate implementations:
 
 void MediaProgressView::AnimationProgressed(const gfx::Animation* animation) {
-  CHECK(animation == &slide_animation_);
-  progress_amp_fraction_ = animation->GetCurrentValue();
-  OnPropertyChanged(&progress_amp_fraction_, views::kPropertyEffectsPaint);
+  if (animation == &slide_animation_) {
+    progress_amp_fraction_ = animation->GetCurrentValue();
+    if (IsDrawn()) {
+      OnPropertyChanged(&progress_amp_fraction_,
+                        views::PropertyEffects::kPaint);
+    }
+  } else if (animation == &thickness_animation_) {
+    straight_progress_stroke_width_ =
+        animation->CurrentValueBetween(kStrokeWidth, kLargeStrokeWidth);
+    if (IsDrawn()) {
+      OnPropertyChanged(&straight_progress_stroke_width_,
+                        views::PropertyEffects::kPaint);
+    }
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -158,6 +183,16 @@ bool MediaProgressView::HandleAccessibleAction(
 
 void MediaProgressView::VisibilityChanged(View* starting_from,
                                           bool is_visible) {
+  if (!is_visible || !IsDrawn()) {
+    return;
+  }
+
+  // When becoming visible, trigger an immediate repaint and callback
+  // execution. This ensures the UI instantly updates to the correct position
+  // without waiting for the next timer tick.
+  SchedulePaint();
+  on_update_progress_callback_.Run(current_position_);
+
   MaybeNotifyAccessibilityValueChanged();
 }
 
@@ -189,7 +224,7 @@ void MediaProgressView::OnPaint(gfx::Canvas* canvas) {
     // Create a foreground squiggly progress path longer than the required
     // length and truncate it later in canvas. If the media is paused, this will
     // become a straight line.
-    SkPath progress_path;
+    SkPathBuilder progress_path;
     int current_x = -phase_offset_ - kProgressWavelength / 2;
     int current_amp =
         static_cast<int>(kProgressAmplitude * progress_amp_fraction_);
@@ -207,7 +242,7 @@ void MediaProgressView::OnPaint(gfx::Canvas* canvas) {
 
     // Paint the foreground squiggly progress in a clipped rect.
     canvas->ClipRect(gfx::Rect(0, 0, progress_width, view_height));
-    canvas->DrawPath(progress_path, flags);
+    canvas->DrawPath(progress_path.detach(), flags);
   } else {
     // Paint the foreground straight progress line with rounded corners.
     flags.setStyle(cc::PaintFlags::kFill_Style);
@@ -226,14 +261,19 @@ void MediaProgressView::OnPaint(gfx::Canvas* canvas) {
 
   // Paint the progress rectangle indicator.
   flags.setStyle(cc::PaintFlags::kFill_Style);
-  const gfx::SizeF indicator_size =
+  gfx::SizeF indicator_size =
       (use_squiggly_line_ ? kSquigglyProgressIndicatorSize
                           : kStraightProgressIndicatorSize);
-  canvas->DrawRoundRect(
-      gfx::RectF(gfx::PointF(progress_width - indicator_size.width() / 2,
-                             (view_height - indicator_size.height()) / 2),
-                 indicator_size),
-      indicator_size.width() / 2, flags);
+  // For live media, we should not draw an indicator.
+  if (is_live_) {
+    indicator_size = gfx::SizeF();
+  } else {
+    canvas->DrawRoundRect(
+        gfx::RectF(gfx::PointF(progress_width - indicator_size.width() / 2,
+                               (view_height - indicator_size.height()) / 2),
+                   indicator_size),
+        indicator_size.width() / 2, flags);
+  }
 
   // Paint the background straight line with rounded corners.
   int background_line_x =
@@ -277,6 +317,16 @@ void MediaProgressView::OnFocus() {
 void MediaProgressView::OnBlur() {
   views::View::OnBlur();
   SchedulePaint();
+}
+
+void MediaProgressView::OnMouseEntered(const ui::MouseEvent& event) {
+  thickness_animation_.Show();
+}
+
+void MediaProgressView::OnMouseExited(const ui::MouseEvent& event) {
+  if (!is_dragging_) {
+    thickness_animation_.Hide();
+  }
 }
 
 ui::Cursor MediaProgressView::GetCursor(const ui::MouseEvent& event) {
@@ -394,38 +444,76 @@ void MediaProgressView::UpdateProgress(
                        base::Unretained(this), is_paused_));
   }
 
+  // If the user is currently dragging the progress bar and the media is no
+  // longer paused, re-pause it for dragging.
+  if (is_dragging_ && !is_paused_) {
+    PauseForDragging();
+  }
+
   current_position_ = media_position.GetPosition();
   media_duration_ = media_position.duration();
   is_live_ = media_duration_.is_max();
 
-  on_update_progress_callback_.Run(current_position_);
-
+  // Always update all internal state (progress and wave phase)
+  // so the state is accurate the moment we become visible.
   double new_value = CalculateNewValue(current_position_);
-  if (new_value != current_value_) {
+  const bool progress_changed = (new_value != current_value_);
+  if (progress_changed) {
     current_value_ = new_value;
-    MaybeNotifyAccessibilityValueChanged();
-    OnPropertyChanged(&current_value_, views::kPropertyEffectsPaint);
   }
 
-  if (!is_paused_) {
-    if (!slide_animation_.is_animating()) {
-      // Update the progress wavelength phase offset to create wave animation.
-      phase_offset_ +=
-          static_cast<int>(kProgressUpdateFrequency.InMillisecondsF() / 1000 *
-                           kProgressPhaseSpeed);
-      phase_offset_ %= kProgressWavelength;
-      OnPropertyChanged(&phase_offset_, views::kPropertyEffectsPaint);
-    }
+  const bool should_animate_waves =
+      !is_paused_ && use_squiggly_line_ && !slide_animation_.is_animating();
 
+  if (should_animate_waves) {
+    // Update the progress wavelength phase offset to create wave animation.
+    phase_offset_ +=
+        static_cast<int>(kSquigglyProgressUpdateInterval.InMillisecondsF() /
+                         1000 * kProgressPhaseSpeed);
+    phase_offset_ %= kProgressWavelength;
+  }
+
+  // Always restart the timer, regardless of drawn state, to maintain background
+  // synchronization.
+  if (!is_paused_) {
     update_progress_timer_->Start(
-        FROM_HERE, kProgressUpdateFrequency,
+        FROM_HERE, GetUpdateInterval(),
         base::BindOnce(&MediaProgressView::UpdateProgress,
                        base::Unretained(this), media_position));
   }
+
+  // Performance optimization: skip all expensive repaints, external callbacks,
+  // and accessibility updates when the view is not drawn to avoid unnecessary
+  // compositor work. We use IsDrawn() instead of local visibility to correctly
+  // handle cases where a parent (e.g., the PiP overlay) is hidden.
+  if (!IsDrawn()) {
+    return;
+  }
+
+  on_update_progress_callback_.Run(current_position_);
+
+  if (progress_changed) {
+    MaybeNotifyAccessibilityValueChanged();
+    OnPropertyChanged(&current_value_, views::PropertyEffects::kPaint);
+  }
+
+  if (should_animate_waves) {
+    OnPropertyChanged(&phase_offset_, views::PropertyEffects::kPaint);
+  }
+}
+
+base::TimeDelta MediaProgressView::GetUpdateInterval() const {
+  // Performance optimization: The update interval is chosen to ensure the
+  // squiggly wave animation remains smooth, while the straight progress bar is
+  // updated less frequently to improve performance. The straight line's linear
+  // movement is less visually sensitive to a lower update rate than the wave
+  // animation.
+  return use_squiggly_line_ ? kSquigglyProgressUpdateInterval
+                            : kStraightProgressUpdateInterval;
 }
 
 void MediaProgressView::MaybeNotifyAccessibilityValueChanged() {
-  if (!GetWidget() || !GetWidget()->IsVisible() ||
+  if (!IsDrawn() || !GetWidget() || !GetWidget()->IsVisible() ||
       current_position_ == last_announced_position_) {
     return;
   }
@@ -445,18 +533,17 @@ void MediaProgressView::OnProgressDragStarted(double location) {
 }
 
 void MediaProgressView::DelayedProgressDragStarted(double location) {
+  is_dragging_ = true;
+
   // Pause the media only once if it is playing when the user starts dragging
   // the progress line.
   if (!is_paused_ && !paused_for_dragging_) {
-    playback_state_change_for_dragging_callback_.Run(
-        PlaybackStateChangeForDragging::kPauseForDraggingStarted);
-    paused_for_dragging_ = true;
-    UpdateProgressColors(paused_for_dragging_);
+    PauseForDragging();
   }
 
   // Enlarge the straight progress line stroke width when the user starts
   // dragging the progress line.
-  straight_progress_stroke_width_ = kLargeStrokeWidth;
+  thickness_animation_.Show();
   drag_state_change_callback_.Run(DragState::kDragStarted);
 
   // Seek to the location for the dragging event so that if the user only
@@ -465,6 +552,8 @@ void MediaProgressView::DelayedProgressDragStarted(double location) {
 }
 
 void MediaProgressView::OnProgressDragEnded() {
+  is_dragging_ = false;
+
   if (progress_drag_started_delay_timer_->IsRunning()) {
     // If the timer is still running, we consider the user event to be clicking
     // rather than dragging and do not need to un-pause the media.
@@ -478,10 +567,20 @@ void MediaProgressView::OnProgressDragEnded() {
       paused_for_dragging_ = false;
       UpdateProgressColors(paused_for_dragging_);
     }
-    // Reset the straight progress line stroke width.
-    straight_progress_stroke_width_ = kStrokeWidth;
+    // Reset the straight progress line stroke width if the mouse is not
+    // hovering over the view.
+    if (!IsMouseHovered()) {
+      thickness_animation_.Hide();
+    }
     drag_state_change_callback_.Run(DragState::kDragEnded);
   }
+}
+
+void MediaProgressView::PauseForDragging() {
+  playback_state_change_for_dragging_callback_.Run(
+      PlaybackStateChangeForDragging::kPauseForDraggingStarted);
+  paused_for_dragging_ = true;
+  UpdateProgressColors(true);
 }
 
 void MediaProgressView::UpdateProgressColors(bool is_paused) {
@@ -522,6 +621,18 @@ double MediaProgressView::current_value_for_testing() const {
   return current_value_;
 }
 
+int MediaProgressView::phase_offset_for_testing() const {
+  return phase_offset_;
+}
+
+double MediaProgressView::progress_amp_fraction_for_testing() const {
+  return progress_amp_fraction_;
+}
+
+int MediaProgressView::straight_progress_stroke_width_for_testing() const {
+  return straight_progress_stroke_width_;
+}
+
 bool MediaProgressView::is_paused_for_testing() const {
   return is_paused_;
 }
@@ -547,6 +658,14 @@ void MediaProgressView::set_switch_progress_colors_delay_timer_for_testing(
 void MediaProgressView::set_progress_drag_started_delay_timer_for_testing(
     std::unique_ptr<base::OneShotTimer> test_timer) {
   progress_drag_started_delay_timer_ = std::move(test_timer);
+}
+
+gfx::SlideAnimation& MediaProgressView::slide_animation_for_testing() {
+  return slide_animation_;
+}
+
+gfx::SlideAnimation& MediaProgressView::thickness_animation_for_testing() {
+  return thickness_animation_;
 }
 
 BEGIN_METADATA(MediaProgressView)

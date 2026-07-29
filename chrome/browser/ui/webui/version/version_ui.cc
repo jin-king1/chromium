@@ -6,12 +6,15 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/command_line.h"
 #include "base/debug/debugging_buildflags.h"
 #include "base/i18n/message_formatter.h"
+#include "base/memory/ref_counted_memory.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
@@ -23,6 +26,7 @@
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
+#include "chrome/grit/theme_resources.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/grit/components_scaled_resources.h"
 #include "components/grit/version_ui_resources.h"
@@ -37,18 +41,21 @@
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/resource/resource_bundle.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/webui/webui_util.h"
 #include "v8/include/v8-version-string.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
+#include "base/android/apk_info.h"
 #include "chrome/browser/ui/android/android_about_app_info.h"
 #else
 #include "chrome/browser/ui/webui/theme_source.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "build/util/LASTCHANGE_commit_position.h"
 #include "chrome/browser/ui/webui/version/version_handler_chromeos.h"
 #endif
 
@@ -87,6 +94,8 @@ void CreateAndAddVersionUIDataSource(Profile* profile) {
       {version_ui::kCopyVariationsLabel, IDS_VERSION_UI_COPY_VARIATIONS_LABEL},
       {version_ui::kCopyVariationsNotice,
        IDS_VERSION_UI_COPY_VARIATIONS_NOTICE},
+      {version_ui::kVariationsSourceName,
+       IDS_VERSION_UI_VARIATIONS_SOURCE_NAME},
       {version_ui::kVariationsSeedName, IDS_VERSION_UI_VARIATIONS_SEED_NAME},
 #if BUILDFLAG(IS_CHROMEOS)
       {version_ui::kARC, IDS_ARC_LABEL},
@@ -105,6 +114,7 @@ void CreateAndAddVersionUIDataSource(Profile* profile) {
   VersionUI::AddVersionDetailStrings(html_source);
 
   html_source->AddResourcePaths(kVersionUiResources);
+  html_source->SetDefaultResource(IDR_VERSION_UI_ABOUT_VERSION_HTML);
   html_source->UseStringsJs();
 
 #if BUILDFLAG(IS_ANDROID)
@@ -112,7 +122,6 @@ void CreateAndAddVersionUIDataSource(Profile* profile) {
   html_source->AddResourcePath("images/product_logo_white.png",
                                IDR_PRODUCT_LOGO_WHITE);
 #endif  // BUILDFLAG(IS_ANDROID)
-  html_source->SetDefaultResource(IDR_VERSION_UI_ABOUT_VERSION_HTML);
 }
 
 std::string GetProductModifier() {
@@ -126,6 +135,16 @@ std::string GetProductModifier() {
   modifier_parts.emplace_back("dcheck");
 #endif  // BUILDFLAG(DCHECK_IS_CONFIGURABLE)
   return base::JoinString(modifier_parts, "-");
+}
+
+std::string_view GetVersionInformationalSuffix() {
+#if BUILDFLAG(IS_CHROMEOS) && CHROMIUM_COMMIT_POSITION_IS_MAIN
+  // Adds the revision number as a suffix to the version number if the chrome
+  // is built from the main branch.
+  return "-r" CHROMIUM_COMMIT_POSITION_NUMBER;
+#else
+  return "";
+#endif
 }
 
 }  // namespace
@@ -160,7 +179,7 @@ int VersionUI::VersionProcessorVariation() {
   // bitness. Search the code for "generate_resource_allowlist" for more
   // information. Therefore, make sure both the IDS_VERSION_UI_32BIT and
   // IDS_VERSION_UI_64BIT strings are marked as always used so that they’re
-  // never stripped. https://crbug.com/1119479
+  // never stripped. https://crbug.com/40145503
   IDS_VERSION_UI_32BIT;
   IDS_VERSION_UI_64BIT;
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -190,6 +209,11 @@ int VersionUI::VersionProcessorVariation() {
   return IDS_VERSION_UI_64BIT;
 #endif  // defined(ARCH_CPU_X86)
 #endif  // defined(ARCH_CPU_ARM64)
+#elif BUILDFLAG(IS_LINUX)
+#if defined(ARCH_CPU_X86_64)
+  return IDS_VERSION_UI_64BIT_INTEL;
+#elif defined(ARCH_CPU_ARM64)
+  return IDS_VERSION_UI_64BIT_ARM;
 #elif defined(ARCH_CPU_64_BITS)
   return IDS_VERSION_UI_64BIT;
 #elif defined(ARCH_CPU_32_BITS)
@@ -197,6 +221,20 @@ int VersionUI::VersionProcessorVariation() {
 #else
 #error Update for a processor that is neither 32-bit nor 64-bit.
 #endif
+#elif defined(ARCH_CPU_64_BITS)
+  return IDS_VERSION_UI_64BIT;
+#elif defined(ARCH_CPU_32_BITS)
+  return IDS_VERSION_UI_32BIT;
+#else
+#error Update for a processor that is neither 32-bit nor 64-bit.
+#endif
+}
+
+// static
+base::RefCountedMemory* VersionUI::GetFaviconResourceBytes(
+    ui::ResourceScaleFactor scale_factor) {
+  return ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
+      IDR_PRODUCT_FAVICON, scale_factor);
 }
 
 // static
@@ -211,6 +249,8 @@ void VersionUI::AddVersionDetailStrings(content::WebUIDataSource* html_source) {
   // Data strings.
   html_source->AddString(version_ui::kVersion,
                          version_info::GetVersionNumber());
+  html_source->AddString(version_ui::kVersionSuffix,
+                         GetVersionInformationalSuffix());
 
   html_source->AddString(version_ui::kVersionModifier, GetProductModifier());
 
@@ -238,22 +278,18 @@ void VersionUI::AddVersionDetailStrings(content::WebUIDataSource* html_source) {
 
 #if BUILDFLAG(IS_ANDROID)
   std::string os_info = AndroidAboutAppInfo::GetOsInfo();
-  os_info += "; " + base::NumberToString(
-                        base::android::BuildInfo::GetInstance()->sdk_int());
-  std::string code_name(base::android::BuildInfo::GetInstance()->codename());
+  os_info +=
+      "; " + base::NumberToString(base::android::android_info::sdk_int());
+  std::string code_name(base::android::android_info::codename());
   os_info += "; " + code_name;
   html_source->AddString(version_ui::kOSVersion, os_info);
   html_source->AddString(
       version_ui::kTargetSdkVersion,
-      base::NumberToString(
-          base::android::BuildInfo::GetInstance()->target_sdk_version()));
-  html_source->AddString(version_ui::kTargetsU,
-                         AndroidAboutAppInfo::GetTargetsUInfo());
+      base::NumberToString(base::android::apk_info::target_sdk_version()));
   html_source->AddString(version_ui::kGmsVersion,
                          AndroidAboutAppInfo::GetGmsInfo());
-  html_source->AddString(
-      version_ui::kVersionCode,
-      base::android::BuildInfo::GetInstance()->package_version_code());
+  html_source->AddString(version_ui::kVersionCode,
+                         base::android::apk_info::package_version_code());
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN)
@@ -282,11 +318,17 @@ void VersionUI::AddVersionDetailStrings(content::WebUIDataSource* html_source) {
                          version_utils::win::GetCohortVersionInfo());
 #endif  // BUILDFLAG(IS_WIN)
 
+  auto* variations_service = g_browser_process->variations_service();
+  html_source->AddString(version_ui::kVariationsSource,
+                         variations_service
+                             ? version_ui::VariationsSourceToUiString(
+                                   variations_service->GetVariationsSource())
+                             : std::string());
+
   html_source->AddString(
       version_ui::kVariationsSeed,
-      g_browser_process->variations_service()
-          ? version_ui::SeedTypeToUiString(
-                g_browser_process->variations_service()->GetSeedType())
+      variations_service
+          ? version_ui::SeedTypeToUiString(variations_service->GetSeedType())
           : std::string());
 
   html_source->AddString(version_ui::kSanitizer,
@@ -299,6 +341,7 @@ std::u16string VersionUI::GetAnnotatedVersionStringForUi() {
   return l10n_util::GetStringFUTF16(
       IDS_SETTINGS_ABOUT_PAGE_BROWSER_VERSION,
       base::UTF8ToUTF16(version_info::GetVersionNumber()),
+      base::UTF8ToUTF16(GetVersionInformationalSuffix()),
       l10n_util::GetStringUTF16(version_info::IsOfficialBuild()
                                     ? IDS_VERSION_UI_OFFICIAL
                                     : IDS_VERSION_UI_UNOFFICIAL),

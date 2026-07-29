@@ -26,10 +26,8 @@ class MockLifecycleUnitObserver : public LifecycleUnitObserver {
   MockLifecycleUnitObserver& operator=(const MockLifecycleUnitObserver&) =
       delete;
 
-  MOCK_METHOD3(OnLifecycleUnitStateChanged,
-               void(LifecycleUnit*,
-                    LifecycleUnitState,
-                    LifecycleUnitStateChangeReason));
+  MOCK_METHOD2(OnLifecycleUnitStateChanged,
+               void(LifecycleUnit*, LifecycleUnitState));
   MOCK_METHOD1(OnLifecycleUnitDestroyed, void(LifecycleUnit*));
 };
 
@@ -76,14 +74,21 @@ TEST_F(LifecycleUnitBaseTest, GetID) {
 TEST_F(LifecycleUnitBaseTest, SetStateUpdatesTime) {
   TestLifecycleUnit lifecycle_unit;
   EXPECT_EQ(NowTicks(), lifecycle_unit.GetStateChangeTime());
+  EXPECT_EQ(Now(), lifecycle_unit.GetStateChangeWallTime());
 
   test_tick_clock_.Advance(base::Seconds(1));
+  test_clock_.Advance(base::Seconds(1));
   base::TimeTicks first_state_change_time = NowTicks();
-  lifecycle_unit.SetState(LifecycleUnitState::DISCARDED,
-                          LifecycleUnitStateChangeReason::BROWSER_INITIATED);
+  base::Time first_state_change_wall_time = Now();
+  lifecycle_unit.SetState(LifecycleUnitState::DISCARDED);
   EXPECT_EQ(first_state_change_time, lifecycle_unit.GetStateChangeTime());
+  EXPECT_EQ(first_state_change_wall_time,
+            lifecycle_unit.GetStateChangeWallTime());
   test_tick_clock_.Advance(base::Seconds(1));
+  test_clock_.Advance(base::Seconds(1));
   EXPECT_EQ(first_state_change_time, lifecycle_unit.GetStateChangeTime());
+  EXPECT_EQ(first_state_change_wall_time,
+            lifecycle_unit.GetStateChangeWallTime());
 }
 
 // Verify that observers are notified when the state changes and when the
@@ -93,17 +98,13 @@ TEST_F(LifecycleUnitBaseTest, SetStateNotifiesObservers) {
   lifecycle_unit.AddObserver(&observer_);
 
   // Observer is notified when the state changes.
-  EXPECT_CALL(observer_,
-              OnLifecycleUnitStateChanged(
-                  &lifecycle_unit, lifecycle_unit.GetState(),
-                  LifecycleUnitStateChangeReason::BROWSER_INITIATED));
-  lifecycle_unit.SetState(LifecycleUnitState::DISCARDED,
-                          LifecycleUnitStateChangeReason::BROWSER_INITIATED);
+  EXPECT_CALL(observer_, OnLifecycleUnitStateChanged(
+                             &lifecycle_unit, lifecycle_unit.GetState()));
+  lifecycle_unit.SetState(LifecycleUnitState::DISCARDED);
   testing::Mock::VerifyAndClear(&observer_);
 
   // Observer isn't notified when the state stays the same.
-  lifecycle_unit.SetState(LifecycleUnitState::DISCARDED,
-                          LifecycleUnitStateChangeReason::BROWSER_INITIATED);
+  lifecycle_unit.SetState(LifecycleUnitState::DISCARDED);
 
   lifecycle_unit.RemoveObserver(&observer_);
 }

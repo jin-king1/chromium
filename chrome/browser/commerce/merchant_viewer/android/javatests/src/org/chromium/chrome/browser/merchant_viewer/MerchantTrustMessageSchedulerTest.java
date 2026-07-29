@@ -19,14 +19,17 @@ import android.util.Pair;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.FeatureOverrides;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.merchant_viewer.MerchantTrustMetrics.MessageClearReason;
@@ -44,6 +47,7 @@ import java.util.concurrent.TimeoutException;
 @Config(manifest = Config.NONE)
 public class MerchantTrustMessageSchedulerTest {
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private MessageDispatcher mMockMessageDispatcher;
 
     @Mock private WebContents mMockWebContents;
@@ -51,17 +55,16 @@ public class MerchantTrustMessageSchedulerTest {
     @Mock private MerchantTrustMetrics mMockMetrics;
 
     @Mock private Handler mMockHandler;
-
-    @Mock private ObservableSupplier<Tab> mMockTabProvider;
-
     @Mock private Tab mMockTab;
 
     @Mock private WebContents mMockWebContents2;
 
+    private final SettableMonotonicObservableSupplier<Tab> mMockTabProvider =
+            ObservableSuppliers.createMonotonic();
+
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-
+        mMockTabProvider.set(mMockTab);
         doAnswer(
                         invocation -> {
                             Runnable runnable = (Runnable) invocation.getArguments()[0];
@@ -70,8 +73,6 @@ public class MerchantTrustMessageSchedulerTest {
                         })
                 .when(mMockHandler)
                 .postDelayed(any(Runnable.class), anyLong());
-        doReturn(mMockTab).when(mMockTabProvider).get();
-        doReturn(true).when(mMockTabProvider).hasValue();
     }
 
     @Test
@@ -231,12 +232,15 @@ public class MerchantTrustMessageSchedulerTest {
         doReturn(true).when(mockMessagesContext).isValid();
         doReturn(mMockWebContents).when(mockMessagesContext).getWebContents();
         doReturn(mMockWebContents).when(mMockTab).getWebContents();
-        doReturn(false).when(mMockTabProvider).hasValue();
 
-        scheduler.setHandlerForTesting(mMockHandler);
+        // Use a new supplier that is null to trigger the clear reason.
+        MerchantTrustMessageScheduler schedulerWithNullTab =
+                new MerchantTrustMessageScheduler(
+                        mMockMessageDispatcher, mMockMetrics, ObservableSuppliers.alwaysNull());
+        schedulerWithNullTab.setHandlerForTesting(mMockHandler);
 
         int callCount = callbackHelper.getCallCount();
-        scheduler.schedule(
+        schedulerWithNullTab.schedule(
                 mockPropteryModel, mockMessagesContext, 2000, callbackHelper::notifyCalled);
         callbackHelper.waitForCallback(callCount);
 
@@ -263,9 +267,7 @@ public class MerchantTrustMessageSchedulerTest {
         doReturn(true).when(mockMessagesContext).isValid();
         doReturn(mMockWebContents).when(mockMessagesContext).getWebContents();
 
-        scheduler.setScheduledMessage(
-                new Pair<MerchantTrustMessageContext, PropertyModel>(
-                        mockMessagesContext, mockPropteryModel));
+        scheduler.setScheduledMessage(new Pair<>(mockMessagesContext, mockPropteryModel));
         Assert.assertNotNull(scheduler.getScheduledMessageContext());
         scheduler.clear(MessageClearReason.UNKNOWN);
         Assert.assertNull(scheduler.getScheduledMessageContext());

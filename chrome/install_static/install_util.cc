@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/install_static/install_util.h"
 
 #include <windows.h>
@@ -22,6 +17,7 @@
 #include <sstream>
 
 #include "base/compiler_specific.h"
+#include "base/containers/heap_array.h"
 #include "base/version_info/channel.h"
 #include "build/branding_buildflags.h"
 #include "chrome/chrome_elf/nt_registry/nt_registry.h"
@@ -30,7 +26,6 @@
 #include "chrome/install_static/install_modes.h"
 #include "chrome/install_static/policy_path_parser.h"
 #include "chrome/install_static/user_data_dir.h"
-#include "components/nacl/common/buildflags.h"
 
 namespace install_static {
 
@@ -38,9 +33,6 @@ enum class ProcessType {
   UNINITIALIZED,
   OTHER_PROCESS,
   BROWSER_PROCESS,
-#if BUILDFLAG(ENABLE_NACL)
-  NACL_LOADER_PROCESS,
-#endif
   CRASHPAD_HANDLER_PROCESS,
 };
 
@@ -83,10 +75,6 @@ constexpr wchar_t kChromeChannelStableExplicit[] = L"stable";
 constexpr wchar_t kRegValueUsageStats[] = L"usagestats";
 constexpr wchar_t kMetricsReportingEnabled[] = L"MetricsReportingEnabled";
 
-#if BUILDFLAG(ENABLE_NACL)
-constexpr wchar_t kNaClLoaderProcess[] = L"nacl-loader";
-#endif
-
 void Trace(const wchar_t* format_string, ...) {
   static const int kMaxLogBufferSize = 1024;
   static wchar_t buffer[kMaxLogBufferSize] = {};
@@ -94,7 +82,7 @@ void Trace(const wchar_t* format_string, ...) {
   va_list args = {};
 
   va_start(args, format_string);
-  vswprintf(buffer, kMaxLogBufferSize, format_string, args);
+  UNSAFE_TODO(vswprintf(buffer, kMaxLogBufferSize, format_string, args));
   OutputDebugStringW(buffer);
   va_end(args);
 }
@@ -143,17 +131,17 @@ bool GetValueFromVersionResource(const char* version_resource,
   WORD lang_codepage[array_size] = {};
   size_t i = 0;
   // Use the language and codepage
-  lang_codepage[i++] = language;
-  lang_codepage[i++] = code_page;
+  UNSAFE_TODO(lang_codepage[i++]) = language;
+  UNSAFE_TODO(lang_codepage[i++]) = code_page;
   // Use the default language and codepage from the resource.
-  lang_codepage[i++] = ::GetUserDefaultLangID();
-  lang_codepage[i++] = code_page;
+  UNSAFE_TODO(lang_codepage[i++]) = ::GetUserDefaultLangID();
+  UNSAFE_TODO(lang_codepage[i++]) = code_page;
   // Use the language from the resource and Latin codepage (most common).
-  lang_codepage[i++] = language;
-  lang_codepage[i++] = 1252;
+  UNSAFE_TODO(lang_codepage[i++]) = language;
+  UNSAFE_TODO(lang_codepage[i++]) = 1252;
   // Use the default language and Latin codepage (most common).
-  lang_codepage[i++] = ::GetUserDefaultLangID();
-  lang_codepage[i++] = 1252;
+  UNSAFE_TODO(lang_codepage[i++]) = ::GetUserDefaultLangID();
+  UNSAFE_TODO(lang_codepage[i++]) = 1252;
 
   static_assert((array_size % 2) == 0,
                 "Language code page size should be a multiple of 2");
@@ -161,8 +149,8 @@ bool GetValueFromVersionResource(const char* version_resource,
 
   for (i = 0; i < array_size;) {
     wchar_t sub_block[MAX_PATH];
-    language = lang_codepage[i++];
-    code_page = lang_codepage[i++];
+    language = UNSAFE_TODO(lang_codepage[i++]);
+    code_page = UNSAFE_TODO(lang_codepage[i++]);
     _snwprintf_s(sub_block, MAX_PATH, MAX_PATH,
                  L"\\StringFileInfo\\%04hx%04hx\\%ls", language, code_page,
                  name.c_str());
@@ -262,10 +250,6 @@ bool GetChromeChannelNameFromString(const wchar_t* channel_test,
 ProcessType GetProcessType(const std::wstring& process_type) {
   if (process_type.empty())
     return ProcessType::BROWSER_PROCESS;
-#if BUILDFLAG(ENABLE_NACL)
-  if (process_type == kNaClLoaderProcess)
-    return ProcessType::NACL_LOADER_PROCESS;
-#endif
   if (process_type == kCrashpadHandler)
     return ProcessType::CRASHPAD_HANDLER_PROCESS;
   return ProcessType::OTHER_PROCESS;
@@ -278,9 +262,6 @@ bool ProcessNeedsProfileDir(ProcessType process_type) {
   // lies on a network share the sandbox will prevent us from accessing it.
   switch (process_type) {
     case ProcessType::BROWSER_PROCESS:
-#if BUILDFLAG(ENABLE_NACL)
-    case ProcessType::NACL_LOADER_PROCESS:
-#endif
       return true;
     case ProcessType::OTHER_PROCESS:
       return false;
@@ -350,8 +331,9 @@ std::wstring GetClientStateMediumKeyPath() {
 std::wstring GetUninstallRegistryPath() {
   std::wstring result(
       L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\");
-  if (*kCompanyPathName)
+  if constexpr (*kCompanyPathName) {
     result.append(kCompanyPathName).append(1, L' ');
+  }
   result.append(kProductPathName, kProductPathNameLength);
   return result.append(InstallDetails::Get().mode().install_suffix);
 }
@@ -374,7 +356,7 @@ const IID& GetElevatorIid() {
 
 std::wstring GetElevationServiceName() {
   std::wstring name = GetElevationServiceDisplayName();
-  name.erase(std::remove_if(name.begin(), name.end(), isspace), name.end());
+  std::erase_if(name, isspace);
   return name;
 }
 
@@ -394,7 +376,7 @@ const IID& GetTracingServiceIid() {
 
 std::wstring GetTracingServiceName() {
   std::wstring name = GetTracingServiceDisplayName();
-  name.erase(std::remove_if(name.begin(), name.end(), isspace), name.end());
+  std::erase_if(name, isspace);
   return name;
 }
 
@@ -419,6 +401,10 @@ const wchar_t* GetBrowserProgIdDescription() {
   return InstallDetails::Get().mode().browser_prog_id_description;
 }
 
+const char* GetDirectLaunchUrlScheme() {
+  return InstallDetails::Get().mode().direct_launch_url_scheme;
+}
+
 const wchar_t* GetPDFProgIdPrefix() {
   return InstallDetails::Get().mode().pdf_prog_id_prefix;
 }
@@ -431,10 +417,6 @@ std::wstring GetActiveSetupPath() {
   return std::wstring(
              L"Software\\Microsoft\\Active Setup\\Installed Components\\")
       .append(InstallDetails::Get().mode().active_setup_guid);
-}
-
-std::wstring GetLegacyCommandExecuteImplClsid() {
-  return InstallDetails::Get().mode().legacy_command_execute_clsid;
 }
 
 bool SupportsSetAsDefaultBrowser() {
@@ -521,7 +503,7 @@ bool SetCollectStatsInSample(bool in_sample) {
 std::wstring& AppendChromeInstallSubDirectory(const InstallConstants& mode,
                                               bool include_suffix,
                                               std::wstring* path) {
-  if (*kCompanyPathName) {
+  if constexpr (*kCompanyPathName) {
     path->append(kCompanyPathName);
     path->push_back(L'\\');
   }
@@ -581,7 +563,7 @@ bool ProcessNeedsProfileDir(const std::string& process_type) {
 std::wstring GetCrashDumpLocation() {
   // In order to be able to start crash handling very early and in chrome_elf,
   // we cannot rely on chrome's PathService entries (for DIR_CRASH_DUMPS) being
-  // available on Windows. See https://crbug.com/564398.
+  // available on Windows. See https://crbug.com/40447216.
   std::wstring user_data_dir;
   bool ret = GetUserDataDirectory(&user_data_dir, nullptr);
   assert(ret);
@@ -642,18 +624,18 @@ void GetExecutableVersionDetails(const std::wstring& exe_path,
   DWORD dummy = 0;
   DWORD length = ::GetFileVersionInfoSize(exe_path.c_str(), &dummy);
   if (length) {
-    std::unique_ptr<char[]> data(new char[length]);
-    if (::GetFileVersionInfo(exe_path.c_str(), dummy, length, data.get())) {
-      GetValueFromVersionResource(data.get(), L"ProductVersion", version);
+    auto data = base::HeapArray<char>::Uninit(length);
+    if (::GetFileVersionInfo(exe_path.c_str(), dummy, length, data.data())) {
+      GetValueFromVersionResource(data.data(), L"ProductVersion", version);
 
       std::wstring official_build;
-      GetValueFromVersionResource(data.get(), L"Official Build",
+      GetValueFromVersionResource(data.data(), L"Official Build",
                                   &official_build);
       if (official_build != L"1")
         version->append(L"-devel");
-      GetValueFromVersionResource(data.get(), L"ProductShortName",
+      GetValueFromVersionResource(data.data(), L"ProductShortName",
                                   product_name);
-      GetValueFromVersionResource(data.get(), L"SpecialBuild", special_build);
+      GetValueFromVersionResource(data.data(), L"SpecialBuild", special_build);
     }
   }
   *channel_name = GetChromeChannelName(/*with_extended_stable=*/true);
@@ -692,7 +674,7 @@ bool IsExtendedStableChannel() {
 
 std::string WideToUTF8(const std::wstring& source) {
   if (source.empty() ||
-      static_cast<int>(source.size()) > std::numeric_limits<int>::max()) {
+      source.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return std::string();
   }
   int size = ::WideCharToMultiByte(CP_UTF8, 0, &source[0],
@@ -710,7 +692,7 @@ std::string WideToUTF8(const std::wstring& source) {
 
 std::wstring UTF8ToWide(const std::string& source) {
   if (source.empty() ||
-      static_cast<int>(source.size()) > std::numeric_limits<int>::max()) {
+      source.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return std::wstring();
   }
   int size = ::MultiByteToWideChar(CP_UTF8, 0, &source[0],
@@ -771,24 +753,25 @@ std::vector<std::wstring> TokenizeCommandLineToArray(
   // on its first character.
   size_t argv0_length = 0;
   if (p[0] == L'"') {
-    const wchar_t* closing = wcschr(++p, L'"');
+    const wchar_t* closing = UNSAFE_TODO(wcschr(++p, L'"'));
     if (!closing)
       argv0_length = command_line.size() - 1;  // Skip the opening quote.
     else
-      argv0_length = closing - (command_line.c_str() + 1);
+      argv0_length = UNSAFE_TODO(closing - (command_line.c_str() + 1));
   } else {
-    argv0_length = wcscspn(p, kSpaceTab);
+    argv0_length = UNSAFE_TODO(wcscspn(p, kSpaceTab));
   }
   result.emplace_back(p, argv0_length);
-  if (p[argv0_length] == 0)
+  if (UNSAFE_TODO(p[argv0_length]) == 0) {
     return result;
-  p += argv0_length + 1;
+  }
+  UNSAFE_TODO(p += argv0_length + 1);
 
   std::wstring token;
   // This loops the entire string, with a subloop for each argument.
   for (;;) {
     // Advance past leading whitespace (only space and tab are handled).
-    p += wcsspn(p, kSpaceTab);
+    UNSAFE_TODO(p += wcsspn(p, kSpaceTab));
 
     // End of arguments.
     if (p[0] == 0)
@@ -800,8 +783,8 @@ std::vector<std::wstring> TokenizeCommandLineToArray(
     for (;;) {
       // Count and advance past collections of backslashes, which have special
       // meaning when followed by a double quote.
-      int num_backslashes = wcsspn(p, L"\\");
-      p += num_backslashes;
+      int num_backslashes = UNSAFE_TODO(wcsspn(p, L"\\"));
+      UNSAFE_TODO(p += num_backslashes);
 
       if (p[0] == L'"') {
         // Emit a backslash for each pair of backslashes found. A non-paired
@@ -812,11 +795,12 @@ std::vector<std::wstring> TokenizeCommandLineToArray(
           // An odd number of backslashes followed by a quote is treated as
           // pairs of protected backslashes, followed by the protected quote.
           token += L'"';
-        } else if (p[1] == L'"' && state == SpecialChars::kIgnore) {
+        } else if (UNSAFE_TODO(p[1]) == L'"' &&
+                   state == SpecialChars::kIgnore) {
           // Special case for consecutive double quotes within a quoted string:
           // emit one for the pair, and switch back to interpreting special
           // characters.
-          ++p;
+          UNSAFE_TODO(++p);
           token += L'"';
           state = SpecialChars::kInterpret;
         } else {
@@ -826,8 +810,8 @@ std::vector<std::wstring> TokenizeCommandLineToArray(
       } else {
         // Emit backslashes that do not precede a quote verbatim.
         token.append(num_backslashes, L'\\');
-        if (p[0] == 0 ||
-            (state == SpecialChars::kInterpret && wcschr(kSpaceTab, p[0]))) {
+        if (p[0] == 0 || (state == SpecialChars::kInterpret &&
+                          UNSAFE_TODO(wcschr(kSpaceTab, p[0])))) {
           result.push_back(token);
           token.clear();
           break;
@@ -836,7 +820,7 @@ std::vector<std::wstring> TokenizeCommandLineToArray(
         token += *p;
       }
 
-      ++p;
+      UNSAFE_TODO(++p);
     }
   }
 

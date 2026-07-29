@@ -9,6 +9,7 @@
 #include "base/android/callback_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/android/scoped_java_ref.h"
 #include "base/functional/bind.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/commerce/core/feature_utils.h"
@@ -20,7 +21,6 @@
 #include "components/commerce/core/android/core_jni/DiscountInfo_jni.h"
 #include "components/commerce/core/android/core_jni/ShoppingService_jni.h"
 
-using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
 using base::android::RunBooleanCallbackAndroid;
 using base::android::ScopedJavaLocalRef;
@@ -56,7 +56,8 @@ ScopedJavaLocalRef<jobject> ConvertToJavaDiscountInfo(
       terms_and_conditions_java_string,
       ConvertUTF8ToJavaString(env, info.value_in_text),
       discount_code_java_string, info.id, info.is_merchant_wide,
-      info.expiry_time_sec, info.offer_id);
+      info.expiry_time_sec.has_value(), info.expiry_time_sec.value_or(0),
+      info.offer_id);
 }
 
 ScopedJavaLocalRef<jobjectArray> ConvertToJavaDiscountInfos(
@@ -81,7 +82,7 @@ ScopedJavaLocalRef<jobjectArray> ConvertToJavaDiscountInfos(
 ShoppingServiceAndroid::ShoppingServiceAndroid(ShoppingService* service)
     : shopping_service_(service), weak_ptr_factory_(this) {
   java_ref_.Reset(Java_ShoppingService_create(
-      base::android::AttachCurrentThread(), reinterpret_cast<jlong>(this)));
+      base::android::AttachCurrentThread(), reinterpret_cast<int64_t>(this)));
   scoped_subscriptions_observer_.Observe(shopping_service_);
 }
 
@@ -95,9 +96,8 @@ ShoppingService* ShoppingServiceAndroid::GetShoppingService() {
 
 void ShoppingServiceAndroid::GetProductInfoForUrl(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& j_gurl,
-    const JavaParamRef<jobject>& j_callback) {
+    const JavaRef<jobject>& j_gurl,
+    const JavaRef<jobject>& j_callback) {
   CHECK(shopping_service_);
 
   GURL url = url::GURLAndroid::ToNativeGURL(env, j_gurl);
@@ -111,8 +111,7 @@ void ShoppingServiceAndroid::GetProductInfoForUrl(
 ScopedJavaLocalRef<jobject>
 ShoppingServiceAndroid::GetAvailableProductInfoForUrl(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& j_gurl) {
+    const JavaRef<jobject>& j_gurl) {
   CHECK(shopping_service_);
 
   GURL url = url::GURLAndroid::ToNativeGURL(env, j_gurl);
@@ -163,9 +162,8 @@ void ShoppingServiceAndroid::HandleProductInfoCallback(
 
 void ShoppingServiceAndroid::GetMerchantInfoForUrl(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& j_gurl,
-    const JavaParamRef<jobject>& j_callback) {
+    const JavaRef<jobject>& j_gurl,
+    const JavaRef<jobject>& j_callback) {
   CHECK(shopping_service_);
 
   GURL url = url::GURLAndroid::ToNativeGURL(env, j_gurl);
@@ -197,9 +195,8 @@ void ShoppingServiceAndroid::HandleMerchantInfoCallback(
 
 void ShoppingServiceAndroid::GetPriceInsightsInfoForUrl(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& j_gurl,
-    const JavaParamRef<jobject>& j_callback) {
+    const JavaRef<jobject>& j_gurl,
+    const JavaRef<jobject>& j_callback) {
   CHECK(shopping_service_);
 
   GURL url = url::GURLAndroid::ToNativeGURL(env, j_gurl);
@@ -248,9 +245,8 @@ void ShoppingServiceAndroid::HandlePriceInsightsInfoCallback(
 
 void ShoppingServiceAndroid::GetDiscountInfoForUrl(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& j_gurl,
-    const JavaParamRef<jobject>& j_callback) {
+    const JavaRef<jobject>& j_gurl,
+    const JavaRef<jobject>& j_callback) {
   CHECK(shopping_service_);
 
   GURL url = url::GURLAndroid::ToNativeGURL(env, j_gurl);
@@ -273,42 +269,45 @@ void ShoppingServiceAndroid::HandleDiscountInfoCallback(
       discount_info_array_obj);
 }
 
-void ShoppingServiceAndroid::FetchPriceEmailPref(
+void ShoppingServiceAndroid::GetAvailableDiscountInfoForUrl(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+    const JavaRef<jobject>& j_gurl,
+    const JavaRef<jobject>& j_callback) {
+  CHECK(shopping_service_);
+
+  GURL url = url::GURLAndroid::ToNativeGURL(env, j_gurl);
+
+  shopping_service_->GetAvailableDiscountInfoForUrl(
+      {url}, base::BindOnce(&ShoppingServiceAndroid::HandleDiscountInfoCallback,
+                            weak_ptr_factory_.GetWeakPtr(), env,
+                            ScopedJavaGlobalRef<jobject>(j_callback)));
+}
+
+void ShoppingServiceAndroid::FetchPriceEmailPref() {
   CHECK(shopping_service_);
 
   shopping_service_->FetchPriceEmailPref();
 }
 
-void ShoppingServiceAndroid::ScheduleSavedProductUpdate(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+void ShoppingServiceAndroid::ScheduleSavedProductUpdate() {
   CHECK(shopping_service_);
 
   shopping_service_->ScheduleSavedProductUpdate();
 }
 
-void ShoppingServiceAndroid::Subscribe(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    jint j_type,
-    jint j_id_type,
-    jint j_management_type,
-    const JavaParamRef<jstring>& j_id,
-    const JavaParamRef<jstring>& j_seen_offer_id,
-    jlong j_seen_price,
-    const JavaParamRef<jstring>& j_seen_country,
-    const JavaParamRef<jstring>& j_seen_locale,
-    const JavaParamRef<jobject>& j_callback) {
-  std::string id = ConvertJavaStringToUTF8(j_id);
-  std::string seen_offer_id = ConvertJavaStringToUTF8(j_seen_offer_id);
-  std::string seen_country = ConvertJavaStringToUTF8(j_seen_country);
-  std::string seen_locale = ConvertJavaStringToUTF8(j_seen_locale);
+void ShoppingServiceAndroid::Subscribe(int32_t j_type,
+                                       int32_t j_id_type,
+                                       int32_t j_management_type,
+                                       const std::string& id,
+                                       const std::string& seen_offer_id,
+                                       int64_t seen_price,
+                                       const std::string& seen_country,
+                                       const std::string& seen_locale,
+                                       const JavaRef<jobject>& j_callback) {
   CHECK(!id.empty());
 
   auto user_seen_offer = std::make_optional<UserSeenOffer>(
-      seen_offer_id, j_seen_price, seen_country, seen_locale);
+      seen_offer_id, seen_price, seen_country, seen_locale);
   CommerceSubscription sub(SubscriptionType(j_type), IdentifierType(j_id_type),
                            id, ManagementType(j_management_type),
                            kUnknownSubscriptionTimestamp,
@@ -323,15 +322,11 @@ void ShoppingServiceAndroid::Subscribe(
   shopping_service_->Subscribe(std::move(subs), std::move(callback));
 }
 
-void ShoppingServiceAndroid::Unsubscribe(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    jint j_type,
-    jint j_id_type,
-    jint j_management_type,
-    const JavaParamRef<jstring>& j_id,
-    const JavaParamRef<jobject>& j_callback) {
-  std::string id = ConvertJavaStringToUTF8(j_id);
+void ShoppingServiceAndroid::Unsubscribe(int32_t j_type,
+                                         int32_t j_id_type,
+                                         int32_t j_management_type,
+                                         const std::string& id,
+                                         const JavaRef<jobject>& j_callback) {
   CHECK(!id.empty());
 
   CommerceSubscription sub(SubscriptionType(j_type), IdentifierType(j_id_type),
@@ -347,15 +342,11 @@ void ShoppingServiceAndroid::Unsubscribe(
   shopping_service_->Unsubscribe(std::move(subs), std::move(callback));
 }
 
-void ShoppingServiceAndroid::IsSubscribed(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    jint j_type,
-    jint j_id_type,
-    jint j_management_type,
-    const JavaParamRef<jstring>& j_id,
-    const JavaParamRef<jobject>& j_callback) {
-  std::string id = ConvertJavaStringToUTF8(j_id);
+void ShoppingServiceAndroid::IsSubscribed(int32_t j_type,
+                                          int32_t j_id_type,
+                                          int32_t j_management_type,
+                                          const std::string& id,
+                                          const JavaRef<jobject>& j_callback) {
   CHECK(!id.empty());
 
   CommerceSubscription sub(SubscriptionType(j_type), IdentifierType(j_id_type),
@@ -371,14 +362,10 @@ void ShoppingServiceAndroid::IsSubscribed(
           ScopedJavaGlobalRef<jobject>(j_callback)));
 }
 
-bool ShoppingServiceAndroid::IsSubscribedFromCache(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    jint j_type,
-    jint j_id_type,
-    jint j_management_type,
-    const JavaParamRef<jstring>& j_id) {
-  std::string id = ConvertJavaStringToUTF8(j_id);
+bool ShoppingServiceAndroid::IsSubscribedFromCache(int32_t j_type,
+                                                   int32_t j_id_type,
+                                                   int32_t j_management_type,
+                                                   const std::string& id) {
   CHECK(!id.empty());
 
   CommerceSubscription sub(SubscriptionType(j_type), IdentifierType(j_id_type),
@@ -390,8 +377,7 @@ bool ShoppingServiceAndroid::IsSubscribedFromCache(
 
 void ShoppingServiceAndroid::GetAllPriceTrackedBookmarks(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& j_callback) {
+    const JavaRef<jobject>& j_callback) {
   shopping_service_->GetAllPriceTrackedBookmarks(base::BindOnce(
       [](JNIEnv* env, const ScopedJavaGlobalRef<jobject>& callback,
          std::vector<const bookmarks::BookmarkNode*> tracked_items) {
@@ -419,35 +405,27 @@ void ShoppingServiceAndroid::OnUnsubscribe(const CommerceSubscription& sub,
                                      succeeded);
 }
 
-bool ShoppingServiceAndroid::IsShoppingListEligible(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+bool ShoppingServiceAndroid::IsShoppingListEligible() {
   CHECK(shopping_service_);
 
   return shopping_service_->IsShoppingListEligible();
 }
 
-bool ShoppingServiceAndroid::IsMerchantViewerEnabled(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+bool ShoppingServiceAndroid::IsMerchantViewerEnabled() {
   CHECK(shopping_service_);
 
   return commerce::IsMerchantViewerEnabled(
       shopping_service_->GetAccountChecker());
 }
 
-bool ShoppingServiceAndroid::IsPriceInsightsEligible(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+bool ShoppingServiceAndroid::IsPriceInsightsEligible() {
   CHECK(shopping_service_);
 
   return commerce::IsPriceInsightsEligible(
       shopping_service_->GetAccountChecker());
 }
 
-bool ShoppingServiceAndroid::IsDiscountEligibleToShowOnNavigation(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+bool ShoppingServiceAndroid::IsDiscountEligibleToShowOnNavigation() {
   CHECK(shopping_service_);
 
   return commerce::IsDiscountEligibleToShowOnNavigation(
@@ -455,3 +433,6 @@ bool ShoppingServiceAndroid::IsDiscountEligibleToShowOnNavigation(
 }
 
 }  // namespace commerce
+
+DEFINE_JNI(DiscountInfo)
+DEFINE_JNI(ShoppingService)

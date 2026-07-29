@@ -11,18 +11,17 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
+#include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/webui/ntp/cookie_controls_handler.h"
 #include "chrome/browser/ui/webui/ntp/core_app_launcher_handler.h"
 #include "chrome/browser/ui/webui/ntp/ntp_resource_cache.h"
 #include "chrome/browser/ui/webui/ntp/ntp_resource_cache_factory.h"
 #include "chrome/browser/ui/webui/theme_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
@@ -97,10 +96,6 @@ NewTabUI::NewTabUI(content::WebUI* web_ui) : content::WebUIController(web_ui) {
 
   if (!profile->IsGuestSession()) {
     web_ui->AddMessageHandler(std::make_unique<ThemeHandler>());
-    if (profile->IsOffTheRecord()) {
-      web_ui->AddMessageHandler(
-          std::make_unique<CookieControlsHandler>(profile));
-    }
   }
 
   // content::URLDataSource assumes the ownership of the html source.
@@ -114,11 +109,11 @@ NewTabUI::~NewTabUI() = default;
 // static
 bool NewTabUI::IsNewTab(const GURL& url) {
   return url.DeprecatedGetOriginAsURL() ==
-         GURL(chrome::kChromeUINewTabURL).DeprecatedGetOriginAsURL();
+         chrome::ChromeUINewTabURLAsGURL().DeprecatedGetOriginAsURL();
 }
 
 // static
-void NewTabUI::SetUrlTitleAndDirection(base::Value::Dict* dictionary,
+void NewTabUI::SetUrlTitleAndDirection(base::DictValue* dictionary,
                                        const std::u16string& title,
                                        const GURL& gurl) {
   dictionary->Set("url", gurl.spec());
@@ -154,7 +149,7 @@ void NewTabUI::SetUrlTitleAndDirection(base::Value::Dict* dictionary,
 
 // static
 void NewTabUI::SetFullNameAndDirection(const std::u16string& full_name,
-                                       base::Value::Dict* dictionary) {
+                                       base::DictValue* dictionary) {
   dictionary->Set("full_name", full_name);
   dictionary->Set("full_name_direction", GetHtmlTextDirection(full_name));
 }

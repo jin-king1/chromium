@@ -11,26 +11,6 @@ declare global {
   export namespace chrome {
     export namespace developerPrivate {
 
-      export enum ItemType {
-        HOSTED_APP = 'hosted_app',
-        PACKAGED_APP = 'packaged_app',
-        LEGACY_PACKAGED_APP = 'legacy_packaged_app',
-        EXTENSION = 'extension',
-        THEME = 'theme',
-      }
-
-      export interface ItemInspectView {
-        path: string;
-        render_process_id: number;
-        render_view_id: number;
-        incognito: boolean;
-        generatedBackgroundPage: boolean;
-      }
-
-      export interface InstallWarning {
-        message: string;
-      }
-
       export enum ExtensionType {
         HOSTED_APP = 'HOSTED_APP',
         PLATFORM_APP = 'PLATFORM_APP',
@@ -141,6 +121,7 @@ declare global {
         renderViewId: number;
         renderProcessId: number;
         canInspect: boolean;
+        isServiceWorker: boolean;
         stackTrace: StackFrame[];
       }
 
@@ -224,7 +205,6 @@ declare global {
       export interface Permissions {
         simplePermissions: chrome.developerPrivate.Permission[];
         runtimeHostPermissions?: RuntimeHostPermissions;
-        canAccessSiteData: boolean;
       }
 
       export interface ExtensionInfo {
@@ -273,7 +253,6 @@ declare global {
         safetyCheckWarningReason: SafetyCheckWarningReason;
         pinnedToToolbar?: boolean;
         isAffectedByMV2Deprecation: boolean;
-        didAcknowledgeMV2DeprecationNotice: boolean;
         canUploadAsAccountExtension: boolean;
       }
 
@@ -284,6 +263,7 @@ declare global {
         isIncognitoAvailable: boolean;
         isChildAccount: boolean;
         isMv2DeprecationNoticeDismissed: boolean;
+        extensionsPinnedByDefault: boolean;
       }
 
       export interface ExtensionConfigurationUpdate {
@@ -301,6 +281,7 @@ declare global {
       export interface ProfileConfigurationUpdate {
         inDeveloperMode?: boolean;
         isMv2DeprecationNoticeDismissed?: boolean;
+        extensionsPinnedByDefault?: boolean;
       }
 
       export interface ExtensionCommandUpdate {
@@ -401,9 +382,7 @@ declare global {
       }
 
       export interface RequestFileSourceResponse {
-        highlight: string;
-        beforeHighlight: string;
-        afterHighlight: string;
+        source?: ErrorFileSource;
         title: string;
         message: string;
       }
@@ -513,10 +492,9 @@ declare global {
           site: string, updates: ExtensionSiteAccessUpdate[]): Promise<void>;
       export function dismissSafetyHubExtensionsMenuNotification(): void;
       export function dismissMv2DeprecationPanel(): void;
-      export function dismissMv2DeprecationNoticeForExtension(
-          extensionId: string): Promise<void>;
       export function uploadExtensionToAccount(extensionId: string):
-          Promise<void>;
+          Promise<boolean>;
+      export function showSiteSettings(extensionId: string): Promise<void>;
 
       export const onItemStateChanged: ChromeEvent<(data: EventData) => void>;
       export const onProfileStateChanged:

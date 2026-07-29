@@ -15,10 +15,10 @@
 #include <vector>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/raw_ref.h"
 #include "base/path_service.h"
@@ -53,9 +53,9 @@
 #include "third_party/skia/include/core/SkRRect.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/icon_util.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_family.h"
+#include "ui/gfx/win/icon_util.h"
 
 using content::BrowserThread;
 
@@ -175,7 +175,7 @@ base::FilePath CreateOrUpdateShortcutIconForProfile(
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     // On Win 11, SHCNE_ASSOCCHANGED doesn't update the taskbar icons, so find
     // the affected shortcuts and tell Windows they've changed.
-    // TODO:(crbug.com/1287111) Find all affected shortcuts, e.g., desktop, and
+    // TODO:(crbug.com/40816037) Find all affected shortcuts, e.g., desktop, and
     // remove the SHCNE_ASSOCCHANGED notification, to avoid flashing the
     // desktop (and taskbar on Win 10). Remove Win 11 version check.
     if (base::win::GetVersion() >= base::win::Version::WIN11) {
@@ -867,11 +867,8 @@ bool ProfileShortcutManager::IsFeatureEnabled() {
   base::FilePath user_data_dir;
   bool success = base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
   DCHECK(success);
-  base::FilePath default_user_data_dir;
-  success = chrome::GetDefaultUserDataDirectory(&default_user_data_dir);
-  DCHECK(success);
-  return user_data_dir == default_user_data_dir ||
-         user_data_dir == policy_user_data_dir;
+  return user_data_dir == policy_user_data_dir ||
+         chrome::IsUsingDefaultDataDirectory().value_or(false);
 }
 
 // static
@@ -1020,7 +1017,7 @@ void ProfileShortcutManagerWin::OnProfileAvatarChanged(
 
 void ProfileShortcutManagerWin::OnProfileHighResAvatarLoaded(
     const base::FilePath& profile_path) {
-  if (base::Contains(profiles_with_pending_avatar_load_, profile_path)) {
+  if (profiles_with_pending_avatar_load_.contains(profile_path)) {
     profiles_with_pending_avatar_load_.erase(profile_path);
     CreateOrUpdateProfileIcon(profile_path);
   }

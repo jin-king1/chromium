@@ -5,12 +5,12 @@
 #ifndef CHROME_BROWSER_DEVTOOLS_DEVTOOLS_EMBEDDER_MESSAGE_DISPATCHER_H_
 #define CHROME_BROWSER_DEVTOOLS_DEVTOOLS_EMBEDDER_MESSAGE_DISPATCHER_H_
 
-#include <map>
 #include <memory>
 #include <string>
 
 #include "base/functional/callback.h"
 #include "base/values.h"
+#include "chrome/browser/devtools/devtools_dispatch_http_request_params.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -24,6 +24,7 @@ struct DragEvent;
 struct ChangeEvent;
 struct KeyDownEvent;
 struct SettingAccessEvent;
+struct FunctionCallEvent;
 
 /**
  * Dispatcher for messages sent from the DevTools frontend running in an
@@ -119,6 +120,7 @@ class DevToolsEmbedderMessageDispatcher {
     virtual void RecordPerformanceHistogramMedium(const std::string& name,
                                                   double duration) = 0;
     virtual void RecordUserMetricsAction(const std::string& name) = 0;
+    virtual void RecordNewBadgeUsage(const std::string& feature_name) = 0;
     virtual void RecordImpression(const ImpressionEvent& event) = 0;
     virtual void RecordResize(const ResizeEvent& event) = 0;
     virtual void RecordClick(const ClickEvent& event) = 0;
@@ -127,9 +129,7 @@ class DevToolsEmbedderMessageDispatcher {
     virtual void RecordChange(const ChangeEvent& event) = 0;
     virtual void RecordKeyDown(const KeyDownEvent& event) = 0;
     virtual void RecordSettingAccess(const SettingAccessEvent& event) = 0;
-    virtual void SendJsonRequest(DispatchCallback callback,
-                                 const std::string& browser_id,
-                                 const std::string& url) = 0;
+    virtual void RecordFunctionCall(const FunctionCallEvent& event) = 0;
     virtual void Reattach(DispatchCallback callback) = 0;
     virtual void ReadyForTest() = 0;
     virtual void ConnectionReady() = 0;
@@ -143,8 +143,15 @@ class DevToolsEmbedderMessageDispatcher {
     virtual void DoAidaConversation(DispatchCallback callback,
                                     const std::string& request,
                                     int stream_id) = 0;
+    virtual void AidaCodeComplete(DispatchCallback callback,
+                                    const std::string& request) = 0;
     virtual void RegisterAidaClientEvent(DispatchCallback callback,
                                          const std::string& request) = 0;
+    virtual void SetChromeFlag(const std::string& flag_name, bool value) = 0;
+    virtual void DispatchHttpRequest(
+        DispatchCallback callback,
+        const DevToolsDispatchHttpRequestParams& body) = 0;
+    virtual void RequestRestart() = 0;
   };
 
   using DispatchCallback = Delegate::DispatchCallback;
@@ -152,7 +159,7 @@ class DevToolsEmbedderMessageDispatcher {
   virtual ~DevToolsEmbedderMessageDispatcher() = default;
   virtual bool Dispatch(DispatchCallback callback,
                         const std::string& method,
-                        const base::Value::List& params) = 0;
+                        const base::ListValue& params) = 0;
 
   static std::unique_ptr<DevToolsEmbedderMessageDispatcher>
   CreateForDevToolsFrontend(Delegate* delegate);

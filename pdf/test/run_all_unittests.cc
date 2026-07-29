@@ -14,6 +14,7 @@
 #include "base/test/test_suite.h"
 #include "mojo/core/embedder/embedder.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
+#include "pdf/buildflags.h"
 #include "pdf/test/test_helpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -29,6 +30,10 @@
 #include "gin/v8_initializer.h"
 #endif
 
+#if BUILDFLAG(ENABLE_PDF_INK2)
+#include "pdf/test/pdf_ink_test_helpers.h"
+#endif  // BUILDFLAG(ENABLE_PDF_INK2)
+
 namespace {
 
 #if defined(V8_USE_EXTERNAL_STARTUP_DATA)
@@ -42,17 +47,32 @@ constexpr gin::V8SnapshotFileType kSnapshotType =
 
 class BlinkPlatformForTesting : public blink::Platform {
  public:
-  BlinkPlatformForTesting() = default;
+  BlinkPlatformForTesting() {
+    chrome_pdf::SetPdfTestTaskEnvironment(&task_environment_);
+  }
   BlinkPlatformForTesting(const BlinkPlatformForTesting&) = delete;
   BlinkPlatformForTesting& operator=(const BlinkPlatformForTesting&) = delete;
-  ~BlinkPlatformForTesting() override { main_thread_scheduler_->Shutdown(); }
+  ~BlinkPlatformForTesting() override {
+    main_thread_scheduler_->Shutdown();
+    chrome_pdf::SetPdfTestTaskEnvironment(nullptr);
+  }
 
   blink::scheduler::WebThreadScheduler* GetMainThreadScheduler() {
     return main_thread_scheduler_.get();
   }
 
+  // Required for binders to work, for testing, run on a single thread.
+  scoped_refptr<base::SequencedTaskRunner> MediaThreadTaskRunner() override {
+    return base::SequencedTaskRunner::GetCurrentDefault();
+  }
+
+  scoped_refptr<base::SingleThreadTaskRunner> GetIOTaskRunner() const override {
+    return base::SingleThreadTaskRunner::GetCurrentDefault();
+  }
+
  private:
-  base::test::TaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   std::unique_ptr<blink::scheduler::WebThreadScheduler> main_thread_scheduler_ =
       blink::scheduler::CreateWebMainThreadSchedulerForTests();
 };

@@ -6,7 +6,10 @@
 #define COMPONENTS_AUTOFILL_CONTENT_RENDERER_AUTOFILL_AGENT_TEST_API_H_
 
 #include "base/memory/raw_ref.h"
+#include "base/types/optional_ref.h"
 #include "components/autofill/content/renderer/autofill_agent.h"
+#include "components/autofill/content/renderer/javascript_autofill_tracker.h"
+#include "components/autofill/content/renderer/password_autofill_agent.h"
 
 namespace autofill {
 
@@ -21,18 +24,17 @@ class AutofillAgentTestApi {
     agent_->form_tracker_ = std::move(form_tracker);
   }
 
-  std::optional<FormData> provisionally_saved_form() {
-    return agent_->provisionally_saved_form();
-  }
-
   void FocusedElementChanged(blink::WebElement new_focused_element) {
     agent_->FocusedElementChanged(new_focused_element);
   }
 
-  void QueryAutofillSuggestions(const blink::WebFormControlElement& element,
-                                AutofillSuggestionTriggerSource trigger_source,
-                                const SynchronousFormCache& form_cache) {
-    agent_->QueryAutofillSuggestions(element, trigger_source, form_cache);
+  void ShowSuggestions(
+      const blink::WebFormControlElement& element,
+      AutofillSuggestionTriggerSource trigger_source,
+      const SynchronousFormCache& form_cache,
+      std::optional<PasswordSuggestionRequest> password_request) {
+    agent_->ShowSuggestions(element, trigger_source, form_cache,
+                            password_request);
   }
 
   void ShowSuggestionsForContentEditable(
@@ -41,12 +43,41 @@ class AutofillAgentTestApi {
     agent_->ShowSuggestionsForContentEditable(element, trigger_source);
   }
 
-  void OnFormNoLongerSubmittable() { agent_->OnFormNoLongerSubmittable(); }
+  void ContentEditableDidChange(const blink::WebElement& element) {
+    agent_->ContentEditableDidChange(element);
+  }
+
+  void TextFieldValueChanged(const blink::WebFormControlElement& element) {
+    agent_->TextFieldValueChanged(element);
+  }
+
+  void SelectFieldOptionsChanged(const blink::WebFormControlElement& element) {
+    agent_->SelectFieldOptionsChanged(element);
+  }
+
+  void DidChangeScrollOffset() { agent_->DidChangeScrollOffset(); }
+
+  void set_focus_requires_scroll(bool focus_requires_scroll) {
+    const_cast<AutofillAgent::Config&>(agent_->config_).focus_requires_scroll =
+        AutofillAgent::FocusRequiresScroll(focus_requires_scroll);
+  }
 
   const FormCache& form_cache() { return agent_->form_cache_; }
 
+  PasswordAutofillAgent* password_autofill_agent() {
+    return agent_->password_autofill_agent_.get();
+  }
+
   const base::OneShotTimer& process_forms_after_dynamic_change_timer() {
     return agent_->process_forms_after_dynamic_change_timer_;
+  }
+
+  AutofillAgent::EmailVerificationObserver& email_verification_observer() {
+    return agent_->email_verification_observer_;
+  }
+
+  JavaScriptAutofillTracker& javascript_autofill_tracker() {
+    return agent_->javascript_autofill_tracker_;
   }
 
  private:

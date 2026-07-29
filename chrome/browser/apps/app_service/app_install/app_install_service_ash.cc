@@ -5,19 +5,20 @@
 #include "chrome/browser/apps/app_service/app_install/app_install_service_ash.h"
 
 #include <algorithm>
+#include <variant>
 
 #include "ash/constants/ash_features.h"
-#include "base/debug/stack_trace.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
+#include "base/strings/to_string.h"
 #include "chrome/browser/apps/app_service/app_install/app_install.pb.h"
 #include "chrome/browser/apps/app_service/app_install/app_install_discovery_metrics.h"
 #include "chrome/browser/apps/app_service/app_install/app_install_types.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
-#include "chrome/browser/ash/borealis/borealis_game_install_flow.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/app_install/app_install.mojom.h"
 // TODO(crbug.com/40283709): Remove circular dependency.
@@ -32,8 +33,7 @@
 #include "components/user_manager/user_manager.h"
 #include "net/base/url_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace apps {
 
@@ -142,10 +142,9 @@ void AppInstallServiceAsh::InstallApp(
     case PackageType::kWeb:
     case PackageType::kWebsite: {
       // Observe for `anchor_window` being destroyed during async work.
-      std::unique_ptr<views::NativeWindowTracker> anchor_window_tracker;
+      std::unique_ptr<ui::NativeWindowTracker> anchor_window_tracker;
       if (anchor_window) {
-        anchor_window_tracker =
-            views::NativeWindowTracker::Create(*anchor_window);
+        anchor_window_tracker = ui::NativeWindowTracker::Create(*anchor_window);
       }
 
       FetchAppInstallData(
@@ -233,7 +232,7 @@ void AppInstallServiceAsh::ShowDialogAndInstall(
     AppInstallSurface surface,
     PackageId expected_package_id,
     std::optional<gfx::NativeWindow> anchor_window,
-    std::unique_ptr<views::NativeWindowTracker> anchor_window_tracker,
+    std::unique_ptr<ui::NativeWindowTracker> anchor_window_tracker,
     base::OnceCallback<void(AppInstallResult)> callback,
     base::expected<AppInstallData, QueryError> data) {
   gfx::NativeWindow parent =
@@ -280,9 +279,9 @@ void AppInstallServiceAsh::ShowDialogAndInstall(
   }
 
   // The install dialog is only used for web apps currently.
-  CHECK(absl::holds_alternative<WebAppInstallData>(data->app_type_data));
+  CHECK(std::holds_alternative<WebAppInstallData>(data->app_type_data));
   const WebAppInstallData& web_app_data =
-      absl::get<WebAppInstallData>(data->app_type_data);
+      std::get<WebAppInstallData>(data->app_type_data);
 
   if (expected_package_id.package_type() == PackageType::kWebsite) {
     // kWebsite packages will end up installed as a regular kWeb app. Pass a
@@ -361,10 +360,10 @@ void AppInstallServiceAsh::PerformInstall(
     AppInstallSurface surface,
     AppInstallData data,
     base::OnceCallback<void(bool)> install_callback) {
-  if (absl::holds_alternative<AndroidAppInstallData>(data.app_type_data)) {
+  if (std::holds_alternative<AndroidAppInstallData>(data.app_type_data)) {
     arc_app_installer_.InstallApp(surface, std::move(data),
                                   std::move(install_callback));
-  } else if (absl::holds_alternative<WebAppInstallData>(data.app_type_data)) {
+  } else if (std::holds_alternative<WebAppInstallData>(data.app_type_data)) {
     web_app_installer_.InstallApp(surface, std::move(data),
                                   std::move(install_callback));
   } else {

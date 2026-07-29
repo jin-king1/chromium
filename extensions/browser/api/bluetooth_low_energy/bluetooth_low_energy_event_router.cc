@@ -7,11 +7,11 @@
 #include <algorithm>
 #include <iterator>
 #include <memory>
-#include <unordered_set>
 #include <utility>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -33,6 +33,7 @@
 #include "extensions/common/api/bluetooth/bluetooth_manifest_data.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 using content::BrowserThread;
 
@@ -1057,7 +1058,7 @@ void BluetoothLowEnergyEventRouter::GattCharacteristicValueChanged(
   // lists of enums correctly.
   apibtle::Characteristic api_characteristic =
       PopulateCharacteristic(characteristic);
-  base::Value::List args;
+  base::ListValue args;
   args.Append(apibtle::CharacteristicToValue(api_characteristic));
 
   DispatchEventToExtensionsWithPermission(
@@ -1087,7 +1088,7 @@ void BluetoothLowEnergyEventRouter::GattDescriptorValueChanged(
   // apibtle::OnDescriptorValueChanged::Create, as it doesn't convert
   // lists of enums correctly.
   apibtle::Descriptor api_descriptor = PopulateDescriptor(descriptor);
-  base::Value::List args;
+  base::ListValue args;
   args.Append(apibtle::DescriptorToValue(api_descriptor));
 
   DispatchEventToExtensionsWithPermission(
@@ -1469,7 +1470,7 @@ void BluetoothLowEnergyEventRouter::DispatchEventToExtensionsWithPermission(
     const std::string& event_name,
     const device::BluetoothUUID& uuid,
     const std::string& characteristic_id,
-    base::Value::List args) {
+    base::ListValue args) {
   // Obtain the listeners of |event_name|. The list can contain multiple
   // entries for the same extension, so we keep track of the extensions that we
   // already sent the event to, since we want the send an event to an extension
@@ -1519,7 +1520,7 @@ void BluetoothLowEnergyEventRouter::DispatchEventToExtension(
     const ExtensionId& extension_id,
     events::HistogramValue histogram_value,
     const std::string& event_name,
-    base::Value::List args) {
+    base::ListValue args) {
   // For all API methods, the "low_energy" permission check is handled by
   // BluetoothLowEnergyExtensionFunction but for events we have to do the
   // check here.
@@ -1777,7 +1778,7 @@ BluetoothLowEnergyConnection* BluetoothLowEnergyEventRouter::FindConnection(
   ConnectionResourceManager* manager =
       GetConnectionResourceManager(browser_context_);
 
-  std::unordered_set<int>* connection_ids =
+  absl::flat_hash_set<int>* connection_ids =
       manager->GetResourceIds(extension_id);
   if (!connection_ids)
     return nullptr;
@@ -1802,7 +1803,7 @@ bool BluetoothLowEnergyEventRouter::RemoveConnection(
   ConnectionResourceManager* manager =
       GetConnectionResourceManager(browser_context_);
 
-  std::unordered_set<int>* connection_ids =
+  absl::flat_hash_set<int>* connection_ids =
       manager->GetResourceIds(extension_id);
   if (!connection_ids)
     return false;
@@ -1828,7 +1829,7 @@ BluetoothLowEnergyEventRouter::FindNotifySession(
   NotifySessionResourceManager* manager =
       GetNotifySessionResourceManager(browser_context_);
 
-  std::unordered_set<int>* ids = manager->GetResourceIds(extension_id);
+  absl::flat_hash_set<int>* ids = manager->GetResourceIds(extension_id);
   if (!ids)
     return nullptr;
 
@@ -1852,7 +1853,7 @@ bool BluetoothLowEnergyEventRouter::RemoveNotifySession(
   NotifySessionResourceManager* manager =
       GetNotifySessionResourceManager(browser_context_);
 
-  std::unordered_set<int>* ids = manager->GetResourceIds(extension_id);
+  absl::flat_hash_set<int>* ids = manager->GetResourceIds(extension_id);
   if (!ids)
     return false;
 

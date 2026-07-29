@@ -22,6 +22,7 @@
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/mojom/view_type.mojom.h"
+#include "ipc/constants.mojom.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "ui/gfx/geometry/rect.h"
@@ -43,10 +44,10 @@ BackgroundContents::BackgroundContents(
       site_instance->GetBrowserContext());
 
   WebContents::CreateParams create_params(profile_, std::move(site_instance));
-  create_params.opener_render_process_id =
-      opener ? opener->GetProcess()->GetDeprecatedID() : MSG_ROUTING_NONE;
-  create_params.opener_render_frame_id =
-      opener ? opener->GetRoutingID() : MSG_ROUTING_NONE;
+  create_params.is_never_composited = true;
+  if (opener) {
+    create_params.opener_id = opener->GetGlobalId();
+  }
 
   if (session_storage_namespace) {
     content::SessionStorageNamespaceMap session_storage_namespace_map;
@@ -119,12 +120,6 @@ WebContents* BackgroundContents::AddNewContents(
   delegate_->AddWebContents(std::move(new_contents), target_url, disposition,
                             window_features, was_blocked);
   return nullptr;
-}
-
-bool BackgroundContents::IsNeverComposited(content::WebContents* web_contents) {
-  DCHECK_EQ(extensions::mojom::ViewType::kBackgroundContents,
-            extensions::GetViewType(web_contents));
-  return true;
 }
 
 void BackgroundContents::PrimaryMainFrameRenderProcessGone(

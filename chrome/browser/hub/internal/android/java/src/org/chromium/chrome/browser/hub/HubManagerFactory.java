@@ -6,20 +6,24 @@ package org.chromium.chrome.browser.hub;
 
 import android.app.Activity;
 
-import androidx.annotation.NonNull;
-
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplier;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.menu_button.MenuButtonCoordinator;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarHostManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityClient;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 
 /** Factory for creating {@link HubManager}. */
+@NullMarked
 public class HubManagerFactory {
     /**
      * Creates a new instance of {@link HubManagerImpl}.
@@ -31,24 +35,33 @@ public class HubManagerFactory {
      * @param menuOrKeyboardActionController The {@link MenuOrKeyboardActionController} for the
      *     activity.
      * @param snackbarManager The primary {@link SnackbarManager} for the activity.
+     * @param bottomSheetController The primary {@link BottomSheetController} for the activity.
      * @param tabSupplier The supplier of the current tab in the current tab model.
      * @param menuButtonCoordinator Root component for the app menu.
      * @param edgeToEdgeSupplier A supplier to the {@link EdgeToEdgeController}.
      * @param searchActivityClient A client for the search activity, used to launch search.
      * @return an instance of {@link HubManagerImpl}.
+     * @param xrSpaceModeObservableSupplier Supplies current XR space mode status. True for XR full
+     *     space mode, false otherwise.
+     * @param defaultPaneId The default pane's Id.
      */
+    @SuppressWarnings("NullAway") // https://crbug.com/433562519
     public static HubManager createHubManager(
-            @NonNull Activity activity,
-            @NonNull OneshotSupplier<ProfileProvider> profileProviderSupplier,
-            @NonNull PaneListBuilder paneListBuilder,
-            @NonNull BackPressManager backPressManager,
-            @NonNull MenuOrKeyboardActionController menuOrKeyboardActionController,
-            @NonNull SnackbarManager snackbarManager,
-            @NonNull ObservableSupplier<Tab> tabSupplier,
-            @NonNull MenuButtonCoordinator menuButtonCoordinator,
-            @NonNull HubShowPaneHelper hubShowPaneHelper,
-            @NonNull ObservableSupplier<EdgeToEdgeController> edgeToEdgeSupplier,
-            @NonNull SearchActivityClient searchActivityClient) {
+            Activity activity,
+            OneshotSupplier<ProfileProvider> profileProviderSupplier,
+            PaneListBuilder paneListBuilder,
+            BackPressManager backPressManager,
+            MenuOrKeyboardActionController menuOrKeyboardActionController,
+            SnackbarManager snackbarManager,
+            BottomSheetController bottomSheetController,
+            BottomBarHostManager bottomBarHostManager,
+            NullableObservableSupplier<Tab> tabSupplier,
+            MenuButtonCoordinator menuButtonCoordinator,
+            HubShowPaneHelper hubShowPaneHelper,
+            MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeSupplier,
+            SearchActivityClient searchActivityClient,
+            NonNullObservableSupplier<Boolean> xrSpaceModeObservableSupplier,
+            @PaneId int defaultPaneId) {
         return new HubManagerImpl(
                 activity,
                 profileProviderSupplier,
@@ -56,10 +69,14 @@ public class HubManagerFactory {
                 backPressManager,
                 menuOrKeyboardActionController,
                 snackbarManager,
+                bottomSheetController,
+                bottomBarHostManager,
                 tabSupplier,
                 menuButtonCoordinator,
                 hubShowPaneHelper,
                 edgeToEdgeSupplier,
-                searchActivityClient);
+                searchActivityClient,
+                xrSpaceModeObservableSupplier,
+                defaultPaneId);
     }
 }

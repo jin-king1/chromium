@@ -49,6 +49,7 @@ PASS oldChildWindow.navigator.connection.rtt is newChildWindow.navigator.connect
 PASS oldChildWindow.navigator.connection.saveData is newChildWindow.navigator.connection.saveData
 PASS oldChildWindow.navigator.connection.type is newChildWindow.navigator.connection.type
 PASS oldChildWindow.navigator.cookieEnabled is newChildWindow.navigator.cookieEnabled
+PASS oldChildWindow.navigator.cpuPerformance is newChildWindow.navigator.cpuPerformance
 PASS oldChildWindow.navigator.deprecatedRunAdAuctionEnforcesKAnonymity is newChildWindow.navigator.deprecatedRunAdAuctionEnforcesKAnonymity
 PASS oldChildWindow.navigator.deviceMemory is newChildWindow.navigator.deviceMemory
 PASS oldChildWindow.navigator.devicePosture.onchange is newChildWindow.navigator.devicePosture.onchange
@@ -119,11 +120,13 @@ PASS oldChildWindow.navigator.windowControlsOverlay.visible is newChildWindow.na
 PASS oldChildWindow.navigator.xr.ondevicechange is newChildWindow.navigator.xr.ondevicechange
 PASS oldChildWindow.onabort is newChildWindow.onabort
 PASS oldChildWindow.onafterprint is newChildWindow.onafterprint
+PASS oldChildWindow.onanimationcancel is newChildWindow.onanimationcancel
 PASS oldChildWindow.onanimationend is newChildWindow.onanimationend
 PASS oldChildWindow.onanimationiteration is newChildWindow.onanimationiteration
 PASS oldChildWindow.onanimationstart is newChildWindow.onanimationstart
 PASS oldChildWindow.onappinstalled is newChildWindow.onappinstalled
 PASS oldChildWindow.onauxclick is newChildWindow.onauxclick
+PASS oldChildWindow.onbeforefilter is newChildWindow.onbeforefilter
 PASS oldChildWindow.onbeforeinput is newChildWindow.onbeforeinput
 PASS oldChildWindow.onbeforeinstallprompt is newChildWindow.onbeforeinstallprompt
 PASS oldChildWindow.onbeforematch is newChildWindow.onbeforematch
@@ -139,6 +142,7 @@ PASS oldChildWindow.onchange is newChildWindow.onchange
 PASS oldChildWindow.onclick is newChildWindow.onclick
 PASS oldChildWindow.onclose is newChildWindow.onclose
 PASS oldChildWindow.oncommand is newChildWindow.oncommand
+PASS oldChildWindow.oncomplete is newChildWindow.oncomplete
 PASS oldChildWindow.oncontentvisibilityautostatechange is newChildWindow.oncontentvisibilityautostatechange
 PASS oldChildWindow.oncontextlost is newChildWindow.oncontextlost
 PASS oldChildWindow.oncontextmenu is newChildWindow.oncontextmenu
@@ -161,6 +165,9 @@ PASS oldChildWindow.onended is newChildWindow.onended
 PASS oldChildWindow.onerror is newChildWindow.onerror
 PASS oldChildWindow.onfocus is newChildWindow.onfocus
 PASS oldChildWindow.onformdata is newChildWindow.onformdata
+PASS oldChildWindow.ongamepadconnected is newChildWindow.ongamepadconnected
+PASS oldChildWindow.ongamepaddisconnected is newChildWindow.ongamepaddisconnected
+PASS oldChildWindow.ongamepadrawinputchanged is newChildWindow.ongamepadrawinputchanged
 PASS oldChildWindow.ongotpointercapture is newChildWindow.ongotpointercapture
 PASS oldChildWindow.onhashchange is newChildWindow.onhashchange
 PASS oldChildWindow.oninput is newChildWindow.oninput
@@ -187,7 +194,10 @@ PASS oldChildWindow.onmousewheel is newChildWindow.onmousewheel
 PASS oldChildWindow.onmove is newChildWindow.onmove
 PASS oldChildWindow.onoffline is newChildWindow.onoffline
 PASS oldChildWindow.ononline is newChildWindow.ononline
-PASS oldChildWindow.onoverscroll is newChildWindow.onoverscroll
+PASS oldChildWindow.onoverscrollcancel is newChildWindow.onoverscrollcancel
+PASS oldChildWindow.onoverscrollchanging is newChildWindow.onoverscrollchanging
+PASS oldChildWindow.onoverscrollend is newChildWindow.onoverscrollend
+PASS oldChildWindow.onoverscrollstart is newChildWindow.onoverscrollstart
 PASS oldChildWindow.onpagehide is newChildWindow.onpagehide
 PASS oldChildWindow.onpagereveal is newChildWindow.onpagereveal
 PASS oldChildWindow.onpageshow is newChildWindow.onpageshow
@@ -308,7 +318,6 @@ PASS oldChildWindow.statusbar.visible is newChildWindow.statusbar.visible
 PASS oldChildWindow.styleMedia.type is newChildWindow.styleMedia.type
 PASS oldChildWindow.toolbar.visible is newChildWindow.toolbar.visible
 PASS oldChildWindow.trustedTypes.defaultPolicy is newChildWindow.trustedTypes.defaultPolicy
-PASS oldChildWindow.trustedTypes.onbeforecreatepolicy is newChildWindow.trustedTypes.onbeforecreatepolicy
 PASS oldChildWindow.viewport.segments is newChildWindow.viewport.segments
 PASS oldChildWindow.visualViewport.height is newChildWindow.visualViewport.height
 PASS oldChildWindow.visualViewport.offsetLeft is newChildWindow.visualViewport.offsetLeft

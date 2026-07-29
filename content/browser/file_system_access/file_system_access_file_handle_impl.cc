@@ -7,7 +7,6 @@
 #include "base/files/file_error_or.h"
 #include "base/files/file_util.h"
 #include "base/files/safe_base_name.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/strings/stringprintf.h"
@@ -16,6 +15,7 @@
 #include "base/uuid.h"
 #include "build/build_config.h"
 #include "components/file_access/scoped_file_access_delegate.h"
+#include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/file_system_access/features.h"
 #include "content/browser/file_system_access/file_system_access_access_handle_host_impl.h"
 #include "content/browser/file_system_access/file_system_access_error.h"
@@ -44,8 +44,10 @@
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_transfer_token.mojom.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/strings/string_view_util.h"
+#include "crypto/obsolete/sha1.h"
 #include "base/path_service.h"
-#include "base/strings/escape.h"
+#include "base/strings/string_number_conversions.h"
 #include "content/public/common/content_paths.h"
 #endif
 
@@ -66,6 +68,17 @@ using storage::FileSystemOperation;
 using storage::FileSystemOperationRunner;
 
 namespace content {
+
+#if BUILDFLAG(IS_ANDROID)
+// Computes a SHA-1 hash of |url_path_value| and returns it as a hex string.
+// This function is intentionally declared in a separate header file
+// "crypto/obsolete/sha1.h", so as to easily monitor current usage of SHA-1 in
+// Chrome, since SHA-1 is now discouraged for new code.
+std::string GetHashedUrlPath(std::string_view url_path_value) {
+  return base::HexEncode(
+            base::as_string_view(crypto::obsolete::Sha1::Hash(url_path_value)));
+}
+#endif
 
 namespace {
 
@@ -150,15 +163,15 @@ FileSystemAccessFileHandleImpl::FileSystemAccessFileHandleImpl(
 FileSystemAccessFileHandleImpl::~FileSystemAccessFileHandleImpl() = default;
 
 void FileSystemAccessFileHandleImpl::GetPermissionStatus(
-    bool writable,
+    blink::mojom::FileSystemAccessPermissionMode mode,
     GetPermissionStatusCallback callback) {
-  DoGetPermissionStatus(writable, std::move(callback));
+  DoGetPermissionStatus(mode, std::move(callback));
 }
 
 void FileSystemAccessFileHandleImpl::RequestPermission(
-    bool writable,
+    blink::mojom::FileSystemAccessPermissionMode mode,
     RequestPermissionCallback callback) {
-  DoRequestPermission(writable, std::move(callback));
+  DoRequestPermission(mode, std::move(callback));
 }
 
 void FileSystemAccessFileHandleImpl::AsBlob(AsBlobCallback callback) {
@@ -191,7 +204,10 @@ void FileSystemAccessFileHandleImpl::CreateFileWriter(
     CreateFileWriterCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  RunWithWritePermission(
+  RunWithPermission(
+      keep_existing_data
+          ? blink::mojom::FileSystemAccessPermissionMode::kReadWrite
+          : FileSystemAccessManagerImpl::GetEffectiveWritePermissionMode(),
       base::BindOnce(&FileSystemAccessFileHandleImpl::CreateFileWriterImpl,
                      weak_factory_.GetWeakPtr(), keep_existing_data, auto_close,
                      mode),
@@ -212,7 +228,8 @@ void FileSystemAccessFileHandleImpl::Move(
   RenderFrameHost* rfh = RenderFrameHost::FromID(context().frame_id);
   bool has_transient_user_activation = rfh && rfh->HasTransientUserActivation();
 
-  RunWithWritePermission(
+  RunWithPermission(
+      FileSystemAccessManagerImpl::GetEffectiveWritePermissionMode(),
       base::BindOnce(&FileSystemAccessHandleBase::DoMove,
                      weak_factory_.GetWeakPtr(),
                      std::move(destination_directory), new_entry_name,
@@ -231,7 +248,8 @@ void FileSystemAccessFileHandleImpl::Rename(const std::string& new_entry_name,
   RenderFrameHost* rfh = RenderFrameHost::FromID(context().frame_id);
   bool has_transient_user_activation = rfh && rfh->HasTransientUserActivation();
 
-  RunWithWritePermission(
+  RunWithPermission(
+      FileSystemAccessManagerImpl::GetEffectiveWritePermissionMode(),
       base::BindOnce(&FileSystemAccessHandleBase::DoRename,
                      weak_factory_.GetWeakPtr(), new_entry_name,
                      has_transient_user_activation),
@@ -245,7 +263,8 @@ void FileSystemAccessFileHandleImpl::Rename(const std::string& new_entry_name,
 void FileSystemAccessFileHandleImpl::Remove(RemoveCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  RunWithWritePermission(
+  RunWithPermission(
+      FileSystemAccessManagerImpl::GetEffectiveWritePermissionMode(),
       base::BindOnce(&FileSystemAccessHandleBase::DoRemove,
                      weak_factory_.GetWeakPtr(), url(), /*recurse=*/false),
       base::BindOnce([](blink::mojom::FileSystemAccessErrorPtr result,
@@ -312,7 +331,9 @@ void FileSystemAccessFileHandleImpl::DidTakeAccessHandleLock(
                            weak_factory_.GetWeakPtr(), std::move(lock))
           : base::BindOnce(&FileSystemAccessFileHandleImpl::DoOpenFile,
                            weak_factory_.GetWeakPtr(), std::move(lock));
-  RunWithWritePermission(
+  // TODO(crbug.com/40276567): Review whether to switch to write-only.
+  RunWithPermission(
+      blink::mojom::FileSystemAccessPermissionMode::kReadWrite,
       std::move(open_file_callback),
       base::BindOnce([](blink::mojom::FileSystemAccessErrorPtr result,
                         OpenAccessHandleCallback callback) {
@@ -328,7 +349,8 @@ void FileSystemAccessFileHandleImpl::DoOpenIncognitoFile(
     scoped_refptr<FileSystemAccessLockManager::LockHandle> lock,
     OpenAccessHandleCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(GetWritePermissionStatus(),
+  // TODO(crbug.com/40276567): Update if this only needs write-only permission
+  DCHECK_EQ(GetReadWritePermissionStatus(),
             blink::mojom::PermissionStatus::GRANTED);
 
   mojo::PendingRemote<blink::mojom::FileSystemAccessFileDelegateHost>
@@ -350,7 +372,8 @@ void FileSystemAccessFileHandleImpl::DoOpenFile(
     scoped_refptr<FileSystemAccessLockManager::LockHandle> lock,
     OpenAccessHandleCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(GetWritePermissionStatus(),
+  // TODO(crbug.com/40276567): Update if this only needs write-only permission
+  DCHECK_EQ(GetReadWritePermissionStatus(),
             blink::mojom::PermissionStatus::GRANTED);
 
   manager()->DoFileSystemOperation(
@@ -490,18 +513,13 @@ void FileSystemAccessFileHandleImpl::DidGetMetaDataForBlob(
   std::string uuid = base::Uuid::GenerateRandomV4().AsLowercaseString();
   std::string content_type;
 
-  base::FilePath::StringType extension =
-      base::FilePath::FromUTF8Unsafe(display_name_).Extension();
-  if (!extension.empty()) {
-    std::string mime_type;
-    // TODO(crbug.com/41458368): Using GetMimeTypeFromExtension and
-    // including platform defined mime type mappings might be nice/make sense,
-    // however that method can potentially block and thus can't be called from
-    // the IO thread.
-    if (net::GetWellKnownMimeTypeFromExtension(extension.substr(1),
-                                               &mime_type)) {
-      content_type = std::move(mime_type);
-    }
+  // TODO(crbug.com/41458368): Using GetMimeTypeFromExtension and including
+  // platform defined mime type mappings might be nice/make sense, however that
+  // method can potentially block and thus can't be called from the IO thread.
+  std::string mime_type;
+  if (net::GetWellKnownMimeTypeFromFile(
+          base::FilePath::FromUTF8Unsafe(display_name_), &mime_type)) {
+    content_type = std::move(mime_type);
   }
   // TODO(crbug.com/41458368): Consider some kind of fallback type when
   // the above mime type detection fails.
@@ -531,7 +549,8 @@ void FileSystemAccessFileHandleImpl::CreateFileWriterImpl(
     blink::mojom::FileSystemAccessWritableFileStreamLockMode mode,
     CreateFileWriterCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(GetWritePermissionStatus(),
+  DCHECK_EQ(keep_existing_data ? GetReadWritePermissionStatus()
+                               : GetEffectiveWritePermissionStatus(),
             blink::mojom::PermissionStatus::GRANTED);
 
   // TODO(crbug.com/40194651): Expand this check to all backends.
@@ -607,7 +626,9 @@ void FileSystemAccessFileHandleImpl::StartCreateSwapFile(
     return;
   }
 
-  if (GetWritePermissionStatus() != blink::mojom::PermissionStatus::GRANTED) {
+  if ((keep_existing_data ? GetReadWritePermissionStatus()
+                          : GetEffectiveWritePermissionStatus()) !=
+      PermissionStatus::GRANTED) {
     std::move(callback).Run(file_system_access_error::FromStatus(
                                 FileSystemAccessStatus::kPermissionDenied),
                             mojo::NullRemote());
@@ -635,11 +656,14 @@ void FileSystemAccessFileHandleImpl::StartCreateSwapFile(
     //  copy back to the original content-URI when done.
     storage::FileSystemURL swap_url;
     if (url().path().IsContentUri()) {
-      // We must escape 'content://com.android...' to use it as the file name.
-      std::string file_name = base::EscapeAllExceptUnreserved(
-          url().path().DirName().Append(*opt_swap_name).value());
+      // Use SHA1 hash instead of escape to avoid exceeding filename length
+      // limits.
+      std::string file_name = GetHashedUrlPath(url().path().value());
+      if (count > 0) {
+        file_name += base::StringPrintf(".%d", count);
+      }
       swap_url = manager()->CreateFileSystemURLFromPath(
-          PathInfo(swap_dir_.Append(file_name)));
+          PathInfo(swap_dir_.Append(file_name).AddExtension(".crswap")));
     } else {
       swap_url = url().CreateSibling(*opt_swap_name);
     }

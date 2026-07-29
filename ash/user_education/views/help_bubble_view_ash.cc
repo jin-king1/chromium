@@ -28,7 +28,6 @@
 #include "base/types/pass_key.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_education/common/help_bubble/help_bubble_params.h"
-#include "components/vector_icons/vector_icons.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_targeter.h"
@@ -38,6 +37,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_provider.h"
@@ -159,7 +159,9 @@ class ClosePromoButton : public views::ImageButton {
     SetImageModel(
         views::ImageButton::STATE_NORMAL,
         ui::ImageModel::FromVectorIcon(
-            views::kIcCloseIcon, cros_tokens::kCrosSysOnSurface, kIconSize));
+            ::features::IsRoundedIconsEnabled() ? views::kCloseIcon
+                                                : views::kIcCloseOldIcon,
+            cros_tokens::kCrosSysOnSurface, kIconSize));
 
     constexpr float kCloseButtonFocusRingHaloThickness = 1.25f;
     views::FocusRing::Get(this)->SetHaloThickness(
@@ -282,7 +284,7 @@ HelpBubbleViewAsh::HelpBubbleViewAsh(
                                TranslateArrow(params.arrow),
                                views::BubbleBorder::STANDARD_SHADOW),
       id_(id) {
-  set_background_color(cros_tokens::kCrosSysDialogContainer);
+  SetBackgroundColor(cros_tokens::kCrosSysDialogContainer);
   SetCanActivate(true);
 
   // When hosted within a `views::ScrollView`, the anchor view may be
@@ -634,16 +636,48 @@ HelpBubbleViewAsh::HelpBubbleViewAsh(
   SetModalType(
       user_education_util::GetHelpBubbleModalType(params.extended_properties));
   SetProperty(views::kElementIdentifierKey, kHelpBubbleElementIdForTesting);
-  set_margins(gfx::Insets());
-  set_title_margins(gfx::Insets());
+  set_frame_margins({.contents = gfx::Insets(), .title = gfx::Insets()});
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   set_close_on_deactivate(false);
   set_focus_traversable_from_anchor_view(false);
+  SetUseAnchorWindowBounds(false);
   set_parent_window(
       anchor_widget()->GetNativeWindow()->GetRootWindow()->GetChildById(
           kShellWindowId_HelpBubbleContainer));
 
-  views::Widget* widget = views::BubbleDialogDelegateView::CreateBubble(this);
+  auto* const anchor_bubble =
+      anchor.view->GetWidget()->widget_delegate()->AsBubbleDialogDelegate();
+  if (anchor_bubble) {
+    anchor_pin_ = anchor_bubble->PreventCloseOnDeactivate();
+  }
+}
+
+HelpBubbleViewAsh::~HelpBubbleViewAsh() {
+  // NOTE: `controller` may be `nullptr` in testing.
+  if (auto* controller = UserEducationHelpBubbleController::Get()) {
+    controller->NotifyHelpBubbleClosed(base::PassKey<HelpBubbleViewAsh>(),
+                                       /*help_bubble_view=*/this);
+  }
+}
+
+// static
+user_education::HelpBubbleViewInfo HelpBubbleViewAsh::Create(
+    HelpBubbleId id,
+    const internal::HelpBubbleAnchorParams& anchor,
+    user_education::HelpBubbleParams params) {
+  auto bubble =
+      base::WrapUnique(new HelpBubbleViewAsh(id, anchor, std::move(params)));
+  auto* const bubble_ptr = bubble.get();
+  // TODO(https://crbug.com/510617577): Fix leaks in
+  // views::BubbleDialogDelegate.
+  std::unique_ptr<views::Widget> widget =
+      views::BubbleDialogDelegate::CreateBubble(bubble.release());
+  bubble_ptr->InitializeAndShow();
+  return user_education::HelpBubbleViewInfo(std::move(widget), bubble_ptr);
+}
+
+void HelpBubbleViewAsh::InitializeAndShow() {
+  views::Widget* widget = GetWidget();
 
   // This gets reset to the platform default when we call `CreateBubble()`, so
   // we have to change it afterwards. Note that rounded corners are updated
@@ -668,25 +702,12 @@ HelpBubbleViewAsh::HelpBubbleViewAsh(
     widget->ShowInactive();
   }
 
-  auto* const anchor_bubble =
-      anchor.view->GetWidget()->widget_delegate()->AsBubbleDialogDelegate();
-  if (anchor_bubble) {
-    anchor_pin_ = anchor_bubble->PreventCloseOnDeactivate();
-  }
   MaybeStartAutoCloseTimer();
 
   // NOTE: `controller` may be `nullptr` in testing.
   if (auto* controller = UserEducationHelpBubbleController::Get()) {
     controller->NotifyHelpBubbleShown(base::PassKey<HelpBubbleViewAsh>(),
                                       /*help_bubble_view=*/this);
-  }
-}
-
-HelpBubbleViewAsh::~HelpBubbleViewAsh() {
-  // NOTE: `controller` may be `nullptr` in testing.
-  if (auto* controller = UserEducationHelpBubbleController::Get()) {
-    controller->NotifyHelpBubbleClosed(base::PassKey<HelpBubbleViewAsh>(),
-                                       /*help_bubble_view=*/this);
   }
 }
 
@@ -704,12 +725,11 @@ void HelpBubbleViewAsh::OnTimeout() {
   GetWidget()->Close();
 }
 
-std::unique_ptr<views::NonClientFrameView>
-HelpBubbleViewAsh::CreateNonClientFrameView(views::Widget* widget) {
-  auto frame = BubbleDialogDelegateView::CreateNonClientFrameView(widget);
+std::unique_ptr<views::FrameView> HelpBubbleViewAsh::CreateFrameView(
+    views::Widget* widget) {
+  auto frame = BubbleDialogDelegateView::CreateFrameView(widget);
   auto* frame_ptr = static_cast<views::BubbleFrameView*>(frame.get());
   frame_ptr->bubble_border()->set_md_shadow_elevation(kBubbleShadowElevation);
-  frame_ptr->set_use_anchor_window_bounds(false);
   return frame;
 }
 
@@ -830,7 +850,7 @@ gfx::Rect HelpBubbleViewAsh::GetAnchorRect() const {
 }
 
 void HelpBubbleViewAsh::GetWidgetHitTestMask(SkPath* mask) const {
-  mask->addRect(gfx::RectToSkRect(GetHitRect()));
+  *mask = SkPath::Rect(gfx::RectToSkRect(GetHitRect()));
 }
 
 bool HelpBubbleViewAsh::WidgetHasHitTestMask() const {
@@ -901,7 +921,7 @@ void HelpBubbleViewAsh::UpdateRoundedCorners() {
   const float lower_left = dx < 0 && dy > 0 ? kSmall : kDefault;
 
   // Update rounded corners.
-  GetBubbleFrameView()->bubble_border()->set_rounded_corners(
+  GetBubbleFrameView()->SetRoundedCorners(
       gfx::RoundedCornersF(upper_left, upper_right, lower_right, lower_left));
 }
 

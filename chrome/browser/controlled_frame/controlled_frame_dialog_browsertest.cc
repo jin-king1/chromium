@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "base/values.h"
 #include "chrome/browser/controlled_frame/controlled_frame_permission_request_test_base.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -18,8 +19,9 @@ class ControlledFrameDialogBrowserTest
       public testing::WithParamInterface<bool> {
  public:
   void SetUpOnMainThread() override {
+    embedded_https_test_server().ServeFilesFromSourceDirectory(
+        GetChromeTestDataDir().AppendASCII("web_apps/simple_isolated_app"));
     ControlledFrameTestBase::SetUpOnMainThread();
-    StartContentServer("web_apps/simple_isolated_app");
   }
 
  protected:
@@ -129,8 +131,8 @@ IN_PROC_BROWSER_TEST_P(ControlledFrameDialogBrowserTest, Alert) {
     )",
                                                       handle_dialog_str())));
 
-  EXPECT_EQ(nullptr, content::EvalJs(controlled_frame,
-                                     R"(
+  EXPECT_EQ(base::Value(), content::EvalJs(controlled_frame,
+                                           R"(
       (async function() {
         try {
           return await alert('alert test text');

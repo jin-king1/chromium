@@ -7,9 +7,7 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/cpu.h"
-#include "base/files/file_util.h"
 #include "base/functional/callback_helpers.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
@@ -17,6 +15,7 @@
 #include "base/test/bind.h"
 #include "base/test/launcher/unit_test_launcher.h"
 #include "build/build_config.h"
+#include "media/base/decoder.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/encryption_scheme.h"
 #include "media/base/media_switches.h"
@@ -25,7 +24,6 @@
 #include "media/base/video_decoder_config.h"
 #include "media/base/video_transformation.h"
 #include "media/filters/dav1d_video_decoder.h"
-#include "media/gpu/chromeos/default_video_frame_converter.h"
 #include "media/gpu/test/video_bitstream.h"
 #include "media/gpu/test/video_decode_accelerator_test_suite.h"
 #include "media/gpu/test/video_frame_file_writer.h"
@@ -33,14 +31,15 @@
 #include "media/gpu/test/video_player/decoder_listener.h"
 #include "media/gpu/test/video_player/decoder_wrapper.h"
 #include "media/gpu/test/video_player/frame_renderer_dummy.h"
+#include "media/gpu/test/video_player/mappable_si_video_frame_converter.h"
 #include "media/gpu/test/video_player/video_player_test_environment.h"
 #include "media/gpu/test/video_test_helpers.h"
 #include "media/media_buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 #include "media/gpu/chromeos/video_decoder_pipeline.h"
-#endif  // BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 #include "media/gpu/chromeos/platform_video_frame_pool.h"
@@ -122,12 +121,12 @@ class VideoDecoderTest : public ::testing::Test {
 
 // Set the frame rate for the decoder. This is required for the
 // VideoDecoderPipeline to work.
-#if BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#if BUILDFLAG(USE_V4L2_CODEC)
     base::CommandLine& command_line = *base::CommandLine::ForCurrentProcess();
     command_line.AppendSwitchASCII(
         switches::kHardwareVideoDecodeFrameRate,
         base::NumberToString(g_env->Video()->FrameRate()));
-#endif  // BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#endif  // BUILDFLAG(USE_V4L2_CODEC)
 
     config.implementation = g_env->GetDecoderImplementation();
     config.linear_output = g_env->ShouldOutputLinearBuffers();
@@ -165,7 +164,8 @@ class VideoDecoderTest : public ::testing::Test {
     std::unique_ptr<VideoDecoder> decoder = VideoDecoderPipeline::Create(
         gpu::GpuDriverBugWorkarounds(),
         base::SingleThreadTaskRunner::GetCurrentDefault(),
-        std::move(frame_pool), DefaultFrameConverter::Create(),
+        std::move(frame_pool),
+        MappableSIVideoFrameConverter::CreateForTesting(),
         VideoDecoderPipeline::DefaultPreferredRenderableFourccs(),
         std::make_unique<NullMediaLog>(),
         /*oop_video_decoder=*/{},
@@ -275,20 +275,14 @@ class VideoDecoderTest : public ::testing::Test {
 
 }  // namespace
 
-#if BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 TEST_F(VideoDecoderTest, GetSupportedConfigs) {
   if (g_env->GetDecoderImplementation() != DecoderImplementation::kVD) {
     GTEST_SKIP() << "Re-initialization is only supported by the "
                     "media::VideoDecoder interface;";
   }
   const media::VideoDecoderType decoder_type =
-#if BUILDFLAG(USE_VAAPI)
-      media::VideoDecoderType::kVaapi;
-#elif BUILDFLAG(USE_V4L2_CODEC)
-      media::VideoDecoderType::kV4L2;
-#else
-      media::VideoDecoderType::kUnknown;
-#endif
+      media::ActiveLinuxVideoDecoderType();
   const auto supported_configs = VideoDecoderPipeline::GetSupportedConfigs(
       decoder_type, gpu::GpuDriverBugWorkarounds());
   ASSERT_FALSE(supported_configs->empty());
@@ -302,7 +296,7 @@ TEST_F(VideoDecoderTest, GetSupportedConfigs) {
   // Every hardware video decoder in ChromeOS supports some kind of H.264.
   EXPECT_TRUE(contains_h264);
 }
-#endif  // BUILDFLAG(USE_CHROMEOS_MEDIA_ACCELERATION)
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 
 // Test initializing the video decoder for the specified video. Initialization
 // will be successful if the video decoder is capable of decoding the test

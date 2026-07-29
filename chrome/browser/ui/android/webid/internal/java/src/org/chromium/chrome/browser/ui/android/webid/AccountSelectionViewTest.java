@@ -27,11 +27,12 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.robolectric.ParameterizedRobolectricTestRunner;
 import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRule;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.ScalableTimeout;
+import org.chromium.blink.mojom.RpContext;
 import org.chromium.blink.mojom.RpMode;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.AccountProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ButtonData;
@@ -79,11 +80,11 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
     private static final String LINK_TAG_REGEX = "<[^>]*>";
 
     private class TokenError {
-        public String mCode;
-        public GURL mUrl;
-        public String mExpectedSummary;
-        public String mExpectedDescription;
-        public boolean mClickableText;
+        public final String mCode;
+        public final GURL mUrl;
+        public final String mExpectedSummary;
+        public final String mExpectedDescription;
+        public final boolean mClickableText;
 
         TokenError(String code, GURL url, boolean clickableText) {
             mCode = code;
@@ -142,7 +143,7 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
                                 R.string.signin_server_error_dialog_description,
                                 TEST_RP_ETLD_PLUS_ONE));
 
-        private final String appendExtraDescription(String code, GURL url, boolean clickableText) {
+        private String appendExtraDescription(String code, GURL url, boolean clickableText) {
             String initialDescription = mCodeToDescription.get(code);
             if (AccountSelectionViewBinder.GENERIC.equals(code)) {
                 if (mTestEmptyErrorUrl.equals(url) || !clickableText) {
@@ -188,48 +189,117 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
     public void testAccountsChangedByModel() {
         mSheetAccountItems.addAll(
                 asList(
-                        buildAccountItem(mAnaAccount),
-                        buildAccountItem(mNoOneAccount),
-                        buildAccountItem(mBobAccount),
-                        buildAccountItem(mNicolasAccount)));
-        ShadowLooper.shadowMainLooper().idle();
+                        buildAccountItem(mAnaAccount, /* showIdp= */ false),
+                        buildAccountItem(mNoOneAccount, /* showIdp= */ false),
+                        buildAccountItem(mBobAccount, /* showIdp= */ false),
+                        buildAccountItem(mNicolasAccount, /* showIdp= */ false)));
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertEquals(View.VISIBLE, mContentView.getVisibility());
         assertEquals("Incorrect account count", 4, getAccounts().getChildCount());
-        assertEquals("Incorrect name", mAnaAccount.getName(), getAccountNameAt(0).getText());
-        assertEquals("Incorrect email", mAnaAccount.getEmail(), getAccountEmailAt(0).getText());
+        assertEquals(
+                "Incorrect display name",
+                mAnaAccount.getDisplayName(),
+                getAccountNameAt(0).getText());
+        assertEquals(
+                "Incorrect display identifier",
+                mAnaAccount.getDisplayIdentifier(),
+                getAccountDescriptionAt(0).getText());
         assertEquals(
                 "Should not have secondary description",
                 "",
                 getAccountSecondaryDescriptionAt(0).getText());
         assertEquals(View.GONE, getAccountSecondaryDescriptionAt(0).getVisibility());
-        assertEquals("Incorrect name", mNoOneAccount.getName(), getAccountNameAt(1).getText());
-        assertEquals("Incorrect email", mNoOneAccount.getEmail(), getAccountEmailAt(1).getText());
+        assertEquals(
+                "Incorrect display name",
+                mNoOneAccount.getDisplayName(),
+                getAccountNameAt(1).getText());
+        assertEquals(
+                "Incorrect display identifier",
+                mNoOneAccount.getDisplayIdentifier(),
+                getAccountDescriptionAt(1).getText());
         assertEquals(
                 "Should not have secondary description",
                 "",
                 getAccountSecondaryDescriptionAt(1).getText());
         assertEquals(View.GONE, getAccountSecondaryDescriptionAt(1).getVisibility());
-        assertEquals("Incorrect name", mBobAccount.getName(), getAccountNameAt(2).getText());
-        assertEquals("Incorrect email", mBobAccount.getEmail(), getAccountEmailAt(2).getText());
+        assertEquals(
+                "Incorrect display name",
+                mBobAccount.getDisplayName(),
+                getAccountNameAt(2).getText());
+        assertEquals(
+                "Incorrect display identifier",
+                mBobAccount.getDisplayIdentifier(),
+                getAccountDescriptionAt(2).getText());
         assertEquals(
                 "Should not have secondary description",
                 "",
                 getAccountSecondaryDescriptionAt(2).getText());
         assertEquals(View.GONE, getAccountSecondaryDescriptionAt(2).getVisibility());
-        assertEquals("Incorrect name", mNicolasAccount.getName(), getAccountNameAt(3).getText());
-        assertEquals("Incorrect email", mNicolasAccount.getEmail(), getAccountEmailAt(3).getText());
+        assertEquals(
+                "Incorrect display name",
+                mNicolasAccount.getDisplayName(),
+                getAccountNameAt(3).getText());
+        assertEquals(
+                "Incorrect display identifier",
+                mNicolasAccount.getDisplayIdentifier(),
+                getAccountDescriptionAt(3).getText());
+
+        // Even though mNicolasAccount has secondary description, it should not be shown when UI is
+        // not in multi IDP mode.
         assertEquals(
                 "Should not have secondary description",
-                mNicolasAccount.getSecondaryDescription(),
+                "",
                 getAccountSecondaryDescriptionAt(3).getText());
-        assertEquals(View.VISIBLE, getAccountSecondaryDescriptionAt(3).getVisibility());
+        assertEquals(View.GONE, getAccountSecondaryDescriptionAt(3).getVisibility());
+    }
+
+    @Test
+    public void testSecondaryDescriptionsWithMultipleIdpAccounts() {
+        mSheetAccountItems.addAll(
+                asList(
+                        buildAccountItem(mAnaAccount, /* showIdp= */ true),
+                        buildAccountItem(mAnaAccountWithoutBrandIcons, /* showIdp= */ true),
+                        buildAccountItem(mNewUserAccount, /* showIdp= */ true)));
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        assertEquals(View.VISIBLE, mContentView.getVisibility());
+        assertEquals("Incorrect account count", 3, getAccounts().getChildCount());
+
+        TextView secondaryDescription = getAccountSecondaryDescriptionAt(0);
+        assertEquals(
+                "Secondary description not visible",
+                View.VISIBLE,
+                secondaryDescription.getVisibility());
+        assertEquals(
+                mAnaAccount.getSecondaryDescription() + " • You used on this site",
+                secondaryDescription.getText().toString());
+
+        secondaryDescription = getAccountSecondaryDescriptionAt(1);
+        assertEquals(
+                "Secondary description not visible",
+                View.VISIBLE,
+                secondaryDescription.getVisibility());
+        assertEquals(
+                mAnaAccountWithoutBrandIcons.getSecondaryDescription() + " • You used on this site",
+                secondaryDescription.getText().toString());
+
+        secondaryDescription = getAccountSecondaryDescriptionAt(2);
+        assertEquals(
+                "Secondary description not visible",
+                View.VISIBLE,
+                secondaryDescription.getVisibility());
+        // This is a new account, so should not include "You used on this site".
+        assertEquals(
+                mNewUserAccount.getSecondaryDescription(),
+                secondaryDescription.getText().toString());
     }
 
     @Test
     public void testAccountsAreClickable() {
-        mSheetAccountItems.addAll(Collections.singletonList(buildAccountItem(mAnaAccount)));
-        ShadowLooper.shadowMainLooper().idle();
+        mSheetAccountItems.addAll(
+                Collections.singletonList(buildAccountItem(mAnaAccount, /* showIdp= */ false)));
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertEquals(View.VISIBLE, mContentView.getVisibility());
 
@@ -255,7 +325,7 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
                                 .with(AccountProperties.ACCOUNT, mAnaAccount)
                                 .with(AccountProperties.ON_CLICK_LISTENER, null)
                                 .build()));
-        ShadowLooper.shadowMainLooper().idle();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         mModel.set(
                 ItemProperties.CONTINUE_BUTTON,
@@ -349,6 +419,7 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
                 mContentView.findViewById(R.id.account_selection_continue_btn);
         assertTrue(continueButton.isShown());
         assertEquals("Continue", continueButton.getText());
+        assertEquals("Continue, opens in a new tab", continueButton.getContentDescription());
         continueButton.performClick();
 
         ArgumentCaptor<ButtonData> captor = ArgumentCaptor.forClass(ButtonData.class);
@@ -360,7 +431,7 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
 
     @Test
     public void testErrorText() {
-        final TokenError[] mErrors =
+        final TokenError[] errors =
                 new TokenError[] {
                     new TokenError(
                             AccountSelectionViewBinder.GENERIC,
@@ -460,7 +531,7 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
                             /* clickableText= */ false)
                 };
 
-        for (TokenError error : mErrors) {
+        for (TokenError error : errors) {
             ErrorProperties.Properties properties = new ErrorProperties.Properties();
             properties.mIdpForDisplay = TEST_IDP_ETLD_PLUS_ONE;
             properties.mRpForDisplay = TEST_RP_ETLD_PLUS_ONE;
@@ -482,6 +553,35 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
         }
     }
 
+    @Test
+    public void testContentDescription() {
+        mModel.set(
+                ItemProperties.CONTINUE_BUTTON,
+                buildContinueButton(mAnaAccount, mIdpMetadata, HeaderType.SIGN_IN));
+        // Check that there is not a period in the content description since one will be appended.
+        assertEquals(
+                "Sign in bottom sheet", mBottomSheetContent.getSheetContentDescription(mContext));
+    }
+
+    @Test
+    public void testMultipleIdPLogins() {
+        mSheetAccountItems.addAll(
+                asList(
+                        buildIdpLoginItem(mIdpData, /* showIdp= */ true),
+                        buildIdpLoginItem(mIdpDataWithoutIcons, /* showIdp= */ true)));
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        assertEquals(View.VISIBLE, mContentView.getVisibility());
+        RecyclerView buttons = mContentView.findViewById(R.id.sheet_item_list);
+        assertEquals("Incorrect account count", 2, buttons.getChildCount());
+        View idpLogin = buttons.getChildAt(0);
+        TextView title = idpLogin.findViewById(R.id.title);
+        assertEquals("Use your " + mTestEtldPlusOne2 + " account", title.getText());
+        assertEquals(
+                "Use your " + mTestEtldPlusOne2 + " account, opens in a new tab",
+                title.getContentDescription());
+    }
+
     private RecyclerView getAccounts() {
         return mContentView.findViewById(R.id.sheet_item_list);
     }
@@ -490,7 +590,7 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
         return getAccounts().getChildAt(index).findViewById(R.id.title);
     }
 
-    private TextView getAccountEmailAt(int index) {
+    private TextView getAccountDescriptionAt(int index) {
         return getAccounts().getChildAt(index).findViewById(R.id.description);
     }
 
@@ -535,5 +635,34 @@ public class AccountSelectionViewTest extends AccountSelectionJUnitTestBase {
         return new PropertyModel.Builder(IdpSignInProperties.ALL_KEYS)
                 .with(IdpSignInProperties.IDP_FOR_DISPLAY, idpEtldPlusOne)
                 .build();
+    }
+
+    @Test
+    public void testIframeDisplayed() {
+        mModel.set(
+                ItemProperties.HEADER,
+                new PropertyModel.Builder(HeaderProperties.ALL_KEYS)
+                        .with(HeaderProperties.TYPE, HeaderType.SIGN_IN)
+                        .with(HeaderProperties.RP_FOR_DISPLAY, "rp.com")
+                        .with(HeaderProperties.IFRAME_FOR_DISPLAY, "iframe.com")
+                        .with(HeaderProperties.IDP_FOR_DISPLAY, "idp.com")
+                        .with(HeaderProperties.RP_CONTEXT, RpContext.SIGN_IN)
+                        .with(HeaderProperties.RP_MODE, mRpMode)
+                        .build());
+        assertEquals(View.VISIBLE, mContentView.getVisibility());
+        TextView title = mContentView.findViewById(R.id.header_title);
+        TextView subtitle = mContentView.findViewById(R.id.header_subtitle);
+
+        String expectedTitle =
+                mResources.getString(
+                        R.string.account_selection_sheet_title_explicit_signin,
+                        "iframe.com",
+                        "idp.com");
+
+        assertEquals("Incorrect title", expectedTitle, title.getText().toString());
+        assertEquals(
+                "Incorrect subtitle",
+                "rp.com embeds content from iframe.com",
+                subtitle.getText().toString());
     }
 }

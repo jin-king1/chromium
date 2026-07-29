@@ -13,7 +13,6 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "third_party/blink/public/common/features.h"
 
 using ScreenDetailsTest = InProcessBrowserTest;
 
@@ -34,11 +33,11 @@ IN_PROC_BROWSER_TEST_F(ScreenDetailsTest, GetScreenDetailsBasic) {
   ASSERT_TRUE(EvalJs(tab, "'getScreenDetails' in self").ExtractBool());
   content::EvalJsResult result =
       EvalJs(tab, content::test::kGetScreenDetailsScript);
-  EXPECT_EQ(content::test::GetExpectedScreenDetails(), result.value);
+  EXPECT_EQ(content::test::GetExpectedScreenDetails(), result);
 }
 
 // Tests that ScreenDetailed and window.screen both yield display metrics, not
-// viewport dimensions, while the frame is fullscreen. See crbug.com/1367416
+// viewport dimensions, while the frame is fullscreen. See crbug.com/40867640
 IN_PROC_BROWSER_TEST_F(ScreenDetailsTest, FullscreenSize) {
   auto* tab = chrome_test_utils::GetActiveWebContents(this);
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -76,7 +75,7 @@ IN_PROC_BROWSER_TEST_F(ScreenDetailsTest, FullscreenSize) {
   )JS";
   ASSERT_TRUE(EvalJs(tab, kEnterFullscreenAndResizeScript).ExtractBool());
   DevToolsWindowTesting::OpenDevToolsWindowSync(tab, true);
-  ASSERT_TRUE(EvalJs(tab, "window.nextResize").error.empty());
+  ASSERT_TRUE(EvalJs(tab, "window.nextResize").is_ok());
   ASSERT_TRUE(tab->IsFullscreen());
   // `window.screen` dimensions match the display size.
   EXPECT_EQ(display_size, EvalJs(tab, "`${screen.width}x${screen.height}`"));

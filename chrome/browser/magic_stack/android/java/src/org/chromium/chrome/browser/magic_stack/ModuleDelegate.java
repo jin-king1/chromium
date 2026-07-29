@@ -5,9 +5,9 @@
 package org.chromium.chrome.browser.magic_stack;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
@@ -16,17 +16,19 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** The interface for magic stack which owns a list of modules. */
+@NullMarked
 public interface ModuleDelegate {
+    // LINT.IfChange(HomeModuleTypes)
     /**
      * Module types that are shown in the magic stack on the home surfaces.
      *
      * <p>These values are persisted to logs. Entries should not be renumbered and numeric values
-     * should never be reused. See tools/metrics/histograms/enums.xml.
+     * should never be reused. See tools/metrics/histograms/metadata/magic_stack/enums.xml.
      */
     @IntDef({
         ModuleType.SINGLE_TAB,
         ModuleType.PRICE_CHANGE,
-        ModuleType.TAB_RESUMPTION,
+        ModuleType.DEPRECATED_TAB_RESUMPTION,
         ModuleType.SAFETY_HUB,
         ModuleType.DEPRECATED_EDUCATIONAL_TIP,
         ModuleType.AUXILIARY_SEARCH,
@@ -34,13 +36,23 @@ public interface ModuleDelegate {
         ModuleType.TAB_GROUP_PROMO,
         ModuleType.TAB_GROUP_SYNC_PROMO,
         ModuleType.QUICK_DELETE_PROMO,
+        ModuleType.HISTORY_SYNC_PROMO,
+        ModuleType.DEPRECATED_TIPS_NOTIFICATIONS_PROMO,
+        ModuleType.ENHANCED_SAFE_BROWSING_PROMO,
+        ModuleType.ADDRESS_BAR_PLACEMENT_PROMO,
+        ModuleType.SETUP_LIST_TWO_CELL_CONTAINER,
+        ModuleType.SIGN_IN_PROMO,
+        ModuleType.SAVE_PASSWORDS_PROMO,
+        ModuleType.PASSWORD_CHECKUP_PROMO,
+        ModuleType.SETUP_LIST_CELEBRATORY_PROMO,
+        ModuleType.NTP_THEME_PROMO,
         ModuleType.NUM_ENTRIES
     })
     @Retention(RetentionPolicy.SOURCE)
     @interface ModuleType {
         int SINGLE_TAB = 0;
         int PRICE_CHANGE = 1;
-        int TAB_RESUMPTION = 2;
+        int DEPRECATED_TAB_RESUMPTION = 2;
         int SAFETY_HUB = 3;
         int DEPRECATED_EDUCATIONAL_TIP = 4;
         int AUXILIARY_SEARCH = 5;
@@ -48,14 +60,26 @@ public interface ModuleDelegate {
         int TAB_GROUP_PROMO = 7;
         int TAB_GROUP_SYNC_PROMO = 8;
         int QUICK_DELETE_PROMO = 9;
-        int NUM_ENTRIES = 10;
+        int HISTORY_SYNC_PROMO = 10;
+        int DEPRECATED_TIPS_NOTIFICATIONS_PROMO = 11;
+        int ENHANCED_SAFE_BROWSING_PROMO = 12;
+        int ADDRESS_BAR_PLACEMENT_PROMO = 13;
+        int SETUP_LIST_TWO_CELL_CONTAINER = 14;
+        int SIGN_IN_PROMO = 15;
+        int SAVE_PASSWORDS_PROMO = 16;
+        int PASSWORD_CHECKUP_PROMO = 17;
+        int SETUP_LIST_CELEBRATORY_PROMO = 18;
+        int NTP_THEME_PROMO = 19;
+        int NUM_ENTRIES = 20;
     }
+
+    // LINT.ThenChange(//chrome/browser/ntp_customization/java/src/org/chromium/chrome/browser/ntp_customization/ntp_cards/NtpCardsMediator.java:HomeModuleTypes, //tools/metrics/histograms/metadata/magic_stack/enums.xml:ModuleType, //tools/metrics/histograms/metadata/magic_stack/histograms.xml:ModuleType)
 
     /**
      * Called when a module has a PropertyModel ready. This could be called multiple times from the
      * same module.
      */
-    void onDataReady(@ModuleType int moduleType, @NonNull PropertyModel propertyModel);
+    void onDataReady(@ModuleType int moduleType, PropertyModel propertyModel);
 
     /** Called when a module has no data to show. */
     void onDataFetchFailed(@ModuleType int moduleType);
@@ -75,7 +99,7 @@ public interface ModuleDelegate {
      * @param gurl The URL to open.
      * @param moduleType The type of the module clicked.
      */
-    void onUrlClicked(@NonNull GURL gurl, @ModuleType int moduleType);
+    void onUrlClicked(GURL gurl, @ModuleType int moduleType);
 
     /**
      * Called when the user clicks a module to select a Tab.
@@ -96,8 +120,10 @@ public interface ModuleDelegate {
     ModuleProvider getModuleProvider(@ModuleType int moduleType);
 
     /** Gets the local Tab that is showing on the magic stack. */
-    @Nullable
-    Tab getTrackingTab();
+    @Nullable Tab getTrackingTab();
+
+    /** Re-evaluates eligibility and re-renders the magic stack. */
+    void refreshModules();
 
     /** Called before build and show modules. */
     void prepareBuildAndShow();

@@ -15,8 +15,13 @@ include_rules = [
   "+chrome/browser/ui/browser.h",
   "+chrome/browser/ui/browser_window.h",
   "+chrome/browser/ui/webui/ash/system_web_dialog",
-  "+chrome/browser/ui/webui/webui_util.h",
   "+chrome/common",
   "+chrome/grit",
   "+chrome/test/base",
 ]
+
+specific_include_rules = {
+  "local_files_migration_ui\\.cc": [
+    "+chrome/browser/ui/webui/theme_source.h",
+  ],
+}

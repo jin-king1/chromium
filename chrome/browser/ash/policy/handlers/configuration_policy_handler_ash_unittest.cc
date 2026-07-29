@@ -12,7 +12,6 @@
 #include "base/json/json_reader.h"
 #include "base/values.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_prefs.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/dbus/power/power_policy_controller.h"
 #include "components/policy/core/browser/configuration_policy_handler.h"
@@ -115,8 +114,8 @@ TEST(ExternalDataPolicyHandlerTest, WrongType) {
 }
 
 TEST(ExternalDataPolicyHandlerTest, MissingURL) {
-  auto dict = base::Value::Dict().Set(
-      "hash", "1234567890123456789012345678901234567890");
+  auto dict =
+      base::DictValue().Set("hash", "1234567890123456789012345678901234567890");
   PolicyMap policy_map;
   policy_map.Set(key::kUserAvatarImage, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
@@ -128,7 +127,7 @@ TEST(ExternalDataPolicyHandlerTest, MissingURL) {
 }
 
 TEST(ExternalDataPolicyHandlerTest, InvalidURL) {
-  auto dict = base::Value::Dict()
+  auto dict = base::DictValue()
                   .Set("url", "http://")
                   .Set("hash", "1234567890123456789012345678901234567890");
   PolicyMap policy_map;
@@ -142,7 +141,7 @@ TEST(ExternalDataPolicyHandlerTest, InvalidURL) {
 }
 
 TEST(ExternalDataPolicyHandlerTest, MissingHash) {
-  auto dict = base::Value::Dict().Set("url", "http://localhost/");
+  auto dict = base::DictValue().Set("url", "http://localhost/");
   PolicyMap policy_map;
   policy_map.Set(key::kUserAvatarImage, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
@@ -155,7 +154,7 @@ TEST(ExternalDataPolicyHandlerTest, MissingHash) {
 
 TEST(ExternalDataPolicyHandlerTest, InvalidHash) {
   auto dict =
-      base::Value::Dict().Set("url", "http://localhost/").Set("hash", "1234");
+      base::DictValue().Set("url", "http://localhost/").Set("hash", "1234");
   PolicyMap policy_map;
   policy_map.Set(key::kUserAvatarImage, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
@@ -167,7 +166,7 @@ TEST(ExternalDataPolicyHandlerTest, InvalidHash) {
 }
 
 TEST(ExternalDataPolicyHandlerTest, Valid) {
-  auto dict = base::Value::Dict()
+  auto dict = base::DictValue()
                   .Set("url", "http://localhost/")
                   .Set("hash",
                        "1234567890123456789012345678901234567890123456789012345"
@@ -320,7 +319,8 @@ TEST_F(LoginScreenPowerManagementPolicyHandlerTest, ValidPolicy) {
   PolicyMap policy_map;
   policy_map.Set(key::kDeviceLoginScreenPowerManagement, POLICY_LEVEL_MANDATORY,
                  POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-                 base::JSONReader::Read(kLoginScreenPowerManagementPolicy),
+                 base::JSONReader::Read(kLoginScreenPowerManagementPolicy,
+                                        base::JSON_PARSE_CHROMIUM_EXTENSIONS),
                  nullptr);
   LoginScreenPowerManagementPolicyHandler handler(chrome_schema_);
   PolicyErrorMap errors;
@@ -360,7 +360,8 @@ TEST_F(PowerManagementIdleSettingsPolicyHandlerTest,
   )";
   policy_.Set(key::kPowerManagementIdleSettings, POLICY_LEVEL_MANDATORY,
               POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-              base::JSONReader::Read(policy_with_minimum_correct_idle_timeouts),
+              base::JSONReader::Read(policy_with_minimum_correct_idle_timeouts,
+                                     base::JSON_PARSE_CHROMIUM_EXTENSIONS),
               nullptr);
   PowerManagementIdleSettingsPolicyHandler handler(chrome_schema_);
   handler.ApplyPolicySettings(policy_, &prefs_);
@@ -394,7 +395,9 @@ TEST_F(PowerManagementIdleSettingsPolicyHandlerTest,
   )";
   policy_.Set(key::kPowerManagementIdleSettings, POLICY_LEVEL_MANDATORY,
               POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-              base::JSONReader::Read(policy_with_zero_ac_idle), nullptr);
+              base::JSONReader::Read(policy_with_zero_ac_idle,
+                                     base::JSON_PARSE_CHROMIUM_EXTENSIONS),
+              nullptr);
   PowerManagementIdleSettingsPolicyHandler handler(chrome_schema_);
   handler.ApplyPolicySettings(policy_, &prefs_);
 
@@ -426,7 +429,9 @@ TEST_F(PowerManagementIdleSettingsPolicyHandlerTest,
   )";
   policy_.Set(key::kPowerManagementIdleSettings, POLICY_LEVEL_MANDATORY,
               POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-              base::JSONReader::Read(policy_with_zero_battery_idle), nullptr);
+              base::JSONReader::Read(policy_with_zero_battery_idle,
+                                     base::JSON_PARSE_CHROMIUM_EXTENSIONS),
+              nullptr);
   PowerManagementIdleSettingsPolicyHandler handler(chrome_schema_);
   handler.ApplyPolicySettings(policy_, &prefs_);
 
@@ -453,7 +458,9 @@ TEST_F(PowerManagementIdleSettingsPolicyHandlerTest,
   )";
   policy_.Set(key::kPowerManagementIdleSettings, POLICY_LEVEL_MANDATORY,
               POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-              base::JSONReader::Read(policy_without_idle_timeouts), nullptr);
+              base::JSONReader::Read(policy_without_idle_timeouts,
+                                     base::JSON_PARSE_CHROMIUM_EXTENSIONS),
+              nullptr);
   PowerManagementIdleSettingsPolicyHandler handler(chrome_schema_);
   handler.ApplyPolicySettings(policy_, &prefs_);
 

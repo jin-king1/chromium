@@ -8,6 +8,7 @@
 #include <set>
 
 #include "base/functional/bind.h"
+#include "components/performance_manager/public/features.h"
 #include "components/performance_manager/public/graph/frame_node.h"
 #include "components/performance_manager/public/graph/graph_operations.h"
 #include "components/performance_manager/public/graph/process_node.h"
@@ -128,21 +129,21 @@ void ReportPageProcessesPolicy::HandlePageNodeEventsDelayed() {
 void ReportPageProcessesPolicy::HandlePageNodeEvents() {
   has_delayed_events_ = false;
 
-  PageDiscardingHelper* discarding_helper =
-      PageDiscardingHelper::GetFromGraph(GetOwningGraph());
+  DiscardEligibilityPolicy* eligibility_policy =
+      DiscardEligibilityPolicy::GetFromGraph(GetOwningGraph());
 
   Graph::NodeSetView<const PageNode*> all_page_nodes =
       GetOwningGraph()->GetAllPageNodes();
   std::vector<PageNodeSortProxy> candidates;
   candidates.reserve(all_page_nodes.size());
   for (const PageNode* page_node : all_page_nodes) {
-    CanDiscardResult can_discard_result = discarding_helper->CanDiscard(
-        page_node, PageDiscardingHelper::DiscardReason::URGENT);
+    CanDiscardResult can_discard_result = eligibility_policy->CanDiscard(
+        page_node, DiscardEligibilityPolicy::DiscardReason::URGENT);
     bool is_visible = page_node->IsVisible();
     bool is_focused = page_node->IsFocused();
-    candidates.emplace_back(page_node, can_discard_result, is_visible,
-                            is_focused,
-                            page_node->GetTimeSinceLastVisibilityChange());
+    candidates.emplace_back(page_node->GetWeakPtr(), can_discard_result,
+                            is_visible, is_focused,
+                            page_node->GetLastVisibilityChangeTime());
   }
 
   // Sorts with descending importance.
@@ -158,16 +159,14 @@ void ReportPageProcessesPolicy::ListPageProcesses(
     const std::vector<PageNodeSortProxy>& candidates) {
   base::flat_map<base::ProcessId, PageState> current_pages;
 
-  base::TimeTicks report_time = base::TimeTicks::Now();
-
-  for (auto candidate : candidates) {
+  for (auto& candidate : candidates) {
     // Only list candidates that could be discarded.
     if (candidate.is_disallowed()) {
       continue;
     }
 
     base::flat_set<const ProcessNode*> processes =
-        GraphOperations::GetAssociatedProcessNodes(candidate.page_node());
+        GraphOperations::GetAssociatedProcessNodes(candidate.page_node().get());
     for (auto* process : processes) {
       base::ProcessId pid = process->GetProcessId();
       if (pid == base::kNullProcessId) {
@@ -181,7 +180,7 @@ void ReportPageProcessesPolicy::ListPageProcesses(
           std::piecewise_construct, std::forward_as_tuple(pid),
           std::forward_as_tuple(candidate.is_protected(),
                                 candidate.is_visible(), candidate.is_focused(),
-                                report_time - candidate.last_visible()));
+                                candidate.last_visibility_change_time()));
     }
   }
 

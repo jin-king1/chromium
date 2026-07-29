@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "base/containers/span.h"
+#include "testing/libfuzzer/libfuzzer_base_wrappers.h"
 #include "third_party/blink/renderer/platform/fonts/font.h"
 #include "third_party/blink/renderer/platform/fonts/opentype/open_type_math_support.h"
 #include "third_party/blink/renderer/platform/fonts/opentype/open_type_math_test_fonts.h"
@@ -15,22 +16,19 @@
 #include "third_party/blink/renderer/platform/testing/font_test_base.h"
 #include "third_party/blink/renderer/platform/testing/font_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
+#include "third_party/blink/renderer/platform/text/text_direction.h"
 
 namespace blink {
 
 constexpr float kFontSize = 1000;
 constexpr float kSizeCount = 20;
 
-int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+DEFINE_LLVM_FUZZER_TEST_ONE_INPUT_SPAN(const base::span<const uint8_t> data) {
   static BlinkFuzzerTestSupport test_support = BlinkFuzzerTestSupport();
   test::TaskEnvironment task_environment;
 
-  // SAFETY: Just wraps the data from libFuzzer in a span.
-  auto data_span = UNSAFE_BUFFERS(base::span(data, size));
-
-  FontCachePurgePreventer font_cache_purge_preventer;
   FontDescription::VariantLigatures ligatures;
-  Font* math = test::CreateTestFont(AtomicString("MathTestFont"), data_span,
+  Font* math = test::CreateTestFont(AtomicString("MathTestFont"), data,
                                     kFontSize, &ligatures);
 
   // TODO(crbug.com/1340884): This is only testing API for three characters.
@@ -42,10 +40,13 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (!math->PrimaryFont()->GlyphForCharacter(character)) {
       continue;
     }
+    // TODO(crbug.com/432143094): Test different text directions.
     StretchyOperatorShaper vertical_shaper(
-        character, OpenTypeMathStretchData::StretchAxis::Vertical);
+        character, OpenTypeMathStretchData::StretchAxis::Vertical,
+        TextDirection::kLtr);
     StretchyOperatorShaper horizontal_shaper(
-        character, OpenTypeMathStretchData::StretchAxis::Horizontal);
+        character, OpenTypeMathStretchData::StretchAxis::Horizontal,
+        TextDirection::kLtr);
     for (unsigned i = 0; i < kSizeCount; i++) {
       StretchyOperatorShaper::Metrics metrics;
       float target_size = (i + 1) * (kFontSize / 2);
@@ -59,6 +60,3 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
 }  // namespace blink
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
-  return blink::LLVMFuzzerTestOneInput(data, size);
-}

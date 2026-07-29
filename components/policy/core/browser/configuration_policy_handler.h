@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
-#include "base/containers/enum_set.h"
 #include "base/functional/callback.h"
 #include "base/values.h"
 #include "components/policy/core/common/policy_map.h"
@@ -161,7 +160,7 @@ class POLICY_EXPORT ListPolicyHandler : public TypeCheckingPolicyHandler {
 
   // Implement this method to apply the |filtered_list| of values of type
   // |list_entry_type_| as returned from CheckAndGetList() to |prefs|.
-  virtual void ApplyList(base::Value::List filtered_list,
+  virtual void ApplyList(base::ListValue filtered_list,
                          PrefValueMap* prefs) = 0;
 
  private:
@@ -172,7 +171,7 @@ class POLICY_EXPORT ListPolicyHandler : public TypeCheckingPolicyHandler {
   // |errors| is not nullptr.
   bool CheckAndGetList(const policy::PolicyMap& policies,
                        policy::PolicyErrorMap* errors,
-                       std::optional<base::Value::List>& filtered_list);
+                       std::optional<base::ListValue>& filtered_list);
 
   // Expected value type for list entries. All other types are filtered out.
   base::Value::Type list_entry_type_;
@@ -317,7 +316,7 @@ class POLICY_EXPORT StringMappingListPolicyHandler
   // Attempts to convert the list in |input| to |output| according to the table,
   // returns false on errors.
   bool Convert(const base::Value* input,
-               base::Value::List* output,
+               base::ListValue* output,
                PolicyErrorMap* errors);
 
   // Helper method that converts from a policy value string to the associated
@@ -589,33 +588,70 @@ class POLICY_EXPORT SimpleDeprecatingPolicyHandler
   std::unique_ptr<NamedPolicyHandler> new_policy_handler_;
 };
 
-// A schema policy handler for complex policies that only accept cloud sources.
-class POLICY_EXPORT CloudOnlyPolicyHandler
-    : public SchemaValidatingPolicyHandler {
+// A policy handler that applies a deprecated policy only if none of the new
+// ones has been set. The new policies need their own handlers.
+class POLICY_EXPORT SingleDeprecatedPolicyToMultipleNewPolicyHandler
+    : public ConfigurationPolicyHandler {
  public:
-  CloudOnlyPolicyHandler(const char* policy_name,
-                         Schema schema,
-                         SchemaOnErrorStrategy strategy);
-  ~CloudOnlyPolicyHandler() override;
+  SingleDeprecatedPolicyToMultipleNewPolicyHandler(
+      std::unique_ptr<NamedPolicyHandler> legacy_policy_handler,
+      std::vector<std::string> new_policy_names);
+  SingleDeprecatedPolicyToMultipleNewPolicyHandler(
+      const SingleDeprecatedPolicyToMultipleNewPolicyHandler&) = delete;
+  SingleDeprecatedPolicyToMultipleNewPolicyHandler& operator=(
+      const SingleDeprecatedPolicyToMultipleNewPolicyHandler&) = delete;
+  ~SingleDeprecatedPolicyToMultipleNewPolicyHandler() override;
 
-  // Utility method for checking whether a policy is applied by a cloud-only
-  // source. Useful for cloud-only policy handlers which currently don't inherit
-  // from `CloudOnlyPolicyHandler`.
-  static bool CheckCloudOnlyPolicySettings(const char* policy_name,
-                                           const PolicyMap& policies,
-                                           PolicyErrorMap* errors);
-
+  // ConfigurationPolicyHandler:
   bool CheckPolicySettings(const PolicyMap& policies,
                            PolicyErrorMap* errors) override;
+
+  void ApplyPolicySettingsWithParameters(
+      const PolicyMap& policies,
+      const PolicyHandlerParameters& parameters,
+      PrefValueMap* prefs) override;
+
+ protected:
+  void ApplyPolicySettings(const PolicyMap& policies,
+                           PrefValueMap* prefs) override;
+
+ private:
+  std::unique_ptr<NamedPolicyHandler> legacy_policy_handler_;
+  std::vector<std::string> new_policy_names_;
 };
 
-// A schema policy handler for complex policies that only accept user scoped
-// sources.
-class POLICY_EXPORT CloudUserOnlyPolicyHandler : public NamedPolicyHandler {
+// Checker focus on validating the input. A Checker class should implement its
+// own checking function while simple forward its apply function.
+// Checker is still a handler to allow it being wrapper for other
+// checkers/handlers.
+class POLICY_EXPORT ConfigurationPolicyChecker : public NamedPolicyHandler {
  public:
-  CloudUserOnlyPolicyHandler(
+  explicit ConfigurationPolicyChecker(
+      std::unique_ptr<NamedPolicyHandler> handler);
+  ~ConfigurationPolicyChecker() override;
+
+  // ConfigurationPolicyHandler methods:
+  void ApplyPolicySettingsWithParameters(
+      const policy::PolicyMap& policies,
+      const policy::PolicyHandlerParameters& parameters,
+      PrefValueMap* prefs) override;
+
+  // ConfigurationPolicyChecker methods:
+  void ApplyPolicySettings(const PolicyMap& policies,
+                           PrefValueMap* prefs) override;
+
+ protected:
+  std::unique_ptr<NamedPolicyHandler> policy_handler_;
+};
+
+// A wrapper around a policy handler that checks that the policy is cloud user
+// only before applying the policy.
+class POLICY_EXPORT CloudUserOnlyPolicyChecker
+    : public ConfigurationPolicyChecker {
+ public:
+  explicit CloudUserOnlyPolicyChecker(
       std::unique_ptr<NamedPolicyHandler> policy_handler);
-  ~CloudUserOnlyPolicyHandler() override;
+  ~CloudUserOnlyPolicyChecker() override;
 
   // Utility method for checking whether a policy is applied by a user-only
   // source. Useful for user-only policy handlers which currently don't inherit
@@ -627,19 +663,6 @@ class POLICY_EXPORT CloudUserOnlyPolicyHandler : public NamedPolicyHandler {
   // ConfigurationPolicyHandler methods:
   bool CheckPolicySettings(const PolicyMap& policies,
                            PolicyErrorMap* errors) override;
-
-  void ApplyPolicySettingsWithParameters(
-      const policy::PolicyMap& policies,
-      const policy::PolicyHandlerParameters& parameters,
-      PrefValueMap* prefs) override;
-
- protected:
-  // ConfigurationPolicyHandler methods:
-  void ApplyPolicySettings(const PolicyMap& policies,
-                           PrefValueMap* prefs) override;
-
- private:
-  std::unique_ptr<NamedPolicyHandler> policy_handler_;
 };
 
 // A schema policy handler string policies expecting a URL.

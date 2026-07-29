@@ -11,6 +11,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/timer/timer.h"
 #include "base/values.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_ui_controller.h"
@@ -62,7 +63,8 @@ class AccessibilityUIObserver : public content::WebContentsObserver {
 };
 
 // Manages messages sent from accessibility.js via json.
-class AccessibilityUIMessageHandler : public content::WebUIMessageHandler {
+class AccessibilityUIMessageHandler : public content::WebUIMessageHandler,
+                                      public content::WebContentsObserver {
  public:
   AccessibilityUIMessageHandler();
 
@@ -72,24 +74,29 @@ class AccessibilityUIMessageHandler : public content::WebUIMessageHandler {
 
   ~AccessibilityUIMessageHandler() override;
 
+  void OnJavascriptAllowed() override;
+  void OnJavascriptDisallowed() override;
   void RegisterMessages() override;
 
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
  private:
-  void ToggleAccessibilityForWebContents(const base::Value::List& args);
-  void SetGlobalFlag(const base::Value::List& args);
-  void SetGlobalString(const base::Value::List& args);
+  void HandleInitialize(const base::ListValue& args);
+  void HandleToggleAccessibilityForWebContents(const base::ListValue& args);
+  void HandleSetGlobalFlag(const base::ListValue& args);
+  void HandleSetGlobalString(const base::ListValue& args);
 
-  void GetRequestTypeAndFilters(const base::Value::Dict& data,
+  void GetRequestTypeAndFilters(const base::DictValue& data,
                                 std::string& request_type,
                                 std::string& allow,
                                 std::string& allow_empty,
                                 std::string& deny);
-  void RequestWebContentsTree(const base::Value::List& args);
-  void RequestNativeUITree(const base::Value::List& args);
-  void RequestWidgetsTree(const base::Value::List& args);
-  void RequestAccessibilityEvents(const base::Value::List& args);
+  void HandleRequestWebContentsTree(const base::ListValue& args);
+  void HandleRequestNativeUITree(const base::ListValue& args);
+#if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS)
+  void HandleRequestWidgetsTree(const base::ListValue& args);
+#endif
+  void HandleRequestAccessibilityEvents(const base::ListValue& args);
   void Callback(const std::string&);
   void StopRecording(content::WebContents* web_contents);
 
@@ -97,8 +104,21 @@ class AccessibilityUIMessageHandler : public content::WebUIMessageHandler {
   // the user-set type is not supported.
   ui::AXApiType::Type GetRecordingApiType();
 
+  // content::WebContentsObserver:
+  void OnVisibilityChanged(content::Visibility visibility) override;
+
+  // Updates the UI with new data. Called periodically to keep the UI up-to-date
+  // while it is visible.
+  void OnUpdateDisplayTimer();
+
   std::vector<std::string> event_logs_;
   std::unique_ptr<AccessibilityUIObserver> observer_;
+
+  // The last data for display sent to the UI by OnUpdateDisplayTimer.
+  base::DictValue last_data_;
+
+  // A timer that runs while the UI is visible to call OnUpdateDisplayTimer.
+  base::RepeatingTimer update_display_timer_;
 
   base::WeakPtrFactory<AccessibilityUIMessageHandler> weak_ptr_factory_{this};
 };

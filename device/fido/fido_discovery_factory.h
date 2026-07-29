@@ -15,25 +15,27 @@
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
-#include "components/sync/protocol/webauthn_credential_specifics.pb.h"
-#include "device/fido/cable/cable_discovery_data.h"
 #include "device/fido/cable/v2_constants.h"
 #include "device/fido/ctap_get_assertion_request.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/fido_discovery_base.h"
 #include "device/fido/fido_request_handler_base.h"
-#include "device/fido/fido_transport_protocol.h"
 #include "device/fido/hid/fido_hid_discovery.h"
 #include "device/fido/network_context_factory.h"
-#include "mojo/public/cpp/bindings/remote.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_transport_protocol.h"
 #include "services/device/public/mojom/usb_manager.mojom.h"
 #include "services/network/public/mojom/network_context.mojom-forward.h"
 
 #if BUILDFLAG(IS_MAC)
+#include "base/apple/owned_objc.h"
 #include "device/fido/mac/authenticator_config.h"
 #endif  // BUILDFLAG(IS_MAC)
 
 namespace device {
+
+namespace cablev2 {
+struct Pairing;
+}
 
 namespace enclave {
 struct CredentialRequest;
@@ -61,10 +63,9 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoDiscoveryFactory {
   // WebAuthn testing API.
   virtual bool IsTestOverride();
 
-  // set_cable_data configures caBLE obtained via a WebAuthn extension.
+  // set_cable_data configures the QR code generator key for hybrid.
   virtual void set_cable_data(
       FidoRequestType request_type,
-      std::vector<CableDiscoveryData> cable_data,
       const std::optional<std::array<uint8_t, cablev2::kQRKeySize>>&
           qr_generator_key);
 
@@ -108,9 +109,12 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoDiscoveryFactory {
     mac_touch_id_config_ = std::move(mac_touch_id_config);
   }
   // Sets the window on top of which macOS will show any iCloud Keychain UI.
-  // This is passed as a `uintptr_t` to avoid handling `NSWindow` (an ObjC++
-  // type) in C++. See crbug.com/1433041.
-  void set_nswindow(uintptr_t window) { nswindow_ = window; }
+  void set_nswindow(base::apple::WeakNSWindow window) { nswindow_ = window; }
+  // Sets a flag to allow for discovery of the authenticator despite having no
+  // NSWindow. For testing use only.
+  void set_allow_no_nswindow_for_testing(bool value) {
+    allow_no_nswindow_for_testing_ = value;
+  }
 #endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_WIN)
@@ -149,10 +153,10 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoDiscoveryFactory {
 
 #if BUILDFLAG(IS_MAC)
   std::optional<fido::mac::AuthenticatorConfig> mac_touch_id_config_;
-  uintptr_t nswindow_ = 0;
+  base::apple::WeakNSWindow nswindow_;
+  bool allow_no_nswindow_for_testing_ = false;
 #endif  // BUILDFLAG(IS_MAC)
   NetworkContextFactory network_context_factory_;
-  std::optional<std::vector<CableDiscoveryData>> cable_data_;
   std::optional<std::array<uint8_t, cablev2::kQRKeySize>> qr_generator_key_;
   std::optional<FidoRequestType> request_type_;
   std::unique_ptr<

@@ -47,11 +47,10 @@ class MockAutofillManagerObserver : public AutofillManager::Observer {
               OnBeforeTextFieldValueChanged,
               (AutofillManager&, FormGlobalId, FieldGlobalId),
               (override));
-  MOCK_METHOD(
-      void,
-      OnAfterTextFieldValueChanged,
-      (AutofillManager&, FormGlobalId, FieldGlobalId, const std::u16string&),
-      (override));
+  MOCK_METHOD(void,
+              OnAfterTextFieldValueChanged,
+              (AutofillManager&, FormGlobalId, FieldGlobalId),
+              (override));
 
   MOCK_METHOD(void,
               OnBeforeTextFieldDidScroll,
@@ -72,11 +71,20 @@ class MockAutofillManagerObserver : public AutofillManager::Observer {
               (override));
 
   MOCK_METHOD(void,
-              OnBeforeDidFillAutofillFormData,
+              OnBeforeSelectFieldOptionsDidChange,
               (AutofillManager&, FormGlobalId),
               (override));
   MOCK_METHOD(void,
-              OnAfterDidFillAutofillFormData,
+              OnAfterSelectFieldOptionsDidChange,
+              (AutofillManager&, FormGlobalId),
+              (override));
+
+  MOCK_METHOD(void,
+              OnBeforeDidAutofillForm,
+              (AutofillManager&, FormGlobalId),
+              (override));
+  MOCK_METHOD(void,
+              OnAfterDidAutofillForm,
               (AutofillManager&, FormGlobalId),
               (override));
 
@@ -99,6 +107,12 @@ class MockAutofillManagerObserver : public AutofillManager::Observer {
               (override));
 
   MOCK_METHOD(void,
+              OnBeforeFocusOnNonFormField,
+              (AutofillManager&),
+              (override));
+  MOCK_METHOD(void, OnAfterFocusOnNonFormField, (AutofillManager&), (override));
+
+  MOCK_METHOD(void,
               OnBeforeJavaScriptChangedAutofilledValue,
               (AutofillManager&, FormGlobalId, FieldGlobalId),
               (override));
@@ -118,20 +132,36 @@ class MockAutofillManagerObserver : public AutofillManager::Observer {
 
   MOCK_METHOD(void,
               OnFieldTypesDetermined,
-              (AutofillManager&, FormGlobalId, FieldTypeSource),
+              (AutofillManager&, FormGlobalId, FieldTypeSource, bool),
               (override));
 
   MOCK_METHOD(void,
-              OnFillOrPreviewDataModelForm,
-              (AutofillManager&,
-               FormGlobalId,
-               mojom::ActionPersistence action_persistence,
-               (base::span<const FormFieldData* const>),
-               (const FillingPayload& filling_payload)),
+              OnSuggestionsShown,
+              (AutofillManager&, base::span<const Suggestion>),
+              (override));
+  MOCK_METHOD(void,
+              OnSuggestionsHidden,
+              (AutofillManager&, SuggestionHidingReason),
               (override));
 
+  MOCK_METHOD(
+      void,
+      OnFillOrPreviewForm,
+      (AutofillManager&,
+       FormGlobalId,
+       FieldGlobalId,
+       mojom::ActionPersistence,
+       (const base::flat_set<FieldGlobalId>&),
+       (const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&),
+       (const FillingPayload&)),
+      (override));
+
   MOCK_METHOD(void,
-              OnFormSubmitted,
+              OnBeforeFormSubmitted,
+              (AutofillManager&, const FormData&),
+              (override));
+  MOCK_METHOD(void,
+              OnAfterFormSubmitted,
               (AutofillManager&, const FormData&),
               (override));
 };

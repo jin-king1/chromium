@@ -26,8 +26,7 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchController.AuxiliarySearchHostType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
@@ -44,6 +43,11 @@ public class AuxiliarySearchControllerFactoryUnitTest {
     @Mock private Profile mProfile;
     @Mock private TabModelSelector mTabModelSelector;
     @Mock private AuxiliarySearchBridge.Natives mMockAuxiliarySearchBridgeJni;
+
+    @Mock
+    private AuxiliarySearchTopSiteProviderBridge.Natives
+            mMockAuxiliarySearchTopSiteProviderBridgeJni;
+
     @Mock private FaviconHelper.Natives mMockFaviconHelperJni;
     @Mock private AuxiliarySearchHooks mHooks;
 
@@ -55,6 +59,8 @@ public class AuxiliarySearchControllerFactoryUnitTest {
         when(mContext.getResources()).thenReturn(mResources);
 
         AuxiliarySearchBridgeJni.setInstanceForTesting(mMockAuxiliarySearchBridgeJni);
+        AuxiliarySearchTopSiteProviderBridgeJni.setInstanceForTesting(
+                mMockAuxiliarySearchTopSiteProviderBridgeJni);
         when(mMockFaviconHelperJni.init()).thenReturn(1L);
         FaviconHelperJni.setInstanceForTesting(mMockFaviconHelperJni);
         AuxiliarySearchDonor.setSkipInitializationForTesting(true);
@@ -79,20 +85,39 @@ public class AuxiliarySearchControllerFactoryUnitTest {
 
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.ANDROID_APP_INTEGRATION_V2)
     @Config(sdk = VERSION_CODES.S)
     public void testCreateAuxiliarySearchController() {
         when(mHooks.isEnabled()).thenReturn(false);
         assertFalse(mFactory.isEnabled());
-        assertNull(mFactory.createAuxiliarySearchController(mContext, mProfile, mTabModelSelector));
+        assertNull(
+                mFactory.createAuxiliarySearchController(
+                        mContext, mProfile, mTabModelSelector, AuxiliarySearchHostType.CTA));
 
         when(mHooks.isEnabled()).thenReturn(true);
         assertTrue(mFactory.isEnabled());
         when(mProfile.isOffTheRecord()).thenReturn(false);
 
         AuxiliarySearchController controller =
-                mFactory.createAuxiliarySearchController(mContext, mProfile, mTabModelSelector);
+                mFactory.createAuxiliarySearchController(
+                        mContext, mProfile, mTabModelSelector, AuxiliarySearchHostType.CTA);
         assertTrue(controller instanceof AuxiliarySearchControllerImpl);
+
+        // Enables donating multiple data sources.
+        mFactory.setSupportMultiDataSourceForTesting(true);
+        controller =
+                mFactory.createAuxiliarySearchController(
+                        mContext, mProfile, mTabModelSelector, AuxiliarySearchHostType.CTA);
+        assertTrue(controller instanceof AuxiliarySearchMultiDataControllerImpl);
+    }
+
+    @Test
+    @SmallTest
+    public void testIsMultiDataTypeEnabledOnDevice() {
+        when(mHooks.isMultiDataTypeEnabledOnDevice()).thenReturn(false);
+        assertFalse(mFactory.isMultiDataTypeEnabledOnDevice());
+
+        when(mHooks.isMultiDataTypeEnabledOnDevice()).thenReturn(true);
+        assertTrue(mFactory.isMultiDataTypeEnabledOnDevice());
     }
 
     @Test

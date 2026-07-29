@@ -34,9 +34,6 @@ class CORE_EXPORT TextFragmentHandler final
   TextFragmentHandler(const TextFragmentHandler&) = delete;
   TextFragmentHandler& operator=(const TextFragmentHandler&) = delete;
 
-  // Determine if |result| represents a click on an existing highlight.
-  static bool IsOverTextFragment(const HitTestResult& result);
-
   // Called to notify the frame's TextFragmentHandler on context menu open over
   // a selection. Will trigger preemptive generation if needed.
   static void OpenedContextMenuOverSelection(LocalFrame* frame);
@@ -51,6 +48,10 @@ class CORE_EXPORT TextFragmentHandler final
   // mojom::blink::TextFragmentReceiver interface
   void Cancel() override;
   void RequestSelector(RequestSelectorCallback callback) override;
+  void RequestSelectorForViewportCenter(
+      RequestSelectorForViewportCenterCallback callback) override;
+  void RequestSelectorForSelection(
+      RequestSelectorForSelectionCallback callback) override;
   void GetExistingSelectors(GetExistingSelectorsCallback callback) override;
   void RemoveFragments() override;
   void ExtractTextFragmentsMatches(
@@ -73,6 +74,7 @@ class CORE_EXPORT TextFragmentHandler final
   FRIEND_TEST_ALL_PREFIXES(TextFragmentHandlerTest,
                            IfGeneratorResetShouldRecordCorrectError);
   FRIEND_TEST_ALL_PREFIXES(TextFragmentHandlerTest, NotGenerated);
+  FRIEND_TEST_ALL_PREFIXES(TextFragmentHandlerTest, NotGeneratedWithFileInput);
   // Returns whether preemptive generation should run for the given frame.
   static bool ShouldPreemptivelyGenerateFor(LocalFrame* frame);
 
@@ -85,6 +87,10 @@ class CORE_EXPORT TextFragmentHandler final
   // This starts running the generator over the current selection.
   // The result will be returned by invoking DidFinishSelectorGeneration().
   void StartGeneratingForCurrentSelection();
+
+  // Returns the range of the paragraph at the viewport's target reading
+  // position.
+  RangeInFlatTree* GetRangeForReadingPosition();
 
   // Called to reply to the client's RequestSelector call with the result.
   void InvokeReplyCallback(const TextFragmentSelector& selector,

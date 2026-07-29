@@ -17,10 +17,10 @@
 #include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/sequence_bound.h"
@@ -28,7 +28,6 @@
 #include "base/types/expected_macros.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/common/printing/printing_init.h"
 #include "chrome/services/printing/public/mojom/print_backend_service.mojom.h"
 #include "components/crash/core/common/crash_keys.h"
@@ -51,26 +50,22 @@
 #endif
 
 #if BUILDFLAG(IS_LINUX)
+#include "base/command_line.h"
 #include "base/no_destructor.h"
+#include "components/printing/common/print_dialog_linux_factory.h"
+#include "content/public/common/content_switches.h"  // nogncheck
 #include "ui/linux/linux_ui.h"
 #include "ui/linux/linux_ui_delegate_stub.h"
 #include "ui/linux/linux_ui_factory.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
-#include "base/containers/queue.h"
-#include "base/types/expected.h"
 #include "base/win/win_util.h"
-#include "chrome/services/printing/public/mojom/printer_xml_parser.mojom.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/remote.h"
-#include "printing/backend/xps_utils_win.h"
 #include "printing/emf_win.h"
 #include "printing/printed_page_win.h"
-#include "printing/printing_features.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #endif
 
 namespace printing {
@@ -439,29 +434,11 @@ PrintBackendServiceImpl::PrintBackendServiceImpl(
 
 PrintBackendServiceImpl::~PrintBackendServiceImpl() = default;
 
-void PrintBackendServiceImpl::InitCommon(
-#if BUILDFLAG(IS_WIN)
-    const std::string& locale,
-    mojo::PendingRemote<mojom::PrinterXmlParser> remote
-#else
-    const std::string& locale
-#endif  // BUILDFLAG(IS_WIN)
-) {
+void PrintBackendServiceImpl::InitCommon(const std::string& locale) {
   locale_ = locale;
-#if BUILDFLAG(IS_WIN)
-  if (remote.is_valid())
-    xml_parser_remote_.Bind(std::move(remote));
-#endif  // BUILDFLAG(IS_WIN)
 }
 
-void PrintBackendServiceImpl::Init(
-#if BUILDFLAG(IS_WIN)
-    const std::string& locale,
-    mojo::PendingRemote<mojom::PrinterXmlParser> remote
-#else
-    const std::string& locale
-#endif  // BUILDFLAG(IS_WIN)
-) {
+void PrintBackendServiceImpl::Init(const std::string& locale) {
   // Test classes should not invoke this base initialization method, as process
   // initialization is very different for test frameworks.  Test classes
   // will also provide their own test version of a `PrintBackend`.
@@ -475,13 +452,13 @@ void PrintBackendServiceImpl::Init(
   // are using `TestPrintingContext`.
   InstantiateLinuxUiDelegate();
   ui::LinuxUi::SetInstance(ui::GetDefaultLinuxUi());
+  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kSingleProcess)) {
+    print_dialog_factory_ = std::make_unique<PrintDialogLinuxFactory>();
+  }
 #endif  // BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_WIN)
-  InitCommon(locale, std::move(remote));
-#else
   InitCommon(locale);
-#endif  // BUILDFLAG(IS_WIN)
 }
 
 // TODO(crbug.com/40775634)  Do nothing, this is just to assist an idle timeout
@@ -494,11 +471,10 @@ void PrintBackendServiceImpl::EnumeratePrinters(
   PrinterList printer_list;
   mojom::ResultCode result = print_backend_->EnumeratePrinters(printer_list);
   if (result != mojom::ResultCode::kSuccess) {
-    std::move(callback).Run(mojom::PrinterListResult::NewResultCode(result));
+    std::move(callback).Run(base::unexpected(result));
     return;
   }
-  std::move(callback).Run(
-      mojom::PrinterListResult::NewPrinterList(std::move(printer_list)));
+  std::move(callback).Run(base::ok(std::move(printer_list)));
 }
 
 void PrintBackendServiceImpl::GetDefaultPrinterName(
@@ -508,15 +484,13 @@ void PrintBackendServiceImpl::GetDefaultPrinterName(
   mojom::ResultCode result =
       print_backend_->GetDefaultPrinterName(default_printer);
   if (result != mojom::ResultCode::kSuccess) {
-    std::move(callback).Run(
-        mojom::DefaultPrinterNameResult::NewResultCode(result));
+    std::move(callback).Run(base::unexpected(result));
     return;
   }
-  std::move(callback).Run(
-      mojom::DefaultPrinterNameResult::NewDefaultPrinterName(default_printer));
+  std::move(callback).Run(base::ok(default_printer));
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 void PrintBackendServiceImpl::GetPrinterSemanticCapsAndDefaults(
     const std::string& printer_name,
     mojom::PrintBackendService::GetPrinterSemanticCapsAndDefaultsCallback
@@ -530,15 +504,12 @@ void PrintBackendServiceImpl::GetPrinterSemanticCapsAndDefaults(
       print_backend_->GetPrinterSemanticCapsAndDefaults(printer_name,
                                                         &printer_caps);
   if (result != mojom::ResultCode::kSuccess) {
-    std::move(callback).Run(
-        mojom::PrinterSemanticCapsAndDefaultsResult::NewResultCode(result));
+    std::move(callback).Run(base::unexpected(result));
     return;
   }
-  std::move(callback).Run(
-      mojom::PrinterSemanticCapsAndDefaultsResult::NewPrinterCaps(
-          std::move(printer_caps)));
+  std::move(callback).Run(base::ok(std::move(printer_caps)));
 }
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 void PrintBackendServiceImpl::FetchCapabilities(
     const std::string& printer_name,
@@ -551,8 +522,7 @@ void PrintBackendServiceImpl::FetchCapabilities(
   mojom::ResultCode result =
       print_backend_->GetPrinterBasicInfo(printer_name, &printer_info);
   if (result != mojom::ResultCode::kSuccess) {
-    std::move(callback).Run(
-        mojom::PrinterCapsAndInfoResult::NewResultCode(result));
+    std::move(callback).Run(base::unexpected(result));
     return;
   }
 
@@ -560,24 +530,9 @@ void PrintBackendServiceImpl::FetchCapabilities(
   result =
       print_backend_->GetPrinterSemanticCapsAndDefaults(printer_name, &caps);
   if (result != mojom::ResultCode::kSuccess) {
-    std::move(callback).Run(
-        mojom::PrinterCapsAndInfoResult::NewResultCode(result));
+    std::move(callback).Run(base::unexpected(result));
     return;
   }
-
-#if BUILDFLAG(IS_WIN)
-  if (xml_parser_remote_.is_bound() &&
-      base::FeatureList::IsEnabled(features::kReadPrinterCapabilitiesWithXps)) {
-    ASSIGN_OR_RETURN(
-        XpsCapabilities xps_capabilities, GetXpsCapabilities(printer_name),
-        [&](mojom::ResultCode error) {
-          return std::move(callback).Run(
-              mojom::PrinterCapsAndInfoResult::NewResultCode(error));
-        });
-
-    MergeXpsCapabilities(std::move(xps_capabilities), caps);
-  }
-#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_MAC)
   {
@@ -598,9 +553,7 @@ void PrintBackendServiceImpl::FetchCapabilities(
 
   mojom::PrinterCapsAndInfoPtr caps_and_info =
       mojom::PrinterCapsAndInfo::New(std::move(printer_info), std::move(caps));
-  std::move(callback).Run(
-      mojom::PrinterCapsAndInfoResult::NewPrinterCapsAndInfo(
-          std::move(caps_and_info)));
+  std::move(callback).Run(base::ok(std::move(caps_and_info)));
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -634,7 +587,7 @@ void PrintBackendServiceImpl::EstablishPrintingContext(uint32_t context_id
 
   context_container->context = PrintingContext::Create(
       context_container->delegate.get(),
-      PrintingContext::ProcessBehavior::kOopEnabledPerformSystemCalls);
+      PrintingContext::OutOfProcessBehavior::kEnabledPerformSystemCalls);
 
   bool inserted = persistent_printing_contexts_
                       .insert({context_id, std::move(context_container)})
@@ -652,11 +605,10 @@ void PrintBackendServiceImpl::UseDefaultSettings(
     DLOG(ERROR) << "Failure getting default settings of default printer, "
                 << "error: " << result;
     persistent_printing_contexts_.erase(context_id);
-    std::move(callback).Run(mojom::PrintSettingsResult::NewResultCode(result));
+    std::move(callback).Run(base::unexpected(result));
     return;
   }
-  std::move(callback).Run(mojom::PrintSettingsResult::NewSettings(
-      *context->TakeAndResetSettings()));
+  std::move(callback).Run(base::ok(*context->TakeAndResetSettings()));
 }
 
 #if BUILDFLAG(ENABLE_OOP_BASIC_PRINT_DIALOG)
@@ -680,7 +632,7 @@ void PrintBackendServiceImpl::AskUserForSettings(
 
 void PrintBackendServiceImpl::UpdatePrintSettings(
     uint32_t context_id,
-    base::Value::Dict job_settings,
+    base::DictValue job_settings,
     mojom::PrintBackendService::UpdatePrintSettingsCallback callback) {
   DCHECK(print_backend_);
 
@@ -695,7 +647,7 @@ void PrintBackendServiceImpl::UpdatePrintSettings(
   PrinterBasicInfo basic_info;
   if (print_backend_->GetPrinterBasicInfo(*printer_name, &basic_info) ==
       mojom::ResultCode::kSuccess) {
-    base::Value::Dict advanced_settings;
+    base::DictValue advanced_settings;
     for (const auto& pair : basic_info.options)
       advanced_settings.Set(pair.first, pair.second);
 
@@ -710,12 +662,11 @@ void PrintBackendServiceImpl::UpdatePrintSettings(
 
   if (result != mojom::ResultCode::kSuccess) {
     persistent_printing_contexts_.erase(context_id);
-    std::move(callback).Run(mojom::PrintSettingsResult::NewResultCode(result));
+    std::move(callback).Run(base::unexpected(result));
     return;
   }
 
-  std::move(callback).Run(
-      mojom::PrintSettingsResult::NewSettings(context->settings()));
+  std::move(callback).Run(base::ok(context->settings()));
 }
 
 void PrintBackendServiceImpl::StartPrinting(
@@ -865,7 +816,7 @@ void PrintBackendServiceImpl::OnDidAskUserForSettings(
   if (result != mojom::ResultCode::kSuccess) {
     DLOG(ERROR) << "Did not get user settings, error: " << result;
     persistent_printing_contexts_.erase(context_id);
-    std::move(callback).Run(mojom::PrintSettingsResult::NewResultCode(result));
+    std::move(callback).Run(base::unexpected(result));
     return;
   }
 
@@ -875,8 +826,7 @@ void PrintBackendServiceImpl::OnDidAskUserForSettings(
   crash_keys_ = std::make_unique<crash_keys::ScopedPrinterInfo>(
       printer_name, print_backend_->GetPrinterDriverInfo(printer_name));
 
-  std::move(callback).Run(mojom::PrintSettingsResult::NewSettings(
-      *context->TakeAndResetSettings()));
+  std::move(callback).Run(base::ok(*context->TakeAndResetSettings()));
 }
 #endif  // BUILDFLAG(ENABLE_OOP_BASIC_PRINT_DIALOG)
 
@@ -953,47 +903,12 @@ void PrintBackendServiceImpl::RemoveDocumentHelper(
   int cookie = document_helper.document_cookie();
   auto item =
       std::ranges::find(documents_, cookie, &DocumentHelper::document_cookie);
-  CHECK(item != documents_.end(), base::NotFatalUntil::M130)
+  CHECK(item != documents_.end())
       << "Document " << cookie << " to be deleted not found";
   documents_.erase(item);
 
   // TODO(crbug.com/40561724)  This releases a connection; try to start the
   // next job waiting to be started (if any).
 }
-
-#if BUILDFLAG(IS_WIN)
-base::expected<XpsCapabilities, mojom::ResultCode>
-PrintBackendServiceImpl::GetXpsCapabilities(const std::string& printer_name) {
-  ASSIGN_OR_RETURN(
-      std::string xml,
-      print_backend_->GetXmlPrinterCapabilitiesForXpsDriver(printer_name),
-      [&](mojom::ResultCode error) {
-        DLOG(ERROR) << "Failure getting XPS capabilities of printer "
-                    << printer_name << ", error: " << error;
-        return error;
-      });
-
-  mojom::PrinterCapabilitiesValueResultPtr value_result;
-  if (!xml_parser_remote_->ParseXmlForPrinterCapabilities(xml, &value_result)) {
-    DLOG(ERROR) << "Failure parsing XML of XPS capabilities of printer "
-                << printer_name
-                << ", error: ParseXmlForPrinterCapabilities failed";
-    return base::unexpected(mojom::ResultCode::kFailed);
-  }
-  if (value_result->is_result_code()) {
-    DLOG(ERROR) << "Failure parsing XML of XPS capabilities of printer "
-                << printer_name
-                << ", error: " << value_result->get_result_code();
-    return base::unexpected(value_result->get_result_code());
-  }
-
-  return ParseValueForXpsPrinterCapabilities(value_result->get_capabilities())
-      .transform_error([&](mojom::ResultCode code) {
-        DLOG(ERROR) << "Failure parsing value of XPS capabilities of printer "
-                    << printer_name << ", error: " << code;
-        return code;
-      });
-}
-#endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace printing

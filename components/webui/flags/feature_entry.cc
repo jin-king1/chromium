@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "components/webui/flags/feature_entry.h"
 
 #include "base/check_op.h"
@@ -33,7 +28,7 @@ const char kGenericExperimentChoiceEnabled[] = "Enabled";
 const char kGenericExperimentChoiceDisabled[] = "Disabled";
 const char kGenericExperimentChoiceAutomatic[] = "Automatic";
 
-bool FeatureEntry::InternalNameMatches(const std::string& name) const {
+bool FeatureEntry::InternalNameMatches(std::string_view name) const {
   if (!base::StartsWith(name, internal_name, base::CompareCase::SENSITIVE)) {
     return false;
   }

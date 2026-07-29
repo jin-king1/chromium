@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 
 #import <tuple>
+#import <variant>
 
 #import "base/base_paths.h"
 #import "base/files/file_util.h"
@@ -17,31 +18,35 @@
 #import "base/task/single_thread_task_runner.h"
 #import "base/task/thread_pool.h"
 #import "base/test/test_file_util.h"
-#import "components/keyed_service/ios/browser_state_dependency_manager.h"
+#import "base/threading/thread_restrictions.h"
 #import "components/policy/core/common/cloud/user_cloud_policy_manager.h"
 #import "components/profile_metrics/browser_profile_type.h"
-#import "components/supervised_user/core/browser/supervised_user_settings_service.h"
+#import "components/supervised_user/core/browser/family_link_settings_service.h"
 #import "components/sync_preferences/pref_service_syncable.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "components/user_prefs/user_prefs.h"
 #import "ios/chrome/browser/prefs/model/ios_chrome_pref_service_factory.h"
 #import "ios/chrome/browser/profile/model/keyed_service_factories.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
-#import "ios/chrome/browser/supervised_user/model/supervised_user_settings_service_factory.h"
+#import "ios/chrome/browser/shared/model/profile/profile_dependency_manager_ios.h"
+#import "ios/chrome/browser/supervised_user/model/family_link_settings_service_factory.h"
 #import "ios/web/public/thread/web_task_traits.h"
 #import "ios/web/public/thread/web_thread.h"
 #import "net/url_request/url_request_test_util.h"
 
 namespace {
 
+using PassKey = base::PassKey<TestProfileIOS>;
+
 // Assigns `testing_factories` to `profile`.
 void AssignTestingFactories(
+    PassKey pass_key,
     TestProfileIOS* profile,
     TestProfileIOS::TestingFactories testing_factories) {
   for (auto& item : testing_factories) {
-    absl::visit(
-        [profile](auto& p) {
-          p.first->SetTestingFactory(profile, std::move(p.second));
+    std::visit(
+        [pass_key, profile](auto& p) {
+          p.first->SetTestingFactory(pass_key, profile, std::move(p.second));
         },
         item.service_factory_and_testing_factory);
   }
@@ -50,14 +55,14 @@ void AssignTestingFactories(
 }  // namespace
 
 TestProfileIOS::TestingFactory::TestingFactory(
-    BrowserStateKeyedServiceFactory* service_factory,
-    BrowserStateKeyedServiceFactory::TestingFactory testing_factory)
+    ProfileKeyedServiceFactoryIOS* service_factory,
+    ProfileKeyedServiceFactoryIOS::TestingFactory testing_factory)
     : service_factory_and_testing_factory(
           std::make_pair(service_factory, std::move(testing_factory))) {}
 
 TestProfileIOS::TestingFactory::TestingFactory(
-    RefcountedBrowserStateKeyedServiceFactory* service_factory,
-    RefcountedBrowserStateKeyedServiceFactory::TestingFactory testing_factory)
+    RefcountedProfileKeyedServiceFactoryIOS* service_factory,
+    RefcountedProfileKeyedServiceFactoryIOS::TestingFactory testing_factory)
     : service_factory_and_testing_factory(
           std::make_pair(service_factory, std::move(testing_factory))) {}
 
@@ -89,9 +94,9 @@ TestProfileIOS::TestProfileIOS(const base::FilePath& state_path,
       original_profile_(original_profile) {
   DCHECK(original_profile_);
 
-  BrowserStateDependencyManager::GetInstance()->MarkBrowserStateLive(this);
+  ProfileDependencyManagerIOS::GetInstance()->MarkProfileLive(this);
 
-  AssignTestingFactories(this, std::move(testing_factories));
+  AssignTestingFactories(PassKey{}, this, std::move(testing_factories));
   profile_metrics::SetBrowserProfileType(
       this, profile_metrics::BrowserProfileType::kIncognito);
 
@@ -122,9 +127,9 @@ TestProfileIOS::TestProfileIOS(
       original_profile_(nullptr) {
   DCHECK(!profile_name.empty());
 
-  BrowserStateDependencyManager::GetInstance()->MarkBrowserStateLive(this);
+  ProfileDependencyManagerIOS::GetInstance()->MarkProfileLive(this);
 
-  AssignTestingFactories(this, std::move(testing_factories));
+  AssignTestingFactories(PassKey{}, this, std::move(testing_factories));
   profile_metrics::SetBrowserProfileType(
       this, profile_metrics::BrowserProfileType::kRegular);
 
@@ -135,21 +140,18 @@ TestProfileIOS::~TestProfileIOS() {
   // Allows blocking in this scope for testing.
   base::ScopedAllowBlockingForTesting allow_bocking;
 
+  // Notify the callback of the profile destruction before destroying anything.
+  NotifyProfileDestroyed();
+
   // If this TestProfileIOS owns an incognito TestProfileIOS,
   // tear it down first.
   otr_profile_.reset();
 
-  // Here, (1) the profile services may
-  // depend on `policy_connector_` and `user_cloud_policy_manager_`, and (2)
-  // `policy_connector_` depends on `user_cloud_policy_manager_`. The
-  // dependencies have to be shut down backward.
-  policy_connector_->Shutdown();
+  ProfileDependencyManagerIOS::GetInstance()->DestroyProfileServices(this);
+
   if (user_cloud_policy_manager_) {
     user_cloud_policy_manager_->Shutdown();
   }
-
-  BrowserStateDependencyManager::GetInstance()->DestroyBrowserStateServices(
-      this);
 }
 
 void TestProfileIOS::Init() {
@@ -191,14 +193,14 @@ void TestProfileIOS::Init() {
     user_prefs::PrefRegistrySyncable* pref_registry =
         static_cast<user_prefs::PrefRegistrySyncable*>(
             prefs_->DeprecatedGetPrefRegistry());
-    BrowserStateDependencyManager::GetInstance()
-        ->RegisterBrowserStatePrefsForServices(pref_registry);
+    ProfileDependencyManagerIOS::GetInstance()->RegisterProfilePrefsForServices(
+        pref_registry);
   }
 
-  BrowserStateDependencyManager::GetInstance()
-      ->CreateBrowserStateServicesForTest(this);
+  ProfileDependencyManagerIOS::GetInstance()->CreateProfileServicesForTest(
+      this);
   // `SupervisedUserSettingsService` needs to be initialized for SyncService.
-  SupervisedUserSettingsServiceFactory::GetForProfile(this)->Init(
+  supervised_user::FamilyLinkSettingsServiceFactory::GetForProfile(this)->Init(
       GetStatePath(), GetIOTaskRunner().get(),
       /*load_synchronously=*/true);
 }
@@ -213,13 +215,6 @@ const base::Uuid& TestProfileIOS::GetWebKitStorageID() const {
 
 scoped_refptr<base::SequencedTaskRunner> TestProfileIOS::GetIOTaskRunner() {
   return base::SingleThreadTaskRunner::GetCurrentDefault();
-}
-
-TestProfileIOS*
-TestProfileIOS::CreateOffTheRecordBrowserStateWithTestingFactories(
-    TestingFactories testing_factories) {
-  return CreateOffTheRecordProfileWithTestingFactories(
-      std::move(testing_factories));
 }
 
 ProfileIOS* TestProfileIOS::GetOriginalProfile() {
@@ -242,7 +237,7 @@ ProfileIOS* TestProfileIOS::GetOffTheRecordProfile() {
     return otr_profile_.get();
   }
 
-  return CreateOffTheRecordBrowserStateWithTestingFactories();
+  return CreateOffTheRecordProfileWithTestingFactories();
 }
 
 void TestProfileIOS::DestroyOffTheRecordProfile() {
@@ -330,15 +325,15 @@ TestProfileIOS::Builder& TestProfileIOS::Builder::operator=(Builder&&) =
 TestProfileIOS::Builder::~Builder() = default;
 
 TestProfileIOS::Builder& TestProfileIOS::Builder::AddTestingFactory(
-    BrowserStateKeyedServiceFactory* service_factory,
-    BrowserStateKeyedServiceFactory::TestingFactory testing_factory) {
+    ProfileKeyedServiceFactoryIOS* service_factory,
+    ProfileKeyedServiceFactoryIOS::TestingFactory testing_factory) {
   testing_factories_.emplace_back(service_factory, std::move(testing_factory));
   return *this;
 }
 
 TestProfileIOS::Builder& TestProfileIOS::Builder::AddTestingFactory(
-    RefcountedBrowserStateKeyedServiceFactory* service_factory,
-    RefcountedBrowserStateKeyedServiceFactory::TestingFactory testing_factory) {
+    RefcountedProfileKeyedServiceFactoryIOS* service_factory,
+    RefcountedProfileKeyedServiceFactoryIOS::TestingFactory testing_factory) {
   testing_factories_.emplace_back(service_factory, std::move(testing_factory));
   return *this;
 }
@@ -346,7 +341,7 @@ TestProfileIOS::Builder& TestProfileIOS::Builder::AddTestingFactory(
 TestProfileIOS::Builder& TestProfileIOS::Builder::AddTestingFactories(
     TestingFactories testing_factories) {
   for (auto& item : testing_factories) {
-    testing_factories.emplace_back(std::move(item));
+    testing_factories_.emplace_back(std::move(item));
   }
   return *this;
 }

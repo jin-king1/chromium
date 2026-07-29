@@ -11,8 +11,8 @@
 #include "base/check.h"
 #include "base/files/file.h"
 #include "base/memory/ref_counted.h"
+#include "components/subresource_filter/content/browser/ruleset_service.h"
 #include "components/subresource_filter/content/browser/safe_browsing_ruleset_publisher.h"
-#include "components/subresource_filter/content/shared/browser/ruleset_service.h"
 #include "components/subresource_filter/core/mojom/subresource_filter.mojom.h"
 #include "content/public/browser/render_process_host.h"
 #include "ipc/ipc_channel_proxy.h"
@@ -30,9 +30,9 @@ std::unique_ptr<RulesetPublisher> SafeBrowsingRulesetPublisher::Factory::Create(
 void SafeBrowsingRulesetPublisher::SendRulesetToRenderProcess(
     base::File* file,
     content::RenderProcessHost* rph) {
-  CHECK(rph, base::NotFatalUntil::M129);
-  CHECK(file, base::NotFatalUntil::M129);
-  CHECK(file->IsValid(), base::NotFatalUntil::M129);
+  CHECK(rph);
+  CHECK(file);
+  CHECK(file->IsValid());
   if (!rph->GetChannel()) {
     return;
   }

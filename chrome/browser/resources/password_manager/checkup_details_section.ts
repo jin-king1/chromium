@@ -13,14 +13,14 @@ import './checkup_list_item.js';
 import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {assert} from 'chrome://resources/js/assert.js';
+import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
 import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {getTemplate} from './checkup_details_section.html.js';
 import type {CheckupListItemElement} from './checkup_list_item.js';
 import type {CredentialsChangedListener} from './password_manager_proxy.js';
-import {PasswordCheckInteraction, PasswordManagerImpl} from './password_manager_proxy.js';
+import {PasswordAutomaticChangeState, PasswordCheckInteraction, PasswordManagerImpl} from './password_manager_proxy.js';
 import type {Route} from './router.js';
 import {CheckupSubpage, Page, RouteObserverMixin, Router} from './router.js';
 
@@ -74,6 +74,10 @@ export class CheckupDetailsSectionElement extends
         observer: 'updateShownCredentials_',
       },
 
+      groups_: {
+        type: Array,
+      },
+
       allInsecureCredentials_: {
         type: Array,
         observer: 'updateShownCredentials_',
@@ -88,13 +92,22 @@ export class CheckupDetailsSectionElement extends
         type: Array,
       },
 
+      mutedCompromisedCredentials_: {
+        type: Array,
+      },
+
+      activeListItem_: {
+        type: Object,
+        value: null,
+      },
+
       /**
        * The ids of insecure credentials for which user clicked "Change
        * Password" button
        */
       clickedChangePasswordIds_: {
         type: Object,
-        value: new Set(),
+        value: () => new Set(),
       },
 
       isMutingDisabled_: {
@@ -102,24 +115,33 @@ export class CheckupDetailsSectionElement extends
         computed: 'computeIsMutingDisabled_(' +
             'prefs.profile.password_dismiss_compromised_alert.value)',
       },
+
+      passwordChangeStates_: {
+        type: Object,
+        value: () => ({}),
+      },
     };
   }
 
-  private pageTitle_: string;
-  private pageSubtitle_: string;
-  private insecurityType_: CheckupSubpage|undefined;
-  private groups_: chrome.passwordsPrivate.CredentialGroup[] = [];
-  private allInsecureCredentials_: chrome.passwordsPrivate.PasswordUiEntry[];
-  private shownInsecureCredentials_: chrome.passwordsPrivate.PasswordUiEntry[];
-  private credentialsWithReusedPassword_: ReusedPasswordInfo[];
-  private mutedCompromisedCredentials_:
+  declare private pageTitle_: string;
+  declare private pageSubtitle_: string;
+  declare private insecurityType_: CheckupSubpage|undefined;
+  declare private groups_: chrome.passwordsPrivate.CredentialGroup[];
+  declare private allInsecureCredentials_:
       chrome.passwordsPrivate.PasswordUiEntry[];
-  private activeListItem_: CheckupListItemElement|null;
-  private clickedChangePasswordIds_: Set<number>;
-  private isMutingDisabled_: boolean;
-  private activeCredential_: chrome.passwordsPrivate.PasswordUiEntry|undefined;
+  declare private shownInsecureCredentials_:
+      chrome.passwordsPrivate.PasswordUiEntry[];
+  declare private credentialsWithReusedPassword_: ReusedPasswordInfo[];
+  declare private mutedCompromisedCredentials_:
+      chrome.passwordsPrivate.PasswordUiEntry[];
+  declare private activeListItem_: CheckupListItemElement|null;
+  declare private clickedChangePasswordIds_: Set<number>;
+  declare private isMutingDisabled_: boolean;
+  declare private passwordChangeStates_:
+      Record<number, PasswordAutomaticChangeState>;
   private insecureCredentialsChangedListener_: CredentialsChangedListener|null =
       null;
+  private listenerId_: number|null = null;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -130,6 +152,8 @@ export class CheckupDetailsSectionElement extends
     };
 
     this.insecureCredentialsChangedListener_ = insecureCredentials => {
+      // TODO(crbug.com/532045774): handle the case when the id of the
+      // credential has changed and APC tracking fails
       this.allInsecureCredentials_ = insecureCredentials;
       updateGroups();
     };
@@ -139,13 +163,44 @@ export class CheckupDetailsSectionElement extends
         this.insecureCredentialsChangedListener_);
     PasswordManagerImpl.getInstance().addInsecureCredentialsListener(
         this.insecureCredentialsChangedListener_);
+
+    this.listenerId_ =
+        PasswordManagerImpl.getInstance()
+            .callbackRouter.onPasswordAutomaticChangeStateUpdated.addListener(
+                (id: number, state: PasswordAutomaticChangeState) =>
+                    this.onStateUpdated_(id, state));
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+
+    if (this.insecureCredentialsChangedListener_) {
+      PasswordManagerImpl.getInstance().removeInsecureCredentialsListener(
+          this.insecureCredentialsChangedListener_);
+    }
+    if (this.listenerId_ !== null) {
+      PasswordManagerImpl.getInstance().callbackRouter.removeListener(
+          this.listenerId_);
+      this.listenerId_ = null;
+    }
+  }
+
+  private onStateUpdated_(id: number, state: PasswordAutomaticChangeState) {
+    this.set(`passwordChangeStates_.${id}`, state);
+  }
+
+  private getPasswordChangeStateFor_(
+      id: number,
+      _statesRecord: Record<string, unknown>): PasswordAutomaticChangeState {
+    return this.passwordChangeStates_[id] ||
+        PasswordAutomaticChangeState.kInactive;
   }
 
   override currentRouteChanged(route: Route, oldRoute: Route): void {
     if (route.page !== Page.CHECKUP_DETAILS) {
       return;
     }
-    this.insecurityType_ = route.details as unknown as CheckupSubpage;
+    this.insecurityType_ = route.details as CheckupSubpage;
     // Focus back button when it's not direct navigation.
     if (oldRoute !== undefined) {
       setTimeout(() => {  // Async to allow page to load.
@@ -232,6 +287,8 @@ export class CheckupDetailsSectionElement extends
         return [chrome.passwordsPrivate.CompromiseType.REUSED];
       case CheckupSubpage.WEAK:
         return [chrome.passwordsPrivate.CompromiseType.WEAK];
+      default:
+        assertNotReached();
     }
   }
 
@@ -323,6 +380,10 @@ export class CheckupDetailsSectionElement extends
   private clickedChangePassword_(item: chrome.passwordsPrivate.PasswordUiEntry):
       boolean {
     return this.clickedChangePasswordIds_.has(item.id);
+  }
+
+  getListenerIdForTesting(): number|null {
+    return this.listenerId_;
   }
 }
 

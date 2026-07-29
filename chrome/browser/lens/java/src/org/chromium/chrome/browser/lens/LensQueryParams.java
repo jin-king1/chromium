@@ -34,9 +34,9 @@ public class LensQueryParams {
         private @Nullable String mPageTitle;
         private @Nullable WebContents mWebContents;
         private @Nullable String mSrcUrl;
-        private boolean mIsIncognito;
-        private @LensEntryPoint int mLensEntryPoint;
-        private boolean mIsTablet;
+        private final boolean mIsIncognito;
+        private final @LensEntryPoint int mLensEntryPoint;
+        private final boolean mIsTablet;
 
         public Builder(@LensEntryPoint int lensEntryPoint, boolean isIncognito, boolean isTablet) {
             this.mLensEntryPoint = lensEntryPoint;
@@ -121,9 +121,9 @@ public class LensQueryParams {
     }
 
     /**
-     * Sets the imageUri.
-     * With this setter method we can set the imageUri in a retrieve image callback.
-     * e.g., LensChipDelegate#getChipRenderParams.
+     * Sets the imageUri. With this setter method we can set the imageUri in a retrieve image
+     * callback.
+     *
      * @param imageUri The image URI to set as a parameter
      */
     public void setImageUri(Uri imageUri) {

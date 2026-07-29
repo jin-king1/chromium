@@ -32,6 +32,7 @@
 #include "ui/views/controls/button/menu_button_controller.h"
 #include "ui/views/controls/menu/menu_config.h"
 #include "ui/views/controls/menu/menu_delegate.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget_observer.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -107,6 +108,12 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
     kTrailing,
   };
 
+  enum class MenuType {
+    kNormal,               // Regular menu
+    kContextMenu,          // Context menu
+    kMenuItemContextMenu,  // Context menu for a menu item
+  };
+
   // Callback that is used to pass events to an "annotation" bubble or widget,
   // such as a help bubble, that floats alongside the menu and acts as part of
   // the menu for event-handling purposes. These require special handling
@@ -138,7 +145,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
       const gfx::Rect& anchor_bounds,
       MenuAnchorPosition position,
       ui::mojom::MenuSourceType source_type = ui::mojom::MenuSourceType::kNone,
-      bool context_menu = false,
+      MenuType menu_type = MenuType::kNormal,
       bool is_nested_drag = false,
       gfx::NativeView native_view_for_gestures = gfx::NativeView());
 
@@ -229,14 +236,14 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   void OnDragEnteredScrollButton(SubmenuView* source, bool is_up);
   void OnDragExitedScrollButton(SubmenuView* source);
 
-  // Called by the MenuHost when a drag is about to start on a child view.
-  // This could be initiated by one of our MenuItemViews, or could be through
-  // another child View.
-  void OnDragWillStart();
+  // Called by the MenuHost when a drag-and-drop session is about to start on a
+  // child view. This could be initiated by one of our MenuItemViews, or could
+  // be through another child View.
+  void OnDragDropWillStart();
 
-  // Called by the MenuHost when the drag has completed. |should_close|
-  // corresponds to whether or not the menu should close.
-  void OnDragComplete(bool should_close);
+  // Called by the MenuHost when a drag-and-drop session has completed.
+  // |should_close| corresponds to whether or not the menu should close.
+  void OnDragDropCompleted(bool should_close);
 
   // Called while dispatching messages to intercept key events.
   // Returns ui::POST_DISPATCH_NONE if the event was swallowed by the menu.
@@ -248,8 +255,6 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // WidgetObserver overrides:
   void OnWidgetDestroying(Widget* widget) override;
   void OnWidgetShowStateChanged(Widget* widget) override;
-  void OnWidgetBoundsChanged(Widget* widget,
-                             const gfx::Rect& new_bounds) override;
 
   // Only used for testing.
   bool IsCancelAllTimerRunningForTest();
@@ -359,7 +364,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
     ~State();
 
     // The selected menu item.
-    raw_ptr<MenuItemView, DanglingUntriaged> item = nullptr;
+    raw_ptr<MenuItemView> item = nullptr;
 
     // Used to capture a hot tracked child button when a nested menu is opened
     // and to restore the hot tracked state when exiting a nested menu.
@@ -377,8 +382,8 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
     // Bounds for the monitor we're showing on.
     gfx::Rect monitor_bounds;
 
-    // Is the current menu a context menu.
-    bool context_menu = false;
+    // Type of the current menu.
+    MenuType menu_type = MenuType::kNormal;
   };
 
   // Sets the selection to |menu_item|. A value of NULL unselects
@@ -409,7 +414,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
 
   void UpdateInitialLocation(const gfx::Rect& anchor_bounds,
                              MenuAnchorPosition position,
-                             bool context_menu);
+                             MenuType menu_type);
 
   // Returns the anchor position adjusted for RTL languages. For example,
   // in RTL MenuAnchorPosition::kBubbleLeft is mapped to kBubbleRight.
@@ -562,6 +567,10 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // If possible, closes the submenu.
   void CloseSubmenu();
 
+  // Show a context menu for the currently hot-tracked view if available.
+  // Triggered by keyboard events, e.g., APPS key, Shift+F10.
+  void ShowContextMenu();
+
   // Returns details about which menu items match the mnemonic |key|.
   // |match_function| is used to determine which menus match.
   SelectByCharDetails FindChildForMnemonic(
@@ -620,7 +629,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
 
   // Performs the teardown of the menu launched by Run(). The selected item is
   // returned.
-  MenuItemView* ExitTopMostMenu();
+  raw_ptr<MenuItemView> ExitTopMostMenu();
 
   // Handles the mouse location event on the submenu |source|.
   void HandleMouseLocation(SubmenuView* source,
@@ -729,8 +738,8 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // side.
   base::OneShotTimer cancel_all_timer_;
 
-  // Drop target.
-  raw_ptr<MenuItemView> drop_target_ = nullptr;
+  // Drop target. ViewTracker auto-clears if the view is destroyed mid-drag.
+  ViewTracker drop_target_tracker_;
   MenuDelegate::DropPosition drop_position_ =
       MenuDelegate::DropPosition::kUnknow;
 

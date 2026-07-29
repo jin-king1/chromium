@@ -147,6 +147,13 @@ class CONTENT_EXPORT SavePackage final
   friend class WebContentsImpl;
   FRIEND_TEST_ALL_PREFIXES(SavePackageTest, TestSuggestedSaveNames);
   FRIEND_TEST_ALL_PREFIXES(SavePackageTest, TestLongSafePureFilename);
+  FRIEND_TEST_ALL_PREFIXES(SavePackageTest,
+                           TestComputeMaxPathLengthForDirectory);
+  FRIEND_TEST_ALL_PREFIXES(SavePackageTest, TestTruncateBaseNameEdgeCases);
+  FRIEND_TEST_ALL_PREFIXES(SavePackageTest, TestUTF8FilenameTruncation);
+  FRIEND_TEST_ALL_PREFIXES(SavePackageTest, TestDirectoryWithTrailingSeparator);
+  FRIEND_TEST_ALL_PREFIXES(SavePackageTest, TestEmptyExtension);
+  FRIEND_TEST_ALL_PREFIXES(SavePackageTest, TestVeryLongDirectory);
   FRIEND_TEST_ALL_PREFIXES(SavePackageFencedFrameTest,
                            DontRequestSavableResourcesFromFencedFrames);
   FRIEND_TEST_ALL_PREFIXES(SavePackageBrowserTest, ImplicitCancel);
@@ -211,28 +218,18 @@ class CONTENT_EXPORT SavePackage final
   // Update the download history of this item upon completion.
   void FinalizeDownloadEntry();
 
-  // Return max length of a path for a specific base directory.
-  // This is needed on POSIX, which restrict the length of file names in
-  // addition to the restriction on the length of path names.
-  // |base_dir| is assumed to be a directory name with no trailing slash.
-  static uint32_t GetMaxPathLengthForDirectory(const base::FilePath& base_dir);
+  // Queries runtime filesystem constraints for maximum path length.
+  // Performs blocking I/O - only call on file threads during path selection.
+  static uint32_t ComputeMaxPathLengthForDirectory(
+      const base::FilePath& base_dir);
 
-  // Truncates a filename to fit length constraints.
-  //
-  // |directory|    : Directory containing target file.
-  // |extension|    : Extension.
-  // |max_path_len| : Maximum size allowed for |len(directory + base_name +
-  //                  extension|.
-  // |base_name|    : Variable portion. The length of this component will be
-  //                  adjusted to fit the length constraints described at
-  //                  |max_path_len| above.
-  //
-  // Returns true if |base_name| could be successfully adjusted to fit the
-  // aforementioned constraints, or false otherwise.
-  // TODO(asanka): This function is wrong. |base_name| cannot be truncated
-  //   without knowing its encoding and truncation has to be performed on
-  //   character boundaries. Also the implementation doesn't look up the actual
-  //   path constraints and instead uses hard coded constants. crbug.com/618737
+  // Returns conservative maximum path length using platform defaults.
+  // Non-blocking - safe to call during save operations.
+  uint32_t GetMaxPathLengthForDirectory() const;
+
+  // Truncates |base_name| to fit within |max_path_len| for the full path.
+  // Respects UTF-8 character boundaries on POSIX systems.
+  // Returns true if truncation succeeded, false if no valid name possible.
   static bool TruncateBaseNameToFitPathConstraints(
       const base::FilePath& directory,
       const base::FilePath::StringType& extension,
@@ -468,6 +465,10 @@ class CONTENT_EXPORT SavePackage final
   // UKM IDs for reporting.
   ukm::SourceId ukm_source_id_;
   uint64_t ukm_download_id_;
+
+  // Display name of the main file. If this is empty, the name will be
+  // inferred from `saved_main_file_path_`.
+  base::FilePath saved_main_file_display_name_;
 
   base::WeakPtrFactory<SavePackage> weak_ptr_factory_{this};
 };

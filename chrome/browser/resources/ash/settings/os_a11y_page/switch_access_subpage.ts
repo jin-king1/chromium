@@ -152,18 +152,6 @@ export class SettingsSwitchAccessSubpageElement extends
         value: 1,
       },
 
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kSwitchActionAssignment,
-          Setting.kSwitchActionAutoScan,
-          Setting.kSwitchActionAutoScanKeyboard,
-        ]),
-      },
-
       showSwitchAccessActionAssignmentDialog_: {
         type: Boolean,
         value: false,
@@ -187,23 +175,30 @@ export class SettingsSwitchAccessSubpageElement extends
     };
   }
 
-  private action_: SwitchAccessCommand|null;
-  private autoScanSpeedRangeMs_: number[];
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kSwitchActionAssignment,
+    Setting.kSwitchActionAutoScan,
+    Setting.kSwitchActionAutoScanKeyboard,
+  ]);
+
+  declare private action_: SwitchAccessCommand|null;
+  declare private autoScanSpeedRangeMs_: number[];
   private focusAfterDialogClose_: HTMLElement|null;
-  private formatter_: Intl.NumberFormat;
-  private maxPointScanSpeed_: number;
-  private minPointScanSpeed_: number;
-  private maxScanSpeedLabelSec_: string;
-  private maxScanSpeedMs_: number;
-  private minScanSpeedLabelSec_: string;
-  private minScanSpeedMs_: number;
-  private nextAssignments_: KeyAssignment[];
-  private pointScanSpeedRangeDipsPerSecond_: number[];
-  private previousAssignments_: KeyAssignment[];
-  private selectAssignments_: KeyAssignment[];
-  private showSwitchAccessActionAssignmentDialog_: boolean;
-  private showSwitchAccessSetupGuideDialog_: boolean;
-  private showSwitchAccessSetupGuideWarningDialog_: boolean;
+  declare private formatter_: Intl.NumberFormat;
+  declare private maxPointScanSpeed_: number;
+  declare private minPointScanSpeed_: number;
+  declare private maxScanSpeedLabelSec_: string;
+  declare private maxScanSpeedMs_: number;
+  declare private minScanSpeedLabelSec_: string;
+  declare private minScanSpeedMs_: number;
+  declare private nextAssignments_: KeyAssignment[];
+  declare private pointScanSpeedRangeDipsPerSecond_: number[];
+  declare private previousAssignments_: KeyAssignment[];
+  declare private selectAssignments_: KeyAssignment[];
+  declare private showSwitchAccessActionAssignmentDialog_: boolean;
+  declare private showSwitchAccessSetupGuideDialog_: boolean;
+  declare private showSwitchAccessSetupGuideWarningDialog_: boolean;
   private switchAccessBrowserProxy_: SwitchAccessSubpageBrowserProxy;
 
   constructor() {

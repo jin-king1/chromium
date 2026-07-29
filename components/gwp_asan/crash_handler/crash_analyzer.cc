@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/gwp_asan/crash_handler/crash_analyzer.h"
 
 #include <stddef.h>
@@ -18,10 +13,12 @@
 #include <string>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/process/process_metrics.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "build/build_config.h"
 #include "components/gwp_asan/common/allocator_state.h"
 #include "components/gwp_asan/common/crash_key_name.h"
@@ -43,10 +40,28 @@
 #include <windows.h>
 #endif
 
+#if BUILDFLAG(IS_IOS)
+#include "third_party/crashpad/crashpad/snapshot/ios/process_snapshot_ios_intermediate_dump.h"
+#endif  // BUILDFLAG(IS_IOS)
+
 namespace gwp_asan {
 namespace internal {
 
 namespace {
+
+#if BUILDFLAG(IS_IOS)
+class ReadToPointer : public crashpad::MemorySnapshot::Delegate {
+ public:
+  ReadToPointer(void* ptr) : ptr_(ptr) {}
+
+  bool MemorySnapshotDelegateRead(void* data, size_t size) override {
+    UNSAFE_TODO(memcpy(ptr_, data, size));
+    return true;
+  }
+
+  raw_ptr<void> ptr_;
+};
+#endif  // BUILDFLAG(IS_IOS)
 
 // Report failure for a particular allocator's histogram.
 void ReportHistogram(Crash_Allocator allocator,
@@ -120,7 +135,7 @@ crashpad::VMAddress CrashAnalyzer::GetStateAddress(
     const crashpad::ProcessSnapshot& process_snapshot,
     const char* annotation_name) {
   for (auto* module : process_snapshot.Modules()) {
-    for (auto annotation : module->AnnotationObjects()) {
+    for (const auto& annotation : module->AnnotationObjects()) {
       if (annotation.name != annotation_name)
         continue;
 
@@ -130,11 +145,11 @@ crashpad::VMAddress CrashAnalyzer::GetStateAddress(
         return 0;
       }
 
-      std::string annotation_str(reinterpret_cast<char*>(&annotation.value[0]),
-                                 annotation.value.size());
       uint64_t value;
-      if (!base::HexStringToUInt64(annotation_str, &value))
+      if (!base::HexStringToUInt64(base::as_string_view(annotation.value),
+                                   &value)) {
         return 0;
+      }
       return value;
     }
   }
@@ -180,6 +195,19 @@ bool CrashAnalyzer::GetState(const crashpad::ProcessSnapshot& process_snapshot,
     return false;
   }
 
+#if BUILDFLAG(IS_IOS)
+  for (auto memory :
+       reinterpret_cast<
+           const crashpad::internal::ProcessSnapshotIOSIntermediateDump&>(
+           process_snapshot)
+           .IntermediateDumpExtraMemory()) {
+    if (memory->Address() == state_addr && memory->Size() == sizeof(*state)) {
+      ReadToPointer delegate(state);
+      memory->Read(&delegate);
+      break;
+    }
+  }
+#else   // BUILDFLAG(IS_IOS)
   const crashpad::ProcessMemory* memory = process_snapshot.Memory();
   if (!memory) {
     DLOG(ERROR) << "Null ProcessMemory.";
@@ -194,6 +222,7 @@ bool CrashAnalyzer::GetState(const crashpad::ProcessSnapshot& process_snapshot,
                     GwpAsanCrashAnalysisResult::kErrorFailedToReadAllocator);
     return false;
   }
+#endif  // BUILDFLAG(IS_IOS)
 
   if (!state->IsValid()) {
     DLOG(ERROR) << "Allocator sanity check failed!";
@@ -231,12 +260,35 @@ bool CrashAnalyzer::AnalyzeLightweightDetectorCrash(
   }
 
   size_t slot_count = valid_state.num_metadata;
+#if BUILDFLAG(IS_IOS)
+  std::unique_ptr<LightweightDetectorState::SlotMetadata[]> metadata_arr;
+  for (auto memory :
+       reinterpret_cast<
+           const crashpad::internal::ProcessSnapshotIOSIntermediateDump&>(
+           process_snapshot)
+           .IntermediateDumpExtraMemory()) {
+    if (memory->Address() == valid_state.metadata_addr &&
+        memory->Size() ==
+            sizeof(LightweightDetectorState::SlotMetadata) * slot_count) {
+      metadata_arr = std::make_unique<LightweightDetectorState::SlotMetadata[]>(
+          slot_count);
+      ReadToPointer delegate(metadata_arr.get());
+      memory->Read(&delegate);
+    }
+    if (metadata_arr != nullptr) {
+      break;
+    }
+  }
+
+  if (metadata_arr == nullptr) {
+#else   // BUILDFLAG(IS_IOS)
   auto metadata_arr =
       std::make_unique<LightweightDetectorState::SlotMetadata[]>(slot_count);
   if (!process_snapshot.Memory()->Read(
           valid_state.metadata_addr,
           sizeof(LightweightDetectorState::SlotMetadata) * slot_count,
           metadata_arr.get())) {
+#endif  // BUILDFLAG(IS_IOS)
     ReportHistogram(
         Crash_Allocator_PARTITIONALLOC,
         GwpAsanCrashAnalysisResult::kErrorFailedToReadLightweightSlotMetadata);
@@ -267,7 +319,7 @@ bool CrashAnalyzer::AnalyzeLightweightDetectorCrash(
       // https://elixir.bootlin.com/linux/v6.2.2/source/arch/x86/kernel/traps.c#L719
       exception->Exception() == SIGSEGV &&
       exception->ExceptionInfo() == SI_KERNEL
-#elif BUILDFLAG(IS_MAC)
+#elif BUILDFLAG(IS_APPLE)
       // https://opensource.apple.com/source/xnu/xnu-1699.24.8/osfmk/i386/trap.c
       exception->Exception() == EXC_BAD_ACCESS &&
       exception->ExceptionInfo() == EXC_I386_GPFLT
@@ -335,7 +387,8 @@ bool CrashAnalyzer::AnalyzeLightweightDetectorCrash(
       metadata.dealloc.trace_len) {
     ReadAllocationInfo(metadata.deallocation_stack_trace,
                        /* stack_trace_offset = */ 0, metadata.dealloc,
-                       proto->mutable_deallocation());
+                       proto->mutable_deallocation(),
+                       LightweightDetectorState::kMaxPackedTraceLength);
   }
 
   ReportHistogram(Crash_Allocator_PARTITIONALLOC,
@@ -375,6 +428,50 @@ bool CrashAnalyzer::AnalyzeCrashedAllocator(
   proto->set_missing_metadata(true);
   proto->set_allocator(allocator);
 
+#if BUILDFLAG(IS_IOS)
+  // Read the allocator's entire metadata array and slot_to_metadata mapping.
+  std::unique_ptr<AllocatorState::SlotMetadata[]> metadata_arr;
+  std::unique_ptr<AllocatorState::MetadataIdx[]> slot_to_metadata;
+  for (auto memory :
+       reinterpret_cast<
+           const crashpad::internal::ProcessSnapshotIOSIntermediateDump&>(
+           process_snapshot)
+           .IntermediateDumpExtraMemory()) {
+    if (memory->Address() == valid_state.metadata_addr &&
+        memory->Size() ==
+            sizeof(AllocatorState::SlotMetadata) * valid_state.num_metadata) {
+      metadata_arr = std::make_unique<AllocatorState::SlotMetadata[]>(
+          valid_state.num_metadata);
+      ReadToPointer delegate(metadata_arr.get());
+      memory->Read(&delegate);
+    } else if (memory->Address() == valid_state.slot_to_metadata_addr &&
+               memory->Size() == sizeof(AllocatorState::MetadataIdx) *
+                                     valid_state.total_reserved_pages) {
+      slot_to_metadata = std::make_unique<AllocatorState::MetadataIdx[]>(
+          valid_state.total_reserved_pages);
+      ReadToPointer delegate(slot_to_metadata.get());
+      memory->Read(&delegate);
+    }
+
+    if (metadata_arr != nullptr && slot_to_metadata != nullptr) {
+      break;
+    }
+  }
+
+  if (metadata_arr == nullptr) {
+    proto->set_internal_error("Failed to read metadata.");
+    ReportHistogram(allocator,
+                    GwpAsanCrashAnalysisResult::kErrorFailedToReadSlotMetadata);
+    return true;
+  }
+  if (slot_to_metadata == nullptr) {
+    proto->set_internal_error("Failed to read slot_to_metadata.");
+    ReportHistogram(
+        allocator,
+        GwpAsanCrashAnalysisResult::kErrorFailedToReadSlotMetadataMapping);
+    return true;
+  }
+#else   // BUILDFLAG(IS_IOS)
   // Read the allocator's entire metadata array.
   auto metadata_arr = std::make_unique<AllocatorState::SlotMetadata[]>(
       valid_state.num_metadata);
@@ -401,6 +498,7 @@ bool CrashAnalyzer::AnalyzeCrashedAllocator(
         GwpAsanCrashAnalysisResult::kErrorFailedToReadSlotMetadataMapping);
     return true;
   }
+#endif  // BUILDFLAG(IS_IOS)
 
   AllocatorState::MetadataIdx metadata_idx;
   std::string error;
@@ -424,7 +522,8 @@ bool CrashAnalyzer::AnalyzeCrashedAllocator(
   }
 
   if (ret == GetMetadataReturnType::kGwpAsanCrash) {
-    AllocatorState::SlotMetadata& metadata = metadata_arr[metadata_idx];
+    AllocatorState::SlotMetadata& metadata =
+        UNSAFE_TODO(metadata_arr[metadata_idx]);
     AllocatorState::ErrorType error_type =
         valid_state.GetErrorType(exception_addr, metadata.alloc.trace_collected,
                                  metadata.dealloc.trace_collected);
@@ -435,12 +534,14 @@ bool CrashAnalyzer::AnalyzeCrashedAllocator(
     if (metadata.alloc.tid != base::kInvalidThreadId ||
         metadata.alloc.trace_len) {
       ReadAllocationInfo(metadata.stack_trace_pool, 0, metadata.alloc,
-                         proto->mutable_allocation());
+                         proto->mutable_allocation(),
+                         AllocatorState::kMaxPackedTraceLength);
     }
     if (metadata.dealloc.tid != base::kInvalidThreadId ||
         metadata.dealloc.trace_len) {
       ReadAllocationInfo(metadata.stack_trace_pool, metadata.alloc.trace_len,
-                         metadata.dealloc, proto->mutable_deallocation());
+                         metadata.dealloc, proto->mutable_deallocation(),
+                         AllocatorState::kMaxPackedTraceLength);
     }
   }
 
@@ -452,7 +553,8 @@ void CrashAnalyzer::ReadAllocationInfo(
     const uint8_t* stack_trace,
     size_t stack_trace_offset,
     const AllocationInfo& slot_info,
-    gwp_asan::Crash_AllocationInfo* proto_info) {
+    gwp_asan::Crash_AllocationInfo* proto_info,
+    size_t max_trace_length) {
   if (slot_info.tid != base::kInvalidThreadId) {
     // The PlatformThreadId will match the Crashpad tid in terms of the bit
     // values, however it can differ in bitwidth and sign. To make this uniform,
@@ -466,16 +568,15 @@ void CrashAnalyzer::ReadAllocationInfo(
   if (!slot_info.trace_len || !slot_info.trace_collected)
     return;
 
-  if (slot_info.trace_len > AllocatorState::kMaxPackedTraceLength ||
-      stack_trace_offset + slot_info.trace_len >
-          AllocatorState::kMaxPackedTraceLength) {
+  if (slot_info.trace_len > max_trace_length ||
+      stack_trace_offset + slot_info.trace_len > max_trace_length) {
     DLOG(ERROR) << "Stack trace length is corrupted: " << slot_info.trace_len;
     return;
   }
 
   uintptr_t unpacked_stack_trace[AllocatorState::kMaxPackedTraceLength];
   size_t unpacked_len =
-      Unpack(stack_trace + stack_trace_offset, slot_info.trace_len,
+      Unpack(UNSAFE_TODO(stack_trace + stack_trace_offset), slot_info.trace_len,
              unpacked_stack_trace, AllocatorState::kMaxPackedTraceLength);
   if (!unpacked_len) {
     DLOG(ERROR) << "Failed to unpack stack trace.";
@@ -487,7 +588,7 @@ void CrashAnalyzer::ReadAllocationInfo(
   proto_info->mutable_stack_trace()->Resize(unpacked_len, 0);
   uint64_t* output = proto_info->mutable_stack_trace()->mutable_data();
   for (size_t i = 0; i < unpacked_len; i++)
-    output[i] = unpacked_stack_trace[i];
+    UNSAFE_TODO(output[i]) = UNSAFE_TODO(unpacked_stack_trace[i]);
 }
 
 Crash_Mode CrashAnalyzer::LightweightDetectorModeToGwpAsanMode(

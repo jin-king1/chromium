@@ -5,7 +5,6 @@
 #include "third_party/blink/renderer/platform/scheduler/common/features.h"
 
 #include "base/command_line.h"
-#include "components/miracle_parameter/common/public/miracle_parameter.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/switches.h"
 
@@ -73,53 +72,40 @@ base::TimeDelta GetIntensiveWakeUpThrottlingGracePeriod(bool loading) {
           features::kIntensiveWakeUpThrottling_GracePeriodSeconds_Name,
           kIntensiveWakeUpThrottling_GracePeriodSeconds_Default};
 
-  // Controls the grace period for loaded pages.
-  static const base::FeatureParam<int>
-      kIntensiveWakeUpThrottling_GracePeriodSeconds_Loaded{
-          &features::kQuickIntensiveWakeUpThrottlingAfterLoading,
-          "grace_period_seconds_loaded",
-          kIntensiveWakeUpThrottling_GracePeriodSecondsLoaded_Default};
-
   int seconds = kIntensiveWakeUpThrottling_GracePeriodSeconds_Default;
   if (GetIntensiveWakeUpThrottlingPolicyOverride() ==
       PolicyOverride::kNoOverride) {
-    seconds = kIntensiveWakeUpThrottling_GracePeriodSeconds.Get();
-    if (!loading && base::FeatureList::IsEnabled(
-                        features::kQuickIntensiveWakeUpThrottlingAfterLoading))
-      seconds = kIntensiveWakeUpThrottling_GracePeriodSeconds_Loaded.Get();
+    if (loading) {
+      seconds = kIntensiveWakeUpThrottling_GracePeriodSeconds.Get();
+    } else {
+      seconds = kIntensiveWakeUpThrottling_GracePeriodSecondsLoaded_Default;
+    }
   }
   return base::Seconds(seconds);
 }
 
-// TODO(crbug.com/1475915): convert this param value to TimeDelta instead of int
-// after the experiment.
-MIRACLE_PARAMETER_FOR_INT(
-    GetLoadingPhaseBufferTimeAfterFirstMeaningfulPaintMillis,
-    features::kLoadingPhaseBufferTimeAfterFirstMeaningfulPaint,
-    "LoadingPhaseBufferTimeAfterFirstMeaningfulPaintMillis",
-    0)
+// When enabled, renderer main will busy loop in user space when no further work
+// is scheduled before waiting in the kernel.
+BASE_FEATURE(kBusyLoopOnRendererMain,
+             "BusyLoopOnMainThread",
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else   // BUILDFLAG(IS_ANDROID)
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif  // BUILDFLAG(IS_ANDROID)
+);
 
-base::TimeDelta GetLoadingPhaseBufferTimeAfterFirstMeaningfulPaint() {
-  return base::Milliseconds(
-      GetLoadingPhaseBufferTimeAfterFirstMeaningfulPaintMillis());
-}
+// The maximum amount of time to busy loop when BusyLoopOnMainThread is enabled.
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kBusyLoopTime,
+                   &kBusyLoopOnRendererMain,
+                   "busy_loop_for",
+                   base::Milliseconds(2));
 
-base::TimeDelta GetThreadedScrollRenderingStarvationThreshold() {
-  static const base::FeatureParam<int>
-      kThreadedScrollRenderingStarvationThreshold{
-          &features::kThreadedScrollPreventRenderingStarvation, "threshold_ms",
-          100};
-  if (base::FeatureList::IsEnabled(
-          features::kThreadedScrollPreventRenderingStarvation)) {
-    return base::Milliseconds(
-        kThreadedScrollRenderingStarvationThreshold.Get());
-  }
-  return base::TimeDelta::Max();
-}
-
-BASE_FEATURE(kThrottleTimedOutIdleTasks,
-             "ThrottleTimedOutIdleTasks",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+// Prevent scaling BusyLoopOnMainThread to its maximum value during compositor
+// driven gestures.
+BASE_FEATURE(kBusyLoopLessWhenCompositorGesture,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace scheduler
 }  // namespace blink

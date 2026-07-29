@@ -6,13 +6,12 @@ source_set("model") {
   sources = [
     "ai_prototyping_service_impl.h",
     "ai_prototyping_service_impl.mm",
-    "tab_organization_service_impl.h",
-    "tab_organization_service_impl.mm",
   ]
 
   deps = [
     "//base",
     "//components/optimization_guide:optimization_guide_buildflags",
+    "//components/optimization_guide/core:model_execution",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//ios/chrome/app/strings:ios_strings_grit",
     "//ios/chrome/browser/intelligence/proto_wrappers",

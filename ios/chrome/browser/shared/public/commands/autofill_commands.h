@@ -5,11 +5,11 @@
 #ifndef IOS_CHROME_BROWSER_SHARED_PUBLIC_COMMANDS_AUTOFILL_COMMANDS_H_
 #define IOS_CHROME_BROWSER_SHARED_PUBLIC_COMMANDS_AUTOFILL_COMMANDS_H_
 
-#import "components/plus_addresses/plus_address_types.h"
-
 namespace autofill {
+struct AutofillAiErrorDialogContext;
 struct AutofillErrorDialogContext;
 struct FormActivityParams;
+struct SaveEntityParams;
 class VirtualCardEnrollUiModel;
 }  // namespace autofill
 namespace web {
@@ -28,14 +28,18 @@ class WebState;
 // Continue the card unmask flow with the CVC authentication input dialog.
 - (void)continueCardUnmaskWithCvcAuth;
 
-// Shows the password suggestion view controller.
-- (void)showPasswordBottomSheet:(const autofill::FormActivityParams&)params;
+// Shows the credential suggestion bottom sheet view controller.
+- (void)showCredentialBottomSheet:(const autofill::FormActivityParams&)params;
 
-// Shows the payments suggestion view controller.
+// Shows the payments suggestion bottom sheet view controller.
 - (void)showPaymentsBottomSheet:(const autofill::FormActivityParams&)params;
 
-// Shows the plus address bottom sheet view controller.
-- (void)showPlusAddressesBottomSheet;
+// Shows the scan card save and fill suggestion bottom sheet view controller.
+- (void)showScanCardSaveAndFillBottomSheet:
+    (const autofill::FormActivityParams&)params;
+// Commands to manage save card bottomsheet.
+- (void)showSaveCardBottomSheetOnOriginWebState:(web::WebState*)originWebState;
+- (void)dismissSaveCardBottomSheet;
 
 // Sends a command to show the VCN enrollment Bottom Sheet.
 - (void)showVirtualCardEnrollmentBottomSheet:
@@ -49,14 +53,30 @@ class WebState;
 // it's shown.
 - (void)dismissEditAddressBottomSheet;
 
+// Command to reset the autofill suggestions loading states.
+- (void)resetAutofillSuggestionsLoadingStates;
+
 // Commands to manage the Autofill error dialog.
 - (void)showAutofillErrorDialog:
     (autofill::AutofillErrorDialogContext)errorContext;
 - (void)dismissAutofillErrorDialog;
 
+// Commands to manage the Autofill AI error dialog.
+- (void)showAutofillAiErrorDialog:
+    (autofill::AutofillAiErrorDialogContext)errorContext;
+- (void)dismissAutofillAiErrorDialog;
+
 // Commands to manage the Autofill progress dialog.
 - (void)showAutofillProgressDialog;
 - (void)dismissAutofillProgressDialog;
+
+// Commands to manage the Autofill save entity dialog.
+- (void)showSaveEntityDialog:(autofill::SaveEntityParams)params;
+- (void)dismissSaveEntityDialog;
+
+// Commands to manage the Autofill notice bottom sheet.
+- (void)showAmbientAutofillNotice:(const autofill::FormActivityParams&)params;
+- (void)dismissAmbientAutofillNotice;
 
 @end
 

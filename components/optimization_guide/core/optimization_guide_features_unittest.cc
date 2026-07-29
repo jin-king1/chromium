@@ -14,9 +14,9 @@
 #include "base/system/sys_info.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "components/optimization_guide/core/delivery/model_util.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
 #include "components/optimization_guide/core/feature_registry/mqls_feature_registry.h"
-#include "components/optimization_guide/core/model_util.h"
 #include "components/optimization_guide/core/optimization_guide_constants.h"
 #include "components/optimization_guide/proto/models.pb.h"
 #include "components/prefs/testing_pref_service.h"
@@ -38,33 +38,6 @@ class OptimizationGuideFeaturesTest : public testing::Test {
   TestingPrefServiceSimple prefs_;
 };
 
-TEST_F(OptimizationGuideFeaturesTest,
-       TestGetOptimizationGuideServiceGetHintsURLHTTPSOnly) {
-  base::test::ScopedFeatureList scoped_feature_list;
-
-  scoped_feature_list.InitAndEnableFeatureWithParameters(
-      features::kRemoteOptimizationGuideFetching,
-      {{"optimization_guide_service_url", "http://NotAnHTTPSServer.com"}});
-
-  EXPECT_EQ(features::GetOptimizationGuideServiceGetHintsURL().spec(),
-            kOptimizationGuideServiceGetHintsDefaultURL);
-  EXPECT_TRUE(features::GetOptimizationGuideServiceGetHintsURL().SchemeIs(
-      url::kHttpsScheme));
-}
-
-TEST_F(OptimizationGuideFeaturesTest,
-       TestGetOptimizationGuideServiceGetHintsURLViaFinch) {
-  base::test::ScopedFeatureList scoped_feature_list;
-
-  std::string optimization_guide_service_url = "https://finchserver.com/";
-  scoped_feature_list.InitAndEnableFeatureWithParameters(
-      features::kRemoteOptimizationGuideFetching,
-      {{"optimization_guide_service_url", optimization_guide_service_url}});
-
-  EXPECT_EQ(features::GetOptimizationGuideServiceGetHintsURL().spec(),
-            optimization_guide_service_url);
-}
-
 TEST_F(OptimizationGuideFeaturesTest, ModelQualityLoggingDefault) {
   base::test::ScopedFeatureList scoped_feature_list;
 
@@ -72,14 +45,11 @@ TEST_F(OptimizationGuideFeaturesTest, ModelQualityLoggingDefault) {
 
   EXPECT_TRUE(features::IsModelQualityLoggingEnabled());
 
-  // Compose, wallpaper search and tab organization should be enabled by
+  // Compose and wallpaper search should be enabled by
   // default whereas product specifications should be disabled by default.
   MqlsFeatureRegistry& registry = MqlsFeatureRegistry::GetInstance();
   EXPECT_TRUE(features::IsModelQualityLoggingEnabledForFeature(
       registry.GetFeature(proto::LogAiDataRequest::FeatureCase::kCompose)));
-  EXPECT_TRUE(
-      features::IsModelQualityLoggingEnabledForFeature(registry.GetFeature(
-          proto::LogAiDataRequest::FeatureCase::kTabOrganization)));
   EXPECT_TRUE(
       features::IsModelQualityLoggingEnabledForFeature(registry.GetFeature(
           proto::LogAiDataRequest::FeatureCase::kWallpaperSearch)));
@@ -111,10 +81,10 @@ TEST_F(OptimizationGuideFeaturesTest, ComposeModelQualityLoggingDisabled) {
 
   EXPECT_TRUE(features::IsModelQualityLoggingEnabled());
   EXPECT_FALSE(features::IsModelQualityLoggingEnabledForFeature(metadata));
-  // TabOrganization should still be enabled.
+  // WallpaperSearch should still be enabled.
   EXPECT_TRUE(
       features::IsModelQualityLoggingEnabledForFeature(registry.GetFeature(
-          proto::LogAiDataRequest::FeatureCase::kTabOrganization)));
+          proto::LogAiDataRequest::FeatureCase::kWallpaperSearch)));
 }
 
 TEST_F(OptimizationGuideFeaturesTest, ModelQualityLoggingDisabled) {
@@ -127,9 +97,6 @@ TEST_F(OptimizationGuideFeaturesTest, ModelQualityLoggingDisabled) {
   MqlsFeatureRegistry& registry = MqlsFeatureRegistry::GetInstance();
   EXPECT_FALSE(features::IsModelQualityLoggingEnabledForFeature(
       registry.GetFeature(proto::LogAiDataRequest::FeatureCase::kCompose)));
-  EXPECT_FALSE(
-      features::IsModelQualityLoggingEnabledForFeature(registry.GetFeature(
-          proto::LogAiDataRequest::FeatureCase::kTabOrganization)));
   EXPECT_FALSE(
       features::IsModelQualityLoggingEnabledForFeature(registry.GetFeature(
           proto::LogAiDataRequest::FeatureCase::kWallpaperSearch)));
@@ -148,47 +115,61 @@ TEST_F(OptimizationGuideFeaturesTest,
 }
 
 TEST_F(OptimizationGuideFeaturesTest,
-       OptimizationGuidePersonalizedFetchingPopulatedParam) {
+       OptimizationGuideProactivePersonalizedHintsFetchingPopulatedParam) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeatureWithParameters(
-      features::kOptimizationGuidePersonalizedFetching,
+      features::kOptimizationGuideProactivePersonalizedHintsFetching,
       {
-          {"allowed_contexts", "CONTEXT_PAGE_NAVIGATION,CONTEXT_BOOKMARKS"},
+          {"allowed_optimization_types", "SHOPPING_DISCOUNTS"},
       });
 
-  features::RequestContextSet allowedContexts =
-      features::GetAllowedContextsForPersonalizedMetadata();
+  features::OptimizationTypeSet allowedOptimizationTypes =
+      features::GetAllowedOptimizationTypesForProactivePersonalization();
 
-  // Check contexts.
+  EXPECT_FALSE(allowedOptimizationTypes.Has(
+      optimization_guide::proto::TYPE_UNSPECIFIED));
   EXPECT_FALSE(
-      allowedContexts.Has(optimization_guide::proto::CONTEXT_UNSPECIFIED));
-  EXPECT_FALSE(allowedContexts.Has(
-      optimization_guide::proto::CONTEXT_PAGE_INSIGHTS_HUB));
+      allowedOptimizationTypes.Has(optimization_guide::proto::NOSCRIPT));
+  EXPECT_TRUE(allowedOptimizationTypes.Has(
+      optimization_guide::proto::SHOPPING_DISCOUNTS));
+}
+
+TEST_F(
+    OptimizationGuideFeaturesTest,
+    OptimizationGuideProactivePersonalizedHintsFetchingPopulatedMultipleParams) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      features::kOptimizationGuideProactivePersonalizedHintsFetching,
+      {
+          {"allowed_optimization_types", "SHOPPING_DISCOUNTS,PRICE_TRACKING"},
+      });
+
+  features::OptimizationTypeSet allowedOptimizationTypes =
+      features::GetAllowedOptimizationTypesForProactivePersonalization();
+
+  EXPECT_FALSE(allowedOptimizationTypes.Has(
+      optimization_guide::proto::TYPE_UNSPECIFIED));
+  EXPECT_FALSE(
+      allowedOptimizationTypes.Has(optimization_guide::proto::NOSCRIPT));
+  EXPECT_TRUE(allowedOptimizationTypes.Has(
+      optimization_guide::proto::SHOPPING_DISCOUNTS));
   EXPECT_TRUE(
-      allowedContexts.Has(optimization_guide::proto::CONTEXT_PAGE_NAVIGATION));
-  EXPECT_TRUE(
-      allowedContexts.Has(optimization_guide::proto::CONTEXT_BOOKMARKS));
+      allowedOptimizationTypes.Has(optimization_guide::proto::PRICE_TRACKING));
 }
 
 TEST_F(OptimizationGuideFeaturesTest,
-       OptimizationGuidePersonalizedFetchingEmptyParam) {
+       OptimizationGuideProactivePersonalizedHintsFetchingEmptyParam) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeatureWithParameters(
-      features::kOptimizationGuidePersonalizedFetching,
+      features::kOptimizationGuideProactivePersonalizedHintsFetching,
       {
-          {"allowed_contexts", ""},
+          {"allowed_optimization_types", ""},
       });
 
-  features::RequestContextSet allowedContexts =
-      features::GetAllowedContextsForPersonalizedMetadata();
+  features::OptimizationTypeSet allowedOptimizationTypes =
+      features::GetAllowedOptimizationTypesForProactivePersonalization();
 
-  // Check contexts.
-  EXPECT_FALSE(
-      allowedContexts.Has(optimization_guide::proto::CONTEXT_UNSPECIFIED));
-  EXPECT_FALSE(
-      allowedContexts.Has(optimization_guide::proto::CONTEXT_PAGE_NAVIGATION));
-  EXPECT_FALSE(allowedContexts.Has(
-      optimization_guide::proto::CONTEXT_PAGE_INSIGHTS_HUB));
+  EXPECT_TRUE(allowedOptimizationTypes.empty());
 }
 
 TEST_F(OptimizationGuideFeaturesTest, TestOverrideNumThreadsForOptTarget) {

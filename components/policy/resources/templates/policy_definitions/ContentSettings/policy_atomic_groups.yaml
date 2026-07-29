@@ -59,11 +59,6 @@ SensorsSettings:
   - DefaultSensorsSetting
   - SensorsAllowedForUrls
   - SensorsBlockedForUrls
-ThirdPartyStoragePartitioningSettings:
-  caption: Third-party storage partitioning settings
-  policies:
-  - DefaultThirdPartyStoragePartitioningSetting
-  - ThirdPartyStoragePartitioningBlockedForOrigins
 WebUsbSettings:
   caption: Web USB settings
   policies:
@@ -107,3 +102,27 @@ SmartCardConnectSettings:
   policies:
   - SmartCardConnectAllowedForUrls
   - SmartCardConnectBlockedForUrls
+  - DefaultSmartCardConnectSetting
+LegacyCookieScopeSettings:
+  caption: Legacy Cookie Scope settings
+  policies:
+  - LegacyCookieScopeEnabled
+  - LegacyCookieScopeEnabledForDomainList
+DeviceAttributesSettings:
+  caption: Device Attributes settings
+  policies:
+  - DefaultDeviceAttributesSetting
+  - DeviceAttributesAllowedForOrigins
+  - DeviceAttributesBlockedForOrigins
+GeolocationSettings:
+  caption: Geolocation settings
+  policies:
+  - DefaultGeolocationSetting
+  - PreciseGeolocationAllowedForUrls
+  - GeolocationBlockedForUrls
+AutomaticDownloadsSettings:
+  caption: Automatic Downloads settings
+  policies:
+  - DefaultAutomaticDownloadsSetting
+  - AutomaticDownloadsAllowedForUrls
+  - AutomaticDownloadsBlockedForUrls

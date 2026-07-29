@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.safety_hub;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
@@ -31,7 +32,6 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.password_manager.PasswordStoreBridge;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.safety_hub.SafetyHubLocalPasswordsDataSource.ModuleType;
-import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.ui.base.TestActivity;
 
@@ -48,7 +48,7 @@ public class SafetyHubLocalPasswordsDataSourceTest {
         @ModuleType int mModuleType;
 
         @Override
-        public void stateChanged(@ModuleType int moduleType) {
+        public void localPasswordsStateChanged(@ModuleType int moduleType) {
             mModuleType = moduleType;
         }
 
@@ -59,7 +59,7 @@ public class SafetyHubLocalPasswordsDataSourceTest {
 
     private static final @DrawableRes int SAFE_ICON = R.drawable.material_ic_check_24dp;
     private static final @DrawableRes int INFO_ICON = R.drawable.btn_info;
-    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_business;
+    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_domain;
     private static final @DrawableRes int WARNING_ICON = R.drawable.ic_error;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -72,7 +72,6 @@ public class SafetyHubLocalPasswordsDataSourceTest {
     @Mock private SafetyHubModuleDelegate mModuleDelegateMock;
     @Mock private PrefService mPrefServiceMock;
     @Mock private SafetyHubFetchService mSafetyHubFetchServiceMock;
-    @Mock private SigninManager mSigninManagerMock;
     @Mock private PasswordStoreBridge mPasswordStoreBridge;
 
     @Before
@@ -88,7 +87,7 @@ public class SafetyHubLocalPasswordsDataSourceTest {
                         mPrefServiceMock,
                         mSafetyHubFetchServiceMock,
                         mPasswordStoreBridge);
-        mDataSource.setObserver(mObserver);
+        mDataSource.addObserver(mObserver);
         mDataSource.setUp();
     }
 
@@ -104,14 +103,36 @@ public class SafetyHubLocalPasswordsDataSourceTest {
         doReturn(reused).when(mPrefServiceMock).getInteger(Pref.LOCAL_REUSED_CREDENTIALS_COUNT);
     }
 
+    private void mockRunPasswordCheckup(boolean willRun) {
+        doReturn(willRun).when(mSafetyHubFetchServiceMock).runLocalPasswordCheckup();
+    }
+
     @Test
-    public void countsUnavailable() {
+    public void countsUnavailable_lastCheckLongAgo() {
         mockTotalPasswordsCount(1);
         mockPasswordCounts(/* compromised= */ -1, /* weak= */ -1, /* reused= */ -1);
+        mockRunPasswordCheckup(true);
 
         assertTrue(mDataSource.maybeTriggerPasswordCheckup());
         verify(mSafetyHubFetchServiceMock, times(1)).runLocalPasswordCheckup();
 
+        mDataSource.localPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
+        mDataSource.updateState();
+        assertEquals(ModuleType.UNAVAILABLE_PASSWORDS, mObserver.getModuleType());
+    }
+
+    @Test
+    public void countsUnavailable_lastCheckRecently() {
+        mockTotalPasswordsCount(1);
+        mockPasswordCounts(/* compromised= */ -1, /* weak= */ -1, /* reused= */ -1);
+        mockRunPasswordCheckup(false);
+
+        assertFalse(mDataSource.maybeTriggerPasswordCheckup());
+        verify(mSafetyHubFetchServiceMock, times(1)).runLocalPasswordCheckup();
+
+        mDataSource.localPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
         mDataSource.updateState();
         assertEquals(ModuleType.UNAVAILABLE_PASSWORDS, mObserver.getModuleType());
     }
@@ -120,6 +141,8 @@ public class SafetyHubLocalPasswordsDataSourceTest {
     public void noPasswords() {
         mockTotalPasswordsCount(0);
 
+        mDataSource.localPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
         mDataSource.updateState();
 
         assertEquals(ModuleType.NO_SAVED_PASSWORDS, mObserver.getModuleType());
@@ -130,6 +153,8 @@ public class SafetyHubLocalPasswordsDataSourceTest {
         mockTotalPasswordsCount(5);
         mockPasswordCounts(/* compromised= */ 4, 0, 0);
 
+        mDataSource.localPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
         mDataSource.updateState();
 
         assertEquals(ModuleType.HAS_COMPROMISED_PASSWORDS, mObserver.getModuleType());
@@ -140,6 +165,8 @@ public class SafetyHubLocalPasswordsDataSourceTest {
         mockTotalPasswordsCount(5);
         mockPasswordCounts(/* compromised= */ 0, /* weak= */ 2, /* reused= */ 1);
 
+        mDataSource.localPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
         mDataSource.updateState();
 
         assertEquals(ModuleType.HAS_REUSED_PASSWORDS, mObserver.getModuleType());
@@ -151,6 +178,8 @@ public class SafetyHubLocalPasswordsDataSourceTest {
         mockTotalPasswordsCount(5);
         mockPasswordCounts(/* compromised= */ 0, /* weak= */ 2, /* reused= */ 1);
 
+        mDataSource.localPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
         mDataSource.updateState();
 
         assertEquals(ModuleType.NO_COMPROMISED_PASSWORDS, mObserver.getModuleType());
@@ -161,6 +190,8 @@ public class SafetyHubLocalPasswordsDataSourceTest {
         mockTotalPasswordsCount(5);
         mockPasswordCounts(/* compromised= */ 0, /* weak= */ 1, /* reused= */ 0);
 
+        mDataSource.localPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
         mDataSource.updateState();
 
         assertEquals(ModuleType.HAS_WEAK_PASSWORDS, mObserver.getModuleType());
@@ -172,6 +203,8 @@ public class SafetyHubLocalPasswordsDataSourceTest {
         mockTotalPasswordsCount(5);
         mockPasswordCounts(/* compromised= */ 0, /* weak= */ 1, /* reused= */ 0);
 
+        mDataSource.localPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
         mDataSource.updateState();
 
         assertEquals(ModuleType.NO_COMPROMISED_PASSWORDS, mObserver.getModuleType());
@@ -182,6 +215,8 @@ public class SafetyHubLocalPasswordsDataSourceTest {
         mockTotalPasswordsCount(5);
         mockPasswordCounts(0, 0, 0);
 
+        mDataSource.localPasswordCountsChanged();
+        mDataSource.onSavedPasswordsChanged(0);
         mDataSource.updateState();
 
         assertEquals(ModuleType.NO_COMPROMISED_PASSWORDS, mObserver.getModuleType());

@@ -20,6 +20,7 @@
 #include "base/metrics/histogram_base.h"
 #include "base/time/time.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace base {
 
@@ -36,6 +37,9 @@ class HistogramSamples;
 // content browser test, then content::FetchHistogramsFromChildProcesses()
 // should be used to achieve that.
 // To test histograms in Java tests, use HistogramWatcher.
+// To wait for a histogram to be recorded in C++ tests, use
+// StatisticsRecorder::ScopedHistogramSampleObserver or
+// StatisticsRecorder::HistogramWaiter.
 class HistogramTester {
  public:
   using CountsMap = std::map<std::string, HistogramBase::Count32, std::less<>>;
@@ -96,9 +100,17 @@ class HistogramTester {
                         HistogramBase::Count32 expected_count,
                         const Location& location = FROM_HERE) const;
 
-  // Returns the sum of all samples recorded since the HistogramTester was
-  // created.
+  // Returns the sum of all samples recorded for a given histogram `name` since
+  // the HistogramTester was created.
   int64_t GetTotalSum(std::string_view name) const;
+
+  // Returns the sum of all samples recorded for all histograms since the
+  // HistogramTester was created.
+  int64_t GetTotalSum() const;
+
+  // Returns the sum of all samples recorded for all histograms whose names
+  // start with `prefix` since the HistogramTester was created.
+  int64_t GetTotalSumForPrefix(std::string_view prefix) const;
 
   // Returns a list of all of the buckets recorded since creation of this
   // object, as vector<Bucket>, where the Bucket represents the min boundary of
@@ -133,6 +145,27 @@ class HistogramTester {
   //             histogram_tester.GetAllSamples("HistogramName"));
   std::vector<Bucket> GetAllSamples(std::string_view name) const;
 
+  // Similar to `GetAllSamples`, but returns all of the buckets for all
+  // histograms whose names start with `prefix`, recorded since creation of this
+  // object.
+  //
+  // This is useful to ensure ensure that only the expected histograms are
+  // recorded and none others are. This is better than negative assertions like
+  // `EXPECT_THAT(h.GetAllSamples("HistogramName.Unexpected"), IsEmpty())`
+  // because if there was a typo in "HistogramName.Unexpected", the assertion
+  // would always succeed.
+  //
+  // Example usage:
+  //   EXPECT_THAT(
+  //     histogram_tester.GetAllSamplesForPrefix("HistogramName"),
+  //     UnorderedElementsAre(
+  //         Pair("HistogramName.Foo",
+  //              BucketsAre(Bucket(1, 5), Bucket(2, 10))),
+  //         Pair("HistogramName.Bar",
+  //              BucketsAre(Bucket(1, 0), Bucket(3, 5)))));
+  absl::flat_hash_map<std::string, std::vector<Bucket>> GetAllSamplesForPrefix(
+      std::string_view prefix) const;
+
   // Returns the value of the |sample| bucket for ths histogram |name|.
   HistogramBase::Count32 GetBucketCount(std::string_view name,
                                       HistogramBase::Sample32 sample) const;
@@ -160,6 +193,11 @@ class HistogramTester {
   //   EXPECT_THAT(histogram_tester.GetTotalCountsForPrefix("MyMetric."),
   //               testing::ContainerEq(expected_counts));
   CountsMap GetTotalCountsForPrefix(std::string_view prefix) const;
+
+  // Returns the total count recorded for all histograms whose names start with
+  // `prefix` since the HistogramTester was created. This is similar to
+  // `GetTotalCountsForPrefix`, but returns the sum of counts instead of a map.
+  HistogramBase::Count32 GetTotalCountForPrefix(std::string_view prefix) const;
 
   // Returns the HistogramSamples recorded since the creation of the
   // HistogramTester.

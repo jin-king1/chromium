@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "ui/gfx/render_text.h"
 
 #include <limits.h>
@@ -17,6 +12,8 @@
 
 #include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/i18n/break_iterator.h"
 #include "base/i18n/char_iterator.h"
 #include "base/i18n/rtl.h"
@@ -36,7 +33,7 @@
 #include "third_party/skia/include/core/SkFontStyle.h"
 #include "third_party/skia/include/core/SkTextBlob.h"
 #include "third_party/skia/include/core/SkTypeface.h"
-#include "third_party/skia/include/effects/SkGradientShader.h"
+#include "third_party/skia/include/effects/SkGradient.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/size_conversions.h"
@@ -372,10 +369,16 @@ void SkiaTextRenderer::DrawPosText(const SkPoint* pos,
   const auto& run_buffer = builder.allocRunPos(font_, glyph_count);
 
   static_assert(sizeof(*glyphs) == sizeof(*run_buffer.glyphs), "");
-  memcpy(run_buffer.glyphs, glyphs, glyph_count * sizeof(*glyphs));
+  // SAFETY: `allocRunPos(font_, glyph_count)` allocates storage for exactly
+  // `glyph_count` glyph IDs in `run_buffer.glyphs`.
+  UNSAFE_TODO(base::span(run_buffer.glyphs, glyph_count)
+                  .copy_from(base::span(glyphs, glyph_count)));
 
-  static_assert(sizeof(*pos) == 2 * sizeof(*run_buffer.pos), "");
-  memcpy(run_buffer.pos, pos, glyph_count * sizeof(*pos));
+  static_assert(sizeof(*pos) == sizeof(*run_buffer.points()), "");
+  // SAFETY: `allocRunPos(font_, glyph_count)` allocates storage for exactly
+  // `glyph_count` `SkPoint`s in `run_buffer.pos`, exposed via `points()`.
+  UNSAFE_TODO(base::span(run_buffer.points(), glyph_count)
+                  .copy_from(base::span(pos, glyph_count)));
 
   canvas_skia_->drawTextBlob(builder.make(), 0, 0, flags_);
 }
@@ -765,9 +768,22 @@ void RenderText::MoveCursor(BreakType break_type,
   uint32_t max_end = std::max(selection().end(), cursor.selection().end());
   uint32_t current_start = selection().start();
 
+  // Determine if the selection is reversed (i.e., the cursor crossed the
+  // selection start).
+#if BUILDFLAG(IS_MAC)
+  // Use strict inequality to ensure that returning exactly to the selection
+  // start is NOT considered a reversal. This allows the selection to collapse
+  // when the caret returns to the selection start position (see
+  // SELECTION_EXTEND case). See https://issues.chromium.org/issues/396057270.
+  const bool is_min_end_before_start = min_end < current_start;
+  const bool is_max_end_after_start = current_start < max_end;
+#else
+  const bool is_min_end_before_start = min_end <= current_start;
+  const bool is_max_end_after_start = current_start <= max_end;
+#endif
+
   bool selection_reversed = !selection().is_empty() &&
-                            min_end <= current_start &&
-                            current_start <= max_end;
+                            is_min_end_before_start && is_max_end_after_start;
 
   // Take |selection_behavior| into account.
   switch (selection_behavior) {
@@ -779,7 +795,7 @@ void RenderText::MoveCursor(BreakType break_type,
                                                     : current_start);
       break;
     case SELECTION_CARET:
-      if (selection_reversed) {
+      if (selection_reversed && cursor.caret_pos() != current_start) {
         cursor =
             SelectionModel(current_start, selection_model_.caret_affinity());
       } else {

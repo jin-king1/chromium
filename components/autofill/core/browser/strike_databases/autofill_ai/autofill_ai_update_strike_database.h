@@ -5,9 +5,12 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_STRIKE_DATABASES_AUTOFILL_AI_AUTOFILL_AI_UPDATE_STRIKE_DATABASE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_STRIKE_DATABASES_AUTOFILL_AI_AUTOFILL_AI_UPDATE_STRIKE_DATABASE_H_
 
+#include <stddef.h>
+
 #include <string_view>
 
-#include "components/autofill/core/browser/strike_databases/simple_autofill_strike_database.h"
+#include "base/time/time.h"
+#include "components/strike_database/simple_strike_database.h"
 
 namespace autofill {
 
@@ -22,8 +25,8 @@ struct AutofillAiUpdateStrikeDatabaseTraits {
   static constexpr bool kUniqueIdRequired = true;
 };
 
-using AutofillAiUpdateStrikeDatabase = autofill::SimpleAutofillStrikeDatabase<
-    AutofillAiUpdateStrikeDatabaseTraits>;
+using AutofillAiUpdateStrikeDatabase =
+    strike_database::SimpleStrikeDatabase<AutofillAiUpdateStrikeDatabaseTraits>;
 
 }  // namespace autofill
 

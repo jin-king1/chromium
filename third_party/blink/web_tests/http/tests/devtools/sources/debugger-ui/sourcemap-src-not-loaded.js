@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
 import {ConsoleTestRunner} from 'console_test_runner';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import {SourcesTestRunner} from 'sources_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(
@@ -15,8 +16,8 @@ import {SourcesTestRunner} from 'sources_test_runner';
   const jsSource = await TestRunner.waitForUISourceCode('sourcemap-src-not-loaded.js');
   const tsSource = await TestRunner.waitForUISourceCode('sourcemap-src-not-loaded.ts');
   const [jsContent, tsContent] = await Promise.all([
-    jsSource.requestContent(),
-    tsSource.requestContent(),
+    jsSource.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent),
+    tsSource.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent),
   ]);
 
   TestRunner.addResult('JavaScript source file:');

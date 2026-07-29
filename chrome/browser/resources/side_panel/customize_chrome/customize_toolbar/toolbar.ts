@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import 'chrome://customize-chrome-side-panel.top-chrome/shared/sp_heading.js';
+import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
 
 import type {SpHeadingElement} from 'chrome://customize-chrome-side-panel.top-chrome/shared/sp_heading.js';
@@ -12,7 +13,7 @@ import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_liste
 import {assert} from 'chrome://resources/js/assert.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import type {Action, Category, CustomizeToolbarHandlerInterface} from '../customize_toolbar.mojom-webui.js';
+import type {Action, Category} from '../customize_toolbar.mojom-webui.js';
 
 import {CustomizeToolbarApiProxy} from './customize_toolbar_api_proxy.js';
 import {getCss} from './toolbar.css.js';
@@ -48,28 +49,28 @@ export class ToolbarElement extends ToolbarElementBase {
     };
   }
 
-  private handler_: CustomizeToolbarHandlerInterface;
+  private apiProxy_: CustomizeToolbarApiProxy =
+      CustomizeToolbarApiProxy.getInstance();
   private listenerIds_: number[] = [];
 
-  protected actions_: Action[] = [];
-  protected categories_: Category[] = [];
-  protected resetToDefaultDisabled_: boolean = true;
+  protected accessor actions_: Action[] = [];
+  protected accessor categories_: Category[] = [];
+  protected accessor resetToDefaultDisabled_: boolean = true;
 
   constructor() {
     super();
-    this.handler_ = CustomizeToolbarApiProxy.getInstance().handler;
-
     this.populateUi_();
   }
 
   override connectedCallback() {
     super.connectedCallback();
-    const callbackRouter =
-        CustomizeToolbarApiProxy.getInstance().callbackRouter;
-    this.listenerIds_.push(callbackRouter.setActionPinned.addListener(
-        this.setActionPinned_.bind(this)));
-    this.listenerIds_.push(callbackRouter.notifyActionsUpdated.addListener(
-        this.populateUi_.bind(this)));
+
+    this.listenerIds_ = [
+      this.apiProxy_.callbackRouter.setActionPinned.addListener(
+          this.setActionPinned_.bind(this)),
+      this.apiProxy_.callbackRouter.notifyActionsUpdated.addListener(
+          this.populateUi_.bind(this)),
+    ];
 
     this.addWebUiListener('theme-changed', this.populateUi_.bind(this));
     chrome.send('observeThemeChanges');
@@ -77,9 +78,9 @@ export class ToolbarElement extends ToolbarElementBase {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    const callbackRouter =
-        CustomizeToolbarApiProxy.getInstance().callbackRouter;
-    this.listenerIds_.forEach(id => callbackRouter.removeListener(id));
+
+    this.listenerIds_.forEach(
+        id => this.apiProxy_.callbackRouter.removeListener(id));
     this.listenerIds_ = [];
   }
 
@@ -87,19 +88,19 @@ export class ToolbarElement extends ToolbarElementBase {
     this.$.heading.getBackButton().focus();
   }
 
-  protected onBackClick_() {
+  protected onBackButtonClick_() {
     this.fire('back-click');
   }
 
-  protected onResetToDefaultClicked_() {
-    this.handler_.resetToDefault();
+  protected onResetToDefaultClick_() {
+    this.apiProxy_.handler.resetToDefault();
     const announcer = getAnnouncerInstance();
     announcer.announce(this.i18n('resetToDefaultButtonAnnouncement'));
   }
 
   protected getActionToggleHandler_(actionId: number, nextValue: boolean) {
     return (_event: CustomEvent<boolean>) =>
-               this.handler_.pinAction(actionId, nextValue);
+               this.apiProxy_.handler.pinAction(actionId, nextValue);
   }
 
   private setActionPinned_(actionId: number, pinned: boolean) {
@@ -115,13 +116,12 @@ export class ToolbarElement extends ToolbarElementBase {
   }
 
   private populateUi_() {
-    this.handler_.listActions().then(({actions}) => {
+    this.apiProxy_.handler.listActions().then(({actions}) => {
       this.actions_ = actions;
-      assert(this.actions_.every(
-          action => action.iconUrl.url.startsWith('data:')));
+      assert(this.actions_.every(action => action.iconUrl.startsWith('data:')));
     });
 
-    this.handler_.listCategories().then(({categories}) => {
+    this.apiProxy_.handler.listCategories().then(({categories}) => {
       this.categories_ = categories;
     });
 
@@ -129,7 +129,7 @@ export class ToolbarElement extends ToolbarElementBase {
   }
 
   private updateResetToDefaultDisabled() {
-    this.handler_.getIsCustomized().then(({customized}) => {
+    this.apiProxy_.handler.getIsCustomized().then(({customized}) => {
       this.resetToDefaultDisabled_ = !customized;
     });
   }

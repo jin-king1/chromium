@@ -15,7 +15,7 @@ namespace blink {
 
 namespace {
 inline bool IsHangingSpace(UChar c) {
-  return c == kSpaceCharacter || Character::IsOtherSpaceSeparator(c);
+  return c == uchar::kSpace || Character::IsOtherSpaceSeparator(c);
 }
 
 wtf_size_t GlyphCount(const InlineItemResult& item_result) {
@@ -70,6 +70,7 @@ void LineInfo::Reset() {
   end_item_index_ = 0;
   end_offset_for_justify_ = 0;
 
+  text_fit_scale_ = 1.0f;
   text_align_ = ETextAlign::kLeft;
   base_direction_ = TextDirection::kLtr;
 
@@ -87,6 +88,7 @@ void LineInfo::Reset() {
   may_have_text_combine_or_ruby_item_ = false;
   may_have_ruby_overhang_ = false;
   allow_hang_for_alignment_ = false;
+  is_start_of_paragraph_ = false;
 }
 
 void LineInfo::SetLineStyle(const InlineNode& node,
@@ -95,7 +97,7 @@ void LineInfo::SetLineStyle(const InlineNode& node,
   use_first_line_style_ = use_first_line_style;
   items_data_ = &items_data;
   const LayoutBox* box = node.GetLayoutBox();
-  line_style_ = box->Style(use_first_line_style_);
+  line_style_ = box->StyleRef(use_first_line_style_);
   needs_accurate_end_position_ = ComputeNeedsAccurateEndPosition();
 
   // Reset block start offset related members.
@@ -133,6 +135,7 @@ bool LineInfo::ComputeNeedsAccurateEndPosition() const {
     case ETextAlign::kCenter:
     case ETextAlign::kWebkitCenter:
     case ETextAlign::kJustify:
+    case ETextAlign::kMatchParent:
       return true;
     case ETextAlign::kLeft:
     case ETextAlign::kWebkitLeft:
@@ -161,6 +164,7 @@ bool LineInfo::ComputeNeedsAccurateEndPosition() const {
     case ETextAlignLast::kEnd:
     case ETextAlignLast::kCenter:
     case ETextAlignLast::kJustify:
+    case ETextAlignLast::kMatchParent:
       return true;
     case ETextAlignLast::kLeft:
       if (IsRtl(BaseDirection()))
@@ -219,7 +223,7 @@ unsigned LineInfo::InflowEndOffsetInternal(bool skip_forced_break) const {
     const InlineItem& item = *item_result.item;
     if (skip_forced_break) {
       if (item.Type() == InlineItem::kControl &&
-          ItemsData().text_content[item.StartOffset()] == kNewlineCharacter) {
+          ItemsData().text_content[item.StartOffset()] == uchar::kLineFeed) {
         continue;
       } else if (item.Type() == InlineItem::kText && item.Length() == 0) {
         continue;
@@ -257,6 +261,13 @@ bool LineInfo::IsHyphenated() const {
     if (item_result.Length()) {
       return item_result.is_hyphenated;
     }
+  }
+  return false;
+}
+
+bool LineInfo::HasUnsuccessfulBlockInInline() const {
+  if (const LayoutResult* result = BlockInInlineLayoutResult()) {
+    return result->Status() != LayoutResult::kSuccess;
   }
   return false;
 }
@@ -540,15 +551,11 @@ void LineInfo::RemoveParallelFlowBreakToken(unsigned item_index) {
                           return a->StartItemIndex() < b->StartItemIndex();
                         }));
 #endif  //  EXPENSIVE_DCHECKS_ARE_ON()
-  // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-  for (auto iter = parallel_flow_break_tokens_.begin();
-       iter != parallel_flow_break_tokens_.end(); UNSAFE_TODO(++iter)) {
-    const InlineBreakToken* break_token = *iter;
+  for (wtf_size_t i = 0; i < parallel_flow_break_tokens_.size(); ++i) {
+    const InlineBreakToken* break_token = parallel_flow_break_tokens_[i];
     DCHECK(break_token->IsInParallelBlockFlow());
     if (break_token->StartItemIndex() >= item_index) {
-      const wtf_size_t index =
-          static_cast<wtf_size_t>(iter - parallel_flow_break_tokens_.begin());
-      parallel_flow_break_tokens_.Shrink(index);
+      parallel_flow_break_tokens_.Shrink(i);
       break;
     }
   }

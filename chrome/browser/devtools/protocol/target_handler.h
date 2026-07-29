@@ -8,8 +8,6 @@
 #include <set>
 
 #include "chrome/browser/devtools/protocol/target.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list_observer.h"
 #include "net/base/host_port_pair.h"
 
 using RemoteLocations = std::set<net::HostPortPair>;
@@ -43,6 +41,8 @@ class TargetHandler : public protocol::Target::Backend {
       std::optional<bool> new_window,
       std::optional<bool> background,
       std::optional<bool> for_tab,
+      std::optional<bool> hidden,
+      std::optional<bool> focus,
       std::string* out_target_id) override;
 
  private:

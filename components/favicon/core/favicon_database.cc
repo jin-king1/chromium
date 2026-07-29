@@ -14,7 +14,6 @@
 #include <utility>
 
 #include "base/debug/alias.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
@@ -26,6 +25,7 @@
 #include "build/build_config.h"
 #include "components/database_utils/upper_bound_string.h"
 #include "components/database_utils/url_converter.h"
+#include "components/favicon/core/favicon_types.h"
 #include "components/favicon_base/favicon_types.h"
 #include "sql/recovery.h"
 #include "sql/statement.h"
@@ -232,14 +232,13 @@ bool FaviconDatabase::IconMappingEnumerator::GetNextIconMapping(
     IconMapping* icon_mapping) {
   if (!statement_.Step())
     return false;
-  FillIconMapping(GURL(statement_.ColumnString(4)), statement_, icon_mapping);
+  FillIconMapping(GURL(statement_.ColumnStringView(4)), statement_,
+                  icon_mapping);
   return true;
 }
 
 FaviconDatabase::FaviconDatabase()
     : db_(sql::DatabaseOptions()
-              .set_preload(base::FeatureList::IsEnabled(
-                  sql::features::kPreOpenPreloadDatabase))
               // Favicons db only stores favicons, so we don't need that big a
               // page size or cache.
               .set_page_size(2048)
@@ -301,10 +300,6 @@ void FaviconDatabase::Vacuum() {
   std::ignore = db_.Execute("VACUUM");
 }
 
-void FaviconDatabase::TrimMemory() {
-  db_.TrimMemory();
-}
-
 std::map<favicon_base::FaviconID, IconMappingsForExpiry>
 FaviconDatabase::GetOldOnDemandFavicons(base::Time threshold) {
   // Restrict to on-demand bitmaps (i.e. with last_requested != 0).
@@ -323,8 +318,8 @@ FaviconDatabase::GetOldOnDemandFavicons(base::Time threshold) {
 
   while (old_icons.Step()) {
     favicon_base::FaviconID id = old_icons.ColumnInt64(0);
-    icon_mappings[id].icon_url = GURL(old_icons.ColumnString(1));
-    icon_mappings[id].page_urls.push_back(GURL(old_icons.ColumnString(2)));
+    icon_mappings[id].icon_url = GURL(old_icons.ColumnStringView(1));
+    icon_mappings[id].page_urls.push_back(GURL(old_icons.ColumnStringView(2)));
   }
 
   return icon_mappings;
@@ -374,9 +369,8 @@ bool FaviconDatabase::GetFaviconBitmaps(
     favicon_bitmap.bitmap_id = statement.ColumnInt64(0);
     favicon_bitmap.icon_id = icon_id;
     favicon_bitmap.last_updated = statement.ColumnTime(1);
-    std::vector<uint8_t> bitmap_data_blob;
-    statement.ColumnBlobAsVector(2, &bitmap_data_blob);
-    if (!bitmap_data_blob.empty()) {
+    if (std::vector<uint8_t> bitmap_data_blob = statement.ColumnBlobAsVector(2);
+        !bitmap_data_blob.empty()) {
       favicon_bitmap.bitmap_data = base::MakeRefCounted<base::RefCountedBytes>(
           std::move(bitmap_data_blob));
     }
@@ -409,8 +403,7 @@ bool FaviconDatabase::GetFaviconBitmap(
   }
 
   if (png_icon_data) {
-    std::vector<uint8_t> png_data_blob;
-    statement.ColumnBlobAsVector(1, &png_data_blob);
+    std::vector<uint8_t> png_data_blob = statement.ColumnBlobAsVector(1);
     if (!png_data_blob.empty())
       *png_icon_data =
           base::MakeRefCounted<base::RefCountedBytes>(std::move(png_data_blob));
@@ -429,7 +422,7 @@ bool FaviconDatabase::GetFaviconBitmap(
 
 FaviconBitmapID FaviconDatabase::AddFaviconBitmap(
     favicon_base::FaviconID icon_id,
-    const scoped_refptr<base::RefCountedMemory>& icon_data,
+    scoped_refptr<base::RefCountedMemory> icon_data,
     FaviconBitmapType type,
     base::Time time,
     const gfx::Size& pixel_size) {
@@ -442,7 +435,7 @@ FaviconBitmapID FaviconDatabase::AddFaviconBitmap(
 
   statement.BindInt64(0, icon_id);
   if (icon_data.get() && icon_data->size()) {
-    statement.BindBlob(1, *icon_data);
+    statement.BindBlob(1, std::move(icon_data));
   } else {
     statement.BindNull(1);
   }
@@ -478,7 +471,7 @@ bool FaviconDatabase::SetFaviconBitmap(
                              "UPDATE favicon_bitmaps SET image_data=?, "
                              "last_updated=?, last_requested=? WHERE id=?"));
   if (bitmap_data.get() && bitmap_data->size()) {
-    statement.BindBlob(0, *bitmap_data);
+    statement.BindBlob(0, std::move(bitmap_data));
   } else {
     statement.BindNull(0);
   }
@@ -600,7 +593,7 @@ favicon_base::FaviconID FaviconDatabase::GetFaviconIDForFaviconURL(
   statement.BindInt64(0, icon_id);
   while (statement.Step()) {
     const auto candidate_origin =
-        url::Origin::Create(GURL(statement.ColumnString(0)));
+        url::Origin::Create(GURL(statement.ColumnStringView(0)));
     if (candidate_origin == page_origin) {
       return icon_id;
     }
@@ -637,7 +630,7 @@ bool FaviconDatabase::GetFaviconHeader(favicon_base::FaviconID icon_id,
     return false;  // No entry for the id.
 
   if (icon_url)
-    *icon_url = GURL(statement.ColumnString(0));
+    *icon_url = GURL(statement.ColumnStringView(0));
   if (icon_type)
     *icon_type = FromPersistedIconType(statement.ColumnInt(1));
 
@@ -660,13 +653,15 @@ favicon_base::FaviconID FaviconDatabase::AddFavicon(
 favicon_base::FaviconID FaviconDatabase::AddFavicon(
     const GURL& icon_url,
     favicon_base::IconType icon_type,
-    const scoped_refptr<base::RefCountedMemory>& icon_data,
+    scoped_refptr<base::RefCountedMemory> icon_data,
     FaviconBitmapType type,
     base::Time time,
     const gfx::Size& pixel_size) {
   favicon_base::FaviconID icon_id = AddFavicon(icon_url, icon_type);
-  if (!icon_id || !AddFaviconBitmap(icon_id, icon_data, type, time, pixel_size))
+  if (!icon_id || !AddFaviconBitmap(icon_id, std::move(icon_data), type, time,
+                                    pixel_size)) {
     return 0;
+  }
 
   return icon_id;
 }
@@ -733,11 +728,13 @@ bool FaviconDatabase::GetIconMappingsForPageURL(
   return result;
 }
 
-std::optional<GURL> FaviconDatabase::FindBestPageURLForHost(
+std::optional<std::pair<GURL, PageUrlType>>
+FaviconDatabase::FindBestPageURLForHost(
     const GURL& url,
     const favicon_base::IconTypeSet& required_icon_types) {
-  if (url.host().empty())
+  if (url.GetHost().empty()) {
     return std::nullopt;
+  }
 
   // This query prioritizes PageUrlType::kRegular over PageUrlType::kRedirect.
   // If PageUrlType is ever changed the ORDER BY clause for page_url_type may
@@ -745,7 +742,8 @@ std::optional<GURL> FaviconDatabase::FindBestPageURLForHost(
   CHECK_EQ(PageUrlType::kRedirect, PageUrlType::kMaxValue);
   sql::Statement statement(
       db_.GetCachedStatement(SQL_FROM_HERE,
-                             "SELECT icon_mapping.page_url, favicons.icon_type "
+                             "SELECT icon_mapping.page_url, "
+                             "favicons.icon_type, icon_mapping.page_url_type "
                              "FROM icon_mapping "
                              "INNER JOIN favicons "
                              "ON icon_mapping.icon_id = favicons.id "
@@ -758,11 +756,11 @@ std::optional<GURL> FaviconDatabase::FindBestPageURLForHost(
   // expensive. This statement finds all rows where page_url starts from either
   // "http://<host>/" or "https://<host>/".
   std::string http_prefix =
-      base::StringPrintf("http://%s/", url.host().c_str());
+      base::StringPrintf("http://%s/", url.GetHost().c_str());
   statement.BindString(0, http_prefix);
   statement.BindString(1, database_utils::UpperBoundString(http_prefix));
   std::string https_prefix =
-      base::StringPrintf("https://%s/", url.host().c_str());
+      base::StringPrintf("https://%s/", url.GetHost().c_str());
   statement.BindString(2, https_prefix);
   statement.BindString(3, database_utils::UpperBoundString(https_prefix));
 
@@ -770,8 +768,11 @@ std::optional<GURL> FaviconDatabase::FindBestPageURLForHost(
     favicon_base::IconType icon_type =
         FaviconDatabase::FromPersistedIconType(statement.ColumnInt(1));
 
-    if (required_icon_types.count(icon_type) != 0)
-      return std::make_optional(GURL(statement.ColumnString(0)));
+    if (required_icon_types.count(icon_type) != 0) {
+      return std::make_optional(std::make_pair(
+          GURL(statement.ColumnStringView(0)),
+          FaviconDatabase::FromPersistedPageUrlType(statement.ColumnInt64(2))));
+    }
   }
   return std::nullopt;
 }
@@ -1025,7 +1026,7 @@ void FaviconDatabase::FillIconMapping(const GURL& page_url,
   icon_mapping->mapping_id = statement.ColumnInt64(0);
   icon_mapping->icon_id = statement.ColumnInt64(1);
   icon_mapping->icon_type = FromPersistedIconType(statement.ColumnInt(2));
-  icon_mapping->icon_url = GURL(statement.ColumnString(3));
+  icon_mapping->icon_url = GURL(statement.ColumnStringView(3));
   icon_mapping->page_url = page_url;
   icon_mapping->page_url_type =
       FromPersistedPageUrlType(statement.ColumnInt64(4));
@@ -1038,13 +1039,7 @@ sql::InitStatus FaviconDatabase::OpenDatabase(sql::Database* db,
   if (!db_.has_error_callback()) {
     db->set_error_callback(base::BindRepeating(&DatabaseErrorCallback, db));
   }
-  if (!db->Open(db_name))
-    return sql::INIT_FAILURE;
-  if (!base::FeatureList::IsEnabled(sql::features::kPreOpenPreloadDatabase)) {
-    db->Preload();
-  }
-
-  return sql::INIT_OK;
+  return db->Open(db_name) ? sql::INIT_OK : sql::INIT_FAILURE;
 }
 
 sql::InitStatus FaviconDatabase::InitImpl(const base::FilePath& db_name) {

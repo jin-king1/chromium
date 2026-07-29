@@ -14,8 +14,11 @@
 #include "base/memory/discardable_memory_allocator.h"
 #include "base/memory/post_delayed_memory_reduction_task.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
 #include "base/memory/unsafe_shared_memory_region.h"
+#include "base/memory_coordinator/async_memory_consumer_registration.h"
+#include "base/memory_coordinator/memory_consumer.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
 #include "base/trace_event/memory_dump_provider.h"
@@ -36,6 +39,7 @@ namespace discardable_memory {
 class DISCARDABLE_MEMORY_EXPORT ClientDiscardableSharedMemoryManager
     : public base::DiscardableMemoryAllocator,
       public base::trace_event::MemoryDumpProvider,
+      public base::MemoryConsumer,
       public base::RefCountedDeleteOnSequence<
           ClientDiscardableSharedMemoryManager> {
  public:
@@ -79,6 +83,10 @@ class DISCARDABLE_MEMORY_EXPORT ClientDiscardableSharedMemoryManager
   void SetBytesAllocatedLimitForTesting(size_t limit) {
     bytes_allocated_limit_for_testing_ = limit;
   }
+
+  // base::MemoryConsumer:
+  void OnUpdateMemoryLimit() override;
+  void OnReleaseMemory() override;
 
   // Anything younger than |kMinAgeForScheduledPurge| is not discarded when we
   // do our periodic purge.
@@ -209,6 +217,8 @@ class DISCARDABLE_MEMORY_EXPORT ClientDiscardableSharedMemoryManager
   // we're in the foreground. This is parallel to what we do in
   // RenderThreadImpl.
   bool foregrounded_ = false;
+
+  base::AsyncMemoryConsumerRegistration memory_consumer_registration_;
 
   THREAD_CHECKER(thread_checker_);
 };

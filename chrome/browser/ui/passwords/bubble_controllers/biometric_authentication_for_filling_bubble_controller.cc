@@ -6,9 +6,8 @@
 
 #include <string>
 
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "chrome/browser/ui/passwords/passwords_model_delegate.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/password_manager/core/common/password_manager_ui.h"
@@ -125,7 +124,9 @@ void BiometricAuthenticationForFillingBubbleController::OnAccepted() {
 void BiometricAuthenticationForFillingBubbleController::OnCanceled() {
   prefs_->SetBoolean(
       password_manager::prefs::kHasUserInteractedWithBiometricAuthPromo, true);
-  delegate_->OnBiometricAuthBeforeFillingDeclined();
+  if (delegate_) {
+    delegate_->OnBiometricAuthBeforeFillingDeclined();
+  }
 }
 
 std::u16string BiometricAuthenticationForFillingBubbleController::GetTitle()

@@ -6,6 +6,7 @@ package org.chromium.components.content_settings;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
@@ -31,8 +32,8 @@ public abstract class ContentSettingsObserver {
 
     @CalledByNative
     private void onContentSettingChanged(
-            String primaryPattern,
-            String secondaryPattern,
+            @JniType("std::string") String primaryPattern,
+            @JniType("std::string") String secondaryPattern,
             @ContentSettingsType.EnumType int contentSettingsType) {
         onContentSettingChanged(
                 primaryPattern, secondaryPattern, new ContentSettingsTypeSet(contentSettingsType));
@@ -53,13 +54,13 @@ public abstract class ContentSettingsObserver {
     public void destroy() {
         assert !mIsDestroyed : "This observer is already destroyed.";
         mIsDestroyed = true;
-        ContentSettingsObserverJni.get().destroy(mNativeAndroidObserver, this);
+        ContentSettingsObserverJni.get().destroy(mNativeAndroidObserver);
     }
 
     @NativeMethods
     interface Natives {
-        long init(ContentSettingsObserver caller, BrowserContextHandle contextHandle);
+        long init(ContentSettingsObserver self, BrowserContextHandle contextHandle);
 
-        void destroy(long nativeAndroidObserver, ContentSettingsObserver caller);
+        void destroy(long nativeAndroidObserver);
     }
 }

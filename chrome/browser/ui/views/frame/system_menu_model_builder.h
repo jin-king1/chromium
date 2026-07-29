@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "chrome/browser/ui/views/frame/system_menu_model_delegate.h"
+#include "ui/base/interaction/element_identifier.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 namespace chromeos {
@@ -26,6 +27,10 @@ class SimpleMenuModel;
 // model.
 class SystemMenuModelBuilder {
  public:
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kToggleVerticalTabsElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kToggleVerticalTabsCollapseElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
+      kToggleVerticalTabsExpandOnHoverElementId);
   SystemMenuModelBuilder(ui::AcceleratorProvider* provider, Browser* browser);
 
   SystemMenuModelBuilder(const SystemMenuModelBuilder&) = delete;

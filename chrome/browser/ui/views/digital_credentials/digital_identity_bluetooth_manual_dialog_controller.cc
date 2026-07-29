@@ -6,11 +6,9 @@
 
 #include <memory>
 
-#include "base/functional/callback_forward.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/digital_credentials/digital_identity_multi_step_dialog.h"
-#include "chrome/browser/ui/views/digital_credentials/digital_identity_safety_interstitial_controller_desktop.h"
 #include "chrome/grit/generated_resources.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
@@ -47,8 +45,8 @@ void DigitalIdentityBluetoothManualDialogController::UpdateDialog(
   ok_button_params->SetEnabled(is_ok_button_enabled);
 
   auto illustration = std::make_unique<ThemeTrackingNonAccessibleImageView>(
-      ui::ImageModel::FromVectorIcon(kPasskeyErrorBluetoothIcon),
-      ui::ImageModel::FromVectorIcon(kPasskeyErrorBluetoothDarkIcon),
+      ui::ImageModel::FromVectorIcon(kPasskeyErrorBluetoothCustomIcon),
+      ui::ImageModel::FromVectorIcon(kPasskeyErrorBluetoothDarkCustomIcon),
       base::BindRepeating(&DigitalIdentityMultiStepDialog::GetBackgroundColor,
                           base::Unretained(dialog_)));
 
@@ -56,12 +54,16 @@ void DigitalIdentityBluetoothManualDialogController::UpdateDialog(
       ok_button_params,
       base::BindOnce(&DigitalIdentityBluetoothManualDialogController::OnAccept,
                      weak_factory_.GetWeakPtr()),
-      ui::DialogModel::Button::Params(),
+      /*cancel_button=*/
+      ui::DialogModel::Button::Params().SetLabel(l10n_util::GetStringUTF16(
+          IDS_WEB_DIGITAL_CREDENTIALS_FLOW_CANCEL_BUTTON_TEXT)),
       base::BindOnce(&DigitalIdentityBluetoothManualDialogController::OnCancel,
                      weak_factory_.GetWeakPtr()),
-      dialog_title, dialog_body,
-      DigitalIdentityMultiStepDialog::ConfigureHeaderIllustration(
-          std::move(illustration)));
+      /*dialog_title=*/u"", /*dialog_body=*/u"",
+      DigitalIdentityMultiStepDialog::CreateHeaderView(std::move(dialog_title),
+                                                       std::move(dialog_body),
+                                                       std::move(illustration)),
+      /*show_progress_bar=*/false);
 }
 
 void DigitalIdentityBluetoothManualDialogController::OnAccept() {

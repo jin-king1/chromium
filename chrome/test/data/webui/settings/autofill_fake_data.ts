@@ -15,8 +15,6 @@ export const STUB_USER_ACCOUNT_INFO: chrome.autofillPrivate.AccountInfo = {
   email: 'stub-user@example.com',
   isSyncEnabledForAutofillProfiles: false,
   isEligibleForAddressAccountStorage: false,
-  isAutofillSyncToggleAvailable: false,
-  isAutofillSyncToggleEnabled: false,
 };
 
 /**
@@ -84,12 +82,15 @@ export function createEmptyCreditCardEntry():
 /**
  * Creates a new random credit card entry for testing.
  */
-export function createCreditCardEntry():
-    chrome.autofillPrivate.CreditCardEntry {
+export function createCreditCardEntry(
+    isNewFopDisplay: boolean = true,
+    hasIdentifier: boolean = false): chrome.autofillPrivate.CreditCardEntry {
   const cards = ['Visa', 'Mastercard', 'Discover', 'Card'];
   const card = cards[Math.floor(Math.random() * cards.length)];
   const cardNumber = appendLuhnCheckBit(patternMaker('xxxxxxxxxxxxxxx', 10));
   const now = new Date();
+  const networkAndLastFour = card + ' ' +
+      '****' + cardNumber.substr(-4);
   return {
     guid: makeGuid(),
     name: 'Jane Doe',
@@ -101,9 +102,10 @@ export function createCreditCardEntry():
     imageSrc: 'chrome://theme/IDR_AUTOFILL_CC_GENERIC',
     metadata: {
       isLocal: true,
-      summaryLabel: card + ' ' +
-          '****' + cardNumber.substr(-4),
-      summarySublabel: 'Jane Doe',
+      summaryLabel: hasIdentifier ? `My Credit Card` : networkAndLastFour,
+      summarySublabel: isNewFopDisplay ?
+          (hasIdentifier ? networkAndLastFour : '') :
+          'Jane Doe',
     },
   };
 }
@@ -137,6 +139,7 @@ export function createPayOverTimeIssuerEntry():
     instrumentId: '123456',
     displayName: 'Issuer1',
     imageSrc: 'chrome://theme/IDR_AUTOFILL_METADATA_BNPL_GENERIC',
+    imageSrcDark: 'chrome://theme/IDR_AUTOFILL_METADATA_BNPL_GENERIC',
   };
 }
 
@@ -222,7 +225,7 @@ export class TestAutofillManager extends TestBrowserProxy implements
     AutofillManagerProxy {
   data: {
     addresses: chrome.autofillPrivate.AddressEntry[],
-    accountInfo: chrome.autofillPrivate.AccountInfo,
+    accountInfo?: chrome.autofillPrivate.AccountInfo,
   };
 
   lastCallback:
@@ -235,7 +238,6 @@ export class TestAutofillManager extends TestBrowserProxy implements
       'removeAddress',
       'removePersonalDataManagerListener',
       'setPersonalDataManagerListener',
-      'setAutofillSyncToggleEnabled',
     ]);
 
     // Set these to have non-empty data.
@@ -245,8 +247,6 @@ export class TestAutofillManager extends TestBrowserProxy implements
         email: 'stub-user@example.com',
         isSyncEnabledForAutofillProfiles: true,
         isEligibleForAddressAccountStorage: false,
-        isAutofillSyncToggleAvailable: false,
-        isAutofillSyncToggleEnabled: false,
       },
     };
 
@@ -279,10 +279,6 @@ export class TestAutofillManager extends TestBrowserProxy implements
 
   removeAddress(_guid: string) {
     this.methodCalled('removeAddress');
-  }
-
-  setAutofillSyncToggleEnabled(_enabled: boolean) {
-    this.methodCalled('setAutofillSyncToggleEnabled');
   }
 
   /**
@@ -321,7 +317,7 @@ export class TestPaymentsManager extends TestBrowserProxy implements
     PaymentsManagerProxy {
   private isValidIbanResult_: boolean = true;
   private isUserVerifyingPlatformAuthenticatorAvailable_: boolean|null = null;
-  // <if expr="is_win or is_macosx">
+  // <if expr="is_win or is_macosx or is_chromeos">
   private isDeviceAuthAvailable_: boolean = false;
   // </if>
 
@@ -380,8 +376,6 @@ export class TestPaymentsManager extends TestBrowserProxy implements
   logServerCardLinkClicked() {}
 
   logServerIbanLinkClicked() {}
-
-  migrateCreditCards() {}
 
   removeCreditCard(_guid: string) {
     this.methodCalled('removeCreditCard');
@@ -442,14 +436,13 @@ export class TestPaymentsManager extends TestBrowserProxy implements
     return Promise.resolve(null);
   }
 
-  // <if expr="is_win or is_macosx">
+  // <if expr="is_win or is_macosx or is_chromeos">
   setIsDeviceAuthAvailable(available: boolean) {
     this.isDeviceAuthAvailable_ = available;
   }
 
-  checkIfDeviceAuthAvailable() {
-    return Promise.resolve(this.isDeviceAuthAvailable_);
-  }
+  checkIfDeviceAuthAvailable: () => Promise<boolean> = () =>
+      Promise.resolve(this.isDeviceAuthAvailable_);
   // </if>
 
   bulkDeleteAllCvcs() {

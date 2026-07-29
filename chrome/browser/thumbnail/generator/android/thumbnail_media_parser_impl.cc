@@ -10,6 +10,7 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
@@ -40,8 +41,7 @@ bool IsSupportedMediaMimeType(const std::string& mime_type) {
                           base::CompareCase::INSENSITIVE_ASCII);
 }
 
-void OnRequestOverlayInfo(bool decoder_requires_restart_for_overlay,
-                          media::ProvideOverlayInfoCB overlay_info_cb) {
+void OnRequestOverlayInfo(media::ProvideOverlayInfoCB overlay_info_cb) {
   // No android overlay associated with video thumbnail.
   if (overlay_info_cb)
     std::move(overlay_info_cb).Run(media::OverlayInfo());

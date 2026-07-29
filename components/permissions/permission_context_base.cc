@@ -6,29 +6,43 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/not_fatal_until.h"
 #include "base/observer_list.h"
+#include "base/strings/strcat.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "components/content_settings/core/browser/content_settings_registry.h"
 #include "components/content_settings/core/browser/content_settings_utils.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/browser/permission_settings_registry.h"
+#include "components/content_settings/core/browser/website_settings_registry.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/content_settings/core/common/features.h"
+#include "components/guest_view/buildflags/buildflags.h"
 #include "components/permissions/features.h"
+#include "components/permissions/permission_actions_history.h"
 #include "components/permissions/permission_context_base.h"
+#include "components/permissions/permission_decision.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
+#include "components/permissions/permission_prompt_decision.h"
 #include "components/permissions/permission_request.h"
 #include "components/permissions/permission_request_id.h"
 #include "components/permissions/permission_request_manager.h"
@@ -36,17 +50,24 @@
 #include "components/permissions/permission_util.h"
 #include "components/permissions/permissions_client.h"
 #include "components/permissions/request_type.h"
+#include "components/permissions/resolvers/content_setting_permission_resolver.h"
+#include "components/permissions/resolvers/geolocation_permission_resolver.h"
+#include "components/permissions/resolvers/permission_prompt_options.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/permission_result.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/mojom/permissions/permission.mojom.h"
 #include "url/gurl.h"
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
 #include "components/guest_view/browser/guest_view_base.h"
 #endif
 
@@ -85,7 +106,8 @@ PermissionContextBase::PermissionContextBase(
     : browser_context_(browser_context),
       content_settings_type_(content_settings_type),
       permissions_policy_feature_(permissions_policy_feature) {
-  CHECK(permissions::PermissionUtil::IsPermission(content_settings_type_));
+  CHECK(permissions::PermissionUtil::IsPermission(content_settings_type_))
+      << content_settings_type_;
 }
 
 PermissionContextBase::~PermissionContextBase() {
@@ -94,50 +116,52 @@ PermissionContextBase::~PermissionContextBase() {
 }
 
 void PermissionContextBase::RequestPermission(
-    PermissionRequestData request_data,
+    std::unique_ptr<PermissionRequestData> request_data,
     BrowserPermissionCallback callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   content::RenderFrameHost* const rfh = content::RenderFrameHost::FromID(
-      request_data.id.global_render_frame_host_id());
+      request_data->id.global_render_frame_host_id());
 
   if (!rfh) {
     // Permission request is not allowed without a valid RenderFrameHost.
-    std::move(callback).Run(CONTENT_SETTING_ASK);
+    std::move(callback).Run(content::PermissionResult(
+        PermissionStatus::ASK, content::PermissionStatusSource::UNSPECIFIED));
     return;
   }
 
   request_data
-      .WithRequestingOrigin(
-          request_data.requesting_origin.DeprecatedGetOriginAsURL())
+      ->WithRequestingOrigin(
+          request_data->requesting_origin.DeprecatedGetOriginAsURL())
       .WithEmbeddingOrigin(GetEffectiveEmbedderOrigin(rfh));
 
-  if (!request_data.requesting_origin.is_valid() ||
-      !request_data.embedding_origin.is_valid()) {
+  if (!request_data->requesting_origin.is_valid() ||
+      !request_data->embedding_origin.is_valid()) {
     std::string type_name =
         PermissionUtil::GetPermissionString(content_settings_type_);
 
     DVLOG(1) << "Attempt to use " << type_name
-             << " from an invalid URL: " << request_data.requesting_origin
-             << "," << request_data.embedding_origin << " (" << type_name
+             << " from an invalid URL: " << request_data->requesting_origin
+             << "," << request_data->embedding_origin << " (" << type_name
              << " is not supported in popups)";
-    NotifyPermissionSet(request_data.id, request_data.requesting_origin,
-                        request_data.embedding_origin, std::move(callback),
-                        /*persist=*/false, CONTENT_SETTING_BLOCK,
-                        /*is_one_time=*/false,
-                        /*is_final_decision=*/true);
+    NotifyPermissionSet(*request_data, std::move(callback),
+                        /*persist=*/false,
+                        /*permission_result=*/nullptr,
+                        permissions::PermissionPromptDecision{
+                            .overall_decision = PermissionDecision::kDeny,
+                            .prompt_options = std::monostate(),
+                            .is_final = true});
     return;
   }
 
   // Check the content setting to see if the user has already made a decision,
   // or if the origin is under embargo. If so, respect that decision.
   DCHECK(rfh);
-  content::PermissionResult result = GetPermissionStatus(
-      rfh, request_data.requesting_origin, request_data.embedding_origin);
+  content::PermissionResult result = GetPermissionStatus(*request_data, rfh);
 
   bool status_ignorable = PermissionUtil::CanPermissionRequestIgnoreStatus(
-      request_data, result.source);
-
+      request_data, result.source, result.status,
+      content::WebContents::FromRenderFrameHost(rfh));
   if (!status_ignorable && (result.status == PermissionStatus::GRANTED ||
                             result.status == PermissionStatus::DENIED)) {
     static constexpr char kResetInstructions[] =
@@ -158,7 +182,9 @@ void PermissionContextBase::RequestPermission(
                                     content_settings_type_);
         PermissionUmaUtil::RecordPermissionRequestedFromFrame(
             content_settings_type_, rfh);
-        std::move(callback).Run(CONTENT_SETTING_BLOCK);
+        std::move(callback).Run(content::PermissionResult(
+            PermissionStatus::DENIED,
+            content::PermissionStatusSource::UNSPECIFIED));
         return;
       case content::PermissionStatusSource::MULTIPLE_DISMISSALS:
         static constexpr char kPermissionBlockedRepeatedDismissalsReason[] =
@@ -185,7 +211,7 @@ void PermissionContextBase::RequestPermission(
       case content::PermissionStatusSource::FEATURE_POLICY:
         static constexpr char kPermissionBlockedPermissionsPolicyReason[] =
             " because of a permissions policy applied to the current document. "
-            "See https://goo.gl/EuHzyv for more details.";
+            "See https://crbug.com/414348233 for more details.";
         LogPermissionBlockedMessage(rfh,
                                     kPermissionBlockedPermissionsPolicyReason,
                                     content_settings_type_);
@@ -200,25 +226,52 @@ void PermissionContextBase::RequestPermission(
         PermissionUmaUtil::RecordPermissionRequestedFromFrame(
             content_settings_type_, rfh);
         break;
+      case content::PermissionStatusSource::APP_LEVEL_SETTINGS:
+        static constexpr char kPermissionBlockedAppLevelSettingsReason[] =
+            " because Chrome does not have and cannot acquire app-level "
+            "permissions for the corresponding capability.";
+        LogPermissionBlockedMessage(rfh,
+                                    kPermissionBlockedAppLevelSettingsReason,
+                                    content_settings_type_);
+        break;
+      case content::PermissionStatusSource::ACTOR_OVERRIDE:
       case content::PermissionStatusSource::FENCED_FRAME:
       case content::PermissionStatusSource::INSECURE_ORIGIN:
       case content::PermissionStatusSource::VIRTUAL_URL_DIFFERENT_ORIGIN:
+      case content::PermissionStatusSource::HEURISTIC_GRANT:
         break;
     }
 
     // If we are under embargo, record the embargo reason for which we have
     // suppressed the prompt.
     PermissionUmaUtil::RecordEmbargoPromptSuppressionFromSource(result.source);
+    bool persist =
+        result.source == content::PermissionStatusSource::HEURISTIC_GRANT;
+    PermissionDecision allow_decision =
+        result.source == content::PermissionStatusSource::HEURISTIC_GRANT
+            ? PermissionDecision::kAllowThisTime
+            : PermissionDecision::kAllow;
     NotifyPermissionSet(
-        request_data.id, request_data.requesting_origin,
-        request_data.embedding_origin, std::move(callback),
-        /*persist=*/false,
-        PermissionUtil::PermissionStatusToContentSetting(result.status),
-        /*is_one_time=*/false,
-        /*is_final_decision=*/true);
+        *request_data, std::move(callback), persist, &result,
+        permissions::PermissionPromptDecision{
+            .overall_decision =
+                result.status == blink::mojom::PermissionStatus::GRANTED
+                    ? allow_decision
+                    : PermissionDecision::kDeny,
+            .is_final = true});
     return;
   }
-
+  // Status is either {ASK} or it's {GRANT/DENY and ignorable}.
+  if (content_settings_type_ == ContentSettingsType::GEOLOCATION_WITH_OPTIONS) {
+    std::unique_ptr<PermissionResolver> resolver =
+        CreatePermissionResolver(request_data->permission_descriptor);
+    CHECK(result.retrieved_permission_setting.has_value());
+    request_data->WithGeolocationPromptType(
+        static_cast<GeolocationPermissionResolver*>(resolver.get())
+            ->GetGeolocationPromptType(
+                request_data->IsEmbeddedPermissionElementInitiated(),
+                result.retrieved_permission_setting.value()));
+  }
   PermissionUmaUtil::RecordPermissionRequestedFromFrame(content_settings_type_,
                                                         rfh);
 
@@ -238,17 +291,17 @@ void PermissionContextBase::UserMadePermissionDecision(
     const PermissionRequestID& id,
     const GURL& requesting_origin,
     const GURL& embedding_origin,
-    ContentSetting content_setting) {}
+    PermissionDecision decision) {}
 
 std::unique_ptr<PermissionRequest>
 PermissionContextBase::CreatePermissionRequest(
     content::WebContents* web_contents,
-    PermissionRequestData request_data,
+    std::unique_ptr<PermissionRequestData> request_data,
     PermissionRequest::PermissionDecidedCallback permission_decided_callback,
-    base::OnceClosure delete_callback) const {
+    base::OnceClosure request_finished_callback) const {
   return std::make_unique<PermissionRequest>(
       std::move(request_data), std::move(permission_decided_callback),
-      std::move(delete_callback), UsesAutomaticEmbargo());
+      std::move(request_finished_callback), UsesAutomaticEmbargo());
 }
 
 bool PermissionContextBase::UsesAutomaticEmbargo() const {
@@ -263,7 +316,7 @@ const PermissionRequest* PermissionContextBase::FindPermissionRequest(
     return nullptr;
   }
 
-  return request->second.first.get();
+  return &*(request->second.first);
 }
 
 GURL PermissionContextBase::GetEffectiveEmbedderOrigin(
@@ -272,6 +325,31 @@ GURL PermissionContextBase::GetEffectiveEmbedderOrigin(
 }
 
 content::PermissionResult PermissionContextBase::GetPermissionStatus(
+    const PermissionRequestData& request_data,
+    content::RenderFrameHost* render_frame_host) const {
+  if (base::FeatureList::IsEnabled(blink::features::kGeolocationElement) &&
+      request_data.IsEligibleForHeuristicAutoGrant() &&
+      PermissionsClient::Get()
+          ->GetPermissionActionsHistory(browser_context_)
+          ->CheckHeuristicallyAutoGranted(request_data.requesting_origin,
+                                          content_settings_type_)) {
+    return content::PermissionResult(
+        PermissionStatus::GRANTED,
+        content::PermissionStatusSource::HEURISTIC_GRANT,
+        content_settings::PermissionSettingsRegistry::GetInstance()
+            ->Get(content_settings_type_)
+            ->delegate()
+            .ToPermissionSetting(CONTENT_SETTING_ALLOW));
+  }
+  std::unique_ptr<PermissionResolver> resolver =
+      CreatePermissionResolver(request_data.permission_descriptor);
+  return GetPermissionStatus(*resolver, render_frame_host,
+                             request_data.requesting_origin,
+                             request_data.embedding_origin);
+}
+
+content::PermissionResult PermissionContextBase::GetPermissionStatus(
+    const PermissionResolver& resolver,
     content::RenderFrameHost* render_frame_host,
     const GURL& requesting_origin,
     const GURL& embedding_origin) const {
@@ -279,6 +357,21 @@ content::PermissionResult PermissionContextBase::GetPermissionStatus(
   if (IsPermissionKillSwitchOn()) {
     return content::PermissionResult(
         PermissionStatus::DENIED, content::PermissionStatusSource::KILL_SWITCH);
+  }
+
+  if (base::FeatureList::IsEnabled(features::kGlicActorPermissionsAutoReject) &&
+      render_frame_host) {
+    content::WebContents* web_contents =
+        content::WebContents::FromRenderFrameHost(render_frame_host);
+    bool is_actor_operating =
+        PermissionsClient::Get()->IsActorOperatingOnWebContents(web_contents);
+    PermissionUmaUtil::RecordPermissionAutoRejectForActor(
+        content_settings_type_, is_actor_operating);
+    if (is_actor_operating) {
+      return content::PermissionResult(
+          PermissionStatus::DENIED,
+          content::PermissionStatusSource::ACTOR_OVERRIDE);
+    }
   }
 
   if (!IsPermissionAvailableToOrigins(requesting_origin, embedding_origin)) {
@@ -320,7 +413,7 @@ content::PermissionResult PermissionContextBase::GetPermissionStatus(
     }
   }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
   guest_view::GuestViewBase* guest =
       guest_view::GuestViewBase::FromRenderFrameHost(render_frame_host);
   if (guest) {
@@ -342,9 +435,7 @@ content::PermissionResult PermissionContextBase::GetPermissionStatus(
     // possible.
     // TODO(crbug.com/40068594): Scope granted permissions to a
     // StoragePartition.
-    if (base::FeatureList::IsEnabled(
-            features::kMitigateUnpartitionedWebviewPermissions) &&
-        !guest->IsPermissionRequestable(content_settings_type_)) {
+    if (!guest->IsPermissionRequestable(content_settings_type_)) {
       return content::PermissionResult(
           PermissionStatus::DENIED,
           content::PermissionStatusSource::UNSPECIFIED);
@@ -352,13 +443,37 @@ content::PermissionResult PermissionContextBase::GetPermissionStatus(
   }
 #endif
 
-  ContentSetting content_setting = GetPermissionStatusInternal(
+#if BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(
+          features::kReturnDeniedForNotificationsWhenNoAppLevelSettings)) {
+    if (content_settings_type_ == ContentSettingsType::NOTIFICATIONS) {
+      bool app_level_settings_allow_site_notifications =
+          enabled_app_level_notification_permission_for_testing_.value_or(
+              DoesAppLevelSettingsAllowSiteNotifications());
+      base::UmaHistogramBoolean(
+          "Permissions.Status.Notifications.EnabledAppLevel",
+          app_level_settings_allow_site_notifications);
+
+      if (!app_level_settings_allow_site_notifications) {
+        // Chrome is not able to send notifications at Android level.
+        return content::PermissionResult(
+            PermissionStatus::DENIED,
+            content::PermissionStatusSource::APP_LEVEL_SETTINGS);
+      }
+    }
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  PermissionSetting retrieved_permission_data = GetPermissionStatusInternal(
       render_frame_host, requesting_origin, embedding_origin);
 
-  if (content_setting != CONTENT_SETTING_ASK) {
+  auto permission_status =
+      resolver.DeterminePermissionStatus(retrieved_permission_data);
+
+  if (permission_status != PermissionStatus::ASK) {
     return content::PermissionResult(
-        PermissionUtil::ContentSettingToPermissionStatus(content_setting),
-        content::PermissionStatusSource::UNSPECIFIED);
+        permission_status, content::PermissionStatusSource::UNSPECIFIED,
+        retrieved_permission_data);
   }
 
   if (UsesAutomaticEmbargo()) {
@@ -367,20 +482,35 @@ content::PermissionResult PermissionContextBase::GetPermissionStatus(
             ->GetPermissionDecisionAutoBlocker(browser_context_)
             ->GetEmbargoResult(requesting_origin, content_settings_type_);
     if (result) {
-      DCHECK(result->status == PermissionStatus::DENIED);
-      return result.value();
+      result->retrieved_permission_setting = retrieved_permission_data;
+      return std::move(result).value();
     }
   }
-  return content::PermissionResult(
-      PermissionStatus::ASK, content::PermissionStatusSource::UNSPECIFIED);
+  return content::PermissionResult(PermissionStatus::ASK,
+                                   content::PermissionStatusSource::UNSPECIFIED,
+                                   retrieved_permission_data);
 }
+
+content::PermissionResult PermissionContextBase::GetPermissionStatus(
+    const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
+    content::RenderFrameHost* render_frame_host,
+    const GURL& requesting_origin,
+    const GURL& embedding_origin) const {
+  return GetPermissionStatus(*CreatePermissionResolver(permission_descriptor),
+                             render_frame_host, requesting_origin,
+                             embedding_origin);
+}
+
+void PermissionContextBase::MaybeOverridePermissionResultToReturn(
+    content::PermissionResult& result) const {}
 
 bool PermissionContextBase::IsPermissionAvailableToOrigins(
     const GURL& requesting_origin,
     const GURL& embedding_origin) const {
   if (IsRestrictedToSecureOrigins()) {
-    if (!network::IsUrlPotentiallyTrustworthy(requesting_origin))
+    if (!network::IsUrlPotentiallyTrustworthy(requesting_origin)) {
       return false;
+    }
 
     // TODO(raymes): We should check the entire chain of embedders here whenever
     // possible as this corresponds to the requirements of the secure contexts
@@ -401,10 +531,13 @@ PermissionContextBase::UpdatePermissionStatusWithDeviceStatus(
     content::PermissionResult result,
     const GURL& requesting_origin,
     const GURL& embedding_origin) {
+  // If the site content setting is ASK or DENIED, device-level permission has
+  // no effect on the current result. However, we still need to refresh the
+  // cached device permission state because a change (e.g. user toggling the
+  // OS-level permission) must invalidate cached state for *all* origins via
+  // the wildcard observer notification in MaybeUpdateCachedHasDevicePermission.
   MaybeUpdateCachedHasDevicePermission(web_contents);
 
-  // If the site content setting is ASK/BLOCKED the device-level permission
-  // won't affect it.
   if (result.status != blink::mojom::PermissionStatus::GRANTED) {
     return result;
   }
@@ -415,37 +548,40 @@ PermissionContextBase::UpdatePermissionStatusWithDeviceStatus(
     return result;
   }
 
-#if BUILDFLAG(IS_ANDROID)
-  if (!web_contents || !web_contents->GetNativeView() ||
-      !web_contents->GetNativeView()->GetWindowAndroid()) {
-    return result;
-  }
-  result.status =
-      CanRequestSystemPermission(content_settings_type(), web_contents)
-          ? blink::mojom::PermissionStatus::ASK
-          : blink::mojom::PermissionStatus::DENIED;
-#else
   // Otherwise the result will be "ASK" if the browser can ask for the
   // device-level permission, and "BLOCKED" otherwise.
-  result.status = PermissionsClient::Get()->CanRequestDevicePermission(
-                      content_settings_type())
-                      ? blink::mojom::PermissionStatus::ASK
-                      : blink::mojom::PermissionStatus::DENIED;
+  bool can_request;
+  if (can_request_device_permission_for_test_.has_value()) {
+    can_request = can_request_device_permission_for_test_.value();
+  } else {
+#if BUILDFLAG(IS_ANDROID)
+    if (!web_contents || !web_contents->GetNativeView() ||
+        !web_contents->GetNativeView()->GetWindowAndroid()) {
+      return result;
+    }
+    can_request =
+        CanRequestSystemPermission(content_settings_type(), web_contents);
+#else
+    can_request = PermissionsClient::Get()->CanRequestDevicePermission(
+        content_settings_type());
 #endif
+  }
+  result.status = can_request ? blink::mojom::PermissionStatus::ASK
+                              : blink::mojom::PermissionStatus::DENIED;
   return result;
 }
 
 void PermissionContextBase::ResetPermission(const GURL& requesting_origin,
                                             const GURL& embedding_origin) {
-  if (!content_settings::ContentSettingsRegistry::GetInstance()->Get(
-          content_settings_type_)) {
+  if (!content_settings::WebsiteSettingsRegistry::GetInstance()->Get(
+          content_settings_type())) {
     return;
   }
+
   PermissionsClient::Get()
-      ->GetSettingsMap(browser_context_)
-      ->SetContentSettingDefaultScope(requesting_origin, embedding_origin,
-                                      content_settings_type_,
-                                      CONTENT_SETTING_DEFAULT);
+      ->GetSettingsMap(browser_context())
+      ->SetWebsiteSettingDefaultScope(requesting_origin, embedding_origin,
+                                      content_settings_type(), base::Value());
 }
 
 bool PermissionContextBase::AlwaysIncludeDeviceStatus() const {
@@ -460,18 +596,18 @@ bool PermissionContextBase::IsPermissionKillSwitchOn() const {
   return param == kPermissionsKillSwitchBlockedValue;
 }
 
-ContentSetting PermissionContextBase::GetPermissionStatusInternal(
+PermissionSetting PermissionContextBase::GetPermissionStatusInternal(
     content::RenderFrameHost* render_frame_host,
     const GURL& requesting_origin,
     const GURL& embedding_origin) const {
   return PermissionsClient::Get()
-      ->GetSettingsMap(browser_context_)
-      ->GetContentSetting(requesting_origin, embedding_origin,
-                          content_settings_type_);
+      ->GetSettingsMap(browser_context())
+      ->GetPermissionSetting(requesting_origin, embedding_origin,
+                             content_settings_type());
 }
 
 void PermissionContextBase::DecidePermission(
-    PermissionRequestData request_data,
+    std::unique_ptr<PermissionRequestData> request_data,
     BrowserPermissionCallback callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
@@ -480,12 +616,12 @@ void PermissionContextBase::DecidePermission(
   // origin. Storage access API requests are excluded as they are expected to
   // request permissions from the frame origin needing access.
   DCHECK(PermissionsClient::Get()->CanBypassEmbeddingOriginCheck(
-             request_data.requesting_origin, request_data.embedding_origin) ||
-         request_data.requesting_origin == request_data.embedding_origin ||
+             request_data->requesting_origin, request_data->embedding_origin) ||
+         request_data->requesting_origin == request_data->embedding_origin ||
          content_settings_type_ == ContentSettingsType::STORAGE_ACCESS);
 
   content::RenderFrameHost* rfh = content::RenderFrameHost::FromID(
-      request_data.id.global_render_frame_host_id());
+      request_data->id.global_render_frame_host_id());
   DCHECK(rfh);
 
   content::WebContents* web_contents =
@@ -495,64 +631,62 @@ void PermissionContextBase::DecidePermission(
   // TODO(felt): sometimes |permission_request_manager| is null. This check is
   // meant to prevent crashes. See crbug.com/457091.
   if (!permission_request_manager) {
-    std::move(callback).Run(CONTENT_SETTING_ASK);
+    std::move(callback).Run(content::PermissionResult(
+        PermissionStatus::ASK, content::PermissionStatusSource::UNSPECIFIED));
     return;
   }
 
   auto decided_cb = base::BindRepeating(
-      &PermissionContextBase::PermissionDecided, weak_factory_.GetWeakPtr(),
-      request_data.id, request_data.requesting_origin,
-      request_data.embedding_origin);
-  auto cleanup_cb =
-      base::BindOnce(&PermissionContextBase::CleanUpRequest,
-                     weak_factory_.GetWeakPtr(), web_contents, request_data.id,
-                     request_data.embedded_permission_element_initiated);
-  PermissionRequestID permission_request_id = request_data.id;
+      &PermissionContextBase::PermissionDecided, weak_factory_.GetWeakPtr());
+  auto cleanup_cb = base::BindOnce(&PermissionContextBase::CleanUpRequest,
+                                   weak_factory_.GetWeakPtr(), web_contents,
+                                   request_data->id);
+  PermissionRequestID permission_request_id = request_data->id;
 
-  std::unique_ptr<PermissionRequest> request_ptr =
+  std::unique_ptr<PermissionRequest> request =
       CreatePermissionRequest(web_contents, std::move(request_data),
                               std::move(decided_cb), std::move(cleanup_cb));
-  PermissionRequest* request = request_ptr.get();
 
   bool inserted =
       pending_requests_
           .insert(std::make_pair(
               permission_request_id.ToString(),
-              std::make_pair(std::move(request_ptr), std::move(callback))))
+              std::make_pair(request->GetSafeRef(), std::move(callback))))
           .second;
+
   DCHECK(inserted) << "Duplicate id " << permission_request_id.ToString();
 
-  permission_request_manager->AddRequest(rfh, request);
+  permission_request_manager->AddRequest(rfh, std::move(request));
 }
 
-void PermissionContextBase::PermissionDecided(const PermissionRequestID& id,
-                                              const GURL& requesting_origin,
-                                              const GURL& embedding_origin,
-                                              ContentSetting content_setting,
-                                              bool is_one_time,
-                                              bool is_final_decision) {
-  DCHECK(content_setting == CONTENT_SETTING_ALLOW ||
-         content_setting == CONTENT_SETTING_BLOCK ||
-         content_setting == CONTENT_SETTING_DEFAULT);
-  UserMadePermissionDecision(id, requesting_origin, embedding_origin,
-                             content_setting);
+void PermissionContextBase::PermissionDecided(
+    const permissions::PermissionPromptDecision& decision,
+    const PermissionRequestData& request_data) {
+  UserMadePermissionDecision(request_data.id, request_data.requesting_origin,
+                             request_data.embedding_origin,
+                             decision.overall_decision);
+  //  If a permission request originates from an embedded element, its
+  //  cancellation would be a result of a "system permission changed event."
+  //  In this case, we will dispatch `OnPermissionChanged` early here.
+  if (request_data.IsEmbeddedPermissionElementInitiated() &&
+      decision.overall_decision == PermissionDecision::kNone) {
+    content::RenderFrameHost* rfh = content::RenderFrameHost::FromID(
+        request_data.id.global_render_frame_host_id());
+    MaybeUpdateCachedHasDevicePermission(
+        content::WebContents::FromRenderFrameHost(rfh));
+  }
 
-  bool persist = content_setting != CONTENT_SETTING_DEFAULT;
+  bool persist = decision.overall_decision != PermissionDecision::kNone;
 
-  auto request = pending_requests_.find(id.ToString());
-  CHECK(request != pending_requests_.end(), base::NotFatalUntil::M130);
+  auto request = pending_requests_.find(request_data.id.ToString());
+  CHECK(request != pending_requests_.end());
   // Check if `request` has `BrowserPermissionCallback`. The call back might be
   // missing if a permission prompt was preignored and we already notified an
   // origin about it.
-  if (request->second.second) {
-    NotifyPermissionSet(id, requesting_origin, embedding_origin,
-                        std::move(request->second.second), persist,
-                        content_setting, is_one_time, is_final_decision);
-  } else {
-    NotifyPermissionSet(id, requesting_origin, embedding_origin,
-                        base::DoNothing(), persist, content_setting,
-                        is_one_time, is_final_decision);
-  }
+  NotifyPermissionSet(request_data,
+                      request->second.second ? std::move(request->second.second)
+                                             : base::DoNothing(),
+                      persist, /*permission_result=*/nullptr, decision);
 }
 
 content::BrowserContext* PermissionContextBase::browser_context() const {
@@ -588,24 +722,31 @@ void PermissionContextBase::RemoveObserver(
   }
 }
 
+std::unique_ptr<PermissionResolver>
+PermissionContextBase::CreatePermissionResolver(
+    const blink::mojom::PermissionDescriptorPtr& permission_descriptor) const {
+  return std::make_unique<ContentSettingPermissionResolver>(
+      content_settings_type_);
+}
+
 void PermissionContextBase::MaybeUpdateCachedHasDevicePermission(
     content::WebContents* web_contents) {
+  bool has_device_permission;
+  if (has_device_permission_for_test_.has_value()) {
+    has_device_permission = has_device_permission_for_test_.value();
+  } else {
 #if BUILDFLAG(IS_ANDROID)
-  if (!web_contents || !web_contents->GetNativeView() ||
-      !web_contents->GetNativeView()->GetWindowAndroid()) {
-    return;
-  }
-  const bool has_device_permission =
-      has_device_permission_for_test_.has_value()
-          ? has_device_permission_for_test_.value()
-          : HasSystemPermission(content_settings_type(), web_contents);
+    if (!web_contents || !web_contents->GetNativeView() ||
+        !web_contents->GetNativeView()->GetWindowAndroid()) {
+      return;
+    }
+    has_device_permission =
+        HasSystemPermission(content_settings_type(), web_contents);
 #else
-  const bool has_device_permission =
-      has_device_permission_for_test_.has_value()
-          ? has_device_permission_for_test_.value()
-          : PermissionsClient::Get()->HasDevicePermission(
-                content_settings_type());
+    has_device_permission =
+        PermissionsClient::Get()->HasDevicePermission(content_settings_type());
 #endif
+  }
 
   const bool should_notify_observers =
       last_has_device_permission_result_.has_value() &&
@@ -623,92 +764,128 @@ void PermissionContextBase::MaybeUpdateCachedHasDevicePermission(
   }
 }
 
+content::PermissionResult PermissionContextBase::ComputeNewPermissionResult(
+    const PermissionRequestData& request_data,
+    const permissions::PermissionPromptDecision& decision) {
+  // Note that rfh may be null, see crbug.com/426909787.
+  auto* rfh = content::RenderFrameHost::FromID(
+      request_data.id.global_render_frame_host_id());
+
+  PermissionSetting previous_value = GetPermissionStatusInternal(
+      rfh, request_data.requesting_origin, request_data.embedding_origin);
+  std::unique_ptr<PermissionResolver> resolver =
+      CreatePermissionResolver(request_data.permission_descriptor);
+  PermissionSetting new_value = resolver->ComputePermissionDecisionResult(
+      previous_value, decision, request_data.geolocation_prompt_type);
+  return content::PermissionResult(
+      resolver->DeterminePermissionStatus(new_value),
+      content::PermissionStatusSource::UNSPECIFIED, new_value);
+}
+
 void PermissionContextBase::NotifyPermissionSet(
-    const PermissionRequestID& id,
-    const GURL& requesting_origin,
-    const GURL& embedding_origin,
+    const PermissionRequestData& request_data,
     BrowserPermissionCallback callback,
     bool persist,
-    ContentSetting content_setting,
-    bool is_one_time,
-    bool is_final_decision) {
+    const content::PermissionResult* permission_result,
+    const permissions::PermissionPromptDecision& decision) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  content::PermissionResult new_permission_result =
+      permission_result ? *permission_result
+                        : ComputeNewPermissionResult(request_data, decision);
 
   if (persist) {
-    UpdateContentSetting(requesting_origin, embedding_origin, content_setting,
-                         is_one_time);
+    CHECK(new_permission_result.retrieved_permission_setting.has_value());
+    UpdateSetting(request_data,
+                  new_permission_result.retrieved_permission_setting.value(),
+                  /*is_one_time=*/decision.overall_decision ==
+                      PermissionDecision::kAllowThisTime);
   }
 
-  if (is_final_decision) {
-    UpdateTabContext(id, requesting_origin,
-                     content_setting == CONTENT_SETTING_ALLOW);
-    if (content_setting == CONTENT_SETTING_ALLOW) {
-      if (auto* rfh = content::RenderFrameHost::FromID(
-              id.global_render_frame_host_id())) {
-        PermissionUmaUtil::RecordPermissionsUsageSourceAndPolicyConfiguration(
-            content_settings_type_, rfh);
-      }
+  // Note that rfh may be null, see crbug.com/426909787.
+  auto* rfh = content::RenderFrameHost::FromID(
+      request_data.id.global_render_frame_host_id());
+
+  if (decision.is_final) {
+    UpdateTabContext(request_data, new_permission_result.status ==
+                                       blink::mojom::PermissionStatus::GRANTED);
+    if (rfh && decision.overall_decision == PermissionDecision::kAllow) {
+      PermissionUmaUtil::RecordPermissionsUsageSourceAndPolicyConfiguration(
+          content_settings_type_, rfh);
     }
   }
 
-  if (content_setting == CONTENT_SETTING_DEFAULT)
-    content_setting = CONTENT_SETTING_ASK;
-
-  std::move(callback).Run(content_setting);
+  auto request = pending_requests_.find(request_data.id.ToString());
+  if (request != pending_requests_.end() &&
+      request_data.IsEmbeddedPermissionElementInitiated()) {
+    content::WebContents* web_contents =
+        content::WebContents::FromRenderFrameHost(rfh);
+    request->second.first->set_request_finished_callback(base::BindOnce(
+        &PermissionContextBase::CleanUpRequestEmbeddedPermissionElement,
+        weak_factory_.GetWeakPtr(), web_contents, request_data.id,
+        std::move(callback), decision.overall_decision, new_permission_result));
+  } else {
+    std::move(callback).Run(new_permission_result);
+  }
 }
 
-void PermissionContextBase::CleanUpRequest(
+void PermissionContextBase::CleanUpRequest(content::WebContents* web_contents,
+                                           const PermissionRequestID& id) {
+  size_t success = pending_requests_.erase(id.ToString());
+  DCHECK(success == 1) << "Missing request " << id.ToString();
+}
+
+void PermissionContextBase::CleanUpRequestEmbeddedPermissionElement(
     content::WebContents* web_contents,
     const PermissionRequestID& id,
-    bool embedded_permission_element_initiated) {
-  size_t success = pending_requests_.erase(id.ToString());
+    BrowserPermissionCallback callback,
+    PermissionDecision decision,
+    const content::PermissionResult& permission_result) {
   // A request from an embedded permission element requires a notification
   // `OnPermissionChanged` when changing the device status, which is currently
   // unavailable. We compare the device status with the cached status and notify
   // `OnPermissionChanged` here. We should remove this line once the device
   // status change observer is implemented.
-  if (embedded_permission_element_initiated) {
-    MaybeUpdateCachedHasDevicePermission(web_contents);
-  }
-  DCHECK(success == 1) << "Missing request " << id.ToString();
+  MaybeUpdateCachedHasDevicePermission(web_contents);
+  std::move(callback).Run(permission_result);
+  CleanUpRequest(web_contents, id);
 }
 
-void PermissionContextBase::UpdateContentSetting(const GURL& requesting_origin,
-                                                 const GURL& embedding_origin,
-                                                 ContentSetting content_setting,
-                                                 bool is_one_time) {
-  DCHECK_EQ(requesting_origin, requesting_origin.DeprecatedGetOriginAsURL());
-  DCHECK_EQ(embedding_origin, embedding_origin.DeprecatedGetOriginAsURL());
-  DCHECK(content_setting == CONTENT_SETTING_ALLOW ||
-         content_setting == CONTENT_SETTING_BLOCK);
+void PermissionContextBase::UpdateSetting(
+    const PermissionRequestData& request_data,
+    const PermissionSetting& setting,
+    bool is_one_time) {
+  auto* info = content_settings::PermissionSettingsRegistry::GetInstance()->Get(
+      content_settings_type_);
+  CHECK(info);
+  CHECK(!info->delegate().IsUndecided(setting));
+
+  CHECK_EQ(request_data.requesting_origin,
+           request_data.requesting_origin.DeprecatedGetOriginAsURL());
+  CHECK_EQ(request_data.embedding_origin,
+           request_data.embedding_origin.DeprecatedGetOriginAsURL());
 
   content_settings::ContentSettingConstraints constraints;
   constraints.set_session_model(
       is_one_time ? content_settings::mojom::SessionModel::ONE_TIME
                   : content_settings::mojom::SessionModel::DURABLE);
 
-  // The Permissions module in Safety check will revoke permissions after
-  // a finite amount of time if the permission can be revoked.
-  if (content_settings::CanBeAutoRevoked(content_settings_type_,
-                                         content_setting, is_one_time)) {
-    // For #2, by definition, that should be all of them. If that changes in
-    // the future, consider whether revocation for such permission makes
-    // sense, and/or change this to an early return so that we don't
-    // unnecessarily record timestamps where we don't need them.
+  // The unused permissions module in Safety check will revoke unused site
+  // permissions after a finite amount of time if the permission can be revoked.
+  if (content_settings::CanBeAutoRevokedAsUnusedPermission(
+          content_settings_type(), setting, is_one_time)) {
     constraints.set_track_last_visit_for_autoexpiration(true);
   }
 
   if (is_one_time) {
-    if (content_settings::ShouldTypeExpireActively(content_settings_type_)) {
+    if (content_settings::ShouldTypeExpireActively(content_settings_type())) {
       constraints.set_lifetime(kOneTimePermissionMaximumLifetime);
     }
   }
-
   PermissionsClient::Get()
-      ->GetSettingsMap(browser_context_)
-      ->SetContentSettingDefaultScope(requesting_origin, embedding_origin,
-                                      content_settings_type_, content_setting,
-                                      constraints);
+      ->GetSettingsMap(browser_context())
+      ->SetPermissionSettingDefaultScope(
+          request_data.requesting_origin, request_data.embedding_origin,
+          content_settings_type(), setting, constraints);
 }
 
 bool PermissionContextBase::PermissionAllowedByPermissionsPolicy(

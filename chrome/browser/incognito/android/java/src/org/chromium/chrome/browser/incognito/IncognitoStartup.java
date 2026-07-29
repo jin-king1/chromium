@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.incognito;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.ActivityManager.AppTask;
@@ -13,8 +15,10 @@ import android.util.Pair;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.ContextUtils;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.cookies.CookiesFetcher;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabHostUtils;
@@ -25,17 +29,21 @@ import java.util.HashSet;
 import java.util.Set;
 
 /** Operations that need to be executed on startup for incognito mode. */
+@NullMarked
 public class IncognitoStartup {
     public static void onResumeWithNative(
             ProfileProvider profileProvider,
             CookiesFetcher cookiesFetcher,
-            ObservableSupplier<TabModelSelector> tabModelSelectorSupplier,
+            MonotonicObservableSupplier<TabModelSelector> tabModelSelectorSupplier,
             Set<String> componentNames) {
-        if (profileProvider.hasOffTheRecordProfile()
+        Profile otrProfile = profileProvider.getOffTheRecordProfile();
+        if (otrProfile != null
                 && shouldDestroyIncognitoProfileOnStartup(
-                        tabModelSelectorSupplier.get().getCurrentModel().isIncognito(),
+                        assumeNonNull(tabModelSelectorSupplier.get())
+                                .getCurrentModel()
+                                .isIncognito(),
                         componentNames)) {
-            ProfileManager.destroyWhenAppropriate(profileProvider.getOffTheRecordProfile(false));
+            ProfileManager.destroyWhenAppropriate(otrProfile);
         } else {
             cookiesFetcher.restoreCookies(CallbackUtils.emptyRunnable());
         }

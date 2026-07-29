@@ -14,6 +14,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
@@ -88,7 +89,7 @@ SigninEmailConfirmationDialog::SigninEmailConfirmationDialog(
   set_dialog_content_url(GURL(chrome::kChromeUISigninEmailConfirmationURL));
   // This dialog chooses its height automatically based on its contents.
   set_dialog_size(gfx::Size(kSigninEmailConfirmationDialogWidth, 0));
-  set_dialog_args(*base::WriteJson(base::Value::Dict()
+  set_dialog_args(*base::WriteJson(base::DictValue()
                                        .Set("newEmail", new_email)
                                        .Set("lastEmail", last_email)));
   set_show_dialog_title(false);
@@ -127,7 +128,8 @@ void SigninEmailConfirmationDialog::ShowDialog() {
   // zoom setting.
   const GURL dialog_url = GetDialogContentURL();
   content::HostZoomMap::Get(dialog_web_contents->GetSiteInstance())
-      ->SetZoomLevelForHostAndScheme(dialog_url.scheme(), dialog_url.host(), 0);
+      ->SetZoomLevelForHostAndScheme(dialog_url.GetScheme(),
+                                     dialog_url.GetHost(), 0);
 
   dialog_observer_ =
       std::make_unique<DialogWebContentsObserver>(dialog_web_contents, this);
@@ -163,7 +165,8 @@ content::WebContents* SigninEmailConfirmationDialog::GetDialogWebContents()
 void SigninEmailConfirmationDialog::OnDialogClosed(
     const std::string& json_retval) {
   Action action = CLOSE;
-  std::optional<base::Value> ret_value = base::JSONReader::Read(json_retval);
+  std::optional<base::Value> ret_value =
+      base::JSONReader::Read(json_retval, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (ret_value && ret_value->is_dict()) {
     const std::string* action_string =
         ret_value->GetDict().FindString(kSigninEmailConfirmationActionKey);
@@ -183,7 +186,7 @@ void SigninEmailConfirmationDialog::OnDialogClosed(
     }
   } else {
     // If the dialog is dismissed without any return value, then simply close
-    // the dialog. (see http://crbug.com/667690)
+    // the dialog. (see http://crbug.com/41287540)
     action = CLOSE;
   }
 

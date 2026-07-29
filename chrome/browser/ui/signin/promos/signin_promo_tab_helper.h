@@ -28,12 +28,11 @@ class SigninPromoTabHelper
   static SigninPromoTabHelper* GetForWebContents(
       content::WebContents& web_contents);
 
-  // Initializes the autofill data move process by observing the
-  // IdentityManager. If the sign in happens from a tab with the appropriate
-  // |access_point| within the |time_limit|, the |move_callback| will be
-  // executed.
-  void InitializeDataMoveAfterSignIn(
-      base::OnceClosure move_callback,
+  // Initializes waiting for a sign in event by observing the IdentityManager.
+  // If the sign in happens from a tab with the appropriate `access_point`
+  // within the `time_limit`, the `completed_callback` will be executed.
+  void InitializeCallbackAfterSignIn(
+      base::OnceClosure completed_callback,
       signin_metrics::AccessPoint access_point,
       base::TimeDelta time_limit = base::Minutes(50));
 
@@ -64,9 +63,8 @@ class SigninPromoTabHelper
     base::ScopedObservation<signin::IdentityManager,
                             signin::IdentityManager::Observer>
         identity_manager_observation_;
-    base::OnceClosure move_callback_;
-    signin_metrics::AccessPoint access_point_ =
-        signin_metrics::AccessPoint::kUnknown;
+    base::OnceClosure completed_callback_;
+    std::optional<signin_metrics::AccessPoint> access_point_;
     base::Time initialization_time_;
     base::TimeDelta time_limit_;
     bool is_initialized_ = false;

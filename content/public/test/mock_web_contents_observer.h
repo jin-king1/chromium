@@ -38,6 +38,7 @@ class MockWebContentsObserver : public WebContentsObserver {
               (RenderFrameHost* render_frame_host),
               (override));
   MOCK_METHOD(void, PrimaryPageChanged, (Page & page), (override));
+  MOCK_METHOD(void, PrimaryPageWillBeDeactivated, (Page & page), (override));
   MOCK_METHOD(void,
               RenderFrameHostChanged,
               (RenderFrameHost* old_host, RenderFrameHost* new_host),
@@ -121,8 +122,10 @@ class MockWebContentsObserver : public WebContentsObserver {
               ResourceLoadComplete,
               (RenderFrameHost* render_frame_host,
                const GlobalRequestID& request_id,
+               const GURL& original_url,
                const blink::mojom::ResourceLoadInfo& resource_load_info),
               (override));
+  MOCK_METHOD(void, OnFedCmFederatedLogin, (bool success), (override));
   MOCK_METHOD(void,
               OnCookiesAccessed,
               (RenderFrameHost* render_frame_host,
@@ -187,21 +190,9 @@ class MockWebContentsObserver : public WebContentsObserver {
                const gfx::Size& frame_size),
               (override));
   MOCK_METHOD(void, TitleWasSet, (NavigationEntry * entry), (override));
-  MOCK_METHOD(void, PepperInstanceCreated, (), (override));
-  MOCK_METHOD(void, PepperInstanceDeleted, (), (override));
   MOCK_METHOD(void,
               ViewportFitChanged,
               (blink::mojom::ViewportFit value),
-              (override));
-  MOCK_METHOD(void,
-              PluginCrashed,
-              (const base::FilePath& plugin_path, base::ProcessId plugin_pid),
-              (override));
-  MOCK_METHOD(void,
-              PluginHungStatusChanged,
-              (int plugin_child_id,
-               const base::FilePath& plugin_path,
-               bool is_hung),
               (override));
   MOCK_METHOD(void,
               InnerWebContentsCreated,
@@ -211,6 +202,15 @@ class MockWebContentsObserver : public WebContentsObserver {
               InnerWebContentsAttached,
               (WebContents* inner_web_contents,
                RenderFrameHost* render_frame_host),
+              (override));
+  MOCK_METHOD(void,
+              SurfaceEmbedChildWebContentsAttached,
+              (WebContents * inner_web_contents,
+               RenderFrameHost* embedder_render_frame_host),
+              (override));
+  MOCK_METHOD(void,
+              SurfaceEmbedChildWebContentsDetached,
+              (WebContents * inner_web_contents),
               (override));
   MOCK_METHOD(void,
               DidCloneToNewWebContents,
@@ -223,8 +223,9 @@ class MockWebContentsObserver : public WebContentsObserver {
               (override));
   MOCK_METHOD(void,
               DidUpdateFaviconURL,
-              (RenderFrameHost* render_frame_host,
-               const std::vector<blink::mojom::FaviconURLPtr>& candidates),
+              (RenderFrameHost * render_frame_host,
+               const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+               blink::mojom::FaviconUpdateReason reason),
               (override));
   MOCK_METHOD(void, OnAudioStateChanged, (bool audible), (override));
   MOCK_METHOD(void,
@@ -311,7 +312,7 @@ class MockWebContentsObserver : public WebContentsObserver {
               (override));
   MOCK_METHOD(void,
               OnFocusChangedInPage,
-              (FocusedNodeDetails* details),
+              (const FocusedNodeDetails& details),
               (override));
   MOCK_METHOD(void,
               DidUpdateWebManifestURL,

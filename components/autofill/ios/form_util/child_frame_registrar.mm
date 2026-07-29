@@ -7,7 +7,6 @@
 #import "base/values.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/ios/browser/autofill_util.h"
-#import "components/autofill/ios/common/features.h"
 #import "ios/web/public/js_messaging/content_world.h"
 
 namespace autofill {
@@ -64,15 +63,17 @@ void ChildFrameRegistrar::RegisterMapping(RemoteFrameToken remote,
 
   lookup_map_[remote] = local;
 
-  // Check if we're waiting for this token and run the pending callback, if any.
-  auto pending = pending_callbacks_.extract(remote);
-  if (pending) {
-    std::move(pending.mapped()).Run(local);
+  // Check if we're waiting for this token and run the pending callbacks, if
+  // any.
+  if (auto pendings = pending_callbacks_.extract(remote)) {
+    for (auto& pending : pendings.mapped()) {
+      std::move(pending).Run(local);
+    }
   }
 }
 
 void ChildFrameRegistrar::ProcessRegistrationMessage(base::Value* message) {
-  base::Value::Dict* dict = message->GetIfDict();
+  base::DictValue* dict = message->GetIfDict();
   if (!dict) {
     return;
   }
@@ -108,17 +109,11 @@ void ChildFrameRegistrar::DeclareNewRemoteToken(
   }
 
   // Otherwise, store the relationship for later.
-  pending_callbacks_[remote] = std::move(callback);
+  pending_callbacks_[remote].push_back(std::move(callback));
 }
 
 ChildFrameRegistrar* ChildFrameRegistrar::GetOrCreateForWebState(
     web::WebState* web_state) {
-  if (!base::FeatureList::IsEnabled(
-          autofill::features::kAutofillAcrossIframesIos) &&
-      !base::FeatureList::IsEnabled(kAutofillIsolatedWorldForJavascriptIos)) {
-    return nullptr;
-  }
-
   ChildFrameRegistrar* helper = FromWebState(web_state);
   if (!helper) {
     CreateForWebState(web_state);
@@ -184,7 +179,5 @@ void ChildFrameRegistrar::RemoveFrameID(const std::string& frame_id) {
     }
   }
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(ChildFrameRegistrar)
 
 }  // namespace autofill

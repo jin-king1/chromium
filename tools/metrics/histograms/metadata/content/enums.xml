@@ -62,29 +62,11 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Promo shown threshold exceeded."/>
 </enum>
 
-<enum name="ContentNotificationPromptAction">
-  <int value="0" label="Go to Settings tapped"/>
-  <int value="1" label="No Thanks tapped"/>
-  <int value="2" label="Accepted tapped"/>
-</enum>
-
 <enum name="ContentNotificationSettingsAction">
   <int value="0" label="Enabled Content Notifications Toggle."/>
   <int value="1" label="Disabled Content Notifications Toggle."/>
   <int value="2" label="Enabled Sports Notifications Toggle."/>
   <int value="3" label="Disabled Sports Notifications Toggle."/>
-</enum>
-
-<enum name="ContentNotificationSetUpListPromoAction">
-  <int value="0" label="Accept"/>
-  <int value="1" label="Cancel"/>
-  <int value="2" label="Remind Me Later"/>
-</enum>
-
-<enum name="ContentNotificationSetUpListPromoEvent">
-  <int value="0" label="Notification promo Sheet shown"/>
-  <int value="1" label="Notification promo Sheet dismissed"/>
-  <int value="2" label="OS Notification permission prompt shown"/>
 </enum>
 
 <enum name="ContentNotificationSnackbarEvent">
@@ -142,21 +124,7 @@ chromium-metrics-reviews@google.com.
   </int>
 </enum>
 
-<enum name="FeedContentOrder">
-  <int value="0" label="Unspecified"/>
-  <int value="1" label="Grouped"/>
-  <int value="2" label="Reverse Chronological"/>
-</enum>
-
-<enum name="FeedControlsActions">
-  <int value="0" label="Clicked on My activity"/>
-  <int value="1" label="Clicked on Manage interests"/>
-  <int value="2" label="Clicked on Learn more"/>
-  <int value="3" label="Toggled the feed"/>
-  <int value="4" label="Clicked on the feed menu button"/>
-  <int value="5" label="Clicked on autoplay"/>
-  <int value="6" label="Clicked on Manage"/>
-</enum>
+<!-- LINT.IfChange(FeedEngagementType) -->
 
 <enum name="FeedEngagementType">
   <int value="0" label="Engaged">
@@ -168,8 +136,9 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Interacted">
     Interaction - Opening a page or using the menu&quot;
   </int>
-<!-- <int value="3" label="Scrolled">Deprecated - formerly scrolled any amount</int> -->
-
+  <int value="3" label="Scrolled (Deprecated)">
+    Deprecated - formerly scrolled any amount
+  </int>
   <int value="4" label="Scrolled">Interaction - Scrolled any amount</int>
   <int value="5" label="Good Visit">
     Visit - user (a) had a good explicit interaction, (b) spent a minute in the
@@ -177,6 +146,8 @@ chromium-metrics-reviews@google.com.
     content.
   </int>
 </enum>
+
+<!-- LINT.ThenChange(//components/feed/core/v2/public/common_enums.h:FeedEngagementType) -->
 
 <enum name="FeedInfoCardType">
   <int value="1" label="INFO_CARD_MAIN_PRIVACY_NOTICE"/>
@@ -221,6 +192,10 @@ chromium-metrics-reviews@google.com.
              account"/>
   <int value="28" label="Failed - account token fetch timed out"/>
   <int value="29" label="Failed - network fetch timed out"/>
+  <int value="30" label="Failed - loading not allowed due to being disabled"/>
+  <int value="31"
+      label="Failed - loading not allowed due to being disabled by DSE"/>
+  <int value="32" label="Failed - no card received"/>
 </enum>
 
 <enum name="FeedRefreshTrigger">
@@ -262,6 +237,8 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Feedback tapped on page from card"/>
 </enum>
 
+<!-- LINT.IfChange(FeedSignInUI) -->
+
 <enum name="FeedSignInUI">
   <int value="0"
       label="(obsolete) Showing a sign-in half sheet triggered from feed."/>
@@ -270,11 +247,9 @@ chromium-metrics-reviews@google.com.
       label="Showing a sign-in disabled snackbar triggered from feed."/>
 </enum>
 
-<enum name="FeedSortType">
-  <int value="0" label="Unspecified"/>
-  <int value="1" label="Grouped by publisher"/>
-  <int value="2" label="Sorted by latest"/>
-</enum>
+<!-- LINT.ThenChange(//components/feed/core/v2/public/common_enums.h:FeedSignInUI) -->
+
+<!-- LINT.IfChange(FeedSyncPromo) -->
 
 <enum name="FeedSyncPromo">
   <int value="0"
@@ -284,6 +259,8 @@ chromium-metrics-reviews@google.com.
       label="The service disable message was shown when the user tapped on
              the Feed sync promo."/>
 </enum>
+
+<!-- LINT.ThenChange(//components/feed/core/v2/public/common_enums.h:FeedSyncPromo) -->
 
 <enum name="FeedUploadActionsBatchStatus">
   <int value="0" label="Actions batch store/upload not attempted"/>
@@ -312,6 +289,8 @@ chromium-metrics-reviews@google.com.
   <int value="8" label="Can not upload actions for another user"/>
   <int value="9" label="Could not upload because pending clear all"/>
 </enum>
+
+<!-- LINT.IfChange(FeedUserActionType) -->
 
 <enum name="FeedUserActionType">
   <int value="0" label="Tapped on card"/>
@@ -365,11 +344,11 @@ chromium-metrics-reviews@google.com.
   <int value="36"
       label="User tapped to unfollow using the snackbar 'try again' option."/>
   <int value="37"
-      label="After following an active web feed, the user tapped to go to
-             feed using the post-follow help dialog."/>
+      label="(obsolete) After following an active web feed, the user tapped
+             to go to feed using the post-follow help dialog."/>
   <int value="38"
-      label="After following an active web feed, the user tapped to dismiss
-             the post-follow help dialog."/>
+      label="(obsolete) After following an active web feed, the user tapped
+             to dismiss the post-follow help dialog."/>
   <int value="39"
       label="After long-pressing on the feed and seeing the preview, the user
              tapped on the preview."/>
@@ -385,27 +364,31 @@ chromium-metrics-reviews@google.com.
   <int value="44"
       label="User tapped the Follow button on the page overflow menu."/>
   <int value="45"
-      label="User selected the Discover feed from the feed header."/>
+      label="User selected the Discover feed from the feed header.
+             (Deprecated M143)"/>
   <int value="46"
-      label="User selected the Following feed from the feed header."/>
+      label="User selected the Following feed from the feed header.
+             (Deprecated M143)"/>
   <int value="47"
       label="User tapped the Unfollow button on the page overflow menu."/>
-  <int value="48" label="Show Follow Succeed Snackbar."/>
-  <int value="49" label="Show Follow Failed Snackbar."/>
-  <int value="50" label="Show Unfollow Succeed Snackbar."/>
-  <int value="51" label="Show Unfollow Failed Snackbar."/>
+  <int value="48" label="Show Follow Succeed Snackbar. (Deprecated M143)"/>
+  <int value="49" label="Show Follow Failed Snackbar. (Deprecated M143)"/>
+  <int value="50" label="Show Unfollow Succeed Snackbar. (Deprecated M143)"/>
+  <int value="51" label="Show Unfollow Failed Snackbar. (Deprecated M143)"/>
   <int value="52"
       label="User tapped to go to Following feed using the snackbar 'go to
              Following' option."/>
   <int value="53" label="User tapped the Crow button in the context menu."/>
-  <int value="54" label="Show First Follow Sheet."/>
+  <int value="54" label="Show First Follow Sheet. (Deprecated M143)"/>
   <int value="55"
-      label="User tapped the 'Go To Feed' button on the first follow sheet."/>
+      label="User tapped the 'Go To Feed' button on the first follow sheet.
+             (Deprecated M143)"/>
   <int value="56"
-      label="User tapped the 'Got It' button on the first follow sheet."/>
+      label="User tapped the 'Got It' button on the first follow sheet.
+             (Deprecated M143)"/>
   <int value="57"
       label="Show Follow Recommendation IPH telling users that they are able
-             to follow a website."/>
+             to follow a website. (Deprecated M143)"/>
   <int value="58"
       label="User opened the article in a new tab in group from the back of
              card menu."/>
@@ -414,8 +397,8 @@ chromium-metrics-reviews@google.com.
   <int value="60"
       label="User selected the 'Sort by Latest' Following feed sort type."/>
   <int value="61"
-      label="After following an active web feed, the user tapped on 'got it'
-             to close the post-follow help dialog."/>
+      label="(obsolete) After following an active web feed, the user tapped
+             on 'got it' to close the post-follow help dialog."/>
   <int value="62"
       label="User tapped the follow accelerator which is presented after a
              user taps on a recommendation that is in the feed."/>
@@ -429,6 +412,8 @@ chromium-metrics-reviews@google.com.
       label="(obsolete) User tapped on the 'Cancel' of the sign-in promo UI."/>
   <int value="66" label="User initiated a non-swipe manual refresh."/>
 </enum>
+
+<!-- LINT.ThenChange(//components/feed/core/v2/public/common_enums.h:FeedUserActionType) -->
 
 <enum name="FeedUserCommandType">
   <int value="0" label="Enum placerholder. See crbug/1179826"/>
@@ -506,13 +491,27 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Popup clicked through (abusive)"/>
 </enum>
 
-<enum name="SingleWebFeedEntryPoint">
-  <int value="0" label="Menu"/>
-  <int value="1" label="Attribtuion"/>
-  <int value="2" label="Recommendation"/>
-  <int value="3" label="Group Header"/>
-  <int value="4" label="Other"/>
+<!-- LINT.IfChange(SharedWorkerCreationContextTypeMismatch) -->
+
+<enum name="SharedWorkerCreationContextTypeMismatch">
+  <int value="0" label="Match"/>
+  <int value="1" label="Mismatch: Renderer Secure, Browser Non-secure"/>
+  <int value="2" label="Mismatch: Renderer Non-secure, Browser Secure"/>
 </enum>
+
+<!-- LINT.ThenChange(//content/browser/worker_host/shared_worker_service_impl.h:SharedWorkerCreationContextTypeMismatch) -->
+
+<!-- LINT.IfChange(SharedWorkerHostDestructionSource) -->
+
+<enum name="SharedWorkerHostDestructionSource">
+  <int value="0" label="Unknown"/>
+  <int value="1" label="Context closed"/>
+  <int value="2" label="Render process host destroyed"/>
+  <int value="3" label="No clients left"/>
+  <int value="4" label="Worker connection lost"/>
+</enum>
+
+<!-- LINT.ThenChange(//content/browser/worker_host/shared_worker_host.cc:SharedWorkerHostDestructionSource) -->
 
 <enum name="StrongPopupBlockerAction">
   <int value="0" label="Navigation commit"/>
@@ -520,78 +519,6 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Commit enforced site"/>
   <int value="3" label="Popup considered"/>
   <int value="4" label="Popup blocked"/>
-</enum>
-
-<enum name="WebFeedChangeReason">
-  <int value="0" label="Unspecified">Unknown change reason</int>
-  <int value="1" label="Web page menu">
-    The user tapped the Follow/Unfollow option from the three dot menu while on
-    a web page.
-  </int>
-  <int value="2" label="Web page accelerator">
-    The user tapped the Follow accelerator while visiting a site.
-  </int>
-  <int value="3" label="Management page">
-    The user tapped to Follow/Unfollow on the Follow Management page.
-  </int>
-  <int value="4" label="In feed recommendation">
-    The user tapped to Follow/Unfollow a recommendation embedded in feed
-    content.
-  </int>
-  <int value="5" label="Back of card unfollow">
-    The user tapped 'Unfollow' on the back of card menu.
-  </int>
-  <int value="6" label="Recommendation web page accelerator">
-    The user tapped a web page on a recommendation card.
-  </int>
-</enum>
-
-<enum name="WebFeedPageInformationRequestReason">
-  <int value="0" label="User Requested Follow">
-    The user requested to Follow the current web page.
-  </int>
-  <int value="1" label="Follow Recommendation">
-    A Follow recommendation is being considered the current web page.
-  </int>
-  <int value="2" label="Menu Item Presentation">
-    The Follow menu item state needs to reflect the current web page.
-  </int>
-</enum>
-
-<enum name="WebFeedPostFollowDialogPresentation">
-  <int value="0"
-      label="Available - Post-follow dialog for an available web feed"/>
-  <int value="1"
-      label="Unavailable - Post-follow dialog for an unavailable web feed"/>
-</enum>
-
-<enum name="WebFeedQueryRequestStatus">
-  <int value="0" label="Unknown status"/>
-  <int value="1" label="Success. The query succeeded."/>
-  <int value="2" label="Failed because the device is offline"/>
-  <int value="3" label="Failed for an unknown reason"/>
-  <int value="4" label="Failed due to pending ClearAll action"/>
-</enum>
-
-<enum name="WebFeedRefreshStatus">
-  <int value="0" label="Unknown status"/>
-  <int value="1" label="Success"/>
-  <int value="2" label="Failed due to a network error"/>
-  <int value="3" label="Failed because the request was throttled client-side"/>
-  <int value="4" label="Failed because there is a pending ClearAll operation"/>
-</enum>
-
-<enum name="WebFeedSubscriptionRequestStatus">
-  <int value="0" label="Unknown status"/>
-  <int value="1"
-      label="Success. The follow/unfollow succeeded. Also reported when
-             following an already-followed web feed, or unfollowing a web
-             feed which is not followed."/>
-  <int value="2" label="Failed because the device is offline"/>
-  <int value="3"
-      label="Failed because the user has reached the subscription limit"/>
-  <int value="4" label="Failed for an unknown reason"/>
-  <int value="5" label="Failed due to pending ClearAll action"/>
 </enum>
 
 </enums>

@@ -19,7 +19,7 @@
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/layout_types.h"
-#include "ui/views/metadata/view_factory_internal.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 
 namespace quick_answers {
@@ -115,7 +115,7 @@ void RetryView::OnRetryButtonPressed() {
 }
 
 BEGIN_METADATA(RetryView)
-ADD_PROPERTY_METADATA(std::u16string_view, FirstLineText)
+ADD_PROPERTY_METADATA(std::u16string, FirstLineText)
 END_METADATA
 
 }  // namespace quick_answers

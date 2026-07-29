@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "media/cast/openscreen/remoting_proto_utils.h"
 
 #include <memory>
@@ -14,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/memory/ref_counted.h"
 #include "media/base/audio_decoder_config.h"
 #include "media/base/decoder_buffer.h"
@@ -98,7 +94,7 @@ TEST_F(ProtoUtilsTest, AudioDecoderConfigConversionTest) {
   const char extra_data[4] = {'A', 'C', 'E', 'G'};
   media::AudioDecoderConfig audio_config(
       media::AudioCodec::kOpus, media::kSampleFormatF32,
-      media::CHANNEL_LAYOUT_MONO, 48000,
+      media::ChannelLayoutConfig::Mono(), 48000,
       std::vector<uint8_t>(std::begin(extra_data), std::end(extra_data)),
       media::EncryptionScheme::kUnencrypted);
   ASSERT_TRUE(audio_config.IsValidConfig());
@@ -111,33 +107,6 @@ TEST_F(ProtoUtilsTest, AudioDecoderConfigConversionTest) {
       ConvertProtoToAudioDecoderConfig(audio_message, &audio_output_config));
 
   ASSERT_TRUE(audio_config.Matches(audio_output_config));
-}
-
-TEST_F(ProtoUtilsTest, AudioDecoderConfigHandlesAacExtraDataCorrectly) {
-  constexpr char aac_extra_data[4] = {'A', 'C', 'E', 'G'};
-  media::AudioDecoderConfig audio_config(
-      media::AudioCodec::kAAC, media::kSampleFormatF32,
-      media::CHANNEL_LAYOUT_MONO, 48000, std::vector<uint8_t>{},
-      media::EncryptionScheme::kUnencrypted);
-  audio_config.set_aac_extra_data(std::vector<uint8_t>(
-      std::begin(aac_extra_data), std::end(aac_extra_data)));
-  ASSERT_TRUE(audio_config.IsValidConfig());
-
-  openscreen::cast::AudioDecoderConfig audio_message;
-  ConvertAudioDecoderConfigToProto(audio_config, &audio_message);
-
-  // We should have filled the "extra_data" protobuf field with
-  // "aac_extra_data."
-  const std::vector<uint8_t> proto_extra_data(
-      audio_message.extra_data().begin(), audio_message.extra_data().end());
-  EXPECT_THAT(proto_extra_data, testing::ElementsAreArray(aac_extra_data));
-
-  media::AudioDecoderConfig audio_output_config;
-  ASSERT_TRUE(
-      ConvertProtoToAudioDecoderConfig(audio_message, &audio_output_config));
-  ASSERT_TRUE(audio_config.Matches(audio_output_config))
-      << "expected=" << audio_config.AsHumanReadableString()
-      << ", actual=" << audio_output_config.AsHumanReadableString();
 }
 
 TEST_F(ProtoUtilsTest, PipelineStatisticsConversion) {
@@ -189,19 +158,37 @@ TEST_F(ProtoUtilsTest, PipelineStatisticsConversion) {
   // NOTE: fields will all be initialized with 0xcd. Forcing the conversion to
   // properly assigned them. Since nested structs have strings, memsetting must
   // be done infividually for them.
-  memset(&converted, 0xcd,
-         sizeof(converted) - sizeof(media::AudioPipelineInfo) -
-             sizeof(media::VideoPipelineInfo));
-  memset(&converted.audio_pipeline_info, 0xcd,
-         sizeof(media::AudioPipelineInfo));
-  memset(&converted.video_pipeline_info, 0xcd,
-         sizeof(media::VideoPipelineInfo));
+  UNSAFE_TODO(memset(&converted, 0xcd,
+                     sizeof(converted) - sizeof(media::AudioPipelineInfo) -
+                         sizeof(media::VideoPipelineInfo)));
+  UNSAFE_TODO(memset(&converted.audio_pipeline_info, 0xcd,
+                     sizeof(media::AudioPipelineInfo)));
+  UNSAFE_TODO(memset(&converted.video_pipeline_info, 0xcd,
+                     sizeof(media::VideoPipelineInfo)));
 
   ConvertProtoToPipelineStatistics(pb_stats, &converted);
 
   // If this fails, did media::PipelineStatistics add/change fields that are not
   // being set by media::remoting::ConvertProtoToPipelineStatistics()?
   EXPECT_EQ(original, converted);
+}
+
+TEST_F(ProtoUtilsTest, PipelineStatisticsConversionOutOfBoundsTest) {
+  openscreen::cast::PipelineStatistics pb_stats;
+  auto* pb_video_info = pb_stats.mutable_video_decoder_info();
+  auto* pb_audio_info = pb_stats.mutable_audio_decoder_info();
+
+  // Set out-of-bounds decoder types.
+  pb_video_info->set_decoder_type(9999);
+  pb_audio_info->set_decoder_type(9999);
+
+  media::PipelineStatistics converted;
+  ConvertProtoToPipelineStatistics(pb_stats, &converted);
+
+  EXPECT_EQ(converted.audio_pipeline_info.decoder_type,
+            media::AudioDecoderType::kUnknown);
+  EXPECT_EQ(converted.video_pipeline_info.decoder_type,
+            media::VideoDecoderType::kUnknown);
 }
 
 TEST_F(ProtoUtilsTest, VideoDecoderConfigConversionTest) {

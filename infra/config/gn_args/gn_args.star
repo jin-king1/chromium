@@ -4,14 +4,7 @@
 
 # Execute this file to set up some common GN arg configs for Chromium builders.
 
-load("//lib/gn_args.star", "gn_args")
-
-gn_args.config(
-    name = "afl",
-    args = {
-        "use_afl": True,
-    },
-)
+load("@chromium-luci//gn_args.star", "gn_args")
 
 gn_args.config(
     name = "amd64-generic",
@@ -79,10 +72,15 @@ gn_args.config(
 # Representative GN args for Android developer builds.
 gn_args.config(
     name = "android_developer",
+    args = {
+        # Developer uses build_server, but that needs autoninja. So disable static analysis on bots.
+        "android_static_analysis": "off",
+    },
     configs = [
         "android",
-        "arm64",
-        "developer",
+        "debug",
+        "minimal_symbols",
+        "x64",
     ],
 )
 
@@ -91,6 +89,16 @@ gn_args.config(
     name = "android_fastbuild",
     args = {
         "android_static_analysis": "off",
+        # Still want TraceReferences checks, which impact targets that enable R8.
+        "enable_r8_tracerefs": True,
+    },
+)
+
+# This will not be the default anymore so must explicitly be set on bots.
+gn_args.config(
+    name = "android_with_static_analysis",
+    args = {
+        "android_static_analysis": "on",
     },
 )
 
@@ -166,16 +174,6 @@ gn_args.config(
     },
     configs = [
         "arm64",
-    ],
-)
-
-gn_args.config(
-    name = "arm_no_neon",
-    args = {
-        "arm_use_neon": False,
-    },
-    configs = [
-        "arm",
     ],
 )
 
@@ -259,10 +257,22 @@ gn_args.config(
 )
 
 gn_args.config(
+    name = "disable_jni_multiplexing",
+    args = {
+        "enable_jni_multiplexing": False,
+    },
+)
+
+gn_args.config(
     name = "cast_receiver",
     args = {
         "enable_cast_receiver": True,
     },
+)
+
+gn_args.config(
+    name = "cast_receiver_perf_optimized",
+    args_file = "//build/config/fuchsia/perf_optimized_cast_receiver_args.gn",
 )
 
 gn_args.config(
@@ -381,8 +391,9 @@ gn_args.config(
     },
 )
 
+# The gn suffix distinguishes this from the "clang_tot" gclient config
 gn_args.config(
-    name = "clang_tot",
+    name = "clang_tot_gn",
     args = {
         "llvm_force_head_revision": True,
     },
@@ -390,6 +401,26 @@ gn_args.config(
         "clang",
     ],
 )
+
+# The gn suffix distinguishes this from the "rust_tot" gclient config
+gn_args.config(
+    name = "rust_tot_gn",
+    args = {
+        "rust_force_head_revision": True,
+    },
+    configs = [
+        "clang",
+        "enable_rust_clippy",
+    ],
+)
+
+gn_args.config(
+    name = "no_treat_warnings_as_errors",
+    args = {
+        "treat_warnings_as_errors": False,
+    },
+)
+
 gn_args.config(
     name = "codesearch_builder",
     args = {
@@ -408,20 +439,13 @@ gn_args.config(
     ],
 )
 
-# Keep in sync with //infra/build/recipes/recipe_modules/chromium_android/chromium_config.py
 gn_args.config(
     name = "cronet_android",
     args = {
-        "use_partition_alloc": False,
-        "enable_reporting": True,
-        "use_hashed_jni_names": True,
-        "default_min_sdk_version": 23,
-        "enable_base_tracing": False,
-        "clang_use_default_sample_profile": False,
-        "media_use_ffmpeg": False,
-        # https://crbug.com/1136963
-        "use_thin_lto": False,
-        "enable_resource_allowlist_generation": False,
+        # DO NOT ADD GN ARGS HERE. Special snowflake gn args are a pain to
+        # maintain; see https://crbug.com/40287068. Instead, change the GN arg
+        # declaration so that the default value for the arg is derived from the
+        # `is_cronet_build` GN arg.
     },
     configs = [
         "android",
@@ -430,25 +454,13 @@ gn_args.config(
 )
 
 gn_args.config(
-    name = "cronet_android_mainline_clang",
-    args = {
-        "clang_base_path": "//third_party/cronet_android_mainline_clang/linux-amd64",
-        "clang_use_chrome_plugins": False,
-        "default_min_sdk_version": 29,
-        # https://crbug.com/1481060
-        "llvm_android_mainline": True,
-    },
-)
-
-# Keep in sync with //infra/build/recipes/recipe_modules/chromium_android/chromium_config.py
-gn_args.config(
     name = "cronet_common",
     args = {
-        "disable_file_support": True,
-        "enable_websockets": False,
-        "include_transport_security_state_preload_list": False,
+        # DO NOT ADD GN ARGS HERE. Special snowflake gn args are a pain to
+        # maintain; see https://crbug.com/40287068. Instead, change the GN arg
+        # declaration so that the default value for the arg is derived from the
+        # `is_cronet_build` GN arg.
         "is_cronet_build": True,
-        "use_platform_icu_alternatives": True,
     },
 )
 
@@ -463,6 +475,13 @@ gn_args.config(
     name = "dawn_use_built_dxc",
     args = {
         "dawn_use_built_dxc": True,
+    },
+)
+
+gn_args.config(
+    name = "dawn_use_swiftshader",
+    args = {
+        "dawn_use_swiftshader": True,
     },
 )
 
@@ -491,7 +510,6 @@ gn_args.config(
     name = "debug_builder",
     configs = [
         "debug",
-        "shared",
         "minimal_symbols",
     ],
 )
@@ -513,11 +531,17 @@ gn_args.config(
 )
 
 gn_args.config(
+    name = "dev_channel",
+    args = {
+        "android_channel": "dev",
+    },
+)
+
+gn_args.config(
     name = "developer",
     configs = [
         "debug",
         "full_symbols",
-        "shared",
     ],
 )
 
@@ -535,33 +559,29 @@ gn_args.config(
     },
 )
 
-gn_args.config(
-    name = "enable_rust_mojo",
-    args = {
-        "enable_rust_mojo": True,
-    },
-)
-
-gn_args.config(
-    name = "enable_rust_mojom_bindings",
-    args = {
-        "enable_rust_mojom_bindings": True,
-    },
-)
-
-gn_args.config(
-    name = "enable_rust_png",
-    args = {
-        "enable_rust_png": True,
-    },
-)
-
 # TODO(crbug.com/40101527): Explicitly enable DirectX 12.
 gn_args.config(
     name = "dx12vk",
     configs = [
         "enable_vulkan",
     ],
+)
+
+gn_args.config(
+    name = "enable_android_secondary_abi",
+    args = {
+        "enable_android_secondary_abi": True,
+    },
+)
+
+# Enables Asan backup ref ptr v2 service for Asan build. This enables raw_ptr
+# refcount emulation on Asan build, but at the cost of some runtime
+# performance. This feature depends on Asan, BackupRefPtr, and Asan hooks.
+gn_args.config(
+    name = "enable_asan_backup_ref_ptr_v2",
+    args = {
+        "use_asan_backup_ref_ptr_v2": True,
+    },
 )
 
 # Enables backup ref ptr by changing the default value of the feature flag.
@@ -609,6 +629,16 @@ gn_args.config(
     },
 )
 
+# iOS can't use enable_dangling_raw_ptr_checks, since there are some configurations
+# that do not build with backup ref ptr. Instead, enable dangling_raw_ptr via
+# ios_enable_dangling_raw_ptr_checks
+gn_args.config(
+    name = "ios_enable_dangling_raw_ptr_checks",
+    args = {
+        "ios_enable_dangling_raw_ptr_checks": True,
+    },
+)
+
 # Changes the default of the dangling raw pointer detection feature flag,
 # enabling it on all runs.
 gn_args.config(
@@ -619,6 +649,13 @@ gn_args.config(
     configs = [
         "enable_dangling_raw_ptr_checks",
     ],
+)
+
+gn_args.config(
+    name = "enable_rust_clippy",
+    args = {
+        "enable_rust_clippy": True,
+    },
 )
 
 gn_args.config(
@@ -744,6 +781,20 @@ gn_args.config(
 )
 
 gn_args.config(
+    name = "hwasan",
+    args = {
+        "is_hwasan": True,
+    },
+)
+
+gn_args.config(
+    name = "reclient",
+    args = {
+        "use_reclient": True,
+    },
+)
+
+gn_args.config(
     name = "include_unwind_tables",
     args = {
         "exclude_unwind_tables": False,
@@ -768,6 +819,7 @@ gn_args.config(
     name = "ios_catalyst",
     args = {
         "target_environment": "catalyst",
+        "use_lld": False,
     },
     configs = [
         "ios",
@@ -776,7 +828,18 @@ gn_args.config(
 
 gn_args.config(
     name = "ios_developer",
-    configs = ["ios_simulator", "debug"],
+    # Settings from ios/build/tools/setup-gn.py, which is used by 90% of iOS developer builds now.
+    args = {
+        "bundle_pool_depth": 64,
+        "enable_dsyms": False,
+        "enable_remoting": False,
+        "enable_stripping": False,
+        "is_chrome_branded": False,
+        "is_official_build": False,
+        "target_platform": "iphoneos",
+        "use_official_google_api_keys": False,
+    },
+    configs = ["ios_simulator"],
 )
 
 gn_args.config(
@@ -807,6 +870,11 @@ gn_args.config(
 )
 
 gn_args.config(
+    name = "tvos_platform",
+    args = {"target_platform": "tvos"},
+)
+
+gn_args.config(
     name = "is_skylab",
     args = {
         "is_skylab": True,
@@ -825,11 +893,10 @@ gn_args.config(
     ],
 )
 
-# Do not use this for non-FYI builders.
 gn_args.config(
-    name = "libcxx_modules",
+    name = "no_clang_modules",
     args = {
-        "use_libcxx_modules": True,
+        "use_clang_modules": False,
     },
 )
 
@@ -857,6 +924,7 @@ gn_args.config(
         "ozone_platform_wayland": True,
         "ozone_platform": "wayland",
         "use_bundled_weston": True,
+        "use_bundled_mutter": True,
     },
 )
 
@@ -879,6 +947,21 @@ gn_args.config(
     args = {
         "target_os": "mac",
     },
+)
+
+gn_args.config(
+    name = "mac_developer",
+    # This configuration is commonly used, but there are other frequently used
+    # configurations as well.
+    args = {
+        "is_debug": False,
+    },
+    configs = [
+        "no_symbols",
+        "static",
+        "mac",
+        "arm64",
+    ],
 )
 
 gn_args.config(
@@ -964,6 +1047,13 @@ gn_args.config(
 )
 
 gn_args.config(
+    name = "no_mold",
+    args = {
+        "use_mold": False,
+    },
+)
+
+gn_args.config(
     name = "no_reclient",
     args = {
         "use_reclient": False,
@@ -992,14 +1082,9 @@ gn_args.config(
 )
 
 gn_args.config(
-    name = "no_secondary_abi",
+    name = "no_safe_browsing",
     args = {
-        "skip_secondary_abi_for_cq": True,
-        # A chromium build with "skip_secondary_abi_for_cq" enabled in a
-        # checkout that has src-internal fails if enable_chrome_android_internal
-        # is not set to false.
-        # TODO(crbug.com/361540497): Can remove this when the build is fixed.
-        "enable_chrome_android_internal": False,
+        "safe_browsing_mode": 0,
     },
 )
 
@@ -1140,19 +1225,20 @@ gn_args.config(
 )
 
 gn_args.config(
-    name = "release_java",
-    args = {
-        "is_java_debug": False,
-    },
-)
-
-gn_args.config(
     name = "release_try_builder",
     configs = [
         "release_builder",
         "try_builder",
         "no_symbols",
     ],
+)
+
+gn_args.config(
+    name = "release_with_dchecks",
+    args = {
+        "is_debug": False,
+        "dcheck_always_on": True,
+    },
 )
 
 gn_args.config(
@@ -1166,6 +1252,13 @@ gn_args.config(
     name = "riscv64",
     args = {
         "target_cpu": "riscv64",
+    },
+)
+
+gn_args.config(
+    name = "sanitizer_coverage_skip_stdlib_and_absl",
+    args = {
+        "sanitizer_coverage_skip_stdlib_and_absl": True,
     },
 )
 
@@ -1449,14 +1542,6 @@ gn_args.config(
     },
 )
 
-# For Android N-P, only userdebug/eng
-gn_args.config(
-    name = "webview_monochrome",
-    args = {
-        "system_webview_package_name": "com.google.android.apps.chrome",
-    },
-)
-
 # Mainly used by builders that use android emulator.
 # See https://bit.ly/3B1cyyt for more details.
 gn_args.config(
@@ -1472,6 +1557,24 @@ gn_args.config(
     args = {
         "system_webview_package_name": "com.google.android.webview.debug",
     },
+)
+
+gn_args.config(
+    name = "windows_developer",
+    # Currently, 70% of Windows developers use this configuration.
+    # See: https://chromium.googlesource.com/chromium/src/+/HEAD/docs/windows_build_instructions.md#faster-builds
+    args = {
+        "is_component_build": False,
+        "is_debug": False,
+        "v8_symbol_level": 0,
+        "blink_symbol_level": 0,
+    },
+    configs = [
+        "chrome_with_codecs",
+        "full_symbols",
+        "win",
+        "x64",
+    ],
 )
 
 gn_args.config(
@@ -1509,8 +1612,27 @@ gn_args.config(
 )
 
 gn_args.config(
+    name = "ios_chrome_enable_profile_altering_tests",
+    args = {
+        "ios_chrome_enable_profile_altering_tests": True,
+    },
+)
+
+gn_args.config(
     name = "high_end_fuzzer_targets",
     args = {
         "high_end_fuzzer_targets": True,
+    },
+)
+
+gn_args.config(
+    name = "enable_swift_cxx_interop",
+    args = {"enable_swift_cxx_interop": True},
+)
+
+gn_args.config(
+    name = "use_typescript_go",
+    args = {
+        "use_typescript_go": True,
     },
 )

@@ -23,7 +23,6 @@
 #include "ash/ambient/ui/photo_view.h"
 #include "ash/ambient/util/ambient_util.h"
 #include "ash/ambient/util/time_of_day_utils.h"
-#include "ash/assistant/assistant_interaction_controller_impl.h"
 #include "ash/constants/ambient_time_of_day_constants.h"
 #include "ash/constants/ambient_video.h"
 #include "ash/constants/ash_paths.h"
@@ -32,7 +31,6 @@
 #include "ash/public/cpp/ambient/ambient_prefs.h"
 #include "ash/public/cpp/ambient/ambient_ui_model.h"
 #include "ash/public/cpp/ambient/fake_ambient_backend_controller_impl.h"
-#include "ash/public/cpp/assistant/controller/assistant_interaction_controller.h"
 #include "ash/public/cpp/personalization_app/time_of_day_test_utils.h"
 #include "ash/public/cpp/test/in_process_data_decoder.h"
 #include "ash/root_window_controller.h"
@@ -46,7 +44,6 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
 #include "base/location.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
@@ -62,7 +59,6 @@
 #include "chromeos/ash/components/assistant/buildflags.h"
 #include "chromeos/ash/components/dbus/dlcservice/dlcservice.pb.h"
 #include "chromeos/ash/components/dbus/dlcservice/fake_dlcservice_client.h"
-#include "chromeos/ash/services/libassistant/public/cpp/assistant_interaction_metadata.h"
 #include "chromeos/dbus/power_manager/suspend.pb.h"
 #include "net/base/url_util.h"
 #include "ui/base/user_activity/user_activity_detector.h"
@@ -78,7 +74,6 @@ namespace ash {
 namespace {
 
 using ash::personalization_app::mojom::AmbientTheme;
-using assistant::AssistantInteractionMetadata;
 
 constexpr char kUser1[] = "user1@gmail.com";
 constexpr char kUser2[] = "user2@gmail.com";
@@ -1268,7 +1263,7 @@ TEST_P(AmbientControllerTestForAnyUiSettings, ShowsOnMultipleDisplays) {
 
   SetAmbientShownAndWaitForWidgets();
 
-  auto* screen = display::Screen::GetScreen();
+  auto* screen = display::Screen::Get();
   EXPECT_EQ(screen->GetNumDisplays(), 2);
   EXPECT_EQ(GetContainerViews().size(), 2u);
   AmbientViewID expected_child_view_id;
@@ -1298,7 +1293,7 @@ TEST_P(AmbientControllerTestForAnyUiSettings, RespondsToDisplayAdded) {
   UpdateDisplay("800x600");
   SetAmbientShownAndWaitForWidgets();
 
-  auto* screen = display::Screen::GetScreen();
+  auto* screen = display::Screen::Get();
   EXPECT_EQ(screen->GetNumDisplays(), 1);
   EXPECT_EQ(GetContainerViews().size(), 1u);
 
@@ -1337,7 +1332,7 @@ TEST_F(AmbientControllerTest, RespondsToDisplayAddedWhileInitializing) {
   FastForwardTiny();
 
   EXPECT_TRUE(ambient_controller()->IsShowing());
-  EXPECT_EQ(display::Screen::GetScreen()->GetNumDisplays(), 2);
+  EXPECT_EQ(display::Screen::Get()->GetNumDisplays(), 2);
   EXPECT_EQ(GetContainerViews().size(), 2u);
   for (auto* ctrl : RootWindowController::root_window_controllers()) {
     EXPECT_TRUE(ctrl->ambient_widget_for_testing() &&
@@ -1351,7 +1346,7 @@ TEST_P(AmbientControllerTestForAnyUiSettings, HandlesDisplayRemoved) {
 
   SetAmbientShownAndWaitForWidgets();
 
-  auto* screen = display::Screen::GetScreen();
+  auto* screen = display::Screen::Get();
   EXPECT_EQ(screen->GetNumDisplays(), 2);
   EXPECT_EQ(GetContainerViews().size(), 2u);
   EXPECT_TRUE(ambient_controller()->IsShowing());
@@ -1448,8 +1443,6 @@ TEST_F(AmbientControllerTest, SwitchActiveUsersDoesNotDoubleBindObservers) {
   SimulateUserLogin({kUser1});
   SetAmbientModeEnabled(true);
 
-  TestSessionControllerClient* session = GetSessionControllerClient();
-
   // Observers are bound for primary user with Ambient mode enabled.
   EXPECT_TRUE(AreSessionSpecificObserversBound());
   EXPECT_TRUE(IsPrefObserved(ambient::prefs::kAmbientModeEnabled));
@@ -1460,12 +1453,12 @@ TEST_F(AmbientControllerTest, SwitchActiveUsersDoesNotDoubleBindObservers) {
   EXPECT_TRUE(IsPrefObserved(ambient::prefs::kAmbientModeEnabled));
 
   // Observers are not re-bound for primary user when session is active.
-  session->SwitchActiveUser(AccountId::FromUserEmail(kUser1));
+  SwitchActiveUser(AccountId::FromUserEmail(kUser1));
   EXPECT_TRUE(AreSessionSpecificObserversBound());
   EXPECT_TRUE(IsPrefObserved(ambient::prefs::kAmbientModeEnabled));
 
   //  Switch back to secondary user.
-  session->SwitchActiveUser(AccountId::FromUserEmail(kUser2));
+  SwitchActiveUser(AccountId::FromUserEmail(kUser2));
 }
 
 TEST_F(AmbientControllerTest, BindsObserversWhenAmbientOn) {
@@ -1487,23 +1480,6 @@ TEST_F(AmbientControllerTest, BindsObserversWhenAmbientOn) {
 
   EXPECT_FALSE(ctrl->user_activity_observer_.IsObserving());
   EXPECT_FALSE(ctrl->power_status_observer_.IsObserving());
-}
-
-TEST_P(AmbientControllerTestForAnyUiSettings,
-       ShowDismissAmbientScreenUponAssistantQuery) {
-  // Without user interaction, should show ambient mode.
-  SetAmbientShownAndWaitForWidgets();
-  EXPECT_TRUE(ambient_controller()->ShouldShowAmbientUi());
-
-  // Trigger Assistant interaction.
-  static_cast<AssistantInteractionControllerImpl*>(
-      AssistantInteractionController::Get())
-      ->OnInteractionStarted(AssistantInteractionMetadata());
-  base::RunLoop().RunUntilIdle();
-
-  // Ambient screen should dismiss.
-  EXPECT_TRUE(GetContainerViews().empty());
-  EXPECT_FALSE(ambient_controller()->ShouldShowAmbientUi());
 }
 
 // For all test cases that depend on ash ambient resources (lottie files, image
@@ -2152,7 +2128,7 @@ TEST_F(AmbientControllerForManagedScreensaverLoginScreenTest,
   EXPECT_TRUE(ambient_controller()->ShouldShowAmbientUi());
   ASSERT_TRUE(GetContainerView());
 
-  SimulateKioskMode(user_manager::UserType::kWebKioskApp);
+  SimulateKioskMode(user_manager::UserType::kKioskWebApp);
   EXPECT_FALSE(ambient_controller()->ShouldShowAmbientUi());
   SetAmbientModeManagedScreensaverEnabled(true);
   EXPECT_EQ(AmbientUiModel::Get()->ui_visibility(),
@@ -2282,7 +2258,7 @@ TEST_F(AmbientControllerTest, RendersCorrectViewForVideo) {
   EXPECT_TRUE(web_view->current_url().SchemeIsFile());
   const base::FilePath video_html_full_path =
       base::FilePath(kTestDlcRootPath).Append(kTimeOfDayVideoHtmlSubPath);
-  EXPECT_EQ(web_view->current_url().path(), video_html_full_path.value());
+  EXPECT_EQ(web_view->current_url().GetPath(), video_html_full_path.value());
   std::string video_file_requested;
   ASSERT_TRUE(net::GetValueForKeyInQuery(web_view->current_url(), "video_file",
                                          &video_file_requested));
@@ -2312,7 +2288,7 @@ TEST_F(AmbientControllerTest, RendersCorrectViewForVideo) {
       GetContainerView()->GetViewByID(kAmbientVideoWebView));
   ASSERT_TRUE(web_view);
   EXPECT_TRUE(web_view->current_url().SchemeIsFile());
-  EXPECT_EQ(web_view->current_url().path(), video_html_full_path.value());
+  EXPECT_EQ(web_view->current_url().GetPath(), video_html_full_path.value());
   ASSERT_TRUE(net::GetValueForKeyInQuery(web_view->current_url(), "video_file",
                                          &video_file_requested));
   EXPECT_EQ(video_file_requested, kTimeOfDayCloudsVideo);

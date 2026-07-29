@@ -15,13 +15,13 @@
 #include "ash/wallpaper/sea_pen_wallpaper_manager.h"
 #include "ash/wallpaper/wallpaper_utils/sea_pen_metadata_utils.h"
 #include "ash/webui/common/mojom/sea_pen.mojom.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_sea_pen_provider_base.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/ash/wallpaper_handlers/wallpaper_fetcher_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/account_id/account_id.h"
-#include "components/manta/features.h"
 #include "content/public/browser/web_ui.h"
 #include "ui/display/screen.h"
 
@@ -87,7 +87,6 @@ void PersonalizationAppSeaPenProviderImpl::BindInterface(
     mojo::PendingReceiver<::ash::personalization_app::mojom::SeaPenProvider>
         receiver) {
   CHECK(::ash::features::IsSeaPenEnabled());
-  CHECK(manta::features::IsMantaServiceEnabled());
   PersonalizationAppSeaPenProviderBase::BindInterface(std::move(receiver));
 }
 

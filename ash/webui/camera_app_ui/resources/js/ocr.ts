@@ -4,7 +4,7 @@
 
 import {assertInstanceof} from './assert.js';
 import {ChromeHelper} from './mojo/chrome_helper.js';
-import {OcrResult} from './mojo/type.js';
+import type {OcrResult} from './mojo/type.js';
 
 export interface PerformOcrResult {
   result: OcrResult;
@@ -18,7 +18,6 @@ export class Ocr {
   async performOcr(): Promise<PerformOcrResult> {
     const width = this.video.videoWidth;
     const height = this.video.videoHeight;
-    // TODO(b/342315479): Unify the way to capture image from preview.
     const canvas = new OffscreenCanvas(width, height);
     const ctx = assertInstanceof(
         canvas.getContext('2d'), OffscreenCanvasRenderingContext2D);

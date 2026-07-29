@@ -5,15 +5,17 @@
 #include "chrome/browser/ash/system_web_apps/apps/terminal_source.h"
 
 #include <optional>
+#include <string_view>
 
 #include "ash/constants/ash_features.h"
-#include "base/containers/flat_map.h"
+#include "ash/constants/webui_url_constants.h"
+#include "ash/strings/grit/ash_strings.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted_memory.h"
-#include "base/no_destructor.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_util.h"
 #include "base/task/task_traits.h"
@@ -27,14 +29,11 @@
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/common/channel_info.h"
-#include "chrome/common/url_constants.h"
-#include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/channel/channel_info.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/prefs/pref_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/version_info/channel.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -43,6 +42,7 @@
 #include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "third_party/zlib/google/compression_utils.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/template_expressions.h"
 #include "ui/webui/webui_allowlist.h"
 
 namespace {
@@ -90,13 +90,14 @@ bool ReadUncompressedOrGzip(base::FilePath path, std::string* content) {
 
 void ReadFile(const base::FilePath downloads,
               const std::string& relative_path,
+              const ui::TemplateReplacements& replacements,
               content::URLDataSource::GotDataCallback callback) {
   base::FilePath path;
   std::string content;
   bool result = false;
 
   // If chrome://flags#terminal-dev set on dev channel, check Downloads.
-  if (chrome::GetChannel() <= version_info::Channel::DEV &&
+  if (ash::GetChannel() <= version_info::Channel::DEV &&
       base::FeatureList::IsEnabled(ash::features::kTerminalDev)) {
     path = downloads.Append("crosh_builtin").Append(relative_path);
     result = ReadUncompressedOrGzip(path, &content);
@@ -109,21 +110,25 @@ void ReadFile(const base::FilePath downloads,
   // Terminal gets files from /usr/share/chromeos-assets/crosh-builtin.
   // In chromium tests, these files don't exist, so we serve dummy values.
   if (!result) {
-    static const base::NoDestructor<base::flat_map<std::string, std::string>>
-        kTestFiles({
+    static constexpr auto kTestFiles =
+        base::MakeFixedFlatMap<std::string_view, std::string_view>({
             {"html/crosh.html", ""},
             {"html/terminal.html", "<script src='/js/terminal.js'></script>"},
             {"js/terminal.js",
              "chrome.terminalPrivate.openVmshellProcess([], () => {})"},
         });
-    auto it = kTestFiles->find(relative_path);
-    if (it != kTestFiles->end()) {
+    auto it = kTestFiles.find(relative_path);
+    if (it != kTestFiles.end()) {
       content = it->second;
       result = true;
     }
   }
 
   DCHECK(result) << path;
+  if (!replacements.empty()) {
+    content = ui::ReplaceTemplateExpressions(content, replacements);
+  }
+
   std::move(callback).Run(
       base::MakeRefCounted<base::RefCountedString>(std::move(content)));
 }
@@ -132,7 +137,7 @@ void ReadFile(const base::FilePath downloads,
 // static
 std::unique_ptr<TerminalSource> TerminalSource::ForCrosh(Profile* profile) {
   return base::WrapUnique(
-      new TerminalSource(profile, chrome::kChromeUIUntrustedCroshURL, false));
+      new TerminalSource(profile, ash::kChromeUIUntrustedCroshURL, false));
 }
 
 // static
@@ -140,7 +145,7 @@ std::unique_ptr<TerminalSource> TerminalSource::ForTerminal(Profile* profile) {
   ash::file_system_provider::Service::Get(profile)->RegisterProvider(
       std::make_unique<TerminalFileSystemProvider>());
   return base::WrapUnique(new TerminalSource(
-      profile, chrome::kChromeUIUntrustedTerminalURL,
+      profile, ash::kChromeUIUntrustedTerminalURL,
       profile->GetPrefs()
           ->FindPreference(crostini::prefs::kTerminalSshAllowedByPolicy)
           ->GetValue()
@@ -178,12 +183,15 @@ void TerminalSource::StartDataRequest(
     const content::WebContents::Getter& wc_getter,
     content::URLDataSource::GotDataCallback callback) {
   // skip first '/' in path.
-  std::string path = url.path().substr(1);
+  std::string path = url.GetPath().substr(1);
   if (path.empty()) {
     path = "html/terminal.html";
   }
 
-  // Refresh the $i8n{themeColor} replacement for css files.
+  // Refresh the $i8n{themeColor} replacement for css files. Since we modify
+  // replacements, create a new copy for each request and do replacements
+  // internally rather than override GetReplacements() (crbug.com/501346792).
+  ui::TemplateReplacements replacements;
   if (base::EndsWith(path, ".css", base::CompareCase::INSENSITIVE_ASCII)) {
     GURL contents_url;
     std::optional<SkColor> opener_background_color;
@@ -201,32 +209,30 @@ void TerminalSource::StartDataRequest(
             opener_tab->GetContents()->GetBackgroundColor();
       }
     }
-    replacements_["themeColor"] =
+    replacements["themeColor"] =
         base::EscapeForHTML(guest_os::GetTerminalSettingBackgroundColor(
             profile_, contents_url, opener_background_color));
   }
 
   base::ThreadPool::PostTask(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
-      base::BindOnce(&ReadFile, downloads_, path, std::move(callback)));
+      base::BindOnce(&ReadFile, downloads_, path, std::move(replacements),
+                     std::move(callback)));
 }
 
 std::string TerminalSource::GetMimeType(const GURL& url) {
-  std::string mime_type(kDefaultMime);
-  std::string ext = base::FilePath(url.path_piece()).Extension();
-  if (!ext.empty()) {
-    net::GetWellKnownMimeTypeFromExtension(ext.substr(1), &mime_type);
+  std::string mime_type;
+  if (!net::GetWellKnownMimeTypeFromFile(base::FilePath(url.path()),
+                                         &mime_type)) {
+    return kDefaultMime;
   }
+
   return mime_type;
 }
 
 bool TerminalSource::ShouldServeMimeTypeAsContentTypeHeader() {
   // TerminalSource pages include js modules which require an explicit MimeType.
   return true;
-}
-
-const ui::TemplateReplacements* TerminalSource::GetReplacements() {
-  return &replacements_;
 }
 
 std::string TerminalSource::GetContentSecurityPolicy(

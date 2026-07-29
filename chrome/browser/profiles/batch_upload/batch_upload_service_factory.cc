@@ -4,30 +4,15 @@
 
 #include "chrome/browser/profiles/batch_upload/batch_upload_service_factory.h"
 
-#include "base/feature_list.h"
 #include "chrome/browser/profiles/batch_upload/batch_upload_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_selections.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/profiles/batch_upload_ui_delegate.h"
-#include "components/signin/public/base/signin_switches.h"
-
-namespace {
-
-ProfileSelections CreateBatchUploadProfileSelections() {
-  if (base::FeatureList::IsEnabled(switches::kBatchUploadDesktop)) {
-    return ProfileSelections::BuildForRegularProfile();
-  }
-
-  return ProfileSelections::BuildNoProfilesSelected();
-}
-
-}  // namespace
 
 BatchUploadServiceFactory::BatchUploadServiceFactory()
-    : ProfileKeyedServiceFactory("BatchUpload",
-                                 CreateBatchUploadProfileSelections()) {
+    : ProfileKeyedServiceFactory("BatchUpload") {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(SyncServiceFactory::GetInstance());
 }
@@ -35,9 +20,10 @@ BatchUploadServiceFactory::BatchUploadServiceFactory()
 BatchUploadServiceFactory::~BatchUploadServiceFactory() = default;
 
 // static
-BatchUploadService* BatchUploadServiceFactory::GetForProfile(Profile* profile) {
+BatchUploadService* BatchUploadServiceFactory::GetForProfile(Profile* profile,
+                                                             bool create) {
   return static_cast<BatchUploadService*>(
-      GetInstance()->GetServiceForBrowserContext(profile, true));
+      GetInstance()->GetServiceForBrowserContext(profile, create));
 }
 
 // static
@@ -50,8 +36,16 @@ std::unique_ptr<KeyedService>
 BatchUploadServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   Profile* profile = Profile::FromBrowserContext(context);
+
+  // BatchUploadService depends on SyncService. If SyncService is not available,
+  // BatchUploadService should not be created.
+  syncer::SyncService* sync_service =
+      SyncServiceFactory::GetForProfile(profile);
+  if (!sync_service) {
+    return nullptr;
+  }
+
   return std::make_unique<BatchUploadService>(
-      IdentityManagerFactory::GetForProfile(profile),
-      SyncServiceFactory::GetForProfile(profile),
-      std::make_unique<BatchUploadUIDelegate>());
+      IdentityManagerFactory::GetForProfile(profile), sync_service,
+      profile->GetPrefs(), std::make_unique<BatchUploadUIDelegate>());
 }

@@ -17,11 +17,12 @@
 #include "ash/style/color_util.h"
 #include "ash/style/dark_light_mode_controller_impl.h"
 #include "ash/style/typography.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/apps/app_service/file_utils.h"
 #include "chrome/browser/profiles/profile.h"
@@ -30,8 +31,6 @@
 #include "chrome/browser/ui/ash/sharesheet/sharesheet_bubble_view.h"
 #include "chrome/browser/ui/ash/sharesheet/sharesheet_constants.h"
 #include "chrome/browser/ui/ash/sharesheet/sharesheet_util.h"
-#include "chrome/browser/ui/views/chrome_typography.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/ui/base/file_icon_util.h"
@@ -44,6 +43,7 @@
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_styles.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_id.h"
@@ -108,7 +108,6 @@ class SharesheetHeaderView::SharesheetImagePreview : public views::View {
 
  public:
   explicit SharesheetImagePreview(size_t file_count) {
-    auto* color_provider = AshColorProvider::Get();
     const bool is_dark_mode_enabled =
         DarkLightModeControllerImpl::Get()->IsDarkModeEnabled();
     SetBackground(views::CreateRoundedRectBackground(
@@ -156,8 +155,8 @@ class SharesheetHeaderView::SharesheetImagePreview : public views::View {
             /*use_debug_colors=*/false));
         label->SetHorizontalAlignment(gfx::ALIGN_CENTER);
         auto second_tone_icon_color_prominent =
-            ColorUtil::GetSecondToneColor(color_provider->GetContentLayerColor(
-                AshColorProvider::ContentLayerType::kIconColorProminent));
+            ColorUtil::GetSecondToneColor(AshColorProvider::Get()->GetColor(
+                cros_tokens::kIconColorProminent));
         label->SetBackground(views::CreateRoundedRectBackground(
             second_tone_icon_color_prominent, kImagePreviewIconCornerRadius));
         label->SetPreferredSize(kImagePreviewQuarterSize);
@@ -288,8 +287,8 @@ SharesheetHeaderView::SharesheetHeaderView(apps::IntentPtr intent,
     ResolveImages();
   } else {
     DCHECK_GT(image_preview_->GetImageViewCount(), 0u);
-    const auto icon_color = ColorProvider::Get()->GetContentLayerColor(
-        ColorProvider::ContentLayerType::kIconColorProminent);
+    const auto icon_color =
+        ColorProvider::Get()->GetColor(cros_tokens::kIconColorProminent);
     gfx::ImageSkia file_type_icon = gfx::CreateVectorIcon(
         GetTextVectorIcon(),
         sharesheet::kImagePreviewPlaceholderIconContentSize, icon_color);
@@ -422,7 +421,8 @@ const gfx::VectorIcon& SharesheetHeaderView::GetTextVectorIcon() {
     case (TextPlaceholderIcon::kGenericText):
       return chromeos::kTextIcon;
     case (TextPlaceholderIcon::kLink):
-      return vector_icons::kLinkIcon;
+      return ::features::IsRoundedIconsEnabled() ? vector_icons::kLinkIcon
+                                                 : vector_icons::kLinkOldIcon;
   }
 }
 

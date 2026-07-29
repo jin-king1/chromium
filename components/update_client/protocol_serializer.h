@@ -55,7 +55,6 @@ protocol_request::App MakeProtocolApp(
     int install_date,
     const std::string& install_source,
     const std::string& install_location,
-    const std::string& fingerprint,
     const std::map<std::string, std::string>& installer_attributes,
     const std::string& cohort,
     const std::string& cohort_hint,
@@ -66,7 +65,7 @@ protocol_request::App MakeProtocolApp(
     std::optional<protocol_request::UpdateCheck> update_check,
     const std::vector<protocol_request::Data>& data,
     std::optional<protocol_request::Ping> ping,
-    std::optional<std::vector<base::Value::Dict>> events);
+    std::optional<std::vector<base::DictValue>> events);
 
 protocol_request::UpdateCheck MakeProtocolUpdateCheck(
     bool is_update_disabled,

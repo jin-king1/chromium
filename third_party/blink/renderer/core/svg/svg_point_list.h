@@ -36,10 +36,6 @@
 #include "third_party/blink/renderer/core/svg/svg_point.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 
-namespace WTF {
-class String;
-}  // namespace WTF
-
 namespace blink {
 
 class SVGPointListTearOff;
@@ -52,10 +48,10 @@ class SVGPointList final
   SVGPointList();
   ~SVGPointList() override;
 
-  SVGParsingError SetValueAsString(const WTF::String&);
+  SVGParsingError SetValueAsString(const String&);
 
   // SVGPropertyBase:
-  void Add(const SVGPropertyBase*, const SVGElement*) override;
+  bool Add(const SVGPropertyBase*, const SVGElement*) override;
   void CalculateAnimatedValue(
       const SMILAnimationEffectParameters&,
       float percentage,
@@ -71,7 +67,7 @@ class SVGPointList final
 
  private:
   template <typename CharType>
-  SVGParsingError Parse(const CharType* ptr, const CharType* end);
+  SVGParsingError Parse(base::span<const CharType> span);
 };
 
 template <>

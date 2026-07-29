@@ -7,6 +7,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
+#import "ios/chrome/browser/shared/coordinator/alert/alert_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -16,6 +17,7 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_group_action_type.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
+#import "ui/strings/grit/ui_strings.h"
 
 @implementation TabGroupConfirmationCoordinator {
   // The action type that a tab group is going to take.
@@ -25,10 +27,10 @@
   TabGroupActionType _secondaryActionType;
   // The source view where the confirmation dialog anchors to.
   UIView* _sourceView;
-  // The source button item where the confirmation dialog anchors to.
-  UIBarButtonItem* _sourceButtonItem;
   // The action sheet coordinator, if one is currently being shown.
   ActionSheetCoordinator* _actionSheetCoordinator;
+  // The alert coordinator, if one is currently being shown.
+  AlertCoordinator* _alert_coordinator;
 }
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
@@ -39,18 +41,7 @@
   if (self) {
     _actionType = actionType;
     _sourceView = sourceView;
-  }
-  return self;
-}
-
-- (instancetype)initWithBaseViewController:(UIViewController*)viewController
-                                   browser:(Browser*)browser
-                                actionType:(TabGroupActionType)actionType
-                          sourceButtonItem:(UIBarButtonItem*)sourceButtonItem {
-  self = [super initWithBaseViewController:viewController browser:browser];
-  if (self) {
-    _actionType = actionType;
-    _sourceButtonItem = sourceButtonItem;
+    _canCancel = YES;
   }
   return self;
 }
@@ -63,27 +54,32 @@
     CHECK(self.secondaryAction);
   }
 
-  if (_sourceView) {
-    _actionSheetCoordinator = [[ActionSheetCoordinator alloc]
+  if (_actionType == TabGroupActionType::kCloseLastTabUnknownRole) {
+    _alert_coordinator = [[AlertCoordinator alloc]
         initWithBaseViewController:self.baseViewController
                            browser:self.browser
-                             title:[self sheetTitle]
-                           message:[self sheetMessage]
-                              rect:_sourceView.bounds
-                              view:_sourceView];
-  } else {
-    CHECK(_sourceButtonItem);
-    _actionSheetCoordinator = [[ActionSheetCoordinator alloc]
-        initWithBaseViewController:self.baseViewController
-                           browser:self.browser
-                             title:[self sheetTitle]
-                           message:[self sheetMessage]
-                     barButtonItem:_sourceButtonItem];
+                             title:l10n_util::GetNSString(
+                                       IDS_IOS_SHARED_GROUP_ERROR_TITLE)
+                           message:l10n_util::GetNSString(
+                                       IDS_IOS_SHARED_GROUP_ERROR_MESSAGE)];
+    [_alert_coordinator addItemWithTitle:l10n_util::GetNSString(IDS_APP_OK)
+                                  action:self.primaryAction
+                                   style:UIAlertActionStyleDefault];
+    [_alert_coordinator start];
+    return;
   }
 
+  _actionSheetCoordinator = [[ActionSheetCoordinator alloc]
+      initWithBaseViewController:self.baseViewController
+                         browser:self.browser
+                           title:[self sheetTitle]
+                         message:[self sheetMessage]
+                            rect:_sourceView.bounds
+                            view:_sourceView];
   _actionSheetCoordinator.alertStyle = _showAsAlert
                                            ? UIAlertControllerStyleAlert
                                            : UIAlertControllerStyleActionSheet;
+
   _actionSheetCoordinator.popoverArrowDirection =
       UIPopoverArrowDirectionDown | UIPopoverArrowDirectionUp;
 
@@ -94,17 +90,21 @@
                                      }
                                       style:UIAlertActionStyleDestructive];
   if ([self shouldHaveSecondaryAction]) {
+    UIAlertActionStyle secondaryStyle =
+        self.canCancel ? UIAlertActionStyleDefault : UIAlertActionStyleCancel;
     [_actionSheetCoordinator addItemWithTitle:[self secondaryItemTitle]
                                        action:^{
                                          [weakSelf handleSecondaryAction];
                                        }
-                                        style:UIAlertActionStyleDefault];
+                                        style:secondaryStyle];
   }
-  [_actionSheetCoordinator addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
-                                     action:^{
-                                       [weakSelf stop];
-                                     }
-                                      style:UIAlertActionStyleCancel];
+  if (self.canCancel) {
+    [_actionSheetCoordinator addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
+                                       action:^{
+                                         [weakSelf stop];
+                                       }
+                                        style:UIAlertActionStyleCancel];
+  }
   [_actionSheetCoordinator start];
 }
 
@@ -136,8 +136,13 @@
 // Stops the action sheet coordinator currently showned and nullifies the
 // instance.
 - (void)dismissActionSheetCoordinator {
+  if (self.dismissAction) {
+    self.dismissAction();
+  }
   [_actionSheetCoordinator stop];
   _actionSheetCoordinator = nil;
+  [_alert_coordinator stop];
+  _alert_coordinator = nil;
 }
 
 // Returns a string used in the first item of the context menu.
@@ -153,6 +158,8 @@
     case TabGroupActionType::kDeleteSharedTabGroup:
     case TabGroupActionType::kDeleteOrKeepSharedTabGroup:
       return l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_DELETESHAREDGROUP);
+    case TabGroupActionType::kCloseLastTabUnknownRole:
+      NOTREACHED();
   }
 }
 
@@ -166,6 +173,7 @@
     case TabGroupActionType::kDeleteTabGroup:
     case TabGroupActionType::kLeaveSharedTabGroup:
     case TabGroupActionType::kDeleteSharedTabGroup:
+    case TabGroupActionType::kCloseLastTabUnknownRole:
       NOTREACHED();
   }
 }
@@ -188,21 +196,20 @@
     case TabGroupActionType::kDeleteOrKeepSharedTabGroup:
     case TabGroupActionType::kLeaveOrKeepSharedTabGroup:
       return l10n_util::GetNSString(IDS_IOS_TAB_GROUP_CONFIRMATION_KEEP_TITLE);
+    case TabGroupActionType::kCloseLastTabUnknownRole:
+      NOTREACHED();
   }
 }
 
 // Returns a string used in the action sheet as a message.
 - (NSString*)sheetMessage {
-  ProfileIOS* profile = self.browser->GetProfile();
-
   // Show a user's email in the message if it's not incognito and a user is
   // signed in.
   NSString* userEmail = nil;
-  if (!profile->IsOffTheRecord()) {
+  if (!self.profile->IsOffTheRecord()) {
     AuthenticationService* authenticationService =
-        AuthenticationServiceFactory::GetForProfile(profile);
-    id<SystemIdentity> identity = authenticationService->GetPrimaryIdentity(
-        signin::ConsentLevel::kSignin);
+        AuthenticationServiceFactory::GetForProfile(self.profile);
+    id<SystemIdentity> identity = authenticationService->GetPrimaryIdentity();
     userEmail = identity.userEmail;
   }
 
@@ -250,6 +257,8 @@
     case TabGroupActionType::kLeaveOrKeepSharedTabGroup:
       return l10n_util::GetNSString(
           IDS_IOS_SHARED_TAB_GROUP_CONFIRMATION_KEEP_OR_LEAVE_MESSAGE);
+    case TabGroupActionType::kCloseLastTabUnknownRole:
+      NOTREACHED();
   }
 }
 

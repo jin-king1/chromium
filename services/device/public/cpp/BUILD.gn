@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/features.gni")
 import("//services/device/public/cpp/compute_pressure/buildflags.gni")
 import("//services/device/public/cpp/geolocation/buildflags.gni")
 
@@ -14,6 +13,7 @@ component("device_features") {
   ]
   configs += [ "//build/config/compiler:wexit_time_destructors" ]
   deps = [
+    "//build:blink_buildflags",
     "//services/device/public/cpp/geolocation:buildflags",
     "//services/device/public/mojom:geolocation_internals",
   ]
@@ -23,6 +23,7 @@ component("device_features") {
   if (is_android) {
     sources += [ "device_feature_map.cc" ]
     deps += [
+      "//device/base",
       "//device/fido",
       "//services/device/public/java:device_feature_list_jni",
     ]
@@ -33,6 +34,8 @@ source_set("test_support") {
   testonly = true
 
   sources = [
+    "test/fake_hid_manager.cc",
+    "test/fake_hid_manager.h",
     "test/fake_sensor_and_provider.cc",
     "test/fake_sensor_and_provider.h",
     "test/fake_serial_port_client.cc",
@@ -45,12 +48,20 @@ source_set("test_support") {
     "test/fake_usb_device_info.h",
     "test/fake_usb_device_manager.cc",
     "test/fake_usb_device_manager.h",
+    "test/hid_test_util.cc",
+    "test/hid_test_util.h",
+    "test/mock_hid_connection.cc",
+    "test/mock_hid_connection.h",
+    "test/mock_hid_service.cc",
+    "test/mock_hid_service.h",
     "test/mock_usb_mojo_device.cc",
     "test/mock_usb_mojo_device.h",
     "test/scoped_geolocation_overrider.cc",
     "test/scoped_geolocation_overrider.h",
     "test/scoped_usb_device_manager_overrider.cc",
     "test/scoped_usb_device_manager_overrider.h",
+    "test/test_report_descriptors.cc",
+    "test/test_report_descriptors.h",
     "test/test_wake_lock_provider.cc",
     "test/test_wake_lock_provider.h",
   ]
@@ -59,6 +70,7 @@ source_set("test_support") {
     "//base",
     "//services/device/public/cpp/generic_sensor",
     "//services/device/public/cpp/geolocation",
+    "//services/device/public/cpp/hid",
     "//services/device/public/cpp/usb",
     "//services/device/public/mojom",
     "//services/device/public/mojom:usb",
@@ -69,6 +81,7 @@ source_set("test_support") {
     "//mojo/public/cpp/bindings",
     "//mojo/public/cpp/system",
     "//services/device:lib",
+    "//services/device/hid",
     "//testing/gmock",
     "//testing/gtest",
     "//url",
@@ -88,23 +101,6 @@ source_set("test_support") {
       "test/scoped_nfc_overrider.cc",
       "test/scoped_nfc_overrider.h",
     ]
-  } else {
-    sources += [
-      "test/fake_hid_manager.cc",
-      "test/fake_hid_manager.h",
-      "test/hid_test_util.cc",
-      "test/hid_test_util.h",
-      "test/mock_hid_connection.cc",
-      "test/mock_hid_connection.h",
-      "test/mock_hid_service.cc",
-      "test/mock_hid_service.h",
-      "test/test_report_descriptors.cc",
-      "test/test_report_descriptors.h",
-    ]
-
-    public_deps += [ "//services/device/public/cpp/hid" ]
-
-    deps += [ "//services/device/hid" ]
   }
 
   if (enable_compute_pressure) {

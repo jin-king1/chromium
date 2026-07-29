@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
+import {CrWebApi, gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
 import {sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.js';
 
 /**
@@ -58,8 +58,6 @@ function getSelectedTextWithOffset(offsetX: number, offsetY: number) {
   });
 }
 
-gCrWeb.webSelection =  { getSelectedText };
-
 window.addEventListener('message', function(message) {
   const payload = message.data;
   if (!payload ||
@@ -74,3 +72,20 @@ window.addEventListener('message', function(message) {
   const y = payload.offsetY;
   getSelectedTextWithOffset(x, y);
 });
+
+const webSelection = new CrWebApi('webSelection');
+
+webSelection.addFunction('getSelectedText', getSelectedText);
+
+try {
+  gCrWeb.registerApi(webSelection);
+} catch (error) {
+  if (error instanceof Error && error.name === 'CrWebError' &&
+      error.message === 'API webSelection already registered.') {
+    // TODO(crbug.com/483452121): Refactor this script to stop registering an
+    // API in a script which is reinjected with `FeatureScript::
+    // ReinjectionBehavior::kReinjectOnDocumentRecreation`.
+  } else {
+    throw error;
+  }
+}

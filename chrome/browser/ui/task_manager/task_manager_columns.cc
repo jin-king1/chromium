@@ -11,9 +11,6 @@
 
 namespace task_manager {
 
-const char kSortColumnIdKey[] = "sort_column_id";
-const char kSortIsAscendingKey[] = "sort_is_ascending";
-
 // We can't derive session restore keys from the integer IDs of the columns
 // since the IDs are generated, and so may change from one build to another.
 // Instead we stringify the column ID symbol (i.e. for the ID
@@ -42,7 +39,6 @@ std::string_view GetColumnIdAsString(int column_id) {
     COLUMN_CASE(IDS_TASK_MANAGER_WEBCORE_CSS_CACHE_COLUMN);
     COLUMN_CASE(IDS_TASK_MANAGER_VIDEO_MEMORY_COLUMN);
     COLUMN_CASE(IDS_TASK_MANAGER_SQLITE_MEMORY_USED_COLUMN);
-    COLUMN_CASE(IDS_TASK_MANAGER_NACL_DEBUG_STUB_PORT_COLUMN);
     COLUMN_CASE(IDS_TASK_MANAGER_JAVASCRIPT_MEMORY_ALLOCATED_COLUMN);
     COLUMN_CASE(IDS_TASK_MANAGER_IDLE_WAKEUPS_COLUMN);
     COLUMN_CASE(IDS_TASK_MANAGER_HARD_FAULTS_COLUMN);

@@ -14,9 +14,9 @@ include_rules = [
   "+chrome/browser/ash/app_mode",
   "+chrome/browser/ash/attestation",
   "+chrome/browser/ash/base",
+  "+chrome/browser/ash/certificate_provider",
   "+chrome/browser/ash/customization",
   "+chrome/browser/ash/drive",
-  "+chrome/browser/ash/http_auth_dialog.h",
   "+chrome/browser/ash/input_method",
   "+chrome/browser/ash/login",
   "+chrome/browser/ash/login/demo_mode",
@@ -37,9 +37,7 @@ include_rules = [
   "+chrome/browser/ash/tpm",
   "+chrome/browser/browser_process.h",
   "+chrome/browser/browser_process_platform_part.h",
-  "+chrome/browser/certificate_provider",
   "+chrome/browser/extensions/tab_helper.h",
-  "+chrome/browser/lifetime",
   "+chrome/browser/net",
   "+chrome/browser/policy/networking",
   "+chrome/browser/profiles",
@@ -47,13 +45,11 @@ include_rules = [
   "+chrome/browser/signin",
   "+chrome/browser/ui/ash/login",
   "+chrome/browser/ui/webui/about",
-  "+chrome/browser/ui/webui/ash/assistant_optin",
   "+chrome/browser/ui/webui/ash/cellular_setup",
   "+chrome/browser/ui/webui/ash/internet",
   "+chrome/browser/ui/webui/ash/multidevice_setup",
   "+chrome/browser/ui/webui/metrics_handler.h",
   "+chrome/browser/ui/webui/signin",
-  "+chrome/browser/ui/webui/test_files_request_filter.h",
   "+chrome/browser/ui/webui/theme_source.h",
   "+chrome/common",
   "+chrome/grit",
@@ -61,28 +57,29 @@ include_rules = [
   "+chrome/test/base",
 ]
 specific_include_rules = {
-  "core_oobe_handler\.cc": [
+  "welcome_screen_handler\\.cc": [
+    "+chrome/browser/global_features.h",
+  ],
+  "core_oobe_handler\\.cc": [
     "+ash/shell.h",
   ],
-  "network_state_informer_browsertest\.cc": [
+  "oobe_display_chooser.*": [
+    "+ash/display/cros_display_config.h",
+  ],
+  "oobe_ui\\.cc": [
+    "+ash/shell.h",
+  ],
+
+  # Tests.
+  "network_state_informer_browsertest\\.cc": [
     "+ash/shell.h",
     "+components/proxy_config",
-    "+ash/test/ash_test_base.h",
   ],
-  "oobe_ui\.cc": [
-    "+ash/shell.h",
-    "+remoting/host/chromeos:features"
-  ],
-  # Tests.
-  "oobe_display_chooser_browsertest\.cc": [
+  "oobe_display_chooser_browsertest\\.cc": [
     "+ash/shell.h",
   ],
-  "oobe_display_chooser_unittest.cc": [
+  "oobe_display_chooser_unittest\\.cc": [
     "+ash/display/display_configuration_controller.h",
     "+ash/shell.h",
-    "+ash/test/ash_test_base.h",
-  ],
-  "signin_userlist_unittest\.cc": [
-    "+ash/test/ash_test_base.h"
   ],
 }

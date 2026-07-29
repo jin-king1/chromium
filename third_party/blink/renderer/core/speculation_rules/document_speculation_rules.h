@@ -8,7 +8,6 @@
 #include "third_party/blink/public/mojom/speculation_rules/speculation_rules.mojom-blink.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/document.h"
-#include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/speculation_rules/speculation_rule_set.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -63,17 +62,43 @@ class CORE_EXPORT DocumentSpeculationRules
   void LinkGainedOrLostComputedStyle(HTMLAnchorElementBase* link);
   void DocumentStyleUpdated();
   void ChildStyleRecalcBlocked(Element* root);
+  void DisplayLockedRootsForceUpdateEnded(
+      const HeapVector<Member<Element>>& roots);
   void DidStyleChildren(Element* root);
   void DisplayLockedElementDisconnected(Element* root);
 
   void DocumentRestoredFromBFCache();
-  void InitiatePreview(const KURL& url);
 
   const HeapVector<Member<StyleRule>>& selectors() { return selectors_; }
+
+  // Returns the "moderate_viewport_heuristics" author overrides from the first
+  // rule set that specifies them, or nullopt if none do. There is intentionally
+  // no conflict resolution between rule sets: the first match wins.
+  std::optional<ModerateViewportHeuristicsParams>
+  GetModerateViewportHeuristicsParams() const;
+
+  // Returns all speculation candidates ever sent to the browser process.
+  // Candidates are accumulated and never removed.
+  // Used by performance.getSpeculations() to expose navigation data.
+  const HeapVector<Member<SpeculationCandidate>>& sent_candidates() const {
+    return sent_candidates_;
+  }
+
+  // Renderer-driven enactment (SpeculationRulesRendererSideHeuristics).
+  //
+  // Called when the pointerdown link-selection heuristic fires for `url`
+  // (from AnchorElementInteractionTracker). Selects the matching
+  // non-immediate candidate(s) previously sent to the browser and asks the
+  // browser to enact them via SpeculationHost::EnactCandidate. No-op unless
+  // the feature is enabled. Immediate-eagerness candidates are excluded (they
+  // are enacted at rule-parse time via UpdateSpeculationCandidates).
+  void OnPointerDownHeuristic(const KURL& url);
 
   // Requests a future call to UpdateSpeculationCandidates, if none is yet
   // scheduled.
   void QueueUpdateSpeculationCandidates(bool force_style_update = false);
+
+  void FlushMojoMessageForTesting();
 
   void Trace(Visitor*) const override;
 
@@ -155,7 +180,7 @@ class CORE_EXPORT DocumentSpeculationRules
   // re-traverse the document to find all links when a new ruleset is
   // added/removed.
   HeapHashMap<Member<HTMLAnchorElementBase>,
-              Member<HeapVector<Member<SpeculationCandidate>>>>
+              Member<GCedHeapVector<Member<SpeculationCandidate>>>>
       matched_links_;
   HeapHashSet<Member<HTMLAnchorElementBase>> unmatched_links_;
   HeapHashSet<Member<HTMLAnchorElementBase>> pending_links_;
@@ -179,6 +204,12 @@ class CORE_EXPORT DocumentSpeculationRules
   bool wants_pointer_events_ = false;
 
   bool first_update_after_restored_from_bfcache_ = false;
+
+  // Stores the current speculation candidates for the
+  // SpeculationMeasurement API. These are populated when candidates are
+  // sent to the browser and represent what the page has requested via
+  // speculation rules.
+  HeapVector<Member<SpeculationCandidate>> sent_candidates_;
 };
 
 }  // namespace blink

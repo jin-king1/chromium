@@ -13,6 +13,8 @@ blink_modules_sources("webgpu") {
     "dawn_enum_conversions.h",
     "dawn_object.cc",
     "dawn_object.h",
+    "external_image_utils.cc",
+    "external_image_utils.h",
     "external_texture_helper.cc",
     "external_texture_helper.h",
     "gpu.cc",
@@ -51,6 +53,7 @@ blink_modules_sources("webgpu") {
     "gpu_error.h",
     "gpu_external_texture.cc",
     "gpu_external_texture.h",
+    "gpu_heap_property.h",
     "gpu_internal_error.cc",
     "gpu_internal_error.h",
     "gpu_map_mode.h",
@@ -78,11 +81,15 @@ blink_modules_sources("webgpu") {
     "gpu_render_pass_encoder.h",
     "gpu_render_pipeline.cc",
     "gpu_render_pipeline.h",
+    "gpu_resource_table.cc",
+    "gpu_resource_table.h",
     "gpu_sampler.cc",
     "gpu_sampler.h",
     "gpu_shader_module.cc",
     "gpu_shader_module.h",
     "gpu_shader_stage.h",
+    "gpu_subgroup_matrix_config.cc",
+    "gpu_subgroup_matrix_config.h",
     "gpu_supported_features.cc",
     "gpu_supported_features.h",
     "gpu_supported_limits.cc",
@@ -108,14 +115,14 @@ blink_modules_sources("webgpu") {
     "//services/metrics/public/cpp:ukm_builders",
     "//skia",
     "//skia:skcms",
-    "//third_party/blink/renderer/modules/webcodecs:webcodecs",
+    "//third_party/blink/renderer/modules/webcodecs",
   ]
 
   if (use_dawn) {
     deps += [ "//third_party/dawn/src/dawn/wire" ]
   } else {
-    # If Dawn is not used, use the proc table. This gives the WebGPU implementation
-    # something to link to, though WebGPU won't be supported.
+    # If Dawn is not used, use the proc table. This gives the WebGPU
+    # implementation something to link to, though WebGPU won't be supported.
     deps += [ "//third_party/dawn/src/dawn:proc" ]
   }
 }

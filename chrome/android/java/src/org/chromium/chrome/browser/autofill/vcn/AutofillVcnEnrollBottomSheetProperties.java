@@ -9,11 +9,14 @@ import android.graphics.drawable.Drawable;
 
 import androidx.annotation.DrawableRes;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.VirtualCardEnrollmentLinkType;
 import org.chromium.components.autofill.payments.LegalMessageLine;
 import org.chromium.ui.modelutil.PropertyKey;
+import org.chromium.ui.modelutil.PropertyModel.ReadableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableObjectPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.url.GURL;
@@ -22,9 +25,10 @@ import java.util.List;
 import java.util.function.Function;
 
 /** The model of the autofill virtual card number (VCN) enrollment bottom sheet UI. */
+@NullMarked
 /*package*/ abstract class AutofillVcnEnrollBottomSheetProperties {
     /** Opens links. */
-    static interface LinkOpener {
+    interface LinkOpener {
         /**
          * Opens a link and records the metric for opening it.
          *
@@ -106,13 +110,13 @@ import java.util.function.Function;
     /** Issuer icon. */
     static class IssuerIcon {
         /** The bitmap for the issuer icon. */
-        final Bitmap mBitmap;
+        final @Nullable Bitmap mBitmap;
 
         /** The resource id for the issuer icon. */
         final @DrawableRes int mIconResource;
 
         /** The url for an issuer icon. */
-        final GURL mIconUrl;
+        final @Nullable GURL mIconUrl;
 
         /** The width of the issuer icon. */
         final int mWidth;
@@ -159,6 +163,9 @@ import java.util.function.Function;
     static final ReadableObjectPropertyKey<Description> DESCRIPTION =
             new ReadableObjectPropertyKey<>();
 
+    /** Whether or not to display the Google Pay icon. */
+    static final ReadableBooleanPropertyKey IS_GPAY_LOGO_VISIBLE = new ReadableBooleanPropertyKey();
+
     /** The icon for the card. */
     static final ReadableObjectPropertyKey<IssuerIcon> ISSUER_ICON =
             new ReadableObjectPropertyKey<>();
@@ -188,6 +195,7 @@ import java.util.function.Function;
     static final PropertyKey[] ALL_KEYS = {
         MESSAGE_TEXT,
         DESCRIPTION,
+        IS_GPAY_LOGO_VISIBLE,
         ISSUER_ICON,
         ISSUER_ICON_FETCH_CALLBACK,
         CARD_LABEL,

@@ -127,10 +127,13 @@ class PLATFORM_EXPORT MediaStreamAudioSource
     return std::nullopt;
   }
 
-  std::optional<media::AudioCapturerSource::ErrorCode> ErrorCode() {
-    DCHECK(GetTaskRunner()->BelongsToCurrentThread());
-    return error_code_;
-  }
+  virtual bool IsProcessedSource() const { return false; }
+  virtual bool IsApmProcessedSource() const { return false; }
+
+  virtual void SetAudioProcessingProperties(
+      const blink::AudioProcessingProperties& properties) {}
+
+  std::optional<media::AudioCapturerSource::ErrorCode> ErrorCode();
 
   // Returns a new MediaStreamAudioTrack. |id| is the blink track's ID in UTF-8.
   // Subclasses may override this to provide an extended implementation.
@@ -139,6 +142,7 @@ class PLATFORM_EXPORT MediaStreamAudioSource
 
   // Number of MediaStreamAudioTracks added as consumers.
   size_t NumTracks() const override;
+  Vector<MediaStreamAudioTrack*> GetTracks() const;
 
  protected:
   // Returns true if the source has already been started and has not yet been
@@ -200,10 +204,7 @@ class PLATFORM_EXPORT MediaStreamAudioSource
 
   void LogMessage(const std::string& message);
 
-  void SetErrorCode(media::AudioCapturerSource::ErrorCode code) {
-    DCHECK(GetTaskRunner()->BelongsToCurrentThread());
-    error_code_ = code;
-  }
+  void SetErrorCode(media::AudioCapturerSource::ErrorCode code);
 
   // The portion of StopSourceOnError processing carried out on the main thread.
   void StopSourceOnErrorOnTaskRunner(

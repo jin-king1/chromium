@@ -7,8 +7,13 @@
 
 #include "android_webview/browser/supervised_user/aw_supervised_user_url_classifier.h"
 #include "base/memory/raw_ptr.h"
+#include "base/sequence_checker.h"
 #include "content/public/browser/navigation_throttle.h"
 #include "net/http/http_request_headers.h"
+
+namespace content {
+class NavigationThrottleRegistry;
+}  // namespace content
 
 namespace android_webview {
 
@@ -28,13 +33,11 @@ namespace android_webview {
 // lives from navigation start until the navigation has been committed.
 class AwSupervisedUserThrottle : public content::NavigationThrottle {
  public:
-  static std::unique_ptr<AwSupervisedUserThrottle> Create(
-      content::NavigationHandle* navigation_handle,
-      AwSupervisedUserUrlClassifier* bridge);
+  static void CreateAndAdd(content::NavigationThrottleRegistry& registry,
+                           AwSupervisedUserUrlClassifier* bridge);
 
-  explicit AwSupervisedUserThrottle(
-      content::NavigationHandle* navigation_handle,
-      AwSupervisedUserUrlClassifier* url_classifier);
+  AwSupervisedUserThrottle(content::NavigationThrottleRegistry& registry,
+                           AwSupervisedUserUrlClassifier* url_classifier);
   AwSupervisedUserThrottle(const AwSupervisedUserThrottle&) = delete;
   AwSupervisedUserThrottle& operator=(const AwSupervisedUserThrottle&) = delete;
   ~AwSupervisedUserThrottle() override;

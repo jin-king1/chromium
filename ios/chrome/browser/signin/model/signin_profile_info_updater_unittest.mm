@@ -10,6 +10,7 @@
 #import "base/files/file_path.h"
 #import "base/files/scoped_temp_dir.h"
 #import "base/strings/utf_string_conversions.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
 #import "google_apis/gaia/google_service_auth_error.h"
@@ -73,7 +74,7 @@ TEST_F(SigninProfileInfoUpdaterTest, SigninSignout) {
 
   // Signin.
   AccountInfo account_info = identity_test_env()->MakePrimaryAccountAvailable(
-      kEmail, signin::ConsentLevel::kSync);
+      kEmail, signin::ConsentLevel::kSignin);
 
   {
     ProfileAttributesIOS attr = GetAttributesForProfile();
@@ -93,7 +94,7 @@ TEST_F(SigninProfileInfoUpdaterTest, AuthError) {
 
   // Signin.
   AccountInfo account_info = identity_test_env()->MakePrimaryAccountAvailable(
-      kEmail, signin::ConsentLevel::kSync);
+      kEmail, signin::ConsentLevel::kSignin);
 
   {
     ProfileAttributesIOS attr = GetAttributesForProfile();
@@ -104,7 +105,8 @@ TEST_F(SigninProfileInfoUpdaterTest, AuthError) {
   // Set auth error.
   identity_test_env()->UpdatePersistentErrorOfRefreshTokenForAccount(
       account_info.account_id,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   EXPECT_TRUE(GetAttributesForProfile().HasAuthenticationError());
 

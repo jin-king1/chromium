@@ -5,19 +5,20 @@
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_web_contents_listener.h"
 
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
+#include "chrome/browser/tab_group_sync/tab_group_sync_tab_state.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
-#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
-#include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_proxy.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "components/data_sharing/public/features.h"
 #include "components/saved_tab_groups/internal/saved_tab_group_model.h"
 #include "components/saved_tab_groups/internal/tab_group_sync_service_impl.h"
 #include "components/saved_tab_groups/public/features.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/saved_tab_group_tab.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
@@ -32,22 +33,11 @@ constexpr char kThirdURL[] = "https://url3.com";
 
 }  // anonymous namespace
 
-class ListenerDeferredTest : public InProcessBrowserTest,
-                             public ::testing::WithParamInterface<bool> {
+class ListenerDeferredTest : public InProcessBrowserTest {
  public:
   ListenerDeferredTest() {
-    if (GetParam()) {
-      features_.InitWithFeatures(
-          {tab_groups::kTabGroupsDeferRemoteNavigations,
-           tab_groups::kTabGroupSyncServiceDesktopMigration,
-           tab_groups::kTabGroupsSaveV2},
-          {});
-    } else {
-      features_.InitWithFeatures(
-          {tab_groups::kTabGroupsDeferRemoteNavigations,
-           tab_groups::kTabGroupsSaveV2},
-          {tab_groups::kTabGroupSyncServiceDesktopMigration});
-    }
+    features_.InitWithFeatures({data_sharing::features::kDataSharingFeature},
+                               {});
   }
 
   void SetUpOnMainThread() override {
@@ -120,8 +110,6 @@ class ListenerDeferredTest : public InProcessBrowserTest,
     saved_tab_guid_ = tab.saved_tab_guid();
   }
 
-  bool IsServiceMigrationEnabled() const { return GetParam(); }
-
   void AttemptNavigationFromSync(const GURL& url) {
     ASSERT_FALSE(test_tab_->GetContents()->IsLoading());
 
@@ -162,27 +150,19 @@ class ListenerDeferredTest : public InProcessBrowserTest,
     return test_tab_->GetContents()->GetLastCommittedURL();
   }
 
- private:
+ protected:
   base::test::ScopedFeatureList features_;
 
   TabStripModel* tab_strip_model() { return browser()->tab_strip_model(); }
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
   tab_groups::SavedTabGroupModel* saved_tab_group_model() {
     tab_groups::TabGroupSyncService* service =
-        tab_groups::SavedTabGroupUtils::GetServiceForProfile(profile());
+        tab_groups::TabGroupSyncServiceFactory::GetForProfile(profile());
     EXPECT_TRUE(service);
 
-    tab_groups::SavedTabGroupModel* model = nullptr;
-    if (IsServiceMigrationEnabled()) {
-      auto* service_impl =
-          static_cast<tab_groups::TabGroupSyncServiceImpl*>(service);
-      model = service_impl->GetModelForTesting();
-    } else {
-      auto* service_impl =
-          static_cast<tab_groups::TabGroupSyncServiceProxy*>(service);
-      model = service_impl->GetModelForTesting();
-    }
-    return model;
+    auto* service_impl =
+        static_cast<tab_groups::TabGroupSyncServiceImpl*>(service);
+    return service_impl->GetModel();
   }
 
   raw_ptr<tabs::TabInterface> other_tab_;
@@ -191,11 +171,7 @@ class ListenerDeferredTest : public InProcessBrowserTest,
   std::optional<base::Uuid> saved_tab_guid_;
 };
 
-INSTANTIATE_TEST_SUITE_P(SavedTabGroupWebContentsListenerParameterized,
-                         ListenerDeferredTest,
-                         testing::Bool());
-
-IN_PROC_BROWSER_TEST_P(ListenerDeferredTest, NavigatesWhenStartsForegrounded) {
+IN_PROC_BROWSER_TEST_F(ListenerDeferredTest, NavigatesWhenStartsForegrounded) {
   ForegroundTestTab();
   SaveGroup();
 
@@ -207,7 +183,7 @@ IN_PROC_BROWSER_TEST_P(ListenerDeferredTest, NavigatesWhenStartsForegrounded) {
   EXPECT_EQ(GURL(kThirdURL), CurrentTabURL());
 }
 
-IN_PROC_BROWSER_TEST_P(ListenerDeferredTest,
+IN_PROC_BROWSER_TEST_F(ListenerDeferredTest,
                        DoesntNavigateWhenStartsBackgrounded) {
   BackgroundTestTab();
   SaveGroup();
@@ -220,7 +196,7 @@ IN_PROC_BROWSER_TEST_P(ListenerDeferredTest,
   EXPECT_EQ(GURL(kFirstURL), CurrentTabURL());
 }
 
-IN_PROC_BROWSER_TEST_P(ListenerDeferredTest, ForegroundingAllowsNavigtation) {
+IN_PROC_BROWSER_TEST_F(ListenerDeferredTest, ForegroundingAllowsNavigtation) {
   BackgroundTestTab();
   SaveGroup();
   EXPECT_EQ(GURL(kFirstURL), CurrentTabURL());
@@ -231,7 +207,7 @@ IN_PROC_BROWSER_TEST_P(ListenerDeferredTest, ForegroundingAllowsNavigtation) {
   EXPECT_EQ(GURL(kSecondURL), CurrentTabURL());
 }
 
-IN_PROC_BROWSER_TEST_P(ListenerDeferredTest,
+IN_PROC_BROWSER_TEST_F(ListenerDeferredTest,
                        ForegroundingAfterANavigationNavigates) {
   BackgroundTestTab();
   SaveGroup();
@@ -245,7 +221,7 @@ IN_PROC_BROWSER_TEST_P(ListenerDeferredTest,
   EXPECT_EQ(GURL(kSecondURL), CurrentTabURL());
 }
 
-IN_PROC_BROWSER_TEST_P(
+IN_PROC_BROWSER_TEST_F(
     ListenerDeferredTest,
     DoesntNavigateWhenBackgroundedAfterStartingForegrounded) {
   ForegroundTestTab();
@@ -261,7 +237,7 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_EQ(GURL(kFirstURL), CurrentTabURL());
 }
 
-IN_PROC_BROWSER_TEST_P(ListenerDeferredTest,
+IN_PROC_BROWSER_TEST_F(ListenerDeferredTest,
                        OnlyNavigatesMostRecentNavigationURLOnForeground) {
   BackgroundTestTab();
   SaveGroup();
@@ -274,4 +250,55 @@ IN_PROC_BROWSER_TEST_P(ListenerDeferredTest,
   ForegroundTestTab();
   WaitForNavigationCompleted();
   EXPECT_EQ(GURL(kThirdURL), CurrentTabURL());
+}
+
+IN_PROC_BROWSER_TEST_F(ListenerDeferredTest, KeywordNavigationClearsTabState) {
+  ForegroundTestTab();
+  SaveGroup();
+
+  // 1. Simulate a navigation from sync to set up a "restricted" tab state.
+  // This likely creates the TabGroupSyncTabState.
+  AttemptNavigationFromSync(GURL(kSecondURL));
+
+  // Verify the tab state exists.
+  ASSERT_TRUE(TabGroupSyncTabState::FromWebContents(test_tab_->GetContents()));
+
+  // 2. Perform a browser-initiated navigation with PAGE_TRANSITION_KEYWORD
+  // and no user gesture.
+  content::NavigationController::LoadURLParams params((GURL(kThirdURL)));
+  params.transition_type = ui::PAGE_TRANSITION_KEYWORD;
+  params.has_user_gesture = false;
+
+  content::TestNavigationObserver navigation_observer(test_tab_->GetContents());
+  test_tab_->GetContents()->GetController().LoadURLWithParams(params);
+  navigation_observer.Wait();
+
+  // 3. Verify that the tab state WAS cleared.
+  // In the old code, KEYWORD (9) would have matched RELOAD (8) & mask,
+  // returning false and failing to clear the state.
+  // With the fix, it correctly identifies it as NOT a reload and clears it.
+  EXPECT_FALSE(TabGroupSyncTabState::FromWebContents(test_tab_->GetContents()));
+}
+
+IN_PROC_BROWSER_TEST_F(ListenerDeferredTest,
+                       ReloadNavigationDoesNotClearTabState) {
+  ForegroundTestTab();
+  SaveGroup();
+
+  // 1. Simulate a navigation from sync.
+  AttemptNavigationFromSync(GURL(kSecondURL));
+
+  ASSERT_TRUE(TabGroupSyncTabState::FromWebContents(test_tab_->GetContents()));
+
+  // 2. Perform a browser-initiated navigation with PAGE_TRANSITION_RELOAD.
+  content::NavigationController::LoadURLParams params((GURL(kSecondURL)));
+  params.transition_type = ui::PAGE_TRANSITION_RELOAD;
+  params.has_user_gesture = false;
+
+  content::TestNavigationObserver navigation_observer(test_tab_->GetContents());
+  test_tab_->GetContents()->GetController().LoadURLWithParams(params);
+  navigation_observer.Wait();
+
+  // 3. Verify that the tab state was NOT cleared.
+  EXPECT_TRUE(TabGroupSyncTabState::FromWebContents(test_tab_->GetContents()));
 }

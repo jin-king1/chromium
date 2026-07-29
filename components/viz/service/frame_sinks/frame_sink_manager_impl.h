@@ -19,6 +19,7 @@
 #include "base/containers/flat_set.h"
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/functional/callback_helpers.h"
+#include "base/functional/function_ref.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
@@ -45,6 +46,7 @@
 #include "components/viz/service/surfaces/surface_observer.h"
 #include "components/viz/service/viz_service_export.h"
 #include "gpu/ipc/common/surface_handle.h"
+#include "mojo/public/cpp/bindings/direct_receiver.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -66,6 +68,9 @@ class InputManager;
 class OutputSurfaceProvider;
 class SharedImageInterfaceProvider;
 struct VideoCaptureTarget;
+#if BUILDFLAG(IS_MAC)
+class ExternalBeginFrameSourceMojoMac;
+#endif
 
 // FrameSinkManagerImpl manages BeginFrame hierarchy. This is the implementation
 // detail for FrameSinkManagerImpl.
@@ -99,6 +104,7 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
     base::ProcessId host_process_id = base::kNullProcessId;
     raw_ptr<HintSessionFactory> hint_session_factory = nullptr;
     size_t max_uncommitted_frames = 0;
+    bool use_direct_receiver = false;
   };
   explicit FrameSinkManagerImpl(const InitParams& params);
 
@@ -114,7 +120,7 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // Mac |task_runner| will be the resize helper task runner. May only be called
   // once.
   void BindAndSetClient(
-      mojo::PendingReceiver<mojom::FrameSinkManager> receiver,
+      mojo::PendingReceiver<mojom::FrameSinkManager> interface_receiver,
       scoped_refptr<base::SingleThreadTaskRunner> task_runner,
       mojo::PendingRemote<mojom::FrameSinkManagerClient> client,
       SharedImageInterfaceProvider* shared_image_interface_provider);
@@ -134,11 +140,18 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // mojom::FrameSinkManager implementation:
   void RegisterFrameSinkId(const FrameSinkId& frame_sink_id,
                            bool report_activation) override;
-  void InvalidateFrameSinkId(const FrameSinkId& frame_sink_id) override;
+  void InvalidateFrameSinkId(const FrameSinkId& frame_sink_id,
+                             InvalidateFrameSinkIdCallback callback) override;
   void SetFrameSinkDebugLabel(const FrameSinkId& frame_sink_id,
                               const std::string& debug_label) override;
   void CreateRootCompositorFrameSink(
       mojom::RootCompositorFrameSinkParamsPtr params) override;
+
+#if BUILDFLAG(IS_MAC)
+  void CreateCompositorDisplayLink(
+      mojom::CompositorDisplayLinkParamsPtr params) override;
+#endif
+
   void CreateFrameSinkBundle(
       const FrameSinkBundleId& bundle_id,
       mojo::PendingReceiver<mojom::FrameSinkBundle> receiver,
@@ -162,11 +175,13 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   void AddVideoDetectorObserver(
       mojo::PendingRemote<mojom::VideoDetectorObserver> observer) override;
   void CreateVideoCapturer(
-      mojo::PendingReceiver<mojom::FrameSinkVideoCapturer> receiver) override;
+      mojo::PendingReceiver<mojom::FrameSinkVideoCapturer> receiver,
+      uint32_t capture_version_source) override;
   void EvictSurfaces(const std::vector<SurfaceId>& surface_ids) override;
   void RequestCopyOfOutput(const SurfaceId& surface_id,
                            std::unique_ptr<CopyOutputRequest> request,
-                           bool capture_exact_surface_id) override;
+                           bool capture_exact_surface_id,
+                           base::TimeDelta timeout) override;
 #if BUILDFLAG(IS_ANDROID)
   void CacheBackBuffer(uint32_t cache_id,
                        const FrameSinkId& root_frame_sink_id) override;
@@ -186,12 +201,9 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
       override;
   void EnableFrameSinkManagerTestApi(
       mojo::PendingReceiver<mojom::FrameSinkManagerTestApi> receiver) override;
-  void SetupRenderInputRouterDelegateConnection(
-      const base::UnguessableToken& grouping_id,
-      mojo::PendingRemote<input::mojom::RenderInputRouterDelegateClient>
-          rir_delegate_client_remote,
-      mojo::PendingReceiver<input::mojom::RenderInputRouterDelegate>
-          rir_delegate_receiver) override;
+  void SetupRendererInputRouterDelegateRegistry(
+      mojo::PendingReceiver<mojom::RendererInputRouterDelegateRegistry>
+          receiver) override;
   void NotifyRendererBlockStateChanged(
       bool blocked,
       const std::vector<FrameSinkId>& render_input_routers) override;
@@ -237,6 +249,29 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   std::string_view GetFrameSinkDebugLabel(
       const FrameSinkId& frame_sink_id) const override;
   void AggregatedFrameSinksChanged() override;
+  void AddObserver(FrameSinkObserver* obs) override;
+  void RemoveObserver(FrameSinkObserver* obs) override;
+  // Check if `transition_token_to_animation_manager_` contains entry for
+  // `transition_token`.
+  bool HasViewTransitionToken(
+      const blink::ViewTransitionToken& transition_token) override;
+
+  // Registers `token` for a same-document view transition. This is used for
+  // synchronizing activation of the new frame with the completion of the
+  // previous frame's capture. When a new frame with a view transition directive
+  // is committed, its activation is delayed until the previous frame's content
+  // has been successfully captured via a CopyOutputRequest. This ensures that
+  // the transition animation has all necessary resources before it begins.
+  void RegisterSameDocViewTransitionToken(
+      const blink::ViewTransitionToken& token);
+
+  // Marks the `token` as ready, indicating that the associated
+  // CopyOutputRequest has been completed and resources are available.
+  void MarkSameDocViewTransitionTokenReady(
+      const blink::ViewTransitionToken& token);
+
+  // Removes the `token` from the tracking set.
+  void ClearSameDocViewTransitionToken(const blink::ViewTransitionToken& token);
 
   // HitTestDataProvider implementation.
   // This is required to allow RenderWidgetHostInputEventRouter to find target
@@ -244,6 +279,10 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   void AddHitTestRegionObserver(HitTestRegionObserver* observer) override;
   void RemoveHitTestRegionObserver(HitTestRegionObserver* observer) override;
   const DisplayHitTestQueryMap& GetDisplayHitTestQuery() const override;
+
+  // HitTestAggregatorDelegate and HitTestManager::Delegate implementation:
+  bool IsChildOf(const FrameSinkId& parent,
+                 const FrameSinkId& child) const override;
 
   // CompositorFrameSinkSupport, hierarchy, and BeginFrameSource can be
   // registered and unregistered in any order with respect to each other.
@@ -271,7 +310,7 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
 
   virtual InputManager* GetInputManager();  // virtual for testing.
 
-  void SubmitHitTestRegionList(
+  bool SubmitHitTestRegionList(
       const SurfaceId& surface_id,
       uint64_t frame_index,
       std::optional<HitTestRegionList> hit_test_region_list);
@@ -298,8 +337,8 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   void OnFrameSinkDeviceScaleFactorChanged(const FrameSinkId& frame_sink_id,
                                            float device_scale_factor);
 
-  void AddObserver(FrameSinkObserver* obs);
-  void RemoveObserver(FrameSinkObserver* obs);
+  void OnFrameSinkMobileOptimizedChanged(const FrameSinkId& frame_sink_id,
+                                         bool is_mobile_optimized);
 
   // Returns ids of all FrameSinks that were registered.
   std::vector<FrameSinkId> GetRegisteredFrameSinkIds() const;
@@ -309,9 +348,12 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // oldest embedding. To be called by non-root CompositorFrameSinks only.
   FrameSinkId GetOldestParentByChildFrameId(
       const FrameSinkId& child_frame_sink_id) const;
+  int GetNumParents(const FrameSinkId& frame_sink_id) const;
   // Returns the oldest RootCompositorFrameSink's FrameSinkId associated with
   // `child_frame_sink_id`, since all frame production/input processing uses
   // the oldest embedding.
+  // In case `child_frame_sink_id` is not attached to a RootCompositorFrameSink
+  // FrameSink(0,0) is returned.
   FrameSinkId GetOldestRootCompositorFrameSinkId(
       const FrameSinkId& child_frame_sink_id) const;
 
@@ -321,10 +363,6 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
       const FrameSinkId& parent_frame_sink_id) const;
   CompositorFrameSinkSupport* GetFrameSinkForId(
       const FrameSinkId& frame_sink_id) const;
-
-  base::TimeDelta GetPreferredFrameIntervalForFrameSinkId(
-      const FrameSinkId& id,
-      mojom::CompositorFrameSinkType* type) const;
 
   // This cancels pending output requests owned by the frame sinks associated
   // with the specified BeginFrameSource.
@@ -382,6 +420,12 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // This call is only valid after BindAndSetClient().
   gpu::SharedImageInterface* GetSharedImageInterface();
 
+  // Returns a callback that triggers the resource capture signal.
+  // This encapsulates the binding logic so clients don't need to know the
+  // implementation details.
+  base::OnceCallback<void(const blink::ViewTransitionToken&)>
+  GetViewTransitionResourcesCapturedCallback();
+
   ReservedResourceIdTracker* reserved_resource_id_tracker() {
     return &reserved_resource_id_tracker_;
   }
@@ -394,7 +438,23 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
 
   GpuServiceImpl* GetGpuService();
 
+#if BUILDFLAG(IS_MAC)
+  // This is called after SetSupportedDisplayLinkId() in the browser process.
+  // Forces every RootCompositorFrameSink associated with the specified display
+  // to update its DisplayLinkMac. This ensures that frame sinks stay in sync
+  // with the display configuration when displays are added or removed.
+  void UpdateVSyncDisplays(int64_t display_id, bool is_browser_vsync_supported);
+#endif
+
  private:
+  void OnViewTransitionResourcesCaptured(
+      const blink::ViewTransitionToken& transition_token);
+
+  void RecurseChildren(const FrameSinkId& frame_sink_id,
+                       base::FunctionRef<void(const FrameSinkId&)> callback);
+  void RecurseParents(const FrameSinkId& frame_sink_id,
+                      base::FunctionRef<void(const FrameSinkId&)> callback);
+
   friend class FrameSinkManagerTest;
   friend class CompositorFrameSinkSupportTestBase;
   friend class FlingSchedulerTest;
@@ -458,10 +518,11 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   bool ChildContains(const FrameSinkId& child_frame_sink_id,
                      const FrameSinkId& search_frame_sink_id) const;
 
-  // Updates throttling recursively on a frame sink specified by its |id|
-  // and all its descendants to send BeginFrames at |interval|.
-  void UpdateThrottlingRecursively(const FrameSinkId& id,
-                                   base::TimeDelta interval);
+  // Updates the throttling state for the hierarchy containing `frame_sink_id`.
+  // This ensures that `frame_sink_id` and its descendants are correctly
+  // throttled based on global settings, explicit throttle requests, and active
+  // video capture, while accounting for the current hierarchy.
+  void UpdateThrottlingRecursively(FrameSinkId frame_sink_id);
 
   // Called when throttling needs to be updated. Some examples can trigger such
   // an update include: starting of video capturing requires throttling on the
@@ -469,9 +530,16 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   // requires throttling on affected frame sinks to be started or stopped.
   void UpdateThrottling();
 
-  // Clears throttling operation on the frame sink with |id| and all its
-  // descendants.
-  void ClearThrottling(const FrameSinkId& id);
+  // Applies throttling to all descendants of `throttled_roots`, and disables
+  // throttling for all descendants of `captured_roots` (e.g. during video
+  // capture).
+  void ApplyThrottlingRules(const base::flat_set<FrameSinkId>& throttled_roots,
+                            const base::flat_set<FrameSinkId>& captured_roots);
+
+  // Check to see if |throttle_interval_| has any effect. For example if
+  // |global_throttle_interval_| is longer then |throttle_interval| it will
+  // never do anything, because the longer interval wins
+  bool ThrottleIntervalHasEffect() const;
 
   // Clears HitTestQuery stored for |frame_sink_id| in
   // `display_hit_test_query_` when `InputOnViz` flag is enabled.
@@ -557,12 +625,15 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
                  std::unique_ptr<SurfaceAnimationManager>>
       transition_token_to_animation_manager_;
 
+  base::flat_set<blink::ViewTransitionToken> same_doc_tokens_pending_;
+  base::flat_set<blink::ViewTransitionToken> same_doc_tokens_ready_;
+
   // The ids of the frame sinks that are currently being captured.
   // These frame sinks should not be throttled.
   base::flat_set<FrameSinkId> captured_frame_sink_ids_;
 
   // Ids of the frame sinks that have been requested to throttle.
-  std::vector<FrameSinkId> frame_sink_ids_to_throttle_;
+  base::flat_set<FrameSinkId> frame_sink_ids_to_throttle_;
 
   // The throttling interval which defines how often BeginFrames are sent for
   // frame sinks in `frame_sink_ids_to_throttle_`, if
@@ -601,11 +672,19 @@ class VIZ_SERVICE_EXPORT FrameSinkManagerImpl
   //     |client_|. Used for some unit tests.
   raw_ptr<mojom::FrameSinkManagerClient, DanglingUntriaged> client_ = nullptr;
 
-  mojo::Receiver<mojom::FrameSinkManager> frame_sink_manager_receiver_{this};
+  using Receiver = mojo::Receiver<mojom::FrameSinkManager>;
+  using DirectReceiver = mojo::DirectReceiver<mojom::FrameSinkManager>;
+  std::variant<Receiver, DirectReceiver> frame_sink_manager_receiver_;
   mojo::Receiver<mojom::FrameSinksMetricsRecorder> metrics_receiver_{this};
   mojo::Receiver<mojom::FrameSinkManagerTestApi> test_api_receiver_{this};
 
-  base::ObserverList<FrameSinkObserver>::Unchecked observer_list_;
+  base::ObserverList<FrameSinkObserver> observer_list_;
+
+#if BUILDFLAG(IS_MAC)
+  // Only one ExternalBeginFrameSourceMojoMac object is created and is
+  // shared by all RootCompositorFrameSinks.
+  std::unique_ptr<ExternalBeginFrameSourceMojoMac> external_begin_frame_source_;
+#endif
 
   // Counts frames for test.
   std::optional<FrameCounter> frame_counter_;

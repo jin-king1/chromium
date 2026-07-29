@@ -33,6 +33,8 @@
 #include "base/gtest_prod_util.h"
 #include "base/unguessable_token.h"
 #include "services/network/public/cpp/content_security_policy/content_security_policy.h"
+#include "services/network/public/cpp/integrity_metadata.h"
+#include "services/network/public/cpp/integrity_policy.h"
 #include "services/network/public/mojom/content_security_policy.mojom-blink.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink.h"
@@ -56,10 +58,6 @@
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
-namespace WTF {
-class OrdinalNumber;
-}
-
 namespace blink {
 
 class AuditsIssue;
@@ -78,6 +76,29 @@ using RedirectStatus = ResourceRequest::RedirectStatus;
 using network::mojom::blink::CSPDirectiveName;
 
 using CSPCheckResult = network::CSPCheckResult;
+
+inline constexpr char kSyntheticResponseBlockedResourceCountHistogramName[] =
+    "ServiceWorker.SyntheticResponse.BlockedResourceCount";
+inline constexpr char kSyntheticResponseBlockedSrcTypeHistogramName[] =
+    "ServiceWorker.SyntheticResponse.BlockedSrcType";
+inline constexpr char
+    kSyntheticResponseBlockedInlineResourceTypeHistogramName[] =
+        "ServiceWorker.SyntheticResponse.BlockedInlineResourceType";
+
+// The src type which is blocked due to the synthetic response. This is a subset
+// of `CSPDirectiveName`.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(SyntheticResponseBlockedSrcType)
+enum class SyntheticResponseBlockedSrcType {
+  kUnspecified = 0,
+  kScriptSrcElm = 1,
+  kWorkerSrc = 2,
+  kMaxValue = kWorkerSrc,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/service/enums.xml:SyntheticResponseBlockedSrcType)
 
 //  A delegate interface to implement violation reporting, support for some
 //  directives and other miscellaneous functionality.
@@ -98,14 +119,42 @@ class CORE_EXPORT ContentSecurityPolicyDelegate : public GarbageCollectedMixin {
   // Directives support.
   virtual void SetSandboxFlags(network::mojom::blink::WebSandboxFlags) = 0;
   virtual void SetRequireTrustedTypes() = 0;
-  virtual void AddInsecureRequestPolicy(
+  // Apply the insecure-request policy change to the renderer-local
+  // SecurityContext (and the associated insecure-navigations upgrade
+  // set). This is the local state change; it does NOT send any IPC. It
+  // is therefore safe to call while binding CSP to a document that has
+  // not yet committed. For the initial commit path the browser receives
+  // the same authoritative values via DidCommitProvisionalLoadParams
+  // (see RenderFrameImpl::MakeDidCommitProvisionalLoadParams and
+  // Navigator::DidNavigate). See crbug/40580002.
+  virtual void ApplyInsecureRequestPolicy(
       mojom::blink::InsecureRequestPolicy) = 0;
+
+  // Send the EnforceInsecureRequestPolicy / EnforceInsecureNavigationsSet
+  // IPCs so the browser can update replicated state and propagate to
+  // cross-process proxies. This does not modify local renderer state.
+  //
+  // Only safe to call once the document has committed and CSP is bound
+  // to the corresponding LocalFrame: otherwise the IPC will route via
+  // GetLocalFrameHostRemote() to the previously committed document's
+  // RenderFrameHost, producing an insecure-request-policy mismatch
+  // (crbug/40580002). Callers on the initial-commit path must not use
+  // this method and should instead rely on DidCommitProvisionalLoadParams
+  // (see ApplyInsecureRequestPolicy above).
+  //
+  // |added_policy| is the delegate's current cumulative insecure-request
+  // policy (i.e. the value ContentSecurityPolicy holds in
+  // |insecure_request_policy_| after applying local side effects). The
+  // insecure-navigations set IPC is gated on kUpgradeInsecureRequests: the
+  // set can only change when the incoming policy contained UIR.
+  virtual void NotifyBrowserOfInsecureRequestPolicy(
+      mojom::blink::InsecureRequestPolicy added_policy) = 0;
 
   // Violation reporting.
 
   // See https://w3c.github.io/webappsec-csp/#create-violation-for-global.
   // These functions are used to create the violation object.
-  virtual std::unique_ptr<SourceLocation> GetSourceLocation() = 0;
+  virtual SourceLocation* GetSourceLocation() = 0;
   virtual std::optional<uint16_t> GetStatusCode() = 0;
   // If the Delegate is not bound to a document, a null string should be
   // returned as the referrer.
@@ -128,7 +177,8 @@ class CORE_EXPORT ContentSecurityPolicyDelegate : public GarbageCollectedMixin {
   virtual void ReportBlockedScriptExecutionToInspector(
       const String& directive_text) = 0;
   virtual void DidAddContentSecurityPolicies(
-      WTF::Vector<network::mojom::blink::ContentSecurityPolicyPtr>) = 0;
+      Vector<network::mojom::blink::ContentSecurityPolicyPtr>) = 0;
+  virtual bool ScriptSrcExtendedHashesEnabled() = 0;
 };
 
 class CORE_EXPORT ContentSecurityPolicy final
@@ -140,14 +190,22 @@ class CORE_EXPORT ContentSecurityPolicy final
   // https://w3c.github.io/webappsec-csp/#should-block-inline
   // Its possible values are listed in:
   // https://w3c.github.io/webappsec-csp/#effective-directive-for-inline-check
+  //
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(InlineType)
   enum class InlineType {
-    kNavigation,
-    kScript,
-    kScriptAttribute,
-    kScriptSpeculationRules,  // TODO(https://crbug.com/1382361): Standardize.
-    kStyle,
-    kStyleAttribute
+    kNavigation = 0,
+    kScript = 1,
+    kScriptAttribute = 2,
+    kScriptSpeculationRules =
+        3,  // TODO(https://crbug.com/1382361): Standardize.
+    kStyle = 4,
+    kStyleAttribute = 5,
+    kMaxValue = kStyleAttribute,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/service/enums.xml:ContentSecurityPolicyInlineType)
 
   // CheckHeaderType can be passed to Allow*FromSource methods to control which
   // types of CSP headers are checked.
@@ -200,6 +258,7 @@ class CORE_EXPORT ContentSecurityPolicy final
   bool AllowWasmCodeGeneration(ReportingDisposition,
                                ExceptionStatus,
                                const String& script_content);
+  bool AllowTrustedTypesEval(ReportingDisposition, ExceptionStatus);
 
   HashSet<HashAlgorithm> HashesToReport() const;
   void AddHashReportIfNeeded(
@@ -257,19 +316,10 @@ class CORE_EXPORT ContentSecurityPolicy final
                    const String& content,
                    const String& nonce,
                    const String& context_url,
-                   const WTF::OrdinalNumber& context_line,
+                   const OrdinalNumber& context_line,
                    ReportingDisposition = ReportingDisposition::kReport);
 
   static bool IsScriptInlineType(InlineType);
-
-  // TODO(crbug.com/889751): Remove "mojom::blink::RequestContextType" once
-  // all the code migrates.
-  bool AllowRequestWithoutIntegrity(
-      mojom::blink::RequestContextType context,
-      network::mojom::RequestDestination request_destination,
-      const KURL& url,
-      ReportingDisposition reporting_disposition,
-      CheckHeaderType check_header_type);
 
   // TODO(crbug.com/889751): Remove "mojom::blink::RequestContextType" once
   // all the code migrates.
@@ -328,13 +378,19 @@ class CORE_EXPORT ContentSecurityPolicy final
       const String& header,
       network::mojom::ContentSecurityPolicyType,
       ContentSecurityPolicyViolationType,
-      std::unique_ptr<SourceLocation>,
+      SourceLocation*,
       LocalFrame* = nullptr,
       Element* = nullptr,
       const String& source = g_empty_string,
       const String& source_prefix = g_empty_string,
-      std::optional<base::UnguessableToken> issue_id = std::nullopt);
+      std::optional<base::UnguessableToken> issue_id = std::nullopt,
+      std::optional<String> eval_hash = std::nullopt,
+      std::optional<String> url_hash = std::nullopt);
 
+  // Strip a URL to make it safe to report it.
+  static String StripURLForUseInReport(const SecurityOrigin* security_origin,
+                                       const KURL& url,
+                                       CSPDirectiveName effective_type);
   // Called when mixed content is detected on a page; will trigger a violation
   // report if the 'block-all-mixed-content' directive is specified for a
   // policy.
@@ -361,6 +417,7 @@ class CORE_EXPORT ContentSecurityPolicy final
   }
 
   bool ExperimentalFeaturesEnabled() const;
+  bool ScriptSrcExtendedHashesEnabled() const;
 
   // CSP can be set from multiple sources; if a directive is set by multiple
   // sources, the strictest one will be used. A CSP can be considered strict
@@ -384,7 +441,17 @@ class CORE_EXPORT ContentSecurityPolicy final
   // main world CSP. See ExecutionContext::GetContentSecurityPolicyForWorld.
   static bool ShouldBypassMainWorldDeprecated(const DOMWrapperWorld* world);
 
+  static bool AllowBaseURI(
+      const KURL&,
+      const Vector<network::mojom::blink::ContentSecurityPolicyPtr>&);
+
   static bool IsNonceableElement(const Element*);
+
+  // Returns true if the attribute name or value contains a dangling markup
+  // signal ("<SCRIPT", "<STYLE", or "<LINK"), indicating a potential nonce
+  // hijacking attempt.
+  static bool ContainsDanglingMarkupSignal(const String& attribute_name,
+                                           const String& attribute_value);
 
   static const char* GetDirectiveName(CSPDirectiveName type);
   static CSPDirectiveName GetDirectiveType(const String& name);
@@ -396,7 +463,7 @@ class CORE_EXPORT ContentSecurityPolicy final
   void SetSupportsWasmEval(bool value) { supports_wasm_eval_ = value; }
 
   // Retrieve the parsed policies.
-  const WTF::Vector<network::mojom::blink::ContentSecurityPolicyPtr>&
+  const Vector<network::mojom::blink::ContentSecurityPolicyPtr>&
   GetParsedPolicies() const;
 
   // Retrieves the parsed sandbox flags. A lot of the time the execution
@@ -423,6 +490,11 @@ class CORE_EXPORT ContentSecurityPolicy final
 
   void Count(WebFeature feature) const;
 
+  // Start the mode to disallow any script executions for synthetic response.
+  void DisallowScriptForSyntheticResponse() {
+    disallow_script_for_synthetic_response_ = true;
+  }
+
  private:
   FRIEND_TEST_ALL_PREFIXES(ContentSecurityPolicyTest, NonceInline);
   FRIEND_TEST_ALL_PREFIXES(ContentSecurityPolicyTest, NonceSinglePolicy);
@@ -434,10 +506,6 @@ class CORE_EXPORT ContentSecurityPolicy final
                            AllowResponseChecksReportedAndEnforcedCSP);
   FRIEND_TEST_ALL_PREFIXES(FrameFetchContextTest,
                            PopulateResourceRequestChecksReportOnlyCSP);
-  FRIEND_TEST_ALL_PREFIXES(RequireSRIForContentSecurityPolicyTest,
-                           RequireSRIFor);
-  FRIEND_TEST_ALL_PREFIXES(RequireSRIForContentSecurityPolicyTest,
-                           RequireSRIForNoReport);
 
   void ApplyPolicySideEffectsToDelegate();
   void ReportUseCounters(
@@ -466,15 +534,10 @@ class CORE_EXPORT ContentSecurityPolicy final
                        const IntegrityMetadataSet& = IntegrityMetadataSet(),
                        ParserDisposition = kParserInserted);
 
-  static void FillInCSPHashValues(
-      const String& source,
-      WTF::HashSet<IntegrityAlgorithm> hash_algorithms_used,
-      Vector<network::mojom::blink::CSPHashSourcePtr>& csp_hash_values);
-
   // checks a vector of csp hashes against policy, probably a good idea
   // to use in tandem with FillInCSPHashValues.
   static bool CheckHashAgainstPolicy(
-      Vector<network::mojom::blink::CSPHashSourcePtr>&,
+      Vector<network::IntegrityMetadata>&,
       const network::mojom::blink::ContentSecurityPolicy&,
       InlineType);
 
@@ -498,7 +561,7 @@ class CORE_EXPORT ContentSecurityPolicy final
   // We put the hash functions used on the policy object so that we only need
   // to calculate digests using those hashing algorithms which show up in the
   // policy.
-  WTF::HashSet<IntegrityAlgorithm> hash_algorithms_used_;
+  HashSet<IntegrityAlgorithm> hash_algorithms_used_;
 
   // State flags used to configure the environment after parsing a policy.
   network::mojom::blink::WebSandboxFlags sandbox_mask_;
@@ -510,6 +573,12 @@ class CORE_EXPORT ContentSecurityPolicy final
   bool supports_wasm_eval_ = false;
 
   bool enforces_strict_policy_{false};
+
+  // When this flag is set true, inline script, external script, and script
+  // attribute are blocked. This is a special mode for the synthetic response
+  // experiment.
+  bool disallow_script_for_synthetic_response_ = false;
+  size_t blocked_count_for_synthetic_response_ = 0;
 };
 
 }  // namespace blink

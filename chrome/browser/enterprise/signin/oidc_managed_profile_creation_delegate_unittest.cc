@@ -8,6 +8,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/task_environment.h"
 #include "chrome/browser/enterprise/signin/enterprise_signin_prefs.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
@@ -16,6 +17,7 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -76,6 +78,38 @@ TEST_P(OidcManagedProfileCreationDelegateTest, OnManagedProfileInitialized) {
       kOAuthToken, kIdToken, is_dasher_based(), kSampleName, kSampleEmail);
   Profile* new_profile =
       profile_manager_->CreateTestingProfile("new_test_profile");
+
+  base::RunLoop loop;
+  delegate->OnManagedProfileInitialized(
+      profile_, new_profile,
+      base::BindOnce(
+          [&](base::OnceClosure quit_closure, base::WeakPtr<Profile> profile) {
+            auto* prefs = profile->GetPrefs();
+            EXPECT_EQ(kSampleName,
+                      prefs->GetString(
+                          enterprise_signin::prefs::kProfileUserDisplayName));
+            EXPECT_EQ(
+                kSampleEmail,
+                prefs->GetString(enterprise_signin::prefs::kProfileUserEmail));
+            std::move(quit_closure).Run();
+          },
+          loop.QuitClosure()));
+
+  loop.Run();
+}
+
+TEST_P(OidcManagedProfileCreationDelegateTest,
+       OnManagedProfileInitializedWithEmptyDelegate) {
+  // Simulate an empty delegate used during profile switching.
+  auto delegate = std::make_unique<OidcManagedProfileCreationDelegate>();
+  Profile* new_profile =
+      profile_manager_->CreateTestingProfile("new_test_profile");
+
+  // Pre-set some values to ensure they are not cleared.
+  new_profile->GetPrefs()->SetString(
+      enterprise_signin::prefs::kProfileUserDisplayName, kSampleName);
+  new_profile->GetPrefs()->SetString(
+      enterprise_signin::prefs::kProfileUserEmail, kSampleEmail);
 
   base::RunLoop loop;
   delegate->OnManagedProfileInitialized(

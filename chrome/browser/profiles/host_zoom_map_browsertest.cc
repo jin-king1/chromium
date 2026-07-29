@@ -6,12 +6,12 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -66,7 +66,7 @@ class ZoomLevelChangeObserver {
   ZoomLevelChangeObserver& operator=(const ZoomLevelChangeObserver&) = delete;
 
   void BlockUntilZoomLevelForHostHasChanged(const std::string& host) {
-    while (!base::Contains(changed_hosts_, host)) {
+    while (!std::ranges::contains(changed_hosts_, host)) {
       message_loop_runner_->Run();
       message_loop_runner_ = new content::MessageLoopRunner;
     }
@@ -95,22 +95,23 @@ class HostZoomMapBrowserTest : public InProcessBrowserTest {
 
  protected:
   void SetDefaultZoomLevel(double level) {
-    browser()->profile()->GetZoomLevelPrefs()->SetDefaultZoomLevelPref(level);
+    browser()->GetProfile()->GetZoomLevelPrefs()->SetDefaultZoomLevelPref(
+        level);
   }
 
   double GetZoomLevel(const GURL& url) {
     content::HostZoomMap* host_zoom_map = static_cast<content::HostZoomMap*>(
         content::HostZoomMap::GetDefaultForBrowserContext(
-            browser()->profile()));
-    return host_zoom_map->GetZoomLevelForHostAndScheme(url.scheme(),
-                                                       url.host());
+            browser()->GetProfile()));
+    return host_zoom_map->GetZoomLevelForHostAndScheme(url.GetScheme(),
+                                                       url.GetHost());
   }
 
   std::vector<std::string> GetHostsWithZoomLevels() {
     typedef content::HostZoomMap::ZoomLevelVector ZoomLevelVector;
     content::HostZoomMap* host_zoom_map = static_cast<content::HostZoomMap*>(
         content::HostZoomMap::GetDefaultForBrowserContext(
-            browser()->profile()));
+            browser()->GetProfile()));
     content::HostZoomMap::ZoomLevelVector zoom_levels =
         host_zoom_map->GetAllZoomLevels();
     std::vector<std::string> results;
@@ -121,12 +122,12 @@ class HostZoomMapBrowserTest : public InProcessBrowserTest {
   }
 
   std::vector<std::string> GetHostsWithZoomLevelsFromPrefs() {
-    PrefService* prefs = browser()->profile()->GetPrefs();
-    const base::Value::Dict& dictionaries =
+    PrefService* prefs = browser()->GetProfile()->GetPrefs();
+    const base::DictValue& dictionaries =
         prefs->GetDict(prefs::kPartitionPerHostZoomLevels);
     std::string partition_key =
         ChromeZoomLevelPrefs::GetPartitionKeyForTesting(base::FilePath());
-    const base::Value::Dict* values =
+    const base::DictValue* values =
         dictionaries.FindDictByDottedPath(partition_key);
     std::vector<std::string> results;
     if (values) {
@@ -229,13 +230,13 @@ class HostZoomMapSanitizationBrowserTest
       const HostZoomMapSanitizationBrowserTest&) = delete;
 };
 
-// Regression test for crbug.com/437392
+// Regression test for crbug.com/40395972
 IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest, ZoomEventsWorkForOffTheRecord) {
   GURL test_url(url::kAboutBlankURL);
-  std::string test_host(test_url.host());
-  std::string test_scheme(test_url.scheme());
+  std::string test_host(test_url.GetHost());
+  std::string test_scheme(test_url.GetScheme());
   Browser* incognito_browser =
-      OpenURLOffTheRecord(browser()->profile(), test_url);
+      OpenURLOffTheRecord(browser()->GetProfile(), test_url);
 
   content::WebContents* web_contents =
       incognito_browser->tab_strip_model()->GetActiveWebContents();
@@ -254,16 +255,16 @@ IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest, ZoomEventsWorkForOffTheRecord) {
                                 test_scheme, test_host));
 }
 
-#if !BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(IS_WIN)
 IN_PROC_BROWSER_TEST_F(
     HostZoomMapBrowserTest,
     WebviewBasedSigninUsesDefaultStoragePartitionForEmbedder) {
-  GURL signin_url = signin::GetEmbeddedPromoURL(
-      signin_metrics::AccessPoint::kStartPage,
-      signin_metrics::Reason::kForcedSigninPrimaryAccount, false);
+  GURL signin_url =
+      signin::GetEmbeddedPromoURL(signin_metrics::AccessPoint::kStartPage,
+                                  signin_metrics::Reason::kFetchLstOnly, false);
   GURL test_url = SubstituteTestServerPort(signin_url);
-  std::string test_host(test_url.host());
-  std::string test_scheme(test_url.scheme());
+  std::string test_host(test_url.GetHost());
+  std::string test_scheme(test_url.GetScheme());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url));
 
   content::WebContents* web_contents =
@@ -274,22 +275,22 @@ IN_PROC_BROWSER_TEST_F(
   // For the webview based sign-in code, the sign in page uses the default host
   // zoom map.
   HostZoomMap* default_profile_host_zoom_map =
-      HostZoomMap::GetDefaultForBrowserContext(browser()->profile());
+      HostZoomMap::GetDefaultForBrowserContext(browser()->GetProfile());
   EXPECT_EQ(host_zoom_map, default_profile_host_zoom_map);
 }
 #endif
 
-// Regression test for crbug.com/364399.
+// Regression test for crbug.com/40361379.
 IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest, ToggleDefaultZoomLevel) {
   const double default_zoom_level = blink::ZoomFactorToZoomLevel(1.5);
 
-  ZoomLevelChangeObserver observer(browser()->profile());
+  ZoomLevelChangeObserver observer(browser()->GetProfile());
 
   GURL test_url1 = SubstituteTestServerPort(GURL("http://host1/"));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url1));
 
   SetDefaultZoomLevel(default_zoom_level);
-  observer.BlockUntilZoomLevelForHostHasChanged(test_url1.host());
+  observer.BlockUntilZoomLevelForHostHasChanged(test_url1.GetHost());
   EXPECT_TRUE(
       blink::ZoomValuesEqual(default_zoom_level, GetZoomLevel(test_url1)));
 
@@ -303,12 +304,12 @@ IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest, ToggleDefaultZoomLevel) {
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   zoom::PageZoom::Zoom(web_contents, content::PAGE_ZOOM_OUT);
-  observer.BlockUntilZoomLevelForHostHasChanged(test_url2.host());
+  observer.BlockUntilZoomLevelForHostHasChanged(test_url2.GetHost());
   EXPECT_FALSE(
       blink::ZoomValuesEqual(default_zoom_level, GetZoomLevel(test_url2)));
 
   zoom::PageZoom::Zoom(web_contents, content::PAGE_ZOOM_IN);
-  observer.BlockUntilZoomLevelForHostHasChanged(test_url2.host());
+  observer.BlockUntilZoomLevelForHostHasChanged(test_url2.GetHost());
   EXPECT_TRUE(
       blink::ZoomValuesEqual(default_zoom_level, GetZoomLevel(test_url2)));
 
@@ -318,7 +319,7 @@ IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest, ToggleDefaultZoomLevel) {
   EXPECT_TRUE(GetHostsWithZoomLevelsFromPrefs().empty());
 }
 
-// Test that garbage data from crbug.com/364399 is cleared up on startup.
+// Test that garbage data from crbug.com/40361379 is cleared up on startup.
 IN_PROC_BROWSER_TEST_F(HostZoomMapSanitizationBrowserTest, ClearOnStartup) {
   EXPECT_THAT(GetHostsWithZoomLevels(), testing::ElementsAre("host2"));
   EXPECT_THAT(GetHostsWithZoomLevelsFromPrefs(), testing::ElementsAre("host2"));
@@ -337,7 +338,7 @@ IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest,
   const double zoom_level_30 = 3.0;
   const double zoom_level_40 = 4.0;
 
-  Profile* parent_profile = browser()->profile();
+  Profile* parent_profile = browser()->GetProfile();
   Profile* child_profile =
       parent_profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
   HostZoomMap* parent_zoom_map =
@@ -382,7 +383,7 @@ IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(HostZoomMapBrowserTest,
                        ParentDefaultZoomPropagatesToIncognitoChild) {
-  Profile* parent_profile = browser()->profile();
+  Profile* parent_profile = browser()->GetProfile();
   Profile* child_profile =
       parent_profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
 

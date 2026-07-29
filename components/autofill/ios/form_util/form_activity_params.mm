@@ -4,6 +4,7 @@
 
 #import "components/autofill/ios/form_util/form_activity_params.h"
 
+#import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/autofill/ios/browser/autofill_util.h"
 #import "ios/web/public/js_messaging/script_message.h"
@@ -27,14 +28,14 @@ FormRemovalParams::FormRemovalParams(const FormRemovalParams& other) = default;
 FormRemovalParams::~FormRemovalParams() = default;
 
 bool BaseFormActivityParams::FromMessage(const web::ScriptMessage& message,
-                                         const base::Value::Dict** message_body,
+                                         const base::DictValue** message_body,
                                          BaseFormActivityParams* params) {
-  if (!message.body() || !message.body()->is_dict()) {
+  if (!message.legacy_body() || !message.legacy_body()->is_dict()) {
     // Ignore invalid message.
     return false;
   }
 
-  const auto& message_body_dict = message.body()->GetDict();
+  const auto& message_body_dict = message.legacy_body()->GetDict();
   *message_body = &message_body_dict;
   const std::string* frame_id = message_body_dict.FindString("frameID");
   if (!frame_id) {
@@ -59,7 +60,7 @@ std::ostream& operator<<(std::ostream& os,
 
 bool FormActivityParams::FromMessage(const web::ScriptMessage& message,
                                      FormActivityParams* params) {
-  const base::Value::Dict* message_body = nullptr;
+  const base::DictValue* message_body = nullptr;
   if (!BaseFormActivityParams::FromMessage(message, &message_body, params)) {
     return false;
   }
@@ -144,7 +145,7 @@ std::ostream& operator<<(std::ostream& os, const FormActivityParams& params) {
 
 bool FormRemovalParams::FromMessage(const web::ScriptMessage& message,
                                     FormRemovalParams* params) {
-  const base::Value::Dict* message_body = nullptr;
+  const base::DictValue* message_body = nullptr;
   if (!BaseFormActivityParams::FromMessage(message, &message_body, params)) {
     return false;
   }

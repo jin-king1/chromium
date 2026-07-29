@@ -27,7 +27,6 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
-#include "components/supervised_user/core/common/features.h"
 #include "components/supervised_user/core/common/pref_names.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
@@ -40,7 +39,7 @@
 
 namespace {
 
-void VerifyProfileEntry(const base::Value::Dict& dict,
+void VerifyProfileEntry(const base::DictValue& dict,
                         ProfileAttributesEntry* entry) {
   EXPECT_EQ(*dict.Find("profilePath"), base::FilePathToValue(entry->GetPath()));
   EXPECT_EQ(*dict.FindString("localProfileName"),
@@ -54,7 +53,7 @@ void VerifyProfileEntry(const base::Value::Dict& dict,
   EXPECT_EQ(*dict.FindString("userName"),
             base::UTF16ToUTF8(entry->GetUserName()));
   EXPECT_EQ(dict.FindString("avatarBadge")->empty(),
-            !AccountInfo::IsManaged(entry->GetHostedDomain()) &&
+            entry->GetIsManaged() != signin::Tribool::kTrue &&
                 !entry->IsSupervised());
   EXPECT_EQ(*dict.FindString("profileCardButtonLabel"),
             base::UTF16ToUTF8(l10n_util::GetStringFUTF16(
@@ -128,7 +127,7 @@ class ProfilePickerHandlerTest : public testing::Test {
 
   void InitializeMainViewAndVerifyProfileList(
       const std::vector<ProfileAttributesEntry*>& ordered_profile_entries) {
-    base::Value::List empty_args;
+    base::ListValue empty_args;
     web_ui()->HandleReceivedMessage("mainViewInitialize", empty_args);
     VerifyProfileListWasPushed(ordered_profile_entries);
   }
@@ -304,14 +303,6 @@ TEST_F(ProfilePickerHandlerTest, OmittedProfileOnInit) {
 // Tests the behavior of the profile picker handler in presence of supervised
 // profiles.
 class SupervisedProfilePickerHandlerTest : public ProfilePickerHandlerTest {
- public:
-  SupervisedProfilePickerHandlerTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        supervised_user::kShowKiteForSupervisedUsers);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(SupervisedProfilePickerHandlerTest,
@@ -419,7 +410,7 @@ TEST_F(ProfilePickerHandlerTest, UpdateProfileOrder) {
 
   // Perform first changes.
   {
-    base::Value::List args;
+    base::ListValue args;
     args.Append(0);  // `from_index`
     args.Append(2);  // `to_index`
     web_ui()->HandleReceivedMessage("updateProfileOrder", args);
@@ -432,7 +423,7 @@ TEST_F(ProfilePickerHandlerTest, UpdateProfileOrder) {
 
   // Perform second changes.
   {
-    base::Value::List args;
+    base::ListValue args;
     args.Append(1);  // `from_index`
     args.Append(3);  // `to_index`
     web_ui()->HandleReceivedMessage("updateProfileOrder", args);

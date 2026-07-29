@@ -111,8 +111,7 @@ class WEBVIEW_EXPORT WebDialogView : public ClientView,
   void WindowClosing() override;
   View* GetContentsView() override;
   ClientView* CreateClientView(Widget* widget) override;
-  std::unique_ptr<NonClientFrameView> CreateNonClientFrameView(
-      Widget* widget) override;
+  std::unique_ptr<FrameView> CreateFrameView(Widget* widget) override;
   View* GetInitiallyFocusedView() override;
   bool ShouldShowWindowTitle() const override;
   bool ShouldShowCloseButton() const override;
@@ -164,6 +163,7 @@ class WEBVIEW_EXPORT WebDialogView : public ClientView,
                          bool proceed,
                          bool* proceed_to_fire_unload) override;
   bool IsWebContentsCreationOverridden(
+      content::RenderFrameHost* opener,
       content::SiteInstance* source_site_instance,
       content::mojom::WindowContainerType window_container_type,
       const GURL& opener_url,

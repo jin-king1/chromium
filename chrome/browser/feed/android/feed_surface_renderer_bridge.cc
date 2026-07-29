@@ -28,7 +28,6 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/browser/feed/android/jni_headers/FeedSurfaceRendererBridge_jni.h"
 
-using base::android::JavaParamRef;
 using base::android::JavaRef;
 using base::android::ScopedJavaGlobalRef;
 using base::android::ScopedJavaLocalRef;
@@ -42,55 +41,32 @@ FeedApi* GetFeedApi(Profile* profile) {
   return service ? service->GetStream() : nullptr;
 }
 
-SurfaceId FromJavaSurfaceId(jint surface_id) {
+SurfaceId FromJavaSurfaceId(int32_t surface_id) {
   return feed::SurfaceId::FromUnsafeValue(surface_id);
 }
 
 }  // namespace
 
-static jlong JNI_FeedSurfaceRendererBridge_Init(
+static int64_t JNI_FeedSurfaceRendererBridge_Init(
     JNIEnv* env,
-    const JavaParamRef<jobject>& j_this,
+    const JavaRef<jobject>& j_this,
     Profile* profile,
-    jint stream_kind,
-    jlong native_feed_reliability_logging_bridge) {
+    int32_t stream_kind,
+    int64_t native_feed_reliability_logging_bridge) {
   return reinterpret_cast<intptr_t>(new FeedSurfaceRendererBridge(
-      j_this, profile, stream_kind, std::string(),
+      j_this, profile, stream_kind,
       reinterpret_cast<FeedReliabilityLoggingBridge*>(
-          native_feed_reliability_logging_bridge),
-      (int)SingleWebFeedEntryPoint::kOther));
-}
-
-static jlong JNI_FeedSurfaceRendererBridge_InitWebFeed(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& j_this,
-    Profile* profile,
-    const JavaParamRef<jbyteArray>& j_web_feed_id,
-    jlong native_feed_reliability_logging_bridge,
-    jint j_entry_point) {
-  std::string web_feed_id;
-  base::android::JavaByteArrayToString(env, j_web_feed_id, &web_feed_id);
-  return reinterpret_cast<intptr_t>(new FeedSurfaceRendererBridge(
-      j_this, profile, static_cast<jint>(StreamKind::kSingleWebFeed),
-      web_feed_id,
-      reinterpret_cast<FeedReliabilityLoggingBridge*>(
-          native_feed_reliability_logging_bridge),
-      j_entry_point));
+          native_feed_reliability_logging_bridge)));
 }
 
 FeedSurfaceRendererBridge::FeedSurfaceRendererBridge(
     const JavaRef<jobject>& j_this,
     Profile* profile,
-    jint stream_kind,
-    std::string web_feed_id,
-    FeedReliabilityLoggingBridge* reliability_logging_bridge,
-    jint feed_entry_point)
+    int32_t stream_kind,
+    FeedReliabilityLoggingBridge* reliability_logging_bridge)
     : feed_stream_api_(nullptr),
       reliability_logging_bridge_(reliability_logging_bridge) {
   java_ref_.Reset(j_this);
-
-  auto single_web_feed_entry_point =
-      static_cast<SingleWebFeedEntryPoint>(feed_entry_point);
 
   feed_stream_api_ = GetFeedApi(profile);
   if (!feed_stream_api_) {
@@ -98,9 +74,7 @@ FeedSurfaceRendererBridge::FeedSurfaceRendererBridge(
   }
 
   surface_id_ = feed_stream_api_->CreateSurface(
-      StreamType(static_cast<StreamKind>(stream_kind), std::move(web_feed_id),
-                 single_web_feed_entry_point),
-      single_web_feed_entry_point);
+      StreamType(static_cast<StreamKind>(stream_kind)));
 }
 
 FeedSurfaceRendererBridge::~FeedSurfaceRendererBridge() {
@@ -147,32 +121,26 @@ void FeedSurfaceRendererBridge::RemoveDataStoreEntry(std::string_view key) {
 }
 
 void FeedSurfaceRendererBridge::LoadMore(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& callback_obj) {
+    base::OnceCallback<void(bool)> callback) {
   if (!feed_stream_api_) {
     return;
   }
-  feed_stream_api_->LoadMore(
-      surface_id_, base::BindOnce(&base::android::RunBooleanCallbackAndroid,
-                                  ScopedJavaGlobalRef<jobject>(callback_obj)));
+  feed_stream_api_->LoadMore(surface_id_, std::move(callback));
 }
 
 void FeedSurfaceRendererBridge::ManualRefresh(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& callback_obj) {
+    base::OnceCallback<void(bool)> callback) {
   if (!feed_stream_api_) {
     return;
   }
-  feed_stream_api_->ManualRefresh(
-      surface_id_, base::BindOnce(&base::android::RunBooleanCallbackAndroid,
-                                  ScopedJavaGlobalRef<jobject>(callback_obj)));
+  feed_stream_api_->ManualRefresh(surface_id_, std::move(callback));
 }
 
 static void JNI_FeedSurfaceRendererBridge_ProcessThereAndBackAgain(
     JNIEnv* env,
     Profile* profile,
-    const JavaParamRef<jbyteArray>& data,
-    const JavaParamRef<jbyteArray>& logging_parameters) {
+    const JavaRef<jbyteArray>& data,
+    const JavaRef<jbyteArray>& logging_parameters) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
@@ -186,8 +154,8 @@ static void JNI_FeedSurfaceRendererBridge_ProcessThereAndBackAgain(
 static int JNI_FeedSurfaceRendererBridge_ExecuteEphemeralChange(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
-    const JavaParamRef<jbyteArray>& data) {
+    int32_t surface_id,
+    const JavaRef<jbyteArray>& data) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return 0;
@@ -203,7 +171,7 @@ static int JNI_FeedSurfaceRendererBridge_ExecuteEphemeralChange(
 static void JNI_FeedSurfaceRendererBridge_CommitEphemeralChange(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
+    int32_t surface_id,
     int change_id) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
@@ -216,7 +184,7 @@ static void JNI_FeedSurfaceRendererBridge_CommitEphemeralChange(
 static void JNI_FeedSurfaceRendererBridge_DiscardEphemeralChange(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
+    int32_t surface_id,
     int change_id) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
@@ -243,9 +211,9 @@ void FeedSurfaceRendererBridge::SurfaceClosed(JNIEnv* env) {
 static void JNI_FeedSurfaceRendererBridge_ReportOpenAction(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
-    const JavaParamRef<jobject>& j_url,
-    std::string& slice_id,
+    int32_t surface_id,
+    const JavaRef<jobject>& j_url,
+    const std::string& slice_id,
     int action_type) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
@@ -259,8 +227,8 @@ static void JNI_FeedSurfaceRendererBridge_ReportOpenAction(
 static void JNI_FeedSurfaceRendererBridge_ReportOpenVisitComplete(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
-    jlong visitTimeMs) {
+    int32_t surface_id,
+    int64_t visitTimeMs) {
   FeedApi* api = GetFeedApi(profile);
   if (!api) {
     return;
@@ -272,8 +240,8 @@ static void JNI_FeedSurfaceRendererBridge_ReportOpenVisitComplete(
 static void JNI_FeedSurfaceRendererBridge_UpdateUserProfileOnLinkClick(
     JNIEnv* env,
     Profile* profile,
-    const base::android::JavaParamRef<jobject>& j_url,
-    const base::android::JavaParamRef<jlongArray>& entity_mids) {
+    const base::android::JavaRef<jobject>& j_url,
+    const base::android::JavaRef<jlongArray>& entity_mids) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
@@ -288,8 +256,8 @@ static void JNI_FeedSurfaceRendererBridge_UpdateUserProfileOnLinkClick(
 static void JNI_FeedSurfaceRendererBridge_ReportSliceViewed(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
-    std::string& slice_id) {
+    int32_t surface_id,
+    const std::string& slice_id) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
@@ -299,7 +267,7 @@ static void JNI_FeedSurfaceRendererBridge_ReportSliceViewed(
 
 static void JNI_FeedSurfaceRendererBridge_ReportFeedViewed(JNIEnv* env,
                                                            Profile* profile,
-                                                           jint surface_id) {
+                                                           int32_t surface_id) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
@@ -307,11 +275,10 @@ static void JNI_FeedSurfaceRendererBridge_ReportFeedViewed(JNIEnv* env,
   feed_api->ReportFeedViewed(FromJavaSurfaceId(surface_id));
 }
 
-static void JNI_FeedSurfaceRendererBridge_ReportPageLoaded(
-    JNIEnv* env,
-    Profile* profile,
-    jint surface_id,
-    jboolean in_new_tab) {
+static void JNI_FeedSurfaceRendererBridge_ReportPageLoaded(JNIEnv* env,
+                                                           Profile* profile,
+                                                           int32_t surface_id,
+                                                           bool in_new_tab) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
@@ -322,7 +289,7 @@ static void JNI_FeedSurfaceRendererBridge_ReportPageLoaded(
 static void JNI_FeedSurfaceRendererBridge_ReportStreamScrolled(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
+    int32_t surface_id,
     int distance_dp) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
@@ -334,7 +301,7 @@ static void JNI_FeedSurfaceRendererBridge_ReportStreamScrolled(
 static void JNI_FeedSurfaceRendererBridge_ReportStreamScrollStart(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id) {
+    int32_t surface_id) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
@@ -345,7 +312,7 @@ static void JNI_FeedSurfaceRendererBridge_ReportStreamScrollStart(
 static void JNI_FeedSurfaceRendererBridge_ReportOtherUserAction(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
+    int32_t surface_id,
     int action_type) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
@@ -359,9 +326,10 @@ int FeedSurfaceRendererBridge::GetSurfaceId(JNIEnv* env) {
   return surface_id_.GetUnsafeValue();
 }
 
-static jlong JNI_FeedSurfaceRendererBridge_GetLastFetchTimeMs(JNIEnv* env,
-                                                              Profile* profile,
-                                                              jint surface_id) {
+static int64_t JNI_FeedSurfaceRendererBridge_GetLastFetchTimeMs(
+    JNIEnv* env,
+    Profile* profile,
+    int32_t surface_id) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return 0;
@@ -370,10 +338,21 @@ static jlong JNI_FeedSurfaceRendererBridge_GetLastFetchTimeMs(JNIEnv* env,
       .InMillisecondsFSinceUnixEpoch();
 }
 
+static std::vector<std::string> JNI_FeedSurfaceRendererBridge_GetFeedUrls(
+    JNIEnv* env,
+    Profile* profile,
+    int32_t surface_id) {
+  FeedApi* feed_api = GetFeedApi(profile);
+  if (!feed_api) {
+    return {};
+  }
+  return feed_api->GetFeedUrls(FromJavaSurfaceId(surface_id));
+}
+
 static void JNI_FeedSurfaceRendererBridge_ReportInfoCardTrackViewStarted(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
+    int32_t surface_id,
     int info_card_type) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
@@ -386,7 +365,7 @@ static void JNI_FeedSurfaceRendererBridge_ReportInfoCardTrackViewStarted(
 static void JNI_FeedSurfaceRendererBridge_ReportInfoCardViewed(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
+    int32_t surface_id,
     int info_card_type,
     int minimum_view_interval_seconds) {
   FeedApi* feed_api = GetFeedApi(profile);
@@ -400,7 +379,7 @@ static void JNI_FeedSurfaceRendererBridge_ReportInfoCardViewed(
 static void JNI_FeedSurfaceRendererBridge_ReportInfoCardClicked(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
+    int32_t surface_id,
     int info_card_type) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
@@ -413,7 +392,7 @@ static void JNI_FeedSurfaceRendererBridge_ReportInfoCardClicked(
 static void JNI_FeedSurfaceRendererBridge_ReportInfoCardDismissedExplicitly(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
+    int32_t surface_id,
     int info_card_type) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
@@ -426,7 +405,7 @@ static void JNI_FeedSurfaceRendererBridge_ReportInfoCardDismissedExplicitly(
 static void JNI_FeedSurfaceRendererBridge_ResetInfoCardStates(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
+    int32_t surface_id,
     int info_card_type) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
@@ -438,7 +417,7 @@ static void JNI_FeedSurfaceRendererBridge_ResetInfoCardStates(
 static void JNI_FeedSurfaceRendererBridge_InvalidateContentCacheFor(
     JNIEnv* env,
     Profile* profile,
-    jint stream_kind) {
+    int32_t stream_kind) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
@@ -448,8 +427,8 @@ static void JNI_FeedSurfaceRendererBridge_InvalidateContentCacheFor(
 
 static void JNI_FeedSurfaceRendererBridge_ContentViewed(JNIEnv* env,
                                                         Profile* profile,
-                                                        jint surface_id,
-                                                        jlong docid) {
+                                                        int32_t surface_id,
+                                                        int64_t docid) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
@@ -461,8 +440,8 @@ static void
 JNI_FeedSurfaceRendererBridge_ReportContentSliceVisibleTimeForGoodVisits(
     JNIEnv* env,
     Profile* profile,
-    jint surface_id,
-    jlong elapsed_ms) {
+    int32_t surface_id,
+    int64_t elapsed_ms) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
@@ -472,3 +451,5 @@ JNI_FeedSurfaceRendererBridge_ReportContentSliceVisibleTimeForGoodVisits(
 }
 
 }  // namespace feed::android
+
+DEFINE_JNI(FeedSurfaceRendererBridge)

@@ -6,14 +6,21 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string_view>
 #include <utility>
 
 #include "base/big_endian.h"
+#include "base/containers/span.h"
+#include "base/json/json_reader.h"
+#include "base/strings/string_util.h"
+#include "base/test/scoped_feature_list.h"
+#include "net/base/features.h"
 #include "net/dns/dns_response.h"
 #include "net/dns/dns_test_util.h"
+#include "net/dns/public/dns_protocol.h"
 #include "net/test/gtest_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -102,24 +109,20 @@ TEST(OptRecordRdataTest, ParseOptRecordWithLongerSizeThanData) {
 TEST(OptRecordRdataTest, CreateEdeOpt) {
   OptRecordRdata::EdeOpt opt0(22, std::string("Don Quixote"));
 
-  std::string expected_data(
-      "\x00\x16"
-      "Don Quixote",
-      13);
+  constexpr uint8_t expected_data[] = {0x00, 0x16, 'D', 'o', 'n', ' ', 'Q',
+                                       'u',  'i',  'x', 'o', 't', 'e'};
 
-  std::string expected_data1(
-      "\x00\x08"
-      "Manhattan",
-      11);
+  constexpr uint8_t expected_data1[] = {0x00, 0x08, 'M', 'a', 'n', 'h',
+                                        'a',  't',  't', 'a', 'n'};
 
-  ASSERT_EQ(opt0.data(), base::as_byte_span(expected_data));
+  ASSERT_EQ(opt0.data(), expected_data);
   ASSERT_EQ(opt0.info_code(), 22u);
   ASSERT_EQ(opt0.extra_text(), std::string("Don Quixote"));
 
   std::unique_ptr<OptRecordRdata::EdeOpt> opt1 =
-      OptRecordRdata::EdeOpt::Create(base::as_byte_span(expected_data1));
+      OptRecordRdata::EdeOpt::Create(expected_data1);
 
-  ASSERT_EQ(opt1->data(), base::as_byte_span(expected_data1));
+  ASSERT_EQ(opt1->data(), expected_data1);
   ASSERT_EQ(opt1->info_code(), 8u);
   ASSERT_EQ(opt1->extra_text(), std::string("Manhattan"));
 }
@@ -197,6 +200,284 @@ TEST(OptRecordRdataTest, ParseEdeOptRecords) {
   ASSERT_EQ(rdata_obj->GetEdeOpts()[1]->info_code(), edeOpt1.info_code());
 }
 
+TEST(OptRecordRdataTest, SerializeEdeRequest) {
+  // This rdata indicates support for Structured EDNS Errors.
+  // clang-format off
+  const uint8_t rdata[] = {
+      // Single OPT (EDE request)
+      0x00, 0x0F,  // OPT code (15)
+      0x00, 0x02,  // OPT data size (2)
+      0x00, 0x00  // Info Code (0) [Other Error]
+      // No Extra Text
+  };
+  // clang-format on
+
+  auto request_rdata = OptRecordRdata::EdeOpt::CreateStructuredErrorsRequest();
+  EXPECT_EQ(dns_protocol::kEdnsExtendedDnsError, request_rdata->GetCode());
+  EXPECT_EQ(OptRecordRdata::EdeOpt::EdeInfoCode::kOtherError,
+            request_rdata->GetEnumFromInfoCode());
+  EXPECT_TRUE(request_rdata->extra_text().empty());
+  OptRecordRdata opt_rdata;
+  opt_rdata.AddOpt(std::move(request_rdata));
+  EXPECT_THAT(opt_rdata.buf(), ElementsAreArray(rdata));
+
+  // Check that Create can parse itself.
+  const auto parsed_rdata =
+      OptRecordRdata::Create(base::as_byte_span(opt_rdata.buf()));
+  ASSERT_THAT(parsed_rdata, NotNull());
+  ASSERT_EQ(parsed_rdata->OptCount(), 1u);
+  const auto parsed_ede_opts = parsed_rdata->GetEdeOpts();
+  ASSERT_EQ(parsed_ede_opts.size(), 1u);
+  EXPECT_EQ(parsed_ede_opts.front()->GetEnumFromInfoCode(),
+            OptRecordRdata::EdeOpt::EdeInfoCode::kOtherError);
+  EXPECT_EQ(parsed_ede_opts.front()->extra_text(), "");
+}
+
+class FilteringDetailsParsingTest : public testing::Test {
+ protected:
+  FilteringDetailsParsingTest() {
+    feature_list_.InitAndEnableFeature(features::kUseStructuredDnsErrors);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Test that an Opt filtering details record is parsed correctly
+TEST_F(FilteringDetailsParsingTest, ParseFilteringDetailsOptRecords) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"example","id":"abc123"},)"
+      R"({"db":"second-example","id":"456","r":"ignored"}],)"
+      R"("j":"should be ignored","c":["mailto:ignored@example.com"]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F,  // OPT code (15 for EDE)
+      0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),  // data size
+      0x00, 0x0F  // EDE info code (15 for Blocked)
+  };
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+
+  const std::vector<const OptRecordRdata::EdeOpt*>& ede_opts =
+      rdata_obj->GetEdeOpts();
+  ASSERT_THAT(ede_opts, SizeIs(1));
+  const auto* ede_opt = ede_opts[0];
+
+  const std::vector<OptRecordRdata::EdeOpt::FilteringDetails>& incidents =
+      ede_opt->filtering_details();
+  ASSERT_EQ(incidents.size(), static_cast<size_t>(2));
+
+  const OptRecordRdata::EdeOpt::FilteringDetails& first = incidents.front();
+  EXPECT_EQ(first.database_operator_id, "example");
+  EXPECT_EQ(first.incident_id, "abc123");
+
+  const OptRecordRdata::EdeOpt::FilteringDetails& second = incidents[1];
+  EXPECT_EQ(second.database_operator_id, "second-example");
+  EXPECT_EQ(second.incident_id, "456");
+}
+TEST_F(FilteringDetailsParsingTest, MissingRoRejected) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"only-db"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F,  // OPT code (15 for EDE)
+      0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),  // data size
+      0x00, 0x0F  // EDE info code (15 for Blocked)
+  };
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  EXPECT_TRUE(ede_opt->filtering_details().empty());
+}
+
+TEST_F(FilteringDetailsParsingTest, Utf8EmojiAccepted) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"💡","id":"123"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F, 0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),
+      0x00, 0x0F};
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  ASSERT_FALSE(ede_opt->filtering_details().empty());
+}
+
+TEST_F(FilteringDetailsParsingTest, SurrogatePairAccepted) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"\uD83D\uDCA9","id":"pile"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F, 0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),
+      0x00, 0x0F};
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  EXPECT_FALSE(ede_opt->filtering_details().empty());
+}
+
+TEST_F(FilteringDetailsParsingTest, UnpairedHighSurrogateRejected) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"\uD800","id":"x"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F, 0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),
+      0x00, 0x0F};
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  EXPECT_TRUE(ede_opt->filtering_details().empty());
+}
+
+TEST_F(FilteringDetailsParsingTest, UnpairedLowSurrogateRejected) {
+  static constexpr std::string_view kJsonExtraText =
+      R"("fdbs"[{"db":"\uDEAD","id":"x"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F, 0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),
+      0x00, 0x0F};
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  EXPECT_TRUE(ede_opt->filtering_details().empty());
+}
+
+TEST_F(FilteringDetailsParsingTest, SwappedSurrogateRejected) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"\uDEAD\uD800","id":"x"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F, 0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),
+      0x00, 0x0F};
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  EXPECT_TRUE(ede_opt->filtering_details().empty());
+}
+
+TEST_F(FilteringDetailsParsingTest, NonStringIncRejected) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"db","id":false}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F, 0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),
+      0x00, 0x0F};
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  EXPECT_TRUE(ede_opt->filtering_details().empty());
+}
+
+TEST_F(FilteringDetailsParsingTest, KeyOrderVariantAccepted) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"id":"incident","db":"database"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F, 0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),
+      0x00, 0x0F};
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  EXPECT_FALSE(ede_opt->filtering_details().empty());
+}
+
+TEST_F(FilteringDetailsParsingTest, UnicodeNonCharacterFDD0Rejected) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"\uFDD0","id":"ok"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F, 0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),
+      0x00, 0x0F};
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  EXPECT_TRUE(ede_opt->filtering_details().empty());
+}
+
+TEST_F(FilteringDetailsParsingTest, UnicodeNonCharacterFFFERejected) {
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"\uFFFE","id":"ok"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F, 0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),
+      0x00, 0x0F};
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+  ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
+
+  const net::OptRecordRdata::EdeOpt* ede_opt = rdata_obj->GetEdeOpts()[0];
+  EXPECT_TRUE(ede_opt->filtering_details().empty());
+}
+
+// Test that FilteringDetails metadata is NOT parsed when the feature is
+// disabled, even if the JSON fields "fdbs[].db" "fdbs[].inc" are present.
+TEST_F(FilteringDetailsParsingTest, FeatureDisabled) {
+  // Disable the feature flag.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(net::features::kUseStructuredDnsErrors);
+
+  static constexpr std::string_view kJsonExtraText =
+      R"({"fdbs":[{"db":"exampleResolver","id":"abc123"}]})";
+
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0F,  // OPT code (15 for EDE)
+      0x00, static_cast<uint8_t>(2 + kJsonExtraText.size()),  // data size
+      0x00, 0x0F  // EDE info code (15 for Blocked)
+  };
+  rdata.insert(rdata.end(), kJsonExtraText.begin(), kJsonExtraText.end());
+
+  std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
+  ASSERT_THAT(rdata_obj, NotNull());
+
+  const std::vector<const OptRecordRdata::EdeOpt*>& ede_opts =
+      rdata_obj->GetEdeOpts();
+  ASSERT_THAT(ede_opts, SizeIs(1));
+  const auto* ede_opt = ede_opts[0];
+
+  // Feature is disabled, so metadata should NOT be parsed.
+  EXPECT_TRUE(ede_opt->filtering_details().empty());
+}
+
 // Test the Opt equality operator (and its subclasses as well)
 TEST(OptRecordRdataTest, OptEquality) {
   // `rdata_obj0` second opt has extra text "BIOS"
@@ -270,13 +551,12 @@ TEST(OptRecordRdataTest, EdeRecordNoExtraText) {
       0x00, 0x05   // Info Code
   };
 
-  std::string expected_data("\x00\x05", 2);
+  const uint8_t expected_data[] = {0x00, 0x05};
 
   std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
   ASSERT_THAT(rdata_obj, NotNull());
   ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
-  ASSERT_EQ(rdata_obj->GetEdeOpts()[0]->data(),
-            base::as_byte_span(expected_data));
+  ASSERT_EQ(rdata_obj->GetEdeOpts()[0]->data(), expected_data);
   ASSERT_EQ(rdata_obj->GetEdeOpts()[0]->info_code(), 5u);
   ASSERT_EQ(rdata_obj->GetEdeOpts()[0]->extra_text(), "");
 }
@@ -305,16 +585,13 @@ TEST(OptRecordRdataTest, EdeRecordUnknownInfoCode) {
       'B',  'O',  'S', 'T', 'O', 'N'  // Extra Text ("BOSTON")
   };
 
-  std::string expected_data(
-      "\x00\x44"
-      "BOSTON",
-      8);
+  const uint8_t expected_data[] = {0x00, 0x44, 'B', 'O', 'S', 'T', 'O', 'N'};
 
   std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
   ASSERT_THAT(rdata_obj, NotNull());
   ASSERT_THAT(rdata_obj->GetEdeOpts(), SizeIs(1));
   auto* opt = rdata_obj->GetEdeOpts()[0];
-  ASSERT_EQ(opt->data(), base::as_byte_span(expected_data));
+  ASSERT_EQ(opt->data(), expected_data);
   ASSERT_EQ(opt->info_code(), 68u);
   ASSERT_EQ(opt->extra_text(), std::string("BOSTON", 6));
   ASSERT_EQ(opt->GetEnumFromInfoCode(),
@@ -322,30 +599,34 @@ TEST(OptRecordRdataTest, EdeRecordUnknownInfoCode) {
 }
 
 TEST(OptRecordRdataTest, CreatePaddingOpt) {
-  std::unique_ptr<OptRecordRdata::PaddingOpt> opt0 =
-      std::make_unique<OptRecordRdata::PaddingOpt>(12);
+  OptRecordRdata::PaddingOpt opt0(12);
 
-  std::string expected_data(12, '\0');
-  std::string expected_data1("MASSACHUSETTS");
+  constexpr const uint8_t expected_data[] = {
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // 12 null characters
+  };
 
-  ASSERT_EQ(opt0->data(), base::as_byte_span(expected_data));
-  ASSERT_THAT(opt0->data(), SizeIs(12u));
+  // For std::string expected_data1("MASSACHUSETTS");
+  constexpr const uint8_t expected_data1[] = {'M', 'A', 'S', 'S', 'A', 'C', 'H',
+                                              'U', 'S', 'E', 'T', 'T', 'S'};
 
-  std::unique_ptr<OptRecordRdata::PaddingOpt> opt1 =
-      std::make_unique<OptRecordRdata::PaddingOpt>("MASSACHUSETTS");
+  ASSERT_EQ(opt0.data(), expected_data);
+  ASSERT_THAT(opt0.data(), SizeIs(12u));
 
-  ASSERT_EQ(opt1->data(), base::as_byte_span(expected_data1));
-  ASSERT_THAT(opt1->data(), SizeIs(13u));
+  OptRecordRdata::PaddingOpt opt1(
+      base::byte_span_from_cstring("MASSACHUSETTS"));
+
+  ASSERT_EQ(opt1.data(), expected_data1);
+  ASSERT_THAT(opt1.data(), SizeIs(13u));
 }
 
 TEST(OptRecordRdataTest, ParsePaddingOpt) {
-  const uint8_t rdata[] = {
-      // First OPT
-      0x00, 0x0C,  // OPT code
-      0x00, 0x07,  // OPT data size
-      0xB0, 0x03,  // OPT data padding (Book of Boba Fett)
-      0x0F, 0xB0, 0xBA, 0xFE, 0x77,
+  constexpr uint8_t kPadding[] = {0xb0, 0x03, 0x0f, 0xb0, 0xba, 0xfe, 0x77};
+  std::vector<uint8_t> rdata = {
+      0x00, 0x0C,                                       // OPT code
+      0x00, static_cast<uint8_t>(std::size(kPadding)),  // OPT data size
   };
+  rdata.insert_range(rdata.end(), kPadding);
 
   std::unique_ptr<OptRecordRdata> rdata_obj = OptRecordRdata::Create(rdata);
 
@@ -355,8 +636,7 @@ TEST(OptRecordRdataTest, ParsePaddingOpt) {
   ASSERT_THAT(rdata_obj->GetPaddingOpts(), SizeIs(1));
 
   // Check elements
-  OptRecordRdata::PaddingOpt opt0(
-      std::string("\xb0\x03\x0f\xb0\xba\xfe\x77", 7));
+  OptRecordRdata::PaddingOpt opt0(kPadding);
 
   ASSERT_EQ(*(rdata_obj->GetOpts()[0]), opt0);
   ASSERT_EQ(*(rdata_obj->GetPaddingOpts()[0]), opt0);
@@ -439,18 +719,14 @@ TEST(OptRecordRdataTest, TestGetOptsOrder) {
   rdata_obj0.AddOpt(OptRecordRdata::UnknownOpt::CreateForTesting(5, data2));
   ASSERT_EQ(rdata_obj0.OptCount(), 3u);
 
-  std::string expected_data("\x11\x11", 2);
-  std::string expected_data1("\x22\x22", 2);
-  std::string expected_data2("\x33\x33", 2);
+  constexpr const uint8_t expected_data[] = {0x11, 0x11};
+  constexpr const uint8_t expected_data1[] = {0x22, 0x22};
+  constexpr const uint8_t expected_data2[] = {0x33, 0x33};
 
   auto opts = rdata_obj0.GetOpts();
-  ASSERT_EQ(opts[0]->data(),
-            base::as_byte_span(expected_data));  // opt code 5 (inserted first)
-  ASSERT_EQ(
-      opts[1]->data(),
-      base::as_byte_span(expected_data1));  // opt code 5 (inserted second)
-  ASSERT_EQ(opts[2]->data(),
-            base::as_byte_span(expected_data2));  // opt code 10
+  ASSERT_EQ(opts[0]->data(), expected_data);   // opt code 5 (inserted first)
+  ASSERT_EQ(opts[1]->data(), expected_data1);  // opt code 5 (inserted second)
+  ASSERT_EQ(opts[2]->data(), expected_data2);  // opt code 10
 }
 
 }  // namespace

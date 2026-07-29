@@ -10,7 +10,6 @@
 #include "base/json/json_reader.h"
 #include "base/test/mock_callback.h"
 #include "base/test/task_environment.h"
-#include "components/mirroring/service/value_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/openscreen/src/cast/common/public/message_port.h"
@@ -65,12 +64,12 @@ class OpenscreenMessagePortTest : public ::testing::Test,
   // mojom::CastMessageChannel implementation (outbound messages).
   void OnMessage(mojom::CastMessagePtr message) override {
     EXPECT_EQ(message->message_namespace, kNamespace);
-    std::optional<base::Value> value =
-        base::JSONReader::Read(message->json_format_data);
-    ASSERT_TRUE(value);
-    std::string message_type;
-    EXPECT_TRUE(GetString(*value, "type", &message_type));
-    OnOutboundMessage(message_type);
+    std::optional<base::Value> value = base::JSONReader::Read(
+        message->json_format_data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    ASSERT_TRUE(value && value->is_dict());
+    const std::string* message_type = value->GetDict().FindString("type");
+    ASSERT_TRUE(message_type);
+    OnOutboundMessage(*message_type);
   }
   MOCK_METHOD1(OnOutboundMessage, void(const std::string& message_type));
 

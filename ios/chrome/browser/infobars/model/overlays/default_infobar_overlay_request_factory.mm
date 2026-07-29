@@ -23,14 +23,18 @@ std::unique_ptr<OverlayRequest> DefaultInfobarOverlayRequestFactory(
     case InfobarType::kInfobarTypePasswordUpdate:
     case InfobarType::kInfobarTypePermissions:
     case InfobarType::kInfobarTypeSaveCard:
+    case InfobarType::kInfobarTypeSaveCvc:
     case InfobarType::kInfobarTypeSyncError:
     case InfobarType::kInfobarTypeTranslate:
-    case InfobarType::kInfobarTypeParcelTracking:
     case InfobarType::kInfobarTypeEnhancedSafeBrowsing:
+    case InfobarType::kInfobarTypeCollaborationGroup:
+    case InfobarType::kInfobarTypeCollaborationOutOfDate:
+    case InfobarType::kInfobarTypeFormsAiPrivateInference:
       return OverlayRequest::CreateWithConfig<
           DefaultInfobarOverlayRequestConfig>(infobar_ios, overlay_type);
 
     case InfobarType::kInfobarTypeConfirm:
+    case InfobarType::kInfobarTypeAutofillAiSaveEntity:
       switch (overlay_type) {
         case InfobarOverlayType::kBanner:
           return OverlayRequest::CreateWithConfig<

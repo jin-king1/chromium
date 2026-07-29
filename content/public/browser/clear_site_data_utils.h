@@ -5,8 +5,13 @@
 #ifndef CONTENT_PUBLIC_BROWSER_CLEAR_SITE_DATA_UTILS_H_
 #define CONTENT_PUBLIC_BROWSER_CLEAR_SITE_DATA_UTILS_H_
 
+#include <optional>
+#include <set>
+#include <string>
+
 #include "base/containers/enum_set.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/weak_ptr.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "net/cookies/cookie_partition_key.h"
@@ -25,10 +30,12 @@ enum class ClearSiteDataType {
   kStorage,
   kCache,
   kClientHints,
+  kPrefetchCache,
+  kPrerenderCache,
 };
 using ClearSiteDataTypeSet = base::EnumSet<ClearSiteDataType,
                                            ClearSiteDataType::kCookies,
-                                           ClearSiteDataType::kClientHints>;
+                                           ClearSiteDataType::kPrerenderCache>;
 
 // Removes browsing data associated with |origin|. Used when the Clear-Site-Data
 // header is sent.

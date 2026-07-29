@@ -14,6 +14,8 @@ class Tracker;
 
 @protocol InfobarBannerConsumer;
 
+@protocol NonModalSignInPromoCommands;
+
 // Mediator superclass for configuring InfobarBannerConsumers.
 @interface InfobarBannerOverlayMediator
     : OverlayRequestMediator <InfobarBannerDelegate>
@@ -25,9 +27,16 @@ class Tracker;
 // Feature engagement tracker for notifying promo events.
 @property(nonatomic, assign) feature_engagement::Tracker* engagementTracker;
 
+// Handler for executing NonModalSignInPromoCommands.
+@property(nonatomic, weak) id<NonModalSignInPromoCommands>
+    nonModalSignInPromoHandler;
+
 // Indicates to the mediator to do any cleanup work in response to a banner
 // dismissal.
 - (void)finishDismissal;
+
+// Disconnects the mediator.
+- (void)disconnect NS_REQUIRES_SUPER;
 
 @end
 

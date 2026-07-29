@@ -9,7 +9,7 @@
 
 #include "base/functional/callback.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
-#include "components/autofill/core/browser/integrators/autofill_compose_delegate.h"
+#include "components/autofill/core/browser/integrators/compose/autofill_compose_delegate.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/compose/core/browser/compose_metrics.h"
 
@@ -38,8 +38,6 @@ class ComposeClient {
   virtual void ShowComposeDialog(
       autofill::AutofillComposeDelegate::UiEntryPoint ui_entry_point,
       const autofill::FormFieldData& trigger_field,
-      std::optional<autofill::AutofillClient::PopupScreenLocation>
-          popup_screen_location,
       ComposeCallback callback) = 0;
 
   // Checks if the popup (aka nudge) should be presented for the provided field.

@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/core/html/custom/custom_element_definition.h"
+
 #include "third_party/blink/renderer/core/dom/attr.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element.h"
@@ -11,6 +12,7 @@
 #include "third_party/blink/renderer/core/html/custom/custom_element_reaction_factory.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_reaction_stack.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_registry.h"
+#include "third_party/blink/renderer/core/html/custom/custom_element_registry_assignment.h"
 #include "third_party/blink/renderer/core/html/custom/element_internals.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html_element_factory.h"
@@ -43,7 +45,7 @@ CustomElementDefinition::~CustomElementDefinition() = default;
 
 void CustomElementDefinition::Trace(Visitor* visitor) const {
   visitor->Trace(registry_);
-  ElementRareDataField::Trace(visitor);
+  NodeRareDataField::Trace(visitor);
 }
 
 static String ErrorMessageForConstructorResult(Element& element,
@@ -129,13 +131,13 @@ HTMLElement* CustomElementDefinition::CreateElement(
       CustomElement::ShouldCreateCustomizedBuiltinElement(tag_name, document))
       << tag_name;
 
-  // 5. If definition is non-null, and definition’s name is not equal to
+  // 4. If definition is non-null, and definition’s name is not equal to
   // its local name (i.e., definition represents a customized built-in
   // element), then:
   if (!descriptor_.IsAutonomous()) {
-    // 5.1. Let interface be the element interface for localName and the
+    // 4.1. Let interface be the element interface for localName and the
     // HTML namespace.
-    // 5.2. Set result to a new element that implements interface, with
+    // 4.2. Set result to a new element that implements interface, with
     // no attributes, namespace set to the HTML namespace, namespace
     // prefix set to prefix, local name set to localName, custom element
     // state set to "undefined", custom element definition set to null,
@@ -145,7 +147,7 @@ HTMLElement* CustomElementDefinition::CreateElement(
     result->SetIsValue(Descriptor().GetName());
 
     if (!flags.IsAsyncCustomElements()) {
-      // 5.3 If the synchronous custom elements flag is set, then run this step
+      // 4.3 If the synchronous custom elements flag is set, then run this step
       // while catching any exceptions:
       //   1. Upgrade element using definition.
       // If this step threw an exception, then:
@@ -153,36 +155,48 @@ HTMLElement* CustomElementDefinition::CreateElement(
       //   2. Set result's custom element state to "failed".
       Upgrade(*result);
     } else {
-      // 5.4. Otherwise, enqueue a custom element upgrade reaction given
+      // 4.4. Otherwise, enqueue a custom element upgrade reaction given
       // result and definition.
       EnqueueUpgradeReaction(*result);
     }
     return To<HTMLElement>(result);
   }
 
-  // 6. If definition is non-null, then:
-  // 6.1. If the synchronous custom elements flag is set, then run these
+  // 5. If definition is non-null, then:
+  // 5.1. If the synchronous custom elements flag is set, then run these
   // steps while catching any exceptions:
   if (!flags.IsAsyncCustomElements()) {
-    // It's impossible to create a custom element with a scoped definition
-    // without push the custom element construction stack. Make sure that
-    // doesn't happen for synchrnous autonomous custom elements, which  don't
-    // push the stack,
-    // TODO(crbug.com/1304439): Alternatively, we can push the construction
-    // stack only when using a scoped definition. Decide the exact behavior.
-    CHECK(!RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() ||
-          registry_->IsGlobalRegistry());
-    return CreateAutonomousCustomElementSync(document, tag_name);
+    // We push the construction stack while creating element from scoped
+    // custom element registry as we don't have access to scoped registry
+    // in HTMLConstructor
+    if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled() &&
+        !registry_->IsGlobalRegistry()) {
+      Element* element = CreateElementForConstructor(document);
+      // Set the registry for the element before running the constructor,
+      // to ensure user gets the correct registry in constructor if need.
+      element->SetCustomElementRegistry(
+          CustomElementRegistryAssignment::Explicit(registry_.Get()));
+      CustomElementConstructionStackScope construction_stack_scope(*this,
+                                                                   *element);
+      // Keeping the following creation call here to avoid the construction
+      // stack above fall out of scope.
+      return CreateAutonomousCustomElementSync(document, tag_name, registry_);
+    }
+    return CreateAutonomousCustomElementSync(document, tag_name, registry_);
   }
 
-  // 6.2. Otherwise: (the synchronous custom elements flag is not set)
-  // 6.2.1. Set result to a new element that implements the HTMLElement
+  // 5.2. Otherwise: (the synchronous custom elements flag is not set)
+  // 5.2.1. Set result to a new element that implements the HTMLElement
   // interface, with no attributes, namespace set to the HTML namespace,
   // namespace prefix set to prefix, local name set to localName, custom
   // element state set to "undefined", and node document set to document.
   auto* element = MakeGarbageCollected<HTMLElement>(tag_name, document);
   element->SetCustomElementState(CustomElementState::kUndefined);
-  // 6.2.2. Enqueue a custom element upgrade reaction given result and
+  if (RuntimeEnabledFeatures::ScopedCustomElementRegistryEnabled()) {
+    element->SetCustomElementRegistry(
+        CustomElementRegistryAssignment::Explicit(registry_.Get()));
+  }
+  // 5.2.2. Enqueue a custom element upgrade reaction given result and
   // definition.
   EnqueueUpgradeReaction(*element);
   return element;
@@ -238,8 +252,10 @@ void CustomElementDefinition::Upgrade(Element& element) {
   if (ListedElement* listed_element = ListedElement::From(element)) {
     if (element.FastHasAttribute(html_names::kReadonlyAttr))
       listed_element->ReadonlyAttributeChanged();
-    if (element.FastHasAttribute(html_names::kDisabledAttr))
-      listed_element->DisabledAttributeChanged();
+    if (element.FastHasAttribute(html_names::kDisabledAttr)) {
+      listed_element->DisabledAttributeChanged(
+          DisabledChangedReason::kAttributeChanged);
+    }
   }
 
   if (IsFormAssociated())

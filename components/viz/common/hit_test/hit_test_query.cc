@@ -65,10 +65,6 @@ const std::string GetAsyncHitTestReasons(uint32_t async_hit_test_reasons) {
     reasons.emplace_back("IrregularClip");
   if (async_hit_test_reasons & kRegionNotActive)
     reasons.emplace_back("RegionNotActive");
-  if (async_hit_test_reasons & kPerspectiveTransform)
-    reasons.emplace_back("PerspectiveTransform");
-  if (async_hit_test_reasons & kUseDrawQuadData)
-    reasons.emplace_back("UseDrawQuadData");
 
   return reasons.empty() ? "None" : base::JoinString(std::move(reasons), ", ");
 }
@@ -209,8 +205,11 @@ bool HitTestQuery::FindTargetInRegionForLocation(
     location_transformed =
         GetHitTestRegionData()[region_index].transform.MapPoint(
             location_transformed);
-    if (!gfx::RectF(GetHitTestRegionData()[region_index].rect)
-             .Contains(location_transformed)) {
+    // TODO(crbug.com/40572334): Replace with RRectF::Contains(PointF&) when the
+    // Skia dependency (https://skia-review.googlesource.com/c/skia/+/1286236)
+    // is available.
+    if (!GetHitTestRegionData()[region_index].rect.rect().Contains(
+            location_transformed)) {
       return false;
     }
   }

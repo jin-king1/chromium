@@ -8,13 +8,14 @@
 #include "base/metrics/user_metrics_action.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
+#include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/supervised_user/supervised_user_service_factory.h"
+#include "chrome/browser/supervised_user/supervised_user_url_filtering_service_factory.h"
 #include "chrome/common/channel_info.h"
 #include "components/policy/core/common/policy_pref_names.h"
+#include "components/supervised_user/core/browser/supervised_user_log_record.h"
 #include "components/supervised_user/core/browser/supervised_user_preferences.h"
-#include "components/supervised_user/core/browser/supervised_user_service.h"
 #include "components/variations/service/variations_service.h"
 #include "content/public/browser/storage_partition.h"
 
@@ -54,32 +55,47 @@ void ChromeSupervisedUserServicePlatformDelegateBase::
 
   // Add some detailed metrics to allow us to better spot any unexpected cases
   // where a supervised user can access incognito.
-  supervised_user::SupervisedUserService* supervised_user_service =
-      SupervisedUserServiceFactory::GetForProfileIfExists(&profile_.get());
-  std::optional<supervised_user::FamilyLinkUserLogRecord::Segment>
+  std::optional<supervised_user::SupervisedUserLogRecord::Segment>
       user_log_segment =
-          supervised_user::FamilyLinkUserLogRecord::Create(
+          supervised_user::SupervisedUserLogRecord::Create(
               IdentityManagerFactory::GetForProfile(&profile_.get()),
               *profile_->GetPrefs(),
               *HostContentSettingsMapFactory::GetForProfile(&profile_.get()),
-              supervised_user_service ? supervised_user_service->GetURLFilter()
-                                      : nullptr)
+              supervised_user::SupervisedUserUrlFilteringServiceFactory::
+                  GetForProfileIfExists(&profile_.get()),
+              g_browser_process->device_parental_controls())
               .GetSupervisionStatusForPrimaryAccount();
   if (!user_log_segment.has_value()) {
     return;
   }
 
+  bool incognito_is_managed =
+      profile_->GetPrefs()
+          ->FindPreference(policy::policy_prefs::kIncognitoModeAvailability)
+          ->IsManaged();
+
   switch (user_log_segment.value()) {
-    case supervised_user::FamilyLinkUserLogRecord::Segment::
-        kSupervisionEnabledByPolicy:
-    case supervised_user::FamilyLinkUserLogRecord::Segment::
-        kSupervisionEnabledByUser:
+    case supervised_user::SupervisedUserLogRecord::Segment::
+        kSupervisionEnabledLocally:
+      if (incognito_is_managed) {
+        // Incognito managed by policy trumps local supervision (it has higher
+        // priority that supervision features).
+        base::RecordAction(base::UserMetricsAction(
+            "IncognitoMode_Started_Supervised_Managed"));
+      } else {
+        base::RecordAction(base::UserMetricsAction(
+            "IncognitoMode_Started_Supervised_Unexpected"));
+      }
+      break;
+    case supervised_user::SupervisedUserLogRecord::Segment::
+        kSupervisionEnabledByFamilyLinkPolicy:
+    case supervised_user::SupervisedUserLogRecord::Segment::
+        kSupervisionEnabledByFamilyLinkUser:
+
       // This is a supervised profile. It is not expected for incognito to be
       // available except in some edge cases. Output the edge cases separately
       // from the "unexpected" bucket.
-      if (profile_->GetPrefs()
-              ->FindPreference(policy::policy_prefs::kIncognitoModeAvailability)
-              ->IsManaged()) {
+      if (incognito_is_managed) {
         // An Enterprise policy has taken higher precedence than the parental
         // control settings.
         base::RecordAction(base::UserMetricsAction(
@@ -99,10 +115,15 @@ void ChromeSupervisedUserServicePlatformDelegateBase::
       }
       break;
 
-    case supervised_user::FamilyLinkUserLogRecord::Segment::kParent:
-    case supervised_user::FamilyLinkUserLogRecord::Segment::kUnsupervised:
-    case supervised_user::FamilyLinkUserLogRecord::Segment::kMixedProfile:
+    case supervised_user::SupervisedUserLogRecord::Segment::kParent:
+    case supervised_user::SupervisedUserLogRecord::Segment::kUnsupervised:
+    case supervised_user::SupervisedUserLogRecord::Segment::kMixedProfile:
       // Incognito usage is expected, so don't output any more detailed metrics.
       break;
   }
+}
+
+bool ChromeSupervisedUserServicePlatformDelegateBase::ShouldCloseIncognitoTabs()
+    const {
+  return !IncognitoModePrefs::IsIncognitoAllowed(&profile_.get());
 }

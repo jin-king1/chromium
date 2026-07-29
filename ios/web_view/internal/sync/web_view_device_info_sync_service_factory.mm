@@ -4,10 +4,13 @@
 
 #import "ios/web_view/internal/sync/web_view_device_info_sync_service_factory.h"
 
+#import <optional>
 #import <utility>
 
+#import "base/feature_list.h"
+#import "base/features.h"
 #import "base/functional/bind.h"
-#import "base/memory/singleton.h"
+#import "base/no_destructor.h"
 #import "base/time/default_clock.h"
 #import "components/keyed_service/ios/browser_state_dependency_manager.h"
 #import "components/signin/public/base/device_id_helper.h"
@@ -19,6 +22,8 @@
 #import "components/sync_device_info/device_info_sync_service_impl.h"
 #import "components/sync_device_info/local_device_info_provider_impl.h"
 #import "components/version_info/version_info.h"
+#import "ios/web/public/thread/web_task_traits.h"
+#import "ios/web/public/thread/web_thread.h"
 #import "ios/web_view/internal/sync/web_view_data_type_store_service_factory.h"
 #import "ios/web_view/internal/sync/web_view_sync_invalidations_service_factory.h"
 #import "ios/web_view/internal/web_view_browser_state.h"
@@ -43,10 +48,9 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
   bool GetSendTabToSelfReceivingEnabled() const override { return false; }
 
   // syncer::DeviceInfoSyncClient:
-  sync_pb::SyncEnums_SendTabReceivingType GetSendTabToSelfReceivingType()
+  syncer::DeviceInfo::SendTabReceivingType GetSendTabToSelfReceivingType()
       const override {
-    return sync_pb::
-        SyncEnums_SendTabReceivingType_SEND_TAB_RECEIVING_TYPE_CHROME_OR_UNSPECIFIED;
+    return syncer::DeviceInfo::SendTabReceivingType::kChromeOrUnspecified;
   }
 
   // syncer::DeviceInfoSyncClient:
@@ -86,6 +90,26 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
   // Returns false since we only care about Chrome OS devices
   bool IsUmaEnabledOnCrOSDevice() const override { return false; }
 
+  // syncer::DeviceInfoSyncClient:
+  bool GetDesktopToIOSPromoReceivingEnabled() const override { return false; }
+
+  // syncer::DeviceInfoSyncClient:
+  MobilePromoOnDesktopPromoTypeSet GetDesktopToIOSPromoReceivingTypes()
+      const override {
+    return {};
+  }
+
+  // syncer::DeviceInfoSyncClient:
+  syncer::DeviceInfo::GlicExperimentalTriggeringState
+  GetGlicExperimentalTriggeringState() const override {
+    return syncer::DeviceInfo::GlicExperimentalTriggeringState::kUnavailable;
+  }
+
+  // syncer::DeviceInfoSyncClient:
+  std::optional<int> GetGlicExperimentalTriggeringVersion() const override {
+    return std::nullopt;
+  }
+
  private:
   PrefService* const prefs_;
   syncer::SyncInvalidationsService* const sync_invalidations_service_;
@@ -98,7 +122,8 @@ namespace ios_web_view {
 // static
 WebViewDeviceInfoSyncServiceFactory*
 WebViewDeviceInfoSyncServiceFactory::GetInstance() {
-  return base::Singleton<WebViewDeviceInfoSyncServiceFactory>::get();
+  static base::NoDestructor<WebViewDeviceInfoSyncServiceFactory> instance;
+  return instance.get();
 }
 
 // static
@@ -141,7 +166,11 @@ WebViewDeviceInfoSyncServiceFactory::BuildServiceInstanceFor(
       WebViewDataTypeStoreServiceFactory::GetForBrowserState(browser_state)
           ->GetStoreFactory(),
       std::move(local_device_info_provider), std::move(device_prefs),
-      std::move(device_info_sync_client), sync_invalidations_service);
+      std::move(device_info_sync_client), sync_invalidations_service,
+      /*pulse_task_runner=*/
+      base::FeatureList::IsEnabled(base::features::kReducePPMs)
+          ? web::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
+          : web::GetUIThreadTaskRunner({}));
 }
 
 }  // namespace ios_web_view

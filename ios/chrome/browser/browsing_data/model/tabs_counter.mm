@@ -11,7 +11,6 @@
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/web/public/browser_state.h"
 #import "net/base/completion_repeating_callback.h"
 
 TabsCounter::TabsCounter(BrowserList* browser_list,
@@ -72,7 +71,7 @@ void TabsCounter::OnLoadDataFromStorageResult(
   if (tab_count > 0) {
     total_tab_count_ += tab_count;
 
-    // Inactive tabs live in a seperate Browser from their active conterparts.
+    // Inactive tabs live in a separate Browser from their active counterparts.
     // This avoids overcounting the number of windows that have tabs within the
     // timeframe (e.g. active and inactive browsers with tabs within the range
     // in the same window).

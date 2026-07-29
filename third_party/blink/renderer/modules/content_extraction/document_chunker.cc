@@ -93,6 +93,9 @@ Vector<String> DocumentChunker::Chunk(const Node& tree) {
   if (max_passages_ != 0 && passages.size() > max_passages_) {
     passages.Shrink(max_passages_);
   }
+  for (String& passage : passages) {
+    passage = passage.substr(0, 1024);
+  }
 
   return passages;
 }
@@ -123,10 +126,9 @@ DocumentChunker::AggregateNode DocumentChunker::ProcessNode(
   if (const Text* text = DynamicTo<Text>(node)) {
     String simplified_text = text->data().SimplifyWhiteSpace();
     if (!simplified_text.empty()) {
-      current_node.num_words =
-          WTF::VisitCharacters(simplified_text, [](auto chars) {
-            return std::count(chars.begin(), chars.end(), ' ') + 1;
-          });
+      current_node.num_words = VisitCharacters(simplified_text, [](auto chars) {
+        return std::count(chars.begin(), chars.end(), ' ') + 1;
+      });
       current_node.segments.push_back(simplified_text);
     }
     return current_node;
@@ -216,7 +218,7 @@ void DocumentChunker::PassageList::AddPassageForNode(
 }
 
 void DocumentChunker::PassageList::Extend(const PassageList& passage_list) {
-  passages.AppendVector(passage_list.passages);
+  passages.append_range(passage_list.passages);
 }
 
 bool DocumentChunker::AggregateNode::Fits(const AggregateNode& node,
@@ -226,7 +228,7 @@ bool DocumentChunker::AggregateNode::Fits(const AggregateNode& node,
 
 void DocumentChunker::AggregateNode::AddNode(const AggregateNode& node) {
   num_words += node.num_words;
-  segments.AppendVector(node.segments);
+  segments.append_range(node.segments);
 }
 
 String DocumentChunker::AggregateNode::CreatePassage() const {
@@ -234,11 +236,7 @@ String DocumentChunker::AggregateNode::CreatePassage() const {
     return String();
   }
   StringBuilder builder;
-  builder.Append(segments[0]);
-  for (unsigned int i = 1; i < segments.size(); i++) {
-    builder.Append(' ');
-    builder.Append(segments[i]);
-  }
+  builder.AppendRange(segments, " ");
   return builder.ReleaseString();
 }
 

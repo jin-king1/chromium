@@ -5,6 +5,8 @@
 #ifndef REMOTING_BASE_PROTOBUF_HTTP_REQUEST_H_
 #define REMOTING_BASE_PROTOBUF_HTTP_REQUEST_H_
 
+#include <optional>
+
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -57,12 +59,12 @@ class ProtobufHttpRequest final : public ProtobufHttpRequestBase {
       network::mojom::URLLoaderFactory* loader_factory) override;
   base::TimeDelta GetRequestTimeoutDuration() const override;
 
-  void OnResponse(std::unique_ptr<std::string> response_body);
+  void OnResponse(std::optional<std::string> response_body);
 
   // Parses |response_body| and writes it to |response_message_|.
-  HttpStatus ParseResponse(std::unique_ptr<std::string> response_body);
+  HttpStatus ParseResponse(std::optional<std::string> response_body);
 
-  void RunResponseCallback(const HttpStatus& status);
+  void RunResponseCallback(const HttpStatus& status, bool run_invalidator);
 
   base::TimeDelta timeout_duration_ = base::Seconds(30);
   base::OnceCallback<void(const HttpStatus&)> response_callback_;

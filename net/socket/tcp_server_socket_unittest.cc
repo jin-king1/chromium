@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/socket/tcp_server_socket.h"
 
 #include <memory>
@@ -15,6 +10,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/memory/ref_counted.h"
+#include "base/strings/string_view_util.h"
 #include "net/base/address_list.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_address.h"
@@ -88,7 +84,8 @@ TEST_F(TCPServerSocketTest, Accept) {
 
   TestCompletionCallback connect_callback;
   TCPClientSocket connecting_socket(local_address_list(), nullptr, nullptr,
-                                    nullptr, NetLogSource());
+                                    nullptr, NetLogSource(),
+                                    handles::kInvalidNetworkHandle);
   int connect_result = connecting_socket.Connect(connect_callback.callback());
 
   TestCompletionCallback accept_callback;
@@ -125,7 +122,8 @@ TEST_F(TCPServerSocketTest, AcceptAsync) {
 
   TestCompletionCallback connect_callback;
   TCPClientSocket connecting_socket(local_address_list(), nullptr, nullptr,
-                                    nullptr, NetLogSource());
+                                    nullptr, NetLogSource(),
+                                    handles::kInvalidNetworkHandle);
   int connect_result = connecting_socket.Connect(connect_callback.callback());
   EXPECT_THAT(connect_callback.GetResult(connect_result), IsOk());
 
@@ -151,7 +149,8 @@ TEST_F(TCPServerSocketTest, AcceptClientDisconnectAfterConnect) {
 
   TestCompletionCallback connect_callback;
   TCPClientSocket connecting_socket(local_address_list(), nullptr, nullptr,
-                                    nullptr, NetLogSource());
+                                    nullptr, NetLogSource(),
+                                    handles::kInvalidNetworkHandle);
   int connect_result = connecting_socket.Connect(connect_callback.callback());
   EXPECT_THAT(connect_callback.GetResult(connect_result), IsOk());
 
@@ -181,12 +180,14 @@ TEST_F(TCPServerSocketTest, Accept2Connections) {
 
   TestCompletionCallback connect_callback;
   TCPClientSocket connecting_socket(local_address_list(), nullptr, nullptr,
-                                    nullptr, NetLogSource());
+                                    nullptr, NetLogSource(),
+                                    handles::kInvalidNetworkHandle);
   int connect_result = connecting_socket.Connect(connect_callback.callback());
 
   TestCompletionCallback connect_callback2;
   TCPClientSocket connecting_socket2(local_address_list(), nullptr, nullptr,
-                                     nullptr, NetLogSource());
+                                     nullptr, NetLogSource(),
+                                     handles::kInvalidNetworkHandle);
   int connect_result2 =
       connecting_socket2.Connect(connect_callback2.callback());
 
@@ -223,7 +224,8 @@ TEST_F(TCPServerSocketTest, AcceptIPv6) {
 
   TestCompletionCallback connect_callback;
   TCPClientSocket connecting_socket(local_address_list(), nullptr, nullptr,
-                                    nullptr, NetLogSource());
+                                    nullptr, NetLogSource(),
+                                    handles::kInvalidNetworkHandle);
   int connect_result = connecting_socket.Connect(connect_callback.callback());
 
   TestCompletionCallback accept_callback;
@@ -253,7 +255,7 @@ class TCPServerSocketTestWithIPv6Only
   void AttemptToConnect(const IPAddress& dest_addr, bool should_succeed) {
     TCPClientSocket connecting_socket(
         AddressList(IPEndPoint(dest_addr, local_address_.port())), nullptr,
-        nullptr, nullptr, NetLogSource());
+        nullptr, nullptr, NetLogSource(), handles::kInvalidNetworkHandle);
 
     TestCompletionCallback connect_cb;
     int connect_result = connecting_socket.Connect(connect_cb.callback());
@@ -303,7 +305,8 @@ TEST_F(TCPServerSocketTest, AcceptIO) {
 
   TestCompletionCallback connect_callback;
   TCPClientSocket connecting_socket(local_address_list(), nullptr, nullptr,
-                                    nullptr, NetLogSource());
+                                    nullptr, NetLogSource(),
+                                    handles::kInvalidNetworkHandle);
   int connect_result = connecting_socket.Connect(connect_callback.callback());
 
   TestCompletionCallback accept_callback;
@@ -325,40 +328,34 @@ TEST_F(TCPServerSocketTest, AcceptIO) {
   EXPECT_THAT(connect_callback.GetResult(connect_result), IsOk());
 
   const std::string message("test message");
-  std::vector<char> buffer(message.size());
 
-  size_t bytes_written = 0;
-  while (bytes_written < message.size()) {
-    scoped_refptr<IOBufferWithSize> write_buffer =
-        base::MakeRefCounted<IOBufferWithSize>(message.size() - bytes_written);
-    memmove(write_buffer->data(), message.data(), message.size());
-
+  auto write_buffer = base::MakeRefCounted<DrainableIOBuffer>(
+      base::MakeRefCounted<StringIOBuffer>(message), message.size());
+  while (write_buffer->size() > 0u) {
     TestCompletionCallback write_callback;
     int write_result = accepted_socket->Write(
         write_buffer.get(), write_buffer->size(), write_callback.callback(),
         TRAFFIC_ANNOTATION_FOR_TESTS);
     write_result = write_callback.GetResult(write_result);
-    ASSERT_TRUE(write_result >= 0);
-    ASSERT_TRUE(bytes_written + write_result <= message.size());
-    bytes_written += write_result;
+    ASSERT_GE(write_result, 0);
+    ASSERT_LE(write_result, write_buffer->size());
+    write_buffer->DidConsume(write_result);
   }
 
-  size_t bytes_read = 0;
-  while (bytes_read < message.size()) {
-    scoped_refptr<IOBufferWithSize> read_buffer =
-        base::MakeRefCounted<IOBufferWithSize>(message.size() - bytes_read);
+  auto read_buffer = base::MakeRefCounted<DrainableIOBuffer>(
+      base::MakeRefCounted<IOBufferWithSize>(message.size()), message.size());
+  while (read_buffer->size() > 0u) {
     TestCompletionCallback read_callback;
     int read_result = connecting_socket.Read(
         read_buffer.get(), read_buffer->size(), read_callback.callback());
     read_result = read_callback.GetResult(read_result);
-    ASSERT_TRUE(read_result >= 0);
-    ASSERT_TRUE(bytes_read + read_result <= message.size());
-    memmove(&buffer[bytes_read], read_buffer->data(), read_result);
-    bytes_read += read_result;
+    ASSERT_GE(read_result, 0);
+    ASSERT_LE(read_result, read_buffer->size());
+    read_buffer->DidConsume(read_result);
   }
 
-  std::string received_message(buffer.begin(), buffer.end());
-  ASSERT_EQ(message, received_message);
+  read_buffer->SetOffset(0);
+  ASSERT_EQ(message, base::as_string_view(read_buffer->span()));
 }
 
 }  // namespace

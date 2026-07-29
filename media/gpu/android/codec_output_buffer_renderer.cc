@@ -17,9 +17,7 @@
 
 namespace media {
 namespace {
-BASE_FEATURE(kHandleUpdateTexImageFailures,
-             "HandleUpdateTexImageFailures",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kHandleUpdateTexImageFailures, base::FEATURE_ENABLED_BY_DEFAULT);
 }
 
 CodecOutputBufferRenderer::CodecOutputBufferRenderer(
@@ -119,7 +117,7 @@ bool CodecOutputBufferRenderer::RenderToTextureOwnerFrontBuffer() {
     gfx::Size coded_size;
     gfx::Rect visible_rect;
     if (texture_owner() && texture_owner()->GetCodedSizeAndVisibleRect(
-                               size(), &coded_size, &visible_rect)) {
+                               visible_size(), &coded_size, &visible_rect)) {
       std::move(frame_info_callback_).Run(coded_size, visible_rect);
     } else {
       std::move(frame_info_callback_).Run(std::nullopt, std::nullopt);

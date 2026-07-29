@@ -2,7 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import './mobile_promo.js';
+import 'chrome://resources/cr_elements/cr_button/cr_button.js';
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
 
 import {CrAutoImgElement} from 'chrome://resources/cr_elements/cr_auto_img/cr_auto_img.js';
 import type {CrToastElement} from 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
@@ -15,6 +17,7 @@ import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
 
+import {recordEnumeration} from './metrics_utils.js';
 import {getCss} from './middle_slot_promo.css.js';
 import {getHtml} from './middle_slot_promo.html.js';
 import type {PageHandlerRemote, Promo} from './new_tab_page.mojom-webui.js';
@@ -29,12 +32,13 @@ import {WindowProxy} from './window_proxy.js';
 export enum PromoDismissAction {
   DISMISS = 0,
   RESTORE = 1,
+  MAX_VALUE = RESTORE,
 }
 
 export function recordPromoDismissAction(action: PromoDismissAction) {
-  chrome.metricsPrivate.recordEnumerationValue(
+  recordEnumeration(
       'NewTabPage.Promos.DismissAction', action,
-      Object.keys(PromoDismissAction).length);
+      PromoDismissAction.MAX_VALUE + 1);
 }
 
 /**
@@ -46,22 +50,19 @@ export async function renderPromo(promo: Promo):
     Promise<{container: Element, id: string | null}|null> {
   const browserHandler = NewTabPageProxy.getInstance().handler;
   const promoBrowserCommandHandler = BrowserCommandProxy.getInstance().handler;
-  if (!promo) {
-    return null;
-  }
-
   const commandIds: Command[] = [];
 
   function createAnchor(target: Url) {
-    const commandIdMatch = /^command:(\d+)$/.exec(target.url);
-    if (!commandIdMatch && !target.url.startsWith('https://')) {
+    const commandIdMatch = /^command:(\d+)$/.exec(target);
+    if (!commandIdMatch && !target.startsWith('https://')) {
       return null;
     }
     const el = document.createElement('a');
     let commandId: Command|null = null;
     if (!commandIdMatch) {
-      el.href = target.url;
+      el.href = target;
     } else {
+      assert(commandIdMatch[1]);
       commandId = +commandIdMatch[1];
       // Make sure we don't send unsupported commands to the browser.
       if (!Object.values(Command).includes(commandId)) {
@@ -97,7 +98,7 @@ export async function renderPromo(promo: Promo):
     let el;
     if (image) {
       el = new CrAutoImgElement();
-      el.autoSrc = image.imageUrl.url;
+      el.autoSrc = image.imageUrl;
       el.staticEncode = true;
       if (image.target) {
         const anchor = createAnchor(image.target);
@@ -140,7 +141,6 @@ export interface MiddleSlotPromoElement {
     promoAndDismissContainer: HTMLElement,
     dismissPromoButtonToast: CrToastElement,
     dismissPromoButtonToastMessage: HTMLElement,
-    mobilePromo: HTMLElement,
     undoDismissPromoButton: HTMLElement,
   };
 }
@@ -163,27 +163,18 @@ export class MiddleSlotPromoElement extends CrLitElement {
 
   static override get properties() {
     return {
-      mobilePromoEnabled_: {type: Boolean},
-
       shownMiddleSlotPromoId_: {
         type: String,
         reflect: true,
       },
 
-      hasDefaultPromo_: {type: Boolean},
-      hasMobilePromoContent_: {type: Boolean},
       promo_: {type: Object},
     };
   }
 
-  protected mobilePromoEnabled_: boolean =
-      loadTimeData.getBoolean('mobilePromoEnabled');
-  protected shownMiddleSlotPromoId_: string;
-  private hasDefaultPromo_: boolean|null = null;
-  private hasMobilePromoContent_: boolean|null = null;
-  private promo_: Promo;
-
-  private blocklistedMiddleSlotPromoId_: string;
+  protected accessor shownMiddleSlotPromoId_: string = '';
+  private accessor promo_: Promo|null = null;
+  private blocklistedMiddleSlotPromoId_: string = '';
   private eventTracker_: EventTracker = new EventTracker();
   private pageHandler_: PageHandlerRemote;
   private setPromoListenerId_: number|null = null;
@@ -197,7 +188,7 @@ export class MiddleSlotPromoElement extends CrLitElement {
     super.connectedCallback();
     this.setPromoListenerId_ =
         NewTabPageProxy.getInstance().callbackRouter.setPromo.addListener(
-            (promo: Promo) => {
+            (promo) => {
               this.promo_ = promo;
             });
     this.eventTracker_.add(window, 'keydown', this.onWindowKeydown_.bind(this));
@@ -220,74 +211,37 @@ export class MiddleSlotPromoElement extends CrLitElement {
     if (changedPrivateProperties.has('promo_')) {
       this.onPromoChange_();
     }
-
-    if (changedPrivateProperties.has('hasDefaultPromo_') ||
-        changedPrivateProperties.has('hasMobilePromoContent_')) {
-      this.updatePromoVisibility_();
-    }
   }
 
-  private updatePromoVisibility_() {
-    // `renderPromo()` must be called first to initialize promo data.
-    if (this.hasDefaultPromo_ === null) {
-      return;
-    }
-
-    // Up to one promo type can show at any given time.
-    // Note: This logic doesn't apply when handling promo dismissal to avoid
-    // immediately showing a new promo after one is dismissed.
-    this.$.promoAndDismissContainer.hidden = !this.hasDefaultPromo_;
-    if (this.mobilePromoEnabled_) {
-      const showMobilePromo =
-          !this.hasDefaultPromo_ && this.hasMobilePromoContent_;
-      this.$.mobilePromo.hidden = !showMobilePromo;
-      if (showMobilePromo) {
-        this.pageHandler_.onMobilePromoShown();
-      }
-    }
-
-    // Don't fire a load event until we've verified that one or neither of the
-    // promo types (default or mobile) can show. `this.mobilePromoEnabled_`
-    // becomes false in `renderPromo()` whenever a default promo is about to
-    // render.
-    if (!this.mobilePromoEnabled_ || this.hasMobilePromoContent_ !== null) {
-      this.fire('ntp-middle-slot-promo-loaded');
-    }
-  }
-
-  protected onMobilePromoQrCodeChanged_(e: CustomEvent<{value: string}>) {
-    this.hasMobilePromoContent_ = !!e.detail.value;
+  private hidePromoContainer_() {
+    this.$.promoAndDismissContainer.hidden = true;
+    this.fire('ntp-middle-slot-promo-loaded');
   }
 
   private onPromoChange_() {
-    if (this.mobilePromoEnabled_) {
-      if (this.hasMobilePromoContent_ && this.hasDefaultPromo_ !== null) {
-        // Skip calling `renderPromo()` if we already attempted to render a
-        // promo before AND there is mobile promo content to display. This
-        // prevents the default promo from showing if the mobile promo has
-        // already been displayed, and vice versa.
-        return;
-      }
+    if (!this.promo_) {
+      this.hidePromoContainer_();
+      return;
     }
 
     renderPromo(this.promo_).then(promo => {
       if (!promo) {
-        this.hasDefaultPromo_ = false;
-      } else {
-        const promoContainer = this.shadowRoot.getElementById('promoContainer');
-        if (promoContainer) {
-          promoContainer.remove();
-        }
-        if (loadTimeData.getBoolean('middleSlotPromoDismissalEnabled')) {
-          this.shownMiddleSlotPromoId_ = promo.id ?? '';
-        }
-        const renderedPromoContainer = promo.container;
-        assert(renderedPromoContainer);
-        this.$.promoAndDismissContainer.prepend(renderedPromoContainer);
-        // Disable the mobile promo since a default promo is going to render.
-        this.mobilePromoEnabled_ = false;
-        this.hasDefaultPromo_ = true;
+        this.hidePromoContainer_();
+        return;
       }
+
+      const promoContainer = this.shadowRoot.getElementById('promoContainer');
+      if (promoContainer) {
+        promoContainer.remove();
+      }
+      if (loadTimeData.getBoolean('middleSlotPromoDismissalEnabled')) {
+        this.shownMiddleSlotPromoId_ = promo.id ?? '';
+      }
+      const renderedPromoContainer = promo.container;
+      assert(renderedPromoContainer);
+      this.$.promoAndDismissContainer.prepend(renderedPromoContainer);
+      this.$.promoAndDismissContainer.hidden = false;
+      this.fire('ntp-middle-slot-promo-loaded');
     });
   }
 

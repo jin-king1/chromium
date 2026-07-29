@@ -35,6 +35,10 @@ class SyncMetadataStoreChangeList : public MetadataChangeList {
                               ErrorCallback error_callback);
   ~SyncMetadataStoreChangeList() override;
 
+  SyncMetadataStoreChangeList(const SyncMetadataStoreChangeList&) = delete;
+  SyncMetadataStoreChangeList& operator=(const SyncMetadataStoreChangeList&) =
+      delete;
+
   // MetadataChangeList implementation.
   void UpdateDataTypeState(
       const sync_pb::DataTypeState& data_type_state) override;
@@ -42,6 +46,8 @@ class SyncMetadataStoreChangeList : public MetadataChangeList {
   void UpdateMetadata(const std::string& storage_key,
                       const sync_pb::EntityMetadata& metadata) override;
   void ClearMetadata(const std::string& storage_key) override;
+  void TransferChangesTo(MetadataChangeList* other) override;
+  void DropAllChanges() override;
 
   const SyncMetadataStore* GetMetadataStoreForTesting() const;
 

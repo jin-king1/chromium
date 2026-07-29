@@ -4,13 +4,25 @@
 
 #include "chrome/browser/ash/app_list/search/local_image_search/sql_database.h"
 
+#include <memory>
 #include <string>
+#include <utility>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/files/file_util.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/sequence_checker.h"
+#include "base/strings/cstring_view.h"
+#include "sql/database.h"
 #include "sql/error_delegate_util.h"
+#include "sql/meta_table.h"
+#include "sql/sqlite_result_code.h"
 #include "sql/statement.h"
+#include "sql/statement_id.h"
 
 namespace app_list {
 namespace {
@@ -47,7 +59,6 @@ SqlDatabase::SqlDatabase(
       migrate_table_schema_(std::move(migrate_table_schema)),
       path_to_db_(path_to_db),
       db_(histogram_tag),
-      meta_table_(sql::MetaTable()),
       current_version_number_(current_version_number) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
   DCHECK_GT(current_version_number_, 1);
@@ -66,6 +77,12 @@ bool SqlDatabase::Initialize() {
     LogStatusUma(db_.histogram_tag(), Status::kFailedToCreatDirectory);
     return false;
   }
+
+  // base::Unretained is safe because `this` owns (and therefore outlives) the
+  // sql::Database held by `db_`. That is, `db_` calls the error callback and
+  // if `this` destroyed then `db_` is destroyed, as well.
+  db_.set_error_callback(base::BindRepeating(&SqlDatabase::OnErrorCallback,
+                                             base::Unretained(this)));
 
   if (!db_.Open(path_to_db_)) {
     LOG(ERROR) << "Unable to open " << path_to_db_;
@@ -91,6 +108,7 @@ bool SqlDatabase::Initialize() {
     const int new_version_number = create_table_schema_.Run(this);
     DCHECK_GT(new_version_number, 1);
 
+    // Sets the version number when db is initialized.
     if (!meta_table_.SetVersionNumber(new_version_number) ||
         !meta_table_.SetCompatibleVersionNumber(new_version_number)) {
       LogStatusUma(db_.histogram_tag(), Status::kFailedToSetVersionNumber);
@@ -101,17 +119,21 @@ bool SqlDatabase::Initialize() {
     return true;
   }
 
-  if (!MigrateDatabaseSchema()) {
+  if (MigrateDatabaseSchema()) {
+    // If the database schema migration succeed, also update the version number.
+    if (!meta_table_.SetVersionNumber(current_version_number_) ||
+        !meta_table_.SetCompatibleVersionNumber(current_version_number_)) {
+      LogStatusUma(db_.histogram_tag(), Status::kFailedToSetVersionNumber);
+      RazeDb();
+      return false;
+    }
+  } else {
     LOG(ERROR) << "Unable to migrate the schema";
     LogStatusUma(db_.histogram_tag(), Status::kFailedToMigrateSchema);
     RazeDb();
     return false;
   }
-  // base::Unretained is safe because `this` owns (and therefore outlives) the
-  // sql::Database held by `db_`. That is, `db_` calls the error callback and
-  // if `this` destroyed then `db_` is destroyed, as well.
-  db_.set_error_callback(base::BindRepeating(&SqlDatabase::OnErrorCallback,
-                                             base::Unretained(this)));
+
   LogStatusUma(db_.histogram_tag(), Status::kOk);
   return true;
 }
@@ -156,7 +178,7 @@ void SqlDatabase::OnErrorCallback(int error, sql::Statement* stmt) {
 }
 
 std::unique_ptr<sql::Statement> SqlDatabase::GetStatementForQuery(
-    const sql::StatementID& sql_from_here,
+    sql::StatementID sql_from_here,
     base::cstring_view query) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!db_.is_open()) {

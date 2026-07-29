@@ -5,10 +5,12 @@
 import '../controls/settings_toggle_button.js';
 import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
 import 'chrome://resources/cr_elements/cr_shared_style.css.js';
+import '../settings_page/settings_section.js';
 import '../settings_shared.css.js';
 import './tab_discard/exception_list.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+import {PrefService} from '/shared/settings/prefs2/pref_service.js';
+import {PrefServiceObserverMixin} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
 import {HelpBubbleMixin} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin.js';
 import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
 import {afterNextRender, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -18,6 +20,7 @@ import {loadTimeData} from '../i18n_setup.js';
 import {routes} from '../route.js';
 import {Router} from '../router.js';
 
+import {PerformanceBrowserProxyImpl, PerformanceFeedbackCategory} from './performance_browser_proxy.js';
 import type {PerformanceMetricsProxy} from './performance_metrics_proxy.js';
 import {PerformanceMetricsProxyImpl} from './performance_metrics_proxy.js';
 import {getTemplate} from './performance_page.html.js';
@@ -33,7 +36,7 @@ export const PERFORMANCE_INTERVENTION_NOTIFICATION_PREF =
 const INACTIVE_TAB_SETTING_ELEMENT_ID = 'kInactiveTabSettingElementId';
 
 const SettingsPerformancePageElementBase =
-    HelpBubbleMixin(PrefsMixin(PolymerElement));
+    HelpBubbleMixin(PrefServiceObserverMixin(PolymerElement));
 
 export interface SettingsPerformancePageElement {
   $: {
@@ -71,7 +74,7 @@ export class SettingsPerformancePageElement extends
 
   private onDiscardRingChange_() {
     this.metricsProxy_.recordDiscardRingTreatmentEnabledChanged(
-        this.getPref<boolean>(DISCARD_RING_PREF).value);
+        PrefService.getInstance().getPref<boolean>(DISCARD_RING_PREF).value);
   }
 
   private onDiscardRingTreatmentLearnMoreLinkClick_() {
@@ -90,9 +93,18 @@ export class SettingsPerformancePageElement extends
 
   private onPerformanceInterventionToggleButtonChange_() {
     this.metricsProxy_.recordPerformanceInterventionToggleButtonChanged(
-        this.getPref<boolean>(PERFORMANCE_INTERVENTION_NOTIFICATION_PREF)
+        PrefService.getInstance()
+            .getPref<boolean>(PERFORMANCE_INTERVENTION_NOTIFICATION_PREF)
             .value);
   }
+
+  // <if expr="_google_chrome">
+  private onSendFeedbackClick_(e: Event) {
+    e.stopPropagation();
+    PerformanceBrowserProxyImpl.getInstance().openFeedbackDialog(
+        PerformanceFeedbackCategory.NOTIFICATIONS);
+  }
+  // </if>
 }
 
 declare global {

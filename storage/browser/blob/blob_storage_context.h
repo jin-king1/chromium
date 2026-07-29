@@ -16,7 +16,6 @@
 #include "base/component_export.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/trace_event/memory_dump_provider.h"
@@ -72,9 +71,19 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) BlobStorageContext
 
   // The following three methods all lookup a BlobDataHandle based on some
   // input. If no blob matching the input exists these methods return null.
+  //
+  // Note: Blob UUIDs are considered unguessable secrets. Possession of the
+  // UUID is proof of authority to access the blob. These lookups do not
+  // enforce origin checks because the security model relies on the secrecy of
+  // the UUID. See storage/browser/blob/SECURITY.md.
   std::unique_ptr<BlobDataHandle> GetBlobDataFromUUID(const std::string& uuid);
   // If this BlobStorageContext is deleted before this method finishes, the
   // callback will still be called with null.
+  //
+  // Note: This method calls GetInternalUUID on the remote to retrieve the UUID
+  // for lookup. If the remote is renderer-hosted, it can return any UUID. This
+  // is not considered a confused deputy vulnerability because the renderer must
+  // already know the UUID to forge it. See storage/browser/blob/SECURITY.md.
   void GetBlobDataFromBlobRemote(
       mojo::PendingRemote<blink::mojom::Blob> blob,
       base::OnceCallback<void(std::unique_ptr<BlobDataHandle>)> callback);
@@ -255,6 +264,7 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) BlobStorageContext
                        const base::FilePath& path,
                        bool flush_on_write,
                        std::optional<base::Time> last_modified,
+                       uint64_t expected_size,
                        WriteBlobToFileCallback callback) override;
   void Clone(mojo::PendingReceiver<mojom::BlobStorageContext> cloned) override;
 

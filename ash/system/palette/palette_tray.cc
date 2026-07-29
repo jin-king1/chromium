@@ -4,6 +4,7 @@
 
 #include "ash/system/palette/palette_tray.h"
 
+#include <algorithm>
 #include <memory>
 
 #include "ash/accessibility/accessibility_controller.h"
@@ -34,10 +35,8 @@
 #include "ash/system/tray/tray_container.h"
 #include "ash/system/tray/tray_popup_utils.h"
 #include "ash/system/tray/tray_utils.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -58,7 +57,6 @@
 #include "ui/events/devices/stylus_state.h"
 #include "ui/events/event_constants.h"
 #include "ui/gfx/paint_vector_icon.h"
-#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
@@ -69,10 +67,6 @@
 namespace ash {
 
 namespace {
-
-// Padding for tray icon (dp; the button that shows the palette menu).
-constexpr int kTrayIconMainAxisInset = 8;
-constexpr int kTrayIconCrossAxisInset = 0;
 
 // Width of the palette itself (dp).
 constexpr int kPaletteWidth = 332;
@@ -192,7 +186,15 @@ class StylusEventHandler : public ui::EventHandler {
 }  // namespace
 
 PaletteTray::PaletteTray(Shelf* shelf)
-    : TrayBackgroundView(shelf, TrayBackgroundViewCatalogName::kPalette),
+    : ImagedTrayIcon(
+          shelf,
+          ui::ImageModel::FromVectorIcon(kPaletteTrayIconDefaultNewuiIcon,
+                                         cros_tokens::kCrosSysOnSurface,
+                                         kTrayIconSize),
+          /*tooltip=*/IDS_ASH_STYLUS_TOOLS_TITLE,
+          /*accessibility_name=*/
+          IDS_ASH_STYLUS_TOOLS_TITLE,
+          TrayBackgroundViewCatalogName::kPalette),
       palette_tool_manager_(std::make_unique<PaletteToolManager>(this)),
       welcome_bubble_(std::make_unique<PaletteWelcomeBubble>(this)),
       stylus_event_handler_(std::make_unique<StylusEventHandler>(this)),
@@ -204,18 +206,10 @@ PaletteTray::PaletteTray(Shelf* shelf)
 
   SetLayoutManager(std::make_unique<views::FillLayout>());
 
-  auto icon = std::make_unique<views::ImageView>();
-  icon->SetTooltipText(l10n_util::GetStringUTF16(IDS_ASH_STYLUS_TOOLS_TITLE));
-  tray_container()->SetMargin(kTrayIconMainAxisInset, kTrayIconCrossAxisInset);
-  icon_ = tray_container()->AddChildView(std::move(icon));
-
   Shell::Get()->AddShellObserver(this);
   Shell::Get()->display_manager()->AddDisplayManagerObserver(this);
 
   shelf->AddObserver(this);
-
-  GetViewAccessibility().SetName(
-      l10n_util::GetStringUTF16(IDS_ASH_STYLUS_TOOLS_TITLE));
 }
 
 PaletteTray::~PaletteTray() {
@@ -269,7 +263,7 @@ bool PaletteTray::ShouldShowOnDisplay() {
     return false;
 
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(
+      display::Screen::Get()->GetDisplayNearestWindow(
           widget->GetNativeWindow());
 
   // Is there a TouchscreenDevice which targets this display or one of
@@ -286,7 +280,8 @@ bool PaletteTray::ShouldShowOnDisplay() {
 
   for (const ui::TouchscreenDevice& device :
        ui::DeviceDataManager::GetInstance()->GetTouchscreenDevices()) {
-    if (device.has_stylus && base::Contains(ids, device.target_display_id)) {
+    if (device.has_stylus &&
+        std::ranges::contains(ids, device.target_display_id)) {
       return true;
     }
   }
@@ -302,7 +297,7 @@ bool PaletteTray::IsWidgetOnInternalDisplay() {
     return false;
 
   const display::Display& display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(
+      display::Screen::Get()->GetDisplayNearestWindow(
           widget->GetNativeWindow());
 
   return display.IsInternal();
@@ -378,10 +373,13 @@ void PaletteTray::OnShellInitialized() {
       Shell::Get()->projector_controller();
   projector_session_observation_.Observe(
       projector_controller->projector_session());
+  annotator_controller_observation_.Observe(
+      Shell::Get()->annotator_controller());
 }
 
 void PaletteTray::OnShellDestroying() {
   projector_session_observation_.Reset();
+  annotator_controller_observation_.Reset();
 }
 
 void PaletteTray::OnDidApplyDisplayChanges() {
@@ -394,15 +392,6 @@ void PaletteTray::ClickedOutsideBubble(const ui::LocatedEvent& event) {
 
 void PaletteTray::UpdateTrayItemColor(bool is_active) {
   UpdateTrayIcon();
-}
-
-void PaletteTray::OnThemeChanged() {
-  TrayBackgroundView::OnThemeChanged();
-  UpdateTrayIcon();
-}
-
-void PaletteTray::HandleLocaleChange() {
-  icon_->SetTooltipText(l10n_util::GetStringUTF16(IDS_ASH_STYLUS_TOOLS_TITLE));
 }
 
 void PaletteTray::HideBubbleWithView(const TrayBubbleView* bubble_view) {
@@ -428,6 +417,10 @@ void PaletteTray::OnStylusStateChanged(ui::StylusState stylus_state) {
 
   // Don't do anything if the palette tray is not shown.
   if (!GetVisible())
+    return;
+
+  // Also check preferred visibility.
+  if (!visible_preferred())
     return;
 
   // Only respond on the internal display.
@@ -494,10 +487,24 @@ void PaletteTray::HidePaletteImmediately() {
 
 void PaletteTray::OnProjectorSessionActiveStateChanged(bool active) {
   is_palette_visibility_paused_ = active;
+  // If the projector session is active, the palette tray should be disabled and
+  // hidden.
   if (active) {
     DeactivateActiveTool();
     SetVisiblePreferred(false);
   } else {
+    UpdateIconVisibility();
+  }
+}
+
+void PaletteTray::OnAnnotatorStateChanged(bool enabled) {
+  if (enabled) {
+    // If the annotator is enabled, hide the palette tray. The marker remains
+    // the active tool.
+    DeactivateActiveTool();
+    SetVisiblePreferred(false);
+  } else {
+    // Once the annotator gets disabled, show the tray again.
     UpdateIconVisibility();
   }
 }
@@ -527,7 +534,7 @@ void PaletteTray::AnchorUpdated() {
 }
 
 void PaletteTray::Initialize() {
-  TrayBackgroundView::Initialize();
+  ImagedTrayIcon::Initialize();
   ui::DeviceDataManager::GetInstance()->AddObserver(this);
 
   InitializeWithLocalState();
@@ -610,11 +617,10 @@ void PaletteTray::InitializeWithLocalState() {
 }
 
 void PaletteTray::UpdateTrayIcon() {
-  SkColor color;
-  color = GetColorProvider()->GetColor(
-      is_active() ? cros_tokens::kCrosSysSystemOnPrimaryContainer
-                  : cros_tokens::kCrosSysOnSurface);
-  icon_->SetImage(ui::ImageModel::FromVectorIcon(
+  ui::ColorId color = is_active()
+                          ? cros_tokens::kCrosSysSystemOnPrimaryContainer
+                          : cros_tokens::kCrosSysOnSurface;
+  image_view()->SetImage(ui::ImageModel::FromVectorIcon(
       palette_tool_manager_->GetActiveTrayIcon(
           palette_tool_manager_->GetActiveTool(PaletteGroup::MODE)),
       color, kTrayIconSize));

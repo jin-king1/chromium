@@ -8,14 +8,16 @@
 #include <stddef.h>
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/common/page/content_to_visible_time_request.h"
 #include "third_party/blink/public/common/widget/visual_properties.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom.h"
 #include "third_party/blink/public/mojom/widget/platform_widget.mojom.h"
-#include "third_party/blink/public/mojom/widget/record_content_to_visible_time_request.mojom.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 
 namespace content {
@@ -46,10 +48,8 @@ class MockWidget : public blink::mojom::Widget,
   // blink::mojom::RenderInputRouterClient overrides;
   void GetWidgetInputHandler(
       mojo::PendingReceiver<blink::mojom::WidgetInputHandler> request,
-      mojo::PendingRemote<blink::mojom::WidgetInputHandlerHost> host) override;
-  void GetWidgetInputHandlerForInputOnViz(
-      mojo::PendingReceiver<blink::mojom::WidgetInputHandler> request)
-      override {}
+      mojo::PendingRemote<blink::mojom::WidgetInputHandlerHost> host,
+      bool from_viz) override;
   void ShowContextMenu(ui::mojom::MenuSourceType source_type,
                        const gfx::Point& location) override {}
   void BindInputTargetClient(
@@ -64,12 +64,11 @@ class MockWidget : public blink::mojom::Widget,
                          const gfx::Rect& window_screen_rect,
                          UpdateScreenRectsCallback callback) override;
   void WasHidden() override;
-  void WasShown(bool was_evicted,
-                blink::mojom::RecordContentToVisibleTimeRequestPtr
-                    record_tab_switch_time_request) override;
+  void WasShown(
+      bool was_evicted,
+      const std::optional<blink::RecordContentToVisibleTimeRequest>&) override;
   void RequestSuccessfulPresentationTimeForNextFrame(
-      blink::mojom::RecordContentToVisibleTimeRequestPtr visible_time_request)
-      override;
+      const blink::RecordContentToVisibleTimeRequest&) override;
   void CancelSuccessfulPresentationTimeRequest() override;
   void SetupBrowserRenderInputRouterConnections(
       mojo::PendingReceiver<blink::mojom::RenderInputRouterClient>

@@ -22,6 +22,7 @@ include_rules = [
   "+components/services/storage/privileged",
   "+components/services/storage/public",
   "+components/services/storage/shared_storage",
+  "+components/soda",
   "+components/startup_metric_utils/browser",
   "+components/startup_metric_utils/common",
   "+components/ukm/test_ukm_recorder.h",
@@ -48,7 +49,7 @@ include_rules = [
 ]
 
 specific_include_rules = {
-  ".*\.(cc|mm)": [
+  ".*\\.(cc|mm)": [
     # Ensure we don't leak internal content headers through public headers. But
     # testing utilities can access anything in content/.
     "+content",
@@ -91,13 +92,13 @@ specific_include_rules = {
   "scoped_time_zone.h": [
     "+services/device/time_zone_monitor/fake_time_zone_monitor.h"
   ],
-  "shared_storage_test_utils.h": [
-    "+content/browser/private_aggregation/private_aggregation_host.h"
-  ],
   "test_image_transport_factory.h": [
     "+content/browser/compositor/image_transport_factory.h"
   ],
-  "test_shared_storage_header_observer.h": [
-    "+content/browser/shared_storage/shared_storage_header_observer.h"
+  "browser_fuzztest_support.h": [
+    "+third_party/fuzztest/src/fuzztest/fuzztest.h"
+  ],
+  "test_renderer_host.cc": [
+    "+components/dbus/thread_linux/dbus_thread_linux.h"
   ]
 }

@@ -101,30 +101,25 @@ export class OsSettingsA11yPageElement extends OsSettingsA11yPageElementBase {
       },
 
       languageHelper: Object,
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kA11yQuickSettings,
-          Setting.kGetImageDescriptionsFromGoogle,
-          Setting.kLiveCaption,
-        ]),
-      },
     };
   }
 
-  currentRoute: Route;
-  languages: LanguagesModel;
-  languageHelper: LanguageHelper;
+  declare currentRoute: Route;
+  declare languages: LanguagesModel;
+  declare languageHelper: LanguageHelper;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kA11yQuickSettings,
+    Setting.kGetImageDescriptionsFromGoogle,
+    Setting.kLiveCaption,
+  ]);
 
   private browserProxy_: OsA11yPageBrowserProxy;
-  private hasScreenReader_: boolean;
-  private isGuest_: boolean;
-  private isKioskOldA11ySettingsRedirectionEnabled_: boolean;
-  private section_: Section;
+  declare private hasScreenReader_: boolean;
+  declare private isGuest_: boolean;
+  declare private isKioskOldA11ySettingsRedirectionEnabled_: boolean;
+  declare private section_: Section;
 
   constructor() {
     super();
@@ -223,6 +218,11 @@ export class OsSettingsA11yPageElement extends OsSettingsA11yPageElementBase {
   private onAdditionalFeaturesClick_(): void {
     window.open(
         'https://chrome.google.com/webstore/category/collection/3p_accessibility_extensions');
+  }
+
+  private onDisabilitySupportClick_(): void {
+    window.open(
+        'http://support.google.com/accessibility/android?p=ChromeOS-A11Y_setting');
   }
 }
 

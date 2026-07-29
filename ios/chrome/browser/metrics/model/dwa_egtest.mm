@@ -4,8 +4,8 @@
 
 #import "base/ios/ios_util.h"
 #import "components/metrics/dwa/dwa_recorder.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
@@ -15,6 +15,8 @@
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/app_launch_configuration.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "net/test/embedded_test_server/default_handlers.h"
+
 using chrome_test_util::GoogleServicesSettingsButton;
 using chrome_test_util::SettingsDoneButton;
 
@@ -62,6 +64,9 @@ using chrome_test_util::SettingsDoneButton;
              @"setUp: Failed to assert that DWA was enabled.");
   GREYAssert([MetricsAppInterface DWARecorderAllowedForAllProfiles:YES],
              @"setUp: Failed to assert that DWA was allowed for all profiles.");
+
+  net::test_server::RegisterDefaultHandlers(self.testServer);
+  GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
 }
 
 - (void)tearDownHelper {
@@ -141,13 +146,6 @@ using chrome_test_util::SettingsDoneButton;
   [ChromeEarlGrey waitForMainTabCount:(tabCount + 1)];
 }
 
-// Records a test DWA entry metric and a pageload event.
-- (void)recordTestDWAEntryMetricAndPageLoadEvent {
-  [MetricsAppInterface recordTestDWAEntryMetric];
-  [MetricsAppInterface DWARecorderOnPageLoadCall];
-  [MetricsAppInterface recordTestDWAEntryMetric];
-}
-
 // Toggle "Make searches and browsing better" switch on.
 - (void)turnOnMsbbSwitch {
   // Wait for the Msbb switch to appear.
@@ -165,11 +163,9 @@ using chrome_test_util::SettingsDoneButton;
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
                       chrome_test_util::TableViewSwitchCell(
                           @"betterSearchAndBrowsingItem_switch", YES)];
-  [[[EarlGrey
+  [[EarlGrey
       selectElementWithMatcher:chrome_test_util::TableViewSwitchCell(
                                    @"betterSearchAndBrowsingItem_switch", YES)]
-         usingSearchAction:grey_scrollToContentEdge(kGREYContentEdgeBottom)
-      onElementWithMatcher:chrome_test_util::GoogleServicesSettingsView()]
       performAction:chrome_test_util::TurnTableViewSwitchOn(NO)];
 }
 
@@ -183,11 +179,8 @@ using chrome_test_util::SettingsDoneButton;
              @"allowed for all profiles.");
 }
 
-// Assertions to check that the DWA recorder has page load events and entries.
+// Assertions to check that the DWA recorder has entries.
 - (void)assertDwaRecorderHasMetrics {
-  GREYAssert([MetricsAppInterface DWARecorderHasPageLoadEvents:YES],
-             @"DWA Recorder should have "
-             @"pageload events.");
   GREYAssert([MetricsAppInterface DWARecorderHasEntries:YES],
              @"DWA Recorder should have "
              @"entries.");
@@ -203,11 +196,8 @@ using chrome_test_util::SettingsDoneButton;
              @"allowed for all profiles.");
 }
 
-// Assertions to check that the DWA recorder has no page load events or entries.
+// Assertions to check that the DWA recorder has no entries.
 - (void)assertDwaRecorderIsEmpty {
-  GREYAssert([MetricsAppInterface DWARecorderHasPageLoadEvents:NO],
-             @"DWA Recorder should not have any "
-             @"pageload events.");
   GREYAssert([MetricsAppInterface DWARecorderHasEntries:NO],
              @"DWA Recorder should not have any "
              @"entries.");
@@ -227,23 +217,6 @@ using chrome_test_util::SettingsDoneButton;
 
   // Records a DWA entry metric.
   [MetricsAppInterface recordTestDWAEntryMetric];
-
-  GREYAssert([MetricsAppInterface DWARecorderHasEntries:YES],
-             @"Failed to record test entry metric.");
-
-  GREYAssert([MetricsAppInterface DWARecorderHasPageLoadEvents:NO],
-             @"DWA Recorder should not have pageload events.");
-
-  GREYAssert([MetricsAppInterface hasUnsentDWALogs:NO],
-             @"DWA Service should not have unsent logs.");
-
-  [MetricsAppInterface DWARecorderOnPageLoadCall];
-  GREYAssert([MetricsAppInterface DWARecorderHasEntries:NO],
-             @"DWA Recorder should not have any entries.");
-
-  GREYAssert([MetricsAppInterface DWARecorderHasPageLoadEvents:YES],
-             @"DWA Recorder should have pageload events.");
-
   GREYAssert([MetricsAppInterface hasUnsentDWALogs:NO],
              @"DWA Service should not have unsent logs.");
 
@@ -368,20 +341,22 @@ using chrome_test_util::SettingsDoneButton;
 }
 // LINT.ThenChange(/chrome/browser/metrics/dwa_browsertest.cc:IncognitoBrowserPlusRegularCheck)
 
-// TODO(crbug.com/400413009): This test is flaky.
 // Tests that disabling MSBB UKM consent disables and purges DWA.
 // Additionally tests that DWA is disabled until all UKM consents are enabled.
 // LINT.IfChange(UkmMsbbConsentChangeCheck)
-- (void)FLAKY_testUkmMsbbConsentChangeCheck {
+- (void)testUkmMsbbConsentChangeCheck {
   // Note: Tests begin with an open regular tab. This tab is opened in setUp.
-  [self recordTestDWAEntryMetricAndPageLoadEvent];
+  [MetricsAppInterface recordTestDWAEntryMetric];
   [self assertDwaIsEnabledAndAllowed];
   [self assertDwaRecorderHasMetrics];
 
   [ChromeEarlGreyUI openSettingsMenu];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      GoogleServicesSettingsButton()];
 
   // Open Google services settings.
   [ChromeEarlGreyUI tapSettingsMenuButton:GoogleServicesSettingsButton()];
+  [ChromeEarlGreyUI waitForAppToIdle];
 
   // Toggle "Make searches and browsing better" switch off.
   [self turnOffMsbbSwitch];
@@ -393,9 +368,8 @@ using chrome_test_util::SettingsDoneButton;
   [self assertDwaIsEnabledAndAllowed];
   [self assertDwaRecorderIsEmpty];
 
-  // Validate DWA entries and page load events are able to be recorded when all
-  // consents are enabled.
-  [self recordTestDWAEntryMetricAndPageLoadEvent];
+  // Validate DWA entries is able to be recorded when all consents are enabled.
+  [MetricsAppInterface recordTestDWAEntryMetric];
   [self assertDwaRecorderHasMetrics];
 
   [[EarlGrey selectElementWithMatcher:SettingsDoneButton()]

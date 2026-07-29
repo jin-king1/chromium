@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/audio/pulse/pulse_util.h"
 
 #include <stdint.h>
@@ -90,6 +85,20 @@ pa_channel_position ChromiumToPAChannelPosition(Channels channel) {
       return PA_CHANNEL_POSITION_SIDE_LEFT;
     case SIDE_RIGHT:
       return PA_CHANNEL_POSITION_SIDE_RIGHT;
+    case TOP_CENTER:
+      return PA_CHANNEL_POSITION_TOP_CENTER;
+    case TOP_FRONT_LEFT:
+      return PA_CHANNEL_POSITION_TOP_FRONT_LEFT;
+    case TOP_FRONT_CENTER:
+      return PA_CHANNEL_POSITION_TOP_FRONT_CENTER;
+    case TOP_FRONT_RIGHT:
+      return PA_CHANNEL_POSITION_TOP_FRONT_RIGHT;
+    case TOP_BACK_LEFT:
+      return PA_CHANNEL_POSITION_TOP_REAR_LEFT;
+    case TOP_BACK_CENTER:
+      return PA_CHANNEL_POSITION_TOP_REAR_CENTER;
+    case TOP_BACK_RIGHT:
+      return PA_CHANNEL_POSITION_TOP_REAR_RIGHT;
     default:
       NOTREACHED() << "Invalid channel: " << channel;
   }
@@ -140,7 +149,7 @@ void InputBusCallback(pa_context* context,
     return;
   }
 
-  if (strcmp(info->name, data->name_->c_str()) == 0 &&
+  if (info->name == *data->name_ &&
       pa_proplist_contains(info->proplist, PA_PROP_DEVICE_BUS_PATH)) {
     data->bus_ = pa_proplist_gets(info->proplist, PA_PROP_DEVICE_BUS_PATH);
   }
@@ -159,8 +168,8 @@ void OutputBusCallback(pa_context* context,
   }
 
   if (pa_proplist_contains(info->proplist, PA_PROP_DEVICE_BUS_PATH) &&
-      strcmp(pa_proplist_gets(info->proplist, PA_PROP_DEVICE_BUS_PATH),
-             data->bus_->c_str()) == 0) {
+      pa_proplist_gets(info->proplist, PA_PROP_DEVICE_BUS_PATH) ==
+          *data->bus_) {
     data->name_ = info->name;
   }
 }
@@ -364,13 +373,14 @@ pa_channel_map ChannelLayoutToPAChannelMap(ChannelLayout channel_layout) {
     pa_channel_map_init(&channel_map);
 
     channel_map.channels = ChannelLayoutToChannelCount(channel_layout);
+    base::span channel_map_span(channel_map.map);
     for (Channels ch = LEFT; ch <= CHANNELS_MAX;
          ch = static_cast<Channels>(ch + 1)) {
       int channel_index = ChannelOrder(channel_layout, ch);
       if (channel_index < 0)
         continue;
 
-      channel_map.map[channel_index] = ChromiumToPAChannelPosition(ch);
+      channel_map_span[channel_index] = ChromiumToPAChannelPosition(ch);
     }
   }
 
@@ -658,19 +668,18 @@ void MuteAllSinksExcept(pa_threaded_mainloop* mainloop,
           std::string* exclude_sink_name = static_cast<std::string*>(userdata);
           // Check if current sink's name matches the exclude_sink_name
           if (i->name != *exclude_sink_name) {
-            pa_context_set_sink_mute_by_index(
+            pa_operation* mute_op = pa_context_set_sink_mute_by_index(
                 c, i->index, 1, /*callback=*/nullptr,
                 /*userdata=*/nullptr);  // Mute the sink
+            if (mute_op) {
+              pa_operation_unref(mute_op);
+            }
           }
         }
       },
       (void*)&exclude_sink_name);
 
   WaitForOperationCompletion(mainloop, op, context);
-  // Clean up the operation after completion
-  if (op) {
-    pa_operation_unref(op);
-  }
 }
 
 // Unmutes all audio output sinks in the system.
@@ -705,11 +714,8 @@ void UnmuteAllSinks(pa_threaded_mainloop* mainloop, pa_context* context) {
       mainloop  // Pass mainloop as userdata
   );
 
-  WaitForOperationCompletion(mainloop, op, context);
   // Wait for the operation to complete to ensure all sinks are unmuted.
-  if (op) {
-    pa_operation_unref(op);
-  }
+  WaitForOperationCompletion(mainloop, op, context);
 }
 
 std::string GetBusOfInput(pa_threaded_mainloop* mainloop,

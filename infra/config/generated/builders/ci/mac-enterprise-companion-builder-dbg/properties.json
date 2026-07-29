@@ -28,34 +28,6 @@
                 "config": "chromium"
               }
             }
-          },
-          {
-            "builder_id": {
-              "bucket": "ci",
-              "builder": "mac11-x64-enterprise-companion-tester-dbg",
-              "project": "chromium"
-            },
-            "builder_spec": {
-              "builder_group": "chromium.enterprise_companion",
-              "execution_mode": "TEST",
-              "legacy_chromium_config": {
-                "apply_configs": [
-                  "mb"
-                ],
-                "build_config": "Debug",
-                "config": "chromium",
-                "target_bits": 64,
-                "target_platform": "mac"
-              },
-              "legacy_gclient_config": {
-                "config": "chromium"
-              },
-              "parent": {
-                "bucket": "ci",
-                "builder": "mac-enterprise-companion-builder-dbg",
-                "project": "chromium"
-              }
-            }
           }
         ]
       },
@@ -66,20 +38,7 @@
           "project": "chromium"
         }
       ],
-      "builder_ids_in_scope_for_testing": [
-        {
-          "bucket": "ci",
-          "builder": "mac11-x64-enterprise-companion-tester-dbg",
-          "project": "chromium"
-        }
-      ],
-      "mirroring_builder_group_and_names": [
-        {
-          "builder": "mac-enterprise-companion-try-builder-dbg",
-          "group": "tryserver.chromium.enterprise_companion"
-        }
-      ],
-      "targets_spec_directory": "src/infra/config/generated/builders/ci/mac-enterprise-companion-builder-dbg/targets"
+      "targets_spec_directory": "infra/config/generated/builders/ci/mac-enterprise-companion-builder-dbg/targets"
     }
   },
   "$build/siso": {
@@ -87,10 +46,9 @@
       "builder"
     ],
     "enable_cloud_monitoring": true,
-    "enable_cloud_profiler": true,
     "enable_cloud_trace": true,
     "experiments": [],
-    "metrics_project": "chromium-reclient-metrics",
+    "profile_mode": "cloud",
     "project": "rbe-chromium-trusted",
     "remote_jobs": 250
   },

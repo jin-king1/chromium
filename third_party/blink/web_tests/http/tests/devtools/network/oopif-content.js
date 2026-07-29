@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import {NetworkTestRunner} from 'network_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   // TestRunner.startDumpingProtocolMessages();
@@ -17,7 +18,7 @@ import {NetworkTestRunner} from 'network_test_runner';
     TestRunner.completeTest();
     return;
   }
-  const { content, error, isEncoded } = await request.requestContent();
+  const { content, error, isEncoded } = await request.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent);
   TestRunner.addResult(`content: ${content}`);
   TestRunner.completeTest();
 })();

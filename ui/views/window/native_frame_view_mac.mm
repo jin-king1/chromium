@@ -6,9 +6,12 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <optional>
+
 #include "ui/base/metadata/metadata_impl_macros.h"
 #import "ui/gfx/mac/coordinate_conversion.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/window/native_frame_view.h"
 
 namespace views {
 

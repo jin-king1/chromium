@@ -22,6 +22,7 @@
 #include "net/ssl/ssl_config.h"
 #include "net/ssl/ssl_config_service.h"
 #include "net/url_request/url_request_context.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/simple_host_resolver.h"
 #include "services/network/restricted_udp_socket.h"
 #include "services/network/tls_client_socket.h"
@@ -61,6 +62,8 @@ void SocketFactory::CreateRestrictedUDPSocket(
     mojo::PendingReceiver<mojom::RestrictedUDPSocket> receiver,
     mojo::PendingRemote<mojom::UDPSocketListener> listener,
     std::unique_ptr<SimpleHostResolver> resolver,
+    bool allow_multicast,
+    bool allow_source_specific_multicast,
     mojom::NetworkContext::CreateRestrictedUDPSocketCallback callback) {
   auto udp_socket = std::make_unique<UDPSocket>(std::move(listener), net_log_);
   switch (mode) {
@@ -70,13 +73,20 @@ void SocketFactory::CreateRestrictedUDPSocket(
                        std::move(callback));
       break;
     case mojom::RestrictedUDPSocketMode::CONNECTED:
+      if (base::FeatureList::IsEnabled(
+              features::
+                  kDirectSocketsUdpSendRequireMulticastPermissionPolicy)) {
+        // Checked in DirectSocketsServiceImpl::OnResolveCompleteForUDPSocket.
+        CHECK(allow_multicast || !addr.address().IsMulticast());
+      }
       udp_socket->Connect(addr, /*options=*/
                           params ? std::move(params->socket_options) : nullptr,
                           std::move(callback));
       break;
   }
   auto restricted_udp_socket = std::make_unique<RestrictedUDPSocket>(
-      std::move(udp_socket), traffic_annotation, std::move(resolver));
+      std::move(udp_socket), traffic_annotation, std::move(resolver),
+      allow_multicast, allow_source_specific_multicast);
 #if BUILDFLAG(IS_CHROMEOS)
   if (params && params->connection_tracker) {
     restricted_udp_socket->AttachConnectionTracker(
@@ -94,8 +104,8 @@ void SocketFactory::CreateTCPServerSocket(
     mojo::PendingReceiver<mojom::TCPServerSocket> receiver,
     mojom::NetworkContext::CreateTCPServerSocketCallback callback) {
 #if BUILDFLAG(IS_WIN)
-  if (socket_broker_) {
-    socket_broker_->CreateTcpSocket(
+  if (socket_broker_client_) {
+    socket_broker_client_->CreateTcpSocket(
         local_addr.GetFamily(),
         base::BindOnce(&SocketFactory::DidCompleteCreate,
                        weak_ptr_factory_.GetWeakPtr(), local_addr,
@@ -138,7 +148,7 @@ void SocketFactory::DidCompleteCreate(
 
 void SocketFactory::BindSocketBroker(
     mojo::PendingRemote<mojom::SocketBroker> pending_remote) {
-  socket_broker_.Bind(std::move(pending_remote));
+  socket_broker_client_.emplace(std::move(pending_remote));
 }
 #endif
 
@@ -154,19 +164,8 @@ void SocketFactory::CreateTCPServerSocketHelper(
     socket->AttachConnectionTracker(std::move(options->connection_tracker));
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
-  std::optional<bool> ipv6_only;
-  switch (options->ipv6_only) {
-    case mojom::OptionalBool::kTrue:
-      ipv6_only = true;
-      break;
-    case mojom::OptionalBool::kFalse:
-      ipv6_only = false;
-      break;
-    case mojom::OptionalBool::kUnset:
-      break;
-  }
   base::expected<net::IPEndPoint, int32_t> result =
-      socket->Listen(local_addr, options->backlog, ipv6_only);
+      socket->Listen(local_addr, options->backlog, options->ipv6_only);
   if (!result.has_value()) {
     std::move(callback).Run(result.error(), std::nullopt);
     return;
@@ -179,13 +178,14 @@ void SocketFactory::CreateTCPConnectedSocket(
     const std::optional<net::IPEndPoint>& local_addr,
     const net::AddressList& remote_addr_list,
     mojom::TCPConnectedSocketOptionsPtr tcp_connected_socket_options,
-    const net::NetworkTrafficAnnotationTag& traffic_annotation,
+    const net::MutableNetworkTrafficAnnotationTag& traffic_annotation,
     mojo::PendingReceiver<mojom::TCPConnectedSocket> receiver,
     mojo::PendingRemote<mojom::SocketObserver> observer,
-    mojom::NetworkContext::CreateTCPConnectedSocketCallback callback) {
+    mojom::SocketFactory::CreateTCPConnectedSocketCallback callback) {
   auto socket = std::make_unique<TCPConnectedSocket>(
       std::move(observer), net_log_, &tls_socket_factory_,
-      client_socket_factory_, traffic_annotation);
+      client_socket_factory_,
+      static_cast<net::NetworkTrafficAnnotationTag>(traffic_annotation));
   TCPConnectedSocket* socket_raw = socket.get();
   tcp_connected_socket_receiver_.Add(std::move(socket), std::move(receiver));
   socket_raw->Connect(local_addr, remote_addr_list,

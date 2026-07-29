@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/numerics/safe_math.h"
 #include "base/run_loop.h"
@@ -34,6 +31,7 @@
 #include "mojo/public/cpp/bindings/tests/validation_test_input_parser.h"
 #include "mojo/public/cpp/system/message.h"
 #include "mojo/public/cpp/test_support/test_support.h"
+#include "mojo/public/cpp/test_support/validation_errors_test_util.h"
 #include "mojo/public/interfaces/bindings/tests/validation_test_associated_interfaces.test-mojom.h"
 #include "mojo/public/interfaces/bindings/tests/validation_test_interfaces.test-mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -62,10 +60,14 @@ Message CreateRawMessage(size_t size) {
 }
 
 template <typename T>
-void Append(std::vector<uint8_t>* data_vector, T data) {
-  size_t pos = data_vector->size();
-  data_vector->resize(pos + sizeof(T));
-  memcpy(&(*data_vector)[pos], &data, sizeof(T));
+void Append(std::vector<uint8_t>* data_vector, const T data) {
+  base::span<const uint8_t> bytes;
+  if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+    bytes = base::byte_span_from_ref(base::allow_nonunique_obj, data);
+  } else {
+    bytes = base::byte_span_from_ref(data);
+  }
+  data_vector->append_range(bytes);
 }
 
 bool TestInputParser(const std::string& input,
@@ -103,8 +105,9 @@ std::vector<std::string> GetMatchingTests(const std::vector<std::string>& names,
   for (size_t i = 0; i < names.size(); ++i) {
     if (names[i].size() >= suffix.size() &&
         names[i].substr(0, prefix.size()) == prefix &&
-        names[i].substr(names[i].size() - suffix.size()) == suffix)
+        names[i].substr(names[i].size() - suffix.size()) == suffix) {
       tests.push_back(names[i].substr(0, names[i].size() - suffix.size()));
+    }
   }
   return tests;
 }
@@ -124,7 +127,7 @@ bool ReadFile(const std::string& path, std::string* result) {
   }
   fseek(fp, 0, SEEK_SET);
   result->resize(size);
-  size_t size_read = fread(&result->at(0), 1, size, fp);
+  size_t size_read = UNSAFE_TODO(fread(&result->at(0), 1, size, fp));
   fclose(fp);
   return size == size_read;
 }
@@ -133,8 +136,9 @@ bool ReadAndParseDataFile(const std::string& path,
                           std::vector<uint8_t>* data,
                           size_t* num_handles) {
   std::string input;
-  if (!ReadFile(path, &input))
+  if (!ReadFile(path, &input)) {
     return false;
+  }
 
   std::string error_message;
   if (!ParseValidationTestInput(input, data, num_handles, &error_message)) {
@@ -146,19 +150,20 @@ bool ReadAndParseDataFile(const std::string& path,
 }
 
 bool ReadResultFile(const std::string& path, std::string* result) {
-  if (!ReadFile(path, result))
+  if (!ReadFile(path, result)) {
     return false;
+  }
 
   // Result files are new-line delimited text files. Remove any CRs.
-  result->erase(std::remove(result->begin(), result->end(), '\r'),
-                result->end());
+  std::erase(*result, '\r');
 
   // Remove trailing LFs.
   size_t pos = result->find_last_not_of('\n');
-  if (pos == std::string::npos)
+  if (pos == std::string::npos) {
     result->clear();
-  else
+  } else {
     result->resize(pos + 1);
+  }
 
   return true;
 }
@@ -180,8 +185,9 @@ bool ReadTestCase(const std::string& test,
   }
 
   *message = CreateRawMessage(data.size());
-  if (!data.empty())
-    memcpy(message->mutable_data(), &data[0], data.size());
+  if (!data.empty()) {
+    UNSAFE_TODO(memcpy(message->mutable_data(), &data[0], data.size()));
+  }
   message->mutable_handles()->resize(num_handles);
 
   return true;
@@ -204,12 +210,14 @@ void RunValidationTests(const std::string& prefix,
     mojo::internal::ValidationErrorObserverForTesting observer(
         run_loop.QuitClosure());
     std::ignore = test_message_receiver->Accept(&message);
-    if (expected != "PASS")  // Observer only gets called on errors.
+    if (expected != "PASS") {  // Observer only gets called on errors.
       run_loop.Run();
-    if (observer.last_error() == mojo::internal::VALIDATION_ERROR_NONE)
+    }
+    if (observer.last_error() == mojo::internal::VALIDATION_ERROR_NONE) {
       result = "PASS";
-    else
+    } else {
       result = mojo::internal::ValidationErrorToString(observer.last_error());
+    }
 
     EXPECT_EQ(expected, result) << "failed test: " << tests[i];
   }
@@ -413,8 +421,9 @@ TEST_F(ValidationTest, InputParser) {
 
     for (size_t i = 0; error_inputs[i]; ++i) {
       std::vector<uint8_t> expected;
-      if (!TestInputParser(error_inputs[i], false, expected, 0))
+      if (!TestInputParser(error_inputs[i], false, expected, 0)) {
         ADD_FAILURE() << "Unexpected test result for: " << error_inputs[i];
+      }
     }
   }
 }

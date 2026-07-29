@@ -5,10 +5,12 @@
 #ifndef CHROME_BROWSER_ASH_APP_LIST_SEARCH_ESSENTIAL_SEARCH_SOCS_COOKIE_FETCHER_H_
 #define CHROME_BROWSER_ASH_APP_LIST_SEARCH_ESSENTIAL_SEARCH_SOCS_COOKIE_FETCHER_H_
 
+#include <optional>
+#include <string>
+
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace network {
@@ -61,9 +63,8 @@ class SocsCookieFetcher final {
   void StartFetching();
 
  private:
-  void OnSimpleLoaderComplete(std::unique_ptr<std::string> response_body);
-  void OnJsonParsed(data_decoder::DataDecoder::ValueOrError result);
-  void ProcessValidTokenResponse(base::Value::Dict json_response);
+  void OnSimpleLoaderComplete(std::optional<std::string> response_body);
+  void ProcessValidTokenResponse(base::DictValue json_response);
 
   // `consumer_` to call back when this request completes.
   const raw_ptr<Consumer> consumer_;

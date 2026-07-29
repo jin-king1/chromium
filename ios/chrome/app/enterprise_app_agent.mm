@@ -82,6 +82,10 @@ constexpr base::TimeDelta kTimeout = base::Seconds(30);
   }
 }
 
+- (void)controllerWillShutdown {
+  _cloudManagementControllerObserver.reset();
+}
+
 #pragma mark - CloudPolicyClientObserverBridge
 
 - (void)cloudPolicyWasFetched:(policy::CloudPolicyClient*)client {
@@ -100,14 +104,14 @@ constexpr base::TimeDelta kTimeout = base::Seconds(30);
 #pragma mark - Private methods
 
 - (void)showUIInScene:(SceneState*)sceneState {
-  if ([sceneState.rootViewController
+  UIWindow* window = sceneState.window;
+  if ([window.rootViewController
           isKindOfClass:[EnterpriseLoadScreenViewController class]]) {
     return;
   }
 
-  [sceneState
-      setRootViewController:[[EnterpriseLoadScreenViewController alloc] init]
-          makeKeyAndVisible:YES];
+  window.rootViewController = [[EnterpriseLoadScreenViewController alloc] init];
+  [window makeKeyAndVisible];
 }
 
 - (BOOL)shouldShowEnterpriseLoadScreen {

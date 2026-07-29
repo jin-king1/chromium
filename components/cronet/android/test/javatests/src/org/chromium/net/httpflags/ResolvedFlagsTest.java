@@ -41,7 +41,11 @@ public final class ResolvedFlagsTest {
     @SmallTest
     public void testResolve_emptyOnEmptyProto() {
         assertThat(
-                        ResolvedFlags.resolve(Flags.newBuilder().build(), "test_app_id", "1.2.3.4")
+                        ResolvedFlags.resolve(
+                                        Flags.newBuilder().build(),
+                                        "test_app_id",
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .isEmpty();
     }
@@ -68,7 +72,8 @@ public final class ResolvedFlagsTest {
                                                                 .build())
                                                 .build(),
                                         "test_app_id",
-                                        "1.2.3.4")
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .comparingValuesUsing(FLAG_STRING_VALUE_EQUALS)
                 .containsExactly(
@@ -87,7 +92,8 @@ public final class ResolvedFlagsTest {
                                                                 FlagValue.ConstrainedValue
                                                                         .newBuilder())),
                                         "test_app_id",
-                                        "1.2.3.4")
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .isEmpty();
     }
@@ -99,7 +105,8 @@ public final class ResolvedFlagsTest {
                         ResolvedFlags.resolve(
                                         singleFlag("test_flag", FlagValue.newBuilder()),
                                         "test_app_id",
-                                        "1.2.3.4")
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .isEmpty();
     }
@@ -117,7 +124,8 @@ public final class ResolvedFlagsTest {
                                                                                 "test_flag_value")
                                                                         .setAppId("test_app_id"))),
                                         "test_app_id",
-                                        "1.2.3.4")
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .comparingValuesUsing(FLAG_STRING_VALUE_EQUALS)
                 .containsExactly("test_flag", "test_flag_value");
@@ -137,29 +145,73 @@ public final class ResolvedFlagsTest {
                                                                         .setAppId(
                                                                                 "nonmatching_app_id"))),
                                         "test_app_id",
-                                        "1.2.3.4")
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .isEmpty();
     }
 
     @Test
     @SmallTest
+    public void testResolve_doesNotReturnFlagIfTelemetryDisabled() {
+        assertThat(
+                        ResolvedFlags.resolve(
+                                        singleFlag(
+                                                "test_flag",
+                                                FlagValue.newBuilder()
+                                                        .addConstrainedValues(
+                                                                stringConstrainedValue(
+                                                                                "test_flag_value")
+                                                                        .setAppId("test_app_id"))),
+                                        "test_app_id",
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ false)
+                                .flags())
+                .isEmpty();
+    }
+
+    @Test
+    @SmallTest
+    public void testResolve_returnsFlagIfTelemetryOverrideIsUsed() {
+        assertThat(
+                        ResolvedFlags.resolve(
+                                        singleFlag(
+                                                "test_flag",
+                                                FlagValue.newBuilder()
+                                                        .addConstrainedValues(
+                                                                stringConstrainedValue(
+                                                                                "test_flag_value")
+                                                                        .setAppId("test_app_id")
+                                                                        .setApplyEvenIfCronetTelemetryDisabled(
+                                                                                true))),
+                                        "test_app_id",
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ false)
+                                .flags())
+                .comparingValuesUsing(FLAG_STRING_VALUE_EQUALS)
+                .containsExactly("test_flag", "test_flag_value");
+    }
+
+    @Test
+    @SmallTest
     public void testResolve_throwsOnEmptyCronetVersion() {
+        Flags flags = Flags.newBuilder().build();
         assertThrows(
                 IllegalArgumentException.class,
-                () -> {
-                    ResolvedFlags.resolve(Flags.newBuilder().build(), "test_app_id", "");
-                });
+                () ->
+                        ResolvedFlags.resolve(
+                                flags, "test_app_id", "", /* isTelemetryEnabled= */ true));
     }
 
     @Test
     @SmallTest
     public void testResolve_throwsOnInvalidCronetVersion() {
+        Flags flags = Flags.newBuilder().build();
         assertThrows(
                 IllegalArgumentException.class,
-                () -> {
-                    ResolvedFlags.resolve(Flags.newBuilder().build(), "test_app_id", "1.2.a.4");
-                });
+                () ->
+                        ResolvedFlags.resolve(
+                                flags, "test_app_id", "1.2.a.4", /* isTelemetryEnabled= */ true));
     }
 
     @Test
@@ -175,7 +227,8 @@ public final class ResolvedFlagsTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> {
-                    ResolvedFlags.resolve(flags, "test_app_id", "1.2.3.4");
+                    ResolvedFlags.resolve(
+                            flags, "test_app_id", "1.2.3.4", /* isTelemetryEnabled= */ true);
                 });
     }
 
@@ -192,7 +245,8 @@ public final class ResolvedFlagsTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> {
-                    ResolvedFlags.resolve(flags, "test_app_id", "1.2.3.4");
+                    ResolvedFlags.resolve(
+                            flags, "test_app_id", "1.2.3.4", /* isTelemetryEnabled= */ true);
                 });
     }
 
@@ -206,7 +260,8 @@ public final class ResolvedFlagsTest {
                                                         stringConstrainedValue("test_flag_value")
                                                                 .setMinVersion(minVersion))),
                                 "test_app_id",
-                                cronetVersion)
+                                cronetVersion,
+                                /* isTelemetryEnabled= */ true)
                         .flags();
         if (expectMatch) {
             assertThat(flags)
@@ -277,7 +332,8 @@ public final class ResolvedFlagsTest {
                                                         .addConstrainedValues(matching_value)
                                                         .addConstrainedValues(nonmatching_value)),
                                         "test_app_id",
-                                        "1.2.3.4")
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .comparingValuesUsing(FLAG_STRING_VALUE_EQUALS)
                 .containsExactly("test_flag", "matching_test_flag_value");
@@ -289,7 +345,8 @@ public final class ResolvedFlagsTest {
                                                         .addConstrainedValues(nonmatching_value)
                                                         .addConstrainedValues(matching_value)),
                                         "test_app_id",
-                                        "1.2.3.4")
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .comparingValuesUsing(FLAG_STRING_VALUE_EQUALS)
                 .containsExactly("test_flag", "matching_test_flag_value");
@@ -310,7 +367,8 @@ public final class ResolvedFlagsTest {
                                                                 stringConstrainedValue(
                                                                         "test_flag_value_2"))),
                                         "test_app_id",
-                                        "1.2.3.4")
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .comparingValuesUsing(FLAG_STRING_VALUE_EQUALS)
                 .containsExactly("test_flag", "test_flag_value_1");
@@ -331,7 +389,8 @@ public final class ResolvedFlagsTest {
                                                                 stringConstrainedValue(
                                                                         "test_flag_value_should_be_skipped"))),
                                         "test_app_id",
-                                        "1.2.3.4")
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
                                 .flags())
                 .isEmpty();
     }
@@ -348,7 +407,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setBoolValue(false))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -368,7 +428,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setBoolValue(true))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -388,7 +449,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setIntValue(0))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -408,7 +470,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setIntValue(42))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -428,7 +491,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setFloatValue(0))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -448,7 +512,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setFloatValue(42))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -468,7 +533,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setStringValue(""))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -489,7 +555,8 @@ public final class ResolvedFlagsTest {
                                                                 .setStringValue(
                                                                         "test_string_value"))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -509,7 +576,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setBytesValue(ByteString.EMPTY))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -530,7 +598,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setBytesValue(byteString))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value).isNotNull();
@@ -550,7 +619,8 @@ public final class ResolvedFlagsTest {
                                                         FlagValue.ConstrainedValue.newBuilder()
                                                                 .setStringValue("test_string"))),
                                 "test_app_id",
-                                "1.2.3.4")
+                                "1.2.3.4",
+                                /* isTelemetryEnabled= */ true)
                         .flags()
                         .get("test_flag");
         assertThat(value.getType()).isEqualTo(ResolvedFlags.Value.Type.STRING);
@@ -559,5 +629,72 @@ public final class ResolvedFlagsTest {
                 () -> {
                     value.getIntValue();
                 });
+    }
+
+    @Test
+    @SmallTest
+    public void testResolve_returnsFlagThatMatchesAppIdPrefix() {
+        assertThat(
+                        ResolvedFlags.resolve(
+                                        singleFlag(
+                                                "test_flag",
+                                                FlagValue.newBuilder()
+                                                        .addConstrainedValues(
+                                                                stringConstrainedValue(
+                                                                                "test_flag_value")
+                                                                        .setAppId("test_app."))),
+                                        "test_app.foo",
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
+                                .flags())
+                .comparingValuesUsing(FLAG_STRING_VALUE_EQUALS)
+                .containsExactly("test_flag", "test_flag_value");
+    }
+
+    @Test
+    @SmallTest
+    public void testResolve_usesFirstMatch_whenWildcardIsFirst() {
+        assertThat(
+                        ResolvedFlags.resolve(
+                                        singleFlag(
+                                                "test_flag",
+                                                FlagValue.newBuilder()
+                                                        .addConstrainedValues(
+                                                                stringConstrainedValue(
+                                                                        "wildcard_match"))
+                                                        .addConstrainedValues(
+                                                                stringConstrainedValue(
+                                                                                "prefix_match")
+                                                                        .setAppId(
+                                                                                "test_app.foo."))),
+                                        "test_app.foo",
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
+                                .flags())
+                .comparingValuesUsing(FLAG_STRING_VALUE_EQUALS)
+                .containsExactly("test_flag", "wildcard_match");
+    }
+
+    @Test
+    @SmallTest
+    public void testResolve_usesFirstMatch_whenPrefixMatchIsFirst() {
+        assertThat(
+                        ResolvedFlags.resolve(
+                                        singleFlag(
+                                                "test_flag",
+                                                FlagValue.newBuilder()
+                                                        .addConstrainedValues(
+                                                                stringConstrainedValue(
+                                                                                "exact_match")
+                                                                        .setAppId("test_app."))
+                                                        .addConstrainedValues(
+                                                                stringConstrainedValue(
+                                                                        "wildcard_match"))),
+                                        "test_app.foo",
+                                        "1.2.3.4",
+                                        /* isTelemetryEnabled= */ true)
+                                .flags())
+                .comparingValuesUsing(FLAG_STRING_VALUE_EQUALS)
+                .containsExactly("test_flag", "exact_match");
     }
 }

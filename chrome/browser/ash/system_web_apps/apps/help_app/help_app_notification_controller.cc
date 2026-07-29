@@ -5,15 +5,13 @@
 #include "chrome/browser/ash/system_web_apps/apps/help_app/help_app_notification_controller.h"
 
 #include "ash/constants/ash_features.h"
+#include "ash/webui/help_app_ui/help_app_prefs.h"
 #include "base/logging.h"
 #include "base/version.h"
 #include "chrome/browser/ash/release_notes/release_notes_notification.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/chrome_version_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/common/channel_info.h"
-#include "chrome/common/pref_names.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -31,9 +29,10 @@ int CurrentMilestone() {
 // Checks if a notification was already shown in the current milestone.
 bool IsNotificationShownForCurrentMilestone(Profile* profile) {
   int last_shown_milestone = profile->GetPrefs()->GetInteger(
-      prefs::kHelpAppNotificationLastShownMilestone);
+      ash::help_app::prefs::kHelpAppNotificationLastShownMilestone);
   if (profile->GetPrefs()
-          ->FindPreference(prefs::kHelpAppNotificationLastShownMilestone)
+          ->FindPreference(
+              ash::help_app::prefs::kHelpAppNotificationLastShownMilestone)
           ->IsDefaultValue()) {
     // We don't know if the user has seen any notification before as we have
     // never set which milestone was last seen. So use the version of chrome
@@ -49,24 +48,17 @@ bool IsNotificationShownForCurrentMilestone(Profile* profile) {
 
 namespace ash {
 
-void HelpAppNotificationController::RegisterProfilePrefs(
-    PrefRegistrySimple* registry) {
-  registry->RegisterIntegerPref(prefs::kHelpAppNotificationLastShownMilestone,
-                                -10);
-}
-
 HelpAppNotificationController::HelpAppNotificationController(Profile* profile)
     : profile_(profile) {}
 
 HelpAppNotificationController::~HelpAppNotificationController() = default;
 
 void HelpAppNotificationController::MaybeShowReleaseNotesNotification() {
-  if (IsNotificationShownForCurrentMilestone(profile_) &&
-      !base::FeatureList::IsEnabled(
-          features::kReleaseNotesNotificationAlwaysEligible)) {
+  if (IsNotificationShownForCurrentMilestone(profile_)) {
     return;
   }
-  if (features::IsForestFeatureEnabled()) {
+  if (!base::FeatureList::IsEnabled(
+          features::kReleaseNotesNotificationAlwaysEligible)) {
     return;
   }
   ReleaseNotesStorage release_notes_storage(profile_);

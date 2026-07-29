@@ -4,6 +4,8 @@
 
 #include <string>
 
+#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/public/cpp/login_screen_test_api.h"
 #include "ash/shelf/shelf.h"
@@ -12,9 +14,13 @@
 #include "ash/system/status_area_widget_test_helper.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "base/command_line.h"
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/strings/string_split.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/ash/login/login_manager_test.h"
 #include "chrome/browser/ash/login/login_wizard.h"
@@ -34,8 +40,8 @@
 #include "chrome/browser/ash/login/test/test_predicate_waiter.h"
 #include "chrome/browser/ash/login/test/user_adding_screen_utils.h"
 #include "chrome/browser/ash/login/test/user_auth_config.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_display_host_webui.h"
 #include "chrome/browser/ui/browser.h"
@@ -53,6 +59,7 @@
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/user_names.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/extension_system.h"
@@ -92,6 +99,57 @@ class LoginCursorTest : public OobeBaseTest {
   LoginCursorTest() = default;
   ~LoginCursorTest() override = default;
 };
+
+class WebUiSyslogTest : public OobeBaseTest {
+ public:
+  WebUiSyslogTest() = default;
+  ~WebUiSyslogTest() override = default;
+
+  void SetUp() override {
+    ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
+    log_file_path_ = temp_dir_.GetPath().AppendASCII("test.log");
+    OobeBaseTest::SetUp();
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    command_line->AppendSwitch(switches::kEnableOobeTestAPI);
+    command_line->AppendSwitch(::switches::kEnableLogging);
+    command_line->AppendSwitchPath(::switches::kLogFile, log_file_path_);
+    OobeBaseTest::SetUpCommandLine(command_line);
+  }
+
+  void ExpectMessageInLogs(const std::string message) {
+    base::RunLoop().RunUntilIdle();
+    std::string log_content;
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    ASSERT_TRUE(base::ReadFileToString(log_file_path_, &log_content))
+        << "Failed to read log file: " << log_file_path_.value();
+    EXPECT_THAT(log_content, testing::HasSubstr(message))
+        << "Log file content:\n"
+        << log_content;
+  }
+
+ private:
+  base::ScopedTempDir temp_dir_;
+  base::FilePath log_file_path_;
+};
+
+IN_PROC_BROWSER_TEST_F(WebUiSyslogTest, ExplicitInvocation) {
+  test::OobeJS().CreateWaiter("window.OobeAPI")->Wait();
+
+  const std::string message = "WEBUI_SYSLOG_MESSAGE_TEST";
+  test::OobeJS().Evaluate(
+      base::StringPrintf("OobeAPI.emitLoginSyslog('%s')", message.c_str()));
+
+  ExpectMessageInLogs(message);
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiSyslogTest, OobeSignalsLoadCompletion) {
+  // Wait for OOBE to load and for logs to be emitted.
+  test::WaitForWelcomeScreen();
+
+  ExpectMessageInLogs("OOBE finished loading");
+}
 
 using LoginSigninTest = LoginManagerTest;
 
@@ -276,7 +334,7 @@ void TestSystemTrayIsVisible() {
 // the -login-user flag indicating that the user is already logged in.
 // This profile should NOT be an OTR profile.
 IN_PROC_BROWSER_TEST_F(LoginUserTest, UserPassed) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   std::string profile_base_name =
       BrowserContextHelper::GetUserBrowserContextDirName("hash");
   EXPECT_EQ(profile_base_name, profile->GetBaseName().value());
@@ -287,7 +345,7 @@ IN_PROC_BROWSER_TEST_F(LoginUserTest, UserPassed) {
 
 // After a guest login, we should get the OTR default profile.
 IN_PROC_BROWSER_TEST_F(LoginGuestTest, GuestIsOTR) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   EXPECT_TRUE(profile->IsOffTheRecord());
   // Ensure there's extension service for this profile.
   EXPECT_TRUE(extensions::ExtensionSystem::Get(profile)->extension_service());
@@ -434,7 +492,10 @@ IN_PROC_BROWSER_TEST_F(LoginOfflineManagedTest, UserOfflineLoginBlocked) {
 
 class UserAddingScreenTrayTest : public LoginManagerTest {
  public:
-  UserAddingScreenTrayTest() { login_mixin_.AppendRegularUsers(3); }
+  UserAddingScreenTrayTest() {
+    set_exit_when_last_browser_closes(false);
+    login_mixin_.AppendRegularUsers(3);
+  }
 
  protected:
   LoginManagerMixin login_mixin_{&mixin_host_};
@@ -447,8 +508,31 @@ IN_PROC_BROWSER_TEST_F(UserAddingScreenTrayTest, TrayVisible) {
 }
 
 IN_PROC_BROWSER_TEST_F(LoginManagerTest, SafeBrowsingDisabledForSigninProfile) {
-  ASSERT_FALSE(ProfileHelper::GetSigninProfile()->GetPrefs()->GetBoolean(
-      prefs::kSafeBrowsingEnabled));
+  Profile* signin_profile = Profile::FromBrowserContext(
+      BrowserContextHelper::Get()->GetSigninBrowserContext());
+  ASSERT_FALSE(
+      signin_profile->GetPrefs()->GetBoolean(::prefs::kSafeBrowsingEnabled));
+}
+
+class LoginOfflineWithAutoEnrollmentCheckForcedTest : public LoginOfflineTest {
+ public:
+  LoginOfflineWithAutoEnrollmentCheckForcedTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kOobeAutoEnrollmentCheckForced);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(LoginOfflineWithAutoEnrollmentCheckForcedTest,
+                       FatalScreenShownWhenOobeNotCompleted) {
+  g_browser_process->local_state()->ClearPref(prefs::kOobeComplete);
+  EXPECT_FALSE(LoginScreenTestApi::IsOobeDialogVisible());
+  LoginScreenTestApi::SubmitPassword(test_account_id_, "password",
+                                     /*check_if_submittable=*/false);
+  OobeScreenWaiter(SignInFatalErrorView::kScreenId).Wait();
+  EXPECT_TRUE(LoginScreenTestApi::IsOobeDialogVisible());
 }
 
 }  // namespace ash

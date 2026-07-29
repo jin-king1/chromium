@@ -9,7 +9,6 @@
 #include <array>
 #include <string>
 
-#include "base/containers/contains.h"
 #include "storage/browser/file_system/file_system_url.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
@@ -87,7 +86,7 @@ TEST_F(IsolatedContextTest, RegisterAndRevokeTest) {
   ASSERT_TRUE(isolated_context()->GetDraggedFileInfo(id_, &toplevels));
   ASSERT_EQ(fileset_.size(), toplevels.size());
   for (const auto& toplevel : toplevels) {
-    ASSERT_TRUE(base::Contains(fileset_, toplevel.path));
+    ASSERT_TRUE(fileset_.contains(toplevel.path));
   }
 
   // See if the name of each registered kTestPaths (that is what we
@@ -172,6 +171,35 @@ TEST_F(IsolatedContextTest, RegisterAndRevokeTest) {
   ASSERT_FALSE(isolated_context()->GetRegisteredPath(fs3.id(), &path));
   ASSERT_FALSE(isolated_context()->GetRegisteredPath(fs4.id(), &path));
   ASSERT_FALSE(isolated_context()->GetRegisteredPath(fs5.id(), &path));
+}
+
+TEST_F(IsolatedContextTest, IsPathValid) {
+  struct {
+    base::FilePath::StringViewType path;
+    bool expected;
+  } cases[]{
+      {DRIVE FPL("/foo"), true},
+      {DRIVE FPL("foo"), false},
+      {DRIVE FPL("/foo/../bar"), false},
+#if BUILDFLAG(IS_ANDROID)
+      {FPL("content://authority/path"), true},
+#else
+      {FPL("content://authority/path"), false},
+#endif
+  };
+
+  for (const auto& tc : cases) {
+    base::FilePath path(tc.path);
+    IsolatedContext::FileInfoSet files;
+    std::string name;
+    EXPECT_EQ(tc.expected, files.AddPath(path, &name));
+    EXPECT_EQ(tc.expected, files.AddPathWithName(path, "name"));
+
+    IsolatedContext::ScopedFSHandle fs =
+        isolated_context()->RegisterFileSystemForPath(
+            kFileSystemTypeLocal, std::string(), path, nullptr);
+    EXPECT_EQ(tc.expected, fs.is_valid());
+  }
 }
 
 TEST_F(IsolatedContextTest, CrackWithRelativePaths) {

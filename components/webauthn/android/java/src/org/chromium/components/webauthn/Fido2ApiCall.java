@@ -6,6 +6,7 @@ package org.chromium.components.webauthn;
 
 import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.components.webauthn.WebauthnLogger.log;
 
 import android.app.PendingIntent;
 import android.content.Context;
@@ -80,6 +81,8 @@ import java.util.List;
  */
 @NullMarked
 public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
+    private static final String TAG = "Fido2ApiCall";
+
     public static class Fido2ApiCallParams {
         public final Api<ApiOptions.NoOptions> mApi;
         public final String mDescriptor;
@@ -256,11 +259,11 @@ public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
                                     FIRSTPARTY_API_ID),
                             FIRSTPARTY_CLIENT_KEY),
                     FIRSTPARTY_DESCRIPTOR,
-                    /* callbackDescriptor */ null,
-                    /* registerMethodId */ 0,
-                    /* signMethodId */ 0,
-                    /* isUserVerifyingPlatformAuthenticatorAvailable */ 0,
-                    /* methodInterfaces */ null);
+                    /* callbackDescriptor= */ null,
+                    /* registerMethodId= */ 0,
+                    /* signMethodId= */ 0,
+                    /* isUserVerifyingPlatformAuthenticatorAvailableMethodId= */ 0,
+                    /* methodInterfaces= */ null);
 
     private static final String PERSISTENT_DESCRIPTOR =
             "com.google.android.gms.auth.api.fido.IFidoPersistentService";
@@ -281,11 +284,11 @@ public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
                                     PERSISTENT_API_ID),
                             PERSISTENT_CLIENT_KEY),
                     PERSISTENT_DESCRIPTOR,
-                    /* callbackDescriptor */ null,
-                    /* registerMethodId */ 0,
-                    /* signMethodId */ 0,
-                    /* isUserVerifyingPlatformAuthenticatorAvailable */ 0,
-                    /* methodInterfaces */ null);
+                    /* callbackDescriptor= */ null,
+                    /* registerMethodId= */ 0,
+                    /* signMethodId= */ 0,
+                    /* isUserVerifyingPlatformAuthenticatorAvailableMethodId= */ 0,
+                    /* methodInterfaces= */ null);
 
     private final String mDescriptor;
 
@@ -301,6 +304,7 @@ public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
     }
 
     public Parcel start() {
+        log(TAG, "start");
         Parcel p = Parcel.obtain();
         p.writeInterfaceToken(mDescriptor);
         return p;
@@ -317,6 +321,7 @@ public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
      */
     public <Result> Task<Result> run(
             int methodId, int transactionId, Parcel args, Callback<Result> callback) {
+        log(TAG, "run method: " + methodId);
         return doRead(
                 TaskApiCall.<FidoClient, Result>builder()
                         .run(
@@ -354,6 +359,7 @@ public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
 
         @Override
         public boolean onTransact(int code, Parcel data, @Nullable Parcel reply, int flags) {
+            log(TAG, "BooleanResult.onTransact");
             data.enforceInterface("com.google.android.gms.fido.fido2.api.IBooleanCallback");
             switch (code) {
                 case IBinder.FIRST_CALL_TRANSACTION + 0:
@@ -384,6 +390,7 @@ public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
 
         @Override
         public boolean onTransact(int code, Parcel data, @Nullable Parcel reply, int flags) {
+            log(TAG, "ByteArrayResult.onTransact");
             data.enforceInterface("com.google.android.gms.fido.fido2.api.IByteArrayCallback");
             switch (code) {
                 case IBinder.FIRST_CALL_TRANSACTION + 0:
@@ -424,11 +431,13 @@ public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
 
         @Override
         public boolean onTransact(int code, Parcel data, @Nullable Parcel reply, int flags) {
+            log(TAG, "WebauthnCredentialDetailsListResult.onTransact");
             data.enforceInterface(mInterfaceName);
             switch (code) {
                 case IBinder.FIRST_CALL_TRANSACTION + 0:
                     try {
-                        mCompletionSource.setResult(Fido2Api.parseCredentialList(data));
+                        final boolean fromCache = mInterfaceName.equals(PERSISTENT_API_INTERFACE);
+                        mCompletionSource.setResult(Fido2Api.parseCredentialList(data, fromCache));
                     } catch (IllegalArgumentException e) {
                         mCompletionSource.setException(e);
                     }
@@ -467,6 +476,7 @@ public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
 
         @Override
         public boolean onTransact(int code, Parcel data, @Nullable Parcel reply, int flags) {
+            log(TAG, "PendingIntentResult.onTransact");
             switch (code) {
                 case IBinder.FIRST_CALL_TRANSACTION + 0:
                     assertNonNull(mCallbackDescriptor);
@@ -498,7 +508,7 @@ public final class Fido2ApiCall extends GoogleApi<ApiOptions.NoOptions> {
         }
     }
 
-    private interface Callback<Result> {
+    public interface Callback<Result> {
         @Initializer
         void setCompletionSource(TaskCompletionSource<Result> cs);
     }

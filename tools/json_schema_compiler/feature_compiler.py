@@ -52,6 +52,9 @@ CC_FILE_BEGIN = """
 
 #include "%(header_file_path)s"
 
+#include <array>
+#include <string_view>
+
 #include "extensions/common/features/complex_feature.h"
 #include "extensions/common/features/feature_provider.h"
 #include "extensions/common/features/manifest_feature.h"
@@ -218,21 +221,21 @@ FEATURE_GRAMMAR = ({
         list: {
             'enum_map': {
                 'extension':
-                'Manifest::TYPE_EXTENSION',
+                'Manifest::Type::kExtension',
                 'hosted_app':
-                'Manifest::TYPE_HOSTED_APP',
+                'Manifest::Type::kHostedApp',
                 'legacy_packaged_app':
-                'Manifest::TYPE_LEGACY_PACKAGED_APP',
+                'Manifest::Type::kLegacyPackagedApp',
                 'platform_app':
-                'Manifest::TYPE_PLATFORM_APP',
+                'Manifest::Type::kPlatformApp',
                 'shared_module':
-                'Manifest::TYPE_SHARED_MODULE',
+                'Manifest::Type::kSharedModule',
                 'theme':
-                'Manifest::TYPE_THEME',
+                'Manifest::Type::kTheme',
                 'login_screen_extension':
-                'Manifest::TYPE_LOGIN_SCREEN_EXTENSION',
+                'Manifest::Type::kLoginScreenExtension',
                 'chromeos_system_extension':
-                'Manifest::TYPE_CHROMEOS_SYSTEM_EXTENSION',
+                'Manifest::Type::kChromeOSSystemExtension',
             },
             'allow_all': True
         },
@@ -243,11 +246,11 @@ FEATURE_GRAMMAR = ({
     'location': {
         str: {
             'enum_map': {
-                'component': 'SimpleFeature::COMPONENT_LOCATION',
+                'component': 'SimpleFeature::Location::kComponent',
                 'external_component':
-                'SimpleFeature::EXTERNAL_COMPONENT_LOCATION',
-                'policy': 'SimpleFeature::POLICY_LOCATION',
-                'unpacked': 'SimpleFeature::UNPACKED_LOCATION',
+                'SimpleFeature::Location::kExternalComponent',
+                'policy': 'SimpleFeature::Location::kPolicy',
+                'unpacked': 'SimpleFeature::Location::kUnpacked',
             }
         }
     },
@@ -285,7 +288,7 @@ FEATURE_GRAMMAR = ({
         list: {
             'enum_map': {
                 'chromeos': 'Feature::CHROMEOS_PLATFORM',
-                'fuchsia': 'Feature::FUCHSIA_PLATFORM',
+                'desktop_android': 'Feature::DESKTOP_ANDROID_PLATFORM',
                 'linux': 'Feature::LINUX_PLATFORM',
                 'mac': 'Feature::MACOSX_PLATFORM',
                 'win': 'Feature::WIN_PLATFORM',
@@ -421,9 +424,9 @@ def DoesNotHaveAllowlistForHostedApps(value):
     return True
 
   types = value['extension_types']
-  # |types| looks like "{Manifest::TYPE_1, Manifest::TYPE_2}", so just looking
-  # for the "TYPE_HOSTED_APP substring is sufficient.
-  if 'TYPE_HOSTED_APP' not in types:
+  # |types| looks like "{Manifest::Type::kOne, Manifest::Type::kTwo}", so just
+  # looking for the "Type::kHostedApp" substring is sufficient.
+  if 'Type::kHostedApp' not in types:
     return True
 
   # Helper to convert our C++ string array like "{\"aaa\", \"bbb\"}" (which is
@@ -552,7 +555,14 @@ def GetCodeForFeatureValues(feature_values):
     if key in IGNORED_KEYS:
       continue
 
-    c.Append('feature->set_%s(%s);' % (key, feature_values[key]))
+    if key == 'matches':
+      if not feature_values[key]:
+        continue
+      c.Append('static constexpr auto kMatches = '
+               'std::to_array<std::string_view>(%s);' % feature_values[key])
+      c.Append('feature->set_matches(StaticSpan(kMatches));')
+    else:
+      c.Append('feature->set_%s(%s);' % (key, feature_values[key]))
   return c
 
 
@@ -831,16 +841,23 @@ class FeatureCompiler(object):
     self._json."""
     for f in self._source_files:
       abs_source_file = os.path.join(self._chrome_root, f)
-      try:
-        with open(abs_source_file, 'r') as f:
-          f_json = json_parse.Parse(f.read())
-      except:
-        print('FAILED: Exception encountered while loading "%s"' %
-              abs_source_file)
-        raise
-      dupes = set(f_json) & set(self._json)
-      assert not dupes, 'Duplicate keys found: %s' % list(dupes)
+      f_json = self._LoadFile(abs_source_file)
+      override_file_root, override_file_ext = os.path.splitext(abs_source_file)
+      override_file_path = f"{override_file_root}.override{override_file_ext}"
+      if os.path.exists(override_file_path):
+        f_json.update(self._LoadFile(override_file_path))
       self._json.update(f_json)
+
+  def _LoadFile(self, file_path):
+    try:
+      with open(file_path, 'r') as f:
+        f_json = json_parse.Parse(f.read())
+    except:
+      print('FAILED: Exception encountered while loading "%s"' % file_path)
+      raise
+    dupes = set(f_json) & set(self._json)
+    assert not dupes, 'Duplicate keys found: %s' % list(dupes)
+    return f_json
 
   def _FindParent(self, feature_name, feature_value):
     """Checks to see if a feature has a parent. If it does, returns the

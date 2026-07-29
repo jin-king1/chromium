@@ -4,7 +4,11 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import android.view.View;
+
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiState.BookmarkUiMode;
+import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
@@ -18,9 +22,10 @@ import java.util.function.Function;
  * Responsible for hosting properties of BookmarkToolbar views. TODO(crbug.com/40265005) Remove all
  * skipEquality=true usage.
  */
+@NullMarked
 class BookmarkToolbarProperties {
     /** Dependencies */
-    static final WritableObjectPropertyKey<SelectionDelegate> SELECTION_DELEGATE =
+    static final WritableObjectPropertyKey<SelectionDelegate<BookmarkId>> SELECTION_DELEGATE =
             new WritableObjectPropertyKey<>();
 
     /** UI state properties. */
@@ -58,6 +63,8 @@ class BookmarkToolbarProperties {
             new WritableBooleanPropertyKey();
     static final WritableBooleanPropertyKey SELECTION_MODE_SHOW_MOVE =
             new WritableBooleanPropertyKey();
+    static final WritableBooleanPropertyKey SELECTION_MODE_SHOW_COPY_LINK =
+            new WritableBooleanPropertyKey();
     static final WritableBooleanPropertyKey SELECTION_MODE_SHOW_MARK_READ =
             new WritableBooleanPropertyKey();
     static final WritableBooleanPropertyKey SELECTION_MODE_SHOW_MARK_UNREAD =
@@ -71,6 +78,9 @@ class BookmarkToolbarProperties {
             new WritableObjectPropertyKey<>();
 
     static final WritableObjectPropertyKey<Runnable> NAVIGATE_BACK_RUNNABLE =
+            new WritableObjectPropertyKey<>();
+
+    static final WritableObjectPropertyKey<View> NEXT_FOCUSABLE_VIEW =
             new WritableObjectPropertyKey<>();
 
     static final PropertyKey[] ALL_KEYS = {
@@ -96,7 +106,9 @@ class BookmarkToolbarProperties {
         SELECTION_MODE_SHOW_OPEN_IN_NEW_TAB,
         SELECTION_MODE_SHOW_OPEN_IN_INCOGNITO,
         SELECTION_MODE_SHOW_MOVE,
+        SELECTION_MODE_SHOW_COPY_LINK,
         SELECTION_MODE_SHOW_MARK_READ,
-        SELECTION_MODE_SHOW_MARK_UNREAD
+        SELECTION_MODE_SHOW_MARK_UNREAD,
+        NEXT_FOCUSABLE_VIEW
     };
 }

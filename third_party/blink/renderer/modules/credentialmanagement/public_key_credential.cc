@@ -5,8 +5,9 @@
 #include "third_party/blink/renderer/modules/credentialmanagement/public_key_credential.h"
 
 #include <utility>
+#include <variant>
 
-#include "base/functional/overloaded.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/blink/public/mojom/webauthn/authenticator.mojom-shared.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
@@ -37,13 +38,6 @@ namespace {
 // https://www.w3.org/TR/webauthn/#dom-publickeycredential-type-slot:
 constexpr char kPublicKeyCredentialType[] = "public-key";
 
-// This is the subset of client capabilities computed by the renderer. See also
-// //content/browser/webauth/authenticator_common_impl.h
-constexpr char kConditionalCreateCapability[] = "conditionalCreate";
-constexpr char kSignalAllAcceptedCredentials[] = "signalAllAcceptedCredentials";
-constexpr char kSignalCurrentUserDetails[] = "signalCurrentUserDetails";
-constexpr char kSignalUnknownCredential[] = "signalUnknownCredential";
-
 void OnIsUserVerifyingComplete(ScriptPromiseResolver<IDLBoolean>* resolver,
                                bool available) {
   resolver->Resolve(available);
@@ -68,15 +62,6 @@ void OnGetClientCapabilitiesComplete(
   for (const auto& capability : capabilities) {
     results.emplace_back(std::move(capability->name), capability->supported);
   }
-  results.emplace_back(
-      kConditionalCreateCapability,
-      RuntimeEnabledFeatures::WebAuthenticationConditionalCreateEnabled());
-
-  const bool report_enabled =
-      RuntimeEnabledFeatures::CredentialManagerReportEnabled();
-  results.emplace_back(kSignalAllAcceptedCredentials, report_enabled);
-  results.emplace_back(kSignalCurrentUserDetails, report_enabled);
-  results.emplace_back(kSignalUnknownCredential, report_enabled);
 
   // Extensions are added from the AuthenticationExtensionsClientInputs
   // dictionary defined in authentication_extensions_client_inputs.idl.
@@ -84,8 +69,7 @@ void OnGetClientCapabilitiesComplete(
   // extension implemented by the client, formed by prefixing "extension:"
   // to the extension identifier.
   //
-  // Excluded extensions: cableAuthentication, uvm, remoteDesktopClientOverride,
-  // and supplementalPubKeys.
+  // Excluded extensions: uvm and remoteDesktopClientOverride.
   results.emplace_back("extension:appid", true);
   results.emplace_back("extension:appidExclude", true);
   results.emplace_back("extension:hmacCreateSecret", true);
@@ -93,16 +77,20 @@ void OnGetClientCapabilitiesComplete(
   results.emplace_back("extension:enforceCredentialProtectionPolicy", true);
   results.emplace_back("extension:minPinLength", true);
   results.emplace_back("extension:credProps", true);
-  results.emplace_back(
-      "extension:largeBlob",
-      RuntimeEnabledFeatures::WebAuthenticationLargeBlobExtensionEnabled());
+  results.emplace_back("extension:largeBlob", true);
   results.emplace_back("extension:credBlob", true);
   results.emplace_back("extension:getCredBlob", true);
   results.emplace_back(
       "extension:payment",
       RuntimeEnabledFeatures::SecurePaymentConfirmationEnabled());
-  results.emplace_back("extension:prf",
-                       RuntimeEnabledFeatures::WebAuthenticationPRFEnabled());
+  results.emplace_back("extension:prf", true);
+  results.emplace_back(
+      "extension:cmtgKey",
+      RuntimeEnabledFeatures::WebAuthenticationCmtgKeyEnabled());
+  results.emplace_back(
+      "extension:crossDeviceFallbackUrl",
+      RuntimeEnabledFeatures::WebAuthenticationCrossDeviceFallbackUrlEnabled(
+          resolver->GetExecutionContext()));
 
   // Results should be sorted lexicographically based on the keys.
   std::sort(
@@ -110,6 +98,16 @@ void OnGetClientCapabilitiesComplete(
       [](const std::pair<String, bool>& a, const std::pair<String, bool>& b) {
         return CodeUnitCompare(a.first, b.first) < 0;
       });
+
+  if (!RuntimeEnabledFeatures::WebAuthenticationAmbientEnabled(
+          resolver->GetExecutionContext())) {
+    for (wtf_size_t i = 0; i < results.size(); ++i) {
+      if (results[i].first == "ambientGet") {
+        results.EraseAt(i);
+        break;
+      }
+    }
+  }
   resolver->Resolve(std::move(results));
 }
 
@@ -164,8 +162,8 @@ PublicKeyCredential::getClientCapabilities(ScriptState* script_state) {
 
   auto* authenticator =
       CredentialManagerProxy::From(script_state)->Authenticator();
-  authenticator->GetClientCapabilities(WTF::BindOnce(
-      &OnGetClientCapabilitiesComplete, WrapPersistent(resolver)));
+  authenticator->GetClientCapabilities(
+      BindOnce(&OnGetClientCapabilitiesComplete, WrapPersistent(resolver)));
   return promise;
 }
 
@@ -194,7 +192,7 @@ PublicKeyCredential::isUserVerifyingPlatformAuthenticatorAvailable(
   auto* authenticator =
       CredentialManagerProxy::From(script_state)->Authenticator();
   authenticator->IsUserVerifyingPlatformAuthenticatorAvailable(
-      WTF::BindOnce(&OnIsUserVerifyingComplete, WrapPersistent(resolver)));
+      BindOnce(&OnIsUserVerifyingComplete, WrapPersistent(resolver)));
   return promise;
 }
 
@@ -205,6 +203,7 @@ PublicKeyCredential::getClientExtensionResults() const {
 }
 
 // static
+// Credential:
 ScriptPromise<IDLBoolean> PublicKeyCredential::isConditionalMediationAvailable(
     ScriptState* script_state) {
   auto* resolver =
@@ -224,9 +223,9 @@ ScriptPromise<IDLBoolean> PublicKeyCredential::isConditionalMediationAvailable(
   auto* authenticator =
       CredentialManagerProxy::From(script_state)->Authenticator();
   authenticator->IsConditionalMediationAvailable(
-      WTF::BindOnce([](ScriptPromiseResolver<IDLBoolean>* resolver,
-                       bool available) { resolver->Resolve(available); },
-                    WrapPersistent(resolver)));
+      BindOnce([](ScriptPromiseResolver<IDLBoolean>* resolver,
+                  bool available) { resolver->Resolve(available); },
+               WrapPersistent(resolver)));
   return promise;
 }
 
@@ -238,13 +237,13 @@ v8::Local<v8::Object> PublicKeyCredential::toJSON(
   // return a RegistrationResponseJSON, and in the latter an
   // AuthenticationResponseJSON.  We can't reflect the type of `response_`
   // though, so we serialize it to JSON first and branch on the result type.
-  absl::variant<AuthenticatorAssertionResponseJSON*,
-                AuthenticatorAttestationResponseJSON*>
+  std::variant<AuthenticatorAssertionResponseJSON*,
+               AuthenticatorAttestationResponseJSON*>
       response_json = response_->toJSON();
 
   v8::Local<v8::Value> result;
-  absl::visit(
-      base::Overloaded{
+  std::visit(
+      absl::Overload{
           [&](AuthenticatorAttestationResponseJSON* attestation_response) {
             auto* registration_response = RegistrationResponseJSON::Create();
             registration_response->setId(id());
@@ -314,8 +313,8 @@ ScriptPromise<IDLUndefined> PublicKeyCredential::signalUnknownCredential(
       script_state, exception_state.GetContext());
   auto promise = resolver->Promise();
 
-  Vector<char> decoded_cred_id;
-  if (!WTF::Base64UnpaddedURLDecode(options->credentialId(), decoded_cred_id)) {
+  Vector<uint8_t> decoded_cred_id;
+  if (!Base64UnpaddedUrlDecode(options->credentialId(), decoded_cred_id)) {
     resolver->RejectWithTypeError("Invalid base64url string for credentialId.");
     return promise;
   }
@@ -325,8 +324,10 @@ ScriptPromise<IDLUndefined> PublicKeyCredential::signalUnknownCredential(
       CredentialManagerProxy::From(script_state)->Authenticator();
   authenticator->Report(
       std::move(mojo_options),
-      WTF::BindOnce(&OnSignalReportComplete,
-                    std::make_unique<ScopedPromiseResolver>(resolver)));
+      BindOnce(&OnSignalReportComplete,
+               std::make_unique<ScopedPromiseResolver>(
+                   resolver,
+                   ScopedPromiseResolver::ConnectionType::kAuthenticator)));
   return promise;
 }
 
@@ -345,16 +346,16 @@ ScriptPromise<IDLUndefined> PublicKeyCredential::signalAllAcceptedCredentials(
       script_state, exception_state.GetContext());
   auto promise = resolver->Promise();
 
-  for (WTF::String credential_id : options->allAcceptedCredentialIds()) {
-    Vector<char> decoded_cred_id;
-    if (!WTF::Base64UnpaddedURLDecode(credential_id, decoded_cred_id)) {
+  for (String credential_id : options->allAcceptedCredentialIds()) {
+    Vector<uint8_t> decoded_cred_id;
+    if (!Base64UnpaddedUrlDecode(credential_id, decoded_cred_id)) {
       resolver->RejectWithTypeError(
           "Invalid base64url string for allAcceptedCredentialIds.");
       return promise;
     }
   }
-  Vector<char> decoded_user_id;
-  if (!WTF::Base64UnpaddedURLDecode(options->userId(), decoded_user_id)) {
+  Vector<uint8_t> decoded_user_id;
+  if (!Base64UnpaddedUrlDecode(options->userId(), decoded_user_id)) {
     resolver->RejectWithTypeError("Invalid base64url string for userId.");
     return promise;
   }
@@ -364,8 +365,10 @@ ScriptPromise<IDLUndefined> PublicKeyCredential::signalAllAcceptedCredentials(
       CredentialManagerProxy::From(script_state)->Authenticator();
   authenticator->Report(
       std::move(mojo_options),
-      WTF::BindOnce(&OnSignalReportComplete,
-                    std::make_unique<ScopedPromiseResolver>(resolver)));
+      BindOnce(&OnSignalReportComplete,
+               std::make_unique<ScopedPromiseResolver>(
+                   resolver,
+                   ScopedPromiseResolver::ConnectionType::kAuthenticator)));
   return promise;
 }
 
@@ -384,8 +387,8 @@ ScriptPromise<IDLUndefined> PublicKeyCredential::signalCurrentUserDetails(
       script_state, exception_state.GetContext());
   auto promise = resolver->Promise();
 
-  Vector<char> decoded_user_id;
-  if (!WTF::Base64UnpaddedURLDecode(options->userId(), decoded_user_id)) {
+  Vector<uint8_t> decoded_user_id;
+  if (!Base64UnpaddedUrlDecode(options->userId(), decoded_user_id)) {
     resolver->RejectWithTypeError("Invalid base64url string for userId.");
     return promise;
   }
@@ -395,8 +398,10 @@ ScriptPromise<IDLUndefined> PublicKeyCredential::signalCurrentUserDetails(
       CredentialManagerProxy::From(script_state)->Authenticator();
   authenticator->Report(
       std::move(mojo_options),
-      WTF::BindOnce(&OnSignalReportComplete,
-                    std::make_unique<ScopedPromiseResolver>(resolver)));
+      BindOnce(&OnSignalReportComplete,
+               std::make_unique<ScopedPromiseResolver>(
+                   resolver,
+                   ScopedPromiseResolver::ConnectionType::kAuthenticator)));
   return promise;
 }
 

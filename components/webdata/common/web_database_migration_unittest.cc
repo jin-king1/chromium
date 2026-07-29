@@ -2,12 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <string>
 
-#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/path_service.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -21,13 +22,15 @@
 #include "components/autofill/core/browser/geo/autofill_country.h"
 #include "components/autofill/core/browser/webdata/addresses/address_autofill_table.h"
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_table.h"
+#include "components/autofill/core/browser/webdata/autofill_ai/entity_table.h"
 #include "components/autofill/core/browser/webdata/autofill_change.h"
 #include "components/autofill/core/browser/webdata/autofill_sync_metadata_table.h"
 #include "components/autofill/core/browser/webdata/payments/payments_autofill_table.h"
+#include "components/autofill/core/browser/webdata/valuables/valuables_table.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/os_crypt/async/browser/test_utils.h"
 #include "components/os_crypt/async/common/test_encryptor.h"
-#include "components/plus_addresses/webdata/plus_address_table.h"
+#include "components/plus_addresses/core/browser/webdata/plus_address_table.h"
 #include "components/search_engines/keyword_table.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/signin/public/webdata/token_service_table.h"
@@ -47,13 +50,13 @@ std::string NormalizeSchemaForComparison(const std::string& schema) {
   normalized.reserve(schema.size());
   bool skip_following_spaces = false;
   for (char c : schema) {
-    if (base::Contains("\"[]`", c)) {  // Quotes
+    if (std::ranges::contains("\"[]`", c)) {  // Quotes
       continue;
     }
     if (c == ' ' && skip_following_spaces) {
       continue;
     }
-    bool is_separator = base::Contains(",()", c);
+    bool is_separator = std::ranges::contains(",()", c);
     if (is_separator && !normalized.empty() && normalized.back() == ' ') {
       normalized.pop_back();
     }
@@ -62,8 +65,6 @@ std::string NormalizeSchemaForComparison(const std::string& schema) {
   }
   return normalized;
 }
-
-}  // anonymous namespace
 
 // The WebDatabaseMigrationTest encapsulates testing of database migrations.
 // Specifically, these tests are intended to exercise any schema changes in
@@ -92,8 +93,10 @@ class WebDatabaseMigrationTest : public testing::Test {
   void DoMigration() {
     autofill::AddressAutofillTable address_autofill_table;
     autofill::AutocompleteTable autocomplete_table;
+    autofill::EntityTable entity_table;
     autofill::AutofillSyncMetadataTable autofill_sync_metadata_table;
     autofill::PaymentsAutofillTable payments_autofill_table;
+    autofill::ValuablesTable valuables_table;
     KeywordTable keyword_table;
     plus_addresses::PlusAddressTable plus_address_table;
     TokenServiceTable token_service_table;
@@ -102,13 +105,15 @@ class WebDatabaseMigrationTest : public testing::Test {
     db.AddTable(&address_autofill_table);
     db.AddTable(&autocomplete_table);
     db.AddTable(&autofill_sync_metadata_table);
+    db.AddTable(&entity_table);
     db.AddTable(&payments_autofill_table);
     db.AddTable(&keyword_table);
     db.AddTable(&plus_address_table);
     db.AddTable(&token_service_table);
+    db.AddTable(&valuables_table);
 
     // This causes the migration to occur.
-    ASSERT_EQ(sql::INIT_OK, db.Init(GetDatabasePath(), &encryptor_));
+    ASSERT_EQ(sql::INIT_OK, db.Init(GetDatabasePath(), encryptor_));
   }
 
  protected:
@@ -152,7 +157,7 @@ class WebDatabaseMigrationTest : public testing::Test {
   //   > .dump
   void LoadDatabase(const base::FilePath::StringType& file);
 
-  os_crypt_async::TestEncryptor encryptor_;
+  scoped_refptr<os_crypt_async::TestEncryptor> encryptor_;
 
  private:
   base::ScopedTempDir temp_dir_;
@@ -1512,6 +1517,7 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion135ToCurrent) {
   }
 }
 
+#if BUILDFLAG(IS_WIN)
 class WebDatabaseMigrationTestEncryption
     : public WebDatabaseMigrationTest,
       public ::testing::WithParamInterface<bool> {
@@ -1521,16 +1527,12 @@ class WebDatabaseMigrationTestEncryption
 
 // Tests addition of the url_hash column to the keywords table.
 TEST_P(WebDatabaseMigrationTestEncryption, MigrateVersion136ToCurrent) {
-  // The feature is tested elsewhere, force enable to make sure expectations
-  // match.
-  base::test::ScopedFeatureList enable_verification(
-      features::kKeywordTableHashVerification);
-
-  encryptor_.set_encryption_available_for_testing(IsEncryptionAvailable());
-  encryptor_.set_decryption_available_for_testing(IsEncryptionAvailable());
+  encryptor_->set_encryption_available_for_testing(IsEncryptionAvailable());
+  encryptor_->set_decryption_available_for_testing(IsEncryptionAvailable());
 
   ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_136.sql")));
   const char kTestUrl[] = "chrome://test/?q={searchTerms}";
+  const std::string_view kTestKeyword = "@testing";
   const TemplateURLID kTestId = 1;
   {
     sql::Database connection(sql::test::kTestTag);
@@ -1541,15 +1543,10 @@ TEST_P(WebDatabaseMigrationTestEncryption, MigrateVersion136ToCurrent) {
     // Insert a keyword to test that it is migrated correctly.
     ASSERT_TRUE(connection.ExecuteScriptForTesting(base::StrCat(
         {"INSERT INTO keywords VALUES(", base::NumberToString(kTestId),
-         ",'Test','@test','','", kTestUrl,
+         ",'Test','", kTestKeyword, "','','", kTestUrl,
          "',1,'',0,0,'','',0,0,0,'','[]','','','','','',0,0,1,2,0,0);"})));
   }
-  {
-    base::HistogramTester histograms;
-    DoMigration();
-    histograms.ExpectUniqueSample("Search.KeywordTable.MigrationSuccess.V137",
-                                  true, 1);
-  }
+  DoMigration();
   {
     sql::Database connection(sql::test::kTestTag);
     ASSERT_TRUE(connection.Open(GetDatabasePath()));
@@ -1567,11 +1564,13 @@ TEST_P(WebDatabaseMigrationTestEncryption, MigrateVersion136ToCurrent) {
 
     EXPECT_EQ(type, sql::ColumnType::kBlob);
     const auto encrypted_hash = stmt.ColumnBlob(0);
-    const auto hash = encryptor_.DecryptData(encrypted_hash);
+    const auto hash = encryptor_->DecryptData(encrypted_hash);
     EXPECT_TRUE(hash.has_value());
     TemplateURLData data;
     data.id = kTestId;
     data.SetURL(kTestUrl);
+    data.SetKeyword(base::UTF8ToUTF16(kTestKeyword));
+    data.starter_pack_id = 2;
     auto expected_hash = data.GenerateHash();
     EXPECT_EQ(hash->size(), expected_hash.size());
     EXPECT_TRUE(std::ranges::equal(
@@ -1590,13 +1589,10 @@ INSTANTIATE_TEST_SUITE_P(/*empty*/,
 // Tests migration of a keywords table with an empty url, which is invalid. The
 // entry should not be migrated, and the test should not crash. The dropping of
 // the invalid entry takes place upon the first GetKeywords call, and this is
-// tested elsewhere in KeywordTableTest.KeywordBadUrl.
+// tested elsewhere in KeywordTableTest.KeywordBadUrl. This test is only valid
+// on Windows because the bad url detection only happens if encrypted hashing is
+// enabled.
 TEST_F(WebDatabaseMigrationTest, MigrateVersion136ToCurrentBadUrl) {
-  // The feature is tested elsewhere, force enable to make sure expectations
-  // match.
-  base::test::ScopedFeatureList enable_verification(
-      features::kKeywordTableHashVerification);
-
   ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_136.sql")));
   const TemplateURLID kTestId = 99;
   {
@@ -1611,10 +1607,451 @@ TEST_F(WebDatabaseMigrationTest, MigrateVersion136ToCurrentBadUrl) {
          ",'Test','@test','','", /*url=*/"",
          "',1,'',0,0,'','',0,0,0,'','[]','','','','','',0,0,1,2,0,0);"})));
   }
+  DoMigration();
+}
+#else
+// On non-Windows the 136 to 137 migration does nothing except update add the
+// `url_hash` column and update the database version.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion136ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_136.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(136, VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist("keywords", "url_hash"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesColumnExist("keywords", "url_hash"));
+  }
+}
+#endif  // BUILDFLAG(IS_WIN)
+
+TEST_F(WebDatabaseMigrationTest, MigrateVersion137ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_137.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(137, VersionFromConnection(&connection));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesTableExist("attributes"));
+    EXPECT_FALSE(connection.DoesTableExist("entities"));
+    EXPECT_FALSE(connection.DoesTableExist("entities_version"));
+    EXPECT_TRUE(connection.DoesTableExist("autofill_ai_attributes"));
+    EXPECT_TRUE(connection.DoesColumnExist("autofill_ai_attributes",
+                                           "value_encrypted"));
+    EXPECT_TRUE(connection.DoesTableExist("autofill_ai_entities"));
+  }
+}
+
+// Tests the renaming of the column in the loyalty_card table from
+// `unmasked_loyalty_card_suffix` to 'loyalty_card_number`.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion138ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_138.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(138, VersionFromConnection(&connection));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesTableExist("loyalty_cards"));
+
+    EXPECT_TRUE(connection.DoesColumnExist("loyalty_cards", "loyalty_card_id"));
+    EXPECT_FALSE(connection.DoesColumnExist("loyalty_cards", "guid"));
+
+    EXPECT_TRUE(
+        connection.DoesColumnExist("loyalty_cards", "loyalty_card_number"));
+    EXPECT_FALSE(connection.DoesColumnExist("loyalty_cards",
+                                            "unmasked_loyalty_card_suffix"));
+  }
+}
+
+// Version 139 added new columns to the entities table. These columns are now
+// deprecated and moved to the entities_metadata table. The migration unit test
+// to the current version thus no longer applies.
+
+TEST_F(WebDatabaseMigrationTest, MigrateVersion140ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_140.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(140, VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist("masked_credit_cards",
+                                            "card_benefit_source"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesColumnExist("masked_credit_cards",
+                                           "card_benefit_source"));
+  }
+}
+
+TEST_F(WebDatabaseMigrationTest, MigrateVersion141ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_141.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(141, VersionFromConnection(&connection));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    ASSERT_TRUE(connection.DoesTableExist("autofill_ai_entities"));
+    EXPECT_TRUE(
+        connection.DoesColumnExist("autofill_ai_entities", "record_type"));
+  }
+}
+
+TEST_F(WebDatabaseMigrationTest, MigrateVersion142ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_142.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(142, VersionFromConnection(&connection));
+    ASSERT_TRUE(connection.ExecuteScriptForTesting(R"(
+      INSERT INTO autofill_ai_entities
+      (guid, entity_type, nickname, date_modified, use_count, use_date)
+      VALUES
+      ('00000000-0000-0000-0000-000000000000', 'Passport', 'My Passport', 123, 123, 123);
+    )"));
+  }
+
+  DoMigration();
+
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    ASSERT_TRUE(connection.DoesTableExist("autofill_ai_entities"));
+    EXPECT_TRUE(connection.DoesColumnExist("autofill_ai_entities",
+                                           "attributes_read_only"));
+
+    sql::Statement s_entities(connection.GetUniqueStatement(
+        "SELECT guid, attributes_read_only from autofill_ai_entities"));
+    ASSERT_TRUE(s_entities.Step());
+    EXPECT_EQ(s_entities.ColumnString(0),
+              "00000000-0000-0000-0000-000000000000");
+    EXPECT_FALSE(s_entities.ColumnBool(1));
+    ASSERT_FALSE(s_entities.Step());
+  }
+}
+
+// Tests addition of card_creation_source column in masked_credit_cards table.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion143ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_143.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(143, VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist("masked_credit_cards",
+                                            "card_creation_source"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesColumnExist("masked_credit_cards",
+                                           "card_creation_source"));
+  }
+}
+
+// Tests dropping the use_date2 and use_date3 columns from the addresses table.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion144ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_144.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(144, VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesColumnExist("addresses", "use_date2"));
+    EXPECT_TRUE(connection.DoesColumnExist("addresses", "use_date3"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist("addresses", "use_date2"));
+    EXPECT_FALSE(connection.DoesColumnExist("addresses", "use_date3"));
+  }
+}
+
+// Tests addition of frecency_override column in autofill_ai_entities table.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion145ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_145.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(145, VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist("autofill_ai_entities",
+                                            "frecency_override"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesColumnExist("autofill_ai_entities",
+                                           "frecency_override"));
+  }
+}
+
+// Tests addition of autofill_ai_entities_metadata table.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion146ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_146.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(146, VersionFromConnection(&connection));
+    EXPECT_TRUE(
+        connection.DoesColumnExist("autofill_ai_entities", "use_count"));
+    EXPECT_TRUE(connection.DoesColumnExist("autofill_ai_entities", "use_date"));
+    EXPECT_TRUE(
+        connection.DoesColumnExist("autofill_ai_entities", "date_modified"));
+
+    // Insert a dummy entity to test that it is migrated correctly.
+    ASSERT_TRUE(connection.ExecuteScriptForTesting(R"(
+      INSERT INTO autofill_ai_entities
+      (guid, entity_type, nickname, use_count, use_date, date_modified)
+      VALUES
+      ('00000000-0000-0000-0000-000000000001', 'TestEntity', 'TestNickname', 11, 22, 33);
+    )"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_FALSE(
+        connection.DoesColumnExist("autofill_ai_entities", "use_count"));
+    EXPECT_FALSE(
+        connection.DoesColumnExist("autofill_ai_entities", "use_date"));
+    EXPECT_FALSE(
+        connection.DoesColumnExist("autofill_ai_entities", "date_modified"));
+
+    EXPECT_TRUE(connection.DoesColumnExist("autofill_ai_entities_metadata",
+                                           "entity_guid"));
+    EXPECT_TRUE(connection.DoesColumnExist("autofill_ai_entities_metadata",
+                                           "use_count"));
+    EXPECT_TRUE(connection.DoesColumnExist("autofill_ai_entities_metadata",
+                                           "use_date"));
+    EXPECT_TRUE(connection.DoesColumnExist("autofill_ai_entities_metadata",
+                                           "date_modified"));
+
+    // The entity should still exist.
+    sql::Statement s_entities(connection.GetUniqueStatement(
+        "SELECT guid, entity_type, nickname from autofill_ai_entities"));
+    ASSERT_TRUE(s_entities.Step());
+    EXPECT_EQ(s_entities.ColumnString(0),
+              "00000000-0000-0000-0000-000000000001");
+    EXPECT_EQ(s_entities.ColumnString(1), "TestEntity");
+    EXPECT_EQ(s_entities.ColumnString(2), "TestNickname");
+    ASSERT_FALSE(s_entities.Step());
+
+    // Expect the entity's metadata in the migrated table.
+    sql::Statement s_metadata(connection.GetUniqueStatement(
+        "SELECT entity_guid, use_count, use_date, date_modified from "
+        "autofill_ai_entities_metadata"));
+    ASSERT_TRUE(s_metadata.Step());
+    EXPECT_EQ(s_metadata.ColumnString(0),
+              "00000000-0000-0000-0000-000000000001");
+    EXPECT_EQ(s_metadata.ColumnInt(1), 11);
+    EXPECT_EQ(s_metadata.ColumnInt(2), 22);
+    EXPECT_EQ(s_metadata.ColumnInt(3), 33);
+    ASSERT_FALSE(s_metadata.Step());
+  }
+}
+
+TEST_F(WebDatabaseMigrationTest, MigrateVersion147ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_147.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    ASSERT_TRUE(sql::MetaTable::DoesTableExist(&connection));
+    EXPECT_EQ(147, VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesTableExist("valuables_metadata"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    ASSERT_TRUE(sql::MetaTable::DoesTableExist(&connection));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesTableExist("valuables_metadata"));
+  }
+}
+
+TEST_F(WebDatabaseMigrationTest, MigrateVersion148ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_148.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(148, VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesColumnExist("addresses", "last_modifier_id"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist("addresses", "last_modifier_id"));
+  }
+}
+
+TEST_F(WebDatabaseMigrationTest, MigrateVersion149ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_149.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(149, VersionFromConnection(&connection));
+    EXPECT_FALSE(
+        connection.DoesColumnExist("token_service", "mtls_token_binding"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_TRUE(
+        connection.DoesColumnExist("token_service", "mtls_token_binding"));
+  }
+}
+
+TEST_F(WebDatabaseMigrationTest, MigrateVersion150ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_150.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(150, VersionFromConnection(&connection));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+  }
+}
+
+TEST_F(WebDatabaseMigrationTest, MigrateVersion151ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_151.sql")));
+  const char kTestUrl[] = "chrome://test/?q={searchTerms}";
+  const std::string_view kTestKeyword = "@testing";
+  const TemplateURLID kTestId = 1;
+  const int kTestStarterPackId = 1234;
+  const int kTestEnforcedByPolicy = 1;
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(151, VersionFromConnection(&connection));
+
+    // Insert a keyword to test that it is migrated correctly.
+    ASSERT_TRUE(connection.ExecuteScriptForTesting(base::StrCat(
+        {"INSERT INTO keywords (id, short_name, keyword, favicon_url, url, "
+         "safe_for_autoreplace, url_hash, starter_pack_id, enforced_by_policy) "
+         "VALUES (",
+         base::NumberToString(kTestId), ",'Test','", kTestKeyword, "','','",
+         kTestUrl, "',1, NULL,", base::NumberToString(kTestStarterPackId), ",",
+         base::NumberToString(kTestEnforcedByPolicy), ");"})));
+  }
   {
     base::HistogramTester histograms;
     DoMigration();
-    histograms.ExpectUniqueSample("Search.KeywordTable.MigrationSuccess.V137",
-                                  false, 1);
+    histograms.ExpectUniqueSample("Search.KeywordTable.MigrationSuccess.V152",
+                                  true, 1);
+  }
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    sql::Statement stmt(connection.GetUniqueStatement(
+        base::StrCat({"SELECT url, keyword, starter_pack_id, "
+                      "enforced_by_policy FROM keywords WHERE id=",
+                      base::NumberToString(kTestId)})));
+    EXPECT_TRUE(stmt.Step());
+    EXPECT_EQ(kTestUrl, stmt.ColumnString(0));
+    EXPECT_EQ(kTestKeyword, stmt.ColumnString(1));
+    EXPECT_EQ(kTestStarterPackId, stmt.ColumnInt(2));
+    EXPECT_EQ(kTestEnforcedByPolicy, stmt.ColumnInt(3));
   }
 }
+
+// Tests replacing the origin column with is_user_confirmed in credit_cards
+// table.
+TEST_F(WebDatabaseMigrationTest, MigrateVersion152ToCurrent) {
+  ASSERT_NO_FATAL_FAILURE(LoadDatabase(FILE_PATH_LITERAL("version_152.sql")));
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(152, VersionFromConnection(&connection));
+    EXPECT_TRUE(connection.DoesColumnExist("credit_cards", "origin"));
+    EXPECT_FALSE(
+        connection.DoesColumnExist("credit_cards", "is_user_confirmed"));
+
+    // Insert dummy credit cards to test that values are migrated correctly.
+    ASSERT_TRUE(connection.ExecuteScriptForTesting(R"(
+      INSERT INTO credit_cards (guid, origin) VALUES ('guid1', 'Chrome settings');
+      INSERT INTO credit_cards (guid, origin) VALUES ('guid2', 'http://www.example.com');
+      INSERT INTO credit_cards (guid, origin) VALUES ('guid3', '');
+    )"));
+  }
+  DoMigration();
+  {
+    sql::Database connection(sql::test::kTestTag);
+    ASSERT_TRUE(connection.Open(GetDatabasePath()));
+    EXPECT_EQ(WebDatabase::kCurrentVersionNumber,
+              VersionFromConnection(&connection));
+    EXPECT_FALSE(connection.DoesColumnExist("credit_cards", "origin"));
+    EXPECT_TRUE(
+        connection.DoesColumnExist("credit_cards", "is_user_confirmed"));
+
+    sql::Statement stmt(connection.GetUniqueStatement(
+        "SELECT guid, is_user_confirmed FROM credit_cards ORDER BY guid"));
+    ASSERT_TRUE(stmt.Step());
+    EXPECT_EQ("guid1", stmt.ColumnString(0));
+    EXPECT_TRUE(stmt.ColumnBool(1));
+
+    ASSERT_TRUE(stmt.Step());
+    EXPECT_EQ("guid2", stmt.ColumnString(0));
+    EXPECT_FALSE(stmt.ColumnBool(1));
+
+    ASSERT_TRUE(stmt.Step());
+    EXPECT_EQ("guid3", stmt.ColumnString(0));
+    EXPECT_FALSE(stmt.ColumnBool(1));
+
+    EXPECT_FALSE(stmt.Step());
+  }
+}
+
+}  // anonymous namespace

@@ -11,14 +11,15 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/test/task_environment.h"
 #include "base/win/windows_types.h"
+#include "components/update_client/utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace update_client {
 namespace {
 constexpr base::FilePath::CharType kTestDirPrefix[] =
-    FILE_PATH_LITERAL("chrome_BITS_(test)_");
+    FILE_PATH_LITERAL("BackgroundDownloaderWinTest_chrome_BITS_(test)_");
 constexpr base::FilePath::CharType kTestDirMatcher[] =
-    FILE_PATH_LITERAL("chrome_BITS_(test)_*");
+    FILE_PATH_LITERAL("BackgroundDownloaderWinTest_chrome_BITS_(test)_*");
 constexpr wchar_t kTestDownloadFilename[] = L"test_file.txt";
 constexpr char kTestDownloadContent[] = "Hello, World!";
 }  // namespace
@@ -30,13 +31,14 @@ class BackgroundDownloaderWinTest : public testing::Test {
 
   base::test::TaskEnvironment task_environment_;
   scoped_refptr<BackgroundDownloader> downloader_ =
-      base::MakeRefCounted<BackgroundDownloader>(nullptr);
+      base::MakeRefCounted<BackgroundDownloader>(nullptr,
+                                                 "BackgroundDownloaderWinTest");
 };
 
 void BackgroundDownloaderWinTest::TearDown() {
-  downloader_->EnumerateDownloadDirs(
-      kTestDirMatcher,
-      [](const base::FilePath& dir) { base::DeletePathRecursively(dir); });
+  base::FilePath dir;
+  ASSERT_TRUE(base::GetSecureTempDirectory(&dir));
+  CleanupDirectoriesOlderThan(dir, kTestDirMatcher, base::Seconds(0));
 }
 
 TEST_F(BackgroundDownloaderWinTest, CleansStaleDownloads) {

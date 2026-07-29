@@ -11,7 +11,7 @@ import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min
 import type {ColorModeSelectElement} from 'chrome://scanning/color_mode_select.js';
 import {ColorMode} from 'chrome://scanning/scanning.mojom-webui.js';
 import {getColorModeString} from 'chrome://scanning/scanning_app_util.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 import {assertOrderedAlphabetically, changeSelectedIndex} from './scanning_app_test_utils.js';
 
@@ -61,9 +61,9 @@ suite('colorModeSelectTest', function() {
 
     assertEquals(2, select.length);
     assertEquals(
-        getColorModeString(firstColorMode), getOption(0).textContent!.trim());
+        getColorModeString(firstColorMode), getOption(0).textContent.trim());
     assertEquals(
-        getColorModeString(secondColorMode), getOption(1).textContent!.trim());
+        getColorModeString(secondColorMode), getOption(1).textContent.trim());
     assertEquals(firstColorMode.toString(), select.value);
   });
 

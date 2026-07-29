@@ -171,9 +171,7 @@ class ServiceWorkerContainerTest : public PageTestBase {
     return ToScriptStateForMainWorld(GetDocument().GetFrame());
   }
 
-  void SetPageURL(const String& url) {
-    NavigateTo(KURL(NullURL(), url));
-  }
+  void SetPageURL(const String& url) { NavigateTo(KURL(NullUrl(), url)); }
 
   void TestRegisterRejected(const String& script_url,
                             const String& scope,
@@ -188,7 +186,8 @@ class ServiceWorkerContainerTest : public PageTestBase {
     RegistrationOptions* options = RegistrationOptions::Create();
     options->setScope(scope);
     ScriptPromise<ServiceWorkerRegistration> promise =
-        container->registerServiceWorker(GetScriptState(), script_url, options);
+        container->registerServiceWorkerWithoutTrustedTypes(
+            GetScriptState(), script_url, options);
     ExpectRejected(GetScriptState(), promise, value_test);
   }
 
@@ -348,8 +347,8 @@ TEST_F(ServiceWorkerContainerTest,
     ScriptState::Scope script_scope(GetScriptState());
     RegistrationOptions* options = RegistrationOptions::Create();
     options->setScope("y/");
-    container->registerServiceWorker(GetScriptState(), "/x/y/worker.js",
-                                     options);
+    container->registerServiceWorkerWithoutTrustedTypes(
+        GetScriptState(), "/x/y/worker.js", options);
 
     EXPECT_EQ(1ul, stub_provider.RegisterCallCount());
     EXPECT_EQ(WebURL(KURL("http://localhost/x/y/")),
@@ -394,9 +393,9 @@ TEST_F(ServiceWorkerContainerTest,
   {
     ScriptState::Scope script_scope(GetScriptState());
     RegistrationOptions* options = RegistrationOptions::Create();
-    options->setUpdateViaCache("none");
-    container->registerServiceWorker(GetScriptState(), "/x/y/worker.js",
-                                     options);
+    options->setUpdateViaCache(V8ServiceWorkerUpdateViaCache::Enum::kNone);
+    container->registerServiceWorkerWithoutTrustedTypes(
+        GetScriptState(), "/x/y/worker.js", options);
 
     EXPECT_EQ(1ul, stub_provider.RegisterCallCount());
     EXPECT_EQ(WebURL(KURL(KURL(), "http://localhost/x/y/")),
@@ -420,9 +419,9 @@ TEST_F(ServiceWorkerContainerTest, Register_TypeOptionDelegatesToProvider) {
   {
     ScriptState::Scope script_scope(GetScriptState());
     RegistrationOptions* options = RegistrationOptions::Create();
-    options->setType("module");
-    container->registerServiceWorker(GetScriptState(), "/x/y/worker.js",
-                                     options);
+    options->setType(V8WorkerType::Enum::kModule);
+    container->registerServiceWorkerWithoutTrustedTypes(
+        GetScriptState(), "/x/y/worker.js", options);
 
     EXPECT_EQ(1ul, stub_provider.RegisterCallCount());
     EXPECT_EQ(WebURL(KURL(KURL(), "http://localhost/x/y/")),

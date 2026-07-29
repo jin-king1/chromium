@@ -5,12 +5,12 @@
 package org.chromium.chrome.test;
 
 import android.app.ActivityOptions;
-import android.app.Instrumentation;
 import android.content.Intent;
 import android.os.Bundle;
 import android.provider.Browser;
 import android.text.TextUtils;
 
+import androidx.test.core.app.ApplicationProvider;
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.runner.lifecycle.Stage;
 
@@ -18,6 +18,7 @@ import org.junit.Assert;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
+import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.ApplicationTestUtils;
@@ -25,7 +26,8 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.omnibox.UrlBar;
+import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.password_manager.PasswordManagerTestHelper;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
@@ -36,7 +38,6 @@ import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.MenuUtils;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
-import org.chromium.chrome.test.util.WaitForFocusHelper;
 
 import java.util.concurrent.TimeoutException;
 
@@ -44,6 +45,10 @@ import java.util.concurrent.TimeoutException;
 public class ChromeTabbedActivityTestRule extends ChromeActivityTestRule<ChromeTabbedActivity> {
     private static final String TAG = "ChromeTabbedATR";
 
+    /**
+     * @deprecated use ChromeTransitTestRules instead.
+     */
+    @Deprecated
     public ChromeTabbedActivityTestRule() {
         super(ChromeTabbedActivity.class);
     }
@@ -54,10 +59,24 @@ public class ChromeTabbedActivityTestRule extends ChromeActivityTestRule<ChromeT
 
     public void resumeMainActivityFromLauncher() throws Exception {
         Assert.assertNotNull(getActivity());
+        int state = ApplicationStatus.getStateForActivity(getActivity());
         Assert.assertTrue(
-                ApplicationStatus.getStateForActivity(getActivity()) == ActivityState.STOPPED
-                        || ApplicationStatus.getStateForActivity(getActivity())
-                                == ActivityState.PAUSED);
+                "Activity should be STOPPED or PAUSED before resuming, but state is " + state,
+                state == ActivityState.STOPPED || state == ActivityState.PAUSED);
+
+        launchMainActivityFromLauncher();
+    }
+
+    /**
+     * Simulates launching the main activity from the Android launcher by firing its launch intent.
+     *
+     * <p>This brings the activity to the foreground and waits for it to reach the RESUMED state.
+     * Because it does not assert the prior lifecycle state, it is particularly useful for scenarios
+     * where the activity is already in the foreground but needs to be expanded (e.g., expanding
+     * from a Picture-in-Picture window).
+     */
+    public void launchMainActivityFromLauncher() throws Exception {
+        Assert.assertNotNull(getActivity());
 
         Intent launchIntent =
                 getActivity()
@@ -87,23 +106,37 @@ public class ChromeTabbedActivityTestRule extends ChromeActivityTestRule<ChromeT
     }
 
     /**
-     * Starts the Main activity and open a blank page.
-     * This is faster and less flakiness-prone than starting on the NTP.
+     * Starts the Main activity on the specified URL. Passing a null URL ensures the default page is
+     * loaded, which is the NTP with a new profile .
+     */
+    public void startMainActivityWithTrustedURL(String url) {
+        Assert.assertFalse(TextUtils.isEmpty(url));
+        // Only launch Chrome.
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        prepareUrlIntent(intent, url);
+        IntentUtils.addTrustedIntentExtras(intent);
+        startMainActivityFromIntent(intent, url);
+    }
+
+    /**
+     * Starts the Main activity and open a blank page. This is faster and less flakiness-prone than
+     * starting on the NTP.
      */
     public void startMainActivityOnBlankPage() {
         startMainActivityWithURL("about:blank");
     }
 
-    /**
-     * Starts the Main activity as if it was started from an external application, on the
-     * specified URL.
-     */
-    public void startMainActivityFromExternalApp(String url, String appId) {
+    /** Starts the Main activity on a blank page in incognito mode. */
+    public void startMainActivityOnIncognitoBlankPage() {
         Intent intent = new Intent(Intent.ACTION_VIEW);
-        if (appId != null) {
-            intent.putExtra(Browser.EXTRA_APPLICATION_ID, appId);
-        }
-        startMainActivityFromIntent(intent, url);
+        intent.addCategory(Intent.CATEGORY_LAUNCHER);
+        intent.putExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, true);
+        prepareUrlIntent(intent, "about:blank");
+        intent.putExtra(
+                Browser.EXTRA_APPLICATION_ID,
+                ApplicationProvider.getApplicationContext().getPackageName());
+        IntentUtils.addTrustedIntentExtras(intent);
+        startMainActivityFromIntent(intent, "about:blank");
     }
 
     /**
@@ -137,8 +170,10 @@ public class ChromeTabbedActivityTestRule extends ChromeActivityTestRule<ChromeT
     }
 
     /**
-     * Open an incognito tab by invoking the 'new incognito' menu item.
-     * Returns when receiving the 'PAGE_LOAD_FINISHED' notification.
+     * Open an incognito tab by invoking the 'new incognito' menu item. Returns when receiving the
+     * 'PAGE_LOAD_FINISHED' notification.
+     *
+     * @deprecated Prefer public transit APIs when possible.
      */
     public Tab newIncognitoTabFromMenu() {
         final CallbackHelper createdCallback = new CallbackHelper();
@@ -180,7 +215,7 @@ public class ChromeTabbedActivityTestRule extends ChromeActivityTestRule<ChromeT
         }
         ThreadUtils.runOnUiThreadBlocking(() -> incognitoTabModel.removeObserver(observer));
 
-        Tab tab = getActivity().getActivityTab();
+        Tab tab = getActivityTab();
 
         ChromeTabUtils.waitForTabPageLoaded(tab, (String) null);
         NewTabPageTestUtils.waitForNtpLoaded(tab);
@@ -190,42 +225,51 @@ public class ChromeTabbedActivityTestRule extends ChromeActivityTestRule<ChromeT
     }
 
     /**
-     * New multiple incognito tabs by invoking the 'new incognito' menu item n times.
-     * @param n The number of tabs you want to create.
-     */
-    public void newIncognitoTabsFromMenu(int n) {
-        while (n > 0) {
-            newIncognitoTabFromMenu();
-            --n;
-        }
-    }
-
-    /**
-     * Looks up the Omnibox in the view hierarchy and types the specified text into it, requesting
-     * focus and using an inter-character delay of 200ms.
+     * Opens a new incognito window from the app menu.
      *
-     * @param oneCharAtATime Whether to type text one character at a time or all at once.
+     * <p>This method will return when the new incognito window is opened and its tab becomes
+     * active.
+     *
+     * @deprecated Please prefer public transit APIs when possible.
+     * @return The {@link ChromeTabbedActivity} for the incognito window.
      */
-    public void typeInOmnibox(String text, boolean oneCharAtATime) throws InterruptedException {
-        final UrlBar urlBar = getActivity().findViewById(R.id.url_bar);
-        Assert.assertNotNull(urlBar);
+    public ChromeTabbedActivity newIncognitoWindowFromMenu() {
+        assert IncognitoUtils.shouldOpenIncognitoAsWindow()
+                : "This method shouldn't be called when we shouldn't open incognito windows";
 
-        WaitForFocusHelper.acquireFocusForView(urlBar);
+        MenuUtils.invokeCustomMenuActionSync(
+                InstrumentationRegistry.getInstrumentation(),
+                getActivity(),
+                R.id.new_incognito_window_menu_id);
 
-        ThreadUtils.runOnUiThreadBlocking(
+        // Use an array of one element to capture the ChromeTabbedActivity in the lambda below.
+        // This is because we need something that's effectively final.
+        ChromeTabbedActivity[] chromeTabbedActivities = new ChromeTabbedActivity[1];
+        CriteriaHelper.pollUiThread(
                 () -> {
-                    if (!oneCharAtATime) {
-                        urlBar.setText(text);
+                    for (var activity : ApplicationStatus.getRunningActivities()) {
+                        if (!(activity instanceof ChromeTabbedActivity chromeTabbedActivity)) {
+                            continue;
+                        }
+                        if (!chromeTabbedActivity.isIncognitoWindow()) {
+                            continue;
+                        }
+
+                        var tab = chromeTabbedActivity.getActivityTabProvider().get();
+                        if (tab == null) {
+                            continue;
+                        }
+
+                        if (tab.isActivated()) {
+                            chromeTabbedActivities[0] = chromeTabbedActivity;
+                            return true;
+                        }
                     }
+
+                    return false;
                 });
 
-        if (oneCharAtATime) {
-            final Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
-            for (int i = 0; i < text.length(); ++i) {
-                instrumentation.sendStringSync(text.substring(i, i + 1));
-                // Let's put some delay between key strokes to simulate a user pressing the keys.
-                Thread.sleep(20);
-            }
-        }
+        Log.d(TAG, "newIncognitoWindowFromMenu <<");
+        return chromeTabbedActivities[0];
     }
 }

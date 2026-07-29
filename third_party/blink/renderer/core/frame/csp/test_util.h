@@ -21,7 +21,7 @@
 namespace blink {
 
 MATCHER_P2(HasConsole, str, level, "") {
-  return arg.first.Contains(str) && arg.second == level;
+  return arg.first.contains(str) && arg.second == level;
 }
 
 // Simple CSP delegate that stores the console messages logged by the
@@ -40,10 +40,11 @@ class TestCSPDelegate final : public GarbageCollected<TestCSPDelegate>,
   const KURL& Url() const override { return url_; }
   void SetSandboxFlags(network::mojom::blink::WebSandboxFlags) override {}
   void SetRequireTrustedTypes() override {}
-  void AddInsecureRequestPolicy(mojom::blink::InsecureRequestPolicy) override {}
-  std::unique_ptr<SourceLocation> GetSourceLocation() override {
-    return nullptr;
-  }
+  void ApplyInsecureRequestPolicy(
+      mojom::blink::InsecureRequestPolicy) override {}
+  void NotifyBrowserOfInsecureRequestPolicy(
+      mojom::blink::InsecureRequestPolicy) override {}
+  SourceLocation* GetSourceLocation() override { return nullptr; }
   std::optional<uint16_t> GetStatusCode() override { return std::nullopt; }
   String GetDocumentReferrer() override { return ""; }
   void DispatchViolationEvent(const SecurityPolicyViolationEventInit&,
@@ -64,7 +65,8 @@ class TestCSPDelegate final : public GarbageCollected<TestCSPDelegate>,
   void ReportBlockedScriptExecutionToInspector(
       const String& directive_text) override {}
   void DidAddContentSecurityPolicies(
-      WTF::Vector<network::mojom::blink::ContentSecurityPolicyPtr>) override {}
+      Vector<network::mojom::blink::ContentSecurityPolicyPtr>) override {}
+  bool ScriptSrcExtendedHashesEnabled() override { return false; }
 
   void Trace(Visitor*) const override {}
 
@@ -74,9 +76,6 @@ class TestCSPDelegate final : public GarbageCollected<TestCSPDelegate>,
       SecurityOrigin::Create(url_);
   Vector<std::pair<String, ConsoleMessage::Level>> console_messages_;
 };
-
-WebContentSecurityPolicy ConvertToPublic(
-    network::mojom::blink::ContentSecurityPolicyPtr policy);
 
 }  // namespace blink
 

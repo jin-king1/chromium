@@ -5,7 +5,7 @@
 #ifndef COMPONENTS_AUTOFILL_IOS_BROWSER_AUTOFILL_CLIENT_IOS_BRIDGE_H_
 #define COMPONENTS_AUTOFILL_IOS_BROWSER_AUTOFILL_CLIENT_IOS_BRIDGE_H_
 
-#include <vector>
+#import <vector>
 
 #import "base/functional/callback_forward.h"
 #import "base/memory/weak_ptr.h"
@@ -28,10 +28,6 @@ struct Suggestion;
 // Checks whether the qurrent query is the most recent one.
 - (bool)isLastQueriedField:(autofill::FieldGlobalId)fieldId;
 
-// Shows a snackbar that offers a user to undo filling a plus address as part of
-// address form filling.
-- (void)showPlusAddressEmailOverrideNotification:
-    (base::OnceClosure)emailOverrideUndoCallback;
 
 @end
 

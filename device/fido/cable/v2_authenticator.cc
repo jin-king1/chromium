@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <string_view>
+#include <variant>
 
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
@@ -27,20 +28,21 @@
 #include "device/fido/cable/v2_handshake.h"
 #include "device/fido/cable/websocket_adapter.h"
 #include "device/fido/cbor_extract.h"
-#include "device/fido/features.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/fido_parsing_utils.h"
 #include "device/fido/network_context_factory.h"
-#include "device/fido/public_key_credential_descriptor.h"
-#include "device/fido/public_key_credential_params.h"
-#include "device/fido/public_key_credential_rp_entity.h"
-#include "device/fido/public_key_credential_user_entity.h"
+#include "device/fido/public/features.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/public_key_credential_descriptor.h"
+#include "device/fido/public/public_key_credential_params.h"
+#include "device/fido/public/public_key_credential_rp_entity.h"
+#include "device/fido/public/public_key_credential_user_entity.h"
 #include "net/base/isolation_info.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/storage_access_api/status.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/constants.h"
+#include "services/network/public/mojom/client_security_state.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/mojom/webauthn/authenticator.mojom.h"
 #include "third_party/boringssl/src/include/openssl/aes.h"
 #include "third_party/boringssl/src/include/openssl/ec_key.h"
@@ -377,18 +379,26 @@ class TunnelTransport : public Transport {
   void StartWebSocket() {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+    uint32_t options = network::mojom::kWebSocketOptionBlockAllCookies;
+    if (base::FeatureList::IsEnabled(kWebAuthnSocketMaxPriorityMode)) {
+      options |= network::mojom::kWebSocketOptionMaximumPriority;
+    }
     network_context_factory_.Run()->CreateWebSocket(
-        target_, {device::kCableWebSocketProtocol}, net::SiteForCookies(),
+        target_, {device::kCableWebSocketProtocol},
         net::StorageAccessApiStatus::kNone, net::IsolationInfo(),
-        /*additional_headers=*/{}, network::mojom::kBrowserProcessId,
+        /*additional_headers=*/{}, network::OriginatingProcessId::browser(),
         url::Origin::Create(target_),
-        network::mojom::kWebSocketOptionBlockAllCookies,
+        network::mojom::ClientSecurityState::New(), options,
         net::MutableNetworkTrafficAnnotationTag(kTrafficAnnotation),
         websocket_client_->BindNewHandshakeClientPipe(),
         /*url_loader_network_observer=*/mojo::NullRemote(),
         /*auth_handler=*/mojo::NullRemote(),
         /*header_client=*/mojo::NullRemote(),
-        /*throttling_profile_id=*/std::nullopt);
+        /*throttling_profile_id=*/std::nullopt,
+        // This is a browser-internal connection for the caBLE rendezvous
+        // tunnel. It does not belong to any webpage, so we bypass connection
+        // allowlists.
+        /*network_restrictions_id=*/network::GetNoOpNetworkRestrictionsId());
     FIDO_LOG(DEBUG) << "Creating WebSocket to " << target_.spec();
   }
 
@@ -672,14 +682,14 @@ class CTAP2Processor : public Transaction {
       return;
     }
 
-    if (auto* error = absl::get_if<Platform::Error>(&update)) {
+    if (auto* error = std::get_if<Platform::Error>(&update)) {
       have_completed_ = true;
       platform_->OnCompleted(*error);
       return;
-    } else if (auto* status = absl::get_if<Platform::Status>(&update)) {
+    } else if (auto* status = std::get_if<Platform::Status>(&update)) {
       platform_->OnStatus(*status);
       return;
-    } else if (absl::get_if<Transport::Disconnected>(&update)) {
+    } else if (std::get_if<Transport::Disconnected>(&update)) {
       std::optional<Platform::Error> maybe_error;
       if (!transaction_received_) {
         maybe_error = Platform::Error::UNEXPECTED_EOF;
@@ -691,22 +701,22 @@ class CTAP2Processor : public Transaction {
       return;
     }
 
-    auto& msg = absl::get<std::pair<PayloadType, std::vector<uint8_t>>>(update);
+    auto& msg = std::get<std::pair<PayloadType, std::vector<uint8_t>>>(update);
     if (msg.first != PayloadType::kCTAP) {
       have_completed_ = true;
       platform_->OnCompleted(Platform::Error::INVALID_CTAP);
       return;
     }
-    const absl::variant<std::vector<uint8_t>, Platform::Error> result =
+    const std::variant<std::vector<uint8_t>, Platform::Error> result =
         ProcessCTAPMessage(msg.second);
-    if (const auto* error = absl::get_if<Platform::Error>(&result)) {
+    if (const auto* error = std::get_if<Platform::Error>(&result)) {
       have_completed_ = true;
       platform_->OnCompleted(*error);
       return;
     }
 
     const std::vector<uint8_t>& response =
-        absl::get<std::vector<uint8_t>>(result);
+        std::get<std::vector<uint8_t>>(result);
     if (response.empty()) {
       // Response is pending.
       return;
@@ -715,7 +725,7 @@ class CTAP2Processor : public Transaction {
     transport_->Write(PayloadType::kCTAP, std::move(response));
   }
 
-  absl::variant<std::vector<uint8_t>, Platform::Error> ProcessCTAPMessage(
+  std::variant<std::vector<uint8_t>, Platform::Error> ProcessCTAPMessage(
       base::span<const uint8_t> message_bytes) {
     if (message_bytes.empty()) {
       return Platform::Error::INVALID_CTAP;
@@ -1142,20 +1152,20 @@ class DigitalIdentityProcessor : public Transaction {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     CHECK(!have_completed_);
 
-    if (auto* error = absl::get_if<Platform::Error>(&update)) {
+    if (auto* error = std::get_if<Platform::Error>(&update)) {
       have_completed_ = true;
       platform_->OnCompleted(*error);
       return;
-    } else if (auto* status = absl::get_if<Platform::Status>(&update)) {
+    } else if (auto* status = std::get_if<Platform::Status>(&update)) {
       platform_->OnStatus(*status);
       return;
-    } else if (absl::get_if<Transport::Disconnected>(&update)) {
+    } else if (std::get_if<Transport::Disconnected>(&update)) {
       have_completed_ = true;
       platform_->OnCompleted(std::nullopt);
       return;
     }
 
-    auto& msg = absl::get<std::pair<PayloadType, std::vector<uint8_t>>>(update);
+    auto& msg = std::get<std::pair<PayloadType, std::vector<uint8_t>>>(update);
     if (msg.first != PayloadType::kJSON) {
       have_completed_ = true;
       platform_->OnCompleted(Platform::Error::INVALID_JSON);

@@ -19,7 +19,7 @@ namespace ui {
 //
 // For new additions, consider whether it should be public to the
 // chrome.automation extension api. If so, please update
-// extensions/common/api/automation.idl.
+// extensions/common/api/automation.webidl.
 class COMPONENT_EXPORT(AX_PLATFORM) AutomationPosition final
     : public gin::Wrappable<AutomationPosition> {
  public:
@@ -33,11 +33,14 @@ class COMPONENT_EXPORT(AX_PLATFORM) AutomationPosition final
 
   ~AutomationPosition() override;
 
-  static gin::WrapperInfo kWrapperInfo;
+  static constexpr gin::WrapperInfo kWrapperInfo = {{gin::kEmbedderNativeGin},
+                                                    gin::kAutomationPosition};
 
   // gin::Wrappable:
   gin::ObjectTemplateBuilder GetObjectTemplateBuilder(
       v8::Isolate* isolate) override;
+
+  const gin::WrapperInfo* wrapper_info() const override;
 
  private:
   std::string GetTreeID(gin::Arguments* arguments);

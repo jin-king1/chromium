@@ -25,10 +25,11 @@ include_rules = [
   "+chrome/browser/ash/mahi",
 
   "+chrome/browser/profiles",
+  "+chrome/browser/signin",
 ]
 
 specific_include_rules = {
-  "magic_boost_browsertest.cc": [
+  "magic_boost_browsertest\\.cc": [
       "+chrome/browser/ash/mahi/mahi_test_util.h",
       "+chrome/browser/ash/mahi/mahi_ui_browser_test_base.h",
       "+chrome/browser/ui/ash/magic_boost",
@@ -39,4 +40,7 @@ specific_include_rules = {
       "+chrome/browser/ui/webui/ash/mako",
       "+chrome/test/base",
   ],
+  ".*unittest\\.cc": [
+    "+chrome/test/base/chrome_ash_test_base.h",
+  ]
 }

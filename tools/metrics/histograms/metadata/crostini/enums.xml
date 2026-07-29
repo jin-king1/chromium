@@ -60,6 +60,7 @@ chromium-metrics-reviews@google.com.
   <int value="6" label="DISK_STATUS_IN_PROGRESS"/>
   <int value="7" label="DISK_STATUS_RESIZED"/>
   <int value="8" label="DISK_STATUS_NOT_ENOUGH_SPACE"/>
+  <int value="9" label="DISK_STATUS_BAD_IMAGE"/>
 </enum>
 
 <enum name="CrostiniDiskImageType">
@@ -181,6 +182,7 @@ chromium-metrics-reviews@google.com.
   <int value="85" label="START_BAGUETTE_VM_TIMED_OUT"/>
   <int value="86" label="UNINSTALL_BAGUETTE_FAILED"/>
   <int value="87" label="INSTALL_BAGUETTE_CANCELLED"/>
+  <int value="88" label="DOWNLOAD_BAGUETTE_FAILED"/>
 </enum>
 
 <enum name="CrostiniSettingsEvent">
@@ -338,20 +340,6 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="By User"/>
   <int value="2" label="Upgrade Clicked"/>
   <int value="3" label="Notification Body Clicked"/>
-</enum>
-
-<enum name="CrostiniUpgradeDialogEvent">
-  <int value="0" label="Dialog Shown"/>
-  <int value="1" label="Upgrade Succeeded"/>
-  <int value="2" label="Upgrade Canceled"/>
-  <int value="3" label="Upgrade Failed"/>
-  <int value="4" label="Upgrade Not Started"/>
-  <int value="5" label="Backup Started"/>
-  <int value="6" label="Backup Succeeded"/>
-  <int value="7" label="Backup Failed"/>
-  <int value="8" label="Restore Started"/>
-  <int value="9" label="Restore Succeeded"/>
-  <int value="10" label="Restore Failed"/>
 </enum>
 
 </enums>

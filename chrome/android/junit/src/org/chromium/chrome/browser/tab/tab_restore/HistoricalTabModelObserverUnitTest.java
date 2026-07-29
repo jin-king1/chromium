@@ -4,12 +4,13 @@
 
 package org.chromium.chrome.browser.tab.tab_restore;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -27,6 +28,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -39,7 +41,6 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.MockTab;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
@@ -60,11 +61,12 @@ public class HistoricalTabModelObserverUnitTest {
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private TabGroupModelFilter mTabGroupModelFilter;
     @Mock private TabModel mTabModel;
     @Mock private Profile mProfile;
     @Mock private HistoricalTabSaver mHistoricalTabSaver;
     @Mock private TabGroupSyncService mTabGroupSyncService;
+
+    @Captor private ArgumentCaptor<List<HistoricalEntry>> mEntriesCaptor;
 
     private Context mContext;
     private HistoricalTabModelObserver mObserver;
@@ -74,15 +76,14 @@ public class HistoricalTabModelObserverUnitTest {
     public void setUp() {
         TabGroupSyncServiceFactory.setForTesting(mTabGroupSyncService);
 
-        when(mTabGroupModelFilter.isTabGroupHiding(any())).thenReturn(false);
-        when(mTabGroupModelFilter.isTabInTabGroup(any())).thenReturn(false);
-        when(mTabGroupModelFilter.getRelatedTabCountForRootId(anyInt())).thenReturn(-1);
-        when(mTabGroupModelFilter.getTabModel()).thenReturn(mTabModel);
+        when(mTabModel.isTabGroupHiding(any())).thenReturn(false);
+        when(mTabModel.isTabInTabGroup(any())).thenReturn(false);
         when(mTabModel.getComprehensiveModel()).thenReturn(mTabModel);
         when(mTabModel.getProfile()).thenReturn(mProfile);
+        when(mTabModel.iterator()).thenAnswer(inv -> Collections.emptyList().iterator());
 
-        mObserver = new HistoricalTabModelObserver(mTabGroupModelFilter, mHistoricalTabSaver);
-        verify(mTabGroupModelFilter).addObserver(mObserver);
+        mObserver = new HistoricalTabModelObserver(mTabModel, mHistoricalTabSaver);
+        verify(mTabModel).addObserver(mObserver);
 
         mContext = spy(ContextUtils.getApplicationContext());
         ContextUtils.initApplicationContextForTests(mContext);
@@ -94,7 +95,7 @@ public class HistoricalTabModelObserverUnitTest {
     @After
     public void tearDown() {
         mObserver.destroy();
-        verify(mTabGroupModelFilter).removeObserver(mObserver);
+        verify(mTabModel).removeObserver(mObserver);
     }
 
     @Test
@@ -126,8 +127,7 @@ public class HistoricalTabModelObserverUnitTest {
 
     @Test
     public void testTabGroupWithSingleTab_NotUndoable() {
-        int rootId = 123;
-        MockTab mockTab = createMockTab(rootId);
+        MockTab mockTab = createMockTab(123);
         Token tabGroupId = new Token(1L, 2L);
         String title = "bar";
         @TabGroupColorId int color = TabGroupColorId.GREY;
@@ -136,15 +136,13 @@ public class HistoricalTabModelObserverUnitTest {
         mObserver.onFinishingMultipleTabClosure(
                 Collections.singletonList(mockTab), /* canRestore= */ true);
 
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
 
         assertEquals(1, entries.size());
         HistoricalEntry group = entries.get(0);
         assertFalse(group.isSingleTab());
         assertEquals(1, group.getTabs().size());
-        assertEquals(rootId, group.getRootId());
         assertEquals(tabGroupId, group.getTabGroupId());
         assertEquals(title, group.getGroupTitle());
         assertEquals(color, group.getGroupColor());
@@ -153,28 +151,25 @@ public class HistoricalTabModelObserverUnitTest {
 
     @Test
     public void testTabGroupWithSingleTab_Undoable() {
-        int rootId = 123;
-        MockTab mockTab = createMockTab(rootId);
+        MockTab mockTab = createMockTab(123);
         Token tabGroupId = new Token(1L, 2L);
         String title = "bar";
         @TabGroupColorId int color = TabGroupColorId.GREY;
         createGroup(tabGroupId, title, color, new MockTab[] {mockTab});
-        when(mTabGroupModelFilter.getRelatedTabCountForRootId(rootId)).thenReturn(1);
-        when(mTabGroupModelFilter.tabGroupExistsForRootId(rootId)).thenReturn(false);
-        when(mTabGroupModelFilter.isTabInTabGroup(mockTab)).thenReturn(false);
+        when(mTabModel.getTabCountForGroup(tabGroupId)).thenReturn(1);
+        when(mTabModel.tabGroupExists(tabGroupId)).thenReturn(false);
+        when(mTabModel.isTabInTabGroup(mockTab)).thenReturn(false);
 
         mObserver.onFinishingMultipleTabClosure(
                 Collections.singletonList(mockTab), /* canRestore= */ true);
 
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
 
         assertEquals(1, entries.size());
         HistoricalEntry group = entries.get(0);
         assertFalse(group.isSingleTab());
         assertEquals(1, group.getTabs().size());
-        assertEquals(rootId, group.getRootId());
         assertEquals(tabGroupId, group.getTabGroupId());
         assertEquals(title, group.getGroupTitle());
         assertEquals(color, group.getGroupColor());
@@ -190,9 +185,8 @@ public class HistoricalTabModelObserverUnitTest {
         Tab[] tabList = new Tab[] {mockTab0, mockTab1, mockTab2};
         mObserver.onFinishingMultipleTabClosure(Arrays.asList(tabList), /* canRestore= */ true);
 
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
         assertEquals(tabList.length, entries.size());
         for (int i = 0; i < tabList.length; i++) {
             HistoricalEntry entry = entries.get(i);
@@ -216,9 +210,8 @@ public class HistoricalTabModelObserverUnitTest {
         List<Tab> closingTabList = List.of(mockTab1, mockTab2);
         mObserver.onFinishingMultipleTabClosure(closingTabList, /* canRestore= */ true);
 
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
 
         assertEquals(2, entries.size());
         HistoricalEntry entryTab1 = entries.get(0);
@@ -239,21 +232,19 @@ public class HistoricalTabModelObserverUnitTest {
         @TabGroupColorId int color = TabGroupColorId.GREY;
         MockTab[] tabList = new MockTab[] {mockTab0, mockTab1, mockTab2};
         Token tabGroupId = new Token(1L, 243L);
-        final int rootId = createGroup(tabGroupId, title, color, tabList);
+        createGroup(tabGroupId, title, color, tabList);
 
         mObserver.onFinishingMultipleTabClosure(Arrays.asList(tabList), /* canRestore= */ true);
 
         // HistoricalTabModelObserver relies on HistoricalTabSaver to simplify to a single group
         // entry.
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
 
         assertEquals(1, entries.size());
         HistoricalEntry group = entries.get(0);
         assertFalse(group.isSingleTab());
         assertEquals(tabList.length, group.getTabs().size());
-        assertEquals(rootId, group.getRootId());
         assertEquals(tabGroupId, group.getTabGroupId());
         assertEquals(title, group.getGroupTitle());
         assertEquals(color, group.getGroupColor());
@@ -271,7 +262,7 @@ public class HistoricalTabModelObserverUnitTest {
         @TabGroupColorId int color = TabGroupColorId.GREY;
         Token tabGroupId = new Token(3L, 4L);
         createGroup(tabGroupId, title, color, new MockTab[] {mockTab0, mockTab1});
-        when(mTabGroupModelFilter.getLazyAllTabGroupIds(any(), anyBoolean()))
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
                 .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<>()));
 
         mSavedTabGroup.collaborationId = COLLABORATION_ID;
@@ -279,9 +270,8 @@ public class HistoricalTabModelObserverUnitTest {
         MockTab[] tabList = new MockTab[] {mockTab0, mockTab1};
         mObserver.onFinishingMultipleTabClosure(Arrays.asList(tabList), /* canRestore= */ true);
 
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
         assertEquals(0, entries.size());
     }
 
@@ -295,7 +285,7 @@ public class HistoricalTabModelObserverUnitTest {
         @TabGroupColorId int color = TabGroupColorId.GREY;
         Token tabGroupId = new Token(3L, 4L);
         createGroup(tabGroupId, title, color, new MockTab[] {mockTab0, mockTab1, mockTab2});
-        when(mTabGroupModelFilter.getLazyAllTabGroupIds(any(), anyBoolean()))
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
                 .thenReturn(LazyOneshotSupplier.fromValue(Set.of(tabGroupId)));
 
         mSavedTabGroup.collaborationId = COLLABORATION_ID;
@@ -303,9 +293,8 @@ public class HistoricalTabModelObserverUnitTest {
         MockTab[] tabList = new MockTab[] {mockTab0, mockTab1};
         mObserver.onFinishingMultipleTabClosure(Arrays.asList(tabList), /* canRestore= */ true);
 
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
         assertEquals(2, entries.size());
         HistoricalEntry entryTab1 = entries.get(0);
         HistoricalEntry entryTab2 = entries.get(1);
@@ -324,7 +313,7 @@ public class HistoricalTabModelObserverUnitTest {
         @TabGroupColorId int color = TabGroupColorId.GREY;
         Token tabGroupId = new Token(3L, 4L);
         createGroup(tabGroupId, title, color, new MockTab[] {mockTab0, mockTab1});
-        when(mTabGroupModelFilter.getLazyAllTabGroupIds(any(), anyBoolean()))
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
                 .thenReturn(LazyOneshotSupplier.fromValue(Set.of(tabGroupId)));
 
         mSavedTabGroup.collaborationId = COLLABORATION_ID;
@@ -344,8 +333,8 @@ public class HistoricalTabModelObserverUnitTest {
         @TabGroupColorId int color = TabGroupColorId.GREY;
         Token tabGroupId = new Token(3L, 4L);
         createGroup(tabGroupId, title, color, new MockTab[] {mockTab0});
-        when(mTabGroupModelFilter.getLazyAllTabGroupIds(any(), anyBoolean()))
-                .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<Token>()));
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
+                .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<>()));
 
         mSavedTabGroup.collaborationId = COLLABORATION_ID;
 
@@ -353,9 +342,8 @@ public class HistoricalTabModelObserverUnitTest {
         mObserver.onFinishingMultipleTabClosure(Arrays.asList(tabList), /* canRestore= */ true);
 
         verify(mHistoricalTabSaver, never()).createHistoricalTab(any());
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
         assertEquals(0, entries.size());
     }
 
@@ -374,9 +362,8 @@ public class HistoricalTabModelObserverUnitTest {
 
         // HistoricalTabModelObserver relies on HistoricalTabSaver to simplify to a single tab
         // entry.
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
         assertEquals(2, entries.size());
 
         HistoricalEntry tab0 = entries.get(0);
@@ -397,8 +384,8 @@ public class HistoricalTabModelObserverUnitTest {
         @TabGroupColorId int color = TabGroupColorId.GREY;
         Token tabGroupId = new Token(3L, 4L);
         createGroup(tabGroupId, title, color, new MockTab[] {mockTab0});
-        when(mTabGroupModelFilter.isTabGroupHiding(tabGroupId)).thenReturn(true);
-        when(mTabGroupModelFilter.getLazyAllTabGroupIds(any(), anyBoolean()))
+        when(mTabModel.isTabGroupHiding(tabGroupId)).thenReturn(true);
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
                 .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<>()));
 
         MockTab[] tabList = new MockTab[] {mockTab0};
@@ -406,9 +393,8 @@ public class HistoricalTabModelObserverUnitTest {
 
         // HistoricalTabModelObserver relies on HistoricalTabSaver to simplify to a single tab
         // entry.
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
         assertEquals(0, entries.size());
     }
 
@@ -421,8 +407,8 @@ public class HistoricalTabModelObserverUnitTest {
         @TabGroupColorId int color = TabGroupColorId.GREY;
         Token tabGroupId = new Token(3L, 4L);
         createGroup(tabGroupId, title, color, new MockTab[] {mockTab0, mockTab1});
-        when(mTabGroupModelFilter.isTabGroupHiding(tabGroupId)).thenReturn(true);
-        when(mTabGroupModelFilter.getLazyAllTabGroupIds(any(), anyBoolean()))
+        when(mTabModel.isTabGroupHiding(tabGroupId)).thenReturn(true);
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
                 .thenReturn(LazyOneshotSupplier.fromValue(Set.of(tabGroupId)));
 
         MockTab[] tabList = new MockTab[] {mockTab0};
@@ -436,13 +422,12 @@ public class HistoricalTabModelObserverUnitTest {
         // the group so no entry should be created.
         tabList = new MockTab[] {mockTab1};
         createGroup(tabGroupId, title, color, tabList);
-        when(mTabGroupModelFilter.getLazyAllTabGroupIds(any(), anyBoolean()))
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
                 .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<>()));
         mObserver.onFinishingMultipleTabClosure(Arrays.asList(tabList), true);
 
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
         assertEquals(0, entries.size());
     }
 
@@ -456,8 +441,8 @@ public class HistoricalTabModelObserverUnitTest {
         @TabGroupColorId int color = TabGroupColorId.GREY;
         Token tabGroupId = new Token(3L, 4L);
         createGroup(tabGroupId, title, color, new MockTab[] {mockTab0, mockTab1, mockTab2});
-        when(mTabGroupModelFilter.isTabGroupHiding(tabGroupId)).thenReturn(true);
-        when(mTabGroupModelFilter.getLazyAllTabGroupIds(any(), anyBoolean()))
+        when(mTabModel.isTabGroupHiding(tabGroupId)).thenReturn(true);
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
                 .thenReturn(LazyOneshotSupplier.fromValue(Set.of(tabGroupId)));
 
         MockTab[] tabList = new MockTab[] {mockTab0};
@@ -471,13 +456,12 @@ public class HistoricalTabModelObserverUnitTest {
         // is hiding the group so no entry should be created.
         tabList = new MockTab[] {mockTab1, mockTab2};
         createGroup(tabGroupId, title, color, new MockTab[] {mockTab1, mockTab2});
-        when(mTabGroupModelFilter.getLazyAllTabGroupIds(any(), anyBoolean()))
+        when(mTabModel.getLazyAllTabGroupIds(any(), anyBoolean()))
                 .thenReturn(LazyOneshotSupplier.fromValue(new HashSet<>()));
         mObserver.onFinishingMultipleTabClosure(Arrays.asList(tabList), true);
 
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
         assertEquals(0, entries.size());
     }
 
@@ -494,22 +478,21 @@ public class HistoricalTabModelObserverUnitTest {
         @TabGroupColorId int groupColor1 = TabGroupColorId.GREY;
         MockTab[] groupTabs1 = new MockTab[] {mockTab3, mockTab5};
         Token tabGroupId1 = new Token(3L, 4L);
-        final int rootId1 = createGroup(tabGroupId1, groupTitle1, groupColor1, groupTabs1);
+        createGroup(tabGroupId1, groupTitle1, groupColor1, groupTabs1);
 
         final String groupTitle2 = "Bar";
         @TabGroupColorId int groupColor2 = TabGroupColorId.BLUE;
         MockTab[] groupTabs2 = new MockTab[] {mockTab1, mockTab2};
-        Token tabGroupId2 = new Token(3L, 4L);
-        final int rootId2 = createGroup(tabGroupId2, groupTitle2, groupColor2, groupTabs2);
+        Token tabGroupId2 = new Token(6L, 7L);
+        createGroup(tabGroupId2, groupTitle2, groupColor2, groupTabs2);
 
         Tab[] tabList = new Tab[] {mockTab0, mockTab2, mockTab3, mockTab4, mockTab1, mockTab5};
         mObserver.onFinishingMultipleTabClosure(Arrays.asList(tabList), /* canRestore= */ true);
 
         // HistoricalTabModelObserver relies on HistoricalTabSaver to simplify to a single group
         // entry.
-        ArgumentCaptor<List<HistoricalEntry>> arg = ArgumentCaptor.forClass((Class) List.class);
-        verify(mHistoricalTabSaver).createHistoricalBulkClosure(arg.capture());
-        List<HistoricalEntry> entries = arg.getValue();
+        verify(mHistoricalTabSaver).createHistoricalBulkClosure(mEntriesCaptor.capture());
+        List<HistoricalEntry> entries = mEntriesCaptor.getValue();
         assertEquals(4, entries.size());
 
         // First tab in list is ungrouped mockTab0.
@@ -521,7 +504,6 @@ public class HistoricalTabModelObserverUnitTest {
         HistoricalEntry historicalGroup2 = entries.get(1);
         assertFalse(historicalGroup2.isSingleTab());
         assertEquals(2, historicalGroup2.getTabs().size());
-        assertEquals(rootId2, historicalGroup2.getRootId());
         assertEquals(tabGroupId2, historicalGroup2.getTabGroupId());
         assertEquals(groupTitle2, historicalGroup2.getGroupTitle());
         assertEquals(groupColor2, historicalGroup2.getGroupColor());
@@ -532,7 +514,6 @@ public class HistoricalTabModelObserverUnitTest {
         HistoricalEntry historicalGroup1 = entries.get(2);
         assertFalse(historicalGroup1.isSingleTab());
         assertEquals(2, historicalGroup1.getTabs().size());
-        assertEquals(rootId1, historicalGroup1.getRootId());
         assertEquals(tabGroupId1, historicalGroup1.getTabGroupId());
         assertEquals(groupTitle1, historicalGroup1.getGroupTitle());
         assertEquals(groupColor1, historicalGroup1.getGroupColor());
@@ -547,7 +528,6 @@ public class HistoricalTabModelObserverUnitTest {
 
     private MockTab createMockTab(int id) {
         MockTab mockTab = new MockTab(id, mProfile);
-        mockTab.setRootId(id);
         return mockTab;
     }
 
@@ -558,25 +538,22 @@ public class HistoricalTabModelObserverUnitTest {
      * @param title Group title.
      * @param color Group color.
      * @param tabList List of tabs in group.
-     * @return ID of the group.
      */
-    private int createGroup(
-            @Nullable Token tabGroupId,
+    private void createGroup(
+            Token tabGroupId,
             @Nullable String title,
             @TabGroupColorId int color,
             MockTab[] tabList) {
-        assert tabList.length != 0;
+        assertThat(tabList).isNotEmpty();
 
-        final int rootId = tabList[0].getId();
-        when(mTabGroupModelFilter.getTabGroupTitle(rootId)).thenReturn(title);
-        when(mTabGroupModelFilter.getTabGroupColorWithFallback(rootId)).thenReturn(color);
-        when(mTabGroupModelFilter.getRelatedTabCountForRootId(rootId)).thenReturn(tabList.length);
-        when(mTabGroupModelFilter.tabGroupExistsForRootId(rootId)).thenReturn(true);
+        when(mTabModel.getTabsInGroup(tabGroupId)).thenReturn(Arrays.asList(tabList));
+        when(mTabModel.getTabCountForGroup(tabGroupId)).thenReturn(tabList.length);
+        when(mTabModel.tabGroupExists(tabGroupId)).thenReturn(true);
         for (MockTab tab : tabList) {
-            tab.setRootId(rootId);
             tab.setTabGroupId(tabGroupId);
-            when(mTabGroupModelFilter.isTabInTabGroup(tab)).thenReturn(true);
+            when(mTabModel.getTabGroupTitle(tab)).thenReturn(title);
+            when(mTabModel.getTabGroupColorWithFallback(tab)).thenReturn(color);
+            when(mTabModel.isTabInTabGroup(tab)).thenReturn(true);
         }
-        return rootId;
     }
 }

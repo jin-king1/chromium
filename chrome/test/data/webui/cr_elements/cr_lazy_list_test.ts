@@ -6,7 +6,7 @@ import 'chrome://resources/cr_elements/cr_lazy_list/cr_lazy_list.js';
 
 import type {CrLazyListElement} from 'chrome://resources/cr_elements/cr_lazy_list/cr_lazy_list.js';
 import {getDeepActiveElement} from 'chrome://resources/js/util.js';
-import {CrLitElement, html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import {CrLitElement, css, html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
@@ -15,9 +15,17 @@ const SAMPLE_ITEM_HEIGHT = 56;
 const SAMPLE_AVAIL_HEIGHT =
     SAMPLE_HEIGHT_VIEWPORT_ITEM_COUNT * SAMPLE_ITEM_HEIGHT;
 
-class TestItem extends CrLitElement {
+class TestItemElement extends CrLitElement {
   static get is() {
     return 'test-item';
+  }
+
+  override render() {
+    return html`
+<div style="height: 48px; padding: 4px;">
+  <span>${this.name}</span>
+  <button>click item</button>
+</div>`;
   }
 
   static override get properties() {
@@ -29,41 +37,19 @@ class TestItem extends CrLitElement {
     };
   }
 
-  override render() {
-    return html`
-<div style="height: 48px; padding: 4px;">
-  <span>${this.name}</span>
-  <button>click item</button>
-</div>`;
-  }
-
   override focus() {
     this.shadowRoot.querySelector('button')!.focus();
   }
 
-  name: string = '';
+  accessor name: string = '';
 }
 
-customElements.define('test-item', TestItem);
+customElements.define(TestItemElement.is, TestItemElement);
 
-class TestApp extends CrLitElement {
+class TestAppElement extends CrLitElement {
   static get is() {
     return 'test-app';
   }
-
-  static override get properties() {
-    return {
-      chunkSize: {type: Number},
-      listItems: {type: Array},
-      restoreFocusElement_: {type: Object},
-      scrollOffset: {type: Number},
-    };
-  }
-
-  chunkSize: number = 0;
-  listItems: Array<{name: string}> = [];
-  scrollOffset: number = 0;
-  private restoreFocusElement_: HTMLElement|null = null;
 
   override render() {
     return html`
@@ -80,26 +66,31 @@ class TestApp extends CrLitElement {
     </lazy-list>`;
   }
 
+  static override get properties() {
+    return {
+      chunkSize: {type: Number},
+      listItems: {type: Array},
+      restoreFocusElement_: {type: Object},
+      scrollOffset: {type: Number},
+    };
+  }
+
+  accessor chunkSize: number = 0;
+  accessor listItems: Array<{name: string}> = [];
+  accessor scrollOffset: number = 0;
+  private accessor restoreFocusElement_: HTMLElement|null = null;
+
   private onRenderedItemsChanged_() {
     this.restoreFocusElement_ = this.shadowRoot.querySelector('[name="Two"]');
   }
 }
 
-customElements.define('test-app', TestApp);
+customElements.define(TestAppElement.is, TestAppElement);
 
-class TestDocumentTargetApp extends CrLitElement {
+class TestDocumentTargetAppElement extends CrLitElement {
   static get is() {
     return 'test-document-target-app';
   }
-
-  static override get properties() {
-    return {
-      listItems: {type: Array},
-      scrollOffset: {type: Number},
-    };
-  }
-
-  listItems: Array<{name: string}> = [];
 
   override render() {
     return html`
@@ -111,24 +102,25 @@ class TestDocumentTargetApp extends CrLitElement {
           `}>
     </lazy-list>`;
   }
-}
-
-customElements.define('test-document-target-app', TestDocumentTargetApp);
-
-class TestListPaddingApp extends CrLitElement {
-  static get is() {
-    return 'test-list-padding-app';
-  }
 
   static override get properties() {
     return {
-      chunkSize: {type: Number},
       listItems: {type: Array},
+      scrollOffset: {type: Number},
     };
   }
 
-  chunkSize: number = 0;
-  listItems: Array<{name: string}> = [];
+  accessor listItems: Array<{name: string}> = [];
+  accessor scrollOffset: number = 0;
+}
+
+customElements.define(
+    TestDocumentTargetAppElement.is, TestDocumentTargetAppElement);
+
+class TestListPaddingAppElement extends CrLitElement {
+  static get is() {
+    return 'test-list-padding-app';
+  }
 
   override render() {
     return html`
@@ -143,37 +135,50 @@ class TestListPaddingApp extends CrLitElement {
           `}>
     </lazy-list>`;
   }
+
+  static override get properties() {
+    return {
+      chunkSize: {type: Number},
+      listItems: {type: Array},
+    };
+  }
+
+  accessor chunkSize: number = 0;
+  accessor listItems: Array<{name: string}> = [];
 }
 
-customElements.define('test-list-padding-app', TestListPaddingApp);
+customElements.define(TestListPaddingAppElement.is, TestListPaddingAppElement);
 
 suite('CrLazyListTest', () => {
-  let lazyList: CrLazyListElement;
-  let testApp: TestApp;
+  let lazyList: CrLazyListElement<{name: string}>;
+  let testApp: TestAppElement;
 
   async function setupTest(
       sampleData: Array<{name: string}>, scrollOffset: number = 0,
       chunkSize: number = 0) {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    testApp = document.createElement('test-app') as TestApp;
+    testApp = document.createElement('test-app') as TestAppElement;
     testApp.style.height = `${SAMPLE_AVAIL_HEIGHT}px`;
     testApp.style.maxHeight = `${SAMPLE_AVAIL_HEIGHT}px`;
     testApp.style.display = 'block';
     testApp.style.overflowY = 'auto';
     testApp.style.overflowX = 'hidden';
     document.body.appendChild(testApp);
+    lazyList =
+        testApp.shadowRoot.querySelector<CrLazyListElement<{name: string}>>(
+            'cr-lazy-list')!;
+    assertTrue(!!lazyList);
+    const listFilled = eventToPromise('viewport-filled', lazyList);
     testApp.chunkSize = chunkSize;
     testApp.listItems = sampleData;
     testApp.scrollOffset = scrollOffset;
 
-    lazyList = testApp.shadowRoot.querySelector('cr-lazy-list')!;
-    assertTrue(!!lazyList);
-    await eventToPromise('viewport-filled', lazyList);
+    await listFilled;
     await microtasksFinished();
   }
 
-  function queryItems(): NodeListOf<TestItem> {
-    return lazyList.querySelectorAll<TestItem>('test-item');
+  function queryItems(): NodeListOf<TestItemElement> {
+    return lazyList.querySelectorAll<TestItemElement>('test-item');
   }
 
   function getTestItems(count: number): Array<{name: string}> {
@@ -218,7 +223,6 @@ suite('CrLazyListTest', () => {
     await setupTest(getTestItems(1));
     assertEquals(1, queryItems().length);
 
-
     // Ensure that on updating the list with an array smaller in size
     // than the viewport item count, all the array items are rendered.
     const items = getTestItems(3);
@@ -240,14 +244,16 @@ suite('CrLazyListTest', () => {
 
     // Scrolling 50% of the viewport renders 50% more items.
     testApp.scrollTop = SAMPLE_AVAIL_HEIGHT / 2;
-    await eventToPromise('fill-height-end', testApp);
+    await eventToPromise('viewport-filled', testApp);
+    await microtasksFinished();
 
     assertEquals(
         3 * SAMPLE_HEIGHT_VIEWPORT_ITEM_COUNT / 2, queryItems().length);
 
     // Scrolling to the end renders remaining items.
     testApp.scrollTop = SAMPLE_AVAIL_HEIGHT;
-    await eventToPromise('fill-height-end', testApp);
+    await eventToPromise('viewport-filled', testApp);
+    await microtasksFinished();
     assertEquals(numItems, queryItems().length);
 
     // Scrolling back to the top --> all items are still rendered.
@@ -332,14 +338,16 @@ suite('CrLazyListTest', () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const testDocumentTargetApp =
         document.createElement('test-document-target-app') as
-        TestDocumentTargetApp;
+        TestDocumentTargetAppElement;
     testDocumentTargetApp.style.display = 'block';
     testDocumentTargetApp.style.overflowY = 'auto';
     testDocumentTargetApp.style.overflowX = 'hidden';
     document.body.appendChild(testDocumentTargetApp);
     testDocumentTargetApp.listItems = getTestItems(3);
 
-    lazyList = testDocumentTargetApp.shadowRoot.querySelector('cr-lazy-list')!;
+    lazyList =
+        testDocumentTargetApp.shadowRoot
+            .querySelector<CrLazyListElement<{name: string}>>('cr-lazy-list')!;
     assertTrue(!!lazyList);
     await eventToPromise('viewport-filled', lazyList);
     await microtasksFinished();
@@ -421,6 +429,7 @@ suite('CrLazyListTest', () => {
     const numItems = 2 * SAMPLE_HEIGHT_VIEWPORT_ITEM_COUNT;
     await setupTest(getTestItems(numItems), /* scrollOffset = */ 0, 4);
     assertEquals(SAMPLE_HEIGHT_VIEWPORT_ITEM_COUNT, queryItems().length);
+
     // 2 chunks holding the items.
     let chunks = lazyList.querySelectorAll('.chunk');
     assertEquals(2, chunks.length);
@@ -428,8 +437,10 @@ suite('CrLazyListTest', () => {
     assertEquals(2, chunks[1]!.querySelectorAll('test-item').length);
 
     // Scrolling 50% of the viewport renders 50% more items.
+    let listFilled = eventToPromise('viewport-filled', testApp);
     testApp.scrollTop = SAMPLE_AVAIL_HEIGHT / 2;
-    await eventToPromise('fill-height-end', testApp);
+    await listFilled;
+    await microtasksFinished();
 
     assertEquals(
         3 * SAMPLE_HEIGHT_VIEWPORT_ITEM_COUNT / 2, queryItems().length);
@@ -441,8 +452,10 @@ suite('CrLazyListTest', () => {
     assertEquals(1, chunks[2]!.querySelectorAll('test-item').length);
 
     // Scrolling to the end renders remaining items.
+    listFilled = eventToPromise('viewport-filled', testApp);
     testApp.scrollTop = SAMPLE_AVAIL_HEIGHT;
-    await eventToPromise('fill-height-end', testApp);
+    await listFilled;
+    await microtasksFinished();
     assertEquals(numItems, queryItems().length);
     // 3 chunks holding the items, now all are full.
     chunks = lazyList.querySelectorAll('.chunk');
@@ -482,10 +495,12 @@ suite('CrLazyListTest', () => {
     assertEquals(active, newButton);
   });
 
-  function setUpListPaddingApp(chunkSize: number = 0): TestListPaddingApp {
+  function setUpListPaddingApp(chunkSize: number = 0):
+      TestListPaddingAppElement {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const testListPaddingApp =
-        document.createElement('test-list-padding-app') as TestListPaddingApp;
+        document.createElement('test-list-padding-app') as
+        TestListPaddingAppElement;
     testListPaddingApp.style.display = 'block';
     testListPaddingApp.style.overflowY = 'auto';
     testListPaddingApp.style.overflowX = 'hidden';
@@ -500,7 +515,9 @@ suite('CrLazyListTest', () => {
     const testListPaddingApp = setUpListPaddingApp();
     testListPaddingApp.listItems = getTestItems(12);
 
-    lazyList = testListPaddingApp.shadowRoot.querySelector('cr-lazy-list')!;
+    lazyList =
+        testListPaddingApp.shadowRoot
+            .querySelector<CrLazyListElement<{name: string}>>('cr-lazy-list')!;
     assertTrue(!!lazyList);
     await eventToPromise('viewport-filled', lazyList);
     await microtasksFinished();
@@ -512,11 +529,120 @@ suite('CrLazyListTest', () => {
     const testListPaddingApp = setUpListPaddingApp(3);
     testListPaddingApp.listItems = getTestItems(12);
 
-    lazyList = testListPaddingApp.shadowRoot.querySelector('cr-lazy-list')!;
+    lazyList =
+        testListPaddingApp.shadowRoot
+            .querySelector<CrLazyListElement<{name: string}>>('cr-lazy-list')!;
     assertTrue(!!lazyList);
     await eventToPromise('viewport-filled', lazyList);
     await microtasksFinished();
     // Should render 6 items, because exactly 6 fit in the viewport.
     assertEquals(6, queryItems().length);
+  });
+
+  test('Fires items-rendered event', async () => {
+    await setupTest(getTestItems(1));
+    assertEquals(1, queryItems().length);
+
+    const items = getTestItems(12);
+    // Fires event when the list adds items.
+    testApp.listItems = items.slice(0, 6);
+    await eventToPromise('items-rendered', lazyList);
+    assertEquals(6, queryItems().length);
+
+    // Still fires the event if the list changes to a list with the same
+    // length and different items.
+    testApp.listItems = items.slice(6);
+    await eventToPromise('items-rendered', lazyList);
+    assertEquals(6, queryItems().length);
+
+    // Event fires if list changes to shorter length (e.g. items removed).
+    testApp.listItems = items.slice(6, 8);
+    await eventToPromise('items-rendered', lazyList);
+    assertEquals(2, queryItems().length);
+
+    testApp.listItems = [];
+    await eventToPromise('items-rendered', lazyList);
+    assertEquals(0, queryItems().length);
+  });
+
+  class TestListWithVariedHeightsAppElement extends CrLitElement {
+    static get is() {
+      return 'test-list-with-varied-heights-app';
+    }
+
+    static override get styles() {
+      return css`
+        :host {
+          display: block;
+          overflow: auto;
+        }
+      `;
+    }
+
+    override render() {
+      return html`
+      <cr-lazy-list
+          .items="${this.listItems}" .itemSize="${this.itemSize}"
+          .chunkSize="${10}"
+          .scrollTarget="${this}"
+          .template=${(item: {height: number}) => html`
+              <div class="item" style="height: ${item.height}px"></div>
+            `}>
+      </cr-lazy-list>`;
+    }
+
+    static override get properties() {
+      return {
+        itemSize: {type: Number},
+        listItems: {type: Array},
+      };
+    }
+
+    accessor itemSize: number|undefined;
+    accessor listItems: Array<{height: number}> = [];
+  }
+
+  customElements.define(
+      TestListWithVariedHeightsAppElement.is,
+      TestListWithVariedHeightsAppElement);
+
+  test('Uses itemSize property instead of calculating', async () => {
+    const viewSize = 100;
+    const typicalItemSize = 20;
+    // Add a couple of tall items and then a bunch of typically sized items.
+    const items = [
+      {height: 50},
+      {height: 50},
+      ...[...Array(20)].map(() => ({height: typicalItemSize})),
+    ];
+
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    let testApp = document.createElement('test-list-with-varied-heights-app') as
+        TestListWithVariedHeightsAppElement;
+    testApp.listItems = items;
+    testApp.itemSize = typicalItemSize;
+    testApp.style.height = `${viewSize}px`;
+    document.body.appendChild(testApp);
+
+    let lazyList = testApp.shadowRoot.querySelector('cr-lazy-list');
+    assertTrue(!!lazyList);
+    await eventToPromise('viewport-filled', lazyList);
+    assertEquals(
+        viewSize / typicalItemSize, lazyList.querySelectorAll('.item').length,
+        'Number of items created should depend the typical item size');
+
+    // No itemSize specified should mean the actual height is used.
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    testApp = document.createElement('test-list-with-varied-heights-app') as
+        TestListWithVariedHeightsAppElement;
+    testApp.listItems = items;
+    testApp.style.height = `${viewSize}px`;
+    document.body.appendChild(testApp);
+    lazyList = testApp.shadowRoot.querySelector('cr-lazy-list');
+    assertTrue(!!lazyList);
+    await eventToPromise('viewport-filled', lazyList);
+    assertEquals(
+        viewSize / items[0]!.height, lazyList.querySelectorAll('.item').length,
+        'Number of items created should reflect the height of the first item.');
   });
 });

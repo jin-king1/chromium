@@ -42,12 +42,15 @@ interface AboutInfo {
 
   unrecoverable_error_detected: boolean;
   unrecoverable_error_message?: string;
+
+  allow_enabling_sync_the_feature: boolean;
 }
 
 export let aboutInfo: AboutInfo = {
   details: [],
   actionable_error_detected: false,
   unrecoverable_error_detected: false,
+  allow_enabling_sync_the_feature: false,
 };
 
 // Snapshot of the previous aboutInfo, used for highlighting rows that changed.
@@ -73,7 +76,8 @@ function renderAboutInfo() {
 
 function shouldHighlightDetail(
     detailsIndex: number, dataIndex: number): boolean {
-  if (previousAboutInfo.details.length <= detailsIndex) {
+  if (previousAboutInfo.details.length <= detailsIndex ||
+      previousAboutInfo.details[detailsIndex]!.data.length <= dataIndex) {
     return false;
   }
 
@@ -101,7 +105,8 @@ function getAboutInfoHtml() {
       </div>
     `)}
 
-    <div id="request-start-stop-wrapper">
+    <div id="request-start-stop-wrapper"
+        ?hidden="${!aboutInfo.allow_enabling_sync_the_feature}">
       <button id="request-start" @click="${requestStart}">
         Enable Sync-The-Feature
       </button>
@@ -144,16 +149,14 @@ function getAboutInfoHtml() {
       </table>
     </div>
 
-    ${aboutInfo.unrecoverable_error_detected ? html`
-      <div class="section">
+    <div class="section"
+        ?hidden="${!aboutInfo.unrecoverable_error_detected}">
         <p>
           <span class="err">${aboutInfo.unrecoverable_error_message}</span>
         </p>
-      </div>
-    ` : ''}
+    </div>
 
-    ${aboutInfo.actionable_error_detected ? html`
-      <div class="section">
+    <div class="section" ?hidden="${!aboutInfo.actionable_error_detected}">
         <p>
           <h2>Actionable Error</h2>
           <table id="actionableError">
@@ -165,8 +168,7 @@ function getAboutInfoHtml() {
             `)}
           </table>
         </p>
-      </div>
-    ` : ''}
+    </div>
 
     `;
   // clang-format on
@@ -273,17 +275,16 @@ function initStatusDumpButton() {
         return !el.is_sensitive;
       });
     }
+    const dataToDump = {
+      aboutInfo: aboutInfoCopy,
+      protocolEvents: protocolEvents,
+    };
     let data = '';
     data += new Date().toString() + '\n';
     data += '======\n';
     data += 'Status\n';
     data += '======\n';
-    data += JSON.stringify(aboutInfoCopy, null, 2) + '\n';
-    data += '\n';
-    data += '===\n';
-    data += 'Log\n';
-    data += '===\n';
-    data += JSON.stringify(protocolEvents, null, 2);
+    data += JSON.stringify(dataToDump, null, 2);
 
     const statusText =
         document.querySelector<HTMLTextAreaElement>('#status-text');
@@ -305,7 +306,7 @@ function initStatusDumpButton() {
         document.querySelector<HTMLTextAreaElement>('#status-text');
     assert(statusText);
     if (statusText.value.length === 0) {
-      statusText.value = 'Paste sync status dump here then click import.';
+      statusText.placeholder = 'Paste sync status dump here then click import.';
       return;
     }
 
@@ -329,7 +330,14 @@ function initStatusDumpButton() {
       entityCountsUpdatedListener = null;
     }
 
-    const aboutInfo = JSON.parse(data);
+    // Handle both the old format (just the aboutInfo object) and the new
+    // format (an object containing both aboutInfo and protocolEvents).
+    const dump = JSON.parse(data);
+    const aboutInfo = dump.aboutInfo || dump;
+    const newProtocolEvents = dump.protocolEvents || [];
+
+    // Clear existing protocol events and add the new ones.
+    protocolEvents.splice(0, protocolEvents.length, ...newProtocolEvents);
     refreshAboutInfo(aboutInfo);
   });
 }

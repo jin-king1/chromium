@@ -9,6 +9,7 @@
 
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
+#include "partition_alloc/internal/partition_root_internal.h"
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_check.h"
 
@@ -61,7 +62,7 @@ void* GetStackTop() {
     error = pthread_attr_getstack(&attr, &base, &size);
     PA_CHECK(!error);
     pthread_attr_destroy(&attr);
-    return reinterpret_cast<uint8_t*>(base) + size;
+    return PA_UNSAFE_TODO(reinterpret_cast<uint8_t*>(base) + size);
   }
 
 #if PA_BUILDFLAG(PA_LIBC_GLIBC)
@@ -153,7 +154,8 @@ StackTopRegistry& StackTopRegistry::Get() {
   return *instance;
 }
 
-void StackTopRegistry::NotifyThreadCreated(void* stack_top) {
+void StackTopRegistry::NotifyThreadCreated() {
+  void* stack_top = GetStackPointer();
   const auto tid = base::PlatformThread::CurrentId();
   ScopedGuard guard(lock_);
   stack_tops_.insert({tid, stack_top});

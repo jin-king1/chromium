@@ -94,9 +94,9 @@ void NetworkChangeManagerClient::ReconnectToNetworkChangeManager() {
 
   // Tell the restarted network service what the current connection type is.
   network_change_manager_->OnNetworkChanged(
-      /*dns_changed=*/false, /*ip_address_changed=*/false,
-      /*connection_type_changed=*/true,
-      network::mojom::ConnectionType(connection_type_),
+      /*dns_changed=*/false,
+      network::mojom::IPAddressChangeType::IP_ADDRESS_CHANGE_NONE,
+      /*connection_type_changed=*/true, connection_type_,
       /*connection_subtype_changed=*/true,
       network::mojom::ConnectionSubtype(connection_subtype_));
 }
@@ -206,7 +206,8 @@ void NetworkChangeManagerClient::NotifyObservers(
 
   // Notify NetworkChangeNotifier.
   if (ip_address_changed)
-    network_change_notifier_->OnIPAddressChanged();
+    network_change_notifier_->OnIPAddressChanged(
+        net::NetworkChangeNotifier::IP_ADDRESS_CHANGE_NORMAL);
   if (dns_changed)
     network_change_notifier_->OnDNSChanged();
   if (connection_type_changed)
@@ -218,9 +219,11 @@ void NetworkChangeManagerClient::NotifyObservers(
   // Notify NetworkChangeManager if exists.
   if (network_change_manager_) {
     network_change_manager_->OnNetworkChanged(
-        dns_changed, ip_address_changed, connection_type_changed,
-        network::mojom::ConnectionType(connection_type),
-        connection_subtype_changed,
+        dns_changed,
+        ip_address_changed
+            ? network::mojom::IPAddressChangeType::IP_ADDRESS_CHANGE_NORMAL
+            : network::mojom::IPAddressChangeType::IP_ADDRESS_CHANGE_NONE,
+        connection_type_changed, connection_type, connection_subtype_changed,
         network::mojom::ConnectionSubtype(connection_subtype));
   }
 }

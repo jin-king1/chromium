@@ -2,13 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 // This file contains some tests for TCPClientSocket.
-// transport_client_socket_unittest.cc contans some other tests that
+// transport_client_socket_unittest.cc contains some other tests that
 // are common for TCP and other types of sockets.
 
 #include "net/socket/tcp_client_socket.h"
@@ -21,6 +16,7 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/power_monitor_test.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -29,6 +25,7 @@
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
+#include "net/base/port_util.h"
 #include "net/base/test_completion_callback.h"
 #include "net/log/net_log_source.h"
 #include "net/nqe/network_quality_estimator_test_util.h"
@@ -98,7 +95,8 @@ class TCPClientSocketTest
     ASSERT_THAT(server_socket->GetLocalAddress(&server_address), IsOk());
 
     *client_socket = std::make_unique<TCPClientSocket>(
-        AddressList(server_address), nullptr, nullptr, nullptr, NetLogSource());
+        AddressList(server_address), nullptr, nullptr, nullptr, NetLogSource(),
+        handles::kInvalidNetworkHandle);
 
     EXPECT_THAT((*client_socket)->Bind(IPEndPoint(local_address, 0)), IsOk());
 
@@ -143,7 +141,7 @@ TEST_P(TCPClientSocketTest, BindLoopbackToLoopback) {
   ASSERT_THAT(server.GetLocalAddress(&server_address), IsOk());
 
   TCPClientSocket socket(AddressList(server_address), nullptr, nullptr, nullptr,
-                         NetLogSource());
+                         NetLogSource(), handles::kInvalidNetworkHandle);
 
   EXPECT_THAT(socket.Bind(IPEndPoint(lo_address, 0)), IsOk());
 
@@ -174,7 +172,8 @@ TEST_P(TCPClientSocketTest, BindLoopbackToLoopback) {
 TEST_P(TCPClientSocketTest, BindLoopbackToExternal) {
   IPAddress external_ip(72, 14, 213, 105);
   TCPClientSocket socket(AddressList::CreateFromIPAddress(external_ip, 80),
-                         nullptr, nullptr, nullptr, NetLogSource());
+                         nullptr, nullptr, nullptr, NetLogSource(),
+                         handles::kInvalidNetworkHandle);
 
   EXPECT_THAT(socket.Bind(IPEndPoint(IPAddress::IPv4Localhost(), 0)), IsOk());
 
@@ -202,7 +201,7 @@ TEST_P(TCPClientSocketTest, BindLoopbackToIPv6) {
   IPEndPoint server_address;
   ASSERT_THAT(server.GetLocalAddress(&server_address), IsOk());
   TCPClientSocket socket(AddressList(server_address), nullptr, nullptr, nullptr,
-                         NetLogSource());
+                         NetLogSource(), handles::kInvalidNetworkHandle);
 
   EXPECT_THAT(socket.Bind(IPEndPoint(IPAddress::IPv4Localhost(), 0)), IsOk());
 
@@ -222,7 +221,7 @@ TEST_P(TCPClientSocketTest, WasEverUsed) {
   ASSERT_THAT(server.GetLocalAddress(&server_address), IsOk());
 
   TCPClientSocket socket(AddressList(server_address), nullptr, nullptr, nullptr,
-                         NetLogSource());
+                         NetLogSource(), handles::kInvalidNetworkHandle);
 
   EXPECT_FALSE(socket.WasEverUsed());
 
@@ -275,7 +274,7 @@ TEST_P(TCPClientSocketTest, DnsAliasesPersistForReuse) {
 
   // Create a socket.
   TCPClientSocket socket(AddressList(server_address), nullptr, nullptr, nullptr,
-                         NetLogSource());
+                         NetLogSource(), handles::kInvalidNetworkHandle);
   EXPECT_FALSE(socket.WasEverUsed());
   EXPECT_THAT(socket.Bind(IPEndPoint(lo_address, 0)), IsOk());
 
@@ -325,6 +324,50 @@ TEST_P(TCPClientSocketTest, DnsAliasesPersistForReuse) {
               testing::ElementsAre("alias1", "alias2", "host"));
 }
 
+TEST_P(TCPClientSocketTest, BlockRestrictedAddress) {
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList feature_list;
+  IPAddress lo_address = IPAddress::IPv4Localhost();
+  TCPServerSocket server(nullptr, NetLogSource());
+  ASSERT_THAT(
+      server.Listen(IPEndPoint(lo_address, 0), 1, /*ipv6_only=*/std::nullopt),
+      IsOk());
+  IPEndPoint server_address;
+  ASSERT_THAT(server.GetLocalAddress(&server_address), IsOk());
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kRestrictAbusePortsOnLocalhost,
+      {{"localhost_restrict_ports",
+        base::NumberToString(server_address.port())}});
+  ReloadLocalhostRestrictedPortsForTesting();
+  const IPAddress addresses_to_test[] = {
+      IPAddress::IPv4Localhost(),
+      IPAddress(127, 0, 0, 2),
+      IPAddress::IPv4AllZeros(),
+      IPAddress::IPv6Localhost(),
+      IPAddress::IPv6AllZeros(),
+      ConvertIPv4ToIPv4MappedIPv6(IPAddress::IPv4Localhost()),
+      ConvertIPv4ToIPv4MappedIPv6(IPAddress::IPv4AllZeros()),
+  };
+
+  int expected_count = 0;
+  for (const auto& address : addresses_to_test) {
+    TCPClientSocket socket(
+        AddressList(IPEndPoint(address, server_address.port())), nullptr,
+        nullptr, nullptr, NetLogSource(), handles::kInvalidNetworkHandle);
+
+    TestCompletionCallback connect_callback;
+    int connect_result = socket.Connect(connect_callback.callback());
+    EXPECT_THAT(connect_callback.GetResult(connect_result),
+                IsError(ERR_UNSAFE_PORT));
+    expected_count++;
+  }
+
+  histogram_tester.ExpectTotalCount("Net.RestrictedLocalhostPorts",
+                                    expected_count);
+  histogram_tester.ExpectBucketCount("Net.RestrictedLocalhostPorts",
+                                     server_address.port(), expected_count);
+}
+
 class TestSocketPerformanceWatcher : public SocketPerformanceWatcher {
  public:
   TestSocketPerformanceWatcher() = default;
@@ -369,7 +412,8 @@ TEST_P(TCPClientSocketTest, MAYBE_TestSocketPerformanceWatcher) {
 
   TCPClientSocket socket(
       AddressList::CreateFromIPAddressList(ip_list, std::move(aliases)),
-      std::move(watcher), nullptr, nullptr, NetLogSource());
+      std::move(watcher), nullptr, nullptr, NetLogSource(),
+      handles::kInvalidNetworkHandle);
 
   EXPECT_THAT(socket.Bind(IPEndPoint(IPAddress::IPv4Localhost(), 0)), IsOk());
 
@@ -397,7 +441,8 @@ TEST_P(TCPClientSocketTest, Tag) {
 
   AddressList addr_list;
   ASSERT_TRUE(test_server.GetAddressList(&addr_list));
-  TCPClientSocket s(addr_list, nullptr, nullptr, nullptr, NetLogSource());
+  TCPClientSocket s(addr_list, nullptr, nullptr, nullptr, NetLogSource(),
+                    handles::kInvalidNetworkHandle);
 
   // Verify TCP connect packets are tagged and counted properly.
   int32_t tag_val1 = 0x12345678;
@@ -415,26 +460,24 @@ TEST_P(TCPClientSocketTest, Tag) {
   old_traffic = GetTaggedBytes(tag_val2);
   SocketTag tag2(getuid(), tag_val2);
   s.ApplySocketTag(tag2);
-  const char kRequest1[] = "GET / HTTP/1.0";
+  const std::string kRequest1 = "GET / HTTP/1.0";
   auto write_buffer1 = base::MakeRefCounted<StringIOBuffer>(kRequest1);
   TestCompletionCallback write_callback1;
-  EXPECT_EQ(s.Write(write_buffer1.get(), strlen(kRequest1),
+  EXPECT_EQ(s.Write(write_buffer1.get(), write_buffer1->size(),
                     write_callback1.callback(), TRAFFIC_ANNOTATION_FOR_TESTS),
-            static_cast<int>(strlen(kRequest1)));
+            static_cast<int>(kRequest1.size()));
   EXPECT_GT(GetTaggedBytes(tag_val2), old_traffic);
 
   // Verify socket can be retagged with a new value and the current process's
   // UID.
   old_traffic = GetTaggedBytes(tag_val1);
   s.ApplySocketTag(tag1);
-  const char kRequest2[] = "\n\n";
-  scoped_refptr<IOBufferWithSize> write_buffer2 =
-      base::MakeRefCounted<IOBufferWithSize>(strlen(kRequest2));
-  memmove(write_buffer2->data(), kRequest2, strlen(kRequest2));
+  const std::string kRequest2 = "\n\n";
+  auto write_buffer2 = base::MakeRefCounted<StringIOBuffer>(kRequest2);
   TestCompletionCallback write_callback2;
-  EXPECT_EQ(s.Write(write_buffer2.get(), strlen(kRequest2),
+  EXPECT_EQ(s.Write(write_buffer2.get(), write_buffer2->size(),
                     write_callback2.callback(), TRAFFIC_ANNOTATION_FOR_TESTS),
-            static_cast<int>(strlen(kRequest2)));
+            static_cast<int>(kRequest2.size()));
   EXPECT_GT(GetTaggedBytes(tag_val1), old_traffic);
 
   s.Disconnect();
@@ -453,7 +496,8 @@ TEST_P(TCPClientSocketTest, TagAfterConnect) {
 
   AddressList addr_list;
   ASSERT_TRUE(test_server.GetAddressList(&addr_list));
-  TCPClientSocket s(addr_list, nullptr, nullptr, nullptr, NetLogSource());
+  TCPClientSocket s(addr_list, nullptr, nullptr, nullptr, NetLogSource(),
+                    handles::kInvalidNetworkHandle);
 
   // Connect socket.
   TestCompletionCallback connect_callback;
@@ -505,7 +549,8 @@ class NeverConnectingTCPClientSocket : public TCPClientSocket {
                         std::move(socket_performance_watcher),
                         network_quality_estimator,
                         net_log,
-                        source) {}
+                        source,
+                        handles::kInvalidNetworkHandle) {}
 
   // Returns the number of times that ConnectInternal() was called.
   int connect_internal_counter() const { return connect_internal_counter_; }
@@ -535,7 +580,7 @@ TEST_P(TCPClientSocketTest, SuspendBeforeConnect) {
   ASSERT_THAT(server.GetLocalAddress(&server_address), IsOk());
 
   TCPClientSocket socket(AddressList(server_address), nullptr, nullptr, nullptr,
-                         NetLogSource());
+                         NetLogSource(), handles::kInvalidNetworkHandle);
 
   EXPECT_THAT(socket.Bind(IPEndPoint(lo_address, 0)), IsOk());
 
@@ -699,8 +744,8 @@ TEST_P(TCPClientSocketTest, SuspendDuringWrite) {
 
   // Write to the socket until a write doesn't complete synchronously.
   const int kBufferSize = 4096;
-  auto write_buffer = base::MakeRefCounted<IOBufferWithSize>(kBufferSize);
-  memset(write_buffer->data(), '1', kBufferSize);
+  auto write_buffer = base::MakeRefCounted<VectorIOBuffer>(
+      std::vector<uint8_t>(kBufferSize, '1'));
   TestCompletionCallback callback;
   while (true) {
     int rv =
@@ -782,8 +827,8 @@ TEST_P(TCPClientSocketTest, SuspendDuringReadAndWrite) {
 
     // Write to the socket until a write doesn't complete synchronously.
     const int kBufferSize = 4096;
-    auto write_buffer = base::MakeRefCounted<IOBufferWithSize>(kBufferSize);
-    memset(write_buffer->data(), '1', kBufferSize);
+    auto write_buffer = base::MakeRefCounted<VectorIOBuffer>(
+        std::vector<uint8_t>(kBufferSize, '1'));
     TestCompletionCallback write_callback;
     while (true) {
       int rv = client_socket->Write(write_buffer.get(), kBufferSize,

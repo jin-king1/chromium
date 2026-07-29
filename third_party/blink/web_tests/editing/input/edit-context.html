@@ -255,8 +255,8 @@ test(function() {
   assert_equals(textFormats.length, 1);
   assert_equals(textFormats[0].rangeStart, 0);
   assert_equals(textFormats[0].rangeEnd, 3);
-  assert_equals(textFormats[0].underlineStyle, "Solid");
-  assert_equals(textFormats[0].underlineThickness, "Thin");
+  assert_equals(textFormats[0].underlineStyle, "solid");
+  assert_equals(textFormats[0].underlineThickness, "thin");
 
   textInputController.setComposition("");
   assert_equals(textFormats.length, 0);
@@ -388,7 +388,7 @@ test(function() {
   textInputController.setComposition("foo");
   assert_equals(test.innerHTML, "FOO");
   editContext.updateText(0, 1, "h");
-  assert_equals(editContext.text, "hoo");
+  assert_equals(editContext.text, "h");
   editContext.updateText(0, 3, "bar");
   assert_equals(editContext.text, "bar");
 }, 'Testing EditContext TextChange');
@@ -455,18 +455,18 @@ test(function() {
   textInputController.setComposition("foo");
   assert_equals(test.innerHTML, "FOO");
   editContext.updateText(0, 1, "h");
-  assert_equals(editContext.text, "hoo");
+  assert_equals(editContext.text, "h");
   editContext.updateText(0, 3, "bar");
   assert_equals(editContext.text, "bar");
   textInputController.insertText("bar");
-  assert_equals(editContext.text, "bar");
+  assert_equals(editContext.text, "barbar");
   editContext.updateSelection(0, 0);
   assert_equals(editContext.selectionStart, 0);
   assert_equals(editContext.selectionEnd, 0);
   textInputController.setComposition("foo");
-  assert_equals(editContext.text, "foobar");
+  assert_equals(editContext.text, "foobarbar");
   textInputController.insertText("foo");
-  assert_equals(editContext.text, "foobar");
+  assert_equals(editContext.text, "foobarbar");
 }, 'Testing EditContext Text And Selection Change');
 
 test(function() {
@@ -714,6 +714,372 @@ test(function() {
 
   test.remove();
 }, 'firstRectForCharacterRange empty control bounds and empty selection bounds fallbacks');
+
+test(function(){
+  const kEditContextUpdateTextRangePrecedesOrOverlapsSelection = 5582;
+  const kEditContextUpdateTextRangePrecedesCompositionRange = 5583;
+  const kEditContextUpdateTextRangeOverlapsCompositionRange = 5584;
+  internals.clearUseCounter(document, kEditContextUpdateTextRangePrecedesOrOverlapsSelection);
+  internals.clearUseCounter(document, kEditContextUpdateTextRangePrecedesCompositionRange);
+  internals.clearUseCounter(document, kEditContextUpdateTextRangeOverlapsCompositionRange);
+
+  const text = "ABCD";
+  const editContext = new EditContext({text: text, selectionStart: 1, selectionEnd: 1});
+  const test = document.createElement("div");
+  test.textContent = text;
+  document.body.appendChild(test);
+  test.editContext = editContext;
+  test.focus();
+
+  assert_false(internals.isUseCounted(document, kEditContextUpdateTextRangePrecedesOrOverlapsSelection));
+
+  // UpdateText range is outside the selection range.
+  editContext.updateText(4, 4, "1");
+  assert_false(internals.isUseCounted(document, kEditContextUpdateTextRangePrecedesOrOverlapsSelection));
+
+  // UpdateText range is less than selection range.
+  editContext.updateText(0, 0, "2");
+  assert_true(internals.isUseCounted(document, kEditContextUpdateTextRangePrecedesOrOverlapsSelection));
+
+  editContext.updateSelection(1, 1);
+  textInputController.setComposition("foo");
+  assert_false(internals.isUseCounted(document, kEditContextUpdateTextRangePrecedesCompositionRange));
+  assert_false(internals.isUseCounted(document, kEditContextUpdateTextRangeOverlapsCompositionRange));
+
+  // UpdeText range is outside the composition range.
+  editContext.updateText(5, 5, "3");
+  assert_false(internals.isUseCounted(document, kEditContextUpdateTextRangePrecedesCompositionRange));
+  assert_false(internals.isUseCounted(document, kEditContextUpdateTextRangeOverlapsCompositionRange));
+
+  // UpdateText range is less than composition range but does not overlap.
+  editContext.updateText(0, 0, "4");
+  assert_true(internals.isUseCounted(document, kEditContextUpdateTextRangePrecedesCompositionRange));
+  assert_false(internals.isUseCounted(document, kEditContextUpdateTextRangeOverlapsCompositionRange));
+
+  // UpdateText range overlaps with composition range.
+  editContext.updateText(0, 3, "5");
+  assert_true(internals.isUseCounted(document, kEditContextUpdateTextRangeOverlapsCompositionRange));
+
+  test.remove();
+}, 'Testing UseCounter for updateText based on update range and selection/composition range.');
+
+test(function(){
+  const kEditContextUpdateSelectionDuringActiveComposition = 5585;
+  internals.clearUseCounter(document, kEditContextUpdateSelectionDuringActiveComposition);
+
+  const text = "ABCD";
+  const editContext = new EditContext({text: text, selectionStart: 0, selectionEnd: 0});
+  const test = document.createElement("div");
+  test.textContent = text;
+  document.body.appendChild(test);
+  test.editContext = editContext;
+  test.focus();
+
+  // Tracks when selection is updated to new value while a composition is active.
+  assert_false(internals.isUseCounted(document, kEditContextUpdateSelectionDuringActiveComposition));
+  editContext.updateSelection(1, 1);
+  assert_false(internals.isUseCounted(document, kEditContextUpdateSelectionDuringActiveComposition));
+
+  textInputController.setComposition("foo");
+  assert_equals(editContext.selectionStart, 4);
+  assert_equals(editContext.selectionEnd, 4);
+  editContext.updateSelection(4, 4);
+  assert_false(internals.isUseCounted(document, kEditContextUpdateSelectionDuringActiveComposition));
+
+  editContext.updateSelection(2, 2);
+  assert_true(internals.isUseCounted(document, kEditContextUpdateSelectionDuringActiveComposition));
+
+  test.remove();
+}, 'Testing UseCounter for updateSelection during an active composition.');
+
+test(function () {
+  const editContext = new EditContext();
+  assert_not_equals(editContext, null);
+  const test = document.getElementById('test');
+
+  let compositionStartData = [];
+  let compositionEndData = [];
+  editContext.addEventListener("compositionstart", e => {
+    compositionStartData.push(e.data);
+  });
+  editContext.addEventListener("compositionend", e => {
+    compositionEndData.push(e.data);
+  });
+
+  test.editContext = editContext;
+  test.focus();
+  editContext.updateText(0, editContext.text.length, "abcd");
+  editContext.updateSelection(2, 2);
+  textInputController.setComposition("foo");
+  assert_equals(editContext.text, "abfoocd");
+  assert_array_equals(compositionStartData, ["foo"], "Should get compositionstart after setting non-empty composition");
+
+  editContext.updateSelection(1, 1);
+  assert_equals(editContext.text, "abcd");
+  assert_array_equals(compositionEndData, [""], "Should get compositionend when setting empty composition");
+  assert_equals(editContext.selectionStart, 1);
+  assert_equals(editContext.selectionEnd, 1);
+}, 'Calling selectionUpdate during active composition should abort the composition.');
+
+test(function () {
+  const editContext = new EditContext();
+  assert_not_equals(editContext, null);
+  const test = document.getElementById('test');
+
+  let compositionStartData = [];
+  let compositionEndData = [];
+  editContext.addEventListener("compositionstart", e => {
+    compositionStartData.push(e.data);
+  });
+  editContext.addEventListener("compositionend", e => {
+    compositionEndData.push(e.data);
+  });
+
+  test.editContext = editContext;
+  test.focus();
+
+  // Case 1: When composition is not active
+  editContext.updateText(0, editContext.text.length, "abcd");
+  editContext.updateSelection(1, 2);
+  assert_array_equals(compositionStartData, [], "Composition should not start");
+
+  // Case 1.1: Update text range after current selection range
+  editContext.updateText(3, 4, "EF");
+  assert_equals(editContext.text, "abcEF");
+  assert_equals(editContext.selectionStart, 1);
+  assert_equals(editContext.selectionEnd, 2);
+
+  // Case 1.2: Update text range before current selection range
+  editContext.updateText(0, 1, "GH");
+  assert_equals(editContext.text, "GHbcEF");
+  assert_equals(editContext.selectionStart, 2);
+  assert_equals(editContext.selectionEnd, 3);
+
+  // Case 1.3: Update text range overlaps current selection range
+  editContext.updateText(2, 4, "IJKL");
+  assert_equals(editContext.text, "GHIJKLEF");
+  assert_equals(editContext.selectionStart, 2);
+  assert_equals(editContext.selectionEnd, 6);
+
+  // Case 2: When composition is active
+  editContext.updateText(0, editContext.text.length, "abcd");
+  editContext.updateSelection(2, 2);
+  textInputController.setComposition("foo");
+  assert_equals(editContext.text, "abfoocd");
+  assert_equals(editContext.selectionStart, 5);
+  assert_equals(editContext.selectionEnd, 5);
+  assert_array_equals(compositionStartData, ["foo"], "Should get compositionstart after setting non-empty composition");
+
+  // Case 2.1: Update text range after current composition range
+  editContext.updateText(5, 5, "PQR");
+  assert_equals(editContext.text, "abfooPQRcd");
+  assert_equals(editContext.selectionStart, 5);
+  assert_equals(editContext.selectionEnd, 5);
+  assert_array_equals(compositionEndData, [], "Composition should not end");
+
+  // Case 2.2: Update text range before current composition range
+  editContext.updateText(1, 1, "STU");
+  assert_equals(editContext.text, "aSTUbfooPQRcd");
+  assert_equals(editContext.selectionStart, 8);
+  assert_equals(editContext.selectionEnd, 8);
+  assert_array_equals(compositionEndData, [], "Composition should not end");
+
+  // Case 2.3: Update text range overlaps with composition range
+  editContext.updateText(6, 6, "WXYZ");
+  assert_equals(editContext.text, "aSTUbPWXYZQRcd");
+  assert_equals(editContext.selectionStart, 10);
+  assert_equals(editContext.selectionEnd, 10);
+  assert_array_equals(compositionEndData, [""], "Should get compositionend when setting empty composition");
+}, 'Tests composition state on calling updateText during active composition.');
+
+test(function () {
+  const editContext1 = new EditContext();
+  const editContext2 = new EditContext();
+  const editContext3 = new EditContext();
+  const test = document.getElementById('test');
+
+  let compositionEndCount = 0;
+  editContext1.addEventListener("compositionend", e => {
+    assert_equals(test.editContext, editContext1, "Old editContext should remain attached until compositionend completes");
+    compositionEndCount++;
+    // Re-entrant editContext assignment during compositionend
+    test.editContext = editContext3;
+  });
+
+  test.editContext = editContext1;
+  test.focus();
+  textInputController.setComposition("foo");
+  assert_equals(test.editContext, editContext1, "editContext1 should still be attached");
+
+  // Setting a new editContext will trigger Blur on editContext1, which fires compositionend
+  test.editContext = editContext2;
+
+  assert_equals(compositionEndCount, 1, "compositionend should have fired during editContext assignment");
+  assert_equals(test.editContext, editContext3, "editContext should have been reassigned to editContext3 during compositionend");
+  assert_array_equals(editContext1.attachedElements(), [], "editContext1 should be detached");
+  assert_array_equals(editContext2.attachedElements(), [], "editContext2 should be detached after being replaced");
+  assert_array_equals(editContext3.attachedElements(), [test], "editContext3 should be attached to test");
+}, 'Re-entrant editContext assignment during compositionend event.');
+
+test(function () {
+  const editContext1 = new EditContext();
+  const editContext2 = new EditContext();
+  const test = document.getElementById('test');
+
+  let compositionEndCount = 0;
+  editContext1.addEventListener("compositionend", e => {
+    assert_equals(test.editContext, editContext1, "Old editContext should remain attached until compositionend completes");
+    compositionEndCount++;
+    // Detach editContext during compositionend
+    test.editContext = null;
+  });
+
+  test.editContext = editContext1;
+  test.focus();
+  textInputController.setComposition("foo");
+
+  // Setting a new editContext will trigger Blur on editContext1, which fires compositionend event
+  test.editContext = editContext2;
+
+  assert_equals(compositionEndCount, 1, "compositionend should have fired during editContext assignment");
+  assert_equals(test.editContext, null, "editContext should have been detached during compositionend");
+  assert_array_equals(editContext1.attachedElements(), [], "editContext1 should have no attached elements");
+  assert_array_equals(editContext2.attachedElements(), [], "editContext2 should have no attached elements");
+}, 'Detaching editContext during compositionend event fired by editContext assignment');
+
+test(function () {
+  const editContext1 = new EditContext();
+  const editContext2 = new EditContext();
+  const test = document.getElementById('test');
+
+  let compositionEndCount = 0;
+  editContext1.addEventListener("compositionend", e => {
+    assert_equals(test.editContext, editContext1, "");
+    compositionEndCount++;
+    // Re-assigning the same editContext should be a no-op
+    test.editContext = editContext1;
+  });
+
+  test.editContext = editContext1;
+  test.focus();
+  textInputController.setComposition("foo");
+
+  // Setting editContext2 will trigger Blur on editContext1, which fires compositionend event
+  test.editContext = editContext2;
+
+  assert_equals(compositionEndCount, 1, "compositionend should have fired once");
+  assert_equals(test.editContext, editContext2, "editContext2 should be attached");
+  assert_array_equals(editContext1.attachedElements(), [], "editContext1 should be detached");
+  assert_array_equals(editContext2.attachedElements(), [test], "editContext2 should be attached");
+}, 'Reassigning old editContext during compositionend.');
+
+test(function () {
+  const editContext1 = new EditContext();
+  const editContext2 = new EditContext();
+  const test = document.getElementById('test');
+  const test2 = document.getElementById('test2');
+
+  let compositionEndCount = 0;
+  editContext1.addEventListener("compositionend", e => {
+    assert_equals(test.editContext, editContext1, "Old editContext should remain attached until compositionend completes");
+    compositionEndCount++;
+    test2.editContext = editContext2;
+  });
+
+  test.editContext = editContext1;
+  test.focus();
+  textInputController.setComposition("foo");
+
+  // Setting editContext2 will trigger Blur on editContext1, which fires compositionend event
+  assert_throws_dom("NotSupportedError", () => {
+      test.editContext = editContext2;
+  }, "Should throw NotSupportedError when assigning already-attached editContext");
+
+  assert_equals(compositionEndCount, 1, "compositionend should have fired");
+  assert_equals(test.editContext, editContext1, "test should have editContext1 after the assignment");
+  assert_equals(test2.editContext, editContext2, "test2 should have editContext2 after assignment");
+}, 'Throws when compositionend handler attaches target editContext to another element');
+
+test(function () {
+  const editContext1 = new EditContext();
+  const editContext2 = new EditContext();
+  const editContext3 = new EditContext();
+  const test = document.getElementById('test');
+
+  test.editContext = editContext1;
+  test.focus();
+  textInputController.setComposition("foo");
+
+  let textFormatUpdateCount = 0;
+  editContext1.addEventListener("textformatupdate", e => {
+    assert_equals(test.editContext, editContext1, "Old editContext should remain attached until textformatupdate completes");
+    textFormatUpdateCount++;
+    // Re-entrant editContext assignment during textformatupdate
+    test.editContext = editContext3;
+  });
+
+  // Setting editContext2 will trigger Blur on editContext1, which fires textformatupdate event
+  test.editContext = editContext2;
+
+  assert_equals(textFormatUpdateCount, 1, "textformatupdate should have fired");
+  assert_equals(test.editContext, editContext3, "editContext should have been reassigned to editContext3 during textformatupdate");
+  assert_array_equals(editContext1.attachedElements(), [], "editContext1 should be detached");
+  assert_array_equals(editContext3.attachedElements(), [test], "editContext3 should be attached to test");
+}, 'Re-entrant editContext assignment during textformatupdate event.');
+
+test(function () {
+  const editContext1 = new EditContext();
+  const editContext2 = new EditContext();
+  const test = document.getElementById('test');
+
+  test.editContext = editContext1;
+  test.focus();
+  textInputController.setComposition("foo");
+
+  let textFormatUpdateCount = 0;
+  editContext1.addEventListener("textformatupdate", e => {
+    assert_equals(test.editContext, editContext1, "Old editContext should remain attached until textformatupdate completes");
+    textFormatUpdateCount++;
+    // Detach editContext during textformatupdate
+    test.editContext = null;
+  });
+
+  // Setting editContext2 will trigger Blur on editContext1, which fires textformatupdate event
+  test.editContext = editContext2;
+
+  assert_equals(textFormatUpdateCount, 1, "textformatupdate should have fired");
+  assert_equals(test.editContext, null, "editContext should have been detached during textformatupdate");
+  assert_array_equals(editContext1.attachedElements(), [], "editContext1 should have no attached elements");
+}, 'Detaching editContext during textformatupdate event.');
+
+test(function () {
+  const editContext1 = new EditContext();
+  const editContext2 = new EditContext();
+  const test = document.getElementById('test');
+  const test2 = document.getElementById('test2');
+
+  test.editContext = editContext1;
+  test.focus();
+  textInputController.setComposition("foo");
+
+  let textFormatUpdateCount = 0;
+  editContext1.addEventListener("textformatupdate", e => {
+    assert_equals(test.editContext, editContext1, "Old editContext should remain attached until textformatupdate completes");
+    textFormatUpdateCount++;
+    test2.editContext = editContext2;
+  });
+
+  // Setting editContext2 will trigger Blur on editContext1, which fires textformatupdate event
+  assert_throws_dom("NotSupportedError", () => {
+      test.editContext = editContext2;
+  }, "Should throw NotSupportedError when assigning already-attached editContext");
+
+  assert_equals(textFormatUpdateCount, 1, "textformatupdate should have fired");
+  assert_equals(test.editContext, editContext1, "test should still have editContext1");
+  assert_equals(test2.editContext, editContext2, "test2 should have editContext2 after assignment in handler");
+  assert_array_equals(editContext1.attachedElements(), [test], "editContext1 should remain attached to test");
+  assert_array_equals(editContext2.attachedElements(), [test2], "editContext2 should be attached to test2");
+}, 'Throws when textformatupdate handler attaches target editContext to another element');
 </script>
 </body>
 </html>

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/login/signin/auth_error_observer.h"
 
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
@@ -27,7 +28,8 @@ bool AuthErrorObserver::ShouldObserve(Profile* profile) {
   return user && user->HasGaiaAccount();
 }
 
-AuthErrorObserver::AuthErrorObserver(Profile* profile) : profile_(profile) {
+AuthErrorObserver::AuthErrorObserver(PrefService* local_state, Profile* profile)
+    : local_state_(CHECK_DEREF(local_state)), profile_(profile) {
   DCHECK(ShouldObserve(profile));
 }
 
@@ -63,6 +65,11 @@ void AuthErrorObserver::OnStateChanged(syncer::SyncService* sync) {
   HandleAuthError(sync->GetAuthError());
 }
 
+void AuthErrorObserver::OnSyncShutdown(syncer::SyncService* sync) {
+  // Unreachable, since this service is Shutdown() before the SyncService.
+  NOTREACHED();
+}
+
 void AuthErrorObserver::OnErrorChanged() {
   // This notification could have come for any account but we are only
   // interested in errors for the Primary Account.
@@ -92,7 +99,8 @@ void AuthErrorObserver::HandleAuthError(
 
     user_manager::UserManager::Get()->SaveUserOAuthStatus(
         account_id, user_manager::User::OAUTH2_TOKEN_STATUS_INVALID);
-    RecordReauthReason(account_id, ReauthReason::kSyncFailed);
+    RecordReauthReason(local_state_.get(), account_id,
+                       ReauthReason::kSyncFailed);
   } else if (auth_error.state() == GoogleServiceAuthError::NONE) {
     if (user->oauth_token_status() ==
         user_manager::User::OAUTH2_TOKEN_STATUS_INVALID) {

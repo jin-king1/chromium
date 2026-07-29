@@ -35,7 +35,7 @@ constexpr SkColor kCueColor = SK_ColorGRAY;
 }  // namespace
 
 TabletModeMultitaskCueController::TabletModeMultitaskCueController() {
-  CHECK(Shell::Get()->IsInTabletMode());
+  CHECK(display::Screen::Get()->InTabletMode());
   Shell::Get()->activation_client()->AddObserver(this);
 
   // If an app window is active before switching to tablet mode, show the cue.
@@ -72,8 +72,8 @@ void TabletModeMultitaskCueController::MaybeShowCue(
 
   window_ = active_window;
 
-  cue_layer_ = std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
-  cue_layer_->SetColor(kCueColor);
+  cue_layer_ = std::make_unique<ui::LayerSolidColor>();
+  cue_layer_->SetColor(SkColor4f::FromColor(kCueColor));
   cue_layer_->SetRoundedCornerRadius(gfx::RoundedCornersF(kCornerRadius));
   cue_layer_->SetOpacity(0.0f);
 

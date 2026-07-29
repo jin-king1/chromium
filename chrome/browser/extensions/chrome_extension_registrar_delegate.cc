@@ -6,33 +6,48 @@
 
 #include <set>
 #include <string>
+#include <utility>
 
 #include "base/barrier_closure.h"
+#include "base/files/file_util.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/notimplemented.h"
 #include "chrome/browser/extensions/component_loader.h"
+#include "chrome/browser/extensions/corrupted_extension_reinstaller.h"
 #include "chrome/browser/extensions/data_deleter.h"
-#include "chrome/browser/extensions/delayed_install_manager.h"
-#include "chrome/browser/extensions/extension_assets_manager.h"
+#include "chrome/browser/extensions/extension_allowlist_factory.h"
 #include "chrome/browser/extensions/extension_disabled_ui.h"
-#include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_special_storage_policy.h"
-#include "chrome/browser/extensions/install_verifier.h"
+#include "chrome/browser/extensions/external_install_manager.h"
+#include "chrome/browser/extensions/install_verifier_factory.h"
 #include "chrome/browser/extensions/installed_loader.h"
-#include "chrome/browser/extensions/permissions/permissions_updater.h"
-#include "chrome/browser/extensions/unpacked_installer.h"
+#include "chrome/browser/extensions/profile_util.h"
+#include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
-#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/favicon_base/favicon_url_parser.h"
+#include "extensions/browser/delayed_install_manager.h"
 #include "extensions/browser/disable_reason.h"
+#include "extensions/browser/extension_allowlist.h"
+#include "extensions/browser/extension_assets_manager.h"
 #include "extensions/browser/extension_file_task_runner.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
 #include "extensions/browser/extensions_browser_client.h"
+#include "extensions/browser/install_flag.h"
+#include "extensions/browser/install_verifier.h"
+#include "extensions/browser/pending_extension_manager.h"
+#include "extensions/browser/permissions/permissions_updater.h"
+#include "extensions/browser/unpacked_installer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/crash_keys.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 #include "extensions/common/manifest_handlers/shared_module_info.h"
 #include "extensions/common/mojom/manifest.mojom-shared.h"
@@ -46,11 +61,16 @@
 #include "storage/browser/file_system/file_system_context.h"
 #endif
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/browser/extensions/sync/extension_sync_service.h"
+#include "chrome/browser/ui/webui/theme_source.h"
+#endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
 using extensions::mojom::ManifestLocation;
 
 namespace extensions {
-
-using LoadErrorBehavior = ExtensionRegistrar::LoadErrorBehavior;
 
 namespace {
 
@@ -73,37 +93,26 @@ bool SkipDeleteExtensionDir(const Extension& extension,
 }  // namespace
 
 ChromeExtensionRegistrarDelegate::ChromeExtensionRegistrarDelegate(
-    Profile* profile,
-    ExtensionService* extension_service,
-    ComponentLoader* component_loader,
-    const base::FilePath& install_directory,
-    const base::FilePath& unpacked_install_directory)
+    Profile* profile)
     : profile_(profile),
       system_(ExtensionSystem::Get(profile_)),
-      extension_service_(extension_service),
       extension_prefs_(ExtensionPrefs::Get(profile_)),
       registry_(ExtensionRegistry::Get(profile_)),
-      component_loader_(component_loader),
-      install_directory_(install_directory),
-      unpacked_install_directory_(unpacked_install_directory) {}
+      component_loader_(ComponentLoader::Get(profile_)) {}
 
 ChromeExtensionRegistrarDelegate::~ChromeExtensionRegistrarDelegate() = default;
 
-void ChromeExtensionRegistrarDelegate::Init(
-    ExtensionRegistrar* registrar,
-    DelayedInstallManager* delayed_install) {
+void ChromeExtensionRegistrarDelegate::Init(ExtensionRegistrar* registrar) {
   extension_registrar_ = registrar;
-  delayed_install_manager_ = delayed_install;
 }
 
 void ChromeExtensionRegistrarDelegate::Shutdown() {
-  // Avoid dangling pointers. The Profile outlives this object but some other
-  // classes don't.
+  // Avoid dangling pointers.
+  profile_ = nullptr;
   extension_prefs_ = nullptr;
   system_ = nullptr;
   registry_ = nullptr;
   extension_registrar_ = nullptr;
-  delayed_install_manager_ = nullptr;
   component_loader_ = nullptr;
 }
 
@@ -123,6 +132,14 @@ void ChromeExtensionRegistrarDelegate::PreAddExtension(
   CheckPermissionsIncrease(extension, !!old_extension);
 }
 
+void ChromeExtensionRegistrarDelegate::OnAddNewOrUpdatedExtension(
+    const Extension* extension) {
+  if (InstallVerifier::NeedsVerification(*extension, profile_)) {
+    InstallVerifierFactory::GetForBrowserContext(profile_)->VerifyExtension(
+        extension->id());
+  }
+}
+
 void ChromeExtensionRegistrarDelegate::PostActivateExtension(
     scoped_refptr<const Extension> extension) {
   // Update policy permissions in case they were changed while extension was not
@@ -131,12 +148,13 @@ void ChromeExtensionRegistrarDelegate::PostActivateExtension(
 
   // TODO(kalman): Convert ExtensionSpecialStoragePolicy to a
   // BrowserContextKeyedService and use ExtensionRegistryObserver.
-  profile_->GetExtensionSpecialStoragePolicy()->GrantRightsForExtension(
-      extension.get(), profile_);
+  auto* special_storage_policy = profile_->GetExtensionSpecialStoragePolicy();
+  CHECK(special_storage_policy);
+  special_storage_policy->GrantRightsForExtension(extension.get(), profile_);
 
   // TODO(kalman): This is broken. The crash reporter is process-wide so doesn't
   // work properly multi-profile. Besides which, it should be using
-  // ExtensionRegistryObserver. See http://crbug.com/355029.
+  // ExtensionRegistryObserver. See http://crbug.com/41096321.
   UpdateActiveExtensionsInCrashReporter();
 
   const PermissionsData* permissions_data = extension->permissions_data();
@@ -152,8 +170,14 @@ void ChromeExtensionRegistrarDelegate::PostActivateExtension(
 
   // Same for chrome://theme/ resources.
   if (permissions_data->HasHostPermission(GURL(chrome::kChromeUIThemeURL))) {
+#if BUILDFLAG(ENABLE_EXTENSIONS)
     content::URLDataSource::Add(profile_,
                                 std::make_unique<ThemeSource>(profile_));
+#else
+    // TODO(crbug.com/408507365): Figure out the theme story on desktop Android
+    // and port ThemeSource if necessary.
+    NOTIMPLEMENTED() << "Themes not yet supported on desktop Android.";
+#endif
   }
 }
 
@@ -161,8 +185,9 @@ void ChromeExtensionRegistrarDelegate::PostDeactivateExtension(
     scoped_refptr<const Extension> extension) {
   // TODO(kalman): Convert ExtensionSpecialStoragePolicy to a
   // BrowserContextKeyedService and use ExtensionRegistryObserver.
-  profile_->GetExtensionSpecialStoragePolicy()->RevokeRightsForExtension(
-      extension.get(), profile_);
+  auto* special_storage_policy = profile_->GetExtensionSpecialStoragePolicy();
+  CHECK(special_storage_policy);
+  special_storage_policy->RevokeRightsForExtension(extension.get(), profile_);
 
 #if BUILDFLAG(IS_CHROMEOS)
   // Revoke external file access for the extension from its file system context.
@@ -179,13 +204,15 @@ void ChromeExtensionRegistrarDelegate::PostDeactivateExtension(
 
   // TODO(kalman): This is broken. The crash reporter is process-wide so doesn't
   // work properly multi-profile. Besides which, it should be using
-  // ExtensionRegistryObserver::OnExtensionLoaded. See http://crbug.com/355029.
+  // ExtensionRegistryObserver::OnExtensionLoaded. See
+  // http://crbug.com/41096321.
   UpdateActiveExtensionsInCrashReporter();
 }
 
 void ChromeExtensionRegistrarDelegate::PreUninstallExtension(
     scoped_refptr<const Extension> extension) {
-  InstallVerifier::Get(profile_)->Remove(extension->id());
+  InstallVerifierFactory::GetForBrowserContext(profile_)->Remove(
+      extension->id());
 }
 
 void ChromeExtensionRegistrarDelegate::PostUninstallExtension(
@@ -212,7 +239,9 @@ void ChromeExtensionRegistrarDelegate::PostUninstallExtension(
         is_unpacked_location ? extension->path() : extension->path().DirName();
 
     base::FilePath extensions_install_dir =
-        is_unpacked_location ? unpacked_install_directory_ : install_directory_;
+        is_unpacked_location
+            ? extension_registrar_->unpacked_install_directory()
+            : extension_registrar_->install_directory();
 
     // Tell the backend to start deleting the installed extension on the file
     // thread.
@@ -232,21 +261,10 @@ void ChromeExtensionRegistrarDelegate::PostUninstallExtension(
   DataDeleter::StartDeleting(profile_, extension.get(), subtask_done_callback);
 }
 
-void ChromeExtensionRegistrarDelegate::PostNotifyUninstallExtension(
-    scoped_refptr<const Extension> extension) {
-  delayed_install_manager_->Remove(extension->id());
-}
-
-void ChromeExtensionRegistrarDelegate::LoadExtensionForReload(
+void ChromeExtensionRegistrarDelegate::DoLoadExtensionForReload(
     const ExtensionId& extension_id,
     const base::FilePath& path,
-    ExtensionRegistrar::LoadErrorBehavior load_error_behavior) {
-  if (delayed_install_manager_->Contains(extension_id) &&
-      delayed_install_manager_->FinishDelayedInstallationIfReady(
-          extension_id, true /*install_immediately*/)) {
-    return;
-  }
-
+    bool load_error_behavior_noisy) {
   // If we're reloading a component extension, use the component extension
   // loader's reloader.
   if (component_loader_->Exists(extension_id)) {
@@ -256,57 +274,44 @@ void ChromeExtensionRegistrarDelegate::LoadExtensionForReload(
 
   // Check the installed extensions to see if what we're reloading was already
   // installed.
-  std::optional<ExtensionInfo> installed_extension(
+  std::optional<ExtensionPrefs::InstallRecord> installed_extension(
       extension_prefs_->GetInstalledExtensionInfo(extension_id));
   if (installed_extension && installed_extension->extension_manifest.get()) {
-    InstalledLoader(extension_service_).Load(*installed_extension, false);
+    InstalledLoader(profile_).Load(*installed_extension, false);
   } else {
     // Otherwise, the extension is unpacked (location LOAD). We must load it
     // from the path.
     CHECK(!path.empty()) << "ExtensionRegistrar should never ask to load an "
                             "unknown extension with no path";
     scoped_refptr<UnpackedInstaller> unpacked_installer =
-        UnpackedInstaller::Create(extension_service_);
-    unpacked_installer->set_be_noisy_on_failure(load_error_behavior ==
-                                                LoadErrorBehavior::kNoisy);
+        UnpackedInstaller::Create(profile_);
+    unpacked_installer->set_be_noisy_on_failure(load_error_behavior_noisy);
     unpacked_installer->set_completion_callback(base::BindOnce(
         &ChromeExtensionRegistrarDelegate::OnUnpackedReloadFailure,
         weak_factory_.GetWeakPtr()));
     unpacked_installer->Load(path);
   }
 }
+void ChromeExtensionRegistrarDelegate::LoadExtensionForReload(
+    const ExtensionId& extension_id,
+    const base::FilePath& path) {
+  DoLoadExtensionForReload(extension_id, path, true);
+}
+void ChromeExtensionRegistrarDelegate::LoadExtensionForReloadWithQuietFailure(
+    const ExtensionId& extension_id,
+    const base::FilePath& path) {
+  DoLoadExtensionForReload(extension_id, path, false);
+}
 
 void ChromeExtensionRegistrarDelegate::ShowExtensionDisabledError(
     const Extension* extension,
     bool is_remote_install) {
-  // TODO(crbug.com/399680111): Android will need a different implementation of
-  // this function (e.g. an extension_disabled_ui_android.cc file) as it cannot
-  // use the views implementation of this bubble.
   AddExtensionDisabledError(profile_, extension, is_remote_install);
-}
-
-void ChromeExtensionRegistrarDelegate::FinishDelayedInstallationsIfAny() {
-  delayed_install_manager_->MaybeFinishDelayedInstallations();
-}
-
-bool ChromeExtensionRegistrarDelegate::CanAddExtension(
-    const Extension* extension) {
-  // TODO(jstritar): We may be able to get rid of this branch by overriding the
-  // default extension state to DISABLED when the --disable-extensions flag
-  // is set (http://crbug.com/29067).
-  std::set<std::string> disable_flag_exempted_extensions =
-      extension_service_->disable_flag_exempted_extensions();
-  if (!extension_service_->extensions_enabled() &&
-      !Manifest::ShouldAlwaysLoadExtension(extension->location(),
-                                           extension->is_theme()) &&
-      disable_flag_exempted_extensions.count(extension->id()) == 0) {
-    return false;
-  }
-  return true;
 }
 
 bool ChromeExtensionRegistrarDelegate::CanEnableExtension(
     const Extension* extension) {
+  CHECK(system_->management_policy());
   return !system_->management_policy()->MustRemainDisabled(extension, nullptr);
 }
 
@@ -332,21 +337,9 @@ bool ChromeExtensionRegistrarDelegate::CanDisableExtension(
     return true;
   }
 
+  CHECK(system_->management_policy());
   return system_->management_policy()->UserMayModifySettings(extension,
                                                              nullptr);
-}
-
-bool ChromeExtensionRegistrarDelegate::ShouldBlockExtension(
-    const Extension* extension) {
-  if (!extension_service_->block_extensions()) {
-    return false;
-  }
-
-  // Blocked extensions aren't marked as such in prefs, thus if
-  // |block_extensions_| is true then CanBlockExtension() must be called with an
-  // Extension object. If |extension| is not loaded, assume it should be
-  // blocked.
-  return !extension || extension_registrar_->CanBlockExtension(extension);
 }
 
 void ChromeExtensionRegistrarDelegate::GrantActivePermissions(
@@ -354,9 +347,149 @@ void ChromeExtensionRegistrarDelegate::GrantActivePermissions(
   PermissionsUpdater(profile_).GrantActivePermissions(extension);
 }
 
+void ChromeExtensionRegistrarDelegate::UpdateExternalExtensionAlert() {
+  ExternalInstallManager::Get(profile_)->UpdateExternalExtensionAlert();
+}
+
+base::flat_set<int>
+ChromeExtensionRegistrarDelegate::GetDisableReasonsOnInstalled(
+    const Extension* extension,
+    int install_flags) {
+  base::flat_set<int> disable_reasons =
+      extension_registrar_->GetDisableReasonsOnInstalled(extension);
+
+  // If the old version of the extension was disabled due to corruption, this
+  // new install may correct the problem.
+  disable_reasons.erase(disable_reason::DISABLE_CORRUPTED);
+
+  // Unsupported requirements overrides the management policy.
+  if (install_flags & kInstallFlagHasRequirementErrors) {
+    disable_reasons.insert(disable_reason::DISABLE_UNSUPPORTED_REQUIREMENT);
+  } else {
+    // Requirement is supported now, remove the corresponding disable reason
+    // instead.
+    disable_reasons.erase(disable_reason::DISABLE_UNSUPPORTED_REQUIREMENT);
+  }
+
+  // Check if the extension was disabled because of the minimum version
+  // requirements from enterprise policy, and satisfies it now.
+  if (ExtensionManagementFactory::GetForBrowserContext(profile_)
+          ->CheckMinimumVersion(extension, nullptr)) {
+    // And remove the corresponding disable reason.
+    disable_reasons.erase(disable_reason::DISABLE_UPDATE_REQUIRED_BY_POLICY);
+  }
+
+  return disable_reasons;
+}
+
+void ChromeExtensionRegistrarDelegate::OnExtensionInstalled(
+    const Extension* extension,
+    const syncer::StringOrdinal& page_ordinal,
+    int install_flags,
+    base::DictValue ruleset_install_prefs) {
+  const std::string& id = extension->id();
+  std::string install_parameter;
+  auto* pending_extension_manager = PendingExtensionManager::Get(profile_);
+  const PendingExtensionInfo* pending_extension_info =
+      pending_extension_manager->GetById(id);
+  auto* corrupted_extension_reinstaller =
+      CorruptedExtensionReinstaller::Get(profile_);
+  bool is_reinstall_for_corruption =
+      corrupted_extension_reinstaller->IsReinstallForCorruptionExpected(id);
+
+  if (is_reinstall_for_corruption) {
+    corrupted_extension_reinstaller->MarkResolved(id);
+  }
+
+  if (pending_extension_info) {
+    if (!pending_extension_info->ShouldAllowInstall(extension, profile_)) {
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+      // Note: Theme is unsupported on desktop Android.
+      // Hack for crbug.com/40445445, see comment on DeleteThemeDoNotUse.
+      if (extension->is_theme() && pending_extension_info->is_from_sync()) {
+        ExtensionSyncService::Get(profile_)->DeleteThemeDoNotUse(*extension);
+      }
+#endif
+
+      pending_extension_manager->Remove(id);
+
+      ExtensionManagement* management =
+          ExtensionManagementFactory::GetForBrowserContext(profile_);
+      LOG(WARNING) << "ShouldAllowInstall() returned false for " << id
+                   << " of type " << std::to_underlying(extension->GetType())
+                   << " and update URL "
+                   << management->GetEffectiveUpdateURL(*extension).spec()
+                   << "; not installing";
+
+      // Delete the extension directory since we're not going to
+      // load it.
+      if (!GetExtensionFileTaskRunner()->PostTask(
+              FROM_HERE,
+              base::GetDeletePathRecursivelyCallback(extension->path()))) {
+        NOTREACHED();
+      }
+      return;
+    }
+
+    install_parameter = pending_extension_info->install_parameter();
+    pending_extension_manager->Remove(id);
+  }
+
+  if (install_flags & kInstallFlagIsBlocklistedForMalware) {
+    // Installation of a blocklisted extension can happen from sync, policy,
+    // etc, where to maintain consistency we need to install it, just never
+    // load it (see AddExtension). Usually it should be the job of callers to
+    // intercept blocklisted extensions earlier (e.g. CrxInstaller, before even
+    // showing the install dialogue).
+    extension_prefs_->AcknowledgeBlocklistedExtension(id);
+    UMA_HISTOGRAM_ENUMERATION("ExtensionBlacklist.SilentInstall",
+                              extension->location());
+  }
+
+  RecordInstallHistograms(extension);
+
+  ExtensionAllowlistFactory::GetForBrowserContext(profile_)
+      ->OnExtensionInstalled(id, install_flags);
+
+  DelayedInstallManager* delayed_install_manager =
+      DelayedInstallManager::Get(profile_);
+
+  ExtensionPrefs::DelayReason delay_reason;
+  InstallGate::Action action =
+      delayed_install_manager->ShouldDelayExtensionInstall(
+          extension, !!(install_flags & kInstallFlagInstallImmediately),
+          &delay_reason);
+  switch (action) {
+    case InstallGate::INSTALL:
+      extension_registrar_->AddNewOrUpdatedExtension(
+          extension, install_flags, page_ordinal, install_parameter,
+          std::move(ruleset_install_prefs));
+      return;
+    case InstallGate::DELAY:
+      extension_prefs_->SetDelayedInstallInfo(
+          extension, {install_flags, delay_reason, page_ordinal,
+                      install_parameter, std::move(ruleset_install_prefs)});
+
+      // Transfer ownership of |extension|.
+      delayed_install_manager->Insert(extension);
+
+      if (delay_reason == ExtensionPrefs::DelayReason::kWaitForIdle) {
+        ExtensionUpdater::Get(profile_)->NotifyAppUpdateAvailable(*extension);
+      }
+      return;
+    case InstallGate::ABORT:
+      // Do nothing to abort the install. One such case is the shared module
+      // service gets IMPORT_STATUS_UNRECOVERABLE status for the pending
+      // install.
+      return;
+  }
+
+  NOTREACHED() << "Unknown action for delayed install: " << action;
+}
+
 void ChromeExtensionRegistrarDelegate::CheckPermissionsIncrease(
     const Extension* extension,
-    bool is_extension_loaded) {
+    bool is_extension_installed) {
   PermissionsUpdater(profile_).InitializePermissions(extension);
 
   // We keep track of all permissions the user has granted each extension.
@@ -383,36 +516,43 @@ void ChromeExtensionRegistrarDelegate::CheckPermissionsIncrease(
 
   // Silently grant all active permissions to pre-installed apps and apps
   // installed in kiosk mode.
+  // Newly-installed external extensions will already trigger a separate prompt
+  // for the user, so their initial permissions are not treated as an increase.
+  bool is_new_external_extension =
+      !is_extension_installed &&
+      Manifest::IsExternalLocation(extension->location());
   bool auto_grant_permission =
       extension->was_installed_by_default() ||
-      ExtensionsBrowserClient::Get()->IsRunningInForcedAppMode();
+      ExtensionsBrowserClient::Get()->IsRunningInForcedAppMode() ||
+      is_new_external_extension;
   if (auto_grant_permission) {
     PermissionsUpdater(profile_).GrantActivePermissions(extension);
   }
 
   bool is_privilege_increase = false;
-  // We only need to compare the granted permissions to the current permissions
-  // if the extension has not been auto-granted its permissions above and is
-  // installed internally.
-  if (extension->location() == ManifestLocation::kInternal &&
-      !auto_grant_permission) {
+
+  // Identify extensions from inherently trusted locations.
+  bool is_trusted_location =
+      Manifest::IsComponentLocation(extension->location()) ||
+      Manifest::IsPolicyLocation(extension->location()) ||
+      Manifest::IsUnpackedLocation(extension->location());
+
+  // Verify privilege increases for non-trusted and non-auto-granted extensions.
+  if (!is_trusted_location && !auto_grant_permission) {
     // Add all the recognized permissions if the granted permissions list
-    // hasn't been initialized yet.
+    // hasn't been initialized yet. Compare requested permissions against the
+    // existing granted set to detect a privilege increase.
     std::unique_ptr<const PermissionSet> granted_permissions =
         extension_prefs_->GetGrantedPermissions(extension->id());
     CHECK(granted_permissions.get());
-    // We check the union of both granted permissions and runtime granted
-    // permissions as it is possible for permissions which were withheld during
-    // installation to have never entered the granted set, but to have later
-    // been granted as runtime permissions.
     std::unique_ptr<const PermissionSet> runtime_granted_permissions =
         extension_prefs_->GetRuntimeGrantedPermissions(extension->id());
     std::unique_ptr<const PermissionSet> total_permissions =
         PermissionSet::CreateUnion(*granted_permissions,
                                    *runtime_granted_permissions);
 
-    // Here, we check if an extension's privileges have increased in a manner
-    // that requires the user's approval. This could occur because the browser
+    // Check if an extension's privileges have increased in a manner that
+    // requires the user's approval. This could occur because the browser
     // upgraded and recognized additional privileges, or an extension upgrades
     // to a version that requires additional privileges.
     is_privilege_increase =
@@ -463,7 +603,7 @@ void ChromeExtensionRegistrarDelegate::UpdateActiveExtensionsInCrashReporter() {
 
   // TODO(kalman): This is broken. ExtensionService is per-profile.
   // crash_keys::SetActiveExtensions is per-process. See
-  // http://crbug.com/355029.
+  // http://crbug.com/41096321.
   crash_keys::SetActiveExtensions(extension_ids);
 }
 
@@ -475,7 +615,8 @@ void ChromeExtensionRegistrarDelegate::UninstallExtensionOnFileThread(
     const base::FilePath& extension_dir_to_delete,
     const base::FilePath& profile_dir) {
   ExtensionAssetsManager* assets_manager =
-      ExtensionAssetsManager::GetInstance();
+      ExtensionsBrowserClient::Get()->GetAssetsManager();
+
   assets_manager->UninstallExtension(id, profile_user_name,
                                      extensions_install_dir,
                                      extension_dir_to_delete, profile_dir);
@@ -484,9 +625,31 @@ void ChromeExtensionRegistrarDelegate::UninstallExtensionOnFileThread(
 void ChromeExtensionRegistrarDelegate::OnUnpackedReloadFailure(
     const Extension* extension,
     const base::FilePath& file_path,
-    const std::string& error) {
+    const std::u16string& error) {
   if (!error.empty()) {
     extension_registrar_->OnUnpackedExtensionReloadFailed(file_path);
+  }
+}
+
+void ChromeExtensionRegistrarDelegate::RecordInstallHistograms(
+    const Extension* extension) {
+  bool is_user_profile =
+      extensions::profile_util::ProfileCanUseNonComponentExtensions(profile_);
+
+  if (!registry_->GetInstalledExtension(extension->id())) {
+    if (is_user_profile) {
+      UMA_HISTOGRAM_ENUMERATION("Extensions.InstallType.User",
+                                extension->GetType(), 100);
+      UMA_HISTOGRAM_ENUMERATION("Extensions.InstallSource.User2",
+                                extension->location(), 100);
+      InstalledLoader::RecordPermissionMessagesHistogram(extension, "Install",
+                                                         profile_);
+    } else {
+      UMA_HISTOGRAM_ENUMERATION("Extensions.InstallType.NonUser",
+                                extension->GetType(), 100);
+      UMA_HISTOGRAM_ENUMERATION("Extensions.InstallSource.NonUser2",
+                                extension->location(), 100);
+    }
   }
 }
 

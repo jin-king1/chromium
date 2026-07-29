@@ -4,6 +4,8 @@
 
 #include "mojo/public/cpp/bindings/tests/struct_with_traits_impl_traits.h"
 
+#include "base/notreached.h"
+
 namespace mojo {
 
 // static
@@ -35,19 +37,17 @@ EnumTraits<test::EnumWithTraits, test::EnumWithTraitsImpl>::ToMojom(
   NOTREACHED();
 }
 
-bool EnumTraits<test::EnumWithTraits, test::EnumWithTraitsImpl>::FromMojom(
-    test::EnumWithTraits input,
-    test::EnumWithTraitsImpl* output) {
+test::EnumWithTraitsImpl
+EnumTraits<test::EnumWithTraits, test::EnumWithTraitsImpl>::FromMojom(
+    test::EnumWithTraits input) {
   switch (input) {
     case test::EnumWithTraits::VALUE_0:
-      *output = test::EnumWithTraitsImpl::CUSTOM_VALUE_0;
-      return true;
+      return test::EnumWithTraitsImpl::CUSTOM_VALUE_0;
     case test::EnumWithTraits::VALUE_1:
-      *output = test::EnumWithTraitsImpl::CUSTOM_VALUE_1;
-      return true;
+      return test::EnumWithTraitsImpl::CUSTOM_VALUE_1;
   };
 
-  return false;
+  NOTREACHED();
 }
 
 // static
@@ -55,8 +55,9 @@ bool StructTraits<test::StructWithTraitsDataView, test::StructWithTraitsImpl>::
     Read(test::StructWithTraits::DataView data,
          test::StructWithTraitsImpl* out) {
   test::EnumWithTraitsImpl f_enum;
-  if (!data.ReadFEnum(&f_enum))
+  if (!data.ReadFEnum(&f_enum)) {
     return false;
+  }
   out->set_enum(f_enum);
 
   out->set_bool(data.f_bool());
@@ -71,8 +72,9 @@ bool StructTraits<test::StructWithTraitsDataView, test::StructWithTraitsImpl>::
   }
   out->set_string(f_string2);
 
-  if (!data.ReadFStringArray(&out->get_mutable_string_array()))
+  if (!data.ReadFStringArray(&out->get_mutable_string_array())) {
     return false;
+  }
 
   // We can't deserialize as a std::set, so we have to manually copy from the
   // data view.
@@ -84,14 +86,17 @@ bool StructTraits<test::StructWithTraitsDataView, test::StructWithTraitsImpl>::
     out->get_mutable_string_set().insert(value);
   }
 
-  if (!data.ReadFStruct(&out->get_mutable_struct()))
+  if (!data.ReadFStruct(&out->get_mutable_struct())) {
     return false;
+  }
 
-  if (!data.ReadFStructArray(&out->get_mutable_struct_array()))
+  if (!data.ReadFStructArray(&out->get_mutable_struct_array())) {
     return false;
+  }
 
-  if (!data.ReadFStructMap(&out->get_mutable_struct_map()))
+  if (!data.ReadFStructMap(&out->get_mutable_struct_map())) {
     return false;
+  }
 
   return true;
 }

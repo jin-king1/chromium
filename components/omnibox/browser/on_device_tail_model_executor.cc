@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/omnibox/browser/on_device_tail_model_executor.h"
 
 #include <cmath>
@@ -15,7 +10,8 @@
 #include <string_view>
 
 #include "base/base64.h"
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/hash/hash.h"
 #include "base/logging.h"
@@ -24,7 +20,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
-#include "components/optimization_guide/core/model_util.h"
+#include "components/optimization_guide/core/delivery/model_util.h"
 #include "components/optimization_guide/core/tflite_op_resolver.h"
 #include "third_party/tflite/src/tensorflow/lite/c/c_api_types.h"
 #include "third_party/tflite/src/tensorflow/lite/kernels/register.h"
@@ -224,7 +220,7 @@ bool OnDeviceTailModelExecutor::Init() {
 
 bool OnDeviceTailModelExecutor::Init(
     const base::FilePath& model_filepath,
-    const base::flat_set<base::FilePath>& additional_files,
+    const std::vector<base::FilePath>& additional_files,
     const ModelMetadata& metadata) {
   base::FilePath vocab_filepath, badword_hashes_filepath,
       bad_substrings_filepath;
@@ -232,12 +228,11 @@ bool OnDeviceTailModelExecutor::Init(
     if (!file_path.empty()) {
       std::string file_path_str =
           optimization_guide::FilePathToString(file_path);
-      if (base::Contains(file_path_str, kVocabFileNameKeyword)) {
+      if (file_path_str.contains(kVocabFileNameKeyword)) {
         vocab_filepath = file_path;
-      } else if (base::Contains(file_path_str, kBadwordHashesFileNameKeyword)) {
+      } else if (file_path_str.contains(kBadwordHashesFileNameKeyword)) {
         badword_hashes_filepath = file_path;
-      } else if (base::Contains(file_path_str,
-                                kBadSubstringDenyListFileNameKeyword)) {
+      } else if (file_path_str.contains(kBadSubstringDenyListFileNameKeyword)) {
         bad_substrings_filepath = file_path;
       }
     }
@@ -274,10 +269,10 @@ bool OnDeviceTailModelExecutor::InitModelInterpreter(
   }
   model_fb_ = std::move(model_fb);
 
+  const base::span<const uint8_t> model_data = model_fb_->bytes();
   std::unique_ptr<tflite::FlatBufferModel> model =
       tflite::FlatBufferModel::VerifyAndBuildFromBuffer(
-          reinterpret_cast<const char*>(model_fb_->data()),
-          model_fb_->length());
+          reinterpret_cast<const char*>(model_data.data()), model_data.size());
 
   if (model == nullptr) {
     DVLOG(1) << "Could not create flat buffer model for file "
@@ -347,7 +342,7 @@ bool OnDeviceTailModelExecutor::EncodePreviousQuery(
   TfLiteTensor* input_tensor =
       prev_query_encoder_->input_tensor(kPrevQueryTokenIdsNodeName);
   for (size_t i = 0; i < prev_query_token_ids.size(); ++i) {
-    input_tensor->data.i32[i] = prev_query_token_ids[i];
+    UNSAFE_TODO(input_tensor->data.i32[i]) = prev_query_token_ids[i];
   }
   if (prev_query_encoder_->Invoke() != kTfLiteOk) {
     DVLOG(1) << "Could not invoke prev query encoder";
@@ -359,7 +354,7 @@ bool OnDeviceTailModelExecutor::EncodePreviousQuery(
       prev_query_encoder_->output_tensor(kPrevQueryEncodingOutputNodeName);
   TfLiteIntArray* dims = output_tensor->dims;
   if (dims->size != 2 || dims->data[0] != 1 ||
-      dims->data[1] != static_cast<int>(embedding_dimension_)) {
+      UNSAFE_TODO(dims->data[1]) != static_cast<int>(embedding_dimension_)) {
     DVLOG(1) << "Wrong embedding dimension for previous query encoder";
     return false;
   }
@@ -369,7 +364,7 @@ bool OnDeviceTailModelExecutor::EncodePreviousQuery(
   }
 
   for (size_t i = 0; i < embedding_dimension_; ++i) {
-    prev_query_encoding->at(i) = output_tensor->data.f[i];
+    prev_query_encoding->at(i) = UNSAFE_TODO(output_tensor->data.f[i]);
   }
 
   prev_query_cache_.Put(prev_query_token_ids, *prev_query_encoding);
@@ -430,7 +425,7 @@ bool OnDeviceTailModelExecutor::IsSuggestionBad(const std::string& suggestion) {
   }
 
   for (const std::string& substring : bad_substrings_) {
-    if (base::Contains(suggestion, substring)) {
+    if (suggestion.contains(substring)) {
       return true;
     }
   }
@@ -442,7 +437,7 @@ bool OnDeviceTailModelExecutor::IsSuggestionBad(const std::string& suggestion) {
 
     for (const std::string& word : words) {
       auto hash_value = base::PersistentHash(word);
-      if (base::Contains(badword_hashes_, hash_value)) {
+      if (badword_hashes_.contains(hash_value)) {
         return true;
       }
     }
@@ -484,7 +479,7 @@ bool OnDeviceTailModelExecutor::RunRnnStep(
   input_tensor =
       rnn_step_->input_tensor(kRnnStepPrevQueryEncodingInputNodeName);
   for (size_t i = 0; i < prev_query_encoding.size(); ++i) {
-    input_tensor->data.f[i] = prev_query_encoding[i];
+    UNSAFE_TODO(input_tensor->data.f[i]) = prev_query_encoding[i];
   }
 
   // Feed c states.
@@ -493,7 +488,7 @@ bool OnDeviceTailModelExecutor::RunRnnStep(
         base::StrCat({kRnnStepCStateInputNamePrefix, base::NumberToString(i)});
     input_tensor = rnn_step_->input_tensor(node_name.c_str());
     for (size_t j = 0; j < state_size_; ++j) {
-      input_tensor->data.f[j] = previous_states.c_i[i][j];
+      UNSAFE_TODO(input_tensor->data.f[j]) = previous_states.c_i[i][j];
     }
   }
 
@@ -503,7 +498,7 @@ bool OnDeviceTailModelExecutor::RunRnnStep(
         base::StrCat({kRnnStepMStateInputNamePrefix, base::NumberToString(i)});
     input_tensor = rnn_step_->input_tensor(node_name.c_str());
     for (size_t j = 0; j < state_size_; ++j) {
-      input_tensor->data.f[j] = previous_states.m_i[i][j];
+      UNSAFE_TODO(input_tensor->data.f[j]) = previous_states.m_i[i][j];
     }
   }
 
@@ -518,7 +513,7 @@ bool OnDeviceTailModelExecutor::RunRnnStep(
 
   // Fetch output probabilities.
   for (size_t i = 0; i < vocab_size_; ++i) {
-    output.probs[i] = output_tensor->data.f[i];
+    output.probs[i] = UNSAFE_TODO(output_tensor->data.f[i]);
   }
 
   // Fetch c states.
@@ -527,7 +522,7 @@ bool OnDeviceTailModelExecutor::RunRnnStep(
         base::StrCat({kRnnStepCStateOutputNamePrefix, base::NumberToString(i)});
     output_tensor = rnn_step_->output_tensor(node_name.c_str());
     for (size_t j = 0; j < state_size_; ++j) {
-      output.states.c_i[i][j] = output_tensor->data.f[j];
+      output.states.c_i[i][j] = UNSAFE_TODO(output_tensor->data.f[j]);
     }
   }
 
@@ -537,7 +532,7 @@ bool OnDeviceTailModelExecutor::RunRnnStep(
         base::StrCat({kRnnStepMStateOutputNamePrefix, base::NumberToString(i)});
     output_tensor = rnn_step_->output_tensor(node_name.c_str());
     for (size_t j = 0; j < state_size_; ++j) {
-      output.states.m_i[i][j] = output_tensor->data.f[j];
+      output.states.m_i[i][j] = UNSAFE_TODO(output_tensor->data.f[j]);
     }
   }
 
@@ -797,6 +792,6 @@ OnDeviceTailModelExecutor::GenerateSuggestionsForPrefix(
 
   // Reverse the predictions vector as it shall be returned in the descending
   // order of probability.
-  std::reverse(predictions.begin(), predictions.end());
+  std::ranges::reverse(predictions);
   return predictions;
 }

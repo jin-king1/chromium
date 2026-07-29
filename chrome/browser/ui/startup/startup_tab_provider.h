@@ -25,10 +25,6 @@ namespace base {
 class CommandLine;
 }  // namespace base
 
-namespace extensions {
-class ExtensionRegistry;
-}  // namespace extensions
-
 // Provides the sets of tabs to be shown at startup for given sets of policy.
 // For instance, this class answers the question, "which tabs, if any, need to
 // be shown for first run/onboarding?" Provided as a virtual interface to allow
@@ -60,11 +56,6 @@ class StartupTabProvider {
   virtual StartupTabs GetNewTabPageTabs(const base::CommandLine& command_line,
                                         Profile* profile) const = 0;
 
-  // Returns the Incompatible Applications settings subpage if any incompatible
-  // applications exist.
-  virtual StartupTabs GetPostCrashTabs(
-      bool has_incompatible_applications) const = 0;
-
   // Returns the URLs given via the command line arguments to be opened at
   // launching.
   virtual StartupTabs GetCommandLineTabs(const base::CommandLine& command_line,
@@ -84,13 +75,6 @@ class StartupTabProvider {
 #if !BUILDFLAG(IS_ANDROID)
   // Returns tabs related to the What's New UI (if applicable).
   virtual StartupTabs GetNewFeaturesTabs(bool whats_new_enabled) const = 0;
-
-  // Returns tabs required for the Privacy Sandbox confirmation dialog. If a
-  // suitable tab is present in |other_startup_tabs| no tab is returned,
-  // otherwise a suitable tab based on |profile| is returned.
-  virtual StartupTabs GetPrivacySandboxTabs(
-      Profile* profile,
-      const StartupTabs& other_startup_tabs) const = 0;
 #endif  // !BUILDFLAG(IS_ANDROID)
 };
 
@@ -134,27 +118,10 @@ class StartupTabProviderImpl : public StartupTabProvider {
   // explicitly specified. Session Restore does not expect the NTP to be passed.
   static StartupTabs GetNewTabPageTabsForState(const SessionStartupPref& pref);
 
-  // Determines if the Incompatible Applications settings subpage should be
-  // shown.
-  static StartupTabs GetPostCrashTabsForState(
-      bool has_incompatible_applications);
-
 #if !BUILDFLAG(IS_ANDROID)
   // Determines if the what's new page should be shown.
   static StartupTabs GetNewFeaturesTabsForState(bool whats_new_enabled);
-
-  // Determines whether an additional tab to display the Privacy Sandbox
-  // confirmation dialog over is required, and if so, the URL of that tab.
-  // |ntp_url| must be the final NTP location, and not the generic new tab url.
-  static StartupTabs GetPrivacySandboxTabsForState(
-      extensions::ExtensionRegistry* extension_registry,
-      const GURL& ntp_url,
-      const StartupTabs& other_startup_tabs);
 #endif
-
-  // In branded Windows builds, adds the URL for the Incompatible Applications
-  // subpage of the Chrome settings.
-  static void AddIncompatibleApplicationsUrl(StartupTabs* tabs);
 
   // Gets the URL for the page which offers to reset the user's profile
   // settings.
@@ -170,8 +137,6 @@ class StartupTabProviderImpl : public StartupTabProvider {
                                  Profile* profile) const override;
   StartupTabs GetNewTabPageTabs(const base::CommandLine& command_line,
                                 Profile* profile) const override;
-  StartupTabs GetPostCrashTabs(
-      bool has_incompatible_applications) const override;
   StartupTabs GetCommandLineTabs(const base::CommandLine& command_line,
                                  const base::FilePath& cur_dir,
                                  Profile* profile) const override;
@@ -181,9 +146,6 @@ class StartupTabProviderImpl : public StartupTabProvider {
 
 #if !BUILDFLAG(IS_ANDROID)
   StartupTabs GetNewFeaturesTabs(bool whats_new_enabled) const override;
-  StartupTabs GetPrivacySandboxTabs(
-      Profile* profile,
-      const StartupTabs& other_startup_tabs) const override;
 #endif  // !BUILDFLAG(IS_ANDROID)
 
  private:
@@ -194,6 +156,9 @@ class StartupTabProviderImpl : public StartupTabProvider {
     // URL for the tab to be created from this argument, will be populated when
     // `tab_parsed` is `CommandLineTabsPresent::kYes`.
     GURL tab_url;
+
+    // True if this tab was launched from a custom protocol that was stripped.
+    bool is_untrusted_launch = false;
   };
 
   // Parses a command line argument to extract a `ParsedCommandLineTabArg`

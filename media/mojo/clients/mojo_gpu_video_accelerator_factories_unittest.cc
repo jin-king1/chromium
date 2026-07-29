@@ -17,7 +17,6 @@
 #include "build/build_config.h"
 #include "components/viz/common/gpu/context_cache_controller.h"
 #include "components/viz/common/gpu/context_lost_observer.h"
-#include "gpu/command_buffer/client/gles2_interface_stub.h"
 #include "gpu/command_buffer/common/capabilities.h"
 #include "gpu/command_buffer/common/context_creation_attribs.h"
 #include "gpu/command_buffer/common/context_result.h"
@@ -59,7 +58,6 @@
 #endif
 
 using ::testing::_;
-using ::testing::Invoke;
 using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::UnorderedElementsAre;
@@ -72,6 +70,9 @@ constexpr gfx::Size kCodedSize(320, 240);
 constexpr gfx::Rect kVisibleRect(320, 240);
 constexpr gfx::Size kNaturalSize(320, 240);
 
+constexpr gfx::Size kMinDecoderTestSize(8, 8);
+constexpr gfx::Size kMaxDecoderTestSize(8192, 8192);
+
 constexpr auto kGpuStreamPriorityDefault = gpu::SchedulingPriority::kNormal;
 constexpr int kGpuStreamIdDefault = 0;
 
@@ -79,8 +80,8 @@ const media::SupportedVideoDecoderConfig kH264MaxSupportedVideoDecoderConfig =
     media::SupportedVideoDecoderConfig(
         media::VideoCodecProfile::H264PROFILE_MIN,
         media::VideoCodecProfile::H264PROFILE_MAX,
-        media::kDefaultSwDecodeSizeMin,
-        media::kDefaultSwDecodeSizeMax,
+        kMinDecoderTestSize,
+        kMaxDecoderTestSize,
         true,
         false);
 
@@ -113,8 +114,8 @@ const media::SupportedVideoDecoderConfig kH265MaxSupportedVideoDecoderConfig =
     media::SupportedVideoDecoderConfig(
         media::VideoCodecProfile::HEVCPROFILE_MIN,
         media::VideoCodecProfile::HEVCPROFILE_MAX,
-        media::kDefaultSwDecodeSizeMin,
-        media::kDefaultSwDecodeSizeMax,
+        kMinDecoderTestSize,
+        kMaxDecoderTestSize,
         true,
         false);
 #endif
@@ -124,9 +125,6 @@ class TestGpuChannelHost : public gpu::GpuChannelHost {
  public:
   explicit TestGpuChannelHost(gpu::mojom::GpuChannel& gpu_channel)
       : GpuChannelHost(0 /* channel_id */,
-                       gpu::GPUInfo(),
-                       gpu::GpuFeatureInfo(),
-                       gpu::SharedImageCapabilities(),
                        mojo::ScopedMessagePipeHandle(
                            mojo::MessagePipeHandle(mojo::kInvalidHandleValue))),
         gpu_channel_(gpu_channel) {}
@@ -140,7 +138,7 @@ class TestGpuChannelHost : public gpu::GpuChannelHost {
 
 class MockOverlayInfoCbHandler {
  public:
-  MOCK_METHOD2(Call, void(bool, media::ProvideOverlayInfoCB));
+  MOCK_METHOD1(Call, void(media::ProvideOverlayInfoCB));
 };
 
 class MockContextProviderCommandBuffer
@@ -148,16 +146,7 @@ class MockContextProviderCommandBuffer
  public:
   explicit MockContextProviderCommandBuffer(
       scoped_refptr<gpu::GpuChannelHost> channel)
-      : viz::ContextProviderCommandBuffer(
-            std::move(channel),
-            kGpuStreamIdDefault,
-            kGpuStreamPriorityDefault,
-            GURL(),
-            false,
-            true,
-            gpu::SharedMemoryLimits(),
-            gpu::ContextCreationAttribs(),
-            viz::command_buffer_metrics::ContextType::FOR_TESTING) {}
+      : viz::ContextProviderCommandBuffer(std::move(channel)) {}
 
   MOCK_METHOD(gpu::CommandBufferProxyImpl*,
               GetCommandBufferProxy,
@@ -168,8 +157,8 @@ class MockContextProviderCommandBuffer
   MOCK_METHOD(gpu::ContextResult, BindToCurrentSequence, (), (override));
   MOCK_METHOD(gpu::gles2::GLES2Interface*, ContextGL, (), (override));
   MOCK_METHOD(gpu::raster::RasterInterface*, RasterInterface, (), (override));
+  MOCK_METHOD(bool, IsLost, (), (override));
   MOCK_METHOD(gpu::ContextSupport*, ContextSupport, (), (override));
-  MOCK_METHOD(class GrDirectContext*, GrContext, (), (override));
   MOCK_METHOD(gpu::SharedImageInterface*, SharedImageInterface, (), (override));
   MOCK_METHOD(viz::ContextCacheController*, CacheController, (), (override));
   MOCK_METHOD(base::Lock*, GetLock, (), (override));
@@ -187,11 +176,6 @@ class MockContextProviderCommandBuffer
 
  protected:
   ~MockContextProviderCommandBuffer() override = default;
-};
-
-class MockGLESInterface : public gpu::gles2::GLES2InterfaceStub {
- public:
-  MOCK_METHOD(GLenum, GetGraphicsResetStatusKHR, ());
 };
 
 class FakeVEAProviderImpl
@@ -246,8 +230,8 @@ class FakeMojoMediaClient : public media::MojoMediaClient {
       media::mojom::CommandBufferIdPtr command_buffer_id,
       media::RequestOverlayInfoCB request_overlay_info_cb,
       const gfx::ColorSpace& target_color_space,
-      mojo::PendingRemote<media::stable::mojom::StableVideoDecoder>
-          oop_video_decoder) override {
+      mojo::PendingRemote<media::mojom::VideoDecoder> oop_video_decoder)
+      override {
     return std::make_unique<media::FakeVideoDecoder>(
         0 /* decoder_id */, 0 /* decoding_delay */,
         13 /* max_parallel_decoding_requests */, media::BytesDecodedCB());
@@ -287,20 +271,19 @@ class FakeInterfaceFactory : public media::mojom::InterfaceFactory {
   // FakeMojoMediaClient will create a FakeGpuVideoDecoder.
   void CreateVideoDecoder(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
-      mojo::PendingRemote<media::stable::mojom::StableVideoDecoder>
-          dst_video_decoder) override {
+      mojo::PendingRemote<media::mojom::VideoDecoder> dst_video_decoder)
+      override {
     video_decoder_receivers_.Add(
         std::make_unique<media::MojoVideoDecoderService>(
             &mojo_media_client_, &cdm_service_context_,
-            mojo::PendingRemote<media::stable::mojom::StableVideoDecoder>()),
+            mojo::PendingRemote<media::mojom::VideoDecoder>()),
         std::move(receiver));
   }
 
 #if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-  void CreateStableVideoDecoder(
-      mojo::PendingReceiver<media::stable::mojom::StableVideoDecoder>
-          video_decoder) override {
-    // TODO(b/327268445): we'll need to complete this for GTFO OOP-VD testing.
+  void CreateVideoDecoderWithTracker(
+      mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
+      mojo::PendingRemote<media::mojom::VideoDecoderTracker> tracker) override {
   }
 #endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
 
@@ -323,21 +306,13 @@ class FakeInterfaceFactory : public media::mojom::InterfaceFactory {
       mojo::PendingRemote<media::mojom::FlingingRendererClientExtension>
           client_extension,
       mojo::PendingReceiver<media::mojom::Renderer> receiver) override {}
-  void CreateMediaPlayerRenderer(
-      mojo::PendingRemote<media::mojom::MediaPlayerRendererClientExtension>
-          client_extension_remote,
-      mojo::PendingReceiver<media::mojom::Renderer> receiver,
-      mojo::PendingReceiver<media::mojom::MediaPlayerRendererExtension>
-          renderer_extension_receiver) override {}
 #endif  // BUILDFLAG(IS_ANDROID)
 #if BUILDFLAG(IS_WIN)
   void CreateMediaFoundationRenderer(
       mojo::PendingRemote<media::mojom::MediaLog> media_log_remote,
       mojo::PendingReceiver<media::mojom::Renderer> receiver,
       mojo::PendingReceiver<media::mojom::MediaFoundationRendererExtension>
-          renderer_extension_receiver,
-      mojo::PendingRemote<media::mojom::MediaFoundationRendererClientExtension>
-          client_extension_remote) override {}
+          renderer_extension_receiver) override {}
 #endif  // BUILDFLAG(IS_WIN)
   void CreateCdm(const media::CdmConfig& cdm_config,
                  CreateCdmCallback callback) override {}
@@ -410,7 +385,6 @@ class MojoGpuVideoAcceleratorFactoriesTest : public testing::Test {
     task_environment_.RunUntilQuit();
 
     ASSERT_TRUE(testing::Mock::VerifyAndClear(&mock_context_provider_));
-    ASSERT_TRUE(testing::Mock::VerifyAndClear(&mock_context_gl_));
     ASSERT_TRUE(testing::Mock::VerifyAndClear(&mock_gpu_channel_));
     gpu_command_buffer_proxy_.reset();
     mock_context_provider_.reset();
@@ -421,7 +395,7 @@ class MojoGpuVideoAcceleratorFactoriesTest : public testing::Test {
     // Simulate success, since we're not actually talking to the service
     // in this test suite.
     ON_CALL(mock_gpu_channel_, CreateCommandBuffer(_, _, _, _, _, _, _, _))
-        .WillByDefault(Invoke(
+        .WillByDefault(
             [&](gpu::mojom::CreateCommandBufferParamsPtr params,
                 int32_t routing_id, base::UnsafeSharedMemoryRegion shared_state,
                 mojo::PendingAssociatedReceiver<gpu::mojom::CommandBuffer>
@@ -437,28 +411,27 @@ class MojoGpuVideoAcceleratorFactoriesTest : public testing::Test {
               receiver.EnableUnassociatedUsage();
               *result = gpu::ContextResult::kSuccess;
               return true;
-            }));
+            });
     ON_CALL(mock_gpu_channel_, GetChannelToken(_))
-        .WillByDefault(Invoke(
+        .WillByDefault(
             [&](gpu::MockGpuChannel::GetChannelTokenCallback callback) -> void {
               std::move(callback).Run(base::UnguessableToken::Create());
-            }));
+            });
   }
 
   void MockContextProvider() {
     ON_CALL(*mock_context_provider_, BindToCurrentSequence())
         .WillByDefault(Return(gpu::ContextResult::kSuccess));
-    ON_CALL(mock_context_gl_, GetGraphicsResetStatusKHR())
-        .WillByDefault(Return(GL_NO_ERROR));
-    ON_CALL(*mock_context_provider_, ContextGL())
-        .WillByDefault(Return(&mock_context_gl_));
+    ON_CALL(*mock_context_provider_, IsLost()).WillByDefault(Return(false));
 
     gpu_command_buffer_proxy_ = std::make_unique<gpu::CommandBufferProxyImpl>(
         gpu_channel_host_, kGpuStreamIdDefault,
         task_environment_.GetMainThreadTaskRunner());
-    gpu_command_buffer_proxy_->Initialize(nullptr, kGpuStreamPriorityDefault,
-                                          gpu::ContextCreationAttribs(),
-                                          GURL());
+    gpu_command_buffer_proxy_->Initialize(
+        kGpuStreamPriorityDefault,
+        gpu::mojom::ContextCreationAttribs::NewGles(
+            gpu::mojom::GLESCreationAttribs::New()),
+        GURL());
     ON_CALL(*mock_context_provider_, GetCommandBufferProxy())
         .WillByDefault(Return(gpu_command_buffer_proxy_.get()));
   }
@@ -530,10 +503,10 @@ class MojoGpuVideoAcceleratorFactoriesTest : public testing::Test {
       base::test::TaskEnvironment::ThreadingMode::MULTIPLE_THREADS};
 
   NiceMock<gpu::MockGpuChannel> mock_gpu_channel_;
-  NiceMock<MockGLESInterface> mock_context_gl_;
   scoped_refptr<TestGpuChannelHost> gpu_channel_host_;
   scoped_refptr<MockContextProviderCommandBuffer> mock_context_provider_;
   std::unique_ptr<gpu::CommandBufferProxyImpl> gpu_command_buffer_proxy_;
+  NullMediaLog media_log_;
   FakeVEAProviderImpl fake_vea_provider_;
 
 #if BUILDFLAG(ENABLE_MOJO_VIDEO_DECODER)
@@ -638,7 +611,7 @@ TEST_F(MojoGpuVideoAcceleratorFactoriesDeathTest, CreateVideoDecoderFailed) {
 
   EXPECT_DCHECK_DEATH({
     EXPECT_EQ(gpu_video_accelerator_factories->CreateVideoDecoder(
-                  nullptr, std::move(mock_cb)),
+                  &media_log_, std::move(mock_cb)),
               nullptr);
   });
 }
@@ -725,7 +698,7 @@ TEST_F(MojoGpuVideoAcceleratorFactoriesTest, CreateVideoDecoder) {
       CreateGpuVideoAcceleratorFactories(true, false);
 
   EXPECT_NE(gpu_video_accelerator_factories->CreateVideoDecoder(
-                nullptr, std::move(mock_cb)),
+                &media_log_, std::move(mock_cb)),
             nullptr);
 }
 #else

@@ -10,7 +10,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
-#include "ui/gfx/paint_vector_icon.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/accessibility/view_accessibility.h"
 
 namespace {
@@ -29,7 +29,9 @@ OverlayWindowBackToTabButton::OverlayWindowBackToTabButton(
 
   SetImageModel(views::Button::STATE_NORMAL,
                 ui::ImageModel::FromVectorIcon(
-                    vector_icons::kBackToTabChromeRefreshIcon,
+                    features::IsRoundedIconsEnabled()
+                        ? vector_icons::kBackToTabIcon
+                        : vector_icons::kBackToTabChromeRefreshOldIcon,
                     kColorPipWindowForeground, kBackToTabButtonIconSize));
 
   // Accessibility.
@@ -39,17 +41,7 @@ OverlayWindowBackToTabButton::OverlayWindowBackToTabButton(
   SetTooltipText(button_label);
 }
 
-void OverlayWindowBackToTabButton::SetPosition(
-    const gfx::Size& size,
-    VideoOverlayWindowViews::WindowQuadrant quadrant) {
-#if BUILDFLAG(IS_CHROMEOS)
-  if (quadrant == VideoOverlayWindowViews::WindowQuadrant::kBottomLeft) {
-    views::ImageButton::SetPosition(gfx::Point(kBackToTabButtonHorizontalMargin,
-                                               kBackToTabButtonVerticalMargin));
-    return;
-  }
-#endif
-
+void OverlayWindowBackToTabButton::SetPosition(const gfx::Size& size) {
   views::ImageButton::SetPosition(gfx::Point(
       size.width() - kBackToTabButtonSize - kBackToTabButtonHorizontalMargin,
       kBackToTabButtonVerticalMargin));

@@ -10,10 +10,10 @@
 #include <string>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
@@ -21,11 +21,11 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "build/build_config.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
+#include "ui/events/features.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/dom_key.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
@@ -81,6 +81,26 @@ std::string ScrollEventPhaseToString(ScrollEventPhase phase) {
     case ScrollEventPhase::kEnd:
       return "kEnd";
   }
+}
+
+std::vector<std::string_view> EventResultsNames(int event_results) {
+  std::vector<std::string_view> names;
+  if (event_results & ER_HANDLED) {
+    names.push_back("ER_HANDLED");
+  }
+  if (event_results & ER_CONSUMED) {
+    names.push_back("ER_CONSUMED");
+  }
+  if (event_results & ER_DISABLE_SYNC_HANDLING) {
+    names.push_back("ER_DISABLE_SYNC_HANDLING");
+  }
+  if (event_results & ER_FORCE_PROCESS_GESTURE) {
+    names.push_back("ER_FORCE_PROCESS_GESTURE");
+  }
+  if (event_results & ER_SKIPPED) {
+    names.push_back("ER_SKIPPED");
+  }
+  return names;
 }
 
 #if BUILDFLAG(IS_OZONE)
@@ -247,10 +267,15 @@ void Event::SetFlags(int flags) {
 }
 
 std::string Event::ToString() const {
-  return base::StrCat(
-      {GetName(), " time_stamp=",
-       base::NumberToString(time_stamp_.since_origin().InSecondsF()),
-       " source_device_id=", base::NumberToString(source_device_id_)});
+  return base::StrCat({
+      GetName(),
+      " time_stamp=",
+      base::NumberToString(time_stamp_.since_origin().InSecondsF()),
+      " source_device_id=",
+      base::NumberToString(source_device_id_),
+      " results=",
+      base::JoinString(EventResultsNames(result_), "|"),
+  });
 }
 
 Event::Event(EventType type, base::TimeTicks time_stamp, int flags)
@@ -363,8 +388,18 @@ void LocatedEvent::UpdateForRootTransform(
 }
 
 std::string LocatedEvent::ToString() const {
-  return base::StrCat({Event::ToString(), " location=", location_.ToString(),
-                       " root_location=", root_location_.ToString()});
+  return base::StrCat(
+      {Event::ToString(), " location=", location_.ToString(),
+       " root_location=", root_location_.ToString(),
+       " target=", base::StringPrintf("%p", target()),
+#if BUILDFLAG(IS_OZONE)
+       " native=", (native_event() ? native_event()->ToString() : "(nil)")
+#elif BUILDFLAG(IS_WIN)
+       " native={hwnd=", base::StringPrintf("%p", native_event().hwnd), " pt=",
+       base::StringPrintf("%d,%d", native_event().pt.x, native_event().pt.y),
+       "}"
+#endif
+      });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -886,8 +921,11 @@ void KeyEvent::InitializeNative() {
 
   // Check if this is a key repeat. This must be called before initial flags
   // processing, e.g: NormalizeFlags(), to avoid issues like crbug.com/1069690.
-  if (synthesize_key_repeat_enabled_ && IsRepeated(GetLastKeyEvent()))
+  if (synthesize_key_repeat_enabled_ &&
+      base::FeatureList::IsEnabled(kLegacyKeyRepeatSynthesis) &&
+      IsRepeated(GetLastKeyEvent())) {
     SetFlags(flags() | EF_IS_REPEAT);
+  }
 
 #if BUILDFLAG(IS_LINUX)
   NormalizeFlags();
@@ -1174,7 +1212,7 @@ ScrollEvent::ScrollEvent(const PlatformEvent& native_event)
     GetFlingData(native_event, &x_offset_, &y_offset_, &x_offset_ordinal_,
                  &y_offset_ordinal_, nullptr);
   } else {
-    NOTREACHED() << "Unexpected event type " << base::to_underlying(type())
+    NOTREACHED() << "Unexpected event type " << std::to_underlying(type())
                  << " when constructing a ScrollEvent.";
   }
 }

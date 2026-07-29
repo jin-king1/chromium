@@ -18,6 +18,9 @@ NSString* const kInactiveTabsButtonAccessibilityIdentifier =
 // Accessibility identifier prefix of a grid cell.
 NSString* const kGridCellIdentifierPrefix = @"GridCellIdentifierPrefix";
 
+NSString* const kGridCellSnapshotIdentifierPrefix =
+    @"GridCellSnapshotIdentifierPrefix";
+
 // Accessibility identifier prefix of a grid cell.
 NSString* const kGroupGridCellIdentifierPrefix =
     @"GroupGridCellIdentifierPrefix";
@@ -40,6 +43,14 @@ NSString* const kGridSectionHeaderIdentifier = @"GridSectionHeaderIdentifier";
 NSString* const kSuggestedActionsGridCellIdentifier =
     @"SuggestedActionsGridCellIdentifier";
 
+// Accessibility identifier for the activity summary cell.
+NSString* const kActivitySummaryGridCellIdentifier =
+    @"ActivitySummaryGridCellIdentifier";
+
+// Accessibility identifier for the close button in the activity summary cell.
+NSString* const kActivitySummaryGridCellCloseButtonIdentifier =
+    @"ActivitySummaryGridCellCloseButtonIdentifier";
+
 // Grid styling.
 NSString* const kGridBackgroundColor = @"grid_background_color";
 
@@ -52,7 +63,7 @@ const int kGridHeaderValueColor = 0xEBEBF5;
 const CGFloat kGridHeaderContentSpacing = 4.0f;
 
 // GridCell dimensions.
-const CGFloat kGridCellCornerRadius = 16.0f;
+const CGFloat kGridCellCornerRadius = 20.0f;
 const CGFloat kGridCellIconCornerRadius = 3.0f;
 const CGFloat kGroupGridCellCornerRadius = 12.0f;
 const CGFloat kGroupGridFaviconViewCornerRadius = 3.0f;
@@ -76,3 +87,6 @@ const CGFloat kGridCellSelectionRingTintWidth = 5.0f;
 const CGFloat kGridCellPriceDropTopSpacing = 10.0f;
 const CGFloat kGridCellPriceDropLeadingSpacing = 10.0f;
 const CGFloat kGridCellPriceDropTrailingSpacing = 10.0f;
+
+const CGFloat kGridCellHighlightScaleTransform = 0.65f;
+const CGFloat kGridCellHighlightDuration = 0.2f;

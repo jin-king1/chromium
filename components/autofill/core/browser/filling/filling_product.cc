@@ -4,15 +4,23 @@
 
 #include "components/autofill/core/browser/filling/filling_product.h"
 
+#include <string>
+
 #include "base/notreached.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/suggestions/suggestion_generator.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/scoped_java_ref.h"
+#include "components/autofill/android/main_autofill_jni_headers/FillingProductBridge_jni.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace autofill {
 
 // LINT.IfChange(FillingProductToString)
-std::string FillingProductToString(FillingProduct filling_product) {
+std::string_view FillingProductToString(FillingProduct filling_product) {
   switch (filling_product) {
     case FillingProduct::kNone:
       return "None";
@@ -26,15 +34,25 @@ std::string FillingProductToString(FillingProduct filling_product) {
       return "Iban";
     case FillingProduct::kAutocomplete:
       return "Autocomplete";
+    case FillingProduct::kPasskey:
+      return "Passkey";
     case FillingProduct::kPassword:
       return "Password";
     case FillingProduct::kCompose:
       return "Compose";
-    case FillingProduct::kPlusAddresses:
-      return "PlusAddresses";
     case FillingProduct::kAutofillAi:
       return "AutofillAi";
-  };
+    case FillingProduct::kLoyaltyCard:
+      return "LoyaltyCard";
+    case FillingProduct::kIdentityCredential:
+      return "IdentityCredential";
+    case FillingProduct::kDataList:
+      return "DataList";
+    case FillingProduct::kOneTimePassword:
+      return "OneTimePassword";
+    case FillingProduct::kAtMemory:
+      return "AtMemory";
+  }
   NOTREACHED();
 }
 // LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/histograms.xml:Autofill.FillingProduct)
@@ -44,17 +62,17 @@ FillingProduct GetFillingProductFromSuggestionType(SuggestionType type) {
     case SuggestionType::kAddressEntry:
     case SuggestionType::kAddressEntryOnTyping:
     case SuggestionType::kAddressFieldByFieldFilling:
-    case SuggestionType::kDevtoolsTestAddresses:
     case SuggestionType::kDevtoolsTestAddressByCountry:
     case SuggestionType::kDevtoolsTestAddressEntry:
+    case SuggestionType::kDevtoolsTestAddresses:
     case SuggestionType::kManageAddress:
       return FillingProduct::kAddress;
     case SuggestionType::kBnplEntry:
     case SuggestionType::kCreditCardEntry:
     case SuggestionType::kManageCreditCard:
+    case SuggestionType::kMaximizeCreditCardBenefitsEntry:
     case SuggestionType::kSaveAndFillCreditCardEntry:
     case SuggestionType::kScanCreditCard:
-    case SuggestionType::kShowAccountCards:
     case SuggestionType::kVirtualCreditCardEntry:
       return FillingProduct::kCreditCard;
     case SuggestionType::kMerchantPromoCodeEntry:
@@ -66,13 +84,15 @@ FillingProduct GetFillingProductFromSuggestionType(SuggestionType type) {
       return FillingProduct::kAutocomplete;
     case SuggestionType::kAccountStoragePasswordEntry:
     case SuggestionType::kAllSavedPasswordsEntry:
+    case SuggestionType::kBackupPasswordEntry:
     case SuggestionType::kFillPassword:
+    case SuggestionType::kFreeformFooter:
     case SuggestionType::kGeneratePasswordEntry:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
+    case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kTroubleSigningInEntry:
     case SuggestionType::kViewPasswordDetails:
-    case SuggestionType::kWebauthnCredential:
-    case SuggestionType::kWebauthnSignInWithAnotherDevice:
       return FillingProduct::kPassword;
     case SuggestionType::kComposeDisable:
     case SuggestionType::kComposeGoToSettings:
@@ -81,26 +101,99 @@ FillingProduct GetFillingProductFromSuggestionType(SuggestionType type) {
     case SuggestionType::kComposeResumeNudge:
     case SuggestionType::kComposeSavedStateNotification:
       return FillingProduct::kCompose;
-    case SuggestionType::kCreateNewPlusAddress:
-    case SuggestionType::kCreateNewPlusAddressInline:
-    case SuggestionType::kFillExistingPlusAddress:
-    case SuggestionType::kManagePlusAddress:
-    case SuggestionType::kPlusAddressError:
-      return FillingProduct::kPlusAddresses;
     case SuggestionType::kDatalistEntry:
+      return FillingProduct::kDataList;
+    case SuggestionType::kAtMemoryAiDisclosure:
+    case SuggestionType::kAtMemoryGenericError:
+    case SuggestionType::kAtMemoryInactivityNudge:
+    case SuggestionType::kAtMemoryNoConnection:
+    case SuggestionType::kAtMemorySearchAffordance:
+    case SuggestionType::kAutocompleteAtMemoryButton:
+    case SuggestionType::kBnplFootnote:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
+    case SuggestionType::kLoadingThrobber:
     case SuggestionType::kMixedFormMessage:
+    case SuggestionType::kOpenGemini:
+    case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kSeparator:
     case SuggestionType::kTitle:
     case SuggestionType::kUndoOrClear:
       return FillingProduct::kNone;
+    case SuggestionType::kAutofillAiOtherOrders:
+    case SuggestionType::kAutofillAiOtherShipments:
+    case SuggestionType::kAutofillAiPrivateInferenceNotice:
+    case SuggestionType::kFetchingAmbientData:
     case SuggestionType::kFillAutofillAi:
     case SuggestionType::kManageAutofillAi:
+    case SuggestionType::kManageAutofillAiIdentityDocs:
+    case SuggestionType::kManageAutofillAiShopping:
+    case SuggestionType::kManageAutofillAiTravel:
       return FillingProduct::kAutofillAi;
+    case SuggestionType::kAllLoyaltyCardsEntry:
+    case SuggestionType::kLoyaltyCardEntry:
+    case SuggestionType::kManageLoyaltyCard:
+      return FillingProduct::kLoyaltyCard;
+    case SuggestionType::kIdentityCredential:
+      return FillingProduct::kIdentityCredential;
+    case SuggestionType::kOneTimePasswordEntry:
+      return FillingProduct::kOneTimePassword;
+    case SuggestionType::kAtMemoryFetching:
+    case SuggestionType::kAtMemorySearchResult:
+    case SuggestionType::kAtMemorySourceAttribution:
+    case SuggestionType::kManageEnhancedAutofill:
+      return FillingProduct::kAtMemory;
+    case SuggestionType::kWebauthnCredential:
+    case SuggestionType::kWebauthnPasskeyQrCode:
+    case SuggestionType::kWebauthnSignInWithAnotherDevice:
+      return FillingProduct::kPasskey;
   }
   NOTREACHED();
 }
+
+FillingProduct GetFillingProductFromSuggestionDataSource(
+    SuggestionGenerator::SuggestionDataSource source) {
+  switch (source) {
+    case SuggestionGenerator::SuggestionDataSource::kAutofillAi:
+      return FillingProduct::kAutofillAi;
+    case SuggestionGenerator::SuggestionDataSource::kAddress:
+    case SuggestionGenerator::SuggestionDataSource::kAddressOnTyping:
+      return FillingProduct::kAddress;
+    case SuggestionGenerator::SuggestionDataSource::kCreditCard:
+    case SuggestionGenerator::SuggestionDataSource::kVirtualStandaloneCvc:
+    case SuggestionGenerator::SuggestionDataSource::kSaveAndFillPromo:
+      return FillingProduct::kCreditCard;
+    case SuggestionGenerator::SuggestionDataSource::kIban:
+      return FillingProduct::kIban;
+    case SuggestionGenerator::SuggestionDataSource::kMerchantPromoCode:
+      return FillingProduct::kMerchantPromoCode;
+    case SuggestionGenerator::SuggestionDataSource::kAutocomplete:
+      return FillingProduct::kAutocomplete;
+    case SuggestionGenerator::SuggestionDataSource::kLoyaltyCard:
+      return FillingProduct::kLoyaltyCard;
+    case SuggestionGenerator::SuggestionDataSource::kIdentityCredential:
+      return FillingProduct::kIdentityCredential;
+    case SuggestionGenerator::SuggestionDataSource::kPasskey:
+      return FillingProduct::kPasskey;
+    case SuggestionGenerator::SuggestionDataSource::kCompose:
+      return FillingProduct::kCompose;
+    case SuggestionGenerator::SuggestionDataSource::kOneTimePassword:
+      return FillingProduct::kOneTimePassword;
+    case SuggestionGenerator::SuggestionDataSource::kAtMemoryInactivityNudge:
+      return FillingProduct::kNone;
+  }
+  NOTREACHED();
+}
+
+#if BUILDFLAG(IS_ANDROID)
+static int32_t JNI_FillingProductBridge_GetFillingProductFromSuggestionType(
+    JNIEnv* env,
+    int32_t type) {
+  SuggestionType suggestion_type = static_cast<SuggestionType>(type);
+  return static_cast<int32_t>(
+      GetFillingProductFromSuggestionType(suggestion_type));
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 FillingProduct GetFillingProductFromFieldTypeGroup(
     FieldTypeGroup field_type_group) {
@@ -126,20 +219,16 @@ FillingProduct GetFillingProductFromFieldTypeGroup(
       return FillingProduct::kIban;
     case kAutofillAi:
       return FillingProduct::kAutofillAi;
+    case kLoyaltyCard:
+      return FillingProduct::kLoyaltyCard;
+    case kOneTimePassword:
+      return FillingProduct::kOneTimePassword;
   }
   NOTREACHED();
 }
 
-FillingProduct GetPreferredSuggestionFillingProduct(
-    FieldType trigger_field_type,
-    AutofillSuggestionTriggerSource suggestion_trigger_source) {
-  FillingProduct filling_product = GetFillingProductFromFieldTypeGroup(
-      GroupTypeOfFieldType(trigger_field_type));
-  // Autofill suggestions fallbacks to autocomplete if no product could be
-  // inferred from the suggestion context.
-  return filling_product == FillingProduct::kNone
-             ? FillingProduct::kAutocomplete
-             : filling_product;
-}
-
 }  // namespace autofill
+
+#if BUILDFLAG(IS_ANDROID)
+DEFINE_JNI(FillingProductBridge)
+#endif

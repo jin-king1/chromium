@@ -13,7 +13,9 @@
 #include "base/task/single_thread_task_runner.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/config/gpu_switches.h"
-#include "third_party/blink/renderer/platform/graphics/gpu/webgpu_resource_provider_cache.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/dawn_command_serializers.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/webgpu_mailbox_texture.h"
+#include "third_party/blink/renderer/platform/graphics/gpu/webgpu_shared_image_wrapper_cache.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
@@ -36,7 +38,7 @@ scoped_refptr<DawnControlClientHolder> DawnControlClientHolder::Create(
   // shared memory. There may still be outstanding mapped GPUBuffers pointing to
   // this memory.
   dawn_control_client_holder->context_provider_->ContextProvider()
-      .SetLostContextCallback(WTF::BindRepeating(
+      .SetLostContextCallback(blink::BindRepeating(
           &DawnControlClientHolder::MarkContextLost,
           dawn_control_client_holder->weak_ptr_factory_.GetWeakPtr()));
   return dawn_control_client_holder;
@@ -51,11 +53,18 @@ DawnControlClientHolder::DawnControlClientHolder(
       api_channel_(context_provider_->ContextProvider()
                        .WebGPUInterface()
                        ->GetAPIChannel()),
-      recyclable_resource_cache_(GetContextProviderWeakPtr(), task_runner) {}
+      shared_image_wrapper_cache_(GetContextProviderWeakPtr(), task_runner) {}
 
 DawnControlClientHolder::~DawnControlClientHolder() = default;
 
 void DawnControlClientHolder::Destroy() {
+  // Dissociate all mailbox textures to ensure their scoped access objects are
+  // destroyed before the context is lost.
+  for (auto& mailbox_texture : mailbox_textures_) {
+    if (mailbox_texture) {
+      mailbox_texture->Dissociate();
+    }
+  }
   MarkContextLost();
 
   // Destroy the WebGPU context.
@@ -102,9 +111,15 @@ bool DawnControlClientHolder::IsContextLost() const {
   return context_lost_;
 }
 
-std::unique_ptr<RecyclableCanvasResource>
-DawnControlClientHolder::GetOrCreateCanvasResource(const SkImageInfo& info) {
-  return recyclable_resource_cache_.GetOrCreateCanvasResource(info);
+std::unique_ptr<WebGpuSharedImageWrapperLease>
+DawnControlClientHolder::LeaseWebGpuSharedImageWrapper(
+    viz::SharedImageFormat format,
+    gfx::Size size,
+    const gfx::ColorSpace& color_space,
+    const gfx::HDRMetadata& hdr_metadata,
+    SkAlphaType alpha_type) {
+  return shared_image_wrapper_cache_.LeaseWebGpuSharedImageWrapper(
+      format, size, color_space, hdr_metadata, alpha_type);
 }
 
 void DawnControlClientHolder::Flush() {
@@ -126,7 +141,7 @@ void DawnControlClientHolder::EnsureFlush(scheduler::EventLoop& event_loop) {
     // is empty. Do nothing.
     return;
   }
-  event_loop.EnqueueMicrotask(WTF::BindOnce(
+  event_loop.EnqueueMicrotask(blink::BindOnce(
       [](scoped_refptr<DawnControlClientHolder> dawn_control_client) {
         if (auto context_provider =
                 dawn_control_client->GetContextProviderWeakPtr()) {
@@ -138,21 +153,26 @@ void DawnControlClientHolder::EnsureFlush(scheduler::EventLoop& event_loop) {
       scoped_refptr<DawnControlClientHolder>(this)));
 }
 
+void DawnControlClientHolder::TrackMailboxTexture(
+    base::WeakPtr<WebGPUMailboxTexture> mailbox_texture) {
+  mailbox_textures_.push_back(std::move(mailbox_texture));
+}
+
+void DawnControlClientHolder::UntrackMailboxTexture(
+    base::WeakPtr<WebGPUMailboxTexture> mailbox_texture) {
+  for (wtf_size_t i = 0; i < mailbox_textures_.size(); ++i) {
+    if (mailbox_textures_[i].get() == mailbox_texture.get()) {
+      mailbox_textures_.EraseAt(i);
+      return;
+    }
+  }
+}
+
 std::vector<wgpu::WGSLLanguageFeatureName> GatherWGSLLanguageFeatures() {
 #if BUILDFLAG(USE_DAWN)
   // Create a dawn::wire::WireClient on a noop serializer, to get an instance
   // from it.
-  class NoopSerializer : public dawn::wire::CommandSerializer {
-   public:
-    size_t GetMaximumAllocationSize() const override { return sizeof(buf); }
-    void* GetCmdSpace(size_t size) override { return buf; }
-    bool Flush() override { return true; }
-
-   private:
-    char buf[1024];
-  };
-
-  NoopSerializer noop_serializer;
+  DawnNoopCommandSerializer noop_serializer;
   dawn::wire::WireClient client{{.serializer = &noop_serializer}};
 
   // Control which WGSL features are exposed based on flags.

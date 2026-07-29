@@ -19,6 +19,7 @@
 #include "partition_alloc/oom.h"
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/page_allocator_constants.h"
+#include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_base/posix/eintr_wrapper.h"
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/thread_isolation/thread_isolation.h"
@@ -156,8 +157,16 @@ void SetSystemPagesAccessInternal(
   //
   // In this case, we are almost certainly bumping into the sandbox limit, mark
   // the crash as OOM. See SandboxLinux::LimitAddressSpace() for details.
-  if (ret == -1 && errno == ENOMEM && (access_flags & PROT_WRITE)) {
-    OOM_CRASH(length);
+  if (ret == -1 && errno == ENOMEM) {
+    // Likely setrlimit(2) related.
+    if (access_flags & PROT_WRITE) {
+      OOM_CRASH(length);
+    } else {
+      // Linux-based systems have a low-ish default limit of ~65k VMAs per
+      // process, and we've seen crashes triggered by that. Single out this
+      // error so that we can track it in crashes.
+      OnErrnoNoMem();
+    }
   }
 
   PA_PCHECK(0 == ret);
@@ -213,7 +222,7 @@ void DecommitSystemPagesInternal(
     size_t size = std::min(length, 2 * SystemPageSize());
     void* ptr = reinterpret_cast<void*>(address);
     PA_CHECK(mprotect(ptr, size, PROT_WRITE) == 0);
-    memset(ptr, 0xcc, size);
+    PA_UNSAFE_TODO(memset(ptr, 0xcc, size));
   }
 #endif
 

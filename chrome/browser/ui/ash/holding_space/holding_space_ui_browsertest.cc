@@ -7,7 +7,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/capture_mode/capture_mode_test_api.h"
 #include "ash/public/cpp/holding_space/holding_space_client.h"
 #include "ash/public/cpp/holding_space/holding_space_constants.h"
@@ -34,18 +33,17 @@
 #include "ash/system/progress_indicator/progress_ring_animation.h"
 #include "ash/system/status_area_widget.h"
 #include "ash/test/view_drawn_waiter.h"
-#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_locale.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
@@ -53,7 +51,6 @@
 #include "chrome/browser/ash/file_suggest/file_suggest_keyed_service.h"
 #include "chrome/browser/ash/file_suggest/file_suggest_keyed_service_factory.h"
 #include "chrome/browser/ash/file_suggest/local_file_suggestion_provider.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
 #include "chrome/browser/download/download_core_service.h"
 #include "chrome/browser/download/download_core_service_factory.h"
@@ -65,7 +62,7 @@
 #include "chrome/browser/ui/ash/holding_space/holding_space_util.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/ash/util/ash_test_util.h"
-#include "chromeos/constants/chromeos_features.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/download/public/common/mock_download_item.h"
 #include "components/user_manager/user.h"
 #include "content/public/browser/download_item_utils.h"
@@ -83,12 +80,12 @@
 #include "ui/compositor/compositor_observer.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_tree_owner.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/image/image_unittest_util.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
@@ -235,6 +232,39 @@ void WaitForText(views::Label* label, const std::u16string& text) {
   run_loop.Run();
 }
 
+// NextMainFrameWaiter ---------------------------------------------------------
+
+// A helper class that waits until the next main frame is processed.
+class NextMainFrameWaiter : public ui::CompositorObserver {
+ public:
+  explicit NextMainFrameWaiter(ui::Compositor* compositor) {
+    observation_.Observe(compositor);
+  }
+
+  void Wait() {
+    CHECK(!run_loop_.running());
+    run_loop_.Run();
+  }
+
+ private:
+  // ui::CompositorObserver:
+  void OnDidBeginMainFrame(ui::Compositor* compositor) override {
+    if (run_loop_.running()) {
+      run_loop_.Quit();
+    }
+  }
+
+  base::RunLoop run_loop_;
+  base::ScopedObservation<ui::Compositor, ui::CompositorObserver> observation_{
+      this};
+};
+
+// HoldingSpaceUiBrowserTest ---------------------------------------------------
+
+using HoldingSpaceUiBrowserTest = HoldingSpaceUiBrowserTestBase;
+
+}  // namespace
+
 // DropSenderView --------------------------------------------------------------
 
 class DropSenderView : public views::WidgetDelegateView,
@@ -326,7 +356,6 @@ class DropSenderView : public views::WidgetDelegateView,
     params.activatable = views::Widget::InitParams::Activatable::kNo;
     params.context = context;
     params.delegate = this;
-    params.wants_mouse_events_when_inactive = true;
 
     views::Widget* widget = new views::Widget();
     widget->Init(std::move(params));
@@ -390,7 +419,6 @@ class DropTargetView : public views::WidgetDelegateView {
     params.activatable = views::Widget::InitParams::Activatable::kNo;
     params.context = context;
     params.delegate = this;
-    params.wants_mouse_events_when_inactive = true;
 
     views::Widget* widget = new views::Widget();
     widget->Init(std::move(params));
@@ -398,39 +426,6 @@ class DropTargetView : public views::WidgetDelegateView {
 
   base::FilePath copied_file_path_;
 };
-
-// NextMainFrameWaiter ---------------------------------------------------------
-
-// A helper class that waits until the next main frame is processed.
-class NextMainFrameWaiter : public ui::CompositorObserver {
- public:
-  explicit NextMainFrameWaiter(ui::Compositor* compositor) {
-    observation_.Observe(compositor);
-  }
-
-  void Wait() {
-    CHECK(!run_loop_.running());
-    run_loop_.Run();
-  }
-
- private:
-  // ui::CompositorObserver:
-  void OnDidBeginMainFrame(ui::Compositor* compositor) override {
-    if (run_loop_.running()) {
-      run_loop_.Quit();
-    }
-  }
-
-  base::RunLoop run_loop_;
-  base::ScopedObservation<ui::Compositor, ui::CompositorObserver> observation_{
-      this};
-};
-
-// HoldingSpaceUiBrowserTest ---------------------------------------------------
-
-using HoldingSpaceUiBrowserTest = HoldingSpaceUiBrowserTestBase;
-
-}  // namespace
 
 // Tests -----------------------------------------------------------------------
 
@@ -595,8 +590,8 @@ class HoldingSpaceUiDragAndDropBrowserTest
 
 // Verifies that drag-and-drop of holding space items works.
 IN_PROC_BROWSER_TEST_P(HoldingSpaceUiDragAndDropBrowserTest, DragAndDrop) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Verify drag-and-drop of download items.
   HoldingSpaceItem* const download_file = AddDownloadFile();
@@ -616,7 +611,7 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceUiDragAndDropBrowserTest, DragAndDrop) {
 
   // Verify drag-and-drop of pinned file items.
   // NOTE: Dragging a pinned file from a non-top row of the pinned files
-  // container grid previously resulted in a crash (crbug.com/1143426). To
+  // container grid previously resulted in a crash (crbug.com/40155085). To
   // explicitly test against this case we will add and drag a second row item.
   HoldingSpaceItem* const pinned_file = AddPinnedFile();
   AddPinnedFile();
@@ -655,8 +650,8 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceUiDragAndDropBrowserTest, DragAndDrop) {
 
 // Verifies that drag-and-drop to pin holding space items works.
 IN_PROC_BROWSER_TEST_P(HoldingSpaceUiDragAndDropBrowserTest, DragAndDropToPin) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Add an item to holding space to cause the holding space tray to appear.
   AddDownloadFile();
@@ -764,7 +759,9 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceUiDragAndDropBrowserTest, DragAndDropToPin) {
   // Swap out the registered holding space client with a mock.
   testing::NiceMock<MockHoldingSpaceClient> client;
   HoldingSpaceController::Get()->RegisterClientAndModelForUser(
-      ProfileHelper::Get()->GetUserByProfile(GetProfile())->GetAccountId(),
+      BrowserContextHelper::Get()
+          ->GetUserByBrowserContext(GetProfile())
+          ->GetAccountId(),
       &client, HoldingSpaceController::Get()->model());
   ASSERT_EQ(&client, HoldingSpaceController::Get()->client());
 
@@ -818,8 +815,8 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Verifies that the holding space tray does not appear on the lock screen.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, LockScreen) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   ASSERT_TRUE(test_api().IsShowingInShelf());
   RequestAndAwaitLockScreen();
@@ -828,8 +825,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, LockScreen) {
 
 // Verifies that pinning and unpinning holding space items works as intended.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, PinAndUnpinItems) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Add an item of every type. For downloads, also add an in-progress item.
   for (const auto type : holding_space_util::GetAllItemTypes()) {
@@ -911,8 +908,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, OpenItem) {
   // Install the Media App, which we expect to open holding space items.
   WaitForTestSystemAppInstall();
 
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   auto* const activation_client = wm::GetActivationClient(
       HoldingSpaceBrowserTestBase::GetRootWindowForNewWindows());
@@ -971,8 +968,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, OpenItem) {
 
 // Verifies that removing holding space items works as intended.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, RemoveItem) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Populate holding space with items of all types.
   for (const auto type : holding_space_util::GetAllItemTypes()) {
@@ -1135,7 +1132,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, RemoveItem) {
           .WillOnce([&](const std::vector<const HoldingSpaceItem*>& items) {
             ASSERT_EQ(items.size(), item_ids.size());
             for (const HoldingSpaceItem* item : items) {
-              ASSERT_TRUE(base::Contains(item_ids, item->id()));
+              ASSERT_TRUE(item_ids.contains(item->id()));
             }
             run_loop.Quit();
           });
@@ -1163,8 +1160,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, RemoveItem) {
 
 // Verifies that unpinning a pinned holding space item works as intended.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, UnpinItem) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Add enough pinned items for there to be multiple rows in the section.
   constexpr size_t kNumPinnedItems = 3u;
@@ -1199,8 +1196,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, UnpinItem) {
 
 // Verifies that previews can be toggled via context menu.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, TogglePreviews) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   ASSERT_TRUE(test_api().IsShowingInShelf());
 
@@ -1305,13 +1302,12 @@ class HoldingSpaceUiInProgressDownloadsBrowserTest
               new testing::NiceMock<content::MockDownloadManager>();
 
           // Mock `content::DownloadManager::Shutdown()`.
-          ON_CALL(*download_manager_, Shutdown)
-              .WillByDefault(testing::Invoke([&]() {
-                if (download_manager_->GetDelegate()) {
-                  download_manager_->GetDelegate()->Shutdown();
-                  download_manager_->SetDelegate(nullptr);
-                }
-              }));
+          ON_CALL(*download_manager_, Shutdown).WillByDefault([&]() {
+            if (download_manager_->GetDelegate()) {
+              download_manager_->GetDelegate()->Shutdown();
+              download_manager_->SetDelegate(nullptr);
+            }
+          });
 
           // Mock `content::DownloadManager::IsManagerInitialized()`.
           ON_CALL(*download_manager_, IsManagerInitialized())
@@ -1337,15 +1333,14 @@ class HoldingSpaceUiInProgressDownloadsBrowserTest
 
           // Mock `content::DownloadManager::SetDelegate()`.
           ON_CALL(*download_manager_, SetDelegate)
-              .WillByDefault(testing::Invoke(
-                  [&](content::DownloadManagerDelegate* delegate) {
-                    download_manager_delegate_ = delegate;
-                  }));
+              .WillByDefault([&](content::DownloadManagerDelegate* delegate) {
+                download_manager_delegate_ = delegate;
+              });
 
           // Mock `content::DownloadManager::GetDelegate()`.
-          ON_CALL(*download_manager_, GetDelegate)
-              .WillByDefault(testing::Invoke(
-                  [&]() { return download_manager_delegate_; }));
+          ON_CALL(*download_manager_, GetDelegate).WillByDefault([&]() {
+            return download_manager_delegate_;
+          });
 
           // Swap out the production download manager for the mock.
           context->SetDownloadManagerForTesting(
@@ -1526,14 +1521,14 @@ class HoldingSpaceUiInProgressDownloadsBrowserTest
 
     // Mock `download::DownloadItem::GetFullPath()`.
     ON_CALL(*ash_download_item, GetFullPath)
-        .WillByDefault(testing::Invoke(
+        .WillByDefault(
             [ash_download_item = ash_download_item.get(),
              file_path = base::FilePath(file_path)]() -> const base::FilePath& {
               return ash_download_item->GetState() ==
                              download::DownloadItem::COMPLETE
                          ? ash_download_item->GetTargetFilePath()
                          : file_path;
-            }));
+            });
 
     // Mock `download::DownloadItem::GetGuid()`.
     ON_CALL(*ash_download_item, GetGuid)
@@ -1541,10 +1536,10 @@ class HoldingSpaceUiInProgressDownloadsBrowserTest
             base::Uuid::GenerateRandomV4().AsLowercaseString()));
 
     // Mock `download::DownloadItem::GetId()`.
-    ON_CALL(*ash_download_item, GetId).WillByDefault(testing::Invoke([]() {
+    ON_CALL(*ash_download_item, GetId).WillByDefault([]() {
       static uint32_t kNextId = 1u;
       return kNextId++;
-    }));
+    });
 
     // Mock `download::DownloadItem::GetLastModifiedTime()`.
     ON_CALL(*ash_download_item, GetLastModifiedTime)
@@ -1553,14 +1548,14 @@ class HoldingSpaceUiInProgressDownloadsBrowserTest
     // Mock `download::DownloadItem::GetLastReason()`.
     ON_CALL(*ash_download_item, GetLastReason)
         .WillByDefault(
-            testing::Invoke([ash_download_item = ash_download_item.get()]() {
+            [ash_download_item = ash_download_item.get()]() {
               return ash_download_item->GetState() ==
                              download::DownloadItem::CANCELLED
                          ? download::DownloadInterruptReason::
                                DOWNLOAD_INTERRUPT_REASON_USER_CANCELED
                          : download::DownloadInterruptReason::
                                DOWNLOAD_INTERRUPT_REASON_NONE;
-            }));
+            });
 
     // Mock `download::DownloadItem::GetOpenWhenComplete()`.
     auto open_when_complete = std::make_unique<bool>(false);
@@ -1613,11 +1608,10 @@ class HoldingSpaceUiInProgressDownloadsBrowserTest
 
     // Mock `download::DownloadItem::IsDone()`.
     ON_CALL(*ash_download_item, IsDone)
-        .WillByDefault(
-            testing::Invoke([ash_download_item = ash_download_item.get()]() {
-              return ash_download_item->GetState() ==
-                     download::DownloadItem::COMPLETE;
-            }));
+        .WillByDefault([ash_download_item = ash_download_item.get()]() {
+          return ash_download_item->GetState() ==
+                 download::DownloadItem::COMPLETE;
+        });
 
     // Mock `download::DownloadItem::IsPaused()`.
     auto paused = std::make_unique<bool>(false);
@@ -1677,7 +1671,6 @@ class HoldingSpaceUiInProgressDownloadsBrowserTest
     ash_download->NotifyObserversDownloadUpdated();
   }
 
-  base::test::ScopedFeatureList scoped_feature_list_;
   raw_ptr<testing::NiceMock<content::MockDownloadManager>, DanglingUntriaged>
       download_manager_ = nullptr;
   raw_ptr<content::DownloadManagerDelegate> download_manager_delegate_ =
@@ -1689,8 +1682,8 @@ class HoldingSpaceUiInProgressDownloadsBrowserTest
 // Verifies that primary, secondary, and accessible text work as intended.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiInProgressDownloadsBrowserTest,
                        PrimarySecondaryAndAccessibleText) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Force locale since strings are being verified.
   base::ScopedLocale scoped_locale("en_US.UTF-8");
@@ -1989,8 +1982,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiInProgressDownloadsBrowserTest,
 // Verifies that canceling holding space items works as intended.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiInProgressDownloadsBrowserTest,
                        CancelItem) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Create an in-progress download and a completed download.
   auto in_progress_download = CreateInProgressDownload();
@@ -2070,8 +2063,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiInProgressDownloadsBrowserTest,
 // Verifies that canceling holding space items via primary action is WAI.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiInProgressDownloadsBrowserTest,
                        CancelItemViaPrimaryAction) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Create an in-progress download and a completed download.
   auto in_progress_download = CreateInProgressDownload();
@@ -2157,8 +2150,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiInProgressDownloadsBrowserTest,
 // Verifies that opening in-progress download items works as intended.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiInProgressDownloadsBrowserTest,
                        OpenItemWhenComplete) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Force locale since strings are being verified.
   base::ScopedLocale scoped_locale("en_US.UTF-8");
@@ -2228,8 +2221,8 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiInProgressDownloadsBrowserTest,
 // Verifies that removing holding space items works as intended.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceUiInProgressDownloadsBrowserTest,
                        RemoveItem) {
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Create an in-progress download and a completed download.
   auto in_progress_download = CreateInProgressDownload();
@@ -2342,8 +2335,8 @@ INSTANTIATE_TEST_SUITE_P(
 IN_PROC_BROWSER_TEST_P(HoldingSpaceUiPauseOrResumeBrowserTest,
                        PauseOrResumeItem) {
   // Use zero animation duration so that UI updates are immediate.
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Create an in-progress download which may or may not be paused depending
   // on parameterization.
@@ -2426,8 +2419,8 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceUiPauseOrResumeBrowserTest,
 IN_PROC_BROWSER_TEST_P(HoldingSpaceUiPauseOrResumeBrowserTest,
                        PauseOrResumeItemViaSecondaryAction) {
   // Use zero animation duration so that UI updates are immediate.
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Create an in-progress download which may or may not be paused depending
   // on parameterization.
@@ -2522,7 +2515,7 @@ IN_PROC_BROWSER_TEST_F(HoldingSpaceUiBrowserTest, AddScreenshot) {
   // Move the mouse over to the browser window. The reason for that is the
   // capture mode implementation will not automatically capture the topmost
   // window unless the mouse is hovered above it.
-  aura::Window* browser_window = browser()->window()->GetNativeWindow();
+  aura::Window* browser_window = browser()->GetWindow()->GetNativeWindow();
   ui::test::EventGenerator event_generator(browser_window->GetRootWindow());
   event_generator.MoveMouseTo(
       browser_window->GetBoundsInScreen().CenterPoint());
@@ -2628,19 +2621,14 @@ IN_PROC_BROWSER_TEST_P(HoldingSpaceScreenRecordingUiBrowserTest,
 // Used to check the holding space suggestion feature.
 class HoldingSpaceSuggestionUiBrowserTest : public HoldingSpaceUiBrowserTest {
  public:
-  HoldingSpaceSuggestionUiBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        features::kHoldingSpaceSuggestions);
-  }
-
   // HoldingSpaceUiBrowserTest:
   void SetUpOnMainThread() override {
     HoldingSpaceUiBrowserTest::SetUpOnMainThread();
 
     // Initialize `local_file_directory_`.
     EXPECT_TRUE(local_file_directory_.CreateUniqueTempDirUnderPath(
-        browser()->profile()->GetPath()));
-    EXPECT_TRUE(browser()->profile()->GetMountPoints()->RegisterFileSystem(
+        browser()->GetProfile()->GetPath()));
+    EXPECT_TRUE(browser()->GetProfile()->GetMountPoints()->RegisterFileSystem(
         /*mount_name=*/"archive", storage::kFileSystemTypeLocal,
         storage::FileSystemMountOption(), GetLocalFileMountPath()));
   }
@@ -2676,8 +2664,6 @@ class HoldingSpaceSuggestionUiBrowserTest : public HoldingSpaceUiBrowserTest {
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-
   // The directory that hosts local files.
   base::ScopedTempDir local_file_directory_;
 };
@@ -2685,8 +2671,8 @@ class HoldingSpaceSuggestionUiBrowserTest : public HoldingSpaceUiBrowserTest {
 // Verifies suggestion removal through holding space item context menu.
 IN_PROC_BROWSER_TEST_F(HoldingSpaceSuggestionUiBrowserTest, RemoveSuggestion) {
   // Use zero animation duration so that UI updates are immediate.
-  ui::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   // Create file suggestions and wait until the suggested files exist in the
   // holding space model.

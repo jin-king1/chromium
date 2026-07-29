@@ -12,8 +12,8 @@
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/fuchsia/fuchsia_logging.h"
+#include "base/notimplemented.h"
 #include "base/path_service.h"
 #include "base/strings/string_split.h"
 #include "base/threading/thread_restrictions.h"
@@ -30,8 +30,8 @@
 #include "fuchsia_web/webengine/switches.h"
 #include "media/capabilities/in_memory_video_decode_stats_db_impl.h"
 #include "media/mojo/services/video_decode_perf_history.h"
+#include "net/base/switches.h"
 #include "net/http/http_util.h"
-#include "services/network/public/cpp/network_switches.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -41,9 +41,9 @@ std::unique_ptr<WebEngineNetLogObserver> CreateNetLogObserver() {
 
   const base::CommandLine* command_line =
       base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(network::switches::kLogNetLog)) {
+  if (command_line->HasSwitch(net::switches::kLogNetLog)) {
     base::FilePath log_path =
-        command_line->GetSwitchValuePath(network::switches::kLogNetLog);
+        command_line->GetSwitchValuePath(net::switches::kLogNetLog);
     result = std::make_unique<WebEngineNetLogObserver>(log_path);
   }
 
@@ -63,17 +63,22 @@ std::vector<std::string> GetAcceptLanguages() {
 std::unique_ptr<WebEngineBrowserContext>
 WebEngineBrowserContext::CreatePersistent(
     base::FilePath data_directory,
-    network::NetworkQualityTracker* network_quality_tracker) {
-  return base::WrapUnique(new WebEngineBrowserContext(std::move(data_directory),
-                                                      network_quality_tracker));
+    network::NetworkQualityTracker* network_quality_tracker,
+    os_crypt_async::OSCryptAsync* os_crypt_async,
+    network::NetworkConnectionTracker* network_connection_tracker) {
+  return base::WrapUnique(new WebEngineBrowserContext(
+      std::move(data_directory), network_quality_tracker, os_crypt_async,
+      network_connection_tracker));
 }
 
 // static
 std::unique_ptr<WebEngineBrowserContext>
 WebEngineBrowserContext::CreateIncognito(
-    network::NetworkQualityTracker* network_quality_tracker) {
-  return base::WrapUnique(
-      new WebEngineBrowserContext({}, network_quality_tracker));
+    network::NetworkQualityTracker* network_quality_tracker,
+    os_crypt_async::OSCryptAsync* os_crypt_async,
+    network::NetworkConnectionTracker* network_connection_tracker) {
+  return base::WrapUnique(new WebEngineBrowserContext(
+      {}, network_quality_tracker, os_crypt_async, network_connection_tracker));
 }
 
 WebEngineBrowserContext::~WebEngineBrowserContext() {
@@ -92,7 +97,7 @@ WebEngineBrowserContext::CreateZoomLevelDelegate(
   return nullptr;
 }
 
-base::FilePath WebEngineBrowserContext::GetPath() {
+base::FilePath WebEngineBrowserContext::GetPath() const {
   return data_dir_path_;
 }
 
@@ -117,12 +122,12 @@ WebEngineBrowserContext::GetSpecialStoragePolicy() {
 
 content::PlatformNotificationService*
 WebEngineBrowserContext::GetPlatformNotificationService() {
-  return nullptr;
+  return &platform_notification_service_;
 }
 
 content::PushMessagingService*
 WebEngineBrowserContext::GetPushMessagingService() {
-  return nullptr;
+  return &push_messaging_service_;
 }
 
 content::StorageNotificationService*
@@ -176,8 +181,7 @@ WebEngineBrowserContext::CreateVideoDecodePerfHistory() {
   // Return in-memory VideoDecodePerfHistory.
   return std::make_unique<media::VideoDecodePerfHistory>(
       std::make_unique<media::InMemoryVideoDecodeStatsDBImpl>(
-          nullptr /* seed_db_provider */),
-      media::learning::FeatureProviderFactoryCB());
+          nullptr /* seed_db_provider */));
 }
 
 base::RepeatingCallback<bool(const GURL&)> IsJavaScriptAllowedCallback() {
@@ -187,14 +191,20 @@ base::RepeatingCallback<bool(const GURL&)> IsJavaScriptAllowedCallback() {
 
 WebEngineBrowserContext::WebEngineBrowserContext(
     base::FilePath data_directory,
-    network::NetworkQualityTracker* network_quality_tracker)
+    network::NetworkQualityTracker* network_quality_tracker,
+    os_crypt_async::OSCryptAsync* os_crypt_async,
+    network::NetworkConnectionTracker* network_connection_tracker)
     : data_dir_path_(std::move(data_directory)),
       net_log_observer_(CreateNetLogObserver()),
       simple_factory_key_(GetPath(), IsOffTheRecord()),
       client_hints_delegate_(network_quality_tracker,
                              IsJavaScriptAllowedCallback(),
                              embedder_support::GetUserAgentMetadata()),
-      reduce_accept_language_delegate_(GetAcceptLanguages()) {
+      reduce_accept_language_delegate_(GetAcceptLanguages()),
+      push_messaging_service_(*this,
+                              *os_crypt_async,
+                              *network_connection_tracker)
+{
   SimpleKeyMap::GetInstance()->Associate(this, &simple_factory_key_);
 
   profile_metrics::SetBrowserProfileType(

@@ -12,6 +12,7 @@
 #include "base/containers/queue.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/safe_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -19,6 +20,8 @@
 #include "base/types/pass_key.h"
 #include "base/unguessable_token.h"
 #include "content/browser/loader/keep_alive_url_loader_service.h"
+#include "content/common/content_export.h"
+#include "net/cookies/cookie_setting_override.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/confidence_level.mojom.h"
 #include "url/gurl.h"
@@ -39,7 +42,7 @@ class RenderFrameHostImpl;
 // directly while consumers of RenderFrameHostImpl should store data via
 // GetDocumentUserData(). Please refer to the description at
 // content/public/browser/document_user_data.h for more details.
-class DocumentAssociatedData : public base::SupportsUserData {
+class CONTENT_EXPORT DocumentAssociatedData : public base::SupportsUserData {
  public:
   // Helper for looking up a RenderFrameHostImpl based on the DocumentToken.
   // Restricted to RenderFrameHostImpl, which performs additional security
@@ -103,6 +106,18 @@ class DocumentAssociatedData : public base::SupportsUserData {
     pending_did_stop_loading_for_prerendering_ = true;
   }
 
+  // Stores the original URL of the navigation that committed this document.
+  // When `kSanitizeOriginalUrlDuringNavigation` is enabled, the renderer
+  // process only receives an origin-sanitized version of the original URL, but
+  // they then provide that sanitized value to browser-side features (such as
+  // observers) that still expect the full URL. Since `NavigationRequest` is
+  // destroyed upon commit, we preserve the original URL for the document's
+  // lifetime.
+  const GURL& original_url() const { return original_url_; }
+  void set_original_url(const GURL& original_url) {
+    original_url_ = original_url;
+  }
+
   // Reporting API:
   //
   // Contains the reporting source token for this document, which will be
@@ -140,6 +155,27 @@ class DocumentAssociatedData : public base::SupportsUserData {
     devtools_navigation_token_ = devtools_navigation_token;
   }
 
+  // Sets the network restrictions id. Should only be called when the document
+  // is being committed. For more details see
+  // NavigationRequest::network_restrictions_id_
+  void SetNetworkRestrictionsId(base::UnguessableToken network_restrictions_id);
+
+  // Shares the network restrictions id from another document (e.g. the
+  // creator's), incrementing the reference count. The nonce will only be
+  // cleared from the network service when the last document holding a
+  // reference is destroyed.
+  void ShareNetworkRestrictionsId(
+      scoped_refptr<base::RefCountedData<base::UnguessableToken>>
+          network_restrictions_id);
+
+  base::UnguessableToken NetworkRestrictionsId() const;
+
+  // Returns the shared ref-counted handle for the network restrictions id.
+  // Used internally for sharing the id between documents (e.g. initial empty
+  // documents inheriting from their creator).
+  const scoped_refptr<base::RefCountedData<base::UnguessableToken>>&
+  NetworkRestrictionsIdHandle() const;
+
   blink::mojom::ConfidenceLevel navigation_confidence() const {
     return confidence_level_;
   }
@@ -159,7 +195,7 @@ class DocumentAssociatedData : public base::SupportsUserData {
   void set_keep_alive_url_loader_factory_context(
       base::WeakPtr<KeepAliveURLLoaderService::FactoryContext>
           factory_context) {
-    DCHECK(!keep_alive_url_loader_factory_context_);
+    CHECK(!keep_alive_url_loader_factory_context_, base::NotFatalUntil::M152);
     keep_alive_url_loader_factory_context_ = factory_context;
   }
 
@@ -186,6 +222,19 @@ class DocumentAssociatedData : public base::SupportsUserData {
   // Run callback queue for post-prerendering activation.
   void RunPostPrerenderingActivationSteps();
 
+  net::CookieSettingOverrides cookie_setting_overrides() const {
+    return cookie_setting_overrides_;
+  }
+  void PutCookieSettingOverride(
+      net::CookieSettingOverride cookie_setting_override);
+  void RemoveCookieSettingOverride(
+      net::CookieSettingOverride cookie_setting_override);
+
+  void SetCrashReportContextRegion(base::UnsafeSharedMemoryRegion region);
+  const base::UnsafeSharedMemoryRegion& crash_report_storage_region() const {
+    return crash_report_storage_region_;
+  }
+
  private:
   const blink::DocumentToken token_;
   std::unique_ptr<PageImpl> owned_page_;
@@ -193,16 +242,31 @@ class DocumentAssociatedData : public base::SupportsUserData {
   bool is_discarded_ = false;
   std::optional<GURL> pending_did_finish_load_url_for_prerendering_;
   bool pending_did_stop_loading_for_prerendering_ = false;
+  GURL original_url_;
   std::vector<raw_ptr<internal::DocumentServiceBase, VectorExperimental>>
       services_;
   scoped_refptr<NavigationOrDocumentHandle> navigation_or_document_handle_;
   std::optional<base::UnguessableToken> devtools_navigation_token_;
+  // Ref-counted to allow safe sharing between documents (e.g. initial empty
+  // documents inherit the creator's id). The nonce is only cleared from the
+  // network service when the last document holding a reference is destroyed.
+  scoped_refptr<base::RefCountedData<base::UnguessableToken>>
+      network_restrictions_id_;
   blink::mojom::ConfidenceLevel confidence_level_ =
       blink::mojom::ConfidenceLevel::kHigh;
   base::WeakPtr<KeepAliveURLLoaderService::FactoryContext>
       keep_alive_url_loader_factory_context_;
   // The callback queue for post-prerendering activation.
   base::queue<base::OnceClosure> post_prerendering_activation_callbacks_;
+  // The base set of overrides used by this document. This may be
+  // augmented/modified before being returned via
+  // `RenderFrameHostImpl::GetCookieSettingOverrides`.
+  net::CookieSettingOverrides cookie_setting_overrides_;
+  // Shared memory region for crash report storage. The renderer is the sole
+  // writer into the memory, and `this` reads from it in
+  // `RenderFrameHostImpl::MaybeGenerateCrashReport()`, after the renderer
+  // process has crashed.
+  base::UnsafeSharedMemoryRegion crash_report_storage_region_;
 
   base::WeakPtrFactory<RenderFrameHostImpl> weak_factory_;
 };

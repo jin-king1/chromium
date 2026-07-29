@@ -16,11 +16,14 @@
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
+#include "components/enterprise/common/proto/synced_from_google3/chrome_reporting_entity.pb.h"
 #include "components/policy/core/common/cloud/cloud_policy_util.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
 #include "components/policy/core/common/cloud/dm_auth.h"
+#include "components/policy/core/common/features.h"
 #include "components/version_info/version_info.h"
 #include "google_apis/google_api_keys.h"
+#include "net/base/net_errors.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 
@@ -42,18 +45,29 @@ const char
         "osPlatform";
 const char ReportingJobConfigurationBase::DeviceDictionaryBuilder::kName[] =
     "name";
+const char
+    ReportingJobConfigurationBase::DeviceDictionaryBuilder::kDeviceFqdn[] =
+        "deviceFqdn";
+const char
+    ReportingJobConfigurationBase::DeviceDictionaryBuilder::kNetworkName[] =
+        "networkName";
 
 // static
-base::Value::Dict
+base::DictValue
 ReportingJobConfigurationBase::DeviceDictionaryBuilder::BuildDeviceDictionary(
     const std::string& dm_token,
     const std::string& client_id) {
-  base::Value::Dict device_dictionary;
+  base::DictValue device_dictionary;
   device_dictionary.Set(kDMToken, dm_token);
   device_dictionary.Set(kClientId, client_id);
   device_dictionary.Set(kOSVersion, GetOSVersion());
   device_dictionary.Set(kOSPlatform, GetOSPlatform());
   device_dictionary.Set(kName, GetDeviceName());
+  if (base::FeatureList::IsEnabled(
+          policy::features::kEnhancedSecurityEventFields)) {
+    device_dictionary.Set(kDeviceFqdn, GetDeviceFqdn());
+    device_dictionary.Set(kNetworkName, GetNetworkName());
+  }
   return device_dictionary;
 }
 
@@ -68,6 +82,11 @@ ReportingJobConfigurationBase::DeviceDictionaryBuilder::BuildDeviceProto(
   device.set_os_version(GetOSVersion());
   device.set_os_platform(GetOSPlatform());
   device.set_name(GetDeviceName());
+  if (base::FeatureList::IsEnabled(
+          policy::features::kEnhancedSecurityEventFields)) {
+    device.set_device_fqdn(GetDeviceFqdn());
+    device.set_network_name(GetNetworkName());
+  }
   return device;
 }
 
@@ -101,6 +120,18 @@ ReportingJobConfigurationBase::DeviceDictionaryBuilder::GetNamePath() {
   return GetStringPath(kName);
 }
 
+//static
+std::string
+ReportingJobConfigurationBase::DeviceDictionaryBuilder::GetDeviceFqdnPath() {
+  return GetStringPath(kDeviceFqdn);
+}
+
+// static
+std::string
+ReportingJobConfigurationBase::DeviceDictionaryBuilder::GetNetworkNamePath() {
+  return GetStringPath(kNetworkName);
+}
+
 // static
 std::string
 ReportingJobConfigurationBase::DeviceDictionaryBuilder::GetStringPath(
@@ -126,10 +157,10 @@ const char
         "chromeVersion";
 
 // static
-base::Value::Dict
+base::DictValue
 ReportingJobConfigurationBase::BrowserDictionaryBuilder::BuildBrowserDictionary(
     bool include_device_info) {
-  base::Value::Dict browser_dictionary;
+  base::DictValue browser_dictionary;
 
   base::FilePath browser_id;
   if (base::PathService::Get(base::DIR_EXE, &browser_id)) {
@@ -203,8 +234,7 @@ std::string ReportingJobConfigurationBase::GetPayload() {
   // Allow children to mutate the payload if need be.
   UpdatePayloadBeforeGetInternal();
 
-  std::string payload_string;
-  base::JSONWriter::Write(payload_, &payload_string);
+  std::string payload_string = base::WriteJson(payload_).value_or("");
 
   // Record UMA request payload size
   base::UmaHistogramCounts1M("Browser.ERP.SingleRequestPayloadSize",
@@ -247,7 +277,8 @@ void ReportingJobConfigurationBase::OnURLLoadComplete(
     int net_error,
     int response_code,
     const std::string& response_body) {
-  std::optional<base::Value> response = base::JSONReader::Read(response_body);
+  std::optional<base::Value> response = base::JSONReader::Read(
+      response_body, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
 
   // Parse the response even if |response_code| is not a success since the
   // response data may contain an error message.
@@ -314,6 +345,7 @@ ReportingJobConfigurationBase::ReportingJobConfigurationBase(
     : JobConfigurationBase(type,
                            std::move(auth_data),
                            /*oauth_token=*/std::nullopt,
+                           /*use_cookies=*/false,
                            factory),
       callback_(std::move(callback)),
       server_url_(server_url) {}

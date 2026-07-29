@@ -6,7 +6,6 @@
 #define CHROME_BROWSER_UI_WEBUI_SETTINGS_HATS_HANDLER_H_
 
 #include "base/gtest_prod_util.h"
-#include "build/branding_buildflags.h"
 #include "chrome/browser/ui/hats/hats_service.h"
 #include "chrome/browser/ui/webui/settings/settings_page_ui_handler.h"
 
@@ -26,9 +25,11 @@ class HatsHandler : public SettingsPageUIHandler {
   // WebUIMessageHandler implementation.
   void RegisterMessages() override;
 
-  void HandleTrustSafetyInteractionOccurred(const base::Value::List& args);
+  void HandleTrustSafetyInteractionOccurred(const base::ListValue& args);
 
-  void HandleSecurityPageHatsRequest(const base::Value::List& args);
+  void HandleSecurityPageHatsRequest(const base::ListValue& args);
+
+  void HandleSecurityPageV2HatsRequest(const base::ListValue& args);
 
  private:
   friend class HatsHandlerTest;
@@ -37,16 +38,33 @@ class HatsHandler : public SettingsPageUIHandler {
   FRIEND_TEST_ALL_PREFIXES(HatsHandlerTest, PrivacySandboxHats);
   FRIEND_TEST_ALL_PREFIXES(
       HatsHandlerTest,
-      HandleSecurityPageHatsRequestPassesArgumentsToHatsService);
-  FRIEND_TEST_ALL_PREFIXES(
-      HatsHandlerTest,
-      HandleSecurityPageHatsRequestPassesArgumentsToHatsServiceNotLaunchSurveyNotEnoughTime);
+      HandleSecurityPageHatsRequest_PassesArgumentsToHatsService);
   FRIEND_TEST_ALL_PREFIXES(
       HatsHandlerTest,
       HandleSecurityPageHatsRequestPassesArgumentsToHatsServiceNotLaunchSurveyNoInteraction);
   FRIEND_TEST_ALL_PREFIXES(
       HatsHandlerTest,
-      HandleSecurityPageHatsRequestPassesFriendlierSafeBrowsingSettingsStateToHatsService);
+      HandleSecurityPageV2HatsRequest_PassesArgumentsToHatsService);
+  FRIEND_TEST_ALL_PREFIXES(
+      HatsHandlerTest,
+      HandleSecurityPageV2HatsRequest_NoSurveyIfSurveysDisabled);
+  FRIEND_TEST_ALL_PREFIXES(
+      HatsHandlerTest,
+      HandleSecurityPageV2HatsRequest_NoSurveyIfInsufficientTimeOnPage);
+  FRIEND_TEST_ALL_PREFIXES(
+      HatsHandlerTest,
+      HandleSecurityPageHatsRequest_SafeBrowsingInteraction);
+  FRIEND_TEST_ALL_PREFIXES(
+      HatsHandlerTest,
+      HandleSecurityPageHatsRequest_SecureDnsV2Interaction);
+  FRIEND_TEST_ALL_PREFIXES(
+      HatsHandlerTest,
+      HandleSecurityPageHatsRequest_HttpsFirstModeInteractions);
+  FRIEND_TEST_ALL_PREFIXES(
+      HatsHandlerTest,
+      HandleSecurityPageHatsRequest_PasswordLeakInteraction);
+  FRIEND_TEST_ALL_PREFIXES(HatsHandlerTest,
+                           HandleSecurityPageHatsRequest_SecureDnsInteraction);
   FRIEND_TEST_ALL_PREFIXES(HatsHandlerTest, TrustSafetySentimentInteractions);
   FRIEND_TEST_ALL_PREFIXES(HatsHandlerNoSandboxTest, PrivacySettings);
   FRIEND_TEST_ALL_PREFIXES(HatsHandlerNoSandboxTest,
@@ -74,6 +92,7 @@ class HatsHandler : public SettingsPageUIHandler {
    * survey. Must be kept in sync with the enum of the same name in
    * hats_browser_proxy.js
    */
+  // LINT.IfChange(SecurityPageInteraction)
   enum class SecurityPageInteraction {
     RADIO_BUTTON_ENHANCED_CLICK = 0,
     RADIO_BUTTON_STANDARD_CLICK = 1,
@@ -82,16 +101,30 @@ class HatsHandler : public SettingsPageUIHandler {
     EXPAND_BUTTON_STANDARD_CLICK = 4,
     NO_INTERACTION = 5,
   };
+  // LINT.ThenChange(/chrome/browser/resources/settings/privacy_page/hats_browser_proxy.ts:SecurityPageInteraction)
 
   /**
-   * Enumeration of all safe browsing modes. Must be kept in sync with the enum
-   * of the same name located in:
-   * chrome/browser/safe_browsing/generated_safe_browsing_pref.h
+   * All interactions from the security settings page which may result in a HaTS
+   * survey. Must be kept in sync with the enum of the same name located in:
+   * chrome/browser/resources/settings/hats_browser_proxy.ts
    */
-  enum class SafeBrowsingSetting {
-    ENHANCED = 0,
-    STANDARD = 1,
-    DISABLED = 2,
+  enum class SecurityPageV2Interaction {
+    STANDARD_BUNDLE_RADIO_BUTTON_CLICK = 0,
+    ENHANCED_BUNDLE_RADIO_BUTTON_CLICK = 1,
+    SAFE_BROWSING_ROW_EXPANDED = 2,
+    STANDARD_SAFE_BROWSING_RADIO_BUTTON_CLICK = 3,
+    ENHANCED_SAFE_BROWSING_RADIO_BUTTON_CLICK = 4,
+    SAFE_BROWSING_TOGGLE_CLICK = 5,
+    SECURE_DNS_V2_ROW_EXPANDED = 6,
+    SECURE_DNS_V2_AUTOMATIC_RADIO_BUTTON_CLICK = 7,
+    SECURE_DNS_V2_FALLBACK_RADIO_BUTTON_CLICK = 8,
+    SECURE_DNS_V2_CUSTOM_RADIO_BUTTON_CLICK = 9,
+    SECURE_DNS_V2_TOGGLE_CLICK = 10,
+    HTTPS_FIRST_MODE_TOGGLE_CLICK = 11,
+    BALANCED_HTTPS_FIRST_MODE_RADIO_BUTTON_CLICK = 12,
+    STRICT_HTTPS_FIRST_MODE_RADIO_BUTTON_CLICK = 13,
+    PASSWORD_LEAK_DETECTION_TOGGLE_CLICK = 14,
+    SECURE_DNS_TOGGLE_CLICK = 15,
   };
 
   // Requests the appropriate HaTS survey, which may be none, for |interaction|.
@@ -108,11 +141,22 @@ class HatsHandler : public SettingsPageUIHandler {
    * Generate the Product Specific string data from |profile| and |args| for
    * chrome://settings/security page HaTS.
    * - First arg in the list indicates the SecurityPageInteraction.
-   * - Second arg in the list indicates the SafeBrowsingSetting.
+   * - Second arg in the list indicates the SafeBrowsingState.
    */
   SurveyStringData GetSecurityPageProductSpecificStringData(
       Profile* profile,
-      const base::Value::List& args);
+      const base::ListValue& args);
+
+  /**
+   * Generate the Product Specific string data from |profile| and |args| for
+   * chrome://settings/security page HaTS.
+   * - First arg in the list is a set of SecurityPageV2Interactions.
+   * - Second arg in the list indicates the SafeBrowsingState.
+   * - Third arg in the list indicates the SecuritySettingsBundleSetting.
+   */
+  SurveyStringData GetSecurityPageV2ProductSpecificStringData(
+      Profile* profile,
+      const base::ListValue& args);
 };
 
 }  // namespace settings

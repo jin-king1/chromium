@@ -10,7 +10,6 @@
 
 #include "base/values.h"
 #include "chrome/browser/ui/webui/ash/login/base_webui_handler.h"
-#include "chromeos/crosapi/mojom/cros_display_config.mojom.h"
 
 namespace ash {
 
@@ -25,7 +24,7 @@ class OobeTestAPIHandler : public BaseWebUIHandler {
   void DeclareLocalizedValues(
       ::login::LocalizedValuesBuilder* builder) override;
   void DeclareJSCallbacks() override;
-  void GetAdditionalParameters(base::Value::Dict* dict) override;
+  void GetAdditionalParameters(base::DictValue* dict) override;
 
  private:
   void LoginWithPin(const std::string& username, const std::string& pin);
@@ -41,10 +40,7 @@ class OobeTestAPIHandler : public BaseWebUIHandler {
   void HandleGetShouldSkipChoobe(const std::string& callback_id);
   void HandleGetShouldSkipTouchpadScroll(const std::string& callback_id);
   void HandleGetMetricsClientID(const std::string& callback_id);
-
-  void OnGetDisplayUnitInfoList(
-      const std::string& callback_id,
-      std::vector<crosapi::mojom::DisplayUnitInfoPtr> info_list);
+  void HandleGetShouldSkipSplitModifierScreen(const std::string& callback_id);
 };
 
 }  // namespace ash

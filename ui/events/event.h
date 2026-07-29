@@ -173,6 +173,7 @@ class EVENTS_EXPORT Event {
       case EventType::kGesturePinchBegin:
       case EventType::kGesturePinchEnd:
       case EventType::kGesturePinchUpdate:
+      case EventType::kGestureShortPress:
       case EventType::kGestureLongPress:
       case EventType::kGestureLongTap:
       case EventType::kGestureSwipe:
@@ -608,10 +609,7 @@ class EVENTS_EXPORT MouseEvent : public LocatedEvent {
   // Raw mouse movement value reported from mouse hardware. The value of this is
   // platform dependent and may change depending upon the hardware connected to
   // the device. This field is only set if the flag EF_UNADJUSTED_MOUSE is
-  // present (which is the case on windows platforms, and CrOS if the
-  // kEnableOrdinalMotion flag is set).
-  //
-  // TODO(b/171249701): always enable on CrOS.
+  // present (which is the case on windows platforms).
   gfx::Vector2dF movement_;
 
   // The most recent user-generated MouseEvent, used to detect double clicks.

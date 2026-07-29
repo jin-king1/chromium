@@ -214,12 +214,12 @@ class MediaDrmSessionManager {
     //   3. Get EME/DRM session ID from DRM/EME session ID.
     // SessionId always has a valid EME session ID, so all opened session should
     // have an entry in mEmeSessionInfoMap.
-    private HashMap<ByteBuffer, SessionInfo> mEmeSessionInfoMap;
-    private HashMap<ByteBuffer, SessionInfo> mDrmSessionInfoMap;
+    private final HashMap<ByteBuffer, SessionInfo> mEmeSessionInfoMap;
+    private final HashMap<ByteBuffer, SessionInfo> mDrmSessionInfoMap;
 
     // The persistent storage to record map from EME session ID to key set ID
     // for persistent license.
-    private MediaDrmStorageBridge mStorage;
+    private final MediaDrmStorageBridge mStorage;
 
     public MediaDrmSessionManager(MediaDrmStorageBridge storage) {
         mEmeSessionInfoMap = new HashMap<>();
@@ -268,9 +268,9 @@ class MediaDrmSessionManager {
     void load(byte[] emeId, final Callback<@Nullable SessionId> callback) {
         mStorage.loadInfo(
                 emeId,
-                new Callback<PersistentInfo>() {
+                new Callback<@Nullable PersistentInfo>() {
                     @Override
-                    public void onResult(PersistentInfo persistentInfo) {
+                    public void onResult(@Nullable PersistentInfo persistentInfo) {
                         if (persistentInfo == null) {
                             callback.onResult(null);
                             return;

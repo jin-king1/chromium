@@ -12,6 +12,7 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/sharing/ui_bundled/activity_services/data/share_to_data.h"
 #import "ios/chrome/browser/snapshots/model/fake_snapshot_generator_delegate.h"
+#import "ios/chrome/browser/snapshots/model/snapshot_source_tab_helper.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/testing/ocmock_complex_type_helper.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
@@ -50,6 +51,7 @@ class ShareToDataBuilderTest : public PlatformTest {
 
     // Attach SnapshotTabHelper to allow snapshot generation.
     SnapshotTabHelper::CreateForWebState(web_state_.get());
+    SnapshotSourceTabHelper::CreateForWebState(web_state_.get());
     delegate_ = [[FakeSnapshotGeneratorDelegate alloc] init];
     SnapshotTabHelper::FromWebState(web_state_.get())->SetDelegate(delegate_);
     // Needed by the ShareToDataForWebState to get the tab title.
@@ -95,6 +97,20 @@ TEST_F(ShareToDataBuilderTest, TestSharePageCommandHandlingWithShareUrl) {
 TEST_F(ShareToDataBuilderTest, TestSharePageCommandHandlingNoShareUrl) {
   ShareToData* actual_data =
       activity_services::ShareToDataForWebState(web_state(), GURL());
+
+  ASSERT_TRUE(actual_data);
+  EXPECT_EQ(kExpectedUrl, actual_data.shareURL);
+  EXPECT_EQ(kExpectedUrl, actual_data.visibleURL);
+  EXPECT_NSEQ(base::SysUTF16ToNSString(kExpectedTitle), actual_data.title);
+  EXPECT_TRUE(actual_data.isOriginalTitle);
+  EXPECT_FALSE(actual_data.isPagePrintable);
+}
+
+// Verifies that ShareToData is constructed properly for a given Tab when the
+// URL designated for share extensions is invalid.
+TEST_F(ShareToDataBuilderTest, TestSharePageCommandHandlingInvalidUrl) {
+  ShareToData* actual_data = activity_services::ShareToDataForWebState(
+      web_state(), GURL("https://[fdfs]"));
 
   ASSERT_TRUE(actual_data);
   EXPECT_EQ(kExpectedUrl, actual_data.shareURL);

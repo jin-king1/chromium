@@ -28,10 +28,14 @@ inline constexpr char kManagedDefaultAdsSetting[] =
     "profile.managed_default_content_settings.ads";
 inline constexpr char kManagedDefaultClipboardSetting[] =
     "profile.managed_default_content_settings.clipboard";
+inline constexpr char kManagedDefaultAutomaticDownloadsSetting[] =
+    "profile.managed_default_content_settings.automatic_downloads";
 inline constexpr char kManagedDefaultCookiesSetting[] =
     "profile.managed_default_content_settings.cookies";
 inline constexpr char kManagedDefaultGeolocationSetting[] =
     "profile.managed_default_content_settings.geolocation";
+inline constexpr char kManagedDefaultIdleDetectionSetting[] =
+    "profile.managed_default_content_settings.idle_detection";
 inline constexpr char kManagedDefaultImagesSetting[] =
     "profile.managed_default_content_settings.images";
 inline constexpr char kManagedDefaultInsecureContentSetting[] =
@@ -56,8 +60,6 @@ inline constexpr char kManagedDefaultFileSystemWriteGuardSetting[] =
     "profile.managed_default_content_settings.file_system_write_guard";
 inline constexpr char kManagedDefaultSerialGuardSetting[] =
     "profile.managed_default_content_settings.serial_guard";
-inline constexpr char kManagedDefaultInsecurePrivateNetworkSetting[] =
-    "profile.managed_default_content_settings.insecure_private_network";
 inline constexpr char kManagedDefaultJavaScriptJitSetting[] =
     "profile.managed_default_content_settings.javascript_jit";
 inline constexpr char kManagedDefaultJavaScriptOptimizerSetting[] =
@@ -68,8 +70,6 @@ inline constexpr char kManagedDefaultWindowManagementSetting[] =
     "profile.managed_default_content_settings.window_management";
 inline constexpr char kManagedDefaultLocalFontsSetting[] =
     "profile.managed_default_content_settings.local_fonts";
-inline constexpr char kManagedDefaultThirdPartyStoragePartitioningSetting[] =
-    "profile.managed_default_content_settings.third_party_storage_partitioning";
 inline constexpr char kManagedDefaultWebPrintingSetting[] =
     "profile.managed_default_content_settings.web_printing";
 inline constexpr char kManagedDefaultDirectSocketsSetting[] =
@@ -77,13 +77,25 @@ inline constexpr char kManagedDefaultDirectSocketsSetting[] =
 inline constexpr char
     kManagedDefaultDirectSocketsPrivateNetworkAccessSetting[] =
         "profile.managed_default_content_settings.direct_sockets_pna";
+inline constexpr char kManagedDefaultSubAppsWithoutPromptsSetting[] =
+    "profile.managed_default_content_settings.sub_apps_without_prompts";
 inline constexpr char kManagedDefaultLegacyCookieScope[] =
     "profile.managed_default_content_settings.legacy_cookie_scope";
 inline constexpr char kManagedDefaultControlledFrameSetting[] =
     "profile.managed_default_content_settings.controlled_frame";
+#if BUILDFLAG(IS_CHROMEOS)
+inline constexpr char kManagedDefaultSmartCardConnectSetting[] =
+    "profile.managed_default_content_settings.smart_card_connect";
+inline constexpr char kManagedDefaultDeviceAttributesSetting[] =
+    "profile.managed_default_content_settings.device_attributes";
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Preferences that are exclusively used to store managed content settings
 // patterns.
+inline constexpr char kManagedAutomaticDownloadsAllowedForUrls[] =
+    "profile.managed_automatic_downloads_allowed_for_urls";
+inline constexpr char kManagedAutomaticDownloadsBlockedForUrls[] =
+    "profile.managed_automatic_downloads_blocked_for_urls";
 inline constexpr char kManagedAutomaticFullscreenAllowedForUrls[] =
     "profile.managed_automatic_fullscreen_allowed_for_urls";
 inline constexpr char kManagedAutomaticFullscreenBlockedForUrls[] =
@@ -100,6 +112,10 @@ inline constexpr char kManagedCookiesBlockedForUrls[] =
     "profile.managed_cookies_blocked_for_urls";
 inline constexpr char kManagedCookiesSessionOnlyForUrls[] =
     "profile.managed_cookies_sessiononly_for_urls";
+inline constexpr char kManagedPreciseGeolocationAllowedForUrls[] =
+    "profile.managed_geolocation_allowed_for_urls";
+inline constexpr char kManagedGeolocationBlockedForUrls[] =
+    "profile.managed_geolocation_blocked_for_urls";
 inline constexpr char
     kManagedAccessToGetAllScreensMediaInSessionAllowedForUrls[] =
         "profile.managed_access_to_get_all_screens_media_in_session_allowed_"
@@ -112,6 +128,10 @@ inline constexpr char kManagedInsecureContentAllowedForUrls[] =
     "profile.managed_insecure_content_allowed_for_urls";
 inline constexpr char kManagedInsecureContentBlockedForUrls[] =
     "profile.managed_insecure_content_blocked_for_urls";
+inline constexpr char kManagedIdleDetectionAllowedForUrls[] =
+    "profile.managed_idle_detection_allowed_for_urls";
+inline constexpr char kManagedIdleDetectionBlockedForUrls[] =
+    "profile.managed_idle_detection_blocked_for_urls";
 inline constexpr char kManagedJavaScriptAllowedForUrls[] =
     "profile.managed_javascript_allowed_for_urls";
 inline constexpr char kManagedJavaScriptBlockedForUrls[] =
@@ -148,8 +168,6 @@ inline constexpr char kManagedSerialAskForUrls[] =
     "profile.managed_serial_ask_for_urls";
 inline constexpr char kManagedSerialBlockedForUrls[] =
     "profile.managed_serial_blocked_for_urls";
-inline constexpr char kManagedInsecurePrivateNetworkAllowedForUrls[] =
-    "profile.managed_insecure_private_network_allowed_for_urls";
 inline constexpr char kManagedJavaScriptJitAllowedForSites[] =
     "profile.managed_javascript_jit_allowed_for_sites";
 inline constexpr char kManagedJavaScriptJitBlockedForSites[] =
@@ -170,8 +188,6 @@ inline constexpr char kManagedLocalFontsAllowedForUrls[] =
     "profile.managed_local_fonts_allowed_for_urls";
 inline constexpr char kManagedLocalFontsBlockedForUrls[] =
     "profile.managed_local_fonts_blocked_for_urls";
-inline constexpr char kManagedThirdPartyStoragePartitioningBlockedForOrigins[] =
-    "profile.managed_third_party_storage_partitioning_blocked_for_origins";
 inline constexpr char kManagedWebPrintingAllowedForUrls[] =
     "profile.managed_web_printing_allowed_for_urls";
 inline constexpr char kManagedWebPrintingBlockedForUrls[] =
@@ -186,6 +202,10 @@ inline constexpr char
 inline constexpr char
     kManagedDirectSocketsPrivateNetworkAccessBlockedForUrls[] =
         "profile.managed_direct_sockets_pna_blocked_for_urls";
+inline constexpr char kManagedSubAppsWithoutPromptsAllowedForOrigins[] =
+    "profile.managed_sub_apps_without_prompts_allowed_for_origins";
+inline constexpr char kManagedSubAppsWithoutPromptsBlockedForOrigins[] =
+    "profile.managed_sub_apps_without_prompts_blocked_for_origins";
 inline constexpr char kManagedLegacyCookieScopeForDomains[] =
     "profile.managed_legacy_cookie_scope_for_domains";
 #if BUILDFLAG(IS_CHROMEOS)
@@ -193,11 +213,28 @@ inline constexpr char kManagedSmartCardConnectAllowedForUrls[] =
     "profile.managed_smart_card_connect_allowed_for_urls";
 inline constexpr char kManagedSmartCardConnectBlockedForUrls[] =
     "profile.managed_smart_card_connect_blocked_for_urls";
+inline constexpr char kManagedDeviceAttributesAllowedForOrigins[] =
+    "profile.managed_device_attributes_allowed_for_origins";
+inline constexpr char kManagedDeviceAttributesBlockedForOrigins[] =
+    "profile.managed_device_attributes_blocked_for_origins";
 #endif
 inline constexpr char kManagedControlledFrameAllowedForUrls[] =
     "profile.managed_controlled_frame_allowed_for_urls";
 inline constexpr char kManagedControlledFrameBlockedForUrls[] =
     "profile.managed_controlled_frame_blocked_for_urls";
+
+inline constexpr char kManagedLocalNetworkAccessAllowedForUrls[] =
+    "profile.managed_local_network_access_allowed_for_urls";
+inline constexpr char kManagedLocalNetworkAccessBlockedForUrls[] =
+    "profile.managed_local_network_access_blocked_for_urls";
+inline constexpr char kManagedLocalNetworkAllowedForUrls[] =
+    "profile.managed_local_network_allowed_for_urls";
+inline constexpr char kManagedLocalNetworkBlockedForUrls[] =
+    "profile.managed_local_network_blocked_for_urls";
+inline constexpr char kManagedLoopbackNetworkAllowedForUrls[] =
+    "profile.managed_loopback_network_allowed_for_urls";
+inline constexpr char kManagedLoopbackNetworkBlockedForUrls[] =
+    "profile.managed_loopback_network_blocked_for_urls";
 
 // Boolean indicating whether the quiet UI is enabled for notification
 // permission requests. This and kEnableNotificationCPSS can't both be true
@@ -244,6 +281,11 @@ inline constexpr char kInContextCookieControlsOpened[] =
 // Enable vibration for web notifications.
 inline constexpr char kNotificationsVibrateEnabled[] =
     "notifications.vibrate_enabled";
+
+// Boolean that indicates whether the desktop site global setting was enabled by
+// the user.
+inline constexpr char kRequestDesktopSiteGlobalSettingUserEnabled[] =
+    "Chrome.RequestDesktopSiteGlobalSetting.UserEnabled";
 
 // Window setting for request desktop site. When enabled, we will request
 // mobile site if the window is narrow.

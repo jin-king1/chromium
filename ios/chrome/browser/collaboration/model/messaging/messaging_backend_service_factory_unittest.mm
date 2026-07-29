@@ -6,8 +6,10 @@
 
 #import "base/test/scoped_feature_list.h"
 #import "components/data_sharing/public/features.h"
+#import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
 
@@ -19,13 +21,14 @@ class MessagingBackendServiceFactoryTest : public PlatformTest {
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/
         {
-            kTabGroupSync,
-            kTabGroupsIPad,
-            kModernTabStrip,
             data_sharing::features::kDataSharingFeature,
         },
         /*disable_features=*/{});
-    profile_ = TestProfileIOS::Builder().Build();
+    TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(
+        tab_groups::TabGroupSyncServiceFactory::GetInstance(),
+        tab_groups::TabGroupSyncServiceFactory::GetDefaultFactory());
+    profile_ = std::move(builder).Build();
   }
 
   ~MessagingBackendServiceFactoryTest() override = default;
@@ -33,6 +36,7 @@ class MessagingBackendServiceFactoryTest : public PlatformTest {
  protected:
   base::test::ScopedFeatureList scoped_feature_list_;
   web::WebTaskEnvironment task_environment_;
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   std::unique_ptr<TestProfileIOS> profile_;
 };
 

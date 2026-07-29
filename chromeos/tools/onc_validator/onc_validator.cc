@@ -31,15 +31,11 @@ const char kSwitchUserPolicy[] = "user-policy";
 const char kSwitchDevicePolicy[] = "device-policy";
 const char kSwitchUserImport[] = "user-import";
 
-const char* kSwitches[] = {
-  kSwitchErrorOnUnknownField,
-  kSwitchErrorOnWrongRecommended,
-  kSwitchErrorOnMissingField,
-  kSwitchManagedOnc,
-  kSwitchUserPolicy,
-  kSwitchDevicePolicy,
-  kSwitchUserImport
-};
+constexpr const char* kSwitches[] = {
+    kSwitchErrorOnUnknownField, kSwitchErrorOnWrongRecommended,
+    kSwitchErrorOnMissingField, kSwitchManagedOnc,
+    kSwitchUserPolicy,          kSwitchDevicePolicy,
+    kSwitchUserImport};
 
 // Return codes.
 enum ReturnCode {
@@ -53,11 +49,8 @@ enum ReturnCode {
 const char kToplevelConfiguration[] = "ToplevelConfiguration";
 const char kNetworkConfiguration[] = "NetworkConfiguration";
 const char kCertificate[] = "Certificate";
-const char* kTypes[] = {
-  kToplevelConfiguration,
-  kNetworkConfiguration,
-  kCertificate
-};
+constexpr const char* kTypes[] = {kToplevelConfiguration, kNetworkConfiguration,
+                                  kCertificate};
 
 void PrintHelp() {
   fprintf(stderr,
@@ -92,7 +85,7 @@ void PrintHelp() {
           kStatusArgumentError);
 }
 
-std::optional<base::Value::Dict> ReadDictionary(const std::string& filename) {
+std::optional<base::DictValue> ReadDictionary(const std::string& filename) {
   base::FilePath path(filename);
   JSONFileValueDeserializer deserializer(path,
                                          base::JSON_ALLOW_TRAILING_COMMAS);
@@ -126,7 +119,7 @@ int main(int argc, const char* argv[]) {
     return kStatusArgumentError;
   }
 
-  std::optional<base::Value::Dict> onc_object = ReadDictionary(args[1]);
+  std::optional<base::DictValue> onc_object = ReadDictionary(args[1]);
 
   if (!onc_object) {
     return kStatusJsonError;

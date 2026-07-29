@@ -12,11 +12,11 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator_tab_modal.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
-#include "components/autofill/core/browser/autofill_progress_dialog_type.h"
+#include "components/autofill/core/browser/metrics/payments/bnpl_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/payments_window_metrics.h"
 #include "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
@@ -24,11 +24,16 @@
 #include "components/autofill/core/browser/payments/payments_requests/unmask_card_request.h"
 #include "components/autofill/core/browser/payments/payments_util.h"
 #include "components/autofill/core/browser/payments/payments_window_manager_util.h"
+#include "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
 #include "components/autofill/core/browser/ui/payments/payments_window_user_consent_dialog_controller_impl.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_LINUX)
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck
+#endif  // BUILDFLAG(IS_LINUX)
 
 namespace autofill::payments {
 
@@ -36,20 +41,20 @@ namespace {
 
 using Vcn3dsFlowEvent = autofill_metrics::Vcn3dsFlowEvent;
 
-gfx::Rect GetPopupSizeForVcn3ds() {
+gfx::Size GetPopupSizeForVcn3ds() {
   // The first two arguments do not matter as position gets overridden by
   // the tab modal pop-up code. The 600x640 size of the pop-up was decided as
   // the ideal size for user experience. This decision largely factored in how
   // to minimize scrolling while maintaining a presentable pop-up.
-  return gfx::Rect(/*x=*/0, /*y=*/0, /*width=*/600, /*height=*/640);
+  return gfx::Size(/*width=*/600, /*height=*/640);
 }
 
-gfx::Rect GetPopupSizeForBnpl() {
+gfx::Size GetPopupSizeForBnpl() {
   // The first two arguments do not matter as position gets overridden by
-  // the tab modal pop-up code. The 600x640 size of the pop-up was decided as
+  // the tab modal pop-up code. The 600x840 size of the pop-up was decided as
   // the ideal size for user experience. This decision largely factored in how
   // to minimize scrolling while maintaining a presentable pop-up.
-  return gfx::Rect(/*x=*/0, /*y=*/0, /*width=*/600, /*height=*/640);
+  return gfx::Size(/*width=*/600, /*height=*/840);
 }
 
 }  // namespace
@@ -58,7 +63,9 @@ DesktopPaymentsWindowManager::DesktopPaymentsWindowManager(
     ContentAutofillClient* client)
     : client_(CHECK_DEREF(client)) {
 #if BUILDFLAG(IS_LINUX)
-  scoped_observation_.Observe(BrowserList::GetInstance());
+  scoped_observation_.Observe(
+      ProfileBrowserCollection::GetForProfile(Profile::FromBrowserContext(
+          client_->GetWebContents().GetBrowserContext())));
 #endif  // BUILDFLAG(IS_LINUX)
 }
 
@@ -66,7 +73,8 @@ DesktopPaymentsWindowManager::~DesktopPaymentsWindowManager() = default;
 
 void DesktopPaymentsWindowManager::InitVcn3dsAuthentication(
     Vcn3dsContext context) {
-  CHECK_EQ(flow_type_, FlowType::kNoFlow);
+  CHECK(!flow_state_.has_value());
+  flow_state_ = FlowState();
   CHECK_EQ(context.card.record_type(), CreditCard::RecordType::kVirtualCard);
   CHECK(!context.completion_callback.is_null());
 
@@ -85,39 +93,43 @@ void DesktopPaymentsWindowManager::InitVcn3dsAuthentication(
     return;
   }
 
-  flow_type_ = FlowType::kVcn3ds;
-  vcn_3ds_context_ = std::move(context);
+  flow_state_->flow_type = FlowType::kVcn3ds;
+  flow_state_->vcn_3ds_context = std::move(context);
   autofill_metrics::LogVcn3dsFlowEvent(
       Vcn3dsFlowEvent::kFlowStarted,
-      /*user_consent_already_given=*/vcn_3ds_context_
+      /*user_consent_already_given=*/flow_state_->vcn_3ds_context
           ->user_consent_already_given);
-  if (vcn_3ds_context_->user_consent_already_given) {
+  if (flow_state_->vcn_3ds_context->user_consent_already_given) {
     autofill_metrics::LogVcn3dsFlowEvent(
         Vcn3dsFlowEvent::kUserConsentDialogSkipped,
-        /*user_consent_already_given=*/vcn_3ds_context_
+        /*user_consent_already_given=*/flow_state_->vcn_3ds_context
             ->user_consent_already_given);
-    CreatePopup(
-        vcn_3ds_context_->challenge_option.vcn_3ds_metadata->url_to_open,
-        GetPopupSizeForVcn3ds());
+    CreatePopup(flow_state_->vcn_3ds_context->challenge_option.vcn_3ds_metadata
+                    ->url_to_open,
+                GetPopupSizeForVcn3ds());
   } else {
     ShowVcn3dsConsentDialog();
   }
 }
 
 void DesktopPaymentsWindowManager::InitBnplFlow(BnplContext context) {
-  CHECK_EQ(flow_type_, FlowType::kNoFlow);
+  CHECK(!flow_state_.has_value());
+  flow_state_ = FlowState();
 
-  flow_type_ = FlowType::kBnpl;
-  bnpl_context_ = std::move(context);
-  CreatePopup(bnpl_context_->initial_url, GetPopupSizeForBnpl());
+  flow_state_->flow_type = FlowType::kBnpl;
+  flow_state_->bnpl_context = std::move(context);
+  CreatePopup(flow_state_->bnpl_context->initial_url, GetPopupSizeForBnpl());
+  autofill_metrics::LogBnplPopupWindowShown(
+      flow_state_->bnpl_context->issuer_id);
 }
 
 void DesktopPaymentsWindowManager::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  most_recent_url_navigation_ = navigation_handle->GetURL();
-  if (flow_type_ == FlowType::kVcn3ds) {
+  CHECK(flow_state_.has_value());
+  flow_state_->most_recent_url_navigation = navigation_handle->GetURL();
+  if (flow_state_->flow_type == FlowType::kVcn3ds) {
     OnDidFinishNavigationForVcn3ds();
-  } else if (flow_type_ == FlowType::kBnpl) {
+  } else if (flow_state_->flow_type == FlowType::kBnpl) {
     OnDidFinishNavigationForBnpl();
   }
 }
@@ -126,14 +138,17 @@ void DesktopPaymentsWindowManager::WebContentsDestroyed() {
   // Accessing the observed web contents should be avoided at this point,
   // because it is unsafe to access during its destruction. Instead, set class
   // variables earlier for context that needs to be known upon web contents
-  // destruction. `most_recent_url_navigation_` is an example that can be
-  // followed.
+  // destruction. `flow_state_->most_recent_url_navigation` is an example that
+  // can be followed.
   // TODO(crbug.com/388088113): Refactor the VCN 3DS flow to not access the
   // observed web contents.
-  if (flow_type_ == FlowType::kVcn3ds) {
+  CHECK(flow_state_.has_value());
+  if (flow_state_->flow_type == FlowType::kVcn3ds) {
     OnWebContentsDestroyedForVcn3ds();
-  } else if (flow_type_ == FlowType::kBnpl) {
-    OnWebContentsDestroyedForBnpl();
+  } else if (flow_state_->flow_type == FlowType::kBnpl) {
+    TriggerCompletionCallbackAndLogMetricsForBnpl(
+        std::move(flow_state_.value()));
+    flow_state_.reset();
   }
 
   if (popup_closed_closure_for_testing_) {
@@ -143,15 +158,17 @@ void DesktopPaymentsWindowManager::WebContentsDestroyed() {
 }
 
 #if BUILDFLAG(IS_LINUX)
-void DesktopPaymentsWindowManager::OnBrowserSetLastActive(Browser* browser) {
+void DesktopPaymentsWindowManager::OnBrowserActivated(
+    BrowserWindowInterface* browser) {
   // If there is an ongoing payments window manager pop-up flow, and the
   // original tab's WebContents become active, activate the pop-up's
   // WebContents. This functionality is only required on Linux, as on
   // other desktop platforms the pop-up will always be the top-most browser
   // window due to differences in window management on these platforms.
   if (web_contents()) {
-    CHECK_NE(flow_type_, FlowType::kNoFlow);
-    if (browser->tab_strip_model()->GetActiveWebContents() ==
+    CHECK(flow_state_.has_value());
+    CHECK_NE(flow_state_->flow_type, FlowType::kNoFlow);
+    if (browser->GetTabStripModel()->GetActiveWebContents() ==
         &client_->GetWebContents()) {
       web_contents()->GetDelegate()->ActivateContents(web_contents());
     }
@@ -160,48 +177,54 @@ void DesktopPaymentsWindowManager::OnBrowserSetLastActive(Browser* browser) {
 #endif  // BUILDFLAG(IS_LINUX)
 
 void DesktopPaymentsWindowManager::CreatePopup(const GURL& url,
-                                               gfx::Rect popup_size) {
+                                               gfx::Size popup_size) {
   // Create a pop-up window. The created pop-up will not have any relationship
   // to the underlying tab, because `params.opener` is not set. Ensuring the
   // original tab is not a related site instance to the pop-up is critical for
   // security reasons.
+  CHECK(flow_state_.has_value());
   content::WebContents& source_contents = client_->GetWebContents();
-  NavigateParams params(
-      Profile::FromBrowserContext(source_contents.GetBrowserContext()), url,
-      ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_POPUP;
-  params.window_action = NavigateParams::SHOW_WINDOW;
-  params.source_contents = &source_contents;
-  params.is_tab_modal_popup = true;
-  params.window_features.bounds = std::move(popup_size);
 
   if (base::WeakPtr<content::NavigationHandle> navigation_handle =
-          Navigate(&params)) {
-    if (flow_type_ == FlowType::kVcn3ds) {
-      vcn_3ds_popup_shown_timestamp_ = base::TimeTicks::Now();
+          BrowserNavigatorTabModal::Show(
+              url, source_contents, popup_size,
+              base::PassKey<DesktopPaymentsWindowManager>())) {
+    switch (flow_state_->flow_type) {
+      case FlowType::kVcn3ds:
+        flow_state_->vcn_3ds_popup_shown_timestamp = base::TimeTicks::Now();
+        break;
+      case FlowType::kBnpl:
+        flow_state_->bnpl_popup_shown_timestamp = base::TimeTicks::Now();
+        break;
+      default:
+        NOTREACHED();
     }
     content::WebContentsObserver::Observe(navigation_handle->GetWebContents());
   } else {
-    if (vcn_3ds_context_.has_value()) {
+    if (flow_state_->vcn_3ds_context.has_value()) {
       autofill_metrics::LogVcn3dsFlowEvent(
           Vcn3dsFlowEvent::kPopupNotShown,
-          /*user_consent_already_given=*/vcn_3ds_context_
+          /*user_consent_already_given=*/flow_state_->vcn_3ds_context
               ->user_consent_already_given);
       client_->GetPaymentsAutofillClient()->ShowAutofillErrorDialog(
           AutofillErrorDialogContext::WithVirtualCardPermanentOrTemporaryError(
               /*is_permanent_error=*/false));
-    } else {
-      // TODO(crbug.com/356443046): Add handling for BNPL pop-up window not
-      // being shown.
+    } else if (flow_state_->bnpl_context.has_value()) {
+      client_->GetPaymentsAutofillClient()->ShowAutofillErrorDialog(
+          AutofillErrorDialogContext::WithBnplPermanentOrTemporaryError(
+              /*is_permanent_error=*/false));
     }
   }
 }
 
 void DesktopPaymentsWindowManager::OnDidFinishNavigationForVcn3ds() {
+  CHECK(flow_state_.has_value());
+  // TODO(crbug.com/388088113): Refactor the VCN 3DS flow to use
+  // `flow_state_->most_recent_url_navigation`, similar to the BNPL flow.
   base::expected<RedirectCompletionResult, Vcn3dsAuthenticationResult> result =
-      ParseUrlForVcn3ds(
-          web_contents()->GetVisibleURL(),
-          vcn_3ds_context_->challenge_option.vcn_3ds_metadata.value());
+      ParseUrlForVcn3ds(web_contents()->GetVisibleURL(),
+                        flow_state_->vcn_3ds_context->challenge_option
+                            .vcn_3ds_metadata.value());
   if (result.has_value() ||
       result.error() == Vcn3dsAuthenticationResult::kAuthenticationFailed) {
     // To safely close the pop-up during a navigation event, a task must be
@@ -215,8 +238,10 @@ void DesktopPaymentsWindowManager::OnDidFinishNavigationForVcn3ds() {
 }
 
 void DesktopPaymentsWindowManager::OnDidFinishNavigationForBnpl() {
+  CHECK(flow_state_.has_value());
   BnplPopupStatus status =
-      ParseUrlForBnpl(most_recent_url_navigation_, bnpl_context_.value());
+      ParseUrlForBnpl(flow_state_->most_recent_url_navigation,
+                      flow_state_->bnpl_context.value());
   if (status != BnplPopupStatus::kNotFinished) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(&content::WebContents::Close,
@@ -225,21 +250,25 @@ void DesktopPaymentsWindowManager::OnDidFinishNavigationForBnpl() {
 }
 
 void DesktopPaymentsWindowManager::OnWebContentsDestroyedForVcn3ds() {
-  CHECK(vcn_3ds_popup_shown_timestamp_.has_value());
+  CHECK(flow_state_.has_value());
+  CHECK(flow_state_->vcn_3ds_popup_shown_timestamp.has_value());
+  // TODO(crbug.com/388088113): Refactor the VCN 3DS flow to use
+  // `flow_state_->most_recent_url_navigation`, similar to the BNPL flow.
   base::expected<RedirectCompletionResult, Vcn3dsAuthenticationResult> result =
-      ParseUrlForVcn3ds(
-          web_contents()->GetVisibleURL(),
-          vcn_3ds_context_->challenge_option.vcn_3ds_metadata.value());
+      ParseUrlForVcn3ds(web_contents()->GetVisibleURL(),
+                        flow_state_->vcn_3ds_context->challenge_option
+                            .vcn_3ds_metadata.value());
 
   // If the result implies that the authentication inside of the pop-up was
   // successful, continue the flow without resetting.
   if (result.has_value()) {
     CHECK(!result.value()->empty());
     autofill_metrics::LogVcn3dsAuthLatency(
-        base::TimeTicks::Now() - vcn_3ds_popup_shown_timestamp_.value(),
+        base::TimeTicks::Now() -
+            flow_state_->vcn_3ds_popup_shown_timestamp.value(),
         /*success=*/true);
     client_->GetPaymentsAutofillClient()->ShowAutofillProgressDialog(
-        AutofillProgressDialogType::k3dsFetchVcnProgressDialog,
+        AutofillProgressUiType::k3dsFetchVcnProgressUi,
         base::BindOnce(&DesktopPaymentsWindowManager::
                            OnVcn3dsAuthenticationProgressDialogCancelled,
                        weak_ptr_factory_.GetWeakPtr()));
@@ -259,10 +288,11 @@ void DesktopPaymentsWindowManager::OnWebContentsDestroyedForVcn3ds() {
   if (result.error() == Vcn3dsAuthenticationResult::kAuthenticationFailed) {
     autofill_metrics::LogVcn3dsFlowEvent(
         Vcn3dsFlowEvent::kAuthenticationInsidePopupFailed,
-        /*user_consent_already_given=*/vcn_3ds_context_
+        /*user_consent_already_given=*/flow_state_->vcn_3ds_context
             ->user_consent_already_given);
     autofill_metrics::LogVcn3dsAuthLatency(
-        base::TimeTicks::Now() - vcn_3ds_popup_shown_timestamp_.value(),
+        base::TimeTicks::Now() -
+            flow_state_->vcn_3ds_popup_shown_timestamp.value(),
         /*success=*/false);
     client_->GetPaymentsAutofillClient()->ShowAutofillErrorDialog(
         AutofillErrorDialogContext::WithVirtualCardPermanentOrTemporaryError(
@@ -270,7 +300,7 @@ void DesktopPaymentsWindowManager::OnWebContentsDestroyedForVcn3ds() {
   } else {
     autofill_metrics::LogVcn3dsFlowEvent(
         Vcn3dsFlowEvent::kFlowCancelledUserClosedPopup,
-        /*user_consent_already_given=*/vcn_3ds_context_
+        /*user_consent_already_given=*/flow_state_->vcn_3ds_context
             ->user_consent_already_given);
   }
 
@@ -281,37 +311,20 @@ void DesktopPaymentsWindowManager::OnWebContentsDestroyedForVcn3ds() {
   // directly once an API for it is built.
   Vcn3dsAuthenticationResponse response;
   response.result = result.error();
-  std::move(vcn_3ds_context_->completion_callback).Run(std::move(response));
-  Reset();
-}
-
-void DesktopPaymentsWindowManager::OnWebContentsDestroyedForBnpl() {
-  BnplPopupStatus status =
-      ParseUrlForBnpl(most_recent_url_navigation_, bnpl_context_.value());
-  BnplFlowResult result;
-  switch (status) {
-    case BnplPopupStatus::kSuccess:
-      result = BnplFlowResult::kSuccess;
-      break;
-    case BnplPopupStatus::kFailure:
-      result = BnplFlowResult::kFailure;
-      break;
-    case BnplPopupStatus::kNotFinished:
-      result = BnplFlowResult::kUserClosed;
-      break;
-  }
-  std::move(bnpl_context_->completion_callback).Run(result);
-  Reset();
+  std::move(flow_state_->vcn_3ds_context->completion_callback)
+      .Run(std::move(response));
+  flow_state_.reset();
 }
 
 void DesktopPaymentsWindowManager::OnDidLoadRiskDataForVcn3ds(
     RedirectCompletionResult redirect_completion_result,
     const std::string& risk_data) {
-  vcn_3ds_context_->risk_data = risk_data;
+  CHECK(flow_state_.has_value());
+  flow_state_->vcn_3ds_context->risk_data = risk_data;
   client_->GetPaymentsAutofillClient()
       ->GetPaymentsNetworkInterface()
       ->UnmaskCard(CreateUnmaskRequestDetailsForVcn3ds(
-                       *client_, vcn_3ds_context_.value(),
+                       *client_, flow_state_->vcn_3ds_context.value(),
                        std::move(redirect_completion_result)),
                    base::BindOnce(&DesktopPaymentsWindowManager::
                                       OnVcn3dsAuthenticationResponseReceived,
@@ -321,16 +334,18 @@ void DesktopPaymentsWindowManager::OnDidLoadRiskDataForVcn3ds(
 void DesktopPaymentsWindowManager::OnVcn3dsAuthenticationResponseReceived(
     PaymentsAutofillClient::PaymentsRpcResult result,
     const UnmaskResponseDetails& response_details) {
+  CHECK(flow_state_.has_value());
   Vcn3dsAuthenticationResponse response =
       CreateVcn3dsAuthenticationResponseFromServerResult(
-          result, response_details, std::move(vcn_3ds_context_->card));
+          result, response_details,
+          std::move(flow_state_->vcn_3ds_context->card));
   client_->GetPaymentsAutofillClient()->CloseAutofillProgressDialog(
       /*show_confirmation_before_closing=*/response.card.has_value(),
       /*no_interactive_authentication_callback=*/base::OnceClosure());
   if (!response.card.has_value()) {
     autofill_metrics::LogVcn3dsFlowEvent(
         Vcn3dsFlowEvent::kFlowFailedWhileRetrievingVCN,
-        /*user_consent_already_given=*/vcn_3ds_context_
+        /*user_consent_already_given=*/flow_state_->vcn_3ds_context
             ->user_consent_already_given);
     client_->GetPaymentsAutofillClient()->ShowAutofillErrorDialog(
         AutofillErrorDialogContext::WithVirtualCardPermanentOrTemporaryError(
@@ -339,17 +354,19 @@ void DesktopPaymentsWindowManager::OnVcn3dsAuthenticationResponseReceived(
 
   autofill_metrics::LogVcn3dsFlowEvent(
       Vcn3dsFlowEvent::kFlowSucceeded,
-      /*user_consent_already_given=*/vcn_3ds_context_
+      /*user_consent_already_given=*/flow_state_->vcn_3ds_context
           ->user_consent_already_given);
-  std::move(vcn_3ds_context_->completion_callback).Run(std::move(response));
-  Reset();
+  std::move(flow_state_->vcn_3ds_context->completion_callback)
+      .Run(std::move(response));
+  flow_state_.reset();
 }
 
 void DesktopPaymentsWindowManager::
     OnVcn3dsAuthenticationProgressDialogCancelled() {
+  CHECK(flow_state_.has_value());
   autofill_metrics::LogVcn3dsFlowEvent(
       Vcn3dsFlowEvent::kProgressDialogCancelled,
-      /*user_consent_already_given=*/vcn_3ds_context_
+      /*user_consent_already_given=*/flow_state_->vcn_3ds_context
           ->user_consent_already_given);
   client_->GetPaymentsAutofillClient()
       ->GetPaymentsNetworkInterface()
@@ -358,8 +375,9 @@ void DesktopPaymentsWindowManager::
   // caller know the flow has finished unsuccessfully.
   Vcn3dsAuthenticationResponse response;
   response.result = Vcn3dsAuthenticationResult::kAuthenticationNotCompleted;
-  std::move(vcn_3ds_context_->completion_callback).Run(std::move(response));
-  Reset();
+  std::move(flow_state_->vcn_3ds_context->completion_callback)
+      .Run(std::move(response));
+  flow_state_.reset();
 }
 
 void DesktopPaymentsWindowManager::ShowVcn3dsConsentDialog() {
@@ -378,33 +396,29 @@ void DesktopPaymentsWindowManager::ShowVcn3dsConsentDialog() {
 }
 
 void DesktopPaymentsWindowManager::OnVcn3dsConsentDialogAccepted() {
+  CHECK(flow_state_.has_value());
   autofill_metrics::LogVcn3dsFlowEvent(
       Vcn3dsFlowEvent::kUserConsentDialogAccepted,
-      /*user_consent_already_given=*/vcn_3ds_context_
+      /*user_consent_already_given=*/flow_state_->vcn_3ds_context
           ->user_consent_already_given);
-  CreatePopup(vcn_3ds_context_->challenge_option.vcn_3ds_metadata->url_to_open,
+  CreatePopup(flow_state_->vcn_3ds_context->challenge_option.vcn_3ds_metadata
+                  ->url_to_open,
               GetPopupSizeForVcn3ds());
 }
 
 void DesktopPaymentsWindowManager::OnVcn3dsConsentDialogCancelled() {
+  CHECK(flow_state_.has_value());
   autofill_metrics::LogVcn3dsFlowEvent(
       Vcn3dsFlowEvent::kUserConsentDialogDeclined,
-      /*user_consent_already_given=*/vcn_3ds_context_
+      /*user_consent_already_given=*/flow_state_->vcn_3ds_context
           ->user_consent_already_given);
   // In the case of the dialog cancelled, we still run the callback to let the
   // caller know the flow has finished unsuccessfully.
   Vcn3dsAuthenticationResponse response;
   response.result = Vcn3dsAuthenticationResult::kAuthenticationNotCompleted;
-  std::move(vcn_3ds_context_->completion_callback).Run(std::move(response));
-  Reset();
-}
-
-void DesktopPaymentsWindowManager::Reset() {
-  vcn_3ds_context_.reset();
-  flow_type_ = FlowType::kNoFlow;
-  vcn_3ds_popup_shown_timestamp_.reset();
-  bnpl_context_.reset();
-  most_recent_url_navigation_ = GURL();
+  std::move(flow_state_->vcn_3ds_context->completion_callback)
+      .Run(std::move(response));
+  flow_state_.reset();
 }
 
 }  // namespace autofill::payments

@@ -29,10 +29,13 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/app_access/app_access_notifier.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
 #include "chromeos/ash/components/camera_presence_notifier/camera_presence_notifier.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user_manager.h"
 
 namespace ash::privacy_hub_util {
 
@@ -91,37 +94,42 @@ void SetCurrentAccessLevel(
                   static_cast<int>(access_level));
 }
 
-class ContentBlockObservationImpl : public ContentBlockObservation,
-                                    public SessionObserver {
+class ContentBlockObservationImpl : public ContentBlockObservation {
  public:
   // Access restricted constructor.
   ContentBlockObservationImpl(SessionController* session_controller,
                               SystemPermissionChangedCallback callback)
-      : callback_(std::move(callback)), session_observation_(this) {
-    session_observation_.Observe(session_controller);
-  }
-
-  ~ContentBlockObservationImpl() override = default;
-
-  // SessionObserver:
-  void OnActiveUserPrefServiceChanged(PrefService* pref_service) override {
-    // Subscribing to pref changes.
-    pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
-    pref_change_registrar_->Init(pref_service);
-    pref_change_registrar_->Add(
+      : callback_(std::move(callback)) {
+    // Microphone and camera settings are following the active user's
+    // preferences. Subscribing to the active user's pref changes.
+    CHECK(Shell::Get()->session_controller());
+    active_user_pref_change_registrar_ =
+        std::make_unique<PrefChangeRegistrar>();
+    active_user_pref_change_registrar_->Init(
+        Shell::Get()->session_controller()->GetActivePrefService());
+    active_user_pref_change_registrar_->Add(
         prefs::kUserCameraAllowed,
         base::BindRepeating(&ContentBlockObservationImpl::OnPreferenceChanged,
                             base::Unretained(this)));
-    pref_change_registrar_->Add(
+    active_user_pref_change_registrar_->Add(
         prefs::kUserMicrophoneAllowed,
         base::BindRepeating(&ContentBlockObservationImpl::OnPreferenceChanged,
                             base::Unretained(this)));
-    pref_change_registrar_->Add(
+
+    // Geolocation setting is exclusively controlled by the primary user of the
+    // session. This is different from the camera and microphone implementation.
+    // Subscribing to the primary user's pref changes.
+    primary_user_pref_change_registrar_ =
+        std::make_unique<PrefChangeRegistrar>();
+    primary_user_pref_change_registrar_->Init(
+        Shell::Get()->session_controller()->GetPrimaryUserPrefService());
+    primary_user_pref_change_registrar_->Add(
         prefs::kUserGeolocationAccessLevel,
         base::BindRepeating(&ContentBlockObservationImpl::OnPreferenceChanged,
                             base::Unretained(this)));
   }
-  void OnChromeTerminating() override { session_observation_.Reset(); }
+
+  ~ContentBlockObservationImpl() override = default;
 
  private:
   // Handles changes in the user pref ( e.g. toggling the camera switch on
@@ -148,9 +156,8 @@ class ContentBlockObservationImpl : public ContentBlockObservation,
   }
 
   SystemPermissionChangedCallback callback_;
-  std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;
-  base::ScopedObservation<SessionController, ContentBlockObservationImpl>
-      session_observation_;
+  std::unique_ptr<PrefChangeRegistrar> active_user_pref_change_registrar_;
+  std::unique_ptr<PrefChangeRegistrar> primary_user_pref_change_registrar_;
   base::WeakPtrFactory<ContentBlockObservationImpl> weak_ptr_factory_{this};
 };
 }  // namespace
@@ -234,6 +241,10 @@ bool IsCrosLocationOobeNegotiationNeeded() {
   return true;
 }
 
+GeolocationAccessLevel GetSystemGeolocationAccessLevel() {
+  return GeolocationPrivacySwitchController::Get()->AccessLevel();
+}
+
 namespace {
 std::optional<bool> camera_led_fallback_for_testing{};
 }
@@ -298,21 +309,19 @@ void SetAppAccessNotifier(AppAccessNotifier* app_access_notifier) {
 }
 
 std::pair<base::Time, base::Time> SunriseSunsetSchedule() {
-  const base::Time default_sunrise_time =
+  auto default_sunrise_time =
       base::Time::Now().LocalMidnight() + base::Hours(6);
-  const base::Time default_sunset_time = default_sunrise_time + base::Hours(12);
+  SunRiseSetTime default_times = {
+      .sunrise = default_sunrise_time,
+      .sunset = default_sunrise_time + base::Hours(12)};
+
   const ash::GeolocationController* geolocation_controller =
       ash::GeolocationController::Get();
-  const base::Time sunrise_time =
+  const auto times =
       geolocation_controller
-          ? geolocation_controller->GetSunriseTime().value_or(
-                default_sunrise_time)
-          : default_sunrise_time;
-  const base::Time sunset_time =
-      geolocation_controller ? geolocation_controller->GetSunsetTime().value_or(
-                                   default_sunset_time)
-                             : default_sunrise_time;
-  return std::make_pair(sunrise_time, sunset_time);
+          ? geolocation_controller->GetSunRiseSetTime().value_or(default_times)
+          : default_times;
+  return std::make_pair(times.sunrise, times.sunset);
 }
 
 bool ContentBlocked(ContentType type) {
@@ -362,7 +371,6 @@ std::unique_ptr<ContentBlockObservation> CreateObservationForBlockedContent(
 
   auto observation = std::make_unique<ContentBlockObservationImpl>(
       session_controller, std::move(callback));
-  observation->OnActiveUserPrefServiceChanged(pref_service);
   return observation;
 }
 
@@ -389,8 +397,15 @@ void OpenSystemSettings(ContentType type) {
     }
   }
 
-  chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      ProfileManager::GetActiveUserProfile(), settings_path);
+  // TODO(crbug.com/447287122): Take user from the caller.
+  auto* session = session_manager::SessionManager::Get()->GetActiveSession();
+  if (!session) {
+    return;
+  }
+  ash::SettingsAppManager::Get()->Open(
+      CHECK_DEREF(
+          user_manager::UserManager::Get()->FindUser(session->account_id())),
+      {.sub_page = settings_path});
 }
 
 ScopedUserPermissionPrefForTest::ScopedUserPermissionPrefForTest(

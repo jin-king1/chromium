@@ -2,12 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/system/video_conference/bubble/set_camera_background_view.h"
+
+#include <array>
 
 #include "ash/public/cpp/image_util.h"
 #include "ash/resources/vector_icons/vector_icons.h"
@@ -25,8 +22,10 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "skia/ext/image_operations.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -44,6 +43,7 @@
 #include "ui/views/controls/image_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
+#include "ui/views/metadata/view_factory.h"
 
 namespace ash::video_conference {
 
@@ -74,7 +74,7 @@ constexpr int kRecentlyUsedImagesFullLength = 368;
 constexpr int kRecentlyUsedImagesHeight = 76;
 constexpr int kRecentlyUsedImagesSpacing = 10;
 
-constexpr int kRecentlyUsedImageButtonId[] = {
+constexpr std::array<int, 4> kRecentlyUsedImageButtonId = {
     BubbleViewID::kBackgroundImage0,
     BubbleViewID::kBackgroundImage1,
     BubbleViewID::kBackgroundImage2,
@@ -136,8 +136,6 @@ class RecentlyUsedImageButton : public views::ImageButton {
     SetImageModel(ButtonState::STATE_NORMAL,
                   ui::ImageModel::FromImageSkia(background_image_));
 
-    // TODO(b/332573200): only construct this button when the metadata is
-    // decodable.
     SetAccessibilityLabelFromMetadata(metadata);
 
     SetFlipCanvasOnPaintForRTLUI(false);
@@ -206,7 +204,7 @@ class RecentlyUsedImageButton : public views::ImageButton {
     const auto height = this->height();
     const auto radius = kSetCameraBackgroundViewRadius;
 
-    return SkPath()
+    return SkPathBuilder()
         // Start just before the curve of the top-right corner.
         .moveTo(width - radius, 0.f)
         // Move to left before the curve.
@@ -233,7 +231,8 @@ class RecentlyUsedImageButton : public views::ImageButton {
         .lineTo(width, 16)
         // Draw top-right curve.
         .rCubicTo(0, -8.84f, -7.16f, -16, -16, -16)
-        .close();
+        .close()
+        .detach();
   }
 
   bool selected_ = false;

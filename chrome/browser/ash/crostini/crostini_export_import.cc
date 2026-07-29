@@ -7,11 +7,9 @@
 #include <algorithm>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/i18n/time_formatting.h"
 #include "base/location.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -29,7 +27,7 @@
 #include "chrome/browser/ash/guest_os/guest_os_share_path_factory.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
+#include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
@@ -98,6 +96,22 @@ void CrostiniExportImport::FillOperationData(ExportImportType type) {
   FillOperationData(type, DefaultContainerId());
 }
 
+void CrostiniExportImport::ExportDiskImageFlow(
+    guest_os::GuestId container_id,
+    content::WebContents* web_contents) {
+  FillOperationData(ExportImportType::EXPORT_DISK_IMAGE,
+                    std::move(container_id));
+  OpenFileDialog(web_contents);
+}
+
+void CrostiniExportImport::ImportDiskImageFlow(
+    guest_os::GuestId container_id,
+    content::WebContents* web_contents) {
+  FillOperationData(ExportImportType::IMPORT_DISK_IMAGE,
+                    std::move(container_id));
+  OpenFileDialog(web_contents);
+}
+
 void CrostiniExportImport::ExportContainer(guest_os::GuestId container_id,
                                            content::WebContents* web_contents) {
   FillOperationData(ExportImportType::EXPORT, std::move(container_id));
@@ -106,6 +120,8 @@ void CrostiniExportImport::ExportContainer(guest_os::GuestId container_id,
 
 void CrostiniExportImport::ImportContainer(guest_os::GuestId container_id,
                                            content::WebContents* web_contents) {
+  // Technically this could be ExportImportType::IMPORT_DISK_IMAGE but we won't
+  // know for sure until we see the file type chosen.
   FillOperationData(ExportImportType::IMPORT, std::move(container_id));
   OpenFileDialog(web_contents);
 }
@@ -127,9 +143,19 @@ void CrostiniExportImport::ImportContainer(guest_os::GuestId container_id,
 }
 
 base::FilePath CrostiniExportImport::GetDefaultBackupPath() const {
+  base::Time::Exploded exploded;
+  base::Time::Now().LocalExplode(&exploded);
   return file_manager::util::GetMyFilesFolderForProfile(profile_).Append(
-      base::UnlocalizedTimeFormatWithPattern(
-          base::Time::Now(), "'chromeos-linux-'yyyy-MM-dd'.tini'"));
+      base::StringPrintf("chromeos-linux-%04d-%02d-%02d.tini", exploded.year,
+                         exploded.month, exploded.day_of_month));
+}
+
+base::FilePath CrostiniExportImport::GetDefaultImageBackupPath() const {
+  base::Time::Exploded exploded;
+  base::Time::Now().LocalExplode(&exploded);
+  return file_manager::util::GetMyFilesFolderForProfile(profile_).Append(
+      base::StringPrintf("chromeos-linux-%04d-%02d-%02d.img.zst", exploded.year,
+                         exploded.month, exploded.day_of_month));
 }
 
 void CrostiniExportImport::OpenFileDialog(content::WebContents* web_contents) {
@@ -147,11 +173,14 @@ void CrostiniExportImport::OpenFileDialog(content::WebContents* web_contents) {
   unsigned title = 0;
   base::FilePath default_path;
   const ui::SelectFileDialog::FileTypeInfo file_types{
-      {FILE_PATH_LITERAL("tini"), FILE_PATH_LITERAL("tar.gz"),
-       FILE_PATH_LITERAL("tgz")}};
+      {FILE_PATH_LITERAL("img.zst"), FILE_PATH_LITERAL("tar.gz"),
+       FILE_PATH_LITERAL("tini"), FILE_PATH_LITERAL("tgz")}};
 
   switch (operation_data_->type) {
     case ExportImportType::EXPORT:
+      // TODO(crbug.com/345312503): deprecate once disk image export flows are
+      // proven stable. Import will need to exist for a while to support legacy
+      // backups.
       file_selector_mode = ui::SelectFileDialog::SELECT_SAVEAS_FILE;
       title = IDS_SETTINGS_CROSTINI_EXPORT;
       default_path = GetDefaultBackupPath();
@@ -164,7 +193,7 @@ void CrostiniExportImport::OpenFileDialog(content::WebContents* web_contents) {
     case ExportImportType::EXPORT_DISK_IMAGE:
       file_selector_mode = ui::SelectFileDialog::SELECT_SAVEAS_FILE;
       title = IDS_SETTINGS_CROSTINI_EXPORT;
-      default_path = GetDefaultBackupPath();
+      default_path = GetDefaultImageBackupPath();
       break;
     case ExportImportType::IMPORT_DISK_IMAGE:
       file_selector_mode = ui::SelectFileDialog::SELECT_OPEN_FILE,
@@ -183,6 +212,13 @@ void CrostiniExportImport::OpenFileDialog(content::WebContents* web_contents) {
 
 void CrostiniExportImport::FileSelected(const ui::SelectedFileInfo& file,
                                         int index) {
+  // During migration phase, we cannot be sure if an import file is a container
+  // or disk image backup until we can rely on the extension.
+  // TODO(crbug.com/345312503): consider looking at magic header bytes?
+  if (operation_data_->type == ExportImportType::IMPORT &&
+      file.path().Extension().ends_with("img.zst")) {
+    operation_data_->type = ExportImportType::IMPORT_DISK_IMAGE;
+  }
   Start(file.path(), /* create_new_container= */ false, base::DoNothing());
   select_folder_dialog_.reset();
 }
@@ -213,12 +249,30 @@ void CrostiniExportImport::ImportContainer(
     CrostiniManager::CrostiniResultCallback callback) {
   std::vector<guest_os::GuestId> existing_containers =
       guest_os::GetContainers(profile_, guest_os::VmType::TERMINA);
-  if (!base::Contains(existing_containers, container_id)) {
+  if (!std::ranges::contains(existing_containers, container_id)) {
     LOG(ERROR) << "Attempting to import Crostini container backup into "
                   "non-existent container: "
                << container_id;
   }
   FillOperationData(ExportImportType::IMPORT, std::move(container_id));
+  Start(path, /* create_new_container= */ false, std::move(callback));
+}
+
+void CrostiniExportImport::ExportDiskImageWithCallback(
+    guest_os::GuestId container_id,
+    base::FilePath path,
+    CrostiniManager::CrostiniResultCallback callback) {
+  FillOperationData(ExportImportType::EXPORT_DISK_IMAGE,
+                    std::move(container_id));
+  Start(path, /* create_new_container= */ false, std::move(callback));
+}
+
+void CrostiniExportImport::ImportDiskImageWithCallback(
+    guest_os::GuestId container_id,
+    base::FilePath path,
+    CrostiniManager::CrostiniResultCallback callback) {
+  FillOperationData(ExportImportType::IMPORT_DISK_IMAGE,
+                    std::move(container_id));
   Start(path, /* create_new_container= */ false, std::move(callback));
 }
 
@@ -259,7 +313,7 @@ void CrostiniExportImport::Start(
                             .Run(operation_data->type, path);
   status_tracker->SetStatusRunning(0);
 
-  auto it = status_trackers_.find(operation_data_->container_id);
+  auto it = status_trackers_.find(operation_data->container_id);
   if (it != status_trackers_.end()) {
     // There is already an operation in progress. Ensure the existing
     // status_tracker is (re)displayed so the user knows why this new concurrent
@@ -395,7 +449,9 @@ void CrostiniExportImport::AfterDiskImageOperation(
     CrostiniResult result) {
   auto it = status_trackers_.find(container_id);
   if (it == status_trackers_.end()) {
-    NOTREACHED() << container_id << " has no status_tracker to update";
+    LOG(WARNING) << container_id << " has no status_tracker to update";
+    std::move(callback).Run(result);
+    return;
   }
 
   if (result == CrostiniResult::SUCCESS) {
@@ -431,8 +487,17 @@ void CrostiniExportImport::AfterDiskImageOperation(
       default:
         NOTREACHED();
     }
+  } else if (result == CrostiniResult::DISK_IMAGE_BAD_IMAGE) {
+    base::ThreadPool::PostTask(
+        FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+        base::GetDeleteFileCallback(it->second->path()));
+    DCHECK(it->second->status() ==
+               CrostiniExportImportStatusTracker::Status::RUNNING ||
+           it->second->status() ==
+               CrostiniExportImportStatusTracker::Status::CANCELLING);
+    RemoveTracker(it)->SetStatusFailedBadImage();
   } else {
-    LOG(ERROR) << "Error exporting " << int(result);
+    LOG(ERROR) << "Error exporting " << static_cast<int>(result);
     base::ThreadPool::PostTask(
         FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
         base::GetDeleteFileCallback(it->second->path()));
@@ -455,9 +520,6 @@ void CrostiniExportImport::EnsureLxdStartedThenSharePath(
   auto* crostini_manager = crostini::CrostiniManager::GetForProfile(profile_);
   crostini::CrostiniManager::RestartOptions options;
   options.stop_after_lxd_available = true;
-  if (create_new_container) {
-    options.restart_source = crostini::RestartSource::kMultiContainerCreation;
-  }
   crostini_manager->RestartCrostiniWithOptions(
       container_id, std::move(options),
       base::BindOnce(&CrostiniExportImport::SharePath,

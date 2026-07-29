@@ -5,19 +5,19 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_FORM_STRUCTURE_RATIONALIZATION_ENGINE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FORM_STRUCTURE_RATIONALIZATION_ENGINE_H_
 
+#include <stddef.h>
+
 #include <memory>
 #include <optional>
 #include <string_view>
 #include <vector>
 
+#include "base/containers/span.h"
+#include "base/feature.h"
 #include "base/memory/raw_ptr.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/field_types.h"
-
-namespace base {
-struct Feature;
-}
 
 namespace autofill {
 class LogManager;
@@ -200,7 +200,7 @@ bool IsFieldConditionFulfilledIgnoringLocation(ParsingContext& context,
 // `condition.location`. Returns std::nullopt if no such field exists.
 std::optional<size_t> FindFieldMeetingCondition(
     ParsingContext& context,
-    const std::vector<std::unique_ptr<AutofillField>>& fields,
+    base::span<const std::unique_ptr<AutofillField>> fields,
     size_t start_index,
     const FieldCondition& condition);
 
@@ -211,7 +211,7 @@ std::optional<size_t> FindFieldMeetingCondition(
 void ApplyRuleIfApplicable(
     ParsingContext& context,
     const RationalizationRule& rule,
-    const std::vector<std::unique_ptr<AutofillField>>& fields,
+    base::span<const std::unique_ptr<AutofillField>> fields,
     LogManager* log_manager = nullptr);
 
 }  // namespace internal
@@ -222,7 +222,7 @@ void ApplyRuleIfApplicable(
 // constness is inherited from the calling sites.
 void ApplyRationalizationEngineRules(
     ParsingContext& context,
-    const std::vector<std::unique_ptr<AutofillField>>& fields,
+    base::span<const std::unique_ptr<AutofillField>> fields,
     LogManager* log_manager = nullptr);
 
 }  // namespace autofill::rationalization

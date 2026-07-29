@@ -22,11 +22,16 @@ namespace {
 constexpr const char kEmitterKey[] = "emitter";
 constexpr const char kArgumentsKey[] = "arguments";
 constexpr const char kFilterKey[] = "filter";
+constexpr const char kOnDispatchedCallbackFunctionKey[] =
+    "on_dispatched_callback";
+constexpr const char kListenerErrorCallbackFunctionKey[] =
+    "listener_error_callback";
 constexpr const char kEventEmitterTypeName[] = "Event";
 
-}  // namespace
+constexpr const char kWebRequestEventPrefix[] = "webRequest.";
+constexpr const char kWebViewInternalEventPrefix[] = "webViewInternal.";
 
-gin::WrapperInfo EventEmitter::kWrapperInfo = {gin::kEmbedderNativeGin};
+}  // namespace
 
 EventEmitter::EventEmitter(bool supports_filters,
                            std::unique_ptr<APIEventListeners> listeners,
@@ -37,9 +42,14 @@ EventEmitter::EventEmitter(bool supports_filters,
 
 EventEmitter::~EventEmitter() = default;
 
+void EventEmitter::Dispose() {
+  pending_filters_.clear();
+  listeners_.reset();
+}
+
 gin::ObjectTemplateBuilder EventEmitter::GetObjectTemplateBuilder(
     v8::Isolate* isolate) {
-  return Wrappable<EventEmitter>::GetObjectTemplateBuilder(isolate)
+  return gin::Wrappable<EventEmitter>::GetObjectTemplateBuilder(isolate)
       .SetMethod("addListener", &EventEmitter::AddListener)
       .SetMethod("removeListener", &EventEmitter::RemoveListener)
       .SetMethod("hasListener", &EventEmitter::HasListener)
@@ -51,22 +61,24 @@ gin::ObjectTemplateBuilder EventEmitter::GetObjectTemplateBuilder(
       .SetMethod("dispatch", &EventEmitter::Dispatch);
 }
 
-const char* EventEmitter::GetTypeName() {
+const char* EventEmitter::GetHumanReadableName() const {
   return kEventEmitterTypeName;
 }
 
 void EventEmitter::Fire(v8::Local<v8::Context> context,
                         v8::LocalVector<v8::Value>* args,
                         mojom::EventFilteringInfoPtr filter,
-                        JSRunner::ResultCallback callback) {
-  DispatchAsync(context, args, std::move(filter), std::move(callback));
+                        v8::Local<v8::Function> on_dispatched_callback,
+                        v8::Local<v8::Function> listener_error_callback) {
+  DispatchAsync(context, args, std::move(filter), on_dispatched_callback,
+                listener_error_callback);
 }
 
 v8::Local<v8::Value> EventEmitter::FireSync(
     v8::Local<v8::Context> context,
     v8::LocalVector<v8::Value>* args,
     mojom::EventFilteringInfoPtr filter) {
-  DCHECK(context == context->GetIsolate()->GetCurrentContext());
+  DCHECK(context == v8::Isolate::GetCurrent()->GetCurrentContext());
   return DispatchSync(context, args, std::move(filter));
 }
 
@@ -75,8 +87,16 @@ void EventEmitter::Invalidate(v8::Local<v8::Context> context) {
   listeners_->Invalidate(context);
 }
 
-size_t EventEmitter::GetNumListeners() const {
+bool EventEmitter::HasListeners() const {
+  return listeners_->GetNumListeners() != 0;
+}
+
+size_t EventEmitter::GetNumListenersForTesting() const {
   return listeners_->GetNumListeners();
+}
+
+size_t EventEmitter::GetNumPendingFiltersForTesting() const {
+  return pending_filters_.size();
 }
 
 int EventEmitter::PushFilter(mojom::EventFilteringInfoPtr filter) {
@@ -146,13 +166,28 @@ void EventEmitter::AddListener(gin::Arguments* arguments) {
     return;
   }
 
+  v8::Local<v8::Object> options;
+  if (!arguments->PeekNext().IsEmpty()) {
+    // The `options` argument is currently limited to webRequest API only.
+    std::string_view event_name = listeners_->GetEventName();
+    if (!event_name.starts_with(kWebRequestEventPrefix) &&
+        !event_name.starts_with(kWebViewInternalEventPrefix)) {
+      arguments->ThrowTypeError("This event does not support options");
+      return;
+    }
+    if (!arguments->GetNext(&options)) {
+      arguments->ThrowTypeError("Invalid invocation");
+      return;
+    }
+  }
+
   v8::Local<v8::Context> context = arguments->GetHolderCreationContext();
   if (!gin::PerContextData::From(context)) {
     return;
   }
 
   std::string error;
-  if (!listeners_->AddListener(listener, filter, context, &error) &&
+  if (!listeners_->AddListener(listener, filter, options, context, &error) &&
       !error.empty()) {
     arguments->ThrowTypeError(error);
   }
@@ -177,16 +212,12 @@ bool EventEmitter::HasListener(v8::Local<v8::Function> listener) {
   return listeners_->HasListener(listener);
 }
 
-bool EventEmitter::HasListeners() {
-  return listeners_->GetNumListeners() != 0;
-}
-
 void EventEmitter::Dispatch(gin::Arguments* arguments) {
   if (!valid_) {
     return;
   }
 
-  if (listeners_->GetNumListeners() == 0) {
+  if (!HasListeners()) {
     return;
   }
 
@@ -204,12 +235,22 @@ v8::Local<v8::Value> EventEmitter::DispatchSync(
     v8::Local<v8::Context> context,
     v8::LocalVector<v8::Value>* args,
     mojom::EventFilteringInfoPtr filter) {
+  return DispatchSync(
+      context, args, std::move(filter),
+      /*listener_error_callback_function=*/v8::Local<v8::Function>());
+}
+
+v8::Local<v8::Value> EventEmitter::DispatchSync(
+    v8::Local<v8::Context> context,
+    v8::LocalVector<v8::Value>* args,
+    mojom::EventFilteringInfoPtr filter,
+    v8::Local<v8::Function> listener_error_callback_function) {
   // Note that |listeners_| can be modified during handling.
   v8::LocalVector<v8::Function> listeners =
       listeners_->GetListeners(std::move(filter), context);
 
   JSRunner* js_runner = JSRunner::Get(context);
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   DCHECK(context == isolate->GetCurrentContext());
 
   // Gather results from each listener as we go along. This should only be
@@ -248,6 +289,15 @@ v8::Local<v8::Value> EventEmitter::DispatchSync(
       }
     } else {
       DCHECK(try_catch.HasCaught());
+
+      // Notify API handlers each time an exception is thrown by a listener.
+      if (!listener_error_callback_function.IsEmpty()) {
+        v8::LocalVector<v8::Value> listener_error_callback_argument(isolate);
+        listener_error_callback_argument.push_back(try_catch.Exception());
+        JSRunner::Get(context)->RunJSFunctionSync(
+            listener_error_callback_function, context,
+            listener_error_callback_argument);
+      }
       exception_handler_->HandleException(context, "Error in event handler",
                                           &try_catch);
       try_catch.Reset();
@@ -268,11 +318,13 @@ v8::Local<v8::Value> EventEmitter::DispatchSync(
   return return_value;
 }
 
-void EventEmitter::DispatchAsync(v8::Local<v8::Context> context,
-                                 v8::LocalVector<v8::Value>* args,
-                                 mojom::EventFilteringInfoPtr filter,
-                                 JSRunner::ResultCallback callback) {
-  v8::Isolate* isolate = context->GetIsolate();
+void EventEmitter::DispatchAsync(
+    v8::Local<v8::Context> context,
+    v8::LocalVector<v8::Value>* args,
+    mojom::EventFilteringInfoPtr filter,
+    v8::Local<v8::Function> on_dispatched_callback,
+    v8::Local<v8::Function> listener_error_callback) {
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::HandleScope handle_scope(isolate);
   v8::Context::Scope context_scope(context);
 
@@ -283,11 +335,23 @@ void EventEmitter::DispatchAsync(v8::Local<v8::Context> context,
     CHECK(args_array->CreateDataProperty(context, i, args->at(i)).ToChecked());
   }
 
+  // Convert the functions to values so they can be set on the `data` object. We
+  // set them to undefined if they're empty because the builder does not allow
+  // empty values to be set on the `data` object.
+  v8::Local<v8::Value> on_dispatched_callback_value =
+      on_dispatched_callback.IsEmpty() ? v8::Undefined(isolate).As<v8::Value>()
+                                       : on_dispatched_callback;
+  v8::Local<v8::Value> listener_error_callback_value =
+      listener_error_callback.IsEmpty() ? v8::Undefined(isolate).As<v8::Value>()
+                                        : listener_error_callback;
+
   v8::Local<v8::Object> data =
       gin::DataObjectBuilder(isolate)
           .Set(kEmitterKey, GetWrapper(isolate).ToLocalChecked())
           .Set(kArgumentsKey, args_array.As<v8::Value>())
           .Set(kFilterKey, gin::ConvertToV8(isolate, filter_id))
+          .Set(kOnDispatchedCallbackFunctionKey, on_dispatched_callback_value)
+          .Set(kListenerErrorCallbackFunctionKey, listener_error_callback_value)
           .Build();
   v8::Local<v8::Function> function;
   // TODO(devlin): Function construction can fail in some weird cases (looking
@@ -297,8 +361,11 @@ void EventEmitter::DispatchAsync(v8::Local<v8::Context> context,
   CHECK(v8::Function::New(context, &DispatchAsyncHelper, data)
             .ToLocal(&function));
 
-  JSRunner::Get(context)->RunJSFunction(function, context, {},
-                                        std::move(callback));
+  JSRunner::Get(context)->RunJSFunction(
+      function, context, {},
+      // We handle the callback via `callback_value` instead so we can pass
+      // it v8 objects.
+      JSRunner::ResultCallback());
 }
 
 // static
@@ -337,10 +404,58 @@ void EventEmitter::DispatchAsyncHelper(
     arguments.push_back(arguments_array->Get(context, i).ToLocalChecked());
   }
 
+  v8::Local<v8::Value> listener_error_callback_value;
+  if (!data->Get(context, gin::StringToSymbol(
+                              isolate, kListenerErrorCallbackFunctionKey))
+           .ToLocal(&listener_error_callback_value)) {
+    NOTREACHED();
+  }
+
+  // Set the listener error callback function to an empty function if it wasn't
+  // provided.
+  v8::Local<v8::Function> listener_error_callback_function =
+      listener_error_callback_value->IsUndefined()
+          ? v8::Local<v8::Function>()
+          : listener_error_callback_value.As<v8::Function>();
+
   // We know that dispatching synchronously should be safe because this function
   // was triggered by JS execution.
-  info.GetReturnValue().Set(
-      emitter->DispatchSync(context, &arguments, std::move(filter)));
+  v8::Local<v8::Value> dispatch_sync_result = emitter->DispatchSync(
+      context, &arguments, std::move(filter), listener_error_callback_function);
+
+  // Script context could be destroyed as a result of the above dispatch.
+  if (!binding::IsContextValid(context)) {
+    return;
+  }
+
+  v8::Local<v8::Value> on_dispatched_callback_value;
+  if (!data->Get(context,
+                 gin::StringToSymbol(isolate, kOnDispatchedCallbackFunctionKey))
+           .ToLocal(&on_dispatched_callback_value)) {
+    NOTREACHED();
+  }
+
+  // No on dispatched callback function provided, so do not call it.
+  if (on_dispatched_callback_value->IsUndefined()) {
+    return;
+  }
+
+  // There's a possibility that the function couldn've been modified to be empty
+  // by arbitrary JS code after DispatchAsync() sets
+  // `on_dispatched_callback_value`.
+  if (on_dispatched_callback_value.IsEmpty()) {
+    return;
+  }
+
+  v8::LocalVector<v8::Value> on_dispatched_callback_argument(isolate);
+  on_dispatched_callback_argument.push_back(dispatch_sync_result);
+  JSRunner::Get(context)->RunJSFunctionSync(
+      on_dispatched_callback_value.As<v8::Function>(), context,
+      on_dispatched_callback_argument);
+}
+
+const gin::WrapperInfo* EventEmitter::wrapper_info() const {
+  return &kWrapperInfo;
 }
 
 }  // namespace extensions

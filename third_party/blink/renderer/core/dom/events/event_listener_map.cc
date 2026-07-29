@@ -32,6 +32,8 @@
 
 #include "third_party/blink/renderer/core/dom/events/event_listener_map.h"
 
+#include <utility>
+
 #include "base/bits.h"
 #include "base/compiler_specific.h"
 #include "base/debug/crash_logging.h"
@@ -112,7 +114,7 @@ static bool AddListenerToVector(EventListenerVector* listener_vector,
                                 const AddEventListenerOptionsResolved* options,
                                 RegisteredEventListener** registered_listener) {
   for (auto& item : *listener_vector) {
-    if (item->Matches(listener, options)) {
+    if (item->Matches(listener, {options->capture()})) {
       // Duplicate listener.
       return false;
     }
@@ -154,25 +156,27 @@ bool EventListenerMap::Add(const AtomicString& event_type,
 static bool RemoveListenerFromVector(
     EventListenerVector* listener_vector,
     const EventListener* listener,
-    const EventListenerOptions* options,
+    const RegisteredEventListener::OptionsForMatching& options,
     RegisteredEventListener** registered_listener) {
-  EventListenerVector::iterator end = listener_vector->end();
-  for (EventListenerVector::iterator iter = listener_vector->begin();
-       iter != end; UNSAFE_TODO(++iter)) {
-    if ((*iter)->Matches(listener, options)) {
-      (*iter)->SetRemoved();
-      *registered_listener = *iter;
-      listener_vector->erase(iter);
-      return true;
-    }
-  }
-  return false;
+  wtf_size_t removed =
+      EraseIf(*listener_vector, [&](const auto& current_listener) {
+        if (current_listener->Matches(listener, options)) {
+          current_listener->SetRemoved();
+          *registered_listener = current_listener.Get();
+          return true;
+        }
+        return false;
+      });
+  // Ensures the vector has no duplicate listeners.
+  DCHECK_LE(removed, 1u);
+  return removed > 0;
 }
 
-bool EventListenerMap::Remove(const AtomicString& event_type,
-                              const EventListener* listener,
-                              const EventListenerOptions* options,
-                              RegisteredEventListener** registered_listener) {
+bool EventListenerMap::Remove(
+    const AtomicString& event_type,
+    const EventListener* listener,
+    const RegisteredEventListener::OptionsForMatching& options,
+    RegisteredEventListener** registered_listener) {
   for (unsigned i = 0; i < entries_.size(); ++i) {
     if (entries_[i].first == event_type) {
       bool was_removed = RemoveListenerFromVector(
@@ -187,6 +191,12 @@ bool EventListenerMap::Remove(const AtomicString& event_type,
 }
 
 EventListenerVector* EventListenerMap::Find(const AtomicString& event_type) {
+  return const_cast<EventListenerVector*>(
+      std::as_const(*this).Find(event_type));
+}
+
+const EventListenerVector* EventListenerMap::Find(
+    const AtomicString& event_type) const {
   for (const auto& entry : entries_) {
     if (entry.first == event_type)
       return entry.second.Get();

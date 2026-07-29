@@ -88,7 +88,8 @@ void CreateRequestValueFromJSON(const std::string& json, RequestValue* result) {
   using extensions::api::file_system_provider_internal::
       ReadDirectoryRequestedSuccess::Params;
 
-  auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(json);
+  auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(
+      json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(parsed_json.has_value()) << parsed_json.error().message;
 
   ASSERT_TRUE(parsed_json->is_list());
@@ -133,7 +134,7 @@ TEST_F(FileSystemProviderOperationsReadDirectoryTest, Execute) {
   EXPECT_EQ(extensions::api::file_system_provider::OnReadDirectoryRequested::
                 kEventName,
             event->event_name);
-  const base::Value::List& event_args = event->event_args;
+  const base::ListValue& event_args = event->event_args;
   ASSERT_EQ(1u, event_args.size());
 
   const base::Value* options_as_value = &event_args[0];

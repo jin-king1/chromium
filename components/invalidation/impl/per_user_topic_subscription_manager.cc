@@ -21,9 +21,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
-#include "components/gcm_driver/instance_id/instance_id_driver.h"
 #include "components/invalidation/public/identity_provider.h"
-#include "components/invalidation/public/invalidation_util.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -88,13 +86,13 @@ class PerProjectDictionaryPrefUpdate {
     DCHECK(per_sender_pref_);
   }
 
-  base::Value::Dict& operator*() { return *per_sender_pref_; }
+  base::DictValue& operator*() { return *per_sender_pref_; }
 
-  base::Value::Dict* operator->() { return per_sender_pref_; }
+  base::DictValue* operator->() { return per_sender_pref_; }
 
  private:
   ScopedDictPrefUpdate update_;
-  raw_ptr<base::Value::Dict> per_sender_pref_;
+  raw_ptr<base::DictValue> per_sender_pref_;
 };
 
 // State of the instance ID token when subscription is requested.
@@ -251,7 +249,11 @@ void PerUserTopicSubscriptionManager::UpdateSubscribedTopics(
   ReportNewInstanceIdTokenState(new_instance_id_token);
   DropAllSavedSubscriptionsOnTokenChange(new_instance_id_token);
   StoreNewToken(new_instance_id_token);
+  UpdateSubscribedTopics(topics);
+}
 
+void PerUserTopicSubscriptionManager::UpdateSubscribedTopics(
+    const TopicMap& topics) {
   for (const auto& topic : topics) {
     auto it = pending_subscriptions_.find(topic.first);
     if (it != pending_subscriptions_.end() &&
@@ -567,7 +569,7 @@ void PerUserTopicSubscriptionManager::DropAllSavedSubscriptionsOnTokenChange(
   // unsubscribe requests - if the token was revoked, the server will drop the
   // subscriptions anyway.)
   PerProjectDictionaryPrefUpdate update(pref_service_, project_id_);
-  *update = base::Value::Dict();
+  *update = base::DictValue();
   topic_to_private_topic_.clear();
   private_topic_to_topic_.clear();
   pending_subscriptions_.clear();

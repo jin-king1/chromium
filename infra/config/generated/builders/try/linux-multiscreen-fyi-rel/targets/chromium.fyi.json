@@ -8,11 +8,12 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//chrome/test:interactive_ui_tests",
+        "module_scheme": "gtest",
         "name": "multiscreen_interactive_ui_tests",
         "swarming": {
           "dimensions": {
-            "os": "Ubuntu-24.04",
-            "pool": "chromium.tests.multiscreen"
+            "os": "Ubuntu-24.04"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },

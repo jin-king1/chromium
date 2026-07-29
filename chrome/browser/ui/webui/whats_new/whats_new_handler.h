@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_WHATS_NEW_WHATS_NEW_HANDLER_H_
 #define CHROME_BROWSER_UI_WEBUI_WHATS_NEW_WHATS_NEW_HANDLER_H_
 
+#include "base/gtest_prod_util.h"
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new.mojom.h"
 #include "components/user_education/webui/whats_new_registry.h"
 #include "content/public/browser/web_ui_message_handler.h"
@@ -20,7 +22,6 @@ class Profile;
 class WhatsNewHandler : public whats_new::mojom::PageHandler {
  public:
   WhatsNewHandler(mojo::PendingReceiver<whats_new::mojom::PageHandler> receiver,
-                  mojo::PendingRemote<whats_new::mojom::Page> page,
                   Profile* profile,
                   content::WebContents* web_contents,
                   const base::Time& navigation_start_time,
@@ -38,6 +39,8 @@ class WhatsNewHandler : public whats_new::mojom::PageHandler {
   FRIEND_TEST_ALL_PREFIXES(WhatsNewHandlerTest, SurveyIsTriggeredWithOverride);
   FRIEND_TEST_ALL_PREFIXES(WhatsNewHandlerTest,
                            SurveyIsNotTriggeredForPreviouslyUsedEdition);
+  FRIEND_TEST_ALL_PREFIXES(WhatsNewRefreshHandlerTest, GetServerUrl);
+  FRIEND_TEST_ALL_PREFIXES(WhatsNewRefreshHandlerTest, SurveyIsTriggered);
 
   void RecordTimeToLoadContent(base::Time time) override;
   void RecordVersionPageLoaded(bool is_auto_open) override;
@@ -48,7 +51,7 @@ class WhatsNewHandler : public whats_new::mojom::PageHandler {
       whats_new::mojom::ModulePosition position) override;
   void RecordExploreMoreToggled(bool expanded) override;
   void RecordScrollDepth(whats_new::mojom::ScrollDepth depth) override;
-  void RecordTimeOnPage(base::TimeDelta time) override;
+  void RecordTimeOnPage(base::TimeDelta time, bool is_heartbeat) override;
   void RecordModuleLinkClicked(
       const std::string& module_name,
       whats_new::mojom::ModulePosition position) override;
@@ -68,6 +71,14 @@ class WhatsNewHandler : public whats_new::mojom::PageHandler {
       const std::string& module_name,
       whats_new::mojom::ModulePosition position) override;
   void RecordBrowserCommandExecuted() override;
+  void RecordQrCodeToggled(bool expanded) override;
+  void RecordNavClick() override;
+  void RecordFeatureTileNavigation() override;
+  void RecordCarouselScrollButtonClick() override;
+  void RecordExpandMediaToggled(const std::string& module_name,
+                                bool expanded) override;
+  void RecordCtaClick() override;
+  void RecordNextButtonClick() override;
 
   // Makes a request to show a HaTS survey.
   void TryShowHatsSurveyWithTimeout();
@@ -83,7 +94,6 @@ class WhatsNewHandler : public whats_new::mojom::PageHandler {
   // These are located at the end of the list of member variables to ensure the
   // WebUI page is disconnected before other members are destroyed.
   mojo::Receiver<whats_new::mojom::PageHandler> receiver_;
-  mojo::Remote<whats_new::mojom::Page> page_;
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_WHATS_NEW_WHATS_NEW_HANDLER_H_

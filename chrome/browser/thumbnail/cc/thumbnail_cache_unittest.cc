@@ -4,6 +4,7 @@
 
 #include "chrome/browser/thumbnail/cc/thumbnail_cache.h"
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
@@ -144,6 +145,54 @@ TEST_F(ThumbnailCacheTest, MetricsEmission) {
                                 1, 1);
   histograms.ExpectUniqueSample("Android.ThumbnailCache.InMemoryCacheSize",
                                 kDimension * kDimension * kN32PixelSize, 1);
+}
+
+TEST_F(ThumbnailCacheTest, PutWithoutUIResourceProvider) {
+  constexpr int kTabId = 1;
+  constexpr int kDimension = 16;
+  SkBitmap bitmap;
+  ASSERT_TRUE(bitmap.tryAllocN32Pixels(kDimension * kKiB, kDimension));
+  bitmap.setImmutable();
+
+  thumbnail_cache().SetUIResourceProvider(nullptr);
+  thumbnail_cache().UpdateVisibleIds(std::vector<TabId>({kTabId}), -1);
+  EXPECT_TRUE(thumbnail_cache().CheckAndUpdateThumbnailMetaData(
+      kTabId, GURL("https://www.foo.com/"), /*force_update=*/false));
+
+  bool jpeg_finished_called = false;
+  bool jpeg_success = false;
+
+  std::unique_ptr<ThumbnailCaptureTracker, base::OnTaskRunnerDeleter> tracker(
+      new ThumbnailCaptureTracker(base::DoNothing()),
+      base::OnTaskRunnerDeleter(
+          base::SequencedTaskRunner::GetCurrentDefault()));
+
+  base::RunLoop loop;
+  tracker->AddOnJpegFinishedCallback(base::BindOnce(
+      [](bool* called, bool* success_out, base::OnceClosure quit_loop,
+         bool success) {
+        *called = true;
+        *success_out = success;
+        std::move(quit_loop).Run();
+      },
+      &jpeg_finished_called, &jpeg_success, loop.QuitClosure()));
+
+  thumbnail_cache().Put(kTabId, std::move(tracker), bitmap,
+                        /*thumbnail_scale=*/1.0f);
+
+  // Without a UI resource provider, the thumbnail is not added to the in-memory
+  // cache.
+  EXPECT_FALSE(thumbnail_cache().Get(kTabId, false));
+
+  // Since it didn't fail synchronously, the JPEG completion callback should not
+  // have been called yet.
+  EXPECT_FALSE(jpeg_finished_called);
+
+  loop.Run();
+
+  // Eventually, the JPEG compression should finish successfully.
+  EXPECT_TRUE(jpeg_finished_called);
+  EXPECT_TRUE(jpeg_success);
 }
 
 TEST_F(ThumbnailCacheTest, InvalidateIfChanged) {

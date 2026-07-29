@@ -73,7 +73,7 @@ class FakeAdb : public Adb {
   Status GetPidByName(const std::string& device_serial,
                       const std::string& process_name,
                       int* pid) override {
-    *pid = 0;  // avoid uninit error crbug.com/393231
+    *pid = 0;  // avoid uninit error crbug.com/41119796
     return Status(kOk);
   }
 
@@ -81,6 +81,18 @@ class FakeAdb : public Adb {
                             const std::string& grep_pattern,
                             std::string* socket_name) override {
     *socket_name = "@webview_devtools_remote_0";
+    return Status(kOk);
+  }
+
+  Status SetPreferences(const std::string& device_serial,
+                        const std::string& path,
+                        const base::DictValue* custom_prefs) override {
+    return Status(kOk);
+  }
+
+  Status SetLocalState(const std::string& device_serial,
+                       const std::string& path,
+                       const base::DictValue* custom_local_state) override {
     return Status(kOk);
   }
 };

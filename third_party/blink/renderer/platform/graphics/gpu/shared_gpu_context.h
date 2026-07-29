@@ -17,12 +17,6 @@
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 
-namespace gpu {
-
-class GpuMemoryBufferManager;
-
-}  // namespace gpu
-
 namespace blink {
 
 class WebGraphicsContext3DProvider;
@@ -45,25 +39,14 @@ class PLATFORM_EXPORT SharedGpuContext {
   // May re-create context if context was lost
   static base::WeakPtr<WebGraphicsContext3DProviderWrapper>
   ContextProviderWrapper();
-  static bool AllowSoftwareToAcceleratedCanvasUpgrade();
-  static bool IsValidWithoutRestoring();
+  // Returns an existing context and doesn't create one if none exists.
+  static base::WeakPtr<WebGraphicsContext3DProviderWrapper>
+  GetExistingContextProviderWrapper();
+
+  static bool IsValidWithoutRestoringForTesting();
 
   static WebGraphicsSharedImageInterfaceProvider*
   SharedImageInterfaceProvider();
-
-  // "ImageChromium" refers to putting a canvas into a hardware layer which is
-  // directly scanned out of display, bypassing chromium's own GPU composite.
-  // It is the same "ImageChromium" referenced by
-  // `RuntimeEnabledFeatures::WebGLImageChromiumEnabled` for example.
-  // The name is out of date and refers to the system that morphed into
-  // SharedImage.
-  // This method performs context-specific check that's not available when
-  // RuntimeEnabledFeatures is set.
-#if BUILDFLAG(IS_ANDROID)
-  static bool MaySupportImageChromium();
-#else
-  static bool MaySupportImageChromium() { return true; }
-#endif
 
   using ContextProviderFactory =
       base::RepeatingCallback<std::unique_ptr<WebGraphicsContext3DProvider>()>;
@@ -73,12 +56,8 @@ class PLATFORM_EXPORT SharedGpuContext {
   // to not interfere with the next test and when terminating web workers.
   static void Reset();
 
-  static gpu::GpuMemoryBufferManager* GetGpuMemoryBufferManager();
-  static void SetGpuMemoryBufferManagerForTesting(
-      gpu::GpuMemoryBufferManager* mgr);
-
  private:
-  friend class WTF::ThreadSpecific<SharedGpuContext>;
+  friend class ThreadSpecific<SharedGpuContext>;
 
   static SharedGpuContext* GetInstanceForCurrentThread();
 
@@ -96,11 +75,6 @@ class PLATFORM_EXPORT SharedGpuContext {
 
   std::unique_ptr<WebGraphicsSharedImageInterfaceProvider>
       shared_image_interface_provider_;
-
-  // RAW_PTR_EXCLUSION: Performance (MotionMark). Please see crbug.com/346693834
-  // for more details.
-  RAW_PTR_EXCLUSION gpu::GpuMemoryBufferManager* gpu_memory_buffer_manager_ =
-      nullptr;
 };
 
 }  // blink

@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/features.gni")
 import("//build/config/ui.gni")
 import("//components/vector_icons/vector_icons.gni")
 import("//testing/test.gni")
@@ -12,13 +11,20 @@ aggregate_vector_icons("message_center_vector_icons") {
   icon_directory = "vector_icons"
 
   sources = [
-    "notification_close_button.icon",
-    "notification_expand_less.icon",
-    "notification_expand_more.icon",
-    "notification_inline_reply.icon",
-    "notification_settings_button.icon",
-    "notification_snooze_button.icon",
-    "product.icon",
+    "chrome_product.icon",
+    "close.icon",
+    "keyboard_arrow_down.icon",
+    "keyboard_arrow_up.icon",
+    "notification_close_button_old.icon",
+    "notification_expand_less_old.icon",
+    "notification_expand_more_old.icon",
+    "notification_inline_reply_old.icon",
+    "notification_settings_button_old.icon",
+    "notification_snooze_button_old.icon",
+    "product_old.icon",
+    "schedule.icon",
+    "send_filled.icon",
+    "settings_filled.icon",
   ]
 }
 
@@ -88,9 +94,10 @@ component("message_center") {
     }
 
     if (toolkit_views) {
-      # TODO(crbug.com/257291597): Skip the sources that are unused on is_chromeos
-      # (e.g. notification_view.cc). This will require refactoring to break
-      # dependencies (e.g. MessagePopupCollection must become an interface).
+      # TODO(crbug.com/257291597): Skip the sources that are unused on
+      # is_chromeos (e.g. notification_view.cc). This will require refactoring
+      # to break dependencies (e.g. MessagePopupCollection must become an
+      # interface).
       sources += [
         "views/desktop_message_popup_collection.cc",
         "views/desktop_message_popup_collection.h",
@@ -156,6 +163,8 @@ if (enable_message_center) {
       "fake_message_center.h",
       "lock_screen/fake_lock_screen_controller.cc",
       "lock_screen/fake_lock_screen_controller.h",
+      "test/message_center_waiter.cc",
+      "test/message_center_waiter.h",
     ]
 
     deps = [
@@ -238,6 +247,7 @@ if (enable_message_center) {
       deps += [
         "//ui/color",
         "//ui/display",
+        "//ui/native_theme:test_support",
         "//ui/strings",
         "//ui/views",
         "//ui/views:test_support",

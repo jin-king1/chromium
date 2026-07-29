@@ -44,6 +44,18 @@ class FakeRestrictedUDPSocket final
  public:
   explicit FakeRestrictedUDPSocket(ContextLifecycleNotifier* notifier)
       : remote_(notifier) {}
+  void JoinGroup(const net::IPAddress& address,
+                 const std::optional<net::IPAddress>& source_address,
+                 JoinGroupCallback) override {
+    NOTREACHED();
+  }
+
+  void LeaveGroup(const net::IPAddress& address,
+                  const std::optional<net::IPAddress>& source_address,
+                  LeaveGroupCallback) override {
+    NOTREACHED();
+  }
+
   void Send(base::span<const uint8_t> data, SendCallback callback) override {
     NOTREACHED();
   }
@@ -118,7 +130,8 @@ class StreamCreator : public GarbageCollected<StreamCreator> {
 
     auto* script_state = scope.GetScriptState();
     stream_wrapper_ = MakeGarbageCollected<UDPReadableStreamWrapper>(
-        script_state, base::DoNothing(), udp_socket, std::move(receiver));
+        script_state, base::DoNothing(), udp_socket, std::move(receiver),
+        /*inspector_id=*/0);
 
     // Ensure that udp_socket->ReceiveMore(...) call from
     // UDPReadableStreamWrapper constructor completes.

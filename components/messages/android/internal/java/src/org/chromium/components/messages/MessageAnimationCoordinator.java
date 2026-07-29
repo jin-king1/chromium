@@ -4,30 +4,24 @@
 
 package org.chromium.components.messages;
 
-import static org.chromium.components.messages.MessagesMetrics.recordStackingAnimationType;
-import static org.chromium.components.messages.MessagesMetrics.recordThreeStackedScenario;
-
 import android.animation.Animator;
 import android.animation.AnimatorSet;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.widget.animation.CancelAwareAnimatorListener;
 import org.chromium.components.messages.MessageQueueManager.MessageState;
 import org.chromium.components.messages.MessageStateHandler.Position;
-import org.chromium.components.messages.MessagesMetrics.StackingAnimationAction;
-import org.chromium.components.messages.MessagesMetrics.StackingAnimationType;
-import org.chromium.components.messages.MessagesMetrics.ThreeStackedScenario;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 /** Coordinator for toggling animation when message is about to show or hide. */
+@NullMarked
 public class MessageAnimationCoordinator implements SwipeAnimationHandler {
-    private static final String TAG = MessageQueueManager.TAG;
     // Animation start delay for the back message for MessageBannerMediator.ENTER_DURATION_MS amount
     // of time, required to show the front message from Position.INVISIBLE to Position.FRONT.
     private static final int BACK_MESSAGE_START_DELAY_MS = 600;
@@ -36,22 +30,20 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
      * mCurrentDisplayedMessage refers to the message which is currently visible on the screen
      * including situations in which the message is already dismissed and hide animation is running.
      */
-    @Nullable private MessageState mCurrentDisplayedMessage;
+    private @Nullable MessageState mCurrentDisplayedMessage;
 
-    @NonNull private List<MessageState> mCurrentDisplayedMessages = Arrays.asList(null, null);
+    private List<MessageState> mCurrentDisplayedMessages = Arrays.asList(null, null);
     private MessageQueueDelegate mMessageQueueDelegate;
     private AnimatorSet mAnimatorSet = new AnimatorSet();
-    private Animator mFrontAnimator;
-    private Animator mBackAnimator;
+    private @Nullable Animator mFrontAnimator;
+    private @Nullable Animator mBackAnimator;
     private final MessageContainer mContainer;
     private final Callback<Animator> mAnimatorStartCallback;
-    private final boolean mAreExtraHistogramsEnabled;
 
     public MessageAnimationCoordinator(
             MessageContainer messageContainer, Callback<Animator> animatorStartCallback) {
         mContainer = messageContainer;
         mAnimatorStartCallback = animatorStartCallback;
-        mAreExtraHistogramsEnabled = MessageFeatureList.areExtraHistogramsEnabled();
     }
 
     // TODO(crbug.com/40762119): Compare current shown messages with last shown ones.
@@ -81,7 +73,7 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
      * @param onFinished Runnable triggered after animation is finished.
      */
     public void updateWithStacking(
-            @NonNull List<MessageState> candidates, boolean isSuspended, Runnable onFinished) {
+            List<MessageState> candidates, boolean isSuspended, Runnable onFinished) {
         if (mMessageQueueDelegate.isDestroyed()) return;
         // Wait until the current animation is done, unless we need to hide them immediately.
         if (mAnimatorSet.isStarted()) {
@@ -109,10 +101,6 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
             return;
         }
 
-        if (mAreExtraHistogramsEnabled && currentFront != nextFront && nextFront != null) {
-            MessagesMetrics.recordRequestToFullyShow(nextFront.handler.getMessageIdentifier());
-        }
-
         if (!isSuspended && !mMessageQueueDelegate.isReadyForShowing()) {
             // Make sure everything is ready for showing a message, unless messages are about to
             // be removed immediately. By "showing", it does mean not just triggering a showing
@@ -123,10 +111,6 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
             if (!mMessageQueueDelegate.isPendingShow()) {
                 mMessageQueueDelegate.onRequestShowing(onFinished);
             }
-            if (mAreExtraHistogramsEnabled && currentFront != nextFront && nextFront != null) {
-                MessagesMetrics.recordBlockedByBrowserControl(
-                        nextFront.handler.getMessageIdentifier());
-            }
             return;
         }
 
@@ -134,10 +118,6 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
         // message is still waiting its animation to be triggered. Early return to avoid cancelling
         // that animation accidentally. Second message will be added after its animation is done.
         if (mContainer.isIsInitializingLayout()) {
-            if (mAreExtraHistogramsEnabled && currentFront != nextFront && nextFront != null) {
-                MessagesMetrics.recordBlockedByContainerInitializing(
-                        nextFront.handler.getMessageIdentifier());
-            }
             return;
         }
 
@@ -147,37 +127,24 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
         boolean animate = !isSuspended;
 
         if (currentFront == null) { // Implies that currently back is also null.
-            recordAnimationAction(StackingAnimationAction.INSERT_AT_FRONT, nextFront);
             mFrontAnimator = nextFront.handler.show(Position.INVISIBLE, Position.FRONT);
             if (nextBack != null) {
-                recordAnimationAction(StackingAnimationAction.INSERT_AT_BACK, nextBack);
-                recordStackingAnimationType(StackingAnimationType.SHOW_ALL);
                 mBackAnimator = nextBack.handler.show(Position.FRONT, Position.BACK);
                 if (mBackAnimator != null) {
                     mBackAnimator.setStartDelay(BACK_MESSAGE_START_DELAY_MS);
                 }
-            } else {
-                recordStackingAnimationType(StackingAnimationType.SHOW_FRONT_ONLY);
             }
         } else if (currentFront != nextFront && currentFront != nextBack) {
             // Current displayed front message will be hidden.
-            recordAnimationAction(StackingAnimationAction.REMOVE_FRONT, currentFront);
             mFrontAnimator = currentFront.handler.hide(Position.FRONT, Position.INVISIBLE, animate);
             if (currentBack != null) {
                 if (currentBack == nextFront) { // Visible front will be dismissed and back one is
                     // moved to front.
-                    recordAnimationAction(StackingAnimationAction.PUSH_TO_FRONT, currentBack);
-                    recordStackingAnimationType(StackingAnimationType.REMOVE_FRONT_AND_SHOW_BACK);
                     mBackAnimator = currentBack.handler.show(Position.BACK, Position.FRONT);
-                    if (nextBack != null) {
-                        recordThreeStackedScenario(ThreeStackedScenario.IN_SEQUENCE);
-                    }
                     // Show nb in the next round.
                     nextBack = null;
                     candidates.set(1, null);
                 } else { // Both visible front and back messages will be replaced.
-                    recordAnimationAction(StackingAnimationAction.REMOVE_BACK, currentBack);
-                    recordStackingAnimationType(StackingAnimationType.REMOVE_ALL);
                     mBackAnimator =
                             currentBack.handler.hide(Position.BACK, Position.FRONT, animate);
                     // Hide current displayed two messages and then show other messages
@@ -193,17 +160,12 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
                 nextFront = nextBack = null;
                 candidates.set(0, null);
                 candidates.set(1, null);
-                recordStackingAnimationType(StackingAnimationType.REMOVE_FRONT_ONLY);
             }
         } else if (currentFront == nextFront) {
             if (currentBack != null) { // Hide the current back one.
-                recordAnimationAction(StackingAnimationAction.REMOVE_BACK, currentBack);
-                recordStackingAnimationType(StackingAnimationType.REMOVE_BACK_ONLY);
                 mBackAnimator = currentBack.handler.hide(Position.BACK, Position.FRONT, animate);
                 candidates.set(1, null); // Show next back in next round if non-null.
             } else {
-                recordAnimationAction(StackingAnimationAction.INSERT_AT_BACK, nextBack);
-                recordStackingAnimationType(StackingAnimationType.SHOW_BACK_ONLY);
                 // If nb is null, it means candidates and current displayed messages are equal.
                 assert nextBack != null;
                 mBackAnimator = nextBack.handler.show(Position.FRONT, Position.BACK);
@@ -211,9 +173,6 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
         } else {
             assert currentFront == nextBack;
             if (currentBack != null) {
-                recordAnimationAction(StackingAnimationAction.REMOVE_BACK, currentBack);
-                recordStackingAnimationType(StackingAnimationType.REMOVE_BACK_ONLY);
-                recordThreeStackedScenario(ThreeStackedScenario.HIGH_PRIORITY);
                 mBackAnimator = currentBack.handler.hide(Position.BACK, Position.FRONT, animate);
                 // [m1, m2] -> [m1, null] -> [m3, m1]
                 // In this case, we complete this in 2 steps to avoid manipulating 3 handlers
@@ -221,17 +180,9 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
                 candidates.set(0, currentFront);
                 candidates.set(1, null);
             } else { // Moved the current front to back and show a new front view.
-                recordAnimationAction(StackingAnimationAction.PUSH_TO_BACK, currentFront);
-                recordAnimationAction(StackingAnimationAction.INSERT_AT_FRONT, nextFront);
-                recordStackingAnimationType(StackingAnimationType.INSERT_AT_FRONT);
                 mFrontAnimator = nextFront.handler.show(Position.INVISIBLE, Position.FRONT);
                 mBackAnimator = currentFront.handler.show(Position.FRONT, Position.BACK);
             }
-        }
-
-        if (candidates.get(0) != null && candidates.get(1) != null) {
-            MessagesMetrics.recordStackingHiding(candidates.get(0).handler.getMessageIdentifier());
-            MessagesMetrics.recordStackingHidden(candidates.get(1).handler.getMessageIdentifier());
         }
 
         if (nextFront == null) {
@@ -253,8 +204,8 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
     private void triggerStackingAnimation(
             List<MessageState> candidates,
             Runnable onFinished,
-            Animator frontAnimator,
-            Animator backAnimator) {
+            @Nullable Animator frontAnimator,
+            @Nullable Animator backAnimator) {
         Runnable runnable =
                 () -> {
                     // While the runnable is waiting to be triggered, hiding animation might be
@@ -280,15 +231,12 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
         if (candidates.get(0) == null) {
             runnable.run();
         } else {
-            boolean initialized = mContainer.runAfterInitialMessageLayout(runnable);
-            if (mAreExtraHistogramsEnabled && !initialized) {
-                MessagesMetrics.recordBlockedByContainerNotInitialized(
-                        candidates.get(0).handler.getMessageIdentifier());
-            }
+            mContainer.runAfterInitialMessageLayout(runnable);
         }
     }
 
-    private boolean isAnimatorExpired(Animator frontAnimator, Animator backAnimator) {
+    private boolean isAnimatorExpired(
+            @Nullable Animator frontAnimator, @Nullable Animator backAnimator) {
         return mFrontAnimator != frontAnimator || mBackAnimator != backAnimator;
     }
 
@@ -315,25 +263,19 @@ public class MessageAnimationCoordinator implements SwipeAnimationHandler {
         mAnimatorStartCallback.onResult(animator);
     }
 
+    @Initializer
     void setMessageQueueDelegate(MessageQueueDelegate delegate) {
         mMessageQueueDelegate = delegate;
     }
 
-    @Nullable
-    MessageState getCurrentDisplayedMessage() {
+    @Nullable MessageState getCurrentDisplayedMessage() {
         return mCurrentDisplayedMessage;
     }
 
     // Return a list of two messages which should be displayed when stacking animation is enabled.
-    @NonNull
+
     List<MessageState> getCurrentDisplayedMessages() {
         return mCurrentDisplayedMessages;
-    }
-
-    private void recordAnimationAction(
-            @StackingAnimationAction int action, @NonNull MessageState messageState) {
-        MessagesMetrics.recordStackingAnimationAction(
-                action, messageState.handler.getMessageIdentifier());
     }
 
     static class MessageAnimationListener extends CancelAwareAnimatorListener {

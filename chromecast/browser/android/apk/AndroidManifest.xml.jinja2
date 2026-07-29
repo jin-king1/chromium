@@ -21,12 +21,12 @@
     <uses-feature android:name="android.hardware.screen.landscape" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
 
-    <application android:name="org.chromium.chromecast.shell.CastApplication"
+    <application android:name="org.chromium.chromecast.shell.CastBrowserApplication"
                  android:icon="@drawable/ic_settings_cast">
         <service android:name="org.chromium.chromecast.shell.CastBrowserService"
                  android:process=":cast_browser_process"
                  android:hardwareAccelerated="true"
-                 android:label="Chromecast Web Browser"
+                 android:label="Cast Web Browser"
                  android:exported="true"
                  android:foregroundServiceType="mediaPlayback"
                  tools:ignore="ExportedService">
@@ -54,6 +54,7 @@
         </activity>
 
         <service android:name="org.chromium.chromecast.shell.TaskRemovedMonitorService"
+                 android:process=":cast_browser_process"
                  android:exported="false">
         </service>
 
@@ -71,6 +72,20 @@
                  android:permission="org.chromium.chromecast.shell.permission.SANDBOX"
                  android:isolatedProcess="true"
                  android:exported="false" />
+        {% endfor %}
+
+        {% for i in range(2) %}
+        <service android:name="org.chromium.content.app.NativeOnlySandboxedProcessService{{ i }}"
+                 android:process=":sandboxed_process{{ i }}"
+                 android:permission="org.chromium.chromecast.shell.permission.SANDBOX"
+                 android:isolatedProcess="true"
+                 android:nativeService="true"
+                 android:exported="false" >
+             <property android:name="android.app.PROPERTY_NATIVE_SERVICE_LIBRARY_NAME"
+                       android:value="lib{{ library_name }}.so" />
+             <property android:name="android.app.PROPERTY_NATIVE_SERVICE_FUNCTION_NAME"
+                       android:value="NativeChildProcessService_onCreate" />
+        </service>
         {% endfor %}
 
         {% set num_privileged_services = 5 %}

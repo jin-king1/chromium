@@ -9,7 +9,6 @@
 #include <string_view>
 
 #include "base/files/file_util.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
 #include "base/scoped_native_library.h"
 #include "base/strings/strcat.h"
@@ -116,9 +115,8 @@ std::string NativeLibraryLoadError::ToString() const {
   return StringPrintf("%lu", code);
 }
 
-NativeLibrary LoadNativeLibraryWithOptions(const FilePath& library_path,
-                                           const NativeLibraryOptions& options,
-                                           NativeLibraryLoadError* error) {
+NativeLibrary LoadNativeLibrary(const FilePath& library_path,
+                                NativeLibraryLoadError* error) {
   return LoadNativeLibraryHelper(library_path, error);
 }
 

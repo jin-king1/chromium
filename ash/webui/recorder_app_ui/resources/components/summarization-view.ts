@@ -12,29 +12,27 @@ import './genai-placeholder.js';
 import './spoken-message.js';
 import './summary-consent-card.js';
 
+import type {CSSResultGroup, PropertyDeclarations} from 'chrome://resources/mwc/lit/index.js';
 import {
   createRef,
   css,
-  CSSResultGroup,
   html,
   map,
   nothing,
-  PropertyDeclarations,
   ref,
 } from 'chrome://resources/mwc/lit/index.js';
 
 import {i18n} from '../core/i18n.js';
 import {usePlatformHandler} from '../core/lit/context.js';
+import type {ModelResponse, ModelState} from '../core/on_device_model/types.js';
 import {
   GenaiResultType,
-  ModelResponse,
-  ModelResponseError,
-  ModelState,
+  ModelLoadError,
 } from '../core/on_device_model/types.js';
 import {ReactiveLitElement} from '../core/reactive/lit.js';
 import {computed, signal} from '../core/reactive/signal.js';
 import {LanguageCode} from '../core/soda/language_info.js';
-import {Transcription} from '../core/soda/soda.js';
+import type {Transcription} from '../core/soda/soda.js';
 import {settings, SummaryEnableState} from '../core/state/settings.js';
 import {HELP_URL} from '../core/url_constants.js';
 import {
@@ -327,18 +325,22 @@ export class SummarizationView extends ReactiveLitElement {
     switch (state.kind) {
       case 'installing':
         return html`<spoken-message role="status" aria-live="polite">
-            ${i18n.summaryDownloadStartedStatusMessage}
+            ${i18n.genAiDownloadStartedStatusMessage}
+          </spoken-message>`;
+      case 'needsReboot':
+        return html`<spoken-message role="status" aria-live="polite">
+            ${i18n.genAiNeedsRebootStatusMessage}
           </spoken-message>`;
       case 'error':
         return html`<spoken-message role="status" aria-live="polite">
-            ${i18n.summaryDownloadErrorStatusMessage}
+            ${i18n.genAiDownloadErrorStatusMessage}
           </spoken-message>`;
       case 'installed':
         if (!this.downloadRequested.value) {
           return nothing;
         }
         return html`<spoken-message role="status" aria-live="polite">
-            ${i18n.summaryDownloadFinishedStatusMessage}
+            ${i18n.genAiDownloadFinishedStatusMessage}
           </spoken-message>`;
       case 'notInstalled':
       case 'unavailable':
@@ -352,10 +354,17 @@ export class SummarizationView extends ReactiveLitElement {
     switch (state.kind) {
       case 'installing':
         return nothing;
+      case 'needsReboot':
+        return html`
+          <genai-error
+            .error=${ModelLoadError.NEEDS_REBOOT}
+            .resultType=${GenaiResultType.SUMMARY}
+          ></genai-error>
+        `;
       case 'error':
         return html`
           <genai-error
-            .error=${ModelResponseError.LOAD_FAILURE}
+            .error=${ModelLoadError.LOAD_FAILURE}
             @download-clicked=${this.onDownloadClicked}
           ></genai-error>
         `;
@@ -370,7 +379,6 @@ export class SummarizationView extends ReactiveLitElement {
   }
 
   private renderSummaryRow(state: ModelState) {
-    // TODO: b/384418702 - Have different tooltip for error state.
     const tooltipLabel = this.summaryOpened.value ?
       i18n.summaryCollapseTooltip :
       i18n.summaryExpandTooltip;
@@ -379,7 +387,7 @@ export class SummarizationView extends ReactiveLitElement {
     if (state.kind === 'installing') {
       progress = html`
         <span class="progress">
-          ${i18n.summaryDownloadingProgressDescription(state.progress)}
+          ${i18n.summaryGenAiDownloadingProgressDescription(state.progress)}
         </span>
       `;
     }
@@ -393,7 +401,7 @@ export class SummarizationView extends ReactiveLitElement {
           show-button-tooltip
           button-tooltip-label=${tooltipLabel}
           ?disabled=${state.kind === 'installing'}
-          ?expanded=${state.kind === 'error'}
+          ?expanded=${state.kind === 'error' || state.kind === 'needsReboot'}
         >
           <cra-icon name="summarize_auto" slot="leading"></cra-icon>
           <div slot="title">
@@ -424,6 +432,7 @@ export class SummarizationView extends ReactiveLitElement {
         return html`<summary-consent-card></summary-consent-card>`;
       case SummaryEnableState.ENABLED:
         switch (summaryModelState.kind) {
+          case 'needsReboot':
           case 'installing':
           case 'error':
           case 'installed':
@@ -433,9 +442,6 @@ export class SummarizationView extends ReactiveLitElement {
           default:
             assertExhaustive(summaryModelState.kind);
         }
-      // eslint doesn't detect that the above case never reaches here, but tsc
-      // prevents us from adding "break;" here since it's unreachable code.
-      // eslint-disable-next-line no-fallthrough
       default:
         assertExhaustive(summaryEnabled);
     }

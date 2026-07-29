@@ -58,8 +58,7 @@ class AwFileSystemAccessPermissionContext
       content::RenderFrameHost* rfh) override;
   bool CanObtainReadPermission(const url::Origin& origin) override;
   bool CanObtainWritePermission(const url::Origin& origin) override;
-  bool IsFileTypeDangerous(const base::FilePath& path,
-                           const url::Origin& origin) override;
+  bool IsFileTypeDangerous(const base::FilePath& path) override;
   void SetLastPickedDirectory(const url::Origin& origin,
                               const std::string& id,
                               const content::PathInfo& path_info) override;
@@ -73,6 +72,10 @@ class AwFileSystemAccessPermissionContext
   void NotifyEntryMoved(const url::Origin& origin,
                         const content::PathInfo& old_path,
                         const content::PathInfo& new_path) override;
+  void NotifyEntryModified(const url::Origin& origin,
+                           const content::PathInfo& path) override;
+  void NotifyEntryRemoved(const url::Origin& origin,
+                          const content::PathInfo& path) override;
   void OnFileCreatedFromShowSaveFilePicker(
       const GURL& file_picker_binding_context,
       const storage::FileSystemURL& url) override;

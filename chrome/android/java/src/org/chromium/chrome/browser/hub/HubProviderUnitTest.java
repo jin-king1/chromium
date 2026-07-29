@@ -27,13 +27,16 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
 import org.chromium.base.supplier.LazyOneshotSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
@@ -41,9 +44,12 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.toolbar.menu_button.MenuButtonCoordinator;
+import org.chromium.chrome.browser.ui.actions.button.DisplayButtonData;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarHostManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityClient;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 import org.chromium.ui.base.TestActivity;
 
@@ -56,17 +62,18 @@ public class HubProviderUnitTest {
     public ActivityScenarioRule<TestActivity> mActivityScenarioRule =
             new ActivityScenarioRule<>(TestActivity.class);
 
-    private final ObservableSupplierImpl<Integer> mTabCountSupplier =
-            new ObservableSupplierImpl<>();
-    private final ObservableSupplierImpl<Tab> mTabSupplierMock = new ObservableSupplierImpl<>();
-    private final ObservableSupplierImpl<TabModel> mTabModelSupplier =
-            new ObservableSupplierImpl<>();
-    private final ObservableSupplierImpl<DisplayButtonData> mReferenceButtonDataSupplier =
-            new ObservableSupplierImpl<>();
+    private final SettableNonNullObservableSupplier<Integer> mTabCountSupplier =
+            ObservableSuppliers.createNonNull(0);
+    private final SettableNullableObservableSupplier<Tab> mTabSupplierMock =
+            ObservableSuppliers.createNullable();
+    private final SettableMonotonicObservableSupplier<TabModel> mTabModelSupplier =
+            ObservableSuppliers.createMonotonic();
+    private final SettableNullableObservableSupplier<DisplayButtonData>
+            mReferenceButtonDataSupplier = ObservableSuppliers.createNullable();
     private final OneshotSupplierImpl<ProfileProvider> mProfileProviderSupplier =
             new OneshotSupplierImpl<>();
-    private final ObservableSupplierImpl<EdgeToEdgeController> mEdgeToEdgeSupplier =
-            new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeSupplier =
+            ObservableSuppliers.createMonotonic();
 
     @Mock private Callback<HubManager> mHubManagerCallback;
     @Mock private DisplayButtonData mReferenceButtonData;
@@ -78,6 +85,8 @@ public class HubProviderUnitTest {
     @Mock private BackPressManager mBackPressManagerMock;
     @Mock private MenuOrKeyboardActionController mMenuOrKeyboardActionController;
     @Mock private SnackbarManager mSnackbarManager;
+    @Mock private BottomSheetController mBottomSheetController;
+    @Mock private BottomBarHostManager mBottomBarHostManager;
     @Mock private MenuButtonCoordinator mMenuButtonCoordinator;
     @Mock private SearchActivityClient mSearchActivityClient;
 
@@ -104,7 +113,6 @@ public class HubProviderUnitTest {
 
         when(mTabModelSelector.getCurrentTabSupplier()).thenReturn(mTabSupplierMock);
         when(mTabModelSelector.getCurrentModelTabCountSupplier()).thenReturn(mTabCountSupplier);
-        mTabCountSupplier.set(0);
         mActivityScenarioRule.getScenario().onActivity(this::onActivity);
     }
 
@@ -119,10 +127,14 @@ public class HubProviderUnitTest {
                         mBackPressManagerMock,
                         mMenuOrKeyboardActionController,
                         () -> mSnackbarManager,
+                        () -> mBottomSheetController,
+                        mBottomBarHostManager,
                         () -> mTabModelSelector,
                         () -> mMenuButtonCoordinator,
                         mEdgeToEdgeSupplier,
-                        mSearchActivityClient);
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
     }
 
     @Test
@@ -151,7 +163,7 @@ public class HubProviderUnitTest {
         PaneManager paneManager = hubManager.getPaneManager();
         assertNotNull(paneManager);
 
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
         when(mTabModelSelector.isIncognitoSelected()).thenReturn(false);
 
         paneManager.focusPane(PaneId.TAB_SWITCHER);
@@ -213,7 +225,7 @@ public class HubProviderUnitTest {
         // This shouldn't crash.
         mHubProvider.destroy();
 
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     @Test
@@ -236,7 +248,7 @@ public class HubProviderUnitTest {
 
         assertFalse(hubManagerSupplier.hasValue());
         mHubProvider.destroy();
-        ShadowLooper.runUiThreadTasks();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         assertFalse(hubManagerSupplier.hasValue());
         verify(mHubManagerCallback, never()).onResult(any());

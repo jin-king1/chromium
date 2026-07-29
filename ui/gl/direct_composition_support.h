@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <d3d11.h>
+#include <d3d12.h>
 #include <dcomp.h>
 #include <wrl/client.h>
 
@@ -17,6 +18,7 @@
 #include "ui/gfx/mojom/dxgi_info.mojom.h"
 #include "ui/gl/gl_export.h"
 #include "ui/gl/gpu_switching_observer.h"
+#include "ui/gl/solid_color_pool_base.h"
 
 namespace gl {
 
@@ -36,11 +38,19 @@ HRESULT DCompositionGetStatistics(COMPOSITION_FRAME_ID frameId,
                                   COMPOSITION_TARGET_ID* targetIds,
                                   UINT* actualTargetIdCount);
 
-// Initialize direct composition with the given d3d11 device.
+// Initialize direct composition with the given d3d11 device, d3d12 command
+// queue, and factory used to create a `SolidColorPoolBase` matching the
+// active GPU backend. The command queue can be null.
 GL_EXPORT void InitializeDirectComposition(
-    Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device);
+    Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device,
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> d3d12_command_queue,
+    SolidColorPoolFactory solid_color_content_provider_factory);
 
 GL_EXPORT void ShutdownDirectComposition();
+
+// Returns a copy of the SolidColorPoolFactory passed to
+// `InitializeDirectComposition`.
+GL_EXPORT SolidColorPoolFactory GetDirectCompositionSolidColorPoolFactory();
 
 // Retrieves the global direct composition device. InitializeDirectComposition
 // must be called on GPU process startup before the device is retrieved, and
@@ -53,15 +63,22 @@ GL_EXPORT IDCompositionDevice3* GetDirectCompositionDevice();
 // shutdown.
 GL_EXPORT ID3D11Device* GetDirectCompositionD3D11Device();
 
+// Retrieves the global d3d12 command queue created by Chromium's Dawn instance
+// and used by SharedImage code to queue work when it runs in D3D12 mode.
+// InitializeDirectComposition must be called on GPU process startup before the
+// command queue is retrieved, and ShutdownDirectComposition must be called at
+// process shutdown.
+GL_EXPORT ID3D12CommandQueue* GetDirectCompositionD3D12CommandQueue();
+
 // Returns true if direct composition is supported.  We prefer to use direct
 // composition even without hardware overlays, because it allows us to bypass
 // blitting by DWM to the window redirection surface by using a flip mode swap
-// chain.  Overridden with --disable_direct_composition=1.
+// chain. Overridden with --disable-direct-composition.
 GL_EXPORT bool DirectCompositionSupported();
 
 // Returns true if video overlays are supported and should be used. Overridden
 // with --enable-direct-composition-video-overlays and
-// --disable_direct_composition_video_overlays=1. This function is thread safe.
+// --disable-direct-composition-video-overlays. This function is thread safe.
 GL_EXPORT bool DirectCompositionOverlaysSupported();
 
 // Returns true if hardware overlays are supported. This function is thread
@@ -87,14 +104,18 @@ GL_EXPORT bool VideoProcessorAutoHDRSupported();
 // Returns true if video processor support handling the given format.
 GL_EXPORT bool CheckVideoProcessorFormatSupport(DXGI_FORMAT format);
 
-// Returns true if the given P010 video format is displayable.
-GL_EXPORT bool CheckDisplayableSupportForP010();
-
 // Returns overlay support flags for the given format.
 // Caller should check for DXGI_OVERLAY_SUPPORT_FLAG_DIRECT and
 // DXGI_OVERLAY_SUPPORT_FLAG_SCALING bits.
 // This function is thread safe.
 GL_EXPORT UINT GetDirectCompositionOverlaySupportFlags(DXGI_FORMAT format);
+
+// Returns HDR HW capabilities information.
+GL_EXPORT void GetDirectCompositionMaxAMDHDRHwOffloadResolution(
+    bool* amd_hdr_hw_offload_supported,
+    bool* amd_platform_detected,
+    int* amd_hdr_hw_offload_max_width,
+    int* amd_hdr_hw_offload_max_height);
 
 // Returns true if swap chain tearing flag is supported.
 GL_EXPORT bool DXGISwapChainTearingSupported();
@@ -120,6 +141,13 @@ GL_EXPORT gfx::mojom::DXGIInfoPtr GetDirectCompositionHDRMonitorDXGIInfo();
 // Returns true if there is support for |IDCompositionTexture|.
 GL_EXPORT bool DirectCompositionTextureSupported();
 
+// Returns true if |color_space| is supported by the IHV overlay hardware for
+// |format| on |output|. Returns false if |output| is null.
+GL_EXPORT bool DirectCompositionColorSpaceOverlaySupported(
+    DXGI_FORMAT format,
+    DXGI_COLOR_SPACE_TYPE color_space,
+    IDXGIOutput* output);
+
 struct DirectCompositionOverlayWorkarounds {
   // Whether software video overlays i.e. swap chains used without hardware
   // overlay/MPO support are used or not.
@@ -129,9 +157,14 @@ struct DirectCompositionOverlayWorkarounds {
   // decoder textures are used or not.
   bool disable_decode_swap_chain = false;
 
-  // On Intel GPUs where YUV overlays are supported, BGRA8 overlays are
-  // supported as well but IDXGIOutput3::CheckOverlaySupport() returns
-  // unsupported. So allow manually enabling BGRA8 overlay support.
+  // This is a workaround for a long-known issue where older Intel GPU drivers
+  // fail to report BGRA8 overlay support on Windows, while Windows D3D API
+  // before 10.0.26100.4061 fails to deal with RGB pixel format in
+  // IDXGIOutput3::CheckOverlaySupport(). This also means that both newer
+  // Windows versions (10.0.26100.4061 and later) and newer Intel GPU drivers
+  // (32.0.101.6314 and later) are required to correctly report BGRA8 overlay
+  // support. Otherwise, this workaround is applied to manually allow BGRA8
+  // overlays to be used when YUV overlays are supported on Intel GPUs.
   bool enable_bgra8_overlays_with_yuv_overlay_support = false;
 
   // Forces to enable NV12 overlay support regardless of the query results from
@@ -145,9 +178,22 @@ struct DirectCompositionOverlayWorkarounds {
   // Enable NV12 overlay support only when
   // DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709 is supported.
   bool check_ycbcr_studio_g22_left_p709_for_nv12_support = false;
+
+  // Before 10.0.26100.3624, Windows could return PRESENTATION_ERROR_LOST in
+  // some cases that are potentially recoverable by destroying all the DComp
+  // textures associated with our DComp device. However, Viz is not
+  // well-equipped to do this since most DComp textures are owned by pools in
+  // the renderer processes. This version and beyond, Windows has a fix to only
+  // return PRESENTATION_ERROR_LOST in truly unrecoverable cases, which we will
+  // treat the same as context loss.
+  bool disable_dcomp_texture = false;
 };
 GL_EXPORT void SetDirectCompositionOverlayWorkarounds(
     const DirectCompositionOverlayWorkarounds& workarounds);
+
+// Returns true if the swap chain format is forced to be a YUV format via a GPU
+// workaround flag.
+GL_EXPORT bool IsSwapChainYuvFormatForced();
 
 // Returns monitor size.
 GL_EXPORT gfx::Size GetDirectCompositionPrimaryMonitorSize();
@@ -163,6 +209,13 @@ GL_EXPORT void SetDirectCompositionOverlayFormatUsedForTesting(
 GL_EXPORT void SetDirectCompositionMonitorInfoForTesting(
     int num_monitors,
     const gfx::Size& primary_monitor_size);
+GL_EXPORT void SetSupportsAMDHwOffloadHDRCapsForTesting(
+    bool amd_hdr_hw_offload_supported,
+    bool amd_platform_detected,
+    INT32 amd_hdr_hw_offload_max_width,
+    INT32 amd_hdr_hw_offload_max_height);
+GL_EXPORT UINT
+GetDirectCompositionOverlaySupportFlagsForTesting(DXGI_FORMAT format);
 
 class GL_EXPORT DirectCompositionOverlayCapsObserver
     : public base::CheckedObserver {
@@ -197,7 +250,6 @@ class GL_EXPORT DirectCompositionOverlayCapsMonitor
   void NotifyOverlayCapsChanged();
 
   // Implements GpuSwitchingObserver.
-  void OnGpuSwitched(gl::GpuPreference active_gpu_heuristic) override;
   void OnDisplayAdded() override;
   void OnDisplayRemoved() override;
   void OnDisplayMetricsChanged() override;

@@ -4,6 +4,9 @@
 
 package org.chromium.chrome.browser.autofill.vcn;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.net.Uri;
@@ -17,9 +20,13 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ChromeStringConstants;
-import org.chromium.chrome.browser.autofill.AutofillUiUtils;
+import org.chromium.chrome.browser.autofill.AutofillUiUtils.IconSpecs;
+import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinator;
+import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinatorProvider;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.Description;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.IssuerIcon;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.LegalMessages;
@@ -31,8 +38,11 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
 import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.ImageSize;
+import org.chromium.components.autofill.ImageType;
 import org.chromium.components.autofill.VirtualCardEnrollmentLinkType;
 import org.chromium.components.autofill.payments.LegalMessageLine;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -42,15 +52,19 @@ import java.util.List;
 
 /** Bridge for the virtual card enrollment bottom sheet. */
 @JNINamespace("autofill")
+@NullMarked
 /*package*/ class AutofillVcnEnrollBottomSheetBridge
         implements AutofillVcnEnrollBottomSheetCoordinator.Delegate,
                 AutofillVcnEnrollBottomSheetProperties.LinkOpener {
     private long mNativeAutofillVcnEnrollBottomSheetBridge;
-    private Context mContext;
-    private AutofillVcnEnrollBottomSheetCoordinator mCoordinator;
+    private @Nullable BottomSheetController mBottomSheetController;
+    private @Nullable AnchoredDialogCoordinator mAnchoredDialogCoordinator;
+    private @Nullable Context mContext;
+    private @Nullable AutofillVcnEnrollBottomSheetCoordinator mCoordinator;
 
-    private LayoutStateProvider mLayoutStateProviderForTesting;
-    private ObservableSupplier<TabModelSelector> mTabModelSelectorSupplierForTesting;
+    private @Nullable LayoutStateProvider mLayoutStateProviderForTesting;
+    private @Nullable MonotonicObservableSupplier<TabModelSelector>
+            mTabModelSelectorSupplierForTesting;
 
     @CalledByNative
     @VisibleForTesting
@@ -102,14 +116,20 @@ import java.util.List;
         WindowAndroid window = webContents.getTopLevelNativeWindow();
         if (window == null) return false;
 
+        mBottomSheetController = BottomSheetControllerProvider.from(window);
+        if (mBottomSheetController == null) return false;
+
+        mAnchoredDialogCoordinator = AnchoredDialogCoordinatorProvider.from(window);
+        if (mAnchoredDialogCoordinator == null) return false;
+
         mContext = window.getContext().get();
         if (mContext == null) return false;
 
         if (mNativeAutofillVcnEnrollBottomSheetBridge != 0) return false;
         mNativeAutofillVcnEnrollBottomSheetBridge = nativeAutofillVcnEnrollBottomSheetBridge;
 
-        AutofillUiUtils.CardIconSpecs cardIconSpecs =
-                AutofillUiUtils.CardIconSpecs.create(mContext, ImageSize.LARGE);
+        IconSpecs iconSpecs =
+                IconSpecs.create(mContext, ImageType.CREDIT_CARD_ART_IMAGE, ImageSize.LARGE);
 
         PropertyModel.Builder modelBuilder =
                 new PropertyModel.Builder(AutofillVcnEnrollBottomSheetProperties.ALL_KEYS)
@@ -125,6 +145,10 @@ import java.util.List;
                                                 .VIRTUAL_CARD_ENROLLMENT_LEARN_MORE_LINK,
                                         /* linkOpener= */ this))
                         .with(
+                                AutofillVcnEnrollBottomSheetProperties.IS_GPAY_LOGO_VISIBLE,
+                                !ChromeFeatureList.isEnabled(
+                                        AutofillFeatures.AUTOFILL_ENABLE_WALLET_BRANDING))
+                        .with(
                                 AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON,
                                 ChromeFeatureList.isEnabled(
                                                 AutofillFeatures
@@ -132,8 +156,8 @@ import java.util.List;
                                         ? new IssuerIcon(networkIconResource, issuerIconUrl)
                                         : new IssuerIcon(
                                                 issuerIconBitmap,
-                                                cardIconSpecs.getWidth(),
-                                                cardIconSpecs.getHeight()))
+                                                iconSpecs.getWidth(),
+                                                iconSpecs.getHeight()))
                         .with(AutofillVcnEnrollBottomSheetProperties.CARD_LABEL, cardLabel)
                         .with(
                                 AutofillVcnEnrollBottomSheetProperties.GOOGLE_LEGAL_MESSAGES,
@@ -157,20 +181,28 @@ import java.util.List;
                                 cancelButtonLabel)
                         .with(AutofillVcnEnrollBottomSheetProperties.SHOW_LOADING_STATE, false);
 
+        LayoutStateProvider layoutStateProvider =
+                mLayoutStateProviderForTesting != null
+                        ? mLayoutStateProviderForTesting
+                        : LayoutManagerProvider.from(window);
+        MonotonicObservableSupplier<TabModelSelector> selectorSupplier =
+                mTabModelSelectorSupplierForTesting != null
+                        ? mTabModelSelectorSupplierForTesting
+                        : TabModelSelectorSupplier.from(window);
+        Profile profile = Profile.fromWebContents(webContents);
+        assertNonNull(profile);
         mCoordinator =
                 new AutofillVcnEnrollBottomSheetCoordinator(
                         mContext,
-                        Profile.fromWebContents(webContents),
+                        mBottomSheetController,
+                        mAnchoredDialogCoordinator,
+                        profile,
                         modelBuilder,
-                        mLayoutStateProviderForTesting != null
-                                ? mLayoutStateProviderForTesting
-                                : LayoutManagerProvider.from(window),
-                        mTabModelSelectorSupplierForTesting != null
-                                ? mTabModelSelectorSupplierForTesting
-                                : TabModelSelectorSupplier.from(window),
+                        assumeNonNull(layoutStateProvider),
+                        assumeNonNull(selectorSupplier),
                         /* delegate= */ this);
 
-        return mCoordinator.requestShowContent(window);
+        return mCoordinator.requestShowContent();
     }
 
     void setLayoutStateProviderForTesting(LayoutStateProvider layoutStateProvider) {
@@ -178,13 +210,14 @@ import java.util.List;
     }
 
     void setTabModelSelectorSupplierForTesting(
-            ObservableSupplier<TabModelSelector> tabModelSelectorSupplier) {
+            MonotonicObservableSupplier<TabModelSelector> tabModelSelectorSupplier) {
         mTabModelSelectorSupplierForTesting = tabModelSelectorSupplier;
     }
 
     // AutofillVcnEnrollBottomSheetProperties.LinkOpener:
     @Override
     public void openLink(String url, @VirtualCardEnrollmentLinkType int linkType) {
+        assumeNonNull(mContext);
         new CustomTabsIntent.Builder()
                 .setShowTitle(true)
                 .build()
@@ -231,7 +264,7 @@ import java.util.List;
         mCoordinator = null;
     }
 
-    AutofillVcnEnrollBottomSheetCoordinator getCoordinatorForTesting() {
+    @Nullable AutofillVcnEnrollBottomSheetCoordinator getCoordinatorForTesting() {
         return mCoordinator;
     }
 

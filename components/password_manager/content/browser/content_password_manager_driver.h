@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CONTENT_BROWSER_CONTENT_PASSWORD_MANAGER_DRIVER_H_
 #define COMPONENTS_PASSWORD_MANAGER_CONTENT_BROWSER_CONTENT_PASSWORD_MANAGER_DRIVER_H_
 
-#include <map>
 #include <string>
 #include <vector>
 
@@ -13,6 +12,7 @@
 #include "base/memory/weak_ptr.h"
 #include "components/autofill/content/common/mojom/autofill_agent.mojom.h"
 #include "components/autofill/content/common/mojom/autofill_driver.mojom.h"
+#include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/password_form_generation_data.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/password_manager/core/browser/password_autofill_manager.h"
@@ -57,10 +57,13 @@ class ContentPasswordManagerDriver final
   void DidNavigate();
 
   // PasswordManagerDriver implementation.
-  int GetId() const override;
-  void SetPasswordFillData(
+  DriverId GetId() const override;
+  gfx::RectF TransformToRootCoordinates(
+      const gfx::RectF& bounds_in_frame_coordinates) override;
+  void PropagateFillDataOnParsingCompletion(
       const autofill::PasswordFormFillData& form_data) override;
-  void InformNoSavedCredentials() override;
+  void InformNoSavedCredentials(
+      bool should_show_popup_without_passwords) override;
   void FormEligibleForGenerationFound(
       const autofill::PasswordFormGenerationData& form) override;
   void GeneratedPasswordAccepted(const std::u16string& password) override;
@@ -70,17 +73,20 @@ class ContentPasswordManagerDriver final
       const std::u16string& password) override;
   void GeneratedPasswordRejected() override;
   void FocusNextFieldAfterPasswords() override;
-  void FillField(
-      const std::u16string& value,
-      autofill::AutofillSuggestionTriggerSource suggestion_source) override;
-  void SubmitChangePasswordForm(
+  void FillField(autofill::FieldRendererId triggering_field_id,
+                 const std::u16string& value,
+                 autofill::FieldPropertiesFlags field_properties,
+                 base::OnceCallback<void(bool)> success_callback) override;
+  void TriggerPasswordRecoverySuggestions(
+      autofill::FieldRendererId field_id) override;
+  void FillChangePasswordForm(
       autofill::FieldRendererId password_element_id,
       autofill::FieldRendererId new_password_element_id,
       autofill::FieldRendererId confirm_password_element_id,
       const std::u16string& old_password,
       const std::u16string& new_password,
-      base::OnceCallback<void(const autofill::FormData&)> form_data_callback)
-      override;
+      base::OnceCallback<void(const std::optional<autofill::FormData>&)>
+          form_data_callback) override;
   void FillSuggestion(const std::u16string& username,
                       const std::u16string& password,
                       base::OnceCallback<void(bool)> success_callback) override;
@@ -111,13 +117,23 @@ class ContentPasswordManagerDriver final
   PasswordGenerationFrameHelper* GetPasswordGenerationHelper() override;
   PasswordManagerInterface* GetPasswordManager() override;
   PasswordAutofillManager* GetPasswordAutofillManager() override;
+  autofill::PasswordManagerDelegate* GetPasswordManagerDelegate() override;
   void SendLoggingAvailability() override;
+  bool IsDirectChildOfPrimaryMainFrame() const override;
   bool IsInPrimaryMainFrame() const override;
+  bool IsNestedWithinFencedFrame() const override;
   bool CanShowAutofillUi() const override;
   int GetFrameId() const override;
   const GURL& GetLastCommittedURL() const override;
+  const url::Origin& GetLastCommittedOrigin() const override;
+  bool HasCrossOriginAncestor() const override;
   void AnnotateFieldsWithParsingResult(
       const autofill::ParsingResult& parsing_result) override;
+  void CheckViewAreaVisible(autofill::FieldRendererId field_id,
+                            base::OnceCallback<void(bool)>) override;
+  bool HasValidURL(bool may_kill_renderer) override;
+  bool IsRenderFrameHostSupported() override;
+  autofill::AutofillDriver* GetAutofillDriver() const override;
   base::WeakPtr<password_manager::PasswordManagerDriver> AsWeakPtr() override;
 
   base::WeakPtr<ContentPasswordManagerDriver> AsWeakPtrImpl() {
@@ -140,6 +156,8 @@ class ContentPasswordManagerDriver final
   content::RenderFrameHost* render_frame_host() const {
     return render_frame_host_;
   }
+
+  PasswordManagerClient* client() { return client_; }
 
 #if defined(UNIT_TEST)
   // Exposed to allow browser tests to hook the driver.
@@ -171,8 +189,6 @@ class ContentPasswordManagerDriver final
                                     const std::u16string& value,
                                     bool autocomplete_attribute_has_username,
                                     bool is_likely_otp) override;
-  void ShowPasswordSuggestions(
-      const autofill::PasswordSuggestionRequest& request) override;
   void CheckSafeBrowsingReputation(const GURL& form_action,
                                    const GURL& frame_url) override;
   void FocusedInputChanged(
@@ -182,8 +198,6 @@ class ContentPasswordManagerDriver final
                              int32_t result) override;
 
  private:
-  void LogFilledFieldType();
-
   const mojo::AssociatedRemote<autofill::mojom::AutofillAgent>&
   GetAutofillAgent();
 
@@ -194,16 +208,16 @@ class ContentPasswordManagerDriver final
   GetPasswordGenerationAgent();
 
   void OnChangePasswordFormFilled(
-      base::OnceCallback<void(const autofill::FormData&)> form_data_callback,
-      const autofill::FormData& raw_form);
+      base::OnceCallback<void(const std::optional<autofill::FormData>&)>
+          form_data_callback,
+      const std::optional<autofill::FormData>& raw_form);
 
   const raw_ptr<content::RenderFrameHost> render_frame_host_;
   const raw_ptr<PasswordManagerClient> client_;
   PasswordGenerationFrameHelper password_generation_helper_;
   PasswordAutofillManager password_autofill_manager_;
 
-  int id_;
-  autofill::FieldRendererId last_triggering_field_id_;
+  DriverId id_;
 
   mojo::AssociatedRemote<autofill::mojom::PasswordAutofillAgent>
       password_autofill_agent_;

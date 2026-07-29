@@ -13,12 +13,13 @@
 #include <string>
 #include <vector>
 
+#include "ash/public/cpp/token_handle_store.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
-#include "base/memory/singleton.h"
+#include "base/memory/raw_ref.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation_traits.h"
@@ -27,7 +28,6 @@
 #include "chrome/browser/ash/child_accounts/child_policy_observer.h"
 #include "chrome/browser/ash/hats/hats_notification_controller.h"
 #include "chrome/browser/ash/login/signin/oauth2_login_manager.h"
-#include "chrome/browser/ash/login/signin/token_handle_util.h"
 #include "chrome/browser/ash/net/xdr_manager.h"
 #include "chrome/browser/ash/release_notes/release_notes_notification.h"
 #include "chrome/browser/ash/system_web_apps/apps/help_app/help_app_notification_controller.h"
@@ -43,10 +43,19 @@
 #include "ui/base/ime/ash/input_method_manager.h"
 
 class AccountId;
+class ApplicationLocaleStorage;
 class GURL;
 class PrefRegistrySimple;
 class PrefService;
 class Profile;
+
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
+
+namespace policy {
+class BrowserPolicyConnectorAsh;
+}  // namespace policy
 
 namespace user_manager {
 class User;
@@ -58,10 +67,11 @@ namespace ash {
 class AuthStatusConsumer;
 class OnboardingUserActivityCounter;
 class AuthenticatorBuilder;
-class TokenHandleFetcher;
+class LegacyTokenHandleFetcher;
 class EolNotification;
+class FrozenUpdateNotification;
 class InputEventsBlocker;
-class U2FNotification;
+class TokenHandleService;
 
 namespace test {
 class UserSessionManagerTestApi;
@@ -77,16 +87,7 @@ class UserSessionManagerDelegate {
   virtual base::WeakPtr<UserSessionManagerDelegate> AsWeakPtr() = 0;
 
  protected:
-  virtual ~UserSessionManagerDelegate();
-};
-
-class UserSessionStateObserver {
- public:
-  // Called when UserManager finishes restoring user sessions after crash.
-  virtual void PendingUserSessionsRestoreFinished();
-
- protected:
-  virtual ~UserSessionStateObserver();
+  virtual ~UserSessionManagerDelegate() = default;
 };
 
 class UserAuthenticatorObserver : public base::CheckedObserver {
@@ -136,7 +137,7 @@ class UserSessionManager
     // TODO(pmarko): Split this into multiple categories, such as kPolicy,
     // kKioskControl. Consider also adding sentinels automatically and
     // pre-filling these switches from the command-line if the chrome has been
-    // started with the --login-user flag (https://crbug.com/832857).
+    // started with the --login-user flag (https://crbug.com/276837931).
     kPolicyAndKioskControl
   };
 
@@ -158,8 +159,17 @@ class UserSessionManager
   // Returns UserSessionManager instance.
   static UserSessionManager* GetInstance();
 
+  // `local_state`, `application_locale_storage` and
+  // `browser_policy_connector_ash` must be non-null and must outlive `this`.
+  // `shared_url_loader_factory` must be non-null.
+  UserSessionManager(
+      PrefService* local_state,
+      ApplicationLocaleStorage* application_locale_storage,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash);
   UserSessionManager(const UserSessionManager&) = delete;
   UserSessionManager& operator=(const UserSessionManager&) = delete;
+  ~UserSessionManager() override;
 
   // Registers session related preferences.
   static void RegisterPrefs(PrefRegistrySimple* registry);
@@ -192,6 +202,11 @@ class UserSessionManager
 
   // Restores authentication session after crash.
   void RestoreAuthenticationSession(Profile* profile);
+
+  // Initializes classes which are responsible for enforcing online sign-in
+  // based on various policies.
+  void EnsureTrackingOfOnlineSignInConditions(Profile* profile,
+                                              UserContext::AuthFlow auth_flow);
 
   // Usually is called when Chrome is restarted after a crash and there's an
   // active session. First user (one that is passed with --login-user) Chrome
@@ -254,9 +269,6 @@ class UserSessionManager
   bool RestartToApplyPerSessionFlagsIfNeed(Profile* profile,
                                            bool early_restart);
 
-  void AddSessionStateObserver(ash::UserSessionStateObserver* observer);
-  void RemoveSessionStateObserver(ash::UserSessionStateObserver* observer);
-
   void AddUserAuthenticatorObserver(UserAuthenticatorObserver* observer);
   void RemoveUserAuthenticatorObserver(UserAuthenticatorObserver* observer);
 
@@ -269,6 +281,10 @@ class UserSessionManager
   // Check to see if given profile should show EndOfLife Notification
   // and show the message accordingly.
   void CheckEolInfo(Profile* profile);
+
+  // Check to see if given user should show Frozen Update Notification
+  // and show the message accordingly.
+  void CheckFrozenUpdateInfo(user_manager::User* user);
 
   // Removes a profile from the per-user input methods states map.
   void RemoveProfileForTesting(Profile* profile);
@@ -288,7 +304,7 @@ class UserSessionManager
   // passed account id. For each type, only the last-set switches will be
   // honored.
   // TODO(pmarko): Introduce a CHECK making sure that `account_id` is the
-  // primary user (https://crbug.com/832857).
+  // primary user (https://crbug.com/276837931).
   void SetSwitchesForUser(const AccountId& account_id,
                           CommandLineSwitchesType switches_type,
                           const std::vector<std::string>& switches);
@@ -318,9 +334,6 @@ class UserSessionManager
     return token_handle_backfill_tried_for_testing_;
   }
 
-  // Shows U2F notification if necessary.
-  void MaybeShowU2FNotification();
-
   // Shows Help App release notes notification, if a notification for the help
   // app has not yet been shown in the current milestone.
   void MaybeShowHelpAppReleaseNotesNotification(Profile* profile);
@@ -331,18 +344,23 @@ class UserSessionManager
   void SetEolNotificationHandlerFactoryForTesting(
       const EolNotificationHandlerFactoryCallback& eol_notification_factory);
 
-  base::WeakPtr<UserSessionManager> GetUserSessionManagerAsWeakPtr();
+  using FrozenUpdateNotificationHandlerFactoryCallback =
+      base::RepeatingCallback<std::unique_ptr<FrozenUpdateNotification>(
+          PrefService& prefs)>;
+  void SetFrozenUpdateNotificationHandlerFactoryForTesting(
+      const FrozenUpdateNotificationHandlerFactoryCallback&
+          frozen_update_notification_factory);
+  // Sets a testing callback which invoked when session restore is finished.
+  // The caller should check `UserSessionsRestored()` is false beforehand.
+  void SetOnPendingUserSessionRestoreFinishedForTesting(
+      base::OnceClosure callback);
 
- protected:
-  // Protected for testability reasons.
-  UserSessionManager();
-  ~UserSessionManager() override;
+  base::WeakPtr<UserSessionManager> GetUserSessionManagerAsWeakPtr();
 
  private:
   // Observes the Device Account's LST and informs UserSessionManager about it.
   class DeviceAccountGaiaTokenObserver;
   friend class test::UserSessionManagerTestApi;
-  friend struct base::DefaultSingletonTraits<UserSessionManager>;
 
   using SigninSessionRestoreStateSet = std::set<AccountId>;
 
@@ -355,7 +373,8 @@ class UserSessionManager
       OAuth2LoginManager::SessionRestoreState state) override;
 
   // network::NetworkConnectionTracker::NetworkConnectionObserver overrides:
-  void OnConnectionChanged(network::mojom::ConnectionType type) override;
+  void OnConnectionChanged(
+      net::NetworkChangeNotifier::ConnectionType type) override;
 
   // UserSessionManagerDelegate overrides:
   // Used when restoring user sessions after crash.
@@ -391,9 +410,6 @@ class UserSessionManager
   void StartCrosSession();
   void PrepareProfile(const base::FilePath& profile_path);
 
-  // Check if the ARCVM DLC image was installed on the device.
-  void CheckArcVmDlcImageExist();
-
   // Callback for Profile::CREATE_STATUS_CREATED profile state.
   // Initializes basic preferences for newly created profile. Any other
   // early profile initialization that needs to happen before
@@ -417,6 +433,10 @@ class UserSessionManager
 
   // Finalized profile preparation.
   void FinalizePrepareProfile(Profile* profile);
+
+  // Checks and enforces the correct primary account consent level based on the
+  // active feature flags.
+  void MaybeMigrateConsentLevelToSync(Profile* profile);
 
   // Launch browser or proceed to alternative login flow. Should be called after
   // profile is ready.
@@ -478,7 +498,7 @@ class UserSessionManager
   // Returns `true` if token handles should be used on this device.
   bool TokenHandlesEnabled();
 
-  void CreateTokenUtilIfMissing();
+  void CreateTokenHandleStoreIfMissing();
 
   // Update token handle if the existing token handle is missing/invalid.
   void UpdateTokenHandleIfRequired(Profile* const profile,
@@ -488,7 +508,7 @@ class UserSessionManager
   void UpdateTokenHandle(Profile* const profile, const AccountId& account_id);
 
   // Test API methods.
-  void InjectAuthenticatorBuilder(
+  void InjectAuthenticatorBuilderForTesting(
       std::unique_ptr<AuthenticatorBuilder> builder);
 
   // Controls whether browser instance should be launched after sign in
@@ -516,6 +536,23 @@ class UserSessionManager
   // doesn't exist.
   HelpAppNotificationController* GetHelpAppNotificationController(
       Profile* profile);
+
+  void MaybeFetchTokenHandleForExistingUser(
+      TokenHandleService* token_handle_service);
+
+  void MaybeFetchTokenHandleForExistingUserIfInvalidOrEmpty(
+      const user_manager::User* user,
+      TokenHandleService* token_handle_service);
+
+  void FetchTokenHandleLegacy(Profile* profile, const user_manager::User* user);
+  void FetchTokenHandle(Profile* profile, const user_manager::User* user);
+
+  const raw_ref<PrefService> local_state_;
+  const raw_ref<ApplicationLocaleStorage> application_locale_storage_;
+  const scoped_refptr<network::SharedURLLoaderFactory>
+      shared_url_loader_factory_;
+  const raw_ref<policy::BrowserPolicyConnectorAsh>
+      browser_policy_connector_ash_;
 
   base::WeakPtr<UserSessionManagerDelegate> delegate_;
 
@@ -546,8 +583,7 @@ class UserSessionManager
 
   PendingUserSessions pending_user_sessions_;
 
-  base::ObserverList<ash::UserSessionStateObserver>::Unchecked
-      session_state_observer_list_;
+  base::OnceClosure on_pending_user_session_restore_finished_for_testsing_;
 
   base::ObserverList<UserAuthenticatorObserver> authenticator_observer_list_;
 
@@ -564,6 +600,10 @@ class UserSessionManager
   // Per-user-session EndofLife Notification
   std::map<Profile*, std::unique_ptr<EolNotification>, ProfileCompare>
       eol_notification_handler_;
+
+  // Per-user-session Frozen Update Notification
+  std::map<AccountId, std::unique_ptr<FrozenUpdateNotification>>
+      frozen_update_notification_handler_;
 
   // Keeps track of which password-requiring-service has already told us whether
   // they need the login password or not.
@@ -582,8 +622,8 @@ class UserSessionManager
   // Whether should fetch token handles, tests may override this value.
   bool should_obtain_handles_;
 
-  std::unique_ptr<TokenHandleUtil> token_handle_util_;
-  std::unique_ptr<TokenHandleFetcher> token_handle_fetcher_;
+  raw_ptr<TokenHandleStore> token_handle_store_;
+  std::unique_ptr<LegacyTokenHandleFetcher> token_handle_fetcher_;
   std::map<Profile*, std::unique_ptr<DeviceAccountGaiaTokenObserver>>
       token_observers_;
 
@@ -598,7 +638,10 @@ class UserSessionManager
 
   scoped_refptr<HatsNotificationController> hats_notification_controller_;
 
-  // Mapped to `chrome::AttemptRestart`, except in tests.
+  // Mapped to `session_manager::SessionManager::Get()->RequestRestart()`,
+  // except in tests.
+  // TODO(crbug.com/479113713): Now we should be able to inject the behavior
+  // at SessionManager.
   base::RepeatingClosure attempt_restart_closure_;
 
   base::flat_set<raw_ptr<Profile, CtnExperimental>>
@@ -610,8 +653,6 @@ class UserSessionManager
 
   std::unique_ptr<ChildPolicyObserver> child_policy_observer_;
 
-  std::unique_ptr<U2FNotification> u2f_notification_;
-
   std::unique_ptr<HelpAppNotificationController>
       help_app_notification_controller_;
 
@@ -622,6 +663,11 @@ class UserSessionManager
 
   // Callback that allows tests to inject a test EolNotification implementation.
   EolNotificationHandlerFactoryCallback eol_notification_handler_test_factory_;
+
+  // Callback that allows tests to inject a test
+  // FrozenUpdateNotification implementation.
+  FrozenUpdateNotificationHandlerFactoryCallback
+      frozen_update_notification_handler_test_factory_;
 
   // Whether `metrics::BeginFirstWebContentsProfiling()` has been called. Should
   // only be called once per program lifetime.

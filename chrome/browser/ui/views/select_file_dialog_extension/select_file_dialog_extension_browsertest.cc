@@ -31,10 +31,10 @@
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_select_file_dialog_controller.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -56,6 +56,7 @@
 #include "storage/browser/file_system/external_mount_points.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/aura/window.h"
+#include "ui/base/base_window.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/select_file_policy.h"
@@ -156,7 +157,7 @@ class BaseSelectFileDialogExtensionBrowserTest
     use_file_type_filter_ = GetParam().file_type_filter;
   }
 
-  enum DialogButtonType { DIALOG_BTN_OK, DIALOG_BTN_CANCEL };
+  enum DialogButtonType { kDialogBtnOk, kDialogBtnCancel };
 
   void SetUp() override {
     // Create the dialog wrapper and listener objects.
@@ -188,7 +189,7 @@ class BaseSelectFileDialogExtensionBrowserTest
                                        downloads_dir_);
 
     // The test resources are setup: enable and add default ChromeOS component
-    // extensions now and not before: crbug.com/831074, crbug.com/804413.
+    // extensions now and not before: crbug.com/41382159, crbug.com/40559198.
     file_manager::test::AddDefaultComponentExtensionsOnMainThread(profile());
   }
 
@@ -292,7 +293,7 @@ class BaseSelectFileDialogExtensionBrowserTest
 
   void ClickJsButton(content::RenderFrameHost* frame_host,
                      DialogButtonType button_type) {
-    std::string button_class = (button_type == DIALOG_BTN_OK)
+    std::string button_class = (button_type == kDialogBtnOk)
                                    ? ".button-panel .ok"
                                    : ".button-panel .cancel";
     std::u16string script = base::ASCIIToUTF16(
@@ -342,7 +343,8 @@ class SelectFileDialogExtensionBrowserTest
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, CreateAndDestroy) {
   // The browser window must exist for us to test dialog's parent window.
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Before we call SelectFile, the dialog should not be running/visible.
@@ -357,7 +359,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, DestroyListener) {
 }
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, DestroyListener2) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Open the file dialog on the default path.
@@ -377,13 +380,14 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, DestroyListener2) {
 
   // This will close the FrameHost/WebContents and will try to close the
   // `dialog_`.
-  ClickJsButton(frame_host, DIALOG_BTN_CANCEL);
+  ClickJsButton(frame_host, kDialogBtnCancel);
 
   base::RunLoop().RunUntilIdle();
 }
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, CanResize) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Open the file dialog on the default path.
@@ -397,19 +401,20 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, CanResize) {
   // `PendingDialog::map_`. `PendingDialog::map_` otherwise prevents the dialog
   // from being destroyed on `reset()` in test TearDown and the
   // `SelectFileDialog::listener_` becomes dangling.
-  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+  CloseDialog(kDialogBtnCancel, owning_window);
 }
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
                        SelectFileAndCancel) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Open the file dialog on the default path.
   ASSERT_NO_FATAL_FAILURE(OpenDialog(ui::SelectFileDialog::SELECT_OPEN_FILE,
                                      base::FilePath(), owning_window, ""));
   // Click the "Cancel" button.
-  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+  CloseDialog(kDialogBtnCancel, owning_window);
 
   // Listener should have been informed of the cancellation.
   ASSERT_FALSE(listener_->file_selected());
@@ -418,7 +423,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
                        SelectFileAndOpen) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Create an empty file to provide the file to open.
@@ -437,7 +443,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
   ASSERT_NO_FATAL_FAILURE(OpenDialog(ui::SelectFileDialog::SELECT_OPEN_FILE,
                                      test_file, owning_window, "dialog-ready"));
   // Click the "Open" button.
-  CloseDialog(DIALOG_BTN_OK, owning_window);
+  CloseDialog(kDialogBtnOk, owning_window);
 
   // Listener should have been informed that the file was opened.
   ASSERT_TRUE(listener_->file_selected());
@@ -448,7 +454,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
 // TODO(crbug.com/40249076): Re-enable this test
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
                        DISABLED_SelectFileAndSave) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Open the file dialog to save a file, providing a suggested file path.
@@ -459,7 +466,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
   ASSERT_NO_FATAL_FAILURE(OpenDialog(ui::SelectFileDialog::SELECT_SAVEAS_FILE,
                                      test_file, owning_window, "dialog-ready"));
   // Click the "Save" button.
-  CloseDialog(DIALOG_BTN_OK, owning_window);
+  CloseDialog(kDialogBtnOk, owning_window);
 
   // Listener should have been informed that the file was saved.
   ASSERT_TRUE(listener_->file_selected());
@@ -470,7 +477,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
 // TODO(crbug.com/40249076): Re-enable this test
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
                        DISABLED_SelectFileVirtualKeyboard) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Enable the virtual keyboard.
@@ -497,7 +505,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
                        OpenSingletonTabAndCancel) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Open the file dialog on the default path.
@@ -505,14 +514,14 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
                                      base::FilePath(), owning_window, ""));
 
   // Open a singleton tab in background.
-  NavigateParams p(browser(), GURL("http://www.google.com"),
+  NavigateParams p(browser_window_interface(), GURL("http://www.google.com"),
                    ui::PAGE_TRANSITION_LINK);
-  p.window_action = NavigateParams::SHOW_WINDOW;
+  p.window_action = NavigateParams::WindowAction::kShowWindow;
   p.disposition = WindowOpenDisposition::SINGLETON_TAB;
   Navigate(&p);
 
   // Click the "Cancel" button.
-  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+  CloseDialog(kDialogBtnCancel, owning_window);
 
   // Listener should have been informed of the cancellation.
   ASSERT_FALSE(listener_->file_selected());
@@ -520,7 +529,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, OpenTwoDialogs) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Open the file dialog on the default path.
@@ -532,7 +542,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, OpenTwoDialogs) {
   ASSERT_FALSE(second_dialog_->IsRunning(owning_window));
 
   // Click the "Cancel" button.
-  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+  CloseDialog(kDialogBtnCancel, owning_window);
 
   // Listener should have been informed of the cancellation.
   ASSERT_FALSE(listener_->file_selected());
@@ -540,7 +550,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, OpenTwoDialogs) {
 }
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, FileInputElement) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Start the embedded test server.
@@ -557,9 +568,9 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, FileInputElement) {
 
   // Navigate the browser to the file input element test page.
   const GURL url = embedded_test_server()->GetURL("/file_input/element.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser_window_interface(), url));
   content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
+      chrome_test_utils::GetActiveWebContents(this);
   ASSERT_EQ(url, web_contents->GetLastCommittedURL());
 
   // Create a listener for the file dialog's "ready" message.
@@ -582,21 +593,26 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
                                      base::FilePath(), owning_window, ""));
 
   // Click the "Cancel" button.
-  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+  CloseDialog(kDialogBtnCancel, owning_window);
 
   // Listener should have been informed of the cancellation.
   ASSERT_TRUE(listener_->canceled());
 }
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest, MultipleOpenFile) {
-  // No use-after-free when Browser::OpenFile is called multiple times.
-  browser()->OpenFile();
-  browser()->OpenFile();
+  // No use-after-free when OpenFile is called multiple times.
+  auto* controller = browser_window_interface()
+                         ->GetFeatures()
+                         .browser_select_file_dialog_controller();
+
+  controller->OpenFile();
+  controller->OpenFile();
 }
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
                        DialogCallerSetWhenPassed) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   const std::string url = "https://example.com/";
@@ -612,7 +628,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionBrowserTest,
   ASSERT_EQ(dialog_->owner_.dialog_caller->url().value(), url);
 
   // Click the "Cancel" button.
-  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+  CloseDialog(kDialogBtnCancel, owning_window);
 
   // Listener should have been informed of the cancellation.
   ASSERT_FALSE(listener_->file_selected());
@@ -633,7 +649,8 @@ class SelectFileDialogExtensionFlagTest
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionFlagTest,
                        DialogColoredTitle_Light) {
   ash::DarkLightModeController::Get()->SetDarkModeEnabledForTest(false);
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Open the file dialog on the default path.
@@ -649,13 +666,14 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionFlagTest,
   EXPECT_EQ(dialog_window->GetProperty(chromeos::kFrameInactiveColorKey),
             dialog_title_bar_color);
 
-  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+  CloseDialog(kDialogBtnCancel, owning_window);
 }
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionFlagTest,
                        DialogColoredTitle_Dark) {
   ash::DarkLightModeController::Get()->SetDarkModeEnabledForTest(true);
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Open the file dialog on the default path.
@@ -671,7 +689,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionFlagTest,
   EXPECT_EQ(dialog_window->GetProperty(chromeos::kFrameInactiveColorKey),
             dialog_title_bar_color);
 
-  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+  CloseDialog(kDialogBtnCancel, owning_window);
 }
 
 INSTANTIATE_TEST_SUITE_P(SystemWebApp,
@@ -683,7 +701,8 @@ using SelectFileDialogExtensionDarkLightModeEnabledTest =
 
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionDarkLightModeEnabledTest,
                        ColorModeChange) {
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Open the file dialog on the default path.
@@ -714,7 +733,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionDarkLightModeEnabledTest,
   EXPECT_NE(dialog_window->GetProperty(chromeos::kFrameInactiveColorKey),
             initial_inactive_color);
 
-  CloseDialog(DIALOG_BTN_CANCEL, owning_window);
+  CloseDialog(kDialogBtnCancel, owning_window);
 }
 
 INSTANTIATE_TEST_SUITE_P(SystemWebApp,
@@ -792,7 +811,8 @@ class SelectFileDialogExtensionPolicyTest
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpDownloadAllow) {
   SetupRulesManager();
 
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   const std::string url = "https://example.com/";
@@ -814,7 +834,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpDownloadAllow) {
       .WillOnce(base::test::RunOnceCallback<2>(true));
 
   // Click the "Save" button.
-  CloseDialog(DIALOG_BTN_OK, owning_window);
+  CloseDialog(kDialogBtnOk, owning_window);
 
   // Listener should have been informed of the selection.
   ASSERT_TRUE(listener_->file_selected());
@@ -824,7 +844,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpDownloadAllow) {
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpDownloadBlock) {
   SetupRulesManager();
 
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   const std::string url = "https://example.com/";
@@ -846,7 +867,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpDownloadBlock) {
       .WillOnce(base::test::RunOnceCallback<2>(false));
 
   // Click the "Save" button.
-  CloseDialog(DIALOG_BTN_OK, owning_window);
+  CloseDialog(kDialogBtnOk, owning_window);
 
   // Listener should have been informed of the cancellation.
   ASSERT_FALSE(listener_->file_selected());
@@ -856,7 +877,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpDownloadBlock) {
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpUploadAllow) {
   SetupRulesManager();
 
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Create an empty file to provide the file to open.
@@ -893,7 +915,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpUploadAllow) {
       .WillOnce(base::test::RunOnceCallback<2>(selected_files));
 
   // Click the "Save" button.
-  CloseDialog(DIALOG_BTN_OK, owning_window);
+  CloseDialog(kDialogBtnOk, owning_window);
 
   // Listener should have been informed of the selection.
   ASSERT_TRUE(listener_->file_selected());
@@ -903,7 +925,8 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpUploadAllow) {
 IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpUploadBlock) {
   SetupRulesManager();
 
-  gfx::NativeWindow owning_window = browser()->window()->GetNativeWindow();
+  gfx::NativeWindow owning_window =
+      browser_window_interface()->GetWindow()->GetNativeWindow();
   ASSERT_NE(nullptr, owning_window);
 
   // Create an empty file to provide the file to open.
@@ -941,7 +964,7 @@ IN_PROC_BROWSER_TEST_P(SelectFileDialogExtensionPolicyTest, DlpUploadBlock) {
           base::test::RunOnceCallback<2>(std::vector<ui::SelectedFileInfo>()));
 
   // Click the "Save" button.
-  CloseDialog(DIALOG_BTN_OK, owning_window);
+  CloseDialog(kDialogBtnOk, owning_window);
 
   // Listener should have been informed of the cancellation.
   ASSERT_FALSE(listener_->file_selected());

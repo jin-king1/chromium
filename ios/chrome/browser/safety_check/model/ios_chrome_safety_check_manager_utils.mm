@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/safety_check/model/ios_chrome_safety_check_manager_utils.h"
 
 #import "base/check.h"
+#import "components/safety_check/features.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
 #import "ios/chrome/browser/safety_check/model/ios_chrome_safety_check_manager_constants.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -80,7 +81,7 @@ PasswordSafetyCheckState CalculatePasswordSafetyCheckState(
 }
 
 password_manager::InsecurePasswordCounts DictToInsecurePasswordCounts(
-    const base::Value::Dict& dict) {
+    const base::DictValue& dict) {
   password_manager::InsecurePasswordCounts insecure_password_counts = {
       /* compromised */
       dict.FindInt(kSafetyCheckCompromisedPasswordsCountKey).value_or(0),
@@ -101,8 +102,10 @@ bool CanAutomaticallyRunSafetyCheck(std::optional<base::Time> last_run_time) {
   }
 
   base::TimeDelta last_run_age = base::Time::Now() - last_run_time.value();
+  const base::TimeDelta update_interval_in_days = base::Days(
+      safety_check::features::kBackgroundPasswordCheckInterval.Get().InDays());
 
-  return last_run_age > kSafetyCheckAutorunDelay;
+  return last_run_age > update_interval_in_days;
 }
 
 std::optional<base::Time> GetLatestSafetyCheckRunTimeAcrossAllEntrypoints(

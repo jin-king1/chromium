@@ -9,6 +9,7 @@
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
+#import "ios/chrome/browser/download/model/browser_download_service.h"
 #import "ios/chrome/browser/download/model/download_manager_tab_helper.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -169,7 +170,7 @@ bool ShareFileDownloadTabHelper::ShouldDownload(web::WebState* web_state) {
     return false;
   }
 
-  if (DownloadManagerTabHelper::ShouldRestrictDownloadToFile(web_state)) {
+  if (BrowserDownloadService::ShouldRestrictLocalDownloads(web_state)) {
     return false;
   }
 
@@ -186,5 +187,3 @@ bool ShareFileDownloadTabHelper::ShouldDownload(web::WebState* web_state) {
           mime_type == content_type::kMimeTypeMicrosoftExcel ||
           mime_type == content_type::kMimeTypeMicrosoftExcelOpenXML);
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(ShareFileDownloadTabHelper)

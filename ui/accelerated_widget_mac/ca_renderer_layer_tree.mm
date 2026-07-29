@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/accelerated_widget_mac/ca_renderer_layer_tree.h"
 
 #import <AVFoundation/AVFoundation.h>
@@ -22,9 +17,11 @@
 #include "base/command_line.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "components/metal_util/hdr_copier_layer.h"
+#include "components/viz/common/resources/shared_image_format.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/cocoa/animation_utils.h"
@@ -39,15 +36,12 @@ namespace ui {
 // Transitioning between AVSampleBufferDisplayLayer and CALayer with IOSurface
 // contents can cause flickering.
 // https://crbug.com/1441762
-BASE_FEATURE(kFullscreenLowPowerBackdropMac,
-             "FullscreenLowPowerBackdropMac",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kFullscreenLowPowerBackdropMac, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_MAC)
 // Show borders around RenderPassDrawQuad CALayers. which is the output of a
 // non-root render pass.
 BASE_FEATURE(kShowMacRenderPassDrawQuadBorders,
-             "ShowMacRenderPassDrawQuadBorders",
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
@@ -111,16 +105,27 @@ bool AVSampleBufferDisplayLayerEnqueueCVPixelBuffer(
                        kCMSampleAttachmentKey_DisplayImmediately,
                        kCFBooleanTrue);
 
-  [av_layer enqueueSampleBuffer:sample_buffer.get()];
+  AVQueuedSampleBufferRenderingStatus status;
+  NSError* error;
+  if (@available(macOS 14, iOS 17, *)) {
+    AVSampleBufferVideoRenderer* renderer = av_layer.sampleBufferRenderer;
+    [renderer enqueueSampleBuffer:sample_buffer.get()];
+    status = renderer.status;
+    error = renderer.error;
+  } else {
+    [av_layer enqueueSampleBuffer:sample_buffer.get()];
+    status = av_layer.status;
+    error = av_layer.error;
+  }
 
-  switch (av_layer.status) {
+  switch (status) {
     case AVQueuedSampleBufferRenderingStatusUnknown:
       LOG(ERROR) << "AVSampleBufferDisplayLayer has status unknown, but should "
                     "be rendering.";
       return false;
     case AVQueuedSampleBufferRenderingStatusFailed:
       LOG(ERROR) << "AVSampleBufferDisplayLayer has status failed, error: "
-                 << base::SysNSStringToUTF8(av_layer.error.description);
+                 << base::SysNSStringToUTF8(error.description);
       return false;
     case AVQueuedSampleBufferRenderingStatusRendering:
       break;
@@ -136,7 +141,7 @@ bool AVSampleBufferDisplayLayerEnqueueIOSurface(
     AVSampleBufferDisplayLayer* av_layer,
     IOSurfaceRef io_surface,
     const gfx::ColorSpace& io_surface_color_space,
-    std::optional<gfx::HDRMetadata> hdr_metadata) {
+    const gfx::HDRMetadata& hdr_metadata) {
   CVReturn cv_return = kCVReturnSuccess;
 
   base::apple::ScopedCFTypeRef<CVPixelBufferRef> cv_pixel_buffer;
@@ -165,18 +170,17 @@ bool AVSampleBufferDisplayLayerEnqueueIOSurface(
     CVBufferSetAttachment(cv_pixel_buffer.get(), kCVImageBufferYCbCrMatrixKey,
                           kCVImageBufferYCbCrMatrix_ITU_R_2020,
                           kCVAttachmentMode_ShouldPropagate);
+
     switch (io_surface_color_space.GetTransferID()) {
       case gfx::ColorSpace::TransferID::HLG:
         CVBufferSetAttachment(cv_pixel_buffer.get(),
                               kCVImageBufferTransferFunctionKey,
                               kCVImageBufferTransferFunction_ITU_R_2100_HLG,
                               kCVAttachmentMode_ShouldPropagate);
-        if (@available(macOS 12, iOS 15, *)) {
-          CVBufferSetAttachment(cv_pixel_buffer.get(),
-                                kCVImageBufferAmbientViewingEnvironmentKey,
-                                gfx::GenerateAmbientViewingEnvironment().get(),
-                                kCVAttachmentMode_ShouldPropagate);
-        }
+        CVBufferSetAttachment(cv_pixel_buffer.get(),
+                              kCVImageBufferAmbientViewingEnvironmentKey,
+                              gfx::GenerateAmbientViewingEnvironment().get(),
+                              kCVAttachmentMode_ShouldPropagate);
         break;
       case gfx::ColorSpace::TransferID::PQ:
         CVBufferSetAttachment(cv_pixel_buffer.get(),
@@ -202,14 +206,12 @@ bool AVSampleBufferDisplayLayerEnqueueIOSurface(
 }
 
 CATransform3D ToCATransform3D(const gfx::Transform& t) {
-  CATransform3D result;
-  auto* dst = &result.m11;
-  for (int col = 0; col < 4; col++) {
-    for (int row = 0; row < 4; row++) {
-      *dst++ = t.rc(row, col);
-    }
-  }
-  return result;
+  return CATransform3D{
+      t.rc(0, 0), t.rc(1, 0), t.rc(2, 0), t.rc(3, 0),  //
+      t.rc(0, 1), t.rc(1, 1), t.rc(2, 1), t.rc(3, 1),  //
+      t.rc(0, 2), t.rc(1, 2), t.rc(2, 2), t.rc(3, 2),  //
+      t.rc(0, 3), t.rc(1, 3), t.rc(2, 3), t.rc(3, 3)   //
+  };
 }
 
 }  // namespace
@@ -248,7 +250,7 @@ CARendererLayerTree::SolidColorContents::Get(SkColor4f color) {
     return found->second;
 
   const gfx::Size size(kSolidColorContentsSize, kSolidColorContentsSize);
-  gfx::BufferFormat buffer_format = gfx::BufferFormat::BGRA_8888;
+  viz::SharedImageFormat si_format = viz::SinglePlaneFormat::kBGRA_8888;
   SkColorType color_type = kBGRA_8888_SkColorType;
   gfx::ColorSpace color_space = gfx::ColorSpace::CreateSRGB();
 
@@ -260,7 +262,7 @@ CARendererLayerTree::SolidColorContents::Get(SkColor4f color) {
   }
 
   base::apple::ScopedCFTypeRef<IOSurfaceRef> io_surface =
-      CreateIOSurface(size, buffer_format);
+      CreateIOSurface(size, si_format);
   if (!io_surface)
     return nullptr;
   IOSurfaceSetColorSpace(io_surface.get(), color_space);
@@ -271,8 +273,9 @@ CARendererLayerTree::SolidColorContents::Get(SkColor4f color) {
     IOSurfaceLock(io_surface.get(), /*options=*/0, /*seed=*/nullptr);
     char* base_address =
         reinterpret_cast<char*>(IOSurfaceGetBaseAddress(io_surface.get()));
-    SkImageInfo info = SkImageInfo::Make(size.width(), size.height(),
-                                         color_type, kPremul_SkAlphaType);
+    SkImageInfo info =
+        SkImageInfo::Make(size.width(), size.height(), color_type,
+                          kPremul_SkAlphaType, color_space.ToSkColorSpace());
     auto canvas = SkCanvas::MakeRasterDirect(info, base_address, bytes_per_row);
     DCHECK(canvas);
     canvas->clear(color);
@@ -316,10 +319,12 @@ CARendererLayerTree::SolidColorContents::GetMap() {
 
 CARendererLayerTree::CARendererLayerTree(
     bool allow_av_sample_buffer_display_layer,
-    bool allow_solid_color_layers)
+    bool allow_solid_color_layers,
+    id<MTLDevice> metal_device)
     : allow_av_sample_buffer_display_layer_(
           allow_av_sample_buffer_display_layer),
-      allow_solid_color_layers_(allow_solid_color_layers) {}
+      allow_solid_color_layers_(allow_solid_color_layers),
+      metal_device_(metal_device) {}
 CARendererLayerTree::~CARendererLayerTree() = default;
 
 bool CARendererLayerTree::ScheduleCALayer(const CARendererLayerParams& params) {
@@ -404,8 +409,10 @@ void CARendererLayerTree::ContentLayer::UpdateMapAndMatchOldLayers(
   if (matched_content_layer->ca_layer_used_)
     return;
 
-  auto* matched_transform_layer = matched_content_layer->parent_layer_;
-  auto* matched_clip_layer = matched_transform_layer->parent_layer_;
+  TransformLayer* matched_transform_layer =
+      matched_content_layer->parent_layer_;
+  ClipAndSortingLayer* matched_clip_layer =
+      matched_transform_layer->parent_layer_;
 
   // If the parent is different, the superlayer must have changed. It should be
   // removed from its superlayer and inserted back to the new superlayer in
@@ -1120,6 +1127,10 @@ void CARendererLayerTree::ContentLayer::CommitToCA(
     update_ca_edge_aa_mask = old_layer_->ca_edge_aa_mask_ != ca_edge_aa_mask_;
     update_opacity = old_layer_->opacity_ != opacity_;
     update_ca_filter = old_layer_->ca_filter_ != ca_filter_;
+    if (type_ == CALayerType::kVideo) {
+      av_layer_.preventsCapture =
+          protected_video_type_ != gfx::ProtectedVideoType::kClear;
+    }
   } else {
     switch (type_) {
       case CALayerType::kHDRCopier:
@@ -1127,6 +1138,13 @@ void CARendererLayerTree::ContentLayer::CommitToCA(
         break;
       case CALayerType::kVideo:
         av_layer_ = [[AVSampleBufferDisplayLayer alloc] init];
+        // Workaround for https://crbug.com/398425794. The documentation for
+        // geometryFlipped specifies that "The value of this property does not
+        // affect the rendering of the layer’s content." If this is not
+        // specified, then AVSampleBufferDisplayLayer, when rendering HDR
+        // content that is transformed (by, e.g, a 90 degree rotation), will
+        // be flipped vertically.
+        av_layer_.geometryFlipped = YES;
         ca_layer_ = av_layer_;
         av_layer_.videoGravity = AVLayerVideoGravityResize;
         if (protected_video_type_ != gfx::ProtectedVideoType::kClear) {

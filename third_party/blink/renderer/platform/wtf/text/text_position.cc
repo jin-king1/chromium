@@ -29,7 +29,7 @@
 #include <memory>
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
-namespace WTF {
+namespace blink {
 
 std::unique_ptr<Vector<wtf_size_t>> GetLineEndings(const String& text) {
   std::unique_ptr<Vector<wtf_size_t>> result(
@@ -63,7 +63,8 @@ TextPosition TextPosition::FromOffsetAndLineEndings(
     const Vector<unsigned>& line_endings) {
   const auto found_line_ending =
       std::lower_bound(line_endings.begin(), line_endings.end(), offset);
-  int line_index = std::distance(line_endings.begin(), found_line_ending);
+  wtf_size_t line_index =
+      CheckedDistance(line_endings.begin(), found_line_ending);
   unsigned line_start_offset =
       line_index > 0 ? line_endings.at(line_index - 1) + 1 : 0;
   int column = offset - line_start_offset;
@@ -71,4 +72,4 @@ TextPosition TextPosition::FromOffsetAndLineEndings(
                       OrdinalNumber::FromZeroBasedInt(column));
 }
 
-}  // namespace WTF
+}  // namespace blink

@@ -6,8 +6,10 @@
 
 #include <math.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <ranges>
 
 #include "base/check_op.h"
 #include "base/debug/dump_without_crashing.h"
@@ -20,6 +22,29 @@
 
 namespace variations {
 namespace {
+
+constexpr uint32_t kInvalidLayerId = 0u;
+constexpr uint32_t kInvalidLayerMemberId = 0u;
+constexpr int64_t kMinTimeStamp = 0;
+constexpr int64_t kMaxTimeStamp = std::numeric_limits<int64_t>::max();
+
+// Returns the given timestamp if it is positive, otherwise returns the given
+// default value.
+int64_t GetTimestamp(int64_t t, int64_t default_if_not_valid) {
+  return t <= kMinTimeStamp ? default_if_not_valid : t;
+}
+
+int64_t GetWebVisibilityStartTime(const Study& study) {
+  return std::max(
+      GetTimestamp(study.filter().start_date(), kMinTimeStamp),
+      GetTimestamp(study.google_web_visibility_start_date(), kMinTimeStamp));
+}
+
+int64_t GetWebVisibilityEndTime(const Study& study) {
+  return std::min(
+      GetTimestamp(study.filter().end_date(), kMaxTimeStamp),
+      GetTimestamp(study.google_web_visibility_end_date(), kMaxTimeStamp));
+}
 
 // Converts a probability value (represented by numerator/denominator) to an
 // entropy value. Callers should ensure that both arguments are strictly
@@ -34,6 +59,12 @@ double ConvertToBitsOfEntropy(uint64_t numerator, uint64_t denominator) {
 
 // Returns the number of bits of entropy used by a single study.
 double GetEntropyUsedByStudy(const Study& study) {
+  if (study.consistency() == Study::SESSION) {
+    // Session-consistent studies do not consume entropy. They are randomized
+    // for each Chrome browser process' lifetime; they use neither the low
+    // entropy source nor the limited entropy randomization source.
+    return 0.0;
+  }
   // Use uint32_t to match the type of `probability_weight` field in the
   // experiment proto.
   uint32_t min_weight = std::numeric_limits<uint32_t>::max();
@@ -74,63 +105,6 @@ double GetEntropyUsedByStudy(const Study& study) {
   return ConvertToBitsOfEntropy(min_weight, total_weight);
 }
 
-// Gets the active limited layer in the seed. There should be at most one layer
-// with `LIMITED` entropy mode that's applicable to the client. Returns nullptr
-// if any of the following conditions are met:
-// 1. There is more than one limited layer in the seed.
-// 2. There is no limited layer in the seed.
-// 3. There is a single limited layer, but it's not active.
-// 4. There is a single limited layer, but its slots bounds are not valid.
-// 5. There is a single limited layer with no slots.
-//
-// Creates a dump without crashing when:
-// - Condition 1 is met because there should be at most 1 limited layer in the
-// seed applicable to the client.
-// - Condition 4 or condition 5 is met because a limited layer with invalid
-// bounds or with no slots is a misconfigured layer.
-const Layer* GetActiveLimitedLayer(const VariationsLayers& layers,
-                                   const VariationsSeed& seed) {
-  const Layer* limited_layer = nullptr;
-  for (const Layer& layer : seed.layers()) {
-    bool is_limited_layer = layer.entropy_mode() == Layer::LIMITED;
-    if (!is_limited_layer) {
-      continue;
-    }
-    if (limited_layer) {
-      // Returns nullptr if there is more than 1 limited later in the seed.
-      // There should be at most one layer with `LIMITED` entropy mode that's
-      // applicable to the client.
-      base::debug::DumpWithoutCrashing();
-      return nullptr;
-    }
-    limited_layer = &layer;
-  }
-
-  // At most one layer with `LIMITED` entropy mode will be applicable to the
-  // client; it's fine if no such layers exist, so no need to create a dump.
-  if (limited_layer == nullptr) {
-    return nullptr;
-  }
-
-  // A layer is "active" for a client if the client's slot for that layer is
-  // associated with a layer member. If the limited layer is not active for a
-  // client, the studies that are constrained to the layer will not be assigned,
-  // and thus the entropy limit will not be reached. In this case there is no
-  // need to create a dump.
-  if (!layers.IsLayerActive(limited_layer->id())) {
-    return nullptr;
-  }
-  if (!VariationsLayers::AreSlotBoundsValid(*limited_layer)) {
-    base::debug::DumpWithoutCrashing();
-    return nullptr;
-  }
-  if (limited_layer->num_slots() == 0) {
-    base::debug::DumpWithoutCrashing();
-    return nullptr;
-  }
-  return limited_layer;
-}
-
 // Computes the entropy used by the limited layer member.
 double GetLayerMemberEntropy(const Layer::LayerMember& member,
                              uint64_t num_slots) {
@@ -145,125 +119,188 @@ double GetLayerMemberEntropy(const Layer::LayerMember& member,
 }  // namespace
 
 LimitedLayerEntropyCostTracker::LimitedLayerEntropyCostTracker(
-    const VariationsLayers& layers,
-    const VariationsSeed& seed,
+    const Layer& layer,
     double entropy_limit_in_bits)
-    : entropy_limit_in_bits_(entropy_limit_in_bits) {
-  // Store the ids of all limited layers found in the seed.
-  for (const Layer& layer : seed.layers()) {
-    if (layer.entropy_mode() == Layer::LIMITED) {
-      limited_layers_ids_.insert(layer.id());
-    }
-  }
-  const Layer* limited_layer = GetActiveLimitedLayer(layers, seed);
-  if (!limited_layer) {
-    // There is no valid active limited layer for the client, meaning no limited
-    // entropy will be consumed by studies. A layer is "active" for a client if
-    // the client's slot for that layer is associated with a layer member. A
-    // "valid" layer is a layer that is not misconfigured. If the limited layer
-    // is misconfigured the seed will be rejected by function
-    // `CreateTrialsFromSeed` in
-    // components/variations/service/variations_field_trial_creator_base.cc.
+    : entropy_limit_in_bits_(entropy_limit_in_bits),
+      limited_layer_id_(layer.id()) {
+  // The caller should have already validated the layer. However, as the layer
+  // data comes from an external source, we verify it here again for safety,
+  // instead of using a CHECK. Note that verify each condition individually in
+  // order to dump a unique stack trace for each failure condition.
+  if (limited_layer_id_ == kInvalidLayerId) {
+    Invalidate();
     return;
   }
-  active_limited_layer_id_ = limited_layer->id();
+  if (entropy_limit_in_bits_ <= 0.0) {
+    Invalidate();
+    return;
+  }
+  const auto num_slots = layer.num_slots();
+  if (num_slots <= 0u) {
+    Invalidate();
+    return;
+  }
+  const auto& layer_members = layer.members();
+  if (layer_members.empty()) {
+    Invalidate();
+    return;
+  }
+  if (layer.entropy_mode() != Layer::LIMITED) {
+    Invalidate();
+    return;
+  }
+  if (!VariationsLayers::AreSlotBoundsValid(layer)) {
+    Invalidate();
+    return;
+  }
 
-  // Computes the entropy used by each layer member keyed by its ID.
-  for (const Layer::LayerMember& member : limited_layer->members()) {
+  // Compute the entropy used by each layer member keyed by its memberID.
+  entropy_events_by_member_id_.reserve(layer_members.size());
+  for (const auto& member : layer_members) {
+    if (member.id() == kInvalidLayerMemberId) {
+      Invalidate();
+      return;
+    }
     // All layer members are included in the entropy calculation, including
     // empty ones – ones not referenced by any study. A client assigned to an
     // empty layer member would have the visible assignment state of "no study
     // assigned", which itself reveals information and should be accounted for
     // in the entropy calculation.
-    entropy_used_by_layer_members_[member.id()] =
-        GetLayerMemberEntropy(member, limited_layer->num_slots());
+    auto [iterator, inserted] =
+        entropy_events_by_member_id_.emplace(member.id(), EntropyEventList());
+    if (!inserted) {
+      // => Duplicated layer member ID.
+      Invalidate();
+      return;
+    }
+
+    // Add an entropy event at kMinTimeStamp, representing the initial entropy
+    // state of the layer member before any study assignments. I.e., the entropy
+    // cost of the layer member itself.
+    //
+    // Note that we reserve an initial capacity for the entropy events to avoid
+    // up to 6-8 (re)allocations per layer member when growing the entropy event
+    // vector. This pre-allocation is not expected to exactly match the number
+    // of entropy events; rather, it simply avoids the allocation overhead for
+    // the growth of the entropy events vector up to the given capacity.
+    //
+    // Also note that these allocations are lifetime bound to the tracker, which
+    // exists transiently during seed validation, so there should be no net
+    // impact on memory usage.
+    constexpr size_t kInitialCapacity = 64;
+    auto& entropy_events = iterator->second;
+    entropy_events.reserve(kInitialCapacity);
+    entropy_events.emplace_back(kMinTimeStamp,
+                                GetLayerMemberEntropy(member, num_slots));
   }
 }
 
 LimitedLayerEntropyCostTracker::~LimitedLayerEntropyCostTracker() = default;
 
-bool LimitedLayerEntropyCostTracker::TryAddEntropyUsedByStudy(
-    const Study& study) {
-  // Returns false if there is no active limited layer for the client but the
-  // study is referencing a limited layer. This scenario could happen if there
-  // is more than one limited layer in the seed or if the single limited layer
-  // present in the seed is misconfigured.
-  if (active_limited_layer_id_ == kInvalidLayerId && study.has_layer() &&
-      limited_layers_ids_.contains(study.layer().layer_id())) {
+bool LimitedLayerEntropyCostTracker::AddEntropyUsedByStudy(const Study& study) {
+  if (!IsValid()) {
+    return false;
+  }
+  // The caller should have already validated the study's layer references.
+  // However, as the study data comes from an external source, we verify it
+  // here again for safety, instead of using a CHECK. Note that verify each
+  // condition individually in order to dump a unique stack trace for each
+  // failure condition.
+  if (!study.has_layer()) {
+    Invalidate();
+    return false;
+  }
+  const auto& layer_ref = study.layer();
+  if (layer_ref.layer_id() != limited_layer_id_) {
+    Invalidate();
+    return false;
+  }
+  const auto& layer_member_ids =
+      layer_ref.layer_member_ids().empty()
+          ? VariationsLayers::FallbackLayerMemberIds(layer_ref)
+          : layer_ref.layer_member_ids();
+  if (layer_member_ids.empty()) {
+    Invalidate();
     return false;
   }
 
-  // Returns true if the study is not referencing the limited layer. In this
-  // scenario, the study does not consume entropy on the limited layer. At this
-  // stage, we already validated that the seed is not misconfigured, so
-  // GWS-Visible studies should not be constrained to non-limited layers.
-  if (active_limited_layer_id_ == kInvalidLayerId || !study.has_layer() ||
-      study.layer().layer_id() != active_limited_layer_id_) {
+  // Returns true if the study does not consume entropy at all (e.g. a study
+  // with no Google web experiment ID or Google web trigger experiment ID).
+  const double study_entropy = GetEntropyUsedByStudy(study);
+  if (study_entropy <= 0) {
     return true;
   }
 
-  // Returns false if the entropy used by a layer member is already above the
-  // entropy limit, meaning no more study can be assigned to the limited layer.
-  if (entropy_limit_reached_) {
-    return false;
-  }
+  // Get the start and end times for the study's visibility.
+  const int64_t start_time = GetWebVisibilityStartTime(study);
+  const int64_t end_time = GetWebVisibilityEndTime(study);
 
-  // Returns true if the sudy does not consume entropy at all (e.g. a study with
-  // no Google web experiment ID or Google web trigger experiment ID).
-  double entropy_used_by_study = GetEntropyUsedByStudy(study);
-  if (entropy_used_by_study <= 0) {
-    return true;
-  }
-
-  // Considers all layer members when trying to add the entropy used by the
-  // study. The `entropy_used_by_layer_members_` field contains all members of
-  // the limited layer, including the members currently using 0 entropy.
-  for (const auto& [member_id, member_entropy] :
-       entropy_used_by_layer_members_) {
-    // Includes entropy from the study if it references this `member`. Study
-    // might reference a non-existent layer, in which case the study will not
-    // be assigned (see ShouldAddStudy() in
-    // components/variations/study_filtering.cc). Entropy calculation should
-    // also exclude such studies.
-    if (!VariationsLayers::IsReferencingLayerMemberId(study.layer(),
-                                                      member_id)) {
-      continue;
+  // Update the entropy events for each layer member referenced by the study.
+  // It is assumed that layer member references have already been validated by
+  // the caller.
+  for (const uint32_t member_id : layer_member_ids) {
+    if (member_id == kInvalidLayerMemberId) {
+      Invalidate();
+      return false;
     }
-    entropy_used_by_layer_members_[member_id] += entropy_used_by_study;
-    includes_entropy_used_by_studies_ = true;
-    // TODO(siakabaro): The entropy used by a layer member could be over the
-    // entropy limit if the layer member covers a very small percentage of the
-    // population. In such a case, we need to need to pool the empty layer
-    // members together and check if their combined entropy is not over the
-    // limit.
-    if (entropy_used_by_layer_members_[member_id] > entropy_limit_in_bits_) {
-      entropy_limit_reached_ = true;
+    const auto it = entropy_events_by_member_id_.find(member_id);
+    if (it == entropy_events_by_member_id_.end()) {
+      Invalidate();
+      return false;
     }
+
+    // Add an entropy event for the study's start and end times. Note that
+    // events which free entropy at the end-of-time can (as an optimization)
+    // be skipped, as they will not contribute the maximum entropy used.
+    auto& entropy_events = it->second;
+    entropy_events.emplace_back(start_time, study_entropy);
+    if (end_time != kMaxTimeStamp) {
+      entropy_events.emplace_back(end_time, -study_entropy);
+    }
+    includes_study_entropy_ = true;
   }
 
-  // Returns false if the entropy limit is reached.
-  return !entropy_limit_reached_;
+  // Returning true means that the studies entropy has been successfully added
+  // to the tracker. It does not mean that the entropy limit has not been
+  // exceeded. Callers should check `IsEntropyLimitExceeded()` to determine if
+  // the entropy limit has been exceeded.
+  return true;
 }
 
-double LimitedLayerEntropyCostTracker::GetTotalEntropyUsedForTesting() {
-  if (active_limited_layer_id_ == kInvalidLayerId) {
-    return 0.0;
-  }
-  // The entropy used is zero when none of the studies constrained to the
-  // limited layer use any entropy. The results stored in
-  // `entropy_used_by_layer_members_` is not applicable here because they
-  // include entropy used from layer members. Those entropy usage only applies
-  // when studies that use entropy are constrained to these layer members.
-  if (!entropy_limit_reached_ && !includes_entropy_used_by_studies_) {
-    return 0.0;
-  }
+bool LimitedLayerEntropyCostTracker::IsEntropyLimitExceeded() const {
+  return GetMaxEntropyUsed() > entropy_limit_in_bits_;
+}
 
+double LimitedLayerEntropyCostTracker::GetMaxEntropyUsed() const {
+  if (!includes_study_entropy_) {
+    return 0.0;
+  }
   double max_entropy_used = 0.0;
-  for (const auto& [member_id, member_entropy] :
-       entropy_used_by_layer_members_) {
-    max_entropy_used = std::max(max_entropy_used, member_entropy);
+  for (auto& [member_id, entropy_events] : entropy_events_by_member_id_) {
+    // Sort the entropy events by increasing time, then by increasing entropy
+    // entropy change. This ensures that we removing entropy (negative changes)
+    // before adding entropy (positive changes) for identical timestamps.
+    std::ranges::sort(entropy_events);
+    // Iterate through the sorted entropy events, accumulating the entropy
+    // used and tracking the maximum entropy used at any point.
+    double entropy_used = 0.0;
+    for (const auto& [unused_timestamp, entropy_change] : entropy_events) {
+      entropy_used += entropy_change;
+      max_entropy_used = std::max(max_entropy_used, entropy_used);
+    }
   }
   return max_entropy_used;
+}
+
+void LimitedLayerEntropyCostTracker::Invalidate() {
+  // The caller should have already validated the layer and study info before
+  // any and all calls to the tracker. However, as the layer and study data
+  // comes from an external source, there are additional safety checks made
+  // throughout the tracker. We use these instead of CHECKS or DCHECKS and
+  // verify each condition individually in order to dump a unique stack trace
+  // for each failure condition.
+  is_valid_ = false;
+  base::debug::DumpWithoutCrashing();
 }
 
 }  // namespace variations

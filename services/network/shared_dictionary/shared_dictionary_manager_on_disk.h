@@ -36,6 +36,7 @@ namespace mojom {
 enum class RequestDestination : int32_t;
 }  // namespace mojom
 
+class SharedDictionaryCache;
 class SharedDictionaryStorage;
 
 // A SharedDictionaryManager which persists dictionary information on disk.
@@ -60,7 +61,8 @@ class SharedDictionaryManagerOnDisk : public SharedDictionaryManager {
 
   // SharedDictionaryManager
   scoped_refptr<SharedDictionaryStorage> CreateStorage(
-      const net::SharedDictionaryIsolationKey& isolation_key) override;
+      const net::SharedDictionaryIsolationKey& isolation_key,
+      SharedDictionaryStorageEvictionReason previous_eviction_reason) override;
   void SetCacheMaxSize(uint64_t cache_max_size) override;
   void ClearData(base::Time start_time,
                  base::Time end_time,
@@ -100,7 +102,8 @@ class SharedDictionaryManagerOnDisk : public SharedDictionaryManager {
       base::OnceCallback<void(net::SharedDictionaryInfo)> callback);
 
   void UpdateDictionaryLastFetchTime(net::SharedDictionaryInfo& info,
-                                     base::Time last_fetch_time);
+                                     base::Time last_fetch_time,
+                                     const std::optional<base::TimeDelta>& ttl);
   void UpdateDictionaryLastUsedTime(net::SharedDictionaryInfo& info);
 
   // Posts a MismatchingEntryDeletionTask if this method is called for the first
@@ -112,6 +115,9 @@ class SharedDictionaryManagerOnDisk : public SharedDictionaryManager {
   void MaybePostExpiredDictionaryDeletionTask();
 
  private:
+  // base::MemoryConsumer:
+  void OnReleaseMemory() override;
+
   class SerializedTask {
    public:
     virtual ~SerializedTask() = default;
@@ -178,6 +184,7 @@ class SharedDictionaryManagerOnDisk : public SharedDictionaryManager {
   uint64_t cache_max_size_;
   const uint64_t cache_max_count_;
   SharedDictionaryDiskCache disk_cache_;
+  scoped_refptr<SharedDictionaryCache> dictionary_cache_;
   net::SQLitePersistentSharedDictionaryStore metadata_store_;
 
   std::unique_ptr<SerializedTask> running_serialized_task_;

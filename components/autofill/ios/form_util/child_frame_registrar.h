@@ -93,7 +93,6 @@ class ChildFrameRegistrar : public web::WebStateUserData<ChildFrameRegistrar>,
  private:
   explicit ChildFrameRegistrar(web::WebState* web_state);
   friend class web::WebStateUserData<ChildFrameRegistrar>;
-  WEB_STATE_USER_DATA_KEY_DECL();
 
   // Deletes all entries in `lookup_map_` that contain `frame_id` as local frame
   // token.
@@ -108,7 +107,8 @@ class ChildFrameRegistrar : public web::WebStateUserData<ChildFrameRegistrar>,
   // When `DeclareNewRemoteToken` is called, the RemoteFrameToken may not
   // yet correspond to a known frame. In this case, the callback is stored in
   // this map until a matching remote token is registered.
-  std::map<RemoteFrameToken, base::OnceCallback<void(LocalFrameToken)>>
+  std::map<RemoteFrameToken,
+           std::vector<base::OnceCallback<void(LocalFrameToken)>>>
       pending_callbacks_;
 
   base::ObserverList<ChildFrameRegistrarObserver> observers_;

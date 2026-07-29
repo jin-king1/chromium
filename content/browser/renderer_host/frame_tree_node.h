@@ -26,6 +26,7 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/frame_type.h"
 #include "content/public/browser/navigation_discard_reason.h"
+#include "services/network/public/cpp/connection_allowlist.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/mojom/content_security_policy.mojom-forward.h"
 #include "services/network/public/mojom/referrer_policy.mojom-forward.h"
@@ -96,6 +97,14 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
   FrameTreeNode& operator=(const FrameTreeNode&) = delete;
 
   ~FrameTreeNode() override;
+
+  // Remove the corresponding FrameNavigationEntry and its descendants
+  // from the last committed entry if this frame was created by a script.
+  // This should be called when this frame is about to be deleted.
+  // The caller is responsible to call this
+  // method at a time where the last committed entry still has those
+  // FrameNavigationEntries.
+  void MaybeRemoveFromLastCommittedEntry();
 
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
@@ -225,6 +234,21 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
     return render_manager_.current_replication_state().origin;
   }
 
+  // Returns the origin of the last *successfully* committed page in this
+  // frame. This may be different from current_origin() if the current page is
+  // an error page.
+  // IMPORTANT: Use current_origin() instead, as all security-relevant decisions
+  // should be made using the current origin of the frame. The last successful
+  // origin is only relevant for specific abuse mitigations that require
+  // tracking the previous state of a frame before an error page navigation.
+  const url::Origin& last_successful_origin() const {
+    return last_successful_origin_;
+  }
+
+  void set_last_successful_origin(const url::Origin& origin) {
+    last_successful_origin_ = origin;
+  }
+
   // Returns the latest frame policy (sandbox flags and container policy) for
   // this frame. This includes flags inherited from parent frames and the latest
   // flags from the <iframe> element hosting this frame. The returned policies
@@ -281,25 +305,18 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
   const network::mojom::ContentSecurityPolicy* csp_attribute() const {
     return attributes_->parsed_csp_attribute.get();
   }
+  // Reflects the iframe's 'connectionallowlist' attribute, parsed (in the
+  // renderer) into a ConnectionAllowlist for Connection-Allowlist embedded
+  // enforcement. Null when the attribute is unset.
+  const std::optional<network::ConnectionAllowlist>&
+  connection_allowlist_attribute() const {
+    return attributes_->required_connection_allowlist;
+  }
   // Tracks iframe's 'browsingtopics' attribute, indicating whether the
   // navigation requests on this frame should calculate and send the
   // `Sec-Browsing-Topics` header.
   bool browsing_topics() const { return attributes_->browsing_topics; }
 
-  // Tracks iframe's 'adauctionheaders' attribute, indicating whether the
-  // navigation request on this frame should calculate and send the
-  // 'Sec-Ad-Auction-Fetch` header.
-  bool ad_auction_headers() const { return attributes_->ad_auction_headers; }
-
-  // Tracks iframe's 'sharedstoragewritable' attribute, indicating what value
-  // the the corresponding
-  // `network::ResourceRequest::shared_storage_writable_eligible` should take
-  // for the navigation(s) on this frame, pending a permissions policy check. If
-  // true, and if the permissions policy check returns "enabled", the network
-  // service will send the `Shared-Storage-Write` request header.
-  bool shared_storage_writable_opted_in() const {
-    return attributes_->shared_storage_writable_opted_in;
-  }
   const std::optional<std::string> html_id() const { return attributes_->id; }
   // This tracks iframe's 'name' attribute instead of window.name, which is
   // tracked in FrameReplicationState. See the comment for frame_name() for
@@ -696,7 +713,7 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
   //
   // The |notification_type| parameter is used for histograms, only for the case
   // |update_state == kNotifyActivation|.
-  bool UpdateUserActivationState(
+  [[nodiscard]] bool UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType update_type,
       blink::mojom::UserActivationNotificationType notification_type) override;
   void DidConsumeHistoryUserActivation() override;
@@ -707,6 +724,7 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
       bool is_same_document,
       const GURL& url,
       const url::Origin& origin,
+      const std::optional<url::Origin>& initiator_origin,
       const std::optional<GURL>& initiator_base_url,
       const net::IsolationInfo& isolation_info_for_subresources,
       blink::mojom::ReferrerPtr referrer,
@@ -719,7 +737,8 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
       const GURL& original_url,
       std::unique_ptr<CrossOriginEmbedderPolicyReporter> coep_reporter,
       std::unique_ptr<DocumentIsolationPolicyReporter> dip_reporter,
-      int http_response_code) override;
+      int http_response_code,
+      base::TimeTicks actual_navigation_start) override;
   void CancelNavigation(NavigationDiscardReason reason) override;
   void ResetNavigationsForDiscard() override;
   bool Credentialless() const override;
@@ -947,6 +966,14 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
   // used to cancel the task.
   // See `CancelRestartingBackForwardCacheNavigation()`.
   base::CancelableTaskTracker restart_back_forward_cached_navigation_tracker_;
+
+  // The last successfully committed origin in this frame. Set in two scenarios:
+  // 1. By RenderFrameHostImpl::DidNavigate() when a navigation in this frame
+  //    succeeds.
+  // 2. By RenderFrameHostImpl::SetOriginDependentStateOfNewFrame() when a new
+  //    frame is first created, which will reflect the origin of the initial
+  //    about::blank document before any navigation has committed.
+  url::Origin last_successful_origin_;
 
   // Manages creation and swapping of RenderFrameHosts for this frame.
   //

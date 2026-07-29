@@ -4,7 +4,8 @@
 
 import * as localStorage from './models/local_storage.js';
 import * as state from './state.js';
-import {LocalStorageKey, PerfInformation} from './type.js';
+import type {PerfInformation} from './type.js';
+import {LocalStorageKey} from './type.js';
 
 export enum ExpertOption {
   CUSTOM_VIDEO_PARAMETERS = 'custom-video-parameters',
@@ -32,8 +33,6 @@ export function setExpertMode(enable: boolean): void {
  * Toggles expert mode.
  */
 export function toggleExpertMode(): void {
-  // TODO(b/231535710): When toggle expert mode, also check the state of all
-  // options under expert mode
   const newState = !state.get(ExpertOption.EXPERT);
   setExpertMode(newState);
 }

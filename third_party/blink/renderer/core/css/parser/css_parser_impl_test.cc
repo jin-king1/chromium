@@ -74,6 +74,8 @@ class TestCSSParserObserver : public CSSParserObserver {
       CSSAtRuleID id,
       const Vector<CSSPropertyID, 2>& invalid_properties) override {}
   void ObserveNestedDeclarations(wtf_size_t insert_rule_index) override {}
+  void ObserveFontFeatureType(StyleRuleFontFeature::FeatureType type) override {
+  }
 
   bool IsAtTargetLevel() const {
     return target_nesting_level_ == kEverything ||
@@ -114,6 +116,11 @@ class TestCSSParserImpl {
                               bool& invalid_rule_error) {
     return impl_.ConsumeStyleRule(stream, nesting_type, parent_rule_for_nesting,
                                   nested, invalid_rule_error);
+  }
+
+  StyleRuleBase* ConsumeAtRule(CSSParserTokenStream& stream) {
+    return impl_.ConsumeAtRule(stream, CSSParserImpl::kTopLevelRules,
+                               CSSNestingType::kNone, nullptr);
   }
 
  private:
@@ -186,8 +193,8 @@ TEST(CSSParserImplTest, AtFontFaceOffsets) {
             StyleRule::RuleType::kFontFace);
   EXPECT_EQ(test_css_parser_observer.rule_header_start_, 11u);
   EXPECT_EQ(test_css_parser_observer.rule_header_end_, 11u);
-  EXPECT_EQ(test_css_parser_observer.rule_body_start_, 11u);
-  EXPECT_EQ(test_css_parser_observer.rule_body_end_, 11u);
+  EXPECT_EQ(test_css_parser_observer.rule_body_start_, 12u);
+  EXPECT_EQ(test_css_parser_observer.rule_body_end_, 13u);
 }
 
 TEST(CSSParserImplTest, AtKeyframesOffsets) {
@@ -1078,11 +1085,12 @@ TEST(CSSParserImplTest, FontPaletteValuesBasicRuleParsing) {
   ASSERT_TRUE(parsed);
   ASSERT_EQ("--myTestPalette", parsed->GetName());
   ASSERT_EQ("testFamily", parsed->GetFontFamily()->CssText());
+  ASSERT_TRUE(IsA<CSSPrimitiveValue>(parsed->GetBasePalette()));
   ASSERT_EQ(
-      0, DynamicTo<CSSPrimitiveValue>(parsed->GetBasePalette())
-             ->ComputeInteger(CSSToLengthConversionData(/*element=*/nullptr)));
+      0, To<CSSPrimitiveValue>(*parsed->GetBasePalette())
+             .ComputeInteger(CSSToLengthConversionData(/*element=*/nullptr)));
   ASSERT_TRUE(parsed->GetOverrideColors()->IsValueList());
-  ASSERT_EQ(2u, DynamicTo<CSSValueList>(parsed->GetOverrideColors())->length());
+  ASSERT_EQ(2u, To<CSSValueList>(*parsed->GetOverrideColors()).length());
 }
 
 TEST(CSSParserImplTest, FontPaletteValuesMultipleFamiliesParsing) {
@@ -1100,9 +1108,10 @@ TEST(CSSParserImplTest, FontPaletteValuesMultipleFamiliesParsing) {
   ASSERT_TRUE(parsed);
   ASSERT_EQ("--myTestPalette", parsed->GetName());
   ASSERT_EQ("testFamily1, testFamily2", parsed->GetFontFamily()->CssText());
+  ASSERT_TRUE(IsA<CSSPrimitiveValue>(parsed->GetBasePalette()));
   ASSERT_EQ(
-      0, DynamicTo<CSSPrimitiveValue>(parsed->GetBasePalette())
-             ->ComputeInteger(CSSToLengthConversionData(/*element=*/nullptr)));
+      0, To<CSSPrimitiveValue>(*parsed->GetBasePalette())
+             .ComputeInteger(CSSToLengthConversionData(/*element=*/nullptr)));
 }
 
 // Font-family descriptor inside @font-palette-values should not contain generic
@@ -1123,9 +1132,10 @@ TEST(CSSParserImplTest, FontPaletteValuesGenericFamiliesNotParsing) {
   ASSERT_TRUE(parsed);
   ASSERT_EQ("--myTestPalette", parsed->GetName());
   ASSERT_FALSE(parsed->GetFontFamily());
+  ASSERT_TRUE(IsA<CSSPrimitiveValue>(parsed->GetBasePalette()));
   ASSERT_EQ(
-      0, DynamicTo<CSSPrimitiveValue>(parsed->GetBasePalette())
-             ->ComputeInteger(CSSToLengthConversionData(/*element=*/nullptr)));
+      0, To<CSSPrimitiveValue>(*parsed->GetBasePalette())
+             .ComputeInteger(CSSToLengthConversionData(/*element=*/nullptr)));
 }
 
 TEST(CSSParserImplTest, FontFeatureValuesRuleParsing) {
@@ -1158,6 +1168,8 @@ TEST(CSSParserImplTest, FontFeatureValuesOffsets) {
       kHTMLStandardMode, SecureContextMode::kInsecureContext);
   auto* style_sheet = MakeGarbageCollected<StyleSheetContents>(context);
   TestCSSParserObserver test_css_parser_observer;
+  // Ignore @styleset block.
+  test_css_parser_observer.target_nesting_level_ = 0;
   CSSParserImpl::ParseStyleSheetForInspector(sheet_text, context, style_sheet,
                                              test_css_parser_observer);
   EXPECT_EQ(style_sheet->ChildRules().size(), 1u);
@@ -1167,6 +1179,42 @@ TEST(CSSParserImplTest, FontFeatureValuesOffsets) {
   EXPECT_EQ(test_css_parser_observer.rule_header_end_, 27u);
   EXPECT_EQ(test_css_parser_observer.rule_body_start_, 28u);
   EXPECT_EQ(test_css_parser_observer.rule_body_end_, 53u);
+}
+
+TEST(CSSParserImplTest, FontFeatureOffsets) {
+  test::TaskEnvironment task_environment;
+  String sheet_text = "@font-feature-values myFam { @styleset { curly: 1; } }";
+  auto* context = MakeGarbageCollected<CSSParserContext>(
+      kHTMLStandardMode, SecureContextMode::kInsecureContext);
+  auto* style_sheet = MakeGarbageCollected<StyleSheetContents>(context);
+  TestCSSParserObserver test_css_parser_observer;
+  // Target the @styleset block.
+  test_css_parser_observer.target_nesting_level_ = 1;
+  CSSParserImpl::ParseStyleSheetForInspector(sheet_text, context, style_sheet,
+                                             test_css_parser_observer);
+  EXPECT_EQ(style_sheet->ChildRules().size(), 1u);
+  EXPECT_EQ(test_css_parser_observer.rule_type_,
+            StyleRule::RuleType::kFontFeature);
+  EXPECT_EQ(test_css_parser_observer.rule_header_start_, 39u);
+  EXPECT_EQ(test_css_parser_observer.rule_header_end_, 39u);
+  EXPECT_EQ(test_css_parser_observer.rule_body_start_, 40u);
+  EXPECT_EQ(test_css_parser_observer.rule_body_end_, 51u);
+}
+
+TEST(CSSParserImplTest, FontFeatureAliasOffsets) {
+  test::TaskEnvironment task_environment;
+  String sheet_text = "@font-feature-values myFam { @styleset { curly: 1; } }";
+  auto* context = MakeGarbageCollected<CSSParserContext>(
+      kHTMLStandardMode, SecureContextMode::kInsecureContext);
+  auto* style_sheet = MakeGarbageCollected<StyleSheetContents>(context);
+  TestCSSParserObserver test_css_parser_observer;
+  // Target the inside of the @styleset block.
+  test_css_parser_observer.target_nesting_level_ = 2;
+  CSSParserImpl::ParseStyleSheetForInspector(sheet_text, context, style_sheet,
+                                             test_css_parser_observer);
+  EXPECT_EQ(style_sheet->ChildRules().size(), 1u);
+  EXPECT_EQ(test_css_parser_observer.property_start_, 41u);
+  EXPECT_EQ(test_css_parser_observer.property_end_, 51u);
 }
 
 TEST(CSSParserImplTest, CSSFunction) {
@@ -1264,7 +1312,7 @@ TEST(CSSParserImplTest, AllPropertiesCanParseImportant) {
   }
 
   // So that we don't introduce more, or break the entire test inadvertently.
-  EXPECT_EQ(broken_properties, 17);
+  EXPECT_EQ(broken_properties, 21);
 }
 
 TEST(CSSParserImplTest, ParseSupportsBlinkFeature) {
@@ -1283,10 +1331,11 @@ TEST(CSSParserImplTest, ParseSupportsBlinkFeature) {
 
   StyleRuleBase* rule = sheet->ChildRules()[0].Get();
   ASSERT_EQ(rule->GetType(), StyleRuleBase::RuleType::kSupports);
-  StyleRuleSupports* supports_rule = DynamicTo<StyleRuleSupports>(rule);
+  auto* supports_rule = To<StyleRuleSupports>(rule);
   ASSERT_TRUE(supports_rule->ConditionIsSupported());
 
-  HeapVector<Member<StyleRuleBase>> child_rules = supports_rule->ChildRules();
+  const HeapVector<Member<StyleRuleBase>>& child_rules =
+      supports_rule->ChildRules();
   ASSERT_EQ(child_rules.size(), 2u);
   ASSERT_EQ(String("div"),
             To<StyleRule>(child_rules[0].Get())->SelectorsText());
@@ -1310,7 +1359,7 @@ TEST(CSSParserImplTest, ParseSupportsBlinkFeatureAuthorStylesheet) {
 
   StyleRuleBase* rule = sheet->ChildRules()[0].Get();
   ASSERT_EQ(rule->GetType(), StyleRuleBase::RuleType::kSupports);
-  StyleRuleSupports* supports_rule = DynamicTo<StyleRuleSupports>(rule);
+  auto* supports_rule = To<StyleRuleSupports>(rule);
   EXPECT_FALSE(supports_rule->ConditionIsSupported());
 }
 
@@ -1330,10 +1379,11 @@ TEST(CSSParserImplTest, ParseSupportsBlinkFeatureDisabledFeature) {
 
   StyleRuleBase* rule = sheet->ChildRules()[0].Get();
   ASSERT_EQ(rule->GetType(), StyleRuleBase::RuleType::kSupports);
-  StyleRuleSupports* supports_rule = DynamicTo<StyleRuleSupports>(rule);
+  auto* supports_rule = To<StyleRuleSupports>(rule);
   ASSERT_FALSE(supports_rule->ConditionIsSupported());
 
-  HeapVector<Member<StyleRuleBase>> child_rules = supports_rule->ChildRules();
+  const HeapVector<Member<StyleRuleBase>>& child_rules =
+      supports_rule->ChildRules();
   ASSERT_EQ(child_rules.size(), 2u);
   ASSERT_EQ(String("div"),
             To<StyleRule>(child_rules[0].Get())->SelectorsText());
@@ -1418,6 +1468,87 @@ TEST(CSSParserImplTest, ParseNestedRule) {
             To<StyleRule>(nested)
                 ->FirstSelector()
                 ->SelectorTextExpandingPseudoReferences(/*scope_id=*/0));
+}
+
+TEST(CSSParserImplTest, UnexpectedTokenInVar_IdentFunctionDisabled) {
+  test::TaskEnvironment task_environment;
+  ScopedNullExecutionContext execution_context;
+  ScopedCSSIdentFunctionForTest scoped_feature(false);
+  Document* document =
+      Document::CreateForTest(execution_context.GetExecutionContext());
+  // Don't crash:
+  css_test_helpers::ParseRule(*document, ".a { color: var(42); }");
+  css_test_helpers::ParseRule(*document, ".a { color: var(ident('thing')); }");
+}
+
+TEST(CSSParserImplTest, CustomMediaBoolValueValid) {
+  CSSParserTokenStream stream("@custom-media --true-val true;");
+  TestCSSParserImpl parser;
+  const StyleRuleCustomMedia* rule =
+      DynamicTo<StyleRuleCustomMedia>(parser.ConsumeAtRule(stream));
+
+  EXPECT_TRUE(rule);
+  EXPECT_TRUE(stream.AtEnd());
+  EXPECT_EQ(rule->GetName(), "--true-val");
+  EXPECT_TRUE(rule->GetBooleanValue());
+}
+
+TEST(CSSParserImplTest, CustomMediaBoolValueValidWithoutSemicolon) {
+  CSSParserTokenStream stream("@custom-media --false-val false");
+  TestCSSParserImpl parser;
+  const StyleRuleCustomMedia* rule =
+      DynamicTo<StyleRuleCustomMedia>(parser.ConsumeAtRule(stream));
+
+  EXPECT_TRUE(rule);
+  EXPECT_TRUE(stream.AtEnd());
+  EXPECT_EQ(rule->GetName(), "--false-val");
+  EXPECT_FALSE(rule->GetBooleanValue());
+}
+
+TEST(CSSParserImplTest, CustomMediaBoolValueInvalid) {
+  CSSParserTokenStream stream("@custom-media --false-val false f;");
+  TestCSSParserImpl parser;
+  const StyleRuleCustomMedia* rule =
+      DynamicTo<StyleRuleCustomMedia>(parser.ConsumeAtRule(stream));
+
+  EXPECT_FALSE(rule);
+  EXPECT_TRUE(stream.AtEnd());
+}
+
+TEST(CSSParserImplTest, CustomMediaQueryValueValid) {
+  CSSParserTokenStream stream("@custom-media --query (min-width > 300px);");
+  TestCSSParserImpl parser;
+  const StyleRuleCustomMedia* rule =
+      DynamicTo<StyleRuleCustomMedia>(parser.ConsumeAtRule(stream));
+
+  EXPECT_TRUE(rule);
+  EXPECT_TRUE(stream.AtEnd());
+  EXPECT_EQ(rule->GetName(), "--query");
+  EXPECT_EQ(rule->GetMediaQueryValue()->MediaText(), "(min-width > 300px)");
+}
+
+TEST(CSSParserImplTest, CustomMediaQueryValueValidWithoutSemicolon) {
+  CSSParserTokenStream stream("@custom-media --query (screen)");
+  TestCSSParserImpl parser;
+  const StyleRuleCustomMedia* rule =
+      DynamicTo<StyleRuleCustomMedia>(parser.ConsumeAtRule(stream));
+
+  EXPECT_TRUE(rule);
+  EXPECT_TRUE(stream.AtEnd());
+  EXPECT_EQ(rule->GetName(), "--query");
+  EXPECT_EQ(rule->GetMediaQueryValue()->MediaText(), "(screen)");
+}
+
+TEST(CSSParserImplTest, CustomMediaQueryValueInvalid) {
+  CSSParserTokenStream stream("@custom-media --query invalid !;");
+  TestCSSParserImpl parser;
+  const StyleRuleCustomMedia* rule =
+      DynamicTo<StyleRuleCustomMedia>(parser.ConsumeAtRule(stream));
+
+  EXPECT_TRUE(rule);
+  EXPECT_TRUE(stream.AtEnd());
+  EXPECT_EQ(rule->GetName(), "--query");
+  EXPECT_EQ(rule->GetMediaQueryValue()->MediaText(), "not all");
 }
 
 }  // namespace blink

@@ -26,10 +26,9 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
 
 }  // namespace
 
-// Implements BubbleViewDelegate to handle BubbleView's close and snooze buttons
-// tap.
-@interface BubbleViewControllerPresenter () <UIGestureRecognizerDelegate,
-                                             BubbleViewDelegate>
+// Implements BubbleViewDelegate to handle BubbleView's close button tap.
+@interface BubbleViewControllerPresenter () <BubbleViewDelegate,
+                                             UIGestureRecognizerDelegate>
 
 // The underlying BubbleViewController managed by this object.
 // `bubbleViewController` manages the BubbleView instance.
@@ -77,7 +76,7 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
 // The type of the bubble view's content.
 @property(nonatomic, assign, readonly) BubbleViewType bubbleType;
 // Whether the bubble view controller is presented or dismissed.
-@property(nonatomic, assign, getter=isPresenting) BOOL presenting;
+@property(nonatomic, assign) BOOL presenting;
 // The block invoked when the bubble is dismissed (both via timer and via tap).
 // Is optional.
 @property(nonatomic, strong)
@@ -85,7 +84,10 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
 
 @end
 
-@implementation BubbleViewControllerPresenter
+@implementation BubbleViewControllerPresenter {
+  // Whether the IPH gesture recognizers for dismissal are added.
+  BOOL _gestureRecognizersActive;
+}
 
 @synthesize bubbleViewController = _bubbleViewController;
 @synthesize insideBubbleTapRecognizer = _insideBubbleTapRecognizer;
@@ -99,23 +101,75 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
 @synthesize alignment = _alignment;
 @synthesize dismissalCallback = _dismissalCallback;
 @synthesize voiceOverAnnouncement = _voiceOverAnnouncement;
+@synthesize dismissalTimerDisabled = _dismissalTimerDisabled;
+@synthesize totalPageControlPages = _totalPageControlPages;
+@synthesize customNextButtonTitle = _customNextButtonTitle;
 
 - (instancetype)initWithText:(NSString*)text
                        title:(NSString*)titleString
               arrowDirection:(BubbleArrowDirection)arrowDirection
                    alignment:(BubbleAlignment)alignment
                   bubbleType:(BubbleViewType)type
+             pageControlPage:(BubblePageControlPage)page
+           dismissalCallback:
+               (CallbackWithIPHDismissalReasonType)dismissalCallback {
+  return [self initWithText:text
+                      title:titleString
+             arrowDirection:arrowDirection
+                  alignment:alignment
+                 bubbleType:type
+            pageControlPage:page
+      totalPageControlPages:BubblePageControlPageFourth
+      customNextButtonTitle:nil
+          dismissalCallback:dismissalCallback];
+}
+
+- (instancetype)initWithText:(NSString*)text
+                       title:(NSString*)titleString
+              arrowDirection:(BubbleArrowDirection)arrowDirection
+                   alignment:(BubbleAlignment)alignment
+                  bubbleType:(BubbleViewType)type
+             pageControlPage:(BubblePageControlPage)page
+       customNextButtonTitle:(NSString*)customNextButtonTitle
+           dismissalCallback:
+               (CallbackWithIPHDismissalReasonType)dismissalCallback {
+  return [self initWithText:text
+                      title:titleString
+             arrowDirection:arrowDirection
+                  alignment:alignment
+                 bubbleType:type
+            pageControlPage:page
+      totalPageControlPages:BubblePageControlPageFourth
+      customNextButtonTitle:customNextButtonTitle
+          dismissalCallback:dismissalCallback];
+}
+
+- (instancetype)initWithText:(NSString*)text
+                       title:(NSString*)titleString
+              arrowDirection:(BubbleArrowDirection)arrowDirection
+                   alignment:(BubbleAlignment)alignment
+                  bubbleType:(BubbleViewType)type
+             pageControlPage:(BubblePageControlPage)page
+       totalPageControlPages:(NSInteger)totalPageControlPages
+       customNextButtonTitle:(NSString*)customNextButtonTitle
            dismissalCallback:
                (CallbackWithIPHDismissalReasonType)dismissalCallback {
   self = [super init];
   if (self) {
+    BOOL hasCustomPages = totalPageControlPages > 0;
+    _totalPageControlPages =
+        hasCustomPages ? totalPageControlPages : BubblePageControlPageFourth;
     _bubbleViewController =
         [[BubbleViewController alloc] initWithText:text
                                              title:titleString
                                     arrowDirection:arrowDirection
                                          alignment:alignment
                                     bubbleViewType:type
+                                   pageControlPage:page
+                             totalPageControlPages:_totalPageControlPages
+                             customNextButtonTitle:customNextButtonTitle
                                           delegate:self];
+    _customNextButtonTitle = [customNextButtonTitle copy];
     _userEngaged = NO;
     _triggerFollowUpAction = NO;
     _ignoreWebContentAreaInteractions = NO;
@@ -131,6 +185,18 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
   return self;
 }
 
+- (void)setTotalPageControlPages:(NSInteger)totalPageControlPages {
+  BOOL hasCustomPages = totalPageControlPages > 0;
+  _totalPageControlPages =
+      hasCustomPages ? totalPageControlPages : BubblePageControlPageFourth;
+  _bubbleViewController.totalPageControlPages = totalPageControlPages;
+}
+
+- (void)setCustomNextButtonTitle:(NSString*)customNextButtonTitle {
+  _customNextButtonTitle = customNextButtonTitle;
+  _bubbleViewController.customNextButtonTitle = customNextButtonTitle;
+}
+
 - (instancetype)initDefaultBubbleWithText:(NSString*)text
                            arrowDirection:(BubbleArrowDirection)arrowDirection
                                 alignment:(BubbleAlignment)alignment
@@ -141,6 +207,7 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
              arrowDirection:arrowDirection
                   alignment:alignment
                  bubbleType:BubbleViewTypeDefault
+            pageControlPage:BubblePageControlPageNone
           dismissalCallback:dismissalCallback];
 }
 
@@ -161,6 +228,24 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
 - (void)presentInViewController:(UIViewController*)parentViewController
                     anchorPoint:(CGPoint)anchorPoint
                 anchorViewFrame:(CGRect)anchorViewFrame {
+  [self configureInParentViewController:parentViewController
+                            anchorPoint:anchorPoint
+                        anchorViewFrame:anchorViewFrame];
+  [self addGestureRecognizersToParentView:self.parentView];
+
+  [parentViewController addChildViewController:self.bubbleViewController];
+  [self.parentView addSubview:self.bubbleViewController.view];
+  [self.bubbleViewController
+      didMoveToParentViewController:parentViewController];
+  [self.bubbleViewController displayAnimated:YES];
+
+  [self setUpDismissalTimer];
+  [self registerVoiceOverAnnouncement];
+}
+
+- (void)configureInParentViewController:(UIViewController*)parentViewController
+                            anchorPoint:(CGPoint)anchorPoint
+                        anchorViewFrame:(CGRect)anchorViewFrame {
   self.parentView = parentViewController.view;
   _anchorViewFrame = anchorViewFrame;
   CGPoint anchorPointInParent =
@@ -171,38 +256,10 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
   // The bubble's frame must be set. Call `canPresentInView` to make sure that
   // the frame can be set before calling `presentInViewController`.
   DCHECK(!CGRectIsEmpty(self.bubbleViewController.view.frame));
-
-  [self addGestureRecognizersToParentView:self.parentView];
-
   self.presenting = YES;
-  [parentViewController addChildViewController:self.bubbleViewController];
-  [self.parentView addSubview:self.bubbleViewController.view];
-  [self.bubbleViewController
-      didMoveToParentViewController:parentViewController];
-  [self.bubbleViewController animateContentIn];
+}
 
-  self.bubbleDismissalTimer = [NSTimer
-      scheduledTimerWithTimeInterval:[self bubbleVisibilityDuration]
-                              target:self
-                            selector:@selector(bubbleDismissalTimerFired:)
-                            userInfo:nil
-                             repeats:NO];
-
-  self.userEngaged = YES;
-  self.triggerFollowUpAction = YES;
-  self.engagementTimer =
-      [NSTimer scheduledTimerWithTimeInterval:kBubbleEngagementDuration
-                                       target:self
-                                     selector:@selector(engagementTimerFired:)
-                                     userInfo:nil
-                                      repeats:NO];
-
-  [[NSNotificationCenter defaultCenter]
-      addObserver:self
-         selector:@selector(onKeyboardHide:)
-             name:UIKeyboardWillHideNotification
-           object:nil];
-
+- (void)registerVoiceOverAnnouncement {
   if (self.voiceOverAnnouncement) {
     if (self.bubbleShouldAutoDismissUnderAccessibility) {
       // The VoiceOverAnnouncement should be dispatched after a delay to account
@@ -235,9 +292,17 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
   [self.bubbleViewController setArrowHidden:hidden animated:animated];
 }
 
-- (void)dismissAnimated:(BOOL)animated
-                 reason:(IPHDismissalReasonType)reason
-           snoozeAction:(feature_engagement::Tracker::SnoozeAction)action {
+- (void)setMaximumContentSizeCategory:
+    (UIContentSizeCategory)maximumContentSizeCategory {
+  self.bubbleViewController.maximumContentSizeCategory =
+      maximumContentSizeCategory;
+}
+
+- (UIContentSizeCategory)maximumContentSizeCategory {
+  return self.bubbleViewController.maximumContentSizeCategory;
+}
+
+- (void)dismissAnimated:(BOOL)animated reason:(IPHDismissalReasonType)reason {
   // Because this object must stay in memory to handle the `userEngaged`
   // property correctly, it is possible for `dismissAnimated` to be called
   // multiple times. However, only the first call should have any effect.
@@ -256,18 +321,12 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
   self.presenting = NO;
 
   if (self.dismissalCallback) {
-    self.dismissalCallback(reason, action);
+    self.dismissalCallback(reason);
   }
 }
 
 - (void)dismissAnimated:(BOOL)animated {
   [self dismissAnimated:animated reason:IPHDismissalReasonType::kUnknown];
-}
-
-- (void)dismissAnimated:(BOOL)animated reason:(IPHDismissalReasonType)reason {
-  [self dismissAnimated:animated
-                 reason:reason
-           snoozeAction:feature_engagement::Tracker::SnoozeAction::DISMISSED];
 }
 
 - (void)dealloc {
@@ -347,14 +406,41 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
   [self dismissAnimated:YES reason:IPHDismissalReasonType::kTappedClose];
 }
 
-- (void)didTapSnoozeButton {
-  [self dismissAnimated:YES
-                 reason:IPHDismissalReasonType::kTappedSnooze
-           snoozeAction:feature_engagement::Tracker::SnoozeAction::SNOOZED];
+- (void)didTapNextButton {
+  [self dismissAnimated:YES reason:IPHDismissalReasonType::kTappedNext];
 }
 
 #pragma mark - Private
 
+// Set up a timer that dismisses the bubble view.
+- (void)setUpDismissalTimer {
+  if (!self.dismissalTimerDisabled) {
+    self.bubbleDismissalTimer = [NSTimer
+        scheduledTimerWithTimeInterval:[self bubbleVisibilityDuration]
+                                target:self
+                              selector:@selector(bubbleDismissalTimerFired:)
+                              userInfo:nil
+                               repeats:NO];
+  }
+
+  self.userEngaged = YES;
+  self.triggerFollowUpAction = YES;
+  self.engagementTimer =
+      [NSTimer scheduledTimerWithTimeInterval:kBubbleEngagementDuration
+                                       target:self
+                                     selector:@selector(engagementTimerFired:)
+                                     userInfo:nil
+                                      repeats:NO];
+
+  [[NSNotificationCenter defaultCenter]
+      addObserver:self
+         selector:@selector(onKeyboardHide:)
+             name:UIKeyboardWillHideNotification
+           object:nil];
+}
+
+// Returns the time the bubble view should be shown before being automatically
+// dismissed.
 - (NSTimeInterval)bubbleVisibilityDuration {
   return _customBubbleVisibilityDuration > 0 ? _customBubbleVisibilityDuration
                                              : kBubbleVisibilityDuration;
@@ -368,48 +454,90 @@ const CGFloat kVoiceOverAnnouncementDelay = 1;
   [self.insideBubbleTapRecognizer.view
       removeGestureRecognizer:self.insideBubbleTapRecognizer];
   [self.swipeRecognizer.view removeGestureRecognizer:self.swipeRecognizer];
+
+  if (IsIPHGestureRecognitionImprovementEnabled()) {
+    self.outsideBubbleTapRecognizer = nil;
+    self.outsideBubblePanRecognizer = nil;
+    self.insideBubbleTapRecognizer = nil;
+    self.swipeRecognizer = nil;
+  }
+
+  _gestureRecognizersActive = NO;
 }
 
 // Adds gesture recognizers to parent view.
 - (void)addGestureRecognizersToParentView:(UIView*)parentView {
-  self.outsideBubbleTapRecognizer = [[UITapGestureRecognizer alloc]
-      initWithTarget:self
-              action:@selector(tapOutsideBubbleRecognized:)];
-  self.outsideBubbleTapRecognizer.delegate = self;
-  self.outsideBubbleTapRecognizer.cancelsTouchesInView = NO;
+  if (!IsIPHGestureRecognitionOutsideTapAblationEnabled()) {
+    self.outsideBubbleTapRecognizer = [[UITapGestureRecognizer alloc]
+        initWithTarget:self
+                action:@selector(tapOutsideBubbleRecognized:)];
+    self.outsideBubbleTapRecognizer.delegate = self;
+    self.outsideBubbleTapRecognizer.cancelsTouchesInView =
+        ShouldCancelTouchesInViewForIPH();
 
-  self.outsideBubblePanRecognizer = [[UIPanGestureRecognizer alloc]
-      initWithTarget:self
-              action:@selector(tapOutsideBubbleRecognized:)];
-  self.outsideBubblePanRecognizer.delegate = self;
-  self.outsideBubblePanRecognizer.cancelsTouchesInView = NO;
+    [parentView addGestureRecognizer:self.outsideBubbleTapRecognizer];
+  }
 
-  self.insideBubbleTapRecognizer = [[UITapGestureRecognizer alloc]
-      initWithTarget:self
-              action:@selector(tapInsideBubbleRecognized:)];
-  self.insideBubbleTapRecognizer.delegate = self;
-  self.insideBubbleTapRecognizer.cancelsTouchesInView = NO;
+  BOOL shouldEnablePanGestureRecognizer =
+      !IsIPHGestureRecognitionPanAblationEnabled() &&
+      !self.forceDisablePanGestureRecognizer;
+  if (shouldEnablePanGestureRecognizer) {
+    self.outsideBubblePanRecognizer = [[UIPanGestureRecognizer alloc]
+        initWithTarget:self
+                action:@selector(tapOutsideBubbleRecognized:)];
+    self.outsideBubblePanRecognizer.delegate = self;
+    self.outsideBubblePanRecognizer.cancelsTouchesInView =
+        ShouldCancelTouchesInViewForIPH();
 
-  self.swipeRecognizer = [[UISwipeGestureRecognizer alloc]
-      initWithTarget:self
-              action:@selector(tapOutsideBubbleRecognized:)];
-  self.swipeRecognizer.direction = UISwipeGestureRecognizerDirectionUp;
-  self.swipeRecognizer.delegate = self;
+    [parentView addGestureRecognizer:self.outsideBubblePanRecognizer];
+  }
 
-  [self.bubbleViewController.view
-      addGestureRecognizer:self.insideBubbleTapRecognizer];
-  [parentView addGestureRecognizer:self.outsideBubbleTapRecognizer];
-  [parentView addGestureRecognizer:self.outsideBubblePanRecognizer];
-  [parentView addGestureRecognizer:self.swipeRecognizer];
+  if (!IsIPHGestureRecognitionInsideTapAblationEnabled()) {
+    self.insideBubbleTapRecognizer = [[UITapGestureRecognizer alloc]
+        initWithTarget:self
+                action:@selector(tapInsideBubbleRecognized:)];
+    self.insideBubbleTapRecognizer.delegate = self;
+    self.insideBubbleTapRecognizer.cancelsTouchesInView =
+        ShouldCancelTouchesInViewForIPH();
+
+    [self.bubbleViewController.view
+        addGestureRecognizer:self.insideBubbleTapRecognizer];
+  }
+
+  if (!IsIPHGestureRecognitionSwipeAblationEnabled()) {
+    self.swipeRecognizer = [[UISwipeGestureRecognizer alloc]
+        initWithTarget:self
+                action:@selector(tapOutsideBubbleRecognized:)];
+    self.swipeRecognizer.direction = UISwipeGestureRecognizerDirectionUp;
+    self.swipeRecognizer.delegate = self;
+
+    [parentView addGestureRecognizer:self.swipeRecognizer];
+  }
+
+  _gestureRecognizersActive = YES;
 }
 
 // Invoked by tapping inside the bubble. Dismisses the bubble.
 - (void)tapInsideBubbleRecognized:(id)sender {
+  if (IsIPHGestureRecognitionImprovementEnabled()) {
+    // If the gesture recognizers are no longer active, we should stop handling
+    // taps. This is to prevent handling queued gestures which are now invalid.
+    if (!_gestureRecognizersActive) {
+      return;
+    }
+  }
   [self dismissAnimated:YES reason:IPHDismissalReasonType::kTappedIPH];
 }
 
 // Invoked by tapping outside the bubble. Dismisses the bubble.
 - (void)tapOutsideBubbleRecognized:(UIGestureRecognizer*)sender {
+  if (IsIPHGestureRecognitionImprovementEnabled()) {
+    // If the gesture recognizers are no longer active, we should stop handling
+    // taps. This is to prevent handling queued gestures which are now invalid.
+    if (!_gestureRecognizersActive) {
+      return;
+    }
+  }
   if (sender.numberOfTouches <= 0) {
     return;
   }

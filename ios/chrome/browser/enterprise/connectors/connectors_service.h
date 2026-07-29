@@ -8,11 +8,14 @@
 #import "base/gtest_prod_util.h"
 #import "components/enterprise/connectors/core/connectors_service_base.h"
 #import "components/keyed_service/core/keyed_service.h"
-#import "ios/chrome/browser/enterprise/connectors/connectors_manager.h"
+
+namespace signin {
+class IdentityManager;
+}
 
 namespace policy {
 class UserCloudPolicyManager;
-}  // namespace policy
+}
 
 namespace enterprise_connectors {
 
@@ -22,17 +25,26 @@ namespace enterprise_connectors {
 // - OnSecurityEventEnterpriseConnectors
 class ConnectorsService : public ConnectorsServiceBase, public KeyedService {
  public:
-  ConnectorsService(bool off_the_record,
-                    PrefService* pref_service,
-                    policy::UserCloudPolicyManager* user_cloud_policy_manager);
+  ConnectorsService(PrefService* pref_service,
+                    signin::IdentityManager* identity_manager,
+                    policy::UserCloudPolicyManager* user_cloud_policy_manager,
+                    const std::string& profile_name,
+                    const base::FilePath& profile_path,
+                    bool is_off_the_record);
   ~ConnectorsService() override;
 
-  // ConnectorsServiceBase:
-  bool IsConnectorEnabled(AnalysisConnector connector) const override;
+  // Returns the CBCM domain or profile domain that enables connector policies.
+  // If both set Connector policies, the CBCM domain is returned as it has
+  // precedence.
+  std::string GetManagementDomain();
 
   // Returns the DM tokens corresponding to browser management, if one is
   // present.
-  std::optional<std::string> GetBrowserDmToken() const;
+  std::optional<std::string> GetBrowserDmToken() const override;
+  std::unique_ptr<ClientMetadata> BuildClientMetadata(bool is_cloud) override;
+
+  // Returns ClientMetadata populated with minimum required information
+  std::unique_ptr<ClientMetadata> GetBasicClientMetadata();
 
  protected:
   // ConnectorsServiceBase:
@@ -40,9 +52,11 @@ class ConnectorsService : public ConnectorsServiceBase, public KeyedService {
   bool ConnectorsEnabled() const override;
   PrefService* GetPrefs() override;
   const PrefService* GetPrefs() const override;
-  ConnectorsManagerBase* GetConnectorsManagerBase() override;
-  const ConnectorsManagerBase* GetConnectorsManagerBase() const override;
   policy::CloudPolicyManager* GetManagedUserCloudPolicyManager() const override;
+
+  bool IsProfileAffiliated() const override;
+  std::string GetProfileEmail() const override;
+  std::string GetDeviceClientId() const override;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(ConnectorsServiceTest, GetPrefs);
@@ -50,10 +64,12 @@ class ConnectorsService : public ConnectorsServiceBase, public KeyedService {
   FRIEND_TEST_ALL_PREFIXES(ConnectorsServiceTest, GetBrowserDmToken);
   FRIEND_TEST_ALL_PREFIXES(ConnectorsServiceTest, ConnectorsEnabled);
 
-  bool off_the_record_;
-  raw_ptr<PrefService> prefs_;
+  raw_ptr<PrefService> pref_service_;
+  raw_ptr<signin::IdentityManager> identity_manager_;
   raw_ptr<policy::UserCloudPolicyManager> user_cloud_policy_manager_;
-  std::unique_ptr<ConnectorsManager> connectors_manager_;
+  std::string profile_name_;
+  base::FilePath profile_path_;
+  bool is_off_the_record_ = false;
 };
 
 }  // namespace enterprise_connectors

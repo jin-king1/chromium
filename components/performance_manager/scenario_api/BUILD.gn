@@ -4,6 +4,9 @@
 
 component("scenario_api") {
   sources = [
+    "performance_scenario_memory.cc",
+    "performance_scenario_memory.h",
+    "performance_scenario_memory_forward.h",
     "performance_scenario_observer.cc",
     "performance_scenario_observer.h",
     "performance_scenarios.cc",
@@ -13,6 +16,20 @@ component("scenario_api") {
   defines = [ "IS_SCENARIO_API_IMPL" ]
 
   public_deps = [ "//base" ]
+}
+
+source_set("test_support") {
+  testonly = true
+
+  sources = [
+    "performance_scenario_test_support.cc",
+    "performance_scenario_test_support.h",
+  ]
+
+  deps = [
+    ":scenario_api",
+    "//testing/gtest",
+  ]
 }
 
 source_set("unit_tests") {
@@ -25,6 +42,7 @@ source_set("unit_tests") {
 
   deps = [
     ":scenario_api",
+    ":test_support",
     "//base/test:test_support",
     "//testing/gmock",
     "//testing/gtest",

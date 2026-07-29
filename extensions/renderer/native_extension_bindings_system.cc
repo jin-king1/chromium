@@ -2,36 +2,33 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "extensions/renderer/native_extension_bindings_system.h"
 
+#include <algorithm>
 #include <string_view>
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/trace_event/typed_macros.h"
 #include "base/tracing/protos/chrome_track_event.pbzero.h"
 #include "components/crx_file/id_util.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/url_constants.h"
 #include "content/public/renderer/render_thread.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_api.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
-#include "extensions/common/features/feature.h"
 #include "extensions/common/features/feature_provider.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/content_capabilities_handler.h"
+#include "extensions/common/manifest_handlers/devtools_page_handler.h"
 #include "extensions/common/manifest_handlers/externally_connectable.h"
 #include "extensions/common/mojom/api_permission_id.mojom.h"
 #include "extensions/common/mojom/context_type.mojom.h"
@@ -62,16 +59,18 @@
 #include "gin/data_object_builder.h"
 #include "gin/handle.h"
 #include "gin/per_context_data.h"
-#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom.h"
 #include "third_party/blink/public/platform/web_runtime_features.h"
-#include "third_party/blink/public/web/modules/ai/web_ai_features.h"
-#include "third_party/blink/public/web/modules/ai/web_ai_language_model.h"
+#include "third_party/blink/public/platform/web_security_origin.h"
 #include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_frame.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_origin_trials.h"
+#include "url/origin.h"
+#include "v8/include/cppgc/allocation.h"
 #include "v8/include/v8-context.h"
+#include "v8/include/v8-cppgc.h"
 #include "v8/include/v8-isolate.h"
 #include "v8/include/v8-object.h"
 #include "v8/include/v8-primitive.h"
@@ -85,17 +84,13 @@ namespace {
 
 constexpr char kBindingsSystemPerContextKey[] = "extension_bindings_system";
 
-constexpr char kStringNameAIOriginTrial[] = "aiOriginTrial";
-constexpr char kStringNameLanguageModel[] = "languageModel";
-
 // Returns true if the given |api| is a "prefixed" api of the |root_api|; that
 // is, if the api begins with the root.
 // For example, 'app.runtime' is a prefixed api of 'app'.
 // This is designed to be used as a utility when iterating over a sorted map, so
 // assumes that |api| is lexicographically greater than |root_api|.
 bool IsPrefixedAPI(std::string_view api, std::string_view root_api) {
-  DCHECK_NE(api, root_api);
-  DCHECK_GT(api, root_api);
+  CHECK_GT(api, root_api);
   return base::StartsWith(api, root_api, base::CompareCase::SENSITIVE) &&
          api[root_api.size()] == '.';
 }
@@ -127,51 +122,56 @@ struct BindingsSystemPerContextData : public base::SupportsUserData::Data {
   base::WeakPtr<NativeExtensionBindingsSystem> bindings_system;
 };
 
-// If a 'chrome' property exists on the context's global and is an object,
+// If a `object_name` property exists on the context's global and is an object,
 // returns that.
-// If a 'chrome' property exists but isn't an object, returns an empty Local.
-// If no 'chrome' property exists (or is undefined), creates a new
-// object, assigns it to Global().chrome, and returns it.
-v8::Local<v8::Object> GetOrCreateChrome(v8::Local<v8::Context> context) {
+// If a `object_name` property exists but isn't an object, returns an empty
+// Local.
+// If no `object_name` property exists (or is undefined), creates a new
+// object, assigns it to Global().<object_name>, and returns it.
+v8::Local<v8::Object> GetOrCreateGlobalObjectProperty(
+    v8::Local<v8::Context> context,
+    const char* object_name) {
   // Ensure that the creation context for any new chrome object is |context|.
   v8::Context::Scope context_scope(context);
 
   // TODO(devlin): This is a little silly. We expect that this may do the wrong
-  // thing if the window has set some other 'chrome' (as in the case of script
-  // doing 'window.chrome = true'), but we don't really handle it. It could also
-  // throw exceptions or have unintended side effects.
+  // thing if the window has set some other `object_name` (as in the case of
+  // script doing 'window.object_name = true'), but we don't really handle it.
+  // It could also throw exceptions or have unintended side effects.
   // On the one hand, anyone writing that code is probably asking for trouble.
   // On the other, it'd be nice to avoid. I wonder if we can?
-  v8::Local<v8::String> chrome_string =
-      gin::StringToSymbol(context->GetIsolate(), "chrome");
-  v8::Local<v8::Value> chrome_value;
-  if (!context->Global()->Get(context, chrome_string).ToLocal(&chrome_value))
+  v8::Local<v8::String> object_string =
+      gin::StringToSymbol(v8::Isolate::GetCurrent(), object_name);
+  v8::Local<v8::Value> object_value;
+  if (!context->Global()->Get(context, object_string).ToLocal(&object_value)) {
     return v8::Local<v8::Object>();
-
-  v8::Local<v8::Object> chrome_object;
-  if (chrome_value->IsUndefined()) {
-    chrome_object = v8::Object::New(context->GetIsolate());
-    v8::Maybe<bool> success = context->Global()->CreateDataProperty(
-        context, chrome_string, chrome_object);
-    if (!success.IsJust() || !success.FromJust())
-      return v8::Local<v8::Object>();
-  } else if (chrome_value->IsObject()) {
-    v8::Local<v8::Object> obj = chrome_value.As<v8::Object>();
-    // The creation context of the `chrome` property could be different if a
-    // different context (such as the parent of an about:blank iframe) assigned
-    // it. Since in this case we know that the chrome object is not the one we
-    // created, do not use it for bindings. This also avoids weirdness of having
-    // bindings created in one context stored on a chrome object from another.
-    // TODO(devlin): There might be a way of detecting if the browser created
-    // the chrome object. For instance, we could add a v8::Private to the
-    // chrome object we construct, and check if it's present. Unfortunately, we
-    // need to a) track down each place we create the chrome object (it's not
-    // just in extensions) and also see how much that would break.
-    if (obj->GetCreationContextChecked() == context)
-      chrome_object = obj;
   }
 
-  return chrome_object;
+  v8::Local<v8::Object> requested_object;
+  if (object_value->IsUndefined()) {
+    requested_object = v8::Object::New(v8::Isolate::GetCurrent());
+    v8::Maybe<bool> success = context->Global()->CreateDataProperty(
+        context, object_string, requested_object);
+    if (!success.IsJust() || !success.FromJust())
+      return v8::Local<v8::Object>();
+  } else if (object_value->IsObject()) {
+    v8::Local<v8::Object> obj = object_value.As<v8::Object>();
+    // The creation context of the `object_name` property could be different if
+    // a different context (such as the parent of an about:blank iframe)
+    // assigned it. Since in this case we know that the `object_name` object is
+    // not the one we created, do not use it for bindings. This also avoids
+    // weirdness of having bindings created in one context stored on a
+    // `object_name` object from another.
+    // TODO(devlin): There might be a way of detecting if the browser created
+    // the `object_name` object. For instance, we could add a v8::Private to the
+    // object we construct, and check if it's present. Unfortunately, we need to
+    // a) track down each place we create the object (it's not just in
+    // extensions) and also see how much that would break.
+    if (obj->GetCreationContextChecked() == context)
+      requested_object = obj;
+  }
+
+  return requested_object;
 }
 
 BindingsSystemPerContextData* GetBindingsDataFromContext(
@@ -206,10 +206,11 @@ void AddConsoleError(v8::Local<v8::Context> context, const std::string& error) {
 }
 
 // Returns the API schema indicated by |api_name|.
-const base::Value::Dict& GetAPISchema(const std::string& api_name) {
-  const base::Value::Dict* schema =
+const base::DictValue& GetAPISchema(const std::string& api_name) {
+  const base::DictValue* schema =
       ExtensionAPI::GetSharedInstance()->GetSchema(api_name);
-  CHECK(schema) << api_name;
+  // Don't use CHECK() here so we capture the `api_name` in the logs.
+  LOG_IF(FATAL, !schema) << "Unknown API " << api_name;
   return *schema;
 }
 
@@ -219,30 +220,6 @@ bool IsAPIFeatureAvailable(v8::Local<v8::Context> context,
                            const std::string& name) {
   ScriptContext* script_context = GetScriptContextFromV8ContextChecked(context);
   return script_context->GetAvailability(name).is_available();
-}
-
-// Returns true if the specified |context| is allowed to use promise based
-// returns from APIs.
-bool ArePromisesAllowed(v8::Local<v8::Context> context) {
-  ScriptContext* script_context = GetScriptContextFromV8ContextChecked(context);
-  const Extension* extension = script_context->extension();
-  if (extension && extension->manifest_version() >= 3) {
-    return true;
-  }
-  switch (script_context->context_type()) {
-    case mojom::ContextType::kWebUi:
-    case mojom::ContextType::kUntrustedWebUi:
-    case mojom::ContextType::kWebPage:
-      return true;
-    case mojom::ContextType::kUnspecified:
-    case mojom::ContextType::kPrivilegedWebPage:
-    case mojom::ContextType::kPrivilegedExtension:
-    case mojom::ContextType::kOffscreenExtension:
-    case mojom::ContextType::kUnprivilegedExtension:
-    case mojom::ContextType::kUserScript:
-    case mojom::ContextType::kContentScript:
-      return false;
-  }
 }
 
 // Instantiates the binding object for the given |name|. |name| must specify a
@@ -255,12 +232,13 @@ v8::Local<v8::Object> CreateRootBinding(v8::Local<v8::Context> context,
   v8::Local<v8::Object> binding_object =
       bindings_system->CreateAPIInstance(name, context, &hooks);
 
-  gin::Handle<APIBindingBridge> bridge_handle = gin::CreateHandle(
-      context->GetIsolate(),
-      new APIBindingBridge(hooks, context, binding_object,
-                           script_context->GetExtensionID(),
-                           script_context->GetContextTypeDescription()));
-  v8::Local<v8::Value> native_api_bridge = bridge_handle.ToV8();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  auto* bridge = cppgc::MakeGarbageCollected<APIBindingBridge>(
+      isolate->GetCppHeap()->GetAllocationHandle(), hooks, context,
+      binding_object, script_context->GetExtensionID(),
+      std::string(script_context->GetContextTypeDescription()));
+  v8::Local<v8::Value> native_api_bridge =
+      bridge->GetWrapper(isolate).ToLocalChecked();
   script_context->module_system()->OnNativeBindingCreated(name,
                                                           native_api_bridge);
 
@@ -289,7 +267,7 @@ v8::Local<v8::Object> CreateFullBinding(
     const std::string& root_name) {
   const FeatureMap& features = api_feature_provider->GetAllFeatures();
   auto lower = features.lower_bound(root_name);
-  CHECK(lower != features.end(), base::NotFatalUntil::M130);
+  CHECK(lower != features.end());
 
   // Some bindings have a prefixed name, like app.runtime, where 'app' and
   // 'app.runtime' are, in fact, separate APIs. It's also possible for a
@@ -369,7 +347,7 @@ v8::Local<v8::Object> CreateFullBinding(
       continue;
 
     if (root_binding.IsEmpty())
-      root_binding = v8::Object::New(context->GetIsolate());
+      root_binding = v8::Object::New(v8::Isolate::GetCurrent());
 
     // The nested api name contains a '.', e.g. 'app.runtime', but we want to
     // expose it on the object simply as 'runtime'.
@@ -379,7 +357,7 @@ v8::Local<v8::Object> CreateFullBinding(
     std::string_view accessor_name =
         binding_name.substr(binding_name.rfind('.') + 1);
     v8::Local<v8::String> nested_name =
-        gin::StringToSymbol(context->GetIsolate(), accessor_name);
+        gin::StringToSymbol(v8::Isolate::GetCurrent(), accessor_name);
     v8::Maybe<bool> success =
         root_binding->CreateDataProperty(context, nested_name, nested_binding);
     if (!success.IsJust() || !success.FromJust())
@@ -400,16 +378,18 @@ std::string GetContextOwner(v8::Local<v8::Context> context) {
              : url::Origin::Create(script_context->url()).GetURL().spec();
 }
 
-// Returns true if the specified `context` needs runtime for messaging APIs.
+// Returns true if the specified `context` can connect to any extension (and
+// needs runtime for extension messaging APIs).
 // This is different than just checking features because runtime's availability
 // depends on the installed extensions and the active URL (in the case of
 // extensions communicating with external websites).
-bool DoesContextNeedMessagingApis(ScriptContext* context) {
+bool CanWebpageContextConnectExternally(ScriptContext* context) {
   // TODO(devlin): This doesn't seem thread-safe with ServiceWorkers?
   for (const auto& extension :
        *RendererExtensionRegistry::Get()->GetMainThreadExtensionSet()) {
-    ExternallyConnectableInfo* info = static_cast<ExternallyConnectableInfo*>(
-        extension->GetManifestData(manifest_keys::kExternallyConnectable));
+    const ExternallyConnectableInfo* info =
+        static_cast<const ExternallyConnectableInfo*>(
+            extension->GetManifestData(manifest_keys::kExternallyConnectable));
     if (info && info->matches.MatchesURL(context->url())) {
       return true;
     }
@@ -422,7 +402,7 @@ bool DoesContextNeedMessagingApis(ScriptContext* context) {
 // to these APIs.
 // Note: `runtime` and `test` may also be available, but are handled specially
 // in UpdateBindingsForContext.
-const char* const kWebAvailableFeatures[] = {
+const std::string_view kWebAvailableFeatures[] = {
     "app",
     "webstorePrivate",
     "management",
@@ -442,16 +422,80 @@ bool ShouldCollectJSStackTrace(const APIRequestHandler::Request& request) {
           extensions_features::kIncludeJSCallStackInExtensionApiRequest)) {
     return false;
   }
-  if (!base::Contains(kApiMethods, request.method_name)) {
+  if (!std::ranges::contains(kApiMethods, request.method_name)) {
     return false;
   }
   return true;
 }
 
-bool IsPromptAPIEnabledForExtension(v8::Local<v8::Context> v8_context) {
-  return blink::WebAIFeatures::IsPromptAPIEnabledForExtension(v8_context) &&
-         base::FeatureList::IsEnabled(
-             blink::features::kAIPromptAPIForExtension);
+// A custom accessor for the `browser.devtools` property.
+// The `devtools` API is special because it is injected by the DevTools frontend
+// onto the `chrome` object, rather than being part of the standard extension
+// API features. This accessor allows `browser.devtools` to dynamically reflect
+// the state of `chrome.devtools`.
+void BrowserDevtoolsAccessor(v8::Local<v8::Name> name,
+                             const v8::PropertyCallbackInfo<v8::Value>& info) {
+  v8::Isolate* isolate = info.GetIsolate();
+  v8::HandleScope handle_scope(isolate);
+  v8::Local<v8::Context> context = info.Holder()->GetCreationContextChecked();
+  v8::Context::Scope context_scope(context);
+  v8::Local<v8::Object> chrome =
+      GetOrCreateGlobalObjectProperty(context, "chrome");
+  if (chrome.IsEmpty()) {
+    return;
+  }
+  // This accessor returns the value of `chrome.devtools`. Note that this will
+  // return whatever value is present on the `chrome` object, even if it is a
+  // user-assigned value (e.g. `chrome.devtools = 3`). This is intentional to
+  // ensure `browser.devtools` perfectly mirrors `chrome.devtools`. It is
+  // necessary since chrome.devtools is set at runtime by the devtools frontend.
+  v8::Local<v8::Value> val;
+  if (chrome->Get(context, name).ToLocal(&val)) {
+    info.GetReturnValue().Set(val);
+  }
+}
+
+// Returns true if the context appears to be the extension's devtools page (as
+// declared in the manifest) or a frame nested within it, and it is hosted by
+// the devtools frontend. Note: Checking for `chrome.devtools` being defined
+// would be much easier, but because it is injected by the DevTools frontend
+// after bindings update we can't so we have to infer it this way.
+bool IsDevToolsPageOrFrame(ScriptContext* context) {
+  const Extension* extension = context->extension();
+  if (!extension) {
+    return false;
+  }
+
+  const GURL& devtools_page_url =
+      chrome_manifest_urls::GetDevToolsPage(extension);
+  if (devtools_page_url.is_empty()) {
+    return false;
+  }
+
+  // Devtools page origin and extension origin are guaranteed to be the same.
+  if (url::Origin::Create(context->url()) != extension->origin()) {
+    return false;
+  }
+
+  // The devtools page is hosted in an iframe in the devtools frontend.
+  blink::WebLocalFrame* web_frame = context->web_frame();
+  if (!web_frame) {
+    return false;
+  }
+
+  // To prevent false positives (e.g. manually navigating to the devtools page
+  // in a regular tab), we must verify that the frame hierarchy is actually
+  // rooted in the devtools frontend (which has the `devtools://` scheme).
+  blink::WebFrame* parent = web_frame->Parent();
+  while (parent) {
+    if (parent->GetSecurityOrigin().Protocol().Utf8() ==
+        content::kChromeDevToolsScheme) {
+      return true;
+    }
+    parent = parent->Parent();
+  }
+
+  return false;
 }
 
 }  // namespace
@@ -464,7 +508,6 @@ NativeExtensionBindingsSystem::NativeExtensionBindingsSystem(
       api_system_(
           base::BindRepeating(&GetAPISchema),
           base::BindRepeating(&IsAPIFeatureAvailable),
-          base::BindRepeating(&ArePromisesAllowed),
           base::BindRepeating(&NativeExtensionBindingsSystem::SendRequest,
                               base::Unretained(this)),
           std::make_unique<ExtensionInteractionProvider>(),
@@ -493,6 +536,8 @@ void NativeExtensionBindingsSystem::DidCreateScriptContext(
   gin::PerContextData* per_context_data = gin::PerContextData::From(v8_context);
   DCHECK(per_context_data);
   DCHECK(!per_context_data->GetUserData(kBindingsSystemPerContextKey));
+
+  api_system_.DidCreateContext(v8_context);
 
   auto data = std::make_unique<BindingsSystemPerContextData>(
       weak_factory_.GetWeakPtr());
@@ -523,12 +568,6 @@ void NativeExtensionBindingsSystem::DidCreateScriptContext(
   if (context->context_type() == mojom::ContextType::kContentScript) {
     SetScriptingParams(context);
   }
-
-  if (context->context_type() == mojom::ContextType::kPrivilegedExtension) {
-    if (IsPromptAPIEnabledForExtension(v8_context)) {
-      UpdateBindingsForPromptAPI(context);
-    }
-  }
 }
 
 void NativeExtensionBindingsSystem::WillReleaseScriptContext(
@@ -546,30 +585,11 @@ void NativeExtensionBindingsSystem::UpdateBindingsForContext(
   v8::Isolate* isolate = context->isolate();
   v8::HandleScope handle_scope(isolate);
   v8::Local<v8::Context> v8_context = context->v8_context();
-  v8::Local<v8::Object> chrome = GetOrCreateChrome(v8_context);
+  v8::Local<v8::Object> chrome =
+      GetOrCreateGlobalObjectProperty(v8_context, "chrome");
   if (chrome.IsEmpty()) {
     return;
   }
-
-  DCHECK(GetBindingsDataFromContext(v8_context));
-
-  auto set_accessor = [chrome, isolate,
-                       v8_context](std::string_view accessor_name) {
-    v8::Local<v8::String> api_name =
-        gin::StringToSymbol(isolate, accessor_name);
-    v8::Maybe<bool> success = chrome->SetLazyDataProperty(
-        v8_context, api_name, &BindingAccessor, api_name);
-    return success.IsJust() && success.FromJust();
-  };
-
-  auto set_restricted_accessor = [chrome, isolate,
-                                  v8_context](std::string_view accessor_name) {
-    v8::Local<v8::String> api_name =
-        gin::StringToSymbol(isolate, accessor_name);
-    v8::Maybe<bool> success = chrome->SetLazyDataProperty(
-        v8_context, api_name, &ThrowDeveloperModeRestrictedError, api_name);
-    return success.IsJust() && success.FromJust();
-  };
 
   bool is_webpage = false;
   switch (context->context_type()) {
@@ -588,6 +608,84 @@ void NativeExtensionBindingsSystem::UpdateBindingsForContext(
       is_webpage = false;
   }
 
+  std::optional<v8::Local<v8::Object>> browser;
+  // TODO(crbug.com/401226626): Determine if `browser` should be created in
+  // WebUI script contexts, currently it is not.
+  bool set_accessor_on_browser = false;
+  const Extension* extension = context->extension();
+  // Create `browser` accessor if this is an extension script context.
+  if (extension && extension->is_extension()) {
+    set_accessor_on_browser = true;
+  } else if (is_webpage &&
+             (CanWebpageContextConnectExternally(context) ||
+              base::FeatureList::IsEnabled(
+                  extensions_features::kExtensionBrowserNamespaceOnWebPages))) {
+    // Create `browser` accessor if this is a web page and it can communicate
+    // with an extension (meaning it will have an extension API enabled for it)
+    // or we've explicitly enabled it for webpages.
+    set_accessor_on_browser = true;
+  }
+
+  DCHECK(GetBindingsDataFromContext(v8_context));
+
+  auto set_accessor =
+      [chrome, &browser, isolate, v8_context,
+       set_accessor_on_browser](std::string_view accessor_name) {
+        v8::Local<v8::String> api_name =
+            gin::StringToSymbol(isolate, accessor_name);
+        v8::Maybe<bool> chrome_success = chrome->SetLazyDataProperty(
+            v8_context, api_name, &BindingAccessor, api_name);
+        if (!chrome_success.IsJust() || !chrome_success.FromJust()) {
+          return false;
+        }
+
+        // Skip `app` API since it is not an extension developer API.
+        if (set_accessor_on_browser && accessor_name != "app") {
+          if (!browser) {
+            browser = GetOrCreateGlobalObjectProperty(v8_context, "browser");
+          }
+          if (browser->IsEmpty()) {
+            return false;
+          }
+          v8::Maybe<bool> browser_success = (*browser)->SetLazyDataProperty(
+              v8_context, api_name, &BindingAccessor, api_name);
+          if (!browser_success.IsJust() || !browser_success.FromJust()) {
+            return false;
+          }
+        }
+
+        return true;
+      };
+
+  auto set_restricted_accessor = [chrome, &browser, isolate, v8_context,
+                                  set_accessor_on_browser](
+                                     std::string_view accessor_name) {
+    v8::Local<v8::String> api_name =
+        gin::StringToSymbol(isolate, accessor_name);
+    v8::Maybe<bool> chrome_success = chrome->SetLazyDataProperty(
+        v8_context, api_name, &ThrowDeveloperModeRestrictedError, api_name);
+    if (!chrome_success.IsJust() || !chrome_success.FromJust()) {
+      return false;
+    }
+
+    // Skip `app` API since it is not an extension developer API.
+    if (set_accessor_on_browser && accessor_name != "app") {
+      if (!browser) {
+        browser = GetOrCreateGlobalObjectProperty(v8_context, "browser");
+      }
+      if (browser->IsEmpty()) {
+        return false;
+      }
+      v8::Maybe<bool> browser_success = (*browser)->SetLazyDataProperty(
+          v8_context, api_name, &ThrowDeveloperModeRestrictedError, api_name);
+      if (!browser_success.IsJust() || !browser_success.FromJust()) {
+        return false;
+      }
+    }
+
+    return true;
+  };
+
   if (is_webpage) {
     // Hard-code registration of any APIs that are exposed to webpage-like
     // contexts, because it's more expensive to iterate over all the existing
@@ -597,10 +695,10 @@ void NativeExtensionBindingsSystem::UpdateBindingsForContext(
     // context types, especially on a given platform. Something to think about
     // for when we generate features.
     bool is_any_feature_available_to_page = false;
-    for (const char* feature_name : kWebAvailableFeatures) {
+    for (std::string_view feature_name : kWebAvailableFeatures) {
       if (context->GetAvailability(feature_name).is_available()) {
         // chrome.app is exposed to all webpages, we ignore it for this check.
-        if (strcmp(feature_name, "app") != 0) {
+        if (feature_name != "app") {
           is_any_feature_available_to_page = true;
         }
         if (!set_accessor(feature_name)) {
@@ -626,22 +724,25 @@ void NativeExtensionBindingsSystem::UpdateBindingsForContext(
     //  - If any extensions have specified themselves as externally connectable
     //  from this web page's URL.
     //  - If any features (other than app) were made available from the above
-    //  checks. We need do do this in order to have runtime.lastError provided
+    //  checks. We need to do this in order to have runtime.lastError provided
     //  for reporting errors to API callbacks.
-    if (DoesContextNeedMessagingApis(context) ||
+    if (CanWebpageContextConnectExternally(context) ||
         is_any_feature_available_to_page) {
       if (!set_accessor("runtime")) {
         LOG(ERROR) << "Failed to create API on Chrome object.";
       }
     }
 
+    if (set_accessor_on_browser && !browser) {
+      browser = GetOrCreateGlobalObjectProperty(v8_context, "browser");
+    }
     UpdateContentCapabilities(context);
     return;
   }
 
   FeatureCache::FeatureNameVector features =
       feature_cache_.GetAvailableFeatures(
-          context->context_type(), context->extension(), context->url(),
+          context->context_type(), extension, context->url(),
           RendererFrameContextData(context->web_frame()));
   std::string_view last_accessor;
   for (const std::string& feature : features) {
@@ -671,7 +772,7 @@ void NativeExtensionBindingsSystem::UpdateBindingsForContext(
 
   FeatureCache::FeatureNameVector dev_mode_features =
       feature_cache_.GetDeveloperModeRestrictedFeatures(
-          context->context_type(), context->extension(), context->url(),
+          context->context_type(), extension, context->url(),
           RendererFrameContextData(context->web_frame()));
 
   for (const std::string& feature : dev_mode_features) {
@@ -686,11 +787,36 @@ void NativeExtensionBindingsSystem::UpdateBindingsForContext(
       return;
     }
   }
+
+  // If we're exposing the `browser` namespace, we need to ensure
+  // `browser.devtools` can be accessed too. The `devtools` API is special
+  // because it is not in `feature_cache_`, but is instead injected onto the
+  // `chrome` object by the DevTools frontend (see ExtensionAPI.ts in
+  // devtools-frontend) so it has it's own bespoke logic for whether it is set.
+  if (set_accessor_on_browser && IsDevToolsPageOrFrame(context)) {
+    if (!browser) {
+      browser = GetOrCreateGlobalObjectProperty(v8_context, "browser");
+    }
+    if (browser && !browser->IsEmpty()) {
+      v8::Local<v8::String> devtools_name =
+          gin::StringToSymbol(isolate, "devtools");
+      v8::Maybe<bool> browser_success = (*browser)->SetLazyDataProperty(
+          v8_context, devtools_name, &BrowserDevtoolsAccessor, devtools_name);
+      if (!browser_success.IsJust() || !browser_success.FromJust()) {
+        LOG(ERROR) << "Failed to create API on Chrome object.";
+      }
+    }
+  }
+
+  // We don't need to check if `browser` was created here for extension
+  // contexts because they are guaranteed to have at least one API registered
+  // (e.g., 'runtime'), which will force the creation of the `browser` object
+  // in `set_accessor`.
 }
 
 void NativeExtensionBindingsSystem::DispatchEventInContext(
     const std::string& event_name,
-    const base::Value::List& event_args,
+    const base::ListValue& event_args,
     const mojom::EventFilteringInfoPtr& filtering_info,
     ScriptContext* context) {
   v8::HandleScope handle_scope(context->isolate());
@@ -710,12 +836,12 @@ bool NativeExtensionBindingsSystem::HasEventListenerInContext(
 void NativeExtensionBindingsSystem::HandleResponse(
     int request_id,
     bool success,
-    const base::Value::List& response,
+    const base::ListValue& response,
     const std::string& error,
     mojom::ExtraResponseDataPtr extra_data) {
   // Some API calls result in failure, but don't set an error. Use a generic and
   // unhelpful error string.
-  // TODO(devlin): Track these down and fix them. See crbug.com/648275.
+  // TODO(devlin): Track these down and fix them. See crbug.com/40485455.
   api_system_.CompleteRequest(
       request_id, response,
       !success && error.empty() ? "Unknown error." : error,
@@ -768,7 +894,7 @@ void NativeExtensionBindingsSystem::BindingAccessor(
   // Force binding creation in the owning context (even if another context is
   // calling in). This is also important to ensure that objects created through
   // the initialization process are all instantiated for the owning context.
-  // See https://crbug.com/819968.
+  // See https://crbug.com/41375376.
   v8::Context::Scope context_scope(context);
 
   // We use info.Data() to store a real name here instead of using the provided
@@ -799,7 +925,7 @@ v8::Local<v8::Object> NativeExtensionBindingsSystem::GetAPIHelper(
   if (!data)
     return v8::Local<v8::Object>();
 
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::Local<v8::Object> apis;
   if (data->api_object.IsEmpty()) {
     apis = v8::Object::New(isolate);
@@ -844,11 +970,11 @@ v8::Local<v8::Object> NativeExtensionBindingsSystem::GetLastErrorParents(
   if (secondary_parent &&
       IsAPIFeatureAvailable(context, "extension.lastError")) {
     *secondary_parent = GetAPIHelper(
-        context, gin::StringToSymbol(context->GetIsolate(), "extension"));
+        context, gin::StringToSymbol(v8::Isolate::GetCurrent(), "extension"));
   }
 
-  return GetAPIHelper(context,
-                      gin::StringToSymbol(context->GetIsolate(), "runtime"));
+  return GetAPIHelper(
+      context, gin::StringToSymbol(v8::Isolate::GetCurrent(), "runtime"));
 }
 
 // static
@@ -889,9 +1015,11 @@ void NativeExtensionBindingsSystem::GetInternalAPI(
   std::string api_name = gin::V8ToString(isolate, info[0]);
   const Feature* feature = FeatureProvider::GetAPIFeature(api_name);
   ScriptContext* script_context = GetScriptContextFromV8ContextChecked(context);
-  if (!feature || !script_context->IsAnyFeatureAvailableToContext(
-                      *feature, CheckAliasStatus::NOT_ALLOWED)) {
-    NOTREACHED();
+  if (!feature) {
+    NOTREACHED() << "Feature not valid: " << api_name;
+  } else if (!script_context->IsAnyFeatureAvailableToContext(
+                 *feature, CheckAliasStatus::NOT_ALLOWED)) {
+    NOTREACHED() << "Feature not available: " << api_name;
   }
 
   CHECK(feature->IsInternal());
@@ -950,16 +1078,7 @@ void NativeExtensionBindingsSystem::SendRequest(
       << script_context->GetDebugString();
 
   if (!params->extension_id.empty() && ShouldCollectJSStackTrace(*request)) {
-    auto start_time = base::TimeTicks::Now();
-    auto stack_trace = script_context->GetStackTrace(/*frame_limit=*/5);
-    auto end_time = base::TimeTicks::Now();
-    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-        "Extensions.Functions.ExtractJSCallStackElapsedTime",
-        end_time - start_time, base::Microseconds(1), base::Milliseconds(10),
-        50);
-    params->js_callstack = std::move(stack_trace);
-  } else {
-    params->js_callstack = std::nullopt;
+    params->js_callstack = script_context->GetStackTrace(/*frame_limit=*/5);
   }
 
   ipc_message_sender_->SendRequestIPC(script_context, std::move(params));
@@ -968,7 +1087,7 @@ void NativeExtensionBindingsSystem::SendRequest(
 void NativeExtensionBindingsSystem::OnEventListenerChanged(
     const std::string& event_name,
     binding::EventListenersChanged change,
-    const base::Value::Dict* filter,
+    const base::DictValue* filter,
     bool update_lazy_listeners,
     v8::Local<v8::Context> context) {
   ScriptContext* script_context = GetScriptContextFromV8ContextChecked(context);
@@ -1041,12 +1160,12 @@ void NativeExtensionBindingsSystem::OnEventListenerChanged(
 void NativeExtensionBindingsSystem::GetJSBindingUtil(
     v8::Local<v8::Context> context,
     v8::Local<v8::Value>* binding_util_out) {
-  gin::Handle<APIBindingJSUtil> handle = gin::CreateHandle(
-      context->GetIsolate(),
-      new APIBindingJSUtil(
-          api_system_.type_reference_map(), api_system_.request_handler(),
-          api_system_.event_handler(), api_system_.exception_handler()));
-  *binding_util_out = handle.ToV8();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  APIBindingJSUtil* util = cppgc::MakeGarbageCollected<APIBindingJSUtil>(
+      isolate->GetCppHeap()->GetAllocationHandle(),
+      api_system_.type_reference_map(), api_system_.request_handler(),
+      api_system_.event_handler(), api_system_.exception_handler());
+  *binding_util_out = util->GetWrapper(isolate).ToLocalChecked();
 }
 
 void NativeExtensionBindingsSystem::UpdateContentCapabilities(
@@ -1099,43 +1218,6 @@ void NativeExtensionBindingsSystem::SetScriptingParams(ScriptContext* context) {
           gin::StringToSymbol(context->isolate(), "globalParams"),
           gin::DataObjectBuilder(context->isolate()).Build())
       .Check();
-}
-
-void NativeExtensionBindingsSystem::UpdateBindingsForPromptAPI(
-    ScriptContext* context) {
-  v8::Isolate* isolate = context->isolate();
-  v8::HandleScope handle_scope(isolate);
-  v8::Local<v8::Context> v8_context = context->v8_context();
-
-  // If the extension has requested for `kAILanguageModelOriginTrial`
-  // permission, we will set the `chrome.aiOriginTrial.languageModel` as a
-  // mirror of `self.ai.languageModel`.
-  if (!context->extension() ||
-      !context->extension()
-           ->permissions_data()
-           ->active_permissions()
-           .HasAPIPermission(
-               mojom::APIPermissionID::kAILanguageModelOriginTrial)) {
-    return;
-  }
-
-  v8::Local<v8::Object> chrome = GetOrCreateChrome(v8_context);
-
-  // Creates `chrome.aiOriginTrial`.
-  v8::Local<v8::Object> chrome_ai_object = v8::Object::New(isolate);
-  v8::Maybe<bool> success = chrome->CreateDataProperty(
-      v8_context, gin::StringToSymbol(isolate, kStringNameAIOriginTrial),
-      chrome_ai_object);
-  CHECK(success.IsJust() && success.FromJust());
-
-  // Set `chrome.aiOriginTrial.languageModel`.
-  v8::Local<v8::String> language_model_name =
-      gin::StringToSymbol(isolate, kStringNameLanguageModel);
-  v8::Local<v8::Value> language_model_value =
-      blink::WebAILanguageModel::GetAILanguageModelFactory(v8_context, isolate);
-  success = chrome_ai_object->CreateDataProperty(
-      v8_context, language_model_name, language_model_value);
-  CHECK(success.IsJust() && success.FromJust());
 }
 
 }  // namespace extensions

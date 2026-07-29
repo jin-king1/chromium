@@ -5,12 +5,27 @@
 #include "services/on_device_model/public/cpp/model_assets.h"
 
 #include <cstdint>
-#include <string_view>
+#include <optional>
+#include <string>
+#include <utility>
+#include <variant>
 
+#include "third_party/dawn/include/dawn/dawn_proc.h"
+
+#include "base/check.h"
 #include "base/files/file.h"
+#include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/functional/callback_helpers.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "mojo/public/cpp/bindings/default_construct_tag.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "base/task/thread_pool.h"
+#endif
 
 namespace on_device_model {
 namespace {
@@ -21,11 +36,18 @@ namespace {
 // though nothing should write through to the file.
 #if BUILDFLAG(IS_FUCHSIA)
 constexpr uint32_t kWeightsFlags =
-    base::File::FLAG_OPEN | base::File::FLAG_READ | base::File::FLAG_WRITE;
+    base::File::AddFlagsForPassingToUntrustedProcess(
+        base::File::FLAG_OPEN | base::File::FLAG_READ | base::File::FLAG_WRITE);
+constexpr uint32_t kCacheFlags = kWeightsFlags;
 #else
 constexpr uint32_t kWeightsFlags =
-    base::File::FLAG_OPEN | base::File::FLAG_READ | base::File::FLAG_ASYNC |
-    base::File::FLAG_WIN_SEQUENTIAL_SCAN;
+    base::File::AddFlagsForPassingToUntrustedProcess(
+        base::File::FLAG_OPEN | base::File::FLAG_READ | base::File::FLAG_ASYNC |
+        base::File::FLAG_WIN_SEQUENTIAL_SCAN);
+constexpr uint32_t kCacheFlags =
+    base::File::AddFlagsForPassingToUntrustedProcess(
+        base::File::FLAG_OPEN_ALWAYS | base::File::FLAG_READ |
+        base::File::FLAG_WRITE);
 #endif
 
 // Attempts to make sure `file` will be read from disk quickly when needed.
@@ -47,26 +69,175 @@ void PrefetchFile(const base::FilePath& path) {
 #endif
 }
 
+base::File OpenAndValidateProgramCache(const base::FilePath& path) {
+  // dawnProcGetVersion() returns a static array of uint8_t of size 20.
+  constexpr int kDawnVersionSize = 20;
+
+  if (path.empty()) {
+    return base::File();
+  }
+
+  PrefetchFile(path);
+  base::File cache_file(path, kCacheFlags);
+  if (!cache_file.IsValid()) {
+    return cache_file;
+  }
+
+  base::FilePath version_path =
+      path.AddExtension(FILE_PATH_LITERAL(".dawn_version"));
+  std::string current_version(
+      reinterpret_cast<const char*>(dawnProcGetVersion()), kDawnVersionSize);
+  std::string cached_version;
+
+  bool version_match = base::ReadFileToString(version_path, &cached_version) &&
+                       cached_version == current_version;
+
+  if (!version_match) {
+    // Dawn version changed (or first run). Invalidate by truncating file to 0.
+    cache_file.SetLength(0);
+    base::WriteFile(version_path, current_version);
+  }
+
+  return cache_file;
+}
+
 }  // namespace
 
 ModelAssetPaths::ModelAssetPaths() = default;
 ModelAssetPaths::ModelAssetPaths(const ModelAssetPaths&) = default;
 ModelAssetPaths::~ModelAssetPaths() = default;
 
-ModelAssets::ModelAssets() = default;
+ModelFile::ModelFile(base::File file) : file_(std::move(file)) {}
+
+ModelFile::ModelFile(base::FilePath path) : file_(std::move(path)) {}
+
+ModelFile::ModelFile(mojo::DefaultConstruct::Tag) {}
+
+ModelFile::ModelFile(const ModelFile& other) {
+  if (other.IsFile()) {
+    file_ = other.file().Duplicate();
+  } else {
+    file_ = other.path();
+  }
+}
+
+ModelFile& ModelFile::operator=(const ModelFile& other) {
+  if (other.IsFile()) {
+    file_ = other.file().Duplicate();
+  } else {
+    file_ = other.path();
+  }
+  return *this;
+}
+
+ModelFile::ModelFile(ModelFile&&) = default;
+ModelFile& ModelFile::operator=(ModelFile&&) = default;
+ModelFile::~ModelFile() {
+  if (IsFile() && file().IsValid()) {
+    base::ThreadPool::PostTask(FROM_HERE, {base::MayBlock()},
+                               base::DoNothingWithBoundArgs(std::move(file())));
+  }
+}
+
+base::File& ModelFile::file() {
+  CHECK(std::holds_alternative<base::File>(file_));
+  return std::get<base::File>(file_);
+}
+
+const base::File& ModelFile::file() const {
+  CHECK(std::holds_alternative<base::File>(file_));
+  return std::get<base::File>(file_);
+}
+
+const base::FilePath& ModelFile::path() const {
+  CHECK(std::holds_alternative<base::FilePath>(file_));
+  return std::get<base::FilePath>(file_);
+}
+
+bool ModelFile::IsFile() const {
+  return std::holds_alternative<base::File>(file_);
+}
+
+// static
+ModelAssets ModelAssets::FromFile(base::File file) {
+  return ModelAssets(ModelFile(std::move(file)));
+}
+
+// static
+ModelAssets ModelAssets::FromPath(base::FilePath path) {
+  return ModelAssets(ModelFile(std::move(path)));
+}
+
+ModelAssets::ModelAssets(ModelFile weights) : weights(std::move(weights)) {}
+
+ModelAssets::ModelAssets(mojo::DefaultConstruct::Tag tag) : weights(tag) {}
+
+ModelAssets::ModelAssets(const ModelAssets& other)
+    : weights(other.weights),
+      sp_model_path(other.sp_model_path),
+      cache(other.cache.Duplicate()),
+      encoder_cache(other.encoder_cache.Duplicate()),
+      adapter_cache(other.adapter_cache.Duplicate()),
+      program_cache(other.program_cache.Duplicate()),
+      encoder_program_cache(other.encoder_program_cache.Duplicate()),
+      adapter_program_cache(other.adapter_program_cache.Duplicate()) {}
+
+ModelAssets& ModelAssets::operator=(const ModelAssets& other) {
+  weights = other.weights;
+  sp_model_path = other.sp_model_path;
+  cache = other.cache.Duplicate();
+  encoder_cache = other.encoder_cache.Duplicate();
+  adapter_cache = other.adapter_cache.Duplicate();
+  program_cache = other.program_cache.Duplicate();
+  encoder_program_cache = other.encoder_program_cache.Duplicate();
+  adapter_program_cache = other.adapter_program_cache.Duplicate();
+  return *this;
+}
+
 ModelAssets::ModelAssets(ModelAssets&&) = default;
 ModelAssets& ModelAssets::operator=(ModelAssets&&) = default;
 ModelAssets::~ModelAssets() = default;
 
 ModelAssets LoadModelAssets(const ModelAssetPaths& paths) {
+  TRACE_EVENT("optimization_guide", "LoadModelAssets");
   if (!paths.weights.empty()) {
     PrefetchFile(paths.weights);
   }
 
-  ModelAssets assets;
-  if (!paths.weights.empty()) {
-    assets.weights = base::File(paths.weights, kWeightsFlags);
+  auto assets =
+      paths.weights.empty()
+          ? ModelAssets::FromPath(std::move(paths.weights))
+          : ModelAssets::FromFile(base::File(paths.weights, kWeightsFlags));
+
+  if (!paths.cache.empty()) {
+    PrefetchFile(paths.cache);
+    assets.cache = base::File(paths.cache, kCacheFlags);
   }
+
+  if (!paths.encoder_cache.empty()) {
+    PrefetchFile(paths.encoder_cache);
+    assets.encoder_cache = base::File(paths.encoder_cache, kCacheFlags);
+  }
+
+  if (!paths.adapter_cache.empty()) {
+    PrefetchFile(paths.adapter_cache);
+    assets.adapter_cache = base::File(paths.adapter_cache, kCacheFlags);
+  }
+
+  if (!paths.program_cache.empty()) {
+    assets.program_cache = OpenAndValidateProgramCache(paths.program_cache);
+  }
+
+  if (!paths.encoder_program_cache.empty()) {
+    assets.encoder_program_cache =
+        OpenAndValidateProgramCache(paths.encoder_program_cache);
+  }
+
+  if (!paths.adapter_program_cache.empty()) {
+    assets.adapter_program_cache =
+        OpenAndValidateProgramCache(paths.adapter_program_cache);
+  }
+
   return assets;
 }
 
@@ -76,11 +247,22 @@ AdaptationAssetPaths::AdaptationAssetPaths(const AdaptationAssetPaths&) =
 AdaptationAssetPaths::~AdaptationAssetPaths() = default;
 
 AdaptationAssets::AdaptationAssets() = default;
+
+AdaptationAssets::AdaptationAssets(const AdaptationAssets& other)
+    : weights(other.weights.Duplicate()), weights_path(other.weights_path) {}
+
+AdaptationAssets& AdaptationAssets::operator=(const AdaptationAssets& other) {
+  weights = other.weights.Duplicate();
+  weights_path = other.weights_path;
+  return *this;
+}
+
 AdaptationAssets::AdaptationAssets(AdaptationAssets&&) = default;
 AdaptationAssets& AdaptationAssets::operator=(AdaptationAssets&&) = default;
 AdaptationAssets::~AdaptationAssets() = default;
 
 AdaptationAssets LoadAdaptationAssets(const AdaptationAssetPaths& paths) {
+  TRACE_EVENT("optimization_guide", "LoadAdaptationAssets");
   AdaptationAssets assets;
   if (!paths.weights.empty()) {
     PrefetchFile(paths.weights);

@@ -7,6 +7,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/uuid.h"
 #include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
+#include "components/autofill/core/browser/ui/test_autofill_image_fetcher.h"
 
 namespace autofill {
 
@@ -14,16 +15,24 @@ TestPaymentsDataManager::TestPaymentsDataManager(const std::string& app_locale)
     : PaymentsDataManager(/*profile_database=*/nullptr,
                           /*account_database=*/nullptr,
                           /*image_fetcher=*/nullptr,
-                          /*shared_storage_handler=*/nullptr,
                           /*pref_service=*/nullptr,
                           /*sync_service=*/nullptr,
                           /*identity_manager=*/nullptr,
                           /*variations_country_code=*/GeoIpCountryCode("US"),
-                          app_locale) {
+                          app_locale,
+                          /*autofill_optimization_guide_decider=*/nullptr) {
   is_payments_data_loaded_ = true;
+  owned_image_fetcher_ = std::make_unique<TestAutofillImageFetcher>();
+  image_fetcher_ = owned_image_fetcher_.get();
+  autofill_optimization_guide_decider_ = std::make_unique<
+      testing::NiceMock<MockAutofillOptimizationGuideDecider>>();
 }
 
-TestPaymentsDataManager::~TestPaymentsDataManager() = default;
+TestPaymentsDataManager::~TestPaymentsDataManager() {
+  // Clear `image_fetcher_` raw pointer because the `owned_image_fetcher_` goes
+  // first out of scope.
+  image_fetcher_ = nullptr;
+}
 
 void TestPaymentsDataManager::LoadCreditCards() {
   // Overridden to avoid a trip to the database.
@@ -92,6 +101,22 @@ void TestPaymentsDataManager::RemoveByGUID(const std::string& guid) {
         std::ranges::find(local_ibans_, iban, &std::unique_ptr<Iban>::get));
     NotifyObservers();
   }
+}
+
+bool TestPaymentsDataManager::SaveCardLocallyIfNew(
+    const CreditCard& imported_credit_card) {
+  CHECK(!imported_credit_card.number().empty());
+
+  for (auto& card : local_credit_cards_) {
+    if (card->MatchingCardDetails(imported_credit_card)) {
+      return false;
+    }
+  }
+  local_credit_cards_.push_back(
+      std::make_unique<CreditCard>(imported_credit_card));
+
+  NotifyObservers();
+  return true;
 }
 
 void TestPaymentsDataManager::RecordUseOfCard(const CreditCard& card) {
@@ -237,7 +262,7 @@ void TestPaymentsDataManager::SetPaymentMethodsMandatoryReauthEnabled(
   PaymentsDataManager::SetPaymentMethodsMandatoryReauthEnabled(enabled);
 }
 
-bool TestPaymentsDataManager::IsPaymentCvcStorageEnabled() {
+bool TestPaymentsDataManager::IsPaymentCvcStorageEnabled() const {
   if (payments_cvc_storage_enabled_.has_value()) {
     return payments_cvc_storage_enabled_.value();
   }
@@ -248,6 +273,21 @@ bool TestPaymentsDataManager::IsSyncFeatureEnabledForPaymentsServerMetrics()
     const {
   return false;
 }
+
+bool TestPaymentsDataManager::IsAutofillBnplPrefEnabled() const {
+  if (autofill_bnpl_enabled_.has_value()) {
+    return autofill_bnpl_enabled_.value();
+  }
+  return PaymentsDataManager::IsAutofillBnplPrefEnabled();
+}
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+bool TestPaymentsDataManager::IsAutofillHasSeenBnplPrefEnabled() const {
+  return PaymentsDataManager::IsAutofillHasSeenBnplPrefEnabled();
+}
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
 
 CoreAccountInfo TestPaymentsDataManager::GetAccountInfoForPaymentsServer()
     const {
@@ -278,11 +318,11 @@ void TestPaymentsDataManager::AddServerCreditCard(
 
 void TestPaymentsDataManager::AddBnplIssuer(const BnplIssuer& bnpl_issuer) {
   // No duplicated issuer should be inserted into the BNPL issuer list.
-  CHECK(!std::ranges::any_of(
+  CHECK(std::ranges::none_of(
       linked_bnpl_issuers_, [&](const BnplIssuer& saved_bnpl_issuer) {
         return saved_bnpl_issuer.issuer_id() == bnpl_issuer.issuer_id();
       }));
-  CHECK(!std::ranges::any_of(
+  CHECK(std::ranges::none_of(
       unlinked_bnpl_issuers_, [&](const BnplIssuer& saved_bnpl_issuer) {
         return saved_bnpl_issuer.issuer_id() == bnpl_issuer.issuer_id();
       }));
@@ -293,6 +333,11 @@ void TestPaymentsDataManager::AddBnplIssuer(const BnplIssuer& bnpl_issuer) {
     unlinked_bnpl_issuers_.push_back(bnpl_issuer);
   }
   NotifyObservers();
+}
+
+void TestPaymentsDataManager::ClearBnplIssuers() {
+  linked_bnpl_issuers_.clear();
+  unlinked_bnpl_issuers_.clear();
 }
 
 void TestPaymentsDataManager::AddAutofillOfferData(
@@ -309,9 +354,9 @@ void TestPaymentsDataManager::AddServerIban(const Iban& iban) {
   NotifyObservers();
 }
 
-void TestPaymentsDataManager::AddCardArtImage(const GURL& url,
-                                              const gfx::Image& image) {
-  credit_card_art_images_[url] = std::make_unique<gfx::Image>(image);
+void TestPaymentsDataManager::CacheImage(const GURL& url,
+                                         const gfx::Image& image) {
+  owned_image_fetcher_->CacheImage(url, image);
   NotifyObservers();
 }
 

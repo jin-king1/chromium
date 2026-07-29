@@ -2,234 +2,253 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import type {AppearanceBrowserProxy, /*CrButtonElement,*/ CustomizeColorSchemeModeClientRemote, SettingsAppearancePageElement, SettingsDropdownMenuElement} from 'chrome://settings/settings.js';
-import {AppearanceBrowserProxyImpl, ColorSchemeMode, CustomizeColorSchemeModeBrowserProxy, CustomizeColorSchemeModeClientCallbackRouter, CustomizeColorSchemeModeHandlerRemote, SystemTheme} from 'chrome://settings/settings.js';
+import type {CrLinkRowElement} from 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
+import type {CustomizeColorSchemeModeClientRemote, SettingsAppearancePageElement, SettingsDropdownMenuElement, SettingsToggleButtonElement} from 'chrome://settings/settings.js';
+import {AppearanceBrowserProxyImpl, ColorSchemeMode, customizeColorSchemeModeBrowserProxyFactory, CustomizeColorSchemeModeHandlerRemote, loadTimeData, MetricsBrowserProxyImpl, PrefsBrowserProxy, PrefService, SystemTheme} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-class TestAppearanceBrowserProxy extends TestBrowserProxy implements
-    AppearanceBrowserProxy {
-  private defaultZoom_: number = 1;
-  private isChildAccount_: boolean = false;
-  private isHomeUrlValid_: boolean = true;
-  private pinnedToolbarActionsAreDefaultResponse_: boolean = true;
+import {TestAppearanceBrowserProxy} from './test_appearance_browser_proxy.js';
+import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 
-  constructor() {
-    super([
-      'getDefaultZoom',
-      'getThemeInfo',
-      'isChildAccount',
-      'openCustomizeChrome',
-      'openCustomizeChromeToolbarSection',
-      'recordHoverCardImagesEnabledChanged',
-      'resetPinnedToolbarActions',
-      'useDefaultTheme',
-      // <if expr="is_linux">
-      'useGtkTheme',
-      'useQtTheme',
-      // </if>
-      'validateStartupPage',
-      'pinnedToolbarActionsAreDefault',
-    ]);
-  }
-
-  getDefaultZoom() {
-    this.methodCalled('getDefaultZoom');
-    return Promise.resolve(this.defaultZoom_);
-  }
-
-  getThemeInfo(themeId: string) {
-    this.methodCalled('getThemeInfo', themeId);
-    return Promise.resolve({
-      id: '',
-      name: 'Sports car red',
-      shortName: '',
-      description: '',
-      version: '',
-      mayDisable: false,
-      enabled: false,
-      isApp: false,
-      offlineEnabled: false,
-      optionsUrl: '',
-      permissions: [],
-      hostPermissions: [],
-    });
-  }
-
-  isChildAccount() {
-    this.methodCalled('isChildAccount');
-    return this.isChildAccount_;
-  }
-
-  openCustomizeChrome() {
-    this.methodCalled('openCustomizeChrome');
-  }
-
-  openCustomizeChromeToolbarSection() {
-    this.methodCalled('openCustomizeChromeToolbarSection');
-  }
-
-  recordHoverCardImagesEnabledChanged(enabled: boolean) {
-    this.methodCalled('recordHoverCardImagesEnabledChanged', enabled);
-  }
-
-  resetPinnedToolbarActions() {
-    this.methodCalled('resetPinnedToolbarActions');
-  }
-
-  useDefaultTheme() {
-    this.methodCalled('useDefaultTheme');
-  }
-
-  // <if expr="is_linux">
-  useGtkTheme() {
-    this.methodCalled('useGtkTheme');
-  }
-
-  useQtTheme() {
-    this.methodCalled('useQtTheme');
-  }
-  // </if>
-
-  setDefaultZoom(defaultZoom: number) {
-    this.defaultZoom_ = defaultZoom;
-  }
-
-  setIsChildAccount(isChildAccount: boolean) {
-    this.isChildAccount_ = isChildAccount;
-  }
-
-  validateStartupPage(url: string) {
-    this.methodCalled('validateStartupPage', url);
-    return Promise.resolve(this.isHomeUrlValid_);
-  }
-
-  setValidStartupPageResponse(isValid: boolean) {
-    this.isHomeUrlValid_ = isValid;
-  }
-
-  pinnedToolbarActionsAreDefault() {
-    this.methodCalled('pinnedToolbarActionsAreDefault');
-    return Promise.resolve(this.pinnedToolbarActionsAreDefaultResponse_);
-  }
-
-  setPinnedToolbarActionsAreDefaultResponse(areDefault: boolean) {
-    this.pinnedToolbarActionsAreDefaultResponse_ = areDefault;
-  }
-}
 
 let appearancePage: SettingsAppearancePageElement;
 let appearanceBrowserProxy: TestAppearanceBrowserProxy;
 let colorSchemeHandler: TestMock<CustomizeColorSchemeModeHandlerRemote>&
     CustomizeColorSchemeModeHandlerRemote;
 let colorSchemeCallbackRouter: CustomizeColorSchemeModeClientRemote;
+let metricsBrowserProxy: TestMetricsBrowserProxy;
 
-function createAppearancePage() {
-  appearanceBrowserProxy.reset();
+let prefService: PrefService;
+
+async function createAppearancePage() {
   document.body.innerHTML = window.trustedTypes!.emptyHTML;
+  appearanceBrowserProxy.reset();
+  metricsBrowserProxy.reset();
 
   colorSchemeHandler =
       TestMock.fromClass(CustomizeColorSchemeModeHandlerRemote);
-  CustomizeColorSchemeModeBrowserProxy.setInstance(
-      colorSchemeHandler, new CustomizeColorSchemeModeClientCallbackRouter());
-  colorSchemeCallbackRouter = CustomizeColorSchemeModeBrowserProxy.getInstance()
-                                  .callbackRouter.$.bindNewPipeAndPassRemote();
+  const {instance, remote} =
+      customizeColorSchemeModeBrowserProxyFactory.createForTest(
+          colorSchemeHandler);
+  customizeColorSchemeModeBrowserProxyFactory.setInstance(instance);
+  colorSchemeCallbackRouter = remote;
+
+  const fakePrefs = [
+    {
+      key: 'autogenerated.theme.policy.color',
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: 0,
+    },
+    {
+      key: 'browser.show_forward_button',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'browser.show_home_button',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+    {
+      key: 'browser.pin_split_tab_button',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+    {
+      key: 'browser.pin_contextual_task_button',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+    {
+      key: 'browser.split_view_drag_and_drop_enabled',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+    {
+      key: 'extensions.theme.id',
+      type: chrome.settingsPrivate.PrefType.STRING,
+      value: '',
+    },
+    {
+      key: 'extensions.theme.system_theme',
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: SystemTheme.DEFAULT,
+    },
+    {
+      key: 'bookmark_bar.show_on_all_tabs',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'bookmark_bar.visibility_state',
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: 0,
+    },
+    {
+      key: 'tab_search.is_right_aligned',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+    {
+      key: 'tab_search.pinned_to_tabstrip',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'organizer_panel.pinned_to_tabstrip',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'everything_menu.pinned_to_tabstrip',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'glass_frame.enabled',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+    {
+      key: 'vertical_tabs.enabled',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+    {
+      key: 'vertical_tabs.expand_on_hover',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+    {
+      key: 'side_panel.is_right_aligned',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'side_panel.alignment_overrides',
+      type: chrome.settingsPrivate.PrefType.DICTIONARY,
+      value: {},
+    },
+    {
+      key: 'webkit.webprefs.default_font_size',
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: 16,
+    },
+    {
+      key: 'webkit.webprefs.default_fixed_font_size',
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: 13,
+    },
+    {
+      key: 'toolbar.pinned_actions',
+      type: chrome.settingsPrivate.PrefType.LIST,
+      value: [],
+    },
+    {
+      key: 'browser.hovercard.image_previews_enabled',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'browser.hovercard.memory_usage_enabled',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'bookmark_bar.show_tab_groups',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'auto_pin_new_tab_groups',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'homepage_is_newtabpage',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'homepage',
+      type: chrome.settingsPrivate.PrefType.URL,
+      value: 'http://chromium.org',
+    },
+    {
+      key: 'browser.custom_chrome_frame',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+    {
+      key: 'browser.ctrl_tab_mru',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+  ];
+  const prefsBrowserProxy = new TestPrefsBrowserProxy(fakePrefs);
+  PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+
+  PrefService.resetInstanceForTesting();
+  await PrefService.getInstance().whenInitialized();
+  prefService = PrefService.getInstance();
 
   appearancePage = document.createElement('settings-appearance-page');
-  appearancePage.set('prefs', {
-    autogenerated: {
-      theme: {
-        policy: {
-          color: {
-            type: chrome.settingsPrivate.PrefType.NUMBER,
-            value: 0,
-          },
-        },
-      },
-    },
-    browser: {
-      show_forward_button: {
-        type: chrome.settingsPrivate.PrefType.BOOLEAN,
-        value: true,
-      },
-      show_home_button: {
-        type: chrome.settingsPrivate.PrefType.BOOLEAN,
-        value: false,
-      },
-    },
-    extensions: {
-      theme: {
-        id: {
-          type: chrome.settingsPrivate.PrefType.STRING,
-          value: '',
-        },
-        system_theme: {
-          type: chrome.settingsPrivate.PrefType.NUMBER,
-          value: SystemTheme.DEFAULT,
-        },
-      },
-    },
-    tab_search: {
-      is_right_aligned: {
-        type: chrome.settingsPrivate.PrefType.BOOLEAN,
-        value: false,
-      },
-    },
-  });
-
-  appearancePage.set('pageVisibility', {
-    setWallpaper: true,
-  });
 
   document.body.appendChild(appearancePage);
-  flush();
+  return microtasksFinished();
 }
 
-suite('AppearanceHandler', function() {
+suite('AppearancePage', function() {
   setup(function() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+
+    loadTimeData.overrideValues({
+      ntpSimplificationBookmarksBarEnabled: false,
+    });
+
     appearanceBrowserProxy = new TestAppearanceBrowserProxy();
     AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
 
-    createAppearancePage();
+    metricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
+
+    return createAppearancePage();
   });
 
-  teardown(function() {
-    appearancePage.remove();
-  });
-
-  const THEME_ID_PREF = 'prefs.extensions.theme.id.value';
+  const THEME_ID_PREF = 'extensions.theme.id';
 
   // <if expr="is_linux">
-  const SYSTEM_THEME_PREF = 'prefs.extensions.theme.system_theme.value';
+  const SYSTEM_THEME_PREF = 'extensions.theme.system_theme';
 
   test('useDefaultThemeLinux', async () => {
     await colorSchemeHandler.whenCalled('initializeColorSchemeMode');
 
-    assertFalse(!!appearancePage.get(THEME_ID_PREF));
-    assertEquals(appearancePage.get(SYSTEM_THEME_PREF), SystemTheme.DEFAULT);
+    assertFalse(!!prefService.getPref<string>(THEME_ID_PREF).value);
+    assertEquals(
+        prefService.getPref<number>(SYSTEM_THEME_PREF).value,
+        SystemTheme.DEFAULT);
     // No custom nor system theme in use; "USE CLASSIC" should be hidden.
-    assertFalse(!!appearancePage.shadowRoot!.querySelector('#useDefault'));
+    assertFalse(!!appearancePage.shadowRoot.querySelector('#useDefault'));
     // The color scheme toggle should be visible when the classic theme is used.
     assertTrue(isVisible(appearancePage.$.colorSchemeModeRow));
 
-    appearancePage.set(SYSTEM_THEME_PREF, SystemTheme.GTK);
-    flush();
+    await prefService.setPrefValue(SYSTEM_THEME_PREF, SystemTheme.GTK);
+    await microtasksFinished();
     // If the system theme is in use, "USE CLASSIC" should show.
-    assertTrue(!!appearancePage.shadowRoot!.querySelector('#useDefault'));
+    assertTrue(!!appearancePage.shadowRoot.querySelector('#useDefault'));
     // The color scheme toggle should be hidden when the GTK theme is used.
     assertFalse(isVisible(appearancePage.$.colorSchemeModeRow));
 
-    appearancePage.set(SYSTEM_THEME_PREF, SystemTheme.DEFAULT);
-    appearancePage.set(THEME_ID_PREF, 'fake theme id');
-    flush();
+    await prefService.setPrefValue(SYSTEM_THEME_PREF, SystemTheme.DEFAULT);
+    await prefService.setPrefValue(THEME_ID_PREF, 'fake theme id');
+    await microtasksFinished();
 
     // With a custom theme installed, "USE CLASSIC" should show.
     const button =
-        appearancePage.shadowRoot!.querySelector<HTMLElement>('#useDefault');
+        appearancePage.shadowRoot.querySelector<HTMLElement>('#useDefault');
     assertTrue(!!button);
 
     button.click();
@@ -239,41 +258,41 @@ suite('AppearanceHandler', function() {
   test('useGtkThemeLinux', async () => {
     await colorSchemeHandler.whenCalled('initializeColorSchemeMode');
 
-    assertFalse(!!appearancePage.get(THEME_ID_PREF));
-    appearancePage.set(SYSTEM_THEME_PREF, SystemTheme.GTK);
-    flush();
+    assertFalse(!!prefService.getPref<string>(THEME_ID_PREF).value);
+    await prefService.setPrefValue(SYSTEM_THEME_PREF, SystemTheme.GTK);
+    await microtasksFinished();
     // The "USE GTK+" button shouldn't be showing if it's already in use.
-    assertFalse(!!appearancePage.shadowRoot!.querySelector('#useGtk'));
+    assertFalse(!!appearancePage.shadowRoot.querySelector('#useGtk'));
     // The color scheme toggle should be hidden when the GTK theme is used.
     assertFalse(isVisible(appearancePage.$.colorSchemeModeRow));
 
     appearanceBrowserProxy.setIsChildAccount(true);
-    appearancePage.set(SYSTEM_THEME_PREF, SystemTheme.DEFAULT);
-    flush();
+    await prefService.setPrefValue(SYSTEM_THEME_PREF, SystemTheme.DEFAULT);
+    await microtasksFinished();
     // Child account users have their own theme and can't use GTK+ theme.
-    assertFalse(!!appearancePage.shadowRoot!.querySelector('#useDefault'));
-    assertFalse(!!appearancePage.shadowRoot!.querySelector('#useGtk'));
+    assertFalse(!!appearancePage.shadowRoot.querySelector('#useDefault'));
+    assertFalse(!!appearancePage.shadowRoot.querySelector('#useGtk'));
     // If there's no "USE" buttons, the container should be hidden.
     assertTrue(
-        appearancePage.shadowRoot!
+        appearancePage.shadowRoot
             .querySelector<HTMLElement>('#themesSecondaryActions')!.hidden);
     // The color scheme toggle should be visible when the classic theme is used,
     // for child accounts.
     assertTrue(isVisible(appearancePage.$.colorSchemeModeRow));
 
     appearanceBrowserProxy.setIsChildAccount(false);
-    appearancePage.set(THEME_ID_PREF, 'fake theme id');
-    flush();
+    await prefService.setPrefValue(THEME_ID_PREF, 'fake theme id');
+    await microtasksFinished();
     // If there's "USE" buttons again, the container should be visible.
-    assertTrue(!!appearancePage.shadowRoot!.querySelector('#useDefault'));
+    assertTrue(!!appearancePage.shadowRoot.querySelector('#useDefault'));
     assertFalse(
-        appearancePage.shadowRoot!
+        appearancePage.shadowRoot
             .querySelector<HTMLElement>('#themesSecondaryActions')!.hidden);
     // The color scheme toggle should be visible when a custom theme is used.
     assertTrue(isVisible(appearancePage.$.colorSchemeModeRow));
 
     const button =
-        appearancePage.shadowRoot!.querySelector<HTMLElement>('#useGtk');
+        appearancePage.shadowRoot.querySelector<HTMLElement>('#useGtk');
     assertTrue(!!button);
 
     button.click();
@@ -282,64 +301,99 @@ suite('AppearanceHandler', function() {
   // </if>
 
   // <if expr="not is_linux">
-  test('useDefaultTheme', function() {
-    assertFalse(!!appearancePage.get(THEME_ID_PREF));
-    assertFalse(!!appearancePage.shadowRoot!.querySelector('#useDefault'));
+  test('useDefaultTheme', async function() {
+    assertFalse(!!prefService.getPref<string>(THEME_ID_PREF).value);
+    assertFalse(!!appearancePage.shadowRoot.querySelector('#useDefault'));
 
-    appearancePage.set(THEME_ID_PREF, 'fake theme id');
-    flush();
+    await prefService.setPrefValue(THEME_ID_PREF, 'fake theme id');
+    await microtasksFinished();
 
     // With a custom theme installed, "RESET TO DEFAULT" should show.
     const button =
-        appearancePage.shadowRoot!.querySelector<HTMLElement>('#useDefault');
+        appearancePage.shadowRoot.querySelector<HTMLElement>('#useDefault');
     assertTrue(!!button);
 
     button.click();
     return appearanceBrowserProxy.whenCalled('useDefaultTheme');
   });
+  // </if>
 
-  test('useDefaultThemeWithPolicy', function() {
-    const POLICY_THEME_COLOR_PREF = 'prefs.autogenerated.theme.policy.color';
-    assertFalse(!!appearancePage.shadowRoot!.querySelector('#useDefault'));
+  test('themeSublabel', async () => {
+    const themeRow =
+        appearancePage.shadowRoot.querySelector<CrLinkRowElement>('#openTheme');
+    assertTrue(!!themeRow);
+
+    // <if expr="is_linux">
+    assertEquals(appearancePage.i18n('classicTheme'), themeRow.subLabel);
+
+    await prefService.setPrefValue(SYSTEM_THEME_PREF, SystemTheme.GTK);
+    await microtasksFinished();
+    assertEquals(appearancePage.i18n('gtkTheme'), themeRow.subLabel);
+
+    await prefService.setPrefValue(SYSTEM_THEME_PREF, SystemTheme.QT);
+    await microtasksFinished();
+    assertEquals(appearancePage.i18n('qtTheme'), themeRow.subLabel);
+    // </if>
+
+    await prefService.setPrefValue(THEME_ID_PREF, 'autogenerated_theme_id');
+    await microtasksFinished();
+    assertEquals(appearancePage.i18n('chromeColors'), themeRow.subLabel);
+  });
+
+  test('useDefaultThemeWithPolicy', async function() {
+    const settingsPrivate =
+        (PrefsBrowserProxy.getInstance() as TestPrefsBrowserProxy).fakeApi;
+    const POLICY_THEME_COLOR_PREF = 'autogenerated.theme.policy.color';
+    assertFalse(!!appearancePage.shadowRoot.querySelector('#useDefault'));
 
     // "Reset to default" button doesn't appear as result of a policy theme.
-    appearancePage.set(POLICY_THEME_COLOR_PREF, {controlledBy: 'PRIMARY_USER'});
-    flush();
+    settingsPrivate.sendPrefChanges([{
+      key: POLICY_THEME_COLOR_PREF,
+      controlledBy: chrome.settingsPrivate.ControlledBy.PRIMARY_USER,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+    }]);
+    await microtasksFinished();
 
-    assertFalse(!!appearancePage.shadowRoot!.querySelector('#useDefault'));
+    assertFalse(!!appearancePage.shadowRoot.querySelector('#useDefault'));
 
     // Unset policy theme and set custom theme to get button to show.
-    appearancePage.set(POLICY_THEME_COLOR_PREF, {});
-    appearancePage.set(THEME_ID_PREF, 'fake theme id');
-    flush();
+    settingsPrivate.sendPrefChanges([{
+      key: POLICY_THEME_COLOR_PREF,
+      controlledBy: undefined,
+      enforcement: undefined,
+    }]);
+    await prefService.setPrefValue(THEME_ID_PREF, 'fake theme id');
+    await microtasksFinished();
 
     let button =
-        appearancePage.shadowRoot!.querySelector<HTMLElement>('#useDefault');
+        appearancePage.shadowRoot.querySelector<HTMLElement>('#useDefault');
     assertTrue(!!button);
 
     // Clicking "Reset to default" button when a policy theme is applied
     // causes the managed theme dialog to appear.
-    appearancePage.set(POLICY_THEME_COLOR_PREF, {controlledBy: 'PRIMARY_USER'});
-    flush();
+    settingsPrivate.sendPrefChanges([{
+      key: POLICY_THEME_COLOR_PREF,
+      controlledBy: chrome.settingsPrivate.ControlledBy.PRIMARY_USER,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+    }]);
+    await microtasksFinished();
 
     button =
-        appearancePage.shadowRoot!.querySelector<HTMLElement>('#useDefault');
+        appearancePage.shadowRoot.querySelector<HTMLElement>('#useDefault');
     assertTrue(!!button);
     assertEquals(
-        null, appearancePage.shadowRoot!.querySelector('managed-dialog'));
+        null, appearancePage.shadowRoot.querySelector('managed-dialog'));
 
     button.click();
-    flush();
+    await microtasksFinished();
 
     assertFalse(
-        appearancePage.shadowRoot!.querySelector('managed-dialog')!.hidden);
+        appearancePage.shadowRoot.querySelector('managed-dialog')!.hidden);
   });
-  // </if>
 
   test('openCustomizeChrome', function() {
-    createAppearancePage();
     const button =
-        appearancePage.shadowRoot!.querySelector<HTMLElement>('#openTheme');
+        appearancePage.shadowRoot.querySelector<HTMLElement>('#openTheme');
     assertTrue(!!button);
 
     button.click();
@@ -347,8 +401,7 @@ suite('AppearanceHandler', function() {
   });
 
   test('openCustomizeChromeToolbarSection', function() {
-    createAppearancePage();
-    const button = appearancePage.shadowRoot!.querySelector<HTMLElement>(
+    const button = appearancePage.shadowRoot.querySelector<HTMLElement>(
         '#customizeToolbar');
     assertTrue(!!button);
 
@@ -359,10 +412,9 @@ suite('AppearanceHandler', function() {
 
   test('resetPinnedToolbarActions', async function() {
     appearanceBrowserProxy.setPinnedToolbarActionsAreDefaultResponse(false);
-    createAppearancePage();
-    await microtasksFinished();
+    await createAppearancePage();
 
-    const button = appearancePage.shadowRoot!.querySelector<HTMLElement>(
+    const button = appearancePage.shadowRoot.querySelector<HTMLElement>(
         '#resetPinnedToolbarActions');
     assertTrue(!!button);
 
@@ -372,19 +424,62 @@ suite('AppearanceHandler', function() {
 
   test('resetHiddenWhenNoPinnedActions', async function() {
     appearanceBrowserProxy.setPinnedToolbarActionsAreDefaultResponse(true);
-    createAppearancePage();
-    await microtasksFinished();
+    await createAppearancePage();
 
-    const button = appearancePage.shadowRoot!.querySelector<HTMLElement>(
+    const button = appearancePage.shadowRoot.querySelector<HTMLElement>(
         '#resetPinnedToolbarActions');
     assertFalse(!!button);
   });
 
-  test('ColorSchemeMode', async () => {
-    assertFalse(isVisible(appearancePage.$.colorSchemeModeRow));
+  test('resetVisibleWhenSplitTabPrefChanges', async function() {
+    appearanceBrowserProxy.setPinnedToolbarActionsAreDefaultResponse(true);
+    await createAppearancePage();
 
+    // Initially hidden.
+    assertFalse(!!appearancePage.shadowRoot.querySelector(
+        '#resetPinnedToolbarActions'));
+
+    // Mock that actions are no longer default.
+    appearanceBrowserProxy.setPinnedToolbarActionsAreDefaultResponse(false);
+    appearanceBrowserProxy.reset();
+
+    // Trigger observer by changing the pref.
+    await prefService.setPrefValue('browser.pin_split_tab_button', true);
+
+    await appearanceBrowserProxy.whenCalled('pinnedToolbarActionsAreDefault');
+    await microtasksFinished();
+
+    // Now visible.
+    assertTrue(!!appearancePage.shadowRoot.querySelector(
+        '#resetPinnedToolbarActions'));
+  });
+
+  test('resetVisibleWhenContextualTaskPrefChanges', async function() {
+    appearanceBrowserProxy.setPinnedToolbarActionsAreDefaultResponse(true);
+    await createAppearancePage();
+
+    // Initially hidden.
+    assertFalse(!!appearancePage.shadowRoot.querySelector(
+        '#resetPinnedToolbarActions'));
+
+    // Mock that actions are no longer default.
+    appearanceBrowserProxy.setPinnedToolbarActionsAreDefaultResponse(false);
+    appearanceBrowserProxy.reset();
+
+    // Trigger observer by changing the pref.
+    await prefService.setPrefValue('browser.pin_contextual_task_button', true);
+
+    await appearanceBrowserProxy.whenCalled('pinnedToolbarActionsAreDefault');
+    await microtasksFinished();
+
+    // Now visible.
+    assertTrue(!!appearancePage.shadowRoot.querySelector(
+        '#resetPinnedToolbarActions'));
+  });
+
+  test('ColorSchemeMode', async () => {
     colorSchemeHandler.reset();
-    createAppearancePage();
+    await createAppearancePage();
     await colorSchemeHandler.whenCalled('initializeColorSchemeMode');
 
     assertTrue(isVisible(appearancePage.$.colorSchemeModeRow));
@@ -408,7 +503,7 @@ suite('AppearanceHandler', function() {
   test('default zoom handling', async function() {
     function getDefaultZoomText() {
       const zoomLevel = appearancePage.$.zoomLevel;
-      return zoomLevel.options[zoomLevel.selectedIndex]!.textContent!.trim();
+      return zoomLevel.options[zoomLevel.selectedIndex]!.textContent.trim();
     }
 
     await appearanceBrowserProxy.whenCalled('getDefaultZoom');
@@ -416,186 +511,505 @@ suite('AppearanceHandler', function() {
     assertEquals('100%', getDefaultZoomText());
 
     appearanceBrowserProxy.setDefaultZoom(2 / 3);
-    createAppearancePage();
+    await createAppearancePage();
     await appearanceBrowserProxy.whenCalled('getDefaultZoom');
 
     assertEquals('67%', getDefaultZoomText());
 
     appearanceBrowserProxy.setDefaultZoom(11 / 10);
-    createAppearancePage();
+    await createAppearancePage();
     await appearanceBrowserProxy.whenCalled('getDefaultZoom');
 
     assertEquals('110%', getDefaultZoomText());
 
     appearanceBrowserProxy.setDefaultZoom(1.7499999999999);
-    createAppearancePage();
+    await createAppearancePage();
     await appearanceBrowserProxy.whenCalled('getDefaultZoom');
 
     assertEquals('175%', getDefaultZoomText());
   });
 
-  test('show home button toggling', function() {
+  test('show home button toggling', async function() {
     assertFalse(
-        !!appearancePage.shadowRoot!.querySelector('#home-button-options'));
-    appearancePage.set('prefs', {
-      autogenerated: {theme: {policy: {color: {value: 0}}}},
-      browser: {show_home_button: {value: true}},
-      extensions: {theme: {id: {value: ''}}},
-      toolbar: {pinned_actions: {value: []}},
-    });
-    flush();
-
-    assertTrue(
-        !!appearancePage.shadowRoot!.querySelector('#home-button-options'));
-  });
-
-  test('show side panel options', function() {
-    createAppearancePage();
-    assertTrue(
-        !!appearancePage.shadowRoot!.querySelector('#sidePanelPosition'));
-  });
-
-  test('show tab search options', async function() {
-    loadTimeData.overrideValues({
-      showTabSearchPositionSettings: true,
-    });
-    createAppearancePage();
+        !!appearancePage.shadowRoot.querySelector('#home-button-options'));
+    assertFalse(!!appearancePage.shadowRoot.querySelector('#customHomePage'));
+    await prefService.setPrefValue('browser.show_home_button', true);
     await microtasksFinished();
+
     assertTrue(
-        !!appearancePage.shadowRoot!.querySelector('#tabSearchPositionRow'));
+        !!appearancePage.shadowRoot.querySelector('#home-button-options'));
+    assertTrue(!!appearancePage.shadowRoot.querySelector('#customHomePage'));
   });
 
-  test('hide tab search options', async function() {
-    loadTimeData.overrideValues({
-      showTabSearchPositionSettings: false,
-    });
-    createAppearancePage();
+  test('homepage_is_newtabpage radio group toggling', async function() {
+    await prefService.setPrefValue('browser.show_home_button', true);
     await microtasksFinished();
-    assertTrue(
-        !appearancePage.shadowRoot!.querySelector('#tabSearchPositionRow'));
+
+    const radioGroup =
+        appearancePage.shadowRoot.querySelector('settings-radio-group');
+    assertTrue(!!radioGroup);
+    assertEquals('homepage_is_newtabpage', radioGroup.prefKey);
+
+    assertTrue(prefService.getPref<boolean>('homepage_is_newtabpage').value);
+    assertEquals('true', radioGroup.selected);
+
+    const buttonFalse = radioGroup.querySelector<HTMLElement>(
+        'controlled-radio-button[name="false"]');
+    assertTrue(!!buttonFalse);
+    buttonFalse.click();
+    await microtasksFinished();
+
+    assertFalse(prefService.getPref<boolean>('homepage_is_newtabpage').value);
+    assertEquals('false', radioGroup.selected);
   });
+
+  test('show side panel options', async function() {
+    await createAppearancePage();
+    assertTrue(!!appearancePage.shadowRoot.querySelector('#sidePanelPosition'));
+  });
+
+
+
+  test('show split view drag and drop options', async function() {
+    loadTimeData.overrideValues({
+      showSplitViewDragAndDropSetting: true,
+    });
+    await createAppearancePage();
+    assertTrue(
+        !!appearancePage.shadowRoot.querySelector('#splitViewDragAndDrop'));
+    assertFalse(appearancePage.shadowRoot
+                    .querySelector<SettingsToggleButtonElement>(
+                        '#splitViewDragAndDrop')!.hidden);
+  });
+
+  test('split view drag and drop toggle updates pref', async function() {
+    loadTimeData.overrideValues({
+      showSplitViewDragAndDropSetting: true,
+    });
+    await createAppearancePage();
+    await prefService.setPrefValue(
+        'browser.split_view_drag_and_drop_enabled', true);
+    await microtasksFinished();
+
+    const toggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#splitViewDragAndDrop');
+    assertTrue(!!toggle);
+    assertTrue(toggle.checked);
+
+    toggle.click();
+    await microtasksFinished();
+    assertFalse(
+        prefService.getPref<boolean>('browser.split_view_drag_and_drop_enabled')
+            .value);
+  });
+
+  test('ShowSavedTabGroupsHiddenWithProjectsPanel', async function() {
+    loadTimeData.overrideValues({
+      showOrganizerPanelEnabled: true,
+    });
+    await createAppearancePage();
+
+    const toggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showSavedTabGroups');
+    assertTrue(!!toggle);
+    assertTrue(toggle.hidden);
+
+    const autoPinToggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#autoPinNewTabGroups');
+    assertTrue(!!autoPinToggle);
+    assertTrue(autoPinToggle.hidden);
+  });
+
+  test('bookmarks bar toggle visibility', async function() {
+    await createAppearancePage();
+
+    assertTrue(!!appearancePage.shadowRoot.querySelector('#showBookmarksBar'));
+    assertFalse(!!appearancePage.shadowRoot.querySelector(
+        '#bookmarksBarVisibilityDropdown'));
+  });
+
+  test(
+      'bookmarks bar dropdown menu updates visibility_state', async function() {
+        loadTimeData.overrideValues({
+          ntpSimplificationBookmarksBarEnabled: true,
+        });
+        await createAppearancePage();
+
+        assertFalse(
+            !!appearancePage.shadowRoot.querySelector('#showBookmarksBar'));
+
+        assertEquals(
+            0, prefService.getPref('bookmark_bar.visibility_state').value);
+
+        const dropdown = appearancePage.shadowRoot
+                             .querySelector<SettingsDropdownMenuElement>(
+                                 '#bookmarksBarVisibilityDropdown');
+        assertTrue(!!dropdown);
+
+        const selectElement = dropdown.$.dropdownMenu;
+
+        assertEquals('0', selectElement.value);
+
+        selectElement.value = '1';
+        selectElement.dispatchEvent(new Event('change'));
+        await microtasksFinished();
+
+        assertEquals(
+            1, prefService.getPref('bookmark_bar.visibility_state').value);
+        assertEquals('1', selectElement.value);
+
+        let action = await metricsBrowserProxy.whenCalled('recordAction');
+        assertEquals('Settings_BookmarkBar_OnlyShowOnNtp', action);
+
+        metricsBrowserProxy.resetResolver('recordAction');
+
+        selectElement.value = '2';
+        selectElement.dispatchEvent(new Event('change'));
+        await microtasksFinished();
+
+        assertEquals(
+            2, prefService.getPref('bookmark_bar.visibility_state').value);
+        assertEquals('2', selectElement.value);
+
+        action = await metricsBrowserProxy.whenCalled('recordAction');
+        assertEquals('Settings_BookmarkBar_AlwaysHide', action);
+
+        metricsBrowserProxy.resetResolver('recordAction');
+
+        selectElement.value = '0';
+        selectElement.dispatchEvent(new Event('change'));
+        await microtasksFinished();
+
+        assertEquals(
+            0, prefService.getPref('bookmark_bar.visibility_state').value);
+        assertEquals('0', selectElement.value);
+
+        action = await metricsBrowserProxy.whenCalled('recordAction');
+        assertEquals('Settings_BookmarkBar_AlwaysShow', action);
+      });
 });
 
-suite('TabSearchPositionSettings', () => {
-  const TAB_SEARCH_IS_RIGHT_ALIGNED_PREF_PATH = 'tab_search.is_right_aligned';
-  const DEFAULT_TAB_SEARCH_IS_RIGHT_ALIGNED = false;
-  const UI_FEATURE_ALIGN_LEFT = 'foo';
-  const UI_FEATURE_ALIGN_RIGHT = 'bar';
-  const FALSEY_STRING = 'false';
-  const TRUTHY_STRING = 'true';
+suite('TabStripPositionSettings', () => {
+  let metricsBrowserProxy: TestMetricsBrowserProxy;
 
-  async function buildPage(startupPref: boolean, currentPref: boolean) {
+  setup(() => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+
     loadTimeData.overrideValues({
-      uiFeatureAlignLeft: UI_FEATURE_ALIGN_LEFT,
-      uiFeatureAlignRight: UI_FEATURE_ALIGN_RIGHT,
-      showTabSearchPositionSettings: true,
-      tabSearchIsRightAlignedAtStartup: startupPref,
+      showVerticalTabsEnabled: true,
     });
 
-    createAppearancePage();
+    appearanceBrowserProxy = new TestAppearanceBrowserProxy();
+    AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
 
-    appearancePage.setPrefValue(
-        TAB_SEARCH_IS_RIGHT_ALIGNED_PREF_PATH, currentPref);
-    flush();
-    await microtasksFinished();
-  }
+    metricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
 
-  function getTabSearchDropdown(): SettingsDropdownMenuElement|null {
-    return appearancePage.shadowRoot!
-        .querySelector<SettingsDropdownMenuElement>(
-            '#tabSearchPositionDropdown');
-  }
-
-  function getTabSearchRestartButton(): HTMLElement|null {
-    return appearancePage.shadowRoot!.querySelector(
-        '#tabSearchPositionRestart');
-  }
-
-  async function userClicksDropdownForOption(userChoice: boolean) {
-    const dropdown: SettingsDropdownMenuElement|null = getTabSearchDropdown();
-    if (dropdown === null) {
-      return;
-    }
-
-    dropdown.$.dropdownMenu.value = userChoice ? TRUTHY_STRING : FALSEY_STRING;
-    dropdown.dispatchEvent(new CustomEvent('change'));
-
-    // simulate the pref changing in the backend, This doesnt get triggered
-    // because the prefs are hardcoded.
-    appearancePage.setPrefValue(
-        TAB_SEARCH_IS_RIGHT_ALIGNED_PREF_PATH, userChoice);
-    flush();
-    await microtasksFinished();
-  }
-
-  setup(async () => {
-    await buildPage(
-        DEFAULT_TAB_SEARCH_IS_RIGHT_ALIGNED,
-        DEFAULT_TAB_SEARCH_IS_RIGHT_ALIGNED);
+    return createAppearancePage();
   });
 
-  test('shows when showTabSearchPositionSettings is true', () => {
-    assertTrue(!!getTabSearchDropdown());
-  });
+  test('Dropdown menu updates vertical_tabs.enabled.value', async function() {
+    assertFalse(prefService.getPref<boolean>('vertical_tabs.enabled').value);
 
-  test('dropdown has expected options', () => {
-    const dropdown: SettingsDropdownMenuElement|null = getTabSearchDropdown();
-
+    const dropdown =
+        appearancePage.shadowRoot.querySelector<SettingsDropdownMenuElement>(
+            '#tabStripPosition');
     assertTrue(!!dropdown);
-    assertEquals(2, dropdown?.menuOptions.length);
-    assertTrue(!!dropdown?.menuOptions.some(
-        option => option.name === UI_FEATURE_ALIGN_LEFT &&
-            option.value === FALSEY_STRING));
-    assertTrue(!!dropdown?.menuOptions.some(
-        option => option.name === UI_FEATURE_ALIGN_RIGHT &&
-            option.value === TRUTHY_STRING));
+
+    const selectElement = dropdown.$.dropdownMenu;
+    assertTrue(!!selectElement);
+
+    assertEquals('false', selectElement.value);
+
+    selectElement.value = 'true';
+    selectElement.dispatchEvent(new Event('change'));
+    await microtasksFinished();
+
+    assertTrue(prefService.getPref<boolean>('vertical_tabs.enabled').value);
+    assertEquals('true', selectElement.value);
+
+    selectElement.value = 'false';
+    selectElement.dispatchEvent(new Event('change'));
+    await microtasksFinished();
+
+    assertFalse(prefService.getPref<boolean>('vertical_tabs.enabled').value);
+    assertEquals('false', selectElement.value);
   });
 
-  test('dropdown sets the value', async () => {
-    const dropdown: SettingsDropdownMenuElement|null = getTabSearchDropdown();
+  test('Dropdown menu records user actions', async function() {
+    assertFalse(prefService.getPref<boolean>('vertical_tabs.enabled').value);
 
-    // Should be set to initial option of "False" based on pref.
-    assertEquals(FALSEY_STRING, dropdown?.getSelectedValue());
+    const dropdown =
+        appearancePage.shadowRoot.querySelector<SettingsDropdownMenuElement>(
+            '#tabStripPosition');
+    assertTrue(!!dropdown);
 
-    // on user click of true, the dropdown should now show truthy
-    await userClicksDropdownForOption(/*userChoice=*/ true);
-    assertEquals(TRUTHY_STRING, dropdown?.getSelectedValue());
+    const selectElement = dropdown.$.dropdownMenu;
+    assertTrue(!!selectElement);
+    assertEquals('false', selectElement.value);
 
-    // on user click of false, the dropdown should now show falsey
-    await userClicksDropdownForOption(/*userChoice=*/ false);
-    assertEquals(FALSEY_STRING, dropdown?.getSelectedValue());
-  });
+    selectElement.value = 'true';
+    selectElement.dispatchEvent(new Event('change'));
+    const verticalEnabled = await appearanceBrowserProxy.whenCalled(
+        'recordVerticalTabStripModeChanged');
+    assertTrue(verticalEnabled);
 
-  test('restart button A11y', async () => {
-    await buildPage(/*startupPref=*/ false, /*currentPref=*/ true);
-    const button = getTabSearchRestartButton();
-    assertTrue(!!button);
+    appearanceBrowserProxy.reset();
 
-    // The restart button needs to have the "alert" aria attribute.
-    assertEquals('alert', button.role);
-  });
-
-  test('restart button steady state', async () => {
-    await buildPage(/*startupPref=*/ false, /*currentPref=*/ false);
-    assertFalse(!!getTabSearchRestartButton());
-
-    await buildPage(/*startupPref=*/ false, /*currentPref=*/ true);
-    assertTrue(!!getTabSearchRestartButton());
-
-    await buildPage(/*startupPref=*/ true, /*currentPref=*/ false);
-    assertTrue(!!getTabSearchRestartButton());
-
-    await buildPage(/*startupPref=*/ true, /*currentPref=*/ true);
-    assertFalse(!!getTabSearchRestartButton());
-  });
-
-  test('restart button shows on change', async () => {
-    assertFalse(!!getTabSearchRestartButton());
-
-    await userClicksDropdownForOption(/*userChoice=*/ true);
-    assertTrue(!!getTabSearchRestartButton());
-
-    await userClicksDropdownForOption(/*userChoice=*/ false);
-    assertFalse(!!getTabSearchRestartButton());
+    selectElement.value = 'false';
+    selectElement.dispatchEvent(new Event('change'));
+    const horizontalEnabled = await appearanceBrowserProxy.whenCalled(
+        'recordVerticalTabStripModeChanged');
+    assertFalse(horizontalEnabled);
   });
 });
+
+suite('VerticalTabsExpandOnHoverSettings', () => {
+  setup(async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+
+    loadTimeData.overrideValues({
+      showVerticalTabsEnabled: true,
+      showVerticalTabsExpandOnHoverEnabled: true,
+    });
+
+    appearanceBrowserProxy = new TestAppearanceBrowserProxy();
+    AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
+
+    await createAppearancePage();
+    await prefService.setPrefValue('vertical_tabs.enabled', true);
+    await microtasksFinished();
+  });
+
+  test('Toggle updates vertical_tabs.expand_on_hover pref', async function() {
+    assertTrue(prefService.getPref<boolean>('vertical_tabs.enabled').value);
+    assertFalse(
+        prefService.getPref<boolean>('vertical_tabs.expand_on_hover').value);
+
+    const toggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showVerticalTabsExpandOnHover');
+    assertTrue(!!toggle);
+    assertFalse(toggle.checked);
+
+    toggle.click();
+    await microtasksFinished();
+
+    assertTrue(
+        prefService.getPref<boolean>('vertical_tabs.expand_on_hover').value);
+    assertTrue(toggle.checked);
+
+    toggle.click();
+    await microtasksFinished();
+
+    assertFalse(
+        prefService.getPref<boolean>('vertical_tabs.expand_on_hover').value);
+    assertFalse(toggle.checked);
+  });
+
+  test('Toggle is hidden when feature flag is disabled', async function() {
+    loadTimeData.overrideValues({
+      showVerticalTabsExpandOnHoverEnabled: false,
+    });
+
+    await createAppearancePage();
+    await prefService.setPrefValue('vertical_tabs.enabled', true);
+    await microtasksFinished();
+
+    const toggle = appearancePage.shadowRoot.querySelector(
+        '#showVerticalTabsExpandOnHover');
+    assertTrue(!toggle);
+  });
+
+  test(
+      'Toggle is hidden when vertical tabs pref is disabled', async function() {
+        await createAppearancePage();
+        await prefService.setPrefValue('vertical_tabs.enabled', false);
+        await microtasksFinished();
+
+        const toggle = appearancePage.shadowRoot.querySelector(
+            '#showVerticalTabsExpandOnHover');
+
+        assertTrue(!toggle);
+      });
+});
+
+suite('TabStripComboButtonSettings', () => {
+  let metricsBrowserProxy: TestMetricsBrowserProxy;
+
+  setup(() => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+
+    loadTimeData.overrideValues({
+      showOrganizerPanelEnabled: true,
+    });
+
+    appearanceBrowserProxy = new TestAppearanceBrowserProxy();
+    AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
+
+    metricsBrowserProxy = new TestMetricsBrowserProxy();
+    MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
+
+    return createAppearancePage();
+  });
+
+  test('Toggles update correct prefs', async function() {
+    assertTrue(
+        prefService.getPref<boolean>('tab_search.pinned_to_tabstrip').value);
+    assertTrue(
+        prefService.getPref<boolean>('organizer_panel.pinned_to_tabstrip')
+            .value);
+
+    const tabSearchToggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showTabSearchButton');
+    assertTrue(!!tabSearchToggle);
+    assertTrue(tabSearchToggle.checked);
+
+    const projectsToggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showOrganizerPanelButton');
+    assertTrue(!!projectsToggle);
+    assertTrue(projectsToggle.checked);
+
+    tabSearchToggle.click();
+    await microtasksFinished();
+    assertFalse(
+        prefService.getPref<boolean>('tab_search.pinned_to_tabstrip').value);
+
+    projectsToggle.click();
+    await microtasksFinished();
+    assertFalse(
+        prefService.getPref<boolean>('organizer_panel.pinned_to_tabstrip')
+            .value);
+  });
+
+  test('Toggles record metrics', async function() {
+    const tabSearchToggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showTabSearchButton');
+    assertTrue(!!tabSearchToggle);
+    tabSearchToggle.click();
+    let action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('TabStripComboButton.TabSearch.Unpinned', action);
+
+    metricsBrowserProxy.resetResolver('recordAction');
+    tabSearchToggle.click();
+    action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('TabStripComboButton.TabSearch.Pinned', action);
+
+    const projectsToggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showOrganizerPanelButton');
+    assertTrue(!!projectsToggle);
+    metricsBrowserProxy.resetResolver('recordAction');
+    projectsToggle.click();
+    action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('TabStripComboButton.OrganizerPanel.Unpinned', action);
+  });
+
+  test('Everything menu toggle updates correct pref', async function() {
+    loadTimeData.overrideValues({
+      showOrganizerPanelEnabled: false,
+      showEverythingMenuEnabled: true,
+    });
+    await createAppearancePage();
+
+    assertTrue(
+        prefService.getPref<boolean>('everything_menu.pinned_to_tabstrip')
+            .value);
+
+    const everythingToggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showEverythingMenuButton');
+    assertTrue(!!everythingToggle);
+    assertTrue(everythingToggle.checked);
+
+    everythingToggle.click();
+    await microtasksFinished();
+    assertFalse(
+        prefService.getPref<boolean>('everything_menu.pinned_to_tabstrip')
+            .value);
+  });
+
+  test('Everything menu toggle records metrics', async function() {
+    loadTimeData.overrideValues({
+      showOrganizerPanelEnabled: false,
+      showEverythingMenuEnabled: true,
+    });
+    await createAppearancePage();
+
+    const everythingToggle =
+        appearancePage.shadowRoot.querySelector<SettingsToggleButtonElement>(
+            '#showEverythingMenuButton');
+    assertTrue(!!everythingToggle);
+
+    everythingToggle.click();
+    const action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('TabStripComboButton.EverythingMenu.Unpinned', action);
+
+    metricsBrowserProxy.resetResolver('recordAction');
+    everythingToggle.click();
+    const action2 = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('TabStripComboButton.EverythingMenu.Pinned', action2);
+  });
+
+  test('Toggles hidden when disabled', async function() {
+    loadTimeData.overrideValues({
+      showOrganizerPanelEnabled: false,
+      showEverythingMenuEnabled: false,
+    });
+    await createAppearancePage();
+
+    assertFalse(
+        !!appearancePage.shadowRoot.querySelector('#showOrganizerPanelButton'));
+    assertFalse(
+        !!appearancePage.shadowRoot.querySelector('#showEverythingMenuButton'));
+  });
+});
+
+// <if expr="is_macosx">
+suite('GlassFrameSettings', () => {
+  setup(async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+
+    loadTimeData.overrideValues({
+      showGlassEffectEnabled: true,
+    });
+    appearanceBrowserProxy = new TestAppearanceBrowserProxy();
+    AppearanceBrowserProxyImpl.setInstance(appearanceBrowserProxy);
+
+    await createAppearancePage();
+    await prefService.setPrefValue('glass_frame.enabled', true);
+    await microtasksFinished();
+  });
+
+  test('Glass frame dropdown records metric', async () => {
+    const dropdown =
+        appearancePage.shadowRoot.querySelector<SettingsDropdownMenuElement>(
+            '#glassEffect');
+    assertTrue(!!dropdown);
+
+    const selectElement = dropdown.$.dropdownMenu;
+    assertTrue(!!selectElement);
+    assertEquals('true', selectElement.value);
+
+    selectElement.value = 'false';
+    selectElement.dispatchEvent(new Event('change'));
+    const glassDisabled = await appearanceBrowserProxy.whenCalled(
+        'recordGlassFrameEnabledChanged');
+    assertFalse(glassDisabled);
+
+    appearanceBrowserProxy.reset();
+
+    selectElement.value = 'true';
+    selectElement.dispatchEvent(new Event('change'));
+    const glassEnabled = await appearanceBrowserProxy.whenCalled(
+        'recordGlassFrameEnabledChanged');
+    assertTrue(glassEnabled);
+  });
+});
+// </if>

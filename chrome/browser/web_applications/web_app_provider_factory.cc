@@ -88,11 +88,15 @@ void WebAppProviderFactory::RegisterProfilePrefs(
   WebAppPolicyManager::RegisterProfilePrefs(registry);
   IsolatedWebAppPolicyManager::RegisterProfilePrefs(registry);
 
-  registry->RegisterBooleanPref(prefs::kShouldGarbageCollectStoragePartitions,
-                                false);
   RegisterInstallBounceMetricProfilePrefs(registry);
   RegisterDailyWebAppMetricsProfilePrefs(registry);
   OsIntegrationManager::RegisterProfilePrefs(registry);
+
+#if BUILDFLAG(IS_CHROMEOS)
+  registry->RegisterIntegerPref(prefs::kLastNavigationCapturingMigrationState,
+                                static_cast<int>(MigrationState::kDefaultOff));
+  registry->RegisterListPref(prefs::kWebAppsPreviouslyAppSupportedLinks);
+#endif
 }
 
 }  //  namespace web_app

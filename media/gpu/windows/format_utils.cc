@@ -75,4 +75,54 @@ DXGI_FORMAT VideoPixelFormatToDxgiFormat(VideoPixelFormat format) {
   }
 }
 
+DXGI_FORMAT SharedImageFormatToDXGIFormat(viz::SharedImageFormat format) {
+  if (format == viz::MultiPlaneFormat::kNV12) {
+    return DXGI_FORMAT_NV12;
+  }
+  if (format == viz::MultiPlaneFormat::kP010) {
+    return DXGI_FORMAT_P010;
+  }
+  if (format == viz::SinglePlaneFormat::kBGRA_8888) {
+    return DXGI_FORMAT_B8G8R8A8_UNORM;
+  }
+  if (format == viz::SinglePlaneFormat::kRGBA_1010102) {
+    return DXGI_FORMAT_R10G10B10A2_UNORM;
+  }
+  return DXGI_FORMAT_UNKNOWN;
+}
+
+bool IsRec709(const gfx::ColorSpace& color_space) {
+  return color_space.GetPrimaryID() == gfx::ColorSpace::PrimaryID::BT709 &&
+         color_space.GetTransferID() == gfx::ColorSpace::TransferID::BT709 &&
+         color_space.GetMatrixID() == gfx::ColorSpace::MatrixID::BT709;
+}
+
+bool IsRec601(const gfx::ColorSpace& color_space) {
+  return color_space.GetPrimaryID() == gfx::ColorSpace::PrimaryID::SMPTE170M &&
+         color_space.GetTransferID() ==
+             gfx::ColorSpace::TransferID::SMPTE170M &&
+         color_space.GetMatrixID() == gfx::ColorSpace::MatrixID::SMPTE170M;
+}
+
+gfx::ColorSpace GetEncoderOutputColorSpaceFromInputColorSpace(
+    const gfx::ColorSpace& input_color_space) {
+  gfx::ColorSpace output_color_space = input_color_space;
+  if (input_color_space.GetMatrixID() == gfx::ColorSpace::MatrixID::RGB) {
+    if (input_color_space.GetPrimaryID() ==
+        gfx::ColorSpace::PrimaryID::SMPTE170M) {
+      output_color_space = input_color_space.GetWithMatrixAndRange(
+          gfx::ColorSpace::MatrixID::SMPTE170M, input_color_space.GetRangeID());
+    } else if (input_color_space.GetPrimaryID() ==
+               gfx::ColorSpace::PrimaryID::BT2020) {
+      output_color_space = input_color_space.GetWithMatrixAndRange(
+          gfx::ColorSpace::MatrixID::BT2020_NCL,
+          input_color_space.GetRangeID());
+    } else {
+      output_color_space = input_color_space.GetWithMatrixAndRange(
+          gfx::ColorSpace::MatrixID::BT709, input_color_space.GetRangeID());
+    }
+  }
+  return output_color_space;
+}
+
 }  // namespace media

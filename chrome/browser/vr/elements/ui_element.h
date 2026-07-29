@@ -10,7 +10,6 @@
 #include <string>
 #include <vector>
 
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/vr/databinding/binding_base.h"
 #include "chrome/browser/vr/elements/corner_radii.h"
@@ -41,7 +40,6 @@ class KeyframeModel;
 
 namespace vr {
 
-class SkiaSurfaceProvider;
 class UiElementRenderer;
 struct CameraModel;
 
@@ -103,7 +101,7 @@ class VR_UI_EXPORT UiElement : public gfx::FloatAnimationCurve::Target,
   virtual void Render(UiElementRenderer* renderer,
                       const CameraModel& model) const;
 
-  virtual void Initialize(SkiaSurfaceProvider* provider);
+  virtual void Initialize();
 
   int id() const { return id_; }
 

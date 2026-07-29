@@ -7,9 +7,13 @@
 
 #include <optional>
 
-#include "base/memory/memory_pressure_listener.h"
+#include "base/memory/available_memory_monitor.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory_coordinator/memory_consumer.h"
 #include "base/sequence_checker.h"
+#include "base/timer/timer.h"
 #include "build/build_config.h"
+#include "chrome/browser/performance_manager/policies/sustained_memory_pressure_evaluator.h"
 #include "components/memory_pressure/reclaim_target.h"
 #include "components/performance_manager/public/graph/graph.h"
 #include "components/performance_manager/public/graph/system_node.h"
@@ -19,8 +23,10 @@ namespace performance_manager {
 namespace policies {
 
 // Urgently discard a tab when receiving a memory pressure signal.
-class UrgentPageDiscardingPolicy : public GraphOwned,
-                                   public SystemNodeObserver {
+class UrgentPageDiscardingPolicy
+    : public GraphOwned,
+      public base::MemoryConsumer,
+      public base::AvailableMemoryMonitor::Observer {
  public:
   UrgentPageDiscardingPolicy();
   ~UrgentPageDiscardingPolicy() override;
@@ -36,9 +42,19 @@ class UrgentPageDiscardingPolicy : public GraphOwned,
   static void DisableForTesting();
 
  private:
-  // SystemNodeObserver:
-  void OnMemoryPressure(
-      base::MemoryPressureListener::MemoryPressureLevel new_level) override;
+  // base::MemoryConsumer:
+  void OnUpdateMemoryLimit() override {}
+  void OnReleaseMemory() override;
+
+  // base::AvailableMemoryMonitor::Observer:
+  void OnAvailableMemoryUpdated(
+      const base::AvailableMemoryMonitor::MemorySample& sample) override;
+
+  // Callback for `sustained_memory_pressure_evaluator_`.
+  void OnSustainedMemoryPressure(bool is_sustained_memory_pressure);
+
+  // Discards a tab while in a memory pressure statte.
+  void HandleMemoryPressureEvent();
 
   // Callback called when a discard attempt has completed.
   void PostDiscardAttemptCallback(bool success);
@@ -50,10 +66,17 @@ class UrgentPageDiscardingPolicy : public GraphOwned,
       std::optional<memory_pressure::ReclaimTarget> reclaim_target_kb);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-  // True while we are in the process of discarding tab(s) in response to a
-  // memory pressure notification. It becomes false once we're done responding
-  // to this notification.
-  bool handling_memory_pressure_notification_ = false;
+  std::optional<base::MemoryConsumerRegistration> memory_consumer_registration_;
+
+  // Determines if the system is in a sustained memory pressure state.
+  std::optional<SustainedMemoryPressureEvaluator>
+      sustained_memory_pressure_evaluator_;
+
+  raw_ptr<base::AvailableMemoryMonitor> monitor_ = nullptr;
+
+  // While in a sustained memory pressure state, continue discarding a tab every
+  // time the timer fires.
+  base::RepeatingTimer sustained_memory_pressure_timer_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

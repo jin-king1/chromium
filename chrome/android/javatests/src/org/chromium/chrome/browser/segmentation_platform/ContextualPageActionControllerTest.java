@@ -14,6 +14,8 @@ import org.junit.runner.RunWith;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
@@ -21,13 +23,14 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.ui.base.DeviceFormFactor;
 
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@EnableFeatures({ChromeFeatureList.CONTEXTUAL_PAGE_ACTIONS})
+@EnableFeatures({ChromeFeatureList.CONTEXTUAL_PAGE_ACTIONS, ChromeFeatureList.GLIC})
 @Batch(Batch.PER_CLASS)
 public class ContextualPageActionControllerTest {
     private static final String CONTEXTUAL_PAGE_ACTION_DEFAULT_MODEL_HISTOGRAM =
@@ -38,19 +41,20 @@ public class ContextualPageActionControllerTest {
     private static final String TEST_PAGE = "/chrome/test/data/dom_distiller/simple_article.html";
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
-    private EmbeddedTestServer mTestServer;
     private String mReaderModePageUrl;
 
     @Before
     public void setUp() throws Exception {
-        mTestServer = mActivityTestRule.getTestServer();
-        mReaderModePageUrl = mTestServer.getURL(TEST_PAGE);
+        mReaderModePageUrl = mActivityTestRule.getTestServer().getURL(TEST_PAGE);
     }
 
     @Test
     @MediumTest
+    @Restriction(DeviceFormFactor.PHONE) // Flaky on larger form factors crbug.com/422817837
+    @DisableIf.Build(supported_abis_includes = "x86_64", message = "https://crbug.com/448846307")
     public void testContextualPageModelExecution() {
         LibraryLoader.getInstance().ensureInitialized();
 
@@ -60,7 +64,7 @@ public class ContextualPageActionControllerTest {
                         CONTEXTUAL_PAGE_ACTION_DEFAULT_MODEL_HISTOGRAM, /* value= kSuccess*/ 0);
 
         // Load a blank page, model should execute for every page load.
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
 
         histogram.pollInstrumentationThreadUntilSatisfied();
     }
@@ -68,9 +72,10 @@ public class ContextualPageActionControllerTest {
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.PHONE) // Reader mode is only available on phones.
+    @DisabledTest(message = "crbug.com/448846307")
     public void testContextualPageModelExecution_OnReaderModePage() {
         LibraryLoader.getInstance().ensureInitialized();
-        mActivityTestRule.startMainActivityFromLauncher();
+        WebPageStation page = mActivityTestRule.startOnBlankPage();
 
         var histograms =
                 HistogramWatcher.newBuilder()
@@ -83,7 +88,7 @@ public class ContextualPageActionControllerTest {
                         .allowExtraRecordsForHistogramsAbove()
                         .build();
 
-        mActivityTestRule.loadUrl(mReaderModePageUrl);
+        page = page.loadWebPageProgrammatically(mReaderModePageUrl);
 
         histograms.pollInstrumentationThreadUntilSatisfied();
     }

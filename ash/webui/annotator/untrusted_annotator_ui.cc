@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ash/webui/annotator/untrusted_annotator_ui.h"
 
@@ -37,18 +33,13 @@ void CreateAndAddAnnotatorHTMLSource(content::WebUI* web_ui) {
       web_ui->GetWebContents()->GetBrowserContext(),
       kChromeUIUntrustedAnnotatorUrl);
 
-  // TODO(b/216523790): Split untrusted annotator resources into a separate
-  // bundle.
   source->AddResourcePaths(kAshAnnotatorUntrustedResources);
   source->AddResourcePaths(kChromeosProjectorAppBundleResources);
   source->AddResourcePaths(kAshProjectorCommonResources);
-  source->AddResourcePath("",
-                          IDR_ASH_ANNOTATOR_UNTRUSTED_ANNOTATOR_HTML);
+  source->SetDefaultResource(IDR_ASH_ANNOTATOR_UNTRUSTED_ANNOTATOR_HTML);
 
 #if BUILDFLAG(ENABLE_CROS_MEDIA_APP)
   // Loads WASM resources shipped to Chromium by chrome://media-app.
-  source->AddResourcePath("ink_engine_ink.worker.js",
-                          IDR_MEDIA_APP_INK_ENGINE_INK_WORKER_JS);
   source->AddResourcePath("ink_engine_ink.wasm",
                           IDR_MEDIA_APP_INK_ENGINE_INK_WASM);
   source->AddResourcePath("ink.js", IDR_MEDIA_APP_INK_JS);

@@ -5,7 +5,6 @@
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 
 #include "base/feature_list.h"
-#include "chrome/browser/browsing_data/browsing_data_file_system_util.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_model_delegate.h"
 #include "chrome/browser/content_settings/chrome_content_settings_utils.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -21,30 +20,31 @@
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/content_settings/core/common/features.h"
+#include "components/guest_view/buildflags/buildflags.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permission_recovery_success_rate_tracker.h"
 #include "components/permissions/permission_uma_util.h"
+#include "components/permissions/permission_util.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "extensions/buildflags/buildflags.h"
-#include "ipc/ipc_channel_proxy.h"
 #include "pdf/buildflags.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
 #include "components/guest_view/browser/guest_view_base.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_GUEST_VIEW)
 
 #if BUILDFLAG(ENABLE_PDF)
-#include "chrome/browser/pdf/pdf_viewer_stream_manager.h"
+#include "extensions/browser/mime_handler/mime_handler_stream_manager.h"  // nogncheck
 #include "pdf/pdf_features.h"
 #endif  // BUILDFLAG(ENABLE_PDF)
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "components/permissions/permission_indicators_tab_data.h"
+#include "components/tabs/public/tab_interface.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 using content_settings::PageSpecificContentSettings;
@@ -52,9 +52,9 @@ using content_settings::PageSpecificContentSettings;
 PageSpecificContentSettingsDelegate::PageSpecificContentSettingsDelegate(
     content::WebContents* web_contents)
     : WebContentsObserver(web_contents) {
-    media_observation_.Observe(MediaCaptureDevicesDispatcher::GetInstance()
-                                   ->GetMediaStreamCaptureIndicator()
-                                   .get());
+  media_observation_.Observe(MediaCaptureDevicesDispatcher::GetInstance()
+                                 ->GetMediaStreamCaptureIndicator()
+                                 .get());
 }
 
 PageSpecificContentSettingsDelegate::~PageSpecificContentSettingsDelegate() =
@@ -133,6 +133,9 @@ void PageSpecificContentSettingsDelegate::OnCapturingStateChanged(
 }
 
 void PageSpecificContentSettingsDelegate::UpdateLocationBar() {
+  if (!web_contents()) {
+    return;
+  }
   content_settings::UpdateLocationBarUiForWebContents(web_contents());
 
   PageSpecificContentSettings* pscs = PageSpecificContentSettings::GetForFrame(
@@ -166,8 +169,9 @@ void PageSpecificContentSettingsDelegate::UpdateLocationBar() {
 PrefService* PageSpecificContentSettingsDelegate::GetPrefs() {
   Profile* profile =
       Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-  if (!profile)
+  if (!profile) {
     return nullptr;
+  }
 
   return profile->GetPrefs();
 }
@@ -187,7 +191,7 @@ PageSpecificContentSettingsDelegate::CreateBrowsingDataModelDelegate() {
 namespace {
 // By default, JavaScript, images and auto dark are allowed, and blockable mixed
 // content is blocked in guest content
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
 void GetGuestViewDefaultContentSettingRules(
     bool incognito,
     RendererContentSettingRules* rules) {
@@ -203,7 +207,7 @@ void GetGuestViewDefaultContentSettingRules(
 void PageSpecificContentSettingsDelegate::SetDefaultRendererContentSettingRules(
     content::RenderFrameHost* rfh,
     RendererContentSettingRules* rules) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_GUEST_VIEW)
   bool is_off_the_record =
       web_contents()->GetBrowserContext()->IsOffTheRecord();
 
@@ -223,10 +227,12 @@ PageSpecificContentSettingsDelegate::GetMicrophoneCameraState() {
   scoped_refptr<MediaStreamCaptureIndicator> media_indicator =
       MediaCaptureDevicesDispatcher::GetInstance()
           ->GetMediaStreamCaptureIndicator();
-  if (media_indicator->IsCapturingAudio(web_contents()))
+  if (media_indicator->IsCapturingAudio(web_contents())) {
     state.Put(PageSpecificContentSettings::kMicrophoneAccessed);
-  if (media_indicator->IsCapturingVideo(web_contents()))
+  }
+  if (media_indicator->IsCapturingVideo(web_contents())) {
     state.Put(PageSpecificContentSettings::kCameraAccessed);
+  }
 
   return state;
 }
@@ -256,7 +262,7 @@ content::WebContents* PageSpecificContentSettingsDelegate::
 
 void PageSpecificContentSettingsDelegate::OnContentAllowed(
     ContentSettingsType type) {
-  if (!(type == ContentSettingsType::GEOLOCATION ||
+  if (!(type == permissions::PermissionUtil::GetGeolocationType() ||
         type == ContentSettingsType::MEDIASTREAM_CAMERA ||
         type == ContentSettingsType::MEDIASTREAM_MIC)) {
     return;
@@ -266,12 +272,16 @@ void PageSpecificContentSettingsDelegate::OnContentAllowed(
                                       web_contents()->GetLastCommittedURL(),
                                       type, &setting_info);
   const base::Time grant_time = setting_info.metadata.last_modified();
-  if (grant_time.is_null())
+  if (grant_time.is_null()) {
     return;
+  }
   permissions::PermissionUmaUtil::RecordTimeElapsedBetweenGrantAndUse(
       type, base::Time::Now() - grant_time, setting_info.source);
   permissions::PermissionUmaUtil::RecordPermissionUsage(
-      type, web_contents()->GetBrowserContext(), web_contents(),
+      type, web_contents()->GetBrowserContext(),
+      // TODO: This RenderFrameHost and origin might be wrong if there was a
+      // concurrent navigation.
+      web_contents()->GetPrimaryMainFrame(),
       web_contents()->GetLastCommittedURL());
 }
 
@@ -299,22 +309,32 @@ bool PageSpecificContentSettingsDelegate::IsFrameAllowlistedForJavaScript(
     return false;
   }
 
-  // There should be a `pdf::PdfViewerStreamManager` if `render_frame_host`'s
+  // There should be a `MimeHandlerStreamManager` if `render_frame_host`'s
   // `content::WebContents` has a PDF.
-  auto* pdf_viewer_stream_manager =
-      pdf::PdfViewerStreamManager::FromRenderFrameHost(render_frame_host);
-  if (!pdf_viewer_stream_manager) {
+  auto* mime_handler_stream_manager =
+      extensions::mime_handler::MimeHandlerStreamManager::FromRenderFrameHost(
+          render_frame_host);
+  if (!mime_handler_stream_manager) {
     return false;
   }
 
-  // Allow the PDF extension frame and PDF content frame to use JavaScript.
-  if (pdf_viewer_stream_manager->IsPdfExtensionHost(render_frame_host) ||
-      pdf_viewer_stream_manager->IsPdfContentHost(render_frame_host)) {
+  // Allow the MIME handler extension frame and content frame to use JavaScript.
+  if (mime_handler_stream_manager->IsExtensionHost(render_frame_host) ||
+      mime_handler_stream_manager->IsContentHost(render_frame_host)) {
     return true;
   }
 #endif  // BUILDFLAG(ENABLE_PDF)
 
   return false;
+}
+
+bool PageSpecificContentSettingsDelegate::IsPiPWindow(
+    content::WebContents* web_contents) {
+  DCHECK(web_contents);
+  content::WebContents* child_web_contents =
+      PictureInPictureWindowManager::GetInstance()->GetChildWebContents();
+
+  return child_web_contents == web_contents;
 }
 
 void PageSpecificContentSettingsDelegate::PrimaryPageChanged(

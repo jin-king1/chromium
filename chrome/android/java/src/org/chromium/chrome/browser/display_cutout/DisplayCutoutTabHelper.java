@@ -6,35 +6,40 @@ package org.chromium.chrome.browser.display_cutout;
 
 import android.app.Activity;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
-import androidx.browser.trusted.TrustedWebActivityDisplayMode;
 
 import org.chromium.base.UserData;
 import org.chromium.base.UserDataHost;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.blink.mojom.DisplayMode;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.customtabs.BaseCustomTabActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabSelectionType;
-import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.components.browser_ui.display_cutout.DisplayCutoutController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
-import org.chromium.ui.InsetObserver;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeManager;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeTokenHolder;
+import org.chromium.ui.insets.InsetObserver;
+import org.chromium.url.GURL;
 
 /**
  * Wraps a {@link DisplayCutoutController} for a Chrome {@link Tab}.
  *
  * <p>This will only be created once the tab sets a non-default viewport fit.
  */
+@NullMarked
 public class DisplayCutoutTabHelper implements UserData {
     private static final Class<DisplayCutoutTabHelper> USER_DATA_KEY = DisplayCutoutTabHelper.class;
 
     /** The tab that this object belongs to. */
-    private Tab mTab;
+    private final Tab mTab;
 
     @VisibleForTesting DisplayCutoutController mCutoutController;
 
@@ -66,6 +71,16 @@ public class DisplayCutoutTabHelper implements UserData {
                 public void onContentChanged(Tab tab) {
                     mCutoutController.onContentChanged();
                 }
+
+                @Override
+                public void onPageLoadFinished(Tab tab, GURL url) {
+                    // Re-push safe-area into Blink once the new document is committed. On
+                    // reload, Blink may finish parsing and run page scripts before our
+                    // viewport-fit-driven push lands. Pushing again here makes CSS
+                    // env(safe-area-inset-*) consistent with the current cover state on Android
+                    // versions where the inset observer does not retrigger after refresh.
+                    mCutoutController.onPageLoadFinished();
+                }
             };
 
     public static DisplayCutoutTabHelper from(Tab tab) {
@@ -78,29 +93,33 @@ public class DisplayCutoutTabHelper implements UserData {
 
     @VisibleForTesting
     static class ChromeDisplayCutoutDelegate implements DisplayCutoutController.Delegate {
-        private Tab mTab;
+        private final Tab mTab;
+        private @Nullable EdgeToEdgeTokenHolder mEdgeToEdgeTokenHolder;
 
         ChromeDisplayCutoutDelegate(Tab tab) {
             mTab = tab;
         }
 
         @Override
-        public Activity getAttachedActivity() {
-            return mTab.getWindowAndroid().getActivity().get();
+        public @Nullable Activity getAttachedActivity() {
+            WindowAndroid window = mTab.getWindowAndroid();
+            return window == null ? null : window.getActivity().get();
         }
 
         @Override
-        public WebContents getWebContents() {
+        public @Nullable WebContents getWebContents() {
             return mTab.getWebContents();
         }
 
         @Override
         public @Nullable InsetObserver getInsetObserver() {
-            return mTab.getWindowAndroid().getInsetObserver();
+            WindowAndroid window = mTab.getWindowAndroid();
+            return window == null ? null : window.getInsetObserver();
         }
 
         @Override
-        public ObservableSupplier<Integer> getBrowserDisplayCutoutModeSupplier() {
+        public @Nullable MonotonicObservableSupplier<Integer>
+                getBrowserDisplayCutoutModeSupplier() {
             WindowAndroid window = mTab.getWindowAndroid();
             return window == null ? null : ActivityDisplayCutoutModeSupplier.from(window);
         }
@@ -111,24 +130,56 @@ public class DisplayCutoutTabHelper implements UserData {
         }
 
         @Override
-        public boolean isInBrowserFullscreen() {
+        public @DisplayMode.EnumType int getDisplayMode() {
             Activity activity = getAttachedActivity();
             if (!(activity instanceof BaseCustomTabActivity)) {
-                return false;
+                return DisplayMode.BROWSER;
             }
-            BaseCustomTabActivity baseCustomTabActivity = (BaseCustomTabActivity) activity;
-            return (baseCustomTabActivity.getIntentDataProvider().getTwaDisplayMode()
-                    instanceof TrustedWebActivityDisplayMode.ImmersiveMode);
+            return ((BaseCustomTabActivity) activity)
+                    .getIntentDataProvider()
+                    .getResolvedDisplayMode();
         }
 
         @Override
         public boolean isDrawEdgeToEdgeEnabled() {
-            return EdgeToEdgeUtils.isEnabled();
+            return true;
+        }
+
+        @Override
+        public boolean isShortEdgesCutoutModeEnabled() {
+            return ChromeFeatureList.sWebAppShortEdgesCutoutMode.isEnabled();
+        }
+
+        /**
+         * Returns the activity's {@link EdgeToEdgeManager}, or null if this delegate is not
+         * attached to a {@link BaseCustomTabActivity} (or the manager has not been created yet).
+         */
+        private @Nullable EdgeToEdgeManager getEdgeToEdgeManagerOrNull() {
+            Activity activity = getAttachedActivity();
+            if (!(activity instanceof BaseCustomTabActivity)) return null;
+            return ((BaseCustomTabActivity) activity).getEdgeToEdgeManager();
+        }
+
+        @Override
+        public void setEdgeToEdgeState(boolean drawEdgeToEdge) {
+            EdgeToEdgeManager edgeToEdgeManager = getEdgeToEdgeManagerOrNull();
+            if (edgeToEdgeManager == null) return;
+            if (mEdgeToEdgeTokenHolder == null) {
+                mEdgeToEdgeTokenHolder =
+                        new EdgeToEdgeTokenHolder(edgeToEdgeManager.getEdgeToEdgeStateProvider());
+            }
+            if (drawEdgeToEdge) {
+                mEdgeToEdgeTokenHolder.acquireTokenIfEmpty();
+            } else {
+                mEdgeToEdgeTokenHolder.release();
+            }
+            edgeToEdgeManager.setContentFitsWindowInsets(!drawEdgeToEdge);
         }
     }
 
     /**
      * Constructs a new DisplayCutoutTabHelper for a specific tab.
+     *
      * @param tab The tab that this object belongs to.
      */
     @VisibleForTesting
@@ -141,6 +192,7 @@ public class DisplayCutoutTabHelper implements UserData {
 
     /**
      * Set the viewport fit value for the tab.
+     *
      * @param value The new viewport fit value.
      */
     public void setViewportFit(@WebContentsObserver.ViewportFitType int value) {

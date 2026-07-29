@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/task/single_thread_task_runner.h"
+#include "extensions/renderer/bindings/api_binding_util.h"
 #include "gin/array_buffer.h"
 #include "gin/public/context_holder.h"
 #include "gin/public/isolate_holder.h"
@@ -16,10 +17,6 @@ namespace extensions {
 
 APIBindingTest::APIBindingTest() = default;
 APIBindingTest::~APIBindingTest() = default;
-
-v8::ExtensionConfiguration* APIBindingTest::GetV8ExtensionConfiguration() {
-  return nullptr;
-}
 
 void APIBindingTest::SetUp() {
   test_js_runner_ = CreateTestJSRunner();
@@ -39,11 +36,12 @@ void APIBindingTest::SetUp() {
   isolate()->Enter();
 
   v8::HandleScope handle_scope(isolate());
-  v8::Local<v8::Context> context =
-      v8::Context::New(isolate(), GetV8ExtensionConfiguration());
+  v8::Local<v8::Context> context = v8::Context::New(isolate());
   context->Enter();
   main_context_holder_ = std::make_unique<gin::ContextHolder>(isolate());
   main_context_holder_->SetContext(context);
+
+  binding::InitializeContext(context);
 }
 
 void APIBindingTest::TearDown() {
@@ -76,8 +74,8 @@ void APIBindingTest::DisposeAllContexts() {
           OnWillDisposeContext(context);
           if (exit)
             context->Exit();
+          holder.reset();
         }
-        holder.reset();
 
         // Garbage collect everything so that we find any issues where we might
         // be double-freeing.
@@ -98,10 +96,10 @@ void APIBindingTest::DisposeAllContexts() {
 
 v8::Local<v8::Context> APIBindingTest::AddContext() {
   auto holder = std::make_unique<gin::ContextHolder>(isolate());
-  v8::Local<v8::Context> context =
-      v8::Context::New(isolate(), GetV8ExtensionConfiguration());
+  v8::Local<v8::Context> context = v8::Context::New(isolate());
   holder->SetContext(context);
   additional_context_holders_.push_back(std::move(holder));
+  binding::InitializeContext(context);
   return context;
 }
 
@@ -130,7 +128,7 @@ void APIBindingTest::RunGarbageCollection() {
   // hopefully clean up all the various paths.
   for (int i = 0; i < 5; ++i) {
     isolate()->RequestGarbageCollectionForTesting(
-        v8::Isolate::kFullGarbageCollection);
+        v8::Isolate::kFullGarbageCollection, v8::StackState::kNoHeapPointers);
   }
 }
 

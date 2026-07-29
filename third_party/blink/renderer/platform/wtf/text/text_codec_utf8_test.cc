@@ -28,33 +28,30 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/wtf/text/text_codec_utf8.h"
 
 #include <limits>
 #include <memory>
+
+#include "base/compiler_specific.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_codec.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding_registry.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
-namespace WTF {
+namespace blink {
 
 namespace {
 
-TEST(TextCodecUTF8, DecodeAscii) {
+TEST(TextCodecUtf8Test, DecodeAscii) {
   TextEncoding encoding("UTF-8");
   std::unique_ptr<TextCodec> codec(NewTextCodec(encoding));
 
   bool saw_error = false;
   const auto input = base::byte_span_from_cstring("HelloWorld");
   const String& result =
-      codec->Decode(input, FlushBehavior::kDataEOF, false, saw_error);
+      codec->Decode(input, FlushBehavior::kDataEof, false, saw_error);
   EXPECT_FALSE(saw_error);
   ASSERT_EQ(input.size(), result.length());
   for (wtf_size_t i = 0; i < input.size(); ++i) {
@@ -62,7 +59,7 @@ TEST(TextCodecUTF8, DecodeAscii) {
   }
 }
 
-TEST(TextCodecUTF8, DecodeChineseCharacters) {
+TEST(TextCodecUtf8Test, DecodeChineseCharacters) {
   TextEncoding encoding("UTF-8");
   std::unique_ptr<TextCodec> codec(NewTextCodec(encoding));
 
@@ -72,27 +69,27 @@ TEST(TextCodecUTF8, DecodeChineseCharacters) {
   bool saw_error = false;
   const String& result =
       codec->Decode(base::byte_span_from_cstring(kTestCase),
-                    FlushBehavior::kDataEOF, false, saw_error);
+                    FlushBehavior::kDataEof, false, saw_error);
   EXPECT_FALSE(saw_error);
   ASSERT_EQ(2u, result.length());
   EXPECT_EQ(0x6f22U, result[0]);
   EXPECT_EQ(0x5b57U, result[1]);
 }
 
-TEST(TextCodecUTF8, Decode0xFF) {
+TEST(TextCodecUtf8Test, Decode0xFF) {
   TextEncoding encoding("UTF-8");
   std::unique_ptr<TextCodec> codec(NewTextCodec(encoding));
 
   bool saw_error = false;
   const String& result =
       codec->Decode(base::byte_span_from_cstring("\xff"),
-                    FlushBehavior::kDataEOF, false, saw_error);
+                    FlushBehavior::kDataEof, false, saw_error);
   EXPECT_TRUE(saw_error);
   ASSERT_EQ(1u, result.length());
   EXPECT_EQ(0xFFFDU, result[0]);
 }
 
-TEST(TextCodecUTF8, DecodeOverflow) {
+TEST(TextCodecUtf8Test, DecodeOverflow) {
   TextEncoding encoding("UTF-8");
   std::unique_ptr<TextCodec> codec(NewTextCodec(encoding));
 
@@ -103,12 +100,43 @@ TEST(TextCodecUTF8, DecodeOverflow) {
   EXPECT_FALSE(saw_error);
 
   EXPECT_DEATH_IF_SUPPORTED(
-      codec->Decode(base::as_bytes(
-                        base::span("", std::numeric_limits<wtf_size_t>::max())),
-                    FlushBehavior::kDataEOF, false, saw_error),
+      // SAFETY: Unsafe operation for a death test.
+      codec->Decode(base::as_bytes(UNSAFE_BUFFERS(base::span(
+                        "", std::numeric_limits<wtf_size_t>::max()))),
+                    FlushBehavior::kDataEof, false, saw_error),
       "");
+}
+
+TEST(TextCodecUtf8Test, DecodeMultiplePartialsAfterError) {
+  TextEncoding encoding("UTF-8");
+  std::unique_ptr<TextCodec> codec(NewTextCodec(encoding));
+
+  constexpr std::array<uint8_t, 4> data = {0xf0, 0xc3, 0x80, 0x2a};
+  const auto [first_chunk, second_chunk] = base::span(data).split_at(1u);
+
+  bool saw_error = false;
+  {
+    String s = codec->Decode(first_chunk, FlushBehavior::kDoNotFlush, false,
+                             saw_error);
+    EXPECT_TRUE(s.empty());
+    EXPECT_FALSE(saw_error);
+  }
+  {
+    String s = codec->Decode(second_chunk, FlushBehavior::kDoNotFlush, false,
+                             saw_error);
+    ASSERT_EQ(s.length(), 3u);
+    EXPECT_EQ(s[0], 0xfffd);  // 0xf0, invalid => replacement character
+    EXPECT_EQ(s[1], 0x00c0);  // 0xc3 0x80
+    EXPECT_EQ(s[2], 0x002a);  // 0x2a
+    EXPECT_TRUE(saw_error);
+  }
+  {
+    String s = codec->Decode({}, FlushBehavior::kDataEof, false, saw_error);
+    EXPECT_TRUE(s.empty());
+    EXPECT_TRUE(saw_error);
+  }
 }
 
 }  // namespace
 
-}  // namespace WTF
+}  // namespace blink

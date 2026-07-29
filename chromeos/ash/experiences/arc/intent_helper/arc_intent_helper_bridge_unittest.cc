@@ -15,8 +15,6 @@
 #include "chromeos/ash/experiences/arc/intent_helper/arc_intent_helper_package.h"
 #include "chromeos/ash/experiences/arc/intent_helper/intent_constants.h"
 #include "chromeos/ash/experiences/arc/intent_helper/open_url_delegate.h"
-#include "chromeos/ash/experiences/arc/mojom/intent_helper.mojom-forward.h"
-#include "chromeos/ash/experiences/arc/mojom/intent_helper.mojom-shared.h"
 #include "chromeos/ash/experiences/arc/mojom/intent_helper.mojom.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "mojo/public/cpp/bindings/clone_traits.h"
@@ -38,12 +36,6 @@ class ArcIntentHelperTest : public testing::Test {
     // OpenUrlDelegate:
     void OpenUrlFromArc(const GURL& url) override { last_opened_url_ = url; }
     void OpenWebAppFromArc(const GURL& url) override { last_opened_url_ = url; }
-    void OpenArcCustomTab(
-        const GURL& url,
-        int32_t task_id,
-        mojom::IntentHelperHost::OnOpenCustomTabCallback callback) override {
-      std::move(callback).Run(mojo::NullRemote());
-    }
     void OpenChromePageFromArc(mojom::ChromePage chrome_page) override {}
     void OpenAppWithIntent(const GURL& url,
                            mojom::LaunchIntentPtr intent) override {

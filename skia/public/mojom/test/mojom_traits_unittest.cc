@@ -2,36 +2,56 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include <limits>
 
+#include "base/compiler_specific.h"
+#include "include/core/SkPathBuilder.h"
+#include "include/core/SkRRect.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "skia/ext/skcolorspace_primaries.h"
 #include "skia/public/mojom/bitmap.mojom.h"
 #include "skia/public/mojom/bitmap_skbitmap_mojom_traits.h"
+#include "skia/public/mojom/hdr_metadata.mojom.h"
+#include "skia/public/mojom/hdr_metadata_mojom_traits.h"
 #include "skia/public/mojom/image_info.mojom-shared.h"
 #include "skia/public/mojom/image_info.mojom.h"
+#include "skia/public/mojom/skcolor4f.mojom.h"
+#include "skia/public/mojom/skcolor4f_mojom_traits.h"
 #include "skia/public/mojom/skcolorspace.mojom.h"
 #include "skia/public/mojom/skcolorspace_mojom_traits.h"
 #include "skia/public/mojom/skcolorspace_primaries.mojom.h"
 #include "skia/public/mojom/skcolorspace_primaries_mojom_traits.h"
+#include "skia/public/mojom/skpath.mojom.h"
+#include "skia/public/mojom/skpath_mojom_traits.h"
 #include "skia/public/mojom/tile_mode.mojom.h"
 #include "skia/public/mojom/tile_mode_mojom_traits.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkColorFilter.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
+#include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkString.h"
 #include "third_party/skia/include/core/SkTileMode.h"
+#include "third_party/skia/include/private/SkHdrMetadata.h"
 #include "third_party/skia/modules/skcms/skcms.h"
 #include "ui/gfx/skia_util.h"
 
 namespace skia {
 namespace {
+
+// A helper to construct a skia.mojom.SkColor4f without using StructTraits
+// to bypass checks on the sending/serialization side.
+skia::mojom::SkColor4fPtr ConstructSkColor4f(float r,
+                                             float g,
+                                             float b,
+                                             float a) {
+  auto mojom_color = skia::mojom::SkColor4f::New();
+  mojom_color->r = r;
+  mojom_color->g = g;
+  mojom_color->b = b;
+  mojom_color->a = a;
+  return mojom_color;
+}
 
 // A helper to construct a skia.mojom.BitmapN32 without using StructTraits
 // to bypass checks on the sending/serialization side.
@@ -96,6 +116,14 @@ mojo::StructPtr<skia::mojom::ImageInfo> ConstructImageInfo(
   mojom_info->width = width;
   mojom_info->height = height;
   return mojom_info;
+}
+
+void TestSkPathSerialization(const SkPath& input) {
+  SkPath output;
+  ASSERT_TRUE(
+      mojo::test::SerializeAndDeserialize<skia::mojom::SkPath>(input, output));
+
+  EXPECT_EQ(input, output);
 }
 
 TEST(StructTraitsTest, ImageInfo) {
@@ -163,14 +191,15 @@ TEST(StructTraitsTest, SkColorSpace) {
   ASSERT_TRUE(
       mojo::test::SerializeAndDeserialize<skia::mojom::SkcmsTransferFunction>(
           in_trfn, out_trfn));
-  EXPECT_EQ(memcmp(&in_trfn, &out_trfn, sizeof(in_trfn)), 0);
+  UNSAFE_TODO(EXPECT_EQ(memcmp(&in_trfn, &out_trfn, sizeof(in_trfn)), 0));
 
   skcms_Matrix3x3 in_to_xyzd50{
       .vals = {{0.1f, 0.2f, 0.3f}, {0.4f, 0.5f, 0.6f}, {0.7f, 0.8f, 0.9f}}};
   skcms_Matrix3x3 out_to_xyzd50;
   ASSERT_TRUE(mojo::test::SerializeAndDeserialize<skia::mojom::SkcmsMatrix3x3>(
       in_to_xyzd50, out_to_xyzd50));
-  EXPECT_EQ(memcmp(&in_to_xyzd50, &out_to_xyzd50, sizeof(in_to_xyzd50)), 0);
+  UNSAFE_TODO(EXPECT_EQ(
+      memcmp(&in_to_xyzd50, &out_to_xyzd50, sizeof(in_to_xyzd50)), 0));
 
   sk_sp<SkColorSpace> in_cs = SkColorSpace::MakeRGB(in_trfn, in_to_xyzd50);
   sk_sp<SkColorSpace> out_cs;
@@ -192,6 +221,61 @@ TEST(StructTraitsTest, SkColorSpace) {
   EXPECT_TRUE(in_p == out_p);
 }
 
+TEST(StructTraitsTest, SkColor4f) {
+  SkColor4f input = {0.1f, 0.2f, 0.3f, 0.4f};
+  SkColor4f output;
+  ASSERT_TRUE(mojo::test::SerializeAndDeserialize<skia::mojom::SkColor4f>(
+      input, output));
+  EXPECT_EQ(input, output);
+
+  const float kNaN = std::numeric_limits<float>::quiet_NaN();
+  const float kInf = std::numeric_limits<float>::infinity();
+
+  // Test NaN in each component.
+  {
+    auto input_nan = ConstructSkColor4f(kNaN, 0.2f, 0.3f, 0.4f);
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<skia::mojom::SkColor4f>(
+        input_nan, output));
+  }
+  {
+    auto input_nan = ConstructSkColor4f(0.1f, kNaN, 0.3f, 0.4f);
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<skia::mojom::SkColor4f>(
+        input_nan, output));
+  }
+  {
+    auto input_nan = ConstructSkColor4f(0.1f, 0.2f, kNaN, 0.4f);
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<skia::mojom::SkColor4f>(
+        input_nan, output));
+  }
+  {
+    auto input_nan = ConstructSkColor4f(0.1f, 0.2f, 0.3f, kNaN);
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<skia::mojom::SkColor4f>(
+        input_nan, output));
+  }
+
+  // Test Infinity in each component.
+  {
+    auto input_inf = ConstructSkColor4f(kInf, 0.2f, 0.3f, 0.4f);
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<skia::mojom::SkColor4f>(
+        input_inf, output));
+  }
+  {
+    auto input_inf = ConstructSkColor4f(0.1f, kInf, 0.3f, 0.4f);
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<skia::mojom::SkColor4f>(
+        input_inf, output));
+  }
+  {
+    auto input_inf = ConstructSkColor4f(0.1f, 0.2f, kInf, 0.4f);
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<skia::mojom::SkColor4f>(
+        input_inf, output));
+  }
+  {
+    auto input_inf = ConstructSkColor4f(0.1f, 0.2f, 0.3f, kInf);
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<skia::mojom::SkColor4f>(
+        input_inf, output));
+  }
+}
+
 TEST(StructTraitsTest, TileMode) {
   SkTileMode input(SkTileMode::kClamp);
   SkTileMode output;
@@ -210,6 +294,18 @@ TEST(StructTraitsTest, TileMode) {
   ASSERT_TRUE(mojo::test::SerializeAndDeserialize<skia::mojom::TileMode>(
       input, output));
   EXPECT_EQ(input, output);
+}
+
+TEST(StructTraitsTest, SkPath) {
+  TestSkPathSerialization(SkPath::Rect(SkRect::MakeWH(100, 200)));
+  TestSkPathSerialization(SkPath::Circle(100, 0, 30));
+  TestSkPathSerialization(
+      SkPath::Polygon({{0, 10}, {10, 0}, {10, 10}}, /*isClosed=*/true));
+  TestSkPathSerialization(SkPathBuilder()
+                              .addRRect(SkRRect::MakeRectXY(
+                                  SkRect::MakeLTRB(10, 10, 30, 50), 2.5, 3))
+                              .cubicTo({0, 10}, {30, 50}, {-5, .8})
+                              .detach());
 }
 
 TEST(StructTraitsTest, Bitmap) {
@@ -531,6 +627,274 @@ TEST(StructTraitsTest, InlineBitmapDeserializeTooManyBytes) {
         ConstructInlineBitmap(info, pixels);
     EXPECT_FALSE(mojo::test::SerializeAndDeserialize<skia::mojom::InlineBitmap>(
         input, output));
+  }
+}
+
+TEST(StructTraitsTest, SkHdrContentLightLevelInformation) {
+  skhdr::ContentLightLevelInformation in;
+  in.fMaxCLL = 1.2f;
+  in.fMaxFALL = 3.4f;
+
+  skhdr::ContentLightLevelInformation out;
+  ASSERT_TRUE(mojo::test::SerializeAndDeserialize<
+              skia::mojom::SkHdrContentLightLevelInformation>(in, out));
+
+  EXPECT_EQ(in.fMaxCLL, out.fMaxCLL);
+  EXPECT_EQ(in.fMaxFALL, out.fMaxFALL);
+}
+
+TEST(StructTraitsTest, SkHdrContentLightLevelInformation_InvalidFloats) {
+  const float kNaN = std::numeric_limits<float>::quiet_NaN();
+  const float kInf = std::numeric_limits<float>::infinity();
+
+  skhdr::ContentLightLevelInformation in;
+  in.fMaxCLL = 1.2f;
+  in.fMaxFALL = 3.4f;
+  skhdr::ContentLightLevelInformation out;
+
+  {
+    skhdr::ContentLightLevelInformation bad = in;
+    bad.fMaxCLL = kNaN;
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrContentLightLevelInformation>(bad, out));
+  }
+  {
+    skhdr::ContentLightLevelInformation bad = in;
+    bad.fMaxFALL = kInf;
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrContentLightLevelInformation>(bad, out));
+  }
+}
+
+TEST(StructTraitsTest, SkHdrMasteringDisplayColorVolume) {
+  skhdr::MasteringDisplayColorVolume in;
+  in.fDisplayPrimaries = SkNamedPrimaries::kRec2020;
+  in.fMaximumDisplayMasteringLuminance = 1.2f;
+  in.fMinimumDisplayMasteringLuminance = 3.4f;
+
+  skhdr::MasteringDisplayColorVolume out;
+  ASSERT_TRUE(mojo::test::SerializeAndDeserialize<
+              skia::mojom::SkHdrMasteringDisplayColorVolume>(in, out));
+
+  EXPECT_EQ(in.fDisplayPrimaries, out.fDisplayPrimaries);
+  EXPECT_EQ(in.fMaximumDisplayMasteringLuminance,
+            out.fMaximumDisplayMasteringLuminance);
+  EXPECT_EQ(in.fMinimumDisplayMasteringLuminance,
+            out.fMinimumDisplayMasteringLuminance);
+}
+
+TEST(StructTraitsTest, SkHdrMasteringDisplayColorVolume_InvalidFloats) {
+  const float kNaN = std::numeric_limits<float>::quiet_NaN();
+  const float kInf = std::numeric_limits<float>::infinity();
+
+  skhdr::MasteringDisplayColorVolume in;
+  in.fDisplayPrimaries = SkNamedPrimaries::kRec2020;
+  in.fMaximumDisplayMasteringLuminance = 1.2f;
+  in.fMinimumDisplayMasteringLuminance = 3.4f;
+  skhdr::MasteringDisplayColorVolume out;
+
+  {
+    skhdr::MasteringDisplayColorVolume bad = in;
+    bad.fMaximumDisplayMasteringLuminance = kNaN;
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrMasteringDisplayColorVolume>(bad, out));
+  }
+  {
+    skhdr::MasteringDisplayColorVolume bad = in;
+    bad.fMinimumDisplayMasteringLuminance = kInf;
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrMasteringDisplayColorVolume>(bad, out));
+  }
+}
+
+TEST(StructTraitsTest, SkHdrAdaptiveGlobalToneMap) {
+  skhdr::AdaptiveGlobalToneMap::HeadroomAdaptiveToneMap inHatm;
+  inHatm.fBaselineHdrHeadroom = 0.1f,
+  inHatm.fGainApplicationSpacePrimaries = SkNamedPrimaries::kRec2020;
+  inHatm.fAlternateImages = {
+      {
+          .fHdrHeadroom = 0.2,
+          .fColorGainFunction =
+              {
+                  .fComponentMixing =
+                      {
+                          .fRed = 0.1f,
+                          .fGreen = 0.2f,
+                          .fBlue = 0.3f,
+                          .fMax = 0.4f,
+                          .fMin = 0.0f,
+                          .fComponent = 0.0f,
+                      },
+                  .fGainCurve =
+                      {
+                          .fControlPoints =
+                              {
+                                  {.fX = 0.7f, .fY = 0.8f, .fM = 0.9f},
+                              },
+                      },
+              },
+      },
+  };
+  skhdr::AdaptiveGlobalToneMap in = {
+      .fHdrReferenceWhite = 100.0f,
+      .fHeadroomAdaptiveToneMap = {inHatm},
+  };
+
+  skhdr::AdaptiveGlobalToneMap out;
+  ASSERT_TRUE(mojo::test::SerializeAndDeserialize<
+              skia::mojom::SkHdrAdaptiveGlobalToneMap>(in, out));
+
+  EXPECT_EQ(in.fHdrReferenceWhite, out.fHdrReferenceWhite);
+  ASSERT_TRUE(out.fHeadroomAdaptiveToneMap.has_value());
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fBaselineHdrHeadroom,
+            out.fHeadroomAdaptiveToneMap->fBaselineHdrHeadroom);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fGainApplicationSpacePrimaries,
+            out.fHeadroomAdaptiveToneMap->fGainApplicationSpacePrimaries);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages.size(),
+            out.fHeadroomAdaptiveToneMap->fAlternateImages.size());
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0].fHdrHeadroom,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0].fHdrHeadroom);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fRed,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fRed);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fGreen,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fGreen);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fBlue,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fBlue);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fMax,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fMax);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fMin,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fMin);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fComponent,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fComponentMixing.fComponent);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fGainCurve.fControlPoints.size(),
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fGainCurve.fControlPoints.size());
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fGainCurve.fControlPoints[0]
+                .fX,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fGainCurve.fControlPoints[0]
+                .fX);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fGainCurve.fControlPoints[0]
+                .fY,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fGainCurve.fControlPoints[0]
+                .fY);
+  EXPECT_EQ(in.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fGainCurve.fControlPoints[0]
+                .fM,
+            out.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+                .fColorGainFunction.fGainCurve.fControlPoints[0]
+                .fM);
+}
+
+TEST(StructTraitsTest, SkHdrAdaptiveGlobalToneMap_InvalidFloats) {
+  const float kNaN = std::numeric_limits<float>::quiet_NaN();
+  const float kInf = std::numeric_limits<float>::infinity();
+
+  skhdr::AdaptiveGlobalToneMap::HeadroomAdaptiveToneMap inHatm;
+  inHatm.fBaselineHdrHeadroom = 0.1f,
+  inHatm.fGainApplicationSpacePrimaries = SkNamedPrimaries::kRec2020;
+  inHatm.fAlternateImages = {
+      {
+          .fHdrHeadroom = 0.2,
+          .fColorGainFunction =
+              {
+                  .fComponentMixing =
+                      {
+                          .fRed = 0.1f,
+                          .fGreen = 0.2f,
+                          .fBlue = 0.3f,
+                          .fMax = 0.4f,
+                          .fMin = 0.5f,
+                          .fComponent = 0.6f,
+                      },
+                  .fGainCurve =
+                      {
+                          .fControlPoints =
+                              {
+                                  {.fX = 0.7f, .fY = 0.8f, .fM = 0.9f},
+                              },
+                      },
+              },
+      },
+  };
+  skhdr::AdaptiveGlobalToneMap in = {
+      .fHdrReferenceWhite = 100.0f,
+      .fHeadroomAdaptiveToneMap = {inHatm},
+  };
+  skhdr::AdaptiveGlobalToneMap out;
+
+  {
+    skhdr::AdaptiveGlobalToneMap bad = in;
+    bad.fHdrReferenceWhite = kNaN;
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrAdaptiveGlobalToneMap>(bad, out));
+  }
+  {
+    skhdr::AdaptiveGlobalToneMap bad = in;
+    bad.fHeadroomAdaptiveToneMap->fBaselineHdrHeadroom = kInf;
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrAdaptiveGlobalToneMap>(bad, out));
+  }
+  {
+    skhdr::AdaptiveGlobalToneMap bad = in;
+    bad.fHeadroomAdaptiveToneMap->fAlternateImages[0].fHdrHeadroom = kNaN;
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrAdaptiveGlobalToneMap>(bad, out));
+  }
+  {
+    skhdr::AdaptiveGlobalToneMap bad = in;
+    bad.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+        .fColorGainFunction.fComponentMixing.fRed = kInf;
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrAdaptiveGlobalToneMap>(bad, out));
+  }
+  {
+    skhdr::AdaptiveGlobalToneMap bad = in;
+    bad.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+        .fColorGainFunction.fGainCurve.fControlPoints[0]
+        .fX = kNaN;
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrAdaptiveGlobalToneMap>(bad, out));
+  }
+  {
+    skhdr::AdaptiveGlobalToneMap bad = in;
+    bad.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+        .fColorGainFunction.fGainCurve.fControlPoints.clear();
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrAdaptiveGlobalToneMap>(bad, out));
+  }
+  {
+    skhdr::AdaptiveGlobalToneMap bad = in;
+    bad.fHeadroomAdaptiveToneMap->fAlternateImages[0]
+        .fColorGainFunction.fGainCurve.fControlPoints.resize(33);
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrAdaptiveGlobalToneMap>(bad, out));
+  }
+  {
+    skhdr::AdaptiveGlobalToneMap bad = in;
+    for (size_t i = 0; i < 4; ++i) {
+      auto alt = bad.fHeadroomAdaptiveToneMap->fAlternateImages.front();
+      alt.fHdrHeadroom += static_cast<float>(i);
+      bad.fHeadroomAdaptiveToneMap->fAlternateImages.push_back(alt);
+    }
+    EXPECT_FALSE(mojo::test::SerializeAndDeserialize<
+                 skia::mojom::SkHdrAdaptiveGlobalToneMap>(bad, out));
   }
 }
 

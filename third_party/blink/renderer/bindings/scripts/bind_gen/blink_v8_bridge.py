@@ -406,7 +406,10 @@ def blink_type_info(idl_type):
         if inner_type.has_null_value:
             return inner_type
         if inner_type.is_heap_vector_type:
-            return TypeInfo(inner_type.typename,
+            # Since the type is Member<>, we need to used GCedHeapVector<T>
+            # as inner type as we require MakeGarbageCollected() for the
+            # vector type.
+            return TypeInfo("GCed{}".format(inner_type.typename),
                             member_fmt="Member<{}>",
                             ref_fmt="{}*",
                             const_ref_fmt="const {}*",
@@ -434,9 +437,10 @@ def native_value_tag(idl_type, argument=None, apply_optional_to_last_arg=True):
             and not (idl_type.is_nullable or argument.default_value)
             and (apply_optional_to_last_arg
                  or argument != argument.owner.arguments[-1])):
-        return "IDLOptional<{}>".format(_native_value_tag_impl(idl_type))
+        return "IDLOptional<{}>".format(
+            _native_value_tag_impl(idl_type, argument))
 
-    return _native_value_tag_impl(idl_type)
+    return _native_value_tag_impl(idl_type, argument)
 
 
 def _pass_as_span_conversion_arguments(idl_type):
@@ -477,15 +481,19 @@ def _pass_as_span_conversion_arguments(idl_type):
         "AllowShared" in t.effective_annotations for t in types)
     if allow_shared:
         flags.append("PassAsSpanMarkerBase::Flags::kAllowShared")
+    # The actual value should be defined in the operation callback body according
+    # to the needs of the particular operation.
+    flags.append("${kPerformDetachCheckFlag}")
 
     return [
         " | ".join(flags) or "PassAsSpanMarkerBase::Flags::kNone", native_type
     ]
 
 
-def _native_value_tag_impl(idl_type):
+def _native_value_tag_impl(idl_type, argument=None):
     """Returns the tag type of NativeValueTraits."""
     assert isinstance(idl_type, web_idl.IdlType)
+    assert argument is None or isinstance(argument, web_idl.Argument)
 
     if idl_type.is_event_handler:
         return "IDL{}".format(idl_type.identifier)
@@ -493,6 +501,9 @@ def _native_value_tag_impl(idl_type):
     real_type = idl_type.unwrap(typedef=True)
 
     if "PassAsSpan" in idl_type.effective_annotations:
+        assert argument, "PassAsSpan can only appear on an argument"
+        assert "AllowResizable" not in idl_type.effective_annotations, (
+            "[AllowResizable] is not supported with [PassAsSpan]")
         conversion_arguments = _pass_as_span_conversion_arguments(idl_type)
         return "PassAsSpan<{}>".format(", ".join(conversion_arguments))
 
@@ -727,22 +738,28 @@ def make_default_value_expr(idl_type, default_value):
         initializer_expr = None  # VectorOf<T>::size() == 0 by default
         assignment_value = "{}()".format(type_info.value_t)
     elif default_value.idl_type.is_object:
-        dictionary = idl_type.unwrap().type_definition_object
-        # Currently "isolate" is the only possible dependency, so whenever
-        # .initializer_deps exists, it must be ["isolate"].
-        if any((make_default_value_expr(member.idl_type,
-                                        member.default_value).initializer_deps)
-               for member in dictionary.members if member.default_value):
-            value = _format("{}::Create(${isolate})",
-                            blink_class_name(dictionary))
-            initializer_expr = value
-            initializer_deps = ["isolate"]
-            assignment_value = value
-            assignment_deps = ["isolate"]
+        if idl_type.unwrap().is_dictionary:
+            dictionary = idl_type.unwrap().type_definition_object
+            # Currently "isolate" is the only possible dependency, so whenever
+            # .initializer_deps exists, it must be ["isolate"].
+            if any((make_default_value_expr(
+                    member.idl_type, member.default_value).initializer_deps)
+                   for member in dictionary.members if member.default_value):
+                value = _format("{}::Create(${isolate})",
+                                blink_class_name(dictionary))
+                initializer_expr = value
+                initializer_deps = ["isolate"]
+                assignment_value = value
+                assignment_deps = ["isolate"]
+            else:
+                value = _format("{}::Create()", blink_class_name(dictionary))
+                initializer_expr = value
+                assignment_value = value
+        elif idl_type.unwrap().is_record:
+            initializer_expr = ""
+            assignment_value = "{}"
         else:
-            value = _format("{}::Create()", blink_class_name(dictionary))
-            initializer_expr = value
-            assignment_value = value
+            assert False, "unexpected type and default value literal combination"
     elif default_value.idl_type.is_boolean:
         value = "true" if default_value.value else "false"
         initializer_expr = value
@@ -852,10 +869,7 @@ def make_v8_to_blink_value(blink_var_name,
                 v8_value_expr,
                 "${exception_state}",
             ]
-        if "StringContext" in idl_type.effective_annotations:
-            arguments.append("${class_like_name}")
-            arguments.append("${property_name}")
-            arguments.append("${execution_context_of_document_tree}")
+
         blink_value_expr = _format("NativeValueTraits<{_1}>::{_2}({_3})",
                                    _1=native_value_tag(
                                        idl_type,
@@ -949,10 +963,6 @@ def make_v8_to_blink_value_variadic(blink_var_name, v8_array,
         "${isolate}", v8_array,
         str(v8_array_start_index), "${exception_state}"
     ]
-    if "StringContext" in idl_type.element_type.effective_annotations:
-        arguments.append("${class_like_name}")
-        arguments.append("${property_name}")
-        arguments.append("${execution_context_of_document_tree}")
     text = _format(
         pattern,
         _1=blink_var_name,
@@ -983,6 +993,7 @@ def typed_array_element_type(idl_type):
         'Uint32Array': 'unsigned long',
         'BigUint64Array': 'unsigned long long',
         'Uint8ClampedArray': 'octet',
+        'Float16Array': 'unsigned short',
         'Float32Array': 'unrestricted float',
         'Float64Array': 'unrestricted double',
     }

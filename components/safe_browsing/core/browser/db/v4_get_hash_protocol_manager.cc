@@ -4,16 +4,17 @@
 
 #include "components/safe_browsing/core/browser/db/v4_get_hash_protocol_manager.h"
 
+#include <algorithm>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/base64url.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/string_split.h"
 #include "base/timer/timer.h"
 #include "base/trace_event/trace_event.h"
@@ -43,6 +44,8 @@ void RecordGetHashResult(safe_browsing::V4OperationResult result) {
 // Record a backoff error count
 void RecordBackoffErrorCountResult(size_t count) {
   base::UmaHistogramCounts100("SafeBrowsing.V4GetHash.Result.BackoffErrorCount",
+                              count);
+  base::UmaHistogramCounts100("SafeBrowsing.SBGetHash.Result.BackoffErrorCount",
                               count);
 }
 
@@ -133,14 +136,6 @@ void RecordV4GetHashCheckResult(V4GetHashCheckResultType result_type) {
 }
 
 const char kPermission[] = "permission";
-const char kPhaPatternType[] = "pha_pattern_type";
-const char kMalwareThreatType[] = "malware_threat_type";
-const char kSePatternType[] = "se_pattern_type";
-const char kLanding[] = "LANDING";
-const char kDistribution[] = "DISTRIBUTION";
-const char kSocialEngineeringAds[] = "SOCIAL_ENGINEERING_ADS";
-const char kSocialEngineeringLanding[] = "SOCIAL_ENGINEERING_LANDING";
-const char kPhishing[] = "PHISHING";
 
 }  // namespace
 
@@ -211,15 +206,6 @@ FullHashInfo::FullHashInfo(const FullHashInfo& other) = default;
 
 FullHashInfo::~FullHashInfo() = default;
 
-bool FullHashInfo::operator==(const FullHashInfo& other) const {
-  return full_hash == other.full_hash && list_id == other.list_id &&
-         positive_expiry == other.positive_expiry && metadata == other.metadata;
-}
-
-bool FullHashInfo::operator!=(const FullHashInfo& other) const {
-  return !operator==(other);
-}
-
 // V4GetHashProtocolManager implementation --------------------------------
 
 // static
@@ -286,6 +272,8 @@ void V4GetHashProtocolManager::GetFullHashes(
                            &prefixes_to_request, &cached_full_hash_infos);
 
   base::UmaHistogramBoolean("SafeBrowsing.V4GetHash.CacheFullyHit",
+                            prefixes_to_request.empty());
+  base::UmaHistogramBoolean("SafeBrowsing.SBGetHash.CacheHitAllPrefixes",
                             prefixes_to_request.empty());
   if (prefixes_to_request.empty()) {
     // 100% cache hits (positive or negative) so we can call the callback right
@@ -364,33 +352,35 @@ void V4GetHashProtocolManager::GetFullHashes(
       full_hash_to_store_and_hash_prefixes, std::move(callback), clock_->Now());
   UMA_HISTOGRAM_COUNTS_100("SafeBrowsing.V4GetHash.CountOfPrefixes",
                            prefixes_to_request.size());
+  base::UmaHistogramCounts100("SafeBrowsing.SBGetHash.Request.CountOfPrefixes",
+                              prefixes_to_request.size());
 }
 
-void V4GetHashProtocolManager::GetFullHashesWithApis(
+void V4GetHashProtocolManager::GetFullHashesForNotificationAbuse(
     const GURL& url,
     const std::vector<std::string>& list_client_states,
-    ThreatMetadataForApiCallback api_callback) {
+    NotificationAbuseCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(url.SchemeIs(url::kHttpScheme) || url.SchemeIs(url::kHttpsScheme));
 
   std::vector<FullHashStr> full_hashes;
-  V4ProtocolManagerUtil::UrlToFullHashes(url.DeprecatedGetOriginAsURL(),
+  SBProtocolManagerUtil::UrlToFullHashes(url.DeprecatedGetOriginAsURL(),
                                          &full_hashes);
 
   FullHashToStoreAndHashPrefixesMap full_hash_to_store_and_hash_prefixes;
   for (const FullHashStr& full_hash : full_hashes) {
     HashPrefixStr prefix;
     bool result =
-        V4ProtocolManagerUtil::FullHashToSmallestHashPrefix(full_hash, &prefix);
+        SBProtocolManagerUtil::FullHashToSmallestHashPrefix(full_hash, &prefix);
     DCHECK(result);
     full_hash_to_store_and_hash_prefixes[full_hash].emplace_back(
         GetChromeUrlApiId(), prefix);
   }
 
-  GetFullHashes(full_hash_to_store_and_hash_prefixes, list_client_states,
-                base::BindOnce(&V4GetHashProtocolManager::OnFullHashForApi,
-                               base::Unretained(this), std::move(api_callback),
-                               full_hashes));
+  GetFullHashes(
+      full_hash_to_store_and_hash_prefixes, list_client_states,
+      base::BindOnce(&V4GetHashProtocolManager::OnFullHashForNotificationAbuse,
+                     base::Unretained(this), std::move(callback), full_hashes));
 }
 
 void V4GetHashProtocolManager::GetFullHashCachedResults(
@@ -495,7 +485,7 @@ std::string V4GetHashProtocolManager::GetHashRequest(
 
   FindFullHashesRequest req;
 
-  V4ProtocolManagerUtil::SetClientInfoFromConfig(req.mutable_client(), config_);
+  SBProtocolManagerUtil::SetClientInfoFromConfig(req.mutable_client(), config_);
 
   for (const auto& client_state : list_client_states) {
     req.add_client_states(client_state);
@@ -527,30 +517,32 @@ void V4GetHashProtocolManager::GetHashUrlAndHeaders(
     const std::string& req_base64,
     GURL* gurl,
     net::HttpRequestHeaders* headers) const {
-  V4ProtocolManagerUtil::GetRequestUrlAndHeaders(req_base64, "fullHashes:find",
+  SBProtocolManagerUtil::GetRequestUrlAndHeaders(req_base64, "fullHashes:find",
                                                  config_, gurl, headers);
 }
 
 void V4GetHashProtocolManager::HandleGetHashError(const Time& now) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  base::TimeDelta next = V4ProtocolManagerUtil::GetNextBackOffInterval(
+  base::TimeDelta next = SBProtocolManagerUtil::GetNextBackOffInterval(
       &gethash_error_count_, &gethash_back_off_mult_);
   next_gethash_time_ = now + next;
 }
 
-void V4GetHashProtocolManager::OnFullHashForApi(
-    ThreatMetadataForApiCallback api_callback,
+void V4GetHashProtocolManager::OnFullHashForNotificationAbuse(
+    NotificationAbuseCallback callback,
     const std::vector<FullHashStr>& full_hashes,
     const std::vector<FullHashInfo>& full_hash_infos) {
-  ThreatMetadata md;
+  bool is_abusive = false;
   for (const FullHashInfo& full_hash_info : full_hash_infos) {
     DCHECK_EQ(GetChromeUrlApiId(), full_hash_info.list_id);
-    DCHECK(base::Contains(full_hashes, full_hash_info.full_hash));
-    md.api_permissions.insert(full_hash_info.metadata.api_permissions.begin(),
-                              full_hash_info.metadata.api_permissions.end());
+    DCHECK(std::ranges::contains(full_hashes, full_hash_info.full_hash));
+    if (full_hash_info.is_notification_abusive) {
+      is_abusive = true;
+      break;
+    }
   }
 
-  std::move(api_callback).Run(md);
+  std::move(callback).Run(is_abusive);
 }
 
 bool V4GetHashProtocolManager::ParseHashResponse(
@@ -599,9 +591,10 @@ bool V4GetHashProtocolManager::ParseHashResponse(
 
     ListIdentifier list_id(match.platform_type(), match.threat_entry_type(),
                            match.threat_type());
-    if (!base::Contains(platform_types_, list_id.platform_type()) ||
-        !base::Contains(threat_entry_types_, list_id.threat_entry_type()) ||
-        !base::Contains(threat_types_, list_id.threat_type())) {
+    if (!std::ranges::contains(platform_types_, list_id.platform_type()) ||
+        !std::ranges::contains(threat_entry_types_,
+                               list_id.threat_entry_type()) ||
+        !std::ranges::contains(threat_types_, list_id.threat_type())) {
       // The server may send a ThreatMatch response for lists that we didn't ask
       // for so ignore those ThreatMatch responses.
       continue;
@@ -617,7 +610,7 @@ bool V4GetHashProtocolManager::ParseHashResponse(
     }
     FullHashInfo full_hash_info(match.threat().hash(), list_id,
                                 positive_expiry);
-    ParseMetadata(match, &full_hash_info.metadata);
+    ParseMetadata(match, &full_hash_info);
     TRACE_EVENT2("safe_browsing", "V4GetHashProtocolManager::ParseHashResponse",
                  "threat_type", full_hash_info.list_id.threat_type(),
                  "metadata", full_hash_info.metadata.ToTracedValue());
@@ -628,7 +621,7 @@ bool V4GetHashProtocolManager::ParseHashResponse(
 
 // static
 void V4GetHashProtocolManager::ParseMetadata(const ThreatMatch& match,
-                                             ThreatMetadata* metadata) {
+                                             FullHashInfo* full_hash_info) {
   // Different threat types will handle the metadata differently.
   if (match.threat_type() == API_ABUSE) {
     if (!match.has_platform_type()) {
@@ -640,52 +633,15 @@ void V4GetHashProtocolManager::ParseMetadata(const ThreatMatch& match,
       RecordParseGetHashResult(NO_METADATA_ERROR);
       return;
     }
-    // For API Abuse, store a list of the returned permissions.
+    // For API Abuse, check if the returned permissions contain NOTIFICATIONS.
     for (const ThreatEntryMetadata::MetadataEntry& m :
          match.threat_entry_metadata().entries()) {
       if (m.key() != kPermission) {
         RecordParseGetHashResult(UNEXPECTED_METADATA_VALUE_ERROR);
         return;
       }
-      metadata->api_permissions.insert(m.value());
-    }
-  } else if (match.threat_type() == MALWARE_THREAT ||
-             match.threat_type() == POTENTIALLY_HARMFUL_APPLICATION) {
-    for (const ThreatEntryMetadata::MetadataEntry& m :
-         match.threat_entry_metadata().entries()) {
-      if (m.key() == kPhaPatternType || m.key() == kMalwareThreatType) {
-        if (m.value() == kLanding) {
-          metadata->threat_pattern_type = ThreatPatternType::MALWARE_LANDING;
-          break;
-        } else if (m.value() == kDistribution) {
-          metadata->threat_pattern_type =
-              ThreatPatternType::MALWARE_DISTRIBUTION;
-          break;
-        } else {
-          RecordParseGetHashResult(UNEXPECTED_METADATA_VALUE_ERROR);
-          return;
-        }
-      }
-    }
-  } else if (match.threat_type() == SOCIAL_ENGINEERING) {
-    for (const ThreatEntryMetadata::MetadataEntry& m :
-         match.threat_entry_metadata().entries()) {
-      if (m.key() == kSePatternType) {
-        if (m.value() == kSocialEngineeringAds) {
-          metadata->threat_pattern_type =
-              ThreatPatternType::SOCIAL_ENGINEERING_ADS;
-          break;
-        } else if (m.value() == kSocialEngineeringLanding) {
-          metadata->threat_pattern_type =
-              ThreatPatternType::SOCIAL_ENGINEERING_LANDING;
-          break;
-        } else if (m.value() == kPhishing) {
-          metadata->threat_pattern_type = ThreatPatternType::PHISHING;
-          break;
-        } else {
-          RecordParseGetHashResult(UNEXPECTED_METADATA_VALUE_ERROR);
-          return;
-        }
+      if (m.value() == "NOTIFICATIONS") {
+        full_hash_info->is_notification_abusive = true;
       }
     }
   } else if (match.threat_type() == SUBRESOURCE_FILTER) {
@@ -698,10 +654,12 @@ void V4GetHashProtocolManager::ParseMetadata(const ThreatMatch& match,
                                : SubresourceFilterLevel::ENFORCE;
       };
       if (m.key() == "sf_absv") {
-        metadata->subresource_filter_match[SubresourceFilterType::ABUSIVE] =
+        full_hash_info->metadata
+            .subresource_filter_match[SubresourceFilterType::ABUSIVE] =
             get_enforcement(m.value());
       } else if (m.key() == "sf_bas") {
-        metadata->subresource_filter_match[SubresourceFilterType::BETTER_ADS] =
+        full_hash_info->metadata
+            .subresource_filter_match[SubresourceFilterType::BETTER_ADS] =
             get_enforcement(m.value());
       }
     }
@@ -741,7 +699,7 @@ void V4GetHashProtocolManager::UpdateCache(
     chpi.negative_expiry = negative_cache_expire;
 
     for (const FullHashInfo& full_hash_info : full_hash_infos) {
-      if (V4ProtocolManagerUtil::FullHashMatchesHashPrefix(
+      if (SBProtocolManagerUtil::FullHashMatchesHashPrefix(
               full_hash_info.full_hash, prefix)) {
         chpi.full_hash_infos.push_back(full_hash_info);
       }
@@ -780,19 +738,15 @@ void V4GetHashProtocolManager::MergeResults(
 // SafeBrowsing request responses are handled here.
 void V4GetHashProtocolManager::OnURLLoaderComplete(
     network::SimpleURLLoader* url_loader,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   int response_code = 0;
   if (url_loader->ResponseInfo() && url_loader->ResponseInfo()->headers)
     response_code = url_loader->ResponseInfo()->headers->response_code();
 
-  std::string data;
-  if (response_body)
-    data = *response_body;
-
   OnURLLoaderCompleteInternal(url_loader, url_loader->NetError(), response_code,
-                              data);
+                              std::move(response_body).value_or(""));
 }
 
 void V4GetHashProtocolManager::OnURLLoaderCompleteInternal(
@@ -801,9 +755,10 @@ void V4GetHashProtocolManager::OnURLLoaderCompleteInternal(
     int response_code,
     const std::string& data) {
   auto it = pending_hash_requests_.find(url_loader);
-  CHECK(it != pending_hash_requests_.end(), base::NotFatalUntil::M130)
-      << "Request not found";
+  CHECK(it != pending_hash_requests_.end()) << "Request not found";
   RecordHttpResponseOrErrorCode("SafeBrowsing.V4GetHash.Network.Result",
+                                net_error, response_code);
+  RecordHttpResponseOrErrorCode("SafeBrowsing.SBGetHash.Network.Result",
                                 net_error, response_code);
 
   std::vector<FullHashInfo> full_hash_infos;
@@ -841,6 +796,8 @@ void V4GetHashProtocolManager::OnURLLoaderCompleteInternal(
   const std::unique_ptr<FullHashCallbackInfo>& fhci = it->second;
   UMA_HISTOGRAM_LONG_TIMES("SafeBrowsing.V4GetHash.Network.Time",
                            clock_->Now() - fhci->network_start_time);
+  base::UmaHistogramLongTimes("SafeBrowsing.SBGetHash.Network.Time",
+                              clock_->Now() - fhci->network_start_time);
   UpdateCache(fhci->prefixes_requested, full_hash_infos, negative_cache_expire);
   MergeResults(fhci->full_hash_to_store_and_hash_prefixes, full_hash_infos,
                &fhci->cached_full_hash_infos);
@@ -883,8 +840,7 @@ void V4GetHashProtocolManager::CollectFullHashCacheInfo(
 std::ostream& operator<<(std::ostream& os, const FullHashInfo& fhi) {
   os << "{full_hash: " << fhi.full_hash << "; list_id: " << fhi.list_id
      << "; positive_expiry: " << fhi.positive_expiry
-     << "; metadata.api_permissions.size(): "
-     << fhi.metadata.api_permissions.size() << "}";
+     << "; is_notification_abusive: " << fhi.is_notification_abusive << "}";
   return os;
 }
 #endif

@@ -4,6 +4,7 @@
 
 module cert_verifier.mojom;
 
+import "services/network/public/mojom/ct_policy.mojom";
 import "services/network/public/mojom/ip_address.mojom";
 
 struct CIDR {
@@ -66,4 +67,8 @@ interface CertVerifierServiceUpdater {
   // When the next UpdateAdditionalCertificates call is completed, it will call
   // the return callback.
   WaitUntilNextUpdateForTesting() => ();
+
+  // Updates the CT policy to be used for requests.
+  [EnableIf=is_ct_supported]
+  SetCTPolicy(network.mojom.CTPolicy ct_policy);
 };

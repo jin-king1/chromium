@@ -16,6 +16,24 @@
 
 namespace media {
 
+class DXGIKeyedMutexMock
+    : public Microsoft::WRL::RuntimeClass<
+          Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+          IDXGIKeyedMutex> {
+ public:
+  DXGIKeyedMutexMock();
+  ~DXGIKeyedMutexMock() override;
+
+  MOCK_STDCALL_METHOD2(AcquireSync, HRESULT(UINT64, DWORD));
+  MOCK_STDCALL_METHOD1(ReleaseSync, HRESULT(UINT64));
+  MOCK_STDCALL_METHOD2(GetDevice, HRESULT(REFIID, void**));
+  MOCK_STDCALL_METHOD2(GetParent, HRESULT(REFIID, void**));
+  MOCK_STDCALL_METHOD3(GetPrivateData, HRESULT(REFGUID, UINT*, void*));
+  MOCK_STDCALL_METHOD3(SetPrivateData, HRESULT(REFGUID, UINT, const void*));
+  MOCK_STDCALL_METHOD2(SetPrivateDataInterface,
+                       HRESULT(REFGUID, const IUnknown*));
+};
+
 class D3D11Texture2DMock
     : public Microsoft::WRL::RuntimeClass<
           Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
@@ -23,6 +41,7 @@ class D3D11Texture2DMock
  public:
   D3D11Texture2DMock();
   ~D3D11Texture2DMock() override;
+  MOCK_STDCALL_METHOD2(QueryInterface, HRESULT(REFIID riid, void** ppv));
   MOCK_STDCALL_METHOD1(GetDevice, void(ID3D11Device**));
   MOCK_STDCALL_METHOD3(GetPrivateData, HRESULT(const GUID&, UINT*, void*));
   MOCK_STDCALL_METHOD3(SetPrivateData, HRESULT(const GUID&, UINT, const void*));
@@ -347,6 +366,64 @@ class DXGIFactoryMock
                        HRESULT(REFGUID, const IUnknown*));
   MOCK_STDCALL_METHOD2(GetParent, HRESULT(REFIID, void**));
   MOCK_STDCALL_METHOD3(GetPrivateData, HRESULT(REFGUID, UINT*, void*));
+};
+
+class DXGIFactory2Mock
+    : public Microsoft::WRL::RuntimeClass<
+          Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+          IDXGIFactory2> {
+ public:
+  DXGIFactory2Mock();
+  ~DXGIFactory2Mock() override;
+
+  // IDXGIFactory (inherited)
+  MOCK_STDCALL_METHOD2(CreateSoftwareAdapter, HRESULT(HMODULE, IDXGIAdapter**));
+  MOCK_STDCALL_METHOD3(CreateSwapChain,
+                       HRESULT(IUnknown*,
+                               DXGI_SWAP_CHAIN_DESC*,
+                               IDXGISwapChain**));
+  MOCK_STDCALL_METHOD2(EnumAdapters, HRESULT(UINT, IDXGIAdapter**));
+  MOCK_STDCALL_METHOD1(GetWindowAssociation, HRESULT(HWND*));
+  MOCK_STDCALL_METHOD2(MakeWindowAssociation, HRESULT(HWND, UINT));
+  MOCK_STDCALL_METHOD3(SetPrivateData, HRESULT(REFGUID, UINT, const void*));
+  MOCK_STDCALL_METHOD2(SetPrivateDataInterface,
+                       HRESULT(REFGUID, const IUnknown*));
+  MOCK_STDCALL_METHOD2(GetParent, HRESULT(REFIID, void**));
+  MOCK_STDCALL_METHOD3(GetPrivateData, HRESULT(REFGUID, UINT*, void*));
+
+  // IDXGIFactory1
+  MOCK_STDCALL_METHOD2(EnumAdapters1,
+                       HRESULT(UINT Adapter, IDXGIAdapter1** ppAdapter));
+  MOCK_STDCALL_METHOD0(IsCurrent, BOOL());
+
+  // IDXGIFactory2
+  MOCK_STDCALL_METHOD0(IsWindowedStereoEnabled, BOOL());
+  MOCK_STDCALL_METHOD6(CreateSwapChainForHwnd,
+                       HRESULT(IUnknown*,
+                               HWND,
+                               const DXGI_SWAP_CHAIN_DESC1*,
+                               const DXGI_SWAP_CHAIN_FULLSCREEN_DESC*,
+                               IDXGIOutput*,
+                               IDXGISwapChain1**));
+  MOCK_STDCALL_METHOD5(CreateSwapChainForCoreWindow,
+                       HRESULT(IUnknown*,
+                               IUnknown*,
+                               const DXGI_SWAP_CHAIN_DESC1*,
+                               IDXGIOutput*,
+                               IDXGISwapChain1**));
+  MOCK_STDCALL_METHOD2(GetSharedResourceAdapterLuid, HRESULT(HANDLE, LUID*));
+  MOCK_STDCALL_METHOD3(RegisterStereoStatusWindow, HRESULT(HWND, UINT, DWORD*));
+  MOCK_STDCALL_METHOD2(RegisterStereoStatusEvent, HRESULT(HANDLE, DWORD*));
+  MOCK_STDCALL_METHOD1(UnregisterStereoStatus, void(DWORD));
+  MOCK_STDCALL_METHOD3(RegisterOcclusionStatusWindow,
+                       HRESULT(HWND, UINT, DWORD*));
+  MOCK_STDCALL_METHOD2(RegisterOcclusionStatusEvent, HRESULT(HANDLE, DWORD*));
+  MOCK_STDCALL_METHOD1(UnregisterOcclusionStatus, void(DWORD));
+  MOCK_STDCALL_METHOD4(CreateSwapChainForComposition,
+                       HRESULT(IUnknown*,
+                               const DXGI_SWAP_CHAIN_DESC1*,
+                               IDXGIOutput*,
+                               IDXGISwapChain1**));
 };
 
 class DXGIDeviceMock
@@ -1574,6 +1651,58 @@ class D3D11FenceMock
   MOCK_STDCALL_METHOD0(GetCompletedValue, UINT64());
 
   MOCK_STDCALL_METHOD2(SetEventOnCompletion, HRESULT(UINT64, HANDLE));
+};
+
+class DXGISwapChain1Mock
+    : public Microsoft::WRL::RuntimeClass<
+          Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+          IDXGISwapChain1> {
+ public:
+  DXGISwapChain1Mock();
+  ~DXGISwapChain1Mock() override;
+
+  // IUnknown
+  MOCK_STDCALL_METHOD2(QueryInterface, HRESULT(REFIID, void**));
+  MOCK_STDCALL_METHOD0(AddRef, ULONG());
+  MOCK_STDCALL_METHOD0(Release, ULONG());
+
+  // IDXGIObject
+  MOCK_STDCALL_METHOD3(SetPrivateData, HRESULT(REFGUID, UINT, const void*));
+  MOCK_STDCALL_METHOD2(SetPrivateDataInterface,
+                       HRESULT(REFGUID, const IUnknown*));
+  MOCK_STDCALL_METHOD3(GetPrivateData, HRESULT(REFGUID, UINT*, void*));
+  MOCK_STDCALL_METHOD2(GetParent, HRESULT(REFIID, void**));
+
+  // IDXGIDeviceSubObject
+  MOCK_STDCALL_METHOD2(GetDevice, HRESULT(REFIID, void**));
+
+  // IDXGISwapChain
+  MOCK_STDCALL_METHOD2(Present, HRESULT(UINT, UINT));
+  MOCK_STDCALL_METHOD3(GetBuffer, HRESULT(UINT, REFIID, void**));
+  MOCK_STDCALL_METHOD2(SetFullscreenState, HRESULT(BOOL, IDXGIOutput*));
+  MOCK_STDCALL_METHOD2(GetFullscreenState, HRESULT(BOOL*, IDXGIOutput**));
+  MOCK_STDCALL_METHOD1(GetDesc, HRESULT(DXGI_SWAP_CHAIN_DESC*));
+  MOCK_STDCALL_METHOD5(ResizeBuffers,
+                       HRESULT(UINT, UINT, UINT, DXGI_FORMAT, UINT));
+  MOCK_STDCALL_METHOD1(ResizeTarget, HRESULT(const DXGI_MODE_DESC*));
+  MOCK_STDCALL_METHOD1(GetContainingOutput, HRESULT(IDXGIOutput**));
+  MOCK_STDCALL_METHOD1(GetFrameStatistics, HRESULT(DXGI_FRAME_STATISTICS*));
+  MOCK_STDCALL_METHOD1(GetLastPresentCount, HRESULT(UINT*));
+
+  // IDXGISwapChain1
+  MOCK_STDCALL_METHOD3(Present1,
+                       HRESULT(UINT, UINT, const DXGI_PRESENT_PARAMETERS*));
+  MOCK_STDCALL_METHOD0(IsTemporaryMonoSupported, BOOL());
+  MOCK_STDCALL_METHOD1(GetRestrictToOutput, HRESULT(IDXGIOutput**));
+  MOCK_STDCALL_METHOD1(SetBackgroundColor, HRESULT(const DXGI_RGBA*));
+  MOCK_STDCALL_METHOD1(GetBackgroundColor, HRESULT(DXGI_RGBA*));
+  MOCK_STDCALL_METHOD1(SetRotation, HRESULT(DXGI_MODE_ROTATION));
+  MOCK_STDCALL_METHOD1(GetRotation, HRESULT(DXGI_MODE_ROTATION*));
+  MOCK_STDCALL_METHOD1(GetDesc1, HRESULT(DXGI_SWAP_CHAIN_DESC1* pDesc));
+  MOCK_STDCALL_METHOD1(GetFullscreenDesc,
+                       HRESULT(DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pDesc));
+  MOCK_STDCALL_METHOD1(GetHwnd, HRESULT(HWND* pHwnd));
+  MOCK_STDCALL_METHOD2(GetCoreWindow, HRESULT(REFIID refiid, void** ppUnk));
 };
 
 }  // namespace media

@@ -9,14 +9,15 @@ import static org.chromium.support_lib_glue.SupportLibWebViewChromiumFactory.rec
 import androidx.annotation.Nullable;
 
 import org.chromium.android_webview.AwNavigation;
-import org.chromium.android_webview.AwSupportLibIsomorphic;
 import org.chromium.android_webview.common.Lifetime;
 import org.chromium.base.TraceEvent;
 import org.chromium.support_lib_boundary.WebViewNavigationBoundaryInterface;
 import org.chromium.support_lib_boundary.util.BoundaryInterfaceReflectionUtil;
+import org.chromium.support_lib_callback_glue.SupportLibWebResourceError;
 import org.chromium.support_lib_glue.SupportLibWebViewChromiumFactory.ApiCall;
 
 import java.lang.reflect.InvocationHandler;
+import java.util.concurrent.Callable;
 
 /**
  * Adapter between WebViewNavigationBoundaryInterface and AwNavigation.
@@ -24,17 +25,11 @@ import java.lang.reflect.InvocationHandler;
  * <p>Once created, instances are kept alive by the peer AwNavigation.
  */
 @Lifetime.Temporary
-class SupportLibWebViewNavigationAdapter extends IsomorphicAdapter
-        implements WebViewNavigationBoundaryInterface {
-    private AwNavigation mNavigation;
+class SupportLibWebViewNavigationAdapter implements WebViewNavigationBoundaryInterface {
+    private final AwNavigation mNavigation;
 
     SupportLibWebViewNavigationAdapter(AwNavigation navigation) {
         mNavigation = navigation;
-    }
-
-    @Override
-    AwSupportLibIsomorphic getPeeredObject() {
-        return mNavigation;
     }
 
     @Override
@@ -46,11 +41,11 @@ class SupportLibWebViewNavigationAdapter extends IsomorphicAdapter
     }
 
     @Override
-    public boolean isPageInitiated() {
+    public boolean wasInitiatedByPage() {
         try (TraceEvent event =
-                TraceEvent.scoped("WebView.APICall.AndroidX.NAVIGATION_IS_PAGE_INITIATED")) {
-            recordApiCall(ApiCall.NAVIGATION_IS_PAGE_INITIATED);
-            return mNavigation.isPageInitiated();
+                TraceEvent.scoped("WebView.APICall.AndroidX.NAVIGATION_WAS_INITIATED_BY_PAGE")) {
+            recordApiCall(ApiCall.NAVIGATION_WAS_INITIATED_BY_PAGE);
+            return mNavigation.wasInitiatedByPage();
         }
     }
 
@@ -108,11 +103,11 @@ class SupportLibWebViewNavigationAdapter extends IsomorphicAdapter
     }
 
     @Override
-    public boolean hasCommitted() {
+    public boolean didCommit() {
         try (TraceEvent event =
-                TraceEvent.scoped("WebView.APICall.AndroidX.NAVIGATION_HAS_COMMITTED")) {
-            recordApiCall(ApiCall.NAVIGATION_HAS_COMMITTED);
-            return mNavigation.hasCommitted();
+                TraceEvent.scoped("WebView.APICall.AndroidX.NAVIGATION_DID_COMMIT")) {
+            recordApiCall(ApiCall.NAVIGATION_DID_COMMIT);
+            return mNavigation.didCommit();
         }
     }
 
@@ -138,8 +133,29 @@ class SupportLibWebViewNavigationAdapter extends IsomorphicAdapter
     public /* WebViewPage */ @Nullable InvocationHandler getPage() {
         try (TraceEvent event = TraceEvent.scoped("WebView.APICall.AndroidX.NAVIGATION_GET_PAGE")) {
             recordApiCall(ApiCall.NAVIGATION_GET_PAGE);
+            if (mNavigation.getPage() == null) {
+                return null;
+            }
             return BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
                     new SupportLibWebViewPageAdapter(mNavigation.getPage()));
         }
+    }
+
+    @Override
+    public /* WebResourceError */ @Nullable InvocationHandler getWebResourceError() {
+        try (TraceEvent event =
+                TraceEvent.scoped("WebView.APICall.AndroidX.NAVIGATION_GET_WEB_RESOURCE_ERROR")) {
+            recordApiCall(ApiCall.NAVIGATION_GET_WEB_RESOURCE_ERROR);
+            if (mNavigation.getWebResourceError() == null) {
+                return null;
+            }
+            return BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
+                    new SupportLibWebResourceError(mNavigation.getWebResourceError()));
+        }
+    }
+
+    @Override
+    public Object getOrCreatePeer(Callable<Object> creationCallable) {
+        return mNavigation.getOrCreateSupportLibObject(creationCallable);
     }
 }

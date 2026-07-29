@@ -9,11 +9,13 @@
 
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "components/performance_manager/graph/process_node_impl.h"
 #include "components/performance_manager/performance_manager_impl.h"
+#include "components/performance_manager/public/features.h"
 #include "components/performance_manager/public/render_process_host_id.h"
 #include "components/performance_manager/public/render_process_host_proxy.h"
 #include "content/public/browser/child_process_termination_info.h"
@@ -25,22 +27,26 @@ namespace {
 
 const void* const kRenderProcessUserDataKey = &kRenderProcessUserDataKey;
 
+base::Process::Priority GetInitialPriority() {
+  return features::kRendererHighInitialPriority.Get()
+             ? base::Process::Priority::kUserBlocking
+             : base::Process::Priority::kMinValue;
+}
+
 }  // namespace
 
 RenderProcessUserData::RenderProcessUserData(
     content::RenderProcessHost* render_process_host)
     : host_(render_process_host) {
   host_->AddObserver(this);
-  base::TaskPriority initial_priority = host_->IsSpare()
-                                            ? base::TaskPriority::LOWEST
-                                            : base::TaskPriority::HIGHEST;
+  base::Process::Priority initial_priority = GetInitialPriority();
   process_node_ = PerformanceManagerImpl::CreateProcessNode(
       RenderProcessHostProxy(host_->GetID()), initial_priority);
 }
 
 RenderProcessUserData::~RenderProcessUserData() {
-  PerformanceManagerImpl::DeleteNode(std::move(process_node_));
   host_->RemoveObserver(this);
+  PerformanceManagerImpl::DeleteNode(std::move(process_node_));
 
   if (destruction_observer_) {
     destruction_observer_->OnRenderProcessUserDataDestroying(host_);

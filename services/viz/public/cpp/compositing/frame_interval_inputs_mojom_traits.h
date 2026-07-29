@@ -17,8 +17,8 @@ struct EnumTraits<viz::mojom::ContentFrameIntervalType,
                   viz::ContentFrameIntervalType> {
   static viz::mojom::ContentFrameIntervalType ToMojom(
       viz::ContentFrameIntervalType type);
-  static bool FromMojom(viz::mojom::ContentFrameIntervalType input,
-                        viz::ContentFrameIntervalType* out);
+  static viz::ContentFrameIntervalType FromMojom(
+      viz::mojom::ContentFrameIntervalType input);
 };
 
 template <>
@@ -49,8 +49,17 @@ struct StructTraits<viz::mojom::FrameIntervalInputsDataView,
     return inputs.frame_time;
   }
 
+  static bool has_user_input(const viz::FrameIntervalInputs& inputs) {
+    return inputs.has_user_input;
+  }
+
   static bool has_input(const viz::FrameIntervalInputs& inputs) {
     return inputs.has_input;
+  }
+
+  static float major_scroll_speed_in_pixels_per_second(
+      const viz::FrameIntervalInputs& inputs) {
+    return inputs.major_scroll_speed_in_pixels_per_second;
   }
 
   static const std::vector<viz::ContentFrameIntervalInfo>&

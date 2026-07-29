@@ -11,9 +11,10 @@ import android.view.ViewGroup;
 import android.view.ViewGroup.LayoutParams;
 import android.widget.FrameLayout;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.Px;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.xsurface.ListContentManager;
 import org.chromium.chrome.browser.xsurface.ListContentManagerObserver;
 import org.chromium.chrome.browser.xsurface.LoggingParameters;
@@ -30,6 +31,7 @@ import java.util.Map;
  * Implementation of ListContentManager that manages a list of feed contents that are supported by
  * either native view or external surface controlled view.
  */
+@NullMarked
 public class FeedListContentManager implements ListContentManager {
     /** Encapsulates the content of an item stored and managed by ListContentManager. */
     public abstract static class FeedContent {
@@ -95,12 +97,12 @@ public class FeedListContentManager implements ListContentManager {
 
     /** For the content that is supported by the native view. */
     public static class NativeViewContent extends FeedContent {
-        private View mNativeView;
+        private @Nullable View mNativeView;
         private int mResId;
         // An unique ID for this NativeViewContent. This is initially 0, and assigned by
         // FeedListContentManager when needed.
         private int mViewType;
-        @Px private int mLateralPaddingsPx;
+        @Px private final int mLateralPaddingsPx;
 
         /** Holds an inflated native view. */
         public NativeViewContent(@Px int lateralPaddingsPx, String key, View nativeView) {
@@ -136,7 +138,7 @@ public class FeedListContentManager implements ListContentManager {
             // If there's already a parent, we have already enclosed this view previously.
             // This can happen if a native view is added, removed, and added again.
             // In this case, it is important to make a new view because the RecyclerView
-            // may still have a reference to the old one. See crbug.com/1131975.
+            // may still have a reference to the old one. See crbug.com/40721693.
             UiUtils.removeViewFromParent(mNativeView);
 
             FrameLayout enclosingLayout = new FrameLayout(parent.getContext());
@@ -179,6 +181,7 @@ public class FeedListContentManager implements ListContentManager {
 
     /**
      * Clears existing handlers and sets current handlers to newHandlers.
+     *
      * @param newHandlers handlers to set.
      */
     public void setHandlers(Map<String, Object> newHandlers) {
@@ -443,6 +446,13 @@ public class FeedListContentManager implements ListContentManager {
         mObservers.remove(observer);
     }
 
+    @Override
+    public void destroy() {
+        mObservers.clear();
+        mFeedContentList.clear();
+        mHandlers.clear();
+    }
+
     private @Nullable NativeViewContent findNativeViewByType(int viewType) {
         // Note: since there's relatively few native views, they're mostly at the front, a linear
         // search isn't terrible. This function is also called infrequently.
@@ -453,5 +463,9 @@ public class FeedListContentManager implements ListContentManager {
             if (nativeContent.getViewType() == viewType) return nativeContent;
         }
         return null;
+    }
+
+    public boolean isObserversEmptyForTesting() {
+        return mObservers.isEmpty();
     }
 }

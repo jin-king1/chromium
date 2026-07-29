@@ -5,6 +5,7 @@
 #include "net/first_party_sets/first_party_sets_context_config.h"
 
 #include "base/containers/map_util.h"
+#include "base/types/optional_util.h"
 #include "net/first_party_sets/first_party_set_entry_override.h"
 
 namespace net {
@@ -43,6 +44,23 @@ std::optional<FirstPartySetsContextConfig> FirstPartySetsContextConfig::Create(
                                      std::move(aliases));
 }
 
+std::optional<FirstPartySetsContextConfig> FirstPartySetsContextConfig::Create(
+    base::flat_map<SchemefulSite, FirstPartySetEntry> entries,
+    base::flat_map<SchemefulSite, SchemefulSite> aliases) {
+  base::flat_map<SchemefulSite, FirstPartySetEntryOverride> customizations;
+  for (auto& pair : entries) {
+    customizations.emplace(std::move(pair.first), std::move(pair.second));
+  }
+  for (const auto& pair : aliases) {
+    const auto* entry_override = base::FindOrNull(customizations, pair.second);
+    if (!entry_override) {
+      return std::nullopt;
+    }
+    customizations.emplace(pair.first, *entry_override);
+  }
+  return Create(std::move(customizations), std::move(aliases));
+}
+
 FirstPartySetsContextConfig::FirstPartySetsContextConfig(
     base::flat_map<SchemefulSite, FirstPartySetEntryOverride> customizations,
     base::flat_map<SchemefulSite, SchemefulSite> aliases)
@@ -65,10 +83,7 @@ bool FirstPartySetsContextConfig::operator==(
 
 std::optional<FirstPartySetEntryOverride>
 FirstPartySetsContextConfig::FindOverride(const SchemefulSite& site) const {
-  if (const auto it = customizations_.find(site); it != customizations_.end()) {
-    return it->second;
-  }
-  return std::nullopt;
+  return base::OptionalFromPtr(base::FindOrNull(customizations_, site));
 }
 
 bool FirstPartySetsContextConfig::Contains(const SchemefulSite& site) const {
@@ -91,6 +106,13 @@ void FirstPartySetsContextConfig::ForEachAlias(
   for (const auto& [alias, canonical] : aliases_) {
     f(alias, canonical);
   }
+}
+
+const SchemefulSite& FirstPartySetsContextConfig::ResolveAlias(
+    const SchemefulSite& site) const {
+  CHECK(Contains(site));
+  const SchemefulSite* canonical = base::FindOrNull(aliases_, site);
+  return canonical ? *canonical : site;
 }
 
 }  // namespace net

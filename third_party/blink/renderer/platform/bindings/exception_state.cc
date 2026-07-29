@@ -38,7 +38,6 @@
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/assertions.h"
 
 namespace blink {
@@ -66,6 +65,10 @@ NOINLINE void ExceptionState::ThrowRangeError(const char* message) {
 
 NOINLINE void ExceptionState::ThrowTypeError(const char* message) {
   ThrowTypeError(String(message));
+}
+
+NOINLINE void ExceptionState::ThrowSyntaxError(const char* message) {
+  ThrowSyntaxError(String(message));
 }
 
 NOINLINE void ExceptionState::ThrowWasmCompileError(const char* message) {
@@ -109,6 +112,19 @@ void ExceptionState::ThrowDOMException(DOMExceptionCode exception_code,
   }
 }
 
+void ExceptionState::ThrowDOMException(v8::Local<v8::Value> exception,
+                                       DOMExceptionCode code,
+                                       const String& message) {
+#if DCHECK_IS_ON()
+  DCHECK_AT(!assert_no_exceptions_, location_)
+      << "DOMException should not be thrown.";
+#endif
+  SetExceptionInfo(ToExceptionCode(code), message);
+  if (isolate_) {
+    V8ThrowException::ThrowException(isolate_, exception);
+  }
+}
+
 void ExceptionState::ThrowSecurityError(const String& sanitized_message,
                                         const String& unsanitized_message) {
 #if DCHECK_IS_ON()
@@ -144,6 +160,17 @@ void ExceptionState::ThrowTypeError(const String& message) {
   SetExceptionInfo(ToExceptionCode(ESErrorType::kTypeError), message);
   if (isolate_) {
     V8ThrowException::ThrowTypeError(isolate_, message);
+  }
+}
+
+void ExceptionState::ThrowSyntaxError(const String& message) {
+#if DCHECK_IS_ON()
+  DCHECK_AT(!assert_no_exceptions_, location_)
+      << "SyntaxError should not be thrown.";
+#endif
+  SetExceptionInfo(ToExceptionCode(ESErrorType::kSyntaxError), message);
+  if (isolate_) {
+    V8ThrowException::ThrowSyntaxError(isolate_, message);
   }
 }
 

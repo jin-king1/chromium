@@ -10,18 +10,17 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/enterprise/connectors/device_trust/common/common_types.h"
-#include "chrome/browser/enterprise/connectors/device_trust/common/device_trust_constants.h"
 #include "chrome/browser/enterprise/connectors/device_trust/common/metrics_utils.h"
 #include "chrome/browser/enterprise/connectors/device_trust/device_trust_service.h"
 #include "chrome/browser/enterprise/connectors/device_trust/device_trust_service_factory.h"
 #include "chrome/browser/enterprise/signals/user_permission_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/device_signals_consent/consent_requester.h"
+#include "chrome/browser/ui/views/device_signals_consent/consent_dialog_coordinator.h"
 #include "components/device_signals/core/browser/pref_names.h"
 #include "components/device_signals/core/browser/user_permission_service.h"
-#include "components/device_signals/core/common/signals_features.h"
 #include "components/enterprise/connectors/core/connectors_prefs.h"
+#include "components/enterprise/device_trust/core/common_types.h"
+#include "components/enterprise/device_trust/core/device_trust_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
@@ -46,7 +45,7 @@ constexpr char kSpecificErrorCodePropertyName[] = "code";
 const std::string CreateErrorJsonString(
     const DeviceTrustResponse& dt_response) {
   DCHECK(dt_response.error);
-  base::Value::Dict error_response;
+  base::DictValue error_response;
   error_response.Set(kErrorPropertyName,
                      DeviceTrustErrorToString(dt_response.error.value()));
 
@@ -68,13 +67,13 @@ bool VerifyURL(GURL url) {
   return (url.is_valid() && url.SchemeIsHTTPOrHTTPS());
 }
 
-Profile* GetProfile(content::NavigationHandle* navigation_handle) {
-  if (!navigation_handle || !navigation_handle->GetWebContents()) {
+Profile* GetProfile(content::NavigationHandle& navigation_handle) {
+  if (!navigation_handle.GetWebContents()) {
     return nullptr;
   }
 
   return Profile::FromBrowserContext(
-      navigation_handle->GetWebContents()->GetBrowserContext());
+      navigation_handle.GetWebContents()->GetBrowserContext());
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -98,9 +97,9 @@ constexpr char kVerifiedAccessResponseHeader[] =
     "X-Verified-Access-Challenge-Response";
 
 // static
-std::unique_ptr<DeviceTrustNavigationThrottle>
-DeviceTrustNavigationThrottle::MaybeCreateThrottleFor(
-    content::NavigationHandle* navigation_handle) {
+void DeviceTrustNavigationThrottle::MaybeCreateAndAdd(
+    content::NavigationThrottleRegistry& registry) {
+  content::NavigationHandle& navigation_handle = registry.GetNavigationHandle();
   auto* profile = GetProfile(navigation_handle);
   auto* device_trust_service =
       DeviceTrustServiceFactory::GetForProfile(profile);
@@ -110,22 +109,22 @@ DeviceTrustNavigationThrottle::MaybeCreateThrottleFor(
   if ((!device_trust_service || !device_trust_service->IsEnabled()) &&
       (!user_permission_service ||
        !user_permission_service->ShouldCollectConsent())) {
-    return nullptr;
+    return;
   }
 
-  return std::make_unique<DeviceTrustNavigationThrottle>(
-      device_trust_service, user_permission_service, navigation_handle);
+  registry.AddThrottle(std::make_unique<DeviceTrustNavigationThrottle>(
+      device_trust_service, user_permission_service, registry));
 }
 
 DeviceTrustNavigationThrottle::DeviceTrustNavigationThrottle(
     DeviceTrustService* device_trust_service,
     device_signals::UserPermissionService* user_permission_service,
-    content::NavigationHandle* navigation_handle)
-    : content::NavigationThrottle(navigation_handle),
+    content::NavigationThrottleRegistry& registry)
+    : content::NavigationThrottle(registry),
       device_trust_service_(device_trust_service),
       user_permission_service_(user_permission_service),
       consent_requester_(ConsentRequester::CreateConsentRequester(
-          GetProfile(navigation_handle))) {}
+          GetProfile(registry.GetNavigationHandle()))) {}
 
 DeviceTrustNavigationThrottle::~DeviceTrustNavigationThrottle() = default;
 
@@ -149,9 +148,6 @@ const char* DeviceTrustNavigationThrottle::GetNameForLogging() {
 
 content::NavigationThrottle::ThrottleCheckResult
 DeviceTrustNavigationThrottle::MayTriggerConsentDialog() {
-  if (!enterprise_signals::features::IsConsentDialogEnabled()) {
-    return PROCEED;
-  }
   const GURL& url = navigation_handle()->GetURL();
   if (!user_permission_service_ ||
       !user_permission_service_->ShouldCollectConsent() || !VerifyURL(url) ||

@@ -38,7 +38,7 @@ export class InfoDialogElement extends CrLitElement {
     };
   }
 
-  showOnAttach: boolean = false;
+  accessor showOnAttach: boolean = false;
 
   showModal() {
     this.$.dialog.showModal();
@@ -46,6 +46,12 @@ export class InfoDialogElement extends CrLitElement {
 
   protected onCloseClick_() {
     this.$.dialog.close();
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'ntp-info-dialog': InfoDialogElement;
   }
 }
 

@@ -9,12 +9,16 @@
 #include <string>
 
 #include "base/time/time.h"
+#include "base/values.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/net_export.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
 #include "net/base/proxy_server.h"
+#include "net/base/request_priority.h"
 #include "net/log/net_log_with_source.h"
 #include "net/proxy_resolution/proxy_info.h"
+#include "net/proxy_resolution/proxy_retry_info.h"
 #include "url/gurl.h"
 
 namespace net {
@@ -46,14 +50,18 @@ class NET_EXPORT ProxyResolutionService {
   // otherwise).  |request| must not be nullptr.
   //
   // Profiling information for the request is saved to |net_log| if non-nullptr.
+  //
+  // |priority| can be used by the service for scheduling optimizations.
   virtual int ResolveProxy(
       const GURL& url,
       const std::string& method,
       const NetworkAnonymizationKey& network_anonymization_key,
+      handles::NetworkHandle target_network,
       ProxyInfo* results,
       CompletionOnceCallback callback,
       std::unique_ptr<ProxyResolutionRequest>* request,
-      const NetLogWithSource& net_log) = 0;
+      const NetLogWithSource& net_log,
+      RequestPriority priority) = 0;
 
   // Called to report that the last proxy connection succeeded.  If |proxy_info|
   // has a non empty proxy_retry_info map, the proxies that have been tried (and
@@ -80,7 +88,7 @@ class NET_EXPORT ProxyResolutionService {
 
   // Returns proxy related debug information to be included in the NetLog. The
   // data should be appropriate for any capture mode (sensitivity level).
-  virtual base::Value::Dict GetProxyNetLogValues() = 0;
+  virtual base::DictValue GetProxyNetLogValues() = 0;
 
   // Returns true if |this| is an instance of ConfiguredProxyResolutionService
   // and assigns |this| to the out parameter. Otherwise returns false and sets
@@ -95,6 +103,27 @@ class NET_EXPORT ProxyResolutionService {
   [[nodiscard]] virtual bool CastToConfiguredProxyResolutionService(
       ConfiguredProxyResolutionService**
           configured_proxy_resolution_service) = 0;
+
+ protected:
+  // Helper method to handle the common logic for ReportSuccess implementations.
+  // This method processes proxy retry information and delegates to proxy
+  // delegate callbacks. Derived classes can call this static method to reuse
+  // the core logic while providing their own logging or other customizations.
+  static void ProcessProxyRetryInfo(const ProxyRetryInfoMap& new_retry_info,
+                                    ProxyRetryInfoMap& proxy_retry_info,
+                                    ProxyDelegate* proxy_delegate);
+
+  // Returns a list for bad proxies from the proxy retry info map.
+  static base::ListValue BuildBadProxiesList(
+      const ProxyRetryInfoMap& proxy_retry_info);
+
+  // Helper method to deprioritize bad proxy chains and log the action.
+  // This handles the common pattern of checking if proxy_retry_info is not
+  // empty, calling DeprioritizeBadProxyChains, and logging the event.
+  static void DeprioritizeBadProxyChains(
+      const ProxyRetryInfoMap& proxy_retry_info,
+      ProxyInfo* result,
+      const NetLogWithSource& net_log);
 };
 
 }  // namespace net

@@ -16,6 +16,7 @@
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/window_util.h"
 #include "ash/wm/work_area_insets.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "chromeos/components/mahi/public/cpp/mahi_manager.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -27,11 +28,11 @@
 #include "ui/base/ui_base_types.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/unique_widget_ptr.h"
@@ -52,8 +53,7 @@ class MahiPanelWidgetTest : public AshTestBase {
   // AshTestBase:
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{chromeos::features::kMahi,
-                              chromeos::features::kFeatureManagementMahi,
+        /*enabled_features=*/{chromeos::features::kFeatureManagementMahi,
                               chromeos::features::kMahiPanelResizable},
         /*disabled_features=*/{});
     AshTestBase::SetUp();
@@ -110,10 +110,9 @@ TEST_F(MahiPanelWidgetTest, WidgetPositionWithConstrainedBottomSpace) {
 
   // The panel's bottom should be `kPanelBoundsShelfPadding` pixels above the
   // work_area's bottom.
-  EXPECT_EQ(
-      display::Screen::GetScreen()->GetPrimaryDisplay().work_area().bottom() -
-          kPanelBoundsShelfPadding,
-      widget->GetRestoredBounds().bottom());
+  EXPECT_EQ(display::Screen::Get()->GetPrimaryDisplay().work_area().bottom() -
+                kPanelBoundsShelfPadding,
+            widget->GetRestoredBounds().bottom());
 }
 
 TEST_F(MahiPanelWidgetTest, WidgetAfterResize) {
@@ -137,7 +136,7 @@ TEST_F(MahiPanelWidgetTest, WidgetAfterResize) {
 
 TEST_F(MahiPanelWidgetTest, WidgetPositionAfterWorkAreaBoundsChange) {
   auto default_work_area =
-      display::Screen::GetScreen()->GetPrimaryDisplay().work_area();
+      display::Screen::Get()->GetPrimaryDisplay().work_area();
 
   // Create a widget that has the same size as the work area and show it at the
   // bottom of the work area bounds.
@@ -154,7 +153,11 @@ TEST_F(MahiPanelWidgetTest, WidgetPositionAfterWorkAreaBoundsChange) {
       ->keyboard_controller()
       ->virtual_keyboard_controller()
       ->ForceShowKeyboard();
-  base::RunLoop().RunUntilIdle();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return WorkAreaInsets::ForWindow(widget->GetNativeWindow())
+               ->user_work_area_bounds()
+               .bottom() < default_work_area.bottom();
+  }));
 
   auto current_work_area = WorkAreaInsets::ForWindow(widget->GetNativeWindow())
                                ->user_work_area_bounds();
@@ -188,15 +191,14 @@ TEST_F(MahiPanelWidgetTest, WidgetPositionWithConstrainedRightSpace) {
       /*mahi_menu_bounds=*/gfx::Rect(500, 100, 300, 300), &ui_controller_);
 
   // The panel should be placed correctly within the work area.
-  EXPECT_EQ(
-      display::Screen::GetScreen()->GetPrimaryDisplay().work_area().right(),
-      widget->GetRestoredBounds().right());
+  EXPECT_EQ(display::Screen::Get()->GetPrimaryDisplay().work_area().right(),
+            widget->GetRestoredBounds().right());
 }
 
 TEST_F(MahiPanelWidgetTest, WidgetDestroyedDuringShowAnimation) {
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
   auto widget = MahiPanelWidget::CreateAndShowPanelWidget(
       GetPrimaryDisplay().id(),
       /*mahi_menu_bounds=*/gfx::Rect(100, 100, 200, 200), &ui_controller_);
@@ -275,7 +277,7 @@ TEST_F(MahiPanelWidgetTest, WidgetDoesNotHideOnFullScreen) {
   EXPECT_TRUE(widget->IsVisible());
 
   // Create a fullscreen window. The panel widget should still be visible.
-  auto window = CreateTestWindow();
+  auto window = CreateWindowWithAppType();
   window->SetProperty(aura::client::kShowStateKey,
                       ui::mojom::WindowShowState::kFullscreen);
   EXPECT_TRUE(widget->IsVisible());

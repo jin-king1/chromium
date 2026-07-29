@@ -1,10 +1,12 @@
 include_rules = [
+  # keep-sorted start
   "+ios/chrome/browser/history/model",
-  "+ios/chrome/browser/synced_sessions/model",
   "+ios/chrome/browser/sessions/model",
-  "+ios/chrome/browser/tabs/model",
   "+ios/chrome/browser/signin/model",
   "+ios/chrome/browser/sync/model",
+  "+ios/chrome/browser/synced_sessions/model",
+  "+ios/chrome/browser/tabs/model",
+  # keep-sorted end
 ]
 
 specific_include_rules = {
@@ -13,9 +15,5 @@ specific_include_rules = {
     "+ios/chrome/browser/history/ui_bundled/ios_browsing_history_driver.h",
     "+ios/chrome/browser/history/ui_bundled/ios_browsing_history_driver_delegate.h",
   ],
-  "^tabs_search_service.mm": [
-    "+ios/chrome/browser/recent_tabs/ui_bundled/synced_sessions.h",
-  ],
-
 }
 

@@ -51,7 +51,10 @@ class MockInputHandler : public InputHandler {
                ScrollStatus(ScrollState*, ui::ScrollInputType type));
   MOCK_METHOD2(ScrollUpdate,
                InputHandlerScrollResult(ScrollState, base::TimeDelta));
-  MOCK_METHOD1(ScrollEnd, void(bool));
+  MOCK_METHOD2(
+      ScrollEnd,
+      InputHandlerScrollEndResult(bool,
+                                  std::optional<ScrollVector> scroll_state));
   MOCK_METHOD2(RecordScrollBegin,
                void(ui::ScrollInputType type, ScrollBeginThreadState state));
   MOCK_METHOD1(RecordScrollEnd, void(ui::ScrollInputType type));
@@ -62,7 +65,7 @@ class MockInputHandler : public InputHandler {
   MOCK_METHOD1(MouseUp,
                InputHandlerPointerResult(const gfx::PointF& mouse_position));
   MOCK_METHOD1(SetIsHandlingTouchSequence, void(bool));
-  void NotifyInputEvent() override {}
+  void NotifyInputEvent(bool is_fling) override {}
 
   std::unique_ptr<LatencyInfoSwapPromiseMonitor>
   CreateLatencyInfoSwapPromiseMonitor(ui::LatencyInfo* latency) override {
@@ -103,7 +106,7 @@ class MockInputHandler : public InputHandler {
                      EventListenerProperties(EventListenerClass event_class));
   MOCK_METHOD2(EventListenerTypeForTouchStartOrMoveAt,
                InputHandler::TouchStartOrMoveEventListenerType(
-                   const gfx::Point& point,
+                   const gfx::Rect& viewport_touch_rect,
                    TouchAction* touch_action));
   MOCK_CONST_METHOD1(HasBlockingWheelEventHandlerAt, bool(const gfx::Point&));
 

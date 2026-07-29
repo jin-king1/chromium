@@ -23,12 +23,14 @@ import android.app.Activity;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.ActivityState;
@@ -39,10 +41,11 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabHidingType;
 import org.chromium.components.prefs.PrefService;
 
-/** Unit tests for {@link FeedSurfaceLifecycleManager}. */
+/** Unit tests for {@link NtpFeedSurfaceLifecycleManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class NtpFeedSurfaceLifecycleManagerTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Activity mActivity;
     @Mock private Tab mTab;
     @Mock private Stream mStream;
@@ -54,7 +57,6 @@ public class NtpFeedSurfaceLifecycleManagerTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
 
         // Initialize a test instance for PrefService.
         when(mPrefService.getBoolean(anyString())).thenReturn(true);

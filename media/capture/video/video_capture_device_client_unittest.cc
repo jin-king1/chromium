@@ -12,6 +12,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/task_environment.h"
@@ -23,7 +24,6 @@
 #include "media/base/video_frame.h"
 #include "media/base/video_types.h"
 #include "media/capture/mojom/video_capture_buffer.mojom.h"
-#include "media/capture/mojom/video_effects_manager.mojom.h"
 #include "media/capture/video/mock_video_frame_receiver.h"
 #include "media/capture/video/video_capture_buffer_pool_impl.h"
 #include "media/capture/video/video_capture_buffer_tracker.h"
@@ -31,9 +31,6 @@
 #include "media/capture/video/video_capture_buffer_tracker_factory_impl.h"
 #include "media/capture/video/video_frame_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "services/video_effects/public/cpp/buildflags.h"
-#include "services/video_effects/public/mojom/video_effects_processor.mojom.h"
-#include "services/video_effects/test/fake_video_effects_processor.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -46,7 +43,6 @@ using ::testing::AtLeast;
 using ::testing::Eq;
 using ::testing::Field;
 using ::testing::InSequence;
-using ::testing::Invoke;
 using ::testing::Mock;
 using ::testing::NiceMock;
 using ::testing::Optional;
@@ -67,19 +63,11 @@ std::unique_ptr<VideoCaptureJpegDecoder> ReturnNullPtrAsJpecDecoder() {
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-class FakeVideoEffectsManagerImpl
-    : public media::mojom::ReadonlyVideoEffectsManager {
-  void GetConfiguration(GetConfigurationCallback callback) override {}
-  void AddObserver(
-      ::mojo::PendingRemote<media::mojom::VideoEffectsConfigurationObserver>
-          observer) override {}
-};
-
 class FakeVideoCaptureBufferHandle : public VideoCaptureBufferHandle {
  public:
   size_t mapped_size() const override { return 1024; }
-  uint8_t* data() const override { return nullptr; }
-  const uint8_t* const_data() const override { return nullptr; }
+  base::span<uint8_t> data() final { return {}; }
+  base::span<const uint8_t> const_data() const override { return {}; }
 };
 
 class FakeVideoCaptureBufferTracker : public VideoCaptureBufferTracker {
@@ -116,9 +104,8 @@ class FakeVideoCaptureBufferTrackerFactory
       VideoCaptureBufferType buffer_type) override {
     return std::make_unique<FakeVideoCaptureBufferTracker>();
   }
-  std::unique_ptr<VideoCaptureBufferTracker>
-  CreateTrackerForExternalGpuMemoryBuffer(
-      gfx::GpuMemoryBufferHandle handle) override {
+  std::unique_ptr<VideoCaptureBufferTracker> CreateTrackerForExternalBuffer(
+      CapturedExternalVideoBuffer buffer) override {
     return std::make_unique<FakeVideoCaptureBufferTracker>();
   }
 };
@@ -143,46 +130,26 @@ testing::Matcher<std::optional<T>> CreateOptionalMatcher(
 class VideoCaptureDeviceClientTest : public ::testing::Test {
  public:
   void InitWithSharedMemoryBufferPool() {
-    scoped_refptr<VideoCaptureBufferPoolImpl> buffer_pool(
-        new VideoCaptureBufferPoolImpl(VideoCaptureBufferType::kSharedMemory,
-                                       2));
+    auto buffer_pool = base::MakeRefCounted<VideoCaptureBufferPoolImpl>(
+        VideoCaptureBufferType::kSharedMemory, 2);
     Init(std::move(buffer_pool));
   }
 
   void InitWithGmbBufferPool() {
-    scoped_refptr<VideoCaptureBufferPoolImpl> buffer_pool(
-        new VideoCaptureBufferPoolImpl(
-            VideoCaptureBufferType::kSharedMemory, 2,
-            std::make_unique<FakeVideoCaptureBufferTrackerFactory>()));
+    auto buffer_pool = base::MakeRefCounted<VideoCaptureBufferPoolImpl>(
+        VideoCaptureBufferType::kSharedMemory, 2,
+        std::make_unique<FakeVideoCaptureBufferTrackerFactory>());
     Init(std::move(buffer_pool));
   }
 
   void Cleanup() {
     receiver_ = nullptr;
     device_client_.reset();
-    processor_readonly_manager_receiver_.reset();
-
-    // VideoCaptureDeviceClient's dtor submits a task to destroy its effects
-    // processor. In order to avoid LSAN warnings, we need to wait for that task
-    // to run - let's just post a task to the same sequence and run the loop
-    // until our task fires.
-    base::RunLoop().RunUntilIdle();
   }
 
  protected:
   base::test::TaskEnvironment task_environment_;
   scoped_refptr<gpu::TestSharedImageInterface> test_sii_;
-  // Will be nullopt until `Init()` has been called:
-  std::optional<video_effects::FakeVideoEffectsProcessor>
-      fake_video_effects_processor_;
-  FakeVideoEffectsManagerImpl fake_video_effects_manager_;
-
-  mojo::Receiver<media::mojom::ReadonlyVideoEffectsManager>
-      processor_readonly_manager_receiver_{&fake_video_effects_manager_};
-
-  mojo::Receiver<media::mojom::ReadonlyVideoEffectsManager>
-      readonly_video_effects_manager_receiver_{&fake_video_effects_manager_};
-
   // Must outlive `receiver_`.
   std::unique_ptr<VideoCaptureDeviceClient> device_client_;
   raw_ptr<NiceMock<MockVideoFrameReceiver>> receiver_;
@@ -192,32 +159,13 @@ class VideoCaptureDeviceClientTest : public ::testing::Test {
     auto controller = std::make_unique<NiceMock<MockVideoFrameReceiver>>();
     receiver_ = controller.get();
     test_sii_ = base::MakeRefCounted<gpu::TestSharedImageInterface>();
-    test_sii_->UseTestGMBInSharedImageCreationWithBufferUsage();
 #if BUILDFLAG(IS_CHROMEOS)
     device_client_ = std::make_unique<VideoCaptureDeviceClient>(
         std::move(controller), buffer_pool,
         base::BindRepeating(&ReturnNullPtrAsJpecDecoder));
 #else
-
-    mojo::PendingReceiver<video_effects::mojom::VideoEffectsProcessor>
-        processor_receiver;
-    mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor>
-        processor_remote(processor_receiver.InitWithNewPipeAndPassRemote());
-
-    mojo::PendingRemote<mojom::ReadonlyVideoEffectsManager> manager_remote =
-        processor_readonly_manager_receiver_.BindNewPipeAndPassRemote();
-
-    fake_video_effects_processor_.emplace(std::move(processor_receiver),
-                                          std::move(manager_remote));
-
-    mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager>
-        readonly_effects_manager_remote =
-            readonly_video_effects_manager_receiver_.BindNewPipeAndPassRemote();
-
     device_client_ = std::make_unique<VideoCaptureDeviceClient>(
-        std::move(controller), buffer_pool,
-        media::VideoEffectsContext(std::move(processor_remote),
-                                   std::move(readonly_effects_manager_remote)));
+        std::move(controller), buffer_pool);
 #endif  // BUILDFLAG(IS_CHROMEOS)
   }
 };
@@ -270,7 +218,8 @@ TEST_F(VideoCaptureDeviceClientTest, Minimal) {
   device_client_->VideoCaptureDevice::Client::OnIncomingCapturedImage(
       std::move(shared_image), kFrameFormatNV12, 0 /*clockwise rotation*/,
       base::TimeTicks(), base::TimeDelta(),
-      /*capture_begin_timestamp=*/std::nullopt, /*metadata=*/std::nullopt);
+      /*capture_begin_timestamp=*/std::nullopt, kFrameFormatNV12.frame_size,
+      /*metadata=*/std::nullopt);
 
   Cleanup();
 }
@@ -344,7 +293,8 @@ TEST_F(VideoCaptureDeviceClientTest,
     device_client_->VideoCaptureDevice::Client::OnIncomingCapturedImage(
         std::move(shared_image), kFrameFormatNV12, 0 /*clockwise rotation*/,
         base::TimeTicks(), base::TimeDelta(),
-        /*capture_begin_timestamp=*/std::nullopt, metadata);
+        /*capture_begin_timestamp=*/std::nullopt, kFrameFormatNV12.frame_size,
+        metadata);
     Mock::VerifyAndClearExpectations(receiver_);
   }
 
@@ -393,7 +343,7 @@ TEST_F(VideoCaptureDeviceClientTest,
   device_client_->VideoCaptureDevice::Client::OnIncomingCapturedImage(
       std::move(shared_image),
       VideoCaptureFormat(resolution, 30.0f, PIXEL_FORMAT_NV12), 0,
-      base::TimeTicks(), base::TimeDelta(), expected_timestamp,
+      base::TimeTicks(), base::TimeDelta(), expected_timestamp, resolution,
       /*metadata=*/std::nullopt);
 
   Cleanup();
@@ -417,7 +367,7 @@ TEST_F(VideoCaptureDeviceClientTest,
           VideoCaptureFormat(resolution, 30, PIXEL_FORMAT_NV12),
           gfx::ColorSpace::CreateREC601()),
       base::TimeTicks(), base::TimeDelta(), expected_timestamp,
-      gfx::Rect(resolution), /*metadata=*/std::nullopt);
+      gfx::Rect(resolution), resolution, /*metadata=*/std::nullopt);
 
   Cleanup();
 }
@@ -440,9 +390,9 @@ TEST_F(VideoCaptureDeviceClientTest, DropsFrameIfNoBuffer) {
       read_permission;
   EXPECT_CALL(*receiver_, MockOnFrameReadyInBuffer)
       .Times(2)
-      .WillRepeatedly(Invoke([&read_permission](ReadyFrameInBuffer frame) {
+      .WillRepeatedly([&read_permission](ReadyFrameInBuffer frame) {
         read_permission.push_back(std::move(frame.buffer_read_permission));
-      }));
+      });
   // Pass three frames. The third will be dropped.
   device_client_->VideoCaptureDevice::Client::OnIncomingCapturedData(
       data, kScratchpadSizeInBytes, kFrameFormat, kColorSpace,
@@ -549,9 +499,9 @@ TEST_F(VideoCaptureDeviceClientTest, CheckRotationsAndCrops) {
     gfx::Size coded_size;
     EXPECT_CALL(*receiver_, MockOnFrameReadyInBuffer)
         .Times(1)
-        .WillOnce(Invoke([&coded_size](ReadyFrameInBuffer frame) {
+        .WillOnce([&coded_size](ReadyFrameInBuffer frame) {
           coded_size = frame.frame_info->coded_size;
-        }));
+        });
     device_client_->VideoCaptureDevice::Client::OnIncomingCapturedData(
         data,
         media::VideoFrame::AllocationSize(params.requested_format.pixel_format,
@@ -586,13 +536,15 @@ TEST_F(VideoCaptureDeviceClientTest, CheckRotationsAndCrops) {
     gfx::Size coded_size;
     EXPECT_CALL(*receiver_, MockOnFrameReadyInBuffer)
         .Times(1)
-        .WillOnce(Invoke([&coded_size](ReadyFrameInBuffer frame) {
+        .WillOnce([&coded_size](ReadyFrameInBuffer frame) {
           coded_size = frame.frame_info->coded_size;
-        }));
+        });
     device_client_->VideoCaptureDevice::Client::OnIncomingCapturedImage(
         std::move(shared_image), params.requested_format,
         size_and_rotation.rotation, base::TimeTicks(), base::TimeDelta(),
-        /*capture_begin_timestamp=*/std::nullopt, /*metadata=*/std::nullopt);
+        /*capture_begin_timestamp=*/std::nullopt,
+        params.requested_format.frame_size,
+        /*metadata=*/std::nullopt);
 
     EXPECT_EQ(coded_size.width(), size_and_rotation.output_resolution.width());
     EXPECT_EQ(coded_size.height(),
@@ -603,19 +555,5 @@ TEST_F(VideoCaptureDeviceClientTest, CheckRotationsAndCrops) {
 
   Cleanup();
 }
-
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-// Tests that the VideoEffectsManager remote is closed on the correct task
-// runner. Destruction on the wrong task runner will cause a crash.
-TEST_F(VideoCaptureDeviceClientTest, DestructionClosesVideoEffectsManager) {
-  InitWithSharedMemoryBufferPool();
-  base::RunLoop run_loop;
-  processor_readonly_manager_receiver_.set_disconnect_handler(
-      run_loop.QuitClosure());
-  receiver_ = nullptr;
-  EXPECT_NO_FATAL_FAILURE(device_client_.reset());
-  run_loop.Run();
-}
-#endif  // !BUILDFLAG(ENABLE_VIDEO_EFFECTS)
 
 }  // namespace media

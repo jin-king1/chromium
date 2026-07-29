@@ -66,7 +66,8 @@ class UserScriptInjector : public ScriptInjector,
   std::vector<blink::WebScriptSource> GetJsSources(
       mojom::RunLocation run_location,
       std::set<std::string>* executing_scripts,
-      size_t* num_injected_js_scripts) const override;
+      size_t* num_injected_js_scripts,
+      ExtensionFrameHelper* frame_helper) const override;
   std::vector<CSSSource> GetCssSources(
       mojom::RunLocation run_location,
       std::set<std::string>* injected_stylesheets,
@@ -85,11 +86,11 @@ class UserScriptInjector : public ScriptInjector,
   const raw_ptr<UserScriptSet, DanglingUntriaged> user_script_set_;
 
   // The id of the associated user script. We cache this because when we update
-  // the |script_| associated with this injection, the old reference may be
+  // the `script_` associated with this injection, the old reference may be
   // deleted.
   std::string script_id_;
 
-  // The associated host id, preserved for the same reason as |script_id|.
+  // The associated host id, preserved for the same reason as `script_id`.
   mojom::HostID host_id_;
 
   // Indicates whether or not this script is declarative. This influences which

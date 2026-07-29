@@ -8,7 +8,6 @@
  * subsection settings in system settings.
  */
 
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import 'chrome://resources/ash/common/bluetooth/bluetooth_battery_icon_percentage.js';
 import 'chrome://resources/ash/common/cr_elements/localized_link/localized_link.js';
@@ -118,7 +117,7 @@ export class SettingsPerDeviceMouseSubsectionElement extends
         value: true,
       },
 
-      swapPrimaryOptions: {
+      swapPrimaryOptions_: {
         readOnly: true,
         type: Array,
         value() {
@@ -133,17 +132,6 @@ export class SettingsPerDeviceMouseSubsectionElement extends
             },
           ];
         },
-      },
-
-      /**
-       * TODO(khorimoto): Remove this conditional once the feature is launched.
-       */
-      allowScrollSettings_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('allowScrollSettings');
-        },
-        reflectToAttribute: true,
       },
 
       /**
@@ -166,20 +154,6 @@ export class SettingsPerDeviceMouseSubsectionElement extends
         type: Object,
       },
 
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kMouseSwapPrimaryButtons,
-          Setting.kMouseReverseScrolling,
-          Setting.kMouseAcceleration,
-          Setting.kMouseScrollAcceleration,
-          Setting.kMouseSpeed,
-        ]),
-      },
-
       mouseIndex: {
         type: Number,
       },
@@ -198,22 +172,6 @@ export class SettingsPerDeviceMouseSubsectionElement extends
        */
       currentMouseChanged: {
         type: Boolean,
-      },
-
-      isWelcomeExperienceEnabled: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('enableWelcomeExperience');
-        },
-        readOnly: true,
-      },
-
-      deviceImageDataUrl: {
-        type: String,
-      },
-
-      bluetoothDevice: {
-        type: Object,
       },
     };
   }
@@ -261,23 +219,33 @@ export class SettingsPerDeviceMouseSubsectionElement extends
     this.currentMouseChanged = false;
   }
 
-  isWelcomeExperienceEnabled: boolean;
-  private mouse: Mouse;
-  protected mousePolicies: MousePolicies;
-  private primaryRightPref: chrome.settingsPrivate.PrefObject;
-  private accelerationPref: chrome.settingsPrivate.PrefObject;
-  private sensitivityPref: chrome.settingsPrivate.PrefObject;
-  private scrollSensitivityPref: chrome.settingsPrivate.PrefObject;
-  private reverseScrollValue: boolean;
-  private scrollAccelerationValue: boolean;
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kMouseSwapPrimaryButtons,
+    Setting.kMouseReverseScrolling,
+    Setting.kMouseAcceleration,
+    Setting.kMouseScrollAcceleration,
+    Setting.kMouseSpeed,
+  ]);
+
+  declare private mouse: Mouse;
+  declare protected mousePolicies: MousePolicies;
+  declare private primaryRightPref: chrome.settingsPrivate.PrefObject;
+  declare private accelerationPref: chrome.settingsPrivate.PrefObject;
+  declare private sensitivityPref: chrome.settingsPrivate.PrefObject;
+  declare private scrollSensitivityPref: chrome.settingsPrivate.PrefObject;
+  declare private reverseScrollValue: boolean;
+  declare private scrollAccelerationValue: boolean;
   private isInitialized: boolean = false;
-  private isPeripheralCustomizationEnabled_: boolean;
+  declare private isPeripheralCustomizationEnabled_: boolean;
   private inputDeviceSettingsProvider: InputDeviceSettingsProviderInterface =
       getInputDeviceSettingsProvider();
-  private mouseIndex: number;
-  private isLastDevice: boolean;
-  private customizationRestriction: CustomizationRestriction;
-  private currentMouseChanged: boolean;
+  declare private mouseIndex: number;
+  declare private isLastDevice: boolean;
+  declare private customizationRestriction: CustomizationRestriction;
+  declare private currentMouseChanged: boolean;
+  declare private readonly sensitivityValues_: number[];
+  declare private readonly swapPrimaryOptions_: Array<{value: boolean, name: string}>;
 
   private showCustomizeButtonRow(): boolean {
     return (this.customizationRestriction !==
@@ -388,16 +356,11 @@ export class SettingsPerDeviceMouseSubsectionElement extends
   }
 
   private getCursorSpeedString(): TrustedHTML {
-    return this.i18nAdvanced(
-        loadTimeData.getBoolean('allowScrollSettings') ? 'cursorSpeed' :
-                                                         'mouseSpeed');
+    return this.i18nAdvanced('cursorSpeed');
   }
 
   private getCursorAccelerationString(): TrustedHTML {
-    return this.i18nAdvanced(
-        loadTimeData.getBoolean('allowScrollSettings') ?
-            'cursorAccelerationLabel' :
-            'mouseAccelerationLabel');
+    return this.i18nAdvanced('cursorAccelerationLabel');
   }
 
   private onCustomizeButtonsClick(): void {

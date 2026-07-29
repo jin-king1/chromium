@@ -4,21 +4,18 @@
 
 package org.chromium.ui.display;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.content.Context;
-import android.graphics.Insets;
 import android.graphics.Rect;
-import android.os.Build;
 import android.view.Display;
 import android.view.Surface;
 
-import androidx.annotation.RequiresApi;
-
+import org.chromium.base.AconfigFlaggedApiDelegate;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.WeakHashMap;
 
 /**
@@ -66,18 +63,55 @@ public class DisplayAndroid {
          * @param currentMode the current display mode.
          */
         default void onCurrentModeChanged(Display.@Nullable Mode currentMode) {}
+
+        default void onAdaptiveRefreshRateInfoChanged(AdaptiveRefreshRateInfo arrInfo) {}
+    }
+
+    public static final class AdaptiveRefreshRateInfo {
+        public final boolean supportsAdaptiveRefreshRate;
+        public final float suggestedFrameRateHigh;
+        public final @Nullable List<AconfigFlaggedApiDelegate.FrameRateVelocityPoint>
+                velocityMapping;
+
+        public AdaptiveRefreshRateInfo(
+                boolean supportsAdaptiveRefreshRate,
+                float suggestedFrameRateHigh,
+                @Nullable List<AconfigFlaggedApiDelegate.FrameRateVelocityPoint> velocityMapping) {
+            this.supportsAdaptiveRefreshRate = supportsAdaptiveRefreshRate;
+            this.suggestedFrameRateHigh = suggestedFrameRateHigh;
+            this.velocityMapping = velocityMapping;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (!(obj instanceof AdaptiveRefreshRateInfo)) {
+                return false;
+            }
+            AdaptiveRefreshRateInfo other = (AdaptiveRefreshRateInfo) obj;
+            return supportsAdaptiveRefreshRate == other.supportsAdaptiveRefreshRate
+                    && suggestedFrameRateHigh == other.suggestedFrameRateHigh
+                    && Objects.equals(velocityMapping, other.velocityMapping);
+        }
     }
 
     private static final DisplayAndroidObserver[] EMPTY_OBSERVER_ARRAY =
             new DisplayAndroidObserver[0];
+
+    private static @Nullable DisplayAndroid sNonMultiDisplayForTesting;
 
     private final WeakHashMap<DisplayAndroidObserver, Object /* null */> mObservers;
     // Do NOT add strong references to objects with potentially complex lifetime, like Context.
 
     private final int mDisplayId;
     private @Nullable String mName;
+    /* Display bounds in dip */
     private Rect mBounds;
-    private @Nullable Insets mInsets;
+    /* Display work area in dip */
+    private Rect mWorkArea;
+    /* Display width in physical pixels */
+    private int mWidth;
+    /* Display height in physical pixels */
+    private int mHeight;
     private float mDipScale;
     private float mXdpi;
     private float mYdpi;
@@ -92,6 +126,8 @@ public class DisplayAndroid {
     private boolean mIsInternal;
     protected boolean mIsDisplayWideColorGamut;
     protected boolean mIsDisplayServerWideColorGamut;
+    private AdaptiveRefreshRateInfo mAdaptiveRefreshRateInfo =
+            new AdaptiveRefreshRateInfo(false, 0.0f, null);
 
     protected static DisplayAndroidManager getManager() {
         return DisplayAndroidManager.getInstance();
@@ -101,9 +137,9 @@ public class DisplayAndroid {
      * Get the non-multi-display DisplayAndroid for the given context. It's safe to call this with
      * any type of context, including the Application.
      *
-     * To support multi-display, obtain DisplayAndroid from WindowAndroid instead.
+     * <p>To support multi-display, obtain DisplayAndroid from WindowAndroid instead.
      *
-     * This function is intended to be analogous to GetPrimaryDisplay() for other platforms.
+     * <p>This function is intended to be analogous to GetPrimaryDisplay() for other platforms.
      * However, Android has historically had no real concept of a Primary Display, and instead uses
      * the notion of a default display for an Activity. Under normal circumstances, this function,
      * called with the correct context, will return the expected display for an Activity. However,
@@ -113,13 +149,33 @@ public class DisplayAndroid {
      * @return What the Android WindowManager considers to be the default display for this context.
      */
     public static DisplayAndroid getNonMultiDisplay(Context context) {
+        if (sNonMultiDisplayForTesting != null) return sNonMultiDisplayForTesting;
         Display display = DisplayAndroidManager.getDefaultDisplayForContext(context);
         return getManager().getDisplayAndroid(display);
     }
 
+    public static void setNonMultiDisplayForTesting(DisplayAndroid display) {
+        sNonMultiDisplayForTesting = display;
+        ResettersForTesting.register(() -> sNonMultiDisplayForTesting = null);
+    }
+
     /**
-     * Returns the display id that does not necessarily match the one defined in Android's Display.
+     * Returns the device's internal, built-in display (ID 0).
+     *
+     * <p>This method always returns the default display (typically the phone or tablet screen),
+     * even if the application is currently running on a secondary screen (such as an external
+     * monitor or in Samsung DeX mode).
+     *
+     * <p>
+     *
+     * @return The {@link DisplayAndroid} corresponding to {@link
+     *     android.view.Display#DEFAULT_DISPLAY}.
      */
+    /* package */ static DisplayAndroid getGlobalDefaultDisplay() {
+        return getManager().getDisplayAndroid(DisplayAndroidManager.getGlobalDefaultDisplay());
+    }
+
+    /** Returns the display ID that matches the one defined in Android's Display. */
     public int getDisplayId() {
         return mDisplayId;
     }
@@ -131,35 +187,37 @@ public class DisplayAndroid {
 
     /** Returns display height in physical pixels. */
     public int getDisplayHeight() {
-        return mBounds.height();
+        return mHeight;
     }
 
     /** Returns display width in physical pixels. */
     public int getDisplayWidth() {
-        return mBounds.width();
+        return mWidth;
     }
 
-    /** Returns the bounds of the display. */
+    /** Returns the bounds of the display in dip. */
     public Rect getBounds() {
         return new Rect(mBounds);
     }
 
-    /** Returns the bounds as an array. */
-    public int[] getBoundsAsArray() {
+    /** Returns the bounds of the display in dip as an array. */
+    /* package */ int[] getBoundsAsArray() {
         return new int[] {mBounds.left, mBounds.top, mBounds.right, mBounds.bottom};
     }
 
-    /** Returns the insets of the display. */
-    @RequiresApi(Build.VERSION_CODES.R)
-    public Insets getInsets() {
-        return assumeNonNull(mInsets);
+    /** Returns display local bounds in physical pixels. */
+    public Rect getLocalBounds() {
+        return new Rect(0, 0, getDisplayWidth(), getDisplayHeight());
     }
 
-    /** Returns the insets as an array. */
-    @RequiresApi(Build.VERSION_CODES.R)
-    public int[] getInsetsAsArray() {
-        Insets insets = assumeNonNull(mInsets);
-        return new int[] {insets.left, insets.top, insets.right, insets.bottom};
+    /** Returns the work area of the display in dip. */
+    public Rect getWorkArea() {
+        return mWorkArea;
+    }
+
+    /** Returns the work area of the dusplay in dip as an array. */
+    /* package */ int[] getWorkAreaAsArray() {
+        return new int[] {mWorkArea.left, mWorkArea.top, mWorkArea.right, mWorkArea.bottom};
     }
 
     /** Returns current orientation. One of Surface.ORIENTATION_* values. */
@@ -233,10 +291,13 @@ public class DisplayAndroid {
         return mCurrentDisplayMode;
     }
 
+    public AdaptiveRefreshRateInfo getAdaptiveRefreshRateInfo() {
+        return mAdaptiveRefreshRateInfo;
+    }
+
     /**
      * Whether or not the display is HDR capable. If false then getHdrMaxLuminanceRatio will always
-     * return 1.0.
-     * Package private only because no client needs to access this from java.
+     * return 1.0. Package private only because no client needs to access this from java.
      */
     /* package */ boolean getIsHdr() {
         return mIsHdr;
@@ -279,13 +340,16 @@ public class DisplayAndroid {
         mObservers.remove(observer);
     }
 
+    /**
+     * Constructs an instance.
+     *
+     * @param displayId The display ID of Android's Display represented by this object.
+     */
     protected DisplayAndroid(int displayId) {
         mDisplayId = displayId;
         mObservers = new WeakHashMap<>();
         mBounds = new Rect();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            mInsets = Insets.of(0, 0, 0, 0);
-        }
+        mWorkArea = new Rect();
     }
 
     private DisplayAndroidObserver[] getObservers() {
@@ -298,7 +362,9 @@ public class DisplayAndroid {
         update(
                 /* name= */ null,
                 /* bounds= */ null,
-                /* insets= */ null,
+                /* workArea= */ null,
+                /* width= */ null,
+                /* height= */ null,
                 /* dipScale= */ null,
                 /* xdpi= */ null,
                 /* ydpi= */ null,
@@ -312,7 +378,8 @@ public class DisplayAndroid {
                 /* supportedModes= */ null,
                 /* isHdr= */ null,
                 /* hdrMaxLuminanceRatio= */ null,
-                /* isInternal= */ null);
+                /* isInternal= */ null,
+                /* arrInfo= */ null);
     }
 
     /** Update the display to the provided parameters. Null values leave the parameter unchanged. */
@@ -320,7 +387,9 @@ public class DisplayAndroid {
     protected void update(
             @Nullable String name,
             @Nullable Rect bounds,
-            @Nullable Insets insets,
+            @Nullable Rect workArea,
+            @Nullable Integer width,
+            @Nullable Integer height,
             @Nullable Float dipScale,
             @Nullable Float xdpi,
             @Nullable Float ydpi,
@@ -334,10 +403,13 @@ public class DisplayAndroid {
             @Nullable List<Display.Mode> supportedModes,
             @Nullable Boolean isHdr,
             @Nullable Float hdrMaxLuminanceRatio,
-            @Nullable Boolean isInternal) {
+            @Nullable Boolean isInternal,
+            @Nullable AdaptiveRefreshRateInfo arrInfo) {
         boolean nameChanged = name != null && !name.equals(mName);
         boolean boundsChanged = bounds != null && !bounds.equals(mBounds);
-        boolean insetsChanged = insets != null && !insets.equals(mInsets);
+        boolean workAreaChanged = workArea != null && !workArea.equals(mWorkArea);
+        boolean widthChanged = width != null && width != mWidth;
+        boolean heightChanged = height != null && height != mHeight;
         // Intentional comparison of floats: we assume that if scales differ, they differ
         // significantly.
         boolean dipScaleChanged = dipScale != null && mDipScale != dipScale;
@@ -362,10 +434,16 @@ public class DisplayAndroid {
         boolean hdrMaxLuminanceRatioChanged =
                 hdrMaxLuminanceRatio != null && hdrMaxLuminanceRatio != mHdrMaxLuminanceRatio;
         boolean isInternalChanged = isInternal != null && mIsInternal != isInternal;
+        boolean adaptiveRefreshRateInfoChanged =
+                arrInfo != null
+                        && (mAdaptiveRefreshRateInfo == null
+                                || !mAdaptiveRefreshRateInfo.equals(arrInfo));
         boolean changed =
                 nameChanged
                         || boundsChanged
-                        || insetsChanged
+                        || workAreaChanged
+                        || widthChanged
+                        || heightChanged
                         || dipScaleChanged
                         || bitsPerPixelChanged
                         || bitsPerComponentChanged
@@ -377,12 +455,15 @@ public class DisplayAndroid {
                         || currentModeChanged
                         || isHdrChanged
                         || hdrMaxLuminanceRatioChanged
-                        || isInternalChanged;
+                        || isInternalChanged
+                        || adaptiveRefreshRateInfoChanged;
         if (!changed) return;
 
         if (nameChanged) mName = name;
         if (boundsChanged) mBounds = bounds;
-        if (insetsChanged) mInsets = insets;
+        if (workAreaChanged) mWorkArea = workArea;
+        if (widthChanged) mWidth = width;
+        if (heightChanged) mHeight = height;
         if (dipScaleChanged) mDipScale = dipScale;
         if (xdpiChanged) mXdpi = xdpi;
         if (ydpiChanged) mYdpi = ydpi;
@@ -401,6 +482,9 @@ public class DisplayAndroid {
         if (displayModesChanged) mDisplayModes = supportedModes;
         if (currentModeChanged) mCurrentDisplayMode = currentMode;
         if (isInternalChanged) mIsInternal = isInternal;
+        if (adaptiveRefreshRateInfoChanged) {
+            mAdaptiveRefreshRateInfo = arrInfo;
+        }
 
         getManager().updateDisplayOnNativeSide(this);
         if (rotationChanged) {
@@ -431,6 +515,12 @@ public class DisplayAndroid {
             DisplayAndroidObserver[] observers = getObservers();
             for (DisplayAndroidObserver o : observers) {
                 o.onCurrentModeChanged(mCurrentDisplayMode);
+            }
+        }
+        if (adaptiveRefreshRateInfoChanged) {
+            DisplayAndroidObserver[] observers = getObservers();
+            for (DisplayAndroidObserver o : observers) {
+                o.onAdaptiveRefreshRateInfoChanged(mAdaptiveRefreshRateInfo);
             }
         }
     }

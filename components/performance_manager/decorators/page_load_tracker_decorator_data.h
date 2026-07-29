@@ -17,6 +17,9 @@ class PageNodeImpl;
 class PageLoadTrackerDecoratorData
     : public SparseNodeInlineData<PageLoadTrackerDecoratorData> {
  public:
+  PageLoadTrackerDecoratorData();
+  ~PageLoadTrackerDecoratorData();
+
   // The state transitions associated with a load. This is more granular than
   // the publicly exposed PageNode::LoadingState, to provide the required
   // details to implement state transitions.
@@ -57,7 +60,7 @@ class PageLoadTrackerDecoratorData
   // Returns the LoadIdleState for the page.
   LoadIdleState load_idle_state() const { return load_idle_state_; }
 
-  void Describe(base::Value::Dict* dict);
+  void Describe(base::DictValue* dict);
 
   // Whether there is an ongoing different-document load, i.e. DidStartLoading()
   // was invoked but not DidStopLoading().

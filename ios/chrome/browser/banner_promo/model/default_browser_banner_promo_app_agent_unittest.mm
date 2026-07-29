@@ -6,7 +6,6 @@
 
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
-#import "base/test/task_environment.h"
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/test/mock_tracker.h"
 #import "components/google/core/common/google_util.h"
@@ -25,6 +24,7 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "ios/web/public/web_state.h"
 #import "testing/platform_test.h"
 
@@ -32,9 +32,11 @@ namespace {
 
 // Creates the Feature Engagement Mock Tracker.
 std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
-    web::BrowserState* browser_state) {
+    ProfileIOS* profile) {
   return std::make_unique<feature_engagement::test::MockTracker>();
 }
+
+const int kSessionImpressionLimit = 5;
 
 }  // namespace
 
@@ -78,15 +80,18 @@ class DefaultBrowserBannerPromoAppAgentTest : public PlatformTest {
 
     profile_ = std::move(builder).Build();
 
-    profile_state_ = [[ProfileState alloc] initWithAppState:nil];
+    profile_state_ = [[ProfileState alloc] initWithAppState:app_state_];
     profile_state_.profile = profile_.get();
     SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
+    [app_state_ profileStateCreated:profile_state_];
 
     mock_tracker_ = static_cast<feature_engagement::test::MockTracker*>(
         feature_engagement::TrackerFactory::GetForProfile(profile_.get()));
   }
 
-  ~DefaultBrowserBannerPromoAppAgentTest() override = default;
+  ~DefaultBrowserBannerPromoAppAgentTest() override {
+    profile_state_.profile = nullptr;
+  }
 
   // Returns the WebStateList for the given SceneState.
   WebStateList* GetWebStateList(SceneState* scene_state) {
@@ -103,8 +108,7 @@ class DefaultBrowserBannerPromoAppAgentTest : public PlatformTest {
   // Creates, adds, activates, and returns a new scene state with one web state.
   FakeSceneState* SetUpAndAddSceneState() {
     FakeSceneState* scene_state =
-        [[FakeSceneState alloc] initWithAppState:app_state_
-                                         profile:profile_.get()];
+        [[FakeSceneState alloc] initWithProfile:profile_.get()];
     scene_state.activationLevel = SceneActivationLevelForegroundActive;
 
     [scene_state appendWebStateWithURL:url_];
@@ -116,9 +120,7 @@ class DefaultBrowserBannerPromoAppAgentTest : public PlatformTest {
     return scene_state;
   }
 
-  base::test::TaskEnvironment task_env_;
-  base::test::ScopedFeatureList scoped_feature_list_{
-      kDefaultBrowserBannerPromo};
+  web::WebTaskEnvironment task_env_;
 
   const GURL url_ = GURL("http://www.example.com");
 
@@ -148,6 +150,9 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest, TestPromoAppears) {
   EXPECT_TRUE(observer_.promoDisplayed);
   histogram_tester_.ExpectBucketCount("IOS.DefaultBrowserBannerPromo.Shown", 1,
                                       1);
+
+  [scene_state shutdown];
+  scene_state = nil;
 }
 
 // Tests that the promo appears for the required number of navigations and then
@@ -176,8 +181,7 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
   context.SetIsSameDocument(false);
 
   // Navigate enough times to use up all promo views.
-  for (int navigation_count = 1;
-       navigation_count < kDefaultBrowserBannerPromoImpressionLimit.Get();
+  for (int navigation_count = 1; navigation_count < kSessionImpressionLimit;
        navigation_count++) {
     web_state->OnNavigationFinished(&context);
 
@@ -199,6 +203,9 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
   histogram_tester_.ExpectBucketCount(
       "IOS.DefaultBrowserBannerPromo.PromoSessionEnded",
       IOSDefaultBrowserBannerPromoPromoSessionEndedReason::kImpressionsMet, 1);
+
+  [scene_state shutdown];
+  scene_state = nil;
 }
 
 // Tests that the promo will disappear when the close button is tapped.
@@ -232,6 +239,9 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
       IOSDefaultBrowserBannerPromoPromoSessionEndedReason::kUserClosed, 1);
   histogram_tester_.ExpectBucketCount(
       "IOS.DefaultBrowserBannerPromo.ManuallyDismissed", 1, 1);
+
+  [scene_state shutdown];
+  scene_state = nil;
 }
 
 // Tests that the promo should disappear when the user regularly interacts with
@@ -266,6 +276,9 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
       IOSDefaultBrowserBannerPromoPromoSessionEndedReason::kUserTappedPromo, 1);
   histogram_tester_.ExpectBucketCount("IOS.DefaultBrowserBannerPromo.Tapped", 1,
                                       1);
+
+  [scene_state shutdown];
+  scene_state = nil;
 }
 
 // Tests that the promo should disappear after the user navigates to the Google
@@ -308,6 +321,9 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
   histogram_tester_.ExpectBucketCount(
       "IOS.DefaultBrowserBannerPromo.PromoSessionEnded",
       IOSDefaultBrowserBannerPromoPromoSessionEndedReason::kNavigationToSRP, 1);
+
+  [scene_state shutdown];
+  scene_state = nil;
 }
 
 // Tests that the promo should disappear after the user navigates to the new tab
@@ -347,6 +363,9 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
   histogram_tester_.ExpectBucketCount(
       "IOS.DefaultBrowserBannerPromo.PromoSessionEnded",
       IOSDefaultBrowserBannerPromoPromoSessionEndedReason::kNavigationToNTP, 1);
+
+  [scene_state shutdown];
+  scene_state = nil;
 }
 
 // Tests that the AppAgent will switch active web states and observe the
@@ -400,8 +419,7 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
   navigation_count++;
 
   // Navigate in the second web state enough times to use up all promo views.
-  for (; navigation_count < kDefaultBrowserBannerPromoImpressionLimit.Get();
-       navigation_count++) {
+  for (; navigation_count < kSessionImpressionLimit; navigation_count++) {
     web_state_2->OnNavigationFinished(&context);
 
     EXPECT_TRUE(observer_.promoDisplayed);
@@ -422,6 +440,9 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
   histogram_tester_.ExpectBucketCount(
       "IOS.DefaultBrowserBannerPromo.PromoSessionEnded",
       IOSDefaultBrowserBannerPromoPromoSessionEndedReason::kImpressionsMet, 1);
+
+  [scene_state shutdown];
+  scene_state = nil;
 }
 
 // Tests that the app agent can observe navigations in multiple scenes at once.
@@ -460,8 +481,7 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
 
   // Add a second scene, which counts as a promo show.
   FakeSceneState* scene_state_2 =
-      [[FakeSceneState alloc] initWithAppState:app_state_
-                                       profile:profile_.get()];
+      [[FakeSceneState alloc] initWithProfile:profile_.get()];
   scene_state_2.UIEnabled = YES;
   scene_state_2.activationLevel = SceneActivationLevelBackground;
 
@@ -469,6 +489,7 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
   GetWebStateList(scene_state_2)->ActivateWebStateAt(0);
 
   [agent_ appState:app_state_ sceneConnected:scene_state_2];
+  scene_state_2.profileState = profile_state_;
 
   scene_state_2.activationLevel = SceneActivationLevelForegroundActive;
 
@@ -497,8 +518,7 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
   navigation_count++;
 
   // Navigate in the second scene enough times to use up all promo views.
-  for (; navigation_count < kDefaultBrowserBannerPromoImpressionLimit.Get();
-       navigation_count++) {
+  for (; navigation_count < kSessionImpressionLimit; navigation_count++) {
     web_state_2->OnNavigationFinished(&context);
 
     EXPECT_TRUE(observer_.promoDisplayed);
@@ -519,6 +539,16 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest,
   histogram_tester_.ExpectBucketCount(
       "IOS.DefaultBrowserBannerPromo.PromoSessionEnded",
       IOSDefaultBrowserBannerPromoPromoSessionEndedReason::kImpressionsMet, 1);
+
+  // Check expectations now, since destroying the FakeSceneState will cause
+  // more methods to be called.
+  testing::Mock::VerifyAndClearExpectations(mock_tracker_);
+
+  [scene_state_2 shutdown];
+  scene_state_2 = nil;
+
+  [scene_state shutdown];
+  scene_state = nil;
 }
 
 // Tests that the promo doesn't reappear on subsequent navigations after being
@@ -568,4 +598,7 @@ TEST_F(DefaultBrowserBannerPromoAppAgentTest, TestPromoDoesNotReappear) {
   web_state->OnNavigationFinished(&context);
 
   EXPECT_FALSE(observer_.promoDisplayed);
+
+  [scene_state shutdown];
+  scene_state = nil;
 }

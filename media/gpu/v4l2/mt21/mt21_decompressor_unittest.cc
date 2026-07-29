@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/compiler_specific.h"
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_CHROMEOS) && defined(ARCH_CPU_ARM_FAMILY) && \
@@ -388,8 +389,8 @@ TEST(MT21DecompressorTest, TestMT21DecompressorPerfTest) {
   perf_test::PerfResultReporter reporter("MT21Decompressor", "Uncapped Test");
   reporter.RegisterImportantMetric(".decompress_latency", "us");
 
-  memset(decompressed_y, 0, resolution.GetArea());
-  memset(decompressed_uv, 0, resolution.GetArea() / 2);
+  UNSAFE_TODO(memset(decompressed_y, 0, resolution.GetArea()));
+  UNSAFE_TODO(memset(decompressed_uv, 0, resolution.GetArea() / 2));
   constexpr int kNumIterations = 1000;
   auto start_time = base::TimeTicks::Now();
   for (int i = 0; i < kNumIterations; i++) {

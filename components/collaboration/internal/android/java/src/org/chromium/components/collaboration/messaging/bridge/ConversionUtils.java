@@ -6,11 +6,11 @@ package org.chromium.components.collaboration.messaging.bridge;
 
 import android.text.TextUtils;
 
-import androidx.annotation.Nullable;
-
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.collaboration.messaging.ActivityLogItem;
 import org.chromium.components.collaboration.messaging.CollaborationEvent;
 import org.chromium.components.collaboration.messaging.InstantMessage;
@@ -27,13 +27,16 @@ import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_groups.TabGroupColorId;
 
 import java.util.ArrayList;
-import java.util.Optional;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Helper class meant to be called by native. Used to create Java objects from C++ objects. Do not
  * call these methods directly.
  */
 @JNINamespace("collaboration::messaging::android")
+@NullMarked
 class ConversionUtils {
     @CalledByNative
     private static MessageAttribution createAttributionFrom(
@@ -47,6 +50,7 @@ class ConversionUtils {
             @Nullable String syncTabId,
             @Nullable String lastKnownTabTitle,
             @Nullable String lastKnownTabUrl,
+            @Nullable String previousTabUrl,
             @Nullable GroupMember affectedUser,
             boolean affectedUserIsSelf,
             GroupMember triggeringUser,
@@ -62,11 +66,8 @@ class ConversionUtils {
             attribution.tabGroupMetadata.localTabGroupId = localTabGroupId;
             attribution.tabGroupMetadata.syncTabGroupId = syncTabGroupId;
             attribution.tabGroupMetadata.lastKnownTitle = lastKnownTabGroupTitle;
-            if (lastKnownTabGroupColor == -1) {
-                attribution.tabGroupMetadata.lastKnownColor = Optional.empty();
-            } else {
-                attribution.tabGroupMetadata.lastKnownColor = Optional.of(lastKnownTabGroupColor);
-            }
+            attribution.tabGroupMetadata.lastKnownColor =
+                    lastKnownTabGroupColor == -1 ? null : lastKnownTabGroupColor;
         }
         if (localTabId != -1
                 || syncTabId != null
@@ -77,6 +78,7 @@ class ConversionUtils {
             attribution.tabMetadata.syncTabId = syncTabId;
             attribution.tabMetadata.lastKnownTitle = lastKnownTabTitle;
             attribution.tabMetadata.lastKnownUrl = lastKnownTabUrl;
+            attribution.tabMetadata.previousUrl = previousTabUrl;
         }
         attribution.affectedUser = affectedUser;
         attribution.affectedUserIsSelf = affectedUserIsSelf;
@@ -87,7 +89,7 @@ class ConversionUtils {
 
     @CalledByNative
     private static ArrayList<PersistentMessage> createPersistentMessageList() {
-        return new ArrayList<PersistentMessage>();
+        return new ArrayList<>();
     }
 
     @CalledByNative
@@ -110,22 +112,44 @@ class ConversionUtils {
 
     @CalledByNative
     private static InstantMessage createInstantMessage(
-            MessageAttribution attribution,
             @CollaborationEvent int collaborationEvent,
             @InstantNotificationLevel int level,
-            @InstantNotificationType int type) {
+            @InstantNotificationType int type,
+            String localizedMessage,
+            List<MessageAttribution> attributions) {
         InstantMessage message = new InstantMessage();
-        message.attribution = attribution;
         message.collaborationEvent = collaborationEvent;
         message.level = level;
         message.type = type;
+        message.localizedMessage = localizedMessage;
+        message.attributions = attributions;
 
         return message;
     }
 
     @CalledByNative
+    private static Set<String> createStringSet() {
+        return new TreeSet<>();
+    }
+
+    @CalledByNative
+    private static void addStringToStringSet(Set<String> set, String string) {
+        set.add(string);
+    }
+
+    @CalledByNative
+    private static List<MessageAttribution> addAttributionToList(
+            @Nullable List<MessageAttribution> attributions, MessageAttribution attribution) {
+        if (attributions == null) {
+            attributions = new ArrayList<>();
+        }
+        attributions.add(attribution);
+        return attributions;
+    }
+
+    @CalledByNative
     private static ArrayList<ActivityLogItem> createActivityLogItemList() {
-        return new ArrayList<ActivityLogItem>();
+        return new ArrayList<>();
     }
 
     @CalledByNative

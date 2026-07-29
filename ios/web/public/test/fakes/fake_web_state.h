@@ -43,7 +43,7 @@ class FakeWebState : public WebState {
   void SetDelegate(WebStateDelegate* delegate) override;
   std::unique_ptr<WebState> Clone() const override;
   bool IsRealized() const final;
-  WebState* ForceRealized() final;
+  WebState* ForceRealizedWithPolicy(RealizationPolicy policy) final;
   bool IsWebUsageEnabled() const override;
   void SetWebUsageEnabled(bool enabled) override;
   UIView* GetView() override;
@@ -62,7 +62,7 @@ class FakeWebState : public WebState {
   void LoadSimulatedRequest(const GURL& url,
                             NSData* response_data,
                             NSString* mime_type) override;
-  void Stop() override {}
+  void Stop() override;
   const NavigationManager* GetNavigationManager() const override;
   NavigationManager* GetNavigationManager() override;
   WebFramesManager* GetPageWorldWebFramesManager() override;
@@ -70,10 +70,8 @@ class FakeWebState : public WebState {
   const SessionCertificatePolicyCache* GetSessionCertificatePolicyCache()
       const override;
   SessionCertificatePolicyCache* GetSessionCertificatePolicyCache() override;
-  CRWSessionStorage* BuildSessionStorage() const override;
   void LoadData(NSData* data, NSString* mime_type, const GURL& url) override;
   void ExecuteUserJavaScript(NSString* javaScript) override;
-  NSString* GetStableIdentifier() const override;
   WebStateID GetUniqueIdentifier() const override;
   const std::string& GetContentsMimeType() const override;
   bool ContentIsHTML() const override;
@@ -92,6 +90,8 @@ class FakeWebState : public WebState {
   const GURL& GetLastCommittedURL() const override;
   std::optional<GURL> GetLastCommittedURLIfTrusted() const override;
   CRWWebViewProxyType GetWebViewProxy() const override;
+  std::optional<std::string> GetUserAgentOverride() const override;
+  void SetUserAgentOverride(std::optional<std::string> ua_override) override;
 
   void AddObserver(WebStateObserver* observer) override;
 
@@ -115,6 +115,8 @@ class FakeWebState : public WebState {
   void SetFindInteractionEnabled(bool enabled) final;
   id<CRWFindInteraction> GetFindInteraction() final API_AVAILABLE(ios(16));
   id GetActivityItem() API_AVAILABLE(ios(16.4)) final;
+  bool IsCustomOpenPanelSupported() const override;
+  void SetCustomOpenPanelSupported(bool supports) override;
   UIColor* GetThemeColor() final;
   UIColor* GetUnderPageBackgroundColor() final;
 
@@ -133,7 +135,6 @@ class FakeWebState : public WebState {
   void SetBrowserState(BrowserState* browser_state);
   void SetIsRealized(bool value);
   void SetTitle(const std::u16string& title);
-  void SetUnderPageBackgroundColor(UIColor* color);
   void SetContentIsHTML(bool content_is_html);
   void SetContentsMimeType(const std::string& mime_type);
   void SetLoading(bool is_loading);
@@ -173,6 +174,8 @@ class FakeWebState : public WebState {
       WebStatePolicyDecider::PolicyDecisionCallback callback);
   NSData* GetLastLoadedData() const;
   bool IsClosed() const;
+  // Whether `Stop` was called at least once on this WebState.
+  bool was_stopped() const { return was_stopped_; }
 
   // Notifier for tests.
   void OnPageLoaded(PageLoadCompletionStatus load_completion_status);
@@ -185,7 +188,7 @@ class FakeWebState : public WebState {
   void OnDownloadFinished(NSError* error);
 
  private:
-  raw_ptr<BrowserState> browser_state_ = nullptr;
+  raw_ptr<BrowserState, DanglingUntriaged> browser_state_ = nullptr;
   NSString* stable_identifier_ = nil;
   const WebStateID unique_identifier_;
   bool web_usage_enabled_ = true;
@@ -194,8 +197,10 @@ class FakeWebState : public WebState {
   bool is_visible_ = false;
   bool is_crashed_ = false;
   bool is_evicted_ = false;
+  bool was_stopped_ = false;
   bool has_opener_ = false;
   bool can_take_snapshot_ = false;
+  bool supports_custom_open_panel_ = false;
   bool is_closed_ = false;
   bool is_find_interaction_enabled_ = false;
   base::Time last_active_time_ = base::Time::Now();
@@ -214,13 +219,14 @@ class FakeWebState : public WebState {
   NSData* last_loaded_data_ = nil;
   PermissionState camera_permission_state_ = PermissionStateNotAccessible;
   PermissionState microphone_permission_state_ = PermissionStateNotAccessible;
-  UIColor* under_page_background_color_ = nil;
   id<CRWFindInteraction> find_interaction_ API_AVAILABLE(ios(16));
   id<CRWWebViewDownload> web_view_download_;
   id<CRWWebViewDownloadDelegate> download_delegate_;
+  std::optional<std::string> user_agent_override_;
 
   // A list of observers notified when page state changes. Weak references.
-  base::ObserverList<WebStateObserver, true> observers_;
+  WebStateObserverList observers_;
+
   // All the WebStatePolicyDeciders asked for navigation decision. Weak
   // references.
   base::ObserverList<WebStatePolicyDecider, true> policy_deciders_;

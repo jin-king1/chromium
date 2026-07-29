@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/functional/bind.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
@@ -22,6 +23,7 @@
 #include "content/browser/compositor/surface_utils.h"
 #include "content/browser/renderer_host/navigation_transitions/navigation_entry_screenshot_cache.h"
 #include "content/browser/renderer_host/navigation_transitions/navigation_entry_screenshot_manager.h"
+#include "content/browser/renderer_host/navigation_transitions/navigation_transition_config.h"
 #include "content/browser/renderer_host/navigation_transitions/navigation_transition_utils.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -221,7 +223,10 @@ class HostGetterCrossOrigin : public HostGetter {
 
 class NavigationEntryScreenshotBrowserTestBase : public ContentBrowserTest {
  public:
-  NavigationEntryScreenshotBrowserTestBase() = default;
+  NavigationEntryScreenshotBrowserTestBase()
+      : min_required_physical_rm_mb_auto_reset_(
+            NavigationTransitionConfig::SetMinRequiredPhysicalRamMbForTesting(
+                0)) {}
   ~NavigationEntryScreenshotBrowserTestBase() override = default;
 
   void SetUp() override {
@@ -254,9 +259,6 @@ class NavigationEntryScreenshotBrowserTestBase : public ContentBrowserTest {
       NavigationEntryScreenshot::SetDisableCompressionForTesting(true);
     }
 
-    ASSERT_TRUE(
-        base::FeatureList::IsEnabled(blink::features::kBackForwardTransitions));
-
     host_resolver()->AddRule("*", "127.0.0.1");
     embedded_test_server()->ServeFilesFromSourceDirectory(
         GetTestDataFilePath());
@@ -280,17 +282,21 @@ class NavigationEntryScreenshotBrowserTestBase : public ContentBrowserTest {
     int num_pixel_mismatch = 0;
     gfx::Rect err_bounding_box;
 
-    int row_start = 0;
-    int row_end = bitmap.height();
-    int col_start = 0;
-    int col_end = bitmap.width();
-
+    // Do not compare the borders, because we run tests with a scaled down COR
+    // and the resulting bitmap could have a slightly different color in the
+    // border for some devices or resolutions.
+    int row_start = 1;
+    int row_end = bitmap.height() - 1;
+    int col_start = 1;
+    int col_end = bitmap.width() - 1;
     if (compare_region.has_value()) {
-      row_start = compare_region->y();
-      row_end = compare_region->bottom();
-      col_start = compare_region->x();
-      col_end = compare_region->right();
+      row_start = compare_region->y() + 1;
+      row_end = compare_region->bottom() - 1;
+      col_start = compare_region->x() + 1;
+      col_end = compare_region->right() - 1;
     }
+    ASSERT_LT(row_start, row_end);
+    ASSERT_LT(col_start, col_end);
 
     for (int r = row_start; r < row_end; ++r) {
       for (int c = col_start; c < col_end; ++c) {
@@ -380,6 +386,9 @@ class NavigationEntryScreenshotBrowserTestBase : public ContentBrowserTest {
   WebContentsImpl* web_contents() {
     return static_cast<WebContentsImpl*>(shell()->web_contents());
   }
+
+ private:
+  base::AutoReset<int> min_required_physical_rm_mb_auto_reset_;
 };
 
 class NavigationEntryScreenshotBrowserTest
@@ -391,19 +400,11 @@ class NavigationEntryScreenshotBrowserTest
   ~NavigationEntryScreenshotBrowserTest() override = default;
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    base::FieldTrialParams bf_transition_params;
-    if (Use1MinuteEvictionDelay()) {
-      bf_transition_params = {{"invisible-cache-cleanup-delay", "1m"}};
-    }
-    std::vector<base::test::FeatureRefAndParams> enabled_features = {
-        {blink::features::kBackForwardTransitions, bf_transition_params}};
-
     if (GetParam().enable_bfcache) {
       scoped_feature_list_.InitWithFeaturesAndParameters(
-          GetDefaultEnabledBackForwardCacheFeaturesForTesting(enabled_features),
+          GetDefaultEnabledBackForwardCacheFeaturesForTesting(),
           GetDefaultDisabledBackForwardCacheFeaturesForTesting());
     } else {
-      scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features, {});
       command_line->AppendSwitch(switches::kDisableBackForwardCache);
     }
 
@@ -443,8 +444,6 @@ class NavigationEntryScreenshotBrowserTest
 
     ASSERT_TRUE(web_contents()->GetRenderWidgetHostView());
   }
-
-  virtual bool Use1MinuteEvictionDelay() const { return false; }
 
   std::string GetNextHost() { return host_getter_->Get(); }
 
@@ -966,13 +965,11 @@ IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotBrowserTest,
             GURL(url::kAboutBlankURL));
 
   // Navigates away from about:blank.
-  ASSERT_TRUE(NavigateToURL(tab, GetNextUrl("/green.html")));
-  WaitForCopyableViewInWebContents(tab);
-  // Captured.
+  NavigateTabAndWaitForScreenshotCached(tab, controller,
+                                        GetNextUrl("/green.html"));
   AssertOrderedScreenshotsAre(controller, {SK_ColorWHITE, std::nullopt});
 
   HistoryNavigateTabAndWaitForScreenshotCached(tab, controller, -1);
-  // Captured.
   AssertOrderedScreenshotsAre(controller, {std::nullopt, SK_ColorGREEN});
 }
 
@@ -1199,8 +1196,15 @@ IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotBrowserTest,
 }
 
 // Regression test for https://crbug.com/368289857.
+// TODO(crbug.com/429352317): Re-enable this test.
 IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotBrowserTest,
-                       NavigateWhileHidden_NotCaptured) {
+                       DISABLED_NavigateWhileHidden_NotCaptured) {
+  // TODO(crbug.com/390571607): Update this test to support default
+  // SiteInstanceGroup in all parameterization modes.
+  if (ShouldUseDefaultSiteInstanceGroup()) {
+    GTEST_SKIP();
+  }
+
   const size_t page_size = GetUncompressedScreenshotSizeInBytes();
   const size_t memory_budget = 10 * page_size;
   auto* manager = GetManagerForTab(web_contents());
@@ -1268,12 +1272,8 @@ INSTANTIATE_TEST_SUITE_P(All,
                          ::testing::ValuesIn(kNavTypes),
                          &DescribeNavType);
 
-class NavigationEntryScreenshotBrowserTestWithEviction
-    : public NavigationEntryScreenshotBrowserTest {
- public:
-  bool Use1MinuteEvictionDelay() const override { return true; }
-  ~NavigationEntryScreenshotBrowserTestWithEviction() override = default;
-};
+using NavigationEntryScreenshotBrowserTestWithEviction =
+    NavigationEntryScreenshotBrowserTest;
 
 IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotBrowserTestWithEviction,
                        InvisibleTabEviction) {
@@ -1330,7 +1330,8 @@ IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotBrowserTestWithEviction,
 
   base::SimpleTestTickClock fake_clock;
   manager->set_tick_clock_for_testing(&fake_clock);
-  const base::TimeDelta eviction_delay = base::Minutes(1);
+  const base::TimeDelta eviction_delay =
+      NavigationTransitionConfig::GetCleanupDelayForInvisibleCaches();
   fake_clock.SetNowTicks(base::TimeTicks() + eviction_delay);
 
   // Mark the tabs hidden at different times.
@@ -1398,7 +1399,8 @@ IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotBrowserTestWithEviction,
 
   base::SimpleTestTickClock fake_clock;
   manager->set_tick_clock_for_testing(&fake_clock);
-  const base::TimeDelta eviction_delay = base::Minutes(1);
+  const base::TimeDelta eviction_delay =
+      NavigationTransitionConfig::GetCleanupDelayForInvisibleCaches();
   fake_clock.SetNowTicks(base::TimeTicks() + eviction_delay);
 
   // A task should be posted to clear the tab.
@@ -1473,7 +1475,8 @@ IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotBrowserTestWithEviction,
 
   base::SimpleTestTickClock fake_clock;
   manager->set_tick_clock_for_testing(&fake_clock);
-  const base::TimeDelta eviction_delay = base::Minutes(1);
+  const base::TimeDelta eviction_delay =
+      NavigationTransitionConfig::GetCleanupDelayForInvisibleCaches();
   fake_clock.SetNowTicks(base::TimeTicks() + eviction_delay);
 
   // Mark the tabs hidden at different times.
@@ -1798,10 +1801,7 @@ class SameDocNavigationEntryScreenshotBrowserTest
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     std::vector<base::test::FeatureRefAndParams> enabled_features = {
-        {viz::mojom::EnableVizTestApis, {}},
-        {blink::features::kBackForwardTransitions, {}},
-        {blink::features::kIncrementLocalSurfaceIdForMainframeSameDocNavigation,
-         {}}};
+        {viz::mojom::EnableVizTestApis, {}}};
 
     scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features, {});
 
@@ -2371,6 +2371,52 @@ IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotCacheHitOrMissReasonBrowserTest,
   }
 }
 
+// Ensure that only the necessary screenshots persist when a navigation happens
+// while a gesture is ongoing.
+IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotCacheHitOrMissReasonBrowserTest,
+                       NavigationDuringGesture) {
+  // One screenshot per Profile (BrowserContext).
+  const size_t page_size = GetUncompressedScreenshotSizeInBytes();
+  auto* manager = GetManagerForTab(web_contents());
+  manager->SetMemoryBudgetForTesting(page_size);
+  auto& controller = web_contents()->GetController();
+  {
+    SCOPED_TRACE("[red*] -> [red&, green*]");
+    NavigateTabAndWaitForScreenshotCached(web_contents(), controller,
+                                          GetNextUrl("/green.html"));
+    AssertCacheHitOrMissReasonsAre(
+        controller, {CacheHitOrMissReason::kCacheHit, std::nullopt});
+    AssertOrderedScreenshotsAre(controller, {SK_ColorRED, std::nullopt});
+  }
+  {
+    SCOPED_TRACE("[red&, green*] -> [red*, green&]");
+    // Simulate initiating a gesture.
+    std::unique_ptr<NavigationEntryScreenshot> screenshot =
+        controller.GetNavigationEntryScreenshotCache()->RemoveScreenshot(
+            controller.GetEntryAtOffset(-1));
+    AssertCacheHitOrMissReasonsAre(controller, {std::nullopt, std::nullopt});
+
+    // A renderer navigation starts.
+    auto* tab = web_contents();
+    TestFrameNavigationObserver nav_observer(tab->GetPrimaryMainFrame());
+    ScopedScreenshotCapturedObserverForTesting screenshot_observer(
+        controller.GetLastCommittedEntryIndex());
+    EXPECT_TRUE(ExecJs(tab, "history.back();"));
+
+    // Wait for screenshot to be pending.
+    screenshot_observer.Wait();
+    // Simulate canceling the gesture.
+    controller.GetNavigationEntryScreenshotCache()->SetScreenshot(
+        nullptr, std::move(screenshot), false);
+
+    // Navigation completes
+    nav_observer.Wait();
+    AssertCacheHitOrMissReasonsAre(
+        controller, {std::nullopt, CacheHitOrMissReason::kCacheHit});
+    AssertOrderedScreenshotsAre(controller, {std::nullopt, SK_ColorGREEN});
+  }
+}
+
 IN_PROC_BROWSER_TEST_P(NavigationEntryScreenshotCacheHitOrMissReasonBrowserTest,
                        CCNSPagesCached) {
   // Max of three screenshots per Profile (BrowserContext).
@@ -2410,12 +2456,6 @@ class NavigationEntryScreenshotCompressionBrowserTest
   NavigationEntryScreenshotCompressionBrowserTest() = default;
   ~NavigationEntryScreenshotCompressionBrowserTest() override = default;
 
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    scoped_feature_list_.InitAndEnableFeature(
-        blink::features::kBackForwardTransitions);
-    NavigationEntryScreenshotBrowserTestBase::SetUpCommandLine(command_line);
-  }
-
   void SetUpOnMainThread() override {
     NavigationEntryScreenshotBrowserTestBase::SetUpOnMainThread();
 
@@ -2433,9 +2473,6 @@ class NavigationEntryScreenshotCompressionBrowserTest
   NavigationControllerImpl& controller() {
     return web_contents()->GetController();
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(NavigationEntryScreenshotCompressionBrowserTest, Basic) {

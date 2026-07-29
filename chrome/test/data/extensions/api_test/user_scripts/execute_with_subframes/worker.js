@@ -3,21 +3,24 @@
 // found in the LICENSE file.
 
 import {findDocumentIdWithHostname, findFrameIdWithHostname, findFrameWithHostname, getFramesInTab, getSingleTab} from '/_test_resources/test_util/tabs_util.js';
+import {waitForUserScriptsAPIAllowed} from '/_test_resources/test_util/user_script_test_util.js';
 
 const locationScript = `(function() { return location.href })()`;
 
 chrome.test.runTests([
+  waitForUserScriptsAPIAllowed,
+
   // Tests injecting a script when the extension has site access to the top
   // frame (a.com).
   async function allowedTopFrameAccess() {
     await chrome.userScripts.unregister();
 
     const query = {url: 'http://a.com/*'};
-    let tab = await getSingleTab(query);
+    const tab = await getSingleTab(query);
 
     const script = {
       js: [{code: locationScript}],
-      target: {allFrames: true, tabId: tab.id}
+      target: {allFrames: true, tabId: tab.id},
     };
     const results = await chrome.userScripts.execute(script);
     chrome.test.assertEq(2, results.length);
@@ -43,11 +46,11 @@ chrome.test.runTests([
     await chrome.userScripts.unregister();
 
     const query = {url: 'http://d.com/*'};
-    let tab = await getSingleTab(query);
+    const tab = await getSingleTab(query);
 
     const script = {
       js: [{code: locationScript}],
-      target: {allFrames: true, tabId: tab.id}
+      target: {allFrames: true, tabId: tab.id},
     };
     await chrome.test.assertPromiseRejects(
         chrome.userScripts.execute(script),
@@ -68,7 +71,7 @@ chrome.test.runTests([
 
     const script = {
       js: [{code: locationScript}],
-      target: {frameIds: [frame.frameId], tabId: tab.id}
+      target: {frameIds: [frame.frameId], tabId: tab.id},
     };
     const results = await chrome.userScripts.execute(script);
 
@@ -92,7 +95,7 @@ chrome.test.runTests([
 
     const script = {
       js: [{code: locationScript}],
-      target: {documentIds: [frame.documentId], tabId: tab.id}
+      target: {documentIds: [frame.documentId], tabId: tab.id},
     };
     const results = await chrome.userScripts.execute(script);
 
@@ -119,7 +122,7 @@ chrome.test.runTests([
 
     const script = {
       js: [{code: locationScript}],
-      target: {frameIds: frameIds, tabId: tab.id}
+      target: {frameIds: frameIds, tabId: tab.id},
     };
     const results = await chrome.userScripts.execute(script);
 
@@ -148,7 +151,7 @@ chrome.test.runTests([
 
     const script = {
       js: [{code: locationScript}],
-      target: {documentIds: documentIds, tabId: tab.id}
+      target: {documentIds: documentIds, tabId: tab.id},
     };
     const results = await chrome.userScripts.execute(script);
 
@@ -175,13 +178,13 @@ chrome.test.runTests([
 
     const script = {
       js: [{code: locationScript}],
-      target: {frameIds: [frame.frameId, frame.frameId], tabId: tab.id}
+      target: {frameIds: [frame.frameId, frame.frameId], tabId: tab.id},
     };
     const results = await chrome.userScripts.execute(script);
 
     // Verify script is only injected once to the duplicated frame id.
     chrome.test.assertEq(1, results.length);
-    let resultUrl = new URL(results[0].result);
+    const resultUrl = new URL(results[0].result);
     chrome.test.assertEq('b.com', resultUrl.hostname);
     chrome.test.assertEq(frame.frameId, results[0].frameId);
 
@@ -199,13 +202,14 @@ chrome.test.runTests([
 
     const script = {
       js: [{code: locationScript}],
-      target: {documentIds: [frame.documentId, frame.documentId], tabId: tab.id}
+      target:
+          {documentIds: [frame.documentId, frame.documentId], tabId: tab.id},
     };
     const results = await chrome.userScripts.execute(script);
 
     // Verify script is only injected once to the duplicated frame id.
     chrome.test.assertEq(1, results.length);
-    let resultUrl = new URL(results[0].result);
+    const resultUrl = new URL(results[0].result);
     chrome.test.assertEq('b.com', resultUrl.hostname);
     chrome.test.assertEq(frame.documentId, results[0].documentId);
 
@@ -225,12 +229,12 @@ chrome.test.runTests([
       findFrameIdWithHostname(frames, 'c.com'),
     ];
     const deniedFrame = frames.find((frame) => {
-      return (new URL(frame.url)).hostname == 'c.com';
+      return (new URL(frame.url)).hostname === 'c.com';
     });
 
     const script = {
       js: [{code: locationScript}],
-      target: {frameIds: frameIds, tabId: tab.id}
+      target: {frameIds: frameIds, tabId: tab.id},
     };
     await chrome.test.assertPromiseRejects(
         chrome.userScripts.execute(script),
@@ -254,12 +258,12 @@ chrome.test.runTests([
       findDocumentIdWithHostname(frames, 'c.com'),
     ];
     const deniedFrame = frames.find((frame) => {
-      return (new URL(frame.url)).hostname == 'c.com';
+      return (new URL(frame.url)).hostname === 'c.com';
     });
 
     const script = {
       js: [{code: locationScript}],
-      target: {documentIds: documentIds, tabId: tab.id}
+      target: {documentIds: documentIds, tabId: tab.id},
     };
     await chrome.test.assertPromiseRejects(
         chrome.userScripts.execute(script),
@@ -269,4 +273,4 @@ chrome.test.runTests([
 
     chrome.test.succeed();
   },
-])
+]);

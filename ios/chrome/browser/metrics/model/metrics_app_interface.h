@@ -96,14 +96,8 @@ constexpr base::TimeDelta kSyncDWAOperationsTimeout = base::Seconds(60);
 // Returns YES if the DWA recorder has entries.
 + (BOOL)DWARecorderHasEntries:(BOOL)state;
 
-// Returns YES if the DWA recorder has pageload events.
-+ (BOOL)DWARecorderHasPageLoadEvents:(BOOL)state;
-
 // Returns YES if the DWA service has logs to send.
 + (BOOL)hasUnsentDWALogs:(BOOL)state;
-
-// Invokes the DWA recorder's OnPageLoad method.
-+ (void)DWARecorderOnPageLoadCall;
 
 // Records a new entry metric for DWA.
 + (void)recordTestDWAEntryMetric;
@@ -116,6 +110,24 @@ constexpr base::TimeDelta kSyncDWAOperationsTimeout = base::Seconds(60);
 
 // Purges DWA recorder.
 + (void)clearDWARecorder;
+
+// Returns whether PUMA reporting is active.
++ (BOOL)isPumaReportingEnabled;
+
+// Returns whether there are unsent PUMA logs.
++ (BOOL)hasUnsentPumaLogs;
+
+// Purges unsent PUMA logs.
++ (void)purgePumaLogs;
+
+// Records a test PUMA metric.
++ (void)recordTestPumaMetric;
+
+// Flushes the PUMA service.
++ (void)flushPumaService;
+
+// Returns the last PUMA RC profile as a dictionary.
++ (NSDictionary*)lastPumaRcProfile;
 
 // Creates a chrome_test_util::HistogramTester that will record every histogram
 // sent during test.

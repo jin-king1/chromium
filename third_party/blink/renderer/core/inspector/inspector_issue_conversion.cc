@@ -53,17 +53,20 @@ blink::protocol::String InspectorIssueCodeValue(
           ContentSecurityPolicyIssue;
     case mojom::blink::InspectorIssueCode::kSharedArrayBufferIssue:
       return protocol::Audits::InspectorIssueCodeEnum::SharedArrayBufferIssue;
-    case mojom::blink::InspectorIssueCode::kLowTextContrastIssue:
-      return protocol::Audits::InspectorIssueCodeEnum::LowTextContrastIssue;
+    case mojom::blink::InspectorIssueCode::kUserReidentificationIssue:
+      return protocol::Audits::InspectorIssueCodeEnum::
+          UserReidentificationIssue;
+    case mojom::blink::InspectorIssueCode::kPerformanceIssue:
+      return protocol::Audits::InspectorIssueCodeEnum::PerformanceIssue;
     case mojom::blink::InspectorIssueCode::kHeavyAdIssue:
     case mojom::blink::InspectorIssueCode::kFederatedAuthRequestIssue:
     case mojom::blink::InspectorIssueCode::kFederatedAuthUserInfoRequestIssue:
+    case mojom::blink::InspectorIssueCode::kEmailVerificationRequestIssue:
     case mojom::blink::InspectorIssueCode::kBounceTrackingIssue:
     case mojom::blink::InspectorIssueCode::kPartitioningBlobURLIssue:
     case mojom::blink::InspectorIssueCode::kCookieDeprecationMetadataIssue:
     case mojom::blink::InspectorIssueCode::kGenericIssue:
     case mojom::blink::InspectorIssueCode::kDeprecationIssue:
-    case mojom::blink::InspectorIssueCode::kAttributionReportingIssue:
       NOTREACHED();
   }
 }
@@ -97,7 +100,7 @@ protocol::String BuildCookieExclusionReason(
 
 std::unique_ptr<std::vector<blink::protocol::String>>
 BuildCookieExclusionReasons(
-    const WTF::Vector<mojom::blink::CookieExclusionReason>& exclusion_reasons) {
+    const Vector<mojom::blink::CookieExclusionReason>& exclusion_reasons) {
   auto protocol_exclusion_reasons =
       std::make_unique<std::vector<blink::protocol::String>>();
   for (const auto& reason : exclusion_reasons) {
@@ -156,7 +159,7 @@ protocol::String BuildCookieWarningReason(
 }
 
 std::unique_ptr<std::vector<blink::protocol::String>> BuildCookieWarningReasons(
-    const WTF::Vector<mojom::blink::CookieWarningReason>& warning_reasons) {
+    const Vector<mojom::blink::CookieWarningReason>& warning_reasons) {
   auto protocol_warning_reasons =
       std::make_unique<std::vector<blink::protocol::String>>();
   for (const auto& reason : warning_reasons) {
@@ -194,8 +197,6 @@ protocol::String BuildMixedContentResolutionStatus(
 protocol::String BuildMixedContentResourceType(
     mojom::blink::RequestContextType request_context) {
   switch (request_context) {
-    case mojom::blink::RequestContextType::ATTRIBUTION_SRC:
-      return protocol::Audits::MixedContentResourceTypeEnum::AttributionSrc;
     case blink::mojom::blink::RequestContextType::AUDIO:
       return protocol::Audits::MixedContentResourceTypeEnum::Audio;
     case blink::mojom::blink::RequestContextType::BEACON:
@@ -229,6 +230,7 @@ protocol::String BuildMixedContentResourceType(
     case blink::mojom::blink::RequestContextType::INTERNAL:
       return protocol::Audits::MixedContentResourceTypeEnum::Resource;
     case blink::mojom::blink::RequestContextType::JSON:
+    case blink::mojom::blink::RequestContextType::TEXT:
       // TODO(crbug.com/1511738): Consider adding a type
       // specific to JSON modules requests
       return protocol::Audits::MixedContentResourceTypeEnum::Resource;
@@ -362,6 +364,15 @@ std::unique_ptr<protocol::Audits::SourceCodeLocation> BuildAffectedLocation(
   return protocol_affected_location;
 }
 
+protocol::String BuildPerformanceIssueType(
+    mojom::blink::PerformanceIssueType type) {
+  switch (type) {
+    case mojom::blink::PerformanceIssueType::kDocumentCookie:
+      return protocol::Audits::PerformanceIssueTypeEnum::DocumentCookie;
+  }
+  NOTREACHED();
+}
+
 }  // namespace
 
 std::unique_ptr<protocol::Audits::InspectorIssue>
@@ -462,19 +473,18 @@ ConvertInspectorIssueToProtocolFormat(InspectorIssue* issue) {
     issueDetails.setSharedArrayBufferIssueDetails(std::move(details));
   }
 
-  if (issue->Details()->low_text_contrast_details) {
-    const auto* d = issue->Details()->low_text_contrast_details.get();
-    auto lowContrastDetails =
-        protocol::Audits::LowTextContrastIssueDetails::create()
-            .setThresholdAA(d->threshold_aa)
-            .setThresholdAAA(d->threshold_aaa)
-            .setFontSize(d->font_size)
-            .setFontWeight(d->font_weight)
-            .setContrastRatio(d->contrast_ratio)
-            .setViolatingNodeSelector(d->violating_node_selector)
-            .setViolatingNodeId(d->violating_node_id)
+  if (issue->Details()->performance_issue_details) {
+    const auto* d = issue->Details()->performance_issue_details.get();
+    auto performanceDetails =
+        protocol::Audits::PerformanceIssueDetails::create()
+            .setPerformanceIssueType(
+                BuildPerformanceIssueType(d->performance_issue_type))
             .build();
-    issueDetails.setLowTextContrastIssueDetails(std::move(lowContrastDetails));
+    if (d->affected_location) {
+      performanceDetails->setSourceCodeLocation(
+          BuildAffectedLocation(d->affected_location));
+    }
+    issueDetails.setPerformanceIssueDetails(std::move(performanceDetails));
   }
 
   auto final_issue = protocol::Audits::InspectorIssue::create()
@@ -482,7 +492,7 @@ ConvertInspectorIssueToProtocolFormat(InspectorIssue* issue) {
                          .setDetails(issueDetails.build())
                          .build();
   if (issue->Details()->issue_id) {
-    String issue_id = String::FromUTF8(issue->Details()->issue_id->ToString());
+    String issue_id = String::FromUtf8(issue->Details()->issue_id->ToString());
     final_issue->setIssueId(issue_id);
   }
   return final_issue;

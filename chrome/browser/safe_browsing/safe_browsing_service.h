@@ -15,36 +15,37 @@
 #include "base/callback_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
-#include "base/memory/ref_counted.h"
+#include "base/gtest_prod_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/scoped_multi_source_observation.h"
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "build/build_config.h"
-#include "chrome/browser/net/proxy_config_monitor.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager_observer.h"
 #include "chrome/browser/profiles/profile_observer.h"
-#include "chrome/browser/safe_browsing/phishy_interaction_tracker.h"
-#include "chrome/browser/safe_browsing/safe_browsing_pref_change_handler.h"
 #include "chrome/browser/safe_browsing/services_delegate.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/content/browser/safe_browsing_service_interface.h"
 #include "components/safe_browsing/core/browser/db/util.h"
-#include "components/safe_browsing/core/browser/ping_manager.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/network_context.mojom-forward.h"
 
 #if BUILDFLAG(FULL_SAFE_BROWSING)
 #include "chrome/browser/safe_browsing/incident_reporting/delayed_analysis_callback.h"
+#include "chrome/browser/safe_browsing/phishy_interaction_tracker.h"
 #endif
 
 class PrefChangeRegistrar;
 class PrefService;
+class ProxyConfigMonitor;
 
 namespace content {
 class DownloadManager;
+class RenderFrameHost;
 }
 
 namespace download {
@@ -72,12 +73,14 @@ namespace safe_browsing {
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
 class DownloadProtectionService;
 #endif
+class HashRealTimeService;
 class PasswordProtectionService;
 class SafeBrowsingDatabaseManager;
+class SafeBrowsingPrefChangeHandler;
 class SafeBrowsingServiceFactory;
 class SafeBrowsingUIManager;
+class SecuritySettingsBundlePrefChangeHandler;
 class TriggerManager;
-class HashRealTimeService;
 
 // Construction needs to happen on the main thread.
 // The SafeBrowsingServiceImpl owns both the UI and Database managers which do
@@ -163,6 +166,9 @@ class SafeBrowsingServiceImpl : public SafeBrowsingServiceInterface,
       content::BrowserContext* browser_context) override;
 
 #if BUILDFLAG(IS_ANDROID)
+  // This is currently only used for the chrome://safe-browsing UI.
+  // Prefer calling the GetReferringAppInfo static function in
+  // safe_browsing_referring_app_bridge_android.h instead.
   internal::ReferringAppInfo GetReferringAppInfo(
       content::WebContents* web_contents) override;
 #endif
@@ -190,9 +196,6 @@ class SafeBrowsingServiceImpl : public SafeBrowsingServiceInterface,
   // Gets the hash-prefix real-time lookup service associated with the profile,
   // or creates one if one does not already exist.
   HashRealTimeService* GetHashRealTimeService(Profile* profile);
-
-  // Type for subscriptions to SafeBrowsing service state.
-  typedef base::RepeatingClosureList::Subscription StateSubscription;
 
   // Adds a listener for when SafeBrowsing preferences might have changed.
   // To get the current state, the callback should call enabled_by_prefs().
@@ -281,6 +284,8 @@ class SafeBrowsingServiceImpl : public SafeBrowsingServiceInterface,
   friend class SafeBrowsingBlockingQuietPageTest;
   friend class extensions::SafeBrowsingPrivateApiUnitTest;
   friend class SafeBrowsingServerTest;
+  friend class SafeBrowsingServiceSecuritySettingsBundleToastTest;
+  friend class SafeBrowsingServiceMigrationTest;
   friend class SafeBrowsingUIManagerTest;
   friend class TestSafeBrowsingService;
   friend class TestSafeBrowsingServiceFactory;
@@ -308,7 +313,17 @@ class SafeBrowsingServiceImpl : public SafeBrowsingServiceInterface,
                            EnhancedProtectionPrefChange_SingleProfile);
   FRIEND_TEST_ALL_PREFIXES(
       SafeBrowsingServiceTest,
+      BundlePrefChanged_MaybeShowEnhancedBundleSettingChangeNotificationCalledForProfile);
+  FRIEND_TEST_ALL_PREFIXES(
+      SafeBrowsingServiceTest,
       EnhancedProtectionPrefChange_SupportsMultipleProfiles);
+  FRIEND_TEST_ALL_PREFIXES(
+      SafeBrowsingServiceTest,
+      BundlePrefChanged_MaybeShowEnhancedBundleSettingChangeNotificationCalledForEachProfile);
+  FRIEND_TEST_ALL_PREFIXES(V4SafeBrowsingServiceTest,
+                           NotificationsAcceptedReportSentWithCorrectOrigins);
+  FRIEND_TEST_ALL_PREFIXES(V4SafeBrowsingServiceTest,
+                           NotificationsAcceptedReportSentWithReferrerChain);
 
   void SetDatabaseManagerForTest(SafeBrowsingDatabaseManager* database_manager);
 
@@ -337,6 +352,11 @@ class SafeBrowsingServiceImpl : public SafeBrowsingServiceInterface,
   // Protection setting changes when its preference value updates.
   void EnhancedProtectionPrefChange(Profile* profile);
 
+  // Potentially shows a toast about Enhanced Bundle
+  // setting changes when the bundled settings preference value updates.
+  // TODO(crbug.com/502677594): Rename the enhanced protection toast variable.
+  void SecuritySettingsBundlePrefChange(Profile* profile);
+
   // Maybe show a toast about Enhanced Protection setting changes. Called when
   // its preference value updates.
   void MaybeShowEnhancedProtectionSettingChangeToast(Profile* profile);
@@ -354,9 +374,6 @@ class SafeBrowsingServiceImpl : public SafeBrowsingServiceInterface,
   // Creates a configured NetworkContextParams when the network service is in
   // use.
   network::mojom::NetworkContextParamsPtr CreateNetworkContextParams();
-
-  // Logs metrics related to cookies.
-  void RecordStartupCookieMetrics(Profile* profile);
 
   // Fills out_referrer_chain with the referrer chain value.
   void FillReferrerChain(Profile* profile,
@@ -431,8 +448,13 @@ class SafeBrowsingServiceImpl : public SafeBrowsingServiceInterface,
 
   // Manages the logic for handling preference changes, including displaying
   // specific UI elements in response to certain preference changes.
+  // TODO(crbug.com/502649234): Remove after bundled settings is launched.
   std::map<Profile*, std::unique_ptr<SafeBrowsingPrefChangeHandler>>
       pref_change_handlers_map_;
+
+  // Manages the logic for handling bundled settings preference changes.
+  std::map<Profile*, std::unique_ptr<SecuritySettingsBundlePrefChangeHandler>>
+      bundled_settings_pref_change_handlers_map_;
 };
 
 // TODO(crbug.com/41437292): Remove this once dependencies are using the

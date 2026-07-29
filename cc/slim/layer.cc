@@ -11,7 +11,6 @@
 
 #include "base/atomic_sequence_num.h"
 #include "base/check.h"
-#include "base/not_fatal_until.h"
 #include "cc/paint/filter_operation.h"
 #include "cc/slim/layer_tree.h"
 #include "cc/slim/layer_tree_impl.h"
@@ -34,6 +33,10 @@ cc::FilterOperations ToCcFilters(std::vector<cc::slim::Filter> filters) {
       case cc::slim::Filter::kSaturation:
         cc_filters.Append(
             cc::FilterOperation::CreateSaturateFilter(slim_filter.amount()));
+        break;
+      case cc::slim::Filter::kBlur:
+        cc_filters.Append(cc::FilterOperation::CreateBlurFilter(
+            slim_filter.amount(), slim_filter.tile_mode()));
         break;
     }
   }
@@ -128,7 +131,7 @@ void Layer::ReplaceChild(Layer* old_child, scoped_refptr<Layer> new_child) {
 
   auto it = std::ranges::find_if(
       children_, [&](auto& ptr) { return ptr.get() == old_child; });
-  CHECK(it != children_.end(), base::NotFatalUntil::M130);
+  CHECK(it != children_.end());
   old_child->SetParentSlim(nullptr);
   old_child->SetLayerTree(nullptr);
 
@@ -448,5 +451,7 @@ void Layer::NotifyPropertyChanged() {
     static_cast<LayerTreeImpl*>(layer_tree_)->NotifyTreeChanged();
   }
 }
+
+void Layer::ReleaseResources() {}
 
 }  // namespace cc::slim

@@ -2,12 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ui/gfx/font_render_params.h"
+#include "ui/gfx/font_render_params_linux.h"
 
 #include <fontconfig/fontconfig.h>
 
 #include "base/check_op.h"
-#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
@@ -16,7 +15,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/test_fonts/fontconfig/fontconfig_util_linux.h"
 #include "ui/gfx/font.h"
-#include "ui/gfx/font_render_params_linux.h"
+#include "ui/gfx/font_render_params.h"
 #include "ui/gfx/linux/fontconfig_util.h"
 
 #if BUILDFLAG(IS_LINUX)
@@ -110,7 +109,7 @@ class FontRenderParamsTest : public testing::Test {
 #if BUILDFLAG(IS_LINUX)
     ui::LinuxUi::SetInstance(&test_font_delegate_);
 #endif
-    ClearFontRenderParamsCacheForTest();
+    ClearFontRenderParamsCache();
     SetForceDisableSubpixelFontRendering(false);
 
     // Create a new fontconfig configuration and load the default fonts
@@ -193,7 +192,7 @@ TEST_F(FontRenderParamsTest, Default) {
   EXPECT_EQ(FontRenderParams::SUBPIXEL_RENDERING_RGB,
             params.subpixel_rendering);
 
-  ClearFontRenderParamsCacheForTest();
+  ClearFontRenderParamsCache();
   SetForceDisableSubpixelFontRendering(true);
 
   params = GetFontRenderParams(FontRenderParamsQuery(), nullptr);
@@ -359,7 +358,7 @@ TEST_F(FontRenderParamsTest, ForceSubpixelPositioning) {
     EXPECT_FALSE(params.subpixel_positioning);
     SetFontRenderParamsDeviceScaleFactor(1.0f);
   }
-  ClearFontRenderParamsCacheForTest();
+  ClearFontRenderParamsCache();
   SetFontRenderParamsDeviceScaleFactor(1.25f);
   // Subpixel positioning should be forced.
   {
@@ -369,7 +368,7 @@ TEST_F(FontRenderParamsTest, ForceSubpixelPositioning) {
     EXPECT_TRUE(params.subpixel_positioning);
     SetFontRenderParamsDeviceScaleFactor(1.0f);
   }
-  ClearFontRenderParamsCacheForTest();
+  ClearFontRenderParamsCache();
   SetFontRenderParamsDeviceScaleFactor(2.f);
   // Subpixel positioning should be forced on non-Chrome-OS.
   {

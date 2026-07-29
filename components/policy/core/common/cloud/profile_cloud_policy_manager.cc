@@ -13,7 +13,9 @@
 #include "components/policy/core/common/cloud/cloud_external_data_manager.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/cloud_policy_service.h"
+#include "components/policy/core/common/cloud/cloud_policy_util.h"
 #include "components/policy/core/common/cloud/profile_cloud_policy_store.h"
+#include "components/policy/core/common/features.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/policy/core/common/policy_types.h"
@@ -39,19 +41,20 @@ const base::FilePath::CharType kComponentPolicyCacheDir[] =
 // "google/chrome/profile-level-user" when ready.
 ProfileCloudPolicyManager::ProfileCloudPolicyManager(
     std::unique_ptr<ProfileCloudPolicyStore> profile_store,
+    std::unique_ptr<ProfileCloudPolicyStore> extension_install_store,
     const base::FilePath& component_policy_cache_path,
     std::unique_ptr<CloudExternalDataManager> external_data_manager,
     const scoped_refptr<base::SequencedTaskRunner>& task_runner,
     network::NetworkConnectionTrackerGetter network_connection_tracker_getter,
     bool is_dasherless)
     : CloudPolicyManager(
-          is_dasherless ? dm_protocol::kChromeUserPolicyType
+          is_dasherless ? dm_protocol::GetChromeUserPolicyType()
                         : dm_protocol::kChromeMachineLevelUserCloudPolicyType,
           /*settings_entity_id=*/std::string(),
           std::move(profile_store),
+          std::move(extension_install_store),
           task_runner,
           std::move(network_connection_tracker_getter)),
-      profile_store_(static_cast<ProfileCloudPolicyStore*>(store())),
       external_data_manager_(std::move(external_data_manager)),
       component_policy_cache_path_(component_policy_cache_path),
       is_dasherless_(is_dasherless) {
@@ -74,16 +77,36 @@ std::unique_ptr<ProfileCloudPolicyManager> ProfileCloudPolicyManager::Create(
   std::unique_ptr<policy::ProfileCloudPolicyStore> store =
       policy::ProfileCloudPolicyStore::Create(
           profile_path, background_task_runner, is_dasherless);
+  std::unique_ptr<policy::ProfileCloudPolicyStore> extension_install_store =
+      nullptr;
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  // This is not supported before M146.
+  if (IsExtensionInstallPolicySupportedOnThisVersion()) {
+    if (base::FeatureList::IsEnabled(
+            features::kEnableExtensionInstallPolicyFetching)) {
+      extension_install_store =
+          policy::ProfileCloudPolicyStore::CreateForExtensionInstall(
+              profile_path, background_task_runner, is_dasherless);
+    } else {
+      policy::ProfileCloudPolicyStore::CreateForExtensionInstall(
+          profile_path, background_task_runner, is_dasherless)
+          ->Clear();
+    }
+  }
+#endif  // !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (force_immediate_load) {
     store->LoadImmediately();
+    if (extension_install_store) {
+      extension_install_store->LoadImmediately();
+    }
   }
 
   const base::FilePath component_policy_cache_dir =
       profile_path.Append(kPolicy).Append(kComponentPolicyCacheDir);
 
   auto manager = std::make_unique<policy::ProfileCloudPolicyManager>(
-      std::move(store), component_policy_cache_dir,
-      std::unique_ptr<CloudExternalDataManager>(),
+      std::move(store), std::move(extension_install_store),
+      component_policy_cache_dir, std::unique_ptr<CloudExternalDataManager>(),
       base::SequencedTaskRunner::GetCurrentDefault(),
       network_connection_tracker_getter, is_dasherless);
   manager->Init(schema_registry);
@@ -125,17 +148,27 @@ void ProfileCloudPolicyManager::DisconnectAndRemovePolicy() {
     external_data_manager_->Disconnect();
   }
 
-  core()->Disconnect();
-
   // store_->Clear() will publish the updated, empty policy. The component
   // policy service must be cleared before OnStoreLoaded() is issued, so that
   // component policies are also empty at CheckAndPublishPolicy().
-  ClearAndDestroyComponentCloudPolicyService();
+  CloudPolicyManager::DisconnectAndRemovePolicy();
 
   // When the |profile_store_| is cleared, it informs the
   // |external_data_manager_| that all external data references have been
   // removed, causing the |external_data_manager_| to clear its cache as well.
-  profile_store_->Clear();
+  store()->Clear();
+  if (extension_install_store()) {
+    extension_install_store()->Clear();
+  }
+}
+
+ProfileCloudPolicyStore* ProfileCloudPolicyManager::store() {
+  return static_cast<ProfileCloudPolicyStore*>(CloudPolicyManager::store());
+}
+
+ProfileCloudPolicyStore* ProfileCloudPolicyManager::extension_install_store() {
+  return static_cast<ProfileCloudPolicyStore*>(
+      CloudPolicyManager::extension_install_store());
 }
 
 void ProfileCloudPolicyManager::Shutdown() {

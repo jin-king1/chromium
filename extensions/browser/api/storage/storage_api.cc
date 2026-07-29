@@ -10,9 +10,11 @@
 #include <utility>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/trace_event/memory_usage_estimator.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "content/public/browser/browser_context.h"
@@ -27,6 +29,7 @@
 #include "extensions/common/features/feature_channel.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 
+using base::trace_event::EstimateMemoryUsage;
 using value_store::ValueStore;
 
 namespace extensions {
@@ -35,8 +38,10 @@ namespace extensions {
 
 namespace {
 
+BASE_FEATURE(kEnforceStorageGetSizeLimit, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Returns a vector of any strings within the given list.
-std::vector<std::string> GetKeysFromList(const base::Value::List& list) {
+std::vector<std::string> GetKeysFromList(const base::ListValue& list) {
   std::vector<std::string> keys;
   keys.reserve(list.size());
   for (const auto& value : list) {
@@ -49,7 +54,7 @@ std::vector<std::string> GetKeysFromList(const base::Value::List& list) {
 }
 
 // Returns a vector of keys within the given dict.
-std::vector<std::string> GetKeysFromDict(const base::Value::Dict& dict) {
+std::vector<std::string> GetKeysFromDict(const base::DictValue& dict) {
   std::vector<std::string> keys;
   keys.reserve(dict.size());
   for (auto value : dict) {
@@ -103,23 +108,26 @@ bool SettingsFunction::PreRunValidation(std::string* error) {
   EXTENSION_FUNCTION_PRERUN_VALIDATE(args().size() >= 1);
   EXTENSION_FUNCTION_PRERUN_VALIDATE(args()[0].is_string());
 
-  // Not a ref since we remove the underlying value after.
-  std::string storage_area_string = args()[0].GetString();
+  base::ListValue& mutable_args = GetMutableArgs();
 
-  mutable_args().erase(args().begin());
+  // Not a ref since we remove the underlying value after.
+  const std::string storage_area_string(std::move(mutable_args[0].GetString()));
+
+  mutable_args.erase(mutable_args.begin());
   storage_area_ = StorageAreaFromString(storage_area_string);
   EXTENSION_FUNCTION_PRERUN_VALIDATE(storage_area_ !=
                                      StorageAreaNamespace::kInvalid);
-
-  // Session is the only storage area that does not use ValueStore, and will
-  // return synchronously.
-  if (storage_area_ == StorageAreaNamespace::kSession) {
-    // Currently only `session` can restrict the storage access. This call will
-    // be moved after the other storage areas allow it.
-    if (!IsAccessToStorageAllowed()) {
+  if (storage_area_ != StorageAreaNamespace::kInvalid) {
+    if (!IsAccessToStorageAllowed(storage_area_)) {
       *error = "Access to storage is not allowed from this context.";
       return false;
     }
+  }
+
+  // Session is the only storage area that does not use ValueStore, and will
+  // return synchronously. If access is allowed, validation is complete for it
+  // here.
+  if (storage_area_ == StorageAreaNamespace::kSession) {
     return true;
   }
 
@@ -132,7 +140,7 @@ bool SettingsFunction::PreRunValidation(std::string* error) {
   if (extension()->is_login_screen_extension() &&
       storage_area_ != StorageAreaNamespace::kManaged) {
     // Login screen extensions are not allowed to use local/sync storage for
-    // security reasons (see crbug.com/978443).
+    // security reasons (see crbug.com/40633613).
     *error = base::StringPrintf(
         "\"%s\" is not available for login screen extensions",
         storage_area_string.c_str());
@@ -150,12 +158,13 @@ bool SettingsFunction::PreRunValidation(std::string* error) {
   return true;
 }
 
-bool SettingsFunction::IsAccessToStorageAllowed() {
-  api::storage::AccessLevel access_level = storage_utils::GetSessionAccessLevel(
-      extension()->id(), *browser_context());
+bool SettingsFunction::IsAccessToStorageAllowed(
+    StorageAreaNamespace storage_area) {
+  api::storage::AccessLevel access_level = storage_utils::GetAccessLevelForArea(
+      extension()->id(), *browser_context(), storage_area);
 
-  // Only a privileged extension context is considered trusted.
   if (access_level == api::storage::AccessLevel::kTrustedContexts) {
+    // Only a privileged extension context is considered trusted.
     return source_context_type() == mojom::ContextType::kPrivilegedExtension;
   }
 
@@ -187,11 +196,13 @@ ExtensionFunction::ResponseAction StorageStorageAreaGetFunction::Run() {
     return RespondNow(BadMessage());
   }
 
-  base::Value input = std::move(mutable_args()[0]);
-  mutable_args().erase(args().begin());
+  base::ListValue& mutable_args = GetMutableArgs();
+
+  base::Value input = std::move(mutable_args[0]);
+  mutable_args.erase(args().begin());
 
   std::optional<std::vector<std::string>> keys;
-  std::optional<base::Value::Dict> defaults;
+  std::optional<base::DictValue> defaults;
 
   switch (input.type()) {
     case base::Value::Type::NONE:
@@ -229,8 +240,12 @@ ExtensionFunction::ResponseAction StorageStorageAreaGetFunction::Run() {
   return RespondLater();
 }
 
+// Setting a 99.9% percentile cutoff size limit for a single 'get' operation
+// which is 25 MB. See crbug.com/427600178 for more details.
+constexpr size_t kMaxSingleGetSizeBytes = 25 * 1024 * 1024;
+
 void StorageStorageAreaGetFunction::OnGetOperationFinished(
-    std::optional<base::Value::Dict> defaults,
+    std::optional<base::DictValue> defaults,
     StorageFrontend::GetResult result) {
   // Since the storage access happens asynchronously, the browser context can
   // be torn down in the interim. If this happens, early-out.
@@ -248,8 +263,20 @@ void StorageStorageAreaGetFunction::OnGetOperationFinished(
 
   CHECK(result.data.has_value());
 
-  base::Value::Dict values =
-      defaults ? std::move(*defaults) : base::Value::Dict();
+  // Estimate the size of the result data before attempting to send it over IPC.
+  size_t data_size = EstimateMemoryUsage(*result.data);
+
+  if (base::FeatureList::IsEnabled(kEnforceStorageGetSizeLimit) &&
+      data_size > kMaxSingleGetSizeBytes) {
+    Respond(Error(base::StringPrintf(
+        "The total data size of %zu bytes exceeds the maximum limit of %zu "
+        "bytes for a single get() operation. Please use getKeys() and "
+        "retrieve items in smaller batches.",
+        data_size, kMaxSingleGetSizeBytes)));
+    return;
+  }
+
+  base::DictValue values = defaults ? std::move(*defaults) : base::DictValue();
 
   // It's important that we merge the values into the defaults, and not the
   // other way around, to avoid the defaults overwriting any existing values.
@@ -343,9 +370,11 @@ ExtensionFunction::ResponseAction StorageStorageAreaSetFunction::Run() {
     return RespondNow(BadMessage());
   }
 
+  base::ListValue& mutable_args = GetMutableArgs();
+
   // Retrieve and delete input from `args_` since they will be moved to storage.
-  base::Value input = std::move(mutable_args()[0]);
-  mutable_args().erase(args().begin());
+  base::Value input = std::move(mutable_args[0]);
+  mutable_args.erase(args().begin());
 
   StorageFrontend* frontend = StorageFrontend::Get(browser_context());
   frontend->Set(
@@ -413,9 +442,7 @@ void StorageStorageAreaClearFunction::GetQuotaLimitHeuristics(
 
 ExtensionFunction::ResponseAction
 StorageStorageAreaSetAccessLevelFunction::Run() {
-  if (storage_area() != StorageAreaNamespace::kSession) {
-    // TODO(crbug.com/40949182). Support storage areas other than kSession. For
-    // now, we return an error.
+  if (storage_area() == StorageAreaNamespace::kInvalid) {
     return RespondNow(
         Error("This StorageArea is not available for setting access level"));
   }
@@ -437,7 +464,8 @@ StorageStorageAreaSetAccessLevelFunction::Run() {
          params->access_options.access_level ==
              api::storage::AccessLevel::kTrustedAndUntrustedContexts);
 
-  storage_utils::SetSessionAccessLevel(extension_id(), *browser_context(),
+  storage_utils::SetAccessLevelForArea(extension_id(), *browser_context(),
+                                       storage_area(),
                                        params->access_options.access_level);
 
   return RespondNow(NoArguments());

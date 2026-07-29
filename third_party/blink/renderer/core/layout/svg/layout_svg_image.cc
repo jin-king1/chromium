@@ -28,11 +28,13 @@
 #include "third_party/blink/renderer/core/layout/hit_test_location.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/layout_image_resource.h"
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/layout_replaced.h"
 #include "third_party/blink/renderer/core/layout/natural_sizing_info.h"
 #include "third_party/blink/renderer/core/layout/pointer_events_hit_rules.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_resource_container.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_info.h"
+#include "third_party/blink/renderer/core/layout/svg/svg_layout_support.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_resources.h"
 #include "third_party/blink/renderer/core/layout/svg/transform_helper.h"
 #include "third_party/blink/renderer/core/layout/svg/transformed_hit_test_location.h"
@@ -59,15 +61,28 @@ void LayoutSVGImage::Trace(Visitor* visitor) const {
   LayoutSVGModelObject::Trace(visitor);
 }
 
-void LayoutSVGImage::StyleDidChange(StyleDifference diff,
-                                    const ComputedStyle* old_style) {
+void LayoutSVGImage::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
   TransformHelper::UpdateOffsetPath(*GetElement(), old_style);
   transform_uses_reference_box_ =
-      RuntimeEnabledFeatures::SvgViewportOptimizationEnabled()
-          ? TransformHelper::DependsOnReferenceBox(StyleRef())
-          : TransformHelper::UpdateReferenceBoxDependency(*this);
-  LayoutSVGModelObject::StyleDidChange(diff, old_style);
+      TransformHelper::DependsOnReferenceBox(StyleRef());
+
+  if (old_style && EverHadLayout()) {
+    const ComputedStyle& style = StyleRef();
+    bool length_attribute_changed = old_style->X() != style.X() ||
+                                    old_style->Y() != style.Y() ||
+                                    old_style->Width() != style.Width() ||
+                                    old_style->Height() != style.Height();
+    if (length_attribute_changed) {
+      LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(
+          *this);
+    }
+  }
+
+  LayoutSVGModelObject::StyleDidChange(diff, old_style, style_change_context);
 }
 
 void LayoutSVGImage::WillBeDestroyed() {
@@ -146,9 +161,10 @@ SVGLayoutResult LayoutSVGImage::UpdateSVGLayout(
   }
 
   const bool has_viewport_dependence =
-      To<SVGImageElement>(GetElement())->SelfHasRelativeLengths() ||
       (transform_uses_reference_box_ &&
-       StyleRef().TransformBox() == ETransformBox::kViewBox);
+       StyleRef().TransformBox() == ETransformBox::kViewBox) ||
+      StyleRef().Width().HasPercent() || StyleRef().Height().HasPercent() ||
+      StyleRef().X().HasPercent() || StyleRef().Y().HasPercent();
 
   DCHECK(!needs_transform_update_);
   ClearNeedsLayout();
@@ -211,13 +227,21 @@ bool LayoutSVGImage::NodeAtPoint(HitTestResult& result,
     return false;
   }
 
-  if (hit_rules.can_hit_fill || hit_rules.can_hit_bounding_box) {
-    if (local_location->Intersects(object_bounding_box_)) {
+  bool is_visual_overflow =
+      result.GetHitTestRequest().IsHitTestVisualOverflow();
+  if (is_visual_overflow || hit_rules.can_hit_fill ||
+      hit_rules.can_hit_bounding_box) {
+    gfx::RectF bounds = object_bounding_box_;
+    if (is_visual_overflow) [[unlikely]] {
+      bounds = SVGLayoutSupport::ApplyFiltersToRect(*this, bounds);
+    }
+    if (local_location->Intersects(bounds)) {
       UpdateHitTestResult(result, PhysicalOffset::FromPointFRound(
                                       local_location->TransformedPoint()));
       if (result.AddNodeToListBasedTestResult(GetElement(), *local_location) ==
-          kStopHitTesting)
+          kStopHitTesting) {
         return true;
+      }
     }
   }
   return false;

@@ -120,26 +120,27 @@ void WaitForPersonalDataManagerToBeLoaded(Profile* base_profile) {
   driver.renderer_events().AskForValuesToFill(
       form, form.fields().front().renderer_id(),
       /*caret_bounds=*/gfx::Rect(gfx::Point(p.x(), p.y()), gfx::Size(0, 10)),
-      AutofillSuggestionTriggerSource::kFormControlElementClicked);
+      AutofillSuggestionTriggerSource::kFormControlElementClicked,
+      /*password_request=*/std::nullopt);
   if (AssertionResult a = std::move(wait_for_ask_for_values_to_fill).Wait();
       !a) {
     return a << " " << __func__ << "(): "
              << "TestAutofillManagerSingleEventWaiter assertion failed";
   }
-  if (driver.GetAutofillManager().form_structures().size() != 1u) {
-    return testing::AssertionFailure()
-           << " " << __func__
-           << "(): driver.GetAutofillManager().form_structures().size() != 1u";
+  if (test_api(driver.GetAutofillManager()).form_structures().size() != 1u) {
+    return testing::AssertionFailure() << " " << __func__
+                                       << "(): "
+                                          "test_api(driver.GetAutofillManager()"
+                                          ").form_structures().size() != 1u";
   }
 
   // `form.host_frame` and `form.url` have only been set by
   // ContentAutofillDriver::AskForValuesToFill().
-  form = driver.GetAutofillManager()
+  form = test_api(driver.GetAutofillManager())
              .form_structures()
-             .begin()
-             ->second->ToFormData();
+             .front()
+             ->ToFormData();
 
-  std::vector<Suggestion> suggestions = {Suggestion(u"John Doe")};
   TestAutofillExternalDelegate* delegate =
       static_cast<TestAutofillExternalDelegate*>(
           test_api(

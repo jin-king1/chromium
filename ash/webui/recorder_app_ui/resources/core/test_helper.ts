@@ -2,11 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {RecorderApp} from '../pages/recorder-app.js';
+import type {RecorderApp} from '../pages/recorder-app.js';
 
+import {SAMPLES_PER_SLICE} from './audio_constants.js';
 import {usePlatformHandler, useRecordingDataManager} from './lit/context.js';
 import {LanguageCode} from './soda/language_info.js';
-import {TextToken, Transcription} from './soda/soda.js';
+import type {TextToken} from './soda/soda.js';
+import {Transcription} from './soda/soda.js';
 import {navigateTo} from './state/route.js';
 import {
   settings,
@@ -118,6 +120,7 @@ export class TestHelper {
         durationMs: durationMs,
         recordedAt: Date.now(),
         powers: powers,
+        samplesPerDataPoint: SAMPLES_PER_SLICE,
         transcription: tokens !== undefined ?
           new Transcription(tokens, stringToLanguageCode(language ?? 'en-US')) :
           null,
@@ -146,9 +149,6 @@ export class TestHelper {
 
   /**
    * Installs GenAi model used for summary and title suggestion.
-   *
-   * TODO(hsuanling): Remove other model install helpers after tast side is
-   * modified.
    */
   static installGenAiModel(): void {
     usePlatformHandler().downloadGenAiModel();
@@ -158,46 +158,9 @@ export class TestHelper {
    * Returns whether GenAi model is installed.
    *
    * @return Boolean indicating if GenAi model is installed.
-   *
-   * TODO(hsuanling): Remove other model state checkers after tast side is
-   * modified.
    */
   static isGenAiModelInstalled(): boolean {
     const state = usePlatformHandler().getGenAiModelState();
-    return state.kind === 'installed';
-  }
-
-  /**
-   * Installs the model used for summarize recordings.
-   */
-  static installSummaryModel(): void {
-    usePlatformHandler().summaryModelLoader.download();
-  }
-
-  /**
-   * Returns whether the summary model is installed.
-   *
-   * @return Boolean indicating if the summary model is installed.
-   */
-  static isSummaryModelInstalled(): boolean {
-    const state = usePlatformHandler().summaryModelLoader.state.value;
-    return state.kind === 'installed';
-  }
-
-  /**
-   * Installs the model used for suggest recording titles.
-   */
-  static installTitleSuggestionModel(): void {
-    usePlatformHandler().titleSuggestionModelLoader.download();
-  }
-
-  /**
-   * Returns whether the title suggestion model is installed.
-   *
-   * @return Boolean indicating if the title suggestion model is installed.
-   */
-  static isTitleSuggestionModelInstalled(): boolean {
-    const state = usePlatformHandler().titleSuggestionModelLoader.state.value;
     return state.kind === 'installed';
   }
 

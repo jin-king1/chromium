@@ -3,11 +3,13 @@
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/modules/printing/web_printer.h"
+
 #include <limits>
 
+#include "base/task/single_thread_task_runner.h"
+#include "base/types/expected_macros.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_web_print_document_description.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_web_print_job_template_attributes.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_web_printer_attributes.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_web_printing_media_collection_requested.h"
@@ -18,6 +20,7 @@
 #include "third_party/blink/renderer/modules/printing/web_print_job.h"
 #include "third_party/blink/renderer/modules/printing/web_printing_type_converters.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
 
@@ -79,6 +82,7 @@ WebPrinter::WebPrinter(ExecutionContext* execution_context,
                 execution_context->GetTaskRunner(TaskType::kMiscPlatformAPI));
   attributes_ = WebPrinterAttributes::Create();
   attributes_->setPrinterName(printer_info->printer_name);
+  attributes_->setPrinterId(printer_info->printer_id);
 }
 
 WebPrinter::~WebPrinter() = default;
@@ -110,15 +114,15 @@ ScriptPromise<WebPrinterAttributes> WebPrinter::fetchAttributes(
       MakeGarbageCollected<ScriptPromiseResolver<WebPrinterAttributes>>(
           script_state, exception_state.GetContext());
   printer_->FetchAttributes(
-      fetch_attributes_resolver_->WrapCallbackInScriptScope(
-          WTF::BindOnce(&WebPrinter::OnFetchAttributes, WrapPersistent(this))));
+      fetch_attributes_resolver_->WrapCallbackInScriptScope(blink::BindOnce(
+          &WebPrinter::OnFetchAttributes, WrapPersistent(this))));
   return fetch_attributes_resolver_->Promise();
 }
 
-ScriptPromise<WebPrintJob> WebPrinter::printJob(
+ScriptPromise<WebPrintJob> WebPrinter::submitPrintJob(
     ScriptState* script_state,
     const String& job_name,
-    const WebPrintDocumentDescription* document,
+    Blob* document_data,
     const WebPrintJobTemplateAttributes* pjt_attributes,
     ExceptionState& exception_state) {
   if (!script_state->ContextIsValid()) {
@@ -138,17 +142,18 @@ ScriptPromise<WebPrintJob> WebPrinter::printJob(
 
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<WebPrintJob>>(
       script_state, exception_state.GetContext());
-  printer_->Print(document->data()->AsMojoBlob(), std::move(attributes),
-                  resolver->WrapCallbackInScriptScope(WTF::BindOnce(
-                      &WebPrinter::OnPrint, WrapPersistent(this))));
+  printer_->Print(document_data->AsMojoBlob(), std::move(attributes),
+                  resolver->WrapCallbackInScriptScope(blink::BindOnce(
+                      &WebPrinter::OnPrint, WrapPersistent(this),
+                      WrapPersistent(pjt_attributes->getSignalOr(nullptr)))));
   return resolver->Promise();
 }
 
 void WebPrinter::OnFetchAttributes(
     ScriptPromiseResolver<WebPrinterAttributes>*,
-    mojom::blink::WebPrinterFetchResultPtr result) {
-  if (result->is_error()) {
-    switch (result->get_error()) {
+    mojom::blink::WebPrinter::FetchAttributesResult fetch_result) {
+  ASSIGN_OR_RETURN(auto attributes, std::move(fetch_result), [&](auto error) {
+    switch (error) {
       case mojom::blink::WebPrinterFetchError::kPrinterUnreachable:
         fetch_attributes_resolver_->RejectWithDOMException(
             DOMExceptionCode::kNetworkError, kPrinterUnreachableError);
@@ -159,22 +164,23 @@ void WebPrinter::OnFetchAttributes(
         break;
     }
     fetch_attributes_resolver_ = nullptr;
-    return;
-  }
+  });
 
-  auto* new_attributes = mojo::ConvertTo<WebPrinterAttributes*>(
-      std::move(result->get_printer_attributes()));
+  auto* new_attributes =
+      mojo::ConvertTo<WebPrinterAttributes*>(std::move(attributes));
   new_attributes->setPrinterName(attributes_->printerName());
+  new_attributes->setPrinterId(attributes_->printerId());
   attributes_ = new_attributes;
 
   fetch_attributes_resolver_->Resolve(attributes_);
   fetch_attributes_resolver_ = nullptr;
 }
 
-void WebPrinter::OnPrint(ScriptPromiseResolver<WebPrintJob>* resolver,
-                         mojom::blink::WebPrintResultPtr result) {
-  if (result->is_error()) {
-    switch (result->get_error()) {
+void WebPrinter::OnPrint(AbortSignal* signal,
+                         ScriptPromiseResolver<WebPrintJob>* resolver,
+                         mojom::blink::WebPrinter::PrintResult print_result) {
+  ASSIGN_OR_RETURN(auto job_info, std::move(print_result), [&](auto error) {
+    switch (error) {
       case mojom::blink::WebPrintError::kPrinterUnreachable:
         resolver->RejectWithDOMException(DOMExceptionCode::kNetworkError,
                                          kPrinterUnreachableError);
@@ -194,11 +200,10 @@ void WebPrinter::OnPrint(ScriptPromiseResolver<WebPrintJob>* resolver,
                                          kUserPermissionDeniedError);
         break;
     }
-    return;
-  }
+  });
 
   auto* print_job = MakeGarbageCollected<WebPrintJob>(
-      resolver->GetExecutionContext(), std::move(result->get_print_job_info()));
+      resolver->GetExecutionContext(), std::move(job_info), signal);
   resolver->Resolve(print_job);
 }
 

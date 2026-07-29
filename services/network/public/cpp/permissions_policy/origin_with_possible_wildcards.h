@@ -5,6 +5,8 @@
 #ifndef SERVICES_NETWORK_PUBLIC_CPP_PERMISSIONS_POLICY_ORIGIN_WITH_POSSIBLE_WILDCARDS_H_
 #define SERVICES_NETWORK_PUBLIC_CPP_PERMISSIONS_POLICY_ORIGIN_WITH_POSSIBLE_WILDCARDS_H_
 
+#include <compare>
+
 #include "base/component_export.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy.mojom-shared.h"
@@ -17,7 +19,7 @@ namespace network {
 // Note that https://*.foo.com/ matches domains like https://example.foo.com/
 // or https://test.example.foo.com/ but does not match https://foo.com/.
 // Origins that do have wildcards cannot be opaque.
-class COMPONENT_EXPORT(NETWORK_CPP) OriginWithPossibleWildcards {
+class COMPONENT_EXPORT(NETWORK_CPP_WEB_PLATFORM) OriginWithPossibleWildcards {
  public:
   // Indicates the source of a parsed permissions policy. kHeader represents a
   // permissions policy in an HTTP header. kAttribute represents an iframe allow
@@ -75,19 +77,19 @@ class COMPONENT_EXPORT(NETWORK_CPP) OriginWithPossibleWildcards {
     return csp_source;
   }
 
+  COMPONENT_EXPORT(NETWORK_CPP_WEB_PLATFORM)
+  friend bool operator==(const OriginWithPossibleWildcards& lhs,
+                         const OriginWithPossibleWildcards& rhs);
+
+  COMPONENT_EXPORT(NETWORK_CPP_WEB_PLATFORM)
+  friend std::strong_ordering operator<=>(
+      const OriginWithPossibleWildcards& lhs,
+      const OriginWithPossibleWildcards& rhs);
+
  private:
   friend struct mojo::StructTraits<
       network::mojom::OriginWithPossibleWildcardsDataView,
       network::OriginWithPossibleWildcards>;
-  COMPONENT_EXPORT(NETWORK_CPP)
-  friend bool operator==(const OriginWithPossibleWildcards& lhs,
-                         const OriginWithPossibleWildcards& rhs);
-  COMPONENT_EXPORT(NETWORK_CPP)
-  friend bool operator!=(const OriginWithPossibleWildcards& lhs,
-                         const OriginWithPossibleWildcards& rhs);
-  COMPONENT_EXPORT(NETWORK_CPP)
-  friend bool operator<(const OriginWithPossibleWildcards& lhs,
-                        const OriginWithPossibleWildcards& rhs);
 
   network::mojom::CSPSource csp_source;
 };

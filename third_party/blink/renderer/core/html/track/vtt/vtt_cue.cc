@@ -33,6 +33,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_autokeyword_double.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/document_fragment.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/node_cloning_data.h"
@@ -66,7 +67,7 @@ bool ScanRun(VTTScanner& scanner, StringView str) {
 }
 
 bool ScanRun(VTTScanner& scanner, AlignSetting align) {
-  return ScanRun(scanner, V8AlignSetting(align).AsString());
+  return ScanRun(scanner, V8AlignSetting(align).AsStringView());
 }
 
 constexpr auto kDisplayWritingModeMap = std::to_array<CSSValueID>(
@@ -215,12 +216,12 @@ bool VTTCue::LineIsAuto() const {
   return std::isnan(line_position_);
 }
 
-V8UnionAutoKeywordOrDouble* VTTCue::line() const {
+V8UnionAutoKeywordOrDouble::Ret VTTCue::line(ScriptState* script_state) const {
   if (LineIsAuto()) {
-    return MakeGarbageCollected<V8UnionAutoKeywordOrDouble>(
-        V8AutoKeyword(V8AutoKeyword::Enum::kAuto));
+    return V8UnionAutoKeywordOrDouble::Ret(
+        script_state, V8AutoKeyword(V8AutoKeyword::Enum::kAuto));
   }
-  return MakeGarbageCollected<V8UnionAutoKeywordOrDouble>(line_position_);
+  return V8UnionAutoKeywordOrDouble::Ret(script_state, line_position_);
 }
 
 void VTTCue::setLine(const V8UnionAutoKeywordOrDouble* position) {
@@ -253,12 +254,13 @@ bool VTTCue::TextPositionIsAuto() const {
   return std::isnan(text_position_);
 }
 
-V8UnionAutoKeywordOrDouble* VTTCue::position() const {
+V8UnionAutoKeywordOrDouble::Ret VTTCue::position(
+    ScriptState* script_state) const {
   if (TextPositionIsAuto()) {
-    return MakeGarbageCollected<V8UnionAutoKeywordOrDouble>(
-        V8AutoKeyword(V8AutoKeyword::Enum::kAuto));
+    return V8UnionAutoKeywordOrDouble::Ret(
+        script_state, V8AutoKeyword(V8AutoKeyword::Enum::kAuto));
   }
-  return MakeGarbageCollected<V8UnionAutoKeywordOrDouble>(text_position_);
+  return V8UnionAutoKeywordOrDouble::Ret(script_state, text_position_);
 }
 
 void VTTCue::setPosition(const V8UnionAutoKeywordOrDouble* position,
@@ -696,7 +698,8 @@ VTTCueBox* VTTCue::GetDisplayTree() {
 
   cue_background_box_->RemoveChildren();
   NodeCloningData data{CloneOption::kIncludeDescendants};
-  cue_background_box_->CloneChildNodesFrom(*vtt_node_tree_, data);
+  cue_background_box_->CloneChildNodesFrom(*vtt_node_tree_, data,
+                                           /*fallback_registry*/ nullptr);
 
   if (!region()) {
     VTTDisplayParameters display_parameters = CalculateDisplayParameters();
@@ -720,27 +723,6 @@ void VTTCue::RemoveDisplayTree(RemovalNotification removal_notification) {
       region()->WillRemoveVTTCueBox(display_tree_);
   }
   display_tree_->remove(ASSERT_NO_EXCEPTION);
-}
-
-void VTTCue::OnEnter(HTMLMediaElement& video) {
-  if (!track()->IsSpokenKind())
-    return;
-
-  // Clear the queue of utterances before speaking a current cue.
-  video.SpeechSynthesis()->Cancel();
-
-  video.SpeechSynthesis()->Speak(text_, track()->Language());
-}
-
-void VTTCue::OnExit(HTMLMediaElement& video) {
-  if (!track()->IsSpokenKind())
-    return;
-
-  // If SpeechSynthesis is speaking audio descriptions at the end time
-  // specified (when onExit runs), call PauseToLetDescriptionFinish so that only
-  // the video is paused and the audio descriptions can finish.
-  if (video.SpeechSynthesis()->Speaking())
-    video.PauseToLetDescriptionFinish();
 }
 
 void VTTCue::UpdateDisplay(HTMLDivElement& container) {

@@ -71,6 +71,32 @@ bool CSSOMUtils::HasGridRepeatValue(const CSSValueList* value_list) {
 }
 
 // static
+bool CSSOMUtils::IsGridLanesNormalDirectionValue(
+    const CSSValue* grid_lanes_direction_values) {
+  // The 'normal' keyword cannot be paired with any reversal keywords and as
+  // such is always parsed as an identifier.
+  if (const auto* value =
+          DynamicTo<CSSIdentifierValue>(grid_lanes_direction_values)) {
+    CHECK_EQ(value->GetValueID(), CSSValueID::kNormal);
+    return true;
+  }
+  return false;
+}
+
+// static
+bool CSSOMUtils::IsGridLanesColumnDirectionValue(
+    const CSSValue* grid_lanes_direction_values) {
+  // Unlike 'normal', the 'row'/'column' keywords are parsed as a list because
+  // they may be paired with one or more reversal keyword.
+  if (const auto* list = DynamicTo<CSSValueList>(grid_lanes_direction_values)) {
+    CHECK_GE(list->length(), 1u);
+    return To<CSSIdentifierValue>(&list->Item(0))->GetValueID() ==
+           CSSValueID::kColumn;
+  }
+  return false;
+}
+
+// static
 String CSSOMUtils::NamedGridAreaTextForPosition(
     const NamedGridAreaMap& grid_area_map,
     wtf_size_t row,
@@ -83,6 +109,30 @@ String CSSOMUtils::NamedGridAreaTextForPosition(
     }
   }
   return ".";
+}
+
+// static
+String CSSOMUtils::SerializeGridAreaText(
+    const cssvalue::CSSGridTemplateAreasValue* template_areas,
+    wtf_size_t fixed_index,
+    bool is_row) {
+  const NamedGridAreaMap& grid_area_map = template_areas->GridAreaMap();
+  const wtf_size_t count =
+      is_row ? template_areas->ColumnCount() : template_areas->RowCount();
+  StringBuilder result;
+  for (wtf_size_t i = 0; i < count; ++i) {
+    if (is_row) {
+      result.Append(
+          NamedGridAreaTextForPosition(grid_area_map, fixed_index, i));
+    } else {
+      result.Append(
+          NamedGridAreaTextForPosition(grid_area_map, i, fixed_index));
+    }
+    if (i != count - 1) {
+      result.Append(' ');
+    }
+  }
+  return result.ReleaseString();
 }
 
 // static
@@ -138,8 +188,6 @@ CSSValueList* CSSOMUtils::ComputedValueForGridTemplateShorthand(
   const cssvalue::CSSGridTemplateAreasValue* template_areas =
       DynamicTo<cssvalue::CSSGridTemplateAreasValue>(template_area_values);
   DCHECK(template_areas);
-  const NamedGridAreaMap& grid_area_map = template_areas->GridAreaMap();
-  const wtf_size_t grid_area_column_count = template_areas->ColumnCount();
 
   // Handle [ <line-names>? <string> <track-size>? <line-names>? ]+
   CSSValueList* template_row_list = CSSValueList::CreateSpaceSeparated();
@@ -149,17 +197,11 @@ CSSValueList* CSSOMUtils::ComputedValueForGridTemplateShorthand(
       template_row_list->Append(*row_value);
       continue;
     }
-    StringBuilder grid_area_text;
-    for (wtf_size_t column = 0; column < grid_area_column_count; ++column) {
-      grid_area_text.Append(
-          NamedGridAreaTextForPosition(grid_area_map, row, column));
-      if (column != grid_area_column_count - 1) {
-        grid_area_text.Append(' ');
-      }
-    }
+    String grid_area_text =
+        SerializeGridAreaText(template_areas, row, /*is_row=*/true);
     DCHECK(!grid_area_text.empty());
     template_row_list->Append(
-        *MakeGarbageCollected<CSSStringValue>(grid_area_text.ReleaseString()));
+        *MakeGarbageCollected<CSSStringValue>(grid_area_text));
     ++row;
 
     // Omit `auto` values.
@@ -181,6 +223,46 @@ CSSValueList* CSSOMUtils::ComputedValueForGridTemplateShorthand(
   if (!has_initial_template_columns) {
     list->Append(*template_column_values);
   }
+
+  return list;
+}
+
+// static
+//
+// TODO(almaher): Update grid-lanes based on new shorthand proposal in
+// https://github.com/w3c/csswg-drafts/issues/12023#issuecomment-3666148876
+CSSValueList* CSSOMUtils::ComputedValueForGridLanesShorthand(
+    const CSSValue* grid_template_tracks_values,
+    const CSSValue* template_area_values,
+    const CSSValue* grid_lanes_direction_values) {
+  const bool has_initial_grid_template_tracks =
+      !grid_template_tracks_values || IsNoneValue(grid_template_tracks_values);
+  const bool has_initial_template_areas =
+      !template_area_values || IsNoneValue(template_area_values);
+  CSSValueList* list = CSSValueList::CreateSpaceSeparated();
+
+  if (!has_initial_template_areas) {
+    // If `grid-lanes-direction` is column, serialize the template areas as is.
+    // If `grid-lanes-direction` is row, serialize multiple string tokens into a
+    // single space-separated string to match the `grid-template-areas` syntax.
+    if (IsGridLanesColumnDirectionValue(grid_lanes_direction_values) ||
+        IsGridLanesNormalDirectionValue(grid_lanes_direction_values)) {
+      list->Append(*template_area_values);
+    } else {
+      const cssvalue::CSSGridTemplateAreasValue* template_areas =
+          DynamicTo<cssvalue::CSSGridTemplateAreasValue>(template_area_values);
+      DCHECK(template_areas);
+      String template_area_text = SerializeGridAreaText(
+          template_areas, /*fixed_index=*/0, /*is_row=*/false);
+      list->Append(*MakeGarbageCollected<CSSStringValue>(template_area_text));
+    }
+  }
+
+  if (!has_initial_grid_template_tracks) {
+    list->Append(*grid_template_tracks_values);
+  }
+
+  list->Append(*grid_lanes_direction_values);
 
   return list;
 }

@@ -4,9 +4,10 @@
 
 #include "chrome/browser/ash/policy/skyvault/migration_notification_manager.h"
 
+#include "ash/constants/ash_features.h"
+#include "ash/constants/webui_url_constants.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
-#include "base/functional/callback_forward.h"
 #include "base/notreached.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
@@ -37,7 +38,7 @@ class MigrationNotificationManagerTest : public InProcessBrowserTest {
  public:
   MigrationNotificationManagerTest() {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kSkyVault, features::kSkyVaultV2},
+        /*enabled_features=*/{features::kSkyVault, ash::features::kSkyVaultV2},
         /*disabled_features=*/{});
   }
   ~MigrationNotificationManagerTest() override = default;
@@ -50,7 +51,7 @@ class MigrationNotificationManagerTest : public InProcessBrowserTest {
   }
 
  protected:
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
 
   MigrationNotificationManager* manager() {
     return MigrationNotificationManagerFactory::GetInstance()
@@ -63,24 +64,25 @@ class MigrationNotificationManagerTest : public InProcessBrowserTest {
 
 class MigrationNotificationManagerParamTest
     : public MigrationNotificationManagerTest,
-      public ::testing::WithParamInterface<CloudProvider> {
+      public ::testing::WithParamInterface<MigrationDestination> {
  public:
   MigrationNotificationManagerParamTest() {
     EXPECT_TRUE(temp_dir_.CreateUniqueTempDir());
   }
   static std::string ParamToName(const testing::TestParamInfo<ParamType> info) {
     switch (info.param) {
-      case CloudProvider::kGoogleDrive:
+      case MigrationDestination::kGoogleDrive:
         return "google_drive";
-      case CloudProvider::kOneDrive:
+      case MigrationDestination::kOneDrive:
         return "one_drive";
-      case CloudProvider::kNotSpecified:
+      case MigrationDestination::kNotSpecified:
+      case MigrationDestination::kDelete:
         NOTREACHED();
     }
   }
 
  protected:
-  CloudProvider CloudProvider() { return GetParam(); }
+  MigrationDestination CloudProvider() { return GetParam(); }
 
   base::ScopedTempDir temp_dir_;
 };
@@ -107,6 +109,19 @@ IN_PROC_BROWSER_TEST_P(MigrationNotificationManagerParamTest,
   manager()->ShowMigrationCompletedNotification(
       CloudProvider(),
       /*destination_path=*/base::FilePath());
+  EXPECT_TRUE(tester_->GetNotification(kSkyVaultMigrationNotificationId));
+
+  manager()->CloseNotifications();
+  EXPECT_FALSE(tester_->GetNotification(kSkyVaultMigrationNotificationId));
+}
+
+// Tests that a deletion completed notification is shown, and closed when
+// CloseNotifications() is called.
+IN_PROC_BROWSER_TEST_F(MigrationNotificationManagerTest,
+                       ShowDeletionCompletedNotification) {
+  EXPECT_FALSE(tester_->GetNotification(kSkyVaultMigrationNotificationId));
+
+  manager()->ShowDeletionCompletedNotification();
   EXPECT_TRUE(tester_->GetNotification(kSkyVaultMigrationNotificationId));
 
   manager()->CloseNotifications();
@@ -246,7 +261,7 @@ IN_PROC_BROWSER_TEST_P(MigrationNotificationManagerParamTest, ShowDialog) {
   EXPECT_FALSE(LocalFilesMigrationDialog::GetDialog());
 
   content::TestNavigationObserver navigation_observer_dialog(
-      (GURL(chrome::kChromeUILocalFilesMigrationURL)));
+      (GURL(ash::kChromeUILocalFilesMigrationURL)));
   navigation_observer_dialog.StartWatchingNewWebContents();
 
   base::MockCallback<StartMigrationCallback> mock_cb;
@@ -272,8 +287,8 @@ IN_PROC_BROWSER_TEST_P(MigrationNotificationManagerParamTest, ShowDialog) {
 
 INSTANTIATE_TEST_SUITE_P(LocalUserFiles,
                          MigrationNotificationManagerParamTest,
-                         ::testing::Values(CloudProvider::kGoogleDrive,
-                                           CloudProvider::kOneDrive),
+                         ::testing::Values(MigrationDestination::kGoogleDrive,
+                                           MigrationDestination::kOneDrive),
                          MigrationNotificationManagerParamTest::ParamToName);
 
 }  // namespace policy::local_user_files

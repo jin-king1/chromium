@@ -5,9 +5,7 @@
 #include "ash/shelf/home_button_controller.h"
 
 #include "ash/app_list/app_list_controller_impl.h"
-#include "ash/assistant/model/assistant_ui_model.h"
 #include "ash/capture_mode/capture_mode_controller.h"
-#include "ash/public/cpp/assistant/controller/assistant_ui_controller.h"
 #include "ash/root_window_controller.h"
 #include "ash/scanner/scanner_metrics.h"
 #include "ash/shelf/home_button.h"
@@ -16,7 +14,6 @@
 #include "ash/shell.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -45,8 +42,6 @@ HomeButtonController::HomeButtonController(HomeButton* button)
   sunfish_scanner_feature_observation_.Observe(
       shell->sunfish_scanner_feature_watcher());
   shell->app_list_controller()->AddObserver(this);
-  AssistantUiController::Get()->GetModel()->AddObserver(this);
-  AssistantState::Get()->AddObserver(this);
 }
 
 HomeButtonController::~HomeButtonController() {
@@ -54,19 +49,15 @@ HomeButtonController::~HomeButtonController() {
 
   // AppListController are destroyed early when Shel is being destroyed, so they
   // may not exist.
-  if (AssistantUiController::Get())
-    AssistantUiController::Get()->GetModel()->RemoveObserver(this);
   if (shell->app_list_controller())
     shell->app_list_controller()->RemoveObserver(this);
-  if (AssistantState::Get())
-    AssistantState::Get()->RemoveObserver(this);
 }
 
 bool HomeButtonController::MaybeHandleGestureEvent(ui::GestureEvent* event) {
   switch (event->type()) {
     case ui::EventType::kGestureTap:
     case ui::EventType::kGestureTapCancel:
-      // Unconditionally stop the animation, even if Assistant / Sunfish/Scanner
+      // Unconditionally stop the animation, even if Sunfish/Scanner
       // is not currently available - because the animation could have been
       // started when they _were_ available.
       // These are no-ops if the animation did not start.
@@ -76,7 +67,7 @@ bool HomeButtonController::MaybeHandleGestureEvent(ui::GestureEvent* event) {
       // After animating the ripple, let the button handle the event.
       return false;
     case ui::EventType::kGestureTapDown:
-      if (IsAssistantAvailable() || IsSunfishOrScannerAvailable()) {
+      if (IsSunfishOrScannerAvailable()) {
         tap_animation_delay_timer_->Start(
             FROM_HERE, kAssistantAnimationDelay,
             base::BindOnce(&HomeButtonController::StartAssistantAnimation,
@@ -99,23 +90,10 @@ bool HomeButtonController::MaybeHandleGestureEvent(ui::GestureEvent* event) {
         return true;
       }
 
-      if (IsAssistantAvailable()) {
-        base::RecordAction(base::UserMetricsAction(
-            "VoiceInteraction.Started.HomeButtonLongPress"));
-        tap_overlay_->BurstAnimation();
-        event->SetHandled();
-        Shell::SetRootWindowForNewWindows(
-            button_->GetWidget()->GetNativeWindow()->GetRootWindow());
-        AssistantUiController::Get()->ShowUi(
-            AssistantEntryPoint::kLongPressLauncher);
-        return true;
-      }
-
       return false;
     case ui::EventType::kGestureLongTap:
-      // Only consume the long tap event if Assistant / Sunfish/Scanner is
-      // available.
-      if (!(IsAssistantAvailable() || IsSunfishOrScannerAvailable())) {
+      // Only consume the long tap event if Sunfish/Scanner is available.
+      if (!IsSunfishOrScannerAvailable()) {
         return false;
       }
 
@@ -128,15 +106,8 @@ bool HomeButtonController::MaybeHandleGestureEvent(ui::GestureEvent* event) {
   }
 }
 
-bool HomeButtonController::IsAssistantAvailable() {
-  AssistantStateBase* state = AssistantState::Get();
-  return state->allowed_state() == assistant::AssistantAllowedState::ALLOWED &&
-         state->settings_enabled().value_or(false);
-}
-
-bool HomeButtonController::IsAssistantVisible() {
-  return AssistantUiController::Get()->GetModel()->visibility() ==
-         AssistantVisibility::kVisible;
+bool HomeButtonController::IsLongPressActionAvailable() {
+  return IsSunfishOrScannerAvailable();
 }
 
 bool HomeButtonController::IsSunfishOrScannerAvailable() const {
@@ -161,26 +132,9 @@ void HomeButtonController::OnDisplayTabletStateChanged(
   }
 }
 
-void HomeButtonController::OnAssistantFeatureAllowedChanged(
-    assistant::AssistantAllowedState state) {
-  button_->OnAssistantAvailabilityChanged();
-}
-
-void HomeButtonController::OnAssistantSettingsEnabled(bool enabled) {
-  button_->OnAssistantAvailabilityChanged();
-}
-
-void HomeButtonController::OnUiVisibilityChanged(
-    AssistantVisibility new_visibility,
-    AssistantVisibility old_visibility,
-    std::optional<AssistantEntryPoint> entry_point,
-    std::optional<AssistantExitPoint> exit_point) {
-  button_->OnAssistantAvailabilityChanged();
-}
-
 void HomeButtonController::OnSunfishScannerFeatureStatesChanged(
     SunfishScannerFeatureWatcher& source) {
-  // TODO: crbug.com/391909810 - Update the button's visibility here.
+  button_->OnIconUpdated();
 }
 
 void HomeButtonController::StartAssistantAnimation() {
@@ -190,7 +144,7 @@ void HomeButtonController::StartAssistantAnimation() {
 void HomeButtonController::OnAppListShown() {
   // Do not show the button as toggled in tablet mode, since the home screen
   // view is always open in the background.
-  if (!Shell::Get()->IsInTabletMode()) {
+  if (!display::Screen::Get()->InTabletMode()) {
     button_->SetToggled(true);
   }
   button_->UpdateTooltipText();

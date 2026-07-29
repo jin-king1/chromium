@@ -4,6 +4,8 @@
 
 package org.chromium.ui.base;
 
+import static androidx.annotation.VisibleForTesting.PRIVATE;
+
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.animation.Animator;
@@ -11,53 +13,66 @@ import android.animation.AnimatorListenerAdapter;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.PendingIntent;
-import android.app.UiModeManager;
+import android.content.ComponentCallbacks;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.graphics.Rect;
+import android.graphics.Region;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.Process;
+import android.os.SystemClock;
 import android.util.TypedValue;
 import android.view.Display;
+import android.view.KeyEvent;
 import android.view.Surface;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.window.TrustedPresentationThresholds;
 
+import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.CalledByNativeForTesting;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
-import org.chromium.base.LifetimeAssert;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.Log;
 import org.chromium.base.ObserverList;
 import org.chromium.base.PackageManagerUtils;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.UnownedUserDataHost;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.lifetime.Destroyable;
+import org.chromium.base.lifetime.LifetimeAssert;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
-import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.build.annotations.RequiresNonNull;
-import org.chromium.ui.InsetObserver;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.display.DisplayAndroid.DisplayAndroidObserver;
+import org.chromium.ui.display.DisplayUtil;
 import org.chromium.ui.gfx.OverlayTransform;
+import org.chromium.ui.insets.InsetObserver;
+import org.chromium.ui.insets.InsetObserver.WindowInsetObserver;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.permissions.AndroidPermissionDelegate;
 import org.chromium.ui.permissions.PermissionCallback;
@@ -68,6 +83,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /** The window base class that has the minimum functionality. */
@@ -76,7 +92,8 @@ import java.util.function.Consumer;
 public class WindowAndroid
         implements AndroidPermissionDelegate,
                 DisplayAndroidObserver,
-                View.OnAttachStateChangeListener {
+                View.OnAttachStateChangeListener,
+                Destroyable {
     private static final String TAG = "WindowAndroid";
     private static final ImmutableWeakReference<Activity> NULL_ACTIVITY_WEAK_REF =
             new ImmutableWeakReference<>(null);
@@ -84,6 +101,70 @@ public class WindowAndroid
     // Arbitrary error margin to account for cases where the display's refresh rate might not
     // exactly match the target rate.
     private static final float MAX_REFRESH_RATE_DELTA = 2.f;
+
+    private static final long PERIODIC_METRIC_DELAY_MS = TimeUnit.MINUTES.toMillis(5);
+
+    private static int sOccludedCount;
+
+    private static ThreadUtils.@Nullable ThreadChecker sThreadChecker;
+
+    private static long sTotalOccludedPixels;
+    private static long sAccumulatedPixelMilliseconds;
+    private static long sLastPixelUpdateTimeMs;
+
+    private static void updateAccumulatedPixelMilliseconds() {
+        long now = SystemClock.uptimeMillis();
+        if (sLastPixelUpdateTimeMs > 0) {
+            sAccumulatedPixelMilliseconds += sTotalOccludedPixels * (now - sLastPixelUpdateTimeMs);
+        }
+        sLastPixelUpdateTimeMs = now;
+    }
+
+    private static final Runnable PERIODIC_METRICS_TASK =
+            new Runnable() {
+                @Override
+                public void run() {
+                    // TODO(crbug.com/488882847): Rename to non-experimental once occlusion
+                    // experiments are
+                    // complete.
+                    RecordHistogram.recordCount100Histogram(
+                            "Android.Window.OcclusionExperimental.OccludedCount", sOccludedCount);
+
+                    updateAccumulatedPixelMilliseconds();
+                    // Convert from milliseconds to seconds, and pixels to megapixels.
+                    float megapixelSeconds = (sAccumulatedPixelMilliseconds / 1000f) / 1_000_000f;
+                    RecordHistogram.recordCount100000Histogram(
+                            "Android.Window.OcclusionExperimental.SavedRenderingPer5Minutes",
+                            Math.round(megapixelSeconds));
+                    sAccumulatedPixelMilliseconds = 0;
+
+                    RecordHistogram.recordCount1000Histogram(
+                            "Android.Window.OcclusionExperimental.TotalOccludedMegapixels",
+                            Math.round(sTotalOccludedPixels / 1_000_000f));
+
+                    ThreadUtils.postOnUiThreadDelayed(this, PERIODIC_METRIC_DELAY_MS);
+                }
+            };
+
+    private static boolean sPeriodicMetricsRunning;
+
+    @VisibleForTesting
+    static void postPeriodicMetricRunner() {
+        ThreadUtils.postOnUiThreadDelayed(PERIODIC_METRICS_TASK, PERIODIC_METRIC_DELAY_MS);
+    }
+
+    public static void resetPeriodicMetricsForTesting() {
+        sOccludedCount = 0;
+        sTotalOccludedPixels = 0;
+        sAccumulatedPixelMilliseconds = 0;
+        sLastPixelUpdateTimeMs = 0;
+        sPeriodicMetricsRunning = false;
+        ThreadUtils.getUiThreadHandler().removeCallbacks(PERIODIC_METRICS_TASK);
+    }
+
+    // Constants that must be consistent with ui_controls::KeyEventType in C++.
+    private static final int KEY_EVENT_TYPE_KEY_PRESS = 1;
+    private static final int KEY_EVENT_TYPE_KEY_RELEASE = 2;
 
     private final @Nullable LifetimeAssert mLifetimeAssert;
     private @Nullable IntentRequestTrackerImpl mIntentRequestTracker;
@@ -95,7 +176,7 @@ public class WindowAndroid
 
     // Native pointer to the c++ WindowAndroid object.
     private long mNativeWindowAndroid;
-    private final DisplayAndroid mDisplayAndroid;
+    private DisplayAndroid mDisplayAndroid;
 
     // A string used as a key to store intent errors in a bundle
     static final String WINDOW_CALLBACK_ERRORS = "window_callback_errors";
@@ -103,24 +184,23 @@ public class WindowAndroid
     // Error code returned when an Intent fails to start an Activity.
     public static final int START_INTENT_FAILURE = -1;
 
-    private boolean mIsDestroyed;
+    // Set in `destroy()` call to record the stack the call.
+    private @Nullable RuntimeException mDestroyStack;
 
     // We use a weak reference here to prevent this from leaking in WebView.
     private final ImmutableWeakReference<Context> mContextRef;
 
+    private @Nullable ComponentCallbacks mComponentCallbacks;
+
     // We track all animations over content and provide a drawing placeholder for them.
-    private HashSet<Animator> mAnimationsOverContent = new HashSet<>();
+    private final HashSet<Animator> mAnimationsOverContent = new HashSet<>();
     private @Nullable View mAnimationPlaceholderView;
 
     /** A mechanism for observing and updating the application window's bottom inset. */
-    private ApplicationViewportInsetSupplier mApplicationBottomInsetSupplier =
-            new ApplicationViewportInsetSupplier();
+    private final ApplicationViewportInsetTracker mApplicationBottomInsetSupplier =
+            new ApplicationViewportInsetTracker();
 
     private @Nullable AndroidPermissionDelegate mPermissionDelegate;
-
-    // Note that this state lives in Java, rather than in the native BeginFrameSource because
-    // clients may pause VSync before the native WindowAndroid is created.
-    private boolean mVSyncPaused;
 
     // List of display modes with the same dimensions as the current mode but varying refresh rate.
     private @Nullable List<Display.Mode> mSupportedRefreshRateModes;
@@ -132,6 +212,11 @@ public class WindowAndroid
     private float mRefreshRate;
     private boolean mHasFocus = true;
     private @Nullable OverlayTransformApiHelper mOverlayTransformApiHelper;
+
+    private @Nullable View mPointerLockingView;
+    private @Nullable View mPointerLockChangeView;
+    private View.@Nullable OnFocusChangeListener mPointerLockingViewFocusChangeListener;
+    private View.@Nullable OnFocusChangeListener mPointerLockingViewPrvFocusChangeListener;
 
     // The information required to draw a replica of the progress bar drawn in
     // java UI in composited UI.
@@ -147,23 +232,20 @@ public class WindowAndroid
         // The color of the hairline.
         public int hairlineColor;
 
-        public static interface Provider {
+        public interface Provider {
             ProgressBarConfig getProgressBarConfig();
         }
     }
 
     private ProgressBarConfig.@Nullable Provider mProgressBarConfigProvider;
 
-    /** An interface to notify listeners that a context menu is closed. */
-    public interface OnCloseContextMenuListener {
-        /** Called when a context menu has been closed. */
-        void onContextMenuClosed();
-    }
-
     /** An interface to notify listeners of the changes in activity state. */
     public interface ActivityStateObserver {
         /** Called when the activity goes into paused state. */
         default void onActivityPaused() {}
+
+        /** Called when the activity top status is changed. */
+        default void onActivityTopResumedChanged(boolean isTopResumedActivity) {}
 
         /** Called when the activity goes into resumed state. */
         default void onActivityResumed() {}
@@ -175,7 +257,8 @@ public class WindowAndroid
         default void onActivityDestroyed() {}
     }
 
-    private ObserverList<ActivityStateObserver> mActivityStateObservers = new ObserverList<>();
+    private final ObserverList<ActivityStateObserver> mActivityStateObservers =
+            new ObserverList<>();
 
     /** An interface to notify listeners of the changes in selection handles state. */
     public interface SelectionHandlesObserver {
@@ -184,76 +267,165 @@ public class WindowAndroid
     }
 
     private boolean mSelectionHandlesActive;
-    private ObserverList<SelectionHandlesObserver> mSelectionHandlesObservers =
+    private final ObserverList<SelectionHandlesObserver> mSelectionHandlesObservers =
             new ObserverList<>();
 
-    private final boolean mAllowChangeRefreshRate;
+    /** Interface for delegating keyboard events. */
+    public interface KeyboardShortcutsDelegate {
+        /**
+         * Called before a keyboard event is dispatched to the page.
+         *
+         * @param event The KeyEvent to handle.
+         * @return true if the event was handled and should be consumed.
+         */
+        boolean preHandleKeyboardEvent(KeyEvent event);
+
+        /**
+         * Called to handle a keyboard event if it wasn't handled by the page.
+         *
+         * @param event The KeyEvent to handle.
+         * @return true if the event was handled and should be consumed.
+         */
+        boolean handleKeyboardEvent(KeyEvent event);
+    }
+
+    private @Nullable KeyboardShortcutsDelegate mKeyboardShortcutsDelegate;
+
+    private boolean mAllowChangeRefreshRate;
 
     /** Gets the view for readback. */
     public @Nullable View getReadbackView() {
         return null;
     }
 
-    private final ObserverList<OnCloseContextMenuListener> mContextMenuCloseListeners =
-            new ObserverList<>();
-
     private @Nullable ModalDialogManager mModalDialogManagerForTesting;
 
-    private @Nullable Consumer<Boolean> mOcclusionObserver;
+    private @Nullable Consumer<Boolean> mTrustedPresentationOcclusionObserver;
 
-    private final boolean mTrackOcclusion;
+    private final boolean mOcclusionTrackingAllowed;
+
+    // Whether occlusion is actually tracked for this window.
+    private boolean mIsOcclusionTracked;
 
     /** True when this window is occluded. */
-    private final ObservableSupplierImpl<Boolean> mOcclusionSupplier =
-            new ObservableSupplierImpl<>(false);
+    private final SettableNonNullObservableSupplier<Boolean> mOcclusionSupplier =
+            ObservableSuppliers.createNonNull(false);
+
+    private boolean mIsOccluded;
+    private long mOcclusionStartTimeMs;
+    private long mTotalOccludedTimeMs;
+    private long mOccludedPixels;
+    private final long mCreationTimeMs;
+
+    private @Nullable WindowAndroidOcclusionMetrics mWindowAndroidOcclusionMetrics;
+
+    private boolean mIsTopResumedActivity;
+    private final boolean mActivityTopResumedSupported;
+
+    private @Nullable WindowInsetObserver mWindowInsetObserver;
+    private @Nullable Rect mLastWindowBounds;
 
     /**
      * @param context The application {@link Context}.
-     * @param trackOcclusion Whether to track occlusion of the window.
+     * @param occlusionTrackingAllowed Whether occlusion tracking is allowed.
      */
-    public WindowAndroid(Context context, boolean trackOcclusion) {
-        this(context, DisplayAndroid.getNonMultiDisplay(context), trackOcclusion);
+    public WindowAndroid(Context context, boolean occlusionTrackingAllowed) {
+        this(
+                context,
+                DisplayAndroid.getNonMultiDisplay(context),
+                /* activityTopResumedSupported= */ false,
+                occlusionTrackingAllowed);
     }
 
     protected WindowAndroid(
             Context context,
+            boolean activityTopResumedSupported,
             IntentRequestTracker tracker,
             @Nullable InsetObserver insetObserver,
-            boolean trackOcclusion) {
-        this(context, DisplayAndroid.getNonMultiDisplay(context), trackOcclusion);
+            boolean occlusionTrackingAllowed) {
+        this(
+                context,
+                DisplayAndroid.getNonMultiDisplay(context),
+                activityTopResumedSupported,
+                occlusionTrackingAllowed);
         mIntentRequestTracker = (IntentRequestTrackerImpl) tracker;
         mInsetObserver = insetObserver;
+        mApplicationBottomInsetSupplier.setInsetObserver(mInsetObserver);
+        if (mInsetObserver != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            mWindowInsetObserver =
+                    new WindowInsetObserver() {
+                        @Override
+                        public void onInsetChanged() {
+                            maybeSendWindowPositionChangedEventToNative();
+                        }
+                    };
+            mInsetObserver.addObserver(mWindowInsetObserver);
+        }
     }
 
     /**
      * @param context The application {@link Context}.
+     * @param activityTopResumedSupported If you enable this, you are committed to notify every
+     *     onTopResumedActivityChanged() on the Activity owning the WindowAndroid. If this is not
+     *     enabled, WindowAndroid assumes the activity is in the top when it is resumed.
      * @param display The application {@link DisplayAndroid}.
-     * @param trackOcclusion Whether to track occlusion of the window.
+     * @param occlusionTrackingAllowed Whether occlusion tracking is allowed.
      */
     @SuppressLint("UseSparseArrays")
-    protected WindowAndroid(Context context, DisplayAndroid display, boolean trackOcclusion) {
+    protected WindowAndroid(
+            Context context,
+            DisplayAndroid display,
+            boolean activityTopResumedSupported,
+            boolean occlusionTrackingAllowed) {
+
+        if (sThreadChecker == null) {
+            sThreadChecker = new ThreadUtils.ThreadChecker();
+        }
+
+        // When the first occlusion tracked window is created, start periodic metrics collection.
+        if (occlusionTrackingAllowed
+                && UiAndroidFeatureList.sAndroidWindowOcclusion.isEnabled()
+                && !sPeriodicMetricsRunning) {
+            sPeriodicMetricsRunning = true;
+            postPeriodicMetricRunner();
+        }
+
         mLifetimeAssert = LifetimeAssert.create(this);
+        mCreationTimeMs = SystemClock.uptimeMillis();
         // context does not have the same lifetime guarantees as an application context so we can't
         // hold a strong reference to it.
+        assert context != null : "Context when creating WindowAndroid must not be null.";
         mContextRef = new ImmutableWeakReference<>(context);
+
         mDisplayAndroid = display;
+        // Observe current display property changes (for same display ID).
         mDisplayAndroid.addObserver(this);
 
-        // Using this setting is gated to Q due to bugs on Razer phones which can freeze the device
-        // if the API is used. See crbug.com/990646.
-        // Disable refresh rate change on TV platforms, as it may cause black screen flicker due to
-        // display mode changes.
-        mAllowChangeRefreshRate = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !isTv(context);
+        if (context != null && UiAndroidFeatureList.sAndroidUpdateDisplayForContext.isEnabled()) {
+            mComponentCallbacks =
+                    new ComponentCallbacks() {
+                        @Override
+                        public void onConfigurationChanged(Configuration newConfig) {
+                            updateDisplayForContext();
+                        }
+
+                        @Override
+                        public void onLowMemory() {}
+                    };
+
+            context.registerComponentCallbacks(mComponentCallbacks);
+        }
+
+        // Disable refresh rate change on TV platforms and external displays, as it may cause black
+        // screen flicker/blanking due to display mode changes.
+        mAllowChangeRefreshRate = computeAllowChangeRefreshRate(context);
 
         // Multiple refresh rate support is only available on M+.
         recomputeSupportedRefreshRates();
 
         // Configuration.isDisplayServerWideColorGamut must be queried from the window's context.
-        // Because of crbug.com/756180, many devices report true for isScreenWideColorGamut in
-        // 8.0.0, even when they don't actually support wide color gamut.
         // TODO(boliu): Observe configuration changes to update the value of isScreenWideColorGamut.
-        if (!Build.VERSION.RELEASE.equals("8.0.0")
-                && ContextUtils.activityFromContext(context) != null) {
+        if (ContextUtils.activityFromContext(context) != null) {
             Configuration configuration = context.getResources().getConfiguration();
             boolean isScreenWideColorGamut = configuration.isScreenWideColorGamut();
             display.updateIsDisplayServerWideColorGamut(isScreenWideColorGamut);
@@ -263,49 +435,67 @@ public class WindowAndroid
             mOverlayTransformApiHelper = OverlayTransformApiHelper.create(this);
         }
 
-        // Enable occlusion only for desktop Android. For non-desktop Android, occlusion signals
-        // from Android should be the same as the Activity lifecycle signals that already control
-        // web contents occlusion. Also, on rotate Android seems to send a spurious occlusion
-        // signal. See crbug.com/380209799 for details.
-        mTrackOcclusion = trackOcclusion && BuildConfig.IS_DESKTOP_ANDROID;
-        if (mTrackOcclusion) {
-            var decorView = getDecorView();
-            assert decorView != null;
+        mOcclusionTrackingAllowed = occlusionTrackingAllowed;
+        maybeTrackOcclusionWithTrustedPresentationApi();
 
-            // If the decor view is already attached to the window the listener won't be called.
-            // In this case, the window token exists so we can register the occlusion observer.
-            if (decorView.isAttachedToWindow()) {
-                maybeRegisterOcclusionObserver(getWindowToken());
-            }
-            decorView.addOnAttachStateChangeListener(this);
-        }
+        mActivityTopResumedSupported = activityTopResumedSupported;
     }
 
     @Override
     public void onViewAttachedToWindow(View v) {
-        maybeRegisterOcclusionObserver(v.getWindowToken());
+        maybeRegisterTrustedPresentationObserver(v.getWindowToken());
     }
 
     @Override
     public void onViewDetachedFromWindow(View v) {
-        maybeUnregisterOcclusionObserver();
+        maybeUnregisterTrustedPresentationObserver();
     }
 
-    private void maybeRegisterOcclusionObserver(@Nullable IBinder windowToken) {
-        if (!mTrackOcclusion || Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+    private boolean shouldTrackOcclusionWithTrustedPresentationApi() {
+        AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        return mOcclusionTrackingAllowed
+                && UiAndroidFeatureList.sAndroidWindowOcclusion.isEnabled()
+                && "trusted_presentation_strict_mode"
+                        .equals(UiAndroidFeatureList.sAndroidWindowOcclusionTrackingMode.getValue())
+                && delegate != null
+                && delegate.isStrictOcclusionAvailable();
+    }
+
+    private void maybeTrackOcclusionWithTrustedPresentationApi() {
+        if (!shouldTrackOcclusionWithTrustedPresentationApi()) {
             return;
         }
-        assert mOcclusionObserver == null;
+
+        var decorView = getDecorView();
+        assert decorView != null;
+
+        // If the decor view is already attached to the window the listener won't be called.
+        // In this case, the window token exists so we can register the occlusion observer.
+        if (decorView.isAttachedToWindow()) {
+            maybeRegisterTrustedPresentationObserver(getWindowToken());
+        }
+        decorView.addOnAttachStateChangeListener(this);
+    }
+
+    @SuppressWarnings("NewApi")
+    private void maybeRegisterTrustedPresentationObserver(@Nullable IBinder windowToken) {
+        assert mTrustedPresentationOcclusionObserver == null;
 
         Context context = assumeNonNull(getContext().get());
         WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
 
-        var thresholds = new TrustedPresentationThresholds(Float.MIN_VALUE, Float.MIN_VALUE, 1);
-        mOcclusionObserver =
-                new Consumer<Boolean>() {
+        AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        assert delegate != null;
+        TrustedPresentationThresholds thresholds =
+                delegate.createTrustedPresentationThresholdsStrictMode(
+                        Float.MIN_VALUE, Float.MIN_VALUE, 1);
+        assert thresholds != null;
+
+        mTrustedPresentationOcclusionObserver =
+                new Consumer<>() {
                     @Override
                     public void accept(Boolean visible) {
-                        mOcclusionSupplier.set(!visible);
+                        updateOcclusionState(!visible, null);
                     }
                 };
 
@@ -316,39 +506,133 @@ public class WindowAndroid
                 (r) -> {
                     PostTask.postTask(TaskTraits.UI_DEFAULT, r);
                 },
-                mOcclusionObserver);
+                mTrustedPresentationOcclusionObserver);
+
+        mIsOcclusionTracked = true;
     }
 
-    private void maybeUnregisterOcclusionObserver() {
-        if (!mTrackOcclusion || Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            return;
-        }
-        assert mOcclusionObserver != null;
+    @SuppressWarnings("NewApi")
+    private void maybeUnregisterTrustedPresentationObserver() {
+        assert mTrustedPresentationOcclusionObserver != null;
 
         Context context = assumeNonNull(getContext().get());
         WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
-        wm.unregisterTrustedPresentationListener(mOcclusionObserver);
+        wm.unregisterTrustedPresentationListener(mTrustedPresentationOcclusionObserver);
 
-        mOcclusionObserver = null;
+        mTrustedPresentationOcclusionObserver = null;
     }
 
     /** A supplier that returns whether the window is occluded or not. */
-    public ObservableSupplier<Boolean> getOcclusionSupplier() {
+    public NonNullObservableSupplier<Boolean> getOcclusionSupplier() {
         return mOcclusionSupplier;
     }
 
-    private static boolean isTv(Context context) {
-        UiModeManager uiModeManager =
-                (UiModeManager) context.getSystemService(Context.UI_MODE_SERVICE);
-        return uiModeManager != null
-                && uiModeManager.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION;
+    /** Returns whether occlusion tracking is allowed for this window. */
+    public boolean isOcclusionTrackingAllowed() {
+        return mOcclusionTrackingAllowed;
+    }
+
+    /**
+     * Sets whether occlusion is tracked for this window.
+     *
+     * @param isOcclusionTracked Whether occlusion is tracked for this window.
+     */
+    public void setIsOcclusionTracked(boolean isOcclusionTracked) {
+        assumeNonNull(sThreadChecker).assertOnValidThread();
+        assert !shouldTrackOcclusionWithTrustedPresentationApi();
+        mIsOcclusionTracked = isOcclusionTracked;
+    }
+
+    /**
+     * Sets whether the window is occluded.
+     *
+     * @param isOccluded Whether the window is occluded.
+     * @param windowBounds The screen bounds of the window in absolute screen coordinates in pixels,
+     *     or null if unknown.
+     * @param visibleRegion The visible region of the window in absolute screen coordinates in
+     *     pixels, or null if unknown. The meaning of null changes depending on if isOccluded is
+     *     true or false. When isOccluded is true, a null region is interpreted as the window being
+     *     fully occluded. If isOccluded is false, a null region is interpreted as the window being
+     *     fully visible.
+     */
+    public void setOccluded(
+            boolean isOccluded, @Nullable Rect windowBounds, @Nullable Region visibleRegion) {
+        assumeNonNull(sThreadChecker).assertOnValidThread();
+        // If the Trusted Presentation API is already tracking occlusion, it takes precedence.
+        if (!mOcclusionTrackingAllowed || shouldTrackOcclusionWithTrustedPresentationApi()) {
+            return;
+        }
+
+        if (mWindowAndroidOcclusionMetrics == null) {
+            mWindowAndroidOcclusionMetrics = new WindowAndroidOcclusionMetrics();
+        }
+        mWindowAndroidOcclusionMetrics.onOcclusionStateChanged(isOccluded, visibleRegion);
+
+        updateOcclusionState(isOccluded, windowBounds);
+    }
+
+    private void onOccluded(@Nullable Rect windowBounds) {
+        updateAccumulatedPixelMilliseconds();
+
+        mOccludedPixels =
+                windowBounds == null ? 0 : (long) windowBounds.width() * windowBounds.height();
+        sTotalOccludedPixels += mOccludedPixels;
+        mOcclusionStartTimeMs = SystemClock.uptimeMillis();
+        sOccludedCount++;
+    }
+
+    private void onUnoccluded() {
+        // The window wasn't occluded to begin with. Nothing to do.
+        if (mOcclusionStartTimeMs == 0) return;
+
+        updateAccumulatedPixelMilliseconds();
+
+        long durationMs = SystemClock.uptimeMillis() - mOcclusionStartTimeMs;
+        // TODO(488882847): Rename to non-experimental once occlusion experiments are
+        // complete.
+        RecordHistogram.recordLongTimesHistogram(
+                "Android.Window.OcclusionExperimental.Duration", durationMs);
+        mTotalOccludedTimeMs += durationMs;
+        mOcclusionStartTimeMs = 0;
+        sOccludedCount--;
+        sTotalOccludedPixels -= mOccludedPixels;
+        assert sTotalOccludedPixels >= 0;
+        mOccludedPixels = 0;
+    }
+
+    private void updateOcclusionState(boolean isOccluded, @Nullable Rect windowBounds) {
+        if (mIsOccluded == isOccluded) return;
+        mIsOccluded = isOccluded;
+
+        // This feature param allows for collecting occlusion metrics without applying any
+        // optimizations to the window. Only set the supplier if the optimizations are enabled.
+        if (UiAndroidFeatureList.sAndroidWindowOcclusionOptimizations.getValue()) {
+            mOcclusionSupplier.set(isOccluded);
+        }
+
+        if (isOccluded) {
+            onOccluded(windowBounds);
+        } else {
+            onUnoccluded();
+        }
+    }
+
+    private static boolean isInternalDisplay(Context context) {
+        // TODO(b/521980379): Evaluate migrating to DisplayAndroid#isInternal for external display
+        // check.
+        return DisplayUtil.isContextInDefaultDisplay(context);
+    }
+
+    private static boolean computeAllowChangeRefreshRate(Context context) {
+        return !DeviceInfo.isTV() && isInternalDisplay(context);
     }
 
     @CalledByNativeForTesting
     private static long createForTesting() {
         WindowAndroid windowAndroid =
                 new WindowAndroid(
-                        ContextUtils.getApplicationContext(), /* trackOcclusion= */ false);
+                        ContextUtils.getApplicationContext(),
+                        /* occlusionTrackingAllowed= */ false);
         // |windowAndroid.getNativePointer()| creates native WindowAndroid object
         // which stores a global ref to |windowAndroid|. Therefore |windowAndroid|
         // is not immediately eligible for gc.
@@ -393,7 +677,7 @@ public class WindowAndroid
     public boolean showIntent(
             PendingIntent intent, @Nullable IntentCallback callback, @Nullable Integer errorId) {
         if (mIntentRequestTracker == null) {
-            Log.d(TAG, "Can't show intent as context is not an Activity: " + intent);
+            Log.d(TAG, "Can't show intent as context is not an Activity: %s", intent);
             return false;
         }
         return mIntentRequestTracker.showCancelableIntent(intent, callback, errorId) >= 0;
@@ -411,7 +695,7 @@ public class WindowAndroid
     public boolean showIntent(
             @Nullable Intent intent, @Nullable IntentCallback callback, @Nullable Integer errorId) {
         if (mIntentRequestTracker == null) {
-            Log.d(TAG, "Can't show intent as context is not an Activity: " + intent);
+            Log.d(TAG, "Can't show intent as context is not an Activity: %s", intent);
             return false;
         }
         return mIntentRequestTracker.showCancelableIntent(intent, callback, errorId) >= 0;
@@ -430,7 +714,7 @@ public class WindowAndroid
     public int showCancelableIntent(
             PendingIntent intent, @Nullable IntentCallback callback, @Nullable Integer errorId) {
         if (mIntentRequestTracker == null) {
-            Log.d(TAG, "Can't show intent as context is not an Activity: " + intent);
+            Log.d(TAG, "Can't show intent as context is not an Activity: %s", intent);
             return START_INTENT_FAILURE;
         }
         return mIntentRequestTracker.showCancelableIntent(intent, callback, errorId);
@@ -449,7 +733,7 @@ public class WindowAndroid
     public int showCancelableIntent(
             Intent intent, @Nullable IntentCallback callback, @Nullable Integer errorId) {
         if (mIntentRequestTracker == null) {
-            Log.d(TAG, "Can't show intent as context is not an Activity: " + intent);
+            Log.d(TAG, "Can't show intent as context is not an Activity: %s", intent);
             return START_INTENT_FAILURE;
         }
         return mIntentRequestTracker.showCancelableIntent(intent, callback, errorId);
@@ -468,11 +752,12 @@ public class WindowAndroid
 
     /**
      * Force finish another activity that you had previously started with showCancelableIntent.
+     *
      * @param requestCode The request code returned from showCancelableIntent.
      */
     public void cancelIntent(int requestCode) {
         if (mIntentRequestTracker == null) {
-            Log.d(TAG, "Can't cancel intent as context is not an Activity: " + requestCode);
+            Log.d(TAG, "Can't cancel intent as context is not an Activity: %d", requestCode);
             return;
         }
         mIntentRequestTracker.cancelIntent(requestCode);
@@ -645,8 +930,7 @@ public class WindowAndroid
      */
     public void onVisibilityChanged(boolean visible) {
         if (mNativeWindowAndroid == 0) return;
-        WindowAndroidJni.get()
-                .onVisibilityChanged(mNativeWindowAndroid, WindowAndroid.this, visible);
+        WindowAndroidJni.get().onVisibilityChanged(mNativeWindowAndroid, visible);
     }
 
     /**
@@ -656,7 +940,7 @@ public class WindowAndroid
     protected void onActivityStopped() {
         if (mNativeWindowAndroid == 0) return;
         for (ActivityStateObserver observer : mActivityStateObservers) observer.onActivityStopped();
-        WindowAndroidJni.get().onActivityStopped(mNativeWindowAndroid, WindowAndroid.this);
+        WindowAndroidJni.get().onActivityStopped(mNativeWindowAndroid);
     }
 
     /**
@@ -665,15 +949,46 @@ public class WindowAndroid
      */
     protected void onActivityStarted() {
         if (mNativeWindowAndroid == 0) return;
-        WindowAndroidJni.get().onActivityStarted(mNativeWindowAndroid, WindowAndroid.this);
+        WindowAndroidJni.get().onActivityStarted(mNativeWindowAndroid);
     }
 
     protected void onActivityPaused() {
-        for (ActivityStateObserver observer : mActivityStateObservers) observer.onActivityPaused();
+        if (!mActivityTopResumedSupported) {
+            onActivityTopResumedChanged(false);
+        }
+        for (ActivityStateObserver observer : mActivityStateObservers) {
+            observer.onActivityPaused();
+        }
+    }
+
+    /**
+     * For window instances associated with an activity, notifies any listeners that the activity's
+     * top resumed state is changed.
+     */
+    public void onActivityTopResumedChanged(boolean isTopResumedActivity) {
+        mIsTopResumedActivity = isTopResumedActivity;
+        for (ActivityStateObserver observer : mActivityStateObservers) {
+            observer.onActivityTopResumedChanged(isTopResumedActivity);
+        }
     }
 
     protected void onActivityResumed() {
-        for (ActivityStateObserver observer : mActivityStateObservers) observer.onActivityResumed();
+        /**
+         * Update the display for context to make sure the display ID is up to date. Activity could
+         * be stopped and resumed without any configuration change when disconnected/reconnected to
+         * a display. DisplayId may change during reconnect (see crbug.com/444627601). Note: Webview
+         * does not invoke these activity events, so this will not be called for Webview.
+         */
+        if (UiAndroidFeatureList.sAndroidUpdateDisplayForContext.isEnabled()) {
+            updateDisplayForContext();
+        }
+
+        for (ActivityStateObserver observer : mActivityStateObservers) {
+            observer.onActivityResumed();
+        }
+        if (!mActivityTopResumedSupported) {
+            onActivityTopResumedChanged(true);
+        }
     }
 
     protected void onActivityDestroyed() {
@@ -732,6 +1047,14 @@ public class WindowAndroid
         return result;
     }
 
+    public boolean isTopResumedActivity() {
+        return mIsTopResumedActivity;
+    }
+
+    public boolean isActivityTopResumedSupported() {
+        return mActivityTopResumedSupported;
+    }
+
     /**
      * @return Current state of the associated {@link Activity}. Can be overridden to return the
      *     correct state. {@code ActivityState.DESTROYED} by default.
@@ -745,10 +1068,11 @@ public class WindowAndroid
     public interface IntentCallback {
         /**
          * Handles the data returned by the requested intent.
+         *
          * @param resultCode Result code of the requested intent.
          * @param data The data returned by the intent.
          */
-        void onIntentCompleted(int resultCode, Intent data);
+        void onIntentCompleted(int resultCode, @Nullable Intent data);
     }
 
     /**
@@ -777,6 +1101,56 @@ public class WindowAndroid
         mModalDialogManagerForTesting = modalDialogManager;
     }
 
+    @CalledByNativeForTesting
+    private boolean sendKeyEventsForTesting(
+            int code,
+            int keyEventTypes,
+            boolean shift,
+            boolean control,
+            boolean alt,
+            boolean meta) {
+
+        Activity activity = ContextUtils.activityFromContext(mContextRef.get());
+        if (activity == null || activity.isFinishing()) {
+            return false;
+        }
+
+        long downTime = System.currentTimeMillis();
+        int metaState =
+                (shift ? KeyEvent.META_SHIFT_ON : 0)
+                        | (control ? KeyEvent.META_CTRL_ON : 0)
+                        | (alt ? KeyEvent.META_ALT_ON : 0)
+                        | (meta ? KeyEvent.META_META_ON : 0);
+
+        if ((keyEventTypes & KEY_EVENT_TYPE_KEY_PRESS) != 0) {
+            if (!activity.dispatchKeyEvent(
+                    new KeyEvent(
+                            downTime,
+                            /* eventTime= */ downTime,
+                            KeyEvent.ACTION_DOWN,
+                            code,
+                            /* repeat= */ 0,
+                            metaState))) {
+                return false;
+            }
+        }
+
+        if ((keyEventTypes & KEY_EVENT_TYPE_KEY_RELEASE) != 0) {
+            if (!activity.dispatchKeyEvent(
+                    new KeyEvent(
+                            downTime,
+                            /* eventTime= */ System.currentTimeMillis(),
+                            KeyEvent.ACTION_UP,
+                            code,
+                            /* repeat= */ 0,
+                            metaState))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     @CalledByNative
     private long getNativeModalDialogManagerBridge() {
         ModalDialogManager manager = getModalDialogManager();
@@ -798,22 +1172,68 @@ public class WindowAndroid
      * @return Whether this instance is destroyed.
      */
     public boolean isDestroyed() {
-        return mIsDestroyed;
+        return mDestroyStack != null;
     }
 
-    /** Destroys the c++ WindowAndroid object if one has been created. */
+    /**
+     * @return Null if not destroyed, or the exception containing the stack of the destroy call.
+     */
+    public @Nullable RuntimeException getDestroyStack() {
+        return mDestroyStack;
+    }
+
     @CalledByNative
+    @Override
     public void destroy() {
-        LifetimeAssert.setSafeToGc(mLifetimeAssert, true);
-        mIsDestroyed = true;
+        long now = SystemClock.uptimeMillis();
+        // This is safe to call even if the window was not occluded before destruction.
+        onUnoccluded();
+        if (mWindowAndroidOcclusionMetrics != null) {
+            mWindowAndroidOcclusionMetrics.onDestroy();
+        }
+
+        long lifetimeMs = now - mCreationTimeMs;
+        if (lifetimeMs > 0 && mIsOcclusionTracked) {
+            int percent = Math.round(mTotalOccludedTimeMs * 100f / lifetimeMs);
+            // TODO(crbug.com/488882847): Rename to non-experimental once occlusion experiments are
+            // complete.
+            RecordHistogram.recordPercentageHistogram(
+                    "Android.Window.OcclusionExperimental.OccludedTimePercent", percent);
+        }
+
+        LifetimeAssert.destroy(mLifetimeAssert);
+        if (mDestroyStack == null) {
+            mDestroyStack = new RuntimeException("WindowAndroid.destroy");
+        }
         mDisplayAndroid.removeObserver(this);
+
+        Context context = mContextRef.get();
+        if (context != null && mComponentCallbacks != null) {
+            try {
+                context.unregisterComponentCallbacks(mComponentCallbacks);
+            } catch (IllegalStateException e) {
+                // If unregistering gets skipped, it's probably a real leak, but it's an app
+                // embedding
+                // WebView doing something sketchy with the context (e.g. detaching the base
+                // context),
+                // so it's not like there's anything better we can do here.
+                Log.w(TAG, "Failed to unregister ComponentCallbacks", e);
+            }
+            mComponentCallbacks = null;
+        }
+
+        // Destroys the c++ WindowAndroid object if one has been created.
         if (mNativeWindowAndroid != 0) {
             // Native code clears |mNativeWindowAndroid|.
-            WindowAndroidJni.get().destroy(mNativeWindowAndroid, WindowAndroid.this);
+            WindowAndroidJni.get().destroy(mNativeWindowAndroid);
         }
 
         mUnownedUserDataHost.destroy();
         mApplicationBottomInsetSupplier.destroy();
+
+        if (KeyboardVisibilityDelegate.getInstance() == mKeyboardVisibilityDelegate) {
+            KeyboardVisibilityDelegate.setInstance(new KeyboardVisibilityDelegate() {});
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S_V2) {
             if (mOverlayTransformApiHelper != null) {
@@ -821,12 +1241,14 @@ public class WindowAndroid
             }
         }
 
-        if (mTrackOcclusion) {
+        if (mOcclusionTrackingAllowed) {
             View decorView = getDecorView();
             if (decorView != null) {
                 decorView.removeOnAttachStateChangeListener(this);
             }
         }
+
+        removePointerLockViews();
     }
 
     /**
@@ -840,18 +1262,22 @@ public class WindowAndroid
             mNativeWindowAndroid =
                     WindowAndroidJni.get()
                             .init(
-                                    WindowAndroid.this,
+                                    this,
                                     mDisplayAndroid.getDisplayId(),
                                     getMouseWheelScrollFactor(),
                                     getWindowIsWideColorGamut());
-            WindowAndroidJni.get()
-                    .setVSyncPaused(mNativeWindowAndroid, WindowAndroid.this, mVSyncPaused);
+            onAdaptiveRefreshRateInfoChanged(mDisplayAndroid.getAdaptiveRefreshRateInfo());
         }
         return mNativeWindowAndroid;
     }
 
+    /* package */ void setNativePointerForTesting(long ptr) {
+        mNativeWindowAndroid = ptr;
+    }
+
     /**
      * Returns current wheel scroll factor (physical pixels per mouse scroll click).
+     *
      * @return wheel scroll factor or zero if attr retrieval fails.
      */
     private float getMouseWheelScrollFactor() {
@@ -881,7 +1307,6 @@ public class WindowAndroid
     // gamut (on supported hardware and os). However it is important for embedders like WebView
     // which do not make the wide gamut decision to check this at run time.
     private boolean getWindowIsWideColorGamut() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
         Window window = getWindow();
         if (window == null) return false;
         return window.isWideColorGamut();
@@ -911,6 +1336,20 @@ public class WindowAndroid
         return mKeyboardVisibilityDelegate;
     }
 
+    /**
+     * @param delegate The delegate to handle keyboard events.
+     */
+    public void setKeyboardShortcutsDelegate(KeyboardShortcutsDelegate delegate) {
+        mKeyboardShortcutsDelegate = delegate;
+    }
+
+    /**
+     * @return The delegate to handle keyboard events.
+     */
+    public @Nullable KeyboardShortcutsDelegate getKeyboardShortcutsDelegate() {
+        return mKeyboardShortcutsDelegate;
+    }
+
     /** Returns the {@link InsetObserver} for the root view of the activity or null. */
     public @Nullable InsetObserver getInsetObserver() {
         return mInsetObserver;
@@ -919,32 +1358,8 @@ public class WindowAndroid
     /**
      * @return A mechanism for updating and observing the bottom inset of the browser window.
      */
-    public ApplicationViewportInsetSupplier getApplicationBottomInsetSupplier() {
+    public ApplicationViewportInsetTracker getApplicationBottomInsetTracker() {
         return mApplicationBottomInsetSupplier;
-    }
-
-    /** Adds a listener that will be notified whenever a ContextMenu is closed. */
-    public void addContextMenuCloseListener(OnCloseContextMenuListener listener) {
-        mContextMenuCloseListeners.addObserver(listener);
-    }
-
-    /**
-     * Removes a listener from the list of listeners that will be notified when a
-     * ContextMenu is closed.
-     */
-    public void removeContextMenuCloseListener(OnCloseContextMenuListener listener) {
-        mContextMenuCloseListeners.removeObserver(listener);
-    }
-
-    /**
-     * This hook is called whenever the context menu is being closed (either by
-     * the user canceling the menu with the back/menu button, or when an item is
-     * selected).
-     */
-    public void onContextMenuClosed() {
-        for (OnCloseContextMenuListener listener : mContextMenuCloseListeners) {
-            listener.onContextMenuClosed();
-        }
     }
 
     /**
@@ -1023,23 +1438,10 @@ public class WindowAndroid
         return mAnimationsOverContent.isEmpty();
     }
 
-    /**
-     * Pauses/Unpauses VSync. When VSync is paused the compositor for this window will idle, and
-     * requestAnimationFrame callbacks won't fire, etc.
-     */
-    public void setVSyncPaused(boolean paused) {
-        if (mVSyncPaused == paused) return;
-        mVSyncPaused = paused;
-        if (mNativeWindowAndroid != 0) {
-            WindowAndroidJni.get().setVSyncPaused(mNativeWindowAndroid, WindowAndroid.this, paused);
-        }
-    }
-
     @Override
     public void onRefreshRateChanged(float refreshRate) {
         if (mNativeWindowAndroid != 0) {
-            WindowAndroidJni.get()
-                    .onUpdateRefreshRate(mNativeWindowAndroid, WindowAndroid.this, refreshRate);
+            WindowAndroidJni.get().onUpdateRefreshRate(mNativeWindowAndroid, refreshRate);
         }
     }
 
@@ -1064,14 +1466,55 @@ public class WindowAndroid
         recomputeSupportedRefreshRates();
     }
 
+    /** Refreshes the display associated with this window. */
+    private void updateDisplayForContext() {
+        Context context = mContextRef.get();
+        if (context == null) return;
+        DisplayAndroid newDisplay = DisplayAndroid.getNonMultiDisplay(context);
+        if (newDisplay != mDisplayAndroid) {
+            mDisplayAndroid.removeObserver(this);
+            mDisplayAndroid = newDisplay;
+            mDisplayAndroid.addObserver(this);
+            if (mNativeWindowAndroid != 0) {
+                WindowAndroidJni.get()
+                        .onUpdateDisplayId(mNativeWindowAndroid, mDisplayAndroid.getDisplayId());
+                onAdaptiveRefreshRateInfoChanged(mDisplayAndroid.getAdaptiveRefreshRateInfo());
+                onRefreshRateChanged(mDisplayAndroid.getRefreshRate());
+            }
+            mAllowChangeRefreshRate = computeAllowChangeRefreshRate(context);
+            if (!mAllowChangeRefreshRate) {
+                doSetPreferredRefreshRate(0);
+            }
+            recomputeSupportedRefreshRates();
+        }
+    }
+
+    @Override
+    public void onAdaptiveRefreshRateInfoChanged(DisplayAndroid.AdaptiveRefreshRateInfo arrInfo) {
+        if (mNativeWindowAndroid == 0) return;
+        int velocityArraySize =
+                arrInfo.velocityMapping == null ? 0 : arrInfo.velocityMapping.size();
+        float[] framePerSecondArray = new float[velocityArraySize];
+        float[] dpPerSecondArray = new float[velocityArraySize];
+        if (arrInfo.velocityMapping != null) {
+            int index = 0;
+            for (AconfigFlaggedApiDelegate.FrameRateVelocityPoint point : arrInfo.velocityMapping) {
+                framePerSecondArray[index] = point.getFramePerSecond();
+                dpPerSecondArray[index] = point.getDpPerSecond();
+                ++index;
+            }
+        }
+        WindowAndroidJni.get()
+                .onAdaptiveRefreshRateInfoChanged(
+                        mNativeWindowAndroid,
+                        arrInfo.supportsAdaptiveRefreshRate,
+                        arrInfo.suggestedFrameRateHigh,
+                        framePerSecondArray,
+                        dpPerSecondArray);
+    }
+
     @CalledByNative
     public void setWideColorEnabled(boolean enabled) {
-        // Although this API was added in Android O, it was buggy.
-        // Restrict to Android Q, where it was fixed.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            assert !enabled;
-            return;
-        }
         Window window = getWindow();
         if (window == null) return;
 
@@ -1104,7 +1547,6 @@ public class WindowAndroid
                     && currentMode.getPhysicalHeight() == supportedModes.get(i).getPhysicalHeight()
                     && currentMode.getRefreshRate() != supportedModes.get(i).getRefreshRate()) {
                 supportedRefreshRateModes.add(supportedModes.get(i));
-                continue;
             }
         }
 
@@ -1114,9 +1556,7 @@ public class WindowAndroid
             if (mNativeWindowAndroid != 0) {
                 WindowAndroidJni.get()
                         .onSupportedRefreshRatesUpdated(
-                                mNativeWindowAndroid,
-                                WindowAndroid.this,
-                                getSupportedRefreshRates());
+                                mNativeWindowAndroid, getSupportedRefreshRates());
             }
         }
     }
@@ -1141,13 +1581,13 @@ public class WindowAndroid
 
     @SuppressLint("NewApi")
     @CalledByNative
-    private void setPreferredRefreshRate(float preferredRefreshRate) {
+    /* package */ void setPreferredRefreshRate(float preferredRefreshRate) {
         mRefreshRate = preferredRefreshRate;
         if (mHasFocus) doSetPreferredRefreshRate(preferredRefreshRate);
     }
 
     private void doSetPreferredRefreshRate(float preferredRefreshRate) {
-        if (mSupportedRefreshRateModes == null || !mAllowChangeRefreshRate) return;
+        if (!mAllowChangeRefreshRate && preferredRefreshRate != 0) return;
 
         int preferredModeId = getPreferredModeId(preferredRefreshRate);
         Window window = getWindow();
@@ -1161,9 +1601,8 @@ public class WindowAndroid
 
     @SuppressLint("NewApi")
     // mSupportedRefreshRateModes should only be set if Display.Mode is available.
-    @RequiresNonNull("mSupportedRefreshRateModes")
     private int getPreferredModeId(float preferredRefreshRate) {
-        if (preferredRefreshRate == 0) return 0;
+        if (preferredRefreshRate == 0 || mSupportedRefreshRateModes == null) return 0;
 
         Display.Mode preferredMode = null;
         float preferredModeDelta = Float.MAX_VALUE;
@@ -1194,7 +1633,7 @@ public class WindowAndroid
 
     void onOverlayTransformUpdated() {
         if (mNativeWindowAndroid != 0) {
-            WindowAndroidJni.get().onOverlayTransformUpdated(mNativeWindowAndroid, this);
+            WindowAndroidJni.get().onOverlayTransformUpdated(mNativeWindowAndroid);
         }
     }
 
@@ -1232,6 +1671,182 @@ public class WindowAndroid
         }
     }
 
+    @CalledByNative
+    @VisibleForTesting(otherwise = PRIVATE)
+    public boolean requestPointerLock(View view) {
+        assert mPointerLockChangeView == null;
+        assert mPointerLockingView == null;
+
+        if (!mHasFocus || !view.hasFocus()) {
+            return false;
+        }
+
+        Context context = assumeNonNull(getContext().get());
+        mPointerLockChangeView =
+                new View(context) {
+                    @Override
+                    public void onPointerCaptureChange(boolean hasCapture) {
+                        super.onPointerCaptureChange(hasCapture);
+                        onPointerLockChangeEvent(hasCapture);
+                    }
+                };
+
+        var decorView = getDecorView();
+        if (decorView instanceof ViewGroup decorViewGroup) {
+            decorViewGroup.addView(mPointerLockChangeView);
+        }
+
+        mPointerLockingViewFocusChangeListener =
+                (view2, hasFocus) -> onPointerLockingViewFocusChange(hasFocus);
+        mPointerLockingViewPrvFocusChangeListener = view.getOnFocusChangeListener();
+
+        view.setOnFocusChangeListener(mPointerLockingViewFocusChangeListener);
+
+        // Pointer lock API equivalent on Android is called pointer capture
+        view.requestPointerCapture();
+        mPointerLockingView = view;
+        return true;
+    }
+
+    @CalledByNative
+    @VisibleForTesting(otherwise = PRIVATE)
+    public void releasePointerLock(View view) {
+        releasePointerLockHelper(view, true, false);
+    }
+
+    private void onPointerLockChangeEvent(boolean hasLock) {
+        assert mPointerLockingView != null;
+
+        if (!hasLock) {
+            releasePointerLockHelper(mPointerLockingView, false, true);
+        }
+    }
+
+    private void onPointerLockingViewFocusChange(boolean hasFocus) {
+        assert mPointerLockingView != null;
+
+        if (mPointerLockingViewPrvFocusChangeListener != null) {
+            mPointerLockingViewPrvFocusChangeListener.onFocusChange(mPointerLockingView, hasFocus);
+        }
+
+        if (!hasFocus) {
+            releasePointerLockHelper(mPointerLockingView, true, true);
+        }
+    }
+
+    private void releasePointerLockHelper(
+            View view, boolean callReleasePointerForView, boolean callbackNativeWindow) {
+        assert mPointerLockingView != null;
+        assert view == mPointerLockingView;
+
+        if (callReleasePointerForView) {
+            mPointerLockingView.releasePointerCapture();
+        }
+        if (callbackNativeWindow && mNativeWindowAndroid != 0) {
+            WindowAndroidJni.get().onWindowPointerLockRelease(mNativeWindowAndroid);
+        }
+
+        removePointerLockViews();
+    }
+
+    private void removePointerLockViews() {
+        var decorView = getDecorView();
+        if (mPointerLockChangeView != null && decorView instanceof ViewGroup decorViewGroup) {
+            decorViewGroup.removeView(mPointerLockChangeView);
+        }
+        if (mPointerLockingView != null) {
+            assert mPointerLockingViewFocusChangeListener != null;
+
+            if (mPointerLockingView.getOnFocusChangeListener()
+                    != mPointerLockingViewFocusChangeListener) {
+                Log.w(TAG, "Pointer locking view focus listener was changed");
+            } else {
+                mPointerLockingView.setOnFocusChangeListener(
+                        mPointerLockingViewPrvFocusChangeListener);
+            }
+        }
+
+        mPointerLockChangeView = null;
+        mPointerLockingView = null;
+        mPointerLockingViewFocusChangeListener = null;
+        mPointerLockingViewPrvFocusChangeListener = null;
+    }
+
+    @Nullable View getPointerLockChangeViewForTesting() {
+        return mPointerLockChangeView;
+    }
+
+    View.@Nullable OnFocusChangeListener getPointerLockingViewFocusChangeListenerForTesting() {
+        return mPointerLockingViewFocusChangeListener;
+    }
+
+    @CalledByNative
+    private boolean setHasKeyboardCapture(boolean hasCapture) {
+        Window window = getWindow();
+        if (window == null) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA
+                && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) {
+            WindowManager.LayoutParams params = window.getAttributes();
+            params.setKeyboardCaptureEnabled(hasCapture);
+            window.setAttributes(params);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Returns bounds of this window in global dp coordinates (takes display topology into account).
+     */
+    @CalledByNative
+    @VisibleForTesting(otherwise = PRIVATE)
+    public int @Nullable [] getBoundsInScreenCoordinates() {
+        // For older API levels fall through to default behavior.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return null;
+        }
+
+        final Context context = getContext().get();
+        if (context == null) {
+            return null;
+        }
+
+        final WindowManager wm = context.getSystemService(WindowManager.class);
+        final Rect boundsPx = wm.getCurrentWindowMetrics().getBounds();
+        final DisplayAndroid display = getDisplay();
+        final Rect globalBoundsDp =
+                DisplayUtil.convertLocalPxToGlobalDipCoordinates(display, boundsPx);
+
+        return new int[] {
+            globalBoundsDp.left, globalBoundsDp.top, globalBoundsDp.width(), globalBoundsDp.height()
+        }; // x, y, width, height
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private void maybeSendWindowPositionChangedEventToNative() {
+        final long startTimeMs = SystemClock.elapsedRealtime();
+
+        if (mNativeWindowAndroid == 0) {
+            return;
+        }
+
+        final Context context = mContextRef.get();
+        if (context == null) {
+            return;
+        }
+
+        final WindowManager wm = context.getSystemService(WindowManager.class);
+        final Rect boundsPx = wm.getCurrentWindowMetrics().getBounds();
+        if (boundsPx.equals(mLastWindowBounds)) {
+            return;
+        }
+        mLastWindowBounds = boundsPx;
+
+        WindowAndroidJni.get().onWindowPositionChanged(mNativeWindowAndroid);
+
+        final long durationMs = SystemClock.elapsedRealtime() - startTimeMs;
+        RecordHistogram.recordTimesHistogram("Android.Window.TimeToUpdateWindowBounds", durationMs);
+    }
+
     @NativeMethods
     interface Natives {
         long init(
@@ -1240,25 +1855,34 @@ public class WindowAndroid
                 float scrollFactor,
                 boolean windowIsWideColorGamut);
 
-        void onVisibilityChanged(long nativeWindowAndroid, WindowAndroid caller, boolean visible);
+        void onVisibilityChanged(long nativeWindowAndroid, boolean visible);
 
-        void onActivityStopped(long nativeWindowAndroid, WindowAndroid caller);
+        void onActivityStopped(long nativeWindowAndroid);
 
-        void onActivityStarted(long nativeWindowAndroid, WindowAndroid caller);
+        void onActivityStarted(long nativeWindowAndroid);
 
-        void setVSyncPaused(long nativeWindowAndroid, WindowAndroid caller, boolean paused);
+        void onUpdateRefreshRate(long nativeWindowAndroid, float refreshRate);
 
-        void onUpdateRefreshRate(long nativeWindowAndroid, WindowAndroid caller, float refreshRate);
+        void onUpdateDisplayId(long nativeWindowAndroid, int displayId);
 
-        void destroy(long nativeWindowAndroid, WindowAndroid caller);
+        void destroy(long nativeWindowAndroid);
 
         void onSupportedRefreshRatesUpdated(
-                long nativeWindowAndroid,
-                WindowAndroid caller,
-                float @Nullable [] supportedRefreshRates);
+                long nativeWindowAndroid, float @Nullable [] supportedRefreshRates);
 
-        void onOverlayTransformUpdated(long nativeWindowAndroid, WindowAndroid caller);
+        void onAdaptiveRefreshRateInfoChanged(
+                long nativeWindowAndroid,
+                boolean supportsAdaptiveRefreshRate,
+                float suggestedFrameRateHigh,
+                @JniType("std::vector<jfloat>") float[] framePerSecondArray,
+                @JniType("std::vector<jfloat>") float[] dpPerSecondArray);
+
+        void onOverlayTransformUpdated(long nativeWindowAndroid);
 
         void sendUnfoldLatencyBeginTimestamp(long nativeWindowAndroid, long beginTimestampMs);
+
+        void onWindowPointerLockRelease(long nativeWindowAndroid);
+
+        void onWindowPositionChanged(long nativeWindowAndroid);
     }
 }

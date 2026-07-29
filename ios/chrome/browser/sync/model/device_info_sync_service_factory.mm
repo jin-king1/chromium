@@ -8,12 +8,14 @@
 #import <utility>
 
 #import "base/feature_list.h"
+#import "base/features.h"
 #import "base/functional/bind.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/singleton.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/default_clock.h"
-#import "components/send_tab_to_self/features.h"
+#import "components/desktop_to_mobile_promos/features.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/device_id_helper.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/sync/invalidations/sync_invalidations_service.h"
@@ -34,6 +36,8 @@
 #import "ios/chrome/browser/sync/model/data_type_store_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_invalidations_service_factory.h"
 #import "ios/chrome/common/channel_info.h"
+#import "ios/web/public/thread/web_task_traits.h"
+#import "ios/web/public/thread/web_thread.h"
 
 namespace {
 
@@ -61,7 +65,7 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
   }
 
   // syncer::DeviceInfoSyncClient:
-  sync_pb::SyncEnums_SendTabReceivingType GetSendTabToSelfReceivingType()
+  syncer::DeviceInfo::SendTabReceivingType GetSendTabToSelfReceivingType()
       const override {
     GaiaId gaia_id =
         identity_manager_->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
@@ -69,22 +73,17 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
     bool send_tab_notifications_enabled = push_notification_settings::
         GetMobileNotificationPermissionStatusForClient(
             PushNotificationClientId::kSendTab, gaia_id);
-    if (base::FeatureList::IsEnabled(
-            send_tab_to_self::kSendTabToSelfIOSPushNotifications) &&
-        send_tab_notifications_enabled) {
-      return sync_pb::
-          SyncEnums_SendTabReceivingType_SEND_TAB_RECEIVING_TYPE_CHROME_AND_PUSH_NOTIFICATION;
+    if (send_tab_notifications_enabled) {
+      return syncer::DeviceInfo::SendTabReceivingType::
+          kChromeAndPushNotification;
     }
-    return sync_pb::
-        SyncEnums_SendTabReceivingType_SEND_TAB_RECEIVING_TYPE_CHROME_OR_UNSPECIFIED;
+    return syncer::DeviceInfo::SendTabReceivingType::kChromeOrUnspecified;
   }
 
   // syncer::DeviceInfoSyncClient:
   std::optional<syncer::DeviceInfo::SharingInfo> GetLocalSharingInfo()
       const override {
-    if (!identity_manager_ ||
-        !base::FeatureList::IsEnabled(
-            send_tab_to_self::kSendTabToSelfIOSPushNotifications)) {
+    if (!identity_manager_) {
       return std::nullopt;
     }
     GaiaId gaia_id =
@@ -93,13 +92,12 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
     std::string representative_target_id =
         GetApplicationContext()
             ->GetPushNotificationService()
-            ->GetRepresentativeTargetIdForGaiaId(gaia_id.ToNSString());
+            ->GetRepresentativeTargetIdForGaiaId(gaia_id);
     // Sharing info is not implemented on iOS, so empty structs are passed in.
     // TODO(crbug.com/352370268): Use SharingSyncPreference to hold SharingInfo.
     return syncer::DeviceInfo::SharingInfo(
-        syncer::DeviceInfo::SharingTargetInfo(),
         syncer::DeviceInfo::SharingTargetInfo(), representative_target_id,
-        std::set<sync_pb::SharingSpecificFields_EnabledFeatures>());
+        std::set<syncer::DeviceInfo::SharingFeature>());
   }
 
   // syncer::DeviceInfoSyncClient:
@@ -133,6 +131,39 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
   // syncer::DeviceInfoSyncClient:
   // Returns false since we only care about Chrome OS devices
   bool IsUmaEnabledOnCrOSDevice() const override { return false; }
+
+  // syncer::DeviceInfoSyncClient:
+  bool GetDesktopToIOSPromoReceivingEnabled() const override {
+    return MobilePromoOnDesktopEnabled();
+  }
+
+  // syncer::DeviceInfoSyncClient:
+  MobilePromoOnDesktopPromoTypeSet GetDesktopToIOSPromoReceivingTypes()
+      const override {
+    if (!MobilePromoOnDesktopEnabled()) {
+      return {};
+    }
+
+    MobilePromoOnDesktopPromoTypeSet enabled_types;
+    for (MobilePromoOnDesktopPromoType type :
+         MobilePromoOnDesktopPromoTypeSet::All()) {
+      if (MobilePromoOnDesktopTypeEnabled(type)) {
+        enabled_types.Put(type);
+      }
+    }
+    return enabled_types;
+  }
+
+  // syncer::DeviceInfoSyncClient:
+  syncer::DeviceInfo::GlicExperimentalTriggeringState
+  GetGlicExperimentalTriggeringState() const override {
+    return syncer::DeviceInfo::GlicExperimentalTriggeringState::kUnavailable;
+  }
+
+  // syncer::DeviceInfoSyncClient:
+  std::optional<int> GetGlicExperimentalTriggeringVersion() const override {
+    return std::nullopt;
+  }
 
  private:
   const raw_ptr<PrefService> prefs_;
@@ -189,9 +220,7 @@ DeviceInfoSyncServiceFactory::~DeviceInfoSyncServiceFactory() {}
 
 std::unique_ptr<KeyedService>
 DeviceInfoSyncServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
-
+    ProfileIOS* profile) const {
   syncer::SyncInvalidationsService* const sync_invalidations_service =
       SyncInvalidationsServiceFactory::GetForProfile(profile);
   signin::IdentityManager* const identity_manager =
@@ -207,5 +236,9 @@ DeviceInfoSyncServiceFactory::BuildServiceInstanceFor(
   return std::make_unique<syncer::DeviceInfoSyncServiceImpl>(
       DataTypeStoreServiceFactory::GetForProfile(profile)->GetStoreFactory(),
       std::move(local_device_info_provider), std::move(device_prefs),
-      std::move(device_info_sync_client), sync_invalidations_service);
+      std::move(device_info_sync_client), sync_invalidations_service,
+      /*pulse_task_runner=*/
+      base::FeatureList::IsEnabled(base::features::kReducePPMs)
+          ? web::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
+          : web::GetUIThreadTaskRunner({}));
 }

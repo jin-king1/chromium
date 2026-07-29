@@ -7,7 +7,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/android/build_info.h"
 #include "base/feature_list.h"
 #include "base/types/expected.h"
 #include "content/public/browser/android/android_overlay_provider.h"
@@ -73,7 +72,7 @@ const media::VideoCodec kMP4VideoCodecsToQuery[] = {
 
 // Is an audio sink connected which supports the given codec?
 static bool CanPassthrough(media::AudioCodec codec) {
-  return (media::AudioManagerAndroid::GetSinkAudioEncodingFormats() &
+  return (media::AudioManagerAndroid::GetHdmiOutputEncodingFormats() &
           media::ConvertAudioCodecToBitstreamFormat(codec)) != 0;
 }
 
@@ -243,6 +242,7 @@ class CheckCdmCompatibility {
       std::move(cdm_capability_cb_)
           .Run(base::unexpected(
               media::CdmCapabilityQueryStatus::kNoMediaDrmSupport));
+      delete this;
       return;
     }
 
@@ -258,9 +258,11 @@ class CheckCdmCompatibility {
   // is not supported.
   void OnServiceClosed() {
     DVLOG(1) << "IsKeySystemSupported failed for " << key_system_;
-    std::move(cdm_capability_cb_)
-        .Run(base::unexpected(
-            media::CdmCapabilityQueryStatus::kDisconnectionError));
+    if (cdm_capability_cb_) {
+      std::move(cdm_capability_cb_)
+          .Run(base::unexpected(
+              media::CdmCapabilityQueryStatus::kDisconnectionError));
+    }
     delete this;
   }
 
@@ -297,8 +299,7 @@ void GetAndroidCdmCapability(const std::string& key_system,
   // Calls to MediaDrm.isCryptoSchemeSupported() are known to crash
   // (see b/308692917), so calling them via a utility process to avoid
   // crashing the browser if allowed.
-  if (base::FeatureList::IsEnabled(
-          media::kAllowMediaCodecCallsInSeparateProcess)) {
+  if (base::FeatureList::IsEnabled(media::kMediaDrmQueryInSeparateProcess)) {
     // The class CheckCdmCompatibility will manage it's own lifetime
     // (destruct after calling `cdm_capability_cb`).
     auto* check_cdm_compatibility = new CheckCdmCompatibility(
@@ -321,7 +322,7 @@ void GetAndroidCdmCapability(const std::string& key_system,
     security_level = is_secure ? media::MediaDrmBridge::SECURITY_LEVEL_1
                                : media::MediaDrmBridge::SECURITY_LEVEL_3;
   }
-  auto version = MediaDrmBridge::GetVersion(key_system, security_level);
+  auto version = MediaDrmBridge::MaybeGetVersion(key_system, security_level);
   if (!version.has_value() &&
       version.error() ==
           media::CreateCdmStatus::kAndroidFailedL1SecurityLevel) {

@@ -18,7 +18,6 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
 #include "chrome/browser/ash/policy/status_collector/status_collector.h"
-#include "chrome/browser/browser_process.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/components/settings/cros_settings_provider.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
@@ -236,7 +235,7 @@ void StatusUploader::OnUploadCompleted(CloudPolicyClient::Result result) {
   status_upload_in_progress_ = false;
 
   if (result.IsClientNotRegisteredError()) {
-    // This can happen when the DM Token is missing (crbug.com/705607).
+    // This can happen when the DM Token is missing (crbug.com/41309687).
     VLOG(1) << "Skipping status upload because the client is not registered";
   } else if (result.IsSuccess()) {
     SYSLOG(INFO) << "Status upload successful";

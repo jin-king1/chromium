@@ -10,6 +10,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/policy/policy_constants.h"
+#include "remoting/base/session_policies.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -17,29 +18,30 @@ namespace remoting {
 
 namespace {
 
-const SessionPolicies kFullSessionPolicies = {
-    .clipboard_size_bytes = 1024,
-    .allow_stun_connections = true,
-    .allow_relayed_connections = false,
-    .host_udp_port_range =
-        {
-            .min_port = 123,
-            .max_port = 456,
-        },
+const SessionPolicies GetFullSessionPolicies() {
+  SessionPolicies session_policies;
+  session_policies.clipboard_size_bytes = 1024;
+  session_policies.allow_stun_connections = true;
+  session_policies.allow_relayed_connections = false;
+  session_policies.host_udp_port_range = {
+      .min_port = 123,
+      .max_port = 456,
+  };
 #if !BUILDFLAG(IS_CHROMEOS)
-    .allow_file_transfer = true,
-    .allow_uri_forwarding = false,
-    .maximum_session_duration = base::Hours(20),
-    .curtain_required = false,
+  session_policies.allow_file_transfer = true;
+  session_policies.allow_uri_forwarding = false;
+  session_policies.maximum_session_duration = base::Hours(20);
+  session_policies.curtain_required = false;
 #endif
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
-    .host_username_match_required = true,
+  session_policies.host_username_match_required = true;
 #endif
-};
+  return session_policies;
+}
 
-const base::Value::Dict& GetFullSessionPolicyDict() {
-  static const base::NoDestructor<base::Value::Dict> dict(
-      base::Value::Dict()
+const base::DictValue& GetFullSessionPolicyDict() {
+  static const base::NoDestructor<base::DictValue> dict(
+      base::DictValue()
           .Set(policy::key::kRemoteAccessHostClipboardSizeBytes, 1024)
           .Set(policy::key::kRemoteAccessHostFirewallTraversal, true)
           .Set(policy::key::kRemoteAccessHostAllowRelayedConnection, false)
@@ -59,13 +61,13 @@ const base::Value::Dict& GetFullSessionPolicyDict() {
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
-base::Value::Dict GetPolicyDictWithMaxDurationMins(int mins) {
+base::DictValue GetPolicyDictWithMaxDurationMins(int mins) {
   return GetFullSessionPolicyDict().Clone().Set(
       policy::key::kRemoteAccessHostMaximumSessionDurationMinutes, mins);
 }
 #endif
 
-base::Value::Dict GetPolicyDictWithClipboardSize(int clipboard_size) {
+base::DictValue GetPolicyDictWithClipboardSize(int clipboard_size) {
   return GetFullSessionPolicyDict().Clone().Set(
       policy::key::kRemoteAccessHostClipboardSizeBytes, clipboard_size);
 }
@@ -74,25 +76,33 @@ base::Value::Dict GetPolicyDictWithClipboardSize(int clipboard_size) {
 
 TEST(SessionPoliciesFromDict, EmptyDict_CreatesEmptyPolicies) {
   std::optional<SessionPolicies> policies =
-      SessionPoliciesFromDict(base::Value::Dict());
+      SessionPoliciesFromDict(base::DictValue());
   EXPECT_EQ(*policies, SessionPolicies());
 }
 
 TEST(SessionPoliciesFromDict, FullDict_CreatesFullPolicies) {
   std::optional<SessionPolicies> policies =
       SessionPoliciesFromDict(GetFullSessionPolicyDict());
-  EXPECT_EQ(*policies, kFullSessionPolicies);
+  EXPECT_EQ(*policies, GetFullSessionPolicies());
+}
+
+TEST(SessionPoliciesFromDict, FullDict_ExpectNoValueForAllowRemoteInput) {
+  // `SessionPolicies.allow_remote_input` is not set from `PolicyWatcher` so we
+  // expect the value to be empty .
+  std::optional<SessionPolicies> policies =
+      SessionPoliciesFromDict(GetFullSessionPolicyDict());
+  EXPECT_FALSE(policies->allow_remote_input.has_value());
 }
 
 TEST(SessionPoliciesFromDict, PartialDict_CreatesPartialPolicies) {
-  base::Value::Dict policy_dict = GetFullSessionPolicyDict().Clone();
+  base::DictValue policy_dict = GetFullSessionPolicyDict().Clone();
   policy_dict.Remove(policy::key::kRemoteAccessHostClipboardSizeBytes);
   policy_dict.Remove(policy::key::kRemoteAccessHostUdpPortRange);
 
   std::optional<SessionPolicies> policies =
       SessionPoliciesFromDict(policy_dict);
 
-  SessionPolicies expected_policies = kFullSessionPolicies;
+  SessionPolicies expected_policies = GetFullSessionPolicies();
   expected_policies.clipboard_size_bytes.reset();
   expected_policies.host_udp_port_range.reset();
   EXPECT_EQ(*policies, expected_policies);
@@ -100,7 +110,7 @@ TEST(SessionPoliciesFromDict, PartialDict_CreatesPartialPolicies) {
 
 TEST(SessionPoliciesFromDict,
      FirewallTraversalDisabled_DisablesStunAndRelayedConnections) {
-  base::Value::Dict policy_dict =
+  base::DictValue policy_dict =
       GetFullSessionPolicyDict()
           .Clone()
           .Set(policy::key::kRemoteAccessHostFirewallTraversal, false)
@@ -109,7 +119,7 @@ TEST(SessionPoliciesFromDict,
   std::optional<SessionPolicies> policies =
       SessionPoliciesFromDict(policy_dict);
 
-  SessionPolicies expected_policies = kFullSessionPolicies;
+  SessionPolicies expected_policies = GetFullSessionPolicies();
   expected_policies.allow_stun_connections = false;
   expected_policies.allow_relayed_connections = false;
   EXPECT_EQ(*policies, expected_policies);
@@ -126,7 +136,7 @@ TEST(SessionPoliciesFromDict, InvalidMaxSessionDuration_ReturnsNullopt) {
 
 #if !BUILDFLAG(IS_CHROMEOS)
 TEST(SessionPoliciesFromDict, ZeroMaxSessionDuration_FieldIsNullopt) {
-  SessionPolicies expected_policies = kFullSessionPolicies;
+  SessionPolicies expected_policies = GetFullSessionPolicies();
   expected_policies.maximum_session_duration.reset();
   EXPECT_EQ(SessionPoliciesFromDict(GetPolicyDictWithMaxDurationMins(0)),
             expected_policies);
@@ -134,20 +144,20 @@ TEST(SessionPoliciesFromDict, ZeroMaxSessionDuration_FieldIsNullopt) {
 #endif
 
 TEST(SessionPoliciesFromDict, InvalidHostUdpPortRange_ReturnsNullopt) {
-  base::Value::Dict policy_dict = GetFullSessionPolicyDict().Clone().Set(
+  base::DictValue policy_dict = GetFullSessionPolicyDict().Clone().Set(
       policy::key::kRemoteAccessHostUdpPortRange, "456-123");
   EXPECT_EQ(SessionPoliciesFromDict(policy_dict), std::nullopt);
 }
 
 TEST(SessionPoliciesFromDict, NegativeClipboardSize_FieldIsNullopt) {
-  SessionPolicies expected_policies = kFullSessionPolicies;
+  SessionPolicies expected_policies = GetFullSessionPolicies();
   expected_policies.clipboard_size_bytes.reset();
   EXPECT_EQ(SessionPoliciesFromDict(GetPolicyDictWithClipboardSize(-1)),
             expected_policies);
 }
 
 TEST(SessionPoliciesFromDict, ZeroClipboardSize_FieldIsZero) {
-  SessionPolicies expected_policies = kFullSessionPolicies;
+  SessionPolicies expected_policies = GetFullSessionPolicies();
   expected_policies.clipboard_size_bytes = 0;
   EXPECT_EQ(SessionPoliciesFromDict(GetPolicyDictWithClipboardSize(0)),
             expected_policies);

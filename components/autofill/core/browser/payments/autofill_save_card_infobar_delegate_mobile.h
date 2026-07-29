@@ -9,12 +9,13 @@
 #include <string>
 
 #include "build/build_config.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/payments/autofill_save_card_delegate.h"
 #include "components/autofill/core/browser/payments/autofill_save_card_ui_info.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
+#include "components/infobars/core/infobar_delegate.h"
 #include "ui/gfx/image/image.h"
+#include "url/gurl.h"
 
 namespace autofill {
 
@@ -63,6 +64,7 @@ class AutofillSaveCardInfoBarDelegateMobile : public ConfirmInfoBarDelegate {
   const std::u16string& expiration_date_year() const {
     return ui_info_.expiration_date_year;
   }
+  const std::u16string& card_cvc() const { return ui_info_.card_cvc; }
   const std::u16string& displayed_target_account_email() const {
     return ui_info_.displayed_target_account_email;
   }
@@ -76,9 +78,9 @@ class AutofillSaveCardInfoBarDelegateMobile : public ConfirmInfoBarDelegate {
   // Called when a link in the legal message text was clicked.
   virtual void OnLegalMessageLinkClicked(GURL url);
 
-  // Google Pay branding is enabled with a flag and only for cards upstreamed
+  // Google Chrome branding is enabled with a flag and only for cards upstreamed
   // to Google.
-  bool IsGooglePayBrandingEnabled() const;
+  bool IsChromeBrandingEnabled() const;
 
   // Description text to be shown above the card information in the infobar.
   std::u16string GetDescriptionText() const;
@@ -98,10 +100,6 @@ class AutofillSaveCardInfoBarDelegateMobile : public ConfirmInfoBarDelegate {
   AutofillSaveCardDelegate* delegate() { return delegate_.get(); }
 
  private:
-#if BUILDFLAG(IS_ANDROID)
-  void RemoveInfobar();
-#endif
-
   // Strings and assets provided to the info bar UI.
   AutofillSaveCardUiInfo ui_info_;
   // UI actions (accept, cancel, dismiss etc.) are forwarded to this object that

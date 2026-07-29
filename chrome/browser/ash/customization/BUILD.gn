@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("customization") {
@@ -26,6 +24,8 @@ static_library("customization") {
     "//chrome/browser/ash/extensions",
     "//chrome/browser/ash/login/users/avatar",
     "//chrome/browser/ash/net",
+    "//chrome/browser/extensions:external_loader",
+    "//chrome/browser/net",
     "//chrome/browser/profiles",
     "//chrome/common",
     "//chromeos/ash/components/system",
@@ -57,6 +57,10 @@ source_set("browser_tests") {
     "//net:test_support",
     "//testing/gtest",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("unit_tests") {

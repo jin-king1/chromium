@@ -18,6 +18,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "ui/views/border.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/test/views_test_base.h"
@@ -27,7 +28,7 @@ namespace ash {
 namespace test {
 
 namespace {
-int kDefaultSearchItems = 3;
+constexpr int kDefaultSearchItems = 3;
 
 // Preferred sizing for different types of search result views.
 constexpr int kPreferredWidth = 640;
@@ -82,7 +83,9 @@ class SearchResultListViewTest : public views::test::WidgetTest {
   void TearDown() override {
     default_view_.reset();
     answer_card_view_.reset();
-    widget_->CloseNow();
+    auto* widget = widget_.get();
+    widget_ = nullptr;
+    widget->CloseNow();
     views::test::WidgetTest::TearDown();
   }
 
@@ -299,7 +302,7 @@ class SearchResultListViewTest : public views::test::WidgetTest {
   AppListTestViewDelegate view_delegate_;
   std::unique_ptr<SearchResultListView> default_view_;
   std::unique_ptr<SearchResultListView> answer_card_view_;
-  raw_ptr<views::Widget, DanglingUntriaged> widget_;
+  raw_ptr<views::Widget> widget_;
 };
 
 TEST_F(SearchResultListViewTest, SpokenFeedback) {

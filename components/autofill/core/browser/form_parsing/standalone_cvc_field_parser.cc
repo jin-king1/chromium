@@ -4,19 +4,21 @@
 
 #include "components/autofill/core/browser/form_parsing/standalone_cvc_field_parser.h"
 
-#include "components/autofill/core/browser/autofill_field.h"
+#include <memory>
+#include <optional>
+#include <utility>
+
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_parsing/autofill_scanner.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
-#include "components/autofill/core/common/autofill_regex_constants.h"
-#include "components/autofill/core/common/autofill_regexes.h"
+#include "components/autofill/core/browser/form_parsing/field_candidates.h"
+#include "components/autofill/core/browser/form_parsing/form_field_parser.h"
 
 namespace autofill {
 
 // static
 std::unique_ptr<FormFieldParser> StandaloneCvcFieldParser::Parse(
     ParsingContext& context,
-    AutofillScanner* scanner) {
-
+    AutofillScanner& scanner) {
   // Ignore gift card fields as both |kGiftCardRe| and |kCardCvcRe| matches
   // "gift card pin" and "gift card code" but it should only match
   // |kGiftCardRe|.
@@ -36,16 +38,16 @@ StandaloneCvcFieldParser::~StandaloneCvcFieldParser() = default;
 
 // static
 bool StandaloneCvcFieldParser::MatchGiftCard(ParsingContext& context,
-                                             AutofillScanner* scanner) {
-  if (scanner->IsEnd()) {
+                                             AutofillScanner& scanner) {
+  if (scanner.IsEnd()) {
     return false;
   }
 
-  size_t saved_cursor = scanner->SaveCursor();
+  const AutofillScanner::Position saved_cursor = scanner.GetPosition();
   const bool gift_card_match = ParseField(context, scanner, "GIFT_CARD");
   // MatchGiftCard only wants to test the presence of a gift card but not
   // consume the field.
-  scanner->RewindTo(saved_cursor);
+  scanner.Restore(saved_cursor);
 
   return gift_card_match;
 }
@@ -56,7 +58,7 @@ StandaloneCvcFieldParser::StandaloneCvcFieldParser(FieldAndMatchInfo match)
 void StandaloneCvcFieldParser::AddClassifications(
     FieldCandidatesMap& field_candidates) const {
   AddClassification(match_, CREDIT_CARD_STANDALONE_VERIFICATION_CODE,
-                    kBaseCreditCardParserScore, field_candidates);
+                    HeuristicParser::kCreditCard, field_candidates);
 }
 
 }  // namespace autofill

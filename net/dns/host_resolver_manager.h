@@ -15,6 +15,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "base/functional/callback.h"
@@ -38,14 +39,13 @@
 #include "net/dns/httpssvc_metrics.h"
 #include "net/dns/public/dns_config_overrides.h"
 #include "net/dns/public/dns_query_type.h"
+#include "net/dns/public/insecure_dns_mode.h"
 #include "net/dns/public/secure_dns_mode.h"
 #include "net/dns/public/secure_dns_policy.h"
 #include "net/dns/resolve_context.h"
 #include "net/dns/system_dns_config_change_notifier.h"
 #include "net/log/net_log_with_source.h"
 #include "net/socket/datagram_client_socket.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
-#include "url/gurl.h"
 #include "url/scheme_host_port.h"
 
 namespace base {
@@ -153,14 +153,16 @@ class NET_EXPORT HostResolverManager
   // `host_cache()` coming from a ContextHostResolver that owns
   // `resolve_context`.
   std::unique_ptr<HostResolver::ResolveHostRequest> CreateRequest(
-      absl::variant<url::SchemeHostPort, HostPortPair> host,
+      std::variant<url::SchemeHostPort, HostPortPair> host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       std::optional<ResolveHostParameters> optional_parameters,
       ResolveContext* resolve_context);
   std::unique_ptr<HostResolver::ResolveHostRequest> CreateRequest(
       HostResolver::Host host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       std::optional<ResolveHostParameters> optional_parameters,
       ResolveContext* resolve_context);
@@ -174,8 +176,9 @@ class NET_EXPORT HostResolverManager
   // Creates a service endpoint resolution request.
   std::unique_ptr<HostResolver::ServiceEndpointRequest>
   CreateServiceEndpointRequest(
-      url::SchemeHostPort scheme_host_port,
+      HostResolver::Host host,
       NetworkAnonymizationKey network_anonymization_key,
+      handles::NetworkHandle target_network,
       NetLogWithSource net_log,
       ResolveHostParameters parameters,
       ResolveContext* resolve_context);
@@ -187,17 +190,20 @@ class NET_EXPORT HostResolverManager
   // HostResolverSystemTask::Params). If the DnsClient is not pre-configured
   // with a valid DnsConfig, a new config is fetched from NetworkChangeNotifier.
   //
-  // Setting to |true| has no effect if |ENABLE_BUILT_IN_DNS| not defined.
-  virtual void SetInsecureDnsClientEnabled(bool enabled,
+  // This has no effect if |ENABLE_BUILT_IN_DNS| not defined.
+  virtual void SetInsecureDnsClientEnabled(InsecureDnsMode mode,
                                            bool additional_dns_types_enabled);
 
-  base::Value::Dict GetDnsConfigAsValue() const;
+  base::DictValue GetDnsConfigAsValue() const;
 
   // Sets overriding configuration that will replace or add to configuration
   // read from the system for DnsClient resolution.
   void SetDnsConfigOverrides(DnsConfigOverrides overrides);
 
   void SetIPv6ReachabilityOverride(bool reachability_override);
+
+  void SetIsHappyEyeballsV3Enabled(bool enabled);
+  bool IsHappyEyeballsV3Enabled() const;
 
   // Support for invalidating cached per-context data on changes to network or
   // DNS configuration. ContextHostResolvers should register/deregister
@@ -253,6 +259,17 @@ class NET_EXPORT HostResolverManager
     last_ipv6_probe_time_ = base::TimeTicks();
   }
 
+  // Removes this manager as an observer of the SystemDnsConfigChangeNotifier
+  // and clears the pointer. This is needed in tests where the
+  // SystemDnsConfigChangeNotifier (owned by MockNetworkChangeNotifier) is
+  // destroyed before the in-process NetworkService (which is leaked).
+  void ClearSystemDnsConfigNotifierForTesting() {
+    if (system_dns_config_notifier_) {
+      system_dns_config_notifier_->RemoveObserver(this);
+      system_dns_config_notifier_ = nullptr;
+    }
+  }
+
   // Allows the tests to catch slots leaking out of the dispatcher.  One
   // HostResolverManager::Job could occupy multiple PrioritizedDispatcher job
   // slots.
@@ -279,6 +296,12 @@ class NET_EXPORT HostResolverManager
                       handles::NetworkHandle target_network,
                       NetLog* net_log);
 
+  bool InvalidationInProgress() const { return invalidation_in_progress_; }
+
+  void SetInvalidationInProgressForTesting() {
+    invalidation_in_progress_ = true;
+  }
+
  protected:
   // Callback from HaveOnlyLoopbackAddresses probe.
   void SetHaveOnlyLoopbackAddresses(bool result);
@@ -304,8 +327,9 @@ class NET_EXPORT HostResolverManager
     CONFIG_PRESET = 7,
     NAT64 = 8,
     HOSTS = 9,
+    DNS_PLATFORM = 10,
 
-    kMaxValue = HOSTS,
+    kMaxValue = DNS_PLATFORM,
   };
 
   // Returns true if the task is local, synchronous, and instantaneous.
@@ -336,6 +360,10 @@ class NET_EXPORT HostResolverManager
   //
   // If |cache_usage == ResolveHostParameters::CacheUsage::STALE_ALLOWED|, then
   // stale cache entries can be returned.
+  //
+  // WARNING: The task ordering configured here is assumed by
+  // HostResolverManager::Job::CalculateResolvePath() and other methods. If you
+  // modify the task ordering, update them accordingly.
   HostCache::Entry ResolveLocally(
       bool only_ipv6_reachable,
       const JobKey& job_key,
@@ -425,7 +453,7 @@ class NET_EXPORT HostResolverManager
   // may push an insecure cache lookup ahead of a secure DnsTask.
   void PushDnsTasks(bool system_task_allowed,
                     SecureDnsMode secure_dns_mode,
-                    bool insecure_tasks_allowed,
+                    InsecureDnsMode insecure_dns_mode,
                     bool allow_cache,
                     bool prioritize_local_lookups,
                     ResolveContext* resolve_context,
@@ -433,6 +461,10 @@ class NET_EXPORT HostResolverManager
 
   // Initialized the sequence of tasks to run to resolve a request. The sequence
   // may be adjusted later and not all tasks need to be run.
+  //
+  // WARNING: The task ordering configured here is assumed by
+  // HostResolverManager::Job::CalculateResolvePath() and other methods. If you
+  // modify the task ordering, update them accordingly.
   void CreateTaskSequence(const JobKey& job_key,
                           ResolveHostParameters::CacheUsage cache_usage,
                           SecureDnsPolicy secure_dns_policy,
@@ -442,7 +474,8 @@ class NET_EXPORT HostResolverManager
   // already cached, and ERR_IO_PENDING when a probe is scheduled to be
   // completed asynchronously. When called repeatedly this method returns OK to
   // confirm that results have been cached.
-  int StartIPv6ReachabilityCheck(const NetLogWithSource& net_log,
+  int StartIPv6ReachabilityCheck(handles::NetworkHandle target_network,
+                                 const NetLogWithSource& net_log,
                                  ClientSocketFactory* client_socket_factory,
                                  CompletionOnceCallback callback);
 
@@ -460,6 +493,7 @@ class NET_EXPORT HostResolverManager
   // ERR_IO_PENDING if it will be asynchronous.
   virtual int StartGloballyReachableCheck(
       const IPAddress& dest,
+      handles::NetworkHandle target_network,
       const NetLogWithSource& net_log,
       ClientSocketFactory* client_socket_factory,
       CompletionOnceCallback callback);
@@ -506,7 +540,8 @@ class NET_EXPORT HostResolverManager
   void TryServingAllJobsFromHosts();
 
   // NetworkChangeNotifier::IPAddressObserver:
-  void OnIPAddressChanged() override;
+  void OnIPAddressChanged(
+      NetworkChangeNotifier::IPAddressChangeType change_type) override;
 
   // NetworkChangeNotifier::ConnectionTypeObserver:
   void OnConnectionTypeChanged(
@@ -575,6 +610,9 @@ class NET_EXPORT HostResolverManager
   // When true, query AAAA even when the globally reachable check failed.
   bool ipv6_reachability_override_ = false;
 
+  // Enables or disables the HappyEyeballsV3 feature.
+  bool is_happy_eyeballs_v3_enabled_;
+
   // Any resolver flags that should be added to a request by default.
   HostResolverFlags additional_resolver_flags_ = 0;
 
@@ -590,12 +628,15 @@ class NET_EXPORT HostResolverManager
   // For per-context cache invalidation notifications.
   base::ObserverList<ResolveContext,
                      true /* check_empty */,
-                     false /* allow_reentrancy */>
+                     base::ObserverListReentrancyPolicy::kDisallowReentrancy>
       registered_contexts_;
+
+  // True while invalidating caches.
   bool invalidation_in_progress_ = false;
 
   // An experimental flag for features::kUseDnsHttpsSvcb.
   HostResolver::HttpsSvcbOptions https_svcb_options_;
+
 
   std::vector<CompletionOnceCallback> ipv6_request_callbacks_;
 

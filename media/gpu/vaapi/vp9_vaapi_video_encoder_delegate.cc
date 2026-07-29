@@ -2,20 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/vaapi/vp9_vaapi_video_encoder_delegate.h"
 
 #include <va/va.h>
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <numeric>
 
 #include "base/bits.h"
+#include "base/compiler_specific.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
@@ -113,21 +110,22 @@ libvpx::VP9RateControlRtcConfig CreateRateControlConfig(
   rc_cfg.ss_number_layers = num_spatial_layers;
   rc_cfg.ts_number_layers = num_temporal_layers;
   for (size_t tid = 0; tid < num_temporal_layers; ++tid) {
-    rc_cfg.ts_rate_decimator[tid] = 1u << (num_temporal_layers - tid - 1);
+    UNSAFE_TODO(rc_cfg.ts_rate_decimator[tid]) =
+        1u << (num_temporal_layers - tid - 1);
   }
   for (size_t sid = 0; sid < num_spatial_layers; ++sid) {
     int gcd =
         std::gcd(encode_size.height(), spatial_layer_resolutions[sid].height());
-    rc_cfg.scaling_factor_num[sid] =
+    UNSAFE_TODO(rc_cfg.scaling_factor_num[sid]) =
         spatial_layer_resolutions[sid].height() / gcd;
-    rc_cfg.scaling_factor_den[sid] = encode_size.height() / gcd;
+    UNSAFE_TODO(rc_cfg.scaling_factor_den[sid]) = encode_size.height() / gcd;
     int bitrate_sum = 0;
     for (size_t tid = 0; tid < num_temporal_layers; ++tid) {
       size_t idx = sid * num_temporal_layers + tid;
-      rc_cfg.max_quantizers[idx] = rc_cfg.max_quantizer;
-      rc_cfg.min_quantizers[idx] = rc_cfg.min_quantizer;
+      UNSAFE_TODO(rc_cfg.max_quantizers[idx]) = rc_cfg.max_quantizer;
+      UNSAFE_TODO(rc_cfg.min_quantizers[idx]) = rc_cfg.min_quantizer;
       bitrate_sum += bitrate_allocation.GetBitrateBps(sid, tid);
-      rc_cfg.layer_target_bitrate[idx] = bitrate_sum / 1000;
+      UNSAFE_TODO(rc_cfg.layer_target_bitrate[idx]) = bitrate_sum / 1000;
     }
   }
   return rc_cfg;
@@ -264,6 +262,13 @@ bool VP9VaapiVideoEncoderDelegate::Initialize(
       return false;
     }
     for (const auto& spatial_layer : config.spatial_layers) {
+      // Only down scaling is supported in spatial layer encoding.
+      if (spatial_layer.width > visible_size_.width() ||
+          spatial_layer.height > visible_size_.height()) {
+        VLOGF(1) << "Spatial layer resolution is larger than visible size";
+        return false;
+      }
+
       spatial_layer_resolutions.emplace_back(
           gfx::Size(spatial_layer.width, spatial_layer.height));
     }
@@ -656,7 +661,7 @@ bool VP9VaapiVideoEncoderDelegate::SubmitFrameParameters(
 
   for (size_t i = 0; i < kVp9NumRefFrames; i++) {
     auto ref_pic = ref_frames.GetFrame(i);
-    pic_param.reference_frames[i] =
+    UNSAFE_TODO(pic_param.reference_frames[i]) =
         ref_pic ? ref_pic->AsVaapiVP9Picture()->va_surface_id() : VA_INVALID_ID;
   }
 

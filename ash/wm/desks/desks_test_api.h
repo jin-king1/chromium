@@ -7,6 +7,7 @@
 
 #include "ash/wm/desks/desk_action_context_menu.h"
 #include "ash/wm/desks/desk_bar_view_base.h"
+#include "base/auto_reset.h"
 
 namespace aura {
 class Window;
@@ -54,8 +55,6 @@ class DesksTestApi {
       Desk* desk);
   static views::Label* GetDeskShortcutLabel(DeskMiniView* mini_view);
   static bool IsDeskShortcutViewVisible(DeskMiniView* mini_view);
-  static DeskProfilesButton* GetDeskProfileButton(DeskMiniView* mini_view);
-  static bool HasVerticalDotsButton();
   static bool DesksControllerHasDesk(Desk* desk);
   static bool DesksControllerCanUndoDeskRemoval();
 
@@ -68,10 +67,6 @@ class DesksTestApi {
 
   // Waits for `desk_bar_view` to finish its UI update.
   static void WaitForDeskBarUiUpdate(DeskBarViewBase* desk_bar_view);
-
-  // Invoke `done` when `desk_bar_view` finishes its UI updates.
-  static void SetDeskBarUiUpdateCallback(DeskBarViewBase* desk_bar_view,
-                                         base::OnceClosure done);
 
   // Desk context menu related. `GetContextMenuForDesk()` and
   // `GetContextMenuModelForDesk()` open a context menu.

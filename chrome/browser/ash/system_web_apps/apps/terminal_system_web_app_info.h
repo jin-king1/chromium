@@ -7,11 +7,8 @@
 
 #include <memory>
 
-#include "chrome/common/webui_url_constants.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
 #include "ui/gfx/geometry/rect.h"
-
-class Browser;
 
 namespace web_app {
 struct WebAppInstallInfo;
@@ -23,12 +20,13 @@ class TerminalSystemAppDelegate : public ash::SystemWebAppDelegate {
 
   // ash::SystemWebAppDelegate overrides:
   std::unique_ptr<web_app::WebAppInstallInfo> GetWebAppInfo() const override;
-  Browser* GetWindowForLaunch(Profile* profile, const GURL& url) const override;
+  ash::BrowserDelegate* GetWindowForLaunch(Profile* profile,
+                                           const GURL& url) const override;
   bool ShouldShowNewWindowMenuOption() const override;
   bool ShouldShowInLauncher() const override;
   bool IsAppEnabled() const override;
   bool ShouldHaveTabStrip() const override;
-  gfx::Rect GetDefaultBounds(Browser* browser) const override;
+  gfx::Rect GetDefaultBounds(ash::BrowserDelegate* browser) const override;
   bool HasCustomTabMenuModel() const override;
   std::unique_ptr<ui::SimpleMenuModel> GetTabMenuModel(
       ui::SimpleMenuModel::Delegate* delegate) const override;

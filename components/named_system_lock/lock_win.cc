@@ -12,7 +12,6 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
-#include "base/win/atl.h"
 #include "base/win/scoped_handle.h"
 
 namespace named_system_lock {
@@ -27,7 +26,7 @@ class ScopedLockImpl {
  private:
   friend ScopedLock;
   bool Initialize(const std::wstring& mutex_name,
-                  CSecurityAttributes* sa,
+                  SECURITY_ATTRIBUTES* sa,
                   base::TimeDelta timeout);
 
   base::win::ScopedHandle mutex_;
@@ -40,7 +39,7 @@ ScopedLock::~ScopedLock() = default;
 
 // static
 std::unique_ptr<ScopedLock> ScopedLock::Create(const std::wstring& mutex_name,
-                                               CSecurityAttributes* sa,
+                                               SECURITY_ATTRIBUTES* sa,
                                                base::TimeDelta timeout) {
   auto lock = std::make_unique<ScopedLockImpl>();
 
@@ -54,10 +53,10 @@ std::unique_ptr<ScopedLock> ScopedLock::Create(const std::wstring& mutex_name,
 }
 
 bool ScopedLockImpl::Initialize(const std::wstring& mutex_name,
-                                CSecurityAttributes* sa,
+                                SECURITY_ATTRIBUTES* sa,
                                 base::TimeDelta timeout) {
   mutex_.Set(::CreateMutex(sa, false, mutex_name.c_str()));
-  if (!mutex_.IsValid()) {
+  if (!mutex_.is_valid()) {
     return false;
   }
 
@@ -66,7 +65,7 @@ bool ScopedLockImpl::Initialize(const std::wstring& mutex_name,
 }
 
 ScopedLockImpl::~ScopedLockImpl() {
-  if (mutex_.IsValid()) {
+  if (mutex_.is_valid()) {
     ::ReleaseMutex(mutex_.Get());
     VLOG(2) << "Lock released.";
   }

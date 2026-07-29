@@ -31,7 +31,7 @@ class SystemFeaturesDisableListPolicyHandlerTest : public testing::Test {
 
   void ApplyPolicySettings(std::vector<std::string> list) {
     PolicyMap policy_map;
-    base::Value::List features_list;
+    base::ListValue features_list;
     for (auto& i : list) {
       features_list.Append(i);
     }
@@ -43,7 +43,7 @@ class SystemFeaturesDisableListPolicyHandlerTest : public testing::Test {
   }
 
   void VerifyPrefList(std::vector<SystemFeature> expected) {
-    base::Value::List expected_list;
+    base::ListValue expected_list;
     for (auto& i : expected) {
       expected_list.Append(static_cast<int>(i));
     }
@@ -76,7 +76,8 @@ TEST_F(SystemFeaturesDisableListPolicyHandlerTest, ShouldHandleAllSettings) {
        "terminal",      "gallery",      "print_jobs",       "key_shortcuts",
        "recorder",      "gmail",        "google_docs",      "google_slides",
        "google_sheets", "google_drive", "google_keep",      "google_calendar",
-       "google_chat",   "youtube",      "google_maps"});
+       "google_chat",   "youtube",      "google_maps",      "calculator",
+       "text_editor",   "vids"});
 
   VerifyPrefList(
       {SystemFeature::kCamera,          SystemFeature::kOsSettings,
@@ -90,7 +91,8 @@ TEST_F(SystemFeaturesDisableListPolicyHandlerTest, ShouldHandleAllSettings) {
        SystemFeature::kGoogleSheets,    SystemFeature::kGoogleDrive,
        SystemFeature::kGoogleKeep,      SystemFeature::kGoogleCalendar,
        SystemFeature::kGoogleChat,      SystemFeature::kYoutube,
-       SystemFeature::kGoogleMaps});
+       SystemFeature::kGoogleMaps,      SystemFeature::kCalculator,
+       SystemFeature::kTextEditor,      SystemFeature::kVids});
 
   std::vector<base::Bucket> expected_histogram{
       base::Bucket(static_cast<int>(SystemFeature::kCamera), 1),
@@ -115,7 +117,10 @@ TEST_F(SystemFeaturesDisableListPolicyHandlerTest, ShouldHandleAllSettings) {
       base::Bucket(static_cast<int>(SystemFeature::kGoogleCalendar), 1),
       base::Bucket(static_cast<int>(SystemFeature::kGoogleChat), 1),
       base::Bucket(static_cast<int>(SystemFeature::kYoutube), 1),
-      base::Bucket(static_cast<int>(SystemFeature::kGoogleMaps), 1)};
+      base::Bucket(static_cast<int>(SystemFeature::kGoogleMaps), 1),
+      base::Bucket(static_cast<int>(SystemFeature::kCalculator), 1),
+      base::Bucket(static_cast<int>(SystemFeature::kTextEditor), 1),
+      base::Bucket(static_cast<int>(SystemFeature::kVids), 1)};
 
   EXPECT_EQ(
       histogram_tester_.GetAllSamples(kSystemFeaturesDisableListHistogram),

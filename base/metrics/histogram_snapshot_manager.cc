@@ -10,18 +10,13 @@
 #include "base/debug/crash_logging.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_flattener.h"
+#include "base/metrics/bucket_ranges.h"
+#include "base/metrics/histogram.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 
 namespace base {
-
-HistogramSnapshotManager::HistogramSnapshotManager(
-    HistogramFlattener* histogram_flattener)
-    : histogram_flattener_(histogram_flattener) {
-  DCHECK(histogram_flattener_);
-}
 
 HistogramSnapshotManager::~HistogramSnapshotManager() = default;
 
@@ -50,7 +45,6 @@ void HistogramSnapshotManager::PrepareFinalDelta(
 
 void HistogramSnapshotManager::PrepareSamples(const HistogramBase* histogram,
                                               const HistogramSamples& samples) {
-  DCHECK(histogram_flattener_);
   if (samples.TotalCount() <= 0) {
     return;
   }
@@ -80,7 +74,7 @@ void HistogramSnapshotManager::PrepareSamples(const HistogramBase* histogram,
     for (size_t index = 0; index < ranges->size(); ++index) {
       ranges_string += base::StringPrintf("%d ", ranges->range(index));
     }
-    SCOPED_CRASH_KEY_STRING32("PrepareSamples", "ranges", ranges_string);
+    SCOPED_CRASH_KEY_STRING1024("PrepareSamples", "ranges", ranges_string);
 
     // The checksum should have caught this, so crash separately if it didn't.
     CHECK_NE(0U, HistogramBase::RANGE_CHECKSUM_ERROR & corruption);
@@ -99,7 +93,7 @@ void HistogramSnapshotManager::PrepareSamples(const HistogramBase* histogram,
     return;
   }
 
-  histogram_flattener_->RecordDelta(*histogram, samples);
+  RecordDelta(*histogram, samples);
 }
 
 }  // namespace base

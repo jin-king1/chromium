@@ -9,7 +9,7 @@
 
 namespace regional_capabilities {
 
-CountryIdHolder::CountryIdHolder(CountryId country_id)
+CountryIdHolder::CountryIdHolder(country_codes::CountryId country_id)
     : country_id_(country_id) {}
 
 CountryIdHolder::~CountryIdHolder() = default;
@@ -23,29 +23,15 @@ bool CountryIdHolder::operator==(const CountryIdHolder& other) const {
   return country_id_ == other.country_id_;
 }
 
-CountryId CountryIdHolder::GetRestricted(
-    CountryAccessReason access_reason) const {
+country_codes::CountryId CountryIdHolder::GetRestricted(
+    CountryAccessKey access_key) const {
   // TODO(crbug.com/328040066): Record access to UMA.
   return country_id_;
 }
 
-CountryId CountryIdHolder::GetForTesting() const {
+country_codes::CountryId CountryIdHolder::GetForTesting() const {
   CHECK_IS_TEST();
   return country_id_;
-}
-
-CountryId CountryIdHolder::GetRestricted(
-    CountryAccessKey<TemplateURLPrepopulateData::Resolver> access_key) const {
-  return GetRestricted(access_key.reason);
-}
-CountryId CountryIdHolder::GetRestricted(
-    CountryAccessKey<search_engines::SearchEngineChoiceService> access_key)
-    const {
-  return GetRestricted(access_key.reason);
-}
-CountryId CountryIdHolder::GetRestricted(
-    CountryAccessKey<RegionalCapabilitiesService> access_key) const {
-  return GetRestricted(access_key.reason);
 }
 
 }  // namespace regional_capabilities

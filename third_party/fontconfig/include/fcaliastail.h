@@ -70,12 +70,22 @@ extern __typeof (FcConfigGetRescanInterval) FcConfigGetRescanInterval __attribut
 extern __typeof (FcConfigSetRescanInterval) FcConfigSetRescanInterval __attribute((alias("IA__FcConfigSetRescanInterval"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcConfigGetFonts
 extern __typeof (FcConfigGetFonts) FcConfigGetFonts __attribute((alias("IA__FcConfigGetFonts"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
+# undef FcConfigAcceptFont
+extern __typeof (FcConfigAcceptFont) FcConfigAcceptFont __attribute((alias("IA__FcConfigAcceptFont"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
+# undef FcConfigAcceptFilter
+extern __typeof (FcConfigAcceptFilter) FcConfigAcceptFilter __attribute((alias("IA__FcConfigAcceptFilter"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcConfigAppFontAddFile
 extern __typeof (FcConfigAppFontAddFile) FcConfigAppFontAddFile __attribute((alias("IA__FcConfigAppFontAddFile"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcConfigAppFontAddDir
 extern __typeof (FcConfigAppFontAddDir) FcConfigAppFontAddDir __attribute((alias("IA__FcConfigAppFontAddDir"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcConfigAppFontClear
 extern __typeof (FcConfigAppFontClear) FcConfigAppFontClear __attribute((alias("IA__FcConfigAppFontClear"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
+# undef FcConfigPreferAppFont
+extern __typeof (FcConfigPreferAppFont) FcConfigPreferAppFont __attribute((alias("IA__FcConfigPreferAppFont"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
+# undef FcConfigSetWarningFlags
+extern __typeof (FcConfigSetWarningFlags) FcConfigSetWarningFlags __attribute((alias("IA__FcConfigSetWarningFlags"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
+# undef FcConfigGetWarningFlags
+extern __typeof (FcConfigGetWarningFlags) FcConfigGetWarningFlags __attribute((alias("IA__FcConfigGetWarningFlags"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcConfigSubstituteWithPat
 extern __typeof (FcConfigSubstituteWithPat) FcConfigSubstituteWithPat __attribute((alias("IA__FcConfigSubstituteWithPat"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcConfigSubstitute
@@ -84,6 +94,8 @@ extern __typeof (FcConfigSubstitute) FcConfigSubstitute __attribute((alias("IA__
 extern __typeof (FcConfigGetSysRoot) FcConfigGetSysRoot __attribute((alias("IA__FcConfigGetSysRoot"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcConfigSetSysRoot
 extern __typeof (FcConfigSetSysRoot) FcConfigSetSysRoot __attribute((alias("IA__FcConfigSetSysRoot"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
+# undef FcConfigSetFontSetFilter
+extern __typeof (FcConfigSetFontSetFilter) FcConfigSetFontSetFilter __attribute((alias("IA__FcConfigSetFontSetFilter"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcConfigFileInfoIterInit
 extern __typeof (FcConfigFileInfoIterInit) FcConfigFileInfoIterInit __attribute((alias("IA__FcConfigFileInfoIterInit"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcConfigFileInfoIterNext
@@ -140,8 +152,12 @@ extern __typeof (FcPatternPrint) FcPatternPrint __attribute((alias("IA__FcPatter
 extern __typeof (FcFontSetPrint) FcFontSetPrint __attribute((alias("IA__FcFontSetPrint"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 #endif /* __fcdbg__ */
 #ifdef __fcdefault__
+# undef FcConfigGetDefaultLangs
+extern __typeof (FcConfigGetDefaultLangs) FcConfigGetDefaultLangs __attribute((alias("IA__FcConfigGetDefaultLangs"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcGetDefaultLangs
 extern __typeof (FcGetDefaultLangs) FcGetDefaultLangs __attribute((alias("IA__FcGetDefaultLangs"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
+# undef FcConfigSetDefaultSubstitute
+extern __typeof (FcConfigSetDefaultSubstitute) FcConfigSetDefaultSubstitute __attribute((alias("IA__FcConfigSetDefaultSubstitute"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcDefaultSubstitute
 extern __typeof (FcDefaultSubstitute) FcDefaultSubstitute __attribute((alias("IA__FcDefaultSubstitute"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 #endif /* __fcdefault__ */
@@ -171,12 +187,6 @@ extern __typeof (FcDirCacheLoadFile) FcDirCacheLoadFile __attribute((alias("IA__
 # undef FcDirCacheUnload
 extern __typeof (FcDirCacheUnload) FcDirCacheUnload __attribute((alias("IA__FcDirCacheUnload"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 #endif /* __fccache__ */
-#ifdef __fcfreetype__
-# undef FcFreeTypeQuery
-extern __typeof (FcFreeTypeQuery) FcFreeTypeQuery __attribute((alias("IA__FcFreeTypeQuery"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
-# undef FcFreeTypeQueryAll
-extern __typeof (FcFreeTypeQueryAll) FcFreeTypeQueryAll __attribute((alias("IA__FcFreeTypeQueryAll"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
-#endif /* __fcfreetype__ */
 #ifdef __fcfs__
 # undef FcFontSetCreate
 extern __typeof (FcFontSetCreate) FcFontSetCreate __attribute((alias("IA__FcFontSetCreate"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
@@ -314,6 +324,8 @@ extern __typeof (FcNameGetConstant) FcNameGetConstant __attribute((alias("IA__Fc
 extern __typeof (FcNameGetConstantFor) FcNameGetConstantFor __attribute((alias("IA__FcNameGetConstantFor"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcNameConstant
 extern __typeof (FcNameConstant) FcNameConstant __attribute((alias("IA__FcNameConstant"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
+# undef FcNameGetConstantNameFrom
+extern __typeof (FcNameGetConstantNameFrom) FcNameGetConstantNameFrom __attribute((alias("IA__FcNameGetConstantNameFrom"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcNameParse
 extern __typeof (FcNameParse) FcNameParse __attribute((alias("IA__FcNameParse"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 # undef FcNameUnparse
@@ -501,6 +513,10 @@ extern __typeof (FcConfigParseAndLoad) FcConfigParseAndLoad __attribute((alias("
 # undef FcConfigParseAndLoadFromMemory
 extern __typeof (FcConfigParseAndLoadFromMemory) FcConfigParseAndLoadFromMemory __attribute((alias("IA__FcConfigParseAndLoadFromMemory"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
 #endif /* __fcxml__ */
+#ifdef __fcconffile__
+# undef FcConfigFileGenerate
+extern __typeof (FcConfigFileGenerate) FcConfigFileGenerate __attribute((alias("IA__FcConfigFileGenerate"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;
+#endif /* __fcconffile__ */
 #ifdef __fccfg__
 # undef FcConfigGetRescanInverval
 extern __typeof (FcConfigGetRescanInverval) FcConfigGetRescanInverval __attribute((alias("IA__FcConfigGetRescanInverval"))) FC_ATTRIBUTE_VISIBILITY_EXPORT;

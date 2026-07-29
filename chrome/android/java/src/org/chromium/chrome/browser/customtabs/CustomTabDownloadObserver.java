@@ -7,12 +7,15 @@ package org.chromium.chrome.browser.customtabs;
 import android.app.Activity;
 import android.text.TextUtils;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.DeferredStartupHandler;
 import org.chromium.chrome.browser.customtabs.content.TabObserverRegistrar;
 import org.chromium.chrome.browser.download.DownloadManagerService;
 import org.chromium.chrome.browser.download.interstitial.DownloadInterstitialCoordinator;
 import org.chromium.chrome.browser.download.interstitial.DownloadInterstitialCoordinatorFactory;
 import org.chromium.chrome.browser.download.interstitial.NewDownloadTab;
+import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
+import org.chromium.chrome.browser.lifecycle.DestroyObserver;
 import org.chromium.chrome.browser.pdf.PdfUtils;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
@@ -25,14 +28,26 @@ import org.chromium.ui.base.PageTransition;
  * A {@link TabObserver} that determines whether a custom tab navigation should show the new
  * download UI.
  */
-public class CustomTabDownloadObserver extends EmptyTabObserver {
+@NullMarked
+public class CustomTabDownloadObserver extends EmptyTabObserver implements DestroyObserver {
     private final Activity mActivity;
     private final TabObserverRegistrar mTabObserverRegistrar;
+    private final ActivityLifecycleDispatcher mLifecycleDispatcher;
 
-    public CustomTabDownloadObserver(Activity activity, TabObserverRegistrar tabObserverRegistrar) {
+    public CustomTabDownloadObserver(
+            Activity activity,
+            TabObserverRegistrar tabObserverRegistrar,
+            ActivityLifecycleDispatcher lifecycleDispatcher) {
         mActivity = activity;
         mTabObserverRegistrar = tabObserverRegistrar;
+        mLifecycleDispatcher = lifecycleDispatcher;
+        mLifecycleDispatcher.register(this);
         mTabObserverRegistrar.registerTabObserver(this);
+    }
+
+    @Override
+    public void onDestroy() {
+        unregister();
     }
 
     @Override
@@ -87,5 +102,6 @@ public class CustomTabDownloadObserver extends EmptyTabObserver {
 
     private void unregister() {
         mTabObserverRegistrar.unregisterTabObserver(this);
+        mLifecycleDispatcher.unregister(this);
     }
 }

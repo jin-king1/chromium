@@ -10,7 +10,7 @@
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_constants.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
-#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/browser/shared/ui/image/image_names.h"
 #import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/signin_util.h"
 #import "ios/chrome/common/ui/util/image_util.h"
@@ -29,7 +29,7 @@ using l10n_util::GetNSStringF;
 // there is no userGivenName.
 @property(nonatomic) NSString* userEmail;
 
-// User full name used fro the primary button.
+// User full name used for the primary button. It may be nil.
 @property(nonatomic) NSString* userGivenName;
 
 // User profile image.
@@ -98,12 +98,12 @@ using l10n_util::GetNSStringF;
 // Configures the view elements of the `signinPromoView` to conform to the
 // `SigninPromoViewStyleStandard` style.
 - (void)configureStandardSigninPromoView:(SigninPromoView*)signinPromoView {
-  NSString* name =
+  NSString* nameOrEmail =
       self.userGivenName.length ? self.userGivenName : self.userEmail;
-  std::u16string name16 = SysNSStringToUTF16(name);
+  std::u16string nameOrEmail16 = SysNSStringToUTF16(nameOrEmail);
   switch (self.signinPromoViewMode) {
     case SigninPromoViewModeNoAccounts: {
-      DCHECK(!name);
+      DCHECK(!nameOrEmail);
       DCHECK(!self.userImage);
       NSString* signInString =
           self.primaryButtonTitleOverride
@@ -116,7 +116,7 @@ using l10n_util::GetNSStringF;
       [signinPromoView
           configurePrimaryButtonWithTitle:GetNSStringF(
                                               IDS_IOS_SIGNIN_PROMO_CONTINUE_AS,
-                                              name16)];
+                                              nameOrEmail16)];
       [signinPromoView.secondaryButton
           setTitle:GetNSString(IDS_IOS_SIGNIN_PROMO_CHANGE_ACCOUNT)
           forState:UIControlStateNormal];
@@ -181,11 +181,11 @@ using l10n_util::GetNSStringF;
 // Sets non-profile image to a given `signinPromoView`.
 - (void)assignNonProfileImageToSigninPromoView:
     (SigninPromoView*)signinPromoView {
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   UIImage* logo = [UIImage imageNamed:kChromeSigninPromoLogoImage];
 #else
   UIImage* logo = [UIImage imageNamed:kChromiumSigninPromoLogoImage];
-#endif  // BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#endif  // BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   DCHECK(logo);
   [signinPromoView setNonProfileImage:logo];
 }

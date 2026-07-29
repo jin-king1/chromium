@@ -30,6 +30,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -40,7 +41,7 @@
 #include "chromeos/ash/components/network/network_state_test_helper.h"
 #include "chromeos/ash/services/quick_pair/public/cpp/account_key_filter.h"
 #include "components/prefs/testing_pref_service.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/public/cpp/bluetooth_address.h"
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
@@ -93,10 +94,8 @@ std::string GenerateSha256AccountKeyMacAddress(const std::string& account_key,
 
   concat_bytes.insert(concat_bytes.end(), mac_address_bytes.begin(),
                       mac_address_bytes.end());
-  std::array<uint8_t, crypto::kSHA256Length> hashed =
-      crypto::SHA256Hash(concat_bytes);
 
-  return std::string(hashed.begin(), hashed.end());
+  return std::string(base::as_string_view(crypto::hash::Sha256(concat_bytes)));
 }
 
 std::string Base64Decode(const std::string& encoded) {
@@ -193,6 +192,16 @@ class FastPairRepositoryImplTest : public AshTestBase {
   }
 
   void TearDown() override {
+    saved_device_registry_ = nullptr;
+    pending_write_store_ = nullptr;
+    device_image_store_ = nullptr;
+    device_address_map_ = nullptr;
+    image_decoder_ = nullptr;
+    footprints_fetcher_ = nullptr;
+    device_metadata_fetcher_ = nullptr;
+    metadata_http_fetcher_ = nullptr;
+    device_.reset();
+    // reset last due to dependency to above
     fast_pair_repository_.reset();
     NetworkHandler::Shutdown();
     AshTestBase::TearDown();
@@ -248,15 +257,14 @@ class FastPairRepositoryImplTest : public AshTestBase {
   scoped_refptr<Device> device_;
   gfx::Image test_image_;
 
-  raw_ptr<DeviceMetadataFetcher, DanglingUntriaged> device_metadata_fetcher_;
-  raw_ptr<FakeDeviceMetadataHttpFetcher, DanglingUntriaged>
-      metadata_http_fetcher_;
-  raw_ptr<FakeFootprintsFetcher, DanglingUntriaged> footprints_fetcher_;
-  raw_ptr<MockFastPairImageDecoder, DanglingUntriaged> image_decoder_;
-  raw_ptr<DeviceAddressMap, DanglingUntriaged> device_address_map_;
-  raw_ptr<DeviceImageStore, DanglingUntriaged> device_image_store_;
-  raw_ptr<PendingWriteStore, DanglingUntriaged> pending_write_store_;
-  raw_ptr<SavedDeviceRegistry, DanglingUntriaged> saved_device_registry_;
+  raw_ptr<DeviceMetadataFetcher> device_metadata_fetcher_;
+  raw_ptr<FakeDeviceMetadataHttpFetcher> metadata_http_fetcher_;
+  raw_ptr<FakeFootprintsFetcher> footprints_fetcher_;
+  raw_ptr<MockFastPairImageDecoder> image_decoder_;
+  raw_ptr<DeviceAddressMap> device_address_map_;
+  raw_ptr<DeviceImageStore> device_image_store_;
+  raw_ptr<PendingWriteStore> pending_write_store_;
+  raw_ptr<SavedDeviceRegistry> saved_device_registry_;
 
   base::WeakPtrFactory<FastPairRepositoryImplTest> weak_ptr_factory_{this};
 };

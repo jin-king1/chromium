@@ -9,7 +9,6 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
@@ -404,6 +403,10 @@ void DownloadUIAdapter::ResumeDownload(const ContentId& id) {
   request_coordinator_->GetAllRequests(
       base::BindOnce(&DownloadUIAdapter::ResumeDownloadContinuation,
                      weak_ptr_factory_.GetWeakPtr(), id.id));
+}
+
+void DownloadUIAdapter::ValidateDangerousDownload(const ContentId& id) {
+  NOTREACHED();
 }
 
 void DownloadUIAdapter::ResumeDownloadContinuation(

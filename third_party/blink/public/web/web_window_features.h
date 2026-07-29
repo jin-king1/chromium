@@ -31,9 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_WINDOW_FEATURES_H_
 #define THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_WINDOW_FEATURES_H_
 
-#include <optional>
-#include <vector>
-
 #include "third_party/blink/public/platform/web_string.h"
 
 namespace blink {
@@ -50,10 +47,6 @@ struct WebWindowFeatures {
 
   bool is_popup = false;
 
-  // Whether the created window is a partitioned popin. If true, `is_popup` must
-  // be true. See: https://explainers-by-googlers.github.io/partitioned-popins/
-  bool is_partitioned_popin = false;
-
   // The members above this line are transferred through mojo
   // in the form of |struct WindowFeatures| defined in window_features.mojom,
   // to be used across process boundaries.
@@ -65,15 +58,6 @@ struct WebWindowFeatures {
   bool noreferrer = false;
   bool background = false;
   bool persistent = false;
-
-  // If `std::nullopt`, no impression should be set on the navigation.
-  // If `std::vector::empty()`, an impression should be set but no background
-  // request should be made. Otherwise, an impression should be set and a
-  // background request should be made to the contained relative URL.
-  //
-  // TODO(apaseltiner): Investigate moving this field to a non-public struct
-  // since it is only needed within //third_party/blink.
-  std::optional<std::vector<WebString>> attribution_srcs;
 };
 
 }  // namespace blink

@@ -3,16 +3,19 @@
 // found in the LICENSE file.
 
 import {getInjectedElementIds, openTab} from '/_test_resources/test_util/tabs_util.js';
+import {waitForUserScriptsAPIAllowed} from '/_test_resources/test_util/user_script_test_util.js';
 
 // Navigates to an url requested by the extension and returns the opened tab.
 async function navigateToRequestedUrl() {
   const config = await chrome.test.getConfig();
   const url = `http://requested.com:${config.testServer.port}/simple.html`;
-  let tab = await openTab(url);
+  const tab = await openTab(url);
   return tab;
 }
 
 chrome.test.runTests([
+  waitForUserScriptsAPIAllowed,
+
   async function singleScriptExceedsLimit() {
     await chrome.userScripts.unregister();
 
@@ -42,7 +45,7 @@ chrome.test.runTests([
     await chrome.test.assertPromiseRejects(
         chrome.scripting.executeScript(
             {target: {tabId: tab.id}, files: ['medium.js', 'small.js']}),
-            `Error: Could not load file: 'small.js'. Resource size exceeded.`);
+        `Error: Could not load file: 'small.js'. Resource size exceeded.`);
 
     // Verify no script was injected.
     chrome.test.assertEq([], await getInjectedElementIds(tab.id));

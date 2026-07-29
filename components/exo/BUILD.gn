@@ -32,6 +32,8 @@ static_library("exo") {
     "data_device.h",
     "data_device_delegate.h",
     "data_exchange_delegate.h",
+    "data_exchange_utils.cc",
+    "data_exchange_utils.h",
     "data_offer.cc",
     "data_offer.h",
     "data_offer_delegate.h",
@@ -118,6 +120,8 @@ static_library("exo") {
     "ui_lock_controller.h",
     "vsync_timing_manager.cc",
     "vsync_timing_manager.h",
+    "window_occlusion_manager.cc",
+    "window_occlusion_manager.h",
     "window_properties.cc",
     "window_properties.h",
     "wm_helper.cc",
@@ -136,7 +140,7 @@ static_library("exo") {
     "//ash/resources/vector_icons",
     "//base",
     "//cc",
-    "//cc/mojo_embedder:mojo_embedder",
+    "//cc/mojo_embedder",
     "//chromeos/dbus/power",
     "//chromeos/dbus/power:power_manager_proto",
     "//chromeos/ui/base",
@@ -148,7 +152,6 @@ static_library("exo") {
     "//components/viz/host",
     "//device/gamepad",
     "//device/gamepad/public/cpp:shared_with_blink",
-    "//gpu",
     "//gpu/command_buffer/client:raster_interface",
     "//net",
     "//services/data_decoder/public/cpp",
@@ -167,7 +170,7 @@ static_library("exo") {
     "//ui/compositor",
     "//ui/compositor_extra",
     "//ui/display/manager",
-    "//ui/events/devices:devices",
+    "//ui/events/devices",
     "//ui/events/ozone",
     "//ui/events/ozone/evdev:mouse_button_property",
     "//ui/events/ozone/layout",
@@ -198,6 +201,10 @@ static_library("exo") {
   if (use_xkbcommon) {
     configs += [ ":xkbcommon" ]
   }
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("test_support") {
@@ -238,11 +245,10 @@ source_set("test_support") {
     "//ash/public/cpp",
     "//base",
     "//base/test:test_support",
+    "//cc/mojo_embedder",
     "//chromeos/ui/base",
-    "//components/exo/wayland:test_controller_stub",
     "//components/exo/wayland:ui_controls_protocol_stub",
     "//components/viz/service",
-    "//gpu",
     "//skia",
     "//ui/aura",
     "//ui/base/dragdrop/mojom",
@@ -266,6 +272,7 @@ source_set("unit_tests") {
     "buffer_unittest.cc",
     "client_controlled_shell_surface_unittest.cc",
     "data_device_unittest.cc",
+    "data_exchange_utils_unittest.cc",
     "data_offer_unittest.cc",
     "data_source_unittest.cc",
     "display_unittest.cc",
@@ -309,7 +316,7 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//cc",
     "//cc:test_support",
-    "//cc/mojo_embedder:mojo_embedder",
+    "//cc/mojo_embedder",
     "//chromeos/ash/components/login/auth",
     "//chromeos/ash/experiences/arc",
     "//chromeos/dbus/power",
@@ -329,6 +336,7 @@ source_set("unit_tests") {
     "//ui/aura",
     "//ui/aura:test_support",
     "//ui/base:test_support",
+    "//ui/base/clipboard:clipboard_test_support",
     "//ui/base/cursor/mojom:cursor_type",
     "//ui/base/dragdrop:types",
     "//ui/base/dragdrop/mojom",
@@ -344,8 +352,13 @@ source_set("unit_tests") {
     "//ui/gl:test_support",
     "//ui/message_center",
     "//ui/views",
+    "//ui/views:test_support",
     "//ui/wm",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 test("exo_unittests") {
@@ -374,4 +387,8 @@ test("exo_unittests") {
   ]
 
   data_deps = []
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

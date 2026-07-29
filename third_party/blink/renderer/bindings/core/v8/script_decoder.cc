@@ -16,24 +16,6 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 
-namespace WTF {
-
-template <>
-struct CrossThreadCopier<blink::ScriptDecoder::Result> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = blink::ScriptDecoder::Result;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<mojo::ScopedDataPipeConsumerHandle> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = mojo::ScopedDataPipeConsumerHandle;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-}  // namespace WTF
-
 namespace blink {
 
 namespace {
@@ -60,10 +42,9 @@ void AppendDataImpl(Digestor* digestor,
 }
 }  // namespace
 
-ScriptDecoder::Result::Result(
-    SegmentedBuffer raw_data,
-    String decoded_data,
-    std::unique_ptr<ParkableStringImpl::SecureDigest> digest)
+ScriptDecoder::Result::Result(SegmentedBuffer raw_data,
+                              String decoded_data,
+                              std::unique_ptr<SecureStringDigest> digest)
     : raw_data(std::move(raw_data)),
       decoded_data(std::move(decoded_data)),
       digest(std::move(digest)) {}
@@ -121,8 +102,7 @@ void ScriptDecoder::FinishDecode(
       CrossThreadBindOnce(
           std::move(on_decode_finished_callback),
           Result(std::move(raw_data_), builder_.ReleaseString(),
-                 std::make_unique<ParkableStringImpl::SecureDigest>(
-                     digest_value))));
+                 std::make_unique<SecureStringDigest>(digest_value))));
 }
 
 void ScriptDecoder::Delete() const {
@@ -188,8 +168,7 @@ void DataPipeScriptDecoder::OnDataComplete() {
           std::move(on_decode_finished_callback_),
           ScriptDecoder::Result(
               std::move(raw_data_), builder_.ReleaseString(),
-              std::make_unique<ParkableStringImpl::SecureDigest>(
-                  digest_value_))));
+              std::make_unique<SecureStringDigest>(digest_value_))));
 }
 
 void DataPipeScriptDecoder::AppendData(const String& data) {
@@ -283,7 +262,7 @@ void ScriptDecoderWithClient::FinishDecode(
       CrossThreadBindOnce(
           [](ResponseBodyLoaderClient* response_body_loader_client,
              const String& decoded_data,
-             std::unique_ptr<ParkableStringImpl::SecureDigest> digest,
+             std::unique_ptr<SecureStringDigest> digest,
              CrossThreadOnceClosure main_thread_continuation) {
             if (response_body_loader_client) {
               response_body_loader_client->DidReceiveDecodedData(
@@ -293,7 +272,7 @@ void ScriptDecoderWithClient::FinishDecode(
           },
           MakeUnwrappingCrossThreadWeakHandle(response_body_loader_client_),
           builder_.ReleaseString(),
-          std::make_unique<ParkableStringImpl::SecureDigest>(digest_value),
+          std::make_unique<SecureStringDigest>(digest_value),
           std::move(main_thread_continuation)));
 }
 

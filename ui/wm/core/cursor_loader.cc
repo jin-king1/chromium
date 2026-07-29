@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -92,6 +93,10 @@ void CursorLoader::SetColor(SkColor color) {
   }
 
   color_ = color;
+
+  // Reset cursor lottie animation cache when new color needs to be applied.
+  wm::ClearCursorAnimationCache();
+
   UnloadCursors();
 }
 
@@ -138,7 +143,7 @@ std::optional<ui::CursorData> CursorLoader::GetCursorData(
   // TODO(crbug.com/40175364): use the actual `rotation_` if that makes
   // sense for the current use cases of `GetCursorData` (e.g. Chrome Remote
   // Desktop, WebRTC and VideoRecordingWatcher).
-  return wm::GetCursorData(type, size_, resource_scale_,
+  return wm::GetCursorData(type, resource_scale_,
                            size_ == ui::CursorSize::kLarge
                                ? std::make_optional(large_cursor_size_in_px)
                                : std::nullopt,
@@ -179,8 +184,8 @@ void CursorLoader::ApplyColorAndLargeSize(
 scoped_refptr<ui::PlatformCursor> CursorLoader::CursorFromType(
     CursorType type) {
   // An image cursor is loaded for this type.
-  if (image_cursors_.count(type))
-    return image_cursors_[type];
+  if (auto it = image_cursors_.find(type); it != image_cursors_.end())
+    return it->second;
 
   // Check if there's a default platform cursor available.
   // For the none cursor, we also need to use the platform factory to take
@@ -210,7 +215,7 @@ scoped_refptr<ui::PlatformCursor> CursorLoader::CursorFromType(
 scoped_refptr<ui::PlatformCursor> CursorLoader::LoadCursorFromAsset(
     CursorType type) {
   std::optional<ui::CursorData> cursor_data = wm::GetCursorData(
-      type, size_, resource_scale_,
+      type, resource_scale_,
       size_ == ui::CursorSize::kLarge ? std::make_optional(ConvertDipToPixel(
                                             large_cursor_size_in_dip_, scale_))
                                       : std::nullopt,

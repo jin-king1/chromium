@@ -3,7 +3,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-var global = {argumentsReceived: false, params: null, picker: null};
+/**
+ * @type {Object}
+ */
+const global = {
+  argumentsReceived: false,
+  params: null,
+  picker: null
+};
 
 const DELAYED_LAYOUT_THRESHOLD = 1000;
 
@@ -233,6 +240,13 @@ class ListPicker extends Picker {
   }
 
   handleChange_(event) {
+    if (this.selectElement_.selectedIndex == -1) {
+      // ListBox select elements like this.selectElement_ support a state where
+      // no option is selected and the selectedIndex is -1. If we try to send
+      // an empty value in this case to pagePopupController, then it may result
+      // in a disabled option becoming selected: http://crbug.com/40815207
+      return;
+    }
     window.pagePopupController.setValue(this.selectElement_.value);
     this.selectionSetByMouseHover_ = false;
   }
@@ -272,7 +286,11 @@ class ListPicker extends Picker {
     if (this.selectElement_.scrollHeight > this.selectElement_.clientHeight)
       desiredWindowWidth -= scrollbarWidth;
     let expectingScrollbar = false;
-    if (desiredWindowHeight > maxHeight) {
+    if (!this.selectElement_.children.length) {
+      // If there are no options, then instead of rendering just the border we
+      // should render a small empty box. See http://crbug.com/40703853
+      desiredWindowHeight = 8;
+    } else if (desiredWindowHeight > maxHeight) {
       desiredWindowHeight = maxHeight;
       // Setting overflow to auto does not increase width for the scrollbar
       // so we need to do it manually.
@@ -358,7 +376,7 @@ class ListPicker extends Picker {
       optionUnderMouse =
           elementUnderMouse && elementUnderMouse.closest('option');
     }
-    if (optionUnderMouse)
+    if (optionUnderMouse && !optionUnderMouse.disabled)
       optionUnderMouse.selected = true;
     else
       this.selectElement_.value = oldValue;
@@ -529,7 +547,7 @@ class ListPicker extends Picker {
   }
 
   setMenuListOptionsBoundsInAXTree_(childrenUpdated = false) {
-    var optionBounds = [];
+    let optionBounds = [];
     buildOptionBoundsArray(this.selectElement_, optionBounds);
     window.pagePopupController.setMenuListOptionsBoundsInAXTree(
         optionBounds, childrenUpdated);
@@ -542,3 +560,6 @@ if (window.dialogArguments) {
   window.addEventListener('message', handleMessage);
   window.setTimeout(handleArgumentsTimeout, 1000);
 }
+
+// Necessary for some web tests.
+window.global = global;

@@ -6,6 +6,8 @@
 
 #include <algorithm>
 
+#include "cc/base/math_util.h"
+#include "cc/input/scroll_utils.h"
 #include "cc/trees/effect_node.h"
 #include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/scroll_node.h"
@@ -34,8 +36,8 @@ ScrollbarLayerImplBase::~ScrollbarLayerImplBase() {
   layer_tree_impl()->UnregisterScrollbar(this);
 }
 
-void ScrollbarLayerImplBase::PushPropertiesTo(LayerImpl* layer) {
-  LayerImpl::PushPropertiesTo(layer);
+void ScrollbarLayerImplBase::CopyPropertiesTo(LayerImpl* layer) const {
+  LayerImpl::CopyPropertiesTo(layer);
   DCHECK(layer->IsScrollbarLayer());
   ScrollbarLayerImplBase* scrollbar_layer = ToScrollbarLayer(layer);
   scrollbar_layer->SetHasFindInPageTickmarks(has_find_in_page_tickmarks_);
@@ -50,7 +52,7 @@ DamageReasonSet ScrollbarLayerImplBase::GetDamageReasons() const {
     reasons.Put(DamageReason::kScrollbarFadeOutAnimation);
   }
   if (property_changed_for_other_reasons_ || !update_rect().IsEmpty()) {
-    reasons.Put(DamageReason::kUntracked);
+    reasons.Put(DamageReason::kCompositorScroll);
   }
   return reasons;
 }
@@ -276,16 +278,26 @@ void ScrollbarLayerImplBase::SetOverlayScrollbarLayerOpacityAnimated(
   if (!layer_tree_impl())
     return;
 
-  PropertyTrees* property_trees = layer_tree_impl()->property_trees();
-
-  EffectNode* node =
-      property_trees->effect_tree_mutable().Node(effect_tree_index());
-  if (node->opacity == opacity) {
+  if (layer_tree_impl()->settings().trees_in_viz_in_viz_process &&
+      !layer_tree_impl()->settings().TreeAnimationsInVizInVizProcess()) {
     return;
   }
 
-  node->opacity = opacity;
-  node->effect_changed = true;
+  PropertyTrees* property_trees = layer_tree_impl()->property_trees();
+
+  int effect_id = effect_tree_index();
+  if (effect_id == kInvalidPropertyNodeId) {
+    return;
+  }
+
+  EffectNode& node =
+      property_trees->effect_tree_mutable().MutableNode(effect_id);
+  if (node.opacity == opacity) {
+    return;
+  }
+
+  node.opacity = opacity;
+  node.effect_changed = true;
   property_trees->set_changed(true);
   property_trees->effect_tree_mutable().set_needs_update(true);
   layer_tree_impl()->set_needs_update_draw_properties();
@@ -332,6 +344,12 @@ bool ScrollbarLayerImplBase::IsFluentOverlayScrollbarEnabled() const {
   return layer_tree_impl()->settings().enable_fluent_overlay_scrollbar;
 }
 
+int32_t ScrollbarLayerImplBase::ThumbLength() const {
+  return ScrollUtils::CalculateScrollbarThumbLength(
+      scroll_layer_length(), clip_layer_length(), TrackLength(),
+      MinimumThumbLength());
+}
+
 gfx::Rect ScrollbarLayerImplBase::BackButtonRect() const {
   return gfx::Rect(0, 0);
 }
@@ -369,7 +387,7 @@ ScrollbarPart ScrollbarLayerImplBase::IdentifyScrollbarPart(
   if (ForwardTrackRect().Contains(pointer_location))
     return ScrollbarPart::kForwardTrack;
 
-  // TODO(arakeri): Once crbug.com/952314 is fixed, add a DCHECK to verify that
+  // TODO(gastonr): Once crbug.com/952314 is fixed, add a DCHECK to verify that
   // the point that is passed in is within the TrackRect. Also, please note that
   // hit testing other scrollbar parts is not yet implemented.
   return ScrollbarPart::kNoPart;

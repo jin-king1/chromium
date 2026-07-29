@@ -20,6 +20,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/barrier_callback.h"
+#include "base/check_deref.h"
 #include "base/files/file.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
@@ -32,10 +33,10 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/platform_thread.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_list/search/local_image_search/local_image_search_service.h"
 #include "chrome/browser/ash/app_list/search/local_image_search/local_image_search_service_factory.h"
@@ -77,11 +78,11 @@
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/extensions/api/file_manager_private.h"
 #include "chrome/common/extensions/api/file_manager_private_internal.h"
 #include "chromeos/ash/components/disks/disk.h"
 #include "chromeos/ash/components/disks/disk_mount_manager.h"
+#include "chromeos/ash/components/file_manager/app_id.h"
 #include "components/drive/event_logger.h"
 #include "components/drive/file_system_core_util.h"
 #include "components/enterprise/data_controls/core/browser/component.h"
@@ -97,6 +98,7 @@
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/common/extension.h"
 #include "services/device/public/mojom/mtp_manager.mojom.h"
 #include "services/device/public/mojom/mtp_storage_info.mojom.h"
 #include "storage/browser/file_system/external_mount_points.h"
@@ -142,13 +144,14 @@ const char kRootPath[] = "/";
 void GetSizeStatsAsync(const base::FilePath& mount_path,
                        uint64_t* total_size,
                        uint64_t* remaining_size) {
-  int64_t size = base::SysInfo::AmountOfTotalDiskSpace(mount_path);
-  if (size >= 0) {
-    *total_size = size;
+  std::optional<int64_t> size =
+      base::SysInfo::AmountOfTotalDiskSpace(mount_path);
+  if (size) {
+    *total_size = *size;
   }
   size = base::SysInfo::AmountOfFreeDiskSpace(mount_path);
-  if (size >= 0) {
-    *remaining_size = size;
+  if (size) {
+    *remaining_size = *size;
   }
 }
 
@@ -184,7 +187,7 @@ ash::disks::FormatFileSystemType ApiFormatFileSystemToChromeEnum(
       return ash::disks::FormatFileSystemType::kNtfs;
   }
   NOTREACHED() << "Unknown format filesystem "
-               << base::to_underlying(filesystem);
+               << std::to_underlying(filesystem);
 }
 
 std::optional<file_manager::io_task::OperationType> IoTaskTypeToChromeEnum(
@@ -211,7 +214,7 @@ std::optional<file_manager::io_task::OperationType> IoTaskTypeToChromeEnum(
     case api::file_manager_private::IoTaskType::kNone:
       return {};
   }
-  NOTREACHED() << "Unknown I/O task type " << base::to_underlying(type);
+  NOTREACHED() << "Unknown I/O task type " << std::to_underlying(type);
 }
 
 extensions::api::file_manager_private::DlpLevel DlpRulesManagerLevelToApiEnum(
@@ -265,7 +268,7 @@ policy::FilesDialogType ApiPolicyDialogTypeToChromeEnum(
     case api::file_manager_private::PolicyDialogType::kError:
       return policy::FilesDialogType::kError;
   }
-  NOTREACHED() << "Unknown policy dialog type " << base::to_underlying(type);
+  NOTREACHED() << "Unknown policy dialog type " << std::to_underlying(type);
 }
 
 std::optional<policy::Policy> ApiPolicyErrorTypeToChromeEnum(
@@ -278,9 +281,9 @@ std::optional<policy::Policy> ApiPolicyErrorTypeToChromeEnum(
     case api::file_manager_private::PolicyErrorType::kNone:
       return std::nullopt;
     case api::file_manager_private::PolicyErrorType::kDlpWarningTimeout:
-      NOTREACHED() << "Unexpected policy type " << base::to_underlying(type);
+      NOTREACHED() << "Unexpected policy type " << std::to_underlying(type);
   }
-  NOTREACHED() << "Unknown policy error type " << base::to_underlying(type);
+  NOTREACHED() << "Unknown policy error type " << std::to_underlying(type);
 }
 
 // Handles a callback from the LocalImageSearchService. The job of this function
@@ -323,12 +326,25 @@ ExtensionFunction::ResponseAction FileManagerPrivateGrantAccessFunction::Run() {
   const std::optional<Params> params = Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
 
+  bool for_thumbnailing = params->options &&
+                          params->options->for_thumbnailing.has_value() &&
+                          params->options->for_thumbnailing.value();
+
   scoped_refptr<storage::FileSystemContext> file_system_context =
       file_manager::util::GetFileSystemContextForRenderFrameHost(
           Profile::FromBrowserContext(browser_context()), render_frame_host());
 
   auto* const backend = ash::FileSystemBackend::Get(*file_system_context);
   DCHECK(backend);
+
+  // The ImageLoader extension reads files on behalf of the Files app to
+  // generate thumbnails, so grant it access to the same paths in its own
+  // FileSystemBackend.
+  const GURL image_loader_url = file_manager::util::GetImageLoaderBaseURL();
+  const url::Origin image_loader_origin = url::Origin::Create(image_loader_url);
+  auto* const image_loader_backend = ash::FileSystemBackend::Get(
+      *file_manager::util::GetFileSystemContextForSourceURL(
+          Profile::FromBrowserContext(browser_context()), image_loader_url));
 
   const std::vector<Profile*>& profiles =
       g_browser_process->profile_manager()->GetLoadedProfiles();
@@ -348,12 +364,17 @@ ExtensionFunction::ResponseAction FileManagerPrivateGrantAccessFunction::Run() {
           file_system_url.mount_type() != storage::kFileSystemTypeExternal) {
         continue;
       }
-      backend->GrantFileAccessToOrigin(url::Origin::Create(source_url()),
-                                       file_system_url.virtual_path());
-      content::ChildProcessSecurityPolicy::GetInstance()
-          ->GrantCreateReadWriteFile(
-              render_frame_host()->GetProcess()->GetDeprecatedID(),
-              file_system_url.path());
+      if (!for_thumbnailing) {
+        backend->GrantFileAccessToOrigin(url::Origin::Create(source_url()),
+                                         file_system_url.virtual_path());
+        content::ChildProcessSecurityPolicy::GetInstance()
+            ->GrantCreateReadWriteFile(
+                render_frame_host()->GetProcess()->GetDeprecatedID(),
+                file_system_url.path());
+      } else if (image_loader_backend) {
+        image_loader_backend->GrantFileAccessToOrigin(
+            image_loader_origin, file_system_url.virtual_path());
+      }
     }
   }
   return RespondNow(NoArguments());
@@ -680,7 +701,7 @@ void FileManagerPrivateGetSizeStatsFunction::OnGetDriveQuotaUsage(
 void FileManagerPrivateGetSizeStatsFunction::OnGetSizeStats(
     const uint64_t* total_size,
     const uint64_t* remaining_size) {
-  base::Value::Dict sizes;
+  base::DictValue sizes;
   sizes.Set("totalSize", static_cast<double>(*total_size));
   sizes.Set("remainingSize", static_cast<double>(*remaining_size));
   Respond(WithArguments(std::move(sizes)));
@@ -897,15 +918,15 @@ FileManagerPrivateInternalGetDisallowedTransfersFunction::
 ExtensionFunction::ResponseAction
 FileManagerPrivateInternalGetDisallowedTransfersFunction::Run() {
   if (!base::FeatureList::IsEnabled(
-          features::kDataLeakPreventionFilesRestriction)) {
-    return RespondNow(WithArguments(base::Value::List()));
+          ash::features::kDataLeakPreventionFilesRestriction)) {
+    return RespondNow(WithArguments(base::ListValue()));
   }
 
   policy::DlpRulesManager* rules_manager =
       policy::DlpRulesManagerFactory::GetForPrimaryProfile();
   if (!rules_manager || !rules_manager->IsFilesPolicyEnabled() ||
       !rules_manager->GetDlpFilesController()) {
-    return RespondNow(WithArguments(base::Value::List()));
+    return RespondNow(WithArguments(base::ListValue()));
   }
 
   using extensions::api::file_manager_private_internal::GetDisallowedTransfers::
@@ -935,8 +956,8 @@ FileManagerPrivateInternalGetDisallowedTransfersFunction::Run() {
 
   // If the new UX flow is enabled, return an empty list so the copy/move
   // operation can start.
-  if (base::FeatureList::IsEnabled(features::kNewFilesPolicyUX)) {
-    return RespondNow(WithArguments(base::Value::List()));
+  if (base::FeatureList::IsEnabled(ash::features::kNewFilesPolicyUX)) {
+    return RespondNow(WithArguments(base::ListValue()));
   }
 
   policy::DlpFilesControllerAsh* files_controller =
@@ -993,15 +1014,15 @@ FileManagerPrivateInternalGetDlpMetadataFunction::
 ExtensionFunction::ResponseAction
 FileManagerPrivateInternalGetDlpMetadataFunction::Run() {
   if (!base::FeatureList::IsEnabled(
-          features::kDataLeakPreventionFilesRestriction)) {
-    return RespondNow(WithArguments(base::Value::List()));
+          ash::features::kDataLeakPreventionFilesRestriction)) {
+    return RespondNow(WithArguments(base::ListValue()));
   }
 
   policy::DlpRulesManager* rules_manager =
       policy::DlpRulesManagerFactory::GetForPrimaryProfile();
   if (!rules_manager || !rules_manager->IsFilesPolicyEnabled() ||
       !rules_manager->GetDlpFilesController()) {
-    return RespondNow(WithArguments(base::Value::List()));
+    return RespondNow(WithArguments(base::ListValue()));
   }
 
   using extensions::api::file_manager_private_internal::GetDlpMetadata::Params;
@@ -1075,15 +1096,15 @@ FileManagerPrivateGetDlpRestrictionDetailsFunction::
 ExtensionFunction::ResponseAction
 FileManagerPrivateGetDlpRestrictionDetailsFunction::Run() {
   if (!base::FeatureList::IsEnabled(
-          features::kDataLeakPreventionFilesRestriction)) {
-    return RespondNow(WithArguments(base::Value::List()));
+          ash::features::kDataLeakPreventionFilesRestriction)) {
+    return RespondNow(WithArguments(base::ListValue()));
   }
 
   policy::DlpRulesManager* rules_manager =
       policy::DlpRulesManagerFactory::GetForPrimaryProfile();
   if (!rules_manager || !rules_manager->IsFilesPolicyEnabled() ||
       !rules_manager->GetDlpFilesController()) {
-    return RespondNow(WithArguments(base::Value::List()));
+    return RespondNow(WithArguments(base::ListValue()));
   }
 
   using extensions::api::file_manager_private::GetDlpRestrictionDetails::Params;
@@ -1126,8 +1147,8 @@ FileManagerPrivateGetDlpBlockedComponentsFunction::
 ExtensionFunction::ResponseAction
 FileManagerPrivateGetDlpBlockedComponentsFunction::Run() {
   if (!base::FeatureList::IsEnabled(
-          features::kDataLeakPreventionFilesRestriction)) {
-    return RespondNow(WithArguments(base::Value::List()));
+          ash::features::kDataLeakPreventionFilesRestriction)) {
+    return RespondNow(WithArguments(base::ListValue()));
   }
 
   policy::DlpRulesManager* rules_manager =
@@ -1136,7 +1157,7 @@ FileManagerPrivateGetDlpBlockedComponentsFunction::Run() {
   if (!rules_manager || !rules_manager->IsFilesPolicyEnabled() ||
       !(files_controller = static_cast<policy::DlpFilesControllerAsh*>(
             rules_manager->GetDlpFilesController()))) {
-    return RespondNow(WithArguments(base::Value::List()));
+    return RespondNow(WithArguments(base::ListValue()));
   }
 
   using extensions::api::file_manager_private::GetDlpBlockedComponents::Params;
@@ -1163,14 +1184,14 @@ FileManagerPrivateGetDialogCallerFunction::Run() {
   std::optional<policy::DlpFileDestination> caller =
       SelectFileDialogExtensionUserData::GetDialogCallerForWebContents(
           GetSenderWebContents());
-  base::Value::Dict info;
+  base::DictValue info;
   if (caller.has_value()) {
     if (caller->url().has_value()) {
       info.Set("url", caller->url()->spec());
     }
     if (caller->component().has_value()) {
       info.Set("component",
-               base::to_underlying(DlpRulesManagerComponentToApiEnum(
+               std::to_underlying(DlpRulesManagerComponentToApiEnum(
                    caller->component().value())));
     }
   }
@@ -1291,8 +1312,7 @@ FileManagerPrivateInternalSearchFilesFunction::Run() {
     root_path = url.path();
   }
 
-  size_t max_results =
-      base::internal::checked_cast<size_t>(search_params.max_results);
+  size_t max_results = base::checked_cast<size_t>(search_params.max_results);
   base::Time modified_time = base::Time::FromMillisecondsSinceUnixEpoch(
       search_params.modified_timestamp);
 
@@ -1324,7 +1344,9 @@ void FileManagerPrivateInternalSearchFilesFunction::RunFileSearchByName(
   // generate all trash paths that are to be excluded when searching for
   // matching files.
   std::vector<base::FilePath> excluded_paths;
-  if (file_manager::trash::IsTrashEnabledForProfile(profile)) {
+  // TODO(crbug.com/404131876): Avoid using g_browser_process.
+  if (file_manager::trash::IsTrashEnabledForProfile(
+          CHECK_DEREF(g_browser_process->local_state()), profile)) {
     auto enabled_trash_locations =
         file_manager::trash::GenerateEnabledTrashLocationsForProfile(profile);
     for (const auto& it : enabled_trash_locations) {
@@ -1369,7 +1391,7 @@ void FileManagerPrivateInternalSearchFilesFunction::OnSearchByPatternDone(
   std::set<base::FilePath> found;
   for (const auto& results : all_results) {
     for (const auto& [file_path, is_directory] : results) {
-      if (base::Contains(found, file_path)) {
+      if (found.contains(file_path)) {
         continue;
       }
       found.insert(file_path);
@@ -1377,7 +1399,7 @@ void FileManagerPrivateInternalSearchFilesFunction::OnSearchByPatternDone(
     }
   }
 
-  base::Value::List entries;
+  base::ListValue entries;
   for (const auto& result : unique_results) {
     std::string mount_name;
     std::string file_system_name;
@@ -1391,7 +1413,7 @@ void FileManagerPrivateInternalSearchFilesFunction::OnSearchByPatternDone(
     std::string fs_root =
         storage::GetExternalFileSystemRootURIString(source_url(), mount_name);
 
-    base::Value::Dict entry;
+    base::DictValue entry;
     entry.Set("fileSystemName", file_system_name);
     entry.Set("fileSystemRoot", fs_root);
     entry.Set("fileFullPath", full_path);

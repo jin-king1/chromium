@@ -35,7 +35,8 @@ class FakeSyncScheduler : public SyncScheduler {
   void SetNotificationsEnabled(bool notifications_enabled) override;
 
   void OnCredentialsUpdated() override;
-  void OnConnectionStatusChange(network::mojom::ConnectionType type) override;
+  void OnConnectionStatusChange(
+      net::NetworkChangeNotifier::ConnectionType type) override;
 
   // SyncCycle::Delegate implementation.
   void OnThrottled(const base::TimeDelta& throttle_duration) override;
@@ -48,7 +49,6 @@ class FakeSyncScheduler : public SyncScheduler {
   void OnReceivedCustomNudgeDelays(
       const std::map<DataType, base::TimeDelta>& nudge_delays) override;
   void OnSyncProtocolError(const SyncProtocolError& error) override;
-  void OnReceivedGuRetryDelay(const base::TimeDelta& delay) override;
   void OnReceivedMigrationRequest(DataTypeSet types) override;
   void OnReceivedQuotaParamsForExtensionTypes(
       std::optional<int> max_tokens,

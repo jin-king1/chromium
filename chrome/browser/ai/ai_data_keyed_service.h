@@ -11,15 +11,24 @@
 
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
+#include "build/build_config.h"
+#include "chrome/browser/actor/execution_engine.h"
+#include "chrome/browser/glic/host/context/glic_page_context_fetcher.h"
+#include "chrome/common/buildflags.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/optimization_guide/proto/features/model_prototyping.pb.h"
+
 
 namespace content {
 class WebContents;
 class BrowserContext;
 }  // namespace content
 
-// Browser service to collect AI data.
+// Browser service to collect AI data, including data resulting from triggering
+// actor tasks.
 class AiDataKeyedService : public KeyedService {
  public:
   // Data related to AiData collection.
@@ -34,7 +43,14 @@ class AiDataKeyedService : public KeyedService {
   AiDataKeyedService& operator=(const AiDataKeyedService&) = delete;
   ~AiDataKeyedService() override;
 
-  static std::vector<std::string> GetAllowlistedExtensions();
+  // Returns the list of extensions that are allowlisted for data collection.
+  static bool IsExtensionAllowlistedForData(const std::string& extension_id);
+
+  // Returns the list of extensions that are allowlisted for actions.
+  static bool IsExtensionAllowlistedForActions(const std::string& extension_id);
+
+  // Returns whether an extension is allowed to run on stable channel.
+  static bool IsExtensionAllowlistedForStable(const std::string& extension_id);
 
   // Fills an AiData and returns the result via the passed in callback. If the
   // AiData is empty, data collection failed. |callback| is guaranteed to be
@@ -55,6 +71,8 @@ class AiDataKeyedService : public KeyedService {
                               AiDataCallback callback);
 
   static const base::Feature& GetAllowlistedAiDataExtensionsFeatureForTesting();
+  static const base::Feature&
+  GetAllowlistedActionsExtensionsFeatureForTesting();
 
  private:
   // A `KeyedService` should never outlive the `BrowserContext`.

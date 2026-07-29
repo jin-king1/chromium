@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 // This file contains unit tests for the sid class.
 
 #include "base/win/sid.h"
@@ -18,11 +13,10 @@
 #include <algorithm>
 #include <optional>
 
+#include "base/compiler_specific.h"
 #include "base/win/atl.h"
-#include "base/win/scoped_handle.h"
 #include "base/win/scoped_localalloc.h"
 #include "base/win/win_util.h"
-#include "build/branding_buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base::win {
@@ -81,7 +75,7 @@ typedef decltype(::DeriveCapabilitySidsFromName)*
 DeriveCapabilitySidsFromNameFunc GetDeriveCapabilitySidsFromName() {
   static const DeriveCapabilitySidsFromNameFunc derive_capability_sids =
       []() -> DeriveCapabilitySidsFromNameFunc {
-    HMODULE module = GetModuleHandle(L"api-ms-win-security-base-l1-2-2.dll");
+    HMODULE module = ::GetModuleHandle(L"api-ms-win-security-base-l1-2-2.dll");
     if (!module) {
       return nullptr;
     }
@@ -113,10 +107,12 @@ bool EqualNamedCapSid(const Sid& sid, const std::wstring& capability_name) {
   deleter_list.emplace_back(capability_sids);
 
   for (DWORD i = 0; i < capability_group_count; ++i) {
-    deleter_list.emplace_back(capability_groups[i]);
+    // SAFETY: External C API guarantees the size of the array.
+    deleter_list.emplace_back(UNSAFE_BUFFERS(capability_groups[i]));
   }
   for (DWORD i = 0; i < capability_sid_count; ++i) {
-    deleter_list.emplace_back(capability_sids[i]);
+    // SAFETY: External C API guarantees the size of the array.
+    deleter_list.emplace_back(UNSAFE_BUFFERS(capability_sids[i]));
   }
 
   CHECK_GE(capability_sid_count, 1U);

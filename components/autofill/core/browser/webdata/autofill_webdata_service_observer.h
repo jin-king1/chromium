@@ -13,6 +13,8 @@ namespace autofill {
 class AutofillWebDataServiceObserverOnDBSequence {
  public:
   // Called on DB sequence whenever autocomplete entries are changed.
+  // The changes are emitted only from the old non-label-sensitive autocomplete
+  // table. New label-sensitive autocomplete is not sync at all.
   virtual void AutocompleteEntriesChanged(
       const AutocompleteChangeList& changes) {}
 
@@ -31,6 +33,26 @@ class AutofillWebDataServiceObserverOnDBSequence {
   // Called on DB sequence when a server CVC has been added/removed/updated in
   // the WebDatabase.
   virtual void ServerCvcChanged(const ServerCvcChange& change) {}
+
+  // Called on DB sequence when a entity instance has been added/updated/deleted
+  // in the WebDatabase.
+  virtual void EntityInstanceChanged(const EntityInstanceChange& change) {}
+
+  // Called on DB sequence when a server entity instance's metadata has been
+  // added/updated/deleted in the WebDatabase.
+  // It's called when the metadata is changed (a) due to a change to the entity
+  // (via AutofillWebdataBackendImpl), or (b) due to the entity being deleted
+  // (via ValuableSyncBridge, for some reason). But it's not called when the
+  // metadata is changed directly (not through the entity), by
+  // ValuableMetadataSyncBridge.
+  // TODO(crbug.com/436551488): Provide consistent notifications from all points
+  // were server metadata is changed.
+  virtual void ServerEntityInstanceMetadataChanged(
+      const EntityInstanceMetadataChange& change) {}
+
+  // Called on DB sequence when a valuable metadata has been
+  // added/updated/deleted in the WebDatabase.
+  virtual void ValuableMetadataChanged(const ValuableMetadataChange& change) {}
 
  protected:
   virtual ~AutofillWebDataServiceObserverOnDBSequence() = default;

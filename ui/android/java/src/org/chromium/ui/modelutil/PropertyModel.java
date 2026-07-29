@@ -17,6 +17,7 @@ import androidx.core.util.ObjectsCompat;
 
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.NullUnmarked;
 import org.chromium.build.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -32,10 +33,10 @@ import java.util.function.Function;
 @NullMarked
 public class PropertyModel extends PropertyObservable<PropertyKey> {
     /** A PropertyKey implementation that associates a name with the property for easy debugging. */
-    private static class NamedPropertyKey implements PropertyKey {
+    static class NamedPropertyKey implements PropertyKey {
         private final @Nullable String mPropertyName;
 
-        public NamedPropertyKey(@Nullable String propertyName) {
+        protected NamedPropertyKey(@Nullable String propertyName) {
             mPropertyName = propertyName;
         }
 
@@ -318,8 +319,19 @@ public class PropertyModel extends PropertyObservable<PropertyKey> {
         mTransformers = transformers;
     }
 
+    /** Returns whether the given key is contained in the property model. */
     public boolean containsKey(PropertyKey key) {
         return mData.containsKey(key);
+    }
+
+    /** Returns whether the given key is contained and the value is equal to the passed arg. */
+    public boolean containsKeyEqualTo(ReadableBooleanPropertyKey key, boolean value) {
+        return mData.containsKey(key) && get(key) == value;
+    }
+
+    /** Returns whether the given key is contained and the value is equal to the passed arg. */
+    public boolean containsKeyEqualTo(ReadableIntPropertyKey key, int value) {
+        return mData.containsKey(key) && get(key) == value;
     }
 
     private void validateKey(PropertyKey key) {
@@ -418,7 +430,8 @@ public class PropertyModel extends PropertyObservable<PropertyKey> {
     }
 
     /** Get the current value from the object based key. */
-    @SuppressWarnings({"unchecked", "NullAway"}) // Can't check container != null when T is @NonNull
+    @SuppressWarnings("unchecked")
+    @NullUnmarked // https://github.com/uber/NullAway/issues/1075
     public <T extends @Nullable Object> T get(ReadableObjectPropertyKey<T> key) {
         validateKey(key);
         ObjectContainer<T> container = (ObjectContainer<T>) mData.get(key);
@@ -427,6 +440,7 @@ public class PropertyModel extends PropertyObservable<PropertyKey> {
 
     /** Set the value for the Object based key. */
     @SuppressWarnings("unchecked")
+    @NullUnmarked // https://github.com/uber/NullAway/issues/1075
     public <T extends @Nullable Object> void set(
             WritableObjectPropertyKey<T> key, @Nullable T value) {
         validateKey(key);
@@ -445,6 +459,7 @@ public class PropertyModel extends PropertyObservable<PropertyKey> {
 
     /** Get the transformed value from the current value of an object based key. */
     @SuppressWarnings({"unchecked", "NullAway"}) // Can't check container != null when T is @NonNull
+    @NullUnmarked // https://github.com/uber/NullAway/issues/1075
     public <T extends @Nullable Object, V extends @Nullable Object> V get(
             ReadableTransformingObjectPropertyKey<T, V> key) {
         assumeNonNull(mTransformers);
@@ -457,12 +472,13 @@ public class PropertyModel extends PropertyObservable<PropertyKey> {
 
     /** Set the value for the transforming Object based key. */
     @SuppressWarnings("unchecked")
+    @NullUnmarked // https://github.com/uber/NullAway/issues/1075
     public <T extends @Nullable Object, V extends @Nullable Object> void set(
             WritableTransformingObjectPropertyKey<T, V> key, T value) {
         validateKey(key);
         ObjectContainer<T> container = (ObjectContainer<T>) mData.get(key);
         if (container == null) {
-            container = new ObjectContainer<T>(value);
+            container = new ObjectContainer<>(value);
             mData.put(key, container);
         } else if (ObjectsCompat.equals(container.value, value)) {
             return;
@@ -601,7 +617,7 @@ public class PropertyModel extends PropertyObservable<PropertyKey> {
             return this;
         }
 
-        @SuppressWarnings("NullAway") // https://github.com/uber/NullAway/issues/1075
+        @NullUnmarked // https://github.com/uber/NullAway/issues/1075
         public <T extends @Nullable Object> Builder with(
                 ReadableObjectPropertyKey<T> key, @Nullable T value) {
             validateKey(key);
@@ -616,9 +632,14 @@ public class PropertyModel extends PropertyObservable<PropertyKey> {
          * @param resId The specified string resource id.
          * @return The {@link Builder} with the specified key and string resource set.
          */
+        @SuppressWarnings({"rawtypes", "unchecked"})
         public Builder with(
-                ReadableObjectPropertyKey<String> key, Resources resources, @StringRes int resId) {
-            if (resId != 0) with(key, resources.getString(resId));
+                ReadableObjectPropertyKey<? extends CharSequence> key,
+                Resources resources,
+                @StringRes int resId) {
+            if (resId != 0) {
+                with((ReadableObjectPropertyKey) key, resources.getString(resId));
+            }
             return this;
         }
 
@@ -645,6 +666,7 @@ public class PropertyModel extends PropertyObservable<PropertyKey> {
          * @param <T> The type value stored in the model.
          * @param <V> The type of transformed output.
          */
+        @NullUnmarked // https://github.com/uber/NullAway/issues/1075
         public <T extends @Nullable Object, V extends @Nullable Object> Builder withTransformingKey(
                 ReadableTransformingObjectPropertyKey<T, V> key, Function<T, V> transformer) {
             if (BuildConfig.ENABLE_ASSERTS && mData.containsKey(key)) {
@@ -669,6 +691,7 @@ public class PropertyModel extends PropertyObservable<PropertyKey> {
          * @param <T> The type value stored in the model.
          * @param <V> The type of transformed output.
          */
+        @NullUnmarked // https://github.com/uber/NullAway/issues/1075
         public <T extends @Nullable Object, V extends @Nullable Object> Builder withTransformingKey(
                 ReadableTransformingObjectPropertyKey<T, V> key,
                 Function<T, V> transformer,

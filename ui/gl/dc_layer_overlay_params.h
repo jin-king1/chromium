@@ -7,11 +7,8 @@
 
 #include <optional>
 
-#include "base/functional/callback.h"
-#include "base/memory/scoped_refptr.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/color_space.h"
-#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/rrect_f.h"
@@ -36,6 +33,9 @@ struct GL_EXPORT DCLayerOverlayParams {
   // then this overlay will represents a solid color quad. If both this and
   // |background_color| are null, this overlay will not have any visible output.
   std::optional<DCLayerOverlayImage> overlay_image;
+
+  // Damage in buffer space.
+  gfx::RectF damage_rect;
 
   // Stacking order relative to backbuffer which has z-order 0.
   int z_order = 1;
@@ -87,11 +87,9 @@ struct GL_EXPORT DCLayerOverlayParams {
     // SDR.
     bool is_p010_content = false;
 
-    // Indication of the overlay to be detected as possible full screen
-    // letterboxing.
-    // Go to viz::OverlayCandidate::possible_video_fullscreen_letterboxing for
-    // the details.
-    bool possible_video_fullscreen_letterboxing = false;
+    // This overlay represents a full screen, letterboxed, or pillarboxed video.
+    // This means all pixels behind the video can be assumed to be solid black.
+    bool is_full_screen_video = false;
   };
 
   VideoParams video_params;

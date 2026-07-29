@@ -1,7 +1,8 @@
 Name: Leanback Grid
 Short Name: leanback-grid
-URL: https://developer.android.com/jetpack/androidx/releases/leanback#1.0.0-SNAPSHOT
-Version: 1.0.0-SNAPSHOT
+URL: https://androidx.dev/snapshots/builds/15963504/artifacts/repository/androidx/leanback/leanback-grid/1.1.0-SNAPSHOT/leanback-grid-1.1.0-20260728.210420-1.aar
+Version: 1.1.0-SNAPSHOT
+Update Mechanism: Autoroll
 License: Apache-2.0
 License File: LICENSE
 CPEPrefix: unknown
@@ -11,6 +12,9 @@ License Android Compatible: yes
 
 Description:
 This library adds grid view components to be used in TV
+
+See also: https://developer.android.com/jetpack/androidx/releases/leanback#1.1.0-SNAPSHOT
+
 
 Local Modifications:
 No modifications.

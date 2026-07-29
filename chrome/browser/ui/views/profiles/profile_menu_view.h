@@ -7,7 +7,6 @@
 
 #include <stddef.h>
 
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,20 +16,20 @@
 #include "chrome/browser/password_manager/web_app_profile_switcher.h"
 #include "chrome/browser/profiles/avatar_menu.h"
 #include "chrome/browser/profiles/avatar_menu_observer.h"
+#include "chrome/browser/signin/signin_promo_util.h"
 #include "chrome/browser/sync/sync_ui_util.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_view_base.h"
 #include "components/signin/core/browser/signin_header_helper.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "components/sync/service/local_data_description.h"
+#include "components/sync/service/sync_service.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/controls/styled_label.h"
 
 namespace signin_metrics {
 enum class AccessPoint;
-}
-
-namespace views {
-class Button;
 }
 
 struct CoreAccountInfo;
@@ -38,9 +37,20 @@ class Browser;
 
 // This bubble view is displayed when the user clicks on the avatar button.
 // It displays a list of profiles and allows users to switch between profiles.
+//
+// If `explicit_signin_access_point` is provided, it will be used as the access
+// point for the signin (or sync) flow. This is used to track the real source of
+// the signin (or sync), e.g. history sync opt-in identity pill promo.
+//
+// Dismissing the menu without clicking an actionable item will trigger a HaTS
+// survey.
 class ProfileMenuView : public ProfileMenuViewBase {
  public:
-  ProfileMenuView(views::Button* anchor_button, Browser* browser);
+  // `browser` must not be nullptr.
+  ProfileMenuView(views::BubbleAnchor anchor_element,
+                  Browser* browser,
+                  signin::ProfileMenuAvatarButtonPromoInfo promo_info,
+                  bool from_avatar_promo);
   ~ProfileMenuView() override;
 
   ProfileMenuView(const ProfileMenuView&) = delete;
@@ -48,7 +58,10 @@ class ProfileMenuView : public ProfileMenuViewBase {
 
   // ProfileMenuViewBase:
   void BuildMenu() override;
-  gfx::ImageSkia GetSyncIcon() const override;
+
+  void set_skip_window_active_check_for_testing(bool skip) {
+    skip_window_active_check_for_testing_ = skip;
+  }
 
  private:
   friend class ProfileMenuViewExtensionsTest;
@@ -57,68 +70,81 @@ class ProfileMenuView : public ProfileMenuViewBase {
   friend class ProfileMenuViewSyncErrorButtonTest;
   friend class ProfileMenuInteractiveUiTest;
 
+  Browser& browser() const { return *browser_; }
+
   // views::BubbleDialogDelegateView:
   std::u16string GetAccessibleWindowTitle() const override;
+
+  // Callback invoked whenever the view is being closed.
+  void OnClose();
 
   // Button/link actions.
   void OnProfileManagementButtonClicked();
   void OnManageGoogleAccountButtonClicked();
-  void OnPasswordsButtonClicked();
-  void OnCreditCardsButtonClicked();
-  void OnAddressesButtonClicked();
   void OnGuestProfileButtonClicked();
   void OnExitProfileButtonClicked();
   void OnSyncSettingsButtonClicked();
-  void OnSyncErrorButtonClicked(AvatarSyncErrorType error);
+  void OnGoogleServicesSettingsButtonClicked();
+  void OnAccountSettingsButtonClicked();
+  void OnSyncErrorButtonClicked(syncer::SyncService::UserActionableError error);
+  void OnPasskeyUnlockButtonClicked();
   void OnSigninButtonClicked(CoreAccountInfo account,
                              ActionableItem button_type,
                              signin_metrics::AccessPoint access_point);
-  void OnCookiesClearedOnExitLinkClicked();
   void OnSignoutButtonClicked();
   void OnOtherProfileSelected(const base::FilePath& profile_path);
   void OnAddNewProfileButtonClicked();
   void OnManageProfilesButtonClicked();
   void OnEditProfileButtonClicked();
-  void OnAutofillSettingsButtonClicked();
+  void OnYourSavedInfoSettingsButtonClicked();
+  void OnBatchUploadButtonClicked(ActionableItem button_type);
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  void OnCrossDeviceSigninButtonClicked();
+#endif
 
   // We normally close the bubble any time it becomes inactive but this can lead
   // to flaky tests where unexpected UI events are triggering this behavior.
   // Tests set this to "false" for more consistent operation.
   static bool close_on_deactivate_for_testing_;
 
+  // Prevents flaky tests by skipping the browser window active check within
+  // `ProfileMenuView::OnClose`. Window active status is often unpredictable
+  // during automated tests.
+  bool skip_window_active_check_for_testing_ = false;
+
   // Helper methods for building the menu.
   void SetMenuTitleForAccessibility();
   void BuildGuestIdentity();
+  void MaybeBuildBatchUploadButton();
   void BuildAutofillSettingsButton();
   void BuildCustomizeProfileButton();
+  void MaybeBuildChromeAccountSettingsButtonWithSync();
   void MaybeBuildChromeAccountSettingsButton();
+  void MaybeBuildGoogleServicesSettingsButton();
   void MaybeBuildManageGoogleAccountButton();
   void MaybeBuildCloseBrowsersButton();
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  void MaybeBuildCrossDeviceSigninButton();
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
   void MaybeBuildSignoutButton();
   void BuildFeatureButtons();
   IdentitySectionParams GetIdentitySectionParams(
       const ProfileAttributesEntry& entry);
   void BuildIdentityWithCallToAction();
 
-  // TODO(crbug.com/370473765): Delete these functions after
-  // `switches::IsImprovedSigninUIOnDesktopEnabled()` is launched.
-  void BuildIdentity();
-  void BuildAutofillButtons();
-  void BuildSyncInfo();
-
   // Gets the profiles to be displayed in the "Other profiles" section. Does not
   // include the current profile.
-  // When `switches::IsImprovedSigninUIOnDesktopEnabled()` returns true, the
-  // guest profile is never shown in this section. It is shown in the profile
-  // management section instead.
   void GetProfilesForOtherProfilesSection(
-      std::vector<ProfileAttributesEntry*>& available_profiles,
-      bool& show_guest_in_other_profiles_section) const;
+      std::vector<ProfileAttributesEntry*>& available_profiles) const;
   void BuildOtherProfilesSection(
-      const std::vector<ProfileAttributesEntry*>& available_profiles,
-      bool show_guest_in_other_profiles_section);
+      const std::vector<ProfileAttributesEntry*>& available_profiles);
 
   void BuildProfileManagementFeatureButtons();
+
+  const raw_ref<Browser> browser_;
+  signin::ProfileMenuAvatarButtonPromoInfo promo_info_;
+  // If the profile menu opening originated from a Promo on the AvatarButton.
+  bool from_avatar_promo_;
 
   std::u16string menu_title_;
   std::u16string menu_subtitle_;

@@ -14,20 +14,22 @@ import {
 } from
   'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {mojoString16ToString} from 'chrome://resources/js/mojo_type_util.js';
 import {nothing} from 'chrome://resources/mwc/lit/index.js';
 
-import {NoArgStringName} from '../../core/i18n.js';
-import {InternalMicInfo} from '../../core/microphone_manager.js';
-import {ModelState} from '../../core/on_device_model/types.js';
+import type {NoArgStringName} from '../../core/i18n.js';
+import type {InternalMicInfo} from '../../core/microphone_manager.js';
+import type {ModelState} from '../../core/on_device_model/types.js';
 import {PerfLogger} from '../../core/perf.js';
 import {
   PlatformHandler as PlatformHandlerBase,
 } from '../../core/platform_handler.js';
-import {computed, Signal, signal} from '../../core/reactive/signal.js';
-import {LangPackInfo, LanguageCode} from '../../core/soda/language_info.js';
-import {SodaSession} from '../../core/soda/types.js';
+import type {Signal} from '../../core/reactive/signal.js';
+import {computed, signal} from '../../core/reactive/signal.js';
+import type {LangPackInfo} from '../../core/soda/language_info.js';
+import {LanguageCode} from '../../core/soda/language_info.js';
+import type {SodaSession} from '../../core/soda/types.js';
 import {
+  assertEnumVariant,
   assertExists,
   assertInstanceof,
   checkEnumVariant,
@@ -42,15 +44,8 @@ import {
   TitleSuggestionModelLoader,
 } from './on_device_model.js';
 import {MojoSodaSession} from './soda_session.js';
-import {
-  LangPackInfo as MojoLangPackInfo,
-  ModelState as MojoModelState,
-  ModelStateMonitorReceiver,
-  PageHandler as MojoPageHandler,
-  QuietModeMonitorReceiver,
-  SodaClientReceiver,
-  SodaRecognizerRemote,
-} from './types.js';
+import type {LangPackInfo as MojoLangPackInfo, ModelState as MojoModelState} from './types.js';
+import {ModelStateMonitorReceiver, PageHandler as MojoPageHandler, QuietModeMonitorReceiver, SodaClientReceiver, SodaRecognizerRemote} from './types.js';
 
 const CRASH_SERVER_PRODUCT_NAME = 'ChromeOS_RecorderApp';
 
@@ -60,6 +55,8 @@ export class PlatformHandler extends PlatformHandlerBase {
   private readonly sodaStates = new Map<LanguageCode, Signal<ModelState>>();
 
   private readonly langPacks = new Map<LanguageCode, LangPackInfo>();
+
+  private defaultLanguage = LanguageCode.EN_US;
 
   override summaryModelLoader: SummaryModelLoader;
 
@@ -76,9 +73,13 @@ export class PlatformHandler extends PlatformHandlerBase {
     return loadTimeData.getStringF(id, ...args);
   }
 
+  static override getDeviceType(): string {
+    return loadTimeData.getStringF('deviceType');
+  }
+
   override readonly canCaptureSystemAudioWithLoopback = signal(false);
 
-  override readonly eventsSender = new EventsSender();
+  override readonly eventsSender = new EventsSender(this.remote);
 
   override perfLogger = new PerfLogger(this.eventsSender);
 
@@ -109,7 +110,7 @@ export class PlatformHandler extends PlatformHandlerBase {
     }
     return {
       languageCode: languageCode,
-      displayName: mojoString16ToString(langPack.displayName),
+      displayName: langPack.displayName,
       isGenAiSupported: langPack.isGenAiSupported,
       isSpeakerLabelSupported: langPack.isSpeakerLabelSupported,
     };
@@ -150,6 +151,13 @@ export class PlatformHandler extends PlatformHandlerBase {
       update(state);
     }
 
+    const languageCodeString =
+      (await this.remote.getDefaultLanguage()).languageCode;
+    const languageCode = assertEnumVariant(LanguageCode, languageCodeString);
+    if (this.getSodaState(languageCode).value.kind !== 'unavailable') {
+      this.defaultLanguage = languageCode;
+    }
+
     const quietModeMonitor = new QuietModeMonitorReceiver({
       update: (inQuietMode: boolean) => {
         this.quietModeInternal.value = inQuietMode;
@@ -164,6 +172,10 @@ export class PlatformHandler extends PlatformHandlerBase {
     await this.titleSuggestionModelLoader.init();
 
     this.initPerfEventWatchers();
+  }
+
+  override getDefaultLanguage(): LanguageCode {
+    return this.defaultLanguage;
   }
 
   override getLangPackList = lazyInit((): readonly LangPackInfo[] => {

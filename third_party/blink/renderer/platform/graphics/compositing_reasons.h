@@ -38,6 +38,7 @@ using CompositingReasons = uint64_t;
   V(AnchorPosition)                                                            \
   V(BackdropFilter)                                                            \
   V(BackdropFilterMask)                                                        \
+  V(FixedBackdropInOverscrollAreaParent)                                       \
   V(RootScroller)                                                              \
   V(Viewport)                                                                  \
   V(WillChangeTransform)                                                       \
@@ -47,6 +48,9 @@ using CompositingReasons = uint64_t;
   V(WillChangeOpacity)                                                         \
   V(WillChangeFilter)                                                          \
   V(WillChangeBackdropFilter)                                                  \
+  V(WillChangeClipPath)                                                        \
+  V(WillChangeMixBlendMode)                                                    \
+  V(WillChangeMask)                                                            \
   /* This flag is needed only when none of the explicit kWillChange* reasons   \
      are set. */                                                               \
   V(WillChangeOther)                                                           \
@@ -85,11 +89,13 @@ using CompositingReasons = uint64_t;
   V(Caret)                                                                     \
   V(Video)                                                                     \
   V(Canvas)                                                                    \
+  V(CanvasChild)                                                               \
   V(Plugin)                                                                    \
   V(Scrollbar)                                                                 \
   V(LinkHighlight)                                                             \
   V(DevToolsOverlay)                                                           \
   V(ViewTransitionContent)                                                     \
+  V(UnboundedElement)
 
 class PLATFORM_EXPORT CompositingReason {
   DISALLOW_NEW();
@@ -126,9 +132,16 @@ class PLATFORM_EXPORT CompositingReason {
     // that are not IsIdentityOrTranslation().
     kPreventingSubpixelAccumulationReasons =
         kWillChangeTransform | kWillChangeScale | kWillChangeRotate,
+
     kDirectReasonsForPaintOffsetTranslationProperty =
         kFixedPosition | kAffectedByOuterViewportBoundsDelta | kUndoOverscroll |
-        kVideo | kCanvas | kPlugin | kIFrame | kAffectedBySafeAreaBottom,
+        kVideo | kCanvas | kCanvasChild | kPlugin | kIFrame |
+        kAffectedBySafeAreaBottom | kFixedBackdropInOverscrollAreaParent,
+
+    kFixedPositionReasons = kFixedPosition | kUndoOverscroll |
+                            kAffectedByOuterViewportBoundsDelta |
+                            kAffectedBySafeAreaBottom,
+
     // TODO(dbaron): kWillChangeOther probably shouldn't be in this list.
     // TODO(vmpstr): kViewTransitionElement is needed to make sure that the
     // capture escapes clips when view transition has a descendant that
@@ -144,17 +157,26 @@ class PLATFORM_EXPORT CompositingReason {
         k3DRotate | kWillChangeRotate | kActiveRotateAnimation,
     kDirectReasonsForTranslateProperty =
         k3DTranslate | kWillChangeTranslate | kActiveTranslateAnimation,
+
     kDirectReasonsForScrollTranslationProperty =
         kRootScroller | kOverflowScrolling,
+
     kDirectReasonsForEffectProperty =
         kActiveOpacityAnimation | kWillChangeOpacity | kBackdropFilter |
-        kWillChangeBackdropFilter | kActiveBackdropFilterAnimation |
-        kViewTransitionPseudoElement | kTransform3DSceneLeaf | kElementCapture,
+        kWillChangeBackdropFilter | kWillChangeMixBlendMode |
+        kActiveBackdropFilterAnimation | kViewTransitionPseudoElement |
+        kTransform3DSceneLeaf | kElementCapture | kCanvasChild |
+        kUnboundedElement,
     kDirectReasonsForFilterProperty =
         kActiveFilterAnimation | kWillChangeFilter,
+
     kDirectReasonsForBackdropFilter = kBackdropFilter |
                                       kActiveBackdropFilterAnimation |
                                       kWillChangeBackdropFilter,
+    // These will-change properties create a backdrop root if a child with
+    // backdrop-filter is present, but otherwise do not create an effect node on
+    // their own (and thus do not self-enforce)
+    kAuxiliaryReasonsForBackdropRoot = kWillChangeClipPath | kWillChangeMask,
 
     // These reasons also cause any effect or filter node that exists
     // to be composited. They don't cause creation of a node.

@@ -24,7 +24,7 @@ import androidx.test.runner.lifecycle.Stage;
 
 import org.hamcrest.Matchers;
 import org.junit.Assert;
-import org.junit.ClassRule;
+import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -44,8 +44,10 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.PackageManagerWrapper;
 import org.chromium.base.test.util.RequiresRestart;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.LauncherShortcutActivity;
 import org.chromium.chrome.browser.ServiceTabLauncher;
@@ -54,12 +56,14 @@ import org.chromium.chrome.browser.bookmarkswidget.BookmarkWidgetProxy;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.searchwidget.SearchActivity;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
 import org.chromium.chrome.test.util.ChromeApplicationTestUtils;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.network.mojom.ReferrerPolicy;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.mojom.WindowOpenDisposition;
 import org.chromium.url.GURL;
 
@@ -74,11 +78,8 @@ public final class TabbedActivityLaunchCauseMetricsTest {
     private static final long CHROME_LAUNCH_TIMEOUT = 10000L;
 
     @Rule
-    public final ChromeTabbedActivityTestRule mActivityTestRule =
-            new ChromeTabbedActivityTestRule();
-
-    @ClassRule
-    public static final ChromeBrowserTestRule sBrowserTestRule = new ChromeBrowserTestRule();
+    public final FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
@@ -90,11 +91,19 @@ public final class TabbedActivityLaunchCauseMetricsTest {
                 LaunchCauseMetrics.LAUNCH_CAUSE_HISTOGRAM, value);
     }
 
+    @BeforeClass
+    public static void setUpClass() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
+    }
+
     @Test
     @MediumTest
     public void testMainIntentMetrics() throws Throwable {
         final int count = histogramCountForValue(LaunchCauseMetrics.LaunchCause.MAIN_LAUNCHER_ICON);
-        mActivityTestRule.startMainActivityFromLauncher();
+        // If this is the first test in the batch, opens an NTP. Otherwise, opens a blank page.
+        mActivityTestRule
+                .startFromLauncherTo()
+                .arriveAt(CtaPageStation.newGenericBuilder().withEntryPoint().build());
         CriteriaHelper.pollInstrumentationThread(
                 () -> {
                     Criteria.checkThat(
@@ -113,6 +122,25 @@ public final class TabbedActivityLaunchCauseMetricsTest {
                                     LaunchCauseMetrics.LaunchCause.MAIN_LAUNCHER_ICON),
                             Matchers.is(count + 2));
                 });
+    }
+
+    @Test
+    @MediumTest
+    public void testRecreationMetrics() throws Throwable {
+        final int count = histogramCountForValue(LaunchCauseMetrics.LaunchCause.RECREATION);
+        // If this is the first test in the batch, opens an NTP. Otherwise, opens a blank page.
+        mActivityTestRule
+                .startFromLauncherTo()
+                .arriveAt(CtaPageStation.newGenericBuilder().withEntryPoint().build());
+        mActivityTestRule.recreateActivity();
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    Criteria.checkThat(
+                            histogramCountForValue(LaunchCauseMetrics.LaunchCause.RECREATION),
+                            Matchers.is(count + 1));
+                },
+                CHROME_LAUNCH_TIMEOUT,
+                CriteriaHelper.DEFAULT_POLLING_INTERVAL);
     }
 
     @Test
@@ -142,7 +170,10 @@ public final class TabbedActivityLaunchCauseMetricsTest {
                 histogramCountForValue(LaunchCauseMetrics.LaunchCause.MAIN_LAUNCHER_ICON);
         final int recentsCount = histogramCountForValue(LaunchCauseMetrics.LaunchCause.RECENTS);
 
-        mActivityTestRule.startMainActivityFromIntent(intent, null);
+        // If this is the first test in the batch, opens an NTP. Otherwise, opens a blank page.
+        mActivityTestRule
+                .startWithIntentPlusUrlTo(intent, /* url= */ null)
+                .arriveAt(CtaPageStation.newGenericBuilder().withEntryPoint().build());
         CriteriaHelper.pollInstrumentationThread(
                 () -> {
                     Criteria.checkThat(
@@ -167,7 +198,14 @@ public final class TabbedActivityLaunchCauseMetricsTest {
                 1
                         + histogramCountForValue(
                                 LaunchCauseMetrics.LaunchCause.MAIN_LAUNCHER_ICON_SHORTCUT);
-        mActivityTestRule.startMainActivityFromIntent(intent, null);
+        // If this is the first test in the batch, opens an NTP. Otherwise, opens a blank page.
+        mActivityTestRule
+                .startWithIntentPlusUrlTo(intent, /* url= */ null)
+                .arriveAt(
+                        CtaPageStation.newGenericBuilder()
+                                .withIncognito(true)
+                                .withEntryPoint()
+                                .build());
         CriteriaHelper.pollInstrumentationThread(
                 () -> {
                     Criteria.checkThat(
@@ -188,11 +226,13 @@ public final class TabbedActivityLaunchCauseMetricsTest {
         intent.setData(Uri.parse("about:blank"));
         final int count =
                 1 + histogramCountForValue(LaunchCauseMetrics.LaunchCause.HOME_SCREEN_WIDGET);
-        mActivityTestRule.setActivity(
-                ApplicationTestUtils.waitForActivityWithClass(
-                        ChromeTabbedActivity.class,
-                        Stage.RESUMED,
-                        () -> ContextUtils.getApplicationContext().startActivity(intent)));
+        mActivityTestRule
+                .getActivityTestRule()
+                .setActivity(
+                        ApplicationTestUtils.waitForActivityWithClass(
+                                ChromeTabbedActivity.class,
+                                Stage.RESUMED,
+                                () -> ContextUtils.getApplicationContext().startActivity(intent)));
         CriteriaHelper.pollInstrumentationThread(
                 () -> {
                     Criteria.checkThat(
@@ -228,7 +268,8 @@ public final class TabbedActivityLaunchCauseMetricsTest {
 
     @Test
     @MediumTest
-    @RequiresRestart("crbug.com/1223068")
+    @RequiresRestart("crbug.com/40774438")
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // crbug.com/537353093
     public void testExternalSearchIntentNoResolvers() throws Throwable {
         final int count =
                 1
@@ -277,21 +318,23 @@ public final class TabbedActivityLaunchCauseMetricsTest {
     public void testServiceWorkerTabLaunch() throws Throwable {
         final int count = 1 + histogramCountForValue(LaunchCauseMetrics.LaunchCause.NOTIFICATION);
         ServiceTabLauncherJni.setInstanceForTesting(mServiceTabLauncherJni);
-        mActivityTestRule.setActivity(
-                ApplicationTestUtils.waitForActivityWithClass(
-                        ChromeTabbedActivity.class,
-                        Stage.RESUMED,
-                        () -> {
-                            ServiceTabLauncher.launchTab(
-                                    0,
-                                    false,
-                                    new GURL("about:blank"),
-                                    WindowOpenDisposition.NEW_FOREGROUND_TAB,
-                                    "",
-                                    ReferrerPolicy.DEFAULT,
-                                    "",
-                                    null);
-                        }));
+        mActivityTestRule
+                .getActivityTestRule()
+                .setActivity(
+                        ApplicationTestUtils.waitForActivityWithClass(
+                                ChromeTabbedActivity.class,
+                                Stage.RESUMED,
+                                () -> {
+                                    ServiceTabLauncher.launchTab(
+                                            0,
+                                            false,
+                                            new GURL("about:blank"),
+                                            WindowOpenDisposition.NEW_FOREGROUND_TAB,
+                                            "",
+                                            ReferrerPolicy.DEFAULT,
+                                            "",
+                                            null);
+                                }));
         CriteriaHelper.pollInstrumentationThread(
                 () -> {
                     Criteria.checkThat(

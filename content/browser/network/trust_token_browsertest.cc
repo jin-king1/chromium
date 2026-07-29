@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "build/build_config.h"
@@ -554,6 +555,10 @@ IN_PROC_BROWSER_TEST_F(TrustTokenBrowsertest, RecordsTimers) {
         1);
   }
 
+  histograms.ExpectTotalCount("Net.TrustTokens.ProtocolVersion", 1);
+  histograms.ExpectUniqueSample(
+      "Net.TrustTokens.ProtocolVersion",
+      network::mojom::TrustTokenProtocolVersion::kPrivateStateTokenV1Voprf, 1);
   // Expect three accesses, one for issue, redeem, and sign.
   EXPECT_EQ(3, access_count_);
 }

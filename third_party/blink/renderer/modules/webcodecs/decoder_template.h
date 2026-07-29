@@ -6,8 +6,10 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBCODECS_DECODER_TEMPLATE_H_
 
 #include <stdint.h>
+
 #include <memory>
 
+#include "base/sequence_checker.h"
 #include "media/base/decoder_status.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
@@ -250,6 +252,7 @@ class MODULES_EXPORT DecoderTemplate
   // initialization.
   bool low_delay_ = false;
   std::unique_ptr<MediaConfigType> active_config_;
+  std::optional<HardwarePreference> active_preference_;
 
   // TODO(sandersd): Store the last config, flush, and reset so that
   // duplicates can be elided.

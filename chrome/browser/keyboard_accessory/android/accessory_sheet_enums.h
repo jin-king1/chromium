@@ -56,9 +56,13 @@ enum class AccessorySuggestionType {
 
   // Plus address suggestion types are accessible from both address and
   // passwords manual filling sheets.
-  kPlusAddress = 20,
+  // kPlusAddress = 20,  // DEPRECATED
 
-  kMaxValue = kPlusAddress,
+  // Google Wallet loyalty card suggestion accessing from the payments manual
+  // filling sheet.
+  kLoyaltyCard = 21,
+
+  kMaxValue = kLoyaltyCard,
 };
 
 // Describes possible actions in the keyboard accessory and its sheets. Used to
@@ -68,6 +72,8 @@ enum class AccessorySuggestionType {
 // be reused. Must be kept in sync with the enum in enums.xml. A java IntDef@ is
 // generated from this.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.keyboard_accessory
+//
+// LINT.IfChange(AccessoryAction)
 enum class AccessoryAction {
   GENERATE_PASSWORD_AUTOMATIC = 0,
   MANAGE_PASSWORDS = 1,
@@ -79,14 +85,20 @@ enum class AccessoryAction {
   USE_OTHER_PASSWORD = 7,
   CREDMAN_CONDITIONAL_UI_REENTRY = 8,
   CROSS_DEVICE_PASSKEY = 9,
-  CREATE_PLUS_ADDRESS_FROM_ADDRESS_SHEET = 10,
-  SELECT_PLUS_ADDRESS_FROM_ADDRESS_SHEET = 11,
-  MANAGE_PLUS_ADDRESS_FROM_ADDRESS_SHEET = 12,
-  CREATE_PLUS_ADDRESS_FROM_PASSWORD_SHEET = 13,
-  SELECT_PLUS_ADDRESS_FROM_PASSWORD_SHEET = 14,
-  MANAGE_PLUS_ADDRESS_FROM_PASSWORD_SHEET = 15,
+  // CREATE_PLUS_ADDRESS_FROM_ADDRESS_SHEET = 10,  // DEPRECATED
+  // SELECT_PLUS_ADDRESS_FROM_ADDRESS_SHEET = 11,  // DEPRECATED
+  // MANAGE_PLUS_ADDRESS_FROM_ADDRESS_SHEET = 12,  // DEPRECATED
+  // CREATE_PLUS_ADDRESS_FROM_PASSWORD_SHEET = 13,  // DEPRECATED
+  // SELECT_PLUS_ADDRESS_FROM_PASSWORD_SHEET = 14,  // DEPRECATED
+  // MANAGE_PLUS_ADDRESS_FROM_PASSWORD_SHEET = 15,  // DEPRECATED
+  MANAGE_LOYALTY_CARDS = 16,
+  RETRIEVE_TRUSTED_VAULT_KEY = 17,
+  AUTOFILL_SUGGESTION_FROM_ACCESSORY_SHEET = 18,
+  DISMISS = 19,
+  SHOW_AT_MEMORY_BOTTOMSHEET = 20,
   COUNT,
 };
+// LINT.ThenChange(/tools/metrics/histograms/metadata/password/enums.xml)
 
 // Used to record metrics for accessory toggles. Entries should not be
 // renumbered and numeric values should never be reused. Must be kept in sync

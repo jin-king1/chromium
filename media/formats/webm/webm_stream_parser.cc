@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/formats/webm/webm_stream_parser.h"
 
 #include <memory>
@@ -16,6 +11,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/numerics/checked_math.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "media/base/byte_queue.h"
 #include "media/base/media_track.h"
@@ -61,7 +57,7 @@ void WebMStreamParser::Init(
   encrypted_media_init_data_cb_ = std::move(encrypted_media_init_data_cb);
   new_segment_cb_ = std::move(new_segment_cb);
   end_of_segment_cb_ = std::move(end_of_segment_cb);
-  media_log_ = media_log;
+  media_log_ = MediaLog::CloneSafely(media_log);
 }
 
 void WebMStreamParser::Flush() {
@@ -105,13 +101,13 @@ bool WebMStreamParser::AppendToParseBuffer(base::span<const uint8_t> buf) {
   // could lead to memory corruption, preferring CHECK.
   CHECK_EQ(uninspected_pending_bytes_, 0);
 
-  uninspected_pending_bytes_ = base::checked_cast<int>(buf.size());
   if (!byte_queue_.Push(buf)) {
     DVLOG(2) << "AppendToParseBuffer(): Failed to push buf of size "
              << buf.size();
     return false;
   }
 
+  uninspected_pending_bytes_ = base::checked_cast<int>(buf.size());
   return true;
 }
 
@@ -126,13 +122,12 @@ StreamParser::ParseStatus WebMStreamParser::Parse(
 
   int result = 0;
   int bytes_parsed = 0;
-  const uint8_t* cur = nullptr;
-  int queue_size = 0;
-  byte_queue_.Peek(&cur, &queue_size);
+  base::span<const uint8_t> queue = byte_queue_.Data();
 
   // First, determine the amount of bytes not yet popped, though already
   // inspected by previous call(s) to Parse().
-  int cur_size = queue_size - uninspected_pending_bytes_;
+  int cur_size =
+      base::checked_cast<int>(queue.size()) - uninspected_pending_bytes_;
   DCHECK_GE(cur_size, 0);
 
   // Next, allow up to `max_pending_bytes_to_inspect` more of `byte_queue_`
@@ -147,15 +142,18 @@ StreamParser::ParseStatus WebMStreamParser::Parse(
   uninspected_pending_bytes_ -= inspection_increment;
   DCHECK_GE(uninspected_pending_bytes_, 0);
 
-  while (cur_size > 0) {
+  base::span<const uint8_t> cur =
+      queue.first(base::checked_cast<size_t>(cur_size));
+
+  while (!cur.empty()) {
     State oldState = state_;
     switch (state_) {
       case kParsingHeaders:
-        result = ParseInfoAndTracks(cur, cur_size);
+        result = ParseInfoAndTracks(cur);
         break;
 
       case kParsingClusters:
-        result = ParseCluster(cur, cur_size);
+        result = ParseCluster(cur);
         break;
 
       case kWaitingForInit:
@@ -172,8 +170,7 @@ StreamParser::ParseStatus WebMStreamParser::Parse(
       break;
 
     DCHECK_GE(result, 0);
-    cur += result;
-    cur_size -= result;
+    cur = cur.subspan(base::checked_cast<size_t>(result));
     bytes_parsed += result;
   }
 
@@ -189,18 +186,15 @@ void WebMStreamParser::ChangeState(State new_state) {
   state_ = new_state;
 }
 
-int WebMStreamParser::ParseInfoAndTracks(const uint8_t* data, int size) {
+int WebMStreamParser::ParseInfoAndTracks(base::span<const uint8_t> data) {
   DVLOG(2) << "ParseInfoAndTracks()";
-  DCHECK(data);
-  DCHECK_GT(size, 0);
+  DCHECK(!data.empty());
 
-  const uint8_t* cur = data;
-  int cur_size = size;
   int bytes_parsed = 0;
 
   int id;
   int64_t element_size;
-  int result = WebMParseElementHeader(cur, cur_size, &id, &element_size);
+  int result = WebMParseElementHeader(data, &id, &element_size);
 
   if (result <= 0)
     return result;
@@ -215,7 +209,7 @@ int WebMStreamParser::ParseInfoAndTracks(const uint8_t* data, int size) {
     case kWebMIdTags:
     case kWebMIdAttachments:
       // TODO(matthewjheaney): Implement support for chapters.
-      if (cur_size < (result + element_size)) {
+      if (base::checked_cast<int64_t>(data.size()) < (result + element_size)) {
         // We don't have the whole element yet. Signal we need more data.
         return 0;
       }
@@ -246,17 +240,16 @@ int WebMStreamParser::ParseInfoAndTracks(const uint8_t* data, int size) {
   }
 
   WebMInfoParser info_parser;
-  result = info_parser.Parse(cur, cur_size);
+  result = info_parser.Parse(data);
 
   if (result <= 0)
     return result;
 
-  cur += result;
-  cur_size -= result;
+  data = data.subspan(base::checked_cast<size_t>(result));
   bytes_parsed += result;
 
-  WebMTracksParser tracks_parser(media_log_);
-  result = tracks_parser.Parse(cur, cur_size);
+  WebMTracksParser tracks_parser(media_log_.get());
+  result = tracks_parser.Parse(data);
 
   if (result <= 0)
     return result;
@@ -305,7 +298,7 @@ int WebMStreamParser::ParseInfoAndTracks(const uint8_t* data, int size) {
       tracks_parser.GetVideoDefaultDuration(timecode_scale_in_ns),
       tracks_parser.ignored_tracks(), tracks_parser.audio_encryption_key_id(),
       tracks_parser.video_encryption_key_id(), audio_config.codec(),
-      media_log_);
+      media_log_.get());
 
   if (init_cb_) {
     params.detected_audio_track_count =
@@ -318,11 +311,11 @@ int WebMStreamParser::ParseInfoAndTracks(const uint8_t* data, int size) {
   return bytes_parsed;
 }
 
-int WebMStreamParser::ParseCluster(const uint8_t* data, int size) {
+int WebMStreamParser::ParseCluster(base::span<const uint8_t> data) {
   if (!cluster_parser_)
     return -1;
 
-  int bytes_parsed = cluster_parser_->Parse(data, size);
+  int bytes_parsed = cluster_parser_->Parse(data);
   if (bytes_parsed < 0)
     return bytes_parsed;
 

@@ -35,7 +35,6 @@ using ::testing::_;
 using ::testing::AllOf;
 using ::testing::EndsWith;
 using ::testing::Eq;
-using ::testing::Invoke;
 using ::testing::MockFunction;
 using ::testing::NiceMock;
 using ::testing::Not;
@@ -148,7 +147,7 @@ TEST_F(ReportQueueImplTest, SuccessfulStringRecord) {
 TEST_F(ReportQueueImplTest, SuccessfulBaseValueRecord) {
   static constexpr char kTestKey[] = "TEST_KEY";
   static constexpr char kTestValue[] = "TEST_VALUE";
-  base::Value::Dict test_dict;
+  base::DictValue test_dict;
   test_dict.Set(kTestKey, kTestValue);
   test::TestEvent<Status> a;
   report_queue_->Enqueue(test_dict.Clone(), priority_, a.cb());
@@ -159,7 +158,8 @@ TEST_F(ReportQueueImplTest, SuccessfulBaseValueRecord) {
   EXPECT_THAT(test_storage_module()->record().has_timestamp_us(), Eq(true));
 
   std::optional<base::Value> value_result =
-      base::JSONReader::Read(test_storage_module()->record().data());
+      base::JSONReader::Read(test_storage_module()->record().data(),
+                             base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(value_result.has_value());
   EXPECT_EQ(value_result.value().GetDict(), test_dict);
 }
@@ -379,10 +379,9 @@ TEST_F(ReportQueueImplTest, SuccessfulProtoRecordWithSourceVersion) {
 // unsuccessful.
 TEST_F(ReportQueueImplTest, CallSuccessCallbackFailure) {
   EXPECT_CALL(*test_storage_module(), AddRecord(Eq(priority_), _, _))
-      .WillOnce(
-          WithArg<2>(Invoke([](base::OnceCallback<void(Status)> callback) {
-            std::move(callback).Run(Status(error::UNKNOWN, "Failing for Test"));
-          })));
+      .WillOnce(WithArg<2>([](base::OnceCallback<void(Status)> callback) {
+        std::move(callback).Run(Status(error::UNKNOWN, "Failing for Test"));
+      }));
 
   test::TestMessage test_message;
   test_message.set_test(kTestMessage);
@@ -422,7 +421,7 @@ TEST_F(ReportQueueImplTest, EnqueueValueFailsOnPolicy) {
       .WillOnce(Return(Status(error::UNAUTHENTICATED, "Failing for tests")));
   static constexpr char kTestKey[] = "TEST_KEY";
   static constexpr char kTestValue[] = "TEST_VALUE";
-  base::Value::Dict test_dict;
+  base::DictValue test_dict;
   test_dict.Set(kTestKey, kTestValue);
   test::TestEvent<Status> a;
   report_queue_->Enqueue(test_dict.Clone(), priority_, a.cb());
@@ -455,10 +454,9 @@ TEST_F(ReportQueueImplTest, EnqueueSuccessFlushFailure) {
   EXPECT_OK(a_result) << a_result;
 
   EXPECT_CALL(*test_storage_module(), Flush(Eq(priority_), _))
-      .WillOnce(
-          WithArg<1>(Invoke([](base::OnceCallback<void(Status)> callback) {
-            std::move(callback).Run(Status(error::UNKNOWN, "Failing for Test"));
-          })));
+      .WillOnce(WithArg<1>([](base::OnceCallback<void(Status)> callback) {
+        std::move(callback).Run(Status(error::UNKNOWN, "Failing for Test"));
+      }));
   test::TestEvent<Status> f;
   report_queue_->Flush(priority_, f.cb());
   const auto result = f.result();
@@ -760,10 +758,9 @@ TEST_F(ReportQueueImplTest, FlushSpeculativeReportQueue) {
   task_environment_.RunUntilIdle();
 
   EXPECT_CALL(*test_storage_module(), Flush(Eq(priority_), _))
-      .WillOnce(
-          WithArg<1>(Invoke([](base::OnceCallback<void(Status)> callback) {
-            std::move(callback).Run(Status::StatusOK());
-          })));
+      .WillOnce(WithArg<1>([](base::OnceCallback<void(Status)> callback) {
+        std::move(callback).Run(Status::StatusOK());
+      }));
 
   speculative_report_queue->Flush(priority_, event.cb());
   const auto result = event.result();
@@ -823,7 +820,7 @@ TEST_F(ReportQueueImplTest, AsyncProcessingReportQueue) {
   test::TestEvent<Status> a_json;
   static constexpr char kTestKey[] = "TEST_KEY";
   static constexpr char kTestValue[] = "TEST_VALUE";
-  base::Value::Dict test_dict;
+  base::DictValue test_dict;
   test_dict.Set(kTestKey, kTestValue);
   mock_queue->Enqueue(std::move(test_dict), priority_, a_json.cb());
 
@@ -853,7 +850,7 @@ TEST_F(ReportQueueImplTest, AsyncProcessingSpeculativeReportQueue) {
   test::TestEvent<Status> a_json;
   static constexpr char kTestKey[] = "TEST_KEY";
   static constexpr char kTestValue[] = "TEST_VALUE";
-  base::Value::Dict test_dict;
+  base::DictValue test_dict;
   test_dict.Set(kTestKey, kTestValue);
   speculative_report_queue->Enqueue(std::move(test_dict), priority_,
                                     a_json.cb());

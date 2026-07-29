@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/renderer/wallet/boarding_pass_extractor.h"
 
@@ -148,7 +144,7 @@ void BoardingPassExtractor::ExtractBoardingPassWithScript(
   blink::WebLocalFrame* main_frame = render_frame()->GetWebFrame();
   v8::HandleScope handle_scope(main_frame->GetAgentGroupScheduler()->Isolate());
   blink::WebScriptSource source =
-      blink::WebScriptSource(blink::WebString::FromUTF8(script));
+      blink::WebScriptSource(blink::WebString::FromUtf8(script));
 
   main_frame->RequestExecuteScript(
       ISOLATED_WORLD_ID_CHROME_INTERNAL, base::span_from_ref(source),

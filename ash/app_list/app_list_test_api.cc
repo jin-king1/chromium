@@ -69,11 +69,11 @@ class ScopedItemMoveAnimationDisabler;
 ScopedItemMoveAnimationDisabler* g_disabler_ptr = nullptr;
 
 // Returns the menu item indicated by `order` from a non-folder item menu.
-views::MenuItemView* GetReorderOptionForNonFolderItemMenu(
+const views::MenuItemView* GetReorderOptionForNonFolderItemMenu(
     const views::MenuItemView* root_menu,
     ash::AppListSortOrder order) {
   // Get the last menu item index where the reorder submenu is.
-  views::MenuItemView* reorder_item_view =
+  const views::MenuItemView* reorder_item_view =
       root_menu->GetSubmenu()->GetLastItem();
   DCHECK_EQ(reorder_item_view->title(), u"Sort by");
   return reorder_item_view;
@@ -115,10 +115,10 @@ size_t GetMenuIndexOfSortingOrder(ash::AppListSortOrder order) {
   }
 }
 
-views::MenuItemView* GetReorderOptionForAppListOrFolderItemMenu(
+const views::MenuItemView* GetReorderOptionForAppListOrFolderItemMenu(
     const views::MenuItemView* root_menu,
     const ash::AppListSortOrder order) {
-  views::MenuItemView* reorder_option = nullptr;
+  const views::MenuItemView* reorder_option = nullptr;
   switch (order) {
     case ash::AppListSortOrder::kNameAlphabetical:
       reorder_option = root_menu->GetSubmenu()->GetMenuItemAt(1);
@@ -343,7 +343,7 @@ void AppListTestApi::WaitForBubbleWindow(bool wait_for_opening_animation) {
 void AppListTestApi::WaitForBubbleWindowInRootWindow(
     aura::Window* root_window,
     bool wait_for_opening_animation) {
-  DCHECK(!Shell::Get()->IsInTabletMode());
+  DCHECK(!display::Screen::Get()->InTabletMode());
 
   // Wait for the window only when the app list window does not exist.
   auto* app_list_controller = Shell::Get()->app_list_controller();
@@ -382,7 +382,7 @@ void AppListTestApi::WaitForAppListShowAnimation(bool is_bubble_window) {
   if (!is_bubble_window)
     return;
 
-  DCHECK(!Shell::Get()->IsInTabletMode());
+  DCHECK(!display::Screen::Get()->InTabletMode());
 
   ScrollableAppsGridView* scrollable_apps_grid_view =
       static_cast<ScrollableAppsGridView*>(GetTopLevelAppsGridView());
@@ -697,7 +697,7 @@ void AppListTestApi::ReorderByMouseClickAtContextMenuInAppsGrid(
       ShowRootMenuAndReturn(apps_grid_view, menu_type, event_generator);
 
   // Get the "Name" or "Color" option.
-  views::MenuItemView* reorder_option = nullptr;
+  const views::MenuItemView* reorder_option = nullptr;
   switch (menu_type) {
     case MenuType::kAppListPageMenu:
     case MenuType::kAppListFolderItemMenu:
@@ -706,7 +706,7 @@ void AppListTestApi::ReorderByMouseClickAtContextMenuInAppsGrid(
       break;
     case MenuType::kAppListNonFolderItemMenu: {
       // The `reorder_option` cached here is the submenu of the options.
-      views::MenuItemView* reorder_submenu =
+      const views::MenuItemView* reorder_submenu =
           GetReorderOptionForNonFolderItemMenu(root_menu, order);
       event_generator->MoveMouseTo(
           reorder_submenu->GetBoundsInScreen().CenterPoint());
@@ -798,7 +798,7 @@ void AppListTestApi::RegisterReorderAnimationDoneCallback(
     ReorderAnimationEndState* actual_state) {
   AddReorderAnimationCallback(base::BindRepeating(
       &AppListTestApi::OnReorderAnimationDone, weak_factory_.GetWeakPtr(),
-      !ash::Shell::Get()->IsInTabletMode(), actual_state));
+      !display::Screen::Get()->InTabletMode(), actual_state));
 }
 
 void AppListTestApi::OnReorderAnimationDone(bool for_bubble_app_list,

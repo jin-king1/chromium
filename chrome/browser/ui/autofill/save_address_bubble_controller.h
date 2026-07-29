@@ -25,13 +25,14 @@ class SaveAddressBubbleController : public content::WebContentsObserver {
   struct HeaderImages {
     ui::ImageModel light;
     ui::ImageModel dark;
+    ui::ImageModel lottie;
   };
 
   SaveAddressBubbleController(
       base::WeakPtr<AddressBubbleControllerDelegate> delegate,
       content::WebContents* web_contents,
       const AutofillProfile& address_profile,
-      bool is_migration_to_account);
+      AutofillClient::SaveAddressBubbleType save_address_bubble_type);
   SaveAddressBubbleController(const SaveAddressBubbleController&) = delete;
   SaveAddressBubbleController& operator=(const SaveAddressBubbleController&) =
       delete;
@@ -44,6 +45,7 @@ class SaveAddressBubbleController : public content::WebContentsObserver {
   virtual std::u16string GetProfileEmail() const;
   virtual std::u16string GetProfilePhone() const;
   virtual std::u16string GetOkButtonLabel() const;
+  std::u16string GetNegativeButtonLabel() const;
   const AutofillProfile& GetAutofillProfile() const { return address_profile_; }
 
   // The value returned by the cancel button callback depends on whether
@@ -70,6 +72,8 @@ class SaveAddressBubbleController : public content::WebContentsObserver {
   virtual void OnBubbleClosed();
 
  private:
+  bool IsMigrationToAccount() const;
+
   // The delegate is used to return the user decision or notify about events
   // important for higher level processes, e.g. saving the address with editing.
   base::WeakPtr<AddressBubbleControllerDelegate> delegate_;
@@ -79,7 +83,7 @@ class SaveAddressBubbleController : public content::WebContentsObserver {
   const AutofillProfile address_profile_;
 
   // Whether the bubble prompts to save (migrate) the profile into account.
-  const bool is_migration_to_account_;
+  const AutofillClient::SaveAddressBubbleType save_address_bubble_type_;
 };
 
 }  // namespace autofill

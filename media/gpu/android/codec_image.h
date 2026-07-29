@@ -12,6 +12,7 @@
 
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
 #include "base/task/sequenced_task_runner.h"
 #include "gpu/command_buffer/service/ref_counted_lock.h"
@@ -49,8 +50,7 @@ class MEDIA_GPU_EXPORT CodecImage
   // destroying it.
   using UnusedCB = base::OnceCallback<void(CodecImage*)>;
 
-  CodecImage(const gfx::Size& coded_size,
-             scoped_refptr<gpu::RefCountedLock> drdc_lock);
+  explicit CodecImage(scoped_refptr<gpu::RefCountedLock> drdc_lock);
 
   CodecImage(const CodecImage&) = delete;
   CodecImage& operator=(const CodecImage&) = delete;
@@ -74,16 +74,13 @@ class MEDIA_GPU_EXPORT CodecImage
 
   // gpu::StreamTextureSharedImageInterface implementation.
   void ReleaseResources() override;
-  void UpdateAndBindTexImage() override;
   bool HasTextureOwner() const override;
-  gpu::TextureBase* GetTextureBase() const override;
   void NotifyOverlayPromotion(bool promotion, const gfx::Rect& bounds) override;
   // Renders this image to the overlay. Returns true if the buffer is in the
   // overlay front buffer. Returns false if the buffer was invalidated.
   bool RenderToOverlay() override;
   std::unique_ptr<base::android::ScopedHardwareBufferFenceSync>
   GetAHardwareBuffer() override;
-  bool TextureOwnerBindsTextureOnUpdate() override;
 
   // Whether the codec buffer has been rendered to the front buffer.
   bool was_rendered_to_front_buffer() const {
@@ -128,8 +125,6 @@ class MEDIA_GPU_EXPORT CodecImage
  private:
   FRIEND_TEST_ALL_PREFIXES(CodecImageTest, RenderAfterUnusedDoesntCrash);
 
-  bool TextureOwnerBindsOnUpdate() const;
-
   std::unique_ptr<CodecOutputBufferRenderer> output_buffer_renderer_;
 
   // Renders this image to the texture owner front buffer by first rendering
@@ -142,9 +137,6 @@ class MEDIA_GPU_EXPORT CodecImage
 
   // The bounds last sent to the overlay.
   gfx::Rect most_recent_bounds_;
-
-  // Coded size of the image.
-  gfx::Size coded_size_;
 
   // Callback to notify about promotion hints and overlay position.
   PromotionHintAggregator::NotifyPromotionHintCB promotion_hint_cb_;

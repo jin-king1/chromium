@@ -21,7 +21,10 @@ process_version("remoting_base_version") {
 
 buildflag_header("buildflags") {
   header = "buildflags.h"
-  flags = [ "REMOTING_INTERNAL=$remoting_internal" ]
+  flags = [
+    "REMOTING_INTERNAL=$remoting_internal",
+    "REMOTING_MULTI_PROCESS=$remoting_multi_process",
+  ]
 }
 
 source_set("http_status") {
@@ -36,22 +39,51 @@ source_set("http_status") {
   ]
 }
 
-source_set("base") {
+source_set("authentication_method") {
   sources = [
     "authentication_method.cc",
     "authentication_method.h",
+  ]
+  deps = [
+    ":name_value_map",
+    "//base",
+  ]
+}
+
+source_set("remoting_export") {
+  sources = [ "remoting_export.h" ]
+  if (is_linux || is_mac || is_win) {
+    configs += [ "//remoting/build/config:host_implementation" ]
+  }
+}
+
+if (is_posix) {
+  source_set("security_key_socket_name") {
+    sources = [
+      "security_key_socket_name.cc",
+      "security_key_socket_name.h",
+    ]
+    deps = [
+      ":remoting_export",
+      "//base",
+    ]
+  }
+}
+
+source_set("base") {
+  sources = [
+    "async_file_util.cc",
+    "async_file_util.h",
     "auto_thread.cc",
     "auto_thread.h",
     "auto_thread_task_runner.cc",
     "auto_thread_task_runner.h",
-    "buffered_socket_writer.cc",
-    "buffered_socket_writer.h",
+    "branding.cc",
+    "branding.h",
     "capabilities.cc",
     "capabilities.h",
     "certificate_helpers.cc",
     "certificate_helpers.h",
-    "chromoting_event.cc",
-    "chromoting_event.h",
     "cloud_service_client.cc",
     "cloud_service_client.h",
     "cloud_session_authz_service_client_factory.cc",
@@ -76,20 +108,32 @@ source_set("base") {
     "cpu_utils.h",
     "directory_service_client.cc",
     "directory_service_client.h",
+    "ecdh_key_exchange.cc",
+    "ecdh_key_exchange.h",
+    "environment_details.cc",
+    "environment_details.h",
+    "fifo_buffer.h",
     "fqdn.cc",
     "fqdn.h",
     "instance_identity_token.cc",
     "instance_identity_token.h",
-    "instance_identity_token_getter.cc",
     "instance_identity_token_getter.h",
+    "instance_identity_token_getter_impl.cc",
+    "instance_identity_token_getter_impl.h",
     "internal_headers.h",
+    "ipc_fifo_buffer.cc",
+    "ipc_fifo_buffer.h",
     "is_google_email.cc",
     "is_google_email.h",
     "leaky_bucket.cc",
     "leaky_bucket.h",
     "local_session_policies_provider.cc",
     "local_session_policies_provider.h",
+    "loggable.cc",
+    "loggable.h",
     "logging_service_client.h",
+    "memory_consumer_registry.cc",
+    "memory_consumer_registry.h",
     "protobuf_http_client.cc",
     "protobuf_http_client.h",
     "protobuf_http_request.cc",
@@ -115,20 +159,21 @@ source_set("base") {
     "scoped_protobuf_http_request.h",
     "service_urls.cc",
     "service_urls.h",
+    "session_authz_service_client.cc",
     "session_authz_service_client.h",
     "session_authz_service_client_factory.h",
     "session_options.cc",
     "session_options.h",
-    "socket_reader.cc",
-    "socket_reader.h",
+    "source_location.cc",
+    "source_location.h",
     "task_util.h",
-    "telemetry_log_writer.cc",
-    "telemetry_log_writer.h",
     "typed_buffer.h",
     "url_loader_network_service_observer.cc",
     "url_loader_network_service_observer.h",
     "url_request_context_getter.cc",
     "url_request_context_getter.h",
+    "username.cc",
+    "username.h",
     "util.cc",
     "util.h",
     "vlog_net_log.cc",
@@ -143,33 +188,34 @@ source_set("base") {
   ]
 
   public_deps = [
+    ":authentication_method",
+    ":buildflags",
     ":http_status",
     "//base",
     "//net",
     "//remoting/proto",
-    "//remoting/proto/remoting/v1:chromoting_event_proto",
     "//third_party/protobuf:protobuf_lite",
   ]
   deps = [
     ":authorization",
-    ":buildflags",
     ":logging",
     ":name_value_map",
     ":protobuf_http_client_messages_proto",
     ":remoting_base_version",
     ":session_policies",
+    "//crypto",
     "//google_apis",
     "//google_apis/common:request_util",
+    "//mojo/public/cpp/system",
     "//remoting/proto:internal_structs",
     "//remoting/proto/google/internal/remoting/cloud/v1alpha:messages",
     "//remoting/proto/google/remoting/cloud/v1:messages",
     "//remoting/proto/remoting/v1:directory_proto",
-    "//remoting/proto/remoting/v1:telemetry_messages",
+    "//remoting/proto/remoting/v1:remote_support_host_messages",
     "//services/network/public/cpp",
     "//services/network/public/mojom",
     "//third_party/abseil-cpp:absl",
     "//third_party/libvpx",
-    "//third_party/libyuv",
     "//third_party/webrtc_overrides:webrtc_component",
     "//url",
   ]
@@ -183,6 +229,13 @@ source_set("base") {
     deps += [
       ":api_key_stubs",
       "//remoting/proto:internal_stubs",
+    ]
+  }
+
+  if (is_posix) {
+    sources += [
+      "passwd_utils.cc",
+      "passwd_utils.h",
     ]
   }
 
@@ -388,6 +441,9 @@ source_set("run_all_unittests") {
     "//mojo/core/embedder",
     "//testing/gtest",
   ]
+  if (is_posix) {
+    deps += [ ":security_key_socket_name" ]
+  }
   if (is_chromeos) {
     deps += [ "//chromeos/ash/components:test_support" ]
     data = [ "$root_out_dir/locales/en-US.pak" ]
@@ -401,10 +457,12 @@ source_set("unit_tests") {
   sources = [
     "auto_thread_task_runner_unittest.cc",
     "auto_thread_unittest.cc",
-    "buffered_socket_writer_unittest.cc",
     "capabilities_unittest.cc",
     "compound_buffer_unittest.cc",
-    "instance_identity_token_getter_unittest.cc",
+    "ecdh_key_exchange_unittest.cc",
+    "fifo_buffer_test_base.h",
+    "instance_identity_token_getter_impl_unittest.cc",
+    "ipc_fifo_buffer_unittest.cc",
     "leaky_bucket_unittest.cc",
     "local_session_policies_provider_unittest.cc",
     "oauth_token_getter_proxy_unittest.cc",
@@ -418,7 +476,7 @@ source_set("unit_tests") {
     "running_samples_unittest.cc",
     "session_options_unittest.cc",
     "session_policies_unittest.cc",
-    "telemetry_log_writer_unittest.cc",
+    "source_location_unittest.cc",
     "typed_buffer_unittest.cc",
     "util_unittest.cc",
     "weighted_samples_unittest.cc",
@@ -433,16 +491,18 @@ source_set("unit_tests") {
     ":test_support",
     "//base",
     "//net:test_support",
-    "//remoting/proto/remoting/v1:telemetry_messages",
     "//services/network:test_support",
     "//services/network/public/cpp",
-    "//third_party/libyuv",
     "//third_party/webrtc_overrides:webrtc_component",
   ]
 
   if (is_win || is_chromeos) {
     deps += [ "//third_party/breakpad:client" ]
   }
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 fuzzer_test("remoting_protobuf_http_stream_parser_fuzzer") {

@@ -28,6 +28,7 @@ import {dismissTimeOfDayBanner, setAmbientModeEnabled} from './ambient_controlle
 import {getAmbientProvider} from './ambient_interface_provider.js';
 import {AmbientObserver} from './ambient_observer.js';
 import {getTemplate} from './ambient_subpage_element.html.js';
+import {AmbientThemePreviewMap} from './utils.js';
 
 export class AmbientSubpageElement extends WithPersonalizationStore {
   static get is() {
@@ -47,6 +48,10 @@ export class AmbientSubpageElement extends WithPersonalizationStore {
         value: null,
       },
       ambientTheme_: {
+        type: Object,
+        value: null,
+      },
+      ambientThemePreviews_: {
         type: Object,
         value: null,
       },
@@ -70,7 +75,7 @@ export class AmbientSubpageElement extends WithPersonalizationStore {
       loading_: {
         type: Boolean,
         computed:
-            'computeLoading_(ambientModeEnabled_, albums_, temperatureUnit_, topicSource_, isOnline_)',
+            'computeLoading_(ambientModeEnabled_, albums_, temperatureUnit_, topicSource_, isOnline_, ambientThemePreviews_)',
         observer: 'onLoadingChanged_',
       },
       isOnline_: {
@@ -82,15 +87,17 @@ export class AmbientSubpageElement extends WithPersonalizationStore {
     };
   }
 
-  path: Paths;
-  queryParams: Record<string, string>;
-  private albums_: AmbientModeAlbum[]|null;
-  private ambientModeEnabled_: boolean|null;
-  private ambientTheme_: AmbientTheme|null;
-  private duration_: number|null;
-  private temperatureUnit_: TemperatureUnit|null;
-  private topicSource_: TopicSource|null;
-  private isOnline_: boolean;
+  declare path: Paths;
+  declare queryParams: Record<string, string>;
+  declare private albums_: AmbientModeAlbum[]|null;
+  declare private ambientModeEnabled_: boolean|null;
+  declare private ambientTheme_: AmbientTheme|null;
+  declare private ambientThemePreviews_: AmbientThemePreviewMap|null;
+  declare private duration_: number|null;
+  declare private temperatureUnit_: TemperatureUnit|null;
+  declare private topicSource_: TopicSource|null;
+  declare private loading_: boolean;
+  declare private isOnline_: boolean;
 
   // Refetch albums if the user is currently viewing ambient subpage, focuses
   // another window, and then re-focuses personalization app.
@@ -130,6 +137,8 @@ export class AmbientSubpageElement extends WithPersonalizationStore {
         'ambientModeEnabled_', state => state.ambient.ambientModeEnabled);
     this.watch<AmbientSubpageElement['ambientTheme_']>(
         'ambientTheme_', state => state.ambient.ambientTheme);
+    this.watch<AmbientSubpageElement['ambientThemePreviews_']>(
+        'ambientThemePreviews_', state => state.ambient.ambientThemePreviews);
     this.watch<AmbientSubpageElement['temperatureUnit_']>(
         'temperatureUnit_', state => state.ambient.temperatureUnit);
     this.watch<AmbientSubpageElement['topicSource_']>(
@@ -222,7 +231,8 @@ export class AmbientSubpageElement extends WithPersonalizationStore {
   private computeLoading_(): boolean {
     return this.ambientModeEnabled_ === null || this.albums_ === null ||
         this.topicSource_ === null || this.temperatureUnit_ === null ||
-        this.duration_ === null || !this.isOnline_;
+        this.duration_ === null || !this.isOnline_ ||
+        this.ambientThemePreviews_ === null;
   }
 
   private getPlaceholders_(x: number): number[] {

@@ -67,7 +67,8 @@ const CGFloat kNavigationIconImageViewWidth = 16;
   self = [super initWithFrame:frame];
   if (self) {
     // Configure `contentView`, representing the overall container.
-    self.contentView.backgroundColor = [UIColor colorNamed:kGrey100Color];
+    self.contentView.backgroundColor =
+        [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
     self.contentView.layer.cornerRadius = kContainerBorderRadius;
     self.contentView.layoutMargins = UIEdgeInsetsMake(
         kVerticalMargin, kHorizontalMargin, kVerticalMargin, kHorizontalMargin);
@@ -75,12 +76,14 @@ const CGFloat kNavigationIconImageViewWidth = 16;
     // Sets the title, subtitle and stack view to lay them out vertically.
     _title = [[UILabel alloc] init];
     _title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    _title.adjustsFontForContentSizeCategory = YES;
     _title.numberOfLines = 0;
     _title.textColor = [UIColor colorNamed:kTextPrimaryColor];
 
     _subtitle = [[UILabel alloc] init];
     _subtitle.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    _subtitle.numberOfLines = 2;
+    _subtitle.adjustsFontForContentSizeCategory = YES;
+    _subtitle.numberOfLines = 0;
     _subtitle.textColor = [UIColor colorNamed:kTextSecondaryColor];
 
     _textStackView =
@@ -94,8 +97,8 @@ const CGFloat kNavigationIconImageViewWidth = 16;
     // cell is configured.
     _iconContainer = [[UIView alloc] init];
     _iconImageView = [[UIImageView alloc]
-        initWithImage:DefaultSymbolWithPointSize(kSliderHorizontalSymbol,
-                                                 kToggleIconPointSize)];
+        initWithImage:SymbolWithPointSize(SymbolSliderHorizontal,
+                                          kToggleIconPointSize)];
     _iconImageView.tintColor = [UIColor colorNamed:kTextPrimaryColor];
     [_iconContainer addSubview:_iconImageView];
     _iconContainer.translatesAutoresizingMaskIntoConstraints = NO;
@@ -113,8 +116,8 @@ const CGFloat kNavigationIconImageViewWidth = 16;
     // horizontally.
     _navigationIconContainer = [[UIView alloc] init];
     _navigationImageView = [[UIImageView alloc]
-        initWithImage:DefaultSymbolWithPointSize(kChevronForwardSymbol,
-                                                 kToggleIconPointSize)];
+        initWithImage:SymbolWithPointSize(SymbolChevronForward,
+                                          kToggleIconPointSize)];
     _navigationImageView.tintColor = [UIColor colorNamed:kTextQuaternaryColor];
     [_navigationIconContainer addSubview:_navigationImageView];
     _navigationIconContainer.translatesAutoresizingMaskIntoConstraints = NO;
@@ -139,7 +142,11 @@ const CGFloat kNavigationIconImageViewWidth = 16;
 
     _navigationSeparator = [[UIView alloc] init];
     _navigationSeparator.translatesAutoresizingMaskIntoConstraints = NO;
-    _navigationSeparator.backgroundColor = [UIColor colorNamed:kGrey200Color];
+
+    UIView* separatorLine = [[UIView alloc] init];
+    separatorLine.translatesAutoresizingMaskIntoConstraints = NO;
+    separatorLine.backgroundColor = [UIColor colorNamed:kGrey200Color];
+    [_navigationSeparator addSubview:separatorLine];
 
     _navigableStackView = [[UIStackView alloc] initWithArrangedSubviews:@[
       _iconContainer,
@@ -152,15 +159,6 @@ const CGFloat kNavigationIconImageViewWidth = 16;
     _navigableStackView.alignment = UIStackViewAlignmentCenter;
     _navigableStackView.spacing = UIStackViewSpacingUseSystem;
 
-    // Anchor separator to the full height of the cell, which includes the
-    // margin.
-    [NSLayoutConstraint activateConstraints:@[
-      [_navigationSeparator.widthAnchor constraintEqualToConstant:1],
-      [_navigationSeparator.heightAnchor
-          constraintEqualToAnchor:_navigableStackView.heightAnchor
-                         constant:kVerticalMargin * 2],
-    ]];
-
     _contentStackView = [[UIStackView alloc]
         initWithArrangedSubviews:@[ _navigableStackView, _switch ]];
     _contentStackView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -171,6 +169,20 @@ const CGFloat kNavigationIconImageViewWidth = 16;
     [self.contentView addSubview:_contentStackView];
 
     AddSameConstraints(_contentStackView, self.contentView.layoutMarginsGuide);
+
+    [NSLayoutConstraint activateConstraints:@[
+      [_navigationSeparator.widthAnchor constraintEqualToConstant:1],
+      [_navigationSeparator.heightAnchor
+          constraintEqualToAnchor:_navigableStackView.heightAnchor],
+      [separatorLine.widthAnchor constraintEqualToConstant:1],
+      [separatorLine.centerXAnchor
+          constraintEqualToAnchor:_navigationSeparator.centerXAnchor],
+      [separatorLine.centerYAnchor
+          constraintEqualToAnchor:_navigationSeparator.centerYAnchor],
+      [separatorLine.heightAnchor
+          constraintEqualToAnchor:_navigationSeparator.heightAnchor
+                         constant:kVerticalMargin * 2],
+    ]];
   }
   return self;
 }

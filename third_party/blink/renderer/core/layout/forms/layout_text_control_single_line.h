@@ -33,14 +33,14 @@ class LayoutTextControlSingleLine final : public LayoutBlockFlow {
     return true;
   }
 
-  void StyleDidChange(StyleDifference, const ComputedStyle* old_style) override;
+  void StyleDidChange(StyleDifference,
+                      const ComputedStyle* old_style,
+                      const StyleChangeContext&) override;
 
   bool NodeAtPoint(HitTestResult& result,
                    const HitTestLocation& hit_test_location,
                    const PhysicalOffset& accumulated_offset,
                    HitTestPhase phase) override;
-
-  bool RespectsCSSOverflow() const override;
 };
 
 }  // namespace blink

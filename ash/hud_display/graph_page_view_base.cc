@@ -14,7 +14,9 @@
 #include "base/functional/bind.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/button.h"
@@ -56,17 +58,14 @@ class MinMaxButton : public views::ImageButton {
   void PaintButtonContents(gfx::Canvas* canvas) override {
     views::ImageButton::PaintButtonContents(canvas);
 
-    SkPath path;
-    path.moveTo(0, height());
-    path.lineTo(height(), width());
-
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
     flags.setBlendMode(SkBlendMode::kSrc);
     flags.setStyle(cc::PaintFlags::kStroke_Style);
     flags.setStrokeWidth(1);
     flags.setColor(kHUDDefaultColor);
-    canvas->DrawPath(path, flags);
+    canvas->DrawLine(gfx::Point{0, height()}, gfx::Point{height(), width()},
+                     flags);
   }
 };
 
@@ -76,14 +75,18 @@ END_METADATA
 void SetMinimizeIconToButton(views::ImageButton* button) {
   button->SetImageModel(
       views::Button::ButtonState::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(views::kWindowControlMinimizeIcon,
+      ui::ImageModel::FromVectorIcon(::features::IsRoundedIconsEnabled()
+                                         ? views::kChromeMinimizeIcon
+                                         : views::kWindowControlMinimizeOldIcon,
                                      kHUDDefaultColor, kMinMaxButtonIconSize));
 }
 
 void SetRestoreIconToButton(views::ImageButton* button) {
   button->SetImageModel(
       views::Button::ButtonState::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(views::kWindowControlRestoreIcon,
+      ui::ImageModel::FromVectorIcon(::features::IsRoundedIconsEnabled()
+                                         ? views::kChromeRestoreFilledIcon
+                                         : views::kWindowControlRestoreOldIcon,
                                      kHUDDefaultColor, kMinMaxButtonIconSize));
 }
 

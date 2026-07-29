@@ -15,9 +15,9 @@
 #include "base/functional/bind.h"
 #include "base/i18n/case_conversion.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/observer_list.h"
 #include "base/strings/string_util.h"
+#include "base/time/time.h"
 #include "components/url_formatter/elide_url.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/class_property.h"
@@ -60,6 +60,7 @@
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
@@ -467,8 +468,8 @@ void NotificationViewBase::CreateOrUpdateProgressBarView(
     auto progress_bar_view = std::make_unique<views::ProgressBar>();
     progress_bar_view->SetPreferredHeight(kProgressBarHeight);
     progress_bar_view->SetPreferredCornerRadii(std::nullopt);
-    progress_bar_view->SetBorder(views::CreateEmptyBorder(
-        gfx::Insets::TLBR(kProgressBarTopPadding, 0, 0, 0)));
+    progress_bar_view->SetProperty(
+        views::kMarginsKey, gfx::Insets::TLBR(kProgressBarTopPadding, 0, 0, 0));
     progress_bar_view_ = AddViewToLeftContent(std::move(progress_bar_view));
   } else {
     ReorderViewInLeftContent(progress_bar_view_);
@@ -777,7 +778,11 @@ bool NotificationViewBase::IsExpanded() const {
 }
 
 void NotificationViewBase::SetExpanded(bool expanded) {
+  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   MessageView::SetExpanded(expanded);
+  if (!weak_ptr) {
+    return;
+  }
   if (expanded_ == expanded)
     return;
   expanded_ = expanded;

@@ -27,9 +27,9 @@ namespace quarantine {
 namespace {
 
 void CheckQuarantineResult(base::OnceClosure quit_closure,
-                           QuarantineFileResult result,
-                           QuarantineFileResult expected_result) {
-  EXPECT_EQ(expected_result, result);
+                           QuarantineFileResult expected,
+                           QuarantineFileResult actual) {
+  EXPECT_EQ(expected, actual);
   std::move(quit_closure).Run();
 }
 
@@ -49,9 +49,10 @@ class QuarantineMacTest : public testing::Test {
     file_url_ = base::apple::FilePathToNSURL(test_file_);
 
     NSDictionary* properties = @{
-      static_cast<NSString*>(kLSQuarantineAgentBundleIdentifierKey) :
+      base::apple::CFToNSPtrCast(kLSQuarantineAgentBundleIdentifierKey) :
           @"com.google.Chrome",
-      static_cast<NSString*>(kLSQuarantineAgentNameKey) : @"Google Chrome.app",
+      base::apple::CFToNSPtrCast(kLSQuarantineAgentNameKey) :
+          @"Google Chrome.app",
       @"kLSQuarantineIsOwnedByCurrentUserKey" : @(1)
     };
 
@@ -169,7 +170,7 @@ TEST_F(QuarantineMacTest, IsFileQuarantined_AgentBundleIdentifier) {
   NSMutableDictionary* mutable_properties = [properties mutableCopy];
 
   [mutable_properties
-      removeObjectForKey:static_cast<NSString*>(
+      removeObjectForKey:base::apple::CFToNSPtrCast(
                              kLSQuarantineAgentBundleIdentifierKey)];
   NSError* error = nullptr;
   BOOL success = [file_url_ setResourceValue:mutable_properties

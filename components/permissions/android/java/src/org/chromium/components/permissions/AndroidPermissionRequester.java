@@ -5,6 +5,7 @@
 package org.chromium.components.permissions;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.components.permissions.PermissionUtil.getGeolocationType;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
@@ -14,8 +15,9 @@ import android.view.View;
 import android.widget.TextView;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
 
-import org.chromium.base.BuildInfo;
+import org.chromium.base.ApkInfo;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -84,7 +86,7 @@ public class AndroidPermissionRequester {
      */
     @CalledByNative
     public static boolean hasRequiredAndroidPermissionsForContentSetting(
-            AndroidPermissionDelegate permissionDelegate,
+            @JniType("ui::WindowAndroid*") AndroidPermissionDelegate permissionDelegate,
             @ContentSettingsType.EnumType int contentSettingsType) {
         Set<String> missingPermissions =
                 filterPermissionsKeepMissing(
@@ -99,7 +101,7 @@ public class AndroidPermissionRequester {
         String[] optionalPermissions =
                 PermissionUtil.getOptionalAndroidPermissionsForContentSetting(contentSettingsType);
         for (String permission : optionalPermissions) {
-            boolean unused_result = permissionDelegate.hasPermission(permission);
+            var _ = permissionDelegate.hasPermission(permission);
         }
 
         return missingPermissions.isEmpty();
@@ -162,10 +164,10 @@ public class AndroidPermissionRequester {
                         for (int i = 0; i < grantResults.length; i++) {
                             String histogramName = null;
                             switch (permissions[i]) {
-                                    // Even in the case of Fine location, Coarse
-                                    // location permission is also granted. We don't
-                                    // need to record histogram for both of them
-                                    // separately.
+                                // Even in the case of Fine location, Coarse
+                                // location permission is also granted. We don't
+                                // need to record histogram for both of them
+                                // separately.
                                 case "android.permission.ACCESS_COARSE_LOCATION":
                                     histogramName =
                                             "Permissions.AndroidSystemLevel.Location.Prompt.Shown";
@@ -213,27 +215,26 @@ public class AndroidPermissionRequester {
                                     && deniedContentSettings.contains(
                                             ContentSettingsType.MEDIASTREAM_CAMERA)) {
                                 deniedStringId =
-                                        R.string.infobar_missing_microphone_camera_permissions_text;
+                                        R.string.message_missing_microphone_camera_permissions_text;
                             } else if (deniedContentSettings.size() == 1) {
-                                if (deniedContentSettings.contains(
-                                        ContentSettingsType.GEOLOCATION)) {
+                                if (deniedContentSettings.contains(getGeolocationType())) {
                                     deniedStringId =
-                                            R.string.infobar_missing_location_permission_text;
+                                            R.string.message_missing_location_permission_text;
                                 } else if (deniedContentSettings.contains(
                                         ContentSettingsType.MEDIASTREAM_MIC)) {
                                     deniedStringId =
-                                            R.string.infobar_missing_microphone_permission_text;
+                                            R.string.message_missing_microphone_permission_text;
                                 } else if (deniedContentSettings.contains(
                                         ContentSettingsType.MEDIASTREAM_CAMERA)) {
                                     deniedStringId =
-                                            R.string.infobar_missing_camera_permission_text;
+                                            R.string.message_missing_camera_permission_text;
                                 } else if (deniedContentSettings.contains(
                                         ContentSettingsType.HAND_TRACKING)) {
                                     deniedStringId =
-                                            R.string.infobar_missing_hand_tracking_permission_text;
+                                            R.string.message_missing_hand_tracking_permission_text;
                                 } else if (deniedContentSettings.contains(ContentSettingsType.AR)) {
                                     deniedStringId =
-                                            R.string.infobar_missing_ar_camera_permission_text;
+                                            R.string.message_missing_ar_camera_permission_text;
                                 } else if (deniedContentSettings.contains(
                                         ContentSettingsType.NOTIFICATIONS)) {
                                     // We don't want to request the notification prompt again, since
@@ -247,7 +248,7 @@ public class AndroidPermissionRequester {
                                     : "Invalid combination of missing content settings: "
                                             + deniedContentSettings;
 
-                            String appName = BuildInfo.getInstance().hostPackageLabel;
+                            String appName = ApkInfo.getHostPackageLabel();
                             if (onMissingPermission == null) {
                                 showMissingPermissionDialog(
                                         windowAndroid,
@@ -308,7 +309,7 @@ public class AndroidPermissionRequester {
     public static void showMissingPermissionDialog(
             WindowAndroid windowAndroid,
             String message,
-            Consumer<PropertyModel> onPositiveButtonClicked,
+            Consumer<@Nullable PropertyModel> onPositiveButtonClicked,
             Runnable onCancelled) {
         final ModalDialogManager modalDialogManager = windowAndroid.getModalDialogManager();
         assert modalDialogManager != null : "ModalDialogManager is null";
@@ -339,7 +340,7 @@ public class AndroidPermissionRequester {
                         .with(ModalDialogProperties.CANCEL_ON_TOUCH_OUTSIDE, true)
                         .with(
                                 ModalDialogProperties.POSITIVE_BUTTON_TEXT,
-                                context.getString(R.string.infobar_update_permissions_button_text))
+                                context.getString(R.string.message_update_permissions_button_text))
                         .with(ModalDialogProperties.CONTROLLER, controller)
                         .build();
         modalDialogManager.showDialog(dialogModel, ModalDialogManager.ModalDialogType.APP);

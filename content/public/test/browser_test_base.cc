@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/base_switches.h"
@@ -26,6 +27,7 @@
 #include "base/path_service.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -54,7 +56,6 @@
 #include "content/browser/storage_partition_impl.h"
 #include "content/browser/tracing/background_tracing_manager_impl.h"
 #include "content/browser/tracing/memory_instrumentation_util.h"
-#include "content/browser/tracing/startup_tracing_controller.h"
 #include "content/browser/tracing/tracing_controller_impl.h"
 #include "content/public/app/content_main.h"
 #include "content/public/app/initialize_mojo_core.h"
@@ -85,13 +86,16 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/network/network_service.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/mojom/network_service_test.mojom.h"
+#include "services/tracing/public/cpp/startup_tracing_controller.h"
 #include "services/tracing/public/cpp/trace_startup.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/compositor/compositor_switches.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/display/display_switches.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_switches.h"
 
@@ -99,12 +103,18 @@
 #include "ui/platform_window/common/platform_window_defaults.h"  // nogncheck
 #endif
 
+#if BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_CHROMEOS_DEVICE)
+#include "ui/events/ozone/events_ozone.h"
+#endif
+
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/task_scheduler/post_task_android.h"
+#include "base/memory_coordinator/memory_consumer_registry.h"
 #include "components/discardable_memory/service/discardable_shared_memory_manager.h"  // nogncheck
 #include "content/app/content_main_runner_impl.h"
 #include "content/app/mojo/mojo_init.h"
 #include "content/app/mojo_ipc_support.h"
+#include "content/browser/memory_coordinator/browser_memory_coordinator.h"
 #include "content/public/app/content_main_delegate.h"
 #include "content/public/common/content_paths.h"
 #include "testing/android/native_test/native_browser_test_support.h"
@@ -135,7 +145,6 @@
 #if BUILDFLAG(IS_WIN)
 #include <shlobj.h>
 
-#include "base/files/file_util.h"
 #include "base/test/test_reg_util_win.h"
 #endif  // BUILDFLAG(IS_WIN)
 
@@ -211,14 +220,14 @@ std::string GetDefaultTraceBasename(TraceBasenameType type) {
   // Add random number to the trace file to distinguish traces from different
   // test runs. We don't use timestamp here to avoid collisions with parallel
   // runs of the same test. Browser test runner runs one test per browser
-  // process instantiation, so saving the seed here is appopriate.
+  // process instantiation, so saving the seed here is appropriate.
   // GetDefaultTraceBasename() is going to be called twice:
   // - for the first time, before the test starts to get the name of the file to
   // stream the results (to avoid losing them if test crashes).
   // - the second time, if test execution finishes normally, to calculate the
   // resulting name of the file, including test result.
   static std::string random_seed =
-      base::NumberToString(base::RandInt(1e7, 1e8 - 1));
+      base::NumberToString(base::RandIntInclusive(1e7, 1e8 - 1));
   std::string status;
   if (type == TraceBasenameType::kWithTestStatus) {
     if (test_info) {
@@ -267,6 +276,13 @@ BrowserTestBase::BrowserTestBase() {
   ui::test::EnableTestConfigForPlatformWindows();
 #endif
 
+#if BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_CHROMEOS_DEVICE)
+  // Events used in tests on CrOS are generated either at aura level, or ozone
+  // level, except for Crosier tests that run on a device.  Disable native
+  // events handling as they can cause unexpected behavior.
+  ui::DisableNativeUiEventDispatchForTest();
+#endif
+
 #if BUILDFLAG(IS_POSIX)
   handle_sigterm_ = true;
 #endif
@@ -305,11 +321,6 @@ BrowserTestBase::BrowserTestBase() {
 }
 
 BrowserTestBase::~BrowserTestBase() {
-#if BUILDFLAG(IS_ANDROID)
-  // DiscardableSharedMemoryManager destruction can block the current thread.
-  base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait;
-  discardable_shared_memory_manager_.reset();
-#endif
   CHECK(set_up_called_ || IsSkipped() || HasFatalFailure())
       << "SetUp was not called. This probably means that the "
          "developer has overridden the method and not called "
@@ -323,17 +334,27 @@ void BrowserTestBase::SetUp() {
   if (!UseProductionQuotaSettings()) {
     // By default use hardcoded quota settings to have a consistent testing
     // environment.
-    const int kQuota = 5 * 1024 * 1024;
-    quota_settings_ =
-        std::make_unique<storage::QuotaSettings>(kQuota * 5, kQuota, 0, 0);
-    StoragePartitionImpl::SetDefaultQuotaSettingsForTesting(
-        quota_settings_.get());
+    static storage::QuotaSettings quota_settings(
+        storage::GetHardCodedSettings(1024 * 1024 * 1024));
+    StoragePartition::SetDefaultQuotaSettingsForTesting(&quota_settings);
   }
 
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
 
-  if (!command_line->HasSwitch(switches::kUseFakeDeviceForMediaStream))
+  // Force all EmbeddedTestServers started into the public address space. This
+  // avoids Local Network Access (LNA) checks on tests that don't intend to
+  // exercise LNA functionality.
+  //
+  // Don't overwrite any IP address overrides that test have already set.
+  if (!command_line->HasSwitch(network::switches::kIpAddressSpaceOverrides)) {
+    command_line->AppendSwitchASCII(network::switches::kIpAddressSpaceOverrides,
+                                    "127.0.0.1:0=public,[::1]:0=public");
+  }
+
+  if (use_fake_media_stream_devices_ &&
+      !command_line->HasSwitch(switches::kUseFakeDeviceForMediaStream)) {
     command_line->AppendSwitch(switches::kUseFakeDeviceForMediaStream);
+  }
 
   // Features that depend on external factors (e.g. memory pressure monitor) can
   // disable themselves based on the switch below (to ensure that browser tests
@@ -363,10 +384,17 @@ void BrowserTestBase::SetUp() {
     command_line->RemoveSwitch(switches::kDisableSoftwareCompositingFallback);
   }
 
+  // Disable D3D11 WARP for consistent cross-platform software rendering.
+  command_line->AppendSwitch(switches::kDisableD3D11Warp);
+
   // The layout of windows on screen is unpredictable during tests, so disable
   // occlusion when running browser tests.
   command_line->AppendSwitch(
       switches::kDisableBackgroundingOccludedWindowsForTesting);
+
+  // Disable IgnoreDuplicateNavs by default to ensure tests run with predictable
+  // navigation behavior and don't have navigations unintentionally ignored.
+  command_line->AppendSwitch(switches::kDisableIgnoreDuplicateNavsForTesting);
 
   if (enable_pixel_output_) {
     DCHECK(!command_line->HasSwitch(switches::kForceDeviceScaleFactor))
@@ -403,8 +431,8 @@ void BrowserTestBase::SetUp() {
   // Disable animations when verifying pixel output, as they make tests flaky.
   if (command_line->HasSwitch(switches::kVerifyPixels)) {
     disable_layer_animations_ =
-        std::make_unique<ui::ScopedAnimationDurationScaleMode>(
-            ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+        std::make_unique<gfx::ScopedAnimationDurationScaleMode>(
+            gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
     disable_rich_animations_ =
         gfx::AnimationTestApi::SetRichAnimationRenderMode(
             gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
@@ -466,10 +494,25 @@ void BrowserTestBase::SetUp() {
 
   SetUpInProcessBrowserTestFixture();
 
-  // Should not use CommandLine to modify features. Please use ScopedFeatureList
-  // instead.
-  DCHECK(!command_line->HasSwitch(switches::kEnableFeatures));
-  DCHECK(!command_line->HasSwitch(switches::kDisableFeatures));
+  std::string command_line_enable_features;
+  std::string command_line_disable_features;
+  if (allow_features_switches_) {
+    if (command_line->HasSwitch(switches::kEnableFeatures)) {
+      command_line_enable_features =
+          command_line->GetSwitchValueASCII(switches::kEnableFeatures);
+      command_line->RemoveSwitch(switches::kEnableFeatures);
+    }
+    if (command_line->HasSwitch(switches::kDisableFeatures)) {
+      command_line_disable_features =
+          command_line->GetSwitchValueASCII(switches::kDisableFeatures);
+      command_line->RemoveSwitch(switches::kDisableFeatures);
+    }
+  } else {
+    // Should not use CommandLine to modify features. Please use
+    // ScopedFeatureList instead.
+    DCHECK(!command_line->HasSwitch(switches::kEnableFeatures));
+    DCHECK(!command_line->HasSwitch(switches::kDisableFeatures));
+  }
 
   // At this point, copy features to the command line, since BrowserMain will
   // wipe out the current feature list.
@@ -478,6 +521,15 @@ void BrowserTestBase::SetUp() {
   if (base::FeatureList::GetInstance()) {
     base::FeatureList::GetInstance()->GetFeatureOverrides(&enabled_features,
                                                           &disabled_features);
+  }
+
+  if (!command_line_enable_features.empty()) {
+    enabled_features =
+        base::StrCat({command_line_enable_features, ",", enabled_features});
+  }
+  if (!command_line_disable_features.empty()) {
+    disabled_features =
+        base::StrCat({command_line_disable_features, ",", disabled_features});
   }
 
   if (!enabled_features.empty()) {
@@ -492,6 +544,11 @@ void BrowserTestBase::SetUp() {
   // Always disable the unsandbox GPU process for DX12 Info collection to avoid
   // interference. This GPU process is launched 120 seconds after chrome starts.
   command_line->AppendSwitch(switches::kDisableGpuProcessForDX12InfoCollection);
+
+  // Disable activation of accessibility from interactions with the platform's
+  // accessibility integration since it leads to flaky tests.
+  command_line->AppendSwitch(
+      switches::kDisablePlatformAccessibilityIntegration);
 
   // The current global field trial list contains any trials that were activated
   // prior to main browser startup. That global field trial list is about to be
@@ -517,13 +574,13 @@ void BrowserTestBase::SetUp() {
 
   // If tracing is enabled, customise the output filename based on the name of
   // the test.
-  StartupTracingController::GetInstance().SetDefaultBasename(
+  tracing::StartupTracingController::SetDefaultBasename(
       GetDefaultTraceBasename(TraceBasenameType::kWithoutTestStatus),
-      StartupTracingController::ExtensionType::kAppendAppropriate);
+      tracing::StartupTracingController::ExtensionType::kAppendAppropriate);
   // Write to the provided file directly to recover at least some data when the
   // test crashes or times out.
-  StartupTracingController::GetInstance().SetUsingTemporaryFile(
-      StartupTracingController::TempFilePolicy::kWriteDirectly);
+  tracing::StartupTracingController::SetUsingTemporaryFile(
+      tracing::StartupTracingController::TempFilePolicy::kWriteDirectly);
   // Set a logging handler to flush a trace before crashing the test when
   // hitting a DCHECK / LOG(FATAL).
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -536,7 +593,7 @@ void BrowserTestBase::SetUp() {
       // calling this to ensure that the message is still printed if something
       // goes wrong.
       if (severity == logging::LOGGING_FATAL)
-        StartupTracingController::EmergencyStop();
+        tracing::StartupTracingController::EmergencyStop();
       return false;
     });
   }
@@ -561,6 +618,9 @@ void BrowserTestBase::SetUp() {
   // things up manually. A meager re-implementation of ContentMainRunnerImpl
   // follows.
 
+  base::MemoryPressureListenerRegistry memory_pressure_listener_registry;
+  BrowserMemoryCoordinator memory_coordinator;
+
   // Unlike other platforms, android_browsertests can reuse the same process for
   // multiple tests. Need to reset startup metrics to allow recording them
   // again.
@@ -576,9 +636,6 @@ void BrowserTestBase::SetUp() {
 
   std::optional<int> startup_error = delegate->BasicStartupComplete();
   ASSERT_FALSE(startup_error.has_value());
-
-  // We can only setup startup tracing after mojo is initialized above.
-  tracing::EnableStartupTracingIfNeeded();
 
   {
     ContentClient::SetBrowserClientAlwaysAllowForTesting(
@@ -607,17 +664,22 @@ void BrowserTestBase::SetUp() {
 
     auto* provider = delegate->CreateVariationsIdsProvider();
     if (!provider) {
-      variations::VariationsIdsProvider::Create(
-          variations::VariationsIdsProvider::Mode::kUseSignedInState);
+      variations::VariationsIdsProvider::CreateInstance(
+          variations::VariationsIdsProvider::Mode::kUseSignedInState,
+          std::make_unique<base::DefaultClock>());
     }
 
     std::optional<int> post_early_initialization_exit_code =
         delegate->PostEarlyInitialization(invoked_in_browser);
     ASSERT_FALSE(post_early_initialization_exit_code.has_value());
 
+    // We can only setup startup tracing after feature list is initialized
+    // above.
+    tracing::InitTracingPostFeatureList(/*enable_consumer=*/true,
+                                        /*will_trace_thread_restart=*/false);
+
     StartBrowserThreadPool();
 
-    tracing::InitTracingPostFeatureList(/*enable_consumer=*/true);
     InitializeBrowserMemoryInstrumentationClient();
   }
 
@@ -644,11 +706,11 @@ void BrowserTestBase::SetUp() {
   // to BrowserMain() if it did not run it (or equivalent) itself. On Android,
   // RunProcess() will return 0 so we don't have to fallback to BrowserMain().
   {
-    // This loop will wait until Java completes async initializion and the test
-    // is ready to run. We must allow nestable tasks so that tasks posted to the
-    // UI thread run as well. The loop is created before RunProcess() so that
-    // the StartupTaskRunner tasks will be nested inside this loop and able to
-    // run.
+    // This loop will wait until Java completes async initialization and the
+    // test is ready to run. We must allow nestable tasks so that tasks posted
+    // to the UI thread run as well. The loop is created before RunProcess() so
+    // that the StartupTaskRunner tasks will be nested inside this loop and able
+    // to run.
     base::RunLoop loop{base::RunLoop::Type::kNestableTasksAllowed};
 
     // The MainFunctionParams must out-live all the startup tasks running.
@@ -662,12 +724,14 @@ void BrowserTestBase::SetUp() {
                                     TestTimeouts::action_max_timeout());
     // Passing "" as the process type to indicate the browser process.
     auto exit_code = delegate->RunProcess("", std::move(params));
-    DCHECK(absl::holds_alternative<int>(exit_code));
-    DCHECK_EQ(absl::get<int>(exit_code), 0);
+    DCHECK(std::holds_alternative<int>(exit_code));
+    DCHECK_EQ(std::get<int>(exit_code), 0);
 
     // Waits for Java to finish initialization, then we can run the test.
     loop.Run();
+  }
 
+  {
     // The BrowserMainLoop startup tasks will call DisallowUnresponsiveTasks().
     // So when we run the ProxyRunTestOnMainThreadLoop() we no longer can block,
     // but tests should be allowed to. So we undo that blocking inside here.
@@ -680,11 +744,26 @@ void BrowserTestBase::SetUp() {
   }
 
   {
+    // We need to finish the Activity before this function returns because
+    // otherwise we will crash when finishing the Activity as too much
+    // infrastructure has been torn down.
+    base::RunLoop loop{base::RunLoop::Type::kNestableTasksAllowed};
+    testing::android::RunActivityTeardownCallback();
+    WaitUntilActivityTeardownIsFinished(loop.QuitClosure(),
+                                        TestTimeouts::action_max_timeout());
+    loop.Run();
+  }
+
+  {
     base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait;
     // Shutting these down will block the thread.
     ShutDownNetworkService();
     ipc_support.reset();
   }
+
+  // Can hang if run after BrowserTaskExecutor is shut down.
+  base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait;
+  discardable_shared_memory_manager_.reset();
 
   // Like in BrowserMainLoop::ShutdownThreadsAndCleanUp(), allow IO during main
   // thread tear down.
@@ -697,8 +776,16 @@ void BrowserTestBase::SetUp() {
 }
 
 void BrowserTestBase::TearDown() {
-  if (embedded_test_server()->Started())
+  // Have to shut down test servers before destruction. Subclasses may have
+  // configured custom handlers using raw pointers to the test fixture itself,
+  // in which case, the test server will maintain a raw pointer to the test
+  // fixture, so needs to be shut down before the test fixture is destroyed.
+  if (embedded_test_server()->Started()) {
     ASSERT_TRUE(embedded_test_server()->ShutdownAndWaitUntilComplete());
+  }
+  if (embedded_https_test_server_ && embedded_https_test_server_->Started()) {
+    ASSERT_TRUE(embedded_https_test_server_->ShutdownAndWaitUntilComplete());
+  }
 
 #if defined(USE_AURA) || BUILDFLAG(IS_MAC)
   ui::test::EventGeneratorDelegate::SetFactoryFunction(
@@ -764,7 +851,26 @@ void BrowserTestBase::WaitUntilJavaIsReady(
                      base::Unretained(this), std::move(quit_closure),
                      wait_retry_left - retry_interval),
       retry_interval);
-  return;
+}
+
+void BrowserTestBase::WaitUntilActivityTeardownIsFinished(
+    base::OnceClosure quit_closure,
+    const base::TimeDelta& wait_retry_left) {
+  CHECK_GE(wait_retry_left.InMilliseconds(), 0)
+      << "WaitUntilActivityTeardownIsFinished() timed out.";
+
+  if (testing::android::JavaActivityTeardownCompleteForBrowserTests()) {
+    std::move(quit_closure).Run();
+    return;
+  }
+
+  base::TimeDelta retry_interval = base::Milliseconds(100);
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&BrowserTestBase::WaitUntilActivityTeardownIsFinished,
+                     base::Unretained(this), std::move(quit_closure),
+                     wait_retry_left - retry_interval),
+      retry_interval);
 }
 #endif
 
@@ -798,10 +904,32 @@ void BrowserTestBase::ProxyRunTestOnMainThreadLoop() {
 
 #if BUILDFLAG(IS_POSIX)
   g_browser_process_pid = base::GetCurrentProcId();
-  signal(SIGSEGV, SignalHandler);
 
-  if (handle_sigterm_)
-    signal(SIGTERM, SignalHandler);
+  struct sigaction action;
+  action.sa_handler = SignalHandler;
+  sigemptyset(&action.sa_mask);
+  action.sa_flags = 0;
+
+  struct sigaction old_action;
+
+  std::optional<struct sigaction> old_sigsegv_action =
+      sigaction(SIGSEGV, &action, &old_action) == 0 ? std::optional(old_action)
+                                                    : std::nullopt;
+
+  std::optional<struct sigaction> old_sigterm_action =
+      handle_sigterm_ && sigaction(SIGTERM, &action, &old_action) == 0
+          ? std::optional(old_action)
+          : std::nullopt;
+
+  absl::Cleanup restore_signal_handlers = [&old_sigsegv_action,
+                                           &old_sigterm_action] {
+    if (old_sigsegv_action) {
+      sigaction(SIGSEGV, &*old_sigsegv_action, nullptr);
+    }
+    if (old_sigterm_action) {
+      sigaction(SIGTERM, &*old_sigterm_action, nullptr);
+    }
+  };
 
   ShutdownHandler = base::BindOnce(&BrowserTestBase::SignalRunTestOnMainThread,
                                    base::Unretained(this));
@@ -881,12 +1009,16 @@ void BrowserTestBase::ProxyRunTestOnMainThreadLoop() {
         auto* test = ::testing::UnitTest::GetInstance()->current_test_info();
         // This might be nullptr in a fuzz test or something else without gtest.
         if (test) {
-          TRACE_EVENT("test", "RunTestOnMainThread", "test_name",
-                      test->test_suite_name() + std::string(".") + test->name(),
-                      "file", test->file(), "line", test->line());
+          TRACE_EVENT_BEGIN(
+              "test", "RunTestOnMainThread", "test_name",
+              base::StrCat({test->test_suite_name(), ".", test->name()}),
+              "file", test->file(), "line", test->line());
         }
         base::ScopedDisallowBlocking disallow_blocking;
         RunTestOnMainThread();
+        if (test) {
+          TRACE_EVENT_END("test");
+        }
       }
     }
 
@@ -909,14 +1041,18 @@ void BrowserTestBase::ProxyRunTestOnMainThreadLoop() {
   content::RunAllPendingInMessageLoop();
 
   // Update the trace output filename to include the test result.
-  StartupTracingController::GetInstance().SetDefaultBasename(
+  tracing::StartupTracingController::SetDefaultBasename(
       GetDefaultTraceBasename(TraceBasenameType::kWithTestStatus),
-      StartupTracingController::ExtensionType::kAppendAppropriate);
+      tracing::StartupTracingController::ExtensionType::kAppendAppropriate);
 
 #if BUILDFLAG(IS_ANDROID)
   // On Android, browser main runner is not shut down, so stop trace recording
   // here.
-  StartupTracingController::GetInstance().WaitUntilStopped();
+  CHECK(BrowserMainLoop::GetInstance());
+  CHECK(BrowserMainLoop::GetInstance()->startup_tracing_controller());
+  BrowserMainLoop::GetInstance()
+      ->startup_tracing_controller()
+      ->ShutdownAndWaitForStopIfNeeded();
 #endif
 }
 
@@ -995,6 +1131,11 @@ void BrowserTestBase::EnablePixelOutput(float force_device_scale_factor) {
   force_device_scale_factor_ = force_device_scale_factor;
 }
 
+void BrowserTestBase::SetUseFakeMediaStreamDevices(
+    bool use_fake_media_stream_devices) {
+  use_fake_media_stream_devices_ = use_fake_media_stream_devices;
+}
+
 void BrowserTestBase::UseSoftwareCompositing() {
   use_software_compositing_ = true;
 }
@@ -1002,6 +1143,11 @@ void BrowserTestBase::UseSoftwareCompositing() {
 void BrowserTestBase::SetInitialWebContents(WebContents* web_contents) {
   DCHECK(!initial_web_contents_);
   initial_web_contents_ = web_contents->GetWeakPtr();
+}
+
+void BrowserTestBase::SetAllowFeaturesSwitches(bool allow) {
+  DCHECK(!set_up_called_);
+  allow_features_switches_ = allow;
 }
 
 void BrowserTestBase::AssertThatNetworkServiceDidNotCrash() {

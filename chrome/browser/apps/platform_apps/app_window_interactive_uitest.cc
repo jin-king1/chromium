@@ -6,8 +6,8 @@
 #include "chrome/browser/apps/platform_apps/app_window_interactive_uitest_base.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
@@ -255,9 +255,9 @@ IN_PROC_BROWSER_TEST_F(AppWindowInteractiveTest,
 }
 
 #if BUILDFLAG(IS_MAC) || defined(THREAD_SANITIZER) || BUILDFLAG(IS_LINUX)
-// http://crbug.com/404081
-// http://crbug.com/1263448 (tsan)
-// http://crbug.com/1263661 (linux)
+// http://crbug.com/41126120
+// http://crbug.com/40800211 (tsan)
+// http://crbug.com/40800332 (linux)
 #define MAYBE_TestInnerBounds DISABLED_TestInnerBounds
 #else
 #define MAYBE_TestInnerBounds TestInnerBounds
@@ -334,12 +334,12 @@ IN_PROC_BROWSER_TEST_F(AppWindowInteractiveTest,
 }
 
 // This test does not work on Linux Aura because ShowInactive() is not
-// implemented. See http://crbug.com/325142
+// implemented. See http://crbug.com/40343495
 // It also does not work on MacOS because ::ShowInactive() ends up behaving like
-// ::Show() because of Cocoa conventions. See http://crbug.com/326987
+// ::Show() because of Cocoa conventions. See http://crbug.com/40344232
 // Those tests should be disabled on Linux GTK when they are enabled on the
-// other platforms, see http://crbug.com/328829.
-// Flaky failures on Windows; see https://crbug.com/788283.
+// other platforms, see http://crbug.com/41080386.
+// Flaky failures on Windows; see https://crbug.com/40551480.
 #if ((BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && defined(USE_AURA)) || \
     BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 #define MAYBE_TestCreate DISABLED_TestCreate
@@ -352,13 +352,13 @@ IN_PROC_BROWSER_TEST_F(AppWindowInteractiveTest, MAYBE_TestCreate) {
 }
 
 // This test does not work on Linux Aura because ShowInactive() is not
-// implemented. See http://crbug.com/325142
+// implemented. See http://crbug.com/40343495
 // It also does not work on Windows because of the document being focused even
-// though the window is not activated. See http://crbug.com/326986
+// though the window is not activated. See http://crbug.com/40344231
 // It also does not work on MacOS because ::ShowInactive() ends up behaving like
-// ::Show() because of Cocoa conventions. See http://crbug.com/326987
+// ::Show() because of Cocoa conventions. See http://crbug.com/40344232
 // Those tests should be disabled on Linux GTK when they are enabled on the
-// other platforms, see http://crbug.com/328829
+// other platforms, see http://crbug.com/41080386
 #if ((BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && defined(USE_AURA)) || \
     BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #define MAYBE_TestShow DISABLED_TestShow
@@ -414,7 +414,7 @@ IN_PROC_BROWSER_TEST_F(AppWindowInteractiveTest, TestCreateHidden) {
   }
 }
 
-// http://crbug.com/502516
+// http://crbug.com/40423704
 #define MAYBE_TestFullscreen DISABLED_TestFullscreen
 IN_PROC_BROWSER_TEST_F(AppWindowInteractiveTest, MAYBE_TestFullscreen) {
   ASSERT_TRUE(RunAppWindowInteractiveTest("testFullscreen")) << message_;
@@ -439,9 +439,11 @@ class AppWindowHiddenKeepAliveTest : public extensions::PlatformAppBrowserTest {
 // A window that becomes hidden should not keep Chrome alive.
 IN_PROC_BROWSER_TEST_F(AppWindowHiddenKeepAliveTest, ShownThenHidden) {
   LoadAndLaunchPlatformApp("minimal", "Launched");
-  for (Browser* browser : *BrowserList::GetInstance()) {
-    browser->window()->Close();
-  }
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [](BrowserWindowInterface* browser_window_interface) {
+        browser_window_interface->GetWindow()->Close();
+        return true;
+      });
   EXPECT_TRUE(KeepAliveRegistry::GetInstance()->IsOriginRegistered(
       KeepAliveOrigin::CHROME_APP_DELEGATE));
   GetFirstAppWindow()->Hide();
@@ -458,9 +460,11 @@ IN_PROC_BROWSER_TEST_F(AppWindowHiddenKeepAliveTest, ShownThenHiddenThenShown) {
 
   EXPECT_TRUE(KeepAliveRegistry::GetInstance()->IsOriginRegistered(
       KeepAliveOrigin::CHROME_APP_DELEGATE));
-  for (Browser* browser : *BrowserList::GetInstance()) {
-    browser->window()->Close();
-  }
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [](BrowserWindowInterface* browser_window_interface) {
+        browser_window_interface->GetWindow()->Close();
+        return true;
+      });
   EXPECT_TRUE(KeepAliveRegistry::GetInstance()->IsOriginRegistered(
       KeepAliveOrigin::CHROME_APP_DELEGATE));
   app_window->GetBaseWindow()->Close();
@@ -473,9 +477,11 @@ IN_PROC_BROWSER_TEST_F(AppWindowHiddenKeepAliveTest, StaysHidden) {
   AppWindow* app_window = GetFirstAppWindow();
   EXPECT_TRUE(app_window->is_hidden());
 
-  for (Browser* browser : *BrowserList::GetInstance()) {
-    browser->window()->Close();
-  }
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [](BrowserWindowInterface* browser_window_interface) {
+        browser_window_interface->GetWindow()->Close();
+        return true;
+      });
 
   RunUntilBrowserProcessQuits();
 }
@@ -490,9 +496,11 @@ IN_PROC_BROWSER_TEST_F(AppWindowHiddenKeepAliveTest, HiddenThenShown) {
   EXPECT_TRUE(app_window->is_hidden());
 
   // Close all browser windows.
-  for (Browser* browser : *BrowserList::GetInstance()) {
-    browser->window()->Close();
-  }
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [](BrowserWindowInterface* browser_window_interface) {
+        browser_window_interface->GetWindow()->Close();
+        return true;
+      });
 
   // The app window will show after 3 seconds.
   ExtensionTestMessageListener shown_listener("Shown");

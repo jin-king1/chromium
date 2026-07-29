@@ -2,9 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
-import type {PageRemote, ProfileData, SwitchToTabInfo, Tab, TabOrganizationSession, TabSearchApiProxy, UnusedTabInfo, UserFeedback} from 'chrome://tab-search.top-chrome/tab_search.js';
-import {PageCallbackRouter, TabOrganizationFeature, TabOrganizationModelStrategy, TabSearchSection} from 'chrome://tab-search.top-chrome/tab_search.js';
+import type {PageRemote, ProfileData, SwitchToTabInfo, TabSearchApiProxy, TokenRange} from 'chrome://tab-search.top-chrome/tab_search.js';
+import {PageCallbackRouter} from 'chrome://tab-search.top-chrome/tab_search.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
 export class TestTabSearchApiProxy extends TestBrowserProxy implements
@@ -12,41 +11,22 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
   callbackRouter: PageCallbackRouter;
   callbackRouterRemote: PageRemote;
   private profileData_?: ProfileData;
-  private tabOrganizationSession_?: TabOrganizationSession;
-  private unusedTabs_: UnusedTabInfo = {staleTabs: [], duplicateTabs: {}};
+  private ranges_?: TokenRange[][];
+  private isSplit_: boolean = false;
 
   constructor() {
     super([
       'closeTab',
-      'declutterTabs',
-      'acceptTabOrganization',
-      'rejectTabOrganization',
-      'renameTabOrganization',
-      'excludeFromStaleTabs',
-      'excludeFromDuplicateTabs',
+      'closeTabs',
+      'closeWebUiTab',
       'getProfileData',
-      'getUnusedTabs',
-      'getTabSearchSection',
-      'getTabOrganizationFeature',
-      'getTabOrganizationSession',
-      'getTabOrganizationModelStrategy',
+      'getIsSplit',
       'openRecentlyClosedEntry',
-      'requestTabOrganization',
-      'removeTabFromOrganization',
-      'rejectSession',
-      'restartSession',
+      'replaceActiveSplitTab',
       'switchToTab',
       'saveRecentlyClosedExpandedPref',
-      'setOrganizationFeature',
-      'startTabGroupTutorial',
-      'triggerFeedback',
-      'triggerSignIn',
-      'openHelpPage',
-      'setTabOrganizationModelStrategy',
-      'setTabOrganizationUserInstruction',
-      'setUserFeedback',
-      'notifyOrganizationUiReadyToShow',
-      'notifySearchUiReadyToShow',
+      'maybeShowUi',
+      'getRangesIgnoringCaseAndAccents',
     ]);
 
     this.callbackRouter = new PageCallbackRouter();
@@ -59,32 +39,12 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
     this.methodCalled('closeTab', [tabId]);
   }
 
-  declutterTabs(tabIds: number[], urls: Url[]) {
-    this.methodCalled('declutterTabs', [tabIds, urls]);
+  closeTabs(tabIds: number[]) {
+    this.methodCalled('closeTabs', [tabIds]);
   }
 
-  acceptTabOrganization(
-      sessionId: number, organizationId: number, tabs: Tab[]) {
-    this.methodCalled(
-        'acceptTabOrganization', [sessionId, organizationId, tabs]);
-  }
-
-  rejectTabOrganization(sessionId: number, organizationId: number) {
-    this.methodCalled('rejectTabOrganization', [sessionId, organizationId]);
-  }
-
-  renameTabOrganization(
-      sessionId: number, organizationId: number, name: string) {
-    this.methodCalled(
-        'renameTabOrganization', [sessionId, organizationId, name]);
-  }
-
-  excludeFromStaleTabs(tabId: number) {
-    this.methodCalled('excludeFromStaleTabs', [tabId]);
-  }
-
-  excludeFromDuplicateTabs(url: Url) {
-    this.methodCalled('excludeFromDuplicateTabs', [url]);
+  closeWebUiTab() {
+    this.methodCalled('closeWebUiTab', []);
   }
 
   getProfileData() {
@@ -92,54 +52,17 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
     return Promise.resolve({profileData: this.profileData_!});
   }
 
-  getUnusedTabs() {
-    this.methodCalled('getUnusedTabs');
-    return Promise.resolve({tabs: this.unusedTabs_});
+  getIsSplit() {
+    this.methodCalled('getIsSplit');
+    return Promise.resolve({isSplit: this.isSplit_});
   }
 
-  getTabSearchSection() {
-    this.methodCalled('getTabSearchSection');
-    return Promise.resolve({section: TabSearchSection.kSearch});
+  openRecentlyClosedEntry(id: number, withSearch: boolean, isTab: boolean) {
+    this.methodCalled('openRecentlyClosedEntry', [id, withSearch, isTab]);
   }
 
-  getTabOrganizationFeature() {
-    this.methodCalled('getTabOrganizationFeature');
-    return Promise.resolve({feature: TabOrganizationFeature.kSelector});
-  }
-
-  getTabOrganizationSession() {
-    this.methodCalled('getTabOrganizationSession');
-    return Promise.resolve({session: this.tabOrganizationSession_!});
-  }
-
-  getTabOrganizationModelStrategy() {
-    this.methodCalled('getTabOrganizationModelStrategy');
-    return Promise.resolve({strategy: TabOrganizationModelStrategy.kTopic});
-  }
-
-  openRecentlyClosedEntry(
-      id: number, withSearch: boolean, isTab: boolean, index: number) {
-    this.methodCalled(
-        'openRecentlyClosedEntry', [id, withSearch, isTab, index]);
-  }
-
-  requestTabOrganization() {
-    this.methodCalled('requestTabOrganization');
-    return Promise.resolve({name: '', tabs: []});
-  }
-
-  removeTabFromOrganization(
-      sessionId: number, organizationId: number, tab: Tab) {
-    this.methodCalled(
-        'removeTabFromOrganization', sessionId, organizationId, tab);
-  }
-
-  rejectSession() {
-    this.methodCalled('rejectSession');
-  }
-
-  restartSession() {
-    this.methodCalled('restartSession');
+  replaceActiveSplitTab(replacementTabId: number) {
+    this.methodCalled('replaceActiveSplitTab', [replacementTabId]);
   }
 
   switchToTab(info: SwitchToTabInfo) {
@@ -150,44 +73,8 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
     this.methodCalled('saveRecentlyClosedExpandedPref', [expanded]);
   }
 
-  setOrganizationFeature(feature: TabOrganizationFeature) {
-    this.methodCalled('setOrganizationFeature', [feature]);
-  }
-
-  startTabGroupTutorial() {
-    this.methodCalled('startTabGroupTutorial');
-  }
-
-  triggerFeedback(sessionId: number) {
-    this.methodCalled('triggerFeedback', [sessionId]);
-  }
-
-  triggerSignIn() {
-    this.methodCalled('triggerSignIn');
-  }
-
-  openHelpPage() {
-    this.methodCalled('openHelpPage');
-  }
-
-  setTabOrganizationModelStrategy(strategy: TabOrganizationModelStrategy) {
-    this.methodCalled('setTabOrganizationModelStrategy', [strategy]);
-  }
-
-  setTabOrganizationUserInstruction(userInstruction: string) {
-    this.methodCalled('setTabOrganizationUserInstruction', [userInstruction]);
-  }
-
-  setUserFeedback(feedback: UserFeedback) {
-    this.methodCalled('setUserFeedback', [feedback]);
-  }
-
-  notifyOrganizationUiReadyToShow() {
-    this.methodCalled('notifyOrganizationUiReadyToShow');
-  }
-
-  notifySearchUiReadyToShow() {
-    this.methodCalled('notifySearchUiReadyToShow');
+  maybeShowUi() {
+    this.methodCalled('maybeShowUi');
   }
 
   getCallbackRouter() {
@@ -202,15 +89,37 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
     this.profileData_ = profileData;
   }
 
-  setSession(session: TabOrganizationSession) {
-    this.tabOrganizationSession_ = session;
+  setIsSplit(isSplit: boolean) {
+    this.isSplit_ = isSplit;
   }
 
-  setStaleTabs(tabs: Tab[]) {
-    this.unusedTabs_.staleTabs = tabs;
+  setRanges(ranges: TokenRange[][]) {
+    this.ranges_ = ranges;
   }
 
-  setDuplicateTabs(tabs: {[key: string]: Tab[]}) {
-    this.unusedTabs_.duplicateTabs = tabs;
+  getRangesIgnoringCaseAndAccents(searchText: string, targets: string[]) {
+    this.methodCalled('getRangesIgnoringCaseAndAccents', [searchText, targets]);
+    // If ranges were explicitly set for the test, use them.
+    if (this.ranges_) {
+      return Promise.resolve({ranges: this.ranges_});
+    }
+    // Otherwise, simulate a basic case-insensitive substring search in the
+    // mock. This is required because existing WebUI page tests (which mock this
+    // proxy) rely on the search actually filtering the tab list when they type
+    // in the search box.
+    const query = searchText.toLowerCase();
+    const ranges = targets.map(target => {
+      const targetLower = target.toLowerCase();
+      const matchRanges: TokenRange[] = [];
+      if (query.length > 0) {
+        let idx = targetLower.indexOf(query);
+        while (idx !== -1) {
+          matchRanges.push({start: idx, length: query.length});
+          idx = targetLower.indexOf(query, idx + query.length);
+        }
+      }
+      return matchRanges;
+    });
+    return Promise.resolve({ranges});
   }
 }

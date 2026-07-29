@@ -6,20 +6,24 @@
 
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "base/command_line.h"
-#include "base/containers/flat_set.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
-#include "base/memory/memory_pressure_monitor.h"
+#include "base/memory_coordinator/traits.h"
+#include "base/memory_coordinator/utils.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
 #include "components/omnibox/browser/on_device_tail_model_executor.h"
-#include "components/optimization_guide/core/optimization_guide_model_provider.h"
+#include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/models.pb.h"
 #include "components/optimization_guide/proto/on_device_tail_suggest_model_metadata.pb.h"
@@ -30,10 +34,24 @@ constexpr std::string kTestPrefix = "google m";
 constexpr std::string_view kModelValidationSwitchName =
     "omnibox-on-device-tail-model-validation";
 
+constexpr base::MemoryConsumerTraits kMemoryConsumerTraits(
+    // Hosts TFLite model and runtime tensors; under 10MB.
+    base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
+    // Unloading unmaps model files and frees memory in bulk.
+    base::MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    // Model is stateless and can be reloaded.
+    base::MemoryConsumerTraits::InformationRetention::kLossless,
+    // The unload task is posted to a background thread runner.
+    base::MemoryConsumerTraits::ExecutionType::kAsynchronous,
+    // Handles pressure as a binary gate to unload.
+    base::MemoryConsumerTraits::SupportsMemoryLimit::kNo,
+    // Stateless, as it unloads completely under pressure.
+    base::MemoryConsumerTraits::IsStateful::kNo);
+
 void InitializeTailModelExecutor(
     OnDeviceTailModelExecutor* executor,
     const base::FilePath& model_file,
-    const base::flat_set<base::FilePath>& additional_files,
+    const std::vector<base::FilePath>& additional_files,
     const optimization_guide::proto::OnDeviceTailSuggestModelMetadata&
         metadata) {
   if (executor == nullptr) {
@@ -73,7 +91,20 @@ std::vector<OnDeviceTailModelExecutor::Prediction> RunTailModelExecutor(
     return predictions;
   }
 
+  auto elapsed_timer = base::ElapsedTimer();
   predictions = executor->GenerateSuggestionsForPrefix(input);
+
+  // Logs some useful histograms for model performance analysis.
+  base::UmaHistogramCustomTimes("Omnibox.OnDeviceBrainModel.Latency",
+                                elapsed_timer.Elapsed(), base::Milliseconds(10),
+                                base::Seconds(2), 50);
+  base::UmaHistogramExactLinear("Omnibox.OnDeviceBrainModel.NumResults",
+                                static_cast<int>(predictions.size()), 4);
+  for (const auto& p : predictions) {
+    base::UmaHistogramCounts100("Omnibox.OnDeviceBrainModel.ResultLength",
+                                static_cast<int>(p.suggestion.size()));
+  }
+
   return predictions;
 }
 
@@ -88,11 +119,10 @@ void MaybeUnloadModelExecutor(OnDeviceTailModelExecutor* executor) {
 
 OnDeviceTailModelService::OnDeviceTailModelService(
     optimization_guide::OptimizationGuideModelProvider* model_provider)
-    : model_executor_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
+    : model_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT})),
-      tail_model_executor_(
-          new OnDeviceTailModelExecutor(),
-          base::OnTaskRunnerDeleter(model_executor_task_runner_)),
+      tail_model_executor_(new OnDeviceTailModelExecutor(),
+                           base::OnTaskRunnerDeleter(model_task_runner_)),
       model_provider_(model_provider) {
   if (model_provider_ == nullptr) {
     return;
@@ -101,12 +131,12 @@ OnDeviceTailModelService::OnDeviceTailModelService(
   model_provider_->AddObserverForOptimizationTargetModel(
       optimization_guide::proto::
           OPTIMIZATION_TARGET_OMNIBOX_ON_DEVICE_TAIL_SUGGEST,
-      /* model_metadata= */ std::nullopt, this);
+      /* model_metadata= */ std::nullopt, model_task_runner_, this);
 
-  memory_pressure_listener_ = std::make_unique<base::MemoryPressureListener>(
-      FROM_HERE,
-      base::BindRepeating(&OnDeviceTailModelService::OnMemoryPressure,
-                          weak_ptr_factory_.GetWeakPtr()));
+  memory_consumer_registration_ =
+      std::make_unique<base::MemoryConsumerRegistration>(
+          "OnDeviceTailModelService", kMemoryConsumerTraits, this,
+          base::MemoryConsumerRegistration::CheckUnregister::kDisabled);
 }
 
 OnDeviceTailModelService::OnDeviceTailModelService()
@@ -123,10 +153,7 @@ OnDeviceTailModelService::~OnDeviceTailModelService() {
 }
 
 void OnDeviceTailModelService::Shutdown() {
-  if (memory_pressure_listener_) {
-    memory_pressure_listener_.reset();
-  }
-  weak_ptr_factory_.InvalidateWeakPtrs();
+  memory_consumer_registration_.reset();
 }
 
 void OnDeviceTailModelService::OnModelUpdated(
@@ -138,7 +165,7 @@ void OnDeviceTailModelService::OnModelUpdated(
     return;
   }
   if (!model_info.has_value()) {
-    model_executor_task_runner_->PostTask(
+    model_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&OnDeviceTailModelExecutor::Reset,
                        base::Unretained(tail_model_executor_.get())));
@@ -146,7 +173,7 @@ void OnDeviceTailModelService::OnModelUpdated(
   }
 
   const std::optional<optimization_guide::proto::Any>& metadata =
-      model_info->GetModelMetadata();
+      model_info->model_metadata;
   std::optional<optimization_guide::proto::OnDeviceTailSuggestModelMetadata>
       tail_model_metadata = std::nullopt;
   if (metadata.has_value()) {
@@ -159,22 +186,22 @@ void OnDeviceTailModelService::OnModelUpdated(
     DVLOG(1) << "Failed to fetch metadata for Omnibox on device tail model";
     return;
   }
-  model_executor_task_runner_->PostTask(
+  model_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&InitializeTailModelExecutor, tail_model_executor_.get(),
-                     model_info->GetModelFilePath(),
-                     model_info->GetAdditionalFiles(),
+                     model_info->model_file_path, model_info->additional_files,
                      tail_model_metadata.value()));
 }
 
-void OnDeviceTailModelService::OnMemoryPressure(
-    base::MemoryPressureListener::MemoryPressureLevel level) {
-  if (level != base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL) {
+void OnDeviceTailModelService::OnUpdateMemoryLimit() {}
+
+void OnDeviceTailModelService::OnReleaseMemory() {
+  if (memory_limit() > base::kCriticalMemoryPressureThreshold) {
     return;
   }
 
-  if (model_executor_task_runner_) {
-    model_executor_task_runner_->PostTask(
+  if (model_task_runner_) {
+    model_task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&MaybeUnloadModelExecutor, tail_model_executor_.get()));
   }
@@ -183,13 +210,10 @@ void OnDeviceTailModelService::OnMemoryPressure(
 void OnDeviceTailModelService::GetPredictionsForInput(
     const OnDeviceTailModelExecutor::ModelInput& input,
     ResultCallback result_callback) {
-  if (model_executor_task_runner_) {
-    base::MemoryPressureMonitor* monitor = base::MemoryPressureMonitor::Get();
+  if (model_task_runner_) {
     // Do not call the model if memory pressure level is too high.
-    if (!monitor ||
-        monitor->GetCurrentPressureLevel() !=
-            base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL) {
-      model_executor_task_runner_->PostTaskAndReplyWithResult(
+    if (memory_limit() > base::kCriticalMemoryPressureThreshold) {
+      model_task_runner_->PostTaskAndReplyWithResult(
           FROM_HERE,
           base::BindOnce(&RunTailModelExecutor, tail_model_executor_.get(),
                          input),

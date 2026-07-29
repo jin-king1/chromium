@@ -13,7 +13,7 @@
 #include "base/containers/flat_set.h"
 #include "base/functional/callback_forward.h"
 #include "base/functional/function_ref.h"
-#include "base/memory/safety_checks.h"
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
@@ -25,9 +25,10 @@
 #include "content/public/common/extra_mojo_js_features.mojom.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "ipc/ipc_listener.h"
-#include "ipc/ipc_sender.h"
 #include "net/cookies/cookie_setting_override.h"
+#include "net/storage_access_api/status.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "services/network/public/cpp/connection_allowlist.h"
 #include "services/network/public/cpp/cross_origin_embedder_policy.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-forward.h"
@@ -44,19 +45,23 @@
 #include "third_party/blink/public/mojom/page/page_visibility_state.mojom-forward.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 #include "ui/accessibility/ax_node_id_forward.h"
-#include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/image/image_skia.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "third_party/jni_zero/jni_zero.h"
 #endif
 
 class GURL;
+class SkBitmap;
 
 namespace network {
 class PermissionsPolicy;
 }  // namespace network
+
+namespace perfetto {
+struct Track;
+}  // namespace perfetto
+
 namespace base {
 class UnguessableToken;
 }  // namespace base
@@ -64,15 +69,19 @@ class UnguessableToken;
 namespace blink {
 class AssociatedInterfaceProvider;
 class StorageKey;
-
 namespace mojom {
 enum class AuthenticatorStatus;
 class MediaPlayerAction;
 }  // namespace mojom
 }  // namespace blink
 
+namespace download {
+class DownloadUrlParameters;
+}  // namespace download
+
 namespace gfx {
 class Point;
+class Rect;
 class Size;
 }  // namespace gfx
 
@@ -84,6 +93,7 @@ class PendingReceiver;
 namespace net {
 class IsolationInfo;
 class NetworkIsolationKey;
+struct NetworkTrafficAnnotationTag;
 }  // namespace net
 
 namespace network {
@@ -126,6 +136,7 @@ class RenderWidgetHostView;
 class SiteInstance;
 class StoragePartition;
 class WeakDocumentPtr;
+class WebAuthRequestSecurityChecker;
 class WebUI;
 class Page;
 
@@ -142,8 +153,7 @@ class Page;
 // higher-level dependencies. In short: code that uses RenderFrameHost must be
 // back-forward cache aware, and code that does not use RenderFrameHost should
 // not have to be back-forward cache aware.
-class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
-                                       public IPC::Sender {
+class CONTENT_EXPORT RenderFrameHost : public IPC::Listener {
   // Do not remove this macro!
   // The macro is maintained by the memory safety team.
   ADVANCED_MEMORY_SAFETY_CHECKS();
@@ -153,6 +163,8 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   // Returns nullptr if the IDs do not correspond to a live RenderFrameHost.
   static RenderFrameHost* FromID(const GlobalRenderFrameHostId& id);
   static RenderFrameHost* FromID(int render_process_id, int render_frame_id);
+  static RenderFrameHost* FromID(ChildProcessId render_process_id,
+                                 int render_frame_id);
 
   // Returns the RenderFrameHost given its global frame token. Returns nullptr
   // if the frame token does not correspond to a live RenderFrameHost.
@@ -160,7 +172,7 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
       const GlobalRenderFrameHostToken& frame_token);
 
   // Globally allows for injecting JavaScript into the main world. This feature
-  // is present only to support Android WebView, WebLayer, Fuchsia web.Contexts,
+  // is present only to support Android WebView, Fuchsia web.Contexts,
   // and CastOS content shell. It must not be used in other configurations.
   static void AllowInjectingJavaScript();
 
@@ -191,6 +203,9 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
 
 #if BUILDFLAG(IS_ANDROID)
   // Returns the RenderFrameHost object associated with a Java native pointer.
+  // Note: It is recommended to use jni_zero::FromJniType<RenderFrameHost*>()
+  // instead of this method. This enables the use of @JniType for automatic
+  // conversion in Java.
   static RenderFrameHost* FromJavaRenderFrameHost(
       const base::android::JavaRef<jobject>& jrender_frame_host_android);
 #endif
@@ -210,6 +225,10 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
 
   // Returns the frame token for this frame.
   virtual const blink::LocalFrameToken& GetFrameToken() const = 0;
+
+  // Returns a tracing track to use as a grouping parent. Do not emit directly
+  // events to this track.
+  virtual const perfetto::Track& GetTracingTrack() const = 0;
 
   // Returns the reporting source token for the document in this frame. This is
   // used by the Reporting API to associate queued reports generated by this
@@ -377,8 +396,7 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   virtual RenderFrameHost* GetOutermostMainFrameOrEmbedder() = 0;
 
   // Fenced frames (meta-bug https://crbug.com/1111084):
-  // Returns true if this document is the root of a fenced frame tree. This
-  // supports both Shadow DOM and MPArch implementations.
+  // Returns true if this document is the root of a fenced frame tree.
   //
   // In particular, this always returns false for frames loaded inside a
   // <fencedframe> element, if the frame is not the top-level <fencedframe>
@@ -388,34 +406,8 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
 
   // Fenced frames (meta-bug https://crbug.com/1111084):
   // Returns true if `this` was loaded in a <fencedframe> element directly or if
-  // one of `this` ancestors was loaded in a <fencedframe> element. This
-  // supports both Shadow DOM and MPArch implementations.
+  // one of `this` ancestors was loaded in a <fencedframe> element.
   virtual bool IsNestedWithinFencedFrame() const = 0;
-
-  // Check if the frame has untrusted network access disabled.
-  //
-  // A Fenced frame can disable untrusted network access for itself and the
-  // descendant iframes in the fenced frame tree by calling the fenced frame API
-  // `window.fence.disableUntrustedNetwork()`. After this API is invoked, no
-  // untrusted network requests are allowed in the fenced frame tree, i.e. in
-  // the root fenced frame and all of its descendant iframes. This includes:
-  // * Subresources requests.
-  // * Navigation requests.
-  // * Event level reporting.
-  // * Any other network channels, for example, WebSocket, web workers, etc.
-  //
-  // Fenced frames will get access to cross-site information, for example,
-  // shared storage API after the untrusted network access is disabled.
-  //
-  // Note: An example of a trusted network request is the aggregation report
-  // sent by Private Aggregation API. Because the report is privacy preserving,
-  // it is allowed from the fenced frame after the untrusted network access is
-  // disabled. Additional trusted network communications, such as to a secure
-  // trusted execution environment, may be added in the future.
-  //
-  // See
-  // https://github.com/WICG/fenced-frame/blob/master/explainer/fenced_frames_with_local_unpartitioned_data_access.md.
-  virtual bool IsUntrustedNetworkDisabled() const = 0;
 
   // |ForEachRenderFrameHost| traverses this RenderFrameHost and all of its
   // descendants, including frames in any inner frame trees (such as guest
@@ -429,7 +421,7 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   // The callback returns a FrameIterationAction which determines if/how
   // iteration on subsequent frames continues. The FrameIterationAction may be
   // omitted, in which case kContinue will be assumed.
-  enum class FrameIterationAction {
+  enum class [[nodiscard]] FrameIterationAction {
     // Includes the children of the visited frame for subsequent traversal and
     // continues traversal to the next frame.
     kContinue,
@@ -473,10 +465,16 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   // in CreateChildFrame() or similar.
   virtual std::optional<base::UnguessableToken> GetEmbeddingToken() = 0;
 
-  // Returns the assigned name of the frame, the name of the iframe tag
-  // declaring it. For example, <iframe name="framename">[...]</iframe>. It is
-  // quite possible for a frame to have no name, in which case GetFrameName will
-  // return an empty string.
+  // Returns this frame's browsing context name, i.e. its "window.name".
+  // Initially, if the <iframe> element had a `name` attribute, that value
+  // will be used. The initial value is snapshotted from the element
+  // attribute; changing the attribute later does not change the browsing
+  // context name.
+  // In addition to HTML attributes, the name can also be set via
+  // window.open(), the target attribute of an <a> element, or by frames
+  // in a frameset. Subsequent changes to window.name in the renderer will
+  // be reflected here, though they will not be pushed back to the element
+  // attribute. If the frame never had a name, this returns an empty string.
   virtual const std::string& GetFrameName() = 0;
 
   // Returns true if the frame is display: none.
@@ -545,6 +543,12 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   // it will no longer be needed.
   virtual net::IsolationInfo GetPendingIsolationInfoForSubresources() = 0;
 
+  // Returns the network restrictions ID which the network service uses to block
+  // requests originating from this document. If there is a pending commit, the
+  // identifier for that commit will be used. Otherwise, the identifier for
+  // the last committed navigation will be used.
+  virtual base::UnguessableToken GetNetworkRestrictionsID() = 0;
+
   // Returns the associated widget's native view.
   virtual gfx::NativeView GetNativeView() = 0;
 
@@ -572,7 +576,7 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   //   ExecuteJavaScript("obj.foo(1, true)", callback)
   virtual void ExecuteJavaScriptMethod(const std::u16string& object_name,
                                        const std::u16string& method_name,
-                                       base::Value::List arguments,
+                                       base::ListValue arguments,
                                        JavaScriptResultCallback callback) = 0;
 
   // This is the default API to run JavaScript in this frame. This API can only
@@ -831,8 +835,16 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
       int max_length) = 0;
 
   // Generates an intervention report in this frame.
+  //
+  // The report is associated with this frame unless `child_frame` is provided.
+  // If `child_frame` is provided, `message` may be modified to include
+  // additional information about `child_frame`.
+  //
+  // Prerequisite: If `child_frame` is provided, it must be a direct child frame
+  // of this frame.
   virtual void SendInterventionReport(const std::string& id,
-                                      const std::string& message) = 0;
+                                      const std::string& message,
+                                      RenderFrameHost* child_frame) = 0;
 
   // Returns the WebUI object associated wit this RenderFrameHost or nullptr
   // otherwise.
@@ -852,6 +864,8 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
 
 #if BUILDFLAG(IS_ANDROID)
   // Returns the Java object of this instance.
+  // Note: It is recommended to use jni_zero::ToJniType() instead. This enables
+  // the use of @JniType for automatic conversion in Java.
   virtual jni_zero::ScopedJavaLocalRef<jobject> GetJavaRenderFrameHost() = 0;
 
   // Returns an InterfaceProvider for Java-implemented interfaces that are
@@ -860,6 +874,11 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   // process.
   virtual service_manager::InterfaceProvider* GetJavaInterfaces() = 0;
 #endif  // BUILDFLAG(IS_ANDROID)
+
+  // Returns true if this frame has a beforeunload handler and has received
+  // a user activation, which would allow it to display a beforeunload dialog
+  // if the user attempted to close the page or navigate away.
+  virtual bool CouldDisplayBeforeUnloadDialog() const = 0;
 
   // Stops and disables the hang monitor for beforeunload. This avoids flakiness
   // in tests that need to observe beforeunload dialogs, which could fail if the
@@ -942,9 +961,9 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   // embedding frame.
   virtual bool IsSandboxed(network::mojom::WebSandboxFlags flags) = 0;
 
-  // Calls |FlushForTesting()| on Network Service and FrameNavigationControl
-  // related interfaces to make sure all in-flight mojo messages have been
-  // received by the other end. For test use only.
+  // Calls |FlushForTesting()| on Network Service related interfaces to make
+  // sure all in-flight mojo messages have been received by the other end. For
+  // test use only.
   //
   // It is usually an error to call this method when the frame doesn't have any
   // NetworkService connection.  OTOH, tests that can't easily tell when this
@@ -1004,7 +1023,8 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   // Returns true if this frame has fired DOMContentLoaded.
   virtual bool IsDOMContentLoaded() = 0;
 
-  // Update whether the frame is considered an ad frame by Ad Tagging.
+  // Update or retrieve whether the frame is considered an ad frame by Ad
+  // Tagging.
   //
   // Note: This ad status is currently maintained and updated *outside* content.
   // This is used to ensure the render frame proxies are in sync (since they
@@ -1012,6 +1032,7 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   // this somewhat (maybe //content would be responsible for maintaining the
   // state, with some content client method used to update it).
   virtual void UpdateIsAdFrame(bool is_ad_frame) = 0;
+  virtual bool IsAdFrame() const = 0;
 
   // Tells the host that this is part of setting up a WebXR DOM Overlay. This
   // starts a short timer that permits entering fullscreen mode, similar to a
@@ -1049,6 +1070,11 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   // identified locally within the RFH using the ID `lid`.
   virtual void EnableWebRtcEventLogOutput(int lid, int output_period_ms) = 0;
   virtual void DisableWebRtcEventLogOutput(int lid) = 0;
+
+  // Start/stop data channel output from WebRTC on this RFH for the peer
+  // connection identified locally within the RFH using the ID `lid`.
+  virtual void EnableWebRtcDataChannelLogOutput(int lid) = 0;
+  virtual void DisableWebRtcDataChannelLogOutput(int lid) = 0;
 
   // Return true if onload has been executed in the renderer in the main frame.
   virtual bool IsDocumentOnLoadCompletedInMainFrame() = 0;
@@ -1138,11 +1164,12 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   virtual void OnPreloadingHeuristicsModelDone(const GURL& url,
                                                float score) = 0;
 
-  // Checks if `seqno` is known to have originated from this RFH. This will only
-  // return true if `seqno` represents the last clipboard write made by all
-  // RFHs.
-  virtual bool IsClipboardOwner(
-      ui::ClipboardSequenceNumberToken seqno) const = 0;
+  // Checks if `seqno` is known to have originated from this RFH. `callback`
+  // will only be called with true if `seqno` represents the last clipboard
+  // write made by all RFHs.
+  virtual void IsClipboardOwner(
+      ui::ClipboardSequenceNumberToken seqno,
+      base::OnceCallback<void(bool)> callback) const = 0;
 
   // Returns true if RenderFrameHostImpl has non-null PolicyContainerHost.
   // TODO(crbug.com/346386726): Delete this method once we have solidified the
@@ -1155,11 +1182,40 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
   virtual const network::CrossOriginEmbedderPolicy&
   GetCrossOriginEmbedderPolicy() const = 0;
 
-  // Returns true if this RenderFrameHost is in a partitioned popin and is not
-  // within a fenced frame (as this prevents the popin from impacting
-  // partitioning).
-  // See https://explainers-by-googlers.github.io/partitioned-popins/
-  virtual bool ShouldPartitionAsPopin() const = 0;
+  // Returns the Connection-Allowlist committed for this document, parsed from
+  // the `Connection-Allowlist` / `Connection-Allowlist-Report-Only` response
+  // headers. The returned value is empty (neither an enforced nor a report-only
+  // allowlist is set) when the document has none. Must have a non-null
+  // PolicyContainerHost, otherwise a crash will occur;
+  // `HasPolicyContainerHost()` can be used to check if it is non-null. This is
+  // independent of the `kConnectionAllowlists` feature state, so callers that
+  // gate behavior on the feature should check it separately. Browser-process
+  // features that are not yet compatible with Connection-Allowlist enforcement
+  // (e.g. NoStatePrefetch) can use this to opt out. See
+  // https://github.com/WICG/connection-allowlists.
+  virtual const network::ConnectionAllowlists& GetConnectionAllowlists()
+      const = 0;
+
+  // Returns true if this RenderFrameHost has access to cookies.
+  virtual bool IsFullCookieAccessAllowed() = 0;
+
+  // Sets the Storage Access API status for this RenderFrameHost.
+  //
+  // Note: this is not trusted by the browser. This input alone does not grant
+  // access to unpartitioned cookies/storage.
+  virtual void SetStorageAccessApiStatus(
+      net::StorageAccessApiStatus status) = 0;
+
+  // Returns the centralized security checker for Web Authentication requests
+  // originating in this frame.
+  virtual scoped_refptr<WebAuthRequestSecurityChecker>
+  GetWebAuthRequestSecurityChecker() = 0;
+
+  // Creates `DownloadUrlParameters` for downloads initiated by `this` frame.
+  virtual std::unique_ptr<download::DownloadUrlParameters>
+  CreateDownloadUrlParameters(
+      const GURL& url,
+      const net::NetworkTrafficAnnotationTag& traffic_annotation) const = 0;
 
  private:
   // This interface should only be implemented inside content.
@@ -1168,5 +1224,24 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener,
 };
 
 }  // namespace content
+
+#if BUILDFLAG(IS_ANDROID)
+namespace jni_zero {
+
+// @JniType conversion function.
+template <>
+inline content::RenderFrameHost* FromJniType<content::RenderFrameHost*>(
+    JNIEnv* env,
+    const JavaRef<jobject>& j_obj) {
+  return content::RenderFrameHost::FromJavaRenderFrameHost(j_obj);
+}
+template <>
+inline ScopedJavaLocalRef<jobject> ToJniType(JNIEnv* env,
+                                             content::RenderFrameHost* obj) {
+  return obj->GetJavaRenderFrameHost();
+}
+
+}  // namespace jni_zero
+#endif
 
 #endif  // CONTENT_PUBLIC_BROWSER_RENDER_FRAME_HOST_H_

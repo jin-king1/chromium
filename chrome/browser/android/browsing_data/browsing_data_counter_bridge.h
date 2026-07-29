@@ -7,6 +7,7 @@
 
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
+#include "base/memory/raw_ptr.h"
 #include "components/browsing_data/core/browsing_data_utils.h"
 #include "components/browsing_data/core/counters/browsing_data_counter.h"
 
@@ -19,10 +20,11 @@ class BrowsingDataCounterBridge {
   // Creates a BrowsingDataCounterBridge for a certain browsing data type.
   // The |data_type| is a value of the enum BrowsingDataType.
   BrowsingDataCounterBridge(JNIEnv* env,
-                            const base::android::JavaParamRef<jobject>& obj,
+                            const base::android::JavaRef<jobject>& obj,
+
                             Profile* profile,
-                            jint selected_time_period,
-                            jint data_type);
+                            int32_t selected_time_period,
+                            int32_t data_type);
 
   BrowsingDataCounterBridge(const BrowsingDataCounterBridge&) = delete;
   BrowsingDataCounterBridge& operator=(const BrowsingDataCounterBridge&) =
@@ -30,13 +32,11 @@ class BrowsingDataCounterBridge {
 
   ~BrowsingDataCounterBridge();
 
-  void SetSelectedTimePeriod(JNIEnv* env,
-                             const base::android::JavaParamRef<jobject>& obj,
-                             jint selected_time_period);
+  void SetSelectedTimePeriod(JNIEnv* env, int32_t selected_time_period);
 
   // Destroys the BrowsingDataCounterBridge object. This needs to be called
   // on the java side when the object is not in use anymore.
-  void Destroy(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  void Destroy(JNIEnv* env);
 
  private:
   void onCounterFinished(

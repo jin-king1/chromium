@@ -38,7 +38,7 @@ webrtc::PeerConnectionInterface::RTCConfiguration DefaultConfiguration() {
 // Having a refcounted helper class allows multiple DummyRTCRtpSenderPlatform to
 // share the same internal states.
 class DummyRtpSenderInternal
-    : public WTF::ThreadSafeRefCounted<DummyRtpSenderInternal> {
+    : public ThreadSafeRefCounted<DummyRtpSenderInternal> {
  private:
   static uintptr_t last_id_;
 
@@ -81,7 +81,8 @@ class DummyRTCRtpSenderPlatform : public RTCRtpSenderPlatform {
     return nullptr;
   }
   uintptr_t Id() const override { return internal_->id(); }
-  rtc::scoped_refptr<webrtc::DtlsTransportInterface> DtlsTransport() override {
+  webrtc::scoped_refptr<webrtc::DtlsTransportInterface> DtlsTransport()
+      override {
     return nullptr;
   }
   webrtc::DtlsTransportInformation DtlsTransportInformation() override {
@@ -91,7 +92,7 @@ class DummyRTCRtpSenderPlatform : public RTCRtpSenderPlatform {
   }
   MediaStreamComponent* Track() const override { return internal_->track(); }
   Vector<String> StreamIds() const override {
-    return Vector<String>({String::FromUTF8("DummyStringId")});
+    return Vector<String>({"DummyStringId"});
   }
   void ReplaceTrack(MediaStreamComponent*, RTCVoidRequest*) override {}
   std::unique_ptr<RtcDtmfSenderHandler> GetDtmfSender() const override {
@@ -136,9 +137,8 @@ class DummyRTCRtpReceiverPlatform : public RTCRtpReceiverPlatform {
             nullptr)) {
     if (type == MediaStreamSource::StreamType::kTypeAudio) {
       auto* source = MakeGarbageCollected<MediaStreamSource>(
-          String::FromUTF8("remoteAudioId"),
-          MediaStreamSource::StreamType::kTypeAudio,
-          String::FromUTF8("remoteAudioName"), /*remote=*/true,
+          "remoteAudioId", MediaStreamSource::StreamType::kTypeAudio,
+          "remoteAudioName", /*remote=*/true,
           /*platform_source=*/nullptr);
       component_ = MakeGarbageCollected<MediaStreamComponentImpl>(
           source->Id(), source,
@@ -148,10 +148,8 @@ class DummyRTCRtpReceiverPlatform : public RTCRtpReceiverPlatform {
       auto platform_source = std::make_unique<MockMediaStreamVideoSource>();
       auto* platform_source_ptr = platform_source.get();
       auto* source = MakeGarbageCollected<MediaStreamSource>(
-          String::FromUTF8("remoteVideoId"),
-          MediaStreamSource::StreamType::kTypeVideo,
-          String::FromUTF8("remoteVideoName"), /*remote=*/true,
-          std::move(platform_source));
+          "remoteVideoId", MediaStreamSource::StreamType::kTypeVideo,
+          "remoteVideoName", /*remote=*/true, std::move(platform_source));
       component_ = MakeGarbageCollected<MediaStreamComponentImpl>(
           source->Id(), source,
           std::make_unique<MediaStreamVideoTrack>(
@@ -174,7 +172,8 @@ class DummyRTCRtpReceiverPlatform : public RTCRtpReceiverPlatform {
     return nullptr;
   }
   uintptr_t Id() const override { return id_; }
-  rtc::scoped_refptr<webrtc::DtlsTransportInterface> DtlsTransport() override {
+  webrtc::scoped_refptr<webrtc::DtlsTransportInterface> DtlsTransport()
+      override {
     return nullptr;
   }
   webrtc::DtlsTransportInformation DtlsTransportInformation() override {
@@ -217,7 +216,7 @@ uintptr_t DummyRTCRtpReceiverPlatform::last_id_ = 0;
 // Having a refcounted helper class allows multiple
 // DummyRTCRtpTransceiverPlatforms to share the same internal states.
 class DummyTransceiverInternal
-    : public WTF::ThreadSafeRefCounted<DummyTransceiverInternal> {
+    : public ThreadSafeRefCounted<DummyTransceiverInternal> {
  private:
   static uintptr_t last_id_;
 
@@ -329,8 +328,7 @@ bool MockRTCPeerConnectionHandlerPlatform::Initialize(
     ExecutionContext*,
     const webrtc::PeerConnectionInterface::RTCConfiguration&,
     WebLocalFrame*,
-    ExceptionState&,
-    RTCRtpTransport*) {
+    ExceptionState&) {
   return true;
 }
 
@@ -426,7 +424,7 @@ MockRTCPeerConnectionHandlerPlatform::RemoveTrack(
   return std::unique_ptr<RTCRtpTransceiverPlatform>(std::move(copy));
 }
 
-rtc::scoped_refptr<webrtc::DataChannelInterface>
+webrtc::scoped_refptr<webrtc::DataChannelInterface>
 MockRTCPeerConnectionHandlerPlatform::CreateDataChannel(
     const String& label,
     const webrtc::DataChannelInit&) {

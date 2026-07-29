@@ -39,7 +39,6 @@
 #include "third_party/blink/renderer/core/layout/layout_block_flow.h"
 #include "third_party/blink/renderer/core/layout/layout_image.h"
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -66,10 +65,8 @@ void ImageInputType::AppendToFormData(FormData& form_data) const {
     return;
   }
 
-  DEFINE_STATIC_LOCAL(String, dot_x_string, (".x"));
-  DEFINE_STATIC_LOCAL(String, dot_y_string, (".y"));
-  form_data.AppendFromElement(name + dot_x_string, click_location_.x());
-  form_data.AppendFromElement(name + dot_y_string, click_location_.y());
+  form_data.AppendFromElement(StrCat({name, ".x"}), click_location_.x());
+  form_data.AppendFromElement(StrCat({name, ".y"}), click_location_.y());
 }
 
 String ImageInputType::ResultForDialogSubmit() const {
@@ -180,7 +177,7 @@ unsigned ImageInputType::Height() const {
     // If the image is available, use its height.
     HTMLImageLoader* image_loader = GetElement().ImageLoader();
     if (image_loader && image_loader->GetContent()) {
-      return image_loader->AccessNaturalSize().height();
+      return image_loader->DensityCorrectedNaturalSize(1).height();
     }
   }
 
@@ -188,8 +185,8 @@ unsigned ImageInputType::Height() const {
       &GetElement(), DocumentUpdateReason::kJavaScript);
 
   LayoutBox* box = GetElement().GetLayoutBox();
-  return box ? AdjustForAbsoluteZoom::AdjustInt(box->ContentHeight().ToInt(),
-                                                box)
+  return box ? AdjustForAbsoluteZoom::AdjustInt(
+                   box->PhysicalContentBoxRect().Height().ToInt(), box)
              : 0;
 }
 
@@ -204,7 +201,7 @@ unsigned ImageInputType::Width() const {
     // If the image is available, use its width.
     HTMLImageLoader* image_loader = GetElement().ImageLoader();
     if (image_loader && image_loader->GetContent()) {
-      return image_loader->AccessNaturalSize().width();
+      return image_loader->DensityCorrectedNaturalSize(1).width();
     }
   }
 
@@ -212,8 +209,8 @@ unsigned ImageInputType::Width() const {
       &GetElement(), DocumentUpdateReason::kJavaScript);
 
   LayoutBox* box = GetElement().GetLayoutBox();
-  return box ? AdjustForAbsoluteZoom::AdjustInt(box->ContentWidth().ToInt(),
-                                                box)
+  return box ? AdjustForAbsoluteZoom::AdjustInt(
+                   box->PhysicalContentBoxRect().Width().ToInt(), box)
              : 0;
 }
 

@@ -35,28 +35,33 @@ import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.blink.mojom.ContactIconBlob;
-import org.chromium.components.browser_ui.contacts_picker.test.R;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.widget.RecyclerViewTestUtils;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate.SelectionObserver;
 import org.chromium.content.browser.contacts.ContactsPickerProperties;
+import org.chromium.content_public.browser.ContactsFetcher;
+import org.chromium.content_public.browser.ContactsFetcher.RetrievedContact;
 import org.chromium.content_public.browser.ContactsPicker;
+import org.chromium.content_public.browser.ContactsPickerDelegate;
 import org.chromium.content_public.browser.ContactsPickerListener;
 import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.content_public.browser.test.util.TestTouchUtils;
 import org.chromium.payments.mojom.PaymentAddress;
-import org.chromium.ui.InsetObserver;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.IntentRequestTracker;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.RenderTestRule;
 
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -65,6 +70,7 @@ import java.util.List;
 @RunWith(BaseJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @EnableFeatures(ContactsPickerFeatureList.CONTACTS_PICKER_SELECT_ALL)
+@DisableFeatures(ContactsPickerFeatureList.ANDROID_SYSTEM_CONTACTS_PICKER)
 public class ContactsPickerDialogTest
         implements ContactsPickerListener, SelectionObserver<ContactDetails> {
     @ClassRule
@@ -88,7 +94,7 @@ public class ContactsPickerDialogTest
     private ContactsPickerDialog mDialog;
 
     // The data to show in the dialog.
-    private ArrayList<ContactDetails> mTestContacts;
+    private ArrayList<RetrievedContact> mTestContacts;
 
     // The selection delegate for the dialog.
     private SelectionDelegate<ContactDetails> mSelectionDelegate;
@@ -130,6 +136,9 @@ public class ContactsPickerDialogTest
     // A callback that fires when an action is taken in the dialog (cancel/done etc).
     public final CallbackHelper onActionCallback = new CallbackHelper();
 
+    // A ContactsFetcher for testing.
+    private final ContactsFetcherTestImpl mContactsFetcher = new ContactsFetcherTestImpl();
+
     @BeforeClass
     public static void setupSuite() {
         activityTestRule.launchActivity(null);
@@ -146,9 +155,13 @@ public class ContactsPickerDialogTest
                                     /* listenToActivityState= */ true,
                                     IntentRequestTracker.createFromActivity(mActivity),
                                     mInsetObserver,
-                                    /* trackOcclusion= */ true);
+                                    /* occlusionTrackingAllowed= */ true);
                         });
-        mWebContents = Mockito.mock(WebContents.class);
+        mWebContents =
+                Mockito.mock(
+                        WebContents.class,
+                        Mockito.withSettings()
+                                .extraInterfaces(WebContentsObserver.Observable.class));
         when(mWebContents.getTopLevelNativeWindow()).thenReturn(mWindowAndroid);
         when(mWebContents.isDestroyed()).thenReturn(false);
         when(mWebContents.getVisibility()).thenReturn(Visibility.VISIBLE);
@@ -156,7 +169,7 @@ public class ContactsPickerDialogTest
         mIcon = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(mIcon);
         canvas.drawColor(Color.BLUE);
-        ContactViewHolder.setIconForTesting(mIcon);
+        mContactsFetcher.setTestIcon(mIcon);
         // Disable the async task since it tries to access contact icons which would fail in tests.
         CompressContactIconsWorkerTask.sDisableForTesting = true;
     }
@@ -196,7 +209,7 @@ public class ContactsPickerDialogTest
     }
 
     private RecyclerView getRecyclerView() {
-        return (RecyclerView) mDialog.findViewById(R.id.selectable_list_recycler_view);
+        return mDialog.findViewById(R.id.selectable_list_recycler_view);
     }
 
     /**
@@ -226,38 +239,54 @@ public class ContactsPickerDialogTest
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     ContactsPicker.setContactsPickerDelegate(
-                            (WebContents webContents,
-                                    ContactsPickerListener listener,
-                                    boolean multiple,
-                                    boolean names,
-                                    boolean emails,
-                                    boolean tels,
-                                    boolean addresses,
-                                    boolean icons,
-                                    String formattedOrigin) -> {
-                                mDialog =
-                                        new ContactsPickerDialog(
-                                                webContents.getTopLevelNativeWindow(),
-                                                new PickerAdapter() {
-                                                    @Override
-                                                    protected String findOwnerEmail() {
-                                                        return null;
-                                                    }
+                            new ContactsPickerDelegate() {
+                                @Override
+                                public Object showContactsPicker(
+                                        WebContents webContents,
+                                        ContactsPickerListener listener,
+                                        boolean multiple,
+                                        boolean names,
+                                        boolean emails,
+                                        boolean tels,
+                                        boolean addresses,
+                                        boolean icons,
+                                        String formattedOrigin,
+                                        @Nullable ContactsFetcher contactsFetcher) {
+                                    mDialog =
+                                            new ContactsPickerDialog(
+                                                    webContents.getTopLevelNativeWindow(),
+                                                    new PickerAdapter() {
+                                                        @Override
+                                                        protected String findOwnerEmail() {
+                                                            return null;
+                                                        }
 
-                                                    @Override
-                                                    protected void addOwnerInfoToContacts(
-                                                            ArrayList<ContactDetails> contacts) {}
-                                                },
-                                                listener,
-                                                multiple,
-                                                names,
-                                                emails,
-                                                tels,
-                                                addresses,
-                                                icons,
-                                                formattedOrigin);
-                                mDialog.show();
-                                return true;
+                                                        @Override
+                                                        protected void addOwnerInfoToContacts(
+                                                                ArrayList<ContactDetails> contacts,
+                                                                String ownerEmail) {}
+                                                    },
+                                                    listener,
+                                                    multiple,
+                                                    names,
+                                                    emails,
+                                                    tels,
+                                                    addresses,
+                                                    icons,
+                                                    formattedOrigin,
+                                                    /* shouldPadForContent= */ false,
+                                                    contactsFetcher);
+
+                                    mDialog.show();
+                                    return mDialog;
+                                }
+
+                                @Override
+                                public void cancelContactsPicker(Object picker) {
+                                    if (mDialog != null) {
+                                        mDialog.cancel();
+                                    }
+                                }
                             });
 
                     if (!ContactsPicker.showContactsPicker(
@@ -269,7 +298,8 @@ public class ContactsPickerDialogTest
                             includeTel,
                             includeAddresses,
                             includeIcons,
-                            "example.com")) {
+                            "example.com",
+                            mContactsFetcher)) {
                         return;
                     }
 
@@ -308,7 +338,8 @@ public class ContactsPickerDialogTest
             Assert.assertEquals(expectedSelectionCount, mCurrentContactSelection.size());
             Assert.assertEquals(
                     expectSelection,
-                    mSelectionDelegate.isItemSelected(mTestContacts.get(position)));
+                    mSelectionDelegate.isItemSelected(
+                            ContactDetails.fromRetrievedContact(mTestContacts.get(position))));
         }
     }
 
@@ -332,9 +363,8 @@ public class ContactsPickerDialogTest
 
         mLastActionRecorded = ContactsPickerAction.NUM_ENTRIES;
 
-        ContactsPickerToolbar toolbar =
-                (ContactsPickerToolbar) mDialog.findViewById(R.id.action_bar);
-        Button done = (Button) toolbar.findViewById(R.id.done);
+        ContactsPickerToolbar toolbar = mDialog.findViewById(R.id.action_bar);
+        Button done = toolbar.findViewById(R.id.done);
         int callCount = onActionCallback.getCallCount();
         TestTouchUtils.performClickOnMainSync(InstrumentationRegistry.getInstrumentation(), done);
         onActionCallback.waitForCallback(callCount, 1);
@@ -353,6 +383,9 @@ public class ContactsPickerDialogTest
         categoryView.onClick(cancel);
         onActionCallback.waitForCallback(callCount, 1);
         Assert.assertEquals(ContactsPickerAction.CANCEL, mLastActionRecorded);
+
+        // Wait until the dismiss listener runs and clears the picker.
+        CriteriaHelper.pollUiThread(() -> !ContactsPicker.hasPickerForTesting());
     }
 
     private void toggleSelectAll(
@@ -386,8 +419,7 @@ public class ContactsPickerDialogTest
     }
 
     private void clickSearchButton() {
-        ContactsPickerToolbar toolbar =
-                (ContactsPickerToolbar) mDialog.findViewById(R.id.action_bar);
+        ContactsPickerToolbar toolbar = mDialog.findViewById(R.id.action_bar);
         View search = toolbar.findViewById(R.id.search);
         TestTouchUtils.performClickOnMainSync(InstrumentationRegistry.getInstrumentation(), search);
     }
@@ -423,7 +455,7 @@ public class ContactsPickerDialogTest
      * @param ownerEmail If not null, includes a few contact entries representing owners.
      */
     private void setTestContacts(String ownerEmail) {
-        mTestContacts = new ArrayList<ContactDetails>();
+        mTestContacts = new ArrayList<>();
         PaymentAddress address = new PaymentAddress();
         address.city = "city";
         address.country = "country";
@@ -500,11 +532,12 @@ public class ContactsPickerDialogTest
                             Arrays.asList("owner@example.com"),
                             /* phoneNumbers= */ null,
                             /* addresses= */ null);
-            mTestContacts.add(owner);
-            mTestContacts.add(owner2);
+            mTestContacts.add(0, owner);
+            mTestContacts.add(1, owner2);
         }
 
-        PickerAdapter.setTestContactsAndOwner(mTestContacts, ownerEmail);
+        mContactsFetcher.setTestContacts(mTestContacts);
+        PickerAdapter.setTestOwner(ownerEmail);
     }
 
     @Test
@@ -517,7 +550,7 @@ public class ContactsPickerDialogTest
         TopView topView = getTopView();
         Assert.assertNotNull(topView);
 
-        TextView explanation = (TextView) topView.findViewById(R.id.explanation);
+        TextView explanation = topView.findViewById(R.id.explanation);
         Assert.assertNotNull(explanation);
         Assert.assertEquals(
                 "The contacts you select will be shared with example.com.",
@@ -699,7 +732,7 @@ public class ContactsPickerDialogTest
 
         Assert.assertEquals(ContactsPickerAction.CONTACTS_SELECTED, mLastActionRecorded);
         Assert.assertEquals(1, mLastSelectedContacts.size());
-        Assert.assertEquals(new ArrayList<String>(), mLastSelectedContacts.get(0).names);
+        Assert.assertEquals(new ArrayList<>(), mLastSelectedContacts.get(0).names);
         Assert.assertEquals(
                 mTestContacts.get(0).getEmails().get(0),
                 mLastSelectedContacts.get(0).emails.get(0));
@@ -738,7 +771,7 @@ public class ContactsPickerDialogTest
         Assert.assertEquals(1, mLastSelectedContacts.size());
         Assert.assertEquals(
                 mTestContacts.get(0).getDisplayName(), mLastSelectedContacts.get(0).names.get(0));
-        Assert.assertEquals(new ArrayList<String>(), mLastSelectedContacts.get(0).emails);
+        Assert.assertEquals(new ArrayList<>(), mLastSelectedContacts.get(0).emails);
         Assert.assertEquals(16, mLastPercentageShared);
         Assert.assertEquals(31, mLastPropertiesRequested);
         Assert.assertEquals(ContactsPickerProperties.PROPERTIES_EMAILS, mLastPropertiesRejected);
@@ -761,7 +794,7 @@ public class ContactsPickerDialogTest
         Assert.assertEquals(1, mLastSelectedContacts.size());
         Assert.assertEquals(
                 mTestContacts.get(0).getDisplayName(), mLastSelectedContacts.get(0).names.get(0));
-        Assert.assertEquals(new ArrayList<String>(), mLastSelectedContacts.get(0).tel);
+        Assert.assertEquals(new ArrayList<>(), mLastSelectedContacts.get(0).tel);
         Assert.assertEquals(16, mLastPercentageShared);
         Assert.assertEquals(31, mLastPropertiesRequested);
         Assert.assertEquals(ContactsPickerProperties.PROPERTIES_TELS, mLastPropertiesRejected);
@@ -784,8 +817,7 @@ public class ContactsPickerDialogTest
         Assert.assertEquals(1, mLastSelectedContacts.size());
         Assert.assertEquals(
                 mTestContacts.get(0).getDisplayName(), mLastSelectedContacts.get(0).names.get(0));
-        Assert.assertEquals(
-                new ArrayList<ByteBuffer>(), mLastSelectedContacts.get(0).serializedAddresses);
+        Assert.assertEquals(new ArrayList<>(), mLastSelectedContacts.get(0).serializedAddresses);
         Assert.assertEquals(16, mLastPercentageShared);
         Assert.assertEquals(31, mLastPropertiesRequested);
         Assert.assertEquals(ContactsPickerProperties.PROPERTIES_ADDRESSES, mLastPropertiesRejected);
@@ -808,8 +840,7 @@ public class ContactsPickerDialogTest
         Assert.assertEquals(1, mLastSelectedContacts.size());
         Assert.assertEquals(
                 mTestContacts.get(0).getDisplayName(), mLastSelectedContacts.get(0).names.get(0));
-        Assert.assertEquals(
-                new ArrayList<ByteBuffer>(), mLastSelectedContacts.get(0).serializedIcons);
+        Assert.assertEquals(new ArrayList<>(), mLastSelectedContacts.get(0).serializedIcons);
         Assert.assertEquals(16, mLastPercentageShared);
         Assert.assertEquals(31, mLastPropertiesRequested);
         Assert.assertEquals(ContactsPickerProperties.PROPERTIES_ICONS, mLastPropertiesRejected);
@@ -971,7 +1002,8 @@ public class ContactsPickerDialogTest
     @Test
     @LargeTest
     public void testEmptyContactListCrash() throws Throwable {
-        PickerAdapter.setTestContactsAndOwner(new ArrayList<ContactDetails>(), null);
+        mContactsFetcher.setTestContacts(new ArrayList<>());
+        PickerAdapter.setTestOwner(null);
 
         createDialog(/* multiselect= */ true);
         Assert.assertTrue(mDialog.isShowing());
@@ -997,6 +1029,8 @@ public class ContactsPickerDialogTest
         setTestContacts(/* ownerEmail= */ "owner@example.com");
         createDialog(/* multiselect= */ true);
         Assert.assertTrue(mDialog.isShowing());
+
+        mContactsFetcher.awaitFetchIcon();
 
         mRenderTestRule.render(mDialog.getCategoryViewForTesting(), "selection_none");
 

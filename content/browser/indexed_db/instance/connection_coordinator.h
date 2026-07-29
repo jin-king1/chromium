@@ -6,28 +6,28 @@
 #define CONTENT_BROWSER_INDEXED_DB_INSTANCE_CONNECTION_COORDINATOR_H_
 
 #include <memory>
-#include <tuple>
 
 #include "base/containers/queue.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
 #include "content/browser/indexed_db/instance/bucket_context.h"
 #include "content/browser/indexed_db/status.h"
 #include "content/common/content_export.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 
 namespace content::indexed_db {
-class FactoryClient;
-class Connection;
 class Database;
 struct PendingConnection;
 
 class CONTENT_EXPORT ConnectionCoordinator {
- public:
-  static const int64_t kInvalidDatabaseId = 0;
-  static const int64_t kMinimumIndexId = 30;
+  // TODO(crbug.com/498738402): Remove this macro.
+  ADVANCED_MEMORY_SAFETY_CHECKS();
 
+ public:
   ConnectionCoordinator(Database* db, BucketContext& bucket_context);
 
   ConnectionCoordinator(const ConnectionCoordinator&) = delete;
@@ -35,16 +35,17 @@ class CONTENT_EXPORT ConnectionCoordinator {
 
   ~ConnectionCoordinator();
 
-  void ScheduleOpenConnection(std::unique_ptr<PendingConnection> connection);
+  // `synchronous_duration` tracks the work done prior to calling these methods
+  // (such as backing store initialization).
+  void ScheduleOpenConnection(std::unique_ptr<PendingConnection> connection,
+                              base::TimeDelta synchronous_duration);
+  void ScheduleDeleteDatabase(
+      mojo::AssociatedRemote<blink::mojom::IDBFactoryClient> factory_client,
+      base::OnceClosure on_deletion_complete,
+      base::TimeDelta synchronous_duration);
 
-  void ScheduleDeleteDatabase(std::unique_ptr<FactoryClient> factory_client,
-                              base::OnceClosure on_deletion_complete);
-
-  // Call this method to prune any tasks that don't want to be run during
-  // force close. Returns any error caused by rolling back changes.
-  Status PruneTasksForForceClose();
-
-  void OnConnectionClosed(Connection* connection);
+  // Aborts and removes all pending tasks.
+  void CancelPendingRequests(const std::string& message);
 
   void OnNoConnections();
 
@@ -65,14 +66,10 @@ class CONTENT_EXPORT ConnectionCoordinator {
     // There are tasks but they are waiting on async work to complete. No more
     // calls to ExecuteTask() are necessary.
     kPendingAsyncWork,
-    // There was an error executing a task - see the status. The offending task
-    // was removed, and the caller can choose to continue executing tasks if
-    // they want.
-    kError,
     // There are no more tasks to run.
     kDone,
   };
-  std::tuple<ExecuteTaskResult, Status> ExecuteTask(bool has_connections);
+  StatusOr<ExecuteTaskResult> ExecuteTask(bool has_connections);
 
   bool HasTasks() const { return !request_queue_.empty(); }
 

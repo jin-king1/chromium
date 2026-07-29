@@ -11,6 +11,9 @@ source_set("model") {
   ]
   deps = [
     "//base",
+    "//build:blink_buildflags",
+    "//components/activity_reporter",
+    "//components/application_locale_storage",
     "//components/breadcrumbs/core",
     "//components/breadcrumbs/core:status",
     "//components/component_updater",
@@ -21,13 +24,17 @@ source_set("model") {
     "//components/net_log",
     "//components/network_time",
     "//components/optimization_guide:optimization_guide_buildflags",
+    "//components/optimization_guide/core",
     "//components/os_crypt/async/browser",
+    "//components/os_crypt/async/browser:keychain_key_provider",
     "//components/prefs",
     "//components/sessions",
     "//components/signin/core/browser",
+    "//components/supervised_user/core/browser:device_parental_controls",
     "//components/translate/core/browser",
     "//components/ukm",
     "//components/update_client",
+    "//components/update_client:network_impl",
     "//components/variations/service",
     "//components/version_info",
     "//ios/chrome/app:tests_hook",
@@ -35,9 +42,11 @@ source_set("model") {
     "//ios/chrome/browser/crash_report/model/breadcrumbs",
     "//ios/chrome/browser/crash_report/model/breadcrumbs:application_breadcrumbs_logger",
     "//ios/chrome/browser/default_browser/model:utils",
+    "//ios/chrome/browser/download/model/auto_deletion",
     "//ios/chrome/browser/gcm/model",
     "//ios/chrome/browser/history/model",
     "//ios/chrome/browser/metrics/model",
+    "//ios/chrome/browser/optimization_guide/model",
     "//ios/chrome/browser/policy/model",
     "//ios/chrome/browser/prefs/model",
     "//ios/chrome/browser/profile/model",
@@ -50,6 +59,7 @@ source_set("model") {
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/model/profile:incognito_session_tracker",
     "//ios/chrome/browser/signin/model",
+    "//ios/chrome/browser/signin/model/avatar",
     "//ios/chrome/browser/update_client/model",
     "//ios/chrome/common",
     "//ios/components/security_interstitials/safe_browsing",
@@ -63,11 +73,4 @@ source_set("model") {
     "//services/network:network_service",
     "//ui/base",
   ]
-
-  if (build_with_internal_optimization_guide) {
-    deps += [
-      "//components/optimization_guide/core",
-      "//ios/chrome/browser/optimization_guide/model",
-    ]
-  }
 }

@@ -5,14 +5,13 @@
 #include "net/device_bound_sessions/registration_fetcher_param.h"
 
 #include <optional>
+#include <vector>
 
 #include "base/strings/strcat.h"
-#include "base/strings/stringprintf.h"
-#include "base/test/bind.h"
-#include "base/test/task_environment.h"
+#include "base/test/scoped_feature_list.h"
 #include "crypto/signature_verifier.h"
+#include "net/base/features.h"
 #include "net/http/http_response_headers.h"
-#include "net/http/structured_headers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -20,7 +19,8 @@ namespace net::device_bound_sessions {
 
 namespace {
 
-constexpr char kRegistrationHeader[] = "Sec-Session-Registration";
+constexpr char kRegistrationHeaderName[] = "Secure-Session-Registration";
+
 using crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256;
 using crypto::SignatureVerifier::SignatureAlgorithm::RSA_PKCS1_SHA256;
 using ::testing::UnorderedElementsAre;
@@ -47,7 +47,7 @@ scoped_refptr<net::HttpResponseHeaders> CreateHeaders(
   if (!headers) {
     headers = HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
   }
-  headers->AddHeader(kRegistrationHeader, full_string);
+  headers->AddHeader(kRegistrationHeaderName, full_string);
 
   return headers;
 }
@@ -57,8 +57,9 @@ TEST(RegistrationFetcherParamTest, BasicValid) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       CreateHeaders("startsession", "(ES256 RS256)", "c1", "auth");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -76,8 +77,9 @@ TEST(RegistrationFetcherParamTest, SubpathRequestUrlValid) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       CreateHeaders("/startsession", "(ES256 RS256)", "c1", "auth");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -93,8 +95,9 @@ TEST(RegistrationFetcherParamTest, ExtraUnrecognizedAlgorithm) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       CreateHeaders("startsession", "(ES256 bf512)", "c1", "auth");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -109,8 +112,9 @@ TEST(RegistrationFetcherParamTest, NoHeader) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_TRUE(params.empty());
 }
 
@@ -120,12 +124,13 @@ TEST(RegistrationFetcherParamTest, ChallengeFirst) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
   response_headers->SetHeader(
-      kRegistrationHeader,
+      kRegistrationHeaderName,
       "(RS256 ES256);challenge=\"challenge1\";path=\"first\"");
 
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -141,11 +146,12 @@ TEST(RegistrationFetcherParamTest, NoSpaces) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
   response_headers->SetHeader(
-      kRegistrationHeader,
+      kRegistrationHeaderName,
       "(RS256 ES256);path=\"startsession\";challenge=\"challenge1\"");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -161,8 +167,9 @@ TEST(RegistrationFetcherParamTest, TwoRegistrations) {
       CreateHeaders("/first", "(ES256 RS256)", "c1", "auth1");
   CreateHeaders("/second", "(ES256)", "challenge2", "auth2", response_headers);
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 2U);
   const auto& p1 = params[0];
   EXPECT_EQ(p1.registration_endpoint(), GURL("https://www.example.com/first"));
@@ -184,8 +191,9 @@ TEST(RegistrationFetcherParamTest, ValidInvalid) {
       "/first", "(ES256 RS256)", "c1", /*authorization=*/std::nullopt);
   CreateHeaders("/second", "(es256)", "challenge2", "auth2", response_headers);
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& p1 = params[0];
   EXPECT_EQ(p1.registration_endpoint(), GURL("https://www.example.com/first"));
@@ -200,11 +208,12 @@ TEST(RegistrationFetcherParamTest, AddedInvalidNonsenseCharacters) {
   // Testing customized header.
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
-  response_headers->AddHeader(kRegistrationHeader,
+  response_headers->AddHeader(kRegistrationHeaderName,
                               "(RS256);path=\"new\";challenge=\"test\";;=;");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_TRUE(params.empty());
 }
 
@@ -214,11 +223,12 @@ TEST(RegistrationFetcherParamTest, AddedValidNonsenseCharacters) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
   response_headers->AddHeader(
-      kRegistrationHeader,
+      kRegistrationHeaderName,
       "(RS256);path=\"new\";challenge=\"test\";nonsense=\";';'\",OTHER");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& p1 = params[0];
   EXPECT_EQ(p1.registration_endpoint(), GURL("https://www.example.com/new"));
@@ -231,11 +241,12 @@ TEST(RegistrationFetcherParamTest, AlgAsString) {
   // Testing customized header.
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
-  response_headers->AddHeader(kRegistrationHeader,
+  response_headers->AddHeader(kRegistrationHeaderName,
                               "(\"RS256\");path=\"new\";challenge=\"test\"");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_TRUE(params.empty());
 }
 
@@ -244,11 +255,12 @@ TEST(RegistrationFetcherParamTest, PathAsToken) {
   // Testing customized header.
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
-  response_headers->AddHeader(kRegistrationHeader,
+  response_headers->AddHeader(kRegistrationHeaderName,
                               "(RS256);path=new;challenge=\"test\"");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_TRUE(params.empty());
 }
 
@@ -257,11 +269,12 @@ TEST(RegistrationFetcherParamTest, ChallengeAsByteSequence) {
   // Testing customized header.
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
-  response_headers->AddHeader(kRegistrationHeader,
+  response_headers->AddHeader(kRegistrationHeaderName,
                               "(RS256);path=\"new\";challenge=:Y29kZWQ=:");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_TRUE(params.empty());
 }
 
@@ -273,8 +286,9 @@ TEST(RegistrationFetcherParamTest, ValidInvalidValid) {
   CreateHeaders("/third", "(ES256)", "challenge3", "auth3", response_headers);
 
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 2U);
   const auto& p1 = params[0];
   EXPECT_EQ(p1.registration_endpoint(), GURL("https://www.example.com/first"));
@@ -298,8 +312,9 @@ TEST(RegistrationFetcherParamTest, ThreeRegistrations) {
   CreateHeaders("/third", "(ES256)", "another", "auth", response_headers);
 
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 3U);
   const auto& p1 = params[0];
   EXPECT_EQ(p1.registration_endpoint(),
@@ -327,12 +342,13 @@ TEST(RegistrationFetcherParamTest, ThreeRegistrationsList) {
   // Testing customized header.
   scoped_refptr<net::HttpResponseHeaders> response_headers = CreateHeaders(
       "/startsession", "(ES256 RS256)", "c1", /*authorization=*/std::nullopt);
-  response_headers->AddHeader(kRegistrationHeader,
+  response_headers->AddHeader(kRegistrationHeaderName,
                               "(ES256);path=\"new\";challenge=\"coded\", "
                               "(ES256);path=\"third\";challenge=\"another\"");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 3U);
   const auto& p1 = params[0];
   EXPECT_EQ(p1.registration_endpoint(),
@@ -357,8 +373,9 @@ TEST(RegistrationFetcherParamTest, StartWithSlash) {
   scoped_refptr<net::HttpResponseHeaders> response_headers = CreateHeaders(
       "/startsession", "(ES256 RS256)", "c1", /*authorization=*/std::nullopt);
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -374,8 +391,9 @@ TEST(RegistrationFetcherParamTest, EscapeOnce) {
   scoped_refptr<net::HttpResponseHeaders> response_headers = CreateHeaders(
       "/%2561", "(ES256 RS256)", "c1", /*authorization=*/std::nullopt);
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(), GURL("https://www.example.com/%61"));
@@ -390,8 +408,9 @@ TEST(RegistrationFetcherParamTest, InvalidUrl) {
   scoped_refptr<net::HttpResponseHeaders> response_headers = CreateHeaders(
       "new", "(ES256 RS256)", "c1", /*authorization=*/std::nullopt);
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 0U);
 }
 
@@ -402,8 +421,9 @@ TEST(RegistrationFetcherParamTest, NonSecureUrl) {
     scoped_refptr<net::HttpResponseHeaders> response_headers =
         CreateHeaders("startsession", "(ES256 RS256)", "c1", "auth");
     std::vector<RegistrationFetcherParam> params =
-        RegistrationFetcherParam::CreateIfValid(http_url,
-                                                response_headers.get());
+        RegistrationFetcherParam::CreateIfValid(
+            http_url, response_headers.get(),
+            /*restricted_sites=*/std::vector<SchemefulSite>());
     EXPECT_TRUE(params.empty());
   }
 
@@ -413,8 +433,9 @@ TEST(RegistrationFetcherParamTest, NonSecureUrl) {
     scoped_refptr<net::HttpResponseHeaders> response_headers =
         CreateHeaders("startsession", "(ES256 RS256)", "c1", "auth");
     std::vector<RegistrationFetcherParam> params =
-        RegistrationFetcherParam::CreateIfValid(localhost_url,
-                                                response_headers.get());
+        RegistrationFetcherParam::CreateIfValid(
+            localhost_url, response_headers.get(),
+            /*restricted_sites=*/std::vector<SchemefulSite>());
     EXPECT_FALSE(params.empty());
   }
 }
@@ -424,8 +445,9 @@ TEST(RegistrationFetcherParamTest, HasUrlEncoded) {
   scoped_refptr<net::HttpResponseHeaders> response_headers = CreateHeaders(
       "test%2Fstart", "(ES256 RS256)", "c1", /*authorization=*/std::nullopt);
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -442,8 +464,9 @@ TEST(RegistrationFetcherParamTest, FullUrl) {
       CreateHeaders("https://accounts.example.com/startsession",
                     "(ES256 RS256)", "c1", /*authorization=*/std::nullopt);
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -459,8 +482,9 @@ TEST(RegistrationFetcherParamTest, SwapAlgo) {
   scoped_refptr<net::HttpResponseHeaders> response_headers = CreateHeaders(
       "startsession", "(ES256 RS256)", "c1", /*authorization=*/std::nullopt);
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -476,8 +500,9 @@ TEST(RegistrationFetcherParamTest, OneAlgo) {
   scoped_refptr<net::HttpResponseHeaders> response_headers = CreateHeaders(
       "startsession", "(RS256)", "c1", /*authorization=*/std::nullopt);
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -492,11 +517,12 @@ TEST(RegistrationFetcherParamTest, InvalidParamIgnored) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
   response_headers->SetHeader(
-      kRegistrationHeader,
+      kRegistrationHeaderName,
       "(RS256);path=\"first\";challenge=\"c1\";another=true");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -530,10 +556,6 @@ TEST(RegistrationFetcherParamTest, InvalidInputs) {
       {"https://www.example.com/reg", "start", std::nullopt, "c1"},
       // Missing registration
       {"https://www.example.com/reg", std::nullopt, "(ES256 RS256)", "c1"},
-      // Missing challenge
-      {"https://www.example.com/reg", "start", "(ES256 RS256)", std::nullopt},
-      // Empty challenge
-      {"https://www.example.com/reg", "start", "(ES256 RS256)", ""},
       // Challenge invalid utf8
       {"https://www.example.com/reg", "start", "(ES256 RS256)", "ab\xC0\x80"}};
 
@@ -545,8 +567,9 @@ TEST(RegistrationFetcherParamTest, InvalidInputs) {
     SCOPED_TRACE(registration_request.spec() + "; " +
                  response_headers->raw_headers());
     std::vector<RegistrationFetcherParam> params =
-        RegistrationFetcherParam::CreateIfValid(registration_request,
-                                                response_headers.get());
+        RegistrationFetcherParam::CreateIfValid(
+            registration_request, response_headers.get(),
+            /*restricted_sites=*/std::vector<SchemefulSite>());
     EXPECT_TRUE(params.empty());
   }
 }
@@ -556,8 +579,9 @@ TEST(RegistrationFetcherParamTest, ValidAuthorization) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       CreateHeaders("startsession", "(ES256 RS256)", "c1", "authcode");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -568,24 +592,19 @@ TEST(RegistrationFetcherParamTest, ValidAuthorization) {
   EXPECT_EQ(param.authorization(), "authcode");
 }
 
-TEST(RegistrationFetcherParamTest, InvalidAuthorizationIgnored) {
+TEST(RegistrationFetcherParamTest, InvalidAuthorizationPreventsRegistration) {
   const GURL registration_request("https://www.example.com/registration");
   // Testing customized header.
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
   response_headers->AddHeader(
-      kRegistrationHeader,
+      kRegistrationHeaderName,
       "(RS256);path=\"startsession\";challenge=\"c1\";authorization=123");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
-  ASSERT_EQ(params.size(), 1U);
-  const auto& param = params[0];
-  EXPECT_EQ(param.registration_endpoint(),
-            GURL("https://www.example.com/startsession"));
-  EXPECT_THAT(param.supported_algos(), UnorderedElementsAre(RSA_PKCS1_SHA256));
-  EXPECT_EQ(param.challenge(), "c1");
-  EXPECT_FALSE(param.authorization());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+  ASSERT_TRUE(params.empty());
 }
 
 TEST(RegistrationFetcherParamTest, MultipleAuthorizationHeaders) {
@@ -594,12 +613,13 @@ TEST(RegistrationFetcherParamTest, MultipleAuthorizationHeaders) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
   response_headers->AddHeader(
-      kRegistrationHeader,
+      kRegistrationHeaderName,
       "(RS256);path=\"startsession\";challenge=\"c1\";"
       "authorization=\"auth1\";authorization=\"auth2\"");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -614,12 +634,13 @@ TEST(RegistrationFetcherParamTest, MultipleAuthorizationHeadersWithEmpty) {
   // Testing customized header.
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
-  response_headers->AddHeader(kRegistrationHeader,
+  response_headers->AddHeader(kRegistrationHeaderName,
                               "(RS256);path=\"startsession\";challenge=\"c1\";"
                               "authorization=\"auth1\";authorization=\"\"");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -635,11 +656,12 @@ TEST(RegistrationFetcherParamTest, EmptyStringAuthorization) {
   scoped_refptr<net::HttpResponseHeaders> response_headers =
       HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
   response_headers->AddHeader(
-      kRegistrationHeader,
+      kRegistrationHeaderName,
       "(RS256);path=\"startsession\";challenge=\"c1\";authorization=\"\"");
   std::vector<RegistrationFetcherParam> params =
-      RegistrationFetcherParam::CreateIfValid(registration_request,
-                                              response_headers.get());
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
   ASSERT_EQ(params.size(), 1U);
   const auto& param = params[0];
   EXPECT_EQ(param.registration_endpoint(),
@@ -647,6 +669,277 @@ TEST(RegistrationFetcherParamTest, EmptyStringAuthorization) {
   EXPECT_THAT(param.supported_algos(), UnorderedElementsAre(RSA_PKCS1_SHA256));
   EXPECT_EQ(param.challenge(), "c1");
   EXPECT_EQ(param.authorization(), "");
+}
+
+TEST(RegistrationFetcherParamTest, ValidProviderParams) {
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";provider_key=\"key\";"
+      "provider_url=\"https://"
+      "provider.example.com\";provider_session_id=\"id\"");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+  ASSERT_EQ(params.size(), 1U);
+  const auto& param = params[0];
+  EXPECT_EQ(param.registration_endpoint(),
+            GURL("https://www.example.com/startsession"));
+  EXPECT_THAT(param.supported_algos(), UnorderedElementsAre(ECDSA_SHA256));
+  EXPECT_EQ(param.challenge(), "c1");
+  EXPECT_EQ(param.provider_key(), "key");
+  EXPECT_EQ(param.provider_url(), GURL("https://provider.example.com"));
+  EXPECT_EQ(param.provider_session_id(), Session::Id("id"));
+}
+
+TEST(RegistrationFetcherParamTest, ValidProviderParamsWithoutSessionId) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kDeviceBoundSessionsForSingleSignOn);
+
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";provider_key=\"key\";"
+      "provider_url=\"https://provider.example.com\"");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+  ASSERT_EQ(params.size(), 1U);
+  const auto& param = params[0];
+  EXPECT_EQ(param.registration_endpoint(),
+            GURL("https://www.example.com/startsession"));
+  EXPECT_THAT(param.supported_algos(), UnorderedElementsAre(ECDSA_SHA256));
+  EXPECT_EQ(param.challenge(), "c1");
+  EXPECT_EQ(param.provider_key(), "key");
+  EXPECT_EQ(param.provider_url(), GURL("https://provider.example.com"));
+  EXPECT_FALSE(param.provider_session_id().has_value());
+}
+
+TEST(RegistrationFetcherParamTest, InvalidProviderParamsWithoutSessionId) {
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";provider_key=\"key\";"
+      "provider_url=\"https://provider.example.com\"");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+
+  // `provider_key` + `provider_url` only should not return a valid
+  // `RegistrationFetcherParam` if SSO feature is not enabled.
+  ASSERT_EQ(params.size(), 0U);
+}
+
+TEST(RegistrationFetcherParamTest, IncompleteProviderParams) {
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";provider_key=\"key\"");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+  EXPECT_TRUE(params.empty());
+}
+
+TEST(RegistrationFetcherParamTest, IncompleteProviderParams2) {
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";"
+      "provider_key=\"key\";provider_session_id=\"id\"");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+  EXPECT_TRUE(params.empty());
+}
+
+TEST(RegistrationFetcherParamTest, InvalidProviderUrl) {
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";provider_key=\"key\";"
+      "provider_url=\"http://"
+      "provider.example.com\";provider_session_id=\"id\"");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+  // The provider_url is not secure, so reject the federated registration
+  // request.
+  EXPECT_TRUE(params.empty());
+}
+
+TEST(RegistrationFetcherParamTest, MissingChallenge) {
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      CreateHeaders("https://www.example.com/reg", "(ES256 RS256)",
+                    /*challenge=*/std::nullopt,
+                    /*authorization=*/std::nullopt);
+  SCOPED_TRACE(registration_request.spec() + "; " +
+               response_headers->raw_headers());
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+  ASSERT_EQ(params.size(), 1u);
+  EXPECT_FALSE(params[0].challenge().has_value());
+  EXPECT_FALSE(params[0].authorization().has_value());
+}
+
+TEST(RegistrationFetcherParamTest, EmptyChallenge) {
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers = CreateHeaders(
+      "https://www.example.com/reg", "(ES256 RS256)", /*challenge=*/"",
+      /*authorization=*/std::nullopt);
+  SCOPED_TRACE(registration_request.spec() + "; " +
+               response_headers->raw_headers());
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+  ASSERT_EQ(params.size(), 1u);
+  EXPECT_EQ(params[0].challenge(), "");
+  EXPECT_FALSE(params[0].authorization().has_value());
+}
+
+TEST(RegistrationFetcherParamTest, RestrictedRegistration) {
+  const GURL registration_request(
+      "https://restricted.example.test/registration");
+  std::vector<SchemefulSite> restricted_sites{
+      SchemefulSite(GURL("https://restricted.example.test")),
+      SchemefulSite(GURL("https://other-restricted.example.test"))};
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      CreateHeaders("startsession", "(ES256 RS256)", "c1", "auth");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(), restricted_sites);
+  EXPECT_EQ(params.size(), 0U);
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kDeviceBoundSessionsForRestrictedSites);
+  params = RegistrationFetcherParam::CreateIfValid(
+      registration_request, response_headers.get(), restricted_sites);
+  ASSERT_EQ(params.size(), 1U);
+  const auto& param = params[0];
+  EXPECT_EQ(param.registration_endpoint(),
+            GURL("https://restricted.example.test/startsession"));
+}
+
+TEST(RegistrationFetcherParamTest, AikRequired) {
+  base::test::ScopedFeatureList feature_list(
+      features::kDeviceBoundSessionsForSingleSignOn);
+
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";aik_required=?1");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+
+  ASSERT_EQ(params.size(), 1U);
+  const auto& param = params[0];
+  EXPECT_EQ(param.attestation_mode(), AttestationMode::kRequired);
+}
+
+TEST(RegistrationFetcherParamTest, AikRequiredDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kDeviceBoundSessionsForSingleSignOn);
+
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";aik_required=?1");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+
+  ASSERT_EQ(params.size(), 1U);
+  const auto& param = params[0];
+  EXPECT_EQ(param.attestation_mode(), AttestationMode::kNone);
+}
+
+TEST(RegistrationFetcherParamTest, AikRequiredDefault) {
+  base::test::ScopedFeatureList feature_list(
+      features::kDeviceBoundSessionsForSingleSignOn);
+
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(kRegistrationHeaderName,
+                              "(ES256);path=\"startsession\";challenge=\"c1\"");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+
+  ASSERT_EQ(params.size(), 1U);
+  const auto& param = params[0];
+  EXPECT_EQ(param.attestation_mode(), AttestationMode::kNone);
+}
+
+TEST(RegistrationFetcherParamTest, AikRequiredFalse) {
+  base::test::ScopedFeatureList feature_list(
+      features::kDeviceBoundSessionsForSingleSignOn);
+
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";aik_required=?0");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+
+  ASSERT_EQ(params.size(), 1U);
+  const auto& param = params[0];
+  EXPECT_EQ(param.attestation_mode(), AttestationMode::kNone);
+}
+
+TEST(RegistrationFetcherParamTest, AikRequiredInvalidValue) {
+  base::test::ScopedFeatureList feature_list(
+      features::kDeviceBoundSessionsForSingleSignOn);
+
+  const GURL registration_request("https://www.example.com/registration");
+  scoped_refptr<net::HttpResponseHeaders> response_headers =
+      HttpResponseHeaders::Builder({1, 1}, "200 OK").Build();
+  response_headers->AddHeader(
+      kRegistrationHeaderName,
+      "(ES256);path=\"startsession\";challenge=\"c1\";aik_required=42");
+  std::vector<RegistrationFetcherParam> params =
+      RegistrationFetcherParam::CreateIfValid(
+          registration_request, response_headers.get(),
+          /*restricted_sites=*/std::vector<SchemefulSite>());
+
+  EXPECT_TRUE(params.empty());
 }
 
 }  // namespace

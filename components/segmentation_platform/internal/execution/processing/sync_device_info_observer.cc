@@ -9,6 +9,7 @@
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -81,7 +82,6 @@ const char* ConvertOsTypeToString(OsType os_type) {
 }  // namespace
 
 BASE_FEATURE(kSegmentationDeviceCountByOsType,
-             "SegmentationDeviceCountByOsType",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 SyncDeviceInfoObserver::SyncDeviceInfoObserver(

@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/mojo/clients/mojo_decryptor.h"
 
@@ -15,6 +11,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/test_message_loop.h"
 #include "media/base/decryptor.h"
@@ -25,6 +22,7 @@
 #include "media/mojo/mojom/decryptor.mojom.h"
 #include "media/mojo/services/mojo_decryptor_service.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/test_support/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -81,11 +79,11 @@ class MojoDecryptorTest : public ::testing::Test {
     // VideoFrame.
     auto region = base::ReadOnlySharedMemoryRegion::Create(15000);
     CHECK(region.IsValid());
-    uint8_t* data = const_cast<uint8_t*>(region.mapping.GetMemoryAs<uint8_t>());
+    auto data = region.mapping.GetMemoryAsSpan<uint8_t>();
     scoped_refptr<VideoFrame> frame = VideoFrame::WrapExternalYuvData(
         PIXEL_FORMAT_I420, gfx::Size(100, 100), gfx::Rect(100, 100),
-        gfx::Size(100, 100), 100, 50, 50, data, data + 100 * 100,
-        data + (100 * 100 * 5 / 4), base::Seconds(100));
+        gfx::Size(100, 100), 100, 50, 50, data, data.subspan(100u * 100),
+        data.subspan(100u * 100 * 5 / 4), base::Seconds(100));
     auto read_only_mapping = region.region.Map();
     CHECK(read_only_mapping.IsValid());
     frame->BackWithOwnedSharedMemory(std::move(region.region),
@@ -133,12 +131,12 @@ class MojoDecryptorTest : public ::testing::Test {
   // The MojoDecryptor that we are testing.
   std::unique_ptr<MojoDecryptor> mojo_decryptor_;
 
+  // The actual Decryptor object used by |mojo_decryptor_service_|.
+  std::unique_ptr<StrictMock<MockDecryptor>> decryptor_;
+
   // The matching MojoDecryptorService for |mojo_decryptor_|.
   std::unique_ptr<MojoDecryptorService> mojo_decryptor_service_;
   std::unique_ptr<mojo::Receiver<mojom::Decryptor>> receiver_;
-
-  // The actual Decryptor object used by |mojo_decryptor_service_|.
-  std::unique_ptr<StrictMock<MockDecryptor>> decryptor_;
 };
 
 // DecryptAndDecodeAudio() and ResetDecoder(kAudio) immediately.
@@ -389,6 +387,69 @@ TEST_F(MojoDecryptorTest, DestroyService) {
       std::move(buffer), base::BindRepeating(&MojoDecryptorTest::VideoDecoded,
                                              base::Unretained(this)));
   base::RunLoop().RunUntilIdle();
+}
+
+TEST_F(MojoDecryptorTest, InitializeVideoDecoder_InvalidConfig) {
+  Initialize();
+
+  mojo::test::BadMessageObserver bad_message_observer;
+
+
+  EXPECT_CALL(*decryptor_, InitializeVideoDecoder(_, _)).Times(0);
+
+  gfx::Size coded_size(65536, 65536);
+  gfx::Rect visible_rect(0, 0, 65536, 65536);
+  gfx::Size natural_size(65536, 65536);
+  VideoDecoderConfig config(VideoCodec::kVP9, VP9PROFILE_PROFILE3,
+                            VideoDecoderConfig::AlphaMode::kIsOpaque,
+                            VideoColorSpace(), kNoTransformation, coded_size,
+                            visible_rect, natural_size, std::vector<uint8_t>(),
+                            EncryptionScheme());
+
+  mojo_decryptor_->InitializeVideoDecoder(config, base::DoNothing());
+
+  std::string bad_message = bad_message_observer.WaitForBadMessage();
+  EXPECT_EQ(bad_message, "Invalid VideoDecoderConfig");
+  base::RunLoop().RunUntilIdle();
+}
+
+TEST_F(MojoDecryptorTest, Deinitialize_DuringDecryptAndDecode) {
+  SetWriterCapacity(20);
+  Initialize();
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(*this, AudioDecoded(Decryptor::kError, _))
+      .WillOnce(testing::InvokeWithoutArgs(&run_loop, &base::RunLoop::Quit));
+
+  auto buffer = DecoderBuffer::CopyFrom(std::vector<uint8_t>(100, 0));
+  mojo_decryptor_->DecryptAndDecodeAudio(
+      std::move(buffer), base::BindRepeating(&MojoDecryptorTest::AudioDecoded,
+                                             base::Unretained(this)));
+
+  EXPECT_CALL(*decryptor_, DeinitializeDecoder(Decryptor::kAudio));
+  mojo_decryptor_->DeinitializeDecoder(Decryptor::kAudio);
+  run_loop.Run();
+}
+
+TEST_F(MojoDecryptorTest, InitializeVideoDecoder_DuringDecryptAndDecode) {
+  SetWriterCapacity(20);
+  Initialize();
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(*this, VideoDecoded(Decryptor::kError, IsNull()))
+      .WillOnce(testing::InvokeWithoutArgs(&run_loop, &base::RunLoop::Quit));
+
+  auto buffer = DecoderBuffer::CopyFrom(std::vector<uint8_t>(100, 0));
+  mojo_decryptor_->DecryptAndDecodeVideo(
+      std::move(buffer), base::BindRepeating(&MojoDecryptorTest::VideoDecoded,
+                                             base::Unretained(this)));
+
+  EXPECT_CALL(*decryptor_, InitializeVideoDecoder(_, _))
+      .WillOnce([](const VideoDecoderConfig& config,
+                   Decryptor::DecoderInitCB cb) { std::move(cb).Run(true); });
+  mojo_decryptor_->InitializeVideoDecoder(TestVideoConfig::Normal(),
+                                          base::DoNothing());
+  run_loop.Run();
 }
 
 }  // namespace media

@@ -8,25 +8,20 @@
 #include <memory>
 
 #include "ash/constants/ash_features.h"
-#include "chrome/browser/ui/webui/ash/office_fallback/office_fallback.mojom-shared.h"
+#include "ash/constants/webui_url_constants.h"
 #include "chrome/browser/ui/webui/ash/office_fallback/office_fallback.mojom.h"
 #include "chrome/browser/ui/webui/ash/office_fallback/office_fallback_page_handler.h"
-#include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/webui_config.h"
+#include "content/public/common/url_constants.h"
 #include "ui/web_dialogs/web_dialog_ui.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
-
-namespace ui {
-class ColorChangeHandler;
-}
 
 namespace ash::office_fallback {
 
 // The string conversions of ash::office_fallback::mojom::DialogChoice.
-const char kDialogChoiceCancel[] = "cancel";
-const char kDialogChoiceOk[] = "ok";
-const char kDialogChoiceQuickOffice[] = "quick-office";
-const char kDialogChoiceTryAgain[] = "try-again";
+inline constexpr char kDialogChoiceCancel[] = "cancel";
+inline constexpr char kDialogChoiceOk[] = "ok";
+inline constexpr char kDialogChoiceQuickOffice[] = "quick-office";
+inline constexpr char kDialogChoiceTryAgain[] = "try-again";
 
 class OfficeFallbackUI;
 
@@ -36,7 +31,7 @@ class OfficeFallbackUIConfig
  public:
   OfficeFallbackUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
-                           chrome::kChromeUIOfficeFallbackHost) {}
+                           ash::kChromeUIOfficeFallbackHost) {}
 
   bool IsWebUIEnabled(content::BrowserContext* browser_context) override;
 };
@@ -57,10 +52,6 @@ class OfficeFallbackUI : public ui::MojoWebDialogUI,
   void BindInterface(
       mojo::PendingReceiver<mojom::PageHandlerFactory> pending_receiver);
 
-  void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          receiver);
-
   // mojom::PageHandlerFactory:
   void CreatePageHandler(
       mojo::PendingReceiver<mojom::PageHandler> pending_page_handler) override;
@@ -70,7 +61,6 @@ class OfficeFallbackUI : public ui::MojoWebDialogUI,
 
   std::unique_ptr<OfficeFallbackPageHandler> page_handler_;
   mojo::Receiver<mojom::PageHandlerFactory> factory_receiver_{this};
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
 
   WEB_UI_CONTROLLER_TYPE_DECL();
 };

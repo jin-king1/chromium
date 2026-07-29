@@ -28,14 +28,19 @@ export class ExtensionControlledIndicatorElement extends PolymerElement {
       extensionCanBeDisabled: Boolean,
       extensionId: String,
       extensionName: String,
+      extensionNameOnlyInLabel: Boolean,
     };
   }
 
-  extensionCanBeDisabled: boolean;
-  extensionId: string;
-  extensionName: string;
+  declare extensionCanBeDisabled: boolean;
+  declare extensionId: string;
+  declare extensionName: string;
+  declare extensionNameOnlyInLabel?: boolean;
 
   private getLabel_(): string {
+    if (this.extensionNameOnlyInLabel === true) {
+      return this.extensionName;
+    }
     return loadTimeData.getStringF('controlledByExtension', this.extensionName);
   }
 
@@ -48,8 +53,8 @@ export class ExtensionControlledIndicatorElement extends PolymerElement {
     assert(this.extensionCanBeDisabled);
     ExtensionControlBrowserProxyImpl.getInstance().disableExtension(
         this.extensionId);
-    this.dispatchEvent(
-        new CustomEvent('extension-disable', {bubbles: true, composed: true}));
+    this.dispatchEvent(new CustomEvent(
+        'disable-extension-click', {bubbles: true, composed: true}));
   }
 }
 

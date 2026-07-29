@@ -2,31 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_utils.h"
 
 #include <string>
 #include <vector>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/feature_list.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/login/quick_unlock/pin_backend.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/osauth/public/auth_policy_utils.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
@@ -86,7 +81,7 @@ constexpr int kDefaultMinimumPinLength = 6;
 bool HasPolicyValue(const PrefService* pref_service,
                     Purpose purpose,
                     const char* value) {
-  const base::Value::List* factors = nullptr;
+  const base::ListValue* factors = nullptr;
   switch (purpose) {
     case Purpose::kUnlock:
       factors = &pref_service->GetList(prefs::kQuickUnlockModeAllowlist);
@@ -97,7 +92,7 @@ bool HasPolicyValue(const PrefService* pref_service,
     default:
       return false;
   }
-  return base::Contains(*factors, base::Value(value));
+  return factors->contains(value);
 }
 
 // Check if fingerprint is disabled for a specific purpose (so not including
@@ -118,7 +113,10 @@ bool IsPinDisabledByPolicySinglePurpose(const PrefService* pref_service,
   DCHECK(purpose != Purpose::kAny);
   const bool enabled =
       HasPolicyValue(pref_service, purpose, kFactorsOptionAll) ||
-      HasPolicyValue(pref_service, purpose, kFactorsOptionPin);
+      HasPolicyValue(pref_service, purpose, kFactorsOptionPin) ||
+      (features::IsManagedLocalPinAndPasswordEnabled() &&
+       purpose == Purpose::kUnlock &&
+       IsPinEnabledAsMainFactorByPolicy(pref_service));
   return !enabled;
 }
 
@@ -129,9 +127,12 @@ TestApi::TestApi(bool override_quick_unlock)
   old_instance_ = g_instance;
   g_instance = this;
   std::fill(pin_purposes_enabled_by_policy_,
-            pin_purposes_enabled_by_policy_ + kNumOfPurposes, false);
-  std::fill(fingerprint_purposes_enabled_by_policy_,
-            fingerprint_purposes_enabled_by_policy_ + kNumOfPurposes, false);
+            UNSAFE_TODO(pin_purposes_enabled_by_policy_ + kNumOfPurposes),
+            false);
+  std::fill(
+      fingerprint_purposes_enabled_by_policy_,
+      UNSAFE_TODO(fingerprint_purposes_enabled_by_policy_ + kNumOfPurposes),
+      false);
 }
 
 TestApi::~TestApi() {
@@ -151,7 +152,8 @@ void TestApi::EnablePinByPolicy(Purpose purpose) {
   if (purpose != Purpose::kAny) {
     pin_purposes_enabled_by_policy_[static_cast<int>(Purpose::kAny)] = true;
   }
-  pin_purposes_enabled_by_policy_[static_cast<int>(purpose)] = true;
+  UNSAFE_TODO(pin_purposes_enabled_by_policy_[static_cast<int>(purpose)]) =
+      true;
 }
 
 void TestApi::EnableFingerprintByPolicy(Purpose purpose) {
@@ -159,15 +161,19 @@ void TestApi::EnableFingerprintByPolicy(Purpose purpose) {
     fingerprint_purposes_enabled_by_policy_[static_cast<int>(Purpose::kAny)] =
         true;
   }
-  fingerprint_purposes_enabled_by_policy_[static_cast<int>(purpose)] = true;
+  UNSAFE_TODO(
+      fingerprint_purposes_enabled_by_policy_[static_cast<int>(purpose)]) =
+      true;
 }
 
 bool TestApi::IsPinEnabledByPolicy(Purpose purpose) {
-  return pin_purposes_enabled_by_policy_[static_cast<int>(purpose)];
+  return UNSAFE_TODO(
+      pin_purposes_enabled_by_policy_[static_cast<int>(purpose)]);
 }
 
 bool TestApi::IsFingerprintEnabledByPolicy(Purpose purpose) {
-  return fingerprint_purposes_enabled_by_policy_[static_cast<int>(purpose)];
+  return UNSAFE_TODO(
+      fingerprint_purposes_enabled_by_policy_[static_cast<int>(purpose)]);
 }
 
 bool IsFingerprintDisabledByPolicy(const PrefService* pref_service,
@@ -202,9 +208,9 @@ base::TimeDelta PasswordConfirmationFrequencyToTimeDelta(
 }
 
 void RegisterProfilePrefs(PrefRegistrySimple* registry) {
-  base::Value::List quick_unlock_modes_default;
+  base::ListValue quick_unlock_modes_default;
   quick_unlock_modes_default.Append(kFactorsOptionAll);
-  base::Value::List webauthn_factors_default;
+  base::ListValue webauthn_factors_default;
   webauthn_factors_default.Append(kFactorsOptionAll);
   registry->RegisterListPref(prefs::kQuickUnlockModeAllowlist,
                              std::move(quick_unlock_modes_default));
@@ -221,7 +227,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(prefs::kPinUnlockMaximumLength, 0);
   registry->RegisterBooleanPref(prefs::kPinUnlockWeakPinsAllowed, true);
 
-  registry->RegisterBooleanPref(::prefs::kPinUnlockAutosubmitEnabled, true);
+  registry->RegisterBooleanPref(ash::prefs::kPinUnlockAutosubmitEnabled, true);
 }
 
 bool IsPinDisabledByPolicy(PrefService* pref_service, Purpose purpose) {

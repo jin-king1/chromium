@@ -8,28 +8,51 @@
 #import <UIKit/UIKit.h>
 
 #import "base/ios/block_types.h"
+#import "ios/chrome/browser/authentication/ui_bundled/change_profile_continuation_provider.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 
 @class AuthenticationFlow;
+class AuthenticationService;
 @class InstantSigninMediator;
-enum class SigninCoordinatorInterrupt;
+
+namespace signin {
+class IdentityManager;
+}  // namespace signin
 
 namespace signin_metrics {
 enum class AccessPoint;
 }  // namespace signin_metrics
 
+namespace signin_ui {
+enum class CancelationReason;
+}  // namespace signin_ui
+
 @protocol InstantSigninMediatorDelegate <NSObject>
 
 // Called when the sign-in is over.
+// Causes the coordinator to be stopped synchronously.
 - (void)instantSigninMediator:(InstantSigninMediator*)mediator
-          didSigninWithResult:(SigninCoordinatorResult)result;
+    didSigninWithCancelationResult:
+        (signin_ui::CancelationReason)cancelationResult;
+
+// Called when the sign-in will be done in another profile.
+- (void)instantSigninMediatorWillSwitchProfile:(InstantSigninMediator*)mediator;
+
+// Called when sign-in is not available anymore.
+- (void)instantSigninMediatorSigninIsImpossible:
+    (InstantSigninMediator*)mediator;
 
 @end
 
 @interface InstantSigninMediator : NSObject
 
 - (instancetype)init NS_UNAVAILABLE;
-- (instancetype)initWithAccessPoint:(signin_metrics::AccessPoint)accessPoint
+- (instancetype)
+      initWithAccessPoint:(signin_metrics::AccessPoint)accessPoint
+    authenticationService:(AuthenticationService*)authenticationService
+          identityManager:(signin::IdentityManager*)identityManager
+     continuationProvider:
+         (const ChangeProfileContinuationProvider&)continuationProvider
     NS_DESIGNATED_INITIALIZER;
 
 @property(nonatomic, weak) id<InstantSigninMediatorDelegate> delegate;
@@ -38,13 +61,8 @@ enum class AccessPoint;
 - (void)startSignInOnlyFlowWithAuthenticationFlow:
     (AuthenticationFlow*)authenticationFlow;
 
-// Disconnect the mediator.
+// Stops the sign-in flow. Disconnect the mediator.
 - (void)disconnect;
-
-// Stops the sign-in flow. This method can only be called once, and only after
-// `startSignInOnlyFlowWithAuthenticationFlow:` has ben called. `completion` is
-// run synchronously.
-- (void)interrupt;
 
 @end
 

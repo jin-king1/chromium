@@ -5,13 +5,16 @@
 #include "chrome/browser/ui/views/passwords/password_add_username_view.h"
 
 #include "base/functional/callback.h"
+#include "base/strings/string_util.h"
 #include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/passwords/views_utils.h"
+#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/grit/theme_resources.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
 #include "ui/views/controls/editable_combobox/editable_combobox.h"
@@ -51,10 +54,16 @@ std::unique_ptr<views::View> CreatePasswordLabelWithEyeIconView(
   eye_icon->SetToggledTooltipText(
       l10n_util::GetStringUTF16(IDS_MANAGE_PASSWORDS_HIDE_PASSWORD));
   eye_icon->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
-  views::SetImageFromVectorIconWithColorId(eye_icon, views::kEyeIcon,
-                                           ui::kColorIcon, ui::kColorIcon);
-  views::SetToggledImageFromVectorIconWithColorId(
-      eye_icon, views::kEyeCrossedIcon, ui::kColorIcon, ui::kColorIcon);
+  views::SetImageFromVectorIconWithColor(eye_icon,
+                                         features::IsRoundedIconsEnabled()
+                                             ? views::kVisibilityFilledIcon
+                                             : views::kEyeOldIcon,
+                                         {ui::kColorIcon, ui::kColorIcon});
+  views::SetToggledImageFromVectorIconWithColor(
+      eye_icon,
+      features::IsRoundedIconsEnabled() ? views::kVisibilityOffFilledIcon
+                                        : views::kEyeCrossedOldIcon,
+      {ui::kColorIcon, ui::kColorIcon});
   eye_icon->SetCallback(base::BindRepeating(
       [](views::ToggleImageButton* toggle_button,
          views::Label* password_label) {
@@ -84,7 +93,7 @@ void AddEmptyBorder(views::View* password_field) {
 
 PasswordAddUsernameView::PasswordAddUsernameView(
     content::WebContents* web_contents,
-    views::View* anchor_view,
+    views::BubbleAnchor anchor_view,
     DisplayReason reason)
     : PasswordBubbleViewBase(web_contents, anchor_view, true),
       controller_(PasswordsModelDelegateFromWebContents(web_contents),
@@ -106,7 +115,7 @@ PasswordAddUsernameView::PasswordAddUsernameView(
       .SetDefault(
           views::kMarginsKey,
           gfx::Insets::VH(ChromeLayoutProvider::Get()->GetDistanceMetric(
-                              DISTANCE_CONTROL_LIST_VERTICAL),
+                              views::DISTANCE_CONTROL_LIST_VERTICAL),
                           0));
 
   std::unique_ptr<views::Label> body_text = CreateBodyText(margins().width());
@@ -173,7 +182,7 @@ ui::ImageModel PasswordAddUsernameView::GetWindowIcon() {
 }
 
 void PasswordAddUsernameView::AddedToWidget() {
-  SetBubbleHeader(IDR_SAVE_PASSWORD, IDR_SAVE_PASSWORD_DARK);
+  SetBubbleHeaderLottie(IDR_AUTOFILL_SAVE_PASSWORD_LOTTIE);
 }
 
 void PasswordAddUsernameView::UpdateUsernameInModel() {

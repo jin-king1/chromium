@@ -2,24 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {I18nMixin} from '//resources/cr_elements/i18n_mixin.js';
+import {skColorToRgba} from '//resources/js/color_utils.js';
+import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-import {BrowserProxyImpl} from './browser_proxy.js';
-import type {BrowserProxy} from './browser_proxy.js';
-import {getFallbackTheme, getShaderLayerColorHexes} from './color_utils.js';
+import {getShaderLayerColorHexes, GLIF_HEX_COLORS} from './color_utils.js';
 import {CenterRotatedBox_CoordinateType} from './geometry.mojom-webui.js';
 import type {CenterRotatedBox} from './geometry.mojom-webui.js';
-import type {OverlayTheme} from './lens.mojom-webui.js';
-import {UserAction} from './lens.mojom-webui.js';
-import {INVOCATION_SOURCE} from './lens_overlay_app.js';
-import {recordLensOverlayInteraction} from './metrics_utils.js';
 import type {PostSelectionBoundingBox} from './post_selection_renderer.js';
 import {getTemplate} from './region_selection.html.js';
 import {ScreenshotBitmapBrowserProxyImpl} from './screenshot_bitmap_browser_proxy.js';
 import {renderScreenshot} from './screenshot_utils.js';
-import {focusShimmerOnRegion, type GestureEvent, GestureState, getRelativeCoordinate, ShimmerControlRequester, unfocusShimmer} from './selection_utils.js';
-import type {Point} from './selection_utils.js';
+import {RegionSource, SelectionOverlayBaseHandler} from './selection_overlay_base_handler.js';
+import {calculateBoundingBox, calculateCenterRotatedBox, focusShimmerOnRegion, GestureState, getRelativeCoordinate, normalizePoints, ShimmerControlRequester, unfocusShimmer} from './selection_utils.js';
+import type {GestureEvent, Point} from './selection_utils.js';
 
 // A simple interface representing a rectangle with normalized values.
 interface NormalizedRectangle {
@@ -30,18 +28,43 @@ interface NormalizedRectangle {
   height: number;
 }
 
+function fullscreenNormalizedCenterRotatedBox(): CenterRotatedBox {
+  return {
+    box: {
+      x: 0.5,
+      y: 0.5,
+      width: 1,
+      height: 1,
+    },
+    rotation: 0,
+    coordinateType: CenterRotatedBox_CoordinateType.kNormalized,
+  };
+}
+
+function fullscreenPostSelectionRegion(): PostSelectionBoundingBox {
+  return {
+    top: 0,
+    left: 0,
+    width: 1,
+    height: 1,
+  };
+}
+
 export interface RegionSelectionElement {
   $: {
     highlightImgCanvas: HTMLCanvasElement,
+    keyboardSelection: HTMLDivElement,
     regionSelectionCanvas: HTMLCanvasElement,
   };
 }
+
+const RegionSelectionElementBase = I18nMixin(PolymerElement);
 
 /*
  * Element responsible for rendering the region being selected by the user. It
  * does not render any post-selection state.
  */
-export class RegionSelectionElement extends PolymerElement {
+export class RegionSelectionElement extends RegionSelectionElementBase {
   static get is() {
     return 'region-selection';
   }
@@ -52,50 +75,138 @@ export class RegionSelectionElement extends PolymerElement {
 
   static get properties() {
     return {
+      borderGlowEnabled: {
+        reflectToAttribute: true,
+        type: Boolean,
+        value: false,
+      },
       canvasHeight: Number,
       canvasWidth: Number,
       canvasPhysicalHeight: Number,
       canvasPhysicalWidth: Number,
+      displayKeyboardSelection: {
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('enableKeyboardSelection'),
+        reflectToAttribute: true,
+      },
+      hasSelected: {
+        reflectToAttribute: true,
+        type: Boolean,
+        value: false,
+      },
+      isSelecting: {
+        reflectToAttribute: true,
+        type: Boolean,
+        value: false,
+      },
+      multiRegionSelectionEnabled: {
+        reflectToAttribute: true,
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('enableMultiRegionSelection'),
+      },
+      lineSelectionEnabled: {
+        reflectToAttribute: true,
+        type: Boolean,
+        value: () => loadTimeData.getBoolean('lineSelection'),
+      },
       screenshotDataUri: String,
       shaderLayerColorHexes: {
         type: Array,
-        computed: 'computeShaderLayerColorHexes_(theme)',
-      },
-      theme: {
-        type: Object,
-        value: getFallbackTheme,
+        computed: 'computeShaderLayerColorHexes_()',
       },
       selectionOverlayRect: Object,
+      regionStrokeColor1: {
+        type: String,
+        value: GLIF_HEX_COLORS.blue,
+      },
+      regionStrokeColor2: {
+        type: String,
+        value: GLIF_HEX_COLORS.blue,
+      },
+      regionStrokeColor3: {
+        type: String,
+        value: GLIF_HEX_COLORS.red,
+      },
+      regionStrokeColor4: {
+        type: String,
+        value: GLIF_HEX_COLORS.yellow,
+      },
+      regionStrokeColor5: {
+        type: String,
+        value: GLIF_HEX_COLORS.green,
+      },
     };
   }
 
-  private canvasHeight: number;
-  private canvasWidth: number;
-  private canvasPhysicalHeight: number;
-  private canvasPhysicalWidth: number;
+  private eventTracker_: EventTracker = new EventTracker();
+  // Whether the border glow is enabled. This is a replacement for the shimmer.
+  declare private borderGlowEnabled: boolean;
+  declare private canvasHeight: number;
+  declare private canvasWidth: number;
+  declare private canvasPhysicalHeight: number;
+  declare private canvasPhysicalWidth: number;
+  // Whether the user has selected a region.
+  declare private hasSelected: boolean;
+  // Whether the user is currently selecting a region.
+  declare private isSelecting: boolean;
   private context: CanvasRenderingContext2D;
   // The data URI of the current overlay screenshot.
-  private screenshotDataUri: string;
-  // The overlay theme.
-  private theme: OverlayTheme;
+  declare private screenshotDataUri: string;
+  // Shader hex colors.
+  declare private shaderLayerColorHexes: string[];
   // The bounds of the parent element. This is updated by the parent to avoid
   // this class needing to call getBoundingClientRect()
-  private selectionOverlayRect: DOMRect;
-  // Shader hex colors.
-  private shaderLayerColorHexes: string[];
-  private browserProxy: BrowserProxy = BrowserProxyImpl.getInstance();
+  declare private selectionOverlayRect: DOMRect;
+  // Whether keyboard selection should be displayed.
+  declare private displayKeyboardSelection: boolean;
+  // Whether multi-region selection is enabled.
+  declare private multiRegionSelectionEnabled: boolean;
+  // Whether line selection is enabled.
+  declare lineSelectionEnabled: boolean;
 
+  // The colors used for the gradient stroke of the region selection.
+  declare private regionStrokeColor1: string;
+  declare private regionStrokeColor2: string;
+  declare private regionStrokeColor3: string;
+  declare private regionStrokeColor4: string;
+  declare private regionStrokeColor5: string;
+
+  private baseHandler: SelectionOverlayBaseHandler =
+      SelectionOverlayBaseHandler.getInstance();
+
+  private readonly gradientRegionStrokeEnabled: boolean =
+      loadTimeData.getBoolean('enableGradientRegionStroke');
+  private readonly whiteRegionStrokeEnabled: boolean =
+      loadTimeData.getBoolean('enableWhiteRegionStroke');
+  private lineSelectionStrokeWidth: number = 0;
+  private lineSelectionColor1: string = '';
+  private lineSelectionColor2: string = '';
+  private lineSelectionColor3: string = '';
   // The tap region dimensions are the height and width that the region should
   // have when the user taps instead of drag.
   private readonly tapRegionHeight: number =
       loadTimeData.getInteger('tapRegionHeight');
   private readonly tapRegionWidth: number =
       loadTimeData.getInteger('tapRegionWidth');
+  private readonly enableKeyboardSelection: boolean =
+      loadTimeData.getBoolean('enableKeyboardSelection');
+  private currentPolylinePoints: Point[] = [];
 
   override ready() {
     super.ready();
 
     this.context = this.$.regionSelectionCanvas.getContext('2d')!;
+
+    if (this.lineSelectionEnabled) {
+      this.lineSelectionStrokeWidth =
+          loadTimeData.getInteger('lineSelectionStrokeWidth');
+      this.lineSelectionColor1 = skColorToRgba(
+          {value: loadTimeData.getInteger('colorLineSelectionGradient1')});
+      this.lineSelectionColor2 = skColorToRgba(
+          {value: loadTimeData.getInteger('colorLineSelectionGradient2')});
+      this.lineSelectionColor3 = skColorToRgba(
+          {value: loadTimeData.getInteger('colorLineSelectionGradient3')});
+    }
   }
 
   override connectedCallback() {
@@ -105,24 +216,172 @@ export class RegionSelectionElement extends PolymerElement {
         (screenshot: ImageBitmap) => {
           renderScreenshot(this.$.highlightImgCanvas, screenshot);
         });
+    ScreenshotBitmapBrowserProxyImpl.getInstance().addOnOverlayReshownListener(
+        (screenshot: ImageBitmap) => {
+          renderScreenshot(this.$.highlightImgCanvas, screenshot);
+        });
+    if (this.enableKeyboardSelection) {
+      this.eventTracker_.add(
+          document, 'post-selection-updated', (e: CustomEvent) => {
+            this.displayKeyboardSelection =
+                e.detail.height === 0 && e.detail.width === 0;
+          });
+    }
+    if (loadTimeData.getBoolean('lineSelection')) {
+      this.eventTracker_.add(
+          document, 'keydown', (e: KeyboardEvent) => {
+            let activeElement = document.activeElement;
+            while (activeElement) {
+              const tagName = activeElement.tagName;
+              if (tagName === 'INPUT' ||
+                  tagName === 'TEXTAREA' ||
+                  tagName === 'IFRAME' ||
+                  (activeElement as HTMLElement).isContentEditable) {
+                return;
+              }
+              if (activeElement.shadowRoot &&
+                  activeElement.shadowRoot.activeElement) {
+                activeElement = activeElement.shadowRoot.activeElement;
+              } else {
+                break;
+              }
+            }
+            if (e.key === 'z' || e.key === 'Z') {
+              this.lineSelectionEnabled = !this.lineSelectionEnabled;
+            }
+          });
+    }
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this.eventTracker_.removeAll();
   }
 
   private computeShaderLayerColorHexes_() {
-    return getShaderLayerColorHexes(this.theme);
+    return getShaderLayerColorHexes();
+  }
+
+  handleGestureStart() {
+    this.isSelecting = true;
+    if (!this.lineSelectionEnabled) {
+      this.hasSelected = false;
+    }
+    this.currentPolylinePoints = [];
   }
 
   // Handles a drag gesture by drawing a bounded box on the canvas.
   handleGestureDrag(event: GestureEvent) {
     this.clearCanvas();
-    this.renderBoundingBox(event);
+    if (this.lineSelectionEnabled) {
+      this.currentPolylinePoints.push({x: event.clientX, y: event.clientY});
+      this.renderPolyline();
+    } else {
+      this.renderBoundingBox(event);
+    }
   }
 
   handleGestureEnd(event: GestureEvent): boolean {
-    // Issue the Lens request.
     const isClick = event.state === GestureState.STARTING;
-    this.browserProxy.handler.issueLensRegionRequest(
-        this.getNormalizedCenterRotatedBoxFromGesture(event), isClick);
 
+    if (this.lineSelectionEnabled) {
+      if (!isClick && this.currentPolylinePoints.length > 2) {
+        const normalizedPoints = normalizePoints(
+            this.currentPolylinePoints, this.selectionOverlayRect);
+        const bounds = calculateBoundingBox(normalizedPoints);
+        const box: CenterRotatedBox = {
+          ...calculateCenterRotatedBox(normalizedPoints),
+          coordinateType: CenterRotatedBox_CoordinateType.kNormalized,
+        };
+
+        const region = {
+          ...bounds,
+          polyline: normalizedPoints,
+        } as PostSelectionBoundingBox;
+
+        this.baseHandler.adjustPolylineSelected(
+            normalizedPoints, RegionSource.SELECTION);
+
+        this.completeSelection(box, region);
+        return true;
+      }
+
+      this.cancelGesture();
+      return true;
+    }
+
+    const box = this.getNormalizedCenterRotatedBoxFromGesture(event);
+    const region = this.getPostSelectionRegion(event);
+    const interaction = isClick ? RegionSource.CLICK : RegionSource.SELECTION;
+    this.issueRequest(box, region, interaction);
+    return true;
+  }
+
+  private renderPolyline() {
+    if (this.currentPolylinePoints.length < 2 || !this.selectionOverlayRect) {
+      return;
+    }
+
+    const parentRect = this.selectionOverlayRect;
+    let minX = Infinity;
+    let maxX = -Infinity;
+
+    this.context.beginPath();
+    const firstPoint =
+        getRelativeCoordinate(this.currentPolylinePoints[0], parentRect);
+    this.context.moveTo(firstPoint.x, firstPoint.y);
+    minX = Math.min(minX, firstPoint.x);
+    maxX = Math.max(maxX, firstPoint.x);
+
+    for (let i = 1; i < this.currentPolylinePoints.length; i++) {
+      const point =
+          getRelativeCoordinate(this.currentPolylinePoints[i], parentRect);
+      this.context.lineTo(point.x, point.y);
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+    }
+
+    if (this.lineSelectionStrokeWidth > 0) {
+      this.context.lineWidth = this.lineSelectionStrokeWidth;
+      this.context.lineCap = 'round';
+      this.context.lineJoin = 'round';
+
+      const gradient = this.context.createLinearGradient(
+          minX, 0, Math.max(minX + 1, maxX), 0);
+      gradient.addColorStop(0, this.lineSelectionColor1);
+      gradient.addColorStop(0.5, this.lineSelectionColor2);
+      gradient.addColorStop(1, this.lineSelectionColor3);
+
+      this.context.save();
+      this.context.globalAlpha = 0.5;
+      this.context.strokeStyle = gradient;
+      this.context.stroke();
+      this.context.restore();
+    }
+  }
+
+  private onKeyboardSelection(event: Event): boolean {
+    if (event instanceof KeyboardEvent &&
+        !(event.key === 'Enter' || event.key === ' ')) {
+      return false;
+    }
+
+    this.issueRequest(
+        fullscreenNormalizedCenterRotatedBox(), fullscreenPostSelectionRegion(),
+        RegionSource.KEYBOARD);
+    return true;
+  }
+
+  private issueRequest(
+      box: CenterRotatedBox, region: PostSelectionBoundingBox,
+      source: RegionSource) {
+    // Issue the Lens request.
+    this.baseHandler.adjustRegionSelected(box.box, source);
+    this.completeSelection(box, region);
+  }
+
+  private completeSelection(
+      box: CenterRotatedBox, region: PostSelectionBoundingBox) {
     // Relinquish control from the shimmer.
     unfocusShimmer(this, ShimmerControlRequester.MANUAL_REGION);
 
@@ -130,22 +389,42 @@ export class RegionSelectionElement extends PolymerElement {
     this.dispatchEvent(new CustomEvent('render-post-selection', {
       bubbles: true,
       composed: true,
-      detail: this.getPostSelectionRegion(event),
+      detail: region,
     }));
 
     // Check for selectable text
     this.dispatchEvent(new CustomEvent('detect-text-in-region', {
       bubbles: true,
       composed: true,
-      detail: this.getNormalizedCenterRotatedBoxFromGesture(event),
+      detail: box,
     }));
 
     this.clearCanvas();
-    return true;
+
+    this.hasSelected = true;
+    this.isSelecting = false;
+  }
+
+  // Fade out scrim after drag to resize selection in post selection renderer
+  // TODO(crbug.com/420998632): Move scrim out to a central component so that
+  // post selection drag handling is not dependent on the region selection scrim
+  handlePostSelectionDragGestureEnd(): void {
+    this.hasSelected = true;
+    this.isSelecting = false;
+  }
+
+  handlePostSelectionCleared(): void {
+    this.hasSelected = false;
+    this.isSelecting = false;
   }
 
   cancelGesture() {
     this.clearCanvas();
+
+    this.isSelecting = false;
+    if (!this.lineSelectionEnabled) {
+      this.hasSelected = false;
+    }
   }
 
   setCanvasSizeTo(width: number, height: number) {
@@ -163,6 +442,10 @@ export class RegionSelectionElement extends PolymerElement {
   }
 
   private renderBoundingBox(event: GestureEvent, idealCornerRadius = 24) {
+    if (!this.selectionOverlayRect) {
+      return;
+    }
+
     const parentRect = this.selectionOverlayRect;
 
     // Get the drag event coordinates relative to the canvas
@@ -180,24 +463,57 @@ export class RegionSelectionElement extends PolymerElement {
     const top = Math.min(relativeDragStart.y, relativeDragEnd.y);
     const right = Math.max(relativeDragStart.x, relativeDragEnd.x);
     const bottom = Math.max(relativeDragStart.y, relativeDragEnd.y);
+    const centerX = (left + right) / 2;
+    const centerY = (top + bottom) / 2;
 
     // Get the vertical and horizontal directions of the drag.
     const isDraggingDown = relativeDragEnd.y > relativeDragStart.y;
     const isDraggingRight = relativeDragEnd.x > relativeDragStart.x;
 
-    this.context.lineWidth = 3;
-    const gradient = this.context.createLinearGradient(
-        left,
-        bottom,
-        right,
-        top,
-    );
-    gradient.addColorStop(0, this.shaderLayerColorHexes[0]);
-    gradient.addColorStop(0.5, this.shaderLayerColorHexes[1]);
-    gradient.addColorStop(1, this.shaderLayerColorHexes[2]);
+    let gradient;
+    if (this.gradientRegionStrokeEnabled) {
+      // Use AIM style GLIF color gradient.
+      gradient = this.context.createConicGradient(0, centerX, centerY);
+      gradient.addColorStop(0, this.regionStrokeColor1);
+      gradient.addColorStop(0.45, this.regionStrokeColor2);
+      gradient.addColorStop(0.6, this.regionStrokeColor3);
+      gradient.addColorStop(0.76, this.regionStrokeColor4);
+      gradient.addColorStop(0.92, this.regionStrokeColor5);
+    } else if (this.whiteRegionStrokeEnabled) {
+      // Use white gradient.
+      gradient = this.context.createLinearGradient(
+          left,
+          bottom,
+          right,
+          top,
+      );
+      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+      gradient.addColorStop(0.92, 'rgba(255, 255, 255, 0.5)');
+    } else {
+      // Use selection color gradient.
+      gradient = this.context.createLinearGradient(
+          left,
+          bottom,
+          right,
+          top,
+      );
+      if (this.shaderLayerColorHexes &&
+          this.shaderLayerColorHexes.length >= 3) {
+        gradient.addColorStop(0, this.shaderLayerColorHexes[0]);
+        gradient.addColorStop(0.5, this.shaderLayerColorHexes[1]);
+        gradient.addColorStop(1, this.shaderLayerColorHexes[2]);
+      } else {
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+        gradient.addColorStop(1, 'rgba(255, 255, 255, 1)');
+      }
+    }
+
+    const strokeWidth = 3;
+    this.context.lineWidth = strokeWidth;
     this.context.strokeStyle = gradient;
 
-    // Draw the path for the region bounding box.
+    // Step 1: Define the path for the main clipping region (the 'hole' in the
+    // scrim)
     this.context.beginPath();
     // The corner corresponding to the user's cursor should have 0 radius.
     const radii = [
@@ -208,15 +524,43 @@ export class RegionSelectionElement extends PolymerElement {
     ];
     this.context.roundRect(left, top, width, height, radii);
 
-    // Draw the highlight image clipped to the path.
+    // Step 2: Save the context and apply the clip. This clip ensures
+    // the image and stroke are only drawn within this bounded region.
     this.context.save();
     this.context.clip();
+
+    // Step 3: Draw the highlight image. It will be clipped to the path.
     this.context.drawImage(
         this.$.highlightImgCanvas, 0, 0, this.canvasWidth, this.canvasHeight);
-    this.context.restore();
 
-    // Stroke the path on top of the image.
-    this.context.stroke();
+    // Step 4: Draw the stroke
+    if (this.gradientRegionStrokeEnabled) {
+      // Draw the stroke *inside* the clipped region.
+      // To achieve this, we create a new path slightly inset from the clip
+      // boundary.
+      this.context.beginPath();
+      const inset = strokeWidth / 2;
+
+      const strokeRectLeft = left + inset;
+      const strokeRectTop = top + inset;
+      const strokeRectWidth = width - (inset * 2);
+      const strokeRectHeight = height - (inset * 2);
+
+      // Adjust radii for the stroke path to keep it visually consistent
+      const strokeRadii = radii.map(r => Math.max(0, r - inset));
+
+      this.context.roundRect(
+          strokeRectLeft, strokeRectTop, strokeRectWidth, strokeRectHeight,
+          strokeRadii);
+      // Stroke this new path. Since the clip is active,
+      // this stroke will be confined to the original clip region.
+      this.context.stroke();
+      this.context.restore();
+    } else {
+      this.context.restore();
+      // Stroke the path on top of the image.
+      this.context.stroke();
+    }
 
     // Focus the shimmer on the new manually selected region.
     focusShimmerOnRegion(
@@ -251,12 +595,20 @@ export class RegionSelectionElement extends PolymerElement {
 
   /**
    * @returns a mojo CenterRotatedBox corresponding to the gesture provided,
-   *          normalized to the selection overlay dimensions. The gesture is
-   *          expected to be a drag.
+   * normalized to the selection overlay dimensions. The gesture is
+   * expected to be a drag.
    */
   private getNormalizedCenterRotatedBoxFromDrag(gesture: GestureEvent):
       CenterRotatedBox {
     const parentRect = this.selectionOverlayRect;
+    if (parentRect.width <= 0 || parentRect.height <= 0) {
+      return {
+        box: {x: 0, y: 0, width: 0, height: 0},
+        rotation: 0,
+        coordinateType: CenterRotatedBox_CoordinateType.kNormalized,
+      };
+    }
+
     // Get coordinates relative to the region selection bounds
     const relativeDragStart = getRelativeCoordinate(
         {x: gesture.startX, y: gesture.startY}, parentRect);
@@ -285,15 +637,9 @@ export class RegionSelectionElement extends PolymerElement {
 
   private getPostSelectionRegion(gesture: GestureEvent):
       PostSelectionBoundingBox {
-    if (gesture.state === GestureState.STARTING) {
-      recordLensOverlayInteraction(
-          INVOCATION_SOURCE, UserAction.kTapRegionSelection);
-      return this.getPostSelectionRegionFromTap(gesture);
-    }
-
-    recordLensOverlayInteraction(
-        INVOCATION_SOURCE, UserAction.kRegionSelection);
-    return this.getPostSelectionRegionFromDrag(gesture);
+    return gesture.state === GestureState.STARTING ?
+        this.getPostSelectionRegionFromTap(gesture) :
+        this.getPostSelectionRegionFromDrag(gesture);
   }
 
   private getPostSelectionRegionFromTap(gesture: GestureEvent):
@@ -310,6 +656,14 @@ export class RegionSelectionElement extends PolymerElement {
   private getPostSelectionRegionFromDrag(gesture: GestureEvent):
       PostSelectionBoundingBox {
     const parentRect = this.selectionOverlayRect;
+    if (parentRect.width <= 0 || parentRect.height <= 0) {
+      return {
+        top: 0,
+        left: 0,
+        width: 0,
+        height: 0,
+      };
+    }
 
     // Get coordinates relative to the region selection bounds
     const relativeDragStart = getRelativeCoordinate(
@@ -337,6 +691,15 @@ export class RegionSelectionElement extends PolymerElement {
   private getNormalizedRectangleFromTap(gesture: GestureEvent):
       NormalizedRectangle {
     const parentRect = this.selectionOverlayRect;
+    if (parentRect.width <= 0 || parentRect.height <= 0) {
+      return {
+        top: 0,
+        left: 0,
+        center: {x: 0.5, y: 0.5},
+        width: 1,
+        height: 1,
+      };
+    }
     // The size of the canvas relative to the size of the viewport.
     const scaleFactor = Math.min(
         parentRect.height / window.innerHeight,
@@ -385,6 +748,10 @@ export class RegionSelectionElement extends PolymerElement {
       width: normalizedWidth,
       height: normalizedHeight,
     };
+  }
+
+  setSelectionOverlayRectForTesting(rect: DOMRect) {
+    this.selectionOverlayRect = rect;
   }
 }
 

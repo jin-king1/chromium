@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
-import {SourcesTestRunner} from 'sources_test_runner';
-
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import * as Workspace from 'devtools/models/workspace/workspace.js';
+import {SourcesTestRunner} from 'sources_test_runner';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(`Tests that script is replaced with the newer version when the names match.\n`);
@@ -32,7 +32,7 @@ import * as Workspace from 'devtools/models/workspace/workspace.js';
         'Added: ' + event.data.url().replace(/VM[\d]+/, 'VMXX') + ' to ' + event.data.project().type());
     if (event.data.project().type() !== 'network')
       return;
-    event.data.requestContent().then(function(it, content) {
+    event.data.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(function(it, content) {
       TestRunner.addResult('Content: ' + content.content);
       if (it)
         TestRunner.completeTest();

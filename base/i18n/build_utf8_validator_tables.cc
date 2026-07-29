@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 // Create a state machine for validating UTF-8. The algorithm in brief:
 // 1. Convert the complete unicode range of code points, except for the
 //    surrogate code points, to an ordered array of sequences of bytes in
@@ -38,14 +33,17 @@
 #include <string.h>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <string>
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
+#include "base/logging/logging_settings.h"
 #include "base/memory/raw_ptr.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -141,7 +139,7 @@ class TablePrinter {
 
   void PrintValue(uint8_t value) {
     if (values_on_this_line_ == 0) {
-      fputs("   ", stream_);
+      UNSAFE_TODO(fputs("   ", stream_));
     } else if (values_on_this_line_ == kMaxValuesPerLine) {
       fprintf(stream_.get(), "  // 0x%02x\n   ", current_offset_);
       values_on_this_line_ = 0;
@@ -153,7 +151,7 @@ class TablePrinter {
 
   void NewLine() {
     while (values_on_this_line_ < kMaxValuesPerLine) {
-      fputs("      ", stream_);
+      UNSAFE_TODO(fputs("      ", stream_));
       ++values_on_this_line_;
     }
     fprintf(stream_.get(), "  // 0x%02x\n", current_offset_);
@@ -183,14 +181,16 @@ PairVector InitializeCharacters() {
       // explicitly permitted.
       continue;
     }
-    uint8_t bytes[4];
+    std::array<uint8_t, 4> bytes;
     unsigned int offset = 0;
     UBool is_error = false;
     U8_APPEND(bytes, offset, std::size(bytes), i, is_error);
     DCHECK(!is_error);
     DCHECK_GT(offset, 0u);
     DCHECK_LE(offset, std::size(bytes));
-    Pair pair = {Character(bytes, bytes + offset), StringSet()};
+    Pair pair = {Character(bytes.data(),
+                           base::span<uint8_t>(bytes).subspan(offset).data()),
+                 StringSet()};
     vector.push_back(pair);
   }
   return vector;
@@ -324,7 +324,7 @@ uint8_t MakeState(const StringSet& set,
                        std::end(new_state_initializer));
   const uint8_t new_state_number =
       base::checked_cast<uint8_t>(states->size() - 1);
-  CHECK(state_map->insert(std::make_pair(set, new_state_number)).second);
+  CHECK(state_map->try_emplace(set, new_state_number).second);
   return new_state_number;
 }
 
@@ -332,7 +332,7 @@ std::vector<State> GenerateStates(const PairVector& pairs) {
   // States 0 and 1 are the initial/valid state and invalid state, respectively.
   std::vector<State> states(2, GenerateInvalidState());
   StateMap state_map;
-  state_map.insert(std::make_pair(StringSet(), 0));
+  state_map.try_emplace(StringSet(), 0);
   for (auto it = pairs.begin(); it != pairs.end(); ++it) {
     DCHECK(it->character.empty());
     DCHECK(!it->set.empty());
@@ -392,7 +392,7 @@ void PrintStates(const std::vector<State>& states, FILE* stream) {
 
   DCHECK_EQ(129, state_offset[1]);
 
-  fputs(kProlog, stream);
+  UNSAFE_TODO(fputs(kProlog, stream));
   TablePrinter table_printer(stream);
 
   for (uint8_t state_index = 0; state_index < states.size(); ++state_index) {
@@ -416,7 +416,7 @@ void PrintStates(const std::vector<State>& states, FILE* stream) {
     table_printer.NewLine();
   }
 
-  fputs(kEpilog, stream);
+  UNSAFE_TODO(fputs(kEpilog, stream));
 }
 
 }  // namespace
@@ -428,7 +428,7 @@ int main(int argc, char* argv[]) {
       logging::LOG_TO_SYSTEM_DEBUG_LOG | logging::LOG_TO_STDERR;
   logging::InitLogging(settings);
   if (base::CommandLine::ForCurrentProcess()->HasSwitch("help")) {
-    fwrite(kHelpText, 1, std::size(kHelpText), stdout);
+    UNSAFE_TODO(fwrite(kHelpText, 1, std::size(kHelpText), stdout));
     exit(EXIT_SUCCESS);
   }
   base::FilePath filename =

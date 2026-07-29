@@ -4,13 +4,12 @@
 
 #include <cstddef>
 
+#include "ash/test/ash_test_util.h"
 #include "ash/webui/shortcut_customization_ui/backend/accelerator_layout_table.h"
-#include "base/hash/md5.h"
-#include "base/hash/md5_boringssl.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
 #include "build/branding_buildflags.h"
-#include "chrome/browser/ui/views/accelerator_table.h"
+#include "chrome/browser/ui/accelerator_table.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace ash {
@@ -20,14 +19,16 @@ namespace {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 // Internal builds add two extra accelerator for the Feedback app.
 // The total number of Chrome accelerators (available on Chrome OS).
-constexpr int kChromeAcceleratorsTotalNum = 103;
+constexpr int kChromeAcceleratorsTotalNum = 106;
 // The hash of Chrome accelerators (available on Chrome OS).
-constexpr char kChromeAcceleratorsHash[] = "0b83abd23bca45738c58668d94337f48";
+constexpr char kChromeAcceleratorsHash[] =
+    "37f3d41a36bc43d4c562dcacc45caef29ab0dbec3e25352374c54cbacd8074b6";
 #else
 // The total number of Chrome accelerators (available on Chrome OS).
-constexpr int kChromeAcceleratorsTotalNum = 101;
+constexpr int kChromeAcceleratorsTotalNum = 104;
 // The hash of Chrome accelerators (available on Chrome OS).
-constexpr char kChromeAcceleratorsHash[] = "b294aad5a7b11a754d8c81940979e47c";
+constexpr char kChromeAcceleratorsHash[] =
+    "c8cd89b8191075d72ad52852b54d9c6d54bee7f280c7386a414f7e8bf749c733";
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
 const char kCommonMessage[] =
@@ -59,19 +60,6 @@ std::string ChromeAcceleratorMappingToString(
   return base::StringPrintf("keycode=%d command_id=%d ", accelerator.keycode,
                             accelerator.command_id) +
          ModifiersToString(accelerator.modifiers);
-}
-
-std::string HashChromeAcceleratorMapping(
-    const std::vector<AcceleratorMapping>& accelerators) {
-  base::MD5Context context;
-  base::MD5Init(&context);
-  for (const auto& accelerator : accelerators) {
-    base::MD5Update(&context, ChromeAcceleratorMappingToString(accelerator));
-  }
-
-  base::MD5Digest digest;
-  base::MD5Final(&digest, &context);
-  return MD5DigestToBase16(digest);
 }
 
 class ChromeAcceleratorMetadataTest : public testing::Test {
@@ -107,8 +95,8 @@ TEST_F(ChromeAcceleratorMetadataTest,
 
   std::stable_sort(chrome_accelerators.begin(), chrome_accelerators.end(),
                    ChromeAcceleratorMappingCmp());
-  const std::string chrome_accelerators_hash =
-      HashChromeAcceleratorMapping(chrome_accelerators);
+  const std::string chrome_accelerators_hash = ash::StableHashOfCollection(
+      chrome_accelerators, ChromeAcceleratorMappingToString);
   EXPECT_EQ(chrome_accelerators_hash, kChromeAcceleratorsHash)
       << kCommonMessage << "kChromeAcceleratorsHash=\""
       << chrome_accelerators_hash << "\"\n";

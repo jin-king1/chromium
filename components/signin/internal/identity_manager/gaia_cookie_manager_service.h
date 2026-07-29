@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +22,8 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/signin/internal/identity_manager/account_tracker_service.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service.h"
+#include "components/signin/public/base/bound_session_oauth_multilogin_delegate.h"
+#include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_client.h"
 #include "components/signin/public/identity_manager/accounts_cookie_mutator.h"
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
@@ -182,7 +185,7 @@ class GaiaCookieManagerService
 
     // Called back from SimpleURLLoader.
     void OnURLLoadComplete(const network::SimpleURLLoader* source,
-                           std::unique_ptr<std::string> body);
+                           std::optional<std::string> body);
 
     // Any fetches still ongoing after this call are considered timed out.
     void Timeout();
@@ -224,6 +227,9 @@ class GaiaCookieManagerService
   // ListAccounts fetch is sent GAIA and Observer::OnGaiaAccountsInCookieUpdated
   // will be called.
   signin::AccountsInCookieJarInfo ListAccounts();
+
+  // Returns the cached list of accounts.
+  signin::AccountsInCookieJarInfo GetCachedListAccounts();
 
   // Triggers a ListAccounts fetch. This is public so that callers that know
   // that a check which GAIA should be done can force it.
@@ -296,6 +302,9 @@ class GaiaCookieManagerService
   FRIEND_TEST_ALL_PREFIXES(GaiaCookieManagerServiceCookieTest, CookieChange);
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory();
 
+  // Calls ListAccounts() and ignores the result. Used for posting async tasks.
+  void TriggerListAccountsIfStale();
+
   // Calls the LogOutFromCookie completion callback.
   void SignalLogOutComplete(const GoogleServiceAuthError& error);
 
@@ -320,6 +329,13 @@ class GaiaCookieManagerService
       GaiaAuthConsumer* consumer,
       const gaia::GaiaSource& source) override;
   network::mojom::CookieManager* GetCookieManagerForPartition() override;
+  signin::PartitionSuffix GetPartitionSuffix() const override;
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  std::unique_ptr<signin::BoundSessionOAuthMultiLoginDelegate>
+  CreateBoundSessionOAuthMultiLoginDelegateForPartition() override;
+  network::mojom::DeviceBoundSessionManager*
+  GetDeviceBoundSessionManagerForPartition() override;
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
   // Helper method to initialize listed accounts ids.
   void InitializeListedAccountsIds();

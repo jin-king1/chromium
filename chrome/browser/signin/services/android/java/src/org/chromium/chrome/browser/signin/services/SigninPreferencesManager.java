@@ -27,6 +27,7 @@ public class SigninPreferencesManager {
     /** Suffix strings for promo shown count preference and histograms. */
     // LINT.IfChange(SigninPromoAccessPointId)
     @StringDef({
+        SigninPromoAccessPointId.AUTOFILL_AND_PASSWORDS,
         SigninPromoAccessPointId.BOOKMARKS,
         SigninPromoAccessPointId.HISTORY_PAGE,
         SigninPromoAccessPointId.NTP,
@@ -35,10 +36,11 @@ public class SigninPreferencesManager {
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface SigninPromoAccessPointId {
+        String AUTOFILL_AND_PASSWORDS = "AutofillAndPasswords";
         String BOOKMARKS = "Bookmarks";
         String HISTORY_PAGE = "HistoryPage";
         String NTP = "Ntp";
-        String RECENT_TABS = "RecentTabs"; // Only used for histograms
+        String RECENT_TABS = "RecentTabs";
         String SETTINGS = "Settings";
     }
 
@@ -68,6 +70,7 @@ public class SigninPreferencesManager {
     public void clearSigninPromoLastShownPrefsForTesting() {
         mManager.removeKey(ChromePreferenceKeys.SIGNIN_PROMO_LAST_SHOWN_MAJOR_VERSION);
         mManager.removeKey(ChromePreferenceKeys.SIGNIN_PROMO_LAST_SHOWN_ACCOUNT_NAMES);
+        mManager.removeKey(ChromePreferenceKeys.SIGNIN_PROMO_LAST_SHOWN_TIME_WITH_RANDOM_OFFSET);
     }
 
     /**
@@ -81,6 +84,22 @@ public class SigninPreferencesManager {
     /** Sets Chrome major version number when signin promo was last shown. */
     public void setSigninPromoLastShownVersion(int majorVersion) {
         mManager.writeInt(ChromePreferenceKeys.SIGNIN_PROMO_LAST_SHOWN_MAJOR_VERSION, majorVersion);
+    }
+
+    /** Returns the last promo shown time with a random time offset. Returns -1 if never set. */
+    public long getSigninPromoLastShownTimeWithRandomOffset() {
+        return mManager.readLong(
+                ChromePreferenceKeys.SIGNIN_PROMO_LAST_SHOWN_TIME_WITH_RANDOM_OFFSET, -1);
+    }
+
+    /**
+     * Sets last promo shown time with a random time offset.
+     *
+     * @param rnd Time in milliseconds.
+     */
+    public void setSigninPromoLastShownTimeWithRandomOffset(long rnd) {
+        mManager.writeLong(
+                ChromePreferenceKeys.SIGNIN_PROMO_LAST_SHOWN_TIME_WITH_RANDOM_OFFSET, rnd);
     }
 
     /**

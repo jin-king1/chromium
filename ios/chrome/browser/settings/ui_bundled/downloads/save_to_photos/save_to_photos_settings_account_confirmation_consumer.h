@@ -7,15 +7,18 @@
 
 #import <UIKit/UIKit.h>
 
+class GaiaId;
+
 // Protocol for the first screen of Save to Photos settings.
 @protocol SaveToPhotosSettingsAccountConfirmationConsumer <NSObject>
 
 // Sets the values of the identity button and the value of the "Ask which
 // account to use every time" switch.
+// `name` may be nil if it has not yet been loaded.
 - (void)setIdentityButtonAvatar:(UIImage*)avatar
                            name:(NSString*)name
                           email:(NSString*)email
-                         gaiaID:(NSString*)gaiaID
+                         gaiaID:(const GaiaId&)gaiaID
            askEveryTimeSwitchOn:(BOOL)on;
 
 // Displays the Save to Photos UI in the Downloads settings menu.

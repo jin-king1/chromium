@@ -6,7 +6,10 @@
 #define CHROME_BROWSER_EXTENSIONS_API_MESSAGING_CHROME_MESSAGING_DELEGATE_H_
 
 #include "extensions/browser/api/messaging/messaging_delegate.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -24,7 +27,7 @@ class ChromeMessagingDelegate : public MessagingDelegate {
   PolicyPermission IsNativeMessagingHostAllowed(
       content::BrowserContext* browser_context,
       const std::string& native_host_name) override;
-  std::optional<base::Value::Dict> MaybeGetTabInfo(
+  std::optional<base::DictValue> MaybeGetTabInfo(
       content::WebContents* web_contents) override;
   content::WebContents* GetWebContentsByTabId(
       content::BrowserContext* browser_context,

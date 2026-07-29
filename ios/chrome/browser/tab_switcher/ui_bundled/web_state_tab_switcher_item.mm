@@ -8,14 +8,17 @@
 #import "base/memory/weak_ptr.h"
 #import "components/favicon/ios/web_favicon_driver.h"
 #import "ios/chrome/browser/shared/model/url/url_util.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
-#import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/browser/tabs/model/tab_title_util.h"
 #import "ios/web/public/web_state.h"
 
 namespace {
-const CGFloat kSymbolSize = 16;
-}
+
+// Size of the NTP symbol in points.
+const CGFloat kSymbolSize = 14.0;
+
+}  // namespace
 
 @implementation WebStateTabSwitcherItem {
   // The web state represented by this item.
@@ -29,6 +32,10 @@ const CGFloat kSymbolSize = 16;
     _webState = webState->GetWeakPtr();
   }
   return self;
+}
+
+- (web::WebState*)webState {
+  return _webState.get();
 }
 
 - (GURL)URL {
@@ -45,13 +52,6 @@ const CGFloat kSymbolSize = 16;
   return tab_util::GetTabTitle(_webState.get());
 }
 
-- (BOOL)hidesTitle {
-  if (!_webState) {
-    return NO;
-  }
-  return IsUrlNtp(_webState->GetVisibleURL());
-}
-
 - (BOOL)showsActivity {
   if (!_webState) {
     return NO;
@@ -59,66 +59,10 @@ const CGFloat kSymbolSize = 16;
   return _webState->IsLoading();
 }
 
-#pragma mark - Image Fetching
-
-- (void)fetchFavicon:(TabSwitcherImageFetchingCompletionBlock)completion {
-  web::WebState* webState = _webState.get();
-  if (!webState) {
-    completion(self, nil);
-    return;
-  }
-
-  // NTP tabs have special treatment.
-  if (IsUrlNtp(webState->GetVisibleURL())) {
-    completion(self, [self NTPFavicon]);
-    return;
-  }
-
-  // Use the page favicon.
-  favicon::FaviconDriver* faviconDriver =
-      favicon::WebFaviconDriver::FromWebState(webState);
-  // The favicon driver may be null during testing.
-  if (faviconDriver) {
-    gfx::Image favicon = faviconDriver->GetFavicon();
-    if (!favicon.IsEmpty()) {
-      completion(self, favicon.ToUIImage());
-      return;
-    }
-  }
-
-  // Otherwise, set a default favicon.
-  completion(self, [self defaultFavicon]);
-}
-
-- (void)fetchSnapshot:(TabSwitcherImageFetchingCompletionBlock)completion {
-  web::WebState* webState = _webState.get();
-  if (!webState) {
-    completion(self, nil);
-    return;
-  }
-
-  __weak __typeof(self) weakSelf = self;
-  SnapshotTabHelper::FromWebState(webState)->RetrieveColorSnapshot(
-      ^(UIImage* snapshot) {
-        if (weakSelf) {
-          completion(weakSelf, snapshot);
-        }
-      });
-}
-
 #pragma mark - Favicons
 
-- (UIImage*)defaultFavicon {
-  UIImageConfiguration* configuration = [UIImageSymbolConfiguration
-      configurationWithPointSize:kSymbolSize
-                          weight:UIImageSymbolWeightBold
-                           scale:UIImageSymbolScaleMedium];
-  return DefaultSymbolWithConfiguration(kGlobeAmericasSymbol, configuration);
-}
-
 - (UIImage*)NTPFavicon {
-  // By default NTP tabs gets no favicon.
-  return nil;
+  return SymbolWithPointSize(SymbolChromeProduct, kSymbolSize);
 }
 
 #pragma mark - NSObject
@@ -130,9 +74,9 @@ const CGFloat kSymbolSize = 16;
   if (![object isKindOfClass:[WebStateTabSwitcherItem class]]) {
     return NO;
   }
-  WebStateTabSwitcherItem* otherTabStrip =
+  WebStateTabSwitcherItem* otherItem =
       base::apple::ObjCCastStrict<WebStateTabSwitcherItem>(object);
-  return self.identifier == otherTabStrip.identifier;
+  return self.identifier == otherItem.identifier;
 }
 
 - (NSUInteger)hash {

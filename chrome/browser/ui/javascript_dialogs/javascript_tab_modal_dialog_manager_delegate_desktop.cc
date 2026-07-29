@@ -4,19 +4,21 @@
 
 #include "chrome/browser/ui/javascript_dialogs/javascript_tab_modal_dialog_manager_delegate_desktop.h"
 
+#include <algorithm>
 #include <utility>
 
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/tab_modal_confirm_dialog.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/javascript_dialogs/app_modal_dialog_manager.h"
 #include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "components/javascript_dialogs/tab_modal_dialog_view.h"
 #include "components/navigation_metrics/navigation_metrics.h"
 #include "components/safe_browsing/buildflags.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
@@ -39,7 +41,8 @@ JavaScriptTabModalDialogManagerDelegateDesktop::
 }
 
 void JavaScriptTabModalDialogManagerDelegateDesktop::WillRunDialog() {
-  BrowserList::AddObserver(this);
+  browser_collection_observer_.Observe(ProfileBrowserCollection::GetForProfile(
+      Profile::FromBrowserContext(web_contents_->GetBrowserContext())));
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   // SafeBrowsing Delayed Warnings experiment can delay some SafeBrowsing
@@ -56,48 +59,77 @@ void JavaScriptTabModalDialogManagerDelegateDesktop::WillRunDialog() {
 }
 
 void JavaScriptTabModalDialogManagerDelegateDesktop::DidCloseDialog() {
-  BrowserList::RemoveObserver(this);
+  browser_collection_observer_.Reset();
 }
 
 void JavaScriptTabModalDialogManagerDelegateDesktop::SetTabNeedsAttention(
     bool attention) {
-  Browser* browser = chrome::FindBrowserWithTab(web_contents_);
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents_);
+  if (!tab) {
+    // WebContents may be detached during tab close. See crbug.com/40727952.
+    return;
+  }
+  BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
   if (!browser) {
     // It's possible that the WebContents is no longer in the tab strip. If so,
-    // just give up. https://crbug.com/786178
+    // just give up. https://crbug.com/40550429
     return;
   }
 
-  TabStripModel* tab_strip_model = browser->tab_strip_model();
+  TabStripModel* tab_strip_model = browser->GetTabStripModel();
   SetTabNeedsAttentionImpl(
       attention, tab_strip_model,
       tab_strip_model->GetIndexOfWebContents(web_contents_));
 }
 
 bool JavaScriptTabModalDialogManagerDelegateDesktop::IsWebContentsForemost() {
-  Browser* browser = BrowserList::GetInstance()->GetLastActive();
+  BrowserWindowInterface* browser =
+      GetLastActiveBrowserWindowInterfaceWithAnyProfile();
   if (!browser) {
     // It's rare, but there are crashes from where sites are trying to show
     // dialogs in the split second of time between when their Browser is gone
-    // and they're gone. In that case, bail. https://crbug.com/1142806
+    // and they're gone. In that case, bail. https://crbug.com/40727952
     return false;
   }
 
-  return browser->tab_strip_model()->GetActiveWebContents() == web_contents_;
+  // A dialog can be shown on the inactive tab of a split so check if one of the
+  // foreground tabs contains the web contents.
+  std::vector<tabs::TabInterface*> tabs =
+      browser->GetTabStripModel()->GetForegroundTabs();
+  return std::any_of(tabs.begin(), tabs.end(),
+                     [this](const tabs::TabInterface* tab) {
+                       return tab->GetContents() == web_contents_;
+                     });
 }
 
 bool JavaScriptTabModalDialogManagerDelegateDesktop::IsApp() {
-  Browser* browser = chrome::FindBrowserWithTab(web_contents_);
-  return browser && (browser->is_type_app() || browser->is_type_app_popup());
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents_);
+  if (!tab) {
+    // WebContents may be detached during tab close. See crbug.com/40727952.
+    return false;
+  }
+  BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
+  return browser &&
+         (browser->GetType() == BrowserWindowInterface::Type::TYPE_APP ||
+          browser->GetType() == BrowserWindowInterface::Type::TYPE_APP_POPUP);
 }
 
 bool JavaScriptTabModalDialogManagerDelegateDesktop::CanShowModalUI() {
-  tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(web_contents_);
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents_);
   return tab && tab->CanShowModalUI();
 }
 
-void JavaScriptTabModalDialogManagerDelegateDesktop::OnBrowserSetLastActive(
-    Browser* browser) {
+void JavaScriptTabModalDialogManagerDelegateDesktop::OnBrowserActivated(
+    BrowserWindowInterface* browser) {
+  javascript_dialogs::TabModalDialogManager::FromWebContents(web_contents_)
+      ->BrowserActiveStateChanged();
+}
+
+void JavaScriptTabModalDialogManagerDelegateDesktop::OnBrowserDeactivated(
+    BrowserWindowInterface* browser) {
   javascript_dialogs::TabModalDialogManager::FromWebContents(web_contents_)
       ->BrowserActiveStateChanged();
 }
@@ -127,7 +159,7 @@ void JavaScriptTabModalDialogManagerDelegateDesktop::OnTabStripModelChanged(
         // short term because the tab in question is being removed.
         // TODO(erikchen): Clean up TabStripModel observer API so that this
         // doesn't require re-entrancy and/or works correctly
-        // https://crbug.com/842194.
+        // https://crbug.com/40575977.
         DCHECK(tab_strip_model_being_observed_);
         tab_strip_model_being_observed_->RemoveObserver(this);
         tab_strip_model_being_observed_ = nullptr;

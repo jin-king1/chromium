@@ -63,7 +63,7 @@ class TranslateInfobarModalOverlayMediatorTest : public PlatformTest {
   }
 
  protected:
-  raw_ptr<FakeTranslateInfoBarDelegate> translate_delegate_;
+  raw_ptr<FakeTranslateInfoBarDelegate, DanglingUntriaged> translate_delegate_;
   FakeTranslateInfoBarDelegateFactory delegate_factory_;
   std::unique_ptr<InfoBarIOS> infobar_;
   std::unique_ptr<OverlayRequest> request_;
@@ -163,6 +163,15 @@ TEST_F(TranslateInfobarModalOverlayMediatorTest, NeverTranslateSite) {
   // object, and verify that ToggleNeverPromptSite is called.
   OCMExpect([delegate_ stopOverlayForMediator:mediator_]);
   [mediator_ neverTranslateSite];
+}
+
+// Tests that calling user-triggered actions when the underlying infobar has
+// been destroyed (leading to a null delegate) safely dismisses the overlay
+// without crashing.
+TEST_F(TranslateInfobarModalOverlayMediatorTest, NullDelegateDoesNotCrash) {
+  infobar_.reset();
+  OCMExpect([delegate_ stopOverlayForMediator:mediator_]);
+  [mediator_ alwaysTranslateSourceLanguage];
 }
 
 // Test fixture for TranslateInfobarModalOverlayMediator using the

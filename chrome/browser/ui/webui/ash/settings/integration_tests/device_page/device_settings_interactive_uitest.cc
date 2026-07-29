@@ -12,15 +12,22 @@
 #include "ash/system/brightness_control_delegate.h"
 #include "ash/system/keyboard_brightness_control_delegate.h"
 #include "ash/webui/settings/public/constants/routes.mojom-forward.h"
+#include "ash/webui/settings/public/constants/routes_util.h"
+#include "base/check.h"
+#include "base/check_deref.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/ash/interactive/interactive_ash_test.h"
+#include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power/power_manager_client.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user_manager.h"
 #include "device/udev_linux/fake_udev_loader.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/state_observer.h"
@@ -114,13 +121,10 @@ class DeviceSettingsInteractiveUiTest : public InteractiveAshTest {
     DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOsSettingsWebContentsId);
     webcontents_id_ = kOsSettingsWebContentsId;
 
-    feature_list_.InitWithFeatures(
-        {features::kInputDeviceSettingsSplit,
-         features::kAltClickAndSixPackCustomization,
-         features::kPeripheralCustomization,
-         features::kEnableKeyboardBacklightControlInSettings,
-         ::features::kSupportF11AndF12KeyShortcuts},
-        {});
+    feature_list_.InitWithFeatures({features::kAltClickAndSixPackCustomization,
+                                    features::kPeripheralCustomization,
+                                    ::features::kSupportF11AndF12KeyShortcuts},
+                                   {});
   }
 
   DeviceSettingsInteractiveUiTest(const DeviceSettingsInteractiveUiTest&) =
@@ -222,15 +226,21 @@ class DeviceSettingsInteractiveUiTest : public InteractiveAshTest {
     return Steps(
         Log(base::StringPrintf("Open OS Settings to %s", subpage.c_str())),
         InstrumentNextTab(element_id, AnyBrowser()), Do([&]() {
-          chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-              GetActiveUserProfile(), subpage);
+          auto* session =
+              session_manager::SessionManager::Get()->GetActiveSession();
+          CHECK(session);
+          ash::SettingsAppManager::Get()->Open(
+              CHECK_DEREF(user_manager::UserManager::Get()->FindUser(
+                  session->account_id())),
+              {.sub_page = subpage});
         }),
         WaitForShow(element_id),
         Log(base::StringPrintf("Waiting for OS Settings %s page to load",
                                subpage.c_str())),
 
         Log("Waiting for OS settings audio settings page to load"),
-        WaitForWebContentsReady(element_id, chrome::GetOSSettingsUrl(subpage)));
+        WaitForWebContentsReady(element_id,
+                                chromeos::settings::GetOSSettingsUrl(subpage)));
   }
 
   // Enters lower-case text into the focused html input element.
@@ -500,8 +510,7 @@ class DeviceSettingsSwapPrimaryMouseButtonInteractiveUiTest
  public:
   DeviceSettingsSwapPrimaryMouseButtonInteractiveUiTest() {
     feature_list_.Reset();
-    feature_list_.InitWithFeatures({features::kInputDeviceSettingsSplit},
-                                   {features::kPeripheralCustomization});
+    feature_list_.InitWithFeatures({}, {features::kPeripheralCustomization});
   }
   // Query to pierce through Shadow DOM to find the mouse row.
   const DeepQuery kMouseRowQuery{
@@ -962,8 +971,11 @@ IN_PROC_BROWSER_TEST_F(DeviceSettingsInteractiveUiTest, KeyboardFkeys) {
       Log("Verifying that 'F12' shortcut opens the developer console"),
       InAnyContext(WaitForShow(kDevToolsId)));
   // Get settings browser and verify that the window is maximized.
-  Browser* browser = BrowserList::GetInstance()->get(0);
-  EXPECT_TRUE(browser->window()->IsFullscreen());
+  BrowserWindowInterface* const settings_app_browser =
+      ui_test_utils::FindMatchingBrowsers([](BrowserWindowInterface* browser) {
+        return browser->GetType() == BrowserWindowInterface::Type::TYPE_APP;
+      }).front();
+  EXPECT_TRUE(settings_app_browser->GetWindow()->IsFullscreen());
 }
 
 class KeyboardAmbientLightSensorStateObserver
@@ -1040,9 +1052,7 @@ class DeviceSettingsBrightnessInteractiveUiTest
   DeviceSettingsBrightnessInteractiveUiTest() {
     feature_list_.Reset();
     feature_list_.InitWithFeatures(
-        {features::kInputDeviceSettingsSplit,
-         features::kPeripheralCustomization,
-         features::kEnableKeyboardBacklightControlInSettings,
+        {features::kPeripheralCustomization,
          features::kEnableBrightnessControlInSettings},
         {});
   }

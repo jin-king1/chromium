@@ -8,6 +8,7 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
 import android.graphics.ImageFormat;
+import android.hardware.HardwareBuffer;
 import android.hardware.display.DisplayManager;
 import android.view.Display;
 import android.view.Surface;
@@ -52,18 +53,18 @@ public abstract class VideoCapture {
     // individual implementations.
     protected boolean mInvertDeviceOrientationReadings;
 
+    protected boolean mIsExternalCamera;
+
     protected @Nullable VideoCaptureFormat mCaptureFormat;
 
-    protected final int mId;
+    protected final String mId;
     // Native callback context variable.
     private long mNativeVideoCaptureDeviceAndroid;
-
-    protected boolean mUseBackgroundThreadForTesting;
 
     // Lock for guarding |mNativeVideoCaptureDeviceAndroid|.
     private final Object mNativeVideoCaptureLock = new Object();
 
-    VideoCapture(int id, long nativeVideoCaptureDeviceAndroid) {
+    VideoCapture(String id, long nativeVideoCaptureDeviceAndroid) {
         mId = id;
         mNativeVideoCaptureDeviceAndroid = nativeVideoCaptureDeviceAndroid;
     }
@@ -71,7 +72,12 @@ public abstract class VideoCapture {
     // Allocate necessary resources for capture.
     @CalledByNative
     public abstract boolean allocate(
-            int width, int height, int frameRate, boolean enableFaceDetection);
+            int width,
+            int height,
+            int frameRate,
+            boolean enableFaceDetection,
+            boolean useHardwareBuffers,
+            boolean enableBackgroundMediaCapturing);
 
     // Success is indicated by returning true and a callback to
     // VideoCaptureJni.get().onStarted(,  VideoCapture.this), which may occur synchronously or
@@ -164,7 +170,7 @@ public abstract class VideoCapture {
     }
 
     @CalledByNative
-    public final int getColorspace() {
+    public final int getPixelFormat() {
         assumeNonNull(mCaptureFormat);
         switch (mCaptureFormat.mPixelFormat) {
             case ImageFormat.YV12:
@@ -179,12 +185,11 @@ public abstract class VideoCapture {
         }
     }
 
-    @CalledByNative
-    public final void setTestMode() {
-        mUseBackgroundThreadForTesting = true;
-    }
-
     protected final int getCameraRotation() {
+        // For external camera, we should not rotate the frame.
+        if (mIsExternalCamera) {
+            return 0;
+        }
         int rotation =
                 mInvertDeviceOrientationReadings
                         ? (360 - getDeviceRotation())
@@ -222,11 +227,7 @@ public abstract class VideoCapture {
         synchronized (mNativeVideoCaptureLock) {
             if (mNativeVideoCaptureDeviceAndroid != 0) {
                 VideoCaptureJni.get()
-                        .onPhotoTaken(
-                                mNativeVideoCaptureDeviceAndroid,
-                                VideoCapture.this,
-                                callbackId,
-                                null);
+                        .onPhotoTaken(mNativeVideoCaptureDeviceAndroid, callbackId, null);
             }
         }
     }
@@ -298,18 +299,7 @@ public abstract class VideoCapture {
     }
 
     // JNI wrapper methods.
-    protected void onFrameAvailable(VideoCapture caller, byte[] data, int length, int rotation) {
-        synchronized (mNativeVideoCaptureLock) {
-            if (mNativeVideoCaptureDeviceAndroid != 0) {
-                VideoCaptureJni.get()
-                        .onFrameAvailable(
-                                mNativeVideoCaptureDeviceAndroid, caller, data, length, rotation);
-            }
-        }
-    }
-
     protected void onI420FrameAvailable(
-            VideoCapture caller,
             ByteBuffer yBuffer,
             int yStride,
             ByteBuffer uBuffer,
@@ -319,13 +309,13 @@ public abstract class VideoCapture {
             int width,
             int height,
             int rotation,
-            long timestamp) {
+            long timestamp,
+            int dataSpace) {
         synchronized (mNativeVideoCaptureLock) {
             if (mNativeVideoCaptureDeviceAndroid != 0) {
                 VideoCaptureJni.get()
                         .onI420FrameAvailable(
                                 mNativeVideoCaptureDeviceAndroid,
-                                caller,
                                 yBuffer,
                                 yStride,
                                 uBuffer,
@@ -335,18 +325,33 @@ public abstract class VideoCapture {
                                 width,
                                 height,
                                 rotation,
+                                timestamp,
+                                dataSpace);
+            }
+        }
+    }
+
+    protected void onHardwareBufferAvailable(
+            HardwareBuffer hardwareBuffer, int dataSpace, int rotation, long timestamp) {
+        synchronized (mNativeVideoCaptureLock) {
+            if (mNativeVideoCaptureDeviceAndroid != 0) {
+                VideoCaptureJni.get()
+                        .onHardwareBufferAvailable(
+                                mNativeVideoCaptureDeviceAndroid,
+                                hardwareBuffer,
+                                dataSpace,
+                                rotation,
                                 timestamp);
             }
         }
     }
 
-    protected void onError(VideoCapture caller, int androidVideoCaptureError, String message) {
+    protected void onError(int androidVideoCaptureError, String message) {
         synchronized (mNativeVideoCaptureLock) {
             if (mNativeVideoCaptureDeviceAndroid != 0) {
                 VideoCaptureJni.get()
                         .onError(
                                 mNativeVideoCaptureDeviceAndroid,
-                                caller,
                                 androidVideoCaptureError,
                                 message);
             }
@@ -354,52 +359,59 @@ public abstract class VideoCapture {
     }
 
     // Method for VideoCapture implementations to signal that a frame was dropped.
-    protected void onFrameDropped(VideoCapture caller, int androidVideoCaptureFrameDropReason) {
+    protected void onFrameDropped(int androidVideoCaptureFrameDropReason) {
         synchronized (mNativeVideoCaptureLock) {
             if (mNativeVideoCaptureDeviceAndroid != 0) {
                 VideoCaptureJni.get()
                         .onFrameDropped(
                                 mNativeVideoCaptureDeviceAndroid,
-                                caller,
                                 androidVideoCaptureFrameDropReason);
             }
         }
     }
 
     protected void onGetPhotoCapabilitiesReply(
-            VideoCapture caller, long callbackId, @Nullable PhotoCapabilities result) {
+            long callbackId, @Nullable PhotoCapabilities result) {
         synchronized (mNativeVideoCaptureLock) {
             if (mNativeVideoCaptureDeviceAndroid != 0) {
                 VideoCaptureJni.get()
                         .onGetPhotoCapabilitiesReply(
-                                mNativeVideoCaptureDeviceAndroid, caller, callbackId, result);
+                                mNativeVideoCaptureDeviceAndroid, callbackId, result);
             }
         }
     }
 
-    protected void onPhotoTaken(VideoCapture caller, long callbackId, byte[] data) {
+    protected void onPhotoTaken(long callbackId, byte[] data) {
         synchronized (mNativeVideoCaptureLock) {
             if (mNativeVideoCaptureDeviceAndroid != 0) {
                 VideoCaptureJni.get()
-                        .onPhotoTaken(mNativeVideoCaptureDeviceAndroid, caller, callbackId, data);
+                        .onPhotoTaken(mNativeVideoCaptureDeviceAndroid, callbackId, data);
             }
         }
     }
 
-    protected void onStarted(VideoCapture caller) {
+    protected void onStarted() {
         synchronized (mNativeVideoCaptureLock) {
             if (mNativeVideoCaptureDeviceAndroid != 0) {
-                VideoCaptureJni.get().onStarted(mNativeVideoCaptureDeviceAndroid, caller);
+                VideoCaptureJni.get().onStarted(mNativeVideoCaptureDeviceAndroid);
             }
         }
     }
 
-    protected void dCheckCurrentlyOnIncomingTaskRunner(VideoCapture caller) {
+    protected void onInteractiveStateChanged(boolean isInteractive) {
         synchronized (mNativeVideoCaptureLock) {
             if (mNativeVideoCaptureDeviceAndroid != 0) {
                 VideoCaptureJni.get()
-                        .dCheckCurrentlyOnIncomingTaskRunner(
-                                mNativeVideoCaptureDeviceAndroid, caller);
+                        .onInteractiveStateChanged(mNativeVideoCaptureDeviceAndroid, isInteractive);
+            }
+        }
+    }
+
+    protected void dCheckCurrentlyOnIncomingTaskRunner() {
+        synchronized (mNativeVideoCaptureLock) {
+            if (mNativeVideoCaptureDeviceAndroid != 0) {
+                VideoCaptureJni.get()
+                        .dCheckCurrentlyOnIncomingTaskRunner(mNativeVideoCaptureDeviceAndroid);
             }
         }
     }
@@ -407,16 +419,8 @@ public abstract class VideoCapture {
     @NativeMethods
     interface Natives {
         // Method for VideoCapture implementations to call back native code.
-        void onFrameAvailable(
-                long nativeVideoCaptureDeviceAndroid,
-                VideoCapture caller,
-                byte[] data,
-                int length,
-                int rotation);
-
         void onI420FrameAvailable(
                 long nativeVideoCaptureDeviceAndroid,
-                VideoCapture caller,
                 ByteBuffer yBuffer,
                 int yStride,
                 ByteBuffer uBuffer,
@@ -426,39 +430,40 @@ public abstract class VideoCapture {
                 int width,
                 int height,
                 int rotation,
+                long timestamp,
+                int dataSpace);
+
+        void onHardwareBufferAvailable(
+                long nativeVideoCaptureDeviceAndroid,
+                HardwareBuffer hardwareBuffer,
+                int dataSpace,
+                int rotation,
                 long timestamp);
 
         // Method for VideoCapture implementations to signal an asynchronous error.
         void onError(
-                long nativeVideoCaptureDeviceAndroid,
-                VideoCapture caller,
-                int androidVideoCaptureError,
-                String message);
+                long nativeVideoCaptureDeviceAndroid, int androidVideoCaptureError, String message);
 
         // Method for VideoCapture implementations to signal that a frame was dropped.
         void onFrameDropped(
-                long nativeVideoCaptureDeviceAndroid,
-                VideoCapture caller,
-                int androidVideoCaptureFrameDropReason);
+                long nativeVideoCaptureDeviceAndroid, int androidVideoCaptureFrameDropReason);
 
         void onGetPhotoCapabilitiesReply(
                 long nativeVideoCaptureDeviceAndroid,
-                VideoCapture caller,
                 long callbackId,
                 @Nullable PhotoCapabilities result);
 
         // Callback for calls to takePhoto(). This can indicate both success and
         // failure. Failure is indicated by |data| being null.
         void onPhotoTaken(
-                long nativeVideoCaptureDeviceAndroid,
-                VideoCapture caller,
-                long callbackId,
-                byte @Nullable [] data);
+                long nativeVideoCaptureDeviceAndroid, long callbackId, byte @Nullable [] data);
 
         // Method for VideoCapture implementations to report device started event.
-        void onStarted(long nativeVideoCaptureDeviceAndroid, VideoCapture caller);
+        void onStarted(long nativeVideoCaptureDeviceAndroid);
 
-        void dCheckCurrentlyOnIncomingTaskRunner(
-                long nativeVideoCaptureDeviceAndroid, VideoCapture caller);
+        // Method for VideoCapture implementations to report screen state change.
+        void onInteractiveStateChanged(long nativeVideoCaptureDeviceAndroid, boolean isInteractive);
+
+        void dCheckCurrentlyOnIncomingTaskRunner(long nativeVideoCaptureDeviceAndroid);
     }
 }

@@ -5,9 +5,9 @@
 package org.chromium.base.test.transit;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 
-import org.chromium.base.TimeUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -18,9 +18,10 @@ import java.lang.annotation.RetentionPolicy;
  * <p>Includes whether the condition is fulfilled, an optional message and the timestamp of the
  * check.
  */
+@NullMarked
 public class ConditionStatus {
 
-    private static final int TRUNCATE_STATUS_UPDATE = 1000;
+    private static final int TRUNCATE_STATUS_UPDATE = 20000;
 
     /** Lifecycle phases of ConditionalState. */
     @IntDef({
@@ -42,7 +43,7 @@ public class ConditionStatus {
     private @Nullable String mMessage;
 
     ConditionStatus(@Status int status, @Nullable String message) {
-        mTimestamp = TimeUtils.currentTimeMillis();
+        mTimestamp = ConditionWaiter.getNow();
         mStatus = status;
         if (message != null) {
             if (message.length() > TRUNCATE_STATUS_UPDATE) {

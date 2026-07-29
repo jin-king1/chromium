@@ -15,7 +15,6 @@
 #include "ash/session/test_session_controller_client.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
-#include "ash/test/test_widget_builder.h"
 #include "ash/user_education/user_education_types.h"
 #include "components/account_id/account_id.h"
 #include "components/user_education/common/help_bubble/help_bubble_params.h"
@@ -26,6 +25,7 @@
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/metadata/view_factory.h"
+#include "ui/views/test/test_widget_builder.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
@@ -46,7 +46,7 @@ std::unique_ptr<views::Widget> ShowFramelessTestWidgetOnDisplay(
     std::unique_ptr<views::View> contents_view) {
   auto* manager = Shell::Get()->window_tree_host_manager();
   auto widget =
-      TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .SetParent(manager->GetRootWindowForDisplayId(display_id))
           .BuildOwnsNativeWidget();
@@ -287,10 +287,9 @@ TEST_F(UserEducationUtilAshTest, IsPrimaryAccountActive) {
   // Case: no user sessions added.
   EXPECT_FALSE(IsPrimaryAccountActive());
 
-  // Case: primary user session added but inactive.
+  // Case: primary user session added and activate it.
   auto* session_controller_client = GetSessionControllerClient();
-  session_controller_client->AddUserSession({}, primary_account_id);
-  EXPECT_FALSE(IsPrimaryAccountActive());
+  SimulateUserLogin({.activate_session = false}, primary_account_id);
 
   // Case: primary user session activated.
   session_controller_client->SetSessionState(SessionState::ACTIVE);
@@ -302,11 +301,8 @@ TEST_F(UserEducationUtilAshTest, IsPrimaryAccountActive) {
   session_controller_client->SetSessionState(SessionState::ACTIVE);
   EXPECT_TRUE(IsPrimaryAccountActive());
 
-  // Case: secondary user session added but inactive.
-  session_controller_client->AddUserSession({}, secondary_account_id);
-  EXPECT_TRUE(IsPrimaryAccountActive());
-
-  // Case: secondary user activated and then deactivated.
+  // Case: secondary user session added and activate it.
+  SimulateUserLogin({.activate_session = false}, secondary_account_id);
   session_controller_client->SwitchActiveUser(secondary_account_id);
   EXPECT_FALSE(IsPrimaryAccountActive());
   session_controller_client->SwitchActiveUser(primary_account_id);
@@ -323,9 +319,8 @@ TEST_F(UserEducationUtilAshTest, IsPrimaryAccountId) {
   EXPECT_FALSE(IsPrimaryAccountId(primary_account_id));
   EXPECT_FALSE(IsPrimaryAccountId(secondary_account_id));
 
-  auto* session_controller_client = GetSessionControllerClient();
-  session_controller_client->AddUserSession({}, primary_account_id);
-  session_controller_client->AddUserSession({}, secondary_account_id);
+  SimulateUserLogin(primary_account_id);
+  SimulateUserLogin(secondary_account_id);
 
   // Case: multiple user sessions added.
   EXPECT_FALSE(IsPrimaryAccountId(AccountId()));

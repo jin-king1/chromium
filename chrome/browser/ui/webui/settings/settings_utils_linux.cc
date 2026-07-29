@@ -10,6 +10,7 @@
 #include "base/environment.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/nix/xdg_util.h"
 #include "base/process/launch.h"
@@ -48,6 +49,8 @@ const char* const kKDE6ProxyConfigCommand[] = {"kcmshell6", "kcm_proxy"};
 // In Deepin OS, we might need to run dde-control-center instead.
 const char* const kDeepinProxyConfigCommand[] = {"dde-control-center", "-m",
                                                  "network"};
+
+const char* const kCosmicProxyConfigCommand[] = {"cosmic-settings", "network"};
 
 // The URL for Linux proxy configuration help when not running under a
 // supported desktop environment.
@@ -147,6 +150,10 @@ bool DetectAndStartProxyConfigUtil() {
 
     case base::nix::DESKTOP_ENVIRONMENT_KDE6:
       launched = StartProxyConfigUtil(kKDE6ProxyConfigCommand);
+      break;
+
+    case base::nix::DESKTOP_ENVIRONMENT_COSMIC:
+      launched = StartProxyConfigUtil(kCosmicProxyConfigCommand);
       break;
 
     case base::nix::DESKTOP_ENVIRONMENT_XFCE:

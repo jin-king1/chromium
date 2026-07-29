@@ -20,6 +20,7 @@
 <translation id="2226276347425096477">Бул текстти <ph name="MAX_CHARACTERS" /> белгиге же андан кыскараак кылып кыскартыңыз (учурда <ph name="CURRENT_LENGTH" /> белги турат).</translation>
 <translation id="2247351761944213033"><ph name="WEEKNUMBER" />-апта, <ph name="YEAR" /></translation>
 <translation id="2277199496770840904"><ph name="NUMBER" />-трек</translation>
+<translation id="2500270406326775625">Маалыматтын URL дареги</translation>
 <translation id="2507943997699731163">Бул талааны толтуруңуз.</translation>
 <translation id="2613802280814924224">Жарактуу маани киргизиңиз. Кыйла жарактуу маани: <ph name="VALID_VALUE" />.</translation>
 <translation id="2653659639078652383">Тапшыруу</translation>
@@ -29,7 +30,7 @@
 <translation id="3049748772180311791"><ph name="QUANTITY" /> Мб</translation>
 <translation id="3075154866155599887">Жарактуу маанини киргизиңиз. Талаа толук эмес же күнү жараксыз.</translation>
 <translation id="310520048233152454">URL жазыңыз.</translation>
-<translation id="3321030238473337787">Ойнотуу ылдамдыгы</translation>
+<translation id="3321030238473337787">Ылдамдыгы</translation>
 <translation id="3450233048674729344">Маани <ph name="MAXIMUM" /> кичирээк же барабар болушу керек.</translation>
 <translation id="3732799496749320381">аа</translation>
 <translation id="3754210790023674521">Сүрөт ичиндеги сүрөт режиминен чыгуу</translation>

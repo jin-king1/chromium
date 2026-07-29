@@ -6,20 +6,23 @@
     "isolated_scripts": [
       {
         "args": [
+          "--use-simulator-cache",
           "--platform",
-          "iPhone X",
+          "iPhone 15",
           "--version",
-          "16.4",
+          "18.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "16c5032a",
+          "17f42",
           "--xctest"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "name": "base_unittests iPhone X 16.4",
+        "module_name": "//base:base_unittests",
+        "module_scheme": "gtest",
+        "name": "base_unittests iPhone 15 18.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -29,20 +32,20 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:a18b7d95d26f3c6bf9591978b19cf0ca8268ac7d"
+              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
             }
           ],
           "dimensions": {
-            "cpu": "x86-64",
-            "os": "Mac-14"
+            "cpu": "arm64",
+            "os": "Mac-15|Mac-26"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_16_4",
-              "path": "Runtime-ios-16.4"
+              "name": "runtime_ios_18_2",
+              "path": "Runtime-ios-18.2"
             },
             {
-              "name": "xcode_ios_16c5032a",
+              "name": "xcode_ios_17f42",
               "path": "Xcode.app"
             }
           ],
@@ -50,24 +53,27 @@
         },
         "test": "base_unittests",
         "test_id_prefix": "ninja://base:base_unittests/",
-        "variant_id": "iPhone X 16.4"
+        "variant_id": "iPhone 15 18.2"
       },
       {
         "args": [
+          "--use-simulator-cache",
           "--platform",
-          "iPhone X",
+          "iPhone 15",
           "--version",
-          "16.4",
+          "18.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "16c5032a",
+          "17f42",
           "--xctest"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "name": "highway_tests iPhone X 16.4",
+        "module_name": "//third_party/highway:highway_tests",
+        "module_scheme": "gtest",
+        "name": "highway_tests iPhone 15 18.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -77,20 +83,20 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:a18b7d95d26f3c6bf9591978b19cf0ca8268ac7d"
+              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
             }
           ],
           "dimensions": {
-            "cpu": "x86-64",
-            "os": "Mac-14"
+            "cpu": "arm64",
+            "os": "Mac-15|Mac-26"
           },
           "named_caches": [
             {
-              "name": "runtime_ios_16_4",
-              "path": "Runtime-ios-16.4"
+              "name": "runtime_ios_18_2",
+              "path": "Runtime-ios-18.2"
             },
             {
-              "name": "xcode_ios_16c5032a",
+              "name": "xcode_ios_17f42",
               "path": "Xcode.app"
             }
           ],
@@ -98,7 +104,7 @@
         },
         "test": "highway_tests",
         "test_id_prefix": "ninja://third_party/highway:highway_tests/",
-        "variant_id": "iPhone X 16.4"
+        "variant_id": "iPhone 15 18.2"
       }
     ]
   }

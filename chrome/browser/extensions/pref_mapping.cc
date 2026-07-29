@@ -8,9 +8,8 @@
 #include <span>  // std::size.
 #include <string_view>
 
-#include "base/containers/contains.h"
+#include "base/memory/singleton.h"
 #include "base/strings/stringprintf.h"
-#include "chrome/browser/extensions/pref_transformer_interface.h"
 #include "chrome/browser/prefetch/pref_names.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
 #include "chrome/common/pref_names.h"
@@ -19,15 +18,18 @@
 #include "components/embedder_support/pref_names.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/privacy_sandbox/privacy_sandbox_prefs.h"
-#include "components/privacy_sandbox/tracking_protection_prefs.h"
 #include "components/proxy_config/proxy_config_pref_names.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/spellcheck/browser/pref_names.h"
 #include "components/translate/core/browser/translate_pref_names.h"
+#include "extensions/browser/pref_transformer_interface.h"
+#include "extensions/buildflags/buildflags.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_pref_names.h"
 #endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using extensions::mojom::APIPermissionID;
 
@@ -46,6 +48,8 @@ const PrefMappingEntry kMappings[] = {
     {"autofillAddressEnabled", autofill::prefs::kAutofillProfileEnabled,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"autofillCreditCardEnabled", autofill::prefs::kAutofillCreditCardEnabled,
+     APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
+    {"autofillSettings", autofill::prefs::kAutofillTypesBlocked,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"hyperlinkAuditingEnabled", prefs::kEnableHyperlinkAuditing,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
@@ -87,11 +91,19 @@ const PrefMappingEntry kMappings[] = {
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"webRTCIPHandlingUrl", prefs::kWebRTCIPHandlingUrl,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
+    {"webRTCPostQuantumKeyAgreement", prefs::kWebRTCPostQuantumKeyAgreement,
+     APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
+    {"webRTCDiagnosticLogCollectionAllowedForOrigins",
+     prefs::kWebRTCDiagnosticLogCollectionAllowedForOrigins,
+     APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"webRTCUDPPortRange", prefs::kWebRTCUDPPortRange,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"relatedWebsiteSetsEnabled",
      prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, APIPermissionID::kPrivacy,
      APIPermissionID::kPrivacy},
+    {"proxyOverrideRulesPrivate", proxy_config::prefs::kProxyOverrideRules,
+     APIPermissionID::kProxyOverrideRulesPrivate,
+     APIPermissionID::kProxyOverrideRulesPrivate},
     // accessibilityFeatures.animationPolicy is available for
     // all platforms but the others from accessibilityFeatures
     // is only available for OS_CHROMEOS.
@@ -231,7 +243,7 @@ PrefMapping::~PrefMapping() = default;
 void PrefMapping::RegisterPrefTransformer(
     const std::string& browser_pref,
     std::unique_ptr<PrefTransformerInterface> transformer) {
-  DCHECK(!base::Contains(transformers_, browser_pref))
+  DCHECK(!transformers_.contains(browser_pref))
       << "Trying to register pref transformer for " << browser_pref << " twice";
   transformers_[browser_pref] = std::move(transformer);
 }

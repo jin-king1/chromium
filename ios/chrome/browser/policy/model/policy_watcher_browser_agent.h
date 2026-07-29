@@ -15,6 +15,10 @@
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer.h"
 
+namespace signin {
+class IdentityManager;
+}  // namespace signin
+
 class Browser;
 @protocol PolicyChangeCommands;
 class PolicyWatcherBrowserAgentObserver;
@@ -44,7 +48,6 @@ class PolicyWatcherBrowserAgent
 
  private:
   friend class BrowserUserData<PolicyWatcherBrowserAgent>;
-  BROWSER_USER_DATA_KEY_DECL();
 
   explicit PolicyWatcherBrowserAgent(Browser* browser);
 
@@ -68,8 +71,8 @@ class PolicyWatcherBrowserAgent
   // AuthenticationServiceObserver implementation.
   void OnPrimaryAccountRestricted() override;
 
-  // The owning Browser.
-  raw_ptr<Browser> browser_ = nullptr;
+  // The IdentityManager, used to check the primary account.
+  raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
 
   // The AuthenticationService.
   raw_ptr<AuthenticationService> auth_service_ = nullptr;

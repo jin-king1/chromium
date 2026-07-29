@@ -7,7 +7,9 @@
 #import <Cocoa/Cocoa.h>
 
 #include "base/i18n/base_i18n_switches.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/test/browser_test.h"
@@ -15,8 +17,6 @@
 #include "ui/base/accelerators/platform_accelerator_cocoa.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 #import "ui/events/keycodes/keyboard_code_conversion_mac.h"
-
-using AcceleratorsCocoaBrowserTest = InProcessBrowserTest;
 
 namespace {
 
@@ -69,8 +69,8 @@ NSMenuItem* MenuContainsAccelerator(NSMenu* menu,
     if ([item.keyEquivalent isEqual:key_equivalent]) {
       // We don't want to ignore shift for [cmd + shift + tab] and [cmd + tab],
       // which are special.
-      if (item.tag == IDC_SELECT_NEXT_TAB ||
-          item.tag == IDC_SELECT_PREVIOUS_TAB) {
+      if (item.tag == IDC_CYCLE_TO_NEXT_TAB ||
+          item.tag == IDC_CYCLE_TO_PREV_TAB) {
         if (modifier_mask == item.keyEquivalentModifierMask) {
           return item;
         }
@@ -86,6 +86,9 @@ NSMenuItem* MenuContainsAccelerator(NSMenu* menu,
 }
 
 }  // namespace
+
+class AcceleratorsCocoaBrowserTest : public InProcessBrowserTest {
+};
 
 class AcceleratorsCocoaBrowserTestRTL : public AcceleratorsCocoaBrowserTest {
  public:
@@ -137,7 +140,7 @@ IN_PROC_BROWSER_TEST_F(AcceleratorsCocoaBrowserTest,
   AcceleratorsCocoa* keymap = AcceleratorsCocoa::GetInstance();
   // The "Share" menu is dynamically populated.
   NSMenu* mainMenu = NSApp.mainMenu;
-  NSMenu* fileMenu = [[mainMenu itemWithTag:IDC_FILE_MENU] submenu];
+  NSMenu* fileMenu = [[mainMenu itemWithTag:kMacFileMenuId] submenu];
   NSMenu* shareMenu =
       [[fileMenu itemWithTitle:l10n_util::GetNSString(IDS_SHARE_MAC)] submenu];
   [[shareMenu delegate] menuNeedsUpdate:shareMenu];

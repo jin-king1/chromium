@@ -89,6 +89,8 @@ class FakeArcBridgeHost : public mojom::ArcBridgeHost {
   void OnKeyMintInstanceReady(
       mojo::PendingRemote<mojom::keymint::KeyMintInstance> keymint_remote)
       override;
+  void OnKioskInstanceReady(
+      mojo::PendingRemote<mojom::KioskInstance> kiosk_remote) override;
   void OnMediaSessionInstanceReady(
       mojo::PendingRemote<mojom::MediaSessionInstance> media_session_remote)
       override;
@@ -140,8 +142,6 @@ class FakeArcBridgeHost : public mojom::ArcBridgeHost {
       override;
   void OnSystemUiInstanceReady(
       mojo::PendingRemote<mojom::SystemUiInstance> system_ui_remote) override;
-  void OnTimerInstanceReady(
-      mojo::PendingRemote<mojom::TimerInstance> timer_remote) override;
   void OnTracingInstanceReady(
       mojo::PendingRemote<mojom::TracingInstance> trace_remote) override;
   void OnTtsInstanceReady(

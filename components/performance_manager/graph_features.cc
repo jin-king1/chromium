@@ -18,7 +18,9 @@
 #include "components/performance_manager/graph/frame_node_impl_describer.h"
 #include "components/performance_manager/graph/page_node_impl_describer.h"
 #include "components/performance_manager/graph/process_node_impl_describer.h"
+#include "components/performance_manager/graph/tracing_observer.h"
 #include "components/performance_manager/graph/worker_node_impl_describer.h"
+#include "components/performance_manager/public/decorators/site_data_recorder.h"
 #include "components/performance_manager/public/decorators/tab_page_decorator.h"
 #include "components/performance_manager/public/execution_context_priority/priority_voting_system.h"
 #include "components/performance_manager/public/graph/graph.h"
@@ -27,10 +29,6 @@
 #include "components/performance_manager/scenarios/input_scenario_observer.h"
 #include "components/performance_manager/scenarios/loading_scenario_observer.h"
 #include "components/performance_manager/v8_memory/v8_context_tracker.h"
-
-#if !BUILDFLAG(IS_ANDROID)
-#include "components/performance_manager/public/decorators/site_data_recorder.h"
-#endif
 
 namespace performance_manager {
 
@@ -86,11 +84,9 @@ void GraphFeatures::ConfigureGraph(Graph* graph) const {
     Install<resource_attribution::internal::QueryScheduler>(graph);
   }
 
-#if !BUILDFLAG(IS_ANDROID)
   if (flags_.site_data_recorder) {
     Install<SiteDataRecorder>(graph);
   }
-#endif
 
   if (flags_.tab_page_decorator) {
     Install<TabPageDecorator>(graph);
@@ -98,6 +94,10 @@ void GraphFeatures::ConfigureGraph(Graph* graph) const {
 
   if (flags_.v8_context_tracker) {
     Install<v8_memory::V8ContextTracker>(graph);
+  }
+
+  if (flags_.tracing_observers) {
+    Install<TracingObserverList>(graph);
   }
 }
 

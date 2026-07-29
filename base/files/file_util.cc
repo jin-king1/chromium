@@ -2,16 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/files/file_util.h"
 
 #include <algorithm>
+#include <array>
 #include <string_view>
 
+#include "base/containers/fixed_flat_set.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_split.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
 
@@ -29,12 +28,12 @@
 
 #include "base/bit_cast.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/containers/span.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/functional/function_ref.h"
 #include "base/notreached.h"
+#include "base/numerics/checked_math.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -114,8 +113,12 @@ bool ReadStreamToSpanWithMaxSize(
   span<uint8_t> bytes_span = resize_span(chunk_size);
   DCHECK_EQ(bytes_span.size(), chunk_size);
 
-  while ((bytes_read_this_pass = fread(bytes_span.data() + bytes_read_so_far, 1,
-                                       chunk_size, stream)) > 0) {
+  // TODO(https://crbug.com/40284755): Replace `UNSAFE_TODO` with
+  // `UNSAFE_BUFFERS` after replacing pointer arithmetic with `span::subspan`
+  // and adding a comment explaining why `fread` calls are safe.
+  while ((bytes_read_this_pass = UNSAFE_TODO(fread(
+              bytes_span.data() + bytes_read_so_far, 1, chunk_size, stream))) >
+         0) {
     if ((max_size - bytes_read_so_far) < bytes_read_this_pass) {
       // Read more than max_size bytes, bail out.
       bytes_read_so_far = max_size;
@@ -200,29 +203,28 @@ bool CopyFileContents(File& infile, File& outfile) {
 #endif
 
   static constexpr size_t kBufferSize = 32768;
-  std::vector<char> buffer(kBufferSize);
+  std::vector<uint8_t> buffer(kBufferSize);
 
   for (;;) {
-    int bytes_read =
-        infile.ReadAtCurrentPos(buffer.data(), static_cast<int>(buffer.size()));
-    if (bytes_read < 0) {
+    std::optional<size_t> bytes_read = infile.ReadAtCurrentPos(buffer);
+    if (!bytes_read.has_value()) {
       return false;
     }
     if (bytes_read == 0) {
       return true;
     }
     // Allow for partial writes
-    int bytes_written_per_read = 0;
+    span<const uint8_t> bytes_to_write =
+        as_byte_span(buffer).first(*bytes_read);
     do {
-      int bytes_written_partial = outfile.WriteAtCurrentPos(
-          &buffer[static_cast<size_t>(bytes_written_per_read)],
-          bytes_read - bytes_written_per_read);
-      if (bytes_written_partial < 0) {
+      std::optional<size_t> bytes_written =
+          outfile.WriteAtCurrentPos(bytes_to_write);
+      if (!bytes_written.has_value()) {
         return false;
       }
 
-      bytes_written_per_read += bytes_written_partial;
-    } while (bytes_written_per_read < bytes_read);
+      bytes_to_write = bytes_to_write.subspan(*bytes_written);
+    } while (!bytes_to_write.empty());
   }
 
   NOTREACHED();
@@ -253,17 +255,19 @@ bool ContentsEqual(const FilePath& filename1, const FilePath& filename2) {
   do {
     file1.read(buffer1, BUFFER_SIZE);
     file2.read(buffer2, BUFFER_SIZE);
+    if ((file1.eof() != file2.eof()) || (file1.gcount() != file2.gcount())) {
+      return false;
+    }
 
-    if ((file1.eof() != file2.eof()) || (file1.gcount() != file2.gcount()) ||
-        (memcmp(buffer1, buffer2, static_cast<size_t>(file1.gcount())))) {
-      file1.close();
-      file2.close();
+    span<const uint8_t> data1 =
+        as_byte_span(buffer1).first(checked_cast<size_t>(file1.gcount()));
+    span<const uint8_t> data2 =
+        as_byte_span(buffer2).first(checked_cast<size_t>(file2.gcount()));
+    if (data1 != data2) {
       return false;
     }
   } while (!file1.eof() || !file2.eof());
 
-  file1.close();
-  file2.close();
   return true;
 }
 
@@ -485,8 +489,17 @@ int ReadFile(const FilePath& filename, char* data, int max_size) {
   if (max_size < 0) {
     return -1;
   }
-  std::optional<uint64_t> result =
-      ReadFile(filename, span(data, static_cast<uint32_t>(max_size)));
+  size_t unsigned_size = checked_cast<size_t>(max_size);
+
+  // SAFETY: Depending on the caller to provide valid `data` and `max_size`.
+  //
+  // TODO(https://crbug.com/40284755): Mark this overload of `ReadFile` with
+  // `UNSAFE_BUFFER_USAGE` and eventually remove it altogether (preferring the
+  // overload that takes a `span`).
+  span<char> chars_buffer = UNSAFE_TODO(span(data, unsigned_size));
+
+  span<uint8_t> bytes_buffer = as_writable_byte_span(chars_buffer);
+  std::optional<uint64_t> result = ReadFile(filename, bytes_buffer);
   if (!result) {
     return -1;
   }
@@ -505,7 +518,7 @@ FilePath GetUniquePathWithSuffixFormat(const FilePath& path,
                                        base::cstring_view suffix_format) {
   DCHECK(!path.empty());
   DCHECK_EQ(std::ranges::count(suffix_format, '%'), 1);
-  DCHECK(base::Contains(suffix_format, "%d"));
+  DCHECK(suffix_format.contains("%d"));
 
   if (!PathExists(path)) {
     return path;
@@ -521,5 +534,41 @@ FilePath GetUniquePathWithSuffixFormat(const FilePath& path,
   }
   return FilePath();
 }
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+bool IsReservedNameOnWindows(const base::FilePath::StringType& filename) {
+  // This list is taken from the MSDN article "Naming a file"
+  // http://msdn2.microsoft.com/en-us/library/aa365247(VS.85).aspx
+  // `clock$` is also included because GetSaveFileName seems to consider it as a
+  // reserved name too.
+  static constexpr auto kKnownDevices = std::to_array(
+      {"con",  "prn",  "aux",  "nul",  "com1", "com2", "com3",  "com4",
+       "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2",  "lpt3",
+       "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "clock$"});
+  static constexpr auto kMagicNames = base::MakeFixedFlatSet<std::string_view>({
+      // These file names are used by the "Customize folder" feature of the
+      // shell.
+      "desktop.ini",
+      "thumbs.db",
+  });
+
+#if BUILDFLAG(IS_WIN)
+  std::string filename_lower = base::ToLowerASCII(base::WideToUTF8(filename));
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+  std::string filename_lower = base::ToLowerASCII(filename);
+#endif
+
+  return std::ranges::any_of(kKnownDevices,
+                             [&filename_lower](std::string_view device) {
+                               if (filename_lower == device) {
+                                 return true;
+                               }
+                               auto parts =
+                                   SplitStringOnce(filename_lower, '.');
+                               return parts && parts->first == device;
+                             }) ||
+         kMagicNames.contains(filename_lower);
+}
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 
 }  // namespace base

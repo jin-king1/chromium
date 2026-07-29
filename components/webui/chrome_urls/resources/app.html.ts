@@ -12,9 +12,12 @@ export function getHtml(this: ChromeUrlsAppElement) {
 <h2>List of Chrome URLs</h2>
 <ul>
   ${this.webuiUrlInfos_.map(info => html`
-    ${info.enabled ?
-      html`<li><a href="${info.url.url}">${info.url.url}</a></li>` :
-      html`<li>${info.url.url}</li>`
+    ${this.isChromeUrlsUrl_(info) ?
+      html`<li><a href="#">chrome://chrome-urls</a></li>` :
+      html`${info.enabled ?
+        html`<li><a href="${info.url}">${info.url}</a></li>` :
+        html`<li>${info.url}</li>`
+      }`
     }`)}
 </ul>
 ${this.internalUrlInfos_.length ? html`
@@ -30,8 +33,8 @@ ${this.internalUrlInfos_.length ? html`
   <ul>
     ${this.internalUrlInfos_.map(info => html`
       ${this.isInternalUiEnabled_(info) ?
-        html`<li><a href="${info.url.url}">${info.url.url}</a></li>` :
-        html`<li>${info.url.url}</li>`
+        html`<li><a href="${info.url}">${info.url}</a></li>` :
+        html`<li>${info.url}</li>`
       }`)}
   </ul>` : ''}
 ${this.commandUrls_.length ? html`
@@ -42,6 +45,6 @@ ${this.commandUrls_.length ? html`
     address bar if you need them.
   </p>
   <ul>
-    ${this.commandUrls_.map(url => html`<li>${url.url}</li>`)}
+    ${this.commandUrls_.map(url => html`<li>${url}</li>`)}
   </ul>` : ''}`;
 }

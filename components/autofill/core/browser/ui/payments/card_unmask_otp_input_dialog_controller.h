@@ -5,8 +5,11 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_UI_PAYMENTS_CARD_UNMASK_OTP_INPUT_DIALOG_CONTROLLER_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_UI_PAYMENTS_CARD_UNMASK_OTP_INPUT_DIALOG_CONTROLLER_H_
 
+#include <stddef.h>
+
 #include <string>
 
+#include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 
@@ -17,11 +20,18 @@ struct FooterText {
   size_t link_offset_in_text;
 };
 
+class CardUnmaskOtpInputDialogView;
+
 // Interface that exposes controller functionality to
 // CardUnmaskOtpInputDialogView.
 class CardUnmaskOtpInputDialogController {
  public:
   virtual ~CardUnmaskOtpInputDialogController() = default;
+
+  // Show the dialog for users to type in OTPs.
+  virtual void ShowDialog(
+      base::OnceCallback<base::WeakPtr<CardUnmaskOtpInputDialogView>()>
+          create_and_show_view_callback) = 0;
 
   // Called whenever the dialog is closed, and it sets the |dialog_view_|
   // variable in this class to nullptr. |user_closed_dialog| indicates whether

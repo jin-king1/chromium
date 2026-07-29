@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "fuchsia_web/runners/cast/cast_component.h"
 
@@ -20,7 +16,6 @@
 #include <utility>
 
 #include "base/auto_reset.h"
-#include "base/files/file_util.h"
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/functional/bind.h"
 #include "base/path_service.h"
@@ -38,18 +33,18 @@ constexpr int kBindingsFailureExitCode = 129;
 constexpr int kRewriteRulesProviderDisconnectExitCode = 130;
 
 fuchsia::web::ConsoleLogLevel SeverityToConsoleLogLevel(
-    fuchsia::diagnostics::Severity severity) {
+    fuchsia::diagnostics::types::Severity severity) {
   switch (severity) {
-    case fuchsia::diagnostics::Severity::TRACE:
-    case fuchsia::diagnostics::Severity::DEBUG:
+    case fuchsia::diagnostics::types::Severity::TRACE:
+    case fuchsia::diagnostics::types::Severity::DEBUG:
       return fuchsia::web::ConsoleLogLevel::DEBUG;
-    case fuchsia::diagnostics::Severity::INFO:
+    case fuchsia::diagnostics::types::Severity::INFO:
       return fuchsia::web::ConsoleLogLevel::INFO;
-    case fuchsia::diagnostics::Severity::WARN:
+    case fuchsia::diagnostics::types::Severity::WARN:
       return fuchsia::web::ConsoleLogLevel::WARN;
-    case fuchsia::diagnostics::Severity::ERROR:
+    case fuchsia::diagnostics::types::Severity::ERROR:
       return fuchsia::web::ConsoleLogLevel::ERROR;
-    case fuchsia::diagnostics::Severity::FATAL:
+    case fuchsia::diagnostics::types::Severity::FATAL:
       // FATAL means none per the FIDL definition.
       return fuchsia::web::ConsoleLogLevel::NONE;
   }

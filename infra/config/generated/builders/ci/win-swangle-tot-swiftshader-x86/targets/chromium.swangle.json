@@ -8,12 +8,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_egl_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_egl_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -31,12 +33,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_gles2_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_gles2_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -54,12 +58,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_gles31_rotate180_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_gles31_rotate180_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -77,12 +83,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_gles31_rotate270_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_gles31_rotate270_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -100,12 +108,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_gles31_rotate90_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_gles31_rotate90_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -123,12 +133,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_gles31_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_gles31_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -147,12 +159,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_gles3_rotate180_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_gles3_rotate180_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -170,12 +184,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_gles3_rotate270_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_gles3_rotate270_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -193,12 +209,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_gles3_rotate90_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_gles3_rotate90_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -216,12 +234,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_gles3_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_gles3_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -240,12 +260,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_khr_gles2_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_khr_gles2_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -263,12 +285,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_khr_gles31_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_khr_gles31_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -286,12 +310,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_deqp_khr_gles3_tests",
+        "module_scheme": "deqp",
         "name": "angle_deqp_khr_gles3_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,
@@ -309,12 +335,14 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_end2end_tests",
+        "module_scheme": "gtest",
         "name": "angle_end2end_tests",
         "swarming": {
           "dimensions": {
             "cpu": "x86-64",
             "gpu": "none",
-            "os": "Windows-10",
+            "os": "Windows-10-19045",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 900,

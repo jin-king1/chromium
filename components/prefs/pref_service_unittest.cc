@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/functional/callback_helpers.h"
+#include "base/test/gtest_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/prefs/json_pref_store.h"
@@ -17,6 +18,7 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service_factory.h"
 #include "components/prefs/pref_value_store.h"
+#include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/prefs/testing_pref_store.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -65,6 +67,36 @@ TEST(PrefServiceTest, NoObserverFire) {
   EXPECT_CALL(obs, OnPreferenceChanged(_)).Times(0);
   prefs.ClearPref(pref_name);
   Mock::VerifyAndClearExpectations(&obs);
+}
+
+TEST(PrefServiceTest, GetMutableUserPrefRecoversFromTypeConflict) {
+  TestingPrefServiceSimple prefs;
+
+  // Register a nested dictionary preference.
+  const char kNestedDictPref[] = "parent.child";
+  prefs.registry()->RegisterDictionaryPref(kNestedDictPref);
+
+  // Simulate a type conflict: write a non-dictionary value directly to the
+  // parent path.
+  prefs.SetUserPref("parent", base::Value(true));
+
+  // Attempting to access the nested dictionary should trigger recovery.
+  ScopedDictPrefUpdate update(&prefs, kNestedDictPref);
+
+  // The update should be successful (not null/fallback) and we can mutate it.
+  update->Set("key", "value");
+
+  // Verify that the parent node was cleared and reconstructed as a dictionary
+  // containing "child" by checking that the registered pref "parent.child" now
+  // works and has our mutation.
+  const base::Value* recovered_val = prefs.GetUserPrefValue(kNestedDictPref);
+  ASSERT_TRUE(recovered_val);
+  ASSERT_TRUE(recovered_val->is_dict());
+
+  // Verify our mutation exists.
+  const std::string* inner_val = recovered_val->GetDict().FindString("key");
+  ASSERT_TRUE(inner_val);
+  EXPECT_EQ(*inner_val, "value");
 }
 
 TEST(PrefServiceTest, HasPrefPath) {
@@ -438,7 +470,7 @@ TEST_F(PrefServiceSetValueTest, SetDictionaryValue) {
   prefs_.RemoveUserPref(kName);
   Mock::VerifyAndClearExpectations(&observer_);
 
-  base::Value::Dict new_value_dict;
+  base::DictValue new_value_dict;
   new_value_dict.Set(kName, kValue);
   base::Value new_value(std::move(new_value_dict));
   observer_.Expect(kName, &new_value);
@@ -449,7 +481,7 @@ TEST_F(PrefServiceSetValueTest, SetDictionaryValue) {
   prefs_.Set(kName, new_value);
   Mock::VerifyAndClearExpectations(&observer_);
 
-  base::Value empty((base::Value::Dict()));
+  base::Value empty((base::DictValue()));
   observer_.Expect(kName, &empty);
   prefs_.Set(kName, empty);
   Mock::VerifyAndClearExpectations(&observer_);
@@ -465,7 +497,7 @@ TEST_F(PrefServiceSetValueTest, SetListValue) {
   prefs_.RemoveUserPref(kName);
   Mock::VerifyAndClearExpectations(&observer_);
 
-  base::Value::List new_value_list;
+  base::ListValue new_value_list;
   new_value_list.Append(kValue);
   base::Value new_value(std::move(new_value_list));
   observer_.Expect(kName, &new_value);
@@ -476,8 +508,34 @@ TEST_F(PrefServiceSetValueTest, SetListValue) {
   prefs_.Set(kName, new_value);
   Mock::VerifyAndClearExpectations(&observer_);
 
-  base::Value empty((base::Value::List()));
+  base::Value empty((base::ListValue()));
   observer_.Expect(kName, &empty);
   prefs_.Set(kName, empty);
   Mock::VerifyAndClearExpectations(&observer_);
+}
+
+// TODO(crbug.com/441781730): Failing on CrOS.
+#if BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_GetValueWithTypeConversion DISABLED_GetValueWithTypeConversion
+#else
+#define MAYBE_GetValueWithTypeConversion GetValueWithTypeConversion
+#endif
+TEST(PrefServiceTest, MAYBE_GetValueWithTypeConversion) {
+  TestingPrefServiceSimple prefs;
+  const char kTimePref[] = "time_pref";
+  const char kInt64Pref[] = "int64_pref";
+  prefs.registry()->RegisterTimePref(kTimePref, base::Time());
+  prefs.registry()->RegisterInt64Pref(kInt64Pref, 0);
+
+  // Good cases:
+  prefs.SetTime(kTimePref, base::Time::Now());
+  prefs.GetTime(kTimePref);
+  prefs.SetInt64(kInt64Pref, 123);
+  prefs.GetInt64(kInt64Pref);
+
+  // Bad cases:
+  EXPECT_CHECK_DEATH(prefs.SetInt64(kTimePref, 123));
+  EXPECT_CHECK_DEATH(prefs.GetInt64(kTimePref));
+  EXPECT_CHECK_DEATH(prefs.SetTime(kInt64Pref, base::Time::Now()));
+  EXPECT_CHECK_DEATH(prefs.GetTime(kInt64Pref));
 }

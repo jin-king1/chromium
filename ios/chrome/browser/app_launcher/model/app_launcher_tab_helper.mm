@@ -9,12 +9,12 @@
 #import "base/memory/ptr_util.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/strings/sys_string_conversions.h"
-#import "components/policy/core/browser/url_blocklist_manager.h"
+#import "components/policy/core/browser/url_list/policy_blocklist_service.h"
+#import "components/policy/core/browser/url_list/url_blocklist_manager.h"
 #import "components/reading_list/core/reading_list_model.h"
 #import "ios/chrome/browser/app_launcher/model/app_launcher_abuse_detector.h"
 #import "ios/chrome/browser/app_launcher/model/app_launcher_tab_helper_browser_presentation_provider.h"
 #import "ios/chrome/browser/app_launcher/model/app_launcher_tab_helper_delegate.h"
-#import "ios/chrome/browser/policy_url_blocking/model/policy_url_blocking_service.h"
 #import "ios/chrome/browser/policy_url_blocking/model/policy_url_blocking_service_factory.h"
 #import "ios/chrome/browser/policy_url_blocking/model/policy_url_blocking_util.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_model_factory.h"
@@ -28,6 +28,7 @@
 #import "ios/web/public/web_client.h"
 #import "net/base/apple/url_conversions.h"
 #import "url/gurl.h"
+#import "url/url_constants_ios.h"
 
 namespace {
 
@@ -48,11 +49,21 @@ bool IsValidAppUrl(const GURL& app_url) {
   return true;
 }
 
+// Returns true if `url` has a scheme that shows a prompt to initiate a phone or
+// video call.
+bool UrlHasCallWithPromptScheme(const GURL& url) {
+  return url.SchemeIs(url::kTelScheme) || url.SchemeIs(url::kTelPromptScheme) ||
+         url.SchemeIs(url::kFaceTimeScheme) ||
+         url.SchemeIs(url::kFaceTimePromptScheme) ||
+         url.SchemeIs(url::kFaceTimeAudioScheme) ||
+         url.SchemeIs(url::kFaceTimeAudioPromptScheme);
+}
+
 // Returns True if `app_url` has a Chrome bundle URL scheme.
 bool HasChromeAppScheme(const GURL& app_url) {
   NSArray* chrome_schemes =
       [[ChromeAppConstants sharedInstance] allBundleURLSchemes];
-  NSString* app_url_scheme = base::SysUTF8ToNSString(app_url.scheme());
+  NSString* app_url_scheme = base::SysUTF8ToNSString(app_url.GetScheme());
   return [chrome_schemes containsObject:app_url_scheme];
 }
 
@@ -134,8 +145,17 @@ void AppLauncherTabHelper::RequestToLaunchApp(const GURL& url,
   }
 
   if (!(is_user_initiated ||
-        (url.SchemeIs(url::kTelScheme) && user_tapped_recently))) {
+        (UrlHasCallWithPromptScheme(url) && user_tapped_recently))) {
     ShowAppLaunchAlert(AppLauncherAlertCause::kNoUserInteraction, url);
+    return;
+  }
+
+  // Prompt user before launching shortcuts. See crbug.com/476591032 for more
+  // context.
+  constexpr char kShortcutsScheme[] = "shortcuts";
+  constexpr char kWorkflowScheme[] = "workflow";
+  if (url.SchemeIs(kShortcutsScheme) || url.SchemeIs(kWorkflowScheme)) {
+    ShowAppLaunchAlert(AppLauncherAlertCause::kShortcutsURL, url);
     return;
   }
 
@@ -302,15 +322,19 @@ AppLauncherTabHelper::GetPolicyDecisionAndOptionalAppLaunchRequest(
       ProfileIOS::FromBrowserState(web_state()->GetBrowserState());
   PolicyBlocklistService* blocklistService =
       PolicyBlocklistServiceFactory::GetForProfile(profile);
-  if (blocklistService->GetURLBlocklistState(request_url) ==
+  PolicyBlocklistService::PolicyBlocklistState blocklist_state =
+      blocklistService->GetURLBlocklistStateWithPolicySource(request_url);
+  if (blocklist_state.url_blocklist_state ==
       policy::URLBlocklist::URLBlocklistState::URL_IN_BLOCKLIST) {
     return {PolicyDecision::CancelAndDisplayError(
-                policy_url_blocking_util::CreateBlockedUrlError()),
+                policy_url_blocking_util::CreateBlockedUrlError(
+                    blocklist_state.policy_source)),
             kNoAppLaunchRequest};
   }
 
-  // Disallow navigations to tel: URLs from cross-origin frames.
-  if (request_url.SchemeIs(url::kTelScheme) &&
+  // Disallow navigations to call or messaging URLs (tel:, telprompt:,
+  // facetime:, facetime-audio:, sms:) from cross-origin frames.
+  if (UrlHasCallWithPromptScheme(request_url) &&
       request_info.target_frame_is_cross_origin) {
     return {PolicyDecision::Cancel(), kNoAppLaunchRequest};
   }
@@ -380,5 +404,3 @@ AppLauncherTabHelper::GetPolicyDecisionAndOptionalAppLaunchRequest(
   }
   return {PolicyDecision::Cancel(), std::move(optional_app_launch_request)};
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(AppLauncherTabHelper)

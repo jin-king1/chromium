@@ -7,10 +7,12 @@
 #include "base/check.h"
 #include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
+#include "components/content_settings/core/common/content_settings.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
+#include "third_party/blink/public/mojom/permissions/permission_status.mojom-shared.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -25,11 +27,49 @@ constexpr const char* kIsFileURLHistogram =
 }
 #endif
 
+PermissionOption PermissionUtil::ToPermissionOption(
+    blink::mojom::PermissionStatus permission_status) {
+  switch (permission_status) {
+    case blink::mojom::PermissionStatus::GRANTED:
+      return PermissionOption::kAllowed;
+    case blink::mojom::PermissionStatus::DENIED:
+      return PermissionOption::kDenied;
+    case blink::mojom::PermissionStatus::ASK:
+      return PermissionOption::kAsk;
+  }
+  NOTREACHED();
+}
+
+blink::mojom::PermissionStatusWithDetailsPtr
+PermissionUtil::ToPermissionStatusWithDetails(
+    blink::mojom::PermissionName permission_name,
+    PermissionResult result) {
+  blink::mojom::PermissionStatus status = result.status;
+  blink::mojom::PermissionDetailsPtr details;
+
+  if (permission_name == blink::mojom::PermissionName::GEOLOCATION) {
+    GeolocationSetting* geolocation_setting =
+        result.retrieved_permission_setting
+            ? std::get_if<GeolocationSetting>(
+                  &result.retrieved_permission_setting.value())
+            : nullptr;
+    if (status == blink::mojom::PermissionStatus::GRANTED &&
+        geolocation_setting) {
+      details = blink::mojom::PermissionDetails::NewGeolocationAccuracy(
+          geolocation_setting->precise == PermissionOption::kAllowed
+              ? blink::mojom::GeolocationAccuracy::kPrecise
+              : blink::mojom::GeolocationAccuracy::kApproximate);
+    }
+  }
+  return blink::mojom::PermissionStatusWithDetails::New(status,
+                                                        std::move(details));
+}
+
 // Due to dependency issues, this method is duplicated from
 // components/permissions/permission_util.cc.
 GURL PermissionUtil::GetLastCommittedOriginAsURL(
     content::RenderFrameHost* render_frame_host) {
-  DCHECK(render_frame_host);
+  CHECK(render_frame_host);
 
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(render_frame_host);
@@ -48,12 +88,13 @@ GURL PermissionUtil::GetLastCommittedOriginAsURL(
   }
 #endif
 
-  if (render_frame_host->GetLastCommittedOrigin().GetURL().is_empty()) {
+  GURL origin = render_frame_host->GetLastCommittedOrigin().GetURL();
+  if (origin.is_empty() && render_frame_host->IsInPrimaryMainFrame()) {
     if (!web_contents->GetVisibleURL().is_empty()) {
-      return web_contents->GetVisibleURL();
+      origin = web_contents->GetVisibleURL().DeprecatedGetOriginAsURL();
     }
   }
-  return render_frame_host->GetLastCommittedOrigin().GetURL();
+  return origin;
 }
 
 bool PermissionUtil::IsDomainOverride(
@@ -71,7 +112,7 @@ const url::Origin& PermissionUtil::ExtractDomainOverride(
 }
 
 bool PermissionUtil::ValidateDomainOverride(
-    const std::vector<blink::PermissionType>& types,
+    const std::vector<blink::mojom::PermissionDescriptorPtr>& types,
     RenderFrameHost* rfh,
     const blink::mojom::PermissionDescriptorPtr& descriptor) {
   if (types.size() > 1) {
@@ -95,6 +136,24 @@ bool PermissionUtil::ValidateDomainOverride(
   }
 
   return true;
+}
+
+bool PermissionUtil::IsDevicePermission(
+    const blink::mojom::PermissionDescriptorPtr& descriptor) {
+  return descriptor->name == blink::mojom::PermissionName::VIDEO_CAPTURE ||
+         descriptor->name == blink::mojom::PermissionName::AUDIO_CAPTURE ||
+         descriptor->name == blink::mojom::PermissionName::GEOLOCATION ||
+         descriptor->name == blink::mojom::PermissionName::AR ||
+         descriptor->name == blink::mojom::PermissionName::VR ||
+         descriptor->name == blink::mojom::PermissionName::HAND_TRACKING;
+}
+
+bool PermissionUtil::IsEmbeddablePermission(
+    const blink::mojom::PermissionDescriptorPtr& descriptor) {
+  return descriptor->name == blink::mojom::PermissionName::VIDEO_CAPTURE ||
+         descriptor->name == blink::mojom::PermissionName::AUDIO_CAPTURE ||
+         descriptor->name == blink::mojom::PermissionName::GEOLOCATION ||
+         descriptor->name == blink::mojom::PermissionName::WEB_APP_INSTALLATION;
 }
 
 }  // namespace content

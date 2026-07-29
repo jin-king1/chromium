@@ -36,10 +36,29 @@ std::string WebFilterTypeToDisplayString(WebFilterType web_filter_type) {
       return "allow_certain_sites";
     case WebFilterType::kTryToBlockMatureSites:
       return "block_mature_sites";
+    case WebFilterType::kDisabled:
+      return "disabled";
     case WebFilterType::kMixed:
       NOTREACHED();
   }
 }
+
+// LINT.IfChange(top_level_filtering_context)
+std::string GetFilteringContextName(FilteringContext context) {
+  switch (context) {
+    case FilteringContext::kDefault:
+      return ".Default";
+    case FilteringContext::kNavigationThrottle:
+      return ".NavigationThrottle";
+    case FilteringContext::kNavigationObserver:
+      return ".NavigationObserver";
+    case FilteringContext::kFamilyLinkSettingsUpdated:
+      return ".FamilyLinkSettingsUpdated";
+    default:
+      NOTREACHED();
+  }
+}
+// LINT.ThenChange(//tools/metrics/histograms/metadata/families/histograms.xml:top_level_filtering_context)
 
 int GetHistogramValueForTransitionType(ui::PageTransition transition_type) {
   int value =
@@ -87,9 +106,6 @@ const char* const kCustodianInfoPrefs[] = {
 const base::FilePath::CharType kSupervisedUserSettingsFilename[] =
     FILE_PATH_LITERAL("Managed Mode Settings");
 
-const char kSyncGoogleDashboardURL[] =
-    "https://www.google.com/settings/chrome/sync";
-
 const char kFamilyLinkUserLogSegmentHistogramName[] =
     "FamilyLinkUser.LogSegment";
 
@@ -105,8 +121,6 @@ const char kSkipParentApprovalToInstallExtensionsHistogramName[] =
 const char kSupervisedUserURLFilteringResultHistogramName[] =
     "ManagedUsers.FilteringResult";
 
-const char kSupervisedUserTopLevelURLFilteringResultHistogramName[] =
-    "ManagedUsers.TopLevelFilteringResult";
 const char kSupervisedUserTopLevelURLFilteringResult2HistogramName[] =
     "ManagedUsers.TopLevelFilteringResult2";
 
@@ -115,9 +129,6 @@ const char kLocalWebApprovalResultHistogramName[] =
 
 const char kManagedByParentUiMoreInfoUrl[] =
     "https://familylink.google.com/setting/resource/94";
-
-const char kFamilyManagementUrl[] =
-    "https://myaccount.google.com/family/details";
 
 const char kDefaultEmptyFamilyMemberRole[] = "not_in_family";
 
@@ -129,8 +140,6 @@ const char kClassifiedEarlierThanContentResponseHistogramName[] =
     "SupervisedUsers.ClassifyUrlThrottle.EarlierThanContentResponse";
 const char kClassifiedLaterThanContentResponseHistogramName[] =
     "SupervisedUsers.ClassifyUrlThrottle.LaterThanContentResponse";
-extern const char kClassifyUrlThrottleStatusHistogramName[] =
-    "SupervisedUsers.ClassifyUrlThrottle.Status";
 extern const char kClassifyUrlThrottleFinalStatusHistogramName[] =
     "SupervisedUsers.ClassifyUrlThrottle.FinalStatus";
 
@@ -138,4 +147,10 @@ const char kLocalWebApprovalDurationMillisecondsHistogramName[] =
     "FamilyLinkUser.LocalWebApprovalCompleteRequestTotalDuration";
 const char kLocalWebApprovalErrorTypeHistogramName[] =
     "FamilyLinkUser.LocalWebApprovalErrorType";
+
+const char kBrowserContentFiltersSettingName[] =
+    "browser_content_filters_enabled";
+const char kSearchContentFiltersSettingName[] =
+    "search_content_filters_enabled";
+
 }  // namespace supervised_user

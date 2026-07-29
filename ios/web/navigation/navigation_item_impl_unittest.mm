@@ -75,9 +75,12 @@ TEST_F(NavigationItemTest, Clone) {
   NSString* state0 = @"state0";
   NSMutableString* mutableState = [state0 mutableCopy];
   item_->SetSerializedStateObject(mutableState);
+  item_->SetInternalScrollToTextFragment("start,end");
 
   // Clone.
   std::unique_ptr<web::NavigationItemImpl> clone = item_->Clone();
+  EXPECT_EQ(item_->GetInternalScrollToTextFragment(),
+            clone->GetInternalScrollToTextFragment());
 
   // Modify the objects.
   NSString* postData1 = @"postData1";
@@ -158,6 +161,18 @@ TEST_F(NavigationItemTest, VirtualURLTest) {
   EXPECT_EQ(original_url, item_->GetURL());
 }
 
+// Tests the getter and setter for the text fragment.
+TEST_F(NavigationItemTest, InternalScrollToTextFragment) {
+  EXPECT_FALSE(item_->GetInternalScrollToTextFragment().has_value());
+  std::string fragment = "start,end";
+  item_->SetInternalScrollToTextFragment(fragment);
+  ASSERT_TRUE(item_->GetInternalScrollToTextFragment().has_value());
+  EXPECT_EQ(fragment, item_->GetInternalScrollToTextFragment().value());
+
+  item_->SetInternalScrollToTextFragment(std::nullopt);
+  EXPECT_FALSE(item_->GetInternalScrollToTextFragment().has_value());
+}
+
 // Tests setting title longer than kMaxTitleLength.
 TEST_F(NavigationItemTest, ExtraLongTitle) {
   item_->SetTitle(base::UTF8ToUTF16(std::string(kMaxTitleLength + 1, 'i')));
@@ -196,6 +211,8 @@ TEST_F(NavigationItemTest, RestoreState) {
   other_item.SetUserAgentType(UserAgentType::DESKTOP);
   other_item.SetURL(GURL("www.otherurl.com"));
   other_item.SetVirtualURL(GURL("www.virtual.com"));
+  NSData* data = [@"data" dataUsingEncoding:NSUTF8StringEncoding];
+  other_item.SetSecurityScopedFileResource(data);
 
   ASSERT_NE(other_item.GetURL(), item_->GetURL());
 
@@ -203,16 +220,21 @@ TEST_F(NavigationItemTest, RestoreState) {
   item_->RestoreStateFromItem(&other_item);
   EXPECT_EQ(other_item.GetUserAgentType(), item_->GetUserAgentType());
   EXPECT_NE(other_item.GetVirtualURL(), item_->GetVirtualURL());
+  EXPECT_NE(other_item.GetSecurityScopedFileResource(),
+            item_->GetSecurityScopedFileResource());
 
   NavigationItemImpl other_item2;
   other_item2.SetUserAgentType(UserAgentType::DESKTOP);
   other_item2.SetURL(item_->GetURL());
   other_item2.SetVirtualURL(GURL("www.virtual.com"));
+  other_item2.SetSecurityScopedFileResource(data);
 
   // Same URL, everything is restored.
   item_->RestoreStateFromItem(&other_item2);
   EXPECT_EQ(other_item2.GetUserAgentType(), item_->GetUserAgentType());
   EXPECT_EQ(other_item2.GetVirtualURL(), item_->GetVirtualURL());
+  EXPECT_EQ(other_item2.GetSecurityScopedFileResource(),
+            item_->GetSecurityScopedFileResource());
 }
 
 // Tests that NavigationItemImpl round trip correctly when serialized to proto.
@@ -227,6 +249,7 @@ TEST_F(NavigationItemTest, NavigationItemImplRoundTrip) {
   original.SetUserAgentType(UserAgentType::DESKTOP);
   original.AddHttpRequestHeaders(@{@"HeaderKey" : @"HeaderValue"});
   original.SetTransitionType(ui::PAGE_TRANSITION_TYPED);
+  original.SetInternalScrollToTextFragment("start,end");
 
   proto::NavigationItemStorage storage;
   original.SerializeToProto(storage);
@@ -238,6 +261,8 @@ TEST_F(NavigationItemTest, NavigationItemImplRoundTrip) {
   EXPECT_EQ(original.GetReferrer(), decoded.GetReferrer());
   EXPECT_EQ(original.GetTimestamp(), decoded.GetTimestamp());
   EXPECT_EQ(original.GetUserAgentType(), decoded.GetUserAgentType());
+  EXPECT_EQ(original.GetInternalScrollToTextFragment(),
+            decoded.GetInternalScrollToTextFragment());
   EXPECT_NSEQ(original.GetHttpRequestHeaders(),
               decoded.GetHttpRequestHeaders());
 

@@ -14,9 +14,7 @@ constexpr int64_t kMBytes = 1024 * 1024;
 }  // namespace
 
 // Enables customized storage quota settings for embedders.
-BASE_FEATURE(kStorageQuotaSettings,
-             "StorageQuotaSettings",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kStorageQuotaSettings, base::FEATURE_DISABLED_BY_DEFAULT);
 constexpr base::FeatureParam<double> kMustRemainAvailableBytes{
     &kStorageQuotaSettings, "MustRemainAvailableBytes", 1024 * kMBytes /* 1GB */
 };
@@ -37,9 +35,11 @@ constexpr base::FeatureParam<double> kShouldRemainAvailableRatio{
 };
 
 // A kill switch for the new reported quota being a static value.
-BASE_FEATURE(kStaticStorageQuota,
-             "StaticStorageQuota",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kStaticStorageQuota, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, Incognito mode will always report a maximal quota value to avoid
+// fingerprinting and incognito detection.
+BASE_FEATURE(kIncognitoStaticStorageQuota, base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace features
 }  // namespace storage

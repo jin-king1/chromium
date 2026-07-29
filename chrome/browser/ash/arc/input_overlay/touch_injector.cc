@@ -37,7 +37,7 @@
 #include "ui/gfx/geometry/vector2d_f.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/non_client_view.h"
+#include "ui/views/window/frame_view.h"
 
 // Enable VLOG level 1.
 #undef ENABLED_VLOG_LEVEL
@@ -75,7 +75,7 @@ void RemoveActionsWithSameID(std::vector<std::unique_ptr<Action>>& actions) {
 // Parse Json to different types of actions.
 std::vector<std::unique_ptr<Action>> ParseJsonToActions(
     TouchInjector* touch_injector,
-    const base::Value::Dict& root) {
+    const base::DictValue& root) {
   std::vector<std::unique_ptr<Action>> actions;
 
   // Parse tap actions if they exist.
@@ -245,10 +245,16 @@ TouchInjector::TouchInjector(aura::Window* top_level_window,
       save_file_callback_(save_file_callback) {}
 
 TouchInjector::~TouchInjector() {
+  if (!played_with_game_controls_) {
+    // Record the game never played with Game Controls before shutting down the
+    // game.
+    RecordPlayGameWithGameControls(package_name_,
+                                   /*played_with_game_controls=*/false);
+  }
   UnRegisterEventRewriter();
 }
 
-void TouchInjector::ParseActions(const base::Value::Dict& root) {
+void TouchInjector::ParseActions(const base::DictValue& root) {
   DCHECK(actions_.empty());
   if (enable_mouse_lock_) {
     ParseMouseLock(root);
@@ -378,8 +384,7 @@ void TouchInjector::UpdatePositionsForRegister() {
   }
 
   // No need to transform if there is no rotation.
-  if (auto display =
-          display::Screen::GetScreen()->GetDisplayNearestWindow(window_);
+  if (auto display = display::Screen::Get()->GetDisplayNearestWindow(window_);
       display.panel_rotation() != display::Display::ROTATE_0) {
     rotation_transform_ =
         std::make_unique<gfx::Transform>(ash::CreateRotationTransform(
@@ -479,7 +484,7 @@ void TouchInjector::SendExtraEvent(
   }
 }
 
-void TouchInjector::ParseMouseLock(const base::Value::Dict& dict) {
+void TouchInjector::ParseMouseLock(const base::DictValue& dict) {
   auto* mouse_lock = dict.FindDict(kMouseLock);
   if (!mouse_lock) {
     mouse_lock_ = std::make_unique<KeyCommand>(
@@ -548,6 +553,14 @@ ui::EventDispatchDetails TouchInjector::RewriteEvent(
     }
 
     has_pending_touch_events_ = true;
+
+    if (!played_with_game_controls_) {
+      played_with_game_controls_ = true;
+      // Record once only when it is played with Game Controls for the first
+      // time.
+      RecordPlayGameWithGameControls(package_name_,
+                                     /*played_with_game_controls=*/true);
+    }
 
     if (keep_original_event) {
       SendExtraEvent(continuation, event);
@@ -643,10 +656,11 @@ std::unique_ptr<ui::TouchEvent> TouchInjector::CreateTouchEvent(
     ui::PointerId original_id,
     int managed_touch_id,
     gfx::PointF root_location_f) {
-  return std::make_unique<ui::TouchEvent>(ui::TouchEvent(
-      touch_event->type(), root_location_f, root_location_f,
-      touch_event->time_stamp(),
-      ui::PointerDetails(ui::EventPointerType::kTouch, managed_touch_id)));
+  ui::PointerDetails managed_pointer_details = touch_event->pointer_details();
+  managed_pointer_details.id = managed_touch_id;
+  return std::make_unique<ui::TouchEvent>(
+      ui::TouchEvent(touch_event->type(), root_location_f, root_location_f,
+                     touch_event->time_stamp(), managed_pointer_details));
 }
 
 Action* TouchInjector::GetActionById(int id) {

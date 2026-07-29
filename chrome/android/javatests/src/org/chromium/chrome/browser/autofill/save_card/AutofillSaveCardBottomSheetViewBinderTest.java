@@ -10,7 +10,6 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.isEmptyString;
 import static org.junit.Assert.assertEquals;
 
-import android.app.Activity;
 import android.view.View;
 import android.widget.TextView;
 
@@ -39,7 +38,7 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.widget.LoadingView;
 
-import java.util.LinkedList;
+import java.util.ArrayList;
 import java.util.concurrent.TimeoutException;
 
 /** Tests for {@link AutofillSaveCardBottomSheetViewBinder}. */
@@ -51,8 +50,6 @@ public class AutofillSaveCardBottomSheetViewBinderTest {
     @ClassRule
     public static BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
-
-    private static Activity sActivity;
 
     private PropertyModel.Builder mModelBuilder;
     private PropertyModel mModel;
@@ -84,14 +81,15 @@ public class AutofillSaveCardBottomSheetViewBinderTest {
 
     @BeforeClass
     public static void setupSuite() {
-        sActivity = sActivityTestRule.launchActivity(null);
+        sActivityTestRule.launchActivity(null);
     }
 
     @Before
     public void setUp() throws Exception {
         mModelBuilder = new PropertyModel.Builder(AutofillSaveCardBottomSheetProperties.ALL_KEYS);
-        mView = new AutofillSaveCardBottomSheetView(sActivity);
-        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mView.mContentView));
+        mView = new AutofillSaveCardBottomSheetView(sActivityTestRule.getActivity());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> sActivityTestRule.getActivity().setContentView(mView.mContentView));
         bind(mModelBuilder);
     }
 
@@ -131,6 +129,26 @@ public class AutofillSaveCardBottomSheetViewBinderTest {
                         AutofillSaveCardBottomSheetProperties.LOGO_ICON, TEST_DRAWABLE_RES));
         assertThat(mView.mLogoIcon.getDrawable(), notNullValue());
         assertEquals(View.VISIBLE, mView.mLogoIcon.getVisibility());
+    }
+
+    @Test
+    @SmallTest
+    public void testLogoIconDescription() {
+        bind(mModelBuilder.with(AutofillSaveCardBottomSheetProperties.LOGO_ICON_DESCRIPTION, ""));
+        assertEquals(
+                View.IMPORTANT_FOR_ACCESSIBILITY_NO,
+                mView.mLogoIcon.getImportantForAccessibility());
+        assertThat(String.valueOf(mView.mLogoIcon.getContentDescription()), isEmptyString());
+
+        String descriptionText = "Logo Icon";
+        bind(
+                mModelBuilder.with(
+                        AutofillSaveCardBottomSheetProperties.LOGO_ICON_DESCRIPTION,
+                        descriptionText));
+        assertEquals(
+                View.IMPORTANT_FOR_ACCESSIBILITY_YES,
+                mView.mLogoIcon.getImportantForAccessibility());
+        assertEquals(descriptionText, String.valueOf(mView.mLogoIcon.getContentDescription()));
     }
 
     @Test
@@ -198,7 +216,7 @@ public class AutofillSaveCardBottomSheetViewBinderTest {
         assertEquals(View.GONE, mView.mLegalMessage.getVisibility());
 
         final String messageText = "Legal message line";
-        LinkedList<LegalMessageLine> legalMessageLines = new LinkedList<>();
+        ArrayList<LegalMessageLine> legalMessageLines = new ArrayList<>();
         legalMessageLines.add(new LegalMessageLine(messageText));
         bind(
                 mModelBuilder.with(
@@ -210,7 +228,7 @@ public class AutofillSaveCardBottomSheetViewBinderTest {
 
         LegalMessageLine legalMessageLine = new LegalMessageLine(messageText);
         legalMessageLine.links.add(new Link(0, 5, "https://example.test"));
-        legalMessageLines = new LinkedList<>();
+        legalMessageLines = new ArrayList<>();
         legalMessageLines.add(legalMessageLine);
         bind(
                 mModelBuilder.with(

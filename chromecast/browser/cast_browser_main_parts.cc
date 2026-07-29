@@ -13,11 +13,10 @@
 
 #include "base/check.h"
 #include "base/command_line.h"
-#include "base/files/file_util.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
-#include "base/memory/memory_pressure_monitor.h"
 #include "base/memory/ptr_util.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
@@ -60,7 +59,6 @@
 #include "chromecast/external_mojo/public/cpp/common.h"
 #include "chromecast/graphics/cast_window_manager.h"
 #include "chromecast/media/base/key_systems_common.h"
-#include "chromecast/media/base/video_plane_controller.h"
 #include "chromecast/media/common/media_pipeline_backend_manager.h"
 #include "chromecast/media/common/media_resource_tracker.h"
 #include "chromecast/metrics/cast_metrics_service_client.h"
@@ -124,7 +122,6 @@
 #include "chromecast/browser/devtools/cast_ui_devtools.h"
 #include "chromecast/graphics/cast_screen.h"
 #include "chromecast/graphics/cast_window_manager_aura.h"
-#include "chromecast/media/service/cast_renderer.h"  // nogncheck
 #if !BUILDFLAG(IS_FUCHSIA)
 #include "components/ui_devtools/devtools_server.h"  // nogncheck
 #include "components/ui_devtools/switches.h"         // nogncheck
@@ -154,15 +151,24 @@ int kSignalsToRunClosure[] = {
 // Closure to run on SIGTERM and SIGINT.
 base::OnceClosure* g_signal_closure = nullptr;
 base::PlatformThreadId g_main_thread_id;
+pthread_t g_main_pthread;
 
 void RunClosureOnSignal(int signum) {
   if (base::PlatformThread::CurrentId() != g_main_thread_id) {
     RAW_LOG(INFO, "Received signal on non-main thread\n");
+
+    // Resend the signal to the main thread to avoid concurrency issues when
+    // accessing g_signal_closure. pthread_kill is required to be
+    // async-signal-safe by POSIX.1 (see "man 7 signal-safety").
+    if (pthread_kill(g_main_pthread, signum) != 0) {
+      RAW_LOG(ERROR, "Failed to send signal to main thread\n");
+    }
     return;
   }
 
   char message[48] = "Received close signal: ";
-  strncat(message, strsignal(signum), sizeof(message) - strlen(message) - 1);
+  UNSAFE_TODO(strncat(message, strsignal(signum),
+                      sizeof(message) - strlen(message) - 1));
   RAW_LOG(INFO, message);
 
   DCHECK(g_signal_closure);
@@ -179,9 +185,10 @@ void RegisterClosureOnSignal(base::OnceClosure closure) {
   // process exit.
   g_signal_closure = new base::OnceClosure(std::move(closure));
   g_main_thread_id = base::PlatformThread::CurrentId();
+  g_main_pthread = pthread_self();
 
   struct sigaction sa_new;
-  memset(&sa_new, 0, sizeof(sa_new));
+  UNSAFE_TODO(memset(&sa_new, 0, sizeof(sa_new)));
   sa_new.sa_handler = RunClosureOnSignal;
   sigfillset(&sa_new.sa_mask);
   sa_new.sa_flags = SA_RESTART;
@@ -208,7 +215,7 @@ void KillOnAlarm(int signum) {
 
 void RegisterKillOnAlarm(int timeout_seconds) {
   struct sigaction sa_new;
-  memset(&sa_new, 0, sizeof(sa_new));
+  UNSAFE_TODO(memset(&sa_new, 0, sizeof(sa_new)));
   sa_new.sa_handler = KillOnAlarm;
   sigfillset(&sa_new.sa_mask);
   sa_new.sa_flags = SA_RESTART;
@@ -229,7 +236,7 @@ void DeregisterKillOnAlarm() {
   alarm(0);
 
   struct sigaction sa_new;
-  memset(&sa_new, 0, sizeof(sa_new));
+  UNSAFE_TODO(memset(&sa_new, 0, sizeof(sa_new)));
   sa_new.sa_handler = SIG_DFL;
   sigfillset(&sa_new.sa_mask);
   sa_new.sa_flags = SA_RESTART;
@@ -272,8 +279,7 @@ class CastViewsDelegate : public views::ViewsDelegate {
 
 base::FilePath GetApplicationFontsDir() {
   std::unique_ptr<base::Environment> env(base::Environment::Create());
-  std::string fontconfig_sysroot;
-  if (env->GetVar("FONTCONFIG_SYSROOT", &fontconfig_sysroot)) {
+  if (env->HasVar("FONTCONFIG_SYSROOT")) {
     // Running with hermetic fontconfig; using the full path will not work.
     // Assume the root is base::DIR_ASSETS as set by
     // test_fonts::SetUpFontconfig().
@@ -304,25 +310,14 @@ const DefaultCommandLineSwitch kDefaultSwitches[] = {
     // GPU shader disk cache disabling is largely to conserve disk space.
     {switches::kDisableGpuShaderDiskCache, ""},
 #endif
-#if BUILDFLAG(IS_CAST_AUDIO_ONLY)
-    {switches::kDisableGpu, ""},
-    {switches::kDisableSoftwareRasterizer, ""},
-    {switches::kDisableGpuCompositing, ""},
-#if BUILDFLAG(IS_ANDROID)
-    {switches::kDisableFrameRateLimit, ""},
-    {switches::kDisableGLDrawingForTests, ""},
-    {switches::kDisableThreadedAnimation, ""},
-#endif  // BUILDFLAG(IS_ANDROID)
-#endif  // BUILDFLAG(IS_CAST_AUDIO_ONLY)
+
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #if defined(ARCH_CPU_X86_FAMILY)
     // This is needed for now to enable the x11 Ozone platform to work with
     // current Linux/NVidia OpenGL drivers.
     {switches::kIgnoreGpuBlocklist, ""},
 #elif defined(ARCH_CPU_ARM_FAMILY)
-#if !BUILDFLAG(IS_CAST_AUDIO_ONLY)
     {switches::kEnableHardwareOverlays, "cast"},
-#endif
 #endif
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
     // It's better to start GPU process on demand. For example, for TV platforms
@@ -517,7 +512,7 @@ int CastBrowserMainParts::PreCreateThreads() {
 #if defined(USE_AURA)
   cast_screen_ = std::make_unique<CastScreen>();
   cast_browser_process_->SetCastScreen(cast_screen_.get());
-  DCHECK(!display::Screen::GetScreen());
+  DCHECK(!display::Screen::Get());
   display::Screen::SetScreenInstance(cast_screen_.get());
   cast_browser_process_->SetDisplayConfigurator(
       std::make_unique<CastDisplayConfigurator>(cast_screen_.get()));
@@ -552,13 +547,9 @@ void CastBrowserMainParts::PostCreateThreads() {
 
 int CastBrowserMainParts::PreMainMessageLoopRun() {
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
-  // static_cast is safe because this is the only implementation of
-  // MemoryPressureMonitor.
-  auto* monitor =
-      static_cast<memory_pressure::MultiSourceMemoryPressureMonitor*>(
-          base::MemoryPressureMonitor::Get());
   // |monitor| may be nullptr in browser tests.
-  if (monitor) {
+  if (auto* monitor =
+          memory_pressure::MultiSourceMemoryPressureMonitor::Get()) {
     monitor->SetSystemEvaluator(
         std::make_unique<CastSystemMemoryPressureEvaluator>(
             monitor->CreateVoter()));
@@ -596,20 +587,6 @@ int CastBrowserMainParts::PreMainMessageLoopRun() {
       std::make_unique<RemoteDebuggingServer>(
           cast_browser_process_->browser_client()
               ->EnableRemoteDebuggingImmediately()));
-
-#if defined(USE_AURA) && !BUILDFLAG(IS_CAST_AUDIO_ONLY)
-  // TODO(halliwell) move audio builds to use ozone_platform_cast, then can
-  // simplify this by removing IS_CAST_AUDIO_ONLY condition.  Should then also
-  // assert(ozone_platform_cast) in BUILD.gn where it depends on //ui/ozone.
-  gfx::Size display_size =
-      display::Screen::GetScreen()->GetPrimaryDisplay().GetSizeInPixel();
-  video_plane_controller_.reset(new media::VideoPlaneController(
-      Size(display_size.width(), display_size.height()),
-      cast_content_browser_client_->GetMediaTaskRunner()));
-  media::CastRenderer::SetOverlayCompositedCallback(BindToCurrentThread(
-      base::BindRepeating(&media::VideoPlaneController::SetGeometry,
-                          base::Unretained(video_plane_controller_.get()))));
-#endif
 
 #if defined(USE_AURA)
 
@@ -671,9 +648,8 @@ int CastBrowserMainParts::PreMainMessageLoopRun() {
   cast_browser_process_->SetCastService(
       cast_browser_process_->browser_client()->CreateCastService(
           cast_browser_process_->browser_context(), nullptr,
-          cast_browser_process_->pref_service(), video_plane_controller_.get(),
-          window_manager_.get(), web_service_.get(),
-          display_settings_manager_.get()));
+          cast_browser_process_->pref_service(), window_manager_.get(),
+          web_service_.get(), display_settings_manager_.get()));
   cast_browser_process_->cast_service()->Initialize();
 
   // Initializing metrics service and network delegates must happen after cast
@@ -682,9 +658,6 @@ int CastBrowserMainParts::PreMainMessageLoopRun() {
   // initialized by cast service.
   cast_browser_process_->cast_browser_metrics()->Initialize();
   cast_content_browser_client_->InitializeURLLoaderThrottleDelegate();
-
-  cast_content_browser_client_->CreateGeneralAudienceBrowsingService();
-
   // Disable RenderFrameHost's Javascript injection restrictions so that the
   // Cast Web Service can implement its own JS injection policy at a higher
   // level.

@@ -18,7 +18,7 @@
 #include "ui/display/display_export.h"
 #include "ui/display/screen_infos.h"
 #include "ui/gfx/gpu_extra_info.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace base {
 class TimeDelta;
@@ -54,8 +54,7 @@ class DISPLAY_EXPORT Screen {
   // Retrieves the single Screen object; this may be null if it's not already
   // created, except for IOS where it creates a native screen instance
   // automatically. On ChromeOS ash the return value is only null on startup.
-
-  static Screen* GetScreen();
+  static Screen* Get();
 
   // Returns whether a Screen singleton exists or not.
   static bool HasScreen();
@@ -202,7 +201,7 @@ class DISPLAY_EXPORT Screen {
 
   // Returns human readable description of the window manager, desktop, and
   // other system properties related to the compositing.
-  virtual base::Value::List GetGpuExtraInfo(
+  virtual base::ListValue GetGpuExtraInfo(
       const gfx::GpuExtraInfo& gpu_extra_info);
 
   // Returns the preferred scale factor for |window|, if the underlying platform
@@ -212,6 +211,9 @@ class DISPLAY_EXPORT Screen {
       gfx::NativeWindow window) const;
   virtual std::optional<float> GetPreferredScaleFactorForView(
       gfx::NativeView view) const;
+
+  // Returns true when running in headless mode.
+  virtual bool IsHeadless() const;
 
 #if BUILDFLAG(IS_CHROMEOS)
   // Returns tablet state.
@@ -255,6 +257,12 @@ class DISPLAY_EXPORT Screen {
 // TODO(crbug.com/40222482): Make this static private member of
 // ScopedNativeScreen.
 DISPLAY_EXPORT Screen* CreateNativeScreen();
+
+#if BUILDFLAG(IS_IOS)
+// Returns the internal display device scale factor. This should only
+// be used for loading resources at startup before Screen is initialized.
+DISPLAY_EXPORT float GetInternalDisplayDeviceScaleFactor();
+#endif
 
 // ScopedNativeScreen creates a native screen if there is no screen created yet
 // (e.g. by a unit test).

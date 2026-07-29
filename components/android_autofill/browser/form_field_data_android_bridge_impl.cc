@@ -12,6 +12,7 @@
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/common/autofill_util.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -63,11 +64,7 @@ FormFieldDataAndroidBridgeImpl::GetOrCreateJavaPeer(
 
   auto ProjectOptions = [env](base::span<const SelectOption> options,
                               const auto& projection) {
-    std::vector<std::u16string> projected_options;
-    projected_options.reserve(options.size());
-    std::ranges::transform(options, std::back_inserter(projected_options),
-                           projection);
-    return ToJavaArrayOfStrings(env, projected_options);
+    return ToJavaArrayOfStrings(env, base::ToVector(options, projection));
   };
 
   ScopedJavaLocalRef<jobject> obj = Java_FormFieldData_createFormFieldData(
@@ -91,7 +88,7 @@ FormFieldDataAndroidBridgeImpl::GetOrCreateJavaPeer(
                 env, FieldTypeToStringView(field_types.heuristic_type)),
       ConvertUTF8ToJavaString(env,
                               FieldTypeToStringView(field_types.server_type)),
-      ConvertUTF8ToJavaString(env, field_types.computed_type),
+      ConvertUTF8ToJavaString(env, field_types.overall_type),
       ToJavaArrayOfPredictionStrings(env, field_types.server_predictions),
       field.bounds().x(), field.bounds().y(), field.bounds().right(),
       field.bounds().bottom(),
@@ -99,7 +96,9 @@ FormFieldDataAndroidBridgeImpl::GetOrCreateJavaPeer(
       ProjectOptions(field.datalist_options(), &SelectOption::value),
       /*datalistLabels=*/
       ProjectOptions(field.datalist_options(), &SelectOption::text),
-      /*visible=*/field.IsFocusable(), field.is_autofilled());
+      field.is_focusable(), field.is_visible(),
+      field.is_autofilled_according_to_renderer(),
+      ConvertUTF8ToJavaString(env, field.origin().Serialize()));
   java_ref_ = JavaObjectWeakGlobalRef(env, obj);
   return obj;
 }
@@ -112,7 +111,11 @@ void FormFieldDataAndroidBridgeImpl::UpdateFieldFromJava(FormFieldData& field) {
     return;
   }
 
-  field.set_is_autofilled(Java_FormFieldData_isAutofilled(env, obj));
+  // This is an abuse of naming. `is_autofilled_according_to_renderer` is being
+  // set here so that the form is sent to the renderer and the renderer is able
+  // to fill them and update the background accordingly.
+  field.set_is_autofilled_according_to_renderer(
+      Java_FormFieldData_isAutofilled(env, obj));
   if (IsCheckable(field.check_status())) {
     SetCheckStatus(&field, true, Java_FormFieldData_isChecked(env, obj));
     return;
@@ -137,7 +140,7 @@ void FormFieldDataAndroidBridgeImpl::UpdateFieldTypes(
       env, obj,
       ConvertUTF8ToJavaString(env,
                               FieldTypeToStringView(field_types.server_type)),
-      ConvertUTF8ToJavaString(env, field_types.computed_type),
+      ConvertUTF8ToJavaString(env, field_types.overall_type),
       ToJavaArrayOfPredictionStrings(env, field_types.server_predictions));
 }
 
@@ -152,14 +155,16 @@ void FormFieldDataAndroidBridgeImpl::UpdateValue(std::u16string_view value) {
                                  ConvertUTF16ToJavaString(env, value));
 }
 
-void FormFieldDataAndroidBridgeImpl::UpdateVisible(bool visible) {
+void FormFieldDataAndroidBridgeImpl::UpdateFocusable(bool visible) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = java_ref_.get(env);
   if (obj.is_null()) {
     return;
   }
 
-  Java_FormFieldData_updateVisible(env, obj, visible);
+  Java_FormFieldData_updateFocusable(env, obj, visible);
 }
 
 }  // namespace autofill
+
+DEFINE_JNI(FormFieldData)

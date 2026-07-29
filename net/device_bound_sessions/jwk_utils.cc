@@ -5,8 +5,12 @@
 #include "net/device_bound_sessions/jwk_utils.h"
 
 #include "base/base64url.h"
+#include "base/json/json_writer.h"
+#include "base/notreached.h"
+#include "crypto/evp.h"
+#include "crypto/keypair.h"
+#include "crypto/sha2.h"
 #include "third_party/boringssl/src/include/openssl/bn.h"
-#include "third_party/boringssl/src/include/openssl/bytestring.h"
 #include "third_party/boringssl/src/include/openssl/ec.h"
 #include "third_party/boringssl/src/include/openssl/evp.h"
 #include "third_party/boringssl/src/include/openssl/rsa.h"
@@ -36,101 +40,110 @@ std::string Base64UrlEncode(base::span<const uint8_t> input) {
   return output;
 }
 
-bssl::UniquePtr<EVP_PKEY> ParsePublicKey(base::span<const uint8_t> pkey_spki) {
-  CBS cbs;
-  CBS_init(&cbs, pkey_spki.data(), pkey_spki.size());
-  bssl::UniquePtr<EVP_PKEY> pkey(EVP_parse_public_key(&cbs));
-  if (CBS_len(&cbs) != 0) {
-    return nullptr;
-  }
-  return pkey;
-}
-
-base::Value::Dict ConvertES256PkeySpkiToJwk(
-    base::span<const uint8_t> pkey_spki) {
-  bssl::UniquePtr<EVP_PKEY> pkey = ParsePublicKey(pkey_spki);
+base::DictValue ConvertES256PkeySpkiToJwk(base::span<const uint8_t> pkey_spki) {
+  bssl::UniquePtr<EVP_PKEY> pkey = crypto::evp::PublicKeyFromBytes(pkey_spki);
   if (!pkey || EVP_PKEY_id(pkey.get()) != EVP_PKEY_EC) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
 
   EC_KEY* ec_key = EVP_PKEY_get0_EC_KEY(pkey.get());
   if (!ec_key) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
 
   const EC_GROUP* group = EC_KEY_get0_group(ec_key);
   const EC_POINT* point = EC_KEY_get0_public_key(ec_key);
   if (!group || !point) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
 
   bssl::UniquePtr<BIGNUM> x(BN_new());
   bssl::UniquePtr<BIGNUM> y(BN_new());
   if (!x || !y) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
 
   if (!EC_POINT_get_affine_coordinates_GFp(group, point, x.get(), y.get(),
                                            nullptr)) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
 
   std::vector<uint8_t> x_bytes(32);
   std::vector<uint8_t> y_bytes(32);
   if (!BN_bn2bin_padded(x_bytes.data(), x_bytes.size(), x.get()) ||
       !BN_bn2bin_padded(y_bytes.data(), y_bytes.size(), y.get())) {
-    return base::Value::Dict();
+    return base::DictValue();
   }
 
-  return base::Value::Dict()
+  return base::DictValue()
       .Set(kKeyTypeParam, kEcKeyType)
       .Set(kEcCurve, kEcCurveP256)
       .Set(kEcCoordinateX, Base64UrlEncode(x_bytes))
       .Set(kEcCoordinateY, Base64UrlEncode(y_bytes));
 }
 
-base::Value::Dict ConvertRS256PkeySpkiToJwk(
-    base::span<const uint8_t> pkey_spki) {
-  bssl::UniquePtr<EVP_PKEY> pkey = ParsePublicKey(pkey_spki);
-  if (!pkey || EVP_PKEY_id(pkey.get()) != EVP_PKEY_RSA) {
-    return base::Value::Dict();
+base::DictValue ConvertRS256PkeySpkiToJwk(base::span<const uint8_t> pkey_spki) {
+  std::optional<crypto::keypair::PublicKey> key =
+      crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(pkey_spki);
+  if (!key || !key->IsRsa()) {
+    return base::DictValue();
   }
 
-  RSA* rsa_key = EVP_PKEY_get0_RSA(pkey.get());
-  if (!rsa_key) {
-    return base::Value::Dict();
-  }
-
-  const BIGNUM* n = RSA_get0_n(rsa_key);
-  const BIGNUM* e = RSA_get0_e(rsa_key);
-  if (!n || !e) {
-    return base::Value::Dict();
-  }
-
-  std::vector<uint8_t> n_bytes(BN_num_bytes(n));
-  std::vector<uint8_t> e_bytes(BN_num_bytes(e));
-  BN_bn2bin(n, n_bytes.data());
-  BN_bn2bin(e, e_bytes.data());
-
-  return base::Value::Dict()
+  return base::DictValue()
       .Set(kKeyTypeParam, kRsaKeyType)
-      .Set(kRsaModulus, Base64UrlEncode(n_bytes))
-      .Set(kRsaExponent, Base64UrlEncode(e_bytes));
+      .Set(kRsaModulus, Base64UrlEncode(key->GetRsaModulus()))
+      .Set(kRsaExponent, Base64UrlEncode(key->GetRsaExponent()));
 }
 }  // namespace
 
-base::Value::Dict ConvertPkeySpkiToJwk(
+base::DictValue ConvertPkeySpkiToJwk(
     crypto::SignatureVerifier::SignatureAlgorithm algorithm,
     base::span<const uint8_t> pkey_spki) {
-  // TODO(crbug.com/360756896): Support more algorithms.
   switch (algorithm) {
     case crypto::SignatureVerifier::SignatureAlgorithm::RSA_PKCS1_SHA256:
       return ConvertRS256PkeySpkiToJwk(pkey_spki);
     case crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256:
       return ConvertES256PkeySpkiToJwk(pkey_spki);
     default:
-      return base::Value::Dict();
+      return base::DictValue();
   }
+}
+
+std::string CreateJwkThumbprint(
+    crypto::SignatureVerifier::SignatureAlgorithm algorithm,
+    base::span<const uint8_t> pkey_spki) {
+  base::DictValue jwk = ConvertPkeySpkiToJwk(algorithm, pkey_spki);
+  if (jwk.empty()) {
+    return "";
+  }
+
+  // Move only the required fields from `jwk` to `canonical_jwk`.
+  base::DictValue canonical_jwk;
+  switch (algorithm) {
+    case crypto::SignatureVerifier::SignatureAlgorithm::RSA_PKCS1_SHA256:
+      canonical_jwk.Set(kKeyTypeParam, std::move(*jwk.Extract(kKeyTypeParam)));
+      canonical_jwk.Set(kRsaExponent, std::move(*jwk.Extract(kRsaExponent)));
+      canonical_jwk.Set(kRsaModulus, std::move(*jwk.Extract(kRsaModulus)));
+      break;
+    case crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256:
+      canonical_jwk.Set(kKeyTypeParam, std::move(*jwk.Extract(kKeyTypeParam)));
+      canonical_jwk.Set(kEcCurve, std::move(*jwk.Extract(kEcCurve)));
+      canonical_jwk.Set(kEcCoordinateX,
+                        std::move(*jwk.Extract(kEcCoordinateX)));
+      canonical_jwk.Set(kEcCoordinateY,
+                        std::move(*jwk.Extract(kEcCoordinateY)));
+      break;
+    default:
+      NOTREACHED();
+  }
+
+  // The canonical representation of the JWK requires the keys to be sorted
+  // alphabetically. `base::DictValue` is already sorted.
+  std::string canonical_jwk_string;
+  CHECK(base::JSONWriter::Write(canonical_jwk, &canonical_jwk_string));
+
+  std::string thumbprint_hash = crypto::SHA256HashString(canonical_jwk_string);
+  return Base64UrlEncode(base::as_bytes(base::span(thumbprint_hash)));
 }
 
 }  // namespace net::device_bound_sessions

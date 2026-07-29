@@ -7,8 +7,9 @@
 
 #include <memory>
 
+#include "ash/quick_pair/fast_pair_handshake/fast_pair_data_encryptor.h"
+#include "ash/quick_pair/fast_pair_handshake/fast_pair_gatt_service_client.h"
 #include "ash/quick_pair/fast_pair_handshake/fast_pair_handshake.h"
-
 #include "base/memory/scoped_refptr.h"
 
 namespace ash::quick_pair {
@@ -26,15 +27,7 @@ class FakeFastPairHandshake : public FastPairHandshake {
   FakeFastPairHandshake& operator=(const FakeFastPairHandshake&) = delete;
   ~FakeFastPairHandshake() override;
 
-  void SetUpHandshake(OnFailureCallback on_failure_callback,
-                      OnCompleteCallbackNew on_success_callback) override;
-  void Reset() override;
-
   void InvokeCallback(std::optional<PairFailure> failure = std::nullopt);
-
-  void set_completed_successfully(bool completed_successfully) {
-    completed_successfully_ = completed_successfully;
-  }
 };
 
 }  // namespace ash::quick_pair

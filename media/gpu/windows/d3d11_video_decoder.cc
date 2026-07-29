@@ -42,6 +42,7 @@
 #include "media/gpu/windows/supported_profile_helpers.h"
 #include "media/media_buildflags.h"
 #include "ui/gfx/color_space.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/hdr_metadata.h"
 #include "ui/gl/gl_angle_util_win.h"
 #include "ui/gl/gl_switches.h"
@@ -85,6 +86,15 @@ scoped_refptr<CommandBufferHelper> CreateCommandBufferHelper(
 
   return holder->helper;
 }
+
+#if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
+bool ShouldUseDXVADeviceForHEVCRangeExtension(const VideoDecoderConfig& config,
+                                              ComD3D11Device device) {
+  return config.profile() == HEVCPROFILE_REXT &&
+         (base::FeatureList::IsEnabled(kD3D12VideoDecoder) ||
+          SupportsHEVCRangeExtensionDXVAProfile(device));
+}
+#endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
 
 }  // namespace
 
@@ -143,6 +153,12 @@ D3D11VideoDecoder::~D3D11VideoDecoder() {
   // Log whatever usage we measured, if any.
   LogPictureBufferUsage();
 
+  // Driver may cache allocated D3D11 resources even we release them. Adding
+  // a Flush() here, so driver will less likely perform caching.
+  if (device_context_) {
+    device_context_->Flush();
+  }
+
   // Explicitly destroy the decoder, since it can reference picture buffers.
   accelerated_video_decoder_.reset();
 }
@@ -168,13 +184,16 @@ bool D3D11VideoDecoder::InitializeAcceleratedDecoder(
     accelerated_video_decoder_ = std::make_unique<AV1Decoder>(
         std::make_unique<D3D11AV1Accelerator>(
             this, media_log_.get(),
-            gpu_workarounds_.use_current_picture_for_av1_invalid_ref),
+            gpu_workarounds_.use_first_valid_ref_for_av1_invalid_ref),
         profile_, config.color_space_info());
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
   } else if (config.codec() == VideoCodec::kHEVC) {
     DCHECK(base::FeatureList::IsEnabled(kPlatformHEVCDecoderSupport));
+    bool use_dxva_device_for_hevc_rext =
+        ShouldUseDXVADeviceForHEVCRangeExtension(config, device_);
     accelerated_video_decoder_ = std::make_unique<H265Decoder>(
-        std::make_unique<D3D11H265Accelerator>(this, media_log_.get()),
+        std::make_unique<D3D11H265Accelerator>(this, media_log_.get(),
+                                               use_dxva_device_for_hevc_rext),
         profile_, config.color_space_info());
 #endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
   } else {
@@ -210,7 +229,7 @@ bool D3D11VideoDecoder::ResetD3DVideoDecoder() {
 
   auto decoder_configurator = D3D11DecoderConfigurator::Create(
       gpu_preferences_, gpu_workarounds_, config_, bit_depth, chroma_sampling_,
-      media_log_.get(), use_shared_handle_);
+      media_log_.get(), use_shared_handle_, device_);
   if (!decoder_configurator) {
     NotifyError(D3D11StatusCode::kDecoderUnsupportedProfile);
     return false;
@@ -278,8 +297,23 @@ D3D11VideoDecoder::CreateD3DVideoDecoderWrapper(
       return nullptr;
     }
 
+    // Check ID3D11Device5 is supported so that we can use D3D11Fence.
+    d3d_device = get_d3d_device_cb_.Run(D3DVersion::kD3D11);
+    if (!d3d_device) {
+      NotifyError({D3D11StatusCode::kUnsupportedFeatureLevel,
+                   "Cannot create D3D11Device"});
+      return nullptr;
+    }
+    ComD3D11Device5 d3d11_device5;
+    if (d3d_device.As(&d3d11_device5) != S_OK) {
+      NotifyError({D3D11StatusCode::kUnsupportedFeatureLevel,
+                   "Cannot get ID3D11Device5 interface"});
+      return nullptr;
+    }
+
     video_decoder_wrapper = D3D12VideoDecoderWrapper::Create(
-        media_log_.get(), video_device, config_, bit_depth, chroma_sampling_);
+        media_log_.get(), video_device, config_, bit_depth, chroma_sampling_,
+        GetMaxDecodeRequests());
   } else {
     MEDIA_LOG(INFO, media_log_) << "D3D11VideoDecoder is using D3D11 backend";
     ComD3D11VideoContext video_context;
@@ -302,7 +336,9 @@ D3D11VideoDecoder::CreateD3DVideoDecoderWrapper(
     return nullptr;
   }
   use_single_video_decoder_texture_ =
-      use_single_texture.value() | use_shared_handle_;
+      base::FeatureList::IsEnabled(kD3D11VideoDecoderForceSingleTexture) ||
+      use_single_texture.value() || use_shared_handle_ ||
+      gpu_workarounds_.disable_decode_into_array_texture;
   if (use_single_video_decoder_texture_) {
     MEDIA_LOG(INFO, media_log_) << "D3D11VideoDecoder is using single textures";
   } else {
@@ -574,7 +610,7 @@ void D3D11VideoDecoder::DoDecode() {
     // EOS buffer.
     current_timestamp_ = current_buffer_->timestamp();
 
-    accelerated_video_decoder_->SetStream(-1, *current_buffer_);
+    accelerated_video_decoder_->SetStream(-1, current_buffer_);
   }
 
   while (true) {
@@ -634,8 +670,13 @@ void D3D11VideoDecoder::DoDecode() {
           accelerated_video_decoder_->GetChromaSampling();
       const auto new_color_space =
           accelerated_video_decoder_->GetVideoColorSpace();
+      const auto new_visible_rect =
+          accelerated_video_decoder_->GetVisibleRect();
+      DCHECK(gfx::Rect(new_coded_size).Contains(new_visible_rect));
+      DCHECK(!new_visible_rect.IsEmpty());
       if (new_profile == config_.profile() &&
           new_coded_size == config_.coded_size() &&
+          new_visible_rect == config_.visible_rect() &&
           new_bit_depth == bit_depth_ && !picture_buffers_.size() &&
           new_chroma_sampling == chroma_sampling_ &&
           new_color_space == color_space_) {
@@ -648,11 +689,13 @@ void D3D11VideoDecoder::DoDecode() {
           << GetProfileName(new_profile) << ", chroma_sampling_format: "
           << VideoChromaSamplingToString(new_chroma_sampling)
           << ", coded_size: " << new_coded_size.ToString()
+          << ", visible_rect: " << new_visible_rect.ToString()
           << ", bit_depth: " << base::strict_cast<int>(new_bit_depth)
           << ", color_space: " << new_color_space.ToString();
       profile_ = new_profile;
       config_.set_profile(profile_);
       config_.set_coded_size(new_coded_size);
+      config_.set_visible_rect(new_visible_rect);
       chroma_sampling_ = new_chroma_sampling;
       color_space_ = new_color_space;
 
@@ -683,6 +726,9 @@ void D3D11VideoDecoder::Reset(base::OnceClosure closure) {
   DCHECK_NE(state_, State::kInitializing);
   TRACE_EVENT0("gpu", "D3D11VideoDecoder::Reset");
 
+  // TODO(liberato): how do we signal an error?
+  accelerated_video_decoder_->Reset();
+
   current_buffer_ = nullptr;
   if (current_decode_cb_)
     std::move(current_decode_cb_).Run(DecoderStatus::Codes::kAborted);
@@ -690,9 +736,6 @@ void D3D11VideoDecoder::Reset(base::OnceClosure closure) {
   for (auto& queue_pair : input_buffer_queue_)
     std::move(queue_pair.second).Run(DecoderStatus::Codes::kAborted);
   input_buffer_queue_.clear();
-
-  // TODO(liberato): how do we signal an error?
-  accelerated_video_decoder_->Reset();
 
   std::move(closure).Run();
 }
@@ -742,15 +785,21 @@ void D3D11VideoDecoder::CreatePictureBuffers() {
   if (!color_space.IsValid()) {
     color_space = config_.color_space_info().ToGfxColorSpace();
   }
+  if (!color_space.IsValid()) {
+    auto output_si_format = texture_selector_->OutputSharedImageFormat();
+    // Use BT709 as the default color space for multi-planar formats and SRGB
+    // for single-planar.
+    color_space = output_si_format.is_multi_plane()
+                      ? gfx::ColorSpace::CreateREC709()
+                      : gfx::ColorSpace::CreateSRGB();
+  }
 
   // Since we are about to allocate new picture buffers, record whatever usage
   // we had for the outgoing ones, if any.
   LogPictureBufferUsage();
 
-  // Drop any old pictures.
-  for (auto& buffer : picture_buffers_)
-    DCHECK(!buffer->in_picture_use());
-  picture_buffers_.clear();
+  // There shouldn't be any picture buffer.
+  CHECK(picture_buffers_.empty());
 
   ComD3D11Texture2D in_texture;
 
@@ -788,7 +837,7 @@ void D3D11VideoDecoder::CreatePictureBuffers() {
     const size_t array_slice = use_single_video_decoder_texture_ ? 0 : i;
     picture_buffers_.push_back(base::MakeRefCounted<D3D11PictureBuffer>(
         decoder_task_runner_, in_texture, array_slice, std::move(tex_wrapper),
-        size, /*level=*/i));
+        /*level=*/i));
 
     base::OnceCallback<void(scoped_refptr<media::D3D11PictureBuffer>)>
         picture_buffer_gpu_resource_init_done_cb = base::DoNothing();
@@ -816,6 +865,12 @@ void D3D11VideoDecoder::CreatePictureBuffers() {
     // the ref to it so that we allocate a new one above.
     if (use_single_video_decoder_texture_)
       in_texture = nullptr;
+  }
+
+  D3D11Status result =
+      d3d_video_decoder_wrapper_->SetPictureBuffers(picture_buffers_);
+  if (!result.is_ok()) {
+    return NotifyError(std::move(result).AddHere());
   }
 }
 
@@ -845,6 +900,12 @@ bool D3D11VideoDecoder::OutputResult(const CodecPicture* picture,
   DCHECK(texture_selector_);
   TRACE_EVENT0("gpu", "D3D11VideoDecoder::OutputResult");
 
+  D3D11Status result =
+      picture_buffer->WaitForDecodeCompleteGPU(device_context_.Get());
+  if (!result.is_ok()) {
+    NotifyError(std::move(result).AddHere());
+    return false;
+  }
   picture_buffer->add_client_use();
 
   // Note: The pixel format doesn't matter.
@@ -852,21 +913,11 @@ bool D3D11VideoDecoder::OutputResult(const CodecPicture* picture,
   if (visible_rect.IsEmpty())
     visible_rect = config_.visible_rect();
 
-  // TODO(crbug.com/41389060): Use aspect ratio from decoder (SPS) if
-  // the config's aspect ratio isn't valid.
   gfx::Size natural_size = config_.aspect_ratio().GetNaturalSize(visible_rect);
-
   base::TimeDelta timestamp = picture_buffer->timestamp_;
 
-  // Prefer the frame color space over what's in the config.
-  auto picture_color_space = picture->get_colorspace().ToGfxColorSpace();
-  if (!picture_color_space.IsValid()) {
-    picture_color_space = config_.color_space_info().ToGfxColorSpace();
-  }
-
   scoped_refptr<gpu::ClientSharedImage> shared_image;
-  D3D11Status result =
-      picture_buffer->ProcessTexture(picture_color_space, shared_image);
+  result = picture_buffer->ProcessTexture(shared_image);
   if (!result.is_ok()) {
     NotifyError(std::move(result).AddHere());
     return false;
@@ -875,7 +926,7 @@ bool D3D11VideoDecoder::OutputResult(const CodecPicture* picture,
   scoped_refptr<VideoFrame> frame = VideoFrame::WrapSharedImage(
       texture_selector_->PixelFormat(), shared_image,
       shared_image->creation_sync_token(), VideoFrame::ReleaseMailboxCB(),
-      picture_buffer->size(), visible_rect, natural_size, timestamp);
+      visible_rect, natural_size, timestamp);
 
   if (!frame) {
     // This can happen if, somehow, we get an unsupported combination of
@@ -893,36 +944,28 @@ bool D3D11VideoDecoder::OutputResult(const CodecPicture* picture,
                      scoped_refptr<D3D11PictureBuffer>(picture_buffer)));
   frame->SetReleaseMailboxCB(
       base::BindOnce(release_mailbox_cb_, std::move(wait_complete_cb)));
-  // For NV12, overlay is allowed by default. If the decoder is going to support
-  // non-NV12 textures, then this may have to be conditionally set. Also note
-  // that ALLOW_OVERLAY is required for encrypted video path.
-  //
-  // Since all of our picture buffers allow overlay, we just set this to true.
-  // However, we may choose to set ALLOW_OVERLAY to false even if
-  // the finch flag is enabled.  We may not choose to set ALLOW_OVERLAY if the
-  // flag is off, however.
-  frame->metadata().allow_overlay = true;
-  // The swapchain presenter currently only supports NV12 and P010 overlay,
-  // with BGRA only as fallback when DWM continuously fails to overlay submitted
-  // video. As a result, we should not allow overlay for non-NV12/P010 formats
-  // which may cause chroma downsampling when blitting into the back buffer.
-  // See https://crbugs.com/331679628 for more details.
-  if (!config_.is_encrypted()) {
-    frame->metadata().allow_overlay =
-        texture_selector_->OutputDXGIFormat() == DXGI_FORMAT_P010 ||
-        texture_selector_->OutputDXGIFormat() == DXGI_FORMAT_NV12;
-  }
+  frame->metadata().allow_overlay =
+      shared_image->usage().Has(gpu::SHARED_IMAGE_USAGE_SCANOUT);
   frame->metadata().power_efficient = true;
 
-  frame->set_color_space(picture_color_space);
-  if (picture_color_space.IsHDR()) {
+  // If the output texture is in RGB pixel format, then the color space needs to
+  // be updated using the color space of the output texture.
+  frame->set_color_space(shared_image->color_space());
+  if (shared_image->color_space().IsHDR()) {
     // Some streams may have varying metadata, so bitstream metadata should be
     // preferred over metadata provide by the configuration.
-    frame->set_hdr_metadata(picture->hdr_metadata() ? picture->hdr_metadata()
-                                                    : config_.hdr_metadata());
+    gfx::HDRMetadata hdr_metadata = picture->dynamic_hdr_metadata();
+    if (hdr_metadata.IsEmpty()) {
+      hdr_metadata = config_.hdr_metadata();
+    }
+    frame->set_hdr_metadata(hdr_metadata);
   }
 
-  frame->metadata().is_webgpu_compatible = use_shared_handle_;
+  frame->metadata().is_webgpu_compatible =
+      !(gpu_workarounds_.disable_sharing_nv12_from_d3d11_to_d3d12 &&
+        texture_selector_->OutputSharedImageFormat() ==
+            viz::MultiPlaneFormat::kNV12) &&
+      use_shared_handle_;
 
   output_cb_.Run(frame);
   return true;
@@ -1014,8 +1057,7 @@ void D3D11VideoDecoder::LogDecoderAdapterLUID() {
 
   ComDXGIAdapter dxgi_adapter;
   hr = dxgi_device->GetAdapter(&dxgi_adapter);
-  if (FAILED(hr))
-    return;
+  CHECK_EQ(hr, S_OK);
 
   DXGI_ADAPTER_DESC adapter_desc{};
   hr = dxgi_adapter->GetDesc(&adapter_desc);
@@ -1064,6 +1106,18 @@ D3D11VideoDecoder::GetSupportedVideoDecoderConfigs(
     ComD3D12Device d3d12_device;
     CHECK_EQ(d3d_device.As(&d3d12_device), S_OK);
 
+    // Check ID3D11Device5 is supported so that we can use D3D11Fence.
+    d3d_device = get_d3d_device_cb.Run(D3DVersion::kD3D11);
+    if (!d3d_device) {
+      return {};
+    }
+    ComD3D11Device d3d11_device;
+    CHECK_EQ(d3d_device.As(&d3d11_device), S_OK);
+    ComD3D11Device5 d3d11_device5;
+    if (d3d11_device.As(&d3d11_device5) != S_OK) {
+      return {};
+    }
+
     supported_resolutions =
         GetSupportedD3D12VideoDecoderResolutions(d3d12_device, gpu_workarounds);
   } else {
@@ -1095,20 +1149,18 @@ D3D11VideoDecoder::GetSupportedVideoDecoderConfigs(
   std::vector<SupportedVideoDecoderConfig> configs;
   for (const auto& kv : supported_resolutions) {
     const auto profile = kv.first;
-    // TODO(liberato): Add VP8 support to D3D11VideoDecoder.
-    if (profile == VP8PROFILE_ANY)
-      continue;
-
     const auto& resolution_range = kv.second;
+
+    DCHECK(!resolution_range.min_resolution.IsEmpty());
+    DCHECK(!resolution_range.max_landscape_resolution.IsEmpty());
+
     configs.emplace_back(profile, profile, resolution_range.min_resolution,
                          resolution_range.max_landscape_resolution,
                          /*allow_encrypted=*/false,
                          /*require_encrypted=*/false);
-    if (!resolution_range.max_portrait_resolution.IsEmpty() &&
-        resolution_range.max_portrait_resolution !=
-            resolution_range.max_landscape_resolution) {
+    if (resolution_range.max_portrait_resolution) {
       configs.emplace_back(profile, profile, resolution_range.min_resolution,
-                           resolution_range.max_portrait_resolution,
+                           *resolution_range.max_portrait_resolution,
                            /*allow_encrypted=*/false,
                            /*require_encrypted=*/false);
     }

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/files/file_util.h"
+#include "ash/constants/ash_pref_names.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
 #include "chrome/browser/web_applications/os_integration/web_app_file_handler_manager.h"
 #include "chrome/browser/web_applications/os_integration/web_app_protocol_handler_manager.h"
@@ -13,7 +13,7 @@
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chrome/common/chrome_features.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -24,6 +24,7 @@ class UpdateFileHandlerCommandTest : public WebAppTest {
  public:
   const char* kTestAppName = "test app";
   const GURL kTestAppUrl = GURL("https://example.com");
+  const std::string kTestAppPolicyId = "https://example.com/";
 
   UpdateFileHandlerCommandTest() = default;
   ~UpdateFileHandlerCommandTest() override = default;
@@ -71,7 +72,7 @@ TEST_F(UpdateFileHandlerCommandTest, UserChoiceAllowPersisted) {
   const webapps::AppId app_id =
       test::InstallDummyWebApp(profile(), kTestAppName, kTestAppUrl);
   EXPECT_EQ(
-      provider()->registrar_unsafe().GetAppFileHandlerApprovalState(app_id),
+      provider()->registrar_unsafe().GetAppFileHandlerUserApprovalState(app_id),
       ApiApprovalState::kRequiresPrompt);
 
   base::RunLoop run_loop;
@@ -80,7 +81,7 @@ TEST_F(UpdateFileHandlerCommandTest, UserChoiceAllowPersisted) {
   run_loop.Run();
 
   EXPECT_EQ(
-      provider()->registrar_unsafe().GetAppFileHandlerApprovalState(app_id),
+      provider()->registrar_unsafe().GetAppFileHandlerUserApprovalState(app_id),
       ApiApprovalState::kAllowed);
   EXPECT_TRUE(
       provider()->registrar_unsafe().ExpectThatFileHandlersAreRegisteredWithOs(
@@ -91,7 +92,7 @@ TEST_F(UpdateFileHandlerCommandTest, UserChoiceDisallowPersisted) {
   const webapps::AppId app_id =
       test::InstallDummyWebApp(profile(), kTestAppName, kTestAppUrl);
   EXPECT_EQ(
-      provider()->registrar_unsafe().GetAppFileHandlerApprovalState(app_id),
+      provider()->registrar_unsafe().GetAppFileHandlerUserApprovalState(app_id),
       ApiApprovalState::kRequiresPrompt);
 
   base::RunLoop run_loop;
@@ -100,12 +101,34 @@ TEST_F(UpdateFileHandlerCommandTest, UserChoiceDisallowPersisted) {
   run_loop.Run();
 
   EXPECT_EQ(
-      provider()->registrar_unsafe().GetAppFileHandlerApprovalState(app_id),
+      provider()->registrar_unsafe().GetAppFileHandlerUserApprovalState(app_id),
       ApiApprovalState::kDisallowed);
   EXPECT_FALSE(
       provider()->registrar_unsafe().ExpectThatFileHandlersAreRegisteredWithOs(
           app_id));
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+TEST_F(UpdateFileHandlerCommandTest, ApprovalStateOverridenByPolicy) {
+  const webapps::AppId app_id =
+      test::InstallDummyWebApp(profile(), kTestAppName, kTestAppUrl,
+                               webapps::WebappInstallSource::EXTERNAL_POLICY);
+  EXPECT_EQ(
+      provider()->registrar_unsafe().GetAppFileHandlerUserApprovalState(app_id),
+      ApiApprovalState::kRequiresPrompt);
+
+  profile()->GetTestingPrefService()->SetDict(
+      ash::prefs::kDefaultHandlersForFileExtensions,
+      base::DictValue().Set("pdf", kTestAppPolicyId));
+
+  EXPECT_EQ(provider()->registrar_unsafe().GetAppFileHandlerApprovalState(
+                app_id, "pdf"),
+            ApiApprovalState::kAllowed);
+  EXPECT_TRUE(
+      provider()->registrar_unsafe().ExpectThatFileHandlersAreRegisteredWithOs(
+          app_id));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace
 }  // namespace web_app

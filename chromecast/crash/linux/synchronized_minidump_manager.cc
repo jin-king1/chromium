@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/dir_reader_posix.h"
 #include "base/files/file_util.h"
 #include "base/json/json_file_value_serializer.h"
@@ -65,8 +66,7 @@ base::FilePath GetMinidumpPath() {
 
 // Gets the ratelimit parameter dictionary given a deserialized |metadata|.
 // Returns nullptr if invalid.
-base::Value::Dict* GetRatelimitParams(
-    std::optional<base::Value::Dict>& metadata) {
+base::DictValue* GetRatelimitParams(std::optional<base::DictValue>& metadata) {
   if (!metadata)
     return nullptr;
   return metadata->FindDict(kLockfileRatelimitKey);
@@ -74,8 +74,8 @@ base::Value::Dict* GetRatelimitParams(
 
 // Returns the time of the current ratelimit period's start in |metadata|.
 // Returns base::Time() if an error occurs.
-base::Time GetRatelimitPeriodStart(std::optional<base::Value::Dict>& metadata) {
-  base::Value::Dict* ratelimit_params = GetRatelimitParams(metadata);
+base::Time GetRatelimitPeriodStart(std::optional<base::DictValue>& metadata) {
+  base::DictValue* ratelimit_params = GetRatelimitParams(metadata);
   RCHECK(ratelimit_params, base::Time());
 
   std::optional<double> seconds =
@@ -90,11 +90,11 @@ base::Time GetRatelimitPeriodStart(std::optional<base::Value::Dict>& metadata) {
 
 // Sets the time of the current ratelimit period's start in |metadata| to
 // |period_start|. Returns true on success, false on error.
-bool SetRatelimitPeriodStart(std::optional<base::Value::Dict>& metadata,
+bool SetRatelimitPeriodStart(std::optional<base::DictValue>& metadata,
                              base::Time period_start) {
   DCHECK(!period_start.is_null());
 
-  base::Value::Dict* ratelimit_params = GetRatelimitParams(metadata);
+  base::DictValue* ratelimit_params = GetRatelimitParams(metadata);
   RCHECK(ratelimit_params, false);
 
   ratelimit_params->Set(kLockfileRatelimitPeriodStartKey,
@@ -104,8 +104,8 @@ bool SetRatelimitPeriodStart(std::optional<base::Value::Dict>& metadata,
 
 // Gets the number of dumps added to |metadata| in the current ratelimit
 // period. Returns < 0 on error.
-int GetRatelimitPeriodDumps(std::optional<base::Value::Dict>& metadata) {
-  base::Value::Dict* ratelimit_params = GetRatelimitParams(metadata);
+int GetRatelimitPeriodDumps(std::optional<base::DictValue>& metadata) {
+  base::DictValue* ratelimit_params = GetRatelimitParams(metadata);
   if (!ratelimit_params)
     return -1;
   std::optional<int> period_dumps =
@@ -115,11 +115,11 @@ int GetRatelimitPeriodDumps(std::optional<base::Value::Dict>& metadata) {
 
 // Sets the current ratelimit period's number of dumps in |metadata| to
 // |period_dumps|. Returns true on success, false on error.
-bool SetRatelimitPeriodDumps(std::optional<base::Value::Dict>& metadata,
+bool SetRatelimitPeriodDumps(std::optional<base::DictValue>& metadata,
                              int period_dumps) {
   DCHECK_GE(period_dumps, 0);
 
-  base::Value::Dict* ratelimit_params = GetRatelimitParams(metadata);
+  base::DictValue* ratelimit_params = GetRatelimitParams(metadata);
   RCHECK(ratelimit_params, false);
 
   ratelimit_params->Set(kLockfileRatelimitPeriodDumpsKey, period_dumps);
@@ -128,11 +128,11 @@ bool SetRatelimitPeriodDumps(std::optional<base::Value::Dict>& metadata,
 }
 
 // Returns true if |metadata| contains valid metadata, false otherwise.
-bool ValidateMetadata(std::optional<base::Value::Dict>& metadata) {
+bool ValidateMetadata(std::optional<base::DictValue>& metadata) {
   RCHECK(metadata, false);
 
   // Validate ratelimit params
-  base::Value::Dict* ratelimit_params = GetRatelimitParams(metadata);
+  base::DictValue* ratelimit_params = GetRatelimitParams(metadata);
 
   return ratelimit_params &&
          ratelimit_params->size() == kLockfileNumRatelimitParams &&
@@ -198,8 +198,10 @@ int SynchronizedMinidumpManager::GetNumDumps(bool delete_all_dumps) {
   }
 
   while (reader.Next()) {
-    if (strcmp(reader.name(), ".") == 0 || strcmp(reader.name(), "..") == 0)
+    if (UNSAFE_TODO(strcmp(reader.name(), ".")) == 0 ||
+        UNSAFE_TODO(strcmp(reader.name(), "..")) == 0) {
       continue;
+    }
 
     const base::FilePath dump_file(dump_path_.Append(reader.name()));
     // If file cannot be found, skip.
@@ -289,13 +291,14 @@ bool SynchronizedMinidumpManager::ParseFiles() {
   std::vector<std::string> lines = base::SplitString(
       lockfile, "\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
 
-  base::Value::List dumps;
+  base::ListValue dumps;
 
   // Validate dumps
   for (const std::string& line : lines) {
     if (line.size() == 0)
       continue;
-    std::optional<base::Value> dump_info = base::JSONReader::Read(line);
+    std::optional<base::Value> dump_info =
+        base::JSONReader::Read(line, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     RCHECK(dump_info.has_value(), false);
     DumpInfo info(&dump_info.value());
     RCHECK(info.valid(), false);
@@ -311,8 +314,7 @@ bool SynchronizedMinidumpManager::ParseFiles() {
       << "JSON error " << error_code << ":" << error_msg;
   RCHECK(metadata_ptr, false);
   RCHECK(metadata_ptr->is_dict(), false);
-  std::optional<base::Value::Dict> metadata =
-      std::move(*metadata_ptr).TakeDict();
+  std::optional<base::DictValue> metadata = std::move(*metadata_ptr).TakeDict();
   RCHECK(ValidateMetadata(metadata), false);
 
   dumps_ = std::move(dumps);
@@ -320,9 +322,8 @@ bool SynchronizedMinidumpManager::ParseFiles() {
   return true;
 }
 
-bool SynchronizedMinidumpManager::WriteFiles(
-    const base::Value::List& dumps,
-    const base::Value::Dict& metadata) {
+bool SynchronizedMinidumpManager::WriteFiles(const base::ListValue& dumps,
+                                             const base::DictValue& metadata) {
   std::string lockfile;
 
   for (const auto& elem : dumps) {
@@ -342,14 +343,14 @@ bool SynchronizedMinidumpManager::WriteFiles(
 }
 
 bool SynchronizedMinidumpManager::InitializeFiles() {
-  base::Value::Dict metadata;
+  base::DictValue metadata;
 
-  base::Value::Dict ratelimit_fields;
+  base::DictValue ratelimit_fields;
   ratelimit_fields.Set(kLockfileRatelimitPeriodStartKey, 0.0);
   ratelimit_fields.Set(kLockfileRatelimitPeriodDumpsKey, 0);
   metadata.Set(kLockfileRatelimitKey, std::move(ratelimit_fields));
 
-  base::Value::List dumps;
+  base::ListValue dumps;
 
   return WriteFiles(dumps, metadata);
 }
@@ -470,9 +471,10 @@ bool SynchronizedMinidumpManager::HasDumps() {
   }
 
   while (reader.Next()) {
-    if (strcmp(reader.name(), ".") == 0 || strcmp(reader.name(), "..") == 0)
+    if (UNSAFE_TODO(strcmp(reader.name(), ".")) == 0 ||
+        UNSAFE_TODO(strcmp(reader.name(), "..")) == 0) {
       continue;
-
+    }
     const base::FilePath file_path = dump_path_.Append(reader.name());
     if (file_path != lockfile_path_ && file_path != metadata_path_)
       return true;

@@ -8,13 +8,15 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
 import android.view.View;
+import android.widget.LinearLayout;
 
 import androidx.annotation.IntDef;
 
-import org.chromium.base.BuildInfo;
+import org.chromium.base.ApkInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
+import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -38,6 +40,7 @@ public class PermissionDialogMediator
         State.PROMPT_NEGATIVE_CLICKED,
         State.REQUEST_ANDROID_PERMISSIONS_FOR_PERSISTENT_GRANT,
         State.REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT,
+        State.REQUEST_ANDROID_PERMISSIONS_FOR_KEEP_CURRENT_GRANT,
         State.PROMPT_POSITIVE_EPHEMERAL_CLICKED,
         State.SHOW_SYSTEM_PROMPT
     })
@@ -53,10 +56,12 @@ public class PermissionDialogMediator
         int REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT = 6;
         int PROMPT_POSITIVE_EPHEMERAL_CLICKED = 7;
         int SHOW_SYSTEM_PROMPT = 8;
+        int REQUEST_ANDROID_PERMISSIONS_FOR_KEEP_CURRENT_GRANT = 9;
     }
 
     protected @Nullable PropertyModel mDialogModel;
     private @Nullable PropertyModel mOverlayDetectedDialogModel;
+    private @Nullable LocationPrecisionChooserController mLocationPrecisionChooserController;
     protected @Nullable PermissionDialogDelegate mDialogDelegate;
     protected @Nullable ModalDialogManager mModalDialogManager;
     protected PermissionDialogCoordinator.@Nullable Delegate mCoordinatorDelegate;
@@ -81,9 +86,62 @@ public class PermissionDialogMediator
         assert mState == State.NOT_SHOWING;
         mDialogDelegate = delegate;
         mModalDialogManager = manager;
+
+        setupLocationPrecisionChooser(view);
+
         mDialogModel = createModalDialogModel(view);
         mModalDialogManager.showDialog(mDialogModel, ModalDialogManager.ModalDialogType.TAB);
         mState = State.PROMPT_OPEN;
+    }
+
+    protected void setupLocationPrecisionChooser(View view) {
+        assert mDialogDelegate != null;
+        boolean isGeolocationContentSetting =
+                mDialogDelegate.getContentSettingsTypes().length == 1
+                        && mDialogDelegate.getContentSettingsTypes()[0]
+                                == ContentSettingsType.GEOLOCATION_WITH_OPTIONS;
+        boolean isApproximateGeolocationEnabled =
+                PermissionsAndroidFeatureMap.isEnabled(
+                        PermissionsAndroidFeatureList.APPROXIMATE_GEOLOCATION_PERMISSION);
+
+        boolean supportedEmbeddedPromptVariant =
+                switch (mDialogDelegate.getEmbeddedPromptVariant()) {
+                    case EmbeddedPromptVariant.UNINITIALIZED,
+                            EmbeddedPromptVariant.ASK,
+                            EmbeddedPromptVariant.PREVIOUSLY_DENIED,
+                            EmbeddedPromptVariant.PREVIOUSLY_GRANTED ->
+                            true;
+                    default -> false;
+                };
+
+        LinearLayout locationPrecisionContainer = view.findViewById(R.id.custom_view_container);
+
+        if (isGeolocationContentSetting
+                && isApproximateGeolocationEnabled
+                && locationPrecisionContainer != null
+                && supportedEmbeddedPromptVariant
+                && mDialogDelegate.getGeolocationPromptType()
+                        == GeolocationPromptType.APPROXIMATE_OR_PRECISE) {
+
+            mLocationPrecisionChooserController =
+                    new LocationPrecisionChooserController(
+                            view.getContext(),
+                            locationPrecisionContainer,
+                            mDialogDelegate.getInitialGeolocationAccuracySelection(),
+                            this::onLocationAccuracyRadioButtonSelected);
+            mLocationPrecisionChooserController.show();
+        } else {
+            if (locationPrecisionContainer != null) {
+                locationPrecisionContainer.setVisibility(View.GONE);
+                locationPrecisionContainer.removeAllViews();
+            }
+        }
+    }
+
+    private void onLocationAccuracyRadioButtonSelected(@LocationAccuracy int locationAccuracy) {
+        if (mDialogDelegate != null) {
+            mDialogDelegate.onGeolocationAccuracySelected(locationAccuracy);
+        }
     }
 
     /** Update the current displaying dialog. */
@@ -103,8 +161,19 @@ public class PermissionDialogMediator
         } else {
             assert mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_PERSISTENT_GRANT
                     || mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT
+                    || mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_KEEP_CURRENT_GRANT
                     || mState == State.PROMPT_NEGATIVE_CLICKED
                     || mState == State.PROMPT_POSITIVE_CLICKED;
+            onPermissionDialogEnded();
+        }
+    }
+
+    /** Dismiss the dialog by the close button. */
+    public void dismissByCloseButton() {
+        if (mState == State.PROMPT_OPEN) {
+            assumeNonNull(mModalDialogManager)
+                    .dismissDialog(mDialogModel, DialogDismissalCause.ACTION_ON_CONTENT);
+        } else {
             onPermissionDialogEnded();
         }
     }
@@ -119,7 +188,16 @@ public class PermissionDialogMediator
                 this,
                 assumeNonNull(mDialogDelegate),
                 view,
-                () -> showFilteredTouchEventDialog(getContext()));
+                () -> showFilteredTouchEventDialogIfPossible());
+    }
+
+    /** Attempts to show the filtered touch event dialog if the dialog delegate is available. */
+    private void showFilteredTouchEventDialogIfPossible() {
+        // The dialog delegate may be null if destroyed before this callback is invoked.
+        // Occasionally observed on HarmonyOS.
+        if (mDialogDelegate == null) return;
+
+        showFilteredTouchEventDialog(getContext());
     }
 
     /**
@@ -152,7 +230,7 @@ public class PermissionDialogMediator
                                 ModalDialogProperties.TITLE,
                                 context.getString(
                                         R.string.overlay_detected_dialog_title,
-                                        BuildInfo.getInstance().hostPackageLabel))
+                                        ApkInfo.getHostPackageLabel()))
                         .with(
                                 ModalDialogProperties.MESSAGE_PARAGRAPH_1,
                                 context.getString(R.string.overlay_detected_dialog_message))
@@ -177,14 +255,17 @@ public class PermissionDialogMediator
             mState = State.NOT_SHOWING;
         } else {
             assert mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_PERSISTENT_GRANT
-                    || mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT;
+                    || mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT
+                    || mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_KEEP_CURRENT_GRANT;
 
-            onPermissionDialogResult(ContentSettingValues.ALLOW);
+            onPermissionDialogResult(ContentSetting.ALLOW);
             if (mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_PERSISTENT_GRANT) {
                 mDialogDelegate.onAccept();
-            } else {
-                // State.REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT
+            } else if (mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT) {
                 mDialogDelegate.onAcceptThisTime();
+            } else {
+                // mState = State.REQUEST_ANDROID_PERMISSIONS_FOR_KEEP_CURRENT_GRANT
+                mDialogDelegate.onDeny();
             }
         }
         onPermissionDialogEnded();
@@ -193,13 +274,14 @@ public class PermissionDialogMediator
     @Override
     public void onAndroidPermissionCanceled() {
         assert mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_PERSISTENT_GRANT
-                || mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT;
+                || mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT
+                || mState == State.REQUEST_ANDROID_PERMISSIONS_FOR_KEEP_CURRENT_GRANT;
 
         // The tab may have navigated or been closed behind the Android permission prompt.
         if (mDialogDelegate == null) {
             mState = State.NOT_SHOWING;
         } else {
-            onPermissionDialogResult(ContentSettingValues.DEFAULT);
+            onPermissionDialogResult(ContentSetting.DEFAULT);
             // The user accepted the site-level prompt but denied the app-level prompt.
             // No content setting should be set.
             mDialogDelegate.onDismiss(DismissalType.AUTODISMISS_OS_DENIED);
@@ -230,15 +312,31 @@ public class PermissionDialogMediator
         } else if (mState == State.PROMPT_POSITIVE_CLICKED) {
             handleDismissPositiveButtonClickedState();
         } else if (mState == State.PROMPT_NEGATIVE_CLICKED) {
-            handleDismissNegativeButtonClickedState();
+            assert mDialogDelegate != null;
+            boolean isGeolocationContentSetting =
+                    mDialogDelegate.getContentSettingsTypes().length == 1
+                            && mDialogDelegate.getContentSettingsTypes()[0]
+                                    == ContentSettingsType.GEOLOCATION_WITH_OPTIONS;
+            if (isGeolocationContentSetting
+                    && mDialogDelegate.getGeolocationPromptType()
+                            == GeolocationPromptType.UPGRADE_TO_PRECISE) {
+                // In the geolocation upgrade prompt, even the negative button ("keep
+                // approximate location") results in the overall permission state being
+                // granted(even if with only approximate granularity).
+                handleDismissPositiveButtonClickedState();
+            } else {
+                handleDismissNegativeButtonClickedState();
+            }
         } else {
             @DismissalType int type = DismissalType.UNSPECIFIED;
             if (dismissalCause == DialogDismissalCause.NAVIGATE_BACK) {
                 type = DismissalType.NAVIGATE_BACK;
             } else if (dismissalCause == DialogDismissalCause.TOUCH_OUTSIDE) {
                 type = DismissalType.TOUCH_OUTSIDE;
+            } else if (dismissalCause == DialogDismissalCause.ACTION_ON_CONTENT) {
+                type = DismissalType.CLOSE_BUTTON_CLICKED;
             }
-            onPermissionDialogResult(ContentSettingValues.DEFAULT);
+            onPermissionDialogResult(ContentSetting.DEFAULT);
             mDialogDelegate.onDismiss(type);
             onPermissionDialogEnded();
         }
@@ -283,7 +381,7 @@ public class PermissionDialogMediator
     /** Handle negative button clicked state, after dialog is dismissed */
     protected void handleDismissNegativeButtonClickedState() {
         // Run the necessary delegate callback immediately and will schedule the next dialog.
-        onPermissionDialogResult(ContentSettingValues.BLOCK);
+        onPermissionDialogResult(ContentSetting.BLOCK);
         assumeNonNull(mDialogDelegate).onDeny();
         onPermissionDialogEnded();
     }
@@ -296,11 +394,14 @@ public class PermissionDialogMediator
     /** Request Android permissions if necessary, after user accepted the dialog */
     protected void requestAndroidPermissionsIfNecessary() {
         assert mState == State.PROMPT_POSITIVE_CLICKED
-                || mState == State.PROMPT_POSITIVE_EPHEMERAL_CLICKED;
+                || mState == State.PROMPT_POSITIVE_EPHEMERAL_CLICKED
+                || mState == State.PROMPT_NEGATIVE_CLICKED;
         if (mState == State.PROMPT_POSITIVE_CLICKED) {
             mState = State.REQUEST_ANDROID_PERMISSIONS_FOR_PERSISTENT_GRANT;
-        } else {
+        } else if (mState == State.PROMPT_POSITIVE_EPHEMERAL_CLICKED) {
             mState = State.REQUEST_ANDROID_PERMISSIONS_FOR_EPHEMERAL_GRANT;
+        } else {
+            mState = State.REQUEST_ANDROID_PERMISSIONS_FOR_KEEP_CURRENT_GRANT;
         }
 
         // This will call back into either onAndroidPermissionAccepted or
@@ -324,7 +425,7 @@ public class PermissionDialogMediator
     }
 
     /** Notify that user has just completed a permissions prompt flow with a result */
-    protected void onPermissionDialogResult(@ContentSettingValues int result) {
+    protected void onPermissionDialogResult(@ContentSetting int result) {
         if (mCoordinatorDelegate != null) {
             mCoordinatorDelegate.onPermissionDialogResult(result);
         }
@@ -342,6 +443,7 @@ public class PermissionDialogMediator
             mModalDialogManager.dismissDialog(mDialogModel, DialogDismissalCause.UNKNOWN);
         }
 
+        mLocationPrecisionChooserController = null;
         mDialogModel = null;
         mDialogDelegate = null;
         mModalDialogManager = null;

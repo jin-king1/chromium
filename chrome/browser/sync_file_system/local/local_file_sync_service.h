@@ -13,7 +13,7 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "chrome/browser/sync_file_system/local/local_origin_change_observer.h"
@@ -118,7 +118,7 @@ class LocalFileSyncService final : public RemoteChangeProcessor,
   // ProcessLocalChange().
   //
   // TODO(kinuko): Remove this method once we stop using multiple backends
-  // (crbug.com/324215), or deprecate the other if we keep doing so.
+  // (crbug.com/41077438), or deprecate the other if we keep doing so.
   void SetLocalChangeProcessorCallback(
       GetLocalChangeProcessorCallback get_local_change_processor);
 
@@ -130,8 +130,8 @@ class LocalFileSyncService final : public RemoteChangeProcessor,
   void PromoteDemotedChanges(base::RepeatingClosure callback);
 
   // Returns the metadata of a remote file pointed by |url|.
-  virtual void GetLocalFileMetadata(const storage::FileSystemURL& url,
-                                    SyncFileMetadataCallback callback);
+  void GetLocalFileMetadata(const storage::FileSystemURL& url,
+                            SyncFileMetadataCallback callback);
 
   // RemoteChangeProcessor overrides.
   void PrepareForProcessRemoteChange(const storage::FileSystemURL& url,

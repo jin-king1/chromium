@@ -24,7 +24,7 @@
 // Download progress. 1.0 if the download is complete.
 @property(nonatomic) float progress;
 
-// State of the download task. Default is kDownloadManagerStateNotStarted.
+// State of the download task. Default is DownloadManagerState::kNotStarted.
 @property(nonatomic) DownloadManagerState state;
 
 // Visible state of Install Google Drive button.
@@ -33,9 +33,6 @@
 
 // The host that triggered the download.
 @property(nonatomic) NSString* originatingHost;
-
-// Whether the originating host is displayed.
-@property(nonatomic) BOOL originatingHostDisplayed;
 
 @end
 

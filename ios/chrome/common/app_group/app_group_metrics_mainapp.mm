@@ -8,6 +8,7 @@
 
 #import "base/metrics/histogram_functions.h"
 #import "base/threading/scoped_blocking_call.h"
+#import "base/time/time.h"
 #import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/chrome/common/app_group/app_group_metrics.h"
 
@@ -15,7 +16,7 @@ namespace {
 // Delay in seconds before reporting the metrics coming from Open extensions.
 // This delay is needed to be sure the shared user default
 // is correctly synchronized.
-const int kDispatchTimeInSeconds = 2;
+constexpr base::TimeDelta kDispatchTime = base::Seconds(2);
 
 // Maximum number of outcomes reported to UMA to avoid infinite loops.
 const int kMaxNumberOfLogs = 10;
@@ -24,34 +25,6 @@ const int kMaxNumberOfLogs = 10;
 namespace app_group {
 
 namespace main_app {
-
-void ProcessPendingLogs(ProceduralBlockWithData callback) {
-  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
-                                                base::BlockingType::WILL_BLOCK);
-  NSFileManager* file_manager = [NSFileManager defaultManager];
-  NSURL* store_url = [file_manager
-      containerURLForSecurityApplicationGroupIdentifier:ApplicationGroup()];
-  NSURL* log_dir_url =
-      [store_url URLByAppendingPathComponent:app_group::kPendingLogFileDirectory
-                                 isDirectory:YES];
-
-  NSArray* pending_logs =
-      [file_manager contentsOfDirectoryAtPath:[log_dir_url path] error:nil];
-  if (!pending_logs) {
-    return;
-  }
-  for (NSString* pending_log : pending_logs) {
-    if ([pending_log hasSuffix:app_group::kPendingLogFileSuffix]) {
-      NSURL* file_url = [log_dir_url URLByAppendingPathComponent:pending_log
-                                                     isDirectory:NO];
-      if (callback) {
-        NSData* log_content = [file_manager contentsAtPath:[file_url path]];
-        callback(log_content);
-      }
-      [file_manager removeItemAtURL:file_url error:nil];
-    }
-  }
-}
 
 void EnableMetrics(NSString* client_id,
                    NSString* brand_code,
@@ -76,8 +49,7 @@ void EnableMetrics(NSString* client_id,
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
     dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW,
-                      (int64_t)(kDispatchTimeInSeconds * NSEC_PER_SEC)),
+        dispatch_time(DISPATCH_TIME_NOW, kDispatchTime.InNanoseconds()),
         dispatch_get_main_queue(), ^{
           LogOpenExtensionMetrics();
         });
@@ -87,8 +59,6 @@ void EnableMetrics(NSString* client_id,
 void DisableMetrics() {
   NSUserDefaults* shared_defaults = GetGroupUserDefaults();
   [shared_defaults removeObjectForKey:@(kChromeAppClientID)];
-  [shared_defaults removeObjectForKey:kContentExtensionDisplayCount];
-  [shared_defaults removeObjectForKey:kSearchExtensionDisplayCount];
   [shared_defaults removeObjectForKey:kOpenExtensionOutcomes];
 }
 
@@ -100,7 +70,7 @@ void LogOpenExtensionMetrics() {
   [shared_defaults removeObjectForKey:kOpenExtensionOutcomes];
 
   for (NSString* key in open_extension_dictionary) {
-    int event_count = [open_extension_dictionary valueForKey:key].intValue;
+    int event_count = open_extension_dictionary[key].intValue;
     app_group::OpenExtensionOutcome bucket_for_histogram =
         OutcomeTypeFromKey(key);
 

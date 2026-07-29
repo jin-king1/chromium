@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/containers/flat_map.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
@@ -27,7 +28,6 @@
 #include "chrome/browser/ash/child_accounts/time_limits/app_types.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/experiences/arc/test/fake_app_instance.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -104,7 +104,7 @@ class FamilyUserParentalControlMetricsTest : public testing::Test {
 TEST_F(FamilyUserParentalControlMetricsTest, BedAndScreenTimeLimitMetrics) {
   ASSERT_TRUE(ChildUserServiceFactory::GetForBrowserContext(profile_.get()));
 
-  base::Value::Dict policy_content =
+  base::DictValue policy_content =
       utils::CreateTimeLimitPolicy(utils::CreateTime(6, 0));
 
   // Adds bedtime policy:
@@ -119,7 +119,7 @@ TEST_F(FamilyUserParentalControlMetricsTest, BedAndScreenTimeLimitMetrics) {
       /*quota*/ kOneHour,
       /*last_updated=*/base::Time::Now());
 
-  GetPrefs()->SetDict(prefs::kUsageTimeLimit, policy_content.Clone());
+  GetPrefs()->SetDict(ash::prefs::kUsageTimeLimit, policy_content.Clone());
 
   histogram_tester_.ExpectBucketCount(
       ChildUserService::GetTimeLimitPolicyTypesHistogramNameForTest(),
@@ -159,7 +159,7 @@ TEST_F(FamilyUserParentalControlMetricsTest, OverrideTimeLimitMetrics) {
   ASSERT_TRUE(ChildUserServiceFactory::GetForBrowserContext(profile_.get()));
 
   // Adds override time policy created at 1 day ago.
-  base::Value::Dict policy_content =
+  base::DictValue policy_content =
       utils::CreateTimeLimitPolicy(utils::CreateTime(6, 0));
 
   utils::AddOverrideWithDuration(
@@ -167,7 +167,7 @@ TEST_F(FamilyUserParentalControlMetricsTest, OverrideTimeLimitMetrics) {
       /*action=*/usage_time_limit::TimeLimitOverride::Action::kLock,
       /*created_at=*/base::Time::Now() - kOneDay,
       /*duration=*/base::Hours(2));
-  GetPrefs()->SetDict(prefs::kUsageTimeLimit, policy_content.Clone());
+  GetPrefs()->SetDict(ash::prefs::kUsageTimeLimit, policy_content.Clone());
 
   // The override time limit policy would not get reported since the difference
   // between reported and created time are greater than 1 day.
@@ -188,7 +188,7 @@ TEST_F(FamilyUserParentalControlMetricsTest, OverrideTimeLimitMetrics) {
       /*action=*/usage_time_limit::TimeLimitOverride::Action::kLock,
       /*created_at=*/base::Time::Now() - base::Hours(23),
       /*duration=*/base::Hours(2));
-  GetPrefs()->SetDict(prefs::kUsageTimeLimit, policy_content.Clone());
+  GetPrefs()->SetDict(ash::prefs::kUsageTimeLimit, policy_content.Clone());
 
   // The override time limit policy would get reported since the created
   // time and reported time are within 1 day.
@@ -213,7 +213,9 @@ TEST_F(FamilyUserParentalControlMetricsTest, OverrideTimeLimitMetrics) {
 
 TEST_F(FamilyUserParentalControlMetricsTest, AppTimeLimitMetrics) {
   apps::AppServiceTest app_service_test_;
-  ArcAppTest arc_test_;
+  ArcAppTest arc_app_test_;
+  // TODO(crbug.com/454468678): This should be called before profile is created.
+  arc_app_test_.PreProfileSetUp();
 
   // During tests, AppService doesn't notify AppActivityRegistry that chrome
   // app is installed. Mark chrome as installed here.
@@ -222,15 +224,15 @@ TEST_F(FamilyUserParentalControlMetricsTest, AppTimeLimitMetrics) {
 
   // Install and set up Arc app.
   app_service_test_.SetUp(profile_.get());
-  arc_test_.SetUp(profile_.get());
-  arc_test_.app_instance()->set_icon_response_type(
+  arc_app_test_.PostProfileSetUp(profile_.get());
+  arc_app_test_.app_instance()->set_icon_response_type(
       arc::FakeAppInstance::IconResponseType::ICON_RESPONSE_SKIP);
   EXPECT_EQ(apps::AppType::kArc, kArcApp.app_type());
   std::string package_name = kArcApp.app_id();
-  arc_test_.AddPackage(CreateArcAppPackage(package_name)->Clone());
+  arc_app_test_.AddPackage(CreateArcAppPackage(package_name)->Clone());
   std::vector<arc::mojom::AppInfoPtr> apps;
   apps.emplace_back(CreateArcAppInfo(package_name, package_name));
-  arc_test_.app_instance()->SendPackageAppListRefreshed(package_name, apps);
+  arc_app_test_.app_instance()->SendPackageAppListRefreshed(package_name, apps);
 
   // Add limit policy to the Chrome and the Arc app.
   {
@@ -243,7 +245,7 @@ TEST_F(FamilyUserParentalControlMetricsTest, AppTimeLimitMetrics) {
                                            base::Hours(1), base::Time::Now()));
 
     builder.SetResetTime(6, 0);
-    GetPrefs()->SetDict(prefs::kPerAppTimeLimitsPolicy,
+    GetPrefs()->SetDict(ash::prefs::kPerAppTimeLimitsPolicy,
                         builder.value().Clone());
   }
 
@@ -265,6 +267,10 @@ TEST_F(FamilyUserParentalControlMetricsTest, AppTimeLimitMetrics) {
   histogram_tester_.ExpectTotalCount(
       ChildUserService::GetTimeLimitPolicyTypesHistogramNameForTest(),
       /*expected_count=*/2);
+
+  arc_app_test_.PreProfileTearDown();
+  // TODO(crbug.com/454468678): This should be called after profile is deleted.
+  arc_app_test_.PostProfileTearDown();
 }
 
 }  // namespace ash

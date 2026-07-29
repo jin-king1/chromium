@@ -6,10 +6,11 @@ import './toggle_row.js';
 
 import {assert, assertNotReached} from '//resources/js/assert.js';
 import type {App} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
-import {BrowserProxy} from 'chrome://resources/cr_components/app_management/browser_proxy.js';
-import {AppManagementUserAction, WindowMode} from 'chrome://resources/cr_components/app_management/constants.js';
+import {browserProxyFactory, WindowMode} from 'chrome://resources/cr_components/app_management/app_management.mojom-webui.js';
+import {AppManagementUserAction} from 'chrome://resources/cr_components/app_management/constants.js';
 import {recordAppManagementUserAction} from 'chrome://resources/cr_components/app_management/util.js';
-import {CrLitElement, type PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './app_management_shared_style.css.js';
 import type {ToggleRowElement} from './toggle_row.js';
@@ -58,9 +59,9 @@ export class WindowModeItemElement extends CrLitElement {
     };
   }
 
-  windowModeLabel: string = '';
-  app: App = createDummyApp();
-  override hidden: boolean = false;
+  accessor windowModeLabel: string = '';
+  accessor app: App = createDummyApp();
+  override accessor hidden: boolean = false;
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -91,7 +92,7 @@ export class WindowModeItemElement extends CrLitElement {
     const newWindowMode = (currentWindowMode === WindowMode.kBrowser) ?
         WindowMode.kWindow :
         WindowMode.kBrowser;
-    BrowserProxy.getInstance().handler.setWindowMode(
+    browserProxyFactory.getInstance().handler.setWindowMode(
         this.app.id,
         newWindowMode,
     );

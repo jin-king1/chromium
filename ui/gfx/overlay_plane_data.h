@@ -6,9 +6,9 @@
 #define UI_GFX_OVERLAY_PLANE_DATA_H_
 
 #include <optional>
+#include <variant>
 
 #include "base/component_export.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect.h"
@@ -26,7 +26,7 @@ struct COMPONENT_EXPORT(GFX) OverlayPlaneData {
   OverlayPlaneData();
   OverlayPlaneData(
       int z_order,
-      absl::variant<gfx::OverlayTransform, gfx::Transform> plane_transform,
+      std::variant<gfx::OverlayTransform, gfx::Transform> plane_transform,
       const RectF& display_bounds,
       const RectF& crop_rect,
       bool enable_blend,
@@ -34,7 +34,7 @@ struct COMPONENT_EXPORT(GFX) OverlayPlaneData {
       float opacity,
       OverlayPriorityHint priority_hint,
       const gfx::RRectF& rounded_corners,
-      const gfx::ColorSpace& color_space,
+      const ColorSpace& color_space,
       const std::optional<HDRMetadata>& hdr_metadata,
       std::optional<SkColor4f> color = std::nullopt,
       bool is_solid_color = false,
@@ -52,7 +52,7 @@ struct COMPONENT_EXPORT(GFX) OverlayPlaneData {
   // Specifies how the buffer is to be transformed during composition.
   // Note: An |OverlayTransform| transforms the buffer within its bounds and
   // does not affect |display_bounds|.
-  absl::variant<gfx::OverlayTransform, gfx::Transform> plane_transform =
+  std::variant<gfx::OverlayTransform, gfx::Transform> plane_transform =
       OverlayTransform::OVERLAY_TRANSFORM_NONE;
 
   // Bounds within the display to position the image in pixel coordinates. They
@@ -80,10 +80,10 @@ struct COMPONENT_EXPORT(GFX) OverlayPlaneData {
   RRectF rounded_corners;
 
   // ColorSpace for this overlay.
-  gfx::ColorSpace color_space;
+  ColorSpace color_space;
 
   // Optional HDR meta data required to display this overlay.
-  std::optional<HDRMetadata> hdr_metadata;
+  HDRMetadata hdr_metadata;
 
   // Represents either a background of this overlay or a color of a solid color
   // quad, which can be checked via the |is_solid_color|.

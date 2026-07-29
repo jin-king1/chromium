@@ -12,7 +12,6 @@
 
 #include "build/build_config.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/nacl/common/buildflags.h"
 #include "ui/base/models/table_model.h"
 
 namespace task_manager {
@@ -233,18 +232,6 @@ inline constexpr std::array kColumns = {
                     .initial_sort_is_ascending = false,
                     .default_visibility = false},
 
-#if BUILDFLAG(ENABLE_NACL)
-    TableColumnData{.id = IDS_TASK_MANAGER_NACL_DEBUG_STUB_PORT_COLUMN,
-                    .align = ui::TableColumn::RIGHT,
-                    .width = -1,
-                    .percent = 0,
-                    .min_width = std::size("32767") * kCharWidth,
-                    .max_width = -1,
-                    .sortable = true,
-                    .initial_sort_is_ascending = true,
-                    .default_visibility = false},
-#endif  // BUILDFLAG(ENABLE_NACL)
-
     TableColumnData{
         .id = IDS_TASK_MANAGER_JAVASCRIPT_MEMORY_ALLOCATED_COLUMN,
         .align = ui::TableColumn::RIGHT,
@@ -310,8 +297,8 @@ inline constexpr std::array kColumns = {
 inline constexpr size_t kColumnsSize = std::size(kColumns);
 
 // Session Restore Keys.
-extern const char kSortColumnIdKey[];
-extern const char kSortIsAscendingKey[];
+inline constexpr char kSortColumnIdKey[] = "sort_column_id";
+inline constexpr char kSortIsAscendingKey[] = "sort_is_ascending";
 
 // Returns the |column_id| as a string value to be used as keys in the user
 // preferences.

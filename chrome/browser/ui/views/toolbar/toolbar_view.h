@@ -10,19 +10,25 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/command_observer.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/toolbar/app_menu_icon_controller.h"
 #include "chrome/browser/ui/toolbar/back_forward_menu_model.h"
-#include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_model.h"
 #include "chrome/browser/ui/views/frame/browser_root_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/intent_picker_bubble_view.h"
 #include "chrome/browser/ui/views/location_bar/custom_tab_bar_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/browser/ui/views/toolbar/overflow_button.h"
+#include "chrome/browser/ui/views/toolbar/pinned_action_toolbar_button.h"
+#include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions.h"
+#include "chrome/browser/ui/views/toolbar/split_tabs_button.h"
 #include "components/prefs/pref_member.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -31,6 +37,7 @@
 #include "ui/views/accessible_pane_view.h"
 #include "ui/views/animation/animation_delegate_views.h"
 #include "ui/views/controls/button/menu_button.h"
+#include "ui/views/mouse_watcher.h"
 #include "ui/views/view.h"
 #include "url/origin.h"
 
@@ -39,42 +46,45 @@
 #include "chromeos/ash/experiences/arc/mojom/intent_helper.mojom-forward.h"  // nogncheck https://crbug.com/784179
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-class AppMenuButton;
 class AvatarToolbarButton;
+class AvatarToolbarButtonInterface;
 class BatterySaverButton;
 class BrowserAppMenuButton;
 class Browser;
-class DownloadToolbarButtonView;
 class ExtensionsToolbarButton;
-class ExtensionsToolbarContainer;
-class ChromeLabsButton;
+class ExtensionsToolbarDesktop;
 class HomeButton;
-class IntentChipButton;
 class ExtensionsToolbarCoordinator;
-class MediaToolbarButtonView;
+class MediaToolbarButton;
 class ReloadButton;
+class WebUIToolbarWebView;
 class PinnedToolbarActionsContainer;
 class ToolbarButton;
 class AvatarToolbarButtonBrowserTest;
 class ToolbarController;
+class ToolbarDivider;
 class OverflowButton;
 class PerformanceInterventionButton;
 
-namespace media_router {
-class CastToolbarButton;
-}
-
-namespace page_actions {
-class PageActionView;
-}  // namespace page_actions
-
-namespace send_tab_to_self {
-class SendTabToSelfToolbarIconView;
-}
-
 namespace views {
 class FlexLayout;
-}
+class LabelButton;
+}  // namespace views
+
+namespace glic {
+class ToolbarGlicButton;
+class ToolbarGlicActorTaskIcon;
+class GlicButtonInterface;
+class GlicSplitButtonController;
+}  // namespace glic
+
+class GlicAndActorButtonsContainer;
+
+enum class ExpansionMode {
+  kNone = 0,
+  kWillShow,
+  kWillHide,
+};
 
 // The Browser Window's toolbar.
 class ToolbarView : public views::AccessiblePaneView,
@@ -82,23 +92,24 @@ class ToolbarView : public views::AccessiblePaneView,
                     public views::AnimationDelegateViews,
                     public LocationBarView::Delegate,
                     public CommandObserver,
+                    public views::MouseWatcherListener,
                     public AppMenuIconController::Delegate,
                     public ToolbarButtonProvider,
-                    public BrowserRootView::DropTarget {
+                    public BrowserRootView::DropTarget,
+                    public glic::GlicSplitButtonDelegate {
   METADATA_HEADER(ToolbarView, views::AccessiblePaneView)
 
  public:
   // Types of display mode this toolbar can have.
   enum class DisplayMode {
-    NORMAL,     // Normal toolbar with buttons, etc.
-    LOCATION,   // Slimline toolbar showing only compact location
+    kNormal,    // Normal toolbar with buttons, etc.
+    kLocation,  // Slimline toolbar showing only compact location
                 // bar, used for popups.
-    CUSTOM_TAB  // Custom tab bar, used in PWAs when a location
+    kCustomTab  // Custom tab bar, used in PWAs when a location
                 // needs to be displayed.
   };
 
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kToolbarElementId);
-  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kToolbarContainerElementId);
 
   ToolbarView(Browser* browser, BrowserView* browser_view);
   ToolbarView(const ToolbarView&) = delete;
@@ -122,10 +133,6 @@ class ToolbarView : public views::AccessiblePaneView,
   // transition.
   void UpdateCustomTabBarVisibility(bool visible, bool animate);
 
-  // We may or may not be using a WebUI tab strip. Make sure toolbar items are
-  // added or removed accordingly.
-  void UpdateForWebUITabStrip();
-
   // Clears the current state for |tab|.
   void ResetTabState(content::WebContents* tab);
 
@@ -136,6 +143,10 @@ class ToolbarView : public views::AccessiblePaneView,
 
   // Returns true if the app menu is focused.
   bool GetAppMenuFocused() const;
+
+  WebUIToolbarWebView* GetWebUIToolbarViewForTesting() override;
+
+  OverflowButton* overflow_button() { return overflow_button_; }
 
   void ShowIntentPickerBubble(
       std::vector<IntentPickerBubbleView::AppInfo> app_info,
@@ -148,27 +159,26 @@ class ToolbarView : public views::AccessiblePaneView,
   // Shows a bookmark bubble and anchors it appropriately.
   void ShowBookmarkBubble(const GURL& url, bool already_bookmarked);
 
+  // Used to test whether `test_point` should be treated as part of the caption
+  // bar, which means it can be used to drag the window or open the window
+  // context menu. Should only be called when the toolbar is in the caption
+  // area.
+  bool IsPositionInWindowCaption(const gfx::Point& test_point) const;
+
+  // Records user metrics based on hit test results within the toolbar view.
+  void RecordHitTestMetrics(bool is_caption_area);
+
   // Accessors.
   Browser* browser() const { return browser_; }
   views::Button* GetChromeLabsButton() const;
-
-  // NOTE: Use of the above method `GetChromeLabsButton` is preferred while the
-  // Chrome Labs button is migrated to PinnedActionToolbarButton.
-  // TODO(b/353385180): Remove once Chrome Labs button migration is complete.
-  ChromeLabsButton* chrome_labs_button() const { return chrome_labs_button_; }
-  ChromeLabsModel* chrome_labs_model() const {
-    return chrome_labs_model_.get();
-  }
-  DownloadToolbarButtonView* download_button() const {
-    return download_button_;
-  }
-  ExtensionsToolbarContainer* extensions_container() const {
+  ExtensionsToolbarDesktop* extensions_container() const {
     return extensions_container_;
   }
   ToolbarButton* forward_button() const { return forward_; }
   ExtensionsToolbarButton* GetExtensionsButton() const;
   ReloadButton* reload_button() const { return reload_; }
-  LocationBarView* location_bar() const { return location_bar_; }
+  LocationBarView* location_bar_view() const { return location_bar_view_; }
+  LocationBar* location_bar() const { return location_bar_; }
   CustomTabBarView* custom_tab_bar() { return custom_tab_bar_; }
   BatterySaverButton* battery_saver_button() const {
     return battery_saver_button_;
@@ -176,25 +186,32 @@ class ToolbarView : public views::AccessiblePaneView,
   PerformanceInterventionButton* performance_intervention_button() const {
     return performance_intervention_button_;
   }
-  ToolbarButton* GetCastButton() const;
-  PinnedToolbarActionsContainer* pinned_toolbar_actions_container() const {
-    return pinned_toolbar_actions_container_;
-  }
-  MediaToolbarButtonView* media_button() const { return media_button_; }
-  send_tab_to_self::SendTabToSelfToolbarIconView* send_tab_to_self_button()
-      const {
-    return send_tab_to_self_button_;
-  }
-  BrowserAppMenuButton* app_menu_button() const { return app_menu_button_; }
+  MediaToolbarButton* media_button() const { return media_button_; }
   HomeButton* home_button() const { return home_; }
+
+  views::LabelButton* GetGlicButton();
+
+  // TODO(crbug.com/513238408): Remove this once toolbar layout/overflow is
+  // fixed.
+  AvatarToolbarButton* avatar_toolbar_button() { return avatar_; }
   AppMenuIconController* app_menu_icon_controller() {
     return &app_menu_icon_controller_;
   }
+
+  // The ToolbarController may be nullptr. This happens when there is a
+  // WebUIToolbarWebView that is handling all toolbar controls.
+  ToolbarController* toolbar_controller() { return toolbar_controller_.get(); }
   const ToolbarController* toolbar_controller() const {
     return toolbar_controller_.get();
   }
 
-  views::View* new_tab_button_for_testing() { return new_tab_button_; }
+  WebUIToolbarWebView* detached_toolbar_webview_for_testing() {
+    return detached_toolbar_webview_.get();
+  }
+
+  glic::ToolbarGlicActorTaskIcon* glic_actor_task_icon() {
+    return glic_actor_task_icon_;
+  }
 
   // LocationBarView::Delegate:
   content::WebContents* GetWebContents() override;
@@ -218,8 +235,29 @@ class ToolbarView : public views::AccessiblePaneView,
   void OnThemeChanged() override;
   bool AcceleratorPressed(const ui::Accelerator& acc) override;
   void ChildPreferredSizeChanged(views::View* child) override;
+  void ChildVisibilityChanged(View* child) override;
 
-  friend class AvatarToolbarButtonBrowserTest;
+  friend class AvatarToolbarButtonBaseBrowserTest;
+
+  // GlicSplitButtonDelegate:
+  void SetGlicShowState(bool show) override;
+  void SetGlicPanelIsOpen(bool open) override;
+  // Called when the glic nudge UI needs to be triggered. `label' holds the
+  // nudge label. `anchored_message_text` and `prompt_suggestion` are unused in
+  // this UI.
+  void OnTriggerGlicNudgeUI(glic::NudgeParams params) override;
+  void OnHideGlicNudgeUI() override;
+  bool GetIsShowingGlicNudge() override;
+  void ShowGlicActorTaskIcon() override;
+  void HideGlicActorTaskIcon() override;
+  bool GetIsShowingGlicActorTaskIconNudge() override;
+  void SetGlicActorNudgeLabel(const std::u16string& nudge_label) override;
+  void TriggerGlicActorNudge(const std::u16string& nudge_text) override;
+  void SetGlicActorNudgePressedState(bool pressed) override;
+  void ShowActorTaskListBubble() override;
+
+  // Updates glic button parenting after hiding glic actor task icon.
+  void FinalizeHideGlicActorTaskIcon();
 
  protected:
   // This controls Toolbar, LocationBar and CustomTabBar visibility.
@@ -249,24 +287,26 @@ class ToolbarView : public views::AccessiblePaneView,
       AppMenuIconController::TypeAndSeverity type_and_severity) override;
 
   // ToolbarButtonProvider:
-  ExtensionsToolbarContainer* GetExtensionsToolbarContainer() override;
-  PinnedToolbarActionsContainer* GetPinnedToolbarActionsContainer() override;
+  ExtensionsContainerViews* GetExtensionsContainerViews() override;
+  PinnedToolbarActions* GetPinnedToolbarActions() override;
   gfx::Size GetToolbarButtonSize() const override;
-  views::View* GetDefaultExtensionDialogAnchorView() override;
+  views::BubbleAnchor GetDefaultExtensionDialogAnchor() override;
   PageActionIconView* GetPageActionIconView(PageActionIconType type) override;
-  page_actions::PageActionView* GetPageActionView(
+  page_actions::PageActionViewInterface* GetPageActionViewInterface(
       actions::ActionId action_id) override;
-  AppMenuButton* GetAppMenuButton() override;
+  AppMenuControl* GetAppMenuControl() override;
+  const AppMenuControl* GetAppMenuControl() const;
   gfx::Rect GetFindBarBoundingBox(int contents_bottom) override;
   void FocusToolbar() override;
   views::AccessiblePaneView* GetAsAccessiblePaneView() override;
-  views::View* GetAnchorView(
+  views::BubbleAnchor GetBubbleAnchor(
       std::optional<actions::ActionId> action_id) override;
+  views::BubbleAnchor GetPageActionBubbleAnchor(
+      actions::ActionId action_id) override;
   void ZoomChangedForActiveTab(bool can_show_bubble) override;
-  AvatarToolbarButton* GetAvatarToolbarButton() override;
+  AvatarToolbarButtonInterface* GetAvatarToolbarButtonInterface() override;
   ToolbarButton* GetBackButton() override;
-  ReloadButton* GetReloadButton() override;
-  IntentChipButton* GetIntentChipButton() override;
+  ReloadControl* GetReloadButton() override;
   ToolbarButton* GetDownloadButton() override;
 
   // BrowserRootView::DropTarget
@@ -275,6 +315,9 @@ class ToolbarView : public views::AccessiblePaneView,
   BrowserRootView::DropTarget* GetDropTarget(
       gfx::Point loc_in_local_coords) override;
   views::View* GetViewForDrop() override;
+
+  // views::MouseWatcherListener:
+  void MouseMovedOutOfHost() override;
 
   // Changes the visibility of the Chrome Labs entry point based on prefs.
   void OnChromeLabsPrefChanged();
@@ -288,12 +331,39 @@ class ToolbarView : public views::AccessiblePaneView,
 
   void OnTouchUiChanged();
 
-  void UpdateClipPath();
+  void InitGlicContainer();
 
-  // Called when active state for the window changes.
-  void ActiveStateChanged();
+  void OnVerticalTabStripModeChanged(
+      tabs::VerticalTabStripStateController* controller);
 
-  void NewTabButtonPressed(const ui::Event& event);
+  void SetForwardButtonVisibility(bool visible);
+
+  gfx::Size GetBackForwardButtonSize(bool minimum_size = false) const;
+
+  std::unique_ptr<glic::ToolbarGlicButton> CreateGlicButton();
+  void OnGlicButtonClicked();
+  void OnGlicButtonDismissed();
+  void OnGlicButtonAnimationEnded();
+  void ShowToolbarNudge(glic::GlicButtonInterface* button);
+  void HideToolbarNudge(glic::GlicButtonInterface* button);
+  void ShowGlicActorNudge(const std::u16string nudge_text);
+  void ExecuteShowToolbarNudge(glic::GlicButtonInterface* button);
+  void ExecuteHideToolbarNudge(glic::GlicButtonInterface* button);
+  void UpdateGlicActorVisibility();
+  void UpdateGlicButtonVisibility();
+  void SetGlicActorShowState(bool show);
+  void UpdateGlicActorButtonContainerBorders();
+
+  std::unique_ptr<glic::ToolbarGlicActorTaskIcon> CreateGlicActorTaskIcon();
+  void OnGlicActorTaskIconClicked();
+  std::unique_ptr<GlicAndActorButtonsContainer>
+  CreateGlicActorButtonContainer();
+
+  // Update the expansion mode to be executed once the mouse is no longer over
+  // the nudge. This button will be what is expanded, either the glic button or
+  // actor button.
+  void SetLockedExpansionMode(ExpansionMode mode,
+                              glic::GlicButtonInterface* button);
 
   gfx::SlideAnimation size_animation_{this};
 
@@ -303,34 +373,62 @@ class ToolbarView : public views::AccessiblePaneView,
   raw_ptr<ToolbarButton> back_ = nullptr;
   raw_ptr<ToolbarButton> forward_ = nullptr;
   raw_ptr<ReloadButton> reload_ = nullptr;
+  raw_ptr<WebUIToolbarWebView> toolbar_webview_ = nullptr;
+  std::unique_ptr<WebUIToolbarWebView> detached_toolbar_webview_;
   raw_ptr<HomeButton> home_ = nullptr;
+  raw_ptr<SplitTabsToolbarButton> split_tabs_ = nullptr;
   raw_ptr<CustomTabBarView> custom_tab_bar_ = nullptr;
-  raw_ptr<LocationBarView> location_bar_ = nullptr;
-  raw_ptr<ExtensionsToolbarContainer> extensions_container_ = nullptr;
-  raw_ptr<views::View> toolbar_divider_ = nullptr;
-  raw_ptr<ChromeLabsButton> chrome_labs_button_ = nullptr;
+  raw_ptr<LocationBarView> location_bar_view_ = nullptr;
+
+  // An alias for `location_bar_view_` or `toolbar_webview_->GetLocationBar()`.
+  raw_ptr<LocationBar> location_bar_ = nullptr;
+  raw_ptr<ExtensionsToolbarDesktop> extensions_container_ = nullptr;
+  raw_ptr<ToolbarDivider> toolbar_divider_ = nullptr;
   raw_ptr<BatterySaverButton> battery_saver_button_ = nullptr;
   raw_ptr<PerformanceInterventionButton> performance_intervention_button_ =
       nullptr;
-  raw_ptr<media_router::CastToolbarButton> cast_ = nullptr;
   raw_ptr<PinnedToolbarActionsContainer> pinned_toolbar_actions_container_ =
       nullptr;
+
+  // An alias for `pinned_toolbar_actions_container_` or
+  // `toolbar_webview_->GetPinnedActionsContainer()`.
+  raw_ptr<PinnedToolbarActions> pinned_toolbar_actions_ = nullptr;
   raw_ptr<AvatarToolbarButton> avatar_ = nullptr;
-  raw_ptr<MediaToolbarButtonView> media_button_ = nullptr;
-  raw_ptr<send_tab_to_self::SendTabToSelfToolbarIconView>
-      send_tab_to_self_button_ = nullptr;
+  raw_ptr<MediaToolbarButton> media_button_ = nullptr;
   raw_ptr<BrowserAppMenuButton> app_menu_button_ = nullptr;
-  raw_ptr<DownloadToolbarButtonView> download_button_ = nullptr;
-  raw_ptr<views::View> new_tab_button_ = nullptr;
+
+  // The button currently holding the lock to be shown/hidden.
+  raw_ptr<glic::GlicButtonInterface> locked_expansion_button_ = nullptr;
+  raw_ptr<GlicAndActorButtonsContainer> glic_actor_button_container_ = nullptr;
+  raw_ptr<glic::ToolbarGlicButton> glic_button_ = nullptr;
+  raw_ptr<glic::ToolbarGlicActorTaskIcon> glic_actor_task_icon_ = nullptr;
+  raw_ptr<ToolbarDivider> glic_button_divider_ = nullptr;
+
+  // When locked, the container is unable to change its expanded state.
+  // Changes will be staged until after this is unlocked.
+  ExpansionMode locked_expansion_mode_ = ExpansionMode::kNone;
+
+  // MouseWatcher is used to lock and unlock the expansion state of this
+  // container.
+  std::unique_ptr<views::MouseWatcher> mouse_watcher_;
+
+  raw_ptr<ToolbarButton> ai_overlay_dialog_button_ = nullptr;
 
   const raw_ptr<Browser> browser_;
   const raw_ptr<BrowserView> browser_view_;
+  base::WeakPtr<glic::GlicSplitButtonController> glic_split_button_controller_;
+
+  // ToolbarView may or may not serve as the `ToolbarButtonProvider` for a given
+  // browser instance depending on the browser type (e.g. WebApp browsers set
+  // their own in `WebAppFrameToolbarView`). Make this optional to allow
+  // conditionally configuring this as the `ToolbarButtonProvider`.
+  std::optional<ui::ScopedUnownedUserData<ToolbarButtonProvider>>
+      scoped_unowned_user_data_;
 
   raw_ptr<views::FlexLayout> layout_manager_ = nullptr;
 
   AppMenuIconController app_menu_icon_controller_;
 
-  std::unique_ptr<ChromeLabsModel> chrome_labs_model_;
   std::unique_ptr<ExtensionsToolbarCoordinator> extensions_toolbar_coordinator_;
 
   BooleanPrefMember show_forward_button_;
@@ -353,30 +451,19 @@ class ToolbarView : public views::AccessiblePaneView,
   // Whether this toolbar has been initialized.
   bool initialized_ = false;
 
-  // container_view_ is transparent with the same dimensions as ToolbarView.
-  // All children are added to container_view_ and layout_manager_ applies to
-  // container_view_. The reason for this layer of indiretion is because
-  // container_view_ has a clip path set in UpdateClipPath() which adds rounded
-  // corners. This leaves some unpainted pixels, which are painted by
-  // background_view_left_ and background_view_right_.
-  // the future.
-  raw_ptr<ContainerView> container_view_ = nullptr;
-
   // A chevron button that indicates some toolbar elements have overflowed
   // due to small toolbar view width. Visibility controlled by
   // `toolbar_controller_`.
   raw_ptr<OverflowButton> overflow_button_ = nullptr;
 
-  // There are two situations where background_view_left_ and
-  // background_view_right_ need be repainted: window active state change and
-  // theme change. active_state_subscription_ handles the former, and the latter
-  // causes the whole toolbar to be repainted so not special logic is necessary.
-  raw_ptr<View> background_view_left_ = nullptr;
-  raw_ptr<View> background_view_right_ = nullptr;
+  // Subscription for when tab strip mode changes
+  base::CallbackListSubscription vertical_tab_subscription_;
 
-  // Listens to changes to active state to update background_view_right_ and
-  // background_view_left_, as their background depends on active state.
-  base::CallbackListSubscription active_state_subscription_;
+  bool should_display_vertical_tabs_ = false;
+  bool should_show_glic_button_ = false;
+  bool should_show_glic_actor_ = false;
+
+  bool was_mouse_down_ = false;
 };
 
 extern const ui::ClassProperty<bool>* const kActionItemUnderlineIndicatorKey;

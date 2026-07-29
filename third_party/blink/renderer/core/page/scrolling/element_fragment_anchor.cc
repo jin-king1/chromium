@@ -26,12 +26,8 @@ namespace blink {
 namespace {
 // TODO(bokan): Move this into FragmentDirective after
 // https://crrev.com/c/3216206 lands.
-String RemoveFragmentDirectives(const String& url_fragment) {
-  wtf_size_t directive_delimiter_ix = url_fragment.Find(":~:");
-  if (directive_delimiter_ix == kNotFound)
-    return url_fragment;
-
-  return url_fragment.Substring(0, directive_delimiter_ix);
+StringView RemoveFragmentDirectives(const StringView& url_fragment) {
+  return url_fragment.substr(0, url_fragment.find(":~:"));
 }
 
 }  // namespace
@@ -44,16 +40,15 @@ ElementFragmentAnchor* ElementFragmentAnchor::TryCreate(const KURL& url,
 
   // If our URL has no ref, then we have no place we need to jump to.
   // OTOH If CSS target was set previously, we want to set it to 0, recalc
-  // and possibly paint invalidation because :target pseudo class may have been
+  // and possibly paint invalidation because :target pseudo-class may have been
   // set (see bug 11321).
   // Similarly for svg, if we had a previous svgView() then we need to reset
   // the initial view if we don't have a fragment.
   if (!url.HasFragmentIdentifier() && !doc.CssTarget() && !doc.IsSVGDocument())
     return nullptr;
 
-  String fragment =
-      RemoveFragmentDirectives(url.FragmentIdentifier().ToString());
-  Node* anchor_node = doc.FindAnchor(fragment);
+  StringView fragment = RemoveFragmentDirectives(url.FragmentIdentifier());
+  Node* anchor_node = doc.FindAnchor(fragment.ToString());
 
   // Setting to null will clear the current target.
   auto* target = DynamicTo<Element>(anchor_node);
@@ -61,7 +56,7 @@ ElementFragmentAnchor* ElementFragmentAnchor::TryCreate(const KURL& url,
 
   if (doc.IsSVGDocument()) {
     if (auto* svg = DynamicTo<SVGSVGElement>(doc.documentElement())) {
-      String decoded = DecodeURLEscapeSequences(fragment, DecodeURLMode::kUTF8);
+      String decoded = DecodeUrlEscapeSequences(fragment, DecodeUrlMode::kUtf8);
       svg->SetViewSpec(svg->ParseViewSpec(decoded, target));
     }
   }
@@ -81,8 +76,7 @@ ElementFragmentAnchor* ElementFragmentAnchor::TryCreate(const KURL& url,
   if (!should_scroll)
     return nullptr;
 
-  HTMLDetailsElement::ExpandDetailsAncestors(*anchor_node);
-  DisplayLockUtilities::RevealHiddenUntilFoundAncestors(*anchor_node);
+  DisplayLockUtilities::RevealAutoExpandableAncestors(*anchor_node);
 
   return MakeGarbageCollected<ElementFragmentAnchor>(*anchor_node, frame);
 }
@@ -114,10 +108,8 @@ bool ElementFragmentAnchor::Invoke() {
     element_to_scroll = doc.documentElement();
 
   if (element_to_scroll) {
-    ScrollIntoViewOptions* options = ScrollIntoViewOptions::Create();
-    options->setBlock("start");
-    options->setInlinePosition("nearest");
-    ScrollElementIntoViewWithOptions(element_to_scroll, options);
+    ScrollElementIntoViewWithOptions(element_to_scroll,
+                                     ScrollIntoViewOptions::Create());
   }
 
   if (AXObjectCache* cache = doc.ExistingAXObjectCache())
@@ -141,7 +133,7 @@ void ElementFragmentAnchor::Installed() {
   if (needs_focus_) {
     // Attempts to focus the anchor if we couldn't focus above. This can cause
     // script to run so we can't do it from Invoke.
-    frame_->GetDocument()->EnqueueAnimationFrameTask(WTF::BindOnce(
+    frame_->GetDocument()->EnqueueAnimationFrameTask(BindOnce(
         &ElementFragmentAnchor::ApplyFocusIfNeeded, WrapPersistent(this)));
   }
 
@@ -192,7 +184,7 @@ void ElementFragmentAnchor::ApplyFocusIfNeeded() {
     const Position& pos = Position::FirstPositionInOrBeforeNode(*anchor_node_);
     if (pos.IsConnected()) {
       frame_->Selection().SetSelection(
-          SelectionInDOMTree::Builder().Collapse(pos).Build(),
+          SelectionInDomTree::Builder().Collapse(pos).Build(),
           SetSelectionOptions::Builder()
               .SetShouldCloseTyping(true)
               .SetShouldClearTypingStyle(true)

@@ -71,7 +71,7 @@ struct FlexLine {
            LayoutUnit major_baseline,
            LayoutUnit minor_baseline,
            unsigned main_axis_auto_margin_count)
-      : item_indices(item_indices),
+      : item_indices(std::move(item_indices)),
         main_axis_free_space(main_axis_free_space),
         line_cross_size(line_cross_size),
         major_baseline(major_baseline),
@@ -93,11 +93,23 @@ struct FlexLine {
 
   LayoutUnit cross_axis_offset;
 
+  // Per-line effective gap size used only for gap decoration positioning.
+  // This already accounts for both the base `gap` property and any extra
+  // content distribution space from `justify-content` (e.g. space-between).
+  // This value is captured from the first inter-item gap in the line and
+  // reused for all items, so it may differ by a small delta from the actual
+  // diffused values used for item positioning. This discrepancy is negligible
+  // for gap decoration purposes.
+  LayoutUnit effective_gap_between_items;
+
   // These fields are only used/populated during fragmentation.
   LayoutUnit item_offset_adjustment;
   bool has_seen_all_children = false;
   HeapVector<FlexItemData> line_items_data;
 };
+
+// Flex-layout usually has exactly one line.
+using FlexLineVector = HeapVector<FlexLine, 1>;
 
 }  // namespace blink
 

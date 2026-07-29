@@ -5,6 +5,8 @@
 #include "third_party/blink/renderer/core/css/parser/container_query_parser.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/core/css/container_selector.h"
+#include "third_party/blink/renderer/core/css/media_query_exp.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_token_stream.h"
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
@@ -19,11 +21,13 @@ class ContainerQueryParserTest : public PageTestBase {
   String ParseQuery(String string, Functor& container_query_parser_func) {
     const auto* context = MakeGarbageCollected<CSSParserContext>(GetDocument());
     ContainerQueryParser parser(*context);
-    const MediaQueryExpNode* node = container_query_parser_func(string, parser);
+    const ConditionalExpNode* node =
+        container_query_parser_func(string, parser);
     if (!node) {
       return g_null_atom;
     }
-    if (node->HasUnknown()) {
+    if (ContainerSelector::CollectFeatureFlags(*node) &
+        ContainerSelector::kFeatureUnknown) {
       return "<unknown>";
     }
     StringBuilder builder;
@@ -42,17 +46,24 @@ class ContainerQueryParserTest : public PageTestBase {
                                const ExecutionContext*) const override {
       return true;
     }
+    bool IsAllowedWithValue(const AtomicString& feature) const override {
+      return true;
+    }
     bool IsCaseSensitive(const AtomicString& feature) const override {
       return false;
     }
-    bool SupportsRange() const override { return true; }
+    bool IsRangeTypeFeature(const AtomicString& feature) const override {
+      return true;
+    }
+    bool SupportsStyleRange() const override { return false; }
+    bool SupportsElementDependent() const override { return false; }
   };
 
   // E.g. https://drafts.csswg.org/css-contain-3/#typedef-style-query
   String ParseFeatureQuery(String feature_query) {
     const auto* context = MakeGarbageCollected<CSSParserContext>(GetDocument());
     CSSParserTokenStream stream(feature_query);
-    const MediaQueryExpNode* node =
+    const ConditionalExpNode* node =
         ContainerQueryParser(*context).ConsumeFeatureQuery(stream,
                                                            TestFeatureSet());
     if (!node || !stream.AtEnd()) {

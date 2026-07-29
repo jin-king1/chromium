@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/media_preview/page_info_previews_coordinator.h"
 
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/media_preview/media_preview_metrics.h"
 #include "chrome/browser/ui/views/media_preview/media_view.h"
 #include "chrome/browser/ui/views/media_preview/scroll_media_preview.h"
 #include "components/content_settings/core/common/content_settings_types.h"
@@ -37,10 +38,10 @@ PageInfoPreviewsCoordinator::PageInfoPreviewsCoordinator(
     ContentSettingsType content_settings_type,
     views::View* parent_view)
     : view_type_(ComputePreviewType(content_settings_type)),
-      metrics_context_(media_preview_metrics::Context(
+      metrics_context_(
           media_preview_metrics::UiLocation::kPageInfo,
           media_coordinator::GetPreviewTypeFromMediaCoordinatorViewType(
-              view_type_))) {
+              view_type_)) {
   CHECK(web_contents);
 
   CHECK(parent_view);

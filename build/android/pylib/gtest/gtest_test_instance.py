@@ -18,6 +18,8 @@ from pylib import constants
 from pylib.constants import host_paths
 from pylib.base import base_test_result
 from pylib.base import test_instance
+from pylib.base import test_run
+from pylib.symbols import deobfuscator
 from pylib.symbols import stack_symbolizer
 from pylib.utils import test_filter
 
@@ -29,11 +31,10 @@ BROWSER_TEST_SUITES = [
     'android_sync_integration_tests',
     'components_browsertests',
     'content_browsertests',
-    'weblayer_browsertests',
 ]
 
-# The max number of tests to run on a shard during the test run.
-MAX_SHARDS = 256
+# The max number of tests to run on a batch during the test run.
+MAX_BATCH_SIZE = 256
 
 RUN_IN_SUB_THREAD_TEST_SUITES = [
     # Multiprocess tests should be run outside of the main thread.
@@ -82,6 +83,10 @@ _EXTRA_SHARD_SIZE_LIMIT = (
     'org.chromium.native_test.NativeTestInstrumentationTestRunner.'
         'ShardSizeLimit')
 
+_PREFIX_DISABLED = 'DISABLED_'
+_PREFIX_FLAKY = 'FLAKY_'
+_PREFIX_PRE = 'PRE_'
+
 # TODO(jbudorick): Remove these once we're no longer parsing stdout to generate
 # results.
 _RE_TEST_STATUS = re.compile(
@@ -105,8 +110,6 @@ _RE_TEST_ERROR = re.compile(r'FAILURES!!! Tests run: \d+,'
 _RE_TEST_CURRENTLY_RUNNING = re.compile(
     r'\[.*ERROR:.*?\] Currently running: (.*)')
 _RE_TEST_DCHECK_FATAL = re.compile(r'\[.*:FATAL:.*\] (.*)')
-_RE_DISABLED = re.compile(r'DISABLED_')
-_RE_FLAKY = re.compile(r'FLAKY_')
 
 # Detect a new launcher invocation. When encountered, the output parser will
 # stop recording logs for a suddenly crashed test (if one was running) in the
@@ -232,10 +235,9 @@ def ParseGTestOutput(output, symbolizer, device_abi):
         duration = None  # Don't know.  Not using 0 as this is unknown vs 0.
 
     if not launcher_main_start_match:
+      log.append(l)
       if not matcher and _STACK_LINE_RE.match(l):
         stack.append(l)
-      else:
-        log.append(l)
 
     if _RE_ANY_TESTS_FAILED.match(l):
       break
@@ -316,19 +318,95 @@ def ParseGTestJSON(json_content):
   return results
 
 
-def TestNameWithoutDisabledPrefix(test_name):
-  """Modify the test name without disabled prefix if prefix 'DISABLED_' or
-  'FLAKY_' presents.
+def ParseGTestListTestsJSON(json_content):
+  """Parses the list of tests in JSON format.
+
+  See PrintJsonTestList() in googletest/src/gtest.cc for the format of this
+  JSON.
 
   Args:
-    test_name: The name of a test.
+    json_content: The JSON content as a string.
+
   Returns:
-    A test name without prefix 'DISABLED_' or 'FLAKY_'.
+    A dict mapping test names to a dict containing 'file' and 'line'.
   """
-  disabled_prefixes = [_RE_DISABLED, _RE_FLAKY]
-  for dp in disabled_prefixes:
-    test_name = dp.sub('', test_name)
-  return test_name
+  test_locations = {}
+  if not json_content:
+    return test_locations
+
+  try:
+    json_data = json.loads(json_content)
+  except ValueError:
+    logging.warning('Failed to parse gtest list tests JSON.')
+    return test_locations
+
+  for suite in json_data.get('testsuites', []):
+    suite_name = suite.get('name')
+    for test in suite.get('testsuite', []):
+      test_name = test.get('name')
+      file_name = test.get('file')
+      if suite_name and test_name and file_name:
+        # Gtest JSON 'file' paths are often relative to the build directory.
+        # We want to normalize them to be relative to the source root.
+        if file_name.startswith('../../'):
+          file_name = file_name.replace('../../', '//', 1)
+        test_locations[f'{suite_name}.{test_name}'] = file_name
+  return test_locations
+
+
+def _TestNameWithoutPrefix(full_test_name, prefixes):
+  """Get full test name without any prefix from the given list of prefixes.
+
+  Args:
+    full_test_name: A string containing the full name of a test, e.g.
+        TestSuite1.TestName1
+    prefixes: A list of prefixes to remove from the test name.
+  Returns:
+    A full test name without any given prefix.
+  """
+  for prefix in prefixes:
+    full_test_name = full_test_name.replace(prefix, '')
+  return full_test_name
+
+
+def TestNameWithoutDisabledPrefix(full_test_name):
+  """Get full test name without disabled prefixes 'DISABLED_' or 'FLAKY_'."""
+  return _TestNameWithoutPrefix(full_test_name,
+                                [_PREFIX_DISABLED, _PREFIX_FLAKY])
+
+
+def TestNameWithoutPrefixes(full_test_name):
+  """Get full test name without prefixes 'DISABLED_', 'FLAKY_', or 'PRE_'."""
+  return _TestNameWithoutPrefix(full_test_name,
+                                [_PREFIX_DISABLED, _PREFIX_FLAKY, _PREFIX_PRE])
+
+
+def TestNameWithPrePrefix(full_test_name):
+  """Get full test name with PRE_ added to the test name.
+
+  Note that the DISABLED_ prefix will be stripped if present.
+
+  For example:
+   - TestSuite1.TestName1 -> TestSuite1.PRE_TestName1
+   - TestSuite1.PRE_TestName2 -> TestSuite1.PRE_PRE_TestName2
+   - TestSuite1.DISABLED_TestName3 -> TestSuite1.PRE_TestName3
+  """
+  full_test_name = TestNameWithoutDisabledPrefix(full_test_name)
+  test_suite, test_name = full_test_name.split('.', maxsplit=1)
+  return f'{test_suite}.{_PREFIX_PRE}{test_name}'
+
+
+def IsPreTest(full_test_name):
+  """Check if a full test name is a PRE_ test.
+
+  Since both of the following are valid PRE_ tests, we just check if PRE_ exists
+  in the test name:
+   - TestSuite1.PRE_TestName2
+   - TestSuite1.DISABLED_PRE_TestName3
+  """
+  _, test_name = full_test_name.split('.', maxsplit=1)
+  return _PREFIX_PRE in test_name
+
 
 class GtestTestInstance(test_instance.TestInstance):
 
@@ -351,11 +429,12 @@ class GtestTestInstance(test_instance.TestInstance):
     self._shard_timeout = args.shard_timeout
     self._store_tombstones = args.store_tombstones
     self._suite = args.suite_name[0]
-    self._symbolizer = stack_symbolizer.Symbolizer(None)
     self._total_external_shards = args.test_launcher_total_shards
     self._wait_for_java_debugger = args.wait_for_java_debugger
     self._use_existing_test_data = args.use_existing_test_data
     self._deploy_mock_openxr_runtime = args.deploy_mock_openxr_runtime
+    self._proguard_mapping_path = args.proguard_mapping_path
+    self._deobfuscator = None
 
     # GYP:
     if args.executable_dist_dir:
@@ -372,9 +451,9 @@ class GtestTestInstance(test_instance.TestInstance):
     if args.test_apk_incremental_install_json:
       incremental_part = '_incremental'
 
-    self._test_launcher_batch_limit = MAX_SHARDS
+    self._test_launcher_batch_limit = MAX_BATCH_SIZE
     if (args.test_launcher_batch_limit
-        and 0 < args.test_launcher_batch_limit < MAX_SHARDS):
+        and 0 < args.test_launcher_batch_limit < MAX_BATCH_SIZE):
       self._test_launcher_batch_limit = args.test_launcher_batch_limit
 
     apk_path = os.path.join(
@@ -400,6 +479,9 @@ class GtestTestInstance(test_instance.TestInstance):
         self._shard_timeout = 10 * self._shard_timeout
       if args.wait_for_java_debugger:
         self._extras[EXTRA_SHARD_NANO_TIMEOUT] = int(1e15)  # Forever
+
+    self._symbolizer = stack_symbolizer.Symbolizer(
+        self._apk_helper.path if self._apk_helper else None)
 
     if not self._apk_helper and not self._exe_dist_dir:
       error_func('Could not find apk or executable for %s' % self._suite)
@@ -590,8 +672,26 @@ class GtestTestInstance(test_instance.TestInstance):
   #override
   def SetUp(self):
     """Map data dependencies via isolate."""
+    if self.wait_for_java_debugger:
+      if self._apk_helper and not self._apk_helper.GetIsDebuggable():
+        raise Exception('Passed --wait-for-java-debugger flag but did not set '
+                        'debuggable_apks = true in GN args')
     self._data_deps.extend(
         self._data_deps_delegate(self._runtime_deps_path))
+    if self._proguard_mapping_path:
+      self._deobfuscator = deobfuscator.DeobfuscatorPool(
+          self._proguard_mapping_path)
+
+  def GetLogcatPackageNames(self):
+    ret = {x.GetPackageName() for x in self._additional_apks}
+    if pkg := self.package:
+      ret.add(pkg)
+    return ','.join(sorted(ret))
+
+  def MaybeDeobfuscateLines(self, lines):
+    if not self._deobfuscator:
+      return lines
+    return self._deobfuscator.TransformLines(lines)
 
   def GetDataDependencies(self):
     """Returns the test suite's data dependencies.
@@ -624,19 +724,26 @@ class GtestTestInstance(test_instance.TestInstance):
       for gtest_filter_string in gtest_filter_strings:
         logging.debug('Filtering tests using: %s', gtest_filter_string)
         filtered_test_list = unittest_util.FilterTestNames(
-            filtered_test_list, gtest_filter_string)
+            filtered_test_list, gtest_filter_string, TestNameWithoutPrefixes)
 
-      if self._run_disabled and self._gtest_filters:
+      if self._gtest_filters:
         out_filtered_test_list = list(set(test_list)-set(filtered_test_list))
+        disabled_tests = []
         for test in out_filtered_test_list:
           test_name_no_disabled = TestNameWithoutDisabledPrefix(test)
           if test_name_no_disabled == test:
             continue
           if all(
               unittest_util.FilterTestNames([test_name_no_disabled],
-                                            gtest_filter)
+                                            gtest_filter,
+                                            TestNameWithoutPrefixes)
               for gtest_filter in self._gtest_filters):
-            filtered_test_list.append(test)
+            disabled_tests.append(test)
+        if disabled_tests:
+          if self._run_disabled:
+            filtered_test_list += disabled_tests
+          else:
+            test_run.ShowDisabledTestsHint(count=len(disabled_tests))
     return filtered_test_list
 
   def _GenerateDisabledFilterString(self, disabled_prefixes):
@@ -648,8 +755,6 @@ class GtestTestInstance(test_instance.TestInstance):
         disabled_prefixes += ['MANUAL_']
       if not self._run_disabled:
         disabled_prefixes += ['DISABLED_', 'FLAKY_']
-      if not self._run_pre_tests:
-        disabled_prefixes += ['PRE_']
 
     disabled_filter_items += ['%s*' % dp for dp in disabled_prefixes]
     disabled_filter_items += ['*.%s*' % dp for dp in disabled_prefixes]
@@ -668,3 +773,7 @@ class GtestTestInstance(test_instance.TestInstance):
   #override
   def TearDown(self):
     """Do nothing."""
+    self.symbolizer.CleanUp()
+    if self._deobfuscator:
+      self._deobfuscator.Close()
+      self._deobfuscator = None

@@ -21,14 +21,14 @@ inline bool FullyClipsContents(const Node* node) {
   if (!layout_object || !layout_object->IsBox() ||
       !layout_object->IsScrollContainer() || IsA<LayoutView>(layout_object))
     return false;
-  return To<LayoutBox>(layout_object)->Size().IsEmpty();
+  return To<LayoutBox>(layout_object)->StitchedSize().IsEmpty();
 }
 
 inline bool IgnoresContainerClip(const Node* node) {
   LayoutObject* layout_object = node->GetLayoutObject();
   if (!layout_object || layout_object->IsText())
     return false;
-  return layout_object->Style()->HasOutOfFlowPosition();
+  return layout_object->StyleRef().HasOutOfFlowPosition();
 }
 
 template <typename Strategy>

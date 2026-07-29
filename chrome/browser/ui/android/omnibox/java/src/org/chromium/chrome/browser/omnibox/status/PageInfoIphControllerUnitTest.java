@@ -45,7 +45,8 @@ public class PageInfoIphControllerUnitTest {
     private @Mock Tracker mTracker;
     private View mView;
     private PageInfoIphController mController;
-    private ArgumentCaptor<IphCommand> mIphCmdCaptor = ArgumentCaptor.forClass(IphCommand.class);
+    private final ArgumentCaptor<IphCommand> mIphCmdCaptor =
+            ArgumentCaptor.forClass(IphCommand.class);
 
     @Before
     public void setUp() {
@@ -86,22 +87,6 @@ public class PageInfoIphControllerUnitTest {
         assertEquals(TIMEOUT, cmd.autoDismissTimeout);
         assertEquals(IPH_RES_ID, cmd.stringId);
         assertEquals(FeatureConstants.PAGE_INFO_STORE_INFO_FEATURE, cmd.featureName);
-        assertEquals(STATUS_INSETS, cmd.insetRect);
-        assertTrue(cmd.dismissOnTouch);
-        assertNull(cmd.anchorRect);
-        assertEquals(mView, cmd.anchorView);
-    }
-
-    @Test
-    public void showCookieControlsIph() {
-        mController.showCookieControlsIph(TIMEOUT, IPH_RES_ID);
-        verify(mHelper).requestShowIph(mIphCmdCaptor.capture());
-        var cmd = mIphCmdCaptor.getValue();
-        cmd.fetchFromResources();
-
-        assertEquals(TIMEOUT, cmd.autoDismissTimeout);
-        assertEquals(IPH_RES_ID, cmd.stringId);
-        assertEquals(FeatureConstants.COOKIE_CONTROLS_FEATURE, cmd.featureName);
         assertEquals(STATUS_INSETS, cmd.insetRect);
         assertTrue(cmd.dismissOnTouch);
         assertNull(cmd.anchorRect);

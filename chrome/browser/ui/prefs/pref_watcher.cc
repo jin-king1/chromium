@@ -10,17 +10,16 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/privacy_sandbox/tracking_protection_settings_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile_selections.h"
 #include "chrome/browser/renderer_preferences_util.h"
 #include "chrome/browser/ui/prefs/prefs_tab_helper.h"
 #include "chrome/common/pref_names.h"
+#include "components/autofill/core/common/autofill_prefs.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/live_caption/pref_names.h"
@@ -39,6 +38,11 @@
 #include "components/browser_ui/accessibility/android/font_size_prefs_android.h"
 #endif
 
+#if BUILDFLAG(IS_LINUX)
+#include "ui/linux/linux_ui.h"
+#include "ui/linux/primary_paste_pref_observer.h"
+#endif
+
 namespace {
 
 // The list of prefs we want to observe.
@@ -49,6 +53,7 @@ const char* const kWebPrefsToObserve[] = {
     prefs::kDefaultCharset,
     prefs::kDisable3DAPIs,
     prefs::kEnableHyperlinkAuditing,
+    prefs::kSubresourceFilterHighlightAds,
     prefs::kWebKitAllowRunningInsecureContent,
     prefs::kWebKitDefaultFixedFontSize,
     prefs::kWebKitDefaultFontSize,
@@ -65,7 +70,9 @@ const char* const kWebPrefsToObserve[] = {
     prefs::kAccessibilityTextSizeContrastFactor,
     prefs::kAccessibilityForceEnableZoom,
     prefs::kAccessibilityFontWeightAdjustment,
-    prefs::kWebKitPasswordEchoEnabled,
+    prefs::kAccessibilityTouchpadOverscrollHistoryNavigation,
+    prefs::kWebKitPasswordEchoEnabledPhysical,
+    prefs::kWebKitPasswordEchoEnabledTouch,
 #endif
     prefs::kWebKitForceDarkModeEnabled,
     prefs::kWebKitJavascriptEnabled,
@@ -86,17 +93,40 @@ const char* const kWebPrefsToObserve[] = {
 
 }  // namespace
 
+#if BUILDFLAG(IS_LINUX)
+// A helper class to handle notifying about changes in the
+// Primary Paste/Middle Click Paste preference on Linux.
+class PrimaryPastePrefHelper : public ui::PrimaryPastePrefObserver {
+ public:
+  explicit PrimaryPastePrefHelper(PrefWatcher* watcher) : watcher_(watcher) {
+    DCHECK(watcher);
+
+    if (auto* linux_ui = ui::LinuxUi::instance()) {
+      primary_paste_pref_observation_.Observe(linux_ui);
+    }
+  }
+
+  // ui::PrimaryPastePrefObserver:
+  void OnPrimaryPastePrefChanged() override {
+    watcher_->UpdateRendererPreferences();
+  }
+
+ private:
+  raw_ptr<PrefWatcher> watcher_;
+  base::ScopedObservation<ui::LinuxUi, ui::PrimaryPastePrefObserver>
+      primary_paste_pref_observation_{this};
+};
+#endif
+
 // Watching all these settings per tab is slow when a user has a lot of tabs and
 // and they use session restore. So watch them once per profile.
-// http://crbug.com/452693
-PrefWatcher::PrefWatcher(Profile* profile)
-    : profile_(profile),
-      tracking_protection_settings_(
-          TrackingProtectionSettingsFactory::GetForProfile(profile)) {
-  CHECK(tracking_protection_settings_);
-  tracking_protection_settings_observation_.Observe(
-      tracking_protection_settings_);
+// http://crbug.com/41154242
+PrefWatcher::PrefWatcher(Profile* profile) : profile_(profile) {
   native_theme_observation_.Observe(ui::NativeTheme::GetInstanceForWeb());
+
+#if BUILDFLAG(IS_LINUX)
+  primary_paste_pref_helper_ = std::make_unique<PrimaryPastePrefHelper>(this);
+#endif
 
   profile_pref_change_registrar_.Init(profile_->GetPrefs());
 
@@ -112,18 +142,27 @@ PrefWatcher::PrefWatcher(Profile* profile)
                                      renderer_callback);
   profile_pref_change_registrar_.Add(prefs::kWebRTCIPHandlingUrl,
                                      renderer_callback);
+  profile_pref_change_registrar_.Add(prefs::kWebRTCPostQuantumKeyAgreement,
+                                     renderer_callback);
+  profile_pref_change_registrar_.Add(
+      prefs::kWebRTCDiagnosticLogCollectionAllowedForOrigins,
+      renderer_callback);
   profile_pref_change_registrar_.Add(prefs::kWebRTCUDPPortRange,
                                      renderer_callback);
-
-#if !BUILDFLAG(IS_ANDROID)
   profile_pref_change_registrar_.Add(prefs::kCaretBrowsingEnabled,
                                      renderer_callback);
-#endif
+  profile_pref_change_registrar_.Add(prefs::kEnableDoNotTrack,
+                                     renderer_callback);
+  profile_pref_change_registrar_.Add(
+      autofill::prefs::kAutofillAtMemoryTriggerInfo, renderer_callback);
 
 #if !BUILDFLAG(IS_MAC)
   profile_pref_change_registrar_.Add(prefs::kFullscreenAllowed,
                                      renderer_callback);
 #endif
+
+  profile_pref_change_registrar_.Add(prefs::kViewSourceLineWrappingEnabled,
+                                     renderer_callback);
 
   PrefChangeRegistrar::NamedChangeCallback webkit_callback =
       base::BindRepeating(&PrefWatcher::OnWebPrefChanged,
@@ -157,17 +196,11 @@ void PrefWatcher::RegisterRendererPreferenceWatcher(
 }
 
 void PrefWatcher::Shutdown() {
-  tracking_protection_settings_ = nullptr;
-  tracking_protection_settings_observation_.Reset();
   profile_pref_change_registrar_.RemoveAll();
   local_state_pref_change_registrar_.RemoveAll();
 }
 
 void PrefWatcher::OnNativeThemeUpdated(ui::NativeTheme* observed_theme) {
-  UpdateRendererPreferences();
-}
-
-void PrefWatcher::OnDoNotTrackEnabledChanged() {
   UpdateRendererPreferences();
 }
 
@@ -197,7 +230,8 @@ PrefWatcher* PrefWatcherFactory::GetForProfile(Profile* profile) {
 
 // static
 PrefWatcherFactory* PrefWatcherFactory::GetInstance() {
-  return base::Singleton<PrefWatcherFactory>::get();
+  static base::NoDestructor<PrefWatcherFactory> instance;
+  return instance.get();
 }
 
 PrefWatcherFactory::PrefWatcherFactory()
@@ -212,7 +246,6 @@ PrefWatcherFactory::PrefWatcherFactory()
               // Ash Internals.
               .WithAshInternals(ProfileSelection::kOwnInstance)
               .Build()) {
-  DependsOn(TrackingProtectionSettingsFactory::GetInstance());
 }
 
 PrefWatcherFactory::~PrefWatcherFactory() = default;

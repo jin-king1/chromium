@@ -3,14 +3,19 @@
 // found in the LICENSE file.
 package org.chromium.chrome.browser.lens;
 
-import androidx.annotation.NonNull;
+import android.content.Context;
+
+import androidx.annotation.DrawableRes;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ServiceLoaderUtil;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.components.embedder_support.contextmenu.ChipRenderParams;
 import org.chromium.ui.base.WindowAndroid;
 
 /** A class which manages communication with the Lens SDK. */
+@NullMarked
 public class LensController {
     private static LensController sInstance = new LensController();
 
@@ -23,6 +28,12 @@ public class LensController {
         return sInstance;
     }
 
+    public static void setInstanceForTesting(LensController instance) {
+        LensController prev = sInstance;
+        sInstance = instance;
+        ResettersForTesting.register(() -> sInstance = prev);
+    }
+
     public LensController() {
         LensControllerDelegate delegate =
                 ServiceLoaderUtil.maybeCreate(LensControllerDelegate.class);
@@ -30,6 +41,15 @@ public class LensController {
             delegate = new LensControllerDelegate();
         }
         mDelegate = delegate;
+    }
+
+    /**
+     * Retrieve the Lens icon resource id.
+     *
+     * @return The resource id for the Lens icon.
+     */
+    public @DrawableRes int getLensIconResourceId() {
+        return mDelegate.getLensIconResourceId();
     }
 
     /**
@@ -52,9 +72,9 @@ public class LensController {
     /**
      * Classify an image and once complete trigger a callback with a LensQueryResult on whether that
      * image supports a lens action.
-     * @param LensQueryParams A wrapper object which contains params for the Lens image query.
-     * @param queryCallback A callback to trigger once classification is complete.
      *
+     * @param lensQueryParams A wrapper object which contains params for the Lens image query.
+     * @param queryCallback A callback to trigger once classification is complete.
      */
     public void queryImage(
             LensQueryParams lensQueryParams, Callback<LensQueryResult> queryCallback) {
@@ -90,6 +110,16 @@ public class LensController {
         mDelegate.startLens(window, lensIntentParams);
     }
 
+    /**
+     * Launch lens with an intent.
+     *
+     * @param context The current context.
+     * @param lensIntentParams The intent parameters for Lens
+     */
+    public void startLens(Context context, LensIntentParams lensIntentParams) {
+        mDelegate.startLens(context, lensIntentParams);
+    }
+
     /** Starts the Lens connection. */
     public void startLensConnection() {
         mDelegate.startLensConnection();
@@ -100,15 +130,13 @@ public class LensController {
         mDelegate.terminateLensConnections();
     }
 
-    // TODO(b/180960783): Revisit the wrapper object for this enablement check. LensQueryParams
-    // was designed to be only used in the Prime classification query.
     /**
      * Whether the Lens is enabled based on user signals.
      *
      * @param lensQueryParams A wrapper object which contains params for the enablement check.
      * @return True if Lens is enabled.
      */
-    public boolean isLensEnabled(@NonNull LensQueryParams lensQueryParams) {
+    public boolean isLensEnabled(LensQueryParams lensQueryParams) {
         return mDelegate.isLensEnabled(lensQueryParams);
     }
 }

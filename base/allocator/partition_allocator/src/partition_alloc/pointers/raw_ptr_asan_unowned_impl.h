@@ -10,7 +10,6 @@
 
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
-#include "partition_alloc/partition_alloc_base/cxx20_is_constant_evaluated.h"
 #include "partition_alloc/partition_alloc_forward.h"
 
 #if !PA_BUILDFLAG(USE_RAW_PTR_ASAN_UNOWNED_IMPL)
@@ -39,7 +38,7 @@ struct RawPtrAsanUnownedImpl {
   // Notifies the allocator when a wrapped pointer is being removed or replaced.
   template <typename T>
   PA_ALWAYS_INLINE static constexpr void ReleaseWrappedPtr(T* wrapped_ptr) {
-    if (!partition_alloc::internal::base::is_constant_evaluated()) {
+    if (!std::is_constant_evaluated()) {
       ProbeForLowSeverityLifetimeIssue(wrapped_ptr);
     }
   }
@@ -58,7 +57,7 @@ struct RawPtrAsanUnownedImpl {
   template <typename T>
   PA_ALWAYS_INLINE static constexpr T* SafelyUnwrapPtrForExtraction(
       T* wrapped_ptr) {
-    if (!partition_alloc::internal::base::is_constant_evaluated()) {
+    if (!std::is_constant_evaluated()) {
       ProbeForLowSeverityLifetimeIssue(wrapped_ptr);
     }
     return wrapped_ptr;
@@ -90,7 +89,7 @@ struct RawPtrAsanUnownedImpl {
           std::enable_if_t<partition_alloc::internal::is_offset_type<Z>, void>>
   PA_ALWAYS_INLINE static constexpr T*
   Advance(T* wrapped_ptr, Z delta_elems, bool /*is_in_pointer_modification*/) {
-    return wrapped_ptr + delta_elems;
+    return PA_UNSAFE_TODO(wrapped_ptr + delta_elems);
   }
 
   // Retreat the wrapped pointer by `delta_elems`.
@@ -101,7 +100,7 @@ struct RawPtrAsanUnownedImpl {
           std::enable_if_t<partition_alloc::internal::is_offset_type<Z>, void>>
   PA_ALWAYS_INLINE static constexpr T*
   Retreat(T* wrapped_ptr, Z delta_elems, bool /*is_in_pointer_modification*/) {
-    return wrapped_ptr - delta_elems;
+    return PA_UNSAFE_TODO(wrapped_ptr - delta_elems);
   }
 
   template <typename T>

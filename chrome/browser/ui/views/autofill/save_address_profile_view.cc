@@ -7,46 +7,36 @@
 #include <memory>
 #include <string>
 
-#include "base/logging.h"
-#include "base/strings/string_util.h"
 #include "chrome/app/vector_icons/vector_icons.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/hats/hats_service.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/autofill/autofill_bubble_utils.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/grit/theme_resources.h"
-#include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
-#include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/browser/geo/address_i18n.h"
-#include "components/autofill/core/browser/ui/addresses/autofill_address_util.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
-#include "skia/ext/image_operations.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/insets.h"
-#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/image/canvas_image_source.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
+#include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/layout_provider.h"
-#include "ui/views/metadata/view_factory_internal.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/style/typography_provider.h"
 #include "ui/views/view_class_properties.h"
@@ -113,7 +103,7 @@ std::unique_ptr<views::View> CreateStreetAddressView(
 }  // namespace
 
 SaveAddressProfileView::SaveAddressProfileView(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor_view,
     std::unique_ptr<SaveAddressBubbleController> controller,
     content::WebContents* web_contents)
     : AddressBubbleBaseView(anchor_view, web_contents),
@@ -134,9 +124,7 @@ SaveAddressProfileView::SaveAddressProfileView(
   SetTitle(controller_->GetWindowTitle());
   SetButtonLabel(ui::mojom::DialogButton::kOk, controller_->GetOkButtonLabel());
   SetButtonLabel(ui::mojom::DialogButton::kCancel,
-                 l10n_util::GetStringUTF16(
-                     IDS_AUTOFILL_SAVE_ADDRESS_PROMPT_CANCEL_BUTTON_LABEL));
-
+                 controller_->GetNegativeButtonLabel());
   SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets(),
       views::LayoutProvider::Get()->GetDistanceMetric(
@@ -184,7 +172,7 @@ SaveAddressProfileView::SaveAddressProfileView(
           .SetOrientation(views::BoxLayout::Orientation::kVertical)
           .SetBetweenChildSpacing(
               ChromeLayoutProvider::Get()->GetDistanceMetric(
-                  DISTANCE_CONTROL_LIST_VERTICAL))
+                  views::DISTANCE_CONTROL_LIST_VERTICAL))
           .Build());
 
   edit_button_ = details_section->AddChildView(CreateEditButton(
@@ -194,8 +182,9 @@ SaveAddressProfileView::SaveAddressProfileView(
 
   std::u16string address = controller_->GetAddressSummary();
   if (!address.empty()) {
-    std::unique_ptr<views::ImageView> icon =
-        CreateAddressSectionIcon(vector_icons::kLocationOnIcon);
+    std::unique_ptr<views::ImageView> icon = CreateAddressSectionIcon(
+        ::features::IsRoundedIconsEnabled() ? vector_icons::kLocationOnIcon
+                                            : vector_icons::kLocationOnOldIcon);
     address_section_icons_.push_back(icon.get());
     AddAddressSection(/*parent_view=*/address_components_view_, std::move(icon),
                       CreateStreetAddressView(address));
@@ -203,8 +192,9 @@ SaveAddressProfileView::SaveAddressProfileView(
 
   std::u16string phone = controller_->GetProfilePhone();
   if (!phone.empty()) {
-    std::unique_ptr<views::ImageView> icon =
-        CreateAddressSectionIcon(vector_icons::kCallIcon);
+    std::unique_ptr<views::ImageView> icon = CreateAddressSectionIcon(
+        ::features::IsRoundedIconsEnabled() ? vector_icons::kCallFilledIcon
+                                            : vector_icons::kCallOldIcon);
     address_section_icons_.push_back(icon.get());
     AddAddressSection(
         /*parent_view=*/address_components_view_, std::move(icon), phone,
@@ -213,8 +203,9 @@ SaveAddressProfileView::SaveAddressProfileView(
 
   std::u16string email = controller_->GetProfileEmail();
   if (!email.empty()) {
-    std::unique_ptr<views::ImageView> icon =
-        CreateAddressSectionIcon(vector_icons::kEmailIcon);
+    std::unique_ptr<views::ImageView> icon = CreateAddressSectionIcon(
+        ::features::IsRoundedIconsEnabled() ? vector_icons::kMailFilledIcon
+                                            : vector_icons::kEmailOldIcon);
     address_section_icons_.push_back(icon.get());
     AddAddressSection(
         /*parent_view=*/address_components_view_, std::move(icon), email,
@@ -278,11 +269,18 @@ void SaveAddressProfileView::AddedToWidget() {
   std::optional<SaveAddressBubbleController::HeaderImages> images =
       controller_->GetHeaderImages();
   if (images) {
-    GetBubbleFrameView()->SetHeaderView(
-        std::make_unique<ThemeTrackingNonAccessibleImageView>(
-            images->light, images->dark,
-            base::BindRepeating(&views::BubbleDialogDelegate::background_color,
-                                base::Unretained(this))));
+    if (!images->lottie.IsEmpty()) {
+      auto image_view = std::make_unique<views::ImageView>(images->lottie);
+      image_view->GetViewAccessibility().SetIsInvisible(true);
+      GetBubbleFrameView()->SetHeaderView(std::move(image_view));
+    } else {
+      GetBubbleFrameView()->SetHeaderView(
+          std::make_unique<ThemeTrackingNonAccessibleImageView>(
+              images->light, images->dark,
+              base::BindRepeating(
+                  &views::BubbleDialogDelegate::background_color,
+                  base::Unretained(this))));
+    }
   }
 }
 

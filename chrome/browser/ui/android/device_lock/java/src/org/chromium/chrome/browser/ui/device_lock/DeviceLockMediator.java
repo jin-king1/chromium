@@ -16,33 +16,33 @@ import static org.chromium.chrome.browser.ui.device_lock.DeviceLockProperties.SO
 import static org.chromium.chrome.browser.ui.device_lock.DeviceLockProperties.UI_ENABLED;
 import static org.chromium.components.browser_ui.device_lock.DeviceLockBridge.DEVICE_LOCK_PAGE_HAS_BEEN_PASSED;
 
-import android.accounts.Account;
 import android.app.Activity;
 import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.base.ContextUtils;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
 import org.chromium.components.browser_ui.device_lock.DeviceLockDialogMetrics;
 import org.chromium.components.browser_ui.device_lock.DeviceLockDialogMetrics.DeviceLockDialogAction;
 import org.chromium.components.signin.AccountManagerFacade;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.AccountReauthenticationUtils;
+import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 
 import java.util.concurrent.TimeUnit;
 
-
 /**
  * The mediator handles which design the device lock UI displays and interacts through the
  * coordinator delegate.
  */
+@NullMarked
 public class DeviceLockMediator {
     static final int ACCOUNT_REAUTHENTICATION_RECENT_TIME_WINDOW_MINUTES = 10;
 
@@ -51,7 +51,7 @@ public class DeviceLockMediator {
 
     private final WindowAndroid mWindowAndroid;
     private final Activity mActivity;
-    private final @Nullable Account mAccount;
+    private final @Nullable CoreAccountId mAccountId;
     private final @Nullable ReauthenticatorBridge mDeviceLockAuthenticatorBridge;
     private final AccountReauthenticationUtils mAccountReauthenticationUtils;
 
@@ -60,14 +60,14 @@ public class DeviceLockMediator {
             WindowAndroid windowAndroid,
             @Nullable ReauthenticatorBridge deviceLockAuthenticatorBridge,
             Activity activity,
-            @Nullable Account account) {
+            @Nullable CoreAccountId accountId) {
         this(
                 delegate,
                 windowAndroid,
                 deviceLockAuthenticatorBridge,
                 new AccountReauthenticationUtils(),
                 activity,
-                account);
+                accountId);
     }
 
     protected DeviceLockMediator(
@@ -76,10 +76,10 @@ public class DeviceLockMediator {
             @Nullable ReauthenticatorBridge deviceLockAuthenticatorBridge,
             AccountReauthenticationUtils accountReauthenticationUtils,
             Activity activity,
-            @Nullable Account account) {
+            @Nullable CoreAccountId accountId) {
         mDelegate = delegate;
         mActivity = activity;
-        mAccount = account;
+        mAccountId = accountId;
         mWindowAndroid = windowAndroid;
         mDeviceLockAuthenticatorBridge = deviceLockAuthenticatorBridge;
         mAccountReauthenticationUtils = accountReauthenticationUtils;
@@ -196,13 +196,13 @@ public class DeviceLockMediator {
 
     private void maybeTriggerAccountReauthenticationChallenge(Runnable onSuccess) {
         //  If no account is specified, the current flow does not require account reauthentication.
-        if (mAccount == null) {
+        if (mAccountId == null) {
             onSuccess.run();
             return;
         }
         mAccountReauthenticationUtils.confirmCredentialsOrRecentAuthentication(
                 getAccountManager(),
-                mAccount,
+                mAccountId,
                 mActivity,
                 (confirmationResult) -> {
                     if (confirmationResult

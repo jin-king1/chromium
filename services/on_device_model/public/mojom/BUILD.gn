@@ -6,6 +6,7 @@ import("//mojo/public/tools/bindings/mojom.gni")
 
 mojom("mojom") {
   sources = [
+    "download_observer.mojom",
     "on_device_model.mojom",
     "on_device_model_service.mojom",
   ]
@@ -26,8 +27,19 @@ mojom("mojom") {
     {
       types = [
         {
+          mojom = "on_device_model.mojom.Capabilities"
+          cpp = "::on_device_model::Capabilities"
+        },
+        {
           mojom = "on_device_model.mojom.ModelAssets"
           cpp = "::on_device_model::ModelAssets"
+          default_constructible = false
+          move_only = true
+        },
+        {
+          mojom = "on_device_model.mojom.ModelFile"
+          cpp = "::on_device_model::ModelFile"
+          default_constructible = false
           move_only = true
         },
         {
@@ -40,10 +52,6 @@ mojom("mojom") {
           cpp = "::ml::Token"
         },
         {
-          mojom = "on_device_model.mojom.InputPiece"
-          cpp = "::ml::InputPiece"
-        },
-        {
           mojom = "on_device_model.mojom.ModelBackendType"
           cpp = "::ml::ModelBackendType"
         },
@@ -53,15 +61,18 @@ mojom("mojom") {
         },
       ]
       traits_headers = [
+        "//services/on_device_model/public/cpp/chrome_ml_types_mojom_traits.h",
         "//services/on_device_model/public/cpp/adaptation_assets_mojom_traits.h",
+        "//services/on_device_model/public/cpp/capabilities_mojom_traits.h",
         "//services/on_device_model/public/cpp/model_assets_mojom_traits.h",
-        "//services/on_device_model/ml/chrome_ml_types_traits.h",
+        "//services/on_device_model/public/cpp/model_file_mojom_traits.h",
       ]
-      traits_sources =
-          [ "//services/on_device_model/ml/chrome_ml_types_traits.cc" ]
+      traits_sources = [
+        "//services/on_device_model/public/cpp/chrome_ml_types_mojom_traits.cc",
+      ]
       traits_public_deps = [
         "//services/on_device_model/ml:api",
-        "//services/on_device_model/public/cpp:model_assets",
+        "//services/on_device_model/public/cpp:types",
       ]
     },
   ]

@@ -9,21 +9,28 @@
 
 #include "base/functional/callback_forward.h"
 #import "base/memory/raw_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/task/sequenced_task_runner.h"
+#import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent_observer.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller_observer.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_snapshot_controller_delegate.h"
 
 class SnapshotTabHelper;
 class FullscreenController;
+class FullscreenBrowserAgent;
+@protocol FullscreenCommands;
 enum class FullscreenAnimatorStyle : short;
 
 // Manages the flow of capturing the snapshot of a given base window.
 class LensOverlaySnapshotController final
-    : public FullscreenControllerObserver {
+    : public FullscreenControllerObserver,
+      public FullscreenBrowserAgentObserver {
  public:
   LensOverlaySnapshotController(SnapshotTabHelper* snapshot_tab_helper,
                                 FullscreenController* fullscreen_controller,
+                                FullscreenBrowserAgent* fullscreen_agent,
+                                id<FullscreenCommands> fullscreen_handler,
                                 UIWindow* window,
                                 bool is_bottom_omnibox);
 
@@ -70,6 +77,10 @@ class LensOverlaySnapshotController final
   void FullscreenDidAnimate(FullscreenController* controller,
                             FullscreenAnimatorStyle style) override;
 
+  // FullscreenBrowserAgentObserver:
+  void FullscreenDidTransition(FullscreenBrowserAgent* agent,
+                               FullscreenTransition transition) override;
+
   // Cover the viewport with static image of the base window.
   void ShowStaticSnapshotOfBaseWindowIfNeeded();
 
@@ -100,8 +111,10 @@ class LensOverlaySnapshotController final
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  raw_ptr<SnapshotTabHelper> snapshot_tab_helper_ = nullptr;
+  raw_ptr<SnapshotTabHelper, DanglingUntriaged> snapshot_tab_helper_ = nullptr;
   raw_ptr<FullscreenController> fullscreen_controller_ = nullptr;
+  raw_ptr<FullscreenBrowserAgent> fullscreen_agent_ = nullptr;
+  __weak id<FullscreenCommands> fullscreen_handler_ = nil;
   base::WeakPtr<LensOverlaySnapshotControllerDelegate> delegate_ = nullptr;
 
   base::CancelableTaskTracker task_tracker_;

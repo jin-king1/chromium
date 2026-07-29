@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("help_app") {
@@ -25,6 +23,7 @@ static_library("help_app") {
     "//chrome/browser/profiles:profile",
     "//chrome/common",
     "//chromeos/ash/experiences/system_web_apps/types",
+    "//components/variations/service",
     "//content/public/browser",
     "//ui/gfx/geometry",
   ]
@@ -33,17 +32,16 @@ static_library("help_app") {
     "//ash",
     "//ash/constants",
     "//ash/public/cpp",
+    "//ash/webui/help_app_ui:help_app_ui_pref",
     "//ash/webui/help_app_ui:mojo_bindings",
     "//ash/webui/resources:help_app_resources",
     "//ash/webui/settings/public/constants:mojom",
     "//chrome/app:generated_resources",
     "//chrome/browser:browser_process",
     "//chrome/browser/apps/almanac_api_client",
-    "//chrome/browser/apps/app_service:constants",
     "//chrome/browser/ash/accessibility",
     "//chrome/browser/ash/arc",
     "//chrome/browser/ash/arc:arc_util",
-    "//chrome/browser/ash/assistant",
     "//chrome/browser/ash/borealis",
     "//chrome/browser/ash/child_accounts/on_device_controls",
     "//chrome/browser/ash/input_method",
@@ -54,19 +52,18 @@ static_library("help_app") {
     "//chrome/browser/ash/system_web_apps/apps/personalization_app",
     "//chrome/browser/chromeos/upload_office_to_cloud",
     "//chrome/browser/feedback",
-    "//chrome/browser/ui:browser_navigator_params_headers",
+    "//chrome/browser/ui:chrome_pages",
+    "//chrome/browser/ui/navigator",
     "//chrome/browser/web_applications",
     "//chrome/browser/web_applications/mojom:mojom_web_apps_enum",
-    "//chrome/common:channel_info",
     "//chrome/common:constants",
     "//chrome/common:non_code_constants",
     "//chromeos/ash/components/browser_context_helper",
-    "//chromeos/ash/components/scalable_iph",
-    "//chromeos/ash/components/scalable_iph:constants",
+    "//chromeos/ash/components/channel",
     "//chromeos/ash/components/system",
+    "//chromeos/ash/experiences/settings_ui",
     "//chromeos/ash/services/multidevice_setup/public/cpp:prefs",
     "//chromeos/constants",
-    "//chromeos/crosapi/mojom",
     "//chromeos/strings",
     "//components/language/core/browser",
     "//components/prefs",
@@ -106,12 +103,12 @@ source_set("browser_tests") {
     "//base/test:test_support",
     "//build:branding_buildflags",
     "//chrome/browser/apps/app_service",
-    "//chrome/browser/apps/app_service:constants",
     "//chrome/browser/apps/app_service/app_install:implementation",
     "//chrome/browser/ash/first_run",
     "//chrome/browser/ash/release_notes",
     "//chrome/browser/ash/system_web_apps",
     "//chrome/browser/ash/system_web_apps/test_support:test_support_ui",
+    "//chrome/browser/ui:chrome_pages",
     "//chrome/browser/ui/ash/system",
     "//chrome/browser/ui/webui/ash/system_web_dialog",
     "//chrome/browser/web_applications",
@@ -150,11 +147,13 @@ source_set("unit_tests") {
   sources = [
     "help_app_notification_controller_unittest.cc",
     "help_app_ui_delegate_unittest.cc",
+    "help_app_untrusted_ui_config_unittest.cc",
   ]
 
   deps = [
     "//ash",
     "//ash/constants",
+    "//ash/webui/help_app_ui:help_app_ui_pref",
     "//ash/webui/help_app_ui:mojo_bindings",
     "//base",
     "//base/test:test_support",
@@ -163,14 +162,20 @@ source_set("unit_tests") {
     "//chrome/browser/ash/borealis/testing:test_support",
     "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/ash/system_web_apps/apps/help_app",
+    "//chrome/browser/notifications:system_notification_helper",
     "//chrome/common:constants",
     "//chrome/test:test_support",
     "//components/account_id",
     "//components/language/core/browser",
     "//components/pref_registry",
     "//components/prefs:test_support",
+    "//components/variations/service",
     "//components/version_info",
     "//content/test:test_support",
     "//testing/gtest",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_INPUT_FLING_CONTROLLER_H_
 #define COMPONENTS_INPUT_FLING_CONTROLLER_H_
 
+#include <optional>
+
 #include "base/component_export.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
@@ -50,7 +52,7 @@ class COMPONENT_EXPORT(INPUT) FlingControllerSchedulerClient {
   virtual void DidStopFlingingOnBrowser(
       base::WeakPtr<FlingController> fling_controller) = 0;
 
-  virtual bool NeedsBeginFrameForFlingProgress() = 0;
+  virtual bool ProgressFlingOnFlingStart() = 0;
 
   virtual bool ShouldUseMobileFlingCurve() = 0;
 
@@ -76,7 +78,10 @@ class COMPONENT_EXPORT(INPUT) FlingController {
     gfx::PointF global_point;
     int modifiers;
     blink::WebGestureDevice source_device;
+    // Timestamp where the fling curve animation begins physics calculations.
     base::TimeTicks start_time;
+    // Timestamp of the original GestureFlingStart event.
+    base::TimeTicks fling_start_event_time;
 
     ActiveFlingParameters() : modifiers(0) {}
   };
@@ -91,7 +96,9 @@ class COMPONENT_EXPORT(INPUT) FlingController {
   ~FlingController();
 
   // Used to progress an active fling on every begin frame.
-  void ProgressFling(base::TimeTicks current_time);
+  void ProgressFling(base::TimeTicks current_time,
+                     std::optional<base::TimeTicks>
+                         first_coalesced_frame_begin_time = std::nullopt);
 
   // Used to halt an active fling progress whenever needed.
   void StopFling();
@@ -169,10 +176,9 @@ class COMPONENT_EXPORT(INPUT) FlingController {
     return !last_progress_time_.is_null();
   }
 
-  raw_ptr<FlingControllerEventSenderClient, DanglingUntriaged>
-      event_sender_client_;
+  raw_ptr<FlingControllerEventSenderClient> event_sender_client_;
 
-  raw_ptr<FlingControllerSchedulerClient, DanglingUntriaged> scheduler_client_;
+  raw_ptr<FlingControllerSchedulerClient> scheduler_client_;
 
   // An object tracking the state of touchpad on the delivery of mouse events to
   // the renderer to filter mouse immediately after a touchpad fling canceling

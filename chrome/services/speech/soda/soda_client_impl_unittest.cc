@@ -17,6 +17,7 @@
 #include "chrome/services/speech/soda/soda_test_paths.h"
 #include "media/audio/wav_audio_handler.h"
 #include "media/base/audio_bus.h"
+#include "media/base/audio_sample_types.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -68,7 +69,7 @@ void OnSodaResponse(const char* serialized_proto,
 void SodaClientImplUnitTest::AddRecognitionResult(std::string result) {
   // The language pack used by the MacOS builder is newer and has punctuation
   // enabled whereas the one used by the Linux builder does not.
-  result.erase(std::remove(result.begin(), result.end(), ','), result.end());
+  std::erase(result, ',');
   recognition_results_.push_back(std::move(result));
 }
 
@@ -133,8 +134,7 @@ TEST_F(SodaClientImplUnitTest, CreateSodaClient) {
   ASSERT_TRUE(handler->CopyTo(bus.get(), &bytes_written));
 
   std::vector<int16_t> audio_data(bus->frames());
-  bus->ToInterleaved<media::SignedInt16SampleTypeTraits>(bus->frames(),
-                                                         audio_data.data());
+  bus->ToInterleaved<media::SignedInt16SampleTypeTraits>(audio_data);
 
   constexpr size_t kMaxChunkSize = 1024;
   constexpr int kReplayAudioCount = 2;

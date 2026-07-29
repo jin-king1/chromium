@@ -10,7 +10,11 @@ include_rules = [
   "+components/browser_ui/site_settings/android",
   "+components/browser_ui/sms/android",
   "+components/browser_ui/util/android/url_constants.h",
-  "+components/query_tiles",
+  "+components/contextual_search",
+  "+components/contextual_tasks/public",
+  "+components/guest_view",
+  "+components/omnibox/composebox",
+  "+components/page_content_annotations/content",
   "+components/session_proto_db",
   "+components/webapk",
   "+device/vr/buildflags/buildflags.h",
@@ -21,16 +25,16 @@ include_rules = [
   "+third_party/gvr-android-sdk",
   "+third_party/blink/public/common",
   "+third_party/blink/public/mojom/unhandled_tap_notifier/unhandled_tap_notifier.mojom.h",
+  "+ui/base/unowned_user_data",
 ]
 
 specific_include_rules = {
-  # Special-case where monochrome composes chrome+webview+weblayer
-  "monochrome_entry_point\.cc": [
+  # Special-case where monochrome composes chrome+webview
+  "monochrome_entry_point\\.cc": [
     "+android_webview",
-    "+weblayer",
   ],
   # Allowed for test setup.
-  "chrome_entry_point_for_test\.cc": [
+  "chrome_entry_point_for_test\\.cc": [
     "+chrome/utility/chrome_content_utility_client.h",
   ],
 }

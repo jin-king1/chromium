@@ -16,7 +16,6 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/uuid.h"
-#include "build/build_config.h"
 #include "components/bookmarks/browser/bookmark_uuids.h"
 #include "components/bookmarks/common/bookmark_features.h"
 #include "components/strings/grit/components_strings.h"
@@ -149,16 +148,14 @@ BookmarkPermanentNode::CreateManagedBookmarks(int64_t id) {
   // base::WrapUnique() used because the constructor is private.
   return base::WrapUnique(new BookmarkPermanentNode(
       id, FOLDER, base::Uuid::ParseLowercase(kManagedNodeUuid),
-      std::u16string()));
+      std::u16string(), /*is_account_node=*/false));
 }
 
 // static
-bool BookmarkPermanentNode::IsTypeVisibleWhenEmpty(Type type) {
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-  bool is_desktop = false;
-#else
-  bool is_desktop = true;
-#endif
+bool BookmarkPermanentNode::IsTypeVisibleWhenEmpty(
+    Type type,
+    BookmarkFormFactor form_factor) {
+  bool is_desktop = form_factor == BookmarkFormFactor::kDesktop;
 
   switch (type) {
     case BookmarkNode::URL:
@@ -173,52 +170,63 @@ bool BookmarkPermanentNode::IsTypeVisibleWhenEmpty(Type type) {
                                kAllBookmarksBaselineFolderVisibility);
     case BookmarkNode::MOBILE:
       // Either MOBILE or OTHER_NODE is visible when empty, but never both.
-      return !IsTypeVisibleWhenEmpty(BookmarkNode::OTHER_NODE);
+      return !IsTypeVisibleWhenEmpty(BookmarkNode::OTHER_NODE, form_factor);
   }
   NOTREACHED();
 }
 
 BookmarkPermanentNode::~BookmarkPermanentNode() = default;
 
-bool BookmarkPermanentNode::IsVisible() const {
-  return visible_when_empty_ || !children().empty();
-}
-
 // static
 std::unique_ptr<BookmarkPermanentNode> BookmarkPermanentNode::CreateBookmarkBar(
-    int64_t id) {
+    int64_t id,
+    bool is_account_node) {
   // base::WrapUnique() used because the constructor is private.
   return base::WrapUnique(new BookmarkPermanentNode(
       id, BOOKMARK_BAR, base::Uuid::ParseLowercase(kBookmarkBarNodeUuid),
-      l10n_util::GetStringUTF16(IDS_BOOKMARK_BAR_FOLDER_NAME)));
+      l10n_util::GetStringUTF16(IDS_BOOKMARK_BAR_FOLDER_NAME),
+      is_account_node));
 }
 
 // static
 std::unique_ptr<BookmarkPermanentNode>
-BookmarkPermanentNode::CreateOtherBookmarks(int64_t id) {
+BookmarkPermanentNode::CreateOtherBookmarks(int64_t id,
+                                            bool is_account_node) {
   // base::WrapUnique() used because the constructor is private.
   return base::WrapUnique(new BookmarkPermanentNode(
       id, OTHER_NODE, base::Uuid::ParseLowercase(kOtherBookmarksNodeUuid),
-      l10n_util::GetStringUTF16(IDS_BOOKMARK_BAR_OTHER_FOLDER_NAME)));
+      l10n_util::GetStringUTF16(IDS_BOOKMARK_BAR_OTHER_FOLDER_NAME),
+      is_account_node));
 }
 
 // static
 std::unique_ptr<BookmarkPermanentNode>
-BookmarkPermanentNode::CreateMobileBookmarks(int64_t id) {
+BookmarkPermanentNode::CreateMobileBookmarks(int64_t id,
+                                             bool is_account_node) {
   // base::WrapUnique() used because the constructor is private.
   return base::WrapUnique(new BookmarkPermanentNode(
       id, MOBILE, base::Uuid::ParseLowercase(kMobileBookmarksNodeUuid),
-      l10n_util::GetStringUTF16(IDS_BOOKMARK_BAR_MOBILE_FOLDER_NAME)));
+      l10n_util::GetStringUTF16(IDS_BOOKMARK_BAR_MOBILE_FOLDER_NAME),
+      is_account_node));
 }
 
 BookmarkPermanentNode::BookmarkPermanentNode(int64_t id,
                                              Type type,
                                              const base::Uuid& uuid,
-                                             const std::u16string& title)
-    : BookmarkNode(id, uuid, GURL(), type, /*is_permanent_node=*/true),
-      visible_when_empty_(IsTypeVisibleWhenEmpty(type)) {
+                                             const std::u16string& title,
+                                             bool is_account_node)
+    : BookmarkNode(id,
+                   uuid,
+                   GURL(),
+                   type,
+                   /*is_permanent_node=*/true),
+      is_account_node_(is_account_node) {
   CHECK(type != URL);
   SetTitle(title);
+}
+
+bool BookmarkPermanentNode::IsVisible() const {
+  return is_visible_;
 }
 
 }  // namespace bookmarks

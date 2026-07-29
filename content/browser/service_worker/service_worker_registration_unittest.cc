@@ -28,6 +28,7 @@
 #include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/browser/service_worker/service_worker_context_core_observer.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
+#include "content/browser/service_worker/service_worker_context_wrapper_test_api.h"
 #include "content/browser/service_worker/service_worker_host.h"
 #include "content/browser/service_worker/service_worker_register_job.h"
 #include "content/browser/service_worker/service_worker_registration_object_host.h"
@@ -37,10 +38,10 @@
 #include "content/public/common/content_client.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "content/public/test/url_loader_interceptor.h"
 #include "content/test/fake_network.h"
 #include "content/test/storage_partition_test_helpers.h"
-#include "content/test/test_content_browser_client.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/system/functions.h"
@@ -82,6 +83,7 @@ class ServiceWorkerTestContentBrowserClient : public TestContentBrowserClient {
       const GURL& scope,
       const net::SiteForCookies& site_for_cookies,
       const std::optional<url::Origin>& top_frame_origin,
+      const blink::StorageKey& storage_key,
       const GURL& script_url,
       content::BrowserContext* context) override {
     return AllowServiceWorkerResult::No();
@@ -92,7 +94,7 @@ void RequestTermination(
     mojo::AssociatedRemote<blink::mojom::EmbeddedWorkerInstanceHost>* host) {
   // We can't wait for the callback since Stop() arrives first which severs
   // the connection.
-  (*host)->RequestTermination(base::DoNothing());
+  (*host)->RequestTermination(0, base::DoNothing());
 }
 
 class MockServiceWorkerRegistrationObject
@@ -179,8 +181,8 @@ class ServiceWorkerRegistrationTest : public testing::Test {
         CreateStoragePartitionConfigForTesting(/*in_memory=*/true),
         base::FilePath() /* relative_partition_path */);
     storage_partition_impl_->Initialize();
-    helper_->context_wrapper()->set_storage_partition(
-        storage_partition_impl_.get());
+    ServiceWorkerContextWrapperTestApi(helper_->context_wrapper())
+        .set_storage_partition(storage_partition_impl_.get());
   }
 
   void TearDown() override {
@@ -188,7 +190,7 @@ class ServiceWorkerRegistrationTest : public testing::Test {
   }
 
   ServiceWorkerContextCore* context() { return helper_->context(); }
-  ServiceWorkerRegistry* registry() { return helper_->context()->registry(); }
+  ServiceWorkerRegistry& registry() { return helper_->context()->registry(); }
 
   class RegistrationListener : public ServiceWorkerRegistration::Listener {
    public:
@@ -252,13 +254,15 @@ TEST_F(ServiceWorkerRegistrationTest, SetAndUnsetVersions) {
           registration.get(), kScript, blink::mojom::ScriptType::kClassic,
           version_1_id,
           mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>(),
-          context()->AsWeakPtr());
+          context()->AsWeakPtr(), std::nullopt, std::nullopt,
+          PolicyContainerPolicies());
   scoped_refptr<ServiceWorkerVersion> version_2 =
       base::MakeRefCounted<ServiceWorkerVersion>(
           registration.get(), kScript, blink::mojom::ScriptType::kClassic,
           version_2_id,
           mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>(),
-          context()->AsWeakPtr());
+          context()->AsWeakPtr(), std::nullopt, std::nullopt,
+          PolicyContainerPolicies());
 
   RegistrationListener listener;
   registration->AddListener(&listener);
@@ -426,7 +430,7 @@ class ServiceWorkerActivationTest : public ServiceWorkerRegistrationTest,
         EmbeddedWorkerTestHelper::CreateMainScriptResponse());
     std::optional<blink::ServiceWorkerStatusCode> status;
     base::RunLoop run_loop;
-    context()->registry()->StoreRegistration(
+    context()->registry().StoreRegistration(
         registration_.get(), version_1.get(),
         ReceiveServiceWorkerStatus(&status, run_loop.QuitClosure()));
     run_loop.Run();
@@ -830,8 +834,12 @@ class ServiceWorkerRegistrationObjectHostTest
       std::string* out_error_msg) {
     blink::mojom::ServiceWorkerErrorType out_error =
         blink::mojom::ServiceWorkerErrorType::kUnknown;
+    auto fetch_client_settings_object =
+        blink::mojom::FetchClientSettingsObject::New();
+    fetch_client_settings_object->policy_container_policies =
+        blink::mojom::PolicyContainerPolicies::New();
     registration_host->Update(
-        blink::mojom::FetchClientSettingsObject::New(),
+        std::move(fetch_client_settings_object),
         base::BindLambdaForTesting(
             [&out_error, &out_error_msg](
                 blink::mojom::ServiceWorkerErrorType error,
@@ -850,8 +858,13 @@ class ServiceWorkerRegistrationObjectHostTest
       ServiceWorkerVersion& version) {
     std::optional<blink::mojom::ServiceWorkerErrorType> error;
     base::RunLoop run_loop;
+    auto fetch_client_settings_object =
+        blink::mojom::FetchClientSettingsObject::New();
+    fetch_client_settings_object->policy_container_policies =
+        blink::mojom::PolicyContainerPolicies::New();
     registration->DelayUpdate(
-        version, blink::mojom::FetchClientSettingsObject::New(),
+        version, std::move(fetch_client_settings_object),
+
         base::BindOnce(
             [](std::optional<blink::mojom::ServiceWorkerErrorType>* out_error,
                base::OnceClosure callback,
@@ -882,7 +895,7 @@ class ServiceWorkerRegistrationObjectHostTest
       int64_t registration_id,
       const blink::StorageKey& key) {
     std::optional<blink::ServiceWorkerStatusCode> status;
-    registry()->FindRegistrationForId(
+    registry().FindRegistrationForId(
         registration_id, key,
         base::BindOnce(
             [](std::optional<blink::ServiceWorkerStatusCode>* out_status,
@@ -935,7 +948,7 @@ class ServiceWorkerRegistrationObjectHostTest
     bool called = false;
     blink::ServiceWorkerStatusCode status =
         blink::ServiceWorkerStatusCode::kErrorFailed;
-    registry()->StoreRegistration(
+    registry().StoreRegistration(
         registration.get(), version.get(),
         base::BindOnce(&SaveStatusCallback, &called, &status));
     base::RunLoop().RunUntilIdle();
@@ -1279,13 +1292,15 @@ TEST_F(ServiceWorkerRegistrationObjectHostTest, SetVersionAttributes) {
           registration.get(), kScriptUrl, blink::mojom::ScriptType::kClassic,
           version_1_id,
           mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>(),
-          context()->AsWeakPtr());
+          context()->AsWeakPtr(), std::nullopt, std::nullopt,
+          PolicyContainerPolicies());
   scoped_refptr<ServiceWorkerVersion> version_2 =
       base::MakeRefCounted<ServiceWorkerVersion>(
           registration.get(), kScriptUrl, blink::mojom::ScriptType::kClassic,
           version_2_id,
           mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>(),
-          context()->AsWeakPtr());
+          context()->AsWeakPtr(), std::nullopt, std::nullopt,
+          PolicyContainerPolicies());
 
   // Set an active worker.
   registration->SetActiveVersion(version_1);

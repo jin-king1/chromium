@@ -16,6 +16,9 @@ import android.os.UserHandle;
 
 import androidx.annotation.RequiresApi;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
+import org.chromium.base.BindingRequestQueue;
+import org.chromium.base.ContextUtils;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -25,8 +28,16 @@ import java.util.concurrent.Executor;
 
 /** Class of static helper methods to call Context.bindService variants. */
 @NullMarked
-final class BindService {
+public final class BindService {
     private static @Nullable Method sBindServiceAsUserMethod;
+    private static @Nullable BinderCallCounter sBinderCallCounter;
+
+    public static final class BinderCallCounter {
+        public int mBindServiceCount;
+        public int mRebindServiceCount;
+        public int mUnbindServiceCount;
+        public int mUpdateServiceGroupCount;
+    }
 
     static boolean supportVariableConnections() {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
@@ -43,6 +54,21 @@ final class BindService {
             Handler handler,
             Executor executor,
             @Nullable String instanceName) {
+        if (ScopedServiceBindingBatch.shouldBatchUpdate()) {
+            BindingRequestQueue queue = ScopedServiceBindingBatch.getBindingRequestQueue();
+            // This should never be null because shouldBatchUpdate() checks that the feature is
+            // enabled.
+            assert queue != null;
+            // Flush all enqueued unbind requests before binding a new service. The order of unbind
+            // -> bind requests is important on the devices where process count limit is hit.
+            // TODO(crbug.com/469633098): Skip flushing if there is no unbind request in the queue
+            // (e.g. rebind requests only).
+            queue.flush();
+        }
+
+        if (sBinderCallCounter != null) {
+            sBinderCallCounter.mBindServiceCount++;
+        }
         if (supportVariableConnections() && instanceName != null) {
             return context.bindIsolatedService(intent, flags, instanceName, executor, connection);
         }
@@ -61,6 +87,115 @@ final class BindService {
                 throw new RuntimeException(runtimeException.getMessage(), reflectionException);
             }
         }
+    }
+
+    /**
+     * This method should always be used when creating an instance of {@link
+     * Context.BindServiceFlags}. This method removes the incompatible BIND_EXTERNAL_SERVICE flag if
+     * present and replaces it with BIND_EXTERNAL_SERVICE_LONG. If you don't use this method when
+     * creating BindServiceFlags, it could lead to an IllegalArgumentException on some devices.
+     *
+     * <p>Don't:
+     *
+     * <pre>
+     *     int flags = ...;
+     *     BindServiceFlags.of(flags);
+     * </pre>
+     *
+     * Do:
+     *
+     * <pre>
+     *     int flags = ...;
+     *     BindServiceFlags.of(sanitizeFlagsForBindServiceFlags(flags));
+     * </pre>
+     *
+     * This method can be cleaned up once Build.VERSION.SDK_INT >= U is always true.
+     */
+    public static long sanitizeFlagsForBindServiceFlags(int flags) {
+        // crbug.com/482179609 BindServiceFlags is incompatible with BIND_EXTERNAL_SERVICE. We must
+        // use BIND_EXTERNAL_SERVICE_LONG instead.
+        long longFlags = flags;
+        if ((longFlags & Context.BIND_EXTERNAL_SERVICE) != 0) {
+            longFlags &= ~Context.BIND_EXTERNAL_SERVICE;
+            longFlags |= Context.BIND_EXTERNAL_SERVICE_LONG;
+        }
+        return longFlags;
+    }
+
+    @SuppressWarnings("NewApi")
+    static void doRebindService(Context context, ServiceConnection connection, int flags) {
+        if (sBinderCallCounter != null) {
+            sBinderCallCounter.mRebindServiceCount++;
+        }
+        Context.BindServiceFlags bindServiceFlags =
+                Context.BindServiceFlags.of(sanitizeFlagsForBindServiceFlags(flags));
+        if (context == ContextUtils.getApplicationContext()
+                && ScopedServiceBindingBatch.shouldBatchUpdate()) {
+            BindingRequestQueue queue = ScopedServiceBindingBatch.getBindingRequestQueue();
+            // This should never be null because shouldBatchUpdate() checks that the feature is
+            // enabled.
+            assert queue != null;
+            queue.rebind(connection, bindServiceFlags);
+            return;
+        }
+        final AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+        if (delegate != null) {
+            delegate.rebindService(context, connection, bindServiceFlags);
+        }
+    }
+
+    static void doUnbindService(Context context, ServiceConnection connection) {
+        if (sBinderCallCounter != null) {
+            sBinderCallCounter.mUnbindServiceCount++;
+        }
+        if (context == ContextUtils.getApplicationContext()
+                && ScopedServiceBindingBatch.shouldBatchUpdate()) {
+            BindingRequestQueue queue = ScopedServiceBindingBatch.getBindingRequestQueue();
+            // This should never be null because shouldBatchUpdate() checks that the feature is
+            // enabled.
+            assert queue != null;
+            queue.unbind(connection);
+            return;
+        }
+        context.unbindService(connection);
+    }
+
+    static void doUpdateServiceGroup(
+            Context context, ServiceConnection connection, int group, int importanceInGroup) {
+        if (sBinderCallCounter != null) {
+            sBinderCallCounter.mUpdateServiceGroupCount++;
+        }
+        context.updateServiceGroup(connection, group, importanceInGroup);
+    }
+
+    /**
+     * Enables counting of service binding Binder calls.
+     *
+     * <p>Note that counter is not thread-safe. setEnableCounting(), doBindService(),
+     * doUnbindService(), doUpdateServiceGroup(), and getAndResetBinderCallCounter() should be
+     * called on the same thread.
+     *
+     * @param enabled Whether to enable counting of binder calls.
+     */
+    public static void setEnableCounting(boolean enabled) {
+        if (enabled) {
+            sBinderCallCounter = new BinderCallCounter();
+        } else {
+            sBinderCallCounter = null;
+        }
+    }
+
+    /**
+     * Returns the number of bindService calls and resets the counter.
+     *
+     * @return The number of bindService calls.
+     */
+    public static @Nullable BinderCallCounter getAndResetBinderCallCounter() {
+        BinderCallCounter counter = sBinderCallCounter;
+        if (counter != null) {
+            sBinderCallCounter = new BinderCallCounter();
+        }
+        return counter;
     }
 
     private static boolean bindServiceByCall(

@@ -10,14 +10,14 @@
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
 
 namespace {
 
 // Creates a MockTabGroupSyncService.
-std::unique_ptr<KeyedService> CreateMockSyncService(
-    web::BrowserState* context) {
+std::unique_ptr<KeyedService> CreateMockSyncService(ProfileIOS* profile) {
   return std::make_unique<
       ::testing::NiceMock<tab_groups::MockTabGroupSyncService>>();
 }
@@ -29,10 +29,11 @@ class ShareKitServiceFactoryTest : public PlatformTest {
  protected:
   ShareKitServiceFactoryTest() {
     scoped_feature_list_.InitWithFeatures(
-        {kTabGroupsIPad, kModernTabStrip, kTabGroupSync,
-         data_sharing::features::kDataSharingFeature,
-         data_sharing::features::kDataSharingJoinOnly},
-        {});
+        /*enabled_features=*/
+        {
+            data_sharing::features::kDataSharingJoinOnly,
+        },
+        /*disable_features=*/{});
 
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
@@ -43,15 +44,12 @@ class ShareKitServiceFactoryTest : public PlatformTest {
 
   base::test::ScopedFeatureList scoped_feature_list_;
   web::WebTaskEnvironment task_environment_;
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   std::unique_ptr<TestProfileIOS> profile_;
 };
 
 // Tests that the factory isn't returning a service in incognito.
 TEST_F(ShareKitServiceFactoryTest, NoProfileInIncognito) {
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   ShareKitService* regular_service =
       ShareKitServiceFactory::GetForProfile(profile_.get());
   ShareKitService* off_the_record_service =

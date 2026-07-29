@@ -4,10 +4,12 @@
 
 #include "third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h"
 
+#include "base/test/scoped_feature_list.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "services/viz/public/mojom/hit_test/hit_test_region_list.mojom-blink.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
@@ -17,7 +19,10 @@
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_draw_listener.h"
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
+#include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
+#include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
 #include "third_party/blink/renderer/modules/canvas/htmlcanvas/html_canvas_element_module.h"
+#include "third_party/blink/renderer/modules/canvas/imagebitmap/image_bitmap_rendering_context.h"
 #include "third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
@@ -26,9 +31,11 @@
 #include "third_party/blink/renderer/platform/graphics/test/mock_compositor_frame_sink.h"
 #include "third_party/blink/renderer/platform/graphics/test/mock_embedded_frame_sink_provider.h"
 #include "third_party/blink/renderer/platform/graphics/test/test_webgraphics_shared_image_interface_provider.h"
+#include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
+#include "third_party/skia/include/core/SkSurface.h"
 
 using ::testing::_;
 using ::testing::Combine;
@@ -98,6 +105,12 @@ class OffscreenCanvasTest : public ::testing::Test,
 
   HTMLCanvasElement* GetCanvasElement() const { return canvas_element_; }
 
+  FakeGLES2Interface* GetGLInterface() { return &gl_; }
+
+  static uint32_t FrameGenerationOf(const UniqueFontSelector& selector) {
+    return selector.frame_generation_;
+  }
+
  private:
   test::TaskEnvironment task_environment_;
   std::unique_ptr<frame_test_helpers::WebViewHelper> web_view_helper_;
@@ -121,15 +134,15 @@ void OffscreenCanvasTest::SetUp() {
     return std::make_unique<FakeWebGraphicsContext3DProvider>(gl);
   };
   SharedGpuContext::SetContextProviderFactoryForTesting(
-      WTF::BindRepeating(factory, WTF::Unretained(&gl_)));
+      BindRepeating(factory, Unretained(&gl_)));
 
   web_view_helper_ = std::make_unique<frame_test_helpers::WebViewHelper>();
   web_view_helper_->Initialize();
   accelerated_compositing_scope_ = std::make_unique<
       ScopedTestingPlatformSupport<AcceleratedCompositingTestPlatform>>();
 
-  GetDocument().documentElement()->setInnerHTML(
-      String::FromUTF8("<body><canvas id='c'></canvas></body>"));
+  GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      "<body><canvas id='c'></canvas></body>");
 
   canvas_element_ =
       To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
@@ -140,7 +153,7 @@ void OffscreenCanvasTest::SetUp() {
       exception_state);
   // |offscreen_canvas_| should inherit the FrameSinkId from |canvas_element|s
   // SurfaceLayerBridge, but in tests this id is zero; fill it up by hand.
-  offscreen_canvas_->SetFrameSinkId(kClientId, kSinkId);
+  offscreen_canvas_->SetFrameSinkIdForTesting(kClientId, kSinkId);
 
   CanvasContextCreationAttributesCore attrs;
   if (testing::UnitTest::GetInstance()->current_test_info()->value_param()) {
@@ -182,7 +195,7 @@ TEST_F(OffscreenCanvasTest, AnimationUsesSyntheticTimerWhenHidden) {
 
   // Without capture, animation should be suspended.
   EXPECT_EQ(GetCanvasElement()->GetAnimationStateForTesting(),
-            CanvasResourceDispatcher::AnimationState::kSuspended);
+            OffscreenCanvasPlaceholder::AnimationState::kSuspended);
 
   // Cause the canvas to believe that it's being captured, and verify that we're
   // now using synthetic timing.
@@ -190,20 +203,51 @@ TEST_F(OffscreenCanvasTest, AnimationUsesSyntheticTimerWhenHidden) {
   GetCanvasElement()->AddListener(listener);
   EXPECT_EQ(
       GetCanvasElement()->GetAnimationStateForTesting(),
-      CanvasResourceDispatcher::AnimationState::kActiveWithSyntheticTiming);
+      OffscreenCanvasPlaceholder::AnimationState::kActiveWithSyntheticTiming);
   GetCanvasElement()->RemoveListener(listener);
 }
 
-// Verifies that an offscreen_canvas()s PushFrame()/Commit() has the appropriate
+TEST_F(OffscreenCanvasTest, SwitchFrameByCanvasImageSource) {
+  auto* canvas = OffscreenCanvas::Create(GetScriptState(), 100, 100);
+  // Make sure the canvas has the context.
+  ASSERT_TRUE(canvas->GetCanvasRenderingContext(
+      GetDocument().GetExecutionContext(),
+      CanvasRenderingContext::CanvasRenderingAPI::k2D, {}));
+  auto* selector = canvas->GetFontSelector();
+  uint32_t original_generation = FrameGenerationOf(*selector);
+
+  // GetSourceImageForCanvas() should call UniqueFontSelector::DidSwitchFrame().
+  SourceImageStatus source_image_status;
+  canvas->GetSourceImageForCanvas(&source_image_status, {100, 100});
+  EXPECT_GT(FrameGenerationOf(*selector), original_generation);
+}
+
+TEST_F(OffscreenCanvasTest, SwitchFrameByImageBitmapSource) {
+  auto* canvas = OffscreenCanvas::Create(GetScriptState(), 100, 100);
+  // Make sure the canvas has the context.
+  ASSERT_TRUE(canvas->GetCanvasRenderingContext(
+      GetDocument().GetExecutionContext(),
+      CanvasRenderingContext::CanvasRenderingAPI::k2D, {}));
+  auto* selector = canvas->GetFontSelector();
+  uint32_t original_generation = FrameGenerationOf(*selector);
+
+  // The ImageBitmap constructor should call
+  // UniqueFontSelector::DidSwitchFrame().
+  MakeGarbageCollected<ImageBitmap>(canvas, std::nullopt);
+  EXPECT_GT(FrameGenerationOf(*selector), original_generation);
+}
+
+// Verifies that an offscreen_canvas()s PushFrame() has the appropriate
 // opacity/blending information sent to the CompositorFrameSink.
 TEST_P(OffscreenCanvasTest, CompositorFrameOpacity) {
   ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
   ScriptState::Scope scope(GetScriptState());
   ::testing::InSequence s;
 
-  // To intercept SubmitCompositorFrame/SubmitCompositorFrameSync messages sent
-  // by OffscreenCanvas's CanvasResourceDispatcher, we have to override the Mojo
-  // EmbeddedFrameSinkProvider interface impl and its CompositorFrameSinkClient.
+  // To intercept SubmitCompositorFrame messages sent by OffscreenCanvas's
+  // CanvasResourceDispatcher, we have to override the Mojo
+  // EmbeddedFrameSinkProvider interface impl and its
+  // CompositorFrameSinkClient.
   MockEmbeddedFrameSinkProvider mock_embedded_frame_sink_provider;
   mojo::Receiver<mojom::blink::EmbeddedFrameSinkProvider>
       embedded_frame_sink_provider_receiver(&mock_embedded_frame_sink_provider);
@@ -211,10 +255,10 @@ TEST_P(OffscreenCanvasTest, CompositorFrameOpacity) {
       mock_embedded_frame_sink_provider.CreateScopedOverrideMojoInterface(
           &embedded_frame_sink_provider_receiver);
 
-  // Call here DidDraw() to simulate having drawn something before PushFrame()/
-  // Commit(); DidDraw() will in turn cause a CanvasResourceDispatcher to be
-  // created and a CreateCompositorFrameSink() to be issued; this sink will get
-  // a SetNeedsBeginFrame() message sent upon construction.
+  // Call here DidDraw() to simulate having drawn something before PushFrame();
+  // DidDraw() will in turn cause a CanvasResourceDispatcher to be created and
+  // a CreateCompositorFrameSink() to be issued; this sink will get a
+  // SetNeedsBeginFrame() message sent upon construction.
   mock_embedded_frame_sink_provider
       .set_num_expected_set_needs_begin_frame_on_sink_construction(1);
   EXPECT_CALL(mock_embedded_frame_sink_provider,
@@ -224,16 +268,19 @@ TEST_P(OffscreenCanvasTest, CompositorFrameOpacity) {
 
   const bool context_alpha = GetParam().alpha;
 
-  auto canvas_resource = CanvasResourceSharedImage::CreateSoftware(
-      offscreen_canvas().Size(), viz::SinglePlaneFormat::kRGBA_8888,
+  auto canvas_resource = CanvasResourceSharedImage::CreateForTesting(
+      offscreen_canvas().Size(), viz::SinglePlaneFormat::kBGRA_8888,
       kPremul_SkAlphaType, gfx::ColorSpace::CreateSRGB(),
-      /*provider=*/nullptr, shared_image_interface_provider());
+      gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY,
+      /*is_software=*/true,
+      /*is_accelerated=*/false, /*provider=*/nullptr,
+      /*context_provider_wrapper=*/nullptr, shared_image_interface_provider());
   EXPECT_TRUE(!!canvas_resource);
 
   EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
               SubmitCompositorFrame_(_))
       .WillOnce(::testing::WithArg<0>(
-          ::testing::Invoke([context_alpha](const viz::CompositorFrame* frame) {
+          [context_alpha](const viz::CompositorFrame* frame) {
             ASSERT_EQ(frame->render_pass_list.size(), 1u);
 
             const auto& quad_list = frame->render_pass_list[0]->quad_list;
@@ -245,34 +292,78 @@ TEST_P(OffscreenCanvasTest, CompositorFrameOpacity) {
             ASSERT_EQ(shared_quad_state_list.size(), 1u);
             EXPECT_NE(shared_quad_state_list.front()->are_contents_opaque,
                       context_alpha);
-          })));
-  offscreen_canvas().PushFrame(std::move(canvas_resource),
-                               SkIRect::MakeWH(10, 10));
+          }));
+  offscreen_canvas().PushFrame(std::move(canvas_resource));
   platform->RunUntilIdle();
+}
 
-  auto canvas_resource2 = CanvasResourceSharedImage::CreateSoftware(
-      offscreen_canvas().Size(), viz::SinglePlaneFormat::kRGBA_8888,
-      kPremul_SkAlphaType, gfx::ColorSpace::CreateSRGB(),
-      /*provider=*/nullptr, shared_image_interface_provider());
-  EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
-              SubmitCompositorFrameSync_(_))
-      .WillOnce(::testing::WithArg<0>(
-          ::testing::Invoke([context_alpha](const viz::CompositorFrame* frame) {
-            ASSERT_EQ(frame->render_pass_list.size(), 1u);
+TEST_P(OffscreenCanvasTest, GetRasterModeAutoRecovery) {
+  // Verifies that after a context loss, getting the raster mode from the
+  // canvas will restore the context and succeed.
+  GetGLInterface()->SetIsContextLost(true);
+  EXPECT_FALSE(SharedGpuContext::IsValidWithoutRestoringForTesting());
+  offscreen_canvas().SetPreferred2DRasterMode(RasterModeHint::kPreferGPU);
+  EXPECT_EQ(offscreen_canvas().GetRasterModeForCanvas2D(), RasterMode::kGPU);
+  EXPECT_TRUE(SharedGpuContext::IsValidWithoutRestoringForTesting());
+}
 
-            const auto& quad_list = frame->render_pass_list[0]->quad_list;
-            ASSERT_EQ(quad_list.size(), 1u);
-            EXPECT_EQ(quad_list.front()->needs_blending, context_alpha);
+TEST_F(OffscreenCanvasTest, BitmapRendererResizePreservesTaint) {
+  auto* canvas = OffscreenCanvas::Create(GetScriptState(), 100, 100);
+  CanvasContextCreationAttributesCore attrs;
+  auto* context = static_cast<ImageBitmapRenderingContext*>(
+      canvas->GetCanvasRenderingContext(
+          GetDocument().GetExecutionContext(),
+          CanvasRenderingContext::CanvasRenderingAPI::kBitmaprenderer, attrs));
+  ASSERT_NE(context, nullptr);
 
-            const auto& shared_quad_state_list =
-                frame->render_pass_list[0]->shared_quad_state_list;
-            ASSERT_EQ(shared_quad_state_list.size(), 1u);
-            EXPECT_NE(shared_quad_state_list.front()->are_contents_opaque,
-                      context_alpha);
-          })));
-  offscreen_canvas().Commit(std::move(canvas_resource2),
-                            SkIRect::MakeWH(10, 10));
-  platform->RunUntilIdle();
+  // Create a tainted ImageBitmap.
+  SkImageInfo info = SkImageInfo::MakeN32Premul(10, 10);
+  sk_sp<SkSurface> surface = SkSurfaces::Raster(info);
+  auto image =
+      UnacceleratedStaticBitmapImage::Create(surface->makeImageSnapshot());
+  image->SetOriginClean(false);
+  auto* bitmap = MakeGarbageCollected<ImageBitmap>(image);
+  EXPECT_FALSE(bitmap->OriginClean());
+
+  // Transfer tainted bitmap to canvas.
+  context->transferFromImageBitmap(bitmap, ASSERT_NO_EXCEPTION);
+  EXPECT_FALSE(canvas->OriginClean());
+  EXPECT_TRUE(context->IsPaintable());
+
+  // Resize the canvas.
+  canvas->setWidth(101);
+
+  // origin_clean_ should still be false.
+  EXPECT_FALSE(canvas->OriginClean());
+  EXPECT_TRUE(context->IsPaintable());
+  CanvasRenderingContext::GetCanvasPerformanceMonitor().ResetForTesting();
+}
+
+TEST_F(OffscreenCanvasTest, VisibilityPropagation) {
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(
+        blink::features::kOffscreenCanvasPropagateVisibility);
+
+    EXPECT_TRUE(offscreen_canvas().IsPageVisible());
+    offscreen_canvas().SetParentVisibility(false);
+    // Should remain visible because the feature is disabled.
+    EXPECT_TRUE(offscreen_canvas().IsPageVisible());
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(
+        blink::features::kOffscreenCanvasPropagateVisibility);
+
+    EXPECT_TRUE(offscreen_canvas().IsPageVisible());
+
+    offscreen_canvas().SetParentVisibility(false);
+    EXPECT_FALSE(offscreen_canvas().IsPageVisible());
+
+    offscreen_canvas().SetParentVisibility(true);
+    EXPECT_TRUE(offscreen_canvas().IsPageVisible());
+  }
 }
 
 const TestParams kTestCases[] = {

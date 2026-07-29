@@ -4,12 +4,16 @@
 
 #include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
 #include "base/notimplemented.h"
+#include "base/test/bind.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/test/test_timeouts.h"
 #include "build/build_config.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_model_delegate.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h"
@@ -27,31 +31,53 @@
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
 #include "chrome/browser/web_applications/test/web_app_test_observers.h"
+#include "chrome/browser/web_applications/web_app.h"
+#include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_registry_update.h"
+#include "chrome/browser/web_applications/web_app_sync_bridge.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/common/url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/account_id/account_id.h"
-#include "components/nacl/common/buildflags.h"
+#include "components/content_settings/core/common/pref_names.h"
 #include "components/permissions/features.h"
+#include "components/permissions/test/permission_test_util.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/profile_metrics/browser_profile_type.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/web_contents_tester.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/test_support/fake_message_dispatch_context.h"
+#include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/base/features.h"
+#include "testing/gmock/include/gmock/gmock.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
+#include "components/webapps/isolated_web_apps/scheme.h"
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS)
+
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_pref_names.h"
 #include "base/test/scoped_command_line.h"
-#include "chrome/browser/ash/app_mode/web_app/web_kiosk_app_manager.h"
+#include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
+#include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace {
@@ -59,26 +85,25 @@ namespace {
 constexpr char kDefaultAppInstallUrl[] = "https://example.com/install";
 constexpr char kTrustedUrl[] = "https://example.com/sample";
 constexpr char kUntrustedUrl[] = "https://non-example.com/sample";
-constexpr char kKioskAppInstallUrl[] = "https://kiosk.com/install";
 constexpr char kUserEmail[] = "user-email@example.com";
-constexpr char kNotAffiliatedErrorMessage[] =
-    "This web API is not allowed if the current profile is not affiliated.";
-constexpr char kUntrustedIwaAppOrigin[] =
-    "isolated-app://abc2sheak3vpmm7vmjqnjwuzx3xwot3vdayrlgnvbkq2mp5lg4daaaic";
 
 #if BUILDFLAG(IS_CHROMEOS)
+constexpr char kKioskAppInstallUrl[] = "https://kiosk.com/install";
 constexpr char kKioskAppUrl[] = "https://kiosk.com/sample";
 constexpr char kInvalidKioskAppUrl[] = "https://invalid-kiosk.com/sample";
-constexpr char kNotAllowedOriginErrorMessage[] =
-    "The current origin cannot use this web API because it is not allowed by "
-    "the DeviceAttributesAllowedForOrigins policy.";
+constexpr char kNoDeviceAttributesPermissionErrorMessage[] =
+    "The current origin cannot use this web API because it was not granted the "
+    "'device-attributes' permission.";
+constexpr char kPermissionsPolicyMojoErrorMessage[] =
+    "Permissions policy blocks access to Device Attributes.";
+constexpr char kNotAffiliatedErrorMessage[] =
+    "This web API is not allowed if the current profile is not affiliated.";
 #endif
 
 }  // namespace
 
 namespace {
 
-using Result = blink::mojom::DeviceAttributeResult;
 
 constexpr char kAnnotatedAssetId[] = "annotated_asset_id";
 constexpr char kAnnotatedLocation[] = "annotated_location";
@@ -93,45 +118,45 @@ class FakeDeviceAttributeApi : public DeviceAttributeApi {
 
   // This method forwards calls to DeviceAttributesApiImpl to the test the
   // actual error reported by the service.
-  void ReportNotAllowedError(
-      base::OnceCallback<void(blink::mojom::DeviceAttributeResultPtr)> callback)
-      override {
+  void ReportNotAllowedError(NotificationCallback callback) override {
     device_attributes_api_.ReportNotAllowedError(std::move(callback));
   }
 
   // This method forwards calls to DeviceAttributesApiImpl to the test the
   // actual error reported by the service.
-  void ReportNotAffiliatedError(
-      base::OnceCallback<void(blink::mojom::DeviceAttributeResultPtr)> callback)
-      override {
+  void ReportNotAffiliatedError(NotificationCallback callback) override {
     device_attributes_api_.ReportNotAffiliatedError(std::move(callback));
   }
 
   void GetDirectoryId(blink::mojom::DeviceAPIService::GetDirectoryIdCallback
                           callback) override {
-    std::move(callback).Run(Result::NewAttribute(kDirectoryApiId));
+    std::move(callback).Run(
+        blink::mojom::DeviceAttributeValue::New(kDirectoryApiId));
   }
 
   void GetHostname(
       blink::mojom::DeviceAPIService::GetHostnameCallback callback) override {
-    std::move(callback).Run(Result::NewAttribute(kHostname));
+    std::move(callback).Run(blink::mojom::DeviceAttributeValue::New(kHostname));
   }
 
   void GetSerialNumber(blink::mojom::DeviceAPIService::GetSerialNumberCallback
                            callback) override {
-    std::move(callback).Run(Result::NewAttribute(kSerialNumber));
+    std::move(callback).Run(
+        blink::mojom::DeviceAttributeValue::New(kSerialNumber));
   }
 
   void GetAnnotatedAssetId(
       blink::mojom::DeviceAPIService::GetAnnotatedAssetIdCallback callback)
       override {
-    std::move(callback).Run(Result::NewAttribute(kAnnotatedAssetId));
+    std::move(callback).Run(
+        blink::mojom::DeviceAttributeValue::New(kAnnotatedAssetId));
   }
 
   void GetAnnotatedLocation(
       blink::mojom::DeviceAPIService::GetAnnotatedLocationCallback callback)
       override {
-    std::move(callback).Run(Result::NewAttribute(kAnnotatedLocation));
+    std::move(callback).Run(
+        blink::mojom::DeviceAttributeValue::New(kAnnotatedLocation));
   }
 
  private:
@@ -142,22 +167,9 @@ class FakeDeviceAttributeApi : public DeviceAttributeApi {
 class DeviceAPIServiceTest {
  public:
   void InstallTrustedApps(Profile* profile) {
-    app_id_ = web_app::GenerateAppIdFromManifestId(
-        web_app::GenerateManifestIdFromStartUrlOnly(
-            GURL(kDefaultAppInstallUrl)));
-
-    web_app::WebAppTestInstallObserver observer(profile);
-    observer.BeginListening({app_id()});
-
-    {
-      ScopedListPrefUpdate update(profile->GetPrefs(),
-                                  prefs::kWebAppInstallForceList);
-      base::Value::Dict app_policy;
-      app_policy.Set(web_app::kUrlKey, kDefaultAppInstallUrl);
-      update->Append(std::move(app_policy));
-    }
-
-    EXPECT_EQ(observer.Wait(), app_id());
+    app_id_ = web_app::test::InstallDummyWebApp(
+        profile, "Policy installed app", GURL(kDefaultAppInstallUrl),
+        webapps::WebappInstallSource::EXTERNAL_POLICY);
   }
 
   void TryCreatingService(
@@ -166,12 +178,20 @@ class DeviceAPIServiceTest {
       content::WebContents* web_contents) {
     // Isolated Web Apps require Cross Origin Isolation headers to be included
     // in the response.
-    if (url.SchemeIs(chrome::kIsolatedAppScheme)) {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
+    if (url.SchemeIs(webapps::kIsolatedAppScheme)) {
       web_app::SimulateIsolatedWebAppNavigation(web_contents, url);
     } else {
       content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents,
                                                                  url);
     }
+#else  // !(BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+       //   BUILDFLAG(IS_CHROMEOS))
+    content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents,
+                                                               url);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS)
 
     DeviceServiceImpl::CreateForTest(web_contents->GetPrimaryMainFrame(),
                                      remote()->BindNewPipeAndPassReceiver(),
@@ -188,26 +208,68 @@ class DeviceAPIServiceTest {
 };
 
 namespace {
+
+using ::base::test::ErrorIs;
+
+#if BUILDFLAG(IS_CHROMEOS)
+using ::base::test::ValueIs;
+using ::testing::Field;
+using ::testing::Optional;
+using ::testing::Pointee;
+
+auto DeviceAttributeIs(const std::string& expected_value) {
+  return ValueIs(Pointee(Field(&blink::mojom::DeviceAttributeValue::value,
+                               Optional(expected_value))));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 void VerifyErrorMessageResultForAllDeviceAttributesAPIs(
     blink::mojom::DeviceAPIService* service,
     const std::string& expected_error_message) {
-  base::test::TestFuture<blink::mojom::DeviceAttributeResultPtr> future;
+  base::test::TestFuture<
+      base::expected<blink::mojom::DeviceAttributeValuePtr, std::string>>
+      future;
 
   service->GetDirectoryId(future.GetCallback());
-  EXPECT_EQ(future.Take()->get_error_message(), expected_error_message);
+  EXPECT_THAT(future.Take(), ErrorIs(expected_error_message));
 
   service->GetHostname(future.GetCallback());
-  EXPECT_EQ(future.Take()->get_error_message(), expected_error_message);
+  EXPECT_THAT(future.Take(), ErrorIs(expected_error_message));
 
   service->GetSerialNumber(future.GetCallback());
-  EXPECT_EQ(future.Take()->get_error_message(), expected_error_message);
+  EXPECT_THAT(future.Take(), ErrorIs(expected_error_message));
 
   service->GetAnnotatedAssetId(future.GetCallback());
-  EXPECT_EQ(future.Take()->get_error_message(), expected_error_message);
+  EXPECT_THAT(future.Take(), ErrorIs(expected_error_message));
 
   service->GetAnnotatedLocation(future.GetCallback());
-  EXPECT_EQ(future.Take()->get_error_message(), expected_error_message);
+  EXPECT_THAT(future.Take(), ErrorIs(expected_error_message));
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+void VerifyCanAccessForAllDeviceAttributesAPIs(
+    blink::mojom::DeviceAPIService* service) {
+  base::test::TestFuture<
+      base::expected<blink::mojom::DeviceAttributeValuePtr, std::string>>
+      future;
+
+  service->GetDirectoryId(future.GetCallback());
+  EXPECT_THAT(future.Take(), DeviceAttributeIs(kDirectoryApiId));
+
+  service->GetHostname(future.GetCallback());
+  EXPECT_THAT(future.Take(), DeviceAttributeIs(kHostname));
+
+  service->GetSerialNumber(future.GetCallback());
+  EXPECT_THAT(future.Take(), DeviceAttributeIs(kSerialNumber));
+
+  service->GetAnnotatedAssetId(future.GetCallback());
+  EXPECT_THAT(future.Take(), DeviceAttributeIs(kAnnotatedAssetId));
+
+  service->GetAnnotatedLocation(future.GetCallback());
+  EXPECT_THAT(future.Take(), DeviceAttributeIs(kAnnotatedLocation));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 }  // namespace
 
 class DeviceAPIServiceWebAppTest : public DeviceAPIServiceTest,
@@ -222,26 +284,18 @@ class DeviceAPIServiceWebAppTest : public DeviceAPIServiceTest,
     WebAppTest::SetUp();
     web_app::test::AwaitStartWebAppProviderAndSubsystems(profile());
     InstallTrustedApps();
+    profile()->SetPermissionControllerDelegate(
+        permissions::GetPermissionControllerDelegate(profile()));
+#if BUILDFLAG(IS_CHROMEOS)
     SetAllowedOrigin();
+#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
   void InstallTrustedApps() {
     DeviceAPIServiceTest::InstallTrustedApps(profile());
   }
 
-  void RemoveTrustedApps() {
-    web_app::WebAppTestUninstallObserver observer(profile());
-    observer.BeginListening({app_id()});
-
-    {
-      ScopedListPrefUpdate update(profile()->GetPrefs(),
-                                  prefs::kWebAppInstallForceList);
-      base::Value::Dict app_policy;
-      update->clear();
-    }
-
-    task_environment()->RunUntilIdle();
-  }
+  void UninstallAllApps() { web_app::test::UninstallAllWebApps(profile()); }
 
   webapps::AppId UserInstallWebApp() {
     auto app_info = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
@@ -253,13 +307,16 @@ class DeviceAPIServiceWebAppTest : public DeviceAPIServiceTest,
         webapps::WebappInstallSource::EXTERNAL_DEFAULT);
   }
 
+#if BUILDFLAG(IS_CHROMEOS)
   void SetAllowedOrigin() {
-    base::Value::List allowed_origins;
+    base::ListValue allowed_origins;
     allowed_origins.Append(kTrustedUrl);
     allowed_origins.Append(kKioskAppInstallUrl);
-    profile()->GetPrefs()->SetList(prefs::kDeviceAttributesAllowedForOrigins,
-                                   std::move(allowed_origins));
+    profile()->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDeviceAttributesAllowedForOrigins,
+        std::move(allowed_origins));
   }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   void TryCreatingService(
       const GURL& url,
@@ -280,24 +337,27 @@ class DeviceAPIServiceWebAppTest : public DeviceAPIServiceTest,
     return web_app::WebAppProvider::GetForTest(profile());
   }
 
+  void TearDown() override {
+    provider()->Shutdown();
+    WebAppTest::TearDown();
+  }
+
  private:
   AccountId account_id_;
 };
 
-TEST_F(DeviceAPIServiceWebAppTest, ConnectsForTrustedApps) {
+TEST_F(DeviceAPIServiceWebAppTest, DoesNotConnectForTrustedApps) {
   TryCreatingService(GURL(kTrustedUrl),
                      std::make_unique<DeviceAttributeApiImpl>());
   remote()->FlushForTesting();
-  ASSERT_TRUE(remote()->is_connected());
+  ASSERT_FALSE(remote()->is_connected());
 }
 
-// The service should be disabled in the Incognito mode.
 TEST_F(DeviceAPIServiceWebAppTest, DoesNotConnectForIncognitoProfile) {
   profile_metrics::SetBrowserProfileType(
       profile(), profile_metrics::BrowserProfileType::kIncognito);
   TryCreatingService(GURL(kTrustedUrl),
                      std::make_unique<DeviceAttributeApiImpl>());
-
   remote()->FlushForTesting();
   ASSERT_FALSE(remote()->is_connected());
 }
@@ -309,44 +369,18 @@ TEST_F(DeviceAPIServiceWebAppTest, DoesNotConnectForUntrustedApps) {
   ASSERT_FALSE(remote()->is_connected());
 }
 
-TEST_F(DeviceAPIServiceWebAppTest, DisconnectWhenTrustRevoked) {
-  TryCreatingService(GURL(kTrustedUrl),
-                     std::make_unique<DeviceAttributeApiImpl>());
-  remote()->FlushForTesting();
-  RemoveTrustedApps();
-  remote()->FlushForTesting();
+#if BUILDFLAG(IS_CHROMEOS)
 
-  ASSERT_FALSE(remote()->is_connected());
-}
-
-TEST_F(DeviceAPIServiceWebAppTest, MultiOriginDisconnectWhenTrustRevoked) {
-  webapps::AppId app_id = UserInstallWebApp();
-
-  TryCreatingService(GURL(kTrustedUrl),
-                     std::make_unique<DeviceAttributeApiImpl>());
-  remote()->FlushForTesting();
-  RemoveTrustedApps();
-  remote()->FlushForTesting();
-
-  ASSERT_FALSE(remote()->is_connected());
-}
-
-TEST_F(DeviceAPIServiceWebAppTest, ReportErrorForDefaultUser) {
-  TryCreatingService(GURL(kTrustedUrl),
-                     std::make_unique<DeviceAttributeApiImpl>());
-  VerifyErrorMessageResultForAllDeviceAttributesAPIs(
-      kNotAffiliatedErrorMessage);
-  ASSERT_TRUE(remote()->is_connected());
-}
-
-class DeviceAPIServiceIwaTest : public DeviceAPIServiceTest,
-                                public web_app::IsolatedWebAppTest {
+class DeviceAPIServiceIwaTest
+    : public DeviceAPIServiceTest,
+      public web_app::IsolatedWebAppTest,
+      public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {
  public:
   void SetUp() override {
     web_app::IsolatedWebAppTest::SetUp();
     web_app::test::AwaitStartWebAppProviderAndSubsystems(profile());
-    InstallTrustedIWA();
-
+    profile()->SetPermissionControllerDelegate(
+        permissions::GetPermissionControllerDelegate(profile()));
     rvh_test_enabler_ = std::make_unique<content::RenderViewHostTestEnabler>();
     web_contents_ = content::WebContentsTester::CreateTestWebContents(
         profile(), /*instance=*/nullptr);
@@ -358,38 +392,58 @@ class DeviceAPIServiceIwaTest : public DeviceAPIServiceTest,
     web_app::IsolatedWebAppTest::TearDown();
   }
 
-  void InstallTrustedIWA() {
-    auto app = web_app::IsolatedWebAppBuilder(
-                   web_app::ManifestBuilder().SetVersion("1.0.0"))
-                   .BuildBundle();
-    app->FakeInstallPageState(profile());
-
-    url_info_ = web_app::IsolatedWebAppUrlInfo::CreateFromSignedWebBundleId(
-        app->web_bundle_id());
-
-    web_app::WebAppTestInstallObserver install_observer(profile());
-    install_observer.BeginListening({app_id()});
-
-    test_update_server().AddBundle(std::move(app));
-
-    profile()->GetPrefs()->SetList(
-        prefs::kIsolatedWebAppInstallForceList,
-        base::Value::List().Append(
-            web_app::IwaTestServerConfigurator::CreateForceInstallPolicyEntry(
-                get_url_info().web_bundle_id())));
-
-    EXPECT_EQ(install_observer.Wait(), app_id());
+  void SetAllowedOrigin(const std::string& origin) {
+    profile()->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDeviceAttributesAllowedForOrigins,
+        base::ListValue().Append(origin));
   }
 
-  void RemoveTrustedIWA() {
-    web_app::WebAppTestUninstallObserver uninstall_observer(profile());
+  void SetBlockedOrigin(const std::string& origin) {
+    profile()->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDeviceAttributesBlockedForOrigins,
+        base::ListValue().Append(origin));
+  }
 
-    uninstall_observer.BeginListening({app_id()});
+  void SetEnterprisePoliciesForOrigin(const std::string& origin) {
+    if (IsBlockPolicySet()) {
+      SetBlockedOrigin(origin);
+    }
+    if (IsAllowPolicySet()) {
+      SetAllowedOrigin(origin);
+    }
+  }
 
-    profile()->GetPrefs()->SetList(prefs::kIsolatedWebAppInstallForceList,
-                                   base::Value::List());
+  web_app::IsolatedWebAppUrlInfo InstallTrustedIWA() {
+    return InstallIWA(InstallType::kPolicy);
+  }
 
-    EXPECT_EQ(uninstall_observer.Wait(), app_id());
+  web_app::IsolatedWebAppUrlInfo InstallUntrustedIWA() {
+    return InstallIWA(InstallType::kGraphicalInstaller);
+  }
+
+  web_app::IsolatedWebAppUrlInfo InstallDevModeIWA() {
+    return InstallIWA(InstallType::kDevMode);
+  }
+
+  void ForceUninstall(const web_app::IsolatedWebAppUrlInfo& url_info) {
+    base::RunLoop run_loop;
+    auto* browsing_data_remover = profile()->GetBrowsingDataRemover();
+    browsing_data_remover->SetWouldCompleteCallbackForTesting(
+        base::BindLambdaForTesting([&](base::OnceClosure callback) {
+          if (browsing_data_remover->GetPendingTaskCountForTesting() == 1) {
+            run_loop.Quit();
+          }
+          std::move(callback).Run();
+        }));
+
+    base::test::TestFuture<webapps::UninstallResultCode> future;
+    provider().scheduler().RemoveInstallManagementMaybeUninstall(
+        url_info.app_id(), web_app::WebAppManagement::Type::kIwaPolicy,
+        webapps::WebappUninstallSource::kIwaEnterprisePolicy,
+        future.GetCallback());
+    auto code = future.Get();
+    ASSERT_EQ(code, webapps::UninstallResultCode::kAppRemoved);
+    run_loop.Run();
   }
 
   void TryCreatingService(
@@ -401,105 +455,207 @@ class DeviceAPIServiceIwaTest : public DeviceAPIServiceTest,
 
   void InitWebContents() {}
 
-  const web_app::IsolatedWebAppUrlInfo& get_url_info() const {
-    return *url_info_;
-  }
-
-  const webapps::AppId& app_id() const { return get_url_info().app_id(); }
-
- private:
-  std::unique_ptr<content::RenderViewHostTestEnabler> rvh_test_enabler_;
-  std::unique_ptr<content::WebContents> web_contents_;
-  std::optional<web_app::IsolatedWebAppUrlInfo> url_info_;
-};
-
-TEST_F(DeviceAPIServiceIwaTest, ConnectsForTrustedApps) {
-  TryCreatingService(get_url_info().origin().GetURL(),
-                     std::make_unique<DeviceAttributeApiImpl>());
-  remote()->FlushForTesting();
-  ASSERT_TRUE(remote()->is_connected());
-}
-
-TEST_F(DeviceAPIServiceIwaTest, DoesNotConnectForUntrustedApps) {
-  TryCreatingService(GURL(kUntrustedIwaAppOrigin),
-                     std::make_unique<DeviceAttributeApiImpl>());
-  remote()->FlushForTesting();
-  ASSERT_FALSE(remote()->is_connected());
-}
-
-TEST_F(DeviceAPIServiceIwaTest, DisconnectWhenTrustRevoked) {
-  TryCreatingService(get_url_info().origin().GetURL(),
-                     std::make_unique<DeviceAttributeApiImpl>());
-  remote()->FlushForTesting();
-  RemoveTrustedIWA();
-  remote()->FlushForTesting();
-  ASSERT_FALSE(remote()->is_connected());
-}
-
-TEST_F(DeviceAPIServiceIwaTest, ReportErrorForDefaultUser) {
-  TryCreatingService(get_url_info().origin().GetURL(),
-                     std::make_unique<DeviceAttributeApiImpl>());
-  VerifyErrorMessageResultForAllDeviceAttributesAPIs(
-      remote()->get(), kNotAffiliatedErrorMessage);
-  ASSERT_TRUE(remote()->is_connected());
-}
-
-#if BUILDFLAG(IS_CHROMEOS)
-
-class DeviceAPIServiceParamTest
-    : public DeviceAPIServiceWebAppTest,
-      public testing::WithParamInterface<std::pair<std::string, bool>> {
- public:
-  void SetAllowedOriginFromParam() {
-    profile()->GetPrefs()->SetList(
-        prefs::kDeviceAttributesAllowedForOrigins,
-        base::Value::List().Append(GetParamOrigin()));
-  }
-
-  void SetAllowedOrigin(const std::string& origin) {
-    profile()->GetPrefs()->SetList(prefs::kDeviceAttributesAllowedForOrigins,
-                                   base::Value::List().Append(origin));
-  }
-
-  void EnableFeatureAndAllowlistOrigin(const base::Feature& param,
-                                       const std::string& origin) {
-    base::FieldTrialParams feature_params;
-    feature_params[permissions::feature_params::
-                       kWebKioskBrowserPermissionsAllowlist.name] = origin;
-    feature_list_.InitAndEnableFeatureWithParameters(param, feature_params);
-  }
+  bool IsAllowPolicySet() { return std::get<0>(GetParam()); }
+  bool IsBlockPolicySet() { return std::get<1>(GetParam()); }
+  bool IsPermissionsPolicyGranted() { return std::get<2>(GetParam()); }
 
   void EnableFeature(const base::Feature& param) {
     feature_list_.InitAndEnableFeature(param);
   }
 
-  void DisableFeature(const base::Feature& feature) {
-    feature_list_.InitAndDisableFeature(feature);
+  void AddScopeExtension(const webapps::AppId& app_id,
+                         const std::string& origin_str,
+                         bool has_wildcard = false) {
+    web_app::ScopedRegistryUpdate update =
+        provider().sync_bridge_unsafe().BeginUpdate();
+    web_app::WebApp* app = update->UpdateApp(app_id);
+    app->SetValidatedScopeExtensions(
+        {web_app::ScopeExtensionInfo::CreateForOrigin(
+            url::Origin::Create(GURL(origin_str)), has_wildcard)});
+  }
+
+ private:
+  enum class InstallType { kPolicy, kDevMode, kGraphicalInstaller };
+  web_app::IsolatedWebAppUrlInfo InstallIWA(InstallType install_type) {
+    auto manifest_builder = web_app::ManifestBuilder();
+    if (IsPermissionsPolicyGranted()) {
+      manifest_builder.AddPermissionsPolicy(
+          network::mojom::PermissionsPolicyFeature::kDeviceAttributes, true,
+          {});
+    }
+    const std::unique_ptr<web_app::ScopedBundledIsolatedWebApp> bundle =
+        web_app::IsolatedWebAppBuilder(manifest_builder).BuildBundle();
+    bundle->TrustSigningKey();
+    switch (install_type) {
+      case InstallType::kPolicy:
+        return bundle
+            ->InstallWithSource(
+                profile(),
+                &web_app::IsolatedWebAppInstallSource::FromExternalPolicy)
+            .value();
+      case InstallType::kDevMode:
+        return bundle
+            ->InstallWithSource(
+                profile(), &web_app::IsolatedWebAppInstallSource::FromDevUi)
+            .value();
+      case InstallType::kGraphicalInstaller:
+        return bundle->InstallChecked(profile());
+    }
+  }
+
+  std::unique_ptr<content::RenderViewHostTestEnabler> rvh_test_enabler_;
+  std::unique_ptr<content::WebContents> web_contents_;
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_P(DeviceAPIServiceIwaTest, CheckTrustedApps) {
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  mojo::test::BadMessageObserver bad_message_observer;
+
+  auto url_info = InstallTrustedIWA();
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<DeviceAttributeApiImpl>());
+  remote()->FlushForTesting();
+  if (IsPermissionsPolicyGranted()) {
+    ASSERT_TRUE(remote()->is_connected());
+  } else {
+    ASSERT_FALSE(remote()->is_connected());
+    EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+              "Permissions policy blocks access to Device Attributes.");
+  }
+}
+
+TEST_P(DeviceAPIServiceIwaTest, CheckUntrustedApps) {
+  auto url_info = InstallUntrustedIWA();
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<DeviceAttributeApiImpl>());
+  remote()->FlushForTesting();
+  ASSERT_FALSE(remote()->is_connected());
+}
+
+TEST_P(DeviceAPIServiceIwaTest, CheckTrustRevoked) {
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  mojo::test::BadMessageObserver bad_message_observer;
+
+  auto url_info = InstallTrustedIWA();
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<DeviceAttributeApiImpl>());
+  remote()->FlushForTesting();
+  if (IsPermissionsPolicyGranted()) {
+    ForceUninstall(url_info);
+    remote()->FlushForTesting();
+    ASSERT_FALSE(remote()->is_connected());
+  } else {
+    ASSERT_FALSE(remote()->is_connected());
+    EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+              kPermissionsPolicyMojoErrorMessage);
+  }
+}
+
+TEST_P(DeviceAPIServiceIwaTest, CheckErrorForDefaultUser) {
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  mojo::test::BadMessageObserver bad_message_observer;
+
+  auto url_info = InstallTrustedIWA();
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<DeviceAttributeApiImpl>());
+  remote()->FlushForTesting();
+  if (IsPermissionsPolicyGranted()) {
+    VerifyErrorMessageResultForAllDeviceAttributesAPIs(
+        remote()->get(), kNotAffiliatedErrorMessage);
+    ASSERT_TRUE(remote()->is_connected());
+  } else {
+    ASSERT_FALSE(remote()->is_connected());
+    EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+              kPermissionsPolicyMojoErrorMessage);
+  }
+}
+
+TEST_P(DeviceAPIServiceIwaTest, CheckUntrustedAppsWithIwaDevModeFlag) {
+  EnableFeature(features::kIsolatedWebAppDevMode);
+  auto url_info = InstallUntrustedIWA();
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<DeviceAttributeApiImpl>());
+  remote()->FlushForTesting();
+  ASSERT_FALSE(remote()->is_connected());
+}
+
+TEST_P(DeviceAPIServiceIwaTest, CheckDevModeInstalledAppsWithIwaDevModeFlag) {
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  mojo::test::BadMessageObserver bad_message_observer;
+
+  EnableFeature(features::kIsolatedWebAppDevMode);
+  auto url_info = InstallDevModeIWA();
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<DeviceAttributeApiImpl>());
+  remote()->FlushForTesting();
+  if (IsPermissionsPolicyGranted()) {
+    ASSERT_TRUE(remote()->is_connected());
+  } else {
+    ASSERT_FALSE(remote()->is_connected());
+    EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+              "Permissions policy blocks access to Device Attributes.");
+  }
+}
+
+TEST_P(DeviceAPIServiceIwaTest,
+       HttpsScopeExtensionOriginDoesNotInheritIwaTrust) {
+  auto url_info = InstallTrustedIWA();
+  AddScopeExtension(url_info.app_id(), "https://partner.example");
+
+  TryCreatingService(GURL("https://partner.example/path"),
+                     std::make_unique<DeviceAttributeApiImpl>());
+  remote()->FlushForTesting();
+  EXPECT_FALSE(remote()->is_connected());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    DeviceAPIServiceIwaTest,
+    ::testing::Combine(::testing::Bool(),  // allow policy
+                       ::testing::Bool(),  // block policy
+                       ::testing::Bool()   // permissions policy
+                       ),
+    [](const ::testing::TestParamInfo<std::tuple<bool, bool, bool>>& info) {
+      return base::StringPrintf(
+          "AllowPolicy%s_BlockPolicy%s_PermissionsPolicy%s",
+          std::get<0>(info.param) ? "Set" : "Unset",
+          std::get<1>(info.param) ? "Set" : "Unset",
+          std::get<2>(info.param) ? "Granted" : "Denied");
+    });
+
+class DeviceAPIServiceParamTest
+    : public DeviceAPIServiceWebAppTest,
+      public testing::WithParamInterface<std::pair<std::string, bool>> {
+ public:
+  void SetAllowedOriginFromParam() { SetAllowedOrigin(GetParamOrigin()); }
+
+  void SetAllowedOrigin(const std::string& origin) {
+    profile()->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDeviceAttributesAllowedForOrigins,
+        base::ListValue().Append(origin));
+  }
+
+  void AllowOriginsByDefault() {
+    profile()->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDefaultDeviceAttributesSetting,
+        base::Value(kAllowSetting));
+  }
+
+  void BlockOriginsByDefault() {
+    profile()->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDefaultDeviceAttributesSetting,
+        base::Value(kBlockSetting));
   }
 
   void SetKioskBrowserPermissionsAllowedForOrigins(const std::string& origin) {
     profile()->GetPrefs()->SetList(
-        prefs::kKioskBrowserPermissionsAllowedForOrigins,
-        base::Value::List().Append(std::move(origin)));
+        ash::prefs::kKioskBrowserPermissionsAllowedForOrigins,
+        base::ListValue().Append(std::move(origin)));
   }
 
   void VerifyCanAccessForAllDeviceAttributesAPIs() {
-    base::test::TestFuture<blink::mojom::DeviceAttributeResultPtr> future;
-
-    remote()->get()->GetDirectoryId(future.GetCallback());
-    EXPECT_EQ(future.Take()->get_attribute(), kDirectoryApiId);
-
-    remote()->get()->GetHostname(future.GetCallback());
-    EXPECT_EQ(future.Take()->get_attribute(), kHostname);
-
-    remote()->get()->GetSerialNumber(future.GetCallback());
-    EXPECT_EQ(future.Take()->get_attribute(), kSerialNumber);
-
-    remote()->get()->GetAnnotatedAssetId(future.GetCallback());
-    EXPECT_EQ(future.Take()->get_attribute(), kAnnotatedAssetId);
-
-    remote()->get()->GetAnnotatedLocation(future.GetCallback());
-    EXPECT_EQ(future.Take()->get_attribute(), kAnnotatedLocation);
+    ::VerifyCanAccessForAllDeviceAttributesAPIs(remote()->get());
   }
 
   const std::string& GetParamOrigin() { return GetParam().first; }
@@ -507,89 +663,193 @@ class DeviceAPIServiceParamTest
   bool ExpectApiAvailable() { return GetParam().second; }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
+  static constexpr int32_t kAllowSetting = 1;
+  static constexpr int32_t kBlockSetting = 2;
 };
 
-class DeviceAPIServiceRegularUserTest : public DeviceAPIServiceParamTest {
+class DeviceAPIServiceRegularUserTest : public DeviceAPIServiceWebAppTest {
  public:
   void LoginRegularUser(bool is_affiliated) {
-    fake_user_manager_ = static_cast<ash::FakeChromeUserManager*>(
-        user_manager::UserManager::Get());
     const user_manager::User* user =
         fake_user_manager()->AddUserWithAffiliation(account_id(),
                                                     is_affiliated);
-    fake_user_manager()->UserLoggedIn(user->GetAccountId(),
-                                      user->username_hash(), false, false);
+    fake_user_manager()->UserLoggedIn(
+        user->GetAccountId(),
+        user_manager::TestHelper::GetFakeUsernameHash(user->GetAccountId()));
   }
 
   ash::FakeChromeUserManager* fake_user_manager() const {
-    return fake_user_manager_;
+    return static_cast<ash::FakeChromeUserManager*>(
+        user_manager::UserManager::Get());
   }
 
   void RemoveAllowedOrigin() {
-    profile()->GetPrefs()->SetList(prefs::kDeviceAttributesAllowedForOrigins,
-                                   base::Value::List());
+    profile()->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDeviceAttributesAllowedForOrigins, base::ListValue());
   }
 
   void TearDown() override {
     provider()->Shutdown();
-    DeviceAPIServiceParamTest::TearDown();
+    DeviceAPIServiceWebAppTest::TearDown();
   }
-
- private:
-  raw_ptr<ash::FakeChromeUserManager, DanglingUntriaged> fake_user_manager_;
 };
 
-TEST_F(DeviceAPIServiceRegularUserTest, ReportErrorForUnaffiliatedUser) {
+TEST_F(DeviceAPIServiceRegularUserTest, DoesNotConnectForUnaffiliatedUser) {
   LoginRegularUser(false);
   TryCreatingService(GURL(kTrustedUrl),
                      std::make_unique<FakeDeviceAttributeApi>());
-  VerifyErrorMessageResultForAllDeviceAttributesAPIs(
-      kNotAffiliatedErrorMessage);
-  ASSERT_TRUE(remote()->is_connected());
+  remote()->FlushForTesting();
+  ASSERT_FALSE(remote()->is_connected());
 }
 
-TEST_F(DeviceAPIServiceRegularUserTest, ReportErrorForDisallowedOrigin) {
+TEST_F(DeviceAPIServiceRegularUserTest, DoesNotConnectForAffiliatedUser) {
   LoginRegularUser(true);
   TryCreatingService(GURL(kTrustedUrl),
                      std::make_unique<FakeDeviceAttributeApi>());
-  RemoveAllowedOrigin();
-
-  VerifyErrorMessageResultForAllDeviceAttributesAPIs(
-      kNotAllowedOriginErrorMessage);
-  ASSERT_TRUE(remote()->is_connected());
+  remote()->FlushForTesting();
+  ASSERT_FALSE(remote()->is_connected());
 }
 
-TEST_P(DeviceAPIServiceRegularUserTest, TestPolicyOriginPatterns) {
-  SetAllowedOriginFromParam();
-  LoginRegularUser(true);
-  TryCreatingService(GURL(kTrustedUrl),
-                     std::make_unique<FakeDeviceAttributeApi>());
-
-  if (ExpectApiAvailable()) {
-    VerifyCanAccessForAllDeviceAttributesAPIs();
-  } else {
-    VerifyErrorMessageResultForAllDeviceAttributesAPIs(
-        kNotAllowedOriginErrorMessage);
+class DeviceAPIServiceRegularUserIwaTest : public DeviceAPIServiceIwaTest {
+ public:
+  DeviceAPIServiceRegularUserIwaTest() {
+    account_id_ = AccountId::FromUserEmail(kUserEmail);
   }
-  ASSERT_TRUE(remote()->is_connected());
+
+  void LoginRegularUser(bool is_affiliated) {
+    const user_manager::User* user =
+        fake_user_manager()->AddUserWithAffiliation(account_id(),
+                                                    is_affiliated);
+    fake_user_manager()->UserLoggedIn(
+        user->GetAccountId(),
+        user_manager::TestHelper::GetFakeUsernameHash(user->GetAccountId()));
+  }
+
+  ash::FakeChromeUserManager* fake_user_manager() const {
+    return static_cast<ash::FakeChromeUserManager*>(
+        user_manager::UserManager::Get());
+  }
+  const AccountId& account_id() const { return account_id_; }
+
+  void AllowOriginsByDefault() {
+    profile()->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDefaultDeviceAttributesSetting,
+        base::Value(kAllowSetting));
+  }
+
+  void BlockOriginsByDefault() {
+    profile()->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDefaultDeviceAttributesSetting,
+        base::Value(kBlockSetting));
+  }
+
+  void VerifyErrorMessageResultForAllDeviceAttributesAPIs(
+      const std::string& expected_error_message) {
+    ::VerifyErrorMessageResultForAllDeviceAttributesAPIs(
+        remote()->get(), expected_error_message);
+  }
+
+  void VerifyCanAccessForAllDeviceAttributesAPIs() {
+    ::VerifyCanAccessForAllDeviceAttributesAPIs(remote()->get());
+  }
+
+ private:
+  static constexpr int32_t kAllowSetting = 1;
+  static constexpr int32_t kBlockSetting = 2;
+  AccountId account_id_;
+};
+
+TEST_P(DeviceAPIServiceRegularUserIwaTest,
+       CheckTrustedAppsForUnaffiliatedUser) {
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  mojo::test::BadMessageObserver bad_message_observer;
+
+  LoginRegularUser(false);
+  auto url_info = InstallTrustedIWA();
+  SetEnterprisePoliciesForOrigin(url_info.origin().Serialize());
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<FakeDeviceAttributeApi>());
+  remote()->FlushForTesting();
+
+  if (IsPermissionsPolicyGranted()) {
+    ASSERT_TRUE(remote()->is_connected());
+    VerifyErrorMessageResultForAllDeviceAttributesAPIs(
+        kNotAffiliatedErrorMessage);
+  } else {
+    ASSERT_FALSE(remote()->is_connected());
+    EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+              kPermissionsPolicyMojoErrorMessage);
+  }
+}
+
+TEST_P(DeviceAPIServiceRegularUserIwaTest, CheckTrustedAppsForAffiliatedUser) {
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  mojo::test::BadMessageObserver bad_message_observer;
+  LoginRegularUser(true);
+  auto url_info = InstallTrustedIWA();
+  SetEnterprisePoliciesForOrigin(url_info.origin().Serialize());
+  bool should_work = IsPermissionsPolicyGranted() && !IsBlockPolicySet();
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<FakeDeviceAttributeApi>());
+  remote()->FlushForTesting();
+
+  if (IsPermissionsPolicyGranted()) {
+    ASSERT_TRUE(remote()->is_connected());
+    if (should_work) {
+      VerifyCanAccessForAllDeviceAttributesAPIs();
+    } else {
+      VerifyErrorMessageResultForAllDeviceAttributesAPIs(
+          kNoDeviceAttributesPermissionErrorMessage);
+    }
+  } else {
+    ASSERT_FALSE(remote()->is_connected());
+    EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+              kPermissionsPolicyMojoErrorMessage);
+  }
+}
+
+TEST_P(DeviceAPIServiceRegularUserIwaTest,
+       CheckDevModeAppsForUnaffiliatedUser) {
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  mojo::test::BadMessageObserver bad_message_observer;
+  EnableFeature(features::kIsolatedWebAppDevMode);
+  LoginRegularUser(/*is_affiliated=*/false);
+  auto url_info = InstallDevModeIWA();
+  SetEnterprisePoliciesForOrigin(url_info.origin().Serialize());
+  bool should_work = IsPermissionsPolicyGranted() && !IsBlockPolicySet();
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<FakeDeviceAttributeApi>());
+  remote()->FlushForTesting();
+
+  if (IsPermissionsPolicyGranted()) {
+    ASSERT_TRUE(remote()->is_connected());
+    if (should_work) {
+      VerifyCanAccessForAllDeviceAttributesAPIs();
+    } else {
+      VerifyErrorMessageResultForAllDeviceAttributesAPIs(
+          kNoDeviceAttributesPermissionErrorMessage);
+    }
+  } else {
+    ASSERT_FALSE(remote()->is_connected());
+    EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+              kPermissionsPolicyMojoErrorMessage);
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
     All,
-    DeviceAPIServiceRegularUserTest,
-    testing::ValuesIn(
-        {std::pair<std::string, bool>("*", false),
-         std::pair<std::string, bool>(".example.com", false),
-         std::pair<std::string, bool>("example.", false),
-         std::pair<std::string, bool>("file://example*", false),
-         std::pair<std::string, bool>("invalid-example.com", false),
-         std::pair<std::string, bool>(kTrustedUrl, true),
-         std::pair<std::string, bool>("https://example.com", true),
-         std::pair<std::string, bool>("https://example.com/sample", true),
-         std::pair<std::string, bool>("example.com", true),
-         std::pair<std::string, bool>("*://example.com:*/", true),
-         std::pair<std::string, bool>("[*.]example.com", true)}));
+    DeviceAPIServiceRegularUserIwaTest,
+    ::testing::Combine(::testing::Bool(),  // allow policy
+                       ::testing::Bool(),  // block policy
+                       ::testing::Bool()   // permissions policy
+                       ),
+    [](const ::testing::TestParamInfo<std::tuple<bool, bool, bool>>& info) {
+      return base::StringPrintf(
+          "AllowPolicy%s_BlockPolicy%s_PermissionsPolicy%s",
+          std::get<0>(info.param) ? "Set" : "Unset",
+          std::get<1>(info.param) ? "Set" : "Unset",
+          std::get<2>(info.param) ? "Granted" : "Denied");
+    });
 
 class DeviceAPIServiceWithKioskUserTest : public DeviceAPIServiceParamTest {
  public:
@@ -601,7 +861,10 @@ class DeviceAPIServiceWithKioskUserTest : public DeviceAPIServiceParamTest {
     DeviceAPIServiceParamTest::SetUp();
     command_line_.GetProcessCommandLine()->AppendSwitch(
         switches::kForceAppMode);
-    app_manager_ = std::make_unique<ash::WebKioskAppManager>();
+    app_manager_ = std::make_unique<ash::KioskWebAppManager>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        &kiosk_cryptohome_remover_);
   }
 
   void TearDown() override {
@@ -611,7 +874,7 @@ class DeviceAPIServiceWithKioskUserTest : public DeviceAPIServiceParamTest {
 
   void LoginKioskUser() {
     app_manager()->AddAppForTesting(account_id(), GURL(kKioskAppInstallUrl));
-    fake_user_manager()->AddWebKioskAppUser(account_id());
+    fake_user_manager()->AddKioskWebAppUser(account_id());
     fake_user_manager()->LoginUser(account_id());
   }
 
@@ -619,12 +882,14 @@ class DeviceAPIServiceWithKioskUserTest : public DeviceAPIServiceParamTest {
     return fake_user_manager_.Get();
   }
 
-  ash::WebKioskAppManager* app_manager() const { return app_manager_.get(); }
+  ash::KioskWebAppManager* app_manager() const { return app_manager_.get(); }
 
  private:
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       fake_user_manager_;
-  std::unique_ptr<ash::WebKioskAppManager> app_manager_;
+  ash::KioskCryptohomeRemover kiosk_cryptohome_remover_{
+      TestingBrowserProcess::GetGlobal()->local_state()};
+  std::unique_ptr<ash::KioskWebAppManager> app_manager_;
   base::test::ScopedCommandLine command_line_;
 };
 
@@ -669,7 +934,7 @@ class DeviceAPIServiceWithChromeAppKioskUserTest
   }
 
   void LoginChromeAppKioskUser() {
-    fake_user_manager()->AddKioskAppUser(account_id());
+    fake_user_manager()->AddKioskChromeAppUser(account_id());
     fake_user_manager()->LoginUser(account_id());
   }
 
@@ -705,14 +970,33 @@ TEST_F(DeviceAPIServiceWithChromeAppKioskUserTest,
 }
 
 class DeviceAPIServiceWithKioskUserTestForOrigins
-    : public DeviceAPIServiceWithKioskUserTest {};
+    : public DeviceAPIServiceWithKioskUserTest {
+ public:
+  void EnableFeature(const base::Feature& param) {
+    feature_list_.InitAndEnableFeature(param);
+  }
+
+  void DisableFeature(const base::Feature& feature) {
+    feature_list_.InitAndDisableFeature(feature);
+  }
+
+  void EnableFeatureAndAllowlistOrigin(const base::Feature& param,
+                                       const std::string& origin) {
+    base::FieldTrialParams feature_params;
+    feature_params[permissions::feature_params::
+                       kWebKioskBrowserPermissionsAllowlist.name] = origin;
+    feature_list_.InitAndEnableFeatureWithParameters(param, feature_params);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
 
 TEST_F(DeviceAPIServiceWithKioskUserTestForOrigins,
        TestTrustedKioskOriginsWhenEnabledByFeature) {
   EnableFeatureAndAllowlistOrigin(
       permissions::features::kAllowMultipleOriginsForWebKioskPermissions,
       kTrustedUrl);
-  SetAllowedOrigin(kTrustedUrl);
 
   LoginKioskUser();
   TryCreatingService(GURL(kTrustedUrl),
@@ -729,7 +1013,6 @@ TEST_F(DeviceAPIServiceWithKioskUserTestForOrigins,
   EnableFeatureAndAllowlistOrigin(
       permissions::features::kAllowMultipleOriginsForWebKioskPermissions,
       kTrustedUrl);
-  SetAllowedOrigin(kUntrustedUrl);
 
   LoginKioskUser();
   TryCreatingService(GURL(kUntrustedUrl),
@@ -745,7 +1028,6 @@ TEST_F(DeviceAPIServiceWithKioskUserTestForOrigins,
   EnableFeature(
       permissions::features::kAllowMultipleOriginsForWebKioskPermissions);
   SetKioskBrowserPermissionsAllowedForOrigins(kTrustedUrl);
-  SetAllowedOrigin(kTrustedUrl);
 
   LoginKioskUser();
   TryCreatingService(GURL(kTrustedUrl),
@@ -761,7 +1043,6 @@ TEST_F(DeviceAPIServiceWithKioskUserTestForOrigins,
        TestKioskInstallOriginWhenMultipleOriginPrefIsNotSet) {
   EnableFeature(
       permissions::features::kAllowMultipleOriginsForWebKioskPermissions);
-  SetAllowedOrigin(kKioskAppInstallUrl);
 
   LoginKioskUser();
   TryCreatingService(GURL(kKioskAppInstallUrl),
@@ -778,7 +1059,6 @@ TEST_F(DeviceAPIServiceWithKioskUserTestForOrigins,
   DisableFeature(
       permissions::features::kAllowMultipleOriginsForWebKioskPermissions);
   SetKioskBrowserPermissionsAllowedForOrigins(kTrustedUrl);
-  SetAllowedOrigin(kTrustedUrl);
 
   LoginKioskUser();
   TryCreatingService(GURL(kTrustedUrl),
@@ -790,6 +1070,7 @@ TEST_F(DeviceAPIServiceWithKioskUserTestForOrigins,
 }
 
 TEST_P(DeviceAPIServiceWithKioskUserTestForOrigins, TestPolicyOriginPatterns) {
+  BlockOriginsByDefault();
   SetAllowedOriginFromParam();
   LoginKioskUser();
   TryCreatingService(GURL(kKioskAppUrl),
@@ -803,7 +1084,7 @@ TEST_P(DeviceAPIServiceWithKioskUserTestForOrigins, TestPolicyOriginPatterns) {
     VerifyCanAccessForAllDeviceAttributesAPIs();
   } else {
     VerifyErrorMessageResultForAllDeviceAttributesAPIs(
-        kNotAllowedOriginErrorMessage);
+        kNoDeviceAttributesPermissionErrorMessage);
   }
 }
 
@@ -822,4 +1103,141 @@ INSTANTIATE_TEST_SUITE_P(
                        std::pair<std::string, bool>("kiosk.com", true),
                        std::pair<std::string, bool>("*://kiosk.com:*/", true),
                        std::pair<std::string, bool>("[*.]kiosk.com", true)}));
+
+class DeviceAPIServiceMultiProfileTest : public DeviceAPIServiceTest,
+                                         public web_app::IsolatedWebAppTest {
+ public:
+  DeviceAPIServiceMultiProfileTest() {
+    fake_user_manager_.Reset(std::make_unique<ash::FakeChromeUserManager>());
+    primary_account_id_ = AccountId::FromUserEmail("primary_user@gmail.com");
+    secondary_account_id_ =
+        AccountId::FromUserEmail("secondary_user@gmail.com");
+  }
+
+  void SetUp() override {
+    web_app::IsolatedWebAppTest::SetUp();
+    web_app::test::AwaitStartWebAppProviderAndSubsystems(profile());
+    profile()->SetPermissionControllerDelegate(
+        permissions::GetPermissionControllerDelegate(profile()));
+    rvh_test_enabler_ = std::make_unique<content::RenderViewHostTestEnabler>();
+    ash::ProfileHelper::SetProfileToUserForTestingEnabled(true);
+  }
+
+  void TearDown() override {
+    ash::ProfileHelper::SetProfileToUserForTestingEnabled(false);
+    rvh_test_enabler_.reset();
+    web_app::IsolatedWebAppTest::TearDown();
+  }
+
+  ash::FakeChromeUserManager* fake_user_manager() const {
+    return fake_user_manager_.Get();
+  }
+
+  void LoginPrimaryUser(bool is_affiliated) {
+    const user_manager::User* user =
+        fake_user_manager()->AddUserWithAffiliation(primary_account_id_,
+                                                    is_affiliated);
+    fake_user_manager()->UserLoggedIn(
+        user->GetAccountId(),
+        user_manager::TestHelper::GetFakeUsernameHash(user->GetAccountId()));
+  }
+
+  void LoginSecondaryUser(bool is_affiliated) {
+    const user_manager::User* user =
+        fake_user_manager()->AddUserWithAffiliation(secondary_account_id_,
+                                                    is_affiliated);
+    fake_user_manager()->UserLoggedIn(
+        user->GetAccountId(),
+        user_manager::TestHelper::GetFakeUsernameHash(user->GetAccountId()));
+  }
+
+  web_app::IsolatedWebAppUrlInfo InstallTrustedIWA(Profile* target_profile) {
+    auto manifest_builder = web_app::ManifestBuilder();
+    manifest_builder.AddPermissionsPolicy(
+        network::mojom::PermissionsPolicyFeature::kDeviceAttributes, true, {});
+    const std::unique_ptr<web_app::ScopedBundledIsolatedWebApp> bundle =
+        web_app::IsolatedWebAppBuilder(manifest_builder).BuildBundle();
+    bundle->TrustSigningKey();
+    return bundle
+        ->InstallWithSource(
+            target_profile,
+            &web_app::IsolatedWebAppInstallSource::FromExternalPolicy)
+        .value();
+  }
+
+  void SetAllowedOrigin(TestingProfile* target_profile,
+                        const std::string& origin) {
+    target_profile->GetTestingPrefService()->SetManagedPref(
+        ::prefs::kManagedDeviceAttributesAllowedForOrigins,
+        base::ListValue().Append(origin));
+  }
+
+  void VerifyErrorMessageResultForAllDeviceAttributesAPIs(
+      const std::string& expected_error_message) {
+    ::VerifyErrorMessageResultForAllDeviceAttributesAPIs(
+        remote()->get(), expected_error_message);
+  }
+
+  void VerifyCanAccessForAllDeviceAttributesAPIs() {
+    ::VerifyCanAccessForAllDeviceAttributesAPIs(remote()->get());
+  }
+
+  AccountId primary_account_id_;
+  AccountId secondary_account_id_;
+  std::unique_ptr<content::RenderViewHostTestEnabler> rvh_test_enabler_;
+  user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
+      fake_user_manager_;
+};
+
+TEST_F(DeviceAPIServiceMultiProfileTest,
+       SecondaryProfileUnaffiliatedPrimaryAffiliated) {
+  LoginPrimaryUser(/*is_affiliated=*/true);
+  LoginSecondaryUser(/*is_affiliated=*/false);
+  TestingProfile* secondary_profile =
+      profile_manager().CreateTestingProfile("secondary_user@gmail.com");
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(secondary_profile);
+  secondary_profile->SetPermissionControllerDelegate(
+      permissions::GetPermissionControllerDelegate(secondary_profile));
+
+  auto url_info = InstallTrustedIWA(secondary_profile);
+  SetAllowedOrigin(secondary_profile, url_info.origin().Serialize());
+
+  std::unique_ptr<content::WebContents> secondary_user_web_contents =
+      content::WebContentsTester::CreateTestWebContents(secondary_profile,
+                                                        /*instance=*/nullptr);
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<FakeDeviceAttributeApi>(),
+                     secondary_user_web_contents.get());
+  remote()->FlushForTesting();
+  ASSERT_TRUE(remote()->is_connected());
+
+  VerifyErrorMessageResultForAllDeviceAttributesAPIs(
+      kNotAffiliatedErrorMessage);
+}
+
+TEST_F(DeviceAPIServiceMultiProfileTest,
+       SecondaryProfileAffiliatedPrimaryUnaffiliated) {
+  LoginPrimaryUser(/*is_affiliated=*/false);
+  LoginSecondaryUser(/*is_affiliated=*/true);
+  TestingProfile* secondary_profile =
+      profile_manager().CreateTestingProfile("secondary_user@gmail.com");
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(secondary_profile);
+  secondary_profile->SetPermissionControllerDelegate(
+      permissions::GetPermissionControllerDelegate(secondary_profile));
+
+  auto url_info = InstallTrustedIWA(secondary_profile);
+  SetAllowedOrigin(secondary_profile, url_info.origin().Serialize());
+
+  std::unique_ptr<content::WebContents> secondary_user_web_contents =
+      content::WebContentsTester::CreateTestWebContents(secondary_profile,
+                                                        /*instance=*/nullptr);
+  TryCreatingService(url_info.origin().GetURL(),
+                     std::make_unique<FakeDeviceAttributeApi>(),
+                     secondary_user_web_contents.get());
+  remote()->FlushForTesting();
+  ASSERT_TRUE(remote()->is_connected());
+
+  VerifyCanAccessForAllDeviceAttributesAPIs();
+}
+
 #endif  // BUILDFLAG(IS_CHROMEOS)

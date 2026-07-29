@@ -10,18 +10,17 @@
 #import "base/metrics/user_metrics_action.h"
 #import "build/branding_buildflags.h"
 #import "components/autofill/core/common/autofill_features.h"
+#import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/model/message/save_card_message_with_links.h"
-#import "ios/chrome/browser/autofill/ui_bundled/save_card_infobar_metrics_recorder.h"
 #import "ios/chrome/browser/infobars/model/infobar_metrics_recorder.h"
 #import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_modal_constants.h"
-#import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_save_card_modal_delegate.h"
+#import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_save_card_modal_constants.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_button_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_edit_item.h"
+#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_edit_item_delegate.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_link_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
@@ -34,8 +33,8 @@ namespace {
 const int kNumberOfMonthsInYear = 12;
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-// Height of the Google pay logo.
-CGFloat const kGooglePayLogoHeight = 26;
+// Height of the Google Wallet logo.
+CGFloat const kGoogleWalletLogoHeight = 26;
 #endif
 
 }  // namespace
@@ -49,16 +48,14 @@ typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeCardHolderName,
   ItemTypeCardExpireMonth,
   ItemTypeCardExpireYear,
+  ItemTypeCardCvc,
   ItemTypeCardLegalMessage,
-  ItemTypeCardSave,
 };
 
-@interface InfobarSaveCardTableViewController () <TableViewTextLinkCellDelegate,
+@interface InfobarSaveCardTableViewController () <TableViewTextEditItemDelegate,
+                                                  TableViewTextLinkCellDelegate,
                                                   UITextFieldDelegate>
 
-// InfobarSaveCardModalDelegate for this ViewController.
-@property(nonatomic, strong) id<InfobarSaveCardModalDelegate>
-    saveCardModalDelegate;
 // Used to build and record metrics.
 @property(nonatomic, strong) InfobarMetricsRecorder* metricsRecorder;
 
@@ -68,13 +65,15 @@ typedef NS_ENUM(NSInteger, ItemType) {
 // Card Issuer icon image to be displayed.
 @property(nonatomic, strong) UIImage* cardIssuerIcon;
 // Card Network for accessibility label.
-@property(nonatomic, strong) NSString* cardNetwork;
+@property(nonatomic, copy) NSString* cardNetwork;
 // Card Number to be displayed.
 @property(nonatomic, copy) NSString* cardNumber;
 // Card Expiration Month to be displayed
 @property(nonatomic, copy) NSString* expirationMonth;
 // Card Expiration Year to be displayed.
 @property(nonatomic, copy) NSString* expirationYear;
+// Card Security code to be displayed.
+@property(nonatomic, strong) NSString* cardCvc;
 // Card related Legal Messages to be displayed.
 @property(nonatomic, copy)
     NSMutableArray<SaveCardMessageWithLinks*>* legalMessages;
@@ -98,17 +97,18 @@ typedef NS_ENUM(NSInteger, ItemType) {
 @property(nonatomic, strong) TableViewTextEditItem* expirationMonthItem;
 // Item for displaying and editing the expiration year.
 @property(nonatomic, strong) TableViewTextEditItem* expirationYearItem;
-// Item for displaying the save card button .
-@property(nonatomic, strong) TableViewTextButtonItem* saveCardButtonItem;
+// Item for displaying and editing the security code.
+@property(nonatomic, strong) TableViewTextEditItem* cardCvcItem;
+
 @end
 
-@implementation InfobarSaveCardTableViewController
+@implementation InfobarSaveCardTableViewController {
+  NSLayoutConstraint* _tableViewHeightConstraint;
+}
 
-- (instancetype)initWithModalDelegate:
-    (id<InfobarSaveCardModalDelegate>)modalDelegate {
-  self = [super initWithStyle:UITableViewStylePlain];
+- (instancetype)initWithStyle:(UITableViewStyle)style {
+  self = [super initWithStyle:style];
   if (self) {
-    _saveCardModalDelegate = modalDelegate;
     _metricsRecorder = [[InfobarMetricsRecorder alloc]
         initWithType:InfobarType::kInfobarTypeSaveCard];
   }
@@ -120,39 +120,47 @@ typedef NS_ENUM(NSInteger, ItemType) {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.backgroundColor = [UIColor colorNamed:kBackgroundColor];
-  self.styler.cellBackgroundColor = [UIColor colorNamed:kBackgroundColor];
+
+  // The table view height will be set to its content view in
+  // viewDidLayoutSubviews. Provide a default value here.
+  _tableViewHeightConstraint = [self.tableView.heightAnchor
+      constraintEqualToConstant:self.view.bounds.size.height];
+  _tableViewHeightConstraint.active = YES;
+  self.tableView.scrollEnabled = NO;
+  self.tableView.tableFooterView =
+      [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
+
   self.tableView.sectionHeaderHeight = 0;
   [self.tableView
       setSeparatorInset:UIEdgeInsetsMake(0, kTableViewHorizontalSpacing, 0, 0)];
 
-  // Configure the NavigationBar.
-  UIBarButtonItem* closeButton = [[UIBarButtonItem alloc]
-      initWithTitle:l10n_util::GetNSString(IDS_IOS_AUTOFILL_SAVE_CARD_CLOSE)
-              style:UIBarButtonItemStylePlain
-             target:self
-             action:@selector(dismissInfobarModal)];
-  closeButton.accessibilityIdentifier = kInfobarModalCancelButton;
-  self.navigationItem.leftBarButtonItem = closeButton;
-  self.navigationController.navigationBar.prefersLargeTitles = NO;
-
   [self loadModel];
-}
-
-- (void)viewDidAppear:(BOOL)animated {
-  [super viewDidAppear:animated];
-  [self.metricsRecorder recordModalEvent:MobileMessagesModalEvent::Presented];
-}
-
-- (void)viewDidDisappear:(BOOL)animated {
-  [self.saveCardModalDelegate modalInfobarWasDismissed:self];
-  [self.metricsRecorder recordModalEvent:MobileMessagesModalEvent::Dismissed];
-  [super viewDidDisappear:animated];
 }
 
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
-  self.tableView.scrollEnabled =
-      self.tableView.contentSize.height > self.view.frame.size.height;
+  _tableViewHeightConstraint.constant =
+      self.tableView.contentSize.height +
+      self.tableView.adjustedContentInset.top +
+      self.tableView.adjustedContentInset.bottom;
+}
+
+#pragma mark - Properties
+
+- (NSString*)currentCardholderName {
+  return self.cardholderNameItem.textFieldValue;
+}
+
+- (NSString*)currentExpirationMonth {
+  return self.expirationMonthItem.textFieldValue;
+}
+
+- (NSString*)currentExpirationYear {
+  return self.expirationYearItem.textFieldValue;
+}
+
+- (NSString*)currentCardCVC {
+  return self.cardCvcItem.textFieldValue;
 }
 
 #pragma mark - TableViewModel
@@ -202,6 +210,17 @@ typedef NS_ENUM(NSInteger, ItemType) {
   [model addItem:self.expirationYearItem
       toSectionWithIdentifier:SectionIdentifierContent];
 
+  self.cardCvcItem =
+      [self textEditItemWithType:ItemTypeCardCvc
+              fieldNameLabelText:l10n_util::GetNSString(IDS_IOS_AUTOFILL_CVC)
+                  textFieldValue:self.cardCvc
+                textFieldEnabled:self.supportsEditing];
+  self.cardCvcItem.keyboardType = UIKeyboardTypeNumberPad;
+  self.cardCvcItem.customTextfieldAccessibilityIdentifier =
+      kSaveCardModalCVCTextFieldIdentifier;
+  [model addItem:self.cardCvcItem
+      toSectionWithIdentifier:SectionIdentifierContent];
+
   // Add a `TableViewTextLinkItem` for each legal message and add logo to the
   // last item.
   for (size_t index = 0; index < self.legalMessages.count; index++) {
@@ -220,16 +239,6 @@ typedef NS_ENUM(NSInteger, ItemType) {
     [model addItem:legalMessageItem
         toSectionWithIdentifier:SectionIdentifierContent];
   }
-
-  self.saveCardButtonItem =
-      [[TableViewTextButtonItem alloc] initWithType:ItemTypeCardSave];
-  self.saveCardButtonItem.textAlignment = NSTextAlignmentNatural;
-  self.saveCardButtonItem.buttonText =
-      l10n_util::GetNSString(IDS_IOS_AUTOFILL_SAVE_CARD);
-  self.saveCardButtonItem.enabled = !self.currentCardSaveAccepted;
-  self.saveCardButtonItem.disableButtonIntrinsicWidth = YES;
-  [model addItem:self.saveCardButtonItem
-      toSectionWithIdentifier:SectionIdentifierContent];
 
   if (self.supportsEditing) {
     [self.cardholderNameItem
@@ -252,13 +261,17 @@ typedef NS_ENUM(NSInteger, ItemType) {
   self.cardNumber = prefs[kCardNumberPrefKey];
   self.expirationMonth = prefs[kExpirationMonthPrefKey];
   self.expirationYear = prefs[kExpirationYearPrefKey];
+  self.cardCvc = prefs[kCardCvcPrefKey];
   self.legalMessages = prefs[kLegalMessagesPrefKey];
   self.currentCardSaveAccepted =
       [prefs[kCurrentCardSaveAcceptedPrefKey] boolValue];
   self.supportsEditing = [prefs[kSupportsEditingPrefKey] boolValue];
   self.displayedTargetAccountEmail = prefs[kDisplayedTargetAccountEmailPrefKey];
   self.logoIcon = prefs[kLogoIconPrefKey];
+  self.logoIconDescription = prefs[kLogoIconDescriptionPrefKey];
   [self.tableView reloadData];
+
+  [self updateSaveCardButtonState];
 }
 
 #pragma mark - UITableViewDataSource
@@ -267,6 +280,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   UITableViewCell* cell = [super tableView:tableView
                      cellForRowAtIndexPath:indexPath];
+  cell.backgroundColor = [UIColor colorNamed:kBackgroundColor];
   ItemType itemType = static_cast<ItemType>(
       [self.tableViewModel itemTypeForIndexPath:indexPath]);
 
@@ -276,62 +290,25 @@ typedef NS_ENUM(NSInteger, ItemType) {
       break;
     }
     case ItemTypeCardHolderName: {
-      TableViewTextEditCell* editCell =
-          base::apple::ObjCCast<TableViewTextEditCell>(cell);
-      [editCell.textField addTarget:self
-                             action:@selector(nameEditDidBegin)
-                   forControlEvents:UIControlEventEditingDidBegin];
-      [editCell.textField addTarget:self
-                             action:@selector(nameDidChange:)
-                   forControlEvents:UIControlEventEditingChanged |
-                                    UIControlEventEditingDidEnd];
-      editCell.selectionStyle = UITableViewCellSelectionStyleNone;
-      editCell.textField.delegate = self;
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
       break;
     }
     case ItemTypeCardExpireMonth: {
-      TableViewTextEditCell* editCell =
-          base::apple::ObjCCast<TableViewTextEditCell>(cell);
-      [editCell.textField addTarget:self
-                             action:@selector(monthEditDidBegin)
-                   forControlEvents:UIControlEventEditingDidBegin];
-      [editCell.textField addTarget:self
-                             action:@selector(expireMonthDidChange:)
-                   forControlEvents:UIControlEventEditingChanged |
-                                    UIControlEventEditingDidEnd];
-      editCell.selectionStyle = UITableViewCellSelectionStyleNone;
-      editCell.textField.delegate = self;
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
       break;
     }
     case ItemTypeCardExpireYear: {
-      TableViewTextEditCell* editCell =
-          base::apple::ObjCCast<TableViewTextEditCell>(cell);
-      [editCell.textField addTarget:self
-                             action:@selector(yearEditDidBegin)
-                   forControlEvents:UIControlEventEditingDidBegin];
-      [editCell.textField addTarget:self
-                             action:@selector(expireYearDidChange:)
-                   forControlEvents:UIControlEventEditingChanged |
-                                    UIControlEventEditingDidEnd];
-      editCell.selectionStyle = UITableViewCellSelectionStyleNone;
-      editCell.textField.delegate = self;
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
+      break;
+    }
+    case ItemTypeCardCvc: {
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
       break;
     }
     case ItemTypeCardLegalMessage: {
       TableViewTextLinkCell* linkCell =
           base::apple::ObjCCast<TableViewTextLinkCell>(cell);
       linkCell.delegate = self;
-      linkCell.separatorInset =
-          UIEdgeInsetsMake(0, self.tableView.bounds.size.width, 0, 0);
-      break;
-    }
-    case ItemTypeCardSave: {
-      TableViewTextButtonCell* tableViewTextButtonCell =
-          base::apple::ObjCCastStrict<TableViewTextButtonCell>(cell);
-      [tableViewTextButtonCell.button
-                 addTarget:self
-                    action:@selector(saveCardButtonWasPressed:)
-          forControlEvents:UIControlEventTouchUpInside];
       break;
     }
   }
@@ -345,42 +322,18 @@ typedef NS_ENUM(NSInteger, ItemType) {
 // == YES`, sets a checkmark on the button to show card upload has completed.
 // Also disables the button and hides its text.
 - (void)showProgressWithUploadCompleted:(BOOL)uploadCompleted {
-  self.saveCardButtonItem.buttonText = @"";
-  self.saveCardButtonItem.enabled = NO;
-  self.saveCardButtonItem.showsActivityIndicator = !uploadCompleted;
-  self.saveCardButtonItem.showsCheckmark = uploadCompleted;
-  if (uploadCompleted) {
-    self.saveCardButtonItem.buttonBackgroundColor =
-        [UIColor colorNamed:kBlue100Color];
-    self.saveCardButtonItem.dimBackgroundWhenDisabled = NO;
-    // VoiceOver would only announce button's accessibility label when its
-    // state changes from enabled to disabled. For confirmation state, the
-    // button's state is already disabled from previously showing loading state.
-    // Thus posting accessibility announcement here.
-    UIAccessibilityPostNotification(
-        UIAccessibilityAnnouncementNotification,
-        l10n_util::GetNSString(
-            IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_SUCCESS_ACCESSIBLE_NAME));
-  }
-  // Set the accessibility label on the button that would be read by the
-  // VoiceOver when the button is focused. Also, there's no need to specially
-  // post accessibility announcement for loading, since VoiceOver will announce
-  // the button's accessibility label on its state change from previously
-  // showing enabled state when `Save Card` is offered to disabled state while
-  // loading.
-  self.saveCardButtonItem.buttonAccessibilityLabel =
-      uploadCompleted
-          ? l10n_util::GetNSString(
-                IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_SUCCESS_ACCESSIBLE_NAME)
-          : l10n_util::GetNSString(
-                IDS_AUTOFILL_SAVE_CARD_PROMPT_LOADING_THROBBER_ACCESSIBLE_NAME);
+  [self.containerDelegate showProgressWithUploadCompleted:uploadCompleted];
 
   [self updateItemsInProgressState];
 
-  [self reconfigureCellsForItems:@[
+  NSMutableArray* items = [NSMutableArray arrayWithArray:@[
     self.cardLastDigitsItem, self.cardholderNameItem, self.expirationMonthItem,
-    self.expirationYearItem, self.saveCardButtonItem
+    self.expirationYearItem
   ]];
+  if (self.cardCvcItem) {
+    [items addObject:self.cardCvcItem];
+  }
+  [self reconfigureCellsForItems:items];
 }
 
 #pragma mark - UITableViewDelegate
@@ -397,11 +350,44 @@ typedef NS_ENUM(NSInteger, ItemType) {
   return YES;
 }
 
+#pragma mark - TableViewTextEditItemDelegate
+
+- (void)tableViewItemDidBeginEditing:(TableViewTextEditItem*)tableViewItem {
+  // No op.
+}
+
+- (void)tableViewItemDidChange:(TableViewTextEditItem*)tableViewItem {
+  ItemType itemType = static_cast<ItemType>(tableViewItem.type);
+  switch (itemType) {
+    case ItemTypeCardLastDigits:
+      // Not editable.
+      break;
+    case ItemTypeCardHolderName:
+      [self nameDidChange];
+      break;
+    case ItemTypeCardExpireMonth:
+      [self expireMonthDidChange];
+      break;
+    case ItemTypeCardExpireYear:
+      [self expireYearDidChange];
+      break;
+    case ItemTypeCardCvc:
+      [self cvcDidChange];
+      break;
+    case ItemTypeCardLegalMessage:
+      NOTREACHED();
+  }
+}
+
+- (void)tableViewItemDidEndEditing:(TableViewTextEditItem*)tableViewItem {
+  // No op.
+}
+
 #pragma mark - TableViewTextLinkCellDelegate
 
 - (void)tableViewTextLinkCell:(TableViewTextLinkCell*)cell
             didRequestOpenURL:(CrURL*)URL {
-  [self.saveCardModalDelegate dismissModalAndOpenURL:URL.gurl];
+  [self.containerDelegate dismissModalAndOpenURL:URL.gurl];
 }
 
 #pragma mark - Private Methods
@@ -410,67 +396,68 @@ typedef NS_ENUM(NSInteger, ItemType) {
 // current editable items.
 - (void)updateSaveCardButtonState {
   BOOL newButtonState = [self isCurrentInputValid];
-  if ([self.saveCardButtonItem isEnabled] != newButtonState) {
-    self.saveCardButtonItem.enabled = newButtonState;
-    [self reconfigureCellsForItems:@[ self.saveCardButtonItem ]];
+  // If card is already saved, disable the button.
+  if (self.currentCardSaveAccepted) {
+    newButtonState = NO;
   }
+  [self.containerDelegate updateSaveButtonEnabled:newButtonState];
 }
 
-- (void)saveCardButtonWasPressed:(UIButton*)sender {
-  base::RecordAction(
-      base::UserMetricsAction("MobileMessagesModalAcceptedTapped"));
-  [self.metricsRecorder recordModalEvent:MobileMessagesModalEvent::Accepted];
-  [self.saveCardModalDelegate
-      saveCardWithCardholderName:self.cardholderNameItem.textFieldValue
-                 expirationMonth:self.expirationMonthItem.textFieldValue
-                  expirationYear:self.expirationYearItem.textFieldValue];
-}
+- (void)nameDidChange {
+  BOOL isNameValid =
+      [self isCardholderNameValid:self.cardholderNameItem.textFieldValue];
 
-- (void)nameEditDidBegin {
-  [SaveCardInfobarMetricsRecorder
-      recordModalEvent:MobileMessagesSaveCardModalEvent::EditedCardHolderName];
-}
+  [self
+      updateErrorStateForItem:self.cardholderNameItem
+                      isValid:isNameValid
+                 errorMessage:
+                     IDS_IOS_AUTOFILL_INVALID_CARDHOLDER_NAME_ACCESSIBILITY_ANNOUNCEMENT];
 
-- (void)monthEditDidBegin {
-  [SaveCardInfobarMetricsRecorder
-      recordModalEvent:MobileMessagesSaveCardModalEvent::EditedExpirationMonth];
-}
-
-- (void)yearEditDidBegin {
-  [SaveCardInfobarMetricsRecorder
-      recordModalEvent:MobileMessagesSaveCardModalEvent::EditedExpirationYear];
-}
-
-- (void)nameDidChange:(UITextField*)textField {
-  BOOL isNameValid = [self isCardholderNameValid:textField.text];
-
-  self.cardholderNameItem.textFieldValue = textField.text;
   [self.cardholderNameItem setHasValidText:isNameValid];
   [self reconfigureCellsForItems:@[ self.cardholderNameItem ]];
 
   [self updateSaveCardButtonState];
 }
 
-- (void)expireMonthDidChange:(UITextField*)textField {
+- (void)expireMonthDidChange {
   BOOL isMonthValid =
-      [self isExpirationMonthValid:textField.text
+      [self isExpirationMonthValid:self.expirationMonthItem.textFieldValue
                            forYear:self.expirationYearItem.textFieldValue];
 
-  self.expirationMonthItem.textFieldValue = textField.text;
+  [self
+      updateErrorStateForItem:self.expirationMonthItem
+                      isValid:isMonthValid
+                 errorMessage:
+                     IDS_IOS_AUTOFILL_INVALID_EXPIRATION_DATE_ACCESSIBILITY_ANNOUNCEMENT];
+
   [self.expirationMonthItem setHasValidText:isMonthValid];
   [self reconfigureCellsForItems:@[ self.expirationMonthItem ]];
 
   [self updateSaveCardButtonState];
 }
 
-- (void)expireYearDidChange:(UITextField*)textField {
-  BOOL isYearValid = [self isExpirationYearValid:textField.text];
+- (void)expireYearDidChange {
+  BOOL isYearValid =
+      [self isExpirationYearValid:self.expirationYearItem.textFieldValue];
   // Check if the card month is valid for the newly entered year.
   BOOL isMonthValid =
       [self isExpirationMonthValid:self.expirationMonthItem.textFieldValue
-                           forYear:textField.text];
+                           forYear:self.expirationYearItem.textFieldValue];
 
-  self.expirationYearItem.textFieldValue = textField.text;
+  // Update Year
+  [self
+      updateErrorStateForItem:self.expirationYearItem
+                      isValid:isYearValid
+                 errorMessage:
+                     IDS_IOS_AUTOFILL_INVALID_EXPIRATION_DATE_ACCESSIBILITY_ANNOUNCEMENT];
+
+  // Update Month (re-validate as it depends on year)
+  [self
+      updateErrorStateForItem:self.expirationMonthItem
+                      isValid:isMonthValid
+                 errorMessage:
+                     IDS_IOS_AUTOFILL_INVALID_EXPIRATION_DATE_ACCESSIBILITY_ANNOUNCEMENT];
+
   [self.expirationYearItem setHasValidText:isYearValid];
   [self.expirationMonthItem setHasValidText:isMonthValid];
   [self reconfigureCellsForItems:@[
@@ -480,11 +467,17 @@ typedef NS_ENUM(NSInteger, ItemType) {
   [self updateSaveCardButtonState];
 }
 
-- (void)dismissInfobarModal {
-  base::RecordAction(
-      base::UserMetricsAction("MobileMessagesModalCancelledTapped"));
-  [self.metricsRecorder recordModalEvent:MobileMessagesModalEvent::Canceled];
-  [self.saveCardModalDelegate dismissInfobarModal:self];
+- (void)cvcDidChange {
+  BOOL isCvcValid = [self isCVCValid:self.cardCvcItem.textFieldValue];
+
+  [self updateErrorStateForItem:self.cardCvcItem
+                        isValid:isCvcValid
+                   errorMessage:
+                       IDS_IOS_AUTOFILL_INVALID_CVC_ACCESSIBILITY_ANNOUNCEMENT];
+  [self.cardCvcItem
+      setHasValidText:[self isCVCValid:self.cardCvcItem.textFieldValue]];
+  [self reconfigureCellsForItems:@[ self.cardCvcItem ]];
+  [self updateSaveCardButtonState];
 }
 
 // In progress state, disables the text and icon for the items of
@@ -502,14 +495,21 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
   self.expirationYearItem.identifyingIconEnabled = NO;
   self.expirationYearItem.textFieldEnabled = NO;
+
+  self.cardCvcItem.identifyingIconEnabled = NO;
+  self.cardCvcItem.textFieldEnabled = NO;
 }
 
 #pragma mark - Helpers
 
 - (UIImage*)logoIconImage {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  Symbol symbol = base::FeatureList::IsEnabled(
+                      autofill::features::kAutofillEnableGradientGoogleLogos)
+                      ? SymbolGoogleWalletV2
+                      : SymbolGoogleWallet;
   return MakeSymbolMulticolor(
-      CustomSymbolWithPointSize(kGooglePaySymbol, kGooglePayLogoHeight));
+      SymbolWithPointSize(symbol, kGoogleWalletLogoHeight));
 #else
   return self.logoIcon;
 #endif
@@ -526,6 +526,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
   textEditItem.textFieldEnabled = enabled;
   textEditItem.hideIcon = !enabled;
   textEditItem.returnKeyType = UIReturnKeyDone;
+  textEditItem.delegate = self;
+  textEditItem.textFieldDelegate = self;
 
   return textEditItem;
 }
@@ -544,6 +546,10 @@ typedef NS_ENUM(NSInteger, ItemType) {
   }
 
   if (![self isExpirationYearValid:self.expirationYearItem.textFieldValue]) {
+    return NO;
+  }
+
+  if (self.cardCvcItem && ![self isCVCValid:self.cardCvcItem.textFieldValue]) {
     return NO;
   }
 
@@ -593,6 +599,22 @@ typedef NS_ENUM(NSInteger, ItemType) {
   return [self currentYearIntValue] <= [expirationYearNumber intValue];
 }
 
+// YES if `cvc` is valid.
+- (BOOL)isCVCValid:(NSString*)cvc {
+  if (!cvc || cvc.length == 0) {
+    return YES;
+  }
+  // Check that the CVC is 3 or 4 digits.
+  if (cvc.length < 3 || cvc.length > 4) {
+    return NO;
+  }
+  // Check that the CVC contains only digits.
+  NSCharacterSet* nonDigitCharacterSet =
+      [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+  return
+      [cvc rangeOfCharacterFromSet:nonDigitCharacterSet].location == NSNotFound;
+}
+
 // The current month int value.
 - (int)currentMonthIntValue {
   NSDateFormatter* dateFormatter = [[NSDateFormatter alloc] init];
@@ -614,6 +636,24 @@ typedef NS_ENUM(NSInteger, ItemType) {
   NSNumberFormatter* numberFormatter = [[NSNumberFormatter alloc] init];
   numberFormatter.numberStyle = NSNumberFormatterDecimalStyle;
   return [numberFormatter numberFromString:string];
+}
+
+// Helper to update the item's error state and accessibility label.
+- (void)updateErrorStateForItem:(TableViewTextEditItem*)item
+                        isValid:(BOOL)isValid
+                   errorMessage:(int)errorMessageID {
+  [item setHasValidText:isValid];
+
+  if (!isValid) {
+    // Append the error message to the field name for the accessibility label.
+    // e.g., "Name on Card, Invalid Name"
+    NSString* errorMessage = l10n_util::GetNSString(errorMessageID);
+    item.cellAccessibilityLabel = [NSString
+        stringWithFormat:@"%@, %@", item.fieldNameLabelText, errorMessage];
+  } else {
+    // Reset to nil to use the default accessibility label (Field Name + Value).
+    item.cellAccessibilityLabel = nil;
+  }
 }
 
 @end

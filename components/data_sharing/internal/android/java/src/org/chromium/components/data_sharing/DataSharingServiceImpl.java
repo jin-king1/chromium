@@ -4,13 +4,18 @@
 
 package org.chromium.components.data_sharing;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.UserDataHost;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.data_sharing.mojom.LogSource;
 import org.chromium.url.GURL;
 
@@ -19,6 +24,7 @@ import org.chromium.url.GURL;
  * delegated to the native C++ class.
  */
 @JNINamespace("data_sharing")
+@NullMarked
 public class DataSharingServiceImpl implements DataSharingService {
     private long mNativePtr;
 
@@ -84,7 +90,7 @@ public class DataSharingServiceImpl implements DataSharingService {
 
     @Override
     public boolean isEmptyService() {
-        return DataSharingServiceImplJni.get().isEmptyService(mNativePtr, this);
+        return DataSharingServiceImplJni.get().isEmptyService(mNativePtr);
     }
 
     @Override
@@ -99,11 +105,12 @@ public class DataSharingServiceImpl implements DataSharingService {
 
     @Override
     public GURL getDataSharingUrl(GroupData groupData) {
+        GroupToken groupToken = groupData.groupToken;
         return DataSharingServiceImplJni.get()
                 .getDataSharingUrl(
                         mNativePtr,
-                        groupData.groupToken.collaborationId,
-                        groupData.groupToken.accessToken);
+                        groupToken.collaborationId,
+                        assumeNonNull(groupToken.accessToken));
     }
 
     @Override
@@ -126,7 +133,10 @@ public class DataSharingServiceImpl implements DataSharingService {
         }
         DataSharingServiceImplJni.get()
                 .getSharedEntitiesPreview(
-                        mNativePtr, groupToken.collaborationId, groupToken.accessToken, callback);
+                        mNativePtr,
+                        groupToken.collaborationId,
+                        assumeNonNull(groupToken.accessToken),
+                        callback);
     }
 
     @Override
@@ -139,9 +149,17 @@ public class DataSharingServiceImpl implements DataSharingService {
         return mLogger;
     }
 
-    private static SharedDataPreviewOrFailureOutcome sSharedEntitiesPreviewForTesting;
+    /* Sets a test preview data to return for all preview requests. */
+    public void setSharedEntitiesPreviewForTesting(String groupId) {
+        DataSharingServiceImplJni.get().setSharedEntitiesPreviewForTesting(mNativePtr, groupId);
+    }
 
-    /** Sets a test preview data to return for all preview requests. */
+    private static @Nullable SharedDataPreviewOrFailureOutcome sSharedEntitiesPreviewForTesting;
+
+    /**
+     * TODO(ssid): Deprecate this method. Sets a test preview data to return for all preview
+     * requests.
+     */
     public static void setSharedEntitiesPreviewForTesting(
             SharedDataPreviewOrFailureOutcome preview) {
         sSharedEntitiesPreviewForTesting = preview;
@@ -151,7 +169,8 @@ public class DataSharingServiceImpl implements DataSharingService {
     /** Static utility to get the data sharing URL for testing. */
     public static GURL getDataSharingUrlForTesting(GroupToken groupToken) {
         return DataSharingServiceImplJni.get()
-                .getDataSharingUrlForTesting(groupToken.groupId, groupToken.accessToken);
+                .getDataSharingUrlForTesting(
+                        groupToken.groupId, assumeNonNull(groupToken.accessToken));
     }
 
     @CalledByNative
@@ -164,57 +183,66 @@ public class DataSharingServiceImpl implements DataSharingService {
     interface Natives {
         void readGroup(
                 long nativeDataSharingServiceAndroid,
-                String groupId,
+                @JniType("std::string") String groupId,
                 Callback<GroupDataOrFailureOutcome> callback);
 
         void createGroup(
                 long nativeDataSharingServiceAndroid,
-                String groupName,
+                @JniType("std::string") String groupName,
                 Callback<GroupDataOrFailureOutcome> callback);
 
         void inviteMember(
                 long nativeDataSharingServiceAndroid,
-                String groupId,
-                String inviteeEmail,
+                @JniType("std::string") String groupId,
+                @JniType("std::string") String inviteeEmail,
                 Callback<Integer> callback);
 
         void addMember(
                 long nativeDataSharingServiceAndroid,
-                String groupId,
-                String accessToken,
+                @JniType("std::string") String groupId,
+                @JniType("std::string") String accessToken,
                 Callback<Integer> callback);
 
         void removeMember(
                 long nativeDataSharingServiceAndroid,
-                String groupId,
-                String memberEmail,
+                @JniType("std::string") String groupId,
+                @JniType("std::string") String memberEmail,
                 Callback<Integer> callback);
 
-        boolean isEmptyService(long nativeDataSharingServiceAndroid, DataSharingServiceImpl caller);
+        boolean isEmptyService(long nativeDataSharingServiceAndroid);
 
         DataSharingNetworkLoader getNetworkLoader(long nativeDataSharingServiceAndroid);
 
         GURL getDataSharingUrl(
-                long nativeDataSharingServiceAndroid, String groupId, String accessToken);
+                long nativeDataSharingServiceAndroid,
+                @JniType("std::string") String groupId,
+                @JniType("std::string") String accessToken);
 
         DataSharingService.ParseUrlResult parseDataSharingUrl(
                 long nativeDataSharingServiceAndroid, GURL url);
 
         void ensureGroupVisibility(
                 long nativeDataSharingServiceAndroid,
-                String groupId,
+                @JniType("std::string") String groupId,
                 Callback<GroupDataOrFailureOutcome> callback);
 
         void getSharedEntitiesPreview(
                 long nativeDataSharingServiceAndroid,
-                String groupId,
-                String accessToken,
+                @JniType("std::string") String groupId,
+                @JniType("std::string") String accessToken,
                 Callback<SharedDataPreviewOrFailureOutcome> callback);
 
         DataSharingUIDelegate getUiDelegate(long nativeDataSharingServiceAndroid);
 
-        void log(long nativeDataSharingServiceAndroid, int source, String message);
+        void log(
+                long nativeDataSharingServiceAndroid,
+                int source,
+                @JniType("std::string") String message);
 
-        GURL getDataSharingUrlForTesting(String groupId, String accessToken);
+        GURL getDataSharingUrlForTesting(
+                @JniType("std::string") String groupId, @JniType("std::string") String accessToken);
+
+        void setSharedEntitiesPreviewForTesting(
+                long nativeDataSharingServiceAndroid, @JniType("std::string") String groupId);
     }
 }

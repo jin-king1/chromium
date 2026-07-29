@@ -19,11 +19,12 @@
 #include "components/app_constants/constants.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/launch_util.h"
 #include "extensions/browser/path_util.h"
 #include "extensions/common/extension.h"
-#include "extensions/common/manifest.h"
+#include "extensions/common/manifest_handlers/description_info.h"
+#include "extensions/common/manifest_handlers/manifest_url_handlers.h"
 #include "extensions/common/manifest_handlers/shared_module_info.h"
-#include "extensions/common/manifest_url_handlers.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/combobox_model.h"
@@ -59,12 +60,12 @@ class LaunchOptionsComboboxModel : public ui::ComboboxModel {
 };
 
 LaunchOptionsComboboxModel::LaunchOptionsComboboxModel() {
-  // Hosted apps can only toggle between LAUNCH_TYPE_WINDOW and
-  // LAUNCH_TYPE_REGULAR.
-  launch_types_.push_back(extensions::LAUNCH_TYPE_REGULAR);
+  // Hosted apps can only toggle between LaunchType::kWindow and
+  // LaunchType::kRegular.
+  launch_types_.push_back(extensions::LaunchType::kRegular);
   launch_type_messages_.push_back(
       l10n_util::GetStringUTF16(IDS_APP_CONTEXT_MENU_OPEN_TAB));
-  launch_types_.push_back(extensions::LAUNCH_TYPE_WINDOW);
+  launch_types_.push_back(extensions::LaunchType::kWindow);
   launch_type_messages_.push_back(
       l10n_util::GetStringUTF16(IDS_APP_CONTEXT_MENU_OPEN_WINDOW));
 }
@@ -83,8 +84,19 @@ int LaunchOptionsComboboxModel::GetIndexForLaunchType(
       return i;
     }
   }
+
+  static constexpr auto kLaunchTypeStrings =
+      base::MakeFixedFlatMap<extensions::LaunchType, std::string_view>({
+          {extensions::LaunchType::kInvalid, "kInvalid"},
+          {extensions::LaunchType::kPinned, "kPinned"},
+          {extensions::LaunchType::kRegular, "kRegular"},
+          {extensions::LaunchType::kFullscreen, "kFullscreen"},
+          {extensions::LaunchType::kWindow, "kWindow"},
+      });
+
   // If the requested launch type is not available, just select the first one.
-  LOG(WARNING) << "Unavailable launch type " << launch_type << " selected.";
+  LOG(WARNING) << "Unavailable launch type "
+               << kLaunchTypeStrings.at(launch_type) << " selected.";
   return 0;
 }
 
@@ -121,9 +133,10 @@ void AppInfoSummaryPanel::AddDescriptionAndLinksControl(
           ChromeLayoutProvider::Get()->GetDistanceMetric(
               DISTANCE_RELATED_CONTROL_VERTICAL_SMALL)));
 
-  if (!app_->description().empty()) {
+  if (!extensions::DescriptionInfo::GetDescription(*app_).empty()) {
     constexpr size_t kMaxLength = 400;
-    std::u16string text = base::UTF8ToUTF16(app_->description());
+    std::u16string text =
+        base::UTF8ToUTF16(extensions::DescriptionInfo::GetDescription(*app_));
     if (text.length() > kMaxLength) {
       text = text.substr(0, kMaxLength - 5);
       text += u" ... ";

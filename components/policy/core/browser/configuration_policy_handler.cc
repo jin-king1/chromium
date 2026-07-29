@@ -22,6 +22,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "components/policy/core/browser/policy_error_map.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/schema.h"
@@ -121,13 +122,13 @@ ListPolicyHandler::~ListPolicyHandler() = default;
 
 bool ListPolicyHandler::CheckPolicySettings(const policy::PolicyMap& policies,
                                             policy::PolicyErrorMap* errors) {
-  std::optional<base::Value::List> empty = std::nullopt;
+  std::optional<base::ListValue> empty = std::nullopt;
   return CheckAndGetList(policies, errors, empty);
 }
 
 void ListPolicyHandler::ApplyPolicySettings(const policy::PolicyMap& policies,
                                             PrefValueMap* prefs) {
-  auto list = std::make_optional<base::Value::List>();
+  auto list = std::make_optional<base::ListValue>();
   if (CheckAndGetList(policies, nullptr, list) && list) {
     ApplyList(*std::move(list), prefs);
   }
@@ -136,7 +137,7 @@ void ListPolicyHandler::ApplyPolicySettings(const policy::PolicyMap& policies,
 bool ListPolicyHandler::CheckAndGetList(
     const policy::PolicyMap& policies,
     policy::PolicyErrorMap* errors,
-    std::optional<base::Value::List>& filtered_list) {
+    std::optional<base::ListValue>& filtered_list) {
   const base::Value* value = nullptr;
   if (!CheckAndGetValue(policies, errors, &value))
     return false;
@@ -147,22 +148,32 @@ bool ListPolicyHandler::CheckAndGetList(
   }
 
   // Filter the list, rejecting any invalid strings.
-  const base::Value::List& list = value->GetList();
+  const base::ListValue& list = value->GetList();
   for (size_t list_index = 0; list_index < list.size(); ++list_index) {
     const base::Value& entry = list[list_index];
     if (entry.type() != list_entry_type_) {
       if (errors) {
-        errors->AddError(policy_name(), IDS_POLICY_TYPE_ERROR,
-                         base::Value::GetTypeName(list_entry_type_),
-                         PolicyErrorPath{list_index});
+        // Casting to int avoids a narrowing conversion from size_t when
+        // constructing PolicyErrorPath, which would otherwise cause the
+        // compiler to prefer the std::vector(size_t count) constructor over the
+        // initializer list constructor.
+        errors->AddError(
+            policy_name(), IDS_POLICY_TYPE_ERROR,
+            base::Value::GetTypeName(list_entry_type_),
+            PolicyErrorPath{base::saturated_cast<int>(list_index)});
       }
       continue;
     }
 
     if (!CheckListEntry(entry)) {
       if (errors) {
-        errors->AddError(policy_name(), IDS_POLICY_VALUE_FORMAT_ERROR,
-                         PolicyErrorPath{list_index});
+        // Casting to int avoids a narrowing conversion from size_t when
+        // constructing PolicyErrorPath, which would otherwise cause the
+        // compiler to prefer the std::vector(size_t count) constructor over the
+        // initializer list constructor.
+        errors->AddError(
+            policy_name(), IDS_POLICY_VALUE_FORMAT_ERROR,
+            PolicyErrorPath{base::saturated_cast<int>(list_index)});
       }
       continue;
     }
@@ -258,13 +269,13 @@ void StringMappingListPolicyHandler::ApplyPolicySettings(
     return;
   const base::Value* value =
       policies.GetValue(policy_name(), base::Value::Type::LIST);
-  base::Value::List list;
+  base::ListValue list;
   if (value && Convert(value, &list, nullptr))
     prefs->SetValue(pref_path_, base::Value(std::move(list)));
 }
 
 bool StringMappingListPolicyHandler::Convert(const base::Value* input,
-                                             base::Value::List* output,
+                                             base::ListValue* output,
                                              PolicyErrorMap* errors) {
   if (!input)
     return true;
@@ -498,20 +509,40 @@ bool SchemaValidatingPolicyHandler::CheckAndGetValue(
   if (!value)
     return true;
 
-  *output = base::Value::ToUniquePtrValue(value->Clone());
+  // First, validate the value without cloning. Validate() is read-only and
+  // produces the same pass/fail result as Normalize() for the same strategy.
+  // This avoids an expensive deep clone when validation fails outright.
   PolicyErrorPath error_path;
   std::string error;
+  bool valid = schema_.Validate(*value, strategy_, &error_path, &error);
+
+  if (!valid) {
+    if (errors && !error.empty()) {
+      errors->AddError(policy_name(), IDS_POLICY_SCHEMA_VALIDATION_ERROR, error,
+                       error_path,
+                       /*error_level=*/PolicyMap::MessageType::kError);
+    }
+    return false;
+  }
+
+  // Validation passed. Clone and normalize to strip unknown properties and
+  // produce the output value. Normalize() may still report warnings.
+  *output = base::Value::ToUniquePtrValue(value->Clone());
+  error_path.clear();
+  error.clear();
   bool result =
       schema_.Normalize(output->get(), strategy_, &error_path, &error, nullptr);
+  // Set error_level based on whether strategy_ tolerates this error without
+  // failure. Validate() already succeeded above and Normalize() yields the
+  // same pass/fail result, so `result` is always true here and any error that
+  // Normalize() reports is a tolerated warning rather than a validation
+  // failure.
+  DCHECK(result);
 
   if (errors && !error.empty()) {
-    // Set error_level based on whether strategy_ tolerates this error without
-    // failure.
     errors->AddError(policy_name(), IDS_POLICY_SCHEMA_VALIDATION_ERROR, error,
                      error_path,
-                     /*error_level=*/
-                     result ? PolicyMap::MessageType::kWarning
-                            : PolicyMap::MessageType::kError);
+                     /*error_level=*/PolicyMap::MessageType::kWarning);
   }
 
   return result;
@@ -648,16 +679,20 @@ bool SimpleJsonStringSchemaValidatingPolicyHandler::CheckListOfJsonStrings(
 
   // If that succeeds, validate all the list items are strings and validate
   // the JSON inside the strings.
-  const base::Value::List& list = root_value->GetList();
+  const base::ListValue& list = root_value->GetList();
   bool json_error_seen = false;
 
   for (size_t index = 0; index < list.size(); ++index) {
     const base::Value& entry = list[index];
     if (!entry.is_string()) {
       if (errors) {
+        // Casting to int avoids a narrowing conversion from size_t when
+        // constructing PolicyErrorPath, which would otherwise cause the
+        // compiler to prefer the std::vector(size_t count) constructor over the
+        // initializer list constructor.
         errors->AddError(policy_name(), IDS_POLICY_TYPE_ERROR,
                          base::Value::GetTypeName(base::Value::Type::STRING),
-                         PolicyErrorPath{index});
+                         PolicyErrorPath{base::saturated_cast<int>(index)});
       }
       continue;
     }
@@ -828,7 +863,78 @@ void SimpleDeprecatingPolicyHandler::ApplyPolicySettings(
   NOTREACHED();
 }
 
-// CloudOnlyPolicyHandler implementation ---------------------------------------
+// SingleDeprecatedPolicyToMultipleNewPolicyHandler implementation
+// -----------------------
+
+SingleDeprecatedPolicyToMultipleNewPolicyHandler::
+    SingleDeprecatedPolicyToMultipleNewPolicyHandler(
+        std::unique_ptr<NamedPolicyHandler> legacy_policy_handler,
+        std::vector<std::string> new_policy_names)
+    : legacy_policy_handler_(std::move(legacy_policy_handler)),
+      new_policy_names_(std::move(new_policy_names)) {}
+
+SingleDeprecatedPolicyToMultipleNewPolicyHandler::
+    ~SingleDeprecatedPolicyToMultipleNewPolicyHandler() = default;
+
+// ConfigurationPolicyHandler:
+bool SingleDeprecatedPolicyToMultipleNewPolicyHandler::CheckPolicySettings(
+    const PolicyMap& policies,
+    PolicyErrorMap* errors) {
+  bool new_policy_set = false;
+  for (const auto& new_policy_name : new_policy_names_) {
+    if (!policies.Get(new_policy_name)) {
+      continue;
+    }
+    new_policy_set = true;
+    if (errors && policies.Get(legacy_policy_handler_->policy_name())) {
+      errors->AddError(legacy_policy_handler_->policy_name(),
+                       IDS_POLICY_OVERRIDDEN, new_policy_name);
+    }
+  }
+
+  // If none of the policies is set, fall back to legacy one.
+  return !new_policy_set &&
+         legacy_policy_handler_->CheckPolicySettings(policies, errors);
+}
+
+void SingleDeprecatedPolicyToMultipleNewPolicyHandler::
+    ApplyPolicySettingsWithParameters(const PolicyMap& policies,
+                                      const PolicyHandlerParameters& parameters,
+                                      PrefValueMap* prefs) {
+  legacy_policy_handler_->ApplyPolicySettingsWithParameters(policies,
+                                                            parameters, prefs);
+}
+
+void SingleDeprecatedPolicyToMultipleNewPolicyHandler::ApplyPolicySettings(
+    const policy::PolicyMap& /* policies */,
+    PrefValueMap* /* prefs */) {
+  NOTREACHED();
+}
+
+// ConfigurationPolicyChecker implementation -----------------------------------
+ConfigurationPolicyChecker::ConfigurationPolicyChecker(
+    std::unique_ptr<NamedPolicyHandler> handler)
+    : NamedPolicyHandler(handler->policy_name()),
+      policy_handler_(std::move(handler)) {}
+
+ConfigurationPolicyChecker::~ConfigurationPolicyChecker() = default;
+
+void ConfigurationPolicyChecker::ApplyPolicySettingsWithParameters(
+    const policy::PolicyMap& policies,
+    const policy::PolicyHandlerParameters& parameters,
+    PrefValueMap* prefs) {
+  policy_handler_->ApplyPolicySettingsWithParameters(policies, parameters,
+                                                     prefs);
+}
+
+void ConfigurationPolicyChecker::ApplyPolicySettings(
+    /* policies */ const policy::PolicyMap&,
+    /* prefs */ PrefValueMap*) {
+  NOTREACHED();
+}
+
+// CloudUserOnlyPolicyChecker implementation
+// ---------------------------------------
 
 namespace {
 
@@ -839,64 +945,16 @@ bool IsCloudOnlyPolicy(const policy::PolicyMap::Entry& policy) {
 
 }  // namespace
 
-CloudOnlyPolicyHandler::CloudOnlyPolicyHandler(const char* policy_name,
-                                               Schema schema,
-                                               SchemaOnErrorStrategy strategy)
-    : SchemaValidatingPolicyHandler(policy_name, schema, strategy) {}
-
-CloudOnlyPolicyHandler::~CloudOnlyPolicyHandler() = default;
-
-// static
-bool CloudOnlyPolicyHandler::CheckCloudOnlyPolicySettings(
-    const char* policy_name,
-    const PolicyMap& policies,
-    PolicyErrorMap* errors) {
-  const PolicyMap::Entry* policy = policies.Get(policy_name);
-  if (!policy) {
-    return true;
-  }
-
-  // If the policy source is POLICY_SOURCE_MERGED, it is still cloud-only if all
-  // policy values merged into it are cloud-only.
-  if (policy->source == policy::POLICY_SOURCE_MERGED) {
-    for (const auto& conflict : policy->conflicts) {
-      if (!IsCloudOnlyPolicy(conflict.entry())) {
-        if (errors) {
-          errors->AddError(policy_name, IDS_POLICY_CLOUD_SOURCE_ONLY_ERROR);
-        }
-        return false;
-      }
-    }
-  } else if (!IsCloudOnlyPolicy(*policy)) {
-    if (errors) {
-      errors->AddError(policy_name, IDS_POLICY_CLOUD_SOURCE_ONLY_ERROR);
-    }
-    return false;
-  }
-
-  return true;
-}
-
-bool CloudOnlyPolicyHandler::CheckPolicySettings(const PolicyMap& policies,
-                                                 PolicyErrorMap* errors) {
-  return CheckCloudOnlyPolicySettings(policy_name(), policies, errors)
-             ? SchemaValidatingPolicyHandler::CheckPolicySettings(policies,
-                                                                  errors)
-             : false;
-}
-
-// CloudUserOnlyPolicyHandler implementation
+// CloudUserOnlyPolicyChecker implementation
 // ---------------------------------------
-
-CloudUserOnlyPolicyHandler::CloudUserOnlyPolicyHandler(
+CloudUserOnlyPolicyChecker::CloudUserOnlyPolicyChecker(
     std::unique_ptr<NamedPolicyHandler> policy_handler)
-    : NamedPolicyHandler(policy_handler->policy_name()),
-      policy_handler_(std::move(policy_handler)) {}
+    : ConfigurationPolicyChecker(std::move(policy_handler)) {}
 
-CloudUserOnlyPolicyHandler::~CloudUserOnlyPolicyHandler() = default;
+CloudUserOnlyPolicyChecker::~CloudUserOnlyPolicyChecker() = default;
 
 // static
-bool CloudUserOnlyPolicyHandler::CheckUserOnlyPolicySettings(
+bool CloudUserOnlyPolicyChecker::CheckUserOnlyPolicySettings(
     const char* policy_name,
     const PolicyMap& policies,
     PolicyErrorMap* errors) {
@@ -916,24 +974,11 @@ bool CloudUserOnlyPolicyHandler::CheckUserOnlyPolicySettings(
   return true;
 }
 
-bool CloudUserOnlyPolicyHandler::CheckPolicySettings(const PolicyMap& policies,
+bool CloudUserOnlyPolicyChecker::CheckPolicySettings(const PolicyMap& policies,
                                                      PolicyErrorMap* errors) {
-  return CheckUserOnlyPolicySettings(policy_name(), policies, errors) &&
+  return CloudUserOnlyPolicyChecker::CheckUserOnlyPolicySettings(
+             policy_handler_->policy_name(), policies, errors) &&
          policy_handler_->CheckPolicySettings(policies, errors);
-}
-
-void CloudUserOnlyPolicyHandler::ApplyPolicySettingsWithParameters(
-    const policy::PolicyMap& policies,
-    const policy::PolicyHandlerParameters& parameters,
-    PrefValueMap* prefs) {
-  policy_handler_->ApplyPolicySettingsWithParameters(policies, parameters,
-                                                     prefs);
-}
-
-void CloudUserOnlyPolicyHandler::ApplyPolicySettings(
-    const policy::PolicyMap& /* policies */,
-    PrefValueMap* /* prefs */) {
-  NOTREACHED();
 }
 
 URLPolicyHandler::URLPolicyHandler(const char* policy_name,

@@ -28,9 +28,11 @@ import type {SettingsToggleButtonElement} from '../controls/settings_toggle_butt
 import {TERMINA_VM_TYPE} from '../guest_os/guest_os_browser_proxy.js';
 import {recordSettingChange} from '../metrics_recorder.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
-import {type Route, Router, routes} from '../router.js';
+import {Router, routes} from '../router.js';
+import type {Route} from '../router.js';
 
-import {type CrostiniBrowserProxy, CrostiniBrowserProxyImpl, type CrostiniDiskInfo} from './crostini_browser_proxy.js';
+import {CrostiniBrowserProxyImpl} from './crostini_browser_proxy.js';
+import type {CrostiniBrowserProxy, CrostiniDiskInfo} from './crostini_browser_proxy.js';
 import {getTemplate} from './crostini_subpage.html.js';
 
 /**
@@ -78,41 +80,21 @@ export class SettingsCrostiniSubpageElement extends
         },
       },
 
+      /**
+       * Whether port-forwarding UI should be displayed.
+       * Determined by policy setting and if current termina guest is of
+       * baguette type.
+       */
       showCrostiniPortForwarding_: {
         type: Boolean,
         value() {
-          return loadTimeData.getBoolean('showCrostiniPortForwarding');
-        },
-      },
-
-      showCrostiniExtraContainers_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('showCrostiniExtraContainers');
+          return loadTimeData.getBoolean('showCrostiniPortForwarding') &&
+              !loadTimeData.getBoolean('isBaguette');
         },
       },
 
       isAndroidEnabled_: {
         type: Boolean,
-      },
-
-      /**
-       * Whether the uninstall options should be displayed.
-       */
-      hideCrostiniUninstall_: {
-        type: Boolean,
-        computed: 'or_(installerShowing_, upgraderDialogShowing_)',
-      },
-
-      /**
-       * Whether the button to launch the Crostini container upgrade flow should
-       * be shown.
-       */
-      showCrostiniContainerUpgrade_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('showCrostiniContainerUpgrade');
-        },
       },
 
       showDiskResizeConfirmationDialog_: {
@@ -122,19 +104,6 @@ export class SettingsCrostiniSubpageElement extends
 
       installerShowing_: {
         type: Boolean,
-      },
-
-      upgraderDialogShowing_: {
-        type: Boolean,
-      },
-
-      /**
-       * Whether the button to launch the Crostini container upgrade flow should
-       * be disabled.
-       */
-      disableUpgradeButton_: {
-        type: Boolean,
-        computed: 'or_(installerShowing_, upgraderDialogShowing_)',
       },
 
       /**
@@ -169,19 +138,6 @@ export class SettingsCrostiniSubpageElement extends
         type: Boolean,
         value: false,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kUninstallCrostini,
-          Setting.kCrostiniDiskResize,
-          Setting.kCrostiniMicAccess,
-          Setting.kCrostiniContainerUpgrade,
-        ]),
-      },
     };
   }
 
@@ -192,20 +148,29 @@ export class SettingsCrostiniSubpageElement extends
     ];
   }
 
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kUninstallCrostini,
+    Setting.kCrostiniDiskResize,
+    Setting.kCrostiniMicAccess,
+  ]);
+
   private browserProxy_: CrostiniBrowserProxy;
-  private canDiskResize_: boolean;
-  private diskResizeButtonAriaLabel_: string;
-  private diskResizeButtonLabel_: string;
+  declare private canDiskResize_: boolean;
+  declare private diskResizeButtonAriaLabel_: string;
+  declare private diskResizeButtonLabel_: string;
   private diskResizeConfirmationState_: ConfirmationState;
-  private diskSizeLabel_: string;
-  private installerShowing_: boolean;
-  private isAndroidEnabled_: boolean;
+  declare private diskSizeLabel_: string;
+  declare private installerShowing_: boolean;
+  declare private readonly isArcAdbSideloadingSupported_: boolean;
+  declare private isAndroidEnabled_: boolean;
   private isDiskUserChosenSize_: boolean;
-  private showCrostiniContainerUpgrade_: boolean;
-  private showCrostiniMicPermissionDialog_: boolean;
-  private showDiskResizeConfirmationDialog_: boolean;
-  private showDiskResizeDialog_: boolean;
-  private upgraderDialogShowing_: boolean;
+  declare private showArcAdbSideloading_: boolean;
+  declare private readonly showCrostiniExportImport_: boolean;
+  declare private showCrostiniMicPermissionDialog_: boolean;
+  declare private readonly showCrostiniPortForwarding_: boolean;
+  declare private showDiskResizeConfirmationDialog_: boolean;
+  declare private showDiskResizeDialog_: boolean;
 
   constructor() {
     super();
@@ -227,18 +192,7 @@ export class SettingsCrostiniSubpageElement extends
         'crostini-installer-status-changed', (status: boolean) => {
           this.installerShowing_ = status;
         });
-    this.addWebUiListener(
-        'crostini-upgrader-status-changed', (status: boolean) => {
-          this.upgraderDialogShowing_ = status;
-        });
-    this.addWebUiListener(
-        'crostini-container-upgrade-available-changed',
-        (canUpgrade: boolean) => {
-          this.showCrostiniContainerUpgrade_ = canUpgrade;
-        });
     this.browserProxy_.requestCrostiniInstallerStatus();
-    this.browserProxy_.requestCrostiniUpgraderDialogStatus();
-    this.browserProxy_.requestCrostiniContainerUpgradeAvailable();
     this.loadDiskInfo_();
   }
 
@@ -253,8 +207,6 @@ export class SettingsCrostiniSubpageElement extends
     this.addFocusConfig(r.CROSTINI_ANDROID_ADB, '#crostiniEnableArcAdbRow');
     this.addFocusConfig(
         r.CROSTINI_PORT_FORWARDING, '#crostiniPortForwardingRow');
-    this.addFocusConfig(
-        r.CROSTINI_EXTRA_CONTAINERS, '#crostiniExtraContainersRow');
   }
 
   override currentRouteChanged(newRoute: Route, oldRoute?: Route): void {
@@ -370,14 +322,6 @@ export class SettingsCrostiniSubpageElement extends
     recordSettingChange(Setting.kUninstallCrostini);
   }
 
-  /**
-   * Shows the upgrade flow dialog.
-   */
-  private onContainerUpgradeClick_(): void {
-    this.browserProxy_.requestCrostiniContainerUpgradeView();
-    recordSettingChange(Setting.kCrostiniContainerUpgrade);
-  }
-
   private onSharedPathsClick_(): void {
     Router.getInstance().navigateTo(routes.CROSTINI_SHARED_PATHS);
   }
@@ -388,10 +332,6 @@ export class SettingsCrostiniSubpageElement extends
 
   private onPortForwardingClick_(): void {
     Router.getInstance().navigateTo(routes.CROSTINI_PORT_FORWARDING);
-  }
-
-  private onExtraContainersClick_(): void {
-    Router.getInstance().navigateTo(routes.CROSTINI_EXTRA_CONTAINERS);
   }
 
   private getMicToggle_(): SettingsToggleButtonElement {

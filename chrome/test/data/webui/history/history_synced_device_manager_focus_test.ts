@@ -5,26 +5,31 @@
 import 'chrome://history/history.js';
 
 import type {HistorySyncedDeviceManagerElement} from 'chrome://history/history.js';
-import {ensureLazyLoaded} from 'chrome://history/history.js';
+import {BrowserProxyImpl, HistorySignInState, SyncState} from 'chrome://history/history.js';
 import {getDeepActiveElement} from 'chrome://resources/js/util.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {pressAndReleaseKeyOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
+import {TestHistoryBrowserProxy} from './test_browser_proxy.js';
 import {createSession, createWindow} from './test_util.js';
 
 suite('<history-synced-device-manager>', function() {
   let element: HistorySyncedDeviceManagerElement;
+  let testProxy: TestHistoryBrowserProxy;
 
   setup(function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
-
-    return ensureLazyLoaded().then(() => {
-      element = document.createElement('history-synced-device-manager');
-      element.signInState = true;
-      element.searchTerm = '';
-      document.body.appendChild(element);
+    testProxy = new TestHistoryBrowserProxy();
+    BrowserProxyImpl.setInstance(testProxy);
+    testProxy.setInitialIdentityState({
+      signIn: HistorySignInState.SIGNED_IN,
+      tabsSync: SyncState.TURNED_ON,
+      historySync: SyncState.TURNED_OFF,
     });
+    element = document.createElement('history-synced-device-manager');
+    element.searchTerm = '';
+    document.body.appendChild(element);
   });
 
   test('focus and keyboard nav', async () => {
@@ -50,12 +55,12 @@ suite('<history-synced-device-manager>', function() {
     assertTrue(!!cards[0]);
     assertTrue(!!cards[1]);
 
-    let focused = cards[0].$['menu-button'];
+    let focused = cards[0].$.menuButton;
     focused.focus();
 
     // Go to the collapse button.
     pressAndReleaseKeyOn(focused, 39, [], 'ArrowRight');
-    focused = cards[0].$['collapse-button'];
+    focused = cards[0].$.collapseButton;
     assertEquals(focused, getDeepActiveElement());
 
     // Go to the first url.
@@ -66,19 +71,19 @@ suite('<history-synced-device-manager>', function() {
 
     // Collapse the first card.
     pressAndReleaseKeyOn(focused, 38, [], 'ArrowUp');
-    focused = cards[0].$['collapse-button'];
+    focused = cards[0].$.collapseButton;
     assertEquals(focused, getDeepActiveElement());
     focused.click();
     await waitForFocusGridUpdate();
 
     // Pressing down goes to the next card.
     pressAndReleaseKeyOn(focused, 40, [], 'ArrowDown');
-    focused = cards[1].$['collapse-button'];
+    focused = cards[1].$.collapseButton;
     assertEquals(focused, getDeepActiveElement());
 
     // Expand the first card.
     pressAndReleaseKeyOn(focused, 38, [], 'ArrowUp');
-    focused = cards[0].$['collapse-button'];
+    focused = cards[0].$.collapseButton;
     assertEquals(focused, getDeepActiveElement());
     focused.click();
     await waitForFocusGridUpdate();
@@ -100,7 +105,7 @@ suite('<history-synced-device-manager>', function() {
 
     // Go to the next card's menu buttons.
     pressAndReleaseKeyOn(focused, 40, [], 'ArrowDown');
-    focused = cards[1].$['collapse-button'];
+    focused = cards[1].$.collapseButton;
     assertEquals(focused, getDeepActiveElement());
 
     pressAndReleaseKeyOn(focused, 38, [], 'ArrowUp');
@@ -118,7 +123,7 @@ suite('<history-synced-device-manager>', function() {
 
     // Pressing down goes to the next card.
     pressAndReleaseKeyOn(focused, 40, [], 'ArrowDown');
-    focused = cards[1].$['collapse-button'];
+    focused = cards[1].$.collapseButton;
     assertEquals(focused, getDeepActiveElement());
   });
 });

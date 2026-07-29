@@ -27,6 +27,10 @@ enum ChromeInsetsMetric {
   INSETS_TASK_MANAGER,
   // Padding used in the page info footer button.
   INSETS_PAGE_INFO_FOOTER_BUTTON,
+  // Outer border insets around the Block-style Action App Menu container popup.
+  INSETS_ACTION_APP_MENU_POPUP,
+  // Border insets for Block-style Action App Menu items.
+  INSETS_ACTION_APP_MENU_ITEM,
 };
 
 enum ChromeDistanceMetric {
@@ -42,8 +46,6 @@ enum ChromeDistanceMetric {
   // Same as |DISTANCE_CONTENT_LIST_VERTICAL_SINGLE|, but used at the beginning
   // and end of a multi-item content list.
   DISTANCE_CONTENT_LIST_VERTICAL_MULTI,
-  // Vertical spacing between a list of multiple controls in one column.
-  DISTANCE_CONTROL_LIST_VERTICAL,
   // Width of the extensions menu.
   DISTANCE_EXTENSIONS_MENU_WIDTH,
   // Width and height of a button's icon in the extensions menu.
@@ -81,11 +83,6 @@ enum ChromeDistanceMetric {
   DISTANCE_UNRELATED_CONTROL_HORIZONTAL_LARGE,
   // Larger vertical spacing between unrelated controls.
   DISTANCE_UNRELATED_CONTROL_VERTICAL_LARGE,
-  // Width of larger modal dialogs that require extra width.
-  DISTANCE_LARGE_MODAL_DIALOG_PREFERRED_WIDTH,
-  // Width and height of a vector icon in a bubble's header (i.e. the one
-  // returned from GetWindowIcon).
-  DISTANCE_BUBBLE_HEADER_VECTOR_ICON_SIZE,
   // Width of a bubble that appears mid-screen (like a standalone dialog)
   // instead of being anchored.
   DISTANCE_STANDALONE_BUBBLE_PREFERRED_WIDTH,
@@ -102,6 +99,8 @@ enum ChromeDistanceMetric {
   DISTANCE_SIDE_PANEL_HEADER_BUTTON_MINIMUM_SIZE,
   // Horizontal spacing for separating side panel header border from controls.
   DISTANCE_SIDE_PANEL_HEADER_INTERIOR_MARGIN_HORIZONTAL,
+  // The corner radius for the side panel content.
+  DISTANCE_SIDE_PANEL_CONTENT_RADIUS,
   // Horizontal padding between separator in the page info view.
   DISTANCE_HORIZONTAL_SEPARATOR_PADDING_PAGE_INFO_VIEW,
   // Horizontal padding applied between the icon and label in the infobar.
@@ -187,6 +186,35 @@ enum ChromeDistanceMetric {
   DISTANCE_RECENT_ACTIVITY_ROW_VERTICAL_PADDING,
   // Distance between the avatar icon and the email in the account info row.
   DISTANCE_ACCOUNT_INFO_ROW_AVATAR_EMAIL,
+  // Vertical spacing between a textfield and an account card, usually
+  // consisting of an avatar icon, name and email address.
+  DISTANCE_TEXTFIELD_ACCOUNT_CARD_VERTICAL,
+  // Width and height of the vector icon shown in infoboxes in the FFR dialog.
+  DISTANCE_FEATURE_FIRST_RUN_INFO_BOX_ICON_SIZE,
+  // Vertical and horizontal padding of the infoboxes in the FFR dialog.
+  DISTANCE_FEATURE_FIRST_RUN_INFO_BOX_PADDING,
+  // Rounded corner radius for infoboxes in the FFR dialog.
+  DISTANCE_FEATURE_FIRST_RUN_INFO_BOX_ROUNDED_BORDER_RADIUS,
+  // Vertical spacing between infoboxes in the FFR dialog.
+  DISTANCE_FEATURE_FIRST_RUN_INFO_BOX_VERTICAL,
+  // Vertical padding for the infobar buttons.
+  DISTANCE_INFOBAR_BUTTON_VERTICAL_PADDING,
+  // Horizontal padding for the infobar buttons.
+  DISTANCE_INFOBAR_BUTTON_HORIZONTAL_PADDING,
+  // Minimum width of the Block Action App Menu popup.
+  DISTANCE_ACTION_APP_MENU_MINIMUM_WIDTH,
+  // Corner radius for Block-style Action App Menu section container cards.
+  DISTANCE_ACTION_APP_MENU_CONTAINER_CORNER_RADIUS,
+  // Top padding for the first item in a Block-style Action App Menu section card.
+  DISTANCE_ACTION_APP_MENU_ITEM_FIRST_TOP_PADDING,
+  // Bottom padding for the last item in a Block-style Action App Menu section card.
+  DISTANCE_ACTION_APP_MENU_ITEM_LAST_BOTTOM_PADDING,
+  // Default vertical margin for Block-style Action App Menu items.
+  DISTANCE_ACTION_APP_MENU_ITEM_DEFAULT_VERTICAL_MARGIN,
+  // Size of vector icons in the Block-style Action App Menu.
+  DISTANCE_ACTION_APP_MENU_ICON_SIZE,
+  // Full height of a Block-style Action App Menu item row.
+  DISTANCE_ACTION_APP_MENU_FULL_ITEM_HEIGHT,
 };
 
 class ChromeLayoutProvider : public views::LayoutProvider {

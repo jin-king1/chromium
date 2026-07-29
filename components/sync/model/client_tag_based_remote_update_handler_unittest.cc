@@ -13,6 +13,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/collaboration_id.h"
+#include "components/sync/base/data_type_histogram.h"
 #include "components/sync/base/deletion_origin.h"
 #include "components/sync/base/features.h"
 #include "components/sync/base/unique_position.h"
@@ -43,6 +44,7 @@ using testing::IsEmpty;
 using testing::IsNull;
 using testing::Not;
 using testing::NotNull;
+using testing::Return;
 
 const char kKey1[] = "key1";
 const char kKey2[] = "key2";
@@ -220,7 +222,7 @@ TEST_F(ClientTagBasedRemoteUpdateHandlerTest, ShouldProcessRemoteCreation) {
   EXPECT_TRUE(metadata.has_creation_time());
   EXPECT_TRUE(metadata.has_modification_time());
   EXPECT_TRUE(metadata.has_specifics_hash());
-  EXPECT_TRUE(metadata.has_possibly_trimmed_base_specifics());
+  EXPECT_FALSE(metadata.has_possibly_trimmed_base_specifics());
 }
 
 TEST_F(ClientTagBasedRemoteUpdateHandlerTest,
@@ -316,7 +318,7 @@ TEST_F(ClientTagBasedRemoteUpdateHandlerTest, ShouldProcessRemoteUpdates) {
   EXPECT_EQ(0, metadata.sequence_number());
   EXPECT_EQ(0, metadata.acked_sequence_number());
   EXPECT_EQ(2, metadata.server_version());
-  EXPECT_TRUE(metadata.has_possibly_trimmed_base_specifics());
+  EXPECT_FALSE(metadata.has_possibly_trimmed_base_specifics());
 }
 
 TEST_F(ClientTagBasedRemoteUpdateHandlerTest, ShouldProcessRemoteDeletion) {
@@ -434,7 +436,7 @@ TEST_F(ClientTagBasedRemoteUpdateHandlerTest,
   ProcessSingleUpdate(std::move(update));
   histogram_tester.ExpectUniqueSample(
       "Sync.DataTypeEntityConflictResolution.PREFERENCE",
-      ConflictResolution::kIgnoreLocalEncryption, /*expected_bucket_count=*/1);
+      ConflictResolution::kIgnoreLocalNoOpUpdate, /*expected_bucket_count=*/1);
 
   EXPECT_EQ(2U, db()->data_change_count());
   ASSERT_EQ(0U, bridge()->trimmed_specifics_change_count());
@@ -468,7 +470,7 @@ TEST_F(ClientTagBasedRemoteUpdateHandlerTest,
   ProcessSingleUpdate(std::move(update));
   histogram_tester.ExpectUniqueSample(
       "Sync.DataTypeEntityConflictResolution.PREFERENCE",
-      ConflictResolution::kIgnoreRemoteEncryption, /*expected_bucket_count=*/1);
+      ConflictResolution::kIgnoreRemoteNoOpUpdate, /*expected_bucket_count=*/1);
 
   EXPECT_EQ(1U, db()->data_change_count());
   ASSERT_EQ(0U, bridge()->trimmed_specifics_change_count());
@@ -503,6 +505,8 @@ TEST_F(ClientTagBasedRemoteUpdateHandlerTest,
   ASSERT_EQ(0U, ProcessorEntityCount());
   UpdateResponseData update = GeneratePrefUpdate("", "");
   ASSERT_TRUE(bridge()->SupportsGetStorageKey());
+  ASSERT_TRUE(bridge()->GetStorageKey(update.entity).empty());
+  ASSERT_FALSE(bridge()->IsEntityDataValid(update.entity));
   // Bridge will generate an empty storage key.
   ProcessSingleUpdate(std::move(update));
   // Update should be filtered out.
@@ -831,6 +835,95 @@ TEST_F(ClientTagBasedRemoteUpdateHandlerForSharedTest,
   EXPECT_TRUE(entity->metadata().has_unique_position());
   EXPECT_THAT(entity->metadata().unique_position(),
               EqualsProto(new_unique_position));
+}
+
+class ClientTagBasedRemoteUpdateHandlerForNonIncrementalTest
+    : public ClientTagBasedRemoteUpdateHandlerTest {
+ public:
+  void SetUp() override {
+    ClientTagBasedRemoteUpdateHandlerTest::SetUp();
+    bridge()->SetSupportsIncrementalUpdates(false);
+  }
+};
+
+TEST_F(ClientTagBasedRemoteUpdateHandlerForNonIncrementalTest,
+       ShouldNotReuploadEntitesOnReencryption) {
+  sync_pb::DataTypeState data_type_state = GenerateDataTypeState();
+  data_type_state.set_encryption_key_name("encryption_key_name");
+
+  sync_pb::GarbageCollectionDirective gc_directive;
+  gc_directive.set_version_watermark(1);
+
+  // Simulate a full remote update with enabled encryption.
+  ProcessSingleUpdate(data_type_state, GeneratePrefUpdate(kKey1, kValue1),
+                      gc_directive);
+  ASSERT_EQ(1U, ProcessorEntityCount());
+  ASSERT_EQ(0U, entity_tracker()->GetUnsyncedDataCount());
+
+  // Simulate a full remote update with disabled encryption (e.g. if encryption
+  // was disabled for the data type). One is an update, the other is a creation.
+  data_type_state.set_encryption_key_name("");
+  UpdateResponseDataList updates;
+  updates.push_back(GeneratePrefUpdate(kKey1, kValue1));
+  updates.push_back(GeneratePrefUpdate(kKey2, kValue2));
+  remote_update_handler()->ProcessIncrementalUpdate(
+      data_type_state, std::move(updates), gc_directive);
+  ASSERT_EQ(2U, ProcessorEntityCount());
+
+  // Both entities should not be unsynced (i.e. re-uploaded).
+  EXPECT_EQ(0U, entity_tracker()->GetUnsyncedDataCount());
+}
+
+class ClientTagBasedRemoteUpdateHandlerMockBridgeTest
+    : public ClientTagBasedRemoteUpdateHandlerTest {
+ protected:
+  class MockBridge : public FakeDataTypeSyncBridge {
+   public:
+    using FakeDataTypeSyncBridge::FakeDataTypeSyncBridge;
+
+    MOCK_METHOD(std::string,
+                GetClientTag,
+                (const EntityData&),
+                (const override));
+    MOCK_METHOD(std::string,
+                GetStorageKey,
+                (const EntityData&),
+                (const override));
+    MOCK_METHOD(bool, IsEntityDataValid, (const EntityData&), (const override));
+  };
+
+  ClientTagBasedRemoteUpdateHandlerMockBridgeTest()
+      : ClientTagBasedRemoteUpdateHandlerTest(PREFERENCES),
+        mock_bridge_(PREFERENCES,
+                     change_processor()->CreateForwardingProcessor()),
+        remote_update_handler_(PREFERENCES, &mock_bridge_, entity_tracker()) {}
+
+  testing::NiceMock<MockBridge> mock_bridge_;
+  ClientTagBasedRemoteUpdateHandler remote_update_handler_;
+};
+
+TEST_F(ClientTagBasedRemoteUpdateHandlerMockBridgeTest,
+       ShouldNotGetClientTagOrStorageKeyIfEntityDataIsInvalid) {
+  mock_bridge_.SetSupportsGetStorageKey(true);
+  mock_bridge_.SetSupportsGetClientTag(true);
+
+  EXPECT_CALL(mock_bridge_, IsEntityDataValid).WillOnce(Return(false));
+
+  // The usual bridge APIs should not be invoked for invalid data.
+  EXPECT_CALL(mock_bridge_, GetClientTag).Times(0);
+  EXPECT_CALL(mock_bridge_, GetStorageKey).Times(0);
+
+  base::HistogramTester histogram_tester;
+  UpdateResponseDataList updates;
+  updates.push_back(GeneratePrefUpdate(GetPrefHash(kKey1), kKey1, kValue1));
+
+  remote_update_handler_.ProcessIncrementalUpdate(
+      GenerateDataTypeState(), std::move(updates),
+      /*gc_directive=*/std::nullopt);
+
+  histogram_tester.ExpectUniqueSample("Sync.DataTypeUpdateDrop.DroppedByBridge",
+                                      DataTypeHistogramValue(PREFERENCES),
+                                      /*expected_bucket_count=*/1);
 }
 
 }  // namespace

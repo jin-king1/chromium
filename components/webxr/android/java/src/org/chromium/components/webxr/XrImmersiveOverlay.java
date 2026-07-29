@@ -4,6 +4,8 @@
 
 package org.chromium.components.webxr;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.pm.ActivityInfo;
@@ -14,14 +16,20 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 
-import androidx.annotation.NonNull;
+import androidx.core.graphics.Insets;
+import androidx.core.view.WindowInsetsCompat;
 
 import org.chromium.base.Log;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.ScreenOrientationDelegate;
 import org.chromium.content_public.browser.ScreenOrientationProvider;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
+import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
+import org.chromium.ui.insets.InsetObserver;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -30,8 +38,12 @@ import java.util.Map;
  * Provides a fullscreen overlay for immersive sessions, allows tailoring setup/etc. due to the
  * particular needs of AR/VR sessions via the XrImmersiveOverlay.Delegate interface.
  */
+@NullMarked
 public class XrImmersiveOverlay
-        implements SurfaceHolder.Callback2, View.OnTouchListener, ScreenOrientationDelegate {
+        implements SurfaceHolder.Callback2,
+                View.OnTouchListener,
+                ScreenOrientationDelegate,
+                InsetObserver.WindowInsetsConsumer {
     /**
      * Abstraction layer for runtime-specific configuration that needs to happen when setting up a
      * SurfaceView.
@@ -104,7 +116,7 @@ public class XrImmersiveOverlay
     private Delegate mOverlayDelegate;
     private Activity mActivity;
     private boolean mSurfaceReportedReady;
-    private Integer mRestoreOrientation;
+    private @Nullable Integer mRestoreOrientation;
     private boolean mCleanupInProgress;
     private XrSurfaceView mXrSurfaceView;
     private WebContents mWebContents;
@@ -112,19 +124,18 @@ public class XrImmersiveOverlay
     // Set containing all currently touching pointers.
     private HashMap<Integer, PointerData> mPointerIdToData;
     // ID of primary pointer (if present).
-    private Integer mPrimaryPointerId;
+    private @Nullable Integer mPrimaryPointerId;
 
+    @Initializer
     public void show(
-            @NonNull Delegate overlayDelegate,
-            @NonNull WebContents webContents,
-            @NonNull XrSessionCoordinator caller) {
+            Delegate overlayDelegate, WebContents webContents, XrSessionCoordinator caller) {
         if (DEBUG_LOGS) Log.i(TAG, "constructor");
         mXrSessionCoordinator = caller;
 
         mWebContents = webContents;
         mOverlayDelegate = overlayDelegate;
 
-        mActivity = XrSessionCoordinator.getActivity(webContents);
+        mActivity = assumeNonNull(XrSessionCoordinator.getActivity(webContents));
 
         mPointerIdToData = new HashMap<Integer, PointerData>();
         mPrimaryPointerId = null;
@@ -132,6 +143,16 @@ public class XrImmersiveOverlay
         // Choose a concrete implementation to create a drawable Surface and make it fullscreen.
         // It forwards SurfaceHolder callbacks and touch events to this XrImmersiveOverlay object.
         mXrSurfaceView = new XrSurfaceView();
+
+        // Register as an Insets consumer so that we can ensure we are probably rendered.
+        WindowAndroid windowAndroid = mWebContents.getTopLevelNativeWindow();
+        if (windowAndroid != null && windowAndroid.getInsetObserver() != null) {
+            windowAndroid
+                    .getInsetObserver()
+                    .addInsetsConsumer(
+                            this,
+                            InsetObserver.WindowInsetsConsumer.InsetConsumerSource.WEBXR_OVERLAY);
+        }
     }
 
     private static class PointerData {
@@ -147,8 +168,8 @@ public class XrImmersiveOverlay
     }
 
     private class XrSurfaceView {
-        private SurfaceView mSurfaceView;
-        private WebContentsObserver mWebContentsObserver;
+        private @Nullable SurfaceView mSurfaceView;
+        private final WebContentsObserver mWebContentsObserver;
         private boolean mSurfaceViewNeedsDestruction;
         private boolean mDestructionFromVisibilityChanged;
 
@@ -479,6 +500,7 @@ public class XrImmersiveOverlay
         // transport even if the currently-visible part in the surface view is smaller than this. We
         // shouldn't get resize events since we're using FLAG_LAYOUT_STABLE and are locking screen
         // orientation.
+        assumeNonNull(mWebContents.getTopLevelNativeWindow());
         DisplayAndroid display = mWebContents.getTopLevelNativeWindow().getDisplay();
         if (mSurfaceReportedReady) {
             int rotation = display.getRotation();
@@ -602,6 +624,33 @@ public class XrImmersiveOverlay
         ScreenOrientationProvider.getInstance().setOrientationDelegate(null);
         if (mRestoreOrientation != null) mActivity.setRequestedOrientation(mRestoreOrientation);
         mRestoreOrientation = null;
+
+        if (!mWebContents.isDestroyed()) {
+            WindowAndroid windowAndroid = mWebContents.getTopLevelNativeWindow();
+            if (windowAndroid != null && windowAndroid.getInsetObserver() != null) {
+                windowAndroid.getInsetObserver().removeInsetsConsumer(this);
+            }
+        }
+    }
+
+    @Override // InsetObserver.WindowInsetsConsumer
+    public WindowInsetsCompat onApplyWindowInsets(View view, WindowInsetsCompat insets) {
+        // On devices with three button navigation enabled, something about the raw camera access
+        // feature can cause our layout to get "squished" because it ends up blocking out space for
+        // the status bar, which doesn't happen when gesture navigation is enabled. This ensures
+        // that we properly take up the entire screen, as we expect we do in the `surfaceChanged`
+        // callback.
+        // We also consume IME (keyboard) insets here. In 3-button navigation mode, showing the
+        // keyboard forces the navigation bar to become visible for safety/accessibility. This
+        // temporarily exits the immersive fullscreen layout state, triggering Android's fallback
+        // 'adjustResize' behavior which shrinks the View (and squishes the WebGL canvas).
+        // Consuming the IME insets here forces the View to ignore the keyboard size and maintain
+        // its size, preserving the layout viewport. In gesture mode, this is less of an issue as
+        // the immersive state is preserved without navigation buttons to restore.
+        return new WindowInsetsCompat.Builder(insets)
+                .setInsets(WindowInsetsCompat.Type.statusBars(), Insets.NONE)
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
+                .build();
     }
 
     /**

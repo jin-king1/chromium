@@ -50,6 +50,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/html/html_font_element.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -57,7 +58,7 @@ void StyleCommands::ApplyStyle(LocalFrame& frame,
                                CSSPropertyValueSet* style,
                                InputEvent::InputType input_type) {
   const VisibleSelection& selection =
-      frame.Selection().ComputeVisibleSelectionInDOMTreeDeprecated();
+      frame.Selection().ComputeVisibleSelectionInDomTreeDeprecated();
   if (selection.IsNone())
     return;
   if (selection.IsCaret()) {
@@ -93,7 +94,7 @@ bool StyleCommands::ApplyCommandToFrame(LocalFrame& frame,
     case EditorCommandSource::kMenuOrKeyBinding:
       ApplyStyleToSelection(frame, style, input_type);
       return true;
-    case EditorCommandSource::kDOM:
+    case EditorCommandSource::kDom:
       ApplyStyle(frame, style, input_type);
       return true;
   }
@@ -218,7 +219,7 @@ bool StyleCommands::SelectionStartHasStyle(LocalFrame& frame,
       property_id, value, secure_context_mode);
   EditingStyle* const style_at_start =
       EditingStyleUtilities::CreateStyleAtSelectionStart(
-          frame.Selection().ComputeVisibleSelectionInDOMTreeDeprecated(),
+          frame.Selection().ComputeVisibleSelectionInDomTreeDeprecated(),
           property_id == CSSPropertyID::kBackgroundColor,
           style_to_check->Style());
   return style_to_check->TriStateOfStyle(frame.DomWindow(), style_at_start,
@@ -315,12 +316,37 @@ bool StyleCommands::ExecuteToggleStyleInList(LocalFrame& frame,
                                              const CSSValue& value) {
   EditingStyle* const selection_style =
       EditingStyleUtilities::CreateStyleAtSelectionStart(
-          frame.Selection().ComputeVisibleSelectionInDOMTree());
+          frame.Selection().ComputeVisibleSelectionInDomTree());
   if (!selection_style || !selection_style->Style())
     return false;
 
   const String new_style =
       ComputeToggleStyleInList(*selection_style, property_id, value);
+
+  // When toggling off a decoration in an empty element, clear the typing style
+  // completely rather than setting it to "none". This prevents stale decoration
+  // properties from being applied to subsequently typed text.
+  if (RuntimeEnabledFeatures::
+          FixStrikethroughToggleInEmptyContentEditableEnabled() &&
+      new_style == "none" &&
+      property_id == CSSPropertyID::kWebkitTextDecorationsInEffect) {
+    const VisibleSelection& selection =
+        frame.Selection().ComputeVisibleSelectionInDomTree();
+
+    if (selection.IsCaret()) {
+      Element* element = AssociatedElementOf(selection.Start());
+      if (element && !element->HasChildren()) {
+        if (EditingStyle* typing_style = frame.GetEditor().TypingStyle()) {
+          // Remove all decoration-related properties to ensure clean state.
+          // Both -webkit-text-decorations-in-effect and text-decoration-line
+          // can contribute to decorations being applied.
+          typing_style->Style()->RemoveProperty(property_id);
+          typing_style->Style()->RemoveProperty(CSSPropertyID::kTextDecoration);
+          return true;
+        }
+      }
+    }
+  }
 
   // TODO(editing-dev): We shouldn't be having to convert new style into text.
   // We should have setPropertyCSSValue.
@@ -354,21 +380,21 @@ bool StyleCommands::ExecuteUnderline(LocalFrame& frame,
       CSSPropertyID::kWebkitTextDecorationsInEffect, underline);
 }
 
-bool StyleCommands::ExecuteStyleWithCSS(LocalFrame& frame,
+bool StyleCommands::ExecuteStyleWithCss(LocalFrame& frame,
                                         Event*,
                                         EditorCommandSource,
                                         const String& value) {
-  frame.GetEditor().SetShouldStyleWithCSS(
-      !EqualIgnoringASCIICase(value, "false"));
+  frame.GetEditor().SetShouldStyleWithCss(
+      !EqualIgnoringAsciiCase(value, "false"));
   return true;
 }
 
-bool StyleCommands::ExecuteUseCSS(LocalFrame& frame,
+bool StyleCommands::ExecuteUseCss(LocalFrame& frame,
                                   Event*,
                                   EditorCommandSource,
                                   const String& value) {
-  frame.GetEditor().SetShouldStyleWithCSS(
-      EqualIgnoringASCIICase(value, "false"));
+  frame.GetEditor().SetShouldStyleWithCss(
+      EqualIgnoringAsciiCase(value, "false"));
   return true;
 }
 
@@ -402,12 +428,12 @@ EditingTriState StyleCommands::StateStrikethrough(LocalFrame& frame, Event*) {
                     "line-through");
 }
 
-EditingTriState StyleCommands::StateStyleWithCSS(LocalFrame& frame, Event*) {
+EditingTriState StyleCommands::StateStyleWithCss(LocalFrame& frame, Event*) {
   if (frame.GetInputMethodController().GetActiveEditContext()) {
     return EditingTriState::kFalse;
   }
 
-  return frame.GetEditor().ShouldStyleWithCSS() ? EditingTriState::kTrue
+  return frame.GetEditor().ShouldStyleWithCss() ? EditingTriState::kTrue
                                                 : EditingTriState::kFalse;
 }
 
@@ -557,7 +583,7 @@ EditingTriState StyleCommands::StateTextWritingDirection(
   bool has_nested_or_multiple_embeddings;
   mojo_base::mojom::blink::TextDirection selection_direction =
       TextDirectionForSelection(
-          frame.Selection().ComputeVisibleSelectionInDOMTreeDeprecated(),
+          frame.Selection().ComputeVisibleSelectionInDomTreeDeprecated(),
           frame.GetEditor().TypingStyle(), has_nested_or_multiple_embeddings);
   // TODO(editing-dev): We should be returning MixedTriState when
   // selectionDirection == direction && hasNestedOrMultipleEmbeddings
@@ -594,12 +620,12 @@ EditingTriState StyleCommands::StateUnderline(LocalFrame& frame, Event*) {
 }
 
 // Value functions
-String StyleCommands::SelectionStartCSSPropertyValue(
+String StyleCommands::SelectionStartCssPropertyValue(
     LocalFrame& frame,
     CSSPropertyID property_id) {
   EditingStyle* const selection_style =
       EditingStyleUtilities::CreateStyleAtSelectionStart(
-          frame.Selection().ComputeVisibleSelectionInDOMTreeDeprecated(),
+          frame.Selection().ComputeVisibleSelectionInDomTreeDeprecated(),
           property_id == CSSPropertyID::kBackgroundColor);
   if (!selection_style || !selection_style->Style())
     return String();
@@ -619,7 +645,7 @@ String StyleCommands::ValueStyle(LocalFrame& frame, CSSPropertyID property_id) {
   // TODO(editing-dev): Rather than retrieving the style at the start of the
   // current selection, we should retrieve the style present throughout the
   // selection for non-Mac platforms.
-  return SelectionStartCSSPropertyValue(frame, property_id);
+  return SelectionStartCssPropertyValue(frame, property_id);
 }
 
 String StyleCommands::ValueBackColor(const EditorInternalCommand&,
@@ -650,6 +676,25 @@ String StyleCommands::ValueFontSizeDelta(const EditorInternalCommand&,
                                          LocalFrame& frame,
                                          Event*) {
   return ValueStyle(frame, CSSPropertyID::kInternalFontSizeDelta);
+}
+
+String StyleCommands::ValueJustify(const EditorInternalCommand&,
+                                   LocalFrame& frame,
+                                   Event*) {
+  String value = ValueStyle(frame, CSSPropertyID::kTextAlign);
+
+  // Map logical "start"/"end" to physical "left"/"right" per
+  // https://w3c.github.io/editing/docs/execCommand/#alignment-value
+  if (value == "start" || value == "end") {
+    bool is_ltr = ValueStyle(frame, CSSPropertyID::kDirection) != "rtl";
+    if (value == "start") {
+      return is_ltr ? "left" : "right";
+    } else {
+      return is_ltr ? "right" : "left";
+    }
+  }
+
+  return value;
 }
 
 }  // namespace blink

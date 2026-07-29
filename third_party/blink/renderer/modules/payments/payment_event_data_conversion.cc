@@ -4,7 +4,7 @@
 
 #include "third_party/blink/renderer/modules/payments/payment_event_data_conversion.h"
 
-#include "third_party/blink/public/mojom/payments/payment_app.mojom-blink.h"
+#include "third_party/blink/public/mojom/payments/payment_app_events.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_payment_currency_amount.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_payment_details_modifier.h"
@@ -76,16 +76,16 @@ PaymentOptions* ToPaymentOptions(
   payment_options->setRequestPayerPhone(options->request_payer_phone);
   payment_options->setRequestShipping(options->request_shipping);
 
-  String shipping_type = "";
+  V8PaymentShippingType::Enum shipping_type;
   switch (options->shipping_type) {
     case payments::mojom::PaymentShippingType::SHIPPING:
-      shipping_type = "shipping";
+      shipping_type = V8PaymentShippingType::Enum::kShipping;
       break;
     case payments::mojom::PaymentShippingType::DELIVERY:
-      shipping_type = "delivery";
+      shipping_type = V8PaymentShippingType::Enum::kDelivery;
       break;
     case payments::mojom::PaymentShippingType::PICKUP:
-      shipping_type = "pickup";
+      shipping_type = V8PaymentShippingType::Enum::kPickup;
       break;
   }
   payment_options->setShippingType(shipping_type);

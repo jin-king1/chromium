@@ -4,73 +4,66 @@
 
 package org.chromium.chrome.browser.ui.signin;
 
-import android.os.Parcel;
-import android.os.Parcelable;
+import android.text.TextUtils;
 
 import androidx.annotation.DrawableRes;
-import androidx.annotation.StringRes;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninConfig;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
 
-/**
- * Class containing IDs of resources for the fullscreen sign-in view and the history sync opt-in
- * view.
- */
-public final class FullscreenSigninAndHistorySyncConfig implements Parcelable {
+import java.util.Objects;
+
+/** Class containing resources for the fullscreen sign-in view and the history sync opt-in view. */
+@NullMarked
+public final class FullscreenSigninAndHistorySyncConfig {
     public final FullscreenSigninConfig signinConfig;
     public final HistorySyncConfig historySyncConfig;
     public final @HistorySyncConfig.OptInMode int historyOptInMode;
 
     /**
-     * Builder for {@link FullscreenSigninAndHistorySyncConfig} which contains resource IDs for the
+     * Builder for {@link FullscreenSigninAndHistorySyncConfig} which contains resources for the
      * sign-in and history sync fullscreen views.
      */
     public static class Builder {
-        private @StringRes int mSigninTitleId = R.string.signin_fre_title;
-        private @StringRes int mSigninSubtitleId = R.string.signin_fre_subtitle;
-        private @StringRes int mSigninDismissTextId = R.string.signin_fre_dismiss_button;
+        private final String mSigninTitle;
+        private final String mSigninSubtitle;
+        private final String mSigninDismissText;
         private @DrawableRes int mSigninLogoId;
-        private @StringRes int mHistorySyncTitleId;
-        private @StringRes int mHistorySyncSubtitleId;
+        private boolean mShouldDisableSignin;
+        private final String mHistorySyncTitle;
+        private final String mHistorySyncSubtitle;
         private @HistorySyncConfig.OptInMode int mHistoryOptInMode =
                 HistorySyncConfig.OptInMode.OPTIONAL;
+        private @Nullable String mSelectedAccountEmail;
+        private @SigninAndHistorySyncCoordinator.SigninFlow int mSigninFlow =
+                SigninAndHistorySyncCoordinator.SigninFlow.DEFAULT_SIGNIN;
 
-        public Builder() {}
-
-        public Builder signinTitleId(@StringRes int signinTitleId) {
-            assert signinTitleId != 0;
-            mSigninTitleId = signinTitleId;
-            return this;
+        private Builder(
+                String signinTitle,
+                String signinSubtitle,
+                String signinDismissText,
+                String historySyncTitle,
+                String historySyncSubtitle) {
+            mSigninTitle = signinTitle;
+            mSigninSubtitle = signinSubtitle;
+            mSigninDismissText = signinDismissText;
+            mHistorySyncTitle = historySyncTitle;
+            mHistorySyncSubtitle = historySyncSubtitle;
         }
 
-        public Builder signinSubtitleId(@StringRes int signinSubtitleId) {
-            assert signinSubtitleId != 0;
-            mSigninSubtitleId = signinSubtitleId;
-            return this;
-        }
-
-        public Builder signinDismissTextId(@StringRes int signinDismissTextId) {
-            assert signinDismissTextId != 0;
-            mSigninDismissTextId = signinDismissTextId;
-            return this;
-        }
-
+        // Set the drawable id of the sign-in screen logo. Should not be 0.
         public Builder signinLogoId(@DrawableRes int signinLogoId) {
-            assert signinLogoId != 0;
+            // TODO(crbug.com/390418475): Add assert to ensure it's not 0 once default null value
+            // will be removed.
             mSigninLogoId = signinLogoId;
             return this;
         }
 
-        public Builder historySyncTitleId(@StringRes int historySyncTitleId) {
-            assert historySyncTitleId != 0;
-            mHistorySyncTitleId = historySyncTitleId;
-            return this;
-        }
-
-        public Builder historySyncSubtitleId(@StringRes int historySyncSubtitleId) {
-            assert historySyncSubtitleId != 0;
-            mHistorySyncSubtitleId = historySyncSubtitleId;
+        // Set whether sign-in should be disabled. See {@link FullscreenSigninConfig}
+        public Builder shouldDisableSignin(boolean shouldDisableSignin) {
+            mShouldDisableSignin = shouldDisableSignin;
             return this;
         }
 
@@ -79,35 +72,35 @@ public final class FullscreenSigninAndHistorySyncConfig implements Parcelable {
             return this;
         }
 
+        public Builder selectedAccountEmail(@Nullable String selectedAccountEmail) {
+            mSelectedAccountEmail = selectedAccountEmail;
+            return this;
+        }
+
+        public Builder signinFlow(@SigninAndHistorySyncCoordinator.SigninFlow int signinFlow) {
+            mSigninFlow = signinFlow;
+            return this;
+        }
+
         public FullscreenSigninAndHistorySyncConfig build() {
             final FullscreenSigninConfig signinConfig =
                     new FullscreenSigninConfig(
-                            /* titleId= */ mSigninTitleId,
-                            /* subtitleId= */ mSigninSubtitleId,
-                            /* dismissTextId= */ mSigninDismissTextId,
-                            /* logoId= */ mSigninLogoId);
+                            /* title= */ mSigninTitle,
+                            /* subtitle= */ mSigninSubtitle,
+                            /* dismissText= */ mSigninDismissText,
+                            /* logoId= */ mSigninLogoId,
+                            /* shouldDisableSignin= */ mShouldDisableSignin,
+                            /* surveyType= */ null,
+                            /* selectedAccountEmail= */ mSelectedAccountEmail,
+                            /* signinFlow= */ mSigninFlow);
             final HistorySyncConfig historySyncConfig =
                     new HistorySyncConfig(
-                            /* titleId= */ mHistorySyncTitleId,
-                            /* subtitleId= */ mHistorySyncSubtitleId);
+                            /* title= */ mHistorySyncTitle, /* subtitle= */ mHistorySyncSubtitle);
 
             return new FullscreenSigninAndHistorySyncConfig(
                     signinConfig, historySyncConfig, mHistoryOptInMode);
         }
     }
-
-    public static final Parcelable.Creator<FullscreenSigninAndHistorySyncConfig> CREATOR =
-            new Parcelable.Creator<FullscreenSigninAndHistorySyncConfig>() {
-                @Override
-                public FullscreenSigninAndHistorySyncConfig createFromParcel(Parcel in) {
-                    return new FullscreenSigninAndHistorySyncConfig(in);
-                }
-
-                @Override
-                public FullscreenSigninAndHistorySyncConfig[] newArray(int size) {
-                    return new FullscreenSigninAndHistorySyncConfig[size];
-                }
-            };
 
     private FullscreenSigninAndHistorySyncConfig(
             FullscreenSigninConfig signinConfig,
@@ -118,24 +111,57 @@ public final class FullscreenSigninAndHistorySyncConfig implements Parcelable {
         this.historyOptInMode = historyOptInMode;
     }
 
-    private FullscreenSigninAndHistorySyncConfig(Parcel in) {
-        this(
-                in.readParcelable(FullscreenSigninConfig.class.getClassLoader()),
-                in.readParcelable(HistorySyncConfig.class.getClassLoader()),
-                /* historyOptInMode= */ in.readInt());
+    /** Creates a builder for the fresh sign-in flow. */
+    public static Builder builder(
+            String signinTitle,
+            String signinSubtitle,
+            String signinDismissText,
+            String historySyncTitle,
+            String historySyncSubtitle) {
+        return new Builder(
+                signinTitle,
+                signinSubtitle,
+                signinDismissText,
+                historySyncTitle,
+                historySyncSubtitle);
     }
 
-    /** Implements {@link Parcelable} */
-    @Override
-    public int describeContents() {
-        return 0;
+    /** Creates a builder for the switch account flow. */
+    public static Builder builderForSwitchAccountFlow(
+            String signinTitle,
+            String signinSubtitle,
+            String signinDismissText,
+            String historySyncTitle,
+            String historySyncSubtitle,
+            String selectedAccountEmail) {
+        Builder builder =
+                new Builder(
+                        signinTitle,
+                        signinSubtitle,
+                        signinDismissText,
+                        historySyncTitle,
+                        historySyncSubtitle);
+        assert !TextUtils.isEmpty(selectedAccountEmail)
+                : "Selected account email cannot be null or empty!";
+        builder.mSelectedAccountEmail = selectedAccountEmail;
+        builder.mSigninFlow = SigninAndHistorySyncCoordinator.SigninFlow.SWITCH_ACCOUNT;
+        return builder;
     }
 
-    /** Implements {@link Parcelable} */
     @Override
-    public void writeToParcel(Parcel out, int flags) {
-        out.writeParcelable(signinConfig, 0);
-        out.writeParcelable(historySyncConfig, 0);
-        out.writeInt(historyOptInMode);
+    public boolean equals(@Nullable Object object) {
+        if (!(object instanceof FullscreenSigninAndHistorySyncConfig)) {
+            return false;
+        }
+
+        FullscreenSigninAndHistorySyncConfig other = (FullscreenSigninAndHistorySyncConfig) object;
+        return signinConfig.equals(other.signinConfig)
+                && historySyncConfig.equals(other.historySyncConfig)
+                && historyOptInMode == other.historyOptInMode;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(signinConfig, historySyncConfig, historyOptInMode);
     }
 }

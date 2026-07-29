@@ -21,6 +21,7 @@
 #include "base/time/time.h"
 #include "content/browser/notifications/platform_notification_context_impl.h"
 #include "content/browser/service_worker/embedded_worker_test_helper.h"
+#include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/common/content_client.h"
@@ -50,6 +51,11 @@
 
 using ::testing::_;
 using ::testing::Return;
+
+MATCHER_P(PermissionTypeMatcher, id, "") {
+  return ::testing::Matches(::testing::Eq(id))(
+      blink::PermissionDescriptorToPermissionType(arg));
+}
 
 namespace content {
 
@@ -162,10 +168,14 @@ class BlinkNotificationServiceImplTest : public ::testing::Test {
     options.scope = GURL(kTestOrigin);
 
     {
+      auto fetch_client_settings_object =
+          blink::mojom::FetchClientSettingsObject::New();
+      fetch_client_settings_object->policy_container_policies =
+          blink::mojom::PolicyContainerPolicies::New();
       base::RunLoop run_loop;
       embedded_worker_helper_->context()->RegisterServiceWorker(
           GURL(kTestServiceWorkerUrl), storage_key_, options,
-          blink::mojom::FetchClientSettingsObject::New(),
+          std::move(fetch_client_settings_object),
           base::BindOnce(
               &BlinkNotificationServiceImplTest::DidRegisterServiceWorker,
               base::Unretained(this), &service_worker_registration_id,
@@ -182,7 +192,7 @@ class BlinkNotificationServiceImplTest : public ::testing::Test {
 
     {
       base::RunLoop run_loop;
-      embedded_worker_helper_->context()->registry()->FindRegistrationForId(
+      embedded_worker_helper_->context()->registry().FindRegistrationForId(
           service_worker_registration_id, storage_key_,
           base::BindOnce(&BlinkNotificationServiceImplTest::
                              DidFindServiceWorkerRegistration,
@@ -405,14 +415,16 @@ class BlinkNotificationServiceImplTest : public ::testing::Test {
         static_cast<MockPermissionManager*>(
             browser_context_.GetPermissionControllerDelegate());
 
-    ON_CALL(*mock_permission_manager,
-            GetPermissionStatusForCurrentDocument(
-                blink::PermissionType::NOTIFICATIONS, _, _))
-        .WillByDefault(Return(permission_status));
-    ON_CALL(*mock_permission_manager,
-            GetPermissionStatusForWorker(blink::PermissionType::NOTIFICATIONS,
-                                         _, _))
-        .WillByDefault(Return(permission_status));
+    ON_CALL(
+        *mock_permission_manager,
+        GetPermissionResultForCurrentDocument(
+            PermissionTypeMatcher(blink::PermissionType::NOTIFICATIONS), _, _))
+        .WillByDefault(Return(PermissionResult(permission_status)));
+    ON_CALL(
+        *mock_permission_manager,
+        GetPermissionResultForWorker(
+            PermissionTypeMatcher(blink::PermissionType::NOTIFICATIONS), _, _))
+        .WillByDefault(Return(PermissionResult(permission_status)));
   }
 
  protected:
@@ -462,6 +474,7 @@ class BlinkNotificationServiceImplTest : public ::testing::Test {
 
   RenderViewHostTestEnabler rvh_enabler_;
 
+ protected:
   std::unique_ptr<WebContents> contents_;
 };
 
@@ -503,6 +516,34 @@ TEST_F(BlinkNotificationServiceImplTest, GetPermissionStatus) {
   }
 
   EXPECT_EQ(blink::mojom::PermissionStatus::ASK, GetPermissionCallbackResult());
+}
+
+TEST_F(BlinkNotificationServiceImplTest, OpaqueOriginDeniedNotifications) {
+  SetPermissionStatus(blink::mojom::PermissionStatus::GRANTED);
+
+  // Create a service with an opaque origin storage key.
+  blink::StorageKey opaque_storage_key =
+      blink::StorageKey::CreateFirstParty(url::Origin());
+  mojo::Remote<blink::mojom::NotificationService>
+      opaque_notification_service_remote;
+
+  notification_context_->CreateService(
+      &render_process_host_, opaque_storage_key,
+      /*document_url=*/GURL(),
+      contents_.get()->GetPrimaryMainFrame()->GetWeakDocumentPtr(),
+      RenderProcessHost::NotificationServiceCreatorType::kDocument,
+      opaque_notification_service_remote.BindNewPipeAndPassReceiver());
+
+  {
+    base::RunLoop run_loop;
+    opaque_notification_service_remote->GetPermissionStatus(base::BindOnce(
+        &BlinkNotificationServiceImplTest::DidGetPermissionStatus,
+        base::Unretained(this), run_loop.QuitClosure()));
+    run_loop.Run();
+  }
+
+  EXPECT_EQ(blink::mojom::PermissionStatus::DENIED,
+            GetPermissionCallbackResult());
 }
 
 TEST_F(BlinkNotificationServiceImplTest,

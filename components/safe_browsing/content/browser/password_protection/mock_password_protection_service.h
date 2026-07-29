@@ -79,8 +79,13 @@ class MockPasswordProtectionService : public PasswordProtectionService {
                     LoginReputationClientResponse::VerdictType,
                     const std::string&,
                     ReusedPasswordAccountType));
-  MOCK_METHOD5(MaybeReportPasswordReuseDetected,
-               void(const GURL&, const std::string&, PasswordType, bool, bool));
+  MOCK_METHOD6(MaybeReportPasswordReuseDetected,
+               void(const GURL&,
+                    const std::string&,
+                    PasswordType,
+                    bool,
+                    bool,
+                    const ReferrerChain&));
   MOCK_METHOD3(UpdateSecurityState,
                void(safe_browsing::SBThreatType,
                     ReusedPasswordAccountType,
@@ -98,12 +103,9 @@ class MockPasswordProtectionService : public PasswordProtectionService {
                     const safe_browsing::LoginReputationClientResponse*));
   MOCK_METHOD2(CanShowInterstitial,
                bool(ReusedPasswordAccountType, const GURL&));
-  MOCK_METHOD5(MaybeStartPasswordFieldOnFocusRequest,
-               void(content::WebContents*,
-                    const GURL&,
-                    const GURL&,
-                    const GURL&,
-                    const std::string&));
+  MOCK_METHOD4(
+      MaybeStartPasswordFieldOnFocusRequest,
+      void(content::WebContents*, const GURL&, const GURL&, const GURL&));
   MOCK_METHOD6(
       MaybeStartProtectedPasswordEntryRequest,
       void(content::WebContents*,
@@ -112,8 +114,14 @@ class MockPasswordProtectionService : public PasswordProtectionService {
            PasswordType,
            const std::vector<password_manager::MatchingReusedCredential>&,
            bool));
-  MOCK_CONST_METHOD0(GetUserPopulationPref,
-                     ChromeUserPopulation::UserPopulation());
+  MOCK_METHOD(void,
+              MaybeTriggerClientSideDetectionScan,
+              (content::WebContents*),
+              (override));
+  MOCK_METHOD3(MaybeStartOtpPhishingRequest,
+               void(content::WebContents*,
+                    const GURL&,
+                    PasswordProtectionRequest::OtpPhishingVerdictCallback));
 };
 
 }  // namespace safe_browsing

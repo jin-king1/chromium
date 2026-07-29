@@ -2,18 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/services/file_util/single_file_tar_reader.h"
 
 #include <memory>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/files/file.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
 #include "chrome/common/chrome_paths.h"
@@ -44,14 +40,14 @@ TEST_F(SingleFileTarReaderTest, ExtractTarFile) {
   std::vector<uint8_t> tar_buffer(kTarBufferSize);
   std::vector<uint8_t> contents;
   while (!tar_reader.IsComplete()) {
-    const int bytes_read = src_file.ReadAtCurrentPos(
-        reinterpret_cast<char*>(tar_buffer.data()), tar_buffer.size());
-    ASSERT_GE(bytes_read, 0);
+    const std::optional<size_t> bytes_read =
+        src_file.ReadAtCurrentPos(tar_buffer);
+    ASSERT_TRUE(bytes_read.has_value());
+    ASSERT_GE(*bytes_read, 0u);
 
     base::span<const uint8_t> bin_buffer;
-    tar_reader.ExtractChunk(
-        base::span(tar_buffer).first(base::checked_cast<size_t>(bytes_read)),
-        bin_buffer);
+    tar_reader.ExtractChunk(base::span(tar_buffer).first(*bytes_read),
+                            bin_buffer);
     contents.insert(contents.begin(), bin_buffer.begin(), bin_buffer.end());
   }
 
@@ -68,6 +64,11 @@ TEST_F(SingleFileTarReaderTest, ReadOctalNumber) {
                                      0x30, 0x30, 0x31, 0x32, 0x33, 0x00};
   EXPECT_EQ(83u, SingleFileTarReader::ReadOctalNumber(kNumber));
 
+  // Test space termination.
+  const std::vector<uint8_t> kSpaceTerminated{
+      0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x32, 0x33, 0x20};
+  EXPECT_EQ(83u, SingleFileTarReader::ReadOctalNumber(kSpaceTerminated));
+
   // Test the case of big-endian integer with padding.
   // 20bc13a00(16) = 8787147264(10)
   const std::vector<uint8_t> kBigNumber{0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -76,7 +77,16 @@ TEST_F(SingleFileTarReaderTest, ReadOctalNumber) {
 
   // Test if ReadOctalNumber return null when the input is shorter than 8 bytes.
   const std::vector<uint8_t> kShortNumber{0x30, 0x30, 0x30, 0x30, 0x30, 0x30};
-  EXPECT_TRUE(!SingleFileTarReader::ReadOctalNumber(kShortNumber).has_value());
+  EXPECT_FALSE(SingleFileTarReader::ReadOctalNumber(kShortNumber).has_value());
+
+  // Test invalid character returning `std::nullopt`.
+  // This explicitly prevents an underflow issue where non-ASCII characters
+  // (like 0xFF) would be cast to a negative char, causing an underflow into
+  // a massive `uint64_t` value when subtracting '0'.
+  const std::vector<uint8_t> kInvalidNumber{0xFF, 0x30, 0x30, 0x30, 0x30, 0x30,
+                                            0x30, 0x30, 0x31, 0x32, 0x33, 0x00};
+  EXPECT_FALSE(
+      SingleFileTarReader::ReadOctalNumber(kInvalidNumber).has_value());
 }
 
 TEST_F(SingleFileTarReaderTest, EmptyFile) {
@@ -87,14 +97,14 @@ TEST_F(SingleFileTarReaderTest, EmptyFile) {
 
   SingleFileTarReader tar_reader;
   std::vector<uint8_t> tar_buffer(kTarBufferSize);
-  const int bytes_read = src_file.ReadAtCurrentPos(
-      reinterpret_cast<char*>(tar_buffer.data()), tar_buffer.size());
-  ASSERT_GE(bytes_read, 0);
+  const std::optional<size_t> bytes_read =
+      src_file.ReadAtCurrentPos(tar_buffer);
+  ASSERT_TRUE(bytes_read.has_value());
+  ASSERT_GE(*bytes_read, 0u);
 
   base::span<const uint8_t> bin_buffer;
-  tar_reader.ExtractChunk(
-      base::span(tar_buffer).first(base::checked_cast<size_t>(bytes_read)),
-      bin_buffer);
+  tar_reader.ExtractChunk(base::span(tar_buffer).first(*bytes_read),
+                          bin_buffer);
 
   EXPECT_TRUE(tar_reader.IsComplete());
 }

@@ -20,10 +20,10 @@
 #include "base/types/expected.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/commands/command_result.h"
-#include "chrome/browser/web_applications/isolated_web_apps/error/uma_logging.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_storage_location.h"
 #include "chrome/browser/web_applications/locks/all_apps_lock.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
+#include "components/webapps/isolated_web_apps/error/uma_logging.h"
+#include "components/webapps/isolated_web_apps/types/storage_location.h"
 
 namespace web_app {
 
@@ -33,28 +33,25 @@ std::set<base::FilePath> RetrieveAllInstalledIsolatedWebAppsPaths(
     const Profile& profile) {
   std::set<base::FilePath> isolated_web_apps_paths;
   const WebAppRegistrar& registrar = lock.registrar();
-  for (const webapps::AppId& app_id : registrar.GetAppIds()) {
-    const WebApp& app = CHECK_DEREF(registrar.GetAppById(app_id));
-    if (const auto& isolation_data = app.isolation_data()) {
-      const auto* owned_bundle =
-          absl::get_if<IsolatedWebAppStorageLocation::OwnedBundle>(
-              &isolation_data->location().variant());
-      if (!owned_bundle) {
-        continue;
-      }
+  for (const auto& iwa : registrar.GetApps(WebAppFilter::IsIsolatedApp())) {
+    const auto* owned_bundle =
+        std::get_if<IsolatedWebAppStorageLocation::OwnedBundle>(
+            &iwa.isolation_data()->location().variant());
+    if (!owned_bundle) {
+      continue;
+    }
 
-      isolated_web_apps_paths.insert(
-          owned_bundle->GetPath(profile.GetPath()).DirName());
+    isolated_web_apps_paths.insert(
+        owned_bundle->GetPath(profile.GetPath()).DirName());
 
-      if (const auto& pending_update_info =
-              isolation_data->pending_update_info()) {
-        const auto* pending_update_location =
-            absl::get_if<IsolatedWebAppStorageLocation::OwnedBundle>(
-                &pending_update_info->location.variant());
-        if (pending_update_location) {
-          isolated_web_apps_paths.insert(
-              pending_update_location->GetPath(profile.GetPath()).DirName());
-        }
+    if (const auto& pending_update_info =
+            iwa.isolation_data()->pending_update_info()) {
+      const auto* pending_update_location =
+          std::get_if<IsolatedWebAppStorageLocation::OwnedBundle>(
+              &pending_update_info->location.variant());
+      if (pending_update_location) {
+        isolated_web_apps_paths.insert(
+            pending_update_location->GetPath(profile.GetPath()).DirName());
       }
     }
   }
@@ -144,9 +141,8 @@ std::ostream& operator<<(
     std::ostream& os,
     const CleanupOrphanedIsolatedWebAppsCommandSuccess& success) {
   return os << "CleanupOrphanedIsolatedWebAppsCommandSuccess "
-            << base::Value::Dict().Set(
-                   "number_of_cleaned_up_directories",
-                   success.number_of_cleaned_up_directories);
+            << base::DictValue().Set("number_of_cleaned_up_directories",
+                                     success.number_of_cleaned_up_directories);
 }
 
 std::ostream& operator<<(
@@ -161,7 +157,7 @@ std::ostream& operator<<(
     case CleanupOrphanedIsolatedWebAppsCommandError::Type::kSystemShutdown:
       type = "SystemShutdown";
   }
-  return os << base::Value::Dict()
+  return os << base::DictValue()
                    .Set("message", error.message)
                    .Set("type", type)
                    .DebugString();
@@ -192,9 +188,12 @@ void CleanupOrphanedIsolatedWebAppsCommand::StartWithLock(
   lock_ = std::move(lock);
 
   const base::FilePath profile_dir = profile_->GetPath();
+  // Since this command is holding an AllAppsLock, it's undesirable to post
+  // low-prio background tasks with BEST_EFFORT; USER_VISIBLE feels like a
+  // better tradeoff.
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE,
-      {base::TaskPriority::BEST_EFFORT, base::MayBlock(),
+      {base::TaskPriority::USER_VISIBLE, base::MayBlock(),
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
       base::BindOnce(&RetrieveAllIsolatedWebAppsDirectories, profile_dir),
       base::BindOnce(&CleanupOrphanedIsolatedWebAppsCommand::
@@ -215,6 +214,15 @@ void CleanupOrphanedIsolatedWebAppsCommand::
                               std::back_inserter(directories_to_delete));
 
   number_of_deleted_directories_ = directories_to_delete.size();
+  if (directories_to_delete.empty()) {
+    // Do not post a task if there's no job to do.
+    CommandComplete(/*success=*/true);
+    return;
+  }
+
+  // Since this command is holding an AllAppsLock, it's undesirable to post
+  // low-prio background tasks with BEST_EFFORT; USER_VISIBLE feels like a
+  // better tradeoff.
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE,
       {base::TaskPriority::USER_VISIBLE, base::MayBlock(),

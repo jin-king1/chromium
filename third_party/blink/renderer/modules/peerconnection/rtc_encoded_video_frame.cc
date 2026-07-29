@@ -6,10 +6,10 @@
 
 #include <utility>
 
+#include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_codec_specifics_vp_8.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_decode_target_indication.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_metadata.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_options.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
@@ -24,11 +24,10 @@ namespace blink {
 
 // Allow all fields to be set when calling RTCEncodedVideoFrame.setMetadata.
 BASE_FEATURE(kAllowRTCEncodedVideoFrameSetMetadataAllFields,
-             "AllowRTCEncodedVideoFrameSetMetadataAllFields",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 namespace {
-static constexpr size_t kMaxNumDependencies = 8;
+constexpr size_t kMaxNumDependencies = 8;
 
 bool IsAllowedSetMetadataChange(
     const RTCEncodedVideoFrameMetadata* original_metadata,
@@ -67,8 +66,8 @@ base::expected<void, String> ValidateMetadata(
     return base::unexpected("new metadata has member(s) missing.");
   }
 
-  // This might happen if the dependency descriptor is not set.
-  if (!metadata->hasFrameId() && metadata->hasDependencies()) {
+  if (!metadata->hasFrameId() && metadata->hasDependencies() &&
+      !metadata->dependencies().empty()) {
     return base::unexpected(
         "new metadata has frameID missing, but has dependencies");
   }
@@ -124,7 +123,7 @@ RTCEncodedVideoFrame* RTCEncodedVideoFrame::Create(
     if (!set_metadata.has_value()) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kInvalidModificationError,
-          "Cannot create a new VideoFrame: " + set_metadata.error());
+          StrCat({"Cannot create a new VideoFrame: ", set_metadata.error()}));
       return nullptr;
     }
   }
@@ -173,7 +172,7 @@ RTCEncodedVideoFrameMetadata* RTCEncodedVideoFrame::getMetadata(
     metadata->setPayloadType(*delegate_->PayloadType());
   }
   if (delegate_->MimeType()) {
-    metadata->setMimeType(WTF::String::FromUTF8(*delegate_->MimeType()));
+    metadata->setMimeType(String::FromUtf8(*delegate_->MimeType()));
   }
 
   if (RuntimeEnabledFeatures::RTCEncodedVideoFrameAdditionalMetadataEnabled()) {
@@ -199,11 +198,11 @@ RTCEncodedVideoFrameMetadata* RTCEncodedVideoFrame::getMetadata(
     metadata->setFrameId(*webrtc_metadata->GetFrameId());
   }
 
-  Vector<int64_t> dependencies;
-  for (const auto& dependency : webrtc_metadata->GetFrameDependencies()) {
-    dependencies.push_back(dependency);
+  if (auto webrtc_deps = webrtc_metadata->GetDependencies()) {
+    Vector<int64_t> dependencies;
+    dependencies.append_range(*webrtc_deps);
+    metadata->setDependencies(std::move(dependencies));
   }
-  metadata->setDependencies(dependencies);
   metadata->setWidth(webrtc_metadata->GetWidth());
   metadata->setHeight(webrtc_metadata->GetHeight());
   metadata->setSpatialIndex(webrtc_metadata->GetSpatialIndex());
@@ -214,12 +213,12 @@ RTCEncodedVideoFrameMetadata* RTCEncodedVideoFrame::getMetadata(
     if (std::optional<base::TimeTicks> receive_time =
             delegate_->ReceiveTime()) {
       metadata->setReceiveTime(
-          CalculateRTCEncodedFrameTimestamp(context, *receive_time));
+          RTCTimeStampFromTimeTicks(context, *receive_time));
     }
-    if (std::optional<base::TimeTicks> capture_time =
+    if (std::optional<CaptureTimeInfo> capture_time_info =
             delegate_->CaptureTime()) {
-      metadata->setCaptureTime(
-          CalculateRTCEncodedFrameTimestamp(context, *capture_time));
+      metadata->setCaptureTime(RTCEncodedFrameTimestampFromCaptureTimeInfo(
+          context, *capture_time_info));
     }
     if (std::optional<base::TimeDelta> sender_capture_time_offset =
             delegate_->SenderCaptureTimeOffset()) {
@@ -277,7 +276,7 @@ base::expected<void, String> RTCEncodedVideoFrame::SetMetadata(
     webrtc_metadata.SetFrameId(metadata->frameId());
   }
   if (metadata->hasDependencies()) {
-    webrtc_metadata.SetFrameDependencies(metadata->dependencies());
+    webrtc_metadata.SetDependencies(metadata->dependencies());
   }
   webrtc_metadata.SetWidth(metadata->width());
   webrtc_metadata.SetHeight(metadata->height());
@@ -303,7 +302,7 @@ void RTCEncodedVideoFrame::setMetadata(ExecutionContext* context,
   if (!set_metadata.has_value()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidModificationError,
-        "Cannot setMetadata: " + set_metadata.error());
+        StrCat({"Cannot setMetadata: ", set_metadata.error()}));
   }
 }
 

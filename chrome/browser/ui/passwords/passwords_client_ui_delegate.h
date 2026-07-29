@@ -5,7 +5,6 @@
 #ifndef CHROME_BROWSER_UI_PASSWORDS_PASSWORDS_CLIENT_UI_DELEGATE_H_
 #define CHROME_BROWSER_UI_PASSWORDS_PASSWORDS_CLIENT_UI_DELEGATE_H_
 
-#include <map>
 #include <memory>
 #include <vector>
 
@@ -21,6 +20,7 @@ class WebContents;
 
 namespace password_manager {
 class PasswordFormManagerForUI;
+struct StoredCredential;
 }
 
 namespace url {
@@ -87,20 +87,21 @@ class PasswordsClientUIDelegate {
   virtual void OnPromptEnableAutoSignin() = 0;
 
   // Called when the password will be saved automatically, but we still wish to
-  // visually inform the user that the save has occured.
+  // visually inform the user that the save has occurred.
   virtual void OnAutomaticPasswordSave(
       std::unique_ptr<password_manager::PasswordFormManagerForUI> form_manager,
       bool is_update_confirmation) = 0;
 
   // Called when a form is autofilled with login information, so we can manage
   // password credentials for the current site which are stored in
-  // |password_forms|. This stores a copy of |password_forms| and shows
-  // the manage password icon. |federated_matches| contain the matching stored
-  // federated credentials to display in the UI.
+  // |password_credentials|. This stores a copy of |password_credentials| and
+  // shows the manage password icon. |federated_matches| contain the matching
+  // stored federated credentials to display in the UI.
   virtual void OnPasswordAutofilled(
-      base::span<const password_manager::PasswordForm> password_forms,
+      base::span<const password_manager::StoredCredential> password_credentials,
       const url::Origin& origin,
-      base::span<const password_manager::PasswordForm> federated_matches) = 0;
+      base::span<const password_manager::StoredCredential>
+          federated_matches) = 0;
 
   // Called when user credentials were leaked. This triggers the UI to prompt
   // the user whether they would like to check their passwords.
@@ -128,8 +129,8 @@ class PasswordsClientUIDelegate {
   virtual void OnPasskeySaved(bool gpm_pin_created,
                               std::string passkey_rp_id) = 0;
 
-  // Called when a passkey has just been deleted to display a confirmation of
-  // that to the user.
+  // Called when a passkey has just been hidden or deleted to display a
+  // confirmation of to the user. The UI does not distinguish between both.
   virtual void OnPasskeyDeleted() = 0;
 
   // Called when a passkey has just been updated to display a confirmation of

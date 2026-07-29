@@ -11,13 +11,16 @@ import androidx.annotation.IntDef;
 import org.chromium.base.ObserverList;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.paintpreview.player.CompositorStatus;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /** Helper class for recording metrics related to TabbedPaintPreview. */
+@NullMarked
 public class StartupPaintPreviewMetrics {
     /** Used for recording the cause for exiting the Paint Preview player. */
     @IntDef({
@@ -56,7 +59,7 @@ public class StartupPaintPreviewMetrics {
 
         /**
          * Called on the first paint of a paint preview in the case where the first paint was not
-         * recorded. Added to aid in investigating crbug.com/1273097.
+         * recorded. Added to aid in investigating crbug.com/40806757.
          */
         void onUnrecordedFirstPaint();
     }
@@ -96,15 +99,16 @@ public class StartupPaintPreviewMetrics {
                 "Browser.PaintPreview.TabbedPlayer.UpTime.RemovedOnAccessibilityNotSupported");
     }
 
+    private final ObserverList<PaintPreviewMetricsObserver> mObservers = new ObserverList<>();
     private long mShownTime;
     private boolean mFirstPaintHappened;
-    private final ObserverList<PaintPreviewMetricsObserver> mObservers = new ObserverList<>();
 
     void onShown() {
         mShownTime = System.currentTimeMillis();
     }
 
-    void onFirstPaint(long activityOnCreateTimestamp, Supplier<Boolean> shouldRecordFirstPaint) {
+    void onFirstPaint(
+            long activityOnCreateTimestamp, @Nullable Supplier<Boolean> shouldRecordFirstPaint) {
         mFirstPaintHappened = true;
         if (shouldRecordFirstPaint != null && shouldRecordFirstPaint.get()) {
             long durationMs = SystemClock.elapsedRealtime() - activityOnCreateTimestamp;

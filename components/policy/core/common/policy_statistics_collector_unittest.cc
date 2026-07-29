@@ -61,12 +61,15 @@ const char kTestChromeSchema[] = R"(
     })";
 
 constexpr auto kTestPolicyDetails = std::to_array<PolicyDetails>({
-    // is_deprecated is_future is_device_policy id  max_external_data_size
-    {false, false, kProfile, kTestPolicy1Id, 0},
-    {false, false, kProfile, kTestPolicy2Id, 0},
-    {false, false, kProfile, kTestPolicy3Id, 0},
-    {false, false, kProfile, kEnrollmentTokenPolicyId, 0},
-    {false, false, kProfile, kEnrollmentOptionPolicyId, 0},
+    // is_deprecated, is_future, supports_dynamic_refresh, is_device_policy,
+    // source_restriction id, max_external_data_size
+    {false, false, false, kProfile, kSourceRestrictionNone, kTestPolicy1Id, 0},
+    {false, false, false, kProfile, kSourceRestrictionNone, kTestPolicy2Id, 0},
+    {false, false, false, kProfile, kSourceRestrictionNone, kTestPolicy3Id, 0},
+    {false, false, false, kProfile, kSourceRestrictionNone, kEnrollmentTokenPolicyId,
+     0},
+    {false, false, false, kProfile, kSourceRestrictionNone, kEnrollmentOptionPolicyId,
+     0},
 });
 
 }  // namespace
@@ -86,8 +89,8 @@ class PolicyStatisticsCollectorTest : public testing::Test {
     policy_details_.SetDetails(kEnrollmentTokenPolicy, &kTestPolicyDetails[3]);
     policy_details_.SetDetails(kEnrollmentOptionPolicy, &kTestPolicyDetails[4]);
 
-    prefs_.registry()->RegisterInt64Pref(
-        policy_prefs::kLastPolicyStatisticsUpdate, 0);
+    prefs_.registry()->RegisterTimePref(
+        policy_prefs::kLastPolicyStatisticsUpdate, base::Time());
 
     // Set up default function behaviour.
     EXPECT_CALL(policy_service_, GetPolicies(PolicyNamespace(

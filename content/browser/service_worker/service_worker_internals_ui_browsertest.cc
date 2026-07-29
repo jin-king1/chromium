@@ -10,13 +10,16 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/browser/service_worker/service_worker_registration.h"
 #include "content/browser/service_worker/service_worker_test_utils.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -157,7 +160,7 @@ class SWOnStartedObserver
   // ServiceWorkerContextCoreObserver overrides.
   void OnStarted(int64_t version_id,
                  const GURL& scope,
-                 int process_id,
+                 ChildProcessId process_id,
                  const GURL& script_url,
                  const blink::ServiceWorkerToken& token,
                  const blink::StorageKey& key) override {
@@ -235,7 +238,7 @@ class ServiceWorkerInternalsUIBrowserTest : public ContentBrowserTest {
     wrapper()
         ->context()
         ->registry()
-        ->GetRemoteStorageControl()
+        .GetRemoteStorageControl()
         .FlushForTesting();
     content::RunAllTasksUntilIdle();
     wrapper_ = nullptr;
@@ -334,6 +337,7 @@ class ServiceWorkerInternalsUIBrowserTest : public ContentBrowserTest {
       // Register returns when the promise is resolved.
       public_context()->RegisterServiceWorker(
           embedded_test_server()->GetURL(kServiceWorkerUrl), key, options,
+          GlobalRenderFrameHostId(),
           base::BindOnce(&ExpectRegisterResultAndRun,
                          blink::ServiceWorkerStatusCode::kOk,
                          run_loop.QuitClosure()));
@@ -421,7 +425,7 @@ class ServiceWorkerInternalsUIBrowserTest : public ContentBrowserTest {
     static constexpr char kScript[] = R"(
       const button = document.body.querySelector('#serviceworker-list \
           .serviceworker-registration[data-registration-id=\'%d\'] \
-          button[data-command=\'%s\']');
+          cr-button[data-command=\'%s\']');
       button.click();
     )";
     EXPECT_TRUE(ExecJs(web_contents()->GetPrimaryMainFrame(),
@@ -546,8 +550,8 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerInternalsUIBrowserTest,
   TearDownWindow(sw_internal_ui_window);
 }
 
-// The test is flaky on Mac and Linux. crbug.com/1324856
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// The test is flaky on Mac, Linux, Android. http://crbug.com/1324856
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_ANDROID)
 #define MAYBE_StopStartSWReflectedOnInternalUI \
   DISABLED_StopStartSWReflectedOnInternalUI
 #else
@@ -703,6 +707,7 @@ IN_PROC_BROWSER_TEST_F(
     // Register returns when the promise is resolved.
     public_context()->RegisterServiceWorker(
         https_server()->GetURL("b.test", kServiceWorkerUrl), key, options,
+        GlobalRenderFrameHostId(),
         base::BindOnce(&ExpectRegisterResultAndRun,
                        blink::ServiceWorkerStatusCode::kOk,
                        run_loop.QuitClosure()));

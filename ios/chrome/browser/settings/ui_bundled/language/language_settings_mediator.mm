@@ -4,14 +4,15 @@
 
 #import "ios/chrome/browser/settings/ui_bundled/language/language_settings_mediator.h"
 
+#import <algorithm>
 #import <memory>
 
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
-#import "base/containers/contains.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/language/core/browser/language_model_manager.h"
 #import "components/language/core/browser/pref_names.h"
 #import "components/language/core/common/language_util.h"
@@ -118,7 +119,7 @@
   // Create a map of supported language codes to supported languages.
   std::vector<translate::TranslateLanguageInfo> supportedLanguages;
   translate::TranslatePrefs::GetLanguageInfoList(
-      GetApplicationContext()->GetApplicationLocale(),
+      GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
       _translatePrefs->IsTranslateAllowedByPolicy(), &supportedLanguages);
   std::map<std::string, translate::TranslateLanguageInfo> supportedLanguagesMap;
   for (const auto& supportedLanguage : supportedLanguages) {
@@ -189,14 +190,14 @@
   // Get the supported languages.
   std::vector<translate::TranslateLanguageInfo> languages;
   translate::TranslatePrefs::GetLanguageInfoList(
-      GetApplicationContext()->GetApplicationLocale(),
+      GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
       _translatePrefs->IsTranslateAllowedByPolicy(), &languages);
 
   NSMutableArray<LanguageItem*>* supportedLanguages =
       [NSMutableArray arrayWithCapacity:languages.size()];
   for (const auto& language : languages) {
     // Ignore languages already in the accept languages list.
-    if (base::Contains(acceptLanguageCodes, language.code)) {
+    if (std::ranges::contains(acceptLanguageCodes, language.code)) {
       continue;
     }
     LanguageItem* languageItem = [self languageItemFromLanguage:language];

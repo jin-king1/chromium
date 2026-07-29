@@ -6,9 +6,9 @@
 
 #include <memory>
 
+#include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/icon_button.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ash/arc/input_overlay/actions/action.h"
 #include "chrome/browser/ash/arc/input_overlay/arc_input_overlay_metrics.h"
 #include "chrome/browser/ash/arc/input_overlay/constants.h"
@@ -22,6 +22,7 @@
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
@@ -43,10 +44,9 @@ DeleteEditShortcut::DeleteEditShortcut(DisplayOverlayController* controller,
                                        ActionViewListItem* anchor_view)
     : views::BubbleDialogDelegateView(anchor_view,
                                       views::BubbleBorder::LEFT_CENTER,
-                                      // TODO(b/329895423): Add shadow.
                                       views::BubbleBorder::NO_SHADOW),
       controller_(controller) {
-  set_background_color(cros_tokens::kCrosSysSystemBaseElevatedOpaque);
+  SetBackgroundColor(cros_tokens::kCrosSysSystemBaseElevatedOpaque);
   set_margins(gfx::Insets(12));
   set_corner_radius(20);
   set_close_on_deactivate(false);
@@ -79,14 +79,14 @@ DeleteEditShortcut::DeleteEditShortcut(DisplayOverlayController* controller,
   edit_button_ = AddChildView(std::make_unique<ash::IconButton>(
       base::BindRepeating(&DeleteEditShortcut::OnEditButtonPressed,
                           base::Unretained(this)),
-      ash::IconButton::Type::kMedium, &kGameControlsEditPenIcon, u"",
+      ash::IconButton::Type::kMedium, &ash::kGameControlsEditPenIcon, u"",
       /*is_togglable=*/false, /*has_border=*/false));
   edit_button_->GetViewAccessibility().SetRole(ax::mojom::Role::kMenuItem);
 
   delete_button_ = AddChildView(std::make_unique<ash::IconButton>(
       base::BindRepeating(&DeleteEditShortcut::OnDeleteButtonPressed,
                           base::Unretained(this)),
-      ash::IconButton::Type::kMedium, &kGameControlsDeleteIcon, u"",
+      ash::IconButton::Type::kMedium, &ash::kGameControlsDeleteIcon, u"",
       /*is_togglable=*/false, /*has_border=*/false));
   delete_button_->GetViewAccessibility().SetRole(ax::mojom::Role::kMenuItem);
 
@@ -96,9 +96,6 @@ DeleteEditShortcut::DeleteEditShortcut(DisplayOverlayController* controller,
 DeleteEditShortcut::~DeleteEditShortcut() = default;
 
 void DeleteEditShortcut::UpdateAnchorView(ActionViewListItem* anchor_view) {
-  // Reset the highlight of previous anchor view.
-  SetHighlightedButton(anchor_view);
-
   SetAnchorView(anchor_view);
   UpdateTooltipText(anchor_view);
 
@@ -140,21 +137,20 @@ void DeleteEditShortcut::OnDeleteButtonPressed() {
   }
 }
 
-std::unique_ptr<views::NonClientFrameView>
-DeleteEditShortcut::CreateNonClientFrameView(views::Widget* widget) {
+std::unique_ptr<views::FrameView> DeleteEditShortcut::CreateFrameView(
+    views::Widget* widget) {
   // Create the customized bubble border.
   auto bubble_border =
       std::make_unique<views::BubbleBorder>(arrow(), GetShadow());
   bubble_border->SetColor(background_color());
   if (GetParams().round_corners) {
-    bubble_border->SetCornerRadius(GetCornerRadius());
+    bubble_border->set_rounded_corners(gfx::RoundedCornersF(GetCornerRadius()));
   }
   bubble_border->set_avoid_shadow_overlap(true);
   bubble_border->set_insets(
       gfx::Insets::VH(0, kSpaceToEditingList + kEditingListInsideBorderInsets));
 
-  auto frame =
-      views::BubbleDialogDelegateView::CreateNonClientFrameView(widget);
+  auto frame = views::BubbleDialogDelegateView::CreateFrameView(widget);
   if (auto* frame_view =
           views::AsViewClass<views::BubbleFrameView>(frame.get())) {
     frame_view->SetBubbleBorder(std::move(bubble_border));

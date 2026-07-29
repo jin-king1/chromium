@@ -29,19 +29,23 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.incognito.R;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
@@ -52,12 +56,11 @@ import java.io.IOException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
+@DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288344
 public class FullScreenIncognitoReauthViewTest {
     @ClassRule
     public static BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
-
-    private static Activity sActivity;
 
     private View mView;
     private PropertyModel mPropertyModel;
@@ -69,28 +72,32 @@ public class FullScreenIncognitoReauthViewTest {
     @Mock private Runnable mCloseAllIncognitoTabsRunnable;
     @Mock private SettingsNavigation mSettingsNavigationMock;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(ChromeRenderTestRule.Component.PRIVACY_INCOGNITO)
+                    .setRevision(3)
+                    .setDescription("Updated Incognito splash to GM3")
                     .build();
 
     @BeforeClass
     public static void setupSuite() {
-        sActivity = sActivityTestRule.launchActivity(null);
+        sActivityTestRule.launchActivity(null);
     }
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         SettingsNavigationFactory.setInstanceForTesting(mSettingsNavigationMock);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    sActivity.setContentView(R.layout.incognito_reauth_view);
-                    mView = sActivity.findViewById(android.R.id.content);
+                    Activity activity = sActivityTestRule.getActivity();
+                    activity.setContentView(R.layout.incognito_reauth_view);
+                    mView = activity.findViewById(android.R.id.content);
                     mIncognitoReauthMenuDelegate =
                             new IncognitoReauthMenuDelegate(
-                                    sActivity, mCloseAllIncognitoTabsRunnable);
+                                    activity, mCloseAllIncognitoTabsRunnable);
                 });
     }
 
@@ -102,16 +109,20 @@ public class FullScreenIncognitoReauthViewTest {
         onView(withId(R.id.incognito_reauth_unlock_incognito_button)).check(matches(isDisplayed()));
         onView(withText(R.string.incognito_reauth_page_unlock_incognito_button_label))
                 .check(matches(isDisplayed()));
-
-        onView(withId(R.id.incognito_reauth_see_other_tabs_label)).check(matches(isDisplayed()));
-        onView(withText(R.string.incognito_reauth_page_see_other_tabs_label))
-                .check(matches(isDisplayed()));
+        if (!IncognitoUtils.shouldOpenIncognitoAsWindow()) {
+            onView(withId(R.id.incognito_reauth_see_other_tabs_label))
+                    .check(matches(isDisplayed()));
+            onView(withText(R.string.incognito_reauth_page_see_other_tabs_label))
+                    .check(matches(isDisplayed()));
+        }
 
         onView(withId(R.id.incognito_reauth_unlock_incognito_button)).perform(click());
         verify(mUnlockIncognitoRunnableMock).run();
 
-        onView(withId(R.id.incognito_reauth_see_other_tabs_label)).perform(click());
-        verify(mSeeOtherTabsRunnableMock).run();
+        if (!IncognitoUtils.shouldOpenIncognitoAsWindow()) {
+            onView(withId(R.id.incognito_reauth_see_other_tabs_label)).perform(click());
+            verify(mSeeOtherTabsRunnableMock).run();
+        }
     }
 
     @Test

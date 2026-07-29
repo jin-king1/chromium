@@ -4,6 +4,7 @@
 
 #include "media/gpu/windows/d3d12_video_processor_wrapper.h"
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "media/gpu/windows/d3d12_helpers.h"
@@ -17,7 +18,15 @@ D3D12VideoProcessorWrapper::D3D12VideoProcessorWrapper(
   CHECK_EQ(video_device.As(&device_), S_OK);
 }
 
-D3D12VideoProcessorWrapper::~D3D12VideoProcessorWrapper() = default;
+D3D12VideoProcessorWrapper::~D3D12VideoProcessorWrapper() {
+  // Ensure any in-flight video processing work has completed before releasing
+  // resources that may still be referenced by the GPU.
+  if (auto status = WaitForInFlightWorkImpl(); !status.is_ok()) {
+    DLOG(ERROR) << "Waiting for in-flight video processing during teardown "
+                   "failed: "
+                << static_cast<int>(status.code());
+  }
+}
 
 bool D3D12VideoProcessorWrapper::Init() {
   D3D12_COMMAND_QUEUE_DESC command_queue_desc{
@@ -63,7 +72,30 @@ bool D3D12VideoProcessorWrapper::Init() {
   return true;
 }
 
-bool D3D12VideoProcessorWrapper::ProcessFrames(
+D3D11Status D3D12VideoProcessorWrapper::WaitForInFlightWork() {
+  return WaitForInFlightWorkImpl();
+}
+
+D3D11Status D3D12VideoProcessorWrapper::WaitForInFlightWorkImpl() {
+  if (!fence_ || fence_->GetCompletedValue() >= fence_->Value()) {
+    return D3D11StatusCode::kOk;
+  }
+  return fence_->WaitCPU(fence_->Value());
+}
+
+bool D3D12VideoProcessorWrapper::Wait(D3D12FenceAndValue fence_and_value) {
+  auto [fence, value] = fence_and_value;
+  CHECK(fence);
+  HRESULT hr = command_queue_->Wait(fence.Get(), value);
+  if (FAILED(hr)) {
+    DLOG(ERROR) << "D3D12 video process command queue wait failed: "
+                << logging::SystemErrorCodeToString(hr);
+    return false;
+  }
+  return true;
+}
+
+D3D12FenceAndValue D3D12VideoProcessorWrapper::ProcessFrames(
     ID3D12Resource* input_texture,
     UINT input_subresource,
     const gfx::ColorSpace& input_color_space,
@@ -95,10 +127,11 @@ bool D3D12VideoProcessorWrapper::ProcessFrames(
   };
 
   HRESULT hr;
-  if (memcmp(&input_stream_desc, &input_stream_desc_,
-             sizeof(D3D12_VIDEO_PROCESS_INPUT_STREAM_DESC)) != 0 ||
-      memcmp(&output_stream_desc, &output_stream_desc_,
-             sizeof(D3D12_VIDEO_PROCESS_OUTPUT_STREAM_DESC)) != 0) {
+  if (UNSAFE_TODO(memcmp(&input_stream_desc, &input_stream_desc_,
+                         sizeof(D3D12_VIDEO_PROCESS_INPUT_STREAM_DESC))) != 0 ||
+      UNSAFE_TODO(memcmp(&output_stream_desc, &output_stream_desc_,
+                         sizeof(D3D12_VIDEO_PROCESS_OUTPUT_STREAM_DESC))) !=
+          0) {
     D3D12_FEATURE_DATA_VIDEO_PROCESS_SUPPORT support{
         .InputSample = {.Width = static_cast<UINT>(input_texture_desc.Width),
                         .Height = input_texture_desc.Height,
@@ -118,7 +151,7 @@ bool D3D12VideoProcessorWrapper::ProcessFrames(
     }
     if (support.SupportFlags != D3D12_VIDEO_PROCESS_SUPPORT_FLAG_SUPPORTED) {
       DLOG(ERROR) << "D3D12 cannot support video processing.";
-      return false;
+      return {};
     }
 
     hr = video_device_->CreateVideoProcessor(0, &output_stream_desc, 1,
@@ -127,24 +160,35 @@ bool D3D12VideoProcessorWrapper::ProcessFrames(
     if (FAILED(hr)) {
       DLOG(ERROR) << "Create video processor failed: "
                   << logging::SystemErrorCodeToString(hr);
-      return false;
+      return {};
     }
     input_stream_desc_ = input_stream_desc;
     output_stream_desc_ = output_stream_desc;
+  }
+
+  // Ensure the GPU has finished executing previous commands before resetting
+  // the allocator. Without this guard, a downstream error could leave the
+  // allocator in use when Reset() is called.
+  // An alternative approach is to reuse the allocator without resetting it.
+  // However, this could potentially cause the allocator to grow unboundedly.
+  if (auto status = WaitForInFlightWork(); !status.is_ok()) {
+    DLOG(ERROR) << "Waiting for previous video processing failed: "
+                << static_cast<int>(status.code());
+    return {};
   }
 
   hr = command_allocator_->Reset();
   if (FAILED(hr)) {
     DLOG(ERROR) << "Reset video process command allocator failed:"
                 << logging::SystemErrorCodeToString(hr);
-    return false;
+    return {};
   }
 
   hr = command_list_->Reset(command_allocator_.Get());
   if (FAILED(hr)) {
     DLOG(ERROR) << "Reset video process command list failed:"
                 << logging::SystemErrorCodeToString(hr);
-    return false;
+    return {};
   }
 
   std::vector<D3D12_RESOURCE_BARRIER> resource_barriers;
@@ -167,8 +211,9 @@ bool D3D12VideoProcessorWrapper::ProcessFrames(
       .Transform = {.SourceRectangle = input_rectangle.ToRECT(),
                     .DestinationRectangle = output_rectangle.ToRECT()}};
   D3D12_VIDEO_PROCESS_OUTPUT_STREAM_ARGUMENTS output_stream_arguments{
-      .OutputStream = {
-          {.pTexture2D = output_texture, .Subresource = output_subresource}}};
+      .OutputStream = {{.pTexture2D = output_texture,
+                        .Subresource = output_subresource}},
+      .TargetRectangle = output_rectangle.ToRECT()};
   command_list_->ProcessFrames(video_processor_.Get(), &output_stream_arguments,
                                1, &input_stream_arguments);
 
@@ -182,13 +227,19 @@ bool D3D12VideoProcessorWrapper::ProcessFrames(
   if (FAILED(hr)) {
     DLOG(ERROR) << "Close video process command list failed:"
                 << logging::SystemErrorCodeToString(hr);
-    return false;
+    return {};
   }
 
   ID3D12CommandList* command_list = command_list_.Get();
   command_queue_->ExecuteCommandLists(1, &command_list);
 
-  return fence_->SignalAndWait(*command_queue_.Get()) == D3D11StatusCode::kOk;
+  auto value_or_error = fence_->Signal(*command_queue_.Get());
+  if (!value_or_error.has_value()) {
+    DLOG(ERROR) << "Failed to call Signal: "
+                << std::move(value_or_error).error().message();
+    return {};
+  }
+  return {fence_->Get(), std::move(value_or_error).value()};
 }
 
 }  // namespace media

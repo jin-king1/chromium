@@ -4,6 +4,7 @@
 
 #import "ios/web/js_messaging/web_frames_manager_java_script_feature.h"
 
+#import "base/strings/string_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "ios/web/js_messaging/java_script_content_world_util.h"
 #import "ios/web/js_messaging/java_script_feature_manager.h"
@@ -89,9 +90,7 @@ WebFramesManagerJavaScriptFeature::WebFramesManagerJavaScriptFeature(
                FeatureScript::InjectionTime::kDocumentStart,
                FeatureScript::TargetFrames::kAllFrames,
                FeatureScript::ReinjectionBehavior::
-                   kReinjectOnDocumentRecreation)},
-          {java_script_features::GetCommonJavaScriptFeature(),
-           java_script_features::GetMessageJavaScriptFeature()}),
+                   kReinjectOnDocumentRecreation)}),
       content_world_(content_world),
       browser_state_(browser_state),
       weak_factory_(this) {}
@@ -143,8 +142,7 @@ void WebFramesManagerJavaScriptFeature::ConfigureHandlers(
 
 void WebFramesManagerJavaScriptFeature::FrameAvailableMessageReceived(
     WKScriptMessage* message) {
-  WebState* web_state = WebViewWebStateMap::FromBrowserState(browser_state_)
-                            ->GetWebStateForWebView(message.webView);
+  WebState* web_state = web::GetWebStateForWebView(message.webView);
   if (!web_state) {
     // Ignore this message if `message.webView` is no longer associated with a
     // WebState.
@@ -189,8 +187,7 @@ void WebFramesManagerJavaScriptFeature::FrameAvailableMessageReceived(
 
 void WebFramesManagerJavaScriptFeature::FrameUnavailableMessageReceived(
     WKScriptMessage* message) {
-  WebState* web_state = WebViewWebStateMap::FromBrowserState(browser_state_)
-                            ->GetWebStateForWebView(message.webView);
+  WebState* web_state = web::GetWebStateForWebView(message.webView);
   if (!web_state) {
     // Ignore this message if `message.webView` is no longer associated with a
     // WebState.

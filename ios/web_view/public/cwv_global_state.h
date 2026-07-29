@@ -11,6 +11,32 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Flags that specify options that should be set before starting the early
+// initialization.
+CWV_EXPORT
+@interface CWVEarlyInitFlags : NSObject
+
+// Set to `YES` to enable the autofill across iframes feature.
+@property(nonatomic, readwrite) BOOL autofillAcrossIframesEnabled;
+
+// Set to `YES` to delay loading resources from early init to CWV start.
+// Defaults to `NO`.
+@property(nonatomic, readwrite) BOOL delayLoadingResources;
+
+// The initial nesting level of the main thread's run loop.
+// This is used to synchronize Chromium's run loop nesting state with the host
+// app's state if Chromium is initialized while the host app is already in a
+// nested run loop.
+// Must be greater than 0.
+@property(nonatomic, assign) NSInteger mainThreadInitialNestingLevel;
+
+// Set to `YES` to enable the Autofill strike system.
+// Defaults to `YES`.
+@property(nonatomic, readwrite, getter=isAutofillStrikeSystemEnabled)
+    BOOL autofillStrikeSystemEnabled;
+
+@end
+
 // Manages internal global state that must be initialized before accessing any
 // of the other public APIs //ios/web_view/public.
 CWV_EXPORT
@@ -37,8 +63,18 @@ CWV_EXPORT
 // Returns `YES` if `-[CWVGlobalState start]` has been called.
 @property(nonatomic, readonly, getter=isStarted) BOOL started;
 
-- (instancetype)init NS_UNAVAILABLE;
+// Returns `YES` if the autofill across iframes feature is enabled.
+@property(nonatomic, readonly) BOOL autofillAcrossIframesEnabled;
 
+// Returns `YES` if the delay loading resources feature is enabled.
+@property(nonatomic, readonly, getter=isDelayLoadingResources)
+    BOOL delayLoadingResources;
+
+// Returns `YES` if the Autofill strike system is enabled.
+@property(nonatomic, readonly, getter=isAutofillStrikeSystemEnabled)
+    BOOL autofillStrikeSystemEnabled;
+
+- (instancetype)init NS_UNAVAILABLE;
 // Use this method to set the necessary credentials used to communicate with
 // the Google API for features such as translate. See this link for more info:
 // https://support.google.com/googleapi/answer/6158857
@@ -46,10 +82,22 @@ CWV_EXPORT
                clientID:(NSString*)clientID
            clientSecret:(NSString*)clientSecret;
 
-// Initializes internal global state machinery. This should be called as early
-//  during the host app's launch process as possible. For example, in
-// `-[UIApplicationDelegate application:willFinishLaunchingWithOptions:]`.
+// Initializes internal global state machinery with the default flags. See
+// -earlyInitWithFlags for more details.
 - (void)earlyInit;
+
+// Sets a handler function to be called for non-fatal error reporting
+// via Chromium's base::debug::DumpWithoutCrashing mechanism.
+// The provided `handler` will be executed when a non-fatal CHECK or
+// similar error condition triggers a dump.
+- (void)setDumpWithoutCrashingHandler:(void (*_Nullable)(void))handler;
+
+// Initializes internal global state machinery with `flags` specifying options
+// that should be set before starting the early initialization. This should be
+// called as early as possible during the host app's launch process. For
+// example, in
+// `-[UIApplicationDelegate application:willFinishLaunchingWithOptions:]`.
+- (void)earlyInitWithFlags:(CWVEarlyInitFlags*)flags;
 
 // Starts up internal global state machinery. This can be called anytime after
 // `earlyInit`, but must be called before using any other CWV* classes.

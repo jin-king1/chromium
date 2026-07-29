@@ -9,6 +9,7 @@
 
 #include "base/component_export.h"
 #include "base/containers/span.h"
+#include "services/webnn/public/cpp/graph_validation_utils.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom.h"
 
@@ -57,8 +58,20 @@ std::vector<uint32_t> COMPONENT_EXPORT(WEBNN_SERVICE)
 bool COMPONENT_EXPORT(WEBNN_SERVICE)
     IsLogicalElementWiseBinary(mojom::ElementWiseBinary::Kind kind);
 
+bool COMPONENT_EXPORT(WEBNN_SERVICE)
+    IsLogicalElementWiseUnary(mojom::ElementWiseUnary::Kind kind);
+
 std::vector<uint32_t> COMPONENT_EXPORT(WEBNN_SERVICE)
     CalculateStrides(base::span<const uint32_t> dimensions);
+
+webnn::Pool2dKind COMPONENT_EXPORT(WEBNN_SERVICE)
+    FromMojoPool2dType(mojom::Pool2d::Kind kind);
+
+webnn::ReduceKind COMPONENT_EXPORT(WEBNN_SERVICE)
+    FromMojoReduceType(mojom::Reduce::Kind kind);
+
+webnn::PaddingMode COMPONENT_EXPORT(WEBNN_SERVICE)
+    FromMojoPaddingMode(mojom::PaddingMode::Tag tag);
 
 }  // namespace webnn
 

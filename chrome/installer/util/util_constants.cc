@@ -94,20 +94,8 @@ const char kInstallLevel[] = "install-level";
 // If present, specify file path to write logging info.
 const char kLogFile[] = "log-file";
 
-// Register Chrome as default browser on the system. Usually this will require
-// that setup is running as admin. If running as admin we try to register
-// as default browser at system level, if running as non-admin we try to
-// register as default browser only for the current user.
-const char kMakeChromeDefault[] = "make-chrome-default";
-
 // Tells installer to expect to be run as a subsidiary to an MSI.
 const char kMsi[] = "msi";
-
-// Useful only when used with --update-setup-exe; otherwise ignored. Specifies
-// the full path where the updated setup.exe will be written. Any other files
-// created in the indicated directory may be deleted by the caller after process
-// termination.
-const char kNewSetupExe[] = "new-setup-exe";
 
 // Specifies a nonce to use with the rotate device key command.
 const char kNonce[] = "nonce";
@@ -115,8 +103,8 @@ const char kNonce[] = "nonce";
 // Notify the installer that the OS has been upgraded.
 const char kOnOsUpgrade[] = "on-os-upgrade";
 
-// Provide the previous version that patch is for.
-const char kPreviousVersion[] = "previous-version";
+// Tells the updater the previous and new Windows versions.
+const char kOsUpgradeVersions[] = "os-upgrade-versions";
 
 // Requests that setup attempt to reenable autoupdates for Chrome.
 const char kReenableAutoupdates[] = "reenable-autoupdates";
@@ -175,24 +163,10 @@ const char kTriggerActiveSetup[] = "trigger-active-setup";
 // If present, setup will uninstall chrome.
 const char kUninstall[] = "uninstall";
 
-// Also see --new-setup-exe. This command line option specifies a diff patch
-// that setup.exe will apply to itself and store the resulting binary in the
-// path given by --new-setup-exe.
-const char kUpdateSetupExe[] = "update-setup-exe";
-
 // Enable verbose logging (info level).
 const char kVerboseLogging[] = "verbose-logging";
 
 }  // namespace switches
-
-namespace env_vars {
-
-// The presence of this environment variable with a value of 1 implies that
-// setup.exe should run as a system installation regardless of what is on the
-// command line.
-const char kGoogleUpdateIsMachineEnvVar[] = "GoogleUpdateIsMachine";
-
-}  // namespace env_vars
 
 // The Active Setup executable will be an identical copy of setup.exe; this is
 // necessary because Windows' installer detection heuristics (which include
@@ -200,7 +174,7 @@ const char kGoogleUpdateIsMachineEnvVar[] = "GoogleUpdateIsMachine";
 // for non-admin users when setup.exe is launched. This is mitigated by adding
 // requestedExecutionLevel="asInvoker" to setup.exe's manifest on Vista+, but
 // there is no such manifest entry on Windows XP (which results in
-// crbug.com/166473).
+// crbug.com/40296982).
 // TODO(gab): Rename setup.exe itself altogether and use the same binary for
 // Active Setup.
 const wchar_t kActiveSetupExe[] = L"chrmstp.exe";
@@ -217,7 +191,13 @@ const wchar_t kCmdOnOsUpgrade[] = L"on-os-upgrade";
 const wchar_t kCmdRotateDeviceTrustKey[] = L"rotate-dtkey";
 const wchar_t kCmdStoreDMToken[] = L"store-dmtoken";
 const wchar_t kCmdDeleteDMToken[] = L"delete-dmtoken";
+const wchar_t kCmdInstallPEH[] = L"install-peh";
+
+// LINT.IfChange(kEulaSentinelFile)
 const wchar_t kEulaSentinelFile[] = L"EULA Accepted";
+// LINT.ThenChange(//chrome/browser/first_run/first_run_internal_linux.cc:kEulaSentinelFile,
+// //chrome/browser/ui/views/eula_dialog_linux_unittest.cc:kEulaSentinelFile)
+
 const wchar_t kInstallBinaryDir[] = L"Application";
 const wchar_t kInstallerDir[] = L"Installer";
 const wchar_t kInstallTempDir[] = L"Temp";

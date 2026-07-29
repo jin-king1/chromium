@@ -4,11 +4,11 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.util.Pair;
 import android.util.SparseBooleanArray;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import androidx.annotation.WorkerThread;
 
@@ -19,18 +19,21 @@ import org.chromium.base.PathUtils;
 import org.chromium.base.StreamUtil;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.task.AsyncTask;
-import org.chromium.base.task.BackgroundOnlyAsyncTask;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskRunner;
 import org.chromium.base.task.TaskTraits;
-import org.chromium.chrome.browser.app.tabmodel.TabWindowManagerSingleton;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tabpersistence.TabMetadataFileManager;
 import org.chromium.chrome.browser.tabpersistence.TabStateDirectory;
 import org.chromium.chrome.browser.tabpersistence.TabStateFileManager;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
@@ -41,8 +44,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /** Handles the Tabbed mode specific behaviors of tab persistence. */
+@NullMarked
 public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
     private static final String TAG = "tabmodel";
 
@@ -52,6 +57,11 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
     // This shared prefs file was used for storing tab properties to use before tabs had loaded for
     // tab switching surfaces.
     private static final String LEGACY_TAB_ATTRIBUTE_CACHE_FILE = "tab_attribute_cache";
+
+    // This shared prefs file was used for migration to TabCollectionTabModelImpl. It is no longer
+    // in use.
+    private static final String LEGACY_TAB_COLLECTION_MIGRATION_FILE =
+            "tab_collection_migration_util_shared_prefs";
 
     /** <M53 The name of the file where the old tab metadata file is saved per directory. */
     @VisibleForTesting static final String LEGACY_SAVED_STATE_FILE = "tab_state";
@@ -70,45 +80,49 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
     //        of activity being merged.
     private static final AtomicBoolean MERGE_IN_PROGRESS = new AtomicBoolean();
 
-    private static AsyncTask<Void> sMigrationTask;
-    private static AsyncTask<Void> sCleanupTask;
+    private static @Nullable AsyncTask<Void> sMigrationTask;
+    private static @Nullable AsyncTask<Void> sCleanupTask;
+    private static boolean sMigrationAttempted;
 
-    private final @NonNull String mMetadataFileName;
-    private final @Nullable String mOtherMetadataFileName;
+    private final String mMetadataFileName;
+    private final @Nullable String mOtherWindowTag;
     private final boolean mMergeTabsOnStartup;
     private final int mMaxSelectors;
 
-    private TabContentManager mTabContentManager;
+    private @Nullable TabContentManager mTabContentManager;
+    private @Nullable Supplier<Boolean> mIsRecreatingSupplier;
     private boolean mDestroyed;
 
     /**
      * Constructs a persistence policy that handles the Tabbed mode specific logic.
      *
      * @param metadataFileName The state file name to pull and save state to.
-     * @param otherMetadataFileName The state file name to use for merging. Must be non-null if
-     *     either {@code mergeTabsOnStartup} or {@code tabMergingEnabled} are true and is ignored if
-     *     both are false.
+     * @param otherWindowTag The window tag to use for merging. Must be non-null if either {@code
+     *     mergeTabsOnStartup} or {@code tabMergingEnabled} are true and is ignored if both are
+     *     false.
      * @param mergeTabsOnStartup Whether this policy should handle merging tabs from all available
      *     tabbed mode files at startup.
      * @param tabMergingEnabled Whether tab merging operation should be done for multi-window/
      *     instance feature in general.
+     * @param isRecreatingSupplier A supplier of whether the activity is recreating.
      */
     public TabbedModeTabPersistencePolicy(
-            @NonNull String metadataFileName,
-            @Nullable String otherMetadataFileName,
+            String metadataFileName,
+            @Nullable String otherWindowTag,
             boolean mergeTabsOnStartup,
-            boolean tabMergingEnabled) {
+            boolean tabMergingEnabled,
+            Supplier<Boolean> isRecreatingSupplier) {
         mMetadataFileName = metadataFileName;
         if (mergeTabsOnStartup || tabMergingEnabled) {
-            assert otherMetadataFileName != null
+            assert otherWindowTag != null
                     : "otherMetadataFileName must be non-null if tab merging is enabled.";
-            mOtherMetadataFileName = otherMetadataFileName;
+            mOtherWindowTag = otherWindowTag;
         } else {
-            mOtherMetadataFileName = null;
+            mOtherWindowTag = null;
         }
         mMergeTabsOnStartup = mergeTabsOnStartup;
-        TabWindowManager tabWindowManager = TabWindowManagerSingleton.getInstance();
-        mMaxSelectors = tabWindowManager.getMaxSimultaneousSelectors();
+        mIsRecreatingSupplier = isRecreatingSupplier;
+        mMaxSelectors = TabWindowManager.MAX_SELECTORS_1000;
     }
 
     /**
@@ -120,14 +134,19 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
      *     tabbed mode files at startup.
      * @param tabMergingEnabled Whether tab merging operation should be done for multi-window/
      *     instance feature in general.
+     * @param isRecreatingSupplier A supplier of whether the activity is recreating.
      */
     public TabbedModeTabPersistencePolicy(
-            int selectorIndex, boolean mergeTabsOnStartup, boolean tabMergingEnabled) {
+            int selectorIndex,
+            boolean mergeTabsOnStartup,
+            boolean tabMergingEnabled,
+            Supplier<Boolean> isRecreatingSupplier) {
         this(
                 getMetadataFileNameForIndex(selectorIndex),
-                getMetadataFileNameForIndex(selectorIndex == 0 ? 1 : 0),
+                Integer.toString(selectorIndex == 0 ? 1 : 0),
                 mergeTabsOnStartup,
-                tabMergingEnabled);
+                tabMergingEnabled,
+                isRecreatingSupplier);
     }
 
     @Override
@@ -136,7 +155,7 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
     }
 
     @Override
-    public @NonNull String getMetadataFileName() {
+    public String getMetadataFileName() {
         return mMetadataFileName;
     }
 
@@ -147,7 +166,13 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
 
     @Override
     public @Nullable String getMetadataFileNameToBeMerged() {
-        return mOtherMetadataFileName;
+        if (mOtherWindowTag == null) return null;
+        return TabMetadataFileManager.getMetadataFileName(mOtherWindowTag);
+    }
+
+    @Override
+    public @Nullable String getWindowTagToBeMerged() {
+        return mOtherWindowTag;
     }
 
     /**
@@ -155,7 +180,7 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
      * @return The name of the state file.
      */
     public static String getMetadataFileNameForIndex(int selectorIndex) {
-        return TabPersistentStore.getMetadataFileName(Integer.toString(selectorIndex));
+        return TabMetadataFileManager.getMetadataFileName(Integer.toString(selectorIndex));
     }
 
     @Override
@@ -174,9 +199,10 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
         if (hasRunLegacyMigration && hasRunMultiInstanceMigration) return false;
 
         synchronized (MIGRATION_LOCK) {
-            if (sMigrationTask != null) return true;
+            if (sMigrationAttempted) return true;
+            sMigrationAttempted = true;
             sMigrationTask =
-                    new BackgroundOnlyAsyncTask<Void>() {
+                    new AsyncTask<Void>() {
                         @Override
                         protected Void doInBackground() {
                             if (!hasRunLegacyMigration) {
@@ -193,6 +219,16 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
                                 performMultiInstanceMigration();
                             }
                             return null;
+                        }
+
+                        @Override
+                        protected void onPostExecute(Void result) {
+                            sMigrationTask = null;
+                        }
+
+                        @Override
+                        protected void onCancelled(@Nullable Void result) {
+                            sMigrationTask = null;
                         }
                     }.executeOnTaskRunner(taskRunner);
             return true;
@@ -242,7 +278,7 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
         Log.w(TAG, "Starting to perform multi-instance migration.");
         // 0. Do not rename the old metadata file if the new metadata file already exists. This
         //    should not happen, but if it does and the metadata file is overwritten then users
-        //    may lose tabs. See crbug.com/649384.
+        //    may lose tabs. See crbug.com/40486025.
         File stateDir = getOrCreateStateDirectory();
         File newMetadataFile = new File(stateDir, getMetadataFileName());
         File oldMetadataFile = new File(stateDir, LEGACY_SAVED_STATE_FILE);
@@ -263,7 +299,7 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
             File otherStateDir =
                     new File(
                             TabStateDirectory.getOrCreateBaseStateDirectory(), Integer.toString(i));
-            if (otherStateDir == null || !otherStateDir.exists()) continue;
+            if (!otherStateDir.exists()) continue;
 
             // Rename tab state file.
             oldMetadataFile = new File(otherStateDir, LEGACY_SAVED_STATE_FILE);
@@ -326,9 +362,10 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
 
     @Override
     public void waitForInitializationToFinish() {
-        if (sMigrationTask == null) return;
+        AsyncTask<Void> task = sMigrationTask;
+        if (task == null) return;
         try {
-            sMigrationTask.get();
+            task.get();
         } catch (InterruptedException e) {
         } catch (ExecutionException e) {
         }
@@ -362,10 +399,29 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
     @Override
     public void cleanupUnusedFiles(Callback<TabPersistenceFileInfo> tabDataToDelete) {
         synchronized (CLEAN_UP_TASK_LOCK) {
-            if (sCleanupTask != null) sCleanupTask.cancel(true);
+            // ClearAllWindowsExceptForTask has priority over CleanUpTabStateDataTask.
+            if (sCleanupTask instanceof CleanUpTabStateDataTask) {
+                sCleanupTask.cancel(true);
+            } else if (sCleanupTask != null) {
+                return;
+            }
             sCleanupTask =
                     new CleanUpTabStateDataTask(
                             tabDataToDelete, () -> getOtherTabsId(getMetadataFileName()));
+            sCleanupTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        }
+    }
+
+    @Override
+    public void clearAllWindowsExceptFor(List<String> windowTags) {
+        if (!ChromeFeatureList.sScheduleWindowCleaning.isEnabled()) return;
+        synchronized (CLEAN_UP_TASK_LOCK) {
+            if (sCleanupTask != null) sCleanupTask.cancel(true);
+            List<String> metadataFileNamesToKeep = new ArrayList<>();
+            for (String windowTag : windowTags) {
+                metadataFileNamesToKeep.add(TabMetadataFileManager.getMetadataFileName(windowTag));
+            }
+            sCleanupTask = new ClearAllWindowsExceptForTask(metadataFileNamesToKeep);
             sCleanupTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
         }
     }
@@ -385,7 +441,12 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
             }
         }
         synchronized (CLEAN_UP_TASK_LOCK) {
-            if (sCleanupTask != null) sCleanupTask.cancel(true);
+            // ClearAllWindowsExceptForTask has priority over CleanUpTabStateDataTask.
+            if (sCleanupTask instanceof CleanUpTabStateDataTask) {
+                sCleanupTask.cancel(true);
+            } else if (sCleanupTask != null) {
+                return;
+            }
             sCleanupTask =
                     new CleanUpTabStateDataTask(
                             tabDataToDelete,
@@ -427,7 +488,7 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
                 stream =
                         new DataInputStream(
                                 new BufferedInputStream(new FileInputStream(metadataFile)));
-                TabPersistentStore.readSavedMetadataFile(stream, null, tabIds);
+                TabMetadataFileManager.readSavedMetadataFile(stream, /* callback= */ null, tabIds);
             } catch (Exception e) {
                 Log.e(TAG, "Unable to read state for " + metadataFile.getName() + ": " + e);
             } finally {
@@ -450,15 +511,62 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
     public void destroy() {
         mTabContentManager = null;
         mDestroyed = true;
+        mIsRecreatingSupplier = null;
+    }
+
+    /**
+     * Asynchronous task to clear the persistent state for all windows, except for those whose
+     * window tags are provided. Deletes only metadata files, leaving tab state files to be cleaned
+     * up by the {@link CleanUpTabStateDataTask}.
+     */
+    private class ClearAllWindowsExceptForTask extends AsyncTask<Void> {
+        private final List<String> mExcludedFileNames;
+
+        ClearAllWindowsExceptForTask(List<String> excludedFileNames) {
+            mExcludedFileNames = excludedFileNames;
+        }
+
+        @Override
+        protected Void doInBackground() {
+            if (mDestroyed) return null;
+            File stateDirectory = getOrCreateStateDirectory();
+            File[] stateFiles = stateDirectory.listFiles();
+            if (stateFiles == null) return null;
+
+            for (File stateFile : stateFiles) {
+                if (!TabMetadataFileManager.isMetadataFile(stateFile.getName())) {
+                    continue;
+                }
+                if (mExcludedFileNames.contains(stateFile.getName())) continue;
+                TabMetadataFileManager.deleteMetadataFile(stateFile);
+            }
+            return null;
+        }
+
+        @Override
+        protected void onPostExecute(Void unused) {
+            synchronized (CLEAN_UP_TASK_LOCK) {
+                sCleanupTask = null;
+            }
+        }
+
+        @Override
+        protected void onCancelled(@Nullable Void result) {
+            super.onCancelled(null);
+            synchronized (CLEAN_UP_TASK_LOCK) {
+                sCleanupTask = null;
+            }
+        }
     }
 
     private class CleanUpTabStateDataTask extends AsyncTask<Void> {
         private final Callback<TabPersistenceFileInfo> mTabDataToDelete;
+        private final Supplier<SparseBooleanArray> mOtherTabSupplier;
 
-        private String[] mTabFileNames;
-        private String[] mThumbnailFileNames;
-        private Supplier<SparseBooleanArray> mOtherTabSupplier;
-        private SparseBooleanArray mOtherTabIds; // Tab in use by other selectors, not be deleted.
+        private String @Nullable [] mTabFileNames;
+        private String @Nullable [] mThumbnailFileNames;
+        // Tab in use by other selectors, not be deleted.
+        private @Nullable SparseBooleanArray mOtherTabIds;
 
         CleanUpTabStateDataTask(
                 Callback<TabPersistenceFileInfo> storedTabDataId,
@@ -480,6 +588,8 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
                     .deleteSharedPreferences(LEGACY_TAB_GROUP_PREFS_FILE);
             ContextUtils.getApplicationContext()
                     .deleteSharedPreferences(LEGACY_TAB_ATTRIBUTE_CACHE_FILE);
+            ContextUtils.getApplicationContext()
+                    .deleteSharedPreferences(LEGACY_TAB_COLLECTION_MIGRATION_FILE);
 
             return null;
         }
@@ -487,6 +597,12 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
         @Override
         protected void onPostExecute(Void unused) {
             if (mDestroyed) return;
+
+            // Populated in doInBackground().
+            assumeNonNull(mTabFileNames);
+            assumeNonNull(mThumbnailFileNames);
+            assumeNonNull(mOtherTabIds);
+
             TabWindowManager tabWindowManager = TabWindowManagerSingleton.getInstance();
 
             TabPersistenceFileInfo storedTabDataToDelete = new TabPersistenceFileInfo();
@@ -534,11 +650,12 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
         }
 
         private boolean shouldDeleteTabFile(int tabId, TabWindowManager tabWindowManager) {
+            assumeNonNull(mOtherTabIds);
             return tabWindowManager.canTabStateBeDeleted(tabId) && !mOtherTabIds.get(tabId);
         }
 
         @Override
-        protected void onCancelled(Void result) {
+        protected void onCancelled(@Nullable Void result) {
             super.onCancelled(null);
             synchronized (CLEAN_UP_TASK_LOCK) {
                 sCleanupTask = null;
@@ -555,12 +672,13 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
                     for (String metadataFileName : getAllMetadataFileNames()) {
                         getTabsFromMetadataFile(tabIds, metadataFileName);
                     }
-                    PostTask.postTask(
-                            TaskTraits.UI_DEFAULT,
-                            () -> {
-                                tabIdsCallback.onResult(tabIds);
-                            });
+                    PostTask.postTask(TaskTraits.UI_DEFAULT, tabIdsCallback.bind(tabIds));
                 });
+    }
+
+    @Override
+    public boolean isRecreating() {
+        return assumeNonNull(mIsRecreatingSupplier).get();
     }
 
     /** Get all the state file names excluding archived. */
@@ -574,5 +692,6 @@ public class TabbedModeTabPersistencePolicy implements TabPersistencePolicy {
 
     protected static void resetMigrationTaskForTesting() {
         sMigrationTask = null;
+        sMigrationAttempted = false;
     }
 }

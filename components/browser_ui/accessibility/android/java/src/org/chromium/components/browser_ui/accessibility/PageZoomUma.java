@@ -8,14 +8,18 @@ import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 
 /** Centralizes UMA data collection for Page Zoom. */
 @NullMarked
 public class PageZoomUma {
-    private static int sMinZoomValue = (int) (PageZoomUtils.PAGE_ZOOM_MINIMUM_ZOOM_LEVEL * 100);
-    private static int sMaxZoomValue = (int) (PageZoomUtils.PAGE_ZOOM_MAXIMUM_ZOOM_LEVEL * 100);
-    private static int sZoomValueBucketCount = (int) ((sMaxZoomValue - sMinZoomValue) / 5) + 2;
+    private static final int sMinZoomValue =
+            (int) (PageZoomUtils.PAGE_ZOOM_MINIMUM_ZOOM_LEVEL * 100);
+    private static final int sMaxZoomValue =
+            (int) (PageZoomUtils.PAGE_ZOOM_MAXIMUM_ZOOM_LEVEL * 100);
+    private static final int sZoomValueBucketCount =
+            (int) ((sMaxZoomValue - sMinZoomValue) / 5) + 2;
 
     // AccessibilityPageZoomAppMenuEnabledState defined in
     // tools/metrics/histograms/metadata/accessibility/enums.xml.
@@ -29,6 +33,8 @@ public class PageZoomUma {
         AccessibilityPageZoomAppMenuEnabledState.USER_ENABLED,
         AccessibilityPageZoomAppMenuEnabledState.OS_ENABLED,
         AccessibilityPageZoomAppMenuEnabledState.USER_DISABLED,
+        AccessibilityPageZoomAppMenuEnabledState.FORM_FACTOR_ENABLED,
+        AccessibilityPageZoomAppMenuEnabledState.USER_HAS_CUSTOM_ZOOM,
         AccessibilityPageZoomAppMenuEnabledState.MAX_VALUE
     })
     public @interface AccessibilityPageZoomAppMenuEnabledState {
@@ -36,9 +42,11 @@ public class PageZoomUma {
         int USER_ENABLED = 1;
         int OS_ENABLED = 2;
         int USER_DISABLED = 3;
+        int FORM_FACTOR_ENABLED = 4;
+        int USER_HAS_CUSTOM_ZOOM = 5;
 
         // Be sure to also update enums.xml when updating these values.
-        int MAX_VALUE = 4;
+        int MAX_VALUE = 6;
     }
 
     // LINT.ThenChange(/tools/metrics/histograms/metadata/accessibility/enums.xml:AccessibilityPageZoomAppMenuEnabledState)
@@ -70,32 +78,44 @@ public class PageZoomUma {
     // LINT.ThenChange(/tools/metrics/histograms/metadata/accessibility/enums.xml:AccessibilityPageZoomUsageType)
 
     // Page Zoom histogram values
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PAGE_ZOOM_APP_MENU_ENABLED_STATE_HISTOGRAM =
             "Accessibility.Android.PageZoom.AppMenuEnabledState";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PAGE_ZOOM_APP_MENU_SLIDER_OPENED_HISTOGRAM =
             "Accessibility.Android.PageZoom.AppMenuSliderOpened";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PAGE_ZOOM_APP_MENU_SLIDER_ZOOM_LEVEL_CHANGED_HISTOGRAM =
             "Accessibility.Android.PageZoom.AppMenuSliderZoomLevelChanged";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PAGE_ZOOM_APP_MENU_SLIDER_ZOOM_LEVEL_VALUE_HISTOGRAM =
             "Accessibility.Android.PageZoom.AppMenuSliderZoomLevelValue";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PAGE_ZOOM_SETTINGS_DEFAULT_ZOOM_LEVEL_CHANGED_HISTOGRAM =
             "Accessibility.Android.PageZoom.SettingsDefaultZoomLevelChanged";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PAGE_ZOOM_SETTINGS_DEFAULT_ZOOM_LEVEL_VALUE_HISTOGRAM =
             "Accessibility.Android.PageZoom.SettingsDefaultZoomLevelValue";
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     public static final String PAGE_ZOOM_FEATURE_USAGE = "Accessibility.Android.PageZoom.Usage";
+
+    @VisibleForTesting
+    public static final String PAGE_ZOOM_LFF_APP_MENU_USAGE =
+            "Accessibility.Android.PageZoom.LffAppMenuUsage";
+
+    @VisibleForTesting
+    public static final String PAGE_ZOOM_INDICATOR_CLICKED =
+            "Accessibility.Android.PageZoom.ZoomIndicatorClicked";
+
+    @VisibleForTesting
+    public static final String PAGE_ZOOM_IMMERSIVE_MODE_CLICKED =
+            "Accessibility.Android.PageZoom.ImmersiveModeClicked";
 
     /**
      * Log the enabled state of the page zoom slider option in the app menu.
@@ -173,6 +193,21 @@ public class PageZoomUma {
         } else {
             recordUsageMetric(AccessibilityPageZoomUsageType.NO_USAGE);
         }
+    }
+
+    /** Log that the user used the LFF app menu. */
+    public static void logLffAppMenuUsageHistogram() {
+        RecordUserAction.record(PAGE_ZOOM_LFF_APP_MENU_USAGE);
+    }
+
+    /** Log that the user clicked the zoom indicator. */
+    public static void logZoomIndicatorClicked() {
+        RecordUserAction.record(PAGE_ZOOM_INDICATOR_CLICKED);
+    }
+
+    /** Log that the user clicked the immersive mode button. */
+    public static void logImmersiveModeClicked() {
+        RecordUserAction.record(PAGE_ZOOM_IMMERSIVE_MODE_CLICKED);
     }
 
     private static void recordUsageMetric(@AccessibilityPageZoomUsageType int usageType) {

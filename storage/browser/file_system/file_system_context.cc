@@ -10,8 +10,9 @@
 #include <memory>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/containers/flat_set.h"
+#include "base/debug/crash_logging.h"
+#include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -41,7 +42,6 @@
 #include "storage/browser/file_system/file_system_quota_client.h"
 #include "storage/browser/file_system/file_system_request_info.h"
 #include "storage/browser/file_system/file_system_url.h"
-#include "storage/browser/file_system/file_system_util.h"
 #include "storage/browser/file_system/isolated_context.h"
 #include "storage/browser/file_system/isolated_file_system_backend.h"
 #include "storage/browser/file_system/mount_points.h"
@@ -52,7 +52,6 @@
 #include "storage/common/file_system/file_system_info.h"
 #include "storage/common/file_system/file_system_util.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
-#include "third_party/blink/public/mojom/quota/quota_types.mojom-shared.h"
 #include "third_party/blink/public/mojom/quota/quota_types.mojom.h"
 #include "third_party/leveldatabase/leveldb_chrome.h"
 #include "url/gurl.h"
@@ -222,8 +221,8 @@ FileSystemContext::FileSystemContext(
   // Chrome OS the additional backend ash::FileSystemBackend handles these
   // types.
   isolated_backend_ = std::make_unique<IsolatedFileSystemBackend>(
-      !base::Contains(backend_map_, kFileSystemTypeLocal),
-      !base::Contains(backend_map_, kFileSystemTypeLocalForPlatformApp));
+      !backend_map_.contains(kFileSystemTypeLocal),
+      !backend_map_.contains(kFileSystemTypeLocalForPlatformApp));
   RegisterBackend(isolated_backend_.get());
 }
 
@@ -249,8 +248,7 @@ void FileSystemContext::Initialize() {
   mojo::PendingReceiver<mojom::QuotaClient> quota_client_receiver =
       quota_client_remote.InitWithNewPipeAndPassReceiver();
   quota_manager_proxy_->RegisterClient(std::move(quota_client_remote),
-                                       QuotaClientType::kFileSystem,
-                                       QuotaManagedStorageTypes());
+                                       QuotaClientType::kFileSystem);
 
   io_task_runner_->PostTask(
       FROM_HERE,
@@ -330,7 +328,9 @@ FileSystemBackend* FileSystemContext::GetFileSystemBackend(
   if (found != backend_map_.end()) {
     return found->second;
   }
-  NOTREACHED() << "Unknown filesystem type: " << type;
+  SCOPED_CRASH_KEY_NUMBER("398002857", "file_system_type", type);
+  base::debug::DumpWithoutCrashing();
+  return nullptr;
 }
 
 WatcherManager* FileSystemContext::GetWatcherManager(
@@ -641,21 +641,6 @@ FileSystemContext::~FileSystemContext() {
   // TODO(crbug.com/41377719) This is a leak. Delete env after the backends have
   // been deleted.
   env_override_.release();
-}
-
-base::flat_set<blink::mojom::StorageType>
-FileSystemContext::QuotaManagedStorageTypes() {
-  std::vector<blink::mojom::StorageType> quota_storage_types;
-  for (FileSystemType file_system_type : GetFileSystemTypes()) {
-    const blink::mojom::StorageType storage_type =
-        FileSystemTypeToQuotaStorageType(file_system_type);
-    if (storage_type == blink::mojom::StorageType::kTemporary ||
-        storage_type == blink::mojom::StorageType::kSyncable) {
-      quota_storage_types.push_back(storage_type);
-    }
-  }
-  return base::flat_set<blink::mojom::StorageType>(
-      std::move(quota_storage_types));
 }
 
 std::unique_ptr<FileSystemOperation>

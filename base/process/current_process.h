@@ -13,8 +13,12 @@
 #include "base/no_destructor.h"
 #include "base/process/process_handle.h"
 #include "base/synchronization/lock.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/tracing/protos/chrome_enums.pbzero.h"
 #include "build/buildflag.h"
+
+namespace content::internal {
+class ProcessCpuTimeMetrics;
+}
 
 namespace tracing {
 class TraceEventDataSource;
@@ -26,13 +30,20 @@ namespace mojo::core {
 class Channel;
 }
 
+namespace network {
+class ContentDecodingInterceptor;
+}  // namespace network
+
 namespace base {
 namespace test {
 class CurrentProcessForTest;
 }  // namespace test
 
-using CurrentProcessType =
-    perfetto::protos::pbzero::ChromeProcessDescriptor::ProcessType;
+#if BUILDFLAG(IS_ANDROID)
+class PlatformThreadPriorityMonitor;
+#endif  // BUILDFLAG(IS_ANDROID)
+
+using CurrentProcessType = perfetto::protos::chrome_enums::pbzero::ProcessType;
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -51,7 +62,8 @@ enum class ShortProcessType {
   kServiceStorage = 10,
   kService = 11,
   kRendererExtension = 12,
-  kMaxValue = kRendererExtension,
+  kRendererTopWebUI = 13,
+  kMaxValue = kRendererTopWebUI,
 };
 
 // CurrentProcess class provides access to set of current process properties
@@ -74,10 +86,12 @@ class BASE_EXPORT CurrentProcess {
    private:
     TypeKey() = default;
     friend class ::base::test::CurrentProcessForTest;
+    friend class ::content::internal::ProcessCpuTimeMetrics;
     friend class ::tracing::TraceEventDataSource;
     friend class ::tracing::CustomEventRecorder;
     friend class ::tracing::TrackNameRecorder;
     friend class ::mojo::core::Channel;
+    friend class ::network::ContentDecodingInterceptor;
   };
   // Returns an enum corresponding to the type of the current process (e.g.
   // browser / renderer / utility / etc). It can be used in metrics or tracing
@@ -97,6 +111,9 @@ class BASE_EXPORT CurrentProcess {
   class NameKey {
    private:
     NameKey() = default;
+#if BUILDFLAG(IS_ANDROID)
+    friend class ::base::PlatformThreadPriorityMonitor;
+#endif  // BUILDFLAG(IS_ANDROID)
     friend class ::base::test::CurrentProcessForTest;
     friend class ::tracing::TraceEventDataSource;
     friend class ::tracing::TrackNameRecorder;
@@ -119,9 +136,7 @@ class BASE_EXPORT CurrentProcess {
 
   // Sets the name and type of the process for the metrics and tracing. This
   // function should be called as early as possible in the process's lifetime
-  // before starting any threads, typically in *Main() function. Provide
-  // process_name as an argument if it can't be trivially derived from the
-  // process type.
+  // before starting any threads, typically in *Main() function.
   void SetProcessType(CurrentProcessType process_type);
 
   // `delegate` might racily be invoked after resetting, thus its lifetime must

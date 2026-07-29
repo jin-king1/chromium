@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/media_timing.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
 namespace blink {
@@ -42,11 +43,6 @@ class VideoTiming final : public GarbageCollected<VideoTiming>,
     return first_frame_time_;
   }
 
-  void SetTimingAllowPassed(bool timing_allow_passed) {
-    timing_allow_passed_ = timing_allow_passed;
-  }
-  bool TimingAllowPassed() const override { return timing_allow_passed_; }
-
   uint64_t ContentSizeForEntropy() const override {
     // We don't do anything clever here to try to isolate the encoded size of
     // just the first frame; if we're calling this, then at least enough data
@@ -76,12 +72,18 @@ class VideoTiming final : public GarbageCollected<VideoTiming>,
 
   base::TimeTicks DiscoveryTime() const override { return base::TimeTicks(); }
 
+  bool IsVideo() const override { return true; }
+
  private:
   KURL url_;
   bool is_loaded_ = false;
   base::TimeTicks first_frame_time_;
-  bool timing_allow_passed_ = false;
   size_t content_size_ = 0;
+};
+
+template <>
+struct DowncastTraits<VideoTiming> {
+  static bool AllowFrom(const MediaTiming& timing) { return timing.IsVideo(); }
 };
 
 }  // namespace blink

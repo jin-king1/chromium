@@ -41,8 +41,6 @@ export class ViewerZoomToolbarElement extends CrLitElement {
     return {
       keyboardNavigationActive_: {type: Boolean},
 
-      pdfCr23Enabled: {type: Boolean},
-
       visible_: {
         type: Boolean,
         reflect: true,
@@ -50,9 +48,8 @@ export class ViewerZoomToolbarElement extends CrLitElement {
     };
   }
 
-  protected keyboardNavigationActive_: boolean = false;
-  protected pdfCr23Enabled: boolean = false;
-  private visible_: boolean = false;
+  protected accessor keyboardNavigationActive_: boolean = false;
+  private accessor visible_: boolean = false;
 
   override firstUpdated() {
     this.addEventListener('focus', this.onFocus_);
@@ -62,10 +59,6 @@ export class ViewerZoomToolbarElement extends CrLitElement {
 
   isVisible(): boolean {
     return this.visible_;
-  }
-
-  protected iconsetName_(): string {
-    return this.pdfCr23Enabled ? 'pdf-cr23' : 'pdf';
   }
 
   private onFocus_(): void {
@@ -87,6 +80,10 @@ export class ViewerZoomToolbarElement extends CrLitElement {
   private onPointerDown_(): void {
     this.fire('keyboard-navigation-active', false);
     this.keyboardNavigationActive_ = false;
+  }
+
+  protected onFitButtonFabclick_() {
+    this.fitToggle();
   }
 
   /** Handle clicks of the fit-button. */
@@ -130,12 +127,12 @@ export class ViewerZoomToolbarElement extends CrLitElement {
   }
 
   /** Handle clicks of the zoom-in-button. */
-  zoomIn() {
+  protected onZoomInFabclick_() {
     this.fire('zoom-in');
   }
 
   /** Handle clicks of the zoom-out-button. */
-  zoomOut() {
+  protected onZoomOutFabclick_() {
     this.fire('zoom-out');
   }
 

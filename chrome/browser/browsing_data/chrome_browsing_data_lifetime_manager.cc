@@ -6,11 +6,11 @@
 
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <string>
 #include <utility>
 
 #include "base/command_line.h"
-#include "base/containers/flat_set.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -19,12 +19,10 @@
 #include "base/task/task_traits.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_constants.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
@@ -36,19 +34,21 @@
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/browsing_data_filter_builder.h"
 #include "content/public/browser/browsing_data_remover.h"
+#include "content/public/browser/download_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck crbug.com/40147906
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #else
 #include "chrome/browser/android/tab_android.h"
@@ -66,7 +66,7 @@ using ScheduledRemovalSettings =
     ChromeBrowsingDataLifetimeManager::ScheduledRemovalSettings;
 
 // An observer of all the browsing data removal tasks that are started by the
-// ChromeBrowsingDataLifetimeManager that records the the tasks starts and
+// ChromeBrowsingDataLifetimeManager that records the tasks starts and
 // completed states as well as their durations.
 class BrowsingDataRemoverObserver
     : public content::BrowsingDataRemover::Observer {
@@ -148,7 +148,7 @@ class BrowsingDataRemoverObserver
 #endif
 };
 
-uint64_t GetOriginTypeMask(const base::Value::List& data_types) {
+uint64_t GetOriginTypeMask(const base::ListValue& data_types) {
   uint64_t result = 0;
   for (const auto& data_type : data_types) {
     std::optional<browsing_data::PolicyDataType> policy_data_type =
@@ -170,7 +170,7 @@ uint64_t GetOriginTypeMask(const base::Value::List& data_types) {
   return result;
 }
 
-uint64_t GetRemoveMask(const base::Value::List& data_types) {
+uint64_t GetRemoveMask(const base::ListValue& data_types) {
   uint64_t result = 0;
   for (const auto& data_type : data_types) {
     std::optional<browsing_data::PolicyDataType> policy_data_type =
@@ -211,7 +211,7 @@ uint64_t GetRemoveMask(const base::Value::List& data_types) {
 }
 
 std::vector<ScheduledRemovalSettings> ConvertToScheduledRemovalSettings(
-    const base::Value::List& browsing_data_settings) {
+    const base::ListValue& browsing_data_settings) {
   std::vector<ScheduledRemovalSettings> scheduled_removals_settings;
   for (const auto& setting : browsing_data_settings) {
     const auto* data_types =
@@ -226,18 +226,21 @@ std::vector<ScheduledRemovalSettings> ConvertToScheduledRemovalSettings(
   return scheduled_removals_settings;
 }
 
-base::flat_set<GURL> GetOpenedUrls(Profile* profile) {
-  base::flat_set<GURL> result;
-  // TODO (crbug/1288416): Enable this for android.
+std::set<GURL> GetOpenedUrlsAndOngoingDownloads(Profile* profile) {
+  std::set<GURL> result;
+  // TODO (crbug.com/40211511): Enable this for android.
 #if !BUILDFLAG(IS_ANDROID)
-  for (Browser* browser : *BrowserList::GetInstance()) {
-    if (browser->profile() != profile) {
-      continue;
-    }
-    for (int i = 0; i < browser->tab_strip_model()->count(); ++i) {
-      result.insert(browser->tab_strip_model()->GetWebContentsAt(i)->GetURL());
-    }
-  }
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [profile, &result](BrowserWindowInterface* browser) {
+        if (browser->GetProfile() != profile) {
+          return true;
+        }
+        TabStripModel* const tab_strip_model = browser->GetTabStripModel();
+        for (tabs::TabInterface* tab: *tab_strip_model) {
+          result.insert(tab->GetContents()->GetURL());
+        }
+        return true;
+      });
 #else
   for (const TabModel* model : TabModelList::models()) {
     for (int index = 0; index < model->GetTabCount(); ++index) {
@@ -247,6 +250,18 @@ base::flat_set<GURL> GetOpenedUrls(Profile* profile) {
     }
   }
 #endif
+
+  download::SimpleDownloadManager::DownloadVector downloads;
+  if (auto* download_manager = profile->GetDownloadManager()) {
+    download_manager->GetAllDownloads(&downloads);
+  }
+  for (const download::DownloadItem* download : downloads) {
+    auto state = download->GetState();
+    if (state != download::DownloadItem::DownloadState::IN_PROGRESS) {
+      continue;
+    }
+    result.insert(download->GetURL());
+  }
   return result;
 }
 
@@ -311,7 +326,7 @@ void ChromeBrowsingDataLifetimeManager::Shutdown() {
 
 void ChromeBrowsingDataLifetimeManager::ClearBrowsingDataForOnExitPolicy(
     bool keep_browser_alive) {
-  const base::Value::List& data_types = profile_->GetPrefs()->GetList(
+  const base::ListValue& data_types = profile_->GetPrefs()->GetList(
       browsing_data::prefs::kClearBrowsingDataOnExitList);
 
   if (!data_types.empty() &&
@@ -386,11 +401,11 @@ void ChromeBrowsingDataLifetimeManager::StartScheduledBrowsingDataRemoval() {
     if (filterable_remove_mask) {
       auto filter_builder = content::BrowsingDataFilterBuilder::Create(
           content::BrowsingDataFilterBuilder::Mode::kPreserve);
-      for (const auto& url : GetOpenedUrls(profile_)) {
+      for (const auto& url : GetOpenedUrlsAndOngoingDownloads(profile_)) {
         std::string domain = GetDomainAndRegistry(
             url, net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
         if (domain.empty()) {
-          domain = url.host();  // IP address or internal hostname.
+          domain = url.GetHost();  // IP address or internal hostname.
         }
         filter_builder->AddRegisterableDomain(domain);
       }

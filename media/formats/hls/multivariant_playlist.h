@@ -13,10 +13,10 @@
 #include "media/base/media_export.h"
 #include "media/formats/hls/parse_status.h"
 #include "media/formats/hls/playlist.h"
-#include "media/formats/hls/tag_recorder.h"
 #include "media/formats/hls/types.h"
 #include "media/formats/hls/variable_dictionary.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace media::hls {
 
@@ -25,6 +25,7 @@ class VariantStream;
 class MEDIA_EXPORT MultivariantPlaylist final : public Playlist {
  public:
   MultivariantPlaylist(base::PassKey<MultivariantPlaylist>,
+                       url::Origin security_origin,
                        GURL uri,
                        types::DecimalInteger version,
                        bool independent_segments,
@@ -43,9 +44,6 @@ class MEDIA_EXPORT MultivariantPlaylist final : public Playlist {
     return variable_dictionary_;
   }
 
-  // `Playlist` implementation
-  Kind GetKind() const override;
-
   // Attempts to parse the multivariant playlist represented by `source`. `uri`
   // must be a valid, non-empty GURL referring to the URI of this playlist.
   // `version` is the HLS version expected to be given by an `EXT-X-VERSION` tag
@@ -55,8 +53,8 @@ class MEDIA_EXPORT MultivariantPlaylist final : public Playlist {
   static ParseStatus::Or<scoped_refptr<MultivariantPlaylist>> Parse(
       std::string_view source,
       GURL uri,
-      types::DecimalInteger version,
-      TagRecorder* tag_recorder = nullptr);
+      url::Origin security_origin,
+      types::DecimalInteger version);
 
  private:
   ~MultivariantPlaylist() override;

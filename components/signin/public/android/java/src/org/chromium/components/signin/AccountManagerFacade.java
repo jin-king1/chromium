@@ -4,7 +4,6 @@
 
 package org.chromium.components.signin;
 
-import android.accounts.Account;
 import android.accounts.AccountManager;
 import android.app.Activity;
 import android.content.Intent;
@@ -20,6 +19,8 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.components.signin.base.AccountCapabilities;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.base.CoreAccountInfo;
+import org.chromium.google_apis.gaia.CoreAccountId;
+import org.chromium.google_apis.gaia.GoogleServiceAuthError;
 
 import java.util.List;
 
@@ -38,10 +39,9 @@ public interface AccountManagerFacade {
         /**
          * Invoked on the UI thread if no token is available.
          *
-         * @param isTransientError Indicates if the error is transient (network timeout or
-         *     unavailable, etc) or persistent (bad credentials, permission denied, etc).
+         * @param authError The {@link GoogleServiceAuthError} encountered during token fetch.
          */
-        void onGetTokenFailure(boolean isTransientError);
+        void onGetTokenFailure(GoogleServiceAuthError authError);
     }
 
     // TODO(crbug.com/40201126): consider refactoring this interface to use Promises.
@@ -65,26 +65,11 @@ public interface AccountManagerFacade {
 
     /**
      * Removes an observer that was previously added using {@link #addObserver}.
+     *
      * @param observer the observer to remove.
      */
     @MainThread
     void removeObserver(AccountsChangeObserver observer);
-
-    /**
-     * Retrieves corresponding {@link CoreAccountInfo}s for filtered accounts. The {@link Promise}
-     * will be fulfilled once the accounts cache is populated and gaia ids are fetched. If an error
-     * occurs while getting account list, the returned {@link Promise} will wrap an empty array.
-     *
-     * <p>Since a different {@link Promise} will be returned every time the accounts get updated,
-     * this makes he {@link Promise}t a bad candidate for end users to cache locally unless the end
-     * users are awaiting the {@link CoreAccountInfo}s for current list of accounts only.
-     *
-     * @deprecated, use {@link #getAccounts} instead.
-     *     <p>TODO(crbug.com/385309416): Migrate usages to {@link #getAccounts()} and remove.
-     */
-    @Deprecated
-    @MainThread
-    Promise<List<CoreAccountInfo>> getCoreAccountInfos();
 
     /**
      * Retrieves corresponding {@link AccountInfo}s for filtered accounts. The {@link Promise} will
@@ -99,11 +84,10 @@ public interface AccountManagerFacade {
 
     /**
      * Asynchronously gets OAuth2 access token for the given account and scope. May return a cached
-     * version, use {@link #invalidateAccessToken} to invalidate a token in the cache. Please note
-     * that this method expects a scope with 'oauth2:' prefix.
+     * version, use {@link #invalidateAccessToken} to invalidate a token in the cache.
      *
      * @param account the account to get the access token for.
-     * @param scope The scope to get an auth token for (with Android-style 'oauth2:' prefix).
+     * @param scope The scope to get an auth token for.
      * @param callback called on successful and unsuccessful fetching of auth token.
      */
     @MainThread
@@ -131,19 +115,6 @@ public interface AccountManagerFacade {
     void waitForPendingTokenRequestsToComplete(Runnable requestsCompletedCallback);
 
     /**
-     * Checks the child account status of the given account.
-     *
-     * @param coreAccountInfo The CoreAccountInfo to check the child account status.
-     * @param listener The listener is called when the status of the account (whether it is a child
-     *     one) is ready.
-     */
-    @MainThread
-    // TODO(crbug.com/355388109): Remove this method following the migration to
-    // `checkIsSubjectToParentalControls`.
-    void checkChildAccountStatus(
-            CoreAccountInfo coreAccountInfo, ChildAccountStatusListener listener);
-
-    /**
      * Check whether the account is subject to parental controls.
      *
      * @param coreAccountInfo The CoreAccountInfo to check is subject to parental controls.
@@ -162,14 +133,17 @@ public interface AccountManagerFacade {
     Promise<AccountCapabilities> getAccountCapabilities(CoreAccountInfo coreAccountInfo);
 
     /**
-     * Creates an intent that will ask the user to add a new account to the device. See
-     * {@link AccountManager#addAccount} for details.
-     * @param callback The callback to get the created intent. Will be invoked on the main
-     *         thread. If there is an issue while creating the intent, callback will receive
-     *         null.
+     * Creates an intent that will ask the user to add a new account to the device. See {@link
+     * AccountManager#addAccount} for details.
+     *
+     * @param prefilledEmail The email address to prefill in the add account flow, or null if no
+     *     email should be prefilled.
+     * @param callback The callback to get the created intent. Will be invoked on the main thread.
+     *     If there is an issue while creating the intent, callback will receive null.
      */
     @AnyThread
-    void createAddAccountIntent(Callback<Intent> callback);
+    void createAddAccountIntent(
+            @Nullable String prefilledEmail, Callback<@Nullable Intent> callback);
 
     /**
      * Asks the user to enter a new password for an account, updating the saved credentials for the
@@ -177,23 +151,25 @@ public interface AccountManagerFacade {
      */
     @MainThread
     void updateCredentials(
-            Account account, Activity activity, @Nullable Callback<Boolean> callback);
+            CoreAccountId accountId, Activity activity, @Nullable Callback<Boolean> callback);
 
     /**
-     * Asks the user to confirm their knowledge of the password to the given account.
+     * Asks the user to confirm their knowledge of the password to the given account. If the account
+     * doesn't exist will cause an assertion error.
      *
-     * @param account The {@link Account} to confirm the credentials for.
+     * @param accountId The {@link CoreAccountId} to confirm the credentials for.
      * @param activity The {@link Activity} context to use for launching a new authenticator-defined
      *     sub-Activity to prompt the user to confirm the account's password.
      * @param callback The callback to indicate whether the user successfully confirmed their
      *     knowledge of the account's credentials.
      */
-    @AnyThread
+    @MainThread
     void confirmCredentials(
-            Account account, @Nullable Activity activity, Callback<Bundle> callback);
+            CoreAccountId accountId,
+            @Nullable Activity activity,
+            Callback<@Nullable Bundle> callback);
 
     /** Whether fetching the list of accounts from the device eventually succeeded. */
-    // TODO(crbug.com/330304719): Handle this with exceptions rather than a boolean.
     boolean didAccountFetchSucceed();
 
     /**

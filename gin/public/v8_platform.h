@@ -36,6 +36,7 @@ class GIN_EXPORT V8Platform : public v8::Platform {
   ThreadIsolatedAllocator* GetThreadIsolatedAllocator() override;
 #endif
   void OnCriticalMemoryPressure() override;
+  size_t GetZeroSegmentSize() override;
 #endif
 
   std::shared_ptr<v8::TaskRunner> GetForegroundTaskRunner(
@@ -54,6 +55,8 @@ class GIN_EXPORT V8Platform : public v8::Platform {
       v8::TaskPriority priority,
       std::unique_ptr<v8::JobTask> job_task,
       const v8::SourceLocation& location) override;
+  std::unique_ptr<v8::ScopedBoostablePriority> CreateBoostablePriorityScope()
+      override;
   std::unique_ptr<v8::ScopedBlockingCall> CreateBlockingScope(
       v8::BlockingType blocking_type) override;
   bool IdleTasksEnabled(v8::Isolate* isolate) override;
@@ -63,6 +66,7 @@ class GIN_EXPORT V8Platform : public v8::Platform {
   double CurrentClockTimeMillisecondsHighResolution() override;
   StackTracePrinter GetStackTracePrinter() override;
   v8::TracingController* GetTracingController() override;
+  void DumpWithoutCrashing() override;
 
  private:
   friend struct base::LazyInstanceTraitsBase<V8Platform>;

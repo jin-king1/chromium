@@ -8,8 +8,10 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -17,12 +19,14 @@
 #include "base/memory/weak_ptr.h"
 #include "base/one_shot_event.h"
 #include "build/build_config.h"
+#include "chrome/browser/web_applications/jobs/uninstall/remove_web_app_job.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/web_app_database.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/sync/model/data_type_sync_bridge.h"
 #include "components/sync/model/entity_change.h"
 #include "components/webapps/common/web_app_id.h"
+#include "url/gurl.h"
 
 namespace base {
 class Time;
@@ -48,14 +52,11 @@ enum class InstallResultCode;
 
 namespace web_app {
 
-class AbstractWebAppDatabaseFactory;
 class AppLock;
 class ScopedRegistryUpdate;
 class WebApp;
-class WebAppCommandManager;
-class WebAppInstallManager;
+class WebAppProvider;
 class WebAppRegistryUpdate;
-class WebAppCommandScheduler;
 enum class ApiApprovalState;
 struct RegistryUpdateData;
 
@@ -93,14 +94,34 @@ enum class ManifestIdParseResult {
 // While WebAppRegistrar is a read-only model, WebAppSyncBridge is a
 // controller for that model. WebAppSyncBridge is responsible for:
 // - Registry initialization (reading model from a persistent storage like
-// LevelDb or prefs).
+//   LevelDb or prefs).
 // - Writing all the registry updates to a persistent store and sync.
 //
-// WebAppSyncBridge is the key class to support integration with Unified Sync
-// and Storage (USS) system. The sync bridge exclusively owns
+// WebAppSyncBridge is the key class to support integration with the Unified
+// Sync and Storage (USS) system. The sync bridge exclusively owns
 // DataTypeLocalChangeProcessor and WebAppDatabase (the storage).
+//
+// This is "bridge" between the WebAppProvider system's in-memory representation
+// of web apps and the Unified Sync and Storage (USS) system's database
+// representation. See syncer::DataTypeSyncBridge for more information about
+// this integration. It installs new apps, uninstalls apps the user uninstalled
+// elsewhere, and updates metadata. It also tells the sync system if there are
+// local changes.
+//
+// Note: This only stores per-web-app data, and that data will be deleted if the
+// web app is uninstalled. To store data that persists after uninstall, or
+// applies to a more general scope than a single web app, then the
+// `proto::DatabaseMetadata` object can be used (preferred), or the
+// `PrefService` on the `Profile` object or on the browser process.
 class WebAppSyncBridge : public syncer::DataTypeSyncBridge {
  public:
+  // Disable the logic that resumes pending sync installs, and fixes cases where
+  // os integration is missing but the app's install_state indicates OS
+  // integration should be present. Only intended for use in tests that need to
+  // check the app state before these operations are done.
+  static base::AutoReset<bool>
+  DisableResumeSyncInstallAndMissingOsIntegrationForTesting();
+
   explicit WebAppSyncBridge(WebAppRegistrarMutable* registrar);
   // Tests may inject mocks using this ctor.
   WebAppSyncBridge(
@@ -110,15 +131,9 @@ class WebAppSyncBridge : public syncer::DataTypeSyncBridge {
   WebAppSyncBridge& operator=(const WebAppSyncBridge&) = delete;
   ~WebAppSyncBridge() override;
 
-  void SetSubsystems(AbstractWebAppDatabaseFactory* database_factory,
-                     WebAppCommandManager* command_manager,
-                     WebAppCommandScheduler* command_scheduler_,
-                     WebAppInstallManager* install_manager_);
+  void SetProvider(base::PassKey<WebAppProvider>, WebAppProvider& provider);
 
   using CommitCallback = base::OnceCallback<void(bool success)>;
-  using RepeatingInstallCallback =
-      base::RepeatingCallback<void(const webapps::AppId& app_id,
-                                   webapps::InstallResultCode code)>;
   using RepeatingUninstallCallback =
       base::RepeatingCallback<void(const webapps::AppId& app_id,
                                    webapps::UninstallResultCode code)>;
@@ -140,7 +155,10 @@ class WebAppSyncBridge : public syncer::DataTypeSyncBridge {
   [[nodiscard]] ScopedRegistryUpdate BeginUpdate(
       CommitCallback callback = base::DoNothing());
 
-  void Init(base::OnceClosure callback);
+  using InitCallback = base::OnceCallback<void(
+      WebAppDatabaseOpenResult result,
+      std::vector<std::pair<webapps::AppId, GURL>> salvaged_apps)>;
+  void Init(InitCallback callback);
 
   // Non testing code should use SetUserDisplayModeCommand instead.
   void SetAppUserDisplayModeForTesting(
@@ -161,7 +179,7 @@ class WebAppSyncBridge : public syncer::DataTypeSyncBridge {
 
   // TODO(crbug.com/41490924): Remove this and use a command instead.
   void SetAppLastLaunchTime(const webapps::AppId& app_id,
-                            const base::Time& time);
+                            const std::optional<base::Time>& time);
 
   // TODO(crbug.com/41490924): Remove this and use a command instead.
   void SetAppFirstInstallTime(const webapps::AppId& app_id,
@@ -199,8 +217,6 @@ class WebAppSyncBridge : public syncer::DataTypeSyncBridge {
   const WebAppRegistrar& registrar() const { return *registrar_; }
 
   // syncer::DataTypeSyncBridge:
-  std::unique_ptr<syncer::MetadataChangeList> CreateMetadataChangeList()
-      override;
   std::optional<syncer::ModelError> MergeFullSyncData(
       std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
       syncer::EntityChangeList entity_data) override;
@@ -212,8 +228,12 @@ class WebAppSyncBridge : public syncer::DataTypeSyncBridge {
   std::unique_ptr<syncer::DataBatch> GetDataForCommit(
       StorageKeyList storage_keys) override;
   std::unique_ptr<syncer::DataBatch> GetAllDataForDebugging() override;
-  std::string GetClientTag(const syncer::EntityData& entity_data) override;
-  std::string GetStorageKey(const syncer::EntityData& entity_data) override;
+  std::string GetClientTag(
+      const syncer::EntityData& entity_data) const override;
+  std::string GetStorageKey(
+      const syncer::EntityData& entity_data) const override;
+  sync_pb::EntitySpecifics TrimAllSupportedFieldsFromRemoteSpecifics(
+      const sync_pb::EntitySpecifics& entity_specifics) const override;
   bool IsEntityDataValid(const syncer::EntityData& entity_data) const override;
 
   // Signals that the sync system has received data from the server at some
@@ -228,21 +248,11 @@ class WebAppSyncBridge : public syncer::DataTypeSyncBridge {
     disable_checks_for_testing_ = disable_checks_for_testing;
   }
 
-  using RetryIncompleteUninstallsCallback = base::RepeatingCallback<void(
-      const base::flat_set<webapps::AppId>& apps_to_uninstall)>;
-  void SetRetryIncompleteUninstallsCallbackForTesting(
-      RetryIncompleteUninstallsCallback callback);
-  using InstallWebAppsAfterSyncCallback =
-      base::RepeatingCallback<void(std::vector<WebApp*> web_apps,
-                                   RepeatingInstallCallback callback)>;
-  void SetInstallWebAppsAfterSyncCallbackForTesting(
-      InstallWebAppsAfterSyncCallback callback);
-  using UninstallFromSyncCallback =
-      base::RepeatingCallback<void(const std::vector<webapps::AppId>& web_apps,
-                                   RepeatingUninstallCallback callback)>;
-  void SetUninstallFromSyncCallbackForTesting(
-      UninstallFromSyncCallback callback);
   WebAppDatabase* GetDatabaseForTesting() const { return database_.get(); }
+
+  // Returns the log for the database, or nullptr if Init() has not been called
+  // yet.
+  const PersistableLog* database_log() const;
 
   // TODO(crbug.com/41490924): Remove this and make it so tests can
   // install via sync instead to reach this state.
@@ -263,9 +273,12 @@ class WebAppSyncBridge : public syncer::DataTypeSyncBridge {
   void UpdateSync(const RegistryUpdateData& update_data,
                   syncer::MetadataChangeList* metadata_change_list);
 
-  void OnDatabaseOpened(base::OnceClosure callback,
-                        Registry registry,
-                        std::unique_ptr<syncer::MetadataBatch> metadata_batch);
+  void OnDatabaseOpened(
+      InitCallback callback,
+      Registry registry,
+      std::unique_ptr<syncer::MetadataBatch> metadata_batch,
+      WebAppDatabaseOpenResult result,
+      std::vector<std::pair<webapps::AppId, GURL>> salvaged_apps);
 
   void EnsureShortcutAppToDiyAppMigration();
 
@@ -294,36 +307,19 @@ class WebAppSyncBridge : public syncer::DataTypeSyncBridge {
       const std::vector<webapps::AppId>& apps_display_mode_changed);
 
   void MaybeUninstallAppsPendingUninstall();
-  void MaybeInstallAppsFromSyncAndPendingInstallation();
-
-  void InstallWebAppsAfterSync(std::vector<WebApp*> web_apps,
-                               RepeatingInstallCallback callback);
+  void MaybeInstallAppsFromSyncAndPendingInstallOrSyncOsIntegration();
 
   std::unique_ptr<WebAppDatabase> database_;
   const raw_ptr<WebAppRegistrarMutable, DanglingUntriaged> registrar_;
-  raw_ptr<WebAppCommandManager, AcrossTasksDanglingUntriaged> command_manager_ =
-      nullptr;
-  raw_ptr<WebAppCommandScheduler, AcrossTasksDanglingUntriaged>
-      command_scheduler_ = nullptr;
-  raw_ptr<WebAppInstallManager, AcrossTasksDanglingUntriaged> install_manager_ =
-      nullptr;
+  raw_ptr<WebAppProvider> provider_ = nullptr;
 
   base::OneShotEvent on_sync_connected_;
 
   bool is_in_update_ = false;
   bool disable_checks_for_testing_ = false;
 
-  RetryIncompleteUninstallsCallback
-      retry_incomplete_uninstalls_callback_for_testing_;
-  InstallWebAppsAfterSyncCallback
-      install_web_apps_after_sync_callback_for_testing_;
-  UninstallFromSyncCallback
-      uninstall_from_sync_before_registry_update_callback_for_testing_;
-
   base::WeakPtrFactory<WebAppSyncBridge> weak_ptr_factory_{this};
 };
-
-BASE_DECLARE_FEATURE(kMigrateShortcutsToDiy);
 
 std::unique_ptr<syncer::EntityData> CreateSyncEntityData(const WebApp& app);
 

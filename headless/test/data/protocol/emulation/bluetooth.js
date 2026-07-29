@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-(async function(testRunner) {
+(async function(/** @type {import('test_runner').TestRunner} */ testRunner) {
   testRunner.log('Tests request bluetooth device headless.');
   const {result: {sessionId}} =
       await testRunner.browserP().Target.attachToBrowserTarget({});
-  const {protocol: bProtocol} = new TestRunner.Session(testRunner, sessionId);
+  const {protocol: bProtocol} = testRunner.createSessionFor(sessionId);
   const {result: {browserContextId}} =
       await bProtocol.Target.createBrowserContext();
   {
@@ -15,7 +15,7 @@
         {browserContextId, url: 'about:blank'});
     const {result: {sessionId}} =
         await bProtocol.Target.attachToTarget({targetId, flatten: true});
-    const {protocol: pProtocol} = new TestRunner.Session(testRunner, sessionId);
+    const {protocol: pProtocol} = testRunner.createSessionFor(sessionId);
 
     // In order to use Web Bluetooth, we need to load page off HTTPS, so use
     // interception.
@@ -28,7 +28,8 @@
     await pProtocol.Page.navigate({url: 'https://test.com/index.html'});
 
     // Simulate an adapter and a bluetooth device.
-    await bProtocol.BluetoothEmulation.enable({state: 'powered-on'});
+    await bProtocol.BluetoothEmulation.enable(
+        {state: 'powered-on', leSupported: true});
     await bProtocol.BluetoothEmulation.simulatePreconnectedPeripheral({
       address: '09:09:09:09:09:09',
       name: 'Test BLE device',

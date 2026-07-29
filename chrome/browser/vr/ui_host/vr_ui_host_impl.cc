@@ -4,9 +4,9 @@
 
 #include "chrome/browser/vr/ui_host/vr_ui_host_impl.h"
 
+#include <algorithm>
 #include <memory>
 
-#include "base/containers/contains.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
@@ -14,10 +14,12 @@
 #include "chrome/browser/vr/vr_browser_renderer_thread.h"
 #include "chrome/browser/vr/vr_tab_helper.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
+#include "components/permissions/permission_util.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/device_service.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/permission_controller.h"
+#include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/xr_runtime_manager.h"
 #include "device/base/features.h"
 #include "device/vr/public/mojom/vr_service.mojom.h"
@@ -132,10 +134,10 @@ VRUiHostImpl::VRUiHostImpl(
       triggered_capturing_transience_(&triggered_capturing_state_model_) {
   DVLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  CHECK(base::Contains(views, device::mojom::XREye::kLeft,
-                       &device::mojom::XRView::eye));
-  CHECK(base::Contains(views, device::mojom::XREye::kRight,
-                       &device::mojom::XRView::eye));
+  CHECK(std::ranges::contains(views, device::mojom::XREye::kLeft,
+                              &device::mojom::XRView::eye));
+  CHECK(std::ranges::contains(views, device::mojom::XREye::kRight,
+                              &device::mojom::XRView::eye));
 
   DesktopMediaPickerManager::Get()->AddObserver(this);
 
@@ -252,22 +254,30 @@ void VRUiHostImpl::InitCapturingStates() {
       web_contents_->GetBrowserContext()->GetPermissionController();
   potential_capturing_.audio_capture_enabled =
       permission_controller->GetPermissionStatusForCurrentDocument(
-          blink::PermissionType::AUDIO_CAPTURE,
+          content::PermissionDescriptorUtil::
+              CreatePermissionDescriptorForPermissionType(
+                  blink::PermissionType::AUDIO_CAPTURE),
           web_contents_->GetPrimaryMainFrame()) ==
       blink::mojom::PermissionStatus::GRANTED;
   potential_capturing_.video_capture_enabled =
       permission_controller->GetPermissionStatusForCurrentDocument(
-          blink::PermissionType::VIDEO_CAPTURE,
+          content::PermissionDescriptorUtil::
+              CreatePermissionDescriptorForPermissionType(
+                  blink::PermissionType::VIDEO_CAPTURE),
           web_contents_->GetPrimaryMainFrame()) ==
       blink::mojom::PermissionStatus::GRANTED;
   potential_capturing_.location_access_enabled =
       permission_controller->GetPermissionStatusForCurrentDocument(
-          blink::PermissionType::GEOLOCATION,
+          content::PermissionDescriptorUtil::
+              CreatePermissionDescriptorForPermissionType(
+                  blink::PermissionType::GEOLOCATION),
           web_contents_->GetPrimaryMainFrame()) ==
       blink::mojom::PermissionStatus::GRANTED;
   potential_capturing_.midi_connected =
       permission_controller->GetPermissionStatusForCurrentDocument(
-          blink::PermissionType::MIDI_SYSEX,
+          content::PermissionDescriptorUtil::
+              CreatePermissionDescriptorForPermissionType(
+                  blink::PermissionType::MIDI_SYSEX),
           web_contents_->GetPrimaryMainFrame()) ==
       blink::mojom::PermissionStatus::GRANTED;
 
@@ -294,8 +304,8 @@ void VRUiHostImpl::PollCapturingState() {
             web_contents_->GetPrimaryMainFrame());
 
     if (settings) {
-      active_capturing.location_access_enabled =
-          settings->IsContentAllowed(ContentSettingsType::GEOLOCATION);
+      active_capturing.location_access_enabled = settings->IsContentAllowed(
+          permissions::PermissionUtil::GetGeolocationType());
 
       active_capturing.audio_capture_enabled =
           settings->GetMicrophoneCameraState().Has(

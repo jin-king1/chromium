@@ -7,11 +7,11 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #import "base/apple/foundation_util.h"
-#import "ios/chrome/common/app_group/app_group_metrics.h"
 #import "ios/chrome/common/constants.h"
 #import "ios/chrome/common/credential_provider/credential.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/elements/highlight_button.h"
+#import "ios/chrome/credential_provider_extension/generated_localized_strings.h"
 #import "ios/chrome/credential_provider_extension/metrics_util.h"
 #import "ios/chrome/credential_provider_extension/ui/feature_flags.h"
 #import "ios/chrome/credential_provider_extension/ui/password_note_cell.h"
@@ -24,7 +24,7 @@ namespace {
 // view.
 const CGFloat kTableViewTopSpace = 14;
 
-NSString* kCellIdentifier = @"cdvcCell";
+NSString* const kCellIdentifier = @"cdvcCell";
 
 NSString* const kMaskedPassword = @"••••••••";
 
@@ -47,7 +47,7 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
 @property(nonatomic, weak) id<Credential> credential;
 
 // Current clear password or nil (while locked).
-@property(nonatomic, strong) NSString* clearPassword;
+@property(nonatomic, copy) NSString* clearPassword;
 
 @end
 
@@ -130,36 +130,29 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
   switch (rowIdentifier) {
     case RowIdentifier::RowIdentifierURL:
       cell.accessoryView = nil;
-      cell.textLabel.text =
-          NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_URL", @"URL");
+      cell.textLabel.text = CredentialProviderDetailsUrlString();
       cell.detailTextLabel.text = self.credential.serviceIdentifier;
       break;
     case RowIdentifier::RowIdentifierUsername:
       cell.accessoryView = nil;
-      cell.textLabel.text = NSLocalizedString(
-          @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_USERNAME", @"Username");
+      cell.textLabel.text = CredentialProviderDetailsUsernameString();
       cell.detailTextLabel.text = self.credential.username;
       break;
     case RowIdentifier::RowIdentifierPassword:
       cell.accessoryView = [self passwordIconButton];
-      cell.textLabel.text = NSLocalizedString(
-          @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_PASSWORD", @"Password");
+      cell.textLabel.text = CredentialProviderDetailsPasswordString();
       cell.detailTextLabel.text = [self password];
       break;
     case RowIdentifier::RowIdentifierNote:
       break;
     case RowIdentifier::RowIdentifierUserDisplayName:
       cell.accessoryView = nil;
-      cell.textLabel.text = NSLocalizedString(
-          @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_USER_DISPLAY_NAME",
-          @"User Display Name");
+      cell.textLabel.text = CredentialProviderDetailsUserDisplayNameString();
       cell.detailTextLabel.text = self.credential.userDisplayName;
       break;
     case RowIdentifier::RowIdentifierCreationDate:
       cell.accessoryView = nil;
-      cell.textLabel.text = NSLocalizedString(
-          @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_SHOW_CREATION_DATE",
-          @"Passkey");
+      cell.textLabel.text = CredentialProviderDetailsShowCreationDateString();
       cell.detailTextLabel.text = [self creationDate];
       break;
     default:
@@ -179,44 +172,35 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
 
   switch ([self rowIdentifier:indexPath.row]) {
     case RowIdentifier::RowIdentifierURL:
-      [self showTootip:NSLocalizedString(
-                           @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_COPY", @"Copy")
-            atBottomOf:cell
-                action:@selector(copyURL)];
+      [self showTooltip:CredentialProviderDetailsCopyString()
+             atBottomOf:cell
+                 action:@selector(copyURL)];
       break;
     case RowIdentifier::RowIdentifierUsername:
-      [self showTootip:NSLocalizedString(
-                           @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_COPY", @"Copy")
-            atBottomOf:cell
-                action:@selector(copyUsername)];
+      [self showTooltip:CredentialProviderDetailsCopyString()
+             atBottomOf:cell
+                 action:@selector(copyUsername)];
       break;
     case RowIdentifier::RowIdentifierPassword:
       if (self.clearPassword) {
-        [self
-            showTootip:NSLocalizedString(
-                           @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_COPY", @"Copy")
-            atBottomOf:cell
-                action:@selector(copyPassword)];
+        [self showTooltip:CredentialProviderDetailsCopyString()
+               atBottomOf:cell
+                   action:@selector(copyPassword)];
       } else {
-        [self
-            showTootip:NSLocalizedString(
-                           @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_SHOW_PASSWORD",
-                           @"Show Password")
-            atBottomOf:cell
-                action:@selector(showPassword)];
+        [self showTooltip:CredentialProviderDetailsShowPasswordString()
+               atBottomOf:cell
+                   action:@selector(showPassword)];
       }
       break;
     case RowIdentifier::RowIdentifierUserDisplayName:
-      [self showTootip:NSLocalizedString(
-                           @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_COPY", @"Copy")
-            atBottomOf:cell
-                action:@selector(copyUserDisplayName)];
+      [self showTooltip:CredentialProviderDetailsCopyString()
+             atBottomOf:cell
+                 action:@selector(copyUserDisplayName)];
       break;
     case RowIdentifier::RowIdentifierCreationDate:
-      [self showTootip:NSLocalizedString(
-                           @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_COPY", @"Copy")
-            atBottomOf:cell
-                action:@selector(copyCreationDate)];
+      [self showTooltip:CredentialProviderDetailsCopyString()
+             atBottomOf:cell
+                 action:@selector(copyCreationDate)];
       break;
     default:
       break;
@@ -257,28 +241,24 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
 - (void)copyURL {
   UIPasteboard* generalPasteboard = [UIPasteboard generalPasteboard];
   generalPasteboard.string = self.credential.serviceIdentifier;
-  UpdateUMACountForKey(app_group::kCredentialExtensionCopyURLCount);
 }
 
 // Copy credential Username to clipboard.
 - (void)copyUsername {
   UIPasteboard* generalPasteboard = [UIPasteboard generalPasteboard];
   generalPasteboard.string = self.credential.username;
-  UpdateUMACountForKey(app_group::kCredentialExtensionCopyUsernameCount);
 }
 
 // Copy credential User Display Name to clipboard.
 - (void)copyUserDisplayName {
   UIPasteboard* generalPasteboard = [UIPasteboard generalPasteboard];
   generalPasteboard.string = self.credential.userDisplayName;
-  UpdateUMACountForKey(app_group::kCredentialExtensionCopyUserDisplayNameCount);
 }
 
 // Copy creation date to clipboard.
 - (void)copyCreationDate {
   UIPasteboard* generalPasteboard = [UIPasteboard generalPasteboard];
   generalPasteboard.string = [self creationDate];
-  UpdateUMACountForKey(app_group::kCredentialExtensionCopyCreationDateCount);
 }
 
 // Copy password to clipboard.
@@ -288,7 +268,6 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
       [NSDate dateWithTimeIntervalSinceNow:kSecurePasteboardExpiration];
   NSDictionary* options = @{UIPasteboardOptionExpirationDate : expirationDate};
   [[UIPasteboard generalPasteboard] setItems:@[ item ] options:options];
-  UpdateUMACountForKey(app_group::kCredentialExtensionCopyPasswordCount);
 }
 
 // Initiate process to show password unobfuscated.
@@ -313,8 +292,7 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
 
 // Creates an enter button for the navigation item
 - (UIBarButtonItem*)navigationEnterButton {
-  NSString* title =
-      NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_USE", @"Use");
+  NSString* title = CredentialProviderUseString();
   UIBarButtonItem* enterButton =
       [[UIBarButtonItem alloc] initWithTitle:title
                                        style:UIBarButtonItemStyleDone
@@ -328,13 +306,11 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
 - (NSString*)creationDate {
   NSString* formattedDate =
       [self formattedDateForPasskeyCreationDate:self.credential.creationDate];
-  NSString* baseLocalizedString = NSLocalizedString(
-      @"IDS_IOS_CREDENTIAL_PROVIDER_DETAILS_CREATION_DATE", @"00/00/00");
+  NSString* baseLocalizedString = CredentialProviderDetailsCreationDateString();
 
   return
       [baseLocalizedString stringByReplacingOccurrencesOfString:@"$1"
                                                      withString:formattedDate];
-  ;
 }
 
 // Formats and returns the passkey creation date to be displayed in the UI.
@@ -351,10 +327,7 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
 
 // Creates a button to be displayed as accessory of the password row item.
 - (UIView*)passwordIconButton {
-  UIImage* image =
-      [UIImage imageNamed:self.clearPassword ? @"password_hide_icon"
-                                             : @"password_reveal_icon"];
-  image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+  UIImage* image = GetPasswordVisibilityIcon(self.clearPassword);
 
   HighlightButton* button = [HighlightButton buttonWithType:UIButtonTypeCustom];
   button.frame = CGRectMake(0.0, 0.0, image.size.width, image.size.height);
@@ -381,7 +354,7 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
   return button;
 }
 
-// Called when show/hine password icon is tapped.
+// Called when show/hide password icon is tapped.
 - (void)passwordIconButtonTapped:(id)sender event:(id)event {
   // Only password reveal / hide is an accessory, so no need to check
   // indexPath.
@@ -389,7 +362,6 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
     self.clearPassword = nil;
     [self updatePasswordRow];
   } else {
-    UpdateUMACountForKey(app_group::kCredentialExtensionShowPasswordCount);
     [self.delegate unlockPasswordForCredential:self.credential
                              completionHandler:^(NSString* password) {
                                self.clearPassword = password;
@@ -416,9 +388,9 @@ typedef NS_ENUM(NSInteger, RowIdentifier) {
                         withRowAnimation:UITableViewRowAnimationAutomatic];
 }
 
-- (void)showTootip:(NSString*)message
-        atBottomOf:(UITableViewCell*)cell
-            action:(SEL)action {
+- (void)showTooltip:(NSString*)message
+         atBottomOf:(UITableViewCell*)cell
+             action:(SEL)action {
   TooltipView* tooltip = [[TooltipView alloc] initWithKeyWindow:self.view
                                                          target:self
                                                          action:action];

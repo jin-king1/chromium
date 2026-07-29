@@ -30,13 +30,16 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.commerce.core.CommerceFeatureUtils;
 import org.chromium.components.commerce.core.CommerceFeatureUtilsJni;
@@ -44,7 +47,6 @@ import org.chromium.components.commerce.core.DiscountInfo;
 import org.chromium.components.commerce.core.ShoppingService;
 import org.chromium.components.commerce.core.ShoppingService.DiscountInfoCallback;
 import org.chromium.net.test.EmbeddedTestServer;
-import org.chromium.net.test.EmbeddedTestServerRule;
 import org.chromium.ui.test.util.ViewUtils;
 import org.chromium.url.GURL;
 
@@ -57,15 +59,12 @@ import java.util.List;
 @EnableFeatures({ChromeFeatureList.ENABLE_DISCOUNT_INFO_API})
 @Batch(Batch.PER_CLASS)
 public class DiscountsIntegrationTest {
-    private static final int TEST_PORT = 12345;
     private static final String TEST_PAGE_URL_WITH_DISCOUNTS =
             "/chrome/test/data/android/test.html";
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
-
-    @Rule
-    public final EmbeddedTestServerRule sEmbeddedTestServerRule = new EmbeddedTestServerRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule
     public ChromeRenderTestRule mRenderTestRule =
@@ -80,6 +79,7 @@ public class DiscountsIntegrationTest {
 
     private EmbeddedTestServer mTestServer;
     private GURL mTestPageWithDiscounts;
+    private WebPageStation mPage;
 
     @Before
     public void setUp() {
@@ -89,10 +89,10 @@ public class DiscountsIntegrationTest {
         CommerceFeatureUtilsJni.setInstanceForTesting(mCommerceFeatureUtilsJniMock);
         doReturn(true).when(mCommerceFeatureUtilsJniMock).isDiscountInfoApiEnabled(anyLong());
 
-        mTestServer = sEmbeddedTestServerRule.getServer();
+        mTestServer = mActivityTestRule.getTestServer();
         mTestPageWithDiscounts = new GURL(mTestServer.getURL(TEST_PAGE_URL_WITH_DISCOUNTS));
 
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
         mockShoppingServiceDiscountsResponse();
     }
 
@@ -103,7 +103,7 @@ public class DiscountsIntegrationTest {
                             discountInfoList.add(
                                     new DiscountInfo(
                                             0, 0, "en-US", "detail", "terms", "value", "code", 123,
-                                            false, 10, 123));
+                                            false, true, 10, 123));
                             DiscountInfoCallback callback = invocation.getArgument(1);
                             callback.onResult(invocation.getArgument(0), discountInfoList);
                             return null;
@@ -117,11 +117,12 @@ public class DiscountsIntegrationTest {
         ViewUtils.waitForVisibleView(
                 allOf(
                         withId(R.id.optional_toolbar_button),
-                        withContentDescription(R.string.discount_icon_expanded_text)));
+                        withContentDescription(R.string.discount_container_title)));
     }
 
     @Test
     @SmallTest
+    @DisabledTest(message = "https://crbug.com/447307244")
     public void testDiscountsContextualPageActionIconShown() {
         navigateAndWaitForDiscountsContextualPageActionIcon();
     }
@@ -130,7 +131,8 @@ public class DiscountsIntegrationTest {
     @SmallTest
     @Feature({"RenderTest"})
     @DisableIf.Build(sdk_equals = 32)
-    // Disabled on Android Automotive. See b/368117896
+    // Disabled on Android Automotive. See b/368117896; Fully disabled due to new flakes.
+    @DisabledTest(message = "https://crbug.com/444441793, crbug.com/368117896")
     public void testRenderDiscountContextualPageActionIcon() throws IOException {
         navigateAndWaitForDiscountsContextualPageActionIcon();
         mRenderTestRule.render(
@@ -142,16 +144,18 @@ public class DiscountsIntegrationTest {
 
     @Test
     @SmallTest
+    @DisabledTest(message = "https://crbug.com/402808581")
+    // TODO(402808581): Fix test and add integration tests for price tracking and price insights.
     public void testDiscountsContextualPageActionOnClickOpenBottomSheet() {
         mActivityTestRule.loadUrl(mTestPageWithDiscounts);
         ViewUtils.waitForVisibleView(
                 allOf(
                         withId(R.id.optional_toolbar_button),
-                        withContentDescription(R.string.discount_icon_expanded_text)));
+                        withContentDescription(R.string.discount_container_title)));
         onView(
                         allOf(
                                 withId(R.id.optional_toolbar_button),
-                                withContentDescription(R.string.discount_icon_expanded_text)))
+                                withContentDescription(R.string.discount_container_title)))
                 .perform(click());
         ViewUtils.waitForVisibleView(withId(R.id.commerce_bottom_sheet_content_container));
     }

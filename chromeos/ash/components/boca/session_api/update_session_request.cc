@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/json/json_writer.h"
+#include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "base/values.h"
@@ -71,16 +72,16 @@ bool UpdateSessionRequest::GetContentData(std::string* upload_content_type,
                                           std::string* upload_content) {
   *upload_content_type = boca::kContentTypeApplicationJson;
 
-  base::Value::Dict root;
+  base::DictValue root;
 
   // Mandatory data for all update request.
   root.Set(kSessionId, session_id_);
-  base::Value::Dict teacher;
+  base::DictValue teacher;
   teacher.Set(kGaiaId, teacher_.gaia_id());
   root.Set(kTeacher, std::move(teacher));
 
   if (duration_) {
-    base::Value::Dict duration;
+    base::DictValue duration;
     duration.Set(kSeconds, static_cast<int>(duration_->InSeconds()));
     root.Set(kDuration, std::move(duration));
   }
@@ -91,23 +92,23 @@ bool UpdateSessionRequest::GetContentData(std::string* upload_content_type,
 
   if (on_task_config_ || captions_config_) {
     // We always have to patch the full student groups config.
-    base::Value::Dict student_config;
+    base::DictValue student_config;
 
     // Ontask config
     if (on_task_config_) {
-      base::Value::Dict on_task_config;
+      base::DictValue on_task_config;
       ParseOnTaskConfigJsonFromProto(on_task_config_.get(), &on_task_config);
       student_config.Set(kOnTaskConfig, std::move(on_task_config));
     }
 
     // Caption Config
     if (captions_config_) {
-      base::Value::Dict caption_config;
+      base::DictValue caption_config;
       ParseCaptionConfigJsonFromProto(captions_config_.get(), &caption_config);
       student_config.Set(kCaptionsConfig, std::move(caption_config));
     }
 
-    base::Value::Dict group_student_config;
+    base::DictValue group_student_config;
     group_student_config.Set(kMainStudentGroupName, student_config.Clone());
     // TODO(crbug.com/375051415): We duplicate the session config for access
     // code student for now, this should eventually be moved to server.
@@ -115,7 +116,7 @@ bool UpdateSessionRequest::GetContentData(std::string* upload_content_type,
     root.Set(kStudentGroupsConfig, std::move(group_student_config));
   }
 
-  base::JSONWriter::Write(root, upload_content);
+  *upload_content = base::WriteJson(root).value_or("");
   return true;
 }
 

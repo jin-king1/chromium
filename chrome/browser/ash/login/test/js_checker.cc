@@ -2,17 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/login/test/js_checker.h"
 
 #include <string_view>
 
+#include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/string_escape.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/login/test/test_predicate_waiter.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
@@ -74,7 +71,7 @@ std::string DescribePath(std::initializer_list<std::string_view> element_ids) {
   std::initializer_list<std::string_view>::const_iterator it =
       element_ids.begin();
   result.append("//").append(std::string(*it));
-  for (it++; it < element_ids.end(); it++) {
+  for (UNSAFE_TODO(it++); it < element_ids.end(); UNSAFE_TODO(it++)) {
     result.append("/").append(std::string(*it));
   }
   return result;
@@ -572,8 +569,8 @@ std::string GetOobeElementPath(
   std::initializer_list<std::string_view>::const_iterator it =
       element_ids.begin();
   auto result = base::StringPrintf(kGetElement, std::string(*it).c_str());
-  for (it++; it < element_ids.end(); it++) {
-      result.append(base::StringPrintf(kShadowRoot, std::string(*it).c_str()));
+  for (UNSAFE_TODO(it++); it < element_ids.end(); UNSAFE_TODO(it++)) {
+    result.append(base::StringPrintf(kShadowRoot, std::string(*it).c_str()));
   }
   return result;
 }

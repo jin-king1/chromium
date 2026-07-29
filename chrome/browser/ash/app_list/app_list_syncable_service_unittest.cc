@@ -6,14 +6,17 @@
 
 #include <algorithm>
 #include <utility>
+#include <variant>
 
 #include "ash/app_list/model/app_list_item.h"
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/app_list/app_list_config.h"
 #include "base/containers/to_vector.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
@@ -30,7 +33,6 @@
 #include "chrome/browser/ash/app_list/test/app_list_syncable_service_test_base.h"
 #include "chrome/browser/ui/settings_window_manager_chromeos.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
-#include "chrome/common/pref_names.h"
 #include "components/app_constants/constants.h"
 #include "components/crx_file/id_util.h"
 #include "components/sync/protocol/app_list_specifics.pb.h"
@@ -39,7 +41,6 @@
 #include "components/sync/test/sync_change_processor_wrapper_for_test.h"
 #include "extensions/common/constants.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 using crx_file::id_util::GenerateId;
 using testing::ElementsAre;
@@ -220,7 +221,7 @@ class AppListSyncableServiceTest : public test::AppListSyncableServiceTestBase {
   // Returns the app list order stored as preference.
   ash::AppListSortOrder GetSortOrderFromPrefs() {
     return static_cast<ash::AppListSortOrder>(
-        profile()->GetPrefs()->GetInteger(prefs::kAppListPreferredOrder));
+        profile()->GetPrefs()->GetInteger(ash::prefs::kAppListPreferredOrder));
   }
 
   ash::AppListItem* FindItemForApp(extensions::Extension* app) {
@@ -593,6 +594,48 @@ TEST_F(AppListSyncableServiceTest, NonOEMItemIgnoreSyncToOEMFolder) {
   content::RunAllTasksUntilIdle();
 
   // Parent folder is not changed.
+  EXPECT_EQ(std::string(), app_item->folder_id());
+}
+
+// Verifies that an item is not moved to a parent that is not a folder by sync.
+TEST_F(AppListSyncableServiceTest, ItemIgnoreSyncToNonFolderParent) {
+  // Create an app.
+  const std::string app_id = CreateNextAppId(extensions::kWebStoreAppId);
+  scoped_refptr<extensions::Extension> app = MakeApp(
+      kSomeAppName, app_id, extensions::Extension::WAS_INSTALLED_BY_DEFAULT);
+  InstallExtension(app.get());
+
+  // Create another app that will be the "fake" parent (not a folder).
+  const std::string fake_parent_id = CreateNextAppId(app_id);
+  scoped_refptr<extensions::Extension> fake_parent =
+      MakeApp("Fake Parent", fake_parent_id,
+              extensions::Extension::WAS_INSTALLED_BY_DEFAULT);
+  InstallExtension(fake_parent.get());
+
+  ChromeAppListItem* app_item = GetModelUpdater()->FindItem(app_id);
+  ASSERT_TRUE(app_item);
+  // It is in the top list.
+  EXPECT_EQ(std::string(), app_item->folder_id());
+
+  // Send sync that this app is parented by the other app (which is not a
+  // folder).
+  syncer::SyncDataList sync_list;
+  sync_list.push_back(
+      CreateAppRemoteData(app_id, kSomeAppName, fake_parent_id,
+                          app_item->position().ToInternalValue(),
+                          std::string() /* item_pin_ordinal */));
+  // Include the fake parent in sync data as an app, not a folder.
+  sync_list.push_back(CreateAppRemoteData(
+      fake_parent_id, "Fake Parent", std::string(),
+      GetModelUpdater()->FindItem(fake_parent_id)->position().ToInternalValue(),
+      std::string(), sync_pb::AppListSpecifics_AppListItemType_TYPE_APP));
+
+  app_list_syncable_service()->MergeDataAndStartSyncing(
+      syncer::APP_LIST, sync_list,
+      std::make_unique<syncer::FakeSyncChangeProcessor>());
+  content::RunAllTasksUntilIdle();
+
+  // Parent folder should not be changed to the non-folder item.
   EXPECT_EQ(std::string(), app_item->folder_id());
 }
 
@@ -1036,7 +1079,7 @@ TEST_F(AppListSyncableServiceTest,
 }
 
 // Simulates and verifies the fix of the single item folder issue of
-// crbug.com/1082530. Here is the repro of the bug.
+// crbug.com/40691980. Here is the repro of the bug.
 // When user signs in on a new device for the first time, a folder contains two
 // app items, one is installed before another. After the first app is installed,
 // user sees a single item folder with the first app. User moves the app out of
@@ -1202,7 +1245,7 @@ TEST_F(AppListSyncableServiceTest, PruneRedundantPageBreakItems) {
 // This test simulates that device 2 gets the sync changes from device 1, and
 // applies the changes in model updater and the apps should have the same layout
 // as the ones on the device 1. It verifies the fix for the repro issue
-// described in http://crbug.com/938098#c15.
+// described in http://crbug.com/40616548#comment16.
 TEST_F(AppListSyncableServiceTest, PageBreakWithOverflowItem) {
   RemoveAllExistingItems();
 
@@ -1362,7 +1405,7 @@ TEST_F(AppListSyncableServiceTest, FirstAvailablePosition) {
   for (int i = 0; i < max_items_in_first_page - 1; ++i) {
     std::unique_ptr<ChromeAppListItem> item =
         std::make_unique<ChromeAppListItem>(
-            profile_.get(), GenerateId("item_id" + base::NumberToString(i)),
+            profile(), GenerateId("item_id" + base::NumberToString(i)),
             model_updater);
     ItemTestApi(item.get()).SetPosition(last_app_position);
     model_updater->AddItem(std::move(item));
@@ -1378,7 +1421,7 @@ TEST_F(AppListSyncableServiceTest, FirstAvailablePosition) {
   // Fill up the first page.
   std::unique_ptr<ChromeAppListItem> app_item =
       std::make_unique<ChromeAppListItem>(
-          profile_.get(),
+          profile(),
           GenerateId("item_id" + base::NumberToString(max_items_in_first_page)),
           model_updater);
   const syncer::StringOrdinal new_item_position =
@@ -1491,7 +1534,7 @@ TEST_F(AppListSyncableServiceTest, EphemeralAppsNotSynced) {
   EXPECT_FALSE(GetSyncItem(ephemeral_app_id));
 
   std::unique_ptr<ChromeAppListItem> ephemeral_app_item =
-      std::make_unique<ChromeAppListItem>(profile_.get(), ephemeral_app_id,
+      std::make_unique<ChromeAppListItem>(profile(), ephemeral_app_id,
                                           model_updater);
   ephemeral_app_item->SetIsEphemeral(true);
   // Can't use InstallExtension() because it calls AppRegistryCache::OnApps()
@@ -1507,10 +1550,10 @@ TEST_F(AppListSyncableServiceTest, EphemeralAppsNotSynced) {
   EXPECT_TRUE(sync_item->is_ephemeral);
 
   // Ephemeral sync items are not added to the local storage.
-  const base::Value::Dict& local_items =
-      profile_->GetPrefs()->GetDict(prefs::kAppListLocalState);
+  const base::DictValue& local_items =
+      profile()->GetPrefs()->GetDict(ash::prefs::kAppListLocalState);
 
-  const base::Value::Dict* dict_item = local_items.FindDict(ephemeral_app_id);
+  const base::DictValue* dict_item = local_items.FindDict(ephemeral_app_id);
   EXPECT_FALSE(dict_item);
 
   // Ephemeral sync items are not uploaded to sync data.
@@ -1541,7 +1584,7 @@ TEST_F(AppListSyncableServiceTest, EphemeralFoldersNotSynced) {
   syncer::StringOrdinal position =
       syncer::StringOrdinal::CreateInitialOrdinal();
   std::unique_ptr<ChromeAppListItem> ephemeral_folder_item =
-      std::make_unique<ChromeAppListItem>(profile_.get(), ephemeral_folder_id,
+      std::make_unique<ChromeAppListItem>(profile(), ephemeral_folder_id,
                                           model_updater);
   ephemeral_folder_item->SetChromeIsFolder(true);
   ephemeral_folder_item->SetChromeName("Folder");
@@ -1558,10 +1601,9 @@ TEST_F(AppListSyncableServiceTest, EphemeralFoldersNotSynced) {
   EXPECT_TRUE(sync_item->is_ephemeral);
 
   // Ephemeral sync items are not added to the local storage.
-  const base::Value::Dict& local_items =
-      profile_->GetPrefs()->GetDict(prefs::kAppListLocalState);
-  const base::Value::Dict* dict_item =
-      local_items.FindDict(ephemeral_folder_id);
+  const base::DictValue& local_items =
+      profile()->GetPrefs()->GetDict(ash::prefs::kAppListLocalState);
+  const base::DictValue* dict_item = local_items.FindDict(ephemeral_folder_id);
   EXPECT_FALSE(dict_item);
 
   // Ephemeral sync items are not uploaded to sync data.
@@ -3126,7 +3168,7 @@ TEST_F(AppListSyncableServiceTest, NewAppPlacementInitiallyOnlyFolders) {
   const std::string kFolderItemId1 = GenerateId("folder_id1");
   AppListModelUpdater* model_updater = GetModelUpdater();
   std::unique_ptr<ChromeAppListItem> folder_item1 =
-      std::make_unique<ChromeAppListItem>(profile_.get(), kFolderItemId1,
+      std::make_unique<ChromeAppListItem>(profile(), kFolderItemId1,
                                           model_updater);
   folder_item1->SetChromeIsFolder(true);
   ItemTestApi(folder_item1.get()).SetPosition(position);
@@ -3136,7 +3178,7 @@ TEST_F(AppListSyncableServiceTest, NewAppPlacementInitiallyOnlyFolders) {
 
   const std::string kFolderItemId2 = GenerateId("folder_id2");
   std::unique_ptr<ChromeAppListItem> folder_item2 =
-      std::make_unique<ChromeAppListItem>(profile_.get(), kFolderItemId2,
+      std::make_unique<ChromeAppListItem>(profile(), kFolderItemId2,
                                           model_updater);
   folder_item2->SetChromeIsFolder(true);
   ItemTestApi(folder_item2.get()).SetPosition(position);
@@ -3146,7 +3188,7 @@ TEST_F(AppListSyncableServiceTest, NewAppPlacementInitiallyOnlyFolders) {
 
   const std::string kFolderItemId3 = GenerateId("folder_id3");
   std::unique_ptr<ChromeAppListItem> folder_item3 =
-      std::make_unique<ChromeAppListItem>(profile_.get(), kFolderItemId3,
+      std::make_unique<ChromeAppListItem>(profile(), kFolderItemId3,
                                           model_updater);
   folder_item3->SetChromeIsFolder(true);
   ItemTestApi(folder_item3.get()).SetPosition(position);
@@ -3880,9 +3922,9 @@ TEST_F(AppListSyncableServiceAppPreloadTest, LauncherOrdering) {
     std::vector<std::string> result;
     for (const auto& item : ordered) {
       std::string first =
-          absl::holds_alternative<std::string>(item.first)
-              ? absl::get<std::string>(item.first)
-              : absl::get<apps::PackageId>(item.first).ToString();
+          std::holds_alternative<std::string>(item.first)
+              ? std::get<std::string>(item.first)
+              : std::get<apps::PackageId>(item.first).ToString();
       result.push_back(first + "=" + item.second.ToDebugString());
     }
     return result;
@@ -3893,25 +3935,24 @@ TEST_F(AppListSyncableServiceAppPreloadTest, LauncherOrdering) {
       ordinals_to_string(),
       ElementsAreArray({
           "chromeapp:mgndgikekgjfcpckkfioiadnlibdjbkf=n",
-          "system:lacros-chrome=t",
-          "chromeapp:cnbgggchhmkkdmeppjobngjoejnihlei=w",
-          "system:file_manager=x",
-          "web:https://mail.google.com/mail/?usp=installed_webapp=y",
-          "web:https://docs.google.com/document/?usp=installed_webapp=yn",
-          "web:https://docs.google.com/presentation/?usp=installed_webapp=z",
-          "web:https://docs.google.com/spreadsheets/?usp=installed_webapp=zm",
-          "web:https://drive.google.com/?lfhs=2=zs",
-          "web:https://www.youtube.com/?feature=ytca=zv",
-          "system:camera=zx",
-          "system:settings=zy",
-          "system:help=zyn",
-          "system:app_mall=zz",
-          "system:media=zzm",
-          "system:projector=zzs",
-          "system:print_management=zzv",
-          "system:scanning=zzx",
-          "system:shortcut_customization=zzy",
-          "system:terminal=zzyn",
+          "chromeapp:cnbgggchhmkkdmeppjobngjoejnihlei=t",
+          "system:file_manager=w",
+          "web:https://mail.google.com/mail/?usp=installed_webapp=x",
+          "web:https://docs.google.com/document/?usp=installed_webapp=y",
+          "web:https://docs.google.com/presentation/?usp=installed_webapp=yn",
+          "web:https://docs.google.com/spreadsheets/?usp=installed_webapp=z",
+          "web:https://drive.google.com/?lfhs=2=zm",
+          "web:https://www.youtube.com/?feature=ytca=zs",
+          "system:camera=zv",
+          "system:settings=zx",
+          "system:help=zy",
+          "system:app_mall=zyn",
+          "system:media=zz",
+          "system:projector=zzm",
+          "system:print_management=zzs",
+          "system:scanning=zzv",
+          "system:shortcut_customization=zzx",
+          "system:terminal=zzy",
       }));
   EXPECT_EQ(app_list_syncable_service()->GetOemFolderNameForTest(),
             "OEM folder");
@@ -3932,7 +3973,6 @@ TEST_F(AppListSyncableServiceAppPreloadTest, LauncherOrdering) {
       // app1 should come before chrome.
       {p("chromeapp:app1"), {type_app, 1}},
       {p("chromeapp:mgndgikekgjfcpckkfioiadnlibdjbkf"), {type_chrome, 2}},
-      {p("system:lacros-chrome"), {type_chrome, 2}},
       // OEM folder name should get set as 'aps-oem-folder'.
       // aps-oem-folder, aps-folder, and app2 should come after chrome.
       {"aps-oem-folder", {type_oem_folder, 3}},
@@ -3966,33 +4006,32 @@ TEST_F(AppListSyncableServiceAppPreloadTest, LauncherOrdering) {
           "chromeapp:folderapp1=n",
           "chromeapp:oem1=n",
           "chromeapp:mgndgikekgjfcpckkfioiadnlibdjbkf=n",
-          "system:lacros-chrome=t",
-          "chromeapp:oem2=t",
+          "aps-oem-folder=q",
+          "aps-folder=r",
+          "chromeapp:app2=s",
           "chromeapp:folderapp2=t",
-          "aps-oem-folder=u",  // folders and app2 after chrome.
-          "aps-folder=v",
-          "chromeapp:app2=vn",
-          "chromeapp:cnbgggchhmkkdmeppjobngjoejnihlei=w",
-          "system:file_manager=x",  // file-manager unchanged.
-          "web:https://mail.google.com/mail/?usp=installed_webapp=y",
-          "web:https://docs.google.com/document/?usp=installed_webapp=yn",
-          "web:https://docs.google.com/presentation/?usp=installed_webapp=z",
-          "web:https://docs.google.com/spreadsheets/?usp=installed_webapp=zm",
-          "web:https://drive.google.com/?lfhs=2=zs",
-          "web:https://www.youtube.com/?feature=ytca=zv",
-          "system:camera=zx",
-          "system:settings=zy",
-          "chromeapp:app3=zyg",  // app3 after settings.
-          "chromeapp:app4=zyj",  // app4 after settings, not after file_manager.
-          "system:help=zyn",
-          "system:app_mall=zz",
-          "system:media=zzm",
-          "system:projector=zzs",
-          "system:print_management=zzv",
-          "system:scanning=zzx",
-          "system:shortcut_customization=zzy",
-          "system:terminal=zzyn",
-          "chromeapp:app5=zzz",  // app5 after terminal, last item.
+          "chromeapp:oem2=t",  // folders and app2 after chrome.
+          "chromeapp:cnbgggchhmkkdmeppjobngjoejnihlei=t",
+          "system:file_manager=w",  // file-manager unchanged.
+          "web:https://mail.google.com/mail/?usp=installed_webapp=x",
+          "web:https://docs.google.com/document/?usp=installed_webapp=y",
+          "web:https://docs.google.com/presentation/?usp=installed_webapp=yn",
+          "web:https://docs.google.com/spreadsheets/?usp=installed_webapp=z",
+          "web:https://drive.google.com/?lfhs=2=zm",
+          "web:https://www.youtube.com/?feature=ytca=zs",
+          "system:camera=zv",
+          "system:settings=zx",
+          "chromeapp:app3=zxn",  // app3 after settings.
+          "chromeapp:app4=zxt",  // app4 after settings, not after file_manager.
+          "system:help=zy",
+          "system:app_mall=zyn",
+          "system:media=zz",
+          "system:projector=zzm",
+          "system:print_management=zzs",
+          "system:scanning=zzv",
+          "system:shortcut_customization=zzx",
+          "system:terminal=zzy",
+          "chromeapp:app5=zzyn",  // app5 after terminal, last item.
       }));
   EXPECT_EQ(app_list_syncable_service()->GetOemFolderNameForTest(),
             "aps-oem-folder");
@@ -4015,11 +4054,11 @@ TEST_F(AppListSyncableServiceAppPreloadTest, LauncherOrdering) {
     app->installer_package_id = package_id;
     std::vector<apps::AppPtr> deltas;
     deltas.push_back(std::move(app));
-    apps::AppServiceProxyFactory::GetForProfile(profile_.get())
-        ->OnApps(std::move(deltas), apps::AppType::kUnknown,
-                 /*should_notify_initialized=*/false);
+    apps::AppServiceProxyFactory::GetForProfile(profile())->OnApps(
+        std::move(deltas), apps::AppType::kUnknown,
+        /*should_notify_initialized=*/false);
     auto item = std::make_unique<ChromeAppListItem>(
-        profile_.get(), package_id.identifier(), GetModelUpdater());
+        profile(), package_id.identifier(), GetModelUpdater());
     ItemTestApi(item.get()).SetName(package_id.identifier());
     app_list_syncable_service()->AddItem(std::move(item));
   };
@@ -4041,9 +4080,9 @@ TEST_F(AppListSyncableServiceAppPreloadTest, LauncherOrdering) {
               ElementsAreArray({
                   "app1|app1||h",
                   "dceacbkfkmllgmjmbhgkpjegnodmildf|Hosted App||n",
-                  "ddb1da55-d478-4243-8642-56d3041f0263|aps-oem-folder||u",
+                  "ddb1da55-d478-4243-8642-56d3041f0263|aps-oem-folder||q",
                   "emfkafnhnpcmabnnkckkchdilgeoekbo|Packaged App 1||h",
-                  "folder:aps-folder|aps-folder||v",
+                  "folder:aps-folder|aps-folder||r",
                   "folderapp1|folderapp1|folder:aps-folder|n",
                   "jlklkagmeajbjiobondfhiekepofmljl|Packaged App 2||e",
                   "oem1|oem1|ddb1da55-d478-4243-8642-56d3041f0263|n",

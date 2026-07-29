@@ -6,6 +6,7 @@
 
 #include "base/allocator/partition_alloc_features.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/debug/asan_service.h"
 #include "base/i18n/icu_util.h"
 #include "base/test/test_suite_helper.h"
@@ -24,8 +25,9 @@ namespace content::mojolpm {
 
 #if defined(ADDRESS_SANITIZER)
 static void FalsePositiveErrorReportCallback(const char* reason,
-                                             bool* should_exit_cleanly) {
-  if (!strcmp(base::PlatformThread::GetName(), "fuzzer_thread")) {
+                                             bool* should_exit_cleanly,
+                                             bool* should_abort) {
+  if (!UNSAFE_TODO(strcmp(base::PlatformThread::GetName(), "fuzzer_thread"))) {
     base::debug::AsanService::GetInstance()->Log(
         "MojoLPM: FALSE POSITIVE\n"
         "This crash occurred on the fuzzer thread, so it is a false positive "
@@ -76,12 +78,15 @@ FuzzerEnvironment::FuzzerEnvironment(int argc, const char* const* argv)
   // feature in the future, after evaluating the amount of code to be updated.
   // It would be interesting, because MojoLPM would highlight area lacking
   // proper testing.
-  const bool check_dangling_pointers = true;
+  base::allocator::FeatureListConfiguration config{
+      .configure_dangling_pointer_detector = true,
+  };
 
   // Among other things, this will install the hooks to determine the
   // `MiraclePtr Status`, and some additional memory safety checks.
+  base::allocator::PartitionAllocSupport::Get()->ReconfigureEarlyish("");
   base::allocator::PartitionAllocSupport::Get()
-      ->ReconfigureAfterFeatureListInit("", check_dangling_pointers);
+      ->ReconfigureAfterFeatureListInit("", config);
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC)
 }
 

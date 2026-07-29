@@ -14,6 +14,7 @@
 #include "base/location.h"
 #include "base/metrics/field_trial.h"
 #include "base/path_service.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
@@ -24,21 +25,21 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
-#include "chrome/browser/net/proxy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_navigator.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/login/http_auth_coordinator.h"
 #include "chrome/browser/ui/login/login_tab_helper.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/content_settings/core/common/features.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_manager.h"
 #include "components/omnibox/browser/location_bar_model.h"
 #include "components/prefs/pref_service.h"
@@ -57,19 +58,21 @@
 #include "content/public/test/slow_http_response.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/browser/extension_host.h"
 #include "extensions/browser/process_manager.h"
+#include "extensions/common/extension_features.h"
 #include "net/base/auth.h"
+#include "net/base/host_port_pair.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_response.h"
+#include "net/test/embedded_test_server/register_basic_auth_handler.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/mojom/clear_data_filter.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "url/gurl.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "extensions/common/extension_features.h"
-#endif
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS));
 
 using content::NavigationController;
 using content::OpenURLParams;
@@ -337,7 +340,7 @@ class LoginPromptBrowserTest
 
     // The omnibox should show the correct origin for the new page when the
     // login prompt is shown.
-    EXPECT_EQ(expected_hostname, contents->GetVisibleURL().host());
+    EXPECT_EQ(expected_hostname, contents->GetVisibleURL().GetHost());
 
     if (cancel_prompt) {
       // Cancel, which triggers a reload to get the error page content from the
@@ -347,7 +350,7 @@ class LoginPromptBrowserTest
       content::TestNavigationObserver reload_observer(contents);
       handler->CancelAuth(/*notify_others=*/true);
       reload_observer.Wait();
-      EXPECT_EQ(expected_hostname, contents->GetVisibleURL().host());
+      EXPECT_EQ(expected_hostname, contents->GetVisibleURL().GetHost());
     }
   }
 
@@ -424,15 +427,14 @@ void LoginPromptBrowserTest::ExpectSuccessfulBasicAuthTitle(
 // that there is no regression in behavior when third party cookies are not
 // blocked this test fixture has been added which turns off third party cookie
 // blocking.
-// crbug/1503201 - LoginPromptBrowserTest cases fail in 3PCD
+// crbug.com/40943629 - LoginPromptBrowserTest cases fail in 3PCD
 class LoginPromptBrowserTestThirdPartyCookiesUnblocked
     : public LoginPromptBrowserTest {
  public:
   LoginPromptBrowserTestThirdPartyCookiesUnblocked() {
     scoped_feature_list_.InitWithFeatureStates(
         {{network::features::kSplitAuthCacheByNetworkIsolationKey,
-          (GetParam() == SplitAuthCacheByNetworkIsolationKey::kTrue)},
-         {content_settings::features::kTrackingProtection3pcd, false}});
+          (GetParam() == SplitAuthCacheByNetworkIsolationKey::kTrue)}});
   }
 
  private:
@@ -460,7 +462,7 @@ const char kCCNSPage[] = "/echoall/nocache";
 
 // It does not matter what pages are selected as no-auth, as long as they exist.
 // Navigating to non-existing pages caused flakes in the past
-// (https://crbug.com/636875).
+// (https://crbug.com/41269449).
 const char kNoAuthPage1[] = "/simple.html";
 
 // Confirm that <link rel="prefetch"> targetting an auth required
@@ -507,7 +509,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest, TestBasicAuth) {
       SimulateNetworkServiceCrash();
       // Flush the network interface to make sure it notices the crash.
       browser()
-          ->profile()
+          ->GetProfile()
           ->GetDefaultStoragePartition()
           ->FlushNetworkInterfaceForTesting();
     }
@@ -991,7 +993,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
   // There should be no login prompt.
   {
     GURL test_page = embedded_test_server()->GetURL(kTestPage);
-    ASSERT_EQ("127.0.0.1", test_page.host());
+    ASSERT_EQ("127.0.0.1", test_page.GetHost());
 
     // Change the host from 127.0.0.1 to www.a.com so that when the
     // page tries to load from b, it will be cross-origin.
@@ -1008,7 +1010,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
   // There should be one login prompt.
   {
     GURL test_page = embedded_test_server()->GetURL(kTestPage);
-    ASSERT_EQ("127.0.0.1", test_page.host());
+    ASSERT_EQ("127.0.0.1", test_page.GetHost());
 
     // Change the host from 127.0.0.1 to www.b.com so that when the
     // page tries to load from b, it will be same-origin.
@@ -1049,7 +1051,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
   // cross-domain.
   {
     GURL test_page = embedded_test_server()->GetURL(kTestPage);
-    ASSERT_EQ("127.0.0.1", test_page.host());
+    ASSERT_EQ("127.0.0.1", test_page.GetHost());
 
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_page));
   }
@@ -1058,7 +1060,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
   // b.com iframe'd under b.com and includes an image.
   {
     GURL test_page = embedded_test_server()->GetURL(kTestPage);
-    ASSERT_EQ("127.0.0.1", test_page.host());
+    ASSERT_EQ("127.0.0.1", test_page.GetHost());
 
     // Change the host from 127.0.0.1 to www.b.com so that when the
     // page tries to load from b, it will be same-origin.
@@ -1125,7 +1127,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTestThirdPartyCookiesUnblocked,
   // Load a page that has a cross-domain iframe authentication.
   {
     GURL test_page = embedded_test_server()->GetURL(kTestPage);
-    ASSERT_EQ("127.0.0.1", test_page.host());
+    ASSERT_EQ("127.0.0.1", test_page.GetHost());
 
     // Change the host from 127.0.0.1 to www.a.com so that when the
     // page tries to load from b, it will be cross-origin.
@@ -1151,7 +1153,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTestThirdPartyCookiesUnblocked,
       // When a cross origin iframe displays a login prompt, the blank
       // interstitial shouldn't be displayed and the omnibox should show the
       // main frame's url, not the iframe's.
-      EXPECT_EQ(kNewHost, contents->GetVisibleURL().host());
+      EXPECT_EQ(kNewHost, contents->GetVisibleURL().GetHost());
 
       handler->CancelAuth(/*notify_others=*/true);
       auth_cancelled_waiter.Wait();
@@ -1159,7 +1161,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTestThirdPartyCookiesUnblocked,
   }
 
   // Should stay on the main frame's url once the prompt the iframe is closed.
-  EXPECT_EQ("www.a.com", contents->GetVisibleURL().host());
+  EXPECT_EQ("www.a.com", contents->GetVisibleURL().GetHost());
 
   EXPECT_EQ(1, browser_client_->auth_needed_count);
 }
@@ -1589,7 +1591,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTestThirdPartyCookiesUnblocked,
 
   base::RunLoop run_loop;
   browser()
-      ->profile()
+      ->GetProfile()
       ->GetDefaultStoragePartition()
       ->GetNetworkContext()
       ->ClearHttpCache(base::Time(), base::Time(), nullptr,
@@ -1638,14 +1640,14 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTestThirdPartyCookiesUnblocked,
                        GloballyScopeHTTPAuthCacheEnabled) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  browser()->profile()->GetPrefs()->SetBoolean(
+  browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kGloballyScopeHTTPAuthCacheEnabled, true);
   // This is not technically necessary, since the SetAuthFor() call below uses
   // the same pipe that the pref change uses, making sure the change is applied
   // before the network process receives credentials, but seems safest to flush
   // the NetworkContext pipe explicitly.
   browser()
-      ->profile()
+      ->GetProfile()
       ->GetDefaultStoragePartition()
       ->FlushNetworkInterfaceForTesting();
 
@@ -1669,7 +1671,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTestThirdPartyCookiesUnblocked,
 
   base::RunLoop run_loop;
   browser()
-      ->profile()
+      ->GetProfile()
       ->GetDefaultStoragePartition()
       ->GetNetworkContext()
       ->ClearHttpCache(base::Time(), base::Time(), nullptr,
@@ -1706,7 +1708,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
   ASSERT_TRUE(embedded_test_server()->Start());
 
   GURL test_page = embedded_test_server()->GetURL(kAuthBasicPage);
-  ASSERT_EQ("127.0.0.1", test_page.host());
+  ASSERT_EQ("127.0.0.1", test_page.GetHost());
   std::string auth_host("127.0.0.1");
   TestCrossOriginPrompt(browser(), test_page, auth_host, true);
 }
@@ -1717,9 +1719,9 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
                        ShowCorrectUrlForCrossOriginMainFrameRequests_Popup) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
-  Browser* popup = CreateBrowserForPopup(browser()->profile());
+  Browser* popup = CreateBrowserForPopup(browser()->GetProfile());
   const GURL test_page = embedded_test_server()->GetURL(kAuthBasicPage);
-  ASSERT_EQ("127.0.0.1", test_page.host());
+  ASSERT_EQ("127.0.0.1", test_page.GetHost());
   const std::string auth_host("127.0.0.1");
   TestCrossOriginPrompt(popup, test_page, auth_host, true);
 }
@@ -1732,7 +1734,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
 
   const char kTestPage[] = "/login/cross_origin.html";
   GURL test_page = embedded_test_server()->GetURL(kTestPage);
-  ASSERT_EQ("127.0.0.1", test_page.host());
+  ASSERT_EQ("127.0.0.1", test_page.GetHost());
   std::string auth_host("www.a.com");
   TestCrossOriginPrompt(browser(), test_page, auth_host, true);
 }
@@ -1743,7 +1745,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
 // create a blank interstitial for second page (www.b.com) and show its URL in
 // the omnibox.
 
-// Fails occasionally on Mac. http://crbug.com/852703
+// Fails occasionally on Mac. http://crbug.com/41394568
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_CancelLoginInterstitialOnRedirect \
   DISABLED_CancelLoginInterstitialOnRedirect
@@ -1758,7 +1760,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
   // The test page redirects to www.a.com which triggers an auth dialog.
   const char kTestPage[] = "/login/cross_origin.html";
   GURL test_page = embedded_test_server()->GetURL(kTestPage);
-  ASSERT_EQ("127.0.0.1", test_page.host());
+  ASSERT_EQ("127.0.0.1", test_page.GetHost());
 
   // The page at b.com simply displays an auth dialog.
   GURL::Replacements replace_host2;
@@ -1791,12 +1793,12 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
     content::WaitForLoadStop(contents);
   }
 
-  EXPECT_EQ("www.b.com", contents->GetVisibleURL().host());
+  EXPECT_EQ("www.b.com", contents->GetVisibleURL().GetHost());
 
   // Cancel auth dialog for www.b.com.
   LoginHandler* handler = LoginHandler::GetAllLoginHandlersForTest().front();
   handler->CancelAuth(/*notify_others=*/true);
-  EXPECT_EQ("www.b.com", contents->GetVisibleURL().host());
+  EXPECT_EQ("www.b.com", contents->GetVisibleURL().GetHost());
 }
 
 // Test the scenario where an auth interstitial should replace a different type
@@ -1833,7 +1835,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
   {
     auto auth_needed_waiter = CreateAuthNeededObserver();
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), auth_url));
-    ASSERT_EQ("127.0.0.1", contents->GetLastCommittedURL().host());
+    ASSERT_EQ("127.0.0.1", contents->GetLastCommittedURL().GetHost());
     ASSERT_TRUE(contents->GetLastCommittedURL().SchemeIs("http"));
     auth_needed_waiter.Wait();
     ASSERT_EQ(1u, LoginHandler::GetAllLoginHandlersForTest().size());
@@ -1842,16 +1844,16 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
     content::TestNavigationObserver reload_observer(contents);
     handler->CancelAuth(/*notify_others=*/true);
     reload_observer.Wait();
-    EXPECT_EQ("127.0.0.1", contents->GetVisibleURL().host());
+    EXPECT_EQ("127.0.0.1", contents->GetVisibleURL().GetHost());
     EXPECT_EQ(auth_url, contents->GetLastCommittedURL());
   }
 
   // Navigate to a broken SSL page. This is a cross origin navigation since
   // schemes don't match (http vs https).
   {
-    ASSERT_EQ("127.0.0.1", broken_ssl_page.host());
+    ASSERT_EQ("127.0.0.1", broken_ssl_page.GetHost());
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), broken_ssl_page));
-    ASSERT_EQ("127.0.0.1", contents->GetLastCommittedURL().host());
+    ASSERT_EQ("127.0.0.1", contents->GetLastCommittedURL().GetHost());
     ASSERT_TRUE(contents->GetLastCommittedURL().SchemeIs("https"));
     ASSERT_TRUE(WaitForRenderFrameReady(contents->GetPrimaryMainFrame()));
   }
@@ -1867,7 +1869,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
   {
     auto auth_needed_waiter = CreateAuthNeededObserver();
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), auth_url));
-    ASSERT_EQ("127.0.0.1", contents->GetLastCommittedURL().host());
+    ASSERT_EQ("127.0.0.1", contents->GetLastCommittedURL().GetHost());
     ASSERT_TRUE(contents->GetLastCommittedURL().SchemeIs("http"));
 
     auth_needed_waiter.Wait();
@@ -1899,7 +1901,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTestThirdPartyCookiesUnblocked,
   // trigger a login prompt but no login interstitial.
   GURL test_page = embedded_test_server()->GetURL(kTestPage);
   GURL broken_ssl_page = https_server.GetURL("/");
-  ASSERT_EQ("127.0.0.1", test_page.host());
+  ASSERT_EQ("127.0.0.1", test_page.GetHost());
   auto auth_needed_waiter = CreateAuthNeededObserver();
   browser()->OpenURL(
       OpenURLParams(test_page, Referrer(), WindowOpenDisposition::CURRENT_TAB,
@@ -1947,7 +1949,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest, TestBasicAuthDisabled) {
       SimulateNetworkServiceCrash();
       // Flush the network interface to make sure it notices the crash.
       browser()
-          ->profile()
+          ->GetProfile()
           ->GetDefaultStoragePartition()
           ->FlushNetworkInterfaceForTesting();
     }
@@ -2011,7 +2013,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
 }
 
 // Tests that the repost dialog is not shown when credentials are entered for a
-// POST navigation. Regression test for https://crbug.com/1062317.
+// POST navigation. Regression test for https://crbug.com/40680081.
 IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest, NoRepostDialogAfterCredentials) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
@@ -2037,7 +2039,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest, NoRepostDialogAfterCredentials) {
 
 // Tests that when HTTP Auth committed interstitials are enabled, showing a
 // login prompt in a new window opened from window.open() does not
-// crash. Regression test for https://crbug.com/1005096.
+// crash. Regression test for https://crbug.com/40648068.
 IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest, PromptWithOnlyInitialEntry) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
@@ -2125,7 +2127,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleUnauthorized(
 
 // Tests that 401 responses are not cancelled and replaced with a blank page
 // when incorrect credentials were supplied in the request. See
-// https://crbug.com/1047742.
+// https://crbug.com/40671553.
 IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
                        ResponseNotCancelledWithIncorrectCredentials) {
   // Register a custom handler that returns a 401 Unauthorized response
@@ -2159,12 +2161,38 @@ IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
                 "document.body.innerHTML.indexOf('Unauthorized') === -1"));
 }
 
-class LoginProxyBrowserTest : public ProxyBrowserTest,
+class LoginProxyBrowserTest : public InProcessBrowserTest,
                               public LoginPromptBrowserTestHelper {
  public:
+  LoginProxyBrowserTest() {
+    // HTTPS server to be tunnelled to via a proxy server requiring basic auth.
+    // Use CERT_TEST_NAMES so the default logic on some platforms not to proxy
+    // requests to localhost doesn't cause issues.
+    embedded_https_test_server().SetSSLConfig(
+        net::EmbeddedTestServer::CERT_TEST_NAMES);
+    EXPECT_TRUE(embedded_https_test_server().Start());
+
+    // `embedded_test_server()` acts as a bogus HTTP proxy that requires auth.
+    // It returns 407s if the necessary Proxy-Authorization header is missing,
+    // and it correctly tunnels CONNECT requests to "a.test" and
+    // embedded_https_test_server()'s port to embedded_https_test_server().
+    RegisterProxyBasicAuthHandler(*embedded_test_server(), "user", "pass");
+    embedded_test_server()->EnableConnectProxy(
+        /*proxied_destinations=*/
+        {net::HostPortPair::FromURL(
+            embedded_https_test_server().GetURL("a.test", "/"))});
+    EXPECT_TRUE(embedded_test_server()->Start());
+  }
+
   void SetUpOnMainThread() override {
     SetUpLoginFakes();
     InProcessBrowserTest::SetUpOnMainThread();
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    command_line->AppendSwitchASCII(
+        switches::kProxyServer,
+        embedded_test_server()->host_port_pair().ToString());
   }
 
   void TestProxyAuth(Browser* browser, const GURL& test_page) {
@@ -2189,7 +2217,10 @@ class LoginProxyBrowserTest : public ProxyBrowserTest,
     }
 
     // The URL should be hidden to avoid origin confusion issues.
-    EXPECT_TRUE(browser->location_bar_model()->GetFormattedFullURL().empty());
+    EXPECT_TRUE(browser->GetFeatures()
+                    .location_bar_model()
+                    ->GetFormattedFullURL()
+                    .empty());
 
     // Cancel the prompt, which triggers a reload to read the error page content
     // from the server. On HTTPS pages, the error page content still shouldn't
@@ -2208,8 +2239,10 @@ class LoginProxyBrowserTest : public ProxyBrowserTest,
             content::EvalJs(contents, "document.documentElement.innerHTML"));
       }
 
-      EXPECT_FALSE(
-          browser->location_bar_model()->GetFormattedFullURL().empty());
+      EXPECT_FALSE(browser->GetFeatures()
+                       .location_bar_model()
+                       ->GetFormattedFullURL()
+                       .empty());
     }
 
     // Reload; this time, supply credentials and check that the page loads.
@@ -2220,18 +2253,24 @@ class LoginProxyBrowserTest : public ProxyBrowserTest,
                                      ui::PAGE_TRANSITION_TYPED, false),
                        /*navigation_handle_callback=*/{});
       auth_needed_waiter.Wait();
-      EXPECT_TRUE(browser->location_bar_model()->GetFormattedFullURL().empty());
+      EXPECT_TRUE(browser->GetFeatures()
+                      .location_bar_model()
+                      ->GetFormattedFullURL()
+                      .empty());
     }
 
     auto auth_supplied_waiter = CreateAuthSuppliedObserver();
     LoginHandler* handler = LoginHandler::GetAllLoginHandlersForTest().front();
-    handler->SetAuth(u"foo", u"bar");
+    handler->SetAuth(u"user", u"pass");
     auth_supplied_waiter.Wait();
 
     std::u16string expected_title = u"OK";
     content::TitleWatcher title_watcher(contents, expected_title);
     EXPECT_EQ(expected_title, title_watcher.WaitAndGetTitle());
-    EXPECT_FALSE(browser->location_bar_model()->GetFormattedFullURL().empty());
+    EXPECT_FALSE(browser->GetFeatures()
+                     .location_bar_model()
+                     ->GetFormattedFullURL()
+                     .empty());
   }
 };
 
@@ -2243,18 +2282,17 @@ class LoginProxyBrowserTest : public ProxyBrowserTest,
 #define MAYBE_ProxyAuthHTTPS ProxyAuthHTTPS
 #endif
 IN_PROC_BROWSER_TEST_F(LoginProxyBrowserTest, MAYBE_ProxyAuthHTTPS) {
-  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
-  https_server.AddDefaultHandlers(GetChromeTestDataDir());
-  ASSERT_TRUE(https_server.Start());
-  ASSERT_NO_FATAL_FAILURE(
-      TestProxyAuth(browser(), https_server.GetURL("/simple.html")));
+  ASSERT_NO_FATAL_FAILURE(TestProxyAuth(
+      browser(),
+      embedded_https_test_server().GetURL("a.test", "/simple.html")));
 }
 
 // Tests that basic proxy auth works as expected, for HTTP pages.
 IN_PROC_BROWSER_TEST_F(LoginProxyBrowserTest, ProxyAuthHTTP) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-  ASSERT_NO_FATAL_FAILURE(
-      TestProxyAuth(browser(), embedded_test_server()->GetURL("/simple.html")));
+  // Hostname doesn't matter. Not using localhost or similar bypasses default
+  // behavior on some platforms not to proxy localhost.
+  ASSERT_NO_FATAL_FAILURE(TestProxyAuth(
+      browser(), embedded_test_server()->GetURL("host.test", "/simple.html")));
 }
 
 class LoginPromptExtensionBrowserTest
@@ -2286,7 +2324,8 @@ INSTANTIATE_TEST_SUITE_P(
                       SplitAuthCacheByNetworkIsolationKey::kTrue));
 
 // Tests that with committed interstitials, extensions are notified once per
-// request when auth is required. Regression test for https://crbug.com/1034468.
+// request when auth is required. Regression test for
+// https://crbug.com/40663804.
 IN_PROC_BROWSER_TEST_P(LoginPromptExtensionBrowserTest,
                        OnAuthRequiredNotifiedOnce) {
   const char kSlowResponse[] = "/slow-response";
@@ -2336,7 +2375,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptExtensionBrowserTest,
   // End the response that prompted for basic auth.
   std::move(finish_slow_response).Run();
 
-  // If https://crbug.com/1034468 regresses, the test may hang here. In that
+  // If https://crbug.com/40663804 regresses, the test may hang here. In that
   // bug, extensions were getting notified of each auth request twice, and the
   // extension must handle the auth request both times before LoginHandler
   // proceeds to show the login prompt. Usually, the request is fully destroyed
@@ -2370,7 +2409,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptExtensionBrowserTest,
 }
 
 // Tests that extensions can cancel authentication requests to suppress a
-// prompt. Regression test for https://crbug.com/1075442.
+// prompt. Regression test for https://crbug.com/40687659.
 IN_PROC_BROWSER_TEST_P(LoginPromptExtensionBrowserTest, OnAuthRequiredCancels) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
@@ -2392,7 +2431,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptExtensionBrowserTest, OnAuthRequiredCancels) {
 
 // Tests that login prompts are shown for main resource requests that are
 // intercepted by service workers. Regression test for
-// https://crbug.com/1055253.
+// https://crbug.com/40676156.
 IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest, BasicAuthWithServiceWorker) {
   net::test_server::EmbeddedTestServer https_server(
       net::test_server::EmbeddedTestServer::TYPE_HTTPS);
@@ -2467,7 +2506,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleHttpAuthRequest(
 
 // Tests that crash doesn't happen, when the service worker calls fetch() for a
 // subresource and the page is destroyed before OnAuthRequired() is called. This
-// is a regression test for https://crbug.com/1320420.
+// is a regression test for https://crbug.com/40223506.
 IN_PROC_BROWSER_TEST_P(LoginPromptBrowserTest,
                        BasicAuthWithServiceWorkerForFetchSubResource) {
   net::test_server::EmbeddedTestServer https_server(
@@ -2590,7 +2629,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptPrerenderBrowserTest, CancelOnAuthRequested) {
   content::test::PrerenderHostRegistryObserver registry_observer(
       *GetWebContents());
   registry_observer.WaitForTrigger(kPrerenderingUrl);
-  content::FrameTreeNodeId host_id =
+  content::PrerenderHostId host_id =
       prerender_helper().GetHostForUrl(kPrerenderingUrl);
   content::test::PrerenderHostObserver host_observer(*GetWebContents(),
                                                      host_id);
@@ -2613,7 +2652,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptPrerenderBrowserTest,
 
   // Start prerendering `kPrerenderingUrl`.
   const GURL kPrerenderingUrl = embedded_test_server()->GetURL("/title1.html");
-  content::FrameTreeNodeId host_id =
+  content::PrerenderHostId host_id =
       prerender_helper().AddPrerender(kPrerenderingUrl);
   content::test::PrerenderHostObserver host_observer(*GetWebContents(),
                                                      host_id);
@@ -2648,7 +2687,7 @@ IN_PROC_BROWSER_TEST_P(LoginPromptPrerenderBrowserTest,
 
   // Start prerendering `kPrerenderingUrl`.
   const GURL kPrerenderingUrl = embedded_test_server()->GetURL("/title1.html");
-  content::FrameTreeNodeId host_id =
+  content::PrerenderHostId host_id =
       prerender_helper().AddPrerender(kPrerenderingUrl);
   content::test::PrerenderHostObserver host_observer(*GetWebContents(),
                                                      host_id);

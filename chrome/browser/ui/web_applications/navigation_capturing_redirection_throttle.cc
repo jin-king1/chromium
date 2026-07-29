@@ -21,10 +21,10 @@ using ThrottleCheckResult = content::NavigationThrottle::ThrottleCheckResult;
 }  // namespace
 
 // static
-std::unique_ptr<content::NavigationThrottle>
-NavigationCapturingRedirectionThrottle::MaybeCreate(
-    content::NavigationHandle* handle) {
-  return base::WrapUnique(new NavigationCapturingRedirectionThrottle(handle));
+void NavigationCapturingRedirectionThrottle::MaybeCreateAndAdd(
+    content::NavigationThrottleRegistry& registry) {
+  registry.AddThrottle(
+      base::WrapUnique(new NavigationCapturingRedirectionThrottle(registry)));
 }
 
 NavigationCapturingRedirectionThrottle::
@@ -44,25 +44,11 @@ NavigationCapturingRedirectionThrottle::WillProcessResponse() {
     result = process->HandleRedirect();
   }
 
-  // If the navigation is not cancelled, this is the time to enqueue launch
-  // params, record launch metrics and maybe show a navigation capturing IPH.
-  // Note that there is still a small chance that some other navigation throttle
-  // will cancel this navigation, so ideally we would wait until the navigation
-  // actually commits, but this is an easier place to hook into.
-  if (result.action() != content::NavigationThrottle::CANCEL) {
-    WebAppLaunchNavigationHandleUserData* handle_user_data =
-        WebAppLaunchNavigationHandleUserData::GetForNavigationHandle(
-            *navigation_handle());
-    if (handle_user_data) {
-      handle_user_data->MaybePerformAppHandlingTasksInWebContents();
-    }
-  }
-
   return result;
 }
 
 NavigationCapturingRedirectionThrottle::NavigationCapturingRedirectionThrottle(
-    content::NavigationHandle* navigation_handle)
-    : content::NavigationThrottle(navigation_handle) {}
+    content::NavigationThrottleRegistry& registry)
+    : content::NavigationThrottle(registry) {}
 
 }  // namespace web_app

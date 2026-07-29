@@ -43,6 +43,10 @@ class FileAnalyzer {
     Results(const Results& other);
     ~Results();
 
+    // What type of inspection was performed to yield the results here.
+    DownloadFileType::InspectionType inspection_performed =
+        DownloadFileType::NONE;
+
     // When analyzing a ZIP or RAR, the type becomes clarified by content
     // inspection (does it contain binaries/archives?). So we return a type.
     ClientDownloadRequest::DownloadType type;
@@ -84,7 +88,8 @@ class FileAnalyzer {
   };
 
   explicit FileAnalyzer(
-      scoped_refptr<BinaryFeatureExtractor> binary_feature_extractor);
+      scoped_refptr<BinaryFeatureExtractor> binary_feature_extractor,
+      bool is_obfuscated = false);
   ~FileAnalyzer();
   void Start(const base::FilePath& target_file_name,
              const base::FilePath& tmp_path,
@@ -138,6 +143,8 @@ class FileAnalyzer {
 
   std::unique_ptr<SandboxedRarAnalyzer, base::OnTaskRunnerDeleter>
       rar_analyzer_{nullptr, base::OnTaskRunnerDeleter(nullptr)};
+
+  bool is_obfuscated_ = false;
 #endif
 
 #if BUILDFLAG(IS_MAC)

@@ -104,13 +104,15 @@ class BASE_EXPORT FileEnumerator {
     std::vector<std::string> subdirs_;
 #endif
 #if BUILDFLAG(IS_WIN)
-    CHROME_WIN32_FIND_DATA find_data_;
+    CHROME_WIN32_FIND_DATA find_data_ = {};
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
     stat_wrapper_t stat_;
     FilePath filename_;
 #endif
   };
 
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base
+  // GENERATED_JAVA_IS_FLAG: true
   enum FileType {
     FILES = 1 << 0,
     DIRECTORIES = 1 << 1,
@@ -124,6 +126,9 @@ class BASE_EXPORT FileEnumerator {
     NAMES_ONLY = 1 << 3,
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+    // Report symlinks in the enumeration. If not set, instead report their
+    // targets. Recursive enumerations traverse symlinks to directories only if
+    // SHOW_SYM_LINKS is not set.
     SHOW_SYM_LINKS = 1 << 4,
 #endif
   };
@@ -240,7 +245,7 @@ class BASE_EXPORT FileEnumerator {
 
   // True when find_data_ is valid.
   bool has_find_data_ = false;
-  CHROME_WIN32_FIND_DATA find_data_;
+  CHROME_WIN32_FIND_DATA find_data_ = {};
   HANDLE find_handle_ = INVALID_HANDLE_VALUE;
 
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)

@@ -4,8 +4,6 @@
 
 import type {App} from './app_management.mojom-webui.js';
 
-export {AppType, InstallReason, InstallSource, RunOnOsLogin, RunOnOsLoginMode, WindowMode} from './app_management.mojom-webui.js';
-
 /**
  * The number of apps displayed in app list in the main view before expanding.
  */
@@ -23,7 +21,7 @@ export const AppManagementEntryPointsHistogramName =
     'AppManagement.EntryPoints';
 
 /**
- * These values are persisted to logs and should not be renumbered or re-used.
+ * These values are persisted to logs and should not be renumbered or reused.
  * See tools/metrics/histograms/enums.xml.
  */
 export enum AppManagementEntryPoint {
@@ -43,7 +41,7 @@ export enum AppManagementEntryPoint {
 }
 
 /**
- * These values are persisted to logs and should not be renumbered or re-used.
+ * These values are persisted to logs and should not be renumbered or reused.
  * See tools/metrics/histograms/enums.xml.
  */
 export enum AppManagementUserAction {

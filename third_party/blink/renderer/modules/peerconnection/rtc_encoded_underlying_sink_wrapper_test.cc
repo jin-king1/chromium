@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_underlying_sink_wrapper.h"
 
+#include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/unguessable_token.h"
@@ -63,7 +64,7 @@ class RTCEncodedUnderlyingSinkWrapperTest : public testing::Test {
       : main_task_runner_(
             blink::scheduler::GetSingleThreadTaskRunnerForTesting()),
         webrtc_callback_(
-            new rtc::RefCountedObject<MockWebRtcTransformedFrameCallback>()),
+            new webrtc::RefCountedObject<MockWebRtcTransformedFrameCallback>()),
         audio_transformer_(main_task_runner_),
         video_transformer_(main_task_runner_, /*metronome*/ nullptr) {}
 
@@ -109,8 +110,7 @@ class RTCEncodedUnderlyingSinkWrapperTest : public testing::Test {
     ON_CALL(*mock_frame.get(), GetDirection).WillByDefault(Return(direction));
     if (expect_data_read) {
       EXPECT_CALL(*mock_frame.get(), GetData)
-          .WillOnce(
-              Return(rtc::ArrayView<const uint8_t>(buffer, payload_length)));
+          .WillOnce(Return(base::span(buffer).first(payload_length)));
     } else {
       EXPECT_CALL(*mock_frame.get(), GetData).Times(0);
     }
@@ -155,7 +155,7 @@ class RTCEncodedUnderlyingSinkWrapperTest : public testing::Test {
   test::TaskEnvironment task_environment_;
   ScopedTestingPlatformSupport<TestingPlatformSupport> platform_;
   scoped_refptr<base::SingleThreadTaskRunner> main_task_runner_;
-  rtc::scoped_refptr<MockWebRtcTransformedFrameCallback> webrtc_callback_;
+  webrtc::scoped_refptr<MockWebRtcTransformedFrameCallback> webrtc_callback_;
   RTCEncodedAudioStreamTransformer audio_transformer_;
   RTCEncodedVideoStreamTransformer video_transformer_;
   uint8_t buffer[1500];

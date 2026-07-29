@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/ash/fileapi/fallback_copy_in_foreign_file.h"
 
@@ -230,7 +226,7 @@ void Copier::CallRead() {
       [](scoped_refptr<net::IOBuffer> buffer,
          base::File file) -> base::FileErrorOr<FileAndInt> {
     std::optional<size_t> num_bytes_read =
-        file.ReadAtCurrentPosNoBestEffort(buffer->span().first(kBufferSize));
+        file.ReadAtCurrentPosNoBestEffort(buffer->first(kBufferSize));
     if (!num_bytes_read.has_value()) {
       return base::unexpected(base::File::GetLastFileError());
     }

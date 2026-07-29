@@ -28,9 +28,7 @@ extern NSString* const
 extern NSString* const kBadgeButtonPermissionsMicrophoneAccessibilityIdentifier;
 extern NSString* const
     kBadgeButtonPermissionsMicrophoneAcceptedAccessibilityIdentifier;
-extern NSString* const kBadgeButtonParcelTrackingAccessibilityIdentifier;
-extern NSString* const
-    kBadgeButtonParcelTrackingAcceptedAccessibilityIdentifier;
+extern NSString* const kBadgeButtonReaderModeAccessibilityIdentifier;
 
 // A11y identifier for the unread indicator above the displayed badge.
 extern NSString* const kBadgeUnreadIndicatorAccessibilityIdentifier;
@@ -42,6 +40,5 @@ extern NSString* const kBadgeButtonSaveAddressProfileActionIdentifier;
 extern NSString* const kBadgeButtonSaveCardActionIdentifier;
 extern NSString* const kBadgeButtonTranslateActionIdentifier;
 extern NSString* const kBadgeButtonPermissionsActionIdentifier;
-extern NSString* const kBadgeButtonParcelTrackingActionIdentifier;
 
 #endif  // IOS_CHROME_BROWSER_BADGES_UI_BUNDLED_BADGE_CONSTANTS_H_

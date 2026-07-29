@@ -5,6 +5,7 @@
 package org.chromium.components.crash;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ThreadUtils;
@@ -83,7 +84,7 @@ public class CrashKeys {
     public void set(@CrashKeyIndex int keyIndex, @Nullable String value) {
         ThreadUtils.assertOnUiThread();
         if (mFlushed) {
-            CrashKeysJni.get().set(CrashKeys.this, keyIndex, value);
+            CrashKeysJni.get().set(keyIndex, value);
             return;
         }
         mValues.set(keyIndex, value);
@@ -99,13 +100,13 @@ public class CrashKeys {
 
         assert !mFlushed : "Tried to flush to native twice";
         for (@CrashKeyIndex int i = 0; i < mValues.length(); i++) {
-            CrashKeysJni.get().set(CrashKeys.this, i, mValues.getAndSet(i, null));
+            CrashKeysJni.get().set(i, mValues.getAndSet(i, null));
         }
         mFlushed = true;
     }
 
     @NativeMethods
     interface Natives {
-        void set(CrashKeys caller, int key, @Nullable String value);
+        void set(int key, @JniType("std::optional<std::string>") @Nullable String value);
     }
 }

@@ -8,13 +8,14 @@ import android.content.Context;
 import android.content.res.Resources;
 import android.view.View;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 
 /** The bottom sheet content that contains a list of recent activities for a collaboration. */
+@NullMarked
 class RecentActivityBottomSheetContent implements BottomSheetContent {
     private final View mContentView;
 
@@ -32,9 +33,8 @@ class RecentActivityBottomSheetContent implements BottomSheetContent {
         return mContentView;
     }
 
-    @Nullable
     @Override
-    public View getToolbarView() {
+    public @Nullable View getToolbarView() {
         return null;
     }
 
@@ -47,6 +47,15 @@ class RecentActivityBottomSheetContent implements BottomSheetContent {
     public void destroy() {}
 
     @Override
+    public boolean hasCustomLifecycle() {
+        // This bottom sheet should stay open during sync initiated page navigations in the tab in
+        // the background. This is fine because the bottom sheet shows up over the tab group modal
+        // dialog which shows up over the tab view. The sheet dismisses during any outside touch
+        // interaction on the screen.
+        return true;
+    }
+
+    @Override
     public int getPriority() {
         return ContentPriority.HIGH;
     }
@@ -57,16 +66,10 @@ class RecentActivityBottomSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public int getPeekHeight() {
-        return HeightMode.DISABLED;
-    }
-
-    @Override
     public float getFullHeightRatio() {
         return HeightMode.WRAP_CONTENT;
     }
 
-    @NonNull
     @Override
     public String getSheetContentDescription(Context context) {
         return context.getString(

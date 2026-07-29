@@ -39,15 +39,16 @@ class KioskIwaLauncher : public KioskWebAppLauncherBase {
   const KioskIwaData& iwa_data() const { return iwa_data_.get(); }
 
   bool IsIsolatedWebAppInstalled() const;
-  void InstallIsolatedWebApp();
-  void OnInstallComplete(web_app::IwaInstallerResult result);
+  void InstallIsolatedWebApp(const bool retry_with_internet_on_failure);
+  void OnInstallComplete(const bool retry_with_internet_on_failure,
+                         web_app::IwaInstallerResult result);
 
   void CheckAppInstallState() override;
   const webapps::AppId& GetInstalledWebAppId() override;
 
   const raw_ref<const KioskIwaData> iwa_data_;
   std::unique_ptr<web_app::IwaInstaller> iwa_installer_;
-  base::Value::List iwa_install_log_;
+  base::ListValue iwa_install_log_;
 
   base::WeakPtrFactory<KioskIwaLauncher> weak_ptr_factory_{this};
 };

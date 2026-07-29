@@ -4,8 +4,8 @@
 
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_overflow_menu_factory.h"
 
-#import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_overflow_menu_delegate.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
@@ -15,7 +15,7 @@
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "url/gurl.h"
 
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
 namespace {
 
 const CGFloat kMenuSymbolSize = 18;
@@ -48,17 +48,10 @@ const CGFloat kMenuSymbolSize = 18;
   NSString* title = l10n_util::GetNSString(IDS_IOS_MY_ACTIVITY_TITLE);
   UIImage* image;
 
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   image = MakeSymbolMonochrome(
-      CustomSymbolWithPointSize(kGoogleIconSymbol, kMenuSymbolSize));
+      SymbolWithPointSize(SymbolGoogleIcon, kMenuSymbolSize));
 #endif
-
-  if (IsLensOverlaySameTabNavigationEnabled(
-          _browser->GetProfile()->GetPrefs())) {
-    return [self openURLInTheSameTabAction:GURL(kMyActivityURL)
-                                     title:title
-                                     image:image];
-  }
 
   return [self openURLInNewTabAction:GURL(kMyActivityURL)
                                title:title
@@ -69,17 +62,10 @@ const CGFloat kMenuSymbolSize = 18;
   NSString* title = l10n_util::GetNSString(IDS_IOS_LENS_LEARN_MORE);
   UIImage* image;
 
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   image = MakeSymbolMonochrome(
-      DefaultSymbolWithPointSize(kInfoCircleSymbol, kMenuSymbolSize));
+      SymbolWithPointSize(SymbolInfoCircle, kMenuSymbolSize));
 #endif
-
-  if (IsLensOverlaySameTabNavigationEnabled(
-          _browser->GetProfile()->GetPrefs())) {
-    return [self openURLInTheSameTabAction:GURL(kLearnMoreLensURL)
-                                     title:title
-                                     image:image];
-  }
 
   return [self openURLInNewTabAction:GURL(kLearnMoreLensURL)
                                title:title
@@ -113,9 +99,9 @@ const CGFloat kMenuSymbolSize = 18;
   NSString* title =
       l10n_util::GetNSString(IDS_IOS_LENS_OVERLAY_SPEEDBUMP_MENU_CAMERA);
   UIImage* image;
-#if BUILDFLAG(IOS_USE_BRANDED_SYMBOLS)
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
   image = MakeSymbolMonochrome(
-      CustomSymbolWithPointSize(kCameraLensSymbol, kMenuSymbolSize));
+      SymbolWithPointSize(SymbolCameraLens, kMenuSymbolSize));
 #endif
 
   return [UIAction actionWithTitle:title

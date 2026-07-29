@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/html/html_slot_element.h"
 #include "third_party/blink/renderer/core/inspector/inspector_trace_events.h"
+#include "third_party/blink/renderer/core/inspector/invalidation_set_to_selector_map.h"
 
 namespace blink {
 
@@ -59,9 +60,6 @@ void StyleInvalidator::PushInvalidationSet(
   DCHECK(!invalidation_flags_.WholeSubtreeInvalid());
   DCHECK(!invalidation_set.WholeSubtreeInvalid());
   DCHECK(!invalidation_set.IsEmpty());
-  if (invalidation_set.CustomPseudoInvalid()) {
-    invalidation_flags_.SetInvalidateCustomPseudo(true);
-  }
   if (invalidation_set.TreeBoundaryCrossing()) {
     invalidation_flags_.SetTreeBoundaryCrossing(true);
   }
@@ -79,13 +77,6 @@ void StyleInvalidator::PushInvalidationSet(
 
 ALWAYS_INLINE bool StyleInvalidator::MatchesCurrentInvalidationSets(
     Element& element) const {
-  if (invalidation_flags_.InvalidateCustomPseudo() &&
-      element.ShadowPseudoId() != g_null_atom) {
-    TRACE_STYLE_INVALIDATOR_INVALIDATION_IF_ENABLED(element,
-                                                    kInvalidateCustomPseudo);
-    return true;
-  }
-
   for (auto* const invalidation_set : invalidation_sets_) {
     if (invalidation_set->InvalidatesElement(element)) {
       return true;
@@ -194,12 +185,11 @@ void StyleInvalidator::PushInvalidationSetsForContainerNode(
     return;
   }
   NodeInvalidationSets& pending_invalidations =
-      pending_invalidations_iterator->value;
+      *pending_invalidations_iterator->value;
 
   DCHECK(pending_nth_sets_.empty());
 
   for (const auto& invalidation_set : pending_invalidations.Siblings()) {
-    CHECK(invalidation_set->IsAlive());
     if (invalidation_set->IsNthSiblingInvalidationSet()) {
       AddPendingNthSiblingInvalidationSet(
           To<NthSiblingInvalidationSet>(*invalidation_set));
@@ -215,7 +205,6 @@ void StyleInvalidator::PushInvalidationSetsForContainerNode(
 
   if (!pending_invalidations.Descendants().empty()) {
     for (const auto& invalidation_set : pending_invalidations.Descendants()) {
-      CHECK(invalidation_set->IsAlive());
       PushInvalidationSet(*invalidation_set);
     }
     if (InvalidationTracingFlag::IsEnabled()) [[unlikely]] {
@@ -250,6 +239,14 @@ void StyleInvalidator::InvalidateShadowRootChildren(Element& element) {
         !root->NeedsStyleInvalidation()) {
       return;
     }
+    // Tree boundary crossing happens due to selectors such as `:host(.a) .b`
+    // which exist in the child tree but index into invalidation sets in the
+    // parent tree. If invalidation tracing is active, we would have revisited
+    // stylesheets in the parent tree when we scheduled the set, but we may not
+    // yet have revisited stylesheets in the child tree.
+    InvalidationSetToSelectorMap::StartOrStopTrackingIfNeeded(
+        root->GetTreeScope(), root->GetDocument().GetStyleEngine());
+
     RecursionCheckpoint checkpoint(this);
     SiblingData sibling_data;
     if (!WholeSubtreeInvalid()) {

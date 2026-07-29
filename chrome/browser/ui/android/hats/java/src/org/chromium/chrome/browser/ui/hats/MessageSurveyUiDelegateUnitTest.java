@@ -25,6 +25,8 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ObserverList;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.browser.tab.Tab;
@@ -32,7 +34,6 @@ import org.chromium.chrome.browser.tab.TabHidingType;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
 import org.chromium.chrome.browser.ui.hats.MessageSurveyUiDelegate.State;
 import org.chromium.components.messages.DismissReason;
 import org.chromium.components.messages.MessageBannerProperties;
@@ -269,40 +270,6 @@ public class MessageSurveyUiDelegateUnitTest {
     }
 
     @Test
-    public void cancelWhenSwitchedIntoIncognito() {
-        mTabModelHelper.tabStateInitialized();
-        showSurveyInvitation();
-
-        mTabModelHelper.switchToIncognito(true);
-        mTabModelHelper.skipToReadyForSurvey();
-        mTestMessageDispatcher.assertMessageEnqueued(false);
-        assertEquals(
-                "Delegate state should end at NOT_PRESENTED since message is never enqueued.",
-                State.NOT_PRESENTED,
-                mMessageSurveyUiDelegate.getStateForTesting());
-        assertEquals(
-                "OnPresentationFailedCallback not called.",
-                1,
-                mOnPresentationFailedCallback.getCallCount());
-    }
-
-    @Test
-    public void noSurveyInvitationInIncognito() {
-        mTabModelHelper.switchToIncognito(true);
-        showSurveyInvitation();
-
-        mTestMessageDispatcher.assertMessageEnqueued(false);
-        assertEquals(
-                "Never show survey invitation in incognito.",
-                State.NOT_PRESENTED,
-                mMessageSurveyUiDelegate.getStateForTesting());
-        assertEquals(
-                "OnPresentationFailedCallback is not called.",
-                1,
-                mOnPresentationFailedCallback.getCallCount());
-    }
-
-    @Test
     public void noStateUpdateAfterAccepted() {
         mTabModelHelper.skipToReadyForSurvey();
         showSurveyInvitation();
@@ -390,28 +357,18 @@ public class MessageSurveyUiDelegateUnitTest {
         private boolean mTabStateInitialized;
         private boolean mTabFullyLoaded;
         private boolean mTabIsHidden;
-        private final ObserverList<TabModelSelectorObserver> mTabModelSelectorObserverCaptor =
-                new ObserverList<>();
+        private final SettableNullableObservableSupplier<Tab> mCurrentTabSupplier =
+                ObservableSuppliers.createNullable();
         private final ObserverList<TabObserver> mTabObserverCaptor = new ObserverList<>();
 
         SurveyTestTabModelHelper() {
-            MockitoHelper.doCallback(mTabModelSelectorObserverCaptor::addObserver)
-                    .when(mTabModelSelector)
-                    .addObserver(any(TabModelSelectorObserver.class));
-            MockitoHelper.doCallback(mTabModelSelectorObserverCaptor::removeObserver)
-                    .when(mTabModelSelector)
-                    .removeObserver(any(TabModelSelectorObserver.class));
+            doReturn(mCurrentTabSupplier).when(mTabModelSelector).getCurrentTabSupplier();
             MockitoHelper.doCallback(mTabObserverCaptor::addObserver)
                     .when(mTab)
                     .addObserver(any(TabObserver.class));
             MockitoHelper.doCallback(mTabObserverCaptor::removeObserver)
                     .when(mTab)
                     .removeObserver(any(TabObserver.class));
-        }
-
-        SurveyTestTabModelHelper switchToIncognito(boolean isIncognito) {
-            doReturn(isIncognito).when(mTabModelSelector).isIncognitoSelected();
-            return this;
         }
 
         SurveyTestTabModelHelper tabStateInitialized() {
@@ -421,9 +378,7 @@ public class MessageSurveyUiDelegateUnitTest {
             doReturn(true).when(mTab).isLoading();
             doReturn(false).when(mTab).isUserInteractable();
 
-            for (var observers : mTabModelSelectorObserverCaptor) {
-                observers.onChange();
-            }
+            mCurrentTabSupplier.set(mTab);
             return this;
         }
 
@@ -468,13 +423,8 @@ public class MessageSurveyUiDelegateUnitTest {
         }
 
         void assertAllObserverDetached() {
-            if (!mTabModelSelectorObserverCaptor.isEmpty()) {
-                // Use a mockito verification that should always fail
-                verify(
-                                mTabModelSelector,
-                                never().description("TabModelSelectorObserver is not detached."))
-                        .addObserver(any());
-            }
+            assertTrue(
+                    "Current tab observer is not detached.", !mCurrentTabSupplier.hasObservers());
             if (!mTabObserverCaptor.isEmpty()) {
                 verify(mTab, never().description("TabObserver(s) are not detached."))
                         .addObserver(any());
@@ -508,7 +458,7 @@ public class MessageSurveyUiDelegateUnitTest {
         }
 
         void acceptMessage() {
-            mModel.get(MessageBannerProperties.ON_PRIMARY_ACTION).get();
+            var _ = mModel.get(MessageBannerProperties.ON_PRIMARY_ACTION).get();
             dismissMessage(mModel, DismissReason.PRIMARY_ACTION);
         }
 

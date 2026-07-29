@@ -7,13 +7,13 @@
 #include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/sequence_checker.h"
-#include "base/test/bind.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
 #include "third_party/blink/renderer/core/html/parser/text_resource_decoder.h"
 #include "third_party/blink/renderer/platform/loader/fetch/response_body_loader_client.h"
 #include "third_party/blink/renderer/platform/loader/fetch/text_resource_decoder_options.h"
+#include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
@@ -23,6 +23,7 @@
 namespace blink {
 namespace {
 
+const unsigned char kBOMOnly[] = {0xef, 0xbb, 0xbf};
 const unsigned char kFooUTF8WithBOM[] = {0xef, 0xbb, 0xbf, 0x66, 0x6f, 0x6f};
 // SHA256 hash of 'foo\1' in hex (the end byte indicates the character width):
 //   python3 -c "print('foo\1', end='')" | sha256sum | xxd -r -p | xxd -i
@@ -42,7 +43,7 @@ class DummyResponseBodyLoaderClient
   }
   void DidReceiveDecodedData(
       const String& decoded_data,
-      std::unique_ptr<ParkableStringImpl::SecureDigest> digest) override {
+      std::unique_ptr<SecureStringDigest> digest) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     decoded_data_ = decoded_data;
     digest_ = std::move(digest);
@@ -59,7 +60,7 @@ class DummyResponseBodyLoaderClient
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return decoded_data_;
   }
-  const std::unique_ptr<ParkableStringImpl::SecureDigest>& digest() const {
+  const std::unique_ptr<SecureStringDigest>& digest() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return digest_;
   }
@@ -67,7 +68,7 @@ class DummyResponseBodyLoaderClient
  private:
   Deque<Vector<char>> raw_data_;
   String decoded_data_;
-  std::unique_ptr<ParkableStringImpl::SecureDigest> digest_;
+  std::unique_ptr<SecureStringDigest> digest_;
   SEQUENCE_CHECKER(sequence_checker_);
 };
 
@@ -118,6 +119,35 @@ TEST_F(ScriptDecoderTest, WithClient) {
               testing::Pointee(Vector<uint8_t>(base::span(kExpectedDigest))));
 }
 
+TEST_F(ScriptDecoderTest, BOMOnlyWithClient) {
+  scoped_refptr<base::SequencedTaskRunner> default_task_runner =
+      scheduler::GetSequencedTaskRunnerForTesting();
+  DummyResponseBodyLoaderClient* client =
+      MakeGarbageCollected<DummyResponseBodyLoaderClient>();
+  ScriptDecoderWithClientPtr decoder = ScriptDecoderWithClient::Create(
+      client,
+      std::make_unique<TextResourceDecoder>(
+          TextResourceDecoderOptions::CreateUTF8Decode()),
+      default_task_runner);
+  decoder->DidReceiveData(Vector<char>(base::span(kBOMOnly)),
+                          /*send_to_client=*/true);
+
+  base::RunLoop run_loop;
+  decoder->FinishDecode(CrossThreadBindOnce(
+      [&](scoped_refptr<base::SequencedTaskRunner> default_task_runner,
+          base::RunLoop* run_loop) {
+        CHECK(default_task_runner->RunsTasksInCurrentSequence());
+        run_loop->Quit();
+      },
+      default_task_runner, CrossThreadUnretained(&run_loop)));
+  run_loop.Run();
+
+  ASSERT_EQ(client->raw_data().size(), 1u);
+  EXPECT_THAT(client->raw_data().front(), Vector<char>(base::span(kBOMOnly)));
+  EXPECT_EQ(client->decoded_data(), "");
+  EXPECT_NE(client->digest(), nullptr);
+}
+
 TEST_F(ScriptDecoderTest, PartiallySendDifferentThread) {
   scoped_refptr<base::SequencedTaskRunner> default_task_runner =
       scheduler::GetSequencedTaskRunnerForTesting();
@@ -144,19 +174,20 @@ TEST_F(ScriptDecoderTest, PartiallySendDifferentThread) {
 
   // Call DidReceiveData() with the second chunk and true `send_to_client` on
   // the worker task runner.
-  worker_task_runner->PostTask(
-      FROM_HERE, base::BindOnce(&ScriptDecoderWithClient::DidReceiveData,
-                                base::Unretained(decoder.get()),
-                                Vector<char>(second_chunk),
-                                /*send_to_client=*/true));
+  PostCrossThreadTask(
+      *worker_task_runner, FROM_HERE,
+      CrossThreadBindOnce(&ScriptDecoderWithClient::DidReceiveData,
+                          CrossThreadUnretained(decoder.get()),
+                          Vector<char>(second_chunk),
+                          /*send_to_client=*/true));
 
   // Call FinishDecode() on the worker task runner.
   base::RunLoop run_loop;
-  worker_task_runner->PostTask(
-      FROM_HERE,
-      base::BindOnce(
+  PostCrossThreadTask(
+      *worker_task_runner, FROM_HERE,
+      CrossThreadBindOnce(
           &ScriptDecoderWithClient::FinishDecode,
-          base::Unretained(decoder.get()),
+          CrossThreadUnretained(decoder.get()),
           CrossThreadBindOnce(
               [&](scoped_refptr<base::SequencedTaskRunner> default_task_runner,
                   base::RunLoop* run_loop) {
@@ -186,16 +217,17 @@ TEST_F(ScriptDecoderTest, Simple) {
       worker_pool::CreateSequencedTaskRunner(
           {base::TaskPriority::USER_BLOCKING});
   // Call DidReceiveData() on the worker task runner.
-  worker_task_runner->PostTask(
-      FROM_HERE, base::BindOnce(&ScriptDecoder::DidReceiveData,
-                                base::Unretained(decoder.get()),
-                                Vector<char>(base::span(kFooUTF8WithBOM))));
+  PostCrossThreadTask(
+      *worker_task_runner, FROM_HERE,
+      CrossThreadBindOnce(&ScriptDecoder::DidReceiveData,
+                          CrossThreadUnretained(decoder.get()),
+                          Vector<char>(base::span(kFooUTF8WithBOM))));
   // Call FinishDecode() on the worker task runner.
   base::RunLoop run_loop;
-  worker_task_runner->PostTask(
-      FROM_HERE,
-      base::BindOnce(
-          &ScriptDecoder::FinishDecode, base::Unretained(decoder.get()),
+  PostCrossThreadTask(
+      *worker_task_runner, FROM_HERE,
+      CrossThreadBindOnce(
+          &ScriptDecoder::FinishDecode, CrossThreadUnretained(decoder.get()),
           CrossThreadBindOnce(
               [&](scoped_refptr<base::SequencedTaskRunner> default_task_runner,
                   base::RunLoop* run_loop, ScriptDecoder::Result result) {

@@ -52,6 +52,8 @@
 <del data-testname="el-del" data-expectedrole="deletion" class="ex">x</del>
 <details data-testname="el-details" data-expectedrole="group" class="ex"><summary>x</summary>x</details>
 <dfn data-testname="el-dfn" data-expectedrole="term" class="ex">x</dfn>
+<!-- todo: dialog(modal) -> needs to be tested in a separate file so background inertness won't break the other tests  -->
+<dialog open data-testname="el-dialog-non-modal" data-expectedrole="dialog" class="ex">x</dialog>
 <!-- dir -> ./dir-role.tentative.html -->
 <!-- div -> ./roles-generic.html -->
 <!-- todo: dl -->
@@ -93,6 +95,8 @@
 <!-- Implementations might also be valid if ignored rather than returning 'none' for the following images. -->
 <img alt data-testname="el-img-alt-no-value" class="ex-generic" src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==">
 <img alt="" data-testname="el-img-empty-alt" class="ex-generic" src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==">
+
+<!-- img with empty alt but other naming mechanism -> ./roles-contextual.html -->
 
 <input type="button" value="x" data-testname="el-input-button" data-expectedrole="button" class="ex">
 <input type="checkbox" data-testname="el-input-checkbox" data-expectedrole="checkbox" class="ex">

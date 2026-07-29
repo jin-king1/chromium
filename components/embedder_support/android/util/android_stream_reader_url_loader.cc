@@ -20,12 +20,13 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/thread.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/trace_event.h"
 #include "components/embedder_support/android/util/features.h"
 #include "components/embedder_support/android/util/input_stream.h"
 #include "components/embedder_support/android/util/input_stream_reader.h"
 #include "net/base/io_buffer.h"
 #include "net/base/mime_sniffer.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
 #include "services/network/public/cpp/cors/cors.h"
@@ -68,18 +69,12 @@ void OpenInputStreamOnWorkerThread(
 
 network::ResourceRequest CopyResourceRequest(
     const network::ResourceRequest& request) {
-  // If the features is disabled, copy the full request to preserve previous
-  // behavior.
-  if (!base::FeatureList::IsEnabled(
-          network::features::kAvoidResourceRequestCopies)) {
-    return request;
-  }
-
   // Copy only the fields we need from the request.
   network::ResourceRequest new_request;
   new_request.url = request.url;
   new_request.mode = request.mode;
   new_request.headers = request.headers;
+  new_request.trusted_params = request.trusted_params;
   return new_request;
 }
 
@@ -183,9 +178,7 @@ AndroidStreamReaderURLLoader::AndroidStreamReaderURLLoader(
 AndroidStreamReaderURLLoader::~AndroidStreamReaderURLLoader() = default;
 
 void AndroidStreamReaderURLLoader::FollowRedirect(
-    const std::vector<std::string>& removed_headers,
-    const net::HttpRequestHeaders& modified_headers,
-    const net::HttpRequestHeaders& modified_cors_exempt_headers,
+    network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {}
 void AndroidStreamReaderURLLoader::SetPriority(net::RequestPriority priority,
                                                int intra_priority_value) {}
@@ -384,10 +377,7 @@ void AndroidStreamReaderURLLoader::SetCookies() {
     while (
         std::optional<std::string_view> cookie_string =
             response_head_->headers->EnumerateHeader(&iter, kSetCookieHeader)) {
-      // TODO(crbug.com/378650092): This std::move() is incorrect. It's unclear
-      // what the intention of the code is, but this should be fixed.
-      std::move(set_cookie_header_)
-          ->Run(resource_request_, *cookie_string, server_time);
+      set_cookie_header_->Run(resource_request_, *cookie_string, server_time);
     }
   }
 }

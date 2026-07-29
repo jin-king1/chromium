@@ -11,17 +11,23 @@
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
 #include "components/webui/flags/flags_state.h"
 #include "components/webui/flags/flags_storage.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/views/controls/dot_indicator.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/view_tracker.h"
 
 class Browser;
+class BrowserWindowInterface;
 class ChromeLabsBubbleView;
 class ChromeLabsViewController;
 class PinnedActionToolbarButton;
 
 class ChromeLabsCoordinator : public PinnedToolbarActionsModel::Observer {
  public:
+  DECLARE_USER_DATA(ChromeLabsCoordinator);
+
+  static ChromeLabsCoordinator* From(BrowserWindowInterface* browser);
+
   enum class ShowUserType {
     // The default user type that accounts for most users.
     kDefaultUserType,
@@ -31,8 +37,6 @@ class ChromeLabsCoordinator : public PinnedToolbarActionsModel::Observer {
   };
 
   explicit ChromeLabsCoordinator(Browser* browser);
-  ChromeLabsCoordinator(Browser* browser,
-                        std::unique_ptr<ChromeLabsModel> model);
   ~ChromeLabsCoordinator() override;
 
   void TearDown();
@@ -49,6 +53,8 @@ class ChromeLabsCoordinator : public PinnedToolbarActionsModel::Observer {
   PinnedActionToolbarButton* GetChromeLabsButton();
 
   ChromeLabsBubbleView* GetChromeLabsBubbleView();
+
+  void OnChromeLabsBubbleClosing();
 
   void MaybeInstallDotIndicator();
 
@@ -73,9 +79,9 @@ class ChromeLabsCoordinator : public PinnedToolbarActionsModel::Observer {
   raw_ptr<Browser, DanglingUntriaged> browser_;
   std::unique_ptr<flags_ui::FlagsStorage> flags_storage_;
   raw_ptr<flags_ui::FlagsState, DanglingUntriaged> flags_state_;
-  std::unique_ptr<ChromeLabsModel> model_;
   std::unique_ptr<ChromeLabsViewController> controller_;
   views::ViewTracker chrome_labs_bubble_view_tracker_;
+  raw_ptr<actions::ActionItem> chrome_labs_action_item_;
   base::ScopedObservation<PinnedToolbarActionsModel,
                           PinnedToolbarActionsModel::Observer>
       pinned_actions_observation_{this};
@@ -83,6 +89,7 @@ class ChromeLabsCoordinator : public PinnedToolbarActionsModel::Observer {
   bool is_waiting_to_show_ = false;
   bool should_circumvent_device_check_for_testing_ = false;
 #endif
+  ui::ScopedUnownedUserData<ChromeLabsCoordinator> scoped_unowned_user_data_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TOOLBAR_CHROME_LABS_CHROME_LABS_COORDINATOR_H_

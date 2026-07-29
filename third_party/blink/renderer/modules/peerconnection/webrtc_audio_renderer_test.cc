@@ -13,6 +13,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "media/audio/audio_sink_parameters.h"
@@ -24,10 +25,8 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/page/browsing_context_group_info.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/page/prerender_page_param.mojom.h"
-#include "third_party/blink/public/mojom/partitioned_popins/partitioned_popin_params.mojom.h"
 #include "third_party/blink/public/platform/audio/web_audio_device_source_type.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
@@ -37,13 +36,19 @@
 #include "third_party/blink/public/web/web_local_frame_client.h"
 #include "third_party/blink/public/web/web_view.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_audio_renderer.h"
+#include "third_party/blink/renderer/modules/peerconnection/mock_peer_connection_dependency_factory.h"
+#include "third_party/blink/renderer/modules/webrtc/webrtc_audio_device_impl.h"
+#include "third_party/blink/renderer/platform/mediastream/media_stream_audio_source.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component.h"
+#include "third_party/blink/renderer/platform/mediastream/media_stream_component_impl.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_descriptor.h"
+#include "third_party/blink/renderer/platform/mediastream/media_stream_source.h"
 #include "third_party/blink/renderer/platform/scheduler/public/agent_group_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
+#include "third_party/blink/renderer/platform/webrtc/peer_connection_remote_audio_source.h"
 #include "third_party/blink/renderer/platform/webrtc/webrtc_source.h"
 #include "third_party/webrtc/api/media_stream_interface.h"
 
@@ -126,8 +131,91 @@ class AudioDeviceFactoryTestingPlatformSupport : public blink::Platform {
 
   media::MockAudioRendererSink* mock_sink() { return mock_sink_.get(); }
 
+  // Required for binders to work, for testing, run on a single thread.
+  scoped_refptr<base::SequencedTaskRunner> MediaThreadTaskRunner() override {
+    return base::SequencedTaskRunner::GetCurrentDefault();
+  }
+
+  scoped_refptr<base::SingleThreadTaskRunner> GetIOTaskRunner() const override {
+    return base::SingleThreadTaskRunner::GetCurrentDefault();
+  }
+
  private:
   scoped_refptr<media::MockAudioRendererSink> mock_sink_;
+};
+
+class MockAudioSourceInterface : public webrtc::AudioSourceInterface {
+ public:
+  MockAudioSourceInterface() = default;
+  ~MockAudioSourceInterface() override = default;
+
+  // Implementing NotifierInterface methods
+  MOCK_METHOD(void,
+              RegisterObserver,
+              (webrtc::ObserverInterface * observer),
+              (override));
+  MOCK_METHOD(void,
+              UnregisterObserver,
+              (webrtc::ObserverInterface * observer),
+              (override));
+
+  // implementing MediaSourceInterface methods.
+  MOCK_METHOD(SourceState, state, (), (const, override));
+  MOCK_METHOD(bool, remote, (), (const, override));
+
+  // Implementing AudioSourceInterface methods.
+  MOCK_METHOD(void, SetVolume, (double), (override));
+};
+
+class MockPeerWebRtcAudioTrack : public webrtc::AudioTrackInterface {
+ public:
+  explicit MockPeerWebRtcAudioTrack(
+      scoped_refptr<MockAudioSourceInterface> source)
+      : source_(source) {}
+
+  ~MockPeerWebRtcAudioTrack() override = default;
+
+  // Implement GetSource
+  webrtc::AudioSourceInterface* GetSource() const override {
+    return source_.get();
+  }
+
+  // Mock the remaining pure virtual methods
+  MOCK_METHOD(std::string, kind, (), (const, override));
+  MOCK_METHOD(std::string, id, (), (const, override));
+  MOCK_METHOD(bool, enabled, (), (const, override));
+  MOCK_METHOD(bool, set_enabled, (bool enabled), (override));
+  MOCK_METHOD(webrtc::MediaStreamTrackInterface::TrackState,
+              state,
+              (),
+              (const, override));
+
+  MOCK_METHOD(void,
+              RegisterObserver,
+              (webrtc::ObserverInterface * observer),
+              (override));
+  MOCK_METHOD(void,
+              UnregisterObserver,
+              (webrtc::ObserverInterface * observer),
+              (override));
+
+  // AudioTrackInterface methods
+  MOCK_METHOD(void,
+              AddSink,
+              (webrtc::AudioTrackSinkInterface * sink),
+              (override));
+  MOCK_METHOD(void,
+              RemoveSink,
+              (webrtc::AudioTrackSinkInterface * sink),
+              (override));
+  MOCK_METHOD(bool, GetSignalLevel, (int* level), (override));
+  MOCK_METHOD(webrtc::scoped_refptr<webrtc::AudioProcessorInterface>,
+              GetAudioProcessor,
+              (),
+              (override));
+
+ private:
+  scoped_refptr<MockAudioSourceInterface> source_;
 };
 
 }  // namespace
@@ -161,9 +249,10 @@ class WebRtcAudioRendererTest : public testing::Test {
             *agent_group_scheduler_,
             /*session_storage_namespace_id=*/std::string(),
             /*page_base_background_color=*/std::nullopt,
-            blink::BrowsingContextGroupInfo::CreateUnique(),
+            /*browsing_context_group_token=*/base::UnguessableToken::Create(),
             /*color_provider_colors=*/nullptr,
-            /*partitioned_popin_oarams=*/nullptr)),
+            /*history_index=*/-1,
+            /*history_length=*/0)),
         web_local_frame_(blink::WebLocalFrame::CreateMainFrame(
             web_view_,
             &web_local_frame_client_,
@@ -174,7 +263,7 @@ class WebRtcAudioRendererTest : public testing::Test {
             /*policy_container=*/nullptr)) {
     MediaStreamComponentVector dummy_components;
     stream_descriptor_ = MakeGarbageCollected<MediaStreamDescriptor>(
-        String::FromUTF8("new stream"), dummy_components, dummy_components);
+        "new stream", dummy_components, dummy_components);
   }
 
   void SetupRenderer(const String& device_id) {
@@ -382,7 +471,7 @@ TEST_F(WebRtcAudioRendererTest, SwitchOutputDevice) {
       .WillOnce(SaveArg<2>(&params));
   EXPECT_CALL(*source_.get(), AudioRendererThreadStopped());
   EXPECT_CALL(*source_.get(),
-              SetOutputDeviceForAec(String::FromUTF8(kOtherOutputDeviceId)));
+              SetOutputDeviceForAec(String::FromUtf8(kOtherOutputDeviceId)));
   EXPECT_CALL(*this, MockSwitchDeviceCallback(media::OUTPUT_DEVICE_STATUS_OK));
   base::RunLoop loop;
   renderer_proxy_->SwitchOutputDevice(
@@ -470,6 +559,107 @@ TEST_F(WebRtcAudioRendererTest, SwitchOutputDeviceStoppedSource) {
       base::BindOnce(&WebRtcAudioRendererTest::SwitchDeviceCallback,
                      base::Unretained(this), &loop));
   loop.Run();
+}
+
+TEST_F(WebRtcAudioRendererTest, SourceDisconnectedOnDeviceTerminate) {
+  scoped_refptr<blink::WebRtcAudioDeviceImpl> audio_device(
+      new webrtc::RefCountedObject<blink::WebRtcAudioDeviceImpl>());
+
+  // Alias the ADM interface to avoid inline static_casts.
+  webrtc::AudioDeviceModule* adm = audio_device.get();
+  adm->Init();
+
+  // Instantiate the renderer directly to bypass test helper mocks.
+  auto renderer = base::MakeRefCounted<WebRtcAudioRenderer>(
+      scheduler::GetSingleThreadTaskRunnerForTesting(), stream_descriptor_,
+      *web_local_frame_, base::UnguessableToken::Create(),
+      kDefaultOutputDeviceId, base::RepeatingCallback<void()>());
+
+  media::AudioSinkParameters params;
+  EXPECT_CALL(*audio_device_factory_platform_,
+              MockNewAudioRendererSink(blink::WebAudioDeviceSourceType::kWebRtc,
+                                       web_local_frame_.get(), _))
+      .WillOnce(SaveArg<2>(&params));
+
+  // Connect the device and renderer.
+  EXPECT_TRUE(audio_device->SetAudioRenderer(renderer.get()));
+
+  auto renderer_proxy =
+      renderer->CreateSharedAudioRendererProxy(stream_descriptor_);
+
+  // Terminate the device to trigger DisconnectSource().
+  adm->Terminate();
+
+  // Nullify local pointers to drop the reference and avoid triggering the
+  // dangling pointer detector.
+  adm = nullptr;
+  audio_device = nullptr;
+
+  // Force the renderer to access `source_`. It should gracefully fail with an
+  // internal error instead of triggering a UAF.
+  base::test::TestFuture<media::OutputDeviceStatus> future;
+  renderer_proxy->SwitchOutputDevice(kOtherOutputDeviceId,
+                                     future.GetCallback());
+  EXPECT_EQ(future.Get(), media::OUTPUT_DEVICE_STATUS_ERROR_INTERNAL);
+  // Clean up.
+  renderer_proxy->Start();
+  renderer_proxy->Stop();
+}
+
+class WebRtcAudioRendererTrackSourceTest : public WebRtcAudioRendererTest {
+ public:
+  WebRtcAudioRendererTrackSourceTest() {
+    auto audio_source = std::make_unique<MediaStreamAudioSource>(
+        scheduler::GetSingleThreadTaskRunnerForTesting(), true);
+    auto* source = MakeGarbageCollected<MediaStreamSource>(
+        "dummy_source_id", MediaStreamSource::kTypeAudio, "dummy_source_name",
+        false /* remote */, std::move(audio_source));
+
+    remote_source_interface_ =
+        new webrtc::RefCountedObject<MockAudioSourceInterface>();
+    remote_track_interface_ =
+        new webrtc::RefCountedObject<MockPeerWebRtcAudioTrack>(
+            remote_source_interface_);
+    auto webrtc_audio_track = std::make_unique<PeerConnectionRemoteAudioTrack>(
+        remote_track_interface_);
+
+    MediaStreamComponent* media_component =
+        MakeGarbageCollected<MediaStreamComponentImpl>(
+            source, std::move(webrtc_audio_track));
+    MediaStreamComponentVector audio_components = {media_component};
+    MediaStreamComponentVector dummy_components;
+    descriptor_ = MakeGarbageCollected<MediaStreamDescriptor>(audio_components,
+                                                              dummy_components);
+  }
+  void TearDown() override {
+    renderer_proxy_ = nullptr;
+    descriptor_ = nullptr;
+    remote_source_interface_.reset();
+    remote_track_interface_.reset();
+    WebRtcAudioRendererTest::TearDown();
+  }
+
+ protected:
+  scoped_refptr<MockAudioSourceInterface> remote_source_interface_;
+  scoped_refptr<MockPeerWebRtcAudioTrack> remote_track_interface_;
+  Persistent<MediaStreamDescriptor> descriptor_;
+};
+
+TEST_F(WebRtcAudioRendererTrackSourceTest, SetVolumeCallsAudioSourceInterface) {
+  SetupRenderer(kDefaultOutputDeviceId);
+  renderer_proxy_->Start();
+
+  // Passing WebRtcAudioRendererTrackSourceTest specific descriptor.
+  auto renderer_proxy = renderer_->CreateSharedAudioRendererProxy(descriptor_);
+
+  // WebRtc audio source receives the SetVolume call.
+  EXPECT_CALL(*remote_source_interface_.get(), SetVolume(_)).Times(1);
+
+  // Call is made from WebMediaPlayerMS::SetVolume.
+  renderer_proxy->SetVolume(0.5);
+  base::RunLoop().RunUntilIdle();
+
+  renderer_proxy_->Stop();
 }
 
 }  // namespace blink

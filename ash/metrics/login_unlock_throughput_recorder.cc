@@ -43,7 +43,7 @@ namespace {
 // A class used to wait for animations.
 class ShelfAnimationObserver : public views::BoundsAnimatorObserver {
  public:
-  ShelfAnimationObserver(base::OnceClosure& on_shelf_animation_end)
+  explicit ShelfAnimationObserver(base::OnceClosure& on_shelf_animation_end)
       : on_shelf_animation_end_(std::move(on_shelf_animation_end)) {}
 
   ShelfAnimationObserver(const ShelfAnimationObserver&) = delete;
@@ -87,8 +87,7 @@ class ShelfAnimationObserver : public views::BoundsAnimatorObserver {
 };
 
 bool HasBrowserIcon(const ShelfModel* model) {
-  return model->ItemByID(ShelfID(app_constants::kLacrosAppId)) ||
-         model->ItemByID(ShelfID(app_constants::kChromeAppId));
+  return model->ItemByID(ShelfID(app_constants::kChromeAppId));
 }
 
 bool HasPendingIcon(const ShelfModel* model) {
@@ -114,8 +113,7 @@ void WindowRestoreTracker::Init(
 void WindowRestoreTracker::AddWindow(int window_id, const std::string& app_id) {
   DCHECK(window_id);
   DCHECK(!app_id.empty());
-  if (app_id == app_constants::kChromeAppId ||
-      app_id == app_constants::kLacrosAppId) {
+  if (app_id == app_constants::kChromeAppId) {
     windows_.emplace(window_id, State::kNotCreated);
   }
 }
@@ -152,8 +150,7 @@ void WindowRestoreTracker::OnShown(int window_id, ui::Compositor* compositor) {
     std::move(on_shown_).Run(base::TimeTicks::Now());
   }
 
-  if (compositor &&
-      display::Screen::GetScreen()->GetPrimaryDisplay().detected()) {
+  if (compositor && display::Screen::Get()->GetPrimaryDisplay().detected()) {
     compositor->RequestSuccessfulPresentationTimeForNextFrame(
         base::BindOnce(&WindowRestoreTracker::OnCompositorFramePresented,
                        weak_ptr_factory_.GetWeakPtr(), window_id));
@@ -238,10 +235,8 @@ void ShelfTracker::MaybeRunClosure() {
 LoginUnlockThroughputRecorder::LoginUnlockThroughputRecorder()
     : post_login_deferred_task_runner_(
           base::MakeRefCounted<base::DeferredSequencedTaskRunner>(
-              base::SequencedTaskRunner::GetCurrentDefault())),
-      post_login_metrics_recorder_(this) {
-  LoginState::Get()->AddObserver(this);
-
+              base::SequencedTaskRunner::GetCurrentDefault())) {
+  login_state_observer_.Observe(LoginState::Get());
   window_restore_tracker_.Init(
       base::BindOnce(&LoginUnlockThroughputRecorder::OnAllWindowsCreated,
                      weak_ptr_factory_.GetWeakPtr()),
@@ -255,9 +250,7 @@ LoginUnlockThroughputRecorder::LoginUnlockThroughputRecorder()
       weak_ptr_factory_.GetWeakPtr()));
 }
 
-LoginUnlockThroughputRecorder::~LoginUnlockThroughputRecorder() {
-  LoginState::Get()->RemoveObserver(this);
-}
+LoginUnlockThroughputRecorder::~LoginUnlockThroughputRecorder() = default;
 
 void LoginUnlockThroughputRecorder::AddObserver(PostLoginEventObserver* obs) {
   observers_.AddObserver(obs);
@@ -303,7 +296,7 @@ void LoginUnlockThroughputRecorder::LoggedInStateChanged() {
     return;
   }
 
-  // On ash restart, `SessionManager::CreateSessionForRestart` should happen
+  // On ash restart, `SessionManager::CreateSession` should happen
   // and trigger `LoggedInStateChanged` here to set `user_logged_in_` flag
   // before `OnAshRestart` is called. So `is_ash_restart_` should never be true
   // here. Otherwise, we have unexpected sequence of events and login metrics

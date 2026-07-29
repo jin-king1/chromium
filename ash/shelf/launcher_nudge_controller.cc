@@ -25,8 +25,8 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/display/tablet_state.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 
 namespace ash {
 namespace {
@@ -40,8 +40,6 @@ constexpr char kWasLauncherShown[] = "was_launcher_shown";
 // Constants for launcher nudge controller.
 constexpr base::TimeDelta kFirstTimeShowNudgeInterval = base::Days(1);
 constexpr base::TimeDelta kShowNudgeInterval = base::Days(1);
-constexpr base::TimeDelta kFirstTimeShowNudgeIntervalForTest = base::Minutes(3);
-constexpr base::TimeDelta kShowNudgeIntervalForTest = base::Minutes(3);
 
 // Returns the last active user pref service.
 PrefService* GetPrefs() {
@@ -50,7 +48,7 @@ PrefService* GetPrefs() {
 
 // Gets the timestamp when the nudge was last shown.
 base::Time GetLastShownTime(PrefService* prefs) {
-  const base::Value::Dict& dictionary =
+  const base::DictValue& dictionary =
       prefs->GetDict(prefs::kShelfLauncherNudge);
   std::optional<base::Time> last_shown_time =
       base::ValueToTime(dictionary.Find(kLastShownTime));
@@ -61,7 +59,7 @@ base::Time GetLastShownTime(PrefService* prefs) {
 // set if the user has logged in before the launcher nudge feature was
 // enabled.
 base::Time GetFirstLoginTime(PrefService* prefs) {
-  const base::Value::Dict& dictionary =
+  const base::DictValue& dictionary =
       prefs->GetDict(prefs::kShelfLauncherNudge);
   std::optional<base::Time> first_login_time =
       base::ValueToTime(dictionary.Find(kFirstLoginTime));
@@ -70,7 +68,7 @@ base::Time GetFirstLoginTime(PrefService* prefs) {
 
 // Returns true if the launcher has been shown before.
 bool WasLauncherShownPreviously(PrefService* prefs) {
-  const base::Value::Dict& dictionary =
+  const base::DictValue& dictionary =
       prefs->GetDict(prefs::kShelfLauncherNudge);
   return dictionary.FindBool(kWasLauncherShown).value_or(false);
 }
@@ -109,17 +107,13 @@ HomeButton* LauncherNudgeController::GetHomeButtonForDisplay(
 
 // static
 int LauncherNudgeController::GetShownCount(PrefService* prefs) {
-  const base::Value::Dict& dictionary =
+  const base::DictValue& dictionary =
       prefs->GetDict(prefs::kShelfLauncherNudge);
   return dictionary.FindInt(kShownCount).value_or(0);
 }
 
 base::TimeDelta LauncherNudgeController::GetNudgeInterval(
     bool is_first_time) const {
-  if (features::IsLauncherNudgeShortIntervalEnabled()) {
-    return is_first_time ? kFirstTimeShowNudgeIntervalForTest
-                         : kShowNudgeIntervalForTest;
-  }
   return is_first_time ? kFirstTimeShowNudgeInterval : kShowNudgeInterval;
 }
 
@@ -152,8 +146,9 @@ bool LauncherNudgeController::ShouldShowNudge(base::Time& recheck_time) const {
   }
 
   // Only show the launcher nudge in clamshell mode.
-  if (Shell::Get()->IsInTabletMode())
+  if (display::Screen::Get()->InTabletMode()) {
     return false;
+  }
 
   // If the shown count meets the limit or the launcher has been opened before,
   // don't show the nudge.
@@ -205,9 +200,6 @@ void LauncherNudgeController::HandleNudgeShown() {
 }
 
 void LauncherNudgeController::MaybeShowNudge() {
-  if (!features::IsShelfLauncherNudgeEnabled())
-    return;
-
   base::Time recheck_time;
   if (!ShouldShowNudge(recheck_time)) {
     // If `recheck_time` is set, start the timer to check again later for the
@@ -220,7 +212,7 @@ void LauncherNudgeController::MaybeShowNudge() {
 
   // Don't run the nudge animation if the duration multiplier is 0 to prevent
   // crashes that caused by showing the animation that immediately gets deleted.
-  if (ui::ScopedAnimationDurationScaleMode::duration_multiplier() != 0) {
+  if (gfx::ScopedAnimationDurationScaleMode::duration_multiplier() != 0) {
     // Only show the nudge on the home button which is on the same display with
     // the cursor.
     int64_t display_id_for_nudge =
@@ -287,8 +279,9 @@ void LauncherNudgeController::OnAppListVisibilityChanged(bool shown,
   // require explicit user action. As a result, don't track app list visibility
   // changes in tablet mode as actions affecting nudge availability in clamshell
   // mode.
-  if (Shell::Get()->IsInTabletMode())
+  if (display::Screen::Get()->InTabletMode()) {
     return;
+  }
 
   if (!WasLauncherShownPreviously(prefs) && shown) {
     ScopedDictPrefUpdate update(prefs, prefs::kShelfLauncherNudge);

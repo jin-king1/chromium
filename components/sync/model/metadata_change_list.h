@@ -43,6 +43,15 @@ class MetadataChangeList {
 
   // Requests metadata entry to be cleared from the storage.
   virtual void ClearMetadata(const std::string& storage_key) = 0;
+
+  // Moves all currently accumulated changes into `*other`, resetting this
+  // change list to a default, empty state. `other` must not be null. Not all
+  // implementations support this operation.
+  virtual void TransferChangesTo(MetadataChangeList* other) = 0;
+
+  // Drops all currently accumulated changes, resetting this change list to a
+  // default, empty state. Not all implementations support this operation.
+  virtual void DropAllChanges() = 0;
 };
 
 }  // namespace syncer

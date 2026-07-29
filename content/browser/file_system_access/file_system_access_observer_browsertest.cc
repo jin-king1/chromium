@@ -8,11 +8,17 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/json/values_util.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_timeouts.h"
 #include "base/win/windows_version.h"
 #include "build/buildflag.h"
+#include "content/browser/file_system_access/file_system_access_directory_handle_impl.h"
+#include "content/browser/file_system_access/file_system_access_file_handle_impl.h"
+#include "content/browser/file_system_access/file_system_access_manager_impl.h"
+#include "content/browser/file_system_access/fixed_file_system_access_permission_grant.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/back_forward_cache_util.h"
@@ -22,6 +28,7 @@
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/file_system_chooser_test_helpers.h"
 #include "content/shell/browser/shell.h"
+#include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -319,8 +326,9 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserveWithFlagBrowserTest,
       observer.unobserve(root);
     })()
     )""");
-  EXPECT_TRUE(result.error.find("is not a function") != std::string::npos)
-      << result.error;
+  EXPECT_TRUE(result.ExtractError().find("is not a function") !=
+              std::string::npos)
+      << result;
 }
 
 IN_PROC_BROWSER_TEST_F(FileSystemAccessObserveWithFlagBrowserTest,
@@ -376,7 +384,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserveWithFlagBrowserTest,
          "accessHandle.close();"
       R"(`);)";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
   EXPECT_THAT(*records.front().GetDict().FindString("type"),
               testing::StrEq("modified"));
@@ -415,7 +423,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserveWithFlagBrowserTest,
          "accessHandle.close();"
       R"(`);)";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::SizeIs(3));
   EXPECT_THAT(*records.front().GetDict().FindString("type"),
               testing::StrEq("modified"));
@@ -438,7 +446,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserveWithFlagBrowserTest,
          "accessHandle.close();"
       R"(`);)";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
   EXPECT_THAT(*records.front().GetDict().FindString("type"),
               testing::StrEq("modified"));
@@ -463,7 +471,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserveWithFlagBrowserTest,
          SET_CHANGE_TIMEOUT
       R"(`);)";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::IsEmpty());
 }
 
@@ -489,9 +497,9 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserveWithFlagBrowserTest,
   auto result = EvalJs(shell(), script);
 
   // Check if a JavaScript error occurred.
-  EXPECT_TRUE(result.error.find("InvalidModificationError") !=
+  EXPECT_TRUE(result.ExtractError().find("InvalidModificationError") !=
               std::string::npos)
-      << "Unexpected result: " << result.error;
+      << "Unexpected result: " << result;
   histogram_tester.ExpectUniqueSample(kAttemptToObserveSymlinkHistogram,
                                       /*sample=*/true, 1);
 }
@@ -567,8 +575,9 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserveWithFlagBrowserTest,
       "})()";
   // clang-format on
   auto result = EvalJs(shell(), script);
-  EXPECT_TRUE(result.error.find("did not support") != std::string::npos)
-      << result.error;
+  EXPECT_TRUE(result.ExtractError().find("did not support") !=
+              std::string::npos)
+      << result;
 }
 #endif  // BUILDFLAG(IS_FUCHSIA)
 
@@ -596,7 +605,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest, ObserveFile) {
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::Not(testing::IsEmpty()));
   if (GetTestFileSystemType() == TestFileSystemType::kLocal) {
     histogram_tester.ExpectUniqueSample(kAttemptToObserveSymlinkHistogram,
@@ -617,7 +626,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest, ObserveFileRename) {
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::Not(testing::IsEmpty()));
   // The `relativePathComponents` should be an empty array, since the change
   // occurred on the path corresponding to the handle passed to `observe()`.
@@ -641,7 +650,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest, ObserveDirectory) {
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::Not(testing::IsEmpty()));
 }
 
@@ -663,8 +672,8 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
   auto result = EvalJs(shell(), script);
 
   // Check if a JavaScript error occurred and contains "NotFoundError".
-  EXPECT_TRUE(result.error.find("NotFoundError") != std::string::npos)
-      << "Unexpected result: " << result.error;
+  EXPECT_TRUE(result.ExtractError().find("NotFoundError") != std::string::npos)
+      << "Unexpected result: " << result;
 }
 
 IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
@@ -686,8 +695,8 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
   auto result = EvalJs(shell(), script);
 
   // Check if a JavaScript error occurred and contains "NotFoundError".
-  EXPECT_TRUE(result.error.find("NotFoundError") != std::string::npos)
-      << "Unexpected result: " << result.error;
+  EXPECT_TRUE(result.ExtractError().find("NotFoundError") != std::string::npos)
+      << "Unexpected result: " << result;
 }
 
 IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
@@ -718,7 +727,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::Not(testing::IsEmpty()));
 }
 
@@ -771,7 +780,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::IsEmpty());
 }
 
@@ -805,7 +814,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::IsEmpty());
 }
 
@@ -830,7 +839,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::Not(testing::IsEmpty()));
 }
 #endif  // !BUILDFLAG(IS_MAC)
@@ -851,7 +860,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   // On Linux or ChromeOS, the change type can be "modified" if the swap file is
@@ -906,7 +915,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
   // The `relativePathComponents` should be an empty array, since the change
   // occurred on the path corresponding to the handle passed to `observe()`.
@@ -1008,7 +1017,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
   EXPECT_THAT(*records.front().GetDict().FindList("relativePathComponents"),
               testing::SizeIs(1));
@@ -1041,7 +1050,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
   auto& record_dict = records.front().GetDict();
   EXPECT_THAT(*record_dict.FindString("type"), testing::StrEq("moved"));
@@ -1076,7 +1085,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
   auto& record_dict = records.front().GetDict();
   EXPECT_THAT(*record_dict.FindString("type"), testing::StrEq("appeared"));
@@ -1106,7 +1115,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
   auto& record_dict = records.front().GetDict();
   EXPECT_THAT(*record_dict.FindString("type"), testing::StrEq("disappeared"));
@@ -1137,7 +1146,7 @@ IN_PROC_BROWSER_TEST_P(
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
   auto& record_dict = records.front().GetDict();
   EXPECT_THAT(*record_dict.FindString("type"), testing::StrEq("disappeared"));
@@ -1172,7 +1181,7 @@ IN_PROC_BROWSER_TEST_P(
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::Not(testing::IsEmpty()));
   auto& record_dict = records.front().GetDict();
   EXPECT_THAT(*record_dict.FindString("type"), testing::StrEq("appeared"));
@@ -1215,7 +1224,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessObserverBrowserTest,
   // clang-format on
 
   // Expect one modified event upon closing the writable.
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::SizeIs(1));
   auto& record_dict = records.front().GetDict();
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -1400,7 +1409,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserverWithBFCacheBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::Not(testing::IsEmpty()));
 
   // Navigate back and restore `initial_rfh` as the primary main frame.
@@ -1415,7 +1424,7 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserverWithBFCacheBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  records = EvalJs(shell(), script).ExtractList();
+  records = EvalJs(shell(), script).TakeValue().TakeList();
   EXPECT_THAT(records, testing::SizeIs(1));
   EXPECT_THAT(*records.front().GetDict().FindString("type"),
               testing::StrEq("unknown"));
@@ -1459,10 +1468,227 @@ IN_PROC_BROWSER_TEST_F(FileSystemAccessObserverWithBFCacheBrowserTest,
          SET_CHANGE_TIMEOUT
       "})()";
   // clang-format on
-  auto records = EvalJs(shell(), script).ExtractList();
+  auto records = EvalJs(shell(), script).TakeValue().TakeList();
   ASSERT_THAT(records, testing::IsEmpty());
 }
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS) &&
         // !BUILDFLAG(IS_FUCHSIA)
+
+using HandleType = FileSystemAccessPermissionContext::HandleType;
+
+class FileSystemAccessObserverCrossOriginTokenBypassTest
+    : public FileSystemAccessObserverBrowserTestBase {
+ public:
+  void SetUpOnMainThread() override {
+    host_resolver()->AddRule("*", "127.0.0.1");
+    FileSystemAccessObserverBrowserTestBase::SetUpOnMainThread();
+  }
+
+  FileSystemAccessManagerImpl* GetManager() {
+    auto* partition =
+        static_cast<StoragePartitionImpl*>(shell()
+                                               ->web_contents()
+                                               ->GetBrowserContext()
+                                               ->GetDefaultStoragePartition());
+    return partition->GetFileSystemAccessManager();
+  }
+
+  GURL GetURL(std::string_view relative_url) {
+    return embedded_test_server()->GetURL(relative_url);
+  }
+
+  GURL GetURL(std::string_view hostname, std::string_view relative_url) {
+    return embedded_test_server()->GetURL(hostname, relative_url);
+  }
+};
+
+// Checks that tokens from an unexpected origin cannot be used to create an
+// observer. https://crbug.com/499917177
+IN_PROC_BROWSER_TEST_F(FileSystemAccessObserverCrossOriginTokenBypassTest,
+                       ObserveRefusesCrossOriginToken) {
+  base::FilePath dir_path;
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    ASSERT_TRUE(base::CreateTemporaryDirInDir(
+        temp_dir_.GetPath(), FILE_PATH_LITERAL("victim"), &dir_path));
+  }
+
+  // Victim site.
+  GURL url_victim = GetURL("a.com", "/title1.html");
+  const url::Origin origin_victim = url::Origin::Create(url_victim);
+  const blink::StorageKey key_victim =
+      blink::StorageKey::CreateFirstParty(origin_victim);
+  // Attacker site.
+  GURL url_attacker = GetURL("b.com", "/title1.html");
+  const url::Origin origin_attacker = url::Origin::Create(url_attacker);
+  const blink::StorageKey key_attacker =
+      blink::StorageKey::CreateFirstParty(origin_attacker);
+  ASSERT_NE(origin_victim, origin_attacker);
+
+  // Navigate to get a valid RFH (used for binding contexts).
+  ASSERT_TRUE(NavigateToURL(shell(), url_victim));
+  RenderFrameHost* rfh = shell()->web_contents()->GetPrimaryMainFrame();
+  ASSERT_TRUE(rfh);
+
+  auto* manager = GetManager();
+  ASSERT_TRUE(manager);
+
+  const storage::FileSystemURL dir_url =
+      manager->CreateFileSystemURLFromPath(PathInfo(dir_path));
+
+  auto read_grant = base::MakeRefCounted<FixedFileSystemAccessPermissionGrant>(
+      FixedFileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+      PathInfo(dir_path));
+  auto write_grant = base::MakeRefCounted<FixedFileSystemAccessPermissionGrant>(
+      FixedFileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+      PathInfo(dir_path));
+  FileSystemAccessManagerImpl::SharedHandleState handle_state(read_grant,
+                                                              write_grant);
+
+  // Create a directory handle owned by origin A.
+  FileSystemAccessManagerImpl::BindingContext victim_context(
+      key_victim, url_victim, rfh->GetGlobalId());
+  auto dir_handle = std::make_unique<FileSystemAccessDirectoryHandleImpl>(
+      manager, victim_context, dir_url, handle_state);
+
+  // Create a registered transfer token from the directory handle.
+  // Using CreateTransferToken ensures the token is inserted into the
+  // manager's transfer_tokens_ map so that ResolveTransferToken can find it.
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
+  manager->CreateTransferToken(*dir_handle,
+                               token_remote.InitWithNewPipeAndPassReceiver());
+
+  // Create a context with B's key but A's URL.
+  FileSystemAccessManagerImpl::BindingContext attacker_context(
+      key_attacker, url_victim, rfh->GetGlobalId());
+
+  // Bind an ObserverHost with origin B's context.
+  mojo::Remote<blink::mojom::FileSystemAccessObserverHost> observer_host;
+  manager->watcher_manager().BindObserverHost(
+      attacker_context, observer_host.BindNewPipeAndPassReceiver());
+
+  // --- The exploit: Observe() with A's token from B's host ---
+  base::RunLoop run_loop;
+  blink::mojom::FileSystemAccessStatus observe_status;
+  observer_host->Observe(
+      std::move(token_remote), /*is_recursive=*/true,
+      base::BindLambdaForTesting(
+          [&](blink::mojom::FileSystemAccessErrorPtr result,
+              mojo::PendingReceiver<blink::mojom::FileSystemAccessObserver>
+                  receiver) {
+            observe_status = result->status;
+            run_loop.Quit();
+          }));
+  run_loop.Run();
+
+  // THE BUG: Observe() succeeds despite origin mismatch.
+  //
+  // DidResolveTransferTokenToObserve does not call IsValidTransferToken
+  // to check the token origin against the binding context origin.
+  // Compare with DidResolveTransferTokenForFileHandle (manager_impl.cc:1442)
+  // and DidResolveTransferTokenForDirectoryHandle (manager_impl.cc:1467)
+  // which both call IsValidTransferToken and reject cross-origin tokens.
+  ASSERT_EQ(observe_status,
+            blink::mojom::FileSystemAccessStatus::kInvalidArgument);
+}
+
+// Checks that a destination-directory TransferToken from an unexpected origin
+// cannot be used to move a file into another origin's granted directory.
+// Same pattern as https://crbug.com/499917177 (observer variant), applied to
+// the FileSystemHandle::move() code path in DidResolveTokenToMove.
+IN_PROC_BROWSER_TEST_F(FileSystemAccessObserverCrossOriginTokenBypassTest,
+                       MoveRefusesCrossOriginDestinationToken) {
+  base::FilePath victim_dir_path;
+  base::FilePath attacker_file_path;
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    ASSERT_TRUE(base::CreateTemporaryDirInDir(
+        temp_dir_.GetPath(), FILE_PATH_LITERAL("victim"), &victim_dir_path));
+    ASSERT_TRUE(base::CreateTemporaryFileInDir(temp_dir_.GetPath(),
+                                               &attacker_file_path));
+  }
+
+  // Victim site.
+  GURL url_victim = GetURL("a.com", "/title1.html");
+  const url::Origin origin_victim = url::Origin::Create(url_victim);
+  const blink::StorageKey key_victim =
+      blink::StorageKey::CreateFirstParty(origin_victim);
+  // Attacker site.
+  GURL url_attacker = GetURL("b.com", "/title1.html");
+  const url::Origin origin_attacker = url::Origin::Create(url_attacker);
+  const blink::StorageKey key_attacker =
+      blink::StorageKey::CreateFirstParty(origin_attacker);
+  ASSERT_NE(origin_victim, origin_attacker);
+
+  ASSERT_TRUE(NavigateToURL(shell(), url_victim));
+  RenderFrameHost* rfh = shell()->web_contents()->GetPrimaryMainFrame();
+  ASSERT_TRUE(rfh);
+
+  auto* manager = GetManager();
+  ASSERT_TRUE(manager);
+
+  // Origin A owns the destination directory with read+write grants.
+  const storage::FileSystemURL victim_dir_url =
+      manager->CreateFileSystemURLFromPath(PathInfo(victim_dir_path));
+  auto victim_read_grant =
+      base::MakeRefCounted<FixedFileSystemAccessPermissionGrant>(
+          FixedFileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+          PathInfo(victim_dir_path));
+  auto victim_write_grant =
+      base::MakeRefCounted<FixedFileSystemAccessPermissionGrant>(
+          FixedFileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+          PathInfo(victim_dir_path));
+  FileSystemAccessManagerImpl::SharedHandleState victim_handle_state(
+      victim_read_grant, victim_write_grant);
+  FileSystemAccessManagerImpl::BindingContext victim_context(
+      key_victim, url_victim, rfh->GetGlobalId());
+  auto victim_dir_handle =
+      std::make_unique<FileSystemAccessDirectoryHandleImpl>(
+          manager, victim_context, victim_dir_url, victim_handle_state);
+
+  // Transfer token for origin A's directory, registered in the manager.
+  mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token_remote;
+  manager->CreateTransferToken(*victim_dir_handle,
+                               token_remote.InitWithNewPipeAndPassReceiver());
+
+  // Origin B owns its own source file with its own GRANTED write grant.
+  const storage::FileSystemURL attacker_file_url =
+      manager->CreateFileSystemURLFromPath(PathInfo(attacker_file_path));
+  auto attacker_read_grant =
+      base::MakeRefCounted<FixedFileSystemAccessPermissionGrant>(
+          FixedFileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+          PathInfo(attacker_file_path));
+  auto attacker_write_grant =
+      base::MakeRefCounted<FixedFileSystemAccessPermissionGrant>(
+          FixedFileSystemAccessPermissionGrant::PermissionStatus::GRANTED,
+          PathInfo(attacker_file_path));
+  FileSystemAccessManagerImpl::SharedHandleState attacker_handle_state(
+      attacker_read_grant, attacker_write_grant);
+  FileSystemAccessManagerImpl::BindingContext attacker_context(
+      key_attacker, url_victim, rfh->GetGlobalId());
+  auto attacker_file_handle = std::make_unique<FileSystemAccessFileHandleImpl>(
+      manager, attacker_context, attacker_file_url, /*display_name=*/"",
+      attacker_handle_state);
+
+  // Call Move() on origin B's file handle with origin A's directory
+  // TransferToken as the destination.
+  base::RunLoop run_loop;
+  blink::mojom::FileSystemAccessStatus move_status;
+  static_cast<blink::mojom::FileSystemAccessFileHandle*>(
+      attacker_file_handle.get())
+      ->Move(std::move(token_remote), "evil.html",
+             base::BindLambdaForTesting(
+                 [&](blink::mojom::FileSystemAccessErrorPtr result) {
+                   move_status = result->status;
+                   run_loop.Quit();
+                 }));
+  run_loop.Run();
+
+  // DidResolveTokenToMove must compare the resolved token's origin against
+  // the caller's binding-context origin and reject the mismatch with
+  // kInvalidArgument.
+  ASSERT_EQ(move_status,
+            blink::mojom::FileSystemAccessStatus::kInvalidArgument);
+}
 
 }  // namespace content

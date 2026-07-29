@@ -4,15 +4,20 @@
 
 #import "ios/chrome/browser/credential_provider/model/credential_provider_migrator.h"
 
+#import <UIKit/UIKit.h>
+
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/time/time.h"
 #import "components/password_manager/core/browser/password_form.h"
+#import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/password_store_interface.h"
 #import "components/sync/protocol/webauthn_credential_specifics.pb.h"
 #import "components/webauthn/core/browser/passkey_model.h"
 #import "components/webauthn/core/browser/passkey_model_utils.h"
 #import "ios/chrome/browser/credential_provider/model/archivable_credential+password_form.h"
 #import "ios/chrome/common/credential_provider/archivable_credential+passkey.h"
+#import "ios/chrome/common/credential_provider/passkey_model_observer_bridge.h"
 #import "ios/chrome/common/credential_provider/user_defaults_credential_store.h"
 
 using password_manager::PasswordStoreInterface;
@@ -20,16 +25,15 @@ using password_manager::PasswordStoreInterface;
 NSErrorDomain const kCredentialProviderMigratorErrorDomain =
     @"kCredentialProviderMigratorErrorDomain";
 
-typedef enum : NSInteger {
-  CredentialProviderMigratorErrorAlreadyRunning,
-} CredentialProviderMigratorErrors;
-
 // Name of the passkey migration related histogram.
 static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
 
-@interface CredentialProviderMigrator () {
+@interface CredentialProviderMigrator () <PasskeyModelObserverDelegate> {
   // Passkey store.
   raw_ptr<webauthn::PasskeyModel> _passkeyStore;
+
+  // Observer to know when the passkey store is destroyed.
+  std::unique_ptr<PasskeyModelObserverBridge> _passkeyModelObserverBridge;
 }
 
 // Key used to retrieve the temporal storage.
@@ -45,12 +49,16 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
 @property(nonatomic, assign) scoped_refptr<PasswordStoreInterface>
     passwordStore;
 
+// The GAIA ID of the profile undergoing migration.
+@property(nonatomic, copy) NSString* gaiaID;
+
 @end
 
 @implementation CredentialProviderMigrator
 
 - (instancetype)initWithUserDefaults:(NSUserDefaults*)userDefaults
                                  key:(NSString*)key
+                                gaia:(NSString*)gaiaID
                        passwordStore:
                            (scoped_refptr<PasswordStoreInterface>)passwordStore
                         passkeyStore:(webauthn::PasskeyModel*)passkeyStore {
@@ -60,6 +68,11 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
     _userDefaults = userDefaults;
     _passwordStore = passwordStore;
     _passkeyStore = passkeyStore;
+    _gaiaID = gaiaID;
+    if (_passkeyStore) {
+      _passkeyModelObserverBridge =
+          std::make_unique<PasskeyModelObserverBridge>(self, _passkeyStore);
+    }
   }
   return self;
 }
@@ -69,7 +82,7 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
   if (self.temporalStore) {
     NSError* error =
         [NSError errorWithDomain:kCredentialProviderMigratorErrorDomain
-                            code:CredentialProviderMigratorErrorAlreadyRunning
+                            code:kCredentialProviderMigratorErrorAlreadyRunning
                         userInfo:nil];
     completion(NO, error);
     return;
@@ -88,6 +101,14 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
 
   for (id<Credential> credential in credentials) {
     if (credential.isPasskey) {
+      // For passkeys, gaiaID cannot be nil as passkeys require a user to be
+      // signed in. Also, the account's gaiaID must match the credential's
+      // gaiaID, otherwise the passkey belongs to a different account.
+      if (credential.gaia == nil || self.gaiaID == nil ||
+          ![credential.gaia isEqualToString:self.gaiaID]) {
+        continue;
+      }
+
       // If this happens too early (before the passkey store is ready), the
       // migration will be re-triggered later for that passkey store by
       // CredentialProviderMigratorAppAgent.
@@ -105,12 +126,36 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
             static_cast<const char*>(credential.credentialId.bytes),
             credential.credentialId.length);
         std::optional<sync_pb::WebauthnCredentialSpecifics>
-            credential_specifics =
-                _passkeyStore->GetPasskeyByCredentialId(rpId, credentialId);
+            credential_specifics = _passkeyStore->GetPasskey(
+                rpId, credentialId,
+                webauthn::PasskeyModel::ShadowedCredentials::kExclude);
+        if (!credential_specifics.has_value()) {
+          continue;
+        }
 
-        if (credential_specifics &&
-            (credential_specifics->last_used_time_windows_epoch_micros() <
-             credential.lastUsedTime)) {
+        if (credential_specifics->hidden() != credential.hidden) {
+          // TODO(crbug.com/432260316): Log metrics.
+          // TODO(crbug.com/432260316): Add PasskeyChangeQuotaTracker.
+          if (credential.hidden) {
+            _passkeyStore->HidePasskey(
+                credentialId, base::Time::FromMillisecondsSinceUnixEpoch(
+                                  credential.hiddenTime));
+          } else {
+            _passkeyStore->UnhidePasskey(credentialId);
+          }
+        }
+
+        std::string username = base::SysNSStringToUTF8(credential.username);
+        if (credential_specifics->user_name() != username) {
+          _passkeyStore->UpdatePasskey(
+              credentialId,
+              {.user_name = username,
+               .user_display_name = credential_specifics->user_display_name()},
+              /*updated_by_user=*/false);
+        }
+
+        if (credential_specifics->last_used_time_windows_epoch_micros() <
+            credential.lastUsedTime) {
           _passkeyStore->UpdatePasskeyTimestamp(
               credentialId, base::Time::FromDeltaSinceWindowsEpoch(
                                 base::Microseconds(credential.lastUsedTime)));
@@ -120,7 +165,7 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
       } else {
         sync_pb::WebauthnCredentialSpecifics passkey =
             PasskeyFromCredential(credential);
-        if (webauthn::passkey_model_utils::IsPasskeyValid(passkey)) {
+        if (webauthn::passkey_model_utils::IsGpmPasskeyValid(passkey)) {
           _passkeyStore->CreatePasskey(passkey);
           base::UmaHistogramEnumeration(
               kPasskeysIOSMigration, PasskeysMigrationStatus::kPasskeyCreated);
@@ -130,9 +175,21 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
         }
       }
     } else {
+      // For passwords, either the password is a local password not associated
+      // with a user account, which means that the gaiaID is nil and the
+      // password is being imported locally OR the password is associated with a
+      // user account, which means that the password's gaiaID must match the
+      // current account's gaiaID.
+      bool validLocalPassword = credential.gaia == nil && self.gaiaID == nil;
+      bool validAccountPassword = [credential.gaia isEqualToString:self.gaiaID];
+      if (!validLocalPassword && !validAccountPassword) {
+        continue;
+      }
+
       password_manager::PasswordForm form =
           PasswordFormFromCredential(credential);
-      self.passwordStore->AddLogin(form);
+      self.passwordStore->AddLogin(
+          password_manager::FromPasswordForm(std::move(form)));
     }
     [self.temporalStore
         removeCredentialWithRecordIdentifier:credential.recordIdentifier];
@@ -143,6 +200,20 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
     weakSelf.temporalStore = nil;
     completion(error == nil, error);
   }];
+}
+
+#pragma mark - PasskeyModelObserverDelegate
+
+- (void)passKeyModelShuttingDown:(webauthn::PasskeyModel*)passkeyModel {
+  CHECK_EQ(_passkeyStore, passkeyModel);
+  _passkeyModelObserverBridge.reset();
+  _passkeyStore = nullptr;
+}
+
+- (void)passkeyModelIsReady:(webauthn::PasskeyModel*)passkeyModel {
+}
+
+- (void)passkeyModelDidChange {
 }
 
 @end

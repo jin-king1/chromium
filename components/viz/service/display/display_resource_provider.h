@@ -7,13 +7,13 @@
 
 #include <stddef.h>
 
-#include <map>
 #include <memory>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/stack_allocated.h"
 #include "base/memory/weak_ptr.h"
@@ -79,7 +79,7 @@ class VIZ_SERVICE_EXPORT DisplayResourceProvider
   bool IsBackedBySurfaceView(ResourceId id) const;
 #endif
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_ANDROID)
   // Indicates if this resource wants to receive promotion hints.
   bool DoesResourceWantPromotionHint(ResourceId id) const;
 #endif
@@ -92,16 +92,20 @@ class VIZ_SERVICE_EXPORT DisplayResourceProvider
   // scanout.
   SharedImageFormat GetSharedImageFormat(ResourceId id) const;
   // Returns the color space of the resource.
-  const gfx::ColorSpace& GetColorSpace(ResourceId id) const;
+  gfx::ColorSpace GetColorSpace(ResourceId id) const;
   // Returns true if the resource needs a detiling pass before scanout.
   bool GetNeedsDetiling(ResourceId id) const;
 
   const gfx::HDRMetadata& GetHDRMetadata(ResourceId id) const;
 
   GrSurfaceOrigin GetOrigin(ResourceId id) const;
+  SkAlphaType GetAlphaType(ResourceId id) const;
 
   // Indicates if this resource may be used for a hardware overlay plane.
   bool IsOverlayCandidate(ResourceId id) const;
+  // Indicates if this resource uses low latency rendering.
+  bool IsLowLatencyRendering(ResourceId id) const;
+
   SurfaceId GetSurfaceId(ResourceId id) const;
   int GetChildId(ResourceId id) const;
 
@@ -145,8 +149,8 @@ class VIZ_SERVICE_EXPORT DisplayResourceProvider
     // This is propagated to ReturnedResource when the resource is freed.
     void SetReleaseFence(gfx::GpuFenceHandle release_fence);
 
-    // Returns true iff this resource has a read lock fence set.
-    bool HasReadLockFence() const;
+    // Returns the synchronization type for the underlying resource.
+    TransferableResource::SynchronizationType SynchronizationType() const;
 
    protected:
     ChildResource* resource() { return resource_; }
@@ -154,11 +158,9 @@ class VIZ_SERVICE_EXPORT DisplayResourceProvider
    private:
     void Reset();
 
-    // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of MotionMark).
-    RAW_PTR_EXCLUSION DisplayResourceProvider* resource_provider_ = nullptr;
+    raw_ptr<DisplayResourceProvider> resource_provider_ = nullptr;
     ResourceId resource_id_ = kInvalidResourceId;
-    // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of MotionMark).
-    RAW_PTR_EXCLUSION ChildResource* resource_ = nullptr;
+    raw_ptr<ChildResource> resource_ = nullptr;
   };
 
   // All resources that are returned to children while an instance of this
@@ -250,7 +252,7 @@ class VIZ_SERVICE_EXPORT DisplayResourceProvider
     ChildResource(ChildResource&& other);
     ~ChildResource();
 
-    bool is_gpu_resource_type() const { return !transferable.is_software; }
+    bool is_gpu_resource_type() const { return !transferable.GetIsSoftware(); }
     const gpu::SyncToken& sync_token() const { return sync_token_; }
 
     bool InUse() const {
@@ -335,7 +337,7 @@ class VIZ_SERVICE_EXPORT DisplayResourceProvider
       ChildMap::iterator child_it,
       DeleteStyle style,
       const std::vector<ResourceId>& unused);
-  virtual std::vector<ReturnedResource>
+  virtual std::vector<ReturnedResourceViz>
   DeleteAndReturnUnusedResourcesToChildImpl(
       Child& child_info,
       DeleteStyle style,

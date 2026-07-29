@@ -5,15 +5,12 @@
 #ifndef IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_PASSWORD_PASSWORD_DETAILS_PASSWORD_DETAILS_TABLE_VIEW_CONTROLLER_H_
 #define IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_PASSWORD_PASSWORD_DETAILS_PASSWORD_DETAILS_TABLE_VIEW_CONTROLLER_H_
 
-#import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_edit_table_view_controller.h"
+#import "ios/chrome/browser/settings/autofill/ui/autofill_edit_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_details/password_details_consumer.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_controller_protocol.h"
 
-@protocol ApplicationCommands;
 @protocol PasswordDetailsHandler;
 @protocol PasswordDetailsTableViewControllerDelegate;
-@protocol ReauthenticationProtocol;
-@protocol SnackbarCommands;
 
 // Screen which shows password details and allows to edit it.
 @interface PasswordDetailsTableViewController
@@ -32,16 +29,6 @@
 // Delegate for CredentialDetails related actions e.g. Password editing.
 @property(nonatomic, weak) id<PasswordDetailsTableViewControllerDelegate>
     delegate;
-
-// ApplicationCommands handler.
-@property(nonatomic, weak) id<ApplicationCommands> applicationCommandsHandler;
-
-// SnackbarCommands handler.
-@property(nonatomic, weak) id<SnackbarCommands> snackbarCommandsHandler;
-
-// Module containing the reauthentication mechanism for interactions
-// with password.
-@property(nonatomic, weak) id<ReauthenticationProtocol> reauthModule;
 
 // Called by coordinator when the user confirmed password editing from alert.
 - (void)passwordEditingConfirmed;

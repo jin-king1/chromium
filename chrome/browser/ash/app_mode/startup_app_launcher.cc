@@ -5,17 +5,17 @@
 #include "chrome/browser/ash/app_mode/startup_app_launcher.h"
 
 #include <memory>
-#include <optional>
 #include <string>
+#include <utility>
 
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "base/syslog_logging.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launcher.h"
+#include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/chromeos/app_mode/chrome_kiosk_app_installer.h"
 #include "chrome/browser/chromeos/app_mode/chrome_kiosk_app_launcher.h"
@@ -98,7 +98,7 @@ void StartupAppLauncher::Initialize() {
 
 void StartupAppLauncher::ContinueWithNetworkReady() {
   SYSLOG(INFO) << "ContinueWithNetworkReady"
-               << ", state_=" << base::to_underlying(state_);
+               << ", state_=" << std::to_underlying(state_);
 
   if (state_ != LaunchState::kInitializingNetwork &&
       state_ != LaunchState::kNotStarted) {
@@ -165,37 +165,36 @@ void StartupAppLauncher::BeginInstall() {
       &StartupAppLauncher::OnInstallComplete, weak_ptr_factory_.GetWeakPtr()));
 }
 
-void StartupAppLauncher::OnInstallComplete(
-    ChromeKioskAppInstaller::InstallResult result) {
+void StartupAppLauncher::OnInstallComplete(ash::KioskInstallResult result) {
   CHECK_EQ(state_, LaunchState::kInstallingApp);
 
   installer_.reset();
 
   switch (result) {
-    case ChromeKioskAppInstaller::InstallResult::kSuccess:
+    case ash::KioskInstallResult::kSuccess:
       OnInstallSuccess();
       return;
-    case ChromeKioskAppInstaller::InstallResult::kPrimaryAppUpdateFailed:
+    case ash::KioskInstallResult::kPrimaryAppUpdateFailed:
       SYSLOG(WARNING) << "Primary app update failed, proceeding anyways";
       OnInstallSuccess();
       return;
-    case ChromeKioskAppInstaller::InstallResult::kSecondaryAppUpdateFailed:
+    case ash::KioskInstallResult::kSecondaryAppUpdateFailed:
       SYSLOG(WARNING) << "Secondary app update failed, proceeding anyways";
       OnInstallSuccess();
       return;
-    case ChromeKioskAppInstaller::InstallResult::kPrimaryAppInstallFailed:
+    case ash::KioskInstallResult::kPrimaryAppInstallFailed:
       OnLaunchFailure(KioskAppLaunchError::Error::kUnableToInstall);
       return;
-    case ChromeKioskAppInstaller::InstallResult::kPrimaryAppNotKioskEnabled:
+    case ash::KioskInstallResult::kPrimaryAppNotKioskEnabled:
       OnLaunchFailure(KioskAppLaunchError::Error::kNotKioskEnabled);
       return;
-    case ChromeKioskAppInstaller::InstallResult::kPrimaryAppNotCached:
-    case ChromeKioskAppInstaller::InstallResult::kSecondaryAppInstallFailed:
+    case ash::KioskInstallResult::kPrimaryAppNotCached:
+    case ash::KioskInstallResult::kSecondaryAppInstallFailed:
       if (!RetryWhenNetworkIsAvailable()) {
         OnLaunchFailure(KioskAppLaunchError::Error::kUnableToInstall);
       }
       return;
-    case ChromeKioskAppInstaller::InstallResult::kUnknown:
+    case ash::KioskInstallResult::kUnknown:
       SYSLOG(ERROR) << "Received unknown InstallResult";
       OnLaunchFailure(KioskAppLaunchError::Error::kUnableToInstall);
       return;
@@ -217,32 +216,47 @@ void StartupAppLauncher::LaunchApp() {
   launcher_ = std::make_unique<ChromeKioskAppLauncher>(
       profile_, app_id_, delegate_->IsNetworkReady());
 
+  base::expected<void, ChromeKioskAppLauncher::PreLaunchError>
+      pre_launch_result = launcher_->PerformPreLaunchChecks();
+  if (!pre_launch_result.has_value()) {
+    HandlePreLaunchError(pre_launch_result.error());
+    return;
+  }
+  observers_.NotifyAppLaunching();
+
   launcher_->LaunchApp(base::BindOnce(&StartupAppLauncher::OnLaunchComplete,
                                       weak_ptr_factory_.GetWeakPtr()));
 }
 
-void StartupAppLauncher::OnLaunchComplete(
-    ChromeKioskAppLauncher::LaunchResult result) {
-  CHECK_EQ(state_, LaunchState::kReadyToLaunch);
-
-  launcher_.reset();
-
-  switch (result) {
-    case ChromeKioskAppLauncher::LaunchResult::kSuccess:
-      OnLaunchSuccess();
-      return;
-    case ChromeKioskAppLauncher::LaunchResult::kUnableToLaunch:
+void StartupAppLauncher::HandlePreLaunchError(
+    ChromeKioskAppLauncher::PreLaunchError error) {
+  switch (error) {
+    case ChromeKioskAppLauncher::PreLaunchError::kPrimaryAppMissing:
+    case ChromeKioskAppLauncher::PreLaunchError::kSecondaryAppsMissing:
+    case ChromeKioskAppLauncher::PreLaunchError::kPrimaryAppNotKioskEnabled:
       OnLaunchFailure(KioskAppLaunchError::Error::kUnableToLaunch);
       return;
-    case ChromeKioskAppLauncher::LaunchResult::kNetworkMissing:
+    case ChromeKioskAppLauncher::PreLaunchError::kNetworkMissing:
       if (!RetryWhenNetworkIsAvailable()) {
         OnLaunchFailure(KioskAppLaunchError::Error::kUnableToLaunch);
       }
       return;
-    case ChromeKioskAppLauncher::LaunchResult::kUnknown:
-      SYSLOG(ERROR) << "Received unknown LaunchResult";
-      OnLaunchFailure(KioskAppLaunchError::Error::kUnableToLaunch);
+    case ChromeKioskAppLauncher::PreLaunchError::kChromeAppDeprecated:
+      OnLaunchFailure(KioskAppLaunchError::Error::kChromeAppDeprecated);
       return;
+  }
+}
+
+void StartupAppLauncher::OnLaunchComplete(bool success) {
+  CHECK_EQ(state_, LaunchState::kReadyToLaunch);
+
+  launcher_.reset();
+
+  if (success) {
+    OnLaunchSuccess();
+  } else {
+    // Other error cases are being handled in `HandlePreLaunchError`
+    OnLaunchFailure(KioskAppLaunchError::Error::kUnableToLaunch);
   }
 }
 

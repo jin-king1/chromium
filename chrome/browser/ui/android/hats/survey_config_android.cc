@@ -16,13 +16,13 @@
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace hats {
 
 SurveyConfigHolder::SurveyConfigHolder(JNIEnv* env,
-                                       const JavaParamRef<jobject>& obj,
+                                       const JavaRef<jobject>& obj,
                                        Profile* profile) {
   jobj_.Reset(env, obj);
   GetActiveSurveyConfigs(survey_configs_by_triggers_);
@@ -48,17 +48,16 @@ void SurveyConfigHolder::InitJavaHolder(Profile* profile) {
     ScopedJavaLocalRef<jobjectArray> jpsd_string_data_fields =
         base::android::ToJavaArrayOfStrings(
             env, survey_config.product_specific_string_data_fields);
-    jboolean juser_prompted = survey_config.user_prompted;
-    jdouble jprobability = survey_config.probability;
-    std::optional<base::TimeDelta> cooldown_period_override =
-        survey_config.GetCooldownPeriodOverride(profile);
-    jint jcooldown_period_override = cooldown_period_override.has_value()
-                                         ? cooldown_period_override->InDays()
-                                         : 0;
+    bool juser_prompted = survey_config.user_prompted;
+    double jprobability = survey_config.probability;
+    int32_t requested_browser_type = survey_config.requested_browser_type;
+    int32_t profile_age_requirement =
+        static_cast<int32_t>(survey_config.profile_age_requirement);
+
     Java_SurveyConfig_addActiveSurveyConfigToHolder(
         env, jobj_, jtrigger, jtrigger_id, jprobability, juser_prompted,
-        jpsd_bits_data_fields, jpsd_string_data_fields,
-        jcooldown_period_override);
+        jpsd_bits_data_fields, jpsd_string_data_fields, requested_browser_type,
+        profile_age_requirement);
   }
 }
 
@@ -68,13 +67,15 @@ void SurveyConfigHolder::Destroy(JNIEnv* env) {
 }
 
 // static
-jlong JNI_SurveyConfig_InitHolder(
+static int64_t JNI_SurveyConfig_InitHolder(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& caller,
-    const JavaParamRef<jobject>& profile) {
+    const base::android::JavaRef<jobject>& caller,
+    const JavaRef<jobject>& profile) {
   SurveyConfigHolder* holder =
       new SurveyConfigHolder(env, caller, Profile::FromJavaObject(profile));
   return reinterpret_cast<intptr_t>(holder);
 }
 
 }  // namespace hats
+
+DEFINE_JNI(SurveyConfig)

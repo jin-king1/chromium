@@ -5,15 +5,19 @@
 package org.chromium.chrome.browser.bookmarks;
 
 import android.content.Context;
+import android.view.View;
 
 import org.chromium.base.supplier.OneshotSupplier;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiState.BookmarkUiMode;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.bookmarks.BookmarkId;
-import org.chromium.components.browser_ui.widget.dragreorder.DragReorderableRecyclerViewAdapter;
+import org.chromium.components.browser_ui.widget.dragreorder.DragTouchHandler;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectableListLayout;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectableListToolbar.SearchDelegate;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
+import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
@@ -21,6 +25,7 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import java.util.function.BooleanSupplier;
 
 /** Responsible for the business logic for the BookmarkManagerToolbar. */
+@NullMarked
 public class BookmarkToolbarCoordinator {
     private final BookmarkToolbar mToolbar;
     private final PropertyModel mModel;
@@ -31,7 +36,7 @@ public class BookmarkToolbarCoordinator {
             SelectableListLayout<BookmarkId> selectableListLayout,
             SelectionDelegate<BookmarkId> selectionDelegate,
             SearchDelegate searchDelegate,
-            DragReorderableRecyclerViewAdapter dragReorderableRecyclerViewAdapter,
+            DragTouchHandler dragTouchHandler,
             boolean isDialogUi,
             OneshotSupplier<BookmarkDelegate> bookmarkDelegateSupplier,
             BookmarkModel bookmarkModel,
@@ -39,9 +44,10 @@ public class BookmarkToolbarCoordinator {
             BookmarkUiPrefs bookmarkUiPrefs,
             ModalDialogManager modalDialogManager,
             Runnable endSearchRunnable,
-            BookmarkMoveSnackbarManager bookmarkMoveSnackbarManager,
             BooleanSupplier incognitoEnabledSupplier,
-            BookmarkManagerOpener bookmarkManagerOpener) {
+            BookmarkManagerOpener bookmarkManagerOpener,
+            SnackbarManager snackbarManager,
+            View nextFocusableView) {
         mToolbar =
                 (BookmarkToolbar)
                         selectableListLayout.initializeToolbar(
@@ -60,11 +66,12 @@ public class BookmarkToolbarCoordinator {
         mModel.set(BookmarkToolbarProperties.BOOKMARK_UI_MODE, BookmarkUiMode.LOADING);
         mModel.set(BookmarkToolbarProperties.IS_DIALOG_UI, isDialogUi);
         mModel.set(BookmarkToolbarProperties.DRAG_ENABLED, false);
+        mModel.set(BookmarkToolbarProperties.NEXT_FOCUSABLE_VIEW, nextFocusableView);
         new BookmarkToolbarMediator(
                 context,
                 profile,
                 mModel,
-                dragReorderableRecyclerViewAdapter,
+                dragTouchHandler,
                 bookmarkDelegateSupplier,
                 selectionDelegate,
                 bookmarkModel,
@@ -72,9 +79,10 @@ public class BookmarkToolbarCoordinator {
                 bookmarkUiPrefs,
                 new BookmarkAddNewFolderCoordinator(context, modalDialogManager, bookmarkModel),
                 endSearchRunnable,
-                bookmarkMoveSnackbarManager,
                 incognitoEnabledSupplier,
-                bookmarkManagerOpener);
+                bookmarkManagerOpener,
+                snackbarManager,
+                Clipboard.getInstance());
 
         PropertyModelChangeProcessor.create(mModel, mToolbar, BookmarkToolbarViewBinder::bind);
     }

@@ -73,9 +73,7 @@ config("feature_flags") {
     # setting use_ozone globally.
     defines += [ "USE_OZONE=1" ]
   }
-  if (is_asan || is_hwasan || is_lsan || is_tsan || is_msan) {
-    defines += [ "MEMORY_TOOL_REPLACES_ALLOCATOR" ]
-  }
+
   if (is_asan) {
     defines += [ "ADDRESS_SANITIZER" ]
   }
@@ -113,10 +111,6 @@ config("debug") {
     "DYNAMIC_ANNOTATIONS_ENABLED=1",
   ]
 
-  if (is_nacl) {
-    defines += [ "DYNAMIC_ANNOTATIONS_PREFIX=NACL_" ]
-  }
-
   if (is_win) {
     if (!enable_iterator_debugging && !use_custom_libcxx) {
       # Iterator debugging is enabled by default by the compiler on debug
@@ -139,17 +133,15 @@ config("release") {
   if (is_tsan) {
     defines += [ "DYNAMIC_ANNOTATIONS_ENABLED=1" ]
   } else {
-    defines += [ "NVALGRIND" ]
-    if (!is_nacl) {
-      # NaCl always enables dynamic annotations. Currently this value is set to
-      # 1 for all .nexes.
-      defines += [ "DYNAMIC_ANNOTATIONS_ENABLED=0" ]
-    }
+    defines += [
+      "NVALGRIND",
+      "DYNAMIC_ANNOTATIONS_ENABLED=0",
+    ]
   }
 
   if (is_ios) {
     # Disable NSAssert and GTMDevAssert (from Google Toolbox for Mac). This
-    # follows XCode's default behavior for Release builds.
+    # follows Xcode's default behavior for Release builds.
     defines += [ "NS_BLOCK_ASSERTIONS=1" ]
   }
 }
@@ -243,10 +235,6 @@ group("common_deps_without_libcxx") {
     public_deps += [ "//build/config/sanitizers:dlclose_shim" ]
   }
 
-  if (use_afl) {
-    public_deps += [ "//third_party/afl" ]
-  }
-
   if (is_android && use_order_profiling) {
     public_deps += [ "//base/android/orderfile:orderfile_instrumentation" ]
   }
@@ -296,6 +284,13 @@ group("common_deps") {
 
   if (use_custom_libcxx) {
     public_deps += [ "//buildtools/third_party/libc++" ]
+  }
+
+  if (use_llvm_libatomic) {
+    # Certain C/C++ atomic operations require the separately built "libatomic"
+    # support library, which is not shipped with compiler-rt by default. See
+    # crbug.com/402171653 for context.
+    public_deps += [ "//third_party/compiler-rt:atomic" ]
   }
 }
 
@@ -423,9 +418,17 @@ config("precompiled_headers") {
   }
 }
 
-# Add this config to link steps in order to compress debug sections. This is
-# especially useful on 32-bit architectures in order to keep file sizes under
-# 4gb.
-config("compress_debug_sections") {
-  ldflags = [ "-gz" ]
+# Flag is specific to ELF binaries.
+if (!is_win && !is_mac && !is_ios) {
+  config("compress_debug_sections") {
+    # Use zstd only for Android since debug info is used only in offline
+    # contexts there. For other platforms, and for official builds, use
+    # gzip for best compatibility.
+    # Also for arm32, since unwind_table_v2() doesn't support it.
+    if (is_android && !is_official_build && current_cpu != "arm") {
+      ldflags = [ "-gz=zstd" ]
+    } else {
+      ldflags = [ "-gz" ]
+    }
+  }
 }

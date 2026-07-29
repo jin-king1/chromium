@@ -14,10 +14,11 @@
 #include "base/time/time.h"
 #include "base/version_info/channel.h"
 #include "components/metrics/clean_exit_beacon.h"
+#include "components/metrics/startup_visibility.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/variations/client_filterable_state.h"
 #include "components/variations/pref_names.h"
-#include "components/variations/service/safe_seed_manager_base.h"
+#include "components/variations/service/safe_seed_manager.h"
 #include "components/variations/variations_safe_seed_store_local_state.h"
 #include "components/variations/variations_seed_store.h"
 #include "components/variations/variations_switches.h"
@@ -53,16 +54,15 @@ class FakeSeedStore : public VariationsSeedStore {
                                 /*entropy_providers=*/nullptr),
                             version_info::Channel::UNKNOWN,
                             /*seed_file_dir=*/base::FilePath(),
-                            /*entropy_provider=*/nullptr) {
-    VariationsSeedStore::RegisterPrefs(local_state->registry());
-  }
+                            /*entropy_providers=*/nullptr) {}
 
   FakeSeedStore(const FakeSeedStore&) = delete;
   FakeSeedStore& operator=(const FakeSeedStore&) = delete;
 
   ~FakeSeedStore() override = default;
 
-  bool StoreSafeSeed(const std::string& seed_data,
+  void StoreSafeSeed(base::OnceCallback<void(bool)> done_callback,
+                     const std::string& seed_data,
                      const std::string& base64_seed_signature,
                      int seed_milestone,
                      const ClientFilterableState& client_state,
@@ -75,7 +75,7 @@ class FakeSeedStore : public VariationsSeedStore {
     permanent_consistency_country_ = client_state.permanent_consistency_country;
     session_consistency_country_ = client_state.session_consistency_country;
     fetch_time_ = seed_fetch_time;
-    return true;
+    std::move(done_callback).Run(true);
   }
 
   const std::string& seed_data() const { return seed_data_; }
@@ -143,6 +143,7 @@ class SafeSeedManagerTest : public ::testing::Test {
   SafeSeedManagerTest() {
     metrics::CleanExitBeacon::RegisterPrefs(prefs_.registry());
     SafeSeedManager::RegisterPrefs(prefs_.registry());
+    VariationsSeedStore::RegisterPrefs(prefs_.registry());
   }
   ~SafeSeedManagerTest() override = default;
 
@@ -186,6 +187,41 @@ TEST_F(SafeSeedManagerTest,
   EXPECT_EQ(std::string(), seed_store.session_consistency_country());
   EXPECT_EQ(base::Time(), seed_store.date());
   EXPECT_EQ(base::Time(), seed_store.fetch_time());
+}
+
+struct SafeSeedManagerFetchStartedTestCase {
+  metrics::StartupVisibility visibility;
+  int expected_streak;
+};
+
+class SafeSeedManagerFetchStartedTest
+    : public SafeSeedManagerTest,
+      public ::testing::WithParamInterface<
+          SafeSeedManagerFetchStartedTestCase> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    SafeSeedManagerFetchStartedTest,
+    ::testing::Values(
+        SafeSeedManagerFetchStartedTestCase{
+            .visibility = metrics::StartupVisibility::kUnknown,
+            .expected_streak = 1},
+        SafeSeedManagerFetchStartedTestCase{
+            .visibility = metrics::StartupVisibility::kForeground,
+            .expected_streak = 1},
+        SafeSeedManagerFetchStartedTestCase{
+            .visibility = metrics::StartupVisibility::kBackground,
+            .expected_streak = 0}));
+
+TEST_P(SafeSeedManagerFetchStartedTest, RecordFetchStarted) {
+  const SafeSeedManagerFetchStartedTestCase& test_case = GetParam();
+  SafeSeedManager safe_seed_manager(&prefs_);
+
+  EXPECT_EQ(0, prefs_.GetInteger(prefs::kVariationsFailedToFetchSeedStreak));
+
+  safe_seed_manager.RecordFetchStarted(test_case.visibility);
+  EXPECT_EQ(test_case.expected_streak,
+            prefs_.GetInteger(prefs::kVariationsFailedToFetchSeedStreak));
 }
 
 TEST_F(SafeSeedManagerTest, FetchFailureMetrics_DefaultPrefs) {

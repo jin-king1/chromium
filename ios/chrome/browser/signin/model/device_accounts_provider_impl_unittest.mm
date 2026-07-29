@@ -7,6 +7,8 @@
 #import "base/memory/raw_ptr.h"
 #import "base/scoped_observation.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/scoped_feature_list.h"
+#import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/ios/device_accounts_provider.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -24,7 +26,7 @@
 #import "third_party/ocmock/gtest_support.h"
 
 using testing::Eq;
-using testing::Field;
+using testing::Property;
 
 namespace {
 class MockObserver : public DeviceAccountsProvider::Observer {
@@ -32,7 +34,7 @@ class MockObserver : public DeviceAccountsProvider::Observer {
   MOCK_METHOD(void, OnAccountsOnDeviceChanged, (), (override));
   MOCK_METHOD(void,
               OnAccountOnDeviceUpdated,
-              (const DeviceAccountsProvider::AccountInfo& device_account),
+              (const DeviceAccountsProvider::DeviceAccountInfo& device_account),
               (override));
 };
 
@@ -80,7 +82,7 @@ TEST_F(DeviceAccountsProviderImplTest, TestFetchWithUnknownIdentity) {
          DeviceAccountsProvider::AccessTokenResult result) {
         EXPECT_FALSE(result.has_value());
         EXPECT_EQ(result.error(),
-                  kAuthenticationErrorCategoryUnknownIdentityErrors);
+                  GoogleServiceAuthError::CreateAccountNotFound());
         run_loop->Quit();
       },
       &run_loop);
@@ -91,6 +93,9 @@ TEST_F(DeviceAccountsProviderImplTest, TestFetchWithUnknownIdentity) {
 
 // Tests no error returned, while fetching an access token.
 TEST_F(DeviceAccountsProviderImplTest, TestFetchWithFakeIdentity) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      switches::kHandleMdmErrorsForDasherAccounts);
   const FakeSystemIdentity* fake_identity = [FakeSystemIdentity fakeIdentity1];
   fake_system_identity_manager_->AddIdentity(fake_identity);
   DeviceAccountsProviderImpl* provider = GetDeviceAccountsProviderImpl();
@@ -103,8 +108,32 @@ TEST_F(DeviceAccountsProviderImplTest, TestFetchWithFakeIdentity) {
         run_loop->Quit();
       },
       &run_loop);
-  GaiaId gaia_id(fake_identity.gaiaID);
-  provider->GetAccessToken(gaia_id, kClientID, scopes, std::move(callback));
+  provider->GetAccessToken(fake_identity.gaiaId, kClientID, scopes,
+                           std::move(callback));
+  run_loop.Run();
+}
+
+// Tests no error returned, while fetching an access token with the
+// AccessTokenRequestCallback pathway.
+TEST_F(DeviceAccountsProviderImplTest,
+       TestFetchWithFakeIdentityAndAccessTokenRequestCallback) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      switches::kHandleMdmErrorsForDasherAccounts);
+  const FakeSystemIdentity* fake_identity = [FakeSystemIdentity fakeIdentity1];
+  fake_system_identity_manager_->AddIdentity(fake_identity);
+  DeviceAccountsProviderImpl* provider = GetDeviceAccountsProviderImpl();
+  base::RunLoop run_loop;
+  std::set<std::string> scopes;
+  DeviceAccountsProvider::AccessTokenCallback callback = base::BindOnce(
+      [](base::RunLoop* run_loop,
+         DeviceAccountsProvider::AccessTokenResult result) {
+        EXPECT_TRUE(result.has_value());
+        run_loop->Quit();
+      },
+      &run_loop);
+  provider->GetAccessToken(fake_identity.gaiaId, kClientID, scopes,
+                           std::move(callback));
   run_loop.Run();
 }
 
@@ -131,8 +160,9 @@ TEST_F(DeviceAccountsProviderImplTest, TestOnAccountOnDeviceUpdated) {
       scoped_observation{&observer};
   scoped_observation.Observe(provider);
 
-  EXPECT_CALL(observer, OnAccountOnDeviceUpdated(
-                            Field(&DeviceAccountsProvider::AccountInfo::gaia,
-                                  Eq(GaiaId(fake_identity.gaiaID)))));
+  EXPECT_CALL(observer,
+              OnAccountOnDeviceUpdated(Property(
+                  &DeviceAccountsProvider::DeviceAccountInfo::GetGaiaId,
+                  Eq(fake_identity.gaiaId))));
   fake_system_identity_manager_->FireIdentityUpdatedNotification(fake_identity);
 }

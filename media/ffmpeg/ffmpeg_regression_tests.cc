@@ -22,7 +22,9 @@
 #include <string>
 
 #include "base/functional/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
+#include "media/base/media_switches.h"
 #include "media/test/pipeline_integration_test_base.h"
 
 namespace media {
@@ -62,11 +64,41 @@ struct FlakyRegressionTestData {
 class FFmpegRegressionTest
     : public testing::TestWithParam<RegressionTestData>,
       public PipelineIntegrationTestBase {
+ public:
+  FFmpegRegressionTest() {
+    scoped_feature_list_.InitWithFeatures({}, /*disabled_features=*/{
+                                              kDirectOpusAudioDecoding,
+#if BUILDFLAG(ENABLE_SYMPHONIA)
+                                              kSymphoniaAudioDecoding,
+                                              kSymphoniaMp3Decoding,
+                                              kSymphoniaPcmDecoding,
+                                              kSymphoniaVorbisDecoding,
+#endif
+                                          });
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 class FlakyFFmpegRegressionTest
     : public testing::TestWithParam<FlakyRegressionTestData>,
       public PipelineIntegrationTestBase {
+ public:
+  FlakyFFmpegRegressionTest() {
+    scoped_feature_list_.InitWithFeatures({}, /*disabled_features=*/{
+                                              kDirectOpusAudioDecoding,
+#if BUILDFLAG(ENABLE_SYMPHONIA)
+                                              kSymphoniaAudioDecoding,
+                                              kSymphoniaMp3Decoding,
+                                              kSymphoniaPcmDecoding,
+                                              kSymphoniaVorbisDecoding,
+#endif
+                                          });
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 #define FFMPEG_TEST_CASE_SEEKING(name, fn, init_status, end_status, seek_time) \
@@ -96,10 +128,7 @@ FFMPEG_TEST_CASE(Cr101458,
                  "security/101458.webm",
                  PIPELINE_ERROR_DECODE,
                  PIPELINE_ERROR_DECODE);
-FFMPEG_TEST_CASE(Cr108416,
-                 "security/108416.webm",
-                 PIPELINE_ERROR_DECODE,
-                 PIPELINE_ERROR_DECODE);
+FFMPEG_TEST_CASE(Cr108416, "security/108416.webm", PIPELINE_OK, PIPELINE_OK);
 FFMPEG_TEST_CASE(Cr110849,
                  "security/110849.mkv",
                  DEMUXER_ERROR_COULD_NOT_OPEN,
@@ -154,10 +183,7 @@ FFMPEG_TEST_CASE(Cr234630b,
                  "security/234630b.mov",
                  DEMUXER_ERROR_NO_SUPPORTED_STREAMS,
                  DEMUXER_ERROR_NO_SUPPORTED_STREAMS);
-FFMPEG_TEST_CASE(Cr242786,
-                 "security/242786.webm",
-                 PIPELINE_OK,
-                 PIPELINE_ERROR_DECODE);
+FFMPEG_TEST_CASE(Cr242786, "security/242786.webm", PIPELINE_OK, PIPELINE_OK);
 // Test for out-of-bounds access with slightly corrupt file (detection logic
 // thinks it's a MONO file, but actually contains STEREO audio).
 FFMPEG_TEST_CASE(Cr275590,

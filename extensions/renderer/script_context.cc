@@ -7,7 +7,6 @@
 #include <algorithm>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/containers/flat_set.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
@@ -59,7 +58,8 @@ GURL GetEffectiveDocumentURL(
       allow_inaccessible_parents);
 }
 
-std::string GetContextTypeDescriptionString(mojom::ContextType context_type) {
+std::string_view GetContextTypeDescriptionString(
+    mojom::ContextType context_type) {
   switch (context_type) {
     case mojom::ContextType::kUnspecified:
       return "UNSPECIFIED";
@@ -135,7 +135,7 @@ ScriptContext::ScriptContext(const v8::Local<v8::Context>& v8_context,
                              const Extension* effective_extension,
                              mojom::ContextType effective_context_type)
     : is_valid_(true),
-      v8_context_(v8_context->GetIsolate(), v8_context),
+      v8_context_(v8::Isolate::GetCurrent(), v8_context),
       web_frame_(web_frame),
       host_id_(host_id),
       extension_(extension),
@@ -144,8 +144,8 @@ ScriptContext::ScriptContext(const v8::Local<v8::Context>& v8_context,
       effective_extension_(effective_extension),
       effective_context_type_(effective_context_type),
       context_id_(base::UnguessableToken::Create()),
+      isolate_(v8::Isolate::GetCurrent()),
       safe_builtins_(this),
-      isolate_(v8_context->GetIsolate()),
       service_worker_version_id_(blink::mojom::kInvalidServiceWorkerVersionId) {
   VLOG(1) << "Created context:\n" << GetDebugString();
   v8_context_.AnnotateStrongRetainer("extensions::ScriptContext::v8_context_");
@@ -173,9 +173,9 @@ bool ScriptContext::IsSandboxedPage(const GURL& url) {
   // HasAccessOrThrowError.
   if (url.SchemeIs(kExtensionScheme)) {
     const Extension* extension =
-        RendererExtensionRegistry::Get()->GetByID(url.host());
+        RendererExtensionRegistry::Get()->GetByID(url.GetHost());
     if (extension) {
-      return SandboxedPageInfo::IsSandboxedPage(extension, url.path());
+      return SandboxedPageInfo::IsSandboxedPage(extension, url.GetPath());
     }
   }
   return false;
@@ -207,11 +207,15 @@ void ScriptContext::Invalidate() {
   DCHECK(invalidate_observers_.empty())
       << "Invalidation observers cannot be added during invalidation";
 
+  safe_builtins_.Reset();
   v8_context_.Reset();
 }
 
 void ScriptContext::AddInvalidationObserver(base::OnceClosure observer) {
   DCHECK(thread_checker_.CalledOnValidThread());
+  // `Invalidate()` assumes that an `observer` is not added while it's notifying
+  // observers so let's be sure of that.
+  DCHECK(is_valid_);
   invalidate_observers_.push_back(std::move(observer));
 }
 
@@ -266,12 +270,12 @@ void ScriptContext::SafeCallFunction(
 }
 
 Feature::Availability ScriptContext::GetAvailability(
-    const std::string& api_name) {
+    std::string_view api_name) {
   return GetAvailability(api_name, CheckAliasStatus::ALLOWED);
 }
 
 Feature::Availability ScriptContext::GetAvailability(
-    const std::string& api_name,
+    std::string_view api_name,
     CheckAliasStatus check_alias) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
@@ -284,7 +288,8 @@ Feature::Availability ScriptContext::GetAvailability(
                         switches::kExtensionTestApiOnWebPages) &&
                     context_type_ == mojom::ContextType::kWebPage);
     Feature::AvailabilityResult result =
-        allowed ? Feature::IS_AVAILABLE : Feature::MISSING_COMMAND_LINE_SWITCH;
+        allowed ? Feature::AvailabilityResult::kIsAvailable
+                : Feature::AvailabilityResult::kMissingCommandLineSwitch;
     return Feature::Availability(result,
                                  allowed ? "" : "Only allowed in tests");
   }
@@ -309,7 +314,7 @@ Feature::Availability ScriptContext::GetAvailability(
               .IsMessagingEnabledInUserScriptWorld(*blink_isolated_world_id_);
       if (!is_available) {
         return Feature::Availability(
-            Feature::INVALID_CONTEXT,
+            Feature::AvailabilityResult::kInvalidContext,
             "Messaging APIs are not enabled for this user script world.");
       }
     }
@@ -331,12 +336,12 @@ Feature::Availability ScriptContext::GetAvailability(
       kRendererProfileId, RendererFrameContextData(web_frame()));
 }
 
-std::string ScriptContext::GetContextTypeDescription() const {
+std::string_view ScriptContext::GetContextTypeDescription() const {
   DCHECK(thread_checker_.CalledOnValidThread());
   return GetContextTypeDescriptionString(context_type_);
 }
 
-std::string ScriptContext::GetEffectiveContextTypeDescription() const {
+std::string_view ScriptContext::GetEffectiveContextTypeDescription() const {
   DCHECK(thread_checker_.CalledOnValidThread());
   return GetContextTypeDescriptionString(effective_context_type_);
 }
@@ -442,7 +447,7 @@ bool ScriptContext::HasAPIPermission(mojom::APIPermissionID permission) const {
     // Only web page contexts may be granted content capabilities. Other
     // contexts are either privileged WebUI or extensions with their own set of
     // permissions.
-    return base::Contains(content_capabilities_, permission);
+    return content_capabilities_.count(permission);
   }
   return false;
 }
@@ -455,13 +460,13 @@ bool ScriptContext::HasAccessOrThrowError(const std::string& name) {
   //
   // In any case, this check is silly. The frame's document's security origin
   // already tells us if it's sandboxed. The only problem is that until
-  // crbug.com/466373 is fixed, we don't know the security origin up-front and
+  // crbug.com/40409183 is fixed, we don't know the security origin up-front and
   // may not know it here, either.
   //
   // [1] citation needed. This ScriptContext should already be in a state that
   // doesn't allow this, from ScriptContextSet::ClassifyJavaScriptContext.
   if (extension() &&
-      SandboxedPageInfo::IsSandboxedPage(extension(), url_.path())) {
+      SandboxedPageInfo::IsSandboxedPage(extension(), url_.GetPath())) {
     static const char kMessage[] =
         "%s cannot be used within a sandboxed frame.";
     std::string error_msg = base::StringPrintf(kMessage, name.c_str());
@@ -494,10 +499,10 @@ std::string ScriptContext::GetDebugString() const {
       "  effective extension id: %s\n"
       "  effective context type: %s",
       extension_.get() ? extension_->id().c_str() : "(none)", web_frame_.get(),
-      url_.spec().c_str(), GetContextTypeDescription().c_str(),
+      url_.spec().c_str(), GetContextTypeDescription(),
       effective_extension_.get() ? effective_extension_->id().c_str()
                                  : "(none)",
-      GetEffectiveContextTypeDescription().c_str());
+      GetEffectiveContextTypeDescription());
 }
 
 std::string ScriptContext::GetStackTraceAsString() const {

@@ -16,21 +16,23 @@ import androidx.core.content.res.ResourcesCompat;
 import androidx.core.content.res.ResourcesCompat.FontCallback;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
-import org.robolectric.annotation.LooperMode;
-import org.robolectric.annotation.LooperMode.Mode;
 import org.robolectric.annotation.Resetter;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.fonts.FontPreloaderUnitTest.ShadowResourcesCompat;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /** Unit tests for {@link FontPreloader}. */
@@ -38,14 +40,12 @@ import java.util.List;
 @Config(
         manifest = Config.NONE,
         shadows = {ShadowResourcesCompat.class})
-@LooperMode(Mode.PAUSED)
 public class FontPreloaderUnitTest {
-    private static final Integer[] FONTS = {
-        org.chromium.chrome.R.font.chrome_google_sans,
-        org.chromium.chrome.R.font.chrome_google_sans_medium,
-        org.chromium.chrome.R.font.chrome_google_sans_bold
+    private static final int[] FONTS = {
+        R.font.chrome_google_sans, R.font.chrome_google_sans_medium, R.font.chrome_google_sans_bold
     };
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Context mContext;
 
     private FontPreloader mFontPreloader;
@@ -75,7 +75,6 @@ public class FontPreloaderUnitTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         ShadowResourcesCompat.reset();
         when(mContext.getApplicationContext()).thenReturn(mContext);
         mFontPreloader = new FontPreloader(FONTS);
@@ -84,6 +83,7 @@ public class FontPreloaderUnitTest {
 
     @Test
     public void testGetFontCalledForAllFontsInArray() {
-        assertThat(ShadowResourcesCompat.sFontsRequested, containsInAnyOrder(FONTS));
+        Integer[] expected = Arrays.stream(FONTS).boxed().toArray(Integer[]::new);
+        assertThat(ShadowResourcesCompat.sFontsRequested, containsInAnyOrder(expected));
     }
 }

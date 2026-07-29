@@ -7,7 +7,8 @@ import("//build/config/rust.gni")
 import("clang.gni")
 
 if (is_ios) {
-  import("//build/config/apple/mobile_config.gni")  # For `target_environment`
+  # For `target_environment` and `target_platform`.
+  import("//build/config/apple/mobile_config.gni")
 }
 
 # Helper function for adding cflags to use a clang plugin.
@@ -19,6 +20,7 @@ template("clang_plugin") {
                            [
                              "cflags",
                              "configs",
+                             "inputs",
                            ])
     if (!defined(cflags)) {
       cflags = []
@@ -47,7 +49,7 @@ template("clang_plugin") {
 }
 
 clang_plugin("raw_ptr_check") {
-  if (clang_use_chrome_plugins || clang_use_raw_ptr_plugin) {
+  if (clang_use_raw_ptr_plugin) {
     # The plugin is built directly into clang, so there's no need to load it
     # dynamically.
     plugin = "raw-ptr-plugin"
@@ -59,6 +61,11 @@ clang_plugin("raw_ptr_check") {
       # for the dawn repo.
       "raw-ptr-exclude-path=" +
           rebase_path("//third_party/dawn/", root_build_dir),
+
+      # TODO(crbug.com/417356903): RawRefFieldMatcher causes OOM while
+      # building webidl_in_process_fuzzer.
+      "raw-ptr-exclude-path=" +
+          rebase_path("chrome/test/fuzzing/webidl_fuzzing/", root_build_dir),
     ]
 
     if (enable_check_raw_ptr_fields) {
@@ -71,6 +78,10 @@ clang_plugin("raw_ptr_check") {
     if (enable_check_raw_ref_fields) {
       plugin_arguments += [ "check-raw-ref-fields" ]
     }
+
+    # TODO(crbug.com/330759291): once this has landed and simmered for
+    # a while, bake in the resultant settings and remove all this.
+    plugin_arguments += [ "no-special-treatment-for-oilpanized-paths" ]
   }
 }
 
@@ -80,10 +91,8 @@ clang_plugin("find_bad_constructs") {
     # dynamically.
     plugin = "find-bad-constructs"
     plugin_arguments = [
-      "span-ctor-from-string-literal",
-      "raw-ref-template-as-trivial-member",
-      "raw-span-template-as-trivial-member",
       "check-stack-allocated",
+      "relax-ctor-checks-for-aggregates",
     ]
 
     if (is_linux || is_chromeos || is_android || is_fuchsia) {
@@ -106,11 +115,23 @@ clang_plugin("find_bad_constructs") {
 # This build configuration is not supported when `enable_precompiled_headers`
 # is on because the pragmas that enable and disable unsafe-buffers warnings are
 # not serialized to precompiled header files, and thus we get warnings that we
-# should not.
+# should not. See https://github.com/llvm/llvm-project/issues/90501.
 clang_plugin("unsafe_buffers") {
-  if (clang_use_chrome_plugins && clang_unsafe_buffers_paths != "" &&
-      !enable_precompiled_headers) {
-    cflags = [ "-DUNSAFE_BUFFERS_BUILD" ]
+  if (clang_use_unsafe_buffers_plugin) {
+    assert(
+        !enable_precompiled_headers,
+        "clang_use_unsafe_buffers_plugin is incompatible with enable_precompiled_headers.")
+    cflags = [
+      # If -Werror is set, the plugin still suppresses the warning from
+      # printing, but clang still exits with a nonzero status because an error
+      # occurred.
+      # To prevent this, we use -Wno-error. If -Werror is set, the plugin
+      # upgrades this to an error manually, thus ignoring the -Wno-error.
+      "-DUNSAFE_BUFFERS_BUILD",
+      "-Wunsafe-buffer-usage",
+      "-Wno-error=unsafe-buffer-usage",
+    ]
+    inputs = [ clang_unsafe_buffers_paths ]
     plugin = "unsafe-buffers"
     plugin_arguments =
         [ rebase_path(clang_unsafe_buffers_paths, root_build_dir) ]
@@ -139,7 +160,7 @@ group("llvm-symbolizer_data") {
 }
 
 template("clang_lib") {
-  if (!defined(invoker.libname)) {
+  if (!defined(invoker.libname) || is_wasm) {
     not_needed(invoker, "*")
     config(target_name) {
     }
@@ -150,6 +171,7 @@ template("clang_lib") {
       _prefix = "lib"
       _suffix = ""
       _ext = "a"
+
       if (is_win) {
         _dir = "windows"
         _prefix = ""
@@ -174,6 +196,14 @@ template("clang_lib") {
           _dir = "armv7-unknown-linux-gnueabihf"
         } else if (current_cpu == "arm64") {
           _dir = "aarch64-unknown-linux-gnu"
+        } else if (current_cpu == "loong64") {
+          _dir = "loongarch64-unknown-linux-gnu"
+        } else if (current_cpu == "riscv64") {
+          _dir = "riscv64-unknown-linux-gnu"
+        } else if (current_cpu == "ppc64") {
+          _dir = "ppc64le-unknown-linux-gnu"
+        } else if (current_cpu == "s390x") {
+          _dir = "s390x-unknown-linux-gnu"
         } else {
           assert(false)  # Unhandled cpu type
         }
@@ -216,14 +246,28 @@ clang_lib("compiler_builtins") {
   if (is_mac) {
     libname = "osx"
   } else if (is_ios) {
-    if (target_environment == "simulator") {
-      libname = "iossim"
-    } else if (target_environment == "catalyst") {
-      libname = "osx"
+    if (target_platform == "iphoneos") {
+      if (target_environment == "simulator") {
+        libname = "iossim"
+      } else if (target_environment == "device") {
+        libname = "ios"
+      } else if (target_environment == "catalyst") {
+        libname = "osx"
+      } else {
+        assert(false, "unsupported target_environment=$target_environment")
+      }
+    } else if (target_platform == "tvos") {
+      if (target_environment == "simulator") {
+        libname = "tvossim"
+      } else if (target_environment == "device") {
+        libname = "tvos"
+      } else {
+        assert(false, "unsupported target_environment=$target_environment")
+      }
     } else {
-      libname = "ios"
+      assert(false, "unsupported target_platform=$target_platform")
     }
-  } else {
+  } else if (current_cpu != "ppc64" && current_cpu != "s390x") {
     libname = "builtins"
   }
 }

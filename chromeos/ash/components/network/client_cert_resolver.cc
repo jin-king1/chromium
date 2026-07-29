@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chromeos/ash/components/network/client_cert_resolver.h"
 
 #include <cert.h>
@@ -18,6 +13,7 @@
 #include <optional>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
@@ -57,9 +53,8 @@ std::string GetNetworkIdWithGuid(const NetworkState* network_state) {
 
 // Global override for the getter function. This is used for testing purposes.
 // See SetProvisioningIdForCertGetterForTesting for details.
-ClientCertResolver::ProvisioningProfileIdGetter
-    g_provisioning_id_getter_for_testing =
-        ClientCertResolver::ProvisioningProfileIdGetter();
+ClientCertResolver::ProvisioningProfileIdGetter*
+    g_provisioning_id_getter_for_testing = nullptr;
 
 // Describes a network that is configured with |client_cert_config|, which
 // includes the certificate config.
@@ -299,8 +294,10 @@ std::string GetProvisioningIdForCert(CERTCertificate* cert) {
   if (!priv_key)
     return std::string();
 
-  if (!g_provisioning_id_getter_for_testing.is_null())
-    return g_provisioning_id_getter_for_testing.Run(cert);
+  if (g_provisioning_id_getter_for_testing &&
+      !g_provisioning_id_getter_for_testing->is_null()) {
+    return g_provisioning_id_getter_for_testing->Run(cert);
+  }
 
   crypto::ScopedSECItem attribute_value(SECITEM_AllocItem(/*arena=*/nullptr,
                                                           /*item=*/nullptr,
@@ -318,7 +315,7 @@ std::string GetProvisioningIdForCert(CERTCertificate* cert) {
   if (attribute_value->len > 0) {
     std::string id;
     id.assign(attribute_value->data,
-              attribute_value->data + attribute_value->len);
+              UNSAFE_TODO(attribute_value->data + attribute_value->len));
     return id;
   }
 
@@ -492,7 +489,7 @@ bool ClientCertResolver::IsAnyResolveTaskRunning() const {
 bool ClientCertResolver::ResolveClientCertificateSync(
     const client_cert::ConfigType client_cert_type,
     const client_cert::ClientCertConfig& client_cert_config,
-    base::Value::Dict* shill_properties) {
+    base::DictValue* shill_properties) {
   if (!ShouldResolveCert(client_cert_config))
     return false;
 
@@ -544,10 +541,17 @@ void ClientCertResolver::SetClockForTesting(base::Clock* clock) {
 base::ScopedClosureRunner
 ClientCertResolver::SetProvisioningIdForCertGetterForTesting(
     ProvisioningProfileIdGetter getter) {
-  g_provisioning_id_getter_for_testing = getter;
+  auto persistent_getter =
+      std::make_unique<ProvisioningProfileIdGetter>(std::move(getter));
+  g_provisioning_id_getter_for_testing = persistent_getter.get();
 
-  return base::ScopedClosureRunner(
-      base::BindOnce([]() { g_provisioning_id_getter_for_testing.Reset(); }));
+  return base::ScopedClosureRunner(base::BindOnce(
+      [](std::unique_ptr<ProvisioningProfileIdGetter> old_getter) {
+        if (g_provisioning_id_getter_for_testing == old_getter.get()) {
+          g_provisioning_id_getter_for_testing = nullptr;
+        }
+      },
+      std::move(persistent_getter)));
 }
 
 void ClientCertResolver::NetworkListChanged() {
@@ -657,7 +661,7 @@ void ClientCertResolver::ResolveNetworks(
     // pattern there is already replaced with a certificate (or an empty value).
     // The kOriginal policy cannot be used here because it still contains the
     // unexpanded placeholders.
-    const base::Value::Dict* policy =
+    const base::DictValue* policy =
         managed_network_config_handler_->FindPolicyByGuidAndProfile(
             network->guid(), network->profile_path(),
             ManagedNetworkConfigurationHandler::PolicyType::

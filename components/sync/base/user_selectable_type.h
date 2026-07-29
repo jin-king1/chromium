@@ -16,7 +16,7 @@ namespace syncer {
 
 // A Java counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.sync
-//
+// LINT.IfChange(UserSelectableType)
 enum class UserSelectableType {
   kBookmarks,
   kFirstType = kBookmarks,
@@ -32,11 +32,11 @@ enum class UserSelectableType {
   kTabs,
   kSavedTabGroups,
   kPayments,
-  kSharedTabGroupData,
   kProductComparison,
   kCookies,
   kLastType = kCookies
 };
+// LINT.ThenChange(/chrome/browser/resources/settings_shared/people_page/sync_browser_proxy.ts:UserSelectableType)
 
 using UserSelectableTypeSet = base::EnumSet<UserSelectableType,
                                             UserSelectableType::kFirstType,
@@ -48,6 +48,11 @@ std::optional<UserSelectableType> GetUserSelectableTypeFromString(
     const std::string& type);
 std::string UserSelectableTypeSetToString(UserSelectableTypeSet types);
 DataTypeSet UserSelectableTypeToAllDataTypes(UserSelectableType type);
+
+base::ListValue UserSelectableTypeSetToValueList(
+    syncer::UserSelectableTypeSet user_selected_types);
+syncer::UserSelectableTypeSet ValueListToUserSelectableTypeSet(
+    const base::ListValue& value_list);
 
 DataType UserSelectableTypeToCanonicalDataType(UserSelectableType type);
 
@@ -82,6 +87,11 @@ DataType UserSelectableOsTypeToCanonicalDataType(UserSelectableOsType type);
 // Returns the type if the string matches a known OS type.
 std::optional<UserSelectableOsType> GetUserSelectableOsTypeFromString(
     const std::string& type);
+
+base::ListValue UserSelectableOsTypeSetToValueList(
+    syncer::UserSelectableOsTypeSet user_selected_types);
+syncer::UserSelectableOsTypeSet ValueListToUserSelectableOsTypeSet(
+    const base::ListValue& value_list);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 // For GTest.

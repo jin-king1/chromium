@@ -4,20 +4,36 @@
 
 package org.chromium.components.embedder_support.delegate;
 
+import static android.view.Display.INVALID_DISPLAY;
+
 import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.view.KeyEvent;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
-import org.jni_zero.NativeMethods;
+import org.jni_zero.JniType;
 
 import org.chromium.base.Callback;
+import org.chromium.base.JniOnceCallback;
 import org.chromium.blink.mojom.DisplayMode;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.content_public.browser.ImmersivePlaybackConfirmationStatus;
+import org.chromium.content_public.browser.ImmersiveProjectionType;
+import org.chromium.content_public.browser.ImmersiveStereoMode;
+import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.navigation_controller.UserAgentOverrideOption;
 import org.chromium.content_public.common.ResourceRequestBody;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.base.WindowAndroid.KeyboardShortcutsDelegate;
+import org.chromium.ui.resources.dynamics.CaptureResult;
 import org.chromium.url.GURL;
+
+import java.lang.ref.WeakReference;
+import java.util.HashMap;
+import java.util.Map;
 
 /** Java peer of the native class of the same name. */
 @JNINamespace("web_contents_delegate_android")
@@ -31,6 +47,15 @@ public class WebContentsDelegateAndroid {
     public static final int LOG_LEVEL_WARNING = 2;
     // Equivalent of WebCore::WebConsoleMessage::LevelError.
     public static final int LOG_LEVEL_ERROR = 3;
+
+    /**
+     * Map of native pointer to {@link WebContentsDelegateAndroid} instance. This allows us to avoid
+     * a global ref in native code of which there is a finite table of 51200 entries. We only hold a
+     * weak reference and rely on the provider of the object to hold a strong reference. This allows
+     * it to be GCed when it is no longer needed.
+     */
+    private static final Map<Long, WeakReference<WebContentsDelegateAndroid>> sRefMap =
+            new HashMap<>();
 
     /**
      * @param disposition The new tab disposition, defined in
@@ -69,21 +94,17 @@ public class WebContentsDelegateAndroid {
     public void rendererResponsive() {}
 
     @CalledByNative
-    public void webContentsCreated(
-            WebContents sourceWebContents,
-            long openerRenderProcessId,
-            long openerRenderFrameId,
-            String frameName,
-            GURL targetUrl,
-            WebContents newWebContents) {}
-
-    @CalledByNative
     public boolean shouldCreateWebContents(GURL targetUrl) {
         return true;
     }
 
     @CalledByNative
-    public void onUpdateUrl(GURL url) {}
+    public boolean canDownload(GURL url, String requestMethod) {
+        return true;
+    }
+
+    @CalledByNative
+    public void onUpdateTargetUrl(GURL url) {}
 
     @CalledByNative
     public boolean takeFocus(boolean reverse) {
@@ -94,6 +115,26 @@ public class WebContentsDelegateAndroid {
     public void handleKeyboardEvent(KeyEvent event) {
         // TODO(bulach): we probably want to re-inject the KeyEvent back into
         // the system. Investigate if this is at all possible.
+    }
+
+    @CalledByNative
+    public static boolean preHandleKeyboardEvent(WindowAndroid window, KeyEvent event) {
+        if (window == null) return false;
+        KeyboardShortcutsDelegate delegate = window.getKeyboardShortcutsDelegate();
+        if (delegate != null) {
+            return delegate.preHandleKeyboardEvent(event);
+        }
+        return false;
+    }
+
+    @CalledByNative
+    public static boolean handleKeyboardEventFallback(WindowAndroid window, KeyEvent event) {
+        if (window == null) return false;
+        KeyboardShortcutsDelegate delegate = window.getKeyboardShortcutsDelegate();
+        if (delegate != null) {
+            return delegate.handleKeyboardEvent(event);
+        }
+        return false;
     }
 
     /**
@@ -111,19 +152,47 @@ public class WebContentsDelegateAndroid {
     }
 
     /**
-     * Report a form resubmission. The overwriter of this function should eventually call
-     * either of NavigationController.ContinuePendingReload or
-     * NavigationController.CancelPendingReload.
+     * Report a form resubmission. The overwriter of this function should eventually call either of
+     * NavigationController.ContinuePendingReload or NavigationController.CancelPendingReload.
      */
     @CalledByNative
     public void showRepostFormWarningDialog() {}
 
+    /**
+     * Called when the page wants to start immersive Picture-in-Picture playback session.
+     *
+     * @param stereoMode The default stereo mode to use, defined in {@link ImmersiveStereoMode}.
+     * @param projectionType The default projection type to use, defined in {@link
+     *     ImmersiveProjectionType}.
+     * @param callback The callback to be called when the user confirms or cancels the request. The
+     *     callback expects a packed integer containing the status and options.
+     */
     @CalledByNative
-    public void enterFullscreenModeForTab(boolean prefersNavigationBar, boolean prefersStatusBar) {}
+    public void requestImmersivePlaybackConfirmation(
+            @ImmersiveStereoMode int stereoMode,
+            @ImmersiveProjectionType int projectionType,
+            JniOnceCallback<Integer> callback) {
+        callback.onResult(ImmersivePlaybackConfirmationStatus.FAILED);
+    }
+
+    @CalledByNative
+    public boolean canEnterFullscreenModeForTab(RenderFrameHost renderFrameHost) {
+        return true;
+    }
+
+    @CalledByNative
+    public void enterFullscreenModeForTab(
+            RenderFrameHost renderFrameHost,
+            boolean prefersNavigationBar,
+            boolean prefersStatusBar,
+            long displayId) {}
 
     @CalledByNative
     public void fullscreenStateChangedForTab(
-            boolean prefersNavigationBar, boolean prefersStatusBar) {}
+            RenderFrameHost renderFrameHost,
+            boolean prefersNavigationBar,
+            boolean prefersStatusBar,
+            long displayId) {}
 
     @CalledByNative
     public void exitFullscreenModeForTab() {}
@@ -133,8 +202,20 @@ public class WebContentsDelegateAndroid {
         return false;
     }
 
+    @CalledByNative
+    public long getFullscreenTargetDisplay() {
+        return INVALID_DISPLAY;
+    }
+
+    @CalledByNative
+    public void requestKeyboardLock(boolean escKeyLocked) {}
+
+    @CalledByNative
+    public void cancelKeyboardLockRequest() {}
+
     /**
      * Called when BrowserMediaPlayerManager wants to load a media resource.
+     *
      * @param url the URL of media resource to load.
      * @return true to prevent the resource from being loaded.
      */
@@ -143,19 +224,25 @@ public class WebContentsDelegateAndroid {
         return false;
     }
 
-    /** @return The height of the top controls in physical pixels (not DIPs). */
+    /**
+     * @return The height of the top controls in physical pixels (not DIPs).
+     */
     @CalledByNative
     public int getTopControlsHeight() {
         return 0;
     }
 
-    /** @return The minimum visible height the top controls can have in physical pixels (not DIPs). */
+    /**
+     * @return The minimum visible height the top controls can have in physical pixels (not DIPs).
+     */
     @CalledByNative
     public int getTopControlsMinHeight() {
         return 0;
     }
 
-    /** @return The height of the bottom controls in physical pixels (not DIPs). */
+    /**
+     * @return The height of the bottom controls in physical pixels (not DIPs).
+     */
     @CalledByNative
     public int getBottomControlsHeight() {
         return 0;
@@ -163,20 +250,24 @@ public class WebContentsDelegateAndroid {
 
     /**
      * @return The minimum visible height the bottom controls can have in physical pixels (not
-     *         DIPs).
+     *     DIPs).
      */
     @CalledByNative
     public int getBottomControlsMinHeight() {
         return 0;
     }
 
-    /** @return Whether or not the browser controls height changes should be animated. */
+    /**
+     * @return Whether or not the browser controls height changes should be animated.
+     */
     @CalledByNative
     public boolean shouldAnimateBrowserControlsHeightChanges() {
         return false;
     }
 
-    /** @return Whether or not the browser controls resize Blink's view size. */
+    /**
+     * @return Whether or not the browser controls resize Blink's view size.
+     */
     @CalledByNative
     public boolean controlsResizeView() {
         return false;
@@ -184,7 +275,7 @@ public class WebContentsDelegateAndroid {
 
     /**
      * @return If shown, returns the height of the virtual keyboard in physical pixels. Otherwise,
-     *         returns 0.
+     *     returns 0.
      */
     @CalledByNative
     public int getVirtualKeyboardHeight() {
@@ -207,12 +298,27 @@ public class WebContentsDelegateAndroid {
     public void didBackForwardTransitionAnimationChange() {}
 
     @CalledByNative
-    private boolean maybeCopyContentAreaAsBitmap(long nativeCallback) {
-        return maybeCopyContentAreaAsBitmap(
-                (bitmap) -> {
-                    WebContentsDelegateAndroidJni.get()
-                            .maybeCopyContentAreaAsBitmapOutcome(nativeCallback, bitmap);
-                });
+    private boolean maybeCopyContentAreaAsBitmap(
+            JniOnceCallback<@Nullable CaptureResult> callback) {
+        boolean result = maybeCopyContentArea(callback, CaptureResult.Destination.BITMAP);
+        if (!result) {
+            // If the method returns false, the callback won't be called, so we need to destroy it
+            // to prevent memory leaks and match the previous behavior of no callback.
+            callback.destroy();
+        }
+        return result;
+    }
+
+    @CalledByNative
+    private boolean maybeCopyContentAreaAsHardwareBuffer(
+            JniOnceCallback<@Nullable CaptureResult> callback) {
+        boolean result = maybeCopyContentArea(callback, CaptureResult.Destination.HARDWARE_BUFFER);
+        if (!result) {
+            // If the method returns false, the callback won't be called, so we need to destroy it
+            // to prevent memory leaks and match the previous behavior of no callback.
+            callback.destroy();
+        }
+        return result;
     }
 
     /**
@@ -246,14 +352,38 @@ public class WebContentsDelegateAndroid {
     public void contentsZoomChange(boolean zoomIn) {}
 
     /**
+     * Returns whether to override user agent for prerendering navigation.
+     *
+     * @param url The target URL of the prerendering navigation.
+     */
+    @CalledByNative
+    public @UserAgentOverrideOption int shouldOverrideUserAgentForPreloading(GURL url) {
+        // Inherit UA override of the last committed navigation regardless of URL as fallback.
+        return UserAgentOverrideOption.INHERIT;
+    }
+
+    /**
+     * Repositions the window containing this tab to given bounds. Applicable only for multi-window
+     * mode in Android.
+     *
+     * @param source Source WebContents which requested the repositioning.
+     * @param bounds Rectangle specifying desired bounds in global work area coordinate system.
+     */
+    @CalledByNative
+    public void setContentsBounds(WebContents source, @JniType("gfx::Rect") Rect bounds) {}
+
+    /**
      * Capture current visible native view as a bitmap.
      *
      * @param callback Executed asynchronously with the captured screenshot if this returns true.
      *     Note this callback is guaranteed to not retain a reference to this bitmap once it
      *     returns.
+     * @param destination whether to return the result as a Bitmap or a Hardware Buffer.
      * @return True if a native view such as an NTP is presenting.
      */
-    public boolean maybeCopyContentAreaAsBitmap(Callback<@Nullable Bitmap> callback) {
+    public boolean maybeCopyContentArea(
+            Callback<@Nullable CaptureResult> callback,
+            @CaptureResult.Destination int destination) {
         return false;
     }
 
@@ -293,8 +423,62 @@ public class WebContentsDelegateAndroid {
     @CalledByNative
     public void didChangeCloseSignalInterceptStatus() {}
 
-    @NativeMethods
-    public interface Natives {
-        void maybeCopyContentAreaAsBitmapOutcome(long callbackPtr, @Nullable Bitmap bitmap);
+    /**
+     * Requests that the web contents obtain a pointer lock.
+     *
+     * <p>A pointer lock restricts the mouse cursor to the bounds of the view and provides relative
+     * motion events as the user moves the mouse.
+     *
+     * @param webContents The {@link WebContents} for which to request the pointer lock.
+     * @param userGesture {@code true} if the request is a result of a user gesture, {@code false}
+     *     otherwise. A user gesture is required for the pointer lock to be granted.
+     * @param lastUnlockedByTarget {@code true} if the pointer was previously unlocked by the target
+     *     (website) itself, {@code false} if it was unlocked by the system or user action. This
+     *     flag helps to prevent websites from instantly re-locking the pointer after it has been
+     *     released by the user or system.
+     */
+    public void requestPointerLock(
+            WebContents webContents, boolean userGesture, boolean lastUnlockedByTarget) {}
+
+    /**
+     * Called when the pointer lock is lost, either by a system event, user action or when the
+     * focused view changes.
+     *
+     * <p>This method is invoked when the pointer lock, previously requested via {@link
+     * #requestPointerLock}, is no longer active. This can occur for several reasons:
+     *
+     * <ul>
+     *   <li>The user pressed the escape key or a system-defined key to release the lock.
+     *   <li>The application called {@code document.exitPointerLock()} in JavaScript.
+     *   <li>The window lost focus.
+     *   <li>The view hierarchy capturing the pointer went out of focus.
+     *   <li>The system released the pointer lock for other reasons.
+     * </ul>
+     */
+    public void lostPointerLock() {}
+
+    @CalledByNative
+    private static void registerRef(
+            long nativeWebContentsDelegateAndroid, WebContentsDelegateAndroid delegate) {
+        var oldValue = sRefMap.put(nativeWebContentsDelegateAndroid, new WeakReference<>(delegate));
+        if (oldValue != null) {
+            throw new IllegalStateException(
+                    "WebContentsDelegateAndroid already exists for native pointer: "
+                            + nativeWebContentsDelegateAndroid);
+        }
+    }
+
+    @CalledByNative
+    private static void unregisterRef(long nativeWebContentsDelegateAndroid) {
+        var oldValue = sRefMap.remove(nativeWebContentsDelegateAndroid);
+        assert oldValue != null;
+    }
+
+    @CalledByNative
+    private static @Nullable WebContentsDelegateAndroid getDelegate(
+            long nativeWebContentsDelegateAndroid) {
+        WeakReference<WebContentsDelegateAndroid> reference =
+                sRefMap.get(nativeWebContentsDelegateAndroid);
+        return reference == null ? null : reference.get();
     }
 }

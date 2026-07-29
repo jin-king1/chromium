@@ -4,18 +4,20 @@
 
 package org.chromium.chrome.browser.metrics;
 
-import android.os.Bundle;
+import android.os.BaseBundle;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.profiles.Profile;
 
 /**
  * Bridge for native |AndroidSessionDurationsService| state, for storage and retrieval
  * of Incognito session duration metrics.
  */
+@NullMarked
 public class AndroidSessionDurationsServiceState {
     private static final String INCOGNITO_SESSION_STARTUP_TIME = "incognito_session_startup_time";
     private static final String INCOGNITO_SESSION_LAST_REPORTED_DURATION =
@@ -43,15 +45,14 @@ public class AndroidSessionDurationsServiceState {
     }
 
     /**
-     * Restores the Android session duration service on Native from serialized data.
-     * This function does not supported regular profiles.
+     * Restores the Android session duration service on Native from serialized data. This function
+     * does not supported regular profiles.
      *
-     * @param Bundle inState, saved Incognito session duration service state.
-     * @param profile Profile, the Incognito profile for which the duration
-     *   service will be restored.
-     *
+     * @param inState Saved Incognito session duration service state.
+     * @param profile Profile, the Incognito profile for which the duration service will be
+     *     restored.
      */
-    public static void restoreNativeFromSerialized(Bundle inState, Profile profile) {
+    public static void restoreNativeFromSerialized(BaseBundle inState, Profile profile) {
         long sessionStartTime = inState.getLong(INCOGNITO_SESSION_STARTUP_TIME, -1);
         if (sessionStartTime == -1) {
             return;
@@ -68,14 +69,14 @@ public class AndroidSessionDurationsServiceState {
     }
 
     /**
-     * Serializes the data from Android session duration service on native.
-     * This function is ONLY supported for Incognito profiles.
+     * Serializes the data from Android session duration service on native. This function is ONLY
+     * supported for Incognito profiles.
      *
-     * @param Bundle outState, bundle to save Incognito session duration service state.
-     * @param profile Profile, the Incognito profile for which the duration
-     *   service will be serialized.
+     * @param outState BaseBundle to save Incognito session duration service state.
+     * @param profile Profile, the Incognito profile for which the duration service will be
+     *     serialized.
      */
-    public static void serializeFromNative(Bundle outState, Profile profile) {
+    public static void serializeFromNative(BaseBundle outState, Profile profile) {
         AndroidSessionDurationsServiceState data =
                 AndroidSessionDurationsServiceStateJni.get()
                         .getAndroidSessionDurationsServiceState(profile);

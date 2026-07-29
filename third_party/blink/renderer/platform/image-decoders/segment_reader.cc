@@ -2,15 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/platform/image-decoders/segment_reader.h"
 
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/synchronization/lock.h"
@@ -51,8 +47,7 @@ base::span<const uint8_t> BufferGetSomeData(Iter& iter,
 template <class Iter>
 sk_sp<SkData> BufferCopyAsSkData(Iter iter, size_t available) {
   sk_sp<SkData> data = SkData::MakeUninitialized(available);
-  auto dst =
-      base::span(static_cast<uint8_t*>(data->writable_data()), available);
+  auto dst = skia::as_writable_byte_span(*data);
   do {
     auto src = *iter;
     dst.copy_prefix_from(src);
@@ -74,7 +69,7 @@ class SharedBufferSegmentReader final : public SegmentReader {
       delete;
   size_t size() const override;
   base::span<const uint8_t> GetSomeData(size_t position) const override;
-  sk_sp<SkData> GetAsSkData() const override;
+  sk_sp<const SkData> GetAsSkData() const override;
 
  private:
   ~SharedBufferSegmentReader() override = default;
@@ -98,15 +93,12 @@ base::span<const uint8_t> SharedBufferSegmentReader::GetSomeData(
   return base::as_byte_span(*it);
 }
 
-sk_sp<SkData> SharedBufferSegmentReader::GetAsSkData() const {
+sk_sp<const SkData> SharedBufferSegmentReader::GetAsSkData() const {
   sk_sp<SkData> data = SkData::MakeUninitialized(shared_buffer_->size());
-  char* buffer = static_cast<char*>(data->writable_data());
-  size_t offset = 0;
+  auto buffer = skia::as_writable_byte_span(*data);
   for (const auto& span : *shared_buffer_) {
-    memcpy(buffer + offset, span.data(), span.size());
-    offset += span.size();
+    buffer.take_first(span.size()).copy_from(base::as_bytes(span));
   }
-
   return data;
 }
 
@@ -115,19 +107,19 @@ sk_sp<SkData> SharedBufferSegmentReader::GetAsSkData() const {
 // Interface for ImageDecoder to read an SkData.
 class DataSegmentReader final : public SegmentReader {
  public:
-  explicit DataSegmentReader(sk_sp<SkData>);
+  explicit DataSegmentReader(sk_sp<const SkData>);
   DataSegmentReader(const DataSegmentReader&) = delete;
   DataSegmentReader& operator=(const DataSegmentReader&) = delete;
   size_t size() const override;
   base::span<const uint8_t> GetSomeData(size_t position) const override;
-  sk_sp<SkData> GetAsSkData() const override;
+  sk_sp<const SkData> GetAsSkData() const override;
 
  private:
   ~DataSegmentReader() override = default;
-  sk_sp<SkData> data_;
+  sk_sp<const SkData> data_;
 };
 
-DataSegmentReader::DataSegmentReader(sk_sp<SkData> data)
+DataSegmentReader::DataSegmentReader(sk_sp<const SkData> data)
     : data_(std::move(data)) {}
 
 size_t DataSegmentReader::size() const {
@@ -142,7 +134,7 @@ base::span<const uint8_t> DataSegmentReader::GetSomeData(
   return skia::as_byte_span(*data_).subspan(position);
 }
 
-sk_sp<SkData> DataSegmentReader::GetAsSkData() const {
+sk_sp<const SkData> DataSegmentReader::GetAsSkData() const {
   return data_;
 }
 
@@ -156,7 +148,7 @@ class ROBufferSegmentReader final : public SegmentReader {
 
   size_t size() const override;
   base::span<const uint8_t> GetSomeData(size_t position) const override;
-  sk_sp<SkData> GetAsSkData() const override;
+  sk_sp<const SkData> GetAsSkData() const override;
 
  private:
   ~ROBufferSegmentReader() override = default;
@@ -205,7 +197,7 @@ static void UnrefROBuffer(const void* ptr, void* context) {
   static_cast<ROBuffer*>(context)->Release();
 }
 
-sk_sp<SkData> ROBufferSegmentReader::GetAsSkData() const {
+sk_sp<const SkData> ROBufferSegmentReader::GetAsSkData() const {
   if (!ro_buffer_) {
     return nullptr;
   }
@@ -234,7 +226,7 @@ scoped_refptr<SegmentReader> SegmentReader::CreateFromSharedBuffer(
 }
 
 scoped_refptr<SegmentReader> SegmentReader::CreateFromSkData(
-    sk_sp<SkData> data) {
+    sk_sp<const SkData> data) {
   return base::AdoptRef(new DataSegmentReader(std::move(data)));
 }
 

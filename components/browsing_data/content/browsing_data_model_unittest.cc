@@ -4,8 +4,11 @@
 
 #include "components/browsing_data/content/browsing_data_model.h"
 
+#include <variant>
+
 #include "base/barrier_closure.h"
 #include "base/feature_list.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
@@ -71,7 +74,8 @@ std::unique_ptr<net::CanonicalCookie> MakeCanonicalCookie(
       /*expiration=*/base::Time(), /*last_access=*/base::Time(),
       /*last_update=*/base::Time(),
       /*secure=*/true, /*httponly=*/false, net::CookieSameSite::UNSPECIFIED,
-      net::CookiePriority::COOKIE_PRIORITY_DEFAULT, cookie_partition_key);
+      net::CookiePriority::COOKIE_PRIORITY_DEFAULT,
+      net::CookieSourceType::kOther, cookie_partition_key);
 }
 
 }  // namespace
@@ -211,15 +215,10 @@ TEST_F(BrowsingDataModelTest, ConcurrentDeletions) {
           [&](network::TestNetworkContext::GetStoredTrustTokenCountsCallback
                   callback) { std::move(callback).Run(std::move(tokens)); });
 
-  if (base::FeatureList::IsEnabled(
-          network::features::kCompressionDictionaryTransportBackend)) {
-    EXPECT_CALL(*mock_network_context(),
-                GetSharedDictionaryUsageInfo(testing::_))
-        .WillOnce([&](network::TestNetworkContext::
-                          GetSharedDictionaryUsageInfoCallback callback) {
-          std::move(callback).Run({});
-        });
-  }
+  EXPECT_CALL(*mock_network_context(), GetSharedDictionaryUsageInfo(testing::_))
+      .WillOnce(
+          [&](network::TestNetworkContext::GetSharedDictionaryUsageInfoCallback
+                  callback) { std::move(callback).Run({}); });
 
   base::RunLoop run_loop;
   BuildModel(run_loop.QuitWhenIdleClosure());
@@ -329,15 +328,10 @@ TEST_F(BrowsingDataModelTest, DelegateDataDeleted) {
           [&](network::TestNetworkContext::GetStoredTrustTokenCountsCallback
                   callback) { std::move(callback).Run({}); });
 
-  if (base::FeatureList::IsEnabled(
-          network::features::kCompressionDictionaryTransportBackend)) {
-    EXPECT_CALL(*mock_network_context(),
-                GetSharedDictionaryUsageInfo(testing::_))
-        .WillOnce([&](network::TestNetworkContext::
-                          GetSharedDictionaryUsageInfoCallback callback) {
-          std::move(callback).Run({});
-        });
-  }
+  EXPECT_CALL(*mock_network_context(), GetSharedDictionaryUsageInfo(testing::_))
+      .WillOnce(
+          [&](network::TestNetworkContext::GetSharedDictionaryUsageInfoCallback
+                  callback) { std::move(callback).Run({}); });
 
   base::RunLoop run_loop;
   BuildModel(run_loop.QuitWhenIdleClosure());
@@ -385,7 +379,7 @@ class OriginOwnershipDelegate final : public BrowsingDataModel::Delegate {
   std::optional<BrowsingDataModel::DataOwner> GetDataOwner(
       const BrowsingDataModel::DataKey& data_key,
       BrowsingDataModel::StorageType storage_type) const override {
-    const url::Origin* origin = absl::get_if<url::Origin>(&data_key);
+    const url::Origin* origin = std::get_if<url::Origin>(&data_key);
     if (origin && origin->host() == origin_owned_host_) {
       return *origin;
     }
@@ -594,11 +588,6 @@ TEST_F(BrowsingDataModelTest, ThirdPartyCookieTypes) {
   auto partitioned_shared_dictionary_key = net::SharedDictionaryIsolationKey{
       kSiteOrigin, net::SchemefulSite(kTestOrigin)};
 
-  content::InterestGroupManager::InterestGroupDataKey interest_group_key{
-      kSiteOrigin, kSiteOrigin};
-  content::AttributionDataModel::DataKey attribution_reporting_key{kSiteOrigin};
-  content::PrivateAggregationDataModel::DataKey private_aggregation_key{
-      kSiteOrigin};
   net::device_bound_sessions::SessionKey device_bound_session_key(
       net::SchemefulSite(kSiteOrigin.GetURL()),
       net::device_bound_sessions::SessionKey::Id("session_id"));
@@ -635,11 +624,6 @@ TEST_F(BrowsingDataModelTest, ThirdPartyCookieTypes) {
            partitioned_shared_worker_info},
           {BrowsingDataModel::StorageType::kCookie, *partitioned_cookie},
           {BrowsingDataModel::StorageType::kTrustTokens, kSiteOrigin},
-          {BrowsingDataModel::StorageType::kInterestGroup, interest_group_key},
-          {BrowsingDataModel::StorageType::kAttributionReporting,
-           attribution_reporting_key},
-          {BrowsingDataModel::StorageType::kPrivateAggregation,
-           private_aggregation_key},
           {BrowsingDataModel::StorageType::kSharedDictionary,
            partitioned_shared_dictionary_key}};
 
@@ -754,16 +738,8 @@ TEST_F(BrowsingDataModelTest, HasThirdPartyPartitioningSite_False) {
 
 class BrowsingDataModelSharedDictionaryTest : public BrowsingDataModelTest {
  public:
-  BrowsingDataModelSharedDictionaryTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{network::features::
-                                  kCompressionDictionaryTransportBackend},
-        /*disabled_features=*/{});
-  }
+  BrowsingDataModelSharedDictionaryTest() {}
   ~BrowsingDataModelSharedDictionaryTest() override = default;
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(BrowsingDataModelSharedDictionaryTest, GetUsageInfo) {

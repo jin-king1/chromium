@@ -7,18 +7,19 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <variant>
 
+#include "base/byte_size.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/numerics/checked_math.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/common/loader/background_resource_fetch_histograms.h"
 #include "third_party/blink/public/common/loader/mime_sniffing_throttle.h"
 #include "third_party/blink/public/common/loader/referrer_utils.h"
@@ -43,6 +44,7 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_url.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
@@ -57,87 +59,6 @@ using FollowRedirectCallback =
 using BodyVariant = blink::BackgroundResponseProcessor::BodyVariant;
 
 }  // namespace
-
-namespace WTF {
-
-template <>
-struct CrossThreadCopier<FollowRedirectCallback> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = FollowRedirectCallback;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<url::Origin> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = url::Origin;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<network::mojom::URLResponseHeadPtr> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = network::mojom::URLResponseHeadPtr;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<network::URLLoaderCompletionStatus>
-    : public CrossThreadCopierByValuePassThrough<
-          network::URLLoaderCompletionStatus> {
-  STATIC_ONLY(CrossThreadCopier);
-};
-
-template <>
-struct CrossThreadCopier<net::RedirectInfo>
-    : public CrossThreadCopierByValuePassThrough<net::RedirectInfo> {
-  STATIC_ONLY(CrossThreadCopier);
-};
-
-template <>
-struct CrossThreadCopier<std::vector<std::string>> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = std::vector<std::string>;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<
-    std::vector<std::unique_ptr<blink::URLLoaderThrottle>>> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = std::vector<std::unique_ptr<blink::URLLoaderThrottle>>;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<std::optional<mojo_base::BigBuffer>> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = std::optional<mojo_base::BigBuffer>;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<net::HttpRequestHeaders> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = net::HttpRequestHeaders;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<BodyVariant> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = BodyVariant;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-template <>
-struct CrossThreadCopier<std::optional<network::URLLoaderCompletionStatus>> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = std::optional<network::URLLoaderCompletionStatus>;
-  static Type Copy(Type&& value) { return std::move(value); }
-};
-
-}  // namespace WTF
 
 namespace blink {
 
@@ -184,7 +105,7 @@ BackgroundResourceFetchSupportStatus CanHandleRequestInternal(
 }  // namespace
 
 class BackgroundURLLoader::Context
-    : public WTF::ThreadSafeRefCounted<BackgroundURLLoader::Context> {
+    : public ThreadSafeRefCounted<BackgroundURLLoader::Context> {
  public:
   Context(scoped_refptr<WebBackgroundResourceFetchAssets>
               background_resource_fetch_context,
@@ -343,12 +264,10 @@ class BackgroundURLLoader::Context
           &Context::OnReceivedResponse, context_, std::move(head),
           std::move(body), std::move(cached_metadata)));
     }
-    void OnTransferSizeUpdated(int transfer_size_diff) override {
+    void OnTransferSizeUpdated(base::ByteSize transfer_size_diff) override {
       CHECK(background_task_runner_->RunsTasksInCurrentSequence());
       if (waiting_for_background_response_processor_) {
-        deferred_transfer_size_diff_ =
-            base::CheckAdd(deferred_transfer_size_diff_, transfer_size_diff)
-                .ValueOrDie();
+        deferred_transfer_size_diff_ += transfer_size_diff;
         return;
       }
       context_->PostTaskToMainThread(CrossThreadBindOnce(
@@ -373,9 +292,9 @@ class BackgroundURLLoader::Context
       CHECK(background_task_runner_->RunsTasksInCurrentSequence());
       background_response_processor_.reset();
       waiting_for_background_response_processor_ = false;
-      if (absl::holds_alternative<SegmentedBuffer>(body)) {
+      if (std::holds_alternative<SegmentedBuffer>(body)) {
         context_->DidReadDataByBackgroundResponseProcessorOnBackground(
-            absl::get<SegmentedBuffer>(body).size());
+            std::get<SegmentedBuffer>(body).size());
       }
       context_->PostTaskToMainThread(CrossThreadBindOnce(
           &Context::DidFinishBackgroundResponseProcessor, context_,
@@ -391,7 +310,7 @@ class BackgroundURLLoader::Context
     const scoped_refptr<base::SequencedTaskRunner> background_task_runner_;
     std::unique_ptr<BackgroundResponseProcessor> background_response_processor_;
 
-    int deferred_transfer_size_diff_ = 0;
+    base::ByteSize deferred_transfer_size_diff_;
     std::optional<network::URLLoaderCompletionStatus> deferred_status_;
     bool waiting_for_background_response_processor_ = false;
     base::WeakPtrFactory<RequestClient> weak_factory_{this};
@@ -415,13 +334,18 @@ class BackgroundURLLoader::Context
       return;
     }
 
+    // Keep the refptr of WebBackgroundResourceFetchAssets to ensure it survives
+    // for the duration of the request.
+    cross_thread_background_resource_fetch_context_ =
+        std::move(background_resource_fetch_context);
     std::vector<std::unique_ptr<blink::URLLoaderThrottle>> throttles;
     URLLoaderThrottleProvider* throttle_provider =
-        background_resource_fetch_context->GetThrottleProvider();
+        cross_thread_background_resource_fetch_context_->GetThrottleProvider();
     if (throttle_provider) {
       std::vector<std::unique_ptr<blink::URLLoaderThrottle>> web_throttles =
           throttle_provider->CreateThrottles(
-              background_resource_fetch_context->GetLocalFrameToken(),
+              cross_thread_background_resource_fetch_context_
+                  ->GetLocalFrameToken(),
               *request);
       throttles.reserve(base::checked_cast<wtf_size_t>(web_throttles.size()));
       for (auto& throttle : web_throttles) {
@@ -449,7 +373,7 @@ class BackgroundURLLoader::Context
             background_response_processor_factory
                 ? std::move(*background_response_processor_factory).Create()
                 : nullptr),
-        background_resource_fetch_context->GetLoaderFactory(),
+        cross_thread_background_resource_fetch_context_->GetLoaderFactory(),
         std::move(throttles), std::move(resource_load_info_notifier_wrapper),
         should_use_code_cache_host && background_code_cache_host_
             ? &background_code_cache_host_->GetCodeCacheHost(
@@ -465,6 +389,7 @@ class BackgroundURLLoader::Context
     if (request_id_ != -1) {
       resource_request_sender_->Cancel(background_task_runner_);
       resource_request_sender_.reset();
+      cross_thread_background_resource_fetch_context_.reset();
       request_id_ = -1;
     }
   }
@@ -543,10 +468,10 @@ class BackgroundURLLoader::Context
     net::HttpRequestHeaders modified_headers;
     if (client_->WillFollowRedirect(
             url_, redirect_info.new_site_for_cookies,
-            WebString::FromUTF8(redirect_info.new_referrer),
+            WebString::FromUtf8(redirect_info.new_referrer),
             ReferrerUtils::NetToMojoReferrerPolicy(
                 redirect_info.new_referrer_policy),
-            WebString::FromUTF8(redirect_info.new_method), response,
+            WebString::FromUtf8(redirect_info.new_method), response,
             has_devtools_request_id_, &removed_headers, modified_headers,
             redirect_info.insecure_scheme_was_upgraded)) {
       PostCrossThreadTask(
@@ -570,35 +495,37 @@ class BackgroundURLLoader::Context
       network::mojom::URLResponseHeadPtr head,
       BodyVariant body,
       std::optional<mojo_base::BigBuffer> cached_metadata,
-      int deferred_transfer_size_diff,
+      base::ByteSize deferred_transfer_size_diff,
       std::optional<network::URLLoaderCompletionStatus> deferred_status,
       int request_id) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
 
     OnReceivedResponse(std::move(head), std::move(body),
                        std::move(cached_metadata), request_id);
-    if (client_ && deferred_transfer_size_diff > 0) {
+    if (client_ && deferred_transfer_size_diff.is_positive()) {
       OnTransferSizeUpdated(deferred_transfer_size_diff);
     }
     if (client_ && deferred_status) {
       OnCompletedRequest(*deferred_status);
     }
   }
-  void OnTransferSizeUpdated(int transfer_size_diff) {
+  void OnTransferSizeUpdated(base::ByteSize transfer_size_diff) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
-    client_->DidReceiveTransferSizeUpdate(transfer_size_diff);
+    client_->DidReceiveTransferSizeUpdate(
+        base::checked_cast<int>(transfer_size_diff.InBytes()));
   }
   void OnCompletedRequest(const network::URLLoaderCompletionStatus& status) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
-    int64_t total_transfer_size = status.encoded_data_length;
-    int64_t encoded_body_size = status.encoded_body_length;
+    int64_t total_transfer_size = status.encoded_data_length.InBytes();
+    int64_t encoded_body_size = status.encoded_body_length.InBytes();
     if (status.error_code != net::OK) {
       client_->DidFail(WebURLError::Create(status, url_),
                        status.completion_time, total_transfer_size,
-                       encoded_body_size, status.decoded_body_length);
+                       encoded_body_size, status.decoded_body_length.InBytes());
     } else {
       client_->DidFinishLoading(status.completion_time, total_transfer_size,
-                                encoded_body_size, status.decoded_body_length);
+                                encoded_body_size,
+                                status.decoded_body_length.InBytes());
     }
   }
 
@@ -692,6 +619,10 @@ class BackgroundURLLoader::Context
 
   scoped_refptr<BackgroundCodeCacheHost> background_code_cache_host_
       GUARDED_BY_CONTEXT(background_sequence_checker_);
+
+  scoped_refptr<WebBackgroundResourceFetchAssets>
+      cross_thread_background_resource_fetch_context_
+          GUARDED_BY_CONTEXT(background_sequence_checker_);
 
   Deque<CrossThreadOnceFunction<void(void)>> tasks_ GUARDED_BY(tasks_lock_);
   base::Lock tasks_lock_;

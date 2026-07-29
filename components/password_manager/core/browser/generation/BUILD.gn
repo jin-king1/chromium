@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/features.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
 import("//third_party/libprotobuf-mutator/fuzzable_proto_library.gni")
@@ -57,7 +56,12 @@ if (use_fuzzing_engine_with_lpm) {
     sources = [ "password_generator_proto_fuzzer.cc" ]
     deps = [
       ":generation",
+      "//components/autofill/core/browser/proto",
+      "//components/autofill/core/browser/proto:proto_fuzzable",
       "//third_party/libprotobuf-mutator",
     ]
+
+    # TODO(crbug.com/505034799): Migrate to FUZZ_TEST.
+    is_fuzztest_compatible = false
   }
 }

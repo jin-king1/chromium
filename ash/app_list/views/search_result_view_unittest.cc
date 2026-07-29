@@ -3,11 +3,13 @@
 // found in the LICENSE file.
 
 #include "ash/app_list/views/search_result_view.h"
+
 #include <memory>
 
 #include "ash/app_list/model/search/test_search_result.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/flex_layout_view.h"
@@ -36,7 +38,7 @@ class SearchResultViewWidgetTest : public views::test::WidgetTest {
   void SetUp() override {
     views::test::WidgetTest::SetUp();
 
-    widget_ = CreateTopLevelPlatformWidget();
+    widget_ = base::WrapUnique(CreateTopLevelPlatformWidget());
 
     answer_card_view_ = std::make_unique<SearchResultView>(
         /*list_view=*/nullptr, /*view_delegate=*/nullptr,
@@ -54,7 +56,7 @@ class SearchResultViewWidgetTest : public views::test::WidgetTest {
 
   void TearDown() override {
     answer_card_view_.reset();
-    widget_->CloseNow();
+    widget_.release()->CloseNow();
     views::test::WidgetTest::TearDown();
   }
 
@@ -147,7 +149,7 @@ class SearchResultViewWidgetTest : public views::test::WidgetTest {
   int result_id = 0;
   std::unique_ptr<SearchResultView> answer_card_view_;
   std::unique_ptr<SearchResultView> search_result_view_;
-  raw_ptr<views::Widget, DanglingUntriaged> widget_;
+  std::unique_ptr<views::Widget> widget_;
 };
 
 TEST_F(SearchResultViewWidgetTest, SearchResultTextVectorUpdate) {

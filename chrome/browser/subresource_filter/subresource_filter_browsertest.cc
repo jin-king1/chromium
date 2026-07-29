@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <map>
 #include <memory>
 #include <sstream>
@@ -33,9 +28,8 @@
 #include "chrome/browser/subresource_filter/subresource_filter_browser_test_harness.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/url_constants.h"
@@ -44,8 +38,8 @@
 #include "components/safe_browsing/core/browser/db/v4_test_util.h"
 #include "components/security_interstitials/core/unsafe_resource.h"
 #include "components/subresource_filter/content/browser/content_subresource_filter_throttle_manager.h"
+#include "components/subresource_filter/content/browser/ruleset_service.h"
 #include "components/subresource_filter/content/browser/test_ruleset_publisher.h"
-#include "components/subresource_filter/content/shared/browser/ruleset_service.h"
 #include "components/subresource_filter/core/browser/async_document_subresource_filter.h"
 #include "components/subresource_filter/core/browser/async_document_subresource_filter_test_utils.h"
 #include "components/subresource_filter/core/browser/subresource_filter_constants.h"
@@ -610,7 +604,7 @@ IN_PROC_BROWSER_TEST_F(SubresourceFilterBrowserTest,
 }
 
 // Disable the test as it's flaky on Win7 dbg.
-// crbug.com/1068185
+// crbug.com/40125372
 #if BUILDFLAG(IS_WIN) && !defined(NDEBUG)
 #define MAYBE_RendererDebugURL_NoLeakedThrottlePtrs \
   DISABLED_RendererDebugURL_NoLeakedThrottlePtrs
@@ -633,7 +627,7 @@ IN_PROC_BROWSER_TEST_F(SubresourceFilterBrowserTest,
   // This test should crash the *browser process* with CHECK failures if the
   // component is faulty. The CHECK assumes that the crash URL and other
   // renderer debug URLs do not create a navigation throttle. See
-  // crbug.com/736658.
+  // crbug.com/40527486.
   content::RenderProcessHostWatcher crash_observer(
       browser()->tab_strip_model()->GetActiveWebContents(),
       content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
@@ -821,7 +815,7 @@ IN_PROC_BROWSER_TEST_F(SubresourceFilterBrowserTest,
 
       // TODO(alexmt): Enable this test case. Currently disabled as there is no
       // guarantee that the descendant's navigation starts after the parent's
-      // navigation ends (see crbug.com/1101569).
+      // navigation ends (see crbug.com/40138406).
       // Child of popup with doc.write-aborted load
       // "popupLoadsDisallowedResourceAsDescendant('http://b.com/slow?100');",
 
@@ -1149,7 +1143,7 @@ IN_PROC_BROWSER_TEST_F(SubresourceFilterBrowserTest,
 }
 
 // Perform a hash change before the initial URL of a frame is navigated. Ensure
-// we don't trip any CHECKs (crbug.com/1237409) and that filtering works as
+// we don't trip any CHECKs (crbug.com/40193093) and that filtering works as
 // expected.
 IN_PROC_BROWSER_TEST_F(SubresourceFilterBrowserTest,
                        SameDocumentBeforeInitialNavigation) {

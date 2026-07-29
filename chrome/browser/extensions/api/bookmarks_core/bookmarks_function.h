@@ -9,6 +9,9 @@
 
 #include "components/bookmarks/browser/base_bookmark_model_observer.h"
 #include "extensions/browser/extension_function.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 class Profile;
 
@@ -30,9 +33,7 @@ class BookmarksFunction : public ExtensionFunction,
   ~BookmarksFunction() override = default;
 
   // Run semantic equivalent called when the bookmarks are ready.
-  // Overrides can return nullptr to further delay responding (a.k.a.
-  // RespondLater()).
-  virtual ResponseValue RunOnReady() = 0;
+  virtual ResponseAction RunOnReady() = 0;
 
   // Helper to get the BookmarkModel.
   bookmarks::BookmarkModel* GetBookmarkModel();
@@ -42,7 +43,7 @@ class BookmarksFunction : public ExtensionFunction,
 
   // Helper to get the bookmark node from a given string id.
   // If the given id can't be parsed or doesn't refer to a valid node, sets
-  // |error| and returns nullptr.
+  // `error` and returns nullptr.
   const bookmarks::BookmarkNode* GetBookmarkNodeFromId(
       const std::string& id_string,
       std::string* error);
@@ -50,7 +51,7 @@ class BookmarksFunction : public ExtensionFunction,
   // Helper that checks if bookmark editing is enabled.
   bool EditBookmarksEnabled();
 
-  // Helper that checks if |node| can be modified. Returns false if |node|
+  // Helper that checks if `node` can be modified. Returns false if `node`
   // is nullptr, or a managed node, or the root node. In these cases the node
   // can't be edited, can't have new child nodes appended, and its direct
   // children can't be moved or reordered.

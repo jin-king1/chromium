@@ -9,6 +9,8 @@
 #include <string_view>
 
 #include "ash/lobster/lobster_controller.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/ash/editor_menu/editor_manager.h"
@@ -21,11 +23,12 @@
 #include "chromeos/ash/components/editor_menu/public/cpp/editor_mode.h"
 #include "content/public/browser/browser_context.h"
 
+class ApplicationLocaleStorage;
+class Profile;
+
 namespace views {
 class Widget;
 }
-
-class Profile;
 
 namespace chromeos::editor_menu {
 
@@ -34,7 +37,8 @@ namespace chromeos::editor_menu {
 class EditorMenuControllerImpl : public chromeos::ReadWriteCardController,
                                  public EditorMenuViewDelegate {
  public:
-  EditorMenuControllerImpl();
+  explicit EditorMenuControllerImpl(
+      const ApplicationLocaleStorage* application_locale_storage);
   EditorMenuControllerImpl(const EditorMenuControllerImpl&) = delete;
   EditorMenuControllerImpl& operator=(const EditorMenuControllerImpl&) = delete;
   ~EditorMenuControllerImpl() override;
@@ -54,7 +58,8 @@ class EditorMenuControllerImpl : public chromeos::ReadWriteCardController,
   void OnTextfieldArrowButtonPressed(std::u16string_view text) override;
   void OnPromoCardWidgetClosed(
       views::Widget::ClosedReason closed_reason) override;
-  void OnEditorMenuVisibilityChanged(bool visible) override;
+  void OnEditorMenuVisibilityChanged(bool visible,
+                                     bool destroy_session) override;
 
   bool SetBrowserContext(content::BrowserContext* context);
   void LogEditorMode(const EditorMode& editor_mode);
@@ -132,11 +137,13 @@ class EditorMenuControllerImpl : public chromeos::ReadWriteCardController,
 
   // This method is fired whenever the EditorPromoCard, or EditorMenu cards are
   // hidden from the user's view.
-  void OnEditorCardHidden();
+  void OnEditorCardHidden(bool destroy_session = true);
 
   // Disables the editor menu. We do this when we don't want the editor menu
   // buttons or textfield to receive keyboard or mouse input.
   void DisableEditorMenu();
+
+  const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
 
   std::unique_ptr<views::Widget> editor_menu_widget_;
 

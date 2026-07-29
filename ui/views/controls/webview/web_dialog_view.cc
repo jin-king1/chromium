@@ -18,7 +18,7 @@
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view_class_properties.h"
@@ -33,7 +33,7 @@ using content::WebContents;
 using content::WebUIMessageHandler;
 using input::NativeWebKeyboardEvent;
 using ui::WebDialogDelegate;
-using ui::WebDialogUIBase;
+using ui::WebDialogUI;
 using ui::WebDialogWebContentsDelegate;
 
 namespace views {
@@ -78,7 +78,8 @@ WebDialogView::WebDialogView(content::BrowserContext* context,
   SetCanMinimize(!delegate_ || delegate_->can_minimize());
   SetCanResize(!delegate_ || delegate_->can_resize());
   SetModalType(GetDialogModalType());
-  web_view_->set_allow_accelerators(true);
+  web_view_->set_allow_accelerators(!delegate_ ||
+                                    delegate_->allow_accelerators());
   AddChildViewRaw(web_view_.get());
   set_contents_view(web_view_);
   SetLayoutManager(std::make_unique<views::FillLayout>());
@@ -89,8 +90,10 @@ WebDialogView::WebDialogView(content::BrowserContext* context,
     for (const auto& accelerator : delegate_->GetAccelerators()) {
       AddAccelerator(accelerator);
     }
-    RegisterWindowWillCloseCallback(base::BindOnce(
-        &WebDialogView::NotifyDialogWillClose, base::Unretained(this)));
+    RegisterWindowWillCloseCallback(
+        RegisterWillCloseCallbackPassKey(),
+        base::BindOnce(&WebDialogView::NotifyDialogWillClose,
+                       base::Unretained(this)));
   }
 
   if (web_contents) {
@@ -249,15 +252,14 @@ views::ClientView* WebDialogView::CreateClientView(views::Widget* widget) {
   return this;
 }
 
-std::unique_ptr<NonClientFrameView> WebDialogView::CreateNonClientFrameView(
-    Widget* widget) {
+std::unique_ptr<FrameView> WebDialogView::CreateFrameView(Widget* widget) {
   if (!delegate_) {
-    return WidgetDelegate::CreateNonClientFrameView(widget);
+    return WidgetDelegate::CreateFrameView(widget);
   }
 
   switch (delegate_->GetWebDialogFrameKind()) {
     case WebDialogDelegate::FrameKind::kNonClient:
-      return WidgetDelegate::CreateNonClientFrameView(widget);
+      return WidgetDelegate::CreateFrameView(widget);
     case WebDialogDelegate::FrameKind::kDialog:
       return DialogDelegate::CreateDialogFrameView(widget);
     default:
@@ -484,6 +486,7 @@ void WebDialogView::BeforeUnloadFired(content::WebContents* tab,
 }
 
 bool WebDialogView::IsWebContentsCreationOverridden(
+    content::RenderFrameHost* opener,
     content::SiteInstance* source_site_instance,
     content::mojom::WindowContainerType window_container_type,
     const GURL& opener_url,
@@ -520,7 +523,7 @@ void WebDialogView::SetWebViewCornersRadii(const gfx::RoundedCornersF& radii) {
   views::NativeViewHost* host = web_view_->holder();
   DCHECK(host);
 
-  host->SetCornerRadii(radii);
+  host->SetNativeViewCornerRadii(radii);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -533,13 +536,16 @@ void WebDialogView::InitDialog() {
   }
 
   web_contents->SetDelegate(this);
-
+  web_contents->SetIgnoreZoomGestures(true);
   // Set the delegate. This must be done before loading the page. See
   // the comment above WebDialogUI in its header file for why.
-  WebDialogUIBase::SetDelegate(web_contents, this);
+  WebDialogUI::SetDelegate(web_contents, this);
 
   if (!disable_url_load_for_test_) {
-    web_view_->LoadInitialURL(GetDialogContentURL());
+    auto policy = (delegate_ && delegate_->ShouldDisableHttpsUpgrades())
+                      ? views::WebView::HttpsUpgradePolicy::kNoUpgrade
+                      : views::WebView::HttpsUpgradePolicy::kAllowUpgrade;
+    web_view_->LoadInitialURL(delegate_->GetDialogContentURL(), policy);
   }
 }
 

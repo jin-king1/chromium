@@ -7,9 +7,12 @@
 #include <memory>
 
 #include "base/no_destructor.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
+#include "chrome/browser/autofill/ml_log_router_factory.h"
+#include "chrome/browser/optimization_guide/model_execution/optimization_guide_global_state.h"
+#include "chrome/browser/optimization_guide/optimization_guide_global_state_holder_keyed_service.h"
+#include "chrome/browser/optimization_guide/optimization_guide_global_state_holder_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "components/autofill/core/browser/ml_model/logging/ml_log_router.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "content/public/browser/browser_context.h"
 
@@ -36,7 +39,8 @@ AutofillFieldClassificationModelServiceFactory::
     : BrowserContextKeyedServiceFactory(
           "FieldClassificationModelHandler",
           BrowserContextDependencyManager::GetInstance()) {
-  DependsOn(OptimizationGuideKeyedServiceFactory::GetInstance());
+  DependsOn(
+      OptimizationGuideGlobalStateHolderKeyedServiceFactory::GetInstance());
 }
 
 AutofillFieldClassificationModelServiceFactory::
@@ -47,8 +51,9 @@ AutofillFieldClassificationModelServiceFactory::GetBrowserContextToUse(
     content::BrowserContext* context) const {
   // `FieldClassificationModelHandler` is not supported without an
   // `OptimizationGuideKeyedService`.
-  return OptimizationGuideKeyedServiceFactory::GetForProfile(
-             Profile::FromBrowserContext(context))
+  Profile* profile = Profile::FromBrowserContext(context);
+  return OptimizationGuideGlobalStateHolderKeyedServiceFactory::GetForProfile(
+             profile)
              ? context
              : nullptr;
 }
@@ -56,13 +61,21 @@ AutofillFieldClassificationModelServiceFactory::GetBrowserContextToUse(
 std::unique_ptr<KeyedService> AutofillFieldClassificationModelServiceFactory::
     BuildServiceInstanceForBrowserContext(
         content::BrowserContext* context) const {
-  OptimizationGuideKeyedService* optimization_guide =
-      OptimizationGuideKeyedServiceFactory::GetForProfile(
+  Profile* profile = Profile::FromBrowserContext(context);
+  OptimizationGuideGlobalStateHolderKeyedService* global_state_holder =
+      OptimizationGuideGlobalStateHolderKeyedServiceFactory::GetForProfile(
+          profile);
+  optimization_guide::OptimizationGuideModelProvider* optimization_guide =
+      global_state_holder
+          ? &global_state_holder->GetGlobalState().model_provider()
+          : nullptr;
+  MlLogRouter* log_router = MlLogRouterFactory::GetForProfile(
           Profile::FromBrowserContext(context));
   return std::make_unique<FieldClassificationModelHandler>(
       optimization_guide,
       optimization_guide::proto::OptimizationTarget::
-          OPTIMIZATION_TARGET_AUTOFILL_FIELD_CLASSIFICATION);
+          OPTIMIZATION_TARGET_AUTOFILL_FIELD_CLASSIFICATION,
+      log_router);
 }
 
 }  // namespace autofill

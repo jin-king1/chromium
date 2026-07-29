@@ -6,10 +6,10 @@
 
 namespace blink::scheduler {
 
-const char* ThrottlingTypeToString(ThrottlingType type) {
+perfetto::StaticString ThrottlingTypeToString(ThrottlingType type) {
   switch (type) {
     case ThrottlingType::kNone:
-      return "none";
+      return nullptr;
     case ThrottlingType::kForegroundUnimportant:
       return "foreground-unimportant";
     case ThrottlingType::kBackground:

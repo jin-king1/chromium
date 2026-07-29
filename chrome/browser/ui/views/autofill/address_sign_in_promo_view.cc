@@ -4,22 +4,25 @@
 
 #include "chrome/browser/ui/views/autofill/address_sign_in_promo_view.h"
 
+#include "chrome/browser/signin/signin_promo_util.h"
 #include "chrome/browser/ui/autofill/address_bubbles_controller.h"
 #include "chrome/browser/ui/signin/promos/bubble_signin_promo_view.h"
-#include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
-#include "chrome/grit/theme_resources.h"
+#include "chrome/grit/browser_resources.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/strings/grit/components_strings.h"
+#include "ui/base/resource/resource_bundle.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/image_view.h"
+#include "ui/views/layout/layout_provider.h"
 #include "ui/views/view_class_properties.h"
 
 namespace autofill {
 
 AddressSignInPromoView::AddressSignInPromoView(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor,
     content::WebContents* web_contents,
     const AutofillProfile& autofill_profile)
-    : AddressBubbleBaseView(anchor_view, web_contents) {
+    : AddressBubbleBaseView(anchor, web_contents) {
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   SetTitle(IDS_AUTOFILL_SIGNIN_PROMO_TITLE_ADDRESS);
   SetShowCloseButton(true);
@@ -30,6 +33,7 @@ AddressSignInPromoView::AddressSignInPromoView(
           views::DISTANCE_UNRELATED_CONTROL_VERTICAL)));
   set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_BUBBLE_PREFERRED_WIDTH));
+  set_margins(BubbleSignInPromoView::GetBubbleSigninPromoMargins());
 
   // Show the sign in promo.
   auto* sign_in_promo = AddChildView(std::make_unique<BubbleSignInPromoView>(
@@ -44,12 +48,13 @@ AddressSignInPromoView::~AddressSignInPromoView() = default;
 void AddressSignInPromoView::AddedToWidget() {
   GetBubbleFrameView()->SetProperty(views::kElementIdentifierKey,
                                     kBubbleFrameViewId);
-  GetBubbleFrameView()->SetHeaderView(
-      std::make_unique<ThemeTrackingNonAccessibleImageView>(
-          ui::ImageModel::FromResourceId(IDR_SAVE_ADDRESS),
-          ui::ImageModel::FromResourceId(IDR_SAVE_ADDRESS_DARK),
-          base::BindRepeating(&views::BubbleDialogDelegate::background_color,
-                              base::Unretained(this))));
+
+  ui::ResourceBundle& bundle = ui::ResourceBundle::GetSharedInstance();
+  auto image_view = std::make_unique<views::ImageView>(
+      bundle.GetThemedLottieImageNamed(IDR_AUTOFILL_SAVE_ADDRESS_LOTTIE));
+  image_view->GetViewAccessibility().SetIsInvisible(true);
+
+  GetBubbleFrameView()->SetHeaderView(std::move(image_view));
 }
 
 void AddressSignInPromoView::Hide() {

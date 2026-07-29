@@ -2,13 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "third_party/blink/renderer/core/messaging/blink_transferable_message_mojom_traits.h"
 
+#include "base/containers/adapters.h"
 #include "mojo/public/cpp/base/big_buffer_mojom_traits.h"
 #include "skia/ext/skia_utils_base.h"
 #include "third_party/blink/public/mojom/messaging/static_bitmap_image.mojom-blink.h"
@@ -47,8 +43,8 @@ ToSerializedAcceleratedImage(
     scoped_refptr<blink::StaticBitmapImage> static_bitmap_image) {
   // TODO(crbug.com/374812177): Remove this clone once the lifetime issues
   // around sending accelerated StaticBitmapImage are resolved.
-  auto cloned_image = blink::StaticBitmapImageTransform::Clone(
-      blink::FlushReason::kCreateImageBitmap, static_bitmap_image);
+  auto cloned_image =
+      blink::StaticBitmapImageTransform::Clone(static_bitmap_image);
   cloned_image->EnsureSyncTokenVerified();
 
   auto shared_image = cloned_image->GetSharedImage();
@@ -60,23 +56,20 @@ ToSerializedAcceleratedImage(
       blink::mojom::blink::SerializedStaticBitmapImage::NewAcceleratedImage(
           blink::AcceleratedImageInfo{
               shared_image->Export(), cloned_image->GetSyncToken(),
-              SkImageInfo::Make(cloned_image->GetSize().width(),
-                                cloned_image->GetSize().height(),
-                                cloned_image->GetSkColorType(),
-                                cloned_image->GetAlphaType(),
-                                cloned_image->GetSkColorSpace()),
-              WTF::BindOnce(&blink::StaticBitmapImage::UpdateSyncToken,
-                            std::move(cloned_image))});
+              cloned_image->GetAlphaType(),
+              blink::BindOnce(
+                  &blink::StaticBitmapImage::UpdateSyncTokenFromExportResult,
+                  std::move(cloned_image))});
   return result;
 }
 
 }  // namespace
 
-Vector<blink::mojom::blink::SerializedStaticBitmapImagePtr>
+blink::Vector<blink::mojom::blink::SerializedStaticBitmapImagePtr>
 StructTraits<blink::mojom::blink::TransferableMessage::DataView,
              blink::BlinkTransferableMessage>::
     image_bitmap_contents_array(const blink::BlinkCloneableMessage& input) {
-  Vector<blink::mojom::blink::SerializedStaticBitmapImagePtr> out;
+  blink::Vector<blink::mojom::blink::SerializedStaticBitmapImagePtr> out;
   out.ReserveInitialCapacity(
       input.message->GetImageBitmapContentsArray().size());
   for (auto& bitmap_contents : input.message->GetImageBitmapContentsArray()) {
@@ -85,7 +78,8 @@ StructTraits<blink::mojom::blink::TransferableMessage::DataView,
       // so SkBitmap should be in N32 format.
       auto bitmap_n32 = ToSkBitmapN32(bitmap_contents);
       if (!bitmap_n32) {
-        return Vector<blink::mojom::blink::SerializedStaticBitmapImagePtr>();
+        return blink::Vector<
+            blink::mojom::blink::SerializedStaticBitmapImagePtr>();
       }
       out.push_back(blink::mojom::blink::SerializedStaticBitmapImage::NewBitmap(
           bitmap_n32.value()));
@@ -93,7 +87,8 @@ StructTraits<blink::mojom::blink::TransferableMessage::DataView,
       blink::mojom::blink::SerializedStaticBitmapImagePtr serialized_image =
           ToSerializedAcceleratedImage(bitmap_contents);
       if (!serialized_image) {
-        return Vector<blink::mojom::blink::SerializedStaticBitmapImagePtr>();
+        return blink::Vector<
+            blink::mojom::blink::SerializedStaticBitmapImagePtr>();
       }
       out.push_back(std::move(serialized_image));
     }
@@ -105,11 +100,11 @@ bool StructTraits<blink::mojom::blink::TransferableMessage::DataView,
                   blink::BlinkTransferableMessage>::
     Read(blink::mojom::blink::TransferableMessage::DataView data,
          blink::BlinkTransferableMessage* out) {
-  Vector<blink::MessagePortDescriptor> ports;
-  Vector<blink::MessagePortDescriptor> stream_channels;
+  blink::Vector<blink::MessagePortDescriptor> ports;
+  blink::Vector<blink::MessagePortDescriptor> stream_channels;
   blink::SerializedScriptValue::ArrayBufferContentsArray
       array_buffer_contents_array;
-  Vector<blink::mojom::blink::SerializedStaticBitmapImagePtr> images;
+  blink::Vector<blink::mojom::blink::SerializedStaticBitmapImagePtr> images;
   if (!data.ReadMessage(static_cast<blink::BlinkCloneableMessage*>(out)) ||
       !data.ReadArrayBufferContentsArray(&array_buffer_contents_array) ||
       !data.ReadImageBitmapContentsArray(&images) || !data.ReadPorts(&ports) ||
@@ -118,9 +113,7 @@ bool StructTraits<blink::mojom::blink::TransferableMessage::DataView,
     return false;
   }
 
-  out->ports.ReserveInitialCapacity(ports.size());
-  out->ports.AppendRange(std::make_move_iterator(ports.begin()),
-                         std::make_move_iterator(ports.end()));
+  out->ports.append_range(base::RangeAsRvalues(std::move(ports)));
   for (auto& channel : stream_channels) {
     out->message->GetStreams().push_back(
         blink::SerializedScriptValue::Stream(std::move(channel)));
@@ -171,19 +164,13 @@ bool StructTraits<blink::mojom::blink::SerializedArrayBufferContents::DataView,
     return false;
   auto contents_data = contents_view.data();
 
-  std::optional<size_t> max_data_size;
-  if (data.is_resizable_by_user_javascript()) {
-    max_data_size = base::checked_cast<size_t>(data.max_byte_length());
-  }
+  std::optional<size_t> max_data_size = data.javascript_resize_limit();
   blink::ArrayBufferContents array_buffer_contents(
       contents_data.size(), max_data_size, 1,
       blink::ArrayBufferContents::kNotShared,
-      blink::ArrayBufferContents::kDontInitialize);
-  if (contents_data.size() != array_buffer_contents.DataLength()) {
-    return false;
-  }
-  memcpy(array_buffer_contents.Data(), contents_data.data(),
-         contents_data.size());
+      blink::ArrayBufferContents::kDontInitialize,
+      blink::ArrayBufferContents::AllocationFailureBehavior::kCrash);
+  array_buffer_contents.ByteSpan().copy_from(contents_data);
   *out = std::move(array_buffer_contents);
   return true;
 }

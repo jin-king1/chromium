@@ -19,7 +19,6 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/browsing_data/core/browsing_data_utils.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
-#include "components/content_settings/core/common/features.h"
 #include "components/content_settings/core/common/pref_names.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/page_info/core/features.h"
@@ -47,10 +46,7 @@ const char kDeleteBrowsingDataActionName[] =
     "Privacy.DeleteBrowsingData.Action";
 
 void ClickButton(views::Button* button) {
-  views::test::ButtonTestApi test_api(button);
-  ui::MouseEvent e(ui::EventType::kMousePressed, gfx::Point(), gfx::Point(),
-                   ui::EventTimeForNow(), 0, 0);
-  test_api.NotifyClick(e);
+  views::test::ButtonTestApi(button).NotifyDefaultMouseClick();
 }
 
 }  // namespace
@@ -227,7 +223,7 @@ IN_PROC_BROWSER_TEST_F(PageSpecificSiteDataDialogBrowserTest,
 // Closing the widget asynchronously destroys the CollectedCookiesViews object,
 // but synchronously removes it from the WebContentsModalDialogManager. Make
 // sure there's no crash when trying to re-open the dialog right
-// after closing it. Regression test for https://crbug.com/989888
+// after closing it. Regression test for https://crbug.com/40638525
 IN_PROC_BROWSER_TEST_F(PageSpecificSiteDataDialogBrowserTest,
                        CloseDialogAndReopen) {
   auto* dialog = OpenDialog();
@@ -384,22 +380,10 @@ IN_PROC_BROWSER_TEST_F(PageSpecificSiteDataDialogBrowserTest,
   EXPECT_EQ(1u, infobar_count());
 }
 
-class PageSpecificSiteDataDialogPre3pcdBrowserTest
-    : public PageSpecificSiteDataDialogBrowserTest {
- public:
-  PageSpecificSiteDataDialogPre3pcdBrowserTest() {
-    feature_list_.InitAndDisableFeature(
-        content_settings::features::kTrackingProtection3pcd);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(PageSpecificSiteDataDialogPre3pcdBrowserTest,
+IN_PROC_BROWSER_TEST_F(PageSpecificSiteDataDialogBrowserTest,
                        PartitionedCookiesAndAllowedThirdParty) {
   // Allow third-party cookies.
-  browser()->profile()->GetPrefs()->SetInteger(
+  browser()->GetProfile()->GetPrefs()->SetInteger(
       prefs::kCookieControlsMode,
       static_cast<int>(content_settings::CookieControlsMode::kOff));
 
@@ -460,7 +444,7 @@ IN_PROC_BROWSER_TEST_F(PageSpecificSiteDataDialogPre3pcdBrowserTest,
 IN_PROC_BROWSER_TEST_F(PageSpecificSiteDataDialogBrowserTest,
                        PartitionedCookiesAndBlockedThirdParty) {
   // Block third-party cookies.
-  browser()->profile()->GetPrefs()->SetInteger(
+  browser()->GetProfile()->GetPrefs()->SetInteger(
       prefs::kCookieControlsMode,
       static_cast<int>(content_settings::CookieControlsMode::kBlockThirdParty));
 
@@ -524,7 +508,7 @@ IN_PROC_BROWSER_TEST_F(PageSpecificSiteDataDialogBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PageSpecificSiteDataDialogBrowserTest,
                        SameOriginNavigationDeletion) {
-  // Regression test for crbug.com/1421521. As the dialog remains open during
+  // Regression test for crbug.com/40896298. As the dialog remains open during
   // same-origin navigations, it mustn't cache any pointers owned by the
   // PageSpecificContentSettings, which is _page_ specific, and so changes even
   // on same-origin navigations. Attempting a deletion is sufficient to access

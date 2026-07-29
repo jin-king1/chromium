@@ -4,12 +4,13 @@
 
 package org.chromium.chrome.browser.perf;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.util.Log;
 
 import androidx.benchmark.macro.junit4.BaselineProfileRule;
 import androidx.test.core.app.ApplicationProvider;
@@ -24,6 +25,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.Log;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.IntegrationTest;
 import org.chromium.chrome.test.pagecontroller.utils.IUi2Locator;
@@ -72,36 +74,36 @@ public class BaselineProfileTest {
                 /* outputFilePrefix= */ null,
                 /* includeInStartupProfile= */ true,
                 /* profileBlock= */ scope -> {
-                    final Intent cct_intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                    cct_intent.addFlags(
+                    final Intent cctIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                    cctIntent.addFlags(
                             Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
                     // Mark it as a CCT session.
-                    cct_intent.putExtra(CCT_SESSION_EXTRA, (Bundle) null);
-                    cct_intent.setComponent(new ComponentName(mPackageName, ACTIVITY_NAME));
+                    cctIntent.putExtra(CCT_SESSION_EXTRA, (Bundle) null);
+                    cctIntent.setComponent(new ComponentName(mPackageName, ACTIVITY_NAME));
                     Log.i(TAG, "startActivity(CCT)");
-                    context.startActivity(cct_intent);
+                    context.startActivity(cctIntent);
                     IUi2Locator locatorChrome = Ui2Locators.withPackageName(mPackageName);
                     // Chrome starts this block dead, wait for it to load.
                     Log.i(TAG, "Waiting for chrome to load");
                     UiAutomatorUtils.getInstance().waitUntilAnyVisible(locatorChrome);
                     Log.i(TAG, "Waiting for Top Bar to show Host");
                     String origin = sEmbeddedTestServerRule.getOrigin();
-                    assert origin.startsWith("http://");
+                    assertThat(origin).startsWith("http://");
                     String host = origin.substring(7, origin.length() - 1);
                     IUi2Locator hostTextLocator = Ui2Locators.withText(host);
                     UiAutomatorUtils.getInstance().waitUntilAnyVisible(hostTextLocator);
                     Log.i(TAG, "CCT load complete");
 
-                    final Intent cta_intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                    cta_intent.addCategory(Intent.CATEGORY_BROWSABLE);
-                    cta_intent.addCategory(Intent.CATEGORY_DEFAULT);
-                    cta_intent.addFlags(
+                    final Intent ctaIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                    ctaIntent.addCategory(Intent.CATEGORY_BROWSABLE);
+                    ctaIntent.addCategory(Intent.CATEGORY_DEFAULT);
+                    ctaIntent.addFlags(
                             Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
-                    cta_intent.setComponent(new ComponentName(mPackageName, ACTIVITY_NAME));
+                    ctaIntent.setComponent(new ComponentName(mPackageName, ACTIVITY_NAME));
                     Log.i(TAG, "startActivity(CTA)");
-                    context.startActivity(cta_intent);
+                    context.startActivity(ctaIntent);
                     String urlWithoutScheme = url.substring(7);
-                    IUi2Locator urlTextLocator = Ui2Locators.withText(urlWithoutScheme);
+                    IUi2Locator urlTextLocator = Ui2Locators.withTextContaining(urlWithoutScheme);
                     Log.i(TAG, "Waiting for omnibox to show URL");
                     UiAutomatorUtils.getInstance().waitUntilAnyVisible(urlTextLocator);
                     Log.i(TAG, "CTA load complete");

@@ -35,3 +35,7 @@ Granted 'pointerLock'
 Granted 'automaticFullscreen'
 Granted 'handTracking'
 Granted 'webAppInstallation'
+Granted 'localNetworkAccess'
+Granted 'localNetwork'
+Granted 'loopbackNetwork'
+Failed to grant 'geolocationApproximate', error: Unknown permission type: geolocationApproximate

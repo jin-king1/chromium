@@ -5,8 +5,11 @@
 #ifndef CHROME_BROWSER_UI_ASH_INPUT_METHOD_COMPLETION_SUGGESTION_VIEW_H_
 #define CHROME_BROWSER_UI_ASH_INPUT_METHOD_COMPLETION_SUGGESTION_VIEW_H_
 
+#include <string_view>
+
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "chrome/browser/ui/ash/input_method/suggestion_details.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/chromeos/styles/cros_styles.h"
 #include "ui/chromeos/ui_chromeos_export.h"
@@ -23,23 +26,22 @@ class ImageView;
 namespace ui {
 namespace ime {
 
-struct SuggestionDetails;
 class CompletionSuggestionLabelView;
 
 // Font-related constants
-constexpr char kFontStyle[] = "Roboto";
-constexpr int kAnnotationFontSize = 10;
-constexpr int kIndexFontSize = 10;
+inline constexpr char kFontStyle[] = "Roboto";
+inline constexpr int kAnnotationFontSize = 10;
+inline constexpr int kIndexFontSize = 10;
 
 // Style-related constants
-constexpr int kAnnotationBorderThickness = 1;
-constexpr int kAnnotationCornerRadius = 2;
-constexpr int kPadding = 8;
-constexpr int kAnnotationPaddingLeft = 12;
-constexpr int kAnnotationPaddingBottom = 16;
-constexpr int kAnnotationPaddingTop = 6;
-constexpr char kTabKey[] = "tab";
-constexpr cros_styles::ColorName kButtonHighlightColor =
+inline constexpr int kAnnotationBorderThickness = 1;
+inline constexpr int kAnnotationCornerRadius = 2;
+inline constexpr int kPadding = 8;
+inline constexpr int kAnnotationPaddingLeft = 12;
+inline constexpr int kAnnotationPaddingBottom = 16;
+inline constexpr int kAnnotationPaddingTop = 6;
+inline constexpr char kTabKey[] = "tab";
+inline constexpr cros_styles::ColorName kButtonHighlightColor =
     cros_styles::ColorName::kRippleColor;
 
 // CompletionSuggestionView renders a suggestion.
@@ -83,7 +85,7 @@ class UI_CHROMEOS_EXPORT CompletionSuggestionView : public views::Button {
   // Views created in the class will be part of tree of |this|, so these
   // child views will be deleted when |this| is deleted.
 
-  void SetSuggestionText(const std::u16string& text,
+  void SetSuggestionText(std::u16string_view text,
                          const size_t confirmed_length);
 
   // The suggestion label renders the suggestion text.

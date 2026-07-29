@@ -8,6 +8,8 @@
 #import <AuthenticationServices/AuthenticationServices.h>
 #import <Foundation/Foundation.h>
 
+#import "components/webauthn/ios/passkey_types.h"
+
 @protocol Credential;
 
 // This class represents a passkey credential request (attestation or
@@ -16,30 +18,34 @@
 
 - (instancetype)initWithParameters:(ASPasskeyCredentialRequestParameters*)
                                        passkeyCredentialRequestParameters
-    isBiometricAuthenticationEnabled:(BOOL)isBiometricAuthenticationEnabled
-    API_AVAILABLE(ios(17.0));
+    isBiometricAuthenticationEnabled:(BOOL)isBiometricAuthenticationEnabled;
 
 - (instancetype)initWithRequest:(id<ASCredentialRequest>)credentialRequest
     isBiometricAuthenticationEnabled:(BOOL)isBiometricAuthenticationEnabled
-    API_AVAILABLE(ios(17.0));
+                 isConditionalCreate:(BOOL)isConditionalCreate;
 
 - (instancetype)init NS_UNAVAILABLE;
 
 // Performs passkey creation and returns the new credential.
-- (ASPasskeyRegistrationCredential*)createPasskeyForGaia:(NSString*)gaia
-                                   securityDomainSecrets:
-                                       (NSArray<NSData*>*)securityDomainSecrets
-    API_AVAILABLE(ios(17.0));
+- (ASPasskeyRegistrationCredential*)
+           createPasskeyForGaia:(NSString*)gaia
+               trustedVaultKeys:(webauthn::SharedKeyList)trustedVaultKeys
+    didCompleteUserVerification:(BOOL)didCompleteUserVerification;
 
 // Performs passkey assertion and returns the assertion response.
 - (ASPasskeyAssertionCredential*)
-    assertPasskeyCredential:(id<Credential>)credential
-      securityDomainSecrets:(NSArray<NSData*>*)securityDomainSecrets
-    API_AVAILABLE(ios(17.0));
+        assertPasskeyCredential:(id<Credential>)credential
+               trustedVaultKeys:(webauthn::SharedKeyList)trustedVaultKeys
+    didCompleteUserVerification:(BOOL)didCompleteUserVerification;
 
-// Returns whether the list of credentials contains a password of the same
-// domain and username as the passkey request.
+// Returns whether the list of credentials contains a password that has eTLD+1
+// matching the relying party identifier (either equal or eTLD+1 being a suffix
+// of the RP ID) and the same username as the passkey request.
 - (BOOL)hasMatchingPassword:(NSArray<id<Credential>>*)credentials;
+
+// Returns whether a passkey from the excluded passkeys list is both in the
+// credentials list and is for the same rpId as the current request.
+- (BOOL)hasExcludedPasskey:(NSArray<id<Credential>>*)credentials;
 
 // A preference for whether the authenticator should attempt to verify that it
 // is being used by its owner.
@@ -47,6 +53,9 @@
 
 // The relying party identifier for this request.
 @property(nonatomic, readonly) NSString* relyingPartyIdentifier;
+
+// The user name for this request.
+@property(nonatomic, readonly) NSString* userName;
 
 // A list of allowed credential IDs for this request. An empty list means all
 // credentials are allowed.

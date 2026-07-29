@@ -9,36 +9,44 @@
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/to_string.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "chrome/browser/web_applications/commands/generated_icon_fix_command.h"
 #include "chrome/browser/web_applications/generated_icon_fix_util.h"
 #include "chrome/browser/web_applications/locks/all_apps_lock.h"
 #include "chrome/browser/web_applications/locks/app_lock.h"
 #include "chrome/browser/web_applications/locks/with_app_resources.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
+#include "chrome/browser/web_applications/scheduler/generated_icon_fix_result.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chrome/common/chrome_features.h"
+#include "content/public/browser/network_service_instance.h"
 
 namespace web_app {
 
 namespace {
 
 bool g_disable_auto_retry_for_testing = false;
+bool g_disable_generated_icon_fixes_for_testing = false;
 
-bool IsEnabled() {
-  return base::FeatureList::IsEnabled(
-      features::kWebAppSyncGeneratedIconBackgroundFix);
-}
+constexpr base::TimeDelta kSyncInstallFixDelay = base::Minutes(10);
 
 }  // namespace
 
 // static
-void GeneratedIconFixManager::DisableAutoRetryForTesting() {
-  g_disable_auto_retry_for_testing = true;
+base::AutoReset<bool> GeneratedIconFixManager::DisableAutoRetryForTesting() {
+  return base::AutoReset<bool>(&g_disable_auto_retry_for_testing, true);
+}
+
+// static
+base::AutoReset<bool>
+GeneratedIconFixManager::DisableGeneratedIconFixesForTesting() {
+  return base::AutoReset<bool>(&g_disable_generated_icon_fixes_for_testing,
+                               true);
 }
 
 GeneratedIconFixManager::GeneratedIconFixManager() = default;
@@ -51,23 +59,70 @@ void GeneratedIconFixManager::SetProvider(base::PassKey<WebAppProvider>,
 }
 
 void GeneratedIconFixManager::Start() {
-  if (!IsEnabled()) {
+  if (g_disable_generated_icon_fixes_for_testing) {
     return;
   }
-
-  provider_->scheduler().ScheduleCallback(
-      "GeneratedIconFixManager::Start", AllAppsLockDescription(),
-      base::BindOnce(&GeneratedIconFixManager::ScheduleFixes,
-                     weak_ptr_factory_.GetWeakPtr()),
-      /*on_complete=*/base::DoNothing());
+  if (!registrar_observation_.IsObserving()) {
+    registrar_observation_.Observe(&provider_->registrar_unsafe());
+  }
+  if (!network_observation_.IsObserving()) {
+    network_observation_.Observe(content::GetNetworkConnectionTracker());
+  }
+  ScheduleAllFixes();
 }
 
 void GeneratedIconFixManager::InvalidateWeakPtrsForTesting() {
   weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
+void GeneratedIconFixManager::ScheduleAllFixes() {
+  provider_->scheduler().ScheduleCallback(
+      "GeneratedIconFixManager::ScheduleAllFixes", AllAppsLockDescription(),
+      base::BindOnce(&GeneratedIconFixManager::ScheduleFixes,
+                     weak_ptr_factory_.GetWeakPtr()),
+      /*on_complete=*/base::DoNothing());
+}
+
+void GeneratedIconFixManager::ScheduleFixAfterSyncInstall(
+    const webapps::AppId& app_id) {
+  provider_->scheduler().ScheduleCallback(
+      "GeneratedIconFixManager::ScheduleFixAfterSyncInstall",
+      AppLockDescription(app_id),
+      base::BindOnce(&GeneratedIconFixManager::MaybeScheduleFixAppLock,
+                     weak_ptr_factory_.GetWeakPtr(), app_id),
+      base::DoNothing());
+}
+
+void GeneratedIconFixManager::OnWebAppsWillBeUpdatedFromSync(
+    base::span<const WebApp* const> new_apps_state) {
+  for (const WebApp* app : new_apps_state) {
+    if (MakeScheduleDecision(app) !=
+        GeneratedIconFixScheduleDecision::kSchedule) {
+      continue;
+    }
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&GeneratedIconFixManager::ScheduleFixAfterSyncInstall,
+                       weak_ptr_factory_.GetWeakPtr(), app->app_id()),
+        kSyncInstallFixDelay);
+  }
+}
+
+void GeneratedIconFixManager::OnAppRegistrarDestroyed() {
+  registrar_observation_.Reset();
+  network_observation_.Reset();
+  provider_ = nullptr;
+}
+
+void GeneratedIconFixManager::OnConnectionChanged(
+    net::NetworkChangeNotifier::ConnectionType type) {
+  if (type != net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE) {
+    ScheduleAllFixes();
+  }
+}
+
 void GeneratedIconFixManager::ScheduleFixes(AllAppsLock& all_apps_lock,
-                                            base::Value::Dict& debug_value) {
+                                            base::DictValue& debug_value) {
   int started_attempt_count = 0;
   for (const webapps::AppId& app_id : all_apps_lock.registrar().GetAppIds()) {
     bool scheduled = MaybeScheduleFix(app_id, all_apps_lock,
@@ -79,7 +134,7 @@ void GeneratedIconFixManager::ScheduleFixes(AllAppsLock& all_apps_lock,
 
     ++started_attempt_count;
     const WebApp* app = all_apps_lock.registrar().GetAppById(app_id);
-    const std::optional<GeneratedIconFix>& generated_icon_fix =
+    const std::optional<proto::GeneratedIconFix>& generated_icon_fix =
         app->generated_icon_fix();
     base::UmaHistogramCounts100("WebApp.GeneratedIconFix.AttemptCount",
                                 generated_icon_fix.has_value()
@@ -93,9 +148,7 @@ void GeneratedIconFixManager::ScheduleFixes(AllAppsLock& all_apps_lock,
 
 bool GeneratedIconFixManager::MaybeScheduleFix(const webapps::AppId& app_id,
                                                WithAppResources& resources,
-                                               base::Value::Dict& debug_value) {
-  CHECK(IsEnabled());
-
+                                               base::DictValue& debug_value) {
   const WebApp* app = resources.registrar().GetAppById(app_id);
   GeneratedIconFixScheduleDecision decision = MakeScheduleDecision(app);
 
@@ -124,7 +177,7 @@ bool GeneratedIconFixManager::MaybeScheduleFix(const webapps::AppId& app_id,
 void GeneratedIconFixManager::MaybeScheduleFixAppLock(
     const webapps::AppId& app_id,
     AppLock& app_lock,
-    base::Value::Dict& debug_value) {
+    base::DictValue& debug_value) {
   MaybeScheduleFix(app_id, app_lock, debug_value);
 }
 
@@ -136,7 +189,7 @@ GeneratedIconFixScheduleDecision GeneratedIconFixManager::MakeScheduleDecision(
 
   if (!app->is_generated_icon()) {
     // TODO(crbug.com/40185008): Check for icon bitmaps that match the generated
-    // icon bitmap for users that were affected by crbug.com/1317922.
+    // icon bitmap for users that were affected by crbug.com/40835055.
     return GeneratedIconFixScheduleDecision::kNotRequired;
   }
 
@@ -156,7 +209,7 @@ GeneratedIconFixScheduleDecision GeneratedIconFixManager::MakeScheduleDecision(
 void GeneratedIconFixManager::StartFix(const webapps::AppId& app_id) {
   provider_->command_manager().ScheduleCommand(
       std::make_unique<GeneratedIconFixCommand>(
-          app_id, GeneratedIconFixSource_RETROACTIVE,
+          app_id, proto::GENERATED_ICON_FIX_SOURCE_RETROACTIVE,
           base::BindOnce(&GeneratedIconFixManager::FixCompleted,
                          weak_ptr_factory_.GetWeakPtr(), app_id)));
 }

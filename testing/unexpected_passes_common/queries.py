@@ -213,7 +213,9 @@ class BigQueryQuerier:
       A pandas.Series object for each row returned by the query. Columns can be
       accessed directly as attributes.
     """
-    client = bigquery.Client(project=self._project)
+    client = bigquery.Client(
+        project=self._project,
+        default_query_job_config=bigquery.QueryJobConfig(use_legacy_sql=False))
     job = client.query(query)
     row_iterator = job.result()
     # Using a Dataframe iterator instead of directly using |row_iterator| allows
@@ -288,8 +290,8 @@ class BigQueryQuerier:
 
     return results, expectation_files
 
-  def _ConvertBigQueryRowToResultObject(self,
-                                        row: QueryResult) -> data_types.Result:
+  @staticmethod
+  def _ConvertBigQueryRowToResultObject(row: QueryResult) -> data_types.Result:
     """Converts a single BigQuery result row to a data_types.Result.
 
     Args:
@@ -299,7 +301,7 @@ class BigQueryQuerier:
       A data_types.Result object containing the information from |row|.
     """
     build_id = _StripPrefixFromBuildId(row.id)
-    test_name = self._StripPrefixFromTestId(row.test_id)
+    test_name = row.test_name
     actual_result = _ConvertActualResultToExpectationFileFormat(row.status)
     tags = expectations.GetInstance().FilterToKnownTags(row.typ_tags)
     step = row.step_name
@@ -333,19 +335,8 @@ class BigQueryQuerier:
     """
     del result
     return False
+
   # pylint: enable=no-self-use
-
-  def _StripPrefixFromTestId(self, test_id: str) -> str:
-    """Strips the prefix from a test ID, leaving only the test case name.
-
-    Args:
-      test_id: A string containing a full ResultDB test ID, e.g.
-          ninja://target/directory.suite.class.test_case
-
-    Returns:
-      A string containing the test cases name extracted from |test_id|.
-    """
-    raise NotImplementedError()
 
 
 def _StripPrefixFromBuildId(build_id: str) -> str:

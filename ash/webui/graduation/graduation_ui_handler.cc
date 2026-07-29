@@ -8,12 +8,12 @@
 #include <utility>
 
 #include "ash/webui/graduation/graduation_state_tracker.h"
-#include "ash/webui/graduation/mojom/graduation_ui.mojom-shared.h"
 #include "ash/webui/graduation/mojom/graduation_ui.mojom.h"
 #include "ash/webui/graduation/webview_auth_handler.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "components/user_manager/user.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/gfx/image/image.h"
@@ -48,8 +48,10 @@ GraduationUiHandler::~GraduationUiHandler() = default;
 void GraduationUiHandler::AuthenticateWebview(
     AuthenticateWebviewCallback callback) {
   auth_handler_->AuthenticateWebview(
-      base::BindOnce(&GraduationUiHandler::OnAuthenticationFinished,
-                     base::Unretained(this), std::move(callback)));
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+          base::BindOnce(&GraduationUiHandler::OnAuthenticationFinished,
+                         base::Unretained(this), std::move(callback)),
+          false));
 }
 
 void GraduationUiHandler::GetProfileInfo(GetProfileInfoCallback callback) {

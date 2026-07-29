@@ -22,8 +22,17 @@ namespace proto {
 class DatabaseMetadata;
 }  // namespace proto
 
-class WebAppProto;
+namespace proto {
+class WebApp;
+}  // namespace proto
 
+// A fake implementation of AbstractWebAppDatabaseFactory that provides an
+// in-memory database store (using syncer::InMemoryDataTypeStore) for the web
+// app registry. This avoids real disk I/O in unit tests.
+// Note: tests should strongly prefer acting through the public web app APIs
+// (like WebAppCommandScheduler) rather than directly poking this database.
+// This factory is primarily useful for testing startup conditions or migration
+// logic that requires a specific pre-existing database state.
 class FakeWebAppDatabaseFactory : public AbstractWebAppDatabaseFactory {
  public:
   FakeWebAppDatabaseFactory();
@@ -37,13 +46,16 @@ class FakeWebAppDatabaseFactory : public AbstractWebAppDatabaseFactory {
   // AbstractWebAppDatabaseFactory interface implementation.
   syncer::OnceDataTypeStoreFactory GetStoreFactory() override;
   bool IsSyncingApps() override;
+  FakeWebAppDatabaseFactory* AsFakeWebAppDatabaseFactory() override;
 
   proto::DatabaseMetadata ReadMetadata();
-  Registry ReadRegistry();
+  Registry ReadRegistry(bool allow_invalid_protos = false);
 
   std::set<webapps::AppId> ReadAllAppIds();
 
-  void WriteProtos(const std::vector<std::unique_ptr<WebAppProto>>& protos);
+  void WriteMetadata(const proto::DatabaseMetadata& metadata);
+  void WriteProtos(const std::vector<std::unique_ptr<proto::WebApp>>& protos);
+  void WriteProtos(const std::vector<proto::WebApp>& protos);
   void WriteRegistry(const Registry& registry);
 
   void set_is_syncing_apps(bool is_syncing_apps) {

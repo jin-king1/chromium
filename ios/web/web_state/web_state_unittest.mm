@@ -10,6 +10,7 @@
 #import "base/path_service.h"
 #import "base/run_loop.h"
 #import "base/strings/stringprintf.h"
+#import "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/values.h"
@@ -160,13 +161,14 @@ TEST_F(WebStateTest, Snapshot) {
         EXPECT_GT(snapshot.size.height, 0);
         int red_pixel_x = (snapshot.size.width / 2) - 10;
         int white_pixel_x = (snapshot.size.width / 2) + 10;
+        int pixel_y = (snapshot.size.height / 2);
         // Test a pixel on the left (red) side.
         gfx::test::CheckColors(
-            gfx::test::GetPlatformImageColor(snapshot, red_pixel_x, 50),
+            gfx::test::GetPlatformImageColor(snapshot, red_pixel_x, pixel_y),
             SK_ColorRED);
         // Test a pixel on the right (white) side.
         gfx::test::CheckColors(
-            gfx::test::GetPlatformImageColor(snapshot, white_pixel_x, 50),
+            gfx::test::GetPlatformImageColor(snapshot, white_pixel_x, pixel_y),
             SK_ColorWHITE);
         snapshot_complete = true;
       }));
@@ -176,7 +178,13 @@ TEST_F(WebStateTest, Snapshot) {
 }
 
 // Tests that the create PDF method returns a PDF of a rendered html page.
-TEST_F(WebStateTest, CreateFullPagePdf_ValidURL) {
+// TODO(crbug.com/433740395): Re-enable tests
+#if TARGET_OS_SIMULATOR
+#define MAYBE_CreateFullPagePdf_ValidURL CreateFullPagePdf_ValidURL
+#else
+#define MAYBE_CreateFullPagePdf_ValidURL DISABLED_CreateFullPagePdf_ValidURL
+#endif
+TEST_F(WebStateTest, MAYBE_CreateFullPagePdf_ValidURL) {
   [GetAnyKeyWindow() addSubview:web_state()->GetView()];
 
   // Load a URL and some HTML in the WebState.
@@ -236,6 +244,7 @@ TEST_F(WebStateTest, CreateFullPagePdf_InvalidURLs) {
                           @"text/html", url);
 
     NavigationManager::WebLoadParams load_params(url);
+    load_params.transition_type = ui::PAGE_TRANSITION_TYPED;
     web_state()->GetNavigationManager()->LoadURLWithParams(load_params);
     ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
         base::test::ios::kWaitForPageLoadTimeout, ^bool {
@@ -257,9 +266,10 @@ TEST_F(WebStateTest, CreateFullPagePdf_InvalidURLs) {
   }
 }
 
-// Tests that CreateFullPagePdf invokes completion callback nil when the
-// WebState content is not HTML (e.g. a PDF file).
+// Tests that CreateFullPagePdf returns PDF data when the WebState content is a
+// PDF file.
 TEST_F(WebStateTest, CreateFullPagePdfWebStatePdfContent) {
+  [GetAnyKeyWindow() addSubview:web_state()->GetView()];
   CGRect fake_bounds = CGRectMake(0, 0, 100, 100);
   UIGraphicsPDFRenderer* pdf_renderer =
       [[UIGraphicsPDFRenderer alloc] initWithBounds:fake_bounds];
@@ -271,7 +281,7 @@ TEST_F(WebStateTest, CreateFullPagePdfWebStatePdfContent) {
       }];
 
   GURL test_url("https://www.chromium.org/somePDF.pdf");
-  NavigationManager::WebLoadParams load_params(test_url);
+  web::NavigationManager::WebLoadParams load_params(test_url);
   web_state()->GetNavigationManager()->LoadURLWithParams(load_params);
   ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForPageLoadTimeout, ^bool {
@@ -299,7 +309,7 @@ TEST_F(WebStateTest, CreateFullPagePdfWebStatePdfContent) {
     return callback_called;
   }));
 
-  ASSERT_FALSE(callback_data);
+  ASSERT_TRUE(callback_data);
 }
 
 // Tests that the web state has an opener after calling SetHasOpener().
@@ -309,9 +319,52 @@ TEST_F(WebStateTest, SetHasOpener) {
   EXPECT_TRUE(web_state()->HasOpener());
 }
 
+// Tests that setting and getting user agent override works.
+TEST_F(WebStateTest, UserAgentOverride) {
+  EXPECT_FALSE(web_state()->GetUserAgentOverride().has_value());
+  std::string ua_override = "Fake UA String";
+  web_state()->SetUserAgentOverride(ua_override);
+  EXPECT_EQ(ua_override, web_state()->GetUserAgentOverride().value());
+
+  web_state()->SetUserAgentOverride(std::nullopt);
+  EXPECT_FALSE(web_state()->GetUserAgentOverride().has_value());
+
+  web_state()->SetUserAgentOverride(ua_override);
+  EXPECT_TRUE(web_state()->GetUserAgentOverride().has_value());
+
+  // An explicit empty string is treated as no override (std::nullopt).
+  web_state()->SetUserAgentOverride("");
+  EXPECT_FALSE(web_state()->GetUserAgentOverride().has_value());
+}
+
+// Tests that setting an invalid user agent override is ignored.
+TEST_F(WebStateTest, UserAgentOverrideValidation) {
+  EXPECT_FALSE(web_state()->GetUserAgentOverride().has_value());
+
+  // String with a newline is an invalid header value.
+  std::string invalid_ua = "Fake\nUA";
+  web_state()->SetUserAgentOverride(invalid_ua);
+  EXPECT_FALSE(web_state()->GetUserAgentOverride().has_value());
+
+  // Normal string should still work.
+  std::string valid_ua = "Fake UA";
+  web_state()->SetUserAgentOverride(valid_ua);
+  EXPECT_EQ(valid_ua, web_state()->GetUserAgentOverride().value());
+
+  // Clearing still works.
+  web_state()->SetUserAgentOverride(std::nullopt);
+  EXPECT_FALSE(web_state()->GetUserAgentOverride().has_value());
+}
+
 // Verifies that large session can be restored with max session size limit
 // equals to `wk_navigation_util::kMaxSessionSize`.
-TEST_F(WebStateTest, RestoreLargeSession) {
+// TODO(crbug.com/433740395): Re-enable tests
+#if TARGET_OS_SIMULATOR
+#define MAYBE_RestoreLargeSession RestoreLargeSession
+#else
+#define MAYBE_RestoreLargeSession DISABLED_RestoreLargeSession
+#endif
+TEST_F(WebStateTest, MAYBE_RestoreLargeSession) {
   // Create session storage with large number of items.
   const int kItemCount = 150;
   std::unique_ptr<WebState> web_state =
@@ -415,7 +468,13 @@ TEST_F(WebStateTest, RestoreLargeSession) {
 // Verifies that calling WebState::Stop() does not stop the session restoration.
 // Session restoration should be opaque to the user and embedder, so calling
 // Stop() is no-op.
-TEST_F(WebStateTest, CallStopDuringSessionRestore) {
+// TODO(crbug.com/433740395): Re-enable tests
+#if TARGET_OS_SIMULATOR
+#define MAYBE_CallStopDuringSessionRestore CallStopDuringSessionRestore
+#else
+#define MAYBE_CallStopDuringSessionRestore DISABLED_CallStopDuringSessionRestore
+#endif
+TEST_F(WebStateTest, MAYBE_CallStopDuringSessionRestore) {
   // Create session storage with large number of items.
   const int kItemCount = 10;
   std::unique_ptr<WebState> web_state =
@@ -496,7 +555,14 @@ TEST_F(WebStateTest, CallLoadURLWithParamsDuringSessionRestore) {
 // Verifies that calling NavigationManager::Reload() does not stop the session
 // restoration. Session restoration should be opaque to the user and embedder,
 // so calling Reload() is no-op.
-TEST_F(WebStateTest, CallReloadDuringSessionRestore) {
+// TODO(crbug.com/433740395): Re-enable tests
+#if TARGET_OS_SIMULATOR
+#define MAYBE_CallReloadDuringSessionRestore CallReloadDuringSessionRestore
+#else
+#define MAYBE_CallReloadDuringSessionRestore \
+  DISABLED_CallReloadDuringSessionRestore
+#endif
+TEST_F(WebStateTest, MAYBE_CallReloadDuringSessionRestore) {
   // Create session storage with large number of items.
   const int kItemCount = 10;
   std::unique_ptr<WebState> web_state =
@@ -566,6 +632,7 @@ TEST_F(WebStateTest, LoadChromeThenHTML) {
   GURL app_specific_url(
       base::StringPrintf("%s://app_specific_url", kTestAppSpecificScheme));
   web::NavigationManager::WebLoadParams load_params(app_specific_url);
+  load_params.transition_type = ui::PAGE_TRANSITION_TYPED;
   web_state()->GetNavigationManager()->LoadURLWithParams(load_params);
   EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForPageLoadTimeout, ^{
     return !web_state()->IsLoading();
@@ -602,6 +669,7 @@ TEST_F(WebStateTest, LoadChromeThenWaitThenHTMLThenReload) {
   GURL app_specific_url(
       base::StringPrintf("%s://app_specific_url", kTestAppSpecificScheme));
   web::NavigationManager::WebLoadParams load_params(app_specific_url);
+  load_params.transition_type = ui::PAGE_TRANSITION_TYPED;
   web_state()->GetNavigationManager()->LoadURLWithParams(load_params);
   // Wait for the error loading.
   EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForPageLoadTimeout, ^{

@@ -10,6 +10,7 @@
 #import "ios/chrome/browser/omnibox/eg_tests/omnibox_test_util.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_ui_features.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/common/NSString+Chromium.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -96,6 +97,12 @@
 
 // Tests navigating to a shortcut as a default match.
 - (void)testRichInlineDefaultSuggestion {
+// TODO(crbug.com/482376763): Test fails on iphone device.
+#if !TARGET_IPHONE_SIMULATOR
+  if (![ChromeEarlGrey isIPadIdiom]) {
+    EARL_GREY_TEST_DISABLED(@"Fails on iPhone device.");
+  }
+#endif
   // Add 2 shortcuts Page(1) and Page(2).
   [OmniboxEarlGrey addShorcuts:2 toTestServer:self.testServer];
 
@@ -103,8 +110,8 @@
 
   // Type the shortcut input in the omnibox.
   [ChromeEarlGreyUI
-      focusOmniboxAndReplaceText:base::SysUTF8ToNSString(
-                                     omnibox::PageTitle(shortcutPage))];
+      focusOmniboxAndReplaceText:[NSString cr_fromString:omnibox::PageTitle(
+                                                             shortcutPage)]];
 
   // The shortcut suggestion should be default match. Press enter to navigate to
   // it.
@@ -114,140 +121,6 @@
 
   [ChromeEarlGrey
       waitForWebStateContainingText:omnibox::PageContent(shortcutPage)];
-}
-
-@end
-
-// Tests the omnibox text field when editing, with search provider.
-@interface OmniboxEditAllowSearchTestCase : ChromeTestCase
-@end
-
-@implementation OmniboxEditAllowSearchTestCase
-
-- (void)setUp {
-  [super setUp];
-
-  // Start a server to be able to navigate to a web page.
-  self.testServer->RegisterRequestHandler(
-      base::BindRepeating(&omnibox::OmniboxHTTPResponses));
-  GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
-
-  [OmniboxAppInterface
-      setUpFakeSuggestionsService:@"fake_suggestions_sample.json"];
-
-  if (![ChromeTestCase forceRestartAndWipe]) {
-    [ChromeEarlGrey clearBrowsingHistory];
-  }
-}
-
-- (void)tearDownHelper {
-  [super tearDownHelper];
-  [OmniboxAppInterface tearDownFakeSuggestionsService];
-}
-
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-
-  // Enable flags for rich inline autocomplete tests.
-  if ([self isRunningTest:@selector(DISABLED_testRichInlineRemovedByTap)] ||
-      [self isRunningTest:@selector(DISABLED_testRichInlineRemovedByDelete)] ||
-      [self isRunningTest:@selector(testRichInlineRemovedWithArrowKey)]) {
-    config.features_enabled.push_back(omnibox::kRichAutocompletion);
-  }
-
-  // Disable AutocompleteProvider type TYPE_ON_DEVICE_HEAD.
-  omnibox::DisableAutocompleteProviders(config, 1024);
-
-  return config;
-}
-
-/// Verifies that the first suggestion is of type search.
-- (void)assertFirstSuggestionIsSearch {
-  NSIndexPath* firstRow = [NSIndexPath indexPathForRow:0 inSection:0];
-  // Verifies that the first suggestion doesn't contain a secondary text.
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(
-                                   grey_ancestor(
-                                       omnibox::PopupRowAtIndex(firstRow)),
-                                   omnibox::PopupRowSecondaryTextMatcher(),
-                                   nil)] assertWithMatcher:grey_nil()];
-}
-
-/// Verifies that the first suggestion is not of type search.
-- (void)assertFirstSuggestionIsURL {
-  NSIndexPath* firstRow = [NSIndexPath indexPathForRow:0 inSection:0];
-  // Verifies that the first suggestion contains a secondary text.
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(
-                                   grey_ancestor(
-                                       omnibox::PopupRowAtIndex(firstRow)),
-                                   omnibox::PopupRowSecondaryTextMatcher(),
-                                   nil)]
-      assertWithMatcher:[OmniboxEarlGrey isURLMatcher]];
-}
-
-#pragma mark - Test rich inline
-
-// Tests removing rich inline autocomplete by tapping the omnibox.
-// TODO(crbug.com/375219994): Re-enable test.
-- (void)DISABLED_testRichInlineRemovedByTap {
-  // Add 2 shortcuts Page(1) and Page(2).
-  [OmniboxEarlGrey addShorcuts:2 toTestServer:self.testServer];
-
-  omnibox::Page shortcutPage = omnibox::Page(1);
-
-  // Type the shortcut input in the omnibox.
-  [ChromeEarlGreyUI
-      focusOmniboxAndReplaceText:base::SysUTF8ToNSString(
-                                     omnibox::PageTitle(shortcutPage))];
-
-  [self assertFirstSuggestionIsURL];
-
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::Omnibox()]
-      performAction:grey_tap()];
-
-  [self assertFirstSuggestionIsSearch];
-}
-
-// Tests removing rich inline autocomplete by pressing delete.
-// TODO(crbug.com/374727611): Re-enable test.
-- (void)DISABLED_testRichInlineRemovedByDelete {
-  // Add 2 shortcuts Page(1) and Page(2).
-  [OmniboxEarlGrey addShorcuts:2 toTestServer:self.testServer];
-
-  omnibox::Page shortcutPage = omnibox::Page(1);
-
-  // Type the shortcut input in the omnibox.
-  [ChromeEarlGreyUI
-      focusOmniboxAndReplaceText:base::SysUTF8ToNSString(
-                                     omnibox::PageTitle(shortcutPage))];
-
-  [self assertFirstSuggestionIsURL];
-
-  // Press the backspace HW keyboard key.
-  [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"\b" flags:0];
-
-  [self assertFirstSuggestionIsSearch];
-}
-
-// Tests removing rich inline autocomplete by pressing an arrow key.
-- (void)testRichInlineRemovedWithArrowKey {
-  // Add 2 shortcuts Page(1) and Page(2).
-  [OmniboxEarlGrey addShorcuts:2 toTestServer:self.testServer];
-
-  omnibox::Page shortcutPage = omnibox::Page(1);
-
-  // Type the shortcut input in the omnibox.
-  [ChromeEarlGreyUI
-      focusOmniboxAndReplaceText:base::SysUTF8ToNSString(
-                                     omnibox::PageTitle(shortcutPage))];
-
-  [self assertFirstSuggestionIsURL];
-
-  // Simulate press the HW left arrow key.
-  [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"leftArrow" flags:0];
-
-  [self assertFirstSuggestionIsSearch];
 }
 
 @end

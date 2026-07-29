@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial.h"
@@ -19,10 +20,12 @@
 #include "base/strings/escape.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
+#include "base/values.h"
 #include "components/variations/client_filterable_state.h"
 #include "components/variations/field_trial_config/fieldtrial_testing_config.h"
 #include "components/variations/study_filtering.h"
 #include "components/variations/variations_seed_processor.h"
+#include "components/variations/variations_switches.h"
 
 namespace variations {
 namespace {
@@ -63,20 +66,19 @@ bool HasFormFactor(const FieldTrialTestingExperiment& experiment,
 // Returns true if the experiment config has a missing |min_os_version| or
 // GetOSVersion() >= |min_os_version|.
 bool HasMinOSVersion(const FieldTrialTestingExperiment& experiment) {
-  if (!experiment.min_os_version)
+  if (!experiment.min_os_version) {
     return true;
+  }
   return base::Version(experiment.min_os_version) <=
          ClientFilterableState::GetOSVersion();
 }
 
-// Records the override ui string config. Mainly used for testing.
-void ApplyUIStringOverrides(
-    const FieldTrialTestingExperiment& experiment,
-    const VariationsSeedProcessor::UIStringOverrideCallback& callback) {
-  for (const auto& override_ui_string : experiment.override_ui_string) {
-    callback.Run(override_ui_string.name_hash,
-                 base::UTF8ToUTF16(override_ui_string.value));
-  }
+// Checks that if |is_benchmarking_enabled| is true that this particular
+// experiment has not been disabled for benchmarking.
+bool IsEnabledForBenchmarking(const FieldTrialTestingExperiment& experiment,
+                              const bool is_benchmarking_enabled) {
+  return !is_benchmarking_enabled ||
+         !experiment.disable_benchmarking.value_or(false);
 }
 
 // Determines whether an experiment should be skipped or not. An experiment
@@ -100,7 +102,6 @@ bool ShouldSkipExperiment(const FieldTrialTestingExperiment& experiment,
 void AssociateParamsFromExperiment(
     const std::string& study_name,
     const FieldTrialTestingExperiment& experiment,
-    const VariationsSeedProcessor::UIStringOverrideCallback& callback,
     base::FeatureList* feature_list) {
   if (ShouldSkipExperiment(experiment, feature_list)) {
     return;
@@ -110,7 +111,8 @@ void AssociateParamsFromExperiment(
     for (const FieldTrialTestingExperimentParams& param : experiment.params) {
       params[param.key] = param.value;
     }
-    base::AssociateFieldTrialParams(study_name, experiment.name, params);
+    base::AssociateFieldTrialParams(study_name, experiment.name,
+                                    std::move(params));
   }
   base::FieldTrial* trial =
       base::FieldTrialList::CreateFieldTrial(study_name, experiment.name);
@@ -127,8 +129,6 @@ void AssociateParamsFromExperiment(
     feature_list->RegisterFieldTrialOverride(
         disabled_feature, base::FeatureList::OVERRIDE_DISABLE_FEATURE, trial);
   }
-
-  ApplyUIStringOverrides(experiment, callback);
 }
 
 Study::Filter CreateFilter(const FieldTrialTestingExperiment& experiment) {
@@ -138,6 +138,14 @@ Study::Filter CreateFilter(const FieldTrialTestingExperiment& experiment) {
   }
   for (const auto* excluded_hw_class : experiment.exclude_hardware_classes) {
     filter.add_exclude_hardware_class(excluded_hw_class);
+  }
+  for (const auto* included_hw_manufacturer :
+       experiment.hardware_manufacturers) {
+    filter.add_hardware_manufacturer(included_hw_manufacturer);
+  }
+  for (const auto* excluded_hw_manufacturer :
+       experiment.exclude_hardware_manufacturers) {
+    filter.add_exclude_hardware_manufacturer(excluded_hw_manufacturer);
   }
   return filter;
 }
@@ -158,12 +166,17 @@ Study::Filter CreateFilter(const FieldTrialTestingExperiment& experiment) {
 // - If no experiments match this platform, do not associate any of them.
 void ChooseExperiment(
     const FieldTrialTestingStudy& study,
-    const VariationsSeedProcessor::UIStringOverrideCallback& callback,
     Study::Platform platform,
     Study::FormFactor current_form_factor,
     base::FeatureList* feature_list) {
   const auto& command_line = *base::CommandLine::ForCurrentProcess();
   std::string hardware_class = ClientFilterableState::GetHardwareClass();
+  std::string hardware_manufacturer =
+      ClientFilterableState::GetHardwareManufacturer();
+  const bool is_benchmarking_enabled =
+      command_line.HasSwitch(::switches::kEnableBenchmarking) ||
+      command_line.GetSwitchValueASCII(
+          switches::kEnableFieldTrialTestingConfig) == "benchmarking";
   const FieldTrialTestingExperiment* chosen_experiment = nullptr;
   for (const FieldTrialTestingExperiment& experiment : study.experiments) {
     if (HasPlatform(experiment, platform)) {
@@ -174,7 +187,10 @@ void ChooseExperiment(
       if (!chosen_experiment && !HasDeviceLevelMismatch(experiment) &&
           HasFormFactor(experiment, current_form_factor) &&
           HasMinOSVersion(experiment) &&
-          internal::CheckStudyHardwareClass(filter, hardware_class)) {
+          internal::CheckStudyHardwareClass(filter, hardware_class) &&
+          internal::CheckStudyHardwareManufacturer(filter,
+                                                   hardware_manufacturer) &&
+          IsEnabledForBenchmarking(experiment, is_benchmarking_enabled)) {
         chosen_experiment = &experiment;
       }
 
@@ -186,8 +202,7 @@ void ChooseExperiment(
     }
   }
   if (chosen_experiment) {
-    AssociateParamsFromExperiment(study.name, *chosen_experiment, callback,
-                                  feature_list);
+    AssociateParamsFromExperiment(study.name, *chosen_experiment, feature_list);
   }
 }
 
@@ -204,12 +219,13 @@ std::string EscapeValue(const std::string& value) {
   std::string escaped_str;
   escaped_str.reserve(net_escaped_str.length());
   for (const char ch : net_escaped_str) {
-    if (ch == '.')
+    if (ch == '.') {
       escaped_str.append("%2E");
-    else if (ch == '*')
+    } else if (ch == '*') {
       escaped_str.append("%2A");
-    else
+    } else {
       escaped_str.push_back(ch);
+    }
   }
   return escaped_str;
 }
@@ -221,23 +237,20 @@ bool AssociateParamsFromString(const std::string& varations_string) {
 
 void AssociateParamsFromFieldTrialConfig(
     const FieldTrialTestingConfig& config,
-    const VariationsSeedProcessor::UIStringOverrideCallback& callback,
     Study::Platform platform,
     Study::FormFactor current_form_factor,
     base::FeatureList* feature_list) {
   for (const FieldTrialTestingStudy& study : config.studies) {
     CHECK(!study.experiments.empty());
-    ChooseExperiment(study, callback, platform, current_form_factor,
-                     feature_list);
+    ChooseExperiment(study, platform, current_form_factor, feature_list);
   }
 }
 
 void AssociateDefaultFieldTrialConfig(
-    const VariationsSeedProcessor::UIStringOverrideCallback& callback,
     Study::Platform platform,
     Study::FormFactor current_form_factor,
     base::FeatureList* feature_list) {
-  AssociateParamsFromFieldTrialConfig(kFieldTrialConfig, callback, platform,
+  AssociateParamsFromFieldTrialConfig(kFieldTrialConfig, platform,
                                       current_form_factor, feature_list);
 }
 

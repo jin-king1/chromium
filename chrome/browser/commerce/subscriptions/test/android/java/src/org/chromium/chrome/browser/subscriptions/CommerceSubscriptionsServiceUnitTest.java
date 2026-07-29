@@ -20,12 +20,14 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.FeatureOverrides;
@@ -44,7 +46,6 @@ import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerIm
 import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.MockNotificationManagerProxy;
@@ -63,12 +64,12 @@ import java.util.concurrent.TimeUnit;
 @Config(manifest = Config.NONE)
 public class CommerceSubscriptionsServiceUnitTest {
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private ShoppingService mShoppingService;
     @Mock TabModelSelector mTabModelSelector;
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     @Mock private Profile mProfile;
     @Mock private PrefService mPrefService;
-    @Mock private IdentityServicesProvider mIdentityServicesProvider;
     @Mock private UserPrefs.Natives mUserPrefsJni;
     @Mock private CommerceFeatureUtils.Natives mCommerceFeatureUtilsJniMock;
     @Mock private ShoppingServiceFactory.Natives mShoppingServiceFactoryJniMock;
@@ -83,8 +84,6 @@ public class CommerceSubscriptionsServiceUnitTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-
         CommerceFeatureUtilsJni.setInstanceForTesting(mCommerceFeatureUtilsJniMock);
         doReturn(true).when(mCommerceFeatureUtilsJniMock).isShoppingListEligible(anyLong());
 

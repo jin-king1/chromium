@@ -54,7 +54,6 @@ class OffTheRecordProfileImpl : public Profile {
   Profile* GetOriginalProfile() override;
   const Profile* GetOriginalProfile() const override;
   bool IsChild() const override;
-  bool AllowsBrowserWindows() const override;
   ExtensionSpecialStoragePolicy* GetExtensionSpecialStoragePolicy() override;
   PrefService* GetPrefs() override;
   const PrefService* GetPrefs() const override;
@@ -66,7 +65,6 @@ class OffTheRecordProfileImpl : public Profile {
   policy::ProfileCloudPolicyManager* GetProfileCloudPolicyManager() override;
 #endif  // BUILDFLAG(IS_CHROMEOS)
   policy::CloudPolicyManager* GetCloudPolicyManager() override;
-  scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() override;
   bool IsSameOrParent(Profile* profile) override;
   base::Time GetStartTime() const override;
   ProfileKey* GetProfileKey() const override;
@@ -90,7 +88,6 @@ class OffTheRecordProfileImpl : public Profile {
   void SetCreationTimeForTesting(base::Time creation_time) override;
 
   // content::BrowserContext implementation:
-  base::FilePath GetPath() override;
   base::FilePath GetPath() const override;
   base::Time GetCreationTime() const override;
   std::unique_ptr<content::ZoomLevelDelegate> CreateZoomLevelDelegate(
@@ -125,7 +122,10 @@ class OffTheRecordProfileImpl : public Profile {
   GetFederatedIdentityApiPermissionContext() override;
   content::FederatedIdentityAutoReauthnPermissionContextDelegate*
   GetFederatedIdentityAutoReauthnPermissionContext() override;
-  content::KAnonymityServiceDelegate* GetKAnonymityServiceDelegate() override;
+
+#if BUILDFLAG(IS_WIN)
+  void AckCrashForTracking() override;
+#endif
 
  protected:
   // Profile implementation.

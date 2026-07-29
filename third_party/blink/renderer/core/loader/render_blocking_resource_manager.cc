@@ -59,7 +59,7 @@ class ImperativeFontLoadFinishedCallback final
 
 RenderBlockingResourceManager::RenderBlockingResourceManager(Document& document)
     : element_render_blocking_links_(
-          MakeGarbageCollected<RenderBlockingElementLinkMap>(WTF::BindRepeating(
+          MakeGarbageCollected<RenderBlockingElementLinkMap>(BindRepeating(
               &RenderBlockingResourceManager::OnRenderBlockingElementLinkEmpty,
               WrapWeakPersistent(this)))),
       document_(document),
@@ -144,7 +144,8 @@ void RenderBlockingResourceManager::FontPreloadingTimerFired(TimerBase*) {
 
 void RenderBlockingResourceManager::AddPendingParsingElementLink(
     const AtomicString& id,
-    const HTMLLinkElement* link) {
+    const HTMLLinkElement* link,
+    RenderBlockingLevel blocking_level) {
   CHECK(link);
 
   // We can only add resources until the body element is parsed.
@@ -153,9 +154,11 @@ void RenderBlockingResourceManager::AddPendingParsingElementLink(
     return;
   }
 
-  element_render_blocking_links_->AddLinkWithTargetElement(
-      id, link, RenderBlockingLevel::kBlock);
-  document_->SetHasRenderBlockingExpectLinkElements(true);
+  element_render_blocking_links_->AddLinkWithTargetElement(id, link,
+                                                           blocking_level);
+  if (blocking_level == RenderBlockingLevel::kBlock) {
+    document_->SetHasRenderBlockingExpectLinkElements(true);
+  }
 }
 
 void RenderBlockingResourceManager::RemovePendingParsingElement(
@@ -182,15 +185,14 @@ void RenderBlockingResourceManager::ClearPendingParsingElements() {
           RenderBlockingLevel::kBlock)) {
     return;
   }
-  element_render_blocking_links_->ForEach(WTF::BindRepeating(
+  element_render_blocking_links_->ForEach(BindRepeating(
       [](Document* document, RenderBlockingLevel, const HTMLLinkElement& link) {
         document->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
             mojom::blink::ConsoleMessageSource::kOther,
             mojom::blink::ConsoleMessageLevel::kWarning,
-            String("Did not find element expected to be parsed from: <link "
-                   "rel=expect "
-                   "href=\"") +
-                link.FastGetAttribute(html_names::kHrefAttr) + "\">"));
+            StrCat({"Did not find element expected to be parsed from: <link "
+                    "rel=expect href=\"",
+                    link.FastGetAttribute(html_names::kHrefAttr), "\">"})));
       },
       WrapPersistent(document_.Get())));
   element_render_blocking_links_->Clear();
@@ -198,11 +200,10 @@ void RenderBlockingResourceManager::ClearPendingParsingElements() {
 
 void RenderBlockingResourceManager::OnRenderBlockingElementLinkEmpty(
     RenderBlockingLevel level) {
-  if (level != RenderBlockingLevel::kBlock) {
-    return;
+  if (level == RenderBlockingLevel::kBlock) {
+    document_->SetHasRenderBlockingExpectLinkElements(false);
+    RenderBlockingResourceUnblocked();
   }
-  document_->SetHasRenderBlockingExpectLinkElements(false);
-  RenderBlockingResourceUnblocked();
 }
 
 void RenderBlockingResourceManager::SetFontPreloadTimeoutForTest(

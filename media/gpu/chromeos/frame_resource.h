@@ -14,7 +14,7 @@
 #include "media/base/video_frame_metadata.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/gpu_memory_buffer.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
 #include "ui/gfx/linux/native_pixmap_dmabuf.h"
 
 namespace media {
@@ -56,11 +56,11 @@ class FrameResource : public base::RefCountedThreadSafe<FrameResource> {
   using ID = ::base::IdTypeU64<class FrameResourceIdTag>;
   ID unique_id() const;
 
-  // If the instance IsMappable(), then frame data can be accessed by using
-  // data(), writable_data(), visible_data(), and GetWritableVisibleData()
+  // If the instance HasDirectCpuAccess(), then frame data can be accessed by
+  // using data(), writable_data(), visible_data(), and GetWritableVisibleData()
   // accessors. The memory is owned by the FrameResource object and must not be
   // freed by the caller.
-  virtual bool IsMappable() const = 0;
+  virtual bool HasDirectCpuAccess() const = 0;
 
   virtual const uint8_t* data(size_t plane) const = 0;
 
@@ -96,18 +96,16 @@ class FrameResource : public base::RefCountedThreadSafe<FrameResource> {
   // Create a shared GPU memory handle to |this|'s data.
   virtual gfx::GpuMemoryBufferHandle CreateGpuMemoryBufferHandle() const = 0;
 
-  // Gets the ScopedMapping object which clients can use to access the CPU
-  // visible memory and other metadata for the gpu buffer backing |this|.
-  virtual std::unique_ptr<VideoFrame::ScopedMapping> MapGMBOrSharedImage()
-      const = 0;
+  virtual bool HasMappableSharedImage() const = 0;
+
+  virtual scoped_refptr<gpu::ClientSharedImage> GetSharedImage() const = 0;
 
   virtual const VideoFrameLayout& layout() const = 0;
 
   virtual VideoPixelFormat format() const = 0;
 
-  // Returns the stride in bytes of a plane. Note that stride can be negative if
-  // the image layout is bottom-up.
-  virtual int stride(size_t plane) const = 0;
+  // Returns the stride in bytes of a plane.
+  virtual size_t stride(size_t plane) const = 0;
 
   virtual VideoFrame::StorageType storage_type() const = 0;
 
@@ -148,9 +146,8 @@ class FrameResource : public base::RefCountedThreadSafe<FrameResource> {
   virtual gfx::ColorSpace ColorSpace() const = 0;
   virtual void set_color_space(const gfx::ColorSpace& color_space) = 0;
 
-  virtual const std::optional<gfx::HDRMetadata>& hdr_metadata() const = 0;
-  virtual void set_hdr_metadata(
-      const std::optional<gfx::HDRMetadata>& hdr_metadata) = 0;
+  virtual const gfx::HDRMetadata& hdr_metadata() const = 0;
+  virtual void set_hdr_metadata(const gfx::HDRMetadata& hdr_metadata) = 0;
 
   // Adds a callback to be run when the FrameResource is about to be destroyed.
   // The callback may be run from ANY THREAD, and so it is up to the client to

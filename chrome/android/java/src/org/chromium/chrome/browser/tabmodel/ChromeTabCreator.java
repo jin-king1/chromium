@@ -4,18 +4,20 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 import android.content.Intent;
 import android.text.TextUtils;
-
-import androidx.annotation.Nullable;
 
 import org.chromium.base.IntentUtils;
 import org.chromium.base.SysUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.TimingMetric;
 import org.chromium.base.supplier.OneshotSupplier;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.ServiceTabLauncher;
 import org.chromium.chrome.browser.WarmupManager;
@@ -23,7 +25,7 @@ import org.chromium.chrome.browser.app.tab_activity_glue.ReparentingDelegateFact
 import org.chromium.chrome.browser.app.tab_activity_glue.ReparentingTask;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.new_tab_url.DseNewTabUrlManager;
+import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.prefetch.settings.PreloadPagesSettingsBridge;
 import org.chromium.chrome.browser.prefetch.settings.PreloadPagesState;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -34,32 +36,46 @@ import org.chromium.chrome.browser.tab.TabAssociatedApp;
 import org.chromium.chrome.browser.tab.TabBuilder;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
+import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabParentIntent;
 import org.chromium.chrome.browser.tab.TabResolver;
 import org.chromium.chrome.browser.tab.TabState;
+import org.chromium.chrome.browser.tabmodel.TabCreator.NeedsTabModel;
+import org.chromium.chrome.browser.tabmodel.TabCreator.NeedsTabModelOrderController;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.content_public.browser.NavigationController;
+import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.PageTransition;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 
-/** This class creates various kinds of new tabs and adds them to the right {@link TabModel}. */
-public class ChromeTabCreator extends TabCreator {
-    private final Activity mActivity;
-    private final OneshotSupplier<ProfileProvider> mProfileProviderSupplier;
-    private final boolean mIncognito;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 
-    private WindowAndroid mNativeWindow;
-    private TabModel mTabModel;
-    private TabModelOrderController mOrderController;
-    private Supplier<TabDelegateFactory> mTabDelegateFactorySupplier;
-    private final AsyncTabParamsManager mAsyncTabParamsManager;
+/** This class creates various kinds of new tabs and adds them to the right {@link TabModel}. */
+@NullMarked
+public class ChromeTabCreator implements TabCreator, NeedsTabModel, NeedsTabModelOrderController {
+    /**
+     * The application ID used for tabs opened from an application that does not specify an app ID
+     * in its VIEW intent extras.
+     */
+    private static final String UNKNOWN_APP_ID = "com.google.android.apps.chrome.unknown_app";
+
+    protected final Activity mActivity;
+    private final WindowAndroid mNativeWindow;
+    private final Supplier<TabDelegateFactory> mTabDelegateFactorySupplier;
+    private final OneshotSupplier<ProfileProvider> mProfileProviderSupplier;
+    protected final boolean mIncognito;
+    protected final AsyncTabParamsManager mAsyncTabParamsManager;
     private final Supplier<TabModelSelector> mTabModelSelectorSupplier;
-    private final Supplier<CompositorViewHolder> mCompositorViewHolderSupplier;
-    @Nullable private final DseNewTabUrlManager mDseNewTabUrlManager;
+    private final Supplier<@Nullable CompositorViewHolder> mCompositorViewHolderSupplier;
+
+    private @Nullable TabModel mTabModel;
+    private @Nullable TabModelOrderController mOrderController;
 
     public ChromeTabCreator(
             Activity activity,
@@ -69,8 +85,7 @@ public class ChromeTabCreator extends TabCreator {
             boolean incognito,
             AsyncTabParamsManager asyncTabParamsManager,
             Supplier<TabModelSelector> tabModelSelectorSupplier,
-            Supplier<CompositorViewHolder> compositorViewHolderSupplier,
-            @Nullable DseNewTabUrlManager dseNewTabUrlManager) {
+            Supplier<@Nullable CompositorViewHolder> compositorViewHolderSupplier) {
         mActivity = activity;
         mNativeWindow = nativeWindow;
         mTabDelegateFactorySupplier = tabDelegateFactory;
@@ -79,7 +94,6 @@ public class ChromeTabCreator extends TabCreator {
         mAsyncTabParamsManager = asyncTabParamsManager;
         mTabModelSelectorSupplier = tabModelSelectorSupplier;
         mCompositorViewHolderSupplier = compositorViewHolderSupplier;
-        mDseNewTabUrlManager = dseNewTabUrlManager;
     }
 
     /**
@@ -112,6 +126,8 @@ public class ChromeTabCreator extends TabCreator {
                 return "NewIncognitoTab";
             case TabLaunchType.FROM_STARTUP:
                 return "Startup";
+            case TabLaunchType.FROM_START_SURFACE:
+                return "StartSurface";
             case TabLaunchType.FROM_TAB_GROUP_UI:
                 return "TabGroupUI";
             case TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP:
@@ -140,18 +156,41 @@ public class ChromeTabCreator extends TabCreator {
                 return "CollaborationBackgroundInGroup";
             case TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND:
                 return "BookmarkBarBackground";
+            case TabLaunchType.FROM_REPARENTING_BACKGROUND:
+                return "ReparentingBackground";
+            case TabLaunchType.FROM_HISTORY_NAVIGATION_BACKGROUND:
+                return "HistoryNavigationBackground";
+            case TabLaunchType.FROM_HISTORY_NAVIGATION_FOREGROUND:
+                return "HistoryNavigationBackground";
+            case TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP:
+                return "LongpressForegroundInGroup";
+            case TabLaunchType.FROM_TAB_LIST_INTERFACE:
+                return "TabListInterface";
+            case TabLaunchType.FROM_LINK_CREATING_NEW_WINDOW:
+                return "LinkToNewWindow";
+            case TabLaunchType.FROM_TIPS_NOTIFICATIONS:
+                return "TipsNotifications";
+            case TabLaunchType.FROM_TAB_LIST_INTERFACE_BACKGROUND:
+                return "TabListInterfaceBackground";
             default:
                 assert false : "Unexpected serialization of tabLaunchType: " + tabLaunchType;
                 return "TypeUnknown";
         }
     }
 
+    @Override
+    public void launchNtp(@TabLaunchType int type) {
+        TabCreatorUtil.launchNtp(this, getProfile(), type);
+    }
+
     private Profile getProfile() {
-        return ProfileProvider.getOrCreateProfile(mProfileProviderSupplier.get(), mIncognito);
+        return ProfileProvider.getOrCreateProfile(
+                assertNonNull(mProfileProviderSupplier.get()), mIncognito);
     }
 
     /**
      * Preconnect to the URL and its subresources as the tab is being created.
+     *
      * @param url URL to be preconnected to.
      */
     private void maybePreconnectUrlAndSubResources(GURL url) {
@@ -178,10 +217,11 @@ public class ChromeTabCreator extends TabCreator {
      * @param loadUrlParams parameters of the url load.
      * @param type Information about how the tab was launched.
      * @param parent the parent tab, if present.
-     * @return The new tab.
+     * @return The new tab or null if the tab is not created in current window.
      */
     @Override
-    public Tab createNewTab(LoadUrlParams loadUrlParams, @TabLaunchType int type, Tab parent) {
+    public @Nullable Tab createNewTab(
+            LoadUrlParams loadUrlParams, @TabLaunchType int type, @Nullable Tab parent) {
         return createNewTab(loadUrlParams, type, parent, null);
     }
 
@@ -192,12 +232,16 @@ public class ChromeTabCreator extends TabCreator {
      * @param type Information about how the tab was launched.
      * @param parent the parent tab, if present.
      * @param position the requested position (index in the tab model)
-     * @return The new tab.
+     * @return The new tab or null if the tab is not created in current window.
      */
     @Override
-    public Tab createNewTab(
-            LoadUrlParams loadUrlParams, @TabLaunchType int type, Tab parent, int position) {
-        return createNewTab(loadUrlParams, null, type, parent, position, null);
+    public @Nullable Tab createNewTab(
+            LoadUrlParams loadUrlParams,
+            @TabLaunchType int type,
+            @Nullable Tab parent,
+            int position) {
+        return createNewTab(
+                loadUrlParams, null, type, parent, position, null, /* copyHistory= */ false);
     }
 
     /**
@@ -208,16 +252,17 @@ public class ChromeTabCreator extends TabCreator {
      * @param type Information about how the tab was launched.
      * @param parent the parent tab, if present.
      * @param position the requested position (index in the tab model)
-     * @return The new tab.
+     * @return The new tab or null if the tab is not created in current window.
      */
     @Override
-    public Tab createNewTab(
+    public @Nullable Tab createNewTab(
             LoadUrlParams loadUrlParams,
-            String title,
+            @Nullable String title,
             @TabLaunchType int type,
-            Tab parent,
+            @Nullable Tab parent,
             int position) {
-        return createNewTab(loadUrlParams, title, type, parent, position, null);
+        return createNewTab(
+                loadUrlParams, title, type, parent, position, null, /* copyHistory= */ false);
     }
 
     /**
@@ -227,10 +272,14 @@ public class ChromeTabCreator extends TabCreator {
      * @param type Information about how the tab was launched.
      * @param parent the parent tab, if present.
      * @param intent the source of the url if it isn't null.
-     * @return The new tab.
+     * @return The new tab or null if the tab is not created in current window.
      */
-    public Tab createNewTab(
-            LoadUrlParams loadUrlParams, @TabLaunchType int type, Tab parent, Intent intent) {
+    public @Nullable Tab createNewTab(
+            LoadUrlParams loadUrlParams,
+            @TabLaunchType int type,
+            @Nullable Tab parent,
+            @Nullable Intent intent) {
+        if (mTabModel == null) return null;
         int position =
                 (intent == null || !IntentUtils.isTrustedIntentFromSelf(intent))
                         ? TabModel.INVALID_TAB_INDEX
@@ -242,7 +291,8 @@ public class ChromeTabCreator extends TabCreator {
             if (index != TabModel.INVALID_TAB_INDEX) position = index + 1;
         }
 
-        return createNewTab(loadUrlParams, null, type, parent, position, intent);
+        return createNewTab(
+                loadUrlParams, null, type, parent, position, intent, /* copyHistory= */ false);
     }
 
     /**
@@ -254,28 +304,29 @@ public class ChromeTabCreator extends TabCreator {
      * @param parent the parent tab, if present.
      * @param position the requested position (index in the tab model)
      * @param intent the source of the url if it isn't null.
-     * @return The new tab.
+     * @param copyHistory Whether the new tab should have the same history stack as {@param parent}.
+     * @return The new tab or null if the tab is not created in current window.
      */
-    private Tab createNewTab(
+    @Nullable Tab createNewTab(
             LoadUrlParams loadUrlParams,
-            String title,
+            @Nullable String title,
             @TabLaunchType int type,
-            Tab parent,
+            @Nullable Tab parent,
             int position,
-            Intent intent) {
+            @Nullable Intent intent,
+            boolean copyHistory) {
+        if (mTabModel == null || mOrderController == null) return null;
         // Measure tab creation duration for different launch types to understand tab creation
         // performance.
         try (TraceEvent te = TraceEvent.scoped("ChromeTabCreator.createNewTab");
-                TimingMetric unused =
+                var _ =
                         TimingMetric.mediumUptime(
                                 "Android.Tab.CreateNewTabDuration."
-                                        + tabLaunchTypeToHistogramKey(type))) {
+                                        + tabLaunchTypeToHistogramKey(type)
+                                        + "2")) {
             int parentId = parent != null ? parent.getId() : Tab.INVALID_TAB_ID;
 
             GURL url = UrlFormatter.fixupUrl(loadUrlParams.getUrl());
-            if (mDseNewTabUrlManager != null) {
-                url = mDseNewTabUrlManager.maybeGetOverrideUrl(url);
-            }
 
             // Sanitize the url.
             loadUrlParams.setUrl(url.getValidSpecOrEmpty());
@@ -287,6 +338,7 @@ public class ChromeTabCreator extends TabCreator {
 
             // Check if the tab is being created asynchronously.
             int assignedTabId = IntentHandler.getTabId(intent);
+            boolean isReparenting = isReparenting(assignedTabId);
             AsyncTabParams asyncParams = mAsyncTabParamsManager.remove(assignedTabId);
 
             boolean openInForeground = mOrderController.willOpenInForeground(type, mIncognito);
@@ -294,11 +346,20 @@ public class ChromeTabCreator extends TabCreator {
                     parent == null ? createDefaultTabDelegateFactory() : null;
             Tab tab;
             @TabCreationState int creationState = TabCreationState.LIVE_IN_FOREGROUND;
-            if (asyncParams != null && asyncParams.getTabToReparent() != null) {
-                type = TabLaunchType.FROM_REPARENTING;
-
+            if (isReparenting) {
                 TabReparentingParams params = (TabReparentingParams) asyncParams;
                 tab = params.getTabToReparent();
+
+                assert intent != null;
+
+                @Nullable TabGroupMetadata tabGroupMetadata =
+                        IntentHandler.getTabGroupMetadata(intent);
+                if (tabGroupMetadata != null && tabGroupMetadata.selectedTabId != tab.getId()) {
+                    type = TabLaunchType.FROM_REPARENTING_BACKGROUND;
+                } else {
+                    type = TabLaunchType.FROM_REPARENTING;
+                }
+
                 ReparentingTask.from(tab)
                         .finish(
                                 ReparentingDelegateFactory.createReparentingTaskDelegate(
@@ -308,8 +369,10 @@ public class ChromeTabCreator extends TabCreator {
                                 params.getFinalizeCallback());
             } else if (asyncParams != null && asyncParams.getWebContents() != null) {
                 openInForeground = true;
+                assumeNonNull(intent);
+
                 WebContents webContents = asyncParams.getWebContents();
-                // A WebContents was passed through the Intent.  Create a new Tab to hold it.
+                // A WebContents was passed through the Intent. Create a new Tab to hold it.
                 Intent parentIntent =
                         IntentUtils.safeGetParcelableExtra(
                                 intent, IntentHandler.EXTRA_PARENT_INTENT);
@@ -318,8 +381,7 @@ public class ChromeTabCreator extends TabCreator {
                                 intent, IntentHandler.EXTRA_PARENT_TAB_ID, parentId);
                 TabModelSelector selector = mTabModelSelectorSupplier.get();
                 parent = selector != null ? selector.getTabById(parentId) : null;
-                assert TabModelUtils.getTabIndexById(mTabModel, assignedTabId)
-                        == TabModel.INVALID_TAB_INDEX;
+                assert mTabModel.getTabById(assignedTabId) == null;
                 tab =
                         TabBuilder.createLiveTab(getProfile(), !openInForeground)
                                 .setId(assignedTabId)
@@ -330,6 +392,7 @@ public class ChromeTabCreator extends TabCreator {
                                 .setDelegateFactory(delegateFactory)
                                 .setInitiallyHidden(!openInForeground)
                                 .build();
+                assumeNonNull(parentIntent);
                 TabParentIntent.from(tab).set(parentIntent).setCurrentTab(selector::getCurrentTab);
                 webContents.resumeLoadingCreatedWebContents();
             } else if ((!openInForeground && SysUtils.isLowEndDevice())
@@ -342,6 +405,8 @@ public class ChromeTabCreator extends TabCreator {
                 // tab.
                 tab =
                         TabBuilder.createForLazyLoad(getProfile(), loadUrlParams, title)
+                                .setContentViewDeferred(
+                                        ChromeFeatureList.sLoadAllTabsAtStartup.isEnabled())
                                 .setParent(parent)
                                 .setWindow(mNativeWindow)
                                 .setLaunchType(type)
@@ -366,7 +431,7 @@ public class ChromeTabCreator extends TabCreator {
                 assert tab != null;
 
                 // Reparent the tab to its parent, updating the DelegateFactory and NativeWindow.
-                tab.reparentTab(parent);
+                tab.reparentTab(assumeNonNull(parent));
                 ReparentingTask.from(tab)
                         .finish(
                                 ReparentingDelegateFactory.createReparentingTaskDelegate(
@@ -374,7 +439,10 @@ public class ChromeTabCreator extends TabCreator {
                                         mNativeWindow,
                                         createDefaultTabDelegateFactory()),
                                 null);
-                RedirectHandlerTabHelper.updateIntentInTab(tab, intent);
+                RedirectHandlerTabHelper.updateIntentInTab(tab, intent, tab.isCustomTab());
+                // Makes WebContents visible before loading the URL to record metrics for SpareTab
+                // (Ref: https://crbug.com/40266649).
+                assumeNonNull(tab.getWebContents()).updateWebContentsVisibility(Visibility.VISIBLE);
                 tab.loadUrl(loadUrlParams);
                 TraceEvent.end("ChromeTabCreator.loadUrlWithSpareTab");
             } else {
@@ -387,7 +455,17 @@ public class ChromeTabCreator extends TabCreator {
                                 .setDelegateFactory(delegateFactory)
                                 .setInitiallyHidden(!openInForeground)
                                 .build();
-                RedirectHandlerTabHelper.updateIntentInTab(tab, intent);
+                if (copyHistory && parent != null) {
+                    // History must be copied immediately after tab is created.
+                    WebContents parentWebContents = parent.getWebContents();
+                    assumeNonNull(parentWebContents);
+                    NavigationController parentNavigationController =
+                            parentWebContents.getNavigationController();
+                    assumeNonNull(tab.getWebContents())
+                            .getNavigationController()
+                            .copyStateFrom(parentNavigationController);
+                }
+                RedirectHandlerTabHelper.updateIntentInTab(tab, intent, tab.isCustomTab());
                 tab.loadUrl(loadUrlParams);
                 TraceEvent.end("ChromeTabCreator.loadUrl");
             }
@@ -406,32 +484,31 @@ public class ChromeTabCreator extends TabCreator {
     }
 
     @Override
-    public boolean createTabWithWebContents(
-            @Nullable Tab parent, WebContents webContents, @TabLaunchType int type, GURL url) {
+    public @Nullable Tab createTabWithWebContents(
+            @Nullable Tab parent,
+            boolean shouldPin,
+            WebContents webContents,
+            @TabLaunchType int type,
+            GURL url,
+            int suggestedPosition,
+            CompletableFuture<Boolean> futureAddTabToModel) {
+        if (mTabModel == null || mOrderController == null) return null;
         assert webContents != null;
 
-        // The parent tab was already closed.  Do not open child tabs.
+        // The parent tab was already closed. Do not open child tabs.
         int parentId = parent != null ? parent.getId() : Tab.INVALID_TAB_ID;
-        if (mTabModel.isClosurePending(parentId)) return false;
+        if (mTabModel.isClosurePending(parentId)) return null;
 
         // Measure tab creation duration for different launch types to understand tab creation
         // performance using an existing WebContents.
-        try (TraceEvent te = TraceEvent.scoped("ChromeTabCreator.createTabWithWebContents");
-                TimingMetric unused =
-                        TimingMetric.mediumUptime(
-                                "Android.Tab.CreateNewTabDuration."
-                                        + tabLaunchTypeToHistogramKey(type)
-                                        + ".WithExistingWebContents")) {
-            // If parent is in the same tab model, place the new tab next to it.
-            int position = TabModel.INVALID_TAB_INDEX;
-            int index = TabModelUtils.getTabIndexById(mTabModel, parentId);
-            if (index != TabModel.INVALID_TAB_INDEX) position = index + 1;
+        try (TraceEvent te = TraceEvent.scoped("ChromeTabCreator.createTabWithWebContents")) {
+            final int position = evaluateNewTabPosition(suggestedPosition, parentId);
 
             boolean openInForeground = mOrderController.willOpenInForeground(type, mIncognito);
             TabDelegateFactory delegateFactory =
                     parent == null ? createDefaultTabDelegateFactory() : null;
             Tab tab;
-            @TabCreationState int creationState = 0;
+            @TabCreationState int creationState;
             if (webContents.getMainFrame() == null
                     || !webContents.getMainFrame().isRenderFrameLive()) {
                 // The webContents may not have a renderer. Treat it as FROZEN_FOR_LAZY_LOAD
@@ -444,6 +521,7 @@ public class ChromeTabCreator extends TabCreator {
                                 .setWebContents(webContents)
                                 .setDelegateFactory(delegateFactory)
                                 .setInitiallyHidden(!openInForeground)
+                                .setInitialPinState(shouldPin)
                                 .build();
                 creationState = TabCreationState.FROZEN_FOR_LAZY_LOAD;
             } else {
@@ -455,34 +533,58 @@ public class ChromeTabCreator extends TabCreator {
                                 .setWebContents(webContents)
                                 .setDelegateFactory(delegateFactory)
                                 .setInitiallyHidden(!openInForeground)
+                                .setInitialPinState(shouldPin)
                                 .build();
                 creationState =
                         openInForeground
                                 ? TabCreationState.LIVE_IN_FOREGROUND
                                 : TabCreationState.LIVE_IN_BACKGROUND;
             }
-            mTabModel.addTab(tab, position, type, creationState);
-            return true;
+            futureAddTabToModel.thenAccept(
+                    addTabToModel -> {
+                        if (addTabToModel) {
+                            assumeNonNull(mTabModel);
+                            mTabModel.addTab(tab, position, type, creationState);
+                        }
+                    });
+            return tab;
         }
     }
 
     @Override
-    public Tab launchUrl(String url, @TabLaunchType int type) {
+    public @Nullable Tab createTabWithHistory(Tab parent, @TabLaunchType int tabLaunchType) {
+        if (mTabModel == null) return null;
+        int position = TabModel.INVALID_TAB_INDEX;
+        int index = mTabModel.indexOf(parent);
+        if (index != TabModel.INVALID_TAB_INDEX) position = index + 1;
+        return createNewTab(
+                new LoadUrlParams(parent.getUrl()),
+                /* title= */ null,
+                tabLaunchType,
+                parent,
+                position,
+                /* intent= */ null,
+                /* copyHistory= */ true);
+    }
+
+    @Override
+    public @Nullable Tab launchUrl(String url, @TabLaunchType int type) {
         return launchUrl(url, type, null, 0);
     }
 
     /**
-     * Creates a new tab and loads the specified URL in it. This is a convenience method for
-     * {@link #createNewTab} with the default {@link LoadUrlParams} and no parent tab.
+     * Creates a new tab and loads the specified URL in it. This is a convenience method for {@link
+     * #createNewTab} with the default {@link LoadUrlParams} and no parent tab.
      *
      * @param url the URL to open.
      * @param type the type of action that triggered that launch. Determines how the tab is opened
-     *             (for example, in the foreground or background).
+     *     (for example, in the foreground or background).
      * @param intent the source of url if it isn't null.
      * @param intentTimestamp the time the intent was received.
-     * @return the created tab.
+     * @return the created tab or null if the tab is not created in current window.
      */
-    public Tab launchUrl(String url, @TabLaunchType int type, Intent intent, long intentTimestamp) {
+    public @Nullable Tab launchUrl(
+            String url, @TabLaunchType int type, @Nullable Intent intent, long intentTimestamp) {
         LoadUrlParams loadUrlParams = new LoadUrlParams(url);
         loadUrlParams.setIntentReceivedTimestamp(intentTimestamp);
         return createNewTab(loadUrlParams, type, null, intent);
@@ -500,9 +602,16 @@ public class ChromeTabCreator extends TabCreator {
      * @return the tab the URL was opened in, could be a new tab or a reused one.
      */
     // TODO(crbug.com/40691614): Clean up the launches from SearchActivity/Chrome.
-    public Tab launchUrlFromExternalApp(
+    public @Nullable Tab launchUrlFromExternalApp(
             LoadUrlParams loadUrlParams, String appId, boolean forceNewTab, Intent intent) {
-        assert !mIncognito;
+        if (mTabModel == null) return null;
+        assert !mIncognito || isIncognitoForced();
+
+        if (mIncognito) {
+            forceNewTab = true;
+            appId = null;
+        }
+
         // Don't re-use tabs for intents from Chrome. Note that this can be spoofed so shouldn't be
         // relied on for anything security sensitive.
         boolean isLaunchedFromChrome = TextUtils.equals(appId, mActivity.getPackageName());
@@ -526,11 +635,11 @@ public class ChromeTabCreator extends TabCreator {
         if (appId == null) {
             // If we have no application ID, we use a made-up one so that these tabs can be
             // reused.
-            appId = TabModelImpl.UNKNOWN_APP_ID;
+            appId = UNKNOWN_APP_ID;
         }
         // Let's try to find an existing tab that was started by that app.
-        for (int i = 0; i < mTabModel.getCount(); i++) {
-            Tab tab = mTabModel.getTabAt(i);
+        int i = 0;
+        for (Tab tab : mTabModel) {
             if (appId.equals(TabAssociatedApp.getAppId(tab))) {
                 // We don't reuse the tab, we create a new one at the same index instead.
                 // Reusing a tab would require clearing the navigation history and clearing the
@@ -542,7 +651,9 @@ public class ChromeTabCreator extends TabCreator {
                                 TabLaunchType.FROM_EXTERNAL_APP,
                                 null,
                                 i,
-                                intent);
+                                intent,
+                                /* copyHistory= */ false);
+                if (newTab == null) return null;
                 TabAssociatedApp.from(newTab).setAppId(appId);
                 mTabModel
                         .getTabRemover()
@@ -551,16 +662,21 @@ public class ChromeTabCreator extends TabCreator {
                                 /* allowDialog= */ false);
                 return newTab;
             }
+            ++i;
         }
 
         // No tab for that app, we'll have to create a new one.
         Tab tab = createNewTab(loadUrlParams, TabLaunchType.FROM_EXTERNAL_APP, null, intent);
+        // #createNewTab could return null if the tab is created in another window due to profile
+        // restriction.
+        if (tab == null) return null;
         TabAssociatedApp.from(tab).setAppId(appId);
         return tab;
     }
 
     @Override
-    public Tab createFrozenTab(TabState state, int id, int index) {
+    public @Nullable Tab createFrozenTab(TabState state, int id, int index) {
+        if (mTabModel == null || mOrderController == null) return null;
         TabModelSelector selector = mTabModelSelectorSupplier.get();
         TabResolver resolver =
                 (tabId) -> {
@@ -568,11 +684,12 @@ public class ChromeTabCreator extends TabCreator {
                 };
         boolean selectTab =
                 mOrderController.willOpenInForeground(TabLaunchType.FROM_RESTORE, mIncognito);
+        boolean isReparenting = isReparenting(id);
         AsyncTabParams asyncParams = mAsyncTabParamsManager.remove(id);
         Tab tab = null;
         @TabLaunchType int launchType = TabLaunchType.FROM_RESTORE;
         @TabCreationState int creationState = TabCreationState.FROZEN_ON_RESTORE;
-        if (asyncParams != null && asyncParams.getTabToReparent() != null) {
+        if (isReparenting) {
             creationState = TabCreationState.LIVE_IN_BACKGROUND;
 
             TabReparentingParams params = (TabReparentingParams) asyncParams;
@@ -592,7 +709,7 @@ public class ChromeTabCreator extends TabCreator {
                                     createDefaultTabDelegateFactory()),
                             params.getFinalizeCallback());
             // TODO(crbug.com/40141359): Photos/videos viewed in custom tabs aren't displayed
-            // properly after reparenting. This is a temporary fix for RBS issue crbug.com/1105810,
+            // properly after reparenting. This is a temporary fix for RBS issue crbug.com/40706018,
             // investigate and fix the root cause.
             if (tab.getUrl().getScheme().equals(UrlConstants.FILE_SCHEME)) {
                 tab.reloadIgnoringCache();
@@ -603,6 +720,8 @@ public class ChromeTabCreator extends TabCreator {
         if (tab == null) {
             tab =
                     TabBuilder.createFromFrozenState(getProfile())
+                            .setContentViewDeferred(
+                                    ChromeFeatureList.sLoadAllTabsAtStartup.isEnabled())
                             .setId(id)
                             .setTabResolver(resolver)
                             .setWindow(mNativeWindow)
@@ -616,15 +735,22 @@ public class ChromeTabCreator extends TabCreator {
         return tab;
     }
 
+    @Override
+    public boolean isReparenting(@TabId int id) {
+        AsyncTabParams params = mAsyncTabParamsManager.getAsyncTabParams().get(id);
+        return params != null && params.getTabToReparent() != null;
+    }
+
     /**
      * @param tabLaunchType Type of the tab launch.
      * @param intent The intent causing the tab launch.
      * @param originalTransitionType The original transition type.
      * @return The page transition type constant.
      */
-    private int getTransitionType(
+    @PageTransition
+    int getTransitionType(
             @TabLaunchType int tabLaunchType,
-            Intent intent,
+            @Nullable Intent intent,
             @PageTransition int originalTransitionType) {
         int transition = PageTransition.LINK;
         switch (tabLaunchType) {
@@ -633,6 +759,7 @@ public class ChromeTabCreator extends TabCreator {
                 break;
             case TabLaunchType.FROM_RESTORE:
             case TabLaunchType.FROM_LINK:
+            case TabLaunchType.FROM_LINK_CREATING_NEW_WINDOW:
             case TabLaunchType.FROM_EXTERNAL_APP:
             case TabLaunchType.FROM_BROWSER_ACTIONS:
                 // FROM_API ensures intent handling isn't used.
@@ -648,10 +775,14 @@ public class ChromeTabCreator extends TabCreator {
             case TabLaunchType.FROM_APP_WIDGET:
             case TabLaunchType.FROM_READING_LIST:
             case TabLaunchType.FROM_SYNC_BACKGROUND:
+            case TabLaunchType.FROM_REPARENTING:
+            case TabLaunchType.FROM_START_SURFACE:
                 transition = PageTransition.AUTO_TOPLEVEL;
                 break;
             case TabLaunchType.FROM_LONGPRESS_FOREGROUND:
+            case TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP:
             case TabLaunchType.FROM_LONGPRESS_INCOGNITO:
+            case TabLaunchType.FROM_HISTORY_NAVIGATION_FOREGROUND:
                 transition = PageTransition.LINK;
                 break;
             case TabLaunchType.FROM_LONGPRESS_BACKGROUND:
@@ -660,34 +791,69 @@ public class ChromeTabCreator extends TabCreator {
             case TabLaunchType.FROM_RECENT_TABS:
             case TabLaunchType.FROM_RECENT_TABS_FOREGROUND:
             case TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND:
+            case TabLaunchType.FROM_HISTORY_NAVIGATION_BACKGROUND:
+            case TabLaunchType.FROM_REPARENTING_BACKGROUND:
+            case TabLaunchType.FROM_SPECULATIVE_BACKGROUND_CREATION:
+            case TabLaunchType.FROM_TAB_LIST_INTERFACE:
+            case TabLaunchType.FROM_TIPS_NOTIFICATIONS:
+            case TabLaunchType.FROM_TAB_LIST_INTERFACE_BACKGROUND:
                 // On low end devices tabs are backgrounded in a frozen state, so we set the
                 // transition type to RELOAD to avoid handling intents when the tab is foregrounded.
-                // (https://crbug.com/758027)
+                // (https://crbug.com/40536523)
                 transition =
                         SysUtils.isLowEndDevice() ? PageTransition.RELOAD : PageTransition.LINK;
                 break;
+            case TabLaunchType.UNSET: // Fall through.
             default:
                 assert false;
                 break;
         }
 
-        return IntentHandler.getTransitionTypeFromIntent(intent, transition);
+        return IntentHandler.getTransitionTypeFromIntent(assumeNonNull(intent), transition);
     }
 
-    /**
-     * Sets the tab model and tab content manager to use.
-     * @param model           The new {@link TabModel} to use.
-     * @param orderController The controller for determining the order of tabs.
-     */
-    public void setTabModel(TabModel model, TabModelOrderController orderController) {
-        mTabModel = model;
-        mOrderController = orderController;
+    @Override
+    public void setTabModel(TabModel tabModel) {
+        mTabModel = tabModel;
     }
 
-    /**
-     * @return The default tab delegate factory to be used if creating new tabs w/o parents.
-     */
-    public TabDelegateFactory createDefaultTabDelegateFactory() {
+    @Override
+    public void setTabModelOrderController(TabModelOrderController tabModelOrderController) {
+        mOrderController = tabModelOrderController;
+    }
+
+    private boolean isIncognitoForced() {
+        ProfileProvider profileProvider = mProfileProviderSupplier.get();
+        if (profileProvider == null) return false;
+        return IncognitoUtils.isIncognitoModeForced(profileProvider.getOriginalProfile());
+    }
+
+    /** Returns the default tab delegate factory to be used if creating new tabs w/o parents. */
+    private @Nullable TabDelegateFactory createDefaultTabDelegateFactory() {
         return mTabDelegateFactorySupplier != null ? mTabDelegateFactorySupplier.get() : null;
+    }
+
+    /**
+     * Returns the best position in the {@link TabModel} of the new tab basing on the explicitly
+     * suggested position and, if not provided, on whereabouts of its parent tab.
+     */
+    private int evaluateNewTabPosition(int suggestedPosition, int parentId) {
+        if (mTabModel == null) return TabModel.INVALID_TAB_INDEX;
+        if (suggestedPosition != TabModel.INVALID_TAB_INDEX) {
+            return suggestedPosition;
+        }
+        if (parentId == Tab.INVALID_TAB_ID) {
+            return TabModel.INVALID_TAB_INDEX;
+        }
+
+        // This eventually calls the native part. For performance reasons be careful not to call
+        // this when not necessary.
+        final int index = TabModelUtils.getTabIndexById(mTabModel, parentId);
+
+        if (index != TabModel.INVALID_TAB_INDEX) {
+            return index + 1;
+        }
+
+        return TabModel.INVALID_TAB_INDEX;
     }
 }

@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_WEBAPPS_BROWSER_ANDROID_APP_BANNER_MANAGER_ANDROID_H_
 #define COMPONENTS_WEBAPPS_BROWSER_ANDROID_APP_BANNER_MANAGER_ANDROID_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -61,7 +60,7 @@ struct InstallBannerConfig;
 // TODO(crbug.com/40730613): remove remaining Chrome-specific functionality and
 // move to //components/webapps.
 class AppBannerManagerAndroid
-    : public AppBannerManager,
+    : public AppBannerManager::Delegate,
       public content::WebContentsUserData<AppBannerManagerAndroid> {
  public:
   class ChromeDelegate {
@@ -82,7 +81,7 @@ class AppBannerManagerAndroid
     // Called when an install event occurs, allowing specializations to record
     // additional metrics.
     virtual void RecordExtraMetricsForInstallEvent(
-        AddToHomescreenInstaller::Event event,
+        AddToHomescreenEvent event,
         const AddToHomescreenParams& a2hs_params) = 0;
   };
 
@@ -105,14 +104,13 @@ class AppBannerManagerAndroid
   // determined (and blank if not).
   base::android::ScopedJavaLocalRef<jstring> GetInstallableWebAppName(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& java_web_contents);
+      const base::android::JavaRef<jobject>& java_web_contents);
   base::android::ScopedJavaLocalRef<jstring> GetInstallableWebAppManifestId(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& java_web_contents);
+      const base::android::JavaRef<jobject>& java_web_contents);
 
   // Returns true if the banner pipeline is currently running.
-  bool IsRunningForTesting(JNIEnv* env,
-                           const base::android::JavaParamRef<jobject>& jobj);
+  bool IsRunningForTesting(JNIEnv* env);
 
   // Returns the state of the processing pipeline for testing purposes.
   int GetPipelineStatusForTesting(JNIEnv* env);
@@ -121,24 +119,14 @@ class AppBannerManagerAndroid
 
   // Called when the Java-side has retrieved information for the app.
   // Returns |false| if an icon fetch couldn't be kicked off.
-  void OnAppDetailsRetrieved(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj,
-      int request_id,
-      const base::android::JavaParamRef<jobject>& japp_data,
-      const base::android::JavaParamRef<jstring>& japp_title,
-      const base::android::JavaParamRef<jstring>& japp_package,
-      const base::android::JavaParamRef<jstring>& jicon_url);
+  void OnAppDetailsRetrieved(JNIEnv* env,
+                             int request_id,
+                             const base::android::JavaRef<jobject>& japp_data,
+                             std::u16string&& app_title,
+                             std::string&& app_package,
+                             std::string&& icon_url);
 
   void ShowBannerFromBadge(const InstallBannerConfig& config);
-
-  // Installs the app referenced by the data in |a2hs_params|.
-  // |a2hs_event_callback| will be run to inform the caller of the progress of
-  // the installation.
-  void Install(const AddToHomescreenParams& a2hs_params,
-               base::RepeatingCallback<void(AddToHomescreenInstaller::Event,
-                                            const AddToHomescreenParams&)>
-                   a2hs_event_callback);
 
   // Returns false if the bottom sheet can't be shown. In that case an
   // alternative UI should be shown.
@@ -146,9 +134,16 @@ class AppBannerManagerAndroid
                                          WebappInstallSource install_source,
                                          const InstallBannerConfig& data);
 
-  // AppBannerManager override:
-  void OnMlInstallPrediction(base::PassKey<MLInstallabilityPromoter>,
-                             std::string result_label) override;
+  std::optional<InstallBannerConfig> GetCurrentBannerConfig() const {
+    return app_banner_manager_->GetCurrentBannerConfig();
+  }
+
+  // AppBannerManager::Delegate override:
+  void OnMlInstallPrediction(std::string result_label) override;
+
+  AppBannerManager* app_banner_manager() const {
+    return app_banner_manager_.get();
+  }
 
  protected:
   friend class content::WebContentsUserData<AppBannerManagerAndroid>;
@@ -164,7 +159,7 @@ class AppBannerManagerAndroid
   AppBannerManagerAndroid(content::WebContents* web_contents,
                           std::unique_ptr<ChromeDelegate> delegate);
 
-  // AppBannerManager overrides.
+  // AppBannerManager::Delegate overrides.
   bool CanRequestAppBanner() const override;
   InstallableParams ParamsToPerformInstallableWebAppCheck() override;
   bool ShouldDoNativeAppCheck(
@@ -174,7 +169,7 @@ class AppBannerManagerAndroid
                                    const blink::mojom::Manifest& manifest,
                                    NativeCheckCallback callback) override;
   void OnWebAppInstallableCheckedNoErrors(
-      const ManifestId& manifest_id) const override;
+      const ManifestId& manifest_id) override;
   base::expected<void, InstallableStatusCode> CanRunWebAppInstallableChecks(
       const blink::mojom::Manifest& manifest) override;
   bool IsSupportedNonWebAppPlatform(
@@ -182,16 +177,17 @@ class AppBannerManagerAndroid
   bool IsRelatedNonWebAppInstalled(
       const blink::Manifest::RelatedApplication& related_app) const override;
   void MaybeShowAmbientBadge(const InstallBannerConfig& config) override;
-  void ShowBannerUi(WebappInstallSource install_source,
-                    const InstallBannerConfig& config) override;
-  base::WeakPtr<AppBannerManager> GetWeakPtrForThisNavigation() override;
+  AppBannerManager::ShowBannerUiResult ShowBannerUi(
+      WebappInstallSource install_source,
+      const InstallBannerConfig& config) override;
   void InvalidateWeakPtrsForThisNavigation() override;
   void ResetCurrentPageData() override;
+  void InstallableWebAppStatusUpdate() override;
 
   // Use as a callback to notify |this| after an install event such as a dialog
   // being cancelled or an app being installed has occurred.
   void OnInstallEvent(GURL validated_url,
-                      AddToHomescreenInstaller::Event event,
+                      AddToHomescreenEvent event,
                       const AddToHomescreenParams& a2hs_params);
 
   base::WeakPtr<AppBannerManagerAndroid> GetAndroidWeakPtr();
@@ -206,16 +202,15 @@ class AppBannerManagerAndroid
   friend class content::WebContentsUserData<AppBannerManagerAndroid>;
 
   struct QueryNativeAppConfig {
-    QueryNativeAppConfig(
-        const base::android::ScopedJavaLocalRef<jstring>& url,
-        const base::android::ScopedJavaLocalRef<jstring>& package,
-        const base::android::ScopedJavaLocalRef<jstring>& referrer);
+    QueryNativeAppConfig(const std::string& url,
+                         const std::string& package,
+                         const std::string& referrer);
     QueryNativeAppConfig(const QueryNativeAppConfig& config);
     ~QueryNativeAppConfig();
 
-    base::android::ScopedJavaLocalRef<jstring> url;
-    base::android::ScopedJavaLocalRef<jstring> package;
-    base::android::ScopedJavaLocalRef<jstring> referrer;
+    std::string url;
+    std::string package;
+    std::string referrer;
   };
 
   // Creates the Java-side AppBannerManager.
@@ -230,7 +225,6 @@ class AppBannerManagerAndroid
   base::expected<QueryNativeAppConfig, InstallableStatusCode>
   GetNativeAppFetchRequestConfig(
       const GURL& validated_url,
-      JNIEnv* env,
       const blink::Manifest::RelatedApplication& related_application) const;
 
   // Called when the download of a native app's icon is complete, as native
@@ -240,6 +234,8 @@ class AppBannerManagerAndroid
                               std::u16string app_title,
                               GURL primary_icon_url,
                               const SkBitmap& bitmap);
+
+  std::unique_ptr<AppBannerManager> app_banner_manager_;
 
   const std::unique_ptr<ChromeDelegate> delegate_;
 

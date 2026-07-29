@@ -4,10 +4,13 @@
 
 #include "chrome/browser/enterprise/signin/user_policy_oidc_signin_service_factory.h"
 
+#include <variant>
+
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/profile_management/profile_management_features.h"
 #include "chrome/browser/enterprise/signin/user_policy_oidc_signin_service.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
+#include "chrome/browser/policy/cloud/user_policy_signin_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
@@ -19,7 +22,7 @@
 
 namespace policy {
 
-absl::variant<UserCloudPolicyManager*, ProfileCloudPolicyManager*>
+std::variant<UserCloudPolicyManager*, ProfileCloudPolicyManager*>
 GetCloudPolicyManager(Profile* profile) {
   auto* entry = g_browser_process->profile_manager()
                     ->GetProfileAttributesStorage()
@@ -37,6 +40,9 @@ UserPolicyOidcSigninServiceFactory::UserPolicyOidcSigninServiceFactory()
               .WithRegular(ProfileSelection::kOriginalOnly)
               .Build()) {
   DependsOn(IdentityManagerFactory::GetInstance());
+  // Let GAIA user policy service take precedence, specifically in the case of
+  // Dasher-based OIDC profiles.
+  DependsOn(policy::UserPolicySigninServiceFactory::GetInstance());
 }
 
 UserPolicyOidcSigninServiceFactory::~UserPolicyOidcSigninServiceFactory() =

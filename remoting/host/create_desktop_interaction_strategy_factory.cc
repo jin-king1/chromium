@@ -12,6 +12,13 @@
 #include "remoting/host/desktop_interaction_strategy.h"
 #include "remoting/host/legacy_interaction_strategy.h"
 
+#if BUILDFLAG(IS_LINUX)
+#include "remoting/host/linux/gnome_interaction_strategy.h"
+#include "remoting/host/linux/gnome_remote_desktop_session.h"
+#include "remoting/host/linux/portal_interaction_strategy.h"
+#include "third_party/webrtc/modules/desktop_capture/desktop_capturer.h"
+#endif  // BUILDFLAG(IS_LINUX)
+
 namespace remoting {
 
 std::unique_ptr<DesktopInteractionStrategyFactory>
@@ -20,6 +27,16 @@ CreateDesktopInteractionStrategyFactory(
     scoped_refptr<base::SingleThreadTaskRunner> ui_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> video_capture_task_runner,
     scoped_refptr<base::SingleThreadTaskRunner> input_task_runner) {
+#if BUILDFLAG(IS_LINUX)
+  if (webrtc::DesktopCapturer::IsRunningUnderWayland()) {
+    if (GnomeRemoteDesktopSession::IsRunningUnderGnome()) {
+      return std::make_unique<GnomeInteractionStrategyFactory>(ui_task_runner);
+    } else {
+      return std::make_unique<PortalInteractionStrategyFactory>();
+    }
+  }
+#endif  // BUILDFLAG(IS_LINUX)
+
   return std::make_unique<LegacyInteractionStrategyFactory>(
       std::move(caller_task_runner), std::move(ui_task_runner),
       std::move(video_capture_task_runner), std::move(input_task_runner));

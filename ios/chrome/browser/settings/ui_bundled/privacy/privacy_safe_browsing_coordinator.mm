@@ -20,7 +20,6 @@
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -69,11 +68,9 @@
 - (void)start {
   self.viewController = [[PrivacySafeBrowsingViewController alloc]
       initWithStyle:ChromeTableViewStyle()];
-  self.viewController.styler.cellHighlightColor =
-      [UIColor colorNamed:kTextfieldHighlightBackgroundColor];
   self.viewController.presentationDelegate = self;
   self.mediator = [[PrivacySafeBrowsingMediator alloc]
-      initWithUserPrefService:self.browser->GetProfile()->GetPrefs()];
+      initWithUserPrefService:self.profile->GetPrefs()];
   self.mediator.consumer = self.viewController;
   self.mediator.handler = self;
   self.viewController.modelDelegate = self.mediator;
@@ -86,6 +83,8 @@
 - (void)stop {
   [self stopSafeBrowsingEnhancedProtectionCoordinator];
   [self stopSafeBrowsingStandardProtectionCoordinator];
+  [self.mediator disconnect];
+  self.mediator = nil;
   [super stop];
 }
 
@@ -114,8 +113,8 @@
   }
   self.safeBrowsingEnhancedProtectionCoordinator =
       [[SafeBrowsingEnhancedProtectionCoordinator alloc]
-          initWithBaseNavigationController:self.baseNavigationController
-                                   browser:self.browser];
+          initWithBaseViewController:self.baseNavigationController
+                             browser:self.browser];
   self.safeBrowsingEnhancedProtectionCoordinator.delegate = self;
   [self.safeBrowsingEnhancedProtectionCoordinator start];
 }

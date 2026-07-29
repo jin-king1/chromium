@@ -6,24 +6,31 @@
 
 #include <stddef.h>
 
+#include <string>
 #include <string_view>
+#include <utility>
 
+#include "base/check.h"
 #include "base/check_deref.h"
-#include "base/functional/bind.h"
+#include "base/check_op.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_quality/validation.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
+#include "components/autofill/core/browser/payments/card_unmask_delegate.h"
+#include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/studies/autofill_experiments.h"
+#include "components/autofill/core/browser/ui/payments/card_unmask_prompt_options.h"
 #include "components/autofill/core/browser/ui/payments/card_unmask_prompt_view.h"
 #include "components/autofill/core/common/autofill_clock.h"
-#include "components/autofill/core/common/autofill_features.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/grit/components_scaled_resources.h"
@@ -56,8 +63,16 @@ CardUnmaskPromptControllerImpl::CardUnmaskPromptControllerImpl(
       delegate_(delegate) {}
 
 CardUnmaskPromptControllerImpl::~CardUnmaskPromptControllerImpl() {
-  if (card_unmask_view_)
-    card_unmask_view_->ControllerGone();
+  if (card_unmask_view_) {
+    // The order of operations below is critical to prevent a use-after-free
+    // crash. If card_unmask_view_ is not nulled out before the call to
+    // ControllerGone(), the raw_ptr's safety checks will trigger a crash when
+    // card_unmask_view_ is later destructed (at the end of this destructor) or
+    // even reassigned, as it would be pointing to deallocated memory.
+    CardUnmaskPromptView* temp_view = card_unmask_view_.get();
+    card_unmask_view_ = nullptr;
+    temp_view->ControllerGone();
+  }
 }
 
 void CardUnmaskPromptControllerImpl::ShowPrompt(
@@ -169,7 +184,8 @@ void CardUnmaskPromptControllerImpl::OnUnmaskPromptAccepted(
   card_unmask_view_->DisableAndWaitForVerification();
 
   DCHECK(InputCvcIsValid(cvc));
-  base::TrimWhitespace(cvc, base::TRIM_ALL, &pending_details_.cvc);
+  pending_details_.cvc =
+      std::u16string(base::TrimWhitespace(cvc, base::TRIM_ALL));
   if (ShouldRequestExpirationDate()) {
     DCHECK(InputExpirationIsValid(exp_month, exp_year));
     pending_details_.exp_month = exp_month;
@@ -336,8 +352,8 @@ std::u16string CardUnmaskPromptControllerImpl::GetCvcImageAnnouncement() const {
 
 bool CardUnmaskPromptControllerImpl::InputCvcIsValid(
     std::u16string_view input_text) const {
-  std::u16string trimmed_text;
-  base::TrimWhitespace(input_text, base::TRIM_ALL, &trimmed_text);
+  const std::u16string_view trimmed_text =
+      base::TrimWhitespace(input_text, base::TRIM_ALL);
 
   // Allow three digit American Express Cvc value when it is a back of card cvc
   // challenge option.

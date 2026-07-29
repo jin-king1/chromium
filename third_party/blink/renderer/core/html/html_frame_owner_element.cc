@@ -37,7 +37,9 @@
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/events/current_input_event.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
@@ -50,6 +52,7 @@
 #include "third_party/blink/renderer/core/frame/remote_frame.h"
 #include "third_party/blink/renderer/core/frame/remote_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/core/html/fenced_frame/html_fenced_frame_element.h"
 #include "third_party/blink/renderer/core/html/lazy_load_frame_observer.h"
 #include "third_party/blink/renderer/core/html/loading_attribute.h"
@@ -58,20 +61,27 @@
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/loader/frame_load_request.h"
 #include "third_party/blink/renderer/core/loader/frame_loader.h"
+#include "third_party/blink/renderer/core/loader/resource_initiator_helper.h"
 #include "third_party/blink/renderer/core/loader/url_matcher.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/scrolling/root_scroller_controller.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
+#include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
+#include "third_party/blink/renderer/core/timing/resource_timing_context.h"
 #include "third_party/blink/renderer/core/timing/window_performance.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/instrumentation/resource_coordinator/renderer_resource_coordinator.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_initiator_type_names.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_timing_utils.h"
 #include "third_party/blink/renderer/platform/network/network_state_notifier.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/scheduler/public/task_attribution_info.h"
+#include "third_party/blink/renderer/platform/scheduler/public/task_attribution_tracker.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
+#include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 
 namespace blink {
@@ -80,9 +90,10 @@ namespace {
 
 using PluginSet = HeapHashSet<Member<WebPluginContainerImpl>>;
 PluginSet& PluginsPendingDispose() {
-  DEFINE_STATIC_LOCAL(Persistent<PluginSet>, set,
-                      (MakeGarbageCollected<PluginSet>()));
-  return *set;
+  using PluginSetHolder = DisallowNewWrapper<PluginSet>;
+  DEFINE_STATIC_LOCAL(Persistent<PluginSetHolder>, holder,
+                      (MakeGarbageCollected<PluginSetHolder>()));
+  return holder->Value();
 }
 
 bool DoesParentAllowLazyLoadingChildren(Document& document) {
@@ -106,8 +117,9 @@ bool IsFrameLazyLoadable(ExecutionContext* context,
   // Only http:// or https:// URLs are eligible for lazy loading, excluding
   // URLs like invalid or empty URLs, "about:blank", local file URLs, etc.
   // that it doesn't make sense to lazily load.
-  if (!url.ProtocolIsInHTTPFamily())
+  if (!url.ProtocolIsInHttpFamily()) {
     return false;
+  }
 
   // Do not lazyload frames when JavaScript is disabled, regardless of the
   // `loading` attribute.
@@ -173,8 +185,7 @@ void HTMLFrameOwnerElement::PluginDisposeSuspendScope::
 HTMLFrameOwnerElement::HTMLFrameOwnerElement(const QualifiedName& tag_name,
                                              Document& document)
     : HTMLElement(tag_name, document),
-      should_lazy_load_children_(DoesParentAllowLazyLoadingChildren(document)),
-      preferred_color_scheme_(mojom::blink::PreferredColorScheme::kLight) {
+      should_lazy_load_children_(DoesParentAllowLazyLoadingChildren(document)) {
   SetHasCustomStyleCallbacks();
   document.IncrementImmediateChildFrameCreationCount();
 }
@@ -197,26 +208,44 @@ LayoutEmbeddedContent* HTMLFrameOwnerElement::GetLayoutEmbeddedContent() const {
 
 Node::InsertionNotificationRequest HTMLFrameOwnerElement::InsertedInto(
     ContainerNode& insertion_point) {
+  // Except for when state-preserving atomic moves are enabled, we should never
+  // have a content frame at the point where we got inserted into a tree.
+  SECURITY_CHECK(!ContentFrame() ||
+                 GetDocument().StatePreservingAtomicMoveInProgress());
+
   InsertionNotificationRequest result =
       HTMLElement::InsertedInto(insertion_point);
+
   // If a state-preserving atomic move is in progress, then we have to manually
   // perform some bookkeeping that ordinarily would only be done deeper in the
   // frame setup logic that gets triggered in the *NON* state-preserving atomic
   // move flow.
   if (GetDocument().StatePreservingAtomicMoveInProgress() && ContentFrame()) {
     // During a state-preserving atomic move, we must specifically inform all of
-    // `this`'s ancestor nodes of the new connected frame they are adopting.
+    // `this`'s new ancestor nodes, starting from `insertion_point`, of the new
+    // connected frame they are adopting. We also re-increment `this` to match
+    // the decrement performed in `RemovedFrom()` below.
     //
     // For the non-state-preserving atomic move case (i.e., when we're setting
     // up a full frame due to real insertion), this is done in
     // `HTMLFrameOwnerElement::SetContentFrame()` below.
-    for (ContainerNode* node = this; node;
+    IncrementConnectedSubframeCount();
+    for (ContainerNode* node = &insertion_point; node;
          node = node->ParentOrShadowHostNode()) {
       node->IncrementConnectedSubframeCount();
     }
   }
 
   return result;
+}
+
+void HTMLFrameOwnerElement::DidChangeIsInCanvasSubtree() {
+  HTMLElement::DidChangeIsInCanvasSubtree();
+  if (Document* inner_document = contentDocument()) {
+    if (Element* root = inner_document->documentElement()) {
+      root->SetIsInCanvasSubtree(IsInCanvasSubtree());
+    }
+  }
 }
 
 void HTMLFrameOwnerElement::RemovedFrom(ContainerNode& insertion_point) {
@@ -229,8 +258,7 @@ void HTMLFrameOwnerElement::RemovedFrom(ContainerNode& insertion_point) {
   // Not doing (1) is a good thing, since we're trying to preserve the frame,
   // but we still have to do (2) manually to maintain bookkeeping consistency
   // among the ancestor nodes.
-  if (GetDocument().StatePreservingAtomicMoveInProgress() &&
-      insertion_point.isConnected()) {
+  if (GetDocument().StatePreservingAtomicMoveInProgress() && ContentFrame()) {
     // `this` is no longer connected, so we have to decrement our subframe count
     // separately from our old ancestors's subframe count (i.e.,
     // `insertion_point`).
@@ -375,12 +403,36 @@ bool HTMLFrameOwnerElement::IsKeyboardFocusableSlow(
          HTMLElement::IsKeyboardFocusableSlow(update_behavior);
 }
 
+FocusgroupFlags HTMLFrameOwnerElement::NativeArrowKeyAxes() const {
+  // Frames (iframe/frame) and object/embed elements host content that
+  // typically has its own arrow key handling.
+  return FocusgroupFlags::kInline | FocusgroupFlags::kBlock;
+}
+
 void HTMLFrameOwnerElement::DisposePluginSoon(WebPluginContainerImpl* plugin) {
   if (PluginDisposeSuspendScope::suspend_count_) {
     PluginsPendingDispose().insert(plugin);
     PluginDisposeSuspendScope::suspend_count_ |= 1;
   } else
     plugin->Dispose();
+}
+
+void HTMLFrameOwnerElement::NaturalSizingInfoChanged() {
+  if (auto* frame_view = DynamicTo<FrameView>(OwnedEmbeddedContentView())) {
+    last_natural_sizing_info_ = frame_view->GetNaturalDimensions();
+  }
+}
+
+void HTMLFrameOwnerElement::ClearLastNaturalSizingInfo() {
+  last_natural_sizing_info_.reset();
+}
+
+void HTMLFrameOwnerElement::ClearAllNaturalSizingInfo() {
+  last_natural_sizing_info_.reset();
+  if (auto* frame_view = DynamicTo<FrameView>(OwnedEmbeddedContentView())) {
+    frame_view->ClearNaturalDimensions();
+  }
+  NaturalSizingInfoChanged();
 }
 
 void HTMLFrameOwnerElement::UpdateContainerPolicy() {
@@ -425,12 +477,14 @@ void HTMLFrameOwnerElement::UpdateRequiredPolicy() {
   }
 }
 
-void HTMLFrameOwnerElement::UpdateDeferredFetchPolicy(const KURL& to_url) {
+void HTMLFrameOwnerElement::UpdateDeferredFetchPolicy(
+    scoped_refptr<const SecurityOrigin> to_origin) {
   if (!IsFetchLaterUseDeferredFetchPolicyEnabled()) {
     return;
   }
   frame_policy_.deferred_fetch_policy =
-      FetchLaterUtil::GetContainerDeferredFetchPolicyOnNavigation(this, to_url);
+      FetchLaterUtil::GetContainerDeferredFetchPolicyOnNavigation(this,
+                                                                  to_origin);
   DidChangeContainerPolicy();
 }
 
@@ -464,7 +518,7 @@ void HTMLFrameOwnerElement::FrameOwnerPropertiesChanged() {
   mojom::blink::FrameOwnerPropertiesPtr properties =
       mojom::blink::FrameOwnerProperties::New();
   properties->name = BrowsingContextContainerName().IsNull()
-                         ? WTF::g_empty_string
+                         ? g_empty_string
                          : BrowsingContextContainerName(),
   properties->scrollbar_mode = ScrollbarMode();
   properties->margin_width = MarginWidth();
@@ -474,6 +528,7 @@ void HTMLFrameOwnerElement::FrameOwnerPropertiesChanged() {
   properties->is_display_none = IsDisplayNone();
   properties->color_scheme = GetColorScheme();
   properties->preferred_color_scheme = GetPreferredColorScheme();
+  properties->responsive_sizing = GetResponsiveSizing();
 
   GetDocument()
       .GetFrame()
@@ -492,15 +547,12 @@ void HTMLFrameOwnerElement::AddResourceTiming(
     return;
   }
 
-  // This would only happen in rare cases, where the frame is navigated from the
-  // outside, e.g. by a web extension or window.open() with target, and that
-  // navigation would cancel the container-initiated navigation. This safeguard
-  // would make this type of race harmless.
-  // TODO(crbug.com/1410705): fix this properly by moving IFrame reporting to
-  // the browser side.
-  if (fallback_timing_info_->name != info->name) {
-    return;
-  }
+  info->initiator_url = fallback_timing_info_->initiator_url;
+
+  // When the kSanitizeOriginalUrlDuringNavigation feature is enabled, the
+  // original URL will be sanitized in the child frame's commit parameters.
+  // Restore it from the fallback info.
+  info->name = fallback_timing_info_->name;
 
   DOMWindowPerformance::performance(*GetDocument().domWindow())
       ->AddResourceTiming(std::move(info), localName());
@@ -533,13 +585,13 @@ void HTMLFrameOwnerElement::ReportFallbackResourceTimingIfNeeded() {
 void HTMLFrameOwnerElement::DispatchLoad() {
   ReportFallbackResourceTimingIfNeeded();
   DispatchScopedEvent(*Event::Create(event_type_names::kLoad));
-  if (RuntimeEnabledFeatures::PotentialPermissionsPolicyReportingEnabled()) {
+  if (RuntimeEnabledFeatures::PotentialPermissionsPolicyReportingEnabled() &&
+      GetExecutionContext()) {
     CheckPotentialPermissionsPolicyViolation();
   }
 }
 
-Document* HTMLFrameOwnerElement::getSVGDocument(
-    ExceptionState& exception_state) const {
+Document* HTMLFrameOwnerElement::getSVGDocument() const {
   Document* doc = contentDocument();
   if (doc && doc->IsSVGDocument())
     return doc;
@@ -625,7 +677,7 @@ bool HTMLFrameOwnerElement::LazyLoadIfPossible(
     const ResourceRequestHead& request,
     WebFrameLoadType frame_load_type) {
   const auto& loading_attr = FastGetAttribute(html_names::kLoadingAttr);
-  bool loading_lazy_set = EqualIgnoringASCIICase(loading_attr, "lazy");
+  bool loading_lazy_set = EqualIgnoringAsciiCase(loading_attr, "lazy");
 
   if (!IsFrameLazyLoadable(GetExecutionContext(), url, loading_lazy_set,
                            should_lazy_load_children_)) {
@@ -673,10 +725,18 @@ bool HTMLFrameOwnerElement::LoadOrRedirectSubframe(
 
   // If the subframe navigation is aborted or TAO fails, we report a "fallback"
   // entry that starts at navigation and ends at load/error event.
-  if (url.ProtocolIsInHTTPFamily()) {
+  if (url.ProtocolIsInHttpFamily()) {
     fallback_timing_info_ =
         CreateResourceTimingInfo(base::TimeTicks::Now(), url,
                                  /*response=*/nullptr);
+
+    if (RuntimeEnabledFeatures::ResourceTimingInitiatorEnabled()) {
+      v8::Isolate* isolate =
+          ResourceInitiatorHelper::GetIsolateIfRunningScript();
+      fallback_timing_info_->initiator_url =
+          isolate ? ResourceInitiatorHelper::GetScriptInitiatorUrl(*isolate)
+                  : GetDocument().Url();
+    }
   }
 
   // Update the |should_lazy_load_children_| value according to the "loading"
@@ -684,7 +744,7 @@ bool HTMLFrameOwnerElement::LoadOrRedirectSubframe(
   // attribute gets parsed in ParseAttribute() before the "loading" attribute
   // does.
   if (should_lazy_load_children_ &&
-      EqualIgnoringASCIICase(FastGetAttribute(html_names::kLoadingAttr),
+      EqualIgnoringAsciiCase(FastGetAttribute(html_names::kLoadingAttr),
                              "eager")) {
     should_lazy_load_children_ = false;
   }
@@ -692,7 +752,7 @@ bool HTMLFrameOwnerElement::LoadOrRedirectSubframe(
   UpdateContainerPolicy();
   UpdateRequiredPolicy();
 
-  KURL url_to_request = url.IsNull() ? BlankURL() : url;
+  KURL url_to_request = url.IsNull() ? BlankUrl() : url;
   ResourceRequestHead request(url_to_request);
   request.SetReferrerPolicy(ReferrerPolicyAttribute());
   request.SetHasUserGesture(
@@ -744,7 +804,7 @@ bool HTMLFrameOwnerElement::LoadOrRedirectSubframe(
   // kReloadBypassingCache navigation, following the parent frame. If the frame
   // URL is about:blank, it should be committed synchronously as a
   // kReplaceCurrentItem navigation (see https://crbug.com/778318).
-  if (url != BlankURL() && !GetDocument().LoadEventFinished() &&
+  if (url != BlankUrl() && !GetDocument().LoadEventFinished() &&
       GetDocument().Loader()->LoadType() ==
           WebFrameLoadType::kReloadBypassingCache) {
     child_load_type = WebFrameLoadType::kReloadBypassingCache;
@@ -815,13 +875,6 @@ void HTMLFrameOwnerElement::ParseAttribute(
   } else {
     HTMLElement::ParseAttribute(params);
   }
-}
-
-bool HTMLFrameOwnerElement::IsAdRelated() const {
-  if (!content_frame_)
-    return false;
-
-  return content_frame_->IsAdFrame();
 }
 
 mojom::blink::ColorScheme HTMLFrameOwnerElement::GetColorScheme() const {
@@ -903,6 +956,36 @@ void HTMLFrameOwnerElement::DidRecalcStyle(
   SetPreferredColorScheme(
       GetDocument().GetStyleEngine().ResolveColorSchemeForEmbedding(
           GetComputedStyle()));
+
+  mojom::blink::FrameResponsiveSizing new_responsive_sizing =
+      GetResponsiveSizing();
+  if (new_responsive_sizing != responsive_sizing_) {
+    responsive_sizing_ = new_responsive_sizing;
+    FrameOwnerPropertiesChanged();
+  }
+}
+
+mojom::blink::FrameResponsiveSizing HTMLFrameOwnerElement::GetResponsiveSizing()
+    const {
+  if (const ComputedStyle* style = GetComputedStyle()) {
+    switch (style->FrameSizing()) {
+      case EFrameSizing::kAuto:
+        return mojom::blink::FrameResponsiveSizing::kNone;
+      case EFrameSizing::kContentWidth:
+        return mojom::blink::FrameResponsiveSizing::kWidth;
+      case EFrameSizing::kContentHeight:
+        return mojom::blink::FrameResponsiveSizing::kHeight;
+      case EFrameSizing::kContentInlineSize:
+        return style->IsHorizontalWritingMode()
+                   ? mojom::blink::FrameResponsiveSizing::kWidth
+                   : mojom::blink::FrameResponsiveSizing::kHeight;
+      case EFrameSizing::kContentBlockSize:
+        return style->IsHorizontalWritingMode()
+                   ? mojom::blink::FrameResponsiveSizing::kHeight
+                   : mojom::blink::FrameResponsiveSizing::kWidth;
+    }
+  }
+  return mojom::blink::FrameResponsiveSizing::kNone;
 }
 
 }  // namespace blink

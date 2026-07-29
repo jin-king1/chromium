@@ -4,11 +4,22 @@
 
 #include "components/affiliations/core/browser/lookup_affiliation_response_parser.h"
 
+#include <optional>
+
 #include "base/containers/flat_set.h"
+#include "url/url_constants.h"
 
 namespace affiliations {
 
 namespace {
+
+GURL GetValidCryptographicUrl(const std::string& url_spec) {
+  GURL url(url_spec);
+  if (url.is_valid() && url.SchemeIsCryptographic()) {
+    return url;
+  }
+  return GURL();
+}
 
 // Template for the affiliation_pb message:
 // > affiliation_pb::Affiliation
@@ -26,11 +37,23 @@ std::vector<Facet> ParseFacets(const MessageT& response) {
     Facet new_facet(uri);
     if (facet.has_branding_info()) {
       new_facet.branding_info = FacetBrandingInfo{
-          facet.branding_info().name(), GURL(facet.branding_info().icon_url())};
+          facet.branding_info().name(),
+          GetValidCryptographicUrl(facet.branding_info().icon_url())};
     }
     if (facet.has_change_password_info()) {
-      new_facet.change_password_url =
-          GURL(facet.change_password_info().change_password_url());
+      GURL url = GetValidCryptographicUrl(
+          facet.change_password_info().change_password_url());
+      if (!url.is_empty()) {
+        new_facet.change_password_url = std::move(url);
+      }
+      for (const auto& pattern : facet.change_password_info().patterns()) {
+        GURL pattern_url =
+            GetValidCryptographicUrl(pattern.change_password_url());
+        if (!pattern_url.is_empty()) {
+          new_facet.change_password_patterns.push_back(
+              {pattern.url_pattern_re2(), std::move(pattern_url)});
+        }
+      }
     }
     if (facet.has_main_domain()) {
       new_facet.main_domain = facet.main_domain();
@@ -48,18 +71,20 @@ GroupedFacets ParseEqClass(const affiliation_pb::FacetGroup& grouping) {
   GroupedFacets group;
   group.facets = ParseFacets(grouping);
   if (grouping.has_group_branding_info()) {
-    group.branding_info =
-        FacetBrandingInfo{grouping.group_branding_info().name(),
-                          GURL(grouping.group_branding_info().icon_url())};
+    group.branding_info = FacetBrandingInfo{
+        grouping.group_branding_info().name(),
+        GetValidCryptographicUrl(grouping.group_branding_info().icon_url())};
   }
   return group;
 }
 
 void AddSingleFacet(std::vector<AffiliatedFacets>& affiliations, Facet facet) {
+  facet.is_facet_synthesized = true;
   affiliations.push_back({facet});
 }
 
 void AddSingleFacet(std::vector<GroupedFacets>& groups, Facet facet) {
+  facet.is_facet_synthesized = true;
   GroupedFacets group;
   group.facets = {facet};
   groups.push_back(std::move(group));
@@ -123,7 +148,7 @@ bool ParseResponse(const std::vector<FacetURI>& requested_facet_uris,
 bool ParseLookupAffiliationResponse(
     const std::vector<FacetURI>& requested_facet_uris,
     const affiliation_pb::LookupAffiliationByHashPrefixResponse& response,
-    AffiliationFetcherDelegate::Result* result) {
+    AffiliationFetcherInterface::ParsedFetchResponse* result) {
   for (const auto& domain : response.psl_extensions()) {
     result->psl_extensions.push_back(domain);
   }

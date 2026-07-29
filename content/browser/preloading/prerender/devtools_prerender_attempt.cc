@@ -6,6 +6,7 @@
 
 #include "base/check_op.h"
 #include "content/browser/devtools/devtools_instrumentation.h"
+#include "services/network/public/cpp/headers_matcher.h"
 
 namespace content {
 
@@ -23,7 +24,8 @@ void DevToolsPrerenderAttempt::SetTriggeringOutcome(
   devtools_instrumentation::DidUpdatePrerenderStatus(
       attributes.initiator_frame_tree_node_id,
       attributes.initiator_devtools_navigation_token.value(),
-      attributes.prerendering_url, attributes.target_hint,
+      attributes.prerender_action_type, attributes.prerendering_url,
+      attributes.form_submission, attributes.GetTargetHint(),
       attributes.preload_pipeline_info->id(), outcome,
       /*prerender_status=*/std::nullopt,
       /*disallowed_mojo_interface=*/std::nullopt,
@@ -45,7 +47,8 @@ void DevToolsPrerenderAttempt::SetFailureReason(
   devtools_instrumentation::DidUpdatePrerenderStatus(
       attributes.initiator_frame_tree_node_id,
       attributes.initiator_devtools_navigation_token.value(),
-      attributes.prerendering_url, attributes.target_hint,
+      attributes.prerender_action_type, attributes.prerendering_url,
+      attributes.form_submission, attributes.GetTargetHint(),
       attributes.preload_pipeline_info->id(),
       PreloadingTriggeringOutcome::kFailure, prerender_status,
       /*disallowed_mojo_interface=*/std::nullopt,
@@ -57,7 +60,8 @@ void DevToolsPrerenderAttempt::SetFailureReason(
     const PrerenderCancellationReason& reason) {
   PrerenderFinalStatus prerender_status = reason.final_status();
   std::optional<std::string> disallowed_mojo_interface;
-  const std::vector<PrerenderMismatchedHeaders>* mismatched_headers = nullptr;
+  const std::vector<network::MismatchedHttpRequestHeader>* mismatched_headers =
+      nullptr;
 
   // Ensured by PrerenderCancellationReason.
   switch (prerender_status) {
@@ -79,7 +83,8 @@ void DevToolsPrerenderAttempt::SetFailureReason(
   devtools_instrumentation::DidUpdatePrerenderStatus(
       attributes.initiator_frame_tree_node_id,
       attributes.initiator_devtools_navigation_token.value(),
-      attributes.prerendering_url, attributes.target_hint,
+      attributes.prerender_action_type, attributes.prerendering_url,
+      attributes.form_submission, attributes.GetTargetHint(),
       attributes.preload_pipeline_info->id(),
       PreloadingTriggeringOutcome::kFailure, prerender_status,
       disallowed_mojo_interface, mismatched_headers);

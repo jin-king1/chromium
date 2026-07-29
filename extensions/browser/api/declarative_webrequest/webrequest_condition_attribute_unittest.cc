@@ -15,10 +15,13 @@
 #include "extensions/browser/api/declarative_webrequest/webrequest_constants.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/api/web_request/web_request_info.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/http/http_util.h"
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -100,7 +103,7 @@ TEST(WebRequestConditionAttributeTest, ContentType) {
                                         "Content-Type: text/plain; UTF-8\r\n"));
 
   base::Value content_types(base::Value::Type::LIST);
-  base::Value::List& content_types_list = content_types.GetList();
+  base::ListValue& content_types_list = content_types.GetList();
   content_types_list.Append("text/plain");
   scoped_refptr<const WebRequestConditionAttribute> attribute_include =
       WebRequestConditionAttribute::Create(
@@ -238,14 +241,13 @@ void GetArrayAsVector(const std::vector<std::string>& strings,
   }
 }
 
-// Builds a base::Value::Dict from an array of the form {name1, value1, name2,
+// Builds a base::DictValue from an array of the form {name1, value1, name2,
 // value2, ...}. Values for the same key are grouped in a List.
-base::Value::Dict GetDictFromArray(
-    const std::vector<const std::string*>& array) {
+base::DictValue GetDictFromArray(const std::vector<const std::string*>& array) {
   const size_t length = array.size();
   CHECK(length % 2 == 0);
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   for (size_t i = 0; i < length; i += 2) {
     const std::string* name = array[i];
     const std::string* value = array[i+1];
@@ -254,7 +256,7 @@ base::Value::Dict GetDictFromArray(
       switch (entry->type()) {
         case base::Value::Type::STRING: {
           // Replace the present string with a list.
-          base::Value::List list;
+          base::ListValue list;
           // No need to check again, we already verified the entry is there.
           entry_owned = dict.Extract(*name);
           list.Append(std::move(*entry_owned));

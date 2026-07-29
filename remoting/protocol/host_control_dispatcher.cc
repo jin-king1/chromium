@@ -8,6 +8,7 @@
 #include "net/socket/stream_socket.h"
 #include "remoting/base/compound_buffer.h"
 #include "remoting/base/constants.h"
+#include "remoting/base/logging.h"
 #include "remoting/proto/control.pb.h"
 #include "remoting/proto/internal.pb.h"
 #include "remoting/protocol/clipboard_stub.h"
@@ -61,6 +62,20 @@ void HostControlDispatcher::SetActiveDisplay(
   message_pipe()->Send(&message, {});
 }
 
+void HostControlDispatcher::ControlMicrophone(
+    const MicrophoneControl& control) {
+  ControlMessage message;
+  message.mutable_microphone_control()->CopyFrom(control);
+  message_pipe()->Send(&message, {});
+}
+
+void HostControlDispatcher::DeliverTerminalControl(
+    const TerminalControl& terminal_control) {
+  ControlMessage message;
+  message.mutable_terminal_control()->CopyFrom(terminal_control);
+  message_pipe()->Send(&message, {});
+}
+
 void HostControlDispatcher::InjectClipboardEvent(const ClipboardEvent& event) {
   ControlMessage message;
   message.mutable_clipboard_event()->CopyFrom(event);
@@ -90,16 +105,34 @@ void HostControlDispatcher::SetCursorShape(
   message_pipe()->Send(&message, {});
 }
 
+void HostControlDispatcher::SetHostCursorPosition(
+    const HostCursorPosition& position) {
+  ControlMessage message;
+  message.mutable_host_cursor_position()->CopyFrom(position);
+  message_pipe()->Send(&message, {});
+}
+
 void HostControlDispatcher::SetKeyboardLayout(const KeyboardLayout& layout) {
   ControlMessage message;
   message.mutable_keyboard_layout()->CopyFrom(layout);
   message_pipe()->Send(&message, {});
 }
 
+void HostControlDispatcher::set_host_stub(HostStub* host_stub) {
+  host_stub_ = host_stub;
+  while (!pending_messages_.empty()) {
+    OnIncomingMessage(std::move(pending_messages_.front()));
+    pending_messages_.pop();
+  }
+}
+
 void HostControlDispatcher::OnIncomingMessage(
     std::unique_ptr<CompoundBuffer> buffer) {
-  DCHECK(clipboard_stub_);
-  DCHECK(host_stub_);
+  if (!host_stub_) {
+    HOST_LOG << "Received control message before host stub is set.";
+    pending_messages_.push(std::move(buffer));
+    return;
+  }
 
   std::unique_ptr<ControlMessage> message =
       ParseMessage<ControlMessage>(buffer.get());
@@ -109,7 +142,12 @@ void HostControlDispatcher::OnIncomingMessage(
 
   // TODO(sergeyu): Move message validation from the message handlers here.
   if (message->has_clipboard_event()) {
-    clipboard_stub_->InjectClipboardEvent(message->clipboard_event());
+    if (clipboard_stub_) {
+      clipboard_stub_->InjectClipboardEvent(message->clipboard_event());
+    } else {
+      LOG(WARNING)
+          << "Clipboard event ignored because no clipboard stub is set.";
+    }
   } else if (message->has_client_resolution()) {
     const ClientResolution& resolution = message->client_resolution();
     if ((resolution.has_width_pixels() && resolution.width_pixels() <= 0) ||
@@ -134,7 +172,10 @@ void HostControlDispatcher::OnIncomingMessage(
     host_stub_->ControlPeerConnection(message->peer_connection_parameters());
   } else if (message->has_video_layout()) {
     host_stub_->SetVideoLayout(message->video_layout());
-  } else if (message->has_cursor_shape()) {
+  } else if (message->has_terminal_control()) {
+    host_stub_->ControlTerminal(message->terminal_control());
+  }
+  else if (message->has_cursor_shape()) {
     LOG(WARNING) << "Unexpected control message received: CursorShape";
   } else if (message->has_pairing_response()) {
     LOG(WARNING) << "Unexpected control message received: PairingResponse";

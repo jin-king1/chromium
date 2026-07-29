@@ -40,7 +40,7 @@
 #include "third_party/blink/renderer/core/animation/interpolable_length.h"
 #include "third_party/blink/renderer/core/animation/invalidatable_interpolation.h"
 #include "third_party/blink/renderer/core/animation/string_keyframe.h"
-#include "third_party/blink/renderer/core/css/css_primitive_value.h"
+#include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/css_test_helpers.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
 #include "third_party/blink/renderer/core/css/property_registry.h"
@@ -58,6 +58,19 @@
 namespace blink {
 
 using animation_test_helpers::EnsureInterpolatedValueCached;
+
+namespace {
+
+template <class T>
+size_t count(const T& container) {
+  size_t amount = 0;
+  for (const auto& _ : container) {
+    amount++;
+  }
+  return amount;
+}
+
+}  // namespace
 
 class AnimationKeyframeEffectModel : public PageTestBase {
  protected:
@@ -85,10 +98,11 @@ class AnimationKeyframeEffectModel : public PageTestBase {
         To<InterpolableLength>(typed_value->GetInterpolableValue());
     // Lengths are computed in logical units, which are quantized to 64ths of
     // a pixel.
-    EXPECT_NEAR(
-        expected_value,
-        length.CreateCSSValue(Length::ValueRange::kAll)->GetDoubleValue(),
-        /*abs_error=*/0.02);
+    EXPECT_NEAR(expected_value,
+                To<CSSNumericLiteralValue>(
+                    length.CreateCSSValue(Length::ValueRange::kAll))
+                    ->ClampedDoubleValue(),
+                /*abs_error=*/0.02);
   }
 
   void ExpectNonInterpolableValue(const String& expected_value,
@@ -752,7 +766,6 @@ TEST_F(AnimationKeyframeEffectModel,
 }
 
 TEST_F(AnimationKeyframeEffectModel, CompositorSnapshotUpdateCustomProperty) {
-  ScopedOffMainThreadCSSPaintForTest off_main_thread_css_paint(true);
   DummyExceptionStateForTesting exception_state;
 
   // Compositor keyframe value available after snapshot
@@ -769,7 +782,6 @@ TEST_F(AnimationKeyframeEffectModel, CompositorSnapshotUpdateCustomProperty) {
 }
 
 TEST_F(AnimationKeyframeEffectModel, CompositorUpdateColorProperty) {
-  ScopedOffMainThreadCSSPaintForTest off_main_thread_css_paint(true);
   DummyExceptionStateForTesting exception_state;
 
   element->style()->setProperty(GetDocument().GetExecutionContext(), "color",
@@ -998,13 +1010,13 @@ TEST_F(KeyframeEffectModelTest, StaticProperty) {
   StringKeyframeVector keyframes =
       KeyframesAtZeroAndOne(CSSPropertyID::kLeft, "3px", "3px");
   auto* effect = MakeGarbageCollected<StringKeyframeEffectModel>(keyframes);
-  EXPECT_EQ(1U, effect->Properties().size());
-  EXPECT_EQ(0U, effect->EnsureDynamicProperties().size());
+  EXPECT_EQ(1U, effect->Properties().UniqueProperties().size());
+  EXPECT_EQ(0U, count(effect->DynamicProperties()));
 
   keyframes = KeyframesAtZeroAndOne(CSSPropertyID::kLeft, "3px", "5px");
   effect = MakeGarbageCollected<StringKeyframeEffectModel>(keyframes);
-  EXPECT_EQ(1U, effect->Properties().size());
-  EXPECT_EQ(1U, effect->EnsureDynamicProperties().size());
+  EXPECT_EQ(1U, effect->Properties().UniqueProperties().size());
+  EXPECT_EQ(1U, count(effect->DynamicProperties()));
 }
 
 TEST_F(AnimationKeyframeEffectModel, BackgroundShorthandStaticProperties) {
@@ -1033,9 +1045,43 @@ TEST_F(AnimationKeyframeEffectModel, BackgroundShorthandStaticProperties) {
   EXPECT_EQ(1U, animations.size());
   auto* effect = animations[0]->effect();
   auto* model = To<KeyframeEffect>(effect)->Model();
-  EXPECT_EQ(kBackgroundProperties, model->Properties().size());
+  EXPECT_EQ(kBackgroundProperties,
+            model->Properties().UniqueProperties().size());
   // Background-color is the only property that is changing between keyframes.
-  EXPECT_EQ(1U, model->EnsureDynamicProperties().size());
+  EXPECT_EQ(1U, count(model->DynamicProperties()));
+}
+
+TEST_F(AnimationKeyframeEffectModel, QuantizedLegnthSaturation) {
+  // Lengths that are px based are expressed in layout units, which are 64ths of
+  // a pixel. When comparing px lengths for the purpose of determining if
+  // the values are equal for static optimization, we multiply by 64 and round.
+  // When converting from float, we can easily saturate the maximum value of an
+  // integer. Any value that would saturate the integer return value, instead
+  // returns the max value for an integer. Thus, sufficiently large values,
+  // can be considered equal even though wildly different in value. For
+  // practical purposes, any value sufficiently large is nonsensical. Adding
+  // saturation prevents a crash. We use a similar mechanism with saturation
+  // of animation timing properties.
+  const wtf_size_t kNumberOfPaddingLonghands = 4U;
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes pad {
+        from { padding: calc(5e38px); }
+        to { padding: calc(6e38px); }
+      }
+      br {
+        animation: pad 1s;
+      }
+    </style>
+    <div><br></div>
+  )HTML");
+  const auto& animations = GetDocument().getAnimations();
+  EXPECT_EQ(1U, animations.size());
+  auto* effect = animations[0]->effect();
+  auto* model = To<KeyframeEffect>(effect)->Model();
+  EXPECT_EQ(kNumberOfPaddingLonghands,
+            model->Properties().UniqueProperties().size());
+  EXPECT_EQ(0U, count(model->DynamicProperties()));
 }
 
 }  // namespace blink

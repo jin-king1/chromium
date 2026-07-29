@@ -5,8 +5,12 @@
 #ifndef CHROME_BROWSER_ASH_POLICY_SKYVAULT_POLICY_UTILS_H_
 #define CHROME_BROWSER_ASH_POLICY_SKYVAULT_POLICY_UTILS_H_
 
-#include "base/files/file_path.h"
+#include <optional>
 
+#include "base/files/file_path.h"
+#include "base/time/time.h"
+
+class PrefService;
 class Profile;
 
 namespace policy::local_user_files {
@@ -23,11 +27,13 @@ enum class FileSaveDestination {
   kMaxValue = kOneDrive,
 };
 
-// Supported cloud providers.
-enum class CloudProvider {
-  kNotSpecified,  // Not set by the policy.
-  kGoogleDrive,   // Google Drive.
-  kOneDrive,      // Microsoft OneDrive.
+// Supported migration destination options.
+enum class MigrationDestination {
+  kNotSpecified,
+  kGoogleDrive,
+  kOneDrive,
+  kDelete,
+  kMaxValue = kDelete,
 };
 
 // Categories of errors that can occur during the file upload process.
@@ -59,7 +65,8 @@ enum class UploadTrigger {
   kDownload = 0,
   kScreenCapture = 1,
   kMigration = 2,
-  kMaxValue = kMigration,
+  kCamera = 3,
+  kMaxValue = kCamera,
 };
 
 // Possible states of the migration. Persisted to a pref.
@@ -112,23 +119,33 @@ enum class DialogAction {
 
 // Returns whether local user files are enabled on the device by the flag and
 // policy.
-bool LocalUserFilesAllowed();
+bool LocalUserFilesAllowed(const PrefService& local_state);
 
-// If SkyVault migration is enabled, returns the `CloudProvider` to which local
-// files should be uploaded, and `kNotSpecified` otherwise.
-CloudProvider GetMigrationDestination();
+// Returns the `MigrationDestination` indicating where local files should be
+// moved, or that they should be deleted. Returns `kNotSpecified` if the
+// migration policy is unset or explicitly set to "read-only".
+MigrationDestination GetMigrationDestination(const PrefService& local_state);
 
-// Get the destination where downloads are saved.
+// Returns true if `destination` is set to a cloud location.
+bool IsCloudDestination(MigrationDestination destination);
+
+// Returns the destination where downloads are saved.
 FileSaveDestination GetDownloadsDestination(Profile* profile);
 
-// Get the destination where screen captures are saved.
+// Returns the destination where screen captures are saved.
 FileSaveDestination GetScreenCaptureDestination(Profile* profile);
+
+// Returns the destination where camera app files are saved.
+FileSaveDestination GetCameraDestination(Profile* profile);
 
 // Returns whether `download` should be saved to tmp/ directory.
 bool DownloadToTemp(Profile* profile);
 
 // Returns the path of MyFiles folder for `profile`.
 base::FilePath GetMyFilesPath(Profile* profile);
+
+// Returns the scheduled start time for local file migration or deletion.
+std::optional<base::Time> GetMigrationStartTime(Profile* profile);
 
 }  // namespace policy::local_user_files
 

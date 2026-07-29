@@ -14,16 +14,17 @@
 #import "components/autofill/core/browser/crowdsourcing/autofill_crowdsourcing_manager.h"
 #import "components/autofill/core/browser/crowdsourcing/votes_uploader.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
+#import "components/autofill/core/browser/data_manager/valuables/valuables_data_manager.h"
 #import "components/autofill/core/browser/foundations/autofill_client.h"
 #import "components/autofill/core/browser/logging/log_manager.h"
 #import "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #import "components/autofill/core/browser/single_field_fillers/autocomplete/autocomplete_history_manager.h"
 #import "components/autofill/core/browser/single_field_fillers/single_field_fill_router.h"
-#import "components/autofill/core/browser/strike_databases/strike_database.h"
 #import "components/autofill/ios/browser/autofill_client_ios.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_bridge.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_factory.h"
 #import "components/prefs/pref_service.h"
+#import "components/strike_database/strike_database.h"
 #import "components/sync/service/sync_service.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web_view/internal/autofill/cwv_autofill_client_ios_bridge.h"
@@ -75,19 +76,17 @@ class IOSWebViewPaymentsAutofillClient;
 class WebViewAutofillClientIOS : public AutofillClientIOS {
  public:
   static std::unique_ptr<WebViewAutofillClientIOS> Create(
-      FromWebStateImpl from_web_state_impl,
       web::WebState* web_state,
       id<CWVAutofillClientIOSBridge, AutofillDriverIOSBridge> bridge);
 
   WebViewAutofillClientIOS(
-      FromWebStateImpl from_web_state_impl,
       PrefService* pref_service,
       PersonalDataManager* personal_data_manager,
       AutocompleteHistoryManager* autocomplete_history_manager,
       web::WebState* web_state,
       id<CWVAutofillClientIOSBridge, AutofillDriverIOSBridge> bridge,
       signin::IdentityManager* identity_manager,
-      StrikeDatabase* strike_database,
+      strike_database::StrikeDatabase* strike_database,
       syncer::SyncService* sync_service,
       LogRouter* log_router);
 
@@ -104,6 +103,7 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
   AutofillCrowdsourcingManager& GetCrowdsourcingManager() override;
   VotesUploader& GetVotesUploader() override;
   PersonalDataManager& GetPersonalDataManager() override;
+  ValuablesDataManager* GetValuablesDataManager() override;
   EntityDataManager* GetEntityDataManager() override;
   SingleFieldFillRouter& GetSingleFieldFillRouter() override;
   AutocompleteHistoryManager* GetAutocompleteHistoryManager() override;
@@ -112,9 +112,10 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
   syncer::SyncService* GetSyncService() override;
   signin::IdentityManager* GetIdentityManager() override;
   const signin::IdentityManager* GetIdentityManager() const override;
+  metrics::ProfileMetricsService* GetProfileMetricsService() override;
   FormDataImporter* GetFormDataImporter() override;
   payments::PaymentsAutofillClient* GetPaymentsAutofillClient() override;
-  StrikeDatabase* GetStrikeDatabase() override;
+  strike_database::StrikeDatabase* GetStrikeDatabase() final;
   ukm::UkmRecorder* GetUkmRecorder() override;
   AddressNormalizer* GetAddressNormalizer() override;
   const GURL& GetLastCommittedPrimaryMainFrameURL() const override;
@@ -126,23 +127,23 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
   void ConfirmSaveAddressProfile(
       const AutofillProfile& profile,
       const AutofillProfile* original_profile,
-      bool is_migration_to_account,
+      AutofillClient::SaveAddressBubbleType save_address_bubble_type,
       AddressProfileSavePromptCallback callback) override;
   SuggestionUiSessionId ShowAutofillSuggestions(
       const AutofillClient::PopupOpenArgs& open_args,
       base::WeakPtr<AutofillSuggestionDelegate> delegate) override;
   void UpdateAutofillDataListValues(
-      base::span<const autofill::SelectOption> datalist) override;
-  void HideAutofillSuggestions(SuggestionHidingReason reason) override;
+      base::span<const SelectOption> datalist) override;
+  void HideSuggestions(SuggestionHidingReason reason,
+                       std::optional<FillingProduct> product) override;
   bool IsAutofillEnabled() const override;
   bool IsAutofillProfileEnabled() const override;
-  bool IsAutofillPaymentMethodsEnabled() const override;
+  bool IsWalletPublicPassStorageEnabled() const override;
   bool IsAutocompleteEnabled() const override;
   bool IsPasswordManagerEnabled() const override;
-  void DidFillForm(AutofillTriggerSource trigger_source,
-                   bool is_refill) override;
+  bool UsesPlatformAutofill() const override;
   bool IsContextSecure() const override;
-  autofill::FormInteractionsFlowId GetCurrentFormInteractionsFlowId() override;
+  bool IsCvcSavingSupported() const override;
   autofill_metrics::FormInteractionsUkmLogger& GetFormInteractionsUkmLogger()
       override;
   bool IsLastQueriedField(FieldGlobalId field_id) override;
@@ -157,8 +158,8 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
   PersonalDataManager* personal_data_manager_;
   AutocompleteHistoryManager* autocomplete_history_manager_;
   raw_ptr<signin::IdentityManager> identity_manager_;
+  strike_database::StrikeDatabase* strike_database_;
   std::unique_ptr<FormDataImporter> form_data_importer_;
-  StrikeDatabase* strike_database_;
   syncer::SyncService* sync_service_ = nullptr;
   raw_ptr<LogRouter> log_router_;
   std::unique_ptr<LogManager> log_manager_;
@@ -173,6 +174,8 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
   SingleFieldFillRouter single_field_fill_router_{
       autocomplete_history_manager_, payments_autofill_client_.GetIbanManager(),
       payments_autofill_client_.GetMerchantPromoCodeManager()};
+
+  base::WeakPtr<AutofillSuggestionDelegate> active_suggestion_delegate_;
 
   base::WeakPtrFactory<WebViewAutofillClientIOS> weak_ptr_factory_{this};
 };

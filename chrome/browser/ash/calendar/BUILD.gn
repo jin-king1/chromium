@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 assert(is_chromeos)
 
 static_library("calendar") {
@@ -21,10 +19,11 @@ static_library("calendar") {
   deps = [
     "//ash",
     "//base",
-    "//chrome/browser:browser_process",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/signin",
     "//chrome/browser/web_applications",
+    "//chromeos/ash/components/policy/policy_blocklist_service",
     "//components/policy/content",
     "//components/policy/core/browser",
     "//components/prefs",
@@ -58,10 +57,12 @@ source_set("unit_tests") {
     "//chrome/browser",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/apps/app_service:test_support",
+    "//chrome/browser/apps/app_service/publishers",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/prefs",
     "//chrome/browser/web_applications",
     "//chrome/test:test_support",
+    "//chromeos/ash/components/policy/policy_blocklist_service",
     "//components/account_id",
     "//components/policy/core/common",
     "//components/services/app_service/public/cpp:app_types",

@@ -69,14 +69,6 @@ class IdentityUtilsTest : public testing::Test {
         kTestEmail, ConsentLevel::kSignin);
   }
 
-  void SetExplicitBrowserSigninPref(bool value) {
-    pref_service_.SetBoolean(prefs::kExplicitBrowserSignin, value);
-  }
-
-  bool GetExplicitBrowserSigninPref() {
-    return pref_service_.GetBoolean(prefs::kExplicitBrowserSignin);
-  }
-
   IdentityManager* identity_manager() {
     return identity_test_env_.identity_manager();
   }
@@ -87,32 +79,9 @@ class IdentityUtilsTest : public testing::Test {
 
  private:
   base::test::SingleThreadTaskEnvironment task_environment_;
-  base::test::ScopedFeatureList scoped_feature_list_{
-      switches::kExplicitBrowserSigninUIOnDesktop};
   sync_preferences::TestingPrefServiceSyncable pref_service_;
   IdentityTestEnvironment identity_test_env_;
 };
-
-TEST_F(IdentityUtilsTest, AreGoogleCookiesRebuiltAfterClearingWhenSignedIn) {
-  // Signed out.
-  EXPECT_TRUE(AreGoogleCookiesRebuiltAfterClearingWhenSignedIn(
-      *identity_manager(), *pref_service()));
-  // Implicit signin.
-  MakePrimaryAccountAvailable();
-  SetExplicitBrowserSigninPref(false);
-  EXPECT_FALSE(AreGoogleCookiesRebuiltAfterClearingWhenSignedIn(
-      *identity_manager(), *pref_service()));
-  // Explicit signin.
-  SetExplicitBrowserSigninPref(true);
-  EXPECT_TRUE(AreGoogleCookiesRebuiltAfterClearingWhenSignedIn(
-      *identity_manager(), *pref_service()));
-  // Sync.
-  identity_manager()->GetPrimaryAccountMutator()->SetPrimaryAccount(
-      identity_manager()->GetPrimaryAccountId(ConsentLevel::kSignin),
-      ConsentLevel::kSync, signin_metrics::AccessPoint::kSettings);
-  EXPECT_FALSE(AreGoogleCookiesRebuiltAfterClearingWhenSignedIn(
-      *identity_manager(), *pref_service()));
-}
 
 TEST_F(IdentityUtilsIsUsernameAllowedTest, EmptyPatterns) {
   prefs()->SetString(prefs::kGoogleServicesUsernamePattern, "");
@@ -252,83 +221,5 @@ TEST_F(IdentityUtilsTest, GetAllGaiaIdsForKeyedPreferences) {
       testing::UnorderedElementsAre(account_info.gaia, GaiaId("0"),
                                     GaiaId("1")));
 }
-
-class IdentityUtilsIsImplicitBrowserSigninOrExplicitDisabled
-    : public testing::Test,
-      public base::test::WithFeatureOverride {
- public:
-  IdentityUtilsIsImplicitBrowserSigninOrExplicitDisabled()
-      : base::test::WithFeatureOverride(
-            switches::kExplicitBrowserSigninUIOnDesktop),
-        identity_test_env_(/*test_url_loader_factory=*/nullptr,
-                           &pref_service_) {}
-
-  bool IsExplicitBrowserSigninDisabled() const {
-    return !IsParamFeatureEnabled();
-  }
-
-  void MakePrimaryAccountAvailable() {
-    static const std::string kTestEmail = "test@gmail.com";
-    identity_test_env_.MakePrimaryAccountAvailable(kTestEmail,
-                                                   ConsentLevel::kSignin);
-  }
-
-  void SetExplicitBrowserSigninPref(bool value) {
-    pref_service_.SetBoolean(prefs::kExplicitBrowserSignin, value);
-  }
-
-  bool GetExplicitBrowserSigninPref() {
-    return pref_service_.GetBoolean(prefs::kExplicitBrowserSignin);
-  }
-
-  IdentityManager* identity_manager() {
-    return identity_test_env_.identity_manager();
-  }
-
-  sync_preferences::TestingPrefServiceSyncable* pref_service() {
-    return &pref_service_;
-  }
-
- private:
-  base::test::SingleThreadTaskEnvironment task_environment_;
-  sync_preferences::TestingPrefServiceSyncable pref_service_;
-  IdentityTestEnvironment identity_test_env_;
-};
-
-TEST_P(IdentityUtilsIsImplicitBrowserSigninOrExplicitDisabled,
-       NoPrimaryAccount) {
-  ASSERT_FALSE(identity_manager()->HasPrimaryAccount(ConsentLevel::kSignin));
-  EXPECT_FALSE(GetExplicitBrowserSigninPref());
-  EXPECT_EQ(IsImplicitBrowserSigninOrExplicitDisabled(identity_manager(),
-                                                      pref_service()),
-            IsExplicitBrowserSigninDisabled());
-}
-
-TEST_P(IdentityUtilsIsImplicitBrowserSigninOrExplicitDisabled,
-       PrimaryAccountExplicitSignin) {
-  MakePrimaryAccountAvailable();
-  ASSERT_TRUE(identity_manager()->HasPrimaryAccount(ConsentLevel::kSignin));
-  SetExplicitBrowserSigninPref(true);
-  ASSERT_TRUE(GetExplicitBrowserSigninPref());
-
-  EXPECT_EQ(IsImplicitBrowserSigninOrExplicitDisabled(identity_manager(),
-                                                      pref_service()),
-            IsExplicitBrowserSigninDisabled());
-}
-
-// Test for users that are already signed in implicitly.
-TEST_P(IdentityUtilsIsImplicitBrowserSigninOrExplicitDisabled,
-       PrimaryAccountDiceImplicitSignin) {
-  MakePrimaryAccountAvailable();
-  ASSERT_TRUE(identity_manager()->HasPrimaryAccount(ConsentLevel::kSignin));
-  SetExplicitBrowserSigninPref(false);
-  ASSERT_FALSE(GetExplicitBrowserSigninPref());
-
-  EXPECT_TRUE(IsImplicitBrowserSigninOrExplicitDisabled(identity_manager(),
-                                                        pref_service()));
-}
-
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
-    IdentityUtilsIsImplicitBrowserSigninOrExplicitDisabled);
 
 }  // namespace signin

@@ -7,7 +7,6 @@
 #include <string>
 #include <utility>
 
-#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
@@ -547,7 +546,7 @@ TEST_F(AutocompleteTableTest,
   FormFieldData field;
   field.set_name(u"Name");
   field.set_value(u"Superman");
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 5; ++i) {
     EXPECT_TRUE(table().AddFormFieldValues({field}, &changes));
     AdvanceClock(base::Seconds(10));
   }
@@ -568,7 +567,7 @@ TEST_F(AutocompleteTableTest,
   FormFieldData field;
   field.set_name(u"Name");
   field.set_value(u"Superman");
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 5; ++i) {
     AdvanceClock(base::Seconds(10));
     EXPECT_TRUE(table().AddFormFieldValues({field}, &changes));
   }
@@ -590,7 +589,7 @@ TEST_F(AutocompleteTableTest,
   FormFieldData field;
   field.set_name(u"Name");
   field.set_value(u"Superman");
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 5; ++i) {
     EXPECT_TRUE(table().AddFormFieldValues({field}, &changes));
     AdvanceClock(base::Seconds(10));
   }
@@ -615,7 +614,7 @@ TEST_F(AutocompleteTableTest,
   FormFieldData field;
   field.set_name(u"Name");
   field.set_value(u"Superman");
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 5; ++i) {
     AdvanceClock(base::Seconds(10));
     EXPECT_TRUE(table().AddFormFieldValues({field}, &changes));
   }
@@ -646,7 +645,7 @@ TEST_F(AutocompleteTableTest,
   FormFieldData field;
   field.set_name(u"Name");
   field.set_value(u"Superman");
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 5; ++i) {
     AdvanceClock(base::Seconds(10));
     EXPECT_TRUE(table().AddFormFieldValues({field}, &changes));
   }
@@ -847,6 +846,27 @@ TEST_F(AutocompleteTableTest, Autocomplete_GetAllAutocompleteEntries_TwoSame) {
                                  CompareAutocompleteEntries);
 
   CompareAutocompleteEntrySets(entry_set, expected_entries);
+}
+
+// Tests that wildcards in the user input are ignored by
+// GetFormValuesForElementName().
+// Regression test for crbug.com/511812704.
+TEST_F(AutocompleteTableTest, GetFormValuesForElementName_Wildcards) {
+  AutocompleteChangeList changes;
+  FormFieldData field;
+  field.set_name(u"name");
+  field.set_value(u"value");
+  ASSERT_TRUE(table().AddFormFieldValues({field}, &changes));
+
+  std::vector<AutocompleteEntry> entries;
+  // Wildcards in the search value should be interpreted literally.
+  ASSERT_TRUE(table().GetFormValuesForElementName(u"name", u"_alue",
+                                                  /*limit=*/1, entries));
+  EXPECT_TRUE(entries.empty());
+  // Prefix matching should work.
+  ASSERT_TRUE(table().GetFormValuesForElementName(u"name", u"val", /*limit=*/1,
+                                                  entries));
+  EXPECT_FALSE(entries.empty());
 }
 
 TEST_F(AutocompleteTableTest, DontCrashWhenAddingValueToPoisonedDB) {

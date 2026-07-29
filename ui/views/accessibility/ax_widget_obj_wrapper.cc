@@ -50,7 +50,7 @@ void AXWidgetObjWrapper::Serialize(ui::AXNodeData* out_node_data) {
                                     "Widget");
   out_node_data->relative_bounds.bounds =
       gfx::RectF(widget_->GetWindowBoundsInScreen());
-  out_node_data->state = 0;
+  out_node_data->state = ui::AXStates(0U);
 }
 
 ui::AXNodeID AXWidgetObjWrapper::GetUniqueId() const {
@@ -66,6 +66,7 @@ void AXWidgetObjWrapper::OnWidgetDestroying(Widget* widget) {
 }
 
 void AXWidgetObjWrapper::OnWidgetDestroyed(Widget* widget) {
+  widget_observation_.Reset();
   // Normally this does not run because of OnWidgetDestroying should have
   // removed |this| from cache. However, some code could trigger a destroying
   // widget to be created after OnWidgetDestroying. This guards against such

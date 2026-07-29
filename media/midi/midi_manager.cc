@@ -164,7 +164,7 @@ bool MidiManager::EndSession(MidiManagerClient* client) {
 
 bool MidiManager::HasOpenSession() {
   base::AutoLock auto_lock(lock_);
-  return clients_.size() != 0u;
+  return !clients_.empty() || !pending_clients_.empty();
 }
 
 void MidiManager::DispatchSendMidiData(MidiManagerClient* client,
@@ -277,14 +277,13 @@ void MidiManager::AccumulateMidiBytesSent(MidiManagerClient* client, size_t n) {
 }
 
 void MidiManager::ReceiveMidiData(uint32_t port_index,
-                                  const uint8_t* data,
-                                  size_t length,
+                                  base::span<const uint8_t> data,
                                   base::TimeTicks timestamp) {
   base::AutoLock auto_lock(lock_);
   data_received_ = true;
 
   for (MidiManagerClient* client : clients_) {
-    client->ReceiveMidiData(port_index, data, length, timestamp);
+    client->ReceiveMidiData(port_index, data, timestamp);
   }
 }
 

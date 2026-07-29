@@ -28,6 +28,8 @@ constexpr base::TimeDelta kVeryBigLocalChangeNudgeDelay = kDefaultPollInterval;
 
 constexpr base::TimeDelta kDefaultLocalChangeNudgeDelayForSessions =
     base::Seconds(15);
+constexpr base::TimeDelta kDefaultLocalChangeNudgeDelayForSavedTabGroup =
+    base::Seconds(11);
 
 // Nudge delay for remote invalidations. Common to all data types.
 constexpr base::TimeDelta kRemoteInvalidationDelay = base::Milliseconds(250);
@@ -55,7 +57,7 @@ base::TimeDelta GetDefaultLocalChangeNudgeDelay(DataType data_type) {
       // and freshness.
       return kDefaultLocalChangeNudgeDelayForSessions;
     case SAVED_TAB_GROUP:
-      return syncer::kTabGroupsSaveCustomNudgeDelay.Get();
+      return kDefaultLocalChangeNudgeDelayForSavedTabGroup;
     case BOOKMARKS:
     case PREFERENCES:
     case PRODUCT_COMPARISON:
@@ -76,6 +78,9 @@ base::TimeDelta GetDefaultLocalChangeNudgeDelay(DataType data_type) {
     case COLLABORATION_GROUP:
     case CONTACT_INFO:
     case THEMES:
+    case THEMES_IOS:
+    case ENCRYPTED_TAB_CONTEXT_CONTAINER:
+    case ENCRYPTED_TAB_CONTEXT_ITEM:
     case EXTENSIONS:
     case SEARCH_ENGINES:
     case APPS:
@@ -103,11 +108,20 @@ base::TimeDelta GetDefaultLocalChangeNudgeDelay(DataType data_type) {
     case OS_PRIORITY_PREFERENCES:
     case WORKSPACE_DESK:
     case NIGORI:
-    case POWER_BOOKMARK:
     case WEBAUTHN_CREDENTIAL:
     case PLUS_ADDRESS:
     case PLUS_ADDRESS_SETTING:
-    case AUTOFILL_LOYALTY_CARD:
+    case AUTOFILL_VALUABLE:
+    case AUTOFILL_VALUABLE_METADATA:
+    case ACCOUNT_SETTING:
+    case SHARED_TAB_GROUP_ACCOUNT_DATA:
+    case SHARED_COMMENT:
+    case AI_THREAD:
+    case CONTEXTUAL_TASK:
+    case SKILL:
+    case GEMINI_THREAD:
+    case THEMES_ANDROID:
+    case NOTEBOOK:
       return kMediumLocalChangeNudgeDelay;
     case UNSPECIFIED:
       NOTREACHED();
@@ -143,6 +157,9 @@ bool CanGetCommitsFromExtensions(DataType data_type) {
     case AUTOFILL_WALLET_OFFER:
     case AUTOFILL_WALLET_USAGE:
     case THEMES:
+    case THEMES_IOS:
+    case ENCRYPTED_TAB_CONTEXT_CONTAINER:
+    case ENCRYPTED_TAB_CONTEXT_ITEM:
     case EXTENSIONS:
     case SEARCH_ENGINES:
     case APPS:
@@ -167,7 +184,6 @@ bool CanGetCommitsFromExtensions(DataType data_type) {
     case WORKSPACE_DESK:
     case NIGORI:
     case SAVED_TAB_GROUP:
-    case POWER_BOOKMARK:
     case INCOMING_PASSWORD_SHARING_INVITATION:
     case OUTGOING_PASSWORD_SHARING_INVITATION:
     case SHARED_TAB_GROUP_DATA:
@@ -176,7 +192,17 @@ bool CanGetCommitsFromExtensions(DataType data_type) {
     case PLUS_ADDRESS_SETTING:
     case PRODUCT_COMPARISON:
     case COOKIES:
-    case AUTOFILL_LOYALTY_CARD:
+    case AUTOFILL_VALUABLE:
+    case AUTOFILL_VALUABLE_METADATA:
+    case ACCOUNT_SETTING:
+    case SHARED_TAB_GROUP_ACCOUNT_DATA:
+    case SHARED_COMMENT:
+    case AI_THREAD:
+    case CONTEXTUAL_TASK:
+    case SKILL:
+    case GEMINI_THREAD:
+    case THEMES_ANDROID:
+    case NOTEBOOK:
       return false;
     case UNSPECIFIED:
       NOTREACHED();
@@ -314,7 +340,7 @@ void DataTypeTracker::FillGetUpdatesTriggersMessage(
 }
 
 bool DataTypeTracker::IsBlocked() const {
-  return wait_interval_.get() &&
+  return wait_interval_ &&
          (wait_interval_->mode == WaitInterval::BlockingMode::kThrottled ||
           wait_interval_->mode ==
               WaitInterval::BlockingMode::kExponentialBackoff);
@@ -336,20 +362,19 @@ base::TimeDelta DataTypeTracker::GetLastBackoffInterval() const {
 void DataTypeTracker::ThrottleType(base::TimeDelta duration,
                                    base::TimeTicks now) {
   unblock_time_ = std::max(unblock_time_, now + duration);
-  wait_interval_ = std::make_unique<WaitInterval>(
-      WaitInterval::BlockingMode::kThrottled, duration);
+  wait_interval_.emplace(WaitInterval::BlockingMode::kThrottled, duration);
 }
 
 void DataTypeTracker::BackOffType(base::TimeDelta duration,
                                   base::TimeTicks now) {
   unblock_time_ = std::max(unblock_time_, now + duration);
-  wait_interval_ = std::make_unique<WaitInterval>(
-      WaitInterval::BlockingMode::kExponentialBackoff, duration);
+  wait_interval_.emplace(WaitInterval::BlockingMode::kExponentialBackoff,
+                         duration);
 }
 
 void DataTypeTracker::UpdateThrottleOrBackoffState() {
   if (base::TimeTicks::Now() >= unblock_time_) {
-    if (wait_interval_.get() &&
+    if (wait_interval_ &&
         (wait_interval_->mode ==
              WaitInterval::BlockingMode::kExponentialBackoff ||
          wait_interval_->mode ==

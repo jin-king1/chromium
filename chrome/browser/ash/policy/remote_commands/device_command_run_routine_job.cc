@@ -13,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/syslog_logging.h"
@@ -67,13 +68,11 @@ bool PopulateMojoEnumValueIfValid(int possible_enum, T* valid_enum_out) {
 std::string CreatePayload(
     ash::cros_healthd::mojom::RunRoutineResponsePtr response) {
   auto root_dict =
-      base::Value::Dict()
+      base::DictValue()
           .Set(kIdFieldName, response->id)
           .Set(kStatusFieldName, static_cast<int>(response->status));
 
-  std::string payload;
-  base::JSONWriter::Write(root_dict, &payload);
-  return payload;
+  return base::WriteJson(root_dict).value_or("");
 }
 }  // namespace
 
@@ -90,8 +89,8 @@ em::RemoteCommand_Type DeviceCommandRunRoutineJob::GetType() const {
 
 bool DeviceCommandRunRoutineJob::ParseCommandPayload(
     const std::string& command_payload) {
-  std::optional<base::Value::Dict> root =
-      base::JSONReader::ReadDict(command_payload);
+  std::optional<base::DictValue> root = base::JSONReader::ReadDict(
+      command_payload, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!root) {
     return false;
   }

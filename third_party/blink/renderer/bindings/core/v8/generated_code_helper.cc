@@ -20,7 +20,7 @@
 #include "third_party/blink/renderer/core/xml/dom_parser.h"
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
 #include "third_party/blink/renderer/platform/bindings/v8_per_context_data.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
@@ -42,11 +42,13 @@ bool IsCallbackFunctionRunnableInternal(
       relevant_execution_context->IsContextDestroyed()) {
     return false;
   }
-  if (relevant_execution_context->IsContextPaused()) {
-    if (ignore_pause == IgnorePause::kDontIgnore)
-      return false;
+  // When execution context is frozen, callbacks should never run.
+  // When paused, callbacks should not run except when explicitly set to ignore.
+  if (relevant_execution_context->IsContextFrozen() ||
+      (relevant_execution_context->IsContextPaused() &&
+       ignore_pause == IgnorePause::kDontIgnore)) {
+    return false;
   }
-
   // TODO(yukishiino): Callback function type value must make the incumbent
   // environment alive, i.e. the reference to v8::Context must be strong.
   v8::HandleScope handle_scope(incumbent_script_state->GetIsolate());
@@ -66,12 +68,19 @@ bool IsCallbackFunctionRunnableInternal(
       incumbent_execution_context->IsContextDestroyed()) {
     return false;
   }
-  if (incumbent_execution_context->IsContextPaused()) {
-    if (ignore_pause == IgnorePause::kDontIgnore)
-      return false;
+  if (incumbent_execution_context->IsContextFrozen() ||
+      (incumbent_execution_context->IsContextPaused() &&
+       ignore_pause == IgnorePause::kDontIgnore)) {
+    return false;
   }
   return !incumbent_script_state->World().IsMainWorld() ||
          incumbent_execution_context->CanExecuteScripts(kAboutToExecuteScript);
+}
+
+String FormatInvalidEnumValueMessage(StringView value,
+                                     const char* enum_type_name) {
+  return StrCat({"The provided value '", value,
+                 "' is not a valid enum value of type ", enum_type_name, "."});
 }
 
 }  // namespace
@@ -216,9 +225,8 @@ std::optional<size_t> FindIndexInEnumStringTable(
       FindIndexInEnumStringTable(str_value, enum_value_table);
 
   if (!index.has_value()) [[unlikely]] {
-    exception_state.ThrowTypeError("The provided value '" + str_value +
-                                   "' is not a valid enum value of type " +
-                                   enum_type_name + ".");
+    exception_state.ThrowTypeError(
+        FormatInvalidEnumValueMessage(str_value, enum_type_name));
   }
   return index;
 }
@@ -228,7 +236,7 @@ std::optional<size_t> FindIndexInEnumStringTable(
     base::span<const char* const> enum_value_table) {
   for (size_t i = 0; i < enum_value_table.size(); ++i) {
     // Avoid operator== because of the strlen inside a StringView construction.
-    if (WTF::EqualToCString(str_value, enum_value_table[i])) {
+    if (EqualToCString(str_value, enum_value_table[i])) {
       return i;
     }
   }
@@ -237,18 +245,14 @@ std::optional<size_t> FindIndexInEnumStringTable(
 
 void ReportInvalidEnumSetToAttribute(v8::Isolate* isolate,
                                      const String& value,
-                                     const String& enum_type_name,
+                                     const char* enum_type_name,
                                      ExceptionState& exception_state) {
   ScriptState* script_state = ScriptState::ForCurrentRealm(isolate);
   ExecutionContext* execution_context = ExecutionContext::From(script_state);
-
-  String message = "The provided value '" + value +
-                   "' is not a valid enum value of type " + enum_type_name +
-                   ".";
-
   execution_context->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
       mojom::blink::ConsoleMessageSource::kJavaScript,
-      mojom::blink::ConsoleMessageLevel::kWarning, message,
+      mojom::blink::ConsoleMessageLevel::kWarning,
+      FormatInvalidEnumValueMessage(value, enum_type_name),
       CaptureSourceLocation(execution_context)));
 }
 
@@ -282,8 +286,8 @@ bool IsEsIterableObject(v8::Isolate* isolate,
   return true;
 }
 
-Document* ToDocumentFromExecutionContext(ExecutionContext* execution_context) {
-  return DynamicTo<LocalDOMWindow>(execution_context)->document();
+Document& ToDocumentFromExecutionContext(ExecutionContext& execution_context) {
+  return *To<LocalDOMWindow>(execution_context).document();
 }
 
 ExecutionContext* ExecutionContextFromV8Wrappable(const Range* range) {
@@ -400,7 +404,7 @@ void PerformAttributeSetCEReactionsReflect(
     return;
   }
 
-  CEReactionsScope ce_reactions_scope;
+  CEReactionsScope ce_reactions_scope(isolate);
 
   Element* blink_receiver = V8Element::ToWrappableUnsafe(isolate, info.This());
   auto&& arg_value = NativeValueTraits<IDLType>::NativeValue(

@@ -2,16 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/gpu/v4l2/test/h264_decoder.h"
 
 #include <linux/v4l2-controls.h>
 #include <linux/videodev2.h>
 
+#include <tuple>
+
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/notreached.h"
@@ -109,10 +108,10 @@ v4l2_ctrl_h264_sps SetupSPSCtrl(const H264SPS* sps) {
 
   // Check that SPS offsets for ref frames size matches v4l2 sps.
   static_assert(std::extent<decltype(v4l2_sps.offset_for_ref_frame)>() ==
-                    std::extent<decltype(sps->offset_for_ref_frame)>(),
-                "SPS Offsets for ref frames size must match");
+                std::tuple_size<decltype(sps->offset_for_ref_frame)>::value);
   for (size_t i = 0; i < std::size(v4l2_sps.offset_for_ref_frame); i++)
-    v4l2_sps.offset_for_ref_frame[i] = sps->offset_for_ref_frame[i];
+    UNSAFE_TODO(v4l2_sps.offset_for_ref_frame[i]) =
+        UNSAFE_TODO(sps->offset_for_ref_frame[i]);
 
   v4l2_sps.offset_for_non_ref_pic = sps->offset_for_non_ref_pic;
   v4l2_sps.offset_for_top_to_bottom_field = sps->offset_for_top_to_bottom_field;
@@ -185,25 +184,33 @@ v4l2_ctrl_h264_scaling_matrix SetupScalingMatrix(const H264SPS* sps,
   // Makes sure that the size of the matrix scaling lists correspond
   // to the PPS scaling matrix sizes.
   static_assert(std::extent<decltype(matrix.scaling_list_4x4)>() <=
-                        std::extent<decltype(pps->scaling_list4x4)>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(pps->scaling_list4x4)>>::value &&
                     std::extent<decltype(matrix.scaling_list_4x4[0])>() <=
-                        std::extent<decltype(pps->scaling_list4x4[0])>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(pps->scaling_list4x4[0])>>::value &&
                     std::extent<decltype(matrix.scaling_list_8x8)>() <=
-                        std::extent<decltype(pps->scaling_list8x8)>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(pps->scaling_list8x8)>>::value &&
                     std::extent<decltype(matrix.scaling_list_8x8[0])>() <=
-                        std::extent<decltype(pps->scaling_list8x8[0])>(),
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(pps->scaling_list8x8[0])>>::value,
                 "PPS scaling_lists must be of correct size");
 
   // Makes sure that the size of the matrix scaling lists correspond
   // to the SPS scaling matrix sizes.
   static_assert(std::extent<decltype(matrix.scaling_list_4x4)>() <=
-                        std::extent<decltype(sps->scaling_list4x4)>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(sps->scaling_list4x4)>>::value &&
                     std::extent<decltype(matrix.scaling_list_4x4[0])>() <=
-                        std::extent<decltype(sps->scaling_list4x4[0])>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(sps->scaling_list4x4[0])>>::value &&
                     std::extent<decltype(matrix.scaling_list_8x8)>() <=
-                        std::extent<decltype(sps->scaling_list8x8)>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(sps->scaling_list8x8)>>::value &&
                     std::extent<decltype(matrix.scaling_list_8x8[0])>() <=
-                        std::extent<decltype(sps->scaling_list8x8[0])>(),
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(sps->scaling_list8x8[0])>>::value,
                 "SPS scaling_lists must be of correct size");
 
   const auto* scaling_list4x4 = &sps->scaling_list4x4[0];
@@ -216,16 +223,20 @@ v4l2_ctrl_h264_scaling_matrix SetupScalingMatrix(const H264SPS* sps,
   static_assert(std::extent<decltype(matrix.scaling_list_4x4), 1>() ==
                 std::extent<decltype(zigzag_4x4)>());
   for (size_t i = 0; i < std::size(matrix.scaling_list_4x4); ++i) {
-    for (size_t j = 0; j < std::size(matrix.scaling_list_4x4[i]); ++j) {
-      matrix.scaling_list_4x4[i][zigzag_4x4[j]] = scaling_list4x4[i][j];
+    for (size_t j = 0; j < std::size(UNSAFE_TODO(matrix.scaling_list_4x4[i]));
+         ++j) {
+      UNSAFE_TODO(matrix.scaling_list_4x4[i][zigzag_4x4[j]]) =
+          UNSAFE_TODO(scaling_list4x4[i][j]);
     }
   }
 
   static_assert(std::extent<decltype(matrix.scaling_list_8x8), 1>() ==
                 std::extent<decltype(zigzag_8x8)>());
   for (size_t i = 0; i < std::size(matrix.scaling_list_8x8); ++i) {
-    for (size_t j = 0; j < std::size(matrix.scaling_list_8x8[i]); ++j) {
-      matrix.scaling_list_8x8[i][zigzag_8x8[j]] = scaling_list8x8[i][j];
+    for (size_t j = 0; j < std::size(UNSAFE_TODO(matrix.scaling_list_8x8[i]));
+         ++j) {
+      UNSAFE_TODO(matrix.scaling_list_8x8[i][zigzag_8x8[j]]) =
+          UNSAFE_TODO(scaling_list8x8[i][j]);
     }
   }
 
@@ -263,7 +274,8 @@ v4l2_ctrl_h264_decode_params SetupDecodeParams(
   size_t i = 0;
   constexpr size_t kTimestampToNanoSecs = 1000;
   for (const auto& element : dpb) {
-    struct v4l2_h264_dpb_entry& entry = v4l2_decode_params.dpb[i++];
+    struct v4l2_h264_dpb_entry& entry =
+        UNSAFE_TODO(v4l2_decode_params.dpb[i++]);
     entry = {.reference_ts = element.second.ref_ts_nsec * kTimestampToNanoSecs,
              .pic_num = static_cast<unsigned short>(element.second.pic_num),
              .frame_num = static_cast<unsigned short>(element.second.frame_num),
@@ -441,7 +453,7 @@ void H264Decoder::FlushDPB() {
 
 void H264Decoder::InitializeDecoderLogic() {
   parser_ = std::make_unique<H264Parser>();
-  parser_->SetStream(data_stream_->data(), data_stream_->length());
+  parser_->SetStream(data_stream_->bytes());
 
   // Advance through NALUs until the first SPS.  The start of the decodable
   // data in an h.264 bistreams starts with an SPS.
@@ -487,13 +499,14 @@ VideoDecoder::Result H264Decoder::SubmitSlice() {
   std::vector<uint8_t> slice_data(
       sizeof(V4L2_STATELESS_H264_START_CODE_ANNEX_B) - 1);
   slice_data[2] = V4L2_STATELESS_H264_START_CODE_ANNEX_B;
-  slice_data.insert(slice_data.end(), (curr_slice_hdr_->nalu_data).get(),
-                    (curr_slice_hdr_->nalu_data +
-                     base::checked_cast<size_t>(curr_slice_hdr_->nalu_size))
-                        .get());
+  slice_data.insert(
+      slice_data.end(), (curr_slice_hdr_->nalu_data).get(),
+      UNSAFE_TODO((curr_slice_hdr_->nalu_data +
+                   base::checked_cast<size_t>(curr_slice_hdr_->nalu_size))
+                      .get()));
 
   scoped_refptr<MmappedBuffer> OUTPUT_buffer = OUTPUT_queue_->GetBuffer(0);
-  OUTPUT_buffer->mmapped_planes()[0].CopyIn(&slice_data[0], slice_data.size());
+  OUTPUT_buffer->mmapped_planes()[0].CopyIn(slice_data);
   OUTPUT_buffer->set_frame_number(global_pic_count_);
 
   if (!v4l2_ioctl_->QBuf(OUTPUT_queue_, 0)) {
@@ -528,11 +541,7 @@ VideoDecoder::Result H264Decoder::InitializeSliceMetadata(
   slice_metadata->long_term_reference_flag = slice_hdr.long_term_reference_flag;
 
   if (slice_hdr.adaptive_ref_pic_marking_mode_flag) {
-    static_assert(sizeof(slice_metadata->ref_pic_marking) ==
-                      sizeof(slice_hdr.ref_pic_marking),
-                  "Array sizes of ref pic marking do not match.");
-    memcpy(slice_metadata->ref_pic_marking, slice_hdr.ref_pic_marking,
-           sizeof(slice_metadata->ref_pic_marking));
+    slice_metadata->ref_pic_marking = slice_hdr.ref_pic_marking;
   }
 
   // Calculate H264 slice order counts.
@@ -895,7 +904,7 @@ void H264Decoder::FinishPicture(H264SliceMetadata picture, const int sps_id) {
 std::unique_ptr<H264Decoder> H264Decoder::Create(
     const base::MemoryMappedFile& stream) {
   auto parser = std::make_unique<H264Parser>();
-  parser->SetStream(stream.data(), stream.length());
+  parser->SetStream(stream.bytes());
 
   // Advance through NALUs until the first SPS.  The start of the decodable
   // data in an h.264 bistreams starts with an SPS.

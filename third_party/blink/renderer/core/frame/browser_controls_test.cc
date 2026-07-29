@@ -38,6 +38,7 @@
 #include "third_party/blink/public/web/web_settings.h"
 #include "third_party/blink/renderer/core/css/css_variable_data.h"
 #include "third_party/blink/renderer/core/css/document_style_environment_variables.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/qualified_name.h"
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
@@ -119,8 +120,8 @@ class BrowserControlsTest : public testing::Test,
 
   void RegisterMockedHttpURLLoad(const std::string& file_name) {
     url_test_helpers::RegisterMockedURLLoadFromBase(
-        WebString::FromUTF8(base_url_), test::CoreTestDataPath(),
-        WebString::FromUTF8(file_name));
+        WebString::FromUtf8(base_url_), test::CoreTestDataPath(),
+        WebString::FromUtf8(file_name));
   }
 
   WebGestureEvent GenerateEvent(WebInputEvent::Type type,
@@ -366,45 +367,7 @@ TEST_F(BrowserControlsTest, MAYBE(HideBottomControlsOnScrollDown)) {
             GetFrame()->View()->LayoutViewport()->GetScrollOffset());
 }
 
-TEST_F(BrowserControlsTest,
-       MAYBE(DynamicSafeAreaInsetBottomUntilScrollDownFinished)) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-  ScopedDynamicSafeAreaInsetsOnScrollForTest on_scroll(false);
-
-  WebViewImpl* web_view = Initialize();
-  web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
-  SetMaxSafeAreaInsets(GetFrame(), gfx::Insets().set_bottom(30));
-
-  // initialize browser controls to be shown.
-  web_view->GetBrowserControls().SetShownRatio(0.0, 1);
-  web_view->ResizeWithBrowserControls(web_view->MainFrameViewWidget()->Size(),
-                                      0, 50.f, true);
-  CompositeForTest();
-  // Bottom insets should be 0, as browser control is presented and it's taller
-  // than the bottom of the insets.
-  EXPECT_EQ("0px", ResolveSafeAreaInsetsBottom());
-
-  VerticalScroll(-40.0f);
-
-  // The safe area does not update until the scroll is finished.
-  EXPECT_FLOAT_EQ(0.2f, web_view->GetBrowserControls().BottomShownRatio());
-  EXPECT_EQ("0px", ResolveSafeAreaInsetsBottom());
-
-  // Simulate the scroll is finished, and call the browser control
-  // to resize the page.
-  FinishAnimation();
-  web_view->ResizeWithBrowserControls(web_view->MainFrameViewWidget()->Size(),
-                                      0, 50.f, false);
-  UpdateAllLifecyclePhases();
-
-  EXPECT_FLOAT_EQ(0.f, web_view->GetBrowserControls().BottomShownRatio());
-  EXPECT_EQ("30px", ResolveSafeAreaInsetsBottom());
-}
-
 TEST_F(BrowserControlsTest, MAYBE(DynamicSafeAreaInsetBottomScrollDown)) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-  ScopedDynamicSafeAreaInsetsOnScrollForTest on_scroll(true);
-
   WebViewImpl* web_view = Initialize();
   web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
   SetMaxSafeAreaInsets(GetFrame(), gfx::Insets().set_bottom(30));
@@ -438,8 +401,6 @@ TEST_F(BrowserControlsTest, MAYBE(DynamicSafeAreaInsetBottomScrollDown)) {
 }
 
 TEST_F(BrowserControlsTest, SafeAreaInsetAccountsForBrowserZoom) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-
   WebViewImpl* web_view = Initialize();
   web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
   web_view->MainFrameViewWidget()->SetZoomLevel(ZoomFactorToZoomLevel(1.6));
@@ -452,8 +413,6 @@ TEST_F(BrowserControlsTest, SafeAreaInsetAccountsForBrowserZoom) {
 }
 
 TEST_F(BrowserControlsTest, SafeAreaInsetAccountsForDSF) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-
   WebViewImpl* web_view = Initialize();
   web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
   web_view->MainFrameViewWidget()->SetDeviceScaleFactorForTesting(2.5);
@@ -532,47 +491,7 @@ TEST_F(BrowserControlsTest, MAYBE(ShowBottomControlsOnScrollUp)) {
             GetFrame()->View()->LayoutViewport()->GetScrollOffset());
 }
 
-TEST_F(BrowserControlsTest,
-       MAYBE(DynamicSafeAreaInsetBottomUntilScrollUpFinished)) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-  ScopedDynamicSafeAreaInsetsOnScrollForTest on_scroll(false);
-
-  WebViewImpl* web_view = Initialize();
-  web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
-  SetMaxSafeAreaInsets(GetFrame(), gfx::Insets().set_bottom(30));
-
-  // initialize browser controls to be shown.
-  web_view->GetBrowserControls().SetShownRatio(0, 0);
-  web_view->ResizeWithBrowserControls(web_view->MainFrameViewWidget()->Size(),
-                                      0, 50.f, false);
-  CompositeForTest();
-
-  // Bottom insets should be 30, as browser control is fully hidden.
-  EXPECT_EQ("30px", ResolveSafeAreaInsetsBottom());
-
-  VerticalScroll(40.0f);
-
-  // Safe area insets does not update when DynamicSafeAreaInsetsOnScroll
-  // flag is disabled.
-  EXPECT_FLOAT_EQ(0.8f, web_view->GetBrowserControls().BottomShownRatio());
-  EXPECT_EQ("30px", ResolveSafeAreaInsetsBottom());
-
-  // Simulate the scroll is finished, and call the browser control
-  // to resize the page.
-  FinishAnimation();
-  web_view->ResizeWithBrowserControls(web_view->MainFrameViewWidget()->Size(),
-                                      0, 50.f, true);
-  UpdateAllLifecyclePhases();
-
-  // Browser controls full shown when the entire scroll is finished.
-  EXPECT_FLOAT_EQ(1.0f, web_view->GetBrowserControls().BottomShownRatio());
-  EXPECT_EQ("0px", ResolveSafeAreaInsetsBottom());
-}
-
 TEST_F(BrowserControlsTest, MAYBE(DynamicSafeAreaInsetBottomScrollUp)) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-  ScopedDynamicSafeAreaInsetsOnScrollForTest on_scroll(true);
-
   WebViewImpl* web_view = Initialize();
   web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
   SetMaxSafeAreaInsets(GetFrame(), gfx::Insets().set_bottom(30));
@@ -614,7 +533,8 @@ TEST_F(BrowserControlsTest, MAYBE(ScrollDownThenUp)) {
                                       50.f, 0, true);
   web_view->GetBrowserControls().SetShownRatio(1, 1);
   GetFrame()->View()->GetScrollableArea()->SetScrollOffset(
-      ScrollOffset(0, 100), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 100), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   CompositeForTest();
 
   GetWebFrameWidget()->DispatchThroughCcInputHandler(
@@ -673,7 +593,8 @@ TEST_F(BrowserControlsTest, MAYBE(ScrollUpThenDown)) {
                                       50.f, 0, false);
   web_view->GetBrowserControls().SetShownRatio(0, 0);
   GetFrame()->View()->GetScrollableArea()->SetScrollOffset(
-      ScrollOffset(0, 100), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 100), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   CompositeForTest();
 
   GetWebFrameWidget()->DispatchThroughCcInputHandler(
@@ -803,7 +724,8 @@ TEST_F(BrowserControlsTest, MAYBE(ScrollableSubregionScrollFirst)) {
                                       50.f, 0, true);
   web_view->GetBrowserControls().SetShownRatio(1, 1);
   GetFrame()->View()->GetScrollableArea()->SetScrollOffset(
-      ScrollOffset(0, 50), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 50), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   CompositeForTest();
 
   // Test scroll down
@@ -871,7 +793,8 @@ TEST_F(BrowserControlsTest, MAYBE(ScrollableIframeScrollFirst)) {
                                       50.f, 0, true);
   web_view->GetBrowserControls().SetShownRatio(1, 1);
   GetFrame()->View()->GetScrollableArea()->SetScrollOffset(
-      ScrollOffset(0, 50), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 50), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   CompositeForTest();
 
   // Test scroll down
@@ -934,8 +857,6 @@ TEST_F(BrowserControlsTest, MAYBE(ScrollableIframeScrollFirst)) {
 
 TEST_F(BrowserControlsTest,
        MAYBE(SetMaxSafeAreaInsetWithDynamicSafeAreaInsets)) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-
   WebViewImpl* web_view = Initialize();
   web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
   SetMaxSafeAreaInsets(GetFrame(), gfx::Insets().set_bottom(30));
@@ -987,8 +908,6 @@ TEST_F(BrowserControlsTest, MAYBE(SetMaxSafeAreaInsetWithSubFrames)) {
 
 TEST_F(BrowserControlsTest,
        MAYBE(SetMaxSafeAreaInsetWithSubFramesWithDynamicSafeAreaInsets)) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-
   WebViewImpl* web_view = Initialize("fullscreen_iframe.html");
   web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
   SetMaxSafeAreaInsets(GetFrame(), gfx::Insets().set_bottom(30));
@@ -1023,34 +942,7 @@ TEST_F(BrowserControlsTest,
   EXPECT_EQ("40px", ResolveSafeAreaInsetsBottom(iframe));
 }
 
-TEST_F(BrowserControlsTest, MAYBE(StateUpdateRecomputesSafeAreaInset)) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-  ScopedDynamicSafeAreaInsetsOnScrollForTest on_scroll(false);
-
-  WebViewImpl* web_view = Initialize();
-  web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
-  SetMaxSafeAreaInsets(GetFrame(), gfx::Insets().set_bottom(30));
-
-  web_view->ResizeWithBrowserControls(web_view->MainFrameViewWidget()->Size(),
-                                      0, 50.f, true);
-
-  // With DynamicSafeAreaInsetsOnScroll disabled, SetShownRatio does not update
-  // the safe area inset.
-  web_view->GetBrowserControls().SetShownRatio(0.0, 1);
-  CompositeForTest();
-  EXPECT_EQ("30px", ResolveSafeAreaInsetsBottom());
-
-  // However, UpdateConstraintsAndState always updates the safe area inset.
-  web_view->GetBrowserControls().UpdateConstraintsAndState(
-      cc::BrowserControlsState::kShown, cc::BrowserControlsState::kBoth);
-  CompositeForTest();
-  EXPECT_EQ("0px", ResolveSafeAreaInsetsBottom());
-}
-
 TEST_F(BrowserControlsTest, MAYBE(SafeAreaMaxInsetVars)) {
-  ScopedDynamicSafeAreaInsetsForTest dynamic_safe_area_insets(true);
-  ScopedCSSSafeAreaMaxInsetForTest safe_area_max_inset(true);
-
   WebViewImpl* web_view = Initialize();
   web_view->GetSettings()->SetDynamicSafeAreaInsetsEnabled(true);
   gfx::Size widget_size = web_view->MainFrameViewWidget()->Size();
@@ -1118,7 +1010,8 @@ TEST_F(BrowserControlsTest, MAYBE(ZeroHeightMeansNoEffect)) {
                                       0, 0, false);
   web_view->GetBrowserControls().SetShownRatio(0, 0);
   GetFrame()->View()->GetScrollableArea()->SetScrollOffset(
-      ScrollOffset(0, 100), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 100), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   CompositeForTest();
 
   EXPECT_FLOAT_EQ(0.f, web_view->GetBrowserControls().ContentOffset());
@@ -1211,7 +1104,8 @@ TEST_F(BrowserControlsSimTest, MAYBE(StateConstraints)) {
   Compositor().BeginFrame();
 
   GetDocument().View()->GetScrollableArea()->SetScrollOffset(
-      ScrollOffset(0, 100), mojom::blink::ScrollType::kProgrammatic);
+      ScrollOffset(0, 100), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
   // Setting permitted state should change the content offset to match the
   // constraint.
   Compositor().LayerTreeHost()->UpdateBrowserControlsState(
@@ -1314,8 +1208,8 @@ TEST_F(BrowserControlsTest, MAYBE(DontAffectLayoutHeight)) {
   // so
   // 50% should result in both the position:fixed and position: absolute divs
   // having 150px of height.
-  Element* abs_pos = GetElementById(WebString::FromUTF8("abs"));
-  Element* fixed_pos = GetElementById(WebString::FromUTF8("fixed"));
+  Element* abs_pos = GetElementById(WebString("abs"));
+  Element* fixed_pos = GetElementById(WebString("fixed"));
   EXPECT_FLOAT_EQ(150.f, abs_pos->GetBoundingClientRect()->height());
   EXPECT_FLOAT_EQ(150.f, fixed_pos->GetBoundingClientRect()->height());
 
@@ -1380,9 +1274,8 @@ TEST_F(BrowserControlsSimTest, MAYBE(AffectLayoutHeightWhenConstrained)) {
       std::nullopt);
   Compositor().BeginFrame();
 
-  Element* abs_pos = GetDocument().getElementById(WebString::FromUTF8("abs"));
-  Element* fixed_pos =
-      GetDocument().getElementById(WebString::FromUTF8("fixed"));
+  Element* abs_pos = GetDocument().getElementById(WebString("abs"));
+  Element* fixed_pos = GetDocument().getElementById(WebString("fixed"));
 
   ASSERT_EQ(100.f, WebView().GetBrowserControls().ContentOffset());
 
@@ -1489,8 +1382,7 @@ TEST_F(BrowserControlsSimTest, MAYBE(AffectViewportConstrainedSticky)) {
       std::nullopt);
   Compositor().BeginFrame();
 
-  Element* sticky_pos =
-      GetDocument().getElementById(WebString::FromUTF8("sticky"));
+  Element* sticky_pos = GetDocument().getElementById(WebString("sticky"));
   ASSERT_EQ(100.f, WebView().GetBrowserControls().ContentOffset());
   ASSERT_EQ(300, GetDocument().GetFrame()->View()->GetLayoutSize().height());
   EXPECT_FLOAT_EQ(300.f, sticky_pos->GetBoundingClientRect()->bottom());
@@ -1549,8 +1441,8 @@ TEST_P(BrowserControlsViewportUnitTest, MAYBE(DontAffectStaticUnits)) {
 
   // Static '*vh' units should be based on the viewport when the browser
   // controls are hidden.
-  Element* abs_pos = GetElementById(WebString::FromUTF8("abs"));
-  Element* fixed_pos = GetElementById(WebString::FromUTF8("fixed"));
+  Element* abs_pos = GetElementById(WebString("abs"));
+  Element* fixed_pos = GetElementById(WebString("fixed"));
   EXPECT_FLOAT_EQ(param.height, abs_pos->GetBoundingClientRect()->height());
   EXPECT_FLOAT_EQ(param.height, fixed_pos->GetBoundingClientRect()->height());
 
@@ -1581,7 +1473,7 @@ TEST_P(BrowserControlsViewportUnitTest, MAYBE(DontAffectStaticUnits)) {
   // Static *vw units should not change when scrollbar disappears.
   EXPECT_FLOAT_EQ(param.width, abs_pos->GetBoundingClientRect()->width());
   EXPECT_FLOAT_EQ(param.width, fixed_pos->GetBoundingClientRect()->width());
-  Element* spacer = GetElementById(WebString::FromUTF8("spacer"));
+  Element* spacer = GetElementById(WebString("spacer"));
   ASSERT_TRUE(spacer);
   spacer->remove();
   UpdateAllLifecyclePhases();
@@ -1613,8 +1505,8 @@ TEST_F(BrowserControlsTest, MAYBE(DoAffectDVHUnits)) {
   ASSERT_EQ(100.f, web_view->GetBrowserControls().ContentOffset());
 
   // 'dvh' units should respond according to the current state of the controls.
-  Element* abs_pos = GetElementById(WebString::FromUTF8("abs"));
-  Element* fixed_pos = GetElementById(WebString::FromUTF8("fixed"));
+  Element* abs_pos = GetElementById(WebString("abs"));
+  Element* fixed_pos = GetElementById(WebString("fixed"));
   EXPECT_FLOAT_EQ(150.f, abs_pos->GetBoundingClientRect()->height());
   EXPECT_FLOAT_EQ(150.f, fixed_pos->GetBoundingClientRect()->height());
 
@@ -1658,7 +1550,7 @@ TEST_F(BrowserControlsTest, MAYBE(DoAffectDVHUnits)) {
   // dvw units should not change when scrollbar disappears.
   EXPECT_FLOAT_EQ(200.f, abs_pos->GetBoundingClientRect()->width());
   EXPECT_FLOAT_EQ(200.f, fixed_pos->GetBoundingClientRect()->width());
-  Element* spacer = GetElementById(WebString::FromUTF8("spacer"));
+  Element* spacer = GetElementById(WebString("spacer"));
   ASSERT_TRUE(spacer);
   spacer->remove();
   UpdateAllLifecyclePhases();
@@ -1689,8 +1581,8 @@ TEST_F(BrowserControlsTest, MAYBE(DontAffectVHUnitsWithScale)) {
   // we have to account for the minimum page scale factor. Since both boxes
   // are 50vh, and layout scale = 0.5, we have a vh viewport of 400 / 0.5 = 800
   // so we expect 50vh to be 400px.
-  Element* abs_pos = GetElementById(WebString::FromUTF8("abs"));
-  Element* fixed_pos = GetElementById(WebString::FromUTF8("fixed"));
+  Element* abs_pos = GetElementById(WebString("abs"));
+  Element* fixed_pos = GetElementById(WebString("fixed"));
   EXPECT_FLOAT_EQ(400.f, abs_pos->GetBoundingClientRect()->height());
   EXPECT_FLOAT_EQ(400.f, fixed_pos->GetBoundingClientRect()->height());
 
@@ -1761,8 +1653,8 @@ TEST_F(BrowserControlsTest, MAYBE(VHUnitsWithTopMinHeight)) {
   // 'vh' units should be based on the viewport when the browser controls are
   // hidden. However, the viewport height will be limited by the min-height
   // since the top controls can't completely hide.
-  Element* abs_pos = GetElementById(WebString::FromUTF8("abs"));
-  Element* fixed_pos = GetElementById(WebString::FromUTF8("fixed"));
+  Element* abs_pos = GetElementById(WebString("abs"));
+  Element* fixed_pos = GetElementById(WebString("fixed"));
   float div_height = 0.5f * (300 + (100 - 20));
   EXPECT_FLOAT_EQ(div_height, abs_pos->GetBoundingClientRect()->height());
   EXPECT_FLOAT_EQ(div_height, fixed_pos->GetBoundingClientRect()->height());
@@ -1810,8 +1702,8 @@ TEST_F(BrowserControlsTest, MAYBE(VHUnitsWithBottomMinHeight)) {
   // 'vh' units should be based on the viewport when the browser controls are
   // hidden. However, the viewport height will be limited by the min-height
   // since the top and bottom controls can't completely hide.
-  Element* abs_pos = GetElementById(WebString::FromUTF8("abs"));
-  Element* fixed_pos = GetElementById(WebString::FromUTF8("fixed"));
+  Element* abs_pos = GetElementById(WebString("abs"));
+  Element* fixed_pos = GetElementById(WebString("fixed"));
   float div_height = 0.5f * (250 + (100 - 20) + (50 - 10));
   EXPECT_FLOAT_EQ(div_height, abs_pos->GetBoundingClientRect()->height());
   EXPECT_FLOAT_EQ(div_height, fixed_pos->GetBoundingClientRect()->height());
@@ -1859,8 +1751,8 @@ TEST_F(BrowserControlsTest, MAYBE(VHUnitsWithMinHeightsChanging)) {
   // 'vh' units should be based on the viewport when the browser controls are
   // hidden. However, the viewport height will be limited by the min-height
   // since the top and bottom controls can't completely hide.
-  Element* abs_pos = GetElementById(WebString::FromUTF8("abs"));
-  Element* fixed_pos = GetElementById(WebString::FromUTF8("fixed"));
+  Element* abs_pos = GetElementById(WebString("abs"));
+  Element* fixed_pos = GetElementById(WebString("fixed"));
   float div_height = 0.5f * (250 + (100 - 20) + (50 - 10));
   EXPECT_FLOAT_EQ(div_height, abs_pos->GetBoundingClientRect()->height());
   EXPECT_FLOAT_EQ(div_height, fixed_pos->GetBoundingClientRect()->height());
@@ -1968,7 +1860,7 @@ TEST_F(BrowserControlsTest,
     GetVisualViewport().ClampToBoundaries();
     view->LayoutViewport()->SetScrollOffset(
         view->LayoutViewport()->GetScrollOffset(),
-        mojom::blink::ScrollType::kProgrammatic);
+        mojom::blink::ScrollType::kProgrammatic, cc::ScrollSourceType::kNone);
 
     ASSERT_EQ(80.f, web_view->GetBrowserControls().ContentOffset());
     EXPECT_EQ(expected_root_offset, root_viewport->GetScrollOffset().y());
@@ -2107,6 +1999,26 @@ TEST_F(BrowserControlsTest, MAYBE(BottomControlsSizeAdjustment)) {
   web_view->GetBrowserControls().SetShownRatio(0.0, 0.0);
   EXPECT_FLOAT_EQ(0.f,
                   web_view->GetBrowserControls().UnreportedSizeAdjustment());
+}
+
+TEST_F(BrowserControlsTest, MAYBE(TopControlsMinHeightNoSizeAdjustment)) {
+  WebViewImpl* web_view = Initialize();
+  gfx::Size viewport_size = web_view->MainFrameViewWidget()->Size();
+
+  cc::BrowserControlsParams params;
+  params.top_controls_height = 50.f;
+  params.top_controls_min_height = 50.f;
+  params.browser_controls_shrink_blink_size = false;
+
+  web_view->ResizeWithBrowserControls(viewport_size, viewport_size, params);
+  web_view->GetBrowserControls().SetShownRatio(/* top_ratio */ 1,
+                                               /* bottom_ratio */ 0);
+
+  // With top controls shown and height == min_height, there should be no size
+  // adjustment, even with browser_controls_shrink_blink_size == false.
+  EXPECT_FLOAT_EQ(0.f,
+                  web_view->GetBrowserControls().UnreportedSizeAdjustment());
+  EXPECT_FLOAT_EQ(0.f, GetVisualViewport().MaximumScrollOffset().y());
 }
 
 TEST_F(BrowserControlsTest, MAYBE(GrowingHeightKeepsTopControlsHidden)) {

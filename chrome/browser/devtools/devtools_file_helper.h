@@ -13,12 +13,13 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/uuid.h"
 #include "chrome/browser/devtools/devtools_file_watcher.h"
 #include "chrome/browser/platform_util.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "content/public/browser/file_system_access_permission_context.h"
 
 class GURL;
 class Profile;
@@ -26,7 +27,11 @@ class Profile;
 namespace base {
 class FilePath;
 class SequencedTaskRunner;
-}
+}  // namespace base
+
+namespace ui {
+struct SelectedFileInfo;
+}  // namespace ui
 
 class DevToolsFileHelper {
  public:
@@ -39,12 +44,8 @@ class DevToolsFileHelper {
                const std::string& root_url,
                const std::string& file_system_path);
 
-    bool operator==(const FileSystem& that) const {
-      return type == that.type && file_system_name == that.file_system_name &&
-             root_url == that.root_url &&
-             file_system_path == that.file_system_path;
-    }
-    bool operator!=(const FileSystem& that) const { return !(*this == that); }
+    friend constexpr bool operator==(const FileSystem&,
+                                     const FileSystem&) = default;
 
     std::string type;
     std::string file_system_name;
@@ -87,13 +88,15 @@ class DevToolsFileHelper {
   using CanceledCallback = base::OnceClosure;
   using ConnectCallback = base::OnceCallback<void(bool)>;
   using SaveCallback = base::OnceCallback<void(const std::string&)>;
-  using SelectedCallback = base::OnceCallback<void(const base::FilePath&)>;
+  using SelectedCallback =
+      base::OnceCallback<void(const ui::SelectedFileInfo&)>;
   using SelectFileCallback =
       base::OnceCallback<void(SelectedCallback selected_callback,
                               CanceledCallback canceled_callback,
                               const base::FilePath& default_path)>;
-  using ShowInfoBarCallback =
-      base::RepeatingCallback<void(const std::u16string&,
+  using HandlePermissionsCallback =
+      base::RepeatingCallback<void(const std::string&,
+                                   const std::u16string&,
                                    base::OnceCallback<void(bool)>)>;
 
   // Saves |content| to the file and associates its path with given |url|.
@@ -129,7 +132,7 @@ class DevToolsFileHelper {
   // must not be a valid UUID).
   void AddFileSystem(const std::string& type,
                      SelectFileCallback select_file_callback,
-                     const ShowInfoBarCallback& show_info_bar_callback);
+                     const HandlePermissionsCallback& show_info_bar_callback);
 
   // Upgrades dragged file system permissions to a read-write access.
   // Shows infobar by means of |show_info_bar_callback| to let the user decide
@@ -141,7 +144,7 @@ class DevToolsFileHelper {
   // |callback|.
   void UpgradeDraggedFileSystemPermissions(
       const std::string& file_system_url,
-      const ShowInfoBarCallback& show_info_bar_callback);
+      const HandlePermissionsCallback& show_info_bar_callback);
 
   // Attempts to automatically connect to the |file_system_path| (identified
   // by path and |file_system_uuid|). If this is the first time that the
@@ -153,7 +156,7 @@ class DevToolsFileHelper {
       const std::string& file_system_path,
       const base::Uuid& file_system_uuid,
       bool add_if_missing,
-      const ShowInfoBarCallback& show_info_bar_callback,
+      const HandlePermissionsCallback& show_info_bar_callback,
       ConnectCallback connect_callback);
 
   // Disconnects the automatically connected |file_system_path|.
@@ -171,6 +174,9 @@ class DevToolsFileHelper {
   // granted.
   bool IsFileSystemAdded(const std::string& file_system_path);
 
+  // Returns whether the given |file_path| is a part of any added file systems.
+  bool IsFileInFileSystem(const std::string& file_path);
+
   // Opens and reveals file in OS's default file manager.
   void ShowItemInFolder(const std::string& file_system_path);
 
@@ -178,16 +184,30 @@ class DevToolsFileHelper {
   void OnOpenItemComplete(const base::FilePath& path,
                           platform_util::OpenOperationResult result);
   void SaveToFileSelected(const std::string& url,
-                          const std::string& content,
+                          std::string content,
                           bool is_base64,
                           SaveCallback callback,
-                          const base::FilePath& path);
-  void InnerAddFileSystem(const ShowInfoBarCallback& show_info_bar_callback,
-                          const std::string& type,
-                          const base::FilePath& path);
+                          const ui::SelectedFileInfo& file_info);
+  void InnerAddFileSystem(
+      const HandlePermissionsCallback& show_info_bar_callback,
+      const std::string& type,
+      const ui::SelectedFileInfo& file_info);
   void AddUserConfirmedFileSystem(const std::string& type,
                                   const base::FilePath& path,
                                   bool allowed);
+  void CheckBlocklistAndConnectAutomaticFileSystem(
+      const std::string& file_system_path,
+      const base::Uuid& file_system_uuid,
+      bool add_if_missing,
+      const HandlePermissionsCallback& handle_permissions_callback,
+      ConnectCallback connect_callback,
+      content::FileSystemAccessPermissionContext::SensitiveEntryResult result);
+  void ConnectMissingAutomaticFileSystem(
+      const std::string& file_system_path,
+      const base::Uuid& file_system_uuid,
+      const HandlePermissionsCallback& handle_permissions_callback,
+      ConnectCallback connect_callback,
+      bool directory_exists);
   void ConnectUserConfirmedAutomaticFileSystem(
       ConnectCallback connect_callback,
       const std::string& file_system_path,
@@ -208,8 +228,8 @@ class DevToolsFileHelper {
   raw_ptr<Profile> profile_;
   raw_ptr<DevToolsFileHelper::Delegate> delegate_;
   raw_ptr<DevToolsFileHelper::Storage> storage_;
-  typedef std::map<std::string, base::FilePath> PathsMap;
-  PathsMap saved_files_;
+  typedef std::map<std::string, ui::SelectedFileInfo> SelectedFileInfoMap;
+  SelectedFileInfoMap saved_files_;
   PrefChangeRegistrar pref_change_registrar_;
   PathToType file_system_paths_;
   std::set<std::string> connected_automatic_file_systems_;

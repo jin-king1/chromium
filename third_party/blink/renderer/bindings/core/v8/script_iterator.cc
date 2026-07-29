@@ -10,7 +10,6 @@
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_script_runner.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_string_resource.h"
 #include "third_party/blink/renderer/platform/bindings/exception_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
@@ -263,18 +262,18 @@ ScriptValue ScriptIterator::CloseSync(ScriptState* script_state,
     return ScriptValue();
   }
 
+  // 4. If innerResult is a normal completion, then
+  //   a. Let return be innerResult.[[Value]].
+  //   b. If return is undefined, return ? completion.
+  if (return_method->IsNullOrUndefined()) {
+    return ScriptValue();
+  }
+
   // 7.3.10 GetMethod(V, P):
   //
   // 3. If IsCallable(func) is false, throw a TypeError exception.
   if (!return_method->IsFunction()) {
     exception_state.ThrowTypeError("return() function must be callable.");
-    return ScriptValue();
-  }
-
-  // 4. If innerResult is a normal completion, then
-  //   a. Let return be innerResult.[[Value]].
-  //   b. If return is undefined, return ? completion.
-  if (return_method->IsNullOrUndefined()) {
     return ScriptValue();
   }
 

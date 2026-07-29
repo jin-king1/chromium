@@ -35,8 +35,7 @@ MetricsLogStore::MetricsLogStore(PrefService* local_state,
           UnsentLogStore::UnsentLogStoreLimits{
               storage_limits.initial_log_queue_limits.min_log_count,
               storage_limits.initial_log_queue_limits.min_queue_size_bytes,
-              // Each individual initial log can be any size.
-              /*max_log_size_bytes=*/0},
+              storage_limits.initial_log_queue_limits.max_log_size_bytes},
           signing_key,
           logs_event_manager),
       ongoing_log_queue_(std::make_unique<UnsentLogStoreMetricsImpl>(),
@@ -212,7 +211,7 @@ void MetricsLogStore::StageNextLog() {
     ongoing_log_queue_.StageNextLog();
 }
 
-void MetricsLogStore::DiscardStagedLog(std::string_view reason) {
+void MetricsLogStore::DiscardStagedLogImpl(std::string_view reason) {
   DCHECK(has_staged_log());
   if (initial_log_queue_.has_staged_log())
     initial_log_queue_.DiscardStagedLog(reason);

@@ -12,7 +12,6 @@
 #include "build/buildflag.h"
 #include "chrome/browser/apps/app_service/app_registry_cache_waiter.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -33,12 +32,6 @@ WebAppNavigationCapturingBrowserTestBase::
   parameters["link_capturing_state"] = "reimpl_default_on";
   scoped_feature_list_.InitAndEnableFeatureWithParameters(
       features::kPwaNavigationCapturing, parameters);
-
-#if BUILDFLAG(IS_CHROMEOS)
-  // TODO(crbug.com/366547977): CrOS doesn't use our nav capturing
-  // implementation.
-  NOTREACHED();
-#endif
 }
 
 WebAppNavigationCapturingBrowserTestBase::
@@ -49,10 +42,9 @@ WebAppNavigationCapturingBrowserTestBase::CallWindowOpenExpectNewBrowser(
     content::WebContents* contents,
     const GURL& url,
     bool with_opener) {
-  ui_test_utils::BrowserChangeObserver browser_observer(
-      nullptr, ui_test_utils::BrowserChangeObserver::ChangeType::kAdded);
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
   CallWindowOpen(contents, url, with_opener);
-  return browser_observer.Wait();
+  return browser_created_observer.Wait();
 }
 
 content::WebContents*
@@ -94,23 +86,6 @@ void WebAppNavigationCapturingBrowserTestBase::WaitForLaunchParams(
                    base::NumberToString(min_launch_params_to_wait_for))
         .ExtractBool();
   }));
-}
-
-std::vector<GURL> WebAppNavigationCapturingBrowserTestBase::GetLaunchParams(
-    content::WebContents* contents,
-    const std::string& params) {
-  std::vector<GURL> launch_params;
-  content::EvalJsResult launchParamsResults =
-      content::EvalJs(contents->GetPrimaryMainFrame(),
-                      "'" + params + "' in window ? " + params + " : []");
-  EXPECT_THAT(launchParamsResults, content::EvalJsResult::IsOk());
-  base::Value::List launchParamsTargetUrls = launchParamsResults.ExtractList();
-  if (!launchParamsTargetUrls.empty()) {
-    for (const base::Value& url : launchParamsTargetUrls) {
-      launch_params.push_back(GURL(url.GetString()));
-    }
-  }
-  return launch_params;
 }
 
 }  // namespace web_app

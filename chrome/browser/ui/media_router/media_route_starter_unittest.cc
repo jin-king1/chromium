@@ -9,6 +9,7 @@
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/browser/media/router/chrome_media_router_factory.h"
@@ -45,7 +46,6 @@
 #endif
 
 using testing::_;
-using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 
@@ -308,7 +308,9 @@ class MediaRouteStarterTest : public ChromeRenderViewHostTestHarness {
 
   std::string GetLogEntry(const std::string& logs_json,
                           const std::string& attribute) {
-    base::Value logs = base::JSONReader::Read(logs_json).value();
+    base::Value logs =
+        base::JSONReader::Read(logs_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS)
+            .value();
     return *logs.GetList()[0].GetDict().FindString(attribute);
   }
 
@@ -919,6 +921,34 @@ TEST_F(MediaRouteStarterTest, GetScreenCapturePermission) {
   EXPECT_EQ(screen_capture_is_allowed,
             MediaRouteStarter::GetScreenCapturePermission(
                 MediaCastMode::DESKTOP_MIRROR));
+}
+
+TEST_F(MediaRouteStarterTest,
+       StartPresentationContextDoesNotObserveDefaultPresentationChanges) {
+  const std::string kVictimUrl = "https://victim.example/recv";
+  const std::string kVictimOrigin = "https://victim.example";
+  content::PresentationRequest victim_request =
+      CreatePresentationRequest(kVictimUrl, kVictimOrigin);
+  auto start_presentation_context =
+      CreateStartPresentationContext(victim_request);
+
+  CreateStarter(MediaRouterUIParameters(kDefaultModes, web_contents(),
+                                        std::move(start_presentation_context)));
+
+  EXPECT_EQ(u"victim.example",
+            media_route_starter()->GetPresentationRequestSourceName());
+
+  const std::string kAttackerUrl = "https://attacker.example/recv";
+  const std::string kAttackerOrigin = "https://attacker.example";
+  content::PresentationRequest attacker_request =
+      CreatePresentationRequest(kAttackerUrl, kAttackerOrigin);
+  presentation_manager()->NotifyDefaultPresentationChanged(&attacker_request);
+
+  // The source name should remain unchanged because MediaRouteStarter does not
+  // observe default presentation request changes.
+  EXPECT_EQ(u"victim.example",
+            media_route_starter()->GetPresentationRequestSourceName());
+  EXPECT_CALL(*this, RequestError(_));
 }
 
 }  // namespace media_router

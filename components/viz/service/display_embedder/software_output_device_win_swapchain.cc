@@ -9,6 +9,8 @@
 #include "base/debug/alias.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
+#include "base/strings/stringprintf.h"
+#include "components/viz/service/gl/exit_code.h"
 #include "mojo/public/cpp/system/platform_handle.h"
 #include "skia/ext/platform_canvas.h"
 #include "skia/ext/skia_utils_win.h"
@@ -67,13 +69,20 @@ SoftwareOutputDeviceWinSwapChain::~SoftwareOutputDeviceWinSwapChain() {
   }
 }
 
-void SoftwareOutputDeviceWinSwapChain::ResizeDelegated() {
+bool SoftwareOutputDeviceWinSwapChain::UpdateWindowSize(
+    const gfx::Size& viewport_pixel_size) {
+  // Update the size of the child window.
+  return SetWindowPos(child_window_.window(), nullptr, 0, 0,
+                      viewport_pixel_size.width(), viewport_pixel_size.height(),
+                      SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOCOPYBITS |
+                          SWP_NOOWNERZORDER | SWP_NOZORDER);
+}
+
+bool SoftwareOutputDeviceWinSwapChain::ResizeDelegated(
+    const gfx::Size& viewport_pixel_size) {
   // Update window size.
-  if (!SetWindowPos(child_window_.window(), nullptr, 0, 0,
-                    viewport_pixel_size_.width(), viewport_pixel_size_.height(),
-                    SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOCOPYBITS |
-                        SWP_NOOWNERZORDER | SWP_NOZORDER)) {
-    return;
+  if (!UpdateWindowSize(viewport_pixel_size)) {
+    return false;
   }
 
   // If the swapchain already exists, resize it instead of creating a new one.
@@ -81,13 +90,16 @@ void SoftwareOutputDeviceWinSwapChain::ResizeDelegated() {
     DCHECK(d3d11_device_);
     DCHECK(d3d11_device_context_);
 
-    HRESULT hr = dxgi_swapchain_->ResizeBuffers(2, viewport_pixel_size_.width(),
-                                                viewport_pixel_size_.height(),
+    HRESULT hr = dxgi_swapchain_->ResizeBuffers(2, viewport_pixel_size.width(),
+                                                viewport_pixel_size.height(),
                                                 kDXGISwapChainFormat, 0);
     if (FAILED(hr)) {
-      LOG(ERROR) << "IDXGISwapChain::ResizeBuffers failed: "
-                 << logging::SystemErrorCodeToString(hr);
-      return;
+      // If ResizeBuffers fails, the swapchain and window sizes will be out of
+      // sync, causing unexpected behavior such as permanent gutters or
+      // clipping. Therefore, terminate the GPU process to refresh state.
+      RestartGpuProcessForContextLoss(
+          base::StringPrintf("IDXGISwapChain::ResizeBuffers failed: %s",
+                             logging::SystemErrorCodeToString(hr)));
     }
   } else {
     // Defer the creation of DirectX related objects to when they're needed
@@ -103,7 +115,12 @@ void SoftwareOutputDeviceWinSwapChain::ResizeDelegated() {
     HRESULT hr = output_backing_->GetOrCreateDXObjects(
         &d3d11_device, &dxgi_factory, &dcomp_device);
     if (FAILED(hr)) {
-      return;
+      // If the error code is E_ACCESSDENIED, it indicates that the browser is
+      // running in session 0, which is non-interactive. There would be no
+      // rendering in this case, and there is no need to terminate the GPU
+      // process.
+      CHECK_EQ(hr, E_ACCESSDENIED);
+      return false;
     }
 
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3d11_device_context;
@@ -123,7 +140,7 @@ void SoftwareOutputDeviceWinSwapChain::ResizeDelegated() {
       // returned when the window is not valid. This will ensure that the
       // following CHECK still hits for more meaningful errors.
       CHECK_EQ(hr, E_INVALIDARG);
-      return;
+      return false;
     }
 
     Microsoft::WRL::ComPtr<IDCompositionVisual> dcomp_root_visual;
@@ -135,8 +152,8 @@ void SoftwareOutputDeviceWinSwapChain::ResizeDelegated() {
 
     // Create swapchain.
     DXGI_SWAP_CHAIN_DESC1 dxgi_swapchain_desc = {
-        .Width = static_cast<UINT>(viewport_pixel_size_.width()),
-        .Height = static_cast<UINT>(viewport_pixel_size_.height()),
+        .Width = static_cast<UINT>(viewport_pixel_size.width()),
+        .Height = static_cast<UINT>(viewport_pixel_size.height()),
         .Format = kDXGISwapChainFormat,
         .Stereo = FALSE,
         .SampleDesc = {.Count = 1, .Quality = 0},
@@ -152,9 +169,13 @@ void SoftwareOutputDeviceWinSwapChain::ResizeDelegated() {
     hr = dxgi_factory->CreateSwapChainForComposition(
         d3d11_device.Get(), &dxgi_swapchain_desc, nullptr, &dxgi_swapchain);
     if (FAILED(hr)) {
-      LOG(ERROR) << "IDXGIFactory2::CreateSwapChainForComposition failed: "
-                 << logging::SystemErrorCodeToString(hr);
-      return;
+      // An error in CreateSwapChainForComposition is observed to happen mostly
+      // due to OOM issues. This causes the DXGI device to be removed resulting
+      // in an error somewhere else. If this occurs, terminate the GPU process
+      // here to refresh state.
+      RestartGpuProcessForContextLoss(base::StringPrintf(
+          "IDXGIFactory2::CreateSwapChainForComposition failed: %s",
+          logging::SystemErrorCodeToString(hr)));
     }
 
     // Set swapchain as root visual content.
@@ -162,11 +183,7 @@ void SoftwareOutputDeviceWinSwapChain::ResizeDelegated() {
     CHECK_EQ(hr, S_OK);
 
     hr = dcomp_device->Commit();
-    if (FAILED(hr)) {
-      LOG(ERROR) << "IDCompositionDevice::Commit failed: "
-                 << logging::SystemErrorCodeToString(hr);
-      return;
-    }
+    CHECK_EQ(hr, S_OK);
 
     // Once all of the resources have been allocated into local variables
     // copy them as a group to the member variables so the object is never
@@ -178,9 +195,7 @@ void SoftwareOutputDeviceWinSwapChain::ResizeDelegated() {
     dcomp_target_ = std::move(dcomp_target);
     dcomp_root_visual_ = std::move(dcomp_root_visual);
   }
-
-  // Notify backing of successful resizing.
-  output_backing_->ClientResized();
+  return true;
 }
 
 SkCanvas* SoftwareOutputDeviceWinSwapChain::BeginPaintDelegated() {
@@ -257,6 +272,10 @@ void SoftwareOutputDeviceWinSwapChain::EndPaintDelegated(
     CheckDeviceRemoved(hr, d3d11_device_.Get(), "IDXGISwapChain1::Present1");
     return;
   }
+}
+
+void SoftwareOutputDeviceWinSwapChain::NotifyClientResized() {
+  output_backing_->ClientResized();
 }
 
 void SoftwareOutputDeviceWinSwapChain::ReleaseCanvas() {

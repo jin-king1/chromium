@@ -5,7 +5,6 @@
 #ifndef CONTENT_BROWSER_DEVTOOLS_RENDER_FRAME_DEVTOOLS_AGENT_HOST_H_
 #define CONTENT_BROWSER_DEVTOOLS_RENDER_FRAME_DEVTOOLS_AGENT_HOST_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -52,11 +51,18 @@ class CONTENT_EXPORT RenderFrameDevToolsAgentHost
   // Returns appropriate agent host for given frame tree node, traversing
   // up to local root as needed.
   static DevToolsAgentHostImpl* GetFor(FrameTreeNode* frame_tree_node);
+
   // Returns appropriate agent host for given RenderFrameHost, traversing
   // up to local root as needed. This will have an effect different from
   // calling the above overload as GetFor(rfh->frame_tree_node()) when
   // given RFH is a pending local root.
   static DevToolsAgentHostImpl* GetFor(RenderFrameHostImpl* rfh);
+
+  // Returns appropriate agent host for given frame tree node, traversing
+  // up to local root as needed. If no agent host exists for the local root,
+  // use the (potentially cross-process) root of the FTNs parent.
+  static DevToolsAgentHostImpl* GetForWithAncestorFallback(
+      FrameTreeNode* frame_tree_node);
 
   // Similar to GetFor(), but creates a host if it doesn't exist yet.
   static scoped_refptr<DevToolsAgentHost> GetOrCreateFor(
@@ -98,6 +104,7 @@ class CONTENT_EXPORT RenderFrameDevToolsAgentHost
   std::string GetParentId() override;
   std::string GetOpenerId() override;
   std::string GetOpenerFrameId() override;
+  std::string GetParentFrameId() override;
   bool CanAccessOpener() override;
   std::string GetType() override;
   std::string GetTitle() override;
@@ -129,7 +136,9 @@ class CONTENT_EXPORT RenderFrameDevToolsAgentHost
   friend class DevToolsAgentHost;
   friend class RenderFrameDevToolsAgentHostFencedFrameBrowserTest;
 
-  static void UpdateRawHeadersAccess(RenderFrameHostImpl* rfh);
+  static void UpdateRawHeadersAccess(
+      RenderFrameHostImpl* rfh,
+      RenderFrameDevToolsAgentHost* force_include_host);
 
   RenderFrameDevToolsAgentHost(FrameTreeNode*, RenderFrameHostImpl*);
   ~RenderFrameDevToolsAgentHost() override;
@@ -183,6 +192,7 @@ class CONTENT_EXPORT RenderFrameDevToolsAgentHost
       navigation_requests_;
   bool render_frame_alive_ = false;
   bool render_frame_crashed_ = false;
+  bool did_try_to_initialize_prerender_primary_main_frame_ = false;
 
   // TODO(crbug.com/40269649): Remove these fields once we collect enough
   // data.

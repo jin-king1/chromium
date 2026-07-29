@@ -8,11 +8,10 @@
 #include <vector>
 
 #include "ash/public/cpp/app_menu_constants.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/menu_util.h"
 #include "chrome/browser/ash/crostini/crostini_features.h"
-#include "chrome/browser/ash/crostini/crostini_package_service.h"
-#include "chrome/browser/ash/crostini/crostini_package_service_factory.h"
 #include "chrome/browser/ash/crostini/crostini_util.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
 #include "chrome/grit/generated_resources.h"
@@ -20,12 +19,6 @@
 #include "components/services/app_service/public/cpp/intent.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
-#include "ui/strings/grit/ui_strings.h"
-
-// TODO(crbug.com/40569217): the equivalent of
-// CrostiniAppModelBuilder::MaybeCreateRootFolder. Does some sort of "root
-// folder" abstraction belong here (on the publisher side of the App Service)
-// or should we hard-code that in one particular subscriber (the App List UI)?
 
 namespace {
 
@@ -39,7 +32,7 @@ bool ShouldShowDisplayDensityMenuItem(const std::string& app_id,
   }
 
   display::Display d;
-  if (!display::Screen::GetScreen()->GetDisplayWithDisplayId(display_id, &d)) {
+  if (!display::Screen::Get()->GetDisplayWithDisplayId(display_id, &d)) {
     return true;
   }
 
@@ -91,23 +84,10 @@ void CrostiniApps::LaunchAppWithIntent(const std::string& app_id,
       profile(), app_id,
       window_info ? window_info->display_id : display::kInvalidDisplayId,
       std::move(intent), std::move(args),
-      base::BindOnce(
-          [](LaunchCallback callback, bool success,
-             const std::string& failure_reason) {
-            if (!success) {
-              LOG(ERROR) << "Crostini launch error: " << failure_reason;
-            }
-            std::move(callback).Run(ConvertBoolToLaunchResult(success));
-          },
-          std::move(callback)));
-}
-
-void CrostiniApps::Uninstall(const std::string& app_id,
-                             UninstallSource uninstall_source,
-                             bool clear_site_data,
-                             bool report_abuse) {
-  crostini::CrostiniPackageServiceFactory::GetForProfile(profile())
-      ->QueueUninstallApplication(app_id);
+      base::BindOnce([](bool success, const std::string& failure_reason) {
+        LOG_IF(ERROR, !success) << "Crostini launch error: " << failure_reason;
+        return success ? LaunchResult::kSuccess : LaunchResult::kFailed;
+      }).Then(std::move(callback)));
 }
 
 void CrostiniApps::GetMenuModel(const std::string& app_id,
@@ -119,10 +99,6 @@ void CrostiniApps::GetMenuModel(const std::string& app_id,
   if (menu_type == MenuType::kShelf) {
     AddCommandItem(ash::APP_CONTEXT_MENU_NEW_WINDOW, IDS_APP_LIST_NEW_WINDOW,
                    menu_items);
-  }
-
-  if (crostini::IsUninstallable(profile(), app_id)) {
-    AddCommandItem(ash::UNINSTALL, IDS_APP_LIST_UNINSTALL_ITEM, menu_items);
   }
 
   if (ShouldAddOpenItem(app_id, menu_type, profile())) {
@@ -158,12 +134,9 @@ void CrostiniApps::GetMenuModel(const std::string& app_id,
 void CrostiniApps::CreateAppOverrides(
     const guest_os::GuestOsRegistryService::Registration& registration,
     App* app) {
-  // TODO(crbug.com/40624403): Enable once Crostini apps are managed inside App
+  // Per crbug.com/40624403, Crostini apps aren't going to be added in App
   // Management.
   app->show_in_management = false;
-
-  app->allow_uninstall =
-      crostini::IsUninstallable(profile(), registration.app_id());
 }
 
 }  // namespace apps

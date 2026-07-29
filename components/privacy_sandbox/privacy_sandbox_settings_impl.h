@@ -7,7 +7,6 @@
 
 #include <set>
 
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
@@ -15,9 +14,6 @@
 #include "components/browsing_topics/common/common_types.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/privacy_sandbox/privacy_sandbox_settings.h"
-#include "components/privacy_sandbox/tpcd_experiment_eligibility.h"
-#include "components/privacy_sandbox/tracking_protection_settings.h"
-#include "components/privacy_sandbox/tracking_protection_settings_observer.h"
 
 class HostContentSettingsMap;
 class PrefService;
@@ -25,11 +21,13 @@ class PrefService;
 namespace content_settings {
 class CookieSettings;
 }
+namespace privacy_sandbox_test_util {
+class PrivacySandboxSettingsTestPeer;
+}
 
 namespace privacy_sandbox {
 
-class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
-                                   public TrackingProtectionSettingsObserver {
+class PrivacySandboxSettingsImpl : public PrivacySandboxSettings {
  public:
   // Ideally the only external locations that call this constructor are the
   // factory, and dedicated tests.
@@ -40,7 +38,6 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
       std::unique_ptr<Delegate> delegate,
       HostContentSettingsMap* host_content_settings_map,
       scoped_refptr<content_settings::CookieSettings> cookie_settings,
-      TrackingProtectionSettings* tracking_protection_settings,
       PrefService* pref_service);
   ~PrivacySandboxSettingsImpl() override;
 
@@ -58,20 +55,6 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
   bool IsTopicPrioritized(const CanonicalTopic& topic) override;
   void ClearTopicSettings(base::Time start_time, base::Time end_time) override;
   base::Time TopicsDataAccessibleSince() const override;
-  bool IsAttributionReportingEverAllowed() const override;
-  bool IsAttributionReportingAllowed(
-      const url::Origin& top_frame_origin,
-      const url::Origin& reporting_origin,
-      content::RenderFrameHost* console_frame = nullptr) const override;
-  bool MaySendAttributionReport(
-      const url::Origin& source_origin,
-      const url::Origin& destination_origin,
-      const url::Origin& reporting_origin,
-      content::RenderFrameHost* console_frame = nullptr) const override;
-  bool IsAttributionReportingTransitionalDebuggingAllowed(
-      const url::Origin& top_frame_origin,
-      const url::Origin& reporting_origin,
-      bool& can_bypass) const override;
   void SetFledgeJoiningAllowed(const std::string& top_frame_etld_plus1,
                                bool allowed) override;
   void ClearFledgeJoiningAllowedSettings(base::Time start_time,
@@ -79,7 +62,7 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
   bool IsFledgeAllowed(
       const url::Origin& top_frame_origin,
       const url::Origin& auction_party,
-      content::InterestGroupApiOperation interest_group_api_operation,
+      InterestGroupApiOperation interest_group_api_operation,
       content::RenderFrameHost* console_frame = nullptr) const override;
   bool IsEventReportingDestinationAttested(
       const url::Origin& destination_origin,
@@ -96,10 +79,6 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
       const url::Origin& accessing_origin,
       std::string* out_debug_message,
       bool* out_block_is_site_setting_specific) const override;
-  bool IsFencedStorageReadAllowed(
-      const url::Origin& top_frame_origin,
-      const url::Origin& accessing_origin,
-      content::RenderFrameHost* console_frame) const override;
   bool IsPrivateAggregationAllowed(
       const url::Origin& top_frame_origin,
       const url::Origin& reporting_origin,
@@ -107,13 +86,7 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
   bool IsPrivateAggregationDebugModeAllowed(
       const url::Origin& top_frame_origin,
       const url::Origin& reporting_origin) const override;
-  TpcdExperimentEligibility GetCookieDeprecationExperimentCurrentEligibility()
-      const override;
 
-  bool IsCookieDeprecationLabelAllowed() const override;
-  bool IsCookieDeprecationLabelAllowedForContext(
-      const url::Origin& top_frame_origin,
-      const url::Origin& context_origin) const override;
   void SetAllPrivacySandboxAllowedForTesting() override;
   void SetTopicsBlockedForTesting() override;
   bool IsPrivacySandboxRestricted() const override;
@@ -128,31 +101,13 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
   bool AreRelatedWebsiteSetsEnabled() const override;
 
  private:
-  // TODO(crbug.com/366168654): Browser tests should not reach into the private
-  // method or states of this class. Consider exposing the required functions
-  // via a test helper class or test only functions.
-  friend class PrivacySandboxSettingsTest;
   friend class PrivacySandboxAttestations;
-  friend class PrivacySandboxAttestationsTestBase;
-  FRIEND_TEST_ALL_PREFIXES(
-      PrivacySandboxAttestationsBrowserTest,
-      CallComponentReadyWhenRegistrationFindsExistingComponent);
-  FRIEND_TEST_ALL_PREFIXES(PrivacySandboxAttestationsBrowserTest,
-                           SentinelFilePreventsSubsequentParsings);
-  FRIEND_TEST_ALL_PREFIXES(PrivacySandboxAttestationsBrowserTest,
-                           DifferentHistogramAfterAttestationsFileCheck);
-  FRIEND_TEST_ALL_PREFIXES(
-      PrivacySandboxAttestationPreInstallInteractionWithDownloadTest,
-      BothPreinstalledAndDownloadedAttestationsAvailable);
-  FRIEND_TEST_ALL_PREFIXES(PrivacySandboxSettingsTest, FledgeJoiningAllowed);
-  FRIEND_TEST_ALL_PREFIXES(PrivacySandboxSettingsTest, NonEtldPlusOneBlocked);
-  FRIEND_TEST_ALL_PREFIXES(PrivacySandboxSettingsTest,
-                           FledgeJoinSettingTimeRangeDeletion);
+  // NOTE: Do not add any new friend classes for testing; tests that need
+  // access to private functions / variables should go through this peer class.
+  friend class privacy_sandbox_test_util::PrivacySandboxSettingsTestPeer;
+
   // Called when the Related Website Sets enabled preference is changed.
   void OnRelatedWebsiteSetsEnabledPrefChanged();
-
-  // Called when the CookieControlsMode preference is changed.
-  void OnCookieControlsModePrefChanged();
 
   void SetTopicsDataAccessibleFromNow() const;
 
@@ -170,7 +125,6 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
     kAttestationsDownloadedNotYetLoaded = 8,
     kAttestationsFileCorrupt = 9,
     kJoiningTopFrameBlocked = 10,
-    kBlockedBy3pcdExperiment = 11,
     kAttestationsFileNotYetChecked = 12,
     kAttestationsFileNotPresent = 13,
     kMaxValue = kAttestationsFileNotPresent,
@@ -180,7 +134,7 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
 
   static void JoinHistogram(const char* name, Status status);
   static void JoinFledgeHistogram(
-      content::InterestGroupApiOperation interest_group_api_operation,
+      InterestGroupApiOperation interest_group_api_operation,
       Status status);
 
   // Get the Topics that are disabled by Finch.
@@ -224,12 +178,6 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
   // `interest_group_api_operation` is `kJoin`.
   bool IsFledgeJoiningAllowed(const url::Origin& top_frame_origin) const;
 
-  // Whether fenced frame local unpartitioned data access is enabled.
-  Status GetFencedStorageReadEnabledStatus() const;
-
-  // From TrackingProtectionSettingsObserver.
-  void OnBlockAllThirdPartyCookiesChanged() override;
-
   // Sets the out parameter `out_block_is_site_setting_specific` if it is
   // non-null, based on the given `status`.
   void SetOutBlockIsSiteSettingSpecificFromStatus(
@@ -241,13 +189,8 @@ class PrivacySandboxSettingsImpl : public PrivacySandboxSettings,
   std::unique_ptr<Delegate> delegate_;
   raw_ptr<HostContentSettingsMap> host_content_settings_map_;
   scoped_refptr<content_settings::CookieSettings> cookie_settings_;
-  raw_ptr<TrackingProtectionSettings> tracking_protection_settings_;
   raw_ptr<PrefService> pref_service_;
   PrefChangeRegistrar pref_change_registrar_;
-
-  base::ScopedObservation<TrackingProtectionSettings,
-                          TrackingProtectionSettingsObserver>
-      tracking_protection_settings_observation_{this};
 
   // Which topics are disabled by Finch; This is set and read by
   // GetFinchDisabledTopics.

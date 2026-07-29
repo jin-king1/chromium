@@ -7,13 +7,13 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <algorithm>
 #include <compare>
 #include <ostream>
 #include <string_view>
 #include <tuple>
 
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
@@ -34,16 +34,15 @@ bool IsCanonicalHost(std::string_view host, bool is_file_scheme) {
   std::string canon_host;
 
   // Try to canonicalize the host (copy/pasted from net/base. :( ).
-  const Component raw_host_component(0,
-                                     base::checked_cast<int>(host.length()));
+  const Component raw_host_component(host);
   StdStringCanonOutput canon_host_output(&canon_host);
   CanonHostInfo host_info;
   if (is_file_scheme) {
-    CanonicalizeFileHostVerbose(host.data(), raw_host_component,
-                                canon_host_output, host_info);
+    CanonicalizeFileHostVerbose(host, raw_host_component, canon_host_output,
+                                host_info);
   } else {
-    CanonicalizeSpecialHostVerbose(host.data(), raw_host_component,
-                                   canon_host_output, host_info);
+    CanonicalizeSpecialHostVerbose(host, raw_host_component, canon_host_output,
+                                   host_info);
   }
 
   if (host_info.out_host.is_nonempty() &&
@@ -73,31 +72,21 @@ bool IsValidInput(std::string_view scheme,
 
   // about:blank and other no-access schemes translate into an opaque origin.
   // This helps consistency with ShouldTreatAsOpaqueOrigin in Blink.
-  if (base::Contains(GetNoAccessSchemes(), scheme))
+  if (std::ranges::contains(GetNoAccessSchemes(), scheme))
     return false;
 
   SchemeType scheme_type = SCHEME_WITH_HOST_PORT_AND_USER_INFORMATION;
-  bool is_standard = GetStandardSchemeType(
-      scheme.data(),
-      Component(0, base::checked_cast<int>(scheme.length())),
-      &scheme_type);
+  bool is_standard = GetStandardSchemeType(scheme, &scheme_type);
   if (!is_standard) {
     // To be consistent with ShouldTreatAsOpaqueOrigin in Blink, local
     // non-standard schemes are currently allowed to be tuple origins.
     //
     // TODO: Migrate "content:" and "externalfile:" to be standard schemes, and
     // remove this local scheme exception.
-    if (url::IsUsingStandardCompliantNonSpecialSchemeURLParsing()) {
-      // If the flag is enabled, a host can be empty for non-special URLs.
-      // Therefore, we don't check a host nor port.
-      if (base::Contains(GetLocalSchemes(), scheme)) {
-        return true;
-      }
-    } else {
-      if (base::Contains(GetLocalSchemes(), scheme) && host.empty() &&
-          port == 0) {
-        return true;
-      }
+    // For standard compliant non special scheme url parsing, a host can be
+    // empty for non-special URLs. Therefore, we don't check a host nor port.
+    if (std::ranges::contains(GetLocalSchemes(), scheme)) {
+      return true;
     }
 
     // Otherwise, allow non-standard schemes only if the Android WebView
@@ -190,8 +179,8 @@ SchemeHostPort::SchemeHostPort(const GURL& url) {
   if (!url.is_valid())
     return;
 
-  std::string_view scheme = url.scheme_piece();
-  std::string_view host = url.host_piece();
+  std::string_view scheme = url.scheme();
+  std::string_view host = url.host();
 
   // A valid GURL never returns PORT_INVALID.
   int port = url.EffectiveIntPort();
@@ -246,21 +235,15 @@ GURL SchemeHostPort::GetURL() const {
     return GURL(serialized);
 
   // If the serialized string is passed to GURL for parsing, it will append an
-  // empty path "/" for standard URLs. Add that here. Note: per RFC 6454 we
-  // cannot do this for normal Origin serialization.
+  // empty path "/" for standard URLs but only if they are special. Add that
+  // here. Note: Non-special urls with empty paths do not have an appended "/".
+  // Note: per RFC 6454 we cannot do this for normal Origin serialization.
   DCHECK(!parsed.path.is_valid());
-  if (url::IsUsingStandardCompliantNonSpecialSchemeURLParsing()) {
-    // Append "/" only if the URL is standard. If the flag is enabled,
-    // non-special URLs can have an empty path and GURL doesn't append "/" to
-    // that.
-    if (IsStandardScheme(scheme_)) {
-      parsed.path = Component(serialized.length(), 1);
-      serialized.append("/");
-    }
-  } else {
+  if (IsStandardScheme(scheme_)) {
     parsed.path = Component(serialized.length(), 1);
     serialized.append("/");
   }
+
   return GURL(std::move(serialized), parsed, true);
 }
 
@@ -305,8 +288,7 @@ std::string SchemeHostPort::SerializeInternal(url::Parsed* parsed) const {
 }
 
 bool SchemeHostPort::ShouldDiscardHostAndPort(std::string_view scheme) {
-  return IsAndroidWebViewHackEnabledScheme(scheme) &&
-         IsUsingStandardCompliantNonSpecialSchemeURLParsing();
+  return IsAndroidWebViewHackEnabledScheme(scheme);
 }
 
 std::ostream& operator<<(std::ostream& out,

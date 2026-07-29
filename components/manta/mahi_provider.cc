@@ -15,6 +15,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "base/version_info/channel.h"
+#include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "components/endpoint_fetcher/endpoint_fetcher.h"
 #include "components/manta/base_provider.h"
 #include "components/manta/features.h"
@@ -29,7 +30,6 @@ namespace manta {
 
 namespace {
 
-constexpr char kOauthConsumerName[] = "manta_mahi";
 constexpr base::TimeDelta kTimeout = base::Seconds(30);
 
 const net::NetworkTrafficAnnotationTag kMahiTrafficAnnotationTag =
@@ -94,7 +94,7 @@ void OnServerResponseOrErrorReceived(
     MantaStatus manta_status) {
   if (manta_status.status_code != MantaStatusCode::kOk) {
     CHECK(manta_response == nullptr);
-    std::move(callback).Run(base::Value::Dict(), std::move(manta_status));
+    std::move(callback).Run(base::DictValue(), std::move(manta_status));
     return;
   }
 
@@ -112,14 +112,14 @@ void OnServerResponseOrErrorReceived(
           proto::FilteredReason_Name(manta_response->filtered_data(0).reason())
               .c_str());
     }
-    std::move(callback).Run(base::Value::Dict(),
+    std::move(callback).Run(base::DictValue(),
                             {MantaStatusCode::kBlockedOutputs, message});
     return;
   }
 
   std::move(callback).Run(
-      base::Value::Dict().Set("outputData",
-                              std::move(manta_response->output_data(0).text())),
+      base::DictValue().Set("outputData",
+                            std::move(manta_response->output_data(0).text())),
       std::move(manta_status));
 }
 
@@ -143,6 +143,8 @@ void MahiProvider::Summarize(const std::string& input,
                              const std::optional<std::string>& context,
                              const std::optional<std::string>& url,
                              MantaGenericCallback done_callback) {
+  chromeos::MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash();
+
   proto::Request request;
   request.set_feature_name(proto::FeatureName::CHROMEOS_READER_SUMMARY);
 
@@ -170,8 +172,7 @@ void MahiProvider::Summarize(const std::string& input,
 
   RequestInternal(
       GURL{GetProviderEndpoint(features::IsMahiUseProdServerEnabled())},
-      kOauthConsumerName, kMahiTrafficAnnotationTag, request,
-      MantaMetricType::kMahiSummary,
+      kMahiTrafficAnnotationTag, request, MantaMetricType::kMahiSummary,
       base::BindOnce(&OnServerResponseOrErrorReceived,
                      std::move(done_callback)),
       kTimeout);
@@ -184,6 +185,8 @@ void MahiProvider::Elucidate(const std::string& input,
                              const std::string& title,
                              const std::optional<std::string>& url,
                              MantaGenericCallback done_callback) {
+  chromeos::MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash();
+
   proto::Request request;
   request.set_feature_name(proto::FeatureName::CHROMEOS_READER_ELUCIDATION);
 
@@ -209,8 +212,7 @@ void MahiProvider::Elucidate(const std::string& input,
 
   RequestInternal(
       GURL{GetProviderEndpoint(features::IsMahiUseProdServerEnabled())},
-      kOauthConsumerName, kMahiTrafficAnnotationTag, request,
-      MantaMetricType::kMahiElucidation,
+      kMahiTrafficAnnotationTag, request, MantaMetricType::kMahiElucidation,
       base::BindOnce(&OnServerResponseOrErrorReceived,
                      std::move(done_callback)),
       kTimeout);
@@ -223,7 +225,7 @@ void MahiProvider::Outline(const std::string& input,
                            const std::optional<std::string>& url,
                            MantaGenericCallback done_callback) {
   std::move(done_callback)
-      .Run(base::Value::Dict(),
+      .Run(base::DictValue(),
            {MantaStatusCode::kGenericError, "Unimplemented"});
 }
 
@@ -233,6 +235,8 @@ void MahiProvider::QuestionAndAnswer(const std::string& original_content,
                                      const std::vector<MahiQAPair> QAHistory,
                                      const std::string& question,
                                      MantaGenericCallback done_callback) {
+  chromeos::MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash();
+
   proto::Request request;
   request.set_feature_name(proto::FeatureName::CHROMEOS_READER_Q_AND_A);
 
@@ -268,8 +272,7 @@ void MahiProvider::QuestionAndAnswer(const std::string& original_content,
 
   RequestInternal(
       GURL{GetProviderEndpoint(features::IsMahiUseProdServerEnabled())},
-      kOauthConsumerName, kMahiTrafficAnnotationTag, request,
-      MantaMetricType::kMahiQA,
+      kMahiTrafficAnnotationTag, request, MantaMetricType::kMahiQA,
       base::BindOnce(&OnServerResponseOrErrorReceived,
                      std::move(done_callback)),
       kTimeout);

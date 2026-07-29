@@ -26,7 +26,6 @@ import static org.chromium.ui.test.util.ViewUtils.clickOnClickableSpan;
 
 import android.view.View;
 
-import androidx.annotation.StringRes;
 import androidx.test.espresso.contrib.RecyclerViewActions;
 import androidx.test.filters.SmallTest;
 
@@ -40,21 +39,21 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.RenderTestRule;
 import org.chromium.ui.test.util.ViewUtils;
 
@@ -64,8 +63,8 @@ import java.io.IOException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
 public final class AdMeasurementFragmentTest {
-    @Rule public ChromeBrowserTestRule mChromeBrowserTestRule = new ChromeBrowserTestRule();
 
     @Rule
     public ChromeRenderTestRule mRenderTestRule =
@@ -81,6 +80,7 @@ public final class AdMeasurementFragmentTest {
 
     @Before
     public void setUp() {
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         mUserActionTester = new UserActionTester();
     }
 
@@ -115,13 +115,6 @@ public final class AdMeasurementFragmentTest {
                                                         .settings_ad_measurement_page_toggle_label)))));
     }
 
-    private View getRootView(@StringRes int text) {
-        View[] view = {null};
-        onView(withText(text)).check((v, e) -> view[0] = v.getRootView());
-        ThreadUtils.runOnUiThreadBlocking(() -> RenderTestRule.sanitize(view[0]));
-        return view[0];
-    }
-
     private void setAdMeasurementPrefEnabled(boolean isEnabled) {
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
@@ -143,19 +136,6 @@ public final class AdMeasurementFragmentTest {
 
     @Test
     @SmallTest
-    @Feature({"RenderTest"})
-    @DisableFeatures(ChromeFeatureList.PRIVACY_SANDBOX_ADS_API_UX_ENHANCEMENTS)
-    public void testRenderAdMeasurement() throws IOException {
-        setAdMeasurementPrefEnabled(true);
-        startAdMeasuremenSettings();
-        mRenderTestRule.render(
-                getRootView(R.string.settings_ad_measurement_page_toggle_sub_label),
-                "ad_measurement_page_toggle_on");
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures(ChromeFeatureList.PRIVACY_SANDBOX_ADS_API_UX_ENHANCEMENTS)
     public void adMeasurementDisclaimerMetrics() throws IOException {
         setAdMeasurementPrefEnabled(true);
         startAdMeasuremenSettings();
@@ -192,6 +172,7 @@ public final class AdMeasurementFragmentTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289154
     public void testTurnAdMeasurementOn() {
         setAdMeasurementPrefEnabled(false);
         startAdMeasuremenSettings();
@@ -205,6 +186,7 @@ public final class AdMeasurementFragmentTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289154
     public void testTurnAdMeasurementOff() {
         setAdMeasurementPrefEnabled(true);
         startAdMeasuremenSettings();
@@ -218,10 +200,7 @@ public final class AdMeasurementFragmentTest {
 
     @Test
     @SmallTest
-    @Policies.Add({
-        @Policies.Item(key = "PrivacySandboxAdMeasurementEnabled", string = "false"),
-        @Policies.Item(key = "PrivacySandboxPromptEnabled", string = "false")
-    })
+    @Policies.Add({@Policies.Item(key = "PrivacySandboxAdMeasurementEnabled", string = "false")})
     public void testAdMeasurementManaged() {
         startAdMeasuremenSettings();
 

@@ -11,6 +11,7 @@
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "components/account_id/account_id.h"
+#include "components/session_manager/core/session_manager_delegate.h"
 #include "components/session_manager/session_manager_export.h"
 #include "components/session_manager/session_manager_types.h"
 #include "components/user_manager/user_manager.h"
@@ -24,7 +25,8 @@ class SessionManagerObserver;
 class SESSION_EXPORT SessionManager
     : public user_manager::UserManager::Observer {
  public:
-  SessionManager();
+  explicit SessionManager(
+      std::unique_ptr<session_manager::SessionManagerDelegate> delegate);
 
   SessionManager(const SessionManager&) = delete;
   SessionManager& operator=(const SessionManager&) = delete;
@@ -38,29 +40,25 @@ class SESSION_EXPORT SessionManager
   void SetSessionState(SessionState state);
 
   // Creates a session for the given user, hash and the type.
-  // This is used for common session starts, and recovery from crash
-  // for the secondary+ users. For the latter case, `has_active_session`
-  // is set true.
+  // On recovery from crash for the secondary+ users, this is called with
+  // `has_active_session` set to `true`. Note that for the primary user,
+  // this is called with `has_active_session` false even for crash recovery
+  // cases, similar to regular log-in.
   void CreateSession(const AccountId& user_account_id,
                      const std::string& username_hash,
                      bool new_user,
                      bool has_active_session);
 
-  // Similar to above, creates a session for the given user and hash,
-  // but for the primary user session on restarting chrome for crash recovering.
-  // (Note: for non primary user sessions, CreateSession() is called with
-  // `has_active_session == true`).
-  // For this case, we expect there already is a registered User, so in general
-  // the user type should be derived from the one. Though, there are edge
-  // cases. Please find UserManager::CalculateUserType() for details.
-  void CreateSessionForRestart(const AccountId& user_account_id,
-                               const std::string& user_id_hash,
-                               bool new_user);
-
   // Switches the active user session to the one specified by `account_id`.
   // The User has to be logged in already (i.e. CreateSession* needs to be
   // called in advance).
   void SwitchActiveSession(const AccountId& account_id);
+
+  // Requests to sign out user from session.
+  void RequestSignOut();
+
+  // Requests to restart the chrome.
+  void RequestRestart();
 
   // Returns true if we're logged in and browser has been started i.e.
   // browser_creator.LaunchBrowser(...) was called after sign in
@@ -75,7 +73,7 @@ class SESSION_EXPORT SessionManager
   // Tests need to follow the same lifetime management.
   // TODO(b:332481586): Move this to the constructor by fixing initialization
   // order.
-  virtual void OnUserManagerCreated(user_manager::UserManager* user_manager);
+  void OnUserManagerCreated(user_manager::UserManager* user_manager);
 
   // Called when browser session is started i.e. after
   // browser_creator.LaunchBrowser(...) was called after user sign in.
@@ -83,10 +81,27 @@ class SESSION_EXPORT SessionManager
   // but IsSessionStarted() will return false. During the kiosk splash screen,
   // we perform additional initialization after the user is logged in but
   // before the session has been started.
-  virtual void SessionStarted();
+  void SessionStarted();
 
   // Returns true if the session for the given user was started.
   bool HasSessionForAccountId(const AccountId& user_account_id) const;
+
+  // Returns the Session instance for the user specified by the given
+  // `account_id`. Returns nullptr if not found.
+  const Session* FindSession(const AccountId& account_id) const;
+
+  // Returns the Session instance for the current active session.
+  // If there's no such session, returns nullptr.
+  // NOTE: in most cases, this is not what you should use, because when you
+  // need this kind of function, it means the function is running under the
+  // active session conceptually, so, importantly, its callers, too.
+  // Instead of calling this, please pass `const Session&` via arguments
+  // from the bottom of the call stack.
+  const Session* GetActiveSession() const;
+
+  // Returns the Session instance for the primary session.
+  // If there's no such session (i.e. before user log-in), returns nullptr.
+  const Session* GetPrimarySession() const;
 
   // Convenience wrapps of session state.
   bool IsInSecondaryLoginScreen() const;
@@ -119,20 +134,13 @@ class SESSION_EXPORT SessionManager
  protected:
   user_manager::UserManager* user_manager() { return user_manager_.get(); }
 
-  // Called when a session is created. Make it possible for subclasses to inject
-  // their more specific behavior at the timing.
-  // TODO(crbug.com/278643115): Consolidate the subclass behaviors to this class
-  // or extract into one of SessionManagerObserver's implementation.
-  virtual void OnSessionCreated(bool browser_restart) {}
-
   // Sets SessionManager instance.
   static void SetInstance(SessionManager* session_manager);
 
  private:
   void CreateSessionInternal(const AccountId& user_account_id,
                              const std::string& username_hash,
-                             bool new_user,
-                             bool browser_restart);
+                             bool new_user);
 
   // Pointer to the existing SessionManager instance (if any).
   // Set in ctor, reset in dtor. Not owned since specific implementation of
@@ -173,6 +181,8 @@ class SESSION_EXPORT SessionManager
   std::vector<std::unique_ptr<Session>> sessions_;
 
   base::ObserverList<SessionManagerObserver> observers_;
+
+  const std::unique_ptr<SessionManagerDelegate> delegate_;
 };
 
 }  // namespace session_manager

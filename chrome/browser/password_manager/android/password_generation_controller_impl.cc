@@ -11,7 +11,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/keyboard_accessory/android/accessory_sheet_enums.h"
 #include "chrome/browser/keyboard_accessory/android/manual_filling_controller.h"
@@ -227,6 +226,9 @@ PasswordGenerationControllerImpl::PasswordGenerationControllerImpl(
 
 std::unique_ptr<TouchToFillPasswordGenerationController>
 PasswordGenerationControllerImpl::CreateTouchToFillGenerationController() {
+  if (!active_frame_driver_ || !generation_element_data_) {
+    return nullptr;
+  }
   return std::make_unique<TouchToFillPasswordGenerationController>(
       active_frame_driver_, &GetWebContents(), *generation_element_data_,
       std::make_unique<TouchToFillPasswordGenerationBridgeImpl>(),
@@ -301,6 +303,9 @@ bool PasswordGenerationControllerImpl::ShowBottomSheet(
     PasswordGenerationType type) {
   touch_to_fill_generation_controller_ =
       create_touch_to_fill_generation_controller_.Run();
+  if (!touch_to_fill_generation_controller_) {
+    return false;  // Prevents using reset generation data, e.g. on unfocus.
+  }
   Profile* profile =
       Profile::FromBrowserContext(GetWebContents().GetBrowserContext());
   std::string account =

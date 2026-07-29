@@ -10,16 +10,13 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/logging.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/rand_util.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
-#include "base/time/default_tick_clock.h"
-#include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/page_content_annotations/core/page_content_annotations_common.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
 #include "components/page_content_annotations/core/page_content_annotations_switches.h"
@@ -29,7 +26,7 @@ namespace page_content_annotations {
 
 namespace {
 
-auto kRandomNouns = std::to_array<const char*>({
+constexpr auto kRandomNouns = std::to_array<const char*>({
     "Airplane", "Boat",       "Book",          "Dinosaur",   "Earth",
     "Football", "Fork",       "Hummingbird",   "Magic Wand", "Mailbox",
     "Molecule", "Pizza",      "Record Player", "Skeleton",   "Soda",

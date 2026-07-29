@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <variant>
 
 #include "chrome/app/chrome_main_delegate.h"
 #include "components/safe_browsing/buildflags.h"
@@ -15,8 +16,6 @@
 // Android override of ChromeMainDelegate
 class ChromeMainDelegateAndroid : public ChromeMainDelegate {
  public:
-  static void SecureDataDirectory();  // visible for testing
-
   ChromeMainDelegateAndroid();
 
   ChromeMainDelegateAndroid(const ChromeMainDelegateAndroid&) = delete;
@@ -27,7 +26,7 @@ class ChromeMainDelegateAndroid : public ChromeMainDelegate {
 
   std::optional<int> BasicStartupComplete() override;
   void PreSandboxStartup() override;
-  absl::variant<int, content::MainFunctionParams> RunProcess(
+  std::variant<int, content::MainFunctionParams> RunProcess(
       const std::string& process_type,
       content::MainFunctionParams main_function_params) override;
   void ProcessExiting(const std::string& process_type) override {}

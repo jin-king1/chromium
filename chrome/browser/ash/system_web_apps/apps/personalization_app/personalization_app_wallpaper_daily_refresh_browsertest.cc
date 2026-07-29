@@ -20,7 +20,6 @@
 #include "ash/wallpaper/wallpaper_controller_test_api.h"
 #include "ash/wallpaper/wallpaper_daily_refresh_scheduler.h"
 #include "ash/webui/personalization_app/personalization_app_url_constants.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
@@ -99,7 +98,7 @@ class PersonalizationAppWallpaperDailyRefreshBrowserTest
   void SetUpOnMainThread() override {
     SystemWebAppBrowserTestBase::SetUpOnMainThread();
 
-    browser()->window()->Minimize();
+    browser()->GetWindow()->Minimize();
 
     WallpaperControllerClientImpl::Get()->SetWallpaperFetcherDelegateForTesting(
         std::make_unique<wallpaper_handlers::TestWallpaperFetcherDelegate>());
@@ -107,7 +106,7 @@ class PersonalizationAppWallpaperDailyRefreshBrowserTest
     auto wallpaper_controller_test_api =
         std::make_unique<WallpaperControllerTestApi>(wallpaper_controller());
     wallpaper_controller_test_api->SetDefaultWallpaper(
-        GetAccountId(browser()->profile()));
+        GetAccountId(browser()->GetProfile()));
 
     test_chrome_webui_controller_factory_.AddFactoryOverride(
         kChromeUIPersonalizationAppHost, &test_webui_provider_);

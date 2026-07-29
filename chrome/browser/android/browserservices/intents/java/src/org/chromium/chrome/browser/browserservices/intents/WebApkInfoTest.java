@@ -40,6 +40,7 @@ import org.chromium.webapk.lib.common.splash.SplashLayout;
 import org.chromium.webapk.test.WebApkTestHelper;
 
 import java.io.ByteArrayInputStream;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -77,14 +78,14 @@ public class WebApkInfoTest {
 
     /** Fakes the Resources object, allowing lookup of String value. */
     private static class FakeResources extends Resources {
-        private static AssetManager sAssetManager = createAssetManager();
+        private static final AssetManager sAssetManager = createAssetManager();
         private final Map<String, Integer> mStringIdMap;
         private final Map<Integer, String> mIdValueMap;
         private String mShortcutsXmlContents;
         private String mPrimaryIconXmlContents;
 
         private class MockXmlResourceParserImpl extends XmlResourceParserImpl {
-            String mPackageName;
+            final String mPackageName;
 
             public MockXmlResourceParserImpl(
                     Document document,
@@ -92,7 +93,12 @@ public class WebApkInfoTest {
                     String packageName,
                     String applicationPackageName,
                     ResourceTable resourceTable) {
-                super(document, fileName, packageName, applicationPackageName, resourceTable);
+                super(
+                        document,
+                        Paths.get(fileName),
+                        packageName,
+                        applicationPackageName,
+                        resourceTable);
                 mPackageName = packageName;
             }
 

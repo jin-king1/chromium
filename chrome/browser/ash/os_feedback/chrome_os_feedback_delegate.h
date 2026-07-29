@@ -10,7 +10,6 @@
 
 #include "ash/webui/os_feedback_ui/backend/os_feedback_delegate.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -51,7 +50,6 @@ class ChromeOsFeedbackDelegate : public OsFeedbackDelegate {
   std::string GetApplicationLocale() override;
   std::optional<GURL> GetLastActivePageUrl() override;
   std::optional<std::string> GetSignedInUserEmail() const override;
-  std::optional<std::string> GetLinkedPhoneMacAddress() override;
   bool IsWifiDebugLogsAllowed() const override;
   int GetPerformanceTraceId() override;
   void GetScreenshotPng(GetScreenshotPngCallback callback) override;

@@ -5,12 +5,14 @@
 #import "ios/chrome/browser/fullscreen/ui_bundled/test/test_fullscreen_controller.h"
 
 #import "ios/chrome/browser/broadcaster/ui_bundled/chrome_broadcaster.h"
+#import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller_observer.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_model.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_model_observer.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/fullscreen/toolbars_size_browser_agent.h"
 
-TestFullscreenController::TestFullscreenController()
-    : FullscreenController(),
+TestFullscreenController::TestFullscreenController(Browser* browser)
+    : FullscreenController(browser),
       model_(std::make_unique<FullscreenModel>()),
       broadcaster_([[ChromeBroadcaster alloc] init]) {}
 
@@ -18,6 +20,28 @@ TestFullscreenController::~TestFullscreenController() {
   for (auto& observer : observers_) {
     observer.FullscreenControllerWillShutDown(this);
   }
+}
+
+// static
+void TestFullscreenController::CreateForBrowser(Browser* browser) {
+  DCHECK(!FullscreenController::FromBrowser(browser));
+  ToolbarsSizeBrowserAgent::CreateForBrowser(browser);
+  browser->SetUserData(UserDataKey(),
+                       std::make_unique<TestFullscreenController>(browser));
+}
+
+// static
+TestFullscreenController* TestFullscreenController::FromBrowser(
+    Browser* browser) {
+  return static_cast<TestFullscreenController*>(
+      browser->GetUserData(UserDataKey()));
+}
+
+// static
+const TestFullscreenController* TestFullscreenController::FromBrowser(
+    const Browser* browser) {
+  return static_cast<const TestFullscreenController*>(
+      browser->GetUserData(UserDataKey()));
 }
 
 ChromeBroadcaster* TestFullscreenController::broadcaster() {
@@ -94,6 +118,13 @@ void TestFullscreenController::ExitFullscreen() {
   }
 }
 
+void TestFullscreenController::ExitFullscreen(
+    FullscreenModeTransitionTrigger fullscreen_exit_trigger) {
+  if (model_) {
+    model_->ResetForNavigation();
+  }
+}
+
 void TestFullscreenController::ExitFullscreenWithoutAnimation() {
   if (model_) {
     model_->ResetForNavigation();
@@ -105,7 +136,8 @@ bool TestFullscreenController::IsForceFullscreenMode() const {
 }
 
 void TestFullscreenController::EnterForceFullscreenMode(
-    bool insets_update_enabled) {
+    bool insets_update_enabled,
+    FullscreenModeTransitionTrigger trigger) {
   if (model_ && !model_->IsForceFullscreenMode()) {
     model_->SetForceFullscreenMode(true);
     model_->SetInsetsUpdateEnabled(insets_update_enabled);
@@ -114,7 +146,8 @@ void TestFullscreenController::EnterForceFullscreenMode(
   }
 }
 
-void TestFullscreenController::ExitForceFullscreenMode() {
+void TestFullscreenController::ExitForceFullscreenMode(
+    FullscreenModeTransitionTrigger trigger) {
   if (model_ && model_->IsForceFullscreenMode()) {
     model_->DecrementDisabledCounter();
     model_->SetForceFullscreenMode(false);

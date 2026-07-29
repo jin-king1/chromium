@@ -35,6 +35,7 @@
 #include "ui/base/ime/text_input_type.h"
 #include "ui/base/models/menu_separator_types.h"
 #include "ui/base/ui_base_types.h"
+#include "ui/color/color_variant.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
@@ -204,10 +205,21 @@ struct COMPONENT_EXPORT(UI_BASE_METADATA) TypeConverter<const char*>
   static std::u16string ToString(const char* source_value);
 };
 
+// Note: View types (std::string_view, std::u16string_view, const char*) must
+// be read-only (BaseTypeConverter<true, true>). Writable metadata properties
+// must use std::u16string or std::string as their property type in
+// ADD_PROPERTY_METADATA to prevent dangling string references during
+// deserialization (FromString).
 template <>
 struct COMPONENT_EXPORT(UI_BASE_METADATA) TypeConverter<std::string_view>
     : BaseTypeConverter<true, true> {
   static std::u16string ToString(std::string_view source_value);
+};
+
+template <>
+struct COMPONENT_EXPORT(UI_BASE_METADATA)
+    TypeConverter<std::u16string_view> : BaseTypeConverter<true, true> {
+  static std::u16string ToString(std::u16string_view source_value);
 };
 
 #define DECLARE_CONVERSIONS(T)                                              \
@@ -244,10 +256,19 @@ DECLARE_CONVERSIONS(gfx::ShadowValues)
 DECLARE_CONVERSIONS(gfx::Size)
 DECLARE_CONVERSIONS(gfx::SizeF)
 DECLARE_CONVERSIONS(std::string)
-DECLARE_CONVERSIONS(std::u16string)
+DECLARE_CONVERSIONS(ui::ColorVariant)
 DECLARE_CONVERSIONS(url::Component)
 
 #undef DECLARE_CONVERSIONS
+
+template <>
+struct COMPONENT_EXPORT(UI_BASE_METADATA)
+    TypeConverter<std::u16string> : BaseTypeConverter<true> {
+  static std::u16string ToString(std::u16string_view source_value);
+  static std::optional<std::u16string> FromString(
+      const std::u16string& source_value);
+  static ValidStrings GetValidStrings() { return {}; }
+};
 
 // Special conversions for wrapper types --------------------------------------
 
@@ -406,6 +427,34 @@ std::u16string PointerToString(T* ptr) {
         {u"&{", TypeConverter<std::remove_const_t<T>>::ToString(*ptr), u"}"});
   }
 }
+
+template <typename T>
+concept ClassHasToString = requires(T t) {
+  { t.ToString() } -> std::same_as<std::string>;
+};
+
+template <typename T>
+concept ClassHasFromString = requires(T t, std::string_view sv) {
+  { T::FromString(sv) } -> std::same_as<std::optional<T>>;
+};
+
+template <ClassHasToString T>
+struct TypeConverter<T>
+    : BaseTypeConverter<ClassHasFromString<T>, !ClassHasFromString<T>> {
+  static std::u16string ToString(ui::metadata::ArgType<T> source_value) {
+    return base::UTF8ToUTF16(source_value.ToString());
+  }
+
+  static std::optional<T> FromString(const std::u16string& source_value) {
+    if constexpr (ClassHasFromString<T>) {
+      return T::FromString(base::UTF16ToUTF8(source_value));
+    }
+
+    return std::nullopt;
+  }
+
+  static ValidStrings GetValidStrings() { return {}; }
+};
 
 }  // namespace metadata
 }  // namespace ui

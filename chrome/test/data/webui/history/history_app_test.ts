@@ -2,34 +2,38 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+// clang-format off
 import 'chrome://history/history.js';
 
 import type {HistoryAppElement} from 'chrome://history/history.js';
-import {BrowserServiceImpl, CrRouter, HistoryEmbeddingsBrowserProxyImpl, HistoryEmbeddingsPageHandlerRemote} from 'chrome://history/history.js';
-import {assert} from 'chrome://resources/js/assert.js';
+import {BrowserProxyImpl, CrRouter, historyEmbeddingsBrowserProxyFactory, HistoryEmbeddingsPageHandlerRemote} from 'chrome://history/history.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {isMac} from 'chrome://resources/js/platform.js';
-import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {pressAndReleaseKeyOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
-import {eventToPromise} from 'chrome://webui-test/test_util.js';
+import {eventToPromise, isChildVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
+import {COLORS_CSS_SELECTOR} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
+// <if expr="not is_chromeos">
+import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
+import {HistorySignInState, SyncState} from 'chrome://history/history.js';
 
-import {TestBrowserService} from './test_browser_service.js';
+// </if>
+
+import {TestHistoryBrowserProxy} from './test_browser_proxy.js';
+// clang-format on
 
 suite('HistoryAppTest', function() {
   let element: HistoryAppElement;
-  let browserService: TestBrowserService;
+  let browserProxy: TestHistoryBrowserProxy;
   let embeddingsHandler: TestMock<HistoryEmbeddingsPageHandlerRemote>&
       HistoryEmbeddingsPageHandlerRemote;
 
   // Force cr-history-embeddings to be in the DOM for testing.
-  async function forceHistoryEmbeddingsElement() {
+  function forceHistoryEmbeddingsElement() {
     loadTimeData.overrideValues({historyEmbeddingsSearchMinimumWordCount: 0});
     element.dispatchEvent(new CustomEvent(
         'change-query',
         {bubbles: true, composed: true, detail: {search: 'some fake input'}}));
-    return flushTasks();
+    return microtasksFinished();
   }
 
   setup(() => {
@@ -41,11 +45,12 @@ suite('HistoryAppTest', function() {
       maybeShowEmbeddingsIph: false,
     });
 
-    browserService = new TestBrowserService();
-    BrowserServiceImpl.setInstance(browserService);
+    browserProxy = new TestHistoryBrowserProxy();
+    BrowserProxyImpl.setInstance(browserProxy);
     embeddingsHandler = TestMock.fromClass(HistoryEmbeddingsPageHandlerRemote);
-    HistoryEmbeddingsBrowserProxyImpl.setInstance(
-        new HistoryEmbeddingsBrowserProxyImpl(embeddingsHandler));
+    const {instance} =
+        historyEmbeddingsBrowserProxyFactory.createForTest(embeddingsHandler);
+    historyEmbeddingsBrowserProxyFactory.setInstance(instance);
     embeddingsHandler.setResultFor(
         'search', Promise.resolve({result: {items: []}}));
 
@@ -55,81 +60,54 @@ suite('HistoryAppTest', function() {
     CrRouter.resetForTesting();
     element = document.createElement('history-app');
     document.body.appendChild(element);
-    return flushTasks();
+    return microtasksFinished();
   });
 
   test('SetsScrollTarget', async () => {
-    assertEquals(element.$.tabsScrollContainer, element.scrollTarget);
+    assertEquals(
+        element.$.tabsScrollContainer, element.getScrollTargetForTesting());
 
     // 'By group' view shares the same scroll container as default history view.
     element.$.router.selectedPage = 'grouped';
-    await flushTasks();
-    assertEquals(element.$.tabsScrollContainer, element.scrollTarget);
+    await microtasksFinished();
+    assertEquals(
+        element.$.tabsScrollContainer, element.getScrollTargetForTesting());
 
     // Switching to synced tabs should change scroll target to it.
     element.$.router.selectedPage = 'syncedTabs';
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
-        element.shadowRoot!.querySelector('history-synced-device-manager'),
-        element.scrollTarget);
-  });
-
-  test('SetsScrollTargetForEmbeddingsDisabled', async () => {
-    // Override loadTimeData and re-create the element to disable history
-    // embeddings.
-    loadTimeData.overrideValues({enableHistoryEmbeddings: false});
-    element.remove();
-    element = document.createElement('history-app');
-    document.body.appendChild(element);
-    await flushTasks();
-
-    // By default, the history-list should be its own scroll container.
-    assertEquals(
-        element.shadowRoot!.querySelector('history-list'),
-        element.scrollTarget);
-
-    // 'By group' view switches the scroll target to it.
-    element.$.router.selectedPage = 'grouped';
-    await flushTasks();
-    assertEquals(
-        element.shadowRoot!.querySelector('history-clusters'),
-        element.scrollTarget);
-
-    // Switching to synced tabs should change scroll target to it.
-    element.$.router.selectedPage = 'syncedTabs';
-    await flushTasks();
-    assertEquals(
-        element.shadowRoot!.querySelector('history-synced-device-manager'),
-        element.scrollTarget);
+        element.shadowRoot.querySelector('#syncedDevicesScroll'),
+        element.getScrollTargetForTesting());
   });
 
   test('ShowsHistoryEmbeddings', async () => {
     // By default, embeddings should not even be in the DOM.
-    assertFalse(!!element.shadowRoot!.querySelector('cr-history-embeddings'));
+    assertFalse(!!element.shadowRoot.querySelector('cr-history-embeddings'));
 
     element.dispatchEvent(new CustomEvent(
         'change-query',
         {bubbles: true, composed: true, detail: {search: 'one'}}));
-    await flushTasks();
-    assertFalse(!!element.shadowRoot!.querySelector('cr-history-embeddings'));
+    await microtasksFinished();
+    assertFalse(!!element.shadowRoot.querySelector('cr-history-embeddings'));
 
     element.dispatchEvent(new CustomEvent(
         'change-query',
         {bubbles: true, composed: true, detail: {search: 'two words'}}));
-    await flushTasks();
-    assertTrue(!!element.shadowRoot!.querySelector('cr-history-embeddings'));
+    await microtasksFinished();
+    assertTrue(!!element.shadowRoot.querySelector('cr-history-embeddings'));
 
     element.dispatchEvent(new CustomEvent(
         'change-query',
         {bubbles: true, composed: true, detail: {search: 'one'}}));
-    await flushTasks();
-    assertFalse(!!element.shadowRoot!.querySelector('cr-history-embeddings'));
+    await microtasksFinished();
+    assertFalse(!!element.shadowRoot.querySelector('cr-history-embeddings'));
   });
 
   test('SetsScrollOffset', async () => {
     function resizeAndWait(height: number) {
       const historyEmbeddingsContainer =
-          element.shadowRoot!.querySelector<HTMLElement>(
+          element.shadowRoot.querySelector<HTMLElement>(
               '#historyEmbeddingsContainer');
       assertTrue(!!historyEmbeddingsContainer);
 
@@ -146,11 +124,11 @@ suite('HistoryAppTest', function() {
     }
 
     await resizeAndWait(700);
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(700, element.$.history.scrollOffset);
 
     await resizeAndWait(400);
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(400, element.$.history.scrollOffset);
   });
 
@@ -158,16 +136,16 @@ suite('HistoryAppTest', function() {
     element.dispatchEvent(new CustomEvent(
         'change-query',
         {bubbles: true, composed: true, detail: {search: 'two words'}}));
-    await flushTasks();
+    await microtasksFinished();
     const historyEmbeddings =
-        element.shadowRoot!.querySelector('cr-history-embeddings');
+        element.shadowRoot.querySelector('cr-history-embeddings');
     assertTrue(!!historyEmbeddings);
 
     const changeQueryEventPromise = eventToPromise('change-query', element);
     historyEmbeddings.dispatchEvent(new CustomEvent('more-from-site-click', {
       detail: {
         title: 'Google',
-        url: {url: 'http://google.com'},
+        url: 'http://google.com',
         urlForDisplay: 'google.com',
         relativeTime: '2 hours ago',
         sourcePassage: 'Google description',
@@ -182,15 +160,15 @@ suite('HistoryAppTest', function() {
     element.dispatchEvent(new CustomEvent(
         'change-query',
         {bubbles: true, composed: true, detail: {search: 'two words'}}));
-    await flushTasks();
+    await microtasksFinished();
     const historyEmbeddings =
-        element.shadowRoot!.querySelector('cr-history-embeddings');
+        element.shadowRoot.querySelector('cr-history-embeddings');
     assertTrue(!!historyEmbeddings);
 
     historyEmbeddings.dispatchEvent(new CustomEvent('remove-item-click', {
       detail: {
         title: 'Google',
-        url: {url: 'http://google.com'},
+        url: 'http://google.com',
         urlForDisplay: 'google.com',
         relativeTime: '2 hours ago',
         sourcePassage: 'Google description',
@@ -198,7 +176,7 @@ suite('HistoryAppTest', function() {
       },
     }));
     const removeVisitsArg =
-        await browserService.handler.whenCalled('removeVisits');
+        await browserProxy.handler.whenCalled('removeVisits');
     assertEquals(1, removeVisitsArg.length);
     assertEquals('http://google.com', removeVisitsArg[0].url);
     assertEquals(1, removeVisitsArg[0].timestamps.length);
@@ -206,8 +184,8 @@ suite('HistoryAppTest', function() {
   });
 
   test('ChangesQueryStateWithFilterChips', async () => {
-    const filterChips = element.shadowRoot!.querySelector(
-        'cr-history-embeddings-filter-chips')!;
+    const filterChips =
+        element.shadowRoot.querySelector('cr-history-embeddings-filter-chips')!;
     const changeQueryEventPromise = eventToPromise('change-query', element);
     filterChips.dispatchEvent(new CustomEvent('selected-suggestion-changed', {
       detail: {
@@ -233,18 +211,18 @@ suite('HistoryAppTest', function() {
         after: '2022-04-02',
       },
     }));
-    await flushTasks();
+    await microtasksFinished();
 
     const expectedDateObject = new Date('2022-04-02T00:00:00');
 
-    const filterChips = element.shadowRoot!.querySelector(
-        'cr-history-embeddings-filter-chips')!;
+    const filterChips =
+        element.shadowRoot.querySelector('cr-history-embeddings-filter-chips')!;
     assertTrue(!!filterChips);
     assertEquals(
         expectedDateObject.getTime(), filterChips.timeRangeStart?.getTime());
 
     const historyEmbeddings =
-        element.shadowRoot!.querySelector('cr-history-embeddings');
+        element.shadowRoot.querySelector('cr-history-embeddings');
     assertTrue(!!historyEmbeddings);
     const timeRangeStartObj = historyEmbeddings.timeRangeStart;
     assertTrue(!!timeRangeStartObj);
@@ -259,7 +237,7 @@ suite('HistoryAppTest', function() {
         after: '2022-04-02',
       },
     }));
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(timeRangeStartObj, historyEmbeddings.timeRangeStart);
 
     // Clear the after date query.
@@ -270,7 +248,7 @@ suite('HistoryAppTest', function() {
         search: 'two words',
       },
     }));
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(undefined, historyEmbeddings.timeRangeStart);
   });
 
@@ -281,10 +259,10 @@ suite('HistoryAppTest', function() {
       composed: true,
       detail: {search: 'two words'},
     }));
-    await flushTasks();
+    await microtasksFinished();
 
     let historyEmbeddings =
-        element.shadowRoot!.querySelector('cr-history-embeddings');
+        element.shadowRoot.querySelector('cr-history-embeddings');
     assertFalse(!!historyEmbeddings);
 
     element.dispatchEvent(new CustomEvent('change-query', {
@@ -292,9 +270,9 @@ suite('HistoryAppTest', function() {
       composed: true,
       detail: {search: 'at least four words'},
     }));
-    await flushTasks();
+    await microtasksFinished();
     historyEmbeddings =
-        element.shadowRoot!.querySelector('cr-history-embeddings');
+        element.shadowRoot.querySelector('cr-history-embeddings');
     assertTrue(!!historyEmbeddings);
   });
 
@@ -311,31 +289,32 @@ suite('HistoryAppTest', function() {
             composed: true,
             bubbles: true,
           }));
+      return microtasksFinished();
     }
 
     function getCount() {
       const historyEmbeddingsElement =
-          element.shadowRoot!.querySelector('cr-history-embeddings')!;
+          element.shadowRoot.querySelector('cr-history-embeddings')!;
       return historyEmbeddingsElement.numCharsForQuery;
     }
 
-    dispatchNativeInput({data: 'a'}, 'a');
+    await dispatchNativeInput({data: 'a'}, 'a');
     assertEquals(1, getCount(), 'counts normal characters');
-    dispatchNativeInput({data: 'b'}, 'ab');
-    dispatchNativeInput({data: 'c'}, 'abc');
+    await dispatchNativeInput({data: 'b'}, 'ab');
+    await dispatchNativeInput({data: 'c'}, 'abc');
     assertEquals(3, getCount(), 'counts additional characters');
 
-    dispatchNativeInput({data: 'pasted text'}, 'pasted text');
+    await dispatchNativeInput({data: 'pasted text'}, 'pasted text');
     assertEquals(1, getCount(), 'insert that replaces all text counts as 1');
 
-    dispatchNativeInput({data: 'more text'}, 'pasted text more text');
+    await dispatchNativeInput({data: 'more text'}, 'pasted text more text');
     assertEquals(
         2, getCount(), 'insert that adds to existing input increments count');
 
-    dispatchNativeInput({data: null}, 'pasted text more tex');
+    await dispatchNativeInput({data: null}, 'pasted text more tex');
     assertEquals(3, getCount(), 'deletion increments');
 
-    dispatchNativeInput({data: null}, '');
+    await dispatchNativeInput({data: null}, '');
     assertEquals(0, getCount(), 'deletion of entire input resets counter');
 
     element.$.toolbar.dispatchEvent(new CustomEvent('search-term-cleared'));
@@ -349,9 +328,10 @@ suite('HistoryAppTest', function() {
 
     // Recreate the app with the promo enabled.
     loadTimeData.overrideValues({maybeShowEmbeddingsIph: true});
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
     element = document.createElement('history-app');
     document.body.appendChild(element);
-    await flushTasks();
+    await microtasksFinished();
     assertDeepEquals(
         element.getSortedAnchorStatusesForTesting(),
         [
@@ -364,100 +344,386 @@ suite('HistoryAppTest', function() {
         'promo is disabled in setup');
   });
 
-  test('ProductSpecsIncrementsToolbar', async () => {
-    // Reset the app with product spec lists feature enabled.
-    document.body.removeChild(element);
-    loadTimeData.overrideValues({compareHistoryEnabled: true});
-    element = document.createElement('history-app');
-    document.body.appendChild(element);
-    element.$.router.selectedPage = 'comparisonTables';
-    await flushTasks();
-    assertEquals(0, element.$.toolbar.count);
-
-    const productSpecificationsList =
-        element.shadowRoot!.querySelector('product-specifications-lists');
-    assert(!!productSpecificationsList);
-
-    // Mock adding a selected item.
-    productSpecificationsList.selectedItems.add('uuid1');
-    productSpecificationsList.dispatchEvent(
-        new CustomEvent('product-spec-item-select', {
-          bubbles: true,
-          composed: true,
-          detail: {
-            checked: true,
-            uuid: 'uuid1',
-          },
-        }));
-    await flushTasks();
-
-    assertEquals(1, element.$.toolbar.count);
-  });
-
-  test('ProductSpecsSelectUnselectAll', async () => {
-    // Reset the app with product spec lists feature enabled.
-    document.body.removeChild(element);
-    loadTimeData.overrideValues({compareHistoryEnabled: true});
-    element = document.createElement('history-app');
-    document.body.appendChild(element);
-    element.$.router.selectedPage = 'comparisonTables';
-    await flushTasks();
-    assertEquals(0, element.$.toolbar.count);
-
-    // Stub the selectOrUnselectAll method in the list element.
-    let selectAllCalled = false;
-    const productSpecificationsList =
-        element.shadowRoot!.querySelector('product-specifications-lists');
-    assert(!!productSpecificationsList);
-    productSpecificationsList.selectOrUnselectAll = function() {
-      selectAllCalled = true;
-    };
-
-    // Mock ctrl+A.
-    productSpecificationsList.selectedItems.add('uuid1');
-    productSpecificationsList.selectedItems.add('uuid2');
-    const modifier = isMac ? 'meta' : 'ctrl';
-    pressAndReleaseKeyOn(document.body, 65, modifier, 'a');
-    await flushTasks();
-
-    assertEquals(true, selectAllCalled);
-    assertEquals(2, element.$.toolbar.count);
-  });
-
   test('PassesDisclaimerLinkClicksToEmbeddings', async () => {
     await forceHistoryEmbeddingsElement();
     const historyEmbeddingsElement =
-        element.shadowRoot!.querySelector('cr-history-embeddings');
+        element.shadowRoot.querySelector('cr-history-embeddings');
     assertTrue(!!historyEmbeddingsElement);
     assertFalse(historyEmbeddingsElement.forceSuppressLogging);
     element.$.historyEmbeddingsDisclaimerLink.click();
+    await microtasksFinished();
     assertTrue(historyEmbeddingsElement.forceSuppressLogging);
   });
 
   test('PassesDisclaimerLinkAuxClicksToEmbeddings', async () => {
     await forceHistoryEmbeddingsElement();
     const historyEmbeddingsElement =
-        element.shadowRoot!.querySelector('cr-history-embeddings');
+        element.shadowRoot.querySelector('cr-history-embeddings');
     assertTrue(!!historyEmbeddingsElement);
     assertFalse(historyEmbeddingsElement.forceSuppressLogging);
     element.$.historyEmbeddingsDisclaimerLink.dispatchEvent(
         new MouseEvent('auxclick'));
+    await microtasksFinished();
     assertTrue(historyEmbeddingsElement.forceSuppressLogging);
   });
 
   test('SetsDateTimeFormatForEmbeddings', async () => {
     await forceHistoryEmbeddingsElement();
     const historyEmbeddingsElement =
-        element.shadowRoot!.querySelector('cr-history-embeddings');
+        element.shadowRoot.querySelector('cr-history-embeddings');
     assertTrue(!!historyEmbeddingsElement);
     assertFalse(historyEmbeddingsElement.showRelativeTimes);
 
     element.$.router.selectedPage = 'grouped';
-    await flushTasks();
+    await microtasksFinished();
     assertTrue(historyEmbeddingsElement.showRelativeTimes);
 
     element.$.router.selectedPage = 'history';
-    await flushTasks();
+    await microtasksFinished();
     assertFalse(historyEmbeddingsElement.showRelativeTimes);
+  });
+});
+
+// <if expr="not is_chromeos">
+// history sync promo is not shown for ChromeOS.
+suite('HistoryAppUnoPhase2FollowUpTest', () => {
+  let element: HistoryAppElement;
+  let browserProxy: TestHistoryBrowserProxy;
+
+  setup(() => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    loadTimeData.overrideValues({
+      unoPhase2FollowUp: true,
+    });
+    browserProxy = new TestHistoryBrowserProxy();
+    BrowserProxyImpl.setInstance(browserProxy);
+    browserProxy.handler.setResultFor(
+        'shouldShowHistoryPageHistorySyncPromo', Promise.resolve({
+          shouldShow: true,
+        }));
+
+    element = document.createElement('history-app');
+    document.body.appendChild(element);
+    return microtasksFinished();
+  });
+
+  test('ShowsHistorySyncPromoElementWhenDataIsTrue', async () => {
+    webUIListenerCallback('history-identity-state-changed', {
+      signIn: HistorySignInState.SIGNED_IN,
+      tabsSync: SyncState.TURNED_OFF,
+      historySync: SyncState.TURNED_OFF,
+    });
+    await microtasksFinished();
+
+    assertTrue(
+        isChildVisible(element, 'history-sync-promo'), 'Promo should be shown');
+  });
+
+  test('HidesHistorySyncPromoElementWhenDataIsFalse', async () => {
+    browserProxy.handler.setResultFor(
+        'shouldShowHistoryPageHistorySyncPromo',
+        Promise.resolve({shouldShow: false}));
+    // Re-create the element to pick up the new loadTimeData.
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    element = document.createElement('history-app');
+    document.body.appendChild(element);
+    await microtasksFinished();
+
+    assertFalse(
+        isChildVisible(element, 'history-sync-promo'),
+        'Promo should not be shown');
+  });
+
+  test('HidesHistorySyncPromoElementWhenHistorySyncIsDisabled', async () => {
+    webUIListenerCallback('history-identity-state-changed', {
+      signIn: HistorySignInState.SIGNED_IN,
+      tabsSync: SyncState.TURNED_OFF,
+      historySync: SyncState.DISABLED,
+    });
+    await microtasksFinished();
+
+    assertFalse(
+        isChildVisible(element, 'history-sync-promo'),
+        'Promo should not be shown');
+  });
+
+  test('HistorySyncPromoElementSignedIn', async () => {
+    webUIListenerCallback('history-identity-state-changed', {
+      signIn: HistorySignInState.SIGNED_IN,
+      tabsSync: SyncState.TURNED_OFF,
+      historySync: SyncState.TURNED_OFF,
+    });
+    await microtasksFinished();
+    const historySyncPromo =
+        element.shadowRoot.querySelector('history-sync-promo');
+    assertTrue(!!historySyncPromo, 'Promo should be shown');
+
+    // The promo elements for current state are shown correctly.
+    assertTrue(isChildVisible(historySyncPromo, '#sync-history-illustration'));
+    assertTrue(isChildVisible(historySyncPromo, '#signed-in-description'));
+    assertTrue(isChildVisible(historySyncPromo, '#sync-history-button'));
+
+    // The other states promo elements should not be visible.
+    assertFalse(isChildVisible(historySyncPromo, '#signed-out-description'));
+    assertFalse(isChildVisible(
+        historySyncPromo, '#sign-in-pending-not-syncing-history-description'));
+    assertFalse(isChildVisible(historySyncPromo, '#verify-its-you-button'));
+  });
+
+  test('HistorySyncPromoElementPendingSignInWithHistorySyncOn', async () => {
+    webUIListenerCallback('history-identity-state-changed', {
+      signIn: HistorySignInState.SIGN_IN_PENDING,
+      tabsSync: SyncState.TURNED_OFF,
+      historySync: SyncState.TURNED_ON,
+    });
+    await microtasksFinished();
+    const historySyncPromo =
+        element.shadowRoot.querySelector('history-sync-promo');
+    assertTrue(!!historySyncPromo, 'Promo should be shown');
+
+    // The promo elements for current state are shown correctly.
+    assertTrue(isChildVisible(historySyncPromo, '#sync-history-illustration'));
+    assertTrue(isChildVisible(
+        historySyncPromo, '#sign-in-pending-syncing-history-description'));
+    assertTrue(isChildVisible(historySyncPromo, '#verify-its-you-button'));
+
+    // The other states promo elements should not be visible.
+    assertFalse(isChildVisible(historySyncPromo, '#signed-out-description'));
+    assertFalse(isChildVisible(
+        historySyncPromo, '#sign-in-pending-not-syncing-history-description'));
+    assertFalse(isChildVisible(historySyncPromo, '#signed-in-description'));
+    assertFalse(isChildVisible(historySyncPromo, '#sync-history-button'));
+  });
+
+  test('HistorySyncPromoElementPendingSignInWithHistorySyncOff', async () => {
+    webUIListenerCallback('history-identity-state-changed', {
+      signIn: HistorySignInState.SIGN_IN_PENDING,
+      tabsSync: SyncState.TURNED_OFF,
+      historySync: SyncState.TURNED_OFF,
+    });
+    await microtasksFinished();
+    const historySyncPromo =
+        element.shadowRoot.querySelector('history-sync-promo');
+    assertTrue(!!historySyncPromo, 'Promo should be shown');
+
+    // The promo elements for current state are shown correctly.
+    assertTrue(isChildVisible(historySyncPromo, '#sync-history-illustration'));
+    assertTrue(isChildVisible(
+        historySyncPromo, '#sign-in-pending-not-syncing-history-description'));
+    assertTrue(isChildVisible(historySyncPromo, '#sync-history-button'));
+
+    // The other states promo elements should not be visible.
+    assertFalse(isChildVisible(historySyncPromo, '#signed-out-description'));
+    assertFalse(isChildVisible(
+        historySyncPromo, '#sign-in-pending-syncing-history-description'));
+    assertFalse(isChildVisible(historySyncPromo, '#signed-in-description'));
+    assertFalse(isChildVisible(historySyncPromo, '#verify-its-you-button'));
+  });
+
+  test('HistorySyncPromoElementWebOnlySignIn', async () => {
+    webUIListenerCallback('history-identity-state-changed', {
+      signIn: HistorySignInState.WEB_ONLY_SIGNED_IN,
+      tabsSync: SyncState.TURNED_OFF,
+      historySync: SyncState.TURNED_OFF,
+    });
+    await microtasksFinished();
+    const historySyncPromo =
+        element.shadowRoot.querySelector('history-sync-promo');
+    assertTrue(!!historySyncPromo, 'Promo should be shown');
+
+    // The promo elements for current state are shown correctly.
+    assertTrue(
+        isChildVisible(historySyncPromo, '#web-only-signed-in-description'));
+    assertTrue(isChildVisible(historySyncPromo, '#profile-info-row'));
+    assertTrue(isChildVisible(historySyncPromo, '#sync-history-button'));
+
+    // The other states promo elements should not be visible.
+    assertFalse(isChildVisible(historySyncPromo, '#sync-history-illustration'));
+    assertFalse(isChildVisible(historySyncPromo, '#signed-in-description'));
+    assertFalse(isChildVisible(
+        historySyncPromo, '#sign-in-pending-not-syncing-history-description'));
+    assertFalse(isChildVisible(historySyncPromo, '#verify-its-you-button'));
+  });
+
+  test('HistorySyncPromoElementSignedOut', async () => {
+    webUIListenerCallback('history-identity-state-changed', {
+      signIn: HistorySignInState.SIGNED_OUT,
+      tabsSync: SyncState.TURNED_OFF,
+      historySync: SyncState.TURNED_OFF,
+    });
+    await microtasksFinished();
+    const historySyncPromo =
+        element.shadowRoot.querySelector('history-sync-promo');
+    assertTrue(!!historySyncPromo, 'Promo should be shown');
+
+    // The promo elements for current state are shown correctly.
+    assertTrue(isChildVisible(historySyncPromo, '#sync-history-illustration'));
+    assertTrue(isChildVisible(historySyncPromo, '#signed-out-description'));
+    assertTrue(isChildVisible(historySyncPromo, '#sync-history-button'));
+
+    // The other states promo elements should not be visible.
+    assertFalse(isChildVisible(historySyncPromo, '#signed-in-description'));
+    assertFalse(isChildVisible(
+        historySyncPromo, '#sign-in-pending-not-syncing-history-description'));
+    assertFalse(isChildVisible(historySyncPromo, '#verify-its-you-button'));
+  });
+});
+// </if>
+
+suite('HistoryFilterChipsVisibility', function() {
+  let element: HistoryAppElement;
+
+  setup(() => {
+    const browserProxy = new TestHistoryBrowserProxy();
+    BrowserProxyImpl.setInstance(browserProxy);
+
+    // Some of the tests below assume the query state is fully reset to empty
+    // between tests.
+    window.history.replaceState({}, '', '/');
+    CrRouter.resetForTesting();
+  });
+
+  teardown(() => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+  });
+
+  function createPage() {
+    element = document.createElement('history-app');
+    document.body.appendChild(element);
+    return microtasksFinished();
+  }
+
+  test('FilterChipsVisible', async () => {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryActorIntegrationM3Enabled: true,
+      isGlicWebActuationAvailable: true,
+    });
+    // Re-create the element to pick up the new loadTimeData.
+    await createPage();
+    assertTrue(isChildVisible(element, '#historyFilterChips'));
+  });
+
+  test('FilterChipsNotVisible_M3Off', async () => {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryActorIntegrationM3Enabled: false,
+      isGlicWebActuationAvailable: true,
+    });
+    // Re-create the element to pick up the new loadTimeData.
+    await createPage();
+    assertFalse(isChildVisible(element, '#historyFilterChips'));
+  });
+
+  test('FilterChipsNotVisibile_GlicActuationOff', async () => {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryActorIntegrationM3Enabled: true,
+      isGlicWebActuationAvailable: false,
+    });
+    // Re-create the element to pick up the new loadTimeData.
+    await createPage();
+    assertFalse(isChildVisible(element, '#historyFilterChips'));
+  });
+
+  test('PropagatesFilterChanges', async () => {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryActorIntegrationM3Enabled: true,
+      isGlicWebActuationAvailable: true,
+    });
+    await createPage();
+
+    const filterChips =
+        element.shadowRoot.querySelector<HTMLElement>('#historyFilterChips');
+    assertTrue(!!filterChips);
+
+    const changeQueryEventPromise = eventToPromise<CustomEvent<{
+      search: string,
+      includeUserVisits: boolean,
+      includeActorVisits: boolean,
+    }>>('change-query', element);
+
+    filterChips.dispatchEvent(new CustomEvent('filter-changed', {
+      detail: {
+        userVisits: false,
+        actorVisits: true,
+      },
+      bubbles: true,
+      composed: true,
+    }));
+
+    const event = await changeQueryEventPromise;
+
+    // The query sent to the manager includes the new filters.
+    assertFalse(event.detail.includeUserVisits);
+    assertTrue(event.detail.includeActorVisits);
+    assertEquals('', event.detail.search);
+  });
+
+  test('HidesFilterChipsOnGroupedView', async () => {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryActorIntegrationM3Enabled: true,
+      isGlicWebActuationAvailable: true,
+    });
+    await createPage();
+
+    assertTrue(isChildVisible(element, '#historyFilterChips'));
+
+    element.$.router.selectedPage = 'grouped';
+    await microtasksFinished();
+
+    // Should be hidden for grouped view.
+    assertFalse(isChildVisible(element, '#historyFilterChips'));
+
+    element.$.router.selectedPage = 'history';
+    await microtasksFinished();
+    assertTrue(isChildVisible(element, '#historyFilterChips'));
+  });
+});
+
+suite('WebuiRefresh2026', function() {
+  const WEBUI_REFRESH_ATTR = 'webui-refresh-2026';
+  let element: HistoryAppElement;
+  let browserProxy: TestHistoryBrowserProxy;
+  let embeddingsHandler: TestMock<HistoryEmbeddingsPageHandlerRemote>&
+      HistoryEmbeddingsPageHandlerRemote;
+
+  setup(() => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+
+    loadTimeData.overrideValues({
+      historyEmbeddingsSearchMinimumWordCount: 2,
+      enableHistoryEmbeddings: true,
+      maybeShowEmbeddingsIph: false,
+    });
+
+    browserProxy = new TestHistoryBrowserProxy();
+    BrowserProxyImpl.setInstance(browserProxy);
+    embeddingsHandler = TestMock.fromClass(HistoryEmbeddingsPageHandlerRemote);
+    const {instance} =
+        historyEmbeddingsBrowserProxyFactory.createForTest(embeddingsHandler);
+    historyEmbeddingsBrowserProxyFactory.setInstance(instance);
+    embeddingsHandler.setResultFor(
+        'search', Promise.resolve({result: {items: []}}));
+
+    window.history.replaceState({}, '', '/');
+    CrRouter.resetForTesting();
+  });
+
+  function createPage() {
+    element = document.createElement('history-app');
+    document.body.appendChild(element);
+    return microtasksFinished();
+  }
+
+  test('Enabled', async () => {
+    loadTimeData.overrideValues({webuiRefresh2026: WEBUI_REFRESH_ATTR});
+    await createPage();
+
+    assertNotEquals(null, document.body.querySelector(COLORS_CSS_SELECTOR));
+  });
+
+  test('Disabled', async () => {
+    loadTimeData.overrideValues({webuiRefresh2026: ''});
+    await createPage();
+
+    assertEquals(null, document.body.querySelector(COLORS_CSS_SELECTOR));
   });
 });

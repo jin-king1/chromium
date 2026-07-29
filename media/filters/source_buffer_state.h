@@ -98,22 +98,21 @@ class MEDIA_EXPORT SourceBufferState {
               base::TimeDelta end,
               base::TimeDelta duration);
 
+  // Set the append window boundaries.
+  void SetAppendWindow(base::TimeDelta start, base::TimeDelta end);
+
+  base::TimeDelta append_window_start_for_testing() const {
+    return append_window_start_;
+  }
+  base::TimeDelta append_window_end_for_testing() const {
+    return append_window_end_;
+  }
+
   // If the buffer is full, attempts to try to free up space, as specified in
   // the "Coded Frame Eviction Algorithm" in the Media Source Extensions Spec.
   // Returns false iff buffer is still full after running eviction.
   // https://w3c.github.io/media-source/#sourcebuffer-coded-frame-eviction
   bool EvictCodedFrames(base::TimeDelta media_time, size_t newDataSize);
-
-  // Gets invoked when the system is experiencing memory pressure, i.e. there's
-  // not enough free memory. The |media_time| is the media playback position at
-  // the time of memory pressure notification (needed for accurate GC). The
-  // |memory_pressure_level| indicates memory pressure severity. The
-  // |force_instant_gc| is used to force the MSE garbage collection algorithm to
-  // be run right away, without waiting for the next append.
-  void OnMemoryPressure(
-      base::TimeDelta media_time,
-      base::MemoryPressureListener::MemoryPressureLevel memory_pressure_level,
-      bool force_instant_gc);
 
   // Returns true if currently parsing a media segment, or false otherwise.
   bool parsing_media_segment() const { return parsing_media_segment_; }
@@ -240,12 +239,19 @@ class MEDIA_EXPORT SourceBufferState {
   // RunSegmentParserLoop() or AppendChunks() call.
   raw_ptr<base::TimeDelta> timestamp_offset_during_append_;
 
+  // The active timestamp offset used/updated during frame processing.
+  base::TimeDelta timestamp_offset_;
+
   // During RunSegmentParserLoop() or AppendChunks(), coded frame processing
   // triggered by OnNewBuffers() requires these two attributes. These are only
   // valid during the lifetime of a RunSegmentParserLoop() or AppendChunks()
   // call.
   base::TimeDelta append_window_start_during_append_;
   base::TimeDelta append_window_end_during_append_;
+
+  // The persistent append window boundaries set by SetAppendWindow().
+  base::TimeDelta append_window_start_;
+  base::TimeDelta append_window_end_ = kInfiniteDuration;
 
   // Keeps track of whether a media segment is being parsed.
   bool parsing_media_segment_;
@@ -265,7 +271,7 @@ class MEDIA_EXPORT SourceBufferState {
 
   std::unique_ptr<FrameProcessor> frame_processor_;
   const CreateDemuxerStreamCB create_demuxer_stream_cb_;
-  raw_ptr<MediaLog> media_log_;
+  const std::unique_ptr<MediaLog> media_log_;
 
   StreamParser::InitCB init_cb_;
   StreamParser::EncryptedMediaInitDataCB encrypted_media_init_data_cb_;

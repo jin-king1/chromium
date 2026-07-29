@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.omnibox.status;
 
 import android.content.Context;
-import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -16,12 +15,14 @@ import android.view.View;
 import androidx.annotation.ColorInt;
 import androidx.annotation.ColorRes;
 import androidx.annotation.DrawableRes;
-import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.content.res.AppCompatResources;
 import androidx.core.graphics.drawable.DrawableCompat;
 import androidx.core.util.ObjectsCompat;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.ui.UiUtils;
@@ -33,32 +34,34 @@ import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
 /** Model properties for the Status. */
+@NullMarked
 public class StatusProperties {
     // TODO(wylieb): Investigate the case where we only want to swap the tint (if any).
     /** Encapsulates an icon and tint to allow atomic drawable updates for StatusView. */
     public static class StatusIconResource {
-        private @DrawableRes Integer mIconRes;
+        private @DrawableRes @Nullable Integer mIconRes;
         private @ColorRes int mTint;
-        private String mIconIdentifier;
-        private Bitmap mBitmap;
-        private Drawable mDrawable;
+        private @Nullable String mIconIdentifier;
+        private @Nullable Bitmap mBitmap;
+        private @Nullable Drawable mDrawable;
         private @StatusView.IconTransitionType int mIconTransitionType =
                 StatusView.IconTransitionType.CROSSFADE;
-        private Runnable mCallback;
+        private @Nullable Runnable mCallback;
 
         /** Constructor for a custom drawable. */
-        public StatusIconResource(Drawable drawable) {
+        public StatusIconResource(@Nullable Drawable drawable) {
             mDrawable = drawable;
         }
 
         /** Constructor for a custom drawable with identifier. */
-        public StatusIconResource(Drawable drawable, String iconIdentifier) {
+        public StatusIconResource(@Nullable Drawable drawable, String iconIdentifier) {
             mDrawable = drawable;
             mIconIdentifier = iconIdentifier;
         }
 
         /** Constructor for a custom bitmap. */
-        public StatusIconResource(String iconIdentifier, Bitmap bitmap, @ColorRes int tint) {
+        public StatusIconResource(
+                @Nullable String iconIdentifier, Bitmap bitmap, @ColorRes int tint) {
             mIconIdentifier = iconIdentifier;
             mBitmap = bitmap;
             mTint = tint;
@@ -82,7 +85,7 @@ public class StatusProperties {
          * @return The icon res.
          */
         @DrawableRes
-        int getIconResForTesting() {
+        public int getIconRes() {
             if (mIconRes == null) return 0;
             return mIconRes;
         }
@@ -100,15 +103,12 @@ public class StatusProperties {
             return mIconTransitionType;
         }
 
-        /**
-         * @return The {@link Drawable} for this StatusIconResource.
-         */
-        Drawable getDrawable(Context context, Resources resources) {
+        /** Returns a {@link Drawable} for this StatusIconResource. */
+        public @Nullable Drawable getDrawable(Context context) {
             if (mBitmap != null) {
-                Drawable drawable = new BitmapDrawable(resources, mBitmap);
+                Drawable drawable = new BitmapDrawable(context.getResources(), mBitmap);
                 if (mTint != 0) {
-                    DrawableCompat.setTintList(
-                            drawable, AppCompatResources.getColorStateList(context, mTint));
+                    DrawableCompat.setTintList(drawable, context.getColorStateList(mTint));
                 }
                 return drawable;
             } else if (mIconRes != null) {
@@ -126,8 +126,7 @@ public class StatusProperties {
         /**
          * @return The icon identifier, used for testing.
          */
-        @Nullable
-        String getIconIdentifierForTesting() {
+        @Nullable String getIconIdentifierForTesting() {
             return mIconIdentifier;
         }
 
@@ -157,8 +156,7 @@ public class StatusProperties {
         /**
          * @return the callback to be run after this icon has been set, if any.
          */
-        @Nullable
-        Runnable getAnimationFinishedCallback() {
+        @Nullable Runnable getAnimationFinishedCallback() {
             return mCallback;
         }
     }
@@ -173,22 +171,44 @@ public class StatusProperties {
         public static final int OMNIBOX_ICON_DP = 24;
         public static final int INNER_ICON_DP = 20;
 
-        private boolean mIsIncognito;
+        private final boolean mIsIncognito;
+        private final @StringRes int mContentDescriptionRes;
 
-        PermissionIconResource(Drawable drawable, boolean isIncognito) {
+        PermissionIconResource(@Nullable Drawable drawable, boolean isIncognito) {
             super(drawable);
             mIsIncognito = isIncognito;
+            mContentDescriptionRes = 0;
         }
 
-        PermissionIconResource(Drawable drawable, boolean isIncognito, String iconIdentifier) {
+        PermissionIconResource(
+                @Nullable Drawable drawable,
+                boolean isIncognito,
+                @StringRes int contentDescriptionRes) {
+            super(drawable);
+            mIsIncognito = isIncognito;
+            mContentDescriptionRes = contentDescriptionRes;
+        }
+
+        PermissionIconResource(
+                @Nullable Drawable drawable, boolean isIncognito, String iconIdentifier) {
             super(drawable, iconIdentifier);
             mIsIncognito = isIncognito;
+            mContentDescriptionRes = 0;
         }
 
-        /** Returns a {@link Drawable} for this StatusIconResource. */
+        /**
+         * Returns the resource ID for the accessibility description string associated with the
+         * current permission icon. This is used by screen readers to announce the permission status
+         * to the user. Can be 0 (unset).
+         */
+        @StringRes
+        int getContentDescriptionRes() {
+            return mContentDescriptionRes;
+        }
+
         @Override
-        Drawable getDrawable(Context context, Resources resources) {
-            Drawable icon = super.getDrawable(context, resources);
+        public @Nullable Drawable getDrawable(Context context) {
+            Drawable icon = super.getDrawable(context);
             if (icon == null) {
                 return null;
             }
@@ -198,7 +218,7 @@ public class StatusProperties {
             Canvas canvas = new Canvas(bitmap);
             drawCircleBackground(canvas, context);
             drawCenteredIcon(context, canvas, icon);
-            return new BitmapDrawable(resources, bitmap);
+            return new BitmapDrawable(context.getResources(), bitmap);
         }
 
         /** Draws the provided icon at INNER_ICON_DP on the canvas. */
@@ -239,27 +259,23 @@ public class StatusProperties {
     /** The status separator color. */
     static final WritableIntPropertyKey SEPARATOR_COLOR = new WritableIntPropertyKey();
 
-    /** Whether the icon is shown. */
-    static final WritableBooleanPropertyKey SHOW_STATUS_ICON = new WritableBooleanPropertyKey();
-
-    /** Whether the icon background is shown. */
-    static final WritableBooleanPropertyKey SHOW_STATUS_ICON_BACKGROUND =
-            new WritableBooleanPropertyKey();
-
-    /** The handler of status click events. */
-    static final WritableObjectPropertyKey<View.OnClickListener> STATUS_CLICK_LISTENER =
-            new WritableObjectPropertyKey<>();
-
-    /** The accessibility string shown upon a long click. */
-    static final WritableIntPropertyKey STATUS_ACCESSIBILITY_TOAST_RES =
-            new WritableIntPropertyKey();
+    /** Whether the status view is shown. */
+    static final WritableBooleanPropertyKey SHOW_STATUS_VIEW = new WritableBooleanPropertyKey();
 
     /** The accessibility description read for double tab upon a click on status view. */
     static final WritableIntPropertyKey STATUS_ACCESSIBILITY_DOUBLE_TAP_DESCRIPTION_RES =
             new WritableIntPropertyKey();
 
-    /** Alpha of the icon. */
-    static final WritableFloatPropertyKey STATUS_ICON_ALPHA = new WritableFloatPropertyKey();
+    /** The accessibility string shown upon a long click. */
+    static final WritableIntPropertyKey STATUS_ACCESSIBILITY_TOAST_RES =
+            new WritableIntPropertyKey();
+
+    /** The handler of status click events. */
+    static final WritableObjectPropertyKey<View.OnClickListener> STATUS_CLICK_LISTENER =
+            new WritableObjectPropertyKey<>();
+
+    /** The corner radius of the status icon. */
+    static final WritableIntPropertyKey STATUS_ICON_CORNER_RADIUS = new WritableIntPropertyKey();
 
     /** The string resource used for the description for security icon. */
     static final WritableIntPropertyKey STATUS_ICON_DESCRIPTION_RES = new WritableIntPropertyKey();
@@ -268,14 +284,21 @@ public class StatusProperties {
     static final WritableObjectPropertyKey<StatusIconResource> STATUS_ICON_RESOURCE =
             new WritableObjectPropertyKey<>();
 
+    /** The StatusView background drawable. */
+    static final WritableObjectPropertyKey<Drawable> STATUS_VIEW_BACKGROUND =
+            new WritableObjectPropertyKey<>();
+
     /** The StatusView tooltip text resource. */
     static final WritableIntPropertyKey STATUS_VIEW_TOOLTIP_TEXT = new WritableIntPropertyKey();
 
-    /** The StatusView hover highlight resource. */
-    static final WritableIntPropertyKey STATUS_VIEW_HOVER_HIGHLIGHT = new WritableIntPropertyKey();
-
     /** The x translation of the status view. */
     static final WritableFloatPropertyKey TRANSLATION_X = new WritableFloatPropertyKey();
+
+    /** Specifies the preferred size of the Status field. */
+    static final WritableBooleanPropertyKey USE_SMALL_WIDGET = new WritableBooleanPropertyKey();
+
+    /** Whether the status view should be wide. */
+    static final WritableBooleanPropertyKey USE_WIDE_STATUS_ICON = new WritableBooleanPropertyKey();
 
     /** Text color of the verbose status text field. */
     static final WritableIntPropertyKey VERBOSE_STATUS_TEXT_COLOR = new WritableIntPropertyKey();
@@ -291,35 +314,31 @@ public class StatusProperties {
     /** Specifies width of the verbose status text field. */
     static final WritableIntPropertyKey VERBOSE_STATUS_TEXT_WIDTH = new WritableIntPropertyKey();
 
-    /**
-     * Whether the status view is shown. This is different from SHOW_STATUS_ICON, which is
-     * responsible for whether the icon sub-view is shown or not and is managed independently.
-     */
-    static final WritableBooleanPropertyKey SHOW_STATUS_VIEW = new WritableBooleanPropertyKey();
-
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     public static final PropertyKey[] ALL_KEYS =
             new PropertyKey[] {
+                // go/keep-sorted start
                 ALPHA,
                 ANIMATIONS_ENABLED,
                 INCOGNITO_BADGE_VISIBLE,
                 SEPARATOR_COLOR,
-                SHOW_STATUS_ICON,
-                SHOW_STATUS_ICON_BACKGROUND,
                 SHOW_STATUS_VIEW,
-                STATUS_CLICK_LISTENER,
-                STATUS_ACCESSIBILITY_TOAST_RES,
                 STATUS_ACCESSIBILITY_DOUBLE_TAP_DESCRIPTION_RES,
-                STATUS_ICON_ALPHA,
+                STATUS_ACCESSIBILITY_TOAST_RES,
+                STATUS_CLICK_LISTENER,
+                STATUS_ICON_CORNER_RADIUS,
                 STATUS_ICON_DESCRIPTION_RES,
                 STATUS_ICON_RESOURCE,
+                STATUS_VIEW_BACKGROUND,
                 STATUS_VIEW_TOOLTIP_TEXT,
-                STATUS_VIEW_HOVER_HIGHLIGHT,
                 TRANSLATION_X,
+                USE_SMALL_WIDGET,
+                USE_WIDE_STATUS_ICON,
                 VERBOSE_STATUS_TEXT_COLOR,
                 VERBOSE_STATUS_TEXT_STRING_RES,
                 VERBOSE_STATUS_TEXT_VISIBLE,
                 VERBOSE_STATUS_TEXT_WIDTH,
+                // go/keep-sorted end
             };
 
     private StatusProperties() {}

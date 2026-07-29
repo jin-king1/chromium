@@ -17,6 +17,7 @@ Length::ValueRange LengthPropertyFunctions::GetValueRange(
     case CSSPropertyID::kBorderRightWidth:
     case CSSPropertyID::kBorderTopWidth:
     case CSSPropertyID::kFlexBasis:
+    case CSSPropertyID::kFlowTolerance:
     case CSSPropertyID::kHeight:
     case CSSPropertyID::kLineHeight:
     case CSSPropertyID::kMaxHeight:
@@ -28,6 +29,7 @@ Length::ValueRange LengthPropertyFunctions::GetValueRange(
     case CSSPropertyID::kPaddingLeft:
     case CSSPropertyID::kPaddingRight:
     case CSSPropertyID::kPaddingTop:
+    case CSSPropertyID::kPathLength:
     case CSSPropertyID::kPerspective:
     case CSSPropertyID::kR:
     case CSSPropertyID::kRx:
@@ -39,6 +41,7 @@ Length::ValueRange LengthPropertyFunctions::GetValueRange(
     case CSSPropertyID::kColumnGap:
     case CSSPropertyID::kRowGap:
     case CSSPropertyID::kColumnWidth:
+    case CSSPropertyID::kColumnHeight:
     case CSSPropertyID::kWidth:
     case CSSPropertyID::kTabSize:
       return Length::ValueRange::kNonNegative;
@@ -189,6 +192,13 @@ bool LengthPropertyFunctions::GetLength(const CSSProperty& property,
       result = style.FlexBasis();
       success = true;
       break;
+    case CSSPropertyID::kFlowTolerance:
+      if (!style.GetFlowTolerance().IsNormal() &&
+          !style.GetFlowTolerance().IsInfinite()) {
+        result = style.GetFlowTolerance().GetLength();
+        success = true;
+      }
+      break;
     case CSSPropertyID::kHeight:
       result = style.Height();
       success = true;
@@ -247,6 +257,10 @@ bool LengthPropertyFunctions::GetLength(const CSSProperty& property,
       break;
     case CSSPropertyID::kPaddingTop:
       result = style.PaddingTop();
+      success = true;
+      break;
+    case CSSPropertyID::kPathLength:
+      result = style.PathLength();
       success = true;
       break;
     case CSSPropertyID::kR:
@@ -315,23 +329,35 @@ bool LengthPropertyFunctions::GetLength(const CSSProperty& property,
       break;
 
     case CSSPropertyID::kBorderBottomWidth:
-      result = Length::Fixed(style.BorderBottomWidth());
+      result =
+          RuntimeEnabledFeatures::DecoupleComputedBorderWidthFromStyleEnabled()
+              ? Length::Fixed(style.BorderBottomWidthInternal())
+              : Length::Fixed(style.BorderBottomWidth());
       success = true;
       break;
     case CSSPropertyID::kBorderLeftWidth:
-      result = Length::Fixed(style.BorderLeftWidth());
+      result =
+          RuntimeEnabledFeatures::DecoupleComputedBorderWidthFromStyleEnabled()
+              ? Length::Fixed(style.BorderLeftWidthInternal())
+              : Length::Fixed(style.BorderLeftWidth());
       success = true;
       break;
     case CSSPropertyID::kBorderRightWidth:
-      result = Length::Fixed(style.BorderRightWidth());
+      result =
+          RuntimeEnabledFeatures::DecoupleComputedBorderWidthFromStyleEnabled()
+              ? Length::Fixed(style.BorderRightWidthInternal())
+              : Length::Fixed(style.BorderRightWidth());
       success = true;
       break;
     case CSSPropertyID::kBorderTopWidth:
-      result = Length::Fixed(style.BorderTopWidth());
+      result =
+          RuntimeEnabledFeatures::DecoupleComputedBorderWidthFromStyleEnabled()
+              ? Length::Fixed(style.BorderTopWidthInternal())
+              : Length::Fixed(style.BorderTopWidth());
       success = true;
       break;
     case CSSPropertyID::kLetterSpacing:
-      result = Length::Fixed(style.LetterSpacing());
+      result = style.ComputedLetterSpacing();
       success = true;
       break;
     case CSSPropertyID::kOutlineOffset:
@@ -339,7 +365,10 @@ bool LengthPropertyFunctions::GetLength(const CSSProperty& property,
       success = true;
       break;
     case CSSPropertyID::kOutlineWidth:
-      result = Length::Fixed(style.OutlineWidth());
+      result =
+          RuntimeEnabledFeatures::DecoupleComputedBorderWidthFromStyleEnabled()
+              ? Length::Fixed(style.OutlineWidthInternal())
+              : Length::Fixed(style.OutlineWidth());
       success = true;
       break;
     case CSSPropertyID::kWebkitBorderHorizontalSpacing:
@@ -362,24 +391,60 @@ bool LengthPropertyFunctions::GetLength(const CSSProperty& property,
         success = true;
       }
       break;
+    case CSSPropertyID::kColumnRuleInsetCapEnd:
+      result = style.ColumnRuleInsetCapEnd();
+      success = true;
+      break;
+    case CSSPropertyID::kRowRuleInsetCapEnd:
+      result = style.RowRuleInsetCapEnd();
+      success = true;
+      break;
+    case CSSPropertyID::kColumnRuleInsetCapStart:
+      result = style.ColumnRuleInsetCapStart();
+      success = true;
+      break;
+    case CSSPropertyID::kRowRuleInsetCapStart:
+      result = style.RowRuleInsetCapStart();
+      success = true;
+      break;
+    case CSSPropertyID::kColumnRuleInsetJunctionEnd:
+      result = style.ColumnRuleInsetJunctionEnd();
+      success = true;
+      break;
+    case CSSPropertyID::kRowRuleInsetJunctionEnd:
+      result = style.RowRuleInsetJunctionEnd();
+      success = true;
+      break;
+    case CSSPropertyID::kColumnRuleInsetJunctionStart:
+      result = style.ColumnRuleInsetJunctionStart();
+      success = true;
+      break;
+    case CSSPropertyID::kRowRuleInsetJunctionStart:
+      result = style.RowRuleInsetJunctionStart();
+      success = true;
+      break;
     case CSSPropertyID::kColumnRuleWidth:
       // TODO(crbug.com/357648037): Investigate whether we'll need a new way of
       // handling multiple lengths.
-      result = Length::Fixed(style.ColumnRuleWidth().GetLegacyValue());
-      success = true;
+      if (style.ColumnRuleWidth().HasSingleValue()) {
+        result = Length::Fixed(style.ColumnRuleWidth().GetLegacyValue());
+        success = true;
+      }
       break;
     case CSSPropertyID::kRowRuleWidth:
       // TODO(crbug.com/357648037): Investigate whether we'll need a new way of
       // handling multiple lengths.
-      result = Length::Fixed(style.RowRuleWidth().GetLegacyValue());
-      success = true;
+      if (style.RowRuleWidth().HasSingleValue()) {
+        result = Length::Fixed(style.RowRuleWidth().GetLegacyValue());
+        success = true;
+      }
       break;
     case CSSPropertyID::kWebkitTransformOriginZ:
       result = Length::Fixed(style.GetTransformOrigin().Z());
       success = true;
       break;
     case CSSPropertyID::kWordSpacing:
-      result = Length::Fixed(style.WordSpacing());
+      result = style.ComputedWordSpacing();
       success = true;
       break;
 
@@ -390,7 +455,7 @@ bool LengthPropertyFunctions::GetLength(const CSSProperty& property,
       }
       break;
     case CSSPropertyID::kLineHeight: {
-      const Length& line_height = style.SpecifiedLineHeight();
+      const Length& line_height = style.LineHeight();
       // Percent Lengths are used to represent numbers on line-height.
       if (!line_height.HasPercent()) {
         result = line_height;
@@ -424,6 +489,12 @@ bool LengthPropertyFunctions::GetLength(const CSSProperty& property,
     case CSSPropertyID::kColumnWidth:
       if (!style.HasAutoColumnWidth()) {
         result = Length::Fixed(style.ColumnWidth());
+        success = true;
+      }
+      break;
+    case CSSPropertyID::kColumnHeight:
+      if (!style.HasAutoColumnHeight()) {
+        result = Length::Fixed(style.ColumnHeight());
         success = true;
       }
       break;
@@ -514,6 +585,9 @@ bool LengthPropertyFunctions::SetLength(const CSSProperty& property,
     case CSSPropertyID::kPaddingTop:
       builder.SetPaddingTop(value);
       return true;
+    case CSSPropertyID::kPathLength:
+      builder.SetPathLength(value);
+      return true;
     case CSSPropertyID::kR:
       builder.SetR(value);
       return true;
@@ -567,27 +641,7 @@ bool LengthPropertyFunctions::SetLength(const CSSProperty& property,
 
     // TODO(alancutter): Support setters that take a numeric value (need to
     // resolve percentages).
-    case CSSPropertyID::kBorderBottomWidth:
-    case CSSPropertyID::kBorderLeftWidth:
-    case CSSPropertyID::kBorderRightWidth:
-    case CSSPropertyID::kBorderTopWidth:
-    case CSSPropertyID::kLetterSpacing:
-    case CSSPropertyID::kOutlineOffset:
-    case CSSPropertyID::kOutlineWidth:
-    case CSSPropertyID::kPerspective:
-    case CSSPropertyID::kStrokeWidth:
-    case CSSPropertyID::kVerticalAlign:
-    case CSSPropertyID::kWebkitBorderHorizontalSpacing:
-    case CSSPropertyID::kWebkitBorderVerticalSpacing:
-    case CSSPropertyID::kColumnGap:
-    case CSSPropertyID::kRowGap:
-    case CSSPropertyID::kColumnRuleWidth:
-    case CSSPropertyID::kRowRuleWidth:
-    case CSSPropertyID::kColumnWidth:
-    case CSSPropertyID::kWebkitTransformOriginZ:
-    case CSSPropertyID::kWordSpacing:
-    case CSSPropertyID::kTabSize:
-      return false;
+    // One example of such a property: border-bottom-width
 
     default:
       return false;

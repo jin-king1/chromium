@@ -34,6 +34,7 @@
 #include "base/time/time.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/task_type.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_string_trustedhtml.h"
 #include "third_party/blink/renderer/core/core_probes_inl.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
@@ -57,8 +58,6 @@ namespace {
 // that a timeout less than 4ms is increased to 4ms when the nesting level is
 // greater than 5. Since the counters in this file start at 1 (rather than the
 // 0 in the spec), we should use the value 6 here.
-// (The value is still 4 until StandardizedTimerClamping has shipped.)
-constexpr int kMaxTimerNestingLevel = 4;
 constexpr int kSpecCompliantMaxTimerNestingLevel = 6;
 constexpr base::TimeDelta kMinimumInterval = base::Milliseconds(4);
 
@@ -178,16 +177,34 @@ int DOMTimer::setTimeout(ScriptState* script_state,
   }
   auto* action = MakeGarbageCollected<ScheduledAction>(script_state, context,
                                                        handler, arguments);
-  return MakeGarbageCollected<DOMTimer>(context, action,
-                                        base::Milliseconds(timeout), true)
+  return MakeGarbageCollected<DOMTimer>(
+             context, action, base::Milliseconds(timeout), true,
+             probe::AsyncTaskContext::StackOptions::kDoNotScan)
       ->timeout_id_;
 }
 
 int DOMTimer::setTimeout(ScriptState* script_state,
                          ExecutionContext& context,
-                         const String& handler,
+                         const V8UnionStringOrTrustedScript* untrusted_handler,
                          int timeout,
-                         const HeapVector<ScriptValue>&) {
+                         const HeapVector<ScriptValue>&,
+                         ExceptionState& exception_state) {
+  // In the current version of the HTML spec, the two setTimeout variants have
+  // been unified, and the Trusted Types check is moved much further down. This
+  // is script-obervable if one tries hard enough, e.g. by having competing
+  // error conditions. Here, we emulate Chrome's existing behaviour precisely.
+  // We leave aligning with the current spec to crbug.com/330516530.
+  //
+  // Spec: https://html.spec.whatwg.org/#timer-initialisation-steps, 9.6.1.4
+  String handler = TrustedTypesCheckForScript(
+      untrusted_handler, &context,
+      context.IsWorkerGlobalScope() ? trusted_types_names::kWorkerGlobalScope
+                                    : trusted_types_names::kWindow,
+      trusted_types_names::kSetTimeout, exception_state);
+  if (exception_state.HadException()) {
+    return 0;
+  }
+
   if (!IsAllowed(context, true, handler)) {
     return 0;
   }
@@ -198,8 +215,9 @@ int DOMTimer::setTimeout(ScriptState* script_state,
   }
   auto* action =
       MakeGarbageCollected<ScheduledAction>(script_state, context, handler);
-  return MakeGarbageCollected<DOMTimer>(context, action,
-                                        base::Milliseconds(timeout), true)
+  return MakeGarbageCollected<DOMTimer>(
+             context, action, base::Milliseconds(timeout), true,
+             probe::AsyncTaskContext::StackOptions::kScan)
       ->timeout_id_;
 }
 
@@ -213,16 +231,29 @@ int DOMTimer::setInterval(ScriptState* script_state,
   }
   auto* action = MakeGarbageCollected<ScheduledAction>(script_state, context,
                                                        handler, arguments);
-  return MakeGarbageCollected<DOMTimer>(context, action,
-                                        base::Milliseconds(timeout), false)
+  return MakeGarbageCollected<DOMTimer>(
+             context, action, base::Milliseconds(timeout), false,
+             probe::AsyncTaskContext::StackOptions::kDoNotScan)
       ->timeout_id_;
 }
 
 int DOMTimer::setInterval(ScriptState* script_state,
                           ExecutionContext& context,
-                          const String& handler,
+                          const V8UnionStringOrTrustedScript* untrusted_handler,
                           int timeout,
-                          const HeapVector<ScriptValue>&) {
+                          const HeapVector<ScriptValue>&,
+                          ExceptionState& exception_state) {
+  // Also see DOMTimer::setTimeout.
+  // Spec: https://html.spec.whatwg.org/#timer-initialisation-steps, 9.6.1.4
+  String handler = TrustedTypesCheckForScript(
+      untrusted_handler, &context,
+      context.IsWorkerGlobalScope() ? trusted_types_names::kWorkerGlobalScope
+                                    : trusted_types_names::kWindow,
+      trusted_types_names::kSetInterval, exception_state);
+  if (exception_state.HadException()) {
+    return 0;
+  }
+
   if (!IsAllowed(context, true, handler)) {
     return 0;
   }
@@ -233,8 +264,9 @@ int DOMTimer::setInterval(ScriptState* script_state,
   }
   auto* action =
       MakeGarbageCollected<ScheduledAction>(script_state, context, handler);
-  return MakeGarbageCollected<DOMTimer>(context, action,
-                                        base::Milliseconds(timeout), false)
+  return MakeGarbageCollected<DOMTimer>(
+             context, action, base::Milliseconds(timeout), false,
+             probe::AsyncTaskContext::StackOptions::kScan)
       ->timeout_id_;
 }
 
@@ -260,7 +292,8 @@ void DOMTimer::RemoveByID(ExecutionContext& context, int timeout_id) {
 DOMTimer::DOMTimer(ExecutionContext& context,
                    ScheduledAction* action,
                    base::TimeDelta timeout,
-                   bool single_shot)
+                   bool single_shot,
+                   probe::AsyncTaskContext::StackOptions stack_options)
     : ExecutionContextLifecycleObserver(&context),
       TimerBase(nullptr),
       timeout_id_(DOMTimerCoordinator::From(context).Install(this)),
@@ -287,10 +320,7 @@ DOMTimer::DOMTimer(ExecutionContext& context,
   bool precise = (timeout < GetMaxHighResolutionInterval()) ||
                  scheduler::IsAlignWakeUpsDisabledForProcess();
 
-  const int max_timer_nesting_level =
-      RuntimeEnabledFeatures::StandardizedTimerClampingEnabled()
-          ? kSpecCompliantMaxTimerNestingLevel
-          : kMaxTimerNestingLevel;
+  const int max_timer_nesting_level = kSpecCompliantMaxTimerNestingLevel;
 
   // Step 11:
   if (nesting_level_ > max_timer_nesting_level && timeout < kMinimumInterval) {
@@ -324,7 +354,7 @@ DOMTimer::DOMTimer(ExecutionContext& context,
       "TimerInstall", inspector_timer_install_event::Data, &context,
       timeout_id_, timeout, single_shot);
   const char* name = single_shot ? "setTimeout" : "setInterval";
-  async_task_context_.Schedule(&context, name);
+  async_task_context_.Schedule(&context, name, stack_options);
   probe::BreakableLocation(&context, name);
 }
 
@@ -335,22 +365,29 @@ void DOMTimer::Dispose() {
 }
 
 void DOMTimer::Stop() {
-  if (!action_) {
-    return;
-  }
-
-  async_task_context_.Cancel();
-  const bool is_interval = RepeatInterval().has_value();
-  probe::BreakableLocation(GetExecutionContext(),
-                           is_interval ? "clearInterval" : "clearTimeout");
-
-  // Need to release JS objects potentially protected by ScheduledAction
-  // because they can form circular references back to the ExecutionContext
-  // which will cause a memory leak.
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // TimerBase::Stop() must run even when action_ is null. During cppgc lazy
+  // sweeping the pre-finalizer (Dispose) may call Stop() after action_ has
+  // already been cleared by a previous Stop(). Skipping TimerBase::Stop() in
+  // that case would leave an Unretained(this) closure in the task queue whose
+  // captured pointer is poisoned by Oilpan right after Dispose() returns.
   if (action_) {
-    action_->Dispose();
+    async_task_context_.Cancel();
+    const bool is_interval = RepeatInterval().has_value();
+
+    // Release the action before invoking the probe to ensure that any
+    // re-entrant Stop() calls will safely and silently no-op.
+    ScheduledAction* action = action_.Release();
+
+    probe::BreakableLocation(GetExecutionContext(),
+                             is_interval ? "clearInterval" : "clearTimeout");
+
+    // Need to release JS objects potentially protected by ScheduledAction
+    // because they can form circular references back to the ExecutionContext
+    // which will cause a memory leak.
+    action->Dispose();
   }
-  action_ = nullptr;
+
   TimerBase::Stop();
 }
 
@@ -359,6 +396,7 @@ void DOMTimer::ContextDestroyed() {
 }
 
 void DOMTimer::Fired() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ExecutionContext* context = GetExecutionContext();
   DCHECK(context);
   DOMTimerCoordinator::From(*context).SetTimerNestingLevel(nesting_level_);
@@ -379,10 +417,7 @@ void DOMTimer::Fired() {
   probe::AsyncTask async_task(context, &async_task_context_,
                               is_interval ? "fired" : nullptr);
 
-  const int max_timer_nesting_level =
-      RuntimeEnabledFeatures::StandardizedTimerClampingEnabled()
-          ? kSpecCompliantMaxTimerNestingLevel
-          : kMaxTimerNestingLevel;
+  const int max_timer_nesting_level = kSpecCompliantMaxTimerNestingLevel;
 
   // Simple case for non-one-shot timers.
   if (IsActive()) {

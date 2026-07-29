@@ -62,11 +62,10 @@ class WaylandTestBase {
 
   // Similar to the two methods above, but provides the convenience of using a
   // capturing lambda directly.
-  template <
-      typename Lambda,
-      typename = std::enable_if_t<
-          std::is_invocable_r_v<void, Lambda, wl::TestWaylandServerThread*> ||
-          std::is_invocable_r_v<void, Lambda>>>
+  template <typename Lambda>
+    requires(
+        std::is_invocable_r_v<void, Lambda, wl::TestWaylandServerThread*> ||
+        std::is_invocable_r_v<void, Lambda>)
   void PostToServerAndWait(Lambda&& lambda, bool no_nested_runloops = true) {
     PostToServerAndWait(base::BindLambdaForTesting(std::move(lambda)),
                         no_nested_runloops);
@@ -111,7 +110,8 @@ class WaylandTestBase {
       PlatformWindowType type,
       const gfx::Rect bounds,
       MockWaylandPlatformWindowDelegate* delegate,
-      gfx::AcceleratedWidget parent_widget = gfx::kNullAcceleratedWidget);
+      gfx::AcceleratedWidget parent_widget = gfx::kNullAcceleratedWidget,
+      bool inactive = false);
 
   base::test::TaskEnvironment task_environment_;
 
@@ -121,11 +121,11 @@ class WaylandTestBase {
   XkbEvdevCodes xkb_evdev_code_converter_;
 #endif
 
-  ::testing::NiceMock<MockWaylandPlatformWindowDelegate> delegate_;
   std::unique_ptr<ScopedKeyboardLayoutEngine> scoped_keyboard_layout_engine_;
-  std::unique_ptr<WaylandSurfaceFactory> surface_factory_;
-  std::unique_ptr<WaylandBufferManagerGpu> buffer_manager_gpu_;
   std::unique_ptr<WaylandConnection> connection_;
+  ::testing::NiceMock<MockWaylandPlatformWindowDelegate> delegate_;
+  std::unique_ptr<WaylandBufferManagerGpu> buffer_manager_gpu_;
+  std::unique_ptr<WaylandSurfaceFactory> surface_factory_;
   std::unique_ptr<WaylandScreen> screen_;
   std::unique_ptr<WaylandWindow> window_;
   gfx::AcceleratedWidget widget_ = gfx::kNullAcceleratedWidget;

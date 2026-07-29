@@ -32,6 +32,8 @@
 #include "base/i18n/number_formatting.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_multi_source_observation.h"
+#include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
 #include "third_party/re2/src/re2/re2.h"
@@ -372,7 +374,7 @@ void SavedDeskPresenter::UpdateUIForSavedDeskLibrary() {
   // The library and the library button is always hidden if we enter tablet
   // mode. If not in tablet mode, the library button is visible if there are
   // saved desks in the model, *or* we are already showing the library.
-  const bool in_tablet_mode = display::Screen::GetScreen()->InTabletMode();
+  const bool in_tablet_mode = display::Screen::Get()->InTabletMode();
 
   for (auto& overview_grid : overview_session_->grid_list()) {
     const bool is_showing_library = overview_grid->IsShowingSavedDeskLibrary();
@@ -429,6 +431,11 @@ void SavedDeskPresenter::LaunchSavedDesk(
   const auto saved_desk_type = saved_desk->type();
   Desk* new_desk = desks_controller->CreateNewDeskForSavedDesk(
       saved_desk_type, saved_desk->template_name());
+
+  if (saved_desk->type() == DeskTemplateType::kCoral) {
+    new_desk->set_tab_app_entities(
+        mojo::Clone(saved_desk->coral_tab_app_entities()));
+  }
 
   LaunchSavedDeskIntoNewDesk(std::move(saved_desk), root_window, new_desk);
 

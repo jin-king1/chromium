@@ -4,319 +4,49 @@
 
 #include "components/autofill/core/browser/payments/multiple_request_payments_network_interface_base.h"
 
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <variant>
+
+#include "base/check.h"
 #include "base/command_line.h"
+#include "base/functional/bind.h"
 #include "base/json/json_reader.h"
+#include "base/logging.h"
+#include "base/memory/raw_ref.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
-#include "components/autofill/core/browser/payments/account_info_getter.h"
-#include "components/autofill/core/browser/payments/payments_autofill_client.h"
+#include "base/strings/string_util.h"
+#include "base/uuid.h"
+#include "base/values.h"
+#include "components/autofill/core/browser/payments/payments_access_token_fetcher.h"
 #include "components/autofill/core/browser/payments/payments_requests/payments_request.h"
 #include "components/autofill/core/browser/payments/payments_service_url.h"
-#include "components/signin/public/identity_manager/access_token_fetcher.h"
-#include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/variations/net/variations_http_headers.h"
+#include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/load_flags.h"
+#include "net/base/net_errors.h"
+#include "net/http/http_request_headers.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 
 namespace autofill::payments {
 
 namespace {
 
-using PaymentsRpcResult = PaymentsAutofillClient::PaymentsRpcResult;
-
-constexpr char kTokenFetchId[] = "wallet_client";
-constexpr char kPaymentsOAuth2Scope[] =
-    "https://www.googleapis.com/auth/wallet.chrome";
-
-GURL GetRequestUrl(const std::string& path) {
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch("sync-url")) {
-    if (IsPaymentsProductionEnabled()) {
-      LOG(ERROR) << "You are using production Payments but you specified a "
-                    "--sync-url. You likely want to disable the sync sandbox "
-                    "or switch to sandbox Payments. Both are controlled in "
-                    "about:flags.";
-    }
-  } else if (!IsPaymentsProductionEnabled()) {
-    LOG(ERROR) << "You are using sandbox Payments but you didn't specify a "
-                  "--sync-url. You likely want to enable the sync sandbox "
-                  "or switch to production Payments. Both are controlled in "
-                  "about:flags.";
-  }
-
-  return GetBaseSecureUrl().Resolve(path);
-}
-
-}  // namespace
-
-MultipleRequestPaymentsNetworkInterfaceBase::
-    MultipleRequestPaymentsNetworkInterfaceBase(
-        scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-        signin::IdentityManager* identity_manager,
-        AccountInfoGetter* account_info_getter,
-        bool is_off_the_record)
-    : url_loader_factory_(url_loader_factory),
-      identity_manager_(identity_manager),
-      account_info_getter_(account_info_getter),
-      is_off_the_record_(is_off_the_record) {}
-
-MultipleRequestPaymentsNetworkInterfaceBase::
-    ~MultipleRequestPaymentsNetworkInterfaceBase() = default;
-
-void MultipleRequestPaymentsNetworkInterfaceBase::CancelRequest() {
-  request_.reset();
-  resource_request_.reset();
-  simple_url_loader_.reset();
-  token_fetcher_.reset();
-  access_token_.clear();
-  has_retried_authorization_ = false;
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::
-    set_url_loader_factory_for_testing(
-        scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
-  url_loader_factory_ = std::move(url_loader_factory);
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::set_access_token_for_testing(
-    std::string access_token) {
-  access_token_ = access_token;
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::IssueRequest(
-    std::unique_ptr<PaymentsRequest> request) {
-  request_ = std::move(request);
-  has_retried_authorization_ = false;
-
-  InitializeResourceRequest();
-
-  if (access_token_.empty()) {
-    StartTokenFetch(false);
-  } else {
-    SetOAuth2TokenAndStartRequest();
-  }
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::InitializeResourceRequest() {
-  resource_request_ = std::make_unique<network::ResourceRequest>();
-  resource_request_->url = GetRequestUrl(request_->GetRequestUrlPath());
-  resource_request_->load_flags = net::LOAD_DISABLE_CACHE;
-  resource_request_->credentials_mode = network::mojom::CredentialsMode::kOmit;
-  resource_request_->method = "POST";
-
-  // Add Chrome experiment state to the request headers.
-  net::HttpRequestHeaders headers;
-  // User is always signed-in to be able to upload card to Google Payments.
-  variations::AppendVariationsHeader(
-      resource_request_->url,
-      is_off_the_record_ ? variations::InIncognito::kYes
-                         : variations::InIncognito::kNo,
-      variations::SignedIn::kYes, resource_request_.get());
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::OnSimpleLoaderComplete(
-    std::unique_ptr<std::string> response_body) {
-  int response_code = -1;
-  if (simple_url_loader_->ResponseInfo() &&
-      simple_url_loader_->ResponseInfo()->headers) {
-    response_code =
-        simple_url_loader_->ResponseInfo()->headers->response_code();
-  } else if (simple_url_loader_->NetError() == net::ERR_TIMED_OUT) {
-    response_code = net::ERR_TIMED_OUT;
-  }
-
-  std::string data;
-  if (response_body) {
-    data = std::move(*response_body);
-  }
-
-  OnSimpleLoaderCompleteInternal(response_code, data);
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::
-    OnSimpleLoaderCompleteInternal(int response_code, const std::string& data) {
-  VLOG(2) << "Got data: " << data;
-
-  PaymentsRpcResult result = PaymentsRpcResult::kSuccess;
-
-  if (!request_) {
-    return;
-  }
-
-  // Measure metrics on how often each type of request times out. We only want
-  // to compare timeouts to otherwise successful results, to measure the effects
-  // of client-side timeouts on successful saves.
-  //
-  // Note: This in theory could affect cases where we timed out when we would
-  // have otherwise received HTTP_UNAUTHORIZED, but it's very unlikely that
-  // HTTP_UNAUTHORIZED would take long enough to hit the client side timeout.
-  if (request_->GetTimeout().has_value() &&
-      (response_code == net::HTTP_OK || response_code == net::ERR_TIMED_OUT)) {
-    base::UmaHistogramBoolean(
-        base::StrCat({"Autofill.PaymentsNetworkInterface.",
-                      request_->GetHistogramName(), ".ClientSideTimedOut"}),
-        response_code == net::ERR_TIMED_OUT);
-  }
-
-  switch (response_code) {
-    // Valid response.
-    case net::HTTP_OK: {
-      std::string error_code;
-      std::string error_api_error_reason;
-      std::optional<base::Value> message_value = base::JSONReader::Read(data);
-      if (message_value && message_value->is_dict()) {
-        const auto* found_error_code =
-            message_value->GetDict().FindStringByDottedPath("error.code");
-        if (found_error_code) {
-          error_code = *found_error_code;
-        }
-
-        const auto* found_error_reason =
-            message_value->GetDict().FindStringByDottedPath(
-                "error.api_error_reason");
-        if (found_error_reason) {
-          error_api_error_reason = *found_error_reason;
-        }
-
-        request_->ParseResponse(message_value->GetDict());
-      }
-
-      // Note that `error_api_error_reason` for virtual cards are mapped with
-      // virtual card specific PaymentsRpcResults while those for card from
-      // vendor(runtime retrieval) are mapped with generic temporary and
-      // permanent PaymentsRpcResults.
-      if (base::EqualsCaseInsensitiveASCII(error_api_error_reason,
-                                           "virtual_card_temporary_error")) {
-        result = PaymentsRpcResult::kVcnRetrievalTryAgainFailure;
-      } else if (base::EqualsCaseInsensitiveASCII(
-                     error_api_error_reason, "virtual_card_permanent_error")) {
-        result = PaymentsRpcResult::kVcnRetrievalPermanentFailure;
-      } else if (request_->IsRetryableFailure(error_code) ||
-                 base::EqualsCaseInsensitiveASCII(
-                     error_api_error_reason,
-                     "card_from_vendor_temporary_error")) {
-        result = PaymentsRpcResult::kTryAgainFailure;
-      } else if (!error_code.empty() || !request_->IsResponseComplete() ||
-                 base::EqualsCaseInsensitiveASCII(
-                     error_api_error_reason,
-                     "card_from_vendor_permanent_error")) {
-        result = PaymentsRpcResult::kPermanentFailure;
-      }
-
-      break;
-    }
-
-    case net::HTTP_UNAUTHORIZED: {
-      if (has_retried_authorization_) {
-        result = PaymentsRpcResult::kPermanentFailure;
-        break;
-      }
-      has_retried_authorization_ = true;
-
-      InitializeResourceRequest();
-      StartTokenFetch(true);
-      return;
-    }
-
-    // TODO(estade): is this actually how network connectivity issues are
-    // reported?
-    case net::HTTP_REQUEST_TIMEOUT: {
-      result = PaymentsRpcResult::kNetworkError;
-      break;
-    }
-
-    // This case occurs when the request hits the client-side timeout. This is
-    // quite complex as the call could still complete on the server side, but we
-    // were not willing to wait any longer for the server.
-    case net::ERR_TIMED_OUT: {
-      result = PaymentsRpcResult::kClientSideTimeout;
-      break;
-    }
-
-    // Handle anything else as a generic (permanent) failure.
-    default: {
-      result = PaymentsRpcResult::kPermanentFailure;
-      break;
-    }
-  }
-
-  if (result != PaymentsRpcResult::kSuccess) {
-    VLOG(1) << "Payments returned error: " << response_code
-            << " with data: " << data;
-  }
-
-  request_->RespondToDelegate(result);
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::AccessTokenFetchFinished(
-    GoogleServiceAuthError error,
-    signin::AccessTokenInfo access_token_info) {
-  DCHECK(token_fetcher_);
-  token_fetcher_.reset();
-
-  if (error.state() != GoogleServiceAuthError::NONE) {
-    AccessTokenError(error);
-    return;
-  }
-
-  access_token_ = access_token_info.token;
-  if (resource_request_) {
-    SetOAuth2TokenAndStartRequest();
-  }
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::AccessTokenError(
-    const GoogleServiceAuthError& error) {
-  VLOG(1) << "Unhandled OAuth2 error: " << error.ToString();
-  if (simple_url_loader_) {
-    simple_url_loader_.reset();
-  }
-  if (request_) {
-    request_->RespondToDelegate(PaymentsRpcResult::kPermanentFailure);
-  }
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::StartTokenFetch(
-    bool invalidate_old) {
-  // We're still waiting for the last request to come back.
-  if (!invalidate_old && token_fetcher_) {
-    return;
-  }
-
-  DCHECK(account_info_getter_);
-
-  signin::ScopeSet payments_scopes;
-  payments_scopes.insert(kPaymentsOAuth2Scope);
-  CoreAccountId account_id =
-      account_info_getter_->GetAccountInfoForPaymentsServer().account_id;
-  if (invalidate_old) {
-    DCHECK(!access_token_.empty());
-    identity_manager_->RemoveAccessTokenFromCache(account_id, payments_scopes,
-                                                  access_token_);
-  }
-  access_token_.clear();
-  token_fetcher_ = identity_manager_->CreateAccessTokenFetcherForAccount(
-      account_id, kTokenFetchId, payments_scopes,
-      base::BindOnce(&MultipleRequestPaymentsNetworkInterfaceBase::
-                         AccessTokenFetchFinished,
-                     base::Unretained(this)),
-      signin::AccessTokenFetcher::Mode::kImmediate);
-}
-
-void MultipleRequestPaymentsNetworkInterfaceBase::
-    SetOAuth2TokenAndStartRequest() {
-  // Set OAuth2 token:
-  DCHECK(resource_request_);
-  resource_request_->headers.SetHeader(net::HttpRequestHeaders::kAuthorization,
-                                       std::string("Bearer ") + access_token_);
-
-  // Start request:
-  net::NetworkTrafficAnnotationTag traffic_annotation =
-      net::DefineNetworkTrafficAnnotation("payments_autofill", R"(
+constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
+    net::DefineNetworkTrafficAnnotation("payments_autofill", R"(
         semantics {
           sender: "Payments"
           description:
@@ -371,8 +101,84 @@ void MultipleRequestPaymentsNetworkInterfaceBase::
             }
           }
         })");
+
+GURL GetRequestUrl(const std::string& path) {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch("sync-url")) {
+    if (IsPaymentsProductionEnabled()) {
+      LOG(ERROR) << "You are using production Payments but you specified a "
+                    "--sync-url. You likely want to disable the sync sandbox "
+                    "or switch to sandbox Payments. Both are controlled in "
+                    "about:flags.";
+    }
+  } else if (!IsPaymentsProductionEnabled()) {
+    LOG(ERROR) << "You are using sandbox Payments but you didn't specify a "
+                  "--sync-url. You likely want to enable the sync sandbox "
+                  "or switch to production Payments. Both are controlled in "
+                  "about:flags.";
+  }
+
+  return GetBaseSecureUrl().Resolve(path);
+}
+
+}  // namespace
+
+MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::RequestOperation(
+    std::unique_ptr<PaymentsRequest> request,
+    MultipleRequestPaymentsNetworkInterfaceBase& payments_network_interface)
+    : request_(std::move(request)),
+      payments_network_interface_(payments_network_interface),
+      token_fetcher_(PaymentsAccessTokenFetcher(
+          payments_network_interface.identity_manager())) {}
+
+MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::
+    ~RequestOperation() = default;
+
+const RequestId& MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::
+    StartOperation() {
+  request_operation_id_ =
+      RequestId(base::Uuid::GenerateRandomV4().AsLowercaseString());
+  has_retried_authorization_ = false;
+  token_fetcher_.GetAccessToken(
+      /*invalidate_old=*/false,
+      base::BindOnce(&MultipleRequestPaymentsNetworkInterfaceBase::
+                         RequestOperation::AccessTokenFetchFinished,
+                     weak_ptr_factory_.GetWeakPtr()));
+  return request_operation_id_;
+}
+
+void MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::
+    InvalidateOperation() {
+  request_.reset();
+}
+
+void MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::
+    AccessTokenFetchFinished(
+        const std::variant<GoogleServiceAuthError, std::string>& result) {
+  if (std::holds_alternative<GoogleServiceAuthError>(result)) {
+    GoogleServiceAuthError error = std::get<GoogleServiceAuthError>(result);
+    DVLOG(1) << "Unhandled access token error: " << error.ToString();
+    if (simple_url_loader_) {
+      simple_url_loader_.reset();
+    }
+    ReportOperationResult(PaymentsRpcResult::kPermanentFailure);
+    return;
+  }
+
+  auto access_token = std::get<std::string>(result);
+  SetAccessTokenAndStartRequest(access_token);
+}
+
+void MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::
+    SetAccessTokenAndStartRequest(const std::string& access_token) {
+  std::unique_ptr<network::ResourceRequest> resource_request =
+      InitializeResourceRequest();
+  // Set access token:
+  resource_request->headers.SetHeader(net::HttpRequestHeaders::kAuthorization,
+                                      std::string("Bearer ") + access_token);
+
+  // Start request:
   simple_url_loader_ = network::SimpleURLLoader::Create(
-      std::move(resource_request_), traffic_annotation);
+      std::move(resource_request), kTrafficAnnotation);
   simple_url_loader_->AttachStringForUpload(request_->GetRequestContent(),
                                             request_->GetRequestContentType());
 
@@ -387,10 +193,209 @@ void MultipleRequestPaymentsNetworkInterfaceBase::
   }
 
   simple_url_loader_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
-      url_loader_factory_.get(),
-      base::BindOnce(
-          &MultipleRequestPaymentsNetworkInterfaceBase::OnSimpleLoaderComplete,
-          base::Unretained(this)));
+      payments_network_interface_->url_loader_factory(),
+      base::BindOnce(&MultipleRequestPaymentsNetworkInterfaceBase::
+                         RequestOperation::OnSimpleLoaderComplete,
+                     base::Unretained(this)));
+}
+
+std::unique_ptr<network::ResourceRequest>
+MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::
+    InitializeResourceRequest() {
+  std::unique_ptr<network::ResourceRequest> resource_request =
+      std::make_unique<network::ResourceRequest>();
+  resource_request->url = GetRequestUrl(request_->GetRequestUrlPath());
+  resource_request->load_flags = net::LOAD_DISABLE_CACHE;
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
+  resource_request->method = "POST";
+
+  // Add Chrome experiment state to the request headers.
+  net::HttpRequestHeaders headers;
+  // User is always signed-in to be able to upload card to Google Payments.
+  variations::AppendVariationsHeader(
+      resource_request->url,
+      payments_network_interface_->is_off_the_record()
+          ? variations::InIncognito::kYes
+          : variations::InIncognito::kNo,
+      variations::SignedIn::kYes, resource_request.get());
+  return resource_request;
+}
+
+void MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::
+    OnSimpleLoaderComplete(std::optional<std::string> response_body) {
+  int response_code = -1;
+  if (simple_url_loader_->ResponseInfo() &&
+      simple_url_loader_->ResponseInfo()->headers) {
+    response_code =
+        simple_url_loader_->ResponseInfo()->headers->response_code();
+  } else if (simple_url_loader_->NetError() == net::ERR_TIMED_OUT) {
+    response_code = net::ERR_TIMED_OUT;
+  }
+
+  OnSimpleLoaderCompleteInternal(response_code,
+                                 std::move(response_body).value_or(""));
+}
+
+void MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::
+    OnSimpleLoaderCompleteInternal(int response_code, const std::string& data) {
+  DVLOG(2) << "Got data: " << data;
+
+  PaymentsRpcResult result = PaymentsRpcResult::kSuccess;
+
+  if (!request_) {
+    payments_network_interface_->OnRequestFinished(request_operation_id_);
+    return;
+  }
+
+  // Measure metrics on how often each type of request times out. We only want
+  // to compare timeouts to otherwise successful results, to measure the effects
+  // of client-side timeouts on successful saves.
+  //
+  // Note: This in theory could affect cases where we timed out when we would
+  // have otherwise received HTTP_UNAUTHORIZED, but it's very unlikely that
+  // HTTP_UNAUTHORIZED would take long enough to hit the client side timeout.
+  if (request_->GetTimeout().has_value() &&
+      (response_code == net::HTTP_OK || response_code == net::ERR_TIMED_OUT)) {
+    base::UmaHistogramBoolean(
+        base::StrCat({"Autofill.PaymentsNetworkInterface.",
+                      request_->GetHistogramName(), ".ClientSideTimedOut"}),
+        response_code == net::ERR_TIMED_OUT);
+  }
+
+  switch (response_code) {
+    // Valid response.
+    case net::HTTP_OK: {
+      std::string error_code;
+      std::string error_api_error_reason;
+      std::optional<base::Value> message_value =
+          base::JSONReader::Read(data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+      if (message_value && message_value->is_dict()) {
+        const auto* found_error_code =
+            message_value->GetDict().FindStringByDottedPath("error.code");
+        if (found_error_code) {
+          error_code = *found_error_code;
+        }
+
+        const auto* found_error_reason =
+            message_value->GetDict().FindStringByDottedPath(
+                "error.api_error_reason");
+        if (found_error_reason) {
+          error_api_error_reason = *found_error_reason;
+        }
+
+        request_->ParseResponse(message_value->GetDict());
+      }
+
+      // Note that `error_api_error_reason` for virtual cards are mapped with
+      // virtual card specific PaymentsRpcResults while those for card from
+      // vendor(runtime retrieval) are mapped with generic temporary and
+      // permanent PaymentsRpcResults.
+      if (base::EqualsCaseInsensitiveASCII(error_api_error_reason,
+                                           "virtual_card_temporary_error")) {
+        result = PaymentsRpcResult::kVcnRetrievalTryAgainFailure;
+      } else if (base::EqualsCaseInsensitiveASCII(
+                     error_api_error_reason, "virtual_card_permanent_error")) {
+        result = PaymentsRpcResult::kVcnRetrievalPermanentFailure;
+      } else if (request_->IsRetryableFailure(error_code) ||
+                 base::EqualsCaseInsensitiveASCII(
+                     error_api_error_reason,
+                     "card_from_vendor_temporary_error")) {
+        result = PaymentsRpcResult::kTryAgainFailure;
+      } else if (!error_code.empty() || !request_->IsResponseComplete() ||
+                 base::EqualsCaseInsensitiveASCII(
+                     error_api_error_reason,
+                     "card_from_vendor_permanent_error")) {
+        result = PaymentsRpcResult::kPermanentFailure;
+      }
+
+      break;
+    }
+
+    case net::HTTP_UNAUTHORIZED: {
+      if (has_retried_authorization_) {
+        result = PaymentsRpcResult::kPermanentFailure;
+        break;
+      }
+      has_retried_authorization_ = true;
+
+      token_fetcher_.GetAccessToken(
+          /*invalidate_old=*/true,
+          base::BindOnce(&MultipleRequestPaymentsNetworkInterfaceBase::
+                             RequestOperation::AccessTokenFetchFinished,
+                         weak_ptr_factory_.GetWeakPtr()));
+      return;
+    }
+
+    case net::HTTP_REQUEST_TIMEOUT: {
+      result = PaymentsRpcResult::kNetworkError;
+      break;
+    }
+
+    // This case occurs when the request hits the client-side timeout. This is
+    // quite complex as the call could still complete on the server side, but we
+    // were not willing to wait any longer for the server.
+    case net::ERR_TIMED_OUT: {
+      result = PaymentsRpcResult::kClientSideTimeout;
+      break;
+    }
+
+    // Handle anything else as a generic (permanent) failure.
+    default: {
+      result = PaymentsRpcResult::kPermanentFailure;
+      break;
+    }
+  }
+
+  if (result != PaymentsRpcResult::kSuccess) {
+    DVLOG(1) << "Payments returned error: " << response_code
+             << " with data: " << data;
+  }
+
+  ReportOperationResult(result);
+}
+
+void MultipleRequestPaymentsNetworkInterfaceBase::RequestOperation::
+    ReportOperationResult(PaymentsRpcResult result) {
+  CHECK(request_);
+  request_->RespondToDelegate(result);
+  payments_network_interface_->OnRequestFinished(request_operation_id_);
+}
+
+MultipleRequestPaymentsNetworkInterfaceBase::
+    MultipleRequestPaymentsNetworkInterfaceBase(
+        scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+        signin::IdentityManager& identity_manager,
+        bool is_off_the_record)
+    : url_loader_factory_(url_loader_factory),
+      identity_manager_(identity_manager),
+      is_off_the_record_(is_off_the_record) {}
+
+MultipleRequestPaymentsNetworkInterfaceBase::
+    ~MultipleRequestPaymentsNetworkInterfaceBase() = default;
+
+RequestId MultipleRequestPaymentsNetworkInterfaceBase::IssueRequest(
+    std::unique_ptr<PaymentsRequest> request) {
+  auto operation =
+      std::make_unique<RequestOperation>(std::move(request), *this);
+  RequestId id = operation->StartOperation();
+  operations_.insert_or_assign(id, std::move(operation));
+  return id;
+}
+
+void MultipleRequestPaymentsNetworkInterfaceBase::CancelRequestWithId(
+    const RequestId& id) {
+  // Instead of deleting the operation with `id` directly, we will mark it
+  // as invalidated so it does not report any result. The lifecycle of the
+  // operation should only be managed by the PaymentsNetworkInterface (i.e. by
+  // OnRequestFinished) internally to avoid accidental use-after-free.
+  if (auto it = operations_.find(id); it != operations_.end()) {
+    it->second->InvalidateOperation();
+  }
+}
+
+void MultipleRequestPaymentsNetworkInterfaceBase::OnRequestFinished(
+    RequestId& id) {
+  operations_.erase(id);
 }
 
 }  // namespace autofill::payments

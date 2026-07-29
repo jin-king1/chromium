@@ -9,7 +9,6 @@
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
-#include "components/signin/public/identity_manager/scope_set.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
@@ -101,8 +100,8 @@ TEST_P(ApiAccessTokenFetcherTest, AuthError) {
 
   service.GetToken(receiver.Receive());
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
-      GoogleServiceAuthError(
-          GoogleServiceAuthError::State::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
   EXPECT_EQ(receiver.Get().error().state(),
             GoogleServiceAuthError::State::INVALID_GAIA_CREDENTIALS);
@@ -131,8 +130,8 @@ TEST_P(ApiAccessTokenFetcherTest, InvalidateToken) {
 INSTANTIATE_TEST_SUITE_P(
     ApiAccessTokenFetcherTest,
     ApiAccessTokenFetcherTest,
-    ::testing::Values(kClassifyUrlConfig.access_token_config,
-                      kListFamilyMembersConfig.access_token_config));
+    ::testing::Values(*kClassifyUrlConfig.access_token_config,
+                      *kListFamilyMembersConfig.access_token_config));
 
 }  // namespace
 }  // namespace supervised_user

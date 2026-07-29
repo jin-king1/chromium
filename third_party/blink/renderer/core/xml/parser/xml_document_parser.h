@@ -77,6 +77,12 @@ class XMLParserContext : public RefCounted<XMLParserContext> {
   xmlParserCtxtPtr context_;
 };
 
+inline bool IsCAPAlertNamespace(StringView uri) {
+  return !uri.IsNull() &&
+         (uri == "urn:oasis:names:tc:emergency:cap" ||
+          uri.starts_with("urn:oasis:names:tc:emergency:cap:"));
+}
+
 class XMLDocumentParser final : public ScriptableDocumentParser,
                                 public XMLParserScriptRunnerHost {
  public:
@@ -84,6 +90,8 @@ class XMLDocumentParser final : public ScriptableDocumentParser,
   XMLDocumentParser(DocumentFragment*, Element*, ParserContentPolicy);
   ~XMLDocumentParser() override;
   void Trace(Visitor*) const override;
+
+  static void EnsureLibXMLInitialized();
 
   // Exposed for callbacks:
   void HandleError(XMLErrors::ErrorType, const char* message, TextPosition);
@@ -204,15 +212,13 @@ class XMLDocumentParser final : public ScriptableDocumentParser,
   Vector<xmlChar> buffered_text_;
 
   Member<ContainerNode> current_node_;
+  // In fragment parsing, track a parent element that has reset the default
+  // namespace, in order not to apply the surrounding element's default
+  // namespace when fixing-up fragment element's namespace information.
+  Member<ContainerNode> ancestor_resetting_namespace_ = nullptr;
   HeapVector<Member<ContainerNode>> current_node_stack_;
 
   Member<Text> leaf_text_node_;
-
-  // Tracks whether we're processing a new input chunk. This is set right before
-  // submitting a new chunk to libxml and is reset by most emitted parse events.
-  // We use this as a signal to merge CDATA sections when they span a chunk
-  // boundary.
-  bool is_start_of_new_chunk_ = false;
 
   bool is_currently_parsing8_bit_chunk_;
   bool saw_error_;
@@ -221,6 +227,10 @@ class XMLDocumentParser final : public ScriptableDocumentParser,
   bool saw_first_element_;
   bool is_xhtml_document_;
   bool parser_paused_;
+  // Re-entrancy guard for DoWrite()/xmlParseChunk(). libxml2 push-parser
+  // contexts are not re-entrant; calling xmlParseChunk while already inside
+  // a SAX callback corrupts ctxt->pushTab/nsTab.
+  bool in_parse_chunk_ = false;
   bool requesting_script_;
   bool finish_called_;
   bool waiting_for_stylesheets_ = false;

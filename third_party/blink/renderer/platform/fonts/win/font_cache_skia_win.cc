@@ -29,11 +29,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <windows.h>  // For GetACP()
 
 #include <unicode/uscript.h>
@@ -46,6 +41,7 @@
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/trace_event/trace_event.h"
+#include "skia/ext/font_utils.h"
 #include "third_party/blink/public/platform/web_font_prewarmer.h"
 #include "third_party/blink/renderer/platform/fonts/bitmap_glyphs_block_list.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
@@ -66,8 +62,6 @@
 #include "third_party/skia/include/ports/SkTypeface_win.h"
 
 namespace blink {
-
-WebFontPrewarmer* FontCache::prewarmer_ = nullptr;
 
 // Cached system font metrics.
 AtomicString* FontCache::menu_font_family_name_ = nullptr;
@@ -101,8 +95,7 @@ const LayoutLocale* FallbackLocaleForCharacter(
     const UChar32 codepoint) {
   if (IsEmojiPresentationEmoji(fallback_priority)) {
     return LayoutLocale::Get(AtomicString(kColorEmojiLocale));
-  } else if (RuntimeEnabledFeatures::SystemFallbackEmojiVSSupportEnabled() &&
-             IsTextPresentationEmoji(fallback_priority)) {
+  } else if (IsTextPresentationEmoji(fallback_priority)) {
     return LayoutLocale::Get(AtomicString(kMonoEmojiLocale));
   }
 
@@ -125,21 +118,6 @@ const LayoutLocale* FallbackLocaleForCharacter(
 }
 
 }  // namespace
-
-// static
-void FontCache::PrewarmFamily(const AtomicString& family_name) {
-  DCHECK(IsMainThread());
-
-  if (!prewarmer_)
-    return;
-
-  DEFINE_STATIC_LOCAL(HashSet<AtomicString>, prewarmed_families, ());
-  const auto result = prewarmed_families.insert(family_name);
-  if (!result.is_new_entry)
-    return;
-
-  prewarmer_->PrewarmFamily(family_name);
-}
 
 //static
 void FontCache::SetSystemFontFamily(const AtomicString&) {
@@ -183,11 +161,11 @@ const SimpleFontData* FontCache::GetFallbackFamilyNameFromHardcodedChoices(
     UChar32 codepoint,
     FontFallbackPriority fallback_priority) {
   UScriptCode script;
-  DCHECK(font_manager_);
+
   if (const AtomicString fallback_family =
           GetFallbackFamily(codepoint, font_description.GenericFamily(),
                             font_description.Locale(), fallback_priority,
-                            *font_manager_, script)) {
+                            *skia::DefaultFontMgr(), script)) {
     FontFaceCreationParams create_by_family =
         FontFaceCreationParams(fallback_family);
     const FontPlatformData* data =
@@ -204,43 +182,38 @@ const SimpleFontData* FontCache::GetFallbackFamilyNameFromHardcodedChoices(
   // large repertoire. Eventually, we need to scan all the fonts
   // on the system to have a Firefox-like coverage.
   // Make sure that all of them are lowercased.
-  const static UChar* const kCjkFonts[] = {
-      u"arial unicode ms", u"ms pgothic", u"simsun", u"gulim", u"pmingliu",
-      u"wenquanyi zen hei",  // Partial CJK Ext. A coverage but more widely
-                             // known to Chinese users.
-      u"ar pl shanheisun uni", u"ar pl zenkai uni",
-      u"han nom a",  // Complete CJK Ext. A coverage.
-      u"code2000"    // Complete CJK Ext. A coverage.
+  const static char* const kCjkFonts[] = {
+      "arial unicode ms", "ms pgothic", "simsun", "gulim", "pmingliu",
+      "wenquanyi zen hei",  // Partial CJK Ext. A coverage but more widely
+                            // known to Chinese users.
+      "ar pl shanheisun uni", "ar pl zenkai uni",
+      "han nom a",  // Complete CJK Ext. A coverage.
+      "code2000"    // Complete CJK Ext. A coverage.
       // CJK Ext. B fonts are not listed here because it's of no use
       // with our current non-BMP character handling because we use
       // Uniscribe for it and that code path does not go through here.
   };
 
-  const static UChar* const kCommonFonts[] = {
-      u"tahoma", u"arial unicode ms", u"lucida sans unicode",
-      u"microsoft sans serif", u"palatino linotype",
+  const static char* const kCommonFonts[] = {
+      "tahoma", "arial unicode ms", "lucida sans unicode",
+      "microsoft sans serif", "palatino linotype",
       // Six fonts below (and code2000 at the end) are not from MS, but
       // once installed, cover a very wide range of characters.
-      u"dejavu serif", u"dejavu sasns", u"freeserif", u"freesans", u"gentium",
-      u"gentiumalt", u"ms pgothic", u"simsun", u"gulim", u"pmingliu",
-      u"code2000"};
+      "dejavu serif", "dejavu sasns", "freeserif", "freesans", "gentium",
+      "gentiumalt", "ms pgothic", "simsun", "gulim", "pmingliu", "code2000"};
 
-  const UChar* const* pan_uni_fonts = nullptr;
-  int num_fonts = 0;
+  base::span<const char* const> pan_uni_fonts;
   if (script == USCRIPT_HAN) {
-    pan_uni_fonts = kCjkFonts;
-    num_fonts = std::size(kCjkFonts);
+    pan_uni_fonts = base::span(kCjkFonts);
   } else {
-    pan_uni_fonts = kCommonFonts;
-    num_fonts = std::size(kCommonFonts);
+    pan_uni_fonts = base::span(kCommonFonts);
   }
-  // Font returned from getFallbackFamily may not cover |character|
+  // Font returned from GetFallbackFamily() may not cover `codepoint`
   // because it's based on script to font mapping. This problem is
   // critical enough for non-Latin scripts (especially Han) to
-  // warrant an additional (real coverage) check with fontCotainsCharacter.
-  for (int i = 0; i < num_fonts; ++i) {
-    FontFaceCreationParams create_by_family =
-        FontFaceCreationParams(AtomicString(pan_uni_fonts[i]));
+  // warrant an additional (real coverage) check with FontContainsCharacter().
+  for (const char* font : pan_uni_fonts) {
+    FontFaceCreationParams create_by_family{AtomicString(font)};
     const FontPlatformData* data =
         GetFontPlatformData(font_description, create_by_family);
     if (data && data->FontContainsCharacter(codepoint))
@@ -261,7 +234,7 @@ const SimpleFontData* FontCache::GetDWriteFallbackFamily(
 
   Bcp47Vector locales;
   locales.push_back(fallback_locale->LocaleForSkFontMgr());
-  sk_sp<SkTypeface> typeface(font_manager_->matchFamilyStyleCharacter(
+  sk_sp<SkTypeface> typeface(skia::DefaultFontMgr()->matchFamilyStyleCharacter(
       family_name.c_str(), font_description.SkiaFontStyle(), locales.data(),
       locales.size(), codepoint));
 
@@ -303,8 +276,7 @@ const SimpleFontData* FontCache::PlatformFallbackFontForCharacter(
   }
 
   FontFallbackPriority fallback_priority_with_emoji_text = fallback_priority;
-  if (RuntimeEnabledFeatures::SystemFallbackEmojiVSSupportEnabled() &&
-      fallback_priority == FontFallbackPriority::kText &&
+  if (fallback_priority == FontFallbackPriority::kText &&
       Character::IsEmoji(character)) {
     fallback_priority_with_emoji_text = FontFallbackPriority::kEmojiText;
   }
@@ -361,31 +333,32 @@ static bool TypefacesHasWeightSuffix(const AtomicString& family,
                                      AtomicString& adjusted_name,
                                      FontSelectionValue& variant_weight) {
   struct FamilyWeightSuffix {
-    const UChar* suffix;
+    const char* suffix;
     wtf_size_t length;
     FontSelectionValue weight;
   };
   // Mapping from suffix to weight from the DirectWrite documentation.
   // http://msdn.microsoft.com/en-us/library/windows/desktop/dd368082.aspx
+  //
+  // The list is intentionally incomplete, because it is for the backward
+  // compatibility with GDI. See issues for crrev.com/c/542603004.
   const static FamilyWeightSuffix kVariantForSuffix[] = {
-      {u" thin", 5, FontSelectionValue(100)},
-      {u" extralight", 11, FontSelectionValue(200)},
-      {u" ultralight", 11, FontSelectionValue(200)},
-      {u" light", 6, FontSelectionValue(300)},
-      {u" regular", 8, FontSelectionValue(400)},
-      {u" medium", 7, FontSelectionValue(500)},
-      {u" demibold", 9, FontSelectionValue(600)},
-      {u" semibold", 9, FontSelectionValue(600)},
-      {u" extrabold", 10, FontSelectionValue(800)},
-      {u" ultrabold", 10, FontSelectionValue(800)},
-      {u" black", 6, FontSelectionValue(900)},
-      {u" heavy", 6, FontSelectionValue(900)}};
-  size_t num_variants = std::size(kVariantForSuffix);
-  for (size_t i = 0; i < num_variants; i++) {
-    const FamilyWeightSuffix& entry = kVariantForSuffix[i];
-    if (family.DeprecatedEndsWithIgnoringCase(entry.suffix)) {
-      String family_name = family.GetString();
-      family_name.Truncate(family.length() - entry.length);
+      {" thin", 5, FontSelectionValue(100)},
+      {" extralight", 11, FontSelectionValue(200)},
+      {" ultralight", 11, FontSelectionValue(200)},
+      {" light", 6, FontSelectionValue(300)},
+      {" regular", 8, FontSelectionValue(400)},
+      {" medium", 7, FontSelectionValue(500)},
+      {" demibold", 9, FontSelectionValue(600)},
+      {" semibold", 9, FontSelectionValue(600)},
+      {" extrabold", 10, FontSelectionValue(800)},
+      {" ultrabold", 10, FontSelectionValue(800)},
+      {" black", 6, FontSelectionValue(900)},
+      {" heavy", 6, FontSelectionValue(900)}};
+  for (const auto& entry : kVariantForSuffix) {
+    if (family.EndsWithIgnoringAsciiCase(entry.suffix)) {
+      StringView family_name(family);
+      family_name.remove_suffix(entry.length);
       adjusted_name = AtomicString(family_name);
       variant_weight = entry.weight;
       return true;
@@ -399,7 +372,7 @@ static bool TypefacesHasStretchSuffix(const AtomicString& family,
                                       AtomicString& adjusted_name,
                                       FontSelectionValue& variant_stretch) {
   struct FamilyStretchSuffix {
-    const UChar* suffix;
+    const char* suffix;
     wtf_size_t length;
     FontSelectionValue stretch;
   };
@@ -408,21 +381,19 @@ static bool TypefacesHasStretchSuffix(const AtomicString& family,
   // Also includes Narrow as a synonym for Condensed to to support Arial
   // Narrow and other fonts following the same naming scheme.
   const static FamilyStretchSuffix kVariantForSuffix[] = {
-      {u" ultracondensed", 15, kUltraCondensedWidthValue},
-      {u" extracondensed", 15, kExtraCondensedWidthValue},
-      {u" condensed", 10, kCondensedWidthValue},
-      {u" narrow", 7, kCondensedWidthValue},
-      {u" semicondensed", 14, kSemiCondensedWidthValue},
-      {u" semiexpanded", 13, kSemiExpandedWidthValue},
-      {u" expanded", 9, kExpandedWidthValue},
-      {u" extraexpanded", 14, kExtraExpandedWidthValue},
-      {u" ultraexpanded", 14, kUltraExpandedWidthValue}};
-  size_t num_variants = std::size(kVariantForSuffix);
-  for (size_t i = 0; i < num_variants; i++) {
-    const FamilyStretchSuffix& entry = kVariantForSuffix[i];
-    if (family.DeprecatedEndsWithIgnoringCase(entry.suffix)) {
-      String family_name = family.GetString();
-      family_name.Truncate(family.length() - entry.length);
+      {" ultracondensed", 15, kUltraCondensedWidthValue},
+      {" extracondensed", 15, kExtraCondensedWidthValue},
+      {" condensed", 10, kCondensedWidthValue},
+      {" narrow", 7, kCondensedWidthValue},
+      {" semicondensed", 14, kSemiCondensedWidthValue},
+      {" semiexpanded", 13, kSemiExpandedWidthValue},
+      {" expanded", 9, kExpandedWidthValue},
+      {" extraexpanded", 14, kExtraExpandedWidthValue},
+      {" ultraexpanded", 14, kUltraExpandedWidthValue}};
+  for (const auto& entry : kVariantForSuffix) {
+    if (family.EndsWithIgnoringAsciiCase(entry.suffix)) {
+      StringView family_name(family);
+      family_name.remove_suffix(entry.length);
       adjusted_name = AtomicString(family_name);
       variant_stretch = entry.stretch;
       return true;
@@ -444,8 +415,7 @@ const FontPlatformData* FontCache::CreateFontPlatformData(
 
   std::string name;
 
-  if (alternate_font_name == AlternateFontName::kLocalUniqueFace &&
-      RuntimeEnabledFeatures::FontSrcLocalMatchingEnabled()) {
+  if (alternate_font_name == AlternateFontName::kLocalUniqueFace) {
     typeface = CreateTypefaceFromUniqueName(creation_params);
 
     // We do not need to try any heuristic around the font name, as below, for

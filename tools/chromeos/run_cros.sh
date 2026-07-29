@@ -52,7 +52,18 @@ declare -A DISPLAY_RES=(
 # Use WXGA as default panel.
 DISPLAY_CONFIG=${DISPLAY_RES[wxga]}
 
-FEATURES=
+# GLIC specific feature flags.
+GLIC_FEATURES=Glic,TabstripComboButton,GlicUserStatusCheck,\
+ContextualCueing,GlicKeyboardShortcutNewBadge,GlicRollout,\
+GlicZeroStateSuggestions,FeatureManagementGlic,GlicMultiInstance,\
+GlicDefaultTabContextSetting,GlicUnifiedFreScreen,GlicDaisyChainNewTabs,\
+GlicLiveModeOnlyGlow
+
+# Webium feature flags.
+WEBIUM_FEATURES=Webium,AttachUnownedInnerWebContents,\
+ExtensionsMenuAccessControl
+
+FEATURES=VerticalTabs,FeatureManagementRoundedWindows,${GLIC_FEATURES}
 
 export XDG_RUNTIME_DIR=${USER_TMP_DIR}/xdg1
 
@@ -165,6 +176,7 @@ command
                          'show-xinput-device-id'.
   --user-data-dir        specifies the user data dir
   --wayland-debug        Enable WAYLAND_DEBUG=1
+  --webium               Enable webium.
   --<chrome commandline flags>
                          Pass extra command line flags to ash-chrome.
                          The script will reject if the string does not exist in
@@ -199,9 +211,12 @@ do
     --wayland-debug)
       export WAYLAND_DEBUG=1
       ;;
+    --webium)
+      FEATURES=${FEATURES},${WEBIUM_FEATURES}
+      ;;
     --touch-device-id=*)
       id=${1:18}
-      TOUCH_DEVICE_OPTION="--touch-devices=${id} --force-show-cursor"
+      TOUCH_DEVICE_OPTION="--touch-devices=0,${id} --force-show-cursor"
       ;;
     --guest)
       GUEST_MODE=true

@@ -120,12 +120,12 @@ export class FingerprintSetup extends FingerprintSetupBase {
     };
   }
 
-  private percentComplete: number;
-  private complete: boolean;
-  private canAddFinger: boolean;
-  private scanResult: FingerprintResultType;
-  private isChildAccount: boolean;
-  private isDynamicColor: boolean;
+  declare private percentComplete: number;
+  declare private complete: boolean;
+  declare private canAddFinger: boolean;
+  declare private scanResult: FingerprintResultType;
+  declare private isChildAccount: boolean;
+  declare private isDynamicColor: boolean;
 
   constructor() {
     super();
@@ -174,9 +174,6 @@ export class FingerprintSetup extends FingerprintSetupBase {
    * @param isComplete Whether fingerprint enrollment is complete.
    * @param percentComplete Percentage of completion of the enrollment.
    */
-  /**
-   * TODO(b/321675493) Revamp progress update to validate isComplete
-  */
   onEnrollScanDone(
       scanResult: FingerprintResultType, _isComplete: boolean,
       percentComplete: number): void {

@@ -11,7 +11,9 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_custom_element_constructor.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_custom_element_constructor_hash.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/dom/node_rare_data_field.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_definition.h"
+#include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
@@ -32,13 +34,15 @@ class LocalDOMWindow;
 class ScriptState;
 class ScriptValue;
 
-class CORE_EXPORT CustomElementRegistry final : public ScriptWrappable {
+class CORE_EXPORT CustomElementRegistry final : public ScriptWrappable,
+                                                public NodeRareDataField {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
   static CustomElementRegistry* Create(ScriptState*);
+  static CustomElementRegistry* DefaultRegistry(Document& document);
 
-  explicit CustomElementRegistry(const LocalDOMWindow*);
+  CustomElementRegistry(const LocalDOMWindow*, int32_t world_id);
   CustomElementRegistry(const CustomElementRegistry&) = delete;
   CustomElementRegistry& operator=(const CustomElementRegistry&) = delete;
   ~CustomElementRegistry() override = default;
@@ -75,9 +79,14 @@ class CORE_EXPORT CustomElementRegistry final : public ScriptWrappable {
 
   const LocalDOMWindow* GetOwnerWindow() const { return owner_.Get(); }
 
-  bool IsGlobalRegistry() const;
+  bool IsGlobalRegistry() const { return is_global_registry_; }
+  void MarkAsGlobalRegistry() { is_global_registry_ = true; }
+
+  int32_t GetWorldId() const { return world_id_; }
 
   void AssociatedWith(Document& document);
+
+  void initialize(Node* root, ExceptionState&);
 
   void Trace(Visitor*) const override;
 
@@ -92,6 +101,8 @@ class CORE_EXPORT CustomElementRegistry final : public ScriptWrappable {
                          HeapVector<Member<Element>>*);
 
   bool element_definition_is_running_;
+  bool is_global_registry_ = false;
+  int32_t world_id_ = DOMWrapperWorld::kInvalidWorldId;
 
   using ConstructorMap = HeapHashMap<Member<V8CustomElementConstructor>,
                                      Member<CustomElementDefinition>,
@@ -103,9 +114,9 @@ class CORE_EXPORT CustomElementRegistry final : public ScriptWrappable {
 
   Member<const LocalDOMWindow> owner_;
 
-  using UpgradeCandidateSet = HeapHashSet<WeakMember<Element>>;
+  using UpgradeCandidateSet = GCedHeapHashSet<WeakMember<Element>>;
   using UpgradeCandidateMap =
-      HeapHashMap<AtomicString, Member<UpgradeCandidateSet>>;
+      GCedHeapHashMap<AtomicString, Member<UpgradeCandidateSet>>;
 
   // Candidate elements that can be upgraded with this registry later.
   // To make implementation simpler, we maintain a superset here, and remove
@@ -119,7 +130,7 @@ class CORE_EXPORT CustomElementRegistry final : public ScriptWrappable {
 
   // Weak ordered set of all documents where this registry is used, in the order
   // of association between this registry and any tree scope in the document.
-  using AssociatedDocumentSet = HeapLinkedHashSet<WeakMember<Document>>;
+  using AssociatedDocumentSet = GCedHeapLinkedHashSet<WeakMember<Document>>;
   Member<AssociatedDocumentSet> associated_documents_;
 
   FRIEND_TEST_ALL_PREFIXES(

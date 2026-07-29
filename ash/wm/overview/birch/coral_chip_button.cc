@@ -4,6 +4,8 @@
 
 #include "ash/wm/overview/birch/coral_chip_button.h"
 
+#include <utility>
+
 #include "ash/birch/birch_coral_item.h"
 #include "ash/birch/birch_coral_provider.h"
 #include "ash/shell.h"
@@ -17,12 +19,15 @@
 #include "ash/wm/overview/birch/resources/grit/coral_resources.h"
 #include "ash/wm/overview/birch/tab_app_selection_host.h"
 #include "ash/wm/overview/overview_session.h"
+#include "base/strings/utf_string_conversions.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/controls/animated_image_view.h"
 #include "ui/views/controls/label.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 
@@ -109,7 +114,9 @@ void CoralChipButton::Init(BirchItem* item) {
       &CoralChipButton::OnCoralAddonClicked, weak_factory_.GetWeakPtr());
 
   auto button = birch_bar_util::CreateCoralAddonButton(
-      std::move(callback), vector_icons::kCaretUpIcon);
+      std::move(callback), ::features::IsRoundedIconsEnabled()
+                               ? vector_icons::kKeyboardArrowUpIcon
+                               : vector_icons::kCaretUpOldIcon);
   button->SetTooltipText(l10n_util::GetStringFUTF16(
       IDS_ASH_BIRCH_CORAL_ADDON_SELECTOR_HIDDEN, item_->title()));
   chevron_button_ = button.get();
@@ -119,11 +126,11 @@ void CoralChipButton::Init(BirchItem* item) {
 
 void CoralChipButton::ExecuteCommand(int command_id, int event_flags) {
   switch (command_id) {
-    case base::to_underlying(
+    case std::to_underlying(
         BirchChipContextMenuModel::CommandId::kCoralNewDesk):
       static_cast<BirchCoralItem*>(item_)->LaunchGroup(this);
       break;
-    case base::to_underlying(
+    case std::to_underlying(
         BirchChipContextMenuModel::CommandId::kCoralSaveForLater): {
       // Show a toast if we already have the max amount of allowed coral saved
       // groups.
@@ -146,6 +153,7 @@ void CoralChipButton::ExecuteCommand(int command_id, int event_flags) {
 
       auto* coral_provider = BirchCoralProvider::Get();
       Shell::Get()->coral_controller()->CreateSavedDeskFromGroup(
+          base::UTF16ToUTF8(title()->GetText()),
           coral_provider->ExtractGroupById(
               static_cast<BirchCoralItem*>(item_)->group_id()),
           root_window);

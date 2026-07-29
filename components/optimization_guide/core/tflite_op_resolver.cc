@@ -70,7 +70,7 @@ TFLiteOpResolver::TFLiteOpResolver() {
   AddBuiltin(tflite::BuiltinOperator_EMBEDDING_LOOKUP,
              tflite::ops::builtin::Register_EMBEDDING_LOOKUP(),
              /* min_version = */ 1,
-             /* max_version = */ 3);
+             /* max_version = */ 4);
   AddBuiltin(tflite::BuiltinOperator_EMBEDDING_LOOKUP_SPARSE,
              tflite::ops::builtin::Register_EMBEDDING_LOOKUP_SPARSE());
   AddBuiltin(tflite::BuiltinOperator_FULLY_CONNECTED,
@@ -147,7 +147,7 @@ TFLiteOpResolver::TFLiteOpResolver() {
   AddBuiltin(tflite::BuiltinOperator_GATHER,
              tflite::ops::builtin::Register_GATHER(),
              /* min_version = */ 1,
-             /* max_version = */ 3);
+             /* max_version = */ 4);
   AddBuiltin(tflite::BuiltinOperator_TRANSPOSE,
              tflite::ops::builtin::Register_TRANSPOSE(),
              /* min_version = */ 1,
@@ -385,14 +385,26 @@ TFLiteOpResolver::TFLiteOpResolver() {
              tflite::ops::builtin::Register_RANDOM_STANDARD_NORMAL());
   AddBuiltin(tflite::BuiltinOperator_RANDOM_UNIFORM,
              tflite::ops::builtin::Register_RANDOM_UNIFORM());
+  AddBuiltin(tflite::BuiltinOperator_BROADCAST_TO,
+             tflite::ops::builtin::Register_BROADCAST_TO(),
+             /* min_version = */ 1,
+             /* max_version = */ 2);
+  AddBuiltin(tflite::BuiltinOperator_CUMSUM,
+             tflite::ops::builtin::Register_CUMSUM());
+  AddBuiltin(tflite::BuiltinOperator_CALL_ONCE,
+             tflite::ops::builtin::Register_CALL_ONCE());
+  AddBuiltin(tflite::BuiltinOperator_VAR_HANDLE,
+             tflite::ops::builtin::Register_VAR_HANDLE());
+  AddBuiltin(tflite::BuiltinOperator_READ_VARIABLE,
+             tflite::ops::builtin::Register_READ_VARIABLE());
+  AddBuiltin(tflite::BuiltinOperator_ASSIGN_VARIABLE,
+             tflite::ops::builtin::Register_ASSIGN_VARIABLE());
 
 #if BUILDFLAG(BUILD_TFLITE_WITH_XNNPACK)
-  if (features::TFLiteXNNPACKDelegateEnabled()) {
-    delegate_creators_.push_back([](TfLiteContext* context) {
-      return tflite::MaybeCreateXNNPACKDelegate(
-          context, tflite::XNNPackQS8Options::default_value);
-    });
-  }
+  delegate_creators_.push_back([](TfLiteContext* context) {
+    return tflite::MaybeCreateXNNPACKDelegate(
+        context, tflite::XNNPackQS8Options::default_value);
+  });
 #endif
 }
 

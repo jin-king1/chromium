@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/check_deref.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
@@ -16,17 +17,18 @@
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/ash/app_mode/web_app/web_kiosk_app_manager.h"
+#include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
+#include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_remote_command_utils.h"
 #include "chrome/browser/ash/policy/remote_commands/fake_cros_network_config.h"
 #include "chrome/browser/ash/policy/remote_commands/user_session_type_test_util.h"
 #include "chrome/browser/ash/settings/device_settings_test_helper.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "remoting/host/chromeos/features.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/user_activity/user_activity_detector.h"
 
@@ -67,8 +69,8 @@ test::NetworkBuilder CreateNetwork(NetworkType type = NetworkType::kWiFi) {
   return test::NetworkBuilder(type);
 }
 
-base::Value::List ToList(std::vector<CrdSessionType> input) {
-  base::Value::List result;
+base::ListValue ToList(std::vector<CrdSessionType> input) {
+  base::ListValue result;
   for (CrdSessionType type : input) {
     result.Append(static_cast<int>(type));
   }
@@ -77,7 +79,7 @@ base::Value::List ToList(std::vector<CrdSessionType> input) {
 
 MATCHER_P(ListContains, expected_type, "") {
   base::Value expected_value(expected_type);
-  base::Value::List* list = arg;
+  base::ListValue* list = arg;
 
   if (!list) {
     *result_listener << "List is null";
@@ -113,18 +115,25 @@ class DeviceCommandFetchCrdAvailabilityInfoJobTest
     ASSERT_TRUE(profile_manager_.SetUp());
 
     user_activity_detector_ = ui::UserActivityDetector::Get();
-    web_kiosk_app_manager_ = std::make_unique<ash::WebKioskAppManager>();
-    kiosk_chrome_app_manager_ = std::make_unique<ash::KioskChromeAppManager>();
+    kiosk_web_app_manager_ = std::make_unique<ash::KioskWebAppManager>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        &kiosk_cryptohome_remover_);
+    kiosk_chrome_app_manager_ = std::make_unique<ash::KioskChromeAppManager>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
+        &kiosk_cryptohome_remover_);
   }
 
   void TearDown() override {
     kiosk_chrome_app_manager_.reset();
-    web_kiosk_app_manager_.reset();
+    kiosk_web_app_manager_.reset();
     DeviceSettingsTestBase::TearDown();
   }
 
   Result CreateAndRunJob() {
-    DeviceCommandFetchCrdAvailabilityInfoJob job;
+    DeviceCommandFetchCrdAvailabilityInfoJob job(
+        TestingBrowserProcess::GetGlobal()->local_state());
 
     bool initialized = job.Init(base::TimeTicks::Now(), GenerateCommandProto(),
                                 enterprise_management::SignedData());
@@ -173,18 +182,22 @@ class DeviceCommandFetchCrdAvailabilityInfoJobTest
   }
 
   void EnablePref(const char* pref_name) {
-    profile_manager_.local_state()->Get()->SetBoolean(pref_name, true);
+    TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(pref_name,
+                                                                  true);
   }
 
   void DisablePref(const char* pref_name) {
-    profile_manager_.local_state()->Get()->SetBoolean(pref_name, false);
+    TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(pref_name,
+                                                                  false);
   }
 
  private:
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       user_manager_{std::make_unique<ash::FakeChromeUserManager>()};
 
-  std::unique_ptr<ash::WebKioskAppManager> web_kiosk_app_manager_;
+  ash::KioskCryptohomeRemover kiosk_cryptohome_remover_{
+      TestingBrowserProcess::GetGlobal()->local_state()};
+  std::unique_ptr<ash::KioskWebAppManager> kiosk_web_app_manager_;
   std::unique_ptr<ash::KioskChromeAppManager> kiosk_chrome_app_manager_;
 
   // Automatically installed as a singleton upon creation.
@@ -223,9 +236,6 @@ class DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType
   CrdSessionAvailability GetExpectedRemoteSupportAvailabilityFor(
       TestSessionType session_type) {
     switch (session_type) {
-      // TODO(b:393521569) Update session availability on default enabled state
-      // for CRD unattended feature flag.
-      case TestSessionType::kNoSession:
       case TestSessionType::kGuestSession:
       case TestSessionType::kUnaffiliatedUserSession:
         return CrdSessionAvailability::
@@ -237,13 +247,15 @@ class DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType
       case TestSessionType::kAutoLaunchedKioskSession:
       case TestSessionType::kManagedGuestSession:
       case TestSessionType::kAffiliatedUserSession:
+      case TestSessionType::kNoSession:
         return CrdSessionAvailability::AVAILABLE;
     }
   }
 };
 
 TEST_F(DeviceCommandFetchCrdAvailabilityInfoJobTest, GetType) {
-  DeviceCommandFetchCrdAvailabilityInfoJob job;
+  DeviceCommandFetchCrdAvailabilityInfoJob job(
+      TestingBrowserProcess::GetGlobal()->local_state());
   EXPECT_EQ(job.GetType(), RemoteCommand::FETCH_CRD_AVAILABILITY_INFO);
 }
 
@@ -299,7 +311,8 @@ TEST_F(DeviceCommandFetchCrdAvailabilityInfoJobTest,
        ShouldRespectDisabledByPolicy) {
   StartSessionOfType(kAnySessionType);
 
-  DisablePref(prefs::kRemoteAccessHostAllowEnterpriseRemoteSupportConnections);
+  DisablePref(
+      ash::prefs::kRemoteAccessHostAllowEnterpriseRemoteSupportConnections);
 
   Result result = CreateAndRunJob();
 
@@ -310,15 +323,15 @@ TEST_F(DeviceCommandFetchCrdAvailabilityInfoJobTest,
 }
 
 TEST_F(DeviceCommandFetchCrdAvailabilityInfoJobTest,
-       AllowRemoteSupportSessionAtLoginScreenIfEnabledByFeatureFlag) {
+       DontAllowRemoteSupportSessionAtLoginScreenIfDisabledByFeatureFlag) {
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kEnableCrdSharedSessionToUnattendedDevice);
+  feature_list.InitAndDisableFeature(kEnableCrdSharedSessionToUnattendedDevice);
 
   StartSessionOfType(TestSessionType::kNoSession);
   Result result = CreateAndRunJob();
 
   EXPECT_EQ(ParseJsonDict(result.payload).FindInt("remoteSupportAvailability"),
-            CrdSessionAvailability::AVAILABLE);
+            CrdSessionAvailability::UNAVAILABLE_UNSUPPORTED_USER_SESSION_TYPE);
 }
 
 TEST_P(DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
@@ -331,26 +344,7 @@ TEST_P(DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
 
   Result result = CreateAndRunJob();
 
-  UserSessionType expected = [&]() {
-    switch (session_type) {
-      case TestSessionType::kManuallyLaunchedWebKioskSession:
-      case TestSessionType::kManuallyLaunchedKioskSession:
-        return UserSessionType::MANUALLY_LAUNCHED_KIOSK_SESSION;
-      case TestSessionType::kAutoLaunchedWebKioskSession:
-      case TestSessionType::kAutoLaunchedKioskSession:
-        return UserSessionType::AUTO_LAUNCHED_KIOSK_SESSION;
-      case TestSessionType::kManagedGuestSession:
-        return UserSessionType::MANAGED_GUEST_SESSION;
-      case TestSessionType::kGuestSession:
-        return UserSessionType::GUEST_SESSION;
-      case TestSessionType::kAffiliatedUserSession:
-        return UserSessionType::AFFILIATED_USER_SESSION;
-      case TestSessionType::kUnaffiliatedUserSession:
-        return UserSessionType::UNAFFILIATED_USER_SESSION;
-      case TestSessionType::kNoSession:
-        return UserSessionType::NO_SESSION;
-    }
-  }();
+  UserSessionType expected = test::SessionTypeToUserSessionType(session_type);
 
   EXPECT_THAT(ParseJsonDict(result.payload),
               DictionaryHasValue("userSessionType",
@@ -368,10 +362,13 @@ TEST_P(DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
   AddActiveManagedNetwork();
   Result result = CreateAndRunJob();
 
-  const base::Value::List expected = [&]() {
+  const base::ListValue expected = [&]() {
     switch (session_type) {
       case TestSessionType::kNoSession:
-        return ToList({CrdSessionType::REMOTE_ACCESS_SESSION});
+        return ToList({
+            CrdSessionType::REMOTE_SUPPORT_SESSION,
+            CrdSessionType::REMOTE_ACCESS_SESSION,
+        });
 
       case TestSessionType::kManuallyLaunchedWebKioskSession:
       case TestSessionType::kManuallyLaunchedKioskSession:
@@ -387,9 +384,9 @@ TEST_P(DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
     }
   }();
 
-  const base::Value::List actual = ParseJsonDict(result.payload)
-                                       .EnsureList("supportedCrdSessionTypes")
-                                       ->Clone();
+  const base::ListValue actual = ParseJsonDict(result.payload)
+                                     .EnsureList("supportedCrdSessionTypes")
+                                     ->Clone();
 
   EXPECT_EQ(actual, expected);
 }
@@ -428,12 +425,12 @@ TEST_P(DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
 
   const CrdSessionAvailability expected = [&]() {
     switch (session_type) {
-      case TestSessionType::kNoSession:
       case TestSessionType::kGuestSession:
       case TestSessionType::kUnaffiliatedUserSession:
         return CrdSessionAvailability::
             UNAVAILABLE_UNSUPPORTED_USER_SESSION_TYPE;
 
+      case TestSessionType::kNoSession:
       case TestSessionType::kManuallyLaunchedWebKioskSession:
       case TestSessionType::kManuallyLaunchedKioskSession:
       case TestSessionType::kAutoLaunchedWebKioskSession:
@@ -451,7 +448,7 @@ TEST_P(DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
 TEST_P(
     DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
     DeviceRemoteAccessPolicyShouldNotEffectRemoteSupportAvailabilityIfDisabled) {
-  DisablePref(prefs::kDeviceAllowEnterpriseRemoteAccessConnections);
+  DisablePref(ash::prefs::kDeviceAllowEnterpriseRemoteAccessConnections);
   TestSessionType session_type = GetParam();
   SCOPED_TRACE(base::StringPrintf("Testing session type %s",
                                   SessionTypeToString(session_type)));
@@ -467,7 +464,7 @@ TEST_P(
 TEST_P(
     DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
     DeviceRemoteAccessPolicyShouldNotEffectRemoteSupportAvailabilityIfEnabled) {
-  EnablePref(prefs::kDeviceAllowEnterpriseRemoteAccessConnections);
+  EnablePref(ash::prefs::kDeviceAllowEnterpriseRemoteAccessConnections);
   TestSessionType session_type = GetParam();
   SCOPED_TRACE(base::StringPrintf("Testing session type %s",
                                   SessionTypeToString(session_type)));
@@ -482,7 +479,7 @@ TEST_P(
 
 TEST_P(DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
        ShouldRespectDisabledByDeviceRemoteAccessPolicy) {
-  DisablePref(prefs::kDeviceAllowEnterpriseRemoteAccessConnections);
+  DisablePref(ash::prefs::kDeviceAllowEnterpriseRemoteAccessConnections);
   TestSessionType session_type = GetParam();
   StartSessionOfType(session_type);
 
@@ -541,7 +538,7 @@ TEST_P(DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
 
 TEST_P(DeviceCommandFetchCrdAvailabilityInfoJobTestParameterizedOverSessionType,
        ShouldReturnRemoteAccessAvailabilityWhenPolicyIsEnabled) {
-  EnablePref(prefs::kDeviceAllowEnterpriseRemoteAccessConnections);
+  EnablePref(ash::prefs::kDeviceAllowEnterpriseRemoteAccessConnections);
   TestSessionType session_type = GetParam();
   SCOPED_TRACE(base::StringPrintf("Testing session type %s",
                                   SessionTypeToString(session_type)));

@@ -16,6 +16,7 @@ import org.mockito.Mockito;
 import org.robolectric.Robolectric;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ui.BottomContainer;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -28,7 +29,7 @@ public class BadFlagsSnackbarManagerTest {
     @Before
     public void setup() {
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
-        mActivity.setTheme(org.chromium.chrome.R.style.Theme_BrowserUI_DayNight);
+        mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
     }
 
     @Test
@@ -36,7 +37,7 @@ public class BadFlagsSnackbarManagerTest {
         String errorString = "Unsupported flag.";
         ViewGroup viewGroup = new BottomContainer(mActivity, null);
         SnackbarManager snackbarManager =
-                Mockito.spy(new SnackbarManager(mActivity, viewGroup, null));
+                Mockito.spy(new SnackbarManager(mActivity, viewGroup, null, null, null));
         BadFlagsSnackbarManager.createSnackbar(errorString, snackbarManager);
         Snackbar snackbar = snackbarManager.getCurrentSnackbarForTesting();
         Mockito.verify(snackbarManager).showSnackbar(ArgumentMatchers.any());
@@ -52,6 +53,7 @@ public class BadFlagsSnackbarManagerTest {
                 SnackbarManager.DEFAULT_SNACKBAR_DURATION_LONG_MS,
                 snackbar.getDuration());
         snackbarManager.dismissSnackbars(null);
+        snackbarManager.destroy();
     }
 
     @Test

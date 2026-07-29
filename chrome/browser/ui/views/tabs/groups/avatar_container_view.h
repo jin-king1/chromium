@@ -5,8 +5,12 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_GROUPS_AVATAR_CONTAINER_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_GROUPS_AVATAR_CONTAINER_VIEW_H_
 
+#include <array>
+
+#include "base/memory/raw_ptr.h"
 #include "components/data_sharing/public/group_data.h"
 #include "components/saved_tab_groups/public/types.h"
+#include "components/sync/base/collaboration_id.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/view.h"
@@ -22,9 +26,8 @@ class DataSharingService;
 class ManageSharingAvatarContainer : public views::View {
   METADATA_HEADER(ManageSharingAvatarContainer, views::View)
  public:
-  ManageSharingAvatarContainer(
-      Profile* profile,
-      const tab_groups::CollaborationId& collaboration_id);
+  ManageSharingAvatarContainer(Profile* profile,
+                               const syncer::CollaborationId& collaboration_id);
   ~ManageSharingAvatarContainer() override;
 
   // destroys and rebuilds all member images, used for retheming. does not
@@ -34,6 +37,10 @@ class ManageSharingAvatarContainer : public views::View {
   // views::View overrides.
   void AddedToWidget() override;
   void OnThemeChanged() override;
+
+ protected:
+  void OnDeviceScaleFactorChanged(float old_device_scale_factor,
+                                  float new_device_scale_factor) override;
 
  private:
   // Callback when data sharing service fetches the avatar.
@@ -49,7 +56,7 @@ class ManageSharingAvatarContainer : public views::View {
   raw_ptr<Profile> const profile_;
 
   // The saved GUID for the group (used to get the collaboration).
-  const tab_groups::CollaborationId collaboration_id_;
+  const syncer::CollaborationId collaboration_id_;
 
   // the members list that were queried from the data_sharing_service.
   std::vector<data_sharing::GroupMember> members_for_display_;

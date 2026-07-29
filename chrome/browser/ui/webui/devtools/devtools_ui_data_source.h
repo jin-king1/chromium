@@ -7,6 +7,8 @@
 
 #include <list>
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "content/public/browser/url_data_source.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -52,12 +54,13 @@ class DevToolsDataSource : public content::URLDataSource {
 
   // content::URLDataSource overrides.
   std::string GetMimeType(const GURL& url) override;
-  bool ShouldAddContentSecurityPolicy() override;
+  std::string GetContentSecurityPolicy(
+      network::mojom::CSPDirectiveName directive) override;
   bool ShouldDenyXFrameOptions() override;
   bool ShouldServeMimeTypeAsContentTypeHeader() override;
 
   void OnLoadComplete(std::list<PendingRequest>::iterator request_iter,
-                      std::unique_ptr<std::string> response_body);
+                      std::optional<std::string> response_body);
 
   // Serves bundled DevTools frontend from ResourceBundle.
   void StartBundledDataRequest(const std::string& path,

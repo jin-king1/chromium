@@ -17,22 +17,23 @@
 #include "ash/test/ash_test_base.h"
 #include "base/auto_reset.h"
 #include "base/command_line.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/unguessable_token.h"
-#include "chrome/browser/ash/magic_boost/magic_boost_state_ash.h"
+#include "chrome/browser/ash/magic_boost/magic_boost_state.h"
 #include "chrome/browser/ash/mahi/mahi_cache_manager.h"
 #include "chrome/browser/ash/mahi/web_contents/test_support/fake_mahi_web_contents_manager.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "chromeos/components/mahi/public/cpp/mahi_media_app_content_manager.h"
+#include "chromeos/components/mahi/public/cpp/mahi_types.h"
 #include "chromeos/components/mahi/public/cpp/mahi_web_contents_manager.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/chromeos_switches.h"
-#include "chromeos/crosapi/mojom/mahi.mojom-forward.h"
-#include "chromeos/crosapi/mojom/mahi.mojom.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "content/public/test/browser_task_environment.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
@@ -40,7 +41,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/image/image_skia.h"
-#include "ui/lottie/resource.h"
 #include "ui/views/widget/widget.h"
 
 namespace {
@@ -71,7 +71,7 @@ class FakeMahiProvider : public manta::MahiProvider {
     latest_summary_input_ = input;
     latest_title_ = title;
     latest_url_ = url;
-    std::move(callback).Run(base::Value::Dict().Set("outputData", kFakeSummary),
+    std::move(callback).Run(base::DictValue().Set("outputData", kFakeSummary),
                             {manta::MantaStatusCode::kOk, "Status string ok"});
   }
 
@@ -82,7 +82,7 @@ class FakeMahiProvider : public manta::MahiProvider {
                  manta::MantaGenericCallback callback) override {
     latest_elucidation_input_ = input;
     std::move(callback).Run(
-        base::Value::Dict().Set("outputData", kFakeElucidation),
+        base::DictValue().Set("outputData", kFakeElucidation),
         {manta::MantaStatusCode::kOk, "Status string ok"});
   }
 
@@ -121,14 +121,7 @@ class MahiManagerImplTest : public NoSessionAshTestBase {
  public:
   MahiManagerImplTest()
       : NoSessionAshTestBase(
-            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
-    // Sets the default functions for the test to create image with the lottie
-    // resource id. Otherwise there's no `g_parse_lottie_as_still_image_` set in
-    // the `ResourceBundle`.
-    ui::ResourceBundle::SetLottieParsingFunctions(
-        &lottie::ParseLottieAsStillImage,
-        &lottie::ParseLottieAsThemedStillImage);
-  }
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
 
   MahiManagerImplTest(const MahiManagerImplTest&) = delete;
   MahiManagerImplTest& operator=(const MahiManagerImplTest&) = delete;
@@ -138,14 +131,14 @@ class MahiManagerImplTest : public NoSessionAshTestBase {
   // NoSessionAshTestBase::
   void SetUp() override {
     feature_list_.InitWithFeatures(
-        /*enabled_features=*/{chromeos::features::kMahi,
-                              chromeos::features::kFeatureManagementMahi},
+        /*enabled_features=*/{chromeos::features::kFeatureManagementMahi},
         /*disabled_features=*/{});
     NoSessionAshTestBase::SetUp();
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         chromeos::switches::kMahiRestrictionsOverride);
 
-    magic_boost_state_ = std::make_unique<MagicBoostStateAsh>();
+    magic_boost_state_ = std::make_unique<MagicBoostState>(
+        base::BindRepeating([]() { return static_cast<Profile*>(nullptr); }));
     mahi_manager_impl_ = std::make_unique<MahiManagerImpl>();
     mahi_manager_impl_->mahi_provider_ = CreateMahiProvider();
 
@@ -175,15 +168,15 @@ class MahiManagerImplTest : public NoSessionAshTestBase {
 
   bool IsEnabled() const { return mahi_manager_impl_->IsEnabled(); }
 
-  crosapi::mojom::MahiPageInfoPtr CreatePageInfo(const std::string& url,
-                                                 const std::u16string& title,
-                                                 bool is_incognito = false) {
-    return crosapi::mojom::MahiPageInfo::New(
-        /*client_id=*/base::UnguessableToken(),
-        /*page_id=*/base::UnguessableToken(), /*url=*/GURL(url),
-        /*title=*/title,
-        /*favicon_image=*/gfx::ImageSkia(), /*is_distillable=*/true,
-        /*is_incognito=*/is_incognito);
+  chromeos::MahiPageInfo CreatePageInfo(const std::string& url,
+                                        const std::u16string& title,
+                                        bool is_incognito = false) {
+    chromeos::MahiPageInfo page_info;
+    page_info.url = GURL(url);
+    page_info.title = title;
+    page_info.is_distillable = true;
+    page_info.is_incognito = is_incognito;
+    return page_info;
   }
 
   MahiCacheManager* GetCacheManager() {
@@ -227,7 +220,7 @@ class MahiManagerImplTest : public NoSessionAshTestBase {
             &test_url_loader_factory_),
         identity_test_env_.identity_manager());
   }
-  std::unique_ptr<MagicBoostStateAsh> magic_boost_state_;
+  std::unique_ptr<MagicBoostState> magic_boost_state_;
   std::unique_ptr<MahiManagerImpl> mahi_manager_impl_;
   base::test::ScopedFeatureList feature_list_;
 
@@ -297,8 +290,7 @@ TEST_F(MahiManagerImplTest, NoContentCallWhenContentIsInCache) {
 TEST_F(MahiManagerImplTest, SendingTitleOnly) {
   feature_list_.Reset();
   feature_list_.InitWithFeatures(
-      /*enabled_features=*/{chromeos::features::kMahi,
-                            chromeos::features::kFeatureManagementMahi},
+      /*enabled_features=*/{chromeos::features::kFeatureManagementMahi},
       /*disabled_features=*/{chromeos::features::kMahiSendingUrl});
   RequestSummary();
 
@@ -309,10 +301,9 @@ TEST_F(MahiManagerImplTest, SendingTitleOnly) {
 // Url, on the other hand, is controlled by kMahiSendingUrl.
 TEST_F(MahiManagerImplTest, SendingTitleAndUrl) {
   feature_list_.Reset();
-  feature_list_.InitWithFeatures(
-      {chromeos::features::kMahi, chromeos::features::kMahiSendingUrl,
-       chromeos::features::kFeatureManagementMahi},
-      /*disabled_features=*/{});
+  feature_list_.InitWithFeatures({chromeos::features::kMahiSendingUrl,
+                                  chromeos::features::kFeatureManagementMahi},
+                                 /*disabled_features=*/{});
 
   RequestSummary();
 
@@ -472,11 +463,11 @@ TEST_F(MahiManagerImplTest, SetMahiPrefOnLogin) {
     EXPECT_EQ(IsEnabled(), !mahi_enabled);
 
     // Switching back to the previous user will update to correct pref.
-    GetSessionControllerClient()->SwitchActiveUser(user1_account_id);
+    SwitchActiveUser(user1_account_id);
     EXPECT_EQ(IsEnabled(), mahi_enabled);
 
     // Clears all logins and re-logins the default user.
-    GetSessionControllerClient()->Reset();
+    ClearLogin();
     SimulateUserLogin(user1_account_id);
   }
 }
@@ -539,10 +530,14 @@ TEST_F(MahiManagerImplTest, GetElucidationForMediaApp) {
 
   EXPECT_CALL(mock_mahi_media_app_content_manager_, GetFileName(_))
       .WillOnce(Return("test PDF file name"));
+
+  chromeos::MahiPageContent page_content;
+  page_content.client_id = base::UnguessableToken::Create();
+  page_content.page_id = base::UnguessableToken::Create();
+  page_content.page_content = u"test PDF content";
+
   EXPECT_CALL(mock_mahi_media_app_content_manager_, GetContent(_, _))
-      .WillOnce(RunOnceCallback<1>(crosapi::mojom::MahiPageContent::New(
-          base::UnguessableToken::Create(), base::UnguessableToken::Create(),
-          u"test PDF content")));
+      .WillOnce(RunOnceCallback<1>(std::move(page_content)));
 
   mahi_manager_impl_->SetMediaAppPDFFocused();
 

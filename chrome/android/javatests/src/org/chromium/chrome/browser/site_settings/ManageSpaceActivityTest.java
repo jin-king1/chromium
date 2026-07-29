@@ -10,6 +10,7 @@ import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
+import android.app.Activity;
 import android.content.Intent;
 
 import androidx.appcompat.app.AlertDialog;
@@ -20,24 +21,31 @@ import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.ApplicationTestUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.RequiresRestart;
+import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataBridge;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.net.test.EmbeddedTestServer;
 
 import java.util.concurrent.TimeoutException;
@@ -45,9 +53,12 @@ import java.util.concurrent.TimeoutException;
 /** Tests for ManageSpaceActivity. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
+@Batch(Batch.PER_CLASS)
 public class ManageSpaceActivityTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private EmbeddedTestServer mTestServer;
 
@@ -56,6 +67,17 @@ public class ManageSpaceActivityTest {
         mTestServer =
                 EmbeddedTestServer.createAndStartServer(
                         ApplicationProvider.getApplicationContext());
+    }
+
+    @After
+    public void tearDown() {
+        if (ApplicationStatus.isInitialized()) {
+            for (Activity activity : ApplicationStatus.getRunningActivities()) {
+                if (!(activity instanceof ChromeTabbedActivity)) {
+                    ApplicationTestUtils.finishActivity(activity);
+                }
+            }
+        }
     }
 
     private ManageSpaceActivity startManageSpaceActivity() {
@@ -96,8 +118,8 @@ public class ManageSpaceActivityTest {
     @Test
     @SmallTest
     public void testLaunchActivity() {
-        mActivityTestRule.startMainActivityOnBlankPage();
-        startManageSpaceActivity().finish();
+        mActivityTestRule.startOnBlankPage();
+        ApplicationTestUtils.finishActivity(startManageSpaceActivity());
     }
 
     @Test
@@ -105,7 +127,7 @@ public class ManageSpaceActivityTest {
     @Feature({"SiteEngagement"})
     @EnableFeatures(ChromeFeatureList.BROWSING_DATA_MODEL)
     public void testClearUnimportantOnlyWithBDM() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         shouldClearUnimportantDomainDataOnly();
     }
 
@@ -114,7 +136,7 @@ public class ManageSpaceActivityTest {
     @Feature({"SiteEngagement"})
     @DisableFeatures(ChromeFeatureList.BROWSING_DATA_MODEL)
     public void testClearUnimportantOnlyWithoutBDM() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         shouldClearUnimportantDomainDataOnly();
     }
 
@@ -147,7 +169,7 @@ public class ManageSpaceActivityTest {
         ThreadUtils.runOnUiThreadBlocking(
                 getPressClearRunnable(manageSpaceActivity.getUnimportantConfirmDialog()));
         waitForClearButtonEnabled(manageSpaceActivity);
-        manageSpaceActivity.finish();
+        ApplicationTestUtils.finishActivity(manageSpaceActivity);
 
         mActivityTestRule.loadUrl(cookiesUrl);
         Assert.assertEquals(
@@ -157,6 +179,8 @@ public class ManageSpaceActivityTest {
     @Test
     @MediumTest
     @Feature({"SiteEngagement"})
+    @RequiresRestart(
+            "Tests ManageSpaceActivity startup without prior browser process initialization")
     public void testClearUnimporantWithoutChromeStart() {
         ManageSpaceActivity manageSpaceActivity = startManageSpaceActivity();
         // Click 'clear' in the CBD screen.
@@ -167,19 +191,19 @@ public class ManageSpaceActivityTest {
         ThreadUtils.runOnUiThreadBlocking(
                 getPressClearRunnable(manageSpaceActivity.getUnimportantConfirmDialog()));
         waitForClearButtonEnabled(manageSpaceActivity);
-        manageSpaceActivity.finish();
+        ApplicationTestUtils.finishActivity(manageSpaceActivity);
     }
 
     @Test
     @MediumTest
     @Feature({"SiteEngagement"})
     public void testManageSiteStorage() {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         ManageSpaceActivity manageSpaceActivity = startManageSpaceActivity();
         waitForClearButtonEnabled(manageSpaceActivity);
         onView(withId(R.id.manage_site_data_storage)).perform(click());
         Espresso.onView(withText("Data stored")).check(ViewAssertions.matches(isDisplayed()));
-        manageSpaceActivity.finish();
+        ApplicationTestUtils.finishActivity(manageSpaceActivity);
     }
 
     // TODO(dmurph): Test the other buttons. One should go to the site storage list, and the other

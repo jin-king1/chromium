@@ -2,14 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/system/night_light/night_light_controller_impl.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 
@@ -42,7 +38,6 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/display/manager/display_configurator.h"
 #include "ui/display/manager/display_manager.h"
@@ -52,6 +47,7 @@
 #include "ui/gfx/animation/animation_delegate.h"
 #include "ui/gfx/animation/linear_animation.h"
 #include "ui/gfx/geometry/vector3d_f.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/skia_color_space_util.h"
 #include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
@@ -288,8 +284,8 @@ class ColorTemperatureAnimation : public gfx::LinearAnimation,
     start_temperature_ = current_temperature_;
     target_temperature_ = std::clamp(new_target_temperature, 0.0f, 1.0f);
 
-    if (ui::ScopedAnimationDurationScaleMode::duration_multiplier() ==
-        ui::ScopedAnimationDurationScaleMode::ZERO_DURATION) {
+    if (gfx::ScopedAnimationDurationScaleMode::duration_multiplier() ==
+        gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION) {
       // Animations are disabled. Apply the target temperature directly to the
       // compositors.
       current_temperature_ = target_temperature_;
@@ -363,7 +359,8 @@ void NightLightControllerImpl::RegisterProfilePrefs(
                                 kDefaultStartTimeOffsetMinutes);
   registry->RegisterIntegerPref(prefs::kNightLightCustomEndTime,
                                 kDefaultEndTimeOffsetMinutes);
-  registry->RegisterBooleanPref(prefs::kAmbientColorEnabled, true);
+  registry->RegisterBooleanPref(prefs::kAmbientColorEnabled,
+                                !features::IsAmbientEQDefaultOff());
   registry->RegisterBooleanPref(prefs::kAutoNightLightNotificationDismissed,
                                 false);
 }
@@ -390,14 +387,21 @@ float NightLightControllerImpl::RemapAmbientColorTemperature(
   // to avoid extreme color temperatures (e.g: temperatures below 4500 and
   // above 7500 are too extreme.)
   // The following table was created with internal user studies.
-  constexpr struct {
+  struct TemperatureMapping {
     int32_t input_temperature;
     int32_t output_temperature;
-  } kTable[] = {{2700, 4500}, {3100, 5000}, {3700, 5300},
-                {4200, 5500}, {4800, 5800}, {5300, 6000},
-                {6000, 6400}, {7000, 6800}, {8000, 7500}};
+  };
 
-  constexpr size_t kTableSize = std::size(kTable);
+  // clang-format off
+  constexpr std::array<TemperatureMapping, 9> kTable = {{
+    {2700, 4500}, {3100, 5000}, {3700, 5300},
+    {4200, 5500}, {4800, 5800}, {5300, 6000},
+    {6000, 6400}, {7000, 6800}, {8000, 7500}
+  }};
+  // clang-format on
+
+  constexpr size_t kTableSize = kTable.size();
+
   // We clamp to a range defined by the minimum possible input value and the
   // maximum. Given that the interval kTable[i].input_temperature,
   // kTable[i+1].input_temperature exclude the upper bound, we clamp it to the

@@ -134,14 +134,15 @@ void ThirdPartyScriptDetector::Trace(Visitor* visitor) const {
 }
 
 ThirdPartyScriptDetector::Technology ThirdPartyScriptDetector::Detect(
-    const WTF::String url) {
+    const String url) {
   if (!url) {
     // Early exit if the script is first party.
     return Technology::kNone;
   }
 
-  if (url_to_technology_cache_.Contains(url)) {
-    return url_to_technology_cache_.at(url);
+  if (auto it = url_to_technology_cache_.find(url);
+      it != url_to_technology_cache_.end()) {
+    return it->value;
   }
 
   // Create result vectors to get the matches for the capturing groups.

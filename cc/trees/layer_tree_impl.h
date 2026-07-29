@@ -5,6 +5,7 @@
 #ifndef CC_TREES_LAYER_TREE_IMPL_H_
 #define CC_TREES_LAYER_TREE_IMPL_H_
 
+#include <array>
 #include <map>
 #include <memory>
 #include <set>
@@ -50,7 +51,6 @@ namespace cc {
 enum class ActivelyScrollingType;
 class DebugRectHistory;
 class ViewTransitionRequest;
-class DroppedFrameCounter;
 class GlobalStateThatImpactsTilePriority;
 class HeadsUpDisplayLayerImpl;
 class ImageDecodeCache;
@@ -69,7 +69,6 @@ struct PendingPageScaleAnimation;
 using UIResourceRequestQueue = std::vector<UIResourceRequest>;
 using SyncedScale = SyncedProperty<ScaleGroup>;
 using SyncedBrowserControls = SyncedProperty<AdditionGroup<float>>;
-using SyncedElasticOverscroll = SyncedProperty<AdditionGroup<gfx::Vector2dF>>;
 
 class LayerTreeLifecycle {
  public:
@@ -107,8 +106,7 @@ class CC_EXPORT LayerTreeImpl {
       viz::BeginFrameArgs begin_frame_args,
       scoped_refptr<SyncedScale> page_scale_factor,
       scoped_refptr<SyncedBrowserControls> top_controls_shown_ratio,
-      scoped_refptr<SyncedBrowserControls> bottom_controls_shown_ratio,
-      scoped_refptr<SyncedElasticOverscroll> elastic_overscroll);
+      scoped_refptr<SyncedBrowserControls> bottom_controls_shown_ratio);
   LayerTreeImpl(const LayerTreeImpl&) = delete;
   virtual ~LayerTreeImpl();
 
@@ -132,7 +130,7 @@ class CC_EXPORT LayerTreeImpl {
   TileManager* tile_manager() const;
   ImageDecodeCache* image_decode_cache() const;
   ImageAnimationController* image_animation_controller() const;
-  DroppedFrameCounter* dropped_frame_counter() const;
+  FrameSorter* frame_sorter() const;
   MemoryHistory* memory_history() const;
   DebugRectHistory* debug_rect_history() const;
   const GlobalStateThatImpactsTilePriority& global_tile_state() const {
@@ -162,8 +160,7 @@ class CC_EXPORT LayerTreeImpl {
   CreateScrollbarAnimationController(ElementId scroll_element_id,
                                      float initial_opacity);
   void DidAnimateScrollOffset();
-  bool use_gpu_rasterization() const;
-  bool create_low_res_tiling() const;
+  const RasterCapabilities& raster_caps() const;
   bool RequiresHighResToDraw() const;
   bool SmoothnessTakesPriority() const;
   VideoFrameControllerClient* GetVideoFrameControllerClient() const;
@@ -200,12 +197,10 @@ class CC_EXPORT LayerTreeImpl {
 
   OwnedLayerImplList DetachLayers();
   OwnedLayerImplList DetachLayersKeepingRootLayerForTesting();
-
-  void SetPropertyTrees(const PropertyTrees& property_trees,
-                        PropertyTreesChangeState& change_state,
-                        bool preserve_change_tracking);
+  OwnedLayerImplList SwapLayers(OwnedLayerImplList new_layers);
 
   void SetPropertyTrees(PropertyTrees& property_trees,
+                        const ViewportPropertyIds& viewport_property_ids,
                         bool preserve_change_tracking = false);
 
   PropertyTrees* property_trees() {
@@ -259,6 +254,7 @@ class CC_EXPORT LayerTreeImpl {
    private:
     Iterator it_;
   };
+  size_t num_layers() const { return layer_list_.size(); }
   using const_iterator = IteratorAdapter<OwnedLayerImplList::const_iterator>;
   using const_reverse_iterator =
       IteratorAdapter<OwnedLayerImplList::const_reverse_iterator>;
@@ -271,12 +267,30 @@ class CC_EXPORT LayerTreeImpl {
     return const_reverse_iterator(layer_list_.crend());
   }
 
+  // Tests precondition for mutating a property based on element id.
+  // These enumerated values are used in metrics, and must not be renumbered.
+  // New values must be added to the end of the list increasing kMaxValue, and
+  // obsolete values must be preserved.
+  enum class PropertyMutation {
+    kTransform = 0,
+    kOpacity = 1,
+    kFilter = 2,
+    kBackdropFilter = 3,
+    kMaxValue = kBackdropFilter
+  };
+  void ValidateEffectTreeMapping(ElementId, PropertyMutation);
+  void RequestCommitForPropertyMutationIfNeeded(PropertyMutation);
+
   void SetTransformMutated(ElementId element_id,
                            const gfx::Transform& transform);
   void SetOpacityMutated(ElementId element_id, float opacity);
   void SetFilterMutated(ElementId element_id, const FilterOperations& filters);
   void SetBackdropFilterMutated(ElementId element_id,
                                 const FilterOperations& backdrop_filters);
+  PropertyChangeForcesCommitCriteria property_change_forces_commit_criteria()
+      const {
+    return property_change_forces_commit_criteria_;
+  }
 
   int source_frame_number() const { return source_frame_number_; }
   void set_source_frame_number(int frame_number) {
@@ -293,7 +307,9 @@ class CC_EXPORT LayerTreeImpl {
   }
 
   gfx::PointF TotalScrollOffset() const;
+  gfx::PointF TotalScrollOffset(ElementId element_id) const;
   gfx::PointF TotalMaxScrollOffset() const;
+  gfx::PointF TotalMaxScrollOffset(ElementId element_id) const;
 
   void AddPresentationCallbacks(
       std::vector<PresentationTimeCallbackBuffer::Callback> callbacks);
@@ -368,7 +384,9 @@ class CC_EXPORT LayerTreeImpl {
   void SetPageScaleOnActiveTree(float active_page_scale);
   void PushPageScaleFromMainThread(float page_scale_factor,
                                    float min_page_scale_factor,
-                                   float max_page_scale_factor);
+                                   float max_page_scale_factor,
+                                   bool limits_set = true);
+  const LayerSelection& selection() const { return selection_; }
   float current_page_scale_factor() const {
     return page_scale_factor()->Current(IsActiveTree());
   }
@@ -456,13 +474,6 @@ class CC_EXPORT LayerTreeImpl {
     return viewport_property_ids_;
   }
 
-  SyncedElasticOverscroll* elastic_overscroll() {
-    return elastic_overscroll_.get();
-  }
-  const SyncedElasticOverscroll* elastic_overscroll() const {
-    return elastic_overscroll_.get();
-  }
-
   SyncedBrowserControls* top_controls_shown_ratio() {
     return top_controls_shown_ratio_.get();
   }
@@ -474,9 +485,6 @@ class CC_EXPORT LayerTreeImpl {
   }
   const SyncedBrowserControls* bottom_controls_shown_ratio() const {
     return bottom_controls_shown_ratio_.get();
-  }
-  gfx::Vector2dF current_elastic_overscroll() const {
-    return elastic_overscroll()->Current(IsActiveTree());
   }
 
   void SetElementIdsForTesting();
@@ -496,6 +504,9 @@ class CC_EXPORT LayerTreeImpl {
   void set_needs_update_draw_properties() {
     needs_update_draw_properties_ = true;
   }
+  void clear_needs_update_draw_properties_for_testing() {
+    needs_update_draw_properties_ = false;
+  }
   bool needs_update_draw_properties() const {
     return needs_update_draw_properties_;
   }
@@ -510,10 +521,6 @@ class CC_EXPORT LayerTreeImpl {
   bool needs_surface_ranges_sync() const { return needs_surface_ranges_sync_; }
   void set_needs_surface_ranges_sync(bool needs_surface_ranges_sync) {
     needs_surface_ranges_sync_ = needs_surface_ranges_sync;
-  }
-
-  bool always_push_properties_on_picture_layers() const {
-    return always_push_properties_on_picture_layers_;
   }
 
   void ForceRedrawNextActivation() { next_activation_forces_redraw_ = true; }
@@ -541,13 +548,14 @@ class CC_EXPORT LayerTreeImpl {
 
   void AddLayerShouldPushProperties(LayerImpl* layer);
   void ClearLayersThatShouldPushProperties();
-  const base::flat_set<LayerImpl*>& LayersThatShouldPushProperties() const {
-    return layers_that_should_push_properties_;
+  auto LayersThatShouldPushProperties() const {
+    return layer_list_.LayersThatShouldPushProperties();
   }
 
-  // These should be called by LayerImpl's ctor/dtor.
-  void RegisterLayer(LayerImpl* layer);
-  void UnregisterLayer(LayerImpl* layer);
+  // Reserve memory for the total number of layers that will be added
+  // with AddLayer(). This is only for performance reasons, and has no
+  // functional effect.
+  void ReserveLayers(size_t count);
 
   // Append a layer to the list.
   void AddLayer(std::unique_ptr<LayerImpl> layer);
@@ -594,23 +602,21 @@ class CC_EXPORT LayerTreeImpl {
   void DidModifyTilePriorities(bool pending_update_tiles = false);
 
   viz::ResourceId ResourceIdForUIResource(UIResourceId uid) const;
+  gfx::Size GetUIResourceSize(UIResourceId uid) const;
   void ProcessUIResourceRequestQueue();
 
   bool IsUIResourceOpaque(UIResourceId uid) const;
 
-  void RegisterPictureLayerImpl(PictureLayerImpl* layer);
-  void UnregisterPictureLayerImpl(PictureLayerImpl* layer);
-  const std::vector<raw_ptr<PictureLayerImpl, VectorExperimental>>&
-  picture_layers() const {
-    return picture_layers_;
+  auto picture_layers() const { return layer_list_.PictureLayers(); }
+  auto picture_layers_with_paint_worklets() const {
+    return layer_list_.PictureLayersWithWorklets();
   }
 
+  void NotifyLayerHasAnimatedImagesChanged(PictureLayerImpl* layer,
+                                           bool has_animated_images);
+  void AnnotateAnimatedImages(AnimatedImageDriverMap&) const;
   void NotifyLayerHasPaintWorkletsChanged(PictureLayerImpl* layer,
                                           bool has_worklets);
-  const base::flat_set<raw_ptr<PictureLayerImpl, CtnExperimental>>&
-  picture_layers_with_paint_worklets() const {
-    return picture_layers_with_paint_worklets_;
-  }
 
   void RegisterScrollbar(ScrollbarLayerImplBase* scrollbar_layer);
   void UnregisterScrollbar(ScrollbarLayerImplBase* scrollbar_layer);
@@ -619,6 +625,12 @@ class CC_EXPORT LayerTreeImpl {
 
   LayerImpl* FindLayerThatIsHitByPoint(const gfx::PointF& screen_space_point);
 
+  LayerImpl* FindLayerThatIsHitByPointInTouchHandlerRegion(
+      const gfx::RectF& screen_space_touch_rect);
+
+  // TODO(crbug.com/355578906): This wrapper mostly exists because a lot of
+  // tests still use this variant of the function. Delete this once the
+  // references are updated.
   LayerImpl* FindLayerThatIsHitByPointInTouchHandlerRegion(
       const gfx::PointF& screen_space_point);
 
@@ -652,6 +664,10 @@ class CC_EXPORT LayerTreeImpl {
   // Compute the current selection handle location and visbility with respect to
   // the viewport.
   void GetViewportSelection(viz::Selection<gfx::SelectionBound>* selection);
+
+  const BrowserControlsParams& browser_controls_params() const {
+    return browser_controls_params_;
+  }
 
   bool browser_controls_shrink_blink_size() const {
     return browser_controls_params_.browser_controls_shrink_blink_size;
@@ -697,7 +713,9 @@ class CC_EXPORT LayerTreeImpl {
   std::unique_ptr<PendingPageScaleAnimation> TakePendingPageScaleAnimation();
 
   void AppendEventsMetricsFromMainThread(EventMetrics::List events_metrics);
+  void AppendEventMetricsFromRasterThread(EventMetrics::List event_metrics);
   EventMetrics::List TakeEventsMetrics();
+  EventMetrics::List TakeRasterEventsMetrics();
 
   // Requests that we force send RenderFrameMetadata with the next frame.
   void RequestForceSendMetadata() { force_send_metadata_request_ = true; }
@@ -779,6 +797,10 @@ class CC_EXPORT LayerTreeImpl {
     return events_metrics_from_main_thread_.size();
   }
 
+  size_t events_metrics_from_raster_thread_count_for_testing() const {
+    return event_metrics_from_raster_thread_.size();
+  }
+
   bool device_viewport_rect_changed() const {
     return device_viewport_rect_changed_;
   }
@@ -793,7 +815,7 @@ class CC_EXPORT LayerTreeImpl {
   // Returns all of the view transition requests stored so far, and empties
   // the internal list.
   std::vector<std::unique_ptr<ViewTransitionRequest>>
-  TakeViewTransitionRequests();
+  TakeViewTransitionRequests(bool should_set_needs_update_draw_properties);
 
   // Returns true if there are pending ViewTransition requests that need a draw.
   bool HasViewTransitionRequests() const;
@@ -802,10 +824,23 @@ class CC_EXPORT LayerTreeImpl {
   // output of the current frame.
   bool HasViewTransitionSaveRequest() const;
 
+  // Returns true if there is a HUD layer and it has animating contents.
+  bool IsAnimatingHUDContents() const;
+
+  void set_is_animating_hud_contents(bool is_animating_hud_contents) {
+    DCHECK(settings().trees_in_viz_in_viz_process);
+    is_animating_hud_contents_ = is_animating_hud_contents;
+  }
+
   // Returns a set of all view transition tokens that are currently in the
   // capture phase.
   base::flat_set<blink::ViewTransitionToken> GetCaptureViewTransitionTokens()
       const;
+
+  const std::vector<std::unique_ptr<ViewTransitionRequest>>&
+  view_transition_requests() const {
+    return view_transition_requests_;
+  }
 
   void UpdateAllScrollbarGeometriesForTesting() {
     UpdateAllScrollbarGeometries();
@@ -815,6 +850,12 @@ class CC_EXPORT LayerTreeImpl {
                                     const gfx::RectF&);
 
   void AddLayerNeedingUpdateDiscardableImageMap(PictureLayerImpl* layer);
+
+  void SetPageScaleFactorAndLimitsForDisplayTree(float page_scale_factor,
+                                                 float min_page_scale_factor,
+                                                 float max_page_scale_factor);
+
+  LayerTreeHostImpl* host_impl() { return host_impl_; }
 
   class CC_EXPORT DiscardableImageMapUpdater {
     STACK_ALLOCATED();
@@ -829,16 +870,18 @@ class CC_EXPORT LayerTreeImpl {
 
    private:
     LayerTreeImpl* const layer_tree_impl_;
-    std::vector<PictureLayerImpl*> layers_needing_update_;
+    std::vector<raw_ptr<PictureLayerImpl>> layers_needing_update_;
   };
 
  protected:
   float ClampPageScaleFactorToLimits(float page_scale_factor) const;
   void PushPageScaleFactorAndLimits(const float* page_scale_factor,
                                     float min_page_scale_factor,
-                                    float max_page_scale_factor);
+                                    float max_page_scale_factor,
+                                    bool limits_set);
   bool SetPageScaleFactorLimits(float min_page_scale_factor,
-                                float max_page_scale_factor);
+                                float max_page_scale_factor,
+                                bool limits_set);
   void DidUpdatePageScale();
   void PushBrowserControls(const float* top_controls_shown_ratio,
                            const float* bottom_controls_shown_ratio);
@@ -854,7 +897,7 @@ class CC_EXPORT LayerTreeImpl {
   void UpdateTransformAnimation(ElementId element_id, int transform_node_index);
   template <typename Functor>
   LayerImpl* FindLayerThatIsHitByPointInEventHandlerRegion(
-      const gfx::PointF& screen_space_point,
+      const gfx::RectF& screen_space_touch_rect,
       const Functor& func);
 
   // Update the geometries of all scrollbars (e.g., thumb size and position).
@@ -866,7 +909,7 @@ class CC_EXPORT LayerTreeImpl {
   viz::BeginFrameArgs created_begin_frame_args_;
   int source_frame_number_ = 0;
   BeginMainFrameTraceId trace_id_{0};
-  raw_ptr<HeadsUpDisplayLayerImpl, DanglingUntriaged> hud_layer_;
+  raw_ptr<HeadsUpDisplayLayerImpl> hud_layer_;
   PropertyTrees property_trees_;
   SkColor4f background_color_;
 
@@ -875,6 +918,10 @@ class CC_EXPORT LayerTreeImpl {
   LayerSelection selection_;
 
   scoped_refptr<SyncedScale> page_scale_factor_;
+
+  // True if the minimum and maximum page scale factors have been explicitly
+  // set.
+  bool page_scale_factor_limits_set_ = false;
   float min_page_scale_factor_;
   float max_page_scale_factor_;
   float external_page_scale_factor_;
@@ -915,7 +962,17 @@ class CC_EXPORT LayerTreeImpl {
   // frame.
   bool force_send_metadata_request_ : 1 = false;
 
-  bool always_push_properties_on_picture_layers_ : 1 = false;
+  // This is only used in TreesInViz.
+  // It is Equivalent to LayerTreeImpl::hud_layer() &&
+  // LayerTreeImpl::hud_layer()->IsAnimatingHUDContents().
+  // It is always false in renderer process, but is wired to viz process
+  // and used to replace the above logic. This is because hud layers aren't
+  // deserialized as HeadsUoDisplayLayerImpl so LayerTreeImpl::hud_layer()
+  // always returns false in viz.
+  bool is_animating_hud_contents_ : 1 = false;
+
+  PropertyChangeForcesCommitCriteria property_change_forces_commit_criteria_ =
+      PropertyChangeForcesCommitCriteria::kNone;
 
   gfx::Rect device_viewport_rect_;
 
@@ -925,19 +982,12 @@ class CC_EXPORT LayerTreeImpl {
   // pixels.
   float max_safe_area_inset_bottom_ = 0;
 
-  scoped_refptr<SyncedElasticOverscroll> elastic_overscroll_;
-
   // TODO(wangxianzhu): Combine layers_ and layer_list_ when we remove
   // support of mask layers.
 
   OwnedLayerImplList layer_list_;
   // Maps from layer id to layer.
-  LayerImplMap layer_id_map_;
-
-  // Set of layers that need to push properties.
-  // RAW_PTR_EXCLUSION: Performance reasons (based on analysis of MotionMark).
-  RAW_PTR_EXCLUSION base::flat_set<LayerImpl*>
-      layers_that_should_push_properties_;
+  // LayerImplMap layer_id_map_;
 
   struct ScrollbarLayerIds {
     int horizontal = Layer::INVALID_ID;
@@ -952,14 +1002,6 @@ class CC_EXPORT LayerTreeImpl {
   // scrollbar layer and consumed by PushPropertiesTo() and
   // HandleScrollbarShowRequests().
   base::flat_set<ElementId> show_scrollbar_requests_;
-
-  std::vector<raw_ptr<PictureLayerImpl, VectorExperimental>> picture_layers_;
-
-  // After commit (or impl-side invalidation), the LayerTreeHostImpl must walk
-  // all PictureLayerImpls that have PaintWorklets to ensure they are painted.
-  // To avoid unnecessary walking, we track that set here.
-  base::flat_set<raw_ptr<PictureLayerImpl, CtnExperimental>>
-      picture_layers_with_paint_worklets_;
 
   base::flat_set<viz::SurfaceRange> surface_layer_ranges_;
 
@@ -1003,6 +1045,8 @@ class CC_EXPORT LayerTreeImpl {
 
   // Event metrics that are reported back from the main thread.
   EventMetrics::List events_metrics_from_main_thread_;
+  // Event metrics that are reported back from the raster thread.
+  EventMetrics::List event_metrics_from_raster_thread_;
 
   std::unique_ptr<gfx::DelegatedInkMetadata> delegated_ink_metadata_;
 

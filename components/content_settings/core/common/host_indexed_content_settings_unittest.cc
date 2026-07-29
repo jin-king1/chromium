@@ -32,7 +32,7 @@ ContentSettingPatternSource CreateSetting(
   return ContentSettingPatternSource(
       ContentSettingsPattern::FromString(primary_pattern),
       ContentSettingsPattern::FromString(secondary_pattern),
-      base::Value(setting), source, false /* incognito */, metadata);
+      base::Value(setting), source, false /* incognito */, std::move(metadata));
 }
 
 ContentSettingsForOneType ToVector(const HostIndexedContentSettings& index) {
@@ -42,7 +42,7 @@ ContentSettingsForOneType ToVector(const HostIndexedContentSettings& index) {
     source.primary_pattern = entry.first.primary_pattern;
     source.secondary_pattern = entry.first.secondary_pattern;
     source.setting_value = entry.second.value.Clone();
-    source.metadata = entry.second.metadata;
+    source.metadata = entry.second.metadata.Clone();
     source.source = index.source();
     v.push_back(std::move(source));
   }
@@ -351,6 +351,20 @@ TEST_F(FindContentSettingTest, VectorOfIndices) {
   EXPECT_EQ(indices[2].source(),
             content_settings::ProviderType::kDefaultProvider);
   EXPECT_EQ(ToVector(indices[2]), expected_2);
+}
+
+TEST_F(HostIndexedContentSettingsTest, CheckSubresourceIsIP) {
+  GURL test_primary_url("http://192.168.1.2/");
+  GURL test_secondary_url("https://www.example.com");
+  ContentSettingsForOneType test_settings = {
+      CreateSetting("*", "[*.]example.com", CONTENT_SETTING_BLOCK),
+  };
+  HostIndexedContentSettings index = FromVector(test_settings);
+
+  auto* result = index.Find(test_primary_url, test_secondary_url);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(ValueToContentSetting(result->second.value), CONTENT_SETTING_BLOCK);
+  EXPECT_THAT(ToVector(index), testing::ContainerEq(test_settings));
 }
 
 }  // namespace

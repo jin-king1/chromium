@@ -9,6 +9,7 @@
 
 #include "base/containers/flat_map.h"
 #include "ui/display/display.h"
+#include "ui/display/headless/headless_screen_manager.h"
 #include "ui/display/mojom/screen_orientation.mojom-shared.h"
 #include "ui/display/screen_base.h"
 #include "ui/gfx/geometry/rect.h"
@@ -16,7 +17,8 @@
 
 namespace headless {
 
-class HeadlessScreen : public display::ScreenBase {
+class HeadlessScreen : public display::ScreenBase,
+                       public display::HeadlessScreenManager::Delegate {
  public:
   static HeadlessScreen* Create(const gfx::Size& window_size,
                                 std::string_view screen_info_spec);
@@ -31,6 +33,12 @@ class HeadlessScreen : public display::ScreenBase {
       int64_t display_id,
       display::mojom::ScreenOrientation screen_orientation);
 
+  // display::HeadlessScreenManager::Delegate overrides:
+  int64_t AddDisplay(const display::Display& display) override;
+  void UpdateDisplay(const display::Display& display) override;
+  void RemoveDisplay(int64_t display_id) override;
+  void SetPrimaryDisplay(int64_t display_id) override;
+
   // display::Screen overrides:
   gfx::Point GetCursorScreenPoint() override;
   bool IsWindowUnderCursor(gfx::NativeWindow window) override;
@@ -40,6 +48,7 @@ class HeadlessScreen : public display::ScreenBase {
       const std::set<gfx::NativeWindow>& ignore) override;
   display::Display GetDisplayNearestWindow(
       gfx::NativeWindow window) const override;
+  bool IsHeadless() const override;
 
   bool IsNaturalPortrait(int64_t display_id) const;
   bool IsNaturalLandscape(int64_t display_id) const;
@@ -47,6 +56,9 @@ class HeadlessScreen : public display::ScreenBase {
  protected:
   HeadlessScreen(const gfx::Size& window_size,
                  std::string_view screen_info_spec);
+
+  void CreateDisplayList(const gfx::Size& window_size,
+                         std::string_view screen_info_spec);
 
   void UpdateScreenSizeForScreenOrientationImpl(
       int64_t display_id,

@@ -69,8 +69,8 @@ TEST_P(HostResolverManagerIPv6ReachabilityOverrideTest, Request) {
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
       resolver_->CreateRequest(
           url::SchemeHostPort(url::kHttpScheme, kTargetHost, 80),
-          NetworkAnonymizationKey(), NetLogWithSource(), std::nullopt,
-          resolve_context_.get());
+          NetworkAnonymizationKey(), handles::kInvalidNetworkHandle,
+          NetLogWithSource(), std::nullopt, resolve_context_.get());
 
   int result = ERR_IO_PENDING;
   base::RunLoop run_loop;
@@ -83,11 +83,11 @@ TEST_P(HostResolverManagerIPv6ReachabilityOverrideTest, Request) {
 
   if (GetParam()) {
     EXPECT_THAT(
-        request->GetAddressResults()->endpoints(),
+        request->GetAddressResults(),
         testing::UnorderedElementsAre(CreateExpected("192.0.2.1", 80),
                                       CreateExpected("2001:db8::1", 80)));
   } else {
-    EXPECT_THAT(request->GetAddressResults()->endpoints(),
+    EXPECT_THAT(request->GetAddressResults(),
                 testing::UnorderedElementsAre(CreateExpected("192.0.2.1", 80)));
   }
 }

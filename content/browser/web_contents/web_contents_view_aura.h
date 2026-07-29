@@ -18,11 +18,12 @@
 #include "content/browser/renderer_host/render_view_host_delegate_view.h"
 #include "content/browser/web_contents/web_contents_view.h"
 #include "content/browser/web_contents/web_contents_view_drag_security_info.h"
-#include "content/common/buildflags.h"
 #include "content/common/content_export.h"
+#include "content/public/browser/clipboard_types.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents_view_delegate.h"
+#include "content/public/common/buildflags.h"
 #include "content/public/common/drop_data.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "third_party/blink/public/mojom/choosers/popup_menu.mojom.h"
@@ -37,10 +38,6 @@
 namespace ui {
 class DropTargetEvent;
 class TouchSelectionController;
-}
-
-namespace url {
-class Origin;
 }
 
 namespace content {
@@ -99,6 +96,10 @@ class CONTENT_EXPORT WebContentsViewAura
     int flags;
   };
 
+#if BUILDFLAG(IS_WIN)
+  class AsyncDropNavigationObserver;
+#endif
+
   // A structure used to keep drop context for asynchronously finishing a
   // drop operation.  This is required because some drop event data gets
   // cleared out once PerformDropCallback() returns.
@@ -107,7 +108,7 @@ class CONTENT_EXPORT WebContentsViewAura
                             std::unique_ptr<DropData> drop_data,
                             DropMetadata drop_metadata,
                             std::unique_ptr<ui::OSExchangeData> data,
-                            base::ScopedClosureRunner end_drag_runner,
+                            base::ScopedClosureRunner drop_exit_cleanup,
                             std::optional<gfx::PointF> transformed_pt,
                             gfx::PointF screen_pt);
     OnPerformingDropContext(const OnPerformingDropContext& other) = delete;
@@ -120,12 +121,18 @@ class CONTENT_EXPORT WebContentsViewAura
     std::unique_ptr<DropData> drop_data;
     DropMetadata drop_metadata;
     std::unique_ptr<ui::OSExchangeData> data;
-    base::ScopedClosureRunner end_drag_runner;
+    base::ScopedClosureRunner drop_exit_cleanup;
     std::optional<gfx::PointF> transformed_pt;
     gfx::PointF screen_pt;
+#if BUILDFLAG(IS_WIN)
+    // Watches for navigations that complete while virtual file retrieval is in
+    // progress so that this drop can be disallowed if the page changes.
+    std::unique_ptr<AsyncDropNavigationObserver> navigation_observer;
+#endif
   };
 
   friend class WebContentsViewAuraTest;
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, StartDraggingBlockedByPolicy);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, EnableDisableOverscroll);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, RenderViewHostChanged);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, DragDropFiles);
@@ -135,8 +142,14 @@ class CONTENT_EXPORT WebContentsViewAura
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, DragDropVirtualFiles);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            DragDropVirtualFilesOriginateFromRenderer);
+  FRIEND_TEST_ALL_PREFIXES(
+      WebContentsViewAuraTest,
+      DragDropVirtualFilesNavigationObservedAcrossOverlappingDrops);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
-                           DragDropVirtualFileGetsNonEmptyContents);
+                           DragDropVirtualFiles_DestroyDuringExtraction);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           DragDropVirtualFiles_UnrelatedNavigation);
+
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, DragDropUrlData);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, DragDropOnOopif);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
@@ -151,6 +164,8 @@ class CONTENT_EXPORT WebContentsViewAura
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, GetDropCallback_Run);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            DragInProgressFinishesAfterDrop);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           DragInProgressFinishesAfterNoDrop);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, GetDropCallback_Cancelled);
   FRIEND_TEST_ALL_PREFIXES(
       WebContentsViewAuraTest,
@@ -169,7 +184,16 @@ class CONTENT_EXPORT WebContentsViewAura
       WebContentsViewAuraTest,
       EmptyTextWithUrlInDropDataIsEmptyInOSExchangeDataGetString);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           RejectDragFromHiddenWebContents);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest, RejectDragFromOutsideView);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           ClampTouchLocationToBrowserObservedPoint);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            UrlInDropDataReturnsUrlInOSExchangeDataGetString);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           IgnoreInputs_OngoingDropGetsCleared);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           EndDragIsCalledAfterAsyncDrop);
 
   class WindowObserver;
 
@@ -177,13 +201,21 @@ class CONTENT_EXPORT WebContentsViewAura
   void PrepareDropData(DropData* drop_data,
                        const ui::OSExchangeData& data) const;
 
-  void EndDrag(base::WeakPtr<RenderWidgetHostImpl> source_rwh_weak_ptr,
-               ui::mojom::DragOperation op);
+  // Virtual for testing.
+  virtual bool IsDragAllowedByDataControlPolicy(const ClipboardEndpoint& source,
+                                                const DropData& drop_data);
+
+  virtual void EndDrag(base::WeakPtr<RenderWidgetHostImpl> source_rwh_weak_ptr,
+                       ui::mojom::DragOperation op);
 
   void InstallOverscrollControllerDelegate(RenderWidgetHostViewAura* view);
 
   ui::TouchSelectionController* GetSelectionController() const;
   TouchSelectionControllerClientAura* GetSelectionControllerClient() const;
+
+  void OnContextMenuHandled(const GlobalRenderFrameHostId& rfh_id,
+                            const ContextMenuParams& params,
+                            bool handled);
 
   // Returns GetNativeView unless overridden for testing.
   gfx::NativeView GetRenderWidgetHostViewParent() const;
@@ -209,6 +241,8 @@ class CONTENT_EXPORT WebContentsViewAura
   void FocusThroughTabTraversal(bool reverse) override;
   DropData* GetDropData() const override;
   gfx::Rect GetViewBounds() const override;
+  void Resize(const gfx::Rect& new_bounds) override;
+  gfx::Size GetSize() const override;
   void CreateView(gfx::NativeView context) override;
   RenderWidgetHostViewBase* CreateViewForWidget(
       RenderWidgetHost* render_widget_host) override;
@@ -221,7 +255,6 @@ class CONTENT_EXPORT WebContentsViewAura
   void SetOverscrollControllerEnabled(bool enabled) override;
   void OnCapturerCountChanged() override;
   void FullscreenStateChanged(bool is_fullscreen) override;
-  void UpdateWindowControlsOverlay(const gfx::Rect& bounding_rect) override;
   BackForwardTransitionAnimationManager*
   GetBackForwardTransitionAnimationManager() override;
   void DestroyBackForwardTransitionAnimationManager() override;
@@ -229,14 +262,14 @@ class CONTENT_EXPORT WebContentsViewAura
   // Overridden from RenderViewHostDelegateView:
   void ShowContextMenu(RenderFrameHost& render_frame_host,
                        const ContextMenuParams& params) override;
-  void StartDragging(const DropData& drop_data,
-                     const url::Origin& source_origin,
-                     blink::DragOperationsMask operations,
-                     const gfx::ImageSkia& image,
-                     const gfx::Vector2d& cursor_offset,
-                     const gfx::Rect& drag_obj_rect,
-                     const blink::mojom::DragEventSourceInfo& event_info,
-                     RenderWidgetHostImpl* source_rwh) override;
+  void StartDragging(
+      RenderFrameHost& source_rfh,
+      const DropData& drop_data,
+      blink::DragOperationsMask operations,
+      const gfx::ImageSkia& image,
+      const gfx::Vector2d& cursor_offset,
+      const gfx::Rect& drag_obj_rect,
+      const blink::mojom::DragEventSourceInfo& event_info) override;
   void UpdateDragOperation(ui::mojom::DragOperation operation,
                            bool document_is_handling_drag) override;
   void GotFocus(RenderWidgetHostImpl* render_widget_host) override;
@@ -328,6 +361,10 @@ class CONTENT_EXPORT WebContentsViewAura
       ui::mojom::DragOperation& output_drag_op,
       std::unique_ptr<ui::LayerTreeOwner> drag_image_layer_owner);
 
+  // Run when drop callback completes to ensure |drag_in_progess_| is
+  // flipped to false before EndDrag runs.
+  void OnDropExit();
+
   // For unit testing, registers a callback for when a drop operation
   // completes.
   using DropCallbackForTesting =
@@ -351,8 +388,6 @@ class CONTENT_EXPORT WebContentsViewAura
                                   /*display name*/ base::FilePath>>&
           filepaths_and_names);
 
-  class AsyncDropNavigationObserver;
-  std::unique_ptr<AsyncDropNavigationObserver> async_drop_navigation_observer_;
 
   class AsyncDropTempFileDeleter;
   std::unique_ptr<AsyncDropTempFileDeleter> async_drop_temp_file_deleter_;
@@ -402,6 +437,10 @@ class CONTENT_EXPORT WebContentsViewAura
   // class. It means it gets true when drag enters and gets reset when either
   // drop happens or drag exits.
   bool drag_in_progress_;
+
+  // Used to determine which enum value to fire for the "Event.DragDrop.Surface"
+  // histogram.
+  bool dropped_in_this_web_contents_ = false;
 
   bool init_rwhv_with_null_parent_for_testing_;
 

@@ -10,6 +10,9 @@
 #include "ash/wm/window_resizer.h"
 #include "base/bit_cast.h"
 #include "base/command_line.h"
+#include "base/notimplemented.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chromeos/ui/base/window_pin_type.h"
 #include "components/exo/display.h"
@@ -398,15 +401,16 @@ void WaylandRemoteSurfaceDelegate::OnStateChanged(
 void WaylandRemoteSurfaceDelegate::OnBoundsChanged(
     chromeos::WindowStateType current_state,
     chromeos::WindowStateType requested_state,
-    int64_t display_id,
-    const gfx::Rect& bounds_in_display,
+    int64_t requested_display_id,
+    const gfx::Rect& requested_bounds_in_display,
     bool is_resize,
     int bounds_change,
     bool is_adjusted_bounds) {
   if (shell_) {
-    shell_->OnRemoteSurfaceBoundsChanged(
-        resource_, current_state, requested_state, display_id,
-        bounds_in_display, is_resize, bounds_change, is_adjusted_bounds);
+    shell_->OnRemoteSurfaceBoundsChanged(resource_, current_state,
+                                         requested_state, requested_display_id,
+                                         requested_bounds_in_display, is_resize,
+                                         bounds_change, is_adjusted_bounds);
   }
 }
 void WaylandRemoteSurfaceDelegate::OnDragStarted(int component) {
@@ -458,7 +462,7 @@ WaylandRemoteShell::WaylandRemoteShell(
   helper->AddFrameThrottlingObserver();
   helper->SetDefaultScaleCancellation(use_default_scale_cancellation_);
 
-  layout_mode_ = display::Screen::GetScreen()->InTabletMode()
+  layout_mode_ = display::Screen::Get()->InTabletMode()
                      ? ZCR_REMOTE_SHELL_V1_LAYOUT_MODE_TABLET
                      : ZCR_REMOTE_SHELL_V1_LAYOUT_MODE_WINDOWED;
 
@@ -615,7 +619,7 @@ void WaylandRemoteShell::SendDisplayMetrics() {
     return;
   needs_send_display_metrics_ = false;
 
-  const display::Screen* screen = display::Screen::GetScreen();
+  const display::Screen* screen = display::Screen::Get();
   double default_dsf = GetDefaultDeviceScaleFactor();
 
   for (const auto& display : screen->GetAllDisplays()) {
@@ -864,7 +868,7 @@ void WaylandRemoteShell::OnRemoteSurfaceStateChanged(
     case WindowStateType::kPinned:
       state_type = ZCR_REMOTE_SHELL_V1_STATE_TYPE_PINNED;
       break;
-    case WindowStateType::kTrustedPinned:
+    case WindowStateType::kLockedFullscreen:
       state_type = ZCR_REMOTE_SHELL_V1_STATE_TYPE_TRUSTED_PINNED;
       break;
     case WindowStateType::kPrimarySnapped:
@@ -1114,7 +1118,7 @@ void remote_surface_activate(wl_client* client,
                              wl_resource* resource,
                              uint32_t serial) {
   ShellSurfaceBase* shell_surface = GetUserDataAs<ShellSurfaceBase>(resource);
-  shell_surface->Activate();
+  shell_surface->RequestActivation();
 }
 
 void remote_surface_maximize(wl_client* client, wl_resource* resource) {
@@ -1143,7 +1147,7 @@ void remote_surface_pin(wl_client* client,
                         wl_resource* resource,
                         int32_t trusted) {
   GetUserDataAs<ClientControlledShellSurface>(resource)->SetPinned(
-      trusted ? chromeos::WindowPinType::kTrustedPinned
+      trusted ? chromeos::WindowPinType::kLockedFullscreen
               : chromeos::WindowPinType::kPinned);
 }
 

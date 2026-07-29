@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/zygote/zygote_linux.h"
 
 #include <errno.h>
@@ -23,12 +18,13 @@
 #include <utility>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/files/platform_file.h"
 #include "base/linux_util.h"
 #include "base/logging.h"
+#include "base/logging/logging_settings.h"
 #include "base/metrics/histogram_shared_memory.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
@@ -42,7 +38,6 @@
 #include "base/process/process_handle.h"
 #include "base/process/set_process_title.h"
 #include "base/time/time.h"
-#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "content/common/zygote/zygote_commands_linux.h"
 #include "content/public/common/content_descriptors.h"
@@ -114,8 +109,7 @@ bool Zygote::ProcessRequests() {
 
   // We need to accept SIGCHLD, even though our handler is a no-op because
   // otherwise we cannot wait on children. (According to POSIX 2001.)
-  struct sigaction action;
-  memset(&action, 0, sizeof(action));
+  struct sigaction action = {};
   action.sa_handler = &SIGCHLDHandler;
   PCHECK(sigaction(SIGCHLD, &action, nullptr) == 0);
 
@@ -131,7 +125,7 @@ bool Zygote::ProcessRequests() {
     // The receiving code is in
     // content/browser/zygote_host/zygote_host_impl_linux.cc.
     bool r = base::UnixDomainSocket::SendMsg(
-        kZygoteSocketPairFd, kZygoteHelloMessage, sizeof(kZygoteHelloMessage),
+        kZygoteSocketPairFd, base::as_byte_span(kZygoteHelloMessage),
         std::vector<int>());
 #if BUILDFLAG(IS_CHROMEOS)
     LOG_IF(WARNING, !r) << "Sending zygote magic failed";
@@ -234,8 +228,7 @@ bool Zygote::UsingNSSandbox() const {
 bool Zygote::HandleRequestFromBrowser(int fd) {
   std::vector<base::ScopedFD> fds;
   uint8_t buf[kZygoteMaxMessageLength];
-  const ssize_t len =
-      base::UnixDomainSocket::RecvMsg(fd, buf, sizeof(buf), &fds);
+  const ssize_t len = base::UnixDomainSocket::RecvMsg(fd, buf, &fds);
 
   if (len == 0 || (len == -1 && errno == ECONNRESET)) {
     // EOF from the browser. We should die.
@@ -250,9 +243,8 @@ bool Zygote::HandleRequestFromBrowser(int fd) {
     return false;
   }
 
-  base::Pickle pickle = base::Pickle::WithUnownedBuffer(
-      base::span(buf, base::checked_cast<size_t>(len)));
-  base::PickleIterator iter(pickle);
+  base::PickleIterator iter = base::PickleIterator::WithData(
+      base::span(buf).first(base::checked_cast<size_t>(len)));
 
   int kind;
   if (iter.ReadInt(&kind)) {
@@ -473,11 +465,6 @@ int Zygote::ForkWithRealPid(const std::string& process_type,
     // Sandboxed processes need to send the global, non-namespaced PID when
     // setting up an IPC channel to their parent.
     IPC::Channel::SetGlobalPid(real_pid);
-    // Force the real PID so chrome event data have a PID that corresponds
-    // to system trace event data.
-    base::trace_event::TraceLog::GetInstance()->SetProcessID(real_pid);
-    // Tell Perfetto SDK about the real PID too.
-    perfetto::Platform::SetCurrentProcessId(real_pid);
     base::InitUniqueIdForProcessInPidNamespace(real_pid);
     return 0;
   }
@@ -497,15 +484,14 @@ int Zygote::ForkWithRealPid(const std::string& process_type,
   {
     std::vector<base::ScopedFD> recv_fds;
     uint8_t buf[kZygoteMaxMessageLength];
-    const ssize_t len = base::UnixDomainSocket::RecvMsg(
-        kZygoteSocketPairFd, buf, sizeof(buf), &recv_fds);
+    const ssize_t len =
+        base::UnixDomainSocket::RecvMsg(kZygoteSocketPairFd, buf, &recv_fds);
 
     if (len > 0) {
       CHECK(recv_fds.empty());
 
-      base::Pickle pickle = base::Pickle::WithUnownedBuffer(
-          base::span(buf, base::checked_cast<size_t>(len)));
-      base::PickleIterator iter(pickle);
+      base::PickleIterator iter = base::PickleIterator::WithData(
+          base::span(buf).first(base::checked_cast<size_t>(len)));
 
       int kind;
       CHECK(iter.ReadInt(&kind));
@@ -532,7 +518,7 @@ int Zygote::ForkWithRealPid(const std::string& process_type,
   }
 
   // Now set-up this process to be tracked by the Zygote.
-  if (base::Contains(process_info_map_, real_pid)) {
+  if (process_info_map_.contains(real_pid)) {
     NOTREACHED() << "Already tracking PID " << real_pid;
   }
   process_info_map_[real_pid].internal_pid = pid;
@@ -621,6 +607,18 @@ base::ProcessId Zygote::ReadArgsAndFork(base::PickleIterator iter,
     // SetProcessTitleFromCommandLine in ChromeMain, so we can pass NULL here
     // (we don't have the original argv at this point).
     base::SetProcessTitleFromCommandLine(nullptr);
+
+    // Linux-specific hack: Avoid taking the ~10-50ms jank penalty that a
+    // multithreaded process has to take when expanding its file descriptor
+    // table:
+    //  - from 64 to 128 entries
+    //  - from 128 to 256 entries
+    //  - from 256 to 512 entries
+    // by allocating an fd table with at least 512 entries right away, while
+    // we're still single-threaded.
+    // No error checks - if this fails, it's not a problem, this is just a
+    // performance hack.
+    base::ScopedFD fdtable_alloc_fd(fcntl(0, F_DUPFD, 256));
   } else if (child_pid < 0) {
     LOG(ERROR) << "Zygote could not fork: process_type " << process_type
                << " numfds " << numfds << " child_pid " << child_pid;

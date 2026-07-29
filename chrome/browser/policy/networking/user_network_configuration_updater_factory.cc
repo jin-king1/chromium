@@ -69,7 +69,7 @@ UserNetworkConfigurationUpdaterFactory::BuildServiceInstanceForBrowserContext(
       ash::ProfileHelper::Get()->GetUserByProfile(profile);
   DCHECK(user);
   // Currently, only the network policy of the primary user is supported. See
-  // also http://crbug.com/310685 .
+  // also http://crbug.com/41067885 .
   if (user != user_manager::UserManager::Get()->GetPrimaryUser())
     return nullptr;
 
@@ -77,8 +77,6 @@ UserNetworkConfigurationUpdaterFactory::BuildServiceInstanceForBrowserContext(
   // expect to have UserNetworkConfigurationUpdater, because
   // ManagedNetworkConfigurationHandler requires a (possibly empty) policy to be
   // set for all user sessions.
-  // TODO(crbug.com/40097732): Evaluate if this is can be solved in a
-  // more elegant way.
   return UserNetworkConfigurationUpdaterAsh::CreateForUserPolicy(
       profile, *user, profile->GetProfilePolicyConnector()->policy_service(),
       ash::NetworkHandler::Get()->managed_network_configuration_handler());

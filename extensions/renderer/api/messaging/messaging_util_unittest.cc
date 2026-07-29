@@ -9,10 +9,13 @@
 #include <string>
 #include <string_view>
 
+#include "base/containers/span.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/scoped_feature_list.h"
 #include "extensions/common/api/messaging/message.h"
 #include "extensions/common/api/messaging/messaging_endpoint.h"
 #include "extensions/common/extension_builder.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/mojom/message_port.mojom-shared.h"
 #include "extensions/renderer/bindings/api_binding_test.h"
@@ -36,17 +39,19 @@ struct TestCase {
 
 using MessagingUtilTest = APIBindingTest;
 
-TEST_F(MessagingUtilTest, TestMaximumMessageSize) {
+// The Structure Cloned version of this test is at
+// StructuredCloneMessageSerializationApiTest.TestMaximumStructuredMessageSize.
+TEST_F(MessagingUtilTest, TestMaximumJSONMessageSize) {
   v8::HandleScope handle_scope(isolate());
   v8::Local<v8::Context> context = MainContext();
 
   constexpr char kMessageTooLongError[] =
-      "Message length exceeded maximum allowed length.";
+      "Message exceeded maximum allowed size of 64MiB.";
 
   v8::Local<v8::Value> long_message =
       V8ValueFromScriptSource(context, "'a'.repeat(1024 *1024 * 65)");
   std::string error;
-  std::unique_ptr<Message> message = messaging_util::MessageFromV8(
+  std::optional<Message> message = messaging_util::MessageFromV8(
       context, long_message, mojom::SerializationFormat::kJson, &error);
   EXPECT_FALSE(message);
   EXPECT_EQ(kMessageTooLongError, error);
@@ -85,8 +90,8 @@ TEST_F(MessagingUtilTest, TestParseMessageOptionsFrameId) {
 
 // Tests the result of GetEventForChannel().
 TEST_F(MessagingUtilTest, TestGetEventForChannel) {
-  ExtensionId id1('a', 32);
-  ExtensionId id2('b', 32);
+  ExtensionId id1(32, 'a');
+  ExtensionId id2(32, 'b');
 
   // Exercise a bunch of possible channel endpoints -> extensions.
   // This technically isn't exhaustive, but should give us pretty reasonable
@@ -217,7 +222,7 @@ TEST_F(MessagingUtilWithSystemTest, TestGetTargetIdFromExtensionContext) {
       {v8::Null(isolate()), extension->id(), true},
       // We treat the empty string to be the same as null, even though it's
       // somewhat unfortunate.
-      // See https://crbug.com/823577.
+      // See https://crbug.com/41377567.
       {gin::StringToV8(isolate(), ""), extension->id(), true},
       {gin::StringToV8(isolate(), extension->id()), extension->id(), true},
       {gin::StringToV8(isolate(), other_id), other_id, true},
@@ -287,7 +292,7 @@ TEST_F(MessagingUtilWithSystemTest, TestGetTargetIdFromUserScriptContext) {
       {v8::Null(isolate()), extension->id(), true},
       // We treat the empty string to be the same as null, even though it's
       // somewhat unfortunate.
-      // See https://crbug.com/823577.
+      // See https://crbug.com/41377567.
       {gin::StringToV8(isolate(), ""), extension->id(), true},
       {gin::StringToV8(isolate(), extension->id()), extension->id(), true},
       // User scripts may not target other extensions.
@@ -306,6 +311,22 @@ TEST_F(MessagingUtilWithSystemTest, TestGetTargetIdFromUserScriptContext) {
     EXPECT_EQ(test_case.expected_id, target);
     EXPECT_EQ(test_case.should_pass, error.empty()) << error;
   }
+}
+
+// Tests that trying to serialize a top-level JS `SharedArrayBuffer` directly
+// fails synchronously and returns an error to the sender.
+TEST_F(MessagingUtilTest, TestTopLevelSharedArrayBufferFailsSerialization) {
+  v8::HandleScope handle_scope(isolate());
+  v8::Local<v8::Context> context = MainContext();
+
+  v8::Local<v8::Value> sab =
+      V8ValueFromScriptSource(context, "new SharedArrayBuffer(16)");
+  std::string error;
+  std::optional<Message> message = messaging_util::MessageFromV8(
+      context, sab, mojom::SerializationFormat::kStructuredClone, &error);
+
+  EXPECT_FALSE(message);
+  EXPECT_EQ("Could not serialize message.", error);
 }
 
 }  // namespace extensions

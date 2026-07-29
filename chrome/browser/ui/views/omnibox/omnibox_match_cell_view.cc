@@ -7,32 +7,25 @@
 #include <algorithm>
 #include <optional>
 
-#include "base/metrics/field_trial_params.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/omnibox/omnibox_theme.h"
-#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_views.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_text_view.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/grit/theme_resources.h"
+#include "components/omnibox/browser/actions/omnibox_action.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
-#include "components/omnibox/browser/omnibox_field_trial.h"
-#include "components/omnibox/browser/suggestion_answer.h"
 #include "components/omnibox/browser/vector_icons.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
-#include "components/omnibox/common/omnibox_features.h"
 #include "content/public/common/color_parser.h"
 #include "skia/ext/image_operations.h"
 #include "third_party/omnibox_proto/answer_type.pb.h"
 #include "third_party/omnibox_proto/rich_answer_template.pb.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/pointer/touch_ui_controller.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/insets.h"
@@ -58,6 +51,12 @@ static constexpr int kUniformRowHeightIconSize = 28;
 // edge of the text bounds. Does not apply to the left side of IPHs with icons,
 // since the text will have to be further right to accommodate the icons.
 static constexpr int kIphTextIndent = 14;
+
+// The extra space added to the left-side inset of the toolbelt suggestion.
+static constexpr int kToolbeltTextInsetLeft = 12;
+
+// The right-side inset of the toolbelt suggestion.
+static constexpr int kToolbeltTextInsetRight = 8;
 
 // The radius of the rounded square backgrounds of icons, answers, and entities.
 static constexpr int kIconAndImageCornerRadius = 4;
@@ -108,43 +107,15 @@ void PlaceholderImageSource::Draw(gfx::Canvas* canvas) {
                                      corner_radius, corner_radius, flags);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// RoundedCornerImageView:
-
-class RoundedCornerImageView : public views::ImageView {
-  METADATA_HEADER(RoundedCornerImageView, views::ImageView)
-
- public:
-  RoundedCornerImageView();
-
-  RoundedCornerImageView(const RoundedCornerImageView&) = delete;
-  RoundedCornerImageView& operator=(const RoundedCornerImageView&) = delete;
-
-  ~RoundedCornerImageView() override = default;
-
- protected:
-  // views::ImageView:
-  void OnPaint(gfx::Canvas* canvas) override;
-};
-
-RoundedCornerImageView::RoundedCornerImageView() {
-  SetCanProcessEventsWithinSubtree(false);
-}
-
-void RoundedCornerImageView::OnPaint(gfx::Canvas* canvas) {
-  SkPath mask;
-  const int corner_radius = views::LayoutProvider::Get()->GetCornerRadiusMetric(
-      views::Emphasis::kMedium);
-  mask.addRoundRect(gfx::RectToSkRect(GetImageBounds()), corner_radius,
-                    corner_radius);
-  canvas->ClipPath(mask, true);
-  ImageView::OnPaint(canvas);
-}
-
-BEGIN_METADATA(RoundedCornerImageView)
-END_METADATA
-
 }  // namespace
+
+// Produces the largest centered square gfx::Rect that fits within a rectangle
+// from origin to `size`.
+gfx::Rect FullCenteredSquare(const gfx::Size& size) {
+  int side = std::min(size.width(), size.height());
+  return gfx::Rect((size.width() - side) / 2, (size.height() - side) / 2, side,
+                   side);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // OmniboxMatchCellView:
@@ -216,7 +187,11 @@ void OmniboxMatchCellView::ComputeMatchMaxWidths(int contents_width,
 
 OmniboxMatchCellView::OmniboxMatchCellView(OmniboxResultView* result_view) {
   icon_view_ = AddChildView(std::make_unique<views::ImageView>());
-  answer_image_view_ = AddChildView(std::make_unique<RoundedCornerImageView>());
+  answer_image_view_ = AddChildView(std::make_unique<views::ImageView>());
+  answer_image_view_->SetCanProcessEventsWithinSubtree(false);
+  answer_image_view_->SetCornerRadius(
+      views::LayoutProvider::Get()->GetCornerRadiusMetric(
+          views::Emphasis::kMedium));
   tail_suggest_ellipse_view_ =
       AddChildView(std::make_unique<OmniboxTextView>(result_view));
   tail_suggest_ellipse_view_->SetText(AutocompleteMatch::kEllipsis);
@@ -242,20 +217,23 @@ bool OmniboxMatchCellView::ShouldDisplayImage(const AutocompleteMatch& match) {
          match.type == AutocompleteMatchType::CALCULATOR ||
          (!match.image_url.is_empty() &&
           match.provider->type() !=
-              AutocompleteProvider::TYPE_UNSCOPED_EXTENSION);
+              AutocompleteProvider::TYPE_UNSCOPED_EXTENSION) ||
+         (match.HasTakeoverAction(
+              OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS) &&
+          omnibox_feature_configs::ContextualSearch::Get()
+              .open_lens_action_uses_thumbnail);
 }
 
 void OmniboxMatchCellView::OnMatchUpdate(const OmniboxResultView* result_view,
                                          const AutocompleteMatch& match) {
   if (ShouldDisplayImage(match)) {
     // Enterprise search aggregator people suggestions may display an image.
-    CHECK(AutocompleteMatch::IsSearchType(match.type) ||
-          match.provider->type() ==
-              AutocompleteProvider::TYPE_ENTERPRISE_SEARCH_AGGREGATOR);
     layout_style_ = LayoutStyle::SEARCH_SUGGESTION_WITH_IMAGE;
   } else if (AutocompleteMatch::IsSearchType(match.type)) {
     layout_style_ = LayoutStyle::SEARCH_SUGGESTION;
-  } else if (match.IsIPHSuggestion()) {
+  } else if (match.IsToolbelt()) {
+    layout_style_ = LayoutStyle::TOOLBELT;
+  } else if (match.IsIphSuggestion()) {
     layout_style_ = LayoutStyle::IPH_SUGGESTION;
   } else if (match.type ==
              AutocompleteMatchType::Type::HISTORY_EMBEDDINGS_ANSWER) {
@@ -303,7 +281,9 @@ void OmniboxMatchCellView::OnMatchUpdate(const OmniboxResultView* result_view,
             icon)));
   };
   if (match.type == AutocompleteMatchType::CALCULATOR) {
-    apply_vector_icon(omnibox::kAnswerCalculatorIcon);
+    apply_vector_icon(features::IsRoundedIconsEnabled()
+                          ? omnibox::kEqualIcon
+                          : omnibox::kAnswerCalculatorOldIcon);
     separator_view_->SetSize(gfx::Size());
   } else if (layout_style_ != LayoutStyle::SEARCH_SUGGESTION_WITH_IMAGE) {
     answer_image_view_->SetImage(ui::ImageModel());
@@ -318,10 +298,14 @@ void OmniboxMatchCellView::OnMatchUpdate(const OmniboxResultView* result_view,
       apply_vector_icon(
           AutocompleteMatch::AnswerTypeToAnswerIcon(match.answer_type));
     } else {
+      // Use the hovered background color as the default placeholder color.
       SkColor color = GetColorProvider()->GetColor(
-          GetOmniboxBackgroundColorId(result_view->GetThemeState()));
-      content::ParseHexColorString(match.image_dominant_color, &color);
-      color = SkColorSetA(color, 0x40);  // 25% transparency (arbitrary).
+          GetOmniboxBackgroundColorId(OmniboxPartState::HOVERED));
+      // If `image_dominant_color` is provided, override the default.
+      if (!match.image_dominant_color.empty()) {
+        content::ParseHexColorString(match.image_dominant_color, &color);
+        color = SkColorSetA(color, 0x40);  // 25% transparency (arbitrary).
+      }
 
       gfx::Size size(kUniformRowHeightIconSize, kUniformRowHeightIconSize);
       answer_image_view_->SetImageSize(size);
@@ -339,11 +323,11 @@ void OmniboxMatchCellView::OnMatchUpdate(const OmniboxResultView* result_view,
   if (match.answer_template.has_value()) {
     content_view_->SetTextWithStyling(match.contents, match.contents_class);
     omnibox::AnswerData answer_data = match.answer_template->answers(0);
-    content_view_->AppendTextWithStyling(
+    content_view_->AppendAndStyleAnswerText(
         /*formatted_string=*/answer_data.headline(), /*fragment_index=*/1u,
-        /*answer_type=*/match.answer_type);
+        /*answer_type=*/match.answer_type, /*is_headline=*/true);
     // The subhead text may be multiline.
-    description_view_->SetMultilineText(
+    description_view_->SetMultilineAnswerText(
         /*formatted_string=*/answer_data.subhead(),
         /*answer_type=*/match.answer_type);
   } else if (layout_style_ == LayoutStyle::HISTORY_EMBEDDING_ANSWER) {
@@ -357,6 +341,10 @@ void OmniboxMatchCellView::OnMatchUpdate(const OmniboxResultView* result_view,
   }
 }
 
+void OmniboxMatchCellView::OnSecondaryTextVisibilityChanged() {
+  PreferredSizeChanged();
+}
+
 void OmniboxMatchCellView::SetIcon(const gfx::ImageSkia& image,
                                    const AutocompleteMatch& match) {
   const bool is_pedal_suggestion_row =
@@ -365,8 +353,18 @@ void OmniboxMatchCellView::SetIcon(const gfx::ImageSkia& image,
       match.type == AutocompleteMatchType::HISTORY_CLUSTER;
   const bool is_instant_keyword_row =
       AutocompleteMatch::IsFeaturedSearchType(match.type);
-  if (is_pedal_suggestion_row || is_journeys_suggestion_row ||
-      is_instant_keyword_row) {
+  bool should_draw_icon_background = is_pedal_suggestion_row ||
+                                     is_journeys_suggestion_row ||
+                                     is_instant_keyword_row;
+
+  // Do not apply the distinctive background color to the open lens action when
+  // the UI tweaks are enabled.
+  if (match.HasTakeoverAction(OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS) &&
+      omnibox_feature_configs::ContextualSearch::Get().open_lens_action_ui_tweaks) {
+    should_draw_icon_background = false;
+  }
+
+  if (should_draw_icon_background) {
     // When a PEDAL suggestion has been split out to its own row, apply a square
     // background with a distinctive color to the respective icon. Journeys
     // suggestion rows should also receive the same treatment.
@@ -400,12 +398,30 @@ void OmniboxMatchCellView::SetImage(const gfx::ImageSkia& image,
   int height = image.height();
 
   // Weather icon square background should be the same color as the pop-up
-  // background.
-  if (is_weather_answer) {
-    // Explicitly resize the weather icon to avoid pixelation.
-    gfx::ImageSkia resized_image = gfx::ImageSkiaOperations::CreateResizedImage(
-        image, skia::ImageOperations::RESIZE_GOOD,
-        gfx::Size(kWeatherImageSize, kWeatherImageSize));
+  // background. The experimental thumbnail is treated similar to the
+  // weather icon and is likewise resized to reduce downscaling artifacts.
+  // However, thumbnails are usually rectangular and should preserve aspect
+  // ratio by cropping edges and scaling to fill, not by shrinking to fit.
+  const bool is_thumbnail =
+      match.HasTakeoverAction(OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS) &&
+      omnibox_feature_configs::ContextualSearch::Get()
+          .open_lens_action_uses_thumbnail;
+  if (is_weather_answer || is_thumbnail) {
+    // Explicitly resize to avoid pixelation. Note the thumbnail uses best
+    // quality because it makes a noticeable difference for so much downscaling.
+    // UX also suggested a 5% opacity black overlay to reduce white on white
+    // edgeless thumbnail effect. Reducing HSL lightness does this efficiently.
+    gfx::ImageSkia resized_image =
+        is_thumbnail ? gfx::ImageSkiaOperations::CreateHSLShiftedImage(
+                           gfx::ImageSkiaOperations::CreateResizedImage(
+                               gfx::ImageSkiaOperations::ExtractSubset(
+                                   image, FullCenteredSquare(image.size())),
+                               skia::ImageOperations::RESIZE_BEST,
+                               gfx::Size(kWeatherImageSize, kWeatherImageSize)),
+                           {-1, -1, 0.5 - (0.05 / 2)})
+                     : gfx::ImageSkiaOperations::CreateResizedImage(
+                           image, skia::ImageOperations::RESIZE_GOOD,
+                           gfx::Size(kWeatherImageSize, kWeatherImageSize));
     answer_image_view_->SetImage(ui::ImageModel::FromImageSkia(
         gfx::ImageSkiaOperations::CreateImageWithRoundRectBackground(
             gfx::SizeF(kWeatherBackgroundSize, kWeatherBackgroundSize),
@@ -430,12 +446,15 @@ void OmniboxMatchCellView::SetImage(const gfx::ImageSkia& image,
 
 gfx::Insets OmniboxMatchCellView::GetInsets() const {
   const int vertical_margin = 0;
-  // IPH text bounds should be centered within the IPH background when there's
-  // no IPH icon. So make their `right_margin` equal to their text's x position.
+  // Toolbelt text bounds are set to match the UX spec. IPH text bounds should
+  // be centered within the IPH background when there's no IPH icon. So make
+  // their `right_margin` equal to their text's x position.
   const int right_margin =
-      layout_style_ == LayoutStyle::IPH_SUGGESTION
+      layout_style_ == LayoutStyle::TOOLBELT
+          ? kToolbeltTextInsetRight
+      : layout_style_ == LayoutStyle::IPH_SUGGESTION
           ? OmniboxMatchCellView::kMarginLeft + kIphTextIndent
-          : 7;
+          : kMarginRight;
   return gfx::Insets::TLBR(vertical_margin, OmniboxMatchCellView::kMarginLeft,
                            vertical_margin, right_margin);
 }
@@ -489,7 +508,9 @@ void OmniboxMatchCellView::Layout(PassKey) {
   }
 
   int content_width = content_view_->GetPreferredSize().width();
-  int description_width = description_view_->GetPreferredSize().width();
+  int description_width = description_view_->GetVisible()
+                              ? description_view_->GetPreferredSize().width()
+                              : 0;
   const gfx::Size separator_size = separator_view_->GetPreferredSize();
   int iph_link_width = iph_link_view_->GetPreferredSize().width();
   ComputeMatchMaxWidths(
@@ -541,7 +562,10 @@ gfx::Size OmniboxMatchCellView::CalculatePreferredSize(
             tail_suggest_common_prefix_width_ +
             content_view_->GetPreferredSize().width() +
             iph_link_view_->GetPreferredSize().width();
-    const int description_width = description_view_->GetPreferredSize().width();
+    const int description_width =
+        description_view_->GetVisible()
+            ? description_view_->GetPreferredSize().width()
+            : 0;
     if (description_width > 0) {
       width += separator_view_->GetPreferredSize().width() + description_width;
     }
@@ -566,8 +590,9 @@ gfx::Size OmniboxMatchCellView::CalculatePreferredSize(
                description_view_->GetLineHeight() + kHistoryEmbeddingAnswerGap +
                kHistoryEmbeddingAnswerBottomPadding;
     }
-  } else if (layout_style_ == LayoutStyle::IPH_SUGGESTION) {
-    // IPH suggestions have extra height.
+  } else if (layout_style_ == LayoutStyle::IPH_SUGGESTION ||
+             layout_style_ == LayoutStyle::TOOLBELT) {
+    // IPH and toolbelt suggestions have extra height.
     height = kRowHeight + 4;
   } else {
     // The height for traditional 1-line matches.
@@ -577,13 +602,18 @@ gfx::Size OmniboxMatchCellView::CalculatePreferredSize(
   return gfx::Size(width, height);
 }
 
+gfx::Size OmniboxMatchCellView::GetMinimumSize() const {
+  return gfx::Size(GetTextIndent(), GetPreferredSize().height());
+}
+
 int OmniboxMatchCellView::GetImageIndent() const {
   // Image indent ignores the `OmniboxMatchCellView::GetInsets()`.
 
   // This number is independent of other layout numbers; i.e., it's not meant to
   // align with any other UI; it's just arbitrarily chosen by UX. Hence, it's
   // not derived from other matches' `indent` below.
-  if (layout_style_ == LayoutStyle::IPH_SUGGESTION) {
+  if (layout_style_ == LayoutStyle::IPH_SUGGESTION ||
+      layout_style_ == LayoutStyle::TOOLBELT) {
     return 2;
   }
 
@@ -597,12 +627,21 @@ int OmniboxMatchCellView::GetImageIndent() const {
   // This applies to both touch-UI and non-touch-UI.
   int indent = 16 + kUniformRowHeightIconSize / 2 - kImageBoundsWidth / 2;
 
+  indent += omnibox_feature_configs::AdjustOmniboxIndent()
+                .Get()
+                .match_icon_indent_offset;
+
   return indent;
 }
 
 int OmniboxMatchCellView::GetTextIndent() const {
   // Text indent is added to the `OmniboxMatchCellView::GetInsets()`. It is not
   // added to the image position & size.
+
+  // Toolbelt layout is similar to IPH and has a custom indent.
+  if (layout_style_ == LayoutStyle::TOOLBELT) {
+    return kToolbeltTextInsetLeft;
+  }
 
   // Some IPH matches have no icons. They should be moved further left so the
   // gap between the IPH background and the start of the IPH text isn't jarring.
@@ -627,12 +666,16 @@ int OmniboxMatchCellView::GetTextIndent() const {
   // left edge of its favicon or answer image.
   int indent = 52;
 
-  // The IPH row left inset is +`kIphOffset` from other suggestions, so the text
-  // indent should be -`kIphOffset` to keep the text aligned. IPH matches seem
-  // to have inner padding, so the gap between the left edge of this
-  // `OmniboxMatchCellView` and the IPH icon/text is actually larger than
-  // `indent`.
+  indent += omnibox_feature_configs::AdjustOmniboxIndent()
+                .Get()
+                .match_text_indent_offset;
+
   if (layout_style_ == LayoutStyle::IPH_SUGGESTION) {
+    // The IPH row left inset is +`kIphOffset` from other suggestions, so the
+    // text indent should be -`kIphOffset` to keep the text aligned. IPH matches
+    // seem to have inner padding, so the gap between the left edge of this
+    // `OmniboxMatchCellView` and the IPH icon/text is actually larger than
+    // `indent`.
     indent -= kIphOffset;
   }
 

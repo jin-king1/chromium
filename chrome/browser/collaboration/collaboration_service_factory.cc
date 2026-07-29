@@ -6,12 +6,10 @@
 
 #include <memory>
 
-#include "base/feature_list.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/data_sharing/data_sharing_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "components/collaboration/internal/collaboration_service_impl.h"
 #include "components/collaboration/internal/empty_collaboration_service.h"
@@ -46,7 +44,6 @@ CollaborationServiceFactory::CollaborationServiceFactory()
   DependsOn(tab_groups::TabGroupSyncServiceFactory::GetInstance());
   DependsOn(data_sharing::DataSharingServiceFactory::GetInstance());
   DependsOn(IdentityManagerFactory::GetInstance());
-  DependsOn(SyncServiceFactory::GetInstance());
 }
 
 CollaborationServiceFactory::~CollaborationServiceFactory() = default;
@@ -55,12 +52,8 @@ std::unique_ptr<KeyedService>
 CollaborationServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   DCHECK(context);
-  bool isFeatureEnabled = base::FeatureList::IsEnabled(
-                              data_sharing::features::kDataSharingFeature) ||
-                          base::FeatureList::IsEnabled(
-                              data_sharing::features::kDataSharingJoinOnly);
-
-  if (!isFeatureEnabled || context->IsOffTheRecord()) {
+  if (!data_sharing::features::IsDataSharingFunctionalityEnabled() ||
+      context->IsOffTheRecord()) {
     return std::make_unique<EmptyCollaborationService>();
   }
 
@@ -71,19 +64,11 @@ CollaborationServiceFactory::BuildServiceInstanceForBrowserContext(
   auto* data_sharing_service =
       data_sharing::DataSharingServiceFactory::GetForProfile(profile);
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
-  auto* sync_service = SyncServiceFactory::GetForProfile(profile);
   auto* profile_prefs = profile->GetPrefs();
-
-  // Sync service might be null in testing environment or explicitly disabled
-  // in command line. In the case sync service does not exist,
-  // CollaborationService is not usable.
-  if (!sync_service) {
-    return std::make_unique<EmptyCollaborationService>();
-  }
 
   auto service = std::make_unique<CollaborationServiceImpl>(
       tab_group_sync_service, data_sharing_service, identity_manager,
-      sync_service, profile_prefs);
+      profile_prefs, /*local_prefs=*/nullptr);
 
   return service;
 }

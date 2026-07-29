@@ -23,13 +23,6 @@ function getExpectedFontFamily(expectingSystemFont: boolean): string {
       // <if expr="is_chromeos">
       'Roboto';
       // </if>
-      // <if expr="is_fuchsia">
-      // TODO(dpapad): WebUI tests are compiled on Fuchsia but don't seem to run
-      // on any bot, so the value below does not matter, it just makes the code
-      // syntactically valid. Figure out whether the tests should be run, or
-      // excluded from compilation on Fuchsia.
-      'unknown';
-      // </if>
 
   return fontFamily;
 }
@@ -46,8 +39,7 @@ function assertFontFamilyRule(
   const fontFamily = styleRules[0]!.style.getPropertyValue('font-family');
   const expectedFontFamily = getExpectedFontFamily(expectingSystemFont);
   assertTrue(
-      fontFamily.startsWith(expectedFontFamily),
-      `Found: '${fontFamily.toString()}'`);
+      fontFamily.startsWith(expectedFontFamily), `Found: '${fontFamily}'`);
 }
 
 // Asserts that a 'div' inherits the expected font-family value.

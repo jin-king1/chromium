@@ -15,6 +15,7 @@
 #include "google_apis/gaia/gaia_urls.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_request_headers.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -48,7 +49,7 @@ std::string OAuth2ApiCallFlow::CreateAuthorizationHeaderValue(
   return base::StrCat({"Bearer ", access_token});
 }
 
-void OAuth2ApiCallFlow::EndApiCall(std::unique_ptr<std::string> body) {
+void OAuth2ApiCallFlow::EndApiCall(std::optional<std::string> body) {
   CHECK_EQ(API_CALL_STARTED, state_);
   std::unique_ptr<network::SimpleURLLoader> source = std::move(url_loader_);
 
@@ -69,7 +70,7 @@ std::string OAuth2ApiCallFlow::CreateApiCallBodyContentType() {
   return "application/x-www-form-urlencoded";
 }
 
-std::string OAuth2ApiCallFlow::GetRequestTypeForBody(const std::string& body) {
+std::string OAuth2ApiCallFlow::GetRequestTypeForBody(std::string_view body) {
   return body.empty() ? "GET" : "POST";
 }
 
@@ -77,7 +78,11 @@ bool OAuth2ApiCallFlow::IsExpectedSuccessCode(int code) const {
   return code == net::HTTP_OK || code == net::HTTP_NO_CONTENT;
 }
 
-void OAuth2ApiCallFlow::OnURLLoadComplete(std::unique_ptr<std::string> body) {
+network::mojom::CredentialsMode OAuth2ApiCallFlow::GetCredentialsMode() const {
+  return google_apis::GetOmitCredentialsModeForGaiaRequests();
+}
+
+void OAuth2ApiCallFlow::OnURLLoadComplete(std::optional<std::string> body) {
   CHECK_EQ(API_CALL_STARTED, state_);
   EndApiCall(std::move(body));
 }
@@ -96,11 +101,12 @@ std::unique_ptr<network::SimpleURLLoader> OAuth2ApiCallFlow::CreateURLLoader(
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = CreateApiCallUrl();
   request->method = request_type;
-  request->credentials_mode =
-      google_apis::GetOmitCredentialsModeForGaiaRequests();
+  request->credentials_mode = GetCredentialsMode();
   request->headers = CreateApiCallHeaders();
-  request->headers.SetHeader("Authorization",
-                             CreateAuthorizationHeaderValue(access_token));
+  std::string authorization = CreateAuthorizationHeaderValue(access_token);
+  if (!authorization.empty()) {
+    request->headers.SetHeader("Authorization", authorization);
+  }
 
   std::unique_ptr<network::SimpleURLLoader> result =
       network::SimpleURLLoader::Create(std::move(request), traffic_annotation);

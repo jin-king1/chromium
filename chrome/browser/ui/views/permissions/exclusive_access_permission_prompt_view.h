@@ -7,12 +7,15 @@
 
 #include <string>
 
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/views/permissions/exclusive_access_permission_prompt.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_base_view.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/layout/flex_layout_view.h"
 
-class Browser;
+namespace content {
+class WebContents;
+}
 
 // The view for a prompt for a set of exclusive access (keyboard/pointer lock)
 // permission requests, shown by `ExclusiveAccessPermissionPrompt`.
@@ -20,6 +23,12 @@ class ExclusiveAccessPermissionPromptView : public PermissionPromptBaseView {
   METADATA_HEADER(ExclusiveAccessPermissionPromptView, PermissionPromptBaseView)
 
  public:
+  enum class ButtonType {
+    kAlwaysAllow = 0,
+    kAllowThisTime = 1,
+    kNeverAllow = 2,
+  };
+
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAlwaysAllowId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAllowThisTimeId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kNeverAllowId);
@@ -28,7 +37,7 @@ class ExclusiveAccessPermissionPromptView : public PermissionPromptBaseView {
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kLabelViewId2);
 
   ExclusiveAccessPermissionPromptView(
-      Browser* browser,
+      content::WebContents* web_contents,
       base::WeakPtr<permissions::PermissionPrompt::Delegate> delegate);
   ExclusiveAccessPermissionPromptView(
       const ExclusiveAccessPermissionPromptView&) = delete;
@@ -51,12 +60,6 @@ class ExclusiveAccessPermissionPromptView : public PermissionPromptBaseView {
  private:
   friend class ExclusiveAccessPermissionPromptInteractiveTest;
 
-  enum class ButtonType {
-    kAlwaysAllow = 0,
-    kAllowThisTime = 1,
-    kNeverAllow = 2,
-  };
-
   static int GetViewId(ButtonType button) { return static_cast<int>(button); }
   static ButtonType GetButtonType(int button_id) {
     return static_cast<ButtonType>(button_id);
@@ -77,7 +80,6 @@ class ExclusiveAccessPermissionPromptView : public PermissionPromptBaseView {
   void AddAllowThisTimeButton(views::View& buttons_container);
   void ClosingPermission();
 
-  const raw_ptr<Browser> browser_;
   base::WeakPtr<permissions::PermissionPrompt::Delegate> delegate_;
 };
 

@@ -28,7 +28,7 @@
 # represents the computer doing the compile and never changes. The "target"
 # represents the main thing we're trying to build. The "current" represents
 # which configuration is currently being defined, which can be either the
-# host, the target, or something completely different (like nacl). GN will
+# host, the target, or something completely different. GN will
 # run the same build file multiple times for the different required
 # configuration in the same build.
 #
@@ -56,7 +56,7 @@ if (target_cpu == "") {
     # build for ARM by default, not the host_cpu (which is likely x64).
     # This allows us to not have to specify both target_os and target_cpu
     # on the command line.
-    target_cpu = "arm"
+    target_cpu = "arm64"
   } else {
     target_cpu = host_cpu
   }
@@ -137,10 +137,7 @@ declare_args() {
 
   # Set to true when compiling with the Clang compiler.
   is_clang = current_os != "linux" ||
-             (current_cpu != "s390x" && current_cpu != "s390" &&
-              current_cpu != "ppc64" && current_cpu != "ppc" &&
-              current_cpu != "mips" && current_cpu != "mips64" &&
-              current_cpu != "riscv64")
+             (current_cpu != "mips" && current_cpu != "mips64")
 
   # Allows the path to a custom target toolchain to be injected as a single
   # argument, and set as the default toolchain.
@@ -165,13 +162,14 @@ declare_args() {
 
 declare_args() {
   # Component build. Setting to true compiles targets declared as "components"
-  # as shared libraries loaded dynamically. This speeds up development time.
-  # When false, components will be linked statically.
+  # as shared libraries loaded dynamically. This can sometimes speed up
+  # development time by having smaller link steps. When false, components will
+  # be linked statically.
   #
   # For more information see
   # https://chromium.googlesource.com/chromium/src/+/main/docs/component_build.md
-  is_component_build =
-      is_debug && current_os != "ios" && current_os != "watchos"
+  is_component_build = is_debug && current_os != "android" &&
+                       current_os != "ios" && current_os != "watchos"
 }
 
 assert(!(is_debug && is_official_build), "Can't do official debug builds")
@@ -179,11 +177,29 @@ assert(!(current_os == "ios" && is_component_build),
        "Can't use component build on iOS")
 assert(!(current_os == "watchos" && is_component_build),
        "Can't use component build on watchOS")
+assert(!(current_os == "android" && is_component_build),
+       "Can't use component build on Android")
 
 declare_args() {
   # Unsafe buffers. Location of file used by plugins to track portions of
   # the codebase which have been made manifestly safe.
   clang_unsafe_buffers_paths = ""
+  clang_warning_suppression_file = ""
+  rust_clippy_conf_file = ""
+}
+
+declare_args() {
+  # Whether to enable strict deps checks. This ensures that your dependencies
+  # are correctly declared (no missing deps and no accessing transitive deps).
+  enable_strict_deps = false
+
+  # The default mode for modulemaps.
+  # Accepts any value that GN takes for "generate_modulemap".
+  default_modulemap_mode = "none"
+}
+
+if (enable_strict_deps) {
+  assert(default_modulemap_mode == "textual", "Strict deps requires modulemaps")
 }
 
 # ==============================================================================
@@ -278,6 +294,12 @@ if (target_os == "android") {
   _default_toolchain = "//build/toolchain/aix:$target_cpu"
 } else if (target_os == "zos") {
   _default_toolchain = "//build/toolchain/zos:$target_cpu"
+} else if (target_os == "emscripten") {
+  # Because it's too hard to remove all targets from //BUILD.gn that do not work
+  # with it.
+  assert(
+      false,
+      "emscripten is not a supported target_os. It is available only as secondary toolchain.")
 } else {
   assert(false, "Unsupported target_os: $target_os")
 }
@@ -314,7 +336,7 @@ is_fuchsia = current_os == "fuchsia"
 is_ios = current_os == "ios"
 is_linux = current_os == "linux"
 is_mac = current_os == "mac"
-is_nacl = current_os == "nacl"
+is_wasm = current_os == "emscripten"
 is_watchos = current_os == "watchos"
 is_win = current_os == "win" || current_os == "winuwp"
 
@@ -340,7 +362,7 @@ is_posix = !is_win && !is_fuchsia
 
 # Holds all configs used for running the compiler.
 default_compiler_configs = [
-  "//build/config:feature_flags",
+  "//build/config/compiler/pgo:default_pgo_flags",
   "//build/config/compiler:afdo",
   "//build/config/compiler:afdo_optimize_size",
   "//build/config/compiler:cet_shadow_stack",
@@ -354,17 +376,18 @@ default_compiler_configs = [
   "//build/config/compiler:default_stack_frames",
   "//build/config/compiler:default_symbols",
   "//build/config/compiler:disallow_unstable_features",
-  "//build/config/compiler:libcxx_hardening",
-  "//build/config/compiler:libcxx_module",
   "//build/config/compiler:no_exceptions",
   "//build/config/compiler:no_rtti",
   "//build/config/compiler:no_unresolved_symbols",
   "//build/config/compiler:runtime_library",
+  "//build/config/compiler:sanitize_c_array_bounds",
+  "//build/config/compiler:sanitize_return",
   "//build/config/compiler:thin_archive",
   "//build/config/compiler:thinlto_optimize_default",
-  "//build/config/compiler/pgo:default_pgo_flags",
+  "//build/config/compiler:tot_warnings",
   "//build/config/coverage:default_coverage",
   "//build/config/sanitizers:default_sanitizer_flags",
+  "//build/config:feature_flags",
 ]
 
 if (is_win) {
@@ -375,6 +398,7 @@ if (is_win) {
     "//build/config/win:nominmax",
     "//build/config/win:unicode",
     "//build/config/win:winver",
+    "//build/config/win:wincrypt_use_symbol_prefix",
   ]
 }
 
@@ -398,7 +422,7 @@ if (is_android) {
       [ "//build/config/android:default_orderfile_instrumentation" ]
 }
 
-if (is_clang && !is_nacl) {
+if (is_clang) {
   default_compiler_configs += [
     "//build/config/clang:extra_warnings",
     "//build/config/clang:find_bad_constructs",
@@ -411,6 +435,10 @@ if (is_debug) {
   default_compiler_configs += [ "//build/config:debug" ]
 } else {
   default_compiler_configs += [ "//build/config:release" ]
+}
+
+if (current_os == "zos") {
+  default_compiler_configs += [ "//build/config/zos:compiler" ]
 }
 
 # Static libraries and source sets use only the compiler ones.
@@ -426,10 +454,14 @@ set_defaults("rust_library") {
 
 # Compute the set of configs common to all linked targets (shared libraries,
 # loadable modules, executables) to avoid duplication below.
+_linker_configs = [
+  "//build/config:default_libs",
+  "//build/config/compiler:linker",
+]
 if (is_win) {
   # Many targets remove these configs, so they are not contained within
   # //build/config:executable_config for easy removal.
-  _linker_configs = [
+  _linker_configs += [
     "//build/config/win:default_incremental_linking",
 
     # Default to console-mode apps. Most of our targets are tests and such
@@ -437,17 +469,18 @@ if (is_win) {
     "//build/config/win:console",
   ]
 } else if (is_apple) {
-  _linker_configs = [ "//build/config/apple:strip_all" ]
-} else {
-  _linker_configs = []
+  _linker_configs += [ "//build/config/apple:strip_all" ]
+} else if (is_android) {
+  # Warn whenever linking code that could unintentionally switch off
+  # branch target identification (BTI) on Arm systems.
+  _linker_configs += [ "//build/config/android:lld_branch_target_hardening" ]
 }
 
 # Executable defaults.
-default_executable_configs = default_compiler_configs + [
+default_executable_configs = default_compiler_configs + _linker_configs + [
                                "//build/config/compiler:export_dynamic",
-                               "//build/config:default_libs",
                                "//build/config:executable_config",
-                             ] + _linker_configs
+                             ]
 
 if (is_win) {
   # Turn on linker CFI for executables, and position it so it can be removed
@@ -469,10 +502,8 @@ set_defaults("executable") {
 
 # Shared library and loadable module defaults (also for components in component
 # mode).
-default_shared_library_configs = default_compiler_configs + [
-                                   "//build/config:default_libs",
-                                   "//build/config:shared_library_config",
-                                 ] + _linker_configs
+default_shared_library_configs = default_compiler_configs + _linker_configs +
+                                 [ "//build/config:shared_library_config" ]
 if (is_win) {
   # Turn on linker CFI for DLLs, and position it so it can be removed if needed.
   default_shared_library_configs += [ "//build/config/win:cfi_linker" ]
@@ -537,6 +568,9 @@ TESTONLY_AND_VISIBILITY = [
 # Variables
 #   use_libcxx_modules: If true, libc++'s modules are added to deps.
 #       This is true by default.
+#   strict_deps: If false, the strict deps check will be disabled even when the
+#       feature is enabled in args.gn.
+#       This is true by default.
 foreach(_target_type,
         [
           "source_set",
@@ -544,9 +578,7 @@ foreach(_target_type,
         ]) {
   template(_target_type) {
     target(_target_type, target_name) {
-      forward_variables_from(invoker,
-                             "*",
-                             TESTONLY_AND_VISIBILITY + [ "use_libcxx_modules" ])
+      forward_variables_from(invoker, "*", TESTONLY_AND_VISIBILITY)
       forward_variables_from(invoker, TESTONLY_AND_VISIBILITY)
       if (!defined(inputs)) {
         inputs = []
@@ -555,30 +587,56 @@ foreach(_target_type,
         deps = []
       }
 
-      if (is_clang && (!defined(invoker.use_libcxx_modules) ||
-                       invoker.use_libcxx_modules)) {
-        # This is necessary for Clang modules builds.
-        deps += [
-          "//buildtools/third_party/libc++:std",
-          "//buildtools/third_party/libc++:std_config",
-          "//buildtools/third_party/libc++:std_core",
-          "//buildtools/third_party/libc++:std_ctype_h",
-          "//buildtools/third_party/libc++:std_errno_h",
-          "//buildtools/third_party/libc++:std_fenv_h",
-          "//buildtools/third_party/libc++:std_float_h",
-          "//buildtools/third_party/libc++:std_inttypes_h",
-          "//buildtools/third_party/libc++:std_math_h",
-          "//buildtools/third_party/libc++:std_private_mbstate_t",
-          "//buildtools/third_party/libc++:std_string_h",
-          "//buildtools/third_party/libc++:std_uchar_h",
-          "//buildtools/third_party/libc++:std_wctype_h",
-        ]
+      if (!defined(public_deps)) {
+        public_deps = []
+      }
+
+      if (!defined(use_libcxx_modules)) {
+        use_libcxx_modules = is_clang
+      }
+
+      if (filter_include(
+              configs,
+              [
+                # TODO(https://github.com/llvm/llvm-project/pull/145654):
+                # Remove mac_no_default_new_delete_symbols after clang roll.
+                ":mac_no_default_new_delete_symbols",
+                "//build/config/compiler:exceptions",
+                "//build/config/compiler:rtti",
+              ]) != [] ||
+          filter_include(configs,
+                         [ "//build/config/compiler:no_exceptions" ]) == []) {
+        # Exceptions (i.e. if the 'no_exceptions' config is not used) and RTTI
+        # flags are incompatible with libc++ modules build. So disable modules
+        # build for such targets.
+        use_libcxx_modules = false
+      }
+
+      if (!defined(strict_deps)) {
+        strict_deps = enable_strict_deps
+      }
+
+      if (use_libcxx_modules && is_clang) {
+        if (strict_deps) {
+          configs += [ "//build/modules:strict_deps" ]
+        }
+      } else {
+        not_needed([ "strict_deps" ])
+      }
+
+      if (!defined(generate_modulemap)) {
+        generate_modulemap = default_modulemap_mode
+      }
+
+      if (use_libcxx_modules) {
+        # Add a dependency needed for Clang modules builds.
+        deps += [ "//buildtools/third_party/libc++:all_modules" ]
       }
 
       # Consumed by the unsafe-buffers plugin during compile.
       #
       # TODO(crbug.com/326584510): Reclient doesn't respect this variable, see
-      # rbe_bug_326584510_missing_inputs in //build/config/rbe.gni.
+      # rbe_bug_326584510_missing_inputs in //build/config/clang/clang.gni
       _uses_cflags = false
       if (defined(sources)) {
         foreach(f, sources) {
@@ -606,6 +664,9 @@ foreach(_target_type,
 #       its subconfig "//build/config/c++:runtime_library").
 #   use_libcxx_modules: If true, libc++'s modules are added to deps.
 #       This is true by default.
+#   strict_deps: If false, the strict deps check will be disabled even when the
+#       feature is enabled in args.gn.
+#       This is true by default.
 foreach(_target_type,
         [
           "executable",
@@ -618,10 +679,7 @@ foreach(_target_type,
     target(_target_type, _target_name) {
       forward_variables_from(invoker,
                              "*",
-                             TESTONLY_AND_VISIBILITY + [
-                                   "no_default_deps",
-                                   "use_libcxx_modules",
-                                 ])
+                             TESTONLY_AND_VISIBILITY + [ "no_default_deps" ])
       forward_variables_from(invoker, TESTONLY_AND_VISIBILITY)
       if (!defined(inputs)) {
         inputs = []
@@ -630,7 +688,7 @@ foreach(_target_type,
       # Consumed by the unsafe-buffers plugin during compile.
       #
       # TODO(crbug.com/326584510): Reclient doesn't respect this variable, see
-      # rbe_bug_326584510_missing_inputs in //build/config/rbe.gni.
+      # rbe_bug_326584510_missing_inputs in //build/config/clang/clang.gni
       _uses_cflags = false
       if (defined(sources)) {
         foreach(f, sources) {
@@ -659,27 +717,50 @@ foreach(_target_type,
         deps += [ "//build/config:${_target_type}_deps" ]
       }
 
-      if (is_clang && (!defined(invoker.use_libcxx_modules) ||
-                       invoker.use_libcxx_modules)) {
-        # These are necessary for Clang modules builds.
-        deps += [
-          "//buildtools/third_party/libc++:_Builtin_limits",
-          "//buildtools/third_party/libc++:_Builtin_stdarg",
-          "//buildtools/third_party/libc++:_Builtin_stddef",
-          "//buildtools/third_party/libc++:std",
-          "//buildtools/third_party/libc++:std_config",
-          "//buildtools/third_party/libc++:std_core",
-          "//buildtools/third_party/libc++:std_ctype_h",
-          "//buildtools/third_party/libc++:std_errno_h",
-          "//buildtools/third_party/libc++:std_fenv_h",
-          "//buildtools/third_party/libc++:std_float_h",
-          "//buildtools/third_party/libc++:std_inttypes_h",
-          "//buildtools/third_party/libc++:std_math_h",
-          "//buildtools/third_party/libc++:std_private_mbstate_t",
-          "//buildtools/third_party/libc++:std_string_h",
-          "//buildtools/third_party/libc++:std_uchar_h",
-          "//buildtools/third_party/libc++:std_wctype_h",
-        ]
+      if (!defined(public_deps)) {
+        public_deps = []
+      }
+
+      if (!defined(use_libcxx_modules)) {
+        use_libcxx_modules = is_clang
+      }
+
+      if (filter_include(
+              configs,
+              [
+                # TODO(https://github.com/llvm/llvm-project/pull/145654):
+                # Remove mac_no_default_new_delete_symbols after clang roll.
+                ":mac_no_default_new_delete_symbols",
+                "//build/config/compiler:exceptions",
+                "//build/config/compiler:rtti",
+              ]) != [] ||
+          filter_include(configs,
+                         [ "//build/config/compiler:no_exceptions" ]) == []) {
+        # Exceptions (i.e. if the 'no_exceptions' config is not used) and RTTI
+        # flags are incompatible with libc++ modules build. So disable modules
+        # build for such targets.
+        use_libcxx_modules = false
+      }
+
+      if (!defined(strict_deps)) {
+        strict_deps = enable_strict_deps
+      }
+
+      if (use_libcxx_modules && is_clang) {
+        if (strict_deps) {
+          configs += [ "//build/modules:strict_deps" ]
+        }
+      } else {
+        not_needed([ "strict_deps" ])
+      }
+
+      if (!defined(generate_modulemap)) {
+        generate_modulemap = default_modulemap_mode
+      }
+
+      if (use_libcxx_modules) {
+        # Add a dependency needed for Clang modules builds.
+        deps += [ "//buildtools/third_party/libc++:all_modules" ]
       }
 
       # On Android, write shared library output file to metadata. We will use

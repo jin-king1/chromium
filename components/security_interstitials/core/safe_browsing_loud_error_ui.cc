@@ -72,7 +72,7 @@ SafeBrowsingLoudErrorUI::~SafeBrowsingLoudErrorUI() {
 }
 
 void SafeBrowsingLoudErrorUI::PopulateStringsForHtml(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   load_time_data.Set("type", "SAFEBROWSING");
   load_time_data.Set("tabTitle",
                      l10n_util::GetStringUTF16(IDS_SAFEBROWSING_V3_TITLE));
@@ -119,10 +119,6 @@ void SafeBrowsingLoudErrorUI::PopulateStringsForHtml(
       PopulateBillingLoadTimeData(load_time_data);
       break;
   }
-
-  // Not used by this interstitial.
-  load_time_data.Set("recurrentErrorParagraph", "");
-  load_time_data.Set("show_recurrent_error_paragraph", false);
 
   PopulateExtendedReportingOption(load_time_data);
   PopulateEnhancedProtectionMessage(load_time_data);
@@ -182,16 +178,7 @@ void SafeBrowsingLoudErrorUI::HandleCommand(
       break;
     }
     case CMD_OPEN_HELP_CENTER: {
-      // User pressed "Learn more".
-      controller()->metrics_helper()->RecordUserInteraction(
-          security_interstitials::MetricsHelper::SHOW_LEARN_MORE);
-
-      GURL learn_more_url = controller()->GetBaseHelpCenterUrl();
-      learn_more_url = net::AppendQueryParameter(
-          learn_more_url, "p", get_help_center_article_link());
-      learn_more_url =
-          google_util::AppendGoogleLocaleParam(learn_more_url, app_locale());
-      controller()->OpenURL(should_open_links_in_new_tab(), learn_more_url);
+      OpenHelpCenter(false);
       break;
     }
     case CMD_RELOAD: {
@@ -212,33 +199,37 @@ void SafeBrowsingLoudErrorUI::HandleCommand(
       break;
     }
     case CMD_OPEN_DIAGNOSTIC: {
-      controller()->metrics_helper()->RecordUserInteraction(
-          security_interstitials::MetricsHelper::SHOW_DIAGNOSTIC);
-      std::string diagnostic = base::StringPrintf(
-          kSbDiagnosticUrl,
-          base::EscapeQueryParamValue(request_url().spec(), true).c_str());
-      GURL diagnostic_url(diagnostic);
-      diagnostic_url =
-          google_util::AppendGoogleLocaleParam(diagnostic_url, app_locale());
-      controller()->OpenURL(should_open_links_in_new_tab(), diagnostic_url);
+      OpenDiagnostic(false);
       break;
     }
     case CMD_REPORT_PHISHING_ERROR: {
-      controller()->metrics_helper()->RecordUserInteraction(
-          security_interstitials::MetricsHelper::REPORT_PHISHING_ERROR);
-      std::string phishing_error = base::StringPrintf(
-          kReportPhishingErrorUrl,
-          base::EscapeQueryParamValue(request_url().spec(), true).c_str());
-      GURL phishing_error_url(phishing_error);
-      phishing_error_url = google_util::AppendGoogleLocaleParam(
-          phishing_error_url, app_locale());
-      controller()->OpenURL(should_open_links_in_new_tab(), phishing_error_url);
+      ReportPhishingError(false);
       break;
     }
     case CMD_OPEN_ENHANCED_PROTECTION_SETTINGS: {
       controller()->metrics_helper()->RecordUserInteraction(
           security_interstitials::MetricsHelper::OPEN_ENHANCED_PROTECTION);
       controller()->OpenEnhancedProtectionSettings();
+      break;
+    }
+    case CMD_OPEN_HELP_CENTER_IN_NEW_TAB: {
+      OpenHelpCenter(true);
+      break;
+    }
+    case CMD_OPEN_DIAGNOSTIC_IN_NEW_TAB: {
+      OpenDiagnostic(true);
+      break;
+    }
+    case CMD_OPEN_REPORTING_PRIVACY_IN_NEW_TAB: {
+      controller()->OpenExtendedReportingPrivacyPolicy(true);
+      break;
+    }
+    case CMD_OPEN_WHITEPAPER_IN_NEW_TAB: {
+      controller()->OpenExtendedReportingWhitepaper(true);
+      break;
+    }
+    case CMD_REPORT_PHISHING_ERROR_IN_NEW_TAB: {
+      ReportPhishingError(true);
       break;
     }
     case CMD_OPEN_DATE_SETTINGS:
@@ -248,12 +239,14 @@ void SafeBrowsingLoudErrorUI::HandleCommand(
     case CMD_TEXT_NOT_FOUND:
     case CMD_CLOSE_INTERSTITIAL_WITHOUT_UI:
     case CMD_REQUEST_SITE_ACCESS_PERMISSION:
+    case CMD_OPEN_ANDROID_ADVANCED_PROTECTION_SETTINGS:
+    case CMD_SHOW_CERTIFICATE_VIEWER:
       break;
   }
 }
 
 void SafeBrowsingLoudErrorUI::PopulateMalwareLoadTimeData(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   load_time_data.Set("phishing", false);
   load_time_data.Set("heading",
                      l10n_util::GetStringUTF16(IDS_SAFEBROWSING_HEADING));
@@ -267,7 +260,7 @@ void SafeBrowsingLoudErrorUI::PopulateMalwareLoadTimeData(
 }
 
 void SafeBrowsingLoudErrorUI::PopulateHarmfulLoadTimeData(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   load_time_data.Set("phishing", false);
   load_time_data.Set("heading",
                      l10n_util::GetStringUTF16(IDS_SAFEBROWSING_HEADING));
@@ -281,7 +274,7 @@ void SafeBrowsingLoudErrorUI::PopulateHarmfulLoadTimeData(
 }
 
 void SafeBrowsingLoudErrorUI::PopulatePhishingLoadTimeData(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   load_time_data.Set("phishing", true);
   load_time_data.Set("heading",
                      l10n_util::GetStringUTF16(IDS_SAFEBROWSING_HEADING));
@@ -296,7 +289,7 @@ void SafeBrowsingLoudErrorUI::PopulatePhishingLoadTimeData(
 }
 
 void SafeBrowsingLoudErrorUI::PopulateExtendedReportingOption(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   bool can_show_extended_reporting_option = CanShowExtendedReportingOption();
   bool can_show_enhanced_protection_message =
       CanShowEnhancedProtectionMessage();
@@ -312,7 +305,7 @@ void SafeBrowsingLoudErrorUI::PopulateExtendedReportingOption(
 }
 
 void SafeBrowsingLoudErrorUI::PopulateEnhancedProtectionMessage(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   bool can_show_enhanced_protection_message =
       CanShowEnhancedProtectionMessage();
   if (can_show_enhanced_protection_message) {
@@ -324,7 +317,7 @@ void SafeBrowsingLoudErrorUI::PopulateEnhancedProtectionMessage(
 }
 
 void SafeBrowsingLoudErrorUI::PopulateBillingLoadTimeData(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   load_time_data.Set("phishing", false);
   load_time_data.Set("overridable", true);
 
@@ -361,6 +354,55 @@ void SafeBrowsingLoudErrorUI::UpdateInterstitialInteractionData(
       command,
       InterstitialInteractionDetails(new_occurrence_count, new_first_timestamp,
                                      new_last_timestamp));
+}
+
+void SafeBrowsingLoudErrorUI::OpenHelpCenter(bool always_open_in_new_tab) {
+  // User pressed "Learn more".
+  controller()->metrics_helper()->RecordUserInteraction(
+      security_interstitials::MetricsHelper::SHOW_LEARN_MORE);
+
+  GURL learn_more_url = controller()->GetBaseHelpCenterUrl();
+  learn_more_url = net::AppendQueryParameter(learn_more_url, "p",
+                                             get_help_center_article_link());
+  learn_more_url =
+      google_util::AppendGoogleLocaleParam(learn_more_url, app_locale());
+  if (always_open_in_new_tab) {
+    controller()->OpenUrlInNewForegroundTab(learn_more_url);
+  } else {
+    controller()->OpenURL(should_open_links_in_new_tab(), learn_more_url);
+  }
+}
+
+void SafeBrowsingLoudErrorUI::OpenDiagnostic(bool always_open_in_new_tab) {
+  controller()->metrics_helper()->RecordUserInteraction(
+      security_interstitials::MetricsHelper::SHOW_DIAGNOSTIC);
+  std::string diagnostic = base::StringPrintf(
+      kSbDiagnosticUrl,
+      base::EscapeQueryParamValue(request_url().spec(), true).c_str());
+  GURL diagnostic_url(diagnostic);
+  diagnostic_url =
+      google_util::AppendGoogleLocaleParam(diagnostic_url, app_locale());
+  if (always_open_in_new_tab) {
+    controller()->OpenUrlInNewForegroundTab(diagnostic_url);
+  } else {
+    controller()->OpenURL(should_open_links_in_new_tab(), diagnostic_url);
+  }
+}
+
+void SafeBrowsingLoudErrorUI::ReportPhishingError(bool always_open_in_new_tab) {
+  controller()->metrics_helper()->RecordUserInteraction(
+      security_interstitials::MetricsHelper::REPORT_PHISHING_ERROR);
+  std::string phishing_error = base::StringPrintf(
+      kReportPhishingErrorUrl,
+      base::EscapeQueryParamValue(request_url().spec(), true).c_str());
+  GURL phishing_error_url(phishing_error);
+  phishing_error_url =
+      google_util::AppendGoogleLocaleParam(phishing_error_url, app_locale());
+  if (always_open_in_new_tab) {
+    controller()->OpenUrlInNewForegroundTab(phishing_error_url);
+  } else {
+    controller()->OpenURL(should_open_links_in_new_tab(), phishing_error_url);
+  }
 }
 
 int SafeBrowsingLoudErrorUI::GetHTMLTemplateId() const {

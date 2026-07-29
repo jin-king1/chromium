@@ -26,8 +26,10 @@
 #include "components/onc/onc_constants.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_provider.h"
+#include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
@@ -230,8 +232,8 @@ gfx::ImageSkia& ConnectingWirelessImage(const ui::ColorProvider* color_provider,
 gfx::ImageSkia ConnectingVpnImage(double animation) {
   float floored_animation_value =
       std::floor(animation * kNumFadeImages) / kNumFadeImages;
-  const SkColor icon_color = AshColorProvider::Get()->GetContentLayerColor(
-      AshColorProvider::ContentLayerType::kIconColorPrimary);
+  const SkColor icon_color =
+      AshColorProvider::Get()->GetColor(cros_tokens::kIconColorPrimary);
   return gfx::CreateVectorIcon(
       kNetworkVpnIcon,
       gfx::Tween::ColorValueBetween(
@@ -293,7 +295,9 @@ gfx::ImageSkia GetIcon(const ui::ColorProvider* color_provider,
     // The system tray uses a smaller icon.
     return gfx::CreateVectorIcon(
         IsTrayIcon(icon_type) ? kNetworkEthernetIcon
-                              : vector_icons::kEthernetIcon,
+        : ::features::IsRoundedIconsEnabled()
+            ? vector_icons::kSettingsEthernetIcon
+            : vector_icons::kEthernetOldIcon,
         GetDefaultColorForIconType(color_provider, icon_type));
   }
   if (network->type == NetworkType::kVPN) {
@@ -492,21 +496,17 @@ SkColor GetDefaultColorForIconType(const ui::ColorProvider* color_provider,
     case ICON_TYPE_LIST:
       return use_color_provider
                  ? color_provider->GetColor(cros_tokens::kCrosSysOnSurface)
-                 : ash_color_provider->GetContentLayerColor(
-                       AshColorProvider::ContentLayerType::kButtonIconColor);
+                 : ash_color_provider->GetColor(cros_tokens::kColorPrimary);
     case ICON_TYPE_TRAY_ACTIVE:
       return use_color_provider
                  ? color_provider->GetColor(
                        cros_tokens::kCrosSysSystemOnPrimaryContainer)
-                 : ash_color_provider->GetContentLayerColor(
-                       AshColorProvider::ContentLayerType::kButtonIconColor);
+                 : ash_color_provider->GetColor(cros_tokens::kColorPrimary);
     case ICON_TYPE_FEATURE_POD_TOGGLED:
       return use_color_provider
                  ? color_provider->GetColor(
                        cros_tokens::kCrosSysSystemOnPrimaryContainer)
-                 : ash_color_provider->GetContentLayerColor(
-                       AshColorProvider::ContentLayerType::
-                           kButtonIconColorPrimary);
+                 : ash_color_provider->GetColor(cros_tokens::kColorPrimary);
     case ICON_TYPE_FEATURE_POD_DISABLED:
       return use_color_provider
                  ? color_provider->GetColor(cros_tokens::kCrosSysDisabled)
@@ -517,8 +517,7 @@ SkColor GetDefaultColorForIconType(const ui::ColorProvider* color_provider,
     default:
       return use_color_provider
                  ? color_provider->GetColor(cros_tokens::kCrosSysPrimary)
-                 : ash_color_provider->GetContentLayerColor(
-                       AshColorProvider::ContentLayerType::kIconColorPrimary);
+                 : ash_color_provider->GetColor(cros_tokens::kColorPrimary);
   }
 }
 

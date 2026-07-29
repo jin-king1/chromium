@@ -7,6 +7,7 @@ package org.chromium.android_webview;
 import android.content.SharedPreferences;
 
 import org.chromium.android_webview.common.Lifetime;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.net.GURLUtils;
 
@@ -16,17 +17,18 @@ import java.util.Set;
 /**
  * This class is used to manage permissions for the WebView's Geolocation JavaScript API.
  *
- * Callbacks are posted on the UI thread.
+ * <p>Callbacks are posted on the UI thread.
  */
 @Lifetime.Profile
+@NullMarked
 public final class AwGeolocationPermissions {
     private static final String PREF_PREFIX = "AwGeolocationPermissions%";
     private final SharedPreferences mSharedPreferences;
 
     /** See {@link android.webkit.GeolocationPermissions}. */
     public interface Callback {
-        /* See {@link android.webkit.GeolocationPermissions}. */
-        public void invoke(String origin, boolean allow, boolean retain);
+        /** See {@link android.webkit.GeolocationPermissions}. */
+        void invoke(String origin, boolean allow, boolean retain);
     }
 
     public AwGeolocationPermissions(SharedPreferences sharedPreferences) {
@@ -110,20 +112,5 @@ public final class AwGeolocationPermissions {
         }
 
         return PREF_PREFIX + origin;
-    }
-
-    /* package */
-    static void migrateGeolocationPreferences(
-            SharedPreferences oldPrefs, SharedPreferences newPrefs) {
-        SharedPreferences.Editor oldPrefsEditor = oldPrefs.edit();
-
-        SharedPreferences.Editor newPrefsEditor = newPrefs.edit();
-
-        for (String name : oldPrefs.getAll().keySet()) {
-            if (name.startsWith(AwGeolocationPermissions.PREF_PREFIX)) {
-                newPrefsEditor.putBoolean(name, oldPrefs.getBoolean(name, false)).apply();
-                oldPrefsEditor.remove(name).apply();
-            }
-        }
     }
 }

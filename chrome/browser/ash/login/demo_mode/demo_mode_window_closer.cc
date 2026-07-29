@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ash/login/demo_mode/demo_mode_window_closer.h"
 
+#include "ash/clipboard/clipboard_history.h"
+#include "ash/clipboard/clipboard_history_controller_impl.h"
 #include "ash/metrics/demo_session_metrics_recorder.h"
 #include "ash/public/cpp/app_types_util.h"
 #include "ash/shell.h"
@@ -11,7 +13,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_ash.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/lifetime/application_lifetime_desktop.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
 #include "components/services/app_service/public/cpp/instance_update.h"
@@ -45,13 +47,32 @@ void CloseWidgetWithInstanceId(const base::UnguessableToken& instance_id) {
       });
 }
 
+void ClearAndCloseClipboard() {
+  // Since this function is posted on another thread, we need to make sure all
+  // the instances are not destroyed.
+  if (!ash::Shell::HasInstance()) {
+    return;
+  }
+  ash::ClipboardHistoryControllerImpl* clipboard_history_controller =
+      ash::Shell::Get()->clipboard_history_controller();
+  if (!clipboard_history_controller ||
+      !clipboard_history_controller->history()) {
+    return;
+  }
+  ash::ClipboardHistory* clipboard_history = const_cast<ash::ClipboardHistory*>(
+      clipboard_history_controller->history());
+  // Clear the clipboard. Clearing the clipboard will automatically close the
+  // clipboard because it has no contents.
+  clipboard_history->Clear();
+}
+
 }  // namespace
 
 DemoModeWindowCloser::DemoModeWindowCloser(
     LaunchDemoAppCallback launch_demo_app_callback)
     : launch_demo_app_callback_(launch_demo_app_callback) {
   auto* profile = ProfileManager::GetPrimaryUserProfile();
-  browser_observation_.Observe(BrowserList::GetInstance());
+  browser_observation_.Observe(ash::BrowserController::GetInstance());
 
   // Some test profiles will not have AppServiceProxy.
   if (!apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile)) {
@@ -87,7 +108,7 @@ void DemoModeWindowCloser::OnInstanceUpdate(
         views::Widget::GetWidgetForNativeWindow(update.Window());
     if (is_widget_app) {
       // Some Chrome app has no widget, it will be closed by
-      // `chrome::CloseAllBrowsers`.
+      // `ash::BrowserController::MayCloseAllBrowsers()`.
       opened_apps_with_widget_.insert(instance_id);
     }
     metric_recorder->OnAppCreation(app_id_or_package, is_arc_app);
@@ -104,35 +125,33 @@ void DemoModeWindowCloser::OnInstanceRegistryWillBeDestroyed(
   }
 }
 
-void DemoModeWindowCloser::OnBrowserRemoved(Browser* browser) {
-  // `OnBrowserRemoved` is called after `browser` is removed from
-  // `browser_list`, triggered by `DemoModeWindowCloser::StartClosingApps()` or
-  // other process. If `is_reseting_browser_` is false, the browser removed is
-  // triggered by user or other process. Return directly for this case. If
-  // `is_reseting_browser_` is true, we need to wait until the last browser is
-  // removed to avoid the race condition of browser removal and closing widgets.
-  if (!is_reseting_browser_ || !BrowserList::GetInstance()->empty()) {
-    return;
+void DemoModeWindowCloser::OnLastBrowserClosed() {
+  // If we were waiting for the last browser to close before closing the widgets
+  // (see `StartClosingApps`), we can now do so.
+  if (is_closing_browsers_) {
+    is_closing_browsers_ = false;
+    StartClosingWidgets();
   }
-
-  is_reseting_browser_ = false;
-  StartClosingWidgets();
 }
 
 void DemoModeWindowCloser::StartClosingApps() {
-  if (BrowserList::GetInstance()->empty()) {
-    StartClosingWidgets();
-  } else {
-    is_reseting_browser_ = true;
-
-    // If browsers are open, close them right now and delay
-    // `StartClosingWidgets` to all browser removed to avoid race condition.
+  if (ash::BrowserController::GetInstance()->GetLastUsedBrowser()) {
+    // Browsers are open, so close them right now and delay
+    // `StartClosingWidgets` until that is done to avoid a race condition.
+    is_closing_browsers_ = true;
     content::GetUIThreadTaskRunner({})->PostTask(
-        FROM_HERE, base::BindOnce(&chrome::CloseAllBrowsers));
+        FROM_HERE, base::BindOnce([]() {
+          ash::BrowserController::GetInstance()->MayCloseAllBrowsers();
+        }));
+  } else {
+    StartClosingWidgets();
   }
 
   // TODO(crbug.com/379946574): Close chromevox/screen capture or any other
   // non-window/widget if open.
+
+  content::GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE, base::BindOnce(&ClearAndCloseClipboard));
 }
 
 // TODO(crbug.com/302583338): Remove this function once

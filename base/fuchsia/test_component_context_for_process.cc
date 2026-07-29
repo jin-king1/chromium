@@ -12,6 +12,7 @@
 
 #include <string_view>
 
+#include "base/containers/span.h"
 #include "base/files/file_enumerator.h"
 #include "base/fuchsia/filtered_service_directory.h"
 #include "base/fuchsia/fuchsia_logging.h"
@@ -59,12 +60,13 @@ TestComponentContextForProcess::TestComponentContextForProcess(
       std::make_unique<sys::ComponentContext>(
           std::move(incoming_services), published_root_directory.NewRequest()));
 
-  // Connect to the "/svc" directory of the |published_root_directory| and wrap
+  // Open the "/svc" directory of the |published_root_directory| and wrap
   // that into a ServiceDirectory.
   fidl::InterfaceHandle<::fuchsia::io::Directory> published_services;
-  status = fdio_service_connect_at(
-      published_root_directory.channel().get(), "svc",
-      published_services.NewRequest().TakeChannel().release());
+  status =
+      fdio_open3_at(published_root_directory.channel().get(), "svc",
+                    uint64_t{fuchsia::io::PERM_READABLE},
+                    published_services.NewRequest().TakeChannel().release());
   ZX_CHECK(status == ZX_OK, status) << "fdio_service_connect_at() to /svc";
   published_services_ =
       std::make_shared<sys::ServiceDirectory>(std::move(published_services));

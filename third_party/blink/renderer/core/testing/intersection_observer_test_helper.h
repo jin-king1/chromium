@@ -24,10 +24,7 @@ class TestIntersectionObserverDelegate : public IntersectionObserverDelegate {
   void Deliver(const HeapVector<Member<IntersectionObserverEntry>>& entries,
                IntersectionObserver&) override {
     call_count_++;
-    entries_.AppendVector(entries);
-  }
-  bool NeedsInitialObservationWithDetachedTarget() const override {
-    return true;
+    entries_.append_range(entries);
   }
   ExecutionContext* GetExecutionContext() const override {
     return document_->GetExecutionContext();

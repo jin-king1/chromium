@@ -31,13 +31,17 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_WRAPPER_TYPE_INFO_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_WRAPPER_TYPE_INFO_H_
 
+#include <type_traits>
+
 #include "base/check_op.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "gin/public/wrapper_info.h"
+#include "third_party/blink/renderer/platform/bindings/cpp_heap_external_tag.h"
 #include "third_party/blink/renderer/platform/bindings/v8_interface_bridge_base.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "v8/include/v8-sandbox.h"
 #include "v8/include/v8.h"
 
 namespace blink {
@@ -45,14 +49,86 @@ namespace blink {
 class DOMWrapperWorld;
 class ScriptWrappable;
 
-static constexpr v8::CppHeapPointerTag kDOMWrappersTag =
-    v8::CppHeapPointerTag::kDefaultTag;
+// LINT.IfChange(ScriptWrappableStartTag)
+constexpr std::underlying_type_t<v8::CppHeapPointerTag>
+    kScriptWrappableStartTag = 256;
+// LINT.ThenChange(third_party/blink/renderer/bindings/scripts/web_idl/idl_compiler.py:ScriptWrappableStartTag)
+
+// The upper bound of all `ScriptWrappable` tags that we currently generate. If
+// you add a new `ScriptWrappable` in the codebase and hit a `static_assert`
+// that this is too small, increase this value.
+// LINT.IfChange(LastGeneratedScriptWrappableTag)
+static constexpr std::underlying_type_t<v8::CppHeapPointerTag>
+    kLastGeneratedScriptWrappableTag = 2000;
+// LINT.ThenChange(gin/public/wrappable_pointer_tags.h)
+
+enum class ScriptWrappableArrayTag : std::underlying_type_t<
+    v8::CppHeapPointerTag> {
+  kFirst = kLastGeneratedScriptWrappableTag,
+  kDOMArrayBufferTag,
+  // Start of DOMArrayBufferView subclasses
+  kDOMArrayBufferViewTag,
+  kDOMDataViewTag,
+  kDOMBigInt64ArrayTag,
+  kDOMBigUint64ArrayTag,
+  kDOMInt8ArrayTag,
+  kDOMInt16ArrayTag,
+  kDOMInt32ArrayTag,
+  kDOMUint8ArrayTag,
+  kDOMUint8ClampedArrayTag,
+  kDOMUint16ArrayTag,
+  kDOMUint32ArrayTag,
+  kDOMFloat16ArrayTag,
+  kDOMFloat32ArrayTag,
+  kDOMFloat64ArrayTag,
+  // End of DOMArrayBufferView subclasses
+  kDOMSharedArrayBufferTag,
+  kFrozenArrayTag,
+  kScriptFunctionHolderTag,
+  // Start of ObservableArrayExoticObject subclasses
+  kObservableArrayExoticObjectTag,
+  kV8ObservableArrayCSSStyleSheetTag,
+  kV8ObservableArraySpeechRecognitionPhraseTag,
+  // End of ObservableArrayExoticObject subclasses
+  kLastTag,
+};
+
+// `kLastScriptWrappableTag` is an upper bound on the number of ScriptWrappable
+// sub-types. If more sub-types are added, the number can be increased
+// accordingly. Ideally this upper bound would be generated automatically, but
+// that may be difficult.
+static constexpr v8::CppHeapPointerTag kLastScriptWrappableTag =
+    static_cast<v8::CppHeapPointerTag>(ScriptWrappableArrayTag::kLastTag);
+
+static_assert(static_cast<uint16_t>(kLastScriptWrappableTag) <
+                  static_cast<uint16_t>(gin::kFirstPointerTag),
+              "The tag range of ScriptWrappable and gin::Wrappable should be "
+              "disjoint. If they overlap, then the gin:Wrappable range should "
+              "be moved backwards");
+
+static_assert(
+    static_cast<uint16_t>(gin::kLastPointerTag) <
+        static_cast<uint16_t>(v8::CppHeapPointerTag::kFirstV8InternalTag),
+    "The tag range of gin::Wrappable and v8-internal tags should be "
+    "disjoint.");
+
+static_assert(static_cast<std::underlying_type_t<v8::CppHeapPointerTag>>(
+                  CppHeapExternalTag::kLastTag) < kScriptWrappableStartTag);
+
+constexpr v8::CppHeapPointerTagRange kScriptWrappableTagRange(
+    static_cast<v8::CppHeapPointerTag>(kScriptWrappableStartTag),
+    kLastScriptWrappableTag);
+
+static_assert(
+    v8::kObjectWrappableTagRange.Contains(kScriptWrappableTagRange),
+    "ScriptWrappable tag range must be within kObjectWrappableTagRange");
 
 // This struct provides a way to store a bunch of information that is helpful
 // when unwrapping v8 objects. Each v8 bindings class has exactly one static
 // WrapperTypeInfo member, so comparing pointers is a safe way to determine if
 // types match.
-struct PLATFORM_EXPORT WrapperTypeInfo final {
+struct PLATFORM_EXPORT WrapperTypeInfo final
+    : public v8::Object::WrapperTypeInfo {
   DISALLOW_NEW();
 
   enum WrapperTypePrototype {
@@ -118,19 +194,6 @@ struct PLATFORM_EXPORT WrapperTypeInfo final {
         interface_template, bindings::V8InterfaceBridgeBase::FeatureSelector());
   }
 
-  static bool HasLegacyInternalFieldsSet(v8::Local<v8::Object> object) {
-    for (int i = 0, n = object->InternalFieldCount(); i < n; ++i) {
-      if (object->GetAlignedPointerFromInternalField(i)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  // This field must be the first member of the struct WrapperTypeInfo.
-  // See also static_assert() in .cpp file.
-  const gin::GinEmbedder gin_embedder;
-
   bindings::V8InterfaceBridgeBase::InstallInterfaceTemplateFuncType
       install_interface_template_func;
   bindings::V8InterfaceBridgeBase::InstallContextDependentPropertiesFuncType
@@ -168,14 +231,23 @@ inline ScriptWrappable* ToAnyScriptWrappable(
     v8::Isolate* isolate,
     const v8::TracedReference<v8::Object>& wrapper) {
   return v8::Object::Unwrap<ScriptWrappable>(isolate, wrapper,
-                                             v8::kAnyCppHeapPointer);
+                                             kScriptWrappableTagRange);
+}
+
+inline v8::Object::Wrappable* ToAnyWrappable(v8::Isolate* isolate,
+                                             v8::Local<v8::Object> wrapper) {
+  return v8::Object::Unwrap<v8::Object::Wrappable>(
+      isolate, wrapper, v8::kObjectWrappableTagRange);
 }
 
 inline ScriptWrappable* ToAnyScriptWrappable(v8::Isolate* isolate,
                                              v8::Local<v8::Object> wrapper) {
   return v8::Object::Unwrap<ScriptWrappable>(isolate, wrapper,
-                                             v8::kAnyCppHeapPointer);
+                                             kScriptWrappableTagRange);
 }
+
+PLATFORM_EXPORT const WrapperTypeInfo* ToWrapperTypeInfo(
+    const ScriptWrappable* wrappable);
 
 PLATFORM_EXPORT const WrapperTypeInfo* ToWrapperTypeInfo(
     v8::Local<v8::Object> wrapper);

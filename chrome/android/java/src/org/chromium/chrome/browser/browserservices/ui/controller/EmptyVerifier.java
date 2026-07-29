@@ -4,11 +4,12 @@
 
 package org.chromium.chrome.browser.browserservices.ui.controller;
 
-import androidx.annotation.Nullable;
-
 import org.chromium.base.Promise;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 /** Empty {@link Verifier} implementation. */
+@NullMarked
 public class EmptyVerifier implements Verifier {
     public EmptyVerifier() {}
 
@@ -22,14 +23,13 @@ public class EmptyVerifier implements Verifier {
         return false;
     }
 
-    @Nullable
     @Override
-    public String getVerifiedScope(String url) {
+    public @Nullable String getVerifiedScope(String url) {
         return url;
     }
 
     @Override
-    public boolean shouldIgnoreExternalIntentHandlers(String url) {
+    public boolean isUrlInVerifiedScope(String url) {
         return false;
     }
 }

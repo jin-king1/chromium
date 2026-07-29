@@ -9,6 +9,7 @@
 
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
@@ -133,11 +134,6 @@ class BleV2GattServerTest : public testing::Test {
   raw_ptr<FakeGattServiceFactory> fake_gatt_service_factory_;
   base::HistogramTester histogram_tester_;
 };
-
-TEST_F(BleV2GattServerTest, GetBlePeripheral) {
-  BluetoothAdapter& ble_v2_periphral = ble_v2_gatt_server_->GetBlePeripheral();
-  EXPECT_EQ(fake_adapter_->address_, ble_v2_periphral.GetAddress());
-}
 
 TEST_F(BleV2GattServerTest,
        CreateCharacteristic_CreateGattService_AlreadyExists) {

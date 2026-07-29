@@ -10,10 +10,11 @@
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/password_manager/bulk_leak_check_service_factory.h"
+#include "chrome/browser/password_manager/factories/bulk_leak_check_service_factory.h"
 #include "chrome/browser/permissions/notifications_engagement_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/safety_hub/notification_permission_review_service_factory.h"
+#include "chrome/browser/ui/safety_hub/revoked_permissions_service_factory.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "services/network/test/test_shared_url_loader_factory.h"
 
@@ -30,6 +31,8 @@
 #include "extensions/common/mojom/manifest.mojom-shared.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
+#include "chrome/browser/ui/safety_hub/safety_hub_result.h"
+#include "chrome/browser/ui/safety_hub/safety_hub_service.h"
 namespace {
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -79,15 +82,35 @@ static extensions::CWSInfoService::CWSInfo cws_info_no_trigger{
     false,
     false};
 
-#endif  // BUILDFLAG(IS_ANDROID)
+std::unique_ptr<KeyedService> BuildPasswordStatusCheckService(
+    content::BrowserContext* context) {
+  return std::make_unique<PasswordStatusCheckService>(
+      Profile::FromBrowserContext(context));
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
+std::unique_ptr<KeyedService> BuildRevokedPermissionsService(
+    content::BrowserContext* context) {
+  return std::make_unique<RevokedPermissionsService>(
+      context, Profile::FromBrowserContext(context)->GetPrefs());
+}
+
+std::unique_ptr<KeyedService> BuildNotificationPermissionsReviewService(
+    content::BrowserContext* context) {
+  site_engagement::SiteEngagementService* engagement_service =
+      site_engagement::SiteEngagementService::Get(
+          Profile::FromBrowserContext(context));
+  return std::make_unique<NotificationPermissionsReviewService>(
+      HostContentSettingsMapFactory::GetForProfile(context),
+      engagement_service);
+}
 class TestObserver : public SafetyHubService::Observer {
  public:
   void SetCallback(const base::RepeatingClosure& callback) {
     callback_ = callback;
   }
 
-  void OnResultAvailable(const SafetyHubService::Result* result) override {
+  void OnResultAvailable(const SafetyHubResult* result) override {
     callback_.Run();
   }
 
@@ -105,6 +128,13 @@ using password_manager::BulkLeakCheckService;
 MockCWSInfoService::MockCWSInfoService(Profile* profile)
     : extensions::CWSInfoService(profile) {}
 MockCWSInfoService::~MockCWSInfoService() = default;
+
+PasswordStatusCheckService* CreateAndUsePasswordStatusService(
+    content::BrowserContext* context) {
+  return static_cast<PasswordStatusCheckService*>(
+      PasswordStatusCheckServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          context, base::BindRepeating(&BuildPasswordStatusCheckService)));
+}
 
 void UpdatePasswordCheckServiceAsync(
     PasswordStatusCheckService* password_service) {
@@ -161,7 +191,7 @@ void AddExtension(const std::string& name,
   scoped_refptr<const extensions::Extension> extension =
       extensions::ExtensionBuilder(name)
           .SetManifestKey("host_permissions",
-                          base::Value::List().Append(kAllHostsPermission))
+                          base::ListValue().Append(kAllHostsPermission))
           .SetManifestKey(extensions::manifest_keys::kUpdateURL, update_url)
           .SetLocation(location)
           .SetID(kId)
@@ -273,6 +303,17 @@ password_manager::PasswordForm MakeForm(std::u16string_view username,
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
+void CreateRevokedPermissionsService(content::BrowserContext* context) {
+  RevokedPermissionsServiceFactory::GetInstance()->SetTestingFactory(
+      context, base::BindRepeating(&BuildRevokedPermissionsService));
+}
+
+void CreateNotificationPermissionsReviewService(
+    content::BrowserContext* context) {
+  NotificationPermissionsReviewServiceFactory::GetInstance()->SetTestingFactory(
+      context, base::BindRepeating(&BuildNotificationPermissionsReviewService));
+}
+
 void UpdateSafetyHubServiceAsync(SafetyHubService* service) {
   auto test_observer = std::make_shared<TestObserver>();
   service->AddObserver(test_observer.get());
@@ -290,8 +331,7 @@ void UpdateSafetyHubServiceAsync(SafetyHubService* service) {
   service->RemoveObserver(test_observer.get());
 }
 
-void UpdateUnusedSitePermissionsServiceAsync(
-    UnusedSitePermissionsService* service) {
+void UpdateRevokedPermissionsServiceAsync(RevokedPermissionsService* service) {
   // Run until the checks complete for unused site permission revocation.
   UpdateSafetyHubServiceAsync(service);
 

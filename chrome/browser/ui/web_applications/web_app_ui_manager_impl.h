@@ -13,26 +13,29 @@
 #include <string>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/scoped_multi_source_observation.h"
+#include "base/scoped_observation.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser_list_observer.h"
+#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
-#include "chrome/browser/web_applications/web_app_callback_app_identity.h"
+#include "chrome/browser/web_applications/web_app_icon_manager.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_app_uninstall_dialog_user_options.h"
 #include "components/user_education/common/feature_promo/feature_promo_result.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 class Browser;
 class BrowserWindow;
 class Profile;
+class GlobalBrowserCollection;
 class SkBitmap;
 
 namespace apps {
@@ -43,9 +46,9 @@ namespace base {
 class FilePath;
 }
 
-namespace views {
+namespace ui {
 class NativeWindowTracker;
-}  // namespace views
+}  // namespace ui
 
 namespace webapps {
 enum class WebappUninstallSource;
@@ -55,11 +58,12 @@ namespace web_app {
 
 class IsolatedWebAppInstallerCoordinator;
 class WithAppResources;
+struct SubAppUninstallMetadata;
 
 // Implementation of WebAppUiManager that depends upon //c/b/ui.
 // Allows //c/b/web_applications code to call into //c/b/ui without directly
 // depending on UI.
-class WebAppUiManagerImpl : public BrowserListObserver,
+class WebAppUiManagerImpl : public BrowserCollectionObserver,
                             public WebAppUiManager,
                             public TabStripModelObserver {
  public:
@@ -80,6 +84,11 @@ class WebAppUiManagerImpl : public BrowserListObserver,
   bool CanAddAppToQuickLaunchBar() const override;
   void AddAppToQuickLaunchBar(const webapps::AppId& app_id) override;
   bool IsAppInQuickLaunchBar(const webapps::AppId& app_id) const override;
+
+  bool IsAppMigrationSuggested(BrowserWindowInterface* window) const override;
+  bool IsAppMigrationDialogShowing(
+      BrowserWindowInterface* window) const override;
+
   bool CanReparentAppTabToWindow(
       const webapps::AppId& app_id,
       bool shortcut_created,
@@ -96,25 +105,21 @@ class WebAppUiManagerImpl : public BrowserListObserver,
       const std::vector<base::FilePath>& file_paths,
       const webapps::AppId& app_id,
       WebAppLaunchAcceptanceCallback launch_callback) override;
-  void ShowWebAppIdentityUpdateDialog(
-      const std::string& app_id,
-      bool title_change,
-      bool icon_change,
-      const std::u16string& old_title,
-      const std::u16string& new_title,
-      const SkBitmap& old_icon,
-      const SkBitmap& new_icon,
-      content::WebContents* web_contents,
-      web_app::AppIdentityDialogCallback callback) override;
+  void ShowWebAppProtocolLaunchDialog(
+      const GURL& protocol_url,
+      const webapps::AppId& app_id,
+      WebAppLaunchAcceptanceCallback launch_callback) override;
+  void ShowSubAppsInstallDialog(
+      content::WebContents* initiating_web_contents,
+      const std::vector<std::unique_ptr<WebAppInstallInfo>>& sub_apps,
+      const webapps::AppId& parent_app_id,
+      base::OnceCallback<void(bool)> callback) override;
   void ShowWebAppSettings(const webapps::AppId& app_id) override;
   void LaunchWebApp(apps::AppLaunchParams params,
                     LaunchWebAppWindowSetting launch_setting,
                     Profile& profile,
                     LaunchWebAppDebugValueCallback callback,
                     WithAppResources& lock) override;
-  void WaitForFirstRunService(
-      Profile& profile,
-      FirstRunServiceCompletedCallback callback) override;
 #if BUILDFLAG(IS_CHROMEOS)
   void MigrateLauncherState(const webapps::AppId& from_app_id,
                             const webapps::AppId& to_app_id,
@@ -137,6 +142,29 @@ class WebAppUiManagerImpl : public BrowserListObserver,
   void TriggerInstallDialog(content::WebContents* web_contents,
                             webapps::WebappInstallSource source,
                             InstallCallback callback) override;
+  // TODO(crbug.com/520025525): Remove install_url code.
+  void TriggerInstallDialogForBackgroundInstall(
+      content::WebContents* initiating_web_contents,
+      std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
+      const GURL& install_url,
+      const std::optional<GURL>& manifest_id,
+      const GURL& last_committed_url,
+      InstallCallback callback) override;
+  void TriggerInstallDialogForManifestInstall(
+      content::WebContents* initiating_web_contents,
+      base::WeakPtr<content::Page> initiating_page,
+      std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
+      blink::mojom::ManifestPtr manifest,
+      const GURL& manifest_url,
+      const GURL& requesting_page_url,
+      InstallCallback callback) override;
+  void TriggerLaunchDialogForBackgroundInstall(
+      content::WebContents* initiating_web_contents,
+      const webapps::AppId& app_id,
+      Profile* profile,
+      const std::string& app_name,
+      const SkBitmap& icon,
+      WebInstallAppLaunchAcceptanceCallback callback) override;
 
   void PresentUserUninstallDialog(
       const webapps::AppId& app_id,
@@ -157,6 +185,14 @@ class WebAppUiManagerImpl : public BrowserListObserver,
       UninstallCompleteCallback callback,
       UninstallScheduledCallback scheduled_callback) override;
 
+  void UninstallAppSilentlyForMigration(const webapps::AppId& app_id) override;
+
+  void ShowProfileErrorDialogForCorruptDB() override;
+
+  void ShowIntentPicker(const GURL& url,
+                        content::WebContents* web_contents,
+                        ShowIntentPickerBubbleCallback callback) override;
+
   void LaunchOrFocusIsolatedWebAppInstaller(
       const base::FilePath& bundle_path) override;
 
@@ -164,22 +200,28 @@ class WebAppUiManagerImpl : public BrowserListObserver,
       content::WebContents* web_contents,
       const std::string& launch_name) override;
 
+  void MaybeCreateWebAppBlockedMigrationInfoBar(
+      content::WebContents* web_contents,
+      base::OnceClosure on_dismiss_callback) override;
+
+  void MaybeRemoveWebAppBlockedMigrationInfoBar(
+      content::WebContents* web_contents) override;
+
+  void NotifyDidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
+
   void MaybeShowIPHPromoForAppsLaunchedViaLinkCapturing(
       Browser* browser,
       Profile* profile,
       const std::string& app_id) override;
 
-  // BrowserListObserver:
-  void OnBrowserAdded(Browser* browser) override;
-#if BUILDFLAG(IS_CHROMEOS)
-  void OnBrowserCloseCancelled(Browser* browser,
-                               BrowserClosingStatus reason) override;
-#endif  // BUILDFLAG(IS_CHROMEOS)
-  void OnBrowserRemoved(Browser* browser) override;
+  // BrowserCollectionObserver:
+  void OnBrowserCreated(BrowserWindowInterface* browser) override;
+  void OnBrowserClosed(BrowserWindowInterface* browser) override;
 
 #if BUILDFLAG(IS_CHROMEOS)
   // TabStripModelObserver:
-  void TabCloseCancelled(const content::WebContents* contents) override;
+  void OnTabCloseCancelled(const tabs::TabInterface* contents) override;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN)
@@ -190,22 +232,24 @@ class WebAppUiManagerImpl : public BrowserListObserver,
 
  private:
   // Returns true if Browser is for an installed App.
-  bool IsBrowserForInstalledApp(Browser* browser);
+  bool IsBrowserForInstalledApp(const BrowserWindowInterface* browser) const;
 
   // Returns webapps::AppId of the Browser's installed App,
   // |IsBrowserForInstalledApp| must be true.
-  webapps::AppId GetAppIdForBrowser(Browser* browser);
+  webapps::AppId GetAppIdForBrowser(
+      const BrowserWindowInterface* browser) const;
 
   void OnExtensionSystemReady();
 
-  void OnIconsReadForUninstall(
+  void OnAllIconsReadForUninstall(
       const webapps::AppId& app_id,
       webapps::WebappUninstallSource uninstall_source,
       gfx::NativeWindow parent_window,
-      std::unique_ptr<views::NativeWindowTracker> parent_window_tracker,
+      std::unique_ptr<ui::NativeWindowTracker> parent_window_tracker,
       UninstallCompleteCallback complete_callback,
       UninstallScheduledCallback uninstall_scheduled_callback,
-      std::map<SquareSizePx, SkBitmap> icon_bitmaps);
+      IconMetadataFromDisk icon_metadata,
+      std::vector<SubAppUninstallMetadata> sub_apps);
 
   void OnIsolatedWebAppInstallerClosed(base::FilePath bundle_path);
 
@@ -225,16 +269,27 @@ class WebAppUiManagerImpl : public BrowserListObserver,
       UninstallCompleteCallback uninstall_complete_callback,
       webapps::UninstallResultCode uninstall_code);
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  void ShowIPHPromoForAppsLaunchedViaLinkCapturing(const Browser* browser,
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
+  void ShowIPHPromoForAppsLaunchedViaLinkCapturing(Browser* browser,
                                                    const webapps::AppId& app_id,
                                                    bool is_activated);
-  void OnIPHPromoResponseForLinkCapturing(const Browser* browser,
+  void OnIPHPromoResponseForLinkCapturing(BrowserWindowInterface* browser,
                                           const webapps::AppId& app_id);
 
-  void OnTabChangedDuringIph(const Browser* browser);
+  void OnTabChangedDuringIph(BrowserWindowInterface* browser);
 
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+        // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_CHROMEOS)
+  void OnBrowserCloseCancelled(
+      BrowserWindowInterface* browser,
+      BrowserWindowInterface::ClosingStatus closing_status);
+
+  std::vector<base::CallbackListSubscription>
+      browser_close_cancelled_subscriptions_;
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   const raw_ptr<Profile> profile_;
   std::map<webapps::AppId, std::vector<base::OnceClosure>>
@@ -243,6 +298,8 @@ class WebAppUiManagerImpl : public BrowserListObserver,
   std::map<base::FilePath, raw_ptr<IsolatedWebAppInstallerCoordinator>>
       active_installers_;
   bool started_ = false;
+  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
+      browser_collection_observation_{this};
 
   base::WeakPtrFactory<WebAppUiManagerImpl> weak_ptr_factory_{this};
 };

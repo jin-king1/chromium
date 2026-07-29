@@ -4,9 +4,16 @@
 
 #include "ui/base/idle/idle.h"
 
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 
 namespace ui {
+
+base::CallbackListSubscription AddScreenLockCallback(
+    base::RepeatingCallback<void(bool)> callback) {
+  // TODO(crbug.com/40151210): Implement this.
+  NOTIMPLEMENTED();
+  return {};
+}
 
 int CalculateIdleTime() {
   // TODO(crbug.com/40151210): Implement this.

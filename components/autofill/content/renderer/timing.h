@@ -25,9 +25,10 @@ struct CallTimerState {
     kGetFormDataFromWebForm,
     kGetSubmittedForm,
     kHandleCaretMovedInFormField,
-    kJavaScriptChangedValue,
+    kJavaScriptSetValue,
     kNotifyPasswordManagerAboutClearedForm,
     kOnProvisionallySaveForm,
+    kOnJavaScriptAutofillDetected,
     kOnTextFieldValueChanged,
     kQueryAutofillSuggestions,
     kShowSuggestionPopup,
@@ -37,6 +38,8 @@ struct CallTimerState {
     kEmitFormIssuesToDevtools,
     kExtractForms,
     kExtractFormsAndNotifyPasswordAutofillAgent,
+    kOnDevToolsSessionConnectionChanged,
+    kFormWithEmailVerificationTokenSubmitted,
   };
   CallSite call_site = internal::IsRequired();
   base::TimeTicks last_autofill_agent_reset = internal::IsRequired();

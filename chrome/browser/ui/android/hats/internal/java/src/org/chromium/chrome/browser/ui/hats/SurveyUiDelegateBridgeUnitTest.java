@@ -23,10 +23,6 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
-import org.robolectric.annotation.Implementation;
-import org.robolectric.annotation.Implements;
-import org.robolectric.shadow.api.Shadow;
 
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -35,10 +31,10 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
 import org.chromium.components.messages.ManagedMessageDispatcher;
 import org.chromium.components.messages.MessageWrapper;
 import org.chromium.components.messages.MessagesFactory;
-import org.chromium.ui.InsetObserver;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.IntentRequestTracker;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.insets.InsetObserver;
 
 /** Unit tests for {@link SurveyUiDelegateBridge} on Java */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -70,7 +66,7 @@ public class SurveyUiDelegateBridgeUnitTest {
                         false,
                         IntentRequestTracker.createFromActivity(mActivity),
                         mInsetObserver,
-                        /* trackOcclusion= */ true);
+                        /* occlusionTrackingAllowed= */ true);
         MessagesFactory.attachMessageDispatcher(mWindow, mMockMessageDispatcher);
         TabModelSelectorSupplier.setInstanceForTesting(mTabModelSelector);
     }
@@ -99,21 +95,19 @@ public class SurveyUiDelegateBridgeUnitTest {
     }
 
     @Test
-    @Config(shadows = ShadowMessageSurveyUiDelegate.class)
     public void createBridgeFromMessage_Success() {
+        SurveyUiDelegate mockDelegate = Mockito.mock(SurveyUiDelegate.class);
+        SurveyUiDelegateBridge.setDelegateForTesting(mockDelegate);
         MessageWrapper wrapper = MessageWrapper.create(1L, /*MessageIdentifier.INVALID_MESSAGE*/ 0);
         SurveyUiDelegateBridge delegate =
                 SurveyUiDelegateBridge.createFromMessage(TEST_NATIVE_POINTER, wrapper, mWindow);
         assertNotNull(delegate);
 
-        ShadowMessageSurveyUiDelegate testDelegate =
-                Shadow.extract(delegate.getDelegateForTesting());
-
         delegate.showSurveyInvitation(() -> {}, () -> {}, () -> {});
-        verify(testDelegate.mMockDelegate).showSurveyInvitation(notNull(), notNull(), notNull());
+        verify(mockDelegate).showSurveyInvitation(notNull(), notNull(), notNull());
 
         delegate.dismiss();
-        verify(testDelegate.mMockDelegate).dismiss();
+        verify(mockDelegate).dismiss();
 
         verifyNoInteractions(mMockSurveyUiDelegateBridge);
     }
@@ -142,28 +136,5 @@ public class SurveyUiDelegateBridgeUnitTest {
         SurveyUiDelegateBridge delegate =
                 SurveyUiDelegateBridge.createFromMessage(TEST_NATIVE_POINTER, wrapper, mWindow);
         assertNull(delegate);
-    }
-
-    @Implements(MessageSurveyUiDelegate.class)
-    public static class ShadowMessageSurveyUiDelegate {
-        private final SurveyUiDelegate mMockDelegate;
-
-        public ShadowMessageSurveyUiDelegate() {
-            mMockDelegate = Mockito.mock(SurveyUiDelegate.class);
-        }
-
-        @Implementation
-        protected void showSurveyInvitation(
-                Runnable onSurveyAccepted,
-                Runnable onSurveyDeclined,
-                Runnable onSurveyPresentationFailed) {
-            mMockDelegate.showSurveyInvitation(
-                    onSurveyAccepted, onSurveyDeclined, onSurveyPresentationFailed);
-        }
-
-        @Implementation
-        protected void dismiss() {
-            mMockDelegate.dismiss();
-        }
     }
 }

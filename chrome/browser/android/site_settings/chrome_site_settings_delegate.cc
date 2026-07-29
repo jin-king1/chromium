@@ -2,13 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
-#include "base/containers/contains.h"
 #include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"
 #include "chrome/browser/file_system_access/file_system_access_permission_context_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -21,7 +21,7 @@
 static std::vector<std::string>
 JNI_ChromeSiteSettingsDelegate_GetOriginsWithFileSystemAccessGrants(
     JNIEnv* env,
-    const jni_zero::JavaParamRef<jobject>& j_profile) {
+    const jni_zero::JavaRef<jobject>& j_profile) {
   Profile* profile = Profile::FromJavaObject(j_profile);
   std::vector<std::string> result;
   auto* context =
@@ -38,8 +38,8 @@ JNI_ChromeSiteSettingsDelegate_GetOriginsWithFileSystemAccessGrants(
 static jni_zero::ScopedJavaLocalRef<jobjectArray>
 JNI_ChromeSiteSettingsDelegate_GetFileSystemAccessGrants(
     JNIEnv* env,
-    const jni_zero::JavaParamRef<jobject>& j_profile,
-    std::string& origin) {
+    const jni_zero::JavaRef<jobject>& j_profile,
+    const std::string& origin) {
   Profile* profile = Profile::FromJavaObject(j_profile);
   std::vector<std::string> paths;
   std::vector<std::string> display_names;
@@ -57,14 +57,18 @@ JNI_ChromeSiteSettingsDelegate_GetFileSystemAccessGrants(
       paths.push_back(grant.path.value());
       display_names.push_back(grant.display_name);
     }
+
+    std::ranges::sort(grants.file_write_grants);
     for (const content::PathInfo& grant : grants.file_read_grants) {
-      if (!base::Contains(grants.file_write_grants, grant)) {
+      if (!std::ranges::binary_search(grants.file_write_grants, grant)) {
         paths.push_back(grant.path.value());
         display_names.push_back(grant.display_name);
       }
     }
+
+    std::ranges::sort(grants.directory_write_grants);
     for (const content::PathInfo& grant : grants.directory_read_grants) {
-      if (!base::Contains(grants.directory_write_grants, grant)) {
+      if (!std::ranges::binary_search(grants.directory_write_grants, grant)) {
         paths.push_back(grant.path.value());
         display_names.push_back(grant.display_name);
       }
@@ -77,9 +81,9 @@ JNI_ChromeSiteSettingsDelegate_GetFileSystemAccessGrants(
 
 static void JNI_ChromeSiteSettingsDelegate_RevokeFileSystemAccessGrant(
     JNIEnv* env,
-    const jni_zero::JavaParamRef<jobject>& j_profile,
-    std::string& origin,
-    std::string& file) {
+    const jni_zero::JavaRef<jobject>& j_profile,
+    const std::string& origin,
+    const std::string& file) {
   Profile* profile = Profile::FromJavaObject(j_profile);
   auto* context =
       FileSystemAccessPermissionContextFactory::GetForProfileIfExists(profile);
@@ -88,3 +92,5 @@ static void JNI_ChromeSiteSettingsDelegate_RevokeFileSystemAccessGrant(
                          base::FilePath(file));
   }
 }
+
+DEFINE_JNI(ChromeSiteSettingsDelegate)

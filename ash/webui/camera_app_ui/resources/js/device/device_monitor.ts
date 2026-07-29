@@ -8,7 +8,8 @@ import * as loadTimeData from '../models/load_time_data.js';
 import {DeviceOperator} from '../mojo/device_operator.js';
 import {speak} from '../spoken_msg.js';
 import * as state from '../state.js';
-import {ErrorLevel, ErrorType, VideoConfig} from '../type.js';
+import type {VideoConfig} from '../type.js';
+import {ErrorLevel, ErrorType} from '../type.js';
 import {sleep} from '../util.js';
 
 import {Camera3DeviceInfo} from './camera3_device_info.js';
@@ -77,7 +78,6 @@ export class DeviceMonitor {
     } catch (e) {
       if (loadTimeData.isCCADisallowed()) {
         // The failure is expected due to the policy so don't throw any error.
-        // TODO(b/297317408): Show messages on the UI.
         // eslint-disable-next-line no-console
         console.log('Failed to load camera since it is blocked by policy');
       } else {

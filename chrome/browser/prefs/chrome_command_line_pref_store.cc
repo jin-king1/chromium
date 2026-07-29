@@ -32,12 +32,17 @@
 #include "services/network/public/cpp/network_switches.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/display/display_switches.h"
+#include "ui/gl/gl_switches.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "chrome/browser/ash/borealis/borealis_prefs.h"
 #include "chrome/browser/ash/borealis/borealis_switches.h"
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "extensions/common/switches.h"
 #endif
 
 const CommandLinePrefStore::SwitchToPreferenceMapEntry
@@ -69,7 +74,7 @@ const CommandLinePrefStore::SwitchToPreferenceMapEntry
 const CommandLinePrefStore::BooleanSwitchToPreferenceMapEntry
     ChromeCommandLinePrefStore::boolean_switch_map_[] = {
         {switches::kDisable3DAPIs, prefs::kDisable3DAPIs, true},
-        {switches::kEnableCloudPrintProxy, prefs::kCloudPrintProxyEnabled,
+        {switches::kEnableUnsafeSwiftShader, prefs::kEnableUnsafeSwiftShader,
          true},
         {switches::kNoPings, prefs::kEnableHyperlinkAuditing, false},
         {switches::kAllowRunningInsecureContent,
@@ -163,7 +168,7 @@ void ChromeCommandLinePrefStore::ApplyProxyMode() {
 
 void ChromeCommandLinePrefStore::ApplySSLSwitches() {
   if (command_line()->HasSwitch(switches::kCipherSuiteBlacklist)) {
-    base::Value::List list_value;
+    base::ListValue list_value;
     const std::vector<std::string> str_list = base::SplitString(
         command_line()->GetSwitchValueASCII(switches::kCipherSuiteBlacklist),
         ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
@@ -176,10 +181,12 @@ void ChromeCommandLinePrefStore::ApplySSLSwitches() {
 }
 
 void ChromeCommandLinePrefStore::ApplyBackgroundModeSwitches() {
-  if (command_line()->HasSwitch(switches::kDisableExtensions)) {
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (command_line()->HasSwitch(extensions::switches::kDisableExtensions)) {
     SetValue(prefs::kBackgroundModeEnabled, base::Value(false),
              WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
   }
+#endif
 }
 
 void ChromeCommandLinePrefStore::ApplyExplicitlyAllowedPortSwitch() {
@@ -187,7 +194,7 @@ void ChromeCommandLinePrefStore::ApplyExplicitlyAllowedPortSwitch() {
     return;
   }
 
-  base::Value::List integer_list;
+  base::ListValue integer_list;
   std::string switch_value =
       command_line()->GetSwitchValueASCII(switches::kExplicitlyAllowedPorts);
   const auto& split = base::SplitStringPiece(

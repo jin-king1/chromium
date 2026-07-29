@@ -6,10 +6,12 @@
 
 #include <limits>
 #include <optional>
+#include <utility>
 
 #include "ash/controls/rounded_scroll_bar.h"
 #include "ash/glanceables/common/glanceables_time_management_bubble_view.h"
 #include "ash/glanceables/common/glanceables_view_id.h"
+#include "base/functional/callback_helpers.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -280,7 +282,7 @@ GlanceablesContentsScrollView::GlanceablesContentsScrollView(
   scroll_bar_ = unique_scroll_bar.get();
   SetVerticalScrollBar(std::move(unique_scroll_bar));
 
-  SetID(base::to_underlying(GlanceablesViewId::kContentsScrollView));
+  SetID(std::to_underlying(GlanceablesViewId::kContentsScrollView));
   SetProperty(views::kFlexBehaviorKey,
               views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
                                        views::MaximumFlexSizeRule::kUnbounded)

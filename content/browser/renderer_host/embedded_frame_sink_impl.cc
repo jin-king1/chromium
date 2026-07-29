@@ -34,7 +34,7 @@ EmbeddedFrameSinkImpl::~EmbeddedFrameSinkImpl() {
     host_frame_sink_manager_->UnregisterFrameSinkHierarchy(
         parent_frame_sink_id_, frame_sink_id_);
   }
-  host_frame_sink_manager_->InvalidateFrameSinkId(frame_sink_id_, this);
+  host_frame_sink_manager_->InvalidateFrameSinkId(frame_sink_id_, this, {});
 }
 
 void EmbeddedFrameSinkImpl::CreateCompositorFrameSink(
@@ -104,6 +104,21 @@ void EmbeddedFrameSinkImpl::RegisterFrameSinkHierarchy() {
   }
   DLOG(ERROR) << "Unable to register " << parent_frame_sink_id_
               << " as parent of " << frame_sink_id_;
+}
+
+void EmbeddedFrameSinkImpl::SetParentFrameSinkId(
+    const viz::FrameSinkId& parent_frame_sink_id) {
+  CHECK(parent_frame_sink_id.is_valid());
+  if (has_registered_compositor_frame_sink_) {
+    if (parent_frame_sink_id_ == parent_frame_sink_id) {
+      return;
+    }
+    host_frame_sink_manager_->UnregisterFrameSinkHierarchy(
+        parent_frame_sink_id_, frame_sink_id_);
+    has_registered_compositor_frame_sink_ = false;
+  }
+  parent_frame_sink_id_ = parent_frame_sink_id;
+  RegisterFrameSinkHierarchy();
 }
 
 void EmbeddedFrameSinkImpl::UnregisterFrameSinkHierarchy() {

@@ -22,6 +22,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/threading/hang_watcher.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "base/uuid.h"
 #include "base/win/scoped_handle.h"
@@ -100,6 +101,11 @@ bool InvokeAttachmentServices(const base::FilePath& full_path,
                               const GURL& referrer_url,
                               const GUID& client_guid,
                               QuarantineFileResult* result) {
+  // Never consider the current WatchHangsInScope as hung. The following
+  // function is calling 3rd party code that can scan the file.
+  // see: https://crbug.com/490418249
+  base::HangWatcher::InvalidateActiveExpectations();
+
   Microsoft::WRL::ComPtr<IAttachmentExecute> attachment_services;
   HRESULT hr = ::CoCreateInstance(CLSID_AttachmentServices, nullptr, CLSCTX_ALL,
                                   IID_PPV_ARGS(&attachment_services));
@@ -193,8 +199,9 @@ QuarantineFileResult SetInternetZoneIdentifierDirectly(
   base::win::ScopedHandle file(::CreateFile(path.c_str(), GENERIC_WRITE, kShare,
                                             nullptr, OPEN_ALWAYS,
                                             FILE_ATTRIBUTE_NORMAL, nullptr));
-  if (!file.IsValid())
+  if (!file.is_valid()) {
     return QuarantineFileResult::ANNOTATION_FAILED;
+  }
 
   static const char kReferrerUrlFormat[] = "ReferrerUrl=%s\r\n";
   static const char kHostUrlFormat[] = "HostUrl=%s\r\n";

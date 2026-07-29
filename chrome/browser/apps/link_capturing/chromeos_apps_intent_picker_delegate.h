@@ -34,7 +34,6 @@ class ChromeOsAppsIntentPickerDelegate : public AppsIntentPickerDelegate {
 
   bool ShouldShowIntentPickerWithApps() override;
   void FindAllAppsForUrl(const GURL& url,
-                         int icon_size_in_dep,
                          IntentPickerAppsCallback apps_callback) override;
   bool IsPreferredAppForSupportedLinks(const std::string& app_id) override;
   void LoadSingleAppIcon(PickerEntryType entry_type,
@@ -54,7 +53,8 @@ class ChromeOsAppsIntentPickerDelegate : public AppsIntentPickerDelegate {
   void LaunchApp(content::WebContents* web_contents,
                  const GURL& url,
                  const std::string& launch_name,
-                 PickerEntryType entry_type) override;
+                 PickerEntryType entry_type,
+                 base::OnceClosure callback = base::DoNothing()) override;
 
  private:
   raw_ref<Profile> profile_;

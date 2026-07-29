@@ -4,12 +4,14 @@
 
 #include "content/browser/media/capture/sub_capture_target_id_web_contents_helper.h"
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/functional/callback.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/token.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
@@ -17,10 +19,6 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
-
-#if BUILDFLAG(IS_ANDROID)
-#error Region Capture not supported on Android.
-#endif
 
 namespace content {
 
@@ -67,6 +65,11 @@ WebContents* SubCaptureTargetIdWebContentsHelper::GetRelevantWebContents(
   if (!rfhi || !rfhi->IsActive()) {
     return nullptr;
   }
+
+  if (rfhi->IsNestedWithinFencedFrame()) {
+    return nullptr;
+  }
+
   rfhi = rfhi->GetMainFrame();  // TODO(crbug.com/40287690): Remove this line.
 
   if (GetContentClient()
@@ -126,7 +129,7 @@ bool SubCaptureTargetIdWebContentsHelper::IsAssociatedWith(
   const std::vector<base::Token>& ids =
       (type == Type::kCropTarget) ? crop_ids_ : restriction_ids_;
 
-  return base::Contains(ids, id);
+  return std::ranges::contains(ids, id);
 }
 
 void SubCaptureTargetIdWebContentsHelper::ReadyToCommitNavigation(

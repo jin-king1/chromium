@@ -10,14 +10,16 @@
 #include <vector>
 
 #include "base/strings/strcat.h"
-#include "content/browser/child_process_security_policy_impl.h"
+#include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
+#include "content/browser/back_forward_cache/back_forward_cache_impl.h"
 #include "content/browser/process_internals/process_internals.mojom.h"
 #include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/agent_scheduling_group_host.h"
-#include "content/browser/renderer_host/back_forward_cache_impl.h"
 #include "content/browser/renderer_host/navigation_controller_impl.h"
 #include "content/browser/renderer_host/navigation_entry_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/site_isolation_policy.h"
@@ -53,15 +55,16 @@ using IsolatedOriginSource = ChildProcessSecurityPolicy::IsolatedOriginSource;
   frame_info->site_instance = ::mojom::SiteInstanceInfo::New();
   frame_info->site_instance->id = site_instance->GetId().value();
   frame_info->site_instance->locked =
-      site_instance->GetProcess()->GetProcessLock().is_locked_to_site();
+      site_instance->GetProcess()->GetProcessLock().IsLockedToSite();
   frame_info->site_instance->site_url =
       site_instance->HasSite()
           ? std::make_optional(site_instance->GetSiteInfo().site_url())
           : std::nullopt;
-  frame_info->site_instance->is_guest = site_instance->IsGuest();
+  frame_info->site_instance->is_guest =
+      site_instance->GetSecurityPrincipal().IsGuest();
   frame_info->site_instance->is_pdf = site_instance->IsPdf();
   frame_info->site_instance->is_sandbox_for_iframes =
-      site_instance->GetSiteInfo().is_sandboxed();
+      site_instance->GetSecurityPrincipal().IsSandboxed();
   frame_info->site_instance->are_javascript_optimizers_enabled =
       !site_instance->GetSiteInfo().are_v8_optimizations_disabled();
   frame_info->site_instance->site_instance_group_id =
@@ -72,7 +75,8 @@ using IsolatedOriginSource = ChildProcessSecurityPolicy::IsolatedOriginSource;
   // If the SiteInstance has a non-default StoragePartition, include a basic
   // string representation of it.  Skip cases where the StoragePartition is
   // already conveyed in the site URL to avoid redundancy.
-  const auto& partition = site_instance->GetStoragePartitionConfig();
+  const auto& partition =
+      site_instance->GetSecurityPrincipal().GetStoragePartitionConfig();
   if (!partition.is_default() &&
       site_instance->GetSiteInfo().site_url().spec().find(
           partition.partition_domain()) == std::string::npos) {
@@ -87,16 +91,17 @@ using IsolatedOriginSource = ChildProcessSecurityPolicy::IsolatedOriginSource;
   // Only send a process lock URL if it's different from the site URL.  In the
   // common case they are the same, so we avoid polluting the UI with two
   // identical URLs.
-  bool should_show_lock_url = frame_info->site_instance->locked &&
-                              site_instance->GetSiteInfo().process_lock_url() !=
-                                  site_instance->GetSiteInfo().site_url();
+  bool should_show_lock_url =
+      frame_info->site_instance->locked &&
+      site_instance->GetSiteInfo().GetProcessLockURL() !=
+          site_instance->GetSiteInfo().site_url();
   frame_info->site_instance->process_lock_url =
       should_show_lock_url
-          ? std::make_optional(site_instance->GetSiteInfo().process_lock_url())
+          ? std::make_optional(site_instance->GetSiteInfo().GetProcessLockURL())
           : std::nullopt;
 
   frame_info->site_instance->requires_origin_keyed_process =
-      site_instance->GetSiteInfo().requires_origin_keyed_process();
+      site_instance->GetSiteInfo().agent_cluster_key().IsOriginKeyed();
 
   return frame_info;
 }
@@ -131,8 +136,8 @@ using IsolatedOriginSource = ChildProcessSecurityPolicy::IsolatedOriginSource;
         ::mojom::FrameInfoPtr frame_info =
             RenderFrameHostToFrameInfoNoTraverse(rfh, type);
         all_frame_info[rfh] = frame_info.get();
-        RenderFrameHostImpl* parent = rfh->GetParentOrOuterDocument();
-        DCHECK(base::Contains(all_frame_info, parent));
+        RenderFrameHostImpl* parent = rfh->GetParentOrOuterDocumentOrEmbedder();
+        DCHECK(all_frame_info.contains(parent));
         all_frame_info[parent]->subframes.push_back(std::move(frame_info));
         return RenderFrameHost::FrameIterationAction::kContinue;
       });
@@ -189,7 +194,9 @@ ProcessInternalsHandlerImpl::~ProcessInternalsHandlerImpl() = default;
 void ProcessInternalsHandlerImpl::GetProcessCountInfo(
     GetProcessCountInfoCallback callback) {
   ::mojom::ProcessCountInfoPtr info = ::mojom::ProcessCountInfo::New();
-  info->renderer_process_count_total = RenderProcessHostImpl::GetProcessCount();
+  info->renderer_process_count_total = RenderProcessHostImpl::GetCount();
+  info->live_renderer_processes_count_total =
+      RenderProcessHostImpl::GetLiveCount();
   info->renderer_process_count_for_limit =
       RenderProcessHostImpl::GetProcessCountForLimit();
   info->renderer_process_limit =
@@ -201,14 +208,22 @@ void ProcessInternalsHandlerImpl::GetProcessCountInfo(
 void ProcessInternalsHandlerImpl::GetIsolationMode(
     GetIsolationModeCallback callback) {
   std::vector<std::string_view> modes;
-  if (SiteIsolationPolicy::UseDedicatedProcessesForAllSites())
+  if (SiteIsolationPolicy::UseDedicatedProcessesForAllSites()) {
     modes.push_back("Site Per Process");
-  if (SiteIsolationPolicy::AreIsolatedOriginsEnabled())
+  }
+  if (SiteIsolationPolicy::AreIsolatedOriginsEnabled()) {
     modes.push_back("Isolate Origins");
-  if (SiteIsolationPolicy::IsStrictOriginIsolationEnabled())
+  }
+  if (SiteIsolationPolicy::AreOriginKeyedProcessesEnabledByDefault(
+          browser_context_)) {
+    modes.push_back("Origin Keyed Processes by Default");
+  }
+  if (SiteIsolationPolicy::IsStrictOriginIsolationEnabled()) {
     modes.push_back("Strict Origin Isolation");
-  if (SiteIsolationPolicy::IsSiteIsolationForCOOPEnabled())
+  }
+  if (SiteIsolationPolicy::IsSiteIsolationForCOOPEnabled()) {
     modes.push_back("COOP");
+  }
 
   // Retrieve any additional site isolation modes controlled by the embedder.
   std::vector<std::string> additional_modes =
@@ -295,7 +310,7 @@ void ProcessInternalsHandlerImpl::GetGloballyIsolatedOrigins(
 void ProcessInternalsHandlerImpl::GetAllWebContentsInfo(
     GetAllWebContentsInfoCallback callback) {
   std::vector<::mojom::WebContentsInfoPtr> infos;
-  std::vector<WebContentsImpl*> all_contents =
+  std::vector<raw_ptr<WebContentsImpl>> all_contents =
       WebContentsImpl::GetAllWebContents();
 
   for (WebContentsImpl* web_contents : all_contents) {
@@ -320,10 +335,10 @@ void ProcessInternalsHandlerImpl::GetAllWebContentsInfo(
     }
 
     // Retrieve prerendering root frames.
-    web_contents->ForEachRenderFrameHostImpl(
+    web_contents->ForEachRenderFrameHostImplWithAction(
         [web_contents, &prerender_root_frames = info->prerender_root_frames](
             RenderFrameHostImpl* rfh) {
-          CollectPrerenders(web_contents, rfh, prerender_root_frames);
+          return CollectPrerenders(web_contents, rfh, prerender_root_frames);
         });
 
     infos.push_back(std::move(info));

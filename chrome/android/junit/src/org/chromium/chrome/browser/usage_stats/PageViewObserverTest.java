@@ -20,21 +20,20 @@ import static org.mockito.Mockito.when;
 import android.app.Activity;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatcher;
-import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
-import org.chromium.base.Callback;
 import org.chromium.base.Promise;
 import org.chromium.base.UserDataHost;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.tab.Tab;
@@ -44,12 +43,14 @@ import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab.TabViewManager;
 import org.chromium.chrome.browser.tab.TabViewProvider;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
 import java.lang.ref.WeakReference;
+import java.util.function.Supplier;
 
 /** Unit tests for PageViewObserver. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -61,8 +62,8 @@ public final class PageViewObserverTest {
     private static final String STARTING_FQDN = "www.one.com";
     private static final String DIFFERENT_FQDN = "www.two.com";
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Activity mActivity;
-    @Mock private ObservableSupplier<Tab> mTabSupplier;
     @Mock private Tab mTab;
     @Mock private Tab mTab2;
     @Mock private EventTracker mEventTracker;
@@ -71,8 +72,8 @@ public final class PageViewObserverTest {
     @Mock private WindowAndroid mWindowAndroid;
     @Mock private ChromeActivity mChromeActivity;
     @Mock private Supplier<TabContentManager> mTabContentManagerSupplier;
-    @Captor private ArgumentCaptor<Callback<Tab>> mTabSupplierCaptor;
 
+    private SettableNullableObservableSupplier<Tab> mTabSupplier;
     private UserDataHost mUserDataHost;
     private UserDataHost mUserDataHostTab2;
     private UserDataHost mDestroyedUserDataHost;
@@ -99,7 +100,7 @@ public final class PageViewObserverTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
+        mTabSupplier = ObservableSuppliers.createNullable(mTab);
 
         mUserDataHost = new UserDataHost();
         mUserDataHostTab2 = new UserDataHost();
@@ -116,7 +117,6 @@ public final class PageViewObserverTest {
         doReturn(new MockTabViewManager()).when(mTab2).getTabViewManager();
         doReturn(true).when(mTab).isInitialized();
         doReturn(true).when(mTab2).isInitialized();
-        doReturn(mTab).when(mTabSupplier).get();
         doReturn(mUserDataHost).when(mTab).getUserDataHost();
         doReturn(mUserDataHostTab2).when(mTab2).getUserDataHost();
         doReturn(Promise.fulfilled("1")).when(mTokenTracker).getTokenForFqdn(anyString());
@@ -166,7 +166,7 @@ public final class PageViewObserverTest {
     @Test
     public void updateUrl_noPaint_doesNotReportStart() {
         PageViewObserver observer = createPageViewObserver();
-        updateUrlNoPaint(mTab, STARTING_URL, observer);
+        startNavigation(mTab, STARTING_URL, observer);
         verify(mEventTracker, times(0)).addWebsiteEvent(argThat(isStartEvent(STARTING_FQDN)));
         reportPaint(mTab, STARTING_URL, observer);
         verify(mEventTracker, times(1)).addWebsiteEvent(argThat(isStartEvent(STARTING_FQDN)));
@@ -179,7 +179,6 @@ public final class PageViewObserverTest {
         reset(mEventTracker);
 
         doReturn(DIFFERENT_URL).when(mTab2).getUrl();
-        doReturn(mTab2).when(mTabSupplier).get();
         doReturn(false).when(mTab2).isHidden();
         changeTab(mTab2);
         verify(mEventTracker, times(1)).addWebsiteEvent(argThat(isStartEvent(DIFFERENT_FQDN)));
@@ -260,9 +259,8 @@ public final class PageViewObserverTest {
 
     @Test
     public void tabAdded_startReported() {
-        PageViewObserver observer = createPageViewObserver();
+        createPageViewObserver();
         doReturn(STARTING_URL).when(mTab2).getUrl();
-        doReturn(mTab2).when(mTabSupplier).get();
         changeTab(mTab2);
 
         verify(mEventTracker, times(1)).addWebsiteEvent(argThat(isStartEvent(STARTING_FQDN)));
@@ -270,9 +268,8 @@ public final class PageViewObserverTest {
 
     @Test
     public void tabAdded_notSelected_startNotReported() {
-        PageViewObserver observer = createPageViewObserver();
+        createPageViewObserver();
         doReturn(STARTING_URL).when(mTab).getUrl();
-        doReturn(null).when(mTabSupplier).get();
         changeTab(mTab);
 
         verify(mEventTracker, times(0)).addWebsiteEvent(argThat(isStartEvent(STARTING_FQDN)));
@@ -280,9 +277,8 @@ public final class PageViewObserverTest {
 
     @Test
     public void tabAdded_suspendedDomain() {
-        PageViewObserver observer = createPageViewObserver();
+        createPageViewObserver();
         doReturn(STARTING_URL).when(mTab2).getUrl();
-        doReturn(mTab2).when(mTabSupplier).get();
         doReturn(true).when(mSuspensionTracker).isWebsiteSuspended(STARTING_FQDN);
         changeTab(mTab2);
 
@@ -443,7 +439,7 @@ public final class PageViewObserverTest {
     public void customTab_startReportedUponConstruction() {
         doReturn(STARTING_URL).when(mTab).getUrl();
         doReturn(false).when(mTab).isHidden();
-        PageViewObserver observer = createPageViewObserver();
+        createPageViewObserver();
         verify(mEventTracker, times(1)).addWebsiteEvent(argThat(isStartEvent(STARTING_FQDN)));
 
         doReturn(DIFFERENT_URL).when(mTab2).getUrl();
@@ -454,10 +450,9 @@ public final class PageViewObserverTest {
 
     @Test
     public void construction_nullInitialTab() {
-        doReturn(null).when(mTabSupplier).get();
-        PageViewObserver observer = createPageViewObserver();
+        mTabSupplier = ObservableSuppliers.createNullable();
+        createPageViewObserver();
 
-        doReturn(mTab).when(mTabSupplier).get();
         doReturn(STARTING_URL).when(mTab).getUrl();
         changeTab(mTab);
         verify(mEventTracker, times(1)).addWebsiteEvent(argThat(isStartEvent(STARTING_FQDN)));
@@ -482,6 +477,7 @@ public final class PageViewObserverTest {
         observer.notifySiteSuspensionChanged(STARTING_FQDN, true);
     }
 
+    @SuppressWarnings("DirectInvocationOnMock")
     private PageViewObserver createPageViewObserver() {
         PageViewObserver observer =
                 new PageViewObserver(
@@ -491,9 +487,7 @@ public final class PageViewObserverTest {
                         mTokenTracker,
                         mSuspensionTracker,
                         mTabContentManagerSupplier);
-        verify(mTabSupplier, times(1)).addObserver(mTabSupplierCaptor.capture());
         Tab tab = mTabSupplier.get();
-        mTabSupplierCaptor.getValue().onResult(tab);
         if (tab != null) {
             verify(tab, times(1)).addObserver(observer);
         }
@@ -502,12 +496,21 @@ public final class PageViewObserverTest {
     }
 
     private void updateUrl(Tab tab, GURL url, TabObserver tabObserver) {
-        updateUrlNoPaint(tab, url, tabObserver);
+        startNavigation(tab, url, tabObserver);
         reportPaint(tab, url, tabObserver);
     }
 
-    private void updateUrlNoPaint(Tab tab, GURL url, TabObserver tabObserver) {
-        tabObserver.onUpdateUrl(tab, url);
+    private void startNavigation(Tab tab, GURL url, TabObserver tabObserver) {
+        NavigationHandle navigationHandle =
+                NavigationHandle.createForTesting(
+                        url,
+                        /* isInPrimaryMainFrame= */ true,
+                        /* isSameDocument= */ false,
+                        /* isRendererInitiated= */ false,
+                        0,
+                        /* hasUserGesture= */ false,
+                        /* isReload= */ false);
+        tabObserver.onDidStartNavigationInPrimaryMainFrame(tab, navigationHandle);
     }
 
     private void reportPaint(Tab tab, GURL url, TabObserver tabObserver) {
@@ -524,11 +527,11 @@ public final class PageViewObserverTest {
     }
 
     private void changeTab(Tab newTab) {
-        mTabSupplierCaptor.getValue().onResult(newTab);
+        mTabSupplier.set(newTab);
     }
 
     private ArgumentMatcher<WebsiteEvent> isStartEvent(String fqdn) {
-        return new ArgumentMatcher<WebsiteEvent>() {
+        return new ArgumentMatcher<>() {
             @Override
             public boolean matches(WebsiteEvent event) {
                 return event.getType() == WebsiteEvent.EventType.START
@@ -543,7 +546,7 @@ public final class PageViewObserverTest {
     }
 
     private ArgumentMatcher<WebsiteEvent> isStopEvent(String fqdn) {
-        return new ArgumentMatcher<WebsiteEvent>() {
+        return new ArgumentMatcher<>() {
             @Override
             public boolean matches(WebsiteEvent event) {
                 return event.getType() == WebsiteEvent.EventType.STOP

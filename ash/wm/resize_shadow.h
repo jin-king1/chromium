@@ -16,13 +16,15 @@
 
 namespace aura {
 class Window;
-}
+}  // namespace aura
+
 namespace ui {
-class Layer;
-}
+class LayerNinePatch;
+}  // namespace ui
+
 namespace gfx {
 class Rect;
-}
+}  // namespace gfx
 
 namespace ash {
 
@@ -54,9 +56,9 @@ class ResizeShadow : public ui::ColorProviderSourceObserver {
     // Controls whether the resize shadow shall respond to hit testing or not.
     bool hit_test_enabled = true;
     int hide_duration_ms = 100;
-    // True if the resize shadow is configured for a window with rounded
+    // True if the resize shadow is configured for a window with large rounded
     // corners.
-    bool is_for_rounded_window = false;
+    bool is_for_large_rounded_corners = false;
   };
 
   ResizeShadow(aura::Window* window,
@@ -67,10 +69,12 @@ class ResizeShadow : public ui::ColorProviderSourceObserver {
   ~ResizeShadow() override;
 
   bool visible() const { return visible_; }
-  bool is_for_rounded_window() const { return params_.is_for_rounded_window; }
+  bool is_for_large_rounded_corners() const {
+    return params_.is_for_large_rounded_corners;
+  }
 
   int GetLastHitTestForTest() const { return last_hit_test_; }
-  const ui::Layer* GetLayerForTest() const { return layer_.get(); }
+  const ui::LayerNinePatch* GetLayerForTest() const { return layer_.get(); }
   ResizeShadowType GetResizeShadowTypeForTest() const { return type_; }
 
  private:
@@ -107,7 +111,7 @@ class ResizeShadow : public ui::ColorProviderSourceObserver {
 
   // The layer to which the shadow is drawn. The layer is stacked beneath the
   // layer of |window_|.
-  std::unique_ptr<ui::Layer> layer_;
+  std::unique_ptr<ui::LayerNinePatch> layer_;
 
   // Hit test value from last call to ShowForHitTest().  Used to prevent
   // repeatedly triggering the same animations for the same hit.

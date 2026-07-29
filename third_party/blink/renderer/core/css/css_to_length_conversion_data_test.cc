@@ -17,7 +17,6 @@
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/geometry/calculation_value.h"
 #include "third_party/blink/renderer/platform/geometry/length.h"
-#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 
@@ -33,18 +32,20 @@ class TestAnchorEvaluator : public AnchorEvaluator {
 
   std::optional<LayoutUnit> Evaluate(
       const AnchorQuery&,
-      const ScopedCSSName* position_anchor,
+      const DefaultAnchorData&,
       const std::optional<PositionAreaOffsets>&) override {
     return result_;
   }
   std::optional<PositionAreaOffsets> ComputePositionAreaOffsetsForLayout(
-      const ScopedCSSName*,
-      PositionArea) override {
-    return PositionAreaOffsets();
+      const DefaultAnchorData&) override {
+    return std::nullopt;
   }
   std::optional<PhysicalOffset> ComputeAnchorCenterOffsets(
       const ComputedStyleBuilder&) override {
     return std::nullopt;
+  }
+  WritingDirectionMode GetContainerWritingDirection() const override {
+    return {WritingMode::kHorizontalTb, TextDirection::kLtr};
   }
 
  private:
@@ -102,7 +103,9 @@ class CSSToLengthConversionDataTest : public PageTestBase {
         CSSToLengthConversionData::ContainerSizes(),
         CSSToLengthConversionData::AnchorData(
             options.anchor_evaluator,
-            /* position_anchor */ nullptr,
+            DefaultAnchorData(
+                StylePositionAnchor(StylePositionAnchor::Type::kNormal),
+                PositionArea()),
             /* position_area_offsets */ std::nullopt),
         options.data_zoom.value_or(div->GetComputedStyle()->EffectiveZoom()),
         options.flags ? *options.flags : ignored_flags_, /*element=*/nullptr);
@@ -538,10 +541,7 @@ TEST_F(CSSToLengthConversionDataTest, ContainerUnitsWithContainerName) {
       GetDocument().documentElement()->GetComputedStyle(),
       CSSToLengthConversionData::ViewportSize(GetDocument().GetLayoutView()),
       CSSToLengthConversionData::ContainerSizes(child),
-      CSSToLengthConversionData::AnchorData(
-          nullptr,
-          /* position_anchor */ nullptr,
-          /* position_area_offsets */ std::nullopt),
+      CSSToLengthConversionData::AnchorData(),
       child->GetComputedStyle()->EffectiveZoom(), flags, /*element=*/nullptr);
 
   ScopedCSSName* name = MakeGarbageCollected<ScopedCSSName>(

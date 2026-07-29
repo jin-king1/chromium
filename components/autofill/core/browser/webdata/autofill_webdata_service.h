@@ -5,22 +5,21 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_WEBDATA_AUTOFILL_WEBDATA_SERVICE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_WEBDATA_AUTOFILL_WEBDATA_SERVICE_H_
 
+#include <stdint.h>
+
 #include <string>
-#include <string_view>
 #include <vector>
 
-#include "base/memory/ref_counted.h"
-#include "base/memory/weak_ptr.h"
-#include "base/observer_list.h"
+#include "base/functional/callback_forward.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/supports_user_data.h"
-#include "base/uuid.h"
+#include "base/time/time.h"
+#include "build/buildflag.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
-#include "components/autofill/core/browser/data_model/passes/loyalty_card.h"
+#include "components/autofill/core/browser/data_model/valuables/valuable_types.h"
 #include "components/autofill/core/browser/webdata/autofill_change.h"
 #include "components/autofill/core/common/form_field_data.h"
-#include "components/sync/base/data_type.h"
-#include "components/webdata/common/web_data_results.h"
 #include "components/webdata/common/web_data_service_base.h"
 #include "components/webdata/common/web_data_service_consumer.h"
 
@@ -57,21 +56,35 @@ class AutofillWebDataService : public WebDataServiceBase {
   // Schedules a task to add form fields to the web database.
   virtual void AddFormFields(const std::vector<FormFieldData>& fields);
 
-  // Initiates the request for a vector of values which have been entered in
-  // form input fields named |name|. The method OnWebDataServiceRequestDone of
-  // |consumer| gets called back when the request is finished, with the vector
-  // included in the argument |result|.
+  // Initiates a request for autocomplete entries in the legacy
+  // non-label-sensitive table matching `name` and `prefix`.
+  // `consumer::OnWebDataServiceRequestDone` is called when the request
+  // finishes.
   virtual WebDataServiceBase::Handle GetFormValuesForElementName(
       const std::u16string& name,
       const std::u16string& prefix,
       int limit,
       WebDataServiceRequestCallback consumer);
 
+  // Asynchronously fetches Autofill suggestions.
+  //
+  // Queries for stored form values matching the field's `name`, `label`,
+  // and the user-typed `prefix`. Returns up to `limit` suggestions
+  // via the `consumer`'s OnWebDataServiceRequestDone callback.
+  virtual WebDataServiceBase::Handle GetFormValuesForElementNameAndLabel(
+      std::u16string_view name,
+      std::u16string_view label,
+      std::u16string_view prefix,
+      int limit,
+      WebDataServiceRequestCallback consumer);
+
   // Removes form elements recorded for Autocomplete from the database.
   void RemoveFormElementsAddedBetween(base::Time delete_begin,
                                       base::Time delete_end);
-  void RemoveFormValueForElementName(const std::u16string& name,
-                                     const std::u16string& value);
+  // Deletes autocomplete `value` entries with matching `name` and/or `label`.
+  virtual void RemoveFormValueForElementNameAndLabel(std::u16string_view name,
+                                                     std::u16string_view label,
+                                                     std::u16string_view value);
 
   // Schedules a task to add an Autofill profile to the web database.
   void AddAutofillProfile(
@@ -84,9 +97,16 @@ class AutofillWebDataService : public WebDataServiceBase {
       base::OnceCallback<void(const AutofillProfileChange&)> on_success);
 
   // Schedules a task to remove an Autofill profile from the web database.
-  // |guid| is the identifier of the profile to remove.
+  // `guid` is the identifier of the profile to remove.
+  // In practice `change_type` will either be `REMOVE` or `HIDE_IN_AUTOFILL`. It
+  // will be used to determine what type of change (permanent remove or update)
+  // should happen on the server. Both of them result in the entry being removed
+  // from the local database.
+  // Important: `HIDE_IN_AUTOFILL` should only be used for calls from the
+  // deduplication logic for account profiles or for Home and Work.
   void RemoveAutofillProfile(
       const std::string& guid,
+      AutofillProfileChange::Type change_type,
       base::OnceCallback<void(const AutofillProfileChange&)> on_success);
 
   // Initiates the request for Autofill profiles. The profiles are passed to the
@@ -101,16 +121,22 @@ class AutofillWebDataService : public WebDataServiceBase {
       EntityInstance entity,
       base::OnceCallback<void(EntityInstanceChange)> on_success);
   void RemoveEntityInstance(
-      base::Uuid guid,
+      EntityInstance entity,
       base::OnceCallback<void(EntityInstanceChange)> on_success);
   void RemoveEntityInstancesModifiedBetween(base::Time delete_begin,
                                             base::Time delete_end);
   WebDataServiceBase::Handle GetEntityInstances(
       WebDataServiceRequestCallback consumer);
 
+  // Updates the `EntityInstance::EntityMetadata` related to the given `entity`.
+  void UpdateEntityMetadata(const EntityInstance& entity);
+
   // Retrieves LoyaltyCards from the database.
   WebDataServiceBase::Handle GetLoyaltyCards(
       WebDataServiceRequestCallback consumer);
+
+  // Updates the `ValuableMetadata` for a valuable.
+  void UpdateValuableMetadata(const ValuableMetadata& metadata);
 
   // Schedules a task to count the number of unique autofill values contained
   // in the time interval [|begin|, |end|). |begin| and |end| can be null
@@ -168,6 +194,11 @@ class AutofillWebDataService : public WebDataServiceBase {
 
   // Method to clear all the local CVCs from the web database.
   void ClearLocalCvcs();
+
+#if BUILDFLAG(IS_IOS)
+  // Method to clean up for crbug.com/445879524.
+  void CleanupForCrbug445879524();
+#endif  // BUILDFLAG(IS_IOS)
 
   // Initiates the request for local/server credit cards.  The method
   // OnWebDataServiceRequestDone of |consumer| gets called when the request is
@@ -249,10 +280,8 @@ class AutofillWebDataService : public WebDataServiceBase {
   void RemoveObserver(AutofillWebDataServiceObserverOnUISequence* observer);
 
   // Returns a SupportsUserData object that may be used to store data accessible
-  // from the DB sequence. Should be called only from the DB sequence, and will
-  // be destroyed on the DB sequence soon after ShutdownOnUISequence() is
-  // called.
-  base::SupportsUserData* GetDBUserData();
+  // from the DB sequence. Must be called only from the DB sequence.
+  base::SupportsUserData& GetDBUserData();
 
   // Takes a callback which will be called on the DB sequence with a pointer to
   // an AutofillWebdataBackend. This backend can be used to access or update the

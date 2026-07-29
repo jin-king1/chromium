@@ -10,7 +10,6 @@
 
 #include <optional>
 
-#include "base/functional/callback.h"
 #include "base/time/time.h"
 #include "media/base/video_frame.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
@@ -76,7 +75,7 @@ class MODULES_EXPORT LowLatencyVideoRendererAlgorithm {
   scoped_refptr<media::VideoFrame> current_frame_;
 
   // Queue of incoming frames waiting for rendering.
-  using VideoFrameQueue = WTF::Deque<scoped_refptr<media::VideoFrame>>;
+  using VideoFrameQueue = Deque<scoped_refptr<media::VideoFrame>>;
   VideoFrameQueue frame_queue_;
 
   // Render deadline min for when the last frame was rendered.

@@ -11,11 +11,12 @@
 #import "ios/chrome/browser/infobars/model/infobar_metrics_recorder.h"
 #import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_modal_constants.h"
 #import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_password_modal_delegate.h"
-#import "ios/chrome/browser/passwords/model/ios_chrome_password_infobar_metrics_recorder.h"
+#import "ios/chrome/browser/passwords/infobars/public/ios_chrome_password_infobar_metrics_recorder.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_text_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_button_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_edit_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
+#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_edit_item_delegate.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
@@ -31,16 +32,16 @@ typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeURL = kItemTypeEnumZero,
   ItemTypeUsername,
   ItemTypePassword,
-  ItemTypeSaveCredentials,
-  ItemTypeCancel,
+  ItemTypeDetails,
 };
 
 const CGFloat kSymbolSize = 15;
 }  // namespace
 
-@interface InfobarPasswordTableViewController () <UITextFieldDelegate>
+@interface InfobarPasswordTableViewController () <TableViewTextEditItemDelegate,
+                                                  UITextFieldDelegate>
 // Properties backing InfobarPasswordModalConsumer interface.
-@property(nonatomic, copy) NSString* username;
+@property(nonatomic, copy) NSString* originalUsername;
 @property(nonatomic, copy) NSString* maskedPassword;
 @property(nonatomic, copy) NSString* unmaskedPassword;
 @property(nonatomic, copy) NSString* detailsTextMessage;
@@ -52,50 +53,12 @@ const CGFloat kSymbolSize = 15;
 @property(nonatomic, strong) TableViewTextEditItem* usernameItem;
 // Item that holds the Password TextField information.
 @property(nonatomic, strong) TableViewTextEditItem* passwordItem;
-// Item that holds the SaveCredentials Button information.
-@property(nonatomic, strong) TableViewTextButtonItem* saveCredentialsItem;
-// Item that holds the cancel Button for this Infobar. e.g. "Never Save for this
-// site".
-@property(nonatomic, strong) TableViewTextButtonItem* cancelInfobarItem;
-// Username at the time the InfobarModal is presented.
-@property(nonatomic, copy) NSString* originalUsername;
-// InfobarPasswordModalDelegate for this ViewController.
-@property(nonatomic, strong) id<InfobarPasswordModalDelegate>
-    infobarModalDelegate;
-// Used to build and record metrics.
-@property(nonatomic, strong) InfobarMetricsRecorder* metricsRecorder;
-// Used to build and record metrics specific to passwords.
-@property(nonatomic, strong)
-    IOSChromePasswordInfobarMetricsRecorder* passwordMetricsRecorder;
 // Whether the current password being shown is masked or not.
 @property(nonatomic, assign) BOOL passwordMasked;
 @end
 
-@implementation InfobarPasswordTableViewController
-
-- (instancetype)initWithDelegate:(id<InfobarPasswordModalDelegate>)modalDelegate
-                            type:(InfobarType)infobarType {
-  self = [super initWithStyle:UITableViewStylePlain];
-  if (self) {
-    _infobarModalDelegate = modalDelegate;
-    _metricsRecorder =
-        [[InfobarMetricsRecorder alloc] initWithType:infobarType];
-    switch (infobarType) {
-      case InfobarType::kInfobarTypePasswordUpdate:
-        _passwordMetricsRecorder =
-            [[IOSChromePasswordInfobarMetricsRecorder alloc]
-                initWithType:PasswordInfobarType::kPasswordInfobarTypeUpdate];
-        break;
-      case InfobarType::kInfobarTypePasswordSave:
-        _passwordMetricsRecorder =
-            [[IOSChromePasswordInfobarMetricsRecorder alloc]
-                initWithType:PasswordInfobarType::kPasswordInfobarTypeSave];
-        break;
-      default:
-        NOTREACHED();
-    }
-  }
-  return self;
+@implementation InfobarPasswordTableViewController {
+  NSLayoutConstraint* _tableViewHeightConstraint;
 }
 
 #pragma mark - ViewController Lifecycle
@@ -103,49 +66,33 @@ const CGFloat kSymbolSize = 15;
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.backgroundColor = [UIColor colorNamed:kBackgroundColor];
-  self.styler.cellBackgroundColor = [UIColor colorNamed:kBackgroundColor];
+  // The table view height will be set to its content view in
+  // viewDidLayoutSubviews. Provide a default value here.
+  _tableViewHeightConstraint = [self.tableView.heightAnchor
+      constraintEqualToConstant:self.view.bounds.size.height];
+  _tableViewHeightConstraint.active = YES;
+  self.tableView.scrollEnabled = NO;
+  self.tableView.tableFooterView =
+      [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
   self.tableView.sectionHeaderHeight = 0;
   [self.tableView
       setSeparatorInset:UIEdgeInsetsMake(0, kTableViewHorizontalSpacing, 0, 0)];
 
-  // Configure the NavigationBar.
-  UIBarButtonItem* cancelButton = [[UIBarButtonItem alloc]
-      initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
-                           target:self
-                           action:@selector(dismissInfobarModal)];
-  cancelButton.accessibilityIdentifier = kInfobarModalCancelButton;
-
-  UIImage* gearImage = DefaultSymbolWithPointSize(kSettingsFilledSymbol,
-                                                  kInfobarSymbolPointSize);
-  UIBarButtonItem* settingsButton = [[UIBarButtonItem alloc]
-      initWithImage:gearImage
-              style:UIBarButtonItemStylePlain
-             target:self
-             action:@selector(presentPasswordSettings)];
-  settingsButton.accessibilityLabel =
-      l10n_util::GetNSString(IDS_IOS_INFOBAR_MODAL_PASSWORD_SETTINGS_HINT);
-  self.navigationItem.leftBarButtonItem = cancelButton;
-  self.navigationItem.rightBarButtonItem = settingsButton;
-  self.navigationController.navigationBar.prefersLargeTitles = NO;
-
   [self loadModel];
-}
-
-- (void)viewDidAppear:(BOOL)animated {
-  [super viewDidAppear:animated];
-  [self.metricsRecorder recordModalEvent:MobileMessagesModalEvent::Presented];
-}
-
-- (void)viewDidDisappear:(BOOL)animated {
-  [self.infobarModalDelegate modalInfobarWasDismissed:self];
-  [self.metricsRecorder recordModalEvent:MobileMessagesModalEvent::Dismissed];
-  [super viewDidDisappear:animated];
 }
 
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
-  self.tableView.scrollEnabled =
-      self.tableView.contentSize.height > self.view.frame.size.height;
+  _tableViewHeightConstraint.constant =
+      self.tableView.contentSize.height +
+      self.tableView.adjustedContentInset.top +
+      self.tableView.adjustedContentInset.bottom;
+}
+
+#pragma mark - Properties
+
+- (NSString*)username {
+  return self.usernameItem.textFieldValue;
 }
 
 #pragma mark - TableViewModel
@@ -164,12 +111,12 @@ const CGFloat kSymbolSize = 15;
   URLItem.hideIcon = YES;
   [model addItem:URLItem toSectionWithIdentifier:SectionIdentifierContent];
 
-  self.originalUsername = self.username;
   self.usernameItem =
       [[TableViewTextEditItem alloc] initWithType:ItemTypeUsername];
   self.usernameItem.fieldNameLabelText =
       l10n_util::GetNSString(IDS_IOS_SHOW_PASSWORD_VIEW_USERNAME);
-  self.usernameItem.textFieldValue = self.username;
+  self.usernameItem.textFieldValue = self.originalUsername;
+  self.usernameItem.textFieldDelegate = self;
   self.usernameItem.returnKeyType = UIReturnKeyDone;
   self.usernameItem.textFieldEnabled = !self.currentCredentialsSaved;
   self.usernameItem.autoCapitalizationType = UITextAutocapitalizationTypeNone;
@@ -182,7 +129,7 @@ const CGFloat kSymbolSize = 15;
       l10n_util::GetNSString(IDS_IOS_SHOW_PASSWORD_VIEW_PASSWORD);
   self.passwordItem.textFieldValue = self.maskedPassword;
   self.passwordItem.identifyingIcon =
-      DefaultSymbolWithPointSize(kShowActionSymbol, kSymbolSize);
+      SymbolWithPointSize(SymbolShowAction, kSymbolSize);
   self.passwordItem.identifyingIconEnabled = YES;
   self.passwordItem.hideIcon = YES;
   self.passwordItem.identifyingIconAccessibilityLabel = l10n_util::GetNSString(
@@ -192,26 +139,11 @@ const CGFloat kSymbolSize = 15;
 
   self.passwordMasked = YES;
 
-  self.saveCredentialsItem =
-      [[TableViewTextButtonItem alloc] initWithType:ItemTypeSaveCredentials];
-  self.saveCredentialsItem.textAlignment = NSTextAlignmentNatural;
-  self.saveCredentialsItem.text = self.detailsTextMessage;
-  self.saveCredentialsItem.buttonText = self.saveButtonText;
-  self.saveCredentialsItem.enabled = !self.currentCredentialsSaved;
-  self.saveCredentialsItem.disableButtonIntrinsicWidth = YES;
-  [model addItem:self.saveCredentialsItem
-      toSectionWithIdentifier:SectionIdentifierContent];
-
-  if ([self.cancelButtonText length]) {
-    self.cancelInfobarItem =
-        [[TableViewTextButtonItem alloc] initWithType:ItemTypeCancel];
-    self.cancelInfobarItem.buttonText = self.cancelButtonText;
-    self.cancelInfobarItem.buttonTextColor = [UIColor colorNamed:kBlueColor];
-    self.cancelInfobarItem.buttonBackgroundColor = [UIColor clearColor];
-    self.cancelInfobarItem.boldButtonText = NO;
-    [model addItem:self.cancelInfobarItem
-        toSectionWithIdentifier:SectionIdentifierContent];
-  }
+  TableViewDetailTextItem* detailItem =
+      [[TableViewDetailTextItem alloc] initWithType:ItemTypeDetails];
+  detailItem.allowMultilineDetailText = YES;
+  detailItem.detailText = self.detailsTextMessage;
+  [model addItem:detailItem toSectionWithIdentifier:SectionIdentifierContent];
 }
 
 #pragma mark - UITableViewDataSource
@@ -220,49 +152,18 @@ const CGFloat kSymbolSize = 15;
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   UITableViewCell* cell = [super tableView:tableView
                      cellForRowAtIndexPath:indexPath];
+  cell.backgroundColor = [UIColor colorNamed:kBackgroundColor];
   ItemType itemType = static_cast<ItemType>(
       [self.tableViewModel itemTypeForIndexPath:indexPath]);
 
   switch (itemType) {
-    case ItemTypeSaveCredentials: {
-      TableViewTextButtonCell* tableViewTextButtonCell =
-          base::apple::ObjCCastStrict<TableViewTextButtonCell>(cell);
-      [tableViewTextButtonCell.button
-                 addTarget:self
-                    action:@selector(saveCredentialsButtonWasPressed:)
-          forControlEvents:UIControlEventTouchUpInside];
-      tableViewTextButtonCell.separatorInset =
-          UIEdgeInsetsMake(0, 0, 0, self.tableView.bounds.size.width);
-      break;
-    }
-    case ItemTypeCancel: {
-      TableViewTextButtonCell* tableViewTextButtonCell =
-          base::apple::ObjCCastStrict<TableViewTextButtonCell>(cell);
-      [tableViewTextButtonCell.button
-                 addTarget:self
-                    action:@selector(neverSaveCredentialsForCurrentSite)
-          forControlEvents:UIControlEventTouchUpInside];
-      break;
-    }
     case ItemTypeUsername: {
-      TableViewTextEditCell* editCell =
-          base::apple::ObjCCast<TableViewTextEditCell>(cell);
-      [editCell.textField addTarget:self
-                             action:@selector(usernameEditDidBegin)
-                   forControlEvents:UIControlEventEditingDidBegin];
-      [editCell.textField addTarget:self
-                             action:@selector(updateSaveCredentialsButtonState)
-                   forControlEvents:UIControlEventEditingChanged];
-      editCell.selectionStyle = UITableViewCellSelectionStyleNone;
-      editCell.textField.delegate = self;
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
       break;
     }
     case ItemTypePassword: {
       TableViewTextEditCell* editCell =
           base::apple::ObjCCast<TableViewTextEditCell>(cell);
-      [editCell.textField addTarget:self
-                             action:@selector(updateSaveCredentialsButtonState)
-                   forControlEvents:UIControlEventEditingChanged];
       [editCell.identifyingIconButton addTarget:self
                                          action:@selector(togglePasswordMasking)
                                forControlEvents:UIControlEventTouchUpInside];
@@ -270,6 +171,9 @@ const CGFloat kSymbolSize = 15;
       break;
     }
     case ItemTypeURL:
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
+      break;
+    case ItemTypeDetails:
       cell.selectionStyle = UITableViewCellSelectionStyleNone;
       break;
   }
@@ -284,6 +188,30 @@ const CGFloat kSymbolSize = 15;
   return 0;
 }
 
+#pragma mark - TableViewTextEditItemDelegate
+
+- (void)tableViewItemDidBeginEditing:(TableViewTextEditItem*)tableViewItem {
+  if (tableViewItem.type == ItemTypeUsername) {
+    [self usernameEditDidBegin];
+    return;
+  }
+}
+
+- (void)tableViewItemDidChange:(TableViewTextEditItem*)tableViewItem {
+  if (tableViewItem.type == ItemTypeUsername) {
+    [self updateSaveCredentialsButtonState];
+    return;
+  }
+  if (tableViewItem.type == ItemTypePassword) {
+    [self updateSaveCredentialsButtonState];
+    return;
+  }
+}
+
+- (void)tableViewItemDidEndEditing:(TableViewTextEditItem*)tableViewItem {
+  // No op.
+}
+
 #pragma mark - UITextFieldDelegate
 
 - (BOOL)textFieldShouldReturn:(UITextField*)textField {
@@ -291,16 +219,27 @@ const CGFloat kSymbolSize = 15;
   return YES;
 }
 
+#pragma mark - InfobarPasswordModalConsumer
+
+- (void)setSaveButtonText:(NSString*)saveButtonText {
+  [self.containerDelegate setAcceptButtonText:saveButtonText];
+  _saveButtonText = [saveButtonText copy];
+}
+
+- (void)setCancelButtonText:(NSString*)cancelButtonText {
+  [self.containerDelegate setCancelButtonText:cancelButtonText];
+  _cancelButtonText = [cancelButtonText copy];
+}
+
+- (void)setCurrentCredentialsSaved:(BOOL)currentCredentialsSaved {
+  [self.containerDelegate setCurrentCredentialsSaved:currentCredentialsSaved];
+  _currentCredentialsSaved = currentCredentialsSaved;
+}
+
 #pragma mark - Private Methods
 
 - (void)updateSaveCredentialsButtonState {
-  BOOL currentButtonState = [self.saveCredentialsItem isEnabled];
-  BOOL newButtonState = [self.passwordItem.textFieldValue length] ? YES : NO;
-  if (currentButtonState != newButtonState) {
-    self.saveCredentialsItem.enabled = newButtonState;
-    [self reconfigureCellsForItems:@[ self.saveCredentialsItem ]];
-  }
-
+  BOOL saveEnabled = self.passwordItem.textFieldValue.length > 0;
   // TODO(crbug.com/40619978):Ideally the InfobarDelegate should update the
   // button text. Once we have a consumer protocol we should be able to create a
   // delegate that asks the InfobarDelegate for the correct text.
@@ -308,52 +247,9 @@ const CGFloat kSymbolSize = 15;
       [self.usernameItem.textFieldValue isEqualToString:self.originalUsername]
           ? self.saveButtonText
           : l10n_util::GetNSString(IDS_IOS_PASSWORD_MANAGER_SAVE_BUTTON);
-  if (![self.saveCredentialsItem.buttonText isEqualToString:buttonText]) {
-    self.saveCredentialsItem.buttonText = buttonText;
-    [self reconfigureCellsForItems:@[ self.saveCredentialsItem ]];
-  }
-}
 
-- (void)dismissInfobarModal {
-  base::RecordAction(
-      base::UserMetricsAction("MobileMessagesModalCancelledTapped"));
-  [self.metricsRecorder recordModalEvent:MobileMessagesModalEvent::Canceled];
-  [self.infobarModalDelegate dismissInfobarModal:self];
-}
-
-- (void)saveCredentialsButtonWasPressed:(UIButton*)sender {
-  base::RecordAction(
-      base::UserMetricsAction("MobileMessagesModalAcceptedTapped"));
-  [self.metricsRecorder recordModalEvent:MobileMessagesModalEvent::Accepted];
-  if ([self.saveCredentialsItem.buttonText
-          isEqualToString:l10n_util::GetNSString(
-                              IDS_IOS_PASSWORD_MANAGER_SAVE_BUTTON)]) {
-    [self.passwordMetricsRecorder
-        recordModalDismiss:MobileMessagesPasswordsModalDismiss::
-                               SavedCredentials];
-  } else {
-    [self.passwordMetricsRecorder
-        recordModalDismiss:MobileMessagesPasswordsModalDismiss::
-                               UpdatedCredentials];
-  }
-  [self.infobarModalDelegate
-      updateCredentialsWithUsername:self.usernameItem.textFieldValue
-                           password:self.unmaskedPassword];
-}
-
-- (void)presentPasswordSettings {
-  base::RecordAction(base::UserMetricsAction("MobileMessagesModalSettings"));
-  [self.metricsRecorder
-      recordModalEvent:MobileMessagesModalEvent::SettingsOpened];
-  [self.infobarModalDelegate presentPasswordSettings];
-}
-
-- (void)neverSaveCredentialsForCurrentSite {
-  base::RecordAction(base::UserMetricsAction("MobileMessagesModalNever"));
-  [self.passwordMetricsRecorder
-      recordModalDismiss:MobileMessagesPasswordsModalDismiss::
-                             TappedNeverForThisSite];
-  [self.infobarModalDelegate neverSaveCredentialsForCurrentSite];
+  [self.containerDelegate updateAcceptButtonEnabled:saveEnabled
+                                              title:buttonText];
 }
 
 - (void)usernameEditDidBegin {
@@ -365,7 +261,7 @@ const CGFloat kSymbolSize = 15;
   self.passwordMasked = !self.passwordMasked;
   if (self.passwordMasked) {
     self.passwordItem.identifyingIcon =
-        DefaultSymbolWithPointSize(kShowActionSymbol, kSymbolSize);
+        SymbolWithPointSize(SymbolShowAction, kSymbolSize);
     self.passwordItem.textFieldValue = self.maskedPassword;
     self.passwordItem.identifyingIconAccessibilityLabel =
         l10n_util::GetNSString(
@@ -374,7 +270,7 @@ const CGFloat kSymbolSize = 15;
         recordModalEvent:MobileMessagesPasswordsModalEvent::MaskedPassword];
   } else {
     self.passwordItem.identifyingIcon =
-        DefaultSymbolWithPointSize(kHideActionSymbol, kSymbolSize);
+        SymbolWithPointSize(SymbolHideAction, kSymbolSize);
     self.passwordItem.textFieldValue = self.unmaskedPassword;
     self.passwordItem.identifyingIconAccessibilityLabel =
         l10n_util::GetNSString(

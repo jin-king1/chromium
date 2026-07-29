@@ -30,7 +30,7 @@ from benchmarks import press
 class _JetStream2Base(press._PressBenchmark):  # pylint:disable=protected-access
   """JetStream2, a combination of JavaScript and Web Assembly benchmarks.
 
-  Run all the JetStream 2 benchmarks by default.
+  Run all the JetStream 2.x benchmarks by default.
   """
   @classmethod
   def AddBenchmarkCommandLineArgs(cls, parser):
@@ -86,7 +86,7 @@ class JetStream22(_JetStream2Base):
     component='Blink>JavaScript',
     documentation_url='https://browserbench.org/JetStream2.0/in-depth.html')
 class JetStream2(_JetStream2Base):
-  """Latest JetStream 2 """
+  """Latest JetStream 2.x """
   @classmethod
   def Name(cls):
     return 'jetstream2'
@@ -96,17 +96,19 @@ class JetStream2(_JetStream2Base):
 
 
 @benchmark.Info(
-    emails=['omerkatz@chromium.org'],
-    component='Blink>JavaScript>GarbageCollection',
+    emails=['vahl@chromium.org', 'cbruni@chromium.org'],
+    component='Blink>JavaScript',
     documentation_url='https://browserbench.org/JetStream2.0/in-depth.html')
-class JetStream2MinorMS(JetStream2):
-  """Latest JetStream2 with the MinorMS flag.
-
-  Shows the performance with MinorMS young generation GC in V8.
+class JetStream2NoFieldTrial(JetStream2):
+  """Latest JetStream 2.x without field-trials
   """
+
+  SCHEDULED = False
+
   @classmethod
   def Name(cls):
-    return 'jetstream2-minorms'
+    return 'jetstream2-no-field-trials'
 
   def SetExtraBrowserOptions(self, options):
-    options.AppendExtraBrowserArgs('--js-flags=--minor-ms')
+    options.AppendExtraBrowserArgs('--disable-field-trial-config')
+    self.RemoveExtraBrowserArgWithValues(options, '--enable-field-trial-config')

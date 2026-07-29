@@ -25,9 +25,10 @@
 #include "components/bookmarks/browser/base_bookmark_model_observer.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/browser/bookmark_test_util.h"
+#include "components/sync/engine/cryptographer.h"
 #include "components/sync/engine/loopback_server/loopback_server_entity.h"
-#include "components/sync/engine/nigori/cryptographer.h"
 #include "components/sync/test/fake_server.h"
+#include "components/sync_bookmarks/bookmark_model_view.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "url/gurl.h"
@@ -45,6 +46,14 @@ class Image;
 
 namespace bookmarks_helper {
 
+// Represents the two underlying instances of Bookmarks, one for
+// the profile store (used when sync-the-feature is enabled) and the other one
+// for the account store (used otherwise).
+enum class StoreType {
+  kLocalOrSyncableStore,
+  kAccountStore,
+};
+
 // Used to access the bookmark undo service within a particular sync profile.
 [[nodiscard]] BookmarkUndoService* GetBookmarkUndoService(int index);
 
@@ -52,13 +61,18 @@ namespace bookmarks_helper {
 [[nodiscard]] bookmarks::BookmarkModel* GetBookmarkModel(int index);
 
 // Used to access the bookmark bar within a particular sync profile.
-[[nodiscard]] const bookmarks::BookmarkNode* GetBookmarkBarNode(int index);
+[[nodiscard]] const bookmarks::BookmarkNode* GetBookmarkBarNode(
+    int index,
+    StoreType store_type);
 
 // Used to access the "other bookmarks" node within a particular sync profile.
-[[nodiscard]] const bookmarks::BookmarkNode* GetOtherNode(int index);
+[[nodiscard]] const bookmarks::BookmarkNode* GetOtherNode(int index,
+                                                          StoreType store_type);
 
 // Used to access the "Synced Bookmarks" node within a particular sync profile.
-[[nodiscard]] const bookmarks::BookmarkNode* GetSyncedBookmarksNode(int index);
+[[nodiscard]] const bookmarks::BookmarkNode* GetSyncedBookmarksNode(
+    int index,
+    StoreType store_type);
 
 // Used to access the "Managed Bookmarks" node for the given profile.
 [[nodiscard]] const bookmarks::BookmarkNode* GetManagedNode(int index);
@@ -67,7 +81,8 @@ namespace bookmarks_helper {
 // profile |profile|. Returns a pointer to the node that was added.
 const bookmarks::BookmarkNode* AddURL(int profile,
                                       const std::u16string& title,
-                                      const GURL& url);
+                                      const GURL& url,
+                                      StoreType store_type);
 
 // Adds a URL with address |url| and title |title| to the bookmark bar of
 // profile |profile| at position |index|. Returns a pointer to the node that
@@ -75,7 +90,8 @@ const bookmarks::BookmarkNode* AddURL(int profile,
 const bookmarks::BookmarkNode* AddURL(int profile,
                                       size_t index,
                                       const std::u16string& title,
-                                      const GURL& url);
+                                      const GURL& url,
+                                      StoreType store_type);
 
 // Adds a URL with address |url| and title |title| under the node |parent| of
 // profile |profile| at position |index|. Returns a pointer to the node that
@@ -89,13 +105,15 @@ const bookmarks::BookmarkNode* AddURL(int profile,
 // Adds a folder named |title| to the bookmark bar of profile |profile|.
 // Returns a pointer to the folder that was added.
 const bookmarks::BookmarkNode* AddFolder(int profile,
-                                         const std::u16string& title);
+                                         const std::u16string& title,
+                                         StoreType store_type);
 
 // Adds a folder named |title| to the bookmark bar of profile |profile| at
 // position |index|. Returns a pointer to the folder that was added.
 const bookmarks::BookmarkNode* AddFolder(int profile,
                                          size_t index,
-                                         const std::u16string& title);
+                                         const std::u16string& title,
+                                         StoreType store_type);
 
 // Adds a folder named |title| to the node |parent| in the bookmark model of
 // profile |profile| at position |index|. Returns a pointer to the node that
@@ -298,7 +316,9 @@ class BookmarksMatchChecker : public BookmarkModelStatusChangeChecker {
 
   // StatusChangeChecker implementation.
   bool IsExitConditionSatisfied(std::ostream* os) override;
-  bool Wait() override;
+
+ protected:
+  void WillStartWaiting() override;
 };
 
 // Base class used for checkers that verify the state of a single BookmarkModel
@@ -328,7 +348,8 @@ class SingleBookmarkModelStatusChangeChecker
 class SingleBookmarksModelMatcherChecker
     : public SingleBookmarkModelStatusChangeChecker {
  public:
-  using Matcher = testing::Matcher<std::vector<const bookmarks::BookmarkNode*>>;
+  using Matcher =
+      testing::Matcher<std::vector<raw_ptr<const bookmarks::BookmarkNode>>>;
 
   SingleBookmarksModelMatcherChecker(int profile_index, const Matcher& matcher);
   ~SingleBookmarksModelMatcherChecker() override;
@@ -437,9 +458,11 @@ class BookmarksUuidChecker : public SingleBookmarksModelMatcherChecker {
 class BookmarkModelMatchesFakeServerChecker
     : public SingleClientStatusChangeChecker {
  public:
-  BookmarkModelMatchesFakeServerChecker(int profile,
+  BookmarkModelMatchesFakeServerChecker(bookmarks::BookmarkModel* model,
                                         syncer::SyncServiceImpl* service,
-                                        fake_server::FakeServer* fake_server);
+                                        fake_server::FakeServer* fake_server,
+                                        StoreType store_type);
+  ~BookmarkModelMatchesFakeServerChecker() override;
 
   bool IsExitConditionSatisfied(std::ostream* os) override;
 
@@ -473,7 +496,7 @@ class BookmarkModelMatchesFakeServerChecker
       const;
 
   const raw_ptr<fake_server::FakeServer> fake_server_;
-  const int profile_index_;
+  const std::unique_ptr<sync_bookmarks::BookmarkModelView> model_view_;
 };
 
 }  // namespace bookmarks_helper

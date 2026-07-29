@@ -10,12 +10,12 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/task/task_traits.h"
@@ -43,7 +43,7 @@ base::FilePath SodaInstallerImpl::GetSodaBinaryPath() const {
 }
 
 base::FilePath SodaInstallerImpl::GetLanguagePath(
-    const std::string& language) const {
+    std::string_view language) const {
   std::optional<speech::SodaLanguagePackComponentConfig> config =
       speech::GetLanguageComponentConfig(language);
   if (config.has_value() &&
@@ -56,7 +56,8 @@ base::FilePath SodaInstallerImpl::GetLanguagePath(
 }
 
 void SodaInstallerImpl::InstallSoda(PrefService* global_prefs) {
-  if (soda_binary_installed_ || never_download_soda_for_testing_) {
+  if (soda_binary_installed_ || is_soda_downloading_ ||
+      never_download_soda_for_testing_) {
     return;
   }
 
@@ -75,11 +76,18 @@ void SodaInstallerImpl::InstallSoda(PrefService* global_prefs) {
   }
 }
 
-void SodaInstallerImpl::InstallLanguage(const std::string& language,
+void SodaInstallerImpl::InstallLanguage(std::string_view language,
                                         PrefService* global_prefs) {
-  if (never_download_soda_for_testing_)
+  if (never_download_soda_for_testing_) {
     return;
+  }
+
   speech::LanguageCode locale = speech::GetLanguageCode(language);
+  if (installed_languages_.contains(locale) ||
+      language_pack_progress_.contains(locale)) {
+    return;
+  }
+
   language_pack_progress_.insert({locale, 0.0});
   SodaInstaller::RegisterLanguage(language, global_prefs);
   component_updater::RegisterSodaLanguageComponent(
@@ -96,7 +104,7 @@ void SodaInstallerImpl::InstallLanguage(const std::string& language,
   }
 }
 
-void SodaInstallerImpl::UninstallLanguage(const std::string& language,
+void SodaInstallerImpl::UninstallLanguage(std::string_view language,
                                           PrefService* global_prefs) {
   speech::LanguageCode language_code = speech::GetLanguageCode(language);
   if (language_code != speech::LanguageCode::kNone) {
@@ -124,14 +132,13 @@ std::vector<std::string> SodaInstallerImpl::GetAvailableLanguages() const {
 }
 
 void SodaInstallerImpl::UninstallSoda(PrefService* global_prefs) {
-  base::ThreadPool::PostTask(FROM_HERE,
-                             {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
-                              base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
-                             base::BindOnce(&SodaInstallerImpl::DeleteSodaFiles,
-                                            weak_factory_.GetWeakPtr()));
+  base::ThreadPool::PostTask(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
+      base::BindOnce(&SodaInstallerImpl::DeleteSodaFiles));
 
   SodaInstaller::UnregisterLanguages(global_prefs);
-  global_prefs->SetTime(prefs::kSodaScheduledDeletionTime, base::Time());
 
   soda_binary_installed_ = false;
   is_soda_downloading_ = false;
@@ -159,9 +166,9 @@ void SodaInstallerImpl::OnEvent(const update_client::CrxUpdateItem& item) {
   switch (item.state) {
     case update_client::ComponentState::kCanUpdate:
     case update_client::ComponentState::kDownloading:
-    case update_client::ComponentState::kDownloadingDiff:
+    case update_client::ComponentState::kDecompressing:
+    case update_client::ComponentState::kPatching:
     case update_client::ComponentState::kUpdating:
-    case update_client::ComponentState::kUpdatingDiff:
       downloading_components_[language_code] = item;
 
       if (language_code == LanguageCode::kNone &&
@@ -200,7 +207,6 @@ void SodaInstallerImpl::OnEvent(const update_client::CrxUpdateItem& item) {
     case update_client::ComponentState::kChecking:
     case update_client::ComponentState::kUpdated:
     case update_client::ComponentState::kUpToDate:
-    case update_client::ComponentState::kLastStatus:
     case update_client::ComponentState::kRun:
       // Do nothing.
       break;
@@ -235,6 +241,7 @@ void SodaInstallerImpl::OnSodaLanguagePackInstalled(
       GetInstallationResultMetricForLanguagePack(language_code), true);
 }
 
+// static
 void SodaInstallerImpl::DeleteSodaFiles() {
   base::DeletePathRecursively(speech::GetSodaDirectory());
   base::DeletePathRecursively(speech::GetSodaLanguagePacksDirectory());
@@ -246,7 +253,7 @@ void SodaInstallerImpl::UpdateAndNotifyOnSodaProgress(
   int downloaded_bytes = 0;
   speech::LanguageCode soda_code = speech::LanguageCode::kNone;
 
-  if (base::Contains(downloading_components_, soda_code)) {
+  if (downloading_components_.contains(soda_code)) {
     total_bytes += downloading_components_[soda_code].total_bytes;
     downloaded_bytes += downloading_components_[soda_code].downloaded_bytes;
   }
@@ -259,7 +266,6 @@ void SodaInstallerImpl::UpdateAndNotifyOnSodaProgress(
   if (total_bytes == 0)
     return;
 
-  DCHECK_LE(downloaded_bytes, total_bytes);
   int progress =
       100 * std::clamp(static_cast<double>(downloaded_bytes) / total_bytes,
                         0.0, 1.0);

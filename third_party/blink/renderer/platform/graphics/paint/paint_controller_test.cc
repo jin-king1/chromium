@@ -6,6 +6,7 @@
 
 #include "base/dcheck_is_on.h"
 #include "build/build_config.h"
+#include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/paint/display_item_cache_skipper.h"
@@ -14,8 +15,11 @@
 #include "third_party/blink/renderer/platform/graphics/paint/scoped_display_item_fragment.h"
 #include "third_party/blink/renderer/platform/graphics/paint/scoped_paint_chunk_properties.h"
 #include "third_party/blink/renderer/platform/graphics/paint/subsequence_recorder.h"
+#include "third_party/blink/renderer/platform/graphics/paint/tracked_element_data.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/testing/paint_test_configurations.h"
+#include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 
 using testing::ElementsAre;
 
@@ -54,8 +58,9 @@ PaintControllerTestBase::DrawResult PaintControllerTestBase::Draw(
   if (matching_cached_item) {
     // We should reused the cached paint record and paint into it.
     PaintRecord new_record =
-        To<DrawingDisplayItem>(
-            GetNewPaintArtifact(paint_controller).GetDisplayItemList().back())
+        To<DrawingDisplayItem>(UNSAFE_TODO(GetNewPaintArtifact(paint_controller)
+                                               .GetDisplayItemList()
+                                               .back()))
             .GetPaintRecord();
     EXPECT_NE(&old_record.GetFirstOp(), &new_record.GetFirstOp());
     EXPECT_EQ(old_record.bytes_used(), new_record.bytes_used());
@@ -1870,8 +1875,10 @@ TEST_P(PaintControllerTest, SkipCacheDuplicatedItemAndChunkIds) {
   EXPECT_THAT(GetPersistentData().GetDisplayItemList(),
               ElementsAre(IsSameId(item_client.Id(), kBackgroundType),
                           IsSameId(item_client.Id(), kBackgroundType)));
-  EXPECT_FALSE(GetPersistentData().GetDisplayItemList()[0].IsCacheable());
-  EXPECT_FALSE(GetPersistentData().GetDisplayItemList()[1].IsCacheable());
+  EXPECT_FALSE(
+      UNSAFE_TODO(GetPersistentData().GetDisplayItemList()[0]).IsCacheable());
+  EXPECT_FALSE(
+      UNSAFE_TODO(GetPersistentData().GetDisplayItemList()[1]).IsCacheable());
 
   EXPECT_THAT(GetPersistentData().GetPaintChunks(),
               ElementsAre(IsPaintChunk(0, 1, chunk_id, properties),
@@ -1901,13 +1908,14 @@ void DrawPath(GraphicsContext& context,
     return;
 
   DrawingRecorder recorder(context, client, type, gfx::Rect(0, 0, 100, 100));
-  SkPath path;
-  path.moveTo(0, 0);
-  path.lineTo(0, 100);
-  path.lineTo(50, 50);
-  path.lineTo(100, 100);
-  path.lineTo(100, 0);
-  path.close();
+  const SkPath path = SkPathBuilder()
+                          .moveTo(0, 0)
+                          .lineTo(0, 100)
+                          .lineTo(50, 50)
+                          .lineTo(100, 100)
+                          .lineTo(100, 0)
+                          .close()
+                          .detach();
   cc::PaintFlags flags;
   flags.setAntiAlias(true);
   for (unsigned i = 0; i < count; i++)
@@ -2115,9 +2123,12 @@ TEST_P(PaintControllerTest, AllowDuplicatedIdForUncacheableItem) {
       DrawRect(context, uncacheable, kBackgroundType, gfx::Rect(r));
     }
   }
-  EXPECT_TRUE(GetPersistentData().GetDisplayItemList()[0].IsCacheable());
-  EXPECT_FALSE(GetPersistentData().GetDisplayItemList()[1].IsCacheable());
-  EXPECT_FALSE(GetPersistentData().GetDisplayItemList()[2].IsCacheable());
+  EXPECT_TRUE(
+      UNSAFE_TODO(GetPersistentData().GetDisplayItemList()[0]).IsCacheable());
+  EXPECT_FALSE(
+      UNSAFE_TODO(GetPersistentData().GetDisplayItemList()[1]).IsCacheable());
+  EXPECT_FALSE(
+      UNSAFE_TODO(GetPersistentData().GetDisplayItemList()[2]).IsCacheable());
   EXPECT_TRUE(cacheable.IsCacheable());
   EXPECT_FALSE(uncacheable.IsCacheable());
 
@@ -2127,9 +2138,12 @@ TEST_P(PaintControllerTest, AllowDuplicatedIdForUncacheableItem) {
     InitRootChunk(paint_controller);
     EXPECT_TRUE(paint_controller.UseCachedSubsequenceIfPossible(cacheable));
   }
-  EXPECT_TRUE(GetPersistentData().GetDisplayItemList()[0].IsCacheable());
-  EXPECT_FALSE(GetPersistentData().GetDisplayItemList()[1].IsCacheable());
-  EXPECT_FALSE(GetPersistentData().GetDisplayItemList()[2].IsCacheable());
+  EXPECT_TRUE(
+      UNSAFE_TODO(GetPersistentData().GetDisplayItemList()[0]).IsCacheable());
+  EXPECT_FALSE(
+      UNSAFE_TODO(GetPersistentData().GetDisplayItemList()[1]).IsCacheable());
+  EXPECT_FALSE(
+      UNSAFE_TODO(GetPersistentData().GetDisplayItemList()[2]).IsCacheable());
   EXPECT_TRUE(cacheable.IsCacheable());
   EXPECT_FALSE(uncacheable.IsCacheable());
 }
@@ -2157,6 +2171,52 @@ TEST_P(PaintControllerTest, RecordRegionCaptureDataValidData) {
   EXPECT_EQ(kBounds, chunks[0].region_capture_data->map.find(kCropId)->second);
 }
 
+TEST_P(PaintControllerTest, RecordTrackedElementData) {
+  static const auto kId = TrackedElementId(base::Token::CreateRandom());
+  static const gfx::Rect kBounds(1, 2, 640, 480);
+  const auto kFeature0 = static_cast<viz::TrackedElementFeature>(0);
+  const auto kFeature1 = static_cast<viz::TrackedElementFeature>(1);
+  const auto kFeature0ElementSubRect = TrackedElementSubRect(kId);
+  const auto kFeature1ElementSubRect = TrackedElementSubRect(
+      kId, /*should_add_to_compositor_frame_metadata=*/true);
+  TrackedElementSubRects tracked_element_sub_rects;
+  tracked_element_sub_rects.insert_or_assign(
+      kFeature0, std::move(kFeature0ElementSubRect));
+  tracked_element_sub_rects.insert_or_assign(
+      kFeature1, std::move(kFeature1ElementSubRect));
+
+  FakeDisplayItemClient& client =
+      *MakeGarbageCollected<FakeDisplayItemClient>("client");
+  {
+    AutoCommitPaintController paint_controller(GetPersistentData());
+    GraphicsContext context(paint_controller);
+    InitRootChunk(paint_controller);
+    paint_controller.RecordTrackedElementData(client, kBounds,
+                                              tracked_element_sub_rects);
+  }
+
+  ASSERT_EQ(1u, GetPersistentData().GetPaintChunks().size());
+  const auto& chunk = GetPersistentData().GetPaintChunks()[0];
+  ASSERT_TRUE(chunk.tracked_element_rects);
+  ASSERT_EQ(2u, chunk.tracked_element_rects->map.size());
+
+  // Check the data for feature 0.
+  ASSERT_TRUE(chunk.tracked_element_rects->map.contains(kFeature0));
+  const auto& feature0_rects = chunk.tracked_element_rects->map.at(kFeature0);
+  ASSERT_EQ(1u, feature0_rects.size());
+  EXPECT_EQ(kId, feature0_rects[0].id);
+  EXPECT_EQ(kBounds, feature0_rects[0].bounds);
+  EXPECT_FALSE(feature0_rects[0].should_add_to_compositor_frame_metadata);
+
+  // Check the data for feature 1.
+  ASSERT_TRUE(chunk.tracked_element_rects->map.contains(kFeature1));
+  const auto& feature1_rects = chunk.tracked_element_rects->map.at(kFeature1);
+  ASSERT_EQ(1u, feature1_rects.size());
+  EXPECT_EQ(kId, feature1_rects[0].id);
+  EXPECT_EQ(kBounds, feature1_rects[0].bounds);
+  EXPECT_TRUE(feature1_rects[0].should_add_to_compositor_frame_metadata);
+}
+
 // Death tests don't work properly on Android.
 #if defined(GTEST_HAS_DEATH_TEST) && !BUILDFLAG(IS_ANDROID)
 
@@ -2171,12 +2231,14 @@ TEST_P(PaintControllerTest, RecordRegionCaptureDataEmptyToken) {
     GraphicsContext context(paint_controller);
     InitRootChunk(paint_controller);
 
-#if DCHECK_IS_ON()
-    EXPECT_DEATH(
-        paint_controller.RecordRegionCaptureData(client, kCropId, kBounds),
-        "Check failed: !crop_id->is_zero");
-  }
-#else
+    // If DCHECKs are on the test stops here. Remainder verifies non-DCHECK
+    // behavior.
+    if (DCHECK_IS_ON()) {
+      EXPECT_DEATH(
+          paint_controller.RecordRegionCaptureData(client, kCropId, kBounds),
+          "DCHECK failed: !crop_id->is_zero");
+      return;
+    }
     // If DCHECKs are not enabled, we should just record the data as-is.
     paint_controller.RecordRegionCaptureData(client, kCropId, kBounds);
     DrawRect(context, client, kBackgroundType, gfx::Rect(100, 100, 200, 200));
@@ -2188,7 +2250,6 @@ TEST_P(PaintControllerTest, RecordRegionCaptureDataEmptyToken) {
   const PaintChunks& chunks = GetPersistentData().GetPaintChunks();
   EXPECT_EQ(1u, chunks.size());
   EXPECT_EQ(kBounds, chunks[0].region_capture_data->map.at(kCropId));
-#endif
 }
 
 TEST_P(PaintControllerTest, DuplicatedSubsequences) {

@@ -31,7 +31,11 @@ class SharedPreferencesTestUtil {
                     "ComponentsProviderServicePreferences",
                     "WebViewChromiumPrefs",
                     "org.chromium.android_webview.devui.MainActivity",
-                    "org.chromium.webengine.test.instrumentation_test_apk_preferences");
+                    "org.chromium.webengine.test.instrumentation_test_apk_preferences",
+                    "android.app.ActivityThread.IDS",
+                    // MLKit is third-party code that uses SharedPreferences internally and we
+                    // cannot control how it accesses them
+                    "com.google.mlkit.internal");
 
     static void deleteOnDiskSharedPreferences(Application app) {
         for (String name : findSharedPreferences()) {

@@ -37,6 +37,7 @@
 #include "cc/trees/target_property.h"
 #include "components/viz/common/quads/shared_quad_state.h"
 #include "components/viz/common/surfaces/region_capture_bounds.h"
+#include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/display_color_spaces.h"
 #include "ui/gfx/geometry/point3_f.h"
@@ -85,6 +86,12 @@ class CC_EXPORT LayerImpl {
   LayerImpl& operator=(const LayerImpl&) = delete;
 
   int id() const { return layer_id_; }
+
+  int stable_id_for_shared_quad_state() const {
+    return stable_id_for_shared_quad_state_;
+  }
+
+  static int GetNextStableIdForSharedQuadState();
 
   // Whether this layer is on the active tree, return false if it's on the
   // pending tree.
@@ -144,6 +151,10 @@ class CC_EXPORT LayerImpl {
                            AppendQuadsData* append_quads_data) {}
   virtual void DidDraw(viz::ClientResourceProvider* resource_provider) {}
 
+  virtual bool HasMissingTiles() const;
+
+  virtual bool ComputeCheckerboardedNeedsRecord();
+
   // Verify that the resource ids in the quad are valid.
   void ValidateQuadResources(viz::DrawQuad* quad) const {
 #if DCHECK_IS_ON()
@@ -155,7 +166,7 @@ class CC_EXPORT LayerImpl {
                                      gfx::Size* resource_size,
                                      gfx::SizeF* resource_uv_size) const;
 
-  virtual void NotifyTileStateChanged(const Tile* tile) {}
+  virtual void NotifyTileStateChanged(const Tile* tile, bool update_damage) {}
 
   virtual bool IsScrollbarLayer() const;
 
@@ -165,6 +176,7 @@ class CC_EXPORT LayerImpl {
   void SetDrawsContent(bool draws_content);
   bool draws_content() const { return draws_content_; }
 
+  HitTestOpaqueness hit_test_opaqueness() const { return hit_test_opaqueness_; }
   void SetHitTestOpaqueness(HitTestOpaqueness opaqueness);
   bool HitTestable() const;
   bool OpaqueToHitTest() const;
@@ -259,13 +271,18 @@ class CC_EXPORT LayerImpl {
     // The bounds of elements marked for potential region capture, stored in
     // the coordinate space of this layer.
     viz::RegionCaptureBounds capture_bounds;
+    viz::TrackedElementRects tracked_element_rects;
+
     Region main_thread_scroll_hit_test_region;
     std::vector<ScrollHitTestRect> non_composited_scroll_hit_test_rects;
     Region wheel_event_handler_region;
+    ElementId canvas_child_id;
     PaintFlags::FilterQuality filter_quality = PaintFlags::FilterQuality::kLow;
     PaintFlags::DynamicRangeLimitMixture dynamic_range_limit{
         PaintFlags::DynamicRangeLimit::kHigh};
   };
+
+  bool HasAnyRarePropertySet() { return !!rare_properties_; }
 
   RareProperties& EnsureRareProperties() {
     if (!rare_properties_)
@@ -321,6 +338,17 @@ class CC_EXPORT LayerImpl {
     return rare_properties_ ? &rare_properties_->capture_bounds : nullptr;
   }
 
+  void SetTrackedElementRects(viz::TrackedElementRects rects);
+  const viz::TrackedElementRects* tracked_element_rects() const {
+    return rare_properties_ ? &rare_properties_->tracked_element_rects
+                            : nullptr;
+  }
+
+  void SetCanvasChildId(ElementId id);
+  ElementId canvas_child_id() const {
+    return rare_properties_ ? rare_properties_->canvas_child_id : ElementId();
+  }
+
   // Set or get the region that contains wheel event handler.
   // The |wheel_event_handler_region| specify the area where wheel event handler
   // could block impl scrolling.
@@ -349,10 +377,16 @@ class CC_EXPORT LayerImpl {
   virtual gfx::Rect GetDamageRect() const;
 
   // Damage tracker will consider layer damaged if `LayerPropertyChanged` is
-  // true, or update_rect() or GetDamageRect() are non-empty. This method
+  // true, or `update_rect()` or `GetDamageRect()` are non-empty. This method
   // returns damage reasons for any and all of these cases. The default
-  // implementation adds kUntracked for all of these cases.
+  // implementation uses `GetDamageReasonsFromLayerPropertyChange` for
+  // `LayerPropertyChanged` and kUntracked for non-empty `update_rect()` or
+  // `GetDamageRect()`.
   virtual DamageReasonSet GetDamageReasons() const;
+
+  // Get damage reasons for `LayerPropertyChanged`. Returns empty set if
+  // `LayerPropertyChanged` is false.
+  DamageReasonSet GetDamageReasonsFromLayerPropertyChange() const;
 
   // This includes |layer_property_changed_not_from_property_trees_| and
   // property_trees changes.
@@ -390,7 +424,11 @@ class CC_EXPORT LayerImpl {
 
   virtual std::unique_ptr<LayerImpl> CreateLayerImpl(
       LayerTreeImpl* tree_impl) const;
-  virtual void PushPropertiesTo(LayerImpl* layer);
+  // Non-destructive and can be called repeatedly with different `layer` args.
+  virtual void CopyPropertiesTo(LayerImpl* layer) const;
+  // May changed state on `this`. This does the same thing as CopyPropertiesTo
+  // and additionally destructively moves non-copied bits of state.
+  virtual void MovePropertiesToActiveLayer(LayerImpl* active_layer);
 
   // Internal to property tree construction (which only happens in tests on a
   // LayerImpl tree. See Layer::IsSnappedToPixelGridInTarget() for explanation,
@@ -414,6 +452,7 @@ class CC_EXPORT LayerImpl {
   // pending tree while syncing layers from main thread, or when we recompute
   // visible layer properties on the pending tree.
   void SetNeedsPushProperties(uint8_t changed_props = kChangedGeneralProperty);
+  bool needs_push_properties() const { return needs_push_properties_; }
 
   virtual void RunMicroBenchmark(MicroBenchmarkImpl* benchmark);
 
@@ -426,9 +465,6 @@ class CC_EXPORT LayerImpl {
   bool contributes_to_drawn_render_surface() const {
     return contributes_to_drawn_render_surface_;
   }
-
-  void SetMayContainVideo(bool);
-  bool may_contain_video() const { return may_contain_video_; }
 
   // Layers that share a sorting context id will be sorted together in 3d
   // space.  0 is a special value that means this layer will not be sorted and
@@ -510,7 +546,9 @@ class CC_EXPORT LayerImpl {
   enum : uint8_t {
     kChangedPropertyTreeIndex = 1 << 0,
     kChangedGeneralProperty = 1 << 1,
-    kChangedAllProperties = kChangedPropertyTreeIndex | kChangedGeneralProperty,
+    kChangedTile = 1 << 2,  // Only used by PictureLayerImpl.
+    kChangedAllProperties =
+        kChangedPropertyTreeIndex | kChangedGeneralProperty | kChangedTile,
   };
 
   bool GetChangeFlag(uint8_t mask) const { return changed_properties_ & mask; }
@@ -519,9 +557,7 @@ class CC_EXPORT LayerImpl {
   // When |will_always_push_properties| is true, the layer will not itself set
   // its SetNeedsPushProperties() state, as it expects to be always pushed to
   // the active tree regardless.
-  LayerImpl(LayerTreeImpl* layer_impl,
-            int id,
-            bool will_always_push_properties = false);
+  LayerImpl(LayerTreeImpl* layer_impl, int id);
 
   // Get the color and size of the layer's debug border.
   virtual void GetDebugBorderProperties(SkColor4f* color, float* width) const;
@@ -536,22 +572,20 @@ class CC_EXPORT LayerImpl {
                              AppendQuadsData* append_quads_data,
                              SkColor4f color,
                              float width) const;
+  gfx::Transform GetScaledDrawTransform(float layer_to_content_scale) const;
 
   static float GetPreferredRasterScale(
       gfx::Vector2dF raster_space_scale_factor);
 
-  // Appends a solid-color quad with color `color`.
-  void AppendSolidQuad(viz::CompositorRenderPass* render_pass,
-                       AppendQuadsData* append_quads_data,
-                       SkColor4f color);
-
  private:
   void ValidateQuadResourcesInternal(viz::DrawQuad* quad) const;
-  gfx::Transform GetScaledDrawTransform(float layer_to_content_scale) const;
 
   const int layer_id_;
   const raw_ptr<LayerTreeImpl> layer_tree_impl_;
-  const bool will_always_push_properties_ : 1;
+
+  // This id shares namespace with RenderSurfaceImpl, and is only used to
+  // set the SharedQuadState::layer_id_.
+  const int stable_id_for_shared_quad_state_;
 
   // Properties synchronized from the associated Layer.
   gfx::Size bounds_;
@@ -568,7 +602,6 @@ class CC_EXPORT LayerImpl {
   bool layer_property_changed_not_from_property_trees_ : 1 = false;
   bool layer_property_changed_from_property_trees_ : 1 = false;
 
-  bool may_contain_video_ : 1 = false;
   bool contents_opaque_ : 1 = false;
   bool contents_opaque_for_text_ : 1 = false;
   bool should_check_backface_visibility_ : 1 = false;

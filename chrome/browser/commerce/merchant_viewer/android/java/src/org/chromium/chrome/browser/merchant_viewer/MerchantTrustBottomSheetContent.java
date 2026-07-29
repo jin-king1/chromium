@@ -7,17 +7,20 @@ package org.chromium.chrome.browser.merchant_viewer;
 import android.content.Context;
 import android.view.View;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.StringRes;
 
-import org.chromium.base.supplier.ObservableSupplierImpl;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+
+import java.util.function.Supplier;
 
 /**
  * An implementation of {@link BottomSheetContent} for the merchant trust bottom sheet experience.
  */
+@NullMarked
 public class MerchantTrustBottomSheetContent implements BottomSheetContent {
     /** Ratio of the height when in half mode. */
     private static final float HALF_HEIGHT_RATIO = 0.6f;
@@ -29,8 +32,6 @@ public class MerchantTrustBottomSheetContent implements BottomSheetContent {
     private final View mContentView;
     private final Supplier<Integer> mVerticalScrollOffset;
     private final Runnable mBackPressCallback;
-    private final ObservableSupplierImpl<Boolean> mBackPressStateChangedSupplier =
-            new ObservableSupplierImpl<>();
 
     /** Creates a new instance. */
     public MerchantTrustBottomSheetContent(
@@ -42,7 +43,6 @@ public class MerchantTrustBottomSheetContent implements BottomSheetContent {
         mContentView = contentView;
         mVerticalScrollOffset = verticalScrollOffset;
         mBackPressCallback = backPressHandler;
-        mBackPressStateChangedSupplier.set(true);
     }
 
     @Override
@@ -74,11 +74,6 @@ public class MerchantTrustBottomSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public int getPeekHeight() {
-        return HeightMode.DISABLED;
-    }
-
-    @Override
     public float getHalfHeightRatio() {
         return HALF_HEIGHT_RATIO;
     }
@@ -95,8 +90,8 @@ public class MerchantTrustBottomSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public ObservableSupplierImpl<Boolean> getBackPressStateChangedSupplier() {
-        return mBackPressStateChangedSupplier;
+    public NonNullObservableSupplier<Boolean> getBackPressStateChangedSupplier() {
+        return ObservableSuppliers.alwaysTrue();
     }
 
     @Override
@@ -105,7 +100,7 @@ public class MerchantTrustBottomSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public @NonNull String getSheetContentDescription(Context context) {
+    public String getSheetContentDescription(Context context) {
         return context.getString(R.string.merchant_viewer_preview_sheet_description);
     }
 

@@ -22,7 +22,7 @@ class GURL;
 class Profile;
 
 namespace base {
-class Value;
+class DictValue;
 }
 
 namespace webapps {
@@ -38,7 +38,6 @@ class WebContents;
 namespace web_app {
 
 class AllAppsLock;
-class ExternallyManagedAppInstallTask;
 class ExternallyManagedAppRegistrationTaskBase;
 class WebAppDataRetriever;
 class WebAppProvider;
@@ -86,6 +85,18 @@ struct ExternallyManagedAppManagerInstallResult {
 // re-initiated, and if successful, the placeholder app is removed.
 class ExternallyManagedAppManager {
  public:
+  // Test class to drop requests instead of enqueueing them for installation.
+  // TODO(crbug.com/408163317): Do not use, this is an implementation detail and
+  // will be removed later.
+  class ScopedDropRequestsForTesting {
+   public:
+    ScopedDropRequestsForTesting();
+    ScopedDropRequestsForTesting(const ScopedDropRequestsForTesting&) = delete;
+    ScopedDropRequestsForTesting& operator=(
+        const ScopedDropRequestsForTesting&) = delete;
+    ~ScopedDropRequestsForTesting();
+  };
+
   using InstallResult = ExternallyManagedAppManagerInstallResult;
 
   using OnceInstallCallback =
@@ -131,25 +142,6 @@ class ExternallyManagedAppManager {
   virtual void Install(ExternalInstallOptions install_options,
                        OnceInstallCallback callback);
 
-  // Adds a task to the queue of operations for each ExternalInstallOptions in
-  // |install_options_list|. Runs |callback| with the URL of the corresponding
-  // ExternalInstallOptions in |install_options_list| and with the id of the
-  // installed app or an empty string if the installation fails. Runs |callback|
-  // for every completed installation - whether or not the installation actually
-  // succeeded.
-  virtual void InstallApps(
-      std::vector<ExternalInstallOptions> install_options_list,
-      const RepeatingInstallCallback& callback);
-
-  // Adds a task to the queue of operations for each GURL in
-  // |uninstall_urls|. Runs |callback| with the URL of the corresponding
-  // app in |uninstall_urls| and with a bool indicating whether or not the
-  // uninstall succeeded. Runs |callback| for every completed uninstallation -
-  // whether or not the uninstallation actually succeeded.
-  virtual void UninstallApps(std::vector<GURL> uninstall_urls,
-                             ExternalInstallSource install_source,
-                             const UninstallCallback& callback);
-
   // Installs an app for each ExternalInstallOptions in
   // |desired_apps_install_options| and uninstalls any apps in
   // GetInstalledAppUrls(install_source) that are not in
@@ -185,9 +177,6 @@ class ExternallyManagedAppManager {
  protected:
   virtual void ReleaseWebContents();
 
-  virtual std::unique_ptr<ExternallyManagedAppInstallTask>
-  CreateInstallationTask(ExternalInstallOptions install_options);
-
   virtual std::unique_ptr<ExternallyManagedAppRegistrationTaskBase>
   CreateRegistration(GURL install_url,
                      const base::TimeDelta registration_timeout);
@@ -200,7 +189,7 @@ class ExternallyManagedAppManager {
   raw_ptr<WebAppProvider> provider_ = nullptr;
 
  private:
-  struct TaskAndCallback;
+  struct ExternalInstallMetadata;
 
   struct SynchronizeRequest {
     SynchronizeRequest(SynchronizeCallback callback,
@@ -221,12 +210,30 @@ class ExternallyManagedAppManager {
     std::map<GURL, webapps::UninstallResultCode> uninstall_results;
   };
 
+  // Adds a task to the queue of operations for each ExternalInstallOptions in
+  // |install_options_list|. Runs |callback| with the URL of the corresponding
+  // ExternalInstallOptions in |install_options_list| and with the id of the
+  // installed app or an empty string if the installation fails. Runs |callback|
+  // for every completed installation - whether or not the installation actually
+  // succeeded.
+  void InstallApps(std::vector<ExternalInstallOptions> install_options_list,
+                   const RepeatingInstallCallback& callback);
+
+  // Adds a task to the queue of operations for each GURL in
+  // |uninstall_urls|. Runs |callback| with the URL of the corresponding
+  // app in |uninstall_urls| and with a bool indicating whether or not the
+  // uninstall succeeded. Runs |callback| for every completed uninstallation -
+  // whether or not the uninstallation actually succeeded.
+  void UninstallApps(std::vector<GURL> uninstall_urls,
+                     ExternalInstallSource install_source,
+                     const UninstallCallback& callback);
+
   void SynchronizeInstalledAppsOnLockAcquired(
       std::vector<ExternalInstallOptions> desired_apps_install_options,
       ExternalInstallSource install_source,
       SynchronizeCallback callback,
       AllAppsLock& lock,
-      base::Value::Dict& debug_value);
+      base::DictValue& debug_value);
 
   void InstallForSynchronizeCallback(
       ExternalInstallSource source,
@@ -242,10 +249,10 @@ class ExternallyManagedAppManager {
 
   void MaybeStartNext();
   void MaybeStartNextOnLockAcquired(AllAppsLock& lock,
-                                    base::Value::Dict& debug_value);
+                                    base::DictValue& debug_value);
 
   void StartInstallationTask(
-      std::unique_ptr<TaskAndCallback> task,
+      std::unique_ptr<ExternalInstallMetadata> external_install_metadata,
       std::optional<webapps::AppId> installed_placeholder_app_id);
 
   bool RunNextRegistration();
@@ -276,9 +283,10 @@ class ExternallyManagedAppManager {
 
   std::unique_ptr<content::WebContents> web_contents_;
 
-  std::unique_ptr<TaskAndCallback> current_install_;
+  std::unique_ptr<ExternalInstallMetadata> current_install_metadata_;
 
-  base::circular_deque<std::unique_ptr<TaskAndCallback>> pending_installs_;
+  base::circular_deque<std::unique_ptr<ExternalInstallMetadata>>
+      pending_installs_metadata_;
 
   std::unique_ptr<ExternallyManagedAppRegistrationTaskBase>
       current_registration_;

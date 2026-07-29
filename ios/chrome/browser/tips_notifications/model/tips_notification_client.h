@@ -10,29 +10,38 @@
 
 #import <optional>
 
+#include "base/sequence_checker.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client.h"
 
-class Browser;
-@class CommandDispatcher;
 class PrefRegistrySimple;
 enum class TipsNotificationType;
 enum class TipsNotificationUserType;
 
-// A notification client responsible for registering notification requests and
-// handling the receiving of user notifications that are user-ed "Tips".
+// A notification client responsible for registering notification requests
+// (see `UNNotificationRequest`) in order to trigger iOS local notifications
+// and handling the receiving of user notifications (See `UNNotification`)
+// that lead to user education promos or tips on how to use the app.
 class TipsNotificationClient : public PushNotificationClient {
  public:
   TipsNotificationClient();
   ~TipsNotificationClient() override;
 
   // Override PushNotificationClient::
+  bool CanHandleNotification(UNNotification* notification) override;
+  std::optional<NotificationType> GetNotificationType(
+      UNNotification* notification) override;
   bool HandleNotificationInteraction(
       UNNotificationResponse* notification_response) override;
   std::optional<UIBackgroundFetchResult> HandleNotificationReception(
       NSDictionary<NSString*, id>* notification) override;
   NSArray<UNNotificationCategory*>* RegisterActionableNotifications() override;
   void OnSceneActiveForegroundBrowserReady() override;
+
+  // Called when the user Taps a provisional notification, but has not yet
+  // opted-in to Tips notifications.
+  void OptInIfAuthorized(base::WeakPtr<ProfileIOS> weak_profile,
+                         UNNotificationSettings* settings);
 
   // Called when the scene becomes "active foreground" and the browser is
   // ready. The closure will be called when all async operations are done.
@@ -70,50 +79,12 @@ class TipsNotificationClient : public PushNotificationClient {
 
   // Request a notification of the given `type`.
   void RequestNotification(TipsNotificationType type,
+                           std::string_view profile_name,
                            base::OnceClosure completion);
   void OnNotificationRequested(TipsNotificationType type, NSError* error);
 
-  // Returns true if a notification of the given `type` should be sent.
-  bool ShouldSendNotification(TipsNotificationType type);
-
-  // Returns true if a Default Browser notification should be sent.
-  bool ShouldSendDefaultBrowser();
-
-  // Returns true if a Signin notification should be sent.
-  bool ShouldSendSignin();
-
-  // Returns true if a WhatsNew notification should be sent.
-  bool ShouldSendWhatsNew();
-
-  // Returns true if a SetUpList continuation notification should be sent.
-  bool ShouldSendSetUpListContinuation();
-
-  // Returns true if a Docking promo notification should be sent.
-  bool ShouldSendDocking();
-
-  // Returns true if an Omnibox Position promo notification should be sent.
-  bool ShouldSendOmniboxPosition();
-
-  // Returns true if a Lens promo notification should be sent.
-  bool ShouldSendLens();
-
-  // Returns true if an Enhanced Safe Browsing promo notification should be
-  // sent.
-  bool ShouldSendEnhancedSafeBrowsing();
-
   // Returns `true` if there is foreground active browser.
-  bool IsSceneLevelForegroundActive();
-
-  // Helpers to handle notification interactions.
-  void ShowUIForNotificationType(TipsNotificationType type, Browser* browser);
-  void ShowDefaultBrowserPromo(Browser* browser);
-  void ShowWhatsNew(Browser* browser);
-  void ShowSignin(Browser* browser);
-  void ShowSetUpListContinuation(Browser* browser);
-  void ShowDocking(Browser* browser);
-  void ShowOmniboxPosition(Browser* browser);
-  void ShowLensPromo(Browser* browser);
-  void ShowEnhancedSafeBrowsingPromo(Browser* browser);
+  bool IsSceneLevelForegroundActive() const;
 
   // Helpers to store state in local state prefs.
   void MarkNotificationTypeSent(TipsNotificationType type);
@@ -129,14 +100,19 @@ class TipsNotificationClient : public PushNotificationClient {
   void OnGetDeliveredNotifications(NSArray<UNNotification*>* notifications);
 
   // Returns true if Tips notifications are permitted.
-  bool IsPermitted();
+  bool IsPermitted() const;
 
   // Returns true if the app has provisional notification authorization and the
   // IOSReactivationNotifications feature is enabled.
-  bool CanSendReactivation();
+  bool CanSendReactivation() const;
 
-  // Returns true if the Dismiss Limit has been reached.
-  bool DismissLimitReached();
+  // Returns true if the given `type` of notification is still valid (meets the
+  // trigger criteria).
+  bool IsNotificationValid(TipsNotificationType type) const;
+
+  // Updates the instance variable that stores whether provisional
+  // notifications are allowed by policy.
+  void UpdateProvisionalAllowed();
 
   // Called when the pref that stores whether Tips notifications are permitted
   // changes.
@@ -149,11 +125,14 @@ class TipsNotificationClient : public PushNotificationClient {
   // Classifies the user and sets the `user_type`, if possible.
   void ClassifyUser();
 
-  // Returns whether any identities/accounts exist on the device.
-  bool HasIdentitiesOnDevice(ProfileIOS* profile) const;
+  // Returns the profile for an active foreground Browser, if there is one.
+  ProfileIOS* GetActiveForegroundProfile() const;
 
   // Stores whether Tips notifications are permitted.
   bool permitted_ = false;
+
+  // Stores whether provisional notifications are allowed by policy.
+  bool provisional_allowed_ = false;
 
   // Stores the local state pref service.
   raw_ptr<PrefService> local_state_;
@@ -165,6 +144,15 @@ class TipsNotificationClient : public PushNotificationClient {
   // foreground scenes, this will store the notification type so it can
   // be handled when there is a foreground scene.
   std::optional<TipsNotificationType> interacted_type_;
+
+  // Stores the type of notification that is forced to be sent by experimental
+  // settings.
+  std::optional<TipsNotificationType> forced_type_;
+
+  // If set, previous notification request(s) will be cleared and the given
+  // type will be sent one time with a 24 hour trigger. This will be used in
+  // conjunction with the kIOSOneTimeDefaultBrowserNotification feature.
+  std::optional<TipsNotificationType> one_time_type_;
 
   // Observes changes to permitted pref.
   PrefChangeRegistrar pref_change_registrar_;

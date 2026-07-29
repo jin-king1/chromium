@@ -72,19 +72,12 @@ export class CrProgressElement extends CrLitElement {
     };
   }
 
-  value: number = 0;
-  min: number = 0;
-  max: number = 100;
-  step: number = 1;
-  indeterminate: boolean = false;
-  disabled: boolean = false;
-
-  override firstUpdated(changedProperties: PropertyValues<this>) {
-    super.firstUpdated(changedProperties);
-    if (!this.hasAttribute('role')) {
-      this.setAttribute('role', 'progressbar');
-    }
-  }
+  accessor value: number = 0;
+  accessor min: number = 0;
+  accessor max: number = 100;
+  accessor step: number = 1;
+  accessor indeterminate: boolean = false;
+  accessor disabled: boolean = false;
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -95,6 +88,13 @@ export class CrProgressElement extends CrLitElement {
       const previous = changedProperties.get('value') || 0;
       const clampedValue = this.clampValue_(this.value);
       this.value = Number.isNaN(clampedValue) ? previous : clampedValue;
+    }
+  }
+
+  override firstUpdated(changedProperties: PropertyValues<this>) {
+    super.firstUpdated(changedProperties);
+    if (!this.hasAttribute('role')) {
+      this.setAttribute('role', 'progressbar');
     }
   }
 

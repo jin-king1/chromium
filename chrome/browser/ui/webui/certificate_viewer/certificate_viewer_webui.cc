@@ -7,6 +7,7 @@
 #include <memory>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
@@ -15,9 +16,11 @@
 #include "base/i18n/time_formatting.h"
 #include "base/json/json_writer.h"
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -32,16 +35,13 @@
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/web_contents.h"
+#include "crypto/crypto_buildflags.h"
 #include "net/base/ip_address.h"
+#include "net/cert/x509_certificate.h"
 #include "net/cert/x509_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/gfx/geometry/size.h"
-
-#if BUILDFLAG(USE_NSS_CERTS)
-#include "chrome/common/net/x509_certificate_model_nss.h"
-#include "net/cert/x509_util_nss.h"
-#endif
 
 using content::WebContents;
 using content::WebUIMessageHandler;
@@ -49,6 +49,11 @@ using content::WebUIMessageHandler;
 using chrome_browser_server_certificate_database::CertificateTrust;
 
 namespace {
+
+CertificateViewerDialog::MockShowCallback& GetMockCallbackInstance() {
+  static base::NoDestructor<CertificateViewerDialog::MockShowCallback> instance;
+  return *instance;
+}
 
 // TODO(crbug.com/40928765): find a good place to put this shared code.
 bool MaskFromIPAndPrefixLength(const net::IPAddress& ip,
@@ -126,7 +131,7 @@ int ConvertTrustToInt(CertificateTrust::CertificateTrustType trust) {
 
 // Helper class for building a Value representation of a certificate. The class
 // gathers data for a single node of the representation tree and builds a
-// `base::Value::Dict` out of that.
+// `base::DictValue` out of that.
 class CertNodeBuilder {
  public:
   // Starts the node with "label" set to |label|.
@@ -146,19 +151,19 @@ class CertNodeBuilder {
   CertNodeBuilder& Payload(std::string_view payload);
 
   // Adds |child| in the list keyed "children". Can be called multiple times.
-  CertNodeBuilder& Child(base::Value::Dict child);
+  CertNodeBuilder& Child(base::DictValue child);
 
   // Similar to Child, but if the argument is null, then this does not add
   // anything.
-  CertNodeBuilder& ChildIfNotNullopt(std::optional<base::Value::Dict> child);
+  CertNodeBuilder& ChildIfNotNullopt(std::optional<base::DictValue> child);
 
-  // Creates a base::Value::Dict representation of the collected information.
+  // Creates a base::DictValue representation of the collected information.
   // Only call this once.
-  base::Value::Dict Build();
+  base::DictValue Build();
 
  private:
-  base::Value::Dict node_;
-  base::Value::List children_;
+  base::DictValue node_;
+  base::ListValue children_;
   // |built_| is false until Build() is called. Once it is |true|, |node_| and
   // |children_| are no longer valid for use.
   bool built_ = false;
@@ -177,20 +182,20 @@ CertNodeBuilder& CertNodeBuilder::Payload(std::string_view payload) {
   return *this;
 }
 
-CertNodeBuilder& CertNodeBuilder::Child(base::Value::Dict child) {
+CertNodeBuilder& CertNodeBuilder::Child(base::DictValue child) {
   children_.Append(std::move(child));
   return *this;
 }
 
 CertNodeBuilder& CertNodeBuilder::ChildIfNotNullopt(
-    std::optional<base::Value::Dict> child) {
+    std::optional<base::DictValue> child) {
   if (child) {
     return Child(std::move(*child));
   }
   return *this;
 }
 
-base::Value::Dict CertNodeBuilder::Build() {
+base::DictValue CertNodeBuilder::Build() {
   DCHECK(!built_);
   if (!children_.empty()) {
     node_.Set("children", std::move(children_));
@@ -201,17 +206,17 @@ base::Value::Dict CertNodeBuilder::Build() {
 
 std::string HandleOptionalOrError(
     const x509_certificate_model::OptionalStringOrError& s) {
-  if (absl::holds_alternative<x509_certificate_model::Error>(s)) {
+  if (std::holds_alternative<x509_certificate_model::Error>(s)) {
     return l10n_util::GetStringUTF8(IDS_CERT_DUMP_ERROR);
-  } else if (absl::holds_alternative<x509_certificate_model::NotPresent>(s)) {
+  } else if (std::holds_alternative<x509_certificate_model::NotPresent>(s)) {
     return l10n_util::GetStringUTF8(IDS_CERT_INFO_FIELD_NOT_PRESENT);
   }
-  return absl::get<std::string>(s);
+  return std::get<std::string>(s);
 }
 
-base::Value::List GenerateConstraintList(
+base::ListValue GenerateConstraintList(
     const chrome_browser_server_certificate_database::Constraints constraints) {
-  base::Value::List list;
+  base::ListValue list;
   for (const auto& dns_constraint : constraints.dns_names()) {
     list.Append(base::Value(dns_constraint));
   }
@@ -239,7 +244,7 @@ std::string DialogArgsForCertList(
 
   // Certificate information. The keys in this dictionary's general key
   // correspond to the IDs in the Html page.
-  base::Value::Dict cert_info;
+  base::DictValue cert_info;
   const x509_certificate_model::X509CertificateModel& model = certs.front();
 
   cert_info.Set("isError", !model.is_valid());
@@ -295,10 +300,10 @@ std::string DialogArgsForCertList(
   cert_info.SetByDottedPath("general.sha256", model.HashCertSHA256());
 
   // Certificate hierarchy is constructed from bottom up.
-  base::Value::List children;
+  base::ListValue children;
   int index = 0;
   for (const auto& cert : certs) {
-    base::Value::Dict cert_node;
+    base::DictValue cert_node;
     cert_node.Set("label", base::Value(cert.GetTitle()));
     cert_node.SetByDottedPath("payload.index", base::Value(index));
     // Add the child from the previous iteration.
@@ -307,7 +312,7 @@ std::string DialogArgsForCertList(
     }
 
     // Add this node to the children list for the next iteration.
-    children = base::Value::List();
+    children = base::ListValue();
     children.Append(std::move(cert_node));
     ++index;
   }
@@ -315,7 +320,7 @@ std::string DialogArgsForCertList(
   cert_info.Set("hierarchy", std::move(children));
 
   if (cert_metadata.has_value()) {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set(
         "trust",
         base::Value(ConvertTrustToInt(cert_metadata->trust().trust_type())));
@@ -327,9 +332,7 @@ std::string DialogArgsForCertList(
     cert_info.Set("certMetadata", std::move(dict));
   }
 
-  base::JSONWriter::Write(cert_info, &data);
-
-  return data;
+  return base::WriteJson(cert_info).value_or("");
 }
 
 }  // namespace
@@ -338,25 +341,8 @@ std::string DialogArgsForCertList(
 void ShowCertificateViewer(WebContents* web_contents,
                            gfx::NativeWindow parent,
                            net::X509Certificate* cert) {
-  std::vector<std::string> nicknames;
-#if BUILDFLAG(USE_NSS_CERTS)
-  net::ScopedCERTCertificateList nss_certs =
-      net::x509_util::CreateCERTCertificateListFromX509Certificate(cert);
-  // If any of the certs could not be parsed by NSS, |nss_certs| will be an
-  // empty list and |nicknames| will not be populated, which is fine as a
-  // fallback.
-  for (const auto& nss_cert : nss_certs) {
-    nicknames.push_back(x509_certificate_model::GetRawNickname(nss_cert.get()));
-  }
-#endif
-
-  std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> cert_buffers;
-  cert_buffers.push_back(bssl::UpRef(cert->cert_buffer()));
-  for (const auto& intermediate : cert->intermediate_buffers()) {
-    cert_buffers.push_back(bssl::UpRef(intermediate));
-  }
-  CertificateViewerDialog::ShowConstrained(
-      std::move(cert_buffers), std::move(nicknames), web_contents, parent);
+  CertificateViewerDialog::ShowConstrained(cert->CopyCertBuffers(),
+                                           web_contents, parent);
 }
 
 #if !(BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC))
@@ -370,33 +356,13 @@ void ShowCertificateViewerForClientAuth(content::WebContents* web_contents,
 ////////////////////////////////////////////////////////////////////////////////
 // CertificateViewerDialog
 
-#if BUILDFLAG(USE_NSS_CERTS)
-// static
-CertificateViewerDialog* CertificateViewerDialog::ShowConstrained(
-    net::ScopedCERTCertificateList nss_certs,
-    WebContents* web_contents,
-    gfx::NativeWindow parent) {
-  std::vector<std::string> nicknames;
-  std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> cert_buffers;
-  for (const auto& cert : nss_certs) {
-    nicknames.push_back(x509_certificate_model::GetRawNickname(cert.get()));
-    cert_buffers.push_back(net::x509_util::CreateCryptoBuffer(
-        net::x509_util::CERTCertificateAsSpan(cert.get())));
-  }
-  return ShowConstrained(std::move(cert_buffers), std::move(nicknames),
-                         web_contents, parent);
-}
-#endif
-
 // static
 CertificateViewerDialog* CertificateViewerDialog::ShowConstrained(
     std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> certs,
-    std::vector<std::string> cert_nicknames,
     content::WebContents* web_contents,
     gfx::NativeWindow parent) {
-  return ShowConstrained(std::move(certs), std::move(cert_nicknames),
-                         std::nullopt, base::NullCallback(), web_contents,
-                         parent);
+  return ShowConstrained(std::move(certs), std::nullopt, base::NullCallback(),
+                         web_contents, parent);
 }
 
 // static
@@ -406,9 +372,8 @@ CertificateViewerDialog* CertificateViewerDialog::ShowConstrained(
     gfx::NativeWindow parent) {
   std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> certs;
   certs.push_back(std::move(cert));
-  return ShowConstrained(std::move(certs),
-                         /*cert_nicknames=*/{}, std::nullopt,
-                         base::NullCallback(), web_contents, parent);
+  return ShowConstrained(std::move(certs), std::nullopt, base::NullCallback(),
+                         web_contents, parent);
 }
 
 // static
@@ -423,23 +388,32 @@ CertificateViewerDialog* CertificateViewerDialog::ShowConstrainedWithMetadata(
   certs.push_back(std::move(cert));
 
   return CertificateViewerDialog::ShowConstrained(
-      std::move(certs), /*cert_nicknames=*/{}, std::move(cert_metadata),
+      std::move(certs), std::move(cert_metadata),
       std::move(modifications_callback), web_contents, parent);
+}
+
+// static
+void CertificateViewerDialog::MockForTesting(MockShowCallback callback) {
+  GetMockCallbackInstance() = std::move(callback);
 }
 
 // static
 CertificateViewerDialog* CertificateViewerDialog::ShowConstrained(
     std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> certs,
-    std::vector<std::string> cert_nicknames,
     std::optional<
         chrome_browser_server_certificate_database::CertificateMetadata>
         cert_metadata,
     CertMetadataModificationsCallback modifications_callback,
     content::WebContents* web_contents,
     gfx::NativeWindow parent) {
-  CertificateViewerDialog* dialog_ptr = new CertificateViewerDialog(
-      std::move(certs), std::move(cert_nicknames), std::move(cert_metadata),
-      std::move(modifications_callback));
+  if (GetMockCallbackInstance()) {
+    GetMockCallbackInstance().Run(std::move(certs), web_contents);
+    return nullptr;
+  }
+
+  CertificateViewerDialog* dialog_ptr =
+      new CertificateViewerDialog(std::move(certs), std::move(cert_metadata),
+                                  std::move(modifications_callback));
 
   auto dialog = base::WrapUnique(dialog_ptr);
 
@@ -454,7 +428,8 @@ CertificateViewerDialog* CertificateViewerDialog::ShowConstrained(
       dialog_ptr->delegate_->GetWebContents();
   const GURL dialog_url = dialog_ptr->GetDialogContentURL();
   content::HostZoomMap::Get(dialog_web_contents->GetSiteInstance())
-      ->SetZoomLevelForHostAndScheme(dialog_url.scheme(), dialog_url.host(), 0);
+      ->SetZoomLevelForHostAndScheme(dialog_url.GetScheme(),
+                                     dialog_url.GetHost(), 0);
   return dialog_ptr;  // For tests.
 }
 
@@ -464,7 +439,6 @@ gfx::NativeWindow CertificateViewerDialog::GetNativeWebContentsModalDialog() {
 
 CertificateViewerDialog::CertificateViewerDialog(
     std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> in_certs,
-    std::vector<std::string> cert_nicknames,
     std::optional<
         chrome_browser_server_certificate_database::CertificateMetadata>
         cert_metadata,
@@ -475,12 +449,8 @@ CertificateViewerDialog::CertificateViewerDialog(
   }
 
   std::vector<x509_certificate_model::X509CertificateModel> certs;
-  for (size_t i = 0; i < in_certs.size(); ++i) {
-    std::string nickname;
-    if (i < cert_nicknames.size()) {
-      nickname = std::move(cert_nicknames[i]);
-    }
-    certs.emplace_back(std::move(in_certs[i]), std::move(nickname));
+  for (auto& in_cert : in_certs) {
+    certs.emplace_back(std::move(in_cert));
   }
 
   constexpr gfx::Size kDefaultSize{544, 628};
@@ -547,7 +517,7 @@ void CertificateViewerDialogHandler::RegisterMessages() {
 }
 
 void CertificateViewerDialogHandler::HandleExportCertificate(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   int cert_index = GetCertificateIndex(args[0].GetInt());
   if (cert_index < 0) {
     return;
@@ -578,7 +548,7 @@ bool CertificateViewerDialogHandler::CanModifyMetadata() const {
 }
 
 void CertificateViewerDialogHandler::HandleUpdateTrustState(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   const base::Value& callback_id = args[0];
   std::optional<CertificateTrust::CertificateTrustType> trust_opt =
@@ -586,7 +556,7 @@ void CertificateViewerDialogHandler::HandleUpdateTrustState(
   // Trust type is invalid for some reason. Should only happen if a user is
   // messing with the HTML/JS.
   if (!trust_opt) {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("success", base::Value(false));
     dict.Set("error", base::Value("An error occured updating the trust state"));
     ResolveJavascriptCallback(callback_id, dict);
@@ -594,7 +564,7 @@ void CertificateViewerDialogHandler::HandleUpdateTrustState(
   }
 
   if (!CanModifyMetadata()) {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("success", base::Value(false));
     dict.Set("error",
              base::Value("Modification of this certificate is not allowed"));
@@ -619,7 +589,7 @@ void CertificateViewerDialogHandler::UpdateTrustStateDone(
     const base::Value& callback_id,
     CertificateTrust::CertificateTrustType new_trust,
     bool success) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("success", base::Value(success));
   cert_metadata_->mutable_trust()->set_trust_type(new_trust);
   // No error message set, use the default message.
@@ -627,14 +597,14 @@ void CertificateViewerDialogHandler::UpdateTrustStateDone(
 }
 
 void CertificateViewerDialogHandler::HandleDeleteConstraint(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   const base::Value& callback_id = args[0];
 
   std::string constraint_to_delete = args[1].GetString();
 
   if (!CanModifyMetadata()) {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("success", base::Value(false));
     dict.Set("error",
              base::Value("Modification of this certificate is not allowed"));
@@ -687,7 +657,7 @@ void CertificateViewerDialogHandler::HandleDeleteConstraint(
   }
 
   if (!removed) {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("success", base::Value(false));
     dict.Set("error",
              base::Value("Error removing constraint from certificate"));
@@ -705,14 +675,14 @@ void CertificateViewerDialogHandler::HandleDeleteConstraint(
 }
 
 void CertificateViewerDialogHandler::HandleAddConstraint(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   const base::Value& callback_id = args[0];
 
   std::string constraint_to_add = args[1].GetString();
 
   if (!CanModifyMetadata()) {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set("success", base::Value(false));
     dict.Set("error",
              base::Value("Modification of this certificate is not allowed"));
@@ -757,11 +727,11 @@ void CertificateViewerDialogHandler::UpdateConstraintsDone(
     const chrome_browser_server_certificate_database::Constraints
         new_constraints,
     bool success) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   // No error message set, use the default message.
   dict.Set("success", base::Value(success));
 
-  base::Value::Dict result;
+  base::DictValue result;
   result.Set("status", std::move(dict));
   if (success) {
     cert_metadata_->clear_constraints();
@@ -772,7 +742,7 @@ void CertificateViewerDialogHandler::UpdateConstraintsDone(
 }
 
 void CertificateViewerDialogHandler::HandleRequestCertificateFields(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
   const base::Value& callback_id = args[0];
   int cert_index = GetCertificateIndex(args[1].GetInt());
@@ -801,7 +771,7 @@ void CertificateViewerDialogHandler::HandleRequestCertificateFields(
             l10n_util::GetStringUTF8(IDS_CERT_EXTENSION_CRITICAL),
             l10n_util::GetStringUTF8(IDS_CERT_EXTENSION_NON_CRITICAL));
 
-    std::optional<base::Value::Dict> details_extensions;
+    std::optional<base::DictValue> details_extensions;
     if (!extensions.empty()) {
       CertNodeBuilder details_extensions_builder(IDS_CERT_DETAILS_EXTENSIONS);
       for (const x509_certificate_model::Extension& extension : extensions) {
@@ -868,7 +838,7 @@ void CertificateViewerDialogHandler::HandleRequestCertificateFields(
   }
   contents_builder.Child(fingerprint_builder.Build());
 
-  base::Value::List root_list;
+  base::ListValue root_list;
   root_list.Append(CertNodeBuilder(model.GetTitle())
                        .Child(contents_builder.Build())
                        .Build());

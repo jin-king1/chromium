@@ -42,6 +42,14 @@ class AffiliatedGroup;
 - (void)setShouldShowPasswordManagerWidgetPromo:
     (BOOL)shouldShowPasswordManagerWidgetPromo;
 
+// Displays the TrustedVault widget promo if needed.
+- (void)setShouldShowTrustedVaultWidgetPromo:
+    (BOOL)shouldShowTrustedVaultWidgetPromo;
+
+// Stores an email of a user (the email is being displayed as a part of the
+// TrustedVault widget promo message).
+- (void)setUserEmail:(const std::u16string&)userEmail;
+
 @end
 
 #endif  // IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_PASSWORD_PASSWORDS_CONSUMER_H_

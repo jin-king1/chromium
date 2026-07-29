@@ -13,6 +13,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/policy/core/browser/policy_error_map.h"
+#include "components/policy/core/common/field_validation_test_utils.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/core/common/schema.h"
@@ -20,7 +21,6 @@
 #include "components/prefs/pref_value_map.h"
 #include "components/search_engines/default_search_manager.h"
 #include "components/search_engines/enterprise/enterprise_search_manager.h"
-#include "components/search_engines/enterprise/field_validation_test_utils.h"
 #include "components/strings/grit/components_strings.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -199,14 +199,14 @@ TestSearchAggregator kTestSearchAggregatorNoStringReplacementSearchUrl = {
 
 void SetFieldIfNotEmpty(const std::string& field,
                         const char* value,
-                        base::Value::Dict* dict) {
+                        base::DictValue* dict) {
   if (value) {
     dict->Set(field, value);
   }
 }
 
-base::Value::Dict GeneratePolicyEntry(TestSearchAggregator test_case) {
-  base::Value::Dict entry;
+base::DictValue GeneratePolicyEntry(TestSearchAggregator test_case) {
+  base::DictValue entry;
   SetFieldIfNotEmpty(SearchAggregatorPolicyHandler::kIconUrl,
                      test_case.icon_url, &entry);
   SetFieldIfNotEmpty(SearchAggregatorPolicyHandler::kName, test_case.name,
@@ -246,7 +246,7 @@ testing::Matcher<const base::Value&> IsSearchAggregatorEntry(
       HasIntegerField(
           DefaultSearchManager::kPolicyOrigin,
           static_cast<int>(TemplateURLData::PolicyOrigin::kSearchAggregator)),
-      HasBooleanField(DefaultSearchManager::kEnforcedByPolicy, false),
+      HasBooleanField(DefaultSearchManager::kEnforcedByPolicy, true),
       HasBooleanField(DefaultSearchManager::kFeaturedByPolicy, featured),
       HasIntegerField(DefaultSearchManager::kIsActive,
                       static_cast<int>(TemplateURLData::ActiveStatus::kTrue)),
@@ -330,7 +330,7 @@ TEST(SearchAggregatorPolicyHandlerTest, Valid) {
       policy::Schema::Wrap(policy::GetChromeSchemaData()));
 
   policy::PolicyMap policies;
-  base::Value::Dict policy_value =
+  base::DictValue policy_value =
       GeneratePolicyEntry(kValidTestSearchAggregator);
   policies.Set(key::kEnterpriseSearchAggregatorSettings,
                policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
@@ -373,7 +373,7 @@ TEST(SearchAggregatorPolicyHandlerTest, ValidWithRequireShortcutTrue) {
       policy::Schema::Wrap(policy::GetChromeSchemaData()));
 
   policy::PolicyMap policies;
-  base::Value::Dict entry =
+  base::DictValue entry =
       GeneratePolicyEntry(kValidTestSearchAggregatorWithRequireShortcutTrue);
   policies.Set(key::kEnterpriseSearchAggregatorSettings,
                policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
@@ -416,7 +416,7 @@ TEST(SearchAggregatorPolicyHandlerTest, Valid_NoIcon) {
       policy::Schema::Wrap(policy::GetChromeSchemaData()));
 
   policy::PolicyMap policies;
-  base::Value::Dict policy_value =
+  base::DictValue policy_value =
       GeneratePolicyEntry(kValidTestSearchAggregatorNoIcon);
   policies.Set(key::kEnterpriseSearchAggregatorSettings,
                policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
@@ -516,7 +516,7 @@ TEST(SearchAggregatorPolicyHandlerTest, UnknownField) {
       policy::Schema::Wrap(policy::GetChromeSchemaData()));
 
   policy::PolicyMap policies;
-  base::Value::Dict entry = GeneratePolicyEntry(kValidTestSearchAggregator);
+  base::DictValue entry = GeneratePolicyEntry(kValidTestSearchAggregator);
   entry.Set(kUnknownFieldName, true);
   policies.Set(key::kEnterpriseSearchAggregatorSettings,
                policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,

@@ -62,11 +62,11 @@ public class EdgeToEdgeBottomChinSceneLayerTest {
         mSceneLayer.setHeight(30);
         mSceneLayer.setColor(Color.RED);
         mSceneLayer.setDividerColor(Color.BLACK);
-        OffsetTag offsetTag = new OffsetTag(new Token(0, 0));
+        OffsetTag offsetTag = new OffsetTag(Token.EMPTY);
         mSceneLayer.setOffsetTag(offsetTag);
 
         RectF viewport = new RectF(0, 0, 100, 400);
-        mSceneLayer.getUpdatedSceneOverlayTree(viewport, viewport, null, 0);
+        mSceneLayer.getUpdatedSceneOverlayTree(viewport, viewport, null);
         verify(mSceneLayerJni)
                 .updateEdgeToEdgeBottomChinLayer(
                         123,

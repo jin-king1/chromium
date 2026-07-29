@@ -33,6 +33,11 @@ typedef NS_ENUM(NSInteger, SettingsItemType) {
   SettingsItemTypePasswords,
   SettingsItemTypeAutofillCreditCard,
   SettingsItemTypeAutofillProfile,
+  SettingsItemTypeIdentityDocs,
+  SettingsItemTypeTravelInfo,
+  SettingsItemTypeShoppingInfo,
+  SettingsItemTypeAutofillAndPasswords,
+  SettingsItemTypeAutofillSettings,
   SettingsItemTypeVoiceSearch,
   SettingsItemTypeAddressBar,
   SettingsItemTypeNotifications,
@@ -40,18 +45,24 @@ typedef NS_ENUM(NSInteger, SettingsItemType) {
   SettingsItemTypeLanguageSettings,
   SettingsItemTypeContentSettings,
   SettingsItemTypeDownloadsSettings,
+  SettingsItemTypeSafariDataImport,
   SettingsItemTypeBandwidth,
   SettingsItemTypeAboutChrome,
   SettingsItemTypeMemoryDebugging,
   SettingsItemTypeViewSource,
   SettingsItemTypeTableCellCatalog,
+  SettingsItemTypeButtonCatalog,
+  SettingsItemTypeViewControllerCatalog,
+  SettingsItemTypeViewCatalog,
   SettingsItemTypeArticlesForYou,
   SettingsItemTypeManagedArticlesForYou,
   SettingsItemTypeSafetyCheck,
   SettingsItemTypeDefaultBrowser,
   SettingsItemTypeSigninDisabled,
   SettingsItemTypeTabs,
-  SettingsItemTypeESBPromo
+  SettingsItemTypeESBPromo,
+  SettingsItemTypeBWGSettings,
+  SettingsItemTypeBackendPromoDebugTools
 };
 
 // The accessibility identifier of the settings TableView.
@@ -100,6 +111,21 @@ extern NSString* const kSettingsPaymentMethodsCellId;
 // The accessibility identifier of the Addresses and More cell.
 extern NSString* const kSettingsAddressesAndMoreCellId;
 
+// The accessibility identifier of the Identity Docs cell.
+extern NSString* const kSettingsIdentityDocsCellId;
+
+// The accessibility identifier of the Travel Info cell.
+extern NSString* const kSettingsTravelInfoCellId;
+
+// The accessibility identifier of the Shopping Info cell.
+extern NSString* const kSettingsShoppingInfoCellId;
+
+// The accessibility identifier of the Autofill and Passwords cell.
+extern NSString* const kSettingsAutofillAndPasswordsCellId;
+
+// The accessibility identifier of the Autofill Settings cell.
+extern NSString* const kSettingsAutofillSettingsCellId;
+
 // The accessibility identifier of the Privacy cell.
 extern NSString* const kSettingsPrivacyCellId;
 
@@ -112,8 +138,14 @@ extern NSString* const kSettingsLanguagesCellId;
 // The accessibility identifier of the Content Settings cell.
 extern NSString* const kSettingsContentSettingsCellId;
 
+// The accessibility identifier of the BWG Settings cell.
+extern NSString* const kSettingsBWGSettingsCellId;
+
 // The accessibility identifier of the Downloads Settings cell.
 extern NSString* const kSettingsDownloadsSettingsCellId;
+
+// The accessibility identifier of the Safari import Settings cell.
+extern NSString* const kSettingsSafariDataImportSettingsCellId;
 
 // The accessibility identifier of the Bandwidth cell.
 extern NSString* const kSettingsBandwidthCellId;
@@ -139,8 +171,14 @@ extern NSString* const kSettingsBlockPopupsCellId;
 // The accessibility identifier of the Show Link Preview cell.
 extern NSString* const kSettingsShowLinkPreviewCellId;
 
+// The accessibility identifier of the Show Reading Mode Available cell.
+extern NSString* const kSettingsShowReadingModeAvailableCellId;
+
 // The accessibility identifier of the Detect Addresses cell.
 extern NSString* const kSettingsDetectAddressesCellId;
+
+// The accessibility identifier of the Mini map native cell.
+extern NSString* const kSettingsMiniMapNativeCellId;
 
 // The accessibility identifier of the Default Apps cell.
 extern NSString* const kSettingsDefaultAppsCellId;
@@ -162,6 +200,9 @@ extern NSString* const kSettingsDefaultSiteModeCellId;
 
 // The accessibility identifier of the Web Inspector cell.
 extern NSString* const kSettingsWebInspectorCellId;
+
+// The accessibility identifier of the Reader Mode cell.
+extern NSString* const kSettingsReaderModeCellId;
 
 // The accessibility identifier of the Safety Check cell.
 extern NSString* const kSettingsSafetyCheckCellId;
@@ -191,8 +232,9 @@ extern NSString* const kSettingsTabsCellId;
 // The accessibility identifier of the move inactive tabs settings cell.
 extern NSString* const kSettingsMoveInactiveTabsCellId;
 
-// The accessibility identifier of the Privacy Guide settings cell.
-extern NSString* const kSettingsPrivacyGuideCellId;
+// The accessibility identifier of the Automatically open tab groups from other
+// devices settings cell.
+extern NSString* const kSettingsAutomaticallyOpenTabGroupsCellId;
 
 // The accessibility identifier of the Detect Units cell.
 extern NSString* const kSettingsDetectUnitsCellId;

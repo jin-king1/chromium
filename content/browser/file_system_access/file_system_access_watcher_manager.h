@@ -16,6 +16,7 @@
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/types/expected.h"
+#include "base/types/optional_ref.h"
 #include "base/types/pass_key.h"
 #include "content/browser/file_system_access/file_system_access_bucket_path_watcher.h"
 #include "content/browser/file_system_access/file_system_access_change_source.h"
@@ -145,10 +146,10 @@ class CONTENT_EXPORT FileSystemAccessWatcherManager
   void OnRawChange(const storage::FileSystemURL& changed_url,
                    bool error,
                    const FileSystemAccessChangeSource::ChangeInfo& change_info,
-                   const FileSystemAccessWatchScope& scope) override;
+                   FileSystemAccessWatchScope scope) override;
   void OnUsageChange(size_t old_usage,
                      size_t new_usage,
-                     const FileSystemAccessWatchScope& scope) override;
+                     FileSystemAccessWatchScope scope) override;
   void OnSourceBeingDestroyed(FileSystemAccessChangeSource* source) override;
 
   // Subscribe this instance to raw changes from `source`.
@@ -199,7 +200,7 @@ class CONTENT_EXPORT FileSystemAccessWatcherManager
   // TODO(crbug.com/40105284): Consider making the lifetime of this
   // watcher match other owned sources; creating an instance on-demand and then
   // destroying it when it is no longer needed.
-  std::unique_ptr<FileSystemAccessBucketPathWatcher> bucket_path_watcher_
+  const scoped_refptr<FileSystemAccessBucketPathWatcher> bucket_path_watcher_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
   // TODO(crbug.com/321980367): Make more efficient mappings to observers

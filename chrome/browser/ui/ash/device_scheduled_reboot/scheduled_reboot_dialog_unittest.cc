@@ -5,6 +5,7 @@
 
 #include <memory>
 
+#include "base/functional/callback_helpers.h"
 #include "chrome/browser/ui/views/chrome_constrained_window_views_client.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "content/public/test/browser_task_environment.h"
@@ -25,7 +26,7 @@ class ScheduledRebootDialogTest : public views::ViewsTestBase {
     views::ViewsTestBase::SetUp();
     SetConstrainedWindowViewsClient(CreateChromeConstrainedWindowViewsClient());
     views::Widget::InitParams params =
-        CreateParams(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+        CreateParams(views::Widget::InitParams::CLIENT_OWNS_WIDGET,
                      views::Widget::InitParams::TYPE_WINDOW);
     parent_widget_.Init(std::move(params));
     parent_widget_.Show();

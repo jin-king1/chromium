@@ -12,7 +12,6 @@ import("//build/config/locales.gni")
 import("//build/config/ozone.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build/config/ui.gni")
-import("//build/util/branding.gni")
 import("//skia/features.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
 import("//testing/test.gni")
@@ -24,8 +23,13 @@ import("//ui/qt/qt.gni")
 if (is_android) {
   import("//build/config/android/config.gni")
   import("//build/config/android/rules.gni")
+} else if (is_ios) {
+  import("//build/config/apple/mobile_config.gni")
 } else if (is_mac) {
   import("//build/config/mac/rules.gni")
+  import("//build/util/branding.gni")
+} else if (is_fuchsia) {
+  import("//build/config/fuchsia/config.gni")
 }
 
 build_ime = !is_ios
@@ -44,10 +48,9 @@ build_ime = !is_ios
 component("ui_data_pack") {
   visibility = [
     ":base",
-    "//chromeos/crosapi/mojom",  # This target requires minimal dependencies.
     "//ios/chrome/tools/strings:generate_localizable_strings",
-    "//third_party/blink/renderer/core:core",
-    "//third_party/blink/renderer/platform:platform",
+    "//third_party/blink/renderer/core",
+    "//third_party/blink/renderer/platform",
     "//ui/gfx:*",
   ]
 
@@ -135,15 +138,8 @@ component("base") {
     "dragdrop/os_exchange_data_provider_factory.h",
     "ime/utf_offset.cc",
     "ime/utf_offset.h",
-    "interaction/element_identifier.cc",
-    "interaction/element_identifier.h",
-    "interaction/element_tracker.cc",
-    "interaction/element_tracker.h",
-    "interaction/framework_specific_implementation.cc",
-    "interaction/framework_specific_implementation.h",
-    "interaction/interaction_sequence.cc",
-    "interaction/interaction_sequence.h",
-    "interaction/typed_identifier.h",
+    "l10n/chromium_language_matcher.cc",
+    "l10n/chromium_language_matcher.h",
     "l10n/formatter.cc",
     "l10n/formatter.h",
     "l10n/l10n_font_util.cc",
@@ -195,6 +191,8 @@ component("base") {
     "pointer/touch_ui_controller.cc",
     "pointer/touch_ui_controller.h",
     "resource/allowlist.h",
+    "resource/lottie_resource.cc",
+    "resource/lottie_resource.h",
     "resource/resource_bundle.cc",
     "resource/resource_bundle.h",
     "resource/scoped_startup_resource_bundle.cc",
@@ -208,7 +206,6 @@ component("base") {
     "ui_base_exports.cc",
     "ui_base_paths.cc",
     "ui_base_paths.h",
-    "ui_base_switches.cc",
     "ui_base_switches.h",
     "ui_base_switches_util.cc",
     "ui_base_switches_util.h",
@@ -263,7 +260,6 @@ component("base") {
       "win/hwnd_metrics.h",
       "win/hwnd_subclass.cc",
       "win/hwnd_subclass.h",
-      "win/internal_constants.cc",
       "win/internal_constants.h",
       "win/lock_state.cc",
       "win/lock_state.h",
@@ -341,13 +337,10 @@ component("base") {
       "cocoa/user_interface_item_command_handler.h",
       "cocoa/views_hostable.h",
       "cocoa/window_size_constants.h",
-      "cocoa/window_size_constants.mm",
       "dragdrop/os_exchange_data_provider_builder_mac.h",
       "dragdrop/os_exchange_data_provider_builder_mac.mm",
       "dragdrop/os_exchange_data_provider_mac.h",
       "dragdrop/os_exchange_data_provider_mac.mm",
-      "interaction/element_tracker_mac.h",
-      "interaction/element_tracker_mac.mm",
       "resource/resource_bundle_mac.mm",
     ]
   }
@@ -391,8 +384,8 @@ component("base") {
       "base_window.h",
       "emoji/emoji_panel_helper.h",
       "owned_window_anchor.h",
+      "pointer/pointer_device.cc",
       "pointer/pointer_device.h",
-      "pointer/pointer_device_util.cc",
       "text/bytes_formatting.cc",
       "text/bytes_formatting.h",
       "themed_vector_icon.cc",
@@ -406,19 +399,19 @@ component("base") {
       ]
     }
 
-    if (is_linux) {
-      sources += [
-        "linux/xdg_shortcut.cc",
-        "linux/xdg_shortcut.h",
-      ]
-    }
-
     if (is_linux || is_chromeos) {
       sources += [
         "accelerators/menu_label_accelerator_util_linux.cc",
         "accelerators/menu_label_accelerator_util_linux.h",
         "linux/linux_desktop.cc",
         "linux/linux_desktop.h",
+      ]
+    }
+
+    if (is_linux) {
+      sources += [
+        "linux/xdg_shortcut.cc",
+        "linux/xdg_shortcut.h",
       ]
     }
 
@@ -442,14 +435,15 @@ component("base") {
       sources += [ "pointer/pointer_device_win.cc" ]
     } else if (is_android) {
       sources += [ "pointer/pointer_device_android.cc" ]
-    } else if (is_ios) {
+    } else if (is_ios && target_platform == "iphoneos") {
       sources += [ "pointer/pointer_device_ios.cc" ]
     } else if (is_linux || is_chromeos) {
       sources += [ "pointer/pointer_device_linux.cc" ]
+    } else if (is_fuchsia && is_web_engine) {
+      sources += [ "pointer/pointer_device_web_engine.cc" ]
     } else {
       # Empty implementation for all other cases.
-      sources += [ "pointer/pointer_device.cc" ]
-      sources -= [ "pointer/pointer_device_util.cc" ]
+      sources += [ "pointer/pointer_device_default.cc" ]
     }
   }
 
@@ -504,11 +498,12 @@ component("base") {
     "//third_party/brotli:dec",
     "//third_party/icu",
     "//third_party/modp_b64",
-    "//third_party/zlib:zlib",
+    "//third_party/zlib",
     "//third_party/zlib/google:compression_utils",
     "//ui/base:data_exchange",
     "//ui/base/clipboard:clipboard_types",
     "//ui/base/dragdrop/mojom",
+    "//ui/base/interaction",
     "//ui/display",
     "//ui/display/util:gpu_info_util",
     "//ui/strings",
@@ -538,16 +533,18 @@ component("base") {
     deps += [
       ":l10n_util_ios",
       "//base",
+      "//ui/events",
       "//ui/events:dom_keycode_converter",
-      "//ui/events:events",
       "//ui/events:events_base",
     ]
   }
 
   if (use_blink) {
     deps += [
+      "//cc/paint",
       "//ui/events",
       "//ui/events/devices",
+      "//ui/lottie",
     ]
   }
 
@@ -577,14 +574,7 @@ component("base") {
   }
 
   if (use_glib) {
-    configs += [ "//build/config/linux:glib" ]
-    sources += [
-      "glib/glib_cast.h",
-      "glib/glib_integers.h",
-      "glib/scoped_gobject.h",
-      "glib/scoped_gsignal.cc",
-      "glib/scoped_gsignal.h",
-    ]
+    public_deps += [ "//ui/base/glib" ]
   }
 
   if (is_chromeos || (use_aura && is_linux) || is_fuchsia) {
@@ -614,12 +604,10 @@ component("base") {
       "Carbon.framework",
       "CoreVideo.framework",
       "Foundation.framework",
+      "IOKit.framework",
       "QuartzCore.framework",
+      "ScreenCaptureKit.framework",
       "UniformTypeIdentifiers.framework",
-    ]
-
-    weak_frameworks = [
-      "ScreenCaptureKit.framework",  # Available in macOS 12.3, stable in 13.2.
     ]
   }
 
@@ -730,6 +718,10 @@ if (is_win || is_mac || is_linux || is_chromeos) {
     if (!is_fuchsia) {
       data_deps = [ ":goldctl" ]
     }
+
+    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+    # enable the diagnostic by removing this line.
+    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 }
 
@@ -753,28 +745,42 @@ if (use_blink) {
   }
 }
 
+if (is_android) {
+  java_cpp_features("java_features_srcjar") {
+    # External code should depend on ":ui_base_features_java" instead.
+    visibility = [ ":*" ]
+    sources = [ "//ui/base/ui_base_features.cc" ]
+    class_name = "org.chromium.ui.base.UiBaseFeatures"
+  }
+  android_library("ui_base_features_java") {
+    # Right now, this only includes the Java features. But if we need more Java
+    # files, they should be added here as necessary.
+    srcjar_deps = [ ":java_features_srcjar" ]
+  }
+
+  java_cpp_enum("ui_base_types_srcjar") {
+    sources = [ "ui_base_types.h" ]
+  }
+
+  android_library("ui_base_types_java") {
+    srcjar_deps = [ ":ui_base_types_srcjar" ]
+    deps = [ "//third_party/androidx:androidx_annotation_annotation_java" ]
+  }
+}
+
 static_library("test_support") {
   testonly = true
   sources = [
     "data_transfer_policy/mock_data_transfer_policy_controller.cc",
     "data_transfer_policy/mock_data_transfer_policy_controller.h",
-    "interaction/element_test_util.cc",
-    "interaction/element_test_util.h",
-    "interaction/expect_call_in_scope.h",
-    "interaction/interaction_sequence_test_util.h",
-    "interaction/interactive_test.cc",
-    "interaction/interactive_test.h",
-    "interaction/interactive_test_definitions.h",
-    "interaction/interactive_test_internal.cc",
-    "interaction/interactive_test_internal.h",
-    "interaction/polling_state_observer.h",
-    "interaction/state_observer.h",
     "pointer/mock_touch_ui_controller.cc",
     "pointer/mock_touch_ui_controller.h",
     "resource/mock_resource_bundle_delegate.cc",
     "resource/mock_resource_bundle_delegate.h",
     "test/idle_test_utils.cc",
     "test/idle_test_utils.h",
+    "test/mock_base_window.cc",
+    "test/mock_base_window.h",
   ]
 
   if (is_mac) {
@@ -812,8 +818,6 @@ static_library("test_support") {
     sources += [
       "accelerators/test_accelerator_target.cc",
       "accelerators/test_accelerator_target.h",
-      "test/mock_base_window.cc",
-      "test/mock_base_window.h",
       "test/test_dialog_model_host.cc",
       "test/test_dialog_model_host.h",
       "test/ui_controls.cc",
@@ -821,11 +825,16 @@ static_library("test_support") {
     ]
   } else {
     sources += [
-      "test/ios/keyboard_appearance_listener.h",
-      "test/ios/keyboard_appearance_listener.mm",
       "test/ios/ui_image_test_utils.h",
       "test/ios/ui_image_test_utils.mm",
     ]
+
+    if (target_platform == "iphoneos") {
+      sources += [
+        "test/ios/keyboard_appearance_listener.h",
+        "test/ios/keyboard_appearance_listener.mm",
+      ]
+    }
   }
 
   if (use_aura && (is_win || is_chromeos || is_castos)) {
@@ -840,7 +849,7 @@ static_library("test_support") {
     "//testing/gmock",
     "//testing/gtest",
     "//ui/base/idle",
-    "//ui/base/interaction:test_support",
+    "//ui/base/interaction",
   ]
 
   if (!is_ios) {
@@ -910,6 +919,15 @@ static_library("test_support") {
       "//ui/base/ime/ash:typing_session_manager",
     ]
   }
+
+  if (is_android) {
+    sources += [ "test/ui_controls_android.cc" ]
+    deps += [ "//ui/android" ]
+  }
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 if (is_android) {
@@ -933,10 +951,7 @@ if (is_android) {
 
 bundle_data("ui_base_unittests_bundle_data") {
   testonly = true
-  sources = [
-    "//testing/buildbot/filters/ios.ui_base_unittests.filter",
-    "test/data/data_pack_unittest/truncated-header.pak",
-  ]
+  sources = [ "test/data/data_pack_unittest/truncated-header.pak" ]
   outputs = [ "{{bundle_resources_dir}}/" +
               "{{source_root_relative_dir}}/{{source_file_part}}" ]
 }
@@ -985,12 +1000,20 @@ source_set("run_all_unittests") {
   deps = [
     "//base",
     "//base/test:test_support",
-    "//mojo/core/embedder:embedder",
+    "//mojo/core/embedder",
     "//skia",
     "//testing/gtest",
     "//ui/base",
     "//ui/display",
   ]
+}
+
+if (is_win) {
+  executable("shell_test_helper") {
+    testonly = true
+    sources = [ "win/shell_test_helper.cc" ]
+    deps = [ "//base" ]
+  }
 }
 
 test("ui_base_unittests") {
@@ -1000,26 +1023,20 @@ test("ui_base_unittests") {
     "class_property_unittest.cc",
     "clipboard/file_info_unittest.cc",
     "ime/utf_offset_unittest.cc",
-    "interaction/element_identifier_unittest.cc",
-    "interaction/element_tracker_unittest.cc",
-    "interaction/framework_specific_implementation_unittest.cc",
-    "interaction/interaction_sequence_unittest.cc",
-    "interaction/interaction_test_util_unittest.cc",
-    "interaction/interactive_test_unittest.cc",
     "l10n/l10n_util_unittest.cc",
     "l10n/time_format_unittest.cc",
     "models/image_model_unittest.cc",
     "models/simple_combobox_model_unittest.cc",
     "models/tree_node_iterator_unittest.cc",
     "pointer/touch_ui_controller_unittest.cc",
-    "prediction/empty_filter_unittests.cc",
+    "prediction/empty_filter_unittest.cc",
     "prediction/input_predictor_unittest_helpers.cc",
     "prediction/input_predictor_unittest_helpers.h",
     "prediction/kalman_predictor_unittest.cc",
     "prediction/least_squares_predictor_unittest.cc",
     "prediction/linear_predictor_unittest.cc",
     "prediction/linear_resampling_unittest.cc",
-    "prediction/one_euro_filter_unittests.cc",
+    "prediction/one_euro_filter_unittest.cc",
     "prediction/prediction_metrics_handler_unittest.cc",
     "prediction/prediction_unittest_helpers.h",
     "resource/data_pack_literal.cc",
@@ -1059,8 +1076,10 @@ test("ui_base_unittests") {
     "//ui/base/clipboard:file_info",
     "//ui/base/cursor:unittests",
     "//ui/base/data_transfer_policy:unittests",
+    "//ui/base/identifier:unit_tests",
+    "//ui/base/interaction:unit_tests",
     "//ui/base/metadata:metadata_tests",
-    "//ui/base/prediction:prediction",
+    "//ui/base/prediction",
     "//ui/color",
     "//ui/display",
     "//ui/gfx:test_support",
@@ -1078,6 +1097,10 @@ test("ui_base_unittests") {
     ]
   }
 
+  if (is_win || is_mac || is_linux || is_chromeos || is_android) {
+    deps += [ "//ui/base/unowned_user_data:unit_tests" ]
+  }
+
   if (!is_android && !is_ios) {
     sources += [ "user_activity/user_activity_detector_unittest.cc" ]
   }
@@ -1089,13 +1112,13 @@ test("ui_base_unittests") {
       "cocoa/base_view_unittest.mm",
       "cocoa/bubble_closer_unittest.mm",
       "cocoa/cocoa_base_utils_unittest.mm",
+      "cocoa/command_dispatcher_unittest.mm",
       "cocoa/constrained_window/constrained_window_animation_unittest.mm",
       "cocoa/defaults_utils_unittest.mm",
       "cocoa/nsmenu_additions_unittest.mm",
       "cocoa/nsmenuitem_additions_unittest.mm",
       "cocoa/touch_bar_util_unittest.mm",
       "cocoa/tracking_area_unittest.mm",
-      "interaction/element_tracker_mac_unittest.mm",
       "l10n/l10n_util_mac_unittest.mm",
       "test/view_tree_validator_unittest.mm",
     ]
@@ -1131,6 +1154,7 @@ test("ui_base_unittests") {
   }
 
   if (use_blink) {
+    sources += [ "pointer/pointer_device_unittest.cc" ]
     deps += [
       "//ui/events:events_base",
       "//ui/events:test_support",
@@ -1235,12 +1259,17 @@ test("ui_base_unittests") {
       "dragdrop/os_exchange_data_win_unittest.cc",
       "view_prop_unittest.cc",
       "win/hwnd_subclass_unittest.cc",
+      "win/shell_unittest.cc",
       "win/win_cursor_factory_unittest.cc",
     ]
     deps += [
       "//ui/base/cursor",
       "//ui/base/cursor/mojom:cursor_type_shared",
+      "//ui/base/idle:unit_tests",
     ]
+    if (!is_component_build && !is_asan) {
+      data_deps += [ ":shell_test_helper" ]
+    }
   }
 
   if (is_android) {
@@ -1311,10 +1340,7 @@ test("ui_base_unittests") {
 
   if (use_glib) {
     sources += [ "glib/scoped_gsignal_unittest.cc" ]
-  }
-
-  if (is_linux) {
-    sources += [ "linux/xdg_shortcut_unittest.cc" ]
+    deps += [ "//ui/base/glib" ]
   }
 
   if (is_linux && use_dbus) {
@@ -1324,8 +1350,17 @@ test("ui_base_unittests") {
       "//content/test:test_support",
       "//dbus:test_support",
       "//ui/base/accelerators/global_accelerator_listener",
+      "//ui/linux:linux_ui",
     ]
   }
+
+  if (is_linux) {
+    sources += [ "linux/xdg_shortcut_unittest.cc" ]
+  }
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 if (is_mac) {
@@ -1356,10 +1391,7 @@ if (is_linux || is_chromeos) {
   # This source set defines linux wm role names and must not have any external
   # dependencies and be kept as minimal as possible.
   source_set("wm_role_names") {
-    sources = [
-      "wm_role_names_linux.cc",
-      "wm_role_names_linux.h",
-    ]
+    sources = [ "wm_role_names_linux.h" ]
   }
 }
 
@@ -1376,7 +1408,7 @@ source_set("base_interactive_ui_tests") {
       ":test_support",
       "//base/test:test_support",
       "//testing/gtest",
-      "//ui/events:events",
+      "//ui/events",
     ]
   }
 }
@@ -1415,7 +1447,7 @@ buildflag_header("ozone_buildflags") {
   header = "ozone_buildflags.h"
 
   flags = [
-    "IS_OZONE_WAYLAND=$ozone_platform_wayland",
-    "IS_OZONE_X11=$ozone_platform_x11",
+    "SUPPORTS_OZONE_WAYLAND=$ozone_platform_wayland",
+    "SUPPORTS_OZONE_X11=$ozone_platform_x11",
   ]
 }

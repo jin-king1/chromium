@@ -2,21 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "media/mojo/services/media_metrics_provider.h"
+
 #include <stddef.h>
+
 #include <memory>
+#include <utility>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_message_loop.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "build/build_config.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "media/cdm/clear_key_cdm_common.h"
-#include "media/mojo/services/media_metrics_provider.h"
 #include "media/mojo/services/watch_time_recorder.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/test_support/test_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -52,9 +55,7 @@ class MediaMetricsProviderTest : public testing::Test {
                       : MediaMetricsProvider::BrowsingMode::kNormal),
         (is_top_frame ? MediaMetricsProvider::FrameStatus::kTopFrame
                       : MediaMetricsProvider::FrameStatus::kNotTopFrame),
-        GetSourceId(), learning::FeatureValue(0),
-        VideoDecodePerfHistory::SaveCallback(),
-        MediaMetricsProvider::GetLearningSessionCallback(),
+        GetSourceId(), VideoDecodePerfHistory::SaveCallback(),
         base::BindRepeating(&MediaMetricsProviderTest::IsShuttingDown,
                             base::Unretained(this)),
         PictureInPictureEventsInfo::AutoPipReasonCallback(),
@@ -168,7 +169,7 @@ TEST_F(MediaMetricsProviderTest, TestUkm) {
       EXPECT_UKM(UkmEntry::kTimeToPlayReadyName,
                  kPlayReadyTime.InMilliseconds());
       EXPECT_UKM(UkmEntry::kContainerNameName,
-                 base::to_underlying(
+                 std::to_underlying(
                      container_names::MediaContainerName::kContainerMOV));
     }
   }
@@ -272,10 +273,27 @@ TEST_F(MediaMetricsProviderTest, TestPipelineUMANoAudioWithEme) {
   histogram_tester.ExpectBucketCount("Media.EME.IsIncognito", false, 1);
 }
 
+TEST_F(MediaMetricsProviderTest, TestPipelineUMAAudioDecoderType) {
+  base::HistogramTester histogram_tester;
+  Initialize(false, false, false, kTestOrigin, mojom::MediaURLScheme::kHttps);
+  provider_->SetAudioPipelineInfo(
+      {false, false, AudioDecoderType::kFFmpeg, EncryptionType::kClear});
+  provider_->SetHasAudio(AudioCodec::kOpus);
+  provider_->SetHasPlayed();
+  provider_->SetHaveEnough();
+  provider_.reset();
+  base::RunLoop().RunUntilIdle();
+  histogram_tester.ExpectBucketCount("Media.PipelineStatus.AudioOnly",
+                                     PIPELINE_OK, 1);
+  histogram_tester.ExpectBucketCount("Media.Audio.DecoderType",
+                                     AudioDecoderType::kFFmpeg, 1);
+}
+
 TEST_F(MediaMetricsProviderTest, TestPipelineUMADecoderFallback) {
   base::HistogramTester histogram_tester;
   Initialize(false, false, false, kTestOrigin, mojom::MediaURLScheme::kHttps);
   provider_->SetIsEME();
+  provider_->SetIsHardwareSecure();
   provider_->SetAudioPipelineInfo(
       {false, false, AudioDecoderType::kMojo, EncryptionType::kClear});
   provider_->SetVideoPipelineInfo(
@@ -287,8 +305,13 @@ TEST_F(MediaMetricsProviderTest, TestPipelineUMADecoderFallback) {
   provider_->SetVideoPipelineInfo({true, false, VideoDecoderType::kFFmpeg});
   provider_.reset();
   base::RunLoop().RunUntilIdle();
+#if BUILDFLAG(IS_ANDROID)
   histogram_tester.ExpectBucketCount("Media.PipelineStatus.AudioVideo.VP9.HW",
                                      PIPELINE_OK, 1);
+#else   // BUILDFLAG(IS_ANDROID)
+  histogram_tester.ExpectBucketCount(
+      "Media.PipelineStatus.AudioVideo.VP9.HardwareSecure.HW", PIPELINE_OK, 1);
+#endif  // BUILDFLAG(IS_ANDROID)
   histogram_tester.ExpectBucketCount("Media.VideoDecoderFallback.VP9", true, 1);
   histogram_tester.ExpectBucketCount("Media.HasEverPlayed", true, 1);
 }
@@ -348,6 +371,77 @@ TEST_F(MediaMetricsProviderTest, TestPipelineUMAMediaDrmHardwareSecure) {
       "Media.PipelineStatus.AudioVideo.VP9.MediaDrm.HardwareSecure",
       PIPELINE_OK, 1);
 }
+#else   // BUILDFLAG(IS_ANDROID)
+TEST_F(MediaMetricsProviderTest, TestPipelineUMAHardwareDecoderHardwareSecure) {
+  base::HistogramTester histogram_tester;
+  Initialize(false, false, false, kTestOrigin, mojom::MediaURLScheme::kHttps);
+  provider_->SetIsEME();
+  provider_->SetIsHardwareSecure();
+  provider_->SetAudioPipelineInfo(
+      {false, false, AudioDecoderType::kMojo, EncryptionType::kClear});
+  provider_->SetVideoPipelineInfo(
+      {true, false, VideoDecoderType::kD3D11, EncryptionType::kEncrypted});
+  provider_->SetHasVideo(VideoCodec::kVP9);
+  provider_->SetHasAudio(AudioCodec::kVorbis);
+  provider_->SetHasPlayed();
+  provider_->SetHaveEnough();
+  provider_.reset();
+  base::RunLoop().RunUntilIdle();
+  histogram_tester.ExpectBucketCount(
+      "Media.PipelineStatus.AudioVideo.VP9.HardwareSecure.HW", PIPELINE_OK, 1);
+  histogram_tester.ExpectBucketCount("Media.HasEverPlayed", true, 1);
+}
+
+struct PipelineDDSTestCase {
+  bool is_eme;
+  bool is_hardware_secure;
+  bool is_platform_decoder;
+  const char* expected_suffix;
+};
+
+class MediaMetricsProviderDDSTest
+    : public MediaMetricsProviderTest,
+      public testing::WithParamInterface<PipelineDDSTestCase> {};
+
+TEST_P(MediaMetricsProviderDDSTest, TestDDSUMA) {
+  const auto& param = GetParam();
+  base::HistogramTester histogram_tester;
+  Initialize(false, false, false, kTestOrigin, mojom::MediaURLScheme::kHttps);
+
+  if (param.is_eme) {
+    provider_->SetIsEME();
+  }
+  if (param.is_hardware_secure) {
+    provider_->SetIsHardwareSecure();
+  }
+
+  provider_->SetAudioPipelineInfo(
+      {false, false, AudioDecoderType::kMojo, EncryptionType::kClear});
+  provider_->SetVideoPipelineInfo({param.is_platform_decoder, true,
+                                   VideoDecoderType::kMojo,
+                                   EncryptionType::kEncrypted});
+  provider_->SetHasVideo(VideoCodec::kVP9);
+  provider_->SetHasAudio(AudioCodec::kVorbis);
+  provider_->SetHasPlayed();
+  provider_->SetHaveEnough();
+  provider_.reset();
+  base::RunLoop().RunUntilIdle();
+
+  histogram_tester.ExpectBucketCount("Media.PipelineStatus.AudioVideo.VP9." +
+                                         std::string(param.expected_suffix),
+                                     PIPELINE_OK, 1);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    MediaMetricsProviderDDSTest,
+    testing::Values(
+        PipelineDDSTestCase{false, false, true, "DDS.HW"},
+        PipelineDDSTestCase{false, false, false, "DDS.SW"},
+        PipelineDDSTestCase{true, true, true, "HardwareSecure.DDS.HW"},
+        PipelineDDSTestCase{true, true, false, "HardwareSecure.DDS.SW"},
+        PipelineDDSTestCase{true, false, true, "SoftwareSecure.DDS.HW"},
+        PipelineDDSTestCase{true, false, false, "SoftwareSecure.DDS.SW"}));
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // Note: Tests for various Acquire* methods are contained with the unittests for
@@ -356,5 +450,16 @@ TEST_F(MediaMetricsProviderTest, TestPipelineUMAMediaDrmHardwareSecure) {
 #undef EXPECT_UKM
 #undef EXPECT_NO_UKM
 #undef EXPECT_HAS_UKM
+
+TEST_F(MediaMetricsProviderTest, DoubleInitializeReportsBadMessage) {
+  Initialize(true, false, true, kTestOrigin, mojom::MediaURLScheme::kHttp);
+
+  mojo::test::BadMessageObserver observer;
+  provider_->Initialize(true, mojom::MediaURLScheme::kHttp,
+                        mojom::MediaStreamType::kNone);
+
+  EXPECT_EQ(observer.WaitForBadMessage(),
+            "Initialize() was not called correctly.");
+}
 
 }  // namespace media

@@ -24,9 +24,11 @@ import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
 import {isChild} from '../common/load_time_booleans.js';
 import {RouteOriginMixin} from '../common/route_origin_mixin.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
-import {type Route, Router, routes} from '../router.js';
+import {Router, routes} from '../router.js';
+import type {Route} from '../router.js';
 
-import {DateTimeBrowserProxy, type DateTimePageCallbackRouter, type DateTimePageHandlerRemote} from './date_time_browser_proxy.js';
+import {DateTimeBrowserProxy} from './date_time_browser_proxy.js';
+import type {DateTimePageCallbackRouter, DateTimePageHandlerRemote} from './date_time_browser_proxy.js';
 import {getTemplate} from './date_time_settings_card.html.js';
 
 const DateTimeSettingsCardElementBase =
@@ -46,17 +48,6 @@ export class DateTimeSettingsCardElement extends
     return {
       activeTimeZoneDisplayName: {
         type: String,
-      },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.k24HourClock,
-          Setting.kChangeTimeZone,
-        ]),
       },
 
       /**
@@ -90,10 +81,17 @@ export class DateTimeSettingsCardElement extends
     };
   }
 
-  activeTimeZoneDisplayName: string;
-  private canSetDateTime_: boolean;
-  private shouldShowManagedByParentIcon_: boolean;
-  private timeZoneSettingSublabel_: string;
+  declare activeTimeZoneDisplayName: string;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.k24HourClock,
+    Setting.kChangeTimeZone,
+  ]);
+
+  declare private canSetDateTime_: boolean;
+  declare private shouldShowManagedByParentIcon_: boolean;
+  declare private timeZoneSettingSublabel_: string;
 
   /**
    * Returns the browser proxy page handler (to invoke functions).

@@ -27,10 +27,7 @@ class URLSearchParamsIterationSource final
   explicit URLSearchParamsIterationSource(URLSearchParams* params)
       : params_(params), current_(0) {}
 
-  bool FetchNextItem(ScriptState*,
-                     String& key,
-                     String& value,
-                     ExceptionState&) override {
+  bool FetchNextItem(ScriptState*, String& key, String& value) override {
     if (current_ >= params_->Params().size())
       return false;
 
@@ -52,7 +49,7 @@ class URLSearchParamsIterationSource final
 
 bool CompareParams(const std::pair<String, String>& a,
                    const std::pair<String, String>& b) {
-  return WTF::CodeUnitCompareLessThan(a.first, b.first);
+  return CodeUnitCompareLessThan(a.first, b.first);
 }
 
 }  // namespace
@@ -63,8 +60,9 @@ URLSearchParams* URLSearchParams::Create(const URLSearchParamsInit* init,
   switch (init->GetContentType()) {
     case URLSearchParamsInit::ContentType::kUSVString: {
       const String& query_string = init->GetAsUSVString();
-      if (query_string.StartsWith('?'))
-        return MakeGarbageCollected<URLSearchParams>(query_string.Substring(1));
+      if (query_string.starts_with('?')) {
+        return MakeGarbageCollected<URLSearchParams>(query_string.substr(1));
+      }
       return MakeGarbageCollected<URLSearchParams>(query_string);
     }
     case URLSearchParamsInit::ContentType::kUSVStringSequenceSequence:
@@ -138,8 +136,8 @@ void URLSearchParams::RunUpdateSteps() {
 static String DecodeString(String input) {
   // |DecodeURLMode::kUTF8| is used because "UTF-8 decode without BOM" should
   // be performed (see https://url.spec.whatwg.org/#concept-urlencoded-parser).
-  return DecodeURLEscapeSequences(input.Replace('+', ' '),
-                                  DecodeURLMode::kUTF8);
+  return DecodeUrlEscapeSequences(input.Replace('+', ' '),
+                                  DecodeUrlMode::kUtf8);
 }
 
 void URLSearchParams::SetInputWithoutUpdate(const String& query_string) {
@@ -157,10 +155,10 @@ void URLSearchParams::SetInputWithoutUpdate(const String& query_string) {
       if (end_of_name == kNotFound || end_of_name > name_value_end)
         end_of_name = name_value_end;
       String name = DecodeString(
-          query_string.Substring(name_start, end_of_name - name_start));
+          query_string.substr(name_start, end_of_name - name_start));
       String value;
       if (end_of_name != name_value_end)
-        value = DecodeString(query_string.Substring(
+        value = DecodeString(query_string.substr(
             end_of_name + 1, name_value_end - end_of_name - 1));
       if (value.IsNull())
         value = "";
@@ -320,7 +318,7 @@ void URLSearchParams::EncodeAsFormData(Vector<char>& encoded_data) const {
   for (const auto& param : params_) {
     FormDataEncoder::AddKeyValuePairAsFormData(
         encoded_data, param.first.Utf8(), param.second.Utf8(),
-        EncodedFormData::kFormURLEncoded, FormDataEncoder::kDoNotNormalizeCRLF);
+        EncodedFormData::kFormUrlEncoded, FormDataEncoder::kDoNotNormalizeCRLF);
   }
 }
 
@@ -331,7 +329,7 @@ scoped_refptr<EncodedFormData> URLSearchParams::ToEncodedFormData() const {
 }
 
 PairSyncIterable<URLSearchParams>::IterationSource*
-URLSearchParams::CreateIterationSource(ScriptState*, ExceptionState&) {
+URLSearchParams::CreateIterationSource(ScriptState*) {
   return MakeGarbageCollected<URLSearchParamsIterationSource>(this);
 }
 

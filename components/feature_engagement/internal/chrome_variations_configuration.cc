@@ -11,10 +11,8 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
-#include "base/not_fatal_until.h"
 #include "build/build_config.h"
 #include "components/feature_engagement/public/configuration.h"
 #include "components/feature_engagement/public/configuration_provider.h"
@@ -119,7 +117,7 @@ void ChromeVariationsConfiguration::LoadFeatureConfig(
     const ConfigurationProviderList& configuration_providers,
     const FeatureVector& all_features,
     const GroupVector& all_groups) {
-  DCHECK(!base::Contains(configs_, feature.name));
+  DCHECK(!configs_.contains(feature.name));
 
   DVLOG(3) << "Loading feature config for " << feature.name;
   bool loaded = false;
@@ -145,7 +143,7 @@ void ChromeVariationsConfiguration::LoadFeatureConfig(
 void ChromeVariationsConfiguration::LoadGroupConfig(
     const base::Feature& group,
     const ConfigurationProviderList& configuration_providers) {
-  DCHECK(!base::Contains(group_configs_, group.name));
+  DCHECK(!group_configs_.contains(group.name));
 
   DVLOG(3) << "Parsing group config for " << group.name;
 
@@ -218,17 +216,23 @@ void ChromeVariationsConfiguration::ExpandGroupNamesInFeatures(
   }
 }
 
+bool ChromeVariationsConfiguration::HasFeatureConfig(
+    const base::Feature& feature) const {
+  const auto it = configs_.find(feature.name);
+  return it != configs_.end() && it->second.valid;
+}
+
 const FeatureConfig& ChromeVariationsConfiguration::GetFeatureConfig(
     const base::Feature& feature) const {
   auto it = configs_.find(feature.name);
-  CHECK(it != configs_.end(), base::NotFatalUntil::M130);
+  CHECK(it != configs_.end());
   return it->second;
 }
 
 const FeatureConfig& ChromeVariationsConfiguration::GetFeatureConfigByName(
     const std::string& feature_name) const {
   auto it = configs_.find(feature_name);
-  CHECK(it != configs_.end(), base::NotFatalUntil::M130);
+  CHECK(it != configs_.end());
   return it->second;
 }
 
@@ -240,22 +244,23 @@ ChromeVariationsConfiguration::GetRegisteredFeatureConfigs() const {
 const std::vector<std::string>
 ChromeVariationsConfiguration::GetRegisteredFeatures() const {
   std::vector<std::string> features;
-  for (const auto& element : configs_)
+  for (const auto& element : configs_) {
     features.push_back(element.first);
+  }
   return features;
 }
 
 const GroupConfig& ChromeVariationsConfiguration::GetGroupConfig(
     const base::Feature& group) const {
   auto it = group_configs_.find(group.name);
-  CHECK(it != group_configs_.end(), base::NotFatalUntil::M130);
+  CHECK(it != group_configs_.end());
   return it->second;
 }
 
 const GroupConfig& ChromeVariationsConfiguration::GetGroupConfigByName(
     const std::string& group_name) const {
   auto it = group_configs_.find(group_name);
-  CHECK(it != group_configs_.end(), base::NotFatalUntil::M130);
+  CHECK(it != group_configs_.end());
   return it->second;
 }
 
@@ -267,8 +272,9 @@ ChromeVariationsConfiguration::GetRegisteredGroupConfigs() const {
 const std::vector<std::string>
 ChromeVariationsConfiguration::GetRegisteredGroups() const {
   std::vector<std::string> groups;
-  for (const auto& element : group_configs_)
+  for (const auto& element : group_configs_) {
     groups.push_back(element.first);
+  }
   return groups;
 }
 

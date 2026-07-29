@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
@@ -35,7 +36,7 @@ const char kClickFn[] = "el => el.click()";
 using ::testing::Eq;
 
 class DownloadsPageInteractiveUitest
-    : public InteractiveBrowserTestT<DownloadTestBase> {
+    : public InteractiveBrowserTestMixin<DownloadTestBase> {
  public:
   DownloadsPageInteractiveUitest() = default;
   ~DownloadsPageInteractiveUitest() override = default;
@@ -45,11 +46,11 @@ class DownloadsPageInteractiveUitest
     // reliably open in the same tab. (It only opens in the same tab if the
     // current tab is about:blank.)
     set_open_about_blank_on_browser_launch(true);
-    InteractiveBrowserTestT<DownloadTestBase>::SetUp();
+    InteractiveBrowserTestMixin<DownloadTestBase>::SetUp();
   }
 
   void SetUpOnMainThread() override {
-    InteractiveBrowserTestT<DownloadTestBase>::SetUpOnMainThread();
+    InteractiveBrowserTestMixin<DownloadTestBase>::SetUpOnMainThread();
     embedded_test_server()->ServeFilesFromDirectory(GetTestDataDirectory());
     ASSERT_TRUE(embedded_test_server()->Start());
   }
@@ -57,7 +58,7 @@ class DownloadsPageInteractiveUitest
   // Opens chrome://downloads via the app menu. All tests must begin with this
   // step so that the identifier kDownloadsPageTabId is bound properly.
   auto OpenDownloadsPage() {
-    DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kReadyEvent);
+    DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kReadyEvent);
     const DeepQuery kPathToDocumentHtml{
         "html",
     };
@@ -100,7 +101,7 @@ class DownloadsPageInteractiveUitest
   // Finds the first download item on the page and presses a button in its
   // dropdown actions menu (which is required to be visible).
   auto TakeTopmostItemMenuAction(const std::string& menu_item_selector) {
-    DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kReadyEvent);
+    DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kReadyEvent);
     const DeepQuery path_to_menu_button =
         PathToTopmostItemElement("#more-actions");
     const DeepQuery path_to_menu_option =
@@ -140,7 +141,7 @@ class DownloadsPageInteractiveUitest
   // the number of download items present is not necessarily the number of list
   // elements that are actually displayed, if items have been removed.
   auto WaitForDownloadItems(int num) {
-    DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kReadyEvent);
+    DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kReadyEvent);
     const DeepQuery kPathToDownloadsList{
         "downloads-manager",
         "#downloadsList",
@@ -156,7 +157,7 @@ class DownloadsPageInteractiveUitest
 
   // Waits for the "no downloads" splash screen to be displayed.
   auto WaitForNoDownloads() {
-    DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kReadyEvent);
+    DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kReadyEvent);
     const DeepQuery kPathToNoDownloads{
         "downloads-manager",
         "#no-downloads:not([hidden])",
@@ -257,8 +258,8 @@ class DownloadsPageInteractiveUitestWithDangerType
   void SetUpOnMainThread() override {
     DownloadsPageInteractiveUitest::SetUpOnMainThread();
     auto test_delegate =
-        std::make_unique<TestDownloadManagerDelegate>(browser()->profile());
-    DownloadCoreServiceFactory::GetForBrowserContext(browser()->profile())
+        std::make_unique<TestDownloadManagerDelegate>(browser()->GetProfile());
+    DownloadCoreServiceFactory::GetForBrowserContext(browser()->GetProfile())
         ->SetDownloadManagerDelegateForTesting(std::move(test_delegate));
   }
 
@@ -286,7 +287,7 @@ class DownloadsPageInteractiveUitestWithDangerType
   auto WaitForTopmostItemDanger(
       bool is_dangerous,
       std::optional<std::string> expected_caption_color = std::nullopt) {
-    DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kReadyEvent);
+    DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kReadyEvent);
     const DeepQuery path_to_item_danger_caption =
         PathToTopmostItemElement(".description");
     const char kHiddenFn[] = "el => el.getAttribute('hidden') %s null";
@@ -310,7 +311,7 @@ class DownloadsPageInteractiveUitestWithDangerType
   }
 
   auto WaitForBypassWarningPrompt() {
-    DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kReadyEvent);
+    DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kReadyEvent);
     const DeepQuery kPathToDialog{
         "downloads-manager",
         "downloads-bypass-warning-confirmation-dialog",
@@ -323,7 +324,7 @@ class DownloadsPageInteractiveUitestWithDangerType
   }
 
   auto ClickBypassWarningPromptButton(const std::string& button_selector) {
-    DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kReadyEvent);
+    DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kReadyEvent);
     const DeepQuery path_to_button{
         "downloads-manager",
         "downloads-bypass-warning-confirmation-dialog",

@@ -4,41 +4,59 @@
 
 #include "third_party/blink/renderer/core/css/css_attr_type.h"
 
+#include <optional>
+
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
+#include "third_party/blink/renderer/core/css/parser/css_parser_local_context.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
-#include "third_party/googletest/src/googletest/include/gtest/gtest.h"
 
 namespace blink {
 
-const char* kDimensionUnits[] = {"em",   "ex",   "cap", "ch",   "ic",  "rem",
-                                 "lh",   "rlh",  "vw",  "vh",   "vi",  "vb",
-                                 "vmin", "vmax", "deg", "grad", "rad", "turn",
-                                 "ms",   "ms",   "hz",  "khz"};
-const char* kValidAttrSyntax[] = {
+constexpr const char* kDimensionUnits[] = {
+    "em",  "ex",   "cap", "ch", "ic",   "rem",  "lh",  "rlh",
+    "vw",  "vh",   "vi",  "vb", "vmin", "vmax", "deg", "grad",
+    "rad", "turn", "ms",  "ms", "hz",   "khz"};
+constexpr const char* kValidAttrSyntax[] = {
     "type(<color>)",   "type(<length> | <percentage>)",
     "type(<angle>#)",  "type(<color>+ | <image>#)",
     "type(<color> )",  "type( <color>)",
     "type( <color> )", "type(<length>)   "};
-const char* kInvalidAttrSyntax[] = {"type(<number >)", "type(< angle>)",
-                                    "type(<length> +)", "type(<color> !)",
-                                    "type(!<color>)"};
+constexpr const char* kInvalidAttrSyntax[] = {
+    "type(<number >)", "type(< angle>)", "type(<length> +)", "type(<color> !)",
+    "type(!<color>)"};
 
 class CSSAttrTypeTest : public PageTestBase {};
 
-TEST_F(CSSAttrTypeTest, ConsumeStringType) {
-  CSSParserTokenStream stream("string");
-  std::optional<CSSAttrType> type = CSSAttrType::Consume(stream);
-  ASSERT_TRUE(type.has_value());
-  EXPECT_TRUE(type->IsString());
-  EXPECT_TRUE(stream.AtEnd());
+TEST_F(CSSAttrTypeTest, ConsumeRawStringType) {
+  CSSParserTokenStream valid_stream("raw-string");
+  std::optional<CSSAttrType> valid_type = CSSAttrType::Consume(valid_stream);
+  ASSERT_TRUE(valid_type.has_value());
+  EXPECT_TRUE(valid_type->IsString());
+  EXPECT_TRUE(valid_stream.AtEnd());
 }
 
-TEST_F(CSSAttrTypeTest, ConsumeInvalidType) {
-  CSSParserTokenStream stream("invalid");
+TEST_F(CSSAttrTypeTest, ConsumeNumberType) {
+  CSSParserTokenStream valid_stream("number");
+  std::optional<CSSAttrType> valid_type = CSSAttrType::Consume(valid_stream);
+  ASSERT_TRUE(valid_type.has_value());
+  EXPECT_TRUE(valid_type->IsNumber());
+  EXPECT_TRUE(valid_stream.AtEnd());
+}
+
+TEST_F(CSSAttrTypeTest, ConsumeInvalidFunctionType) {
+  CSSParserTokenStream stream("invalid()");
   std::optional<CSSAttrType> type = CSSAttrType::Consume(stream);
   ASSERT_FALSE(type.has_value());
   EXPECT_EQ(stream.Offset(), 0u);
+}
+
+TEST_F(CSSAttrTypeTest, ConsumeUnknownUnitType) {
+  CSSParserTokenStream stream("unknown");
+  std::optional<CSSAttrType> type = CSSAttrType::Consume(stream);
+  ASSERT_TRUE(type.has_value());
+  EXPECT_TRUE(type->IsDimensionUnit());
+  EXPECT_TRUE(stream.AtEnd());
 }
 
 class ValidSyntaxTest : public CSSAttrTypeTest,
@@ -93,7 +111,10 @@ TEST_P(DimensionUnitTypeTest, ParseDimensionUnitTypeValid) {
   String valid_value("3");
   String expected_value = valid_value + String(GetParam());
   const auto* context = MakeGarbageCollected<CSSParserContext>(GetDocument());
-  const CSSValue* parsed_value = type->Parse(valid_value, *context);
+  CSSParserLocalContext local_context =
+      CSSParserLocalContext::CreateWithoutPropertyForTest();
+  const CSSValue* parsed_value =
+      type->Parse(valid_value, *context, local_context);
   EXPECT_EQ(parsed_value->CssText(), expected_value);
 }
 
@@ -103,7 +124,10 @@ TEST_P(DimensionUnitTypeTest, ParseDimensionUnitTypeInvalid) {
   ASSERT_TRUE(type.has_value());
   String valid_value("3px");
   const auto* context = MakeGarbageCollected<CSSParserContext>(GetDocument());
-  const CSSValue* parsed_value = type->Parse(valid_value, *context);
+  CSSParserLocalContext local_context =
+      CSSParserLocalContext::CreateWithoutPropertyForTest();
+  const CSSValue* parsed_value =
+      type->Parse(valid_value, *context, local_context);
   EXPECT_FALSE(parsed_value);
 }
 

@@ -4,12 +4,16 @@
 
 package org.chromium.chrome.browser.ui.signin.signin_promo;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -18,19 +22,19 @@ import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
 import org.chromium.chrome.browser.ui.signin.R;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
+import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetStrings;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncHelper;
-import org.chromium.components.signin.SigninFeatureMap;
-import org.chromium.components.signin.SigninFeatures;
-import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.identitymanager.ConsentLevel;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.concurrent.TimeUnit;
 
 /** {@link SigninPromoDelegate} for the History page sign-in promo. */
+@NullMarked
 public class HistoryPageSigninPromoDelegate extends SigninPromoDelegate {
 
     /** Indicates the type of content the should be shown in the visible promo. */
@@ -47,8 +51,13 @@ public class HistoryPageSigninPromoDelegate extends SigninPromoDelegate {
         int HISTORY_SYNC = 1;
     }
 
-    @VisibleForTesting static final int MAX_IMPRESSIONS_HISTORY_PAGE = 10;
+    // 2 weeks in ms.
+    @VisibleForTesting
+    static final long MIN_DELAY_BETWEEN_IMPRESSIONS_MS = TimeUnit.DAYS.toMillis(14);
 
+    @VisibleForTesting static final int MAX_IMPRESSIONS = 10;
+
+    private final boolean mIsCreatedInCct;
     private final String mPromoShowCountPreferenceName;
     private @PromoState int mPromoState = PromoState.NONE;
 
@@ -56,9 +65,11 @@ public class HistoryPageSigninPromoDelegate extends SigninPromoDelegate {
             Context context,
             Profile profile,
             SigninAndHistorySyncActivityLauncher launcher,
-            Runnable onPromoStateChange) {
+            Runnable onPromoStateChange,
+            boolean isCreatedInCct) {
         super(context, profile, launcher, onPromoStateChange);
 
+        mIsCreatedInCct = isCreatedInCct;
         mPromoShowCountPreferenceName =
                 ChromePreferenceKeys.SYNC_PROMO_SHOW_COUNT.createKey(
                         SigninPreferencesManager.SigninPromoAccessPointId.HISTORY_PAGE);
@@ -70,7 +81,7 @@ public class HistoryPageSigninPromoDelegate extends SigninPromoDelegate {
     }
 
     @Override
-    String getDescription() {
+    String getDescription(@Nullable String accountEmail) {
         return mContext.getString(R.string.signin_promo_description_history_page);
     }
 
@@ -87,7 +98,7 @@ public class HistoryPageSigninPromoDelegate extends SigninPromoDelegate {
     }
 
     @Override
-    void onDismissButtonClicked() {
+    void permanentlyDismissPromo() {
         ChromeSharedPreferences.getInstance()
                 .writeBoolean(ChromePreferenceKeys.SIGNIN_PROMO_HISTORY_PAGE_DECLINED, true);
     }
@@ -98,11 +109,26 @@ public class HistoryPageSigninPromoDelegate extends SigninPromoDelegate {
     }
 
     @Override
-    boolean refreshPromoState(@Nullable CoreAccountInfo visibleAccount) {
+    boolean refreshPromoState(@Nullable DisplayableProfileData visibleAccount) {
         @PromoState int newState = computePromoState();
         boolean wasStateChanged = mPromoState != newState;
         mPromoState = newState;
         return wasStateChanged;
+    }
+
+    @Override
+    boolean isSeamlessSigninAllowed() {
+        return false;
+    }
+
+    @Override
+    AccountPickerBottomSheetStrings getBottomSheetStrings() {
+        return new AccountPickerBottomSheetStrings.Builder(
+                        mContext.getString(R.string.signin_account_picker_bottom_sheet_title))
+                .setSubtitleString(
+                        mContext.getString(
+                                R.string.signin_account_picker_bottom_sheet_benefits_subtitle))
+                .build();
     }
 
     @Override
@@ -111,28 +137,22 @@ public class HistoryPageSigninPromoDelegate extends SigninPromoDelegate {
     }
 
     @Override
-    boolean shouldHideDismissButton() {
-        return false;
-    }
-
-    @Override
     String getTextForPrimaryButton(@Nullable DisplayableProfileData profileData) {
-        if (SigninFeatureMap.isEnabled(SigninFeatures.HISTORY_OPT_IN_PROMO_CTA_STRING_VARIATION)) {
-            return mContext.getString(R.string.signin_continue);
-        } else {
-            return mContext.getString(R.string.signin_promo_turn_on);
-        }
+        return mContext.getString(R.string.signin_continue);
     }
 
     @Override
     void recordImpression() {
+        ChromeSharedPreferences.getInstance()
+                .writeLong(
+                        ChromePreferenceKeys.SIGNIN_PROMO_HISTORY_PAGE_LAST_SHOWN_TIME,
+                        System.currentTimeMillis());
         ChromeSharedPreferences.getInstance().incrementInt(mPromoShowCountPreferenceName);
     }
 
     @Override
     boolean isMaxImpressionsReached() {
-        return ChromeSharedPreferences.getInstance().readInt(mPromoShowCountPreferenceName)
-                >= MAX_IMPRESSIONS_HISTORY_PAGE;
+        return getPromoShownCount() >= MAX_IMPRESSIONS;
     }
 
     @Override
@@ -141,21 +161,59 @@ public class HistoryPageSigninPromoDelegate extends SigninPromoDelegate {
         return HistorySyncConfig.OptInMode.REQUIRED;
     }
 
+    @Override
+    boolean shouldDisplaySignedInLayout() {
+        return mPromoState == PromoState.HISTORY_SYNC;
+    }
+
+    @Override
+    int getPromoShownCount() {
+        return ChromeSharedPreferences.getInstance().readInt(mPromoShowCountPreferenceName);
+    }
+
+    @Override
+    @ColorInt
+    int getAccountPickerBackgroundColor() {
+        return SemanticColorUtils.getColorSurface(mContext);
+    }
+
     private @PromoState int computePromoState() {
-        // TODO(crbug.com/388201374): Add delay between 2 impressions.
+        // The history page promo should always be hidden in CCT for privacy concern: it's hard to
+        // clarify that the history sync promo affect only Chrome and not the app that launched the
+        // CCT.
+        if (mIsCreatedInCct) {
+            return PromoState.NONE;
+        }
+
         if (ChromeSharedPreferences.getInstance()
                 .readBoolean(ChromePreferenceKeys.SIGNIN_PROMO_HISTORY_PAGE_DECLINED, false)) {
             return PromoState.NONE;
         }
 
+        final long currentTime = System.currentTimeMillis();
+        final long lastShownTime =
+                ChromeSharedPreferences.getInstance()
+                        .readLong(
+                                ChromePreferenceKeys.SIGNIN_PROMO_HISTORY_PAGE_LAST_SHOWN_TIME, 0L);
+        if (mPromoState == PromoState.NONE
+                && currentTime > lastShownTime
+                && currentTime - lastShownTime < MIN_DELAY_BETWEEN_IMPRESSIONS_MS) {
+            // Hide promo if it was last shown less than two weeks ago and is not currently showing.
+            // (If the promo is already showing, the delay should have been checked before the promo
+            // was first shown to the user, and a new last shown time should have been recorded
+            // afterward.)
+            return PromoState.NONE;
+        }
+
         IdentityManager identityManager =
                 IdentityServicesProvider.get().getIdentityManager(mProfile);
-        if (!identityManager.hasPrimaryAccount(ConsentLevel.SIGNIN)) {
+        assumeNonNull(identityManager);
+        if (!identityManager.hasPrimaryAccount()) {
             // Hide promo for signed-out users.
             return PromoState.NONE;
         }
         final HistorySyncHelper historySyncHelper = HistorySyncHelper.getForProfile(mProfile);
-        return historySyncHelper.shouldSuppressHistorySync()
+        return !historySyncHelper.shouldDisplayHistorySync() || historySyncHelper.isDeclinedOften()
                 ? PromoState.NONE
                 : PromoState.HISTORY_SYNC;
     }

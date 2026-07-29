@@ -19,6 +19,8 @@
 #include "services/network/test/test_shared_url_loader_factory.h"
 #include "url/gurl.h"
 
+class PrefService;
+
 namespace ash {
 
 class UserEducationDelegate;
@@ -72,10 +74,12 @@ class TestShellDelegate : public ShellDelegate {
 
   // Overridden from ShellDelegate:
   bool CanShowWindowForUser(const aura::Window* window) const override;
-  std::unique_ptr<CaptureModeDelegate> CreateCaptureModeDelegate()
-      const override;
+  std::unique_ptr<CaptureModeDelegate> CreateCaptureModeDelegate(
+      PrefService* local_state) const override;
   std::unique_ptr<ClipboardHistoryControllerDelegate>
   CreateClipboardHistoryControllerDelegate() const override;
+  std::unique_ptr<ClipboardImageModelFactory> CreateClipboardImageModelFactory()
+      const override;
   std::unique_ptr<CoralDelegate> CreateCoralDelegate() const override;
   std::unique_ptr<GameDashboardDelegate> CreateGameDashboardDelegate()
       const override;
@@ -102,11 +106,7 @@ class TestShellDelegate : public ShellDelegate {
   GetBrowserProcessUrlLoaderFactory() const override;
   bool CanGoBack(gfx::NativeWindow window) const override;
   void SetTabScrubberEnabled(bool enabled) override;
-  void ShouldExitFullscreenBeforeLock(
-      ShouldExitFullscreenCallback callback) override;
   bool ShouldWaitForTouchPressAck(gfx::NativeWindow window) override;
-  int GetBrowserWebUITabStripHeight() override;
-  DeskProfilesDelegate* GetDeskProfilesDelegate() override;
   void OpenMultitaskingSettings() override;
   void BindMultiDeviceSetup(
       mojo::PendingReceiver<multidevice_setup::mojom::MultiDeviceSetup>
@@ -120,8 +120,6 @@ class TestShellDelegate : public ShellDelegate {
       override {}
 
   void SetCanGoBack(bool can_go_back);
-  void SetShouldExitFullscreenBeforeLock(
-      bool should_exit_fullscreen_before_lock);
   void SetShouldWaitForTouchAck(bool should_wait_for_touch_ack);
   void SetSessionRestoreInProgress(bool in_progress);
   bool IsLoggingRedirectDisabled() const override;
@@ -153,9 +151,6 @@ class TestShellDelegate : public ShellDelegate {
   // True if the tab scrubber is enabled.
   bool tab_scrubber_enabled_ = true;
 
-  // False if it is allowed by policy to keep fullscreen after unlock.
-  bool should_exit_fullscreen_before_lock_ = true;
-
   // True if when performing back gesture on the top window, we should handle
   // the event after the touch ack is received. Please refer to
   // |BackGestureEventHandler::should_wait_for_touch_ack_| for detailed
@@ -164,8 +159,6 @@ class TestShellDelegate : public ShellDelegate {
 
   // True if window browser sessions are restoring.
   bool session_restore_in_progress_ = false;
-
-  std::unique_ptr<DeskProfilesDelegate> test_desk_profiles_delegate_;
 
   MultiDeviceSetupBinder multidevice_setup_binder_;
   UserEducationDelegateFactory user_education_delegate_factory_;

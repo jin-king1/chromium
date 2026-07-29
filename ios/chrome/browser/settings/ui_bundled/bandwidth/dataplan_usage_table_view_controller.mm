@@ -13,7 +13,6 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_text_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_styler.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -97,8 +96,6 @@ NetworkPredictionSetting SettingWithItemType(ItemType item_type) {
 
 - (void)loadModel {
   [super loadModel];
-  self.styler.cellTitleColor = [UIColor colorNamed:kTextPrimaryColor];
-
   TableViewModel<TableViewItem*>* model = self.tableViewModel;
   [model addSectionWithIdentifier:SectionIdentifierOptions];
 
@@ -189,6 +186,12 @@ NetworkPredictionSetting SettingWithItemType(ItemType item_type) {
   [self updateSetting:chosenSetting];
 
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
+}
+
+#pragma mark - SettingsControllerProtocol
+
+- (void)settingsWillBeDismissed {
+  _settingPreference.Destroy();
 }
 
 @end

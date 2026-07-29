@@ -11,12 +11,14 @@
 
 @interface FakeLocationBarSteadyViewConsumer
     : NSObject <LocationBarSteadyViewConsumer>
-@property(nonatomic, strong, readonly) NSString* locationText;
+@property(nonatomic, copy, readonly) NSString* locationText;
 @property(nonatomic, assign, readonly) BOOL clipTail;
 @property(nonatomic, strong, readonly) UIImage* icon;
-@property(nonatomic, strong, readonly) NSString* statusText;
+@property(nonatomic, copy, readonly) NSString* statusText;
 @property(nonatomic, assign, readonly, getter=isLocationShareable)
     BOOL locationShareable;
+// Callback invoked when the location shareable state is updated.
+@property(nonatomic, copy) void (^onUpdateLocationShareable)(BOOL);
 @end
 
 #endif  // IOS_CHROME_BROWSER_LOCATION_BAR_UI_BUNDLED_TEST_FAKE_LOCATION_BAR_STEADY_VIEW_CONSUMER_H_

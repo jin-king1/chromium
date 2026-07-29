@@ -7,13 +7,12 @@
 #include <array>
 
 #include "ash/constants/ash_features.h"
+#include "base/check_deref.h"
 #include "base/containers/span.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/settings/os_settings_features_util.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/browser/ui/webui/settings/reset_settings_handler.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/locale_settings.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -51,7 +50,8 @@ ResetSection::ResetSection(Profile* profile,
                            SearchTagRegistry* search_tag_registry)
     : OsSettingsSection(profile, search_tag_registry) {
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
-  auto* user = BrowserContextHelper::Get()->GetUserByBrowserContext(profile);
+  const auto& user = CHECK_DEREF(
+      BrowserContextHelper::Get()->GetUserByBrowserContext(profile));
   if (IsPowerwashAllowed(user)) {
     updater.AddSearchTags(GetResetSearchConcept());
 
@@ -94,7 +94,8 @@ void ResetSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
-  auto* user = BrowserContextHelper::Get()->GetUserByBrowserContext(profile());
+  const auto& user = CHECK_DEREF(
+      BrowserContextHelper::Get()->GetUserByBrowserContext(profile()));
   html_source->AddBoolean("allowPowerwash", IsPowerwashAllowed(user));
   html_source->AddBoolean("allowSanitize", IsSanitizeAllowed(user));
 

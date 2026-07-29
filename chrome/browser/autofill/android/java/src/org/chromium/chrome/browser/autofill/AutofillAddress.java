@@ -4,14 +4,17 @@
 
 package org.chromium.chrome.browser.autofill;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.telephony.PhoneNumberUtils;
 import android.text.TextUtils;
 import android.util.Pair;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.autofill.AutofillProfile;
 import org.chromium.components.autofill.EditableOption;
 import org.chromium.components.autofill.FieldType;
@@ -19,10 +22,10 @@ import org.chromium.payments.mojom.PaymentAddress;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.List;
 import java.util.regex.Pattern;
 
 /** The locally stored autofill address. */
+@NullMarked
 public class AutofillAddress extends EditableOption {
     /** The pattern for a valid region code. */
     private static final String REGION_CODE_PATTERN = "^[A-Z]{2}$";
@@ -54,13 +57,13 @@ public class AutofillAddress extends EditableOption {
         int MAX_VALUE = 1 << 4;
     }
 
-    @Nullable private static Pattern sRegionCodePattern;
+    private @Nullable static Pattern sRegionCodePattern;
 
     private final Context mContext;
     private final PersonalDataManager mPersonalDataManager;
     private AutofillProfile mProfile;
-    @Nullable private String mShippingLabelWithCountry;
-    @Nullable private String mShippingLabelWithoutCountry;
+    private @Nullable String mShippingLabelWithCountry;
+    private @Nullable String mShippingLabelWithoutCountry;
 
     /**
      * Builds the autofill address.
@@ -136,7 +139,7 @@ public class AutofillAddress extends EditableOption {
         }
 
         mProfile.setLabel(mShippingLabelWithCountry);
-        updateSublabel(mProfile.getLabel());
+        updateSublabel(assumeNonNull(mProfile.getLabel()));
     }
 
     /**
@@ -153,7 +156,7 @@ public class AutofillAddress extends EditableOption {
         }
 
         mProfile.setLabel(mShippingLabelWithoutCountry);
-        updateSublabel(mProfile.getLabel());
+        updateSublabel(assumeNonNull(mProfile.getLabel()));
     }
 
     /**
@@ -212,7 +215,7 @@ public class AutofillAddress extends EditableOption {
                 editTitleResId = R.string.payments_add_more_information;
         }
 
-        return new Pair<Integer, Integer>(editMessageResId, editTitleResId);
+        return new Pair<>(editMessageResId, editTitleResId);
     }
 
     /**
@@ -240,10 +243,9 @@ public class AutofillAddress extends EditableOption {
             completionStatus |= CompletionStatus.INVALID_PHONE_NUMBER;
         }
 
-        List<Integer> requiredFields =
+        for (int fieldId :
                 AutofillProfileBridge.getRequiredAddressFields(
-                        AutofillAddress.getCountryCode(profile, personalDataManager));
-        for (int fieldId : requiredFields) {
+                        AutofillAddress.getCountryCode(profile, personalDataManager))) {
             if (fieldId == FieldType.NAME_FULL || fieldId == FieldType.ADDRESS_HOME_COUNTRY) {
                 continue;
             }

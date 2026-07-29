@@ -19,12 +19,17 @@ include_rules = [
   # extension_id.h doesn't know anything about the extensions system, so it
   # should be fine to include.
   "+extensions/common/extension_id.h",
+
+  # extension_features doesn't know anything about the extensions system,
+  # so it should be fine to include.
+  "+extensions/common/extension_features.h",
+  "+extensions/common/extension_features.cc",
 ]
 
 specific_include_rules = {
   # Allow tests to include extensions system files. Typically, this shouldn't
   # be necessary, but it can be useful.
-  ".*test\.(cc|h)$": [
+  ".*test\\.(cc|h)$": [
     "+extensions/renderer",
     "+extensions/common",
   ]

@@ -14,12 +14,14 @@
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
 #include "net/dns/context_host_resolver.h"
 #include "net/dns/dns_util.h"
 #include "net/dns/host_resolver.h"
@@ -39,6 +41,7 @@ class StaleHostResolver::RequestImpl : public HostResolver::ResolveHostRequest {
   RequestImpl(base::WeakPtr<StaleHostResolver> resolver,
               const HostPortPair& host,
               const NetworkAnonymizationKey& network_anonymization_key,
+              handles::NetworkHandle target_network,
               const NetLogWithSource& net_log,
               const ResolveHostParameters& input_parameters,
               const base::TickClock* tick_clock);
@@ -46,14 +49,16 @@ class StaleHostResolver::RequestImpl : public HostResolver::ResolveHostRequest {
 
   // HostResolver::ResolveHostRequest implementation:
   int Start(CompletionOnceCallback result_callback) override;
-  const AddressList* GetAddressResults() const override;
-  const HostResolverEndpointResults* GetEndpointResults() const override;
-  const std::vector<std::string>* GetTextResults() const override;
-  const std::vector<HostPortPair>* GetHostnameResults() const override;
-  const std::set<std::string>* GetDnsAliasResults() const override;
+  const AddressList& GetAddressResults() const override;
+  base::span<const HostResolverEndpointResult> GetEndpointResults()
+      const override;
+  base::span<const std::string> GetTextResults() const override;
+  base::span<const HostPortPair> GetHostnameResults() const override;
+  const std::set<std::string>& GetDnsAliasResults() const override;
   ResolveErrorInfo GetResolveErrorInfo() const override;
   const std::optional<HostCache::EntryStaleness>& GetStaleInfo() const override;
   void ChangeRequestPriority(RequestPriority priority) override;
+  std::optional<ResolutionDetails> GetResolutionDetails() const override;
 
   // Called on completion of an asynchronous (network) inner request. Expected
   // to be called by StaleHostResolver::OnNetworkRequestComplete().
@@ -75,6 +80,7 @@ class StaleHostResolver::RequestImpl : public HostResolver::ResolveHostRequest {
 
   const HostPortPair host_;
   const NetworkAnonymizationKey network_anonymization_key_;
+  const handles::NetworkHandle target_network_;
   const NetLogWithSource net_log_;
   const ResolveHostParameters input_parameters_;
 
@@ -102,12 +108,14 @@ StaleHostResolver::RequestImpl::RequestImpl(
     base::WeakPtr<StaleHostResolver> resolver,
     const HostPortPair& host,
     const NetworkAnonymizationKey& network_anonymization_key,
+    handles::NetworkHandle target_network,
     const NetLogWithSource& net_log,
     const ResolveHostParameters& input_parameters,
     const base::TickClock* tick_clock)
     : resolver_(std::move(resolver)),
       host_(host),
       network_anonymization_key_(network_anonymization_key),
+      target_network_(target_network),
       net_log_(net_log),
       input_parameters_(input_parameters),
       cache_error_(ERR_DNS_CACHE_MISS),
@@ -125,7 +133,8 @@ int StaleHostResolver::RequestImpl::Start(
       HostResolver::ResolveHostParameters::CacheUsage::STALE_ALLOWED;
   cache_parameters.source = HostResolverSource::LOCAL_ONLY;
   cache_request_ = resolver_->inner_resolver_->CreateRequest(
-      host_, network_anonymization_key_, net_log_, cache_parameters);
+      host_, network_anonymization_key_, target_network_, net_log_,
+      cache_parameters);
   int error =
       cache_request_->Start(base::BindOnce([](int error) { NOTREACHED(); }));
   DCHECK_NE(ERR_IO_PENDING, error);
@@ -163,7 +172,8 @@ int StaleHostResolver::RequestImpl::Start(
   no_cache_parameters.cache_usage =
       HostResolver::ResolveHostParameters::CacheUsage::DISALLOWED;
   network_request_ = resolver_->inner_resolver_->CreateRequest(
-      host_, network_anonymization_key_, net_log_, no_cache_parameters);
+      host_, network_anonymization_key_, target_network_, net_log_,
+      no_cache_parameters);
   int network_rv = network_request_->Start(
       base::BindOnce(&StaleHostResolver::OnNetworkRequestComplete, resolver_,
                      network_request_.get(), weak_ptr_factory_.GetWeakPtr()));
@@ -176,7 +186,7 @@ int StaleHostResolver::RequestImpl::Start(
   return network_rv;
 }
 
-const AddressList* StaleHostResolver::RequestImpl::GetAddressResults() const {
+const AddressList& StaleHostResolver::RequestImpl::GetAddressResults() const {
   if (network_request_) {
     return network_request_->GetAddressResults();
   }
@@ -185,7 +195,7 @@ const AddressList* StaleHostResolver::RequestImpl::GetAddressResults() const {
   return cache_request_->GetAddressResults();
 }
 
-const HostResolverEndpointResults*
+base::span<const HostResolverEndpointResult>
 StaleHostResolver::RequestImpl::GetEndpointResults() const {
   if (network_request_) {
     return network_request_->GetEndpointResults();
@@ -195,7 +205,7 @@ StaleHostResolver::RequestImpl::GetEndpointResults() const {
   return cache_request_->GetEndpointResults();
 }
 
-const std::vector<std::string>* StaleHostResolver::RequestImpl::GetTextResults()
+base::span<const std::string> StaleHostResolver::RequestImpl::GetTextResults()
     const {
   if (network_request_) {
     return network_request_->GetTextResults();
@@ -205,7 +215,7 @@ const std::vector<std::string>* StaleHostResolver::RequestImpl::GetTextResults()
   return cache_request_->GetTextResults();
 }
 
-const std::vector<HostPortPair>*
+base::span<const HostPortPair>
 StaleHostResolver::RequestImpl::GetHostnameResults() const {
   if (network_request_) {
     return network_request_->GetHostnameResults();
@@ -215,7 +225,7 @@ StaleHostResolver::RequestImpl::GetHostnameResults() const {
   return cache_request_->GetHostnameResults();
 }
 
-const std::set<std::string>*
+const std::set<std::string>&
 StaleHostResolver::RequestImpl::GetDnsAliasResults() const {
   if (network_request_) {
     return network_request_->GetDnsAliasResults();
@@ -251,6 +261,17 @@ void StaleHostResolver::RequestImpl::ChangeRequestPriority(
     DCHECK(cache_request_);
     cache_request_->ChangeRequestPriority(priority);
   }
+}
+
+std::optional<ResolutionDetails>
+StaleHostResolver::RequestImpl::GetResolutionDetails() const {
+  if (network_request_) {
+    return network_request_->GetResolutionDetails();
+  }
+  if (cache_request_) {
+    return cache_request_->GetResolutionDetails();
+  }
+  return std::nullopt;
 }
 
 void StaleHostResolver::RequestImpl::OnNetworkRequestComplete(int error) {
@@ -321,10 +342,13 @@ void StaleHostResolver::RequestImpl::OnStaleDelayElapsed() {
   std::move(result_callback_).Run(cache_error_);
 }
 
+// NOTE: Don't change these values without checking with all browsers using it.
+// Currently this is being used but android_webview and Cronet.
 StaleHostResolver::StaleOptions::StaleOptions()
-    : allow_other_network(false),
-      max_stale_uses(0),
-      use_stale_on_name_not_resolved(false) {}
+    : max_expired_time(base::Hours(6)),
+      allow_other_network(true),
+      max_stale_uses(1),
+      use_stale_on_name_not_resolved(true) {}
 
 StaleHostResolver::StaleHostResolver(
     std::unique_ptr<ContextHostResolver> inner_resolver,
@@ -344,22 +368,26 @@ std::unique_ptr<HostResolver::ResolveHostRequest>
 StaleHostResolver::CreateRequest(
     url::SchemeHostPort host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     std::optional<ResolveHostParameters> optional_parameters) {
   // TODO(crbug.com/40181080): Propagate scheme.
   return CreateRequest(HostPortPair::FromSchemeHostPort(host),
-                       network_anonymization_key, net_log, optional_parameters);
+                       network_anonymization_key, target_network, net_log,
+                       optional_parameters);
 }
 
 std::unique_ptr<HostResolver::ResolveHostRequest>
 StaleHostResolver::CreateRequest(
     const HostPortPair& host,
     const NetworkAnonymizationKey& network_anonymization_key,
+    handles::NetworkHandle target_network,
     const NetLogWithSource& net_log,
     const std::optional<ResolveHostParameters>& optional_parameters) {
   DCHECK(tick_clock_);
   return std::make_unique<RequestImpl>(
-      weak_ptr_factory_.GetWeakPtr(), host, network_anonymization_key, net_log,
+      weak_ptr_factory_.GetWeakPtr(), host, network_anonymization_key,
+      target_network, net_log,
       optional_parameters.value_or(ResolveHostParameters()), tick_clock_);
 }
 
@@ -367,6 +395,7 @@ std::unique_ptr<HostResolver::ServiceEndpointRequest>
 StaleHostResolver::CreateServiceEndpointRequest(
     Host host,
     NetworkAnonymizationKey network_anonymization_key,
+    handles::NetworkHandle target_network,
     NetLogWithSource net_log,
     ResolveHostParameters parameters) {
   // TODO(crbug.com/335119455): Figure out a plan to support the
@@ -379,12 +408,21 @@ HostCache* StaleHostResolver::GetHostCache() {
   return inner_resolver_->GetHostCache();
 }
 
-base::Value::Dict StaleHostResolver::GetDnsConfigAsValue() const {
+base::DictValue StaleHostResolver::GetDnsConfigAsValue() const {
   return inner_resolver_->GetDnsConfigAsValue();
+}
+
+std::unique_ptr<HostResolver::ProbeRequest>
+StaleHostResolver::CreateDohProbeRequest() {
+  return inner_resolver_->CreateDohProbeRequest();
 }
 
 void StaleHostResolver::SetRequestContext(URLRequestContext* request_context) {
   inner_resolver_->SetRequestContext(request_context);
+}
+
+bool StaleHostResolver::IsHappyEyeballsV3Enabled() const {
+  return inner_resolver_->IsHappyEyeballsV3Enabled();
 }
 
 void StaleHostResolver::SetTickClockForTesting(

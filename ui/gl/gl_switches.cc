@@ -4,19 +4,25 @@
 
 #include "ui/gl/gl_switches.h"
 
-#include "build/android_buildflags.h"
+#include <array>
+
+#include "base/command_line.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "ui/gl/buildflags.h"
 #include "ui/gl/gl_display_manager.h"
-#include "ui/gl/startup_trace.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #endif
 
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_VULKAN) && \
+    (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID))
 #include <vulkan/vulkan_core.h>
 #include "third_party/angle/src/gpu_info_util/SystemInfo.h"  // nogncheck
-#endif
+#endif  // BUILDFLAG(ENABLE_VULKAN) && (BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID))
 
 namespace gl {
 
@@ -27,9 +33,10 @@ const char kGLImplementationStubName[] = "stub";
 const char kGLImplementationDisabledName[] = "disabled";
 
 const char kANGLEImplementationDefaultName[]  = "default";
-const char kANGLEImplementationD3D9Name[]     = "d3d9";
 const char kANGLEImplementationD3D11Name[]    = "d3d11";
 const char kANGLEImplementationD3D11on12Name[] = "d3d11on12";
+const char kANGLEImplementationD3D11WarpName[] = "d3d11-warp";
+const char kANGLEImplementationD3D11WarpForWebGLName[] = "d3d11-warp-webgl";
 const char kANGLEImplementationOpenGLName[]   = "gl";
 const char kANGLEImplementationOpenGLEGLName[] = "gl-egl";
 const char kANGLEImplementationOpenGLESName[] = "gles";
@@ -85,6 +92,11 @@ const char kEnableGPUServiceTracing[]       = "enable-gpu-service-tracing";
 //  gles: GLES renderer, ES2 and ES3.
 const char kUseANGLE[]                      = "use-angle";
 
+#if BUILDFLAG(USE_STATIC_ANGLE)
+// Use ANGLE shared libraries even if ANGLE is built as a static library.
+const char kUseDynamicAngle[] = "use-dynamic-angle";
+#endif
+
 // Use the Pass-through command decoder, skipping all validation and state
 // tracking. Switch lives in ui/gl because it affects the GL binding
 // initialization on platforms that would otherwise not default to using
@@ -132,11 +144,10 @@ const char kOverrideUseSoftwareGLForTests[] =
 // Disables specified comma separated GL Extensions if found.
 const char kDisableGLExtensions[] = "disable-gl-extensions";
 
-// Enables SwapBuffersWithBounds if it is supported.
-const char kEnableSwapBuffersWithBounds[] = "enable-swap-buffers-with-bounds";
+// Disable DirectComposition.
+const char kDisableDirectComposition[] = "disable-direct-composition";
 
-// Enables using DirectComposition video overlays, even if hardware overlays
-// aren't supported.
+// Enable DirectComposition video overlays even if hardware doesn't support it.
 const char kEnableDirectCompositionVideoOverlays[] =
     "enable-direct-composition-video-overlays";
 
@@ -147,15 +158,30 @@ const char kUseAdapterLuid[] = "use-adapter-luid";
 // Allow usage of SwiftShader for WebGL
 const char kEnableUnsafeSwiftShader[] = "enable-unsafe-swiftshader";
 
+// Explicitly disable D3D11 WARP fallback. Some test suites prefer falling back
+// to swiftshader.
+const char kDisableD3D11Warp[] = "disable-d3d11-warp";
+
 // Used for overriding the swap chain format for direct composition SDR video
 // overlays.
 const char kDirectCompositionVideoSwapChainFormat[] =
     "direct-composition-video-swap-chain-format";
 
+// Tint `SwapChainPresenter` with the following colors:
+//
+// - Decode swap chain: blue
+// - VP blit: magenta
+// - VP blit w/ staging texture: orange
+// - MF proxy surface: green
+//
+// This is similar to `HKLM\Software\Microsoft\Windows\DWM` `OverlayTestMode=1`
+// in DWM, but to help understand `SwapChainPresenter` state.
+const char kTintDcLayer[] = "tint-dc-layer";
+
 // This is the list of switches passed from this file that are passed from the
 // GpuProcessHost to the GPU Process. Add your switch to this list if you need
 // to read it in the GPU process, else don't add it.
-const char* const kGLSwitchesCopiedFromGpuProcessHost[] = {
+const auto kGLSwitchesCopiedFromGpuProcessHostArray = std::to_array({
     kDisableGpuDriverBugWorkarounds,
     kDisableGpuVsync,
     kEnableGPUServiceLogging,
@@ -165,13 +191,23 @@ const char* const kGLSwitchesCopiedFromGpuProcessHost[] = {
     kDisableGLDrawingForTests,
     kOverrideUseSoftwareGLForTests,
     kUseANGLE,
-    kEnableSwapBuffersWithBounds,
+#if BUILDFLAG(USE_STATIC_ANGLE)
+    kUseDynamicAngle,
+#endif
+    kDisableDirectComposition,
     kEnableDirectCompositionVideoOverlays,
     kDirectCompositionVideoSwapChainFormat,
+    kTintDcLayer,
     kEnableUnsafeSwiftShader,
-};
-const size_t kGLSwitchesCopiedFromGpuProcessHostNumSwitches =
-    std::size(kGLSwitchesCopiedFromGpuProcessHost);
+    kDisableD3D11Warp,
+#if BUILDFLAG(IS_WIN)
+    kFakeVsyncRate,
+#endif
+});
+// An external span to the array above, so that it can be exposed from the
+// header file without specifying the size of the array manually.
+const base::span<const char* const> kGLSwitchesCopiedFromGpuProcessHost =
+    kGLSwitchesCopiedFromGpuProcessHostArray;
 
 #if BUILDFLAG(IS_ANDROID)
 // On some Android emulators with software GL, ANGLE
@@ -184,6 +220,27 @@ const size_t kGLSwitchesCopiedFromGpuProcessHostNumSwitches =
 const char kDisableAndroidNativeFenceSyncForTesting[] =
     "disable-android-native-fence-sync-for-testing";
 #endif
+
+#if BUILDFLAG(IS_WIN)
+const char kFakeVsyncRate[] = "fake-vsync-rate";
+
+std::optional<base::TimeDelta> GetFakeVsyncIntervalFromCommandLine() {
+  static const std::optional<base::TimeDelta> fake_interval = [] {
+    const base::CommandLine* command_line =
+        base::CommandLine::ForCurrentProcess();
+    double fake_hz = 0;
+    if (command_line->HasSwitch(kFakeVsyncRate) &&
+        base::StringToDouble(command_line->GetSwitchValueASCII(kFakeVsyncRate),
+                             &fake_hz) &&
+        fake_hz > 0) {
+      return std::optional<base::TimeDelta>(base::Seconds(1.0 / fake_hz));
+    }
+    return std::optional<base::TimeDelta>();
+  }();
+  return fake_interval;
+}
+#endif
+
 }  // namespace switches
 
 namespace features {
@@ -193,30 +250,27 @@ namespace features {
 //
 // Please be aware that some of these visualizations result in quickly flashing
 // colors.
-BASE_FEATURE(kDCompDebugVisualization,
-             "DCompDebugVisualization",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Use BufferCount of 3 for the direct composition root swap chain.
-BASE_FEATURE(kDCompTripleBufferRootSwapChain,
-             "DCompTripleBufferRootSwapChain",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDCompDebugVisualization, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Use BufferCount of 3 for direct composition video swap chains.
 BASE_FEATURE(kDCompTripleBufferVideoSwapChain,
-             "DCompTripleBufferVideoSwapChain",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Allow overlay swapchain to present on all GPUs even if they only support
 // software overlays. GPU deny lists limit it to NVIDIA only at the moment.
 BASE_FEATURE(kDirectCompositionSoftwareOverlays,
-             "DirectCompositionSoftwareOverlays",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Adjust the letterbox video size and position to the center of the screen so
 // that DWM power optimization can be turned on.
 BASE_FEATURE(kDirectCompositionLetterboxVideoOptimization,
-             "DirectCompositionLetterboxVideoOptimization",
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Remove the topmost desktop plane for Media Foundation full screen
+// letterboxing. This is a kill switch for the desktop plane removal
+// optimization for Media Foundation Renderer, which should be enabled by
+// default when crbug.com/406175378 is resolved.
+BASE_FEATURE(kDesktopPlaneRemovalForMFFullScreenLetterbox,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Do not consider hardware YUV overlay count when promoting quads to DComp
@@ -224,14 +278,12 @@ BASE_FEATURE(kDirectCompositionLetterboxVideoOptimization,
 // a performance hit compared to drawing all the videos into a single swap
 // chain. This feature is intended for testing and debugging.
 BASE_FEATURE(kDirectCompositionUnlimitedOverlays,
-             "DirectCompositionUnlimitedOverlays",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Allow dual GPU rendering through EGL where supported, i.e., allow a WebGL
 // or WebGPU context to be on the high performance GPU if preferred and Chrome
 // internal rendering to be on the low power GPU.
 BASE_FEATURE(kEGLDualGPURendering,
-             "EGLDualGPURendering",
 #if BUILDFLAG(IS_MAC)
              base::FEATURE_ENABLED_BY_DEFAULT);
 #else
@@ -239,54 +291,27 @@ BASE_FEATURE(kEGLDualGPURendering,
 #endif
 
 // Allow overlay swapchain to use Intel video processor for super resolution.
-BASE_FEATURE(kIntelVpSuperResolution,
-             "IntelVpSuperResolution",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Allow overlay swapchain to use NVIDIA video processor for super resolution.
-BASE_FEATURE(kNvidiaVpSuperResolution,
-             "NvidiaVpSuperResolution",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Allow overlay swapchain to use NVIDIA video processor for trueHDR.
-BASE_FEATURE(kNvidiaVpTrueHDR,
-             "NvidiaVpTrueHDR",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Default to using ANGLE's OpenGL backend
-BASE_FEATURE(kDefaultANGLEOpenGL,
-             "DefaultANGLEOpenGL",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kIntelVpSuperResolution, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Default to using ANGLE's Metal backend.
-BASE_FEATURE(kDefaultANGLEMetal,
-             "DefaultANGLEMetal",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kDefaultANGLEMetal, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Default to using ANGLE's Vulkan backend.
 BASE_FEATURE(kDefaultANGLEVulkan,
-             "DefaultANGLEVulkan",
-#if BUILDFLAG(IS_DESKTOP_ANDROID)
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#else
              base::FEATURE_DISABLED_BY_DEFAULT);
-#endif
 
 // Track current program's shaders at glUseProgram() call for crash report
 // purpose. Only effective on Windows because the attached shaders may only
 // be reliably retrieved with ANGLE backend.
-BASE_FEATURE(kTrackCurrentShaders,
-             "TrackCurrentShaders",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kTrackCurrentShaders, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enable sharing Vulkan device queue with ANGLE's Vulkan backend.
 BASE_FEATURE(kVulkanFromANGLE,
-             "VulkanFromANGLE",
-#if BUILDFLAG(IS_DESKTOP_ANDROID)
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#else
              base::FEATURE_DISABLED_BY_DEFAULT);
-#endif
+
+// Enable skipping the Vulkan blocklist.
+BASE_FEATURE(kSkipVulkanBlocklist,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsDefaultANGLEVulkan() {
   // Force on if DefaultANGLEVulkan feature is enabled from command line.
@@ -303,21 +328,23 @@ bool IsDefaultANGLEVulkan() {
 #if BUILDFLAG(IS_ANDROID)
   // No support for devices before Q -- exit before checking feature flags
   // so that devices are not counted in finch trials.
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <
-      base::android::SDK_VERSION_Q)
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_Q) {
     return false;
+  }
 
   // For the sake of finch trials, limit to newer devices (Android T+); this
   // condition can be relaxed over time.
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <
-      base::android::SDK_VERSION_T) {
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_T) {
     return false;
   }
 #endif  // BUILDFLAG(IS_ANDROID)
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_VULKAN) && \
+    (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID))
   angle::SystemInfo system_info;
   {
-    GPU_STARTUP_TRACE_EVENT("angle::GetSystemInfoVulkan");
+    TRACE_EVENT("gpu,startup", "angle::GetSystemInfoVulkan");
     if (!angle::GetSystemInfoVulkan(&system_info)) {
       return false;
     }
@@ -330,9 +357,11 @@ bool IsDefaultANGLEVulkan() {
 
   const auto& active_gpu = system_info.gpus[system_info.activeGPUIndex];
 
-  // Vulkan 1.1 is required by ANGLE.
-  if (active_gpu.driverApiVersion < VK_VERSION_1_1)
+  // Vulkan 1.1 is ANGLE's minimum requirement, but drivers older than 1.3 are
+  // rarely reliable enough.
+  if (active_gpu.driverApiVersion < VK_VERSION_1_3) {
     return false;
+  }
 
   // If |dirverId| is 0, the driver lacks VK_KHR_driver_properties.
   // Consider this driver too old to be usable.
@@ -341,8 +370,9 @@ bool IsDefaultANGLEVulkan() {
 
 #if BUILDFLAG(IS_ANDROID)
   // Exclude SwiftShader-based Android emulators for now.
-  if (active_gpu.driverId == VK_DRIVER_ID_GOOGLE_SWIFTSHADER)
+  if (active_gpu.driverId == VK_DRIVER_ID_GOOGLE_SWIFTSHADER) {
     return false;
+  }
 
   // Encountered bugs with older Imagination drivers.  New drivers seem fixed,
   // but disabled for the sake of experiment for now. crbug.com/371512561
@@ -351,18 +381,44 @@ bool IsDefaultANGLEVulkan() {
   }
 
   // Exclude old ARM drivers due to crashes related to creating
-  // AHB-based Video images in Vulkan.  http://anglebug.com/382676807.
+  // AHB-based Video images in Vulkan.  http://crbug.com/382676807.
   if (active_gpu.driverId == VK_DRIVER_ID_ARM_PROPRIETARY &&
       active_gpu.detailedDriverVersion.major <= 32) {
     return false;
   }
 
+  // Exclude old ARM chipsets due to rendering bugs, G52 is still found in
+  // Xiaomi phones. Note that if included in the future, there still seems to be
+  // a driver bug with async garbage collection, so that feature needs to be
+  // disabled in ANGLE. http://crbug.com/405085132
+  if (active_gpu.driverId == VK_DRIVER_ID_ARM_PROPRIETARY &&
+      active_gpu.deviceName.find("G52") != std::string::npos) {
+    return false;
+  }
+
   // Exclude old Qualcomm drivers due to inefficient (and buggy) fallback
   // to CPU path in glCopyTextureCHROMIUM with multi-plane images.
-  // http://anglebug.com/383056998.
+  // http://crbug.com/383056998.
   if (active_gpu.driverId == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
-      (active_gpu.detailedDriverVersion.major != 512 ||
-       active_gpu.detailedDriverVersion.minor <= 530)) {
+      active_gpu.detailedDriverVersion.minor <= 530) {
+    return false;
+  }
+
+  // Exclude Qualcomm 512.615 driver on Xiaomi phones that is the cause of
+  // yet-to-be explained GPU hangs.
+  // http://crbug.com/382725542
+  if (active_gpu.driverId == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
+      active_gpu.detailedDriverVersion.minor == 615) {
+    return false;
+  }
+
+  // Exclude Qualcomm 512.676 driver on Adreno 720 that is the cause of
+  // undiagnosed rendering issues.
+  // http://crbug.com/440110161
+  if (active_gpu.driverId == VK_DRIVER_ID_QUALCOMM_PROPRIETARY &&
+      active_gpu.deviceName.find("Adreno") != std::string::npos &&
+      active_gpu.deviceName.find("720") != std::string::npos &&
+      active_gpu.detailedDriverVersion.minor == 676) {
     return false;
   }
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -379,16 +435,15 @@ bool IsDefaultANGLEVulkan() {
     return false;
   }
 
-#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
-        // BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENABLE_VULKAN) && (BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID))
+
   return base::FeatureList::IsEnabled(kDefaultANGLEVulkan);
 #endif  // !defined(MEMORY_SANITIZER)
 }
 
 // Use waitable swap chain on Windows to reduce display latency.
-BASE_FEATURE(kDXGIWaitableSwapChain,
-             "DXGIWaitableSwapChain",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDXGIWaitableSwapChain, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If using waitable swap chain, specify the maximum number of queued frames.
 const base::FeatureParam<int> kDXGIWaitableSwapChainMaxQueuedFrames{
@@ -398,9 +453,7 @@ const base::FeatureParam<int> kDXGIWaitableSwapChainMaxQueuedFrames{
 // on the previously presented frame instead of synchronizing with vblank(s).
 // Frames may be discarded if they are presented more frequently than one per
 // vblank.
-BASE_FEATURE(kDXGISwapChainPresentInterval0,
-             "DXGISwapChainPresentInterval0",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDXGISwapChainPresentInterval0, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool SupportsEGLDualGPURendering() {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)

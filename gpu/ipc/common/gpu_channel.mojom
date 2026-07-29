@@ -5,8 +5,13 @@
 module gpu.mojom;
 
 import "gpu/ipc/common/capabilities.mojom";
+import "gpu/ipc/common/constants.mojom";
 import "gpu/ipc/common/context_result.mojom";
+import "gpu/ipc/common/context_type.mojom";
+import "gpu/ipc/common/gpu_feature_info.mojom";
+import "gpu/ipc/common/gpu_info.mojom";
 import "gpu/ipc/common/mailbox.mojom";
+import "gpu/ipc/common/shared_image_capabilities.mojom";
 import "gpu/ipc/common/shared_image_metadata.mojom";
 import "gpu/ipc/common/shared_image_pool_id.mojom";
 import "gpu/ipc/common/shared_image_pool_client_interface.mojom";
@@ -27,23 +32,6 @@ import "ui/gfx/mojom/presentation_feedback.mojom";
 import "ui/gl/mojom/gpu_preference.mojom";
 import "url/mojom/url.mojom";
 
-// Maps to its namesake in gpu/command_buffer/common/context_creation_attribs.h.
-enum ContextType {
-  kWebGL1,
-  kWebGL2,
-  kOpenGLES2,
-  kOpenGLES3,
-  kOpenGLES31ForTesting,
-  kWebGPU,
-};
-
-// Maps to its namesake in gpu/command_buffer/common/context_creation_attribs.h.
-enum ContextColorSpace {
-  kUnspecified,
-  kSRGB,
-  kDisplayP3,
-};
-
 // Maps to its namesake in gpu/command_buffer/common/scheduling_priority.h.
 enum SchedulingPriority {
   kHigh,
@@ -51,37 +39,33 @@ enum SchedulingPriority {
   kLow,
 };
 
-// Maps to its namesake in gpu/command_buffer/common/context_creation_attribs.h.
-struct ContextCreationAttribs {
+struct RasterCreationAttribs {
+};
+
+struct GLESCreationAttribs {
   gl.mojom.GpuPreference gpu_preference = kLowPower;
-
-  bool bind_generates_resource = true;
   bool fail_if_major_perf_caveat = false;
-  bool lose_context_when_out_of_memory = false;
-  bool enable_gles2_interface = true;
-  bool enable_grcontext = false;
-  bool enable_raster_interface = false;
-  bool enable_gpu_rasterization = false;
-
   ContextType context_type = kOpenGLES2;
 };
 
+struct WebGPUCreationAttribs {
+  // WebGPU doesn't have any configurable attributes on the command buffer
+  // level.
+};
+
+union ContextCreationAttribs {
+  GLESCreationAttribs gles;
+  RasterCreationAttribs raster;
+  WebGPUCreationAttribs webgpu;
+};
+
 struct CreateCommandBufferParams {
-  int32 share_group_id;
   int32 stream_id;
   SchedulingPriority stream_priority;
   ContextCreationAttribs attribs;
   url.mojom.Url active_url;
   string label;
 };
-
-// Corresponds to the definition in gpu/command_buffer/common/constants.h.
-[Native]
-enum Error;
-
-// Corresponds to the definition in gpu/command_buffer/common/constants.h.
-[Native]
-enum ContextLostReason;
 
 // Information used by the GPU service to convey the current state of a specific
 // CommandBuffer instance. Corresponds to gpu::CommandBuffer::State. See
@@ -94,18 +78,6 @@ struct CommandBufferState {
   ContextLostReason context_lost_reason;
   uint32 generation;
   uint32 set_get_buffer_count;
-};
-
-struct ScheduleImageDecodeParams {
-  array<uint8> encoded_data;
-  gfx.mojom.Size output_size;
-  int32 raster_decoder_route_id;
-  uint32 transfer_cache_entry_id;
-  int32 discardable_handle_shm_id;
-  uint32 discardable_handle_shm_offset;
-  uint64 discardable_handle_release_count;
-  gfx.mojom.ColorSpace target_color_space;
-  bool needs_mips;
 };
 
 // Main control interface for a GPU process connection. For now an instance of
@@ -131,6 +103,12 @@ interface GpuChannel {
   // Returns a globally unique token which can be used by other interfaces to
   // securely identify this GpuChannel endpoint within the GPU process.
   [Sync] GetChannelToken() => (mojo_base.mojom.UnguessableToken token);
+
+  // Returns the GPU information of the GPU process.
+  [Sync, NoInterrupt] GetGPUInfo() => (
+         gpu.mojom.GpuInfo gpu_info,
+         gpu.mojom.GpuFeatureInfo gpu_feature_info,
+         gpu.mojom.SharedImageCapabilities shared_image_capabilities);
 
   // A simple no-op message used as a fence to ensure all previously sent
   // messages have been received.
@@ -164,12 +142,6 @@ interface GpuChannel {
   // object that it's hosting.
   [Sync, NoInterrupt] DestroyCommandBuffer(int32 routing_id) => ();
 
-  // Schedules a hardware-accelerated image decode in the GPU process. Renderers
-  // should use gpu::ImageDecodeAcceleratorProxy to schedule decode requests
-  // which are processed by gpu::ImageDecodeAcceleratorStub on the service side.
-  ScheduleImageDecode(ScheduleImageDecodeParams params,
-                      uint64 decode_release_count);
-
   // Sends a batch of DeferredRequests to be executed by the service.
   // `flushed_deferred_message_id` is used to update the per-channel id of
   // messages confirmed to be flushed that's read on the client side through
@@ -184,21 +156,6 @@ interface GpuChannel {
   viz.mojom.SharedImageFormat format, gfx.mojom.BufferUsage buffer_usage)
   => (gfx.mojom.GpuMemoryBufferHandle buffer_handle);
 
-  // Gets the GpuMemoryBufferHandle for the corresponding `mailbox` from
-  // service side. Note that this needs to be a blocking call on calling
-  // client's thread in order to return the GpuMemoryBufferHandle and other
-  // metadata required by client to map the mailbox to CPU memory before it can
-  // read/write from/to it.
-  [Sync] GetGpuMemoryBufferHandleInfo(gpu.mojom.Mailbox mailbox)
-  => (gfx.mojom.GpuMemoryBufferHandle buffer_handle,
-      viz.mojom.SharedImageFormat format, gfx.mojom.Size size,
-      gfx.mojom.BufferUsage buffer_usage);
-
-  // Creates a StreamTexture associated with the given `stream_id`.
-  [Sync, EnableIf=is_android] CreateStreamTexture(
-      int32 stream_id,
-      pending_associated_receiver<StreamTexture> receiver) => (bool success);
-
   // Creates a DCOMPTexture and attaches to the provided `route_id`.
   // Note: this `route_id` must not conflict with the routing ids for command
   // buffers or shared image stub. Otherwise, unexpected behaviour can happen
@@ -206,15 +163,6 @@ interface GpuChannel {
   [Sync, EnableIf=is_win] CreateDCOMPTexture(
       int32 route_id,
       pending_associated_receiver<DCOMPTexture> receiver) => (bool success);
-
-  // This interface is used by MediaFoundationRendererClient to subscribe
-  // to overlay state information from the Viz layer (as provided by the
-  // DCOverlayProcessor). The MediaFoundationRendererClient uses the overlay
-  // state associated with a Video Frame texture (correlated via 'mailbox') as
-  // a heuristic to determine the best video presentation mode to use.
-  [Sync, EnableIf=is_win] RegisterOverlayStateObserver(
-    pending_remote<OverlayStateObserver> promotion_hint_observer,
-    gpu.mojom.Mailbox mailbox) => (bool success);
 
   // Instructs the command buffer to wait asynchronously until its State is
   // changed by the reader to have a current token value within the (inclusive)
@@ -258,21 +206,12 @@ interface GpuChannel {
       Mailbox mailbox, array<SyncToken> sync_token_dependencies,
       uint64 release_count) => (bool success);
 
-  [Sync, EnableIf=is_win]
   // Copies GMB pixel data from the native handle to the |shared_memory|.
-  // Returns |true| if the copy has succeeded.
+  // Returns |true| asynchronously if the copy has succeeded.
   // Note that this method has some similar functionality but is different than
   // above CopyToGpuMemoryBufferAsync in the sense that above method is only
   // used for shared memory GMBs whereas this method is used for native GMBs.
-  // This has to be a blocking operation since it will be called during
-  // GpuMemoryBuffer::Map() operation which should provide updated data to
-  // clients before using it.
-  CopyNativeGmbToSharedMemorySync(gfx.mojom.GpuMemoryBufferHandle
-      buffer_handle, mojo_base.mojom.UnsafeSharedMemoryRegion shared_memory)
-                     => (bool success);
-
-  // This is non-blocking version of above method.
-  [EnableIf=is_win]
+  [EnableIf=is_win|is_android]
   CopyNativeGmbToSharedMemoryAsync(gfx.mojom.GpuMemoryBufferHandle
       buffer_handle, mojo_base.mojom.UnsafeSharedMemoryRegion shared_memory)
                      => (bool success);
@@ -322,7 +261,7 @@ interface CommandBufferClient {
   OnConsoleMessage(string message);
 
   // Notifies the client of a GPU switch.
-  OnGpuSwitched(gl.mojom.GpuPreference active_gpu_heuristic);
+  OnGpuSwitched();
 
   // Tells the proxy that there was an error and the command buffer had to be
   // destroyed for some reason.
@@ -339,54 +278,11 @@ interface CommandBufferClient {
   OnSignalAck(uint32 signal_id, CommandBufferState state);
 };
 
-// Interface to control a single StreamTexture instance. Implemented in the GPU
-// process and called by renderer clients.
-//
-// NOTE: Due to limitations of Channel-associated interfaces, message replies on
-// this interface must not be used to pass other associated interface remotes or
-// receivers.
-[EnableIf=is_android]
-interface StreamTexture {
-  // Tells the StreamTexture to send its SurfaceTexture to the browser process,
-  // via the ScopedSurfaceRequestConduit. `token` is used to uniquely identify
-  // the surface request to the browser, and therefore must be a token already
-  // minted by the browser and somehow procured by the caller.
-  ForwardForSurfaceRequest(mojo_base.mojom.UnguessableToken token);
-
-  // Tells the service-side instance to start sending frame available
-  // notifications.
-  StartListening(pending_associated_remote<StreamTextureClient> client);
-
-  // Updates the visible size from MediaPlayer. The size includes rotation of
-  // video.
-  UpdateRotatedVisibleSize(gfx.mojom.Size rotated_visible_size);
-};
-
-// Interface used by GPU to notify the client of a StreamTexture instance about
-// new frame availability. Implemented by renderer clients and called by
-// StreamTexture instances in the GPU process.
-//
-// NOTE: Due to limitations of Channel-associated interfaces, messages on this
-// interface must not be used to pass other associated interface remotes or
-// receivers.
-[EnableIf=is_android]
-interface StreamTextureClient {
-  // Informs the client that a new frame is available.
-  OnFrameAvailable();
-
-  // Informs the client that a new frame with VulkanYcbcrInfo is available.
-  OnFrameWithInfoAvailable(Mailbox mailbox, gfx.mojom.Size coded_size,
-                           gfx.mojom.Rect visible_rect,
-                           VulkanYCbCrInfo? info);
-};
-
 // Interface to control a single DCOMPTexture instance. Implemented in the GPU
 // process and called by renderer clients.
 [EnableIf=is_win]
 interface DCOMPTexture {
-  // Starts sending DCOMP surface notifications via the `client`. Follows the
-  // pattern in `StreamTexture::StartListening()` to delay notifications until
-  // the client side is ready.
+  // Starts sending DCOMP surface notifications via the `client`.
   //
   // TODO(crbug.com/40642952): Investigate if we can remove this by having the
   // `client` as a parameter to `CreateDCOMPTexture()`.
@@ -417,17 +313,6 @@ interface DCOMPTextureClient {
   OnOutputRectChange(gfx.mojom.Rect output_rect);
 };
 
-// Interface used by GPU to notify clients when the overlay promotion hint state
-// has changed.
-[EnableIf=is_win]
-interface OverlayStateObserver {
-  // Called when the texture associated with the specified mailbox has had a
-  // change in promotion state. If promoted is true then the texture is
-  // currently using a DC Layer Overlay. If promoted is false then the texture
-  // is not using a DC Layer Overlay.
-  OnStateChanged(bool promoted);
-};
-
 // DeferredRequests are batched locally by clients and sent to the service only
 // when flushing the channel via GpuChannelHost's EnsureFlush or VerifyFlush.
 struct DeferredRequest {
@@ -452,11 +337,6 @@ union DeferredRequestParams {
   // This request pertains to shared image management.
   DeferredSharedImageRequest shared_image_request;
 
-  // Sent to indicate the client wants to destroy the StreamTexture identified
-  // by this ID.
-  [EnableIf=is_android]
-  int32 destroy_stream_texture;
-
   // Sent to indicate the client wants to destroy the DCOMPTexture identified
   // by this ID.
   [EnableIf=is_win]
@@ -479,10 +359,6 @@ union DeferredCommandBufferRequestParams {
 
   // Destroys a transfer buffer identified by this ID.
   int32 destroy_transfer_buffer;
-
-  // Allows to attach SharedImage to default framebuffer of this context.
-  // NOTE: Used only for PNaCL.
-  SetDefaultFramebufferSharedImageParams set_default_framebuffer_shared_image;
 };
 
 // Details of a batched request pertaining to shared image management.
@@ -515,14 +391,6 @@ union DeferredSharedImageRequest {
 
   AddReferenceToSharedImageParams add_reference_to_shared_image;
 
-  // See CreateSwapChainParams.
-  [EnableIf=is_win]
-  CreateSwapChainParams create_swap_chain;
-
-  // See PresentSwapChainParams.
-  [EnableIf=is_win]
-  PresentSwapChainParams present_swap_chain;
-
   // See RegisterDxgiFenceParams.
   [EnableIf=is_win]
   RegisterDxgiFenceParams register_dxgi_fence;
@@ -552,26 +420,6 @@ struct AsyncFlushParams {
   int32 put_offset;
   uint32 flush_id;
   array<SyncToken> sync_token_fences;
-};
-
-// Sets SharedImage mailbox and other framebuffer params to the default
-// framebuffer. NOTE: This exists only to support PNaCl.
-struct SetDefaultFramebufferSharedImageParams {
-  // The mailbox of the shared image. Can be empty if client wants to detach
-  // SharedImage from the color buffer.
-  Mailbox mailbox;
-
-  // Number of samples for the multisampling.
-  uint32 samples_count;
-
-  // If default framebuffer needs to presevre contents across the frames.
-  bool preserve;
-
-  // If this framebuffer needs depth buffer.
-  bool needs_depth;
-
-  // If this framebuffer needs stencil buffer.
-  bool needs_stencil;
 };
 
 // Common params used when creating a new shared image.
@@ -660,40 +508,6 @@ struct AddReferenceToSharedImageParams {
 // complete after the command runs.
 struct CopyToGpuMemoryBufferParams {
   // The mailbox identifying the shared image which should update its GMB.
-  Mailbox mailbox;
-};
-
-[EnableIf=is_win]
-struct CreateSwapChainParams {
-  // Mailbox identifying the front buffer of the swap chain.
-  Mailbox front_buffer_mailbox;
-
-  // Mailbox identifying the back buffer of the swap chain.
-  Mailbox back_buffer_mailbox;
-
-  // Pixel format of the front and back buffers.
-  viz.mojom.SharedImageFormat format;
-
-  // Size of the buffers.
-  gfx.mojom.Size size;
-
-  // Color space of the buffers.
-  gfx.mojom.ColorSpace color_space;
-
-  // Usage flags corresponding to values defined in
-  // gpu/command_buffer/common/shared_image_usage.h.
-  uint32 usage;
-
-  // Which corner is considered the origin of the swap chain's buffers.
-  skia.mojom.SurfaceOrigin surface_origin;
-
-  // Indicates how the alpha component of each pixel is interpreted.
-  skia.mojom.AlphaType alpha_type;
-};
-
-[EnableIf=is_win]
-struct PresentSwapChainParams {
-  // Mailbox identifying the swap chain to present.
   Mailbox mailbox;
 };
 

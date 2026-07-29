@@ -15,7 +15,8 @@
 
 namespace blink {
 
-class InterpolationEnvironment;
+class CSSInterpolationEnvironment;
+class TypedInterpolationValue;
 
 // See the documentation of Interpolation for general information about this
 // class hierarchy.
@@ -42,18 +43,20 @@ class InterpolationEnvironment;
 class CORE_EXPORT TransitionInterpolation : public Interpolation {
  public:
   TransitionInterpolation(const PropertyHandle& property,
-                          const InterpolationType& type,
+                          const InterpolationType* type,
                           InterpolationValue&& start,
                           InterpolationValue&& end,
                           CompositorKeyframeValue* compositor_start,
-                          CompositorKeyframeValue* compositor_end)
+                          CompositorKeyframeValue* compositor_end,
+                          bool is_attr_tainted = false)
       : property_(property),
         type_(type),
         start_(std::move(start)),
         end_(std::move(end)),
-        merge_(type.MaybeMergeSingles(start_.Clone(), end_.Clone())),
+        merge_(type->MaybeMergeSingles(start_.Clone(), end_.Clone())),
         compositor_start_(compositor_start),
-        compositor_end_(compositor_end) {
+        compositor_end_(compositor_end),
+        is_attr_tainted_(is_attr_tainted) {
     // Incredibly speculative CHECKs, to try and get any insight on
     // crbug.com/826627. Somehow a crash is happening in this constructor, which
     // we believe is based on |start_| having no interpolable value. However a
@@ -72,7 +75,7 @@ class CORE_EXPORT TransitionInterpolation : public Interpolation {
                       property_));
   }
 
-  void Apply(InterpolationEnvironment&) const;
+  void Apply(CSSInterpolationEnvironment&) const;
 
   bool IsTransitionInterpolation() const final { return true; }
 
@@ -80,9 +83,13 @@ class CORE_EXPORT TransitionInterpolation : public Interpolation {
 
   TypedInterpolationValue* GetInterpolatedValue() const;
 
-  void Interpolate(int iteration, double fraction) final;
+  void Interpolate(
+      int iteration,
+      double fraction,
+      EffectModel::IterationCompositeOperation iteration_composite) final;
 
   void Trace(Visitor* visitor) const override {
+    visitor->Trace(type_);
     visitor->Trace(start_);
     visitor->Trace(end_);
     visitor->Trace(merge_);
@@ -97,12 +104,13 @@ class CORE_EXPORT TransitionInterpolation : public Interpolation {
   const NonInterpolableValue* CurrentNonInterpolableValue() const;
 
   const PropertyHandle property_;
-  const InterpolationType& type_;
+  Member<const InterpolationType> type_;
   const InterpolationValue start_;
   const InterpolationValue end_;
   const PairwiseInterpolationValue merge_;
   const Member<CompositorKeyframeValue> compositor_start_;
   const Member<CompositorKeyframeValue> compositor_end_;
+  const bool is_attr_tainted_;
 
   mutable std::optional<double> cached_fraction_;
   mutable int cached_iteration_ = 0;

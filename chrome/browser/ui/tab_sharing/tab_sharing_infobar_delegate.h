@@ -9,9 +9,9 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "components/infobars/core/infobar_delegate.h"
 #include "content/public/browser/global_routing_id.h"
-#include "ui/base/models/image_model.h"
 
 namespace content {
 class WebContents;
@@ -22,6 +22,7 @@ class InfoBarManager;
 class InfoBar;
 }  // namespace infobars
 
+class ScreensharingControlsHistogramLogger;
 class TabSharingUI;
 
 // Creates an infobar for sharing a tab using desktopCapture() API; one delegate
@@ -42,17 +43,10 @@ class TabSharingUI;
 // "Sharing a tab to |capturer_name_| [Stop] [Share this tab instead]"
 class TabSharingInfoBarDelegate : public infobars::InfoBarDelegate {
  public:
-  // Represents a target to which focus could be switched and its favicon.
-  struct FocusTarget {
-    content::GlobalRenderFrameHostId id;
-    ui::ImageModel icon;
-  };
-
   enum TabSharingInfoBarButton {
     kNone = 0,
     kStop = 1 << 0,
     kShareThisTabInstead = 1 << 1,
-    kQuickNav = 1 << 2,
     kCapturedSurfaceControlIndicator = 1 << 3,
   };
 
@@ -78,10 +72,12 @@ class TabSharingInfoBarDelegate : public infobars::InfoBarDelegate {
     kOtherTab,
   };
 
+  static bool IsCapturedTab(TabRole role);
+  static bool IsCapturingTab(TabRole role);
+
   class TabSharingInfoBarDelegateButton;
   class StopButton;
   class ShareTabInsteadButton;
-  class SwitchToTabButton;
   class CscIndicatorButton;
 
   // Creates a tab sharing infobar, which has 1-2 buttons.
@@ -102,16 +98,16 @@ class TabSharingInfoBarDelegate : public infobars::InfoBarDelegate {
   static infobars::InfoBar* Create(
       infobars::InfoBarManager* infobar_manager,
       infobars::InfoBar* old_infobar,
+      content::GlobalRenderFrameHostId shared_tab_id,
+      content::GlobalRenderFrameHostId capturer_id,
       const std::u16string& shared_tab_name,
       const std::u16string& capturer_name,
       content::WebContents* web_contents,
       TabRole role,
       ButtonState share_this_tab_instead_button_state,
-      std::optional<FocusTarget> focus_target,
       bool captured_surface_control_active,
       TabSharingUI* ui,
-      TabShareType capture_type,
-      bool favicons_used_for_switch_to_tab_button = false);
+      TabShareType capture_type);
 
   ~TabSharingInfoBarDelegate() override;
 
@@ -125,7 +121,6 @@ class TabSharingInfoBarDelegate : public infobars::InfoBarDelegate {
 
   void Stop();
   void ShareThisTabInstead();
-  void QuickNav();
   void OnCapturedSurfaceControlActivityIndicatorPressed();
 
   // InfoBarDelegate:
@@ -134,16 +129,15 @@ class TabSharingInfoBarDelegate : public infobars::InfoBarDelegate {
   bool EqualsDelegate(InfoBarDelegate* delegate) const override;
   bool ShouldExpire(const NavigationDetails& details) const override;
   bool IsCloseable() const override;
+  infobars::InfoBarDelegate::InfobarPriority GetPriority() const override;
 
  private:
   TabSharingInfoBarDelegate(content::WebContents* web_contents,
                             TabRole role,
                             ButtonState share_this_tab_instead_button_state,
-                            std::optional<FocusTarget> focus_target,
                             bool captured_surface_control_active,
                             TabSharingUI* ui,
-                            TabShareType capture_type,
-                            bool favicons_used_for_switch_to_tab_button);
+                            TabShareType capture_type);
 
   const TabSharingInfoBarDelegateButton& GetButton(
       TabSharingInfoBarButton button) const;
@@ -157,15 +151,17 @@ class TabSharingInfoBarDelegate : public infobars::InfoBarDelegate {
 
   std::unique_ptr<StopButton> stop_button_;
   std::unique_ptr<ShareTabInsteadButton> share_this_tab_instead_button_;
-  std::unique_ptr<SwitchToTabButton> quick_nav_button_;
   std::unique_ptr<CscIndicatorButton> csc_indicator_button_;
 };
 
 std::unique_ptr<infobars::InfoBar> CreateTabSharingInfoBar(
     std::unique_ptr<TabSharingInfoBarDelegate> delegate,
+    content::GlobalRenderFrameHostId shared_tab_id,
+    content::GlobalRenderFrameHostId capturer_id,
     const std::u16string& shared_tab_name,
     const std::u16string& capturer_name,
     TabSharingInfoBarDelegate::TabRole role,
-    TabSharingInfoBarDelegate::TabShareType capture_type);
+    TabSharingInfoBarDelegate::TabShareType capture_type,
+    base::WeakPtr<ScreensharingControlsHistogramLogger> uma_logger);
 
 #endif  // CHROME_BROWSER_UI_TAB_SHARING_TAB_SHARING_INFOBAR_DELEGATE_H_

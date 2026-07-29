@@ -6,7 +6,6 @@ package org.chromium.components.variations.firstrun;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
-import android.content.SharedPreferences;
 import android.os.SystemClock;
 
 import androidx.annotation.IntDef;
@@ -104,7 +103,7 @@ public class VariationsSeedFetcher {
 
     // Values for the "Variations.FirstRun.SeedFetchResult" sparse histogram, which also logs
     // HTTP result codes. These are negative so that they don't conflict with the HTTP codes.
-    // These values should not be renumbered or re-used since they are logged to UMA.
+    // These values should not be renumbered or reused since they are logged to UMA.
     @VisibleForTesting public static final int SEED_FETCH_RESULT_DELTA_PATCH_EXCEPTION = -6;
     @VisibleForTesting public static final int SEED_FETCH_RESULT_INVALID_IM_HEADER = -5;
     // private static final int SEED_FETCH_RESULT_INVALID_DATE_HEADER = -4;
@@ -261,17 +260,15 @@ public class VariationsSeedFetcher {
 
     /** Object holding information about the seed download parameters. */
     public static class SeedFetchParameters {
-        private @VariationsPlatform int mPlatform;
-        private @Nullable String mRestrictMode;
-        private @Nullable String mMilestone;
+        private final @VariationsPlatform int mPlatform;
+        private final @Nullable String mRestrictMode;
+        private final @Nullable String mMilestone;
         private @Nullable String mChannel;
-        private boolean mIsFastFetchMode;
+        private final boolean mIsFastFetchMode;
 
         // This is added as a convenience for using Mockito.
         @Override
         public boolean equals(final Object obj) {
-            if (obj == null) return false;
-            if (obj.getClass() != this.getClass()) return false;
             if (!(obj instanceof SeedFetchParameters)) return false;
             SeedFetchParameters castObj = (SeedFetchParameters) obj;
 
@@ -467,6 +464,17 @@ public class VariationsSeedFetcher {
         }
     }
 
+    // Return false if an attempt has already been made to fetch the seed, even if it failed.
+    // Only attempt to get the initial Java seed once, since a failure probably indicates a network
+    // problem that is unlikely to be resolved by a second attempt.
+    // Note that VariationsSeedBridge.hasNativePref() is a pure Java function, reading an Android
+    // preference that is set when the seed is fetched by the native code.
+    public static boolean shouldFetchSeed() {
+        return !(ContextUtils.getAppSharedPreferences()
+                        .getBoolean(VARIATIONS_INITIALIZED_PREF, false)
+                || VariationsSeedBridge.hasNativePref());
+    }
+
     /**
      * Fetch the first run variations seed.
      *
@@ -478,14 +486,7 @@ public class VariationsSeedFetcher {
         assert !ThreadUtils.runningOnUiThread();
         // Prevent multiple simultaneous fetches
         synchronized (sLock) {
-            SharedPreferences prefs = ContextUtils.getAppSharedPreferences();
-            // Early return if an attempt has already been made to fetch the seed, even if it
-            // failed. Only attempt to get the initial Java seed once, since a failure probably
-            // indicates a network problem that is unlikely to be resolved by a second attempt.
-            // Note that VariationsSeedBridge.hasNativePref() is a pure Java function, reading an
-            // Android preference that is set when the seed is fetched by the native code.
-            if (prefs.getBoolean(VARIATIONS_INITIALIZED_PREF, false)
-                    || VariationsSeedBridge.hasNativePref()) {
+            if (!shouldFetchSeed()) {
                 return;
             }
 
@@ -507,7 +508,10 @@ public class VariationsSeedFetcher {
                         info.isGzipCompressed);
             }
             // VARIATIONS_INITIALIZED_PREF should still be set to true when exceptions occur
-            prefs.edit().putBoolean(VARIATIONS_INITIALIZED_PREF, true).apply();
+            ContextUtils.getAppSharedPreferences()
+                    .edit()
+                    .putBoolean(VARIATIONS_INITIALIZED_PREF, true)
+                    .apply();
         }
     }
 
@@ -585,7 +589,7 @@ public class VariationsSeedFetcher {
                 SeedInfo seedInfo = new SeedInfo();
                 seedInfo.signature = getHeaderFieldOrEmpty(connection, "X-Seed-Signature");
                 seedInfo.country = getHeaderFieldOrEmpty(connection, "X-Country");
-                seedInfo.date = mDateTime.newDate().getTime();
+                seedInfo.date = connection.getHeaderFieldDate("Date", 0);
 
                 InstanceManipulations receivedIm =
                         VariationsCompressionUtils.getInstanceManipulations(
@@ -625,7 +629,7 @@ public class VariationsSeedFetcher {
                 // serial number included in the request is always that of the latest
                 // seed, so it's appropriate to always modify the latest seed's date.
                 fetchInfo.seedInfo = assumeNonNull(currInfo);
-                fetchInfo.seedInfo.date = mDateTime.newDate().getTime();
+                fetchInfo.seedInfo.date = connection.getHeaderFieldDate("Date", 0);
             } else {
                 String errorMsg = "Non-OK response code = " + responseCode;
                 Log.w(TAG, errorMsg);

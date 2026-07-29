@@ -30,10 +30,8 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ActionDelegate;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ActionObserver;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ButtonType;
@@ -55,11 +53,9 @@ import java.util.Set;
 public class TabListEditorBookmarkActionUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private TabGroupModelFilter mTabGroupModelFilter;
-    @Mock private SelectionDelegate<Integer> mSelectionDelegate;
+    @Mock private SelectionDelegate<TabListEditorItemSelectionId> mSelectionDelegate;
     @Mock private ActionDelegate mDelegate;
     @Mock private SnackbarManager mSnackbarManager;
-    @Mock private BookmarkModel mBookmarkModel;
     @Mock private Profile mProfile;
 
     @Mock
@@ -81,13 +77,12 @@ public class TabListEditorBookmarkActionUnitTest {
                         TabListEditorBookmarkAction.createAction(
                                 mActivity, ShowMode.MENU_ONLY, ButtonType.TEXT, IconPosition.START);
         mTabModel = spy(new MockTabModel(mProfile, null));
-        when(mTabGroupModelFilter.getTabModel()).thenReturn(mTabModel);
-        mAction.configure(() -> mTabGroupModelFilter, mSelectionDelegate, mDelegate, false);
+        mAction.configure(() -> mTabModel, mSelectionDelegate, mDelegate, false);
     }
 
     @Test
     public void testInherentActionProperties() {
-        Drawable drawable = AppCompatResources.getDrawable(mActivity, R.drawable.star_outline_24dp);
+        Drawable drawable = AppCompatResources.getDrawable(mActivity, R.drawable.ic_star_24dp);
         drawable.setBounds(0, 0, drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight());
 
         Assert.assertEquals(
@@ -111,7 +106,7 @@ public class TabListEditorBookmarkActionUnitTest {
 
     @Test
     public void testBookmarkActionNoTabs() {
-        mAction.onSelectionStateChange(new ArrayList<Integer>());
+        mAction.onSelectionStateChange(new ArrayList<>());
         Assert.assertEquals(
                 false, mAction.getPropertyModel().get(TabListEditorActionProperties.ENABLED));
         Assert.assertEquals(
@@ -122,16 +117,18 @@ public class TabListEditorBookmarkActionUnitTest {
     public void testBookmarkActionWithOneTab() throws Exception {
         List<Integer> tabIds = new ArrayList<>();
         tabIds.add(1);
+        List<TabListEditorItemSelectionId> itemIds = new ArrayList<>();
+        itemIds.add(TabListEditorItemSelectionId.createTabId(1));
 
         List<Tab> tabs = new ArrayList<>();
         for (int id : tabIds) {
             tabs.add(mTabModel.addTab(id));
         }
 
-        Set<Integer> tabIdsSet = new LinkedHashSet<>(tabIds);
-        when(mSelectionDelegate.getSelectedItems()).thenReturn(tabIdsSet);
+        Set<TabListEditorItemSelectionId> itemIdsSet = new LinkedHashSet<>(itemIds);
+        when(mSelectionDelegate.getSelectedItems()).thenReturn(itemIdsSet);
 
-        mAction.onSelectionStateChange(tabIds);
+        mAction.onSelectionStateChange(itemIds);
         Assert.assertEquals(
                 true, mAction.getPropertyModel().get(TabListEditorActionProperties.ENABLED));
         Assert.assertEquals(
@@ -197,14 +194,19 @@ public class TabListEditorBookmarkActionUnitTest {
         tabIds.add(2);
         tabIds.add(3);
 
+        List<TabListEditorItemSelectionId> itemIds = new ArrayList<>();
+        itemIds.add(TabListEditorItemSelectionId.createTabId(1));
+        itemIds.add(TabListEditorItemSelectionId.createTabId(2));
+        itemIds.add(TabListEditorItemSelectionId.createTabId(3));
+
         List<Tab> tabs = new ArrayList<>();
         for (int id : tabIds) {
             tabs.add(mTabModel.addTab(id));
         }
-        Set<Integer> tabIdsSet = new LinkedHashSet<>(tabIds);
-        when(mSelectionDelegate.getSelectedItems()).thenReturn(tabIdsSet);
+        Set<TabListEditorItemSelectionId> itemIdsSet = new LinkedHashSet<>(itemIds);
+        when(mSelectionDelegate.getSelectedItems()).thenReturn(itemIdsSet);
 
-        mAction.onSelectionStateChange(tabIds);
+        mAction.onSelectionStateChange(itemIds);
         Assert.assertEquals(
                 true, mAction.getPropertyModel().get(TabListEditorActionProperties.ENABLED));
         Assert.assertEquals(

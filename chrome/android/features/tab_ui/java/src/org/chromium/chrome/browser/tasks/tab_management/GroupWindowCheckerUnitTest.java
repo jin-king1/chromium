@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.tasks.tab_management;
 
 import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import org.junit.Before;
@@ -12,15 +13,21 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelType;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.SavedTabGroupTab;
@@ -36,18 +43,16 @@ public class GroupWindowCheckerUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private TabGroupSyncService mSyncService;
-    @Mock private TabGroupModelFilter mFilter;
     @Mock private TabModel mTabModel;
-    @Mock private TabList mTabList;
+    @Spy private TabList mTabList;
     @Mock private Tab mTab1;
     private GroupWindowChecker mSyncUtils;
 
     @Before
     public void setUp() {
-        when(mFilter.getTabModel()).thenReturn(mTabModel);
         when(mTabModel.getComprehensiveModel()).thenReturn(mTabList);
 
-        mSyncUtils = new GroupWindowChecker(mSyncService, mFilter);
+        mSyncUtils = new GroupWindowChecker(mSyncService, mTabModel);
     }
 
     @Test
@@ -68,7 +73,9 @@ public class GroupWindowCheckerUnitTest {
         when(mSyncService.getGroup("id2")).thenReturn(group2);
 
         List<SavedTabGroup> sortedList =
-                mSyncUtils.getSortedGroupList((g1, g2) -> g1.title.compareToIgnoreCase(g2.title));
+                mSyncUtils.getSortedGroupList(
+                        this::tabGroupSelectionPredicate,
+                        (g1, g2) -> g1.title.compareToIgnoreCase(g2.title));
 
         assertEquals(2, sortedList.size());
         assertEquals("title1", sortedList.get(0).title);
@@ -91,12 +98,14 @@ public class GroupWindowCheckerUnitTest {
         when(mSyncService.getAllGroupIds()).thenReturn(new String[] {"id1", "id2"});
         when(mSyncService.getGroup("id1")).thenReturn(group1);
         when(mSyncService.getGroup("id2")).thenReturn(group2);
-        when(mTabList.getCount()).thenReturn(1);
-        when(mTabList.getTabAt(0)).thenReturn(mTab1);
+        List<Tab> tabList = List.of(mTab1);
+        when(mTabList.iterator()).thenAnswer(invocation -> tabList.iterator());
         when(mTab1.getTabGroupId()).thenReturn(token1);
 
         List<SavedTabGroup> sortedList =
-                mSyncUtils.getSortedGroupList((g1, g2) -> g1.title.compareToIgnoreCase(g2.title));
+                mSyncUtils.getSortedGroupList(
+                        this::tabGroupSelectionPredicate,
+                        (g1, g2) -> g1.title.compareToIgnoreCase(g2.title));
 
         assertEquals(1, sortedList.size());
         assertEquals("title1", sortedList.get(0).title);
@@ -106,7 +115,9 @@ public class GroupWindowCheckerUnitTest {
     public void testGetSortedGroupList_empty() {
         when(mSyncService.getAllGroupIds()).thenReturn(new String[] {});
         List<SavedTabGroup> sortedList =
-                mSyncUtils.getSortedGroupList((g1, g2) -> g1.title.compareToIgnoreCase(g2.title));
+                mSyncUtils.getSortedGroupList(
+                        this::tabGroupSelectionPredicate,
+                        (g1, g2) -> g1.title.compareToIgnoreCase(g2.title));
         assertEquals(0, sortedList.size());
     }
 
@@ -125,8 +136,8 @@ public class GroupWindowCheckerUnitTest {
         SavedTabGroup group = createSavedTabGroup(token, "title1");
         group.localId = new LocalTabGroupId(token);
 
-        when(mTabList.getCount()).thenReturn(1);
-        when(mTabList.getTabAt(0)).thenReturn(mTab1);
+        List<Tab> tabList = List.of(mTab1);
+        when(mTabList.iterator()).thenAnswer(invocation -> tabList.iterator());
         when(mTab1.getTabGroupId()).thenReturn(token);
 
         @GroupWindowState int state = mSyncUtils.getState(group);
@@ -137,10 +148,9 @@ public class GroupWindowCheckerUnitTest {
     public void testGetState_InCurrentClosing() {
         Token token = Token.createRandom();
         SavedTabGroup group = createSavedTabGroup(token, "title1");
-        when(mTabList.getCount()).thenReturn(1);
-        when(mTabList.getTabAt(0)).thenReturn(mTab1);
+        List<Tab> tabList = List.of(mTab1);
+        when(mTabList.iterator()).thenAnswer(invocation -> tabList.iterator());
         when(mTab1.getTabGroupId()).thenReturn(token);
-        when(mTab1.getRootId()).thenReturn(1);
         when(mTab1.isClosing()).thenReturn(true);
 
         @GroupWindowState int state = mSyncUtils.getState(group);
@@ -152,12 +162,36 @@ public class GroupWindowCheckerUnitTest {
         Token token = Token.createRandom();
         SavedTabGroup group = createSavedTabGroup(token, "title1");
 
-        when(mTabList.getCount()).thenReturn(1);
-        when(mTabList.getTabAt(0)).thenReturn(mTab1);
+        List<Tab> tabList = List.of(mTab1);
+        when(mTabList.iterator()).thenAnswer(invocation -> tabList.iterator());
         when(mTab1.getTabGroupId()).thenReturn(new Token(200L, 1L));
 
         @GroupWindowState int state = mSyncUtils.getState(group);
         assertEquals(GroupWindowState.IN_ANOTHER, state);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.CROSS_WINDOW_TAB_GROUP_OPERATIONS)
+    public void testGetState_HeadlessWindow() {
+        TabWindowManager tabWindowManager = mock(TabWindowManager.class);
+        TabWindowManagerSingleton.setTabWindowManagerForTesting(tabWindowManager);
+
+        Token token = Token.createRandom();
+        SavedTabGroup group = createSavedTabGroup(token, "title1");
+
+        List<Tab> tabList = List.of(mTab1);
+        when(mTabList.iterator()).thenAnswer(invocation -> tabList.iterator());
+        when(mTab1.getTabGroupId()).thenReturn(new Token(200L, 1L));
+
+        when(tabWindowManager.findWindowIdForTabGroup(token)).thenReturn(1);
+        TabModelSelector selector = mock(TabModelSelector.class);
+        TabModel headlessModel = mock(TabModel.class);
+        when(headlessModel.getTabModelType()).thenReturn(TabModelType.HEADLESS);
+        when(selector.getModel(false)).thenReturn(headlessModel);
+        when(tabWindowManager.getTabModelSelectorById(1)).thenReturn(selector);
+
+        @GroupWindowState int state = mSyncUtils.getState(group);
+        assertEquals(GroupWindowState.HIDDEN, state);
     }
 
     private SavedTabGroup createSavedTabGroup(Token token, String title) {
@@ -166,5 +200,9 @@ public class GroupWindowCheckerUnitTest {
         tabGroup.savedTabs = new ArrayList<>();
         tabGroup.title = title;
         return tabGroup;
+    }
+
+    private boolean tabGroupSelectionPredicate(@GroupWindowState int groupWindowState) {
+        return groupWindowState != GroupWindowState.IN_ANOTHER;
     }
 }

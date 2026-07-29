@@ -17,14 +17,16 @@ import org.junit.runner.RunWith;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.test.params.ParameterizedCommandLineFlags;
 import org.chromium.base.test.params.ParameterizedCommandLineFlags.Switches;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.TabTitleObserver;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.security_interstitials.CaptivePortalHelper;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.net.test.ServerCertificate;
@@ -34,15 +36,17 @@ import java.lang.annotation.RetentionPolicy;
 
 /** Tests for the Captive portal interstitial. */
 @RunWith(ChromeJUnit4ClassRunner.class)
+@Batch(Batch.PER_CLASS)
 @MediumTest
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @ParameterizedCommandLineFlags({
-    @Switches(),
+    @Switches,
 })
 public class CaptivePortalTest {
     private static final String CAPTIVE_PORTAL_INTERSTITIAL_TITLE_PREFIX = "Connect to";
     private static final String SSL_INTERSTITIAL_TITLE = "Privacy error";
     private static final int INTERSTITIAL_TITLE_UPDATE_TIMEOUT_SECONDS = 5;
+    private RegularNewTabPageStation mNtp;
 
     // UMA events copied from ssl_error_handler.h.
     @IntDef({
@@ -82,13 +86,14 @@ public class CaptivePortalTest {
     }
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private EmbeddedTestServer mServer;
 
     @Before
     public void setUp() {
-        mActivityTestRule.startMainActivityWithURL(UrlConstants.NTP_URL);
+        mNtp = mActivityTestRule.startOnNtp();
         mServer =
                 EmbeddedTestServer.createAndStartHTTPSServer(
                         ApplicationProvider.getApplicationContext(),
@@ -102,7 +107,7 @@ public class CaptivePortalTest {
      * in a captive portal interstitial.
      */
     private void navigateAndCheckCaptivePortalInterstitial() throws Exception {
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         ChromeTabUtils.loadUrlOnUiThread(
                 tab, mServer.getURL("/chrome/test/data/android/navigate/simple.html"));
 

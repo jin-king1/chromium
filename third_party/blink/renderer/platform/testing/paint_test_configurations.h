@@ -31,10 +31,9 @@ class CullRectTestConfig {
 };
 
 inline constexpr unsigned kUnderInvalidationChecking = 1 << 0;
-inline constexpr unsigned kFluentScrollbar = 1 << 1;
-inline constexpr unsigned kElementCapture = 1 << 2;
-inline constexpr unsigned kRasterInducingScroll = 1 << 3;
-inline constexpr unsigned kSpeculativeImageDecodes = 1 << 4;
+inline constexpr unsigned kElementCapture = 1 << 1;
+inline constexpr unsigned kRasterInducingScroll = 1 << 2;
+inline constexpr unsigned kSpeculativeImageDecodes = 1 << 3;
 
 class PaintTestConfigurations
     : public testing::WithParamInterface<unsigned>,
@@ -50,11 +49,6 @@ class PaintTestConfigurations
         ScopedRasterInducingScrollForTest(GetParam() & kRasterInducingScroll) {
     std::vector<base::test::FeatureRef> enabled_features = {};
     std::vector<base::test::FeatureRef> disabled_features = {};
-    if (GetParam() & kFluentScrollbar) {
-      enabled_features.push_back(::features::kFluentScrollbar);
-    } else {
-      disabled_features.push_back(::features::kFluentScrollbar);
-    }
     if (GetParam() & kSpeculativeImageDecodes) {
       enabled_features.push_back(features::kSpeculativeImageDecodes);
       enabled_features.push_back(
@@ -70,7 +64,6 @@ class PaintTestConfigurations
       // Create a TaskEnvironment for the garbage collection below.
       task_environment = std::make_unique<base::test::TaskEnvironment>();
     }
-    feature_list_.Reset();
     WebHeap::CollectAllGarbageForTesting();
   }
 
@@ -79,12 +72,23 @@ class PaintTestConfigurations
 };
 
 #define PAINT_TEST_SUITE_P_VALUES \
-  0, kFluentScrollbar, kRasterInducingScroll, kSpeculativeImageDecodes
+  0, kRasterInducingScroll, kSpeculativeImageDecodes
 
-#define INSTANTIATE_PAINT_TEST_SUITE_P(test_class) \
-  INSTANTIATE_TEST_SUITE_P(All, test_class,        \
-                           ::testing::Values(PAINT_TEST_SUITE_P_VALUES))
-
+#define INSTANTIATE_PAINT_TEST_SUITE_P(test_class)                    \
+  INSTANTIATE_TEST_SUITE_P(                                           \
+      All, test_class, ::testing::Values(PAINT_TEST_SUITE_P_VALUES),  \
+      [](const testing::TestParamInfo<test_class::ParamType>& info) { \
+        switch (info.param) {                                         \
+          case 0:                                                     \
+            return std::string("Baseline");                           \
+          case kRasterInducingScroll:                                 \
+            return std::string("RasterInducingScroll");               \
+          case kSpeculativeImageDecodes:                              \
+            return std::string("SpeculativeImageDecodes");            \
+          default:                                                    \
+            return std::string("Unknown");                            \
+        }                                                             \
+      })
 }  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_TESTING_PAINT_TEST_CONFIGURATIONS_H_

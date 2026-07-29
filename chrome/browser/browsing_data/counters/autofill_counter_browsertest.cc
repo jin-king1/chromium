@@ -14,10 +14,12 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
+#include "chrome/browser/autofill/autofill_entity_data_manager_factory.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
@@ -25,15 +27,21 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager_test_utils.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager_test_utils.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/entity_data_test_utils.h"
 #include "components/autofill/core/browser/test_utils/test_autofill_clock.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/browsing_data/core/browsing_data_utils.h"
+#include "components/browsing_data/core/counters/browsing_data_counter.h"
 #include "components/browsing_data/core/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
@@ -56,9 +64,9 @@ class AutofillCounterTest : public InProcessBrowserTest {
   void SetUpOnMainThread() override {
     personal_data_manager_ =
         autofill::PersonalDataManagerFactory::GetForBrowserContext(
-            browser()->profile());
+            browser()->GetProfile());
     web_data_service_ = WebDataServiceFactory::GetAutofillWebDataForProfile(
-        browser()->profile(), ServiceAccessType::IMPLICIT_ACCESS);
+        browser()->GetProfile(), ServiceAccessType::IMPLICIT_ACCESS);
 
     SetAutofillDeletionPref(true);
     SetDeletionPeriodPref(browsing_data::TimePeriod::ALL_TIME);
@@ -71,12 +79,19 @@ class AutofillCounterTest : public InProcessBrowserTest {
     web_data_service_ = nullptr;
   }
 
+  browsing_data::AutofillCounter GetCounter() {
+    return {GetPersonalDataManager(), GetWebDataService(),
+            GetEntityDataManager(), /*sync_service=*/nullptr};
+  }
+
   // Autocomplete suggestions --------------------------------------------------
 
   void AddAutocompleteSuggestion(const std::string& name,
+                                 const std::string& label,
                                  const std::string& value) {
     autofill::FormFieldData field;
     field.set_name(base::ASCIIToUTF16(name));
+    field.set_label(base::ASCIIToUTF16(label));
     field.set_value(base::ASCIIToUTF16(value));
 
     std::vector<autofill::FormFieldData> form_fields;
@@ -85,9 +100,10 @@ class AutofillCounterTest : public InProcessBrowserTest {
   }
 
   void RemoveAutocompleteSuggestion(const std::string& name,
+                                    const std::string& label,
                                     const std::string& value) {
-    web_data_service_->RemoveFormValueForElementName(
-        base::ASCIIToUTF16(name),
+    web_data_service_->RemoveFormValueForElementNameAndLabel(
+        base::ASCIIToUTF16(name), base::ASCIIToUTF16(label),
         base::ASCIIToUTF16(value));
   }
 
@@ -156,13 +172,18 @@ class AutofillCounterTest : public InProcessBrowserTest {
   // Other utils ---------------------------------------------------------------
 
   void SetAutofillDeletionPref(bool value) {
-    browser()->profile()->GetPrefs()->SetBoolean(
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
         browsing_data::prefs::kDeleteFormData, value);
   }
 
   void SetDeletionPeriodPref(browsing_data::TimePeriod period) {
-    browser()->profile()->GetPrefs()->SetInteger(
+    browser()->GetProfile()->GetPrefs()->SetInteger(
         browsing_data::prefs::kDeleteTimePeriod, static_cast<int>(period));
+  }
+
+  autofill::EntityDataManager* GetEntityDataManager() {
+    return autofill::AutofillEntityDataManagerFactory::GetForProfile(
+        browser()->GetProfile());
   }
 
   autofill::PersonalDataManager* GetPersonalDataManager() {
@@ -187,6 +208,10 @@ class AutofillCounterTest : public InProcessBrowserTest {
     return num_addresses_;
   }
 
+  browsing_data::BrowsingDataCounter::ResultInt GetNumEntities() {
+    return num_entities_;
+  }
+
   browsing_data::AutofillCounter::ResultInt GetCounterValue() {
     return counter_value_;
   }
@@ -204,12 +229,15 @@ class AutofillCounterTest : public InProcessBrowserTest {
     counter_value_ = autofill_result->Value();
     num_credit_cards_ = autofill_result->num_credit_cards();
     num_addresses_ = autofill_result->num_addresses();
+    num_entities_ = autofill_result->num_entities();
   }
 
  protected:
   CounterFuture future;
 
  private:
+  base::test::ScopedFeatureList feature_list_{
+      autofill::features::kAutofillAiWithDataSchema};
   autofill::test::AutofillBrowserTestEnvironment autofill_test_environment_;
   std::vector<std::string> credit_card_ids_;
   std::vector<std::string> address_ids_;
@@ -223,37 +251,34 @@ class AutofillCounterTest : public InProcessBrowserTest {
   browsing_data::BrowsingDataCounter::ResultInt num_suggestions_;
   browsing_data::BrowsingDataCounter::ResultInt num_credit_cards_;
   browsing_data::BrowsingDataCounter::ResultInt num_addresses_;
+  browsing_data::BrowsingDataCounter::ResultInt num_entities_;
 };
 
 // Tests that we count the correct number of autocomplete suggestions.
 IN_PROC_BROWSER_TEST_F(AutofillCounterTest, AutocompleteSuggestions) {
-  Profile* profile = browser()->profile();
-  browsing_data::AutofillCounter counter(
-      GetPersonalDataManager(), GetWebDataService(), /*sync_service=*/nullptr);
-
-  counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
+  browsing_data::AutofillCounter counter = GetCounter();
+  counter.Init(browser()->GetProfile()->GetPrefs(),
                future.GetRepeatingCallback());
   counter.Restart();
   WaitForResult();
   EXPECT_EQ(0, GetCounterValue());
 
-  AddAutocompleteSuggestion("email", "example@example.com");
+  AddAutocompleteSuggestion("email", "email", "example@example.com");
   counter.Restart();
   WaitForResult();
   EXPECT_EQ(1, GetCounterValue());
 
-  AddAutocompleteSuggestion("tel", "+123456789");
+  AddAutocompleteSuggestion("tel", "telephone", "+123456789");
   counter.Restart();
   WaitForResult();
   EXPECT_EQ(2, GetCounterValue());
 
-  AddAutocompleteSuggestion("tel", "+987654321");
+  AddAutocompleteSuggestion("tel", "telephone", "+987654321");
   counter.Restart();
   WaitForResult();
   EXPECT_EQ(3, GetCounterValue());
 
-  RemoveAutocompleteSuggestion("email", "example@example.com");
+  RemoveAutocompleteSuggestion("email", "email", "example@example.com");
   counter.Restart();
   WaitForResult();
   EXPECT_EQ(2, GetCounterValue());
@@ -264,14 +289,43 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, AutocompleteSuggestions) {
   EXPECT_EQ(0, GetCounterValue());
 }
 
+IN_PROC_BROWSER_TEST_F(AutofillCounterTest, Entities) {
+  browsing_data::AutofillCounter counter = GetCounter();
+  counter.Init(browser()->GetProfile()->GetPrefs(),
+               future.GetRepeatingCallback());
+  counter.Restart();
+  WaitForResult();
+  EXPECT_EQ(GetNumEntities(), 0);
+
+  autofill::EntityInstance passport =
+      autofill::test::GetPassportEntityInstance();
+  GetEntityDataManager()->AddOrUpdateEntityInstance(passport);
+  autofill::EntityDataChangedWaiter(GetEntityDataManager()).Wait();
+  counter.Restart();
+  WaitForResult();
+  EXPECT_EQ(GetNumEntities(), 1);
+
+  autofill::EntityInstance drivers_license =
+      autofill::test::GetDriversLicenseEntityInstance();
+  GetEntityDataManager()->AddOrUpdateEntityInstance(drivers_license);
+  autofill::EntityDataChangedWaiter(GetEntityDataManager()).Wait();
+  counter.Restart();
+  WaitForResult();
+  EXPECT_EQ(GetNumEntities(), 2);
+
+  GetEntityDataManager()->RemoveEntityInstance(passport.guid());
+  autofill::EntityDataChangedWaiter(GetEntityDataManager()).Wait();
+  counter.Restart();
+  WaitForResult();
+  EXPECT_EQ(GetNumEntities(), 1);
+}
+
 // Tests that we count the correct number of credit cards.
 IN_PROC_BROWSER_TEST_F(AutofillCounterTest, CreditCards) {
-  Profile* profile = browser()->profile();
-  browsing_data::AutofillCounter counter(
-      GetPersonalDataManager(), GetWebDataService(), /*sync_service=*/nullptr);
+  Profile* profile = browser()->GetProfile();
+  browsing_data::AutofillCounter counter = GetCounter();
 
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
   counter.Restart();
   WaitForResult();
@@ -311,12 +365,10 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, CreditCards) {
 
 // Tests that we count the correct number of addresses.
 IN_PROC_BROWSER_TEST_F(AutofillCounterTest, Addresses) {
-  Profile* profile = browser()->profile();
-  browsing_data::AutofillCounter counter(
-      GetPersonalDataManager(), GetWebDataService(), /*sync_service=*/nullptr);
+  Profile* profile = browser()->GetProfile();
+  browsing_data::AutofillCounter counter = GetCounter();
 
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
   counter.Restart();
 
@@ -357,11 +409,11 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, Addresses) {
 // Tests that we return the correct complex result when counting more than
 // one type of items.
 IN_PROC_BROWSER_TEST_F(AutofillCounterTest, ComplexResult) {
-  AddAutocompleteSuggestion("email", "example@example.com");
-  AddAutocompleteSuggestion("zip", "12345");
-  AddAutocompleteSuggestion("tel", "+123456789");
-  AddAutocompleteSuggestion("tel", "+987654321");
-  AddAutocompleteSuggestion("city", "Munich");
+  AddAutocompleteSuggestion("email", "Email", "example@example.com");
+  AddAutocompleteSuggestion("zip", "Zip code", "12345");
+  AddAutocompleteSuggestion("tel", "Telephone", "+123456789");
+  AddAutocompleteSuggestion("tel", "Telephone", "+987654321");
+  AddAutocompleteSuggestion("city", "Your city:", "Munich");
 
   AddCreditCard("0000-0000-0000-0000", "1", "2015", "1");
   AddCreditCard("1211-1098-7654-3210", "10", "2030", "1");
@@ -370,12 +422,10 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, ComplexResult) {
   AddAddress("Jane", "Smith", "Main Street 12346");
   AddAddress("John", "Smith", "Side Street 47");
 
-  Profile* profile = browser()->profile();
-  browsing_data::AutofillCounter counter(
-      GetPersonalDataManager(), GetWebDataService(), /*sync_service=*/nullptr);
+  Profile* profile = browser()->GetProfile();
+  browsing_data::AutofillCounter counter = GetCounter();
 
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
   counter.Restart();
 
@@ -391,7 +441,7 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, TimeRanges) {
   autofill::TestAutofillClock test_clock;
   const base::Time kTime1 = base::Time::FromSecondsSinceUnixEpoch(25);
   test_clock.SetNow(kTime1);
-  AddAutocompleteSuggestion("email", "example@example.com");
+  AddAutocompleteSuggestion("email", "Email:", "example@example.com");
   AddCreditCard("0000-0000-0000-0000", "1", "2015", "1");
   AddAddress("John", "Doe", "Main Street 12345");
   base::ThreadPoolInstance::Get()->FlushForTesting();
@@ -405,7 +455,7 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, TimeRanges) {
 
   const base::Time kTime3 = kTime2 + base::Seconds(10);
   test_clock.SetNow(kTime3);
-  AddAutocompleteSuggestion("tel", "+987654321");
+  AddAutocompleteSuggestion("tel", "Telephone:", "+987654321");
   AddCreditCard("1211-1098-7654-3210", "10", "2030", "1");
   base::ThreadPoolInstance::Get()->FlushForTesting();
 
@@ -425,12 +475,10 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, TimeRanges) {
       {kTime3, 1, 1, 0},
   });
 
-  Profile* profile = browser()->profile();
-  browsing_data::AutofillCounter counter(
-      GetPersonalDataManager(), GetWebDataService(), /*sync_service=*/nullptr);
+  Profile* profile = browser()->GetProfile();
+  browsing_data::AutofillCounter counter = GetCounter();
 
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                future.GetRepeatingCallback());
 
   for (size_t i = 0; i < std::size(test_cases); i++) {

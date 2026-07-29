@@ -9,7 +9,6 @@
 
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/frame/browser_non_client_frame_view.h"
 #include "chrome/browser/ui/views/tabs/tab_group_header.h"
 #include "chrome/browser/ui/views/tabs/tab_group_highlight.h"
 #include "chrome/browser/ui/views/tabs/tab_group_style.h"
@@ -17,8 +16,6 @@
 #include "chrome/browser/ui/views/tabs/tab_slot_controller.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/tabs/tab_strip_controller.h"
-#include "chrome/browser/ui/views/tabs/tab_strip_types.h"
-#include "components/tab_groups/tab_group_color.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/rect.h"
@@ -137,10 +134,6 @@ SkColor TabGroupViews::GetGroupColor() const {
       tab_slot_controller_->GetGroupColorId(group_));
 }
 
-bool TabGroupViews::InTearDown() const {
-  return !header_ || !header_->GetWidget() || !drag_underline_->GetWidget();
-}
-
 std::tuple<const views::View*, const views::View*>
 TabGroupViews::GetLeadingTrailingGroupViews() const {
   std::vector<raw_ptr<views::View, VectorExperimental>> children =
@@ -152,6 +145,10 @@ TabGroupViews::GetLeadingTrailingGroupViews() const {
   return GetLeadingTrailingGroupViews(children);
 }
 
+bool TabGroupViews::InTearDown() const {
+  return !header_ || !header_->GetWidget() || !drag_underline_->GetWidget();
+}
+
 std::tuple<views::View*, views::View*>
 TabGroupViews::GetLeadingTrailingDraggedGroupViews() const {
   return GetLeadingTrailingGroupViews(drag_underline_->parent()->children());
@@ -160,7 +157,7 @@ TabGroupViews::GetLeadingTrailingDraggedGroupViews() const {
 std::tuple<views::View*, views::View*>
 TabGroupViews::GetLeadingTrailingGroupViews(
     std::vector<raw_ptr<views::View, VectorExperimental>> children) const {
-  // Elements of |children| may be in different coordinate spaces. Canonicalize
+  // Elements of `children` may be in different coordinate spaces. Canonicalize
   // to widget space for comparison, since they will be in the same widget.
   views::View* leading_child = nullptr;
   gfx::Rect leading_child_widget_bounds;

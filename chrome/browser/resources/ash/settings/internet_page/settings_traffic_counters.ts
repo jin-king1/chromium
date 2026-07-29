@@ -18,6 +18,7 @@ import {getInstance as getAnnouncerInstance} from 'chrome://resources/ash/common
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import type {Network} from 'chrome://resources/ash/common/traffic_counters/traffic_counters_adapter.js';
 import {TrafficCountersAdapter} from 'chrome://resources/ash/common/traffic_counters/traffic_counters_adapter.js';
+import type {ManagedProperties} from 'chrome://resources/mojo/chromeos/services/network_config/public/mojom/cros_network_config.mojom-webui.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {getTemplate} from './settings_traffic_counters.html.js';
@@ -120,11 +121,12 @@ export class SettingsTrafficCountersElement extends
     };
   }
 
-  guid: string;
-  private date_: string;
-  private resetDay_: number;
+  declare managedProperties: ManagedProperties|undefined;
+  declare guid: string;
+  declare private date_: string;
+  declare private resetDay_: number;
   private trafficCountersAdapter_: TrafficCountersAdapter;
-  private value_: string;
+  declare private value_: string;
 
   constructor() {
     super();
@@ -208,7 +210,7 @@ export class SettingsTrafficCountersElement extends
     }
     let totalBytes = BigInt(0);
     for (const sourceDict of network.counters) {
-      totalBytes += BigInt(sourceDict.rxBytes) + BigInt(sourceDict.txBytes);
+      totalBytes += sourceDict.rxBytes + sourceDict.txBytes;
     }
     return getDataInfoString(totalBytes);
   }

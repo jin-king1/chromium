@@ -41,6 +41,7 @@
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/layout_provider.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/view_class_properties.h"
 
@@ -84,20 +85,17 @@ BubbleDialogModelHost::FieldType GetFieldTypeForField(
 int GetFieldTopMargin(LayoutProvider* layout_provider,
                       const BubbleDialogModelHost::FieldType& field_type,
                       const BubbleDialogModelHost::FieldType& last_field_type) {
-  DCHECK(layout_provider);
   // Menu item preceded by non-menu item should have margin
   if (field_type == BubbleDialogModelHost::FieldType::kMenuItem &&
       last_field_type == BubbleDialogModelHost::FieldType::kMenuItem) {
     return 0;
   }
-  if (field_type == BubbleDialogModelHost::FieldType::kControl &&
-      last_field_type == BubbleDialogModelHost::FieldType::kControl) {
-    // TODO(pbos): Move DISTANCE_CONTROL_LIST_VERTICAL to views::LayoutProvider
-    // and replace "12" here.
-    return 12;
-  }
+  const bool is_control_list =
+      field_type == BubbleDialogModelHost::FieldType::kControl &&
+      last_field_type == BubbleDialogModelHost::FieldType::kControl;
   return layout_provider->GetDistanceMetric(
-      DISTANCE_UNRELATED_CONTROL_VERTICAL);
+      is_control_list ? DISTANCE_CONTROL_LIST_VERTICAL
+                      : DISTANCE_UNRELATED_CONTROL_VERTICAL);
 }
 
 int GetDialogTopMargins(LayoutProvider* layout_provider,
@@ -312,7 +310,8 @@ class BubbleDialogModelHostContentsView final : public DialogModelSectionHost {
   // OnFieldAdded etc. has moved into this class.
   BubbleDialogModelHostContentsView(
       ui::DialogModelSection* contents,
-      ui::ElementIdentifier initially_focused_field_id)
+      ui::ElementIdentifier initially_focused_field_id,
+      ui::ElementIdentifier dialog_id)
       : contents_(contents),
         initially_focused_field_id_(initially_focused_field_id),
         on_field_added_subscription_(
@@ -325,6 +324,9 @@ class BubbleDialogModelHostContentsView final : public DialogModelSectionHost {
                 base::Unretained(this)))) {
     // Note that between-child spacing is manually handled using kMarginsKey.
     SetOrientation(views::BoxLayout::Orientation::kVertical);
+    if (dialog_id) {
+      SetProperty(kElementIdentifierKey, dialog_id);
+    }
 
     // Add all fields from the model.
     for (const auto& field : contents_->fields()) {
@@ -431,8 +433,18 @@ class BubbleDialogModelHostContentsView final : public DialogModelSectionHost {
         },
         model_field, GetPassKey(), checkbox.get()));
 
-    DialogModelHostField info{model_field, checkbox.get(), nullptr};
-    AddDialogModelHostField(std::move(checkbox), info);
+    // Checkbox is wrapped in a horizontal BoxLayoutView so the checkbox's
+    // clickable area is limited to the width of the label text.
+    auto container = std::make_unique<BoxLayoutView>();
+    container->SetOrientation(BoxLayout::Orientation::kHorizontal);
+    container->SetCrossAxisAlignment(BoxLayout::CrossAxisAlignment::kStart);
+    auto checkbox_ptr = checkbox.get();
+    container->AddChildView(std::move(checkbox));
+
+    // Container will be field_view and the checkbox is
+    // the focusable_view that can be interact.
+    DialogModelHostField info{model_field, container.get(), checkbox_ptr};
+    AddDialogModelHostField(std::move(container), info);
   }
   void AddOrUpdateCombobox(ui::DialogModelCombobox* model_field) {
     // TODO(pbos): Handle updating existing field.
@@ -478,12 +490,11 @@ class BubbleDialogModelHostContentsView final : public DialogModelSectionHost {
             model_field, GetPassKey()),
         model_field->label());
     item->SetImageModel(Button::STATE_NORMAL, model_field->icon());
-    // TODO(pbos): Move DISTANCE_CONTROL_LIST_VERTICAL to
-    // views::LayoutProvider and replace "12" here. See below for another "12"
-    // use that also needs to be replaced.
-    item->SetBorder(views::CreateEmptyBorder(
-        gfx::Insets::VH(12 / 2, LayoutProvider::Get()->GetDistanceMetric(
-                                    DISTANCE_BUTTON_HORIZONTAL_PADDING))));
+    const auto* const layout_provider = LayoutProvider::Get();
+    item->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(
+        layout_provider->GetDistanceMetric(DISTANCE_CONTROL_LIST_VERTICAL) / 2,
+        layout_provider->GetDistanceMetric(
+            DISTANCE_BUTTON_HORIZONTAL_PADDING))));
 
     item->SetEnabled(model_field->is_enabled());
     item->SetProperty(kElementIdentifierKey, model_field->id());
@@ -660,6 +671,7 @@ class BubbleDialogModelHostContentsView final : public DialogModelSectionHost {
 
     // Retrieve the replacements strings to create the text.
     std::vector<std::u16string> string_replacements;
+    string_replacements.reserve(replacements.size());
     for (auto replacement : replacements) {
       string_replacements.push_back(replacement.text());
     }
@@ -803,7 +815,7 @@ std::unique_ptr<DialogModelSectionHost> DialogModelSectionHost::Create(
     ui::DialogModelSection* section,
     ui::ElementIdentifier initially_focused_field_id) {
   return std::make_unique<BubbleDialogModelHostContentsView>(
-      section, initially_focused_field_id);
+      section, initially_focused_field_id, ui::ElementIdentifier());
 }
 
 BEGIN_METADATA(DialogModelSectionHost)
@@ -824,24 +836,34 @@ void BubbleDialogModelHost::ThemeChangedObserver::OnViewThemeChanged(
 
 BubbleDialogModelHost::BubbleDialogModelHost(
     std::unique_ptr<ui::DialogModel> model,
-    View* anchor_view,
+    views::BubbleAnchor anchor,
     BubbleBorder::Arrow arrow,
     bool autosize)
     : BubbleDialogModelHost(base::PassKey<BubbleDialogModelHost>(),
                             std::move(model),
-                            anchor_view,
+                            anchor,
                             arrow,
                             ui::mojom::ModalType::kNone,
                             autosize) {}
 
 BubbleDialogModelHost::BubbleDialogModelHost(
+    std::unique_ptr<ui::DialogModel> model,
+    views::View* anchor_view,
+    BubbleBorder::Arrow arrow,
+    bool autosize)
+    : BubbleDialogModelHost(std::move(model),
+                            BubbleAnchor(anchor_view),
+                            arrow,
+                            autosize) {}
+
+BubbleDialogModelHost::BubbleDialogModelHost(
     base::PassKey<BubbleDialogModelHost>,
     std::unique_ptr<ui::DialogModel> model,
-    View* anchor_view,
+    views::BubbleAnchor anchor,
     BubbleBorder::Arrow arrow,
     ui::mojom::ModalType modal_type,
     bool autosize)
-    : BubbleDialogDelegate(anchor_view,
+    : BubbleDialogDelegate(anchor,
                            arrow,
                            views::BubbleBorder::DIALOG_SHADOW,
                            autosize),
@@ -855,6 +877,7 @@ BubbleDialogModelHost::BubbleDialogModelHost(
               base::BindRepeating(&BubbleDialogModelHost::OnContentsViewChanged,
                                   base::Unretained(this)))),
       theme_observer_(this, contents_view_) {
+  SetOwnedByWidget(OwnedByWidgetPassKey());
   model_->set_host(DialogModelHost::GetPassKey(), this);
 
   // Dialog callbacks can safely refer to |model_|, they can't be called after
@@ -875,7 +898,7 @@ BubbleDialogModelHost::BubbleDialogModelHost(
   // only forward the call to DialogModel::OnWindowClosing if we haven't
   // already been closed.
   RegisterWindowClosingCallback(base::BindOnce(
-      &BubbleDialogModelHost::OnWindowClosing, base::Unretained(this)));
+      &BubbleDialogModelHost::OnWindowClosing, weak_ptr_factory_.GetWeakPtr()));
 
   int button_mask = static_cast<int>(ui::mojom::DialogButton::kNone);
   auto* ok_button = model_->ok_button(DialogModelHost::GetPassKey());
@@ -978,16 +1001,35 @@ BubbleDialogModelHost::BubbleDialogModelHost(
   // menus). This is probably too wide for the TabGroupEditorBubbleView which is
   // currently being converted.
   set_fixed_width(LayoutProvider::Get()->GetDistanceMetric(
-      anchor_view ? DISTANCE_BUBBLE_PREFERRED_WIDTH
-                  : DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH));
+      !anchor.IsNull() ? DISTANCE_BUBBLE_PREFERRED_WIDTH
+                       : DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH));
 
   if (model_->footnote_label()) {
     SetFootnoteView(BubbleDialogModelHostContentsView::CreateViewForLabel(
         *model_->footnote_label()));
   }
 
+  if (!model_->close_on_escape(DialogModelHost::GetPassKey())) {
+    set_esc_should_cancel_dialog_override(false);
+  }
+
   // Make sure we're up to date with initial contents state.
   UpdateSpacingAndMargins();
+}
+
+bool BubbleDialogModelHost::OnCloseRequested(
+    views::Widget::ClosedReason close_reason) {
+  if (close_reason == views::Widget::ClosedReason::kEscKeyPressed &&
+      !model_->close_on_escape(DialogModelHost::GetPassKey())) {
+    return false;
+  }
+  return BubbleDialogDelegate::OnCloseRequested(close_reason);
+}
+
+bool BubbleDialogModelHost::ShouldAllowKeyEventsDuringInputProtection() const {
+  return model_
+             ? !model_->enable_input_protection(DialogModelHost::GetPassKey())
+             : true;
 }
 
 BubbleDialogModelHost::~BubbleDialogModelHost() {
@@ -1002,7 +1044,7 @@ std::unique_ptr<BubbleDialogModelHost> BubbleDialogModelHost::CreateModal(
     bool autosize) {
   DCHECK_NE(modal_type, ui::mojom::ModalType::kNone);
   return std::make_unique<BubbleDialogModelHost>(
-      base::PassKey<BubbleDialogModelHost>(), std::move(model), nullptr,
+      base::PassKey<BubbleDialogModelHost>(), std::move(model), BubbleAnchor(),
       BubbleBorder::Arrow::NONE, modal_type, autosize);
 }
 
@@ -1091,7 +1133,8 @@ BubbleDialogModelHostContentsView* BubbleDialogModelHost::InitContentsView(
   auto contents_view_unique =
       std::make_unique<BubbleDialogModelHostContentsView>(
           contents,
-          model_->initially_focused_field(DialogModelHost::GetPassKey()));
+          model_->initially_focused_field(DialogModelHost::GetPassKey()),
+          model_->element_identifier(DialogModelHost::GetPassKey()));
 
   BubbleDialogModelHostContentsView* const contents_view =
       contents_view_unique.get();
@@ -1145,7 +1188,7 @@ void BubbleDialogModelHost::UpdateWindowIcon(
       model_->dark_mode_icon(DialogModelHost::GetPassKey());
   if (!dark_mode_icon.IsEmpty() &&
       color_utils::IsDark(
-          background_color().ConvertToSkColor(color_provider))) {
+          background_color().ResolveToSkColor(color_provider))) {
     SetIcon(dark_mode_icon);
     return;
   }

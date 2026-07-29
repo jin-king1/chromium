@@ -13,7 +13,8 @@
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/gpu/content_gpu_client.h"
-#include "gpu/config/gpu_preferences.h"
+#include "gpu/config/gpu_driver_bug_workarounds.h"
+#include "gpu/config/gpu_feature_info.h"
 #include "gpu/ipc/service/gpu_init.h"
 #include "media/gpu/buildflags.h"
 
@@ -25,14 +26,35 @@
 #include "base/android/jni_android.h"
 #endif
 
+#if BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)
+#include "gpu/ipc/common/ios/be_layer_hierarchy_transport.h"
+#endif
+
 namespace content {
 namespace {
 
-BASE_FEATURE(kInProcessGpuUseIOThread,
-             "InProcessGpuUseIOThread",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kInProcessGpuUseIOThread, base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace
+
+#if BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)
+class InProcessGpuThread::BELayerHierarchyTransportImpl
+    : public gpu::BELayerHierarchyTransport {
+ public:
+  BELayerHierarchyTransportImpl() {
+    gpu::BELayerHierarchyTransport::SetInstance(this);
+  }
+  ~BELayerHierarchyTransportImpl() override {
+    gpu::BELayerHierarchyTransport::SetInstance(nullptr);
+  }
+
+  void ForwardBELayerHierarchyToBrowser(
+      gpu::SurfaceHandle surface_handle,
+      xpc_object_t ipc_representation) override {
+    // Nothing to do.
+  }
+};
+#endif
 
 InProcessGpuThread::InProcessGpuThread(
     const InProcessChildThreadParams& params,
@@ -62,7 +84,12 @@ void InProcessGpuThread::Init() {
   // will not change the thread name kept in Java VM.
   base::android::AttachCurrentThreadWithName(thread_name());
   // Up the priority of the |io_thread_| on Android.
-  io_thread_type = base::ThreadType::kDisplayCritical;
+  io_thread_type = base::ThreadType::kPresentation;
+#endif
+
+#if BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_IOS_TVOS)
+  be_layer_transport_ =
+      std::make_unique<InProcessGpuThread::BELayerHierarchyTransportImpl>();
 #endif
 
   if (base::FeatureList::IsEnabled(kInProcessGpuUseIOThread)) {
@@ -76,7 +103,10 @@ void InProcessGpuThread::Init() {
                                 gpu_preferences_);
 
 #if BUILDFLAG(USE_VAAPI)
-  media::VaapiWrapper::PreSandboxInitialization();
+  gpu::GpuDriverBugWorkarounds workarounds(
+      gpu_init->gpu_feature_info().enabled_gpu_driver_bug_workarounds);
+  media::VaapiWrapper::PreSandboxInitialization(
+      /*allow_disabling_global_lock=*/false, &workarounds);
 #endif
 
   GetContentClient()->SetGpuInfo(gpu_init->gpu_info());

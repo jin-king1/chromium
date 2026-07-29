@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_GLOBAL_MEDIA_CONTROLS_CAST_DEVICE_FOOTER_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_GLOBAL_MEDIA_CONTROLS_CAST_DEVICE_FOOTER_VIEW_H_
 
+#include "base/memory/raw_ptr.h"
 #include "components/global_media_controls/public/views/media_item_ui_footer.h"
 #include "components/media_message_center/notification_theme.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -18,8 +19,7 @@ class LabelButton;
 
 // A footer view attached to MediaItemUIUpdatedView containing the casting
 // device and a stop casting button for a cast media item. This is used within
-// MediaDialogView on non-CrOS desktop platforms when the
-// media::kGlobalMediaControlsUpdatedUI flag is enabled.
+// MediaDialogView on non-CrOS desktop platforms.
 class CastDeviceFooterView : public global_media_controls::MediaItemUIFooter {
   METADATA_HEADER(CastDeviceFooterView,
                   global_media_controls::MediaItemUIFooter)

@@ -6,17 +6,24 @@
 
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/metrics/user_action_tester.h"
+#import "base/test/scoped_feature_list.h"
 #import "components/collaboration/public/messaging/messaging_backend_service.h"
 #import "components/collaboration/public/messaging/util.h"
 #import "components/collaboration/test_support/mock_collaboration_service.h"
 #import "components/collaboration/test_support/mock_messaging_backend_service.h"
+#import "components/data_sharing/public/features.h"
 #import "components/data_sharing/test_support/mock_data_sharing_service.h"
+#import "components/prefs/testing_pref_service.h"
+#import "components/saved_tab_groups/public/pref_names.h"
 #import "components/saved_tab_groups/public/saved_tab_group.h"
 #import "components/saved_tab_groups/public/types.h"
 #import "components/saved_tab_groups/test_support/fake_tab_group_sync_service.h"
 #import "components/saved_tab_groups/test_support/mock_tab_group_sync_service.h"
+#import "components/saved_tab_groups/test_support/mock_versioning_message_controller.h"
 #import "components/saved_tab_groups/test_support/saved_tab_group_test_utils.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/saved_tab_groups/model/tab_group_service.h"
+#import "ios/chrome/browser/saved_tab_groups/ui/fake_face_pile_provider.h"
 #import "ios/chrome/browser/share_kit/model/test_share_kit_service.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
@@ -25,10 +32,12 @@
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/shared/model/web_state_list/test/fake_web_state_list_delegate.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_mode_holder.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_sync_service_observer_bridge.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_groups_panel_consumer.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_groups_panel_item.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_groups_panel_mediator_delegate.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/tab_grid_toolbars_configuration.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/test/fake_tab_grid_toolbars_mediator.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -49,6 +58,7 @@ using collaboration::messaging::PersistentNotificationType;
 using collaboration::messaging::TabGroupMessageMetadata;
 
 using tab_groups::MockTabGroupSyncService;
+using tab_groups::MockVersioningMessageController;
 using tab_groups::SharingState;
 using ::testing::_;
 using ::testing::Return;
@@ -84,6 +94,7 @@ NSString* SummaryFromMessages(const std::vector<PersistentMessage>& messages) {
 }  // namespace
 
 @interface FakeTabGroupsPanelConsumer : NSObject <TabGroupsPanelConsumer>
+@property(nonatomic, readonly) TabGroupsPanelItem* outOfDateMessageItem;
 @property(nonatomic, readonly) TabGroupsPanelItem* notificationItem;
 @property(nonatomic, readonly, copy)
     NSArray<TabGroupsPanelItem*>* tabGroupItems;
@@ -95,8 +106,11 @@ NSString* SummaryFromMessages(const std::vector<PersistentMessage>& messages) {
 
 #pragma mark TabGroupsPanelConsumer
 
-- (void)populateNotificationItem:(TabGroupsPanelItem*)notificationItem
-                   tabGroupItems:(NSArray<TabGroupsPanelItem*>*)tabGroupItems {
+- (void)populateOutOfDateMessageItem:(TabGroupsPanelItem*)outOfDateMessageItem
+                    notificationItem:(TabGroupsPanelItem*)notificationItem
+                       tabGroupItems:
+                           (NSArray<TabGroupsPanelItem*>*)tabGroupItems {
+  _outOfDateMessageItem = outOfDateMessageItem;
   _notificationItem = notificationItem;
   _tabGroupItems = [tabGroupItems copy];
   _populateItemsCallCount++;
@@ -111,6 +125,35 @@ NSString* SummaryFromMessages(const std::vector<PersistentMessage>& messages) {
 
 @end
 
+@interface FakeTabGroupsPanelMediatorDelegate
+    : NSObject <TabGroupsPanelMediatorDelegate>
+@end
+
+@implementation FakeTabGroupsPanelMediatorDelegate
+
+- (void)tabGroupsPanelMediator:(TabGroupsPanelMediator*)tabGroupsPanelMediator
+           openGroupWithSyncID:(const base::Uuid&)syncID {
+}
+
+- (void)tabGroupsPanelMediator:(TabGroupsPanelMediator*)tabGroupsPanelMediator
+    showDeleteGroupConfirmationWithSyncID:(const base::Uuid)syncID
+                               sourceView:(UIView*)sourceView {
+}
+
+- (void)tabGroupsPanelMediator:(TabGroupsPanelMediator*)tabGroupsPanelMediator
+    startLeaveOrDeleteSharedGroupWithSyncID:(const base::Uuid)syncID
+                                 groupTitle:(NSString*)groupTitle
+                                  forAction:(TabGroupActionType)actionType
+                                 sourceView:(UIView*)sourceView {
+}
+
+- (id<FacePileProviding>)facePileProviderForGroupID:
+    (const std::string&)groupID {
+  return [[FakeFacePileProvider alloc] init];
+}
+
+@end
+
 class TabGroupsPanelMediatorTest : public PlatformTest {
  protected:
   TabGroupsPanelMediatorTest() : web_state_list_(&web_state_list_delegate_) {
@@ -119,13 +162,17 @@ class TabGroupsPanelMediatorTest : public PlatformTest {
     browser_ = std::make_unique<TestBrowser>(profile_.get());
     browser_list_ = BrowserListFactory::GetForProfile(profile_.get());
     browser_list_->AddBrowser(browser_.get());
-    mode_holder_ = [[TabGridModeHolder alloc] init];
-    share_kit_service_ =
-        std::make_unique<TestShareKitService>(nullptr, nullptr, nullptr);
+    mode_holder_ = [[TabGridModeHolder alloc] initWithTabGridState:nil];
+    tab_group_service_ = std::make_unique<TabGroupService>(
+        profile_.get(), &tab_group_sync_service_);
+    share_kit_service_ = std::make_unique<TestShareKitService>(
+        nullptr, nullptr, nullptr, tab_group_service_.get());
     collaboration_service_ = std::make_unique<MockCollaborationService>();
     messaging_service_ = std::make_unique<MockMessagingBackendService>();
     data_sharing_service_ = std::make_unique<
         ::testing::NiceMock<data_sharing::MockDataSharingService>>();
+    ON_CALL(tab_group_sync_service_, GetVersioningMessageController())
+        .WillByDefault(Return(&versioning_message_controller_));
   }
 
   web::WebTaskEnvironment task_environment_;
@@ -135,11 +182,13 @@ class TabGroupsPanelMediatorTest : public PlatformTest {
   FakeWebStateListDelegate web_state_list_delegate_;
   WebStateList web_state_list_;
   ::testing::NiceMock<MockTabGroupSyncService> tab_group_sync_service_;
+  std::unique_ptr<TabGroupService> tab_group_service_;
   TabGridModeHolder* mode_holder_;
   std::unique_ptr<ShareKitService> share_kit_service_;
   std::unique_ptr<MockCollaborationService> collaboration_service_;
   std::unique_ptr<MockMessagingBackendService> messaging_service_;
   std::unique_ptr<data_sharing::MockDataSharingService> data_sharing_service_;
+  MockVersioningMessageController versioning_message_controller_;
 };
 
 // Tests that the service observation starts and stops when the mediator is
@@ -266,7 +315,7 @@ TEST_F(TabGroupsPanelMediatorTest, DisabledByPolicy_DisabledToolbarsConfig) {
   EXPECT_EQ(TabGridPageTabGroups, toolbars_mutator.configuration.page);
 
   // All buttons are disabled.
-  EXPECT_FALSE(toolbars_mutator.configuration.doneButton);
+  EXPECT_FALSE(toolbars_mutator.configuration.exitTabGridButton);
 
   EXPECT_FALSE(toolbars_mutator.configuration.selectAllButton);
   EXPECT_EQ(0u, toolbars_mutator.configuration.selectedItemsCount);
@@ -278,7 +327,6 @@ TEST_F(TabGroupsPanelMediatorTest, DisabledByPolicy_DisabledToolbarsConfig) {
   EXPECT_FALSE(toolbars_mutator.configuration.newTabButton);
   EXPECT_FALSE(toolbars_mutator.configuration.searchButton);
   EXPECT_FALSE(toolbars_mutator.configuration.selectTabsButton);
-  EXPECT_FALSE(toolbars_mutator.configuration.undoButton);
   EXPECT_FALSE(toolbars_mutator.configuration.deselectAllButton);
   EXPECT_FALSE(toolbars_mutator.configuration.cancelSearchButton);
 }
@@ -310,7 +358,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   EXPECT_EQ(TabGridPageTabGroups, toolbars_mutator.configuration.page);
 
   // Done button is disabled.
-  EXPECT_FALSE(toolbars_mutator.configuration.doneButton);
+  EXPECT_FALSE(toolbars_mutator.configuration.exitTabGridButton);
 
   // All other buttons are disabled.
   EXPECT_FALSE(toolbars_mutator.configuration.selectAllButton);
@@ -320,10 +368,9 @@ TEST_F(TabGroupsPanelMediatorTest,
   EXPECT_FALSE(toolbars_mutator.configuration.addToButton);
 
   EXPECT_FALSE(toolbars_mutator.configuration.closeAllButton);
-  EXPECT_FALSE(toolbars_mutator.configuration.newTabButton);
+  EXPECT_TRUE(toolbars_mutator.configuration.newTabButton);
   EXPECT_FALSE(toolbars_mutator.configuration.searchButton);
   EXPECT_FALSE(toolbars_mutator.configuration.selectTabsButton);
-  EXPECT_FALSE(toolbars_mutator.configuration.undoButton);
   EXPECT_FALSE(toolbars_mutator.configuration.deselectAllButton);
   EXPECT_FALSE(toolbars_mutator.configuration.cancelSearchButton);
 }
@@ -361,7 +408,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   EXPECT_EQ(TabGridPageTabGroups, toolbars_mutator.configuration.page);
 
   // Done button is enabled.
-  EXPECT_TRUE(toolbars_mutator.configuration.doneButton);
+  EXPECT_TRUE(toolbars_mutator.configuration.exitTabGridButton);
 
   // All other buttons are disabled.
   EXPECT_FALSE(toolbars_mutator.configuration.selectAllButton);
@@ -371,16 +418,15 @@ TEST_F(TabGroupsPanelMediatorTest,
   EXPECT_FALSE(toolbars_mutator.configuration.addToButton);
 
   EXPECT_FALSE(toolbars_mutator.configuration.closeAllButton);
-  EXPECT_FALSE(toolbars_mutator.configuration.newTabButton);
+  EXPECT_TRUE(toolbars_mutator.configuration.newTabButton);
   EXPECT_FALSE(toolbars_mutator.configuration.searchButton);
   EXPECT_FALSE(toolbars_mutator.configuration.selectTabsButton);
-  EXPECT_FALSE(toolbars_mutator.configuration.undoButton);
   EXPECT_FALSE(toolbars_mutator.configuration.deselectAllButton);
   EXPECT_FALSE(toolbars_mutator.configuration.cancelSearchButton);
 }
 
 // Tests that setting a consumer before the service initialization doesn't
-// populate the consumer
+// populate the consumer.
 TEST_F(TabGroupsPanelMediatorTest,
        SetConsumerDoesntPopulateFromUninitializedService) {
   TabGroupsPanelMediator* mediator = [[TabGroupsPanelMediator alloc]
@@ -396,6 +442,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   // Prepare a consumer.
   FakeTabGroupsPanelConsumer* consumer =
       [[FakeTabGroupsPanelConsumer alloc] init];
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_NSEQ(consumer.tabGroupItems, nil);
   EXPECT_EQ(consumer.populateItemsCallCount, 0u);
@@ -407,6 +454,7 @@ TEST_F(TabGroupsPanelMediatorTest,
 
   mediator.consumer = consumer;
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_NSEQ(consumer.tabGroupItems, nil);
   EXPECT_EQ(consumer.populateItemsCallCount, 0u);
@@ -433,6 +481,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   // Prepare a consumer.
   FakeTabGroupsPanelConsumer* consumer =
       [[FakeTabGroupsPanelConsumer alloc] init];
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_NSEQ(consumer.tabGroupItems, nil);
   EXPECT_EQ(consumer.populateItemsCallCount, 0u);
@@ -447,6 +496,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   // Set the consumer.
   mediator.consumer = consumer;
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 1u);
   EXPECT_EQ(consumer.populateItemsCallCount, 1u);
@@ -473,6 +523,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   // Prepare a consumer.
   FakeTabGroupsPanelConsumer* consumer =
       [[FakeTabGroupsPanelConsumer alloc] init];
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_NSEQ(consumer.tabGroupItems, nil);
   EXPECT_EQ(consumer.populateItemsCallCount, 0u);
@@ -486,6 +537,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   // Set the consumer.
   mediator.consumer = consumer;
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
   EXPECT_EQ(consumer.populateItemsCallCount, 1u);
@@ -517,6 +569,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   FakeTabGroupsPanelConsumer* consumer =
       [[FakeTabGroupsPanelConsumer alloc] init];
   mediator.consumer = consumer;
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_NSEQ(consumer.tabGroupItems, nil);
   EXPECT_EQ(consumer.populateItemsCallCount, 0u);
@@ -528,6 +581,7 @@ TEST_F(TabGroupsPanelMediatorTest,
 
   observer->OnInitialized();
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 1u);
   EXPECT_EQ(consumer.populateItemsCallCount, 1u);
@@ -564,6 +618,7 @@ TEST_F(TabGroupsPanelMediatorTest, PopulatesSortedGroups) {
       .WillRepeatedly(Return(groups));
   observer->OnInitialized();
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 2u);
   EXPECT_EQ(consumer.tabGroupItems[0].savedTabGroupID, group_2.saved_guid());
@@ -597,12 +652,14 @@ TEST_F(TabGroupsPanelMediatorTest, UpdateGroup) {
   EXPECT_CALL(tab_group_sync_service_, GetAllGroups())
       .WillRepeatedly(Return(groups));
   observer->OnInitialized();
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 1u);
   EXPECT_EQ(consumer.reconfigureItemCallCount, 0u);
 
   observer->OnTabGroupUpdated(group, tab_groups::TriggerSource::REMOTE);
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 1u);
   EXPECT_EQ(consumer.reconfigureItemCallCount, 1u);
@@ -681,9 +738,9 @@ TEST_F(TabGroupsPanelMediatorTest, DeleteLocalGroup) {
   EXPECT_EQ(0, browser_->GetWebStateList()->count());
 }
 
-// Tests that `facePileViewControllerForItem` returns an UIViewController when
-// the group is shared.
-TEST_F(TabGroupsPanelMediatorTest, FacePileViewControllerForItem) {
+// Tests that `facePileProviderForItem` returns an UIView when the group is
+// shared.
+TEST_F(TabGroupsPanelMediatorTest, facePileProviderForItem) {
   auto sync_service = std::make_unique<tab_groups::FakeTabGroupSyncService>();
   TabGroupsPanelMediator* mediator = [[TabGroupsPanelMediator alloc]
       initWithTabGroupSyncService:sync_service.get()
@@ -695,6 +752,9 @@ TEST_F(TabGroupsPanelMediatorTest, FacePileViewControllerForItem) {
                     faviconLoader:nullptr
                  disabledByPolicy:NO
                       browserList:browser_list_];
+  FakeTabGroupsPanelMediatorDelegate* delegate =
+      [[FakeTabGroupsPanelMediatorDelegate alloc] init];
+  mediator.delegate = delegate;
 
   // Set a saved tab group.
   tab_groups::SavedTabGroup group = tab_groups::test::CreateTestSavedTabGroup();
@@ -705,14 +765,14 @@ TEST_F(TabGroupsPanelMediatorTest, FacePileViewControllerForItem) {
       initWithSavedTabGroupID:group.saved_guid()
                  sharingState:SharingState::kSharedAndOwned];
 
-  EXPECT_FALSE([mediator facePileViewControllerForItem:item]);
+  EXPECT_EQ(nil, [mediator facePileProviderForItem:item]);
 
   // Share the group.
   sync_service->MakeTabGroupShared(
-      group.local_group_id().value(), "collaboration",
+      group.local_group_id().value(), syncer::CollaborationId("collaboration"),
       tab_groups::TabGroupSyncService::TabGroupSharingCallback());
 
-  EXPECT_TRUE([mediator facePileViewControllerForItem:item]);
+  EXPECT_NE(nil, [mediator facePileProviderForItem:item]);
 }
 
 // Tests that a persistent message about a shared tab group that is no longer
@@ -746,6 +806,7 @@ TEST_F(TabGroupsPanelMediatorTest, DisplayNotificationItem) {
   mediator.consumer = consumer;
   EXPECT_CALL(*messaging_service_, IsInitialized())
       .WillRepeatedly(Return(true));
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
 
@@ -758,6 +819,7 @@ TEST_F(TabGroupsPanelMediatorTest, DisplayNotificationItem) {
       .WillRepeatedly(Return(std::vector<PersistentMessage>{messages}));
   observer->DisplayPersistentMessage(persistent_message);
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSNE(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
   EXPECT_EQ(consumer.notificationItem.type,
@@ -797,6 +859,7 @@ TEST_F(TabGroupsPanelMediatorTest, HideNotificationItem) {
   mediator.consumer = consumer;
   EXPECT_CALL(*messaging_service_, IsInitialized())
       .WillRepeatedly(Return(true));
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
   // Simulate the unsharing of two groups communicated by the messaging backend
@@ -812,6 +875,7 @@ TEST_F(TabGroupsPanelMediatorTest, HideNotificationItem) {
           persistent_message_1, persistent_message_2}));
   observer->DisplayPersistentMessage(persistent_message_1);
   observer->DisplayPersistentMessage(persistent_message_2);
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSNE(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
   EXPECT_EQ(consumer.notificationItem.type,
@@ -825,6 +889,7 @@ TEST_F(TabGroupsPanelMediatorTest, HideNotificationItem) {
       .WillRepeatedly(Return(messages));
   observer->HidePersistentMessage(persistent_message_1);
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSNE(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
   EXPECT_EQ(consumer.notificationItem.type,
@@ -864,6 +929,7 @@ TEST_F(TabGroupsPanelMediatorTest, DisplayNotificationItemForTwoGroups) {
   mediator.consumer = consumer;
   EXPECT_CALL(*messaging_service_, IsInitialized())
       .WillRepeatedly(Return(true));
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
 
@@ -880,6 +946,7 @@ TEST_F(TabGroupsPanelMediatorTest, DisplayNotificationItemForTwoGroups) {
   observer->DisplayPersistentMessage(persistent_message_1);
   observer->DisplayPersistentMessage(persistent_message_2);
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSNE(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
   EXPECT_EQ(consumer.notificationItem.type,
@@ -919,6 +986,7 @@ TEST_F(TabGroupsPanelMediatorTest, DisplayAggregateNotificationItem) {
   mediator.consumer = consumer;
   EXPECT_CALL(*messaging_service_, IsInitialized())
       .WillRepeatedly(Return(true));
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
 
@@ -938,6 +1006,7 @@ TEST_F(TabGroupsPanelMediatorTest, DisplayAggregateNotificationItem) {
   observer->DisplayPersistentMessage(persistent_message_2);
   observer->DisplayPersistentMessage(persistent_message_3);
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSNE(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
   EXPECT_EQ(consumer.notificationItem.type,
@@ -978,6 +1047,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   mediator.consumer = consumer;
   EXPECT_CALL(*messaging_service_, IsInitialized())
       .WillRepeatedly(Return(true));
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSEQ(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
 
@@ -996,6 +1066,7 @@ TEST_F(TabGroupsPanelMediatorTest,
   observer->DisplayPersistentMessage(persistent_message_2);
   observer->DisplayPersistentMessage(persistent_message_3);
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSNE(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
   EXPECT_EQ(consumer.notificationItem.type,
@@ -1011,10 +1082,55 @@ TEST_F(TabGroupsPanelMediatorTest,
       .WillRepeatedly(Return(messages));
   observer->HidePersistentMessage(persistent_message_2);
 
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
   EXPECT_NSNE(consumer.notificationItem, nil);
   EXPECT_EQ(consumer.tabGroupItems.count, 0u);
   EXPECT_EQ(consumer.notificationItem.type,
             TabGroupsPanelItemType::kNotification);
   EXPECT_NSEQ(consumer.notificationItem.notificationText,
               SummaryFromMessages(messages));
+}
+
+// Tests that the out-of-date message is pushed to the consumer when the
+// versioning message controller requires it.
+TEST_F(TabGroupsPanelMediatorTest, OutOfDateMessageWhenShouldShow) {
+  // Set up the mediator.
+  tab_groups::TabGroupSyncService::Observer* observer = nullptr;
+  EXPECT_CALL(tab_group_sync_service_, AddObserver(_))
+      .WillOnce(SaveArg<0>(&observer));
+  TabGroupsPanelMediator* mediator = [[TabGroupsPanelMediator alloc]
+      initWithTabGroupSyncService:&tab_group_sync_service_
+                  shareKitService:share_kit_service_.get()
+             collaborationService:collaboration_service_.get()
+                 messagingService:messaging_service_.get()
+               dataSharingService:data_sharing_service_.get()
+              regularWebStateList:&web_state_list_
+                    faviconLoader:nullptr
+                 disabledByPolicy:NO
+                      browserList:browser_list_];
+  EXPECT_NE(observer, nullptr);
+  // Prepare a consumer.
+  FakeTabGroupsPanelConsumer* consumer =
+      [[FakeTabGroupsPanelConsumer alloc] init];
+  EXPECT_NSEQ(consumer.outOfDateMessageItem, nil);
+  EXPECT_NSEQ(consumer.notificationItem, nil);
+  EXPECT_NSEQ(consumer.tabGroupItems, nil);
+  EXPECT_EQ(consumer.populateItemsCallCount, 0u);
+  // Set no saved tab group.
+  std::vector<tab_groups::SavedTabGroup> groups = {};
+  EXPECT_CALL(tab_group_sync_service_, GetAllGroups())
+      .WillRepeatedly(Return(groups));
+  // Set the consumer.
+  mediator.consumer = consumer;
+  // Configure the VersioningMessageController to require an out0-of-date
+  // message.
+  EXPECT_CALL(versioning_message_controller_, ShouldShowMessageUi(_))
+      .WillRepeatedly(Return(true));
+
+  // Initialize the service.
+  observer->OnInitialized();
+
+  EXPECT_NSNE(consumer.outOfDateMessageItem, nil);
+  EXPECT_NSEQ(consumer.notificationItem, nil);
+  EXPECT_EQ(consumer.tabGroupItems.count, 0u);
 }

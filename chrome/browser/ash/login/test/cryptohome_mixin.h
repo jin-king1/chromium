@@ -5,11 +5,9 @@
 #ifndef CHROME_BROWSER_ASH_LOGIN_TEST_CRYPTOHOME_MIXIN_H_
 #define CHROME_BROWSER_ASH_LOGIN_TEST_CRYPTOHOME_MIXIN_H_
 
-#include <queue>
 #include <string>
 #include <utility>
 
-#include "base/gtest_prod_util.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chromeos/ash/components/dbus/cryptohome/rpc.pb.h"
 #include "chromeos/ash/components/dbus/userdataauth/fake_userdataauth_client.h"
@@ -50,6 +48,8 @@ class CryptohomeMixin : public InProcessBrowserTestMixin,
   void SetPinLocked(const AccountId& user, bool locked);
   void SetPinType(const AccountId& user, bool legacy);
   bool HasPinFactor(const AccountId& user);
+  bool HasLocalPasswordFactor(const AccountId& user);
+  bool HasGaiaPasswordFactor(const AccountId& user);
   void AddRecoveryFactor(const AccountId& user);
   bool HasRecoveryFactor(const AccountId& user);
 

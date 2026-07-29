@@ -18,7 +18,7 @@
 #include "third_party/blink/renderer/platform/fonts/font_fallback_priority.h"
 #include "third_party/blink/renderer/platform/fonts/font_test_utilities.h"
 #include "third_party/blink/renderer/platform/fonts/font_variant_emoji.h"
-#include "third_party/blink/renderer/platform/fonts/shaping/shape_result_inline_headers.h"
+#include "third_party/blink/renderer/platform/fonts/shaping/shape_result_run.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_spacing.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_test_info.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_view.h"
@@ -33,7 +33,7 @@
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
@@ -98,7 +98,10 @@ String CreateStringOf(UChar ch, unsigned length) {
 
 class HarfBuzzShaperTest : public FontTestBase {
  protected:
-  void SetUp() override { font_description.SetComputedSize(12.0); }
+  void SetUp() override {
+    FontTestBase::SetUp();
+    font_description.SetComputedSize(12.0);
+  }
 
   void TearDown() override {}
 
@@ -169,22 +172,13 @@ class HarfBuzzShaperTest : public FontTestBase {
   String GetShapedFontFamilyNameForEmojiVS(Font& font, String text) {
     DCHECK(text.length() == 1 ||
            (text.length() == 2 &&
-            (text.EndsWith(u"\ufe0e") || text.EndsWith(u"\ufe0f"))));
+            (text.ends_with(u"\ufe0e") || text.ends_with(u"\ufe0f"))));
     HeapVector<ShapeResult::RunFontData> run_font_data;
     HarfBuzzShaper shaper(text);
     const ShapeResult* result = shaper.Shape(&font, TextDirection::kLtr);
     result->GetRunFontData(&run_font_data);
     EXPECT_EQ(run_font_data.size(), 1u);
     return run_font_data[0].font_data_->PlatformData().FontFamilyName();
-  }
-
-  StringView MaybeStripFontationsSuffix(const String& font_name) {
-    wtf_size_t found_index = font_name.ReverseFind(" (Fontations)");
-    if (found_index != WTF::kNotFound) {
-      return StringView(font_name, 0, found_index);
-    } else {
-      return font_name;
-    }
   }
 
   const ShapeResult* SplitRun(ShapeResult* shape_result, unsigned offset) {
@@ -204,7 +198,6 @@ class HarfBuzzShaperTest : public FontTestBase {
     return result;
   }
 
-  FontCachePurgePreventer font_cache_purge_preventer;
   FontDescription font_description;
   unsigned start_index_ = 0;
   unsigned num_characters_ = 0;
@@ -482,13 +475,13 @@ TEST_F(HarfBuzzShaperTest, ShapeLatinSegment) {
   EXPECT_EQ(11u, start_index_);
   EXPECT_EQ(1u, num_characters_);
 
-  HarfBuzzShaper shaper2(string.Substring(0, 6));
+  HarfBuzzShaper shaper2(string.substr(0, 6));
   const ShapeResult* first_reference = shaper2.Shape(font, direction);
 
-  HarfBuzzShaper shaper3(string.Substring(6, 5));
+  HarfBuzzShaper shaper3(string.substr(6, 5));
   const ShapeResult* second_reference = shaper3.Shape(font, direction);
 
-  HarfBuzzShaper shaper4(string.Substring(11, 1));
+  HarfBuzzShaper shaper4(string.substr(11, 1));
   const ShapeResult* third_reference = shaper4.Shape(font, direction);
 
   // Width of each segment should be the same when shaped using start and end
@@ -774,14 +767,14 @@ TEST_P(ShapeParameterTest, MaxGlyphsClusterDevanagari) {
 }
 
 TEST_P(ShapeParameterTest, ZeroWidthSpace) {
-  UChar string[] = {kZeroWidthSpaceCharacter,
-                    kZeroWidthSpaceCharacter,
+  UChar string[] = {uchar::kZeroWidthSpace,
+                    uchar::kZeroWidthSpace,
                     0x0627,
                     0x0631,
                     0x062F,
                     0x0648,
-                    kZeroWidthSpaceCharacter,
-                    kZeroWidthSpaceCharacter};
+                    uchar::kZeroWidthSpace,
+                    uchar::kZeroWidthSpace};
   HarfBuzzShaper shaper{String(base::span(string))};
   const ShapeResult* result = ShapeWithParameter(&shaper);
   EXPECT_EQ(0u, result->StartIndex());
@@ -792,6 +785,9 @@ TEST_P(ShapeParameterTest, ZeroWidthSpace) {
 }
 
 TEST_F(HarfBuzzShaperTest, IdeographicSpace) {
+  // Noto Sans Mongolian through version 3.002 has U+3001 but not U+3000.
+  // Attempt to avoid this font by falling back to a Japanese font instead.
+  font_description.SetLocale(LayoutLocale::Get(AtomicString("ja")));
   Font* font = MakeGarbageCollected<Font>(font_description);
 
   String string(
@@ -806,9 +802,6 @@ TEST_F(HarfBuzzShaperTest, IdeographicSpace) {
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)
 TEST_F(HarfBuzzShaperTest, SystemEmojiVS15) {
-  ScopedFontVariationSequencesForTest scoped_feature_vs(true);
-  ScopedSystemFallbackEmojiVSSupportForTest scoped_feature_system_emoji_vs(
-      true);
 
   Font* mono_font = CreateNotoEmoji();
   Font* color_font = CreateNotoColorEmoji();
@@ -820,25 +813,20 @@ TEST_F(HarfBuzzShaperTest, SystemEmojiVS15) {
       u"\u2614"
       u"\ufe0e");
   for (String text : {text_default, emoji_default}) {
-    EXPECT_EQ(MaybeStripFontationsSuffix(
-                  GetShapedFontFamilyNameForEmojiVS(*mono_font, text)),
-              String(kNotoEmojiFontName));
+    EXPECT_EQ(GetShapedFontFamilyNameForEmojiVS(*mono_font, text),
+              StringView(kNotoEmojiFontName)) << text;
     const char* system_mono_font_name = kSystemMonoEmojiFont;
 #if BUILDFLAG(IS_MAC)
     if (text == text_default) {
       system_mono_font_name = kSystemMonoTextDefaultEmojiFont;
     }
 #endif
-    EXPECT_EQ(MaybeStripFontationsSuffix(
-                  GetShapedFontFamilyNameForEmojiVS(*color_font, text)),
-              String(system_mono_font_name));
+    EXPECT_EQ(GetShapedFontFamilyNameForEmojiVS(*color_font, text),
+              StringView(system_mono_font_name)) << text;
   }
 }
 
 TEST_F(HarfBuzzShaperTest, SystemEmojiVS16) {
-  ScopedFontVariationSequencesForTest scoped_feature_vs(true);
-  ScopedSystemFallbackEmojiVSSupportForTest scoped_feature_system_emoji_vs(
-      true);
 
   Font* mono_font = CreateNotoEmoji();
   Font* color_font = CreateNotoColorEmoji();
@@ -850,12 +838,10 @@ TEST_F(HarfBuzzShaperTest, SystemEmojiVS16) {
       u"\u2614"
       u"\ufe0f");
   for (String text : {text_default, emoji_default}) {
-    EXPECT_EQ(MaybeStripFontationsSuffix(
-                  GetShapedFontFamilyNameForEmojiVS(*mono_font, text)),
-              kSystemColorEmojiFont);
-    EXPECT_EQ(MaybeStripFontationsSuffix(
-                  GetShapedFontFamilyNameForEmojiVS(*color_font, text)),
-              kNotoColorEmojiFontName);
+    EXPECT_EQ(GetShapedFontFamilyNameForEmojiVS(*mono_font, text),
+              StringView(kSystemColorEmojiFont)) << text;
+    EXPECT_EQ(GetShapedFontFamilyNameForEmojiVS(*color_font, text),
+              StringView(kNotoColorEmojiFontName)) << text;
   }
 }
 
@@ -871,10 +857,6 @@ INSTANTIATE_TEST_SUITE_P(HarfBuzzShaperTest,
                          testing::ValuesIn(variant_emoji_values));
 
 TEST_P(FontVariantEmojiTest, FontVariantEmojiSystemFallback) {
-  ScopedFontVariationSequencesForTest scoped_feature_vs(true);
-  ScopedSystemFallbackEmojiVSSupportForTest scoped_feature_system_emoji_vs(
-      true);
-  ScopedFontVariantEmojiForTest scoped_feature_variant_emoji(true);
 
   const FontVariantEmoji variant_emoji = GetParam();
 
@@ -903,20 +885,14 @@ TEST_P(FontVariantEmojiTest, FontVariantEmojiSystemFallback) {
     }
 #endif
 
-    EXPECT_EQ(MaybeStripFontationsSuffix(
-                  GetShapedFontFamilyNameForEmojiVS(*mono_font, text)),
-              String(expected_name_for_mono_requested_font));
-    EXPECT_EQ(MaybeStripFontationsSuffix(
-                  GetShapedFontFamilyNameForEmojiVS(*color_font, text)),
-              String(expected_name_for_color_requested_font));
+    EXPECT_EQ(GetShapedFontFamilyNameForEmojiVS(*mono_font, text),
+              StringView(expected_name_for_mono_requested_font));
+    EXPECT_EQ(GetShapedFontFamilyNameForEmojiVS(*color_font, text),
+              StringView(expected_name_for_color_requested_font));
   }
 }
 
 TEST_F(HarfBuzzShaperTest, VSOverrideFontVariantEmoji) {
-  ScopedFontVariationSequencesForTest scoped_feature_vs(true);
-  ScopedSystemFallbackEmojiVSSupportForTest scoped_feature_system_emoji_vs(
-      true);
-  ScopedFontVariantEmojiForTest scoped_feature_variant_emoji(true);
 
   String text(u"\u2603\u2614\ufe0e\u2603\ufe0f");
   Font* font = blink::test::CreateTestFont(
@@ -928,22 +904,15 @@ TEST_F(HarfBuzzShaperTest, VSOverrideFontVariantEmoji) {
   const ShapeResult* result = shaper.Shape(font, TextDirection::kLtr);
   result->GetRunFontData(&run_font_data);
   EXPECT_EQ(run_font_data.size(), 3u);
-  EXPECT_EQ(MaybeStripFontationsSuffix(
-                run_font_data[0].font_data_->PlatformData().FontFamilyName()),
-            kSystemColorEmojiFont);
-  EXPECT_EQ(MaybeStripFontationsSuffix(
-                run_font_data[1].font_data_->PlatformData().FontFamilyName()),
-            kSystemMonoEmojiFont);
-  EXPECT_EQ(MaybeStripFontationsSuffix(
-                run_font_data[2].font_data_->PlatformData().FontFamilyName()),
-            kSystemColorEmojiFont);
+  EXPECT_EQ(run_font_data[0].font_data_->PlatformData().FontFamilyName(),
+            StringView(kSystemColorEmojiFont));
+  EXPECT_EQ(run_font_data[1].font_data_->PlatformData().FontFamilyName(),
+            StringView(kSystemMonoEmojiFont));
+  EXPECT_EQ(run_font_data[2].font_data_->PlatformData().FontFamilyName(),
+            StringView(kSystemColorEmojiFont));
 }
 
 TEST_F(HarfBuzzShaperTest, FontVariantEmojiTextSystemFallback) {
-  ScopedFontVariationSequencesForTest scoped_feature_vs(true);
-  ScopedSystemFallbackEmojiVSSupportForTest scoped_feature_system_emoji_vs(
-      true);
-  ScopedFontVariantEmojiForTest scoped_feature_variant_emoji(true);
 #if BUILDFLAG(IS_MAC)
   if (base::mac::MacOSVersion() < 13'00'00) {
     GTEST_SKIP();
@@ -954,9 +923,8 @@ TEST_F(HarfBuzzShaperTest, FontVariantEmojiTextSystemFallback) {
 #endif
   String text(u"\u26CE");
   Font* color_font = CreateNotoColorEmoji(FontVariantEmoji::kTextVariantEmoji);
-  EXPECT_EQ(MaybeStripFontationsSuffix(
-                GetShapedFontFamilyNameForEmojiVS(*color_font, text)),
-            mono_font_name);
+  EXPECT_EQ(GetShapedFontFamilyNameForEmojiVS(*color_font, text),
+            StringView(mono_font_name));
 }
 
 #endif
@@ -969,9 +937,9 @@ TEST_F(HarfBuzzShaperTest, NegativeLetterSpacing) {
   ShapeResult* result = shaper.Shape(font, TextDirection::kLtr);
   float width = result->Width();
 
-  ShapeResultSpacing<String> spacing(string);
+  ShapeResultSpacing spacing(string);
   FontDescription font_description;
-  font_description.SetLetterSpacing(-5);
+  font_description.SetLetterSpacing(Length::Fixed(-5));
   spacing.SetSpacing(font_description);
   result->ApplySpacing(spacing);
 
@@ -986,9 +954,9 @@ TEST_F(HarfBuzzShaperTest, NegativeLetterSpacingTo0) {
   ShapeResult* result = shaper.Shape(font, TextDirection::kLtr);
   float char_width = result->Width() / string.length();
 
-  ShapeResultSpacing<String> spacing(string);
+  ShapeResultSpacing spacing(string);
   FontDescription font_description;
-  font_description.SetLetterSpacing(-char_width);
+  font_description.SetLetterSpacing(Length::Fixed(-char_width));
   spacing.SetSpacing(font_description);
   result->ApplySpacing(spacing);
 
@@ -1003,9 +971,9 @@ TEST_F(HarfBuzzShaperTest, NegativeLetterSpacingToNegative) {
   ShapeResult* result = shaper.Shape(font, TextDirection::kLtr);
   float char_width = result->Width() / string.length();
 
-  ShapeResultSpacing<String> spacing(string);
+  ShapeResultSpacing spacing(string);
   FontDescription font_description;
-  font_description.SetLetterSpacing(-2 * char_width);
+  font_description.SetLetterSpacing(Length::Fixed(-2 * char_width));
   spacing.SetSpacing(font_description);
   result->ApplySpacing(spacing);
 
@@ -1059,10 +1027,37 @@ TEST_P(GlyphDataRangeTest, Data) {
 
   const auto& run = TestInfo(result)->RunInfoForTesting(data.run_index);
   auto glyphs = run.FindGlyphDataRange(data.start_offset, data.end_offset);
-  unsigned start_glyph = std::distance(run.glyph_data_.begin(), glyphs.begin);
+  unsigned start_glyph =
+      CheckedDistance(run.glyph_data_.begin(), glyphs.begin());
   EXPECT_EQ(data.start_glyph, start_glyph);
-  unsigned end_glyph = std::distance(run.glyph_data_.begin(), glyphs.end);
+  unsigned end_glyph = CheckedDistance(run.glyph_data_.begin(), glyphs.end());
   EXPECT_EQ(data.end_glyph, end_glyph);
+}
+
+TEST_F(HarfBuzzShaperTest, FindGlyphDataRangeEmptyKeepsRun) {
+  Font* font = MakeGarbageCollected<Font>(font_description);
+
+  // LTR: a character range past the last glyph exercises the forward path.
+  {
+    HarfBuzzShaper shaper(String("abc"));
+    const ShapeResult* result = shaper.Shape(font, TextDirection::kLtr);
+    const auto& run = TestInfo(result)->RunInfoForTesting(0);
+    GlyphDataRange empty = run.FindGlyphDataRange(100, 101);
+    EXPECT_EQ(empty.size(), 0u);
+    EXPECT_EQ(empty.GetRun(), &run);
+  }
+
+  // RTL: the two code points form one cluster (both glyphs at character index
+  // 0), so a range starting at character index 1 matches no glyph and exercises
+  // the reverse path.
+  {
+    HarfBuzzShaper shaper(String(u"\u05E9\u05B0"));
+    const ShapeResult* result = shaper.Shape(font, TextDirection::kRtl);
+    const auto& run = TestInfo(result)->RunInfoForTesting(0);
+    GlyphDataRange empty = run.FindGlyphDataRange(1, 2);
+    EXPECT_EQ(empty.size(), 0u);
+    EXPECT_EQ(empty.GetRun(), &run);
+  }
 }
 
 static struct OffsetForPositionTestData {
@@ -1121,22 +1116,18 @@ TEST_P(OffsetForPositionTest, Data) {
   Font* ahem = CreateAhem(10);
   const ShapeResult* result =
       SplitRun(shaper.Shape(ahem, TextDirection::kLtr), 2);
-  EXPECT_EQ(data.offset_ltr,
-            result->OffsetForPosition(data.position, BreakGlyphsOption(false)));
+  EXPECT_EQ(data.offset_ltr, result->OffsetForPosition(data.position));
   EXPECT_EQ(data.hit_test_ltr,
-            result->CaretOffsetForHitTest(data.position, string,
-                                          BreakGlyphsOption(false)));
+            result->CaretOffsetForHitTest(data.position, string));
   EXPECT_EQ(data.fit_ltr_ltr,
             result->OffsetToFit(data.position, TextDirection::kLtr));
   EXPECT_EQ(data.fit_ltr_rtl,
             result->OffsetToFit(data.position, TextDirection::kRtl));
 
   result = SplitRun(shaper.Shape(ahem, TextDirection::kRtl), 3);
-  EXPECT_EQ(data.offset_rtl,
-            result->OffsetForPosition(data.position, BreakGlyphsOption(false)));
+  EXPECT_EQ(data.offset_rtl, result->OffsetForPosition(data.position));
   EXPECT_EQ(data.hit_test_rtl,
-            result->CaretOffsetForHitTest(data.position, string,
-                                          BreakGlyphsOption(false)));
+            result->CaretOffsetForHitTest(data.position, string));
   EXPECT_EQ(data.fit_rtl_ltr,
             result->OffsetToFit(data.position, TextDirection::kLtr));
   EXPECT_EQ(data.fit_rtl_rtl,
@@ -1185,20 +1176,7 @@ TEST_F(HarfBuzzShaperTest, EmojiZWJSequence) {
   shaper.Shape(font, direction);
 }
 
-// A Value-Parameterized Test class to test OffsetForPosition() with
-// |include_partial_glyphs| parameter.
-class IncludePartialGlyphsTest
-    : public HarfBuzzShaperTest,
-      public ::testing::WithParamInterface<IncludePartialGlyphsOption> {};
-
-INSTANTIATE_TEST_SUITE_P(
-    HarfBuzzShaperTest,
-    IncludePartialGlyphsTest,
-    ::testing::Values(IncludePartialGlyphsOption::kOnlyFullGlyphs,
-                      IncludePartialGlyphsOption::kIncludePartialGlyphs));
-
-TEST_P(IncludePartialGlyphsTest,
-       OffsetForPositionMatchesPositionForOffsetLatin) {
+TEST_F(HarfBuzzShaperTest, CaretOffsetForHitTestMatchesPositionForOffsetLatin) {
   Font* font = MakeGarbageCollected<Font>(font_description);
 
   String string = To16Bit("Hello World!");
@@ -1207,40 +1185,36 @@ TEST_P(IncludePartialGlyphsTest,
   HarfBuzzShaper shaper(string);
   const ShapeResult* result = shaper.Shape(font, direction);
 
-  IncludePartialGlyphsOption partial = GetParam();
-  EXPECT_EQ(0u, result->OffsetForPosition(result->PositionForOffset(0), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(1u, result->OffsetForPosition(result->PositionForOffset(1), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(2u, result->OffsetForPosition(result->PositionForOffset(2), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(3u, result->OffsetForPosition(result->PositionForOffset(3), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(4u, result->OffsetForPosition(result->PositionForOffset(4), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(5u, result->OffsetForPosition(result->PositionForOffset(5), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(6u, result->OffsetForPosition(result->PositionForOffset(6), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(7u, result->OffsetForPosition(result->PositionForOffset(7), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(8u, result->OffsetForPosition(result->PositionForOffset(8), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(9u, result->OffsetForPosition(result->PositionForOffset(9), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(10u,
-            result->OffsetForPosition(result->PositionForOffset(10), string,
-                                      partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(11u,
-            result->OffsetForPosition(result->PositionForOffset(11), string,
-                                      partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(12u,
-            result->OffsetForPosition(result->PositionForOffset(12), string,
-                                      partial, BreakGlyphsOption(false)));
+  EXPECT_EQ(
+      0u, result->CaretOffsetForHitTest(result->PositionForOffset(0), string));
+  EXPECT_EQ(
+      1u, result->CaretOffsetForHitTest(result->PositionForOffset(1), string));
+  EXPECT_EQ(
+      2u, result->CaretOffsetForHitTest(result->PositionForOffset(2), string));
+  EXPECT_EQ(
+      3u, result->CaretOffsetForHitTest(result->PositionForOffset(3), string));
+  EXPECT_EQ(
+      4u, result->CaretOffsetForHitTest(result->PositionForOffset(4), string));
+  EXPECT_EQ(
+      5u, result->CaretOffsetForHitTest(result->PositionForOffset(5), string));
+  EXPECT_EQ(
+      6u, result->CaretOffsetForHitTest(result->PositionForOffset(6), string));
+  EXPECT_EQ(
+      7u, result->CaretOffsetForHitTest(result->PositionForOffset(7), string));
+  EXPECT_EQ(
+      8u, result->CaretOffsetForHitTest(result->PositionForOffset(8), string));
+  EXPECT_EQ(
+      9u, result->CaretOffsetForHitTest(result->PositionForOffset(9), string));
+  EXPECT_EQ(10u, result->CaretOffsetForHitTest(result->PositionForOffset(10),
+                                               string));
+  EXPECT_EQ(11u, result->CaretOffsetForHitTest(result->PositionForOffset(11),
+                                               string));
+  EXPECT_EQ(12u, result->CaretOffsetForHitTest(result->PositionForOffset(12),
+                                               string));
 }
 
-TEST_P(IncludePartialGlyphsTest,
-       OffsetForPositionMatchesPositionForOffsetArabic) {
+TEST_F(HarfBuzzShaperTest,
+       CaretOffsetForHitTestMatchesPositionForOffsetArabic) {
   Font* font = MakeGarbageCollected<Font>(font_description);
 
   UChar arabic_string[] = {0x628, 0x64A, 0x629};
@@ -1250,19 +1224,17 @@ TEST_P(IncludePartialGlyphsTest,
   HarfBuzzShaper shaper(string);
   const ShapeResult* result = shaper.Shape(font, direction);
 
-  IncludePartialGlyphsOption partial = GetParam();
-  EXPECT_EQ(0u, result->OffsetForPosition(result->PositionForOffset(0), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(1u, result->OffsetForPosition(result->PositionForOffset(1), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(2u, result->OffsetForPosition(result->PositionForOffset(2), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(3u, result->OffsetForPosition(result->PositionForOffset(3), string,
-                                          partial, BreakGlyphsOption(false)));
+  EXPECT_EQ(
+      0u, result->CaretOffsetForHitTest(result->PositionForOffset(0), string));
+  EXPECT_EQ(
+      1u, result->CaretOffsetForHitTest(result->PositionForOffset(1), string));
+  EXPECT_EQ(
+      2u, result->CaretOffsetForHitTest(result->PositionForOffset(2), string));
+  EXPECT_EQ(
+      3u, result->CaretOffsetForHitTest(result->PositionForOffset(3), string));
 }
 
-TEST_P(IncludePartialGlyphsTest,
-       OffsetForPositionMatchesPositionForOffsetMixed) {
+TEST_F(HarfBuzzShaperTest, CaretOffsetForHitTestMatchesPositionForOffsetMixed) {
   Font* font = MakeGarbageCollected<Font>(font_description);
 
   UChar mixed_string[] = {0x628, 0x64A, 0x629, 0xE20, 0x65E5, 0x62};
@@ -1270,21 +1242,20 @@ TEST_P(IncludePartialGlyphsTest,
   HarfBuzzShaper shaper(string);
   const ShapeResult* result = shaper.Shape(font, TextDirection::kLtr);
 
-  IncludePartialGlyphsOption partial = GetParam();
-  EXPECT_EQ(0u, result->OffsetForPosition(result->PositionForOffset(0), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(1u, result->OffsetForPosition(result->PositionForOffset(1), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(2u, result->OffsetForPosition(result->PositionForOffset(2), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(3u, result->OffsetForPosition(result->PositionForOffset(3), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(4u, result->OffsetForPosition(result->PositionForOffset(4), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(5u, result->OffsetForPosition(result->PositionForOffset(5), string,
-                                          partial, BreakGlyphsOption(false)));
-  EXPECT_EQ(6u, result->OffsetForPosition(result->PositionForOffset(6), string,
-                                          partial, BreakGlyphsOption(false)));
+  EXPECT_EQ(
+      0u, result->CaretOffsetForHitTest(result->PositionForOffset(0), string));
+  EXPECT_EQ(
+      1u, result->CaretOffsetForHitTest(result->PositionForOffset(1), string));
+  EXPECT_EQ(
+      2u, result->CaretOffsetForHitTest(result->PositionForOffset(2), string));
+  EXPECT_EQ(
+      3u, result->CaretOffsetForHitTest(result->PositionForOffset(3), string));
+  EXPECT_EQ(
+      4u, result->CaretOffsetForHitTest(result->PositionForOffset(4), string));
+  EXPECT_EQ(
+      5u, result->CaretOffsetForHitTest(result->PositionForOffset(5), string));
+  EXPECT_EQ(
+      6u, result->CaretOffsetForHitTest(result->PositionForOffset(6), string));
 }
 
 TEST_F(HarfBuzzShaperTest, CachedOffsetPositionMappingForOffsetLatin) {
@@ -1310,6 +1281,69 @@ TEST_F(HarfBuzzShaperTest, CachedOffsetPositionMappingForOffsetLatin) {
   EXPECT_EQ(10u, sr->CachedOffsetForPosition(sr->CachedPositionForOffset(10)));
   EXPECT_EQ(11u, sr->CachedOffsetForPosition(sr->CachedPositionForOffset(11)));
   EXPECT_EQ(12u, sr->CachedOffsetForPosition(sr->CachedPositionForOffset(12)));
+}
+
+TEST_F(HarfBuzzShaperTest, CachedOffsetPositionMappingConstantAdvance) {
+  Font* font = MakeGarbageCollected<Font>(font_description);
+
+  String string = To16Bit("XXXXXXXXXXXX");  // 12 identical glyphs.
+  const unsigned length = string.length();
+  TextDirection direction = TextDirection::kLtr;
+
+  HarfBuzzShaper shaper(string);
+  const ShapeResult* sr = shaper.Shape(font, direction);
+  sr->EnsurePositionData();
+
+  // offset -> position -> offset must round-trip for every offset.
+  for (unsigned i = 0; i <= length; ++i) {
+    EXPECT_EQ(i, sr->CachedOffsetForPosition(sr->CachedPositionForOffset(i)))
+        << "offset " << i;
+  }
+
+  // Positions form a strictly increasing ladder starting at 0.
+  EXPECT_EQ(LayoutUnit(), sr->CachedPositionForOffset(0));
+  LayoutUnit previous = sr->CachedPositionForOffset(0);
+  for (unsigned i = 1; i <= length; ++i) {
+    const LayoutUnit position = sr->CachedPositionForOffset(i);
+    EXPECT_GT(position, previous) << "offset " << i;
+    previous = position;
+  }
+
+  // Every character boundary in a constant-advance run is safe to break.
+  for (unsigned i = 0; i < length; ++i) {
+    EXPECT_EQ(i, sr->CachedNextSafeToBreakOffset(i)) << "next " << i;
+    EXPECT_EQ(i, sr->CachedPreviousSafeToBreakOffset(i)) << "previous " << i;
+  }
+}
+
+TEST_F(HarfBuzzShaperTest, CachedPositionForOffsetLigatureNotMonospace) {
+  FontDescription::VariantLigatures ligatures;
+  ligatures.common = FontDescription::kEnabledLigaturesState;
+
+  // MEgalopolis Extra forms an "ffi" ligature (3 characters -> 1 glyph).
+  Font* font = blink::test::CreateTestFont(
+      AtomicString("MEgalopolis"),
+      blink::test::PlatformTestDataPath(
+          "third_party/MEgalopolis/MEgalopolisExtra.woff"),
+      16, &ligatures);
+
+  String string = To16Bit("ffi");
+  HarfBuzzShaper shaper(string);
+  const ShapeResult* sr = shaper.Shape(font, TextDirection::kLtr);
+  ASSERT_EQ(3u, sr->NumCharacters());
+  sr->EnsurePositionData();
+
+  // Offsets 1 and 2 are inside the ligature, so they share the cluster's start
+  // position (0), not `advance * 1` / `advance * 2`.
+  EXPECT_EQ(LayoutUnit(), sr->CachedPositionForOffset(0));
+  EXPECT_EQ(LayoutUnit(), sr->CachedPositionForOffset(1));
+  EXPECT_EQ(LayoutUnit(), sr->CachedPositionForOffset(2));
+  EXPECT_GT(sr->CachedPositionForOffset(3), LayoutUnit());
+
+  // The interior offsets are not safe to break; the next safe break is the end
+  // of the ligature (offset 3).
+  EXPECT_EQ(3u, sr->CachedNextSafeToBreakOffset(1));
+  EXPECT_EQ(3u, sr->CachedNextSafeToBreakOffset(2));
 }
 
 TEST_F(HarfBuzzShaperTest, CachedOffsetPositionMappingArabic) {
@@ -2166,68 +2200,6 @@ TEST_F(HarfBuzzShaperTest, ShapeVerticalWithSubpixelPositionIsRounded) {
   }
 }
 
-// Broken on Apple platforms: https://crbug.com/1194323
-#if BUILDFLAG(IS_APPLE)
-#define MAYBE_EmojiPercentage DISABLED_EmojiPercentage
-#else
-#define MAYBE_EmojiPercentage EmojiPercentage
-#endif
-TEST_F(HarfBuzzShaperTest, MAYBE_EmojiPercentage) {
-#if BUILDFLAG(IS_WIN)
-  if (base::win::OSInfo::GetInstance()->version() >=
-      base::win::Version::WIN11) {
-    GTEST_SKIP() << "Broken on WIN11 and greater: https://crbug.com/1286133";
-  }
-#endif
-  // This test relies on Noto Color Emoji from the third_party directory to not
-  // contain sequences and single codepoint emoji from Unicode 13 and 13.1 such
-  // as:
-  // * Couple with Heart: Woman, Man, Medium-Light Skin Tone, Medium-Dark Skin
-  // Tone
-  // * Disguised Face U+1F978
-  // * Anatomical Heart U+1FAC0
-  String string(
-      u"aa👩🏼‍❤️‍👨🏾😶👩🏼‍❤️‍👨🏾aa👩"
-      u"🏼"
-      u"‍"
-      u"❤"
-      u"️"
-      u"‍"
-      u"👨"
-      u"🏾"
-      u"😶"
-      u"👩🏼‍❤️‍👨🏾aa🫀🫀🥸🥸😶😶");
-
-  struct Expectation {
-    unsigned expected_clusters;
-    unsigned expected_broken_clusters;
-  };
-
-  auto expectations = std::to_array<Expectation>({{3, 2}, {3, 2}, {6, 4}});
-#if BUILDFLAG(IS_ANDROID)
-  // On Android 11, SDK level 30, fallback occurs to an emoji
-  // font that has coverage for the last segment. Adjust the expectation.
-  if (base::android::BuildInfo::GetInstance()->sdk_int() >=
-      base::android::SdkVersion::SDK_VERSION_R) {
-    expectations[2].expected_broken_clusters = 0;
-  }
-#endif
-  unsigned num_calls = 0;
-  HarfBuzzShaper::EmojiMetricsCallback metrics_callback =
-      base::BindLambdaForTesting(
-          [&](unsigned num_clusters, unsigned num_broken_clusters) {
-            CHECK_EQ(num_clusters, expectations[num_calls].expected_clusters);
-            CHECK_EQ(num_broken_clusters,
-                     expectations[num_calls].expected_broken_clusters);
-
-            num_calls++;
-          });
-  HarfBuzzShaper shaper(string, metrics_callback);
-  Font* emoji_font = CreateNotoColorEmoji();
-  shaper.Shape(emoji_font, TextDirection::kLtr);
-  CHECK_EQ(num_calls, std::size(expectations));
-}
-
 // https://crbug.com/1255482
 TEST_F(HarfBuzzShaperTest, OverlyLongGraphemeCluster) {
   Font* font = MakeGarbageCollected<Font>(font_description);
@@ -2236,7 +2208,7 @@ TEST_F(HarfBuzzShaperTest, OverlyLongGraphemeCluster) {
   StringBuilder builder;
   builder.Append('e');
   for (unsigned i = 0; i < 35000; ++i)
-    builder.Append(kCombiningAcuteAccentCharacter);
+    builder.Append(uchar::kCombiningAcuteAccent);
   builder.Append('X');
   String string = builder.ToString();
 

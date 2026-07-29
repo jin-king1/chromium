@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/browser/service_worker/service_worker_internals_ui.h"
 
 #include <stdint.h>
@@ -14,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/functional/bind.h"
@@ -24,6 +20,7 @@
 #include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/service_worker_devtools_agent_host.h"
 #include "content/browser/devtools/service_worker_devtools_manager.h"
+#include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/browser/service_worker/service_worker_context_core_observer.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/browser/service_worker/service_worker_registration.h"
@@ -47,7 +44,6 @@
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_object.mojom.h"
 
-using base::Value;
 using base::WeakPtr;
 
 namespace content {
@@ -68,9 +64,10 @@ void OperationCompleteCallback(WeakPtr<ServiceWorkerInternalsHandler> internals,
   }
 }
 
-base::ProcessId GetRealProcessId(int process_host_id) {
-  if (process_host_id == ChildProcessHost::kInvalidUniqueID)
+base::ProcessId GetRealProcessId(ChildProcessId process_host_id) {
+  if (!process_host_id) {
     return base::kNullProcessId;
+  }
 
   RenderProcessHost* rph = RenderProcessHost::FromID(process_host_id);
   if (!rph)
@@ -87,8 +84,8 @@ base::ProcessId GetRealProcessId(int process_host_id) {
   return base::GetProcId(handle);
 }
 
-base::Value::Dict UpdateVersionInfo(const ServiceWorkerVersionInfo& version) {
-  base::Value::Dict info;
+base::DictValue UpdateVersionInfo(const ServiceWorkerVersionInfo& version) {
+  base::DictValue info;
   switch (version.running_status) {
     case blink::EmbeddedWorkerStatus::kStopped:
       info.Set("running_status", "STOPPED");
@@ -153,17 +150,17 @@ base::Value::Dict UpdateVersionInfo(const ServiceWorkerVersionInfo& version) {
   info.Set("version_id", base::NumberToString(version.version_id));
   info.Set("process_id",
            static_cast<int>(GetRealProcessId(version.process_id)));
-  info.Set("process_host_id", version.process_id);
+  info.Set("process_host_id", version.process_id.value());
   info.Set("thread_id", version.thread_id);
   info.Set("devtools_agent_route_id", version.devtools_agent_route_id);
 
-  base::Value::List clients;
+  base::ListValue clients;
   for (auto& it : version.clients) {
-    base::Value::Dict client;
+    base::DictValue client;
     client.Set("client_id", it.first);
-    if (absl::holds_alternative<GlobalRenderFrameHostId>(it.second)) {
-      RenderFrameHost* render_frame_host = RenderFrameHost::FromID(
-          absl::get<GlobalRenderFrameHostId>(it.second));
+    if (std::holds_alternative<GlobalRenderFrameHostId>(it.second)) {
+      RenderFrameHost* render_frame_host =
+          RenderFrameHost::FromID(std::get<GlobalRenderFrameHostId>(it.second));
       if (render_frame_host) {
         client.Set("url", render_frame_host->GetLastCommittedURL().spec());
       }
@@ -174,11 +171,11 @@ base::Value::Dict UpdateVersionInfo(const ServiceWorkerVersionInfo& version) {
   return info;
 }
 
-base::Value::List GetRegistrationListValue(
+base::ListValue GetRegistrationListValue(
     const std::vector<ServiceWorkerRegistrationInfo>& registrations) {
-  base::Value::List result;
+  base::ListValue result;
   for (const auto& registration : registrations) {
-    base::Value::Dict registration_info;
+    base::DictValue registration_info;
     registration_info.Set("scope", registration.scope.spec());
     registration_info.Set(
         "third_party_storage_partitioning_enabled",
@@ -220,9 +217,9 @@ base::Value::List GetRegistrationListValue(
   return result;
 }
 
-base::Value::List GetVersionListValue(
+base::ListValue GetVersionListValue(
     const std::vector<ServiceWorkerVersionInfo>& versions) {
-  base::Value::List result;
+  base::ListValue result;
   for (const auto& version : versions) {
     result.Append(UpdateVersionInfo(version));
   }
@@ -266,7 +263,7 @@ class ServiceWorkerInternalsHandler::PartitionObserver
   }
   void OnStarted(int64_t version_id,
                  const GURL& scope,
-                 int process_id,
+                 ChildProcessId process_id,
                  const GURL& script_url,
                  const blink::ServiceWorkerToken& token,
                  const blink::StorageKey& key) override {
@@ -311,7 +308,7 @@ class ServiceWorkerInternalsHandler::PartitionObserver
     if (!handler_) {
       return;
     }
-    base::Value::Dict details;
+    base::DictValue details;
     details.Set("message", info.error_message);
     details.Set("lineNumber", info.line_number);
     details.Set("columnNumber", info.column_number);
@@ -328,7 +325,7 @@ class ServiceWorkerInternalsHandler::PartitionObserver
     if (!handler_) {
       return;
     }
-    base::Value::Dict details;
+    base::DictValue details;
     details.Set("sourceIdentifier", static_cast<int>(message.source));
     details.Set("message_level", static_cast<int>(message.message_level));
     details.Set("message", message.message);
@@ -453,7 +450,7 @@ void ServiceWorkerInternalsHandler::OnErrorEvent(
     const std::string& event_name,
     int partition_id,
     int64_t version_id,
-    const base::Value::Dict& details) {
+    const base::DictValue& details) {
   FireWebUIListener(event_name, base::Value(partition_id),
                     base::Value(base::NumberToString(version_id)), details);
 }
@@ -470,7 +467,7 @@ void ServiceWorkerInternalsHandler::OnDidGetRegistrations(
     const std::vector<ServiceWorkerRegistrationInfo>& live_registrations,
     const std::vector<ServiceWorkerVersionInfo>& live_versions,
     const std::vector<ServiceWorkerRegistrationInfo>& stored_registrations) {
-  base::Value::Dict registrations;
+  base::DictValue registrations;
   registrations.Set("liveRegistrations",
                     GetRegistrationListValue(live_registrations));
   registrations.Set("liveVersions", GetVersionListValue(live_versions));
@@ -486,19 +483,20 @@ void ServiceWorkerInternalsHandler::OnOperationComplete(
   ResolveJavascriptCallback(base::Value(callback_id), base::Value(status));
 }
 
-void ServiceWorkerInternalsHandler::HandleGetOptions(const Value::List& args) {
+void ServiceWorkerInternalsHandler::HandleGetOptions(
+    const base::ListValue& args) {
   CHECK(args.size() != 0);
   CHECK(args[0].is_string());
   std::string callback_id = args[0].GetString();
   AllowJavascript();
-  base::Value::Dict options;
+  base::DictValue options;
   options.Set("debug_on_start", ServiceWorkerDevToolsManager::GetInstance()
                                     ->debug_service_worker_on_start());
   ResolveJavascriptCallback(base::Value(callback_id), options);
 }
 
 void ServiceWorkerInternalsHandler::HandleSetOption(
-    const Value::List& args_list) {
+    const base::ListValue& args_list) {
   if (args_list.size() < 2) {
     return;
   }
@@ -518,7 +516,7 @@ void ServiceWorkerInternalsHandler::HandleSetOption(
 }
 
 void ServiceWorkerInternalsHandler::HandleGetAllRegistrations(
-    const Value::List& args) {
+    const base::ListValue& args) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   // Allow Javascript here too, because these messages are sent back to back.
   AllowJavascript();
@@ -590,7 +588,8 @@ bool ServiceWorkerInternalsHandler::GetServiceWorkerContext(
   return true;
 }
 
-void ServiceWorkerInternalsHandler::HandleStopWorker(const Value::List& args) {
+void ServiceWorkerInternalsHandler::HandleStopWorker(
+    const base::ListValue& args) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (args.size() < 2 || !args[0].is_string())
     return;
@@ -598,7 +597,7 @@ void ServiceWorkerInternalsHandler::HandleStopWorker(const Value::List& args) {
 
   if (!args[1].is_dict())
     return;
-  const base::Value::Dict& cmd_args = args[1].GetDict();
+  const base::DictValue& cmd_args = args[1].GetDict();
 
   std::optional<int> partition_id = cmd_args.FindInt("partition_id");
   scoped_refptr<ServiceWorkerContextWrapper> context;
@@ -617,7 +616,7 @@ void ServiceWorkerInternalsHandler::HandleStopWorker(const Value::List& args) {
 }
 
 void ServiceWorkerInternalsHandler::HandleInspectWorker(
-    const Value::List& args) {
+    const base::ListValue& args) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (args.size() < 2 || !args[0].is_string())
     return;
@@ -625,7 +624,7 @@ void ServiceWorkerInternalsHandler::HandleInspectWorker(
 
   if (!args[1].is_dict())
     return;
-  const base::Value::Dict& cmd_args = args[1].GetDict();
+  const base::DictValue& cmd_args = args[1].GetDict();
 
   std::optional<int> process_host_id = cmd_args.FindInt("process_host_id");
   std::optional<int> devtools_agent_route_id =
@@ -638,7 +637,7 @@ void ServiceWorkerInternalsHandler::HandleInspectWorker(
                      callback_id);
   scoped_refptr<ServiceWorkerDevToolsAgentHost> agent_host(
       ServiceWorkerDevToolsManager::GetInstance()
-          ->GetDevToolsAgentHostForWorker(*process_host_id,
+          ->GetDevToolsAgentHostForWorker(ChildProcessId(*process_host_id),
                                           *devtools_agent_route_id));
   if (!agent_host.get()) {
     std::move(callback).Run(blink::ServiceWorkerStatusCode::kErrorNotFound);
@@ -648,7 +647,8 @@ void ServiceWorkerInternalsHandler::HandleInspectWorker(
   std::move(callback).Run(blink::ServiceWorkerStatusCode::kOk);
 }
 
-void ServiceWorkerInternalsHandler::HandleUnregister(const Value::List& args) {
+void ServiceWorkerInternalsHandler::HandleUnregister(
+    const base::ListValue& args) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (args.size() < 2 || !args[0].is_string())
     return;
@@ -656,7 +656,7 @@ void ServiceWorkerInternalsHandler::HandleUnregister(const Value::List& args) {
 
   if (!args[1].is_dict())
     return;
-  const base::Value::Dict& cmd_args = args[1].GetDict();
+  const base::DictValue& cmd_args = args[1].GetDict();
 
   std::optional<int> partition_id = cmd_args.FindInt("partition_id");
   scoped_refptr<ServiceWorkerContextWrapper> context;
@@ -680,7 +680,8 @@ void ServiceWorkerInternalsHandler::HandleUnregister(const Value::List& args) {
                       std::move(callback));
 }
 
-void ServiceWorkerInternalsHandler::HandleStartWorker(const Value::List& args) {
+void ServiceWorkerInternalsHandler::HandleStartWorker(
+    const base::ListValue& args) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   if (args.size() < 2 || !args[0].is_string())
     return;
@@ -688,7 +689,7 @@ void ServiceWorkerInternalsHandler::HandleStartWorker(const Value::List& args) {
 
   if (!args[1].is_dict())
     return;
-  const base::Value::Dict& cmd_args = args[1].GetDict();
+  const base::DictValue& cmd_args = args[1].GetDict();
 
   std::optional<int> partition_id = cmd_args.FindInt("partition_id");
   scoped_refptr<ServiceWorkerContextWrapper> context;
@@ -745,9 +746,10 @@ void ServiceWorkerInternalsHandler::UnregisterWithScope(
 
   // ServiceWorkerContextWrapper::UnregisterServiceWorker doesn't work here
   // because that reduces a status code to boolean.
-  context->context()->UnregisterServiceWorker(scope, storage_key,
-                                              /*is_immediate=*/false,
-                                              std::move(callback));
+  context->context()->UnregisterServiceWorker(
+      scope, storage_key,
+      /*is_immediate=*/false,
+      ServiceWorkerRegistration::DeleteInitiator::kWebUI, std::move(callback));
 }
 
 }  // namespace content

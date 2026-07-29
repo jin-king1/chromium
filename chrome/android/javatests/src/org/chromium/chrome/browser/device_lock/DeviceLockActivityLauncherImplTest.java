@@ -25,6 +25,8 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
+import org.chromium.google_apis.gaia.CoreAccountId;
+import org.chromium.google_apis.gaia.GaiaId;
 import org.chromium.ui.base.WindowAndroid;
 
 /** Tests for the {@link DeviceLockActivity}. */
@@ -36,17 +38,19 @@ public class DeviceLockActivityLauncherImplTest {
     @Mock private WindowAndroid mWindowAndroid;
     @Mock private WindowAndroid.IntentCallback mIntentCallback;
 
+    private final CoreAccountId mAccountId = new CoreAccountId(new GaiaId("accountId"));
+
     @Test
     @MediumTest
     public void testLaunchDeviceLockActivity_launchesIntent() {
         DeviceLockActivityLauncherImpl.get()
                 .launchDeviceLockActivity(
                         mContext,
-                        "testSelectedAccount",
+                        mAccountId,
                         true,
                         mWindowAndroid,
                         mIntentCallback,
-                        DeviceLockActivityLauncher.Source.SYNC_CONSENT);
+                        DeviceLockActivityLauncher.Source.ACCOUNT_PICKER);
         verify(mWindowAndroid, times(1))
                 .showIntent(any(Intent.class), eq(mIntentCallback), isNull());
     }
@@ -67,10 +71,10 @@ public class DeviceLockActivityLauncherImplTest {
         DeviceLockActivityLauncherImpl.get()
                 .launchDeviceLockActivity(
                         mContext,
-                        "testSelectedAccount",
+                        mAccountId,
                         true,
                         mWindowAndroid,
                         mIntentCallback,
-                        DeviceLockActivityLauncher.Source.SYNC_CONSENT);
+                        DeviceLockActivityLauncher.Source.ACCOUNT_PICKER);
     }
 }

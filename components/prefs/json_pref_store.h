@@ -16,7 +16,6 @@
 #include "base/files/file_path.h"
 #include "base/files/important_file_writer.h"
 #include "base/functional/callback_forward.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
@@ -77,7 +76,7 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore final
   // PrefStore overrides:
   bool GetValue(std::string_view key,
                 const base::Value** result) const override;
-  base::Value::Dict GetValues() const override;
+  base::DictValue GetValues() const override;
   void AddObserver(PrefStore::Observer* observer) override;
   void RemoveObserver(PrefStore::Observer* observer) override;
   bool HasObservers() const override;
@@ -95,6 +94,7 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore final
   bool ReadOnly() const override;
   PrefReadError GetReadError() const override;
   bool HasReadErrorDelegate() const override;
+  PrefFilter* GetFilter() override;
   // Note this method may be asynchronous if this instance has a |pref_filter_|
   // in which case it will return PREF_READ_ERROR_ASYNCHRONOUS_TASK_INCOMPLETE.
   // See details in pref_filter.h.
@@ -183,7 +183,7 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore final
   // (typically because the |pref_filter_| has already altered the |prefs|) --
   // this will be ignored if this store is read-only.
   void FinalizeFileRead(bool initialization_successful,
-                        base::Value::Dict prefs,
+                        base::DictValue prefs,
                         bool schedule_write);
 
   // Schedule a write with the file writer as long as |flags| doesn't contain
@@ -193,7 +193,7 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore final
   const base::FilePath path_;
   const scoped_refptr<base::SequencedTaskRunner> file_task_runner_;
 
-  base::Value::Dict prefs_;
+  base::DictValue prefs_;
 
   bool read_only_;
 

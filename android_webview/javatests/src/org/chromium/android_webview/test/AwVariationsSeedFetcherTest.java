@@ -6,7 +6,6 @@ package org.chromium.android_webview.test;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-import static org.mockito.MockitoAnnotations.initMocks;
 
 import static org.chromium.android_webview.test.OnlyRunIn.ProcessMode.EITHER_PROCESS;
 
@@ -25,9 +24,12 @@ import androidx.test.filters.SmallTest;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.android_webview.common.AwSwitches;
 import org.chromium.android_webview.common.variations.VariationsServiceMetricsHelper;
@@ -47,7 +49,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -57,6 +58,8 @@ import java.util.concurrent.TimeoutException;
 @RunWith(AwJUnit4ClassRunner.class)
 @OnlyRunIn(EITHER_PROCESS) // These tests don't use the renderer process
 public class AwVariationsSeedFetcherTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     private static final int HTTP_OK = 200;
     private static final int HTTP_NOT_FOUND = 404;
     private static final int HTTP_NOT_MODIFIED = 304;
@@ -177,7 +180,7 @@ public class AwVariationsSeedFetcherTest {
 
     // A test AwVariationsSeedFetcher that doesn't call JobFinished.
     private static class TestAwVariationsSeedFetcher extends AwVariationsSeedFetcher {
-        public CallbackHelper helper = new CallbackHelper();
+        public final CallbackHelper helper = new CallbackHelper();
         private JobParameters mJobParameters;
         private boolean mNeededReschedule;
 
@@ -198,9 +201,9 @@ public class AwVariationsSeedFetcherTest {
         }
     }
 
-    private TestJobScheduler mScheduler = new TestJobScheduler();
-    private TestVariationsSeedFetcher mDownloader = new TestVariationsSeedFetcher();
-    private TestClock mClock = new TestClock();
+    private final TestJobScheduler mScheduler = new TestJobScheduler();
+    private final TestVariationsSeedFetcher mDownloader = new TestVariationsSeedFetcher();
+    private final TestClock mClock = new TestClock();
     private Context mContext;
 
     @Mock private JobParameters mMockJobParameters;
@@ -210,7 +213,6 @@ public class AwVariationsSeedFetcherTest {
         AwVariationsSeedFetcher.setMocks(mScheduler, mDownloader);
         VariationsTestUtils.deleteSeeds();
         mContext = ContextUtils.getApplicationContext();
-        initMocks(this);
     }
 
     @After
@@ -439,7 +441,6 @@ public class AwVariationsSeedFetcherTest {
     public void testFastFetchJitterPeriodSettings() throws IOException, TimeoutException {
         try {
             TestAwVariationsSeedFetcher fetcher = new TestAwVariationsSeedFetcher();
-            final Date date = mock(Date.class);
             PersistableBundle bundle = new PersistableBundle();
             bundle.putBoolean(AwVariationsSeedFetcher.JOB_REQUEST_FAST_MODE, true);
 
@@ -686,7 +687,7 @@ public class AwVariationsSeedFetcherTest {
             seedInfo.seedData = seed.toByteArray();
 
             out = new FileOutputStream(VariationsUtils.getSeedFile());
-            VariationsUtils.writeSeed(out, seedInfo);
+            VariationsUtils.writeSeed(out, seedInfo, -1);
 
             fetcher.onStartJob(null);
             fetcher.helper.waitForCallback(
@@ -698,7 +699,7 @@ public class AwVariationsSeedFetcherTest {
             Assert.assertEquals(seedInfo.country, updatedSeedInfo.country);
             Assert.assertEquals(seedInfo.isGzipCompressed, updatedSeedInfo.isGzipCompressed);
             Assert.assertEquals(67890L, updatedSeedInfo.date);
-            Arrays.equals(seedInfo.seedData, updatedSeedInfo.seedData);
+            Assert.assertArrayEquals(seedInfo.seedData, updatedSeedInfo.seedData);
         } finally {
             VariationsUtils.closeSafely(out);
             VariationsTestUtils.deleteSeeds(); // Remove seed files.

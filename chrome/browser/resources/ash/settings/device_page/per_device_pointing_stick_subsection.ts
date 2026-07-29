@@ -8,7 +8,6 @@
  * per-device-pointing-stick subsection settings in system settings.
  */
 
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import 'chrome://resources/ash/common/cr_elements/localized_link/localized_link.js';
 import 'chrome://resources/ash/common/cr_elements/cr_radio_button/cr_radio_button.js';
@@ -113,18 +112,6 @@ export class SettingsPerDevicePointingStickSubsectionElement extends
 
       pointingStick: {type: Object},
 
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kPointingStickAcceleration,
-          Setting.kPointingStickSpeed,
-          Setting.kPointingStickSwapPrimaryButtons,
-        ]),
-      },
-
       pointingStickIndex: {
         type: Number,
       },
@@ -157,17 +144,24 @@ export class SettingsPerDevicePointingStickSubsectionElement extends
     }
   }
 
-  private pointingStick: PointingStick;
-  private sensitivityValues: number[];
-  private swapPrimaryOptions: number[];
-  private primaryRightPref: chrome.settingsPrivate.PrefObject;
-  private accelerationPref: chrome.settingsPrivate.PrefObject;
-  private sensitivityPref: chrome.settingsPrivate.PrefObject;
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kPointingStickAcceleration,
+    Setting.kPointingStickSpeed,
+    Setting.kPointingStickSwapPrimaryButtons,
+  ]);
+
+  declare private pointingStick: PointingStick;
+  declare private sensitivityValues: number[];
+  declare private swapPrimaryOptions: number[];
+  declare private primaryRightPref: chrome.settingsPrivate.PrefObject;
+  declare private accelerationPref: chrome.settingsPrivate.PrefObject;
+  declare private sensitivityPref: chrome.settingsPrivate.PrefObject;
   private isInitialized: boolean = false;
   private inputDeviceSettingsProvider: InputDeviceSettingsProviderInterface =
       getInputDeviceSettingsProvider();
-  private pointingStickIndex: number;
-  private isLastDevice: boolean;
+  declare private pointingStickIndex: number;
+  declare private isLastDevice: boolean;
 
   private updateSettingsToCurrentPrefs(): void {
     // `updateSettingsToCurrentPrefs` gets called when the `keyboard` object

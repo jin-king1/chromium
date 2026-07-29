@@ -4,6 +4,8 @@
 
 #include "base/android/path_utils.h"
 
+#include <dlfcn.h>
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
@@ -11,7 +13,7 @@
 #include "base/files/file_path.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
-#include "base/base_jni/PathUtils_jni.h"
+#include "base/path_utils_jni/PathUtils_jni.h"
 
 namespace base {
 namespace android {
@@ -75,10 +77,12 @@ std::vector<FilePath> GetSecondaryStorageDownloadDirectories() {
 }
 
 bool GetNativeLibraryDirectory(FilePath* result) {
-  JNIEnv* env = AttachCurrentThread();
-  std::string path = Java_PathUtils_getNativeLibraryDirectory(env);
-  FilePath library_path(path);
-  *result = library_path;
+  // This is generally a path within the .apk. E.g.:
+  // /data/app/.../base.apk!/lib/arm64-v8a/libchrome.so
+  Dl_info info;
+  dladdr(reinterpret_cast<void*>(&GetNativeLibraryDirectory), &info);
+  base::FilePath lib_path(info.dli_fname);
+  *result = lib_path.DirName();
   return true;
 }
 
@@ -90,5 +94,12 @@ bool GetExternalStorageDirectory(FilePath* result) {
   return true;
 }
 
+int64_t GetCacheQuotaBytes() {
+  JNIEnv* env = AttachCurrentThread();
+  return Java_PathUtils_getCacheQuotaBytes(env);
+}
+
 }  // namespace android
 }  // namespace base
+
+DEFINE_JNI(PathUtils)

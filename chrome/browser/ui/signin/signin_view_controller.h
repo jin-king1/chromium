@@ -11,15 +11,20 @@
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/signin/signin_modal_dialog.h"
+#include "chrome/browser/ui/webui/signin/history_sync_optin_helper.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "chrome/common/url_constants.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/sync/base/data_type.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -30,7 +35,9 @@
 #error This file should only be included on desktop.
 #endif
 
-class Browser;
+class BrowserWindowInterface;
+class Profile;
+class TabStripModel;
 struct AccountInfo;
 struct CoreAccountId;
 
@@ -64,8 +71,25 @@ class SigninViewController {
  public:
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
       kSignoutConfirmationDialogViewElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kHistorySyncOptinViewId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSigninErrorViewId);
 
-  explicit SigninViewController(Browser* browser);
+  class Observer : public base::CheckedObserver {
+   public:
+    // Called when a sigin-in modal dialog is closed.
+    virtual void OnModalSigninDialogClosed() {}
+
+   protected:
+    ~Observer() override = default;
+  };
+
+  // Add/Remove an `observer`; cannot be NULL.
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
+
+  SigninViewController(BrowserWindowInterface* browser,
+                       Profile* profile,
+                       TabStripModel* tab_strip_model);
 
   SigninViewController(const SigninViewController&) = delete;
   SigninViewController& operator=(const SigninViewController&) = delete;
@@ -81,7 +105,7 @@ class SigninViewController {
   // page.
   // DEPRECATED: Use ShowDiceEnableSyncTab instead.
   void ShowSignin(signin_metrics::AccessPoint access_point,
-                  const GURL& redirect_url = GURL(chrome::kChromeUINewTabURL));
+                  const GURL& redirect_url = chrome::ChromeUINewTabURLAsGURL());
 
   // Shows a Chrome Sync signin tab. |email_hint| may be empty.
   // Note: If the user has already set a primary account, then this is
@@ -101,7 +125,7 @@ class SigninViewController {
   // function does not clear it, but still invalidates its credentials.
   // This is the only way to properly signout all accounts. In particular,
   // calling Gaia logout programmatically or revoking the tokens does not sign
-  // out SAML accounts completely (see https://crbug.com/1069421).
+  // out SAML accounts completely (see https://crbug.com/40125905).
   void ShowGaiaLogoutTab(signin_metrics::SourceForRefreshTokenOperation source);
 
   // Shows the modal signin intercept first run experience dialog as a
@@ -137,6 +161,11 @@ class SigninViewController {
       const std::string& last_email,
       const std::string& email,
       SigninEmailConfirmationDialog::Callback callback);
+
+  // Shows the cross-device sign-in QR code bubble. The bubble is anchored to
+  // the profile menu button if available, or centered on the browser window
+  // otherwise.
+  void ShowCrossDeviceSigninQrBubble(base::OnceClosure closing_callback);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
   // Shows the modal sync confirmation dialog as a browser-modal dialog on top
@@ -147,6 +176,16 @@ class SigninViewController {
   // option. It is false if the user explicitly initiated the flow.
   void ShowModalSyncConfirmationDialog(bool is_signin_intercept,
                                        bool is_sync_promo);
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  // Shows the modal history sync opt in dialog as a browser-modal dialog on top
+  // of the `browser_`'s window. Executes the provided callback when the dialog
+  // closes.
+  void ShowModalHistorySyncOptInDialog(
+      bool should_close_modal_dialog,
+      HistorySyncOptinHelper::FlowCompletedCallback
+          history_optin_completed_callback);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
   // Shows the modal managed user notice dialog as a browser-modal dialog on
   // top of the `browser_`'s window. `domain_name` is the domain of the
@@ -178,39 +217,47 @@ class SigninViewController {
   // SigninViewController, if one exists. Does nothing otherwise.
   void CloseModalSignin();
 
+  // Closes the bubble-based signin flow previously shown using this
+  // SigninViewController, if one exists. Does nothing otherwise.
+  void CloseBubbleSignin();
+
   // Sets the height of the modal signin dialog.
   void SetModalSigninHeight(int height);
 
   // Called by a `dialog_`' when it closes.
   void OnModalDialogClosed();
 
+  // Called when `bubble_widget_` is closed. Defers C++ object destruction
+  // to prevent re-entrancy crashes during the native Views teardown.
+  void OnBubbleClosed(views::Widget::ClosedReason reason);
+
   base::WeakPtr<SigninViewController> AsWeakPtr();
+
+  void TearDownPreBrowserWindowDestruction();
 
  private:
   FRIEND_TEST_ALL_PREFIXES(SignInViewControllerBrowserTest,
-                           EmailConfirmationDefaultFocus);
-  FRIEND_TEST_ALL_PREFIXES(SignInViewControllerBrowserTest,
                            ErrorDialogDefaultFocus);
-  FRIEND_TEST_ALL_PREFIXES(SignInViewControllerBrowserTest,
-                           EnterpriseConfirmationDefaultFocus);
-  FRIEND_TEST_ALL_PREFIXES(SignInViewControllerBrowserOIDCAccountTest,
-                           EnterpriseConfirmationDefaultFocus);
-  FRIEND_TEST_ALL_PREFIXES(SignInViewControllerBrowserOIDCAccountTest,
-                           EnterpriseConfirmationCancel);
   FRIEND_TEST_ALL_PREFIXES(SigninViewControllerDelegateViewsBrowserTest,
                            CloseImmediately);
   FRIEND_TEST_ALL_PREFIXES(ProfilePickerCreationFlowBrowserTest,
                            CreateLocalProfile);
   FRIEND_TEST_ALL_PREFIXES(ProfilePickerCreationFlowBrowserTest,
                            CancelLocalProfileCreation);
+  FRIEND_TEST_ALL_PREFIXES(
+      ProfilePickerWithReducedFrictionRemoveSigninBrowserTest,
+      CreateLocalProfileWithoutSigninStep);
   FRIEND_TEST_ALL_PREFIXES(SyncSettingsInteractiveTest,
                            PressingSignOutButtonsSignsOutUser);
+  FRIEND_TEST_ALL_PREFIXES(ProfileManagementDisclaimerServiceBrowserTest,
+                           CancelFlowOnAccountRemoval);
   friend class ChromeSignoutConfirmationPromptPixelTest;
   friend class login_ui_test_utils::SigninViewControllerTestUtil;
-  friend class SigninInterceptFirstRunExperienceDialogBrowserTest;
+  friend class SigninInterceptFirstRunExperienceDialogBrowserTestBase;
   friend class SyncConfirmationUIDialogPixelTest;
   friend class SigninViewControllerBrowserTestBase;
   friend class ProfileMenuViewSignoutTest;
+  friend class DeviceSignalsDisclaimerInteractiveTest;
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   // Shows the DICE-specific sign-in flow: opens a Gaia sign-in webpage in a new
@@ -230,7 +277,7 @@ class SigninViewController {
       signin_metrics::AccessPoint reauth_access_point,
       signin_metrics::ProfileSignout profile_signout_source,
       signin_metrics::SourceForRefreshTokenOperation token_signout_source,
-      syncer::DataTypeSet unsynced_datatypes);
+      absl::flat_hash_map<syncer::DataType, size_t> unsynced_datatypes);
 
   void ShowChromeSigninDialogForExtensions(
       const std::u16string& extension_name_for_display,
@@ -243,6 +290,7 @@ class SigninViewController {
   // prompt.
   void ShowSignoutConfirmationPrompt(
       ChromeSignoutConfirmationPromptVariant prompt_variant,
+      size_t unsynced_data_count,
       SignoutConfirmationCallback callback);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
@@ -256,15 +304,29 @@ class SigninViewController {
   // Helper to create an on close callback for `SigninModalDialog`.
   base::OnceClosure GetOnModalDialogClosedCallback();
 
-  // Browser owning this controller.
-  raw_ptr<Browser> browser_;
+  Profile* GetProfile();
+  TabStripModel* GetTabStripModel();
+
+  // BrowserWindowInterface owning this controller.
+  const raw_ref<BrowserWindowInterface> browser_;
+
+  const raw_ref<Profile> profile_;
+  const raw_ref<TabStripModel> tab_strip_model_;
 
   // Currently displayed modal dialog, or nullptr if none is displayed.
   std::unique_ptr<SigninModalDialog> dialog_;
 
+  // Stores the active bubble widget, if one is currently shown.
+  // New bubble promos/UIs should use this widget, whereas modal dialogs should
+  // use `dialog_`. Note that bubbles managed by this widget are completely
+  // decoupled from the modal dialogs.
+  std::unique_ptr<views::Widget> bubble_widget_;
+
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   std::unique_ptr<NewTabWebContentsObserver> new_tab_web_contents_observer_;
 #endif
+
+  base::ObserverList<Observer> observer_list_;
 
   base::WeakPtrFactory<SigninViewController> weak_ptr_factory_{this};
 };

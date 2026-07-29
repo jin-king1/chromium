@@ -6,9 +6,11 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "base/functional/callback_helpers.h"
 #include "base/values.h"
 #include "chromeos/ash/components/osauth/public/auth_session_storage.h"
 #include "chromeos/ash/services/auth_factor_config/auth_factor_config.h"
+#include "chromeos/ash/services/auth_factor_config/auth_factor_config_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
 
@@ -26,10 +28,9 @@ void RecoveryFactorEditor::BindReceiver(
   receivers_.Add(this, std::move(receiver));
 }
 
-void RecoveryFactorEditor::Configure(
-    const std::string& auth_token,
-    bool enabled,
-    base::OnceCallback<void(mojom::ConfigureResult)> callback) {
+void RecoveryFactorEditor::Configure(const std::string& auth_token,
+                                     bool enabled,
+                                     ConfigureResultCallback callback) {
   auth_factor_config_->IsEditable(
       auth_token, mojom::AuthFactor::kRecovery,
       base::BindOnce(&RecoveryFactorEditor::OnGetEditable,
@@ -37,34 +38,28 @@ void RecoveryFactorEditor::Configure(
                      std::move(callback)));
 }
 
-void RecoveryFactorEditor::OnGetEditable(
-    const std::string& auth_token,
-    bool should_enable,
-    base::OnceCallback<void(mojom::ConfigureResult)> callback,
-    bool is_editable) {
+void RecoveryFactorEditor::OnGetEditable(const std::string& auth_token,
+                                         bool should_enable,
+                                         ConfigureResultCallback callback,
+                                         bool is_editable) {
   if (!is_editable) {
     LOG(ERROR) << "Recovery configuration not editable";
     std::move(callback).Run(mojom::ConfigureResult::kInvalidTokenError);
     return;
   }
 
-  if (!ash::AuthSessionStorage::Get()->IsValid(auth_token)) {
-    LOG(ERROR) << "Invalid auth token";
-    std::move(callback).Run(mojom::ConfigureResult::kInvalidTokenError);
-    return;
-  }
-  ash::AuthSessionStorage::Get()->BorrowAsync(
-      FROM_HERE, auth_token,
+  ObtainContextOrFail(
+      auth_token, std::move(callback),
       base::BindOnce(&RecoveryFactorEditor::ConfigureWithContext,
                      weak_factory_.GetWeakPtr(), auth_token, should_enable,
-                     std::move(callback), is_editable));
+                     is_editable));
 }
 
 void RecoveryFactorEditor::ConfigureWithContext(
     const std::string& auth_token,
     bool should_enable,
-    base::OnceCallback<void(mojom::ConfigureResult)> callback,
     bool is_editable,
+    ConfigureResultCallback callback,
     std::unique_ptr<UserContext> user_context) {
   const bool currently_enabled =
       user_context->GetAuthFactorsConfiguration().HasConfiguredFactor(
@@ -90,7 +85,7 @@ void RecoveryFactorEditor::ConfigureWithContext(
 }
 
 void RecoveryFactorEditor::OnRecoveryFactorConfigured(
-    base::OnceCallback<void(mojom::ConfigureResult)> callback,
+    ConfigureResultCallback callback,
     const std::string& auth_token,
     std::unique_ptr<UserContext> context,
     std::optional<AuthenticationError> error) {

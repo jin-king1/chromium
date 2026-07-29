@@ -8,8 +8,9 @@
 #include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chromeos/ash/components/multidevice/remote_device_ref.h"
 #include "chromeos/ash/services/secure_channel/remote_attribute.h"
@@ -140,6 +141,10 @@ class BluetoothLowEnergyCharacteristicsFinder
 
   // A set of service IDs whose EID characteristics are being checked.
   base::flat_set<std::string> service_ids_pending_eid_read_;
+
+  base::ScopedObservation<device::BluetoothAdapter,
+                          device::BluetoothAdapter::Observer>
+      adapter_observation_{this};
 
   base::WeakPtrFactory<BluetoothLowEnergyCharacteristicsFinder>
       weak_ptr_factory_{this};

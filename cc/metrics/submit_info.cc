@@ -21,16 +21,18 @@ SubmitInfo::SubmitInfo(uint32_t frame_token,
                        EventMetricsSet events_metrics,
                        bool drawn_with_new_layer_tree,
                        bool invalidate_raster_scroll,
-                       std::optional<float> normalized_invalidated_area)
+                       std::optional<float> normalized_invalidated_area,
+                       base::TimeTicks trees_in_viz_submit_time)
     : frame_token(frame_token),
       time(time),
-      checkerboarded_needs_raster(checkerboarded_needs_record),
-      checkerboarded_needs_record(checkerboarded_needs_raster),
+      checkerboarded_needs_raster(checkerboarded_needs_raster),
+      checkerboarded_needs_record(checkerboarded_needs_record),
       top_controls_moved(top_controls_moved),
       events_metrics(std::move(events_metrics)),
       drawn_with_new_layer_tree(drawn_with_new_layer_tree),
       invalidate_raster_scroll(invalidate_raster_scroll),
-      normalized_invalidated_area(normalized_invalidated_area) {}
+      normalized_invalidated_area(normalized_invalidated_area),
+      trees_in_viz_submit_time(trees_in_viz_submit_time) {}
 
 SubmitInfo::SubmitInfo(uint32_t frame_token, base::TimeTicks time)
     : frame_token(frame_token), time(time) {}

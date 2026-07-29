@@ -9,6 +9,7 @@ source_set("account_picker_selection") {
     "account_picker_selection_screen_coordinator.mm",
     "account_picker_selection_screen_mediator.h",
     "account_picker_selection_screen_mediator.mm",
+    "account_picker_selection_screen_mediator_delegate.h",
     "account_picker_selection_screen_table_view_controller.h",
     "account_picker_selection_screen_table_view_controller.mm",
     "account_picker_selection_screen_table_view_controller_action_delegate.h",
@@ -24,14 +25,15 @@ source_set("account_picker_selection") {
     "//ios/chrome/app/strings:ios_strings",
     "//ios/chrome/browser/account_picker/ui_bundled:account_picker_layout",
     "//ios/chrome/browser/account_picker/ui_bundled/account_picker_screen",
+    "//ios/chrome/browser/authentication/add_account_signin/coordinator",
     "//ios/chrome/browser/authentication/ui_bundled/cells",
     "//ios/chrome/browser/authentication/ui_bundled/enterprise:enterprise_utils",
     "//ios/chrome/browser/authentication/ui_bundled/signin:signin_headers",
     "//ios/chrome/browser/net/model:crurl",
     "//ios/chrome/browser/shared/coordinator/chrome_coordinator",
+    "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/profile",
-    "//ios/chrome/browser/shared/model/url:constants",
     "//ios/chrome/browser/shared/model/url:constants",
     "//ios/chrome/browser/shared/public/commands",
     "//ios/chrome/browser/shared/public/features",
@@ -39,7 +41,10 @@ source_set("account_picker_selection") {
     "//ios/chrome/browser/shared/ui/table_view:utils",
     "//ios/chrome/browser/shared/ui/table_view/cells",
     "//ios/chrome/browser/signin/model",
+    "//ios/chrome/browser/signin/model:authentication_service",
+    "//ios/chrome/browser/signin/model:authentication_service_factory",
     "//ios/chrome/browser/signin/model:system_identity",
+    "//ios/chrome/browser/signin/model/avatar",
     "//ios/chrome/common/ui/colors",
     "//ui/base",
   ]
@@ -50,5 +55,8 @@ source_set("identity_item_configurator") {
     "account_picker_selection_screen_identity_item_configurator.h",
     "account_picker_selection_screen_identity_item_configurator.mm",
   ]
-  deps = [ "//ios/chrome/browser/authentication/ui_bundled/cells" ]
+  deps = [
+    "//google_apis",
+    "//ios/chrome/browser/authentication/ui_bundled/cells",
+  ]
 }

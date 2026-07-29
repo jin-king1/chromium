@@ -28,6 +28,12 @@
 #include "third_party/blink/renderer/platform/wtf/text/text_position.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
+namespace v8 {
+
+enum class ModuleImportPhase;
+
+}
+
 namespace blink {
 
 class ModuleScript;
@@ -51,11 +57,12 @@ class CORE_EXPORT SingleModuleClient
  public:
   ~SingleModuleClient() override = default;
   virtual void Trace(Visitor* visitor) const {}
-  const char* NameInHeapSnapshot() const override {
+  const char* GetHumanReadableName() const override {
     return "SingleModuleClient";
   }
 
-  virtual void NotifyModuleLoadFinished(ModuleScript*) = 0;
+  virtual void NotifyModuleLoadFinished(ModuleScript*,
+                                        v8::ModuleImportPhase) = 0;
 };
 
 // A ModuleTreeClient is notified when a module script and its whole descendent
@@ -65,7 +72,9 @@ class CORE_EXPORT ModuleTreeClient : public GarbageCollected<ModuleTreeClient>,
  public:
   ~ModuleTreeClient() override = default;
   virtual void Trace(Visitor* visitor) const {}
-  const char* NameInHeapSnapshot() const override { return "ModuleTreeClient"; }
+  const char* GetHumanReadableName() const override {
+    return "ModuleTreeClient";
+  }
 
   virtual void NotifyModuleTreeLoadFinished(ModuleScript*) = 0;
 };
@@ -111,7 +120,7 @@ class CORE_EXPORT Modulator : public GarbageCollected<Modulator>,
   static void ClearModulator(ScriptState*);
 
   void Trace(Visitor* visitor) const override;
-  const char* NameInHeapSnapshot() const override { return "Modulator"; }
+  const char* GetHumanReadableName() const override { return "Modulator"; }
 
   virtual ModuleRecordResolver* GetModuleRecordResolver() = 0;
   virtual base::SingleThreadTaskRunner* TaskRunner() = 0;
@@ -138,6 +147,7 @@ class CORE_EXPORT Modulator : public GarbageCollected<Modulator>,
       const ScriptFetchOptions&,
       ModuleScriptCustomFetchType,
       ModuleTreeClient*,
+      v8::ModuleImportPhase,
       String referrer = Referrer::ClientReferrerString()) = 0;
 
   // Asynchronously retrieve a module script from the module map, or fetch it
@@ -164,7 +174,9 @@ class CORE_EXPORT Modulator : public GarbageCollected<Modulator>,
   // Synchronously retrieves a single module script from existing module map
   // entry.
   // Note: returns nullptr if the module map entry doesn't exist, or
-  // is still "fetching".
+  // is still "fetching" (except for CSS modules, which may return a
+  // pre-created module with an empty CSSStyleSheet before the fetch
+  // completes).
   // ModuleType indicates the resource type of the module script, e.g.
   // JavaScript, JSON, or CSS. This is used as part of the module map cache key
   // alongside the URL, so both are needed to retrieve the correct module. See
@@ -180,6 +192,10 @@ class CORE_EXPORT Modulator : public GarbageCollected<Modulator>,
   virtual void ResolveDynamically(const ModuleRequest& module_request,
                                   const ReferrerScriptInfo&,
                                   ScriptPromiseResolver<IDLAny>*) = 0;
+
+  virtual void AddEntryToModuleMap(const KURL& url,
+                                   ModuleType type,
+                                   ModuleScript* script) = 0;
 
   // Methods below relate to import maps.
   // https://html.spec.whatwg.org/C#import-maps

@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/memory/ref_counted_memory.h"
@@ -21,8 +22,10 @@
 #include "base/synchronization/waitable_event.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/task_environment.h"
+#include "components/persistent_cache/pending_backend.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -128,14 +131,17 @@ mojo::ScopedDataPipeConsumerHandle CreateDataPipeConsumerHandleFilledWithString(
 
 class TestPlatformForRedirects final : public TestingPlatformSupport {
  public:
-  bool IsRedirectSafe(const GURL& from_url, const GURL& to_url) override {
+  bool IsRedirectSafe(
+      const GURL& from_url,
+      const GURL& to_url,
+      const std::optional<url::Origin>& request_initiator) override {
     return true;
   }
 };
 
 void RegisterURLSchemeAsCodeCacheWithHashing() {
 #if DCHECK_IS_ON()
-  WTF::SetIsBeforeThreadCreatedForTest();  // Required for next operation:
+  SetIsBeforeThreadCreatedForTest();  // Required for next operation:
 #endif
   SchemeRegistry::RegisterURLSchemeAsCodeCacheWithHashing(
       "codecachewithhashing");
@@ -173,7 +179,7 @@ class MockRequestClient : public ResourceRequestClient {
       data_ += ReadOneChunk(&body);
     }
   }
-  void OnTransferSizeUpdated(int transfer_size_diff) override {
+  void OnTransferSizeUpdated(base::ByteSize transfer_size_diff) override {
     transfer_size_updated_called_ = true;
   }
   void OnCompletedRequest(
@@ -237,12 +243,11 @@ class MockLoader : public network::mojom::URLLoader {
 
   // network::mojom::URLLoader implementation:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
+      network::HttpRequestHeadersUpdateParams headers_update_params,
       const std::optional<GURL>& new_url) override {
     if (follow_redirect_callback_) {
-      follow_redirect_callback_.Run(removed_headers, modified_headers);
+      follow_redirect_callback_.Run(headers_update_params.removed_headers,
+                                    headers_update_params.modified_headers);
     }
   }
   void SetPriority(net::RequestPriority priority,
@@ -270,15 +275,22 @@ class DummyCodeCacheHost final : public mojom::blink::CodeCacheHost {
     mojo::PendingRemote<mojom::blink::CodeCacheHost> pending_remote;
     receiver_ = std::make_unique<mojo::Receiver<mojom::blink::CodeCacheHost>>(
         this, pending_remote.InitWithNewPipeAndPassReceiver());
-    host_ = std::make_unique<blink::CodeCacheHost>(
+    host_ = blink::CodeCacheHost::Create(
         mojo::Remote<mojom::blink::CodeCacheHost>(std::move(pending_remote)));
   }
 
   // mojom::blink::CodeCacheHost implementations
+  void GetPendingBackend(mojom::blink::CodeCacheType cache_type,
+                         GetPendingBackendCallback callback) override {
+    std::move(callback).Run(std::nullopt);
+  }
   void DidGenerateCacheableMetadata(mojom::blink::CodeCacheType cache_type,
                                     const KURL& url,
                                     base::Time expected_response_time,
                                     mojo_base::BigBuffer data) override {}
+  void DidGenerateSourceKeyedCacheableMetadata(
+      const blink::Vector<uint8_t>& script_hash,
+      mojo_base::BigBuffer data) override {}
   void FetchCachedCode(mojom::blink::CodeCacheType cache_type,
                        const KURL& url,
                        FetchCachedCodeCallback callback) override {
@@ -293,7 +305,7 @@ class DummyCodeCacheHost final : public mojom::blink::CodeCacheHost {
       const KURL& url,
       base::Time expected_response_time,
       mojo_base::BigBuffer data,
-      const WTF::String& cache_storage_cache_name) override {}
+      const String& cache_storage_cache_name) override {}
 
   blink::CodeCacheHost* GetCodeCacheHost() { return host_.get(); }
   bool did_clear_code_cache_entry() const {
@@ -2180,16 +2192,16 @@ class WebUIBundledCodeCacheResourceRequestSenderTest
   void SetUp() override {
     ResourceRequestSenderTestBase::SetUp();
 #if DCHECK_IS_ON()
-    WTF::SetIsBeforeThreadCreatedForTest();
+    SetIsBeforeThreadCreatedForTest();
 #endif
     SchemeRegistry::RegisterURLSchemeAsWebUIBundledBytecode("chrome");
   }
 
   void TearDown() override {
 #if DCHECK_IS_ON()
-    WTF::SetIsBeforeThreadCreatedForTest();
+    SetIsBeforeThreadCreatedForTest();
 #endif
-    SchemeRegistry::RemoveURLSchemeAsWebUIBundledBytecodeForTesting("chrome");
+    SchemeRegistry::RemoveURLSchemeAsWebUIBundledBytecodeForTest("chrome");
     ResourceRequestSenderTestBase::TearDown();
   }
 
@@ -2230,24 +2242,43 @@ class WebUIBundledCodeCacheResourceRequestSenderTest
 
 TEST_F(WebUIBundledCodeCacheResourceRequestSenderTest,
        FetchesCodeCacheFromPlatformWhenAvailable) {
+  base::HistogramTester histogram_tester;
+
   // Define URLs that support the webui bundled code cache.
-  const GURL test_url_1("chrome://example/script_1.js");
-  const GURL test_url_2("chrome://example/script_2.js");
+  const GURL test_url("chrome://example/script.js");
 
   // Configure the platform to serve webui code cache for only one of the test
   // URLs.
-  platform_->set_webui_bundled_code_cache_url(test_url_1);
-  EXPECT_TRUE(platform_->GetWebUIBundledCodeCacheResourceId(test_url_1));
-  EXPECT_FALSE(platform_->GetWebUIBundledCodeCacheResourceId(test_url_2));
+  platform_->set_webui_bundled_code_cache_url(test_url);
+  EXPECT_TRUE(platform_->GetWebUIBundledCodeCacheResourceId(test_url));
 
   // Assert code cache is fetched for the URL for which the webui bundled code
   // cache is available.
-  LoadResourceAndCheck(test_url_1, /*expect_code_cache=*/true);
-  LoadResourceAndCheck(test_url_2, /*expect_code_cache=*/false);
+  LoadResourceAndCheck(test_url, /*expect_code_cache=*/true);
+  histogram_tester.ExpectUniqueSample(
+      "Blink.ResourceRequest.WebUIBundledCodeCacheFetcher.DidReceiveCachedCode",
+      true, 1);
+}
+
+TEST_F(WebUIBundledCodeCacheResourceRequestSenderTest,
+       FetchesCodeCacheFromPlatformWhenUnavailable) {
+  base::HistogramTester histogram_tester;
+
+  // Define URLs that doesn't support the webui bundled code cache.
+  const GURL test_url("chrome://example/script.js");
+
+  EXPECT_FALSE(platform_->GetWebUIBundledCodeCacheResourceId(test_url));
+
+  LoadResourceAndCheck(test_url, /*expect_code_cache=*/false);
+  histogram_tester.ExpectUniqueSample(
+      "Blink.ResourceRequest.WebUIBundledCodeCacheFetcher.DidReceiveCachedCode",
+      true, 0);
 }
 
 TEST_F(WebUIBundledCodeCacheResourceRequestSenderTest,
        HandlesMissingPlatformCodeCache) {
+  base::HistogramTester histogram_tester;
+
   // Define a URL that supports the webui bundled code cache.
   const GURL test_url("chrome://example/script.js");
 
@@ -2262,6 +2293,9 @@ TEST_F(WebUIBundledCodeCacheResourceRequestSenderTest,
   // Assert attempting to fetch the code cache is handled correctly and the
   // client's code cache remains unset.
   LoadResourceAndCheck(test_url, /*expect_code_cache=*/false);
+  histogram_tester.ExpectUniqueSample(
+      "Blink.ResourceRequest.WebUIBundledCodeCacheFetcher.DidReceiveCachedCode",
+      false, 1);
 }
 
 }  // namespace

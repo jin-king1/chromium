@@ -12,10 +12,11 @@ import static org.chromium.chrome.browser.ui.google_bottom_bar.BottomBarConfig.G
 import android.content.Context;
 import android.graphics.drawable.Drawable;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.intents.CustomButtonParams;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
@@ -35,6 +36,7 @@ import java.util.Map;
 import java.util.Set;
 
 /** This class creates a {@link BottomBarConfig} based on provided params. */
+@NullMarked
 public class BottomBarConfigCreator {
     private static final String TAG = "GoogleBottomBar";
 
@@ -229,7 +231,7 @@ public class BottomBarConfigCreator {
 
         for (CustomButtonParams params : customButtonParams) {
             Integer buttonId = getButtonId(params.getId());
-            if (buttonId == id) {
+            if (buttonId != null && buttonId == id) {
                 return getButtonConfigFromCustomButtonParams(mContext, buttonId, params);
             }
         }
@@ -276,7 +278,7 @@ public class BottomBarConfigCreator {
                         id,
                         UiUtils.getTintedDrawable(
                                 mContext,
-                                R.drawable.ic_search,
+                                R.drawable.ic_search_24dp,
                                 R.color.default_icon_color_baseline),
                         mContext.getString(R.string.google_bottom_bar_search_button_description),
                         /* pendingIntent= */ null);
@@ -285,7 +287,7 @@ public class BottomBarConfigCreator {
                         id,
                         UiUtils.getTintedDrawable(
                                 mContext,
-                                R.drawable.bottom_bar_home_icon,
+                                R.drawable.ic_home_24dp,
                                 R.color.default_icon_color_baseline),
                         mContext.getString(R.string.google_bottom_bar_home_button_description),
                         /* pendingIntent= */ null);
@@ -505,7 +507,7 @@ public class BottomBarConfigCreator {
      *       <li>If an error occurs during processing: Returns null.
      *     </ul>
      */
-    private Integer getSpotlightButtonFromParams(
+    private @Nullable Integer getSpotlightButtonFromParams(
             List<Integer> encodedLayoutList,
             @GoogleBottomBarVariantLayoutType int variantLayoutType) {
         if (variantLayoutType == SINGLE_DECKER) {
@@ -537,8 +539,7 @@ public class BottomBarConfigCreator {
         }
     }
 
-    @Nullable
-    private static @ButtonId Integer createSpotlight(int code) {
+    private static @Nullable @ButtonId Integer createSpotlight(int code) {
         return code != 0 ? code : null;
     }
 
@@ -586,7 +587,7 @@ public class BottomBarConfigCreator {
         return result;
     }
 
-    private static @ButtonId Integer getButtonId(int customButtonParamId) {
+    private static @ButtonId @Nullable Integer getButtonId(int customButtonParamId) {
         return CUSTOM_BUTTON_PARAM_ID_TO_BUTTON_ID_MAP.get(customButtonParamId);
     }
 
@@ -616,19 +617,23 @@ public class BottomBarConfigCreator {
             Context context, @ButtonId int buttonId, CustomButtonParams params) {
         return switch (buttonId) {
             case ButtonId.PIH_BASIC, ButtonId.PIH_COLORED, ButtonId.PIH_EXPANDED ->
-            // Always use pageInsights icon provided by Chrome
-            UiUtils.getTintedDrawable(
-                    context,
-                    R.drawable.bottom_bar_page_insights_icon,
-                    R.color.default_icon_color_baseline);
+                    // Always use pageInsights icon provided by Chrome
+                    UiUtils.getTintedDrawable(
+                            context,
+                            R.drawable.bottom_bar_page_insights_icon,
+                            R.color.default_icon_color_baseline);
             case ButtonId.SEARCH ->
-            // Always use search icon provided by Chrome
-            UiUtils.getTintedDrawable(
-                    context, R.drawable.ic_search, R.color.default_icon_color_baseline);
-            case ButtonId.HOME -> UiUtils.getTintedDrawable(
-                    context, R.drawable.bottom_bar_home_icon, R.color.default_icon_color_baseline);
-            default -> getTintedIcon(
-                    context, params.getIcon(context), R.color.default_icon_color_baseline);
+                    // Always use search icon provided by Chrome
+                    UiUtils.getTintedDrawable(
+                            context,
+                            R.drawable.ic_search_24dp,
+                            R.color.default_icon_color_baseline);
+            case ButtonId.HOME ->
+                    UiUtils.getTintedDrawable(
+                            context, R.drawable.ic_home_24dp, R.color.default_icon_color_baseline);
+            default ->
+                    getTintedIcon(
+                            context, params.getIcon(context), R.color.default_icon_color_baseline);
         };
     }
 }

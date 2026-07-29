@@ -7,12 +7,11 @@
 
 #include <memory>
 
-#include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
 #include "device/fido/fido_discovery_factory.h"
-#include "device/fido/fido_transport_protocol.h"
+#include "device/fido/public/fido_transport_protocol.h"
 
 namespace device {
 
@@ -79,6 +78,8 @@ class FakeFidoDiscovery final : public FidoDeviceDiscovery {
 
   // Combines WaitForCallToStart + SimulateStarted(true).
   void WaitForCallToStartAndSimulateSuccess();
+
+  base::WeakPtr<FakeFidoDiscovery> GetWeakPtr();
 
   // Tests are to directly call Add/RemoveDevice to simulate adding/removing
   // devices. Observers are automatically notified.

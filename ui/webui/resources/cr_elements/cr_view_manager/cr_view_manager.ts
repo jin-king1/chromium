@@ -121,16 +121,39 @@ export class CrViewManagerElement extends CrLitElement {
   switchView(
       newViewId: string, enterAnimation?: string,
       exitAnimation?: string): Promise<void> {
-    const previousView = this.querySelector<HTMLElement>('.active');
-    const newView = this.querySelector<HTMLElement>('#' + newViewId);
-    assert(!!newView);
+    return this.switchViews([newViewId], enterAnimation, exitAnimation);
+  }
+
+  // Each view should have 'position: initial' for being able to show multiple
+  // views at the same time.
+  switchViews(
+      newViewIds: string[], enterAnimation?: string,
+      exitAnimation?: string): Promise<void> {
+    let previousViews = new Set(this.querySelectorAll<HTMLElement>('.active'));
+    let newViews = new Set(
+        newViewIds.length === 0 ?
+            [] :
+            this.querySelectorAll<HTMLElement>(
+                newViewIds.map(id => `#${id}`).join(',')));
+    assert(newViews.size === newViewIds.length);
+
+    // Calculate views that are already active, and remove them from both
+    // `previousViews` and `newViews` as they don't need to be exited/entered
+    // again.
+    const commonViews = previousViews.intersection(newViews);
+    previousViews = previousViews.difference(commonViews);
+    newViews = newViews.difference(commonViews);
 
     const promises = [];
-    if (previousView) {
-      promises.push(this.exit_(previousView, exitAnimation || 'fade-out'));
-      promises.push(this.enter_(newView, enterAnimation || 'fade-in'));
-    } else {
-      promises.push(this.enter_(newView, 'no-animation'));
+
+    for (const view of previousViews) {
+      promises.push(this.exit_(view, exitAnimation || 'fade-out'));
+    }
+    for (const view of newViews) {
+      promises.push(this.enter_(
+          view,
+          enterAnimation ||
+              (previousViews.size === 0 ? 'no-animation' : 'fade-in')));
     }
 
     return Promise.all(promises).then(() => {});

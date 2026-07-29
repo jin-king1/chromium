@@ -24,7 +24,7 @@
 #include "ui/base/ime/ime_key_event_dispatcher.h"
 #include "ui/base/ime/text_input_mode.h"
 #include "ui/base/ime/text_input_type.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/range/range.h"
 #include "url/gurl.h"
 
@@ -337,6 +337,11 @@ class COMPONENT_EXPORT(UI_BASE_IME) TextInputClient {
   // fields that are considered 'private' (e.g. in incognito tabs).
   virtual bool ShouldDoLearning() = 0;
 
+#if BUILDFLAG(IS_MAC)
+  // Returns whether this text client supports system-wide AutoFill.
+  virtual bool SupportsAutoFill() const;
+#endif
+
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   // Start composition over a given UTF-16 code range from existing text. This
   // should only be used for composition scenario when IME wants to start
@@ -384,17 +389,13 @@ class COMPONENT_EXPORT(UI_BASE_IME) TextInputClient {
   virtual bool SupportsAlwaysConfirmComposition();
 #endif
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
   // Returns false if either the focused editable element or the EditContext
   // bounds is not available, else it returns true with the control and
   // selection bounds for the EditContext or control bounds of the active
-  // editable element. This is used to report the layout bounds of the text
-  // input control to TSF on Windows and to the Virtual Keyboard extension on
-  // ChromeOS.
+  // editable element.
   virtual void GetActiveTextInputControlLayoutBounds(
       std::optional<gfx::Rect>* control_bounds,
       std::optional<gfx::Rect>* selection_bounds) = 0;
-#endif
 
 #if BUILDFLAG(IS_WIN)
   // Notifies accessibility about active composition. This API is currently

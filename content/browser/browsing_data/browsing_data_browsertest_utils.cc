@@ -14,9 +14,11 @@
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
+#include "base/strings/string_view_util.h"
 #include "components/network_session_configurator/common/network_switches.h"
 #include "content/browser/browsing_data/browsing_data_test_utils.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/network_service_util.h"
 #include "content/public/browser/service_worker_context.h"
@@ -112,7 +114,8 @@ GURL AddServiceWorker(const std::string& origin,
   const blink::StorageKey key =
       blink::StorageKey::CreateFirstParty(url::Origin::Create(options.scope));
   service_worker_context->RegisterServiceWorker(
-      js_url, key, options, base::BindOnce(&AddServiceWorkerCallback));
+      js_url, key, options, GlobalRenderFrameHostId(),
+      base::BindOnce(&AddServiceWorkerCallback));
 
   // Wait for its activation.
   base::RunLoop run_loop;

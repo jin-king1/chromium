@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,31 +15,26 @@
 #include <vector>
 
 #include "ash/constants/ash_switches.h"
-#include "ash/public/cpp/login_screen_test_api.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
 #include "base/files/file_path.h"
-#include "base/functional/overloaded.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/bind.h"
 #include "chrome/browser/app_mode/test/fake_origin_test_server_mixin.h"
 #include "chrome/browser/ash/app_mode/fake_cws.h"
 #include "chrome/browser/ash/app_mode/fake_cws_mixin.h"
-#include "chrome/browser/ash/app_mode/kiosk_app.h"
-#include "chrome/browser/ash/app_mode/kiosk_app_types.h"
-#include "chrome/browser/ash/app_mode/kiosk_controller.h"
 #include "chrome/browser/ash/app_mode/kiosk_test_helper.h"
-#include "chrome/browser/ash/app_mode/test/kiosk_session_initialized_waiter.h"
 #include "chrome/browser/ash/login/app_mode/network_ui_controller.h"
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/ash/login/test/scoped_policy_update.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
-#include "components/account_id/account_id.h"
-#include "components/policy/core/common/device_local_account_type.h"
+#include "components/policy/core/common/cloud/test/policy_builder.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "url/gurl.h"
 
 namespace ash {
@@ -58,18 +54,9 @@ void AppendSwitchesToDisplayLoginScreen(base::CommandLine* command_line) {
   command_line->AppendSwitch(switches::kForceLoginManagerInTests);
 }
 
-// The account ID as configured in policies is different from the `AccountId`
-// that identify users in Chrome. This function converts the policy `account_id`
-// of a Kiosk app of the given `type` to a Chrome `AccountId`.
-AccountId CreateDeviceLocalAccountId(std::string_view account_id,
-                                     policy::DeviceLocalAccountType type) {
-  return AccountId(AccountId::FromUserEmail(
-      policy::GenerateDeviceLocalAccountUserId(account_id, type)));
-}
-
 std::string_view GetAccountId(const KioskMixin::Option& option) {
   return std::visit(
-      base::Overloaded{
+      absl::Overload{
           [](const KioskMixin::DefaultServerWebAppOption& option) {
             return std::string_view(option.account_id);
           },
@@ -93,7 +80,7 @@ std::string_view GetAccountId(const KioskMixin::Option& option) {
 // not a Web app option.
 GURL GetWebAppUrl(const KioskMixin::Option& option) {
   return std::visit(
-      base::Overloaded{
+      absl::Overload{
           [](const KioskMixin::DefaultServerWebAppOption& option) {
             return GURL(kDefaultWebAppOrigin).Resolve(option.url_path);
           },
@@ -111,7 +98,7 @@ GURL GetWebAppUrl(const KioskMixin::Option& option) {
 // not a Chrome app option.
 std::string_view GetChromeAppId(const KioskMixin::Option& option) {
   return std::visit(
-      base::Overloaded{
+      absl::Overload{
           [](const KioskMixin::DefaultServerWebAppOption& option) {
             return std::string_view();
           },
@@ -203,7 +190,7 @@ void ConfigureWebApp(ScopedDevicePolicyUpdate& update,
   account->mutable_web_kiosk_app()->set_url(url.spec());
 }
 
-// Configures a Kiosk isolated web app in device policies.
+// Configures a Kiosk isolated web app and related device policies.
 void ConfigureIsolatedWebApp(ScopedDevicePolicyUpdate& update,
                              const KioskMixin::IsolatedWebAppOption& option) {
   DeviceLocalAccountInfoProto* account =
@@ -215,6 +202,12 @@ void ConfigureIsolatedWebApp(ScopedDevicePolicyUpdate& update,
       option.web_bundle_id.id());
   account->mutable_isolated_kiosk_app()->set_update_manifest_url(
       option.update_manifest_url.spec());
+  account->mutable_isolated_kiosk_app()->set_update_channel(
+      option.update_channel);
+  account->mutable_isolated_kiosk_app()->set_pinned_version(
+      option.pinned_version);
+  account->mutable_isolated_kiosk_app()->set_allow_downgrades(
+      option.allow_downgrades);
 }
 
 // Configures the Kiosk account given by `account_id` as the auto launch
@@ -223,6 +216,23 @@ void ConfigureAutoLaunchAccountId(ScopedDevicePolicyUpdate& update,
                                   std::string_view account_id) {
   update.policy_payload()->mutable_device_local_accounts()->set_auto_login_id(
       std::string(account_id));
+}
+
+// Configures the default user policies applied by DM server for Kiosk Web apps
+// and IWAs into `update`.
+void ConfigureDefaultWebAppUserPolicies(ScopedUserPolicyUpdate& update) {
+  update.policy_payload()
+      ->mutable_extensioninstallblocklist()
+      ->mutable_value()
+      ->add_entries("*");
+}
+
+bool HasChromeApps(KioskMixin::Config config) {
+  return std::ranges::any_of(config.options, [](const auto& option) {
+    return std::holds_alternative<KioskMixin::CwsChromeAppOption>(option) ||
+           std::holds_alternative<KioskMixin::SelfHostedChromeAppOption>(
+               option);
+  });
 }
 
 }  // namespace
@@ -239,7 +249,15 @@ KioskMixin::KioskMixin(InProcessBrowserTestMixinHost* host,
       fake_cws_mixin_(host, FakeCwsMixin::kPublic),
       device_state_(
           host,
-          ash::DeviceStateMixin::State::OOBE_COMPLETED_CLOUD_ENROLLED) {}
+          ash::DeviceStateMixin::State::OOBE_COMPLETED_CLOUD_ENROLLED) {
+  // Chrome apps default to disabled in Kiosk from M138. Re-enable Chrome apps
+  // in tests that need it. Tests can initialize their own `ScopedFeatureList`
+  // separately to override this setting if needed.
+  if (cached_configuration_.has_value() &&
+      HasChromeApps(cached_configuration_.value())) {
+    scoped_features_.InitFromCommandLine("AllowChromeAppsInKioskSessions", "");
+  }
+}
 
 KioskMixin::KioskMixin(InProcessBrowserTestMixinHost* host,
                        Config cached_configuration)
@@ -261,93 +279,63 @@ void KioskMixin::SetUpInProcessBrowserTestFixture() {
   }
 }
 
-void KioskMixin::Configure(ScopedDevicePolicyUpdate& scoped_update,
+void KioskMixin::Configure(ScopedDevicePolicyUpdate& device_policy_update,
+                           const Config& config) {
+  auto user_policy_update_callback =
+      base::BindLambdaForTesting([this](std::string_view account_id) {
+        return device_state_.RequestDeviceLocalAccountPolicyUpdate(
+            std::string(account_id));
+      });
+  Configure(device_policy_update, user_policy_update_callback, config);
+}
+
+void KioskMixin::Configure(ScopedDevicePolicyUpdate& device_policy_update,
+                           UserPolicyUpdateCallback user_policy_update_callback,
                            const Config& config) {
   CheckIsValid(config);
+
   for (const auto& option : config.options) {
+    auto account_id = GetAccountId(option);
+    auto user_policy_update = user_policy_update_callback.Run(account_id);
     std::visit(
-        base::Overloaded{
-            [this, &scoped_update](const DefaultServerWebAppOption& option) {
-              ConfigureWebApp(scoped_update,
+        absl::Overload{
+            [this, &device_policy_update,
+             &user_policy_update](const DefaultServerWebAppOption& option) {
+              ConfigureWebApp(device_policy_update,
                               web_server_.GetUrl(option.url_path),
                               option.account_id);
+              ConfigureDefaultWebAppUserPolicies(*user_policy_update);
             },
-            [&scoped_update](const WebAppOption& option) {
-              ConfigureWebApp(scoped_update, option.url, option.account_id);
+            [&device_policy_update,
+             &user_policy_update](const WebAppOption& option) {
+              ConfigureWebApp(device_policy_update, option.url,
+                              option.account_id);
+              ConfigureDefaultWebAppUserPolicies(*user_policy_update);
             },
-            [this, &scoped_update](const CwsChromeAppOption& option) {
+            [this, &device_policy_update](const CwsChromeAppOption& option) {
               fake_cws().SetUpdateCrx(option.app_id, option.crx_filename,
                                       option.crx_version);
-              ConfigureCwsChromeApp(scoped_update, option.app_id,
+              ConfigureCwsChromeApp(device_policy_update, option.app_id,
                                     option.account_id);
             },
-            [&scoped_update](const SelfHostedChromeAppOption& option) {
-              ConfigureSelfHostedChromeApp(scoped_update, option.app_id,
+            [&device_policy_update](const SelfHostedChromeAppOption& option) {
+              ConfigureSelfHostedChromeApp(device_policy_update, option.app_id,
                                            option.account_id,
                                            option.update_url);
             },
-            [&scoped_update](const IsolatedWebAppOption& option) {
-              ConfigureIsolatedWebApp(scoped_update, option);
+            [&device_policy_update,
+             &user_policy_update](const IsolatedWebAppOption& option) {
+              ConfigureIsolatedWebApp(device_policy_update, option);
+              ConfigureDefaultWebAppUserPolicies(*user_policy_update);
             },
         },
         option);
   }
+
   if (config.auto_launch_account_id.has_value()) {
-    ConfigureAutoLaunchAccountId(scoped_update,
+    ConfigureAutoLaunchAccountId(device_policy_update,
                                  config.auto_launch_account_id->value());
   }
-}
-
-bool KioskMixin::LaunchManually(const KioskApp& app) {
-  switch (app.id().type) {
-    case KioskAppType::kChromeApp:
-      return LoginScreenTestApi::LaunchApp(app.id().app_id.value());
-    case KioskAppType::kWebApp:
-    case KioskAppType::kIsolatedWebApp:
-      return LoginScreenTestApi::LaunchApp(app.id().account_id);
-  }
-}
-
-bool KioskMixin::LaunchManually(std::string_view account_id) {
-  auto app_maybe = GetAppByAccountId(account_id);
-  return app_maybe.has_value() ? LaunchManually(app_maybe.value()) : false;
-}
-
-bool KioskMixin::WaitSessionLaunched() {
-  return KioskSessionInitializedWaiter().Wait();
-}
-
-// static
-std::optional<KioskApp> KioskMixin::GetAppByAccountId(
-    std::string_view account_id) {
-  // We don't know which app type `account_id` refers to at this point. Create a
-  // device local account ID for each app type and see which one exists.
-  auto chrome_app_account_id = CreateDeviceLocalAccountId(
-      account_id, policy::DeviceLocalAccountType::kKioskApp);
-  auto web_app_account_id = CreateDeviceLocalAccountId(
-      account_id, policy::DeviceLocalAccountType::kWebKioskApp);
-  auto iwa_account_id = CreateDeviceLocalAccountId(
-      account_id, policy::DeviceLocalAccountType::kKioskIsolatedWebApp);
-  for (const auto& app : KioskController::Get().GetApps()) {
-    switch (app.id().type) {
-      case KioskAppType::kChromeApp:
-        if (app.id().account_id == chrome_app_account_id) {
-          return app;
-        }
-        break;
-      case KioskAppType::kWebApp:
-        if (app.id().account_id == web_app_account_id) {
-          return app;
-        }
-        break;
-      case KioskAppType::kIsolatedWebApp:
-        if (app.id().account_id == iwa_account_id) {
-          return app;
-        }
-        break;
-    }
-  }
-  return std::nullopt;
 }
 
 GURL KioskMixin::GetDefaultServerUrl(std::string_view url_suffix) const {
@@ -356,6 +344,7 @@ GURL KioskMixin::GetDefaultServerUrl(std::string_view url_suffix) const {
 
 // static
 std::vector<KioskMixin::Config> KioskMixin::ConfigsToAutoLaunchEachAppType() {
+  // TODO(crbug.com/379633748): Add IWA.
   return {
       Config{/*name=*/"WebApp",
              AutoLaunchAccount{SimpleWebAppOption().account_id},
@@ -463,10 +452,16 @@ KioskMixin::SelfHostedChromeAppOption::~SelfHostedChromeAppOption() = default;
 KioskMixin::IsolatedWebAppOption::IsolatedWebAppOption(
     std::string_view account_id,
     const web_package::SignedWebBundleId& web_bundle_id,
-    GURL update_manifest_url)
+    GURL update_manifest_url,
+    std::string update_channel,
+    std::string pinned_version,
+    bool allow_downgrades)
     : account_id(std::string(account_id)),
       web_bundle_id(web_bundle_id),
-      update_manifest_url(std::move(update_manifest_url)) {}
+      update_manifest_url(std::move(update_manifest_url)),
+      update_channel(std::move(update_channel)),
+      pinned_version(std::move(pinned_version)),
+      allow_downgrades(allow_downgrades) {}
 
 KioskMixin::IsolatedWebAppOption::IsolatedWebAppOption(
     const KioskMixin::IsolatedWebAppOption&) = default;

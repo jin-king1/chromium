@@ -13,7 +13,6 @@
 #include <set>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "base/containers/unique_ptr_adapters.h"
@@ -708,7 +707,7 @@ class ArcBluetoothBridge
   // Timer to turn adapter discoverable off.
   base::OneShotTimer discoverable_off_timer_;
   // Adapter discoverable timeout value.
-  std::optional<uint32_t> discoverable_off_timeout_ = std::nullopt;
+  std::optional<uint32_t> discoverable_off_timeout_;
 
   // Queue to track the powered state changes initiated by Android.
   base::queue<AdapterPowerState> remote_power_changes_;
@@ -728,8 +727,6 @@ class ArcBluetoothBridge
   // * mapped to nullptr -> reserved, awaiting data
   // * mapped to a device::BluetoothAdvertisement -> in use, and the mapped
   //   BluetoothAdvertisement is currently registered with the adapter.
-  // TODO(crbug.com/41282389) Change back to 5 when we support setting signal
-  // strength per each advertisement slot.
   enum { kMaxAdvertisements = 1 };
   std::map<int32_t, scoped_refptr<device::BluetoothAdvertisement>>
       advertisements_;

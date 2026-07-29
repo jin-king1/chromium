@@ -12,10 +12,14 @@
 #include "content/browser/devtools/protocol/devtools_domain_handler.h"
 #include "content/browser/devtools/protocol/fed_cm.h"
 #include "content/common/content_export.h"
+#include "url/origin.h"
 
 namespace content {
-class FederatedAuthRequestImpl;
-class FederatedAuthRequestPageData;
+class DevToolsAgentHostImpl;
+namespace webid {
+class Request;
+class RequestPageData;
+}
 class FederatedIdentityApiPermissionContextDelegate;
 class IdentityProviderData;
 class IdentityRequestAccount;
@@ -77,12 +81,12 @@ class FedCmHandler : public DevToolsDomainHandler, public FedCm::Backend {
 
   url::Origin GetEmbeddingOrigin();
 
-  FederatedAuthRequestPageData* GetPageData();
-  FederatedAuthRequestImpl* GetFederatedAuthRequest();
+  webid::RequestPageData* GetPageData();
+  webid::Request* GetFederatedAuthRequest();
   const std::vector<IdentityProviderDataPtr>* GetIdentityProviderData(
-      FederatedAuthRequestImpl* auth_request);
+      webid::Request* auth_request);
   const std::vector<IdentityRequestAccountPtr>* GetAccounts(
-      FederatedAuthRequestImpl* auth_request);
+      webid::Request* auth_request);
   FederatedIdentityApiPermissionContextDelegate* GetApiPermissionContext();
 
   raw_ptr<RenderFrameHostImpl> frame_host_ = nullptr;

@@ -41,10 +41,6 @@ bool operator==(const OffsetMappingUnit& unit, const OffsetMappingUnit& other) {
          unit.TextContentEnd() == other.TextContentEnd();
 }
 
-bool operator!=(const OffsetMappingUnit& unit, const OffsetMappingUnit& other) {
-  return !operator==(unit, other);
-}
-
 void PrintTo(const OffsetMappingUnit& unit, std::ostream* ostream) {
   static const std::array<const char*, 3> kTypeNames = {"Identity", "Collapsed",
                                                         "Expanded"};
@@ -79,7 +75,6 @@ class OffsetMappingTest : public RenderingTest {
   void SetupHtml(const char* id, String html) {
     SetBodyInnerHTML(html);
     layout_block_flow_ = To<LayoutBlockFlow>(GetLayoutObjectByElementId(id));
-    DCHECK(layout_block_flow_->IsLayoutNGObject());
     layout_object_ = layout_block_flow_->FirstChild();
   }
 
@@ -103,7 +98,7 @@ class OffsetMappingTest : public RenderingTest {
       Vector<unsigned> collapsed_indexes;
       for (const auto& unit : mapping.GetMappingUnitsForDOMRange(
                EphemeralRange::RangeOfContents(node))) {
-        if (unit.GetType() != OffsetMappingUnitType::kCollapsed) {
+        if (!unit.IsCollapsed()) {
           continue;
         }
         for (unsigned i = unit.DOMStart(); i < unit.DOMEnd(); ++i)
@@ -213,7 +208,6 @@ class OffsetMappingTest : public RenderingTest {
 
   Persistent<LayoutBlockFlow> layout_block_flow_;
   Persistent<LayoutObject> layout_object_;
-  FontCachePurgePreventer purge_preventer_;
 };
 
 TEST_F(OffsetMappingTest, CollapseSpaces) {
@@ -937,7 +931,7 @@ TEST_F(OffsetMappingTest, FirstLetterInDifferentBlock) {
   const OffsetMapping& remaining_text_result = *mapping1;
   ASSERT_EQ(1u, remaining_text_result.GetUnits().size());
   TEST_UNIT(remaining_text_result.GetUnits()[0],
-            OffsetMappingUnitType::kIdentity, text_node, 1u, 3u, 1u, 3u);
+            OffsetMappingUnitType::kIdentity, text_node, 1u, 3u, 0u, 2u);
   ASSERT_EQ(1u, remaining_text_result.GetRanges().size());
   TEST_RANGE(remaining_text_result.GetRanges(), text_node, 0u, 1u);
 
@@ -956,17 +950,18 @@ TEST_F(OffsetMappingTest, FirstLetterInDifferentBlock) {
 
   EXPECT_EQ(0u,
             *first_letter_result.GetTextContentOffset(Position(text_node, 0)));
+
   EXPECT_EQ(
-      1u, *remaining_text_result.GetTextContentOffset(Position(text_node, 1)));
+      0u, *remaining_text_result.GetTextContentOffset(Position(text_node, 1)));
   EXPECT_EQ(
-      2u, *remaining_text_result.GetTextContentOffset(Position(text_node, 2)));
+      1u, *remaining_text_result.GetTextContentOffset(Position(text_node, 2)));
   EXPECT_EQ(
-      3u, *remaining_text_result.GetTextContentOffset(Position(text_node, 3)));
+      2u, *remaining_text_result.GetTextContentOffset(Position(text_node, 3)));
 
   EXPECT_EQ(Position(text_node, 1), first_letter_result.GetFirstPosition(1));
   EXPECT_EQ(Position(text_node, 1), first_letter_result.GetLastPosition(1));
-  EXPECT_EQ(Position(text_node, 1), remaining_text_result.GetFirstPosition(1));
-  EXPECT_EQ(Position(text_node, 1), remaining_text_result.GetLastPosition(1));
+  EXPECT_EQ(Position(text_node, 1), remaining_text_result.GetFirstPosition(0));
+  EXPECT_EQ(Position(text_node, 1), remaining_text_result.GetLastPosition(0));
 }
 
 TEST_F(OffsetMappingTest, WhiteSpaceTextNodeWithoutLayoutText) {

@@ -12,9 +12,9 @@ import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
-import {BrowserProxyImpl} from './browser_proxy.js';
 import type {URLVisit} from './history_cluster_types.mojom-webui.js';
 import {Annotation} from './history_cluster_types.mojom-webui.js';
+import {browserProxyFactory} from './history_clusters.mojom-webui.js';
 import {getCss} from './url_visit.css.js';
 import {getHtml} from './url_visit.html.js';
 import {insertHighlightedTextWithMatchesIntoElement} from './utils.js';
@@ -31,12 +31,6 @@ import {insertHighlightedTextWithMatchesIntoElement} from './utils.js';
 const annotationToStringId: Map<number, string> = new Map([
   [Annotation.kBookmarked, 'bookmarked'],
 ]);
-
-declare global {
-  interface HTMLElementTagNameMap {
-    'url-visit': UrlVisitElement;
-  }
-}
 
 const ClusterMenuElementBase = I18nMixinLit(CrLitElement);
 
@@ -100,14 +94,15 @@ export class UrlVisitElement extends ClusterMenuElementBase {
   // Properties
   //============================================================================
 
-  query: string = '';
-  visit?: URLVisit;
-  fromPersistence: boolean = false;
+  accessor query: string = '';
+  accessor visit: URLVisit|undefined;
+  accessor fromPersistence: boolean = false;
   protected annotations_: string[] = [];
-  protected allowDeletingHistory_: boolean =
+  protected accessor allowDeletingHistory_: boolean =
       loadTimeData.getBoolean('allowDeletingHistory');
-  private inSidePanel_: boolean = loadTimeData.getBoolean('inSidePanel');
-  protected renderActionMenu_: boolean = false;
+  private accessor inSidePanel_: boolean =
+      loadTimeData.getBoolean('inSidePanel');
+  protected accessor renderActionMenu_: boolean = false;
 
   override updated(changedProperties: PropertyValues<this>) {
     super.updated(changedProperties);
@@ -126,9 +121,13 @@ export class UrlVisitElement extends ClusterMenuElementBase {
   // Event handlers
   //============================================================================
 
-  private onAuxClick_() {
+  private fireVisitClickedEvent_() {
     // Notify the parent <history-cluster> element of this event.
     this.fire('visit-clicked', this.visit);
+  }
+
+  protected onAuxclick_(event: MouseEvent) {
+    this.onClick_(event);
   }
 
   protected onClick_(event: MouseEvent) {
@@ -140,19 +139,19 @@ export class UrlVisitElement extends ClusterMenuElementBase {
     event.preventDefault();  // Prevent default browser action (navigation).
 
     // To record metrics.
-    this.onAuxClick_();
+    this.fireVisitClickedEvent_();
 
     this.openUrl_(event);
   }
 
-  protected onContextMenu_(event: MouseEvent) {
+  protected onContextmenu_(event: MouseEvent) {
     // Because WebUI has a Blink-provided context menu that's suitable, and
     // Side Panel always UIs always have a custom context menu.
     if (!loadTimeData.getBoolean('inSidePanel') || !this.visit) {
       return;
     }
 
-    BrowserProxyImpl.getInstance().handler.showContextMenuForURL(
+    browserProxyFactory.getInstance().handler.showContextMenuForURL(
         this.visit.normalizedUrl, {x: event.clientX, y: event.clientY});
   }
 
@@ -163,7 +162,7 @@ export class UrlVisitElement extends ClusterMenuElementBase {
     }
 
     // To record metrics.
-    this.onAuxClick_();
+    this.fireVisitClickedEvent_();
 
     this.openUrl_(e);
   }
@@ -232,7 +231,7 @@ export class UrlVisitElement extends ClusterMenuElementBase {
 
   private openUrl_(event: MouseEvent|KeyboardEvent) {
     assert(this.visit);
-    BrowserProxyImpl.getInstance().handler.openHistoryUrl(
+    browserProxyFactory.getInstance().handler.openHistoryUrl(
         this.visit.normalizedUrl, {
           middleButton: (event as MouseEvent).button === 1,
           altKey: event.altKey,
@@ -240,6 +239,12 @@ export class UrlVisitElement extends ClusterMenuElementBase {
           metaKey: event.metaKey,
           shiftKey: event.shiftKey,
         });
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'url-visit': UrlVisitElement;
   }
 }
 

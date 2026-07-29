@@ -7,23 +7,22 @@
 
 #include "base/files/file_path.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 
 namespace password_manager {
 
+#if !BUILDFLAG(IS_ANDROID)
 extern const base::FilePath::CharType kLoginDataForProfileFileName[];
 extern const base::FilePath::CharType kLoginDataForAccountFileName[];
 extern const base::FilePath::CharType kLoginDataJournalForProfileFileName[];
 extern const base::FilePath::CharType kLoginDataJournalForAccountFileName[];
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 // URL to the password manager account dashboard.
 extern const char kPasswordManagerAccountDashboardURL[];
 
 // URL to the password manager help center.
 extern const char kPasswordManagerHelpCenteriOSURL[];
-
-// URL to the help center article about Smart Lock;
-// TODO(crbug.com/40584353): remove when "Smart Lock" is completely gone.
-extern const char kPasswordManagerHelpCenterSmartLock[];
 
 // URL which open native Password Manager UI.
 extern const char kManageMyPasswordsURL[];

@@ -9,45 +9,43 @@
 
 namespace blink {
 
-unsigned FontSizeAdjust::GetHash() const {
-  unsigned computed_hash = 0;
-  WTF::AddFloatToHash(computed_hash, value_);
-  WTF::AddIntToHash(computed_hash, static_cast<const unsigned>(metric_));
-  WTF::AddIntToHash(computed_hash, static_cast<const unsigned>(type_));
-  return computed_hash;
-}
+namespace {
 
-String FontSizeAdjust::ToString(Metric metric) const {
+StringView ToString(FontSizeAdjust::Metric metric) {
   switch (metric) {
-    case Metric::kCapHeight:
+    case FontSizeAdjust::Metric::kCapHeight:
       return "cap-height";
-    case Metric::kChWidth:
+    case FontSizeAdjust::Metric::kChWidth:
       return "ch-width";
-    case Metric::kIcWidth:
+    case FontSizeAdjust::Metric::kIcWidth:
       return "ic-width";
-    case Metric::kIcHeight:
+    case FontSizeAdjust::Metric::kIcHeight:
       return "ic-height";
-    case Metric::kExHeight:
+    case FontSizeAdjust::Metric::kExHeight:
       return "ex-height";
   }
   NOTREACHED();
+}
+
+}  // namespace
+
+unsigned FontSizeAdjust::GetHash() const {
+  unsigned computed_hash = 0;
+  AddFloatToHash(computed_hash, value_);
+  AddIntToHash(computed_hash, static_cast<const unsigned>(metric_));
+  AddIntToHash(computed_hash, static_cast<const unsigned>(type_));
+  return computed_hash;
 }
 
 String FontSizeAdjust::ToString() const {
   if (value_ == kFontSizeAdjustNone) {
     return "none";
   }
-
+  String adjustment = IsFromFont() ? "from-font" : String::Number(value_);
   if (metric_ == Metric::kExHeight) {
-    return IsFromFont()
-               ? "from-font"
-               : String::Format("%s", String::Number(value_).Ascii().c_str());
+    return adjustment;
   }
-
-  return IsFromFont()
-             ? String::Format("%s from-font", ToString(metric_).Ascii().c_str())
-             : String::Format("%s %s", ToString(metric_).Ascii().c_str(),
-                              String::Number(value_).Ascii().c_str());
+  return StrCat({::blink::ToString(metric_), " ", adjustment});
 }
 
 }  // namespace blink

@@ -17,6 +17,7 @@ dev_ui_components_resources.grd.
       <part file="commerce_resources.grdp" />
       <part file="dom_distiller_resources.grdp" />
       <part file="neterror_resources.grdp" />
+      <part file="notifications_global_cache_list.grdp" />
       <part file="ntp_tiles_resources.grdp" />
       <part file="pdf_resources.grdp" />
       <part file="printing_resources.grdp" />
@@ -28,6 +29,9 @@ dev_ui_components_resources.grd.
 
       <if expr="is_android">
         <part file="android_system_error_page_resources.grdp" />
+      </if>
+      <if expr="enable_private_insights">
+        <part file="private_insights_resources.grdp" />
       </if>
       <if expr="enable_supervised_users">
         <part file="supervised_user_resources.grdp" />

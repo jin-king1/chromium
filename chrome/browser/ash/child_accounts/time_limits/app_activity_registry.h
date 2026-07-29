@@ -30,8 +30,7 @@ class ChildStatusReportRequest;
 class PrefRegistrySimple;
 class PrefService;
 
-namespace ash {
-namespace app_time {
+namespace ash::app_time {
 
 class AppTimeLimitsAllowlistPolicyWrapper;
 class AppTimeNotificationDelegate;
@@ -185,7 +184,7 @@ class AppActivityRegistry : public AppServiceWrapper::EventListener {
                        AppNotification app_notification);
     SystemNotification(const SystemNotification&);
     SystemNotification& operator=(const SystemNotification&);
-    std::optional<base::TimeDelta> time_limit = std::nullopt;
+    std::optional<base::TimeDelta> time_limit;
     AppNotification notification = AppNotification::kUnknown;
   };
 
@@ -332,7 +331,6 @@ class AppActivityRegistry : public AppServiceWrapper::EventListener {
   bool activity_reporting_enabled_ = true;
 };
 
-}  // namespace app_time
-}  // namespace ash
+}  // namespace ash::app_time
 
 #endif  // CHROME_BROWSER_ASH_CHILD_ACCOUNTS_TIME_LIMITS_APP_ACTIVITY_REGISTRY_H_

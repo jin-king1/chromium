@@ -164,7 +164,7 @@ bool WideToCharMap(const wchar *Src,char *Dest,size_t DestSize,bool &Success)
   memset(Dest,0,DestSize);
   
   Success=true;
-  uint SrcPos=0,DestPos=0;
+  size_t SrcPos=0,DestPos=0;
   while (Src[SrcPos]!=0 && DestPos<DestSize-MB_CUR_MAX)
   {
     if (uint(Src[SrcPos])==MappedStringMark)
@@ -244,7 +244,7 @@ void CharToWideMap(const char *Src,wchar *Dest,size_t DestSize,bool &Success)
       DestPos++;
     }
   }
-  Dest[Min(DestPos,DestSize-1)]=0;
+  Dest[Min(size_t{DestPos},DestSize-1)]=0;
 }
 #endif
 
@@ -656,6 +656,40 @@ bool IsTextUtf8(const byte *Src,size_t SrcSize)
 
 int wcsicomp(const wchar *s1,const wchar *s2)
 {
+  // If strings are English or numeric, perform the fast comparison.
+  // It improves speed in cases like comparing against a lot of MOTW masks.
+  bool FastMode=true;
+  while (true)
+  {
+    // English uppercase, English lowercase and digit flags.
+    bool u1=*s1>='A' && *s1<='Z', l1=*s1>='a' && *s1<='z', d1=*s1>='0' && *s1<='9';
+    bool u2=*s2>='A' && *s2<='Z', l2=*s2>='a' && *s2<='z', d2=*s2>='0' && *s2<='9';
+
+    // Fast comparison is impossible if both characters are not alphanumeric or 0.
+    if (!u1 && !l1 && !d1 && *s1!=0 && !u2 && !l2 && !d2 && *s2!=0)
+    {
+      FastMode=false;
+      break;
+    }
+    // Convert lowercase to uppercase, keep numeric and not alphanumeric as is.
+    wchar c1 = l1 ? *s1-'a'+'A' : *s1;
+    wchar c2 = l2 ? *s2-'a'+'A' : *s2;
+
+    // If characters mistmatch, to return a proper value we must compare
+    // already converted, case insensitive characters instead of original ones.
+    // So we place a.txt before B.txt and can perform the correct case
+    // insensitive binary search in different string lists.
+    if (c1 != c2)
+      return c1 < c2 ? -1 : 1;
+
+    if (*s1==0)
+      break;
+    s1++;
+    s2++;
+  }
+  if (FastMode)
+    return 0;
+
 #ifdef _WIN_ALL
   return CompareStringW(LOCALE_USER_DEFAULT,NORM_IGNORECASE|SORT_STRINGSORT,s1,-1,s2,-1)-2;
 #else
@@ -663,6 +697,11 @@ int wcsicomp(const wchar *s1,const wchar *s2)
   {
     wchar u1 = towupper(*s1);
     wchar u2 = towupper(*s2);
+
+    // If characters mistmatch, to return a proper value we must compare
+    // already converted, case insensitive characters instead of original ones.
+    // So we place a.txt before B.txt and can perform the correct case
+    // insensitive binary search in different string lists.
     if (u1 != u2)
       return u1 < u2 ? -1 : 1;
     if (*s1==0)
@@ -731,6 +770,21 @@ std::wstring::size_type wcscasestr(const std::wstring &str, const std::wstring &
 #ifndef SFX_MODULE
 wchar* wcslower(wchar *s)
 {
+  // If string doesn't contain non-English or uppercase English characters,
+  // we can return immediately and avoid costly system calls.
+  bool AlreadyLower=true;
+  for (wchar *c=s;*c!=0;c++)
+  {
+    uint u=(uint)*c;
+    if (u>=128 || (u>='A' && u<='Z'))
+    {
+      AlreadyLower=false;
+      break;
+    }
+  }
+  if (AlreadyLower)
+    return s;
+
 #ifdef _WIN_ALL
 #if defined(CHROMIUM_UNRAR)
   // kernel32!LCMapStringEx instead of user32.dll!CharUpper due to win32k

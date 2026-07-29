@@ -5,6 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_INPUT_POINTER_EVENT_MANAGER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_INPUT_POINTER_EVENT_MANAGER_H_
 
+#include <array>
+
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/input/boundary_event_dispatcher.h"
 #include "third_party/blink/renderer/core/input/touch_event_manager.h"
@@ -12,12 +14,18 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
+#include "ui/gfx/geometry/transform.h"
 
 namespace blink {
 
 class LocalFrame;
 class MouseEventManager;
 class WebPointerProperties;
+
+// Width and height of area of rectangle to hit test for potentially important
+// input fields to write into. This improves the chances of writing into the
+// intended input if the user starts writing close to it.
+inline const size_t kStylusWritableAdjustmentSizeDip = 30;
 
 // This class takes care of dispatching all pointer events and keeps track of
 // properties of active pointer events.
@@ -74,7 +82,10 @@ class CORE_EXPORT PointerEventManager final
 
   void ElementRemoved(Element*);
 
-  void NodeWillBeRemoved(Node& node_to_be_removed);
+  void NodeChildrenWillBeRemoved(ContainerNode&);
+  void NodeWillBeRemoved(Node&);
+  void HandlePseudoElementRemoval(PseudoElement&);
+  void SetHandwritingRadius(int handwriting_radius);
 
   // Starts capturing of all events with the given |PointerId| to the given
   // |Element|.
@@ -84,6 +95,10 @@ class CORE_EXPORT PointerEventManager final
 
   // See Element::hasPointerCapture(PointerId).
   bool HasPointerCapture(PointerId, const Element*) const;
+
+  // Records the fact that the primary pointerdown corresponding
+  // to the given `unique_touch_event_id` has been canceled.
+  void AppendTouchIdForCanceledPointerDown(uint32_t unique_touch_event_id);
 
   bool IsActive(const PointerId) const;
 
@@ -95,8 +110,8 @@ class CORE_EXPORT PointerEventManager final
   bool IsPointerIdActiveOnFrame(PointerId, LocalFrame*) const;
 
   // Returns true if the primary pointerdown corresponding to the given
-  // |uniqueTouchEventId| was canceled. Also drops stale ids from
-  // |m_touchIdsForCanceledPointerdowns|.
+  // |unique_touch_event_id| was canceled. Also drops stale ids from
+  // |touch_ids_for_canceled_pointerdowns_|.
   bool PrimaryPointerdownCanceled(uint32_t unique_touch_event_id);
 
   void RemoveLastMousePosition();
@@ -114,6 +129,12 @@ class CORE_EXPORT PointerEventManager final
   PointerId GetPointerIdForTouchGesture(const uint32_t unique_touch_event_id);
 
   Element* CurrentTouchDownElement();
+
+  PointerEventFactory::PointerTarget* GetPointerDownTarget(
+      PointerId pointer_id) const;
+  PointerEventFactory::PointerTarget* GetPointerUpTarget(
+      PointerId pointer_id) const;
+  void RemovePointerTargets(PointerId pointer_id);
 
  private:
   // We use int64_t to cover the whole range for PointerId with no
@@ -179,6 +200,8 @@ class CORE_EXPORT PointerEventManager final
                           PointerEvent*);
   void SetElementUnderPointer(PointerEvent*, Element*);
 
+  void HandleRemoveSubtree(Node&, bool include_root);
+
   // First movement after entering a new frame should be 0 as the new frame
   // doesn't have the info for the previous events. This function sets the
   // LastPosition to be same as current event position when target is in
@@ -243,17 +266,22 @@ class CORE_EXPORT PointerEventManager final
   const Member<LocalFrame> frame_;
 
   WeakMember<PaintLayerScrollableArea> resize_scrollable_area_;
-  gfx::Vector2d offset_from_resize_corner_;
+  gfx::Transform resize_position_to_size_transform_;
 
   // Prevents firing mousedown, mousemove & mouseup in-between a canceled
   // pointerdown and next pointerup/pointercancel.
   // See "PREVENT MOUSE EVENT flag" in the spec:
   //   https://w3c.github.io/pointerevents/#compatibility-mapping-with-mouse-events
-  bool prevent_mouse_event_for_pointer_type_
-      [static_cast<size_t>(WebPointerProperties::PointerType::kMaxValue) + 1];
+  std::array<bool,
+             static_cast<size_t>(WebPointerProperties::PointerType::kMaxValue) +
+                 1>
+      prevent_mouse_event_for_pointer_type_;
 
   // Set upon scrolling starts when sending a pointercancel, prevents PE
   // dispatches for non-hovering pointers until all of them become inactive.
+  // NOTE: If adding a new field to this class please ensure that it is
+  // updated in |PointerEventManager::HandlePseudoElementRemoval()| if it's a
+  // target.
   bool non_hovering_pointers_canceled_ = false;
 
   Deque<uint32_t> touch_ids_for_canceled_pointerdowns_;
@@ -270,14 +298,18 @@ class CORE_EXPORT PointerEventManager final
   // the updated `element_under_pointer_` (i.e. the updated element gets no
   // "out", but it gets an "over" if it happens to become the new
   // `element_under_pointer_` later on).
-  WTF::HashSet<int64_t> original_element_under_pointer_removed_;
+  HashSet<int64_t> original_element_under_pointer_removed_;
 
   PointerCapturingMap pointer_capture_target_;
   PointerCapturingMap pending_pointer_capture_target_;
 
-  PointerEventFactory pointer_event_factory_;
+  Member<PointerEventFactory> pointer_event_factory_;
   Member<TouchEventManager> touch_event_manager_;
   Member<MouseEventManager> mouse_event_manager_;
+
+  // The area around an editable region where handwriting should still be
+  // possible.
+  int handwriting_radius_ = kStylusWritableAdjustmentSizeDip;
 
   // These flags are set for the SkipTouchEventFilter experiment. The
   // experiment either skips filtering discrete (touch start/end) events to the

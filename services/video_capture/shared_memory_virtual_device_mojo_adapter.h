@@ -46,8 +46,7 @@ class SharedMemoryVirtualDeviceMojoAdapter
              mojo::PendingRemote<mojom::VideoFrameHandler> receiver) override;
   void StartInProcess(
       const media::VideoCaptureParams& requested_settings,
-      const base::WeakPtr<media::VideoFrameReceiver>& frame_handler,
-      media::VideoEffectsContext context) override;
+      const base::WeakPtr<media::VideoFrameReceiver>& frame_handler) override;
   void MaybeSuspend() override;
   void Resume() override;
   void GetPhotoState(GetPhotoStateCallback callback) override;
@@ -75,6 +74,8 @@ class SharedMemoryVirtualDeviceMojoAdapter
   scoped_refptr<ScopedAccessPermissionMap> scoped_access_permission_map_;
   SEQUENCE_CHECKER(sequence_checker_);
 };
+
+bool IsSupportedVideoPixelFormat(media::VideoPixelFormat format);
 
 }  // namespace video_capture
 

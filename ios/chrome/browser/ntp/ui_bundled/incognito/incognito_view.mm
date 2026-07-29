@@ -5,26 +5,18 @@
 #import "ios/chrome/browser/ntp/ui_bundled/incognito/incognito_view.h"
 
 #import "base/ios/ns_range.h"
-#import "components/content_settings/core/common/features.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/drag_and_drop/model/url_drag_drop_handler.h"
 #import "ios/chrome/browser/ntp/ui_bundled/incognito/incognito_view_util.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_url_loader_delegate.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
-#import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/public/toolbar_constants.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/public/toolbar_utils.h"
-#import "ios/chrome/browser/url_loading/model/url_loading_params.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_constants.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
-#import "ios/web/public/navigation/navigation_manager.h"
-#import "ios/web/public/navigation/referrer.h"
-#import "net/base/apple/url_conversions.h"
 #import "ui/base/l10n/l10n_util.h"
-#import "url/gurl.h"
 
 namespace {
 
@@ -36,7 +28,7 @@ const CGFloat kLayoutGuideVerticalMargin = 8.0;
 const CGFloat kLayoutGuideMinHeight = 12.0;
 
 // The size of the incognito symbol image.
-NSInteger kIncognitoSymbolImagePointSize = 72;
+constexpr NSInteger kIncognitoSymbolImagePointSize = 72;
 
 // Returns a font, scaled to the current dynamic type settings, that is suitable
 // for the title of the incognito page.
@@ -176,10 +168,9 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
           configurationWithPointSize:kIncognitoSymbolImagePointSize
                               weight:UIImageSymbolWeightLight
                                scale:UIImageSymbolScaleMedium];
-      incognitoImage =
-          SymbolWithPalette(CustomSymbolWithConfiguration(
-                                kIncognitoCircleFillSymbol, configuration),
-                            LargeIncognitoPalette());
+      incognitoImage = SymbolWithPalette(
+          SymbolWithConfiguration(SymbolIncognitoCircleFill, configuration),
+          LargeIncognitoPalette());
 
       UIImageView* incognitoImageView =
           [[UIImageView alloc] initWithImage:incognitoImage];
@@ -276,15 +267,21 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
     ];
     ApplyVisualConstraints(constraints, viewsDictionary);
 
-    if (@available(iOS 17, *)) {
-      NSArray<UITrait>* traits = TraitCollectionSetForTraits(@[
-        UITraitVerticalSizeClass.class, UITraitHorizontalSizeClass.class
-      ]);
-      [self registerForTraitChanges:traits
-                         withAction:@selector(updateToolbarMargins)];
-    }
+    [self registerForTraitChanges:
+              @[UITraitVerticalSizeClass.class, UITraitHorizontalSizeClass.class]
+                       withAction:@selector(updateToolbarMargins)];
   }
   return self;
+}
+
+- (UIEdgeInsets)intrinsicContentVisualInsets {
+  [self layoutIfNeeded];
+  [_containerView layoutIfNeeded];
+  [_stackView layoutIfNeeded];
+  CGFloat topInset = _stackView.frame.origin.y;
+  CGFloat botInset = _containerView.frame.size.height -
+                     _stackView.frame.origin.y - _stackView.frame.size.height;
+  return UIEdgeInsetsMake(topInset, 0, botInset, 0);
 }
 
 #pragma mark - UIView overrides
@@ -321,17 +318,6 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
   [self.superview removeLayoutGuide:_bottomUnsafeAreaGuideInSuperview];
   [super willMoveToSuperview:newSuperview];
 }
-
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-
-  [self updateToolbarMargins];
-}
-#endif
 
 - (void)safeAreaInsetsDidChange {
   [super safeAreaInsetsDidChange];
@@ -393,6 +379,7 @@ NSAttributedString* FormatHTMLListForUILabel(NSString* listString) {
     titleLabel.numberOfLines = 0;
     titleLabel.textAlignment = NSTextAlignmentCenter;
     titleLabel.text = l10n_util::GetNSString(IDS_NEW_TAB_OTR_TITLE);
+    titleLabel.accessibilityTraits = UIAccessibilityTraitHeader;
     titleLabel.adjustsFontForContentSizeCategory = YES;
     [_stackView addArrangedSubview:titleLabel];
   }

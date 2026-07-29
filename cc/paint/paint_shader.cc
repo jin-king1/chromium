@@ -2,30 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "cc/paint/paint_shader.h"
 
 #include <algorithm>
 #include <utility>
 
 #include "base/atomic_sequence_num.h"
+#include "base/compiler_specific.h"
+#include "base/hash/hash.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/numerics/checked_math.h"
 #include "base/types/optional_util.h"
 #include "cc/paint/image_provider.h"
+#include "cc/paint/paint_cache.h"
 #include "cc/paint/paint_image_builder.h"
 #include "cc/paint/paint_op_writer.h"
 #include "cc/paint/paint_record.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkPictureRecorder.h"
-#include "third_party/skia/include/effects/SkGradientShader.h"
+#include "third_party/skia/include/effects/SkGradient.h"
 #include "third_party/skia/include/effects/SkRuntimeEffect.h"
+#include "ui/gfx/geometry/clamp_float_geometry.h"
 
 namespace cc {
 namespace {
@@ -93,7 +92,7 @@ sk_sp<PaintShader> PaintShader::MakeLinearGradient(
     const SkScalar pos[],
     int count,
     SkTileMode mode,
-    SkGradientShader::Interpolation interpolation,
+    SkGradient::Interpolation interpolation,
     uint32_t flags,
     const SkMatrix* local_matrix,
     SkColor4f fallback_color) {
@@ -101,7 +100,7 @@ sk_sp<PaintShader> PaintShader::MakeLinearGradient(
 
   // There are always two points, the start and the end.
   shader->start_point_ = points[0];
-  shader->end_point_ = points[1];
+  shader->end_point_ = UNSAFE_TODO(points[1]);
   shader->SetColorsAndPositions(colors, pos, count);
   shader->SetMatrixAndTiling(local_matrix, mode, mode);
   shader->SetFlagsAndFallback(flags, fallback_color);
@@ -118,7 +117,7 @@ sk_sp<PaintShader> PaintShader::MakeRadialGradient(
     const SkScalar pos[],
     int count,
     SkTileMode mode,
-    SkGradientShader::Interpolation interpolation,
+    SkGradient::Interpolation interpolation,
     uint32_t flags,
     const SkMatrix* local_matrix,
     SkColor4f fallback_color) {
@@ -144,7 +143,7 @@ sk_sp<PaintShader> PaintShader::MakeTwoPointConicalGradient(
     const SkScalar pos[],
     int count,
     SkTileMode mode,
-    SkGradientShader::Interpolation interpolation,
+    SkGradient::Interpolation interpolation,
     uint32_t flags,
     const SkMatrix* local_matrix,
     SkColor4f fallback_color) {
@@ -172,7 +171,7 @@ sk_sp<PaintShader> PaintShader::MakeSweepGradient(
     SkTileMode mode,
     SkScalar start_degrees,
     SkScalar end_degrees,
-    SkGradientShader::Interpolation interpolation,
+    SkGradient::Interpolation interpolation,
     uint32_t flags,
     const SkMatrix* local_matrix,
     SkColor4f fallback_color) {
@@ -233,20 +232,38 @@ sk_sp<PaintShader> PaintShader::MakeSkSLCommand(
     std::vector<FloatUniform> float_uniforms,
     std::vector<Float2Uniform> float2_uniforms,
     std::vector<Float4Uniform> float4_uniforms,
-    std::vector<IntUniform> int_uniforms) {
+    std::vector<IntUniform> int_uniforms,
+    sk_sp<PaintShader> cached_paint_shader) {
   if (float_uniforms.size() > PaintShader::kMaxNumUniformsPerType ||
       float2_uniforms.size() > PaintShader::kMaxNumUniformsPerType ||
       float4_uniforms.size() > PaintShader::kMaxNumUniformsPerType ||
       int_uniforms.size() > PaintShader::kMaxNumUniformsPerType) {
     return nullptr;
   }
+
+  sk_sp<SkRuntimeEffect> effect;
+  uint32_t hash = 0;
   SkString cmd(sksl);
-  auto [effect, error] = SkRuntimeEffect::MakeForShader(cmd);
-  if (!effect) {
-    LOG(ERROR) << error.data();
-    return nullptr;
+  if (cached_paint_shader) {
+    effect = cached_paint_shader->cached_sk_runtime_effect_;
+    hash = cached_paint_shader->sk_runtime_effect_id_;
+    DCHECK_EQ(hash, base::PersistentHash(sksl))
+        << "`cached_paint_shader` does not align with `sksl`.";
+  } else {
+    // Use PersistentHash to get uint32_t, and use the hash as ID.
+    // TODO(crbug.com/404501097): We should use `SkRuntimeEffectHash::fHash`.
+    hash = base::PersistentHash(sksl);
+    auto result = SkRuntimeEffect::MakeForShader(cmd);
+    if (!result.effect) {
+      LOG(ERROR) << result.errorText.data();
+      return nullptr;
+    }
+    effect = result.effect;
   }
+
   sk_sp<PaintShader> shader(new PaintShader(Type::kSkSLCommand));
+  shader->sk_runtime_effect_id_ = hash;
+  shader->cached_sk_runtime_effect_ = std::move(effect);
   shader->sksl_command_ = std::move(cmd);
   shader->scalar_uniforms_ = std::move(float_uniforms);
   shader->float2_uniforms_ = std::move(float2_uniforms);
@@ -285,6 +302,9 @@ size_t PaintShader::GetSerializedSize(const PaintShader* shader) {
                                                   shader->colors_.size()) +
           PaintOpWriter::SerializedSizeOfElements(shader->positions_.data(),
                                                   shader->positions_.size()) +
+          PaintOpWriter::SerializedSize(shader->sk_runtime_effect_id_) +
+          base::CheckedNumeric<size_t>(
+              PaintOpWriter::SerializedSize<PaintCacheEntryState>()) +
           PaintOpWriter::SerializedSize(shader->sksl_command_) +
           PaintOpWriter::SerializedSize(shader->scalar_uniforms_) +
           PaintOpWriter::SerializedSize(shader->float2_uniforms_) +
@@ -486,33 +506,28 @@ sk_sp<SkShader> PaintShader::GetSkShader(
       break;
     case Type::kLinearGradient: {
       SkPoint points[2] = {start_point_, end_point_};
-      return SkGradientShader::MakeLinear(
-          points, colors_.data(), nullptr /*sk_sp<SkColorSpace>*/,
-          positions_.empty() ? nullptr : positions_.data(),
-          static_cast<int>(colors_.size()), tx_, gradient_interpolation_,
+      points[0].fX = gfx::ClampFloatGeometry(points[0].fX);
+      points[0].fY = gfx::ClampFloatGeometry(points[0].fY);
+      points[1].fX = gfx::ClampFloatGeometry(points[1].fX);
+      points[1].fY = gfx::ClampFloatGeometry(points[1].fY);
+      return SkShaders::LinearGradient(
+          points, {{colors_, positions_, tx_}, gradient_interpolation_},
           base::OptionalToPtr(local_matrix_));
     }
     case Type::kRadialGradient:
-      return SkGradientShader::MakeRadial(
-          center_, start_radius_, colors_.data(),
-          nullptr /*sk_sp<SkColorSpace>*/,
-          positions_.empty() ? nullptr : positions_.data(),
-          static_cast<int>(colors_.size()), tx_, gradient_interpolation_,
+      return SkShaders::RadialGradient(
+          center_, start_radius_, {{colors_, positions_, tx_}, gradient_interpolation_},
           base::OptionalToPtr(local_matrix_));
     case Type::kTwoPointConicalGradient:
-      return SkGradientShader::MakeTwoPointConical(
-          start_point_, start_radius_, end_point_, end_radius_, colors_.data(),
-          nullptr /*sk_sp<SkColorSpace>*/,
-          positions_.empty() ? nullptr : positions_.data(),
-          static_cast<int>(colors_.size()), tx_, gradient_interpolation_,
+      return SkShaders::TwoPointConicalGradient(
+          start_point_, start_radius_, end_point_, end_radius_,
+          {{colors_, positions_, tx_}, gradient_interpolation_},
           base::OptionalToPtr(local_matrix_));
     case Type::kSweepGradient:
-      return SkGradientShader::MakeSweep(
-          center_.x(), center_.y(), colors_.data(),
-          nullptr /*sk_sp<SkColorSpace>*/,
-          positions_.empty() ? nullptr : positions_.data(),
-          static_cast<int>(colors_.size()), tx_, start_degrees_, end_degrees_,
-          gradient_interpolation_, base::OptionalToPtr(local_matrix_));
+      return SkShaders::SweepGradient(
+          center_, start_degrees_, end_degrees_,
+          {{colors_, positions_, tx_}, gradient_interpolation_},
+          base::OptionalToPtr(local_matrix_));
     case Type::kImage:
       if (sk_cached_image_) {
         return sk_cached_image_->makeShader(tx_, ty_, sampling,
@@ -542,12 +557,10 @@ sk_sp<SkShader> PaintShader::GetSkShader(
       }
       break;
     case Type::kSkSLCommand: {
-      auto [effect, error] = SkRuntimeEffect::MakeForShader(sksl_command_);
-      if (!effect) {
-        // Fallback the the color shader.
+      if (!cached_sk_runtime_effect_) {
         break;
       }
-      SkRuntimeShaderBuilder builder(effect);
+      SkRuntimeShaderBuilder builder(cached_sk_runtime_effect_);
       for (const auto& [name, value] : scalar_uniforms_) {
         builder.uniform(name.c_str()) = value;
       }
@@ -599,9 +612,9 @@ void PaintShader::SetColorsAndPositions(const SkColor4f* colors,
   DCHECK_GE(count, 1);
   DCHECK_LE(count, kMaxShaderColorsSupported);
 #endif
-  colors_.assign(colors, colors + count);
+  colors_.assign(colors, UNSAFE_TODO(colors + count));
   if (positions)
-    positions_.assign(positions, positions + count);
+    positions_.assign(positions, UNSAFE_TODO(positions + count));
 }
 
 void PaintShader::SetMatrixAndTiling(const SkMatrix* matrix,
@@ -622,6 +635,10 @@ void PaintShader::SetFlagsAndFallback(uint32_t flags,
                                       SkColor4f fallback_color) {
   flags_ = flags;
   fallback_color_ = fallback_color;
+}
+
+const PaintRecord* PaintShader::paint_record() const {
+  return base::OptionalToPtr(record_);
 }
 
 bool PaintShader::IsOpaque() const {
@@ -685,10 +702,8 @@ bool PaintShader::IsValid() const {
       return true;
     case Type::kPaintRecord:
       return !!record_;
-    case Type::kSkSLCommand: {
-      auto [effect, error] = SkRuntimeEffect::MakeForShader(sksl_command_);
-      return !!effect;
-    }
+    case Type::kSkSLCommand:
+      return !!cached_sk_runtime_effect_;
     case Type::kShaderCount:
       return false;
   }
@@ -762,6 +777,11 @@ bool PaintShader::EqualsForTesting(const PaintShader& other) const {
   }
 
   return true;
+}
+
+bool PaintShader::MatchingCachedRuntimeEffectForTesting(
+    const PaintShader& other) const {
+  return cached_sk_runtime_effect_ == other.cached_sk_runtime_effect_;
 }
 
 }  // namespace cc

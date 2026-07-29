@@ -64,27 +64,8 @@ const char kFinchSeedMinUpdatePeriod[] = "finch-seed-min-update-period";
 const char kWebViewEnableModernCookieSameSite[] =
     "webview-enable-modern-cookie-same-site";
 
-// Enables use selective image inversion to automatically darken page, it will
-// be used when WebView is in dark mode, but website doesn't provide dark style.
-const char kWebViewSelectiveImageInversionDarkening[] =
-    "webview-selective-image-inversion-darkening";
-
 // Enables FencedFrames. This also enables PrivacySandboxAdsAPIsOverride.
 const char kWebViewFencedFrames[] = "webview-fenced-frames";
-
-// Enables downloading TrustTokenKeyCommitmentsComponent by the component
-// updater downloading service in nonembedded WebView. See
-// https://crbug.com/1170468.
-const char kWebViewEnableTrustTokensComponent[] =
-    "webview-enable-trust-tokens-component";
-
-// Enables downloading TpcdMetadataComponentInstallerPolicy by the component
-// updater downloading service in nonembedded WebView.
-const char kWebViewTpcdMetadaComponent[] = "webview-tpcd-metadata-component";
-
-// Enables downloading FirstPartySetsComponentInstallerPolicy by the component
-// updater downloading service in nonembedded WebView.
-const char kWebViewFpsComponent[] = "webview-fps-component";
 
 // Force disables 3rd party cookie for all apps.
 const char kWebViewForceDisable3pcs[] = "webview-force-disable-3pcs";
@@ -101,5 +82,32 @@ const char kWebViewUseSeparateResourceContext[] =
 
 // Override and enable features useful for BSA library testing/debugging.
 const char kDebugBsa[] = "debug-bsa";
+// Enables non-blocking WebView constructor.
+const char kStartupNonBlockingWebViewConstructor[] =
+    "startup-non-blocking-webview-constructor";
+
+// Post Chromium startup in the WebView constructor. Only has any effect
+// when kStartupNonBlockingWebViewConstructor is enabled.
+const char kPostChromiumStartupInWebViewConstructor[] =
+    "post-chromium-startup-in-webview-constructor";
+
+// Certain static methods in SharedStatics do not trigger startup.
+const char kWebViewStaticMethodsNotTriggerStartup[] =
+    "webview-static-methods-not-trigger-startup";
+
+// Certain ProfileStore methods do not trigger startup.
+const char kWebViewProfileStoreNotTriggerStartup[] =
+    "webview-profile-store-not-trigger-startup";
+
+// Opts in WebView to GMSCore's bindService optimizations
+const char kWebViewOptInToGmsBindServiceOptimization[] =
+    "webview-opt-in-to-gms-bind-service-optimization";
+
+
+// Enables different reductions of the user-agent.
+const char kWebViewReduceUserAgentMinorVersion[] =
+    "webview-reduce-user-agent-minor-version";
+const char kWebViewReduceUAAndroidVersionDeviceModel[] =
+    "webview-reduce-ua-android-version-device-model";
 
 }  // namespace switches

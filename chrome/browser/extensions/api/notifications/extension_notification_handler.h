@@ -8,7 +8,10 @@
 #include "base/values.h"
 #include "chrome/browser/notifications/notification_handler.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 class Profile;
 
@@ -42,7 +45,10 @@ class ExtensionNotificationHandler : public NotificationHandler {
                const std::optional<int>& action_index,
                const std::optional<std::u16string>& reply,
                base::OnceClosure completed_closure) override;
-  void DisableNotifications(Profile* profile, const GURL& origin) override;
+  void DisableNotifications(Profile* profile,
+                            const GURL& origin,
+                            const std::optional<std::string>& notification_id,
+                            const std::optional<bool>& is_suspicious) override;
   void OpenSettings(Profile* profile, const GURL& origin) override;
 
  protected:
@@ -52,7 +58,7 @@ class ExtensionNotificationHandler : public NotificationHandler {
                          events::HistogramValue histogram_value,
                          const std::string& name,
                          EventRouter::UserGestureState user_gesture,
-                         base::Value::List args);
+                         base::ListValue args);
 };
 
 }  // namespace extensions

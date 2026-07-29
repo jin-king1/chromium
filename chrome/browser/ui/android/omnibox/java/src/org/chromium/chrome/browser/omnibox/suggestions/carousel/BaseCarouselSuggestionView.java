@@ -13,37 +13,49 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.build.annotations.CheckDiscard;
-import org.chromium.build.annotations.MockedInTests;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.omnibox.suggestions.ActivatableSuggestionView;
 import org.chromium.chrome.browser.omnibox.suggestions.RecyclerViewSelectionController;
+import org.chromium.chrome.browser.omnibox.suggestions.SelectionController;
 import org.chromium.chrome.browser.omnibox.suggestions.base.SpacingRecyclerViewItemDecoration;
-import org.chromium.chrome.browser.util.KeyNavigationUtil;
+import org.chromium.ui.base.KeyNavigationUtil;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
 /** View for Carousel Suggestions. */
-@MockedInTests
+@NullMarked
 public class BaseCarouselSuggestionView extends RecyclerView {
     private RecyclerViewSelectionController mSelectionController;
-    private SpacingRecyclerViewItemDecoration mDecoration;
+    private @Nullable SpacingRecyclerViewItemDecoration mDecoration;
 
     /**
      * Constructs a new carousel suggestion view.
      *
      * @param context Current context.
+     * @param adapter Adapter to use for the RecyclerView which can be null if async view inflation
+     *     is enabled b/c the adapter creation will be delayed to when control is returned to the UI
+     *     thread during binding.
      */
-    public BaseCarouselSuggestionView(Context context, SimpleRecyclerViewAdapter adapter) {
+    public BaseCarouselSuggestionView(
+            Context context, @Nullable SimpleRecyclerViewAdapter adapter) {
         super(context);
 
         setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         setFocusable(true);
         setFocusableInTouchMode(true);
         setItemAnimator(null);
-        setLayoutManager(new LinearLayoutManager(context, LinearLayoutManager.HORIZONTAL, false));
+        LayoutManager layoutManager =
+                new LinearLayoutManager(context, LinearLayoutManager.HORIZONTAL, false);
+        setLayoutManager(layoutManager);
 
-        mSelectionController = new RecyclerViewSelectionController(getLayoutManager());
-        mSelectionController.setCycleThroughNoSelection(true);
+        mSelectionController =
+                new RecyclerViewSelectionController(
+                        layoutManager, SelectionController.Mode.SATURATING_WITH_SENTINEL);
         addOnChildAttachStateChangeListener(mSelectionController);
 
-        setAdapter(adapter);
+        if (adapter != null) {
+            setAdapter(adapter);
+        }
     }
 
     @Override
@@ -54,7 +66,12 @@ public class BaseCarouselSuggestionView extends RecyclerView {
             return mSelectionController.selectNextItem();
         } else if (KeyNavigationUtil.isEnter(event)) {
             var tile = mSelectionController.getSelectedView();
-            if (tile != null) return tile.performClick();
+            if (tile != null) {
+                if (tile instanceof ActivatableSuggestionView) {
+                    return ((ActivatableSuggestionView) tile).activate(event.getMetaState());
+                }
+                return tile.performClick();
+            }
         }
         return superOnKeyDown(keyCode, event);
     }
@@ -70,26 +87,25 @@ public class BaseCarouselSuggestionView extends RecyclerView {
     }
 
     void resetSelection() {
-        mSelectionController.setSelectedItem(RecyclerView.NO_POSITION);
+        mSelectionController.reset();
     }
 
     @Override
     public void setSelected(boolean isSelected) {
-        if (isSelected) {
-            mSelectionController.setSelectedItem(0);
-        } else {
-            resetSelection();
-        }
+        resetSelection();
+        if (isSelected) mSelectionController.selectNextItem();
     }
 
     @Override
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
     public void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         super.onMeasure(widthMeasureSpec, heightMeasureSpec);
-        if (mDecoration.notifyViewSizeChanged(
-                getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT,
-                getMeasuredWidth(),
-                getMeasuredHeight())) {
+        if (mDecoration != null
+                && mDecoration.notifyViewSizeChanged(
+                        getResources().getConfiguration().orientation
+                                == Configuration.ORIENTATION_PORTRAIT,
+                        getMeasuredWidth(),
+                        getMeasuredHeight())) {
             invalidateItemDecorations();
         }
     }

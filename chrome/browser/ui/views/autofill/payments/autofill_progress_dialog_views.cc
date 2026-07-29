@@ -11,14 +11,11 @@
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/chrome_typography.h"
-#include "components/autofill/core/browser/metrics/autofill_metrics.h"
-#include "components/autofill/core/browser/ui/payments/autofill_error_dialog_view.h"
 #include "components/autofill/core/browser/ui/payments/autofill_progress_dialog_controller.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/tabs/public/tab_interface.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
@@ -73,8 +70,9 @@ AutofillProgressDialogViewImpl::AutofillProgressDialogViewImpl(
   CHECK(tab_interface);
   dialog_ = tab_interface->GetTabFeatures()
                 ->tab_dialog_manager()
-                ->CreateShowDialogAndBlockTabInteraction(
-                    autofill_progress_dialog_view.release());
+                ->CreateAndShowDialog(
+                    autofill_progress_dialog_view.release(),
+                    std::make_unique<tabs::TabDialogManager::Params>());
   dialog_->MakeCloseSynchronous(base::BindOnce(
       &AutofillProgressDialogViewImpl::CloseWidget, base::Unretained(this)));
 }
@@ -127,14 +125,19 @@ AutofillProgressDialogViews::AutofillProgressDialogViews(
     : controller_(controller) {
   // Set the ownership of the delegate, not the View. The View is owned by the
   // Widget as a child view.
-  // TODO(crbug.com/338254375): Remove the following two lines once this is the
-  // default state for widgets and the delegates.
-  SetOwnedByWidget(false);
+  // TODO(crbug.com/338254375): Remove the following line once this is the
+  // default state for widgets.
   SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
 
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kCancel));
   SetButtonLabel(ui::mojom::DialogButton::kCancel,
                  controller_->GetCancelButtonLabel());
+  // There is no "prominent" button on this dialog. User can explicitly exit the
+  // dialog with "Esc" or click the "Cancel" button. This should make the cancel
+  // button always rendered as a non-prominent/non-default button.
+  SetButtonStyle(ui::mojom::DialogButton::kCancel, ui::ButtonStyle::kDefault);
+  SetDefaultButton(static_cast<int>(ui::mojom::DialogButton::kNone));
+
   SetCancelCallback(base::BindOnce(
       &AutofillProgressDialogViews::OnDialogCanceled, base::Unretained(this)));
   SetModalType(ui::mojom::ModalType::kChild);
@@ -145,38 +148,20 @@ AutofillProgressDialogViews::AutofillProgressDialogViews(
       views::DialogContentType::kControl, views::DialogContentType::kControl));
 
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
+      views::BoxLayout::Orientation::kVertical, gfx::Insets(),
       ChromeLayoutProvider::Get()->GetDistanceMetric(
-          views::DISTANCE_RELATED_CONTROL_HORIZONTAL)));
+          views::DISTANCE_RELATED_CONTROL_VERTICAL)));
   layout->set_cross_axis_alignment(
-      views::BoxLayout::CrossAxisAlignment::kStart);
+      views::BoxLayout::CrossAxisAlignment::kCenter);
   layout->set_main_axis_alignment(views::BoxLayout::MainAxisAlignment::kCenter);
 
-  auto* throbber_container =
-      AddChildView(std::make_unique<views::BoxLayoutView>());
-  progress_throbber_ =
-      throbber_container->AddChildView(std::make_unique<views::Throbber>());
+  progress_throbber_ = AddChildView(std::make_unique<views::Throbber>());
 
   label_ = AddChildView(std::make_unique<views::Label>(
       controller_->GetLoadingMessage(), views::style::CONTEXT_DIALOG_BODY_TEXT,
       views::style::STYLE_SECONDARY));
   label_->SetMultiLine(true);
   label_->SetEnabledColor(ui::kColorThrobber);
-  // Set the maximum width of the label view so it will not compress the
-  // throbber view.
-  label_->SetMaximumWidth(views::LayoutProvider::Get()->GetDistanceMetric(
-                              views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH) -
-                          progress_throbber_->GetPreferredSize().width() -
-                          ChromeLayoutProvider::Get()->GetDistanceMetric(
-                              views::DISTANCE_RELATED_CONTROL_HORIZONTAL) -
-                          margins().width());
-
-  // Center-align the throbber vertically with the first line of the label.
-  progress_throbber_->SetProperty(
-      views::kMarginsKey,
-      gfx::Insets().set_top((label_->GetLineHeight() -
-                             progress_throbber_->GetPreferredSize().height()) /
-                            2));
 }
 
 AutofillProgressDialogViews::~AutofillProgressDialogViews() = default;
@@ -205,7 +190,7 @@ void AutofillProgressDialogViews::Dismiss(bool show_confirmation_before_closing,
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
         FROM_HERE,
         base::BindOnce(&AutofillProgressDialogViews::CloseWidget,
-                       base::Unretained(this)),
+                       weak_ptr_factory_.GetWeakPtr()),
         kDelayBeforeDismissingProgressDialog);
     return;
   }

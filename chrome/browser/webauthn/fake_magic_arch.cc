@@ -2,26 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "chrome/browser/webauthn/fake_magic_arch.h"
 
 #include <algorithm>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/numerics/byte_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "chrome/browser/webauthn/fake_recovery_key_store.h"
 #include "chrome/browser/webauthn/fake_security_domain_service.h"
 #include "components/trusted_vault/proto/recovery_key_store.pb.h"
 #include "components/trusted_vault/proto/vault.pb.h"
 #include "components/trusted_vault/securebox.h"
-#include "third_party/boringssl/src/include/openssl/aead.h"
-#include "third_party/boringssl/src/include/openssl/evp.h"
-#include "third_party/boringssl/src/include/openssl/hmac.h"
-#include "third_party/boringssl/src/include/openssl/sha.h"
+#include "crypto/aead.h"
+#include "crypto/hash.h"
+#include "crypto/hmac.h"
+#include "crypto/kdf.h"
+#include "crypto/subtle_passkey.h"
 
 namespace {
 
@@ -38,9 +37,8 @@ const trusted_vault_pb::AsymmetricKeyPair* GetKeyPairWithPublicKey(
 }
 
 std::string AsLEBytes(int32_t v) {
-  char bytes[4];
-  memcpy(bytes, &v, sizeof(bytes));
-  return std::string(bytes, 4);
+  auto bytes = base::I32ToNativeEndian(v);
+  return std::string(base::as_string_view(base::span(bytes)));
 }
 
 std::array<uint8_t, 32> HashPIN(std::string_view pin,
@@ -51,21 +49,23 @@ std::array<uint8_t, 32> HashPIN(std::string_view pin,
   const base::span<const uint8_t> salt =
       base::as_byte_span(metadata.hash_salt());
   std::array<uint8_t, 32> hashed;
-  CHECK(EVP_PBE_scrypt(pin.data(), pin.size(), salt.data(), salt.size(),
-                       metadata.hash_difficulty(), 8, 1,
-                       /*max_mem=*/0, hashed.data(), hashed.size()));
+  crypto::kdf::Scrypt(
+      {.cost = static_cast<uint64_t>(metadata.hash_difficulty()),
+       .block_size = 8,
+       .parallelization = 1},
+      base::as_byte_span(pin), salt, hashed,
+      crypto::SubtlePassKey::ForTesting());
   return hashed;
 }
 
-std::array<uint8_t, SHA256_DIGEST_LENGTH> SHA256Spans(
+std::array<uint8_t, crypto::hash::kSha256Size> SHA256Spans(
     base::span<const uint8_t> a,
     base::span<const uint8_t> b) {
-  SHA256_CTX ctx;
-  SHA256_Init(&ctx);
-  SHA256_Update(&ctx, a.data(), a.size());
-  SHA256_Update(&ctx, b.data(), b.size());
-  std::array<uint8_t, SHA256_DIGEST_LENGTH> ret;
-  SHA256_Final(ret.data(), &ctx);
+  crypto::hash::Hasher hasher(crypto::hash::kSha256);
+  hasher.Update(a);
+  hasher.Update(b);
+  std::array<uint8_t, crypto::hash::kSha256Size> ret;
+  hasher.Finish(ret);
   return ret;
 }
 
@@ -74,18 +74,8 @@ std::vector<uint8_t> Decrypt(base::span<const uint8_t> key,
   CHECK_GE(nonce_and_ciphertext.size(), 12u);
   const auto [nonce, ciphertext] = nonce_and_ciphertext.split_at<12>();
 
-  EVP_AEAD_CTX ctx;
-  CHECK(EVP_AEAD_CTX_init(&ctx, EVP_aead_aes_256_gcm(), key.data(), key.size(),
-                          EVP_AEAD_DEFAULT_TAG_LENGTH, nullptr));
-  std::vector<uint8_t> result(ciphertext.size());
-  size_t result_len;
-  CHECK(EVP_AEAD_CTX_open(&ctx, result.data(), &result_len, result.size(),
-                          nonce.data(), nonce.size(), ciphertext.data(),
-                          ciphertext.size(), nullptr, 0));
-  EVP_AEAD_CTX_cleanup(&ctx);
-  CHECK_LE(result_len, result.size());
-  result.resize(result_len);
-  return result;
+  crypto::Aead aead(crypto::Aead::AeadAlgorithm::AES_256_GCM, key);
+  return aead.Open(ciphertext, nonce, /*aad=*/{}).value();
 }
 
 }  // namespace
@@ -115,9 +105,11 @@ std::optional<std::vector<uint8_t>> FakeMagicArch::RecoverWithPIN(
       recovery_key_store.vaults(), [&public_key](const auto& vault) -> bool {
         return GetKeyPairWithPublicKey(vault, public_key) != nullptr;
       });
-  CHECK(vault_it != recovery_key_store.vaults().end());
+  if (vault_it == recovery_key_store.vaults().end()) {
+    return std::nullopt;
+  }
 
-  const std::array<uint8_t, SHA256_DIGEST_LENGTH> pin_hash =
+  const std::array<uint8_t, crypto::hash::kSha256Size> pin_hash =
       HashPIN(pin, *vault_it);
   const auto thm_kf_hash =
       SHA256Spans(base::byte_span_from_cstring("THM_KF_hash"), pin_hash);
@@ -128,9 +120,11 @@ std::optional<std::vector<uint8_t>> FakeMagicArch::RecoverWithPIN(
   params += AsLEBytes(vault_it->vault_parameters().max_attempts());
   params += vault_it->vault_parameters().vault_handle();
 
+  base::span<const uint8_t> vault_public_key =
+      base::as_byte_span(vault_it->vault_parameters().backend_public_key());
   const auto vault_private_key =
       trusted_vault::SecureBoxPrivateKey::CreateByImport(
-          recovery_key_store.endpoint_private_key_bytes());
+          recovery_key_store.EndpointPrivateKeyFor(vault_public_key));
   const std::vector<uint8_t> encrypted_recovery_key =
       vault_private_key
           ->Decrypt(thm_kf_hash, base::as_byte_span(params),
@@ -171,15 +165,10 @@ std::optional<std::vector<uint8_t>> FakeMagicArch::RecoverWithPIN(
                     base::as_byte_span(shared_member_key.wrapped_key()))
           .value();
 
-  std::array<uint8_t, SHA256_DIGEST_LENGTH> expected_proof;
-  unsigned expected_proof_len;
-  HMAC(EVP_sha256(), security_domain_secret.data(),
-       security_domain_secret.size(),
-       reinterpret_cast<const uint8_t*>(public_key.data()), public_key.size(),
-       expected_proof.data(), &expected_proof_len);
-  CHECK_EQ(expected_proof_len, expected_proof.size());
-  CHECK(base::span<const uint8_t>(expected_proof) ==
-        base::as_byte_span(shared_member_key.member_proof()));
+  const auto proof = base::span<const uint8_t, crypto::hash::kSha256Size>(
+      base::as_byte_span(shared_member_key.member_proof()));
+  CHECK(crypto::hmac::VerifySha256(security_domain_secret,
+                                   base::as_byte_span(public_key), proof));
 
   return security_domain_secret;
 }

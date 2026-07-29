@@ -35,6 +35,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "services/network/public/cpp/client_hints.h"
+#include "services/network/public/mojom/content_security_policy.mojom-blink.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/media_values_cached.h"
@@ -73,7 +74,7 @@ using MetaCHValues = Vector<MetaCHValue>;
 struct PendingPreloadData {
   MetaCHValues meta_ch_values;
   std::optional<ViewportDescription> viewport;
-  bool has_csp_meta_tag = false;
+  int csp_meta_tag_count = 0;
   bool has_located_potential_lcp_element = false;
   PreloadRequestStream requests;
 };
@@ -91,7 +92,7 @@ struct CORE_EXPORT CachedDocumentParameters {
       std::optional<features::LcppPreloadLazyLoadImageType> type);
 
   bool do_html_preload_scanning;
-  Length default_viewport_min_width;
+  ViewportLength default_viewport_min_width;
   bool viewport_meta_zero_values_quirk;
   bool viewport_meta_enabled;
   network::mojom::ReferrerPolicy referrer_policy;
@@ -103,6 +104,8 @@ struct CORE_EXPORT CachedDocumentParameters {
   static std::optional<features::LcppPreloadLazyLoadImageType>
       preload_lazy_load_image_type_for_testing;
   HashSet<String> disabled_image_types;
+  Vector<network::mojom::blink::ContentSecurityPolicyPtr>
+      content_security_policy;
 };
 
 class TokenPreloadScanner {
@@ -125,7 +128,7 @@ class TokenPreloadScanner {
             PreloadRequestStream& requests,
             MetaCHValues& meta_ch_values,
             std::optional<ViewportDescription>*,
-            bool* is_csp_meta_tag);
+            int* csp_meta_tag_counter);
 
   void SetPredictedBaseElementURL(const KURL& url) {
     predicted_base_element_url_ = url;
@@ -177,7 +180,13 @@ class TokenPreloadScanner {
   bool seen_img_;
   bool seen_potential_lcp_element_ = false;
   PictureData picture_data_;
-  size_t template_count_;
+  // We maintain two nesting counts for <template> elements.  template_count_
+  // is incremented/decremented if we're inside any <template> element other
+  // than those for declarative shadow dom (DSD), including when the *inner*
+  // ones are for DSD.  dsd_count_ is incremented/decremented when all
+  // template elements on the "stack" are DSD.
+  size_t template_count_ = 0;
+  size_t dsd_count_ = 0;
   std::unique_ptr<CachedDocumentParameters> document_parameters_;
   std::unique_ptr<MediaValuesCached::MediaValuesCachedData>
       media_values_cached_data_;
@@ -196,8 +205,8 @@ class CORE_EXPORT HTMLPreloadScanner final {
       HTMLParserOptions options,
       TokenPreloadScanner::ScannerType scanner_type);
 
-  using TakePreloadFn = WTF::CrossThreadRepeatingFunction<void(
-      std::unique_ptr<PendingPreloadData>)>;
+  using TakePreloadFn =
+      CrossThreadRepeatingFunction<void(std::unique_ptr<PendingPreloadData>)>;
 
   // Creates a HTMLPreloadScanner which will be bound to |task_runner|.
   struct Deleter {
@@ -222,8 +231,7 @@ class CORE_EXPORT HTMLPreloadScanner final {
                      std::unique_ptr<BackgroundHTMLScanner::ScriptTokenScanner>
                          script_token_scanner,
                      TakePreloadFn take_preload = TakePreloadFn(),
-                     Vector<ElementLocator> locators = {},
-                     bool disable_preload_scanning = false);
+                     Vector<ElementLocator> locators = {});
   HTMLPreloadScanner(const HTMLPreloadScanner&) = delete;
   HTMLPreloadScanner& operator=(const HTMLPreloadScanner&) = delete;
   ~HTMLPreloadScanner();
@@ -237,8 +245,6 @@ class CORE_EXPORT HTMLPreloadScanner final {
   void ScanInBackground(const String& source,
                         const KURL& document_base_element_url);
 
-  static bool IsSkipPreloadScanEnabled(const Document* document);
-
   base::WeakPtr<HTMLPreloadScanner> AsWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
   }
@@ -250,7 +256,6 @@ class CORE_EXPORT HTMLPreloadScanner final {
   std::unique_ptr<BackgroundHTMLScanner::ScriptTokenScanner>
       script_token_scanner_;
   TakePreloadFn take_preload_;
-  bool skip_preload_scanning_;
   base::WeakPtrFactory<HTMLPreloadScanner> weak_ptr_factory_{this};
 };
 

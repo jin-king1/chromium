@@ -4,10 +4,10 @@
 
 #include "chrome/browser/ash/app_restore/arc_window_utils.h"
 
+#include "base/strings/string_number_conversions.h"
 #include "chrome/browser/ash/app_restore/full_restore_prefs.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "components/app_restore/features.h"
 #include "components/exo/wm_helper.h"
@@ -43,10 +43,9 @@ std::optional<double> GetDisplayScaleFactor(int64_t display_id) {
   // ARC app window will not be shown on chromium default display (placeholder
   // display when no display connected).
   if (display_id == display::kDefaultDisplayId)
-    display_id = display::Screen::GetScreen()->GetPrimaryDisplay().id();
+    display_id = display::Screen::Get()->GetPrimaryDisplay().id();
   display::Display display;
-  if (display::Screen::GetScreen()->GetDisplayWithDisplayId(display_id,
-                                                            &display)) {
+  if (display::Screen::Get()->GetDisplayWithDisplayId(display_id, &display)) {
     return display.device_scale_factor();
   }
   return std::nullopt;

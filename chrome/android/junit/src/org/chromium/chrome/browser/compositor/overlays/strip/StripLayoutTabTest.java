@@ -8,14 +8,17 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.chrome.browser.tasks.tab_management.TabUiThemeUtil.FOLIO_FOOT_LENGTH_DP;
+
 import android.content.Context;
+import android.content.res.Resources;
+import android.graphics.Rect;
 import android.view.ContextThemeWrapper;
 
 import androidx.annotation.ColorInt;
 import androidx.core.content.res.ResourcesCompat;
 import androidx.test.core.app.ApplicationProvider;
-
-import com.google.android.material.color.MaterialColors;
+import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -24,6 +27,9 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.actor.ui.TabIndicatorStatus;
+import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutTabDelegate.VisualState;
+import org.chromium.chrome.browser.tab.MediaState;
 import org.chromium.chrome.browser.ui.theme.ChromeSemanticColorUtils;
 import org.chromium.components.browser_ui.styles.ChromeColors;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
@@ -35,6 +41,7 @@ import org.chromium.ui.util.ColorUtils;
 public class StripLayoutTabTest {
 
     private static final String TAG = "StripLayoutTabTest";
+    private static final float DIVIDER_FOLIO_LIGHT_OPACITY = 0.3f;
 
     private Context mContext;
     private StripLayoutTab mNormalTab;
@@ -55,20 +62,23 @@ public class StripLayoutTabTest {
         @ColorInt int expectedColor;
 
         // Normal active tab color.
-        expectedColor = MaterialColors.getColor(mContext, R.attr.colorSurface, TAG);
+        mNormalTab.setVisualState(VisualState.SELECTED);
+        expectedColor = ChromeColors.getDefaultThemeColor(mContext, /* isIncognito= */ false);
         assertEquals(
                 "Normal active folio should match the Surface-0 color.",
                 expectedColor,
-                mNormalTab.getTint(true, false));
+                mNormalTab.getTint());
 
         // Normal inactive tab color.
-        expectedColor = ChromeColors.getSurfaceColor(mContext, R.dimen.default_elevation_0);
+        mNormalTab.setVisualState(VisualState.NORMAL);
+        expectedColor = SemanticColorUtils.getDefaultBgColor(mContext);
         assertEquals(
                 "Folio inactive tab containers should be Surface-0.",
                 expectedColor,
-                mNormalTab.getTint(false, false));
+                mNormalTab.getTint());
 
         // Normal inactive tab hover color.
+        mNormalTab.setVisualState(VisualState.HOVERED);
         expectedColor =
                 ColorUtils.setAlphaComponentWithFloat(
                         ChromeSemanticColorUtils.getTabInactiveHoverColor(mContext),
@@ -77,23 +87,26 @@ public class StripLayoutTabTest {
                                 R.dimen.tsr_folio_tab_inactive_hover_alpha));
         assertEquals(
                 "Normal hovered inactive folio should be Primary @ 8%.",
-                expectedColor, mNormalTab.getTint(false, true));
+                expectedColor, mNormalTab.getTint());
 
         // Incognito active tab color.
+        mIncognitoTab.setVisualState(VisualState.SELECTED);
         expectedColor = mContext.getColor(R.color.toolbar_background_primary_dark);
         assertEquals(
                 "Incognito active folio should match the baseline color.",
                 expectedColor,
-                mIncognitoTab.getTint(true, false));
+                mIncognitoTab.getTint());
 
         // Incognito inactive tab color.
+        mIncognitoTab.setVisualState(VisualState.NORMAL);
         expectedColor = mContext.getColor(R.color.default_bg_color_dark);
         assertEquals(
                 "Incognito inactive folio should be baseline Surface-0.",
                 expectedColor,
-                mIncognitoTab.getTint(false, false));
+                mIncognitoTab.getTint());
 
         // Incognito inactive tab hover color.
+        mIncognitoTab.setVisualState(VisualState.HOVERED);
         expectedColor =
                 ColorUtils.setAlphaComponentWithFloat(
                         mContext.getColor(R.color.baseline_primary_80),
@@ -103,7 +116,7 @@ public class StripLayoutTabTest {
         assertEquals(
                 "Incognito hovered inactive folio should be the baseline equivalent of Primary @"
                         + " 8%.",
-                expectedColor, mIncognitoTab.getTint(false, true));
+                expectedColor, mIncognitoTab.getTint());
     }
 
     @Test
@@ -114,32 +127,36 @@ public class StripLayoutTabTest {
         mIncognitoTab.setIsPlaceholder(true);
 
         // Normal active tab color.
-        expectedColor = ChromeColors.getDefaultThemeColor(mContext, false);
+        mNormalTab.setVisualState(VisualState.SELECTED);
+        expectedColor = ChromeColors.getDefaultThemeColor(mContext, /* isIncognito= */ false);
         assertEquals(
                 "Normal active should match the regular foreground color.",
                 expectedColor,
-                mNormalTab.getTint(true, false));
+                mNormalTab.getTint());
 
         // Normal inactive tab color.
+        mNormalTab.setVisualState(VisualState.PLACEHOLDER);
         expectedColor = mContext.getColor(R.color.bg_tabstrip_tab_folio_startup_tint);
         assertEquals(
                 "Normal inactive tab should match the placeholder color.",
                 expectedColor,
-                mNormalTab.getTint(false, false));
+                mNormalTab.getTint());
 
         // Incognito active tab color.
+        mIncognitoTab.setVisualState(VisualState.SELECTED);
         expectedColor = ChromeColors.getDefaultThemeColor(mContext, true);
         assertEquals(
                 "Incognito active should match the regular foreground color.",
                 expectedColor,
-                mIncognitoTab.getTint(true, false));
+                mIncognitoTab.getTint());
 
         // Incognito inactive tab color.
+        mIncognitoTab.setVisualState(VisualState.PLACEHOLDER);
         expectedColor = mContext.getColor(R.color.bg_tabstrip_tab_folio_startup_tint);
         assertEquals(
                 "Incognito inactive tab should match the placeholder color.",
                 expectedColor,
-                mIncognitoTab.getTint(false, false));
+                mIncognitoTab.getTint());
     }
 
     @Test
@@ -150,13 +167,33 @@ public class StripLayoutTabTest {
         expectedColor =
                 ColorUtils.setAlphaComponentWithFloat(
                         SemanticColorUtils.getDefaultIconColorAccent1(mContext),
-                        StripLayoutTab.DIVIDER_FOLIO_LIGHT_OPACITY);
+                        DIVIDER_FOLIO_LIGHT_OPACITY);
         assertEquals(
-                "Light mode divider uses 20% icon color",
+                "Light mode divider uses 30% primary color",
                 expectedColor, mNormalTab.getDividerTint());
 
         // Incognito.
-        expectedColor = mContext.getColor(R.color.divider_line_bg_color_light);
+        expectedColor = mContext.getColor(R.color.tab_strip_tablet_divider_bg_incognito);
+        assertEquals(
+                "Incognito dividers use the baseline color.",
+                expectedColor,
+                mIncognitoTab.getDividerTint());
+    }
+
+    @Test
+    @Config(qualifiers = "night")
+    public void testGetDividerTint_Night() {
+        @ColorInt int expectedColor;
+
+        // Normal.
+        expectedColor = SemanticColorUtils.getDividerColor(mContext);
+        assertEquals(
+                "Night mode divider uses colorOutlineVariant.",
+                expectedColor,
+                mNormalTab.getDividerTint());
+
+        // Incognito.
+        expectedColor = mContext.getColor(R.color.tab_strip_tablet_divider_bg_incognito);
         assertEquals(
                 "Incognito dividers use the baseline color.",
                 expectedColor,
@@ -217,7 +254,92 @@ public class StripLayoutTabTest {
                 mNormalTab.needsAccessibilityDescriptionUpdate(null, resId));
     }
 
+    @Test
+    @SmallTest
+    public void testAnchorRect() {
+        int folioFootLengthPx =
+                Math.round(
+                        mContext.getResources().getDisplayMetrics().density * FOLIO_FOOT_LENGTH_DP);
+        int widthWithoutFolio = 20;
+        int width = folioFootLengthPx + widthWithoutFolio; // Should be > than folioFootLengthPx
+        int height = 10; // Arbitrary
+        mNormalTab.setWidth(width);
+        mNormalTab.setHeight(10);
+
+        Rect rect = new Rect();
+        mNormalTab.getAnchorRect(rect);
+        assertEquals(new Rect(folioFootLengthPx, 0, widthWithoutFolio, height), rect);
+    }
+
+    @Test
+    public void testTabIndicatorPriorityHierarchy() {
+        // Case 1: Actuation vs. Recording Media (Recording Media should win)
+        StripLayoutTab tabWithRecording =
+                new StripLayoutTab(
+                        mContext,
+                        0,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        false,
+                        false,
+                        MediaState.RECORDING);
+        tabWithRecording.setTabIndicatorStatus(TabIndicatorStatus.DYNAMIC);
+
+        assertTrue(
+                "Indicator should be shown when recording is active",
+                tabWithRecording.shouldShowIndicator());
+        assertEquals(
+                "Should return recording dot icon res",
+                R.drawable.radio_button_checked_24dp,
+                tabWithRecording.getIndicatorRes());
+        assertEquals(
+                "Should return null overlay res when recording",
+                Resources.ID_NULL,
+                tabWithRecording.getIndicatorOverlayRes());
+        assertEquals(
+                "Should return recording media color for tint",
+                mContext.getColor(R.color.tab_recording_media_color),
+                tabWithRecording.getIndicatorTint());
+
+        // Case 2: Actuation vs. Audible Media (Actuation should win)
+        StripLayoutTab tabWithAudio =
+                new StripLayoutTab(
+                        mContext,
+                        0,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        false,
+                        false,
+                        MediaState.AUDIBLE);
+        tabWithAudio.setTabIndicatorStatus(TabIndicatorStatus.DYNAMIC);
+
+        assertTrue(
+                "Indicator should be shown when actuation is active",
+                tabWithAudio.shouldShowIndicator());
+        assertEquals(
+                "Should return actuation icon res",
+                R.drawable.ic_arrow_selector_spark_14dp,
+                tabWithAudio.getIndicatorRes());
+        assertEquals(
+                "Should return spinner overlay res when actuating",
+                R.drawable.tab_indicator_spinner,
+                tabWithAudio.getIndicatorOverlayRes());
+        assertEquals(
+                "Should return primary color for actuation tint",
+                SemanticColorUtils.getColorPrimary(mContext),
+                tabWithAudio.getIndicatorTint());
+    }
+
     private StripLayoutTab createStripLayoutTab(boolean incognito) {
-        return new StripLayoutTab(mContext, 0, null, null, null, incognito);
+        return new StripLayoutTab(
+                mContext, 0, null, null, null, null, null, null, incognito, false, MediaState.NONE);
     }
 }

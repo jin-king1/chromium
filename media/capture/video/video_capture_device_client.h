@@ -18,17 +18,8 @@
 #include "base/threading/thread_collision_warner.h"
 #include "build/build_config.h"
 #include "media/capture/capture_export.h"
-#include "media/capture/mojom/video_effects_manager.mojom.h"
 #include "media/capture/video/video_capture_device.h"
 #include "media/capture/video/video_frame_receiver.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
-#include "services/video_effects/public/cpp/buildflags.h"
-#include "services/video_effects/public/mojom/video_effects_processor.mojom-forward.h"
-
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-#include "media/capture/video/video_capture_effects_processor.h"
-#endif  // BUILDFLAG(ENABLE_VIDEO_EFFECTS)
 
 namespace gpu {
 class ClientSharedImage;
@@ -46,38 +37,6 @@ using VideoCaptureJpegDecoderFactoryCB =
 CAPTURE_EXPORT BASE_DECLARE_FEATURE(kFallbackToSharedMemoryIfNotNv12OnMac);
 #endif
 
-// Structure used to inject dependencies required for the
-// `VideoCaptureDeviceClient` to apply video effects.
-class CAPTURE_EXPORT VideoEffectsContext {
- public:
-  VideoEffectsContext(
-      mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor>
-          processor_remote,
-      mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager>
-          readonly_manager_remote);
-
-  ~VideoEffectsContext();
-
-  VideoEffectsContext(const VideoEffectsContext& other) = delete;
-  VideoEffectsContext& operator=(VideoEffectsContext& other) = delete;
-
-  VideoEffectsContext(VideoEffectsContext&& other);
-  VideoEffectsContext& operator=(VideoEffectsContext&& other);
-
-  mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor>&&
-  TakeVideoEffectsProcessor();
-
-  mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager>&&
-  TakeReadonlyVideoEffectsManager();
-
- private:
-  mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor>
-      video_effects_processor_;
-
-  mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager>
-      readonly_video_effects_manager_;
-};
-
 // Implementation of VideoCaptureDevice::Client that uses a buffer pool
 // to provide buffers and converts incoming data to the I420 format for
 // consumption by a given VideoFrameReceiver. If
@@ -92,11 +51,8 @@ class CAPTURE_EXPORT VideoEffectsContext {
 // v4l2_thread on Linux, and the UI thread for tab capture.
 // The owner is responsible for making sure that the instance outlives these
 // calls.
-class CAPTURE_EXPORT VideoCaptureDeviceClient :
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-    public media::mojom::VideoEffectsConfigurationObserver,
-#endif
-    public VideoCaptureDevice::Client {
+class CAPTURE_EXPORT VideoCaptureDeviceClient
+    : public VideoCaptureDevice::Client {
  public:
 #if BUILDFLAG(IS_CHROMEOS)
   VideoCaptureDeviceClient(
@@ -104,10 +60,8 @@ class CAPTURE_EXPORT VideoCaptureDeviceClient :
       scoped_refptr<VideoCaptureBufferPool> buffer_pool,
       VideoCaptureJpegDecoderFactoryCB jpeg_decoder_factory_callback);
 #else
-  VideoCaptureDeviceClient(
-      std::unique_ptr<VideoFrameReceiver> receiver,
-      scoped_refptr<VideoCaptureBufferPool> buffer_pool,
-      std::optional<VideoEffectsContext> video_effects_context);
+  VideoCaptureDeviceClient(std::unique_ptr<VideoFrameReceiver> receiver,
+                           scoped_refptr<VideoCaptureBufferPool> buffer_pool);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   VideoCaptureDeviceClient(const VideoCaptureDeviceClient&) = delete;
@@ -141,14 +95,27 @@ class CAPTURE_EXPORT VideoCaptureDeviceClient :
       base::TimeTicks reference_time,
       base::TimeDelta timestamp,
       std::optional<base::TimeTicks> capture_begin_timestamp,
+      const gfx::Size& natural_size,
       const std::optional<VideoFrameMetadata>& metadata,
       int frame_feedback_id) override;
+
+  void OnIncomingCapturedImageZeroCopy(
+      scoped_refptr<gpu::ClientSharedImage> shared_image,
+      const VideoCaptureFormat& frame_format,
+      int clockwise_rotation,
+      base::TimeTicks reference_time,
+      base::TimeDelta timestamp,
+      std::optional<base::TimeTicks> capture_begin_timestamp,
+      const gfx::Size& natural_size,
+      const std::optional<VideoFrameMetadata>& metadata,
+      int frame_feedback_id);
   void OnIncomingCapturedExternalBuffer(
       CapturedExternalVideoBuffer buffer,
       base::TimeTicks reference_time,
       base::TimeDelta timestamp,
       std::optional<base::TimeTicks> capture_begin_timestamp,
       const gfx::Rect& visible_rect,
+      const gfx::Size& natural_size,
       const std::optional<VideoFrameMetadata>& metadata) override;
   ReserveResult ReserveOutputBuffer(const gfx::Size& dimensions,
                                     VideoPixelFormat format,
@@ -187,6 +154,7 @@ class CAPTURE_EXPORT VideoCaptureDeviceClient :
       base::TimeDelta timestamp,
       std::optional<base::TimeTicks> capture_begin_timestamp,
       const gfx::Rect& visible_rect,
+      const gfx::Size& natural_size,
       const std::optional<VideoFrameMetadata>& metadata,
       ReadyFrameInBuffer* ready_buffer);
 
@@ -200,22 +168,6 @@ class CAPTURE_EXPORT VideoCaptureDeviceClient :
       std::optional<base::TimeTicks> capture_begin_timestamp,
       const std::optional<VideoFrameMetadata>& metadata,
       int frame_feedback_id);
-
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-  // media::mojom::VideoEffectsConfigurationObserver impl.
-  void OnConfigurationChanged(
-      media::mojom::VideoEffectsConfigurationPtr configuration) override;
-
-  bool ShouldApplyVideoEffects() const;
-
-  std::optional<VideoCaptureDevice::Client::Buffer> ReserveEffectsOutputBuffer(
-      const VideoCaptureFormat& format,
-      const int frame_feedback_id);
-
-  void OnPostProcessDone(base::expected<PostProcessDoneInfo,
-                                        video_effects::mojom::PostProcessError>
-                             post_process_info_or_error);
-#endif
 
   // The receiver to which we post events.
   const std::unique_ptr<VideoFrameReceiver> receiver_;
@@ -232,25 +184,10 @@ class CAPTURE_EXPORT VideoCaptureDeviceClient :
 
   VideoPixelFormat last_captured_pixel_format_;
 
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-  bool has_active_effects_ = false;
-  scoped_refptr<base::SequencedTaskRunner> effects_processor_task_runner_;
-  std::unique_ptr<VideoCaptureEffectsProcessor> effects_processor_;
-  mojo::Remote<media::mojom::ReadonlyVideoEffectsManager>
-      readonly_effects_manager_remote_;
-  mojo::Receiver<media::mojom::VideoEffectsConfigurationObserver>
-      effects_configuration_observer_{this};
-#endif  // !BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-
   // Thread collision warner to ensure that producer-facing API is not called
   // concurrently. Producers are allowed to call from multiple threads, but not
   // concurrently.
   DFAKE_MUTEX(call_from_producer_);
-
-#if BUILDFLAG(ENABLE_VIDEO_EFFECTS)
-  // Must be last:
-  base::WeakPtrFactory<VideoCaptureDeviceClient> weak_ptr_factory_{this};
-#endif
 };
 
 }  // namespace media

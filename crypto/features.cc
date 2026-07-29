@@ -8,13 +8,7 @@
 
 namespace crypto::features {
 
-BASE_FEATURE(kProcessBoundStringEncryption,
-             "ProcessBoundStringEncryption",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Disabled by default.
-BASE_FEATURE(kLabelWindowsUnexportableKeys,
-             "LabelWindowsUnexportableKeys",
+BASE_FEATURE(kMigrateIOSKeychainAccessibility,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace crypto::features

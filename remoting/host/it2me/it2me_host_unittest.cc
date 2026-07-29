@@ -4,11 +4,6 @@
 
 #include "remoting/host/it2me/it2me_host.h"
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include <memory>
 #include <optional>
 #include <string>
@@ -17,7 +12,6 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
@@ -47,12 +41,9 @@
 #include "remoting/host/it2me/it2me_constants.h"
 #include "remoting/host/policy_watcher.h"
 #include "remoting/host/register_support_host_request.h"
-#include "remoting/host/xmpp_register_support_host_request.h"
 #include "remoting/protocol/errors.h"
 #include "remoting/protocol/transport_context.h"
-#include "remoting/signaling/fake_signal_strategy.h"
-#include "remoting/signaling/remoting_log_to_server.h"
-#include "remoting/signaling/xmpp_log_to_server.h"
+#include "remoting/signaling/fake_ftl_signal_strategy.h"
 #include "services/network/test/test_shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -85,8 +76,6 @@ const char kMismatchedDomain3[] = "not_even_close.com";
 // Note that this is intentionally different from the default port range.
 const char kPortRange[] = "12401-12408";
 
-const char kTestStunServer[] = "test_relay_server.com";
-
 class HostEventReporterStub : public HostEventReporter {
  public:
   HostEventReporterStub() = default;
@@ -98,6 +87,7 @@ class HostEventReporterStub : public HostEventReporter {
 class FakeRegisterSupportHostRequest : public RegisterSupportHostRequest {
  public:
   void StartRequest(SignalStrategy* signal_strategy,
+                    std::unique_ptr<net::ClientCertStore> client_cert_store,
                     scoped_refptr<RsaKeyPair> key_pair,
                     const std::string& authorized_helper,
                     std::optional<ChromeOsEnterpriseParams> params,
@@ -112,6 +102,20 @@ class FakeRegisterSupportHostRequest : public RegisterSupportHostRequest {
 std::unique_ptr<HostEventReporter> CreateHostEventReporterStub(
     scoped_refptr<HostStatusMonitor>) {
   return std::make_unique<HostEventReporterStub>();
+}
+
+ChromeOsEnterpriseParams GetDefaultEnterpriseParamsForEnterpriseAdmin() {
+  ChromeOsEnterpriseParams params;
+  params.request_origin = ChromeOsEnterpriseRequestOrigin::kEnterpriseAdmin;
+  params.audio_playback = ChromeOsEnterpriseAudioPlayback::kLocalOnly;
+  return params;
+}
+
+ChromeOsEnterpriseParams GetDefaultEnterpriseParamsForClassManagement() {
+  ChromeOsEnterpriseParams params;
+  params.request_origin = ChromeOsEnterpriseRequestOrigin::kClassManagement;
+  params.audio_playback = ChromeOsEnterpriseAudioPlayback::kRemoteOnly;
+  return params;
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -264,6 +268,8 @@ class It2MeHostTest : public testing::Test, public It2MeHost::Observer {
 
   static base::Value MakeList(std::initializer_list<std::string_view> values);
 
+  const ChromotingHost* GetHost() const { return it2me_host_->host_.get(); }
+
   ChromotingHost* GetHost() { return it2me_host_->host_.get(); }
 
   const SessionPolicies& get_local_session_policies() const {
@@ -299,13 +305,13 @@ class It2MeHostTest : public testing::Test, public It2MeHost::Observer {
   raw_ptr<FakeIt2MeDialogFactory, AcrossTasksDanglingUntriaged>
       dialog_factory_ = nullptr;
 
-  std::optional<base::Value::Dict> policies_;
+  std::optional<base::DictValue> policies_;
 
   scoped_refptr<It2MeHost> it2me_host_;
 
   PassthroughOAuthTokenGetter token_getter_;
 
-  bool use_corp_session_authz_ = false;
+  bool is_corp_user_ = false;
 
   std::string stored_access_code_;
 
@@ -405,12 +411,8 @@ void It2MeHostTest::StartHost() {
       new FakeIt2MeDialogFactory());
   dialog_factory_ = dialog_factory.get();
 
-  protocol::IceConfig ice_config;
-  ice_config.stun_servers.push_back(rtc::SocketAddress(kTestStunServer, 100));
-  ice_config.expiration_time = base::Time::Now() + base::Hours(2);
-
-  auto fake_signal_strategy =
-      std::make_unique<FakeSignalStrategy>(SignalingAddress("fake_local_jid"));
+  auto fake_signal_strategy = std::make_unique<FakeFtlSignalStrategy>(
+      SignalingAddress("fake_local_jid"));
 
   it2me_host_ = new It2MeHost();
   if (enterprise_params_.has_value()) {
@@ -428,17 +430,13 @@ void It2MeHostTest::StartHost() {
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   auto create_connection_context = base::BindOnce(
-      [](std::unique_ptr<SignalStrategy> signal_strategy,
-         base::WeakPtr<OAuthTokenGetter> token_getter,
-         bool use_corp_session_authz, ChromotingHostContext* host_context) {
+      [](std::unique_ptr<FtlSignalStrategy> signal_strategy,
+         base::WeakPtr<OAuthTokenGetter> token_getter, bool is_corp_user,
+         ChromotingHostContext* host_context) {
         auto context = std::make_unique<It2MeHost::DeferredConnectContext>();
-        context->use_corp_session_authz = use_corp_session_authz;
+        context->is_corp_user = is_corp_user;
         context->register_request =
             std::make_unique<FakeRegisterSupportHostRequest>();
-        context->log_to_server = std::make_unique<RemotingLogToServer>(
-            ServerLogEntry::IT2ME,
-            std::make_unique<OAuthTokenGetterProxy>(token_getter),
-            host_context->url_loader_factory());
         context->signaling_token_getter =
             std::make_unique<OAuthTokenGetterProxy>(token_getter);
         context->api_token_getter =
@@ -447,11 +445,10 @@ void It2MeHostTest::StartHost() {
         return context;
       },
       std::move(fake_signal_strategy), token_getter_.GetWeakPtr(),
-      use_corp_session_authz_);
+      is_corp_user_);
   it2me_host_->Connect(host_context_->Copy(), policies_->Clone(),
                        std::move(dialog_factory), weak_factory_.GetWeakPtr(),
-                       std::move(create_connection_context), kTestHostUsername,
-                       ice_config);
+                       std::move(create_connection_context), kTestHostUsername);
 
   base::RunLoop run_loop;
   state_change_callback_ =
@@ -539,42 +536,23 @@ void It2MeHostTest::SimulateEffectiveSessionPoliciesReceived() {
 
 base::Value It2MeHostTest::MakeList(
     std::initializer_list<std::string_view> values) {
-  base::Value::List result;
+  base::ListValue result;
   for (const auto& value : values) {
     result.Append(value);
   }
   return base::Value(std::move(result));
 }
 
-// Callback to receive IceConfig from TransportContext
-void ReceiveIceConfig(protocol::IceConfig* ice_config,
-                      const protocol::IceConfig& received_ice_config) {
-  *ice_config = received_ice_config;
-}
 
 TEST_F(It2MeHostTest, StartAndStop) {
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
   // The first 7 digits of the access code are the support ID.
   ASSERT_TRUE(stored_access_code_.starts_with(kTestSupportId));
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
-  ASSERT_EQ(ErrorCode::OK, last_error_code_);
-}
-
-// Verify that IceConfig is passed to the TransportContext.
-TEST_F(It2MeHostTest, IceConfig) {
-  StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
-
-  protocol::IceConfig ice_config;
-  GetHost()->transport_context_for_tests()->GetIceConfig(
-      base::BindOnce(&ReceiveIceConfig, &ice_config));
-  EXPECT_EQ(ice_config.stun_servers[0].hostname(), kTestStunServer);
-
-  ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
+  ASSERT_EQ(last_error_code_, ErrorCode::OK);
 }
 
 TEST_F(It2MeHostTest, LocalNatTraversalPolicyEnabled) {
@@ -582,12 +560,12 @@ TEST_F(It2MeHostTest, LocalNatTraversalPolicyEnabled) {
       {{policy::key::kRemoteAccessHostFirewallTraversal, base::Value(true)}});
 
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 
   EXPECT_TRUE(last_nat_traversal_enabled_value_);
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, LocalNatTraversalPolicyDisabled) {
@@ -595,12 +573,12 @@ TEST_F(It2MeHostTest, LocalNatTraversalPolicyDisabled) {
       {{policy::key::kRemoteAccessHostFirewallTraversal, base::Value(false)}});
 
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 
   EXPECT_FALSE(last_nat_traversal_enabled_value_);
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, LocalRelayPolicyEnabled) {
@@ -608,12 +586,12 @@ TEST_F(It2MeHostTest, LocalRelayPolicyEnabled) {
                 base::Value(true)}});
 
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 
   EXPECT_TRUE(last_relay_connections_allowed_value_);
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, LocalRelayPolicyDisabled) {
@@ -621,12 +599,12 @@ TEST_F(It2MeHostTest, LocalRelayPolicyDisabled) {
                 base::Value(false)}});
 
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 
   EXPECT_FALSE(last_relay_connections_allowed_value_);
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(
@@ -638,7 +616,7 @@ TEST_F(
   });
 
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 
   EXPECT_TRUE(last_nat_traversal_enabled_value_);
   EXPECT_TRUE(last_relay_connections_allowed_value_);
@@ -654,7 +632,7 @@ TEST_F(
   EXPECT_FALSE(last_relay_connections_allowed_value_);
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(
@@ -666,7 +644,7 @@ TEST_F(
   });
 
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 
   EXPECT_TRUE(last_nat_traversal_enabled_value_);
   EXPECT_TRUE(last_relay_connections_allowed_value_);
@@ -683,52 +661,52 @@ TEST_F(
   EXPECT_TRUE(last_relay_connections_allowed_value_);
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, HostValidationHostDomainListPolicyMatchingDomain) {
   SetPolicies({{policy::key::kRemoteAccessHostDomainList,
                 MakeList({kMatchingDomain})}});
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, HostValidationHostDomainListPolicyMatchStart) {
   SetPolicies({{policy::key::kRemoteAccessHostDomainList,
                 MakeList({kMismatchedDomain2})}});
   StartHost();
-  ASSERT_EQ(It2MeHostState::kInvalidDomainError, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kInvalidDomainError);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, HostValidationHostDomainListPolicyMatchEnd) {
   SetPolicies({{policy::key::kRemoteAccessHostDomainList,
                 MakeList({kMismatchedDomain1})}});
   StartHost();
-  ASSERT_EQ(It2MeHostState::kInvalidDomainError, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kInvalidDomainError);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, HostValidationHostDomainListPolicyMatchFirst) {
   SetPolicies({{policy::key::kRemoteAccessHostDomainList,
                 MakeList({kMatchingDomain, kMismatchedDomain1})}});
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, HostValidationHostDomainListPolicyMatchSecond) {
   SetPolicies({{policy::key::kRemoteAccessHostDomainList,
                 MakeList({kMismatchedDomain1, kMatchingDomain})}});
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, HostValidationHostDomainListPolicyNoMatch) {
@@ -736,26 +714,26 @@ TEST_F(It2MeHostTest, HostValidationHostDomainListPolicyNoMatch) {
                 MakeList({kMismatchedDomain1, kMismatchedDomain2,
                           kMismatchedDomain3})}});
   StartHost();
-  ASSERT_EQ(It2MeHostState::kInvalidDomainError, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kInvalidDomainError);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, ConnectionValidationNoClientDomainListPolicyValidJid) {
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::SUCCESS, validation_result_);
-  ASSERT_EQ(It2MeHostState::kConnecting, last_host_state_);
+  ASSERT_EQ(validation_result_, ValidationResult::SUCCESS);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kConnecting);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, ConnectionValidationNoClientDomainListPolicyInvalidJid) {
   StartHost();
   RunValidationCallback(kTestClientUsernameNoJid);
-  ASSERT_EQ(ValidationResult::ERROR_INVALID_ACCOUNT, validation_result_);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_INVALID_ACCOUNT);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest,
@@ -763,19 +741,19 @@ TEST_F(It2MeHostTest,
   StartHost();
   dialog_factory_->set_remote_user_email("fake");
   RunValidationCallback(kTestClientJidWithSlash);
-  ASSERT_EQ(ValidationResult::SUCCESS, validation_result_);
-  ASSERT_EQ(It2MeHostState::kConnecting, last_host_state_);
+  ASSERT_EQ(validation_result_, ValidationResult::SUCCESS);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kConnecting);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest,
        ConnectionValidationNoClientDomainListPolicyResourceOnly) {
   StartHost();
   RunValidationCallback(kResourceOnly);
-  ASSERT_EQ(ValidationResult::ERROR_INVALID_ACCOUNT, validation_result_);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_INVALID_ACCOUNT);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest,
@@ -784,10 +762,10 @@ TEST_F(It2MeHostTest,
                 MakeList({kMatchingDomain})}});
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::SUCCESS, validation_result_);
-  ASSERT_EQ(It2MeHostState::kConnecting, last_host_state_);
+  ASSERT_EQ(validation_result_, ValidationResult::SUCCESS);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kConnecting);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest,
@@ -796,9 +774,9 @@ TEST_F(It2MeHostTest,
                 MakeList({kMatchingDomain})}});
   StartHost();
   RunValidationCallback(kTestClientJidWithSlash);
-  ASSERT_EQ(ValidationResult::ERROR_INVALID_ACCOUNT, validation_result_);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_INVALID_ACCOUNT);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, ConnectionValidationClientDomainListPolicyNoJid) {
@@ -807,8 +785,8 @@ TEST_F(It2MeHostTest, ConnectionValidationClientDomainListPolicyNoJid) {
   StartHost();
   RunValidationCallback(kTestClientUsernameNoJid);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
-  ASSERT_EQ(ValidationResult::ERROR_INVALID_ACCOUNT, validation_result_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_INVALID_ACCOUNT);
 }
 
 TEST_F(It2MeHostTest, ConnectionValidationWrongClientDomainMatchStart) {
@@ -816,9 +794,9 @@ TEST_F(It2MeHostTest, ConnectionValidationWrongClientDomainMatchStart) {
                 MakeList({kMismatchedDomain2})}});
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::ERROR_INVALID_ACCOUNT, validation_result_);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_INVALID_ACCOUNT);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, ConnectionValidationWrongClientDomainMatchEnd) {
@@ -826,9 +804,9 @@ TEST_F(It2MeHostTest, ConnectionValidationWrongClientDomainMatchEnd) {
                 MakeList({kMismatchedDomain1})}});
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::ERROR_INVALID_ACCOUNT, validation_result_);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_INVALID_ACCOUNT);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, ConnectionValidationClientDomainListPolicyMatchFirst) {
@@ -836,10 +814,10 @@ TEST_F(It2MeHostTest, ConnectionValidationClientDomainListPolicyMatchFirst) {
                 MakeList({kMatchingDomain, kMismatchedDomain1})}});
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::SUCCESS, validation_result_);
-  ASSERT_EQ(It2MeHostState::kConnecting, last_host_state_);
+  ASSERT_EQ(validation_result_, ValidationResult::SUCCESS);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kConnecting);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, ConnectionValidationClientDomainListPolicyMatchSecond) {
@@ -847,10 +825,10 @@ TEST_F(It2MeHostTest, ConnectionValidationClientDomainListPolicyMatchSecond) {
                 MakeList({kMismatchedDomain1, kMatchingDomain})}});
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::SUCCESS, validation_result_);
-  ASSERT_EQ(It2MeHostState::kConnecting, last_host_state_);
+  ASSERT_EQ(validation_result_, ValidationResult::SUCCESS);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kConnecting);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, ConnectionValidationClientDomainListPolicyNoMatch) {
@@ -859,28 +837,28 @@ TEST_F(It2MeHostTest, ConnectionValidationClientDomainListPolicyNoMatch) {
                           kMismatchedDomain3})}});
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::ERROR_INVALID_ACCOUNT, validation_result_);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_INVALID_ACCOUNT);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, AuthorizedHelperCanConnect) {
   authorized_helper_ = kTestClientUsername;
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::SUCCESS, validation_result_);
-  ASSERT_EQ(It2MeHostState::kConnecting, last_host_state_);
+  ASSERT_EQ(validation_result_, ValidationResult::SUCCESS);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kConnecting);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, UnauthorizedHelperIsRejected) {
   authorized_helper_ = kTestClientUsername;
   StartHost();
   RunValidationCallback(kTestClientJid2);
-  ASSERT_EQ(ValidationResult::ERROR_UNAUTHORIZED_ACCOUNT, validation_result_);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_UNAUTHORIZED_ACCOUNT);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, HostUdpPortRangePolicyValidRange) {
@@ -903,33 +881,33 @@ TEST_F(It2MeHostTest, HostUdpPortRangePolicyNoRange) {
 TEST_F(It2MeHostTest, ConnectionValidationConfirmationDialogAccept) {
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::SUCCESS, validation_result_);
-  ASSERT_EQ(It2MeHostState::kConnecting, last_host_state_);
+  ASSERT_EQ(validation_result_, ValidationResult::SUCCESS);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kConnecting);
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
-  ASSERT_EQ(ErrorCode::OK, last_error_code_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
+  ASSERT_EQ(last_error_code_, ErrorCode::OK);
 }
 
 TEST_F(It2MeHostTest, ConnectionValidationConfirmationDialogReject) {
   StartHost();
   dialog_factory_->set_dialog_result(DialogResult::CANCEL);
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::ERROR_REJECTED_BY_USER, validation_result_);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_REJECTED_BY_USER);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
-  ASSERT_EQ(ErrorCode::SESSION_REJECTED, last_error_code_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
+  ASSERT_EQ(last_error_code_, ErrorCode::SESSION_REJECTED);
 }
 
 TEST_F(It2MeHostTest, MultipleConnectionsTriggerDisconnect) {
   StartHost();
   RunValidationCallback(kTestClientJid);
-  ASSERT_EQ(ValidationResult::SUCCESS, validation_result_);
-  ASSERT_EQ(It2MeHostState::kConnecting, last_host_state_);
+  ASSERT_EQ(validation_result_, ValidationResult::SUCCESS);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kConnecting);
 
   RunValidationCallback(kTestClientJid2);
-  ASSERT_EQ(ValidationResult::ERROR_TOO_MANY_CONNECTIONS, validation_result_);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_TOO_MANY_CONNECTIONS);
   RunUntilStateChanged(It2MeHostState::kDisconnected);
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, AllowSupportHostConnectionsPolicyEnabled) {
@@ -937,10 +915,10 @@ TEST_F(It2MeHostTest, AllowSupportHostConnectionsPolicyEnabled) {
                 base::Value(true)}});
 
   StartHost();
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 
 TEST_F(It2MeHostTest, AllowSupportHostConnectionsPolicyDisabled) {
@@ -948,8 +926,8 @@ TEST_F(It2MeHostTest, AllowSupportHostConnectionsPolicyDisabled) {
                 base::Value(false)}});
 
   StartHost();
-  ASSERT_EQ(It2MeHostState::kError, last_host_state_);
-  ASSERT_EQ(ErrorCode::DISALLOWED_BY_POLICY, last_error_code_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kError);
+  ASSERT_EQ(last_error_code_, ErrorCode::DISALLOWED_BY_POLICY);
 }
 
 TEST_F(It2MeHostTest, FileTransferDisallowedByDefault) {
@@ -964,8 +942,8 @@ TEST_F(It2MeHostTest, UriForwardingDisallowedByDefault) {
   EXPECT_FALSE(*get_local_session_policies().allow_uri_forwarding);
 }
 
-TEST_F(It2MeHostTest, StartHost_UseCorpSessionAuthz) {
-  use_corp_session_authz_ = true;
+TEST_F(It2MeHostTest, StartHost_CorpUser_UseCorpSessionAuthz) {
+  is_corp_user_ = true;
   StartHost();
   ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
   // No shared secret after the support ID.
@@ -974,8 +952,8 @@ TEST_F(It2MeHostTest, StartHost_UseCorpSessionAuthz) {
   ASSERT_TRUE(has_corp_host_status_logger());
 }
 
-TEST_F(It2MeHostTest, StartHost_DoesNotUseCorpSessionAuthz) {
-  use_corp_session_authz_ = false;
+TEST_F(It2MeHostTest, StartHost_NonCorpUser_DoesNotUseCorpSessionAuthz) {
+  is_corp_user_ = false;
   StartHost();
   ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
   // The access code includes the shared secret so it is longer than the support
@@ -985,9 +963,16 @@ TEST_F(It2MeHostTest, StartHost_DoesNotUseCorpSessionAuthz) {
   ASSERT_FALSE(has_corp_host_status_logger());
 }
 
+TEST_F(It2MeHostTest, AllowRemoteInputSessionPolicyEnabledByDefault) {
+  StartHost();
+
+  EXPECT_TRUE(*get_local_session_policies().allow_remote_input);
+}
+
 #if BUILDFLAG(IS_CHROMEOS)
 TEST_F(It2MeHostTest, ConnectRespectsSuppressDialogsParameter) {
-  ChromeOsEnterpriseParams params;
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
   params.suppress_user_dialogs = true;
   StartHost(std::move(params));
 
@@ -997,7 +982,8 @@ TEST_F(It2MeHostTest, ConnectRespectsSuppressDialogsParameter) {
 }
 
 TEST_F(It2MeHostTest, ConnectRespectsSuppressNotificationsParameter) {
-  ChromeOsEnterpriseParams params;
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
   params.suppress_notifications = true;
   StartHost(std::move(params));
 
@@ -1006,7 +992,8 @@ TEST_F(It2MeHostTest, ConnectRespectsSuppressNotificationsParameter) {
 }
 
 TEST_F(It2MeHostTest, ConnectRespectsTerminateUponInputParameter) {
-  ChromeOsEnterpriseParams params;
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
   params.terminate_upon_input = true;
   StartHost(std::move(params));
 
@@ -1019,12 +1006,41 @@ TEST_F(It2MeHostTest, TerminateUponInputDefaultsToFalse) {
   EXPECT_FALSE(GetHost()->desktop_environment_options().terminate_upon_input());
 }
 
+TEST_F(It2MeHostTest, ConnectRespectsMaximumSessionDurationParameter) {
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
+  params.maximum_session_duration = base::Hours(8);
+  StartHost(std::move(params));
+
+  EXPECT_EQ(GetHost()->desktop_environment_options().maximum_session_duration(),
+            base::Hours(8));
+}
+
 TEST_F(It2MeHostTest, ConnectRespectsEnableCurtainingParameter) {
-  ChromeOsEnterpriseParams params;
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
   params.curtain_local_user_session = true;
   StartHost(std::move(params));
 
   EXPECT_TRUE(*get_local_session_policies().curtain_required);
+}
+
+TEST_F(It2MeHostTest, ConnectRespectsAllowRemoteInputParameter) {
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
+  params.allow_remote_input = false;
+  StartHost(std::move(params));
+
+  EXPECT_FALSE(*get_local_session_policies().allow_remote_input);
+}
+
+TEST_F(It2MeHostTest, ConnectRespectsAllowClipboardSyncParameter) {
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
+  params.allow_clipboard_sync = false;
+  StartHost(std::move(params));
+
+  EXPECT_EQ(*get_local_session_policies().clipboard_size_bytes, 0U);
 }
 
 TEST_F(It2MeHostTest, EnableCurtainingDefaultsToFalse) {
@@ -1037,7 +1053,8 @@ TEST_F(It2MeHostTest, AllowEnterpriseFileTransferWithPolicyEnabled) {
   SetPolicies({{policy::key::kRemoteAccessHostAllowEnterpriseFileTransfer,
                 base::Value(true)}});
 
-  ChromeOsEnterpriseParams params;
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
   params.allow_file_transfer = true;
   StartHost(std::move(params));
 
@@ -1048,7 +1065,8 @@ TEST_F(It2MeHostTest, AllowEnterpriseFileTransferWithPolicyDisabled) {
   SetPolicies({{policy::key::kRemoteAccessHostAllowEnterpriseFileTransfer,
                 base::Value(false)}});
 
-  ChromeOsEnterpriseParams params;
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
   params.allow_file_transfer = true;
   StartHost(std::move(params));
 
@@ -1068,7 +1086,8 @@ TEST_F(It2MeHostTest,
 TEST_F(It2MeHostTest, AllowEnterpriseFileTransferWithPolicyNotSet) {
   SetPolicies({});
 
-  ChromeOsEnterpriseParams params;
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
   params.allow_file_transfer = true;
   StartHost(std::move(params));
 
@@ -1081,29 +1100,48 @@ TEST_F(It2MeHostTest, EnableFileTransferDefaultsToFalse) {
   EXPECT_FALSE(*get_local_session_policies().allow_file_transfer);
 }
 
+TEST_F(It2MeHostTest, AudioPlaybackIsLocalOnlyForNonEnterpriseSessions) {
+  StartHost(/*enterprise_params=*/std::nullopt);
+
+  EXPECT_EQ(
+      GetHost()->desktop_environment_options_for_tests().audio_playback_mode(),
+      AudioPlaybackMode::kLocalOnly);
+}
+
+TEST_F(It2MeHostTest, ConnectRespectsAudioPlaybackParameter) {
+  ChromeOsEnterpriseParams params(
+      GetDefaultEnterpriseParamsForEnterpriseAdmin());
+  params.audio_playback = ChromeOsEnterpriseAudioPlayback::kRemoteOnly;
+  StartHost(std::move(params));
+
+  EXPECT_EQ(
+      GetHost()->desktop_environment_options_for_tests().audio_playback_mode(),
+      AudioPlaybackMode::kRemoteOnly);
+}
+
 TEST_F(It2MeHostTest,
        EnterpriseSessionsSucceedWhenRemoteSupportConnectionsPolicyDisabled) {
   SetPolicies({{policy::key::kRemoteAccessHostAllowRemoteSupportConnections,
                 base::Value(false)}});
 
-  StartHost(ChromeOsEnterpriseParams());
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  StartHost(GetDefaultEnterpriseParamsForEnterpriseAdmin());
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
-  ASSERT_EQ(ErrorCode::OK, last_error_code_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
+  ASSERT_EQ(last_error_code_, ErrorCode::OK);
 }
 
 TEST_F(It2MeHostTest, EnterpriseSessionsShouldNotCheckHostDomain) {
   SetPolicies({{policy::key::kRemoteAccessHostDomainList,
                 MakeList({"other-domain.com"})}});
 
-  StartHost(ChromeOsEnterpriseParams());
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  StartHost(GetDefaultEnterpriseParamsForEnterpriseAdmin());
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 
   ShutdownHost();
-  ASSERT_EQ(It2MeHostState::kDisconnected, last_host_state_);
-  ASSERT_EQ(ErrorCode::OK, last_error_code_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
+  ASSERT_EQ(last_error_code_, ErrorCode::OK);
 }
 
 TEST_F(
@@ -1113,9 +1151,9 @@ TEST_F(
       {{policy::key::kRemoteAccessHostAllowEnterpriseRemoteSupportConnections,
         base::Value(false)}});
 
-  StartHost(ChromeOsEnterpriseParams());
-  ASSERT_EQ(It2MeHostState::kError, last_host_state_);
-  ASSERT_EQ(ErrorCode::DISALLOWED_BY_POLICY, last_error_code_);
+  StartHost(GetDefaultEnterpriseParamsForEnterpriseAdmin());
+  ASSERT_EQ(last_host_state_, It2MeHostState::kError);
+  ASSERT_EQ(last_error_code_, ErrorCode::DISALLOWED_BY_POLICY);
 }
 
 TEST_F(
@@ -1126,11 +1164,11 @@ TEST_F(
         base::Value(false)}});
 
   StartHost(/*enterprise_params=*/std::nullopt);
-  ASSERT_EQ(It2MeHostState::kReceivedAccessCode, last_host_state_);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
 }
 
 TEST_F(It2MeHostTest, EnterpriseSessionsShouldNotDisconnectOnPolicyChange) {
-  StartHost(ChromeOsEnterpriseParams());
+  StartHost(GetDefaultEnterpriseParamsForEnterpriseAdmin());
   const It2MeHostState initial_state = last_host_state_;
   ASSERT_EQ(initial_state, It2MeHostState::kReceivedAccessCode);
 
@@ -1141,6 +1179,85 @@ TEST_F(It2MeHostTest, EnterpriseSessionsShouldNotDisconnectOnPolicyChange) {
   // change does *not* happen.
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(last_host_state_, initial_state);
+}
+
+TEST_F(It2MeHostTest, EnterpriseClassManagementSessionsSucceedAsAStudent) {
+  SetPolicies({{policy::key::kRemoteAccessHostAllowRemoteSupportConnections,
+                base::Value(false)},
+               {policy::key::kClassManagementEnabled, base::Value("student")}});
+
+  StartHost(GetDefaultEnterpriseParamsForClassManagement());
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
+}
+
+TEST_F(It2MeHostTest, EnterpriseClassManagementSessionsSucceedAsATeacher) {
+  SetPolicies({{policy::key::kRemoteAccessHostAllowRemoteSupportConnections,
+                base::Value(false)},
+               {policy::key::kClassManagementEnabled, base::Value("teacher")}});
+
+  StartHost(GetDefaultEnterpriseParamsForClassManagement());
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
+}
+
+TEST_F(
+    It2MeHostTest,
+    EnterpriseClassManagementSessionsFailsWhenClassManagementPolicyDisabled) {
+  SetPolicies(
+      {{policy::key::kClassManagementEnabled, base::Value("disabled")}});
+
+  StartHost(GetDefaultEnterpriseParamsForClassManagement());
+  ASSERT_EQ(last_host_state_, It2MeHostState::kError);
+  ASSERT_EQ(last_error_code_, ErrorCode::DISALLOWED_BY_POLICY);
+}
+
+TEST_F(It2MeHostTest,
+       EnterpriseClassManagementSessionsFailsWhenClassManagementPolicyUnset) {
+  StartHost(GetDefaultEnterpriseParamsForClassManagement());
+  ASSERT_EQ(last_host_state_, It2MeHostState::kError);
+  ASSERT_EQ(last_error_code_, ErrorCode::DISALLOWED_BY_POLICY);
+}
+
+TEST_F(It2MeHostTest,
+       EnterpriseClassManagementSessionsShouldNotCheckHostDomain) {
+  SetPolicies({{policy::key::kRemoteAccessHostDomainList,
+                MakeList({"other-domain.com"})},
+               {policy::key::kClassManagementEnabled, base::Value("student")}});
+
+  StartHost(GetDefaultEnterpriseParamsForClassManagement());
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
+
+  ShutdownHost();
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
+  ASSERT_EQ(last_error_code_, ErrorCode::OK);
+}
+
+TEST_F(It2MeHostTest,
+       EnterpriseClassManagementSessionsShouldNotCheckClientDomain) {
+  SetPolicies({{policy::key::kRemoteAccessHostClientDomainList,
+                MakeList({"other-domain.com"})},
+               {policy::key::kClassManagementEnabled, base::Value("student")}});
+
+  authorized_helper_ = kTestClientUsername;
+  StartHost(GetDefaultEnterpriseParamsForClassManagement());
+  ASSERT_EQ(last_host_state_, It2MeHostState::kReceivedAccessCode);
+  RunValidationCallback(kTestClientJid);
+  ASSERT_EQ(validation_result_, ValidationResult::SUCCESS);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kConnecting);
+
+  ShutdownHost();
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
+  ASSERT_EQ(last_error_code_, ErrorCode::OK);
+}
+
+TEST_F(It2MeHostTest,
+       EnterpriseClassManagementSessionsFailWithoutAuthorizedUser) {
+  SetPolicies({{policy::key::kClassManagementEnabled, base::Value("student")}});
+
+  StartHost(GetDefaultEnterpriseParamsForClassManagement());
+  RunValidationCallback(kTestClientJid);
+  ASSERT_EQ(validation_result_, ValidationResult::ERROR_UNAUTHORIZED_ACCOUNT);
+  RunUntilStateChanged(It2MeHostState::kDisconnected);
+  ASSERT_EQ(last_host_state_, It2MeHostState::kDisconnected);
 }
 #endif
 

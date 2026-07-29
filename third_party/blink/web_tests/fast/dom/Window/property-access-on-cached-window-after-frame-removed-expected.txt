@@ -59,11 +59,13 @@ PASS childWindow.navigator.windowControlsOverlay.ongeometrychange is null
 PASS childWindow.navigator.windowControlsOverlay.visible is false
 PASS childWindow.onabort is null
 PASS childWindow.onafterprint is null
+PASS childWindow.onanimationcancel is null
 PASS childWindow.onanimationend is null
 PASS childWindow.onanimationiteration is null
 PASS childWindow.onanimationstart is null
 PASS childWindow.onappinstalled is null
 PASS childWindow.onauxclick is null
+PASS childWindow.onbeforefilter is null
 PASS childWindow.onbeforeinput is null
 PASS childWindow.onbeforeinstallprompt is null
 PASS childWindow.onbeforematch is null
@@ -79,6 +81,7 @@ PASS childWindow.onchange is null
 PASS childWindow.onclick is null
 PASS childWindow.onclose is null
 PASS childWindow.oncommand is null
+PASS childWindow.oncomplete is null
 PASS childWindow.oncontentvisibilityautostatechange is null
 PASS childWindow.oncontextlost is null
 PASS childWindow.oncontextmenu is null
@@ -101,6 +104,9 @@ PASS childWindow.onended is null
 PASS childWindow.onerror is null
 PASS childWindow.onfocus is null
 PASS childWindow.onformdata is null
+PASS childWindow.ongamepadconnected is null
+PASS childWindow.ongamepaddisconnected is null
+PASS childWindow.ongamepadrawinputchanged is null
 PASS childWindow.ongotpointercapture is null
 PASS childWindow.onhashchange is null
 PASS childWindow.oninput is null
@@ -127,7 +133,10 @@ PASS childWindow.onmousewheel is null
 PASS childWindow.onmove is null
 PASS childWindow.onoffline is null
 PASS childWindow.ononline is null
-PASS childWindow.onoverscroll is null
+PASS childWindow.onoverscrollcancel is null
+PASS childWindow.onoverscrollchanging is null
+PASS childWindow.onoverscrollend is null
+PASS childWindow.onoverscrollstart is null
 PASS childWindow.onpagehide is null
 PASS childWindow.onpagereveal is null
 PASS childWindow.onpageshow is null
@@ -199,9 +208,9 @@ PASS childWindow.screen.availHeight is 0
 PASS childWindow.screen.availLeft is 0
 PASS childWindow.screen.availTop is 0
 PASS childWindow.screen.availWidth is 0
-PASS childWindow.screen.colorDepth is 0
+PASS childWindow.screen.colorDepth is 24
 PASS childWindow.screen.height is 0
-PASS childWindow.screen.pixelDepth is 0
+PASS childWindow.screen.pixelDepth is 24
 PASS childWindow.screen.width is 0
 PASS childWindow.screenLeft is 0
 PASS childWindow.screenTop is 0
@@ -219,7 +228,6 @@ PASS childWindow.statusbar.visible is false
 PASS childWindow.styleMedia.type is ''
 PASS childWindow.toolbar.visible is false
 PASS childWindow.trustedTypes.defaultPolicy is null
-PASS childWindow.trustedTypes.onbeforecreatepolicy is null
 PASS childWindow.viewport.segments is null
 PASS childWindow.visualViewport.height is 0
 PASS childWindow.visualViewport.offsetLeft is 0

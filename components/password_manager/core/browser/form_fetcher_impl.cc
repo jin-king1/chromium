@@ -8,24 +8,30 @@
 #include <iterator>
 #include <memory>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check_deref.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
+#include "base/containers/to_vector.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/observer_list.h"
+#include "base/task/bind_post_task.h"
+#include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
 #include "components/autofill/core/common/save_password_progress_logger.h"
 #include "components/password_manager/core/browser/browser_save_password_progress_logger.h"
 #include "components/password_manager/core/browser/credentials_filter.h"
+#include "components/password_manager/core/browser/form_fetcher.h"
 #include "components/password_manager/core/browser/password_feature_manager.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
 #include "components/password_manager/core/browser/password_store/interactions_stats.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/password_store_util.h"
 #include "components/password_manager/core/browser/password_store/psl_matching_helper.h"
@@ -38,16 +44,6 @@ using password_manager_util::GetMatchType;
 namespace password_manager {
 
 namespace {
-
-std::vector<std::unique_ptr<PasswordForm>> ConvertToUniquePtr(
-    std::vector<PasswordForm> forms) {
-  std::vector<std::unique_ptr<PasswordForm>> result;
-  result.reserve(forms.size());
-  for (auto& form : forms) {
-    result.push_back(std::make_unique<PasswordForm>(std::move(form)));
-  }
-  return result;
-}
 
 // Given |non_federated| matches where all matches with the |scheme| are in the
 // beginning of the vector, returns a span with those matches.
@@ -77,7 +73,11 @@ void FormFetcherImpl::AddConsumer(FormFetcher::Consumer* consumer) {
   DCHECK(consumer);
   consumers_.AddObserver(consumer);
   if (state_ == State::NOT_WAITING) {
-    consumer->OnFetchCompleted();
+    // Notify the consumer immediately, but do it async so that it's in line
+    // with the regular form fetcher behavior.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&FormFetcherImpl::NotifyConsumer,
+                                  weak_ptr_factory_.GetWeakPtr(), consumer));
   }
 }
 
@@ -120,7 +120,7 @@ void FormFetcherImpl::Fetch() {
       logger->LogMessage(Logger::STRING_NO_STORE);
     }
 
-    std::vector<std::unique_ptr<PasswordForm>> results;
+    std::vector<StoredCredential> results;
     AggregatePasswordStoreResults(std::move(results));
     return;
   }
@@ -161,20 +161,25 @@ const std::vector<InteractionsStats>& FormFetcherImpl::GetInteractionsStats()
   return interactions_stats_;
 }
 
-base::span<const PasswordForm> FormFetcherImpl::GetInsecureCredentials() const {
+base::span<const StoredCredential> FormFetcherImpl::GetInsecureCredentials()
+    const {
   return insecure_credentials_;
 }
 
-base::span<const PasswordForm> FormFetcherImpl::GetNonFederatedMatches() const {
+base::span<const StoredCredential> FormFetcherImpl::GetNonFederatedMatches()
+    const {
   return non_federated_;
 }
 
-base::span<const PasswordForm> FormFetcherImpl::GetFederatedMatches() const {
+base::span<const StoredCredential> FormFetcherImpl::GetFederatedMatches()
+    const {
   return federated_;
 }
 
 bool FormFetcherImpl::IsBlocklisted() const {
-  if (client_->GetPasswordFeatureManager()->IsAccountStorageEnabled()) {
+  // TODO(crbug.com/470332074): Verify whether this should check for
+  // "enabled" instead of "active".
+  if (client_->GetPasswordFeatureManager()->IsAccountStorageActive()) {
     return is_blocklisted_in_account_store_;
   }
   return is_blocklisted_in_profile_store_;
@@ -182,9 +187,9 @@ bool FormFetcherImpl::IsBlocklisted() const {
 
 bool FormFetcherImpl::IsMovingBlocked(const signin::GaiaIdHash& destination,
                                       const std::u16string& username) const {
-  for (const std::vector<PasswordForm>& matches_vector :
-       {federated_, non_federated_}) {
-    for (const auto& form : matches_vector) {
+  for (const std::vector<StoredCredential>* matches_vector :
+       {&federated_, &non_federated_}) {
+    for (const auto& form : *matches_vector) {
       // Only local entries can be moved to the account store (though
       // account store matches should never have |moving_blocked_for_list|
       // entries anyway).
@@ -200,7 +205,7 @@ bool FormFetcherImpl::IsMovingBlocked(const signin::GaiaIdHash& destination,
       if (form.username_value != username) {
         continue;
       }
-      if (base::Contains(form.moving_blocked_for_list, destination)) {
+      if (std::ranges::contains(form.moving_blocked_for_list, destination)) {
         return true;
       }
     }
@@ -208,16 +213,17 @@ bool FormFetcherImpl::IsMovingBlocked(const signin::GaiaIdHash& destination,
   return false;
 }
 
-base::span<const PasswordForm> FormFetcherImpl::GetAllRelevantMatches() const {
+base::span<const StoredCredential> FormFetcherImpl::GetAllRelevantMatches()
+    const {
   return NonFederatedSameSchemeMatches(base::span(non_federated_),
                                        form_digest_.scheme);
 }
 
-base::span<const PasswordForm> FormFetcherImpl::GetBestMatches() const {
+base::span<const StoredCredential> FormFetcherImpl::GetBestMatches() const {
   return best_matches_;
 }
 
-const PasswordForm* FormFetcherImpl::GetPreferredMatch() const {
+const StoredCredential* FormFetcherImpl::GetPreferredMatch() const {
   if (best_matches_.empty()) {
     return nullptr;
   }
@@ -226,7 +232,7 @@ const PasswordForm* FormFetcherImpl::GetPreferredMatch() const {
 
 std::optional<PasswordFormMetricsRecorder::MatchedFormType>
 FormFetcherImpl::GetPreferredOrPotentialMatchedFormType() const {
-  const PasswordForm* preferred_match = GetPreferredMatch();
+  const StoredCredential* preferred_match = GetPreferredMatch();
   if (!preferred_match) {
     return grouped_credentials_form_type_;
   }
@@ -263,16 +269,19 @@ std::unique_ptr<FormFetcher> FormFetcherImpl::Clone() {
     return result;
   }
 
-  result->non_federated_ = non_federated_;
-  result->federated_ = federated_;
+  result->non_federated_ =
+      base::ToVector(non_federated_, &CloneStoredCredential);
+  result->federated_ = base::ToVector(federated_, &CloneStoredCredential);
   result->is_blocklisted_in_account_store_ = is_blocklisted_in_account_store_;
   result->is_blocklisted_in_profile_store_ = is_blocklisted_in_profile_store_;
-  result->best_matches_ = best_matches_;
+  result->best_matches_ = base::ToVector(best_matches_, &CloneStoredCredential);
   result->interactions_stats_ = interactions_stats_;
-  result->insecure_credentials_ = insecure_credentials_;
+  result->insecure_credentials_ =
+      base::ToVector(insecure_credentials_, &CloneStoredCredential);
   result->state_ = state_;
   result->need_to_refetch_ = need_to_refetch_;
   result->profile_store_backend_error_ = profile_store_backend_error_;
+  result->account_store_backend_error_ = account_store_backend_error_;
 
   return result;
 }
@@ -287,14 +296,40 @@ FormFetcherImpl::GetAccountStoreBackendError() const {
   return account_store_backend_error_;
 }
 
+void FormFetcherImpl::NotifyConsumer(FormFetcher::Consumer* consumer) {
+  // If a fetch has started in the meantime, the `consumer` will be notified
+  // when it finishes.
+  if (state_ == State::NOT_WAITING && consumers_.HasObserver(consumer)) {
+    consumer->OnFetchCompleted();
+  }
+}
+
 void FormFetcherImpl::FindMatchesAndNotifyConsumers(
-    std::vector<std::unique_ptr<PasswordForm>> results) {
+    std::vector<StoredCredential> results) {
   DCHECK_EQ(State::WAITING, state_);
+
+  std::unique_ptr<password_manager::BrowserSavePasswordProgressLogger> logger =
+      password_manager_util::GetLoggerIfAvailable(client_);
+  if (logger) {
+    logger->LogMessage(Logger::STRING_ON_GET_STORE_RESULTS_METHOD);
+    logger->LogNumberResultsForStore(
+        PasswordForm::Store::kProfileStore,
+        std::ranges::count_if(results, &StoredCredential::IsUsingProfileStore));
+    logger->LogNumberResultsForStore(
+        PasswordForm::Store::kAccountStore,
+        std::ranges::count_if(results, &StoredCredential::IsUsingAccountStore));
+  }
+
   SplitResults(std::move(results));
 
   best_matches_ =
       password_manager_util::FindBestMatches(NonFederatedSameSchemeMatches(
           base::span(non_federated_), form_digest_.scheme));
+
+  if (logger) {
+    logger->LogNumber(Logger::STRING_NUMBER_OF_UNIQUE_MATCHED_CREDENTIALS,
+                      best_matches_.size());
+  }
 
   state_ = State::NOT_WAITING;
   for (auto& consumer : consumers_) {
@@ -302,38 +337,37 @@ void FormFetcherImpl::FindMatchesAndNotifyConsumers(
   }
 }
 
-void FormFetcherImpl::SplitResults(
-    std::vector<std::unique_ptr<PasswordForm>> forms) {
+void FormFetcherImpl::SplitResults(std::vector<StoredCredential> forms) {
   is_blocklisted_in_profile_store_ = false;
   is_blocklisted_in_account_store_ = false;
   non_federated_.clear();
   federated_.clear();
   insecure_credentials_.clear();
-  std::vector<PasswordForm> non_federated_other_schemas;
+  std::vector<StoredCredential> non_federated_other_schemas;
 
   for (auto& form : forms) {
-    if (form->blocked_by_user) {
+    if (form.blocked_by_user) {
       // Ignore non-exact matches for blocklisted entries. PLS, affiliated and
       // grouped matches are ignored.
-      if (password_manager_util::GetMatchType(*form) ==
+      if (password_manager_util::GetMatchType(form) ==
               password_manager_util::GetLoginMatchType::kExact &&
-          form->scheme == form_digest_.scheme) {
-        if (form->IsUsingAccountStore()) {
+          form.scheme == form_digest_.scheme) {
+        if (form.IsUsingAccountStore()) {
           is_blocklisted_in_account_store_ = true;
         } else {
           is_blocklisted_in_profile_store_ = true;
         }
       }
     } else {
-      if (!form->password_issues.empty()) {
-        insecure_credentials_.push_back(*form);
+      if (!form.password_issues.empty()) {
+        insecure_credentials_.push_back(CloneStoredCredential(form));
       }
-      if (form->IsFederatedCredential()) {
-        federated_.push_back(*form);
-      } else if (form->scheme == form_digest_.scheme) {
-        non_federated_.push_back(*form);
+      if (form.federation_origin.IsValid()) {
+        federated_.push_back(std::move(form));
+      } else if (form.scheme == form_digest_.scheme) {
+        non_federated_.push_back(std::move(form));
       } else {
-        non_federated_other_schemas.push_back(*form);
+        non_federated_other_schemas.push_back(std::move(form));
       }
     }
   }
@@ -344,40 +378,27 @@ void FormFetcherImpl::SplitResults(
       std::make_move_iterator(non_federated_other_schemas.end()));
 }
 
-void FormFetcherImpl::OnGetPasswordStoreResults(
-    std::vector<std::unique_ptr<PasswordForm>> results) {
-  // This class overrides OnGetPasswordStoreResultsFrom() (the version of this
-  // method that also receives the originating store), so the store-less version
-  // never gets called.
-  NOTREACHED();
-}
-
-void FormFetcherImpl::OnGetPasswordStoreResultsFrom(
-    PasswordStoreInterface* store,
-    std::vector<std::unique_ptr<PasswordForm>> results) {
-  NOTIMPLEMENTED();
-}
-
 void FormFetcherImpl::OnGetPasswordStoreResultsOrErrorFrom(
     PasswordStoreInterface* store,
     LoginsResultOrError results_or_error) {
-  // TODO(crbug.com/40239372): Handle errors coming from the account
-  // store.
   if (store == client_->GetProfilePasswordStore()) {
     profile_store_backend_error_.reset();
-    if (absl::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
+    if (std::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
       profile_store_backend_error_ =
-          absl::get<PasswordStoreBackendError>(results_or_error);
+          std::get<PasswordStoreBackendError>(results_or_error);
     }
   } else if (store == client_->GetAccountPasswordStore()) {
     account_store_backend_error_.reset();
-    if (absl::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
+    if (std::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
       account_store_backend_error_ =
-          absl::get<PasswordStoreBackendError>(results_or_error);
+          std::get<PasswordStoreBackendError>(results_or_error);
     }
   }
 
-  std::vector<PasswordForm> results =
+  bool has_backend_error =
+      std::holds_alternative<PasswordStoreBackendError>(results_or_error);
+
+  std::vector<StoredCredential> results =
       GetLoginsOrEmptyListOnFailure(std::move(results_or_error));
   if (filter_grouped_credentials_) {
     std::erase_if(results, [this](const auto& form) {
@@ -407,7 +428,7 @@ void FormFetcherImpl::OnGetPasswordStoreResultsOrErrorFrom(
   DCHECK_EQ(State::WAITING, state_);
   DCHECK_GT(wait_counter_, 0);
 
-  if (should_migrate_http_passwords_ && results.empty() &&
+  if (should_migrate_http_passwords_ && results.empty() && !has_backend_error &&
       form_digest_.url.SchemeIs(url::kHttpsScheme)) {
     http_migrators_[store] = std::make_unique<HttpPasswordStoreMigrator>(
         url::Origin::Create(form_digest_.url), store,
@@ -416,11 +437,11 @@ void FormFetcherImpl::OnGetPasswordStoreResultsOrErrorFrom(
     return;
   }
 
-  AggregatePasswordStoreResults(ConvertToUniquePtr(std::move(results)));
+  AggregatePasswordStoreResults(std::move(results));
 }
 
 void FormFetcherImpl::AggregatePasswordStoreResults(
-    std::vector<std::unique_ptr<PasswordForm>> results) {
+    std::vector<StoredCredential> results) {
   // Store the results.
   for (auto& form : results) {
     partial_results_.push_back(std::move(form));
@@ -440,11 +461,6 @@ void FormFetcherImpl::AggregatePasswordStoreResults(
     return;
   }
 
-  if (password_manager_util::IsLoggingActive(client_)) {
-    BrowserSavePasswordProgressLogger logger(client_->GetCurrentLogManager());
-    logger.LogMessage(Logger::STRING_ON_GET_STORE_RESULTS_METHOD);
-    logger.LogNumber(Logger::STRING_NUMBER_RESULTS, partial_results_.size());
-  }
   FindMatchesAndNotifyConsumers(std::move(partial_results_));
 }
 
@@ -453,11 +469,10 @@ void FormFetcherImpl::OnGetSiteStatistics(
   interactions_stats_ = std::move(stats);
 }
 
-void FormFetcherImpl::ProcessMigratedForms(
-    std::vector<std::unique_ptr<PasswordForm>> forms) {
+void FormFetcherImpl::ProcessMigratedForms(std::vector<PasswordForm> forms) {
   // The migration from HTTP to HTTPS (within the profile store) was finished.
   // Continue processing with the migrated results.
-  AggregatePasswordStoreResults(std::move(forms));
+  AggregatePasswordStoreResults(FromPasswordForms(std::move(forms)));
 }
 
 }  // namespace password_manager

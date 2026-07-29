@@ -7,11 +7,17 @@
 #include <string.h>
 
 #include <algorithm>
+#include <optional>
 #include <sstream>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/debug/debugging_buildflags.h"
+#include "base/features.h"
+#include "base/numerics/clamped_math.h"
+#include "base/numerics/safe_conversions.h"
 #include "build/build_config.h"
 #include "build/config/compiler/compiler_buildflags.h"
 
@@ -50,6 +56,13 @@ constexpr size_t kStackFrameAdjustment = sizeof(uintptr_t);
 constexpr size_t kStackFrameAdjustment = 0;
 #endif
 
+// The max gap threshold in bytes for stack scanning. If the gap between a frame
+// pointer to stack end is beyond this threshold, stack end is deemed as
+// unreliable and stack scan stops. The value is initialized from the param of
+// `kStackScanMaxFramePointerToStackEndGap` feature if the feature is enabled.
+constinit std::optional<size_t> g_stack_scan_max_fp_to_stack_end_gap_bytes{
+    std::nullopt};
+
 // On Arm-v8.3+ systems with pointer authentication codes (PAC), signature bits
 // are set in the top bits of the pointer, which confuses test assertions.
 // Because the signature size can vary based on the system configuration, use
@@ -60,7 +73,7 @@ static uintptr_t StripPointerAuthenticationBits(uintptr_t ptr) {
   // with and without pointer authentication). xpaclri is used here because it's
   // in the HINT space and treated as a no-op on older Arm cores (unlike the
   // more generic xpaci which has a new encoding). The downside is that ptr has
-  // to be moved to x30 to use this instruction. TODO(richard.townsend@arm.com):
+  // to be moved to x30 to use this instruction. TODO(ritownsend@google.com):
   // replace with an intrinsic once that is available.
   register uintptr_t x30 __asm("x30") = ptr;
   asm("xpaclri" : "+r"(x30));
@@ -149,9 +162,22 @@ uintptr_t ScanStackForNextFrame(uintptr_t fp, uintptr_t stack_end) {
     return 0;
   }
 
+  if (g_stack_scan_max_fp_to_stack_end_gap_bytes.has_value()) {
+    // If `stack_end` is below `fp`, or is too far above `fp`, do not scan since
+    // `stack_end` is likely not a good indication of stack end and it is too
+    // dangerous to scan without knowing the stack end.
+    // See https://crbug.com/402542102 for the context.
+    if (stack_end < fp ||
+        (stack_end - fp) > *g_stack_scan_max_fp_to_stack_end_gap_bytes) {
+      return 0;
+    }
+  }
+
   fp += sizeof(uintptr_t);  // current frame is known to be invalid
   uintptr_t last_fp_to_scan =
-      std::min(fp + kMaxStackScanArea, stack_end) - sizeof(uintptr_t);
+      (base::ClampedNumeric<uintptr_t>(fp) + kMaxStackScanArea).Min(stack_end) -
+      sizeof(uintptr_t);
+
   for (; fp <= last_fp_to_scan; fp += sizeof(uintptr_t)) {
     uintptr_t next_fp = GetNextStackFrame(fp);
     if (IsStackFrameValid(next_fp, fp, stack_end)) {
@@ -264,7 +290,7 @@ StackTrace::StackTrace(span<const void* const> trace)
 
 // static
 bool StackTrace::WillSymbolizeToStreamForTesting() {
-#if BUILDFLAG(SYMBOL_LEVEL) == 0
+#if BUILDFLAG(HAS_SYMBOLS) == 0
   // Symbols are not expected to be reliable when gn args specifies
   // symbol_level=0.
   return false;
@@ -293,6 +319,20 @@ bool StackTrace::WillSymbolizeToStreamForTesting() {
 #else
   return true;
 #endif
+}
+
+// static
+void StackTrace::InitializeFeatures() {
+#if BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
+  if (FeatureList::IsEnabled(
+          features::kStackScanMaxFramePointerToStackEndGap)) {
+    g_stack_scan_max_fp_to_stack_end_gap_bytes =
+        MiBU(checked_cast<unsigned>(
+                 features::kStackScanMaxFramePointerToStackEndGapThresholdMB
+                     .Get()))
+            .InBytes();
+  }
+#endif  // BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
 }
 
 void StackTrace::Print() const {
@@ -333,7 +373,7 @@ std::string StackTrace::ToStringWithPrefix(cstring_view prefix_string) const {
 #if !defined(__UCLIBC__) && !defined(_AIX)
   OutputToStreamWithPrefix(&stream, prefix_string);
 #endif
-  return stream.str();
+  return std::move(stream).str();
 }
 
 // static

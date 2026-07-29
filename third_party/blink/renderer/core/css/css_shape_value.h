@@ -4,6 +4,8 @@
 
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_SHAPE_VALUE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_SHAPE_VALUE_H_
+
+#include <array>
 #include <initializer_list>
 
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
@@ -47,6 +49,10 @@ class CSSShapeCommand : public GarbageCollected<CSSShapeCommand> {
   // This should be private, but can't because of MakeGarbageCollected.
   CSSShapeCommand() : type_(Type::kPathSegClosePath) {}
 
+  bool HasRandomFunctions() const {
+    return end_point_ && end_point_->HasRandomFunctions();
+  }
+
  private:
   Type type_;
   Member<const CSSValue> end_point_;
@@ -59,12 +65,14 @@ class CSSShapeArcCommand : public CSSShapeCommand {
                      const CSSPrimitiveValue& angle,
                      const CSSValuePair& radius,
                      CSSValueID size,
-                     CSSValueID sweep)
+                     CSSValueID sweep,
+                     bool has_direction_agnostic_radius)
       : CSSShapeCommand(type, end_point),
         angle_(angle),
         radius_(radius),
         size_(size),
-        sweep_(sweep) {
+        sweep_(sweep),
+        has_direction_agnostic_radius_(has_direction_agnostic_radius) {
     CHECK(type == Type::kPathSegArcAbs || type == Type::kPathSegArcRel);
     CHECK(sweep == CSSValueID::kCw || sweep == CSSValueID::kCcw);
     CHECK(size == CSSValueID::kLarge || size == CSSValueID::kSmall);
@@ -73,11 +81,25 @@ class CSSShapeArcCommand : public CSSShapeCommand {
   const CSSValuePair& Radius() const { return *radius_; }
   CSSValueID Size() const { return size_; }
   CSSValueID Sweep() const { return sweep_; }
+  bool HasDirectionAgnosticRadius() const {
+    return has_direction_agnostic_radius_;
+  }
   bool operator==(const CSSShapeArcCommand& other) const {
     return CSSShapeCommand::operator==(other) && sweep_ == other.sweep_ &&
            size_ == other.size_ && radius_ == other.radius_ &&
-           angle_ == other.angle_;
+           angle_ == other.angle_ &&
+           has_direction_agnostic_radius_ ==
+               other.has_direction_agnostic_radius_;
   }
+
+  bool HasRandomFunctions() const {
+    if (CSSShapeCommand::HasRandomFunctions()) {
+      return true;
+    }
+    return (angle_ && angle_->HasRandomFunctions()) ||
+           (radius_ && radius_->HasRandomFunctions());
+  }
+
   void Trace(Visitor* visitor) const override {
     visitor->Trace(angle_);
     visitor->Trace(radius_);
@@ -89,6 +111,7 @@ class CSSShapeArcCommand : public CSSShapeCommand {
   Member<const CSSValuePair> radius_;
   CSSValueID size_;
   CSSValueID sweep_;
+  bool has_direction_agnostic_radius_;
 };
 
 using CSSShapeControlPoint = std::pair<CSSValueID, Member<const CSSValuePair>>;
@@ -96,9 +119,9 @@ using CSSShapeControlPoint = std::pair<CSSValueID, Member<const CSSValuePair>>;
 template <wtf_size_t NumControlPoints>
 class CSSShapeCurveCommand : public CSSShapeCommand {
  public:
-  CSSShapeCurveCommand<1>(Type type,
-                          const CSSValuePair& end_point,
-                          const CSSShapeControlPoint control_point)
+  CSSShapeCurveCommand(Type type,
+                       const CSSValuePair& end_point,
+                       const CSSShapeControlPoint control_point)
       : CSSShapeCommand(type, end_point), control_points_{control_point} {}
   CSSShapeCurveCommand(Type type,
                        const CSSValuePair& end_point,
@@ -125,6 +148,16 @@ class CSSShapeCurveCommand : public CSSShapeCommand {
     return control_points_;
   }
 
+  bool HasRandomFunctions() const {
+    if (CSSShapeCommand::HasRandomFunctions()) {
+      return true;
+    }
+    return (control_points_.at(0).second &&
+            control_points_.at(0).second->HasRandomFunctions()) ||
+           (NumControlPoints == 2 && control_points_.at(1).second &&
+            control_points_.at(1).second->HasRandomFunctions());
+  }
+
  private:
   std::array<CSSShapeControlPoint, NumControlPoints> control_points_;
 };
@@ -134,7 +167,7 @@ class CSSShapeValue : public CSSValue {
   CSSShapeValue(WindRule wind_rule,
                 const CSSValuePair& origin,
                 HeapVector<Member<const CSSShapeCommand>> commands)
-      : CSSValue(kShapeClass),
+      : CSSValue(kBasicShapeShapeClass),
         wind_rule_(wind_rule),
         origin_(origin),
         commands_(std::move(commands)) {}
@@ -149,6 +182,15 @@ class CSSShapeValue : public CSSValue {
   bool Equals(const CSSShapeValue& other) const {
     return wind_rule_ == other.wind_rule_ && *origin_ == *other.origin_ &&
            commands_ == other.commands_;
+  }
+
+  bool HasRandomFunctions() const {
+    for (const CSSShapeCommand* command : commands_) {
+      if (command->HasRandomFunctions()) {
+        return true;
+      }
+    }
+    return origin_ && origin_->HasRandomFunctions();
   }
 
   void TraceAfterDispatch(blink::Visitor*) const;

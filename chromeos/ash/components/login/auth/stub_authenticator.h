@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/component_export.h"
-#include "base/functional/callback.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chromeos/ash/components/login/auth/auth_status_consumer.h"
 #include "chromeos/ash/components/login/auth/authenticator.h"
@@ -47,6 +46,8 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_LOGIN_AUTH) StubAuthenticator
                               bool ephemeral) override;
   void LoginAsIwaKioskAccount(const AccountId& app_account_id,
                               bool ephemeral) override;
+  void LoginAsArcvmKioskAccount(const AccountId& app_account_id,
+                                bool ephemeral) override;
   void LoginAuthenticated(std::unique_ptr<UserContext> user_context) override;
   void OnAuthSuccess() override;
   void OnAuthFailure(const AuthFailure& failure) override;

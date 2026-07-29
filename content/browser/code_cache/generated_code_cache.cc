@@ -2,23 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/342213636): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "content/browser/code_cache/generated_code_cache.h"
 
 #include <iostream>
 #include <string_view>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -28,12 +24,14 @@
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/url_constants.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/features.h"
 #include "net/base/network_isolation_key.h"
 #include "net/base/url_util.h"
 #include "net/http/http_cache.h"
+#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/loader/code_cache_util.h"
 #include "third_party/blink/public/common/scheme_registry.h"
 #include "url/gurl.h"
 
@@ -43,28 +41,41 @@ namespace content {
 
 namespace {
 
-constexpr char kPrefix[] = "_key";
 constexpr char kSeparator[] = " \n";
 
-// We always expect to receive valid URLs that can be used as keys to the code
-// cache. The relevant checks (for ex: resource_url is valid, origin_lock is
-// not opque etc.,) must be done prior to requesting the code cache.
+// In this and `CheckValidContext` it's expected to receive valid URLs that can
+// be used as keys to the code cache. The relevant checks (for ex: resource_url
+// is valid, origin_lock is not opaque etc.,) must be done prior to requesting
+// the code cache.
 //
-// This function doesn't enforce anything in the production code. It is here
+// These functions don't enforce anything in the production code. They are here
 // to make the assumptions explicit and to catch any errors when DCHECKs are
 // enabled.
-void CheckValidKeys(const GURL& resource_url,
-                    const GURL& origin_lock,
-                    GeneratedCodeCache::CodeCacheType cache_type) {
+void CheckValidResource(const GURL& resource_url,
+                        GeneratedCodeCache::CodeCacheType cache_type) {
   // If the resource url is invalid don't cache the code.
   DCHECK(resource_url.is_valid());
   bool resource_url_is_chrome_or_chrome_untrusted =
       resource_url.SchemeIs(content::kChromeUIScheme) ||
       resource_url.SchemeIs(content::kChromeUIUntrustedScheme);
-  DCHECK(resource_url.SchemeIsHTTPOrHTTPS() ||
-         resource_url_is_chrome_or_chrome_untrusted ||
-         blink::CommonSchemeRegistry::IsExtensionScheme(resource_url.scheme()));
+  DCHECK(
+      resource_url.SchemeIsHTTPOrHTTPS() ||
+      resource_url_is_chrome_or_chrome_untrusted ||
+      blink::CommonSchemeRegistry::IsExtensionScheme(resource_url.GetScheme()));
 
+  if (!blink::features::IsPersistentCacheForCodeCacheEnabled()) {
+    // The chrome and chrome-untrusted schemes are only used with the WebUI code
+    // cache type when PersistentCache is not used. Otherwise, PersistentCache
+    // segments WebUI from non-WebUI in multiple ways to prevent privilege
+    // escalation, using both `GetCacheId` and
+    // `CheckSecurityForAccessingCodeCacheData`.
+    DCHECK_EQ(resource_url_is_chrome_or_chrome_untrusted,
+              cache_type == GeneratedCodeCache::kWebUIJavaScript);
+  }
+}
+
+void CheckValidContext(const GURL& origin_lock,
+                       GeneratedCodeCache::CodeCacheType cache_type) {
   // |origin_lock| should be either empty or should have
   // Http/Https/chrome/chrome-untrusted schemes and it should not be a URL with
   // opaque origin. Empty origin_locks are allowed when the renderer is not
@@ -72,19 +83,22 @@ void CheckValidKeys(const GURL& resource_url,
   bool origin_lock_is_chrome_or_chrome_untrusted =
       origin_lock.SchemeIs(content::kChromeUIScheme) ||
       origin_lock.SchemeIs(content::kChromeUIUntrustedScheme);
-  DCHECK(
-      origin_lock.is_empty() ||
-      ((origin_lock.SchemeIsHTTPOrHTTPS() ||
-        origin_lock_is_chrome_or_chrome_untrusted ||
-        blink::CommonSchemeRegistry::IsExtensionScheme(origin_lock.scheme())) &&
-       !url::Origin::Create(origin_lock).opaque()));
+  DCHECK(origin_lock.is_empty() ||
+         ((origin_lock.SchemeIsHTTPOrHTTPS() ||
+           origin_lock_is_chrome_or_chrome_untrusted ||
+           blink::CommonSchemeRegistry::IsExtensionScheme(
+               origin_lock.GetScheme())) &&
+          !url::Origin::Create(origin_lock).opaque()));
 
-  // The chrome and chrome-untrusted schemes are only used with the WebUI
-  // code cache type.
-  DCHECK_EQ(origin_lock_is_chrome_or_chrome_untrusted,
-            cache_type == GeneratedCodeCache::kWebUIJavaScript);
-  DCHECK_EQ(resource_url_is_chrome_or_chrome_untrusted,
-            cache_type == GeneratedCodeCache::kWebUIJavaScript);
+  if (!blink::features::IsPersistentCacheForCodeCacheEnabled()) {
+    // The chrome and chrome-untrusted schemes are only used with the WebUI code
+    // cache type when PersistentCache is not used. Otherwise, PersistentCache
+    // segments WebUI from non-WebUI in multiple ways to prevent privilege
+    // escalation, using both `GetCacheId` and
+    // `CheckSecurityForAccessingCodeCacheData`.
+    DCHECK_EQ(origin_lock_is_chrome_or_chrome_untrusted,
+              cache_type == GeneratedCodeCache::kWebUIJavaScript);
+  }
 }
 
 // Generates the cache key for the given |resource_url|, |origin_lock| and
@@ -108,33 +122,16 @@ std::string GetCacheKey(const GURL& resource_url,
                         const GURL& origin_lock,
                         const net::NetworkIsolationKey& nik,
                         GeneratedCodeCache::CodeCacheType cache_type) {
-  CheckValidKeys(resource_url, origin_lock, cache_type);
+  return base::StrCat(
+      {GeneratedCodeCache::GetResourceKey(resource_url, cache_type),
 
-  // Add a prefix _ so it can't be parsed as a valid URL.
-  std::string key(kPrefix);
-  // Remove reference, username and password sections of the URL.
-  key.append(net::SimplifyUrlForRequest(resource_url).spec());
-  // Add a separator between URL and origin to avoid any possibility of
-  // attacks by crafting the URL. URLs do not contain any control ASCII
-  // characters, and also space is encoded. So use ' \n' as a seperator.
-  key.append(kSeparator);
+       // Add a separator between URL and origin to avoid any possibility of
+       // attacks by crafting the URL. URLs do not contain any control ASCII
+       // characters, and also space is encoded. So use ' \n' as a
+       // separator.
+       kSeparator,
 
-  if (origin_lock.is_valid())
-    key.append(net::SimplifyUrlForRequest(origin_lock).spec());
-
-  if (net::HttpCache::IsSplitCacheEnabled() &&
-      base::FeatureList::IsEnabled(
-          net::features::kSplitCodeCacheByNetworkIsolationKey)) {
-    // TODO(crbug.com/40232395):  Transient NIKs return nullopt when
-    // their ToCacheKeyString() method is invoked, as they generally shouldn't
-    // be written to disk. This code is currently reached for transient NIKs,
-    // which needs to be fixed.
-    if (!nik.IsTransient()) {
-      key.append(kSeparator);
-      key.append(*nik.ToCacheKeyString());
-    }
-  }
-  return key;
+       GeneratedCodeCache::GetContextKey(origin_lock, nik, cache_type)});
 }
 
 constexpr size_t kResponseTimeSizeInBytes = sizeof(int64_t);
@@ -145,7 +142,7 @@ constexpr size_t kHeaderSizeInBytes =
 // must convert the checksum to a string key in a way that is guaranteed not to
 // match a key generated by |GetCacheKey|. A simple way to do this is to convert
 // it to a hex number string, which is twice as long as the checksum.
-constexpr size_t kSHAKeySizeInBytes = 2 * crypto::kSHA256Length;
+constexpr size_t kSHAKeySizeInBytes = 2 * crypto::hash::kSha256Size;
 
 // This is the threshold for storing the header and cached code in stream 0,
 // which is read into memory on opening an entry. JavaScript code caching stores
@@ -229,6 +226,44 @@ void CollectStatisticsForEmbedderWebUIPages(
 
 }  // namespace
 
+// static
+std::string GeneratedCodeCache::GetResourceKey(
+    const GURL& resource_url,
+    GeneratedCodeCache::CodeCacheType cache_type) {
+  CheckValidResource(resource_url, cache_type);
+
+  return blink::UrlToCodeCacheKey(resource_url);
+}
+
+// static
+std::string GeneratedCodeCache::GetContextKey(
+    const GURL& origin_lock,
+    const net::NetworkIsolationKey& nik,
+    GeneratedCodeCache::CodeCacheType cache_type) {
+  CheckValidContext(origin_lock, cache_type);
+
+  std::string key;
+
+  if (origin_lock.is_valid()) {
+    key.append(net::SimplifyUrlForRequest(origin_lock).spec());
+  }
+
+  if (net::HttpCache::IsSplitCacheEnabled() &&
+      base::FeatureList::IsEnabled(
+          net::features::kSplitCodeCacheByNetworkIsolationKey)) {
+    // TODO(crbug.com/40232395):  Transient NIKs return nullopt when
+    // their ToCacheKeyString() method is invoked, as they generally shouldn't
+    // be written to disk. This code is currently reached for transient NIKs,
+    // which needs to be fixed.
+    if (!nik.IsTransient()) {
+      key.append(kSeparator);
+      key.append(*nik.ToCacheKeyString());
+    }
+  }
+
+  return key;
+}
+
 bool GeneratedCodeCache::IsValidHeader(
     scoped_refptr<net::IOBufferWithSize> small_buffer) const {
   size_t buffer_size = small_buffer->size();
@@ -248,7 +283,7 @@ bool GeneratedCodeCache::IsValidHeader(
 }
 
 std::string GeneratedCodeCache::GetResourceURLFromKey(const std::string& key) {
-  constexpr size_t kPrefixStringLen = std::size(kPrefix) - 1;
+  constexpr size_t kPrefixStringLen = std::size(blink::kCodeCacheKeyPrefix) - 1;
   // |key| may not have a prefix and separator (e.g. for deduplicated entries).
   // In that case, return an empty string.
   const size_t separator_index = key.find(kSeparator);
@@ -376,9 +411,6 @@ class GeneratedCodeCache::PendingOperation {
         }
         base::UmaHistogramBoolean("SiteIsolatedCodeCache.JS.Hit",
                                   code_cache_hit);
-        base::UmaHistogramBoolean(
-            "SiteIsolatedCodeCache.JS.PotentialMemoryBackedCodeCacheHit",
-            in_memory_code_cache_hit);
       }
     }
     std::move(read_callback_).Run(response_time, std::move(data));
@@ -519,15 +551,11 @@ void GeneratedCodeCache::WriteEntry(const GURL& url,
     // change shared memory before we can compute the hash and write the data.
     // TODO(crbug.com/40151989) Eliminate this copy when the shared memory can't
     // be written by the sender.
-    mojo_base::BigBuffer copy({data.data(), data.size()});
+    mojo_base::BigBuffer copy(base::span{data});
     if (copy.size() != data.size())
       return;
     data = mojo_base::BigBuffer();  // Release the old buffer.
-    uint8_t result[crypto::kSHA256Length];
-    crypto::SHA256HashString(
-        std::string_view(reinterpret_cast<char*>(copy.data()), copy.size()),
-        result, std::size(result));
-    std::string checksum_key = base::HexEncode(result);
+    std::string checksum_key = base::HexEncode(crypto::hash::Sha256(copy));
     DCHECK_EQ(kSHAKeySizeInBytes, checksum_key.length());
     small_buffer = base::MakeRefCounted<net::IOBufferWithSize>(
         kHeaderSizeInBytes + checksum_key.length());
@@ -596,6 +624,7 @@ void GeneratedCodeCache::CreateBackend() {
       CodeCacheTypeToNetCacheType(cache_type_), net::CACHE_BACKEND_SIMPLE,
       /*file_operations=*/nullptr, path_, max_size_bytes_,
       disk_cache::ResetHandling::kResetOnError, /*net_log=*/nullptr,
+      /*cache_encryption_delegate=*/nullptr,
       base::BindOnce(&GeneratedCodeCache::DidCreateBackend,
                      weak_ptr_factory_.GetWeakPtr()));
   if (result.net_error != net::ERR_IO_PENDING) {
@@ -912,7 +941,7 @@ void GeneratedCodeCache::ReadComplete(PendingOperation* op) {
         DCHECK_EQ(static_cast<int>(kHeaderSizeInBytes + kSHAKeySizeInBytes),
                   op->small_buffer()->size());
         std::string checksum_key(
-            op->small_buffer()->data() + kHeaderSizeInBytes,
+            UNSAFE_TODO(op->small_buffer()->data() + kHeaderSizeInBytes),
             kSHAKeySizeInBytes);
         auto small_buffer = base::MakeRefCounted<net::IOBufferWithSize>(0);
         auto large_buffer = base::MakeRefCounted<BigIOBuffer>(data_size);
@@ -981,7 +1010,7 @@ void GeneratedCodeCache::EnqueueOperationAndIssueIfNext(
 std::unique_ptr<GeneratedCodeCache::PendingOperation>
 GeneratedCodeCache::DequeueOperation(PendingOperation* op) {
   auto it = active_entries_map_.find(op->key());
-  CHECK(it != active_entries_map_.end(), base::NotFatalUntil::M130);
+  CHECK(it != active_entries_map_.end());
   DCHECK(!it->second.empty());
   std::unique_ptr<PendingOperation> result = std::move(it->second.front());
   // |op| should be at the front.
@@ -1064,6 +1093,17 @@ void GeneratedCodeCache::CollectStatisticsForTest(
     const GURL& origin_lock,
     GeneratedCodeCache::CacheEntryStatus status) {
   CollectStatistics(resource_url, origin_lock, status);
+}
+
+void GeneratedCodeCache::ShutdownForTesting(base::OnceClosure callback) {
+  weak_ptr_factory_.InvalidateWeakPtrs();
+  while (!pending_ops_.empty()) {
+    pending_ops_.pop();
+  }
+  active_entries_map_.clear();
+  backend_.reset();
+  disk_cache::WaitForBackendCleanupForTesting(path_,  // IN-TEST
+                                              std::move(callback));
 }
 
 }  // namespace content

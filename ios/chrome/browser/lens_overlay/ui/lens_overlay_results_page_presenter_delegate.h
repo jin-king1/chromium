@@ -7,23 +7,51 @@
 
 #import <UIKit/UIKit.h>
 
+#import "base/ios/block_types.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_sheet_detent_state.h"
 
-// Delegate for the results page presenter.
-@protocol LensOverlayResultsPagePresenterDelegate
+@protocol LensOverlayResultsPagePresenting;
 
-// The close height threshold was reached and the bottom sheet will close.
-- (void)onResultsPageWillInitiateGestureDrivenDismiss;
+// The methods adopted by the object you use to manage user interactions with
+// the Lens result page.
+@protocol LensOverlayResultsPagePresenterDelegate <NSObject>
 
-// The results bottom sheet detent dimension has changed.
-- (void)onResultsPageDimensionStateChanged:(SheetDimensionState)state;
+// Informs the delegate that a user swipe has caused the bottom sheet to cross
+// the close threshold, resulting in its dismissal.
+- (void)lensOverlayResultsPagePresenterWillInitiateGestureDrivenDismiss:
+    (id<LensOverlayResultsPagePresenting>)presenter;
 
-// The occlusion insets amount has been determined.
-- (void)onResultsPageVerticalOcclusionInsetsSettled:(CGFloat)offsetNeeded;
+// Tells the delegate that the results bottom sheet detent dimension has
+// changed.
+- (void)lensOverlayResultsPagePresenter:
+            (id<LensOverlayResultsPagePresenting>)presenter
+                didUpdateDimensionState:(SheetDimensionState)state;
 
-// The layout guide for the visible area was adjusted.
-- (void)onResultsPageVisibleAreaLayoutGuideAdjusted:
-    (UILayoutGuide*)visibleAreaLayoutGuide;
+// Notifies the delegate that the side panel is shown.
+- (void)lensOverlayResultsPagePresenter:
+            (id<LensOverlayResultsPagePresenting>)presenter
+        updateHorizontalOcclusionOffset:(CGFloat)horizontalOffset;
+
+// Asks the delegate to update the vertical occlusion offset to the given value.
+- (void)lensOverlayResultsPagePresenter:
+            (id<LensOverlayResultsPagePresenting>)presenter
+          updateVerticalOcclusionOffset:(CGFloat)offsetNeeded;
+
+// Tells the delegate that the layout guide for the visible area was adjusted.
+- (void)lensOverlayResultsPagePresenter:
+            (id<LensOverlayResultsPagePresenting>)presenter
+        didAdjustVisibleAreaLayoutGuide:(UILayoutGuide*)visibleAreaLayoutGuide;
+
+// Asks the delegate to recenter the image, with the given edge insets.
+- (void)lensOverlayResultsPagePresenter:
+            (id<LensOverlayResultsPagePresenting>)presenter
+                shouldZoomImageToCenter:(UIEdgeInsets)edgeInsets;
+
+// Offers the dependent UI a chance to gracefully exit before the bottom sheet
+// dismisses completely.
+- (void)lensOverlayResultsPagePresenter:
+            (id<LensOverlayResultsPagePresenting>)presenter
+    animateAttachedUIDismissWithCompletion:(ProceduralBlock)completion;
 
 @end
 

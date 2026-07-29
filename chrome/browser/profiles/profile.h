@@ -17,7 +17,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "content/public/browser/browser_context.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -57,10 +56,6 @@ class UserCloudPolicyManagerAsh;
 #endif
 }  // namespace policy
 
-namespace network {
-class SharedURLLoaderFactory;
-}
-
 namespace user_prefs {
 class PrefRegistrySyncable;
 }
@@ -82,8 +77,6 @@ class Profile : public content::BrowserContext {
   class OTRProfileID {
    public:
     // ID used by the Incognito and Guest profiles.
-    // TODO(crbug.com/40775669): To be replaced with |IncognitoID| if
-    // OTR Guest profiles are deprecated.
     static const OTRProfileID PrimaryID();
 
     // Creates a unique OTR profile id with the given profile id prefix.
@@ -91,7 +84,8 @@ class Profile : public content::BrowserContext {
     // WARNING:
     // The use of this class to create non-primary OTR profiles in Desktop
     // platforms is restricted exclusively for cases where extensions should not
-    // be applicable to run. Please see crbug.com/1098697#c3 for more details.
+    // be applicable to run. Please see crbug.com/40137149#comment4 for more
+    // details.
     static OTRProfileID CreateUnique(const std::string& profile_id_prefix);
 
     // Creates a unique OTR profile id to be used for DevTools browser contexts.
@@ -108,17 +102,10 @@ class Profile : public content::BrowserContext {
     // Creates a unique OTR profile id for tests.
     static OTRProfileID CreateUniqueForTesting();
 
-    bool operator==(const OTRProfileID& other) const {
-      return profile_id_ == other.profile_id_;
-    }
-
-    bool operator!=(const OTRProfileID& other) const {
-      return profile_id_ != other.profile_id_;
-    }
-
-    bool operator<(const OTRProfileID& other) const {
-      return profile_id_ < other.profile_id_;
-    }
+    friend constexpr bool operator==(const OTRProfileID&,
+                                     const OTRProfileID&) = default;
+    friend constexpr auto operator<=>(const OTRProfileID&,
+                                      const OTRProfileID&) = default;
 
     bool AllowsBrowserWindows() const;
     bool IsDevTools() const;
@@ -214,8 +201,7 @@ class Profile : public content::BrowserContext {
   // content::BrowserContext implementation ------------------------------------
 
   // Returns the path of the directory where this context's data is stored.
-  base::FilePath GetPath() override = 0;
-  virtual base::FilePath GetPath() const = 0;
+  base::FilePath GetPath() const override = 0;
 
   // Returns the base name of the profile, which is the profile directory name
   // within the user data directory, e.g. "Default", "Profile 1", "Profile 2".
@@ -293,14 +279,14 @@ class Profile : public content::BrowserContext {
 
   // Returns whether the profile is associated with the account of a child.
   // This method should not be used in new code to gate child-specific
-  // functionality. Prefer a feture specific method
-  // (eg. `SupervisedUserService::IsURLFilteringEnabled()`) or alternatively
-  // use `SupervisedUserService::IsSubjectToParentalControls()`.
+  // functionality.
+  // Use `supervised_user::IsSubjectToParentalControls()` instead.
   virtual bool IsChild() const = 0;
 
-  // Returns whether opening browser windows is allowed in this profile. For
-  // example, browser windows are not allowed in Sign-in profile on Chrome OS.
-  virtual bool AllowsBrowserWindows() const = 0;
+  // Returns whether opening Browser windows is supported by this profile. For
+  // example, Browser windows are not allowed in Sign-in profile on Chrome OS.
+  // This condition is fixed for a given profile instance.
+  bool AllowsBrowserWindows() const;
 
   // Accessor. The instance is created upon first access.
   virtual ExtensionSpecialStoragePolicy*
@@ -319,10 +305,6 @@ class Profile : public content::BrowserContext {
   // Gives a read-only view of prefs that can be used even if there's no OTR
   // profile at the moment (i.e. HasOffTheRecordProfile is false).
   virtual PrefService* GetReadOnlyOffTheRecordPrefs();
-
-  // Returns the main URLLoaderFactory.
-  virtual scoped_refptr<network::SharedURLLoaderFactory>
-  GetURLLoaderFactory() = 0;
 
   // Return whether two profiles are the same or one is the OffTheRecord version
   // of the other.
@@ -354,7 +336,7 @@ class Profile : public content::BrowserContext {
   // This function combine three Get*CloudPolicyManager functions above and
   // always returns the one that is currently activated.
   //
-  // Returns UserCloudPolicyManagerAsh on Ash.
+  // Returns UserCloudPolicyManagerAsh on ChromeOS.
   // For others, returns UserCloudPolicyManager if it exists, otherwise use
   // ProfileCloudPolicyManager.
   virtual policy::CloudPolicyManager* GetCloudPolicyManager() = 0;
@@ -367,7 +349,7 @@ class Profile : public content::BrowserContext {
   virtual base::FilePath last_selected_directory() = 0;
   virtual void set_last_selected_directory(const base::FilePath& path) = 0;
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   enum AppLocaleChangedVia{// Caused by chrome://settings change.
                            APP_LOCALE_CHANGED_VIA_SETTINGS,
                            // Locale has been reverted via LocaleChangeGuard.
@@ -406,7 +388,7 @@ class Profile : public content::BrowserContext {
   // IsRegularProfile(), IsSystemProfile(), IsIncognitoProfile(), and
   // IsGuestSession() are mutually exclusive.
   // Note: IsGuestSession() is not mutually exclusive with the rest of the
-  // methods mentioned above on Ash. TODO(crbug.com/40233408).
+  // methods mentioned above on ChromeOS. TODO(crbug.com/40233408).
   //
   // IsSystemProfile() returns true for both regular and off-the-record profile
   //   of the system profile.
@@ -486,7 +468,6 @@ class Profile : public content::BrowserContext {
 
   virtual void RecordPrimaryMainFrameNavigation() = 0;
 
-  base::WeakPtr<const Profile> GetWeakPtr() const;
   base::WeakPtr<Profile> GetWeakPtr();
 
   // Experimental getters/setters to gauge the performance of caching
@@ -505,12 +486,18 @@ class Profile : public content::BrowserContext {
   }
 
   // Returns a debug information in std::string.
-  std::string ToDebugString();
+  std::string ToDebugString() const;
 
 #if BUILDFLAG(IS_ANDROID)
   static Profile* FromJavaObject(const jni_zero::JavaRef<jobject>& obj);
   jni_zero::ScopedJavaLocalRef<jobject> GetJavaObject() const;
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_WIN)
+  // Track user acknowledgement of the crash bubble. For more information, see
+  // the definition of `ProfileLoadTracker`.
+  virtual void AckCrashForTracking() = 0;
+#endif
  protected:
   // Creates an OffTheRecordProfile which points to this Profile.
   static std::unique_ptr<Profile> CreateOffTheRecordProfile(
@@ -519,14 +506,19 @@ class Profile : public content::BrowserContext {
 
   // Returns a newly created ExtensionPrefStore suitable for the supplied
   // Profile.
-  static PrefStore* CreateExtensionPrefStore(Profile*,
-                                             bool incognito_pref_store);
+  static scoped_refptr<PrefStore> CreateExtensionPrefStore(
+      Profile*,
+      bool incognito_pref_store);
 
   void NotifyOffTheRecordProfileCreated(Profile* off_the_record);
   void NotifyProfileInitializationComplete();
 
   // Returns whether the user has signed in this profile to an account.
   virtual bool IsSignedIn() = 0;
+
+  void set_allows_browser_windows_for_testing(bool allows_browser_windows) {
+    allows_browser_windows_for_testing_ = allows_browser_windows;
+  }
 
   const std::optional<OTRProfileID> otr_profile_id_;
 
@@ -549,6 +541,10 @@ class Profile : public content::BrowserContext {
   // true or false, so that calls can be nested.
   int accessibility_pause_level_ = 0;
 
+  // Optional test param that allows tests to override the behavior of
+  // `AllowsBrowserWindows()`
+  std::optional<bool> allows_browser_windows_for_testing_;
+
   // Experimental objects to gauge the performance of caching frequently used
   // KeyedServices in a Profile pointer.
   std::optional<raw_ptr<ThemeService>> theme_service_;
@@ -556,7 +552,7 @@ class Profile : public content::BrowserContext {
 
   base::ObserverList<ProfileObserver,
                      /*check_empty=*/true,
-                     /*allow_reentrancy=*/false>
+                     base::ObserverListReentrancyPolicy::kDisallowReentrancy>
       observers_;
 
   class ChromeVariationsClient;

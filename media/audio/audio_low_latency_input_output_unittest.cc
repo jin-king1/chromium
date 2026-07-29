@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 
 #include "base/containers/span.h"
@@ -28,17 +29,21 @@
 #include "media/audio/audio_manager.h"
 #include "media/audio/audio_unittest_util.h"
 #include "media/audio/test_audio_thread.h"
+#include "media/base/audio_bus.h"
+#include "media/base/audio_sample_types.h"
 #include "media/base/seekable_buffer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
 
+using Error = AudioInputStream::AudioInputCallback::Error;
+
 namespace {
 
 // Limits the number of delay measurements we can store in an array and
 // then write to file at end of the WASAPIAudioInputOutputFullDuplex test.
-static const size_t kMaxDelayMeasurements = 1000;
+static constexpr size_t kMaxDelayMeasurements = 1000;
 
 // Name of the output text file. The output file will be stored in the
 // directory containing media_unittests.exe.
@@ -127,7 +132,6 @@ class FullDuplexAudioSinkSource
         0, samples_per_packet_ * frame_size_);
 
     frames_to_ms_ = static_cast<double>(1000.0 / sample_rate_);
-    delay_states_ = std::make_unique<AudioDelayState[]>(kMaxDelayMeasurements);
   }
 
   ~FullDuplexAudioSinkSource() override {
@@ -145,7 +149,7 @@ class FullDuplexAudioSinkSource
     // audio delays values to a text file.
     size_t elements_written = 0;
     while (elements_written <
-        std::min(input_elements_to_write_, output_elements_to_write_)) {
+           std::min(input_elements_to_write_, output_elements_to_write_)) {
       const AudioDelayState state = delay_states_[elements_written];
       fprintf(text_file, "%d %d %d %d\n",
               state.delta_time_ms,
@@ -159,7 +163,7 @@ class FullDuplexAudioSinkSource
   }
 
   // AudioInputStream::AudioInputCallback.
-  void OnError() override {}
+  void OnError(Error error_code) override {}
   void OnData(const AudioBus* src,
               base::TimeTicks capture_time,
               double volume,
@@ -218,8 +222,8 @@ class FullDuplexAudioSinkSource
 
       // We should only have 16 bits per sample.
       DCHECK_EQ(frame_size_ / channels_, 2);
-      dest->FromInterleaved<SignedInt16SampleTypeTraits>(
-          reinterpret_cast<const int16_t*>(source.data()), size / channels_);
+      dest->FromInterleavedBytes<SignedInt16SampleTypeTraits>(
+          source.first(size));
 
       buffer_->Seek(size);
       return size / frame_size_;
@@ -243,7 +247,7 @@ class FullDuplexAudioSinkSource
   int channels_;
   int frame_size_;
   double frames_to_ms_;
-  std::unique_ptr<AudioDelayState[]> delay_states_;
+  std::array<AudioDelayState, kMaxDelayMeasurements> delay_states_;
   size_t input_elements_to_write_;
   size_t output_elements_to_write_;
   base::TimeTicks previous_write_time_;
@@ -332,7 +336,7 @@ class StreamWrapper {
     StreamType* stream = StreamTraits::CreateStream(
         audio_manager_,
         AudioParameters(format_,
-                        ChannelLayoutConfig(channel_layout_, channels()),
+                        ChannelLayoutConfig::FromLayout(channel_layout_),
                         sample_rate_, samples_per_packet_));
     EXPECT_TRUE(stream);
     return stream;

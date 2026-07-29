@@ -26,7 +26,7 @@
 #include "third_party/blink/public/mojom/service_worker/service_worker_object.mojom.h"
 #include "third_party/blink/public/mojom/worker/worker_content_settings_proxy.mojom.h"
 #include "third_party/blink/public/platform/child_url_loader_factory_bundle.h"
-#include "third_party/blink/public/platform/web_dedicated_or_shared_worker_fetch_context.h"
+#include "third_party/blink/public/platform/web_dedicated_or_shared_worker_global_scope_context.h"
 #include "third_party/blink/public/platform/web_fetch_client_settings_object.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_shared_worker.h"
@@ -66,7 +66,8 @@ EmbeddedSharedWorkerStub::EmbeddedSharedWorkerStub(
         coep_reporting_observer,
     mojo::PendingReceiver<blink::mojom::ReportingObserver>
         dip_reporting_observer,
-    const std::vector<std::string>& cors_exempt_header_list)
+    const std::vector<std::string>& cors_exempt_header_list,
+    bool cross_origin_isolated)
     : receiver_(this, std::move(receiver)) {
   DCHECK(main_script_load_params);
   DCHECK(pending_subresource_loader_factory_bundle);
@@ -114,6 +115,8 @@ EmbeddedSharedWorkerStub::EmbeddedSharedWorkerStub(
             std::move(service_worker_container_info->client_receiver),
             std::move(service_worker_container_info->host_remote),
             std::move(controller_info), subresource_loader_factory_bundle_);
+    service_worker_provider_context_->set_container_is_blob_url_shared_worker(
+        info->url.SchemeIsBlob());
   }
 
   scoped_refptr<blink::WebWorkerFetchContext> web_worker_fetch_context =
@@ -124,11 +127,11 @@ EmbeddedSharedWorkerStub::EmbeddedSharedWorkerStub(
 
   impl_ = blink::WebSharedWorker::CreateAndStart(
       token, info->url, info->options->type, info->options->credentials,
-      blink::WebString::FromUTF8(info->options->name),
+      blink::WebString::FromUtf8(info->options->name),
       blink::WebSecurityOrigin(constructor_key.origin()),
       blink::WebSecurityOrigin(origin), is_constructor_secure_context,
-      blink::WebString::FromUTF8(user_agent), ua_metadata,
-      ToWebContentSecurityPolicies(std::move(info->content_security_policies)),
+      blink::WebString::FromUtf8(user_agent), ua_metadata,
+      ToWebContentSecurityPolicies(info->content_security_policies),
       FetchClientSettingsObjectFromMojomToWeb(
           info->outside_fetch_client_settings_object),
       devtools_worker_token, std::move(content_settings),
@@ -137,7 +140,8 @@ EmbeddedSharedWorkerStub::EmbeddedSharedWorkerStub(
       ToWebPolicyContainer(std::move(policy_container)),
       std::move(web_worker_fetch_context), std::move(host), this, ukm_source_id,
       require_cross_site_request_for_cookies,
-      std::move(coep_reporting_observer), std::move(dip_reporting_observer));
+      std::move(coep_reporting_observer), std::move(dip_reporting_observer),
+      cross_origin_isolated);
 
   // If the host drops its connection, then self-destruct.
   receiver_.set_disconnect_handler(base::BindOnce(
@@ -170,9 +174,9 @@ EmbeddedSharedWorkerStub::CreateWorkerFetchContext(
 
   // |pending_subresource_loader_updater| and
   // |pending_resource_load_info_notifier| are not used for shared workers.
-  scoped_refptr<blink::WebDedicatedOrSharedWorkerFetchContext>
-      web_dedicated_or_shared_worker_fetch_context =
-          blink::WebDedicatedOrSharedWorkerFetchContext::Create(
+  scoped_refptr<blink::WebDedicatedOrSharedWorkerGlobalScopeContext>
+      web_dedicated_or_shared_worker_global_scope_context =
+          blink::WebDedicatedOrSharedWorkerGlobalScopeContext::Create(
               service_worker_provider_context_.get(), renderer_preferences,
               std::move(preference_watcher_receiver),
               subresource_loader_factory_bundle_->Clone(),
@@ -181,12 +185,17 @@ EmbeddedSharedWorkerStub::CreateWorkerFetchContext(
               web_cors_exempt_header_list,
               /*pending_resource_load_info_notifier=*/mojo::NullRemote());
 
-  web_dedicated_or_shared_worker_fetch_context->set_site_for_cookies(
+  web_dedicated_or_shared_worker_global_scope_context->set_site_for_cookies(
       require_cross_site_request_for_cookies
           ? net::SiteForCookies()
           : constructor_key.ToNetSiteForCookies());
+  // Since this is within `EmbeddedSharedWorkerStub`, the flag should be
+  // definitely true.
+  // TODO(crbug.com/324939068): remove the code when the feature launched.
+  web_dedicated_or_shared_worker_global_scope_context
+      ->set_container_is_shared_worker(true);
 
-  return web_dedicated_or_shared_worker_fetch_context;
+  return web_dedicated_or_shared_worker_global_scope_context;
 }
 
 void EmbeddedSharedWorkerStub::Connect(int connection_request_id,
@@ -196,6 +205,14 @@ void EmbeddedSharedWorkerStub::Connect(int connection_request_id,
 
 void EmbeddedSharedWorkerStub::Terminate() {
   impl_->TerminateWorkerContext();
+}
+
+void EmbeddedSharedWorkerStub::Freeze() {
+  impl_->Freeze();
+}
+
+void EmbeddedSharedWorkerStub::Resume() {
+  impl_->Resume();
 }
 
 }  // namespace content

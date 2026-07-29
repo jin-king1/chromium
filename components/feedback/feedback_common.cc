@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/memory/ptr_util.h"
@@ -42,19 +43,6 @@ constexpr char kZipExt[] = ".zip";
 constexpr char kPngMimeType[] = "image/png";
 constexpr char kArbitraryMimeType[] = "application/octet-stream";
 
-#if BUILDFLAG(IS_CHROMEOS)
-// Keep in sync with
-// google3/java/com/google/wireless/android/tools/betterbug/protos/uploadfeedbackreport.proto.
-constexpr char kIsCrossDeviceIssueKey[] = "is_cross_device_issue";
-constexpr char kIsCrossDeviceIssueTrueValue[] = "true";
-constexpr char kTargetDeviceIdKey[] = "target_device_id";
-constexpr char kTargetDeviceIdTypeKey[] = "target_device_id_type";
-constexpr char kInitiatingDeviceName[] = "initiating_device_name";
-// Enum value for MAC_ADDRESS type.
-constexpr char kTargetDeviceIdTypeMacAddressValue[] = "1";
-constexpr char kInitiatingDeviceNameValue[] = "Chromebook";
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
 constexpr char kIsOffensiveOrUnsafeKey[] = "is_offensive_or_unsafe";
 
 // Determine if the given feedback value is small enough to not need to
@@ -85,7 +73,7 @@ void AddFeedbackData(userfeedback::ExtensionSubmit* feedback_data,
 // Adds data as an attachment to feedback_data if the data is non-empty.
 void AddAttachment(userfeedback::ExtensionSubmit* feedback_data,
                    const char* name,
-                   const std::string& data) {
+                   const std::vector<uint8_t>& data) {
   if (data.empty())
     return;
 
@@ -93,7 +81,7 @@ void AddAttachment(userfeedback::ExtensionSubmit* feedback_data,
       feedback_data->add_product_specific_binary_data();
   attachment->set_mime_type(kArbitraryMimeType);
   attachment->set_name(name);
-  attachment->set_data(data);
+  attachment->set_data(data.data(), data.size());
 }
 
 }  // namespace
@@ -103,10 +91,16 @@ void AddAttachment(userfeedback::ExtensionSubmit* feedback_data,
 ////////////////////////////////////////////////////////////////////////////////
 
 FeedbackCommon::AttachedFile::AttachedFile(const std::string& filename,
-                                           std::string data)
+                                           std::vector<uint8_t> data)
     : name(filename), data(std::move(data)) {}
 
 FeedbackCommon::AttachedFile::~AttachedFile() = default;
+
+FeedbackCommon::AttachedFile::AttachedFile(FeedbackCommon::AttachedFile&&) =
+    default;
+
+FeedbackCommon::AttachedFile& FeedbackCommon::AttachedFile::operator=(
+    FeedbackCommon::AttachedFile&&) = default;
 
 ////////////////////////////////////////////////////////////////////////////////
 // FeedbackCommon::
@@ -115,6 +109,14 @@ FeedbackCommon::AttachedFile::~AttachedFile() = default;
 FeedbackCommon::FeedbackCommon() : product_id_(-1) {}
 
 void FeedbackCommon::AddFile(const std::string& filename, std::string data) {
+  base::AutoLock lock(attachments_lock_);
+  base::span<const uint8_t> byte_span = base::as_byte_span(data);
+  attachments_.emplace_back(
+      filename, std::vector<uint8_t>(byte_span.begin(), byte_span.end()));
+}
+
+void FeedbackCommon::AddFile(const std::string& filename,
+                             std::vector<uint8_t> data) {
   base::AutoLock lock(attachments_lock_);
   attachments_.emplace_back(filename, std::move(data));
 }
@@ -206,19 +208,6 @@ void FeedbackCommon::PrepareReport(
 
   if (category_tag().size())
     feedback_data->set_bucket(category_tag());
-#if BUILDFLAG(IS_CHROMEOS)
-  if (ash::features::IsLinkCrossDeviceDogfoodFeedbackEnabled() &&
-      gaia::IsGoogleInternalAccountEmail(user_email()) &&
-      mac_address_.has_value()) {
-    AddFeedbackData(feedback_data, kIsCrossDeviceIssueKey,
-                    kIsCrossDeviceIssueTrueValue);
-    AddFeedbackData(feedback_data, kTargetDeviceIdKey, mac_address_.value());
-    AddFeedbackData(feedback_data, kTargetDeviceIdTypeKey,
-                    kTargetDeviceIdTypeMacAddressValue);
-    AddFeedbackData(feedback_data, kInitiatingDeviceName,
-                    kInitiatingDeviceNameValue);
-  }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   if (is_offensive_or_unsafe_.has_value()) {
     AddFeedbackData(feedback_data, kIsOffensiveOrUnsafeKey,
@@ -226,8 +215,8 @@ void FeedbackCommon::PrepareReport(
   }
   if (!ai_metadata_.empty()) {
     // Add feedback data for each key/value pair.
-    std::optional<base::Value::Dict> dict =
-        base::JSONReader::ReadDict(ai_metadata_);
+    std::optional<base::DictValue> dict = base::JSONReader::ReadDict(
+        ai_metadata_, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     CHECK(dict);
     for (auto pair : dict.value()) {
       AddFeedbackData(feedback_data, pair.first, pair.second.GetString());

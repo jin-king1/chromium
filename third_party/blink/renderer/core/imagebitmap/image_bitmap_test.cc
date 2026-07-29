@@ -30,7 +30,9 @@
 
 #include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
 
+#include "base/test/null_task_runner.h"
 #include "build/build_config.h"
+#include "components/viz/test/test_raster_interface.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
@@ -43,7 +45,6 @@
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
 #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/test/fake_gles2_interface.h"
@@ -53,6 +54,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
+#include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
 #include "third_party/blink/renderer/platform/loader/fetch/memory_cache.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
@@ -67,6 +69,10 @@ class ExceptionState;
 
 class ImageBitmapTest : public testing::Test {
  protected:
+  ImageBitmapTest()
+      : scoped_memory_cache_(MakeGarbageCollected<MemoryCache>(
+            blink::scheduler::GetSingleThreadTaskRunnerForTesting())) {}
+
   void SetUp() override {
     sk_sp<SkSurface> surface =
         SkSurfaces::Raster(SkImageInfo::MakeN32Premul(10, 10));
@@ -78,13 +84,8 @@ class ImageBitmapTest : public testing::Test {
     surface2->getCanvas()->clear(0xAAAAAAAA);
     image2_ = surface2->makeImageSnapshot();
 
-    // Save the global memory cache to restore it upon teardown.
-    global_memory_cache_ =
-        ReplaceMemoryCacheForTesting(MakeGarbageCollected<MemoryCache>(
-            blink::scheduler::GetSingleThreadTaskRunnerForTesting()));
-
-    test_context_provider_ = viz::TestContextProvider::Create();
-    InitializeSharedGpuContextGLES2(test_context_provider_.get());
+    test_context_provider_ = viz::TestContextProvider::CreateRaster();
+    InitializeSharedGpuContext(test_context_provider_.get());
   }
 
   void TearDown() override {
@@ -94,7 +95,6 @@ class ImageBitmapTest : public testing::Test {
     ThreadState::Current()->CollectAllGarbageForTesting(
         ThreadState::StackState::kNoHeapPointers);
 
-    ReplaceMemoryCacheForTesting(global_memory_cache_.Release());
     SharedGpuContext::Reset();
   }
 
@@ -102,7 +102,7 @@ class ImageBitmapTest : public testing::Test {
   test::TaskEnvironment task_environment_;
   scoped_refptr<viz::TestContextProvider> test_context_provider_;
   sk_sp<SkImage> image_, image2_;
-  Persistent<MemoryCache> global_memory_cache_;
+  ScopedMemoryCacheForTesting scoped_memory_cache_;
 };
 
 TEST_F(ImageBitmapTest, ImageResourceConsistency) {
@@ -255,16 +255,18 @@ static void TestImageBitmapTextureBacked(
 }
 
 TEST_F(ImageBitmapTest, AvoidGPUReadback) {
-  base::WeakPtr<WebGraphicsContext3DProviderWrapper> context_provider_wrapper =
-      SharedGpuContext::ContextProviderWrapper();
-  auto resource_provider = CanvasResourceProvider::CreateSharedImageProvider(
-      gfx::Size(100, 100), GetN32FormatForCanvas(), kPremul_SkAlphaType,
-      gfx::ColorSpace::CreateSRGB(),
-      CanvasResourceProvider::ShouldInitialize::kNo, context_provider_wrapper,
-      RasterMode::kGPU, gpu::SharedImageUsageSet());
+  auto client_si = gpu::ClientSharedImage::CreateForTesting(
+      gpu::SHARED_IMAGE_USAGE_RASTER_READ);
+  gpu::SyncToken token;
+  token.Set(gpu::CommandBufferNamespace::GPU_IO,
+            gpu::CommandBufferId::FromUnsafeValue(64), 100);
 
   scoped_refptr<StaticBitmapImage> bitmap =
-      resource_provider->Snapshot(FlushReason::kTesting);
+      AcceleratedStaticBitmapImage::CreateFromCanvasSharedImage(
+          std::move(client_si), token, kPremul_SkAlphaType, gfx::HDRMetadata(),
+          SharedGpuContext::ContextProviderWrapper(),
+          base::PlatformThread::CurrentRef(),
+          base::MakeRefCounted<base::NullTaskRunner>(), base::DoNothing());
   ASSERT_TRUE(bitmap->IsTextureBacked());
 
   auto* image_bitmap = MakeGarbageCollected<ImageBitmap>(bitmap);
@@ -278,12 +280,19 @@ TEST_F(ImageBitmapTest, AvoidGPUReadback) {
                                  image_bitmap_options, true);
   }
 
-  std::list<String> image_orientations = {"none", "flipY"};
-  std::list<String> premultiply_alphas = {"none", "premultiply", "default"};
-  std::list<String> color_space_conversions = {"none", "default"};
+  std::list<V8ImageOrientation::Enum> image_orientations = {
+      V8ImageOrientation::Enum::kNone, V8ImageOrientation::Enum::kFlipY};
+  std::list<V8PremultiplyAlpha::Enum> premultiply_alphas = {
+      V8PremultiplyAlpha::Enum::kNone, V8PremultiplyAlpha::Enum::kPremultiply,
+      V8PremultiplyAlpha::Enum::kDefault};
+  std::list<V8ColorSpaceConversion::Enum> color_space_conversions = {
+      V8ColorSpaceConversion::Enum::kNone,
+      V8ColorSpaceConversion::Enum::kDefault};
   std::list<int> resize_widths = {25, 50, 75};
   std::list<int> resize_heights = {25, 50, 75};
-  std::list<String> resize_qualities = {"pixelated", "low", "medium", "high"};
+  std::list<V8ResizeQuality::Enum> resize_qualities = {
+      V8ResizeQuality::Enum::kPixelated, V8ResizeQuality::Enum::kLow,
+      V8ResizeQuality::Enum::kMedium, V8ResizeQuality::Enum::kHigh};
 
   for (auto image_orientation : image_orientations) {
     for (auto premultiply_alpha : premultiply_alphas) {
@@ -303,9 +312,9 @@ TEST_F(ImageBitmapTest, AvoidGPUReadback) {
               // Setting premuliply_alpha to none will cause a read back.
               // Otherwise, we expect to avoid GPU readback when creaing an
               // ImageBitmap from a texture-backed source.
-              TestImageBitmapTextureBacked(bitmap, image_bitmap_rect,
-                                           image_bitmap_options,
-                                           premultiply_alpha != "none");
+              TestImageBitmapTextureBacked(
+                  bitmap, image_bitmap_rect, image_bitmap_options,
+                  premultiply_alpha != V8PremultiplyAlpha::Enum::kNone);
             }
           }
         }
@@ -334,7 +343,7 @@ TEST_F(ImageBitmapTest,
   ImageData* image_data = ImageData::CreateForTest(gfx::Size(kWidth, 1));
   DCHECK(image_data);
   ImageBitmapOptions* options = ImageBitmapOptions::Create();
-  options->setColorSpaceConversion("default");
+  options->setColorSpaceConversion(V8ColorSpaceConversion::Enum::kDefault);
   auto* image_bitmap = MakeGarbageCollected<ImageBitmap>(
       image_data, gfx::Rect(image_data->Size()), options);
   DCHECK(image_bitmap);
@@ -363,10 +372,10 @@ TEST_F(ImageBitmapTest, ImageAlphaState) {
 
   ImageBitmapOptions* options = ImageBitmapOptions::Create();
   // ImageBitmap created from unpremul source image result.
-  options->setPremultiplyAlpha("none");
+  options->setPremultiplyAlpha(V8PremultiplyAlpha::Enum::kNone);
 
   // Additional operation shouldn't affect alpha op.
-  options->setImageOrientation("flipY");
+  options->setImageOrientation(V8ImageOrientation::Enum::kFlipY);
 
   std::optional<gfx::Rect> crop_rect =
       gfx::Rect(0, 0, image_element->width(), image_element->height());

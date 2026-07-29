@@ -13,6 +13,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/sequence_checker.h"
 #include "base/timer/elapsed_timer.h"
 #include "components/sqlite_proto/key_value_data.h"
 #include "components/sqlite_proto/key_value_table.h"
@@ -42,6 +43,23 @@ class NET_EXPORT SessionStoreImpl : public SessionStore {
     kNotLoaded,
   };
 
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(AttestationKeySaveOutcome)
+  enum class AttestationKeySaveOutcome {
+    kNoAttestationKey = 0,
+    kKeyNotReadyCopiedOldKey = 1,
+    kKeyNotReadyNoSiteInDb = 2,
+    kKeyNotReadyNoSessionInDb = 3,
+    kKeyNotReadyNoOldKeyToCopy = 4,
+    kSaveSessionKeySuccess = 5,
+    kGetWrappedKeyFailure = 6,
+    kUnexpectedError = 7,
+    kMaxValue = kUnexpectedError,
+  };
+  // LINT.ThenChange(/tools/metrics/histograms/metadata/net/enums.xml:DeviceBoundSessionAttestationKeySaveOutcome)
+
   // Instantiates a store object.
   // `db_storage_path` is the path to the underlying SQLite DB file.
   // `key_service` is used to convert a session binding key to/from
@@ -58,14 +76,17 @@ class NET_EXPORT SessionStoreImpl : public SessionStore {
 
   // SessionStore implementation:
   void LoadSessions(LoadSessionsCallback callback) override;
-  void SaveSession(const SchemefulSite& site, const Session& session) override;
-  void DeleteSession(const SchemefulSite& site,
-                     const Session::Id& session_id) override;
+  void SaveSession(const SchemefulSite& site,
+                   const Session& session,
+                   SessionStore::SaveSessionMode mode) override;
+  void DeleteSession(const SessionKey& key) override;
   SessionsMap GetAllSessions() const override;
   void RestoreSessionBindingKey(
-      const SchemefulSite& site,
-      const Session::Id& session_id,
+      const SessionKey& session_key,
       RestoreSessionBindingKeyCallback callback) override;
+  void RestoreSessionAttestationKey(
+      const SessionKey& session_key,
+      RestoreSessionAttestationKeyCallback callback) override;
 
   DBStatus db_status() const { return db_status_; }
 
@@ -79,6 +100,31 @@ class NET_EXPORT SessionStoreImpl : public SessionStore {
                            PruneLoadedEntryWithInvalidSession);
   FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
                            PruneLoadedEntryWithSessionMissingWrappedKey);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           PruneLoadedEntryWithInvalidRefreshInitiator);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveAndLoadSessionWithAttestationKey);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveSessionWithoutAttestationKey);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveSessionWithAttestationKeyWrappingFailure);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveRestoredSessionPreservesAttestationKey);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveRestoredSessionWithNewAttestationKey);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveRestoredSessionClearsAttestationKey);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveRestoredSessionSiteNotFound);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveRestoredSessionSessionNotFound);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveRestoredSessionNoOldKeyToCopy);
+  FRIEND_TEST_ALL_PREFIXES(
+      SessionStoreImplTest,
+      SaveRestoredSessionWithoutRefreshFailsToPreserveAttestationKey);
+  FRIEND_TEST_ALL_PREFIXES(SessionStoreImplTest,
+                           SaveSessionWithUnexpectedAttestationKeyError);
 
   void OnDatabaseLoaded(LoadSessionsCallback callback,
                         base::ElapsedTimer timer,
@@ -92,6 +138,24 @@ class NET_EXPORT SessionStoreImpl : public SessionStore {
   static SessionsMap CreateSessionsFromLoadedData(
       const std::map<std::string, proto::SiteSessions>& loaded_data,
       std::vector<std::string>& keys_to_delete);
+
+  // Returns an instance of a `proto::Session` for `session_key` if found.
+  std::optional<proto::Session> GetSessionProto(
+      const SessionKey& session_key) const;
+
+  // Helper function to handle attestation key serialization. Returns the
+  // outcome.
+  AttestationKeySaveOutcome SetWrappedAttestationKey(
+      const SchemefulSite& site,
+      const Session& session,
+      proto::Session& session_proto,
+      SessionStore::SaveSessionMode mode);
+
+  void StartGarbageCollection();
+  void OnGetAllKeysForGarbageCollection(
+      unexportable_keys::ServiceErrorOr<
+          std::vector<unexportable_keys::UnexportableSigningKeyId>>
+          all_key_ids_or_error);
 
   // Key service used to wrap/unwrap unexportable session keys.
   const raw_ref<unexportable_keys::UnexportableKeyService> key_service_;

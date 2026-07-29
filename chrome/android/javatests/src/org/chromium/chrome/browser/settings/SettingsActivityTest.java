@@ -4,6 +4,10 @@
 
 package org.chromium.chrome.browser.settings;
 
+import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.action.ViewActions.click;
+import static androidx.test.espresso.matcher.ViewMatchers.withId;
+
 import static org.junit.Assert.assertEquals;
 
 import android.content.Intent;
@@ -28,9 +32,11 @@ import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.about_settings.AboutChromeSettings;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.components.browser_ui.settings.SettingsFragment;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.ui.test.util.DeviceRestriction;
 import org.chromium.ui.util.AttrUtils;
@@ -63,7 +69,6 @@ public class SettingsActivityTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE})
     @DisabledTest(message = "TODO(crbug.com/389790022)")
     public void testEdgeToEdgeEverywhere() {
         SettingsActivity activity = mSettingsActivityTestRule.startSettingsActivity();
@@ -115,5 +120,22 @@ public class SettingsActivityTest {
                 SettingsActivity.class, Stage.CREATED, () -> activity.startActivity(intent3));
     }
 
-    public static class TestFragment extends Fragment {}
+    /** Regression test for crash. https://crbug.com/535398041 */
+    @Test
+    @SmallTest
+    public void testClickSearchDoesNotCrash() {
+        SettingsActivity activity = mSettingsActivityTestRule.startSettingsActivity();
+
+        // Search UI creation is asynchronous, so wait for the search box to be inflated.
+        CriteriaHelper.pollUiThread(() -> activity.findViewById(R.id.search_box) != null);
+
+        onView(withId(R.id.search_box)).perform(click());
+    }
+
+    public static class TestFragment extends Fragment implements SettingsFragment {
+        @Override
+        public @AnimationType int getAnimationType() {
+            return AnimationType.PROPERTY;
+        }
+    }
 }

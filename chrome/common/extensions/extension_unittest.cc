@@ -6,9 +6,9 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <array>
 
-#include "base/containers/contains.h"
 #include "base/files/file_util.h"
 #include "base/format_macros.h"
 #include "base/path_service.h"
@@ -20,8 +20,8 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/extensions/extension_test_util.h"
 #include "chrome/common/url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/crx_file/id_util.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/command.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/extension_resource.h"
@@ -31,6 +31,7 @@
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/content_scripts_handler.h"
 #include "extensions/common/permissions/permissions_data.h"
+#include "extensions/strings/grit/extensions_strings.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/base/mime_sniffer.h"
 #include "net/dns/mock_host_resolver.h"
@@ -40,6 +41,8 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "url/gurl.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using base::FilePath;
 using extension_test_util::LoadManifest;
@@ -104,7 +107,7 @@ TEST(ExtensionTest, LocationPriorityTest) {
 
 TEST(ExtensionTest, EnsureNewLinesInExtensionNameAreCollapsed) {
   std::string unsanitized_name = "Test\n\n\n\n\n\n\n\n\n\n\n\nNew lines\u0085";
-  auto manifest = base::Value::Dict()
+  auto manifest = base::DictValue()
                       .Set("name", unsanitized_name)
                       .Set("manifest_version", 2)
                       .Set("description", "some description")
@@ -119,7 +122,7 @@ TEST(ExtensionTest, EnsureNewLinesInExtensionNameAreCollapsed) {
 
 TEST(ExtensionTest, EnsureWhitespacesInExtensionNameAreCollapsed) {
   std::string unsanitized_name = "Test                        Whitespace";
-  auto manifest = base::Value::Dict()
+  auto manifest = base::DictValue()
                       .Set("name", unsanitized_name)
                       .Set("manifest_version", 2)
                       .Set("description", "some description")
@@ -137,7 +140,7 @@ TEST(ExtensionTest, RTLNameInLTRLocale) {
   auto run_rtl_test = [](const wchar_t* name, const wchar_t* expected) {
     SCOPED_TRACE(
         base::StringPrintf("Name: %ls, Expected: %ls", name, expected));
-    auto manifest = base::Value::Dict()
+    auto manifest = base::DictValue()
                         .Set("name", base::WideToUTF8(name))
                         .Set("manifest_version", 2)
                         .Set("description", "some description")
@@ -176,16 +179,31 @@ TEST(ExtensionTest, GetResourceURLAndPath) {
   EXPECT_TRUE(extension.get());
 
   EXPECT_EQ(extension->url().spec() + "bar/baz.js",
-            Extension::GetResourceURL(extension->url(), "bar/baz.js").spec());
+            extension->ResolveExtensionURL("bar/baz.js").spec());
   EXPECT_EQ(extension->url().spec() + "baz.js",
-            Extension::GetResourceURL(extension->url(),
-                                      "bar/../baz.js").spec());
+            extension->ResolveExtensionURL("bar/../baz.js").spec());
   EXPECT_EQ(extension->url().spec() + "baz.js",
-            Extension::GetResourceURL(extension->url(), "../baz.js").spec());
+            extension->ResolveExtensionURL("../baz.js").spec());
 
   // Test that absolute-looking paths ("/"-prefixed) are pasted correctly.
   EXPECT_EQ(extension->url().spec() + "test.html",
-            extension->GetResourceURL("/test.html").spec());
+            extension->ResolveExtensionURL("/test.html").spec());
+
+  // Test that absolute URLs are not allowed.
+  EXPECT_EQ(GURL(),
+            extension->ResolveExtensionURL("http://example.test/test.html"));
+  EXPECT_EQ(GURL(),
+            extension->ResolveExtensionURL("https://example.test/test.html"));
+  EXPECT_EQ(GURL(), extension->ResolveExtensionURL("file:///test.html"));
+
+  // Test that invalid relative URLs are not allowed for `GetResourceURL`
+  // (paths that GetResource would reject).
+  EXPECT_EQ(GURL(), extension->GetResourceURL(""));
+  EXPECT_EQ(GURL(), extension->GetResourceURL("/"));
+  EXPECT_EQ(GURL(), extension->GetResourceURL("src/"));
+  EXPECT_EQ(GURL(), extension->GetResourceURL("C:/manifest.json"));
+  EXPECT_EQ(GURL(), extension->GetResourceURL("mani%3Efest.json"));
+  EXPECT_EQ(GURL(), extension->GetResourceURL("com1/manifest.json"));
 }
 
 TEST(ExtensionTest, GetResource) {
@@ -258,7 +276,7 @@ TEST(ExtensionTest, GetAbsolutePathNoError) {
   scoped_refptr<Extension> extension = LoadManifestStrict("absolute_path",
       "absolute.json");
   EXPECT_TRUE(extension.get());
-  std::string err;
+  std::u16string err;
   std::vector<InstallWarning> warnings;
   EXPECT_TRUE(file_util::ValidateExtension(extension.get(), &err, &warnings));
   EXPECT_EQ(0U, warnings.size());
@@ -321,7 +339,7 @@ TEST(ExtensionTest, MimeTypeSniffing) {
   // Finally, an extension that we pack right. This. Instant.
   // This verifies that the modern extensions Chrome packs are always
   // recognized as the extension mime type.
-  // Regression test for https://crbug.com/831284.
+  // Regression test for https://crbug.com/40571035.
   TestExtensionDir test_dir;
   test_dir.WriteManifest(R"(
       {
@@ -425,7 +443,8 @@ TEST(ExtensionTest, IgnoredUnrecognizedKeysAreNotManifestFeatures) {
   ASSERT_TRUE(manifest_features);
 
   for (const auto& [key, value] : manifest_features->GetAllFeatures()) {
-    EXPECT_FALSE(base::Contains(manifest_keys::kIgnoredUnrecognizedKeys, key));
+    EXPECT_FALSE(
+        std::ranges::contains(manifest_keys::kIgnoredUnrecognizedKeys, key));
   }
 }
 

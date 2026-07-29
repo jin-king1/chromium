@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "ash/constants/ash_features.h"
-#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -21,6 +20,8 @@
 #include "chromeos/ash/components/dbus/fwupd/fwupd_properties_dbus.h"
 #include "chromeos/ash/components/dbus/fwupd/fwupd_request.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
+#include "chromeos/ash/components/settings/cros_settings.h"
+#include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/device_event_log/device_event_log.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
@@ -192,18 +193,16 @@ class FwupdClientImpl : public FwupdClient {
 
   void SetFwupdFeatureFlags() override {
     // Enable interactive updates in fwupd by setting the "requests"
-    // FwupdFeatureFlag when the Firmware Updates v2 feature flag is enabled.
-    if (base::FeatureList::IsEnabled(features::kFirmwareUpdateUIV2)) {
-      dbus::MethodCall method_call(kFwupdServiceInterface,
-                                   kFwupdSetFeatureFlagsMethodName);
-      dbus::MessageWriter writer(&method_call);
-      writer.AppendUint64(kRequestsFeatureFlag);
+    // FwupdFeatureFlag.
+    dbus::MethodCall method_call(kFwupdServiceInterface,
+                                 kFwupdSetFeatureFlagsMethodName);
+    dbus::MessageWriter writer(&method_call);
+    writer.AppendUint64(kRequestsFeatureFlag);
 
-      proxy_->CallMethodWithErrorResponse(
-          &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-          base::BindOnce(&FwupdClientImpl::SetFeatureFlagsCallback,
-                         weak_ptr_factory_.GetWeakPtr()));
-    }
+    proxy_->CallMethodWithErrorResponse(
+        &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
+        base::BindOnce(&FwupdClientImpl::SetFeatureFlagsCallback,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
 
   void RequestUpdates(const std::string& device_id) override {
@@ -287,14 +286,14 @@ class FwupdClientImpl : public FwupdClient {
 
  private:
   // Pops a string-to-variant-string dictionary from the reader.
-  base::Value::Dict PopStringToStringDictionary(dbus::MessageReader* reader) {
+  base::DictValue PopStringToStringDictionary(dbus::MessageReader* reader) {
     dbus::MessageReader array_reader(nullptr);
 
     if (!reader->PopArray(&array_reader)) {
       FIRMWARE_LOG(ERROR) << "Failed to pop array into the array reader.";
-      return base::Value::Dict();
+      return base::DictValue();
     }
-    base::Value::Dict result;
+    base::DictValue result;
 
     while (array_reader.HasMoreData()) {
       dbus::MessageReader entry_reader(nullptr);
@@ -309,7 +308,7 @@ class FwupdClientImpl : public FwupdClient {
 
       if (!success) {
         FIRMWARE_LOG(ERROR) << "Failed to get a dictionary entry. ";
-        return base::Value::Dict();
+        return base::DictValue();
       }
 
       // Values in the response can have different types. The fields we are
@@ -351,7 +350,7 @@ class FwupdClientImpl : public FwupdClient {
         std::vector<std::string> strings;
         variant_reader.PopArrayOfStrings(&strings);
 
-        base::Value::List list;
+        base::ListValue list;
         for (const auto& s : strings) {
           list.Append(s);
         }
@@ -386,13 +385,14 @@ class FwupdClientImpl : public FwupdClient {
       can_parse = false;
     }
 
-    const bool needs_trusted_report = !features::IsFlexFirmwareUpdateEnabled();
-    FIRMWARE_LOG(DEBUG) << "Trusted reports required: " << needs_trusted_report;
+    const bool needs_trusted_report =
+        !features::IsFlexFirmwareUpdateEnabled() &&
+        !features::IsFwupdDeveloperModeEnabled();
 
     FwupdUpdateList updates;
     while (can_parse && array_reader.HasMoreData()) {
       // Parse update description.
-      base::Value::Dict dict = PopStringToStringDictionary(&array_reader);
+      base::DictValue dict = PopStringToStringDictionary(&array_reader);
       if (dict.empty()) {
         FIRMWARE_LOG(ERROR) << "Failed to parse the update description.";
         // Ran into an error, exit early.
@@ -407,7 +407,9 @@ class FwupdClientImpl : public FwupdClient {
       std::optional<bool> trusted_report = dict.FindBool(kHasTrustedReportKey);
       const bool has_trusted_report =
           trusted_report.has_value() && trusted_report.value();
-      FIRMWARE_LOG(DEBUG) << "Trusted Reports: " << has_trusted_report;
+      FIRMWARE_LOG(DEBUG) << "Trusted Reports required: "
+                          << needs_trusted_report
+                          << "; Trusted Reports found: " << has_trusted_report;
       const bool missing_trusted_report =
           needs_trusted_report && !has_trusted_report;
 
@@ -479,15 +481,22 @@ class FwupdClientImpl : public FwupdClient {
       FIRMWARE_LOG(ERROR) << "Failed to parse string from DBus Signal";
       return;
     }
-
-    const bool allow_internal =
-        features::IsFlexFirmwareUpdateEnabled() &&
-        !InstallAttributes::Get()->IsEnterpriseManaged();
+    bool is_flex_enabled = features::IsFlexFirmwareUpdateEnabled();
+    // Default to true when device is not managed.
+    bool allowed_by_management = true;
+    bool is_managed = InstallAttributes::Get()->IsEnterpriseManaged();
+    if (is_managed &&
+        !ash::CrosSettings::Get()->GetBoolean(
+            ash::kDeviceUserInitiatedFlexSystemFirmwareUpdatesEnabled,
+            &allowed_by_management)) {
+      allowed_by_management = false;
+    }
+    bool allow_internal = is_flex_enabled && allowed_by_management;
 
     FwupdDeviceList devices;
     while (array_reader.HasMoreData()) {
       // Parse device description.
-      base::Value::Dict dict = PopStringToStringDictionary(&array_reader);
+      base::DictValue dict = PopStringToStringDictionary(&array_reader);
       if (dict.empty()) {
         FIRMWARE_LOG(ERROR) << "Failed to parse the device description.";
         return;
@@ -506,12 +515,13 @@ class FwupdClientImpl : public FwupdClient {
       }
 
       const std::string* id = dict.FindString("DeviceId");
-
-      // The keys "DeviceId" and "Name" must exist in the dictionary.
-      const bool success = id && name;
-      if (!success) {
-        FIRMWARE_LOG(ERROR) << "No device id or name found.";
-        return;
+      if (!id) {
+        FIRMWARE_LOG(ERROR) << "No device id found.";
+        continue;
+      }
+      if (!name) {
+        FIRMWARE_LOG(ERROR) << "No name found for device: " << *id;
+        continue;
       }
 
       std::optional<bool> needs_reboot = dict.FindBool(kNeedsRebootKey);
@@ -656,9 +666,9 @@ class FwupdClientImpl : public FwupdClient {
 
 }  // namespace
 
-base::FilePath GetUpdatePathFromDict(const base::Value::Dict& dict) {
+base::FilePath GetUpdatePathFromDict(const base::DictValue& dict) {
   // Get the locations field.
-  const base::Value::List* locations = dict.FindList(kLocationsKey);
+  const base::ListValue* locations = dict.FindList(kLocationsKey);
   if (!locations || locations->empty()) {
     FIRMWARE_LOG(ERROR) << "Missing or empty locations";
     return base::FilePath();
@@ -678,8 +688,17 @@ base::FilePath GetUpdatePathFromDict(const base::Value::Dict& dict) {
     return base::FilePath();
   }
 
-  // Convert to a FilePath and verify the extension.
+  // Convert to a FilePath
   base::FilePath path(url.spec());
+
+  // Force return; don't authenticate URL further.
+  if (features::IsFwupdDeveloperModeEnabled()) {
+    FIRMWARE_LOG(DEBUG)
+        << "Developer mode detected; URI authentication skipped";
+    return path;
+  }
+
+  // Verify the extension.
   if (path.Extension() != kCabFileExtension) {
     FIRMWARE_LOG(ERROR) << "Invalid location extension: " << path;
     return base::FilePath();

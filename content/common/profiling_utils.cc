@@ -41,13 +41,14 @@ base::FilePath GetProfileFileDirectory() {
   base::PathService::Get(base::DIR_TEMP, &path);
   path = path.Append("pgo_profiles/");
 #else
-  std::string prof_template;
+
   std::unique_ptr<base::Environment> env(base::Environment::Create());
-  if (env->GetVar("LLVM_PROFILE_FILE", &prof_template)) {
+  std::optional<std::string> prof_template = env->GetVar("LLVM_PROFILE_FILE");
+  if (prof_template.has_value()) {
 #if BUILDFLAG(IS_WIN)
-    path = base::FilePath(base::UTF8ToWide(prof_template)).DirName();
+    path = base::FilePath(base::UTF8ToWide(*prof_template)).DirName();
 #else
-    path = base::FilePath(prof_template).DirName();
+    path = base::FilePath(*prof_template).DirName();
 #endif
   }
 #endif
@@ -71,7 +72,7 @@ base::File OpenProfilingFile() {
   // well for the coverage builder.
   // TODO(crbug.com/40121559): Check if this is an appropriate value for
   // the PGO builds.
-  int pool_index = base::RandInt(0, 3);
+  int pool_index = base::RandIntInclusive(0, 3);
   std::string filename = base::StrCat(
       {"child_pool-", base::NumberToString(pool_index), ".profraw"});
 #if BUILDFLAG(IS_WIN)

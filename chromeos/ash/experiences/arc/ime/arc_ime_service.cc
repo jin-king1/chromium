@@ -11,8 +11,9 @@
 #include "ash/public/cpp/app_types_util.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/singleton.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
@@ -36,7 +37,7 @@
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/range/range.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/non_client_view.h"
+#include "ui/views/window/frame_view.h"
 #include "ui/wm/core/ime_util_chromeos.h"
 
 namespace arc {
@@ -96,6 +97,7 @@ class ArcWindowDelegateImpl : public ArcImeService::ArcWindowDelegate {
     if (!exo::WMHelper::HasInstance()) {
       return false;
     }
+    aura::Window* active = exo::WMHelper::GetInstance()->GetActiveWindow();
     for (; window; window = window->parent()) {
       if (ash::IsArcWindow(window)) {
         return true;
@@ -105,6 +107,14 @@ class ArcWindowDelegateImpl : public ArcImeService::ArcWindowDelegate {
       // notifications. It should be okay for now because only the ARC++ windows
       // have kSkipImeProcessing.
       if (window->GetProperty(aura::client::kSkipImeProcessing)) {
+        return true;
+      }
+
+      // TODO(crbug.com/424593108): Use ash::IsArcWindow check.
+      // ash::IsArcWindow might return false for a window of ARCVM Kiosk app, so
+      // we are checking application id of the active window to cover that case.
+      if (window == active && IsArcvmKioskMode() &&
+          GetWindowTaskId(window).has_value()) {
         return true;
       }
     }
@@ -150,11 +160,12 @@ class ArcImeServiceFactory
   static constexpr const char* kName = "ArcImeServiceFactory";
 
   static ArcImeServiceFactory* GetInstance() {
-    return base::Singleton<ArcImeServiceFactory>::get();
+    static base::NoDestructor<ArcImeServiceFactory> instance;
+    return instance.get();
   }
 
  private:
-  friend base::DefaultSingletonTraits<ArcImeServiceFactory>;
+  friend base::NoDestructor<ArcImeServiceFactory>;
   ArcImeServiceFactory() = default;
   ~ArcImeServiceFactory() override = default;
 };
@@ -851,7 +862,7 @@ gfx::Point ArcImeService::GetDisplayOriginForFocusedWindow() const {
   if (g_override_display_origin.has_value()) {
     return g_override_display_origin.value();
   }
-  return display::Screen::GetScreen()
+  return display::Screen::Get()
       ->GetDisplayNearestWindow(focused_arc_window_)
       .bounds()
       .origin();

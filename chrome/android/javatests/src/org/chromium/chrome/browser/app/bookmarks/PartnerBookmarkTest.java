@@ -29,18 +29,19 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisabledTest;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.BookmarkDelegate;
 import org.chromium.chrome.browser.bookmarks.BookmarkManagerCoordinator;
 import org.chromium.chrome.browser.bookmarks.BookmarkManagerTestingDelegate;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
-import org.chromium.chrome.browser.bookmarks.BookmarkPromoHeader;
 import org.chromium.chrome.browser.bookmarks.BookmarkUtils;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactoryJni;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.BookmarkTestRule;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.bookmarks.BookmarkItem;
@@ -57,7 +58,8 @@ import org.chromium.content_public.browser.test.util.TouchCommon;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class PartnerBookmarkTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule public BookmarkTestRule mBookmarkTestRule = new BookmarkTestRule();
 
@@ -82,7 +84,7 @@ public class PartnerBookmarkTest {
         CommerceFeatureUtilsJni.setInstanceForTesting(mCommerceFeatureUtilsJniMock);
         doReturn(false).when(mCommerceFeatureUtilsJniMock).isShoppingListEligible(anyLong());
 
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         runOnUiThreadBlocking(
                 () -> {
                     mBookmarkModel =
@@ -91,9 +93,6 @@ public class PartnerBookmarkTest {
                     mBookmarkModel.loadFakePartnerBookmarkShimForTesting();
                     mBookmarkModel.finishLoadingBookmarkModel(CallbackUtils.emptyRunnable());
                 });
-
-        // Exclude the BookmarkPromoHeader for a consistent testing setup.
-        BookmarkPromoHeader.forcePromoVisibilityForTesting(false);
 
         mBookmarkManagerCoordinator =
                 mBookmarkTestRule.showBookmarkManager(mActivityTestRule.getActivity());
@@ -105,6 +104,7 @@ public class PartnerBookmarkTest {
 
     @Test
     @MediumTest
+    @DisabledTest(message = "Flaky - crbug.com/425906562")
     public void testMoveButtonsGoneForPartnerBookmarks() {
         // Open partner bookmarks folder.
         BookmarkId partnerFolder = runOnUiThreadBlocking(() -> mBookmarkModel.getPartnerFolderId());
@@ -167,6 +167,7 @@ public class PartnerBookmarkTest {
 
     @Test
     @MediumTest
+    @DisabledTest(message = "https://crbug.com/443216305")
     public void testCannotSelectPartner() throws Exception {
         mBookmarkTestRule.openFolder(mBookmarkTestRule.getMobileFolder());
         View partner = mBookmarkManagerTestingDelegate.getBookmarkViewHolderByPosition(0).itemView;
@@ -181,6 +182,7 @@ public class PartnerBookmarkTest {
 
     @Test
     @MediumTest
+    @DisabledTest(message = "crbug.com/442842860")
     public void testPartnerFolderDraggability() throws Exception {
         mBookmarkTestRule.openFolder(mBookmarkTestRule.getMobileFolder());
         ViewHolder partner = mBookmarkManagerTestingDelegate.getBookmarkViewHolderByPosition(0);
@@ -195,10 +197,12 @@ public class PartnerBookmarkTest {
     }
 
     private boolean isViewHolderPassivelyDraggable(ViewHolder viewHolder) {
-        return runOnUiThreadBlocking(() -> mAdapter.isPassivelyDraggable(viewHolder));
+        return runOnUiThreadBlocking(
+                () -> mAdapter.getDragTouchHandlerForTest().isPassivelyDraggable(viewHolder));
     }
 
     private boolean isViewHoldersActivelyDraggable(ViewHolder viewHolder) {
-        return runOnUiThreadBlocking(() -> mAdapter.isActivelyDraggable(viewHolder));
+        return runOnUiThreadBlocking(
+                () -> mAdapter.getDragTouchHandlerForTest().isActivelyDraggable(viewHolder));
     }
 }

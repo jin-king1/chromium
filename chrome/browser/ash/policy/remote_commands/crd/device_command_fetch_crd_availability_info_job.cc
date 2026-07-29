@@ -4,17 +4,21 @@
 
 #include "chrome/browser/ash/policy/remote_commands/crd/device_command_fetch_crd_availability_info_job.h"
 
+#include <cstdint>
+#include <string>
+#include <utility>
+
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/numerics/clamped_math.h"
+#include "base/syslog_logging.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_logging.h"
 #include "chrome/browser/ash/policy/remote_commands/crd/crd_remote_command_utils.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/common/pref_names.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
-#include "components/prefs/pref_service.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 
 namespace policy {
 
@@ -30,8 +34,8 @@ constexpr char kRemoteSupportAvailability[] = "remoteSupportAvailability";
 constexpr char kRemoteAccessAvailability[] = "remoteAccessAvailability";
 constexpr char kIsInManagedEnvironment[] = "isInManagedEnvironment";
 
-base::Value::List GetSupportedSessionTypes(bool is_in_managed_environment) {
-  base::Value::List result;
+base::ListValue GetSupportedSessionTypes(bool is_in_managed_environment) {
+  base::ListValue result;
 
   if (UserSessionSupportsRemoteSupport(GetCurrentUserSessionType())) {
     result.Append(static_cast<int>(CrdSessionType::REMOTE_SUPPORT_SESSION));
@@ -46,9 +50,9 @@ base::Value::List GetSupportedSessionTypes(bool is_in_managed_environment) {
 }
 
 CrdSessionAvailability GetRemoteSupportAvailability(
+    const PrefService& local_state,
     UserSessionType current_user_session) {
-  if (!IsRemoteSupportAllowedByPolicy(
-          CHECK_DEREF(g_browser_process->local_state()))) {
+  if (!IsRemoteSupportAllowedByPolicy(local_state)) {
     return CrdSessionAvailability::UNAVAILABLE_DISABLED_BY_POLICY;
   }
   if (!UserSessionSupportsRemoteSupport(current_user_session)) {
@@ -58,10 +62,10 @@ CrdSessionAvailability GetRemoteSupportAvailability(
 }
 
 CrdSessionAvailability GetRemoteAccessAvailability(
+    const PrefService& local_state,
     bool is_in_managed_environment,
     UserSessionType current_user_session) {
-  if (!IsRemoteAccessAllowedByPolicy(
-          CHECK_DEREF(g_browser_process->local_state()))) {
+  if (!IsRemoteAccessAllowedByPolicy(local_state)) {
     return CrdSessionAvailability::UNAVAILABLE_DISABLED_BY_POLICY;
   }
   if (!is_in_managed_environment) {
@@ -80,7 +84,8 @@ int GetDeviceIdleTimeInSeconds() {
 }  // namespace
 
 DeviceCommandFetchCrdAvailabilityInfoJob::
-    DeviceCommandFetchCrdAvailabilityInfoJob() = default;
+    DeviceCommandFetchCrdAvailabilityInfoJob(PrefService* local_state)
+    : local_state_(CHECK_DEREF(local_state)) {}
 DeviceCommandFetchCrdAvailabilityInfoJob::
     ~DeviceCommandFetchCrdAvailabilityInfoJob() = default;
 
@@ -91,6 +96,7 @@ DeviceCommandFetchCrdAvailabilityInfoJob::GetType() const {
 
 void DeviceCommandFetchCrdAvailabilityInfoJob::RunImpl(
     CallbackWithResult result_callback) {
+  SYSLOG(INFO) << "Running fetch CRD availability command";
   CalculateIsInManagedEnvironmentAsync(base::BindOnce(
       &DeviceCommandFetchCrdAvailabilityInfoJob::SendPayload,
       weak_ptr_factory_.GetWeakPtr(), std::move(result_callback)));
@@ -101,21 +107,23 @@ void DeviceCommandFetchCrdAvailabilityInfoJob::SendPayload(
     bool is_in_managed_environment) {
   std::string payload =
       base::WriteJson(
-          base::Value::Dict()
+          base::DictValue()
               .Set(kIdleTime, GetDeviceIdleTimeInSeconds())
               .Set(kUserSessionType, GetCurrentUserSessionType())
               .Set(kIsInManagedEnvironment, is_in_managed_environment)
               .Set(kSupportedCrdSessionTypes,
                    GetSupportedSessionTypes(is_in_managed_environment))
               .Set(kRemoteSupportAvailability,
-                   GetRemoteSupportAvailability(GetCurrentUserSessionType()))
+                   GetRemoteSupportAvailability(local_state_.get(),
+                                                GetCurrentUserSessionType()))
               .Set(kRemoteAccessAvailability,
-                   GetRemoteAccessAvailability(is_in_managed_environment,
+                   GetRemoteAccessAvailability(local_state_.get(),
+                                               is_in_managed_environment,
                                                GetCurrentUserSessionType())))
           .value();
 
-  CRD_VLOG(1) << "Finished FETCH_CRD_AVAILABILITY_INFO remote command: "
-              << payload;
+  SYSLOG(INFO) << "Finished FETCH_CRD_AVAILABILITY_INFO remote command: "
+               << payload;
   std::move(callback).Run(ResultType::kSuccess, std::move(payload));
 }
 

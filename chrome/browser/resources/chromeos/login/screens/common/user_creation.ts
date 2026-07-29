@@ -159,14 +159,14 @@ export class UserCreation extends UserCreationScreenElementBase {
     };
   }
 
-  selectedUserType: string;
-  selectedEnrollTriageMethod: string;
-  selectedChildSetupMethod: string;
-  isBackButtonVisible_: boolean;
-  titleKey_: string;
-  subtitleKey_: string;
-  isOobeLoaded_: boolean;
-  private readonly isOobeSoftwareUpdateEnabled_: boolean;
+  declare selectedUserType: string;
+  declare selectedEnrollTriageMethod: string;
+  declare selectedChildSetupMethod: string;
+  declare private isBackButtonVisible_: boolean;
+  declare private titleKey_: string;
+  declare private subtitleKey_: string;
+  declare private isOobeLoaded_: boolean;
+  declare private readonly isOobeSoftwareUpdateEnabled_: boolean;
 
   constructor() {
     super();
@@ -238,18 +238,14 @@ export class UserCreation extends UserCreationScreenElementBase {
     super.ready();
     this.initializeLoginScreen('UserCreationScreen');
 
-    if (loadTimeData.getBoolean('isOobeLazyLoadingEnabled')) {
-      // The UserCreation screen is a priority screen, so it becomes visible
-      // before the remaining of the OOBE flow is fully loaded. 'Back' and
-      // 'Next' buttons are initially disabled, and enabled upon receiving the
-      //|oobe-screens-loaded| event.
-      this.isOobeLoaded_ = false;
-      document.addEventListener('oobe-screens-loaded', () => {
-        this.isOobeLoaded_ = true;
-      }, {once: true});
-    } else {
+    // The UserCreation screen is a priority screen, so it becomes visible
+    // before the remaining of the OOBE flow is fully loaded. 'Back' and
+    // 'Next' buttons are initially disabled, and enabled upon receiving the
+    //|oobe-screens-loaded| event.
+    this.isOobeLoaded_ = false;
+    document.addEventListener('oobe-screens-loaded', () => {
       this.isOobeLoaded_ = true;
-    }
+    }, {once: true});
   }
 
   override getOobeUIInitialState(): OobeUiState {

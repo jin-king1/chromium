@@ -5,9 +5,11 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_HEURISTIC_SOURCE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_HEURISTIC_SOURCE_H_
 
+#include <optional>
+#include <string_view>
+
 #include "components/autofill/core/browser/form_parsing/buildflags.h"
 #include "components/autofill/core/browser/form_parsing/regex_patterns.h"
-#include "components/autofill/core/common/dense_set.h"
 
 namespace autofill {
 
@@ -27,6 +29,9 @@ HeuristicSource GetActiveHeuristicSource();
 // Converts a `HeuristicSource` the corresponding `PatternFile`, in case the
 // `source` is using regexes. Otherwise, nullopt is returned.
 std::optional<PatternFile> HeuristicSourceToPatternFile(HeuristicSource source);
+
+// Converts a `HeuristicSource` into a string used to record logs.
+std::string_view HeuristicSourceToString(HeuristicSource source);
 
 }  // namespace autofill
 

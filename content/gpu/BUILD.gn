@@ -47,6 +47,7 @@ target(link_target_type, "gpu_sources") {
   deps = [
     "//base",
     "//build:branding_buildflags",
+    "//components/performance_manager/scenario_api",
     "//components/viz/service",
     "//content:export",
     "//content/child",
@@ -54,31 +55,30 @@ target(link_target_type, "gpu_sources") {
     "//content/common:mojo_bindings",
     "//content/public/child:child_sources",
     "//content/public/common:common_sources",
-    "//gpu:gpu",
-    "//gpu/ipc/common:command_buffer_traits",
     "//gpu/ipc/service",
     "//ipc",
     "//media:media_buildflags",
     "//media/gpu",
     "//media/mojo:buildflags",
+    "//sandbox/policy",
 
     # TODO(jrummell): As //media/gpu/ipc/service is a source_set in a
     # component build, determine if it should not be included here.
     # http://crbug.com/702833.
     "//components/viz/service/main",
     "//media/gpu/ipc/service",
-    "//media/mojo/clients:clients",
+    "//media/mojo/clients",
     "//sandbox/policy:chromecast_sandbox_allowlist_buildflags",
     "//services/service_manager/public/cpp",
     "//services/service_manager/public/mojom",
     "//services/tracing/public/cpp",
     "//services/viz/privileged/mojom",
+    "//services/webnn/public/cpp",
     "//skia",
     "//third_party/angle:angle_gpu_info_util",
     "//ui/gfx/ipc",
     "//ui/gl",
     "//ui/gl/init",
-    "//ui/latency/ipc",
   ]
 
   if (!is_chromeos || !is_chrome_branded) {
@@ -99,6 +99,7 @@ target(link_target_type, "gpu_sources") {
     deps += [
       "//components/tracing:graphics_provider",
       "//media",
+      "//sandbox/linux:sandbox_services",
     ]
   }
 

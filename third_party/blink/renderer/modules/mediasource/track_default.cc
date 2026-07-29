@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/core/html/track/audio_track.h"
 #include "third_party/blink/renderer/core/html/track/text_track.h"
 #include "third_party/blink/renderer/core/html/track/video_track.h"
+#include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 
@@ -22,7 +23,7 @@ AtomicString TrackDefault::VideoKeyword() {
 }
 
 AtomicString TrackDefault::TextKeyword() {
-  return AtomicString("text");
+  return keywords::kText;
 }
 
 ScriptObject TrackDefault::kinds(ScriptState* script_state) const {
@@ -53,8 +54,8 @@ TrackDefault* TrackDefault::Create(const V8TrackDefaultType& type,
     //      TypeError and abort these steps.
     for (const String& kind : kinds) {
       if (!AudioTrack::IsValidKindKeyword(kind)) {
-        exception_state.ThrowTypeError("Invalid audio track default kind '" +
-                                       kind + "'");
+        exception_state.ThrowTypeError(
+            StrCat({"Invalid audio track default kind '", kind, "'"}));
         return nullptr;
       }
     }
@@ -65,8 +66,8 @@ TrackDefault* TrackDefault::Create(const V8TrackDefaultType& type,
     //      TypeError and abort these steps.
     for (const String& kind : kinds) {
       if (!VideoTrack::IsValidKindKeyword(kind)) {
-        exception_state.ThrowTypeError("Invalid video track default kind '" +
-                                       kind + "'");
+        exception_state.ThrowTypeError(
+            StrCat({"Invalid video track default kind '", kind, "'"}));
         return nullptr;
       }
     }
@@ -77,8 +78,8 @@ TrackDefault* TrackDefault::Create(const V8TrackDefaultType& type,
     //      steps.
     for (const String& kind : kinds) {
       if (!TextTrack::IsValidKindKeyword(kind)) {
-        exception_state.ThrowTypeError("Invalid text track default kind '" +
-                                       kind + "'");
+        exception_state.ThrowTypeError(
+            StrCat({"Invalid text track default kind '", kind, "'"}));
         return nullptr;
       }
     }

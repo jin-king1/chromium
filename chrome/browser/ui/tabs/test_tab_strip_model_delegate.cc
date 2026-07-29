@@ -8,6 +8,7 @@
 
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "components/tab_groups/tab_group_id.h"
 
 TestTabStripModelDelegate::TestTabStripModelDelegate() = default;
@@ -18,7 +19,8 @@ void TestTabStripModelDelegate::AddTabAt(
     const GURL& url,
     int index,
     bool foreground,
-    std::optional<tab_groups::TabGroupId> group) {}
+    std::optional<tab_groups::TabGroupId> group,
+    bool pinned) {}
 
 Browser* TestTabStripModelDelegate::CreateNewStripWithTabs(
     std::vector<NewStripContents> tabs,
@@ -47,7 +49,12 @@ bool TestTabStripModelDelegate::IsTabStripEditable() {
   return true;
 }
 
-void TestTabStripModelDelegate::DuplicateContentsAt(int index) {}
+content::WebContents* TestTabStripModelDelegate::DuplicateContentsAt(
+    int index) {
+  return nullptr;
+}
+
+void TestTabStripModelDelegate::DuplicateSplit(split_tabs::SplitTabId split) {}
 
 void TestTabStripModelDelegate::MoveToExistingWindow(
     const std::vector<int>& indices,
@@ -72,11 +79,23 @@ std::optional<SessionID> TestTabStripModelDelegate::CreateHistoricalTab(
 void TestTabStripModelDelegate::CreateHistoricalGroup(
     const tab_groups::TabGroupId& group) {}
 
+void TestTabStripModelDelegate::CreateHistoricalSplit(
+    const split_tabs::SplitTabId& split_id) {}
+
 void TestTabStripModelDelegate::GroupAdded(
     const tab_groups::TabGroupId& group) {}
 
 void TestTabStripModelDelegate::WillCloseGroup(
     const tab_groups::TabGroupId& group) {}
+
+void TestTabStripModelDelegate::WillCloseSplit(
+    const split_tabs::SplitTabId& split_id) {}
+
+void TestTabStripModelDelegate::SplitClosed(
+    const split_tabs::SplitTabId& split_id) {}
+
+void TestTabStripModelDelegate::SplitCloseStopped(
+    const split_tabs::SplitTabId& split_id) {}
 
 void TestTabStripModelDelegate::GroupCloseStopped(
     const tab_groups::TabGroupId& group) {}
@@ -91,17 +110,12 @@ bool TestTabStripModelDelegate::RunUnloadListenerBeforeClosing(
   return false;
 }
 
-bool TestTabStripModelDelegate::ShouldDisplayFavicon(
-    content::WebContents* web_contents) const {
-  return true;
-}
-
 bool TestTabStripModelDelegate::CanReload() const {
   return true;
 }
 
 void TestTabStripModelDelegate::AddToReadLater(
-    content::WebContents* web_contents) {}
+    std::vector<content::WebContents*> web_contentses) {}
 
 bool TestTabStripModelDelegate::SupportsReadLater() {
   return true;
@@ -123,6 +137,11 @@ bool TestTabStripModelDelegate::IsNormalWindow() {
   return true;
 }
 
+void TestTabStripModelDelegate::NewSplitTab(
+    std::vector<int> indices,
+    split_tabs::SplitTabLayout layout,
+    split_tabs::SplitTabCreatedSource source) {}
+
 BrowserWindowInterface* TestTabStripModelDelegate::GetBrowserWindowInterface() {
   return browser_window_interface_;
 }
@@ -139,3 +158,6 @@ void TestTabStripModelDelegate::OnRemovingAllTabsFromGroups(
     base::OnceCallback<void()> callback) {
   std::move(callback).Run();
 }
+
+void TestTabStripModelDelegate::GlicUnpinTabsFromAllConversations(
+    base::span<const tabs::TabHandle> tab_handles) {}

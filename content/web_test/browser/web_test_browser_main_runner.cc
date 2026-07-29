@@ -14,9 +14,11 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/run_loop.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/common/task_annotator.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
@@ -41,7 +43,6 @@
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/url_util.h"
-#include "ppapi/buildflags/buildflags.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/display/display_switches.h"
@@ -50,10 +51,6 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "base/mac/mac_util.h"
-#endif
-
-#if BUILDFLAG(ENABLE_PPAPI)
-#include "content/public/test/ppapi_test_utils.h"
 #endif
 
 #if BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_IOS)
@@ -201,9 +198,9 @@ void WebTestBrowserMainRunner::Initialize() {
   // interference. This GPU process is launched 120 seconds after chrome starts.
   command_line.AppendSwitch(switches::kDisableGpuProcessForDX12InfoCollection);
 
-#if BUILDFLAG(ENABLE_PPAPI)
-  CHECK(ppapi::RegisterBlinkTestPlugin(&command_line));
-#endif
+  // Disable IgnoreDuplicateNavs by default to ensure tests run with predictable
+  // navigation behavior and don't have navigations unintentionally ignored.
+  command_line.AppendSwitch(switches::kDisableIgnoreDuplicateNavsForTesting);
 
   command_line.AppendSwitch(switches::kEnableGpuBenchmarking);
   command_line.AppendSwitch(switches::kEnableLogging);
@@ -215,7 +212,9 @@ void WebTestBrowserMainRunner::Initialize() {
     // only default to a software GL if the flag isn't already specified.
     if (!command_line.HasSwitch(switches::kUseGpuInTests) &&
         !command_line.HasSwitch(switches::kUseGL)) {
-      gl::SetSoftwareGLCommandLineSwitches(&command_line);
+      gl::SetGLImplementationCommandLineSwitches(
+          gl::GLImplementationParts(gl::ANGLEImplementation::kSwiftShader),
+          &command_line);
     }
   }
   command_line.AppendSwitchASCII(switches::kTouchEventFeatureDetection,
@@ -234,14 +233,9 @@ void WebTestBrowserMainRunner::Initialize() {
     command_line.AppendSwitch(switches::kEnableBlinkTestFeatures);
   }
 
-  // With display compositor pixel dumps, we ensure that we complete all
-  // stages of compositing before draw. We also can't have checker imaging,
+  // With display compositor pixel dumps, we can't have checker imaging,
   // since it's incompatible with single threaded compositor and display
   // compositor pixel dumps.
-  //
-  // TODO(crbug.com/41420287) Add kRunAllCompositorStagesBeforeDraw back here
-  // once you figure out why it causes so much web test flakiness.
-  // command_line.AppendSwitch(switches::kRunAllCompositorStagesBeforeDraw);
   command_line.AppendSwitch(switches::kDisableCheckerImaging);
 
   command_line.AppendSwitch(switches::kMuteAudio);
@@ -274,20 +268,11 @@ void WebTestBrowserMainRunner::Initialize() {
     command_line.AppendSwitch(switches::kDisableGpuRasterization);
 
 #if BUILDFLAG(IS_MAC) && defined(ARCH_CPU_ARM64)
-  if (base::mac::MacOSMajorVersion() == 14) {
-    // If Graphite is not explicitly disabled, enable it. This is to use
-    // Graphite as the renderer for web tests on all bots for this platform
-    // except those explicitly testing Ganesh.
-    if (!command_line.HasSwitch(switches::kDisableSkiaGraphite)) {
-      command_line.AppendSwitch(switches::kEnableSkiaGraphite);
-    }
-  } else {
-    // If Graphite is not explicitly enabled, disable it. This is to keep using
-    // Ganesh as renderer for web tests for now until we finish rebaselining all
-    // images for Graphite renderer.
-    if (!command_line.HasSwitch(switches::kEnableSkiaGraphite)) {
-      command_line.AppendSwitch(switches::kDisableSkiaGraphite);
-    }
+  // If Graphite is not explicitly disabled, enable it. This is to use
+  // Graphite as the renderer for web tests on all bots for this platform
+  // except those explicitly testing Ganesh.
+  if (!command_line.HasSwitch(switches::kDisableSkiaGraphite)) {
+    command_line.AppendSwitch(switches::kEnableSkiaGraphite);
   }
 #else
   // If Graphite is not explicitly enabled, disable it. This is to keep using
@@ -323,9 +308,6 @@ void WebTestBrowserMainRunner::Initialize() {
 
   // Always run with fake FedCM UI.
   command_line.AppendSwitch(switches::kUseFakeUIForFedCM);
-
-  // Always run with fake digital identity credential UI.
-  command_line.AppendSwitch(switches::kUseFakeUIForDigitalIdentity);
 
   // Disable the backgrounding of renderers to make running tests faster.
   command_line.AppendSwitch(switches::kDisableRendererBackgrounding);

@@ -23,7 +23,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 using testing::_;
-using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 
@@ -156,11 +155,13 @@ TEST_F(DownloadDriverImplTest, DownloadItemUpdateEvents) {
       .RetiresOnSaturation();
   static_cast<AllDownloadEventNotifier::Observer*>(driver_.get())
       ->OnDownloadUpdated(&coordinator_, &fake_item);
+  task_runner_->RunUntilIdle();
 
   // Nothing happens for cancelled state.
   fake_item.SetState(DownloadState::CANCELLED);
   static_cast<AllDownloadEventNotifier::Observer*>(driver_.get())
       ->OnDownloadUpdated(&coordinator_, &fake_item);
+  task_runner_->RunUntilIdle();
 
   fake_item.SetReceivedBytes(1024);
   fake_item.SetState(DownloadState::COMPLETE);
@@ -171,6 +172,7 @@ TEST_F(DownloadDriverImplTest, DownloadItemUpdateEvents) {
       .RetiresOnSaturation();
   static_cast<AllDownloadEventNotifier::Observer*>(driver_.get())
       ->OnDownloadUpdated(&coordinator_, &fake_item);
+  task_runner_->RunUntilIdle();
 
   fake_item.SetState(DownloadState::INTERRUPTED);
   fake_item.SetLastReason(
@@ -182,6 +184,7 @@ TEST_F(DownloadDriverImplTest, DownloadItemUpdateEvents) {
       .RetiresOnSaturation();
   static_cast<AllDownloadEventNotifier::Observer*>(driver_.get())
       ->OnDownloadUpdated(&coordinator_, &fake_item);
+  task_runner_->RunUntilIdle();
 }
 
 TEST_F(DownloadDriverImplTest, TestGetActiveDownloadsCall) {
@@ -253,7 +256,7 @@ bool HasHeader(const DownloadUrlParameters::RequestHeadersType& headers,
 TEST_F(DownloadDriverImplTest, Start_WithRangeHeader) {
   RequestParams request_params;
   request_params.url = GURL(kFakeURL);
-  request_params.request_headers.AddHeaderFromString("Range: bytes=5-10");
+  request_params.request_headers.SetHeader("Range", "bytes=5-10");
   EXPECT_CALL(mock_manager_, DownloadUrlMock(_)).RetiresOnSaturation();
   driver_->Start(request_params, kFakeGuid, base::FilePath(), nullptr,
                  TRAFFIC_ANNOTATION_FOR_TESTS);
@@ -269,7 +272,7 @@ TEST_F(DownloadDriverImplTest, Start_WithRangeHeader) {
   EXPECT_FALSE(HasHeader(download_url_parameters->request_headers(),
                          net::HttpRequestHeaders::kIfRange));
 
-  request_params.request_headers.AddHeaderFromString("Range: bytes=-10");
+  request_params.request_headers.SetHeader("Range", "bytes=-10");
   EXPECT_CALL(mock_manager_, DownloadUrlMock(_)).RetiresOnSaturation();
   driver_->Start(request_params, kFakeGuid, base::FilePath(), nullptr,
                  TRAFFIC_ANNOTATION_FOR_TESTS);

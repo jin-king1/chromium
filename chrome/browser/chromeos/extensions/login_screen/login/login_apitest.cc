@@ -197,7 +197,7 @@ class LoginApitest : public LoginScreenApitestBase {
  private:
   ash::EmbeddedPolicyTestServerMixin policy_test_server_mixin_{&mixin_host_};
   ExtensionForceInstallMixin extension_force_install_mixin_{&mixin_host_};
-  base::Value::Dict config_;
+  base::DictValue config_;
 };
 
 IN_PROC_BROWSER_TEST_F(LoginApitest, LaunchManagedGuestSession) {
@@ -449,7 +449,7 @@ class LoginApitestWithEnterpriseUser : public LoginApitest {
     SetUpSessionExtensionUserPolicyBuilder();
     enterprise_management::PolicyData& policy_data =
         user_policy_builder_->policy_data();
-    policy_data.set_policy_type(policy::dm_protocol::kChromeUserPolicyType);
+    policy_data.set_policy_type(policy::dm_protocol::GetChromeUserPolicyType());
     policy_data.set_username(account_id.GetUserEmail());
     policy_data.set_gaia_id(account_id.GetGaiaId().ToString());
     user_policy_builder_->Build();
@@ -461,7 +461,7 @@ class LoginApitestWithEnterpriseUser : public LoginApitest {
         user_policy_builder_->payload(), account_id.GetUserEmail());
     session_manager_client()->set_user_policy(
         cryptohome::CreateAccountIdentifierFromAccountId(account_id),
-        user_policy_builder_->GetBlob());
+        login_manager::POLICY_DOMAIN_CHROME, user_policy_builder_->GetBlob());
     RefreshPolicies();
 
     registry_observer->WaitForExtensionReady();

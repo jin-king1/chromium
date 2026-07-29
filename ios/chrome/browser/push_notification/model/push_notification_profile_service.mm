@@ -6,9 +6,11 @@
 
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/primary_account_change_event.h"
 #import "ios/chrome/browser/commerce/model/price_alert_util.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_account_context_manager.h"
+#import "ios/chrome/browser/push_notification/model/push_notification_client_manager.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_service.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_util.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -21,7 +23,7 @@ void OnPrimaryAccountCleared(CoreAccountInfo primary_account) {
   PushNotificationService* service =
       GetApplicationContext()->GetPushNotificationService();
 
-  NSString* gaia = primary_account.gaia.ToNSString();
+  GaiaId gaia = primary_account.gaia;
   service->UnregisterAccount(gaia, nullptr);
 }
 
@@ -34,7 +36,7 @@ void OnPrimaryAccountSet(CoreAccountInfo primary_account) {
         registerDeviceWithAPNSWithProvisionalNotificationsAvailable:NO];
   }
 
-  NSString* gaia = primary_account.gaia.ToNSString();
+  GaiaId gaia = primary_account.gaia;
   service->RegisterAccount(gaia, nullptr);
 }
 
@@ -42,8 +44,10 @@ void OnPrimaryAccountSet(CoreAccountInfo primary_account) {
 
 PushNotificationProfileService::PushNotificationProfileService(
     signin::IdentityManager* identity_manager,
+    std::unique_ptr<PushNotificationClientManager> client_manager,
     base::FilePath profile_state_path)
     : identity_manager_(identity_manager),
+      client_manager_(std::move(client_manager)),
       profile_state_path_(profile_state_path) {
   identity_manager->AddObserver(this);
 }
@@ -52,6 +56,11 @@ PushNotificationProfileService::~PushNotificationProfileService() = default;
 
 void PushNotificationProfileService::Shutdown() {
   identity_manager_->RemoveObserver(this);
+}
+
+PushNotificationClientManager*
+PushNotificationProfileService::GetPushNotificationClientManager() {
+  return client_manager_.get();
 }
 
 void PushNotificationProfileService::OnPrimaryAccountChanged(
@@ -70,9 +79,7 @@ void PushNotificationProfileService::OnPrimaryAccountChanged(
   if (!service->DeviceTokenIsSet()) {
     return;
   }
-  const signin::ConsentLevel consent_level = signin::ConsentLevel::kSignin;
-
-  switch (event.GetEventTypeFor(consent_level)) {
+  switch (event.GetEventTypeFor(signin::ConsentLevel::kSignin)) {
     case signin::PrimaryAccountChangeEvent::Type::kSet: {
       // The PostTask function must be used for the OnPrimaryAccountSet to
       // ensure that the appropriate Profile has been updated with the newly

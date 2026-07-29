@@ -6,12 +6,12 @@ static_library("browser") {
   sources = [
     "bad_message.cc",
     "bad_message.h",
-    "content_credential_manager.cc",
-    "content_credential_manager.h",
     "content_password_manager_driver.cc",
     "content_password_manager_driver.h",
     "content_password_manager_driver_factory.cc",
     "content_password_manager_driver_factory.h",
+    "content_password_manager_util.cc",
+    "content_password_manager_util.h",
     "form_meta_data.cc",
     "form_meta_data.h",
     "form_submission_tracker_util.cc",
@@ -93,7 +93,7 @@ source_set("test_support") {
 source_set("unit_tests") {
   testonly = true
   sources = [
-    "content_credential_manager_unittest.cc",
+    "bad_message_unittest.cc",
     "content_password_manager_driver_factory_unittest.cc",
     "content_password_manager_driver_unittest.cc",
     "form_submission_tracker_util_unittest.cc",
@@ -116,4 +116,8 @@ source_set("unit_tests") {
     "//testing/gmock",
     "//testing/gtest",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

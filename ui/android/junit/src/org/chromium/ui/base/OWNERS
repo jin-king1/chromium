@@ -2,5 +2,5 @@
 per-file SelectFileDialogTest.java=finnur@chromium.org
 per-file SelectFileDialogTest.java=peter@chromium.org
 
-# Clipboard
-per-file Clipboard*.java=gangwu@chromium.org
+# Activity result tracker
+per-file ActivityResultTrackerImplTest.java=myuu@google.com

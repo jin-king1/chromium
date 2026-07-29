@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_EXTENSIONS_API_WEB_AUTHENTICATION_PROXY_WEB_AUTHENTICATION_PROXY_SERVICE_H_
 
 #include <optional>
+#include <variant>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -20,8 +21,10 @@
 #include "content/public/browser/web_authentication_request_proxy.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace content {
 class BrowserContext;
@@ -154,7 +157,7 @@ class WebAuthenticationProxyService
   using RespondCallback = base::OnceCallback<void(std::optional<std::string>)>;
 
   // Returns the service instance for the given BrowserContext, if a proxy is
-  // currently attached, and nulltpr otherwise. References to this class should
+  // currently attached, and nullptr otherwise. References to this class should
   // not be stored because they become invalid whenever the proxy detaches.
   //
   // Service instances are shared between incognito and regular contexts if the
@@ -215,14 +218,12 @@ class WebAuthenticationProxyService
  private:
   void CancelPendingCallbacks();
   RequestId NewRequestId();
-  void OnParseCreateResponse(
-      RespondCallback respondCallback,
-      RequestId request_id,
-      data_decoder::DataDecoder::ValueOrError value_or_error);
-  void OnParseGetResponse(
-      RespondCallback respondCallback,
-      RequestId request_id,
-      data_decoder::DataDecoder::ValueOrError value_or_error);
+  void ParseCreateResponseSync(RespondCallback respond_callback,
+                               RequestId request_id,
+                               const std::string& response_json);
+  void ParseGetResponseSync(RespondCallback respond_callback,
+                            RequestId request_id,
+                            const std::string& response_json);
 
   raw_ptr<content::BrowserContext> browser_context_ = nullptr;
   raw_ptr<EventRouter> event_router_ = nullptr;
@@ -232,12 +233,10 @@ class WebAuthenticationProxyService
   std::optional<ExtensionId> active_proxy_;
 
   using CallbackType =
-      absl::variant<IsUvpaaCallback, CreateCallback, GetCallback>;
+      std::variant<IsUvpaaCallback, CreateCallback, GetCallback>;
   std::map<RequestId, CallbackType> pending_callbacks_;
 
   SEQUENCE_CHECKER(sequence_checker_);
-
-  base::WeakPtrFactory<WebAuthenticationProxyService> weak_ptr_factory_{this};
 };
 
 // WebAuthenticationProxyServiceFactory creates instances of

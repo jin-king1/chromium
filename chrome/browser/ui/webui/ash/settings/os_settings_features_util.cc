@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/webui/ash/settings/os_settings_features_util.h"
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/edusumer/graduation_utils.h"
 #include "base/check.h"
 #include "base/check_deref.h"
@@ -15,7 +16,6 @@
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
@@ -26,30 +26,22 @@
 
 namespace ash::settings {
 
-bool IsGuestModeActive(const user_manager::User* user) {
-  // TODO(crbug.com/380222349): upgrade to CHECK_DEREF.
-  DUMP_WILL_BE_CHECK(user);
-  return user && user->is_logged_in() &&
-         (user->GetType() == user_manager::UserType::kGuest ||
-          user->GetType() == user_manager::UserType::kPublicAccount);
+bool IsGuestModeActive(const user_manager::User& user) {
+  return user.is_logged_in() &&
+         (user.GetType() == user_manager::UserType::kGuest ||
+          user.GetType() == user_manager::UserType::kPublicAccount);
 }
 
-bool IsChildUser(const user_manager::User* user) {
-  // TODO(crbug.com/380222349): upgrade to CHECK_DEREF.
-  DUMP_WILL_BE_CHECK(user);
-  return user && user->is_logged_in() && user->IsChild();
+bool IsChildUser(const user_manager::User& user) {
+  return user.is_logged_in() && user.IsChild();
 }
 
-bool IsPowerwashAllowed(const user_manager::User* user) {
-  // TODO(crbug.com/380222349): upgrade to CHECK_DEREF.
-  DUMP_WILL_BE_CHECK(user);
+bool IsPowerwashAllowed(const user_manager::User& user) {
   return !ash::InstallAttributes::Get()->IsEnterpriseManaged() &&
          !IsGuestModeActive(user) && !IsChildUser(user);
 }
 
-bool IsSanitizeAllowed(const user_manager::User* user) {
-  // TODO(crbug.com/380222349): upgrade to CHECK_DEREF.
-  DUMP_WILL_BE_CHECK(user);
+bool IsSanitizeAllowed(const user_manager::User& user) {
   return IsPowerwashAllowed(user) &&
          base::FeatureList::IsEnabled(ash::features::kSanitize);
 }
@@ -97,17 +89,13 @@ bool ShouldShowGraduationAppSetting(Profile* profile) {
          graduation::IsEligibleForGraduation(pref_service);
 }
 
-bool IsKioskModeActive(const user_manager::User* user) {
-  // TODO(crbug.com/380222349): upgrade to CHECK_DEREF.
-  DUMP_WILL_BE_CHECK(user);
-  return user && user->is_logged_in() && user->IsKioskType();
+bool IsKioskModeActive(const user_manager::User& user) {
+  return user.is_logged_in() && user.IsKioskType();
 }
 
-bool IsKioskOldA11ySettingsRedirectionEnabled(const user_manager::User* user) {
-  // TODO(crbug.com/380222349): upgrade to CHECK_DEREF.
-  DUMP_WILL_BE_CHECK(user);
-  return user && user->is_logged_in() && user->IsKioskType() &&
-         !CHECK_DEREF(user->GetProfilePrefs())
-              .GetBoolean(prefs::kKioskTroubleshootingToolsEnabled);
+bool IsKioskOldA11ySettingsRedirectionEnabled(const user_manager::User& user) {
+  return user.is_logged_in() && user.IsKioskType() &&
+         !CHECK_DEREF(user.GetProfilePrefs())
+              .GetBoolean(ash::prefs::kKioskTroubleshootingToolsEnabled);
 }
 }  // namespace ash::settings

@@ -11,6 +11,7 @@
 #include <bit>
 
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/layout/inline/offset_mapping.h"
@@ -19,13 +20,15 @@
 #include "third_party/blink/renderer/platform/fonts/shaping/run_segmenter.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_options.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/text/text_direction.h"
-#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
 class HarfBuzzShaper;
 class InlineItem;
+class TextOffsetMap;
 
 // Represents a segment produced by |RunSegmenter|.
 //
@@ -87,11 +90,10 @@ class CORE_EXPORT InlineItemSegment {
 // ratio jumps to 10-30, or sometimes 300 depends on the length of the block,
 // because the average characters/segment ratio in Japanese is 2-5. This class
 // builds internal indexes for faster access in such cases.
-class CORE_EXPORT InlineItemSegments {
-  USING_FAST_MALLOC(InlineItemSegments);
-
+class CORE_EXPORT InlineItemSegments
+    : public GarbageCollected<InlineItemSegments> {
  public:
-  std::unique_ptr<InlineItemSegments> Clone() const;
+  InlineItemSegments* Clone() const;
 
   unsigned size() const { return segments_.size(); }
   bool IsEmpty() const { return segments_.empty(); }
@@ -120,6 +122,9 @@ class CORE_EXPORT InlineItemSegments {
                                       unsigned end_offset,
                                       unsigned segment_index);
 
+  // Adjust offsets according to the `offset_map`.
+  void AdjustOffsets(const TextOffsetMap& offset_map);
+
   // Compute an internal items-to-segments index for faster access.
   void ComputeItemIndex(const HeapVector<Member<InlineItem>>& items);
 
@@ -133,7 +138,8 @@ class CORE_EXPORT InlineItemSegments {
    public:
     Iterator(unsigned start_offset,
              unsigned end_offset,
-             const InlineItemSegment* segment);
+             base::span<const InlineItemSegment> span,
+             unsigned segment_index);
 
     bool IsDone() const { return range_.start == end_offset_; }
 
@@ -147,7 +153,8 @@ class CORE_EXPORT InlineItemSegments {
 
    private:
     RunSegmenter::RunSegmenterRange range_;
-    const InlineItemSegment* segment_;
+    base::span<const InlineItemSegment> span_;
+    unsigned segment_index_;
     unsigned start_offset_;
     unsigned end_offset_;
   };
@@ -169,6 +176,11 @@ class CORE_EXPORT InlineItemSegments {
                          unsigned item_index,
                          ShapeOptions = ShapeOptions()) const;
 
+  void Trace(Visitor* visitor) const {
+    visitor->Trace(segments_);
+    visitor->Trace(items_to_segments_);
+  }
+
  private:
   unsigned PopulateItemsFromFontOrientation(
       unsigned start_offset,
@@ -183,17 +195,22 @@ class CORE_EXPORT InlineItemSegments {
   void CheckOffset(unsigned offset, const InlineItemSegment* segment) const {}
 #endif
 
-  Vector<InlineItemSegment> segments_;
-  Vector<unsigned> items_to_segments_;
+  HeapVector<InlineItemSegment> segments_;
+  HeapVector<unsigned> items_to_segments_;
 };
 
-inline InlineItemSegments::Iterator::Iterator(unsigned start_offset,
-                                              unsigned end_offset,
-                                              const InlineItemSegment* segment)
-    : segment_(segment), start_offset_(start_offset), end_offset_(end_offset) {
+inline InlineItemSegments::Iterator::Iterator(
+    unsigned start_offset,
+    unsigned end_offset,
+    base::span<const InlineItemSegment> span,
+    unsigned segment_index)
+    : span_(span),
+      segment_index_(segment_index),
+      start_offset_(start_offset),
+      end_offset_(end_offset) {
   DCHECK_LT(start_offset, end_offset);
-  DCHECK_LT(start_offset, segment->EndOffset());
-  range_ = segment->ToRunSegmenterRange(start_offset_, end_offset_);
+  DCHECK_LT(start_offset, span[segment_index].EndOffset());
+  range_ = span[segment_index].ToRunSegmenterRange(start_offset_, end_offset_);
 }
 
 inline void InlineItemSegments::Iterator::operator++() {
@@ -203,9 +220,9 @@ inline void InlineItemSegments::Iterator::operator++() {
     return;
   }
   start_offset_ = range_.end;
-  // TODO(crbug.com/351564777): Resolve a buffer safety issue.
-  UNSAFE_TODO(++segment_);
-  range_ = segment_->ToRunSegmenterRange(start_offset_, end_offset_);
+  ++segment_index_;
+  range_ =
+      span_[segment_index_].ToRunSegmenterRange(start_offset_, end_offset_);
 }
 
 }  // namespace blink

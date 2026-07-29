@@ -6,8 +6,8 @@
 
 #include <memory>
 
+#include "ash/constants/webui_url_constants.h"
 #include "ash/webui/grit/ash_sanitize_app_resources.h"
-#include "ash/webui/sanitize_ui/url_constants.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/system_web_apps/apps/system_web_app_install_utils.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
@@ -67,9 +67,10 @@ bool SanitizeSystemAppDelegate::ShouldShowInSearchAndShelf() const {
   return false;
 }
 
-gfx::Rect SanitizeSystemAppDelegate::GetDefaultBounds(Browser* browser) const {
+gfx::Rect SanitizeSystemAppDelegate::GetDefaultBounds(
+    ash::BrowserDelegate*) const {
   gfx::Rect bounds =
-      display::Screen::GetScreen()->GetDisplayForNewWindows().work_area();
+      display::Screen::Get()->GetDisplayForNewWindows().work_area();
   bounds.ClampToCenteredSize({kSanitizeWindowWidth, kSanitizeWindowHeight});
   return bounds;
 }

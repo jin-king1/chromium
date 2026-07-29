@@ -6,12 +6,14 @@
 #define IOS_CHROME_BROWSER_AUTOCOMPLETE_MODEL_AUTOCOMPLETE_PROVIDER_CLIENT_IMPL_H_
 
 #import "base/memory/raw_ptr.h"
+#import "base/memory/weak_ptr.h"
 #import "components/omnibox/browser/actions/omnibox_pedal.h"
 #import "components/omnibox/browser/autocomplete_provider_client.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_scheme_classifier_impl.h"
 #import "ios/chrome/browser/autocomplete/model/tab_matcher_impl.h"
 
 class AutocompleteScoringModelService;
+class AimEligibilityService;
 class OnDeviceTailModelService;
 class ProfileIOS;
 struct ProviderStateService;
@@ -22,6 +24,14 @@ class UrlKeyedDataCollectionConsentHelper;
 
 namespace component_updater {
 class ComponentUpdateService;
+}
+
+namespace sync_sessions {
+class SessionSyncService;
+}  // namespace sync_sessions
+
+namespace tab_groups {
+class TabGroupSyncService;
 }
 
 // AutocompleteProviderClientImpl provides iOS-specific implementation of
@@ -69,6 +79,12 @@ class AutocompleteProviderClientImpl : public AutocompleteProviderClient {
       const override;
   OnDeviceTailModelService* GetOnDeviceTailModelService() const override;
   ProviderStateService* GetProviderStateService() const override;
+  base::CallbackListSubscription GetLensSuggestInputsWhenReady(
+      LensOverlaySuggestInputsCallback callback) const override;
+  tab_groups::TabGroupSyncService* GetTabGroupSyncService() const override;
+  sync_sessions::SessionSyncService* GetSessionSyncService() const override;
+  AimEligibilityService* GetAimEligibilityService() const override;
+
   std::string GetAcceptLanguages() const override;
   std::string GetEmbedderRepresentationOfAboutScheme() const override;
   std::vector<std::u16string> GetBuiltinURLs() override;
@@ -81,11 +97,11 @@ class AutocompleteProviderClientImpl : public AutocompleteProviderClient {
   bool IsGuestSession() const override;
   bool SearchSuggestEnabled() const override;
   bool IsUrlDataCollectionActive() const override;
+  bool IsPersonalizedUrlDataCollectionActive() const override;
   bool IsAuthenticated() const override;
-  bool IsSyncActive() const override;
   void Classify(
       const std::u16string& text,
-      bool prefer_keyword,
+      bool in_keyword_mode,
       bool allow_exact_keyword_match,
       metrics::OmniboxEventProto::PageClassification page_classification,
       AutocompleteMatch* match,
@@ -104,18 +120,26 @@ class AutocompleteProviderClientImpl : public AutocompleteProviderClient {
   void OpenIncognitoClearBrowsingDataDialog() override {}
   void CloseIncognitoWindows() override {}
   void PromptPageTranslation() override {}
+  void OpenLensOverlay(bool show) override {}
+  void IssueContextualSearchRequest(const GURL& destination_url,
+                                    AutocompleteMatchType::Type match_type,
+                                    bool is_zero_prefix_suggestion) override {}
+  base::WeakPtr<AutocompleteProviderClient> GetWeakPtr() override;
 
  private:
   raw_ptr<ProfileIOS> profile_;
   AutocompleteSchemeClassifierImpl scheme_classifier_;
   std::unique_ptr<unified_consent::UrlKeyedDataCollectionConsentHelper>
       url_consent_helper_;
+  std::unique_ptr<unified_consent::UrlKeyedDataCollectionConsentHelper>
+      personalized_url_consent_helper_;
   std::unique_ptr<OmniboxTriggeredFeatureService>
       omnibox_triggered_feature_service_;
   TabMatcherImpl tab_matcher_;
   std::unique_ptr<OmniboxPedalProvider> pedal_provider_;
   // Whether or not the app is currently in the background state.
   bool in_background_state_ = false;
+  base::WeakPtrFactory<AutocompleteProviderClientImpl> weak_factory_{this};
 };
 
 #endif  // IOS_CHROME_BROWSER_AUTOCOMPLETE_MODEL_AUTOCOMPLETE_PROVIDER_CLIENT_IMPL_H_

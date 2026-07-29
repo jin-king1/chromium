@@ -27,8 +27,9 @@ fuzztest_add_configs = fuzzing_engine_add_configs + [
 
 config("fuzztest_internal_config") {
   cflags = [
+    "-Wno-unused-result",  #crbug.com/500385597
     "-Wno-unused-private-field",
-    "-Wno-unreachable-code-return",
+    "-Wno-unreachable-code-aggressive",
     "-Wno-unused-but-set-variable",
     "-Wno-shadow",
     "-Wno-unused-const-variable",
@@ -38,11 +39,6 @@ config("fuzztest_internal_config") {
     "-Wno-c++98-compat-extra-semi",
     "-Wno-deprecated-declarations",
   ]
-
-  # int_utils.h depends on an SSE 4.2 intrinsic.
-  if (current_cpu == "x64") {
-    cflags += [ "-msse4.2" ]
-  }
 }
 
 config("fuzztest_public_config") {
@@ -87,6 +83,8 @@ if (use_centipede) {
       "src/centipede/byte_array_mutator.h",
       "src/centipede/command.cc",
       "src/centipede/control_flow.cc",
+      "src/centipede/crash_summary.cc",
+      "src/centipede/crash_summary.h",
       "src/centipede/execution_metadata.cc",
       "src/centipede/execution_metadata.h",
       "src/centipede/feature.cc",
@@ -122,13 +120,15 @@ if (use_centipede) {
       "src/centipede/runner_dl_info.cc",
       "src/centipede/runner_dl_info.h",
       "src/centipede/runner_fork_server.cc",
-      "src/centipede/runner_interceptors.cc",
       "src/centipede/runner_interface.h",
-      "src/centipede/runner_sancov.cc",
-      "src/centipede/runner_sancov_object.cc",
-      "src/centipede/runner_sancov_object.h",
       "src/centipede/runner_utils.cc",
       "src/centipede/runner_utils.h",
+      "src/centipede/sancov_callbacks.cc",
+      "src/centipede/sancov_interceptors.cc",
+      "src/centipede/sancov_object_array.cc",
+      "src/centipede/sancov_object_array.h",
+      "src/centipede/sancov_state.cc",
+      "src/centipede/sancov_state.h",
     ]
 
     deps = [
@@ -188,6 +188,8 @@ if (use_centipede) {
       "src/centipede/corpus.cc",
       "src/centipede/corpus_io.cc",
       "src/centipede/coverage.cc",
+      "src/centipede/crash_deduplication.cc",
+      "src/centipede/crash_deduplication.h",
       "src/centipede/distill.cc",
       "src/centipede/distill.h",
       "src/centipede/environment.cc",
@@ -241,8 +243,14 @@ source_set("fuzztest_internal") {
   }
 
   sources = [
+    # Ideally all files in common/ would live in `:common`, but some files
+    # depend on fuzztest/internal.
+    "src/common/crashing_input_filename.cc",
+    "src/common/crashing_input_filename.h",
     "src/fuzztest/domain.h",
     "src/fuzztest/domain_core.h",
+    "src/fuzztest/fuzzing_bit_gen.cc",
+    "src/fuzztest/fuzzing_bit_gen.h",
     "src/fuzztest/fuzztest.h",
     "src/fuzztest/fuzztest_macros.cc",
     "src/fuzztest/fuzztest_macros.h",
@@ -260,9 +268,9 @@ source_set("fuzztest_internal") {
     "src/fuzztest/internal/domains/aggregate_of_impl.h",
     "src/fuzztest/internal/domains/arbitrary_impl.h",
     "src/fuzztest/internal/domains/bit_flag_combination_of_impl.h",
+    "src/fuzztest/internal/domains/bit_gen_ref.h",
     "src/fuzztest/internal/domains/container_mutation_helpers.h",
     "src/fuzztest/internal/domains/container_of_impl.h",
-    "src/fuzztest/internal/domains/domain_base.cc",
     "src/fuzztest/internal/domains/domain_base.h",
     "src/fuzztest/internal/domains/element_of_impl.h",
     "src/fuzztest/internal/domains/filter_impl.h",
@@ -270,6 +278,7 @@ source_set("fuzztest_internal") {
     "src/fuzztest/internal/domains/in_grammar_impl.cc",
     "src/fuzztest/internal/domains/in_grammar_impl.h",
     "src/fuzztest/internal/domains/in_range_impl.h",
+    "src/fuzztest/internal/domains/in_regexp_impl.cc",
     "src/fuzztest/internal/domains/in_regexp_impl.h",
     "src/fuzztest/internal/domains/map_impl.h",
     "src/fuzztest/internal/domains/one_of_impl.h",
@@ -277,11 +286,17 @@ source_set("fuzztest_internal") {
     "src/fuzztest/internal/domains/protobuf_domain_impl.h",
     "src/fuzztest/internal/domains/regexp_dfa.cc",
     "src/fuzztest/internal/domains/regexp_dfa.h",
+    "src/fuzztest/internal/domains/rune.cc",
+    "src/fuzztest/internal/domains/rune.h",
     "src/fuzztest/internal/domains/serialization_helpers.h",
     "src/fuzztest/internal/domains/smart_pointer_of_impl.h",
     "src/fuzztest/internal/domains/unique_elements_container_of_impl.h",
+    "src/fuzztest/internal/domains/utf.cc",
+    "src/fuzztest/internal/domains/utf.h",
     "src/fuzztest/internal/domains/value_mutation_helpers.h",
     "src/fuzztest/internal/domains/variant_of_impl.h",
+    "src/fuzztest/internal/escaping.cc",
+    "src/fuzztest/internal/escaping.h",
     "src/fuzztest/internal/fixture_driver.cc",
     "src/fuzztest/internal/fixture_driver.h",
     "src/fuzztest/internal/googletest_adaptor.cc",
@@ -291,11 +306,15 @@ source_set("fuzztest_internal") {
     "src/fuzztest/internal/logging.cc",
     "src/fuzztest/internal/logging.h",
     "src/fuzztest/internal/meta.h",
+    "src/fuzztest/internal/register_absl_fuzzing_mocks.cc",
+    "src/fuzztest/internal/register_absl_fuzzing_mocks.h",
     "src/fuzztest/internal/registration.h",
     "src/fuzztest/internal/registry.cc",
     "src/fuzztest/internal/registry.h",
     "src/fuzztest/internal/runtime.cc",
     "src/fuzztest/internal/runtime.h",
+    "src/fuzztest/internal/sanitizer_interface.cc",
+    "src/fuzztest/internal/sanitizer_interface.h",
     "src/fuzztest/internal/seed_seq.cc",
     "src/fuzztest/internal/seed_seq.h",
     "src/fuzztest/internal/serialization.cc",
@@ -337,6 +356,10 @@ source_set("fuzztest_internal") {
 
   configs -= fuzztest_remove_configs
   configs += fuzztest_add_configs
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("common") {
@@ -402,6 +425,23 @@ source_set("fuzztest") {
   public_deps = [ ":fuzztest_internal" ]
   configs -= fuzztest_remove_configs
   configs += fuzztest_add_configs
+  public_configs = [ ":fuzztest_public_config" ]
+  testonly = true
+}
+
+# Depend on this if you are a LLVM-style fuzz target but want to be
+# wrapped in a FUZZ_TEST.
+source_set("llvm_wrapper") {
+  deps = [
+    ":init_fuzztest",
+    "//testing/gtest",
+    "//third_party/abseil-cpp:absl_full",
+  ]
+  sources = [
+    "src/fuzztest/llvm_fuzzer_main.cc",
+    "src/fuzztest/llvm_fuzzer_wrapper.cc",
+  ]
+  public_deps = [ ":fuzztest_internal" ]
   public_configs = [ ":fuzztest_public_config" ]
   testonly = true
 }

@@ -37,6 +37,7 @@ class FakeBoundSessionCookieRefreshService
   }
   std::vector<chrome::mojom::BoundSessionThrottlerParamsPtr>
   GetBoundSessionThrottlerParams() const override;
+  std::vector<BoundSessionKey> GetAllSessions() const override;
   void HandleRequestBlockedOnCookie(
       const GURL& untrusted_request_url,
       HandleRequestBlockedOnCookieCallback resume_blocked_request) override;
@@ -47,6 +48,7 @@ class FakeBoundSessionCookieRefreshService
       base::RepeatingClosure updated_callback) override {}
   void CreateRegistrationRequest(
       BoundSessionRegistrationFetcherParam registration_params) override {}
+  void StopCookieRotation(const BoundSessionKey& key) override {}
   base::WeakPtr<BoundSessionCookieRefreshService> GetWeakPtr() override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;

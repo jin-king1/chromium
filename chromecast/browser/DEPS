@@ -30,6 +30,7 @@ include_rules = [
   "+components/network_hints",
   "+components/network_session_configurator/common",
   "+components/on_load_script_injector/browser",
+  "+components/os_crypt/async",
   "+components/policy/core/browser",
   "+components/prefs",
   "+components/pref_registry",
@@ -75,6 +76,7 @@ include_rules = [
   "+third_party/blink/public/common",
   "+third_party/blink/public/mojom/autoplay",
   "+third_party/blink/public/mojom/loader/resource_load_info.mojom.h",
+  "+third_party/blink/public/mojom/permissions/permission.mojom.h",
   "+third_party/blink/public/mojom/mediastream/media_stream.mojom-shared.h",
   "+third_party/blink/public/mojom/mediastream/media_stream.mojom.h",
   "+third_party/blink/public/mojom/messaging",
@@ -97,10 +99,6 @@ include_rules = [
 
   # TODO(slan): Remove this when the network service is shipped on Cast.
   "+services/network",
-
-  # TODO(guohuideng): Separate SetGeometry from VideoPlaneController, and get
-  # rid of the dependency on cast_renderer.h.
-  "+chromecast/media/service/cast_renderer.h",
 
   # For favicon url
   "+third_party/blink/public/mojom/favicon",

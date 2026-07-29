@@ -6,16 +6,18 @@
 
 #include <cmath>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "ash/constants/webui_url_constants.h"
 #include "ash/style/typography.h"
+#include "base/check_deref.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/apps/almanac_api_client/almanac_app_icon_loader.h"
 #include "chrome/browser/apps/app_service/app_icon/app_icon_factory.h"
 #include "chrome/browser/apps/app_service/package_id_util.h"
 #include "chrome/browser/ui/webui/ash/app_install/app_install.mojom.h"
 #include "chrome/browser/ui/webui/ash/app_install/app_install_page_handler.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/webapps/common/constants.h"
 #include "ui/aura/window.h"
@@ -44,7 +46,7 @@ constexpr int kDividerHeight = 1;
 
 int GetDialogHeight(const AppInstallDialogArgs& dialog_args) {
   if (const AppInfoArgs* app_info_args =
-          absl::get_if<AppInfoArgs>(&dialog_args)) {
+          std::get_if<AppInfoArgs>(&dialog_args)) {
     int height = kMinimumDialogHeight;
     // TODO(b/329515116): Adjust height for long URLs that wrap multiple
     // lines.
@@ -100,7 +102,7 @@ void AppInstallDialog::ShowApp(
   profile_ = profile->GetWeakPtr();
 
   if (parent) {
-    parent_window_tracker_ = views::NativeWindowTracker::Create(parent);
+    parent_window_tracker_ = ui::NativeWindowTracker::Create(parent);
   }
   parent_ = std::move(parent);
 
@@ -171,9 +173,9 @@ void AppInstallDialog::CleanUpDialogIfNotShown() {
 
 void AppInstallDialog::OnDialogShown(content::WebUI* webui) {
   CHECK(dialog_args_.has_value());
-
+  dialog_ui_ =
+      &CHECK_DEREF(webui->GetController()->GetAs<AppInstallDialogUI>());
   SystemWebDialogDelegate::OnDialogShown(webui);
-  dialog_ui_ = static_cast<AppInstallDialogUI*>(webui->GetController());
   dialog_ui_->SetDialogArgs(std::move(dialog_args_).value());
 }
 
@@ -186,7 +188,7 @@ void AppInstallDialog::GetDialogSize(gfx::Size* size) const {
 }
 
 AppInstallDialog::AppInstallDialog()
-    : SystemWebDialogDelegate(GURL(chrome::kChromeUIAppInstallDialogURL),
+    : SystemWebDialogDelegate(GURL(ash::kChromeUIAppInstallDialogURL),
                               /*title=*/u"") {}
 
 AppInstallDialog::~AppInstallDialog() = default;
@@ -212,7 +214,7 @@ void AppInstallDialog::Show(gfx::NativeWindow parent,
   dialog_args_ = std::move(dialog_args);
   dialog_height_ = GetDialogHeight(dialog_args_.value());
 
-  if (absl::holds_alternative<AppInfoArgs>(dialog_args_.value())) {
+  if (std::holds_alternative<AppInfoArgs>(dialog_args_.value())) {
     set_dialog_modal_type(ui::mojom::ModalType::kWindow);
   }
 

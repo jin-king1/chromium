@@ -20,7 +20,7 @@ import {FlagsBrowserProxyImpl} from './flags_browser_proxy.js';
  * @param element The element to highlight.
  */
 function highlightMatch(searchTerm: string, element: HTMLElement) {
-  const text = element.textContent!;
+  const text = element.textContent;
   const match = text.toLowerCase().indexOf(searchTerm);
 
   // Assert against cases that are already handled before this function.
@@ -47,6 +47,10 @@ function highlightMatch(searchTerm: string, element: HTMLElement) {
 }
 
 export class ExperimentElement extends CrLitElement {
+  static get is() {
+    return 'flags-experiment';
+  }
+
   static override get styles() {
     return getCss();
   }
@@ -74,7 +78,7 @@ export class ExperimentElement extends CrLitElement {
     };
   }
 
-  protected feature_: Feature = {
+  protected accessor feature_: Feature = {
     internal_name: '',
     name: '',
     description: '',
@@ -84,21 +88,21 @@ export class ExperimentElement extends CrLitElement {
   };
 
   // Whether the controls to change the experiment state should be hidden.
-  unsupported: boolean = false;
+  accessor unsupported: boolean = false;
 
   // Whether the currently selected value is the default value.
-  protected isDefault_: boolean = false;
+  protected accessor isDefault_: boolean = false;
 
   // Whether the description text is expanded. Only has an effect on narrow
   // widths (max-width: 480px).
-  protected expanded_: boolean = false;
+  protected accessor expanded_: boolean = false;
 
   // Whether search hits are currently displayed. When true, some DOM nodes are
   // replaced with cloned nodes whose textContent is not rendered by Lit, so
   // that the highlight algorithm can freely modify them. Lit does not play
   // nicely with manual DOM modifications and throws internal errors in
   // subsequent renders.
-  protected showingSearchHit_: boolean = false;
+  protected accessor showingSearchHit_: boolean = false;
 
   getRequiredElement<K extends keyof HTMLElementTagNameMap>(query: K):
       HTMLElementTagNameMap[K];
@@ -110,16 +114,10 @@ export class ExperimentElement extends CrLitElement {
     return el;
   }
 
-  override updated(changedProperties: PropertyValues<this>) {
-    super.updated(changedProperties);
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
 
-    const changedPrivateProperties =
-        changedProperties as Map<PropertyKey, unknown>;
-
-    if (changedPrivateProperties.has('feature_') ||
-        changedProperties.has('unsupported')) {
-      this.isDefault_ = this.computeIsDefault_();
-    }
+    this.isDefault_ = this.computeIsDefault_();
   }
 
   set data(feature: Feature) {
@@ -244,16 +242,8 @@ export class ExperimentElement extends CrLitElement {
   }
 
   protected computeIsDefault_(): boolean {
-    if (this.showEnableDisableSelect_()) {
-      const select = this.getRequiredElement('select');
-      const enabled = select.value === 'enabled';
-      return enabled ? (this.feature_.is_default === this.feature_.enabled) :
-                       (this.feature_.is_default !== this.feature_.enabled);
-    }
-
-    if (this.showMultiValueSelect_()) {
-      const select = this.getRequiredElement('select');
-      return select.selectedIndex === 0;
+    if (this.showEnableDisableSelect_() || this.showMultiValueSelect_()) {
+      return this.feature_.is_default;
     }
 
     return true;
@@ -270,12 +260,16 @@ export class ExperimentElement extends CrLitElement {
     assert(this.feature_);
     assert(!this.feature_.options || this.feature_.options.length === 0);
 
-    this.isDefault_ = this.computeIsDefault_();
-
     const experimentEnableDisable = e.target as HTMLSelectElement;
+
+    // Manually update the local data model because modifications don't
+    // result in an updated model to propagate from the backend.
+    this.feature_.is_default = !this.feature_.is_default;
+    this.feature_.enabled = experimentEnableDisable.value === 'enabled';
+    this.requestUpdate();
+
     FlagsBrowserProxyImpl.getInstance().enableExperimentalFeature(
-        this.feature_.internal_name,
-        experimentEnableDisable.value === 'enabled');
+        this.feature_.internal_name, this.feature_.enabled);
     experimentEnableDisable.dispatchEvent(new Event('select-change', {
       bubbles: true,
       composed: true,
@@ -293,9 +287,16 @@ export class ExperimentElement extends CrLitElement {
     assert(this.feature_);
     assert(this.feature_.options && this.feature_.options.length > 0);
 
-    this.isDefault_ = this.computeIsDefault_();
-
     const experimentSelect = e.target as HTMLSelectElement;
+
+    // Manually update the local data model because modifications don't
+    // result in an updated model to propagate from the backend.
+    this.feature_.is_default = experimentSelect.selectedIndex === 0;
+    for (let i = 0; i < this.feature_.options.length; i++) {
+      this.feature_.options[i]!.selected = experimentSelect.selectedIndex === i;
+    }
+    this.requestUpdate();
+
     FlagsBrowserProxyImpl.getInstance().selectExperimentalFeature(
         this.feature_.internal_name, experimentSelect.selectedIndex);
     experimentSelect.dispatchEvent(new Event('select-change', {
@@ -338,4 +339,4 @@ declare global {
   }
 }
 
-customElements.define('flags-experiment', ExperimentElement);
+customElements.define(ExperimentElement.is, ExperimentElement);

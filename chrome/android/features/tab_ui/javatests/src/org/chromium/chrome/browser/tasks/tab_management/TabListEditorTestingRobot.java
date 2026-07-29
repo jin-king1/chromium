@@ -28,6 +28,8 @@ import static org.chromium.chrome.browser.tasks.tab_management.RecyclerViewMatch
 import static org.chromium.chrome.browser.tasks.tab_management.RecyclerViewMatcherUtils.withItemType;
 import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
+import android.view.InputDevice;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup.MarginLayoutParams;
 
@@ -46,7 +48,7 @@ import org.junit.Assert;
 
 import org.chromium.base.test.util.RawFailureHandler;
 import org.chromium.base.test.util.ViewActionOnDescendant;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.R;
 
 /**
  * This is the testing util class for TabListEditor. It's used to perform action and verify result
@@ -66,7 +68,7 @@ public class TabListEditorTestingRobot {
      * @return A view matcher that matches the item is selected.
      */
     public static Matcher<View> itemIsSelected() {
-        return new BoundedMatcher<View, TabGridView>(TabGridView.class) {
+        return new BoundedMatcher<>(TabGridView.class) {
             private TabGridView mSelectableTabGridView;
 
             @Override
@@ -99,7 +101,7 @@ public class TabListEditorTestingRobot {
      * @return A view matcher that matches a divider view.
      */
     public static Matcher<View> isDivider() {
-        return new TypeSafeMatcher<View>() {
+        return new TypeSafeMatcher<>() {
             @Override
             protected boolean matchesSafely(View view) {
                 return view.getId() == R.id.divider_view;
@@ -155,6 +157,12 @@ public class TabListEditorTestingRobot {
 
         public TabListEditorTestingRobot.Action clickToolbarMenuItem(String text) {
             onView(withText(text)).perform(click());
+            return this;
+        }
+
+        public TabListEditorTestingRobot.Action mouseClickToolbarMenuItem(String text) {
+            onView(withText(text))
+                    .perform(click(InputDevice.SOURCE_MOUSE, MotionEvent.BUTTON_PRIMARY));
             return this;
         }
 

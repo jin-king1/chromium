@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/autofill/payments/test_card_unmask_prompt_waiter.h"
 
 #include "base/test/scoped_run_loop_timeout.h"
+#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/autofill/payments/card_unmask_prompt_view_tester.h"
 
 namespace autofill {
@@ -36,12 +37,12 @@ class TestCardUnmaskPromptControllerImpl
     base::test::ScopedRunLoopTimeout run_loop_timeout(
         FROM_HERE, base::Seconds(10),
         base::BindRepeating(
-            [](bool* timeout) {
-              *timeout = new bool(true);
+            [](bool& timeout) {
+              timeout = true;
               return std::string(
                   "\"Enter CVC\" dialog did not pop up within timout.");
             },
-            base::Unretained(&timeout)));
+            std::ref(timeout)));
     run_loop_.Run();
     return timeout ? testing::AssertionFailure() : testing::AssertionSuccess();
   }

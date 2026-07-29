@@ -1,9 +1,5 @@
-include_rules = {
-  "+third_party/liburlpattern",
-}
-
 specific_include_rules = {
-  "web_app_interactive_uitest\.cc": [
+  "web_app_interactive_uitest\\.cc": [
     "+ash/shell.h",
   ],
 }

@@ -1,8 +1,8 @@
 file://chrome/android/OWNERS
 
 bsazonov@chromium.org
+hnakashima@chromium.org
 peconn@chromium.org
-skyostil@chromium.org
 
 per-file TabbedNavigationBarColorControllerTest.java=clhager@google.com
 

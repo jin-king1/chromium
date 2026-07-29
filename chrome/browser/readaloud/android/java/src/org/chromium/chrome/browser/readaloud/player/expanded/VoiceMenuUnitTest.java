@@ -21,12 +21,14 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
@@ -40,10 +42,11 @@ import org.chromium.ui.modelutil.PropertyModel;
 
 import java.util.List;
 
-/** Unit tests for {@link VoiceMenuSheetContent}. */
+/** Unit tests for {@link VoiceMenu}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class VoiceMenuUnitTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private InteractionHandler mInteractionHandler;
     @Mock private Runnable mHideSelfRunnable;
 
@@ -56,7 +59,6 @@ public class VoiceMenuUnitTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mActivity = Robolectric.buildActivity(AppCompatActivity.class).setup().get();
         // Need to set theme before inflating layout.
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
@@ -177,9 +179,8 @@ public class VoiceMenuUnitTest {
     }
 
     private static RadioButton getRadioButton(MenuItem item) {
-        return (RadioButton) item.findViewById(R.id.readaloud_radio_button);
+        return item.findViewById(R.id.readaloud_radio_button);
     }
-
 
     @Test
     public void testEmptyVoiceList() {

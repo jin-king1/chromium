@@ -4,10 +4,10 @@
 
 #include "components/performance_manager/graph/page_node_impl.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
-#include "base/containers/contains.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "components/performance_manager/graph/frame_node_impl.h"
@@ -82,7 +82,7 @@ TEST_F(PageNodeImplTest, RemoveFrame) {
   // Ensure correct page-frame relationship has been established.
   auto frame_nodes = GraphImplOperations::GetFrameNodes(page_node.get());
   EXPECT_EQ(1u, frame_nodes.size());
-  EXPECT_TRUE(base::Contains(frame_nodes, frame_node.get()));
+  EXPECT_TRUE(std::ranges::contains(frame_nodes, frame_node.get()));
   EXPECT_EQ(page_node.get(), frame_node->page_node());
 
   frame_node.reset();
@@ -91,19 +91,19 @@ TEST_F(PageNodeImplTest, RemoveFrame) {
   EXPECT_EQ(0u, GraphImplOperations::GetFrameNodes(page_node.get()).size());
 }
 
-TEST_F(PageNodeImplTest, GetTimeSinceLastVisibilityChange) {
+TEST_F(PageNodeImplTest, GetLastVisibilityChangeTime) {
   MockSinglePageInSingleProcessGraph mock_graph(graph());
 
+  base::TimeTicks t0 = base::TimeTicks::Now();
   mock_graph.page->SetIsVisible(true);
   EXPECT_TRUE(mock_graph.page->IsVisible());
   AdvanceClock(base::Seconds(42));
-  EXPECT_EQ(base::Seconds(42),
-            mock_graph.page->GetTimeSinceLastVisibilityChange());
+  EXPECT_EQ(t0, mock_graph.page->GetLastVisibilityChangeTime());
 
+  base::TimeTicks t1 = base::TimeTicks::Now();
   mock_graph.page->SetIsVisible(false);
   AdvanceClock(base::Seconds(23));
-  EXPECT_EQ(base::Seconds(23),
-            mock_graph.page->GetTimeSinceLastVisibilityChange());
+  EXPECT_EQ(t1, mock_graph.page->GetLastVisibilityChangeTime());
   EXPECT_FALSE(mock_graph.page->IsVisible());
 }
 
@@ -126,7 +126,7 @@ TEST_F(PageNodeImplTest, GetTimeSinceLastAudibleChange) {
 
   // Test a page that's audible at creation.
   auto audible_page = CreateNode<PageNodeImpl>(
-      nullptr, /*browser_context_id=*/std::string(), GURL(),
+      nullptr, /*browser_context_id=*/base::UnguessableToken(), GURL(),
       PagePropertyFlags{PagePropertyFlag::kIsAudible});
   AdvanceClock(base::Seconds(56));
   EXPECT_EQ(base::Seconds(56), audible_page->GetTimeSinceLastAudibleChange());
@@ -184,8 +184,7 @@ TEST_F(PageNodeImplTest, GetTimeSinceLastNavigation) {
 }
 
 TEST_F(PageNodeImplTest, BrowserContextID) {
-  const std::string kTestBrowserContextId =
-      base::UnguessableToken::Create().ToString();
+  const auto kTestBrowserContextId = base::UnguessableToken::Create();
   auto page_node = CreateNode<PageNodeImpl>(nullptr, kTestBrowserContextId);
 
   EXPECT_EQ(page_node->GetBrowserContextID(), kTestBrowserContextId);
@@ -395,9 +394,13 @@ TEST_F(PageNodeImplTest, ObserverWorks) {
   page_node->OnTitleUpdated();
   EXPECT_EQ(raw_page_node, obs.TakeNotifiedPageNode());
 
-  EXPECT_CALL(obs, OnFaviconUpdated(_))
-      .WillOnce(Invoke(&obs, &MockObserver::SetNotifiedPageNode));
-  page_node->OnFaviconUpdated();
+  EXPECT_CALL(obs, OnFaviconUpdated(_, _))
+      .WillOnce(
+          [&obs](const PageNode* node, blink::mojom::FaviconUpdateReason) {
+            obs.SetNotifiedPageNode(node);
+          });
+  page_node->OnFaviconUpdated(
+      blink::mojom::FaviconUpdateReason::kLinkElementChange);
   EXPECT_EQ(raw_page_node, obs.TakeNotifiedPageNode());
 
   // Re-entrant iteration should work.
@@ -477,11 +480,8 @@ TEST_F(PageNodeImplTest, EmbedderFrameNode) {
   auto embedded_page_node = CreateNode<PageNodeImpl>();
   const PageNode* public_embedded_page_node = embedded_page_node.get();
 
-  embedded_page_node->SetEmbedderFrameNodeAndEmbeddingType(
-      embedder_frame_node.get(), PageNode::EmbeddingType::kGuestView);
+  embedded_page_node->SetEmbedderFrameNode(embedder_frame_node.get());
 
-  EXPECT_EQ(embedded_page_node->GetEmbeddingType(),
-            PageNode::EmbeddingType::kGuestView);
   EXPECT_EQ(embedded_page_node->embedder_frame_node(),
             embedder_frame_node.get());
   EXPECT_EQ(public_embedded_page_node->GetEmbedderFrameNode(),

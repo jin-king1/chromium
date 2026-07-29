@@ -4,6 +4,8 @@
 
 package org.chromium.components.browser_ui.widget.selectable_list;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import android.content.Context;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
@@ -138,7 +140,7 @@ public abstract class SelectableItemViewBase<E> extends ViewLookupCachingFrameLa
      * @param item The given item.
      * @return Whether the item was in selected state after the toggle.
      */
-    protected boolean toggleSelectionForItem(@Nullable E item) {
+    protected boolean toggleSelectionForItem(E item) {
         if (mSelectionDelegate == null) return false;
         return mSelectionDelegate.toggleSelectionForItem(item);
     }
@@ -159,6 +161,7 @@ public abstract class SelectableItemViewBase<E> extends ViewLookupCachingFrameLa
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         if (mSelectionDelegate != null) {
+            assertNonNull(mItem);
             setChecked(mSelectionDelegate.isItemSelected(mItem));
         }
     }
@@ -179,7 +182,8 @@ public abstract class SelectableItemViewBase<E> extends ViewLookupCachingFrameLa
         if (action == MotionEvent.ACTION_DOWN) {
             // mCurrentX needs init here as well, since we might not get ACTION_MOVE
             // for a simple click turning into a long click when selection mode is on.
-            mAnchorX = mCurrentX = event.getX();
+            mCurrentX = event.getX();
+            mAnchorX = mCurrentX;
         } else if (action == MotionEvent.ACTION_MOVE) {
             mCurrentX = event.getX();
         }
@@ -251,6 +255,7 @@ public abstract class SelectableItemViewBase<E> extends ViewLookupCachingFrameLa
     @Override
     public void onSelectionStateChange(List<E> selectedItems) {
         if (mSelectionDelegate == null) return;
+        assertNonNull(mItem);
         setChecked(mSelectionDelegate.isItemSelected(mItem));
     }
 
@@ -263,6 +268,7 @@ public abstract class SelectableItemViewBase<E> extends ViewLookupCachingFrameLa
     }
 
     private void handleSelection() {
+        assertNonNull(mItem);
         boolean checked = toggleSelectionForItem(mItem);
         setChecked(checked);
     }

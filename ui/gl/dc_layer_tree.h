@@ -8,7 +8,9 @@
 #include <windows.h>
 
 #include <d3d11.h>
+#include <d3d12.h>
 #include <dcomp.h>
+#include <dxgi.h>
 #include <wrl/client.h>
 
 #include <memory>
@@ -18,7 +20,10 @@
 #include "base/moving_window.h"
 #include "base/types/expected.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "third_party/microsoft_dxheaders/src/include/experimental-composition/experimental-dcomp.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/overlay_layer_id.h"
+#include "ui/gl/dc_commit_error.h"
 #include "ui/gl/dc_layer_overlay_params.h"
 #include "ui/gl/delegated_ink_point_renderer_gpu.h"
 #include "ui/gl/gl_export.h"
@@ -33,27 +38,7 @@ class DelegatedInkMetadata;
 
 namespace gl {
 
-struct CommitError {
-  // The source of the commit error. This should correspond with exactly one
-  // place in code to make identifying the cause of errors easier.
-  enum class Reason {
-    kUnknown,
-    kIDCompositionDeviceCommit,
-    kPresentToSwapChain,
-    kSolidColorSurfacePoolCreateSurface,
-    kSolidColorSurfaceBeginDraw,
-    kSolidColorSurfaceEndDraw,
-    kSolidColorSurfaceCreateRenderTargetView,
-  };
-
-  Reason reason = Reason::kUnknown;
-
-  // If set, the error was caused by a Windows API and this is the HRESULT. If
-  // not set, the error was not caused by a Windows API or we did not explicitly
-  // copy out the failing HRESULT for the given `reason`.
-  std::optional<HRESULT> hr;
-};
-
+class SolidColorPoolBase;
 class SwapChainPresenter;
 
 // Cache video processor and its size.
@@ -109,56 +94,6 @@ struct VideoProcessorWrapper {
   bool driver_supports_vp_auto_hdr = false;
 };
 
-class SolidColorSurface;
-
-// A resource pool that contains DComp surfaces containing solid color fills.
-class SolidColorSurfacePool final {
- public:
-  SolidColorSurfacePool(
-      Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device,
-      Microsoft::WRL::ComPtr<IDCompositionDevice3> dcomp_device);
-  ~SolidColorSurfacePool();
-
-  SolidColorSurfacePool(const SolidColorSurfacePool&) = delete;
-  SolidColorSurfacePool& operator=(const SolidColorSurfacePool&) = delete;
-
-  // The resulting surface only contains the opaque parts of |color| and needs
-  // to be scaled by |color.fA|. Its contents are only valid until the next
-  // |TrimAfterCommit| call, since surfaces can be reused (and recolored) on
-  // subsequent frames.
-  base::expected<IDCompositionSurface*, CommitError> GetSolidColorSurface(
-      const SkColor4f& color);
-
-  // Clean up any unused resources in the pool after DComp commit.
-  void TrimAfterCommit();
-
-  // Returns the number of surfaces currently tracked by this pool.
-  size_t GetNumSurfacesInPoolForTesting() const;
-
- private:
-  Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device_;
-  Microsoft::WRL::ComPtr<IDCompositionDevice3> dcomp_device_;
-
-  // Solid color surfaces that are tracked by this pool.
-  std::vector<SolidColorSurface> tracked_surfaces_;
-  // Index into |tracked_surfaces_| that partitions the surfaces used this frame
-  // (<num_used_this_frame_) and the surfaces free to use by subsequent
-  // |GetSolidColorSurface| calls (>=num_used_this_frame_).
-  size_t num_used_this_frame_ = 0;
-
-  struct Stats {
-    // The number of times |GetSolidColorSurface| was called. This represents
-    // the number of solid color overlays in the frame.
-    int num_surfaces_requested = 0;
-
-    // The number of surfaces that were filled.
-    int num_surfaces_recolored = 0;
-  };
-
-  // Stats about this pool since the last |TrimAfterCommit| call.
-  Stats stats_since_last_trim_;
-};
-
 // DCLayerTree manages a tree of direct composition visuals, and associated
 // swap chains for given overlay layers.
 class GL_EXPORT DCLayerTree {
@@ -169,6 +104,7 @@ class GL_EXPORT DCLayerTree {
               bool disable_vp_auto_hdr,
               bool disable_vp_scaling,
               bool disable_vp_super_resolution,
+              bool disable_dc_letterbox_video_optimization,
               bool force_dcomp_triple_buffer_video_swap_chain,
               bool no_downscaled_overlay_promotion);
 
@@ -207,6 +143,10 @@ class GL_EXPORT DCLayerTree {
     return disable_vp_super_resolution_;
   }
 
+  bool disable_dc_letterbox_video_optimization() const {
+    return disable_dc_letterbox_video_optimization_;
+  }
+
   bool force_dcomp_triple_buffer_video_swap_chain() const {
     return force_dcomp_triple_buffer_video_swap_chain_;
   }
@@ -215,47 +155,37 @@ class GL_EXPORT DCLayerTree {
     return no_downscaled_overlay_promotion_;
   }
 
-  Microsoft::WRL::ComPtr<IDXGISwapChain1> GetLayerSwapChainForTesting(
-      size_t index) const;
+  IDXGISwapChain1* GetLayerSwapChainForTesting(
+      const gfx::OverlayLayerId& layer_id) const;
 
-  void GetSwapChainVisualInfoForTesting(size_t index,
-                                        gfx::Transform* transform,
-                                        gfx::Point* offset,
-                                        gfx::Rect* clip_rect) const;
-
-  size_t GetSwapChainPresenterCountForTesting() const {
-    CHECK_IS_TEST();
-    return video_swap_chains_.size();
-  }
-
-  size_t GetDcompLayerCountForTesting() const {
-    CHECK_IS_TEST();
-    return visual_tree_ ? visual_tree_->GetDcompLayerCountForTesting() : 0;
-  }
-  IDCompositionVisual2* GetContentVisualForTesting(size_t index) const {
-    CHECK_IS_TEST();
-    return visual_tree_ ? visual_tree_->GetContentVisualForTesting(index)
-                        : nullptr;
-  }
-  IDCompositionSurface* GetBackgroundColorSurfaceForTesting(
-      size_t index) const {
-    CHECK_IS_TEST();
-    return visual_tree_
-               ? visual_tree_->GetBackgroundColorSurfaceForTesting(index)
-               : nullptr;
-  }
-  size_t GetNumSurfacesInPoolForTesting() const;
+  void GetSwapChainVisualInfoForTesting(const gfx::OverlayLayerId& layer_id,
+                                        gfx::Transform* out_transform,
+                                        gfx::Point* out_offset,
+                                        gfx::Rect* out_clip_rect) const;
+  size_t GetSwapChainPresenterCountForTesting() const;
+  size_t GetDcompLayerCountForTesting() const;
+  IDCompositionVisual2* GetContentVisualForTesting(
+      const gfx::OverlayLayerId& layer_id) const;
+  IUnknown* GetBackgroundColorContentForTesting(
+      const gfx::OverlayLayerId& layer_id) const;
+  size_t GetNumEntriesInSolidColorPoolForTesting() const;
 #if DCHECK_IS_ON()
-  bool GetAttachedToRootFromPreviousFrameForTesting(size_t index) const;
+  bool DcompVisualContentChangedFromPreviousFrameForTesting(
+      const gfx::OverlayLayerId& layer_id) const;
 #endif  // DCHECK_IS_ON()
-
-  void SetFrameRate(float frame_rate);
 
   const std::unique_ptr<HDRMetadataHelperWin>& GetHDRMetadataHelper() {
     return hdr_metadata_helper_;
   }
 
   HWND window() const { return window_; }
+
+  // The IDXGIOutput for the monitor |window_| is currently on, refreshed when
+  // the DXGI factory becomes stale or the window moves to a different monitor.
+  // Enumerates all adapters so it works even when the window is on a monitor
+  // driven by a different adapter than d3d11_device_. Query GetDesc().Monitor
+  // to get the corresponding HMONITOR.
+  IDXGIOutput* current_output() const { return current_output_.Get(); }
 
   bool SupportsDelegatedInk();
 
@@ -286,29 +216,18 @@ class GL_EXPORT DCLayerTree {
     base::expected<void, CommitError> BuildTree(
         const std::vector<DCLayerOverlayParams>& overlays);
 
-    void GetSwapChainVisualInfoForTesting(size_t index,
-                                          gfx::Transform* transform,
-                                          gfx::Point* offset,
-                                          gfx::Rect* clip_rect) const;
-    size_t GetDcompLayerCountForTesting() const {
-      CHECK_IS_TEST();
-      return visual_subtrees_.size();
-    }
-    IDCompositionVisual2* GetContentVisualForTesting(size_t index) const {
-      CHECK_IS_TEST();
-      return visual_subtrees_[index]->content_visual();
-    }
-    IDCompositionSurface* GetBackgroundColorSurfaceForTesting(
-        size_t index) const {
-      CHECK_IS_TEST();
-      return visual_subtrees_[index]->background_color_surface_for_testing();
-    }
+    void GetSwapChainVisualInfoForTesting(const gfx::OverlayLayerId& layer_id,
+                                          gfx::Transform* out_transform,
+                                          gfx::Point* out_offset,
+                                          gfx::Rect* out_clip_rect) const;
+    size_t GetDcompLayerCountForTesting() const;
+    IDCompositionVisual2* GetContentVisualForTesting(
+        const gfx::OverlayLayerId& layer_id) const;
+    IUnknown* GetBackgroundColorContentForTesting(
+        const gfx::OverlayLayerId& layer_id) const;
 #if DCHECK_IS_ON()
-    bool GetAttachedToRootFromPreviousFrameForTesting(size_t index) const {
-      CHECK_IS_TEST();
-      return visual_subtrees_[index]
-          ->GetAttachedToRootFromPreviousFrameForTesting();
-    }
+    bool DcompVisualContentChangedFromPreviousFrameForTesting(
+        const gfx::OverlayLayerId& layer_id) const;
 #endif  // DCHECK_IS_ON()
     // Maps the visual content to its corresponding subtree index.
     // This is used to find matching subtrees from the previous frame
@@ -330,21 +249,20 @@ class GL_EXPORT DCLayerTree {
       VisualSubtree& operator=(VisualSubtree& other) = delete;
 
       // Returns true if something was changed.
-      bool Update(
-          IDCompositionDevice3* dcomp_device,
-          Microsoft::WRL::ComPtr<IUnknown> dcomp_visual_content,
-          uint64_t dcomp_surface_serial,
-          const gfx::Size& image_size,
-          const gfx::RectF& content_rect,
-          Microsoft::WRL::ComPtr<IDCompositionSurface> background_color_surface,
-          const SkColor4f& background_color,
-          const gfx::Rect& quad_rect,
-          bool nearest_neighbor_filter,
-          const gfx::Transform& quad_to_root_transform,
-          const gfx::RRectF& rounded_corner_bounds,
-          float opacity,
-          const std::optional<gfx::Rect>& clip_rect_in_root,
-          bool allow_antialiasing);
+      bool Update(IDCompositionDevice3* dcomp_device,
+                  Microsoft::WRL::ComPtr<IUnknown> dcomp_visual_content,
+                  uint64_t dcomp_surface_serial,
+                  const gfx::Size& image_size,
+                  const gfx::RectF& content_rect,
+                  Microsoft::WRL::ComPtr<IUnknown> background_color_content,
+                  const SkColor4f& background_color,
+                  const gfx::Rect& quad_rect,
+                  bool nearest_neighbor_filter,
+                  const gfx::Transform& quad_to_root_transform,
+                  const gfx::RRectF& rounded_corner_bounds,
+                  float opacity,
+                  const std::optional<gfx::Rect>& clip_rect_in_root,
+                  bool allow_antialiasing);
 
       IDCompositionVisual2* container_visual() const {
         return clip_visual_.Get();
@@ -355,22 +273,30 @@ class GL_EXPORT DCLayerTree {
       IUnknown* dcomp_visual_content() const {
         return dcomp_visual_content_.Get();
       }
-      IDCompositionSurface* background_color_surface_for_testing() const {
+      IUnknown* background_color_content_for_testing() const {
         CHECK_IS_TEST();
-        return background_color_surface_.Get();
+        return background_color_content_.Get();
       }
-      void GetSwapChainVisualInfoForTesting(gfx::Transform* transform,
-                                            gfx::Point* offset,
-                                            gfx::Rect* clip_rect) const;
+      void GetSwapChainVisualInfoForTesting(gfx::Transform* out_transform,
+                                            gfx::Point* out_offset,
+                                            gfx::Rect* out_clip_rect) const;
 #if DCHECK_IS_ON()
-      bool GetAttachedToRootFromPreviousFrameForTesting() const {
+      bool DcompVisualContentChangedFromPreviousFrameForTesting() const {
         CHECK_IS_TEST();
-        return attached_to_root_from_previous_frame_;
+        return dcomp_visual_content_changed_from_previous_frame_;
       }
 #endif  // DCHECK_IS_ON()
 
       int z_order() const { return z_order_; }
       void set_z_order(int z_order) { z_order_ = z_order; }
+
+      gfx::Transform GetQuadToRootTransformForTesting() const {
+        return quad_to_root_transform_;
+      }
+
+      std::optional<gfx::Rect> GetClipRectInRootForTesting() const {
+        return clip_rect_in_root_;
+      }
 
      private:
 #if DCHECK_IS_ON()
@@ -409,16 +335,17 @@ class GL_EXPORT DCLayerTree {
       // mapped to |quad_rect_|'s bounds.
       gfx::RectF content_rect_;
 
-      // The surface for the background color fill to be placed at a leaf of the
-      // visual subtree. Since |SolidColorSurfacePool::GetSolidColorSurface|
-      // returns a surface that is opaque, |background_color_visual_|'s opacity
+      // The content for the background color fill to be placed at a leaf of
+      // the visual subtree. Since |SolidColorSurfacePool::GetSolidColorContent|
+      // returns content that is opaque, |background_color_visual_|'s opacity
       // will be set to |background_color_.fA|. Must be present if
       // |background_color_| is non-transparent. Must be re-updated from
-      // |SolidColorSurfacePool::GetSolidColorSurface| every frame it is
-      // present.
-      Microsoft::WRL::ComPtr<IDCompositionSurface> background_color_surface_;
+      // |SolidColorSurfacePool::GetSolidColorContent| every frame it is
+      // present. Either an IDCompositionSurface (D3D11 path) or an
+      // IDCompositionTexture (D3D12 path).
+      Microsoft::WRL::ComPtr<IUnknown> background_color_content_;
 
-      // The color of |background_color_surface_|.
+      // The color of |background_color_content_|.
       SkColor4f background_color_;
 
       // The bounds which contain this overlay. When mapped by |transform_|,
@@ -455,11 +382,13 @@ class GL_EXPORT DCLayerTree {
       int z_order_ = 0;
 
 #if DCHECK_IS_ON()
-      // True if the subtree is reused from the previous frame and keeps its
-      // attachment to the root from the previous frame. Used for testing.
-      bool attached_to_root_from_previous_frame_ = false;
+      // True if the content of the dcomp visual changed from the previous
+      // frame. Used for testing.
+      bool dcomp_visual_content_changed_from_previous_frame_ = false;
 #endif  // DCHECK_IS_ON()
     };
+
+    VisualSubtree* GetFrontMostVisualSubtreeForTesting() const;
 
    private:
     // This function is called as part of |BuildTreeOptimized|.
@@ -522,24 +451,47 @@ class GL_EXPORT DCLayerTree {
     // List of DCOMP visual subtrees for previous frame.
     std::vector<std::unique_ptr<VisualSubtree>> visual_subtrees_;
     VisualSubtreeMap subtree_map_;
+
+    // List of layer IDs in the frame, parallel to `visual_subtrees_`.
+    std::vector<gfx::OverlayLayerId> layer_ids_for_testing_;
+    // Get the first subtree in `visual_subtrees_` matching `layer_id`.
+    const VisualSubtree* GetSubtreeFromLayerIdForTesting(
+        const gfx::OverlayLayerId& layer_id) const;
   };
 
+  VisualTree::VisualSubtree* GetFrontMostVideoVisualSubtreeForTesting() const;
+
  private:
+  // Refreshes |current_output_| to match the monitor |window_| is currently
+  // on. Invalidates the cache if the DXGI factory is stale or the window moved
+  // to a different monitor, then re-enumerates adapters to find the new output.
+  void UpdateCurrentOutput();
+
   const bool disable_nv12_dynamic_textures_;
   const bool disable_vp_auto_hdr_;
   const bool disable_vp_scaling_;
   const bool disable_vp_super_resolution_;
+  const bool disable_dc_letterbox_video_optimization_;
   const bool force_dcomp_triple_buffer_video_swap_chain_;
   const bool no_downscaled_overlay_promotion_;
 
+  const bool tint_video_layer_;
+
   HWND window_;
+  Microsoft::WRL::ComPtr<IDXGIOutput> current_output_;
   Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device_;
   Microsoft::WRL::ComPtr<IDCompositionDevice3> dcomp_device_;
   Microsoft::WRL::ComPtr<IDCompositionTarget> dcomp_target_;
+  // IDCompositionDevice6 enables support for D3D12 composition textures.
+  Microsoft::WRL::ComPtr<EXPERIMENTAL_IDCompositionDevice6> dcomp_device_6_;
+  // A d3d12 command queue from Dawn that is used to present composition
+  // textures prior to DComp commit.
+  Microsoft::WRL::ComPtr<ID3D12CommandQueue> d3d12_command_queue_;
 
-  // Resource pool which owns surfaces for solid color overlays. This is needed
-  // since there is no way to procedurally fill a DComp visual.
-  std::unique_ptr<SolidColorSurfacePool> solid_color_surface_pool_;
+  // Resource pool that produces DComp content (`IDCompositionSurface` or
+  // `IDCompositionTexture`) for solid color overlays. This is needed since
+  // there is no way to procedurally fill a DComp visual.
+  std::unique_ptr<SolidColorPoolBase> solid_color_content_provider_;
 
   // Store the largest video processor for SDR and HDR content
   // to avoid problems in (http://crbug.com/1121061) and
@@ -554,15 +506,24 @@ class GL_EXPORT DCLayerTree {
   // Root direct composition visual for window dcomp target.
   Microsoft::WRL::ComPtr<IDCompositionVisual2> dcomp_root_visual_;
 
-  // List of swap chain presenters for previous frame.
-  std::vector<std::unique_ptr<SwapChainPresenter>> video_swap_chains_;
+  // If supported, a surface that is updated with the contents of the primary
+  // plane. If not supported, null.
+  Microsoft::WRL::ComPtr<IDCompositionDynamicTexture> primary_plane_surface_;
+
+  // This is a number that increments once every time `primary_plane_surface_`
+  // is updated, and is used to determine when the contents have changed so
+  // `Commit()` needs to be called on the device.
+  //
+  // Similar to: `DCLayerOverlayImage::dcomp_surface_serial_`
+  uint64_t primary_plane_surface_serial_ = 0;
+
+  // Map of layer ID to swap chain presenters for previous frame.
+  base::flat_map<gfx::OverlayLayerId, std::unique_ptr<SwapChainPresenter>>
+      video_swap_chains_;
 
   // A tree that owns all DCOMP visuals for overlays along with attributes
   // required to build DCOMP tree. It's updated for each frame.
   std::unique_ptr<VisualTree> visual_tree_;
-
-  // Number of frames per second.
-  float frame_rate_ = 0.f;
 
   // dealing with hdr metadata
   std::unique_ptr<HDRMetadataHelperWin> hdr_metadata_helper_;

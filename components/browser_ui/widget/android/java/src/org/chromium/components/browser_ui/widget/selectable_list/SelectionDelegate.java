@@ -6,7 +6,6 @@ package org.chromium.components.browser_ui.widget.selectable_list;
 
 import org.chromium.base.ObserverList;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.build.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -22,12 +21,26 @@ public class SelectionDelegate<E> {
     // True if the SelectionDelegate should only support a single item being selected at a time.
     private boolean mIsSingleSelection;
 
-    // If true, we can enter the selection mode even though zero items are currently selected.
-    // When the number of items drops to zero again, this will automatically turn off.
+    // Whether selection mode should be enabled all the time (even when 0 items are selected).
     private boolean mEnableSelectionForZeroItems;
+
+    /** Creates a {@link SelectionDelegate}. */
+    public SelectionDelegate() {}
+
+    /**
+     * Creates a {@link SelectionDelegate} with the given allowing / disallowing being in selection
+     * mode when 0 items are selected.
+     *
+     * @param enableSelectionForZeroItems Whether selection mode should be enabled all the time
+     *     (even when 0 items are selected).
+     */
+    public SelectionDelegate(boolean enableSelectionForZeroItems) {
+        mEnableSelectionForZeroItems = enableSelectionForZeroItems;
+    }
 
     /**
      * Observer interface to be notified of selection changes.
+     *
      * @param <E> The type of the selectable items this delegate interacts with.
      */
     public interface SelectionObserver<E> {
@@ -40,7 +53,7 @@ public class SelectionDelegate<E> {
     }
 
     private Set<E> mSelectedItems = new LinkedHashSet<>();
-    private ObserverList<SelectionObserver<E>> mObservers = new ObserverList<>();
+    private final ObserverList<SelectionObserver<E>> mObservers = new ObserverList<>();
 
     /** Sets the mode of this SelectionDelegate to single-selection. */
     public void setSingleSelectionMode() {
@@ -48,28 +61,18 @@ public class SelectionDelegate<E> {
     }
 
     /**
-     * Enables selection mode even though there are zero items selected.
-     * @param enable True, for entering selection mode. False, to turn-off this mode.
-     */
-    public void setSelectionModeEnabledForZeroItems(boolean enable) {
-        mEnableSelectionForZeroItems = enable;
-        notifyObservers();
-    }
-
-    /**
      * Toggles the selected state for the given item.
+     *
      * @param item The item to toggle.
      * @return Whether the item is selected.
      */
-    public boolean toggleSelectionForItem(@Nullable E item) {
+    public boolean toggleSelectionForItem(E item) {
         if (mSelectedItems.contains(item)) {
             mSelectedItems.remove(item);
         } else {
             if (mIsSingleSelection) mSelectedItems.clear();
             mSelectedItems.add(item);
         }
-
-        if (mSelectedItems.isEmpty()) mEnableSelectionForZeroItems = false;
 
         notifyObservers();
 
@@ -90,18 +93,19 @@ public class SelectionDelegate<E> {
      * @param item The item.
      * @return Whether the item is selected.
      */
-    public boolean isItemSelected(@Nullable E item) {
+    public boolean isItemSelected(E item) {
         return mSelectedItems.contains(item);
     }
 
-    /** @return Whether any items are selected. */
+    /**
+     * @return Whether selection mode is enabled, allowing the user to select / deselect items.
+     */
     public boolean isSelectionEnabled() {
         return !mSelectedItems.isEmpty() || mEnableSelectionForZeroItems;
     }
 
     /** Clears all selected items. */
     public void clearSelection() {
-        mEnableSelectionForZeroItems = false;
         mSelectedItems.clear();
         notifyObservers();
     }
@@ -111,9 +115,11 @@ public class SelectionDelegate<E> {
         return mSelectedItems;
     }
 
-    /** @return The list of selected items. */
+    /**
+     * @return The list of selected items.
+     */
     public List<E> getSelectedItemsAsList() {
-        return new ArrayList<E>(mSelectedItems);
+        return new ArrayList<>(mSelectedItems);
     }
 
     /**

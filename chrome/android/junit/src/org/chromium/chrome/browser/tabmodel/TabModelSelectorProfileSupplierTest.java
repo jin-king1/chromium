@@ -11,14 +11,17 @@ import static org.mockito.Mockito.verify;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
@@ -28,13 +31,14 @@ import org.chromium.chrome.test.util.browser.tabmodel.MockTabModelSelector;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class TabModelSelectorProfileSupplierTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock Profile mProfile;
     @Mock Profile mIncognitoProfile;
     @Mock Callback<Profile> mProfileCallback1;
     @Mock Callback<Profile> mProfileCallback2;
 
-    ObservableSupplierImpl<TabModelSelector> mTabModelSelectorSupplier =
-            new ObservableSupplierImpl<>();
+    SettableMonotonicObservableSupplier<TabModelSelector> mTabModelSelectorSupplier =
+            ObservableSuppliers.createMonotonic();
 
     TabModelSelectorProfileSupplier mSupplier;
     MockTabModelSelector mSelector;
@@ -43,7 +47,6 @@ public class TabModelSelectorProfileSupplierTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         initTabModelSelector();
         mSupplier = new TabModelSelectorProfileSupplier(mTabModelSelectorSupplier);
         doReturn(true).when(mIncognitoProfile).isOffTheRecord();
@@ -67,7 +70,7 @@ public class TabModelSelectorProfileSupplierTest {
     @Test
     public void testInitialTabModelHasNoProfile_initializedLater() {
         mTabModelSelectorSupplier.set(mSelector);
-        Assert.assertFalse(mSupplier.hasValue());
+        Assert.assertNull(mSupplier.get());
 
         mSelector.initializeTabModels(mNormalModel, mIncognitoModel);
         mSelector.markTabStateInitialized();
@@ -76,11 +79,11 @@ public class TabModelSelectorProfileSupplierTest {
 
     @Test
     public void testObserversFired() {
-        mSupplier.addObserver(mProfileCallback1);
-        mSupplier.addObserver(mProfileCallback2);
+        mSupplier.addSyncObserverAndPostIfNonNull(mProfileCallback1);
+        mSupplier.addSyncObserverAndPostIfNonNull(mProfileCallback2);
 
         mTabModelSelectorSupplier.set(mSelector);
-        Assert.assertFalse(mSupplier.hasValue());
+        Assert.assertNull(mSupplier.get());
         mSelector.initializeTabModels(mNormalModel, mIncognitoModel);
         mSelector.markTabStateInitialized();
 
@@ -125,7 +128,7 @@ public class TabModelSelectorProfileSupplierTest {
         mTabModelSelectorSupplier.set(mSelector);
         mSelector.initializeTabModels(mNormalModel, mIncognitoModel);
         mSelector.markTabStateInitialized();
-        Assert.assertFalse(mSupplier.hasValue());
+        Assert.assertNull(mSupplier.get());
     }
 
     @Test
@@ -135,7 +138,7 @@ public class TabModelSelectorProfileSupplierTest {
 
         mSelector.initializeTabModels(mNormalModel, mIncognitoModel);
         mSelector.markTabStateInitialized();
-        Assert.assertFalse(mSupplier.hasValue());
+        Assert.assertNull(mSupplier.get());
     }
 
     @Test

@@ -16,10 +16,12 @@
   --profile-item-border-width: 1px;
   --profile-item-margin: 4px;
   --profile-item-background: var(--google-grey-50);
+  --picker-logo-height: 44px;
 }
 
 :host([is-glic_]) {
   --footer-spacing: 0px;
+  --picker-logo-height: 58px;
 }
 
 .flex-container {
@@ -43,19 +45,8 @@
   text-align: center;
 }
 
-#images-container {
-  display: flex;
-  justify-content: center;
-  column-gap: 20px;
-}
-
-#glic-logo,
-#product-logo {
-  height: 44px;
-}
-
-#glic-logo {
-  content: url(glic_logo.svg);
+#pickerLogo {
+  height: var(--picker-logo-height);
 }
 
 .title {
@@ -139,7 +130,7 @@
   left: 0;
 }
 
-cr-icon[icon='profiles:add'] {
+cr-icon[icon='profiles:add-custom'] {
   --iron-icon-height: var(--profile-card-avatar-icon-size);
   --iron-icon-width: var(--profile-card-avatar-icon-size);
   --iron-icon-fill-color: var(--google-grey-100);
@@ -153,8 +144,8 @@ cr-icon[icon='profiles:add'] {
 
 #browseAsGuestButton > cr-icon {
   margin-inline-end: 0;
-  --iron-icon-height: 24px;
-  --iron-icon-width: 24px;
+  --iron-icon-height: 20px;
+  --iron-icon-width: 20px;
 }
 
 cr-checkbox {
@@ -167,8 +158,13 @@ cr-checkbox {
   padding-inline-start: 5px;
 }
 
-#button-sign-in {
-  margin-left: 10px;
+#ask-on-startup-container {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: flex-end;
+  margin-inline-end: var(--footer-spacing);
+  margin-inline-start: auto;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -176,12 +172,16 @@ cr-checkbox {
     --profile-item-background: var(--google-grey-900);
   }
 
+  :host([is-refreshed-ui_]) {
+    --profile-item-background: var(--cr-fallback-color-surface5);
+  }
+
   .profile-item,
   #addProfile.profile-item {
     border-color: var(--google-grey-700);
   }
 
-  cr-icon[icon='profiles:add'] {
+  cr-icon[icon='profiles:add-custom'] {
     --iron-icon-fill-color: var(--google-grey-500);
     --iron-icon-stroke-color: rgb(48, 48, 50);
   }

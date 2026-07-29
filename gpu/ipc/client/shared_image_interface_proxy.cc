@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "gpu/ipc/client/shared_image_interface_proxy.h"
 
 #include <bit>
@@ -17,7 +12,6 @@
 #include "gpu/ipc/client/gpu_channel_host.h"
 #include "gpu/ipc/common/command_buffer_id.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
-#include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/gpu_fence.h"
 
@@ -48,15 +42,16 @@ size_t GetRemainingSize(const base::MappedReadOnlyRegion& region,
   return region.mapping.size() - offset;
 }
 
-void* GetDataAddress(base::MappedReadOnlyRegion& region,
-                     size_t offset,
-                     size_t size) {
+base::span<uint8_t> GetTargetData(base::MappedReadOnlyRegion& region,
+                                  size_t offset,
+                                  size_t size) {
   base::CheckedNumeric<size_t> safe_end = offset;
   safe_end += size;
   size_t end;
-  if (!safe_end.AssignIfValid(&end) || end > region.mapping.size())
-    return nullptr;
-  return region.mapping.GetMemoryAs<uint8_t>() + offset;
+  if (!safe_end.AssignIfValid(&end) || end > region.mapping.size()) {
+    return {};
+  }
+  return base::span(region.mapping).subspan(offset, size);
 }
 
 std::vector<SyncToken> GenerateDependenciesFromSyncToken(
@@ -82,7 +77,7 @@ std::vector<SyncToken> GenerateDependenciesFromSyncToken(
 mojom::SharedImageInfoPtr CreateSharedImageInfo(
     const SharedImageInfo& si_info) {
   auto info = mojom::SharedImageInfo::New();
-  info->meta = si_info.meta;
+  info->meta = si_info;
   info->debug_label = si_info.debug_label;
   return info;
 }
@@ -129,25 +124,25 @@ Mailbox SharedImageInterfaceProxy::CreateSharedImage(
   // from it.
   {
     mojo::SyncCallRestrictions::ScopedAllowSyncCall allow_sync_call;
-    host_->CreateGpuMemoryBuffer(si_info.meta.size, si_info.meta.format,
-                                 buffer_usage, handle_to_populate);
+    host_->CreateGpuMemoryBuffer(si_info.size, si_info.format, buffer_usage,
+                                 handle_to_populate);
   }
 
   if (handle_to_populate->is_null()) {
     if (!host_->IsLost()) {
-      LOG(ERROR) << "Buffer handle is null. Not creating a mailbox from it.";
+      VLOG(1) << "Buffer handle is null. Not creating a mailbox from it.";
     }
     return Mailbox();
   }
 
   // Clear the external sampler prefs for shared memory case if it is set. Note
-  // that the |si_info.meta.format| is a reference, so any modifications to it
+  // that the |si_info.format| is a reference, so any modifications to it
   // will also be reflected at the place from which this method is called from.
   // https://issues.chromium.org/339546249.
-  if (si_info.meta.format.PrefersExternalSampler() &&
+  if (si_info.format.PrefersExternalSampler() &&
       (handle_to_populate->type ==
        gfx::GpuMemoryBufferType::SHARED_MEMORY_BUFFER)) {
-    si_info.meta.format.ClearPrefersExternalSampler();
+    si_info.format.ClearPrefersExternalSampler();
   }
 
   // Call existing SI method to create a SI from handle. Note that we are doing
@@ -286,16 +281,9 @@ void SharedImageInterfaceProxy::UpdateSharedImage(
                   d3d_shared_fence->GetFenceValue()))),
       std::move(dependencies), /*release_count=*/0);
 }
+#endif  // BUILDFLAG(IS_WIN)
 
-void SharedImageInterfaceProxy::CopyNativeGmbToSharedMemorySync(
-    gfx::GpuMemoryBufferHandle buffer_handle,
-    base::UnsafeSharedMemoryRegion memory_region,
-    bool* status) {
-  mojo::SyncCallRestrictions::ScopedAllowSyncCall allow_sync_call;
-  host_->CopyNativeGmbToSharedMemorySync(std::move(buffer_handle),
-                                         std::move(memory_region), status);
-}
-
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
 void SharedImageInterfaceProxy::CopyNativeGmbToSharedMemoryAsync(
     gfx::GpuMemoryBufferHandle buffer_handle,
     base::UnsafeSharedMemoryRegion memory_region,
@@ -303,11 +291,7 @@ void SharedImageInterfaceProxy::CopyNativeGmbToSharedMemoryAsync(
   host_->CopyNativeGmbToSharedMemoryAsync(
       std::move(buffer_handle), std::move(memory_region), std::move(callback));
 }
-
-bool SharedImageInterfaceProxy::IsConnected() {
-  return host_->IsConnected();
-}
-#endif  // BUILDFLAG(IS_WIN)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
 
 void SharedImageInterfaceProxy::UpdateSharedImage(const SyncToken& sync_token,
                                                   const Mailbox& mailbox) {
@@ -407,6 +391,22 @@ void SharedImageInterfaceProxy::VerifySyncToken(SyncToken& sync_token) {
   sync_token.SetVerifyFlush();
 }
 
+bool SharedImageInterfaceProxy::CanVerifySyncToken(
+    const gpu::SyncToken& sync_token) {
+  // Can only wait on an unverified sync token if it is from the same channel.
+  int sync_token_channel_id =
+      ChannelIdFromCommandBufferId(sync_token.command_buffer_id());
+  if (sync_token.namespace_id() != gpu::CommandBufferNamespace::GPU_IO ||
+      sync_token_channel_id != host_->channel_id()) {
+    return false;
+  }
+  return true;
+}
+
+void SharedImageInterfaceProxy::VerifyFlush() {
+  host_->VerifyFlush(UINT32_MAX);
+}
+
 void SharedImageInterfaceProxy::WaitSyncToken(const SyncToken& sync_token) {
   if (!sync_token.HasData())
     return;
@@ -420,11 +420,6 @@ void SharedImageInterfaceProxy::WaitSyncToken(const SyncToken& sync_token) {
             mojom::DeferredSharedImageRequest::NewNop(0)),
         std::move(dependencies), /*release_count=*/0);
   }
-}
-
-void SharedImageInterfaceProxy::Flush() {
-  base::AutoLock lock(lock_);
-  host_->EnsureFlush(last_flush_id_);
 }
 
 bool SharedImageInterfaceProxy::GetSHMForPixelData(
@@ -463,12 +458,12 @@ bool SharedImageInterfaceProxy::GetSHMForPixelData(
     upload_buffer_offset_ = 0;
   }
 
-  // We now have an |upload_buffer_| that fits our data.
+  // We now have an `upload_buffer_` that fits our data.
 
-  void* target =
-      GetDataAddress(upload_buffer_, upload_buffer_offset_, pixel_data.size());
-  DCHECK(target);
-  memcpy(target, pixel_data.data(), pixel_data.size());
+  base::span<uint8_t> target =
+      GetTargetData(upload_buffer_, upload_buffer_offset_, pixel_data.size());
+  DCHECK(!target.empty());
+  target.copy_from(pixel_data);
   *shm_offset = upload_buffer_offset_;
 
   // Now that we've successfully used up a portion of our buffer, increase our
@@ -491,62 +486,6 @@ bool SharedImageInterfaceProxy::GetSHMForPixelData(
   }
 
   return true;
-}
-
-SharedImageInterfaceProxy::SwapChainMailboxes
-SharedImageInterfaceProxy::CreateSwapChain(viz::SharedImageFormat format,
-                                           const gfx::Size& size,
-                                           const gfx::ColorSpace& color_space,
-                                           GrSurfaceOrigin surface_origin,
-                                           SkAlphaType alpha_type,
-                                           gpu::SharedImageUsageSet usage) {
-#if BUILDFLAG(IS_WIN)
-  const SwapChainMailboxes mailboxes = {Mailbox::Generate(),
-                                        Mailbox::Generate()};
-  auto params = mojom::CreateSwapChainParams::New();
-  params->front_buffer_mailbox = mailboxes.front_buffer;
-  params->back_buffer_mailbox = mailboxes.back_buffer;
-  params->format = format;
-  params->size = size;
-  params->color_space = color_space;
-  params->usage = uint32_t(usage);
-  params->surface_origin = surface_origin;
-  params->alpha_type = alpha_type;
-  {
-    base::AutoLock lock(lock_);
-
-    AddMailbox(mailboxes.front_buffer);
-    AddMailbox(mailboxes.back_buffer);
-
-    last_flush_id_ = host_->EnqueueDeferredMessage(
-        mojom::DeferredRequestParams::NewSharedImageRequest(
-            mojom::DeferredSharedImageRequest::NewCreateSwapChain(
-                std::move(params))),
-        /*sync_token_fences=*/{}, ++next_release_id_);
-  }
-  return mailboxes;
-#else
-  NOTREACHED();
-#endif  // BUILDFLAG(IS_WIN)
-}
-
-void SharedImageInterfaceProxy::PresentSwapChain(const SyncToken& sync_token,
-                                                 const Mailbox& mailbox) {
-#if BUILDFLAG(IS_WIN)
-  std::vector<SyncToken> dependencies =
-      GenerateDependenciesFromSyncToken(std::move(sync_token), host_);
-  {
-    base::AutoLock lock(lock_);
-    last_flush_id_ = host_->EnqueueDeferredMessage(
-        mojom::DeferredRequestParams::NewSharedImageRequest(
-            mojom::DeferredSharedImageRequest::NewPresentSwapChain(
-                mojom::PresentSwapChainParams::New(mailbox))),
-        std::move(dependencies), ++next_release_id_);
-    host_->EnsureFlush(last_flush_id_);
-  }
-#else
-  NOTREACHED();
-#endif  // BUILDFLAG(IS_WIN)
 }
 
 #if BUILDFLAG(IS_FUCHSIA)

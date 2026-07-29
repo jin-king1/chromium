@@ -9,12 +9,14 @@
 #import <UserNotifications/UserNotifications.h>
 
 #import <optional>
+#import <set>
 
 #import "ios/chrome/browser/passwords/model/password_checkup_utils.h"
 #import "ios/chrome/browser/safety_check/model/ios_chrome_safety_check_manager_constants.h"
 
 enum class SafetyCheckNotificationType;
 enum class SafetyCheckNotificationsOptInSource;
+struct ScheduledNotificationRequest;
 
 // Logs the source of a user's decision to opt-in or opt-out of Safety Check
 // notifications. Determines the current notification permission status
@@ -28,9 +30,9 @@ void LogSafetyCheckNotificationOptInSource(
     SafetyCheckNotificationsOptInSource opt_out_source);
 
 // Returns a notification request for the most critical Password issue
-// found using `state` and `insecure_password_counts`. Returns `nil` if no
-// notification request can be created.
-UNNotificationRequest* PasswordNotificationRequest(
+// found using `state` and `insecure_password_counts`. Returns `std::nullopt` if
+// no notification request can be created.
+std::optional<ScheduledNotificationRequest> GetPasswordNotificationRequest(
     PasswordSafetyCheckState state,
     password_manager::InsecurePasswordCounts insecure_password_counts);
 
@@ -42,9 +44,9 @@ UNNotificationContent* NotificationForPasswordCheckState(
     password_manager::InsecurePasswordCounts insecure_password_counts);
 
 // Returns a notification request for the most critical Update Chrome issue
-// found using `state`. Returns `nil` if no notification request can be
+// found using `state`. Returns `std::nullopt` if no notification request can be
 // created.
-UNNotificationRequest* UpdateChromeNotificationRequest(
+std::optional<ScheduledNotificationRequest> GetUpdateChromeNotificationRequest(
     UpdateChromeSafetyCheckState state);
 
 // Returns notification content for the most critical Update Chrome issue found
@@ -54,9 +56,9 @@ UNNotificationContent* NotificationForUpdateChromeCheckState(
     UpdateChromeSafetyCheckState state);
 
 // Returns a notification request for the most critical Safe Browsing issue
-// found using `state`. Returns `nil` if no notification request can be
+// found using `state`. Returns `std::nullopt` if no notification request can be
 // created.
-UNNotificationRequest* SafeBrowsingNotificationRequest(
+std::optional<ScheduledNotificationRequest> GetSafeBrowsingNotificationRequest(
     SafeBrowsingSafetyCheckState state);
 
 // Returns notification content for the most critical Safe Browsing issue found
@@ -69,5 +71,12 @@ UNNotificationContent* NotificationForSafeBrowsingCheckState(
 // `std::nullopt` if the `request` is not a Safety Check notification.
 std::optional<SafetyCheckNotificationType> ParseSafetyCheckNotificationType(
     UNNotificationRequest* request);
+
+// Returns the set of `SafetyCheckNotificationType` that are now considered
+// resolved (e.g., "safe", "up-to-date") based on the current states.
+std::set<SafetyCheckNotificationType> GetResolvedSafetyCheckTypes(
+    UpdateChromeSafetyCheckState update_chrome_state,
+    SafeBrowsingSafetyCheckState safe_browsing_state,
+    PasswordSafetyCheckState password_state);
 
 #endif  // IOS_CHROME_BROWSER_SAFETY_CHECK_NOTIFICATIONS_UTILS_UTILS_H_

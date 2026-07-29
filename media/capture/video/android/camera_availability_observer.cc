@@ -38,10 +38,10 @@ CameraAvailabilityObserver::~CameraAvailabilityObserver() {
       env, j_camera_availability_observer_);
 }
 
-void CameraAvailabilityObserver::OnCameraAvailabilityChanged(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj) {
+void CameraAvailabilityObserver::OnCameraAvailabilityChanged(JNIEnv* env) {
   notifyVideoCaptureDeviceChanged();
 }
 
 }  // namespace media
+
+DEFINE_JNI(CameraAvailabilityObserver)

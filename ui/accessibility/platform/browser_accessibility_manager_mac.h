@@ -47,20 +47,20 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManagerMac
   void FireFocusEvent(AXNode* node) override;
 
   // BrowserAccessibilityManager overrides.
-  void FireBlinkEvent(ax::mojom::Event event_type,
-                      BrowserAccessibility* node,
-                      int action_request_id) override;
+  void FireSourceEvent(ax::mojom::Event event_type,
+                       BrowserAccessibility* node,
+                       int action_request_id) override;
   void FireGeneratedEvent(AXEventGenerator::Event event_type,
                           const AXNode* node) override;
 
   void FireAriaNotificationEvent(
       BrowserAccessibility* node,
       const std::string& announcement,
-      const std::string& notification_id,
+      ax::mojom::AriaNotificationPriority priority_property,
       ax::mojom::AriaNotificationInterrupt interrupt_property,
-      ax::mojom::AriaNotificationPriority priority_property) override;
+      const std::string& type) override;
 
-  bool OnAccessibilityEvents(const AXUpdatesAndEvents& details) override;
+  bool OnAccessibilityEvents(AXUpdatesAndEvents& details) override;
 
   void FireSentinelEventForTesting() override;
 
@@ -69,7 +69,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManagerMac
 
  private:
   void FireNativeMacNotification(NSString* mac_notification,
-                                 BrowserAccessibility* node);
+                                 BrowserAccessibility& node);
 
   // AXTreeObserver methods.
   void OnAtomicUpdateFinished(AXTree* tree,
@@ -79,7 +79,10 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManagerMac
                          const AXNodeData& old_node_data,
                          const AXNodeData& new_node_data) override;
 
-  NSDictionary* GetUserInfoForSelectedTextChangedNotification();
+  void OnSubtreeWillBeReparented(AXTree* tree, AXNode* node) override;
+
+  NSDictionary* GetUserInfoForSelectedTextChangedNotification(
+      std::initializer_list<NSString*> omit_keys = {});
 
   NSDictionary* GetUserInfoForValueChangedNotification(
       const BrowserAccessibilityCocoa* native_node,

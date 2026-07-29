@@ -2,14 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {GeminiEnablementState, MaterialType, UrlType} from 'chrome-untrusted://boca-app/app/boca_app.js';
 import {ClientDelegateFactory, getNetworkInfoMojomToUI, getSessionConfigMojomToUI, getStudentActivityMojomToUI} from 'chrome-untrusted://boca-app/app/client_delegate.js';
-import type {Assignment, BocaValidPref, CaptionConfig, Config, Course, EndViewScreenSessionError, Identity, OnTaskConfig, Permission, PermissionSetting, RemoveStudentError, SessionResult, SetViewScreenSessionActiveError, UpdateSessionError, ViewStudentScreenError, Window} from 'chrome-untrusted://boca-app/mojom/boca.mojom-webui.js';
-import {PageHandlerRemote, SubmitAccessCodeError} from 'chrome-untrusted://boca-app/mojom/boca.mojom-webui.js';
+import type {AddStudentsError, Assignment, BocaValidPref, CaptionConfig, Config, Course, CreateSessionError, EndViewScreenSessionError, Identity, OnTaskConfig, Permission, PermissionSetting, RemoveStudentError, RenotifyStudentError, SessionResult, SetViewScreenSessionActiveError, UpdateSessionError, ViewStudentScreenError, Window} from 'chrome-untrusted://boca-app/mojom/boca.mojom-webui.js';
+import {GeminiEnablementState as GeminiEnablementStateMojom, MaterialType as MaterialTypeMojo, PageHandlerRemote, SubmitAccessCodeError, UrlType as UrlTypeMojo} from 'chrome-untrusted://boca-app/mojom/boca.mojom-webui.js';
 import type {TimeDelta} from 'chrome-untrusted://resources/mojo/mojo/public/mojom/base/time.mojom-webui.js';
 import type {Value} from 'chrome-untrusted://resources/mojo/mojo/public/mojom/base/values.mojom-webui.js';
-import {assertDeepEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {assertDeepEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
 class MockRemoteHandler extends PageHandlerRemote {
+  urlTypeMojo: UrlTypeMojo|null = null;
+  geminiEnabled = false;
   override getWindowsTabsList(): Promise<{windowList: Window[]}> {
     return Promise.resolve({
       windowList: [
@@ -19,21 +22,33 @@ class MockRemoteHandler extends PageHandlerRemote {
             {
               id: 1,
               title: 'title1',
-              url: {url: 'http://foo1'},
-              favicon: {url: 'dataurl1'},
+              url: 'http://foo1',
+              favicon: 'dataurl1',
+              urlType: null,
             },
             {
+              id: null,
               title: 'title2',
-              url: {url: 'http://foo2'},
-              favicon: {url: 'dataurl2'},
+              url: 'http://foo2',
+              favicon: 'dataurl2',
+              urlType: null,
+            },
+            {
+              id: 2,
+              title: 'Special Url',
+              url: 'http://special',
+              favicon: 'dataurl3',
+              urlType: this.urlTypeMojo,
             },
           ],
         },
         {
           tabList: [{
+            id: null,
             title: 'title3',
-            url: {url: 'http://foo3'},
-            favicon: {url: 'dataurl3'},
+            url: 'http://foo3',
+            favicon: 'dataurl3',
+            urlType: null,
           }],
         },
       ] as Window[],
@@ -52,8 +67,8 @@ class MockRemoteHandler extends PageHandlerRemote {
     id;
     return Promise.resolve({
       students: [
-        {id: '1', name: 'cat', email: 'email1', photoUrl: {url: 'cdn1'}},
-        {id: '2', name: 'dog', email: 'email2', photoUrl: {url: 'cdn2'}},
+        {id: '1', name: 'cat', email: 'email1', photoUrl: 'cdn1'},
+        {id: '2', name: 'dog', email: 'email2', photoUrl: 'cdn2'},
       ],
     });
   }
@@ -64,21 +79,25 @@ class MockRemoteHandler extends PageHandlerRemote {
       assignments: [
         {
           title: 'assignment-title1',
-          url: {url: 'url1'},
+          url: 'url1',
           lastUpdateTime: new Date(1000000),
           materials: [
-            {title: 'material-title-1', type: 0},
-            {title: 'material-title-2', type: 1},
+            {title: 'material-title-1', type: MaterialTypeMojo.kUnknown},
+            {
+              title: 'material-title-2',
+              type: MaterialTypeMojo.kSharedDriveFile,
+            },
           ],
           type: 0,
         },
         {
           title: 'assignment-title2',
-          url: {url: 'url2'},
+          url: 'url2',
           lastUpdateTime: new Date(2000000),
           materials: [
-            {title: 'material-title-3', type: 2},
-            {title: 'material-title-4', type: 3},
+            {title: 'material-title-3', type: MaterialTypeMojo.kYoutubeVideo},
+            {title: 'material-title-4', type: MaterialTypeMojo.kLink},
+            {title: 'material-title-5', type: MaterialTypeMojo.kGuidedLearning},
           ],
           type: 1,
         },
@@ -86,7 +105,8 @@ class MockRemoteHandler extends PageHandlerRemote {
     });
   }
 
-  override createSession(config: Config): Promise<{success: boolean}> {
+  override createSession(config: Config):
+      Promise<{error: CreateSessionError | null}> {
     assertDeepEquals(
         {
           sessionDuration: {
@@ -98,13 +118,13 @@ class MockRemoteHandler extends PageHandlerRemote {
               id: '1',
               name: 'cat',
               email: 'cat@gmail.com',
-              photoUrl: {url: 'cdn1'},
+              photoUrl: 'cdn1',
             },
             {
               id: '2',
               name: 'dog',
               email: 'dog@gmail.com',
-              photoUrl: {url: 'cdn2'},
+              photoUrl: 'cdn2',
             },
           ],
           studentsJoinViaCode: [],
@@ -113,24 +133,37 @@ class MockRemoteHandler extends PageHandlerRemote {
           sessionStartTime: null,
           onTaskConfig: {
             isLocked: true,
+            isPaused: true,
             tabs: [
               {
                 tab: {
                   id: null,
-                  url: {url: 'http://google.com/'},
+                  url: 'http://google.com/',
                   title: 'google',
-                  favicon: {url: 'data/image'},
+                  favicon: 'data/image',
+                  urlType: null,
                 },
                 navigationType: 0,
               },
               {
                 tab: {
                   id: null,
-                  url: {url: 'http://youtube.com/'},
+                  url: 'http://youtube.com/',
                   title: 'youtube',
-                  favicon: {url: 'data/image'},
+                  favicon: 'data/image',
+                  urlType: null,
                 },
                 navigationType: 1,
+              },
+              {
+                tab: {
+                  id: null,
+                  url: 'http://specialurl.com/',
+                  title: 'special url',
+                  favicon: 'data/image',
+                  urlType: this.urlTypeMojo,
+                },
+                navigationType: 0,
               },
             ],
           },
@@ -141,7 +174,7 @@ class MockRemoteHandler extends PageHandlerRemote {
           },
         },
         config);
-    return Promise.resolve({success: true});
+    return Promise.resolve({error: null});
   }
 
   override getSession(): Promise<{result: SessionResult}> {
@@ -157,7 +190,7 @@ class MockRemoteHandler extends PageHandlerRemote {
               id: '0',
               name: 'teacher',
               email: 'teacher@gmail.com',
-              photoUrl: {url: 'cdn0'},
+              photoUrl: 'cdn0',
             },
             accessCode: 'testCode',
             students: [
@@ -165,41 +198,54 @@ class MockRemoteHandler extends PageHandlerRemote {
                 id: '1',
                 name: 'cat',
                 email: 'cat@gmail.com',
-                photoUrl: {url: 'cdn1'},
+                photoUrl: 'cdn1',
               },
               {
                 id: '2',
                 name: 'dog',
                 email: 'dog@gmail.com',
-                photoUrl: {url: 'cdn2'},
+                photoUrl: 'cdn2',
               },
             ],
             studentsJoinViaCode: [{
               id: '3',
               name: 'cat1',
               email: 'cat1@gmail.com',
-              photoUrl: {url: 'cdn3'},
+              photoUrl: 'cdn3',
             }],
             onTaskConfig: {
               isLocked: true,
+              isPaused: true,
               tabs: [
                 {
                   tab: {
                     id: 1,
-                    url: {url: 'http://google.com/'},
+                    url: 'http://google.com/',
                     title: 'google',
-                    favicon: {url: 'data/image'},
+                    favicon: 'data/image',
+                    urlType: null,
                   },
                   navigationType: 0,
                 },
                 {
                   tab: {
                     id: null,
-                    url: {url: 'http://youtube.com/'},
+                    url: 'http://youtube.com/',
                     title: 'youtube',
-                    favicon: {url: 'data/image'},
+                    favicon: 'data/image',
+                    urlType: null,
                   },
                   navigationType: 1,
+                },
+                {
+                  tab: {
+                    id: null,
+                    url: 'http://specialurl.com/',
+                    title: 'special url',
+                    favicon: 'data/image',
+                    urlType: this.urlTypeMojo,
+                  },
+                  navigationType: 0,
                 },
               ],
             },
@@ -220,24 +266,37 @@ class MockRemoteHandler extends PageHandlerRemote {
     assertDeepEquals(
         {
           isLocked: true,
+          isPaused: true,
           tabs: [
             {
               tab: {
                 id: null,
-                url: {url: 'http://google.com/'},
+                url: 'http://google.com/',
                 title: 'google',
-                favicon: {url: 'data/image'},
+                favicon: 'data/image',
+                urlType: null,
               },
               navigationType: 0,
             },
             {
               tab: {
                 id: null,
-                url: {url: 'http://youtube.com/'},
+                url: 'http://youtube.com/',
                 title: 'youtube',
-                favicon: {url: 'data/image'},
+                favicon: 'data/image',
+                urlType: null,
               },
               navigationType: 1,
+            },
+            {
+              tab: {
+                id: null,
+                url: 'http://specialurl.com/',
+                title: 'special url',
+                favicon: 'data/image',
+                urlType: this.urlTypeMojo,
+              },
+              navigationType: 0,
             },
           ],
         },
@@ -272,6 +331,28 @@ class MockRemoteHandler extends PageHandlerRemote {
     id;
     return Promise.resolve({error: null});
   }
+
+  override addStudents(students: Identity[]):
+      Promise<{error: AddStudentsError | null}> {
+    assertDeepEquals(
+        [
+          {
+            id: '1',
+            name: 'cat',
+            email: 'cat@gmail.com',
+            photoUrl: 'cdn1',
+          },
+          {
+            id: '2',
+            name: 'dog',
+            email: 'dog@gmail.com',
+            photoUrl: 'cdn2',
+          },
+        ],
+        students);
+    return Promise.resolve({error: null});
+  }
+
   override setFloatMode(isFloatMode: boolean): Promise<{success: boolean}> {
     isFloatMode;
     return Promise.resolve({success: true});
@@ -299,9 +380,6 @@ class MockRemoteHandler extends PageHandlerRemote {
     id;
     return Promise.resolve({error: null});
   }
-  override authenticateWebview() {
-    return Promise.resolve({success: true});
-  }
   override getUserPref(pref: BocaValidPref): Promise<{value: Value}> {
     pref;
     return Promise.resolve({value: {stringValue: 'value'}});
@@ -319,62 +397,104 @@ class MockRemoteHandler extends PageHandlerRemote {
     setting;
     return Promise.resolve({success: true});
   }
-  override closeTab(tabId: number): Promise<{success: boolean}> {
-    tabId;
-    return Promise.resolve({success: true});
-  }
   override openFeedbackDialog() {
     return Promise.resolve();
+  }
+
+  override refreshWorkbook() {
+    return Promise.resolve();
+  }
+
+  override renotifyStudent(id: string):
+      Promise<{error: RenotifyStudentError | null}> {
+    id;
+    return Promise.resolve({error: null});
+  }
+
+  override startSpotlight(crdConnectionCode: string) {
+    crdConnectionCode;
+    return Promise.resolve();
+  }
+
+  override getGeminiStatus(): Promise<{enabled: boolean}> {
+    return Promise.resolve({enabled: this.geminiEnabled});
   }
 }
 
 suite('ClientDelegateTest', function() {
   let clientDelegateImpl: ClientDelegateFactory;
+  let remoteHandler: MockRemoteHandler;
+  const urlTypeTestCases = [
+    {
+      name: 'Gemini Regular',
+      urlTypeMojo: UrlTypeMojo.kGeminiRegular,
+      urlTypeUi: UrlType.GEMINI_REGULAR,
+    },
+    {
+      name: 'Gemini Guided Learning',
+      urlTypeMojo: UrlTypeMojo.kGeminiGuidedLearning,
+      urlTypeUi: UrlType.GEMINI_GUIDED_LEARNING,
+    },
+  ];
 
   setup(function() {
-    clientDelegateImpl = new ClientDelegateFactory(new MockRemoteHandler());
+    remoteHandler = new MockRemoteHandler();
+    clientDelegateImpl = new ClientDelegateFactory(remoteHandler);
   });
 
-  test(
-      'client delegate should properly translate mojom layer data for windows' +
-          'list',
-      async () => {
-        const result =
-            await clientDelegateImpl.getInstance().getWindowsTabsList();
-        assertDeepEquals(
-            [
-              {
-                windowName: 'window1',
-                tabList: [
-                  {
-                    id: 1,
-                    title: 'title1',
-                    url: 'http://foo1',
-                    favicon: 'dataurl1',
-                  },
-                  {
-                    id: undefined,
-                    title: 'title2',
-                    url: 'http://foo2',
-                    favicon: 'dataurl2',
-                  },
-                ],
-              },
-              {
-                // Default window name should be empty
-                windowName: '',
-                tabList: [
-                  {
-                    id: undefined,
-                    title: 'title3',
-                    url: 'http://foo3',
-                    favicon: 'dataurl3',
-                  },
-                ],
-              },
-            ],
-            result);
-      });
+  urlTypeTestCases.forEach((testCase) => {
+    test(
+        `client delegate should properly translate mojom layer data for ` +
+            `windows list with urlType: ${testCase.name}`,
+        async () => {
+          remoteHandler.urlTypeMojo = testCase.urlTypeMojo;
+          const result =
+              await clientDelegateImpl.getInstance().getWindowsTabsList();
+          assertDeepEquals(
+              [
+                {
+                  windowName: 'window1',
+                  tabList: [
+                    {
+                      id: 1,
+                      title: 'title1',
+                      url: 'http://foo1',
+                      favicon: 'dataurl1',
+                      urlType: undefined,
+                    },
+                    {
+                      id: undefined,
+                      title: 'title2',
+                      url: 'http://foo2',
+                      favicon: 'dataurl2',
+                      urlType: undefined,
+                    },
+                    {
+                      id: 2,
+                      title: 'Special Url',
+                      url: 'http://special',
+                      favicon: 'dataurl3',
+                      urlType: testCase.urlTypeUi,
+                    },
+                  ],
+                },
+                {
+                  // Default window name should be empty
+                  windowName: '',
+                  tabList: [
+                    {
+                      id: undefined,
+                      title: 'title3',
+                      url: 'http://foo3',
+                      favicon: 'dataurl3',
+                      urlType: undefined,
+                    },
+                  ],
+                },
+              ],
+              result);
+        });
+  });
 
   test(
       'client delegate should properly translate mojom layer data for course' +
@@ -418,8 +538,11 @@ suite('ClientDelegateTest', function() {
                 url: 'url1',
                 lastUpdateTime: new Date(1000000),
                 materials: [
-                  {title: 'material-title-1', type: 0},
-                  {title: 'material-title-2', type: 1},
+                  {title: 'material-title-1', type: MaterialType.UNKNOWN},
+                  {
+                    title: 'material-title-2',
+                    type: MaterialType.SHARED_DRIVE_FILE,
+                  },
                 ],
                 type: 0,
               },
@@ -428,8 +551,12 @@ suite('ClientDelegateTest', function() {
                 url: 'url2',
                 lastUpdateTime: new Date(2000000),
                 materials: [
-                  {title: 'material-title-3', type: 2},
-                  {title: 'material-title-4', type: 3},
+                  {title: 'material-title-3', type: MaterialType.YOUTUBE_VIDEO},
+                  {title: 'material-title-4', type: MaterialType.LINK},
+                  {
+                    title: 'material-title-5',
+                    type: MaterialType.GUIDED_LEARNING,
+                  },
                 ],
                 type: 1,
               },
@@ -437,81 +564,28 @@ suite('ClientDelegateTest', function() {
             result);
       });
 
-  test(
-      'client delegate should translate data for creating session',
-      async () => {
-        const result = await clientDelegateImpl.getInstance().createSession({
-          sessionDurationInMinutes: 120,
-          students: [
-            {id: '1', name: 'cat', email: 'cat@gmail.com', photoUrl: 'cdn1'},
-            {id: '2', name: 'dog', email: 'dog@gmail.com', photoUrl: 'cdn2'},
-          ],
-          studentsJoinViaCode: [],
-          teacher: undefined,
-          accessCode: undefined,
-          sessionStartTime: undefined,
-          onTaskConfig: {
-            isLocked: true,
-            tabs: [
-              {
-                tab: {
-                  title: 'google',
-                  url: 'http://google.com/',
-                  favicon: 'data/image',
-                },
-                navigationType: 0,
-              },
-              {
-                tab: {
-                  title: 'youtube',
-                  url: 'http://youtube.com/',
-                  favicon: 'data/image',
-                },
-                navigationType: 1,
-              },
-            ],
-          },
-          captionConfig: {
-            sessionCaptionEnabled: true,
-            localCaptionEnabled: true,
-            sessionTranslationEnabled: true,
-          },
-        });
-        assertTrue(result);
-      });
-
-  test('client delegate should properly translate get session', async () => {
-    const result = await clientDelegateImpl.getInstance().getSession();
-    assertDeepEquals(
-        {
-          sessionConfig: {
-            sessionDurationInMinutes: 2,
-            sessionStartTime: new Date(1000000),
-            teacher: {
-              id: '0',
-              name: 'teacher',
-              email: 'teacher@gmail.com',
-              photoUrl: 'cdn0',
-            },
+  urlTypeTestCases.forEach((testCase) => {
+    test(
+        `client delegate should translate data for creating session with ` +
+            `urlType: ${testCase.name}`,
+        async () => {
+          remoteHandler.urlTypeMojo = testCase.urlTypeMojo;
+          const result = await clientDelegateImpl.getInstance().createSession({
+            sessionDurationInMinutes: 120,
             students: [
               {id: '1', name: 'cat', email: 'cat@gmail.com', photoUrl: 'cdn1'},
               {id: '2', name: 'dog', email: 'dog@gmail.com', photoUrl: 'cdn2'},
             ],
-            studentsJoinViaCode: [
-              {
-                id: '3',
-                name: 'cat1',
-                email: 'cat1@gmail.com',
-                photoUrl: 'cdn3',
-              },
-            ],
-            accessCode: 'testCode',
+            studentsJoinViaCode: [],
+            teacher: undefined,
+            accessCode: undefined,
+            sessionStartTime: undefined,
             onTaskConfig: {
               isLocked: true,
+              isPaused: true,
               tabs: [
                 {
                   tab: {
-                    id: 1,
                     title: 'google',
                     url: 'http://google.com/',
                     favicon: 'data/image',
@@ -520,12 +594,20 @@ suite('ClientDelegateTest', function() {
                 },
                 {
                   tab: {
-                    id: undefined,
                     title: 'youtube',
                     url: 'http://youtube.com/',
                     favicon: 'data/image',
                   },
                   navigationType: 1,
+                },
+                {
+                  tab: {
+                    url: 'http://specialurl.com/',
+                    title: 'special url',
+                    favicon: 'data/image',
+                    urlType: testCase.urlTypeUi,
+                  },
+                  navigationType: 0,
                 },
               ],
             },
@@ -534,10 +616,98 @@ suite('ClientDelegateTest', function() {
               localCaptionEnabled: true,
               sessionTranslationEnabled: true,
             },
-          },
-          activity: [],
-        },
-        result);
+          });
+          assertDeepEquals(1, result);
+        });
+  });
+
+  urlTypeTestCases.forEach((testCase) => {
+    test(
+        `client delegate should properly translate get session with urlType: ${
+            testCase.name}`,
+        async () => {
+          remoteHandler.urlTypeMojo = testCase.urlTypeMojo;
+          const result = await clientDelegateImpl.getInstance().getSession();
+          assertDeepEquals(
+              {
+                sessionConfig: {
+                  sessionDurationInMinutes: 2,
+                  sessionStartTime: new Date(1000000),
+                  teacher: {
+                    id: '0',
+                    name: 'teacher',
+                    email: 'teacher@gmail.com',
+                    photoUrl: 'cdn0',
+                  },
+                  students: [
+                    {
+                      id: '1',
+                      name: 'cat',
+                      email: 'cat@gmail.com',
+                      photoUrl: 'cdn1',
+                    },
+                    {
+                      id: '2',
+                      name: 'dog',
+                      email: 'dog@gmail.com',
+                      photoUrl: 'cdn2',
+                    },
+                  ],
+                  studentsJoinViaCode: [
+                    {
+                      id: '3',
+                      name: 'cat1',
+                      email: 'cat1@gmail.com',
+                      photoUrl: 'cdn3',
+                    },
+                  ],
+                  accessCode: 'testCode',
+                  onTaskConfig: {
+                    isLocked: true,
+                    isPaused: true,
+                    tabs: [
+                      {
+                        tab: {
+                          id: 1,
+                          title: 'google',
+                          url: 'http://google.com/',
+                          favicon: 'data/image',
+                          urlType: undefined,
+                        },
+                        navigationType: 0,
+                      },
+                      {
+                        tab: {
+                          id: undefined,
+                          title: 'youtube',
+                          url: 'http://youtube.com/',
+                          favicon: 'data/image',
+                          urlType: undefined,
+                        },
+                        navigationType: 1,
+                      },
+                      {
+                        tab: {
+                          id: undefined,
+                          url: 'http://specialurl.com/',
+                          title: 'special url',
+                          favicon: 'data/image',
+                          urlType: testCase.urlTypeUi,
+                        },
+                        navigationType: 0,
+                      },
+                    ],
+                  },
+                  captionConfig: {
+                    sessionCaptionEnabled: true,
+                    localCaptionEnabled: true,
+                    sessionTranslationEnabled: true,
+                  },
+                },
+                activity: [],
+              },
+              result);
+        });
   });
 
   test(
@@ -550,12 +720,12 @@ suite('ClientDelegateTest', function() {
           sessionStartTime: new Date(1000000),
           students: [],
           studentsJoinViaCode: [],
-          onTaskConfig: {isLocked: false, tabs: []},
+          onTaskConfig: {isLocked: false, isPaused: false, tabs: []},
           teacher: {
             id: '0',
             name: 'teacher',
             email: 'teacher@gmail.com',
-            photoUrl: {url: 'cdn0'},
+            photoUrl: 'cdn0',
           },
           accessCode: null,
           captionConfig: {
@@ -579,6 +749,7 @@ suite('ClientDelegateTest', function() {
               studentsJoinViaCode: [],
               onTaskConfig: {
                 isLocked: false,
+                isPaused: false,
                 tabs: [],
               },
               accessCode: '',
@@ -592,33 +763,47 @@ suite('ClientDelegateTest', function() {
             result);
       });
 
-  test(
-      'client delegate should translate data for update on task config',
-      async () => {
-        const result =
-            await clientDelegateImpl.getInstance().updateOnTaskConfig({
-              isLocked: true,
-              tabs: [
-                {
-                  tab: {
-                    title: 'google',
-                    url: 'http://google.com/',
-                    favicon: 'data/image',
+  urlTypeTestCases.forEach((testCase) => {
+    test(
+        `client delegate should translate data for update on task config ` +
+            `with urlType: ${testCase.name}`,
+        async () => {
+          remoteHandler.urlTypeMojo = testCase.urlTypeMojo;
+          const result =
+              await clientDelegateImpl.getInstance().updateOnTaskConfig({
+                isLocked: true,
+                isPaused: true,
+                tabs: [
+                  {
+                    tab: {
+                      title: 'google',
+                      url: 'http://google.com/',
+                      favicon: 'data/image',
+                    },
+                    navigationType: 0,
                   },
-                  navigationType: 0,
-                },
-                {
-                  tab: {
-                    title: 'youtube',
-                    url: 'http://youtube.com/',
-                    favicon: 'data/image',
+                  {
+                    tab: {
+                      title: 'youtube',
+                      url: 'http://youtube.com/',
+                      favicon: 'data/image',
+                    },
+                    navigationType: 1,
                   },
-                  navigationType: 1,
-                },
-              ],
-            });
-        assertTrue(result);
-      });
+                  {
+                    tab: {
+                      title: 'special url',
+                      url: 'http://specialurl.com/',
+                      favicon: 'data/image',
+                      urlType: testCase.urlTypeUi,
+                    },
+                    navigationType: 0,
+                  },
+                ],
+              });
+          assertTrue(result);
+        });
+  });
 
   test('client delegate should translate data for caption config', async () => {
     const result = await clientDelegateImpl.getInstance().updateCaptionConfig({
@@ -647,60 +832,75 @@ suite('ClientDelegateTest', function() {
     assertTrue(result);
   });
 
-  test(
-      'client delegate should translate data for student activity', () => {
-        const activities = [
+  test('client delegate should translate data for add students', async () => {
+    const result = await clientDelegateImpl.getInstance().addStudents([
+      {id: '1', name: 'cat', email: 'cat@gmail.com', photoUrl: 'cdn1'},
+      {id: '2', name: 'dog', email: 'dog@gmail.com', photoUrl: 'cdn2'},
+    ]);
+    assertTrue(result);
+  });
+
+  test('client delegate should translate data for student activity', () => {
+    const activities = [
+      {
+        id: '1',
+        activity: {
+          studentStatusDetail: 3,
+          isActive: true,
+          activeTab: 'google',
+          isCaptionEnabled: false,
+          isHandRaised: false,
+          joinMethod: 0,
+          viewScreenSessionCode: 'abcd',
+          geminiState: GeminiEnablementStateMojom.kEnabled,
+        },
+      },
+      {
+        id: '2',
+        activity: {
+          studentStatusDetail: 2,
+          isActive: false,
+          activeTab: 'youtube',
+          isCaptionEnabled: false,
+          isHandRaised: false,
+          joinMethod: 1,
+          viewScreenSessionCode: null,
+          geminiState: GeminiEnablementStateMojom.kDisabled,
+        },
+      },
+    ];
+    const result = getStudentActivityMojomToUI(activities);
+    assertDeepEquals(
+        [
           {
             id: '1',
-            activity: {
+            studentActivity: {
+              studentStatusDetail: 3,
               isActive: true,
               activeTab: 'google',
               isCaptionEnabled: false,
               isHandRaised: false,
               joinMethod: 0,
               viewScreenSessionCode: 'abcd',
+              geminiState: GeminiEnablementState.ENABLED,
             },
           },
           {
             id: '2',
-            activity: {
+            studentActivity: {
+              studentStatusDetail: 2,
               isActive: false,
               activeTab: 'youtube',
               isCaptionEnabled: false,
               isHandRaised: false,
               joinMethod: 1,
-              viewScreenSessionCode: null,
+              viewScreenSessionCode: undefined,
+              geminiState: GeminiEnablementState.DISABLED,
             },
           },
-        ];
-        const result = getStudentActivityMojomToUI(activities);
-        assertDeepEquals(
-            [
-              {
-                id: '1',
-                studentActivity: {
-                  isActive: true,
-                  activeTab: 'google',
-                  isCaptionEnabled: false,
-                  isHandRaised: false,
-                  joinMethod: 0,
-                  viewScreenSessionCode: 'abcd',
-                },
-              },
-              {
-                id: '2',
-                studentActivity: {
-                  isActive: false,
-                  activeTab: 'youtube',
-                  isCaptionEnabled: false,
-                  isHandRaised: false,
-                  joinMethod: 1,
-                  viewScreenSessionCode: undefined,
-                },
-              },
-            ],
-            result);
-      });
+        ],
+        result);
+  });
 
   test('client delegate should translate data for set float', async () => {
     const result = await clientDelegateImpl.getInstance().setFloatMode(true);
@@ -773,13 +973,7 @@ suite('ClientDelegateTest', function() {
         assertTrue(result);
       });
 
-  test(
-      'client delegate should respond correctly for authenticateWebview',
-      async () => {
-        const result =
-            await clientDelegateImpl.getInstance().authenticateWebview();
-        assertTrue(result);
-      });
+
 
   test(
       'client delegate should respond correctly for retrieve user pref',
@@ -800,11 +994,6 @@ suite('ClientDelegateTest', function() {
             await clientDelegateImpl.getInstance().setSitePermission('1', 0, 0);
         assertTrue(result);
       });
-  test('client delegate should respond correctly for close tabs', async () => {
-    const result = await clientDelegateImpl.getInstance().closeTab(1);
-    assertTrue(result);
-  });
-
   test(
       'client delegate should respond correctly for open feedback dialog',
       async () => {
@@ -813,5 +1002,41 @@ suite('ClientDelegateTest', function() {
           openFeedbackDialogResponded = true;
         });
         assertTrue(openFeedbackDialogResponded);
+      });
+
+  test(
+      'client delegate should respond correctly for refresh workbook',
+      async () => {
+        let refreshWorkbookResponded = false;
+        await clientDelegateImpl.getInstance().refreshWorkbook().then(() => {
+          refreshWorkbookResponded = true;
+        });
+        assertTrue(refreshWorkbookResponded);
+      });
+
+  test(
+      'client delegate should translate data for renotify student',
+      async () => {
+        const result =
+            await clientDelegateImpl.getInstance().renotifyStudent('1');
+        assertTrue(result);
+      });
+
+  test(
+      'client delegate should translate data for start spotlight', async () => {
+        let startSpotlightResponded = false;
+        await clientDelegateImpl.getInstance().startSpotlight('1').then(() => {
+          startSpotlightResponded = true;
+        });
+        assertTrue(startSpotlightResponded);
+      });
+
+  test(
+      'client delegate should return gemini status when requested',
+      async () => {
+        remoteHandler.geminiEnabled = true;
+        assertTrue(await clientDelegateImpl.getInstance().getGeminiStatus());
+        remoteHandler.geminiEnabled = false;
+        assertFalse(await clientDelegateImpl.getInstance().getGeminiStatus());
       });
 });

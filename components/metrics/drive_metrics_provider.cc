@@ -8,7 +8,6 @@
 #include "base/check_op.h"
 #include "base/files/drive_info.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
@@ -17,30 +16,57 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "components/metrics/metrics_pref_names.h"
+#include "components/prefs/pref_registry_simple.h"
+#include "components/prefs/pref_service.h"
 
 namespace metrics {
 
 namespace {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(OptionalBoolRecord)
+enum class OptionalBoolRecord {
+  kUnknown = 0,
+  kFalse = 1,
+  kTrue = 2,
+  kMaxValue = kTrue,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/uma/enums.xml:OptionalBoolRecord)
+
 void RecordTriStateMetric(const char* name, std::optional<bool> sample) {
   base::UmaHistogramEnumeration(
-      name, !sample.has_value()
-                ? DriveMetricsProvider::OptionalBoolRecord::kUnknown
-                : (*sample ? DriveMetricsProvider::OptionalBoolRecord::kTrue
-                           : DriveMetricsProvider::OptionalBoolRecord::kFalse));
+      name, !sample.has_value() ? OptionalBoolRecord::kUnknown
+                                : (*sample ? OptionalBoolRecord::kTrue
+                                           : OptionalBoolRecord::kFalse));
 }
+#endif
 }  // namespace
 
-DriveMetricsProvider::DriveMetricsProvider(int local_state_path_key)
-    : local_state_path_key_(local_state_path_key) {}
+DriveMetricsProvider::DriveMetricsProvider(int local_state_path_key,
+                                           PrefService* local_state)
+    : local_state_path_key_(local_state_path_key), local_state_(local_state) {
+  CHECK(local_state_);
+}
 
 DriveMetricsProvider::~DriveMetricsProvider() = default;
 
 void DriveMetricsProvider::ProvideSystemProfileMetrics(
     metrics::SystemProfileProto* system_profile_proto) {
   auto* hardware = system_profile_proto->mutable_hardware();
-  FillDriveMetrics(metrics_.app_drive, hardware->mutable_app_drive());
+  FillDriveMetrics(metrics_.app_drive, hardware->mutable_app_drive(),
+                   prefs::kMetricsAppDriveHasSeekPenalty);
   FillDriveMetrics(metrics_.user_data_drive,
-                   hardware->mutable_user_data_drive());
+                   hardware->mutable_user_data_drive(),
+                   prefs::kMetricsUserDataDriveHasSeekPenalty);
+}
+
+// static
+void DriveMetricsProvider::RegisterPrefs(PrefRegistrySimple* registry) {
+  registry->RegisterBooleanPref(prefs::kMetricsAppDriveHasSeekPenalty, false);
+  registry->RegisterBooleanPref(prefs::kMetricsUserDataDriveHasSeekPenalty,
+                                false);
 }
 
 void DriveMetricsProvider::AsyncInit(base::OnceClosure done_callback) {
@@ -79,14 +105,9 @@ void DriveMetricsProvider::QuerySeekPenalty(
   if (!base::PathService::Get(path_service_key, &path))
     return;
 
-  bool has_seek_penalty;
-  bool have_value = HasSeekPenalty(path, &has_seek_penalty);
-  if (have_value) {
-    response->has_seek_penalty = has_seek_penalty;
-  }
   std::optional<base::DriveInfo> drive_info = base::GetFileDriveInfo(path);
   if (drive_info.has_value()) {
-    response->has_seek_penalty_base = drive_info->has_seek_penalty;
+    response->has_seek_penalty = drive_info->has_seek_penalty;
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
     response->is_removable = drive_info->is_removable;
     response->is_usb = drive_info->is_usb;
@@ -104,15 +125,16 @@ void DriveMetricsProvider::GotDriveMetrics(
 
 void DriveMetricsProvider::FillDriveMetrics(
     const DriveMetricsProvider::SeekPenaltyResponse& response,
-    metrics::SystemProfileProto::Hardware::Drive* drive) {
+    metrics::SystemProfileProto::Hardware::Drive* drive,
+    const char* pref_name) {
   if (response.has_seek_penalty.has_value()) {
     drive->set_has_seek_penalty(*response.has_seek_penalty);
+    local_state_->SetBoolean(pref_name, *response.has_seek_penalty);
+  } else if (local_state_->HasPrefPath(pref_name)) {
+    // If the async task hasn't finished, read the value from the local state.
+    drive->set_has_seek_penalty(local_state_->GetBoolean(pref_name));
   }
 
-  RecordTriStateMetric("UMA.SeekPenaltyResult.Provider",
-                       response.has_seek_penalty);
-  RecordTriStateMetric("UMA.SeekPenaltyResult.Base",
-                       response.has_seek_penalty_base);
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   RecordTriStateMetric("UMA.DriveIsRemovableResult", response.is_removable);
 #endif

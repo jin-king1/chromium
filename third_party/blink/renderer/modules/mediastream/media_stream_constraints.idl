@@ -3,8 +3,11 @@
 // found in the LICENSE file.
 
 enum DisplayMediaIncludeOrExclude { "include", "exclude" };
+enum DisplayMediaSystemWindowOrExclude { "system", "window", "exclude" };
+enum AudioSelectionPreferenceEnum { "preferred" };
 
 typedef DisplayMediaIncludeOrExclude SystemAudioPreferenceEnum;
+typedef DisplayMediaSystemWindowOrExclude WindowAudioPreferenceEnum;
 typedef DisplayMediaIncludeOrExclude SelfCapturePreferenceEnum;
 typedef DisplayMediaIncludeOrExclude SurfaceSwitchingPreferenceEnum;
 typedef DisplayMediaIncludeOrExclude MonitorTypeSurfacesEnum;
@@ -33,8 +36,11 @@ dictionary DisplayMediaStreamOptions {
 
     SelfCapturePreferenceEnum selfBrowserSurface;
     SystemAudioPreferenceEnum systemAudio;
+    [RuntimeEnabled = GetDisplayMediaWindowAudioCapture]
+        WindowAudioPreferenceEnum windowAudio;
     SurfaceSwitchingPreferenceEnum surfaceSwitching;
     MonitorTypeSurfacesEnum monitorTypeSurfaces;
+    [RuntimeEnabled=GetDisplayMediaAudioSelection] AudioSelectionPreferenceEnum audioSelection;
 };
 
 // This dictionnary is used internally to hold all members from
@@ -49,8 +55,11 @@ dictionary MediaStreamConstraints {
     CaptureController controller;
     SelfCapturePreferenceEnum selfBrowserSurface;
     SystemAudioPreferenceEnum systemAudio;
+    [RuntimeEnabled = GetDisplayMediaWindowAudioCapture]
+        WindowAudioPreferenceEnum windowAudio;
     SurfaceSwitchingPreferenceEnum surfaceSwitching;
     MonitorTypeSurfacesEnum monitorTypeSurfaces;
+    [RuntimeEnabled=GetDisplayMediaAudioSelection] AudioSelectionPreferenceEnum audioSelection;
 };
 
 dictionary AudioOutputOptions {

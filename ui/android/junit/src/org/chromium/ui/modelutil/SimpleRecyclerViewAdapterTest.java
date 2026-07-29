@@ -11,10 +11,12 @@ import android.app.Activity;
 import android.view.View;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
@@ -32,6 +34,7 @@ import java.util.List;
             "androidx.recyclerview.widget.RecyclerView" // required to mock final
         })
 public class SimpleRecyclerViewAdapterTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     private static final PropertyModel.WritableIntPropertyKey INT_PROPERTY =
             new PropertyModel.WritableIntPropertyKey();
     private static final Integer VIEW_TYPE_1 = 1;
@@ -46,7 +49,6 @@ public class SimpleRecyclerViewAdapterTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
 
         mModel = new PropertyModel(INT_PROPERTY);
         mModelList = new ModelList();
@@ -68,40 +70,40 @@ public class SimpleRecyclerViewAdapterTest {
 
     @Test
     public void testObserver_listModelItemsAdded() {
-        mModelList.add(new ModelListAdapter.ListItem(VIEW_TYPE_1, mModel));
+        mModelList.add(new MVCListAdapter.ListItem(VIEW_TYPE_1, mModel));
         verify(mSpyAdapter, times(1)).notifyItemRangeInserted(0, 1);
-        mModelList.add(new ModelListAdapter.ListItem(VIEW_TYPE_2, mModel));
+        mModelList.add(new MVCListAdapter.ListItem(VIEW_TYPE_2, mModel));
         verify(mSpyAdapter, times(1)).notifyItemRangeInserted(1, 1);
     }
 
     @Test
     public void testObserver_listModelItemsAddedInBatch() {
-        mModelList.add(new ModelListAdapter.ListItem(VIEW_TYPE_1, mModel));
+        mModelList.add(new MVCListAdapter.ListItem(VIEW_TYPE_1, mModel));
         verify(mSpyAdapter, times(1)).notifyItemRangeInserted(0, 1);
-        List<ModelListAdapter.ListItem> items = new ArrayList<>();
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_1, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_2, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_3, mModel));
+        List<MVCListAdapter.ListItem> items = new ArrayList<>();
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_1, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_2, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_3, mModel));
         mModelList.addAll(items);
         verify(mSpyAdapter, times(1)).notifyItemRangeInserted(1, 3);
     }
 
     @Test
     public void testObserver_listModelItemsSet() {
-        List<ModelListAdapter.ListItem> items = new ArrayList<>();
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_1, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_2, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_3, mModel));
+        List<MVCListAdapter.ListItem> items = new ArrayList<>();
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_1, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_2, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_3, mModel));
         mModelList.set(items);
         verify(mSpyAdapter, times(1)).notifyItemRangeInserted(0, 3);
     }
 
     @Test
     public void testObserver_listModelItemsRemove() {
-        List<ModelListAdapter.ListItem> items = new ArrayList<>();
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_1, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_2, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_3, mModel));
+        List<MVCListAdapter.ListItem> items = new ArrayList<>();
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_1, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_2, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_3, mModel));
         mModelList.set(items);
         verify(mSpyAdapter, times(1)).notifyItemRangeInserted(0, 3);
         mModelList.removeRange(0, 2);
@@ -110,10 +112,10 @@ public class SimpleRecyclerViewAdapterTest {
 
     @Test
     public void testObserver_listModelItemsClear() {
-        List<ModelListAdapter.ListItem> items = new ArrayList<>();
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_1, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_2, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_3, mModel));
+        List<MVCListAdapter.ListItem> items = new ArrayList<>();
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_1, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_2, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_3, mModel));
         mModelList.set(items);
         verify(mSpyAdapter, times(1)).notifyItemRangeInserted(0, 3);
         mModelList.clear();
@@ -122,10 +124,10 @@ public class SimpleRecyclerViewAdapterTest {
 
     @Test
     public void testObserver_listModelItemMoved() {
-        List<ModelListAdapter.ListItem> items = new ArrayList<>();
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_1, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_2, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_3, mModel));
+        List<MVCListAdapter.ListItem> items = new ArrayList<>();
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_1, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_2, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_3, mModel));
         mModelList.set(items);
         verify(mSpyAdapter, times(1)).notifyItemRangeInserted(0, 3);
 
@@ -135,14 +137,14 @@ public class SimpleRecyclerViewAdapterTest {
 
     @Test
     public void testObserver_listModelItemUpdated() {
-        List<ModelListAdapter.ListItem> items = new ArrayList<>();
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_1, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_2, mModel));
-        items.add(new ModelListAdapter.ListItem(VIEW_TYPE_3, mModel));
+        List<MVCListAdapter.ListItem> items = new ArrayList<>();
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_1, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_2, mModel));
+        items.add(new MVCListAdapter.ListItem(VIEW_TYPE_3, mModel));
         mModelList.set(items);
         verify(mSpyAdapter, times(1)).notifyItemRangeInserted(0, 3);
 
-        mModelList.update(1, new ModelListAdapter.ListItem(VIEW_TYPE_2, mModel));
+        mModelList.update(1, new MVCListAdapter.ListItem(VIEW_TYPE_2, mModel));
         verify(mSpyAdapter, times(1)).notifyItemRangeChanged(1, 1);
     }
 }

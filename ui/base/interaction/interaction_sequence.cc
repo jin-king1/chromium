@@ -14,22 +14,22 @@
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/check_is_test.h"
 #include "base/containers/map_util.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/weak_auto_reset.h"
 #include "base/memory/weak_ptr.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
-#include "base/observer_list_internal.h"
+#include "base/observer_list.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/interaction/element_specifier.h"
 #include "ui/base/interaction/element_tracker.h"
 
 namespace ui {
@@ -308,6 +308,14 @@ InteractionSequence::StepBuilder& InteractionSequence::StepBuilder::operator=(
     StepBuilder&& other) = default;
 InteractionSequence::StepBuilder::~StepBuilder() = default;
 
+InteractionSequence::StepBuilder& InteractionSequence::StepBuilder::SetElement(
+    ElementSpecifier element_spec) {
+  DCHECK(element_spec);
+  step_->id = element_spec.identifier();
+  step_->element_name = element_spec.name();
+  return *this;
+}
+
 InteractionSequence::StepBuilder&
 InteractionSequence::StepBuilder::SetElementID(ElementIdentifier element_id) {
   DCHECK(element_id);
@@ -575,6 +583,36 @@ void InteractionSequence::FailForTesting() {
   Abort(AbortedReason::kFailedForTesting);
 }
 
+InteractionSequence::StepTransitionHandle::StepTransitionHandle() = default;
+InteractionSequence::StepTransitionHandle::StepTransitionHandle(
+    StepTransitionHandle&&) = default;
+InteractionSequence::StepTransitionHandle&
+InteractionSequence::StepTransitionHandle::operator=(StepTransitionHandle&&) =
+    default;
+InteractionSequence::StepTransitionHandle::~StepTransitionHandle() {
+  CHECK(!callback_) << "StepTransitionHandle destroyed without being called. "
+                       "This usually indicates a timeout or a logic error in a "
+                       "test.";
+}
+
+void InteractionSequence::StepTransitionHandle::Proceed(bool success) && {
+  if (callback_) {
+    std::move(callback_).Run(success);
+  }
+}
+
+InteractionSequence::StepTransitionHandle::StepTransitionHandle(
+    ProceedToNextStepCallback callback)
+    : callback_(std::move(callback)) {}
+
+InteractionSequence::StepTransitionHandle
+InteractionSequence::SeizeStepTransitionControl() {
+  CHECK_IS_TEST();
+  CHECK_EQ(State::kInStartCallback, state_);
+  CHECK(step_transition_callback_);
+  return StepTransitionHandle(std::move(step_transition_callback_));
+}
+
 void InteractionSequence::NameElement(TrackedElement* element,
                                       std::string_view name) {
   DCHECK(!name.empty());
@@ -633,6 +671,15 @@ InteractionSequence::AbortedData InteractionSequence::BuildAbortedData(
           aborted_data.subsequence_failures.emplace_back(
               data.result == false ? std::make_optional(data.aborted_data)
                                    : std::nullopt);
+        }
+      } else if (reason == AbortedReason::kSequenceTimedOut) {
+        for (const auto& data : next_step()->subsequence_data) {
+          if (data.result == false) {
+            aborted_data.subsequence_failures.emplace_back(data.aborted_data);
+          } else if (data.result != true && data.sequence) {
+            aborted_data.subsequence_failures.emplace_back(
+                data.sequence->BuildAbortedData(reason));
+          }
         }
       }
       if (const auto* ctx =
@@ -744,7 +791,7 @@ void InteractionSequence::OnElementHidden(TrackedElement* element) {
     if (next_step()->uses_named_element()) {
       // Find the named element; if it still exists, it hasn't been hidden.
       const auto it = named_elements_.find(next_step()->element_name);
-      CHECK(it != named_elements_.end(), base::NotFatalUntil::M130);
+      CHECK(it != named_elements_.end());
       if (it->second.get()) {
         return;
       }
@@ -1096,13 +1143,36 @@ void InteractionSequence::CompleteStepTransition() {
 
   // For step types where the element passed to a callback must not be null,
   // ensure there is an element.
-  CHECK(AllowNullElementInStartCallback(current_step_->type) ||
-        !current_step_->start_callback || current_step_->element);
+  if (!AllowNullElementInStartCallback(current_step_->type) &&
+      current_step_->start_callback && !current_step_->element) {
+    LOG(ERROR) << "Assumption violated: Start callback for this step should "
+                  "always have a valid element!";
+    Abort(AbortedReason::kElementHiddenBetweenTriggerAndStepStart);
+    return;
+  }
+
+  step_transition_callback_ = base::BindOnce(&InteractionSequence::FinishStep,
+                                             weak_factory_.GetWeakPtr());
+
   RunIfValid(std::move(current_step_->start_callback), this,
              current_step_->element.get());
   if (!abort_guard) {
     return;
   }
+
+  if (step_transition_callback_) {
+    std::move(step_transition_callback_).Run(true);
+  }
+}
+
+void InteractionSequence::FinishStep(bool success) {
+  if (!success) {
+    CHECK_IS_TEST();
+    FailForTesting();
+    return;
+  }
+
+  CHECK_EQ(State::kInStartCallback, state_);
   state_ = State::kIdle;
 
   if (configuration_->steps.empty()) {
@@ -1350,6 +1420,7 @@ void InteractionSequence::Abort(AbortedReason reason) {
       std::move(configuration_->aborted_callback);
   std::unique_ptr<Step> current_step = std::move(current_step_);
   configuration_->steps.clear();
+  step_transition_callback_.Reset();
 
   // This blows up any abort guards and pending callbacks.
   weak_factory_.InvalidateWeakPtrs();
@@ -1583,11 +1654,22 @@ void PrintTo(const InteractionSequence::AbortedData& data, std::ostream* os) {
   }
   if (data.aborted_reason ==
       InteractionSequence::AbortedReason::kSubsequenceFailed) {
-    *os << "; subsequence failures:";
+    *os << "\nsubsequence failures:";
     size_t i = 0;
     for (auto& subsequence : data.subsequence_failures) {
       if (subsequence) {
-        *os << " { subsequence " << i << " failed " << *subsequence << " }";
+        *os << "\n - subsequence " << i << " failed: " << *subsequence;
+      }
+      ++i;
+    }
+  } else if (data.aborted_reason ==
+                 InteractionSequence::AbortedReason::kSequenceTimedOut &&
+             !data.subsequence_failures.empty()) {
+    *os << "\nsubsequence failures and timeouts:";
+    size_t i = 0;
+    for (auto& subsequence : data.subsequence_failures) {
+      if (subsequence) {
+        *os << "\n - subsequence " << i << ": " << *subsequence;
       }
       ++i;
     }

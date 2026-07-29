@@ -10,7 +10,6 @@
 #include <optional>
 #include <set>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -37,9 +36,7 @@ namespace net {
 
 class ReportingCacheImpl : public ReportingCache {
  public:
-  explicit ReportingCacheImpl(
-      ReportingContext* context,
-      const base::flat_map<std::string, GURL>& enterprise_reporting_endpoints);
+  explicit ReportingCacheImpl(ReportingContext* context);
 
   ReportingCacheImpl(const ReportingCacheImpl&) = delete;
   ReportingCacheImpl& operator=(const ReportingCacheImpl&) = delete;
@@ -53,10 +50,9 @@ class ReportingCacheImpl : public ReportingCache {
                  const std::string& user_agent,
                  const std::string& group_name,
                  const std::string& type,
-                 base::Value::Dict body,
+                 base::DictValue body,
                  int depth,
                  base::TimeTicks queued,
-                 int attempts,
                  ReportingTargetType target_type) override;
   void GetReports(
       std::vector<raw_ptr<const ReportingReport, VectorExperimental>>*
@@ -104,8 +100,6 @@ class ReportingCacheImpl : public ReportingCache {
       const base::UnguessableToken& reporting_source,
       const IsolationInfo& isolation_info,
       std::vector<ReportingEndpoint> parsed_header) override;
-  void SetEnterpriseReportingEndpoints(
-      const base::flat_map<std::string, GURL>& endpoints) override;
   std::set<url::Origin> GetAllOrigins() const override;
   void RemoveClient(const NetworkAnonymizationKey& network_anonymization_key,
                     const url::Origin& origin) override;
@@ -130,8 +124,6 @@ class ReportingCacheImpl : public ReportingCache {
   ReportingEndpoint GetEndpointForTesting(
       const ReportingEndpointGroupKey& group_key,
       const GURL& url) const override;
-  std::vector<ReportingEndpoint> GetEnterpriseEndpointsForTesting()
-      const override;
   bool EndpointGroupExistsForTesting(const ReportingEndpointGroupKey& group_key,
                                      OriginSubdomains include_subdomains,
                                      base::Time expires) const override;

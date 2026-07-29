@@ -5,9 +5,8 @@
 #ifndef CONTENT_BROWSER_PRELOADING_PRERENDER_PRERENDER_FINAL_STATUS_H_
 #define CONTENT_BROWSER_PRELOADING_PRERENDER_PRERENDER_FINAL_STATUS_H_
 
-#include "content/public/browser/preloading.h"
-
 #include "content/common/content_export.h"
+#include "content/public/browser/preloading.h"
 
 namespace content {
 
@@ -37,7 +36,7 @@ enum class PrerenderFinalStatus {
   // kInProgressNavigation = 7,  // No longer used.
   // kNavigationRequestFailure = 8,  // No longer used.
   kNavigationRequestBlockedByCsp = 9,
-  kMainFrameNavigation = 10,
+  // kMainFrameNavigation = 10, // No longer used.
   kMojoBinderPolicy = 11,
   // kPlugin = 12,  // No longer used.
   kRendererProcessCrashed = 13,
@@ -147,8 +146,8 @@ enum class PrerenderFinalStatus {
   // status is specified.
   kActivatedWithAuxiliaryBrowsingContexts = 72,
 
-  kMaxNumOfRunningEagerPrerendersExceeded = 73,
-  kMaxNumOfRunningNonEagerPrerendersExceeded = 74,
+  kMaxNumOfRunningImmediatePrerendersExceeded = 73,
+  kMaxNumOfRunningNonImmediatePrerendersExceeded = 74,
   kMaxNumOfRunningEmbedderPrerendersExceeded = 75,
 
   kPrerenderingUrlHasEffectiveUrl = 76,
@@ -177,10 +176,19 @@ enum class PrerenderFinalStatus {
 
   // Prerendering canceled by clearing cache from browsing data removal.
   kBrowsingDataRemoved = 87,
+  // Prerendering cancelled but the PrerenderHost is reused for future
+  // navigation.
+  kPrerenderHostReused = 88,
+  // Submitting form when prerender is not allowed.
+  kFormSubmitWhenPrerendering = 89,
+  kCrossDocumentRestart = 90,
 
-  kMaxValue = kBrowsingDataRemoved,
+  kMaxValue = kCrossDocumentRestart,
 };
-// LINT.ThenChange()
+// LINT.ThenChange(
+//     //third_party/blink/public/devtools_protocol/domains/Preload.pdl,
+//     //tools/metrics/histograms/enums.xml
+// )
 
 // Helper method to convert PrerenderFinalStatus to PreloadingFailureReason.
 PreloadingFailureReason CONTENT_EXPORT

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/enterprise/connectors/analysis/files_request_handler.h"
 
 #include <map>
@@ -26,10 +21,10 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
-#include "chrome/browser/enterprise/connectors/analysis/content_analysis_features.h"
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_info.h"
 #include "chrome/browser/enterprise/connectors/common.h"
 #include "chrome/browser/enterprise/connectors/connectors_service.h"
@@ -37,7 +32,6 @@
 #include "chrome/browser/enterprise/connectors/test/fake_content_analysis_delegate.h"
 #include "chrome/browser/enterprise/connectors/test/fake_files_request_handler.h"
 #include "chrome/browser/policy/dm_token_utils.h"
-#include "chrome/browser/safe_browsing/cloud_content_scanning/binary_upload_service.h"
 #include "chrome/browser/safe_browsing/cloud_content_scanning/deep_scanning_utils.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -45,8 +39,11 @@
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_service.h"
+#include "components/enterprise/connectors/core/features.h"
 #include "components/file_access/test/mock_scoped_file_access_delegate.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/safe_browsing/core/common/features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
@@ -59,7 +56,7 @@ namespace {
 constexpr char kDmToken[] = "dm_token";
 constexpr char kUserActionId[] = "123";
 constexpr char kTabTitle[] = "tab_title";
-constexpr char kContentTransferMethod[] = "content_transfer_method";
+constexpr char kContentTransferMethod[] = "CONTENT_TRANSFER_METHOD_FILE_PICKER";
 constexpr char kTestUrl[] = "http://example.com/";
 base::TimeDelta kResponseDelay = base::Seconds(0);
 
@@ -174,7 +171,9 @@ class TestContentAnalysisInfo : public ContentAnalysisInfo {
 
   const AnalysisSettings& settings() const override { return settings_.get(); }
 
-  // These methods correspond to fields in `BinaryUploadService::Request`.
+  signin::IdentityManager* identity_manager() const override { return nullptr; }
+
+  // These methods correspond to fields in `BinaryUploadRequest`.
   int user_action_requests_count() const override {
     return user_action_requests_count_;
   }
@@ -185,7 +184,7 @@ class TestContentAnalysisInfo : public ContentAnalysisInfo {
 
   std::string email() const override { return "test@user.com"; }
 
-  std::string url() const override { return kTestUrl; }
+  const GURL& url() const override { return tab_url(); }
 
   const GURL& tab_url() const override {
     static GURL url(kTestUrl);
@@ -195,6 +194,19 @@ class TestContentAnalysisInfo : public ContentAnalysisInfo {
   ContentAnalysisRequest::Reason reason() const override {
     return ContentAnalysisRequest::FILE_PICKER_DIALOG;
   }
+
+  google::protobuf::RepeatedPtrField<::safe_browsing::ReferrerChainEntry>
+  referrer_chain() const override {
+    return google::protobuf::RepeatedPtrField<
+        ::safe_browsing::ReferrerChainEntry>();
+  }
+
+  google::protobuf::RepeatedPtrField<std::string> frame_url_chain()
+      const override {
+    return {};
+  }
+
+  content::WebContents* web_contents() const override { return nullptr; }
 
  private:
   const raw_ref<const enterprise_connectors::AnalysisSettings> settings_;
@@ -234,6 +246,15 @@ void PrintTo(const RequestHandlerResult& request_handler_result,
     case FinalContentAnalysisResult::SUCCESS:
       *os << "SUCCESS";
       break;
+    case FinalContentAnalysisResult::FORCE_SAVE_TO_CLOUD:
+      *os << "FORCE_SAVE_TO_CLOUD";
+      break;
+    case FinalContentAnalysisResult::KEPT_IN_MANAGED_CHROME:
+      *os << "KEPT_IN_MANAGED_CHROME";
+      break;
+    case FinalContentAnalysisResult::CANCELLED:
+      *os << "CANCELLED";
+      break;
   }
   *os << "), tag: \"" << request_handler_result.tag << "\")";
 }
@@ -268,8 +289,8 @@ class FilesRequestHandlerTest : public BaseTest {
                 settings->cloud_or_local_settings.is_cloud_analysis()),
             /*content_analysis_info=*/&info,
             /*upload_service=*/nullptr, profile_, GURL(kTestUrl), "", "",
-            kContentTransferMethod, safe_browsing::DeepScanAccessPoint::UPLOAD,
-            paths, future.GetCallback());
+            kContentTransferMethod, DeepScanAccessPoint::UPLOAD, paths,
+            future.GetCallback());
 
     fake_files_request_handler_->UploadData();
 
@@ -345,13 +366,19 @@ class FilesRequestHandlerTest : public BaseTest {
     enterprise_connectors::test::SetAnalysisConnector(
         profile_->GetPrefs(), AnalysisConnector::FILE_ATTACHED,
         kBlockingScansForDlpAndMalware);
+
+    scoped_feature_list_.InitWithFeatures(
+        {safe_browsing::kEnhancedFieldsForSecOps,
+         enterprise_connectors::kEnableCancelUploadOnContentAnalysis},
+        {});
+    histogram_tester_ = std::make_unique<base::HistogramTester>();
   }
 
   void FakeFileUploadCallback(
       bool is_cloud_analysis,
-      safe_browsing::BinaryUploadService::Result result,
+      ScanRequestUploadResult result,
       const base::FilePath& path,
-      std::unique_ptr<safe_browsing::BinaryUploadService::Request> request,
+      std::unique_ptr<BinaryUploadRequest> request,
       test::FakeFilesRequestHandler::FakeFileRequestCallback callback) {
     EXPECT_FALSE(path.empty());
     if (is_cloud_analysis) {
@@ -412,7 +439,7 @@ class FilesRequestHandlerTest : public BaseTest {
   std::map<base::FilePath, ContentAnalysisResponse> failures_;
 
   // DLP response to ovewrite in the callback if present.
-  std::optional<ContentAnalysisResponse> dlp_response_ = std::nullopt;
+  std::optional<ContentAnalysisResponse> dlp_response_;
 
   // To verify user action requests count in local content analysis request is
   // set correctly.
@@ -420,6 +447,8 @@ class FilesRequestHandlerTest : public BaseTest {
   base::test::ScopedFeatureList scoped_feature_list_;
   bool upload_performed_ = false;
 
+ protected:
+  std::unique_ptr<base::HistogramTester> histogram_tester_;
   base::WeakPtrFactory<FilesRequestHandlerTest> weak_ptr_factory_{this};
 };
 
@@ -604,6 +633,11 @@ TEST_F(FilesRequestHandlerTest, FileIsEncrypted_PolicyAllows) {
 }
 
 TEST_F(FilesRequestHandlerTest, FileIsLarge) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      enterprise_connectors::kEnableNewUploadSizeLimit,
+      {{"max_file_size_mb", "250"}});
+
   content::InProcessUtilityThreadHelper in_process_utility_thread_helper;
 
   enterprise_connectors::test::SetAnalysisConnector(
@@ -626,8 +660,7 @@ TEST_F(FilesRequestHandlerTest, FileIsLarge) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
   base::FilePath file_path = temp_dir.GetPath().AppendASCII("large.doc");
-  std::string contents(
-      safe_browsing::BinaryUploadService::kMaxUploadSizeBytes + 1, 'a');
+  std::string contents(250 * 1024 * 1024 + 1, 'a');
   base::WriteFile(file_path, contents);
   paths.emplace_back(file_path);
   SetExpectedUserActionRequestsCount(1);
@@ -645,6 +678,11 @@ TEST_F(FilesRequestHandlerTest, FileIsLarge) {
 // size.
 #if BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
 TEST_F(FilesRequestHandlerTest, FileIsLarge_LocalAnalysis) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      enterprise_connectors::kEnableNewUploadSizeLimit,
+      {{"max_file_size_mb", "250"}});
+
   content::InProcessUtilityThreadHelper in_process_utility_thread_helper;
 
   enterprise_connectors::test::SetAnalysisConnector(
@@ -656,8 +694,7 @@ TEST_F(FilesRequestHandlerTest, FileIsLarge_LocalAnalysis) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
   base::FilePath file_path = temp_dir.GetPath().AppendASCII("large.doc");
-  std::string contents(
-      safe_browsing::BinaryUploadService::kMaxUploadSizeBytes + 1, 'a');
+  std::string contents(250 * 1024 * 1024 + 1, 'a');
   base::WriteFile(file_path, contents);
   paths.emplace_back(file_path);
   SetExpectedUserActionRequestsCount(1);
@@ -671,7 +708,18 @@ TEST_F(FilesRequestHandlerTest, FileIsLarge_LocalAnalysis) {
 }
 #endif  // BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
 
-TEST_F(FilesRequestHandlerTest, FileIsLarge_PolicyAllows) {
+// TODO(crbug.com/538549149): Flaky on Linux TSan.
+#if defined(THREAD_SANITIZER) && BUILDFLAG(IS_LINUX)
+#define MAYBE_FileIsLarge_PolicyAllows DISABLED_FileIsLarge_PolicyAllows
+#else
+#define MAYBE_FileIsLarge_PolicyAllows FileIsLarge_PolicyAllows
+#endif
+TEST_F(FilesRequestHandlerTest, MAYBE_FileIsLarge_PolicyAllows) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      enterprise_connectors::kEnableNewUploadSizeLimit,
+      {{"max_file_size_mb", "250"}});
+
   content::InProcessUtilityThreadHelper in_process_utility_thread_helper;
 
   enterprise_connectors::test::SetAnalysisConnector(
@@ -694,8 +742,7 @@ TEST_F(FilesRequestHandlerTest, FileIsLarge_PolicyAllows) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
   base::FilePath file_path = temp_dir.GetPath().AppendASCII("large.doc");
-  std::string contents(
-      safe_browsing::BinaryUploadService::kMaxUploadSizeBytes + 1, 'a');
+  std::string contents(250 * 1024 * 1024 + 1, 'a');
   base::WriteFile(file_path, contents);
   paths.emplace_back(file_path);
   SetExpectedUserActionRequestsCount(1);
@@ -852,6 +899,152 @@ TEST_F(FilesRequestHandlerTest, FileDataNegativeMalwareAndDlpVerdicts) {
                          false, FinalContentAnalysisResult::FAILURE, "malware"),
                      MatchesRequestHandlerResult(
                          false, FinalContentAnalysisResult::FAILURE, "dlp")));
+}
+
+TEST_F(FilesRequestHandlerTest, DestructorReportsCancelled) {
+  enterprise_connectors::test::EventReportValidatorHelper
+      event_report_validator_helper(profile_);
+
+  GURL url(kTestUrl);
+  std::vector<base::FilePath> paths = CreateFilesForTest(
+      {FILE_PATH_LITERAL("foo.doc"), FILE_PATH_LITERAL("bar.doc")});
+
+  std::optional<AnalysisSettings> settings = GetSettings();
+  ASSERT_TRUE(settings.has_value());
+
+  TestContentAnalysisInfo info(*settings, paths.size());
+
+  using ResultFuture =
+      base::test::TestFuture<std::vector<RequestHandlerResult>>;
+  ResultFuture future;
+
+  fake_files_request_handler_ = std::make_unique<test::FakeFilesRequestHandler>(
+      base::BindRepeating(
+          &FilesRequestHandlerTest_DestructorReportsCancelled_Test::
+              FakeFileUploadCallback,
+          weak_ptr_factory_.GetWeakPtr(),
+          settings->cloud_or_local_settings.is_cloud_analysis()),
+      /*content_analysis_info=*/&info,
+      /*upload_service=*/nullptr, profile_, GURL(kTestUrl), "", "",
+      kContentTransferMethod, DeepScanAccessPoint::UPLOAD, paths,
+      future.GetCallback());
+
+  base::RunLoop run_loop;
+
+  auto validator = event_report_validator_helper.CreateValidator();
+  validator.SetDoneClosure(run_loop.QuitClosure());
+
+  chrome::cros::reporting::proto::UnscannedFileEvent expected_event;
+  expected_event.set_url(kTestUrl);
+  expected_event.set_tab_url(kTestUrl);
+  expected_event.set_source("");
+  expected_event.set_destination("");
+  expected_event.set_trigger(chrome::cros::reporting::proto::FILE_UPLOAD);
+  expected_event.set_unscanned_reason(
+      chrome::cros::reporting::proto::UnscannedFileEvent::USER_CANCELLED);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EVENT_RESULT_CANCELLED_BY_USER);
+  expected_event.set_profile_user_name("test-user@chromium.org");
+  expected_event.set_profile_identifier(profile_->GetPath().AsUTF8Unsafe());
+  expected_event.set_content_transfer_method(
+      chrome::cros::reporting::proto::CONTENT_TRANSFER_METHOD_FILE_PICKER);
+  expected_event.set_content_size(7);
+
+  std::set<std::string> expected_mimetypes = {""};
+  validator.ExpectUnscannedFileEvents(
+      std::move(expected_event),
+      /*expected_filenames=*/{paths[0].AsUTF8Unsafe(), paths[1].AsUTF8Unsafe()},
+      /*expected_sha256s=*/{"", ""},
+      /*expected_scan_ids=*/{"", ""},
+      /*expected_mimetypes=*/&expected_mimetypes);
+
+  // Triggering the process
+  fake_files_request_handler_->UploadData();
+
+  // Deleting the handler while the scan is ongoing to simulate cancellation.
+  fake_files_request_handler_.reset();
+
+  run_loop.Run();
+
+  histogram_tester_->ExpectUniqueSample(
+      "Enterprise.OnFileAttach.Cancelled.BatchSize", 2, 1);
+  histogram_tester_->ExpectTotalCount(
+      "Enterprise.OnFileAttach.Cancelled.Duration", 1);
+}
+
+TEST_F(FilesRequestHandlerTest, DestructorReportsCancelled_FileDeleted) {
+  enterprise_connectors::test::EventReportValidatorHelper
+      event_report_validator_helper(profile_);
+
+  GURL url(kTestUrl);
+  std::vector<base::FilePath> paths = CreateFilesForTest(
+      {FILE_PATH_LITERAL("foo.doc"), FILE_PATH_LITERAL("bar.doc")});
+
+  std::optional<AnalysisSettings> settings = GetSettings();
+  ASSERT_TRUE(settings.has_value());
+
+  TestContentAnalysisInfo info(*settings, paths.size());
+
+  using ResultFuture =
+      base::test::TestFuture<std::vector<RequestHandlerResult>>;
+  ResultFuture future;
+
+  fake_files_request_handler_ = std::make_unique<test::FakeFilesRequestHandler>(
+      base::BindRepeating(
+          &FilesRequestHandlerTest_DestructorReportsCancelled_FileDeleted_Test::
+              FakeFileUploadCallback,
+          weak_ptr_factory_.GetWeakPtr(),
+          settings->cloud_or_local_settings.is_cloud_analysis()),
+      /*content_analysis_info=*/&info,
+      /*upload_service=*/nullptr, profile_, GURL(kTestUrl), "", "",
+      kContentTransferMethod, DeepScanAccessPoint::UPLOAD, paths,
+      future.GetCallback());
+
+  base::RunLoop run_loop;
+
+  auto validator = event_report_validator_helper.CreateValidator();
+  validator.SetDoneClosure(run_loop.QuitClosure());
+
+  chrome::cros::reporting::proto::UnscannedFileEvent expected_event;
+  expected_event.set_url(kTestUrl);
+  expected_event.set_tab_url(kTestUrl);
+  expected_event.set_source("");
+  expected_event.set_destination("");
+  expected_event.set_trigger(chrome::cros::reporting::proto::FILE_UPLOAD);
+  expected_event.set_unscanned_reason(
+      chrome::cros::reporting::proto::UnscannedFileEvent::USER_CANCELLED);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EVENT_RESULT_CANCELLED_BY_USER);
+  expected_event.set_profile_user_name("test-user@chromium.org");
+  expected_event.set_profile_identifier(profile_->GetPath().AsUTF8Unsafe());
+  expected_event.set_content_transfer_method(
+      chrome::cros::reporting::proto::CONTENT_TRANSFER_METHOD_FILE_PICKER);
+  expected_event.set_content_size(0);
+
+  std::set<std::string> expected_mimetypes = {""};
+  validator.ExpectUnscannedFileEvents(
+      std::move(expected_event),
+      /*expected_filenames=*/{paths[0].AsUTF8Unsafe(), paths[1].AsUTF8Unsafe()},
+      /*expected_sha256s=*/{"", ""},
+      /*expected_scan_ids=*/{"", ""},
+      /*expected_mimetypes=*/&expected_mimetypes);
+
+  // Triggering the process
+  fake_files_request_handler_->UploadData();
+
+  // Delete the files from disk to simulate fetching failure.
+  base::DeleteFile(paths[0]);
+  base::DeleteFile(paths[1]);
+
+  // Deleting the handler while the scan is ongoing to simulate cancellation.
+  fake_files_request_handler_.reset();
+
+  run_loop.Run();
+
+  histogram_tester_->ExpectUniqueSample(
+      "Enterprise.OnFileAttach.Cancelled.BatchSize", 2, 1);
+  histogram_tester_->ExpectTotalCount(
+      "Enterprise.OnFileAttach.Cancelled.Duration", 1);
 }
 
 TEST_F(FilesRequestHandlerTest, NoDelay) {

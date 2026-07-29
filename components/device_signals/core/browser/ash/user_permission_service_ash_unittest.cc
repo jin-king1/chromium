@@ -91,7 +91,7 @@ class UserPermissionServiceAshTest : public testing::Test {
 
   void SetUserAffiliated(bool is_affiliated = true) {
     EXPECT_CALL(*mock_user_delegate_, IsAffiliated())
-        .WillOnce(Return(is_affiliated));
+        .WillRepeatedly(Return(is_affiliated));
   }
 
   base::test::TaskEnvironment task_environment_;
@@ -120,8 +120,12 @@ TEST_F(UserPermissionServiceAshTest,
   SetDeviceAsCloudManaged();
   SetSigninContext(/*is_signin_context=*/false);
   SetUserAffiliated();
+  EXPECT_CALL(*mock_user_delegate_, IsManagedUser())
+      .WillRepeatedly(Return(true));
 
   EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kGranted);
 }
 
 // Tests that signals can be collected on the signin screen of a managed device.
@@ -129,8 +133,12 @@ TEST_F(UserPermissionServiceAshTest,
        CanCollectSignals_DeviceCloudManaged_SigninContext) {
   SetDeviceAsCloudManaged();
   SetSigninContext();
+  EXPECT_CALL(*mock_user_delegate_, IsManagedUser())
+      .WillRepeatedly(Return(false));
 
   EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kUnsupported);
 }
 
 // Tests that signals cannot be collected if the device is unmanaged but user is
@@ -141,8 +149,12 @@ TEST_F(UserPermissionServiceAshTest,
   SetDeviceAsCloudManaged();
   SetSigninContext(/*is_signin_context=*/false);
   SetUserAffiliated(/*is_affiliated=*/false);
+  EXPECT_CALL(*mock_user_delegate_, IsManagedUser())
+      .WillRepeatedly(Return(true));
 
   EXPECT_EQ(permission_service_->CanCollectSignals(),
+            UserPermission::kUnsupported);
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
             UserPermission::kUnsupported);
 }
 
@@ -155,6 +167,8 @@ TEST_F(UserPermissionServiceAshTest,
 
   EXPECT_EQ(permission_service_->CanCollectSignals(),
             UserPermission::kUnsupported);
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kUnsupported);
 }
 
 // Tests that signals can be collected if the device is unmanaged and the user
@@ -165,6 +179,8 @@ TEST_F(UserPermissionServiceAshTest,
   SetUserAsCloudManaged();
 
   EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kUnsupported);
 }
 
 class UserPermissionServiceAshFlagTest
@@ -182,6 +198,8 @@ TEST_P(UserPermissionServiceAshFlagTest, CanCollectSignals_UnmanagedDevice) {
   EXPECT_EQ(
       permission_service_->CanCollectSignals(),
       GetParam() ? UserPermission::kGranted : UserPermission::kUnsupported);
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kUnsupported);
 }
 
 INSTANTIATE_TEST_SUITE_P(All,

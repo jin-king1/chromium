@@ -33,15 +33,17 @@ class MockAutofillAgent : public mojom::AutofillAgent {
               (override));
   MOCK_METHOD(
       void,
-      ExtractForm,
-      (FormRendererId form,
+      ExtractFormWithField,
+      (FieldRendererId field_id,
        base::OnceCallback<void(const std::optional<FormData>&)> callback),
       (override));
   MOCK_METHOD(void,
               ApplyFieldsAction,
               (mojom::FormActionType action_type,
                mojom::ActionPersistence action_persistence,
-               const std::vector<FormFieldData::FillData>& fields),
+               const std::vector<FormFieldData::FillData>& fields,
+               const FillId& fill_id,
+               bool supports_refill),
               (override));
   MOCK_METHOD(void,
               ApplyFieldAction,
@@ -54,6 +56,7 @@ class MockAutofillAgent : public mojom::AutofillAgent {
               FieldTypePredictionsAvailable,
               (const std::vector<FormDataPredictions>& forms),
               (override));
+  MOCK_METHOD(void, ExposeDomNodeIds, (), (override));
   MOCK_METHOD(void, ClearPreviewedForm, (), (override));
   MOCK_METHOD(void,
               TriggerSuggestions,
@@ -88,6 +91,12 @@ class MockAutofillAgent : public mojom::AutofillAgent {
                const std::u16string& label_regex,
                uint32_t number_of_ancestor_levels_to_search,
                base::OnceCallback<void(const std::string&)>),
+              (override));
+  MOCK_METHOD(void, ScrollFieldIntoView, (FieldRendererId), (override));
+  MOCK_METHOD(void,
+              ObserveFieldVisibility,
+              (FieldRendererId,
+               mojo::PendingRemote<mojom::AutofillVisibilityObserver>),
               (override));
 
  private:

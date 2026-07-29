@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/capture_mode/camera_video_frame_renderer.h"
 
 #include <cmath>
@@ -27,7 +22,6 @@
 #include "ui/aura/window_tree_host.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/layer_type.h"
 #include "ui/gfx/geometry/dip_util.h"
 #include "ui/gfx/geometry/size_conversions.h"
 
@@ -54,7 +48,7 @@ CameraVideoFrameRenderer::CameraVideoFrameRenderer(
       should_flip_frames_horizontally_(should_flip_frames_horizontally) {
   host_window_.set_owned_by_parent(false);
   host_window_.Init(ui::LAYER_SOLID_COLOR);
-  host_window_.layer()->SetColor(SK_ColorDKGRAY);
+  host_window_.layer()->AsSolidColor()->SetColor(SkColors::kDkGray);
   host_window_.SetName("CameraVideoFramesHost");
 }
 
@@ -287,8 +281,10 @@ viz::CompositorFrame CameraVideoFrameRenderer::CreateCompositorFrame(
   auto resource_id = quad_list.front()->resource_id;
   if (resource_id != viz::kInvalidResourceId) {
     std::vector<viz::TransferableResource> resource_list;
-    client_resource_provider_.PrepareSendToParent({resource_id}, &resource_list,
-                                                  context_provider_.get());
+    CHECK(context_provider_);
+    client_resource_provider_.PrepareSendToParent(
+        {resource_id}, &resource_list,
+        context_provider_->SharedImageInterface());
     compositor_frame.resource_list = std::move(resource_list);
   }
 

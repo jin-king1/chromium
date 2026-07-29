@@ -5,12 +5,13 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_IME_EDIT_CONTEXT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_IME_EDIT_CONTEXT_H_
 
+#include "third_party/blink/public/mojom/input/input_handler.mojom-blink.h"
 #include "third_party/blink/public/platform/web_text_input_type.h"
 #include "third_party/blink/public/web/web_input_method_controller.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/dom/element_rare_data_field.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
+#include "third_party/blink/renderer/core/dom/node_rare_data_field.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "ui/base/ime/ime_text_span.h"
@@ -29,11 +30,10 @@ class InputMethodController;
 // modern operating systems to facilitate various input modalities to unlock
 // advanced editing scenarios. For more information please refer
 // https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/master/EditContext/explainer.md.
-
 class CORE_EXPORT EditContext final : public EventTarget,
                                       public ActiveScriptWrappable<EditContext>,
                                       public WebInputMethodController,
-                                      public ElementRareDataField {
+                                      public NodeRareDataField {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -133,6 +133,12 @@ class CORE_EXPORT EditContext final : public EventTarget,
                       const std::vector<ui::ImeTextSpan>& ime_text_spans,
                       const WebRange& replacement_range,
                       int selection_start,
+                      int selection_end,
+                      mojom::blink::ImeState ime_state) override;
+  bool SetComposition(const WebString& text,
+                      const std::vector<ui::ImeTextSpan>& ime_text_spans,
+                      const WebRange& replacement_range,
+                      int selection_start,
                       int selection_end) override;
   bool CommitText(const WebString& text,
                   const std::vector<ui::ImeTextSpan>& ime_text_spans,
@@ -174,6 +180,14 @@ class CORE_EXPORT EditContext final : public EventTarget,
   // For English typing.
   bool InsertText(const WebString& text);
 
+  // Clamps `selection_start_` and `selection_end_` to be within `text_` length.
+  // This is necessary because `updateText` can shorten the text buffer without
+  // adjusting selection offsets leaving stale offsets that exceed the `text_`
+  // length. Must be called before delete operations to prevent out-of-bounds
+  // access.
+  // TODO(crbug.com/379170477): This can be removed when `updateText` adjusts
+  // the selection offsets to stay within `text_` bounds.
+  void EnsureSelectionWithinTextBounds();
   void DeleteBackward();
   void DeleteForward();
   void DeleteWordBackward();
@@ -201,6 +215,7 @@ class CORE_EXPORT EditContext final : public EventTarget,
   // page that the selection has changed.
   void SetSelection(int start,
                     int end,
+                    bool sync_selection = true,
                     bool dispatch_text_update_event = false);
 
   // Sets rect_in_viewport to the surrounding rect, in physical pixels,
@@ -267,9 +282,11 @@ class CORE_EXPORT EditContext final : public EventTarget,
 
   bool HasValidCompositionBounds() const;
 
+  // Notify browser process to cancel the ongoing composition.
+  void CancelComposition();
   // Delete the characters in the existing composition range and end the
   // composition.
-  void CancelComposition();
+  void OnCancelComposition();
 
   void ClearCompositionState();
 
@@ -306,6 +323,12 @@ class CORE_EXPORT EditContext final : public EventTarget,
   // composition_range_end_ should always be >= composition_range_start_.
   uint32_t composition_range_start_ = 0;
   uint32_t composition_range_end_ = 0;
+  // This flag tracks whether `FinishComposingText` is currently in progress.
+  // This is used to guard against re-entrant calls to `FinishComposingText`
+  // when editContext associations are changed during compositionend or
+  // textformatupdate event dispatch.
+  bool finish_composing_in_progress_ = false;
+
   // Elements that are associated with this EditContext.
   HeapVector<Member<HTMLElement>> attached_elements_;
 

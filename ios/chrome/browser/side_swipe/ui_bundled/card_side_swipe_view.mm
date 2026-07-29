@@ -11,8 +11,8 @@
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
-#import "ios/chrome/browser/lens_overlay/coordinator/lens_overlay_availability.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_tab_helper.h"
+#import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
@@ -21,10 +21,11 @@
 #import "ios/chrome/browser/side_swipe/ui_bundled/side_swipe_gesture_recognizer.h"
 #import "ios/chrome/browser/side_swipe/ui_bundled/side_swipe_util.h"
 #import "ios/chrome/browser/side_swipe/ui_bundled/swipe_view.h"
-#import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
+#import "ios/chrome/browser/snapshots/model/snapshot_browser_agent.h"
+#import "ios/chrome/browser/snapshots/model/snapshot_id.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_constants.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/public/side_swipe_toolbar_snapshot_providing.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/public/toolbar_type.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/side_swipe_toolbar_snapshot_providing.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_type.h"
 #import "ios/chrome/browser/web/model/page_placeholder_tab_helper.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_theme_resources.h"
@@ -66,18 +67,25 @@ const CGFloat kResizeFactor = 4;
 
   // WebStateList provided from the initializer.
   raw_ptr<WebStateList> _webStateList;
+
+  // Used to fetch snapshot for tabs.
+  raw_ptr<SnapshotBrowserAgent> _snapshotBrowserAgent;
 }
 
 #pragma mark - Public
 
 - (instancetype)initWithFrame:(CGRect)frame
                     topMargin:(CGFloat)topMargin
-                 webStateList:(WebStateList*)webStateList {
+                 bottomMargin:(CGFloat)bottomMargin
+                 webStateList:(WebStateList*)webStateList
+         snapshotBrowserAgent:(SnapshotBrowserAgent*)snapshotBrowserAgent {
   self = [super initWithFrame:frame];
   if (self) {
     _webStateList = webStateList;
+    _snapshotBrowserAgent = snapshotBrowserAgent;
     _currentPoint = CGPointZero;
     _topMargin = topMargin;
+    _bottomMargin = bottomMargin;
 
     UIView* background = [[UIView alloc] initWithFrame:CGRectZero];
     [self addSubview:background];
@@ -97,11 +105,13 @@ const CGFloat kResizeFactor = 4;
     background.backgroundColor = [UIColor colorNamed:kGridBackgroundColor];
 
     _rightCard = [[SwipeView alloc] initWithFrame:CGRectZero
-                                        topMargin:topMargin];
+                                        topMargin:topMargin
+                                     bottomMargin:bottomMargin];
     _rightCard.layer.cornerRadius = kCardCornerRadius;
     _rightCard.layer.masksToBounds = YES;
     _leftCard = [[SwipeView alloc] initWithFrame:CGRectZero
-                                       topMargin:topMargin];
+                                       topMargin:topMargin
+                                    bottomMargin:bottomMargin];
     _leftCard.layer.cornerRadius = kCardCornerRadius;
     _leftCard.layer.masksToBounds = YES;
     [_rightCard setTranslatesAutoresizingMaskIntoConstraints:NO];
@@ -162,6 +172,7 @@ const CGFloat kResizeFactor = 4;
 }
 
 - (void)disconnect {
+  _snapshotBrowserAgent = nullptr;
   _webStateList = nullptr;
 }
 
@@ -171,6 +182,12 @@ const CGFloat kResizeFactor = 4;
   _topMargin = topMargin;
   _leftCard.topMargin = topMargin;
   _rightCard.topMargin = topMargin;
+}
+
+- (void)setBottomMargin:(CGFloat)bottomMargin {
+  _bottomMargin = bottomMargin;
+  _leftCard.bottomMargin = bottomMargin;
+  _rightCard.bottomMargin = bottomMargin;
 }
 
 #pragma mark - UIView
@@ -219,32 +236,17 @@ const CGFloat kResizeFactor = 4;
   [card setHidden:NO];
 
   web::WebState* webState = _webStateList->GetWebStateAt(index);
-  base::WeakPtr<web::WebState> weakWebState = webState->GetWeakPtr();
-  PrefService* prefs =
-      ProfileIOS::FromBrowserState(webState->GetBrowserState())->GetPrefs();
   // Lens overlay displays content fullscreen and hides the vertical toolbars.
-  if (IsLensOverlayAvailable(prefs)) {
-    if (LensOverlayTabHelper* lensOverlayTabHelper =
-            LensOverlayTabHelper::FromWebState(webState)) {
-      BOOL lensOverlayShown;
+  if (LensOverlayTabHelper* lensOverlayTabHelper =
+          LensOverlayTabHelper::FromWebState(webState)) {
+    BOOL lensOverlayShown =
+        lensOverlayTabHelper->IsLensOverlayInvokedOnCurrentNavigationItem();
 
-      if (IsLensOverlaySameTabNavigationEnabled(prefs)) {
-        lensOverlayShown =
-            lensOverlayTabHelper->IsLensOverlayInvokedOnCurrentNavigationItem();
-      } else {
-        lensOverlayShown =
-            lensOverlayTabHelper->IsLensOverlayUIAttachedAndAlive();
-      }
-
-      UIImage* lensOverlaySnapshot =
-          lensOverlayTabHelper->GetViewportSnapshot();
-      if (lensOverlayShown && lensOverlaySnapshot) {
-        [self enableFullscreenCard:card];
-        [self colorSnapshotRetrieved:lensOverlaySnapshot
-                                card:card
-                        weakWebState:weakWebState];
-        return;
-      }
+    UIImage* lensOverlaySnapshot = lensOverlayTabHelper->GetViewportSnapshot();
+    if (lensOverlayShown && lensOverlaySnapshot) {
+      [self enableFullscreenCard:card];
+      [card setImage:lensOverlaySnapshot];
+      return;
     }
   }
 
@@ -257,11 +259,24 @@ const CGFloat kResizeFactor = 4;
                           withToolbarType:ToolbarType::kSecondary];
   [card setBottomToolbarImage:bottomToolbarSnapshot];
 
-  __weak CardSideSwipeView* weakSelf = self;
-  SnapshotTabHelper::FromWebState(webState)->RetrieveColorSnapshot(^(
-      UIImage* image) {
-    [weakSelf colorSnapshotRetrieved:image card:card weakWebState:weakWebState];
-  });
+  // Fetch grey scale image if the WebState is unrealized, or page placeholder
+  // is requested for the next navigation, unless on single code devices (as
+  // generating the greyscale image takes too much time on such slow device).
+  SnapshotKind snapshotKind = SnapshotKindColor;
+  if (!ios::device_util::IsSingleCoreDevice()) {
+    if (!webState->IsRealized() ||
+        PagePlaceholderTabHelper::FromWebState(webState)
+            ->will_add_placeholder_for_next_navigation()) {
+      snapshotKind = SnapshotKindGreyscale;
+    }
+  }
+
+  __weak SwipeView* weakCard = card;
+  _snapshotBrowserAgent->RetrieveSnapshotWithID(
+      SnapshotID(webState->GetUniqueIdentifier()), snapshotKind,
+      ^(UIImage* image) {
+        [weakCard setImage:image];
+      });
 }
 
 // Helper method that turns a card fullscreen by removing the vertical margins
@@ -270,45 +285,6 @@ const CGFloat kResizeFactor = 4;
   [card setTopMargin:0];
   [card setTopToolbarImage:nil];
   [card setBottomToolbarImage:nil];
-}
-
-// Helper method that is invoked once the color snapshot has been fetched
-// for the WebState returned by `weakWebState`. As the fetching is done
-// asynchronously, it is possible for the WebState to have been destroyed
-// and thus for `webStateGetter` to return nullptr.
-- (void)colorSnapshotRetrieved:(UIImage*)image
-                          card:(SwipeView*)card
-                  weakWebState:(base::WeakPtr<web::WebState>)weakWebState {
-  // If the WebState has been destroyed, the card will be dropped, so
-  // the image can be dropped.
-  web::WebState* webState = weakWebState.get();
-  if (!webState) {
-    return;
-  }
-
-  // Converting snapshotted images to grey takes too much time for single core
-  // devices.  Instead, show the colored image for single core devices and the
-  // grey image for multi core devices.
-  const bool use_color_image =
-      ios::device_util::IsSingleCoreDevice() ||
-      !PagePlaceholderTabHelper::FromWebState(webState)
-           ->will_add_placeholder_for_next_navigation();
-
-  if (use_color_image) {
-    [card setImage:image];
-    return;
-  }
-
-  __weak CardSideSwipeView* weakSelf = self;
-  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0ul),
-                 ^{
-                   UIImage* greyImage = [weakSelf smallGreyImage:image];
-                   if (greyImage) {
-                     dispatch_async(dispatch_get_main_queue(), ^{
-                       [card setImage:greyImage];
-                     });
-                   }
-                 });
 }
 
 // Move cards according to `currentPoint_.x`. Edge cards only drag

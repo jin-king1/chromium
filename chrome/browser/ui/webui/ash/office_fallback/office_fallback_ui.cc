@@ -6,17 +6,18 @@
 
 #include <utility>
 
+#include "ash/constants/webui_url_constants.h"
 #include "base/functional/bind.h"
 #include "chrome/browser/chromeos/upload_office_to_cloud/upload_office_to_cloud.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/webui_url_constants.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/office_fallback_resources.h"
 #include "chrome/grit/office_fallback_resources_map.h"
 #include "chromeos/constants/chromeos_features.h"
+#include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/webui_util.h"
 
 namespace ash::office_fallback {
@@ -29,8 +30,10 @@ bool OfficeFallbackUIConfig::IsWebUIEnabled(
 
 OfficeFallbackUI::OfficeFallbackUI(content::WebUI* web_ui)
     : ui::MojoWebDialogUI{web_ui} {
+  Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui), chrome::kChromeUIOfficeFallbackHost);
+      profile, ash::kChromeUIOfficeFallbackHost);
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 
   // Set text for dialog buttons.
   static constexpr webui::LocalizedString kStrings[] = {
@@ -64,7 +67,7 @@ void OfficeFallbackUI::CreatePageHandler(
 }
 
 void OfficeFallbackUI::CloseDialog(mojom::DialogChoice choice) {
-  base::Value::List args;
+  base::ListValue args;
   switch (choice) {
     case mojom::DialogChoice::kCancel:
       args.Append(kDialogChoiceCancel);
@@ -80,12 +83,6 @@ void OfficeFallbackUI::CloseDialog(mojom::DialogChoice choice) {
       break;
   }
   ui::MojoWebDialogUI::CloseDialog(args);
-}
-
-void OfficeFallbackUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(OfficeFallbackUI)

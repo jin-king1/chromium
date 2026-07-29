@@ -13,7 +13,9 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
+#include "pdf/buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace task_manager {
@@ -72,18 +74,28 @@ std::u16string SubframeTask::GetTitle() {
   // For Isolated Web Apps, subframe rows display IWA name:
   //     "Subframe: Example Isolated Web App"
 
-  const GURL& site_url = site_instance_->GetSiteURL();
+  const GURL& site_url =
+      site_instance_->GetSecurityPrincipal().GetDeprecatedSiteURL();
   Profile* profile =
       Profile::FromBrowserContext(site_instance_->GetBrowserContext());
 
-  int message_id = profile->IsOffTheRecord()
-                       ? IDS_TASK_MANAGER_SUBFRAME_INCOGNITO_PREFIX
-                       : IDS_TASK_MANAGER_SUBFRAME_PREFIX;
   return l10n_util::GetStringFUTF16(
-      message_id,
+      GetMessageId(profile),
       UrlIdentity::CreateFromUrl(profile, site_url, kUrlIdentityAllowedTypes,
                                  kUrlIdentityOptions)
           .name);
+}
+
+int SubframeTask::GetMessageId(Profile* profile) {
+#if BUILDFLAG(ENABLE_PDF)
+  if (site_instance_->HasProcess() && site_instance_->GetProcess()->IsPdf()) {
+    return profile->IsOffTheRecord()
+               ? IDS_TASK_MANAGER_PDF_SUBFRAME_INCOGNITO_PREFIX
+               : IDS_TASK_MANAGER_PDF_SUBFRAME_PREFIX;
+  }
+#endif  // BUILDFLAG(ENABLE_PDF)
+  return profile->IsOffTheRecord() ? IDS_TASK_MANAGER_SUBFRAME_INCOGNITO_PREFIX
+                                   : IDS_TASK_MANAGER_SUBFRAME_PREFIX;
 }
 
 }  // namespace task_manager

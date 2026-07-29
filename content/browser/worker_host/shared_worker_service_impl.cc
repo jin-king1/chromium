@@ -15,18 +15,20 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/not_fatal_until.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/observer_list.h"
+#include "base/timer/elapsed_timer.h"
 #include "content/browser/devtools/shared_worker_devtools_agent_host.h"
 #include "content/browser/loader/file_url_loader_factory.h"
-#include "content/browser/renderer_host/private_network_access_util.h"
 #include "content/browser/service_worker/service_worker_client.h"
 #include "content/browser/service_worker/service_worker_main_resource_handle.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/worker_host/shared_worker_host.h"
 #include "content/browser/worker_host/worker_script_fetcher.h"
+#include "content/browser/worker_host/worker_util.h"
 #include "content/common/content_constants_internal.h"
+#include "content/common/features.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
@@ -37,6 +39,7 @@
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
+#include "mojo/public/cpp/bindings/message.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/isolation_info.h"
 #include "net/cookies/site_for_cookies.h"
@@ -80,9 +83,9 @@ void SharedWorkerServiceImpl::RemoveObserver(Observer* observer) {
 
 void SharedWorkerServiceImpl::EnumerateSharedWorkers(Observer* observer) {
   for (const auto& host : worker_hosts_) {
-    observer->OnWorkerCreated(
-        host->token(), host->GetProcessHost()->GetDeprecatedID(),
-        host->instance().storage_key().origin(), host->GetDevToolsToken());
+    observer->OnWorkerCreated(host->token(), host->GetProcessHost()->GetID(),
+                              host->instance().worker_storage_key().origin(),
+                              host->GetDevToolsToken());
     if (host->started()) {
       observer->OnFinalResponseURLDetermined(host->token(),
                                              host->final_response_url());
@@ -124,7 +127,6 @@ void SharedWorkerServiceImpl::ConnectToWorker(
     blink::mojom::SharedWorkerCreationContextType creation_context_type,
     const blink::MessagePortChannel& message_port,
     scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory,
-    ukm::SourceId client_ukm_source_id,
     const std::optional<blink::StorageKey>& storage_key_override) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
@@ -148,6 +150,14 @@ void SharedWorkerServiceImpl::ConnectToWorker(
     return;
   }
 
+  // If the enterprise policy disables the extended lifetime feature, we should
+  // disable it.
+  if (info->extended_lifetime &&
+      !GetContentClient()->browser()->AllowSharedWorkerExtendedLifetime(
+          render_frame_host->GetBrowserContext())) {
+    info->extended_lifetime = false;
+  }
+
   // If we are overriding the storage key it must be to a first-party context
   // version of the storage key in the `render_frame_host`.
   CHECK(!storage_key_override ||
@@ -156,6 +166,31 @@ void SharedWorkerServiceImpl::ConnectToWorker(
           render_frame_host->GetStorageKey().origin())));
   const blink::StorageKey& storage_key =
       storage_key_override.value_or(render_frame_host->GetStorageKey());
+
+  if (base::FeatureList::IsEnabled(
+          features::kEnforceSharedWorkerSameOriginCheck) &&
+      !info->url.SchemeIs(url::kDataScheme)) {
+    url::Origin script_origin = url::Origin::Create(info->url);
+    if (storage_key.origin() != script_origin) {
+      if (storage_key.origin().opaque() &&
+          storage_key.origin().GetTupleOrPrecursorTupleIfOpaque() ==
+              script_origin.GetTupleOrPrecursorTupleIfOpaque()) {
+        // Match found via precursor.
+      } else {
+        constexpr char kIsolatedAppScheme[] = "isolated-app";
+        constexpr char kExtensionScheme[] = "chrome-extension";
+        if (storage_key.origin().scheme() == kIsolatedAppScheme ||
+            storage_key.origin().scheme() == kExtensionScheme ||
+            script_origin.scheme() == kIsolatedAppScheme ||
+            script_origin.scheme() == kExtensionScheme) {
+          bad_message::ReceivedBadMessage(
+              render_frame_host->GetProcess(),
+              bad_message::SWSI_CROSS_ORIGIN_SCRIPT_URL);
+          return;
+        }
+      }
+    }
+  }
 
   // Enforce same-origin policy.
   // data: URLs are not considered a different origin.
@@ -169,24 +204,66 @@ void SharedWorkerServiceImpl::ConnectToWorker(
   }
 
   RenderFrameHost* main_frame = render_frame_host->frame_tree()->GetMainFrame();
+  // TODO(crbug.com/379869738) Remove GetUnsafeValue.
   if (!GetContentClient()->browser()->AllowSharedWorker(
           info->url, render_frame_host->ComputeSiteForCookies(),
           main_frame->GetLastCommittedOrigin(), info->options->name,
           storage_key, info->same_site_cookies,
           render_frame_host->GetBrowserContext(),
-          client_render_frame_host_id.child_id,
+          client_render_frame_host_id.child_id.GetUnsafeValue(),
           client_render_frame_host_id.frame_routing_id)) {
     ScriptLoadFailed(std::move(client), /*error_message=*/"");
     return;
   }
 
+  blink::mojom::SharedWorkerCreationContextType browser_derived_context_type =
+      render_frame_host->policy_container_host()
+              ->policies()
+              .is_web_secure_context
+          ? blink::mojom::SharedWorkerCreationContextType::kSecure
+          : blink::mojom::SharedWorkerCreationContextType::kNonsecure;
+
+  // Log discrepancies between the renderer-supplied creation context type and
+  // the browser-derived one.
+  SharedWorkerCreationContextTypeMismatch mismatch_value =
+      [creation_context_type, browser_derived_context_type]() {
+        using TypeMismatch = SharedWorkerCreationContextTypeMismatch;
+        using ContextType = blink::mojom::SharedWorkerCreationContextType;
+        if (creation_context_type == browser_derived_context_type) {
+          return TypeMismatch::kMatch;
+        }
+        return (creation_context_type == ContextType::kSecure)
+                   ? TypeMismatch::kMismatchRendererSecureBrowserNonsecure
+                   : TypeMismatch::kMismatchRendererNonsecureBrowserSecure;
+      }();
+
+  base::UmaHistogramEnumeration(
+      "Content.SharedWorker.CreationContextTypeMismatch", mismatch_value);
+
+  if (base::FeatureList::IsEnabled(
+          features::kSharedWorkerSecureContextDerivationFromBrowser)) {
+    creation_context_type = browser_derived_context_type;
+  }
+
   SharedWorkerHost* host = FindMatchingSharedWorkerHost(
       info->url, info->options->name, storage_key, info->same_site_cookies);
   if (host) {
+    // TODO(crbug.com/413207418): revise ScriptLoadFailed() to use enum.
+
     // Non-secure contexts cannot connect to secure workers, and secure contexts
     // cannot connect to non-secure workers:
     if (host->instance().creation_context_type() != creation_context_type) {
       ScriptLoadFailed(std::move(client), /*error_message=*/"");
+      return;
+    }
+    // If extended_lifetime does not match, raise.
+    // See: https://github.com/whatwg/html/issues/10997#issuecomment-2791533299
+    if (host->instance().extended_lifetime() != info->extended_lifetime) {
+      ScriptLoadFailed(
+          std::move(client),
+          "Failed to connect an existing shared worker because the "
+          "extendedLifetime given on the SharedWorker constructor doesn't "
+          "match the existing shared worker's extendedLifetime.");
       return;
     }
     // Step 11.4: "If worker global scope is not null, then check if worker
@@ -204,7 +281,7 @@ void SharedWorkerServiceImpl::ConnectToWorker(
     }
 
     host->AddClient(std::move(client), client_render_frame_host_id,
-                    message_port, client_ukm_source_id);
+                    message_port);
     return;
   }
 
@@ -217,10 +294,19 @@ void SharedWorkerServiceImpl::ConnectToWorker(
     return;
   }
   auto partition_domain = site_instance->GetPartitionDomain(storage_partition_);
-  SharedWorkerInstance instance(info->url, info->options->type,
-                                info->options->credentials, info->options->name,
-                                storage_key, creation_context_type,
-                                info->same_site_cookies);
+  bool is_opaque_origin_enabled =
+      GetContentClient()->browser()->IsDataUrlInWebWorkerOpaqueOriginEnabled(
+          render_frame_host->GetBrowserContext());
+
+  blink::StorageKey worker_storage_key = CalculateWorkerStorageKey(
+      info->url, storage_key, is_opaque_origin_enabled);
+  url::Origin renderer_origin = CalculateWorkerRendererOrigin(
+      info->url, worker_storage_key, is_opaque_origin_enabled);
+
+  SharedWorkerInstance instance(
+      info->url, info->options->type, info->options->credentials,
+      info->options->name, storage_key, worker_storage_key, renderer_origin,
+      creation_context_type, info->same_site_cookies, info->extended_lifetime);
   host = CreateWorker(
       *render_frame_host, instance, std::move(info->content_security_policies),
       std::move(info->outside_fetch_client_settings_object), partition_domain,
@@ -229,8 +315,7 @@ void SharedWorkerServiceImpl::ConnectToWorker(
     ScriptLoadFailed(std::move(client), /*error_message=*/"");
     return;
   }
-  host->AddClient(std::move(client), client_render_frame_host_id, message_port,
-                  client_ukm_source_id);
+  host->AddClient(std::move(client), client_render_frame_host_id, message_port);
 }
 
 SharedWorkerHost* SharedWorkerServiceImpl::GetSharedWorkerHostFromToken(
@@ -251,7 +336,7 @@ void SharedWorkerServiceImpl::DestroyHost(SharedWorkerHost* host) {
 
 void SharedWorkerServiceImpl::NotifyWorkerCreated(
     const blink::SharedWorkerToken& token,
-    int worker_process_id,
+    ChildProcessId worker_process_id,
     const url::Origin& security_origin,
     const base::UnguessableToken& dev_tools_token) {
   for (Observer& observer : observers_) {
@@ -288,7 +373,7 @@ void SharedWorkerServiceImpl::NotifyClientRemoved(
     GlobalRenderFrameHostId client_render_frame_host_id) {
   auto it = shared_worker_client_counts_.find(
       std::make_pair(token, client_render_frame_host_id));
-  CHECK(it != shared_worker_client_counts_.end(), base::NotFatalUntil::M130);
+  CHECK(it != shared_worker_client_counts_.end());
 
   int& count = it->second;
   DCHECK_GT(count, 0);
@@ -396,6 +481,9 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
 
   url::Origin worker_origin = url::Origin::Create(host->instance().url());
 
+  ChildProcessSecurityPolicyImpl::GetInstance()->AddCommittedOrigin(
+      worker_process_host->GetID().value(), worker_origin);
+
   base::WeakPtr<SharedWorkerHost> weak_host = host->AsWeakPtr();
   // Cloning before std::move() so that the object can be used in two functions.
   auto cloned_outside_fetch_client_settings_object =
@@ -409,22 +497,25 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
   // TODO(mmenke): The site-for-cookies and NetworkAnonymizationKey arguments
   // leak data across NetworkIsolationKeys and allow same-site cookies to be
   // sent in cross-site contexts. Fix this. Also, we should probably use
-  // `host->instance().storage_key().origin()` instead of `worker_origin`, see
-  // following DCHECK.
+  // `host->instance().creator_storage_key().origin()` instead of
+  // `worker_origin`, see following DCHECK.
   DCHECK(host->instance().url().SchemeIs(url::kDataScheme) ||
          GetContentClient()->browser()->DoesSchemeAllowCrossOriginSharedWorker(
-             host->instance().storage_key().origin().scheme()) ||
-         worker_origin == host->instance().storage_key().origin())
-      << worker_origin << " and " << host->instance().storage_key().origin()
+             host->instance().creator_storage_key().origin().scheme()) ||
+         worker_origin == host->instance().creator_storage_key().origin())
+      << worker_origin << " and "
+      << host->instance().creator_storage_key().origin()
       << " should be the same.";
+
   WorkerScriptFetcher::CreateAndStart(
       worker_process_host->GetDeprecatedID(), host->token(),
-      host->instance().url(), creator, &creator,
+      host->instance().url(), creator, &creator, /*creator_worker=*/nullptr,
       host->instance().DoesRequireCrossSiteRequestForCookies()
           ? net::SiteForCookies()
-          : host->instance().storage_key().ToNetSiteForCookies(),
-      host->instance().storage_key().origin(), host->instance().storage_key(),
-      host->instance().storage_key().ToPartialNetIsolationInfo(),
+          : host->instance().creator_storage_key().ToNetSiteForCookies(),
+      host->instance().creator_storage_key().origin(),
+      host->instance().worker_storage_key(),
+      host->instance().worker_storage_key().ToPartialNetIsolationInfo(),
       creator.BuildClientSecurityStateForWorkers(), credentials_mode,
       std::move(outside_fetch_client_settings_object),
       network::mojom::RequestDestination::kSharedWorker,
@@ -433,7 +524,8 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
       storage_partition_, storage_domain,
       SharedWorkerDevToolsAgentHost::GetFor(host), host->GetDevToolsToken(),
       host->instance().DoesRequireCrossSiteRequestForCookies(),
-      storage_access_api_status,
+      storage_access_api_status, host->network_restrictions_id(),
+      creator.GetNetworkRestrictionsID(), host->creator_policies().Clone(),
       base::BindOnce(&SharedWorkerServiceImpl::StartWorker,
                      weak_factory_.GetWeakPtr(), weak_host, message_port,
                      std::move(cloned_outside_fetch_client_settings_object)));
@@ -514,6 +606,36 @@ void SharedWorkerServiceImpl::ScriptLoadFailed(
   mojo::Remote<blink::mojom::SharedWorkerClient> remote_client(
       std::move(client));
   remote_client->OnScriptLoadFailed(error_message);
+}
+
+bool SharedWorkerServiceImpl::EvictBFCachedClientsIfLastActive(
+    RenderFrameHostImpl* render_frame_host) {
+  TRACE_EVENT0("navigation",
+               "SharedWorkerServiceImpl::EvictBFCachedClientsIfLastActive");
+  base::ElapsedTimer timer;
+  bool was_last_active_for_any_worker = false;
+  RenderFrameHostImpl* const client_main_frame =
+      render_frame_host->GetOutermostMainFrame();
+
+  for (const auto& host : worker_hosts_) {
+    if (host && host->ContainsClient(render_frame_host) &&
+        host->EvictBFCachedClientsIfLastActive(client_main_frame)) {
+      was_last_active_for_any_worker = true;
+    }
+  }
+  base::UmaHistogramTimes("Content.SharedWorker.Service.LastClientCheckTime",
+                          timer.Elapsed());
+  return was_last_active_for_any_worker;
+}
+
+void SharedWorkerServiceImpl::OnClientStateChanged(
+    RenderFrameHostImpl* render_frame_host) {
+  // Notify all workers that have this frame as a client.
+  for (const auto& host : worker_hosts_) {
+    if (host->ContainsClient(render_frame_host)) {
+      host->OnClientStateChanged();
+    }
+  }
 }
 
 }  // namespace content

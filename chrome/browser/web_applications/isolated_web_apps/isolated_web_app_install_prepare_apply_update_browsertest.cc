@@ -6,7 +6,6 @@
 #include <optional>
 #include <string>
 
-#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/scoped_feature_list.h"
@@ -18,20 +17,22 @@
 #include "chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.h"
 #include "chrome/browser/web_applications/isolated_web_apps/commands/isolated_web_app_apply_update_command.h"
 #include "chrome/browser/web_applications/isolated_web_apps/commands/isolated_web_app_prepare_and_store_update_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_install_source.h"
+#include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_trust_checker.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/integrity_block_data_matcher.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/key_distribution/test_utils.h"
-#include "chrome/browser/web_applications/isolated_web_apps/test/test_signed_web_bundle_builder.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/component_updater/component_updater_paths.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "components/web_package/test_support/signed_web_bundles/web_bundle_signer.h"
+#include "components/webapps/isolated_web_apps/test_support/signing_keys.h"
+#include "components/webapps/isolated_web_apps/types/iwa_version.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -42,7 +43,6 @@ namespace {
 
 using base::test::ErrorIs;
 using base::test::HasValue;
-using base::test::ValueIs;
 using ::testing::_;
 using ::testing::Eq;
 using ::testing::Field;
@@ -57,8 +57,6 @@ class IsolatedWebAppInstallPrepareApplyUpdateCommandBrowserTest
                                        InstallIsolatedWebAppCommandError>;
   using PrepareAndStoreUpdateResult =
       IsolatedWebAppUpdatePrepareAndStoreCommandResult;
-  using ApplyUpdateResult =
-      base::expected<void, IsolatedWebAppApplyUpdateCommandError>;
 
   IsolatedWebAppInstallSource GetInstallSource(
       const base::FilePath& bundle_path) const {
@@ -81,7 +79,7 @@ class IsolatedWebAppInstallPrepareApplyUpdateCommandBrowserTest
 
   InstallResult Install(const web_package::SignedWebBundleId& web_bundle_id,
                         const base::FilePath& bundle_path,
-                        const std::optional<base::Version>& expected_version) {
+                        const std::optional<IwaVersion>& expected_version) {
     base::test::TestFuture<InstallResult> future;
     provider()->scheduler().InstallIsolatedWebApp(
         IsolatedWebAppUrlInfo::CreateFromSignedWebBundleId(web_bundle_id),
@@ -94,7 +92,7 @@ class IsolatedWebAppInstallPrepareApplyUpdateCommandBrowserTest
   PrepareAndStoreUpdateResult PrepareAndStoreUpdateInfo(
       const web_package::SignedWebBundleId& web_bundle_id,
       const base::FilePath& update_bundle_path,
-      const base::Version& update_version) {
+      const IwaVersion& update_version) {
     base::test::TestFuture<PrepareAndStoreUpdateResult> future;
     provider()->scheduler().PrepareAndStoreIsolatedWebAppUpdate(
         IsolatedWebAppUpdatePrepareAndStoreCommand::UpdateInfo(
@@ -105,9 +103,9 @@ class IsolatedWebAppInstallPrepareApplyUpdateCommandBrowserTest
     return future.Take();
   }
 
-  ApplyUpdateResult ApplyUpdate(
+  IsolatedWebAppApplyUpdateCommandResult ApplyUpdate(
       const web_package::SignedWebBundleId& web_bundle_id) {
-    base::test::TestFuture<ApplyUpdateResult> future;
+    base::test::TestFuture<IsolatedWebAppApplyUpdateCommandResult> future;
     provider()->scheduler().ApplyPendingIsolatedWebAppUpdate(
         IsolatedWebAppUrlInfo::CreateFromSignedWebBundleId(web_bundle_id),
         /*optional_keep_alive=*/nullptr,
@@ -133,13 +131,10 @@ class IsolatedWebAppInstallPrepareApplyUpdateCommandBrowserTest
       component_updater::kIwaKeyDistributionComponent};
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-  // Override the pre-install component directory and its alternative directory
-  // so that the component update will not find the pre-installed key dist
-  // component.
+  // Override the pre-install component directory so that the component update
+  // will not find the pre-installed key dist component.
   base::ScopedPathOverride preinstalled_dir_override_{
       component_updater::DIR_COMPONENT_PREINSTALLED};
-  base::ScopedPathOverride preinstalled_alt_dir_override_{
-      component_updater::DIR_COMPONENT_PREINSTALLED_ALT};
 };
 
 IN_PROC_BROWSER_TEST_P(
@@ -203,7 +198,7 @@ IN_PROC_BROWSER_TEST_P(
 
   // Step 3: Apply the update and ensure that pending info has been successfully
   // transferred.
-  ASSERT_THAT(ApplyUpdate(web_bundle_id), HasValue());
+  EXPECT_THAT(ApplyUpdate(web_bundle_id), HasValue());
 
   ASSERT_THAT(
       GetIsolatedWebAppFor(web_bundle_id),
@@ -224,7 +219,7 @@ IN_PROC_BROWSER_TEST_P(
   auto web_bundle_id = test::GetDefaultEd25519WebBundleId();
   SetTrustedWebBundleIdsForTesting({web_bundle_id});
 
-  base::Version version("1.0.0");
+  IwaVersion version = *IwaVersion::Create("1.0.0");
 
   // IWA signed by a Ed25519 key.
   auto iwa =
@@ -295,7 +290,7 @@ IN_PROC_BROWSER_TEST_P(
 
   // Step 5: Apply the update and ensure that pending info has been
   // successfully transferred.
-  ASSERT_THAT(ApplyUpdate(web_bundle_id), HasValue());
+  EXPECT_THAT(ApplyUpdate(web_bundle_id), HasValue());
 
   ASSERT_THAT(
       GetIsolatedWebAppFor(web_bundle_id),

@@ -12,6 +12,7 @@
 #include "chrome/grit/theme_resources.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "third_party/skia/include/core/SkRegion.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -134,7 +135,7 @@ void AppWindowFrameView::SetFrameCornerRadius(int radius) {
   SchedulePaint();
 }
 
-// views::NonClientFrameView implementation.
+// views::FrameView implementation.
 
 gfx::Rect AppWindowFrameView::GetBoundsForClientView() const {
   if (!draw_frame_ || widget_->IsFullscreen())
@@ -200,11 +201,12 @@ int AppWindowFrameView::NonClientHitTest(const gfx::Point& point) {
   if (frame_component != HTNOWHERE)
     return frame_component;
 
-  // Check for possible draggable region in the client area for the frameless
-  // window.
-  SkRegion* draggable_region = window_->GetDraggableRegion();
-  if (draggable_region && draggable_region->contains(point.x(), point.y()))
-    return HTCAPTION;
+  if (!non_client_hit_test_callback_.is_null()) {
+    int result = non_client_hit_test_callback_.Run(point);
+    if (result != HTNOWHERE) {
+      return result;
+    }
+  }
 
   int client_component = widget_->client_view()->NonClientHitTest(point);
   if (client_component != HTNOWHERE)
@@ -247,7 +249,7 @@ gfx::Size AppWindowFrameView::CalculatePreferredSize(
 }
 
 void AppWindowFrameView::Layout(PassKey) {
-  LayoutSuperclass<NonClientFrameView>(this);
+  LayoutSuperclass<FrameView>(this);
 
   if (!draw_frame_)
     return;
@@ -322,22 +324,16 @@ void AppWindowFrameView::OnPaint(gfx::Canvas* canvas) {
   flags.setStyle(cc::PaintFlags::kFill_Style);
   flags.setColor(CurrentFrameColor());
 
-  SkPath path;
-
   const SkScalar sk_corner_radius = SkIntToScalar(frame_corner_radius_);
-  const SkScalar radii[8] = {sk_corner_radius,
-                             sk_corner_radius,  // top-left
-                             sk_corner_radius,
-                             sk_corner_radius,  // top-right
-                             0,
-                             0,  // bottom-right
-                             0,
-                             0};  // bottom-left
+  const SkVector radii[4] = {{sk_corner_radius, sk_corner_radius},  // top-left
+                             {sk_corner_radius, sk_corner_radius},  // top-right
+                             {0, 0},   // bottom-right
+                             {0, 0}};  // bottom-left
 
   gfx::Rect frame_bounds(0, 0, width(), kCaptionHeight);
-  path.addRoundRect(gfx::RectToSkRect(frame_bounds), radii,
-                    SkPathDirection::kCW);
-  path.close();
+  const SkPath path = SkPath::RRect(
+      SkRRect::MakeRectRadii(gfx::RectToSkRect(frame_bounds), radii));
+
   canvas->DrawPath(path, flags);
 }
 

@@ -38,8 +38,6 @@ component("cpp") {
     "ambient/fake_ambient_backend_controller_impl.cc",
     "ambient/fake_ambient_backend_controller_impl.h",
     "ambient/weather_info.h",
-    "android_intent_helper.cc",
-    "android_intent_helper.h",
     "annotator/annotations_overlay_view.cc",
     "annotator/annotations_overlay_view.h",
     "annotator/annotator_controller_base.cc",
@@ -81,29 +79,6 @@ component("cpp") {
     "ash_web_view.h",
     "ash_web_view_factory.cc",
     "ash_web_view_factory.h",
-    "assistant/assistant_interface_binder.cc",
-    "assistant/assistant_interface_binder.h",
-    "assistant/assistant_setup.cc",
-    "assistant/assistant_setup.h",
-    "assistant/assistant_state.cc",
-    "assistant/assistant_state.h",
-    "assistant/assistant_state_base.cc",
-    "assistant/assistant_state_base.h",
-    "assistant/controller/assistant_alarm_timer_controller.cc",
-    "assistant/controller/assistant_alarm_timer_controller.h",
-    "assistant/controller/assistant_controller.cc",
-    "assistant/controller/assistant_controller.h",
-    "assistant/controller/assistant_controller_observer.h",
-    "assistant/controller/assistant_interaction_controller.cc",
-    "assistant/controller/assistant_interaction_controller.h",
-    "assistant/controller/assistant_notification_controller.cc",
-    "assistant/controller/assistant_notification_controller.h",
-    "assistant/controller/assistant_screen_context_controller.cc",
-    "assistant/controller/assistant_screen_context_controller.h",
-    "assistant/controller/assistant_suggestions_controller.cc",
-    "assistant/controller/assistant_suggestions_controller.h",
-    "assistant/controller/assistant_ui_controller.cc",
-    "assistant/controller/assistant_ui_controller.h",
     "audio_config_service.cc",
     "audio_config_service.h",
     "auth/active_session_auth_controller.cc",
@@ -125,11 +100,8 @@ component("cpp") {
     "connectivity_services.cc",
     "connectivity_services.h",
     "coral_delegate.h",
-    "debug_delegate.h",
     "default_user_image.cc",
     "default_user_image.h",
-    "desk_profiles_delegate.cc",
-    "desk_profiles_delegate.h",
     "desk_template.cc",
     "desk_template.h",
     "esim_manager.cc",
@@ -206,6 +178,7 @@ component("cpp") {
     "lobster/lobster_enums.h",
     "lobster/lobster_feedback_preview.cc",
     "lobster/lobster_feedback_preview.h",
+    "lobster/lobster_image_candidate.cc",
     "lobster/lobster_image_candidate.h",
     "lobster/lobster_image_download_response.h",
     "lobster/lobster_metrics_state_enums.h",
@@ -217,8 +190,6 @@ component("cpp") {
     "lobster/lobster_text_input_context.h",
     "locale_update_controller.cc",
     "locale_update_controller.h",
-    "lock_screen_widget_factory.cc",
-    "lock_screen_widget_factory.h",
     "login/local_authentication_request_controller.cc",
     "login/local_authentication_request_controller.h",
     "login/local_authentication_test_api.h",
@@ -284,7 +255,6 @@ component("cpp") {
     "power_utils.h",
     "presentation_time_recorder.cc",
     "presentation_time_recorder.h",
-    "print_preview_delegate.h",
     "privacy_hub_delegate.h",
     "privacy_screen_dlp_helper.cc",
     "privacy_screen_dlp_helper.h",
@@ -300,8 +270,6 @@ component("cpp") {
     "projector/speech_recognition_availability.h",
     "reauth_reason.h",
     "resize_shadow_type.h",
-    "rounded_corner_utils.cc",
-    "rounded_corner_utils.h",
     "rounded_image_view.cc",
     "rounded_image_view.h",
     "saved_desk_delegate.h",
@@ -437,7 +405,6 @@ component("cpp") {
   ]
 
   deps = [
-    ":accelerator_actions",
     "//ash/constants",
     "//ash/public/cpp/ambient/proto",
     "//ash/resources/vector_icons",
@@ -464,17 +431,19 @@ component("cpp") {
     "//chromeos/ui/frame",
     "//chromeos/ui/vector_icons",
     "//components/access_code_cast/common:metrics",
-    "//components/language/core/browser:browser",
+    "//components/language/core/browser",
     "//components/pref_registry",
     "//components/prefs",
+    "//components/search_engines",
     "//components/sync/model",
     "//components/sync_device_info",
     "//components/tab_groups",
     "//components/user_manager",
+    "//ipc:mojom_constants",
     "//mojo/public/cpp/bindings",
     "//net/traffic_annotation",
     "//services/data_decoder/public/cpp",
-    "//services/network/public/cpp:cpp",
+    "//services/network/public/cpp",
     "//skia/public/mojom",
     "//ui/aura",
     "//ui/base",
@@ -495,15 +464,16 @@ component("cpp") {
   ]
 
   public_deps = [
+    ":accelerator_actions",
     "//ash/public/mojom",
     "//ash/webui/common/mojom:sea_pen",
     "//ash/webui/personalization_app/mojom:mojom_shared_cpp_sources",
     "//ash/webui/personalization_app/proto",
+    "//ash/webui/settings/public/constants",
     "//base",
     "//chromeos/ash/components/audio/public/mojom",
     "//chromeos/ash/components/login/auth",
     "//chromeos/ash/experiences/arc/mojom:notifications",
-    "//chromeos/ash/services/assistant/public/mojom",
     "//chromeos/ash/services/bluetooth_config/public/mojom",
     "//chromeos/ash/services/cellular_setup/public/mojom",
     "//chromeos/ash/services/connectivity/public/mojom",
@@ -511,7 +481,6 @@ component("cpp") {
     "//chromeos/ash/services/hotspot_config/public/mojom",
     "//chromeos/ash/services/recording/public/mojom",
     "//chromeos/components/security_token_pin",
-    "//chromeos/crosapi/mojom",
     "//chromeos/services/network_config/public/mojom",
     "//components/app_restore",
     "//components/manta/proto",
@@ -521,7 +490,7 @@ component("cpp") {
     "//ui/base/ime/ash",
     "//ui/base/ime/ash:ime_types",
     "//ui/base/mojom:ui_base_types",
-    "//ui/chromeos/resources:resources",
+    "//ui/chromeos/resources",
     "//ui/chromeos/resources:resources_grit",
     "//ui/gfx",
   ]
@@ -534,6 +503,10 @@ component("cpp") {
   }
 
   output_name = "ash_public_cpp"
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("unit_tests") {
@@ -542,7 +515,6 @@ source_set("unit_tests") {
     "accelerator_actions_unittest.cc",
     "accelerator_keycode_lookup_cache_unittest.cc",
     "accelerators_util_unittest.cc",
-    "android_intent_helper_unittest.cc",
     "app_list/app_list_config_provider_unittest.cc",
     "holding_space/holding_space_controller_unittest.cc",
     "holding_space/holding_space_image_unittest.cc",
@@ -572,6 +544,8 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//chromeos/ui/vector_icons",
+    "//components/account_id",
+    "//components/account_id:test_support",
     "//components/prefs:test_support",
     "//mojo/public/cpp/bindings",
     "//services/data_decoder/public/mojom",
@@ -595,6 +569,10 @@ source_set("unit_tests") {
     # Needed to make commit bots run unit_tests on enums.xml changes.
     "//tools/metrics/histograms/metadata/chromeos/enums.xml",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("accelerator_actions") {
@@ -630,8 +608,6 @@ source_set("test_support") {
     "test/test_cast_config_controller.h",
     "test/test_coral_delegate.cc",
     "test/test_coral_delegate.h",
-    "test/test_desk_profiles_delegate.cc",
-    "test/test_desk_profiles_delegate.h",
     "test/test_image_decoder.cc",
     "test/test_image_decoder.h",
     "test/test_image_downloader.cc",
@@ -654,6 +630,7 @@ source_set("test_support") {
 
   deps = [
     ":cpp",
+    "//ash/public/mojom",
     "//base",
     "//base/test:test_support",
     "//chromeos/ash/services/nearby/public/mojom",
@@ -663,7 +640,7 @@ source_set("test_support") {
     "//services/data_decoder/public/cpp:test_support",
     "//services/data_decoder/public/mojom",
     "//services/device/public/cpp:test_support",
-    "//services/network/public/cpp:cpp",
+    "//services/network/public/cpp",
     "//skia",
     "//testing/gmock",
     "//testing/gtest",

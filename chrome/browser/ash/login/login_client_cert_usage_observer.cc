@@ -10,11 +10,11 @@
 #include <string_view>
 
 #include "base/logging.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/certificate_provider/certificate_provider_service.h"
-#include "chrome/browser/certificate_provider/certificate_provider_service_factory.h"
-#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
+#include "chrome/browser/ash/certificate_provider/certificate_provider_service_factory.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/login/auth/challenge_response/cert_utils.h"
+#include "content/public/browser/browser_context.h"
 #include "net/cert/asn1_util.h"
 #include "net/cert/x509_util.h"
 
@@ -22,9 +22,10 @@ namespace ash {
 namespace {
 
 chromeos::CertificateProviderService* GetCertificateProviderService() {
-  Profile* signin_profile = ProfileHelper::GetSigninProfile();
+  content::BrowserContext* signin_browser_context =
+      BrowserContextHelper::Get()->GetSigninBrowserContext();
   return chromeos::CertificateProviderServiceFactory::GetForBrowserContext(
-      signin_profile);
+      signin_browser_context);
 }
 
 bool ObtainSignatureAlgorithms(

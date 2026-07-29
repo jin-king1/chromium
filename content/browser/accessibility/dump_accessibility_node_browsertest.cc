@@ -43,8 +43,8 @@ class DumpAccessibilityNodeTest : public DumpAccessibilityTestBase {
     return property_filters;
   }
 
-  std::vector<std::string> Dump(ui::AXMode mode) override {
-    WaitForFinalTreeContents(mode);
+  std::vector<std::string> Dump() override {
+    WaitForFinalTreeContents();
 
     std::unique_ptr<AXTreeFormatter> formatter(CreateFormatter());
 
@@ -54,6 +54,17 @@ class DumpAccessibilityNodeTest : public DumpAccessibilityTestBase {
     std::string contents = FormatWebContentsTestNode(*formatter);
     return base::SplitString(contents, "\n", base::KEEP_WHITESPACE,
                              base::SPLIT_WANT_NONEMPTY);
+  }
+
+  void ChooseFeatures(
+      std::vector<base::test::FeatureRef>* enabled_features,
+      std::vector<base::test::FeatureRef>* disabled_features) override {
+#if BUILDFLAG(IS_ANDROID)
+    disabled_features->emplace_back(
+        features::kAccessibilityPopulateSupplementalDescriptionApi);
+#endif  // BUILDFLAG(IS_ANDROID)
+    DumpAccessibilityTestBase::ChooseFeatures(enabled_features,
+                                              disabled_features);
   }
 
   void RunBaseTest(const base::FilePath::CharType* file_path,
@@ -204,6 +215,9 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityMathMLNodeTest, MathMLFraction) {
 }
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityMathMLNodeTest, MathMLIdentifier) {
   RunMathMLTest(FILE_PATH_LITERAL("mi.html"));
+}
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityMathMLNodeTest, MathMLIntent) {
+  RunMathMLTest(FILE_PATH_LITERAL("intent.html"));
 }
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityMathMLNodeTest, MathMLMath) {
   RunMathMLTest(FILE_PATH_LITERAL("math.html"));
@@ -636,6 +650,10 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityAccNameTest, NameFromContentDfn) {
   RunAccNameTest(FILE_PATH_LITERAL("name-from-content-dfn.html"));
 }
 
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityAccNameTest, NameFromContentOfAddress) {
+  RunAccNameTest(FILE_PATH_LITERAL("name-from-content-of-address.html"));
+}
+
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityAccNameTest, NameFromContentOfLabel) {
   RunAccNameTest(FILE_PATH_LITERAL("name-from-content-of-label.html"));
 }
@@ -750,6 +768,10 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityAccNameTest,
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityAccNameTest, NameImageTitle) {
   RunAccNameTest(FILE_PATH_LITERAL("name-image-title.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityAccNameTest, NameImgEmptyAltTitle) {
+  RunAccNameTest(FILE_PATH_LITERAL("name-img-empty-alt-title.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityAccNameTest, NameImgLabelAltTitle) {

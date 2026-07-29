@@ -11,7 +11,10 @@
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "base/strings/stringprintf.h"
+#include "base/time/time.h"
 #include "remoting/base/http_status.h"
+#include "remoting/base/logging.h"
+#include "remoting/base/protobuf_http_request_config.h"
 #include "remoting/base/session_authz_service_client.h"
 #include "remoting/proto/session_authz_service.h"
 #include "remoting/protocol/authenticator.h"
@@ -19,6 +22,25 @@
 #include "remoting/protocol/session_authz_reauthorizer.h"
 
 namespace remoting::protocol {
+
+namespace {
+Authenticator::RejectionReason ToRejectionReason(
+    HttpStatus::Code status_code,
+    Authenticator::RejectionReason permission_denied_reason) {
+  switch (status_code) {
+    case HttpStatus::Code::PERMISSION_DENIED:
+      return permission_denied_reason;
+    case HttpStatus::Code::UNAUTHENTICATED:
+      return Authenticator::RejectionReason::INVALID_CREDENTIALS;
+    case HttpStatus::Code::RESOURCE_EXHAUSTED:
+      return Authenticator::RejectionReason::TOO_MANY_CONNECTIONS;
+    case HttpStatus::Code::NETWORK_ERROR:
+      return Authenticator::RejectionReason::NETWORK_FAILURE;
+    default:
+      return Authenticator::RejectionReason::UNEXPECTED_ERROR;
+  }
+}
+}  // namespace
 
 SessionAuthzAuthenticator::SessionAuthzAuthenticator(
     CredentialsType credentials_type,
@@ -88,39 +110,48 @@ Authenticator::RejectionDetails SessionAuthzAuthenticator::rejection_details()
 }
 
 void SessionAuthzAuthenticator::ProcessMessage(
-    const jingle_xmpp::XmlElement* message,
+    const JingleAuthentication& message,
     base::OnceClosure resume_callback) {
   DCHECK_EQ(state(), WAITING_MESSAGE);
 
   switch (session_authz_state_) {
     case SessionAuthzState::WAITING_FOR_SESSION_TOKEN:
-      VerifySessionToken(*message, std::move(resume_callback));
+      VerifySessionToken(message, std::move(resume_callback));
       break;
-    case SessionAuthzState::SHARED_SECRET_FETCHED:
+    case SessionAuthzState::SHARED_SECRET_FETCHED: {
       DCHECK_EQ(underlying_->state(), WAITING_MESSAGE);
+      auto self = weak_factory_.GetWeakPtr();
       underlying_->ProcessMessage(message, std::move(resume_callback));
-      StartReauthorizerIfNecessary();
+      if (self) {
+        StartReauthorizerIfNecessary();
+      }
       break;
+    }
     default:
       NOTREACHED() << "Unexpected SessionAuthz state: "
                    << static_cast<int>(session_authz_state_);
   }
 }
 
-std::unique_ptr<jingle_xmpp::XmlElement>
-SessionAuthzAuthenticator::GetNextMessage() {
+JingleAuthentication SessionAuthzAuthenticator::GetNextMessage() {
   DCHECK_EQ(state(), MESSAGE_READY);
 
-  std::unique_ptr<jingle_xmpp::XmlElement> message;
+  JingleAuthentication message;
+  auto self = weak_factory_.GetWeakPtr();
   if (underlying_ && underlying_->state() == MESSAGE_READY) {
     message = underlying_->GetNextMessage();
-    StartReauthorizerIfNecessary();
-  } else {
-    message = CreateEmptyAuthenticatorMessage();
+    if (self) {
+      StartReauthorizerIfNecessary();
+    }
+  }
+  if (!self) {
+    return message;
   }
 
   if (session_authz_state_ == SessionAuthzState::READY_TO_SEND_HOST_TOKEN) {
-    AddHostTokenElement(message.get());
+    DCHECK(!host_token_.empty());
+    message.session_authz_host_token = host_token_;
+    session_authz_state_ = SessionAuthzState::WAITING_FOR_SESSION_TOKEN;
   }
 
   return message;
@@ -136,13 +167,6 @@ const SessionPolicies* SessionAuthzAuthenticator::GetSessionPolicies() const {
   DCHECK_EQ(state(), ACCEPTED);
 
   return session_policies_.has_value() ? &session_policies_.value() : nullptr;
-}
-
-std::unique_ptr<ChannelAuthenticator>
-SessionAuthzAuthenticator::CreateChannelAuthenticator() const {
-  DCHECK_EQ(state(), ACCEPTED);
-
-  return underlying_->CreateChannelAuthenticator();
 }
 
 void SessionAuthzAuthenticator::SetReauthorizerForTesting(
@@ -186,32 +210,19 @@ void SessionAuthzAuthenticator::OnHostTokenGenerated(
   std::move(resume_callback).Run();
 }
 
-void SessionAuthzAuthenticator::AddHostTokenElement(
-    jingle_xmpp::XmlElement* message) {
-  DCHECK_EQ(session_authz_state_, SessionAuthzState::READY_TO_SEND_HOST_TOKEN);
-  DCHECK(!host_token_.empty());
-
-  jingle_xmpp::XmlElement* host_token_element =
-      new jingle_xmpp::XmlElement(kHostTokenTag);
-  host_token_element->SetBodyText(host_token_);
-  message->AddElement(host_token_element);
-  session_authz_state_ = SessionAuthzState::WAITING_FOR_SESSION_TOKEN;
-}
-
 void SessionAuthzAuthenticator::VerifySessionToken(
-    const jingle_xmpp::XmlElement& message,
+    const JingleAuthentication& message,
     base::OnceClosure resume_callback) {
   session_authz_state_ = SessionAuthzState::VERIFYING_SESSION_TOKEN;
-  std::string session_token = message.TextNamed(kSessionTokenTag);
   service_client_->VerifySessionToken(
-      session_token,
+      message.session_authz_session_token,
       base::BindOnce(&SessionAuthzAuthenticator::OnVerifiedSessionToken,
                      base::Unretained(this), message,
                      std::move(resume_callback)));
 }
 
 void SessionAuthzAuthenticator::OnVerifiedSessionToken(
-    const jingle_xmpp::XmlElement& message,
+    const JingleAuthentication& message,
     base::OnceClosure resume_callback,
     const HttpStatus& status,
     std::unique_ptr<internal::VerifySessionTokenResponseStruct> response) {
@@ -226,7 +237,7 @@ void SessionAuthzAuthenticator::OnVerifiedSessionToken(
     rejection_details_ = RejectionDetails(base::StringPrintf(
         "Session token verification failed. Expected session ID: %s, actual: "
         "%s",
-        session_id_, response->session_id));
+        session_id_.c_str(), response->session_id.c_str()));
     std::move(resume_callback).Run();
     return;
   }
@@ -237,8 +248,11 @@ void SessionAuthzAuthenticator::OnVerifiedSessionToken(
                                                         WAITING_MESSAGE);
   session_policies_ = std::move(response->session_policies);
   verify_token_response_ = std::move(response);
-  underlying_->ProcessMessage(&message, std::move(resume_callback));
-  StartReauthorizerIfNecessary();
+  auto self = weak_factory_.GetWeakPtr();
+  underlying_->ProcessMessage(message, std::move(resume_callback));
+  if (self) {
+    StartReauthorizerIfNecessary();
+  }
 }
 
 void SessionAuthzAuthenticator::HandleSessionAuthzError(
@@ -249,20 +263,8 @@ void SessionAuthzAuthenticator::HandleSessionAuthzError(
       "SessionAuthz %s error, code: %d, message: %s", action_name,
       static_cast<int>(status.error_code()), status.error_message()));
   session_authz_state_ = SessionAuthzState::FAILED;
-  switch (status.error_code()) {
-    case HttpStatus::Code::PERMISSION_DENIED:
-      session_authz_rejection_reason_ =
-          RejectionReason::AUTHZ_POLICY_CHECK_FAILED;
-      break;
-    case HttpStatus::Code::UNAUTHENTICATED:
-      session_authz_rejection_reason_ = RejectionReason::INVALID_CREDENTIALS;
-      break;
-    case HttpStatus::Code::RESOURCE_EXHAUSTED:
-      session_authz_rejection_reason_ = RejectionReason::TOO_MANY_CONNECTIONS;
-      break;
-    default:
-      session_authz_rejection_reason_ = RejectionReason::PROTOCOL_ERROR;
-  }
+  session_authz_rejection_reason_ = ToRejectionReason(
+      status.error_code(), RejectionReason::AUTHZ_POLICY_CHECK_FAILED);
 }
 
 void SessionAuthzAuthenticator::StartReauthorizerIfNecessary() {
@@ -272,21 +274,39 @@ void SessionAuthzAuthenticator::StartReauthorizerIfNecessary() {
   if (!underlying_ || underlying_->state() != ACCEPTED) {
     return;
   }
-  DCHECK(verify_token_response_);
+  if (verify_token_response_->session_reauth_token.empty()) {
+    // Reauthorization is optional for Cloud hosts but required for Corp.
+    if (credentials_type_ == CredentialsType::CLOUD_SESSION_AUTHZ) {
+      HOST_LOG << "Reauthorization is not required for this session.";
+    } else {
+      session_authz_state_ = SessionAuthzState::FAILED;
+      session_authz_rejection_reason_ = RejectionReason::UNEXPECTED_ERROR;
+      rejection_details_ = RejectionDetails(
+          base::StringPrintf("VerifySessionTokenResponse for session id '%s' "
+                             "is missing a session reauth token.",
+                             session_id_));
+      NotifyStateChangeAfterAccepted();
+    }
+    return;
+  }
+
   reauthorizer_ = std::make_unique<SessionAuthzReauthorizer>(
       service_client_.get(), verify_token_response_->session_id,
       verify_token_response_->session_reauth_token,
       verify_token_response_->session_reauth_token_lifetime,
       base::BindOnce(&SessionAuthzAuthenticator::OnReauthorizationFailed,
-                     base::Unretained(this)));
+                     weak_factory_.GetWeakPtr()));
   reauthorizer_->Start();
   verify_token_response_.reset();
 }
 
-void SessionAuthzAuthenticator::OnReauthorizationFailed() {
+void SessionAuthzAuthenticator::OnReauthorizationFailed(
+    HttpStatus::Code error_code,
+    const Authenticator::RejectionDetails& details) {
   session_authz_state_ = SessionAuthzState::FAILED;
-  session_authz_rejection_reason_ =
-      RejectionReason::REAUTHZ_POLICY_CHECK_FAILED;
+  session_authz_rejection_reason_ = ToRejectionReason(
+      error_code, RejectionReason::REAUTHZ_POLICY_CHECK_FAILED);
+  rejection_details_ = details;
 
   reauthorizer_.reset();
   NotifyStateChangeAfterAccepted();

@@ -4,17 +4,21 @@
 
 package org.chromium.components.payments;
 
+import static java.util.Collections.unmodifiableList;
+
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.os.Handler;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.payments.mojom.PaymentDetailsModifier;
+import org.chromium.payments.mojom.PaymentEventResponseType;
 import org.chromium.payments.mojom.PaymentItem;
 import org.chromium.payments.mojom.PaymentMethodData;
 import org.chromium.payments.mojom.PaymentOptions;
@@ -41,18 +45,44 @@ public class JniPaymentApp extends PaymentApp {
 
     private @Nullable AbortCallback mAbortCallback;
     private @Nullable InstrumentDetailsCallback mInvokeCallback;
+    private final List<PaymentEntityLogoImpl> mPaymentEntitiesLogos;
 
     @CalledByNative
     private JniPaymentApp(
             String id,
             String label,
             String sublabel,
-            Bitmap icon,
+            @JniType("const SkBitmap*") @Nullable final Bitmap icon,
             @PaymentAppType int paymentAppType,
-            long nativeObject) {
+            long nativeObject,
+            @JniType("std::vector<PaymentApp::PaymentEntityLogo*>")
+                    List<PaymentEntityLogoImpl> paymentEntitiesLogos) {
         super(id, label, sublabel, new BitmapDrawable(icon));
         mPaymentAppType = paymentAppType;
         mNativeObject = nativeObject;
+        mPaymentEntitiesLogos = paymentEntitiesLogos;
+    }
+
+    public static class PaymentEntityLogoImpl implements PaymentApp.PaymentEntityLogo {
+        private final String mLabel;
+        private final Bitmap mIcon;
+
+        @CalledByNative
+        PaymentEntityLogoImpl(
+                @JniType("std::u16string") String label, @JniType("const SkBitmap*") Bitmap icon) {
+            mLabel = label;
+            mIcon = icon;
+        }
+
+        @Override
+        public String getLabel() {
+            return mLabel;
+        }
+
+        @Override
+        public Bitmap getIcon() {
+            return mIcon;
+        }
     }
 
     @CalledByNative
@@ -77,11 +107,11 @@ public class JniPaymentApp extends PaymentApp {
     }
 
     @CalledByNative
-    public void onInvokeError(String errorMessage) {
+    public void onInvokeError(@PaymentEventResponseType.EnumType int error, String errorMessage) {
         mHandler.post(
                 () -> {
                     if (mInvokeCallback == null) return;
-                    mInvokeCallback.onInstrumentDetailsError(errorMessage);
+                    mInvokeCallback.onInstrumentDetailsError(error, errorMessage);
                     mInvokeCallback = null;
                 });
     }
@@ -230,7 +260,7 @@ public class JniPaymentApp extends PaymentApp {
     @Override
     public void dismissInstrument() {
         if (mNativeObject == 0) return;
-        JniPaymentAppJni.get().freeNativeObject(mNativeObject);
+        JniPaymentAppJni.get().freeNativeObjectSoon(mNativeObject);
         mNativeObject = 0;
     }
 
@@ -253,6 +283,11 @@ public class JniPaymentApp extends PaymentApp {
                 JniPaymentAppJni.get()
                         .setAppSpecificResponseFields(mNativeObject, response.serialize());
         return PaymentResponse.deserialize(ByteBuffer.wrap(byteResult));
+    }
+
+    @Override
+    public List<PaymentEntityLogo> getPaymentEntitiesLogos() {
+        return unmodifiableList(mPaymentEntitiesLogos);
     }
 
     @NativeMethods
@@ -292,7 +327,7 @@ public class JniPaymentApp extends PaymentApp {
 
         void setPaymentHandlerHost(long nativeJniPaymentApp, PaymentHandlerHost paymentHandlerHost);
 
-        void freeNativeObject(long nativeJniPaymentApp);
+        void freeNativeObjectSoon(long nativeJniPaymentApp);
 
         byte[] setAppSpecificResponseFields(long nativeJniPaymentApp, ByteBuffer paymentResponse);
     }

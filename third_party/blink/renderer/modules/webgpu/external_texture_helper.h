@@ -5,6 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGPU_EXTERNAL_TEXTURE_HELPER_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGPU_EXTERNAL_TEXTURE_HELPER_H_
 
+#include <array>
+
 #include "base/memory/raw_ptr.h"
 #include "media/base/video_frame.h"
 #include "third_party/blink/renderer/modules/webgpu/dawn_object.h"
@@ -13,10 +15,6 @@
 namespace gfx {
 class ColorSpace;
 }  // namespace gfx
-
-namespace media {
-class PaintCanvasVideoRenderer;
-}  // namespace media
 
 namespace blink {
 
@@ -33,7 +31,6 @@ struct ColorSpaceConversionConstants {
 
 struct ExternalTextureSource {
   scoped_refptr<media::VideoFrame> media_video_frame = nullptr;
-  raw_ptr<media::PaintCanvasVideoRenderer> video_renderer = nullptr;
   std::optional<media::VideoFrame::ID> media_video_frame_unique_id =
       std::nullopt;
   bool valid = false;
@@ -66,8 +63,7 @@ ExternalTextureSource GetExternalTextureSourceFromVideoFrame(
 ExternalTexture CreateExternalTexture(
     GPUDevice* device,
     PredefinedColorSpace dst_predefined_color_space,
-    scoped_refptr<media::VideoFrame> media_video_frame,
-    media::PaintCanvasVideoRenderer* video_renderer);
+    scoped_refptr<media::VideoFrame> media_video_frame);
 }  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGPU_EXTERNAL_TEXTURE_HELPER_H_

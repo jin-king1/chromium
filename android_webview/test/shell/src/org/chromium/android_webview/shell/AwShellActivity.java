@@ -35,11 +35,13 @@ import org.chromium.android_webview.AwDevToolsServer;
 import org.chromium.android_webview.AwGeolocationPermissions;
 import org.chromium.android_webview.AwSettings;
 import org.chromium.android_webview.JsResultReceiver;
+import org.chromium.android_webview.common.WebViewCachedFlags;
 import org.chromium.android_webview.test.AwTestContainerView;
 import org.chromium.android_webview.test.NullContentsClient;
 import org.chromium.base.CommandLine;
 import org.chromium.base.Log;
 import org.chromium.base.TraceEvent;
+import org.chromium.base.test.util.InMemorySharedPreferences;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
@@ -104,7 +106,7 @@ public class AwShellActivity extends Activity {
         }
 
         mAwTestContainerView.getAwContents().loadUrl(startupUrl);
-        AwContents.setShouldDownloadFavicons();
+        AwSettings.setShouldDownloadFaviconsGlobal();
         mUrlTextView.setText(startupUrl);
 
         new WebContentsObserver(mWebContents) {
@@ -137,12 +139,13 @@ public class AwShellActivity extends Activity {
     }
 
     private AwTestContainerView createAwTestContainerView() {
-        final String supportedModels[] = {
+        final String[] supportedModels = {
             "Pixel 6", "Pixel 6 Pro",
         };
         boolean useVulkan = Arrays.asList(supportedModels).contains(Build.MODEL);
         AwTestContainerView.installDrawFnFunctionTable(useVulkan);
-        AwBrowserProcess.start();
+        WebViewCachedFlags.init(new InMemorySharedPreferences());
+        AwBrowserProcess.startForTesting();
         AwTestContainerView testContainerView = new AwTestContainerView(this, true);
         AwContentsClient awContentsClient =
                 new NullContentsClient() {
@@ -240,14 +243,17 @@ public class AwShellActivity extends Activity {
                     new AwBrowserContext(
                             AwBrowserContext.getDefault().getNativeBrowserContextPointer());
         }
-        final AwSettings awSettings =
-                new AwSettings(
-                        /* context= */ this,
-                        /* isAccessFromFileUrlsGrantedByDefault= */ false,
-                        /* supportsLegacyQuirks= */ false,
-                        /* allowEmptyDocumentPersistence= */ false,
-                        /* allowGeolocationOnInsecureOrigins= */ true,
-                        /* doNotUpdateSelectionOnMutatingSelectionRange= */ false);
+        testContainerView.initialize(
+                new AwContents(
+                        mBrowserContext,
+                        testContainerView,
+                        testContainerView.getContext(),
+                        testContainerView.getInternalAccessDelegate(),
+                        new AwTestContainerView.RoutingDrawFnAccess(),
+                        aw -> awContentsClient));
+
+        AwSettings awSettings = testContainerView.getAwContents().getSettings();
+
         // Required for WebGL conformance tests.
         awSettings.setMediaPlaybackRequiresUserGesture(false);
         // Allow zoom and fit contents to screen
@@ -256,17 +262,7 @@ public class AwShellActivity extends Activity {
         awSettings.setUseWideViewPort(true);
         awSettings.setLoadWithOverviewMode(true);
         awSettings.setLayoutAlgorithm(AwSettings.LAYOUT_ALGORITHM_TEXT_AUTOSIZING);
-
-        testContainerView.initialize(
-                new AwContents(
-                        mBrowserContext,
-                        testContainerView,
-                        testContainerView.getContext(),
-                        testContainerView.getInternalAccessDelegate(),
-                        testContainerView.getNativeDrawFunctorFactory(),
-                        awContentsClient,
-                        awSettings));
-        testContainerView.getAwContents().getSettings().setJavaScriptEnabled(true);
+        awSettings.setJavaScriptEnabled(true);
         if (mDevToolsServer == null) {
             mDevToolsServer = new AwDevToolsServer();
             mDevToolsServer.setRemoteDebuggingEnabled(true);

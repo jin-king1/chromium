@@ -27,6 +27,7 @@ import org.junit.runner.RunWith;
 import org.chromium.base.test.util.Batch;
 import org.chromium.net.CronetEngine;
 import org.chromium.net.CronetException;
+import org.chromium.net.ExperimentalUrlRequest;
 import org.chromium.net.InlineExecutionProhibitedException;
 import org.chromium.net.TestUploadDataProvider;
 import org.chromium.net.TestUrlRequestCallback;
@@ -48,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -77,12 +79,7 @@ public class FakeUrlRequestTest {
         for (int i = 1; i <= numberOfTimes; i++) {
             callback.startNextRead(request);
             callback.waitForNextStep();
-            assertWithMessage(
-                            "Expected read to happen "
-                                    + numberOfTimes
-                                    + " times but got "
-                                    + i
-                                    + " times.")
+            assertWithMessage("Expected read to happen %s times but got %s times", numberOfTimes, i)
                     .that(callback.mResponseStep)
                     .isEqualTo(ResponseStep.ON_READ_COMPLETED);
         }
@@ -166,12 +163,11 @@ public class FakeUrlRequestTest {
     @SmallTest
     public void testBuilderChecks() {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        ExecutorService executor = callback.getExecutor();
         NullPointerException e =
                 assertThrows(
                         NullPointerException.class,
-                        () ->
-                                mFakeCronetEngine.newUrlRequestBuilder(
-                                        null, callback, callback.getExecutor()));
+                        () -> mFakeCronetEngine.newUrlRequestBuilder(null, callback, executor));
         assertThat(e).hasMessageThat().isEqualTo("URL is required.");
 
         e =
@@ -198,7 +194,7 @@ public class FakeUrlRequestTest {
         UrlRequest.Builder builder =
                 mFakeCronetEngine.newUrlRequestBuilder("url", callback, callback.getExecutor());
         NullPointerException e =
-                assertThrows(NullPointerException.class, () -> builder.setHttpMethod(null).build());
+                assertThrows(NullPointerException.class, () -> builder.setHttpMethod(null));
         assertThat(e).hasMessageThat().isEqualTo("Method is required.");
     }
 
@@ -209,10 +205,9 @@ public class FakeUrlRequestTest {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         UrlRequest.Builder builder =
                 mFakeCronetEngine.newUrlRequestBuilder("url", callback, callback.getExecutor());
+        builder.setHttpMethod(method);
         IllegalArgumentException e =
-                assertThrows(
-                        IllegalArgumentException.class,
-                        () -> builder.setHttpMethod(method).build());
+                assertThrows(IllegalArgumentException.class, () -> builder.build());
         assertThat(e).hasMessageThat().isEqualTo("Invalid http method: " + method);
     }
 
@@ -908,17 +903,18 @@ public class FakeUrlRequestTest {
     public void testUploadSetDataProviderChecksForNullUploadDataProvider() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
 
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
 
+        ExecutorService executor = callback.getExecutor();
         NullPointerException e =
                 assertThrows(
                         NullPointerException.class,
-                        () -> builder.setUploadDataProvider(null, callback.getExecutor()));
+                        () -> builder.setUploadDataProvider(null, executor));
         assertThat(e).hasMessageThat().isEqualTo("Invalid UploadDataProvider.");
     }
 
@@ -927,8 +923,8 @@ public class FakeUrlRequestTest {
     public void testUploadSetDataProviderChecksForContentTypeHeader() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
 
@@ -938,8 +934,7 @@ public class FakeUrlRequestTest {
                 new TestUploadDataProvider(
                         TestUploadDataProvider.SuccessCallbackMode.SYNC, callback.getExecutor());
         builder.setUploadDataProvider(dataProvider, callback.getExecutor());
-        IllegalArgumentException e =
-                assertThrows(IllegalArgumentException.class, () -> builder.build().start());
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, builder::build);
         assertThat(e)
                 .hasMessageThat()
                 .isEqualTo("Requests with upload data must have a Content-Type.");
@@ -950,8 +945,8 @@ public class FakeUrlRequestTest {
     public void testUploadWithEmptyBody() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -974,8 +969,8 @@ public class FakeUrlRequestTest {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
         String body = "test";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         TestUploadDataProvider dataProvider =
@@ -1005,8 +1000,8 @@ public class FakeUrlRequestTest {
         String url = "url";
         String body = "test";
         callback.setAutoAdvance(false);
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         TestUploadDataProvider dataProvider =
@@ -1025,17 +1020,18 @@ public class FakeUrlRequestTest {
 
         IllegalStateException e =
                 assertThrows(
-                        IllegalStateException.class,
-                        () -> {
-                            synchronized (request.mLock) {
-                                request.mFakeDataSink.onReadSucceeded(false);
-                            }
-                        });
+                        IllegalStateException.class, () -> simulateNonFinalReadSucceeded(request));
 
         assertThat(e)
                 .hasMessageThat()
                 .isEqualTo("onReadSucceeded() called when not awaiting a read result; in state: 2");
         request.cancel();
+    }
+
+    private static void simulateNonFinalReadSucceeded(FakeUrlRequest request) {
+        synchronized (request.mLock) {
+            request.mFakeDataSink.onReadSucceeded(false);
+        }
     }
 
     @Test
@@ -1045,8 +1041,8 @@ public class FakeUrlRequestTest {
         String url = "url";
         String body = "test";
         callback.setAutoAdvance(false);
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         TestUploadDataProvider dataProvider =
@@ -1064,17 +1060,17 @@ public class FakeUrlRequestTest {
         callback.waitForNextStep();
 
         IllegalStateException e =
-                assertThrows(
-                        IllegalStateException.class,
-                        () -> {
-                            synchronized (request.mLock) {
-                                request.mFakeDataSink.onRewindSucceeded();
-                            }
-                        });
+                assertThrows(IllegalStateException.class, () -> simulateRewindSuccess(request));
         assertThat(e)
                 .hasMessageThat()
                 .isEqualTo("onRewindSucceeded() called when not awaiting a rewind; in state: 2");
         request.cancel();
+    }
+
+    private static void simulateRewindSuccess(FakeUrlRequest request) {
+        synchronized (request.mLock) {
+            request.mFakeDataSink.onRewindSucceeded();
+        }
     }
 
     @Test
@@ -1082,8 +1078,8 @@ public class FakeUrlRequestTest {
     public void testUploadMultiplePiecesSync() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         TestUploadDataProvider dataProvider =
@@ -1114,8 +1110,8 @@ public class FakeUrlRequestTest {
     public void testUploadMultiplePiecesAsync() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1146,8 +1142,8 @@ public class FakeUrlRequestTest {
     public void testUploadChangesDefaultMethod() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(
@@ -1182,8 +1178,8 @@ public class FakeUrlRequestTest {
     public void testUploadWithSetMethod() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(
@@ -1222,8 +1218,8 @@ public class FakeUrlRequestTest {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String redirectUrl = "redirectUrl";
         String echoBodyUrl = "echobody";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 redirectUrl, callback, callback.getExecutor());
         mFakeCronetController.addRedirectResponse(echoBodyUrl, redirectUrl);
@@ -1253,8 +1249,8 @@ public class FakeUrlRequestTest {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String redirectUrl = "redirectUrl";
         String echoBodyUrl = "echobody";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 redirectUrl, callback, callback.getExecutor());
         mFakeCronetController.addRedirectResponse(echoBodyUrl, redirectUrl);
@@ -1283,8 +1279,8 @@ public class FakeUrlRequestTest {
     public void testUploadWithBadLength() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1326,8 +1322,8 @@ public class FakeUrlRequestTest {
     public void testUploadWithBadLengthBufferAligned() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1367,8 +1363,8 @@ public class FakeUrlRequestTest {
     public void testUploadLengthFailSync() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1401,8 +1397,8 @@ public class FakeUrlRequestTest {
     public void testUploadReadFailSync() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1436,8 +1432,8 @@ public class FakeUrlRequestTest {
     public void testUploadReadFailAsync() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1471,8 +1467,8 @@ public class FakeUrlRequestTest {
     public void testUploadReadFailThrown() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1513,8 +1509,8 @@ public class FakeUrlRequestTest {
                     }
                 };
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1558,8 +1554,8 @@ public class FakeUrlRequestTest {
                     }
                 };
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(url, callback, directExecutor);
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
 
@@ -1597,8 +1593,8 @@ public class FakeUrlRequestTest {
                     }
                 };
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1623,8 +1619,8 @@ public class FakeUrlRequestTest {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String redirectUrl = "redirectUrl";
         String echoBodyUrl = "echobody";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 redirectUrl, callback, callback.getExecutor());
         mFakeCronetController.addRedirectResponse(echoBodyUrl, redirectUrl);
@@ -1657,8 +1653,8 @@ public class FakeUrlRequestTest {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String redirectUrl = "redirectUrl";
         String echoBodyUrl = "echobody";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 redirectUrl, callback, callback.getExecutor());
         mFakeCronetController.addRedirectResponse(echoBodyUrl, redirectUrl);
@@ -1694,8 +1690,8 @@ public class FakeUrlRequestTest {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String redirectUrl = "redirectUrl";
         String echoBodyUrl = "echobody";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 redirectUrl, callback, callback.getExecutor());
         mFakeCronetController.addRedirectResponse(echoBodyUrl, redirectUrl);
@@ -1730,8 +1726,8 @@ public class FakeUrlRequestTest {
     public void testUploadChunked() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());
@@ -1760,8 +1756,8 @@ public class FakeUrlRequestTest {
     public void testUploadChunkedLastReadZeroLengthBody() throws Exception {
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         String url = "url";
-        FakeUrlRequest.Builder builder =
-                (FakeUrlRequest.Builder)
+        ExperimentalUrlRequest.Builder builder =
+                (ExperimentalUrlRequest.Builder)
                         mFakeCronetEngine.newUrlRequestBuilder(
                                 url, callback, callback.getExecutor());
         mFakeCronetController.addResponseMatcher(new EchoBodyResponseMatcher());

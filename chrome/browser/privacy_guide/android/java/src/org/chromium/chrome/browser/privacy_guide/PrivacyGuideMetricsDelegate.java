@@ -6,28 +6,28 @@ package org.chromium.chrome.browser.privacy_guide;
 
 import android.os.Bundle;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.safe_browsing.SafeBrowsingState;
+import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncHelper;
 import org.chromium.components.content_settings.CookieControlsMode;
 
 /**
  * A delegate class to record metrics associated with each card inside
  * Privacy Guide {@link PrivacyGuideFragment}.
  */
+@NullMarked
 class PrivacyGuideMetricsDelegate {
     private static final String INITIAL_MSBB_STATE = "INITIAL_MSBB_STATE";
     private static final String INITIAL_HISTORY_SYNC_STATE = "INITIAL_HISTORY_SYNC_STATE";
     private static final String INITIAL_SAFE_BROWSING_STATE = "INITIAL_SAFE_BROWSING_STATE";
     private static final String INITIAL_COOKIES_CONTROL_MODE = "INITIAL_COOKIES_CONTROL_MODE";
-    private static final String INITIAL_AD_TOPICS_STATE = "INITIAL_AD_TOPICS_STATE";
 
     private final Profile mProfile;
+    private final HistorySyncHelper mHistorySyncHelper;
 
     /** Initial state of the MSBB when {@link MSBBFragment} is created. */
     private @Nullable Boolean mInitialMsbbState;
@@ -41,15 +41,13 @@ class PrivacyGuideMetricsDelegate {
     /** Initial mode of the Cookies Control when {@link CookiesFragment} is created. */
     private @Nullable @CookieControlsMode Integer mInitialCookiesControlMode;
 
-    /** Initial state of Ad topics when {@link AdTopicsFragment} is created. */
-    private @Nullable Boolean mInitialAdTopicsState;
-
     PrivacyGuideMetricsDelegate(Profile profile) {
         mProfile = profile;
+        mHistorySyncHelper = HistorySyncHelper.getForProfile(profile);
     }
 
     /** A method to persist the initial state of all Fragments on Activity destruction. */
-    void saveState(@NonNull Bundle bundle) {
+    void saveState(Bundle bundle) {
         if (mInitialMsbbState != null) {
             bundle.putBoolean(INITIAL_MSBB_STATE, mInitialMsbbState);
         }
@@ -62,13 +60,10 @@ class PrivacyGuideMetricsDelegate {
         if (mInitialCookiesControlMode != null) {
             bundle.putInt(INITIAL_COOKIES_CONTROL_MODE, mInitialCookiesControlMode);
         }
-        if (mInitialAdTopicsState != null) {
-            bundle.putBoolean(INITIAL_AD_TOPICS_STATE, mInitialAdTopicsState);
-        }
     }
 
     /** A method to restore the initial state of all Fragments on Activity recreation. */
-    void restoreState(@NonNull Bundle bundle) {
+    void restoreState(Bundle bundle) {
         if (bundle.containsKey(INITIAL_MSBB_STATE)) {
             mInitialMsbbState = bundle.getBoolean(INITIAL_MSBB_STATE);
         }
@@ -80,9 +75,6 @@ class PrivacyGuideMetricsDelegate {
         }
         if (bundle.containsKey(INITIAL_COOKIES_CONTROL_MODE)) {
             mInitialCookiesControlMode = bundle.getInt(INITIAL_COOKIES_CONTROL_MODE);
-        }
-        if (bundle.containsKey(INITIAL_AD_TOPICS_STATE)) {
-            mInitialAdTopicsState = bundle.getBoolean(INITIAL_AD_TOPICS_STATE);
         }
     }
 
@@ -121,7 +113,7 @@ class PrivacyGuideMetricsDelegate {
     private void recordMetricsOnNextForHistorySyncCard() {
         assert mInitialHistorySyncState != null : "Initial state of History Sync not set.";
 
-        boolean currentValue = PrivacyGuideUtils.isHistorySyncEnabled(mProfile);
+        boolean currentValue = mHistorySyncHelper.isHistorySyncEnabled();
         @PrivacyGuideSettingsStates int stateChange;
 
         if (mInitialHistorySyncState && currentValue) {
@@ -192,14 +184,10 @@ class PrivacyGuideMetricsDelegate {
 
         boolean isInitialStateBlock3PIncognito =
                 mInitialCookiesControlMode == CookieControlsMode.INCOGNITO_ONLY
-                        || (ChromeFeatureList.isEnabled(
-                                        ChromeFeatureList.ALWAYS_BLOCK_3PCS_INCOGNITO)
-                                && mInitialCookiesControlMode == CookieControlsMode.OFF);
+                        || mInitialCookiesControlMode == CookieControlsMode.OFF;
         boolean isEndStateBlock3PIncognito =
                 currentValue == CookieControlsMode.INCOGNITO_ONLY
-                        || (ChromeFeatureList.isEnabled(
-                                        ChromeFeatureList.ALWAYS_BLOCK_3PCS_INCOGNITO)
-                                && currentValue == CookieControlsMode.OFF);
+                        || currentValue == CookieControlsMode.OFF;
 
         @PrivacyGuideSettingsStates int stateChange;
 
@@ -227,37 +215,6 @@ class PrivacyGuideMetricsDelegate {
                 PrivacyGuideInteractions.MAX_VALUE);
     }
 
-    /** A method to record metrics on the next click of {@link AdTopicsFragment} */
-    private void recordMetricsOnNextForAdTopicsCard() {
-        assert mInitialAdTopicsState != null : "Initial state of Ad Topics not set.";
-
-        boolean currentValue = PrivacyGuideUtils.isAdTopicsEnabled(mProfile);
-        @PrivacyGuideSettingsStates int stateChange;
-
-        if (mInitialAdTopicsState && currentValue) {
-            stateChange = PrivacyGuideSettingsStates.AD_TOPICS_ON_TO_ON;
-        } else if (mInitialAdTopicsState && !currentValue) {
-            stateChange = PrivacyGuideSettingsStates.AD_TOPICS_ON_TO_OFF;
-        } else if (!mInitialAdTopicsState && currentValue) {
-            stateChange = PrivacyGuideSettingsStates.AD_TOPICS_OFF_TO_ON;
-        } else {
-            stateChange = PrivacyGuideSettingsStates.AD_TOPICS_OFF_TO_OFF;
-        }
-
-        // Record histogram comparing |mInitialAdTopicsState| and |currentValue|
-        RecordHistogram.recordEnumeratedHistogram(
-                "Settings.PrivacyGuide.SettingsStates",
-                stateChange,
-                PrivacyGuideSettingsStates.MAX_VALUE);
-        // Record user action for clicking the next button on the AdTopics card
-        RecordUserAction.record("Settings.PrivacyGuide.NextClickAdTopics");
-        // Record histogram for clicking the next button on the AdTopics card
-        RecordHistogram.recordEnumeratedHistogram(
-                "Settings.PrivacyGuide.NextNavigation",
-                PrivacyGuideInteractions.AD_TOPICS_NEXT_BUTTON,
-                PrivacyGuideInteractions.MAX_VALUE);
-    }
-
     /**
      * A method to set the initial state of a card {@link PrivacyGuideFragment.FragmentType} in
      * Privacy Guide.
@@ -273,7 +230,7 @@ class PrivacyGuideMetricsDelegate {
                 }
             case PrivacyGuideFragment.FragmentType.HISTORY_SYNC:
                 {
-                    mInitialHistorySyncState = PrivacyGuideUtils.isHistorySyncEnabled(mProfile);
+                    mInitialHistorySyncState = mHistorySyncHelper.isHistorySyncEnabled();
                     break;
                 }
             case PrivacyGuideFragment.FragmentType.SAFE_BROWSING:
@@ -284,11 +241,6 @@ class PrivacyGuideMetricsDelegate {
             case PrivacyGuideFragment.FragmentType.COOKIES:
                 {
                     mInitialCookiesControlMode = PrivacyGuideUtils.getCookieControlsMode(mProfile);
-                    break;
-                }
-            case PrivacyGuideFragment.FragmentType.AD_TOPICS:
-                {
-                    mInitialAdTopicsState = PrivacyGuideUtils.isAdTopicsEnabled(mProfile);
                     break;
                 }
             case PrivacyGuideFragment.FragmentType.WELCOME:
@@ -331,11 +283,6 @@ class PrivacyGuideMetricsDelegate {
                     recordMetricsOnNextForCookiesCard();
                     break;
                 }
-            case PrivacyGuideFragment.FragmentType.AD_TOPICS:
-                {
-                    recordMetricsOnNextForAdTopicsCard();
-                    break;
-                }
             default:
                 // The Done card does not have a next button and we won't support a case for it
                 assert false : "Unexpected fragmentType " + fragmentType;
@@ -357,17 +304,6 @@ class PrivacyGuideMetricsDelegate {
         RecordHistogram.recordEnumeratedHistogram(
                 "Settings.PrivacyGuide.NextNavigation",
                 PrivacyGuideInteractions.COMPLETION_NEXT_BUTTON,
-                PrivacyGuideInteractions.MAX_VALUE);
-    }
-
-    /**
-     * A method to record metrics on the Privacy Sandbox link click on the privacy guide done page.
-     */
-    static void recordMetricsForPsLink() {
-        RecordUserAction.record("Settings.PrivacyGuide.CompletionPSClick");
-        RecordHistogram.recordEnumeratedHistogram(
-                "Settings.PrivacyGuide.EntryExit",
-                PrivacyGuideInteractions.PRIVACY_SANDBOX_COMPLETION_LINK,
                 PrivacyGuideInteractions.MAX_VALUE);
     }
 
@@ -438,18 +374,6 @@ class PrivacyGuideMetricsDelegate {
     }
 
     /**
-     * A method to record metrics on Ad Topics toggle change of the Privacy Guide's {@link
-     * AdTopicsFragment}.
-     */
-    static void recordMetricsOnAdTopicsChange(boolean isAdTopicsOn) {
-        if (isAdTopicsOn) {
-            RecordUserAction.record("Settings.PrivacyGuide.ChangeAdTopicsOn");
-        } else {
-            RecordUserAction.record("Settings.PrivacyGuide.ChangeAdTopicsOff");
-        }
-    }
-
-    /**
      * A method to record metrics on the back click of a card {@link
      * PrivacyGuideFragment.FragmentType} in Privacy Guide.
      *
@@ -477,11 +401,7 @@ class PrivacyGuideMetricsDelegate {
                     RecordUserAction.record("Settings.PrivacyGuide.BackClickMSBB");
                     break;
                 }
-            case PrivacyGuideFragment.FragmentType.AD_TOPICS:
-                {
-                    RecordUserAction.record("Settings.PrivacyGuide.BackClickAdTopics");
-                    break;
-                }
+
             case PrivacyGuideFragment.FragmentType.DONE:
                 {
                     RecordUserAction.record("Settings.PrivacyGuide.BackClickCompletion");

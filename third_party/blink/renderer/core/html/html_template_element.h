@@ -32,13 +32,14 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_HTML_HTML_TEMPLATE_ELEMENT_H_
 
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/dom/shadow_root.h"
+#include "third_party/blink/renderer/core/dom/container_node.h"
 #include "third_party/blink/renderer/core/dom/template_content_document_fragment.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 
 namespace blink {
 
 class DocumentFragment;
+class Patch;
 class TemplateContentDocumentFragment;
 
 class CORE_EXPORT HTMLTemplateElement final : public HTMLElement {
@@ -47,6 +48,10 @@ class CORE_EXPORT HTMLTemplateElement final : public HTMLElement {
  public:
   explicit HTMLTemplateElement(Document&);
   ~HTMLTemplateElement() override;
+
+  ElementType GetElementType() const final {
+    return ElementType::kHTMLTemplateElement;
+  }
 
   bool HasNonInBodyInsertionMode() const override { return true; }
 
@@ -57,30 +62,34 @@ class CORE_EXPORT HTMLTemplateElement final : public HTMLElement {
   // This just retrieves existing content, and will not construct a content
   // DocumentFragment if one does not exist.
   DocumentFragment* getContent() const {
-    CHECK(!declarative_shadow_root_ || !content_);
+    CHECK(!override_insertion_target_ || !content_);
     return content_;
   }
 
   // This retrieves either a currently-being-parsed declarative shadow root,
-  // or the content fragment for a "regular" template element. This should only
-  // be used by HTMLConstructionSite.
-  DocumentFragment* TemplateContentOrDeclarativeShadowRoot() const {
-    return declarative_shadow_root_ ? declarative_shadow_root_.Get()
-                                    : content();
+  // or the content fragment for a "regular" template
+  // element. This should only be used by HTMLConstructionSite.
+  ContainerNode* InsertionTarget() const;
+
+  void SetOverrideInsertionTarget(ContainerNode& target) {
+    CHECK(target.IsShadowRoot() || target.IsDocumentFragment());
+    override_insertion_target_ = &target;
   }
 
-  void SetDeclarativeShadowRoot(ShadowRoot& shadow) {
-    declarative_shadow_root_ = &shadow;
-  }
+  bool IsShadowRootModeTemplate() const { return override_insertion_target_; }
+
+  void SetPatch(Patch* patch) { patch_ = patch; }
+  Patch* GetPatch() const { return patch_; }
 
  private:
   void CloneNonAttributePropertiesFrom(const Element&,
                                        NodeCloningData&) override;
   void DidMoveToNewDocument(Document& old_document) override;
-
+  void FinishParsingChildren() override;
   mutable Member<TemplateContentDocumentFragment> content_;
 
-  Member<ShadowRoot> declarative_shadow_root_;
+  Member<ContainerNode> override_insertion_target_;
+  Member<Patch> patch_;
 };
 
 }  // namespace blink

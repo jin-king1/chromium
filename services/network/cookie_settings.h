@@ -25,6 +25,7 @@
 #include "net/cookies/cookie_util.h"
 #include "net/first_party_sets/first_party_set_metadata.h"
 #include "services/network/public/cpp/session_cookie_delete_predicate.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 class GURL;
 
@@ -38,10 +39,6 @@ class Origin;
 }  // namespace url
 
 namespace network {
-
-namespace tpcd::metadata {
-class Manager;
-}
 
 // Handles cookie access and deletion logic for the network service.
 class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
@@ -66,6 +63,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
         secure_origin_cookies_allowed_schemes.end());
   }
 
+  // Cannot be an opaque origin. Opaque origins will be ignored.
+  void set_secure_origin_cookies_allowed_origins(
+      const std::vector<url::Origin>& secure_origin_cookies_allowed_origins);
+
   void set_matching_scheme_cookies_allowed_schemes(
       const std::vector<std::string>& matching_scheme_cookies_allowed_schemes) {
     matching_scheme_cookies_allowed_schemes_.clear();
@@ -85,18 +86,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
   void set_content_settings(ContentSettingsType type,
                             const ContentSettingsForOneType& settings);
 
-  void set_mitigations_enabled_for_3pcd(bool enable) {
-    mitigations_enabled_for_3pcd_ = enable;
-  }
-
-  void set_tracking_protection_enabled_for_3pcd(bool enable) {
-    tracking_protection_enabled_for_3pcd_ = enable;
-  }
-
-  void set_tpcd_metadata_manager(tpcd::metadata::Manager* manager) {
-    tpcd_metadata_manager_ = manager;
-  }
-
   // Returns a predicate that takes the domain of a cookie and a bool whether
   // the cookie is secure and returns true if the cookie should be deleted on
   // exit.
@@ -105,7 +94,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
   // content_settings::CookieSettingsBase:
   bool ShouldIgnoreSameSiteRestrictions(
       const GURL& url,
-      const net::SiteForCookies& site_for_cookies) const override;
+      const net::SiteForCookies& site_for_cookies,
+      const url::Origin& top_level_origin) const override;
 
   // Returns kStateDisallowed iff the given |url| has to be requested over
   // connection that is not tracked by the server. Usually is kStateAllowed,
@@ -157,11 +147,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
     return (setting == CONTENT_SETTING_ALLOW);
   }
 
-  // Returns true if Storage Access Headers are enabled in the given context.
-  bool IsStorageAccessHeadersEnabled(
-      const GURL& url,
-      base::optional_ref<const url::Origin> top_frame_origin) const;
-
   bool ShouldAlwaysAllowCookiesForTesting(const GURL& url,
                                           const GURL& first_party_url) const;
 
@@ -174,12 +159,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
       const GURL& secondary_url,
       ContentSettingsType content_type,
       content_settings::SettingInfo* info) const override;
-  bool IsThirdPartyCookiesAllowedScheme(
-      const std::string& scheme) const override;
+  bool IsThirdPartyCookiesAllowedScheme(std::string_view scheme) const override;
   bool ShouldBlockThirdPartyCookies(
       base::optional_ref<const url::Origin> top_frame_origin,
       net::CookieSettingOverrides overrides) const override;
-  bool MitigationsEnabledFor3pcd() const override;
 
   // Returns true iff any of the ways of enabling third-party cookies
   // restrictions are enabled.
@@ -237,12 +220,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
   // Returns true if user blocks 3PC or 3PCD is on.
   bool block_third_party_cookies_ =
       net::cookie_util::IsForceThirdPartyCookieBlockingEnabled();
-  bool mitigations_enabled_for_3pcd_ = false;
-  // This bool makes sure the correct cookie exclusion reasons are used.
-  bool tracking_protection_enabled_for_3pcd_ = false;
-  std::set<std::string> secure_origin_cookies_allowed_schemes_;
-  std::set<std::string> matching_scheme_cookies_allowed_schemes_;
-  std::set<std::string> third_party_cookies_allowed_schemes_;
+
+  std::set<std::string, std::less<>> secure_origin_cookies_allowed_schemes_;
+  absl::flat_hash_set<url::Origin> secure_origin_cookies_allowed_origins_;
+  std::set<std::string, std::less<>> matching_scheme_cookies_allowed_schemes_;
+  std::set<std::string, std::less<>> third_party_cookies_allowed_schemes_;
 
   typedef base::flat_map<ContentSettingsType, ContentSettingsForOneType>
       EntryMap;
@@ -253,7 +235,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
 
   EntryIndex content_settings_;
 
-  raw_ptr<tpcd::metadata::Manager> tpcd_metadata_manager_;
 };
 
 }  // namespace network

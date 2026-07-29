@@ -16,7 +16,6 @@
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/adapters.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -24,7 +23,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/system/sys_info.h"
@@ -35,7 +33,6 @@
 #include "base/values.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_contents.h"
-#include "components/no_state_prefetch/browser/no_state_prefetch_field_trial.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_handle.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_histograms.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_history.h"
@@ -233,7 +230,7 @@ NoStatePrefetchManager::StartPrefetchingFromLinkRelPrerender(
       return nullptr;
     }
     if (origin == ORIGIN_LINK_REL_PRERENDER_CROSSDOMAIN &&
-        source_web_contents->GetVisibleURL().host_piece() == url.host_piece()) {
+        source_web_contents->GetVisibleURL().host() == url.host()) {
       origin = ORIGIN_LINK_REL_PRERENDER_SAMEDOMAIN;
     }
     // TODO(ajwong): This does not correctly handle storage for isolated apps.
@@ -265,18 +262,6 @@ NoStatePrefetchManager::StartPrefetchingFromLinkRelPrerender(
       session_storage_namespace, attempt ? attempt->GetWeakPtr() : nullptr);
 }
 
-std::unique_ptr<NoStatePrefetchHandle>
-NoStatePrefetchManager::AddSameOriginSpeculation(
-    const GURL& url,
-    content::SessionStorageNamespace* session_storage_namespace,
-    const gfx::Size& size,
-    const url::Origin& initiator_origin) {
-  // The preconnect fallback won't happen.
-  return StartPrefetchingWithPreconnectFallback(
-      ORIGIN_SAME_ORIGIN_SPECULATION, url, content::Referrer(),
-      initiator_origin, gfx::Rect(size), session_storage_namespace);
-}
-
 void NoStatePrefetchManager::CancelAllPrerenders() {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   while (!active_prefetches_.empty()) {
@@ -302,7 +287,7 @@ void NoStatePrefetchManager::MoveEntryToPendingDelete(
   DCHECK(entry);
 
   auto it = FindIteratorForNoStatePrefetchContents(entry);
-  CHECK(it != active_prefetches_.end(), base::NotFatalUntil::M130);
+  CHECK(it != active_prefetches_.end());
   to_delete_prefetches_.push_back(std::move(*it));
   active_prefetches_.erase(it);
   // Destroy the old WebContents relatively promptly to reduce resource usage.
@@ -376,10 +361,10 @@ bool NoStatePrefetchManager::HasRecentlyBeenNavigatedTo(Origin origin,
 
   return false;
 }
-base::Value::Dict NoStatePrefetchManager::CopyAsDict() const {
+base::DictValue NoStatePrefetchManager::CopyAsDict() const {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
-  base::Value::Dict dict_value;
+  base::DictValue dict_value;
   dict_value.Set("history", prefetch_history_->CopyEntriesAsValue());
   dict_value.Set("active", GetActivePrerenders());
   dict_value.Set("enabled", delegate_->IsNetworkPredictionPreferenceEnabled());
@@ -545,12 +530,6 @@ NoStatePrefetchManager::StartPrefetchingWithPreconnectFallback(
     return nullptr;
   }
 
-  if ((origin == ORIGIN_LINK_REL_PRERENDER_CROSSDOMAIN ||
-       origin == ORIGIN_LINK_REL_PRERENDER_SAMEDOMAIN) &&
-      IsGoogleOriginURL(referrer.url)) {
-    origin = ORIGIN_GWS_PRERENDER;
-  }
-
   GURL url = url_arg;
 
   if (delegate_->GetCookieSettings()->ShouldBlockThirdPartyCookies()) {
@@ -579,33 +558,6 @@ NoStatePrefetchManager::StartPrefetchingWithPreconnectFallback(
     SetPreloadingEligibility(
         attempt.get(),
         PreloadingEligibility::kPreloadingInvokedWithinTimelimit);
-    return nullptr;
-  }
-
-  // If this is GWS and we are in the holdback, skip the prefetch. Record the
-  // status as holdback, so we can analyze via UKM.
-  if (origin == ORIGIN_GWS_PRERENDER &&
-      base::FeatureList::IsEnabled(kGWSPrefetchHoldback)) {
-    SetPreloadingEligibility(attempt.get(),
-                             PreloadingEligibility::kPreloadingDisabled);
-    // Set the holdback status on the prefetch entry.
-    SetPrefetchFinalStatusForUrl(url, FINAL_STATUS_GWS_HOLDBACK);
-    SkipNoStatePrefetchContentsAndMaybePreconnect(url, origin,
-                                                  FINAL_STATUS_GWS_HOLDBACK);
-    return nullptr;
-  }
-
-  // If this is Navigation predictor and we are in the holdback, skip the
-  // prefetch. Record the status as holdback, so we can analyze via UKM.
-  if (origin == ORIGIN_NAVIGATION_PREDICTOR &&
-      base::FeatureList::IsEnabled(kNavigationPredictorPrefetchHoldback)) {
-    // Set the holdback status on the prefetch entry.
-    SetPreloadingEligibility(attempt.get(),
-                             PreloadingEligibility::kPreloadingDisabled);
-    SetPrefetchFinalStatusForUrl(url,
-                                 FINAL_STATUS_NAVIGATION_PREDICTOR_HOLDBACK);
-    SkipNoStatePrefetchContentsAndMaybePreconnect(
-        url, origin, FINAL_STATUS_NAVIGATION_PREDICTOR_HOLDBACK);
     return nullptr;
   }
 
@@ -982,10 +934,10 @@ void NoStatePrefetchManager::AddToHistory(NoStatePrefetchContents* contents) {
   prefetch_history_->AddEntry(entry);
 }
 
-base::Value::List NoStatePrefetchManager::GetActivePrerenders() const {
-  base::Value::List list;
+base::ListValue NoStatePrefetchManager::GetActivePrerenders() const {
+  base::ListValue list;
   for (const auto& prefetch : active_prefetches_) {
-    if (std::optional<base::Value::Dict> prefetch_value =
+    if (std::optional<base::DictValue> prefetch_value =
             prefetch->contents()->GetAsDict()) {
       list.Append(std::move(*prefetch_value));
     }
@@ -1001,13 +953,6 @@ void NoStatePrefetchManager::SkipNoStatePrefetchContentsAndMaybePreconnect(
                                       base::Time::Now());
   prefetch_history_->AddEntry(entry);
   histograms_->RecordFinalStatus(origin, final_status);
-
-  if (origin == ORIGIN_SAME_ORIGIN_SPECULATION) {
-    // Prefetch Proxy should not preconnect since that can't be done in a fully
-    // isolated way. Same origin speculation should already have an open
-    // connection.
-    return;
-  }
 
   if (origin == ORIGIN_LINK_REL_NEXT) {
     return;
@@ -1037,7 +982,7 @@ bool NoStatePrefetchManager::MayReuseProcessHost(
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   // Isolate prefetch processes to make the resource monitoring check more
   // accurate.
-  return !base::Contains(prerender_process_hosts_, process_host);
+  return !prerender_process_hosts_.contains(process_host);
 }
 
 void NoStatePrefetchManager::RenderProcessHostDestroyed(

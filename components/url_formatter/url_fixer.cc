@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/url_formatter/url_fixer.h"
 
 #include <stddef.h>
@@ -15,6 +10,7 @@
 #include <string_view>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/i18n/char_iterator.h"
@@ -277,37 +273,6 @@ inline void FixupPassword(const std::string& text,
   url->append(text, part.begin, part.len);
 }
 
-void FixupHost(const std::string& text,
-               const url::Component& part,
-               bool has_scheme,
-               const std::string& desired_tld,
-               std::string* url) {
-  if (!part.is_valid()) {
-    return;
-  }
-
-  // Make domain valid.
-  // Strip all leading dots and all but one trailing dot, unless the user only
-  // typed dots, in which case their input is totally invalid and we should just
-  // leave it unchanged.
-  std::string domain(text, part.begin, part.len);
-  const size_t first_nondot(domain.find_first_not_of('.'));
-  if (first_nondot != std::string::npos) {
-    domain.erase(0, first_nondot);
-    size_t last_nondot(domain.find_last_not_of('.'));
-    DCHECK(last_nondot != std::string::npos);
-    last_nondot += 2;  // Point at second period in ending string
-    if (last_nondot < domain.length()) {
-      domain.erase(last_nondot);
-    }
-  }
-
-  // Add any user-specified TLD, if applicable.
-  AddDesiredTLD(desired_tld, &domain);
-
-  url->append(domain);
-}
-
 void FixupPort(const std::string& text,
                const url::Component& part,
                std::string* url) {
@@ -370,8 +335,8 @@ bool HasPort(const std::string& original_text,
                                      url::ParserMode::kSpecialURL)) {
     ++port_end;
   }
-  std::string_view port_piece(original_text.data() + port_start,
-                              port_end - port_start);
+  std::string_view port_piece =
+      std::string_view(original_text).substr(port_start, port_end - port_start);
   if (port_piece.empty()) {
     return false;
   }
@@ -404,8 +369,7 @@ bool GetValidScheme(const std::string& text,
   canon_scheme->clear();
 
   // Locate everything up to (but not including) the first ':'
-  if (!url::ExtractScheme(text.data(), static_cast<int>(text.length()),
-                          scheme_component)) {
+  if (!url::ExtractScheme(text, scheme_component)) {
     return false;
   }
 
@@ -414,7 +378,7 @@ bool GetValidScheme(const std::string& text,
   // brackets are not in the whitelist.
   url::StdStringCanonOutput canon_scheme_output(canon_scheme);
   url::Component canon_scheme_component;
-  if (!url::CanonicalizeScheme(text.data(), *scheme_component,
+  if (!url::CanonicalizeScheme(scheme_component->AsViewOn(text),
                                &canon_scheme_output, &canon_scheme_component)) {
     return false;
   }
@@ -458,9 +422,9 @@ std::string SegmentURLInternal(std::string* text, url::Parsed* parts) {
 
   std::string scheme;
 #if BUILDFLAG(IS_WIN)
-  int trimmed_length = static_cast<int>(trimmed.length());
-  if (url::DoesBeginWindowsDriveSpec(trimmed.data(), 0, trimmed_length) ||
-      url::DoesBeginUNCPath(trimmed.data(), 0, trimmed_length, true)) {
+  std::string_view trimmed_view(trimmed);
+  if (url::DoesBeginWindowsDriveSpec(trimmed_view, 0) ||
+      url::DoesBeginUncPath(trimmed_view, 0, true)) {
     scheme = url::kFileScheme;
   }
 #elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
@@ -480,11 +444,8 @@ std::string SegmentURLInternal(std::string* text, url::Parsed* parts) {
     if (semicolon != 0 && semicolon != std::string::npos) {
       (*text)[semicolon] = ':';
       if (GetValidScheme(*text, &parts->scheme, &scheme) &&
-          (url::IsStandard(
-               scheme.c_str(),
-               url::Component(0, static_cast<int>(scheme.length()))) ||
-           scheme == url::kAboutScheme || scheme == kChromeUIScheme ||
-           scheme == url::kFileScheme)) {
+          (url::IsStandard(scheme) || scheme == url::kAboutScheme ||
+           scheme == kChromeUIScheme || scheme == url::kFileScheme)) {
         found_scheme = true;
       } else {
         (*text)[semicolon] = ';';
@@ -500,26 +461,24 @@ std::string SegmentURLInternal(std::string* text, url::Parsed* parts) {
   // Proceed with about, chrome, and devtools schemes,
   // but not file or nonstandard schemes.
   if ((scheme != url::kAboutScheme) && (scheme != kChromeUIScheme) &&
-      (scheme != kDevToolsScheme) &&
-      !url::IsStandard(scheme.c_str(),
-                       url::Component(0, static_cast<int>(scheme.length())))) {
+      (scheme != kDevToolsScheme) && !url::IsStandard(scheme)) {
     return scheme;
   }
 
   if (scheme == url::kFileScheme) {
-    *parts = url::ParseFileURL(*text);
+    *parts = url::ParseFileUrl(*text);
     return scheme;
   }
 
   if (scheme == url::kFileSystemScheme) {
     // Have the GURL parser do the heavy lifting for us.
-    *parts = url::ParseFileSystemURL(*text);
+    *parts = url::ParseFileSystemUrl(*text);
     return scheme;
   }
 
   if (parts->scheme.is_valid()) {
     // Have the GURL parser do the heavy lifting for us.
-    *parts = url::ParseStandardURL(*text);
+    *parts = url::ParseStandardUrl(*text);
     return scheme;
   }
 
@@ -545,7 +504,7 @@ std::string SegmentURLInternal(std::string* text, url::Parsed* parts) {
   text_to_parse.append(first_nonwhite, text->end());
 
   // Have the GURL parser do the heavy lifting for us.
-  *parts = url::ParseStandardURL(text_to_parse);
+  *parts = url::ParseStandardUrl(text_to_parse);
 
   // Offset the results of the parse to match the original text.
   const int offset = -static_cast<int>(inserted_text.length());
@@ -563,12 +522,36 @@ std::string SegmentURLInternal(std::string* text, url::Parsed* parts) {
 
 }  // namespace
 
+void FixupHost(std::string domain,
+               const std::string& desired_tld,
+               std::string* url) {
+  // Make domain valid.
+  // Strip all leading dots and all but one trailing dot, unless the user only
+  // typed dots, in which case their input is totally invalid and we should just
+  // leave it unchanged.
+  const size_t first_nondot(domain.find_first_not_of('.'));
+  if (first_nondot != std::string::npos) {
+    domain.erase(0, first_nondot);
+    size_t last_nondot(domain.find_last_not_of('.'));
+    DCHECK(last_nondot != std::string::npos);
+    last_nondot += 2;  // Point at second period in ending string
+    if (last_nondot < domain.length()) {
+      domain.erase(last_nondot);
+    }
+  }
+
+  // Add any user-specified TLD, if applicable.
+  AddDesiredTLD(desired_tld, &domain);
+
+  url->append(domain);
+}
+
 std::string SegmentURL(std::string_view text, url::Parsed* parts) {
   std::string mutable_text(text);
   return SegmentURLInternal(&mutable_text, parts);
 }
 
-std::u16string SegmentURL(const std::u16string& text, url::Parsed* parts) {
+std::u16string SegmentURL(std::u16string_view text, url::Parsed* parts) {
   std::string text_utf8 = base::UTF16ToUTF8(text);
   url::Parsed parts_utf8;
   std::string scheme_utf8 = SegmentURL(text_utf8, &parts_utf8);
@@ -633,9 +616,7 @@ GURL FixupURLInternal(const std::string& text,
   bool chrome_url =
       (scheme == url::kAboutScheme) || (scheme == kChromeUIScheme);
   bool devtools_url = (scheme == kDevToolsScheme);
-  if (chrome_url || devtools_url ||
-      url::IsStandard(scheme.c_str(),
-                      url::Component(0, static_cast<int>(scheme.length())))) {
+  if (chrome_url || devtools_url || url::IsStandard(scheme)) {
     // Replace the about: scheme with the chrome: scheme.
     std::string url(scheme == url::kAboutScheme ? kChromeUIScheme : scheme);
     url.append(url::kStandardSchemeSeparator);
@@ -649,7 +630,10 @@ GURL FixupURLInternal(const std::string& text,
       url.append("@");
     }
 
-    FixupHost(trimmed, parts.host, parts.scheme.is_valid(), desired_tld, &url);
+    if (parts.host.is_valid()) {
+      FixupHost(trimmed.substr(parts.host.begin, parts.host.len),
+                 desired_tld, &url);
+    }
     if (chrome_url && !parts.host.is_valid()) {
       url.append(kChromeUIDefaultHost);
     }

@@ -13,14 +13,18 @@
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/reporting/prefs.h"
+#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/reporting_util.h"
 #include "chrome/browser/upgrade_detector/build_state.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
+#include "components/device_signals/core/common/signals_features.h"
 #include "components/enterprise/browser/reporting/report_scheduler.h"
 #include "components/policy/core/common/cloud/dm_token.h"
+#include "components/policy/core/common/policy_service.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/storage_partition.h"
 
 namespace em = enterprise_management;
 
@@ -52,9 +56,12 @@ ReportSchedulerDesktop::ReportSchedulerDesktop()
 ReportSchedulerDesktop::ReportSchedulerDesktop(Profile* profile)
     : profile_(profile), prefs_(profile->GetPrefs()) {
   if (profile) {
-#if BUILDFLAG(IS_CHROMEOS)
-    NOTREACHED();
-#endif
+    if (enterprise_signals::features::IsProfileSignalsReportingEnabled()) {
+      user_security_signals_service_ =
+          std::make_unique<UserSecuritySignalsService>(
+              prefs_, this,
+              profile->GetProfilePolicyConnector()->policy_service());
+    }
   }
 }
 
@@ -92,8 +99,7 @@ void ReportSchedulerDesktop::StartWatchingUpdatesIfNeeded(
           chrome::kChromeVersion &&
       last_upload + upload_interval > base::Time::Now() &&
       !trigger_report_callback_.is_null()) {
-    trigger_report_callback_.Run(
-        ReportScheduler::ReportTrigger::kTriggerNewVersion);
+    trigger_report_callback_.Run(ReportTrigger::kTriggerNewVersion);
   }
 }
 
@@ -121,14 +127,28 @@ std::string ReportSchedulerDesktop::GetProfileClientId() {
   return reporting::GetUserClientId(profile_).value_or(std::string());
 }
 
+void ReportSchedulerDesktop::OnReportEventTriggered(
+    SecurityReportTrigger trigger) {
+  if (!AreSecurityReportsEnabled()) {
+    return;
+  }
+  if (!trigger_report_callback_.is_null()) {
+    trigger_report_callback_.Run(ReportTrigger::kTriggerSecurity);
+  }
+}
+
+network::mojom::CookieManager* ReportSchedulerDesktop::GetCookieManager() {
+  return profile_->GetDefaultStoragePartition()
+      ->GetCookieManagerForBrowserProcess();
+}
+
 void ReportSchedulerDesktop::OnUpdate(const BuildState* build_state) {
   DCHECK(ShouldReportUpdates());
   // A new version has been detected on the machine and a restart is now needed
   // for it to take effect. Send a basic report (without profile info)
   // immediately.
   if (!trigger_report_callback_.is_null()) {
-    trigger_report_callback_.Run(
-        ReportScheduler::ReportTrigger::kTriggerUpdate);
+    trigger_report_callback_.Run(ReportTrigger::kTriggerUpdate);
   }
 }
 

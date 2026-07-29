@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 import '/strings.m.js';
-import 'chrome://resources/cr_elements/cr_toolbar/cr_toolbar.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_input/cr_input.js';
 
@@ -47,7 +46,6 @@ export class AppElement extends AppElementBase {
   static override get properties() {
     return {
       isBrowserSwitcherEnabled_: {type: Boolean},
-      showSearch_: {type: Boolean},
       lastFetch_: {type: String},
       nextFetch_: {type: String},
       urlCheckerInput_: {type: String},
@@ -58,15 +56,14 @@ export class AppElement extends AppElementBase {
     };
   }
 
-  protected isBrowserSwitcherEnabled_: boolean = true;
-  protected showSearch_: boolean = false;
-  protected greyListRules_: RuleItem[] = [];
-  protected siteListRules_: RuleItem[] = [];
-  protected xmlSiteLists_: XmlSiteListItem[] = [];
-  protected urlCheckerInput_: string = '';
-  protected urlCheckerOutput_: string[] = [];
-  protected lastFetch_: string = '';
-  protected nextFetch_: string = '';
+  protected accessor isBrowserSwitcherEnabled_: boolean = true;
+  protected accessor greyListRules_: RuleItem[] = [];
+  protected accessor siteListRules_: RuleItem[] = [];
+  protected accessor xmlSiteLists_: XmlSiteListItem[] = [];
+  protected accessor urlCheckerInput_: string = '';
+  protected accessor urlCheckerOutput_: string[] = [];
+  protected accessor lastFetch_: string = '';
+  protected accessor nextFetch_: string = '';
 
   override firstUpdated() {
     this.updateEverything();
@@ -85,6 +82,10 @@ export class AppElement extends AppElementBase {
     if (changedPrivateProperties.has('urlCheckerInput_')) {
       this.checkUrl_(this.urlCheckerInput_);
     }
+  }
+
+  get showXmlRow(): boolean {
+    return this.xmlSiteLists_.some(item => item.url !== this.i18n('notConfigured'));
   }
 
   getRuleBrowserName(rule: string) {
@@ -138,6 +139,8 @@ export class AppElement extends AppElementBase {
       case 'go':
         opensIn = this.i18n('openBrowser', altBrowserName) + '\n';
         break;
+      default:
+        break;
     }
 
     let reason = '';
@@ -168,6 +171,8 @@ export class AppElement extends AppElementBase {
       case 'default':
         reason += this.i18n('openBrowserDefaultReason', browserName) + '\n';
         break;
+      default:
+        break;
     }
 
     return [opensIn, reason];
@@ -196,7 +201,7 @@ export class AppElement extends AppElementBase {
         });
   }
 
-  refreshXml() {
+  protected onRefreshXmlClick() {
     getProxy().refreshXml();
   }
 
@@ -272,6 +277,29 @@ export class AppElement extends AppElementBase {
   protected onUrlCheckerInputInput_(e: Event) {
     this.urlCheckerInput_ = (e.target as CrInputElement).value;
   }
+
+  /**
+   * Handles the click event on the export policies button.
+   * Fetches the internals data as JSON and triggers a download.
+   */
+  protected async onExportToJsonClick_() {
+    const json = await getProxy().getBrowserSwitchInternalsJson();
+    const blob = new Blob([json], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'browser_switch_internals.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'browser-switch-internals-app': AppElement;
+  }
 }
 
 customElements.define(AppElement.is, AppElement);
@@ -303,7 +331,7 @@ function formatTime(dateNumber: number): string {
  * Gets the English name of the alternate browser.
  */
 function getAltBrowserName(): string {
-  // TODO (crbug.com/1258133): if you change the AlternativeBrowserPath
+  // TODO (crbug.com/40200942): if you change the AlternativeBrowserPath
   // policy, then loadTimeData can contain stale data. It won't update
   // until you refresh (despite the rest of the page auto-updating).
   return loadTimeData.getString('altBrowserName') || 'alternative browser';
@@ -313,7 +341,7 @@ function getAltBrowserName(): string {
  * Gets the English name of the browser.
  */
 function getBrowserName(): string {
-  // TODO (crbug.com/1258133): if you change the AlternativeBrowserPath
+  // TODO (crbug.com/40200942): if you change the AlternativeBrowserPath
   // policy, then loadTimeData can contain stale data. It won't update
   // until you refresh (despite the rest of the page auto-updating).
   return loadTimeData.getString('browserName');

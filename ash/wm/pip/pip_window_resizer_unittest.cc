@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include "ash/wm/pip/pip_window_resizer.h"
-#include "base/memory/raw_ptr.h"
 
 #include <memory>
 #include <string>
@@ -17,17 +16,19 @@
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
+#include "ash/wm/drag_window_resizer.h"
 #include "ash/wm/pip/pip_controller.h"
 #include "ash/wm/pip/pip_positioner.h"
 #include "ash/wm/pip/pip_test_utils.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "ash/wm/test/fake_window_state.h"
-#include "ash/wm/test/test_non_client_frame_view_ash.h"
+#include "ash/wm/test/test_frame_view_ash.h"
 #include "ash/wm/toplevel_window_event_handler.h"
 #include "ash/wm/window_state.h"
 #include "ash/wm/wm_event.h"
 #include "ash/wm/work_area_insets.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
 #include "base/numerics/angle_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -71,6 +72,8 @@ class PipWindowResizerTest : public AshTestBase,
   }
 
   void TearDown() override {
+    window_ = nullptr;
+    test_state_ = nullptr;
     widget_.reset();
     scoped_display_.reset();
     SetVirtualKeyboardEnabled(false);
@@ -100,7 +103,7 @@ class PipWindowResizerTest : public AshTestBase,
     params.parent = pip_container;
 
     // Add a delegate to make it possible to set the maximum and minimum
-    // size for the window with `NonClientFrameViewAsh`.
+    // size for the window with `FrameViewAsh`.
     params.delegate = new TestWidgetDelegateAsh();
 
     widget->Init(std::move(params));
@@ -108,9 +111,17 @@ class PipWindowResizerTest : public AshTestBase,
     return widget;
   }
 
-  PipWindowResizer* CreateResizerForTest(int window_component) {
+  bool IsMultiDisplayTest() const {
+    // For test simplicity, we will only test the case for starting in first
+    // display. If the param is for the second display, we skip.
+    return display::Screen::Get()->GetNumDisplays() > 1 &&
+           std::get<1>(GetParam()) == 0u;
+  }
+
+  PipWindowResizer* CreateResizerForTest(int window_component,
+                                         bool for_pinch = false) {
     return CreateResizerForTest(window_component, window(),
-                                window()->bounds().CenterPoint());
+                                window()->bounds().CenterPoint(), for_pinch);
   }
 
   PipWindowResizer* CreateResizerForTest(int window_component,
@@ -120,12 +131,13 @@ class PipWindowResizerTest : public AshTestBase,
 
   PipWindowResizer* CreateResizerForTest(int window_component,
                                          aura::Window* window,
-                                         const gfx::Point& point_in_parent) {
+                                         const gfx::Point& point_in_parent,
+                                         bool for_pinch = false) {
     WindowState* window_state = WindowState::Get(window);
     window_state->CreateDragDetails(gfx::PointF(point_in_parent),
                                     window_component,
                                     ::wm::WINDOW_MOVE_SOURCE_MOUSE);
-    return new PipWindowResizer(window_state);
+    return new PipWindowResizer(window_state, for_pinch);
   }
 
   gfx::PointF CalculateDragPoint(const WindowResizer& resizer,
@@ -152,6 +164,8 @@ class PipWindowResizerTest : public AshTestBase,
   }
 
   void PreparePipWindow(const gfx::Rect& bounds) {
+    test_state_ = nullptr;
+    window_ = nullptr;
     widget_ = CreateWidgetForTest(bounds);
     window_ = widget_->GetNativeWindow();
 
@@ -160,8 +174,8 @@ class PipWindowResizerTest : public AshTestBase,
     WindowState::Get(window_)->SetStateObject(std::move(test_state));
     Shell::Get()->pip_controller()->SetPipWindow(window_);
 
-    auto* custom_frame = static_cast<TestNonClientFrameViewAsh*>(
-        NonClientFrameViewAsh::Get(window()));
+    auto* custom_frame =
+        static_cast<TestFrameViewAsh*>(FrameViewAsh::Get(window()));
     custom_frame->SetMaximumSize(gfx::Size(300, 200));
     custom_frame->SetMinimumSize(gfx::Size(30, 20));
 
@@ -172,8 +186,8 @@ class PipWindowResizerTest : public AshTestBase,
 
  private:
   std::unique_ptr<views::Widget> widget_;
-  raw_ptr<aura::Window, DanglingUntriaged> window_;
-  raw_ptr<FakeWindowState, DanglingUntriaged> test_state_;
+  raw_ptr<aura::Window> window_;
+  raw_ptr<FakeWindowState> test_state_;
   base::HistogramTester histograms_;
   std::unique_ptr<display::ScopedDisplayForNewWindows> scoped_display_;
 
@@ -216,7 +230,10 @@ TEST_P(PipWindowResizerTest, PipWindowCanPinchResize) {
 
   PreparePipWindow(gfx::ToRoundedRect(initial_bounds));
 
-  std::unique_ptr<PipWindowResizer> resizer(CreateResizerForTest(HTCAPTION));
+  // Use component which usually do not start resize operation.
+  std::unique_ptr<PipWindowResizer> resizer(
+      CreateResizerForTest(HTCLIENT,
+                           /*for_pinch=*/true));
   ASSERT_TRUE(resizer.get());
 
   window()->SetProperty(aura::client::kAspectRatio, gfx::SizeF(3.f, 2.f));
@@ -261,31 +278,34 @@ TEST_P(PipWindowResizerTest, PipWindowDragIsRestrictedToWorkArea) {
   // Specify point in parent as center so the drag point does not leave the
   // display. If the drag point is not in any display bounds, it causes the
   // window to be moved to the default display.
-  auto landscape =
-      display::Screen::GetScreen()->GetPrimaryDisplay().is_landscape();
+  auto landscape = display::Screen::Get()->GetPrimaryDisplay().is_landscape();
   int right_x = landscape ? 392 : 292;
   int bottom_y = landscape ? 292 : 392;
+
+  // For multi-display case, we drag for 200px to avoid landing in different
+  // display.
+  int delta_x = display::Screen::Get()->GetNumDisplays() < 2 ? 250 : 200;
 
   std::unique_ptr<PipWindowResizer> resizer(
       CreateResizerForTest(HTCAPTION, gfx::Point(250, 250)));
   ASSERT_TRUE(resizer.get());
 
   // Drag to the right.
-  resizer->Drag(CalculateDragPoint(*resizer, 250, 0), 0);
+  resizer->Drag(CalculateDragPoint(*resizer, delta_x, 0), 0);
   EXPECT_EQ(gfx::Rect(right_x, 200, 100, 100),
             test_state()->last_requested_bounds());
 
   // Drag down.
-  resizer->Drag(CalculateDragPoint(*resizer, 0, 250), 0);
+  resizer->Drag(CalculateDragPoint(*resizer, 0, delta_x), 0);
   EXPECT_EQ(gfx::Rect(200, bottom_y, 100, 100),
             test_state()->last_requested_bounds());
 
   // Drag to the left.
-  resizer->Drag(CalculateDragPoint(*resizer, -250, 0), 0);
+  resizer->Drag(CalculateDragPoint(*resizer, -delta_x, 0), 0);
   EXPECT_EQ(gfx::Rect(8, 200, 100, 100), test_state()->last_requested_bounds());
 
   // Drag up.
-  resizer->Drag(CalculateDragPoint(*resizer, 0, -250), 0);
+  resizer->Drag(CalculateDragPoint(*resizer, 0, -delta_x), 0);
   EXPECT_EQ(gfx::Rect(200, 8, 100, 100), test_state()->last_requested_bounds());
 }
 
@@ -419,8 +439,7 @@ TEST_P(PipWindowResizerTest,
 }
 
 TEST_P(PipWindowResizerTest, PipWindowIsFlungToEdge) {
-  auto landscape =
-      display::Screen::GetScreen()->GetPrimaryDisplay().is_landscape();
+  auto landscape = display::Screen::Get()->GetPrimaryDisplay().is_landscape();
 
   {
     PreparePipWindow(gfx::Rect(200, 200, 100, 100));
@@ -477,8 +496,7 @@ TEST_P(PipWindowResizerTest, PipWindowIsFlungToEdge) {
 }
 
 TEST_P(PipWindowResizerTest, PipWindowIsFlungDiagonally) {
-  auto landscape =
-      display::Screen::GetScreen()->GetPrimaryDisplay().is_landscape();
+  auto landscape = display::Screen::Get()->GetPrimaryDisplay().is_landscape();
 
   {
     PreparePipWindow(gfx::Rect(200, 200, 100, 100));
@@ -642,6 +660,108 @@ TEST_P(PipWindowResizerTest, PipWindowDoesNotChangeDisplayOnDrag) {
   EXPECT_TRUE(display.bounds().Contains(rect_in_screen));
 }
 
+TEST_P(PipWindowResizerTest, PipWindowCanChangeDisplayOnDrag) {
+  // This test is for multi display situation only, and for test simplicity, we
+  // only test it for root window index 0.
+  if (!IsMultiDisplayTest()) {
+    return;
+  }
+
+  PreparePipWindow(gfx::Rect(200, 200, 100, 100));
+
+  const display::Display primary_display =
+      display::Screen::Get()->GetPrimaryDisplay();
+  const display::Display secondary_display =
+      display::Screen::Get()->GetAllDisplays()[1];
+
+  EXPECT_EQ(primary_display.id(),
+            WindowState::Get(window())->GetDisplay().id());
+
+  std::unique_ptr<PipWindowResizer> resizer(CreateResizerForTest(HTCAPTION));
+  ASSERT_TRUE(resizer.get());
+
+  resizer->Drag(CalculateDragPoint(*resizer, 400, 0), 0);
+  resizer->CompleteDrag();
+
+  EXPECT_EQ(secondary_display.id(),
+            WindowState::Get(window())->GetDisplay().id());
+}
+
+TEST_P(PipWindowResizerTest, PipWindowCanDragToAnotherDisplayAndBack) {
+  // This test is for multi display situation only, and for test simplicity, we
+  // only test it for root window index 0.
+  if (!IsMultiDisplayTest()) {
+    return;
+  }
+
+  PreparePipWindow(gfx::Rect(200, 200, 100, 100));
+
+  const display::Display primary_display =
+      display::Screen::Get()->GetPrimaryDisplay();
+  const display::Display secondary_display =
+      display::Screen::Get()->GetAllDisplays()[1];
+
+  EXPECT_EQ(primary_display.id(),
+            WindowState::Get(window())->GetDisplay().id());
+
+  // Create PipWindowResizer and wrap it in DragWindowResizer.
+  std::unique_ptr<PipWindowResizer> pip_resizer(
+      CreateResizerForTest(HTCAPTION));
+  auto resizer = std::make_unique<DragWindowResizer>(
+      std::move(pip_resizer), WindowState::Get(window()));
+  ASSERT_TRUE(resizer.get());
+
+  // Drag to the secondary display.
+  Shell::Get()->cursor_manager()->SetDisplay(secondary_display);
+  resizer->Drag(CalculateDragPoint(*resizer, 400, 0), 0);
+
+  // Manually apply requested bounds to window because FakeWindowState doesn't
+  // do it.
+  window()->SetBounds(test_state()->last_requested_bounds());
+  // Call Drag again to trigger phantom window creation with updated bounds!
+  resizer->Drag(CalculateDragPoint(*resizer, 400, 0), 0);
+
+  // Verify requested bounds are in secondary display.
+  gfx::Rect requested_bounds = test_state()->last_requested_bounds();
+  ::wm::ConvertRectToScreen(window()->parent(), &requested_bounds);
+  EXPECT_TRUE(secondary_display.bounds().Contains(requested_bounds));
+
+  // Check if phantom window is created on secondary display.
+  aura::Window* secondary_root = Shell::GetAllRootWindows()[1];
+  aura::Window* phantom_window =
+      secondary_root->GetChildById(kShellWindowId_PhantomWindow);
+  EXPECT_TRUE(phantom_window);
+  if (phantom_window) {
+    EXPECT_FALSE(phantom_window->bounds().IsEmpty());
+  }
+
+  // Drag back to primary display.
+  Shell::Get()->cursor_manager()->SetDisplay(primary_display);
+  resizer->Drag(CalculateDragPoint(*resizer, -100, 0), 0);
+  // Manually apply requested bounds again.
+  window()->SetBounds(test_state()->last_requested_bounds());
+  // Call Drag again to update phantom window (it should be deleted now).
+  resizer->Drag(CalculateDragPoint(*resizer, -100, 0), 0);
+
+  // Verify requested bounds are in primary display.
+  requested_bounds = test_state()->last_requested_bounds();
+  ::wm::ConvertRectToScreen(window()->parent(), &requested_bounds);
+  EXPECT_TRUE(primary_display.bounds().Contains(requested_bounds));
+
+  // Phantom window should be deleted or hidden when dragged back to primary.
+  phantom_window = secondary_root->GetChildById(kShellWindowId_PhantomWindow);
+  EXPECT_FALSE(phantom_window);
+
+  resizer->CompleteDrag();
+
+  EXPECT_EQ(primary_display.id(),
+            WindowState::Get(window())->GetDisplay().id());
+
+  // Verify phantom window is deleted at the end.
+  phantom_window = secondary_root->GetChildById(kShellWindowId_PhantomWindow);
+  EXPECT_FALSE(phantom_window);
+}
+
 TEST_P(PipWindowResizerTest, PipRestoreBoundsSetOnFling) {
   PreparePipWindow(gfx::Rect(200, 200, 100, 100));
 
@@ -710,8 +830,8 @@ TEST_P(PipWindowResizerTest, DragDetailsAreDestroyed) {
 TEST_P(PipWindowResizerTest, PipPinchResizeWithNoMaximumSizeRestrinction) {
   PreparePipWindow(gfx::Rect(200, 200, 100, 100));
 
-  auto* custom_frame = static_cast<TestNonClientFrameViewAsh*>(
-      NonClientFrameViewAsh::Get(window()));
+  auto* custom_frame =
+      static_cast<TestFrameViewAsh*>(FrameViewAsh::Get(window()));
   // This means there is no maximum size limit.
   custom_frame->SetMaximumSize(gfx::Size(0, 0));
   window()->SetProperty(aura::client::kAspectRatio, gfx::SizeF(3.f, 2.f));

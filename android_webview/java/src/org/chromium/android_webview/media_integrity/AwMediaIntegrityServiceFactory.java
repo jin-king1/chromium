@@ -5,10 +5,13 @@
 package org.chromium.android_webview.media_integrity;
 
 import org.chromium.blink.mojom.WebViewMediaIntegrityService;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.services.service_manager.InterfaceFactory;
 
-public class AwMediaIntegrityServiceFactory implements InterfaceFactory {
+@NullMarked
+public class AwMediaIntegrityServiceFactory
+        implements InterfaceFactory<WebViewMediaIntegrityService> {
     private final RenderFrameHost mRenderFrameHost;
 
     public AwMediaIntegrityServiceFactory(RenderFrameHost renderFrameHost) {

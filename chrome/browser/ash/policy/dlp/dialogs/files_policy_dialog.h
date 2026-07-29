@@ -5,18 +5,18 @@
 #ifndef CHROME_BROWSER_ASH_POLICY_DLP_DIALOGS_FILES_POLICY_DIALOG_H_
 #define CHROME_BROWSER_ASH_POLICY_DLP_DIALOGS_FILES_POLICY_DIALOG_H_
 
+#include <array>
 #include <optional>
 #include <string>
 #include <utility>
 
 #include "base/files/file_path.h"
-#include "base/memory/weak_ptr.h"
 #include "chrome/browser/chromeos/policy/dlp/dialogs/policy_dialog_base.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_confidential_file.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_file_destination.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_files_utils.h"
 #include "ui/base/metadata/metadata_header_macros.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/widget.h"
 
 namespace policy {
@@ -103,7 +103,6 @@ class FilesPolicyDialog : public PolicyDialogBase {
     Info& operator=(Info&& other);
 
     bool operator==(const Info& other) const;
-    bool operator!=(const Info& other) const;
 
     const std::vector<DlpConfidentialFile>& GetFiles() const;
 

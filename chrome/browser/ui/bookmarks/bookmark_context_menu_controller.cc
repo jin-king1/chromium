@@ -13,6 +13,7 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -39,12 +40,14 @@
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/bookmarks/browser/scoped_group_bookmark_actions.h"
+#include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_metrics.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/bookmarks/managed/managed_bookmark_service.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/saved_tab_groups/public/features.h"
+#include "components/search/ntp_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/undo/bookmark_undo_service.h"
@@ -57,81 +60,83 @@ using PermanentFolderType = BookmarkParentFolder::PermanentFolderType;
 
 namespace {
 
-constexpr UserMetricsAction kBookmarkBarNewBackgroundTab(
+constexpr UserMetricsAction kBookmarkBarOpenAll(
     "BookmarkBar_ContextMenu_OpenAll");
 constexpr UserMetricsAction kBookmarkBarNewWindow(
     "BookmarkBar_ContextMenu_OpenAllInNewWindow");
 constexpr UserMetricsAction kBookmarkBarIncognito(
     "BookmarkBar_ContextMenu_OpenAllIncognito");
-constexpr UserMetricsAction kAppMenuBookmarksNewBackgroundTab(
+constexpr UserMetricsAction kBookmarkBarOpenAllInNewTabGroup(
+    "BookmarkBar_ContextMenu_OpenAllInNewTabGroup");
+constexpr UserMetricsAction kBookmarkBarOpenSplitView(
+    "BookmarkBar_ContextMenu_OpenSplitView");
+constexpr UserMetricsAction kAppMenuBookmarksOpenAll(
     "WrenchMenu_Bookmarks_ContextMenu_OpenAll");
 constexpr UserMetricsAction kAppMenuBookmarksNewWindow(
     "WrenchMenu_Bookmarks_ContextMenu_OpenAllInNewWindow");
 constexpr UserMetricsAction kAppMenuBookmarksIncognito(
     "WrenchMenu_Bookmarks_ContextMenu_OpenAllIncognito");
-constexpr UserMetricsAction kSidePanelBookmarksNewBackgroundTab(
+constexpr UserMetricsAction kAppMenuBookmarksOpenAllInNewTabGroup(
+    "WrenchMenu_Bookmarks_ContextMenu_OpenAllInNewTabGroup");
+constexpr UserMetricsAction kAppMenuBookmarksOpenSplitView(
+    "WrenchMenu_Bookmarks_ContextMenu_OpenSplitView");
+constexpr UserMetricsAction kSidePanelBookmarksOpenAll(
     "SidePanel_Bookmarks_ContextMenu_OpenAll");
 constexpr UserMetricsAction kSidePanelBookmarksNewWindow(
     "SidePanel_Bookmarks_ContextMenu_OpenAllInNewWindow");
 constexpr UserMetricsAction kSidePanelBookmarksIncognito(
     "SidePanel_Bookmarks_ContextMenu_OpenAllIncognito");
+constexpr UserMetricsAction kSidePanelBookmarksOpenAllInNewTabGroup(
+    "SidePanel_Bookmarks_ContextMenu_OpenAllInNewTabGroup");
+constexpr UserMetricsAction kSidePanelBookmarksOpenSplitView(
+    "SidePanel_Bookmarks_ContextMenu_OpenSplitView");
 
 const UserMetricsAction* GetActionForLocationAndDisposition(
-    BookmarkLaunchLocation location,
-    WindowOpenDisposition disposition) {
+    int command_id,
+    BookmarkLaunchLocation location) {
   switch (location) {
     case BookmarkLaunchLocation::kAttachedBar:
-      switch (disposition) {
-        case WindowOpenDisposition::NEW_BACKGROUND_TAB:
-          return &kBookmarkBarNewBackgroundTab;
-        case WindowOpenDisposition::NEW_WINDOW:
-          return &kBookmarkBarNewWindow;
-        case WindowOpenDisposition::OFF_THE_RECORD:
+      switch (command_id) {
+        case IDC_BOOKMARK_BAR_OPEN_ALL:
+          return &kBookmarkBarOpenAll;
+        case IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO:
           return &kBookmarkBarIncognito;
-        default:
-          return nullptr;
+        case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP:
+          return &kBookmarkBarOpenAllInNewTabGroup;
+        case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW:
+          return &kBookmarkBarNewWindow;
+        case IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW:
+          return &kBookmarkBarOpenSplitView;
       }
     case BookmarkLaunchLocation::kAppMenu:
-      switch (disposition) {
-        case WindowOpenDisposition::NEW_BACKGROUND_TAB:
-          return &kAppMenuBookmarksNewBackgroundTab;
-        case WindowOpenDisposition::NEW_WINDOW:
-          return &kAppMenuBookmarksNewWindow;
-        case WindowOpenDisposition::OFF_THE_RECORD:
+      switch (command_id) {
+        case IDC_BOOKMARK_BAR_OPEN_ALL:
+          return &kAppMenuBookmarksOpenAll;
+        case IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO:
           return &kAppMenuBookmarksIncognito;
-        default:
-          return nullptr;
+        case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP:
+          return &kAppMenuBookmarksOpenAllInNewTabGroup;
+        case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW:
+          return &kAppMenuBookmarksNewWindow;
+        case IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW:
+          return &kAppMenuBookmarksOpenSplitView;
       }
     case BookmarkLaunchLocation::kSidePanelContextMenu:
-      switch (disposition) {
-        case WindowOpenDisposition::NEW_BACKGROUND_TAB:
-          return &kSidePanelBookmarksNewBackgroundTab;
-        case WindowOpenDisposition::NEW_WINDOW:
-          return &kSidePanelBookmarksNewWindow;
-        case WindowOpenDisposition::OFF_THE_RECORD:
+      switch (command_id) {
+        case IDC_BOOKMARK_BAR_OPEN_ALL:
+          return &kSidePanelBookmarksOpenAll;
+        case IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO:
           return &kSidePanelBookmarksIncognito;
-        default:
-          return nullptr;
+        case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP:
+          return &kSidePanelBookmarksOpenAllInNewTabGroup;
+        case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW:
+          return &kSidePanelBookmarksNewWindow;
+        case IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW:
+          return &kSidePanelBookmarksOpenSplitView;
       }
     default:
       return nullptr;
   }
-}
-
-// Returns true if `selection` represents a permanent bookmark folder.
-bool IsSelectionPermanentBookmarkFolder(
-    const std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>&
-        selection) {
-  if (selection.size() == 1) {
-    return selection[0]->is_permanent_node();
-  }
-
-  if (selection.size() == 2) {
-    return selection[0]->is_permanent_node() &&
-           selection[1]->is_permanent_node() &&
-           selection[0]->type() == selection[1]->type();
-  }
-  return false;
 }
 
 // Check selection is not empty, nodes are not null nor repeated.
@@ -157,7 +162,8 @@ BookmarkContextMenuController::BookmarkContextMenuController(
     Profile* profile,
     BookmarkLaunchLocation opened_from,
     const std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>&
-        selection)
+        selection,
+    bool can_paste)
     : parent_window_(parent_window),
       delegate_(delegate),
       browser_(browser),
@@ -166,12 +172,14 @@ BookmarkContextMenuController::BookmarkContextMenuController(
       selection_(selection),
       bookmark_service_(
           BookmarkMergedSurfaceServiceFactory::GetForProfile(profile)),
-      new_nodes_parent_(GetParentForNewNodes(selection)) {
+      new_nodes_parent_(GetParentForNewNodes(selection)),
+      can_paste_(can_paste) {
   DCHECK(profile_);
   DCHECK(bookmark_service_->loaded());
   CheckSelectionIsValid(selection);
   CHECK(new_nodes_parent_);
   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+  submenu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
   bookmark_service_->bookmark_model()->AddObserver(this);
 
   BuildMenu();
@@ -226,10 +234,12 @@ void BookmarkContextMenuController::BuildMenu() {
     AddItem(IDC_BOOKMARK_BAR_OPEN_ALL, IDS_BOOKMARK_BAR_OPEN_IN_NEW_TAB);
     AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW,
             IDS_BOOKMARK_BAR_OPEN_IN_NEW_WINDOW);
+    AddItem(IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW,
+            IDS_BOOKMARK_BAR_OPEN_IN_SPLIT_VIEW);
     AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO,
             IDS_BOOKMARK_BAR_OPEN_INCOGNITO);
   } else {
-    int count = chrome::OpenCount(parent_window_, selection_);
+    int count = bookmarks::OpenCount(selection_);
     AddItem(IDC_BOOKMARK_BAR_OPEN_ALL,
             l10n_util::GetPluralStringFUTF16(IDS_BOOKMARK_BAR_OPEN_ALL_COUNT,
                                              count));
@@ -237,18 +247,30 @@ void BookmarkContextMenuController::BuildMenu() {
             l10n_util::GetPluralStringFUTF16(
                 IDS_BOOKMARK_BAR_OPEN_ALL_COUNT_NEW_WINDOW, count));
 
-    int incognito_count =
-        chrome::OpenCount(parent_window_, selection_, profile_);
-    AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO,
-            l10n_util::GetPluralStringFUTF16(
-                IDS_BOOKMARK_BAR_OPEN_ALL_COUNT_INCOGNITO, incognito_count));
+    if (features::IsMenuSimplificationEnabled()) {
+      AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP,
+              l10n_util::GetPluralStringFUTF16(
+                  IDS_BOOKMARK_BAR_OPEN_ALL_COUNT_NEW_TAB_GROUP, count));
 
-    AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP,
-            l10n_util::GetPluralStringFUTF16(
-                IDS_BOOKMARK_BAR_OPEN_ALL_COUNT_NEW_TAB_GROUP, count));
+      int incognito_count = bookmarks::OpenCount(selection_, profile_);
+      AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO,
+              l10n_util::GetPluralStringFUTF16(
+                  IDS_BOOKMARK_BAR_OPEN_ALL_COUNT_INCOGNITO, incognito_count));
+    } else {
+      int incognito_count = bookmarks::OpenCount(selection_, profile_);
+      AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO,
+              l10n_util::GetPluralStringFUTF16(
+                  IDS_BOOKMARK_BAR_OPEN_ALL_COUNT_INCOGNITO, incognito_count));
+
+      AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP,
+              l10n_util::GetPluralStringFUTF16(
+                  IDS_BOOKMARK_BAR_OPEN_ALL_COUNT_NEW_TAB_GROUP, count));
+    }
   }
 
   AddSeparator();
+  // Permanent folders representation should show the `Rename` option, that will
+  // be disabled.
   if ((selection_.size() == 1 && selection_[0]->is_folder()) ||
       IsSelectionPermanentBookmarkFolder(selection_)) {
     AddItem(IDC_BOOKMARK_BAR_RENAME_FOLDER, IDS_BOOKMARK_BAR_RENAME_FOLDER);
@@ -274,19 +296,29 @@ void BookmarkContextMenuController::BuildMenu() {
   AddItem(IDC_BOOKMARK_BAR_NEW_FOLDER, IDS_BOOKMARK_BAR_NEW_FOLDER);
 
   AddSeparator();
-  AddItem(IDC_BOOKMARK_MANAGER, IDS_BOOKMARK_MANAGER);
-  // Use the native host desktop type in tests.
-  if (chrome::IsAppsShortcutEnabled(profile_)) {
-    AddCheckboxItem(IDC_BOOKMARK_BAR_SHOW_APPS_SHORTCUT,
-                    IDS_BOOKMARK_BAR_SHOW_APPS_SHORTCUT);
+  if (features::IsMenuSimplificationEnabled()) {
+    AddItem(IDC_BOOKMARK_MANAGER, IDS_BOOKMARK_MANAGER_V2);
+  } else {
+    AddItem(IDC_BOOKMARK_MANAGER, IDS_BOOKMARK_MANAGER);
   }
-  if (tab_groups::SavedTabGroupUtils::IsEnabledForProfile(profile_)) {
-    AddCheckboxItem(IDC_BOOKMARK_BAR_TOGGLE_SHOW_TAB_GROUPS,
-                    IDS_BOOKMARK_BAR_SHOW_TAB_GROUPS);
+
+  if (base::FeatureList::IsEnabled(
+          ntp_features::kNtpSimplificationBookmarkBar)) {
+    AddSubmenuItems();
+  } else {
+    // Use the native host desktop type in tests.
+    if (chrome::IsAppsShortcutEnabled(profile_)) {
+      AddCheckboxItem(IDC_BOOKMARK_BAR_SHOW_APPS_SHORTCUT,
+                      IDS_BOOKMARK_BAR_SHOW_APPS_SHORTCUT);
+    }
+    if (tab_groups::SavedTabGroupUtils::IsEnabledForProfile(profile_)) {
+      AddCheckboxItem(IDC_BOOKMARK_BAR_TOGGLE_SHOW_TAB_GROUPS,
+                      IDS_BOOKMARK_BAR_SHOW_TAB_GROUPS);
+    }
+    AddCheckboxItem(IDC_BOOKMARK_BAR_SHOW_MANAGED_BOOKMARKS,
+                    IDS_BOOKMARK_BAR_SHOW_MANAGED_BOOKMARKS_DEFAULT_NAME);
+    AddCheckboxItem(IDC_BOOKMARK_BAR_ALWAYS_SHOW, IDS_SHOW_BOOKMARK_BAR);
   }
-  AddCheckboxItem(IDC_BOOKMARK_BAR_SHOW_MANAGED_BOOKMARKS,
-                  IDS_BOOKMARK_BAR_SHOW_MANAGED_BOOKMARKS_DEFAULT_NAME);
-  AddCheckboxItem(IDC_BOOKMARK_BAR_ALWAYS_SHOW, IDS_SHOW_BOOKMARK_BAR);
 }
 
 void BookmarkContextMenuController::AddItem(int id, const std::u16string str) {
@@ -312,15 +344,18 @@ void BookmarkContextMenuController::ExecuteCommand(int id, int event_flags) {
   }
 
   base::WeakPtr<BookmarkContextMenuController> ref(weak_factory_.GetWeakPtr());
+  PrefService* prefs = profile_->GetPrefs();
 
   switch (id) {
     case IDC_BOOKMARK_BAR_OPEN_ALL:
     case IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO:
     case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP:
-    case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW: {
+    case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW:
+    case IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW: {
       WindowOpenDisposition initial_disposition;
       if (id == IDC_BOOKMARK_BAR_OPEN_ALL ||
-          id == IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP) {
+          id == IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP ||
+          id == IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW) {
         initial_disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
       } else if (id == IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW) {
         initial_disposition = WindowOpenDisposition::NEW_WINDOW;
@@ -328,13 +363,20 @@ void BookmarkContextMenuController::ExecuteCommand(int id, int event_flags) {
         initial_disposition = WindowOpenDisposition::OFF_THE_RECORD;
       }
       const UserMetricsAction* const action =
-          GetActionForLocationAndDisposition(opened_from_, initial_disposition);
+          GetActionForLocationAndDisposition(id, opened_from_);
       if (action) {
         base::RecordAction(*action);
       }
 
-      chrome::OpenAllIfAllowed(browser_, selection_, initial_disposition,
-                               id == IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP);
+      bookmarks::OpenAllBookmarksContext context =
+          bookmarks::OpenAllBookmarksContext::kNone;
+      if (id == IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP) {
+        context = bookmarks::OpenAllBookmarksContext::kInGroup;
+      } else if (id == IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW) {
+        context = bookmarks::OpenAllBookmarksContext::kInSplit;
+      }
+      bookmarks::OpenAllIfAllowed(browser_, selection_, initial_disposition,
+                                  context);
       break;
     }
 
@@ -351,6 +393,15 @@ void BookmarkContextMenuController::ExecuteCommand(int id, int event_flags) {
                            BookmarkEditor::EditDetails::EditNode(selection_[0]),
                            selection_[0]->is_url() ? BookmarkEditor::SHOW_TREE
                                                    : BookmarkEditor::NO_TREE);
+      break;
+
+    case IDC_BOOKMARK_BAR_MOVE:
+      base::RecordAction(UserMetricsAction("BookmarkBar_ContextMenu_Move"));
+
+      BookmarkEditor::Show(parent_window_, profile_,
+                           BookmarkEditor::EditDetails::MoveNodes(
+                               bookmark_service_->bookmark_model(), selection_),
+                           BookmarkEditor::SHOW_TREE);
       break;
 
     case IDC_BOOKMARK_BAR_ADD_TO_BOOKMARKS_BAR: {
@@ -446,7 +497,6 @@ void BookmarkContextMenuController::ExecuteCommand(int id, int event_flags) {
       break;
 
     case IDC_BOOKMARK_BAR_SHOW_APPS_SHORTCUT: {
-      PrefService* prefs = profile_->GetPrefs();
       prefs->SetBoolean(
           bookmarks::prefs::kShowAppsShortcutInBookmarkBar,
           !prefs->GetBoolean(bookmarks::prefs::kShowAppsShortcutInBookmarkBar));
@@ -456,7 +506,6 @@ void BookmarkContextMenuController::ExecuteCommand(int id, int event_flags) {
     case IDC_BOOKMARK_BAR_TOGGLE_SHOW_TAB_GROUPS: {
       base::RecordAction(base::UserMetricsAction(
           "BookmarkBar_ContextMenu_ToggleShowSavedTabGroups"));
-      PrefService* prefs = profile_->GetPrefs();
       prefs->SetBoolean(
           bookmarks::prefs::kShowTabGroupsInBookmarkBar,
           !prefs->GetBoolean(bookmarks::prefs::kShowTabGroupsInBookmarkBar));
@@ -464,7 +513,6 @@ void BookmarkContextMenuController::ExecuteCommand(int id, int event_flags) {
     }
 
     case IDC_BOOKMARK_BAR_SHOW_MANAGED_BOOKMARKS: {
-      PrefService* prefs = profile_->GetPrefs();
       prefs->SetBoolean(
           bookmarks::prefs::kShowManagedBookmarksInBookmarkBar,
           !prefs->GetBoolean(
@@ -473,13 +521,10 @@ void BookmarkContextMenuController::ExecuteCommand(int id, int event_flags) {
     }
 
     case IDC_BOOKMARK_MANAGER: {
-      if (selection_.size() == 1 ||
-          IsSelectionPermanentBookmarkFolder(selection_)) {
-        chrome::ShowBookmarkManagerForNode(
-            browser_, BookmarkUIOperationsHelperMergedSurfaces(
-                          bookmark_service_, new_nodes_parent_.get())
-                          .GetDefaultParentForNonMergedSurfaces()
-                          ->id());
+      const bookmarks::BookmarkNode* node_to_focus =
+          ComputeNodeToFocusForBookmarkManager();
+      if (node_to_focus) {
+        chrome::ShowBookmarkManagerForNode(browser_, node_to_focus->id());
       } else {
         chrome::ShowBookmarkManager(browser_);
       }
@@ -501,9 +546,42 @@ void BookmarkContextMenuController::ExecuteCommand(int id, int event_flags) {
       break;
 
     case IDC_PASTE: {
-      BookmarkUIOperationsHelperMergedSurfaces(bookmark_service_,
-                                               new_nodes_parent_.get())
-          .PasteFromClipboard(GetIndexForNewNodes());
+      auto paste_helper =
+          std::make_unique<BookmarkUIOperationsHelperMergedSurfaces>(
+              bookmark_service_, new_nodes_parent_.get());
+      auto* paste_helper_ptr = paste_helper.get();
+      paste_helper_ptr->PasteFromClipboard(
+          GetIndexForNewNodes(),
+          base::BindOnce(&BookmarkContextMenuController::OnPasteFinished,
+                         weak_factory_.GetWeakPtr(), std::move(paste_helper)));
+      break;
+    }
+
+    case IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW: {
+      base::RecordAction(
+          base::UserMetricsAction("BookmarkBar_ContextMenu_AlwaysShow"));
+      prefs->SetInteger(
+          bookmarks::prefs::kBookmarkBarVisibilityState,
+          static_cast<int>(bookmarks::BookmarkBarVisibilityState::kAlwaysShow));
+      break;
+    }
+
+    case IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_HIDE: {
+      base::RecordAction(
+          base::UserMetricsAction("BookmarkBar_ContextMenu_AlwaysHide"));
+      prefs->SetInteger(
+          bookmarks::prefs::kBookmarkBarVisibilityState,
+          static_cast<int>(bookmarks::BookmarkBarVisibilityState::kAlwaysHide));
+      break;
+    }
+
+    case IDC_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP: {
+      base::RecordAction(
+          base::UserMetricsAction("BookmarkBar_ContextMenu_OnlyShowOnNtp"));
+      prefs->SetInteger(
+          bookmarks::prefs::kBookmarkBarVisibilityState,
+          static_cast<int>(
+              bookmarks::BookmarkBarVisibilityState::kOnlyShowOnNtp));
       break;
     }
 
@@ -562,6 +640,19 @@ bool BookmarkContextMenuController::IsCommandIdChecked(int command_id) const {
   if (command_id == IDC_BOOKMARK_BAR_TOGGLE_SHOW_TAB_GROUPS) {
     return prefs->GetBoolean(bookmarks::prefs::kShowTabGroupsInBookmarkBar);
   }
+  if (command_id == IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW) {
+    return prefs->GetInteger(bookmarks::prefs::kBookmarkBarVisibilityState) ==
+           static_cast<int>(bookmarks::BookmarkBarVisibilityState::kAlwaysShow);
+  }
+  if (command_id == IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_HIDE) {
+    return prefs->GetInteger(bookmarks::prefs::kBookmarkBarVisibilityState) ==
+           static_cast<int>(bookmarks::BookmarkBarVisibilityState::kAlwaysHide);
+  }
+  if (command_id == IDC_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP) {
+    return prefs->GetInteger(bookmarks::prefs::kBookmarkBarVisibilityState) ==
+           static_cast<int>(
+               bookmarks::BookmarkBarVisibilityState::kOnlyShowOnNtp);
+  }
 
   DCHECK_EQ(IDC_BOOKMARK_BAR_SHOW_APPS_SHORTCUT, command_id);
   return prefs->GetBoolean(bookmarks::prefs::kShowAppsShortcutInBookmarkBar);
@@ -588,19 +679,26 @@ bool BookmarkContextMenuController::IsCommandIdEnabled(int command_id) const {
              incognito_avail != policy::IncognitoModeAvailability::kDisabled;
 
     case IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO:
-      return chrome::HasBookmarkURLsAllowedInIncognitoMode(selection_) &&
-             !profile_->IsOffTheRecord() &&
-             incognito_avail != policy::IncognitoModeAvailability::kDisabled;
+      return bookmarks::IsOpenInIncognitoAllowed(selection_, profile_);
     case IDC_BOOKMARK_BAR_OPEN_ALL:
     case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP:
-      return chrome::HasBookmarkURLs(selection_);
+      return bookmarks::HasBookmarkURLs(selection_);
+    case IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW: {
+      tabs::TabInterface* active_tab =
+          browser_ ? browser_->GetActiveTabInterface() : nullptr;
+      return bookmarks::HasBookmarkURLs(selection_) &&
+             active_tab && !active_tab->IsSplit();
+    }
     case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW:
-      return chrome::HasBookmarkURLs(selection_) &&
+      return bookmarks::HasBookmarkURLs(selection_) &&
              incognito_avail != policy::IncognitoModeAvailability::kForced;
 
     case IDC_BOOKMARK_BAR_RENAME_FOLDER:
     case IDC_BOOKMARK_BAR_EDIT:
       return selection_.size() == 1 && !is_any_node_permanent && can_edit;
+
+    case IDC_BOOKMARK_BAR_MOVE:
+      return !is_any_node_permanent && can_edit;
 
     case IDC_BOOKMARK_BAR_ADD_TO_BOOKMARKS_BAR:
       for (const bookmarks::BookmarkNode* node : selection_) {
@@ -639,9 +737,20 @@ bool BookmarkContextMenuController::IsCommandIdEnabled(int command_id) const {
     case IDC_BOOKMARK_BAR_ALWAYS_SHOW:
       return !prefs->IsManagedPreference(bookmarks::prefs::kShowBookmarkBar);
 
+    case IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW:
+    case IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_HIDE:
+    case IDC_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP:
+      return !prefs->IsManagedPreference(
+                 bookmarks::prefs::kBookmarkBarVisibilityState) &&
+             !prefs->IsManagedPreference(bookmarks::prefs::kShowBookmarkBar);
+
     case IDC_BOOKMARK_BAR_SHOW_APPS_SHORTCUT:
       return !prefs->IsManagedPreference(
           bookmarks::prefs::kShowAppsShortcutInBookmarkBar);
+
+    case IDC_BOOKMARK_BAR_TOGGLE_SHOW_TAB_GROUPS:
+      return !prefs->IsManagedPreference(
+          bookmarks::prefs::kShowTabGroupsInBookmarkBar);
 
     case IDC_COPY:
     case IDC_CUT:
@@ -649,9 +758,7 @@ bool BookmarkContextMenuController::IsCommandIdEnabled(int command_id) const {
              (command_id == IDC_COPY || can_edit);
 
     case IDC_PASTE:
-      return can_edit && BookmarkUIOperationsHelperMergedSurfaces(
-                             bookmark_service_, new_nodes_parent_.get())
-                             .CanPasteFromClipboard();
+      return can_edit && can_paste_;
   }
   return true;
 }
@@ -672,3 +779,83 @@ void BookmarkContextMenuController::BookmarkModelChanged() {
     delegate_->CloseMenu();
   }
 }
+
+const bookmarks::BookmarkNode*
+BookmarkContextMenuController::ComputeNodeToFocusForBookmarkManager() const {
+  // If the selection is a permanent folder then query the merged service to
+  // deduce which type of permanent node should be focused.
+  if (IsSelectionPermanentBookmarkFolder(selection_)) {
+    CHECK(new_nodes_parent_);
+    return BookmarkUIOperationsHelperMergedSurfaces(bookmark_service_,
+                                                    new_nodes_parent_.get())
+        .GetDefaultParentForNonMergedSurfaces();
+  }
+
+  // If the selection is not specific to a single selection and not tied to a
+  // pair of permanent folders then we cannot deduce a node to focus.
+  if (selection_.size() != 1) {
+    return nullptr;
+  }
+
+  // If the previously computed parent is a non permanent folder we can return
+  // it directly.
+  CHECK(new_nodes_parent_);
+  if (new_nodes_parent_->HoldsNonPermanentFolder()) {
+    return new_nodes_parent_->as_non_permanent_folder();
+  }
+
+  // The selected value is not a folder and the computed parent is a merged
+  // permanent node, the direct parent of the node selected should be focused,
+  // without relying on the merged service logic, since it may not return the
+  // real parent of the selected node.
+  CHECK(!selection_[0]->is_folder());
+  CHECK(selection_[0]->parent()->is_permanent_node());
+  return selection_[0]->parent();
+}
+
+void BookmarkContextMenuController::AddSubmenuItems() {
+  submenu_model_->AddCheckItemWithStringId(
+      IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_HIDE,
+      IDS_BOOKMARK_BAR_SUBMENU_ALWAYS_HIDE);
+  submenu_model_->AddCheckItemWithStringId(
+      IDC_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW,
+      IDS_BOOKMARK_BAR_SUBMENU_ALWAYS_SHOW);
+  submenu_model_->AddCheckItemWithStringId(
+      IDC_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP,
+      IDS_BOOKMARK_BAR_SUBMENU_ONLY_ON_NTP);
+  submenu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+  if (chrome::IsAppsShortcutEnabled(profile_)) {
+    submenu_model_->AddCheckItemWithStringId(
+        IDC_BOOKMARK_BAR_SHOW_APPS_SHORTCUT,
+        IDS_BOOKMARK_BAR_SHOW_APPS_SHORTCUT);
+  }
+  if (tab_groups::SavedTabGroupUtils::IsEnabledForProfile(profile_)) {
+    submenu_model_->AddCheckItemWithStringId(
+        IDC_BOOKMARK_BAR_TOGGLE_SHOW_TAB_GROUPS,
+        IDS_BOOKMARK_BAR_SHOW_TAB_GROUPS);
+  }
+  submenu_model_->AddCheckItemWithStringId(
+      IDC_BOOKMARK_BAR_SHOW_MANAGED_BOOKMARKS,
+      IDS_BOOKMARK_BAR_SHOW_MANAGED_BOOKMARKS_DEFAULT_NAME);
+  menu_model_->AddSubMenuWithStringId(IDC_BOOKMARK_BAR_SUBMENU,
+                                      IDS_BOOKMARK_BAR_SUBMENU_LABEL,
+                                      submenu_model_.get());
+}
+
+bool IsSelectionPermanentBookmarkFolder(
+    const std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>&
+        selection) {
+  if (selection.size() == 1) {
+    return selection[0]->is_permanent_node();
+  }
+
+  if (selection.size() == 2) {
+    return selection[0]->is_permanent_node() &&
+           selection[1]->is_permanent_node() &&
+           selection[0]->type() == selection[1]->type();
+  }
+  return false;
+}
+
+void BookmarkContextMenuController::OnPasteFinished(
+    std::unique_ptr<BookmarkUIOperationsHelperMergedSurfaces> paste_helper) {}

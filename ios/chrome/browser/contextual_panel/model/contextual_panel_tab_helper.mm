@@ -29,8 +29,6 @@ ContextualPanelTabHelper::~ContextualPanelTabHelper() {
   }
 }
 
-WEB_STATE_USER_DATA_KEY_IMPL(ContextualPanelTabHelper)
-
 void ContextualPanelTabHelper::AddObserver(
     ContextualPanelTabHelperObserver* observer) {
   observers_.AddObserver(observer);
@@ -92,6 +90,14 @@ void ContextualPanelTabHelper::SetLoudMomentEntrypointShown(bool shown) {
   loud_moment_entrypoint_shown_for_curent_page_navigation_ = shown;
 }
 
+bool ContextualPanelTabHelper::WasLoudMomentEntrypointCanceled() {
+  return loud_moment_entrypoint_canceled_for_curent_page_navigation_;
+}
+
+void ContextualPanelTabHelper::SetLoudMomentEntrypointCanceled(bool canceled) {
+  loud_moment_entrypoint_canceled_for_curent_page_navigation_ = canceled;
+}
+
 std::optional<ContextualPanelTabHelper::EntrypointMetricsData>&
 ContextualPanelTabHelper::GetMetricsData() {
   return metrics_data_;
@@ -105,10 +111,8 @@ void ContextualPanelTabHelper::SetMetricsData(
 bool ContextualPanelTabHelper::ShouldRefreshData(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
-  // Refresh data if navigation is to a new URL (ignoring ref) or a new
-  // document.
-  return previous_url_ != navigation_context->GetUrl().GetWithoutRef() ||
-         !navigation_context->IsSameDocument();
+  // Refresh data if navigation is not to the same document.
+  return !navigation_context->IsSameDocument();
 }
 
 #pragma mark - WebStateObserver
@@ -132,6 +136,7 @@ void ContextualPanelTabHelper::DidStartNavigation(
 
   metrics_data_ = std::nullopt;
   loud_moment_entrypoint_shown_for_curent_page_navigation_ = false;
+  loud_moment_entrypoint_canceled_for_curent_page_navigation_ = false;
 
   // Clear the configs and notify the observers.
   sorted_weak_configurations_.clear();
@@ -179,6 +184,27 @@ void ContextualPanelTabHelper::WasHidden(web::WebState* web_state) {
     base::UmaHistogramEnumeration("IOS.ContextualPanel.DismissedReason",
                                   ContextualPanelDismissedReason::TabChanged);
     [contextual_sheet_handler_ hideContextualSheet];
+  }
+}
+
+#pragma mark - ContextualPanelItemConfiguration::Delegate
+
+void ContextualPanelTabHelper::InvalidateContextualPanelItemConfiguration(
+    ContextualPanelItemConfiguration* configuration) {
+  // Reset `configuration` if found in `responses_` and check whether all
+  // responses have been completed.
+  bool all_responses_completed = true;
+  bool config_found = false;
+  for (auto& [key, response] : responses_) {
+    all_responses_completed = all_responses_completed && response.completed;
+    if (key == configuration->item_type &&
+        response.configuration.get() == configuration) {
+      response.configuration.reset();
+      config_found = true;
+    }
+  }
+  if (config_found && all_responses_completed) {
+    UpdateItemConfigurations();
   }
 }
 
@@ -235,7 +261,7 @@ void ContextualPanelTabHelper::ModelCallbackReceived(
   AllRequestsFinished();
 }
 
-void ContextualPanelTabHelper::AllRequestsFinished() {
+void ContextualPanelTabHelper::UpdateItemConfigurations() {
   sorted_weak_configurations_.clear();
 
   // The active configurations passed to observers as weak ptrs.
@@ -267,7 +293,10 @@ void ContextualPanelTabHelper::AllRequestsFinished() {
   for (auto& observer : observers_) {
     observer.ContextualPanelHasNewData(this, sorted_weak_configurations_);
   }
+}
 
+void ContextualPanelTabHelper::AllRequestsFinished() {
+  UpdateItemConfigurations();
   FireRequestsFinishedMetrics();
 }
 

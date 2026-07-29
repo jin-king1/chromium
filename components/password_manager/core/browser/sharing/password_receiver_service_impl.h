@@ -17,8 +17,6 @@
 #include "components/sync/protocol/password_sharing_invitation_specifics.pb.h"
 #include "components/sync/service/sync_service_observer.h"
 
-class PrefService;
-
 namespace password_manager {
 
 class PasswordStoreInterface;
@@ -46,8 +44,9 @@ class ProcessIncomingSharingInvitationTask : public PasswordStoreConsumer {
 
  private:
   // PasswordStoreConsumer implementation:
-  void OnGetPasswordStoreResults(
-      std::vector<std::unique_ptr<PasswordForm>> results) override;
+  void OnGetPasswordStoreResultsOrErrorFrom(
+      PasswordStoreInterface* store,
+      LoginsResultOrError results_or_error) override;
 
   // The incoming credentials that are being processed by this task.
   PasswordForm incoming_credentials_;
@@ -70,7 +69,6 @@ class PasswordReceiverServiceImpl : public PasswordReceiverService,
   // `sync_bridge`, `profile_password_store` and `account_password_store` may be
   // nullptr in tests.
   explicit PasswordReceiverServiceImpl(
-      const PrefService* pref_service,
       std::unique_ptr<IncomingPasswordSharingInvitationSyncBridge> sync_bridge,
       PasswordStoreInterface* profile_password_store,
       PasswordStoreInterface* account_password_store);
@@ -91,8 +89,6 @@ class PasswordReceiverServiceImpl : public PasswordReceiverService,
 
  private:
   void RemoveTaskFromTasksList(ProcessIncomingSharingInvitationTask* task);
-
-  const raw_ptr<const PrefService> pref_service_;
 
   raw_ptr<syncer::SyncService> sync_service_ = nullptr;
 

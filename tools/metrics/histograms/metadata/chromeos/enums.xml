@@ -160,7 +160,7 @@ chromium-metrics-reviews@google.com.
   <int value="106" label="ToggleOverview"/>
   <int value="107" label="ToggleProjectorMarker"/>
   <int value="108" label="ToggleResizeLockMenu"/>
-  <int value="109" label="CreateSnapGroup"/>
+  <int value="109" label="ToggleSnapGroup"/>
   <int value="110" label="ToggleSnapGroupWindowsMinimizeAndRestore"/>
   <int value="111" label="ToggleSpokenFeedback"/>
   <int value="112" label="ToggleStylusTools"/>
@@ -192,6 +192,7 @@ chromium-metrics-reviews@google.com.
   <int value="138" label="ToggleGeminiApp"/>
   <int value="139" label="ToggleDoNotDisturb"/>
   <int value="140" label="ToggleCameraAllowed"/>
+  <int value="141" label="StartSunfishSession"/>
   <int value="9000" label="DebugClearUseKMeansPref"/>
   <int value="9001" label="DebugKeyboardBacklightToggle"/>
   <int value="9002" label="DebugMicrophoneMuteToggle"/>
@@ -221,6 +222,7 @@ chromium-metrics-reviews@google.com.
   <int value="9026" label="DevToggleUnifiedDesktop"/>
   <int value="9027" label="DebugToggleFocusModeState"/>
   <int value="9028" label="DebugStartSunfishSession"/>
+  <int value="9029" label="DebugShowTestWindow"/>
 </enum>
 
 <enum name="ArcIntentHandlerDestinationPlatform">
@@ -400,6 +402,8 @@ chromium-metrics-reviews@google.com.
   <int value="15" label="kImportCertificateInstructionReceived"/>
 </enum>
 
+<!-- LINT.IfChange(ChromeOSCameraClientType) -->
+
 <enum name="ChromeOSCameraClientType">
   <int value="0" label="Unknown"/>
   <int value="1" label="Testing"/>
@@ -407,8 +411,10 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Android"/>
   <int value="4" label="PluginVM"/>
   <int value="5" label="AshChrome"/>
-  <int value="6" label="LacrosChrome"/>
+  <int value="6" label="DEPRECATED: LacrosChrome"/>
 </enum>
+
+<!-- LINT.ThenChange(//media/capture/video/chromeos/mojom/cros_camera_service.mojom:CameraClientType) -->
 
 <enum name="ChromeOSCameraErrorType">
   <int value="1" label="Device"/>
@@ -430,13 +436,24 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="External"/>
 </enum>
 
-<enum name="ChromeOSChannel">
-  <int value="0" label="Unknown"/>
-  <int value="1" label="Canary"/>
-  <int value="2" label="Dev"/>
-  <int value="3" label="Beta"/>
-  <int value="4" label="Stable"/>
+<!-- LINT.IfChange(ChromeOSFallbackCountry) -->
+
+<enum name="ChromeOSFallbackCountry">
+  <int value="0" label="No statistics provider is available"/>
+  <int value="1" label="Statistics provider hasn't finished loading data"/>
+  <int value="2"
+      label="Loaded region is a group and not an individual country"/>
+  <int value="3"
+      label="Region in VPD is non-empty but too short for country code"/>
+  <int value="4" label="Region in VPD is too long for country code"/>
+  <int value="5" label="Valid country code parsed from VPD"/>
+  <int value="6" label="[Deprecated] Removed subkey from country information"/>
+  <int value="7" label="Region in VPD is absent"/>
+  <int value="8" label="Region in VPD is empty"/>
+  <int value="9" label="Region in VPD is not a valid country code"/>
 </enum>
+
+<!-- LINT.ThenChange(//chrome/browser/regional_capabilities/regional_capabilities_service_client_chromeos.h:ChromeOSFallbackCountry) -->
 
 <enum name="ChromeOSIioServiceSensorUsage">
   <int value="0" label="ACCEL_base"/>
@@ -494,12 +511,6 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Throttled"/>
 </enum>
 
-<enum name="ChromeOSMachineIdReason">
-  <int value="0" label="Unknown"/>
-  <int value="1" label="Network"/>
-  <int value="2" label="Periodic"/>
-</enum>
-
 <enum name="ChromeOSMessageCenterScrollActionReason">
   <int value="0" label="Unknown"/>
   <int value="1" label="By mouse wheel"/>
@@ -514,12 +525,6 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="All CPUs have zero frequencies"/>
   <int value="4" label="Success after retry"/>
   <int value="5" label="Number of logical is larger than possible"/>
-</enum>
-
-<enum name="ChromeOSParseLacrosPath">
-  <int value="0" label="Rootfs"/>
-  <int value="1" label="Stateful"/>
-  <int value="2" label="Unrecognized"/>
 </enum>
 
 <enum name="ChromeOSParsePSICPUStatus">
@@ -807,6 +812,12 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="kLocked"/>
 </enum>
 
+<enum name="ClassManagementEnabled">
+  <int value="0" label="Class Management disabled"/>
+  <int value="1" label="Class Management enabled for student"/>
+  <int value="2" label="Class Management enabled for teacher"/>
+</enum>
+
 <enum name="ComboDeviceClassification">
   <int value="0" label="KnownKeyboardImposter"/>
   <int value="1" label="KnownMouseImposter"/>
@@ -907,11 +918,6 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Click"/>
 </enum>
 
-<enum name="CrosSystemTrayToggleExpanded">
-  <int value="0" label="Toggled by button"/>
-  <int value="1" label="Toggled by gesture"/>
-</enum>
-
 <enum name="CustomizableButton">
   <int value="0" label="Left"/>
   <int value="1" label="Right"/>
@@ -967,12 +973,6 @@ chromium-metrics-reviews@google.com.
   <int value="1"
       label="Failed because DLC Service returned an error code (see separate
              DLC error code histogram)"/>
-</enum>
-
-<enum name="DpSuccessMetric">
-  <int value="0" label="Success with HotPlug Detect(HPD)"/>
-  <int value="1" label="Success without HotPlug Detect(HPD)"/>
-  <int value="2" label="Failure"/>
 </enum>
 
 <enum name="ExtendedFkeysModifier">
@@ -1033,6 +1033,7 @@ chromium-metrics-reviews@google.com.
   <int value="9" label="InvalidPatchFile"/>
   <int value="10" label="InstallFailedTimeout"/>
   <int value="11" label="FailedToGetFirmwareFile"/>
+  <int value="12" label="UnknownDeviceId"/>
   <int value="100" label="InternalError"/>
   <int value="101" label="InstalledNewerFirmwareVersion"/>
   <int value="102" label="InstalledSameFirmwareVersion"/>
@@ -1150,58 +1151,16 @@ chromium-metrics-reviews@google.com.
   <int value="8" label="PWA selected and preferred"/>
 </enum>
 
-<enum name="KcerError">
-  <summary>List of errors generated by the Kcer component.</summary>
-  <int value="0" label="UnknownError"/>
-  <int value="1" label="NotImplemented"/>
-  <int value="2" label="NotSupported"/>
-  <int value="3" label="TokenIsNotAvailable"/>
-  <int value="4" label="TokenInitializationFailed"/>
-  <int value="5" label="FailedToGenerateKey"/>
-  <int value="6" label="FailedToExportPublicKey"/>
-  <int value="7" label="FailedToEncodePublicKey"/>
-  <int value="8" label="FailedToImportKey"/>
-  <int value="9" label="InvalidCertificate"/>
-  <int value="10" label="FailedToImportCertificate"/>
-  <int value="11" label="FailedToRemoveCertificate"/>
-  <int value="12" label="KeyNotFound"/>
-  <int value="13" label="UnknownKeyType"/>
-  <int value="14" label="FailedToGetKeyId"/>
-  <int value="15" label="FailedToReadAttribute"/>
-  <int value="16" label="FailedToWriteAttribute"/>
-  <int value="17" label="FailedToParseKeyPermissions"/>
-  <int value="18" label="UnexpectedSigningScheme"/>
-  <int value="19" label="KeyDoesNotSupportSigningScheme"/>
-  <int value="20" label="FailedToSignFailedToDigest"/>
-  <int value="21" label="FailedToSignFailedToAddPrefix"/>
-  <int value="22" label="FailedToSignFailedToGetSignatureLength"/>
-  <int value="23" label="FailedToSign"/>
-  <int value="24" label="FailedToSignBadSignatureLength"/>
-  <int value="25" label="FailedToDerEncode"/>
-  <int value="26" label="InputTooLong"/>
-  <int value="27" label="FailedToListKeys"/>
-  <int value="28" label="FailedToRemovePrivateKey"/>
-  <int value="29" label="FailedToRemovePublicKey"/>
-  <int value="30" label="FailedToRemoveObjects"/>
-  <int value="31" label="FailedToCreateSpki"/>
-  <int value="32" label="FailedToGetPkcs11Id"/>
-  <int value="33" label="FailedToSearchForObjects"/>
-  <int value="34" label="Pkcs11SessionFailure"/>
-  <int value="35" label="BadKeyParams"/>
-  <int value="36" label="UnexpectedFindResult"/>
-  <int value="37" label="FailedToDecodeKeyAttributes"/>
-  <int value="38" label="FailedToRetrieveMechanismList"/>
-  <int value="39" label="FailedToParseKey"/>
-  <int value="40" label="FailedToGetIssuerName"/>
-  <int value="41" label="FailedToGetSubjectName"/>
-  <int value="42" label="FailedToGetSerialNumber"/>
-  <int value="43" label="FailedToParsePkcs12"/>
-  <int value="44" label="InvalidPkcs12"/>
-  <int value="45" label="Pkcs12WrongPassword"/>
-  <int value="46" label="Pkcs12InvalidMac"/>
-  <int value="47" label="FailedToMakeCertNickname"/>
-  <int value="48" label="AlreadyExists"/>
+<!-- LINT.IfChange(K12AgeClassificationSegment) -->
+
+<enum name="K12UserAgeClassificationMatrix">
+  <summary>List of K12 user age classification.</summary>
+  <int value="0" label="K12 user age unspecified"/>
+  <int value="1" label="K12 user age under 18"/>
+  <int value="2" label="K12 user age equal or above 18"/>
 </enum>
+
+<!-- LINT.ThenChange(//chrome/browser/metrics/k12_age_classification_metrics_provider.h:K12AgeClassificationSegment,//components/policy/proto/device_management_backend.proto:K12AgeClassificationSegment) -->
 
 <enum name="KcerPkcs12ImportEvent">
   <summary>Events related to KcerChapsUtil processing PKCS#12 Import.</summary>
@@ -1828,14 +1787,6 @@ chromeos/ash/components/language/language_packs/language_pack_manager.h -->
   <int value="1" label="Notification"/>
 </enum>
 
-<enum name="PrivacyHubSensorSubpageUserAction">
-  <int value="0" label="Subpage opened"/>
-  <int value="1" label="System access changed"/>
-  <int value="2" label="App permission changed"/>
-  <int value="3" label="Android settings link clicked"/>
-  <int value="4" label="Website permission link clicked"/>
-</enum>
-
 <enum name="RgbKeyboardBacklightChangeType">
   <int value="0" label="StaticBackgroundColorChanged"/>
   <int value="1" label="RainbowModeSelected"/>
@@ -1886,6 +1837,22 @@ chromeos/ash/components/language/language_packs/language_pack_manager.h -->
   <int value="7" label="API error: no sync token in Create response."/>
   <int value="8" label="API error: no sync token in Get response."/>
 </enum>
+
+<!-- LINT.IfChange(SamlRedirectEvent) -->
+
+<enum name="SamlRedirectEvent">
+  <summary>
+    Track the usage of /samlredirect Gaia endpoint: whether it is supplied with
+    an SSO profile or only domain at the start of online auth flow, and whether
+    users switch from their default 3P IdP page to the default Google sign-in
+    page during the flow.
+  </summary>
+  <int value="0" label="Start on default 3P IdP page based on an SSO profile."/>
+  <int value="1" label="Start on default 3P IdP page based on a domain."/>
+  <int value="2" label="User switched to the default Google sign-in."/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/resources/chromeos/login/components/online_auth_utils.ts:SamlRedirectEvent, //chrome/browser/ash/login/saml/saml_test_utils.h:SamlRedirectEvent) -->
 
 <enum name="SecagentdAuthFactor">
 <!--

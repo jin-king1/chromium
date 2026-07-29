@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "content/browser/renderer_host/frame_tree.h"
 #include "content/browser/renderer_host/navigation_controller_impl.h"
@@ -62,10 +63,6 @@ class NavigationControllerHistoryInterventionBrowserTest
                      bool /* enable_back_forward_cache*/>> {
  public:
   NavigationControllerHistoryInterventionBrowserTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        {{features::kQueueNavigationsWhileWaitingForCommit,
-          {{"queueing_level", "full"}}}},
-        {});
     InitAndEnableRenderDocumentFeature(&feature_list_for_render_document_,
                                        std::get<0>(GetParam()));
     InitBackForwardCacheFeature(&feature_list_for_back_forward_cache_,
@@ -136,6 +133,7 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
       controller.GetLastCommittedEntry()->should_skip_on_back_forward_ui());
 
   EXPECT_TRUE(controller.CanGoBack());
+  EXPECT_TRUE(controller.ShouldEnableBackButton());
   // Attempt to go back or forward to the skippable entry should log the
   // corresponding histogram and skip the corresponding entry.
   TestNavigationObserver back_load_observer(shell()->web_contents());
@@ -166,7 +164,7 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
   EXPECT_FALSE(root->HasStickyUserActivation());
   EXPECT_FALSE(root->HasTransientUserActivation());
 
-  // Navigate to a new cross-site document from the renderer with a user
+  // Navigate to a new cross-site document from the renderer without a user
   // gesture.
   GURL redirected_url(
       embedded_test_server()->GetURL("foo.com", "/title1.html"));
@@ -184,6 +182,7 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
       controller.GetLastCommittedEntry()->should_skip_on_back_forward_ui());
 
   EXPECT_TRUE(controller.CanGoBack());
+  EXPECT_TRUE(controller.ShouldEnableBackButton());
   // Attempt to go back or forward to the skippable entry should log the
   // corresponding histogram and skip the corresponding entry.
   TestNavigationObserver back_load_observer(shell()->web_contents());
@@ -259,6 +258,7 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
 
   // Going back now should skip the entry at [1].
   ASSERT_TRUE(controller.CanGoBack());
+  EXPECT_TRUE(controller.ShouldEnableBackButton());
   {
     TestNavigationObserver back_load_observer(shell()->web_contents());
     controller.GoBack();
@@ -310,6 +310,12 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
 
   // CanGoBack should return false since all previous entries are skippable.
   EXPECT_FALSE(controller.CanGoBack());
+
+  // If all previous entries are skippable, the back button in the browser UI
+  // will remain enabled, so that a user could long-press and select a skippable
+  // entry if they wanted to. But when they click it, nothing will happen,
+  // because CanGoBack() is still false.
+  EXPECT_TRUE(controller.ShouldEnableBackButton());
 }
 
 // Same as above but tests the metrics on going forward.
@@ -1058,6 +1064,12 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
   EXPECT_FALSE(controller.GetEntryAtIndex(4)->should_skip_on_back_forward_ui());
   EXPECT_FALSE(controller.CanGoBack());
 
+  // Even though all the entries behind the current index are skippable, the
+  // back button will still be clickable in the UI, to allow long-pressing and
+  // manually selecting one of those entries. But, clicking the button won't do
+  // anything, as CanGoBack is still false.
+  EXPECT_TRUE(controller.ShouldEnableBackButton());
+
   // Should notify navigation state changed when skippable bit has been reset.
   CanGoBackNavigationStateChangedDelegate navigation_state_changed_delegate;
   shell()->web_contents()->SetDelegate(&navigation_state_changed_delegate);
@@ -1067,6 +1079,7 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
   EXPECT_TRUE(content::ExecJs(shell()->web_contents(), script));
   EXPECT_TRUE(navigation_state_changed_delegate.can_go_back());
   EXPECT_TRUE(controller.CanGoBack());
+  EXPECT_TRUE(controller.ShouldEnableBackButton());
 
   // We now have (After user gesture)
   // [skippable_url(skip), redirected_url, push_state_url1*, push_state_url2,
@@ -1152,9 +1165,9 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
       controller.GetLastCommittedEntry()->should_skip_on_back_forward_ui());
 
   // Simulate a user gesture.
-  root->UpdateUserActivationState(
+  EXPECT_TRUE(root->UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType::kNotifyActivation,
-      blink::mojom::UserActivationNotificationType::kTest);
+      blink::mojom::UserActivationNotificationType::kTest));
 
   // Since the last navigations refer to a different document, a user gesture
   // here should not reset the skippable bit in the previous entries.
@@ -1341,6 +1354,86 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
   EXPECT_EQ(non_skippable_url, controller.GetLastCommittedEntry()->GetURL());
 }
 #endif  // BUILDFLAG(IS_ANDROID)
+
+// Tests the helper logic for GetIndexForGoBackWithSkipping and
+// GetIndexForGoForwardWithSkipping.
+//
+// Establishes a history chain: [url_0_ok, url_1_skip, url_2_skip, url_3_ok,
+// url_4_skip, url_5_skip, url_6_ok*]. Then verifies that passing any index
+// within that range resolves to the correct non-skippable target in the
+// specified direction.
+IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
+                       GetIndexForGoBackForwardWithSkipping) {
+  GURL url_0(embedded_test_server()->GetURL("/title1.html"));
+  GURL url_1(embedded_test_server()->GetURL("/title2.html"));
+  GURL url_2(embedded_test_server()->GetURL("/title3.html"));
+  GURL url_3(embedded_test_server()->GetURL("/title4.html"));
+  GURL url_4(embedded_test_server()->GetURL("/simple_page.html"));
+  GURL url_5(embedded_test_server()->GetURL(
+      "/navigation_controller/simple_page_1.html"));
+  GURL url_6(embedded_test_server()->GetURL(
+      "/navigation_controller/simple_page_2.html"));
+
+  // Setup the history chain.
+  EXPECT_TRUE(NavigateToURL(shell(), url_0));
+  EXPECT_TRUE(NavigateToURL(shell(), url_1));
+  EXPECT_TRUE(NavigateToURLFromRendererWithoutUserGesture(shell(), url_2));
+  EXPECT_TRUE(NavigateToURLFromRendererWithoutUserGesture(shell(), url_3));
+  EXPECT_TRUE(NavigateToURL(shell(), url_4));
+  EXPECT_TRUE(NavigateToURLFromRendererWithoutUserGesture(shell(), url_5));
+  EXPECT_TRUE(NavigateToURLFromRendererWithoutUserGesture(shell(), url_6));
+
+  NavigationControllerImpl& controller = static_cast<NavigationControllerImpl&>(
+      shell()->web_contents()->GetController());
+
+  // Verify state: [url_0_ok, url_1_skip, url_2_skip, url_3_ok, url_4_skip,
+  // url_5_skip, url_6_ok*].
+  ASSERT_EQ(7, controller.GetEntryCount());
+  ASSERT_EQ(6, controller.GetCurrentEntryIndex());
+  EXPECT_FALSE(controller.GetEntryAtIndex(0)->should_skip_on_back_forward_ui());
+  EXPECT_TRUE(controller.GetEntryAtIndex(1)->should_skip_on_back_forward_ui());
+  EXPECT_TRUE(controller.GetEntryAtIndex(2)->should_skip_on_back_forward_ui());
+  EXPECT_FALSE(controller.GetEntryAtIndex(3)->should_skip_on_back_forward_ui());
+  EXPECT_TRUE(controller.GetEntryAtIndex(4)->should_skip_on_back_forward_ui());
+  EXPECT_TRUE(controller.GetEntryAtIndex(5)->should_skip_on_back_forward_ui());
+  EXPECT_FALSE(controller.GetEntryAtIndex(6)->should_skip_on_back_forward_ui());
+
+  // Test backward helper.
+  EXPECT_EQ(3, controller.GetIndexForGoBackWithSkipping(
+                   6, /*performing_navigation=*/false));
+  EXPECT_EQ(3, controller.GetIndexForGoBackWithSkipping(
+                   5, /*performing_navigation=*/false));
+  EXPECT_EQ(3, controller.GetIndexForGoBackWithSkipping(
+                   4, /*performing_navigation=*/false));
+  EXPECT_EQ(0, controller.GetIndexForGoBackWithSkipping(
+                   3, /*performing_navigation=*/false));
+  EXPECT_EQ(0, controller.GetIndexForGoBackWithSkipping(
+                   2, /*performing_navigation=*/false));
+  EXPECT_EQ(0, controller.GetIndexForGoBackWithSkipping(
+                   1, /*performing_navigation=*/false));
+  EXPECT_FALSE(
+      controller
+          .GetIndexForGoBackWithSkipping(0, /*performing_navigation=*/false)
+          .has_value());
+
+  // Test forward helper.
+  EXPECT_EQ(3, controller.GetIndexForGoForwardWithSkipping(
+                   0, /*performing_navigation=*/false));
+  EXPECT_EQ(3, controller.GetIndexForGoForwardWithSkipping(
+                   1, /*performing_navigation=*/false));
+  EXPECT_EQ(3, controller.GetIndexForGoForwardWithSkipping(
+                   2, /*performing_navigation=*/false));
+  EXPECT_EQ(6, controller.GetIndexForGoForwardWithSkipping(
+                   3, /*performing_navigation=*/false));
+  EXPECT_EQ(6, controller.GetIndexForGoForwardWithSkipping(
+                   4, /*performing_navigation=*/false));
+  EXPECT_EQ(6, controller.GetIndexForGoForwardWithSkipping(
+                   5, /*performing_navigation=*/false));
+  EXPECT_FALSE(
+      controller
+          .GetIndexForGoForwardWithSkipping(6, /*performing_navigation=*/false)
+          .has_value());
+}
 
 // Tests that the navigation entry that is marked as skippable on back/forward
 // button does not get skipped for GoToOffset calls.
@@ -1695,6 +1788,7 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
   EXPECT_FALSE(controller.GetEntryAtIndex(2)->should_skip_on_back_forward_ui());
 
   EXPECT_TRUE(controller.CanGoBack());
+  EXPECT_TRUE(controller.ShouldEnableBackButton());
 
   // Attempt to go back or forward to the skippable entry should log the
   // corresponding histogram and skip the corresponding entry.
@@ -1711,9 +1805,9 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerHistoryInterventionBrowserTest,
 
   // A user gesture in the main frame now will lead to all same document
   // entries to be marked as non-skippable.
-  root->UpdateUserActivationState(
+  EXPECT_TRUE(root->UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType::kNotifyActivation,
-      blink::mojom::UserActivationNotificationType::kTest);
+      blink::mojom::UserActivationNotificationType::kTest));
   EXPECT_TRUE(root->HasStickyUserActivation());
   EXPECT_TRUE(root->HasTransientUserActivation());
   EXPECT_FALSE(controller.GetEntryAtIndex(0)->should_skip_on_back_forward_ui());
@@ -1745,9 +1839,9 @@ IN_PROC_BROWSER_TEST_P(
   // Simulate user gesture in the main frame. Subframes creating entries without
   // user gesture will not lead to the last committed entry being marked as
   // skippable.
-  root->UpdateUserActivationState(
+  EXPECT_TRUE(root->UpdateUserActivationState(
       blink::mojom::UserActivationUpdateType::kNotifyActivation,
-      blink::mojom::UserActivationNotificationType::kTest);
+      blink::mojom::UserActivationNotificationType::kTest));
   EXPECT_TRUE(root->HasStickyUserActivation());
   EXPECT_TRUE(root->HasTransientUserActivation());
 

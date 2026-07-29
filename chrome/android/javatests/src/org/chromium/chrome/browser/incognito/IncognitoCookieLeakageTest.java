@@ -18,7 +18,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.params.ParameterAnnotations.UseMethodParameter;
 import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterProvider;
@@ -34,7 +33,8 @@ import org.chromium.chrome.browser.incognito.IncognitoDataTestUtils.ActivityType
 import org.chromium.chrome.browser.incognito.IncognitoDataTestUtils.TestParams;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.net.test.EmbeddedTestServer;
 
@@ -55,8 +55,8 @@ public class IncognitoCookieLeakageTest {
     private EmbeddedTestServer mTestServer;
 
     @Rule
-    public ChromeTabbedActivityTestRule mChromeActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mChromeActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule
     public IncognitoCustomTabActivityTestRule mCustomTabActivityTestRule =
@@ -72,8 +72,7 @@ public class IncognitoCookieLeakageTest {
 
     @After
     public void tearDown() {
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> IncognitoDataTestUtils.closeTabs(mChromeActivityTestRule));
+        mChromeActivityTestRule.closeAllWindowsAndDeleteInstanceAndTabState();
     }
 
     private void setCookies(Tab tab) throws TimeoutException {
@@ -107,9 +106,6 @@ public class IncognitoCookieLeakageTest {
         }
     }
 
-    // TODO(crbug.com/40107157) : Currently, incognito CCTs are not isolated and hence they share
-    // the session with other incognito sessions. Once, they are properly isolated we should change
-    // the test to expect that cookies are not leaked from/to an incognito CCT session.
     @Test
     @LargeTest
     @UseMethodParameter(TestParams.IncognitoToIncognito.class)
@@ -119,18 +115,18 @@ public class IncognitoCookieLeakageTest {
         ActivityType incognitoActivity1 = ActivityType.valueOf(incognitoActivityType1);
         ActivityType incognitoActivity2 = ActivityType.valueOf(incognitoActivityType2);
 
-        Tab setter_tab =
+        Tab setterTab =
                 incognitoActivity1.launchUrl(
                         mChromeActivityTestRule, mCustomTabActivityTestRule, mCookiesTestPage);
-        setCookies(setter_tab);
+        setCookies(setterTab);
 
-        Tab getter_tab =
+        Tab getterTab =
                 incognitoActivity2.launchUrl(
                         mChromeActivityTestRule, mCustomTabActivityTestRule, mCookiesTestPage);
 
         String expected = "\"\"";
 
-        assertCookies(getter_tab, expected);
+        assertCookies(getterTab, expected);
     }
 
     // This test cookie does not leak from regular to incognito and from incognito to regular
@@ -143,15 +139,15 @@ public class IncognitoCookieLeakageTest {
         ActivityType setterActivity = ActivityType.valueOf(setterActivityType);
         ActivityType getterActivity = ActivityType.valueOf(getterActivityType);
 
-        Tab setter_tab =
+        Tab setterTab =
                 setterActivity.launchUrl(
                         mChromeActivityTestRule, mCustomTabActivityTestRule, mCookiesTestPage);
-        setCookies(setter_tab);
+        setCookies(setterTab);
 
-        Tab getter_tab =
+        Tab getterTab =
                 getterActivity.launchUrl(
                         mChromeActivityTestRule, mCustomTabActivityTestRule, mCookiesTestPage);
 
-        assertCookies(getter_tab, "\"\"");
+        assertCookies(getterTab, "\"\"");
     }
 }

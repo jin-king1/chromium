@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <vector>
 
 #include "ash/constants/ash_features.h"
@@ -10,12 +11,10 @@
 #include "base/barrier_closure.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/containers/enum_set.h"
 #include "base/notreached.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
-#include "base/test/scoped_chromeos_version_info.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/floating_sso/cookie_sync_conversions.h"
@@ -26,21 +25,17 @@
 #include "chrome/browser/ash/floating_workspace/floating_workspace_util.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sync/data_type_store_service_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chromeos/constants/pref_names.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/core/dependency_graph.h"
 #include "components/keyed_service/core/keyed_service_base_factory.h"
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/sync/base/pref_names.h"
-#include "components/sync/model/client_tag_based_data_type_processor.h"
-#include "components/sync/model/data_type_store.h"
-#include "components/sync/model/data_type_store_service.h"
 #include "components/sync/model/entity_change.h"
 #include "components/sync/protocol/cookie_specifics.pb.h"
-#include "components/sync/test/mock_data_type_local_change_processor.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/test/browser_test.h"
 #include "net/cookies/cookie_constants.h"
@@ -55,11 +50,13 @@ namespace {
 using testing::_;
 
 // Cookie that passes the Floating SSO filters.
-constexpr char kStandardCookieLine[] = "CookieName=CookieValue; max-age=3600";
+constexpr char kPersistentCookieLine[] = "CookieName=CookieValue; max-age=3600";
+
+constexpr char kSessionCookieLine[] = "CookieName=CookieValue";
 
 constexpr char kCookieName[] = "CookieName";
 
-// Unique key for standard cookie (kStandardCookieLine and kNonGoogleURL).
+// Unique key for persistent cookie (kPersistentCookieLine and kNonGoogleURL).
 // Has cross-site ancestor (true), name (CookieName), domain + path
 // (example.com/), kSecure scheme (2), port (8888).
 constexpr char kCookieUniqueKey[] = "trueCookieNameexample.com/28888";
@@ -132,9 +129,9 @@ bool SetCookie(network::mojom::CookieManager* cookie_manager,
                const GURL& url,
                const std::string& cookie_line) {
   auto cookie = net::CanonicalCookie::CreateForTesting(
-      url, cookie_line, base::Time::Now(),
+      url, cookie_line, base::Time::Now(), net::CookieSourceType::kHTTP,
       /*server_time=*/std::nullopt,
-      /*cookie_partition_key=*/std::nullopt, net::CookieSourceType::kHTTP);
+      /*cookie_partition_key=*/std::nullopt);
 
   return SetCookie(cookie_manager, url, *cookie);
 }
@@ -171,6 +168,15 @@ class FloatingSsoTest : public policy::PolicyTest {
     provider_.UpdateChromePolicy(policies_);
   }
 
+  void SetFloatingWorkspacePolicy(bool policy_value) {
+    policy::PolicyTest::SetPolicy(&policies_,
+                                  policy::key::kFloatingWorkspaceV2Enabled,
+                                  base::Value(policy_value));
+    provider_.UpdateChromePolicy(policies_);
+    ASSERT_EQ(ash::floating_workspace_util::IsFloatingWorkspaceV2Enabled(),
+              policy_value);
+  }
+
   void SetSyncEverythingPref(bool pref_value) {
     profile()->GetPrefs()->SetBoolean(
         syncer::prefs::internal::kSyncKeepEverythingSynced, pref_value);
@@ -188,7 +194,7 @@ class FloatingSsoTest : public policy::PolicyTest {
   }
 
   void SetFloatingSsoDomainBlocklistPolicy(const std::string& domain) {
-    base::Value::List domains;
+    base::ListValue domains;
     domains.Append(domain);
     policy::PolicyTest::SetPolicy(&policies_,
                                   policy::key::kFloatingSsoDomainBlocklist,
@@ -198,7 +204,7 @@ class FloatingSsoTest : public policy::PolicyTest {
 
   void SetFloatingSsoDomainBlocklistExceptionsPolicy(
       const std::string& domain) {
-    base::Value::List domains;
+    base::ListValue domains;
     if (!domain.empty()) {
       domains.Append(domain);
     }
@@ -208,18 +214,17 @@ class FloatingSsoTest : public policy::PolicyTest {
     provider_.UpdateChromePolicy(policies_);
   }
 
+  void SetFloatingSsoSessionCookiesIncludedPolicy(bool policy_value) {
+    policy::PolicyTest::SetPolicy(
+        &policies_, policy::key::kFloatingSsoSessionCookiesIncluded,
+        base::Value(policy_value));
+    provider_.UpdateChromePolicy(policies_);
+  }
+
   void EnableAllFloatingSsoSettings() {
     SetFloatingSsoEnabledPolicy(/*policy_value=*/true);
     SetSyncCookiesPref(/*pref_value=*/true);
     SetSyncDisabledPolicy(/*policy_value=*/false);
-  }
-
-  void EnableFloatingWorkspace() {
-    policy::PolicyTest::SetPolicy(&policies_,
-                                  policy::key::kFloatingWorkspaceV2Enabled,
-                                  base::Value(true));
-    provider_.UpdateChromePolicy(policies_);
-    ASSERT_TRUE(ash::floating_workspace_util::IsFloatingWorkspaceV2Enabled());
   }
 
   bool IsFloatingSsoServiceRegistered() {
@@ -228,14 +233,22 @@ class FloatingSsoTest : public policy::PolicyTest {
                              ->GetDependencyGraphForTesting()
                              .GetConstructionOrder(&nodes);
     EXPECT_TRUE(success);
-    return base::Contains(
+    return std::ranges::contains(
         nodes, "FloatingSsoService",
         [](const DependencyNode* node) -> std::string_view {
           return static_cast<const KeyedServiceBaseFactory*>(node)->name();
         });
   }
 
-  Profile* profile() { return browser()->profile(); }
+  bool IsFloatingSsoSessionCookiesIncludedPolicyManaged() {
+    const PrefService::Preference* floating_sso_session_cookies_pref =
+        profile()->GetPrefs()->FindPreference(
+            chromeos::prefs::kFloatingSsoSessionCookiesIncluded);
+
+    return CHECK_DEREF(floating_sso_session_cookies_pref).IsManaged();
+  }
+
+  Profile* profile() { return browser()->GetProfile(); }
 
   FloatingSsoService& floating_sso_service() {
     return CHECK_DEREF(FloatingSsoServiceFactory::GetForProfile(profile()));
@@ -331,19 +344,11 @@ class FloatingSsoTest : public policy::PolicyTest {
                 testing::ElementsAre(
                     testing::Field("cause", &net::CookieChangeInfo::cause,
                                    net::CookieChangeCause::OVERWRITE),
-                    testing::Field("cause", &net::CookieChangeInfo::cause,
-                                   net::CookieChangeCause::INSERTED)));
+                    testing::Field(
+                        "cause", &net::CookieChangeInfo::cause,
+                        net::CookieChangeCause::INSERTED_NO_CHANGE_OVERWRITE)));
     commit_future.Get();
   }
-
-  // TODO(crbug.com/379092376): remove this once Floating SSO is out of beta.
-  // This will switch the channel to beta for branded builds, but will be a
-  // no-op for non-branded builds which are always set to
-  // `version_info::Channel::UNKNOWN`. CQ/CI builders which use branded Chrome
-  // rely on this field to set the beta channel, builders for non-branded Chrome
-  // rely on Floating SSO being allowed on unknown channel.
-  base::test::ScopedChromeOSVersionInfo scoped_channel_override_{
-      "CHROMEOS_RELEASE_TRACK=beta-channel", base::Time::Now()};
 
   mojo::Remote<network::mojom::CookieManager> cookie_manager_;
   base::test::ScopedFeatureList feature_list_;
@@ -364,7 +369,8 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FloatingSsoPolicyDisabled) {
 
   ASSERT_FALSE(service.IsBoundToCookieManagerForTesting());
 
-  ASSERT_TRUE(SetCookie(cookie_manager(), kNonGoogleURL, kStandardCookieLine));
+  ASSERT_TRUE(
+      SetCookie(cookie_manager(), kNonGoogleURL, kPersistentCookieLine));
 
   // Cookie is not added to store because the FloatingSsoEnabled policy is
   // disabled.
@@ -383,7 +389,8 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, SyncCookiesPrefDisabled) {
 
   ASSERT_FALSE(service.IsBoundToCookieManagerForTesting());
 
-  ASSERT_TRUE(SetCookie(cookie_manager(), kNonGoogleURL, kStandardCookieLine));
+  ASSERT_TRUE(
+      SetCookie(cookie_manager(), kNonGoogleURL, kPersistentCookieLine));
 
   // Cookie is not added to store because the SyncCookies pref is disabled.
   auto store_entries = GetStoreEntries();
@@ -399,7 +406,8 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, SyncDisabled) {
 
   ASSERT_FALSE(service.IsBoundToCookieManagerForTesting());
 
-  ASSERT_TRUE(SetCookie(cookie_manager(), kNonGoogleURL, kStandardCookieLine));
+  ASSERT_TRUE(
+      SetCookie(cookie_manager(), kNonGoogleURL, kPersistentCookieLine));
 
   // Cookie is not added to store because the SyncCookies pref is disabled.
   auto store_entries = GetStoreEntries();
@@ -420,7 +428,7 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FloatingSsoRespectsSyncEverythingPref) {
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   AddCookieAndWaitForCommit(cookie_manager(), kNonGoogleURL,
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
 
   // Cookie is added to store.
   const auto& store_entries = GetStoreEntries();
@@ -434,7 +442,7 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FloatingSsoStopsListeningAndResumes) {
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   AddCookieAndWaitForCommit(cookie_manager(), kNonGoogleURL,
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
 
   // Cookie is added to store.
   const auto& store_entries = GetStoreEntries();
@@ -454,11 +462,11 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FloatingSsoStopsListeningAndResumes) {
             net::CookieChangeCause::INSERTED);
   EXPECT_EQ(store_entries.size(), 1u);
 
-  // We fetch and commit both cookies again, so we need to wait for 2 commits.
+  // Expect the new cookie to result in a commit once Floating SSO is enabled
+  // again.
   base::test::TestFuture<void> commit_future;
   floating_sso_service().GetBridgeForTesting()->SetOnStoreCommitCallbackForTest(
-      base::BarrierClosure(
-          /*num_callbacks=*/2, commit_future.GetRepeatingCallback()));
+      commit_future.GetRepeatingCallback());
 
   // Re-enabling means that the cookies are fetched again and committed to the
   // store.
@@ -473,27 +481,121 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FiltersOutGoogleCookies) {
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://google.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://accounts.google.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://youtube.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
 
   // Cookies are not added to store.
   auto store_entries = GetStoreEntries();
   EXPECT_EQ(store_entries.size(), 0u);
 }
 
-IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FiltersOutSessionCookies) {
+// Session cookie added to store as both FloatingSsoSessionCookiesIncluded
+// policy and FloatingSsoEnabled policy are Enabled.
+IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
+                       SessionCookiesIncludedEnabledFloatingSsoEnabled) {
   auto& service = floating_sso_service();
   EnableAllFloatingSsoSettings();
+  SetFloatingSsoSessionCookiesIncludedPolicy(/*policy_value=*/true);
+
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
-  ASSERT_TRUE(
-      SetCookie(cookie_manager(), kNonGoogleURL, "CookieName=CookieValue"));
+  ASSERT_TRUE(IsFloatingSsoSessionCookiesIncludedPolicyManaged());
 
-  // Cookie is not added to store.
-  auto store_entries = GetStoreEntries();
+  const auto& store_entries = GetStoreEntries();
+  ASSERT_TRUE(store_entries.empty());
+
+  AddCookieAndWaitForCommit(cookie_manager(), kNonGoogleURL,
+                            kSessionCookieLine);
+
+  EXPECT_EQ(store_entries.size(), 1u);
+}
+
+// Session cookie not added to store. When the FloatingSsoEnabled policy is
+// Disabled, we ensure FloatingSsoSessionCookiesIncluded doesn't override it,
+// preventing session cookie syncing.
+IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
+                       SessionCookiesIncludedEnabledFloatingSsoDisabled) {
+  auto& service = floating_sso_service();
+  SetFloatingSsoEnabledPolicy(/*policy_value=*/false);
+  SetSyncCookiesPref(/*pref_value=*/true);
+  SetSyncDisabledPolicy(/*policy_value=*/false);
+  SetFloatingSsoSessionCookiesIncludedPolicy(/*policy_value=*/true);
+
+  ASSERT_FALSE(service.IsBoundToCookieManagerForTesting());
+
+  ASSERT_TRUE(IsFloatingSsoSessionCookiesIncludedPolicyManaged());
+
+  const auto& store_entries = GetStoreEntries();
+  ASSERT_TRUE(store_entries.empty());
+
+  ASSERT_TRUE(SetCookie(cookie_manager(), kNonGoogleURL, kSessionCookieLine));
+
+  EXPECT_EQ(store_entries.size(), 0u);
+}
+
+// Session cookie not added to store as FloatingSsoSessionCookiesIncluded policy
+// is Disabled. This alone prevents session cookie syncing, regardless of the
+// FloatingSsoEnabled policy state.
+IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
+                       SessionCookiesIncludedDisabledFloatingSsoEnabled) {
+  auto& service = floating_sso_service();
+  EnableAllFloatingSsoSettings();
+  SetFloatingSsoSessionCookiesIncludedPolicy(/*policy_value=*/false);
+
+  ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
+
+  ASSERT_TRUE(IsFloatingSsoSessionCookiesIncludedPolicyManaged());
+
+  const auto& store_entries = GetStoreEntries();
+  ASSERT_TRUE(store_entries.empty());
+
+  ASSERT_TRUE(SetCookie(cookie_manager(), kNonGoogleURL, kSessionCookieLine));
+
+  EXPECT_EQ(store_entries.size(), 0u);
+}
+
+// Session cookie added to store. When FloatingSsoSessionCookiesIncluded policy
+// is Unset, FWS policy controls whether session cookies are synced and it is
+// Enabled.
+IN_PROC_BROWSER_TEST_F(FloatingSsoTest, SessionCookiesIncludedUnsetFWSEnabled) {
+  auto& service = floating_sso_service();
+  EnableAllFloatingSsoSettings();
+  SetFloatingWorkspacePolicy(/*policy_value=*/true);
+
+  ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
+
+  ASSERT_FALSE(IsFloatingSsoSessionCookiesIncludedPolicyManaged());
+
+  const auto& store_entries = GetStoreEntries();
+  ASSERT_TRUE(store_entries.empty());
+
+  AddCookieAndWaitForCommit(cookie_manager(), kNonGoogleURL,
+                            kSessionCookieLine);
+
+  EXPECT_EQ(store_entries.size(), 1u);
+}
+
+// Session cookie not added to store. When FloatingSsoSessionCookiesIncluded
+// policy is Unset, FWS policy controls whether session cookies are synced and
+// it is Disabled.
+IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
+                       SessionCookiesIncludedUnsetFWSDisabled) {
+  auto& service = floating_sso_service();
+  EnableAllFloatingSsoSettings();
+  SetFloatingWorkspacePolicy(/*policy_value=*/false);
+
+  ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
+
+  ASSERT_FALSE(IsFloatingSsoSessionCookiesIncludedPolicyManaged());
+
+  const auto& store_entries = GetStoreEntries();
+  ASSERT_TRUE(store_entries.empty());
+
+  ASSERT_TRUE(SetCookie(cookie_manager(), kNonGoogleURL, kSessionCookieLine));
+
   EXPECT_EQ(store_entries.size(), 0u);
 }
 
@@ -509,7 +611,7 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FiltersOutCookiesWithNonHttpSource) {
   // cookie with such source type to the browser, and verify that it's not being
   // synced.
   for (net::CookieSourceType source :
-       base::EnumSet<net::CookieSourceType, net::CookieSourceType::kUnknown,
+       base::EnumSet<net::CookieSourceType, net::CookieSourceType::kHTTP,
                      net::CookieSourceType::kMaxValue>::All()) {
     if (source == net::CookieSourceType::kHTTP) {
       continue;
@@ -517,9 +619,9 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FiltersOutCookiesWithNonHttpSource) {
     const GURL url("https://example.com");
     std::unique_ptr<net::CanonicalCookie> cookie =
         net::CanonicalCookie::CreateForTesting(
-            url, kStandardCookieLine, base::Time::Now(),
+            url, kPersistentCookieLine, base::Time::Now(), source,
             /*server_time=*/std::nullopt,
-            /*cookie_partition_key=*/std::nullopt, source);
+            /*cookie_partition_key=*/std::nullopt);
     ASSERT_TRUE(SetCookie(cookie_manager(), url, *cookie));
     // Verify that nothing is added to Sync store.
     EXPECT_EQ(store_entries.size(), 0u);
@@ -534,13 +636,13 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://example.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("http://example.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://www.example.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://sub.www.example.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
 
   // Cookies are not added to store.
   auto store_entries = GetStoreEntries();
@@ -555,7 +657,7 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://mail.example.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
 
   // Cookie is not added to store.
   const auto& store_entries = GetStoreEntries();
@@ -563,9 +665,9 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
 
   // Other subdomains are not filtered.
   AddCookieAndWaitForCommit(cookie_manager(), GURL("http://example.com"),
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
   AddCookieAndWaitForCommit(cookie_manager(), GURL("https://www.example.com"),
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
 
   // Cookies are added to store.
   EXPECT_EQ(store_entries.size(), 2u);
@@ -578,7 +680,7 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FiltersCookiesWithBlocklistDotPattern) {
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://example.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
 
   // Cookie is not added to store.
   const auto& store_entries = GetStoreEntries();
@@ -586,7 +688,7 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, FiltersCookiesWithBlocklistDotPattern) {
 
   // Subdomains are not filtered.
   AddCookieAndWaitForCommit(cookie_manager(), GURL("https://mail.example.com"),
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
 
   // Cookie is added to store.
   EXPECT_EQ(store_entries.size(), 1u);
@@ -601,9 +703,9 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://mail.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://test.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
 
   // Cookies are not added to store.
   const auto& store_entries = GetStoreEntries();
@@ -611,7 +713,7 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
 
   // Allows domains in exceptions.
   AddCookieAndWaitForCommit(cookie_manager(), GURL("https://example.com"),
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
 
   // Cookie is added to store.
   EXPECT_EQ(store_entries.size(), 1u);
@@ -625,7 +727,7 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, ExceptionListTakesPrecedence) {
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   AddCookieAndWaitForCommit(cookie_manager(), GURL("https://example.com"),
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
 
   // Cookie is added to store.
   auto store_entries = GetStoreEntries();
@@ -640,9 +742,9 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://google.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://accounts.google.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
 
   // Cookies are not added to store.
   auto store_entries = GetStoreEntries();
@@ -657,9 +759,9 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, RespectsBlockAndExemptListUpdates) {
   ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
 
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://mail.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
   AddCookieAndWaitForCommit(cookie_manager(), GURL("https://example.com"),
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
 
   // Only the example.com cookie is added to the store.
   const auto& store_entries = GetStoreEntries();
@@ -674,9 +776,9 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, RespectsBlockAndExemptListUpdates) {
   // Changing the cookie URL for mail.com to not trigger an update but an
   // insert.
   AddCookieAndWaitForCommit(cookie_manager(), GURL("https://sub.mail.com/"),
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
   ASSERT_TRUE(SetCookie(cookie_manager(), GURL("https://example.com"),
-                        kStandardCookieLine));
+                        kPersistentCookieLine));
 
   // sub.mail.com cookie is added to store. The store still contains the
   // example.com cookie.
@@ -751,7 +853,7 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, AddsAndDeletesCookiesToStore) {
 
   // Add cookie.
   AddCookieAndWaitForCommit(cookie_manager(), kNonGoogleURL,
-                            kStandardCookieLine);
+                            kPersistentCookieLine);
 
   // Cookie is added to store.
   const auto& store_entries = GetStoreEntries();
@@ -842,141 +944,6 @@ IN_PROC_BROWSER_TEST_F(FloatingSsoTest, ApplyingChangesFromSync) {
                                  net::CookieChangeCause::EXPLICIT),
                   testing::Field("cause", &net::CookieChangeInfo::cause,
                                  net::CookieChangeCause::INSERTED)));
-}
-
-IN_PROC_BROWSER_TEST_F(FloatingSsoTest,
-                       KeepsSessionCookiesIfFloatingWorkspaceEnabled) {
-  auto& service = floating_sso_service();
-  EnableAllFloatingSsoSettings();
-  // Note that we enable Floating Workspace only here - when browser is
-  // already initialized during fixture setup. As such, this test
-  // doesn't test any Floating Workspace functionality on session
-  // startup. This would require additional test setup because if we just enable
-  // Floating Workspace we will end up with uninitialized browser and
-  // InProcessBrowserTest::browser() will return nullptr resulting in crashes.
-  EnableFloatingWorkspace();
-  ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
-
-  const auto& store_entries = GetStoreEntries();
-  ASSERT_TRUE(store_entries.empty());
-
-  AddCookieAndWaitForCommit(cookie_manager(), kNonGoogleURL,
-                            "CookieName=CookieValue");
-  EXPECT_EQ(store_entries.size(), 1u);
-}
-
-// Defines mock versions of `AddOrUpdateCookie` and `DeleteCookie` which are
-// the main methods to notify the bridge about local changes. This class allows
-// to test how `FloatingSsoService` calls those methods of the bridge.
-class MockFloatingSsoSyncBridge : public FloatingSsoSyncBridge {
- public:
-  explicit MockFloatingSsoSyncBridge(
-      std::unique_ptr<syncer::DataTypeLocalChangeProcessor> change_processor,
-      syncer::OnceDataTypeStoreFactory create_store_callback)
-      : FloatingSsoSyncBridge(std::move(change_processor),
-                              std::move(create_store_callback)) {}
-  ~MockFloatingSsoSyncBridge() override = default;
-
-  MOCK_METHOD(void,
-              AddOrUpdateCookie,
-              (const sync_pb::CookieSpecifics& specifics),
-              (override));
-  MOCK_METHOD(void, DeleteCookie, (const std::string& storage_key), (override));
-};
-
-class FloatingSsoWithMockedBridgeTest : public FloatingSsoTest {
- public:
-  void SetUpBrowserContextKeyedServices(
-      content::BrowserContext* context) override {
-    FloatingSsoTest::SetUpBrowserContextKeyedServices(context);
-    FloatingSsoServiceFactory::GetInstance()->SetTestingFactory(
-        context, base::BindOnce([](content::BrowserContext* context)
-                                    -> std::unique_ptr<KeyedService> {
-          Profile* profile = Profile::FromBrowserContext(context);
-          auto cookie_manager_getter = base::BindLambdaForTesting([profile]() {
-            return profile->GetDefaultStoragePartition()
-                ->GetCookieManagerForBrowserProcess();
-          });
-          return std::make_unique<FloatingSsoService>(
-              profile->GetPrefs(),
-              std::make_unique<testing::NiceMock<MockFloatingSsoSyncBridge>>(
-                  std::make_unique<syncer::ClientTagBasedDataTypeProcessor>(
-                      syncer::COOKIES, base::DoNothing()),
-                  DataTypeStoreServiceFactory::GetForProfile(profile)
-                      ->GetStoreFactory()),
-              cookie_manager_getter);
-        }));
-  }
-
-  void SetUpOnMainThread() override {
-    FloatingSsoTest::SetUpOnMainThread();
-    // Wait until the bridge finishes reading initial data from the store.
-    ASSERT_TRUE(base::test::RunUntil(
-        [&] { return bridge().IsInitialDataReadFinishedForTest(); }));
-  }
-
-  // Add a cookie as if requested by the Sync server, i.e. by calling
-  // `ApplyIncrementalSyncChanges` on the bridge.
-  void AddCookieSyncRequest(const sync_pb::CookieSpecifics& specifics) {
-    base::test::TestFuture<const net::CookieChangeInfo&> cookie_change_future;
-    CookieChangeListener listener(cookie_manager(),
-                                  cookie_change_future.GetRepeatingCallback());
-
-    syncer::EntityChangeList addition_list;
-    addition_list.push_back(syncer::EntityChange::CreateAdd(
-        specifics.unique_key(), CreateEntityDataForTest(specifics)));
-    bridge().ApplyIncrementalSyncChanges(bridge().CreateMetadataChangeList(),
-                                         std::move(addition_list));
-
-    // Wait for the change to be noticed by the browser.
-    ASSERT_EQ(cookie_change_future.Take().cause,
-              net::CookieChangeCause::INSERTED);
-  }
-
-  // Remove a cookie as if requested by the Sync server, i.e. by calling
-  // `ApplyIncrementalSyncChanges` on the bridge.
-  void RemoveCookieSyncRequest(const sync_pb::CookieSpecifics& specifics) {
-    base::test::TestFuture<const net::CookieChangeInfo&> cookie_change_future;
-    CookieChangeListener listener(cookie_manager(),
-                                  cookie_change_future.GetRepeatingCallback());
-
-    syncer::EntityChangeList deletion_list;
-    deletion_list.push_back(syncer::EntityChange::CreateDelete(
-        specifics.unique_key(),
-        CreateEntityDataForTest(sync_pb::CookieSpecifics())));
-    bridge().ApplyIncrementalSyncChanges(bridge().CreateMetadataChangeList(),
-                                         std::move(deletion_list));
-
-    // Wait for the change to be noticed by the browser.
-    ASSERT_EQ(cookie_change_future.Take().cause,
-              net::CookieChangeCause::EXPLICIT);
-  }
-
-  testing::NiceMock<MockFloatingSsoSyncBridge>& bridge() {
-    return static_cast<testing::NiceMock<MockFloatingSsoSyncBridge>&>(
-        *floating_sso_service().GetBridgeForTesting());
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(FloatingSsoWithMockedBridgeTest,
-                       NoOpChangesAreNotPassedToBridge) {
-  auto& service = floating_sso_service();
-  EnableAllFloatingSsoSettings();
-  ASSERT_TRUE(service.IsBoundToCookieManagerForTesting());
-
-  // Below we will add and then delete a cookie via calls to
-  // `ApplyIncrementalSyncChanges` method of the bridge. Since
-  // `FloatingSsoService` observes all cookie changes, it could in theory notify
-  // the bridge about these changes. Check that this doesn't happen (because the
-  // service should not ask the bridge to perform no-op changes).
-  EXPECT_CALL(bridge(), AddOrUpdateCookie).Times(0);
-  EXPECT_CALL(bridge(), DeleteCookie).Times(0);
-
-  const sync_pb::CookieSpecifics specifics =
-      CreatePredefinedCookieSpecificsForTest(
-          0, /*creation_time=*/base::Time::Now(), /*persistent=*/true);
-  AddCookieSyncRequest(specifics);
-  RemoveCookieSyncRequest(specifics);
 }
 
 }  // namespace ash::floating_sso

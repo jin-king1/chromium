@@ -57,12 +57,6 @@ export async function loadTestModule(): Promise<boolean> {
 }
 
 export async function loadMochaAdapter(): Promise<boolean> {
-  const params = new URLSearchParams(window.location.search);
-  const adapter = params.get('adapter') || 'mocha_adapter.js';
-  if (!['mocha_adapter.js', 'mocha_adapter_simple.js'].includes(adapter)) {
-    return Promise.reject(new Error(`Invalid adapter=${adapter} parameter`));
-  }
-
-  await loadScript(`//webui-test/${adapter}`);
-  return Promise.resolve(true);
+  await loadScript(`//webui-test/mocha_adapter_simple.js`);
+  return true;
 }

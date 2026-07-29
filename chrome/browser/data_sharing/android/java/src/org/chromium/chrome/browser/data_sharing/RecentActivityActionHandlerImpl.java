@@ -4,22 +4,29 @@
 
 package org.chromium.chrome.browser.data_sharing;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.data_sharing.ui.recent_activity.RecentActivityActionHandler;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
+import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncUtils;
 import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
+import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.url.GURL;
 
 /** Implementation for {@code RecentActivityActionHandler}. */
+@NullMarked
 public class RecentActivityActionHandlerImpl implements RecentActivityActionHandler {
-    private final TabGroupSyncService mTabGroupSyncService;
+    private final @Nullable TabGroupSyncService mTabGroupSyncService;
     private final TabModelSelector mTabModelSelector;
     private final DataSharingTabGroupsDelegate mDataSharingTabGroupsDelegate;
-    private final String mCollaborationId;
-    private final String mSyncTabGroupId;
+    private final @Nullable String mSyncTabGroupId;
     private final Runnable mManageSharingCallback;
 
     /**
@@ -43,10 +50,8 @@ public class RecentActivityActionHandlerImpl implements RecentActivityActionHand
         mTabGroupSyncService = tabGroupSyncService;
         mTabModelSelector = tabModelSelector;
         mDataSharingTabGroupsDelegate = dataSharingTabGroupsDelegate;
-        mCollaborationId = collaborationId;
         mSyncTabGroupId = syncTabGroupId;
         mManageSharingCallback = manageSharingCallback;
-        assert mCollaborationId != null;
     }
 
     @Override
@@ -56,28 +61,27 @@ public class RecentActivityActionHandlerImpl implements RecentActivityActionHand
 
     @Override
     public void reopenTab(String url) {
+        GURL gurl = new GURL(url);
+        if (!TabGroupSyncUtils.isSavableUrl(gurl)
+                && !TabGroupSyncUtils.isNtpOrAboutBlankUrl(gurl)) {
+            return;
+        }
+
         SavedTabGroup savedTabGroup = getSavedTabGroup();
         assert savedTabGroup != null;
         assert savedTabGroup.localId != null;
-        TabGroupModelFilter tabGroupModelFilter =
-                mTabModelSelector
-                        .getTabGroupModelFilterProvider()
-                        .getTabGroupModelFilter(/* isIncognito= */ false);
-        int rootId = tabGroupModelFilter.getRootIdFromTabGroupId(savedTabGroup.localId.tabGroupId);
+        TabModel tabModel = mTabModelSelector.getModel(/* incognito= */ false);
+        int rootId = tabModel.getGroupLastShownTabId(savedTabGroup.localId.tabGroupId);
         assert rootId != Tab.INVALID_TAB_ID;
 
-        TabGroupUtils.openUrlInGroup(
-                tabGroupModelFilter, url, rootId, TabLaunchType.FROM_TAB_GROUP_UI);
+        TabGroupUtils.openUrlInGroup(tabModel, url, rootId, TabLaunchType.FROM_TAB_GROUP_UI);
     }
 
     @Override
     public void openTabGroupEditDialog() {
         SavedTabGroup savedTabGroup = getSavedTabGroup();
-        assert savedTabGroup != null;
-        assert !savedTabGroup.savedTabs.isEmpty();
-        Integer tabId = savedTabGroup.savedTabs.get(0).localId;
-        assert tabId != null;
-        mDataSharingTabGroupsDelegate.openTabGroupWithTabId(tabId);
+        LocalTabGroupId localId = assumeNonNull(savedTabGroup).localId;
+        mDataSharingTabGroupsDelegate.openTabGroup(assumeNonNull(localId).tabGroupId);
     }
 
     @Override
@@ -85,7 +89,9 @@ public class RecentActivityActionHandlerImpl implements RecentActivityActionHand
         mManageSharingCallback.run();
     }
 
-    private SavedTabGroup getSavedTabGroup() {
+    private @Nullable SavedTabGroup getSavedTabGroup() {
+        assumeNonNull(mTabGroupSyncService);
+        assumeNonNull(mSyncTabGroupId);
         return mTabGroupSyncService.getGroup(mSyncTabGroupId);
     }
 }

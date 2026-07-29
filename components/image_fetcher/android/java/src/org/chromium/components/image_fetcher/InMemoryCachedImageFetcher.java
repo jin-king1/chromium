@@ -8,8 +8,6 @@ import android.graphics.Bitmap;
 
 import androidx.annotation.VisibleForTesting;
 
-import jp.tomorrowkey.android.gifplayer.BaseGifImage;
-
 import org.chromium.base.Callback;
 import org.chromium.base.DiscardableReferencePool;
 import org.chromium.build.annotations.NullMarked;
@@ -26,7 +24,7 @@ public class InMemoryCachedImageFetcher extends ImageFetcher {
     // Will do the work if the image isn't cached in memory.
     private @Nullable ImageFetcher mImageFetcher;
     private @Nullable BitmapCache mBitmapCache;
-    private @ImageFetcherConfig int mConfig;
+    private final @ImageFetcherConfig int mConfig;
 
     /**
      * Create an instance with a custom max cache size.
@@ -37,12 +35,7 @@ public class InMemoryCachedImageFetcher extends ImageFetcher {
      */
     InMemoryCachedImageFetcher(
             ImageFetcher imageFetcher, DiscardableReferencePool referencePool, int cacheSize) {
-        this(
-                imageFetcher,
-                new BitmapCache(
-                        referencePool,
-                        InMemoryCachedImageFetcher.determineCacheSize(
-                                Runtime.getRuntime(), cacheSize)));
+        this(imageFetcher, createBitmapCache(referencePool, cacheSize));
     }
 
     /**
@@ -85,7 +78,7 @@ public class InMemoryCachedImageFetcher extends ImageFetcher {
     }
 
     @Override
-    public void fetchGif(final Params params, Callback<@Nullable BaseGifImage> callback) {
+    public void fetchGif(final Params params, Callback<ImageDataFetchResult> callback) {
         assert mBitmapCache != null && mImageFetcher != null : "fetchGif called after destroy";
         mImageFetcher.fetchGif(params, callback);
     }
@@ -110,6 +103,32 @@ public class InMemoryCachedImageFetcher extends ImageFetcher {
         } else {
             reportEvent(params.clientName, ImageFetcherEvent.JAVA_IN_MEMORY_CACHE_HIT);
             callback.onResult(cachedBitmap);
+        }
+    }
+
+    @Override
+    public void fetchImageWithRequestMetadata(
+            final Params params, Callback<ImageFetchResult> callback) {
+        assert mBitmapCache != null && mImageFetcher != null : "fetchImage called after destroy";
+        Bitmap cachedBitmap =
+                tryToGetBitmap(params.url, params.shouldResize, params.width, params.height);
+        if (cachedBitmap == null) {
+            mImageFetcher.fetchImageWithRequestMetadata(
+                    params,
+                    (ImageFetchResult bitmapFetchResult) -> {
+                        storeBitmap(
+                                bitmapFetchResult.imageBitmap,
+                                params.url,
+                                params.shouldResize,
+                                params.width,
+                                params.height);
+                        callback.onResult(bitmapFetchResult);
+                    });
+        } else {
+            reportEvent(params.clientName, ImageFetcherEvent.JAVA_IN_MEMORY_CACHE_HIT);
+            callback.onResult(
+                    new ImageFetchResult(
+                            cachedBitmap, new RequestMetadata("unknown", -1, "from_cache")));
         }
     }
 
@@ -192,24 +211,39 @@ public class InMemoryCachedImageFetcher extends ImageFetcher {
         return url + "/" + (wasResized ? 1 : 0) + "/" + desiredWidth + "/" + desiredHeight;
     }
 
+    private static BitmapCache createBitmapCache(
+            DiscardableReferencePool referencePool, int cacheSize) {
+        Runtime runtime = Runtime.getRuntime();
+        return new BitmapCache(
+                referencePool,
+                InMemoryCachedImageFetcher.determineCacheSize(
+                        runtime.totalMemory(),
+                        runtime.freeMemory(),
+                        runtime.maxMemory(),
+                        cacheSize));
+    }
+
     /**
      * Determine the cache size, which will be (1) The client's preferred size or (2) 1/8th of the
      * available memory (whichever is smaller).
      *
-     * @param runtime The Java runtime, used to determine the available memory on the device.
+     * @param totalMemory The total allocated heap (Runtime.totalMemory()).
+     * @param freeMemory The free memory in the allocated heap (Runtime.freeMemory()).
+     * @param maxMemory The maximum heap the JVM will attempt to use (Runtime.maxMemory()).
      * @param preferredCacheSize The preferred cache size (in bytes).
      * @return The actual size of the cache (in bytes).
      */
     @VisibleForTesting
-    static int determineCacheSize(Runtime runtime, int preferredCacheSize) {
-        long allocatedMemory = runtime.totalMemory() - runtime.freeMemory();
-        long freeMemory = runtime.maxMemory() - allocatedMemory;
+    static int determineCacheSize(
+            long totalMemory, long freeMemory, long maxMemory, int preferredCacheSize) {
+        long allocatedMemory = totalMemory - freeMemory;
+        long freeMemoryAvailable = maxMemory - allocatedMemory;
 
         int maxCacheSize =
                 (int)
                         Math.max(
                                 /* Make sure the cache is at least 1 byte. */ 1,
-                                freeMemory * PORTION_OF_AVAILABLE_MEMORY);
+                                freeMemoryAvailable * PORTION_OF_AVAILABLE_MEMORY);
 
         return Math.min(maxCacheSize, preferredCacheSize);
     }

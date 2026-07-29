@@ -6,6 +6,9 @@
 
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/reminder_notifications/ui/reminder_notifications_date_picker_table_view_cell.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_configuration.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_constants.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/confirmation_alert/constants.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -47,16 +50,14 @@ bool HasSubtitle(UIView* view) {
 
 // Returns whether the view hierarchy contains a primary action button.
 bool HasPrimaryActionButton(UIView* view) {
-  return FindViewById(view,
-                      kConfirmationAlertPrimaryActionAccessibilityIdentifier) !=
+  return FindViewById(view, kButtonStackPrimaryActionAccessibilityIdentifier) !=
          nil;
 }
 
 // Returns whether the view hierarchy contains a secondary action button.
 bool HasSecondaryActionButton(UIView* view) {
   return FindViewById(
-             view, kConfirmationAlertSecondaryActionAccessibilityIdentifier) !=
-         nil;
+             view, kButtonStackSecondaryActionAccessibilityIdentifier) != nil;
 }
 
 }  // namespace
@@ -88,11 +89,11 @@ TEST_F(ReminderNotificationsViewControllerTest,
   EXPECT_NSEQ(
       viewController.subtitleString,
       l10n_util::GetNSString(IDS_IOS_REMINDER_NOTIFICATIONS_DESCRIPTION));
-  EXPECT_NSEQ(viewController.primaryActionString,
+  EXPECT_NSEQ(viewController.primaryActionButton.titleLabel.text,
               l10n_util::GetNSString(
                   IDS_IOS_REMINDER_NOTIFICATIONS_SET_REMINDER_BUTTON));
   EXPECT_NSEQ(
-      viewController.secondaryActionString,
+      viewController.secondaryActionButton.titleLabel.text,
       l10n_util::GetNSString(IDS_IOS_REMINDER_NOTIFICATIONS_CANCEL_BUTTON));
 }
 
@@ -103,14 +104,12 @@ TEST_F(ReminderNotificationsViewControllerTest,
       [[ReminderNotificationsViewController alloc] init];
   [viewController view];
 
-  EXPECT_FALSE(viewController.showDismissBarButton);
   EXPECT_TRUE(viewController.topAlignedLayout);
-  EXPECT_FALSE(viewController.scrollEnabled);
-  EXPECT_FALSE(viewController.showsVerticalScrollIndicator);
+  EXPECT_TRUE(viewController.alwaysShowImage);
   EXPECT_TRUE(viewController.imageHasFixedSize);
   EXPECT_TRUE(viewController.imageEnclosedWithShadowWithoutBadge);
 
-  EXPECT_EQ(viewController.customSpacingBeforeImageIfNoNavigationBar, 16);
+  EXPECT_EQ(viewController.customSpacingBeforeImage, 16);
   EXPECT_EQ(viewController.customSpacingAfterImage, 16);
   EXPECT_EQ(viewController.customFaviconSideLength, 42);
   EXPECT_NSEQ(viewController.titleTextStyle, UIFontTextStyleTitle2);
@@ -137,4 +136,34 @@ TEST_F(ReminderNotificationsViewControllerTest,
 
   EXPECT_NSEQ(viewController.imageViewAccessibilityLabel,
               @"ReminderNotificationsBellIconAccessibilityLabel");
+}
+
+// Tests the date picker table view cell configuration
+TEST_F(ReminderNotificationsViewControllerTest, DatePickerTableViewCellConfig) {
+  ReminderNotificationsDatePickerTableViewCell* cell =
+      [[ReminderNotificationsDatePickerTableViewCell alloc]
+            initWithStyle:UITableViewCellStyleDefault
+          reuseIdentifier:@"TestCell"];
+
+  [cell configureWithLabel:@"Test" value:@"Value"];
+
+  // Find the labels (would need to add helper methods or use OCMock for more
+  // complex verification)
+  UILabel* titleLabel = nil;
+  UILabel* valueLabel = nil;
+
+  for (UIView* subview in cell.contentView.subviews) {
+    if ([subview isKindOfClass:[UILabel class]]) {
+      UILabel* label = (UILabel*)subview;
+      if ([label.text isEqualToString:@"Test"]) {
+        titleLabel = label;
+      } else if ([label.text isEqualToString:@"Value"]) {
+        valueLabel = label;
+      }
+    }
+  }
+
+  EXPECT_NE(titleLabel, nil);
+  EXPECT_NE(valueLabel, nil);
+  EXPECT_NSEQ(cell.accessibilityIdentifier, @"ReminderNotificationsTestRow");
 }

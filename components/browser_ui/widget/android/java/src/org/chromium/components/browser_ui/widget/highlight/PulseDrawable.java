@@ -8,6 +8,7 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -21,6 +22,7 @@ import androidx.annotation.Px;
 import androidx.core.view.animation.PathInterpolatorCompat;
 
 import org.chromium.base.MathUtils;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
@@ -36,6 +38,7 @@ import org.chromium.ui.interpolators.Interpolators;
 public class PulseDrawable extends Drawable implements Animatable {
     private static final long PULSE_DURATION_MS = 2500;
     private static final long FRAME_RATE = 60;
+    private static @Nullable Long sFrameRateForTesting;
 
     /**
      * Informs the PulseDrawable about whether it can continue pulsing, and specifies a callback to
@@ -62,17 +65,17 @@ public class PulseDrawable extends Drawable implements Animatable {
     }
 
     /**
-     * An interface that does the actual drawing work for this {@link Drawable}.  Not meant to be
+     * An interface that does the actual drawing work for this {@link Drawable}. Not meant to be
      * stateful, as this could be shared across multiple instances of this drawable if it gets
      * copied or mutated.
      */
     private interface Painter {
         /**
-         * Called when this drawable updates it's pulse interpolation.  Should mutate the drawable
-         * as necessary.  This is responsible for invalidating this {@link Drawable} if something
-         * needs to be redrawn.
+         * Called when this drawable updates it's pulse interpolation. Should mutate the drawable as
+         * necessary. This is responsible for invalidating this {@link Drawable} if something needs
+         * to be redrawn.
          *
-         * @param drawable      The {@link PulseDrawable} that is updated.
+         * @param drawable The {@link PulseDrawable} that is updated.
          * @param interpolation The current progress of whatever is being pulsed.
          */
         void modifyDrawable(PulseDrawable drawable, float interpolation);
@@ -129,18 +132,18 @@ public class PulseDrawable extends Drawable implements Animatable {
 
     /**
      * Creates a {@link PulseDrawable} that will fill the bounds with a pulsing color.
+     *
      * @param context The {@link Context} under which the drawable is created.
-     * @param cornerRadius The corner radius in pixels of the highlight rectangle, 0 may be passed
-     *         if the rectangle should not be rounded.
-     * @param highlightExtension How far in pixels the highlight should be extended past the bounds
-     *         of the view. 0 should be passed if there should be no extension.
+     * @param topCornerRadius The top corner radius in pixels of the highlight rectangle. 0 may be
+     *     passed if the rectangle should not be rounded.
+     * @param bottomCornerRadius The bottom corner radius in pixels of the highlight rectangle.
      * @param pulseEndAuthority The {@link PulseEndAuthority} associated with this drawable.
      * @return A new {@link PulseDrawable} instance.
      */
     public static PulseDrawable createRoundedRectangle(
             Context context,
-            @Px int cornerRadius,
-            @Px int highlightExtension,
+            @Px int topCornerRadius,
+            @Px int bottomCornerRadius,
             PulseEndAuthority pulseEndAuthority) {
         Painter painter =
                 new Painter() {
@@ -156,15 +159,22 @@ public class PulseDrawable extends Drawable implements Animatable {
                             Canvas canvas,
                             float interpolation) {
                         Rect bounds = drawable.getBounds();
-                        if (highlightExtension != 0) {
-                            bounds =
-                                    new Rect(
-                                            bounds.left - highlightExtension,
-                                            bounds.top - highlightExtension,
-                                            bounds.right + highlightExtension,
-                                            bounds.bottom + highlightExtension);
+                        if (topCornerRadius == bottomCornerRadius) {
+                            canvas.drawRoundRect(
+                                    new RectF(bounds), topCornerRadius, topCornerRadius, paint);
+                        } else {
+                            float[] radii =
+                                    new float[] {
+                                        topCornerRadius, topCornerRadius,
+                                        topCornerRadius, topCornerRadius,
+                                        bottomCornerRadius, bottomCornerRadius,
+                                        bottomCornerRadius, bottomCornerRadius
+                                    };
+                            Path path = new Path();
+                            RectF rectF = new RectF(bounds);
+                            path.addRoundRect(rectF, radii, Path.Direction.CW);
+                            canvas.drawPath(path, paint);
                         }
-                        canvas.drawRoundRect(new RectF(bounds), cornerRadius, cornerRadius, paint);
                     }
                 };
 
@@ -176,27 +186,16 @@ public class PulseDrawable extends Drawable implements Animatable {
      * Creates a {@link PulseDrawable} that will fill the bounds with a pulsing color. The {@link
      * PulseDrawable} will continue pulsing forever (if this is not the desired behavior, please use
      * {@link PulseEndAuthority}).
+     *
      * @param context The {@link Context} under which the drawable is created.
-     * @param cornerRadius The corner radius in pixels of the highlight rectangle.
-     * @param highlightExtension How far in pixels the highlight should be extended past the bounds
-     *         of the view. 0 should be passed if there should be no extension.
+     * @param topCornerRadius The top corner radius in pixels of the highlight rectangle.
+     * @param bottomCornerRadius The bottom corner radius in pixels of the highlight rectangle.
      * @return A new {@link PulseDrawable} instance.
      */
     public static PulseDrawable createRoundedRectangle(
-            Context context, @Px int cornerRadius, @Px int highlightExtension) {
+            Context context, @Px int topCornerRadius, @Px int bottomCornerRadius) {
         return createRoundedRectangle(
-                context, cornerRadius, highlightExtension, new EndlessPulser());
-    }
-
-    /**
-     * Creates a {@link PulseDrawable} that will fill the bounds with a pulsing color. The {@link
-     * PulseDrawable} will continue pulsing forever (if this is not the desired behavior, please use
-     * {@link PulseEndAuthority}).
-     * @param context The {@link Context} under which the drawable is created.
-     * @return A new {@link PulseDrawable} instance.
-     */
-    public static PulseDrawable createRectangle(Context context) {
-        return createRoundedRectangle(context, 0, /* highlightExtension= */ 0);
+                context, topCornerRadius, bottomCornerRadius, new EndlessPulser());
     }
 
     /**
@@ -281,7 +280,7 @@ public class PulseDrawable extends Drawable implements Animatable {
                 public void run() {
                     stepPulse();
                     if (mRunning) {
-                        scheduleSelf(mNextFrame, SystemClock.uptimeMillis() + 1000 / FRAME_RATE);
+                        scheduleSelf(mNextFrame, calculateNextFrameTime());
                     }
                 }
             };
@@ -326,7 +325,7 @@ public class PulseDrawable extends Drawable implements Animatable {
     /**
      * @param context The {@link Context} for accessing colors.
      * @param useLightPulseColor Whether or not to use a light or dark color for the pulse.
-     * */
+     */
     public void setUseLightPulseColor(Context context, boolean useLightPulseColor) {
         @ColorInt
         int color =
@@ -336,7 +335,8 @@ public class PulseDrawable extends Drawable implements Animatable {
         if (mState.color == color) return;
 
         int alpha = getAlpha();
-        mState.color = mState.drawColor = color;
+        mState.color = color;
+        mState.drawColor = color;
         setAlpha(alpha);
         invalidateSelf();
     }
@@ -352,7 +352,7 @@ public class PulseDrawable extends Drawable implements Animatable {
     public void start() {
         if (mRunning) {
             unscheduleSelf(mNextFrame);
-            scheduleSelf(mNextFrame, SystemClock.uptimeMillis() + 1000 / FRAME_RATE);
+            scheduleSelf(mNextFrame, calculateNextFrameTime());
         } else {
             mRunning = true;
             if (mState.startTime == 0) {
@@ -463,7 +463,7 @@ public class PulseDrawable extends Drawable implements Animatable {
     }
 
     /** The {@link ConstantState} subclass for this {@link PulseDrawable}. */
-    static final class PulseState extends ConstantState {
+    private static final class PulseState extends ConstantState {
         // Current Paint State.
         /** The current color, including alpha, to draw. */
         public int drawColor;
@@ -479,13 +479,13 @@ public class PulseDrawable extends Drawable implements Animatable {
         public float progress;
 
         /** The {@link Interpolator} that makes the pulse and generates the progress. */
-        public Interpolator interpolator;
+        public final Interpolator interpolator;
 
         /**
-         * The {@link Painter} object that is responsible for modifying and drawing this
-         * {@link PulseDrawable}.
+         * The {@link Painter} object that is responsible for modifying and drawing this {@link
+         * PulseDrawable}.
          */
-        public Painter painter;
+        public final Painter painter;
 
         PulseState(Interpolator interpolator, Painter painter) {
             this.interpolator = new PulseInterpolator(interpolator);
@@ -511,5 +511,17 @@ public class PulseDrawable extends Drawable implements Animatable {
         public int getChangingConfigurations() {
             return 0;
         }
+    }
+
+    public static void setFrameRateForTesting(long frameRateForTesting) {
+        sFrameRateForTesting = frameRateForTesting;
+        ResettersForTesting.register(() -> sFrameRateForTesting = null);
+    }
+
+    private static long calculateNextFrameTime() {
+        if (sFrameRateForTesting != null) {
+            return SystemClock.uptimeMillis() + 1000 / sFrameRateForTesting;
+        }
+        return SystemClock.uptimeMillis() + 1000 / FRAME_RATE;
     }
 }

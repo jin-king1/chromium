@@ -7,7 +7,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/string_number_conversions.h"
 #include "content/browser/background_fetch/background_fetch_data_manager.h"
 #include "content/browser/background_fetch/background_fetch_delegate_proxy.h"
@@ -104,7 +103,8 @@ bool BackgroundFetchScheduler::ScheduleDownload() {
     for (const auto& controller_id : controller_ids_) {
       // Make sure the storage key is not already active.
       bool is_new_storage_key = true;
-      for (auto* controller : active_controllers_) {
+      for (content::BackgroundFetchJobController* controller :
+           active_controllers_) {
         if (controller->registration_id().storage_key() ==
             controller_id.storage_key()) {
           is_new_storage_key = false;
@@ -131,7 +131,7 @@ bool BackgroundFetchScheduler::ScheduleDownload() {
   // 2. Try to start a request within the LRU registration.
   for (auto it = active_controllers_.begin(); it != active_controllers_.end();
        ++it) {
-    auto* controller = *it;
+    BackgroundFetchJobController* controller = *it;
     if (!controller->HasMoreRequests())
       continue;
 
@@ -197,9 +197,10 @@ void BackgroundFetchScheduler::FinishJob(
     base::OnceCallback<void(BackgroundFetchError)> callback) {
   auto* active_controller = GetActiveController(registration_id);
   if (active_controller) {
-    base::EraseIf(active_controllers_, [&registration_id](auto* controller) {
-      return controller->registration_id() == registration_id;
-    });
+    base::EraseIf(active_controllers_,
+                  [&registration_id](const auto& controller) {
+                    return controller->registration_id() == registration_id;
+                  });
   }
 
   data_manager_->MarkRegistrationForDeletion(
@@ -245,7 +246,7 @@ void BackgroundFetchScheduler::DidMarkForDeletion(
     return;
 
   auto it = completed_fetches_.find(registration_id.unique_id());
-  CHECK(it != completed_fetches_.end(), base::NotFatalUntil::M130);
+  CHECK(it != completed_fetches_.end());
 
   blink::mojom::BackgroundFetchRegistrationDataPtr& registration_data =
       it->second->registration;
@@ -503,7 +504,8 @@ void BackgroundFetchScheduler::OnStorageWiped() {
 
 BackgroundFetchJobController* BackgroundFetchScheduler::GetActiveController(
     const BackgroundFetchRegistrationId& registration_id) {
-  for (auto* controller : active_controllers_) {
+  for (content::BackgroundFetchJobController* controller :
+       active_controllers_) {
     if (controller->registration_id() == registration_id)
       return controller;
   }

@@ -11,10 +11,10 @@
 
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "chrome/browser/ash/magic_boost/magic_boost_controller.h"
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_constants.h"
 #include "chrome/browser/ui/ash/read_write_cards/read_write_card_controller.h"
 #include "chromeos/components/mahi/public/cpp/mahi_media_app_events_proxy.h"
-#include "chromeos/crosapi/mojom/magic_boost.mojom.h"
 #include "ui/views/widget/unique_widget_ptr.h"
 
 namespace gfx {
@@ -25,12 +25,10 @@ namespace views {
 class Widget;
 }  // namespace views
 
+class ApplicationLocaleStorage;
 class Profile;
 
 namespace chromeos {
-
-using OptInFeatures = crosapi::mojom::MagicBoostController::OptInFeatures;
-using TransitionAction = crosapi::mojom::MagicBoostController::TransitionAction;
 
 // The controller that manages the lifetime of opt-in cards.
 // Some functions in this controller are virtual for testing.
@@ -38,7 +36,9 @@ class MagicBoostCardController
     : public ReadWriteCardController,
       public chromeos::MahiMediaAppEventsProxy::Observer {
  public:
-  MagicBoostCardController();
+  // `application_locale_storage` must be non-null and must outlive `this`.
+  explicit MagicBoostCardController(
+      const ApplicationLocaleStorage* application_locale_storage);
   MagicBoostCardController(const MagicBoostCardController&) = delete;
   MagicBoostCardController& operator=(const MagicBoostCardController&) = delete;
   ~MagicBoostCardController() override;
@@ -65,28 +65,28 @@ class MagicBoostCardController
 
   // The setter and getter of the features that trigger the magic boost opt in
   // card.
-  void SetOptInFeature(const OptInFeatures& features);
-  const OptInFeatures& GetOptInFeatures() const;
+  void SetOptInFeature(const ash::magic_boost::OptInFeatures& features);
+  const ash::magic_boost::OptInFeatures& GetOptInFeatures() const;
 
-  void SetMagicBoostControllerCrosapiForTesting(
-      crosapi::mojom::MagicBoostController* delegate);
+  void SetMagicBoostControllerForTesting(ash::MagicBoostController* delegate);
 
   base::WeakPtr<MagicBoostCardController> GetWeakPtr();
 
-  void set_transition_action(TransitionAction action) {
+  void set_transition_action(ash::magic_boost::TransitionAction action) {
     transition_action_ = action;
   }
-  TransitionAction transition_action_for_test() { return transition_action_; }
+  ash::magic_boost::TransitionAction transition_action_for_test() {
+    return transition_action_;
+  }
 
   views::Widget* opt_in_widget_for_test() { return opt_in_widget_.get(); }
 
  private:
-  TransitionAction transition_action_ = TransitionAction::kDoNothing;
-
+  const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
+  ash::magic_boost::TransitionAction transition_action_ =
+      ash::magic_boost::TransitionAction::kDoNothing;
   views::UniqueWidgetPtr opt_in_widget_;
-
-  OptInFeatures opt_in_features_;
-
+  ash::magic_boost::OptInFeatures opt_in_features_;
   base::WeakPtrFactory<MagicBoostCardController> weak_factory_{this};
 };
 

@@ -60,6 +60,8 @@ const ComputedStyle* EditingViewPortElement::CustomStyleForLayoutObject(
   style_builder.SetMinHeight(Length::Fixed(0));
   style_builder.SetDisplay(EDisplay::kBlock);
   style_builder.SetDirection(TextDirection::kLtr);
+  style_builder.SetBaseTextDecorationData(
+      OwnerShadowHost()->ComputedStyleRef().AppliedTextDecorationData());
 
   // We don't want the shadow dom to be editable, so we set this block to
   // read-only in case the input itself is editable.
@@ -150,9 +152,17 @@ const ComputedStyle* TextControlInnerEditorElement::CustomStyleForLayoutObject(
           ? EUserModify::kReadOnly
           : EUserModify::kReadWritePlaintextOnly);
   style_builder.SetDisplay(EDisplay::kBlock);
-  style_builder.SetHasLineIfEmpty(true);
+  style_builder.SetBaseTextDecorationData(
+      OwnerShadowHost()->ComputedStyleRef().AppliedTextDecorationData());
   if (!start_style.ApplyControlFixedSize(host)) {
-    Length caret_width(GetDocument().View()->CaretWidth(), Length::kFixed);
+    const Font* font = start_style.GetFont();
+    const SimpleFontData* font_data = font->PrimaryFont();
+    LayoutUnit default_width = GetDocument().View()->BarCaretWidth();
+    CaretShape caret_shape = GetCaretShapeFromComputedStyle(start_style);
+    if (caret_shape != CaretShape::kBar && font_data) [[unlikely]] {
+      default_width = LayoutUnit(font_data->AvgCharWidth());
+    }
+    Length caret_width(default_width, Length::kFixed);
     if (IsHorizontalWritingMode(style_builder.GetWritingMode())) {
       style_builder.SetMinWidth(caret_width);
     } else {
@@ -162,6 +172,7 @@ const ComputedStyle* TextControlInnerEditorElement::CustomStyleForLayoutObject(
   style_builder.SetShouldIgnoreOverflowPropertyForInlineBlockBaseline();
 
   if (!IsA<HTMLTextAreaElement>(host)) {
+    style_builder.SetHasLineIfEmpty(true);
     style_builder.SetScrollbarColor(nullptr);
     style_builder.SetWhiteSpace(EWhiteSpace::kPre);
     style_builder.SetOverflowWrap(EOverflowWrap::kNormal);
@@ -184,7 +195,7 @@ const ComputedStyle* TextControlInnerEditorElement::CustomStyleForLayoutObject(
     // TODO(tkent): This should be done during layout.
     if (logical_height.HasPercent() ||
         (logical_height.IsFixed() &&
-         logical_height.GetFloatValue() > computed_line_height)) {
+         logical_height.Pixels() > computed_line_height)) {
       style_builder.SetLineHeight(
           ComputedStyleInitialValues::InitialLineHeight());
     }
@@ -285,6 +296,14 @@ bool PasswordRevealButtonElement::WillRespondToMouseClickEvents() {
     return true;
 
   return HTMLDivElement::WillRespondToMouseClickEvents();
+}
+
+EmailVerificationIndicatorElement::EmailVerificationIndicatorElement(
+    Document& document)
+    : HTMLDivElement(document) {
+  SetShadowPseudoId(shadow_element_names::kPseudoEmailVerificationIndicator);
+  setAttribute(html_names::kIdAttr,
+               shadow_element_names::kIdEmailVerificationIndicator);
 }
 
 }  // namespace blink

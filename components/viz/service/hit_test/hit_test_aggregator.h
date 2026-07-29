@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/types/expected.h"
 #include "components/viz/common/hit_test/aggregated_hit_test_region.h"
 #include "components/viz/common/hit_test/hit_test_query.h"
 #include "components/viz/common/quads/aggregated_render_pass.h"
@@ -16,6 +17,10 @@
 #include "components/viz/service/hit_test/hit_test_manager.h"
 #include "components/viz/service/surfaces/surface_observer.h"
 #include "components/viz/service/viz_service_export.h"
+
+namespace gfx {
+class RRectF;
+}  // namespace gfx
 
 namespace viz {
 
@@ -58,6 +63,11 @@ class VIZ_SERVICE_EXPORT HitTestAggregator : public HitTestQuery::DataProvider {
  private:
   friend class TestHitTestAggregator;
 
+  // TODO(jonross): add the capacity error to this and handle that.
+  enum class AggregationError {
+    INVALID_CHILD_REGION,
+  };
+
   void SendHitTestData();
 
   // Appends the root element to the AggregatedHitTestRegion array.
@@ -65,15 +75,19 @@ class VIZ_SERVICE_EXPORT HitTestAggregator : public HitTestQuery::DataProvider {
 
   // Appends a |region| to the HitTestRegionList structure to recursively
   // build the tree. |region_index| indicates the current index of the end of
-  // the list.
-  size_t AppendRegion(size_t region_index, const HitTestRegion& region);
+  // the list. |submitting_frame_sink_id| is the FrameSinkId that submitted the
+  // HitTestRegionList containing |region|.
+  base::expected<size_t, AggregationError> AppendRegion(
+      size_t region_index,
+      const HitTestRegion& region,
+      const FrameSinkId& submitting_frame_sink_id);
 
   // Populates the HitTestRegion element at the given element |index|.
   void SetRegionAt(size_t index,
                    const FrameSinkId& frame_sink_id,
                    uint32_t flags,
                    uint32_t reasons,
-                   const gfx::Rect& rect,
+                   const gfx::RRectF& rect,
                    const gfx::Transform& transform,
                    int32_t child_count);
 
@@ -82,7 +96,7 @@ class VIZ_SERVICE_EXPORT HitTestAggregator : public HitTestQuery::DataProvider {
   // This is used in order to ensure that the flow between receiving hit-test
   // data and aggregating is included only once per submission.
   std::optional<int64_t> GetTraceIdIfUpdated(const SurfaceId& surface_id,
-                                             uint64_t active_frame_index);
+                                             uint32_t active_frame_index);
 
   const raw_ptr<const HitTestManager> hit_test_manager_;
 
@@ -112,7 +126,7 @@ class VIZ_SERVICE_EXPORT HitTestAggregator : public HitTestQuery::DataProvider {
   // but only at the same hierarchy level.
   base::flat_set<FrameSinkId> referenced_child_regions_;
 
-  base::flat_map<FrameSinkId, uint64_t> last_active_frame_index_;
+  base::flat_map<FrameSinkId, uint32_t> last_active_frame_index_;
   uint64_t last_submit_hit_test_region_list_index_ = 0;
 
   // Handles the case when this object is deleted after

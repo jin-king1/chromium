@@ -5,19 +5,20 @@
 package org.chromium.chrome.browser.share;
 
 import android.content.Context;
-import android.content.res.Resources;
 import android.graphics.drawable.Drawable;
 import android.view.View;
 
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.share.ShareDelegate.ShareOrigin;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.toolbar.BaseButtonDataProvider;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
+import org.chromium.chrome.browser.toolbar.optional_button.BaseButtonDataProvider;
+import org.chromium.chrome.browser.toolbar.optional_button.ButtonData.ButtonSpec;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightParams;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightShape;
@@ -27,13 +28,16 @@ import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.ukm.UkmRecorder;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
+import java.util.function.Supplier;
+
 /**
  * Handles displaying share button on toolbar depending on several conditions (e.g.,device width,
  * whether NTP is shown).
  */
+@NullMarked
 public class ShareButtonController extends BaseButtonDataProvider {
-    private final ObservableSupplier<ShareDelegate> mShareDelegateSupplier;
-    private final Supplier<Tracker> mTrackerSupplier;
+    private final MonotonicObservableSupplier<ShareDelegate> mShareDelegateSupplier;
+    private final Supplier<@Nullable Tracker> mTrackerSupplier;
     private final Runnable mOnShareRunnable;
 
     /**
@@ -53,21 +57,20 @@ public class ShareButtonController extends BaseButtonDataProvider {
             Context context,
             Drawable buttonDrawable,
             ActivityTabProvider tabProvider,
-            ObservableSupplier<ShareDelegate> shareDelegateSupplier,
-            Supplier<Tracker> trackerSupplier,
+            MonotonicObservableSupplier<ShareDelegate> shareDelegateSupplier,
+            Supplier<@Nullable Tracker> trackerSupplier,
             ModalDialogManager modalDialogManager,
             Runnable onShareRunnable) {
         super(
                 tabProvider,
                 modalDialogManager,
-                buttonDrawable,
-                context.getString(R.string.share),
-                /* actionChipLabelResId= */ Resources.ID_NULL,
-                /* supportsTinting= */ true,
-                /* iphCommandBuilder= */ null,
-                AdaptiveToolbarButtonVariant.SHARE,
-                /* tooltipTextResId= */ R.string.adaptive_toolbar_button_preference_share,
-                /* showHoverHighlight= */ true);
+                new ButtonSpec.Builder(
+                                buttonDrawable,
+                                context.getString(R.string.share),
+                                /* supportsTinting= */ true)
+                        .setButtonVariant(AdaptiveToolbarButtonVariant.SHARE)
+                        .setHoverTooltipTextId(R.string.adaptive_toolbar_button_preference_share)
+                        .build());
 
         mShareDelegateSupplier = shareDelegateSupplier;
         mTrackerSupplier = trackerSupplier;
@@ -92,15 +95,14 @@ public class ShareButtonController extends BaseButtonDataProvider {
         }
         shareDelegate.share(tab, /* shareDirectly= */ false, ShareOrigin.TOP_TOOLBAR);
 
-        if (mTrackerSupplier.hasValue()) {
-            mTrackerSupplier
-                    .get()
-                    .notifyEvent(EventConstants.ADAPTIVE_TOOLBAR_CUSTOMIZATION_SHARE_OPENED);
+        Tracker tracker = mTrackerSupplier.get();
+        if (tracker != null) {
+            tracker.notifyEvent(EventConstants.ADAPTIVE_TOOLBAR_CUSTOMIZATION_SHARE_OPENED);
         }
     }
 
     @Override
-    protected boolean shouldShowButton(Tab tab) {
+    protected boolean shouldShowButton(@Nullable Tab tab) {
         if (!super.shouldShowButton(tab) || mShareDelegateSupplier.get() == null) return false;
 
         return ShareUtils.shouldEnableShare(tab);

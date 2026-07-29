@@ -234,6 +234,11 @@ class ShellSurfaceBase : public SurfaceTreeHost,
 
   bool HasOverlay() const { return !!overlay_widget_; }
 
+  // Returns true if the given |point| is within the bounds of the overlay
+  // widget. |point| is expected to be in the coordinate space of the
+  // ShellSurfaceBase's window.
+  bool IsPointWithinOverlay(const gfx::Point& point) const;
+
   // Set specific orientation lock for this surface. When this surface is in
   // foreground and the display can be rotated (e.g. tablet mode), apply the
   // behavior defined by |orientation_lock|. See more details in
@@ -298,7 +303,7 @@ class ShellSurfaceBase : public SurfaceTreeHost,
   views::Widget* GetWidget() override;
   const views::Widget* GetWidget() const override;
   views::View* GetContentsView() override;
-  std::unique_ptr<views::NonClientFrameView> CreateNonClientFrameView(
+  std::unique_ptr<views::FrameView> CreateFrameView(
       views::Widget* widget) override;
   bool ShouldSaveWindowPlacement() const override;
   bool WidgetHasHitTestMask() const override;
@@ -456,8 +461,8 @@ class ShellSurfaceBase : public SurfaceTreeHost,
   // Install custom window targeter. Used to restore window targeter.
   void InstallCustomWindowTargeter();
 
-  // Creates a NonClientFrameView for shell surface.
-  std::unique_ptr<views::NonClientFrameView> CreateNonClientFrameViewInternal(
+  // Creates a FrameView for shell surface.
+  std::unique_ptr<views::FrameView> CreateFrameViewInternal(
       views::Widget* widget);
 
   virtual void OnPostWidgetCommit();

@@ -31,7 +31,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
@@ -43,7 +44,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.share.ChromeShareExtras.DetailedContentType;
 import org.chromium.chrome.browser.share.ShareContentTypeHelper.ContentType;
-import org.chromium.chrome.test.AutomotiveContextWrapperTestRule;
+import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.favicon.IconType;
@@ -63,12 +64,14 @@ import java.util.List;
 @Batch(Batch.UNIT_TESTS)
 @RunWith(ChromeJUnit4ClassRunner.class)
 public final class ShareSheetBottomSheetContentTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
     @Rule
-    public AutomotiveContextWrapperTestRule mAutoTestRule = new AutomotiveContextWrapperTestRule();
+    public OverrideContextWrapperTestRule mAutoTestRule = new OverrideContextWrapperTestRule();
 
     @Mock private Profile mProfile;
     @Mock private ShareSheetLinkToggleCoordinator mShareSheetLinkToggleCoordinator;
@@ -87,7 +90,6 @@ public final class ShareSheetBottomSheetContentTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         NativeLibraryTestUtils.loadNativeLibraryNoBrowserProcess();
         mActivityTestRule.launchActivity(null);
         mActivity = mActivityTestRule.getActivity();

@@ -8,6 +8,7 @@
 
 #include "ash/capture_mode/fake_video_source_provider.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/gmock_callback_support.h"
 #include "content/public/browser/video_capture_service.h"
 #include "content/public/test/browser_task_environment.h"
@@ -54,10 +55,6 @@ class FakeVideoCaptureService
 
   void ConnectToCameraAppDeviceBridge(
       mojo::PendingReceiver<cros::mojom::CameraAppDeviceBridge> receiver)
-      override {}
-
-  void BindVideoCaptureDeviceFactory(
-      mojo::PendingReceiver<crosapi::mojom::VideoCaptureDeviceFactory> receiver)
       override {}
 
   void ConnectToVideoSourceProvider(

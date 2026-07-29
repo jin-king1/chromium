@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.shape_detection;
 
-import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -12,6 +11,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Manual;
@@ -19,7 +19,9 @@ import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.TabTitleObserver;
 import org.chromium.net.test.EmbeddedTestServer;
@@ -34,13 +36,22 @@ import java.util.concurrent.TimeoutException;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Batch(Batch.PER_CLASS)
 public class ShapeDetectionTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     private static final String BARCODE_TEST_EXPECTED_TAB_TITLE = "https://chromium.org";
     private static final String TEXT_TEST_EXPECTED_TAB_TITLE =
             "The quick brown fox jumped over the lazy dog. Helvetica Neue 36.";
+    private WebPageStation mPage;
+
+    /** We need to allow a looser policy due to the Google Play Services internals. */
+    @Before
+    public void setUp() throws Exception {
+        mPage = mActivityTestRule.startOnBlankPage();
+    }
 
     /** Verifies that QR codes are detected correctly. */
     @Test
@@ -49,10 +60,8 @@ public class ShapeDetectionTest {
     @Feature({"ShapeDetection"})
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_20W02)
     public void testBarcodeDetection() throws TimeoutException {
-        EmbeddedTestServer testServer =
-                EmbeddedTestServer.createAndStartServer(
-                        ApplicationProvider.getApplicationContext());
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        EmbeddedTestServer testServer = mActivityTestRule.getTestServer();
+        Tab tab = mPage.getTab();
         TabTitleObserver titleObserver = new TabTitleObserver(tab, BARCODE_TEST_EXPECTED_TAB_TITLE);
         mActivityTestRule.loadUrl(
                 testServer.getURL("/chrome/test/data/android/barcode_detection.html"));
@@ -67,20 +76,12 @@ public class ShapeDetectionTest {
     @Feature({"ShapeDetection"})
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_20W02)
     public void testTextDetection() throws TimeoutException {
-        EmbeddedTestServer testServer =
-                EmbeddedTestServer.createAndStartServer(
-                        ApplicationProvider.getApplicationContext());
-        Tab tab = mActivityTestRule.getActivity().getActivityTab();
+        EmbeddedTestServer testServer = mActivityTestRule.getTestServer();
+        Tab tab = mPage.getTab();
         TabTitleObserver titleObserver = new TabTitleObserver(tab, TEXT_TEST_EXPECTED_TAB_TITLE);
         mActivityTestRule.loadUrl(
                 testServer.getURL("/chrome/test/data/android/text_detection.html"));
         titleObserver.waitForTitleUpdate(10);
         Assert.assertEquals(TEXT_TEST_EXPECTED_TAB_TITLE, ChromeTabUtils.getTitleOnUiThread(tab));
-    }
-
-    /** We need to allow a looser policy due to the Google Play Services internals. */
-    @Before
-    public void setUp() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
     }
 }

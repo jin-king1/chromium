@@ -90,7 +90,8 @@ class COMPONENT_EXPORT(RMAD) FakeRmadClient : public RmadClient {
   void TriggerExternalDiskStateObservation(bool detected_);
   void TriggerHardwareVerificationResultObservation(
       bool is_compliant,
-      const std::string& error_str);
+      const std::string& error_str,
+      bool is_skipped);
   void TriggerFinalizationProgressObservation(
       rmad::FinalizeStatus::Status status,
       double progress,
@@ -110,7 +111,9 @@ class COMPONENT_EXPORT(RMAD) FakeRmadClient : public RmadClient {
   rmad::GetLogReply get_log_reply_;
   rmad::SaveLogReply save_log_reply_;
   rmad::RecordBrowserActionMetricReply record_browser_action_metric_reply_;
-  base::ObserverList<Observer, /*check_empty=*/true, /*allow_reentrancy=*/false>
+  base::ObserverList<Observer,
+                     /*check_empty=*/true,
+                     base::ObserverListReentrancyPolicy::kDisallowReentrancy>
       observers_;
   std::string diagnostics_logs_text_;
 

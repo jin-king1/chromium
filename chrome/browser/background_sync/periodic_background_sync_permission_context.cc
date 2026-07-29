@@ -12,6 +12,7 @@
 #include "chrome/browser/webapps/installable/installable_utils.h"
 #include "chrome/common/chrome_features.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/permissions/permission_prompt_decision.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "content/public/browser/browser_thread.h"
@@ -21,7 +22,7 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/android/shortcut_helper.h"
 #else
-#include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
+#include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"  // nogncheck
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_install_manager_observer.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -34,7 +35,6 @@ namespace features {
 // dropped and the content setting is checked. This only applies if the
 // requesting origin matches that of the browser's default search engine.
 BASE_FEATURE(kPeriodicSyncPermissionForDefaultSearchEngine,
-             "PeriodicSyncPermissionForDefaultSearchEngine",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace features
@@ -42,7 +42,7 @@ BASE_FEATURE(kPeriodicSyncPermissionForDefaultSearchEngine,
 PeriodicBackgroundSyncPermissionContext::
     PeriodicBackgroundSyncPermissionContext(
         content::BrowserContext* browser_context)
-    : PermissionContextBase(
+    : ContentSettingPermissionContextBase(
           browser_context,
           ContentSettingsType::PERIODIC_BACKGROUND_SYNC,
           network::mojom::PermissionsPolicyFeature::kNotFound) {
@@ -92,7 +92,7 @@ GURL PeriodicBackgroundSyncPermissionContext::GetDefaultSearchEngineUrl()
 }
 
 ContentSetting
-PeriodicBackgroundSyncPermissionContext::GetPermissionStatusInternal(
+PeriodicBackgroundSyncPermissionContext::GetContentSettingStatusInternal(
     content::RenderFrameHost* render_frame_host,
     const GURL& requesting_origin,
     const GURL& embedding_origin) const {
@@ -130,7 +130,7 @@ PeriodicBackgroundSyncPermissionContext::GetPermissionStatusInternal(
 }
 
 void PeriodicBackgroundSyncPermissionContext::DecidePermission(
-    permissions::PermissionRequestData request_data,
+    std::unique_ptr<permissions::PermissionRequestData> request_data,
     permissions::BrowserPermissionCallback callback) {
   // The user should never be prompted to authorize Periodic Background Sync
   // from PeriodicBackgroundSyncPermissionContext.
@@ -138,20 +138,16 @@ void PeriodicBackgroundSyncPermissionContext::DecidePermission(
 }
 
 void PeriodicBackgroundSyncPermissionContext::NotifyPermissionSet(
-    const permissions::PermissionRequestID& id,
-    const GURL& requesting_origin,
-    const GURL& embedding_origin,
+    const permissions::PermissionRequestData& request_data,
     permissions::BrowserPermissionCallback callback,
     bool persist,
-    ContentSetting content_setting,
-    bool is_one_time,
-    bool is_final_decision) {
+    const content::PermissionResult* permission_result,
+    const permissions::PermissionPromptDecision& decision) {
   DCHECK(!persist);
-  DCHECK(is_final_decision);
+  DCHECK(decision.is_final);
 
-  permissions::PermissionContextBase::NotifyPermissionSet(
-      id, requesting_origin, embedding_origin, std::move(callback), persist,
-      content_setting, is_one_time, is_final_decision);
+  permissions::ContentSettingPermissionContextBase::NotifyPermissionSet(
+      request_data, std::move(callback), persist, permission_result, decision);
 }
 
 void PeriodicBackgroundSyncPermissionContext::OnContentSettingChanged(
@@ -163,7 +159,7 @@ void PeriodicBackgroundSyncPermissionContext::OnContentSettingChanged(
           ContentSettingsType::PERIODIC_BACKGROUND_SYNC)) {
     return;
   }
-  permissions::PermissionContextBase::OnContentSettingChanged(
+  permissions::ContentSettingPermissionContextBase::OnContentSettingChanged(
       primary_pattern, secondary_pattern,
       ContentSettingsTypeSet(ContentSettingsType::PERIODIC_BACKGROUND_SYNC));
 }

@@ -26,7 +26,7 @@
 #include "base/threading/thread.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/shell_dialogs/base_shell_dialog_win.h"
 #include "ui/views/win/hwnd_util.h"
 
@@ -96,7 +96,7 @@ bool CanShowNetworkDiagnosticsDialog(content::WebContents* web_contents) {
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
   // The Windows diagnostic tool logs URLs it's run with, so it shouldn't be
-  // used with incognito or guest profiles.  See https://crbug.com/929141
+  // used with incognito or guest profiles.  See https://crbug.com/40612751
   return !profile->IsIncognitoProfile() && !profile->IsGuestSession();
 }
 

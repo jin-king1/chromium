@@ -2,16 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "services/screen_ai/screen_ai_library_wrapper_impl.h"
 
+#include "base/compiler_specific.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "services/screen_ai/public/cpp/utilities.h"
 #include "ui/accessibility/accessibility_features.h"
+
+#if BUILDFLAG(IS_LINUX) && defined(__GLIBC__)
+#include <gnu/libc-version.h>  // nogncheck
+
+#include "components/crash/core/common/crash_key.h"  // nogncheck
+#endif
 
 namespace screen_ai {
 
@@ -90,6 +94,8 @@ bool ScreenAILibraryWrapperImpl::Load(const base::FilePath& library_path) {
   }
 
   if (!LoadFunction(init_ocr_, "InitOCRUsingCallback") ||
+      !LoadFunction(get_max_image_dimension_, "GetMaxImageDimension") ||
+      !LoadFunction(set_ocr_light_mode_, "SetOCRLightMode") ||
       !LoadFunction(perform_ocr_, "PerformOCR")) {
     return false;
   }
@@ -136,11 +142,37 @@ void ScreenAILibraryWrapperImpl::EnableDebugMode() {
 }
 
 NO_SANITIZE("cfi-icall")
+uint32_t ScreenAILibraryWrapperImpl::GetMaxImageDimension() {
+  CHECK(get_max_image_dimension_);
+  return get_max_image_dimension_();
+}
+
+NO_SANITIZE("cfi-icall")
 bool ScreenAILibraryWrapperImpl::InitOCR() {
   SCOPED_UMA_HISTOGRAM_TIMER(
       "Accessibility.ScreenAI.OCR.InitializationLatency");
   CHECK(init_ocr_);
+#if BUILDFLAG(IS_LINUX) && defined(__GLIBC__)
+  static crash_reporter::CrashKeyString<32> glibc_version_crash_key(
+      "glibc_version");
+  glibc_version_crash_key.Set(gnu_get_libc_version());
+
+  bool is_vulnerable = IsVulnerableToTlsDtvCrash(library_.get());
+  base::UmaHistogramBoolean("Accessibility.ScreenAI.VulnerableToTlsDtvCrash",
+                            is_vulnerable);
+  if (is_vulnerable) {
+    LOG(ERROR) << "Disabling Screen AI OCR on this device due to glibc TLS DTV "
+                  "vulnerability.";
+    return false;
+  }
+#endif  // BUILDFLAG(IS_LINUX) && defined(__GLIBC__)
   return init_ocr_();
+}
+
+NO_SANITIZE("cfi-icall")
+void ScreenAILibraryWrapperImpl::SetOCRLightMode(bool enabled) {
+  CHECK(set_ocr_light_mode_);
+  set_ocr_light_mode_(enabled);
 }
 
 NO_SANITIZE("cfi-icall")
@@ -156,6 +188,9 @@ std::optional<chrome_screen_ai::VisualAnnotation>
 ScreenAILibraryWrapperImpl::PerformOcr(const SkBitmap& image) {
   CHECK(perform_ocr_);
   CHECK(free_library_allocated_char_array_);
+
+  // Expected to be prevented upstream.
+  CHECK(!image.drawsNothing());
 
   std::optional<chrome_screen_ai::VisualAnnotation> annotation_proto;
 
@@ -202,8 +237,8 @@ ScreenAILibraryWrapperImpl::ExtractMainContent(
 
   node_ids = std::vector<int32_t>(nodes_count);
   if (nodes_count != 0) {
-    memcpy(node_ids->data(), library_buffer.get(),
-           nodes_count * sizeof(int32_t));
+    UNSAFE_TODO(memcpy(node_ids->data(), library_buffer.get(),
+                       nodes_count * sizeof(int32_t)));
   }
 
   free_library_allocated_int32_array_(library_buffer.release());

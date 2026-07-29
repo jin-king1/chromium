@@ -4,10 +4,13 @@
 
 #include "content/renderer/navigation_client.h"
 
+#include <utility>
+
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/uuid.h"
+#include "content/common/features.h"
 #include "content/common/frame.mojom.h"
 #include "content/renderer/render_frame_impl.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
@@ -66,7 +69,6 @@ void NavigationClient::CommitNavigation(
     const blink::DocumentToken& document_token,
     const base::UnguessableToken& devtools_navigation_token,
     const base::Uuid& base_auction_nonce,
-    const std::optional<network::ParsedPermissionsPolicy>& permissions_policy,
     blink::mojom::PolicyContainerPtr policy_container,
     mojo::PendingRemote<blink::mojom::CodeCacheHost> code_cache_host,
     mojo::PendingRemote<blink::mojom::CodeCacheHost>
@@ -75,7 +77,7 @@ void NavigationClient::CommitNavigation(
     mojom::StorageInfoPtr storage_info,
     CommitNavigationCallback callback) {
   DCHECK(blink::IsRequestDestinationFrame(common_params->request_destination));
-
+  MoveOwnershipToCommitTargetIfNeeded(commit_params->commit_target_frame_token);
   // TODO(crbug.com/40276805): The reset should be done when the
   // navigation did commit (meaning at a later stage). This is not currently
   // possible because of race conditions leading to the early deletion of
@@ -91,7 +93,7 @@ void NavigationClient::CommitNavigation(
       std::move(subresource_proxying_loader_factory),
       std::move(keep_alive_loader_factory),
       std::move(fetch_later_loader_factory), document_token,
-      devtools_navigation_token, base_auction_nonce, permissions_policy,
+      devtools_navigation_token, base_auction_nonce,
       std::move(policy_container), std::move(code_cache_host),
       std::move(code_cache_host_for_background), std::move(cookie_manager_info),
       std::move(storage_info), std::move(callback));
@@ -107,15 +109,17 @@ void NavigationClient::CommitFailedNavigation(
     const std::optional<std::string>& error_page_content,
     std::unique_ptr<blink::PendingURLLoaderFactoryBundle> subresource_loaders,
     const blink::DocumentToken& document_token,
+    const base::UnguessableToken& devtools_navigation_token,
     blink::mojom::PolicyContainerPtr policy_container,
     mojom::AlternativeErrorPageOverrideInfoPtr alternative_error_page_info,
     CommitFailedNavigationCallback callback) {
+  MoveOwnershipToCommitTargetIfNeeded(commit_params->commit_target_frame_token);
   ResetDisconnectionHandler();
   render_frame_->CommitFailedNavigation(
       std::move(common_params), std::move(commit_params),
       has_stale_copy_in_cache, error_code, extended_error_code,
       resolve_error_info, error_page_content, std::move(subresource_loaders),
-      document_token, std::move(policy_container),
+      document_token, devtools_navigation_token, std::move(policy_container),
       std::move(alternative_error_page_info), std::move(callback));
 }
 
@@ -127,15 +131,48 @@ void NavigationClient::Bind(
   SetDisconnectionHandler();
 }
 
+void NavigationClient::MoveOwnershipToCommitTargetIfNeeded(
+    std::optional<blink::LocalFrameToken> commit_target_frame_token) {
+  if (!commit_target_frame_token.has_value()) {
+    return;
+  }
+  CHECK(base::FeatureList::IsEnabled(
+      features::kSkipRendererCancellationThrottle));
+  auto* commit_target_web_frame =
+      blink::WebLocalFrame::FromFrameToken(commit_target_frame_token.value());
+  CHECK(commit_target_web_frame);
+  auto* commit_target_render_frame =
+      RenderFrameImpl::FromWebFrame(commit_target_web_frame);
+  CHECK(commit_target_render_frame);
+  CHECK_NE(render_frame_, commit_target_render_frame);
+  CHECK_EQ(
+      render_frame_->GetWebFrame(),
+      commit_target_render_frame->GetWebFrame()->GetProvisionalOwnerFrame());
+  // This is a commit that will do a local RenderFrame swap. Currently it reuses
+  // the old RenderFrame's NavigationClient, to preserve navigation cancellation
+  // guarantees. Now that we know the navigation is not cancelled, continue
+  // the commit to the new RenderFrame, and move the ownership of this
+  // NavigationClient to the new RenderFrame.
+  commit_target_render_frame->set_navigation_client_impl(
+      render_frame_->TakeNavigationClient());
+  render_frame_ = commit_target_render_frame;
+}
+
 void NavigationClient::SetUpRendererInitiatedNavigation(
     mojo::PendingRemote<mojom::NavigationRendererCancellationListener>
-        renderer_cancellation_listener_remote) {
+        renderer_cancellation_listener_remote,
+    mojo::PendingRemote<mojom::NavigationRendererIgnoreDuplicateNavigationListener>
+        renderer_ignore_duplicate_navigation_listener_remote) {
   DCHECK(!was_initiated_in_this_frame_);
   was_initiated_in_this_frame_ = true;
   renderer_cancellation_listener_remote_.Bind(
       std::move(renderer_cancellation_listener_remote),
       render_frame_->GetTaskRunner(
           blink::TaskType::kInternalNavigationCancellation));
+  renderer_ignore_duplicate_navigation_listener_remote_.Bind(
+      std::move(renderer_ignore_duplicate_navigation_listener_remote),
+      render_frame_->GetTaskRunner(
+          blink::TaskType::kInternalNavigationAssociated));
 
   // Renderer-initiated navigations can be canceled from the JS task it was
   // initiated from. If we post a task here, the task will run after the JS task
@@ -151,26 +188,31 @@ void NavigationClient::SetUpRendererInitiatedNavigation(
 
 void NavigationClient::ResetWithoutCancelling() {
   navigation_client_receiver_.ResetWithReason(
-      base::to_underlying(
+      std::to_underlying(
           mojom::NavigationClientDisconnectReason::kResetForSwap),
       "");
 }
 
 void NavigationClient::ResetForNewNavigation(bool is_duplicate_navigation) {
   navigation_client_receiver_.ResetWithReason(
-      base::to_underlying(is_duplicate_navigation
-                              ? mojom::NavigationClientDisconnectReason::
-                                    kResetForDuplicateNavigation
-                              : mojom::NavigationClientDisconnectReason::
-                                    kResetForNewNavigation),
+      std::to_underlying(is_duplicate_navigation
+                             ? mojom::NavigationClientDisconnectReason::
+                                   kResetForDuplicateNavigation
+                             : mojom::NavigationClientDisconnectReason::
+                                   kResetForNewNavigation),
       "");
 }
 
 void NavigationClient::ResetForAbort() {
   navigation_client_receiver_.ResetWithReason(
-      base::to_underlying(
+      std::to_underlying(
           mojom::NavigationClientDisconnectReason::kResetForAbort),
       "");
+}
+
+void NavigationClient::DidIgnoreDuplicateNavigation() {
+  renderer_ignore_duplicate_navigation_listener_remote_
+      ->DidIgnoreDuplicateNavigation();
 }
 
 void NavigationClient::NotifyNavigationCancellationWindowEnded() {

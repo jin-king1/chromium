@@ -92,6 +92,14 @@ int GetMaxTemporalLayer(
 
 }  // namespace
 
+bool SupportsSharedImageEncoding(
+    const gpu::GpuDriverBugWorkarounds& workarounds) {
+  if (workarounds.disable_nv12_upload) {
+    return false;
+  }
+  return IsMediaFoundationD3DVideoProcessingEnabled(workarounds);
+}
+
 // static
 MediaFoundationVideoEncoderSharedState*
 MediaFoundationVideoEncoderSharedState::GetInstance(
@@ -142,8 +150,6 @@ void MediaFoundationVideoEncoderSharedState::GetSupportedProfilesInternal() {
   for (auto codec : supported_codecs) {
     auto activates = EnumerateHardwareEncoders(codec);
     if (activates.empty()) {
-      DVLOG(1) << "Hardware encode acceleration is not available for "
-               << GetCodecName(codec);
       continue;
     }
 
@@ -151,7 +157,8 @@ void MediaFoundationVideoEncoderSharedState::GetSupportedProfilesInternal() {
         GetMaxTemporalLayer(codec, activates, workarounds_);
     auto bitrate_mode = VideoEncodeAccelerator::kConstantMode |
                         VideoEncodeAccelerator::kVariableMode;
-    if (codec == VideoCodec::kH264 || codec == VideoCodec::kHEVC) {
+    if (codec == VideoCodec::kH264 || codec == VideoCodec::kHEVC ||
+        codec == VideoCodec::kAV1 || codec == VideoCodec::kVP9) {
       bitrate_mode |= VideoEncodeAccelerator::kExternalMode;
     }
 
@@ -209,7 +216,7 @@ void MediaFoundationVideoEncoderSharedState::GetSupportedProfilesInternal() {
         }
       }
 
-      if (base::FeatureList::IsEnabled(kMediaFoundationD3DVideoProcessing)) {
+      if (SupportsSharedImageEncoding(workarounds_)) {
         std::ranges::copy(
             kSupportedPixelFormatsD3DVideoProcessing,
             std::back_inserter(profile.gpu_supported_pixel_formats));
@@ -218,7 +225,7 @@ void MediaFoundationVideoEncoderSharedState::GetSupportedProfilesInternal() {
       VideoEncodeAccelerator::SupportedProfile portrait_profile(profile);
       portrait_profile.max_resolution.Transpose();
 
-      if (base::FeatureList::IsEnabled(kMediaFoundationSharedImageEncode)) {
+      if (SupportsSharedImageEncoding(workarounds_)) {
         profile.supports_gpu_shared_images = true;
       }
 

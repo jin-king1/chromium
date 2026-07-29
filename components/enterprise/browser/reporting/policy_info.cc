@@ -87,7 +87,7 @@ void UpdateConflictedPolicy(em::Policy* policy_info,
 
 void UpdateConflictedPolicies(const std::string conflict_key,
                               em::Policy* policy_info,
-                              const base::Value::Dict& policy) {
+                              const base::DictValue& policy) {
   if (!policy.contains(conflict_key)) {
     return;
   }
@@ -103,8 +103,8 @@ void UpdatePolicyInfo(em::Policy* policy_info,
   policy_info->set_level(GetLevel(policy));
   policy_info->set_scope(GetScope(policy));
   policy_info->set_source(GetSource(policy));
-  base::JSONWriter::Write(*policy.GetDict().Find("value"),
-                          policy_info->mutable_value());
+  *policy_info->mutable_value() =
+      base::WriteJson(*policy.GetDict().Find("value")).value_or("");
   const std::string* error = policy.GetDict().FindString("error");
   std::string deprecated_error;
   std::string future_error;
@@ -133,7 +133,7 @@ void UpdatePolicyInfo(em::Policy* policy_info,
 }  // namespace
 
 void AppendChromePolicyInfoIntoProfileReport(
-    const base::Value::Dict& policies,
+    const base::DictValue& policies,
     em::ChromeUserProfileInfo* profile_info) {
   for (auto policy_iter : *policies.FindDict("chromePolicies")) {
     UpdatePolicyInfo(profile_info->add_chrome_policies(), policy_iter.first,
@@ -142,7 +142,7 @@ void AppendChromePolicyInfoIntoProfileReport(
 }
 
 void AppendExtensionPolicyInfoIntoProfileReport(
-    const base::Value::Dict& policies,
+    const base::DictValue& policies,
     em::ChromeUserProfileInfo* profile_info) {
   if (!policies.Find("extensionPolicies")) {
     // Android and iOS don't support extensions and their policies.

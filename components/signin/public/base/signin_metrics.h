@@ -7,10 +7,17 @@
 
 #include <limits.h>
 
-#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/signin/public/base/consent_level.h"
 #include "google_apis/gaia/google_service_auth_error.h"
+
+namespace base {
+class TimeDelta;
+}  // namespace base
+
+namespace metrics {
+class ProfileMetricsService;
+}  // namespace metrics
 
 namespace signin_metrics {
 
@@ -20,6 +27,7 @@ namespace signin_metrics {
 // GENERATED_JAVA_CLASS_NAME_OVERRIDE: SignoutReason
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange
 enum class ProfileSignout {
   // The value used within unit tests.
   kTest = 0,
@@ -62,11 +70,11 @@ enum class ProfileSignout {
   kIosAccountRemovedFromDeviceAfterRestore = 15,
   // User clicked to 'Turn off sync' from the settings page.
   // Currently only available for Android Unicorn users.
-  kUserClickedRevokeSyncConsentSettings = 16,
+  // Deprecated: kUserClickedRevokeSyncConsentSettings = 16,
   // User clicked to signout from the settings page.
   kUserClickedSignoutProfileMenu = 17,
-  // User retriggered signin from the Android web sign-in bottomsheet.
-  kSigninRetriggeredFromWebSignin = 18,
+  // User retriggered signin from the Android sign-in bottomsheet.
+  kSigninRetriggered = 18,
   // User clicked on sign-out from the notification dialog for User Policy. The
   // notification informs the user that from now on user policies may be
   // effective on their browser if they Sync with their managed account. The
@@ -87,7 +95,7 @@ enum class ProfileSignout {
   // sign out.
   kUserDeletedAccountCookies = 25,
   // User tapped 'Undo' in a snackbar that is shown right after sign-in through
-  // promo in bookmarks and reading list page. (iOS only).
+  // promo in bookmarks and reading list page. iOS only.
   kUserTappedUndoRightAfterSignIn = 26,
   // User has signed-in previously for the sole purpose of enabling history sync
   // (eg. using history sync promo in recent tabs), but declined history sync
@@ -123,9 +131,35 @@ enum class ProfileSignout {
   kUserClickedSignoutInAccountMenu = 36,
   // User disabled allow chrome sign-in from google settings page.
   kUserDisabledAllowChromeSignIn = 37,
+  // User was forced signed out as there was a supervised user added to the
+  // device.
+  kSignoutBeforeSupervisedSignin = 38,
+  // Triggered when the user opens the app from a widget with no selected
+  // account. iOS only.
+  kSignoutFromWidgets = 39,
+  // User declined the enterprise management disclaimer.
+  kUserDeclinedEnterpriseManagementDisclaimer = 40,
+  // DICe user was forcefully signed out.
+  kForcedDiceMigration = 41,
+  // User tapped 'Undo' in a snackbar that is shown right after sign-in through
+  // bookmark promo. Android only.
+  kUserTappedUndoRightAfterSignInFromBookmarks = 42,
+  // User tapped 'Undo' in a snackbar that is shown right after sign-in through
+  // ntp promo. Android only.
+  kUserTappedUndoRightAfterSignInFromNtp = 43,
+  // User tapped 'Undo' in a snackbar that is shown right after sign-in through
+  // recent tabs promo. Android only.
+  kUserTappedUndoRightAfterSignInFromRecentTabs = 44,
+  // A forced sign-out when the account capability CanSignInToChrome restricts
+  // signin.
+  kSignoutFromCanSignInToChromeCapability = 45,
+  // User tapped 'Undo' in a snackbar that is shown right after sign-in through
+  // Autofill and Passwords Sign-in promo. Android only.
+  kUserTappedUndoRightAfterSignInFromAutofillAndPasswords = 46,
   // Keep this as the last enum.
-  kMaxValue = kUserDisabledAllowChromeSignIn
+  kMaxValue = kUserTappedUndoRightAfterSignInFromAutofillAndPasswords,
 };
+// LINT.ThenChange(/tools/metrics/histograms/metadata/signin/enums.xml)
 
 // Enum values which enumerates all access points where sign in could be
 // initiated. Not all of them exist on all platforms.
@@ -135,11 +169,11 @@ enum class ProfileSignout {
 // LINT.IfChange
 enum class AccessPoint : int {
   kStartPage = 0,
-  kNtpLink = 1,
+  // kNtpLink = 1, no longer used.
   // Access point from the three dot app menu.
   kMenu = 2,
   kSettings = 3,
-  kSupervisedUser = 4,
+  // kSupervisedUser = 4, no longer used.
   kExtensionInstallBubble = 5,
   kExtensions = 6,
   // kAppsPageLink = 7, no longer used.
@@ -147,30 +181,29 @@ enum class AccessPoint : int {
   kBookmarkManager = 9,
   kAvatarBubbleSignIn = 10,
   kUserManager = 11,
-  kDevicesPage = 12,
+  // kDevicesPage = 12, no longer used.
   // kCloudPrint = 13, no longer used.
   // kContentArea = 14, no longer used.
-  kSigninPromo = 15,
+  kFullscreenSigninPromo = 15,
   kRecentTabs = 16,
-  // This should never have been used to get signin URL.
-  kUnknown = 17,
+  // kUnknown = 17, no longer used.
   kPasswordBubble = 18,
   kAutofillDropdown = 19,
   // kNtpContentSuggestions = 20, no longer used.
   kResigninInfobar = 21,
-  kTabSwitcher = 22,
+  // kTabSwitcher = 22, no longer used.
   // kForceSigninWarning = 23, no longer used.
   // kSaveCardBubble = 24, no longer used
   // kManageCardsBubble = 25, no longer used
   kMachineLogon = 26,
-  kGoogleServicesSettings = 27,
-  kSyncErrorCard = 28,
+  // kGoogleServicesSettings = 27, no longer used.
+  // kSyncErrorCard = 28, no longer used.
   kForcedSignin = 29,
-  kAccountRenamed = 30,
+  // kAccountRenamed = 30, no longer used.
   kWebSignin = 31,
   kSafetyCheck = 32,
-  kKaleidoscope = 33,
-  kEnterpriseSignoutCoordinator = 34,
+  // kKaleidoscope = 33, no longer used.
+  // kEnterpriseSignoutCoordinator = 34, no longer used.
   kSigninInterceptFirstRunExperience = 35,
   kSendTabToSelfPromo = 36,
   kNtpFeedTopPromo = 37,
@@ -193,12 +226,11 @@ enum class AccessPoint : int {
   kReauthInfoBar = 48,
   // Access point for the consistency service.
   kAccountConsistencyService = 49,
-  // Access point for the search companion sign-in promo.
-  kSearchCompanion = 50,
-  // Access point for the IOS Set Up List on the NTP.
+  // kSearchCompanion = 50, no longer used.
+  // Access point for the Set Up List on the NTP (Mobile only).
   kSetUpList = 51,
   // Access point for the local password migration warning on Android.
-  kPasswordMigrationWarningAndroid = 52,
+  // Deprecated: kPasswordMigrationWarningAndroid = 52,
   // Access point for the Save to Photos feature on iOS.
   kSaveToPhotosIos = 53,
   // Access point for the Chrome Signin Intercept Bubble.
@@ -206,7 +238,7 @@ enum class AccessPoint : int {
   // Restore primary account info in case it was lost.
   kRestorePrimaryAccountOnProfileLoad = 55,
   // Access point for the tab organization UI within the tab search bubble.
-  kTabOrganization = 56,
+  // kTabOrganization = 56, no longer used.
   // Access point for the Save to Drive feature on iOS.
   kSaveToDriveIos = 57,
   // Access point for the Tips Notification on iOS.
@@ -222,7 +254,7 @@ enum class AccessPoint : int {
   kSettingsSignoutConfirmationPrompt = 62,
   // The identity disc (avatar) on the New Tab page. Note that this only covers
   // SignedIn avatars - interactions with the signed-out avatar are instead
-  kNtpIdentityDisc = 63,
+  // kNtpIdentityDisc = 63, no longer used.
   // The identity is received through an interception of a 3rd party OIDC auth
   // redirection.
   kOidcRedirectionInterception = 64,
@@ -233,13 +265,13 @@ enum class AccessPoint : int {
   // Signin button from the profile menu that is labelled as a "Signin" button,
   // but is followed by a Sync confirmation screen as a promo.
   kAvatarBubbleSignInWithSyncPromo = 66,
-  // Signin using the account menu.
-  kAccountMenu = 67,
+  // Signin as part of switching accounts via the account menu.
+  kAccountMenuSwitchAccount = 67,
   // Signin via Product Specifications.
   kProductSpecifications = 68,
   // The user is signed-back into their previous account after failing to switch
   // to a new one.
-  kAccountMenuFailedSwitch = 69,
+  kAccountMenuSwitchAccountFailed = 69,
   // The user signs in from a sign in promo after an address save.
   kAddressBubble = 70,
   // A message notification displayed on CCTs embedded in 1P apps when there is
@@ -247,19 +279,94 @@ enum class AccessPoint : int {
   kCctAccountMismatchNotification = 71,
   // Access point for the Drive file picker on iOS.
   kDriveFilePickerIos = 72,
-  // Access point triggered when a user attempts to share or join a tab group
-  // without being signed in or synced.
-  kCollaborationTabGroup = 73,
+  // Access point triggered when a user attempts to share a tab group without
+  // being signed in or synced.
+  kCollaborationShareTabGroup = 73,
   // Glic launch button on the tab strip.
   kGlicLaunchButton = 74,
   // History sync promo shown on the History page. Should not be visible when
   // the use is not signed-in. Android only.
   kHistoryPage = 75,
-
+  // Access point triggered when a user attempts to join a tab group without
+  // being signed in or synced.
+  kCollaborationJoinTabGroup = 76,
+  // Access point triggered when a user attempts to opt-in to history sync from
+  // the history sync opt-in expanded pill (expanded on startup).
+  kHistorySyncOptinExpansionPillOnStartup = 77,
+  // Access point triggered when the account used in widget is different from
+  // the one used in the app. iOS only.
+  kWidget = 78,
+  // Access point triggered when a user attempts to leave or delete a tab group
+  // without being signed in or synced.
+  kCollaborationLeaveOrDeleteTabGroup = 79,
+  // Access point triggered when a user attempts to opt-in to history sync from
+  // the history sync opt-in expanded pill (expanded on inactivity).
+  // kHistorySyncOptinExpansionPillOnInactivity = 80, // no longer used
+  // History sync education tip is shown on the NTP to users who have history
+  // sync disabled. Android only.
+  kHistorySyncEducationalTip = 81,
+  // iOS only: The user switched to a managed account for the first time, and
+  // the corresponding profile was automatically signed in.
+  kManagedProfileAutoSigninIos = 82,
+  // iOS only: Access point for the contextual non modal sign-in password promo.
+  kNonModalSigninPasswordPromo = 83,
+  // iOS only: Access point for the contextual non modal sign-in bookmark promo.
+  kNonModalSigninBookmarkPromo = 84,
+  // Access point for the user manager with a prefilled email.
+  kUserManagerWithPrefilledEmail = 85,
+  // Access point for the enterprise management disclaimer at startup.
+  kEnterpriseManagementDisclaimerAtStartup = 86,
+  // Access point for the enterprise management disclaimer after browser focus.
+  kEnterpriseManagementDisclaimerAfterBrowserFocus = 87,
+  // Access point for the enterprise management disclaimer after sign-in.
+  kEnterpriseManagementDisclaimerAfterSignin = 88,
+  // New Tab Page sign-in feature promotion.
+  kNtpFeaturePromo = 89,
+  // Access point for the enterprise interception that result in profile
+  // separation.
+  kEnterpriseDialogAfterSigninInterception = 90,
+  // "Your saved info" settings page.
+  kSettingsYourSavedInfo = 91,
+  // Triggered when the user attempts to import credentials through the
+  // ASCredentialImportManager without being signed in.
+  kCredentialExchangeImport = 92,
+  // Set sync consent from sync internals.
+  kSetSyncConsentFromSyncInternals = 93,
+  kIosChromeWebView = 94,
+  kAshUserSessionManager = 95,
+  kAshChromeSessionManager = 96,
+  // Avatar pill button expands to show a sign in promo. Access point is
+  // propagated to the Profile Menu sign in button.
+  kAvatarPillExpandPromo = 97,
+  kSearchAIModeBubble = 98,
+  // Sign in from IOS app bar.
+  kIosAppBar = 99,
+  // Sign in from the Page Action Menu.
+  kIosPageActionMenu = 100,
+  // Autofill and passwords settings page on iOS and Android.
+  kSettingsAutofillAndPasswords = 101,
+  // Deep link to the sign-in flow (e.g. from cross-device QR code sharing).
+  kDeepLinkDefault = 102,
+  // From the AgeMismatchSignout screen after the user is forced sign-out. iOS
+  // only.
+  kAgeMismatchSignout = 103,
+  // Sign in via the iOS assistant button toolbar button on iPad.
+  kIosGeminiButtonToolbar = 104,
+  // Sign in via Indigo.
+  kIndigo = 105,
+  // Access point from the overflow menu (three dots menu on iOS).
+  kOverflowMenu = 106,
+  // Triggered when the user taps the sign-in action on the Level Up screen
+  // snackbar. iOS only.
+  kLevelUp = 107,
+  // Triggered when the user taps the Undo action on the sign-out snackbar.
+  // The snackbar is displayed after the user signs out from the account menu,
+  // when IdentityAwareness is enabled. iOS only.
+  kSignoutUndoSnackbar = 108,
   // Add values above this line with a corresponding label to the
   // "SigninAccessPoint" enum in
   // tools/metrics/histograms/metadata/signin/enums.xml.
-  kMaxValue = kHistoryPage,  // This must be last.
+  kMaxValue = kSignoutUndoSnackbar,  // This must be last.
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/signin/enums.xml)
 
@@ -357,15 +464,15 @@ enum class AccountConsistencyPromoAction : int {
   CONFIRM_MANAGEMENT_SHOWN = 24,
   // User accepted management on signin.
   CONFIRM_MANAGEMENT_ACCEPTED = 25,
-  kMaxValue = CONFIRM_MANAGEMENT_ACCEPTED,
+  // User started sign-in with a managed account in the consistency promo.
+  SIGNIN_STARTED_WITH_MANAGED_ACCOUNT = 26,
+  // User started sign-in with a non-managed account in the consistency promo.
+  SIGNIN_STARTED_WITH_NON_MANAGED_ACCOUNT = 27,
+  kMaxValue = SIGNIN_STARTED_WITH_NON_MANAGED_ACCOUNT,
 };
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 // Enum values which enumerates all reasons to start sign in process.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-// Please keep in sync with "SigninReason" in
-// src/tools/metrics/histograms/enums.xml.
 enum class Reason : int {
   // Used only for the Sync flows, i.e. the user will be proposed to enable Sync
   // after sign-in.
@@ -377,7 +484,9 @@ enum class Reason : int {
   // REASON_UNLOCK = 3,  // DEPRECATED, profile unlocking was removed.
   // This should never have been used to get signin URL.
   kUnknownReason = 4,
-  kForcedSigninPrimaryAccount = 5,
+  // kForcedSigninPrimaryAccount = 5, // DEPRECATED, force signin follows the
+  // regular flow in the profile picker.
+
   // Used to simply login and acquire a login scope token without actually
   // signing into any profiles on Chrome. This allows the Chrome sign-in page to
   // work in incognito mode.
@@ -441,12 +550,14 @@ enum class AccountRelation : int {
 // credentials).
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(SourceForRefreshTokenOperation)
 enum class SourceForRefreshTokenOperation {
   kUnknown = 0,
   kTokenService_LoadCredentials = 1,
   // DEPRECATED
   // kSupervisedUser_InitSync = 2,
-  kInlineLoginHandler_Signin = 3,
+  // DEPRECATED
+  // kInlineLoginHandler_Signin = 3,
   kPrimaryAccountManager_ClearAccount = 4,
   // DEPRECATED
   // kPrimaryAccountManager_LegacyPreDiceSigninFlow = 5,
@@ -472,9 +583,11 @@ enum class SourceForRefreshTokenOperation {
   // kDiceResponseHandler_PasswordPromoSignin = 22,
   kEnterpriseForcedProfileCreation_UserDecline = 23,
   kEnterprisePolicy_AccountNotAllowedInContentArea = 24,
+  kDiceAccountReconcilorDelegate_RefreshTokensBoundToDifferentKeys = 25,
 
-  kMaxValue = kEnterprisePolicy_AccountNotAllowedInContentArea,
+  kMaxValue = kDiceAccountReconcilorDelegate_RefreshTokensBoundToDifferentKeys,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:SourceForRefreshTokenOperation)
 
 // Different types of reporting. This is used as a histogram suffix.
 enum class ReportingType { PERIODIC, ON_CHANGE };
@@ -529,25 +642,6 @@ enum class SyncButtonsType : int {
   kMaxValue = kHistorySyncEqualWeightedFromCapability,
 };
 
-// Tracks type of the button that was clicked by the user.
-// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.signin.metrics
-enum class SyncButtonClicked : int {
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  kSyncOptInEqualWeighted = 0,
-  kSyncCancelEqualWeighted = 1,
-  kSyncSettingsEqualWeighted = 2,
-  kSyncOptInNotEqualWeighted = 3,
-  kSyncCancelNotEqualWeighted = 4,
-  kSyncSettingsNotEqualWeighted = 5,
-  kHistorySyncOptInEqualWeighted = 6,
-  kHistorySyncCancelEqualWeighted = 7,
-  kHistorySyncOptInNotEqualWeighted = 8,
-  kHistorySyncCancelNotEqualWeighted = 9,
-  kSyncSettingsUnknownWeighted = 10,
-  kMaxValue = kSyncSettingsUnknownWeighted,
-};
-
 #if BUILDFLAG(IS_IOS)
 // The reason an alert dialog is shown when the user is about to sign out.
 enum class SignoutDataLossAlertReason : int {
@@ -570,7 +664,41 @@ enum class SigninAccountType {
   // Always the last enumerated type.
   kMaxValue = kManaged,
 };
+
+// Event within the reauth flow.
+//
+// LINT.IfChange(ReauthFlowEvent)
+enum class ReauthFlowEvent : int {
+  // The reauth flow has started.
+  kStarted = 0,
+  // The reauth flow has completed successfully.
+  kCompleted = 1,
+  // There was an error during the reauth flow.
+  kError = 2,
+  // The reauth flow was cancelled by the user.
+  kCancelled = 3,
+  // The reauth flow was cancelled because the coordinator was stopped.
+  kInterrupted = 4,
+  kMaxValue = kInterrupted
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/histograms.xml:ReauthFlowEvent)
+
+// Identifies explicit reauthentication UI entry points.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(ReauthAccessPoint)
+enum class ReauthAccessPoint : int {
+  // Error card in the account menu.
+  kAccountMenu = 0,
+  kAccountSettings = 1,
+  kRecentTabs = 2,
+  kMaxValue = kRecentTabs,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:ReauthAccessPoint)
 #endif  // BUILDFLAG(IS_IOS)
+
+std::optional<AccessPoint> AccessPointFromInt(int access_point);
 
 // -----------------------------------------------------------------------------
 // Histograms
@@ -592,7 +720,11 @@ void LogSignInOffered(AccessPoint access_point, PromoAction promo_action);
 // Logs sign in start events and their associated access points. The
 // completion events are automatically logged when the primary account state
 // changes, see `signin::PrimaryAccountMutator`.
-void LogSignInStarted(AccessPoint access_point);
+void LogSignInStarted(AccessPoint access_point,
+                      metrics::ProfileMetricsService& profile_metrics_service);
+
+// Logs that sign in was offered when the user is in SigninPending state.
+void LogSigninPendingOffered(AccessPoint access_point);
 
 #if BUILDFLAG(IS_IOS)
 // Records the account type when the user signs in.
@@ -603,6 +735,14 @@ void LogSigninWithAccountType(SigninAccountType account_type);
 // completion events are automatically logged when the primary account state
 // changes, see `signin::PrimaryAccountMutator`.
 void LogSyncOptInStarted(AccessPoint access_point);
+
+// Logs a sync opt-in offered event (`Signin.SyncOptIn.Offered` histogram)
+// and its associated access point.
+void LogSyncOptInOffered(AccessPoint access_point);
+
+// Logs a sync opt-in offered event (`Signin.HistorySyncOptIn.Offered`
+// histogram) and its associated access point.
+void LogHistorySyncOptInOffered(AccessPoint access_point);
 
 // Logs that the sync settings were opened at the end of the sync opt-in flow,
 // and the associated access points.
@@ -651,10 +791,6 @@ void LogCookieJarCounts(const int signed_in,
 void LogAccountRelation(const AccountRelation relation,
                         const ReportingType type);
 
-// Records if the best guess is that this profile is currently shared or not
-// between multiple users.
-void LogIsShared(const bool is_shared, const ReportingType type);
-
 // Records the number of signed-in accounts in the cookie jar for the given
 // (potentially unconsented) primary account type, characterized by sync being
 // enabled (`primary_syncing`) and the account being managed (i.e. enterprise,
@@ -676,8 +812,18 @@ void RecordRefreshTokenRevokedFromSource(SourceForRefreshTokenOperation source);
 void RecordSignoutConfirmationFromDataLossAlert(
     SignoutDataLossAlertReason reason,
     bool signout_confirmed);
-// Records whether the user chooses to "Clear Data" or "Keep Data" on signout.
-void RecordSignoutForceClearDataChoice(bool force_clear_data);
+
+// Records the progression of the reauthentication flow that was started within
+// the sign-in flow designated by `access_point`. `event` is converted into a
+// suffix for `Signin.Reauth.InSigninFlow` histogram family.
+void RecordReauthFlowEventInSigninFlow(signin_metrics::AccessPoint access_point,
+                                       ReauthFlowEvent event);
+
+// Records the progression of the reauthentication flow that was started via an
+// explicit reauthentication UI. `event` is converted into a suffix for
+// `Signin.Reauth.InSigninFlow` histogram family.
+void RecordReauthFlowEventInExplicitFlow(ReauthAccessPoint access_point,
+                                         ReauthFlowEvent event);
 #endif  // BUILDFLAG(IS_IOS)
 
 // Records the total number of open tabs at the moment of signin or enabling
@@ -701,9 +847,6 @@ void RecordHistoryOptInStateOnSignin(signin_metrics::AccessPoint access_point,
 
 // Records corresponding sign in user action for an access point.
 void RecordSigninUserActionForAccessPoint(AccessPoint access_point);
-
-// Records corresponding sign out user action.
-void RecordSignoutUserAction(bool force_clear_data);
 
 // Records |Signin_Impression_From*| user action.
 void RecordSigninImpressionUserActionForAccessPoint(AccessPoint access_point);

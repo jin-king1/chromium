@@ -9,13 +9,17 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/autofill/mock_manual_filling_view.h"
 #include "chrome/browser/keyboard_accessory/android/manual_filling_controller_impl.h"
 #include "chrome/browser/keyboard_accessory/test_utils/android/mock_address_accessory_controller.h"
+#include "chrome/browser/keyboard_accessory/test_utils/android/mock_at_memory_accessory_controller.h"
 #include "chrome/browser/keyboard_accessory/test_utils/android/mock_password_accessory_controller.h"
 #include "chrome/browser/keyboard_accessory/test_utils/android/mock_payment_method_accessory_controller.h"
 #include "chrome/browser/ui/autofill/autofill_snackbar_view.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/autofill/core/browser/data_model/payments/credit_card.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -36,6 +40,7 @@ class AutofillSnackbarControllerImplTest
         web_contents(), mock_pwd_controller_.AsWeakPtr(),
         mock_address_controller_.AsWeakPtr(),
         mock_payment_method_controller_.AsWeakPtr(),
+        mock_at_memory_controller_.AsWeakPtr(),
         std::make_unique<NiceMock<MockManualFillingView>>());
   }
 
@@ -52,6 +57,7 @@ class AutofillSnackbarControllerImplTest
   NiceMock<MockAddressAccessoryController> mock_address_controller_;
   NiceMock<MockPaymentMethodAccessoryController>
       mock_payment_method_controller_;
+  NiceMock<MockAtMemoryAccessoryController> mock_at_memory_controller_;
 
   base::WeakPtrFactory<AutofillSnackbarControllerImplTest> weak_ptr_factory_{
       this};
@@ -147,30 +153,98 @@ TEST_F(AutofillSnackbarControllerImplTest, Metrics_VirtualCardEnrollSuccess) {
       "Autofill.Snackbar.VirtualCardEnrollSuccess.ActionClicked", true, 1);
 }
 
-TEST_F(AutofillSnackbarControllerImplTest, Metrics_UndoPlusAddressEmailSwap) {
+
+TEST_F(AutofillSnackbarControllerImplTest, Metrics_CardInfoRetrieval) {
   base::HistogramTester histogram_tester;
 
-  controller()->Show(AutofillSnackbarType::kPlusAddressEmailOverride,
-                     base::DoNothing());
+  CreditCard card;
+  card.set_is_bnpl_card(false);
+  card.set_record_type(CreditCard::RecordType::kMaskedServerCard);
+
+  controller()->ShowPaymentsSnackbar(AutofillSnackbarType::kCardInfoRetrieval,
+                                     card, base::DoNothing());
 
   histogram_tester.ExpectUniqueSample(
-      "Autofill.Snackbar.PlusAddressEmailOverride.Shown", true, 1);
+      "Autofill.Snackbar.CardInfoRetrievalEnrolled.Shown", true, 1);
   histogram_tester.ExpectUniqueSample(
-      "Autofill.Snackbar.PlusAddressEmailOverride.ActionClicked", true, 0);
+      "Autofill.Snackbar.CardInfoRetrievalEnrolled.ActionClicked", true, 0);
 
   controller()->OnActionClicked();
 
   histogram_tester.ExpectUniqueSample(
-      "Autofill.Snackbar.PlusAddressEmailOverride.ActionClicked", true, 1);
+      "Autofill.Snackbar.CardInfoRetrievalEnrolled.ActionClicked", true, 1);
+}
+
+TEST_F(AutofillSnackbarControllerImplTest, Metrics_Bnpl) {
+  base::HistogramTester histogram_tester;
+
+  CreditCard card;
+  card.set_is_bnpl_card(true);
+  card.SetNickname(u"Affirm");
+
+  controller()->ShowPaymentsSnackbar(AutofillSnackbarType::kBnpl, card,
+                                     base::DoNothing());
+
+  histogram_tester.ExpectUniqueSample("Autofill.Snackbar.BnplVirtualCard.Shown",
+                                      true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Snackbar.BnplVirtualCard.ActionClicked", true, 0);
+
+  controller()->OnActionClicked();
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Snackbar.BnplVirtualCard.ActionClicked", true, 1);
 }
 
 TEST_F(AutofillSnackbarControllerImplTest,
-       SaveCardSuccessMessageAndActionButtonText) {
+       SaveCardSuccessMessageAndActionButtonText_WalletBrandingDisabled) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(features::kAutofillEnableWalletBranding);
+
   controller()->Show(AutofillSnackbarType::kSaveCardSuccess, base::DoNothing());
 
   EXPECT_EQ(controller()->GetMessageText(),
             l10n_util::GetStringUTF16(
                 IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
+  EXPECT_EQ(
+      controller()->GetActionButtonText(),
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
+}
+
+TEST_F(AutofillSnackbarControllerImplTest,
+       SaveCardSuccessMessageAndActionButtonText_WalletBrandingEnabled) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableWalletBranding},
+      /*disabled_features=*/{features::kAutofillEnableWalletBrandingV2});
+
+  controller()->Show(AutofillSnackbarType::kSaveCardSuccess, base::DoNothing());
+
+  EXPECT_EQ(
+      controller()->GetMessageText(),
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
+  EXPECT_EQ(
+      controller()->GetActionButtonText(),
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARD_AND_VIRTUAL_CARD_ENROLL_CONFIRMATION_BUTTON_TEXT));
+}
+
+TEST_F(AutofillSnackbarControllerImplTest,
+       SaveCardSuccessMessageAndActionButtonText) {
+  base::test::ScopedFeatureList features;
+    features.InitWithFeatures(
+        /*enabled_features=*/{features::kAutofillEnableWalletBranding,
+                              features::kAutofillEnableWalletBrandingV2},
+        /*disabled_features=*/{});
+
+  controller()->Show(AutofillSnackbarType::kSaveCardSuccess, base::DoNothing());
+
+  EXPECT_EQ(
+      controller()->GetMessageText(),
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARD_TO_WALLET_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT_V2));
   EXPECT_EQ(
       controller()->GetActionButtonText(),
       l10n_util::GetStringUTF16(
@@ -216,13 +290,33 @@ TEST_F(AutofillSnackbarControllerImplTest, Metrics_SaveServerIbanSuccess) {
 }
 
 TEST_F(AutofillSnackbarControllerImplTest,
-       SaveServerIbanSuccessMessageAndActionButtonText) {
+       SaveServerIbanSuccessMessageAndActionButtonText_WalletBrandingDisabled) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(features::kAutofillEnableWalletBranding);
+
   controller()->Show(AutofillSnackbarType::kSaveServerIbanSuccess,
                      base::DoNothing());
 
   EXPECT_EQ(controller()->GetMessageText(),
             l10n_util::GetStringUTF16(
                 IDS_AUTOFILL_SAVE_SERVER_IBAN_SUCCESS_SNACKBAR_MESSAGE_TEXT));
+  EXPECT_EQ(controller()->GetActionButtonText(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_SERVER_IBAN_SUCCESS_SNACKBAR_BUTTON_TEXT));
+}
+
+TEST_F(AutofillSnackbarControllerImplTest,
+       SaveServerIbanSuccessMessageAndActionButtonText) {
+  base::test::ScopedFeatureList features(
+      features::kAutofillEnableWalletBranding);
+
+  controller()->Show(AutofillSnackbarType::kSaveServerIbanSuccess,
+                     base::DoNothing());
+
+  EXPECT_EQ(
+      controller()->GetMessageText(),
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_SERVER_IBAN_TO_WALLET_SUCCESS_SNACKBAR_MESSAGE_TEXT));
   EXPECT_EQ(controller()->GetActionButtonText(),
             l10n_util::GetStringUTF16(
                 IDS_AUTOFILL_SAVE_SERVER_IBAN_SUCCESS_SNACKBAR_BUTTON_TEXT));
@@ -268,6 +362,58 @@ TEST_F(AutofillSnackbarControllerImplTest, OnDismissTwiceCallbackCalledOnce) {
   controller()->OnDismissed();
   controller()->Show(AutofillSnackbarType::kSaveCardSuccess, base::DoNothing());
   controller()->OnDismissed();
+}
+
+TEST_F(AutofillSnackbarControllerImplTest,
+       ShowPaymentsSnackbar_BnplCard_SetsCorrectMessageAndAction) {
+  CreditCard card;
+  card.set_is_bnpl_card(true);
+  card.SetNickname(u"Affirm");
+
+  controller()->ShowPaymentsSnackbar(AutofillSnackbarType::kBnpl, card,
+                                     base::DoNothing());
+
+  EXPECT_EQ(
+      controller()->GetMessageText(),
+      l10n_util::GetStringFUTF16(
+          IDS_AUTOFILL_BNPL_FILLED_CARD_SNACKBAR_MESSAGE_TEXT, u"Affirm"));
+  EXPECT_EQ(controller()->GetActionButtonText(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_VIRTUAL_CARD_NUMBER_SNACKBAR_ACTION_TEXT));
+}
+
+TEST_F(AutofillSnackbarControllerImplTest,
+       ShowPaymentsSnackbar_VirtualCard_SetsCorrectMessageAndAction) {
+  CreditCard card;
+  card.set_is_bnpl_card(false);
+  card.set_record_type(CreditCard::RecordType::kVirtualCard);
+
+  controller()->ShowPaymentsSnackbar(AutofillSnackbarType::kVirtualCard, card,
+                                     base::DoNothing());
+
+  EXPECT_EQ(controller()->GetMessageText(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_VIRTUAL_CARD_NUMBER_SNACKBAR_MESSAGE_TEXT));
+  EXPECT_EQ(controller()->GetActionButtonText(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_VIRTUAL_CARD_NUMBER_SNACKBAR_ACTION_TEXT));
+}
+
+TEST_F(AutofillSnackbarControllerImplTest,
+       ShowPaymentsSnackbar_CardInfoRetrieval_SetsCorrectMessageAndAction) {
+  CreditCard card;
+  card.set_is_bnpl_card(false);
+  card.set_record_type(CreditCard::RecordType::kMaskedServerCard);
+
+  controller()->ShowPaymentsSnackbar(AutofillSnackbarType::kCardInfoRetrieval,
+                                     card, base::DoNothing());
+
+  EXPECT_EQ(controller()->GetMessageText(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_CARD_INFO_RETRIEVAL_SNACKBAR_MESSAGE_TEXT));
+  EXPECT_EQ(controller()->GetActionButtonText(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_VIRTUAL_CARD_NUMBER_SNACKBAR_ACTION_TEXT));
 }
 
 }  // namespace autofill

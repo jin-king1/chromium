@@ -4,15 +4,21 @@
 
 #include "components/performance_manager/public/decorators/page_live_state_decorator.h"
 
+#include <ostream>
 #include <utility>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/not_fatal_until.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
+#include "base/strings/to_string.h"
+#include "base/thread_annotations.h"
 #include "components/performance_manager/decorators/decorators_utils.h"
 #include "components/performance_manager/graph/page_node_impl.h"
+#include "components/performance_manager/public/features.h"
+#include "components/performance_manager/public/graph/graph.h"
 #include "components/performance_manager/public/graph/node_attached_data.h"
 #include "components/performance_manager/public/graph/node_data_describer_registry.h"
 #include "components/performance_manager/public/performance_manager.h"
@@ -28,7 +34,7 @@ namespace {
 // out of the header file.
 class PageLiveStateDataImpl
     : public PageLiveStateDecorator::Data,
-      public ExternalNodeAttachedDataImpl<PageLiveStateDataImpl> {
+      public NodeAttachedDataImpl<PageLiveStateDataImpl> {
  public:
   explicit PageLiveStateDataImpl(const PageNodeImpl* page_node)
       : page_node_(page_node) {}
@@ -74,13 +80,13 @@ class PageLiveStateDataImpl
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return is_capturing_display_;
   }
+  bool IsDiscarded() const override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return is_discarded_;
+  }
   bool IsAutoDiscardable() const override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return is_auto_discardable_;
-  }
-  bool WasDiscarded() const override {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    return was_discarded_;
   }
   bool IsActiveTab() const override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -93,6 +99,10 @@ class PageLiveStateDataImpl
   bool IsDevToolsOpen() const override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return is_dev_tools_open_;
+  }
+  GlicActuationState GetGlicActuationState() const override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return glic_actuation_state_;
   }
   bool UpdatedTitleOrFaviconInBackground() const override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -126,11 +136,11 @@ class PageLiveStateDataImpl
   void SetIsCapturingDisplayForTesting(bool value) override {
     set_is_capturing_display(value);
   }
+  void SetIsDiscardedForTesting(bool value) override {
+    set_is_discarded(value);
+  }
   void SetIsAutoDiscardableForTesting(bool value) override {
     set_is_auto_discardable(value);
-  }
-  void SetWasDiscardedForTesting(bool value) override {
-    set_was_discarded(value);
   }
   void SetIsActiveTabForTesting(bool value) override {
     set_is_active_tab(value);
@@ -140,6 +150,9 @@ class PageLiveStateDataImpl
   }
   void SetIsDevToolsOpenForTesting(bool value) override {
     set_is_dev_tools_open(value);
+  }
+  void SetGlicActuationStateForTesting(GlicActuationState value) override {
+    set_glic_actuation_state(value);
   }
   void SetUpdatedTitleOrFaviconInBackgroundForTesting(bool value) override {
     set_updated_title_or_favicon_in_background(value);
@@ -222,6 +235,10 @@ class PageLiveStateDataImpl
     for (auto& obs : observers_)
       obs.OnIsCapturingDisplayChanged(page_node_);
   }
+  void set_is_discarded(bool is_discarded) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    is_discarded_ = is_discarded;
+  }
   void set_is_auto_discardable(bool is_auto_discardable) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (is_auto_discardable_ == is_auto_discardable)
@@ -229,12 +246,6 @@ class PageLiveStateDataImpl
     is_auto_discardable_ = is_auto_discardable;
     for (auto& obs : observers_)
       obs.OnIsAutoDiscardableChanged(page_node_);
-  }
-  void set_was_discarded(bool was_discarded) {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    if (was_discarded_ == was_discarded)
-      return;
-    was_discarded_ = was_discarded;
   }
   void set_is_active_tab(bool is_active_tab) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -264,9 +275,26 @@ class PageLiveStateDataImpl
       obs.OnIsDevToolsOpenChanged(page_node_);
     }
   }
+  void set_glic_actuation_state(GlicActuationState glic_actuation_state) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (glic_actuation_state_ == glic_actuation_state) {
+      return;
+    }
+    auto previous_state = glic_actuation_state_;
+    glic_actuation_state_ = glic_actuation_state;
+    for (auto& obs : observers_) {
+      obs.OnGlicActuationStateChanged(page_node_, previous_state);
+    }
+  }
   void set_updated_title_or_favicon_in_background(bool updated) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    if (updated_title_or_favicon_in_background_ == updated) {
+      return;
+    }
     updated_title_or_favicon_in_background_ = updated;
+    for (auto& obs : observers_) {
+      obs.OnUpdatedTitleOrFaviconInBackgroundChanged(page_node_);
+    }
   }
 
  private:
@@ -283,11 +311,13 @@ class PageLiveStateDataImpl
   bool is_being_mirrored_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
   bool is_capturing_window_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
   bool is_capturing_display_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+  bool is_discarded_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
   bool is_auto_discardable_ GUARDED_BY_CONTEXT(sequence_checker_) = true;
-  bool was_discarded_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
   bool is_active_tab_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
   bool is_pinned_tab_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
   bool is_dev_tools_open_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+  GlicActuationState glic_actuation_state_
+      GUARDED_BY_CONTEXT(sequence_checker_) = GlicActuationState::kNone;
   bool updated_title_or_favicon_in_background_
       GUARDED_BY_CONTEXT(sequence_checker_) = false;
 
@@ -298,8 +328,69 @@ const char kDescriberName[] = "PageLiveStateDecorator";
 
 }  // namespace
 
+std::ostream& operator<<(std::ostream& os, GlicActuationState state) {
+  switch (state) {
+    case GlicActuationState::kNone:
+      return os << "None";
+    case GlicActuationState::kActuatingOnBackgroundTab:
+      return os << "ActuatingOnBackgroundTab";
+    case GlicActuationState::kActuatingOnVisibleTab:
+      return os << "ActuatingOnVisibleTab";
+  }
+}
+
 PageLiveStateDecorator::PageLiveStateDecorator() = default;
 PageLiveStateDecorator::~PageLiveStateDecorator() = default;
+
+// static
+void PageLiveStateDecorator::AddAllPageObserver(
+    PageLiveStateObserver* observer) {
+  // Must not be called before PerformanceManager is available, or observations
+  // will be lost.
+  CHECK(PerformanceManager::IsAvailable());
+  auto* graph = PerformanceManager::GetGraph();
+  PageLiveStateDecorator::GetFromGraph(graph)->all_page_observers_.AddObserver(
+      observer);
+  for (const PageNode* page_node : graph->GetAllPageNodes()) {
+    PageLiveStateDataImpl::GetOrCreate(PageNodeImpl::FromNode(page_node))
+        ->AddObserver(observer);
+  }
+}
+
+// static
+void PageLiveStateDecorator::RemoveAllPageObserver(
+    PageLiveStateObserver* observer) {
+  if (!PerformanceManager::IsAvailable()) {
+    // Observer list was already cleared when PageLiveStateDecorator was
+    // destroyed.
+    return;
+  }
+  auto* graph = PerformanceManager::GetGraph();
+  for (const PageNode* page_node : graph->GetAllPageNodes()) {
+    auto* data = PageLiveStateDataImpl::Get(PageNodeImpl::FromNode(page_node));
+    // `data` might be null if AddAllPageObserver was never called (which is
+    // possible because, by the semantics of ObserverList, it's legal to remove
+    // an observer that was never added), or if RemoveAllPageObserver is being
+    // called from an OnPageNodeAdded implementation that happens to be called
+    // before PageLiveStateDecorator::OnPageNodeAdded.
+    if (data) {
+      data->RemoveObserver(observer);
+    }
+  }
+  PageLiveStateDecorator::GetFromGraph(graph)
+      ->all_page_observers_.RemoveObserver(observer);
+}
+
+// static
+bool PageLiveStateDecorator::HasAllPageObserver(
+    PageLiveStateObserver* observer) {
+  if (!PerformanceManager::IsAvailable()) {
+    // Observer list was cleared when PageLiveStateDecorator was destroyed.
+    return false;
+  }
+  return PageLiveStateDecorator::GetFromGraph(PerformanceManager::GetGraph())
+      ->all_page_observers_.HasObserver(observer);
+}
 
 // static
 void PageLiveStateDecorator::OnCapabilityTypesChanged(
@@ -380,24 +471,19 @@ void PageLiveStateDecorator::OnIsCapturingDisplayChanged(
 }
 
 // static
+void PageLiveStateDecorator::SetIsDiscarded(content::WebContents* contents,
+                                            bool is_discarded) {
+  SetPropertyForWebContentsPageNode(
+      contents, &PageLiveStateDataImpl::set_is_discarded, is_discarded);
+}
+
+// static
 void PageLiveStateDecorator::SetIsAutoDiscardable(
     content::WebContents* contents,
     bool is_auto_discardable) {
   SetPropertyForWebContentsPageNode(
       contents, &PageLiveStateDataImpl::set_is_auto_discardable,
       is_auto_discardable);
-}
-
-// static
-void PageLiveStateDecorator::SetWasDiscarded(content::WebContents* contents,
-                                             bool was_discarded) {
-  // TODO(crbug.com/391179510): This check validates the assumption that the
-  // WasDiscarded() property is not set correctly. If that assumption holds,
-  // remove all code that depends on it as discussed on the bug.
-  CHECK(!was_discarded, base::NotFatalUntil::M136);
-
-  SetPropertyForWebContentsPageNode(
-      contents, &PageLiveStateDataImpl::set_was_discarded, was_discarded);
 }
 
 // static
@@ -420,6 +506,15 @@ void PageLiveStateDecorator::SetIsDevToolsOpen(content::WebContents* contents,
   SetPropertyForWebContentsPageNode(
       contents, &PageLiveStateDataImpl::set_is_dev_tools_open,
       is_dev_tools_open);
+}
+
+// static
+void PageLiveStateDecorator::SetGlicActuationState(
+    content::WebContents* contents,
+    GlicActuationState glic_actuation_state) {
+  SetPropertyForWebContentsPageNode(
+      contents, &PageLiveStateDataImpl::set_glic_actuation_state,
+      glic_actuation_state);
 }
 
 // static
@@ -482,15 +577,15 @@ bool PageLiveStateDecorator::IsCapturingDisplay(
 }
 
 // static
-bool PageLiveStateDecorator::IsAutoDiscardable(content::WebContents* contents) {
+bool PageLiveStateDecorator::IsDiscarded(content::WebContents* contents) {
   return GetPropertyForWebContentsPageNode<bool>(
-      contents, &PageLiveStateDataImpl::IsAutoDiscardable);
+      contents, &PageLiveStateDataImpl::IsDiscarded);
 }
 
 // static
-bool PageLiveStateDecorator::WasDiscarded(content::WebContents* contents) {
+bool PageLiveStateDecorator::IsAutoDiscardable(content::WebContents* contents) {
   return GetPropertyForWebContentsPageNode<bool>(
-      contents, &PageLiveStateDataImpl::WasDiscarded);
+      contents, &PageLiveStateDataImpl::IsAutoDiscardable);
 }
 
 // static
@@ -512,6 +607,13 @@ bool PageLiveStateDecorator::IsDevToolsOpen(content::WebContents* contents) {
 }
 
 // static
+GlicActuationState PageLiveStateDecorator::GetGlicActuationState(
+    content::WebContents* contents) {
+  return GetPropertyForWebContentsPageNode<GlicActuationState>(
+      contents, &PageLiveStateDataImpl::GetGlicActuationState);
+}
+
+// static
 bool PageLiveStateDecorator::UpdatedTitleOrFaviconInBackground(
     content::WebContents* contents) {
   return GetPropertyForWebContentsPageNode<bool>(
@@ -529,13 +631,13 @@ void PageLiveStateDecorator::OnTakenFromGraph(Graph* graph) {
   graph->GetNodeDataDescriberRegistry()->UnregisterDescriber(this);
 }
 
-base::Value::Dict PageLiveStateDecorator::DescribePageNodeData(
+base::DictValue PageLiveStateDecorator::DescribePageNodeData(
     const PageNode* node) const {
   auto* data = Data::FromPageNode(node);
   if (!data)
-    return base::Value::Dict();
+    return base::DictValue();
 
-  base::Value::Dict ret;
+  base::DictValue ret;
   ret.Set("IsConnectedToUSBDevice", data->IsConnectedToUSBDevice());
   ret.Set("IsConnectedToBluetoothDevice", data->IsConnectedToBluetoothDevice());
   ret.Set("IsConnectedToHidDevice", data->IsConnectedToHidDevice());
@@ -545,29 +647,78 @@ base::Value::Dict PageLiveStateDecorator::DescribePageNodeData(
   ret.Set("IsBeingMirrored", data->IsBeingMirrored());
   ret.Set("IsCapturingWindow", data->IsCapturingWindow());
   ret.Set("IsCapturingDisplay", data->IsCapturingDisplay());
+  ret.Set("IsDiscarded", data->IsDiscarded());
   ret.Set("IsAutoDiscardable", data->IsAutoDiscardable());
-  ret.Set("WasDiscarded", data->WasDiscarded());
   ret.Set("IsActiveTab", data->IsActiveTab());
   ret.Set("IsPinnedTab", data->IsPinnedTab());
   ret.Set("IsDevToolsOpen", data->IsDevToolsOpen());
+  ret.Set("GlicActuationState", base::ToString(data->GetGlicActuationState()));
   ret.Set("UpdatedTitleOrFaviconInBackground",
           data->UpdatedTitleOrFaviconInBackground());
 
   return ret;
 }
 
-void PageLiveStateDecorator::OnTitleUpdated(const PageNode* page_node) {
-  if (!page_node->IsVisible()) {
-    PageLiveStateDataImpl::GetOrCreate(PageNodeImpl::FromNode(page_node))
-        ->set_updated_title_or_favicon_in_background(true);
+void PageLiveStateDecorator::OnPageNodeAdded(const PageNode* page_node) {
+  if (all_page_observers_.empty()) {
+    return;
+  }
+  auto* data =
+      PageLiveStateDataImpl::GetOrCreate(PageNodeImpl::FromNode(page_node));
+  for (PageLiveStateObserver& observer : all_page_observers_) {
+    data->AddObserver(&observer);
   }
 }
 
-void PageLiveStateDecorator::OnFaviconUpdated(const PageNode* page_node) {
-  if (!page_node->IsVisible()) {
-    PageLiveStateDataImpl::GetOrCreate(PageNodeImpl::FromNode(page_node))
-        ->set_updated_title_or_favicon_in_background(true);
+void PageLiveStateDecorator::OnBeforePageNodeRemoved(
+    const PageNode* page_node) {
+  if (all_page_observers_.empty()) {
+    return;
   }
+  auto* data = PageLiveStateDataImpl::Get(PageNodeImpl::FromNode(page_node));
+  // Since an observer exists, AddAllPageObservers was called. So `data` was
+  // created either there or in OnPageNodeAdded.
+  CHECK(data);
+  for (PageLiveStateObserver& observer : all_page_observers_) {
+    data->RemoveObserver(&observer);
+  }
+}
+
+void PageLiveStateDecorator::OnTitleUpdated(const PageNode* page_node) {
+  if (page_node->IsVisible()) {
+    return;
+  }
+  // Title changes are common during load (e.g. "Loading…" -> final title). Only
+  // treat background title updates as activity once the page is fully loaded
+  // and quiescent.
+  if (base::FeatureList::IsEnabled(
+          features::kUseLoadingStateToDetectBackgroundTitleOrFaviconUpdate) &&
+      page_node->GetLoadingState() != PageNode::LoadingState::kLoadedIdle) {
+    return;
+  }
+  PageLiveStateDataImpl::GetOrCreate(PageNodeImpl::FromNode(page_node))
+      ->set_updated_title_or_favicon_in_background(true);
+}
+
+void PageLiveStateDecorator::OnFaviconUpdated(
+    const PageNode* page_node,
+    blink::mojom::FaviconUpdateReason reason) {
+  if (base::FeatureList::IsEnabled(features::kIgnoreMediaQueryFaviconUpdates) &&
+      reason == blink::mojom::FaviconUpdateReason::kMediaQueryChange) {
+    return;
+  }
+  if (page_node->IsVisible()) {
+    return;
+  }
+  // Favicon updates are common during load. Only treat background favicon
+  // updates as activity once the page is fully loaded and quiescent.
+  if (base::FeatureList::IsEnabled(
+          features::kUseLoadingStateToDetectBackgroundTitleOrFaviconUpdate) &&
+      page_node->GetLoadingState() != PageNode::LoadingState::kLoadedIdle) {
+    return;
+  }
+  PageLiveStateDataImpl::GetOrCreate(PageNodeImpl::FromNode(page_node))
+      ->set_updated_title_or_favicon_in_background(true);
 }
 
 void PageLiveStateDecorator::OnAboutToBeDiscarded(
@@ -609,8 +760,5 @@ PageLiveStateDecorator::Data::GetOrCreateForPageNode(
 
 PageLiveStateObserver::PageLiveStateObserver() = default;
 PageLiveStateObserver::~PageLiveStateObserver() = default;
-
-PageLiveStateObserverDefaultImpl::PageLiveStateObserverDefaultImpl() = default;
-PageLiveStateObserverDefaultImpl::~PageLiveStateObserverDefaultImpl() = default;
 
 }  // namespace performance_manager

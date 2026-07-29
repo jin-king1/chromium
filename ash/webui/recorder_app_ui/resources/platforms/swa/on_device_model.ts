@@ -2,15 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {
-  Model,
-  ModelLoader as ModelLoaderBase,
-  ModelResponse,
-  ModelResponseError,
-  ModelState,
-} from '../../core/on_device_model/types.js';
+import type {LoadModelResult, Model, ModelResponse, ModelState} from '../../core/on_device_model/types.js';
+import {ModelExecutionError, ModelLoader as ModelLoaderBase, ModelLoadError} from '../../core/on_device_model/types.js';
 import {signal} from '../../core/reactive/signal.js';
-import {LanguageCode} from '../../core/soda/language_info.js';
+import type {LanguageCode} from '../../core/soda/language_info.js';
 import {
   assertExhaustive,
   assertExists,
@@ -20,24 +15,21 @@ import {
   chunkContentByWord,
 } from '../../core/utils/utils.js';
 
-import {PlatformHandler} from './handler.js';
+import type {PlatformHandler} from './handler.js';
 import {
   isCannedResponse,
   isInvalidFormatResponse,
   parseResponse,
   trimRepeatedBulletPoints,
 } from './on_device_model_utils.js';
+import type {ModelInfo, ModelState as MojoModelState, PageHandlerRemote, ResponseChunk, ResponseSummary} from './types.js';
 import {
   FormatFeature,
-  LoadModelResult,
-  ModelInfo,
-  ModelState as MojoModelState,
+  InputSource,
+  LoadModelResult as MojoLoadModelResult,
   ModelStateMonitorReceiver,
   ModelStateType,
   OnDeviceModelRemote,
-  PageHandlerRemote,
-  ResponseChunk,
-  ResponseSummary,
   SafetyFeature,
   SessionRemote,
   StreamingResponderCallbackRouter,
@@ -76,7 +68,7 @@ abstract class OnDeviceModel<T> implements Model<T> {
   async execute(content: string, language: LanguageCode):
     Promise<ModelResponse<T>> {
     const session = new SessionRemote();
-    this.remote.startSession(session.$.bindNewPipeAndPassReceiver());
+    this.remote.startSession(session.$.bindNewPipeAndPassReceiver(), null);
     const result =
       await this.executeInRemoteSession(content, language, session);
     session.$.close();
@@ -118,15 +110,21 @@ abstract class OnDeviceModel<T> implements Model<T> {
     const size = await this.getInputTokenSize(text, session);
 
     if (size < MIN_TOKEN_LENGTH) {
+      console.warn(
+        `Skip GenAI model execution: too small token size: ${size}.`,
+      );
       return {
         kind: 'error',
-        error: ModelResponseError.UNSUPPORTED_TRANSCRIPTION_IS_TOO_SHORT,
+        error: ModelExecutionError.UNSUPPORTED_TRANSCRIPTION_IS_TOO_SHORT,
       };
     }
     if (size > this.modelInfo.inputTokenLimit) {
+      console.warn(
+        `Skip GenAI model execution: too large token size: ${size}.`,
+      );
       return {
         kind: 'error',
-        error: ModelResponseError.UNSUPPORTED_TRANSCRIPTION_IS_TOO_LONG,
+        error: ModelExecutionError.UNSUPPORTED_TRANSCRIPTION_IS_TOO_LONG,
       };
     }
 
@@ -150,16 +148,16 @@ abstract class OnDeviceModel<T> implements Model<T> {
     session.append(
       {
         maxTokens: 0,
-        tokenOffset: 0,
         input: inputPieces,
+        inputSource: InputSource.kUserInput,
       },
       null,
     );
     session.generate(
       {
         maxOutputTokens: 0,
-        topK: 1,
-        temperature: 0,
+        constraint: null,
+        addOutputTokensToContext: false,
       },
       responseRouter.$.bindNewPipeAndPassRemote(),
     );
@@ -168,7 +166,8 @@ abstract class OnDeviceModel<T> implements Model<T> {
     // When the model returns the canned response, show the same UI as
     // unsafe content for now.
     if (isCannedResponse(result)) {
-      return {kind: 'error', error: ModelResponseError.UNSAFE};
+      console.warn('Invalid GenAI result: canned response.');
+      return {kind: 'error', error: ModelExecutionError.UNSAFE};
     }
 
     const parsedResult = parseResponse(result);
@@ -177,7 +176,8 @@ abstract class OnDeviceModel<T> implements Model<T> {
           parsedResult,
           expectedBulletPointCount,
         )) {
-      return {kind: 'error', error: ModelResponseError.UNSAFE};
+      console.warn('Invalid GenAI result: invalid format.');
+      return {kind: 'error', error: ModelExecutionError.UNSAFE};
     }
 
     const finalBulletPoints = trimRepeatedBulletPoints(
@@ -189,7 +189,8 @@ abstract class OnDeviceModel<T> implements Model<T> {
 
     // Show unsafe content if no valid bullet point.
     if (finalBulletPoints.length === 0) {
-      return {kind: 'error', error: ModelResponseError.UNSAFE};
+      console.warn('Invalid GenAI result: no valid bullet point.');
+      return {kind: 'error', error: ModelExecutionError.UNSAFE};
     }
 
     // To align with model response type, concatenated bullet points back to one
@@ -261,10 +262,11 @@ abstract class OnDeviceModel<T> implements Model<T> {
     const prompt = await this.formatInput(formatFeature, fields);
     if (prompt === null) {
       console.error('formatInput returns null, wrong model?');
-      return {kind: 'error', error: ModelResponseError.GENERAL};
+      return {kind: 'error', error: ModelExecutionError.GENERAL};
     }
     if (await this.contentIsUnsafe(prompt, requestSafetyFeature, language)) {
-      return {kind: 'error', error: ModelResponseError.UNSAFE};
+      console.warn('Unsafe GenAI prompt.');
+      return {kind: 'error', error: ModelExecutionError.UNSAFE};
     }
     const response = await this.executeRaw(
       prompt,
@@ -280,7 +282,8 @@ abstract class OnDeviceModel<T> implements Model<T> {
           responseSafetyFeature,
           language,
         )) {
-      return {kind: 'error', error: ModelResponseError.UNSAFE};
+      console.warn('Unsafe GenAI result.');
+      return {kind: 'error', error: ModelExecutionError.UNSAFE};
     }
     return {kind: 'success', result: response.result};
   }
@@ -314,7 +317,7 @@ export class SummaryModel extends OnDeviceModel<string> {
          * See
          * http://google3/chromeos/odml_foundations/lib/inference/features/models/audio_summary_v2.cc.
          */
-        /* eslint-disable-next-line @typescript-eslint/naming-convention */
+
         bullet_points_request: bulletPointsRequest,
       },
       session,
@@ -415,6 +418,8 @@ export function mojoModelStateToModelState(state: MojoModelState): ModelState {
       return {kind: 'installing', progress: assertExists(state.progress)};
     case ModelStateType.kInstalled:
       return {kind: 'installed'};
+    case ModelStateType.kNeedsReboot:
+      return {kind: 'needsReboot'};
     case ModelStateType.kError:
       return {kind: 'error'};
     case ModelStateType.kUnavailable:
@@ -426,6 +431,26 @@ export function mojoModelStateToModelState(state: MojoModelState): ModelState {
       );
     default:
       assertExhaustive(state.type);
+  }
+}
+
+function mojoLoadModelResultToModelLoadError(result: MojoLoadModelResult):
+  ModelLoadError {
+  switch (result) {
+    case MojoLoadModelResult.kFailedToLoadLibrary:
+    case MojoLoadModelResult.kGpuBlocked:
+      return ModelLoadError.LOAD_FAILURE;
+    case MojoLoadModelResult.kCrosNeedReboot:
+      return ModelLoadError.NEEDS_REBOOT;
+    case MojoLoadModelResult.kSuccess:
+      return assertNotReached(`Try transforming success load result to error`);
+    case MojoLoadModelResult.MIN_VALUE:
+    case MojoLoadModelResult.MAX_VALUE:
+      return assertNotReached(
+        `Got MIN_VALUE or MAX_VALUE from mojo LoadModelResult: ${result}`,
+      );
+    default:
+      assertExhaustive(result);
   }
 }
 
@@ -467,38 +492,39 @@ abstract class ModelLoader<T> extends ModelLoaderBase<T> {
     update(state);
   }
 
-  override async load(): Promise<Model<T>|null> {
+  override async load(): Promise<LoadModelResult<T>> {
     const newModel = new OnDeviceModelRemote();
     const {result} = await this.remote.loadModel(
       this.modelInfo.modelId,
       newModel.$.bindNewPipeAndPassReceiver(),
     );
-    if (result !== LoadModelResult.kSuccess) {
+    if (result !== MojoLoadModelResult.kSuccess) {
       console.error('Load model failed:', result);
-      // TODO(pihsun): Have dedicated error type.
-      return null;
+      return {
+        kind: 'error',
+        error: mojoLoadModelResultToModelLoadError(result),
+      };
     }
-    return this.createModel(newModel);
+    return {kind: 'success', model: this.createModel(newModel)};
   }
 
   override async loadAndExecute(content: string, language: LanguageCode):
     Promise<ModelResponse<T>> {
     if (!this.platformHandler.getLangPackInfo(language).isGenAiSupported) {
-      return {kind: 'error', error: ModelResponseError.UNSUPPORTED_LANGUAGE};
+      console.warn(
+        `Skip GenAI model execution: unsupported language: ${language}.`,
+      );
+      return {kind: 'error', error: ModelExecutionError.UNSUPPORTED_LANGUAGE};
     }
 
-    const model = await this.load();
-    if (model === null) {
-      // TODO(pihsun): Specific error type / message for model loading error.
-      return {
-        kind: 'error',
-        error: ModelResponseError.GENERAL,
-      };
+    const loadResult = await this.load();
+    if (loadResult.kind === 'error') {
+      return loadResult;
     }
     try {
-      return await model.execute(content, language);
+      return await loadResult.model.execute(content, language);
     } finally {
-      model.close();
+      loadResult.model.close();
     }
   }
 }

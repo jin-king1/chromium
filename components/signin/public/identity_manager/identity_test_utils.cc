@@ -13,6 +13,7 @@
 #include "base/uuid.h"
 #include "build/build_config.h"
 #include "components/signin/internal/identity_manager/account_fetcher_service.h"
+#include "components/signin/internal/identity_manager/account_info_util.h"
 #include "components/signin/internal/identity_manager/account_tracker_service.h"
 #include "components/signin/internal/identity_manager/fake_profile_oauth2_token_service.h"
 #include "components/signin/internal/identity_manager/gaia_cookie_manager_service.h"
@@ -21,11 +22,13 @@
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_delegate.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/list_accounts_test_utils.h"
+#include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
 #include "components/signin/public/identity_manager/signin_constants.h"
 #include "components/signin/public/identity_manager/test_identity_manager_observer.h"
+#include "components/signin/public/identity_manager/token_binding_info.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -38,6 +41,10 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_delegate_android.h"
 #include "components/signin/public/android/test_support_jni_headers/AccountManagerFacadeUtil_jni.h"
+#endif
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "components/signin/internal/identity_manager/mutable_profile_oauth2_token_service_delegate.h"
 #endif
 
 using signin::constants::kNoHostedDomainFound;
@@ -56,9 +63,7 @@ void UpdateRefreshTokenForAccount(
     IdentityManager* identity_manager,
     const CoreAccountId& account_id,
     const std::string& new_token,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-    const std::vector<uint8_t> wrapped_binding_key,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+    const TokenBindingInfo& token_binding_info,
     signin_metrics::SourceForRefreshTokenOperation source =
         signin_metrics::SourceForRefreshTokenOperation::kUnknown) {
   DCHECK_EQ(account_tracker_service->GetAccountInfo(account_id).account_id,
@@ -86,12 +91,8 @@ void UpdateRefreshTokenForAccount(
   GetAccountManagerFacade(identity_manager)
       ->UpsertAccountForTesting(account, new_token);
 #else
-  token_service->UpdateCredentials(account_id, new_token, source
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-                                   ,
-                                   wrapped_binding_key
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-  );
+  token_service->UpdateCredentials(account_id, new_token, source,
+                                   token_binding_info);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   run_loop.Run();
@@ -126,18 +127,14 @@ AccountAvailabilityOptions::AccountAvailabilityOptions(
     const GaiaId& gaia_id,
     std::optional<ConsentLevel> consent_level,
     std::optional<std::string> refresh_token,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-    const std::vector<uint8_t>& wrapped_binding_key,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+    const TokenBindingInfo& token_binding_info,
     raw_ptr<network::TestURLLoaderFactory> url_loader_factory_for_cookies,
     signin_metrics::AccessPoint access_point)
     : email(email),
       gaia_id(gaia_id),
       consent_level(consent_level),
       refresh_token(refresh_token),
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-      wrapped_binding_key(wrapped_binding_key),
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+      token_binding_info(token_binding_info),
       url_loader_factory_for_cookies(url_loader_factory_for_cookies),
       access_point(access_point) {
   CHECK(!email.empty());
@@ -194,21 +191,18 @@ AccountAvailabilityOptionsBuilder::WithRefreshToken(
   return *this;
 }
 
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 AccountAvailabilityOptionsBuilder&
-AccountAvailabilityOptionsBuilder::WithRefreshTokenBindingKey(
-    const std::vector<uint8_t>& wrapped_binding_key) {
-  CHECK(refresh_token_.has_value()) << "Binding key requires a refresh token";
-  wrapped_binding_key_ = wrapped_binding_key;
+AccountAvailabilityOptionsBuilder::WithRefreshTokenBindingInfo(
+    const TokenBindingInfo& token_binding_info) {
+  CHECK(refresh_token_.has_value()) << "Binding info requires a refresh token";
+  token_binding_info_ = token_binding_info;
   return *this;
 }
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 
 AccountAvailabilityOptionsBuilder&
 AccountAvailabilityOptionsBuilder::WithoutRefreshToken() {
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-  CHECK(wrapped_binding_key_.empty()) << "Binding key requires a refresh token";
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+  CHECK(token_binding_info_.wrapped_binding_key.empty())
+      << "Binding key requires a refresh token";
   refresh_token_ = std::nullopt;
   return *this;
 }
@@ -224,9 +218,7 @@ AccountAvailabilityOptions AccountAvailabilityOptionsBuilder::Build(
     std::string_view email) {
   return AccountAvailabilityOptions(
       email, gaia_id_, primary_account_consent_level_, refresh_token_,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-      wrapped_binding_key_,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+      token_binding_info_,
       with_cookie_ ? url_loader_factory_for_cookies_ : nullptr, access_point_);
 }
 
@@ -451,12 +443,8 @@ AccountInfo MakeAccountAvailable(IdentityManager* identity_manager,
 
   if (options.refresh_token.has_value()) {
     SetRefreshTokenForAccount(identity_manager, account_info.account_id,
-                              options.refresh_token.value()
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-                                  ,
-                              options.wrapped_binding_key
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-    );
+                              options.refresh_token.value(),
+                              options.token_binding_info);
   }
 
   if (options.url_loader_factory_for_cookies) {
@@ -475,12 +463,8 @@ AccountInfo MakeAccountAvailable(IdentityManager* identity_manager,
 
 void SetRefreshTokenForAccount(IdentityManager* identity_manager,
                                const CoreAccountId& account_id,
-                               const std::string& token_value
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-                               ,
-                               const std::vector<uint8_t>& wrapped_binding_key
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-) {
+                               const std::string& token_value,
+                               const TokenBindingInfo& token_binding_info) {
   UpdateRefreshTokenForAccount(
       identity_manager->GetTokenService(),
       identity_manager->GetAccountTrackerService(), identity_manager,
@@ -488,12 +472,8 @@ void SetRefreshTokenForAccount(IdentityManager* identity_manager,
       token_value.empty()
           ? "refresh_token_for_" + account_id.ToString() + "_" +
                 base::Uuid::GenerateRandomV4().AsLowercaseString()
-          : token_value
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-      ,
-      wrapped_binding_key
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-  );
+          : token_value,
+      token_binding_info);
 }
 
 void SetInvalidRefreshTokenForAccount(
@@ -504,10 +484,7 @@ void SetInvalidRefreshTokenForAccount(
                                identity_manager->GetAccountTrackerService(),
                                identity_manager, account_id,
                                GaiaConstants::kInvalidRefreshToken,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-                               /*wrapped_binding_key=*/{},
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-                               source);
+                               TokenBindingInfo(), source);
 }
 
 void RemoveRefreshTokenForAccount(IdentityManager* identity_manager,
@@ -562,7 +539,7 @@ void SetCookieAccounts(
     network::TestURLLoaderFactory* test_url_loader_factory,
     const std::vector<CookieParamsForTest>& cookie_accounts) {
   // Convert |cookie_accounts| to the format list_accounts_test_utils wants.
-  std::vector<CookieParams> gaia_cookie_accounts;
+  std::vector<gaia::CookieParams> gaia_cookie_accounts;
   for (const CookieParamsForTest& params : cookie_accounts) {
     gaia_cookie_accounts.push_back({params.email, params.gaia_id,
                                     /*valid=*/true, params.signed_out,
@@ -615,15 +592,14 @@ AccountInfo WithGeneratedUserInfo(const AccountInfo& base_account_info,
   CHECK(!given_name.empty())
       << "A given name is needed to generate the Gaia info.";
 
-  AccountInfo extended_account_info = base_account_info;
-
-  extended_account_info.given_name = given_name;
-  extended_account_info.full_name = base::StrCat({given_name, " FullName"});
-
-  extended_account_info.picture_url =
-      "https://chromium.org/examples/account_picture.jpg";
-  extended_account_info.hosted_domain = kNoHostedDomainFound;
-  extended_account_info.locale = "en";
+  AccountInfo extended_account_info =
+      AccountInfo::Builder(base_account_info)
+          .SetFullName(base::StrCat({given_name, " FullName"}))
+          .SetGivenName(given_name)
+          .SetHostedDomain(std::string())
+          .SetAvatarUrl("https://chromium.org/examples/account_picture.jpg")
+          .SetLocale("en")
+          .Build();
 
   CHECK(extended_account_info.IsValid());
 
@@ -704,9 +680,9 @@ void DisableAccessTokenFetchRetries(IdentityManager* identity_manager) {
 }
 
 #if BUILDFLAG(IS_ANDROID)
-void SetUpMockAccountManagerFacade(bool useFakeImpl) {
-  Java_AccountManagerFacadeUtil_setUpMockFacade(
-      base::android::AttachCurrentThread(), useFakeImpl);
+void SetUpFakeAccountManagerFacade() {
+  Java_AccountManagerFacadeUtil_setUpFakeFacade(
+      base::android::AttachCurrentThread());
 }
 #endif
 
@@ -723,7 +699,7 @@ void SimulateSuccessfulFetchOfAccountInfo(IdentityManager* identity_manager,
                                           const std::string& given_name,
                                           const std::string& locale,
                                           const std::string& picture_url) {
-  base::Value::Dict user_info;
+  base::DictValue user_info;
   user_info.Set("id", gaia.ToString());
   user_info.Set("email", email);
   user_info.Set("hd", hosted_domain);
@@ -734,7 +710,21 @@ void SimulateSuccessfulFetchOfAccountInfo(IdentityManager* identity_manager,
 
   AccountTrackerService* account_tracker_service =
       identity_manager->GetAccountTrackerService();
-  account_tracker_service->SetAccountInfoFromUserInfo(account_id, user_info);
+  std::optional<AccountInfo> account_info =
+      signin::AccountInfoFromUserInfo(user_info);
+  CHECK(account_info);
+  account_tracker_service->SetAccountInfoFromUserInfo(account_id,
+                                                      *account_info);
+
+  bool managed =
+      !hosted_domain.empty() && hosted_domain != kNoHostedDomainFound;
+  AccountCapabilities capabilities;
+  AccountCapabilitiesTestMutator mutator(&capabilities);
+  mutator.set_is_subject_to_enterprise_features(managed);
+  mutator.set_is_subject_to_account_level_enterprise_policies(managed);
+  account_tracker_service->SetAccountCapabilities(account_id, capabilities);
+  CHECK_EQ(account_tracker_service->GetAccountInfo(account_id).IsManaged(),
+           signin::TriboolFromBool(managed));
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -744,4 +734,17 @@ account_manager::AccountManagerFacade* GetAccountManagerFacade(
 }
 #endif
 
+std::optional<base::AutoReset<bool>> SetIgnoreNonOfficialApiKeysForTesting() {
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  return MutableProfileOAuth2TokenServiceDelegate::
+      SetIgnoreNonOfficialApiKeysForTesting();
+#else
+  return std::nullopt;
+#endif
+}
+
 }  // namespace signin
+
+#if BUILDFLAG(IS_ANDROID)
+DEFINE_JNI(AccountManagerFacadeUtil)
+#endif

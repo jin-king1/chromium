@@ -14,7 +14,7 @@ import {UpdateRoFirmwarePage} from 'chrome://shimless-rma/reimaging_firmware_upd
 import {ShimlessRma} from 'chrome://shimless-rma/shimless_rma.js';
 import type {StateResult} from 'chrome://shimless-rma/shimless_rma.mojom-webui.js';
 import {UpdateRoFirmwareStatus} from 'chrome://shimless-rma/shimless_rma.mojom-webui.js';
-import {assertEquals, assertFalse} from 'chrome://webui-test/chromeos/chai_assert.js';
+import {assertEquals, assertFalse} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 
 suite('reimagingFirmwareUpdatePageTest', function() {
@@ -60,7 +60,7 @@ suite('reimagingFirmwareUpdatePageTest', function() {
     const updateStatus =
         strictQuery('#firmwareUpdateStatus', component.shadowRoot, HTMLElement);
     assertFalse(updateStatus.hidden);
-    assertEquals('', updateStatus.textContent!.trim());
+    assertEquals('', updateStatus.textContent.trim());
   });
 
   // Verify unplugging the USB while still updating won't trigger update
@@ -103,7 +103,7 @@ suite('reimagingFirmwareUpdatePageTest', function() {
         strictQuery('#titleText', component.shadowRoot, HTMLElement);
     assertEquals(
         loadTimeData.getString('firmwareUpdateInstallImageTitleText'),
-        firmwareTitle.textContent!.trim());
+        firmwareTitle.textContent.trim());
 
     let callCount = 0;
     const resolver = new PromiseResolver<{stateResult: StateResult}>();
@@ -124,7 +124,7 @@ suite('reimagingFirmwareUpdatePageTest', function() {
     // Confirm the page title changes after firmware install completes.
     assertEquals(
         loadTimeData.getString('firmwareUpdateInstallCompleteTitleText'),
-        firmwareTitle.textContent!.trim());
+        firmwareTitle.textContent.trim());
 
     // Unplug the USB and verify that the transition happened.
     service.triggerExternalDiskObserver(

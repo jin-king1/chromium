@@ -6,9 +6,9 @@
 
 #include <optional>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "components/download/database/download_db_entry.h"
@@ -32,7 +32,7 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #include "components/download/internal/common/android/download_collection_bridge.h"
 #include "components/download/public/common/download_path_reservation_tracker.h"
 #endif
@@ -466,6 +466,19 @@ void InProgressDownloadManager::ResumeInterruptedDownload(
   if (!url_loader_factory_)
     return;
 
+  // If the original response came from a Service Worker, the bytes on disk
+  // came from event.respondWith(); resuming against `url_loader_factory_`
+  // would fetch unrelated network bytes and corrupt the file. The IPDM has
+  // no SW context, so defer: DownloadManagerImpl::ImportInProgressDownloads
+  // will reattach as the delegate, and the next resume runs through
+  // DownloadManagerImpl which restarts the download against the SW.
+  // `skip_service_worker_interception` is set by
+  // DownloadItemImpl::ResumeInterruptedDownload to true exactly when the
+  // original was network-fetched, so the negation identifies SW-fetched.
+  if (!params->skip_service_worker_interception()) {
+    return;
+  }
+
   BeginDownload(std::move(params), url_loader_factory_->Clone(), false,
                 serialized_embedder_download_data, GURL(), GURL());
 }
@@ -513,9 +526,6 @@ void InProgressDownloadManager::StartDownload(
   DVLOG(20) << __func__
             << "() result=" << DownloadInterruptReasonToString(info->result);
 
-  GURL url = info->url();
-  std::vector<GURL> url_chain = info->url_chain;
-  std::string mime_type = info->mime_type;
 
   // If the download cannot be found locally, ask |delegate_| to provide the
   // DownloadItem.
@@ -572,7 +582,7 @@ void InProgressDownloadManager::StartDownloadWithItem(
   if (info->is_new_download && !should_persist_new_download)
     non_persistent_download_guids_.insert(download->GetGuid());
   // If the download is not persisted, don't notify |download_db_cache_|.
-  if (!base::Contains(non_persistent_download_guids_, download->GetGuid())) {
+  if (!non_persistent_download_guids_.contains(download->GetGuid())) {
     download_db_cache_->AddOrReplaceEntry(
         CreateDownloadDBEntryFromItem(*download));
     download->RemoveObserver(download_db_cache_.get());
@@ -597,7 +607,7 @@ void InProgressDownloadManager::StartDownloadWithItem(
   if (download_start_observer_)
     download_start_observer_->OnDownloadStarted(download);
 #if BUILDFLAG(IS_ANDROID)
-  if (info->transient && !info->is_must_download &&
+  if (info->transient && info->allow_auto_open_after_completion &&
       base::EqualsCaseInsensitiveASCII(info->mime_type, kPdfMimeType)) {
     base::UmaHistogramBoolean("Download.Android.OpenPdfFromDuplicates",
                               !duplicate_download_file_path.empty());
@@ -610,8 +620,8 @@ void InProgressDownloadManager::OnDBInitialized(
     std::unique_ptr<std::vector<DownloadDBEntry>> entries) {
 #if BUILDFLAG(IS_ANDROID)
   // Retrieve display names for all downloads from media store if needed.
-  if (base::android::BuildInfo::GetInstance()->sdk_int() >=
-      base::android::SDK_VERSION_Q) {
+  if (base::android::android_info::sdk_int() >=
+      base::android::android_info::SDK_VERSION_Q) {
     DownloadCollectionBridge::GetDisplayNamesCallback callback =
         base::BindOnce(&InProgressDownloadManager::OnDownloadNamesRetrieved,
                        weak_factory_.GetWeakPtr(), std::move(entries));
@@ -640,7 +650,7 @@ void InProgressDownloadManager::OnDownloadNamesRetrieved(
     uint32_t download_id = item->GetId();
     // Remove entries with duplicate ids.
     if (download_id != DownloadItem::kInvalidId &&
-        base::Contains(download_ids, download_id)) {
+        download_ids.contains(download_id)) {
       RemoveInProgressDownload(item->GetGuid());
       continue;
     }

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "gin/thread_isolation.h"
 
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
@@ -14,6 +9,7 @@
 #include <sys/mman.h>
 #include <sys/utsname.h>
 
+#include <cerrno>
 #include <cstddef>
 
 #include "base/check.h"
@@ -26,6 +22,12 @@
 
 WEAK_SYMBOL extern int pkey_alloc(unsigned int flags,
                                   unsigned int access_rights);
+WEAK_SYMBOL extern int pkey_mprotect(void* addr,
+                                     size_t len,
+                                     int prot,
+                                     int pkey);
+
+namespace gin {
 
 namespace {
 
@@ -40,8 +42,10 @@ bool KernelHasPkruFix() {
   CHECK_EQ(0, uname(&uname_buffer));
   int kernel, major, minor;
   // Conservatively return if the release does not match the format we expect.
-  if (sscanf(uname_buffer.release, "%d.%d.%d", &kernel, &major, &minor) != 3) {
-    return -1;
+  // SAFETY: required from system when uname() returns successfully.
+  if (UNSAFE_BUFFERS(sscanf(uname_buffer.release, "%d.%d.%d", &kernel, &major,
+                            &minor)) != 3) {
+    return false;
   }
   return kernel > 5 || (kernel == 5 && major >= 13) ||   // anything >= 5.13
          (kernel == 5 && major == 4 && minor >= 182) ||  // 5.4 >= 5.4.182
@@ -82,9 +86,18 @@ void PkeyDisableWriteAccess(int pkey) {
 #endif
 }
 
-}  // namespace
+void PkeyMprotectData(ThreadIsolationData* data, int pkey) {
+  if (!pkey_mprotect) {
+    base::UmaHistogramSparse("V8.CFIPkeyMprotect", -1);
+    return;
+  }
 
-namespace gin {
+  int res = pkey_mprotect(data, sizeof(ThreadIsolationData),
+                          PROT_READ | PROT_WRITE, pkey);
+  base::UmaHistogramSparse("V8.CFIPkeyMprotect", res == 0 ? 0 : errno);
+}
+
+}  // namespace
 
 void ThreadIsolationData::InitializeBeforeThreadCreation() {
   bool page_size_mismatch = PA_THREAD_ISOLATED_ALIGN_SZ < base::GetPageSize();
@@ -101,6 +114,7 @@ void ThreadIsolationData::InitializeBeforeThreadCreation() {
     return;
   }
   allocator->Initialize(pkey);
+  PkeyMprotectData(this, pkey);
   PkeyDisableWriteAccess(pkey);
 }
 

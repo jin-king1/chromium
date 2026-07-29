@@ -5,10 +5,11 @@
 #ifndef CHROME_BROWSER_AUTOFILL_ANDROID_AUTOFILL_IMAGE_FETCHER_IMPL_H_
 #define CHROME_BROWSER_AUTOFILL_ANDROID_AUTOFILL_IMAGE_FETCHER_IMPL_H_
 
-#include "components/autofill/core/browser/ui/autofill_image_fetcher_base.h"
-
 #include "base/android/scoped_java_ref.h"
+#include "base/containers/span.h"
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/profiles/profile_key.h"
+#include "components/autofill/core/browser/ui/autofill_image_fetcher_base.h"
 #include "components/keyed_service/core/keyed_service.h"
 
 namespace autofill {
@@ -23,13 +24,14 @@ class AutofillImageFetcherImpl : public AutofillImageFetcherBase,
   ~AutofillImageFetcherImpl() override;
 
   // AutofillImageFetcherBase:
-  void FetchImagesForURLs(
+  void FetchCreditCardArtImagesForURLs(
       base::span<const GURL> image_urls,
-      base::span<const AutofillImageFetcherBase::ImageSize> image_sizes,
-      base::OnceCallback<
-          void(const std::vector<std::unique_ptr<CreditCardArtImage>>&)>
-          callback_unused) override;
-  void FetchPixAccountImages(base::span<const GURL> image_urls) override;
+      base::span<const AutofillImageFetcherBase::ImageSize> image_sizes)
+      override;
+  void FetchPixAccountImagesForURLs(base::span<const GURL> image_urls) override;
+  void FetchValuableImagesForURLs(base::span<const GURL> image_urls) override;
+  const gfx::Image* GetCachedImageForUrl(const GURL& image_url,
+                                         ImageType image_type) const override;
   base::android::ScopedJavaLocalRef<jobject> GetOrCreateJavaImageFetcher()
       override;
 

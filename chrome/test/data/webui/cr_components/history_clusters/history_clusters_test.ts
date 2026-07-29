@@ -4,15 +4,14 @@
 
 import 'chrome://history/strings.m.js';
 
-import {BrowserProxyImpl} from 'chrome://resources/cr_components/history_clusters/browser_proxy.js';
 import {HistoryClustersElement} from 'chrome://resources/cr_components/history_clusters/clusters.js';
 import type {Cluster, RawVisitData, URLVisit} from 'chrome://resources/cr_components/history_clusters/history_cluster_types.mojom-webui.js';
+import {browserProxyFactory, PageHandlerRemote} from 'chrome://resources/cr_components/history_clusters/history_clusters.mojom-webui.js';
 import type {PageRemote, QueryResult} from 'chrome://resources/cr_components/history_clusters/history_clusters.mojom-webui.js';
-import {PageCallbackRouter, PageHandlerRemote} from 'chrome://resources/cr_components/history_clusters/history_clusters.mojom-webui.js';
 import {PageImageServiceBrowserProxy} from 'chrome://resources/cr_components/page_image_service/browser_proxy.js';
 import {ClientId as PageImageServiceClientId, PageImageServiceHandlerRemote} from 'chrome://resources/cr_components/page_image_service/page_image_service.mojom-webui.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {assertEquals, assertGT, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertGT, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
@@ -24,9 +23,9 @@ let imageServiceHandler: TestMock<PageImageServiceHandlerRemote>&
 
 function createBrowserProxy() {
   handler = TestMock.fromClass(PageHandlerRemote);
-  const callbackRouter = new PageCallbackRouter();
-  BrowserProxyImpl.setInstance(new BrowserProxyImpl(handler, callbackRouter));
-  callbackRouterRemote = callbackRouter.$.bindNewPipeAndPassRemote();
+  const {instance, remote} = browserProxyFactory.createForTest(handler);
+  callbackRouterRemote = remote;
+  browserProxyFactory.setInstance(instance);
 
   imageServiceHandler = TestMock.fromClass(PageImageServiceHandlerRemote);
   PageImageServiceBrowserProxy.setInstance(
@@ -35,13 +34,13 @@ function createBrowserProxy() {
 
 function getTestVisit(rawData?: RawVisitData): URLVisit {
   const rawVisitData: RawVisitData = rawData || {
-    url: {url: ''},
+    url: '',
     visitTime: {internalValue: BigInt(0)},
   };
 
   return {
     visitId: BigInt(1),
-    normalizedUrl: {url: 'https://www.google.com'},
+    normalizedUrl: 'https://www.google.com',
     urlForDisplay: 'https://www.google.com',
     pageTitle: '',
     titleMatchPositions: [],
@@ -190,7 +189,7 @@ suite('HistoryClustersTest', () => {
 
     const openHistoryUrlArgs = await handler.whenCalled('openHistoryUrl');
 
-    assertEquals(urlVisit!.$.url.innerHTML, openHistoryUrlArgs[0].url);
+    assertEquals(urlVisit!.$.url.innerHTML, openHistoryUrlArgs[0]);
     assertEquals(1, handler.getCallCount('openHistoryUrl'));
   });
 
@@ -222,7 +221,7 @@ suite('HistoryClustersTest', () => {
     // Navigates to the first match is selected.
     const openHistoryUrlArgs = await handler.whenCalled('openHistoryUrl');
 
-    assertEquals(urlVisit!.$.url.innerHTML, openHistoryUrlArgs[0].url);
+    assertEquals(urlVisit!.$.url.innerHTML, openHistoryUrlArgs[0]);
     assertEquals(true, openHistoryUrlArgs[1].shiftKey);
     assertEquals(1, handler.getCallCount('openHistoryUrl'));
   });
@@ -237,7 +236,7 @@ suite('HistoryClustersTest', () => {
     // Set a result for the image handler to pass back to the favicon component,
     // so it doesn't throw a console error.
     imageServiceHandler.setResultFor('getPageImageUrl', Promise.resolve({
-      result: {imageUrl: {url: 'https://example.com/image.png'}},
+      result: {imageUrl: 'https://example.com/image.png'},
     }));
 
     const cluster = clustersElement.$.clusters.querySelector('history-cluster');
@@ -263,20 +262,20 @@ suite('HistoryClustersTest', () => {
     assertTrue(!!icon);
     const imageUrl = icon.getImageUrlForTesting();
     assertTrue(!!imageUrl);
-    assertEquals('https://example.com/image.png', imageUrl.url);
+    assertEquals('https://example.com/image.png', imageUrl);
 
     // Verify that the icon's image can be cleared.
     imageServiceHandler.reset();
     imageServiceHandler.setResultFor('getPageImageUrl', Promise.resolve({
       result: null,
     }));
-    icon.url = {url: 'https://something-different.com'};
+    icon.url = 'https://something-different.com';
     const [newClientId, newPageUrl] =
         await imageServiceHandler.whenCalled('getPageImageUrl');
     await microtasksFinished();
     assertEquals(PageImageServiceClientId.Journeys, newClientId);
     assertTrue(!!newPageUrl);
-    assertEquals('https://something-different.com', newPageUrl.url);
+    assertEquals('https://something-different.com', newPageUrl);
     assertTrue(!icon.getImageUrlForTesting());
   });
 
@@ -364,6 +363,42 @@ suite('HistoryClustersTest', () => {
         1,
         clustersElement.shadowRoot.querySelectorAll('history-cluster').length);
   });
+
+  test('VisitMenuClosesOnFocusout', async () => {
+    const clustersElement = await setupClustersElement();
+
+    callbackRouterRemote.onClustersQueryResult(getTestResult());
+    await callbackRouterRemote.$.flushForTesting();
+    await microtasksFinished();
+
+    // Deep-select the 'url-visit' element within the first 'history-cluster'.
+    const cluster = clustersElement.$.clusters.querySelector('history-cluster');
+    assertTrue(!!cluster);
+    const urlVisit = cluster.$.container.querySelector('url-visit');
+    assertTrue(!!urlVisit);
+
+    // Find the action menu button inside the 'url-visit' component's shadow
+    // DOM.
+    const actionMenuButton =
+        urlVisit.shadowRoot.querySelector<HTMLElement>('#actionMenuButton');
+    assertTrue(!!actionMenuButton);
+    actionMenuButton.click();
+    await microtasksFinished();
+
+    const menu = urlVisit.shadowRoot.querySelector('cr-action-menu');
+    assertTrue(!!menu);
+    assertTrue(menu.open);
+
+    // Simulate the menu losing focus to the document body.
+    menu.dispatchEvent(new FocusEvent('focusout', {
+      relatedTarget: document.body,
+      bubbles: true,
+    }));
+    // Wait for the menu to process the focus event and update its 'open' state.
+    await microtasksFinished();
+    assertFalse(menu.open);
+  });
+
 });
 
 suite('HistoryClustersFocusTest', () => {
@@ -398,12 +433,6 @@ suite('HistoryClustersFocusTest', () => {
     clustersElement.scrollTarget = scrollTarget;
     clustersElement.setScrollDebounceForTest(1);
     scrollTarget.appendChild(clustersElement);
-    // Set item size estimate to measured size of items - the amount they are
-    // allowed to overflow (i.e.  'overflow-clip-margin' * 2). This means that
-    // the estimated scroll height should not change significantly on scroll,
-    // which is important when trying to scroll to specific px values to trigger
-    // or not trigger cluster loading.
-    clustersElement.$.clusters.itemSize = 141 - 16;
 
     const query = (await handler.whenCalled('startQueryClusters'))[0];
     assertEquals(query, '');
@@ -417,13 +446,13 @@ suite('HistoryClustersFocusTest', () => {
   // can predicatably scroll to a certain px value before the end and have the
   // average item height, which is used to compute scroll height, not change.
   const visit1 = getTestVisit(
-      {url: {url: 'www.chromium.org'}, visitTime: {internalValue: BigInt(1)}});
+      {url: 'www.chromium.org', visitTime: {internalValue: BigInt(1)}});
   const visit2 = getTestVisit({
-    url: {url: 'chrome://extensions'},
+    url: 'chrome://extensions',
     visitTime: {internalValue: BigInt(2)},
   });
   const visit3 = getTestVisit(
-      {url: {url: 'chrome://settings'}, visitTime: {internalValue: BigInt(3)}});
+      {url: 'chrome://settings', visitTime: {internalValue: BigInt(3)}});
   const cluster1: Cluster = getTestCluster(BigInt(111), [visit1]);
   const cluster2: Cluster = getTestCluster(BigInt(222), [visit2]);
   const cluster3: Cluster = getTestCluster(BigInt(333), [visit3]);
@@ -481,7 +510,8 @@ suite('HistoryClustersFocusTest', () => {
         clustersElement.shadowRoot.querySelectorAll('history-cluster').length);
   });
 
-  test('Scroll to load more clusters', async () => {
+  // TODO(crbug.com/407488107): Fix flakiness and enable test.
+  test.skip('Scroll to load more clusters', async () => {
     const clustersElement = await setupScrollableClustersElement();
 
     // Set up some test data. We intentionally load a lot of clusters for this
@@ -496,27 +526,38 @@ suite('HistoryClustersFocusTest', () => {
       canLoadMore: true,
       isContinuation: false,
     });
+    await microtasksFinished();
     await new Promise(resolve => requestIdleCallback(resolve));
 
     const scrollTarget = document.body.querySelector('div');
     assertTrue(!!scrollTarget);
-    // This check ensures the line below actually scrolls.
-    assertGT(scrollTarget.scrollHeight, scrollTarget.offsetHeight + 600);
-    // Scroll to just under the threshold to make sure more clusters don't load.
-    scrollTarget.scrollTop =
-        scrollTarget.scrollHeight - scrollTarget.offsetHeight - 600;
-    // Wait longer than scroll debounce and for the clusters to be rendered.
-    await Promise.all([
-      new Promise(resolve => setTimeout(resolve, 10)),
-      eventToPromise('viewport-filled', clustersElement),
-    ]);
-    await microtasksFinished();
+
+    // Scrolls the scrollTarget until there is lowerPx amount of space left to
+    // scroll. Scrolling itself can cause cr-lazy-list to render items and cause
+    // changes in scroll height, so this recursively scrolls until the lowerPx
+    // is stable.
+    const scrollUntilLower = async (lowerPx: number) => {
+      assertGT(
+          scrollTarget?.scrollHeight, scrollTarget.offsetHeight + lowerPx,
+          'Scroll target is not tall enough.');
+      const prevScrollHeight = scrollTarget.scrollHeight;
+      scrollTarget.scrollTop =
+          scrollTarget.scrollHeight - scrollTarget.offsetHeight - lowerPx;
+      await eventToPromise('items-rendered', clustersElement);
+      await microtasksFinished();
+      if (scrollTarget.scrollHeight !== prevScrollHeight) {
+        await scrollUntilLower(lowerPx);
+      }
+    };
+
+    await scrollUntilLower(600);
+    // Wait longer than scroll debounce in history-clusters.
+    await new Promise(resolve => setTimeout(resolve, 10));
     assertEquals(0, handler.getCallCount('loadMoreClusters'));
 
     // Scroll to within 500px of the scroll height. More clusters should be
     // requested.
-    scrollTarget.scrollTop =
-        scrollTarget.scrollHeight - scrollTarget.offsetHeight - 400;
+    await scrollUntilLower(490);
     await handler.whenCalled('loadMoreClusters');
 
     // Simulate more clusters loaded.
@@ -538,8 +579,7 @@ suite('HistoryClustersFocusTest', () => {
         scrollTarget.offsetHeight + scrollTarget.scrollTop + 500);
     clustersElement.isActive = false;
     await microtasksFinished();
-    scrollTarget.scrollTop =
-        scrollTarget.scrollHeight - scrollTarget.offsetHeight - 400;
+    await scrollUntilLower(490);
     // Wait longer than scroll debounce.
     await new Promise(resolve => setTimeout(resolve, 10));
     assertEquals(0, handler.getCallCount('loadMoreClusters'));

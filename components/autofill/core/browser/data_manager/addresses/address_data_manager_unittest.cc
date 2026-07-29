@@ -4,6 +4,7 @@
 
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -14,16 +15,18 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
-#include "base/test/with_feature_override.h"
+#include "base/time/time.h"
 #include "base/uuid.h"
 #include "build/buildflag.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager_test_utils.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_test_api.h"
 #include "components/autofill/core/browser/data_quality/addresses/profile_token_quality_test_api.h"
-#include "components/autofill/core/browser/strike_databases/test_inmemory_strike_database.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/browser/test_utils/test_profiles.h"
 #include "components/autofill/core/browser/webdata/addresses/address_autofill_table.h"
+#include "components/autofill/core/browser/webdata/autofill_change.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
@@ -33,6 +36,7 @@
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/strike_database/test_inmemory_strike_database.h"
 #include "components/sync/base/features.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "components/sync/test/test_sync_service.h"
@@ -61,6 +65,19 @@ class MockAddressDataManagerObserver : public AddressDataManager::Observer {
   MOCK_METHOD(void, OnAddressDataChanged, (), (override));
 };
 
+class MockWebDataServiceObserver
+    : public AutofillWebDataServiceObserverOnDBSequence {
+ public:
+  MOCK_METHOD(void,
+              AutofillProfileChanged,
+              (const AutofillProfileChange&),
+              (override));
+};
+
+MATCHER_P(AutofillProfileChangeHasCorrectType, type, "") {
+  return arg.type() == type;
+}
+
 class AddressDataManagerTest : public testing::Test {
  protected:
   AddressDataManagerTest()
@@ -77,7 +94,9 @@ class AddressDataManagerTest : public testing::Test {
         profile_web_database_,
         base::SingleThreadTaskRunner::GetCurrentDefault());
     profile_database_service_->Init(base::NullCallback());
-    ResetAddressDataManager();
+    MakePrimaryAccountAvailable(/*use_sync_transport_mode=*/false,
+                                identity_test_env_, sync_service_);
+    RecreateAddressDataManager();
   }
 
   void TearDown() override { profile_web_database_->ShutdownDatabase(); }
@@ -95,16 +114,16 @@ class AddressDataManagerTest : public testing::Test {
     run_loop.Run();
   }
 
-  void ResetAddressDataManager(bool use_sync_transport_mode = false) {
-    address_data_manager_.reset();
-    MakePrimaryAccountAvailable(use_sync_transport_mode, identity_test_env_,
-                                sync_service_);
+  void RecreateAddressDataManager(
+      bool wait_for_on_address_data_changed = true) {
     address_data_manager_ = std::make_unique<AddressDataManager>(
         profile_database_service_, prefs_.get(), prefs_.get(), &sync_service_,
         identity_test_env_.identity_manager(), &strike_database_,
         GeoIpCountryCode("US"), "en-US");
     address_data_manager_->LoadProfiles();
-    WaitForOnAddressDataChanged();
+    if (wait_for_on_address_data_changed) {
+      WaitForOnAddressDataChanged();
+    }
   }
 
   void AddProfileToAddressDataManager(const AutofillProfile& profile) {
@@ -151,7 +170,7 @@ class AddressDataManagerTest : public testing::Test {
  private:
   scoped_refptr<WebDatabaseService> profile_web_database_;
   std::unique_ptr<AddressDataManager> address_data_manager_;
-  TestInMemoryStrikeDatabase strike_database_;
+  strike_database::TestInMemoryStrikeDatabase strike_database_;
 };
 
 TEST_F(AddressDataManagerTest, AddProfile) {
@@ -291,38 +310,53 @@ TEST_F(AddressDataManagerTest, GetProfiles_Order) {
                                    Pointee(profile3)));
 }
 
-// Tests that `GetProfiles()` and `GetProfilesByRecordType()` filters incomplete
-// H/W addresses.
-TEST_F(AddressDataManagerTest, GetProfiles_CompletenessFiltering) {
-  AutofillProfile local_profile = test::GetFullProfile();
-  AutofillProfile regular_account_profile = test::GetFullProfile2();
-  test_api(regular_account_profile)
-      .set_record_type(AutofillProfile::RecordType::kAccount);
-  AutofillProfile complete_home_profile = test::GetFullCanadianProfile();
-  test_api(complete_home_profile)
-      .set_record_type(AutofillProfile::RecordType::kAccountHome);
-  // `GetIncompleteProfile1()` is only missing a phone number, but is not
-  // lacking any address information. `GetIncompleteProfile2()` is.
-  AutofillProfile incomplete_work_profile = test::GetIncompleteProfile2();
-  ASSERT_FALSE(incomplete_work_profile.HasInfo(ADDRESS_HOME_STREET_ADDRESS));
-  test_api(incomplete_work_profile)
-      .set_record_type(AutofillProfile::RecordType::kAccountWork);
+TEST_F(AddressDataManagerTest, GetProfilesToSuggest_NameEmailOrder) {
+  base::Time now = base::Time::Now();
+  AutofillProfile profile1 = test::GetFullProfile();
+  profile1.usage_history().set_use_date(now - base::Hours(2));
+  profile1.usage_history().set_use_count(1);
+  AutofillProfile profile2 = test::GetFullProfile2();
+  profile2.usage_history().set_use_date(now);
+  profile2.usage_history().set_use_count(1234);
+  AutofillProfile profile_name_email = test::AccountNameEmailProfile();
+  profile_name_email.usage_history().set_use_date(now - base::Hours(1));
+  profile_name_email.usage_history().set_use_count(1);
 
-  AddProfileToAddressDataManager(local_profile);
-  AddProfileToAddressDataManager(regular_account_profile);
-  AddProfileToAddressDataManager(complete_home_profile);
-  AddProfileToAddressDataManager(incomplete_work_profile);
+  AddProfileToAddressDataManager(profile1);
+  AddProfileToAddressDataManager(profile2);
+  AddProfileToAddressDataManager(profile_name_email);
 
-  EXPECT_THAT(address_data_manager().GetProfiles(),
-              testing::UnorderedElementsAre(Pointee(local_profile),
-                                            Pointee(regular_account_profile),
-                                            Pointee(complete_home_profile)));
-  EXPECT_THAT(address_data_manager().GetProfilesByRecordType(
-                  AutofillProfile::RecordType::kAccountHome),
-              testing::UnorderedElementsAre(Pointee(complete_home_profile)));
-  EXPECT_THAT(address_data_manager().GetProfilesByRecordType(
-                  AutofillProfile::RecordType::kAccountWork),
-              testing::IsEmpty());
+  // Based solely on the default suggestion order, the `profile_name_email`
+  // should be placed in the middle.
+  ASSERT_THAT(
+      address_data_manager().GetProfiles(
+          AddressDataManager::ProfileOrder::kHighestFrecencyDesc),
+      testing::ElementsAre(Pointee(profile2), Pointee(profile_name_email),
+                           Pointee(profile1)));
+  ASSERT_EQ(
+      prefs_->GetInteger(prefs::kAutofillNameAndEmailProfileNotSelectedCounter),
+      0);
+  // Verify that calling the GetProfilesToSuggest() checks the counter, which
+  // will make the `profile_name_email` to be suggested first, because
+  // `prefs::kAutofillNameAndEmailProfileNotSelectedCounter` is 0.
+  EXPECT_THAT(address_data_manager().GetProfilesToSuggest(),
+              testing::ElementsAre(Pointee(profile_name_email),
+                                   Pointee(profile2), Pointee(profile1)));
+
+  prefs_->SetInteger(prefs::kAutofillNameAndEmailProfileNotSelectedCounter, 1);
+  // After the pref changes to a non zero value the kAccountNameEmail should be
+  // last.
+  EXPECT_THAT(address_data_manager().GetProfilesToSuggest(),
+              testing::ElementsAre(Pointee(profile2), Pointee(profile1),
+                                   Pointee(profile_name_email)));
+
+  prefs_->ClearPref(prefs::kAutofillNameAndEmailProfileNotSelectedCounter);
+  prefs_->SetBoolean(prefs::kAutofillWasNameAndEmailProfileUsed, true);
+  // If the profile suggestion was accepted after the first time it was shown,
+  // the profile should albo be moved to the last place.
+  EXPECT_THAT(address_data_manager().GetProfilesToSuggest(),
+              testing::ElementsAre(Pointee(profile2), Pointee(profile1),
+                                   Pointee(profile_name_email)));
 }
 
 // Test that profiles are not shown if |kAutofillProfileEnabled| is set to
@@ -331,9 +365,20 @@ TEST_F(AddressDataManagerTest, GetProfilesToSuggest_ProfileAutofillDisabled) {
   // Add two different profiles, a local and a server one.
   AutofillProfile local_profile(
       i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&local_profile, "Josephine", "Alicia", "Saenz",
-                       "joewayne@me.xyz", "Fox", "1212 Center.", "Bld. 5",
-                       "Orlando", "FL", "32801", "US", "19482937549");
+  test::SetProfileInfo(&local_profile, test::SetProfileInfoOptionsBuilder()
+                                           .with_first_name("Josephine")
+                                           .with_middle_name("Alicia")
+                                           .with_last_name("Saenz")
+                                           .with_email("joewayne@me.xyz")
+                                           .with_company("Fox")
+                                           .with_address1("1212 Center.")
+                                           .with_address2("Bld. 5")
+                                           .with_city("Orlando")
+                                           .with_state("FL")
+                                           .with_zipcode("32801")
+                                           .with_country("US")
+                                           .with_phone("19482937549")
+                                           .Build());
   AddProfileToAddressDataManager(local_profile);
 
   // Disable Profile autofill.
@@ -354,9 +399,20 @@ TEST_F(AddressDataManagerTest,
   // Add two different profiles, a local and a server one.
   AutofillProfile local_profile(
       i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&local_profile, "Josephine", "Alicia", "Saenz",
-                       "joewayne@me.xyz", "Fox", "1212 Center.", "Bld. 5",
-                       "Orlando", "FL", "32801", "US", "19482937549");
+  test::SetProfileInfo(&local_profile, test::SetProfileInfoOptionsBuilder()
+                                           .with_first_name("Josephine")
+                                           .with_middle_name("Alicia")
+                                           .with_last_name("Saenz")
+                                           .with_email("joewayne@me.xyz")
+                                           .with_company("Fox")
+                                           .with_address1("1212 Center.")
+                                           .with_address2("Bld. 5")
+                                           .with_city("Orlando")
+                                           .with_state("FL")
+                                           .with_zipcode("32801")
+                                           .with_country("US")
+                                           .with_phone("19482937549")
+                                           .Build());
   AddProfileToAddressDataManager(local_profile);
 
   address_data_manager().LoadProfiles();
@@ -398,9 +454,9 @@ TEST_F(AddressDataManagerTest, GetProfilesForSettings) {
   local_profile.usage_history().set_modification_date(kSomeLaterTime);
   AddProfileToAddressDataManager(local_profile);
 
-  EXPECT_THAT(address_data_manager().GetProfilesForSettings(),
-              testing::ElementsAre(testing::Pointee(local_profile),
-                                   testing::Pointee(account_profile)));
+  EXPECT_THAT(
+      address_data_manager().GetProfilesForSettings(),
+      testing::ElementsAre(Pointee(local_profile), Pointee(account_profile)));
 }
 
 // Adding, updating, removing operations without waiting in between.
@@ -572,8 +628,8 @@ TEST_F(AddressDataManagerTest, AddProfile_CrazyCharacters) {
   }
   ASSERT_EQ(profiles.size(), address_data_manager().GetProfiles().size());
   for (size_t i = 0; i < profiles.size(); ++i) {
-    EXPECT_TRUE(
-        base::Contains(profiles, *address_data_manager().GetProfiles()[i]));
+    EXPECT_TRUE(std::ranges::contains(
+        profiles, *address_data_manager().GetProfiles()[i]));
   }
 }
 
@@ -602,19 +658,51 @@ TEST_F(AddressDataManagerTest, AddProfile_Invalid) {
 
 TEST_F(AddressDataManagerTest, AddUpdateRemoveProfiles) {
   AutofillProfile profile0(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile0, "Marion", "Mitchell", "Morrison",
-                       "johnwayne@me.xyz", "Fox", "123 Zoo St.", "unit 5",
-                       "Hollywood", "CA", "91601", "US", "12345678910");
+  test::SetProfileInfo(&profile0, test::SetProfileInfoOptionsBuilder()
+                                      .with_first_name("Marion")
+                                      .with_middle_name("Mitchell")
+                                      .with_last_name("Morrison")
+                                      .with_email("johnwayne@me.xyz")
+                                      .with_company("Fox")
+                                      .with_address1("123 Zoo St.")
+                                      .with_address2("unit 5")
+                                      .with_city("Hollywood")
+                                      .with_state("CA")
+                                      .with_zipcode("91601")
+                                      .with_country("US")
+                                      .with_phone("12345678910")
+                                      .Build());
 
   AutofillProfile profile1(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile1, "Josephine", "Alicia", "Saenz",
-                       "joewayne@me.xyz", "Fox", "903 Apple Ct.", nullptr,
-                       "Orlando", "FL", "32801", "US", "19482937549");
+  test::SetProfileInfo(&profile1, test::SetProfileInfoOptionsBuilder()
+                                      .with_first_name("Josephine")
+                                      .with_middle_name("Alicia")
+                                      .with_last_name("Saenz")
+                                      .with_email("joewayne@me.xyz")
+                                      .with_company("Fox")
+                                      .with_address1("903 Apple Ct.")
+                                      .with_city("Orlando")
+                                      .with_state("FL")
+                                      .with_zipcode("32801")
+                                      .with_country("US")
+                                      .with_phone("19482937549")
+                                      .Build());
 
   AutofillProfile profile2(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile2, "Josephine", "Alicia", "Saenz",
-                       "joewayne@me.xyz", "Fox", "1212 Center.", "Bld. 5",
-                       "Orlando", "FL", "32801", "US", "19482937549");
+  test::SetProfileInfo(&profile2, test::SetProfileInfoOptionsBuilder()
+                                      .with_first_name("Josephine")
+                                      .with_middle_name("Alicia")
+                                      .with_last_name("Saenz")
+                                      .with_email("joewayne@me.xyz")
+                                      .with_company("Fox")
+                                      .with_address1("1212 Center.")
+                                      .with_address2("Bld. 5")
+                                      .with_city("Orlando")
+                                      .with_state("FL")
+                                      .with_zipcode("32801")
+                                      .with_country("US")
+                                      .with_phone("19482937549")
+                                      .Build());
 
   // Add two test profiles to the database.
   AddProfileToAddressDataManager(profile0);
@@ -632,10 +720,10 @@ TEST_F(AddressDataManagerTest, AddUpdateRemoveProfiles) {
   EXPECT_THAT(address_data_manager().GetProfiles(),
               UnorderedElementsAre(Pointee(profile0), Pointee(profile2)));
 
-  // Reset the PersonalDataManager.  This tests that the personal data was saved
-  // to the web database, and that we can load the profiles from the web
+  // Recreate the address data manager. This tests that the address data was
+  // saved to the web database, and that we can load the profiles from the web
   // database.
-  ResetAddressDataManager();
+  RecreateAddressDataManager();
 
   // Verify that we've loaded the profiles from the web database.
   EXPECT_THAT(address_data_manager().GetProfiles(),
@@ -663,6 +751,51 @@ TEST_F(AddressDataManagerTest, RemoveLocalProfilesModifiedBetween) {
   EXPECT_THAT(
       address_data_manager().GetProfiles(),
       UnorderedElementsAre(Pointee(local_profile1), Pointee(account_profile)));
+}
+
+TEST_F(AddressDataManagerTest, HideAccountProfile) {
+  AutofillProfile local_profile1 = test::GetFullProfile();
+  AutofillProfile local_profile2 = test::GetFullProfile2();
+  AutofillProfile account_profile1 = test::GetFullCanadianProfile();
+  test_api(account_profile1)
+      .set_record_type(AutofillProfile::RecordType::kAccount);
+  AutofillProfile account_profile2 = test::GetFullValidProfileForCanada();
+  test_api(account_profile2)
+      .set_record_type(AutofillProfile::RecordType::kAccount);
+
+  AddProfileToAddressDataManager(local_profile1);
+  AddProfileToAddressDataManager(local_profile2);
+  AddProfileToAddressDataManager(account_profile1);
+  AddProfileToAddressDataManager(account_profile2);
+
+  // Expect that local profiles or permanent account deletions, result in
+  // `AutofillProfileChange::REMOVE`.
+  testing::NiceMock<MockWebDataServiceObserver> observer;
+  profile_database_service_->AddObserver(&observer);
+  EXPECT_CALL(observer,
+              AutofillProfileChanged(AutofillProfileChangeHasCorrectType(
+                  AutofillProfileChange::REMOVE)))
+      .Times(3);
+  address_data_manager().RemoveProfile(
+      local_profile1.guid(),
+      /*non_permanent_account_profile_removal=*/false);
+  address_data_manager().RemoveProfile(
+      local_profile2.guid(),
+      /*non_permanent_account_profile_removal=*/false);
+  address_data_manager().RemoveProfile(
+      account_profile1.guid(),
+      /*non_permanent_account_profile_removal=*/false);
+  task_environment_.RunUntilIdle();
+
+  // Expect that non permanent account profile deletions result in
+  // `AutofillProfileChange::HIDE_IN_AUTOFILL`.
+  EXPECT_CALL(observer,
+              AutofillProfileChanged(AutofillProfileChangeHasCorrectType(
+                  AutofillProfileChange::HIDE_IN_AUTOFILL)));
+  address_data_manager().RemoveProfile(
+      account_profile2.guid(),
+      /*non_permanent_account_profile_removal=*/true);
+  task_environment_.RunUntilIdle();
 }
 
 // Tests that `UpdateProfile()` takes changes in the `ProfileTokenQuality`
@@ -728,11 +861,6 @@ TEST_F(AddressDataManagerTest, IsEligibleForAddressAccountStorage) {
   EXPECT_FALSE(address_data_manager().IsEligibleForAddressAccountStorage());
 }
 
-TEST_F(AddressDataManagerTest, IsCountryEligibleForAccountStorage) {
-  EXPECT_TRUE(address_data_manager().IsCountryEligibleForAccountStorage("AT"));
-  EXPECT_FALSE(address_data_manager().IsCountryEligibleForAccountStorage("IR"));
-}
-
 TEST_F(AddressDataManagerTest, MigrateProfileToAccount) {
   const AutofillProfile kLocalProfile = test::GetFullProfile();
   ASSERT_EQ(kLocalProfile.record_type(),
@@ -751,9 +879,7 @@ TEST_F(AddressDataManagerTest, MigrateProfileToAccount) {
   EXPECT_EQ(kAccountProfile.record_type(),
             AutofillProfile::RecordType::kAccount);
   EXPECT_EQ(kAccountProfile.initial_creator_id(),
-            AutofillProfile::kInitialCreatorOrModifierChrome);
-  EXPECT_EQ(kAccountProfile.last_modifier_id(),
-            AutofillProfile::kInitialCreatorOrModifierChrome);
+            AutofillProfile::kInitialCreatorChrome);
   EXPECT_NE(kLocalProfile.guid(), kAccountProfile.guid());
   EXPECT_EQ(kLocalProfile.Compare(kAccountProfile), 0);
 }
@@ -762,8 +888,9 @@ TEST_F(AddressDataManagerTest, MigrateProfileToAccount) {
 // correctly on load.
 TEST_F(AddressDataManagerTest, PopulateUniqueIDsOnLoad) {
   AutofillProfile profile0(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile0, "y", "", "", "", "", "", "", "", "", "", "",
-                       "");
+  test::SetProfileInfo(
+      &profile0,
+      test::SetProfileInfoOptionsBuilder().with_first_name("y").Build());
 
   // Add the profile0 to the db.
   AddProfileToAddressDataManager(profile0);
@@ -776,8 +903,9 @@ TEST_F(AddressDataManagerTest, PopulateUniqueIDsOnLoad) {
 
   // Add a new profile.
   AutofillProfile profile1(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile1, "z", "", "", "", "", "", "", "", "", "", "",
-                       "");
+  test::SetProfileInfo(
+      &profile1,
+      test::SetProfileInfoOptionsBuilder().with_first_name("z").Build());
   AddProfileToAddressDataManager(profile1);
 
   // Make sure the two profiles have different GUIDs, both valid.
@@ -791,16 +919,15 @@ TEST_F(AddressDataManagerTest, PopulateUniqueIDsOnLoad) {
 
 TEST_F(AddressDataManagerTest, SetEmptyProfile) {
   AutofillProfile profile0(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile0, "", "", "", "", "", "", "", "", "", "", "",
-                       "");
+  test::SetProfileInfo(&profile0, test::SetProfileInfoOptionsBuilder().Build());
 
   // Add the empty profile to the database.
   AddProfileToAddressDataManager(profile0);
 
-  // Reset the PersonalDataManager.  This tests that the personal data was saved
-  // to the web database, and that we can load the profiles from the web
+  // Recreate the address data manager. This tests that the address data was
+  // saved to the web database, and that we can load the profiles from the web
   // database.
-  ResetAddressDataManager();
+  RecreateAddressDataManager();
 
   // Verify that we've loaded the profiles from the web database.
   ASSERT_EQ(0U, address_data_manager().GetProfiles().size());
@@ -808,14 +935,35 @@ TEST_F(AddressDataManagerTest, SetEmptyProfile) {
 
 TEST_F(AddressDataManagerTest, Refresh) {
   AutofillProfile profile0(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile0, "Marion", "Mitchell", "Morrison",
-                       "johnwayne@me.xyz", "Fox", "123 Zoo St.", "unit 5",
-                       "Hollywood", "CA", "91601", "US", "12345678910");
+  test::SetProfileInfo(&profile0, test::SetProfileInfoOptionsBuilder()
+                                      .with_first_name("Marion")
+                                      .with_middle_name("Mitchell")
+                                      .with_last_name("Morrison")
+                                      .with_email("johnwayne@me.xyz")
+                                      .with_company("Fox")
+                                      .with_address1("123 Zoo St.")
+                                      .with_address2("unit 5")
+                                      .with_city("Hollywood")
+                                      .with_state("CA")
+                                      .with_zipcode("91601")
+                                      .with_country("US")
+                                      .with_phone("12345678910")
+                                      .Build());
 
   AutofillProfile profile1(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile1, "Josephine", "Alicia", "Saenz",
-                       "joewayne@me.xyz", "Fox", "903 Apple Ct.", nullptr,
-                       "Orlando", "FL", "32801", "US", "19482937549");
+  test::SetProfileInfo(&profile1, test::SetProfileInfoOptionsBuilder()
+                                      .with_first_name("Josephine")
+                                      .with_middle_name("Alicia")
+                                      .with_last_name("Saenz")
+                                      .with_email("joewayne@me.xyz")
+                                      .with_company("Fox")
+                                      .with_address1("903 Apple Ct.")
+                                      .with_city("Orlando")
+                                      .with_state("FL")
+                                      .with_zipcode("32801")
+                                      .with_country("US")
+                                      .with_phone("19482937549")
+                                      .Build());
 
   // Add the test profiles to the database.
   AddProfileToAddressDataManager(profile0);
@@ -825,9 +973,20 @@ TEST_F(AddressDataManagerTest, Refresh) {
               UnorderedElementsAre(Pointee(profile0), Pointee(profile1)));
 
   AutofillProfile profile2(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile2, "Josephine", "Alicia", "Saenz",
-                       "joewayne@me.xyz", "Fox", "1212 Center.", "Bld. 5",
-                       "Orlando", "FL", "32801", "US", "19482937549");
+  test::SetProfileInfo(&profile2, test::SetProfileInfoOptionsBuilder()
+                                      .with_first_name("Josephine")
+                                      .with_middle_name("Alicia")
+                                      .with_last_name("Saenz")
+                                      .with_email("joewayne@me.xyz")
+                                      .with_company("Fox")
+                                      .with_address1("1212 Center.")
+                                      .with_address2("Bld. 5")
+                                      .with_city("Orlando")
+                                      .with_state("FL")
+                                      .with_zipcode("32801")
+                                      .with_country("US")
+                                      .with_phone("19482937549")
+                                      .Build());
 
   profile_database_service_->AddAutofillProfile(profile2, base::DoNothing());
 
@@ -838,10 +997,10 @@ TEST_F(AddressDataManagerTest, Refresh) {
               UnorderedElementsAre(Pointee(profile0), Pointee(profile1),
                                    Pointee(profile2)));
 
-  profile_database_service_->RemoveAutofillProfile(profile1.guid(),
-                                                   base::DoNothing());
-  profile_database_service_->RemoveAutofillProfile(profile2.guid(),
-                                                   base::DoNothing());
+  profile_database_service_->RemoveAutofillProfile(
+      profile1.guid(), AutofillProfileChange::REMOVE, base::DoNothing());
+  profile_database_service_->RemoveAutofillProfile(
+      profile2.guid(), AutofillProfileChange::REMOVE, base::DoNothing());
 
   address_data_manager().LoadProfiles();
   WaitForOnAddressDataChanged();
@@ -863,9 +1022,20 @@ TEST_F(AddressDataManagerTest, Refresh) {
 
 TEST_F(AddressDataManagerTest, UpdateLanguageCodeInProfile) {
   AutofillProfile profile(i18n_model_definition::kLegacyHierarchyCountryCode);
-  test::SetProfileInfo(&profile, "Marion", "Mitchell", "Morrison",
-                       "johnwayne@me.xyz", "Fox", "123 Zoo St.", "unit 5",
-                       "Hollywood", "CA", "91601", "US", "12345678910");
+  test::SetProfileInfo(&profile, test::SetProfileInfoOptionsBuilder()
+                                     .with_first_name("Marion")
+                                     .with_middle_name("Mitchell")
+                                     .with_last_name("Morrison")
+                                     .with_email("johnwayne@me.xyz")
+                                     .with_company("Fox")
+                                     .with_address1("123 Zoo St.")
+                                     .with_address2("unit 5")
+                                     .with_city("Hollywood")
+                                     .with_state("CA")
+                                     .with_zipcode("91601")
+                                     .with_country("US")
+                                     .with_phone("12345678910")
+                                     .Build());
   AddProfileToAddressDataManager(profile);
 
   // Make sure everything is set up correctly.
@@ -882,99 +1052,9 @@ TEST_F(AddressDataManagerTest, UpdateLanguageCodeInProfile) {
   EXPECT_EQ("en", results[0]->language_code());
 }
 
-// Tests that the least recently used profile of two existing profiles is
-// deleted, when an update of one of the profiles makes it a duplicate of the
-// other, already existing profile. Here, the less recently used profile is
-// edited to become a duplicate of the more recently used profile.
-TEST_F(AddressDataManagerTest, CreateDuplicateWithAnUpdate) {
-  AdvanceClock(kArbitraryTime - base::Time::Now());
-
-  AutofillProfile more_recently_used_profile(test::GetFullProfile());
-  AutofillProfile less_recently_used_profile(test::GetFullProfile2());
-
-  base::Time older_use_date = base::Time::Now();
-  less_recently_used_profile.usage_history().set_use_date(older_use_date);
-  AdvanceClock(base::Days(1));
-
-  // Set more recently used profile to have a use date that is newer than
-  // `older_use_date`.
-  base::Time newer_use_data = base::Time::Now();
-  more_recently_used_profile.usage_history().set_use_date(newer_use_data);
-
-  AddProfileToAddressDataManager(more_recently_used_profile);
-  AddProfileToAddressDataManager(less_recently_used_profile);
-
-  EXPECT_EQ(address_data_manager().GetProfiles().size(), 2U);
-
-  // Now make an update to less recently used profile that makes it a duplicate
-  // of the more recently used profile.
-  AutofillProfile updated_less_recently_used_profile =
-      more_recently_used_profile;
-  updated_less_recently_used_profile.set_guid(
-      less_recently_used_profile.guid());
-  // Set the updated profile to have a older use date than it's duplicate.
-  updated_less_recently_used_profile.usage_history().set_use_date(
-      older_use_date);
-  UpdateProfileOnAddressDataManager(updated_less_recently_used_profile);
-
-  // Verify that the less recently used profile was removed.
-  ASSERT_EQ(address_data_manager().GetProfiles().size(), 1U);
-  EXPECT_EQ(*address_data_manager().GetProfiles()[0],
-            more_recently_used_profile);
-  EXPECT_EQ(address_data_manager().GetProfiles()[0]->usage_history().use_date(),
-            newer_use_data);
-}
-
-// Tests that the least recently used profile of two existing profiles is
-// deleted, when an update of one of the profiles makes it a duplicate of the
-// other, already existing profile. Here, the more recently used profile is
-// edited to become a duplicate of the less recently used profile.
-TEST_F(AddressDataManagerTest,
-       CreateDuplicateWithAnUpdate_UpdatedProfileWasMoreRecentlyUsed) {
-  AdvanceClock(kArbitraryTime - base::Time::Now());
-
-  AutofillProfile less_recently_used_profile(test::GetFullProfile());
-  AutofillProfile more_recently_used_profile(test::GetFullProfile2());
-
-  less_recently_used_profile.usage_history().set_use_date(base::Time::Now());
-  more_recently_used_profile.usage_history().set_use_date(base::Time::Now());
-
-  AddProfileToAddressDataManager(less_recently_used_profile);
-  AddProfileToAddressDataManager(more_recently_used_profile);
-
-  EXPECT_EQ(address_data_manager().GetProfiles().size(), 2U);
-
-  // Now make an update to profile2 that makes it a duplicate of profile1,
-  // but set the last use time to be more recent than the one of profile1.
-  AutofillProfile updated_more_recently_used_profile =
-      less_recently_used_profile;
-  updated_more_recently_used_profile.set_guid(
-      more_recently_used_profile.guid());
-  // Set the updated profile to have a newer use date than it's duplicate.
-  AdvanceClock(base::Days(1));
-  base::Time newer_use_data = base::Time::Now();
-  updated_more_recently_used_profile.usage_history().set_use_date(
-      newer_use_data);
-  // Expect an update and a deletion. This only triggers a single notification
-  // once both operations have finished.
-  address_data_manager().UpdateProfile(updated_more_recently_used_profile);
-  WaitForOnAddressDataChanged();
-
-  // Verify that less recently used profile was removed.
-  ASSERT_EQ(address_data_manager().GetProfiles().size(), 1U);
-
-  EXPECT_EQ(*address_data_manager().GetProfiles()[0],
-            updated_more_recently_used_profile);
-  EXPECT_EQ(address_data_manager().GetProfiles()[0]->usage_history().use_date(),
-            newer_use_data);
-}
-
-// Tests that when an update of one of the profiles makes it a duplicate of the
-// other, already existing profile. Both of them are preserved if
-// `kAutofillDeduplicateAccountAddresses` is enabled.
+// Tests updating a profile in a way that creates a duplicate. Expect that both
+// profiles are preserved.
 TEST_F(AddressDataManagerTest, CreateDuplicateWithAnUpdate_BothProfilesExists) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillDeduplicateAccountAddresses};
   AutofillProfile profile1(test::GetFullProfile());
   AutofillProfile profile2(test::GetFullProfile2());
 
@@ -1180,7 +1260,8 @@ TEST_F(AddressDataManagerTest,
       /*picture_url=*/"");
   identity_test_env_.UpdatePersistentErrorOfRefreshTokenForAccount(
       account_info.account_id,
-      GoogleServiceAuthError(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS));
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   sync_service_.SetPersistentAuthError();
 
   // User is still signed in.
@@ -1194,25 +1275,45 @@ TEST_F(AddressDataManagerTest,
   // Account storage is not eligible.
   EXPECT_FALSE(address_data_manager().IsEligibleForAddressAccountStorage());
 }
-
-TEST_F(AddressDataManagerTest, AutofillSyncToggleAvailableInTransportMode) {
-  ResetAddressDataManager(
-      /*use_sync_transport_mode=*/true);
-  base::test::ScopedFeatureList feature_list{
-      ::switches::kExplicitBrowserSigninUIOnDesktop};
-  const CoreAccountInfo& account = sync_service_.GetAccountInfo();
-  identity_test_env_.SimulateSuccessfulFetchOfAccountInfo(
-      account.account_id, account.email, account.gaia,
-      /*hosted_domain=*/"", "Full Name", "Given Name", "en-US",
-      /*picture_url=*/"");
-
-  prefs_->SetBoolean(::prefs::kExplicitBrowserSignin, true);
-  EXPECT_TRUE(address_data_manager().IsAutofillSyncToggleAvailable());
-
-  prefs_->SetBoolean(::prefs::kExplicitBrowserSignin, false);
-  EXPECT_FALSE(address_data_manager().IsAutofillSyncToggleAvailable());
-}
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
+// Tests that any `kAccountNameEmail` is created on construction of
+// `AddressDataManager`.
+TEST_F(AddressDataManagerTest, CreateAccountNameEmailProfileAfterInitalLoad) {
+  const CoreAccountInfo core_info =
+      identity_test_env_.identity_manager()->GetPrimaryAccountInfo(
+          signin::ConsentLevel::kSignin);
+  identity_test_env_.SimulateSuccessfulFetchOfAccountInfo(
+      core_info.account_id, core_info.email, core_info.gaia, "", "Full Name",
+      "Full", "en-US", "");
+  RecreateAddressDataManager();
+
+  EXPECT_THAT(address_data_manager().GetProfiles(),
+              ElementsAre(testing::Property(
+                  &AutofillProfile::record_type,
+                  AutofillProfile::RecordType::kAccountNameEmail)));
+}
+
+// Tests the race condition where the user signs out while the profiles are
+// still loading from the database.
+TEST_F(AddressDataManagerTest, RemoveNameEmailProfileOnSignOutWhileLoading) {
+  // Add `kAccountNameEmail` profile.
+  sync_service_.SetSignedIn(signin::ConsentLevel::kSignin);
+  AutofillProfile profile = test::AccountNameEmailProfile();
+  AddProfileToAddressDataManager(profile);
+  ASSERT_THAT(address_data_manager().GetProfiles(),
+              UnorderedElementsAre(Pointee(profile)));
+
+  // Restart AddressDataManager to reset the in-memory state.
+  RecreateAddressDataManager(/*wait_for_on_address_data_changed=*/false);
+
+  sync_service_.SetSignedOut();
+  sync_service_.FireStateChanged();
+  WaitForOnAddressDataChanged();
+
+  // Verify the profile is gone.
+  EXPECT_TRUE(address_data_manager().GetProfiles().empty());
+}
 
 }  // namespace
 

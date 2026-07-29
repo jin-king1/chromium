@@ -15,12 +15,12 @@ import androidx.annotation.IntDef;
 import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
 import org.chromium.base.ObserverList;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.ui.InsetObserver;
 import org.chromium.ui.UiSwitches;
+import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.util.TokenHolder;
 
@@ -128,18 +128,6 @@ public class ModalDialogManager {
         }
 
         /**
-         * @param model The dialog model from which the properties should be obtained.
-         * @return The property value for {@link ModalDialogProperties#CONTENT_DESCRIPTION}, or a
-         *         fallback content description if it is not set.
-         */
-        protected static String getContentDescription(PropertyModel model) {
-            String description = model.get(ModalDialogProperties.CONTENT_DESCRIPTION);
-            if (description == null) description = model.get(ModalDialogProperties.TITLE);
-            assert description != null;
-            return description;
-        }
-
-        /**
          * Creates a view for the specified dialog model and puts the view in a container.
          *
          * @param model The dialog model that needs to be shown.
@@ -176,7 +164,7 @@ public class ModalDialogManager {
          *     enabled.
          */
         protected void setEdgeToEdgeStateSupplier(
-                ObservableSupplier<Boolean> edgeToEdgeStateSupplier,
+                NonNullObservableSupplier<Boolean> edgeToEdgeStateSupplier,
                 boolean isEdgeToEdgeEverywhereEnabled) {}
     }
 
@@ -286,7 +274,7 @@ public class ModalDialogManager {
     private @Nullable InsetObserver mInsetObserver;
 
     /** A supplier to determine whether edge-to-edge is active in the enclosing window. */
-    private final @Nullable ObservableSupplier<Boolean> mEdgeToEdgeStateSupplier;
+    private final @Nullable NonNullObservableSupplier<Boolean> mEdgeToEdgeStateSupplier;
 
     private final boolean mIsEdgeToEdgeEverywhereEnabled;
 
@@ -319,7 +307,7 @@ public class ModalDialogManager {
     public ModalDialogManager(
             Presenter defaultPresenter,
             @ModalDialogType int defaultType,
-            @Nullable ObservableSupplier<Boolean> edgeToEdgeStateSupplier,
+            @Nullable NonNullObservableSupplier<Boolean> edgeToEdgeStateSupplier,
             boolean isEdgeToEdgeEverywhereEnabled) {
         mDefaultPresenter = defaultPresenter;
         mEdgeToEdgeStateSupplier = edgeToEdgeStateSupplier;
@@ -645,7 +633,8 @@ public class ModalDialogManager {
         mSuspendedTypes.add(dialogType);
         if (isShowing()
                 && dialogType == mCurrentType
-                && mCurrentPriority != ModalDialogPriority.VERY_HIGH) {
+                && mCurrentPriority != ModalDialogPriority.VERY_HIGH
+                && !mDismissingCurrentDialog) {
             suspendCurrentDialog();
             showNextDialog();
         }

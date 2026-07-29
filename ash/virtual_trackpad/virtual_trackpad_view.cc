@@ -12,6 +12,7 @@
 #include "ash/style/ash_color_id.h"
 #include "ash/style/blurred_background_shield.h"
 #include "ash/wm/window_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "chromeos/ui/base/chromeos_ui_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_targeter.h"
@@ -28,6 +29,7 @@
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/label.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 
@@ -254,7 +256,7 @@ VirtualTrackpadView::VirtualTrackpadView() {
   blurred_background_ = std::make_unique<BlurredBackgroundShield>(
       this, SK_ColorTRANSPARENT, ColorProvider::kBackgroundBlurSigma,
       gfx::RoundedCornersF(
-          static_cast<float>(chromeos::kTopCornerRadiusWhenRestored)));
+          static_cast<float>(chromeos::kRoundedWindowSmallCornerRadius)));
 }
 
 VirtualTrackpadView::~VirtualTrackpadView() = default;
@@ -275,7 +277,7 @@ void VirtualTrackpadView::Toggle() {
   auto delegate = std::make_unique<views::WidgetDelegate>();
   delegate->RegisterWindowClosingCallback(
       base::BindOnce([]() { g_fake_trackpad_widget = nullptr; }));
-  delegate->SetOwnedByWidget(true);
+  delegate->SetOwnedByWidget(views::WidgetDelegate::OwnedByWidgetPassKey());
   delegate->SetCanResize(true);
   delegate->SetTitle(u"Virtual Trackpad Simulator");
 
@@ -304,8 +306,8 @@ void VirtualTrackpadView::Toggle() {
 
   // Used to extend bounds on the virtual trackpad window for resizing. Note
   // that we cannot use
-  // `window_util::InstallResizeHandleWindowTargeterForWindow` since the virtual
-  // trackpad window is not a toplevel window.
+  // `chromeos::wm::InstallResizeHandleWindowTargeterForWindow` since the
+  // virtual trackpad window is not a toplevel window.
   auto targeter = std::make_unique<aura::WindowTargeter>();
   targeter->SetInsets(gfx::Insets(-chromeos::kResizeOutsideBoundsSize));
   g_fake_trackpad_widget->GetNativeWindow()->SetEventTargeter(

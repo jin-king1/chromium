@@ -12,6 +12,7 @@
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/common/mojom/view_type.mojom.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -50,7 +51,7 @@ class AccessibilityPanel::AccessibilityPanelWebContentsObserver
 AccessibilityPanel::AccessibilityPanel(content::BrowserContext* browser_context,
                                        const std::string& content_url,
                                        const std::string& widget_name) {
-  SetOwnedByWidget(true);
+  SetOwnedByWidget(OwnedByWidgetPassKey());
 
   views::WebView* web_view = new views::WebView(browser_context);
   web_contents_ = web_view->GetWebContents();
@@ -58,8 +59,13 @@ AccessibilityPanel::AccessibilityPanel(content::BrowserContext* browser_context,
       std::make_unique<AccessibilityPanelWebContentsObserver>(web_contents_,
                                                               this);
   web_contents_->SetDelegate(this);
-  extensions::SetViewType(web_contents_,
-                          extensions::mojom::ViewType::kComponent);
+  if (::features::IsAccessibilityManifestV3EnabledForChromeVox()) {
+    extensions::SetViewType(web_contents_,
+                            extensions::mojom::ViewType::kExtensionPopup);
+  } else {
+    extensions::SetViewType(web_contents_,
+                            extensions::mojom::ViewType::kComponent);
+  }
   web_view->LoadInitialURL(GURL(content_url));
   web_view_ = web_view;
 
@@ -72,7 +78,7 @@ AccessibilityPanel::AccessibilityPanel(content::BrowserContext* browser_context,
   // The AccessibilityPanel is only shown in the primary root window.
   ash_util::SetupWidgetInitParamsForContainerInPrimary(
       &params, ShellWindowId::kShellWindowId_AccessibilityPanelContainer);
-  params.bounds = display::Screen::GetScreen()->GetPrimaryDisplay().bounds();
+  params.bounds = display::Screen::Get()->GetPrimaryDisplay().bounds();
   params.delegate = this;
   params.activatable = views::Widget::InitParams::Activatable::kNo;
   params.name = widget_name;
@@ -80,7 +86,7 @@ AccessibilityPanel::AccessibilityPanel(content::BrowserContext* browser_context,
   widget_->Init(std::move(params));
   // We rely on being able to set the bounds of the panel to control when it
   // captures input rather than hiding the widget because we need to continue to
-  // receive key events. crbug.com/1251129.
+  // receive key events. crbug.com/40792303.
   widget_->GetNativeWindow()->layer()->SetMasksToBounds(true);
 }
 
@@ -117,6 +123,13 @@ bool AccessibilityPanel::HandleContextMenu(
     const content::ContextMenuParams& params) {
   // Eat all requests as context menus are disallowed.
   return true;
+}
+
+bool AccessibilityPanel::ShouldAllowRendererInitiatedCrossProcessNavigation(
+    bool is_outermost_main_frame_navigation) {
+  // Block navigations that cause the main frame of the accessibility panel
+  // to navigate to non-extension content.
+  return !is_outermost_main_frame_navigation;
 }
 
 void AccessibilityPanel::DidFirstVisuallyNonEmptyPaint() {

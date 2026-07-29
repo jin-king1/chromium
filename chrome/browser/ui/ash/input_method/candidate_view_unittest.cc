@@ -2,16 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ui/ash/input_method/candidate_view.h"
 
 #include <stddef.h>
 
 #include <algorithm>
+#include <array>
+#include <string_view>
 
 #include "base/check.h"
 #include "base/memory/raw_ptr.h"
@@ -33,11 +30,11 @@ namespace ui {
 namespace ime {
 namespace {
 
-const char* const kDummyCandidates[] = {
+constexpr auto kDummyCandidates = std::to_array<std::string_view>({
     "candidate1",
     "candidate2",
     "candidate3",
-};
+});
 
 }  // namespace
 
@@ -57,16 +54,17 @@ class CandidateViewTest : public views::ViewsTestBase {
         CreateParams(views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET,
                      views::Widget::InitParams::TYPE_WINDOW));
 
-    init_params.delegate = new views::WidgetDelegateView();
+    init_params.delegate = new views::WidgetDelegateView(
+        views::WidgetDelegateView::CreatePassKey());
 
     container_ = init_params.delegate->GetContentsView();
     container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical));
-    for (size_t i = 0; i < std::size(kDummyCandidates); ++i) {
+    for (const auto& dummy_candidate : kDummyCandidates) {
       CandidateView* candidate = new CandidateView(
           views::Button::PressedCallback(), ui::CandidateWindow::VERTICAL);
       ui::CandidateWindow::Entry entry;
-      entry.value = base::UTF8ToUTF16(kDummyCandidates[i]);
+      entry.value = base::UTF8ToUTF16(dummy_candidate);
       candidate->SetEntry(entry);
       container_->AddChildViewRaw(candidate);
     }

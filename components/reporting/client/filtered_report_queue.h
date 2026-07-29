@@ -6,7 +6,6 @@
 #define COMPONENTS_REPORTING_CLIENT_FILTERED_REPORT_QUEUE_H_
 
 #include <memory>
-#include <queue>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -96,7 +95,7 @@ class FilteredReportQueue {
   // String and Dict forms of `Enqueue` are forwarded to `report_queue_`
   template <typename U>
     requires(internal::IsImplicitlyConstructible<std::string, U> ||
-             internal::IsImplicitlyConstructible<base::Value::Dict, U>)
+             internal::IsImplicitlyConstructible<base::DictValue, U>)
   void Enqueue(U record,
                Priority priority,
                ReportQueue::EnqueueCallback callback) const {

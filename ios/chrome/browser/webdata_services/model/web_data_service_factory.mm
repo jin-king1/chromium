@@ -9,9 +9,9 @@
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
 #import "base/no_destructor.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #import "components/keyed_service/core/service_access_type.h"
-#import "components/plus_addresses/webdata/plus_address_webdata_service.h"
 #import "components/search_engines/keyword_web_data_service.h"
 #import "components/signin/public/webdata/token_web_data.h"
 #import "components/webdata_services/web_data_service_wrapper.h"
@@ -24,14 +24,13 @@ namespace ios {
 
 namespace {
 
-std::unique_ptr<KeyedService> BuildWebDataService(web::BrowserState* context) {
-  const base::FilePath& state_path = context->GetStatePath();
+std::unique_ptr<KeyedService> BuildWebDataService(ProfileIOS* profile) {
+  const base::FilePath& state_path = profile->GetStatePath();
   // On iOS (and Android), the account storage is persisted on disk.
   return std::make_unique<WebDataServiceWrapper>(
-      state_path, GetApplicationContext()->GetApplicationLocale(),
+      state_path, GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
       web::GetUIThreadTaskRunner({}), base::DoNothing(),
-      GetApplicationContext()->GetOSCryptAsync(),
-      /*use_in_memory_autofill_account_database=*/false);
+      GetApplicationContext()->GetOSCryptAsync());
 }
 
 }  // namespace
@@ -84,15 +83,6 @@ WebDataServiceFactory::GetKeywordWebDataForProfile(
 }
 
 // static
-scoped_refptr<plus_addresses::PlusAddressWebDataService>
-WebDataServiceFactory::GetPlusAddressWebDataForProfile(
-    ProfileIOS* profile,
-    ServiceAccessType access_type) {
-  WebDataServiceWrapper* wrapper = GetForProfile(profile, access_type);
-  return wrapper ? wrapper->GetPlusAddressWebData() : nullptr;
-}
-
-// static
 scoped_refptr<TokenWebData> WebDataServiceFactory::GetTokenWebDataForProfile(
     ProfileIOS* profile,
     ServiceAccessType access_type) {
@@ -107,9 +97,9 @@ WebDataServiceFactory* WebDataServiceFactory::GetInstance() {
 }
 
 // static
-BrowserStateKeyedServiceFactory::TestingFactory
+WebDataServiceFactory::TestingFactory
 WebDataServiceFactory::GetDefaultFactory() {
-  return base::BindRepeating(&BuildWebDataService);
+  return base::BindOnce(&BuildWebDataService);
 }
 
 WebDataServiceFactory::WebDataServiceFactory()
@@ -120,8 +110,8 @@ WebDataServiceFactory::WebDataServiceFactory()
 WebDataServiceFactory::~WebDataServiceFactory() {}
 
 std::unique_ptr<KeyedService> WebDataServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  return BuildWebDataService(context);
+    ProfileIOS* profile) const {
+  return BuildWebDataService(profile);
 }
 
 }  // namespace ios

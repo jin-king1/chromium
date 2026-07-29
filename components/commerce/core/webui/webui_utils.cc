@@ -4,6 +4,7 @@
 
 #include "components/commerce/core/webui/webui_utils.h"
 
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/bookmarks/browser/bookmark_model.h"
@@ -168,20 +169,6 @@ shared::mojom::ProductInfoPtr ProductInfoToMojoProduct(
   }
 
   return product_info;
-}
-
-shared::mojom::ProductSpecificationsSetPtr ProductSpecsSetToMojo(
-    const ProductSpecificationsSet& set) {
-  auto set_ptr = shared::mojom::ProductSpecificationsSet::New();
-
-  set_ptr->name = set.name();
-  set_ptr->uuid = set.uuid();
-
-  for (const auto& url : set.urls()) {
-    set_ptr->urls.push_back(url);
-  }
-
-  return set_ptr;
 }
 
 shared::mojom::BookmarkProductInfoPtr BookmarkNodeToMojoProduct(

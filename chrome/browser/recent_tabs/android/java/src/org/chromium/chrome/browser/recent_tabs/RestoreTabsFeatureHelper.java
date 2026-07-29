@@ -4,28 +4,41 @@
 
 package org.chromium.chrome.browser.recent_tabs;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 
 import org.chromium.base.Callback;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.build.annotations.EnsuresNonNull;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSession;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSessionWindow;
 import org.chromium.chrome.browser.recent_tabs.RestoreTabsMetricsHelper.RestoreTabsOnFREPromoShowResult;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /** A class of helper methods that assist in the restore tabs workflow. */
+@NullMarked
 public class RestoreTabsFeatureHelper {
-    private RestoreTabsController mController;
-    private RestoreTabsControllerDelegate mDelegate;
-    private RestoreTabsControllerDelegate mDelegateForTesting;
-    private ForeignSessionHelper mForeignSessionHelper;
+    private static final long RESTORE_TABS_RECENCY_THRESHOLD_MS = TimeUnit.DAYS.toMillis(7);
+    private @Nullable RestoreTabsController mController;
+    private @Nullable RestoreTabsControllerDelegate mDelegate;
+    private @Nullable RestoreTabsControllerDelegate mDelegateForTesting;
+    private @Nullable ForeignSessionHelper mForeignSessionHelper;
 
     public RestoreTabsFeatureHelper() {}
 
@@ -48,25 +61,24 @@ public class RestoreTabsFeatureHelper {
     /** Check the criteria for displaying the restore tabs promo. */
     public void maybeShowPromo(
             Activity activity,
-            Profile profile,
+            @Nullable Profile profile,
             TabCreatorManager tabCreatorManager,
             BottomSheetController bottomSheetController,
             Supplier<Integer> gtsTabListModelSizeSupplier,
-            Callback<Integer> scrollGTSToRestoredTabsCallback) {
+            Callback<Integer> scrollGTSToRestoredTabsCallback,
+            NonNullObservableSupplier<ModalDialogManager> modalDialogManagerSupplier) {
         if (profile == null || profile.isOffTheRecord()) {
             RestoreTabsMetricsHelper.recordPromoShowResultHistogram(
                     RestoreTabsOnFREPromoShowResult.NULL_PROFILE);
             return;
         }
-
         Tracker tracker = TrackerFactory.getTrackerForProfile(profile);
-
+        updateTrackerIfFirstStartIsRecent(profile, tracker);
         if (!tracker.wouldTriggerHelpUi(FeatureConstants.RESTORE_TABS_ON_FRE_FEATURE)) {
             RestoreTabsMetricsHelper.recordPromoShowResultHistogram(
                     RestoreTabsOnFREPromoShowResult.NOT_ELIGIBLE);
             return;
         }
-
         mForeignSessionHelper = new ForeignSessionHelper(profile);
         if (!mForeignSessionHelper.isTabSyncEnabled()) {
             destroy();
@@ -110,7 +122,8 @@ public class RestoreTabsFeatureHelper {
                     tabCreatorManager,
                     bottomSheetController,
                     gtsTabListModelSizeSupplier,
-                    scrollGTSToRestoredTabsCallback);
+                    scrollGTSToRestoredTabsCallback,
+                    modalDialogManagerSupplier);
             mDelegate.showPromo(sessions);
             RestoreTabsMetricsHelper.recordPromoShowResultHistogram(
                     RestoreTabsOnFREPromoShowResult.SHOWN);
@@ -126,13 +139,15 @@ public class RestoreTabsFeatureHelper {
         }
     }
 
+    @EnsuresNonNull("mDelegate")
     private void createDelegate(
             Activity activity,
             Profile profile,
             TabCreatorManager tabCreatorManager,
             BottomSheetController bottomSheetController,
             Supplier<Integer> gtsTabListModelSizeSupplier,
-            Callback<Integer> scrollGTSToRestoredTabsCallback) {
+            Callback<Integer> scrollGTSToRestoredTabsCallback,
+            NonNullObservableSupplier<ModalDialogManager> modalDialogManagerSupplier) {
         mDelegate =
                 (mDelegateForTesting != null)
                         ? mDelegateForTesting
@@ -146,9 +161,12 @@ public class RestoreTabsFeatureHelper {
                                                 activity,
                                                 profile,
                                                 tabCreatorManager,
-                                                bottomSheetController);
+                                                bottomSheetController,
+                                                modalDialogManagerSupplier.get());
                                 mController.showHomeScreen(
-                                        mForeignSessionHelper, sessions, mDelegate);
+                                        assumeNonNull(mForeignSessionHelper),
+                                        sessions,
+                                        assumeNonNull(mDelegate));
                             }
 
                             @Override
@@ -187,5 +205,19 @@ public class RestoreTabsFeatureHelper {
 
     void setRestoreTabsControllerDelegateForTesting(RestoreTabsControllerDelegate delegate) {
         mDelegateForTesting = delegate;
+    }
+
+    void updateTrackerIfFirstStartIsRecent(Profile profile, Tracker tracker) {
+        long firstInitialized =
+                ChromeSharedPreferences.getInstance()
+                        .readLong(ChromePreferenceKeys.FIRST_CTA_START_TIMESTAMP, -1L);
+        if (firstInitialized == -1L || isTimestampRecent(firstInitialized)) {
+            tracker.notifyEvent(EventConstants.RESTORE_TABS_ON_FIRST_RUN_SHOW_PROMO);
+        }
+    }
+
+    boolean isTimestampRecent(long timestamp) {
+        long threshold = System.currentTimeMillis() - RESTORE_TABS_RECENCY_THRESHOLD_MS;
+        return timestamp > threshold;
     }
 }

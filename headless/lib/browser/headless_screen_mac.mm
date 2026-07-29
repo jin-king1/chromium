@@ -22,7 +22,7 @@
 
 @implementation HeadlessScreenNSScreenDonor
 - (NSRect)frame {
-  display::Screen& screen = CHECK_DEREF(display::Screen::GetScreen());
+  display::Screen& screen = CHECK_DEREF(display::Screen::Get());
   display::Display primary_display = screen.GetPrimaryDisplay();
   const gfx::Rect bounds = primary_display.bounds();
   CHECK_EQ(bounds.x(), 0);
@@ -81,9 +81,8 @@ display::Display HeadlessScreenMac::GetDisplayNearestView(
     }
 
     const gfx::Rect bounds = gfx::ScreenRectFromNSRect([ns_view frame]);
-    std::optional<display::Display> display =
-        GetDisplayFromScreenRect(display_list().displays(), bounds);
-    if (display) {
+    if (std::optional<display::Display> display =
+            GetDisplayFromScreenRect(display_list().displays(), bounds)) {
       return display.value();
     }
   }

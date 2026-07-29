@@ -77,10 +77,10 @@ extern const char kValueRequestCertProvisioningRequest[];
 extern const char kValueRequestChromeProfileReport[];
 extern const char kValueRequestFmRegistrationTokenUpload[];
 extern const char kValueRequestDeterminePromotionEligibility[];
+extern const char kValueRequestGenerateChromeProfileChallenge[];
 
 // Policy type strings for the policy_type field in PolicyFetchRequest.
 extern const char kChromeDevicePolicyType[];
-extern const char kChromeUserPolicyType[];
 extern const char kChromePublicAccountPolicyType[];
 extern const char kChromeExtensionPolicyType[];
 extern const char kChromeSigninExtensionPolicyType[];
@@ -100,6 +100,11 @@ extern const char kChromeBrowserRemoteCommandType[];
 // Command for browser profile.
 extern const char kChromeUserRemoteCommandType[];
 
+// Policy type strings for the policy_type field in PolicyFetchRequest for
+// extension install cloud policy.
+extern const char kChromeExtensionInstallUserCloudPolicyType[];
+extern const char kChromeExtensionInstallMachineLevelCloudPolicyType[];
+
 extern const char kChromeMachineLevelUserCloudPolicyTypeBase64[];
 
 // These codes are sent in the |error_code| field of PolicyFetchResponse.
@@ -107,6 +112,9 @@ enum PolicyFetchStatus {
   POLICY_FETCH_SUCCESS = 200,
   POLICY_FETCH_ERROR_NOT_FOUND = 902,
 };
+
+// Chrome managed-user's policy type when fetching user policy from DM server.
+const char* GetChromeUserPolicyType();
 
 }  // namespace dm_protocol
 
@@ -122,6 +130,7 @@ extern const char kPolicyVerificationKeyHash[];
 // Hence,
 //   (a) existing enumerated constants should never be deleted or reordered, and
 //   (b) new constants should only be appended at the end of the enumeration.
+// LINT.IfChange(DeviceManagementStatus)
 enum DeviceManagementStatus {
   // All is good.
   DM_STATUS_SUCCESS = 0,
@@ -178,6 +187,7 @@ enum DeviceManagementStatus {
   // Service error: Org Unit enrollment limit has been exceeded.
   DM_STATUS_SERVICE_ORG_UNIT_ENROLLMENT_LIMIT_EXCEEEDED = 910
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:EnterpriseDeviceManagementStatus)
 
 // List of modes that the device can be locked into. Some IDs are skipped
 // because they have been used in the past but got deprecated and deleted.

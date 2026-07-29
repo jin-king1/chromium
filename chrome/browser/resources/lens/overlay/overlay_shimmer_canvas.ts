@@ -7,11 +7,10 @@ import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-import {BrowserProxyImpl} from './browser_proxy.js';
-import {getFallbackTheme, getShaderLayerColorRgbas, modifyRgbaTransparency} from './color_utils.js';
+import {getShaderLayerColorRgbas, modifyRgbaTransparency} from './color_utils.js';
 import {CubicBezier} from './cubic_bezier.js';
-import type {OverlayTheme} from './lens.mojom-webui.js';
 import {getTemplate} from './overlay_shimmer_canvas.html.js';
+import {SelectionOverlayBaseHandler} from './selection_overlay_base_handler.js';
 import type {OverlayShimmerFocusedRegion, OverlayShimmerUnfocusRegion, Point} from './selection_utils.js';
 import {ShimmerControlRequester} from './selection_utils.js';
 import {Wiggle} from './wiggle.js';
@@ -263,24 +262,18 @@ export class OverlayShimmerCanvasElement extends PolymerElement {
       canvasWidth: Number,
       shaderLayerRgbaColors: {
         type: Array,
-        computed: 'computeShaderLayerColorRgbas(theme)',
-      },
-      theme: {
-        type: Object,
-        value: () => getFallbackTheme(),
+        computed: 'computeShaderLayerColorRgbas()',
       },
     };
   }
 
 
   // Canvas height property for setting the pixel height of the canvas element.
-  private canvasHeight: number;
+  declare private canvasHeight: number;
   // Canvas width property for setting the pixel width of the canvas element.
-  private canvasWidth: number;
+  declare private canvasWidth: number;
   // Shader rgba colors.
-  private shaderLayerRgbaColors: string[];
-  // The overlay theme.
-  private theme: OverlayTheme;
+  declare private shaderLayerRgbaColors: string[];
 
   // The properties of circles currently being rendered.
   private circles: ShimmerCircle[] = [];
@@ -362,8 +355,8 @@ export class OverlayShimmerCanvasElement extends PolymerElement {
         });
 
     this.listenerIds = [
-      BrowserProxyImpl.getInstance()
-          .callbackRouter.notifyResultsPanelOpened.addListener(() => {
+      SelectionOverlayBaseHandler.getInstance()
+          .addNotifyResultsPanelOpenedListener(() => {
             this.areResultsShowing = true;
           }),
     ];
@@ -374,7 +367,7 @@ export class OverlayShimmerCanvasElement extends PolymerElement {
     this.eventTracker_.removeAll();
     this.listenerIds.forEach(
         id => assert(
-            BrowserProxyImpl.getInstance().callbackRouter.removeListener(id)));
+            SelectionOverlayBaseHandler.getInstance().removeListener(id)));
     this.listenerIds = [];
 
     // Stop updating the sparkles if they are currently updating.
@@ -387,7 +380,7 @@ export class OverlayShimmerCanvasElement extends PolymerElement {
   private onSparklesLoad() {
     // If the flag to enable sparkles is off, ignore the SVG loading in which
     // will cause skip initializing sparklesPattern so no sparkles appear.
-    if (!this.enableSparkles) {
+    if (!this.enableSparkles || !this.context) {
       return;
     }
 
@@ -458,7 +451,7 @@ export class OverlayShimmerCanvasElement extends PolymerElement {
   }
 
   private computeShaderLayerColorRgbas() {
-    return getShaderLayerColorRgbas(this.theme);
+    return getShaderLayerColorRgbas();
   }
 
   private stepAnimation(timeMs: number) {
@@ -477,8 +470,9 @@ export class OverlayShimmerCanvasElement extends PolymerElement {
     const centerX = e.detail.left + e.detail.width / 2;
     const centerY = e.detail.top + e.detail.height / 2;
 
-    // Ignore invalid regions if not translate mode.
+    // Ignore invalid regions if not translate mode or searchbox.
     if (e.detail.requester !== ShimmerControlRequester.TRANSLATE &&
+        e.detail.requester !== ShimmerControlRequester.SEARCHBOX &&
         (centerX <= 0 || centerY <= 0)) {
       return;
     }
@@ -493,6 +487,11 @@ export class OverlayShimmerCanvasElement extends PolymerElement {
         this.shimmerControllerStack.sort();
       }
       this.previousPostSelection = e.detail;
+    }
+
+    // Save the cursor position in case we need to move the shimmer back to it.
+    if (e.detail.requester === ShimmerControlRequester.CURSOR) {
+      this.cursorCenter = {x: centerX * 100, y: centerY * 100};
     }
 
     this.focusRegion(
@@ -527,7 +526,26 @@ export class OverlayShimmerCanvasElement extends PolymerElement {
           centerX, centerY, this.previousPostSelection.width,
           this.previousPostSelection.height,
           this.previousPostSelection.requester);
+    } else if (newCurrentController === ShimmerControlRequester.CURSOR) {
+      // Target the shimmer back to the cursor.
+      this.focusRegion(
+          this.cursorCenter.x / 100, this.cursorCenter.y / 100, 0, 0,
+          newCurrentController);
     } else if (newCurrentController === ShimmerControlRequester.NONE) {
+      if (controllerBeforeUnfocus === ShimmerControlRequester.SEARCHBOX) {
+        // The shimmer should never face back to the steady state. This can
+        // happen if the searchbox is unfocused prior to a cursor focus event
+        // being received. In this case, manually fade out the cursor to 0,0
+        // so the shimmer does not transition to the steady state.
+        // TODO(crbug.com/402183580): This is a bandaid fix for an LE arm. Not
+        // transitioning to the steady state has become a requirement that this
+        // shimmer controller was not originally designed for. This controller
+        // should be redesigned in the future to support this and other more
+        // complex use cases.
+        this.setTransitionState(ShimmerState.TRANSITION_FADE_OUT_TO_CURSOR);
+        this.focusRegion(0, 0, 0, 0, ShimmerControlRequester.CURSOR);
+        return;
+      }
       this.setTransitionState(ShimmerState.TRANSITION_TO_STEADY_STATE);
     }
   }

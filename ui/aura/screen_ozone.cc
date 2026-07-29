@@ -141,7 +141,7 @@ std::string ScreenOzone::GetCurrentWorkspace() {
   return platform_screen_->GetCurrentWorkspace();
 }
 
-base::Value::List ScreenOzone::GetGpuExtraInfo(
+base::ListValue ScreenOzone::GetGpuExtraInfo(
     const gfx::GpuExtraInfo& gpu_extra_info) {
   return platform_screen_->GetGpuExtraInfo(gpu_extra_info);
 }
@@ -154,6 +154,10 @@ std::optional<float> ScreenOzone::GetPreferredScaleFactorForWindow(
              ? platform_screen_->GetPreferredScaleFactorForAcceleratedWidget(
                    GetAcceleratedWidgetForWindow(window))
              : Screen::GetPreferredScaleFactorForWindow(window);
+}
+
+bool ScreenOzone::IsHeadless() const {
+  return platform_screen_->IsHeadless();
 }
 
 gfx::NativeWindow ScreenOzone::GetNativeWindowFromAcceleratedWidget(

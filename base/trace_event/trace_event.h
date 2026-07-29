@@ -23,18 +23,19 @@
 #include "base/trace_event/builtin_categories.h"
 #include "base/trace_event/common/trace_event_common.h"  // IWYU pragma: export
 #include "base/trace_event/trace_arguments.h"
-#include "base/trace_event/trace_log.h"
+#include "base/trace_event/trace_event_impl.h"
 #include "base/trace_event/traced_value_support.h"
 #include "base/tracing_buildflags.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
+#include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 
 // Legacy TRACE_EVENT_API entrypoints. Do not use from new code.
 
 // Add a trace event to the platform tracing system.
-// base::trace_event::TraceEventHandle TRACE_EVENT_API_ADD_TRACE_EVENT(
+// void TRACE_EVENT_API_ADD_TRACE_EVENT(
 //                    char phase,
 //                    const unsigned char* category_group_enabled,
 //                    const char* name,
-//                    const char* scope,
 //                    uint64_t id,
 //                    base::trace_event::TraceArguments* args,
 //                    unsigned int flags)
@@ -42,12 +43,10 @@
 
 // Add a trace event to the platform tracing system overriding the pid.
 // The resulting event will have tid = pid == (process_id passed here).
-// base::trace_event::TraceEventHandle
-// TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_PROCESS_ID(
+// void TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_PROCESS_ID(
 //                    char phase,
 //                    const unsigned char* category_group_enabled,
 //                    const char* name,
-//                    const char* scope,
 //                    uint64_t id,
 //                    base::ProcessId process_id,
 //                    base::trace_event::TraceArguments* args,
@@ -56,14 +55,11 @@
   trace_event_internal::AddTraceEventWithProcessId
 
 // Add a trace event to the platform tracing system.
-// base::trace_event::TraceEventHandle
-// TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_THREAD_ID_AND_TIMESTAMP(
+// void TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_THREAD_ID_AND_TIMESTAMP(
 //                    char phase,
 //                    const unsigned char* category_group_enabled,
 //                    const char* name,
-//                    const char* scope,
 //                    uint64_t id,
-//                    uint64_t bind_id,
 //                    base::PlatformThreadId thread_id,
 //                    const TimeTicks& timestamp,
 //                    base::trace_event::TraceArguments* args,
@@ -74,8 +70,7 @@
 // Set the duration field of a COMPLETE trace event.
 // void TRACE_EVENT_API_UPDATE_TRACE_EVENT_DURATION(
 //     const unsigned char* category_group_enabled,
-//     const char* name,
-//     base::trace_event::TraceEventHandle id)
+//     const char* name)
 #define TRACE_EVENT_API_UPDATE_TRACE_EVENT_DURATION \
   trace_event_internal::UpdateTraceEventDuration
 
@@ -106,7 +101,6 @@ namespace trace_event_internal {
 // Specify these values when the corresponding argument of AddTraceEvent is not
 // used.
 const int kZeroNumArgs = 0;
-const std::nullptr_t kGlobalScope = nullptr;
 const uint64_t kNoId = 0;
 
 // These functions all internally call
@@ -114,83 +108,75 @@ const uint64_t kNoId = 0;
 // name on it. This is used to reduce the generated machine code at each
 // TRACE_EVENTXXX macro call.
 
-base::trace_event::TraceEventHandle BASE_EXPORT
-AddTraceEvent(char phase,
-              const unsigned char* category_group_enabled,
-              const char* name,
-              const char* scope,
-              uint64_t id,
-              base::trace_event::TraceArguments* args,
-              unsigned int flags);
+void BASE_EXPORT AddTraceEvent(char phase,
+                               const unsigned char* category_group_enabled,
+                               const char* name,
+                               uint64_t id,
+                               base::trace_event::TraceArguments* args,
+                               unsigned int flags);
 
-base::trace_event::TraceEventHandle BASE_EXPORT
+void BASE_EXPORT
 AddTraceEventWithProcessId(char phase,
                            const unsigned char* category_group_enabled,
                            const char* name,
-                           const char* scope,
                            uint64_t id,
                            base::ProcessId process_id,
                            base::trace_event::TraceArguments* args,
                            unsigned int flags);
 
-base::trace_event::TraceEventHandle BASE_EXPORT
-AddTraceEventWithThreadIdAndTimestamp(
+void BASE_EXPORT AddTraceEventWithThreadIdAndTimestamp(
     char phase,
     const unsigned char* category_group_enabled,
     const char* name,
-    const char* scope,
     uint64_t id,
-    uint64_t bind_id,
     base::PlatformThreadId thread_id,
     const base::TimeTicks& timestamp,
     base::trace_event::TraceArguments* args,
     unsigned int flags);
 
-base::trace_event::TraceEventHandle BASE_EXPORT
-AddTraceEventWithThreadIdAndTimestamps(
+void BASE_EXPORT AddTraceEventWithThreadIdAndTimestamps(
     char phase,
     const unsigned char* category_group_enabled,
     const char* name,
-    const char* scope,
     uint64_t id,
     base::PlatformThreadId thread_id,
     const base::TimeTicks& timestamp,
-    const base::ThreadTicks& thread_timestamp,
     unsigned int flags);
 
 void BASE_EXPORT
 UpdateTraceEventDuration(const unsigned char* category_group_enabled,
-                         const char* name,
-                         base::trace_event::TraceEventHandle handle);
+                         const char* name);
 
 }  // namespace trace_event_internal
 
 namespace base {
 namespace trace_event {
 
-template <typename IDType, const char* category>
-class TraceScopedTrackableObject {
+// Tracks that are used to group other tracks may not get any events of their
+// own, so their descriptor needs to be explicitly registered. This class wraps
+// a track to automatically register/unregistered its descriptor in the
+// constructor/destructor.
+template <class TrackType>
+class TrackRegistration {
  public:
-  TraceScopedTrackableObject(const char* name, IDType id)
-      : name_(name), id_(id) {
-    TRACE_EVENT_OBJECT_CREATED_WITH_ID(category, name_, id_);
+  explicit TrackRegistration(const TrackType& track) : track_(track) {
+    if (perfetto::internal::TrackRegistry::Get()) {
+      base::TrackEvent::SetTrackDescriptor(track, track.Serialize());
+    }
   }
-  TraceScopedTrackableObject(const TraceScopedTrackableObject&) = delete;
-  TraceScopedTrackableObject& operator=(const TraceScopedTrackableObject&) =
-      delete;
+  ~TrackRegistration() {
+    if (perfetto::internal::TrackRegistry::Get()) {
+      base::TrackEvent::EraseTrackDescriptor(track_);
+    }
+  }
+  TrackRegistration(const TrackRegistration&) = delete;
+  TrackRegistration& operator=(const TrackRegistration&) = delete;
 
-  template <typename ArgType>
-  void snapshot(ArgType snapshot) {
-    TRACE_EVENT_OBJECT_SNAPSHOT_WITH_ID(category, name_, id_, snapshot);
-  }
-
-  ~TraceScopedTrackableObject() {
-    TRACE_EVENT_OBJECT_DELETED_WITH_ID(category, name_, id_);
-  }
+  const TrackType& operator*() const { return track_; }
+  const TrackType& track() const { return track_; }
 
  private:
-  const char* name_;
-  IDType id_;
+  TrackType track_;
 };
 
 }  // namespace trace_event

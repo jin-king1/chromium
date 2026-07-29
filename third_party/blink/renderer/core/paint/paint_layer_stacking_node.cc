@@ -47,9 +47,9 @@
 #include <algorithm>
 #include <memory>
 
+#include "base/containers/adapters.h"
 #include "base/types/optional_util.h"
 #include "third_party/blink/public/platform/platform.h"
-#include "third_party/blink/renderer/core/layout/layout_multi_column_flow_thread.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
@@ -151,8 +151,14 @@ struct PaintLayerStackingNode::HighestLayers {
     // A negative z-index child will not cause reparent of overlay scrollbars
     // because the ancestor scroller either has auto z-index which is above
     // the child or has negative z-index which is a stacking context.
-    if (!layer.GetLayoutObject().IsStacked() || style.EffectiveZIndex() < 0)
+    if (!layer.GetLayoutObject().IsStacked() || style.EffectiveZIndex() < 0) {
       return;
+    }
+
+    // We should not consider layers that have been omitted from z-order lists.
+    if (!layer.IsZOrderListVisible()) {
+      return;
+    }
 
     UpdateOrderForSubtreeHighestLayers(GetLayerType(layer), &layer);
   }
@@ -178,13 +184,13 @@ struct PaintLayerStackingNode::HighestLayers {
   }
 };
 
-static LayoutObject* ChildOfFlexboxOrGridParentOrGrandparent(
+static LayoutObject* ChildOfFlexboxOrGridOrGridLanesParentOrGrandparent(
     const PaintLayer* layer) {
   LayoutObject* parent = layer->GetLayoutObject().Parent();
   if (!parent) {
     return nullptr;
   }
-  if (parent->IsFlexibleBox() || parent->IsLayoutGrid()) {
+  if (parent->IsFlexibleBox() || parent->IsLayoutGridOrGridLanes()) {
     return &layer->GetLayoutObject();
   }
 
@@ -192,7 +198,7 @@ static LayoutObject* ChildOfFlexboxOrGridParentOrGrandparent(
   if (!grandparent) {
     return nullptr;
   }
-  if (grandparent->IsFlexibleBox() || grandparent->IsLayoutGrid()) {
+  if (grandparent->IsFlexibleBox() || grandparent->IsLayoutGridOrGridLanes()) {
     return parent;
   }
   return nullptr;
@@ -201,9 +207,10 @@ static LayoutObject* ChildOfFlexboxOrGridParentOrGrandparent(
 static bool OrderLessThan(const PaintLayer* first, const PaintLayer* second) {
   // TODO(chrishtr): make this work for arbitrary ancestors, not just parent
   // and grandparent.
-  LayoutObject* first_ancestor = ChildOfFlexboxOrGridParentOrGrandparent(first);
+  LayoutObject* first_ancestor =
+      ChildOfFlexboxOrGridOrGridLanesParentOrGrandparent(first);
   LayoutObject* second_ancestor =
-      ChildOfFlexboxOrGridParentOrGrandparent(second);
+      ChildOfFlexboxOrGridOrGridLanesParentOrGrandparent(second);
   if (!first_ancestor || !second_ancestor) {
     return false;
   }
@@ -237,7 +244,7 @@ static bool ChildrenMayBeAffectedByOrder(const PaintLayer& layer) {
     return false;
   }
   for (; child; child = child->NextSibling()) {
-    auto* ancestor = ChildOfFlexboxOrGridParentOrGrandparent(child);
+    auto* ancestor = ChildOfFlexboxOrGridOrGridLanesParentOrGrandparent(child);
     // This is the only case where `OrderLessThan` can return true;
     if (ancestor && ancestor->StyleRef().Order()) {
       return true;
@@ -254,8 +261,7 @@ static void ForAllChildrenSortedByOrder(
     base::FunctionRef<void(PaintLayer&)> function) {
   // Optimization: `order` is relatively rare and we can avoid needing to
   // create and sort the vector of children in most cases.
-  if (RuntimeEnabledFeatures::PaintLayerUpdateOptimizationsEnabled() &&
-      !ChildrenMayBeAffectedByOrder(layer)) {
+  if (!ChildrenMayBeAffectedByOrder(layer)) {
     for (auto* child = layer.FirstChild(); child;
          child = child->NextSibling()) {
       function(*child);
@@ -282,8 +288,11 @@ void PaintLayerStackingNode::RebuildZOrderLists() {
 
   layer_->SetNeedsReorderOverlayOverflowControls(false);
 
+  PaintLayers overscroll_area_parents;
   ForAllChildrenSortedByOrder(
-      *layer_, [this](PaintLayer& child) { CollectLayers(child, nullptr); });
+      *layer_, [this, &overscroll_area_parents](PaintLayer& child) {
+        CollectLayers(child, nullptr, overscroll_area_parents);
+      });
 
   // Sort the two lists.
   std::stable_sort(pos_z_order_list_.begin(), pos_z_order_list_.end(),
@@ -291,18 +300,20 @@ void PaintLayerStackingNode::RebuildZOrderLists() {
   std::stable_sort(neg_z_order_list_.begin(), neg_z_order_list_.end(),
                    ZIndexLessThan);
 
+  // Append overscroll area parent layers after all normal layers in this
+  // stacking context. Note that these are appended in reverse order to match
+  // the overscroll chaining order (last one is one overscrolls first and is on
+  // the bottom of a stack).
+  for (auto& overscroll_area_parent : base::Reversed(overscroll_area_parents)) {
+    pos_z_order_list_.push_back(overscroll_area_parent);
+  }
+
   // Append layers for top layer elements after normal layer collection, to
   // ensure they are on top regardless of z-indexes.  The layoutObjects of top
   // layer elements are children of the view, sorted in top layer stacking
   // order.
   if (layer_->IsRootLayer()) {
     LayoutBlockFlow* root_block = layer_->GetLayoutObject().View();
-    // If the viewport is paginated, everything (including "top-layer" elements)
-    // gets redirected to the flow thread. So that's where we have to look, in
-    // that case.
-    if (LayoutBlockFlow* multi_column_flow_thread =
-            root_block->MultiColumnFlowThread())
-      root_block = multi_column_flow_thread;
     for (LayoutObject* child = root_block->FirstChild(); child;
          child = child->NextSibling()) {
       if (child->IsInTopOrViewTransitionLayer() && child->IsStacked()) {
@@ -310,14 +321,23 @@ void PaintLayerStackingNode::RebuildZOrderLists() {
       }
     }
   }
+
   z_order_lists_dirty_ = false;
 }
 
-void PaintLayerStackingNode::CollectLayers(PaintLayer& paint_layer,
-                                           HighestLayers* highest_layers) {
+void PaintLayerStackingNode::CollectLayers(
+    PaintLayer& paint_layer,
+    HighestLayers* highest_layers,
+    PaintLayers& overscroll_area_parents) {
   paint_layer.SetNeedsReorderOverlayOverflowControls(false);
 
   if (paint_layer.IsInTopOrViewTransitionLayer()) {
+    return;
+  }
+
+  if (paint_layer.GetLayoutObject().IsOverscrollAreaParent()) {
+    CHECK(paint_layer.GetLayoutObject().IsStacked());
+    overscroll_area_parents.push_back(&paint_layer);
     return;
   }
 
@@ -328,8 +348,7 @@ void PaintLayerStackingNode::CollectLayers(PaintLayer& paint_layer,
   const auto& style = object.StyleRef();
 
   if (object.IsStacked()) {
-    if (!RuntimeEnabledFeatures::PaintLayerUpdateOptimizationsEnabled() ||
-        paint_layer.IsZOrderListVisible()) {
+    if (paint_layer.IsZOrderListVisible()) {
       auto& list =
           style.EffectiveZIndex() >= 0 ? pos_z_order_list_ : neg_z_order_list_;
       list.push_back(paint_layer);
@@ -347,8 +366,10 @@ void PaintLayerStackingNode::CollectLayers(PaintLayer& paint_layer,
     subtree_highest_layers.emplace();
 
   ForAllChildrenSortedByOrder(
-      paint_layer, [this, &subtree_highest_layers](PaintLayer& child) {
-        CollectLayers(child, base::OptionalToPtr(subtree_highest_layers));
+      paint_layer, [this, &subtree_highest_layers,
+                    &overscroll_area_parents](PaintLayer& child) {
+        CollectLayers(child, base::OptionalToPtr(subtree_highest_layers),
+                      overscroll_area_parents);
       });
 
   if (has_overlay_overflow_controls) {
@@ -368,7 +389,7 @@ void PaintLayerStackingNode::CollectLayers(PaintLayer& paint_layer,
     if (layer_to_paint_overlay_overflow_controls_after) {
       layer_to_overlay_overflow_controls_painting_after_
           .insert(layer_to_paint_overlay_overflow_controls_after,
-                  MakeGarbageCollected<PaintLayers>())
+                  MakeGarbageCollected<GCedPaintLayers>())
           .stored_value->value->push_back(paint_layer);
     }
     paint_layer.SetNeedsReorderOverlayOverflowControls(

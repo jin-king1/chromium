@@ -12,43 +12,66 @@ import androidx.annotation.VisibleForTesting;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 
-import org.chromium.base.ApplicationStatus;
-import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.build.BuildConfig;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.firstrun.FirstRunUtils;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.components.browser_ui.media.MediaFeatureList;
 import org.chromium.components.browser_ui.modaldialog.ModalDialogFeatureMap;
 import org.chromium.components.cached_flags.CachedFeatureParam;
 import org.chromium.components.cached_flags.CachedFlag;
 import org.chromium.components.cached_flags.CachedFlagUtils;
 import org.chromium.components.cached_flags.CachedFlagsSafeMode;
 import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.permissions.PermissionsAndroidFeatureList;
+import org.chromium.components.policy.PolicyFeatureMap;
+import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.content_public.browser.ContentFeatureList;
+import org.chromium.content_public.browser.JavalessRenderersFeatureList;
+import org.chromium.ui.base.UiAndroidFeatureList;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /** Caches the flags that Chrome might require before native is loaded in a later next run. */
+@NullMarked
 public class ChromeCachedFlags {
     private static final ChromeCachedFlags INSTANCE = new ChromeCachedFlags();
     static final List<List<CachedFlag>> LISTS_OF_CACHED_FLAGS_FULL_BROWSER =
             List.of(
                     ChromeFeatureList.sFlagsCachedFullBrowser,
+                    JavalessRenderersFeatureList.sCachedFlags,
+                    ContentFeatureList.sCachedFlags,
                     OmniboxFeatures.getFlagsToCache(),
-                    ModalDialogFeatureMap.sCachedFlags);
+                    ModalDialogFeatureMap.sCachedFlags,
+                    UiAndroidFeatureList.sFlagsCachedUiAndroid,
+                    SigninFeatureMap.sCachedFlags,
+                    PolicyFeatureMap.sCachedFlags,
+                    MediaFeatureList.getAllCachedFlags());
     static final List<List<CachedFlag>> LISTS_OF_CACHED_FLAGS_MINIMAL_BROWSER =
             List.of(ChromeFeatureList.sFlagsCachedInMinimalBrowser);
 
     static final List<List<CachedFlag>> LISTS_OF_CACHED_FLAGS =
             List.of(
                     ChromeFeatureList.sFlagsCachedFullBrowser,
+                    JavalessRenderersFeatureList.sCachedFlags,
+                    ContentFeatureList.sCachedFlags,
                     OmniboxFeatures.getFlagsToCache(),
                     ModalDialogFeatureMap.sCachedFlags,
-                    ChromeFeatureList.sFlagsCachedInMinimalBrowser);
+                    ChromeFeatureList.sFlagsCachedInMinimalBrowser,
+                    UiAndroidFeatureList.sFlagsCachedUiAndroid,
+                    PolicyFeatureMap.sCachedFlags,
+                    MediaFeatureList.getAllCachedFlags());
 
     static final List<List<CachedFeatureParam<?>>> LISTS_OF_FEATURE_PARAMS_FULL_BROWSER =
-            List.of(ChromeFeatureList.sParamsCached, OmniboxFeatures.getFeatureParamsToCache());
+            List.of(
+                    ChromeFeatureList.sParamsCached,
+                    OmniboxFeatures.getFeatureParamsToCache(),
+                    PermissionsAndroidFeatureList.getFeatureParamsToCache(),
+                    UiAndroidFeatureList.sParamsCached);
 
     /**
      * A list of feature parameters that will be cached when starting minimal browser mode. See
@@ -58,7 +81,11 @@ public class ChromeCachedFlags {
             List.of();
 
     static final List<List<CachedFeatureParam<?>>> LISTS_OF_FEATURE_PARAMS =
-            List.of(ChromeFeatureList.sParamsCached, OmniboxFeatures.getFeatureParamsToCache());
+            List.of(
+                    ChromeFeatureList.sParamsCached,
+                    OmniboxFeatures.getFeatureParamsToCache(),
+                    PermissionsAndroidFeatureList.getFeatureParamsToCache(),
+                    UiAndroidFeatureList.sParamsCached);
 
     private boolean mIsFinishedCachingNativeFlags;
 
@@ -90,7 +117,6 @@ public class ChromeCachedFlags {
         FirstRunUtils.cacheFirstRunPrefs();
 
         CachedFlagUtils.cacheNativeFlags(LISTS_OF_CACHED_FLAGS_FULL_BROWSER);
-        cacheAdditionalNativeFlags();
 
         tryToCatchMissingParameters();
         CachedFlagUtils.cacheFeatureParams(LISTS_OF_FEATURE_PARAMS_FULL_BROWSER);
@@ -116,7 +142,9 @@ public class ChromeCachedFlags {
         // attempt to try to catch accidental omissions. It cannot replace the list because some
         // instances might not be instantiated if the classes they belong to are not accessed yet.
         List<String> omissions = new ArrayList<>();
-        for (CachedFeatureParam<?> param : CachedFeatureParam.getAllInstances()) {
+        Set<CachedFeatureParam<?>> params = CachedFeatureParam.getAllInstances();
+        assert params != null;
+        for (CachedFeatureParam<?> param : params) {
             if (paramsFullBrowser.contains(param)) continue;
             if (paramsMinimalBrowser.contains(param)) continue;
             omissions.add(param.getFeatureName() + ":" + param.getName());
@@ -138,23 +166,7 @@ public class ChromeCachedFlags {
         CachedFlagUtils.cacheFeatureParams(LISTS_OF_FEATURE_PARAMS_MINIMAL_BROWSER);
     }
 
-    /**
-     * Caches a predetermined list of flags that must take effect on startup but are set via native
-     * code.
-     *
-     * <p>Do not add new simple boolean flags here, add them to {@link #cacheNativeFlags} instead.
-     */
-    public static void cacheAdditionalNativeFlags() {
-        // Propagate the BACKGROUND_THREAD_POOL feature value to LibraryLoader.
-        LibraryLoader.setBackgroundThreadPoolEnabledOnNextRuns(
-                ChromeFeatureList.isEnabled(ChromeFeatureList.BACKGROUND_THREAD_POOL));
-
-        // Propagate the CACHE_ACTIVITY_TASKID feature value to ApplicationStatus.
-        ApplicationStatus.setCachingEnabled(
-                ChromeFeatureList.isEnabled(ChromeFeatureList.CACHE_ACTIVITY_TASKID));
-    }
-
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     static void cacheMinimalBrowserFlagsTimeFromNativeTime() {
         ChromeSharedPreferences.getInstance()
                 .writeLong(

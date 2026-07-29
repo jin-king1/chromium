@@ -11,9 +11,10 @@ import {CrPolicyPrefMixin} from '/shared/settings/controls/cr_policy_pref_mixin.
 import {PrefControlMixin} from '/shared/settings/controls/pref_control_mixin.js';
 
 import {getTemplate} from './controlled_button.html.js';
+import {PrefKeyObserverMixin} from './pref_key_observer_mixin.js';
 
 const ControlledButtonElementBase =
-    CrPolicyPrefMixin(PrefControlMixin(PolymerElement));
+    PrefKeyObserverMixin(CrPolicyPrefMixin(PrefControlMixin(PolymerElement)));
 
 export class ControlledButtonElement extends ControlledButtonElementBase {
   static get is() {
@@ -50,11 +51,11 @@ export class ControlledButtonElement extends ControlledButtonElementBase {
     };
   }
 
-  endJustified: boolean;
-  label: string;
-  disabled: boolean;
-  private actionClass_: string;
-  private enforced_: boolean;
+  declare endJustified: boolean;
+  declare label: string;
+  declare disabled: boolean;
+  declare private actionClass_: string;
+  declare private enforced_: boolean;
 
   override connectedCallback() {
     super.connectedCallback();

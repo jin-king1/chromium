@@ -17,23 +17,18 @@ class MODULES_EXPORT SpeechRecognitionPhrase final : public ScriptWrappable {
 
  public:
   static SpeechRecognitionPhrase* Create(
-      ScriptState* script_state,
-      const WTF::String& phrase,
+      const String& phrase,
       float boost = 1.0,
       ExceptionState& exception_state = ASSERT_NO_EXCEPTION);
 
-  explicit SpeechRecognitionPhrase(const WTF::String& phrase,
-                                   float boost = 1.0);
+  explicit SpeechRecognitionPhrase(const String& phrase, float boost = 1.0);
   ~SpeechRecognitionPhrase() override = default;
 
-  WTF::String& phrase() { return phrase_; }
-  void setPhrase(const WTF::String& phrase) { phrase_ = phrase; }
-
-  float boost() { return boost_; }
-  void setBoost(float boost) { boost_ = boost; }
+  const String& phrase() const { return phrase_; }
+  float boost() const { return boost_; }
 
  private:
-  WTF::String phrase_;
+  String phrase_;
   float boost_;
 };
 

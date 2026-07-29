@@ -6,12 +6,13 @@ package org.chromium.chrome.browser.customtabs;
 
 import static androidx.browser.customtabs.CustomTabsIntent.EXTRA_ENABLE_EPHEMERAL_BROWSING;
 import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
-import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.allOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -49,10 +50,11 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbar;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
@@ -69,9 +71,8 @@ import org.chromium.chrome.browser.toolbar.ToolbarDataProvider;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuCoordinator;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuTestSupport;
-import org.chromium.chrome.test.AutomotiveContextWrapperTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.browser_ui.styles.ChromeColors;
 import org.chromium.components.user_prefs.UserPrefs;
@@ -82,7 +83,6 @@ import java.util.concurrent.TimeoutException;
 /** Instrumentation tests for {@link CustomTabActivity} launched in ephemeral mode. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@EnableFeatures(ChromeFeatureList.CCT_EPHEMERAL_MODE)
 @Batch(Batch.PER_CLASS)
 public class CustomTabActivityEphemeralTest {
     private static final String HISTOGRAM_NAME = "CustomTabs.IncognitoCctCallerId";
@@ -96,8 +96,7 @@ public class CustomTabActivityEphemeralTest {
     @Rule public EmbeddedTestServerRule mEmbeddedTestServerRule = new EmbeddedTestServerRule();
 
     @Rule
-    public AutomotiveContextWrapperTestRule mAutomotiveRule =
-            new AutomotiveContextWrapperTestRule();
+    public OverrideContextWrapperTestRule mAutomotiveRule = new OverrideContextWrapperTestRule();
 
     @Before
     public void setUp() throws TimeoutException {
@@ -134,7 +133,7 @@ public class CustomTabActivityEphemeralTest {
 
     private static int getThemeColor(CustomTabActivity activity) {
         return ThreadUtils.runOnUiThreadBlocking(
-                () -> ChromeColors.getDefaultThemeColor(activity, false));
+                () -> ChromeColors.getDefaultThemeColor(activity, /* isIncognito= */ false));
     }
 
     private static int getToolbarColor(CustomTabActivity activity) {
@@ -196,20 +195,10 @@ public class CustomTabActivityEphemeralTest {
 
     @Test
     @MediumTest
-    @Features.DisableFeatures(ChromeFeatureList.CCT_EPHEMERAL_MODE)
-    public void testEphemeralTabLaunchesInRegularProfileWhenDisabled() {
-        CustomTabActivity activity = launchEphemeralCustomTabActivity();
-        Profile profile = activity.getActivityTab().getProfile();
-        assertFalse(profile.isOffTheRecord());
-        assertFalse(profile.isIncognitoBranded());
-        assertFalse(profile.isPrimaryOtrProfile());
-    }
-
-    @Test
-    @MediumTest
     public void testToolbarDoesNotHaveIncognitoLogo() {
         launchEphemeralCustomTabActivity();
-        onView(withId(R.id.incognito_cct_logo_image_view)).check(matches(not(isDisplayed())));
+        onView(allOf(withId(R.id.incognito_cct_logo_image_view), isDisplayed()))
+                .check(doesNotExist());
     }
 
     @Test
@@ -266,7 +255,7 @@ public class CustomTabActivityEphemeralTest {
     public void testHiddenTabCreationIsBlocked() throws Exception {
         // mayLaunchUrl should be blocked for ephemeral mode since it runs with always regular
         // profile. Need to update the test if the mayLaunchUrl is ever
-        // allowed in OTR profiles. (crbug.com/1106757)
+        // allowed in OTR profiles. (crbug.com/40706528)
         Intent intent = createEphemeralCustomTabIntent();
         final CustomTabsConnection connection = CustomTabsTestUtils.warmUpAndWait();
         final var sessionHolder = SessionHolder.getSessionHolderFromIntent(intent);
@@ -395,7 +384,8 @@ public class CustomTabActivityEphemeralTest {
     public void recordsHistogramEphemeral() {
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
-                        HISTOGRAM_NAME, IntentHandler.IncognitoCctCallerId.EPHEMERAL_TAB);
+                        HISTOGRAM_NAME,
+                        BrowserServicesIntentDataProvider.IncognitoCctCallerId.EPHEMERAL_TAB);
         launchEphemeralCustomTabActivity();
         histogramWatcher.assertExpected();
     }

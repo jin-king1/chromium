@@ -7,30 +7,37 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_base.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/apps/intent_helper/preferred_apps_test_util.h"
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
 #include "chrome/browser/apps/link_capturing/metrics/intent_handling_metrics.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/intent_picker_tab_helper.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/intent_picker_bubble_view.h"
-#include "chrome/browser/ui/views/location_bar/intent_chip_button.h"
-#include "chrome/browser/ui/views/location_bar/intent_picker_view.h"
+#include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
+#include "chrome/browser/ui/views/web_apps/web_app_link_capturing_test_utils.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/link_capturing_features.h"
@@ -52,6 +59,7 @@
 #include "components/services/app_service/public/cpp/intent_test_util.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -68,11 +76,11 @@
 #include "ui/views/widget/widget_observer.h"
 #include "ui/views/widget/widget_utils.h"
 #include "url/gurl.h"
-#include "url/url_constants.h"
 
 namespace {
 
 const char kTestAppActivity[] = "abcdefg";
+
 
 class FakeIconLoader : public apps::IconLoader {
  public:
@@ -123,9 +131,10 @@ class WidgetDestroyedWaiter : public views::WidgetObserver {
 
 }  // namespace
 
-class IntentPickerBubbleViewBrowserTestChromeOS : public InProcessBrowserTest {
+class IntentPickerBubbleViewBrowserTestChromeOSBase
+    : public InProcessBrowserTest {
  public:
-  IntentPickerBubbleViewBrowserTestChromeOS() = default;
+  IntentPickerBubbleViewBrowserTestChromeOSBase() = default;
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     arc::SetArcAvailableCommandLineForTesting(command_line);
@@ -178,7 +187,8 @@ class IntentPickerBubbleViewBrowserTestChromeOS : public InProcessBrowserTest {
 
     auto app = std::make_unique<apps::App>(apps::AppType::kArc, app_id);
     app->name = app_name;
-    app->intent_filters.push_back(apps_util::MakeIntentFilterForUrlScope(url));
+    app->intent_filters.emplace();
+    app->intent_filters->push_back(apps_util::MakeIntentFilterForUrlScope(url));
     std::vector<apps::AppPtr> apps;
     apps.push_back(std::move(app));
     app_service_proxy_->OnApps(std::move(apps), apps::AppType::kArc,
@@ -196,12 +206,6 @@ class IntentPickerBubbleViewBrowserTestChromeOS : public InProcessBrowserTest {
     auto app_id =
         web_app::test::InstallWebApp(profile(), std::move(web_app_info));
     return app_id;
-  }
-
-  IntentChipButton* GetIntentPickerIcon() {
-    return BrowserView::GetBrowserViewForBrowser(browser())
-        ->toolbar_button_provider()
-        ->GetIntentChipButton();
   }
 
   IntentPickerBubbleView* intent_picker_bubble() {
@@ -224,7 +228,7 @@ class IntentPickerBubbleViewBrowserTestChromeOS : public InProcessBrowserTest {
   // of the interface.
   arc::mojom::AppHost* app_host() { return app_prefs(); }
 
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
 
   // The handled intents list in the intent helper instance represents the arc
   // app that app service tried to launch.
@@ -235,6 +239,16 @@ class IntentPickerBubbleViewBrowserTestChromeOS : public InProcessBrowserTest {
 
   void clear_launched_arc_apps() {
     intent_helper_instance_->clear_handled_intents();
+  }
+
+  views::Button* GetIntentPickerIcon() {
+    auto* toolbar_button_provider =
+        BrowserView::GetBrowserViewForBrowser(browser())
+            ->toolbar_button_provider();
+    return page_actions::GetIconLabelBubbleViewForTesting(
+        toolbar_button_provider->GetPageActionViewInterface(
+            kActionShowIntentPicker),
+        kActionShowIntentPicker);
   }
 
   void ClickIconToShowBubble() {
@@ -274,12 +288,12 @@ class IntentPickerBubbleViewBrowserTestChromeOS : public InProcessBrowserTest {
     app_info.emplace_back(apps::PickerEntryType::kArc, ui::ImageModel(),
                           "package_2", "dank_app_2");
 
-    browser()->window()->ShowIntentPickerBubble(
+    BrowserWindow::FromBrowser(browser())->ShowIntentPickerBubble(
         std::move(app_info), /*show_stay_in_chrome=*/true,
         /*show_remember_selection=*/true,
         IntentPickerBubbleView::BubbleType::kLinkCapturing, std::nullopt,
         base::BindOnce(
-            &IntentPickerBubbleViewBrowserTestChromeOS::OnBubbleClosed,
+            &IntentPickerBubbleViewBrowserTestChromeOSBase::OnBubbleClosed,
             base::Unretained(this)));
   }
 
@@ -288,7 +302,7 @@ class IntentPickerBubbleViewBrowserTestChromeOS : public InProcessBrowserTest {
   void CheckStayInChrome() {
     ASSERT_TRUE(intent_picker_bubble());
     intent_picker_bubble()->CancelDialog();
-    EXPECT_EQ(BrowserList::GetInstance()->GetLastActive(), browser());
+    EXPECT_EQ(GetLastActiveBrowserWindowInterfaceWithAnyProfile(), browser());
     EXPECT_EQ(launched_arc_apps().size(), 0U);
   }
 
@@ -301,7 +315,8 @@ class IntentPickerBubbleViewBrowserTestChromeOS : public InProcessBrowserTest {
 
   bool VerifyPWALaunched(const std::string& app_id) {
     WaitForAppService();
-    Browser* app_browser = BrowserList::GetInstance()->GetLastActive();
+    BrowserWindowInterface* const app_browser =
+        GetLastActiveBrowserWindowInterfaceWithAnyProfile();
     return web_app::AppBrowserController::IsForWebApp(app_browser, app_id);
   }
 
@@ -350,13 +365,23 @@ class IntentPickerBubbleViewBrowserTestChromeOS : public InProcessBrowserTest {
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
   raw_ptr<apps::AppServiceProxy, DanglingUntriaged> app_service_proxy_ =
       nullptr;
   std::unique_ptr<arc::FakeIntentHelperInstance> intent_helper_instance_;
   std::unique_ptr<arc::FakeAppInstance> app_instance_;
   FakeIconLoader icon_loader_;
   bool bubble_closed_ = false;
+};
+
+class IntentPickerBubbleViewBrowserTestChromeOS
+    : public IntentPickerBubbleViewBrowserTestChromeOSBase {
+ public:
+  IntentPickerBubbleViewBrowserTestChromeOS() {
+    feature_list_.InitAndEnableFeature(features::kPageActionsMigration);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 // Test that the intent picker bubble will show for ARC apps.
@@ -374,9 +399,9 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   auto app_id = AddArcAppWithIntentFilter(app_name, test_url);
   views::Button* intent_picker_view = GetIntentPickerIcon();
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   ClickIconToShowBubble();
@@ -411,10 +436,13 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   GURL test_url(InScopeAppUrl());
   std::string app_name = "test_name";
   auto app_id = InstallWebApp(app_name, test_url);
+  // Disable link capturing preference for the app to ensure the bubble is
+  // shown.
+  apps_util::RemoveSupportedLinksPreferenceAndWait(profile(), app_id);
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   ClickIconToShowBubble();
@@ -475,9 +503,9 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   std::string app_name = "test_name";
   auto app_id = AddArcAppWithIntentFilter(app_name, test_url);
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   ClickIconToShowBubble();
@@ -500,9 +528,9 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   GURL test_url(InScopeAppUrl());
   views::Button* intent_picker_view = GetIntentPickerIcon();
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   EXPECT_FALSE(intent_picker_view->GetVisible());
@@ -537,9 +565,13 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   std::string app_name = "test_name";
   auto app_id = InstallWebApp(app_name, test_url);
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  // Disable link capturing preference for the app to ensure the bubble is
+  // shown.
+  apps_util::RemoveSupportedLinksPreferenceAndWait(profile(), app_id);
+
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   ClickIconToShowBubble();
@@ -554,9 +586,9 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   std::string app_name = "test_name";
   auto app_id = AddArcAppWithIntentFilter(app_name, test_url);
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   ClickIconToShowBubble();
@@ -576,9 +608,9 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   std::string app_name_arc = "arc_test_name";
   auto app_id_arc = AddArcAppWithIntentFilter(app_name_arc, test_url);
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   ClickIconToShowBubble();
@@ -614,22 +646,6 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   intent_picker_bubble()->AcceptDialog();
   EXPECT_TRUE(VerifyPWALaunched(app_id_pwa));
 
-  // WebApp histogram.
-  histogram_tester.ExpectBucketCount(
-      "ChromeOS.Intents.LinkCapturingEvent2.WebApp",
-      apps::IntentHandlingMetrics::LinkCapturingEvent::kEntryPointShown, 1);
-  histogram_tester.ExpectBucketCount(
-      "ChromeOS.Intents.LinkCapturingEvent2.WebApp",
-      apps::IntentHandlingMetrics::LinkCapturingEvent::kAppOpened, 1);
-
-  // ArcApp histogram.
-  histogram_tester.ExpectBucketCount(
-      "ChromeOS.Intents.LinkCapturingEvent2.ArcApp",
-      apps::IntentHandlingMetrics::LinkCapturingEvent::kEntryPointShown, 1);
-  histogram_tester.ExpectBucketCount(
-      "ChromeOS.Intents.LinkCapturingEvent2.ArcApp",
-      apps::IntentHandlingMetrics::LinkCapturingEvent::kAppOpened, 0);
-
   // General histogram.
   histogram_tester.ExpectBucketCount(
       "ChromeOS.Intents.LinkCapturingEvent2",
@@ -649,9 +665,9 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   std::string app_name_arc = "arc_test_name";
   auto app_id_arc = AddArcAppWithIntentFilter(app_name_arc, test_url);
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   ClickIconToShowBubble();
@@ -698,9 +714,9 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
   std::string app_name_arc = "arc_test_name";
   auto app_id_arc = AddArcAppWithIntentFilter(app_name_arc, test_url);
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   ClickIconToShowBubble();
@@ -709,14 +725,21 @@ IN_PROC_BROWSER_TEST_F(IntentPickerBubbleViewBrowserTestChromeOS,
 }
 
 class IntentPickerBubbleViewBrowserTestChromeOSParameterized
-    : public IntentPickerBubbleViewBrowserTestChromeOS,
+    : public IntentPickerBubbleViewBrowserTestChromeOSBase,
       public testing::WithParamInterface<
           apps::test::LinkCapturingFeatureVersion> {
  public:
-  IntentPickerBubbleViewBrowserTestChromeOSParameterized()
-      : IntentPickerBubbleViewBrowserTestChromeOS() {
-    feature_list_.InitWithFeaturesAndParameters(
-        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam()), {});
+  IntentPickerBubbleViewBrowserTestChromeOSParameterized() {
+    std::vector<base::test::FeatureRefAndParams> features_to_enable =
+        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam());
+    std::vector<base::test::FeatureRef> features_to_disable;
+    features_to_enable.push_back({features::kPageActionsMigration, {}});
+    feature_list_.InitWithFeaturesAndParameters(features_to_enable,
+                                                features_to_disable);
+  }
+
+  apps::test::LinkCapturingFeatureVersion GetLinkCapturingVersionParam() const {
+    return GetParam();
   }
 
  private:
@@ -737,9 +760,9 @@ IN_PROC_BROWSER_TEST_P(IntentPickerBubbleViewBrowserTestChromeOSParameterized,
   std::string app_name = "test_name";
   auto app_id = AddArcAppWithIntentFilter(app_name, test_url);
 
-  chrome::NewTab(browser());
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
   NavigateAndWaitForIconUpdate(test_url);
   ClickIconToShowBubble();
@@ -750,24 +773,46 @@ IN_PROC_BROWSER_TEST_P(IntentPickerBubbleViewBrowserTestChromeOSParameterized,
   remember_selection_checkbox()->SetChecked(true);
   ASSERT_TRUE(intent_picker_bubble());
   intent_picker_bubble()->AcceptDialog();
-  WaitForAppService();
+
+  apps_util::PreferredAppUpdateWaiter(profile(), app_id).Wait();
 
   // Navigate to the same site again, and verify the app is automatically
   // launched.
   clear_launched_arc_apps();
 
-  ASSERT_TRUE(
-      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
 
-  NavigateParams params(browser(), test_url,
-                        ui::PageTransition::PAGE_TRANSITION_LINK);
-  ui_test_utils::NavigateToURL(&params);
+  // Click a link to `test_url` programmatically with a user gesture.
+  // This prevents the tab from being closed as "dangling".
+  std::string js_code = content::JsReplace(
+      "const a = document.createElement('a');"
+      "a.href = $1;"
+      "document.body.appendChild(a);"
+      "a.click();",
+      test_url);
+
+  // ExecJs runs with a user gesture by default.
+  EXPECT_TRUE(content::ExecJs(GetWebContents(), js_code));
+  ASSERT_NO_FATAL_FAILURE(VerifyArcAppLaunched(app_name, test_url));
+
+  // Navigate to the same site again, this time in a new tab (which would allow
+  // the non-arc navigation capturing code to also potentially trigger on this
+  // navigation), and verify the app was launched.
+  clear_launched_arc_apps();
+  content::RenderFrameHost* rfh = ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html"));
+  ASSERT_TRUE(rfh);
+  EXPECT_TRUE(content::ExecJs(
+      rfh,
+      content::JsReplace("window.open($1, '_blank', 'noopener');", test_url)));
   ASSERT_NO_FATAL_FAILURE(VerifyArcAppLaunched(app_name, test_url));
 }
 
 INSTANTIATE_TEST_SUITE_P(
     All,
     IntentPickerBubbleViewBrowserTestChromeOSParameterized,
-    testing::Values(apps::test::LinkCapturingFeatureVersion::kV1DefaultOff,
-                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOff),
-    apps::test::LinkCapturingVersionToString);
+    testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOff,
+                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOn),
+    [](const testing::TestParamInfo<apps::test::LinkCapturingFeatureVersion>&
+           info) { return apps::test::ToString(info.param); });

@@ -27,7 +27,7 @@ public class CastContentWindowAndroid
     // ref should be checked that it is not zero before it is used.
     private long mNativeCastContentWindowAndroid;
     private final String mSessionId;
-    private CastWebContentsComponent mComponent;
+    private final CastWebContentsComponent mComponent;
 
     private boolean mScreenAccess;
     private CastWebContentsComponent.StartParams mStartParams;
@@ -71,16 +71,14 @@ public class CastContentWindowAndroid
     @SuppressWarnings("unused")
     @CalledByNative
     private void createWindowForWebContents(
-            WebContents webContents, String appId, boolean shouldRequestAudioFocus) {
+            WebContents webContents, boolean shouldRequestAudioFocus) {
         Log.d(
                 TAG,
-                "Creating window for WebContents: sessionId=%s, appId=%s, audioFocus=%b",
+                "Creating window for WebContents: sessionId=%s, audioFocus=%b",
                 mSessionId,
-                appId,
                 shouldRequestAudioFocus);
         mStartParams =
-                new CastWebContentsComponent.StartParams(
-                        webContents, appId, shouldRequestAudioFocus);
+                new CastWebContentsComponent.StartParams(webContents, shouldRequestAudioFocus);
         maybeStartComponent();
     }
 
@@ -92,7 +90,7 @@ public class CastContentWindowAndroid
     @SuppressWarnings("unused")
     @CalledByNative
     private void grantScreenAccess() {
-        Log.d(TAG, "Granting screen access: sessionId=" + mSessionId);
+        Log.d(TAG, "Granting screen access: sessionId=%s", mSessionId);
         mScreenAccess = true;
         maybeStartComponent();
     }
@@ -100,7 +98,7 @@ public class CastContentWindowAndroid
     @SuppressWarnings("unused")
     @CalledByNative
     private void revokeScreenAccess() {
-        Log.d(TAG, "Revoking screen access: sessionId=" + mSessionId);
+        Log.d(TAG, "Revoking screen access: sessionId=%s", mSessionId);
         mComponent.stop();
         mScreenAccess = false;
     }
@@ -109,17 +107,6 @@ public class CastContentWindowAndroid
     @CalledByNative
     private void enableTouchInput(boolean enabled) {
         mComponent.enableTouchInput(enabled);
-    }
-
-    @SuppressWarnings("unused")
-    @CalledByNative
-    private void setAllowPictureInPicture(boolean allowPictureInPicture) {
-        mComponent.setAllowPictureInPicture(allowPictureInPicture);
-    }
-
-    @CalledByNative
-    private void setMediaPlaying(boolean mediaPlaying) {
-        mComponent.setMediaPlaying(mediaPlaying);
     }
 
     @SuppressWarnings("unused")
@@ -134,17 +121,16 @@ public class CastContentWindowAndroid
         // TODO(derekjchow): Add a unittest to check this behaviour. Also consider using
         // Instrumentation.startActivitySync to guarentee onCreate is run.
 
-        Log.d(TAG, "Native window destroyed: sessionId=" + mSessionId);
+        Log.d(TAG, "Native window destroyed: sessionId=%s", mSessionId);
         mComponent.stop();
+        mComponent.destroy();
     }
 
     @Override
     public void onComponentClosed() {
-        Log.d(TAG, "Component closed: sessionId=" + mSessionId);
+        Log.d(TAG, "Component closed: sessionId=%s", mSessionId);
         if (mNativeCastContentWindowAndroid != 0) {
-            CastContentWindowAndroidJni.get()
-                    .onActivityStopped(
-                            mNativeCastContentWindowAndroid, CastContentWindowAndroid.this);
+            CastContentWindowAndroidJni.get().onActivityStopped(mNativeCastContentWindowAndroid);
         }
     }
 
@@ -153,21 +139,14 @@ public class CastContentWindowAndroid
         Log.d(TAG, "Visiblity changed: sessionId=%s, visibility=%d", mSessionId, visibilityType);
         if (mNativeCastContentWindowAndroid != 0) {
             CastContentWindowAndroidJni.get()
-                    .onVisibilityChange(
-                            mNativeCastContentWindowAndroid,
-                            CastContentWindowAndroid.this,
-                            visibilityType);
+                    .onVisibilityChange(mNativeCastContentWindowAndroid, visibilityType);
         }
     }
 
     @NativeMethods
     interface Natives {
-        void onActivityStopped(
-                long nativeCastContentWindowAndroid, CastContentWindowAndroid caller);
+        void onActivityStopped(long nativeCastContentWindowAndroid);
 
-        void onVisibilityChange(
-                long nativeCastContentWindowAndroid,
-                CastContentWindowAndroid caller,
-                int visibilityType);
+        void onVisibilityChange(long nativeCastContentWindowAndroid, int visibilityType);
     }
 }

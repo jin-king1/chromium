@@ -50,8 +50,7 @@ class FakeFileSystemAccessPermissionContext
       GlobalRenderFrameHostId frame_id,
       base::OnceCallback<void(AfterWriteCheckResult)> callback) override;
 
-  bool IsFileTypeDangerous(const base::FilePath& path,
-                           const url::Origin& origin) override;
+  bool IsFileTypeDangerous(const base::FilePath& path) override;
 
   base::expected<void, std::string> CanShowFilePicker(
       content::RenderFrameHost* rfh) override;
@@ -82,6 +81,14 @@ class FakeFileSystemAccessPermissionContext
   void NotifyEntryMoved(const url::Origin& origin,
                         const PathInfo& old_path,
                         const PathInfo& new_path) override;
+
+  // No-op. This class does not manage any permission grants.
+  void NotifyEntryModified(const url::Origin& origin,
+                           const PathInfo& path) override;
+
+  // No-op. This class does not manage any permission grants.
+  void NotifyEntryRemoved(const url::Origin& origin,
+                          const PathInfo& path) override;
 
   void OnFileCreatedFromShowSaveFilePicker(
       const GURL& file_picker_binding_context,

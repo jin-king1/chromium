@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "remoting/host/curtain_mode.h"
 
 #include <ApplicationServices/ApplicationServices.h>
@@ -16,11 +11,13 @@
 
 #include "base/apple/osstatus_logging.h"
 #include "base/apple/scoped_cftyperef.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/mac/login_util.h"
 #include "base/memory/ptr_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "remoting/base/errors.h"
 #include "remoting/host/client_session_control.h"
@@ -51,7 +48,8 @@ bool IsRunningHeadless() {
   }
 
   for (UInt32 i = 0; i < online_display_count; i++) {
-    if (CGDisplayModelNumber(online_displays[i]) != kVirtualDisplayID) {
+    if (CGDisplayModelNumber(UNSAFE_TODO(online_displays[i])) !=
+        kVirtualDisplayID) {
       // At least one monitor is attached so the machine is not headless.
       return false;
     }
@@ -93,7 +91,9 @@ class SessionWatcher : public base::RefCountedThreadSafe<SessionWatcher> {
   void RemoveEventHandler();
 
   // Disconnects the client session.
-  void DisconnectSession(ErrorCode error);
+  void DisconnectSession(ErrorCode error,
+                         std::string_view error_details,
+                         const base::Location& error_location);
 
   // Handlers for the switch-in event.
   static OSStatus SessionActivateHandler(EventHandlerCallRef handler,
@@ -156,16 +156,17 @@ void SessionWatcher::ActivateCurtain() {
     // In case of fast user switch, there will be two host processes running,
     // one as the logged on user and another one as root. AgentProcessBroker
     // will terminate the root host process in that case.
-    LOG(ERROR)
-        << "Connecting to the console login session is not yet supported.";
-    DisconnectSession(ErrorCode::LOGIN_SCREEN_NOT_SUPPORTED);
+    DisconnectSession(
+        ErrorCode::LOGIN_SCREEN_NOT_SUPPORTED,
+        "Connecting to the console login session is not yet supported.",
+        FROM_HERE);
     return;
   }
   // Try to install the switch-in handler. Do this before switching out the
   // current session so that the console session is not affected if it fails.
   if (!InstallEventHandler()) {
-    LOG(ERROR) << "Failed to install the switch-in handler.";
-    DisconnectSession(ErrorCode::HOST_CONFIGURATION_ERROR);
+    DisconnectSession(ErrorCode::HOST_CONFIGURATION_ERROR,
+                      "Failed to install the switch-in handler.", FROM_HERE);
     return;
   }
 
@@ -198,14 +199,18 @@ void SessionWatcher::ActivateCurtain() {
     std::optional<OSStatus> err = base::mac::SwitchToLoginWindow();
     if (!err.has_value()) {
       // Disconnect the session since we are unable to enter curtain mode.
-      LOG(ERROR) << "SACSwitchToLoginWindow unavailable - unable to enter "
-                    "curtain mode.";
-      DisconnectSession(ErrorCode::HOST_CONFIGURATION_ERROR);
+      DisconnectSession(
+          ErrorCode::HOST_CONFIGURATION_ERROR,
+          "SACSwitchToLoginWindow unavailable - unable to enter curtain mode.",
+          FROM_HERE);
       return;
     }
     if (err.value() != noErr) {
-      OSSTATUS_LOG(ERROR, err.value()) << "Failed to switch to login window";
-      DisconnectSession(ErrorCode::HOST_CONFIGURATION_ERROR);
+      DisconnectSession(
+          ErrorCode::HOST_CONFIGURATION_ERROR,
+          base::StringPrintf("Failed to switch to login window: %d",
+                             err.value()),
+          FROM_HERE);
       return;
     }
     if (is_headless) {
@@ -213,10 +218,12 @@ void SessionWatcher::ActivateCurtain() {
       // since the call to SACSwitchToLoginWindow very likely failed. If we
       // allow them to unlock the machine, the local desktop would be visible if
       // the local monitor were plugged in.
-      LOG(ERROR) << "Machine is running in headless mode (no monitors "
-                 << "attached), we attempted to curtain the session but "
-                 << "SACSwitchToLoginWindow is likely to fail in this mode.";
-      DisconnectSession(ErrorCode::HOST_CONFIGURATION_ERROR);
+      static const char error_details[] =
+          "Machine is running in headless mode (no monitors attached), we "
+          "attempted to curtain the session but SACSwitchToLoginWindow is "
+          "likely to fail in this mode.";
+      DisconnectSession(ErrorCode::HOST_CONFIGURATION_ERROR, error_details,
+                        FROM_HERE);
       return;
     }
   }
@@ -234,7 +241,10 @@ bool SessionWatcher::InstallEventHandler() {
       &event_handler_);
   if (result != noErr) {
     event_handler_ = nullptr;
-    DisconnectSession(ErrorCode::HOST_CONFIGURATION_ERROR);
+    DisconnectSession(
+        ErrorCode::HOST_CONFIGURATION_ERROR,
+        base::StringPrintf("Failed to install event handler: %d", result),
+        FROM_HERE);
     return false;
   }
 
@@ -250,23 +260,28 @@ void SessionWatcher::RemoveEventHandler() {
   }
 }
 
-void SessionWatcher::DisconnectSession(ErrorCode error) {
+void SessionWatcher::DisconnectSession(ErrorCode error,
+                                       std::string_view error_details,
+                                       const base::Location& error_location) {
   if (!caller_task_runner_->BelongsToCurrentThread()) {
     caller_task_runner_->PostTask(
         FROM_HERE,
-        base::BindOnce(&SessionWatcher::DisconnectSession, this, error));
+        base::BindOnce(&SessionWatcher::DisconnectSession, this, error,
+                       std::string(error_details), error_location));
     return;
   }
 
   if (client_session_control_) {
-    client_session_control_->DisconnectSession(error);
+    client_session_control_->DisconnectSession(error, error_details,
+                                               error_location);
   }
 }
 
 OSStatus SessionWatcher::SessionActivateHandler(EventHandlerCallRef handler,
                                                 EventRef event,
                                                 void* user_data) {
-  static_cast<SessionWatcher*>(user_data)->DisconnectSession(ErrorCode::OK);
+  static_cast<SessionWatcher*>(user_data)->DisconnectSession(
+      ErrorCode::OK, "User session activated", FROM_HERE);
   return noErr;
 }
 

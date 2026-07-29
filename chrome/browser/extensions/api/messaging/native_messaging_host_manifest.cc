@@ -10,6 +10,9 @@
 #include "base/json/json_file_value_serializer.h"
 #include "base/strings/string_util.h"
 #include "chrome/common/chrome_features.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -57,7 +60,7 @@ std::unique_ptr<NativeMessagingHostManifest> NativeMessagingHostManifest::Load(
     *error_message = "Invalid manifest file.";
     return nullptr;
   }
-  const base::Value::Dict& dict = parsed->GetDict();
+  const base::DictValue& dict = parsed->GetDict();
 
   std::unique_ptr<NativeMessagingHostManifest> result(
       new NativeMessagingHostManifest());
@@ -70,7 +73,7 @@ std::unique_ptr<NativeMessagingHostManifest> NativeMessagingHostManifest::Load(
 
 NativeMessagingHostManifest::NativeMessagingHostManifest() = default;
 
-bool NativeMessagingHostManifest::Parse(const base::Value::Dict& dict,
+bool NativeMessagingHostManifest::Parse(const base::DictValue& dict,
                                         std::string* error_message) {
   const std::string* name_str = dict.FindString("name");
   if (!name_str || !IsValidName(*name_str)) {
@@ -101,7 +104,7 @@ bool NativeMessagingHostManifest::Parse(const base::Value::Dict& dict,
     return false;
   }
 
-  const base::Value::List* allowed_origins_list =
+  const base::ListValue* allowed_origins_list =
       dict.FindList("allowed_origins");
   if (!allowed_origins_list) {
     *error_message =

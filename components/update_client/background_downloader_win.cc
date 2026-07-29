@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -30,7 +31,9 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/path_service.h"
+#include "base/strings/strcat.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_thread_priority.h"
@@ -144,17 +147,17 @@ constexpr int kMaxQueuedJobs = 10;
 
 // Prefix used for naming the temporary directories for downloads.
 constexpr base::FilePath::CharType kDownloadDirectoryPrefix[] =
-    FILE_PATH_LITERAL("chrome_BITS_");
+    FILE_PATH_LITERAL("_chrome_BITS_");
 constexpr base::FilePath::CharType kDownloadDirectoryPrefixMatcher[] =
-    FILE_PATH_LITERAL("chrome_BITS_*");
+    FILE_PATH_LITERAL("_chrome_BITS_*");
 
 // Returns the status code from a given BITS error.
 int GetHttpStatusFromBitsError(HRESULT error) {
   // BITS errors are defined in bitsmsg.h. Although not documented, it is
   // clear that all errors corresponding to http status code have the high
   // word equal to 0x8019 and the low word equal to the http status code.
-  const int kHttpStatusFirst = 100;  // Continue.
-  const int kHttpStatusLast = 505;   // Version not supported.
+  static constexpr int kHttpStatusFirst = 100;  // Continue.
+  static constexpr int kHttpStatusLast = 505;   // Version not supported.
   bool is_valid = HIWORD(error) == 0x8019 &&
                   LOWORD(error) >= kHttpStatusFirst &&
                   LOWORD(error) <= kHttpStatusLast;
@@ -249,7 +252,7 @@ HRESULT GetJobByteCount(const Microsoft::WRL::ComPtr<IBackgroundCopyJob>& job,
     return hr;
   }
 
-  const uint64_t kMaxNumBytes =
+  static constexpr uint64_t kMaxNumBytes =
       static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
   if (job_progress.BytesTransferred <= kMaxNumBytes) {
     *downloaded_bytes = job_progress.BytesTransferred;
@@ -427,10 +430,12 @@ void CheckIsMta() {
 }  // namespace
 
 BackgroundDownloader::BackgroundDownloader(
-    scoped_refptr<CrxDownloader> successor)
+    scoped_refptr<CrxDownloader> successor,
+    const std::string& prod_id)
     : CrxDownloader(std::move(successor)),
       com_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
-          kTaskTraitsBackgroundDownloader)) {
+          kTaskTraitsBackgroundDownloader)),
+      prod_id_(base::UTF8ToWide(prod_id)) {
   DETACH_FROM_SEQUENCE(com_sequence_checker_);
 }
 
@@ -774,7 +779,8 @@ HRESULT BackgroundDownloader::InitializeNewJob(
   CheckIsMta();
 
   base::FilePath tempdir;
-  if (!base::CreateNewTempDirectory(kDownloadDirectoryPrefix, &tempdir)) {
+  if (!base::CreateNewTempDirectory(
+          base::StrCat({prod_id_, kDownloadDirectoryPrefix}), &tempdir)) {
     return E_FAIL;
   }
 
@@ -800,7 +806,7 @@ HRESULT BackgroundDownloader::InitializeNewJob(
     return hr;
   }
 
-  const int kSecondsDay = 60 * 60 * 24;
+  static constexpr int kSecondsDay = 60 * 60 * 24;
   hr = job->SetNoProgressTimeout(kSecondsDay * kSetNoProgressTimeoutDays);
   if (FAILED(hr)) {
     return hr;
@@ -903,35 +909,14 @@ void BackgroundDownloader::CleanupStaleJobs() {
 
 void BackgroundDownloader::CleanupStaleDownloads() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(com_sequence_checker_);
-  EnumerateDownloadDirs(
-      kDownloadDirectoryPrefixMatcher, [](const base::FilePath& dir) {
-        const base::Time now = base::Time::Now();
-        base::File::Info info;
-        if (base::GetFileInfo(dir, &info) &&
-            info.creation_time + base::Days(kPurgeStaleJobsAfterDays) < now) {
-          RetryDeletePathRecursively(dir);
-        }
-      });
-}
 
-void BackgroundDownloader::EnumerateDownloadDirs(
-    const base::FilePath::StringType& matcher,
-    base::FunctionRef<void(const base::FilePath& dir)> callback) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(com_sequence_checker_);
   base::FilePath dir;
-  std::vector<base::FilePath> dirs;
-  if (base::PathService::Get(base::DIR_SYSTEM_TEMP, &dir)) {
-    dirs.push_back(dir);
+  if (!base::GetSecureTempDirectory(&dir)) {
+    return;
   }
-  if (base::GetTempDir(&dir)) {
-    dirs.push_back(dir);
-  }
-  std::ranges::for_each(dirs, [&](const base::FilePath& parent_dir) {
-    base::FileEnumerator(parent_dir,
-                         /*recursive=*/false, base::FileEnumerator::DIRECTORIES,
-                         matcher)
-        .ForEach(callback);
-  });
+  CleanupDirectoriesOlderThan(
+      dir, base::StrCat({prod_id_, kDownloadDirectoryPrefixMatcher}),
+      base::Days(kPurgeStaleJobsAfterDays));
 }
 
 }  // namespace update_client

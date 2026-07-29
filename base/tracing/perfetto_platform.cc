@@ -4,32 +4,31 @@
 
 #include "base/tracing/perfetto_platform.h"
 
+#include "base/process/process_handle.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
-#include "base/trace_event/trace_event.h"
 #include "base/tracing/perfetto_task_runner.h"
 #include "base/tracing_buildflags.h"
 #include "build/build_config.h"
+#include "third_party/perfetto/include/perfetto/ext/base/thread_task_runner.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
+#include "base/android/apk_info.h"
 #endif  // BUILDFLAG(IS_ANDROID)
-
-#if !BUILDFLAG(IS_NACL)
-#include "third_party/perfetto/include/perfetto/ext/base/thread_task_runner.h"
-#endif
 
 namespace base::tracing {
 
-namespace {
-constexpr char kProcessNamePrefix[] = "org.chromium-";
-}  // namespace
-
 PerfettoPlatform::PerfettoPlatform(
-    scoped_refptr<base::SequencedTaskRunner> task_runner)
-    : task_runner_(std::move(task_runner)),
+    scoped_refptr<base::SequencedTaskRunner> task_runner,
+    Options options)
+    : process_name_prefix_(std::move(options.process_name_prefix)),
+      defer_delayed_tasks_(options.defer_delayed_tasks),
+      real_process_id_(options.real_process_id == base::kNullProcessId
+                           ? base::GetCurrentProcId()
+                           : options.real_process_id),
+      task_runner_(std::move(task_runner)),
       thread_local_object_([](void* object) {
         delete static_cast<ThreadLocalObject*>(object);
       }) {}
@@ -51,7 +50,7 @@ std::unique_ptr<perfetto::base::TaskRunner> PerfettoPlatform::CreateTaskRunner(
   // TODO(b/242965112): Add support for the builtin task runner
   DCHECK(!perfetto_task_runner_);
   auto perfetto_task_runner =
-      std::make_unique<PerfettoTaskRunner>(task_runner_);
+      std::make_unique<PerfettoTaskRunner>(task_runner_, defer_delayed_tasks_);
   perfetto_task_runner_ = perfetto_task_runner->GetWeakPtr();
   return perfetto_task_runner;
 }
@@ -68,23 +67,22 @@ void PerfettoPlatform::ResetTaskRunner(
 // Note that we override the producer name for the mojo backend in ProducerHost,
 // and thus this only affects the producer name for the system backend.
 std::string PerfettoPlatform::GetCurrentProcessName() {
-  const char* host_package_name = nullptr;
 #if BUILDFLAG(IS_ANDROID)
-  host_package_name = android::BuildInfo::GetInstance()->host_package_name();
+  const std::string& host_package_name = android::apk_info::host_package_name();
+#else
+  std::string host_package_name;
 #endif  // BUILDFLAG(IS_ANDROID)
 
   // On Android we want to include if this is webview inside of an app or
   // Android Chrome. To aid this we add the host_package_name to differentiate
   // the various apps and sources.
   std::string process_name;
-  if (host_package_name) {
-    process_name = StrCat(
-        {kProcessNamePrefix, host_package_name, "-",
-         NumberToString(trace_event::TraceLog::GetInstance()->process_id())});
+  if (!host_package_name.empty()) {
+    process_name = StrCat({process_name_prefix_, host_package_name, "-",
+                           NumberToString(real_process_id_)});
   } else {
-    process_name = StrCat(
-        {kProcessNamePrefix,
-         NumberToString(trace_event::TraceLog::GetInstance()->process_id())});
+    process_name =
+        StrCat({process_name_prefix_, NumberToString(real_process_id_)});
   }
   return process_name;
 }

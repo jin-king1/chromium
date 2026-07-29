@@ -5,11 +5,13 @@
 package org.chromium.android_webview;
 
 import android.graphics.Bitmap;
-import android.util.Log;
 
 import org.chromium.android_webview.common.Lifetime;
+import org.chromium.base.Log;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.embedder_support.util.WebResourceResponseInfo;
 
 import java.io.IOException;
@@ -27,6 +29,7 @@ import java.util.Random;
  * mDefaultVideoPosterUrl.
  */
 @Lifetime.WebView
+@NullMarked
 public class DefaultVideoPosterRequestHandler {
     private static InputStream getInputStream(final AwContentsClient contentClient)
             throws IOException {
@@ -52,7 +55,7 @@ public class DefaultVideoPosterRequestHandler {
                                             Bitmap.CompressFormat.PNG, 100, outputStream);
                                     outputStream.flush();
                                 } catch (IOException e) {
-                                    Log.e(TAG, null, e);
+                                    Log.e(TAG, "", e);
                                 } finally {
                                     closeOutputStream(outputStream);
                                 }
@@ -65,13 +68,13 @@ public class DefaultVideoPosterRequestHandler {
         try {
             outputStream.close();
         } catch (IOException e) {
-            Log.e(TAG, null, e);
+            Log.e(TAG, "", e);
         }
     }
 
-    private static final String TAG = "DefaultVideoPosterRequestHandler";
-    private String mDefaultVideoPosterUrl;
-    private AwContentsClient mContentClient;
+    private static final String TAG = "VideoPosterHandler";
+    private final String mDefaultVideoPosterUrl;
+    private final AwContentsClient mContentClient;
 
     public DefaultVideoPosterRequestHandler(AwContentsClient contentClient) {
         mDefaultVideoPosterUrl = generateDefaulVideoPosterUrl();
@@ -85,13 +88,13 @@ public class DefaultVideoPosterRequestHandler {
      * @return WebResourceResponseInfo which caller can get the image if the url is the default
      *     video poster URL, otherwise null is returned.
      */
-    public WebResourceResponseInfo shouldInterceptRequest(final String url) {
+    public @Nullable WebResourceResponseInfo shouldInterceptRequest(final String url) {
         if (!mDefaultVideoPosterUrl.equals(url)) return null;
 
         try {
             return new WebResourceResponseInfo("image/png", null, getInputStream(mContentClient));
         } catch (IOException e) {
-            Log.e(TAG, null, e);
+            Log.e(TAG, "", e);
             return null;
         }
     }

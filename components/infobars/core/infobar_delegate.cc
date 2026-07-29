@@ -21,6 +21,10 @@ const int InfoBarDelegate::kNoIconID = 0;
 
 InfoBarDelegate::~InfoBarDelegate() = default;
 
+InfoBarDelegate::InfobarPriority InfoBarDelegate::GetPriority() const {
+  return InfobarPriority::kDefault;
+}
+
 int InfoBarDelegate::GetIconId() const {
   return kNoIconID;
 }
@@ -54,6 +58,10 @@ GURL InfoBarDelegate::GetLinkURL() const {
   return GURL();
 }
 
+std::optional<std::u16string> InfoBarDelegate::GetLinkAccessibleText() const {
+  return std::nullopt;
+}
+
 bool InfoBarDelegate::EqualsDelegate(InfoBarDelegate* delegate) const {
   return false;
 }
@@ -84,12 +92,17 @@ bool InfoBarDelegate::ShouldAnimate() const {
   return true;
 }
 
-ConfirmInfoBarDelegate* InfoBarDelegate::AsConfirmInfoBarDelegate() {
-  return nullptr;
+bool InfoBarDelegate::ShouldHideInFullscreen() const {
+  return false;
 }
 
-blocked_content::PopupBlockedInfoBarDelegate*
-InfoBarDelegate::AsPopupBlockedInfoBarDelegate() {
+ConfirmInfoBarDelegate* InfoBarDelegate::AsConfirmInfoBarDelegate() {
+  return const_cast<ConfirmInfoBarDelegate*>(
+      static_cast<const InfoBarDelegate*>(this)->AsConfirmInfoBarDelegate());
+}
+
+const ConfirmInfoBarDelegate* InfoBarDelegate::AsConfirmInfoBarDelegate()
+    const {
   return nullptr;
 }
 
@@ -101,13 +114,6 @@ InfoBarDelegate::AsThemePreviewInfobarDelegate() {
 #if BUILDFLAG(IS_IOS)
 translate::TranslateInfoBarDelegate*
 InfoBarDelegate::AsTranslateInfoBarDelegate() {
-  return nullptr;
-}
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-offline_pages::OfflinePageInfoBarDelegate*
-InfoBarDelegate::AsOfflinePageInfoBarDelegate() {
   return nullptr;
 }
 #endif

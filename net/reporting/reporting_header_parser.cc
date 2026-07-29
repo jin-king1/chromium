@@ -2,14 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "net/reporting/reporting_header_parser.h"
 
-#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -44,6 +38,20 @@ const char kMaxAgeKey[] = "max_age";
 const char kPriorityKey[] = "priority";
 const char kWeightKey[] = "weight";
 
+bool IsAbsolutePath(const std::string& endpoint_url) {
+  if (endpoint_url.empty()) {
+    return false;
+  }
+
+  // handle with '/'
+  if (endpoint_url.size() == 1) {
+    return endpoint_url[0] == '/';
+  }
+
+  // Support path-absolute-URL string with exactly one leading "/"
+  return endpoint_url[0] == '/' && endpoint_url[1] != '/';
+}
+
 // Processes a single endpoint url string parsed from header.
 //
 // |endpoint_url_string| is the string value of the endpoint URL.
@@ -54,8 +62,7 @@ const char kWeightKey[] = "weight";
 bool ProcessEndpointURLString(const std::string& endpoint_url_string,
                               const url::Origin& header_origin,
                               GURL& endpoint_url_out) {
-  // Support path-absolute-URL string with exactly one leading "/"
-  if (std::strspn(endpoint_url_string.c_str(), "/") == 1) {
+  if (IsAbsolutePath(endpoint_url_string)) {
     endpoint_url_out = header_origin.GetURL().Resolve(endpoint_url_string);
   } else {
     endpoint_url_out = GURL(endpoint_url_string);
@@ -79,7 +86,7 @@ bool ProcessEndpoint(ReportingDelegate* delegate,
                      const ReportingEndpointGroupKey& group_key,
                      const base::Value& value,
                      ReportingEndpoint::EndpointInfo* endpoint_info_out) {
-  const base::Value::Dict* dict = value.GetIfDict();
+  const base::DictValue* dict = value.GetIfDict();
   if (!dict)
     return false;
 
@@ -134,7 +141,7 @@ bool ProcessEndpointGroup(
     const url::Origin& origin,
     const base::Value& value,
     ReportingEndpointGroup* parsed_endpoint_group_out) {
-  const base::Value::Dict* dict = value.GetIfDict();
+  const base::DictValue* dict = value.GetIfDict();
   if (!dict)
     return false;
 
@@ -174,7 +181,7 @@ bool ProcessEndpointGroup(
     parsed_endpoint_group_out->include_subdomains = OriginSubdomains::INCLUDE;
   }
 
-  const base::Value::List* endpoint_list = dict->FindList(kEndpointsKey);
+  const base::ListValue* endpoint_list = dict->FindList(kEndpointsKey);
   if (!endpoint_list)
     return false;
 
@@ -297,7 +304,7 @@ void ReportingHeaderParser::ParseReportToHeader(
     ReportingContext* context,
     const NetworkAnonymizationKey& network_anonymization_key,
     const url::Origin& origin,
-    const base::Value::List& list) {
+    const base::ListValue& list) {
   DCHECK(GURL::SchemeIsCryptographic(origin.scheme()));
 
   ReportingDelegate* delegate = context->delegate();

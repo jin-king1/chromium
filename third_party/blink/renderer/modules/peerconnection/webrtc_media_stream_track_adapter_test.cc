@@ -18,6 +18,7 @@
 #include "third_party/blink/public/web/web_heap.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_video_track.h"
 #include "third_party/blink/renderer/modules/mediastream/mock_media_stream_video_source.h"
+#include "third_party/blink/renderer/modules/mediastream/remote_media_stream_track_adapter.h"
 #include "third_party/blink/renderer/modules/peerconnection/mock_peer_connection_dependency_factory.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_source.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_track.h"
@@ -51,8 +52,8 @@ class WebRtcMediaStreamTrackAdapterTest : public ::testing::Test {
         scheduler::GetSingleThreadTaskRunnerForTesting(), true);
     auto* audio_source_ptr = audio_source.get();
     auto* source = MakeGarbageCollected<MediaStreamSource>(
-        String::FromUTF8("local_audio_id"), MediaStreamSource::kTypeAudio,
-        String::FromUTF8("local_audio_track"), false, std::move(audio_source));
+        "local_audio_id", MediaStreamSource::kTypeAudio, "local_audio_track",
+        false, std::move(audio_source));
 
     auto* component = MakeGarbageCollected<MediaStreamComponentImpl>(
         source->Id(), source,
@@ -70,8 +71,8 @@ class WebRtcMediaStreamTrackAdapterTest : public ::testing::Test {
     // TODO(https://crbug.com/1302689): Fix this crazy lifecycle jumping back
     // and forth between GCed and non-GCed objects...
     MakeGarbageCollected<MediaStreamSource>(
-        String::FromUTF8("local_video_id"), MediaStreamSource::kTypeVideo,
-        String::FromUTF8("local_video_track"), false, std::move(video_source));
+        "local_video_id", MediaStreamSource::kTypeVideo, "local_video_track",
+        false, std::move(video_source));
 
     return MediaStreamVideoTrack::CreateVideoTrack(
         video_source_ptr,
@@ -268,6 +269,22 @@ TEST_F(WebRtcMediaStreamTrackAdapterTest, LastReferenceOnSignalingThread) {
   track_adapter_->Dispose();
   track_adapter_ = nullptr;
   waitable_event.Signal();
+  RunMessageLoopsUntilIdle();
+}
+
+TEST_F(WebRtcMediaStreamTrackAdapterTest, DisposeOnSignalingThread) {
+  track_adapter_ =
+      blink::WebRtcMediaStreamTrackAdapter::CreateLocalTrackAdapter(
+          dependency_factory_.Get(), main_thread_, CreateLocalAudioTrack());
+  EXPECT_TRUE(track_adapter_->is_initialized());
+
+  dependency_factory_->GetWebRtcSignalingTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](scoped_refptr<blink::WebRtcMediaStreamTrackAdapter> adapter) {
+            adapter->Dispose();
+          },
+          track_adapter_));
   RunMessageLoopsUntilIdle();
 }
 

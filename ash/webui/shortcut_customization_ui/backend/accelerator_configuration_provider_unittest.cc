@@ -21,7 +21,6 @@
 #include "ash/public/cpp/accelerators.h"
 #include "ash/public/cpp/accelerators_util.h"
 #include "ash/public/mojom/accelerator_configuration.mojom.h"
-#include "ash/public/mojom/accelerator_info.mojom-shared.h"
 #include "ash/public/mojom/accelerator_info.mojom.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
@@ -29,10 +28,9 @@
 #include "ash/system/input_device_settings/input_device_settings_controller_impl.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/webui/shortcut_customization_ui/backend/accelerator_layout_table.h"
-#include "ash/webui/shortcut_customization_ui/mojom/shortcut_customization.mojom-forward.h"
 #include "ash/webui/shortcut_customization_ui/mojom/shortcut_customization.mojom-test-utils.h"
 #include "ash/webui/shortcut_customization_ui/mojom/shortcut_customization.mojom.h"
-#include "base/functional/callback_forward.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
@@ -401,8 +399,8 @@ class AcceleratorConfigurationProviderTest : public AshTestBase {
     // `provider_` has a dependency on `input_method_manager_`.
     provider_.reset();
     AshTestBase::TearDown();
-    input_method::InputMethodManager::Shutdown();
     input_method_manager_ = nullptr;
+    input_method::InputMethodManager::Shutdown();
     histogram_tester_.reset();
     user_action_tester_.reset();
   }
@@ -470,7 +468,7 @@ class AcceleratorConfigurationProviderTest : public AshTestBase {
   std::unique_ptr<AcceleratorConfigurationProvider> provider_;
   NonConfigurableActionsMap non_configurable_actions_map_;
   // Test global singleton. Delete is handled by InputMethodManager::Shutdown().
-  raw_ptr<TestInputMethodManager, DanglingUntriaged> input_method_manager_;
+  raw_ptr<TestInputMethodManager> input_method_manager_;
   std::unique_ptr<FakeDeviceManager> fake_keyboard_manager_;
   FakeAcceleratorsUpdatedObserver observer_;
   std::unique_ptr<base::HistogramTester> histogram_tester_;
@@ -680,20 +678,13 @@ TEST_F(AcceleratorConfigurationProviderTest, TopRowKeyAcceleratorRemapped) {
   base::RunLoop().RunUntilIdle();
 
   // Disable TopRowKeysAreFKeys.
-  if (!features::IsInputDeviceSettingsSplitEnabled()) {
-    Shell::Get()->session_controller()->GetActivePrefService()->SetBoolean(
-        prefs::kSendFunctionKeys, false);
-    EXPECT_FALSE(
-        Shell::Get()->keyboard_controller()->AreTopRowKeysFunctionKeys());
-  } else {
-    auto settings = Shell::Get()
-                        ->input_device_settings_controller()
-                        ->GetKeyboardSettings(fake_keyboard.id)
-                        ->Clone();
-    settings->top_row_are_fkeys = false;
-    Shell::Get()->input_device_settings_controller()->SetKeyboardSettings(
-        fake_keyboard.id, std::move(settings));
-  }
+  auto settings = Shell::Get()
+                      ->input_device_settings_controller()
+                      ->GetKeyboardSettings(fake_keyboard.id)
+                      ->Clone();
+  settings->top_row_are_fkeys = false;
+  Shell::Get()->input_device_settings_controller()->SetKeyboardSettings(
+      fake_keyboard.id, std::move(settings));
 
   base::RunLoop().RunUntilIdle();
   FakeAcceleratorsUpdatedMojoObserver mojo_observer;
@@ -734,20 +725,13 @@ TEST_F(AcceleratorConfigurationProviderTest, TopRowKeyAcceleratorRemapped) {
                                mojo_observer.config());
 
   // Enable TopRowKeysAreFKeys.
-  if (!features::IsInputDeviceSettingsSplitEnabled()) {
-    Shell::Get()->session_controller()->GetActivePrefService()->SetBoolean(
-        prefs::kSendFunctionKeys, true);
-    EXPECT_TRUE(
-        Shell::Get()->keyboard_controller()->AreTopRowKeysFunctionKeys());
-  } else {
-    auto settings = Shell::Get()
-                        ->input_device_settings_controller()
-                        ->GetKeyboardSettings(fake_keyboard.id)
-                        ->Clone();
-    settings->top_row_are_fkeys = true;
-    Shell::Get()->input_device_settings_controller()->SetKeyboardSettings(
-        fake_keyboard.id, std::move(settings));
-  }
+  settings = Shell::Get()
+                 ->input_device_settings_controller()
+                 ->GetKeyboardSettings(fake_keyboard.id)
+                 ->Clone();
+  settings->top_row_are_fkeys = true;
+  Shell::Get()->input_device_settings_controller()->SetKeyboardSettings(
+      fake_keyboard.id, std::move(settings));
   base::RunLoop().RunUntilIdle();
 
   EXPECT_EQ(2, mojo_observer.num_times_notified());
@@ -1046,20 +1030,13 @@ TEST_F(AcceleratorConfigurationProviderTest, AliasWithOriginalAccelerator) {
 
   // Disable TopRowKeysAreFKeys, which is enabled by default for external
   // keyboards.
-  if (!features::IsInputDeviceSettingsSplitEnabled()) {
-    Shell::Get()->session_controller()->GetActivePrefService()->SetBoolean(
-        prefs::kSendFunctionKeys, false);
-    EXPECT_FALSE(
-        Shell::Get()->keyboard_controller()->AreTopRowKeysFunctionKeys());
-  } else {
-    auto settings = Shell::Get()
-                        ->input_device_settings_controller()
-                        ->GetKeyboardSettings(fake_keyboard.id)
-                        ->Clone();
-    settings->top_row_are_fkeys = false;
-    Shell::Get()->input_device_settings_controller()->SetKeyboardSettings(
-        fake_keyboard.id, std::move(settings));
-  }
+  auto settings = Shell::Get()
+                      ->input_device_settings_controller()
+                      ->GetKeyboardSettings(fake_keyboard.id)
+                      ->Clone();
+  settings->top_row_are_fkeys = false;
+  Shell::Get()->input_device_settings_controller()->SetKeyboardSettings(
+      fake_keyboard.id, std::move(settings));
 
   base::RunLoop().RunUntilIdle();
 
@@ -1214,7 +1191,7 @@ TEST_F(AcceleratorConfigurationProviderTest, NonConfigurableReverseLookup) {
         std::vector<uint32_t> found_ids =
             GetNonConfigurableIdFromAccelerator(accelerator);
         ASSERT_FALSE(found_ids.empty());
-        EXPECT_TRUE(base::Contains(found_ids, ambient_action_id));
+        EXPECT_TRUE(std::ranges::contains(found_ids, ambient_action_id));
       }
     }
   }
@@ -3173,20 +3150,13 @@ TEST_F(AcceleratorConfigurationProviderTest, GetDefaultAcceleratorsForId) {
   fake_keyboard_manager_->AddFakeKeyboard(fake_keyboard, kKbdTopRowLayout2Tag);
 
   // Enable TopRowKeysAreFKeys.
-  if (!features::IsInputDeviceSettingsSplitEnabled()) {
-    Shell::Get()->session_controller()->GetActivePrefService()->SetBoolean(
-        prefs::kSendFunctionKeys, true);
-    EXPECT_TRUE(
-        Shell::Get()->keyboard_controller()->AreTopRowKeysFunctionKeys());
-  } else {
-    auto settings = Shell::Get()
-                        ->input_device_settings_controller()
-                        ->GetKeyboardSettings(fake_keyboard.id)
-                        ->Clone();
-    settings->top_row_are_fkeys = true;
-    Shell::Get()->input_device_settings_controller()->SetKeyboardSettings(
-        fake_keyboard.id, std::move(settings));
-  }
+  auto settings = Shell::Get()
+                      ->input_device_settings_controller()
+                      ->GetKeyboardSettings(fake_keyboard.id)
+                      ->Clone();
+  settings->top_row_are_fkeys = true;
+  Shell::Get()->input_device_settings_controller()->SetKeyboardSettings(
+      fake_keyboard.id, std::move(settings));
   base::RunLoop().RunUntilIdle();
 
   // Initialize accelerators.

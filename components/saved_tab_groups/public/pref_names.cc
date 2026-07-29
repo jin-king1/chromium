@@ -19,12 +19,7 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   // this value is never read.
   registry->RegisterBooleanPref(prefs::kSyncableTabGroups, false);
 #if BUILDFLAG(IS_ANDROID)
-  if (base::FeatureList::IsEnabled(tab_groups::kTabGroupSyncAndroid)) {
-    registry->RegisterBooleanPref(prefs::kAutoOpenSyncedTabGroups,
-                                  base::GetFieldTrialParamByFeatureAsBool(
-                                      tab_groups::kTabGroupSyncAndroid,
-                                      "auto_open_synced_tab_groups", true));
-  }
+  registry->RegisterBooleanPref(prefs::kAutoOpenSyncedTabGroups, false);
   // Always register stop showing prefs. They're conditionally used by a cached
   // feature in Java, which is hard to synchronize.
   registry->RegisterBooleanPref(prefs::kStopShowingTabGroupConfirmationOnClose,
@@ -44,12 +39,22 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterBooleanPref(prefs::kSavedTabGroupSpecificsToDataMigration,
                                 false);
   registry->RegisterDictionaryPref(prefs::kDeletedTabGroupIds,
-                                   base::Value::Dict());
+                                   base::DictValue());
   registry->RegisterDictionaryPref(prefs::kLocallyClosedRemoteTabGroupIds,
-                                   base::Value::Dict());
+                                   base::DictValue());
   registry->RegisterBooleanPref(prefs::kDidSyncTabGroupsInLastSession, false);
   registry->RegisterBooleanPref(prefs::kDidEnableSharedTabGroupsInLastSession,
                                 false);
+  registry->RegisterBooleanPref(
+      prefs::kEligibleForVersionOutOfDateInstantMessage, false);
+  registry->RegisterBooleanPref(
+      prefs::kEligibleForVersionOutOfDatePersistentMessage, false);
+  registry->RegisterBooleanPref(prefs::kEligibleForVersionUpdatedMessage,
+                                false);
+  registry->RegisterBooleanPref(prefs::kHasShownAnyVersionOutOfDateMessage,
+                                false);
+  registry->RegisterBooleanPref(
+      prefs::kSavedTabGroupPinnedPositionToProjectsPositionMigration, false);
 }
 
 void KeepAccountSettingsPrefsOnlyForUsers(

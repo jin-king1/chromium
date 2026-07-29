@@ -27,11 +27,13 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
+#include "chromeos/ui/clipboard_history/clipboard_history_types.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/menus/simple_menu_model.h"
@@ -50,6 +52,7 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/flex_layout_types.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 
@@ -68,16 +71,9 @@ base::TimeDelta TimeSince(const base::Time& time) {
 }
 
 // Returns whether the clipboard history menu requires a footer.
-bool IsFooterRequired(
-    crosapi::mojom::ClipboardHistoryControllerShowSource show_source,
-    const std::optional<base::Time>& menu_last_time_shown,
-    const std::optional<base::Time>& nudge_last_time_shown) {
-  // A footer is always required when the menu is shown via Ctrl+V long press.
-  using crosapi::mojom::ClipboardHistoryControllerShowSource;
-  if (show_source == ClipboardHistoryControllerShowSource::kControlVLongpress) {
-    return true;
-  }
-
+bool IsFooterRequired(chromeos::clipboard_history::ShowSource show_source,
+                      const std::optional<base::Time>& menu_last_time_shown,
+                      const std::optional<base::Time>& nudge_last_time_shown) {
   // A footer is required if the menu hasn't been shown in the past 60 days.
   if (TimeSince(menu_last_time_shown.value_or(base::Time())) >=
       base::Days(60)) {
@@ -119,23 +115,12 @@ void InsertHeaderContent(views::MenuItemView* container) {
 // clipboard history menu. This method may only be called when clipboard history
 // refresh is enabled.
 void InsertFooterContentV2LabelStyledText(
-    crosapi::mojom::ClipboardHistoryControllerShowSource show_source,
+    chromeos::clipboard_history::ShowSource show_source,
     views::StyledLabel* styled_label) {
   // Create text style.
   views::StyledLabel::RangeStyleInfo text_style;
   text_style.custom_font = Resolve(TypographyToken::kCrosAnnotation1);
   text_style.override_color_id = cros_tokens::kCrosSysOnSurfaceVariant;
-
-  // When the clipboard history menu is shown from a Ctrl+V long press event, a
-  // specific educational text is used which does not require inline icons.
-  using crosapi::mojom::ClipboardHistoryControllerShowSource;
-  if (show_source == ClipboardHistoryControllerShowSource::kControlVLongpress) {
-    styled_label->SetText(l10n_util::GetStringUTF16(
-        IDS_ASH_CLIPBOARD_HISTORY_CONTROL_V_LONGPRESS_FOOTER));
-    styled_label->AddStyleRange(gfx::Range(0u, styled_label->GetText().size()),
-                                std::move(text_style));
-    return;
-  }
 
   // When the clipboard history menu is *not* shown from a Ctrl+V long press
   // event, set text based on keyboard layout, caching the offset where an
@@ -180,7 +165,7 @@ void InsertFooterContentV2LabelStyledText(
 // refresh is enabled.
 void InsertFooterContentV2(
     views::MenuItemView* container,
-    crosapi::mojom::ClipboardHistoryControllerShowSource show_source) {
+    chromeos::clipboard_history::ShowSource show_source) {
   // Cache `menu_padding`.
   const int menu_padding =
       views::MenuConfig::instance().vertical_touchable_menu_item_padding;
@@ -208,7 +193,9 @@ void InsertFooterContentV2(
           .AddChildren(
               views::Builder<views::ImageView>().SetImage(
                   ui::ImageModel::FromVectorIcon(
-                      vector_icons::kHelpOutlineIcon,
+                      ::features::IsRoundedIconsEnabled()
+                          ? vector_icons::kHelpIcon
+                          : vector_icons::kHelpOutlineOldIcon,
                       cros_tokens::kCrosSysOnSurfaceVariant,
                       ClipboardHistoryViews::kFooterContentV2IconSize)),
               views::Builder<views::StyledLabel>()
@@ -300,7 +287,7 @@ ClipboardHistoryMenuModelAdapter::~ClipboardHistoryMenuModelAdapter() = default;
 void ClipboardHistoryMenuModelAdapter::Run(
     const gfx::Rect& anchor_rect,
     ui::mojom::MenuSourceType source_type,
-    crosapi::mojom::ClipboardHistoryControllerShowSource show_source,
+    chromeos::clipboard_history::ShowSource show_source,
     const std::optional<base::Time>& menu_last_time_shown,
     const std::optional<base::Time>& nudge_last_time_shown) {
   DCHECK(!root_view_);

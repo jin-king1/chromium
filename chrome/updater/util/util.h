@@ -11,17 +11,20 @@
 #include <optional>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
-#include "base/memory/ref_counted.h"
-#include "base/types/cxx23_to_underlying.h"
+#include "base/functional/function_ref.h"
 #include "base/version.h"
 #include "build/build_config.h"
+#include "chrome/updater/registration_data.h"
 #include "chrome/updater/tag.h"
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/updater_version.h"
+#include "chrome/updater/util/path_util.h"  // IWYU pragma: export
 
 class GURL;
 
@@ -44,8 +47,6 @@ inline std::ostream& operator<<(std::ostream& os, std::optional<T> opt) {
 
 namespace updater {
 
-struct RegistrationRequest;
-
 // Converts an unsigned integral to a signed one. Returns -1 if the value is
 // out of the range of the target type.
 template <std::unsigned_integral T>
@@ -60,7 +61,7 @@ template <std::unsigned_integral T>
 template <typename T>
   requires(std::is_enum_v<T>)
 inline std::ostream& operator<<(std::ostream& os, const T& e) {
-  return os << base::to_underlying(e);
+  return os << std::to_underlying(e);
 }
 
 // Returns the versioned install directory under which the program stores its
@@ -75,13 +76,12 @@ std::optional<base::FilePath> GetVersionedInstallDirectory(
 // version of the updater.
 std::optional<base::FilePath> GetVersionedInstallDirectory(UpdaterScope scope);
 
-// Returns the base install directory common to all versions of the updater.
-// Does not create the directory if it does not exist.
-std::optional<base::FilePath> GetInstallDirectory(UpdaterScope scope);
-
 // Returns the path where cached CRX files should be stored, common to all
 // versions of the updater. Does not create the directory if it does not exist.
 std::optional<base::FilePath> GetCrxCacheDirectory(UpdaterScope scope);
+
+// Returns the temporary directory used by the updater.
+std::optional<base::FilePath> GetUpdaterTempDir();
 
 #if BUILDFLAG(IS_MAC)
 // For example: ~/Library/Google/GoogleUpdater/88.0.4293.0/GoogleUpdater.app
@@ -141,8 +141,6 @@ std::string GetDecodedInstallDataFromAppArgs(const std::string& app_id);
 
 std::string GetInstallDataIndexFromAppArgs(const std::string& app_id);
 
-std::optional<base::FilePath> GetLogFilePath(UpdaterScope scope);
-
 // Initializes logging for an executable.
 void InitLogging(UpdaterScope updater_scope);
 
@@ -165,18 +163,11 @@ GURL AppendQueryParameter(const GURL& url,
                           const std::string& value);
 
 #if BUILDFLAG(IS_MAC)
-// Uses the builtin unzip utility within macOS /usr/bin/unzip to unzip instead
-// of using the configurator's UnzipperFactory. The UnzipperFactory utilizes the
-// //third_party/zlib/google, which has a bug that does not preserve the
-// permissions when it extracts the contents. For updates via zip or
-// differentials, use UnzipWithExe.
-bool UnzipWithExe(const base::FilePath& src_path,
-                  const base::FilePath& dest_path);
-
-// Read the file at path to confirm that the file at the path has the same
-// permissions as the given permissions mask.
-bool ConfirmFilePermissions(const base::FilePath& root_path,
-                            int kPermissionsMask);
+// Recursively update the permissions of a path to 0755 or 0644, depending on
+// whether the file is already executable (by any user) or is a directory.
+// Returns false if and only if there is a failure lstating or setting a
+// permission, except for failures to set permissions on symbolic links.
+bool SetFilePermissionsRecursive(const base::FilePath& root_path);
 #endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_WIN)
@@ -184,12 +175,16 @@ bool ConfirmFilePermissions(const base::FilePath& root_path,
 // Returns the versioned task name prefix in the following format:
 // "{ProductName}Task{System/User}{UpdaterVersion}".
 // For instance: "ChromiumUpdaterTaskSystem92.0.0.1".
-std::wstring GetTaskNamePrefix(UpdaterScope scope);
+std::wstring GetTaskNamePrefix(
+    UpdaterScope scope,
+    const base::Version& version = base::Version(kUpdaterVersion));
 
 // Returns the versioned task display name in the following format:
 // "{ProductName} Task {System/User} {UpdaterVersion}".
 // For instance: "ChromiumUpdater Task System 92.0.0.1".
-std::wstring GetTaskDisplayName(UpdaterScope scope);
+std::wstring GetTaskDisplayName(
+    UpdaterScope scope,
+    const base::Version& version = base::Version(kUpdaterVersion));
 
 // Parses the command line string in legacy format into `base::CommandLine`.
 // The string must be in format like:
@@ -248,6 +243,23 @@ template <typename T>
 // with the updater.
 [[nodiscard]] std::optional<base::FilePath>
 GetBundledEnterpriseCompanionExecutablePath(UpdaterScope scope);
+
+// Finds files that match `predicate` under `dir`.
+std::vector<base::FilePath> GetFilesWithPredicate(
+    const base::FilePath& dir,
+    base::FunctionRef<bool(const base::FilePath&)> predicate);
+
+// Enumerates and calls `callback` for each update client temp directory found
+// for `scope`.
+void EnumerateUpdateClientTempDirectories(
+    UpdaterScope scope,
+    base::FunctionRef<void(const base::FilePath& dir)> callback);
+
+// Returns true if the App ID is valid (not empty, not too long, does not
+// contain path separators '/' or '\', and does not contain path traversal
+// components).
+bool IsValidAppId(std::string_view app_id);
+bool IsValidAppId(std::wstring_view app_id);
 
 }  // namespace updater
 

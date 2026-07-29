@@ -7,21 +7,21 @@
 #include <memory>
 
 #include "base/containers/flat_set.h"
-#include "base/files/file_util.h"
 #include "base/strings/string_util.h"
 #include "base/test/test_future.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
+#include "chrome/browser/web_applications/model/web_app_icon_types.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom-shared.h"
 #include "chrome/browser/web_applications/test/os_integration_test_override_impl.h"
 #include "chrome/browser/web_applications/test/web_app_icon_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
+#include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_icon_manager.h"
-#include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_install_params.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -62,7 +62,7 @@ class InstallAppFromVerifiedManifestCommandTest : public WebAppBrowserTestBase {
   }
 
   std::string GetIconUrl() {
-    return https_server()->GetURL("/web_apps/blue-192.png").spec();
+    return embedded_https_test_server().GetURL("/web_apps/blue-192.png").spec();
   }
 
   // Returns a basic, installable manifest with "/" as the start URL and 1 icon.
@@ -272,9 +272,9 @@ IN_PROC_BROWSER_TEST_F(InstallAppFromVerifiedManifestCommandTest,
 
   std::string manifest = base::ReplaceStringPlaceholders(
       kManifestTemplate,
-      {https_server()->GetURL("/banners/96x96-red.png").spec(),
-       https_server()->GetURL("/banners/192x192-green.png").spec(),
-       https_server()->GetURL("/web_apps/blue-192.png").spec()
+      {embedded_https_test_server().GetURL("/banners/96x96-red.png").spec(),
+       embedded_https_test_server().GetURL("/banners/192x192-green.png").spec(),
+       embedded_https_test_server().GetURL("/web_apps/blue-192.png").spec()
 
       },
       nullptr);
@@ -286,9 +286,11 @@ IN_PROC_BROWSER_TEST_F(InstallAppFromVerifiedManifestCommandTest,
 
   EXPECT_TRUE(webapps::IsSuccess(result_code));
 
+  // Post trusted icons launch, all icons use the same color (chosen from the
+  // one of the largest size).
   SkColor small_icon_color =
       IconManagerReadAppIconPixel(provider().icon_manager(), result_id, 96);
-  EXPECT_EQ(small_icon_color, SK_ColorRED);
+  EXPECT_EQ(small_icon_color, SK_ColorGREEN);
 
   SkColor large_icon_color =
       IconManagerReadAppIconPixel(provider().icon_manager(), result_id, 192);
@@ -459,8 +461,8 @@ IN_PROC_BROWSER_TEST_F(InstallAppFromVerifiedManifestCommandTest,
   })json";
   std::string manifest = base::ReplaceStringPlaceholders(
       kManifestTemplate,
-      {https_server()->GetURL("/404").spec(),
-       https_server()->GetURL("/nocontent").spec()},
+      {embedded_https_test_server().GetURL("/404").spec(),
+       embedded_https_test_server().GetURL("/nocontent").spec()},
       nullptr);
 
   auto [result_id, result_code] =
@@ -503,13 +505,15 @@ IN_PROC_BROWSER_TEST_F(InstallAppFromVerifiedManifestCommandTest,
 
   std::string manifest = base::ReplaceStringPlaceholders(
       kManifestTemplate,
-      {https_server()
-           ->GetURL("fonts.gstatic.com", "/banners/96x96-red.png")
+      {embedded_https_test_server()
+           .GetURL("fonts.gstatic.com", "/banners/96x96-red.png")
            .spec(),
-       https_server()
-           ->GetURL("lh3.googleusercontent.com", "/banners/192x192-green.png")
+       embedded_https_test_server()
+           .GetURL("lh3.googleusercontent.com", "/banners/192x192-green.png")
            .spec(),
-       https_server()->GetURL("youtube.com", "/web_apps/blue-192.png").spec()},
+       embedded_https_test_server()
+           .GetURL("youtube.com", "/web_apps/blue-192.png")
+           .spec()},
       nullptr);
   webapps::AppId expected_id =
       GenerateAppId(/*manifest_id=*/std::nullopt, kDocumentUrl);
@@ -519,9 +523,11 @@ IN_PROC_BROWSER_TEST_F(InstallAppFromVerifiedManifestCommandTest,
 
   EXPECT_TRUE(webapps::IsSuccess(result_code));
 
+  // Post trusted icons launch, all icons use the same color (chosen from the
+  // one of the largest size).
   SkColor small_icon_color =
       IconManagerReadAppIconPixel(provider().icon_manager(), result_id, 96);
-  EXPECT_EQ(small_icon_color, SK_ColorRED);
+  EXPECT_EQ(small_icon_color, SK_ColorGREEN);
 
   SkColor large_icon_color =
       IconManagerReadAppIconPixel(provider().icon_manager(), result_id, 192);
@@ -632,8 +638,8 @@ IN_PROC_BROWSER_TEST_F(InstallAppFromVerifiedManifestCommandTest,
   EXPECT_EQ(
       provider().registrar_unsafe().GetAppById(result_id)->user_display_mode(),
       mojom::UserDisplayMode::kBrowser);
-  EXPECT_EQ(provider().registrar_unsafe().GetAppEffectiveDisplayMode(result_id),
-            DisplayMode::kBrowser);
+  EXPECT_TRUE(provider().registrar_unsafe().AppMatches(
+      result_id, WebAppFilter::OpensInBrowserTab()));
 }
 
 IN_PROC_BROWSER_TEST_F(InstallAppFromVerifiedManifestCommandTest,
@@ -671,7 +677,8 @@ IN_PROC_BROWSER_TEST_F(InstallAppFromVerifiedManifestCommandTest,
       kDocumentUrl, kManifestUrl, manifest, expected_id,
       webapps::WebappInstallSource::OMNIBOX_INSTALL_ICON, /*is_diy_app=*/true);
 
-  EXPECT_TRUE(provider().registrar_unsafe().IsDiyApp(result_id));
+  EXPECT_FALSE(provider().registrar_unsafe().AppMatches(
+      result_id, WebAppFilter::IsCraftedApp()));
 }
 
 }  // namespace web_app

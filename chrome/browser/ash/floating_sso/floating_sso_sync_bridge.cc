@@ -56,11 +56,6 @@ FloatingSsoSyncBridge::~FloatingSsoSyncBridge() {
   }
 }
 
-std::unique_ptr<syncer::MetadataChangeList>
-FloatingSsoSyncBridge::CreateMetadataChangeList() {
-  return syncer::DataTypeStore::WriteBatch::CreateMetadataChangeList();
-}
-
 std::optional<syncer::ModelError> FloatingSsoSyncBridge::MergeFullSyncData(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList remote_entities) {
@@ -98,8 +93,10 @@ std::optional<syncer::ModelError> FloatingSsoSyncBridge::MergeFullSyncData(
   }
 
   // Add remote entities to local data.
-  return ApplyIncrementalSyncChanges(std::move(metadata_change_list),
-                                     std::move(remote_entities));
+  std::optional<syncer::ModelError> result = ApplyIncrementalSyncChanges(
+      std::move(metadata_change_list), std::move(remote_entities));
+  OnMergeFullSyncDataFinished();
+  return result;
 }
 
 std::optional<syncer::ModelError>
@@ -166,13 +163,26 @@ FloatingSsoSyncBridge::ApplyIncrementalSyncChanges(
 }
 
 std::string FloatingSsoSyncBridge::GetStorageKey(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   return GetClientTag(entity_data);
 }
 
 std::string FloatingSsoSyncBridge::GetClientTag(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   return entity_data.specifics.cookie().unique_key();
+}
+
+sync_pb::EntitySpecifics
+FloatingSsoSyncBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
+    const sync_pb::EntitySpecifics& entity_specifics) const {
+  // Clears all fields by default to avoid the memory and I/O overhead of an
+  // additional copy of the data.
+  return sync_pb::EntitySpecifics();
+}
+
+bool FloatingSsoSyncBridge::IsEntityDataValid(
+    const syncer::EntityData& entity_data) const {
+  return FromSyncProto(entity_data.specifics.cookie()) != nullptr;
 }
 
 std::unique_ptr<syncer::DataBatch> FloatingSsoSyncBridge::GetDataForCommit(
@@ -239,17 +249,17 @@ void FloatingSsoSyncBridge::OnStoreCreated(
 
 void FloatingSsoSyncBridge::ProcessQueuedCookies() {
   // Add all new cookies. The two queues should not overlap.
-  for (const auto& [key, specifics] : deferred_cookie_additions_) {
+  for (const auto& [key, cookie] : deferred_cookie_additions_) {
     if (deferred_cookie_deletions_.contains(key)) {
-      DVLOG(1) << "Cookie present in both addition and deletetion queues. Will "
+      DVLOG(1) << "Cookie present in both addition and deletion queues. Will "
                   "perform delete.";
     } else {
-      AddOrUpdateCookie(specifics);
+      AddOrUpdateCookie(cookie);
     }
   }
   // Delete queued cookies.
   for (const auto& storage_key : deferred_cookie_deletions_) {
-    DeleteCookie(storage_key);
+    DeleteCookieWithKey(storage_key);
   }
   deferred_cookie_additions_.clear();
   deferred_cookie_deletions_.clear();
@@ -278,33 +288,68 @@ bool FloatingSsoSyncBridge::IsCookieInStore(
 }
 
 void FloatingSsoSyncBridge::AddOrUpdateCookie(
-    const sync_pb::CookieSpecifics& specifics) {
-  std::string storage_key = specifics.unique_key();
+    const net::CanonicalCookie& cookie) {
+  std::optional<std::string> serialization_result = SerializedKey(cookie);
+  if (!serialization_result.has_value()) {
+    return;
+  }
+  const std::string& storage_key = serialization_result.value();
 
   if (!is_initial_data_read_finished_) {
-    deferred_cookie_additions_[storage_key] = specifics;
+    deferred_cookie_additions_[storage_key] = cookie;
     deferred_cookie_deletions_.erase(storage_key);
     return;
+  }
+
+  std::optional<sync_pb::CookieSpecifics> specifics = ToSyncProto(cookie);
+  if (!specifics.has_value()) {
+    return;
+  }
+
+  // Check if an identical cookie already exists in the store, to avoid sending
+  // no-op changes to Sync.
+  const CookieSpecificsEntries& in_store_specifics = CookieSpecificsInStore();
+  if (auto it = in_store_specifics.find(specifics->unique_key());
+      it != in_store_specifics.end()) {
+    const sync_pb::CookieSpecifics& local_specifics = it->second;
+    std::unique_ptr<net::CanonicalCookie> in_store_cookie =
+        FromSyncProto(local_specifics);
+    if (in_store_cookie && in_store_cookie->HasEquivalentDataMembers(cookie)) {
+      return;
+    }
   }
 
   std::unique_ptr<StoreWithCache::WriteBatch> batch =
       store_->CreateWriteBatch();
 
   // Add/update this entry to the store and model.
-  change_processor()->Put(storage_key, CreateEntityData(specifics),
+  change_processor()->Put(storage_key, CreateEntityData(specifics.value()),
                           batch->GetMetadataChangeList());
-  batch->WriteData(storage_key, specifics);
+  batch->WriteData(storage_key, specifics.value());
 
   CommitToStore(std::move(batch));
 }
 
-void FloatingSsoSyncBridge::DeleteCookie(const std::string& storage_key) {
+void FloatingSsoSyncBridge::DeleteCookie(const net::CanonicalCookie& cookie) {
+  std::optional<std::string> serialization_result = SerializedKey(cookie);
+  if (!serialization_result.has_value()) {
+    return;
+  }
+  const std::string& storage_key = serialization_result.value();
+
   if (!is_initial_data_read_finished_) {
     deferred_cookie_deletions_.insert(storage_key);
     deferred_cookie_additions_.erase(storage_key);
     return;
   }
 
+  DeleteCookieWithKey(storage_key);
+}
+
+void FloatingSsoSyncBridge::DeleteCookieWithKey(
+    const std::string& storage_key) {
+  // Check if the key is present in the store, to avoid sending no-op changes to
+  // Sync.
   if (!IsCookieInStore(storage_key)) {
     return;
   }
@@ -329,6 +374,22 @@ void FloatingSsoSyncBridge::RemoveObserver(Observer* observer) {
 void FloatingSsoSyncBridge::AddToLocallyPreferredCookies(
     const std::string& storage_key) {
   keep_local_cookie_keys_.insert(storage_key);
+}
+
+void FloatingSsoSyncBridge::SetOnMergeFullSyncDataCallback(
+    base::OnceClosure callback) {
+  if (merge_full_sync_data_finished_) {
+    std::move(callback).Run();
+    return;
+  }
+  on_merge_full_sync_data_callback_ = std::move(callback);
+}
+
+void FloatingSsoSyncBridge::OnMergeFullSyncDataFinished() {
+  if (on_merge_full_sync_data_callback_) {
+    std::move(on_merge_full_sync_data_callback_).Run();
+  }
+  merge_full_sync_data_finished_ = true;
 }
 
 }  // namespace ash::floating_sso

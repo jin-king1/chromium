@@ -5,12 +5,8 @@
 import {sendWithPromise} from 'chrome://resources/js/cr.js';
 
 import type {Cdd} from './data/cdd.js';
-// <if expr="not is_chromeos">
-import type {PrinterType} from './data/destination.js';
-// </if>
-// <if expr="is_chromeos">
+
 import type {PrinterType} from './data/destination_cros.js';
-// </if>
 import type {LocalDestinationInfo} from './data/local_parsers.js';
 import type {MeasurementSystemUnitType} from './data/measurement_system.js';
 
@@ -50,7 +46,6 @@ export enum DuplexModeRestriction {
   DUPLEX = 0x6,
 }
 
-// <if expr="is_chromeos">
 /**
  * Enumeration of PIN printing mode restrictions used by Chromium.
  * This has to coincide with |printing::PinModeRestriction| as defined in
@@ -61,7 +56,6 @@ export enum PinModeRestriction {
   PIN = 1,
   NO_PIN = 2,
 }
-// </if>
 
 /**
  * Policies affecting print settings values and availability.
@@ -82,9 +76,7 @@ export interface Policies {
     allowedMode?: DuplexModeRestriction,
     defaultMode?: DuplexModeRestriction,
   };
-  // <if expr="is_chromeos">
   pin?: {allowedMode?: PinModeRestriction, defaultMode?: PinModeRestriction};
-  // </if>
   printPdfAsImage?: {defaultMode?: boolean};
   printPdfAsImageAvailability?: {allowedMode?: boolean};
 }
@@ -178,10 +170,7 @@ export interface NativeLayer {
    */
   saveAppState(appStateStr: string): void;
 
-  // <if expr="not is_chromeos and not is_win">
-  /** Shows the system's native printing dialog. */
-  showSystemDialog(): void;
-  // </if>
+
 
   /**
    * Closes the print preview dialog.
@@ -213,19 +202,20 @@ export interface NativeLayer {
 
 export class NativeLayerImpl implements NativeLayer {
   getInitialSettings() {
-    return sendWithPromise('getInitialSettings');
+    return sendWithPromise<NativeInitialSettings>('getInitialSettings');
   }
 
   getPrinters(type: PrinterType) {
-    return sendWithPromise('getPrinters', type);
+    return sendWithPromise<void>('getPrinters', type);
   }
 
   getPrinterCapabilities(destinationId: string, type: PrinterType) {
-    return sendWithPromise('getPrinterCapabilities', destinationId, type);
+    return sendWithPromise<CapabilitiesResponse>(
+        'getPrinterCapabilities', destinationId, type);
   }
 
   getPreview(printTicket: string) {
-    return sendWithPromise('getPreview', printTicket);
+    return sendWithPromise<number>('getPreview', printTicket);
   }
 
   managePrinters() {
@@ -233,7 +223,7 @@ export class NativeLayerImpl implements NativeLayer {
   }
 
   doPrint(printTicket: string) {
-    return sendWithPromise('doPrint', printTicket);
+    return sendWithPromise<string|undefined>('doPrint', printTicket);
   }
 
   cancelPendingPrintRequest() {
@@ -244,11 +234,7 @@ export class NativeLayerImpl implements NativeLayer {
     chrome.send('saveAppState', [appStateStr]);
   }
 
-  // <if expr="not chromeos_ash and not is_win">
-  showSystemDialog() {
-    chrome.send('showSystemDialog');
-  }
-  // </if>
+
 
   dialogClose(isCancel: boolean) {
     if (isCancel) {

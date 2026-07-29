@@ -19,11 +19,10 @@
 #include "base/win/scoped_gdi_object.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/ui/views/frame/browser_desktop_window_tree_host.h"
-#include "chrome/browser/ui/views/frame/minimize_button_metrics_win.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_win.h"
 
-class BrowserFrame;
+class BrowserWidget;
 class BrowserView;
 class BrowserWindowPropertyManager;
 class VirtualDesktopHelper;
@@ -42,7 +41,7 @@ class BrowserDesktopWindowTreeHostWin
       views::internal::NativeWidgetDelegate* native_widget_delegate,
       views::DesktopNativeWidgetAura* desktop_native_widget_aura,
       BrowserView* browser_view,
-      BrowserFrame* browser_frame);
+      BrowserWidget* browser_widget);
   BrowserDesktopWindowTreeHostWin(const BrowserDesktopWindowTreeHostWin&) =
       delete;
   BrowserDesktopWindowTreeHostWin& operator=(
@@ -54,7 +53,7 @@ class BrowserDesktopWindowTreeHostWin
 
   // Overridden from BrowserDesktopWindowTreeHost:
   DesktopWindowTreeHost* AsDesktopWindowTreeHost() override;
-  int GetMinimizeButtonOffset() const override;
+  void ShowCustomSystemMenu(const gfx::Point& screen_point) override;
   bool UsesNativeSystemMenu() const override;
 
   // Overridden from DesktopWindowTreeHostWin:
@@ -64,11 +63,10 @@ class BrowserDesktopWindowTreeHostWin
   std::string GetWorkspace() const override;
   int GetInitialShowState() const override;
   bool GetClientAreaInsets(gfx::Insets* insets,
-                           HMONITOR monitor) const override;
+                           int frame_thickness) const override;
   bool GetDwmFrameInsetsInPixels(gfx::Insets* insets) const override;
   void HandleCreate() override;
   void HandleDestroying() override;
-  void HandleWindowScaleFactorChanged(float window_scale_factor) override;
   bool PreHandleMSG(UINT message,
                     WPARAM w_param,
                     LPARAM l_param,
@@ -78,6 +76,7 @@ class BrowserDesktopWindowTreeHostWin
   bool ShouldUseNativeFrame() const override;
   bool ShouldWindowContentsBeTransparent() const override;
   void HandleWindowMinimizedOrRestored(bool restored) override;
+  void ClientDestroyedWidget() override;
 
   // ProfileAttributesStorage::Observer:
   void OnProfileAvatarChanged(const base::FilePath& profile_path) override;
@@ -91,10 +90,11 @@ class BrowserDesktopWindowTreeHostWin
 
   void SetWindowIcon(bool badged);
 
-  raw_ptr<BrowserView> browser_view_;
-  raw_ptr<BrowserFrame> browser_frame_;
+  // Shows the custom Views system menu at the default location (top left).
+  void ShowViewsSystemMenuAtDefaultLocation();
 
-  MinimizeButtonMetrics minimize_button_metrics_;
+  raw_ptr<BrowserView> browser_view_;
+  raw_ptr<BrowserWidget> browser_widget_;
 
   std::unique_ptr<BrowserWindowPropertyManager>
       browser_window_property_manager_;

@@ -4,44 +4,56 @@
 
 #include "chrome/browser/ai/ai_data_keyed_service.h"
 
+#include <memory>
 #include <string>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/test_future.h"
+#include "build/build_config.h"
+#include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_proto_conversion.h"
+#include "chrome/browser/actor/actor_test_util.h"
+#include "chrome/browser/actor/tools/click_tool_request.h"
+#include "chrome/browser/actor/tools/navigate_tool_request.h"
 #include "chrome/browser/ai/ai_data_keyed_service_factory.h"
 #include "chrome/browser/history_embeddings/history_embeddings_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/tab_group.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
+#include "chrome/common/buildflags.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/actor/core/actor_switches.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
+#include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/autofill_test_utils.h"
 #include "components/autofill/core/common/form_data.h"
-#include "components/history_embeddings/mock_answerer.h"
-#include "components/history_embeddings/mock_intent_classifier.h"
+#include "components/history_embeddings/core/mock_answerer.h"
+#include "components/history_embeddings/core/mock_intent_classifier.h"
 #include "components/network_session_configurator/common/network_switches.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
+#include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
-#include "components/passage_embeddings/passage_embeddings_test_util.h"
+#include "components/passage_embeddings/core/passage_embeddings_test_util.h"
+#include "components/tabs/public/tab_group.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/fenced_frame_test_util.h"
+#include "content/public/test/test_frame_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/request_handler_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -49,6 +61,9 @@
 
 namespace {
 
+using ::base::test::TestFuture;
+using ::optimization_guide::DocumentIdentifierUserData;
+using ::optimization_guide::proto::ClickAction;
 using ::testing::ReturnRef;
 using AiData = AiDataKeyedService::AiData;
 using AiDataSpecifier = AiDataKeyedService::AiDataSpecifier;
@@ -69,7 +84,7 @@ class AiDataKeyedServiceBrowserTest : public InProcessBrowserTest {
     ASSERT_TRUE(https_server_->Start());
 
     HistoryEmbeddingsServiceFactory::GetInstance()->SetTestingFactory(
-        browser()->profile(),
+        browser()->GetProfile(),
         base::BindLambdaForTesting([this](content::BrowserContext* context) {
           return HistoryEmbeddingsServiceFactory::
               BuildServiceInstanceForBrowserContextForTesting(
@@ -83,17 +98,24 @@ class AiDataKeyedServiceBrowserTest : public InProcessBrowserTest {
 
   AiDataKeyedService& ai_data_service() {
     return *AiDataKeyedServiceFactory::GetAiDataKeyedService(
-        browser()->profile());
+        browser()->GetProfile());
+  }
+
+  actor::ActorKeyedService& actor_service() {
+    return *actor::ActorKeyedService::Get(browser()->GetProfile());
   }
 
   content::WebContents* web_contents() {
     return browser()->tab_strip_model()->GetActiveWebContents();
   }
 
-  void LoadSimplePage() {
-    content::NavigateToURLBlockUntilNavigationsComplete(
-        web_contents(), https_server_->GetURL("/simple.html"), 1);
+  void LoadPage(const GURL& url) {
+    content::NavigateToURLBlockUntilNavigationsComplete(web_contents(), url, 1);
+    content::WaitForCopyableViewInWebContents(
+        browser()->tab_strip_model()->GetActiveWebContents());
   }
+
+  void LoadSimplePage() { LoadPage(https_server_->GetURL("/simple.html")); }
 
   AiData QueryAiData() {
     base::test::TestFuture<AiData> ai_data;
@@ -119,6 +141,8 @@ class AiDataKeyedServiceBrowserTest : public InProcessBrowserTest {
     return QueryAiDataWithSpecifier(std::move(specifier));
   }
 
+  net::EmbeddedTestServer* https_server() { return https_server_.get(); }
+
  private:
   autofill::test::AutofillBrowserTestEnvironment autofill_test_environment_;
   passage_embeddings::TestEnvironment passage_embeddings_test_env_;
@@ -128,13 +152,35 @@ class AiDataKeyedServiceBrowserTest : public InProcessBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest,
-                       AllowlistedExtensionList) {
+                       AllowlistedExtensionListData) {
   std::vector<std::string> expected_allowlisted_extensions = {
       "hpkopmikdojpadgmioifjjodbmnjjjca", "bgbpcgpcobgjpnpiginpidndjpggappi",
-      "eefninhhiifgcimjkmkongegpoaikmhm"};
+      "eefninhhiifgcimjkmkongegpoaikmhm", "fjhpgileahdpnmfmaggobehbipojhlce",
+      "abdciamfdmknaeggbnmafmbdfdmhfgfa", "fiamdfnbelfkjlacoaeiclobkdmckaoa"};
 
-  EXPECT_EQ(AiDataKeyedService::GetAllowlistedExtensions(),
-            expected_allowlisted_extensions);
+  for (const auto& extension_id : expected_allowlisted_extensions) {
+    EXPECT_TRUE(
+        AiDataKeyedService::IsExtensionAllowlistedForData(extension_id));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest,
+                       AllowlistedExtensionListActions) {
+  std::vector<std::string> expected_allowlisted_extensions = {};
+
+  for (const auto& extension_id : expected_allowlisted_extensions) {
+    EXPECT_TRUE(
+        AiDataKeyedService::IsExtensionAllowlistedForActions(extension_id));
+  }
+
+  std::vector<std::string> expected_not_allowlisted_extensions = {
+      "hpkopmikdojpadgmioifjjodbmnjjjca", "bgbpcgpcobgjpnpiginpidndjpggappi",
+      "eefninhhiifgcimjkmkongegpoaikmhm", "fjhpgileahdpnmfmaggobehbipojhlce",
+      "abdciamfdmknaeggbnmafmbdfdmhfgfa", "fiamdfnbelfkjlacoaeiclobkdmckaoa"};
+  for (const auto& extension_id : expected_not_allowlisted_extensions) {
+    EXPECT_FALSE(
+        AiDataKeyedService::IsExtensionAllowlistedForActions(extension_id));
+  }
 }
 
 IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest, GetsData) {
@@ -194,13 +240,15 @@ IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest, TabData) {
       browser()->GetTabStripModel()->AddToNewGroup({0}));
   auto vis_data1 = *tab_group1->visual_data();
   vis_data1.SetTitle(u"ok");
-  tab_group1->SetVisualData(vis_data1);
+  browser()->GetTabStripModel()->ChangeTabGroupVisuals(tab_group1->id(),
+                                                       vis_data1);
 
   auto* tab_group2 = browser()->GetTabStripModel()->group_model()->GetTabGroup(
       browser()->GetTabStripModel()->AddToNewGroup({1, 2}));
   auto vis_data2 = *tab_group1->visual_data();
   vis_data2.SetTitle(u"ok");
-  tab_group2->SetVisualData(vis_data2);
+  browser()->GetTabStripModel()->ChangeTabGroupVisuals(tab_group2->id(),
+                                                       vis_data2);
 
   AiData ai_data = LoadSimplePageAndData();
   ASSERT_TRUE(ai_data.has_value());
@@ -217,13 +265,15 @@ IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest, TabInnerText) {
       browser()->GetTabStripModel()->AddToNewGroup({0}));
   auto vis_data1 = *tab_group1->visual_data();
   vis_data1.SetTitle(u"ok");
-  tab_group1->SetVisualData(vis_data1);
+  browser()->GetTabStripModel()->ChangeTabGroupVisuals(tab_group1->id(),
+                                                       vis_data1);
 
   auto* tab_group2 = browser()->GetTabStripModel()->group_model()->GetTabGroup(
       browser()->GetTabStripModel()->AddToNewGroup({1, 2}));
   auto vis_data2 = *tab_group1->visual_data();
   vis_data2.SetTitle(u"ok");
-  tab_group2->SetVisualData(vis_data2);
+  browser()->GetTabStripModel()->ChangeTabGroupVisuals(tab_group2->id(),
+                                                       vis_data2);
 
   AiData ai_data = LoadSimplePageAndData();
   ASSERT_TRUE(ai_data.has_value());
@@ -270,13 +320,40 @@ IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest, SiteEngagementScores) {
 }
 
 IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest, AIPageContent) {
-  AiData ai_data = LoadSimplePageAndData();
+  LoadPage(
+      https_server()->GetURL("/optimization_guide/actionable_elements.html"));
+  AiData ai_data = QueryAiData();
   ASSERT_TRUE(ai_data.has_value());
-  const auto& page_content = ai_data->page_context().annotated_page_content();
-  const auto& content_attributes =
-      page_content.root_node().content_attributes();
-  EXPECT_EQ(content_attributes.attribute_type(),
-            optimization_guide::proto::CONTENT_ATTRIBUTE_ROOT);
+
+  {
+    const auto& page_content = ai_data->page_context().annotated_page_content();
+    EXPECT_EQ(page_content.version(),
+              optimization_guide::proto::ANNOTATED_PAGE_CONTENT_VERSION_1_0);
+    const auto& content_attributes =
+        page_content.root_node().content_attributes();
+    EXPECT_EQ(content_attributes.attribute_type(),
+              optimization_guide::proto::CONTENT_ATTRIBUTE_ROOT);
+    EXPECT_FALSE(content_attributes.has_interaction_info());
+    EXPECT_EQ(page_content.root_node().children_nodes().size(), 0);
+  }
+
+  {
+    const auto& page_content = ai_data->action_annotated_page_content();
+    EXPECT_EQ(page_content.version(),
+              optimization_guide::proto::ANNOTATED_PAGE_CONTENT_VERSION_1_0);
+    const auto& content_attributes =
+        page_content.root_node().content_attributes();
+    EXPECT_EQ(content_attributes.attribute_type(),
+              optimization_guide::proto::CONTENT_ATTRIBUTE_ROOT);
+    EXPECT_TRUE(content_attributes.has_interaction_info());
+
+    const auto& html = page_content.root_node().children_nodes().at(0);
+    const auto& body = html.children_nodes().at(0);
+
+    ASSERT_EQ(body.children_nodes().size(), 1);
+    const auto& child = body.children_nodes().at(0);
+    EXPECT_TRUE(child.content_attributes().has_interaction_info());
+  }
 }
 
 IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest, SpecifierOn) {
@@ -336,8 +413,9 @@ IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTest,
       driver->GetAutofillManager(),
       &autofill::AutofillManager::Observer::OnAfterFormsSeen,
       testing::ElementsAre(expected_form.global_id()), testing::IsEmpty());
-  driver->GetAutofillManager().OnFormsSeen(/*updated_forms=*/{expected_form},
-                                           /*removed_forms=*/{});
+  driver->GetAutofillManager().OnFormsSeen(
+      /*updated_forms=*/{expected_form},
+      /*removed_forms=*/{}, autofill::AutofillManagerTestApi::pass_key());
   ASSERT_TRUE(std::move(wait_for_forms_seen).Wait());
 
   // Query the API for `expected_form`'s first field.
@@ -380,10 +458,15 @@ class AiDataKeyedServiceBrowserTestWithBlocklistedExtensions
 IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTestWithBlocklistedExtensions,
                        BlockedExtensionList) {
   std::vector<std::string> expected_allowlisted_extensions = {
-      "bgbpcgpcobgjpnpiginpidndjpggappi", "eefninhhiifgcimjkmkongegpoaikmhm"};
+      "bgbpcgpcobgjpnpiginpidndjpggappi", "eefninhhiifgcimjkmkongegpoaikmhm",
+      "fjhpgileahdpnmfmaggobehbipojhlce", "abdciamfdmknaeggbnmafmbdfdmhfgfa",
+      "fiamdfnbelfkjlacoaeiclobkdmckaoa"};
 
-  EXPECT_EQ(AiDataKeyedService::GetAllowlistedExtensions(),
-            expected_allowlisted_extensions);
+  EXPECT_FALSE(AiDataKeyedService::IsExtensionAllowlistedForData(
+      "hpkopmikdojpadgmioifjjodbmnjjjca"));
+  for (const auto& extension : expected_allowlisted_extensions) {
+    EXPECT_TRUE(AiDataKeyedService::IsExtensionAllowlistedForData(extension));
+  }
 }
 
 class AiDataKeyedServiceBrowserTestWithRemotelyAllowlistedExtensions
@@ -405,11 +488,17 @@ IN_PROC_BROWSER_TEST_F(
     AiDataKeyedServiceBrowserTestWithRemotelyAllowlistedExtensions,
     RemotelyAllowlistedExtensionList) {
   std::vector<std::string> expected_allowlisted_extensions = {
-      "1234", "hpkopmikdojpadgmioifjjodbmnjjjca",
-      "bgbpcgpcobgjpnpiginpidndjpggappi", "eefninhhiifgcimjkmkongegpoaikmhm"};
+      "1234",
+      "hpkopmikdojpadgmioifjjodbmnjjjca",
+      "bgbpcgpcobgjpnpiginpidndjpggappi",
+      "eefninhhiifgcimjkmkongegpoaikmhm",
+      "fjhpgileahdpnmfmaggobehbipojhlce",
+      "abdciamfdmknaeggbnmafmbdfdmhfgfa",
+      "fiamdfnbelfkjlacoaeiclobkdmckaoa"};
 
-  EXPECT_EQ(AiDataKeyedService::GetAllowlistedExtensions(),
-            expected_allowlisted_extensions);
+  for (const auto& extension : expected_allowlisted_extensions) {
+    EXPECT_TRUE(AiDataKeyedService::IsExtensionAllowlistedForData(extension));
+  }
 }
 
 class AiDataKeyedServiceBrowserTestWithAllowAndBlock
@@ -429,12 +518,7 @@ class AiDataKeyedServiceBrowserTestWithAllowAndBlock
 
 IN_PROC_BROWSER_TEST_F(AiDataKeyedServiceBrowserTestWithAllowAndBlock,
                        AllowAndBlock) {
-  std::vector<std::string> expected_allowlisted_extensions = {
-      "hpkopmikdojpadgmioifjjodbmnjjjca", "bgbpcgpcobgjpnpiginpidndjpggappi",
-      "eefninhhiifgcimjkmkongegpoaikmhm"};
-
-  EXPECT_EQ(AiDataKeyedService::GetAllowlistedExtensions(),
-            expected_allowlisted_extensions);
+  EXPECT_FALSE(AiDataKeyedService::IsExtensionAllowlistedForData("1234"));
 }
 
 }  // namespace

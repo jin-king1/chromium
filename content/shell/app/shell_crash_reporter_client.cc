@@ -9,6 +9,7 @@
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
+#include "base/path_service.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "content/public/common/content_switches.h"
@@ -19,6 +20,23 @@
 #endif
 
 namespace content {
+
+namespace {
+
+base::FilePath GetCrashDumpLocationInternal() {
+  const auto* command_line = base::CommandLine::ForCurrentProcess();
+  if (command_line->HasSwitch(switches::kCrashDumpsDir)) {
+    return command_line->GetSwitchValuePath(switches::kCrashDumpsDir);
+  }
+  base::FilePath default_dir;
+#if BUILDFLAG(IS_IOS)
+  CHECK(base::PathService::Get(base::DIR_CACHE, &default_dir));
+  default_dir = default_dir.Append("Crashpad");
+#endif  // BUILDFLAG(IS_IOS)
+  return default_dir;
+}
+
+}  // namespace
 
 ShellCrashReporterClient::ShellCrashReporterClient() {}
 ShellCrashReporterClient::~ShellCrashReporterClient() {}
@@ -48,12 +66,10 @@ bool ShellCrashReporterClient::GetCrashDumpLocation(std::wstring* crash_dir) {
 #else
 bool ShellCrashReporterClient::GetCrashDumpLocation(base::FilePath* crash_dir) {
 #endif
-  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kCrashDumpsDir))
+  base::FilePath crash_directory = GetCrashDumpLocationInternal();
+  if (crash_directory.empty()) {
     return false;
-  base::FilePath crash_directory =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
-          switches::kCrashDumpsDir);
+  }
 #if BUILDFLAG(IS_WIN)
   *crash_dir = crash_directory.value();
 #else
@@ -70,7 +86,6 @@ void ShellCrashReporterClient::GetProductInfo(ProductInfo* product_info) {
 bool ShellCrashReporterClient::EnableBreakpadForProcess(
     const std::string& process_type) {
   return process_type == switches::kRendererProcess ||
-         process_type == switches::kPpapiPluginProcess ||
          process_type == switches::kZygoteProcess ||
          process_type == switches::kGpuProcess;
 }

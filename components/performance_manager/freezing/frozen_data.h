@@ -13,6 +13,8 @@ namespace performance_manager {
 
 class FrozenData : public NodeInlineData<FrozenData> {
  public:
+  FrozenData();
+
   // Returns the current "is_frozen" state. A collection of frames is considered
   // frozen if its non-empty, and all of the frames are frozen.
   bool IsFrozen() const;
@@ -25,7 +27,7 @@ class FrozenData : public NodeInlineData<FrozenData> {
   bool ChangeFrameCounts(int32_t current_frame_delta,
                          int32_t frozen_frame_delta);
 
-  base::Value::Dict Describe();
+  base::DictValue Describe();
 
   uint32_t current_frame_count() const { return current_frame_count_; }
 

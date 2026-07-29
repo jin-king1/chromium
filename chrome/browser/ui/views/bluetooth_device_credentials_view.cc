@@ -20,6 +20,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/compositor/layer.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -102,14 +103,16 @@ void BluetoothDeviceCredentialsView::InitControls(
   // to ensure the proper spacing is maintained between items when stacking
   // vertically.
   const int vertical_spacing = ChromeLayoutProvider::Get()->GetDistanceMetric(
-                                   DISTANCE_CONTROL_LIST_VERTICAL) /
+                                   views::DISTANCE_CONTROL_LIST_VERTICAL) /
                                2;
   constexpr int horizontal_spacing = 0;
 
   constexpr int kIconSize = 48;  // width and height.
   auto icon_view = std::make_unique<views::ImageView>();
   icon_view->SetImage(ui::ImageModel::FromVectorIcon(
-      vector_icons::kBluetoothIcon, ui::kColorIcon, kIconSize));
+      features::IsRoundedIconsEnabled() ? vector_icons::kBluetoothIcon
+                                        : vector_icons::kBluetoothOldIcon,
+      ui::kColorIcon, kIconSize));
   icon_view_ = AddChildView(std::move(icon_view));
 
   auto contents_wrapper = std::make_unique<views::View>();

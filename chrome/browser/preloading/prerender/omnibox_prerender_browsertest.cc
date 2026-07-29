@@ -8,10 +8,10 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/timer/elapsed_timer.h"
 #include "build/build_config.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/predictors/autocomplete_action_predictor.h"
 #include "chrome/browser/predictors/autocomplete_action_predictor_factory.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
@@ -20,6 +20,7 @@
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_service_factory.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
 #include "chrome/browser/preloading/prerender/prerender_manager.h"
+#include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/common/chrome_paths.h"
@@ -97,7 +98,7 @@ class OmniboxPrerenderBrowserTest : public PlatformBrowserTest {
 #if BUILDFLAG(IS_ANDROID)
     return chrome_test_utils::GetProfile(this);
 #else
-    return browser()->profile();
+    return browser()->GetProfile();
 #endif
   }
 
@@ -118,6 +119,8 @@ class OmniboxPrerenderBrowserTest : public PlatformBrowserTest {
  private:
   base::ScopedMockElapsedTimersForTest test_timer_;
   content::test::PrerenderTestHelper prerender_helper_;
+  test::ScopedPrewarmFeatureList scoped_prewarm_feature_list_{
+      test::ScopedPrewarmFeatureList::PrewarmState::kDisabled};
   std::unique_ptr<ukm::TestAutoSetUkmRecorder> test_ukm_recorder_;
   std::unique_ptr<content::test::PreloadingAttemptUkmEntryBuilder>
       ukm_entry_builder_;
@@ -148,7 +151,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPrerenderBrowserTest, DisableNetworkPrediction) {
 
   // Since preload setting is disabled, prerender shouldn't be triggered.
   base::RunLoop().RunUntilIdle();
-  content::FrameTreeNodeId host_id =
+  content::PrerenderHostId host_id =
       prerender_helper().GetHostForUrl(prerender_url);
   EXPECT_TRUE(host_id.is_null());
 
@@ -284,26 +287,16 @@ class PrerenderOmniboxSearchSuggestionBrowserTest
     ASSERT_TRUE(prerender_manager_);
   }
 
-  void NavigateToPrerenderedResult(const GURL& expected_prerender_url) {
-    content::TestNavigationObserver observer(GetActiveWebContents());
-    GetActiveWebContents()->OpenURL(
-        content::OpenURLParams(
-            expected_prerender_url, content::Referrer(),
-            WindowOpenDisposition::CURRENT_TAB,
-            ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                      ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-            /*is_renderer_initiated=*/false),
-        /*navigation_handle_callback=*/{});
-    observer.Wait();
-  }
-
   void PrerenderAndActivate(const std::string& search_terms) {
     PrerenderQuery(search_terms);
     GURL prerendered_url =
         GetSearchSuggestionUrl(search_terms, /*with_parameter=*/false);
     prerender_helper().WaitForPrerenderLoadCompletion(*GetActiveWebContents(),
                                                       prerendered_url);
-    NavigateToPrerenderedResult(prerendered_url);
+    prerender_helper().NavigatePrimaryPage(
+        prerendered_url,
+        ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                  ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
     EXPECT_EQ(GetActiveWebContents()->GetLastCommittedURL(), prerendered_url);
   }
 
@@ -376,7 +369,7 @@ class PrerenderOmniboxSearchSuggestionExpiryBrowserTest
         GetSearchSuggestionUrl(search_terms, /*with_parameter=*/false);
     registry_observer.WaitForTrigger(prerendered_url);
 
-    content::FrameTreeNodeId host_id =
+    content::PrerenderHostId host_id =
         prerender_helper().GetHostForUrl(prerendered_url);
     ASSERT_TRUE(host_id);
     content::test::PrerenderHostObserver prerender_observer(

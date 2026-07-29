@@ -21,7 +21,7 @@
 
 namespace content {
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 struct MediaSessionAndroid::JavaObjectGetter {
@@ -48,9 +48,10 @@ MediaSessionAndroid::~MediaSessionAndroid() {
 }
 
 // static
-ScopedJavaLocalRef<jobject> JNI_MediaSessionImpl_GetMediaSessionFromWebContents(
+static ScopedJavaLocalRef<jobject>
+JNI_MediaSessionImpl_GetMediaSessionFromWebContents(
     JNIEnv* env,
-    const JavaParamRef<jobject>& j_contents_android) {
+    const JavaRef<jobject>& j_contents_android) {
   WebContents* contents = WebContents::FromJavaWebContents(j_contents_android);
   if (!contents)
     return ScopedJavaLocalRef<jobject>();
@@ -163,54 +164,42 @@ void MediaSessionAndroid::MediaSessionPositionChanged(
 
 void MediaSessionAndroid::Resume(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& j_obj) {
+    media_session::mojom::MediaSession::SuspendType suspend_type) {
   DCHECK(media_session_);
-  media_session_->Resume(MediaSession::SuspendType::kUI);
+  media_session_->Resume(suspend_type);
 }
 
 void MediaSessionAndroid::Suspend(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& j_obj) {
+    media_session::mojom::MediaSession::SuspendType suspend_type) {
   DCHECK(media_session_);
-  media_session_->Suspend(MediaSession::SuspendType::kUI);
+  media_session_->Suspend(suspend_type);
 }
 
-void MediaSessionAndroid::Stop(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& j_obj) {
+void MediaSessionAndroid::Stop(JNIEnv* env) {
   DCHECK(media_session_);
   media_session_->Stop(MediaSession::SuspendType::kUI);
 }
 
-void MediaSessionAndroid::Seek(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& j_obj,
-    const jlong millis) {
+void MediaSessionAndroid::Seek(JNIEnv* env, const int64_t millis) {
   DCHECK(media_session_);
   DCHECK_NE(millis, 0)
       << "Attempted to seek by a missing number of milliseconds";
   media_session_->Seek(base::Milliseconds(millis));
 }
 
-void MediaSessionAndroid::SeekTo(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& j_obj,
-    const jlong millis) {
+void MediaSessionAndroid::SeekTo(JNIEnv* env, const int64_t millis) {
   DCHECK(media_session_);
   DCHECK_GE(millis, 0) << "Attempted to seek to a negative position";
   media_session_->SeekTo(base::Milliseconds(millis));
 }
 
-void MediaSessionAndroid::DidReceiveAction(JNIEnv* env,
-                                           const JavaParamRef<jobject>& obj,
-                                           int action) {
+void MediaSessionAndroid::DidReceiveAction(JNIEnv* env, int action) {
   media_session_->DidReceiveAction(
       static_cast<media_session::mojom::MediaSessionAction>(action));
 }
 
-void MediaSessionAndroid::RequestSystemAudioFocus(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& j_obj) {
+void MediaSessionAndroid::RequestSystemAudioFocus(JNIEnv* env) {
   DCHECK(media_session_);
   media_session_->RequestSystemAudioFocus(
       media_session::mojom::AudioFocusType::kGain);
@@ -222,3 +211,5 @@ ScopedJavaLocalRef<jobject> MediaSessionAndroid::GetJavaObject() {
 }
 
 }  // namespace content
+
+DEFINE_JNI(MediaSessionImpl)

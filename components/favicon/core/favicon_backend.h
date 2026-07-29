@@ -5,11 +5,13 @@
 #ifndef COMPONENTS_FAVICON_CORE_FAVICON_BACKEND_H_
 #define COMPONENTS_FAVICON_CORE_FAVICON_BACKEND_H_
 
+#include <array>
 #include <memory>
 #include <set>
 #include <vector>
 
 #include "base/containers/flat_set.h"
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "components/favicon/core/favicon_types.h"
@@ -23,11 +25,6 @@ class FilePath;
 }
 
 namespace favicon {
-
-// The favicon sizes that will be tracked in the histograms. This should be kept
-// in sync with the variants here:
-// tools/metrics/histograms/metadata/favicons/histograms.xml.
-static const std::array<int, 3> icon_sizes = {16, 24, 48};
 
 // The maximum number of bitmaps for a single icon URL which can be stored in
 // the favicon database.
@@ -55,7 +52,6 @@ class FaviconBackend {
   FaviconDatabase* db() { return db_.get(); }
 
   void Commit();
-  void TrimMemory();
 
   // Removes all favicons, except those referenced by `kept_page_urls`.
   // Returns true on success.

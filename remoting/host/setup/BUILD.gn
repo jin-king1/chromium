@@ -37,21 +37,26 @@ source_set("common") {
     "//extensions/browser/api/messaging:native_messaging",
     "//google_apis",
     "//mojo/core/embedder",
+    "//remoting/base",
     "//remoting/base:authorization",
-    "//remoting/base:base",
     "//remoting/host:common",
+    "//remoting/host:elevated_native_messaging_host",
     "//remoting/host:resources",
     "//remoting/host/native_messaging",
-    "//remoting/protocol:protocol",
+    "//remoting/protocol",
     "//services/network/public/cpp",
     "//services/network/public/mojom",
   ]
 
-  if (is_linux || is_chromeos) {
+  if (is_linux) {
     sources += [
-      "daemon_controller_delegate_linux.cc",
-      "daemon_controller_delegate_linux.h",
+      "daemon_controller_delegate_linux_multi_process.cc",
+      "daemon_controller_delegate_linux_multi_process.h",
+      "daemon_controller_delegate_linux_single_process.cc",
+      "daemon_controller_delegate_linux_single_process.h",
+      "daemon_controller_linux.cc",
     ]
+    deps += [ "//remoting/host/linux:host_types" ]
   }
 
   if (is_mac) {
@@ -62,7 +67,7 @@ source_set("common") {
     deps += [
       "//remoting/host/mac:permission_checking",
       "//remoting/resources:strings_grit",
-      "//ui/base:base",
+      "//ui/base",
     ]
   }
 
@@ -76,7 +81,6 @@ source_set("common") {
       "daemon_controller_delegate_win.h",
     ]
     deps += [
-      "//remoting/host/win:elevated_native_messaging_host",
       "//remoting/host/win:remoting_lib_idl",
       "//remoting/host/win:security_descriptor",
     ]
@@ -102,10 +106,10 @@ source_set("start_host_common") {
     ":common",
     "//google_apis",
     "//net",
-    "//remoting/base:base",
+    "//remoting/base",
     "//remoting/host:common",
     "//services/network:network_service",
-    "//services/network/public/cpp:cpp",
+    "//services/network/public/cpp",
   ]
 }
 
@@ -120,31 +124,31 @@ source_set("start_host_main") {
     "start_host_main.cc",
   ]
 
-  if (is_linux) {
-    sources += [
-      "start_host_as_root.cc",
-      "start_host_as_root.h",
-    ]
-  }
-
   deps = [
     ":buildflags",
     ":start_host_common",
     "//google_apis",
     "//mojo/core/embedder",
     "//net",
+    "//remoting/base",
     "//remoting/base:authorization",
-    "//remoting/base:base",
     "//remoting/base/crash",
     "//remoting/host:common",
     "//remoting/host/setup",
     "//remoting/host/setup:start_host_main_headers",
     "//remoting/proto/google/remoting/cloud/v1:messages",
     "//services/network:network_service",
-    "//services/network/public/cpp:cpp",
-    "//third_party/libjingle_xmpp:rtc_xmllite",
+    "//services/network/public/cpp",
     "//third_party/webrtc_overrides:webrtc_component",
   ]
+
+  if (is_linux) {
+    sources += [
+      "start_host_as_root.cc",
+      "start_host_as_root.h",
+    ]
+    deps += [ "//remoting/host/linux:host_types" ]
+  }
 
   if (remoting_internal) {
     deps += [ "//remoting/internal/proto" ]

@@ -5,6 +5,7 @@
 #ifndef UI_OZONE_PLATFORM_WAYLAND_COMMON_WAYLAND_UTIL_H_
 #define UI_OZONE_PLATFORM_WAYLAND_COMMON_WAYLAND_UTIL_H_
 
+#include <variant>
 #include <vector>
 
 #include "base/containers/flat_map.h"
@@ -12,7 +13,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
 #include "base/time/time.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "components/viz/common/resources/shared_image_format.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/events/platform_event.h"
 #include "ui/gfx/geometry/rect.h"
@@ -30,7 +31,6 @@ class WaylandWindow;
 }  // namespace ui
 
 namespace gfx {
-enum class BufferFormat : uint8_t;
 class Size;
 }  // namespace gfx
 
@@ -41,8 +41,8 @@ using RequestSizeCallback = base::OnceCallback<void(const gfx::Size&)>;
 using OnRequestBufferCallback =
     base::OnceCallback<void(wl::Object<struct wl_buffer>)>;
 
-using BufferFormatsWithModifiersMap =
-    base::flat_map<gfx::BufferFormat, std::vector<uint64_t>>;
+using SharedImageFormatsWithModifiersMap =
+    base::flat_map<viz::SharedImageFormat, std::vector<uint64_t>>;
 
 // Constants used to determine how pointer/touch events are processed and
 // dispatched.
@@ -131,6 +131,7 @@ float ClampScale(float scale);
 bool MaybeHandlePlatformEventForDrag(const ui::PlatformEvent& event,
                                      bool start_drag_ack_received,
                                      base::OnceClosure cancel_drag_cb);
+bool EventShouldCancelDrag(const ui::PlatformEvent& event);
 
 // Logs connection state to UMA.
 void RecordConnectionMetrics(wl_display* display);

@@ -12,7 +12,6 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 
 namespace media_session {
 struct MediaPosition;
@@ -50,6 +49,7 @@ class COMPONENT_EXPORT(SYSTEM_MEDIA_CONTROLS) SystemMediaControlsBridge
   void SetAlbum(const std::u16string& album) override;
   void SetThumbnail(const SkBitmap& thumbnail) override;
   void SetPosition(const media_session::MediaPosition& position) override;
+  void ClearPosition() override;
   void ClearMetadata() override;
 
  private:

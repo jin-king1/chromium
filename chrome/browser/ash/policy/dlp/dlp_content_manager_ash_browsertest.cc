@@ -44,7 +44,6 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/experiences/screenshot_area/screenshot_area.h"
 #include "components/enterprise/common/proto/synced/dlp_policy_event.pb.h"
@@ -63,9 +62,9 @@
 #include "content/public/test/browser_test_utils.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/mojom/mediastream/media_stream.mojom-forward.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom-shared.h"
 #include "ui/aura/window.h"
+#include "ui/events/test/event_generator.h"
 #include "ui/gfx/geometry/rect.h"
 
 using testing::_;
@@ -176,7 +175,7 @@ class DlpContentManagerAshBrowserTest : public InProcessBrowserTest {
   // Sets up mock rules manager.
   void SetupDlpRulesManager() {
     DlpRulesManagerFactory::GetInstance()->SetTestingFactory(
-        browser()->profile(),
+        browser()->GetProfile(),
         base::BindRepeating(
             &DlpContentManagerAshBrowserTest::SetDlpRulesManager,
             base::Unretained(this)));
@@ -315,7 +314,7 @@ IN_PROC_BROWSER_TEST_P(ScreenshotTest, CheckRestriction) {
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
   ScreenshotArea fullscreen = ScreenshotArea::CreateForAllRootWindows();
   ScreenshotArea window =
       ScreenshotArea::CreateForWindow(web_contents->GetNativeView());
@@ -451,7 +450,7 @@ IN_PROC_BROWSER_TEST_F(ScreenshotTest, CheckRestriction_Blocked_Lacros) {
   aura::Window* window = shell_surface->GetWidget()->GetNativeWindow();
 
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
   ScreenshotArea fullscreen = ScreenshotArea::CreateForAllRootWindows();
   ScreenshotArea window_area = ScreenshotArea::CreateForWindow(window);
   const gfx::Rect rect = window->GetBoundsInRootWindow();
@@ -540,25 +539,25 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
                        VideoCaptureStoppedWhenConfidentialWindowResized) {
   SetupReporting();
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
 
   // Open first browser window.
   Browser* browser1 = browser();
-  chrome::NewTab(browser1);
+  chrome::NewTab(browser1, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser1, GURL(kExampleUrl)));
   content::WebContents* web_contents1 =
       browser1->tab_strip_model()->GetActiveWebContents();
 
   // Open second browser window.
   Browser* browser2 =
-      Browser::Create(Browser::CreateParams(browser()->profile(), true));
-  chrome::NewTab(browser2);
+      Browser::Create(Browser::CreateParams(browser()->GetProfile(), true));
+  chrome::NewTab(browser2, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, GURL(kGoogleUrl)));
 
   // Resize browsers so that second window covers the first one.
   // Browser window can't have width less than 500.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 500, 500));
-  browser2->window()->SetBounds(gfx::Rect(0, 0, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 500, 500));
+  browser2->GetWindow()->SetBounds(gfx::Rect(0, 0, 700, 700));
 
   // Make first window content as confidential.
   helper_->ChangeConfidentiality(web_contents1, kScreenshotRestricted);
@@ -571,13 +570,13 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
   ASSERT_EQ(events_.size(), 0u);
 
   // Move first window with confidential content to make it visible.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 700, 700));
 
   // Check that capture was requested to be stopped via callback.
   run_loop.Run();
 
   capture_mode_delegate->StopObservingRestrictedContent(base::DoNothing());
-  browser2->window()->Close();
+  browser2->GetWindow()->Close();
   histogram_tester_.ExpectUniqueSample(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kVideoCaptureInterruptedUMA,
@@ -593,25 +592,25 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest, VideoCaptureReported) {
   SetupReporting();
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
 
   // Open first browser window.
   Browser* browser1 = browser();
-  chrome::NewTab(browser1);
+  chrome::NewTab(browser1, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser1, GURL(kExampleUrl)));
   content::WebContents* web_contents1 =
       browser1->tab_strip_model()->GetActiveWebContents();
 
   // Open second browser window.
   Browser* browser2 =
-      Browser::Create(Browser::CreateParams(browser()->profile(), true));
-  chrome::NewTab(browser2);
+      Browser::Create(Browser::CreateParams(browser()->GetProfile(), true));
+  chrome::NewTab(browser2, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, GURL(kGoogleUrl)));
 
   // Resize browsers so that second window covers the first one.
   // Browser window can't have width less than 500.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 500, 500));
-  browser2->window()->SetBounds(gfx::Rect(0, 0, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 500, 500));
+  browser2->GetWindow()->SetBounds(gfx::Rect(0, 0, 700, 700));
 
   // Make first window content as confidential.
   helper_->ChangeConfidentiality(web_contents1, kScreenshotReported);
@@ -625,13 +624,13 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest, VideoCaptureReported) {
       }));
 
   // Move first window with confidential content to make it visible.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 700, 700));
 
   // Check that capture was not requested to be stopped via callback.
   run_loop.RunUntilIdle();
   capture_mode_delegate->StopObservingRestrictedContent(base::DoNothing());
 
-  browser2->window()->Close();
+  browser2->GetWindow()->Close();
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kVideoCaptureInterruptedUMA,
@@ -648,25 +647,25 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
                        VideoCaptureStoppedWhenNonConfidentialWindowResized) {
   SetupReporting();
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
 
   // Open first browser window.
   Browser* browser1 = browser();
-  chrome::NewTab(browser1);
+  chrome::NewTab(browser1, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser1, GURL(kExampleUrl)));
   content::WebContents* web_contents1 =
       browser1->tab_strip_model()->GetActiveWebContents();
 
   // Open second browser window.
   Browser* browser2 =
-      Browser::Create(Browser::CreateParams(browser()->profile(), true));
-  chrome::NewTab(browser2);
+      Browser::Create(Browser::CreateParams(browser()->GetProfile(), true));
+  chrome::NewTab(browser2, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, GURL(kGoogleUrl)));
 
   // Resize browsers so that second window covers the first one.
   // Browser window can't have width less than 500.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 500, 500));
-  browser2->window()->SetBounds(gfx::Rect(0, 0, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 500, 500));
+  browser2->GetWindow()->SetBounds(gfx::Rect(0, 0, 700, 700));
 
   // Make first window content as confidential.
   helper_->ChangeConfidentiality(web_contents1, kScreenshotRestricted);
@@ -679,13 +678,13 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
   ASSERT_EQ(events_.size(), 0u);
 
   // Move second window to make first window with confidential content visible.
-  browser2->window()->SetBounds(gfx::Rect(150, 150, 700, 700));
+  browser2->GetWindow()->SetBounds(gfx::Rect(150, 150, 700, 700));
 
   // Check that capture was requested to be stopped via callback.
   run_loop.Run();
 
   capture_mode_delegate->StopObservingRestrictedContent(base::DoNothing());
-  browser2->window()->Close();
+  browser2->GetWindow()->Close();
   histogram_tester_.ExpectUniqueSample(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kVideoCaptureInterruptedUMA,
@@ -702,25 +701,25 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
                        VideoCaptureNotStoppedWhenConfidentialWindowHidden) {
   SetupReporting();
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
 
   // Open first browser window.
   Browser* browser1 = browser();
-  chrome::NewTab(browser1);
+  chrome::NewTab(browser1, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser1, GURL(kExampleUrl)));
   content::WebContents* web_contents1 =
       browser1->tab_strip_model()->GetActiveWebContents();
 
   // Open second browser window.
   Browser* browser2 =
-      Browser::Create(Browser::CreateParams(browser()->profile(), true));
-  chrome::NewTab(browser2);
+      Browser::Create(Browser::CreateParams(browser()->GetProfile(), true));
+  chrome::NewTab(browser2, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, GURL(kGoogleUrl)));
 
   // Resize browsers so that second window covers the first one.
   // Browser window can't have width less than 500.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 500, 500));
-  browser2->window()->SetBounds(gfx::Rect(0, 0, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 500, 500));
+  browser2->GetWindow()->SetBounds(gfx::Rect(0, 0, 700, 700));
 
   // Make first window content as confidential.
   helper_->ChangeConfidentiality(web_contents1, kScreenshotRestricted);
@@ -736,7 +735,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
       }));
 
   // Move first window, but keep confidential content hidden.
-  browser1->window()->SetBounds(gfx::Rect(150, 150, 500, 500));
+  browser1->GetWindow()->SetBounds(gfx::Rect(150, 150, 500, 500));
 
   // Check that capture was not requested to be stopped via callback.
   run_loop.RunUntilIdle();
@@ -746,7 +745,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
   // dismissed.
   EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 0);
 
-  browser2->window()->Close();
+  browser2->GetWindow()->Close();
   histogram_tester_.ExpectTotalCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kVideoCaptureInterruptedUMA,
@@ -759,25 +758,25 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
                        VideoCaptureWarnedAtEndAllowed) {
   SetupReporting();
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
 
   // Open first browser window.
   Browser* browser1 = browser();
-  chrome::NewTab(browser1);
+  chrome::NewTab(browser1, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser1, GURL(kExampleUrl)));
   content::WebContents* web_contents1 =
       browser1->tab_strip_model()->GetActiveWebContents();
 
   // Open second browser window.
   Browser* browser2 =
-      Browser::Create(Browser::CreateParams(browser()->profile(), true));
-  chrome::NewTab(browser2);
+      Browser::Create(Browser::CreateParams(browser()->GetProfile(), true));
+  chrome::NewTab(browser2, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, GURL(kGoogleUrl)));
 
   // Resize browsers so that second window covers the first one.
   // Browser window can't have width less than 500.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 500, 500));
-  browser2->window()->SetBounds(gfx::Rect(0, 0, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 500, 500));
+  browser2->GetWindow()->SetBounds(gfx::Rect(0, 0, 700, 700));
 
   // Make first window content as confidential.
   helper_->ChangeConfidentiality(web_contents1, kScreenshotWarned);
@@ -791,7 +790,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
       }));
 
   // Move first window with confidential content to make it visible.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 700, 700));
   // Check that the warning is still not shown.
   EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 0);
 
@@ -811,16 +810,18 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
   // Check that the warning is now shown.
   EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 1);
   // Hit Enter to "Save anyway".
-  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(
-      browser(), ui::VKEY_RETURN, /*control=*/false,
-      /*shift=*/false, /*alt=*/false, /*command=*/false));
+  ui::test::EventGenerator(
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow())
+      .PressAndReleaseKey(ui::VKEY_RETURN, ui::EF_NONE);
+  // Run loop to process asynchronous widget closure triggered by key event.
+  base::RunLoop().RunUntilIdle();
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenshotWarnProceededUMA,
       true, 1);
   EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 0);
 
-  browser2->window()->Close();
+  browser2->GetWindow()->Close();
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kVideoCaptureInterruptedUMA,
@@ -831,25 +832,25 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
                        VideoCaptureWarnedAtEndCancelled) {
   SetupReporting();
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
 
   // Open first browser window.
   Browser* browser1 = browser();
-  chrome::NewTab(browser1);
+  chrome::NewTab(browser1, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser1, GURL(kExampleUrl)));
   content::WebContents* web_contents1 =
       browser1->tab_strip_model()->GetActiveWebContents();
 
   // Open second browser window.
   Browser* browser2 =
-      Browser::Create(Browser::CreateParams(browser()->profile(), true));
-  chrome::NewTab(browser2);
+      Browser::Create(Browser::CreateParams(browser()->GetProfile(), true));
+  chrome::NewTab(browser2, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, GURL(kGoogleUrl)));
 
   // Resize browsers so that second window covers the first one.
   // Browser window can't have width less than 500.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 500, 500));
-  browser2->window()->SetBounds(gfx::Rect(0, 0, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 500, 500));
+  browser2->GetWindow()->SetBounds(gfx::Rect(0, 0, 700, 700));
 
   // Make first window content as confidential.
   helper_->ChangeConfidentiality(web_contents1, kScreenshotWarned);
@@ -863,7 +864,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
       }));
 
   // Move first window with confidential content to make it visible.
-  browser1->window()->SetBounds(gfx::Rect(100, 100, 700, 700));
+  browser1->GetWindow()->SetBounds(gfx::Rect(100, 100, 700, 700));
   // Check that the warning is still not shown.
   EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 0);
 
@@ -883,16 +884,18 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
   // Check that the warning is now shown.
   EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 1);
   // Hit Enter to "Cancel".
-  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(
-      browser(), ui::VKEY_ESCAPE, /*control=*/false,
-      /*shift=*/false, /*alt=*/false, /*command=*/false));
+  ui::test::EventGenerator(
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow())
+      .PressAndReleaseKey(ui::VKEY_ESCAPE, ui::EF_NONE);
+  // Run loop to process asynchronous widget closure triggered by key event.
+  base::RunLoop().RunUntilIdle();
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenshotWarnProceededUMA,
       false, 1);
   EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 0);
 
-  browser2->window()->Close();
+  browser2->GetWindow()->Close();
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kVideoCaptureInterruptedUMA,
@@ -905,9 +908,9 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
   MockDlpWarnNotifier* mock_dlp_warn_notifier =
       CreateAndSetMockDlpWarnNotifier();
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
 
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1001,7 +1004,7 @@ class DlpContentManagerAshScreenShareBrowserTest
         content::DesktopMediaID::kNullId,
         content::WebContentsMediaCaptureId(process_id, frame_id));
 
-    extensions::TabCaptureRegistry::Get(browser()->profile())
+    extensions::TabCaptureRegistry::Get(browser()->GetProfile())
         ->AddRequest(web_contents, /*extension_id=*/"", /*is_anonymous=*/false,
                      GURL(kExampleUrl), media_id, process_id, frame_id);
 
@@ -1026,9 +1029,11 @@ class DlpContentManagerAshScreenShareBrowserTest
   void DismissDialog(bool allow) {
     ASSERT_EQ(helper_->ActiveWarningDialogsCount(), 1);
     ui::KeyboardCode key = allow ? ui::VKEY_RETURN : ui::VKEY_ESCAPE;
-    ASSERT_TRUE(ui_test_utils::SendKeyPressSync(
-        browser(), key, /*control=*/false,
-        /*shift=*/false, /*alt=*/false, /*command=*/false));
+    ui::test::EventGenerator(
+        browser()->GetWindow()->GetNativeWindow()->GetRootWindow())
+        .PressAndReleaseKey(key, ui::EF_NONE);
+    // Run loop to process asynchronous widget closure triggered by key event.
+    base::RunLoop().RunUntilIdle();
   }
 
   // Blocks the test execution to wait for a screen share to be resumed.
@@ -1061,8 +1066,7 @@ class DlpContentManagerAshScreenShareBrowserTest
                              bool expect_warning) {
     // First check for the permission to start screen sharing.
     // It should call DlpContentManager::CheckScreenShareRestriction().
-    blink::mojom::MediaStreamRequestResult received_result =
-        blink::mojom::MediaStreamRequestResult::NUM_MEDIA_REQUEST_RESULTS;
+    blink::mojom::MediaStreamRequestResult received_result;
     base::RunLoop run_loop;
     handler->HandleRequest(
         web_contents, request,
@@ -1084,7 +1088,7 @@ class DlpContentManagerAshScreenShareBrowserTest
         received_result,
         (expect_allowed
              ? blink::mojom::MediaStreamRequestResult::OK
-             : blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED));
+             : blink::mojom::MediaStreamRequestResult::DLP_PERMISSION_DENIED));
 
     // Simulate starting screen sharing.
     // Calls DlpContentManager::OnScreenShareStarted().
@@ -1124,7 +1128,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   // Run for fullscreen and window share.
   const auto root_media_id = content::DesktopMediaID::RegisterNativeWindow(
       content::DesktopMediaID::TYPE_SCREEN,
-      browser()->window()->GetNativeWindow()->GetRootWindow());
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow());
   const auto window_media_id = content::DesktopMediaID::RegisterNativeWindow(
       content::DesktopMediaID::TYPE_WINDOW,
       shell_surface->GetWidget()->GetNativeWindow());
@@ -1180,7 +1184,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   // Run for fullscreen and window share.
   const auto root_media_id = content::DesktopMediaID::RegisterNativeWindow(
       content::DesktopMediaID::TYPE_SCREEN,
-      browser()->window()->GetNativeWindow()->GetRootWindow());
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow());
   const auto window_media_id = content::DesktopMediaID::RegisterNativeWindow(
       content::DesktopMediaID::TYPE_WINDOW,
       shell_surface->GetWidget()->GetNativeWindow());
@@ -1206,7 +1210,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareNotification) {
   helper_->SetScreenShareResumeDelay(kScreenShareResumeDelayForTesting);
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1290,7 +1295,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareStoppedForSourceChange) {
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   DlpContentManagerAsh* manager =
       static_cast<DlpContentManagerAsh*>(helper_->GetContentManager());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
@@ -1329,7 +1335,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
       false, 0);
 
   // Open new tab and navigate to a url.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kGoogleUrl)));
   content::WebContents* new_web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1422,7 +1428,8 @@ using CheckRunningScreenShareTest = CheckAndStartScreenShareTest;
 IN_PROC_BROWSER_TEST_P(CheckAndStartScreenShareTest, FullScreenShare) {
   const ScreenShareTestParams& param = GetParam();
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1471,7 +1478,8 @@ IN_PROC_BROWSER_TEST_P(CheckAndStartScreenShareTest, FullScreenShare) {
 IN_PROC_BROWSER_TEST_P(CheckAndStartScreenShareTest, TabShare) {
   const ScreenShareTestParams& param = GetParam();
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1521,7 +1529,8 @@ IN_PROC_BROWSER_TEST_P(CheckRunningScreenShareTest, FullScreenShare) {
   const ScreenShareTestParams& param = GetParam();
   helper_->SetScreenShareResumeDelay(kScreenShareResumeDelayForTesting);
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1593,7 +1602,8 @@ IN_PROC_BROWSER_TEST_P(CheckRunningScreenShareTest, TabShare) {
   const ScreenShareTestParams& param = GetParam();
   helper_->SetScreenShareResumeDelay(kScreenShareResumeDelayForTesting);
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1666,7 +1676,8 @@ IN_PROC_BROWSER_TEST_P(CheckRunningScreenShareTest, TabShare) {
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareResumedWhenNavigatingToBypassedContent) {
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1736,6 +1747,50 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   helper_->ChangeConfidentiality(web_contents, kEmptyRestrictionSet);
 }
 
+// Tests that when blocked content becomes visible while the warn dialog for a
+// running screen share is still open, the dialog is dismissed and the share
+// stays paused.
+IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
+                       ScreenShareWarnDialogDismissedOnBlockedContent) {
+  SetupReporting();
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  MaybeStartFullScreenShare(web_contents, /*expect_allowed=*/true,
+                            /*expect_warning=*/false);
+
+  EXPECT_CALL(state_change_cb_,
+              Run(testing::_, blink::mojom::MediaStreamStateChange::PAUSE))
+      .Times(1);
+  EXPECT_CALL(state_change_cb_,
+              Run(testing::_, blink::mojom::MediaStreamStateChange::PLAY))
+      .Times(0);
+  EXPECT_CALL(stop_cb_, Run).Times(0);
+
+  helper_->ChangeConfidentiality(web_contents, kScreenShareWarned);
+  ASSERT_EQ(helper_->ActiveWarningDialogsCount(), 1);
+  EXPECT_FALSE(
+      display_service_tester.GetNotification(kScreenSharePausedNotificationId)
+          .has_value());
+
+  // While the dialog is open, blocked content appears.
+  helper_->ChangeConfidentiality(web_contents, kScreenShareRestricted);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 0);
+  EXPECT_TRUE(
+      display_service_tester.GetNotification(kScreenSharePausedNotificationId)
+          .has_value());
+
+  VerifyHistogramCounts(
+      /*blocked_count=*/1,
+      /*warned_count=*/1,
+      /*total_count=*/3,
+      /*blocked_suffix=*/data_controls::dlp::kScreenShareBlockedUMA,
+      /*warned_suffix=*/data_controls::dlp::kScreenShareWarnedUMA);
+}
+
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ContentsUpdatedOnWebContentsTitleChanged) {
   SetupReporting();
@@ -1803,14 +1858,14 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 
   // Open first browser window.
   Browser* browser1 = browser();
-  chrome::NewTab(browser1);
+  chrome::NewTab(browser1, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser1, GURL(kExampleUrl)));
-  aura::Window* browser1_window = browser()->window()->GetNativeWindow();
+  aura::Window* browser1_window = browser()->GetWindow()->GetNativeWindow();
 
   // Open second browser window.
   Browser* browser2 =
-      Browser::Create(Browser::CreateParams(browser()->profile(), true));
-  chrome::NewTab(browser2);
+      Browser::Create(Browser::CreateParams(browser()->GetProfile(), true));
+  chrome::NewTab(browser2, NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, GURL(kGoogleUrl)));
   content::WebContents* web_contents2 =
       browser2->tab_strip_model()->GetActiveWebContents();
@@ -1819,8 +1874,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   helper_->ChangeConfidentiality(web_contents2, kScreenShareRestricted);
 
   // Resize both contents to be visible so that visibility state won't change.
-  browser1->window()->SetBounds(gfx::Rect(0, 00, 500, 500));
-  browser2->window()->SetBounds(gfx::Rect(150, 150, 500, 500));
+  browser1->GetWindow()->SetBounds(gfx::Rect(0, 00, 500, 500));
+  browser2->GetWindow()->SetBounds(gfx::Rect(150, 150, 500, 500));
 
   EXPECT_CALL(state_change_cb_,
               Run(testing::_, blink::mojom::MediaStreamStateChange::PAUSE))
@@ -1841,7 +1896,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   browser1->tab_strip_model()->ActivateTabAt(0);
 
   // Cleanup and check reporting.
-  browser2->window()->Close();
+  browser2->GetWindow()->Close();
   histogram_tester_.ExpectUniqueSample(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenSharePausedOrResumedUMA,
@@ -1854,7 +1909,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        WarningIsShownOnlyOnce) {
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
@@ -1907,11 +1963,12 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareWarnedFromLacrosDuringAllowed) {
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   aura::Window* root_window =
-      browser()->window()->GetNativeWindow()->GetRootWindow();
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
   const auto media_id = content::DesktopMediaID::RegisterNativeWindow(
       content::DesktopMediaID::TYPE_SCREEN, root_window);
 
@@ -1928,7 +1985,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   manager->OnScreenShareStarted(kLabel, {media_id}, kApplicationTitle,
                                 stop_cb_.Get(), state_change_cb_.Get(),
                                 /*source_callback=*/base::DoNothing());
-  exo::SetShellApplicationId(browser()->window()->GetNativeWindow(), kWindowId);
+  exo::SetShellApplicationId(browser()->GetWindow()->GetNativeWindow(),
+                             kWindowId);
   manager->OnWindowRestrictionChanged(kReceiverId, kWindowId,
                                       kScreenShareWarned);
   EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 1);
@@ -1949,7 +2007,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareReporting) {
   SetupReporting();
   const GURL origin(kExampleUrl);
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), origin));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1969,7 +2028,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 
   // Open new tab and navigate to a url.
   // Then move back to the screen-shared tab.
-  chrome::NewTab(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kGoogleUrl)));
   ASSERT_NE(browser()->tab_strip_model()->GetActiveWebContents(), web_contents);
   ASSERT_EQ(web_contents->GetLastCommittedURL(), origin);
@@ -1997,7 +2056,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareWithoutLabelNotReported) {
   SetupReporting();
   const GURL origin(kExampleUrl);
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), origin));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -2050,7 +2110,8 @@ IN_PROC_BROWSER_TEST_P(ScreenShareNavigateWebContentsTest, Reporting) {
   const GURL reported_url(kExampleUrl);
   const GURL unrestricted_url(kChromeUrl);
 
-  NotificationDisplayServiceTester display_service_tester(browser()->profile());
+  NotificationDisplayServiceTester display_service_tester(
+      browser()->GetProfile());
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
 

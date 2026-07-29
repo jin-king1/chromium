@@ -7,12 +7,11 @@
 
 #include "base/functional/callback_forward.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/common/buildflags.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
-class Browser;
+class BrowserWindowInterface;
 class GURL;
 class Profile;
 
@@ -78,7 +77,7 @@ void ShowItemInFolder(Profile* profile, const base::FilePath& full_path);
 // Open the given external protocol URL in the desktop's default manner.
 // (For example, mailto: URLs in the default mail user agent.)
 // Must be called from the UI thread.
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 void OpenExternal(Profile* profile, const GURL& url);
 #else
 void OpenExternal(const GURL& url);
@@ -113,18 +112,15 @@ bool IsVisible(gfx::NativeView view);
 bool IsSwipeTrackingFromScrollEventsEnabled();
 
 // Returns the active window which accepts keyboard inputs.
-NSWindow* GetActiveWindow();
-
-// Returns the screen bounds of a window. Top left screen corner is (0, 0).
-// TODO(crbug.com/365733574): used for debugging the misplaced bubble issue on
-// mac fullscreen.
-gfx::Rect GetWindowScreenBounds(gfx::NativeWindow window);
+gfx::NativeWindow GetActiveWindow();
 #endif
 
+#if BUILDFLAG(IS_CHROMEOS)
 // Returns true if the given browser window is in locked fullscreen mode
 // (a special type of fullscreen where the user is locked into one browser
 // window).
-bool IsBrowserLockedFullscreen(const Browser* browser);
+bool IsBrowserLockedFullscreen(const BrowserWindowInterface* browser);
+#endif
 
 }  // namespace platform_util
 

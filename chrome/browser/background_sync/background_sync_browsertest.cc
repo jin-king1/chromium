@@ -8,7 +8,6 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -82,7 +81,7 @@ class BackgroundSyncBrowserTest : public InProcessBrowserTest {
   // Intercepts all requests.
   std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
       const net::test_server::HttpRequest& request) {
-    if (request.GetURL().query() == "syncreceived") {
+    if (request.GetURL().GetQuery() == "syncreceived") {
       time_when_sync_event_received_ = base::Time::Now();
     }
 

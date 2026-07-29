@@ -18,7 +18,6 @@
 #include "content/public/browser/file_system_access_write_item.h"
 #include "content/public/browser/global_routing_id.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_manager.mojom-forward.h"
-#include "third_party/blink/public/mojom/file_system_access/file_system_access_manager.mojom-shared.h"
 #include "url/origin.h"
 
 class GURL;
@@ -58,35 +57,35 @@ struct PathInfo {
   explicit PathInfo(base::FilePath path)
       : path(std::move(path)),
         display_name(this->path.BaseName().AsUTF8Unsafe()) {
-    CHECK(!this->path.empty(), base::NotFatalUntil::M134);
-    CHECK(!this->display_name.empty(), base::NotFatalUntil::M134);
+    CHECK(!this->path.empty());
+    CHECK(!this->display_name.empty());
   }
   explicit PathInfo(base::FilePath::StringViewType path)
       : PathInfo(base::FilePath(path)) {
-    CHECK(!this->path.empty(), base::NotFatalUntil::M134);
-    CHECK(!this->display_name.empty(), base::NotFatalUntil::M134);
+    CHECK(!this->path.empty());
+    CHECK(!this->display_name.empty());
   }
   PathInfo(PathType type, base::FilePath path)
       : type(type),
         path(std::move(path)),
         display_name(this->path.BaseName().AsUTF8Unsafe()) {
-    CHECK(!this->path.empty(), base::NotFatalUntil::M134);
-    CHECK(!this->display_name.empty(), base::NotFatalUntil::M134);
+    CHECK(!this->path.empty());
+    CHECK(!this->display_name.empty());
   }
   PathInfo(base::FilePath path, std::string display_name)
       : path(std::move(path)), display_name(std::move(display_name)) {
-    CHECK(!this->path.empty(), base::NotFatalUntil::M134);
-    CHECK(!this->display_name.empty(), base::NotFatalUntil::M134);
+    CHECK(!this->path.empty());
+    CHECK(!this->display_name.empty());
   }
   PathInfo(PathType type, base::FilePath path, std::string display_name)
       : type(type),
         path(std::move(path)),
         display_name(std::move(display_name)) {
-    CHECK(!this->path.empty(), base::NotFatalUntil::M134);
-    CHECK(!this->display_name.empty(), base::NotFatalUntil::M134);
+    CHECK(!this->path.empty());
+    CHECK(!this->display_name.empty());
   }
 
-  bool operator==(const PathInfo& other) const = default;
+  auto operator<=>(const PathInfo& other) const = default;
 };
 
 // For testing only.
@@ -187,8 +186,7 @@ class FileSystemAccessPermissionContext {
 
   // Returns whether the file type is considered dangerous. This is used to
   // block file operations from creating or accessing these file types.
-  virtual bool IsFileTypeDangerous(const base::FilePath& path,
-                                   const url::Origin& origin) = 0;
+  virtual bool IsFileTypeDangerous(const base::FilePath& path) = 0;
 
   // Returns whether the given RFH can use file picker.
   virtual base::expected<void, std::string> CanShowFilePicker(
@@ -233,6 +231,19 @@ class FileSystemAccessPermissionContext {
   virtual void NotifyEntryMoved(const url::Origin& origin,
                                 const PathInfo& old_path,
                                 const PathInfo& new_path) = 0;
+
+  // Called after a file has been modified (e.g. through a write or move
+  // operation) to restore read access that might have been revoked after a
+  // `remove()` call.
+  // See https://crbug.com/421690393.
+  virtual void NotifyEntryModified(const url::Origin& origin,
+                                   const PathInfo& path) = 0;
+
+  // Notifies that the underlying file or directory has been removed and updates
+  // permission grants accordingly.
+  // See https://crbug.com/421690393.
+  virtual void NotifyEntryRemoved(const url::Origin& origin,
+                                  const PathInfo& path) = 0;
 
   // Invoked on file creation events originating from
   // `window.showSaveFilePicker()`.

@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "chrome/browser/extensions/api/image_writer_private/test_utils.h"
 
 #include <string.h>
 
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -105,8 +101,9 @@ FakeImageWriterClient::~FakeImageWriterClient() = default;
 
 void FakeImageWriterClient::SimulateProgressAndCompletion(
     const SimulateProgressInfo& info) {
-  for (int progress : info.progress_list)
+  for (int progress : info.progress_list) {
     Progress(progress);
+  }
   if (info.will_succeed) {
     Success();
   } else {
@@ -172,23 +169,27 @@ void FakeImageWriterClient::SimulateProgressOnVerifyWrite(
 }
 
 void FakeImageWriterClient::Progress(int64_t progress) {
-  if (!progress_callback_.is_null())
+  if (!progress_callback_.is_null()) {
     progress_callback_.Run(progress);
+  }
 }
 
 void FakeImageWriterClient::Success() {
-  if (!success_callback_.is_null())
+  if (!success_callback_.is_null()) {
     std::move(success_callback_).Run();
+  }
 }
 
 void FakeImageWriterClient::Error(const std::string& message) {
-  if (!error_callback_.is_null())
+  if (!error_callback_.is_null()) {
     std::move(error_callback_).Run(message);
+  }
 }
 
 void FakeImageWriterClient::Cancel() {
-  if (!cancel_callback_.is_null())
+  if (!cancel_callback_.is_null()) {
     std::move(cancel_callback_).Run();
+  }
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -216,8 +217,9 @@ void ImageWriterTestUtils::OnUtilityClientCreated(
   DCHECK(!client_.get())
       << "Single FakeImageWriterClient instance per test case expected.";
   client_ = client;
-  if (!client_creation_callback_.is_null())
+  if (!client_creation_callback_.is_null()) {
     std::move(client_creation_callback_).Run(client);
+  }
 }
 #endif
 
@@ -307,8 +309,8 @@ bool ImageWriterTestUtils::ImageWrittenToDevice() {
     return false;
   }
 
-  return memcmp(image_buffer.data(), device_buffer.data(), *image_bytes_read) ==
-         0;
+  return UNSAFE_TODO(memcmp(image_buffer.data(), device_buffer.data(),
+                            *image_bytes_read)) == 0;
 }
 
 bool ImageWriterTestUtils::FillFile(const base::FilePath& file,
@@ -334,8 +336,9 @@ void ImageWriterUnitTestBase::TearDown() {
 
 bool GetTestDataDirectory(base::FilePath* path) {
   bool success = base::PathService::Get(chrome::DIR_TEST_DATA, path);
-  if (!success)
+  if (!success) {
     return false;
+  }
   *path = path->AppendASCII("image_writer_private");
   return true;
 }

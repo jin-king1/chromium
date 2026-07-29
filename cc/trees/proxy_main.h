@@ -6,11 +6,13 @@
 #define CC_TREES_PROXY_MAIN_H_
 
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/types/optional_ref.h"
 #include "cc/cc_export.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
@@ -59,8 +61,12 @@ class CC_EXPORT ProxyMain : public Proxy {
   void RequestNewLayerTreeFrameSink();
   void DidInitializeLayerTreeFrameSink(bool success);
   void DidCompletePageScaleAnimation();
+  void RecordBeginMainFrameMetrics(const BeginMainFrameReasons& reasons,
+                                   const base::ElapsedTimer& timer,
+                                   std::string_view suffix) const;
   void BeginMainFrame(
       std::unique_ptr<BeginMainFrameAndCommitState> begin_main_frame_state);
+  void DidChangeBeginFrameSourcePaused(bool paused);
   void DidCompleteCommit(int source_frame_number, CommitTimestamps);
   void DidPresentCompositorFrame(
       uint32_t frame_token,
@@ -78,6 +84,13 @@ class CC_EXPORT ProxyMain : public Proxy {
       uint32_t sequence_id,
       const viz::ViewTransitionElementResourceRects&);
 
+  void SetUnboundedFrameSink(
+      std::unique_ptr<LayerTreeFrameSink> unbounded_frame_sink,
+      const viz::LocalSurfaceId& local_surface_id) override;
+  void DismissUnboundedFrameSink() override;
+  void SetUnboundedLocalSurfaceId(
+      const viz::LocalSurfaceId& local_surface_id) override;
+
   CommitPipelineStage max_requested_pipeline_stage() const {
     return max_requested_pipeline_stage_;
   }
@@ -87,6 +100,9 @@ class CC_EXPORT ProxyMain : public Proxy {
   CommitPipelineStage final_pipeline_stage() const {
     return final_pipeline_stage_;
   }
+  bool has_sent_urgent_commit_request() const {
+    return has_sent_urgent_commit_request_;
+  }
 
  private:
   // Proxy implementation.
@@ -95,25 +111,29 @@ class CC_EXPORT ProxyMain : public Proxy {
       LayerTreeFrameSink* layer_tree_frame_sink) override;
   void SetVisible(bool visible) override;
   void SetShouldWarmUp() override;
-  void SetNeedsAnimate(bool urgent) override;
+  void SetNeedsAnimate(BeginMainFrameReason, bool urgent) override;
   void SetNeedsUpdateLayers() override;
-  void SetNeedsCommit() override;
+  void SetNeedsCommit(bool urgent) override;
   void SetNeedsRedraw(const gfx::Rect& damage_rect) override;
   void SetTargetLocalSurfaceId(
       const viz::LocalSurfaceId& target_local_surface_id) override;
   void DetachInputDelegateAndRenderFrameObserver() override;
   bool RequestedAnimatePending() override;
   void SetDeferMainFrameUpdate(bool defer_main_frame_update) override;
-  void SetPauseRendering(bool pause_rendering) override;
+  void SetPauseRendering(bool pause_rendering,
+                         bool delay_until_visibility_change) override;
   void SetInputResponsePending() override;
   bool StartDeferringCommits(base::TimeDelta timeout,
                              PaintHoldingReason reason) override;
-  void StopDeferringCommits(PaintHoldingCommitTrigger) override;
+  void StopDeferringCommits() override;
   bool IsDeferringCommits() const override;
+  void SetRequestHighFramerate(bool flag) override;
   bool CommitRequested() const override;
   void Start() override;
   void Stop() override;
-  void QueueImageDecode(int request_id, const DrawImage& image) override;
+  void QueueImageDecode(int request_id,
+                        const DrawImage& image,
+                        bool speculative) override;
   void SetMutator(std::unique_ptr<LayerTreeMutator> mutator) override;
   void SetPaintWorkletLayerPainter(
       std::unique_ptr<PaintWorkletLayerPainter> painter) override;
@@ -126,32 +146,48 @@ class CC_EXPORT ProxyMain : public Proxy {
       base::optional_ref<const BrowserControlsOffsetTagModifications>
           offset_tag_modifications) override;
   void RequestBeginMainFrameNotExpected(bool new_state) override;
+  void SendImmediateBeginMainFrame() override;
   void SetSourceURL(ukm::SourceId source_id, const GURL& url) override;
-  void SetUkmSmoothnessDestination(
-      base::WritableSharedMemoryMapping ukm_smoothness_data) override;
-  void SetUkmDroppedFramesDestination(
-      base::WritableSharedMemoryMapping ukm_dropped_frames_data) override;
   void SetRenderFrameObserver(
       std::unique_ptr<RenderFrameMetadataObserver> observer) override;
   void CompositeImmediatelyForTest(base::TimeTicks frame_begin_time,
                                    bool raster,
                                    base::OnceClosure callback) override;
-  double GetPercentDroppedFrames() const override;
+  double GetAverageThroughput() const override;
+  bool IsRenderingPaused() const override;
+  void NotifyNewLocalSurfaceIdExpectedWhilePaused() override;
 
   // Returns |true| if the request was actually sent, |false| if one was
   // already outstanding.
-  bool SendCommitRequestToImplThreadIfNeeded(CommitPipelineStage required_stage,
+  bool SendCommitRequestToImplThreadIfNeeded(BeginMainFrameReason reason,
+                                             CommitPipelineStage required_stage,
                                              bool urgent);
+  // Indicates whether the main thread needs a BeginMainFrame callback in order
+  // to make progress.
+  bool BeginFrameNeeded() const;
+  bool ShouldBeginMainFrameNotExpectedUntil() const;
+  bool ShouldBeginMainFrameNotExpectedSoon() const;
+  void MaybeIdleMainThread();
+
   bool IsMainThread() const;
   bool IsImplThread() const;
   base::SingleThreadTaskRunner* ImplThreadTaskRunner();
 
-  void InitializeOnImplThread(
-      CompletionEvent* completion_event,
-      int id,
-      const LayerTreeSettings* settings,
-      RenderingStatsInstrumentation* rendering_stats_instrumentation);
+  void InitializeOnImplThread(CompletionEvent* completion_event,
+                              int id,
+                              const LayerTreeSettings* settings);
   void DestroyProxyImplOnImplThread(CompletionEvent* completion_event);
+
+  // Indicates whether the compositor should continue to receive BeginFrame
+  // notifications. This is different from BeginFrameNeeded() for cases where we
+  // temporarily stop drawing.
+  bool ShouldSubscribeToBeginFrames() const;
+
+  void set_begin_main_frame_reason(const BeginMainFrameReason reason) {
+    begin_main_frame_reason_.set(static_cast<int>(reason));
+  }
+
+  bool IsEmbeddedFrame() const;
 
   raw_ptr<LayerTreeHost> layer_tree_host_;
 
@@ -200,6 +236,16 @@ class CC_EXPORT ProxyMain : public Proxy {
   std::unique_ptr<ProxyImpl> proxy_impl_;
 
   base::OnceClosure synchronous_composite_for_test_callback_;
+
+  // TODO(crbug.com/467096732): Bundle newly-introduced state together.
+  bool begin_frame_source_paused_ = false;
+  int main_frames_in_flight_ = 0;
+  bool needs_begin_main_frame_ = false;
+  BeginMainFrameReasons begin_main_frame_reason_;
+  viz::BeginFrameArgs last_begin_main_frame_args_;
+  bool begin_impl_frame_idle_ = false;
+  bool request_begin_main_frame_not_expected_ = false;
+  bool did_notify_begin_main_frame_not_expected_until_ = false;
 
   // WeakPtrs generated by this factory will be invalidated when
   // LayerTreeFrameSink is released.

@@ -5,7 +5,7 @@
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
 
@@ -156,6 +156,26 @@ class EmbedderContextData
                               base::Unretained(this)));
     }
     browser_tracker_->SetBrowserWindowInterface(browser_window_interface);
+
+    // Setting browser window interface to nullptr removes the tracker
+    // after calling the listeners.
+    if (!browser_window_interface) {
+      browser_tracker_.reset();
+    }
+  }
+
+  BrowserWindowInterface* GetBrowserWindowInterface() {
+    // Source the browser interface either directly from the tracked browser or
+    // via the tracked tab.
+    if (tab_tracker_) {
+      return tab_tracker_->tab_interface()
+                 ? tab_tracker_->tab_interface()->GetBrowserWindowInterface()
+                 : nullptr;
+    }
+    if (browser_tracker_) {
+      return browser_tracker_->browser_window_interface();
+    }
+    return nullptr;
   }
 
   void SetTabInterface(tabs::TabInterface* tab_interface) {
@@ -171,20 +191,12 @@ class EmbedderContextData
                               base::Unretained(this)));
     }
     tab_tracker_->SetTabInterface(tab_interface);
-  }
 
-  BrowserWindowInterface* GetBrowserWindowInterface() {
-    // Source the browser interface either directly from the tracked browser or
-    // via the tracked tab.
-    if (tab_tracker_) {
-      return tab_tracker_->tab_interface()
-                 ? tab_tracker_->tab_interface()->GetBrowserWindowInterface()
-                 : nullptr;
+    // Setting tab interface to nullptr removes the tracker after
+    // calling the listeners.
+    if (!tab_interface) {
+      tab_tracker_.reset();
     }
-    if (browser_tracker_) {
-      return browser_tracker_->browser_window_interface();
-    }
-    return nullptr;
   }
 
   tabs::TabInterface* GetTabInterface() {
@@ -253,16 +265,16 @@ void SetBrowserWindowInterface(
       ->SetBrowserWindowInterface(browser_window_interface);
 }
 
-void SetTabInterface(content::WebContents* host_contents,
-                     tabs::TabInterface* tab_interface) {
-  EmbedderContextData::GetOrCreate(host_contents)
-      ->SetTabInterface(tab_interface);
-}
-
 BrowserWindowInterface* GetBrowserWindowInterface(
     content::WebContents* host_contents) {
   return EmbedderContextData::GetOrCreate(host_contents)
       ->GetBrowserWindowInterface();
+}
+
+void SetTabInterface(content::WebContents* host_contents,
+                     tabs::TabInterface* tab_interface) {
+  EmbedderContextData::GetOrCreate(host_contents)
+      ->SetTabInterface(tab_interface);
 }
 
 tabs::TabInterface* GetTabInterface(content::WebContents* host_contents) {

@@ -52,7 +52,9 @@ class CORE_EXPORT LayoutVideo final : public LayoutMedia {
 
   HTMLVideoElement* VideoElement() const;
 
-  void StyleDidChange(StyleDifference, const ComputedStyle* old_style) override;
+  void StyleDidChange(StyleDifference,
+                      const ComputedStyle* old_style,
+                      const StyleChangeContext&) override;
 
   const char* GetName() const override {
     NOT_DESTROYED();
@@ -81,6 +83,8 @@ class CORE_EXPORT LayoutVideo final : public LayoutMedia {
     NOT_DESTROYED();
     return true;
   }
+  bool IsReplacedNormalFlowStackingContext(
+      const ComputedStyle& style) const final;
 
   void PaintReplaced(const PaintInfo&,
                      const PhysicalOffset& paint_offset) const override;
@@ -91,7 +95,8 @@ class CORE_EXPORT LayoutVideo final : public LayoutMedia {
   }
   CompositingReasons AdditionalCompositingReasons() const override;
 
-  PhysicalNaturalSizingInfo natural_dimensions_;
+  PhysicalNaturalSizingInfo natural_dimensions_ =
+      PhysicalNaturalSizingInfo::None();
 };
 
 template <>

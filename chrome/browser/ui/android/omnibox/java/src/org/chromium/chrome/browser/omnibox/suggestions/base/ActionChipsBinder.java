@@ -7,8 +7,7 @@ package org.chromium.chrome.browser.omnibox.suggestions.base;
 import android.view.View;
 import android.view.ViewGroup;
 
-import androidx.annotation.NonNull;
-
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
@@ -19,8 +18,9 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
 /** Binds ActionChipsView properties. */
+@NullMarked
 public interface ActionChipsBinder {
-    public static void bind(PropertyModel model, ActionChipsView view, PropertyKey propertyKey) {
+    static void bind(PropertyModel model, ActionChipsView view, PropertyKey propertyKey) {
         if (ActionChipsProperties.ACTION_CHIPS == propertyKey) {
             var isIncognito =
                     model.get(SuggestionCommonProperties.COLOR_SCHEME)
@@ -37,6 +37,7 @@ public interface ActionChipsBinder {
                         ChipViewBinder::bind);
                 actionChipsVisibility = View.VISIBLE;
             }
+            view.setSelected(false);
             view.setAdapter(adapter);
             view.setVisibility(actionChipsVisibility);
         } else if (SuggestionCommonProperties.DEVICE_FORM_FACTOR == propertyKey) {
@@ -46,7 +47,7 @@ public interface ActionChipsBinder {
         }
     }
 
-    private static ChipView createChipView(@NonNull ViewGroup parent, boolean isIncognito) {
+    private static ChipView createChipView(ViewGroup parent, boolean isIncognito) {
         return new ChipView(
                 parent.getContext(),
                 isIncognito

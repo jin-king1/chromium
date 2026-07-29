@@ -44,22 +44,19 @@ EnumTraits<viz::mojom::CompositorFrameTransitionDirectiveType,
 }
 
 // static
-bool EnumTraits<viz::mojom::CompositorFrameTransitionDirectiveType,
-                viz::CompositorFrameTransitionDirective::Type>::
-    FromMojom(viz::mojom::CompositorFrameTransitionDirectiveType input,
-              viz::CompositorFrameTransitionDirective::Type* out) {
+viz::CompositorFrameTransitionDirective::Type
+EnumTraits<viz::mojom::CompositorFrameTransitionDirectiveType,
+           viz::CompositorFrameTransitionDirective::Type>::
+    FromMojom(viz::mojom::CompositorFrameTransitionDirectiveType input) {
   switch (input) {
     case viz::mojom::CompositorFrameTransitionDirectiveType::kSave:
-      *out = viz::CompositorFrameTransitionDirective::Type::kSave;
-      return true;
+      return viz::CompositorFrameTransitionDirective::Type::kSave;
     case viz::mojom::CompositorFrameTransitionDirectiveType::kAnimateRenderer:
-      *out = viz::CompositorFrameTransitionDirective::Type::kAnimateRenderer;
-      return true;
+      return viz::CompositorFrameTransitionDirective::Type::kAnimateRenderer;
     case viz::mojom::CompositorFrameTransitionDirectiveType::kRelease:
-      *out = viz::CompositorFrameTransitionDirective::Type::kRelease;
-      return true;
+      return viz::CompositorFrameTransitionDirective::Type::kRelease;
   }
-  return false;
+  NOTREACHED();
 }
 
 // static
@@ -104,15 +101,18 @@ bool StructTraits<viz::mojom::CompositorFrameTransitionDirectiveDataView,
     case viz::CompositorFrameTransitionDirective::Type::kSave:
       *out = viz::CompositorFrameTransitionDirective::CreateSave(
           transition_token, maybe_cross_frame_sink, sequence_id,
-          std::move(shared_elements), display_color_spaces);
+          std::move(shared_elements), display_color_spaces,
+          data.delay_layer_tree_view_deletion());
       break;
     case viz::CompositorFrameTransitionDirective::Type::kAnimateRenderer:
       *out = viz::CompositorFrameTransitionDirective::CreateAnimate(
-          transition_token, maybe_cross_frame_sink, sequence_id);
+          transition_token, maybe_cross_frame_sink, sequence_id,
+          data.delay_layer_tree_view_deletion());
       break;
     case viz::CompositorFrameTransitionDirective::Type::kRelease:
       *out = viz::CompositorFrameTransitionDirective::CreateRelease(
-          transition_token, maybe_cross_frame_sink, sequence_id);
+          transition_token, maybe_cross_frame_sink, sequence_id,
+          data.delay_layer_tree_view_deletion());
   }
 
   return true;

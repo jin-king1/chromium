@@ -4,15 +4,12 @@
 
 #include <string>
 
-#include "base/run_loop.h"
-#include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/views/payments/payment_request_browsertest_base.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view_ids.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager_test_utils.h"
-#include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -34,7 +31,7 @@ std::string GetLocale() {
 }  // namespace
 
 #if BUILDFLAG(IS_MAC)
-// Entire test suite is flaky on MacOS: https://crbug.com/1164438
+// Entire test suite is flaky on MacOS: https://crbug.com/40740752
 #define MAYBE_PaymentRequestContactInfoEditorTest \
   DISABLED_PaymentRequestContactInfoEditorTest
 #else
@@ -78,7 +75,7 @@ IN_PROC_BROWSER_TEST_F(MAYBE_PaymentRequestContactInfoEditorTest, HappyPath) {
   DCHECK(profile);
 
   EXPECT_EQ(kNameFull, profile->GetInfo(autofill::NAME_FULL, GetLocale()));
-  EXPECT_EQ(u"16515558946",
+  EXPECT_EQ(u"+16515558946",
             profile->GetInfo(autofill::PHONE_HOME_WHOLE_NUMBER, GetLocale()));
   EXPECT_EQ(kEmailAddress,
             profile->GetInfo(autofill::EMAIL_ADDRESS, GetLocale()));
@@ -126,7 +123,7 @@ IN_PROC_BROWSER_TEST_F(MAYBE_PaymentRequestContactInfoEditorTest,
   DCHECK(profile);
 
   EXPECT_EQ(kNameFull, profile->GetInfo(autofill::NAME_FULL, GetLocale()));
-  EXPECT_EQ(u"16515558946",
+  EXPECT_EQ(u"+16515558946",
             profile->GetInfo(autofill::PHONE_HOME_WHOLE_NUMBER, GetLocale()));
   EXPECT_EQ(kEmailAddress,
             profile->GetInfo(autofill::EMAIL_ADDRESS, GetLocale()));
@@ -182,7 +179,7 @@ IN_PROC_BROWSER_TEST_F(MAYBE_PaymentRequestContactInfoEditorTest, Validation) {
   DCHECK(profile);
 
   EXPECT_EQ(kNameFull, profile->GetInfo(autofill::NAME_FULL, GetLocale()));
-  EXPECT_EQ(u"16515558946",
+  EXPECT_EQ(u"+16515558946",
             profile->GetInfo(autofill::PHONE_HOME_WHOLE_NUMBER, GetLocale()));
   EXPECT_EQ(kEmailAddress,
             profile->GetInfo(autofill::EMAIL_ADDRESS, GetLocale()));
@@ -234,7 +231,7 @@ IN_PROC_BROWSER_TEST_F(MAYBE_PaymentRequestContactInfoEditorTest,
   DCHECK(profile);
 
   EXPECT_EQ(kNameFull, profile->GetInfo(autofill::NAME_FULL, GetLocale()));
-  EXPECT_EQ(u"16515558946",
+  EXPECT_EQ(u"+16515558946",
             profile->GetInfo(autofill::PHONE_HOME_WHOLE_NUMBER, GetLocale()));
   EXPECT_EQ(kEmailAddress,
             profile->GetInfo(autofill::EMAIL_ADDRESS, GetLocale()));
@@ -291,7 +288,7 @@ IN_PROC_BROWSER_TEST_F(MAYBE_PaymentRequestContactInfoEditorTest,
   autofill::AutofillProfile* profile =
       request->state()->selected_contact_profile();
   DCHECK(profile);
-  EXPECT_EQ(u"16515558946",
+  EXPECT_EQ(u"+16515558946",
             profile->GetInfo(autofill::PHONE_HOME_WHOLE_NUMBER, GetLocale()));
   EXPECT_EQ(kEmailAddress,
             profile->GetInfo(autofill::EMAIL_ADDRESS, GetLocale()));
@@ -341,7 +338,7 @@ IN_PROC_BROWSER_TEST_F(MAYBE_PaymentRequestContactInfoEditorTest,
   DCHECK(profile);
 
   EXPECT_EQ(kNameFull, profile->GetInfo(autofill::NAME_FULL, GetLocale()));
-  EXPECT_EQ(u"16515558946",
+  EXPECT_EQ(u"+16515558946",
             profile->GetInfo(autofill::PHONE_HOME_WHOLE_NUMBER, GetLocale()));
   EXPECT_EQ(kEmailAddress,
             profile->GetInfo(autofill::EMAIL_ADDRESS, GetLocale()));

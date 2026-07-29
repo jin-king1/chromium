@@ -5,7 +5,6 @@
 #ifndef IOS_CHROME_BROWSER_SSL_MODEL_IOS_CAPTIVE_PORTAL_BLOCKING_PAGE_H_
 #define IOS_CHROME_BROWSER_SSL_MODEL_IOS_CAPTIVE_PORTAL_BLOCKING_PAGE_H_
 
-#include "base/functional/callback.h"
 #include "ios/components/security_interstitials/ios_security_interstitial_page.h"
 #include "url/gurl.h"
 
@@ -37,7 +36,7 @@ class IOSCaptivePortalBlockingPage
  private:
   // IOSSecurityInterstitialPage overrides:
   bool ShouldCreateNewNavigation() const override;
-  void PopulateInterstitialStrings(base::Value::Dict& value) const override;
+  void PopulateInterstitialStrings(base::DictValue& value) const override;
   void HandleCommand(
       security_interstitials::SecurityInterstitialCommand command) override;
 

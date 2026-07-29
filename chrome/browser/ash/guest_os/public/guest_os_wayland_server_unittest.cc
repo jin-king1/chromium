@@ -28,7 +28,6 @@
 
 using borealis::NiceCallbackFactory;
 using testing::_;
-using testing::Invoke;
 using testing::IsFalse;
 
 namespace guest_os {
@@ -79,11 +78,6 @@ TEST_F(GuestOsWaylandServerTest, NullDelegateCausesFailure) {
       .IsAllowed(allowedness_future.GetCallback());
   ASSERT_NE(allowedness_future.Get(),
             borealis::BorealisFeatures::AllowStatus::kAllowed);
-
-  base::test::TestFuture<std::optional<std::string>> result_future;
-  gows.Listen(socket.TakeFd(), vm_tools::apps::BOREALIS, "borealis",
-              result_future.GetCallback());
-  EXPECT_TRUE(result_future.Get().has_value());
 }
 
 TEST_F(GuestOsWaylandServerTest, DelegateLifetimeManagedCorrectly) {

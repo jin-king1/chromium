@@ -9,15 +9,18 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.IntentRequestTracker;
 
 /** Native bridge for credit card scanner. */
 @JNINamespace("autofill")
+@NullMarked
 public class CreditCardScannerBridge implements CreditCardScanner.Delegate {
     private final long mNativeScanner;
     private final CreditCardScanner mScanner;
-    private final IntentRequestTracker mIntentRequestTracker;
+    private final @Nullable IntentRequestTracker mIntentRequestTracker;
 
     @CalledByNative
     private static CreditCardScannerBridge create(long nativeScanner, WebContents webContents) {
@@ -46,8 +49,7 @@ public class CreditCardScannerBridge implements CreditCardScanner.Delegate {
 
     @Override
     public void onScanCancelled() {
-        CreditCardScannerBridgeJni.get()
-                .scanCancelled(mNativeScanner, CreditCardScannerBridge.this);
+        CreditCardScannerBridgeJni.get().scanCancelled(mNativeScanner);
     }
 
     @Override
@@ -56,7 +58,6 @@ public class CreditCardScannerBridge implements CreditCardScanner.Delegate {
         CreditCardScannerBridgeJni.get()
                 .scanCompleted(
                         mNativeScanner,
-                        CreditCardScannerBridge.this,
                         cardHolderName,
                         cardNumber,
                         expirationMonth,
@@ -65,11 +66,10 @@ public class CreditCardScannerBridge implements CreditCardScanner.Delegate {
 
     @NativeMethods
     interface Natives {
-        void scanCancelled(long nativeCreditCardScannerViewAndroid, CreditCardScannerBridge caller);
+        void scanCancelled(long nativeCreditCardScannerViewAndroid);
 
         void scanCompleted(
                 long nativeCreditCardScannerViewAndroid,
-                CreditCardScannerBridge caller,
                 @JniType("std::u16string") String cardHolderName,
                 @JniType("std::u16string") String cardNumber,
                 int expirationMonth,

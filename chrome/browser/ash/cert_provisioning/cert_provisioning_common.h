@@ -16,8 +16,9 @@
 #include "base/functional/callback_forward.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "chrome/browser/chromeos/platform_keys/platform_keys.h"
 #include "chromeos/ash/components/dbus/constants/attestation_constants.h"
+#include "chromeos/ash/components/platform_keys/platform_keys.h"
+#include "components/invalidation/invalidation_constants.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "net/cert/x509_certificate.h"
 
@@ -45,15 +46,15 @@ namespace cert_provisioning {
 // done.
 BASE_DECLARE_FEATURE(kCertProvisioningUseOnlyInvalidationsForTesting);
 
-BASE_DECLARE_FEATURE(
-    kDeviceCertProvisioningInvalidationWithDirectMessagesEnabled);
-BASE_DECLARE_FEATURE(
-    kUserCertProvisioningInvalidationWithDirectMessagesEnabled);
-
 // Used for both DeleteVaKey and DeleteVaKeysByPrefix
 using DeleteVaKeyCallback = base::OnceCallback<void(bool)>;
 
-const char kKeyNamePrefix[] = "cert-provis-";
+inline constexpr char kKeyNamePrefix[] = "cert-provis-";
+
+// GCP number to be used for certificates invalidations. Certificates are
+// considered critical to receive invalidation.
+inline constexpr int64_t kCertProvisioningInvalidationProjectNumber =
+    invalidation::kCriticalInvalidationsProjectNumber;
 
 // The type for variables containing an error from DM Server response.
 using CertProvisioningResponseErrorType =
@@ -163,13 +164,14 @@ using CertProfileId = std::string;
 // Names of CertProfile fields in a base::Value representation. Must be in sync
 // with policy schema definitions in RequiredClientCertificateForDevice.yaml and
 // RequiredClientCertificateForUser.yaml.
-const char kCertProfileIdKey[] = "cert_profile_id";
-const char kCertProfileNameKey[] = "name";
-const char kCertProfileRenewalPeroidSec[] = "renewal_period_seconds";
-const char kCertProfilePolicyVersionKey[] = "policy_version";
-const char kCertProfileProtocolVersion[] = "protocol_version";
-const char kCertProfileIsVaEnabledKey[] = "enable_remote_attestation_check";
-const char kCertProfileKeyType[] = "key_algorithm";
+inline constexpr char kCertProfileIdKey[] = "cert_profile_id";
+inline constexpr char kCertProfileNameKey[] = "name";
+inline constexpr char kCertProfileRenewalPeroidSec[] = "renewal_period_seconds";
+inline constexpr char kCertProfilePolicyVersionKey[] = "policy_version";
+inline constexpr char kCertProfileProtocolVersion[] = "protocol_version";
+inline constexpr char kCertProfileIsVaEnabledKey[] =
+    "enable_remote_attestation_check";
+inline constexpr char kCertProfileKeyType[] = "key_algorithm";
 
 // The version of the certificate provisioning protocol between ChromeOS client
 // and device management server.
@@ -198,8 +200,7 @@ enum class KeyType {
 };
 
 struct CertProfile {
-  static std::optional<CertProfile> MakeFromValue(
-      const base::Value::Dict& value);
+  static std::optional<CertProfile> MakeFromValue(const base::DictValue& value);
 
   CertProfile();
   // For tests.
@@ -232,8 +233,7 @@ struct CertProfile {
   // all functions that fail to compile because of it).
   static constexpr int kVersion = 7;
 
-  bool operator==(const CertProfile& other) const;
-  bool operator!=(const CertProfile& other) const;
+  friend bool operator==(const CertProfile&, const CertProfile&) = default;
 };
 
 struct CertProfileComparator {
@@ -308,9 +308,6 @@ std::string MakeInvalidationListenerType(
 // Returns true if workers should only progress when they receive an
 // invalidation (not on timeout).
 bool ShouldOnlyUseInvalidations();
-
-// Returns GCP number for cert provisioning invalidations of given `scope`.
-int64_t GetCertProvisioningInvalidationProjectNumber(CertScope scope);
 
 }  // namespace cert_provisioning
 }  // namespace ash

@@ -11,7 +11,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
-#include "chrome/browser/extensions/api/omnibox/omnibox_api.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/omnibox_input_watcher.h"
 #include "components/omnibox/browser/unscoped_extension_provider.h"
@@ -19,11 +18,9 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
 
-#if !BUILDFLAG(ENABLE_EXTENSIONS)
+#if !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #error "Should not be included when extensions are disabled"
 #endif
-
-namespace omnibox_api = extensions::api::omnibox;
 
 class UnscopedExtensionProvider;
 class Profile;
@@ -56,13 +53,14 @@ class UnscopedExtensionProviderDelegateImpl
   void OnOmniboxInputEntered() override;
   // OmniboxSuggestionsWatcher::Observer:
   void OnOmniboxSuggestionsReady(
-      omnibox_api::SendSuggestions::Params* suggestions,
+      const std::vector<ExtensionSuggestion>& suggestions,
+      const int request_id,
       const std::string& extension_id) override;
 
  private:
   // Creates an `AutocompleteMatch` for the suggestion.
   AutocompleteMatch CreateAutocompleteMatch(
-      const omnibox_api::SuggestResult& suggestion,
+      const ExtensionSuggestion& suggestion,
       int relevance,
       const std::string& extension_id);
 
@@ -80,6 +78,10 @@ class UnscopedExtensionProviderDelegateImpl
   // or when the input is accepted. Used to discard any suggestions that may be
   // incoming later with a stale request ID.
   int current_request_id_ = 0;
+
+  // The first relevance score to assign to the suggestions for the current
+  // request for suggestions.
+  int first_suggestion_relevance_ = 0;
 
   // Current list of matches received from the extensions. Used to update the
   // list of matches in the provider.

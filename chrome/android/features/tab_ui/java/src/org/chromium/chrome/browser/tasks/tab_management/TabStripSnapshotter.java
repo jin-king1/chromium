@@ -4,13 +4,13 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.OnScrollListener;
 
 import org.chromium.base.Callback;
-import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider.TabFaviconFetcher;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.ModelListPropertyChangeFilter;
@@ -28,8 +28,9 @@ import java.util.Set;
  * of these tokens is to decide when the bottom toolbar should take a bitmap capture in preparation
  * for browser controls being scrolled off the screen. This class only watches properties that
  * directly effect the steady state of the view, and thus it implicitly tightly coupled with the
- * TabListMode.STRIP mode of the {@link TabListCoordinator} component.
+ * TabListMode.BOTTOM_STRIP mode of the {@link TabListCoordinator} component.
  */
+@NullMarked
 public class TabStripSnapshotter {
     private static final Set<PropertyKey> SNAPSHOT_PROPERTY_KEY_SET =
             Set.of(
@@ -70,7 +71,7 @@ public class TabStripSnapshotter {
 
     /** Simple tuple to hold all relevant fields for a single tab item. */
     private static class TabStripItemSnapshot {
-        public final @Nullable TabListFaviconProvider.TabFaviconFetcher mTabFaviconFetcher;
+        public final @Nullable TabFaviconFetcher mTabFaviconFetcher;
         public final boolean mFaviconFetched;
         public final boolean mIsSelected;
 
@@ -109,9 +110,7 @@ public class TabStripSnapshotter {
      * @param recyclerView The recycler view that can be scrolled.
      */
     public TabStripSnapshotter(
-            @NonNull Callback<Object> onModelTokenChange,
-            @NonNull ModelList modelList,
-            @NonNull RecyclerView recyclerView) {
+            Callback<Object> onModelTokenChange, ModelList modelList, RecyclerView recyclerView) {
         mOnModelTokenChange = onModelTokenChange;
         mModelList = modelList;
         mRecyclerView = recyclerView;

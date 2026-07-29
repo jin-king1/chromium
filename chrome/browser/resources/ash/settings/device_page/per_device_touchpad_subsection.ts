@@ -8,7 +8,6 @@
  * per-device-touchpad subsection settings in system settings.
  */
 
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import 'chrome://resources/ash/common/cr_elements/localized_link/localized_link.js';
 import 'chrome://resources/ash/common/cr_elements/cr_link_row/cr_link_row.js';
@@ -128,7 +127,7 @@ export class SettingsPerDeviceTouchpadSubsectionElement extends
         },
       },
 
-      simulateRightClickOptions: {
+      simulateRightClickOptions_: {
         readOnly: true,
         type: Array,
         value() {
@@ -192,24 +191,6 @@ export class SettingsPerDeviceTouchpadSubsectionElement extends
 
       touchpad: {type: Object},
 
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kTouchpadTapToClick,
-          Setting.kTouchpadTapDragging,
-          Setting.kTouchpadReverseScrolling,
-          Setting.kTouchpadAcceleration,
-          Setting.kTouchpadScrollAcceleration,
-          Setting.kTouchpadSpeed,
-          Setting.kTouchpadHapticFeedback,
-          Setting.kTouchpadHapticClickSensitivity,
-          Setting.kTouchpadSimulateRightClick,
-        ]),
-      },
-
       touchpadIndex: {
         type: Number,
       },
@@ -260,23 +241,41 @@ export class SettingsPerDeviceTouchpadSubsectionElement extends
     }
   }
 
-  private touchpad: Touchpad;
-  private enableTapToClickPref: chrome.settingsPrivate.PrefObject;
-  private enableTapDraggingPref: chrome.settingsPrivate.PrefObject;
-  private accelerationPref: chrome.settingsPrivate.PrefObject;
-  private sensitivityPref: chrome.settingsPrivate.PrefObject;
-  private hapticClickSensitivityPref: chrome.settingsPrivate.PrefObject;
-  private simulateRightClickPref: chrome.settingsPrivate.PrefObject;
-  private reverseScrollValue: boolean;
-  private hapticFeedbackValue: boolean;
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kTouchpadTapToClick,
+    Setting.kTouchpadTapDragging,
+    Setting.kTouchpadReverseScrolling,
+    Setting.kTouchpadAcceleration,
+    Setting.kTouchpadScrollAcceleration,
+    Setting.kTouchpadSpeed,
+    Setting.kTouchpadHapticFeedback,
+    Setting.kTouchpadHapticClickSensitivity,
+    Setting.kTouchpadSimulateRightClick,
+  ]);
+
+  declare private touchpad: Touchpad;
+  declare private enableTapToClickPref: chrome.settingsPrivate.PrefObject;
+  declare private enableTapDraggingPref: chrome.settingsPrivate.PrefObject;
+  declare private accelerationPref: chrome.settingsPrivate.PrefObject;
+  declare private sensitivityPref: chrome.settingsPrivate.PrefObject;
+  declare private hapticClickSensitivityPref: chrome.settingsPrivate.PrefObject;
+  declare private simulateRightClickPref: chrome.settingsPrivate.PrefObject;
+  declare private reverseScrollValue: boolean;
+  declare private hapticFeedbackValue: boolean;
   private isInitialized: boolean = false;
   private inputDeviceSettingsProvider: InputDeviceSettingsProviderInterface =
       getInputDeviceSettingsProvider();
-  private touchpadIndex: number;
-  private isLastDevice: boolean;
-  isAltClickAndSixPackCustomizationEnabled: boolean;
-  protected mice: Mouse[];
+  declare private touchpadIndex: number;
+  declare private isLastDevice: boolean;
+  declare isAltClickAndSixPackCustomizationEnabled: boolean;
+  declare protected mice: Mouse[];
   private mouseSettingsObserverReceiver: MouseSettingsObserverReceiver;
+  declare private readonly hapticClickSensitivityValues_:
+      Array<{value: number, ariaValue: number}>;
+  declare private readonly sensitivityValues_: number[];
+  declare private readonly simulateRightClickOptions_:
+      Array<{value: number, name: string}>;
 
   constructor() {
     super();

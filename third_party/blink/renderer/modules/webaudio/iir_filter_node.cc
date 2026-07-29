@@ -96,7 +96,7 @@ IIRFilterNode* IIRFilterNode::Create(BaseAudioContext& context,
     return nullptr;
   }
 
-  if (feedback_coef.size() == 0 ||
+  if (feedback_coef.empty() ||
       (feedback_coef.size() > IIRFilter::kMaxOrder + 1)) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
@@ -107,7 +107,7 @@ IIRFilterNode* IIRFilterNode::Create(BaseAudioContext& context,
     return nullptr;
   }
 
-  if (feedforward_coef.size() == 0 ||
+  if (feedforward_coef.empty() ||
       (feedforward_coef.size() > IIRFilter::kMaxOrder + 1)) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
@@ -224,9 +224,9 @@ void IIRFilterNode::getFrequencyResponse(
 
   // Nothing to do if the length is 0.
   if (frequency_hz_length_as_int > 0) {
-    GetIIRFilterHandler().GetFrequencyResponse(
-        frequency_hz_length_as_int, frequency_hz->Data(), mag_response->Data(),
-        phase_response->Data());
+    GetIIRFilterHandler().GetFrequencyResponse(frequency_hz->AsSpan(),
+                                               mag_response->AsSpan(),
+                                               phase_response->AsSpan());
   }
 }
 

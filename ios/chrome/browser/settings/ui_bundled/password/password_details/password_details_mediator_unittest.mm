@@ -10,6 +10,7 @@
 #import "components/affiliations/core/browser/fake_affiliation_service.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/password_form.h"
+#import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/sync/test/mock_sync_service.h"
@@ -58,10 +59,10 @@ std::unique_ptr<PasswordForm> CreatePasswordForm(std::string url,
 
 scoped_refptr<RefcountedKeyedService> BuildPasswordStore(
     password_manager::IsAccountStore is_account_store,
-    web::BrowserState* context) {
+    ProfileIOS* profile) {
   auto store = base::MakeRefCounted<password_manager::TestPasswordStore>(
       is_account_store);
-  store->Init(/*prefs=*/nullptr, /*affiliated_match_helper=*/nullptr);
+  store->Init();
   return store;
 }
 
@@ -106,20 +107,19 @@ class PasswordDetailsMediatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindRepeating(&BuildPasswordStore,
-                            password_manager::IsAccountStore(false)));
+        base::BindOnce(&BuildPasswordStore,
+                       password_manager::IsAccountStore(false)));
 
     builder.AddTestingFactory(
         IOSChromeAccountPasswordStoreFactory::GetInstance(),
-        base::BindRepeating(&BuildPasswordStore,
-                            password_manager::IsAccountStore(true)));
+        base::BindOnce(&BuildPasswordStore,
+                       password_manager::IsAccountStore(true)));
 
     builder.AddTestingFactory(
         IOSChromeAffiliationServiceFactory::GetInstance(),
-        base::BindRepeating(base::BindLambdaForTesting([](web::BrowserState*) {
-          return std::unique_ptr<KeyedService>(
-              std::make_unique<affiliations::FakeAffiliationService>());
-        })));
+        base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          return std::make_unique<affiliations::FakeAffiliationService>();
+        }));
 
     profile_ = std::move(builder).Build();
 
@@ -236,9 +236,9 @@ class PasswordDetailsMediatorTest : public PlatformTest {
   void AddPasswordForm(std::unique_ptr<PasswordForm> form,
                        bool add_to_account_store = false) {
     if (add_to_account_store) {
-      GetTestAccountStore().AddLogin(*form);
+      GetTestAccountStore().AddLogin(password_manager::FromPasswordForm(*form));
     } else {
-      GetTestProfileStore().AddLogin(*form);
+      GetTestProfileStore().AddLogin(password_manager::FromPasswordForm(*form));
     }
     RunUntilIdle();
   }
@@ -366,9 +366,9 @@ TEST_F(PasswordDetailsMediatorTest, MoveCredentialToAccountStore) {
   EXPECT_EQ(*mediator().credentials[0].stored_in.begin(),
             PasswordForm::Store::kProfileStore);
   EXPECT_THAT(
-      GetTestProfileStore().stored_passwords(),
+      GetAllLoginsSync(&GetTestProfileStore()),
       ElementsAre(Pair(kExampleSignonRealm, ElementsAre(expected_form))));
-  EXPECT_THAT(GetTestAccountStore().stored_passwords(), IsEmpty());
+  EXPECT_THAT(GetAllLoginsSync(&GetTestAccountStore()), IsEmpty());
 
   // Move the credential to the account password store.
   CredentialDetails* credential_details = [[CredentialDetails alloc]
@@ -381,9 +381,9 @@ TEST_F(PasswordDetailsMediatorTest, MoveCredentialToAccountStore) {
   // Verify that the credential is now stored in the account password store.
   EXPECT_EQ(*mediator().credentials[0].stored_in.begin(),
             PasswordForm::Store::kAccountStore);
-  EXPECT_THAT(GetTestProfileStore().stored_passwords(), IsEmpty());
+  EXPECT_THAT(GetAllLoginsSync(&GetTestProfileStore()), IsEmpty());
   EXPECT_THAT(
-      GetTestAccountStore().stored_passwords(),
+      GetAllLoginsSync(&GetTestAccountStore()),
       ElementsAre(Pair(kExampleSignonRealm, ElementsAre(expected_form))));
 
   // Verify information sent to consumer.
@@ -430,10 +430,10 @@ TEST_F(PasswordDetailsMediatorTest, MoveCredentialToAccountStoreWithConflict) {
 
   // Check that the both stores both contain the expected password.
   EXPECT_THAT(
-      GetTestAccountStore().stored_passwords(),
+      GetAllLoginsSync(&GetTestAccountStore()),
       ElementsAre(Pair(kExampleSignonRealm, ElementsAre(account_store_form))));
   EXPECT_THAT(
-      GetTestProfileStore().stored_passwords(),
+      GetAllLoginsSync(&GetTestProfileStore()),
       ElementsAre(Pair(kExampleSignonRealm, ElementsAre(profile_store_form))));
 
   // Move the profile credential to the account password store.
@@ -456,9 +456,9 @@ TEST_F(PasswordDetailsMediatorTest, MoveCredentialToAccountStoreWithConflict) {
   // Check that the profile password store is now empty and that the account
   // store only has the updated version (i.e., version with password
   // "password2") of the credential previously saved.
-  EXPECT_THAT(GetTestProfileStore().stored_passwords(), IsEmpty());
+  EXPECT_THAT(GetAllLoginsSync(&GetTestProfileStore()), IsEmpty());
   EXPECT_THAT(
-      GetTestAccountStore().stored_passwords(),
+      GetAllLoginsSync(&GetTestAccountStore()),
       ElementsAre(Pair(kExampleSignonRealm, ElementsAre(expected_form))));
 
   // Verify information sent to consumer.
@@ -507,10 +507,10 @@ TEST_F(PasswordDetailsMediatorTest,
 
   // Check that the both stores both contain the expected password.
   EXPECT_THAT(
-      GetTestProfileStore().stored_passwords(),
+      GetAllLoginsSync(&GetTestProfileStore()),
       ElementsAre(Pair(kExampleSignonRealm, ElementsAre(profile_store_form))));
   EXPECT_THAT(
-      GetTestAccountStore().stored_passwords(),
+      GetAllLoginsSync(&GetTestAccountStore()),
       ElementsAre(Pair(kExampleSignonRealm, ElementsAre(account_store_form))));
 
   // Move the profile credential to the account password store to resolve the
@@ -535,9 +535,9 @@ TEST_F(PasswordDetailsMediatorTest,
   // Check that the profile password store is now empty and that the account
   // store only has the updated version (i.e., version with password
   // "password2") of the credential previously saved.
-  EXPECT_THAT(GetTestProfileStore().stored_passwords(), IsEmpty());
+  EXPECT_THAT(GetAllLoginsSync(&GetTestProfileStore()), IsEmpty());
   EXPECT_THAT(
-      GetTestAccountStore().stored_passwords(),
+      GetAllLoginsSync(&GetTestAccountStore()),
       ElementsAre(Pair(kExampleSignonRealm, ElementsAre(expected_form))));
 
   // Verify information sent to consumer.

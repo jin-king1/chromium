@@ -6,11 +6,12 @@ package org.chromium.chrome.browser.safety_hub;
 
 import android.content.Context;
 
-import androidx.annotation.Nullable;
-
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.password_manager.PasswordStoreBridge;
 
 /** A delegate for Safety Hub to handle UI related behaviour. */
+@NullMarked
 public interface SafetyHubModuleDelegate {
 
     /**
@@ -53,4 +54,7 @@ public interface SafetyHubModuleDelegate {
      * @param context used to launch the promo in.
      */
     void launchSigninPromo(Context context);
+
+    /** Called when the delegate is no longer needed. */
+    void destroy();
 }

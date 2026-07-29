@@ -5,9 +5,11 @@
 #ifndef CHROME_UPDATER_UTIL_PROGRESS_SAMPLER_H_
 #define CHROME_UPDATER_UTIL_PROGRESS_SAMPLER_H_
 
+#include <cstdint>
 #include <optional>
 #include <queue>
 
+#include "base/gtest_prod_util.h"
 #include "base/time/time.h"
 
 namespace updater {

@@ -50,7 +50,7 @@ DevToolsEyeDropper::~DevToolsEyeDropper() {
 
 void DevToolsEyeDropper::AttachToHost(content::RenderFrameHost* frame_host) {
   DCHECK(frame_host->IsRenderFrameLive());
-  // Historically, (see https://crbug.com/847363) this code handled the
+  // Historically, (see https://crbug.com/41391521) this code handled the
   // RenderWidgetHostView being null, but now it is listening to creation of the
   // frame which includes creation of the widget so it is implied that
   // RenderWidgetHostView exists.
@@ -234,10 +234,9 @@ void DevToolsEyeDropper::UpdateCursor() {
 
   // Clip circle for magnified projection.
   float padding = (kCursorSize - kDiameter) / 2;
-  SkPath clip_path;
-  clip_path.addOval(SkRect::MakeXYWH(padding, padding, kDiameter, kDiameter));
-  clip_path.close();
-  canvas.clipPath(clip_path, SkClipOp::kIntersect, true);
+  canvas.clipPath(
+      SkPath::Oval(SkRect::MakeXYWH(padding, padding, kDiameter, kDiameter)),
+      SkClipOp::kIntersect, true);
 
   // Project pixels.
   int pixel_count = kDiameter / kPixelSize;
@@ -360,8 +359,8 @@ void DevToolsEyeDropper::OnFrameCaptured(
   UpdateCursor();
 }
 
-void DevToolsEyeDropper::OnNewSubCaptureTargetVersion(
-    uint32_t sub_capture_target_version) {}
+void DevToolsEyeDropper::OnNewCaptureVersion(
+    const media::CaptureVersion& capture_version) {}
 
 void DevToolsEyeDropper::OnFrameWithEmptyRegionCapture() {}
 

@@ -13,7 +13,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.ComponentName;
-import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.RemoteException;
@@ -21,10 +20,12 @@ import android.os.RemoteException;
 import androidx.browser.trusted.Token;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
@@ -50,6 +51,7 @@ public class TrustedWebActivityClientTest {
     private static final int SERVICE_SMALL_ICON_ID = 1;
     private static final String CLIENT_PACKAGE_NAME = "com.example.app";
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private TrustedWebActivityClientWrappers.ConnectionPool mConnectionPool;
     @Mock private TrustedWebActivityClientWrappers.Connection mService;
     @Mock private NotificationBuilderBase mNotificationBuilder;
@@ -63,7 +65,6 @@ public class TrustedWebActivityClientTest {
 
     @Before
     public void setUp() throws RemoteException {
-        MockitoAnnotations.initMocks(this);
 
         doAnswer(
                         invocation -> {
@@ -158,7 +159,7 @@ public class TrustedWebActivityClientTest {
                 mClient.createLaunchIntentForTwa(
                         RuntimeEnvironment.application,
                         "mailto:miranda@example.com",
-                        new ArrayList<ResolveInfo>()));
+                        new ArrayList<>()));
     }
 
     private static Token createDummyToken() {

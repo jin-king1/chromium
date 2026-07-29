@@ -2,13 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ash/system/focus_mode/sounds/focus_mode_sounds_controller.h"
 
+#include <algorithm>
+#include <array>
 #include <memory>
 #include <utility>
 
@@ -47,14 +44,14 @@ namespace {
 constexpr size_t kMaxAttemptToDownloadThumbnail = 3;
 
 // Arrays for histogram records.
-constexpr focus_mode_histogram_names::FocusModePlaylistChosen
-    soundscapes_chosen[] = {
+constexpr std::array<focus_mode_histogram_names::FocusModePlaylistChosen, 4>
+    soundscapes_chosen = {
         focus_mode_histogram_names::FocusModePlaylistChosen::kSoundscapes1,
         focus_mode_histogram_names::FocusModePlaylistChosen::kSoundscapes2,
         focus_mode_histogram_names::FocusModePlaylistChosen::kSoundscapes3,
         focus_mode_histogram_names::FocusModePlaylistChosen::kSoundscapes4};
-constexpr focus_mode_histogram_names::FocusModePlaylistChosen
-    youtube_music_chosen[] = {
+constexpr std::array<focus_mode_histogram_names::FocusModePlaylistChosen, 4>
+    youtube_music_chosen = {
         focus_mode_histogram_names::FocusModePlaylistChosen::kYouTubeMusic1,
         focus_mode_histogram_names::FocusModePlaylistChosen::kYouTubeMusic2,
         focus_mode_histogram_names::FocusModePlaylistChosen::kYouTubeMusic3,
@@ -240,12 +237,14 @@ bool MayContainsSelectedPlaylist(
     return true;
   }
 
-  return base::Contains(playlists_fetched, selected_playlist.id,
-                        &FocusModeSoundsController::Playlist::playlist_id);
+  return std::ranges::contains(
+      playlists_fetched, selected_playlist.id,
+      &FocusModeSoundsController::Playlist::playlist_id);
 }
 
-bool HasAudioFocus(const base::UnguessableToken& focus_mode_request_id,
-                   const base::UnguessableToken& session_request_id) {
+bool MatchesFocusModeRequestId(
+    const base::UnguessableToken& focus_mode_request_id,
+    const base::UnguessableToken& session_request_id) {
   return !focus_mode_request_id.is_empty() &&
          focus_mode_request_id == session_request_id;
 }
@@ -389,19 +388,23 @@ void FocusModeSoundsController::OnFocusGained(
   CHECK(session->request_id.has_value());
   const auto& request_id =
       FocusModeController::Get()->GetMediaSessionRequestId();
-  has_audio_focus_ = HasAudioFocus(request_id, session->request_id.value());
-
-  // If it's not our focus mode media gained the focus, or if the request id
-  // isn't changed, we will do nothing.
-  if (!has_audio_focus_ || media_session_request_id_ == request_id) {
+  has_audio_focus_ =
+      MatchesFocusModeRequestId(request_id, session->request_id.value());
+  // If it's not the Focus Mode media session gaining focus, do nothing.
+  if (!has_audio_focus_) {
     return;
   }
 
-  RecordPlaylistPlayedLatency(selected_playlist_.type, sounds_started_time_);
-  RecordPlaylistChosenHistogram(selected_playlist_);
+  // If it is a new `request_id`, that means a new playlist is starting, so we
+  // should record the metrics. This is checked because switching tracks in a
+  // playlist also trigger the focus to be lost and gained.
+  if (media_session_request_id_ != request_id) {
+    RecordPlaylistPlayedLatency(selected_playlist_.type, sounds_started_time_);
+    RecordPlaylistChosenHistogram(selected_playlist_);
+  }
 
-  // Otherwise, we will bind the media controller observer with the specific
-  // request id to observe our media state.
+  // We will bind the media controller observer with the specific request id to
+  // observe our media state.
   media_session_request_id_ = request_id;
 
   // `media_controller_manager_remote_` is null in test.
@@ -426,9 +429,12 @@ void FocusModeSoundsController::OnFocusLost(
   }
 
   CHECK(session->request_id.has_value());
-  has_audio_focus_ =
-      HasAudioFocus(FocusModeController::Get()->GetMediaSessionRequestId(),
-                    session->request_id.value());
+  // If the request id matches the focus mode request id, it means the Focus
+  // Mode media session is losing focus, so we need to mark it as such. This
+  // happens when we are switching tracks or starting/stopping playlists.
+  has_audio_focus_ = !MatchesFocusModeRequestId(
+      FocusModeController::Get()->GetMediaSessionRequestId(),
+      session->request_id.value());
 }
 
 void FocusModeSoundsController::OnRequestIdReleased(
@@ -540,14 +546,14 @@ void FocusModeSoundsController::DownloadPlaylistsForType(
   }
 
   if (is_soundscape_type) {
-    if (!base::Contains(enabled_sound_sections_,
-                        focus_mode_util::SoundType::kSoundscape)) {
+    if (!enabled_sound_sections_.contains(
+            focus_mode_util::SoundType::kSoundscape)) {
       LOG(WARNING) << "Playlist download for Focus Sounds blocked by policy";
       return;
     }
   } else {
-    if (!base::Contains(enabled_sound_sections_,
-                        focus_mode_util::SoundType::kYouTubeMusic)) {
+    if (!enabled_sound_sections_.contains(
+            focus_mode_util::SoundType::kYouTubeMusic)) {
       LOG(WARNING)
           << "Playlist download for YouTube Music blocked by policy or flag";
       return;
@@ -672,13 +678,13 @@ void FocusModeSoundsController::SetIsMinorUserForTesting(bool is_minor_user) {
 
 bool FocusModeSoundsController::IsPlaylistAllowed(
     const focus_mode_util::SelectedPlaylist& playlist) const {
-  return base::Contains(enabled_sound_sections_, playlist.type);
+  return enabled_sound_sections_.contains(playlist.type);
 }
 
 void FocusModeSoundsController::SaveUserPref() {
   if (PrefService* active_user_prefs =
           Shell::Get()->session_controller()->GetActivePrefService()) {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set(focus_mode_util::kSoundTypeKey, static_cast<int>(sound_type_));
     dict.Set(focus_mode_util::kPlaylistIdKey, selected_playlist_.id);
     active_user_prefs->SetDict(prefs::kFocusModeSoundSection, std::move(dict));
@@ -764,15 +770,6 @@ void FocusModeSoundsController::OnPrefChanged() {
   PrefService* active_user_prefs =
       Shell::Get()->session_controller()->GetActivePrefService();
   enabled_sound_sections_ = ReadSoundSectionPolicy(active_user_prefs);
-
-  // TODO: If we want to block the whole YTM section, we should make changes
-  // here. And remove the calls to `FocusModeSoundsController::IsMinorUser()` in
-  // `FocusModeSoundsView`.
-
-  // Hide the YTM sound section if the flag isn't enabled.
-  if (!features::IsFocusModeYTMEnabled()) {
-    enabled_sound_sections_.erase(focus_mode_util::SoundType::kYouTubeMusic);
-  }
 }
 
 }  // namespace ash

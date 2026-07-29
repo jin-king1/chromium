@@ -8,7 +8,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 
-namespace WTF {
+namespace blink {
 
 TEST(IntegerToStringConversionTest, SimpleIntConversion) {
   const IntegerToStringConverter<int> conv(100500);
@@ -45,4 +45,33 @@ TYPED_TEST(IntegerToStringConversionBoundsTest, UpperBound) {
   EXPECT_EQ(StringView(expected.c_str()), StringView(conv.Span()));
 }
 
-}  // namespace WTF
+TEST(IntegerToStringConversionTest, HexConversion) {
+  const IntegerToStringConverter<int, 16> conv1(255);
+  EXPECT_EQ(StringView(conv1.Span()), StringView("ff"));
+
+  const IntegerToStringConverter<int, 16, true> conv2(255);
+  EXPECT_EQ(StringView(conv2.Span()), StringView("FF"));
+
+  const IntegerToStringConverter<int, 16, true> conv3(267);
+  EXPECT_EQ(StringView(conv3.Span()), StringView("10B"));
+
+  const IntegerToStringConverter<int, 16> conv4(0);
+  EXPECT_EQ(StringView(conv4.Span()), StringView("0"));
+
+  const IntegerToStringConverter<uint64_t, 16> conv5(
+      UINT64_C(0x123456789ABCDEF0));
+  EXPECT_EQ(StringView(conv5.Span()), StringView("123456789abcdef0"));
+}
+
+TEST(IntegerToStringConversionTest, HexConversionNegative) {
+  const IntegerToStringConverter<int8_t, 16> conv1(-1);
+  EXPECT_EQ(StringView(conv1.Span()), StringView("ff"));
+
+  const IntegerToStringConverter<int32_t, 16> conv2(-1);
+  EXPECT_EQ(StringView(conv2.Span()), StringView("ffffffff"));
+
+  const IntegerToStringConverter<int64_t, 16> conv3(-1);
+  EXPECT_EQ(StringView(conv3.Span()), StringView("ffffffffffffffff"));
+}
+
+}  // namespace blink

@@ -2,20 +2,20 @@
 [
   {
     "os": [
-      "chromeos_ash"
+      "chromeos"
     ],
     "note": "Test for DevicePowerBatteryChargingOptimization and DevicePowerAdaptiveChargingEnabled policy.",
     "policy_pref_mapping_tests": [
       {
-        "note": "Check default value when no policies are set. DevicePowerAdaptiveChargingEnabled has a default_for_enterprise_users, so when DevicePowerAdaptiveChargingEnabled unset, the pref will be overriden by default_for_enterprise_users",
+        "note": "Check default value when no policies are set",
         "policies": {},
         "prefs": {
           "power.adaptive_charging_enabled": {
             "location": "user_profile",
-            "value": false
+            "default_value": true
           },
           "power.charge_limit_enabled": {
-            "location": "local_state",
+            "location": "user_profile",
             "default_value": false
           }
         }
@@ -44,7 +44,7 @@
         }
       },
       {
-        "note":"Check when DevicePowerBatteryChargingOptimization is unset, DevicePowerAdaptiveChargingEnabled can still set adaptive charging",
+        "note":"Check that DevicePowerBatteryChargingOptimization sets the preference correctly (Standard).",
         "policies": {
           "DevicePowerBatteryChargingOptimization": 1
         },
@@ -54,7 +54,7 @@
             "value": false
           },
           "power.charge_limit_enabled": {
-            "location": "local_state",
+            "location": "user_profile",
             "value": false
           }
         }
@@ -71,7 +71,7 @@
             "value": false
           },
           "power.charge_limit_enabled": {
-            "location": "local_state",
+            "location": "user_profile",
             "value": false
           }
         }
@@ -87,7 +87,7 @@
             "value": true
           },
           "power.charge_limit_enabled": {
-            "location": "local_state",
+            "location": "user_profile",
             "value": false
           }
         }
@@ -104,7 +104,7 @@
             "value": true
           },
           "power.charge_limit_enabled": {
-            "location": "local_state",
+            "location": "user_profile",
             "value": false
           }
         }
@@ -120,7 +120,7 @@
             "value": false
           },
           "power.charge_limit_enabled": {
-            "location": "local_state",
+            "location": "user_profile",
             "value": true
           }
         }
@@ -137,7 +137,7 @@
             "value": false
           },
           "power.charge_limit_enabled": {
-            "location": "local_state",
+            "location": "user_profile",
             "value": true
           }
         }

@@ -12,8 +12,6 @@
 #include "third_party/abseil-cpp/absl/strings/has_absl_stringify.h"
 #include "third_party/abseil-cpp/absl/strings/has_ostream_operator.h"
 #include "third_party/abseil-cpp/absl/strings/str_cat.h"
-#include "third_party/webrtc/api/scoped_refptr.h"
-#include "third_party/webrtc/rtc_base/checks.h"
 #include "third_party/webrtc/rtc_base/system/rtc_export.h"
 
 namespace webrtc {
@@ -69,10 +67,10 @@ class RTC_EXPORT DiagnosticLogMessage {
  public:
   template <typename T>
   ABSL_ATTRIBUTE_NOINLINE DiagnosticLogMessage& operator<<(const T& v) {
-    if constexpr (absl::HasOstreamOperator<T>::value) {
-      print_stream_ << v;
-    } else if constexpr (absl::HasAbslStringify<T>::value) {
+    if constexpr (absl::HasAbslStringify<T>::value) {
       print_stream_ << absl::StrCat(v);
+    } else if constexpr (absl::HasOstreamOperator<T>::value) {
+      print_stream_ << v;
     } else {
       static_assert(false, "Unsupported type to log");
     }
@@ -133,6 +131,8 @@ class LogMessage {
 // TODO(grunell): typedef the delegate function.
 RTC_EXPORT void InitDiagnosticLoggingDelegateFunction(
     void (*delegate)(const std::string&));
+
+RTC_EXPORT void ResetDiagnosticLoggingDelegateFunction();
 
 void SetExtraLoggingInit(
     void (*function)(void (*delegate)(const std::string&)));

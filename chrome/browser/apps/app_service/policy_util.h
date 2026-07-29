@@ -23,11 +23,10 @@
 #include <string_view>
 #include <vector>
 
-#include "base/containers/flat_map.h"
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "ash/webui/system_apps/public/system_web_app_type.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 class Profile;
@@ -35,30 +34,8 @@ class Profile;
 namespace apps_util {
 
 #if BUILDFLAG(IS_CHROMEOS)
-constexpr char kVirtualTaskPrefix[] = "VirtualTask/";
+inline constexpr char kVirtualTaskPrefix[] = "VirtualTask/";
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-// Checks whether |policy_id| specifies a Chrome App.
-bool IsChromeAppPolicyId(std::string_view policy_id);
-
-#if BUILDFLAG(IS_CHROMEOS)
-// Checks whether |policy_id| specifies an Arc App.
-bool IsArcAppPolicyId(std::string_view policy_id);
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-// Checks whether |policy_id| specifies a Web App.
-bool IsWebAppPolicyId(std::string_view policy_id);
-
-#if BUILDFLAG(IS_CHROMEOS)
-// Checks whether |policy_id| specifies a System Web App.
-bool IsSystemWebAppPolicyId(std::string_view policy_id);
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-// Checks whether |policy_id| specifies a Preinstalled Web App.
-bool IsPreinstalledWebAppPolicyId(std::string_view policy_id);
-
-// Checks whether |policy_id| specifies an Isolated Web App.
-bool IsIsolatedWebAppPolicyId(std::string_view policy_id);
 
 #if BUILDFLAG(IS_CHROMEOS)
 bool IsFileManagerVirtualTaskPolicyId(std::string_view policy_id);
@@ -78,7 +55,7 @@ std::string TransformRawPolicyId(const std::string& raw_policy_id);
 // |policy_ids|.
 // In most circumstances this function returns no more than one app.
 // However, there are some special cases when there the candidate count might be
-// greater -- Web App placeholders (crbug.com/1427340) or multiple intents in a
+// greater -- Web App placeholders (crbug.com/40261748) or multiple intents in a
 // single ARC package (b/276394178).
 // See go/cros-arc-multi-apps-sketch for a related discussion.
 std::vector<std::string> GetAppIdsFromPolicyId(Profile*,
@@ -116,23 +93,6 @@ std::vector<std::string> GetAppIdsFromPolicyId(Profile*,
 std::optional<std::vector<std::string>> GetPolicyIdsFromAppId(
     Profile*,
     const std::string& app_id);
-
-#if BUILDFLAG(IS_CHROMEOS)
-// Maps SystemWebAppType to a policy id.
-// Returns std::nullopt for apps not included in official builds.
-std::optional<std::string_view> GetPolicyIdForSystemWebAppType(
-    ash::SystemWebAppType);
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-// Returns the policy ID for a given preinstalled web app ID. Note that not all
-// preinstalled web apps are supposed to have a policy ID (currently we only
-// support EDU apps) - in all other cases this will return std::nullopt.
-std::optional<std::string_view> GetPolicyIdForPreinstalledWebApp(
-    std::string_view preinstalled_web_app_id);
-
-void SetPreinstalledWebAppsMappingForTesting(
-    std::optional<base::flat_map<std::string_view, std::string_view>>
-        preinstalled_web_apps_mapping_for_testing);
 
 }  // namespace apps_util
 

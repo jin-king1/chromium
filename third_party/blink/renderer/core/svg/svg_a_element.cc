@@ -30,10 +30,11 @@
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/events/keyboard_event.h"
 #include "third_party/blink/renderer/core/events/mouse_event.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/html/anchor_element_utils.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
-#include "third_party/blink/renderer/core/html/html_anchor_element.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_inline.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_transformable_container.h"
@@ -47,7 +48,9 @@
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/xlink_names.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
+#include "third_party/blink/renderer/platform/weborigin/security_policy.h"
 
 namespace blink {
 
@@ -65,6 +68,15 @@ void SVGAElement::Trace(Visitor* visitor) const {
   SVGGraphicsElement::Trace(visitor);
   SVGURIReference::Trace(visitor);
 }
+
+#if DCHECK_IS_ON()
+bool SVGAElement::IsAnimatableAttribute(const QualifiedName& name) const {
+  if (name == svg_names::kTypeAttr) {
+    return false;
+  }
+  return SVGElement::IsAnimatableAttribute(name);
+}
+#endif
 
 String SVGAElement::title() const {
   // If the xlink:title is set (non-empty string), use it.
@@ -106,18 +118,32 @@ LayoutObject* SVGAElement::CreateLayoutObject(const ComputedStyle&) {
 
 void SVGAElement::DefaultEventHandler(Event& event) {
   if (IsLink()) {
-    if (IsFocused() && IsEnterKeyKeydownEvent(event)) {
+    if (IsFocused() && KeyboardEvent::IsEnterKeyKeydownEvent(event)) {
       event.SetDefaultHandled();
       DispatchSimulatedClick(&event);
       return;
     }
 
-    if (IsLinkClick(event)) {
-      String url = StripLeadingAndTrailingHTMLSpaces(HrefString());
+    if (AnchorElementUtils::IsLinkClick(event)) {
+      // It's unclear whether synthesized middle-button "click" events should be
+      // allowed to be dispatched and create a navigation. Measure how common
+      // this is to see if we can disallow it. Per Pointer Events: "The click
+      // event should only be fired for the primary pointer button (i.e., when
+      // button value is 0, buttons value is 1). Secondary buttons (like the
+      // middle or right button on a standard mouse) MUST NOT fire click
+      // events." (https://w3c.github.io/pointerevents/#dfn-click)
+      if (event.type() == event_type_names::kClick && !event.isTrusted() &&
+          To<MouseEvent>(event).button() ==
+              static_cast<int16_t>(WebPointerProperties::Button::kMiddle)) {
+        UseCounter::Count(GetDocument(),
+                          WebFeature::kSynthesizedMiddleClickSVGAnchor);
+      }
 
-      if (url[0] == '#') {
+      StringView url = StripLeadingAndTrailingHtmlSpaces(HrefString());
+
+      if (url.starts_with('#')) {
         Element* target_element =
-            GetTreeScope().getElementById(AtomicString(url.Substring(1)));
+            GetTreeScope().getElementById(AtomicString(url.substr(1)));
         if (auto* svg_smil_element =
                 DynamicTo<SVGSMILElement>(target_element)) {
           svg_smil_element->BeginByLinkActivation();
@@ -131,10 +157,38 @@ void SVGAElement::DefaultEventHandler(Event& event) {
         return;
       }
 
-      FrameLoadRequest frame_request(
-          GetDocument().domWindow(),
-          ResourceRequest(GetDocument().CompleteURL(url)));
+      NavigationPolicy navigation_policy = NavigationPolicyFromEvent(&event);
 
+      const KURL& resolved_url = GetDocument().CompleteURL(url);
+      ResourceRequest request(resolved_url);
+
+      // Schedule the ping before the frame load. Prerender in Chrome may kill
+      // the renderer as soon as the navigation is sent out.
+      AnchorElementUtils::SendPings(resolved_url, GetDocument(),
+                                    FastGetAttribute(svg_names::kPingAttr));
+
+      AnchorElementUtils::HandleReferrerPolicyAttribute(
+          request, FastGetAttribute(svg_names::kReferrerpolicyAttr),
+          link_relations_, GetDocument());
+
+      request.SetHasUserGesture(LocalFrame::HasTransientUserActivation(frame));
+
+      // Respect the download attribute only if we can read the content, and the
+      // event is not an alt-click or similar.
+      if (FastHasAttribute(svg_names::kDownloadAttr) &&
+          navigation_policy != kNavigationPolicyDownload &&
+          GetDocument().domWindow()->GetSecurityOrigin()->CanReadContent(
+              resolved_url)) {
+        const String download_attr =
+            FastGetAttribute(svg_names::kDownloadAttr).GetString();
+
+        AnchorElementUtils::HandleDownloadAttribute(
+            this, download_attr, resolved_url, GetDocument().domWindow(),
+            event.isTrusted(), std::move(request));
+        return;
+      }
+
+      FrameLoadRequest frame_request(GetDocument().domWindow(), request);
       AtomicString target = frame_request.CleanNavigationTarget(
           AtomicString(svg_target_->CurrentValue()->Value()));
       if (target.empty() && FastGetAttribute(xlink_names::kShowAttr) == "new") {
@@ -142,44 +196,22 @@ void SVGAElement::DefaultEventHandler(Event& event) {
       }
       event.SetDefaultHandled();
 
-      NavigationPolicy navigation_policy = NavigationPolicyFromEvent(&event);
-      if (navigation_policy == kNavigationPolicyLinkPreview) {
-        // TODO(b:302649777): Support LinkPreview for SVG <a> element.
-        return;
-      }
       frame_request.SetNavigationPolicy(navigation_policy);
       frame_request.SetClientNavigationReason(
           ClientNavigationReason::kAnchorClick);
       frame_request.SetSourceElement(this);
 
-      // TODO(dmangal): Create a common interface with HTMAnchorElement and move
-      // navigation related code to that interface.
-      if (RuntimeEnabledFeatures::SvgAnchorElementRelAttributesEnabled()) {
-        if (HasRel(kRelationNoReferrer)) {
-          frame_request.SetNoReferrer();
-          frame_request.SetNoOpener();
-        }
-        if (HasRel(kRelationNoOpener) ||
-            (EqualIgnoringASCIICase(target, "_blank") &&
-             !HasRel(kRelationOpener) &&
-             frame->GetSettings()
-                 ->GetTargetBlankImpliesNoOpenerEnabledWillBeRemoved())) {
-          frame_request.SetNoOpener();
-        }
-        if (RuntimeEnabledFeatures::RelOpenerBcgDependencyHintEnabled(
-                GetExecutionContext()) &&
-            HasRel(kRelationOpener) &&
-            !frame_request.GetWindowFeatures().noopener) {
-          frame_request.SetExplicitOpener();
-        }
-      }
+      AnchorElementUtils::HandleRelAttribute(
+          frame_request, frame->GetSettings(), GetExecutionContext(), target,
+          link_relations_);
+
+      AnchorElementUtils::EnforceBlobUrlNoopenerIfNeeded(
+          frame_request, resolved_url, *GetDocument().domWindow());
 
       frame_request.SetTriggeringEventInfo(
           event.isTrusted()
               ? mojom::blink::TriggeringEventInfo::kFromTrustedEvent
               : mojom::blink::TriggeringEventInfo::kFromUntrustedEvent);
-      frame_request.GetResourceRequest().SetHasUserGesture(
-          LocalFrame::HasTransientUserActivation(GetDocument().GetFrame()));
 
       Frame* target_frame =
           frame->Tree()
@@ -196,19 +228,15 @@ void SVGAElement::DefaultEventHandler(Event& event) {
   SVGGraphicsElement::DefaultEventHandler(event);
 }
 
-Element* SVGAElement::interestTargetElement() {
-  if (!RuntimeEnabledFeatures::HTMLInterestTargetAttributeEnabled(
-          GetDocument().GetExecutionContext())) {
-    return nullptr;
-  }
+bool SVGAElement::IsValidInterestInvoker(Element& target) const {
   // Anchor elements that don't have the `href` attribute are not interactive,
-  // so they can't support `interesttarget`.
-  if (!IsInTreeScope() || !IsLink()) {
-    return nullptr;
-  }
+  // so they can't support `interestfor`.
+  return IsLink();
+}
 
-  return GetElementAttributeResolvingReferenceTarget(
-      svg_names::kInteresttargetAttr);
+KURL SVGAElement::Url() const {
+  return GetDocument().CompleteURL(
+      StripLeadingAndTrailingHtmlSpaces(HrefString()));
 }
 
 bool SVGAElement::HasActivationBehavior() const {
@@ -225,6 +253,10 @@ FocusableState SVGAElement::SupportsFocus(
     return SVGGraphicsElement::SupportsFocus(update_behavior);
   }
   if (IsLink()) {
+    if (IsNonRendered(GetLayoutObject())) {
+      return FocusableState::kNotFocusable;
+    }
+
     return FocusableState::kFocusable;
   }
   // If not a link we should still be able to focus the element if it has
@@ -285,39 +317,13 @@ void SVGAElement::SynchronizeAllSVGAttributes() const {
 }
 
 void SVGAElement::ParseAttribute(const AttributeModificationParams& params) {
-  if (params.name == svg_names::kRelAttr &&
-      RuntimeEnabledFeatures::SvgAnchorElementRelAttributesEnabled()) {
-    SetRel(params.new_value);
+  if (params.name == svg_names::kRelAttr) {
+    link_relations_ =
+        AnchorElementUtils::ParseRelAttribute(params.new_value, GetDocument());
     rel_list_->DidUpdateAttributeValue(params.old_value, params.new_value);
   } else {
     SVGGraphicsElement::ParseAttribute(params);
   }
-}
-
-bool SVGAElement::HasRel(uint32_t relation) const {
-  CHECK(RuntimeEnabledFeatures::SvgAnchorElementRelAttributesEnabled());
-
-  return link_relations_ & relation;
-}
-
-void SVGAElement::SetRel(const AtomicString& value) {
-  CHECK(RuntimeEnabledFeatures::SvgAnchorElementRelAttributesEnabled());
-
-  link_relations_ = 0;
-  SpaceSplitString new_link_relations(value.LowerASCII());
-  if (new_link_relations.Contains(AtomicString("noreferrer"))) {
-    link_relations_ |= kRelationNoReferrer;
-  }
-  if (new_link_relations.Contains(AtomicString("noopener"))) {
-    link_relations_ |= kRelationNoOpener;
-  }
-  if (new_link_relations.Contains(AtomicString("opener"))) {
-    link_relations_ |= kRelationOpener;
-  }
-  // Adding or removing a value here whose processing model is web-visible
-  // (e.g. if the value is listed as a "supported token" for `<a>`'s `rel`
-  // attribute in HTML) also requires you to update the list of tokens in
-  // RelList::SupportedTokensAnchorAndAreaAndForm().
 }
 
 }  // namespace blink

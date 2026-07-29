@@ -4,7 +4,6 @@
 
 #import "ios/chrome/browser/bookmarks/ui_bundled/bookmark_utils_ios.h"
 
-#import <MaterialComponents/MaterialSnackbar.h>
 #import <stdint.h>
 
 #import <algorithm>
@@ -13,11 +12,11 @@
 #import <vector>
 
 #import "base/check.h"
-#import "base/containers/contains.h"
 #import "base/containers/flat_map.h"
 #import "base/hash/hash.h"
 #import "base/i18n/message_formatter.h"
 #import "base/i18n/string_compare.h"
+#import "base/i18n/string_search.h"
 #import "base/memory/raw_ptr.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
@@ -43,7 +42,8 @@
 #import "ios/chrome/browser/ntp/shared/metrics/home_metrics.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
-#import "ios/chrome/browser/shared/ui/util/snackbar_util.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message_action.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -56,8 +56,6 @@
 using bookmarks::BookmarkNode;
 
 namespace bookmark_utils_ios {
-
-NSString* const kBookmarksSnackbarCategory = @"BookmarksSnackbarCategory";
 
 namespace {
 
@@ -72,7 +70,7 @@ void RemoveBookmarksRecursive(const std::set<const BookmarkNode*>& bookmarks,
                              node->children()[i - 1].get(), location);
   }
 
-  if (base::Contains(bookmarks, node)) {
+  if (bookmarks.contains(node)) {
     model->Remove(node, source, location);
   }
 }
@@ -85,6 +83,43 @@ const BookmarkNode* FindFolderById(const bookmarks::BookmarkModel* model,
   const bookmarks::BookmarkNode* node =
       bookmarks::GetBookmarkNodeByID(model, id);
   return (node && node->is_folder()) ? node : nullptr;
+}
+
+std::set<raw_ptr<const BookmarkNode>> GetBookmarkNodesByIds(
+    const bookmarks::BookmarkModel* model,
+    const std::set<int64_t>& ids) {
+  CHECK(model);
+  std::set<raw_ptr<const BookmarkNode>> nodes;
+  for (int64_t id : ids) {
+    const BookmarkNode* node = bookmarks::GetBookmarkNodeByID(model, id);
+    if (node) {
+      nodes.insert(node);
+    }
+  }
+  return nodes;
+}
+
+std::vector<raw_ptr<const BookmarkNode>> GetBookmarkNodesByIds(
+    const bookmarks::BookmarkModel* model,
+    const std::vector<int64_t>& ids) {
+  CHECK(model);
+  std::vector<raw_ptr<const BookmarkNode>> nodes;
+  for (int64_t id : ids) {
+    const BookmarkNode* node = bookmarks::GetBookmarkNodeByID(model, id);
+    if (node) {
+      nodes.push_back(node);
+    }
+  }
+  return nodes;
+}
+
+std::vector<int64_t> GetBookmarkNodeIds(
+    const std::vector<raw_ptr<const BookmarkNode>>& nodes) {
+  std::vector<int64_t> ids;
+  for (const BookmarkNode* node : nodes) {
+    ids.push_back(node->id());
+  }
+  return ids;
 }
 
 NSString* TitleForBookmarkNode(const BookmarkNode* node) {
@@ -113,8 +148,8 @@ NSString* TitleForBookmarkNode(const BookmarkNode* node) {
 BookmarkStorageType GetBookmarkStorageType(
     const BookmarkNode* bookmark_node,
     const bookmarks::BookmarkModel* bookmark_model) {
-  DCHECK(bookmark_node);
-  DCHECK(bookmark_model);
+  CHECK(bookmark_node, base::NotFatalUntil::M152);
+  CHECK(bookmark_model, base::NotFatalUntil::M152);
   return bookmark_model->IsLocalOnlyNode(*bookmark_node)
              ? BookmarkStorageType::kLocalOrSyncable
              : BookmarkStorageType::kAccount;
@@ -122,11 +157,6 @@ BookmarkStorageType GetBookmarkStorageType(
 
 bool IsAccountBookmarkStorageOptedIn(syncer::SyncService* sync_service) {
   if (sync_service->GetAccountInfo().IsEmpty()) {
-    return false;
-  }
-  // TODO(crbug.com/40066949): Remove this after UNO phase 3. See
-  // ConsentLevel::kSync documentation for more details.
-  if (sync_service->HasSyncConsent()) {
     return false;
   }
   syncer::UserSelectableTypeSet selected_types =
@@ -144,12 +174,12 @@ bool IsAccountBookmarkStorageAvailable(const bookmarks::BookmarkModel* model) {
 // Creates a toast which will undo the changes made to the bookmark model if
 // the user presses the undo button, and the UndoManagerWrapper allows the undo
 // to go through.
-MDCSnackbarMessage* CreateUndoToastWithWrapper(UndoManagerWrapper* wrapper,
-                                               NSString* text,
-                                               std::string user_action) {
-  DCHECK(!user_action.empty());
+SnackbarMessage* CreateUndoToastWithWrapper(UndoManagerWrapper* wrapper,
+                                            NSString* text,
+                                            std::string user_action) {
+  CHECK(!user_action.empty(), base::NotFatalUntil::M152);
   // Create the block that will be executed if the user taps the undo button.
-  MDCSnackbarMessageAction* action = [[MDCSnackbarMessageAction alloc] init];
+  SnackbarMessageAction* action = [[SnackbarMessageAction alloc] init];
   action.handler = ^{
     if (![wrapper hasUndoManagerChanged]) {
       base::RecordAction(base::UserMetricsAction(user_action.c_str()));
@@ -158,13 +188,11 @@ MDCSnackbarMessage* CreateUndoToastWithWrapper(UndoManagerWrapper* wrapper,
   };
 
   action.title = l10n_util::GetNSString(IDS_IOS_BOOKMARK_NEW_UNDO_BUTTON_TITLE);
-  action.accessibilityIdentifier = @"Undo";
   action.accessibilityLabel =
       l10n_util::GetNSString(IDS_IOS_BOOKMARK_NEW_UNDO_BUTTON_TITLE);
   TriggerHapticFeedbackForNotification(UINotificationFeedbackTypeSuccess);
-  MDCSnackbarMessage* message = CreateSnackbarMessage(text);
+  SnackbarMessage* message = [[SnackbarMessage alloc] initWithTitle:text];
   message.action = action;
-  message.category = kBookmarksSnackbarCategory;
   return message;
 }
 
@@ -173,8 +201,8 @@ bool UpdateBookmark(const BookmarkNode* node,
                     const GURL& url,
                     const BookmarkNode* folder,
                     bookmarks::BookmarkModel* model) {
-  DCHECK(node);
-  DCHECK(folder);
+  CHECK(node, base::NotFatalUntil::M152);
+  CHECK(folder, base::NotFatalUntil::M152);
   std::u16string titleString = base::SysNSStringToUTF16(title);
   if (node->GetTitle() == titleString && node->url() == url &&
       node->parent() == folder) {
@@ -186,7 +214,7 @@ bool UpdateBookmark(const BookmarkNode* node,
                   bookmarks::metrics::BookmarkEditSource::kUser);
   model->SetURL(node, url, bookmarks::metrics::BookmarkEditSource::kUser);
 
-  DCHECK(!folder->HasAncestor(node));
+  CHECK(!folder->HasAncestor(node), base::NotFatalUntil::M152);
   if (node->parent() != folder) {
     model->Move(node, folder, folder->children().size());
   }
@@ -197,16 +225,7 @@ bool bookmarkSavedIntoAccount(
     BookmarkStorageType bookmarkStorageType,
     base::WeakPtr<AuthenticationService> authenticationService,
     raw_ptr<syncer::SyncService> syncService) {
-  // TODO(crbug.com/40066949): Simplify once kSync becomes unreachable or is
-  // deleted from the codebase. See ConsentLevel::kSync documentation for
-  // details.
-  BOOL hasSyncConsent =
-      authenticationService->HasPrimaryIdentity(signin::ConsentLevel::kSync);
-  BOOL savedIntoAccount =
-      (bookmarkStorageType == BookmarkStorageType::kAccount) ||
-      (hasSyncConsent && syncService->GetUserSettings()->GetSelectedTypes().Has(
-                             syncer::UserSelectableType::kBookmarks));
-  return savedIntoAccount;
+  return bookmarkStorageType == BookmarkStorageType::kAccount;
 }
 
 NSString* messageForAddingBookmarksInFolder(
@@ -221,8 +240,7 @@ NSString* messageForAddingBookmarksInFolder(
   CHECK(model);
 
   NSString* folderTitle = TitleForBookmarkNode(folder);
-  id<SystemIdentity> identity =
-      authenticationService->GetPrimaryIdentity(signin::ConsentLevel::kSignin);
+  id<SystemIdentity> identity = authenticationService->GetPrimaryIdentity();
 
   if (!identity ||
       !syncService->GetUserSettings()->GetSelectedTypes().Has(
@@ -246,9 +264,8 @@ NSString* messageForAddingBookmarksInFolder(
     }
   }
 
-  // The user is signed in and bookmark sync is on (either account bookmarks or
-  // the legacy sync-the-feature). It is still possible that the folder saving
-  // into is a local-only folder.
+  // The user is signed in and account bookmarks are on. It is still possible
+  // that the folder saving into is a local-only folder.
   if (model->IsLocalOnlyNode(*folder)) {
     std::u16string title = base::SysNSStringToUTF16(folderTitle);
     std::u16string pattern = l10n_util::GetStringUTF16(
@@ -280,7 +297,7 @@ NSString* messageForAddingBookmarksInFolder(
   }
 }
 
-MDCSnackbarMessage* UpdateBookmarkWithUndoToast(
+SnackbarMessage* UpdateBookmarkWithUndoSnackbar(
     const BookmarkNode* node,
     NSString* title,
     const GURL& url,
@@ -320,7 +337,7 @@ MDCSnackbarMessage* UpdateBookmarkWithUndoToast(
       wrapper, text, "MobileBookmarkManagerUpdatedBookmarkUndone");
 }
 
-MDCSnackbarMessage* CreateBookmarkAtPositionWithUndoToast(
+SnackbarMessage* CreateBookmarkAtPositionWithUndoSnackbar(
     NSString* title,
     const GURL& url,
     const BookmarkNode* folder,
@@ -349,15 +366,15 @@ MDCSnackbarMessage* CreateBookmarkAtPositionWithUndoToast(
                                     "MobileBookmarkManagerAddedBookmarkUndone");
 }
 
-MDCSnackbarMessage* UpdateBookmarkPositionWithUndoToast(
+SnackbarMessage* UpdateBookmarkPositionWithUndoSnackbar(
     const BookmarkNode* node,
     const BookmarkNode* folder,
     size_t position,
     bookmarks::BookmarkModel* model,
     ProfileIOS* profile) {
-  DCHECK(node);
-  DCHECK(folder);
-  DCHECK(!folder->HasAncestor(node));
+  CHECK(node, base::NotFatalUntil::M152);
+  CHECK(folder, base::NotFatalUntil::M152);
+  CHECK(!folder->HasAncestor(node), base::NotFatalUntil::M152);
 
   size_t old_index = node->parent()->GetIndexOf(node).value();
   // Early return if no change in position.
@@ -393,13 +410,13 @@ void DeleteBookmarks(const std::set<const BookmarkNode*>& bookmarks,
                            bookmark_model->root_node(), location);
 }
 
-MDCSnackbarMessage* DeleteBookmarksWithUndoToast(
+SnackbarMessage* DeleteBookmarksWithUndoSnackbar(
     const std::set<const BookmarkNode*>& nodes,
     bookmarks::BookmarkModel* bookmark_model,
     ProfileIOS* profile,
     const base::Location& location) {
   size_t node_count = nodes.size();
-  DCHECK_GT(node_count, 0u);
+  CHECK_GT(node_count, 0u, base::NotFatalUntil::M152);
 
   UndoManagerWrapper* wrapper =
       [[UndoManagerWrapper alloc] initWithProfile:profile];
@@ -441,7 +458,7 @@ bool MoveBookmarks(const std::vector<const BookmarkNode*>& bookmarks_to_move,
   return did_perform_move;
 }
 
-MDCSnackbarMessage* MoveBookmarksWithUndoToast(
+SnackbarMessage* MoveBookmarksWithUndoSnackbar(
     const std::vector<const BookmarkNode*>& bookmarks_to_move,
     bookmarks::BookmarkModel* model,
     const BookmarkNode* destination_folder,
@@ -449,7 +466,7 @@ MDCSnackbarMessage* MoveBookmarksWithUndoToast(
     base::WeakPtr<AuthenticationService> authenticationService,
     raw_ptr<syncer::SyncService> syncService) {
   size_t node_count = bookmarks_to_move.size();
-  DCHECK_GT(node_count, 0u);
+  CHECK_GT(node_count, 0u, base::NotFatalUntil::M152);
   bool contains_a_folder =
       std::find_if(bookmarks_to_move.begin(), bookmarks_to_move.end(),
                    [](const BookmarkNode* node) {
@@ -492,9 +509,10 @@ namespace {
 // Adds all children of `folder` that are not obstructed to `results`. They are
 // placed immediately after `folder`, using a depth-first, then alphabetically
 // ordering. `results` must contain `folder`.
-void UpdateFoldersFromNode(const BookmarkNode* folder,
-                           NodeVector* results,
-                           const NodeSet& obstructions);
+void UpdateFoldersFromNode(
+    const BookmarkNode* folder,
+    std::vector<raw_ptr<const bookmarks::BookmarkNode>>* results,
+    const NodeSet& obstructions);
 
 // Returns whether `folder` has an ancestor in any of the nodes in
 // `bookmarkNodes`.
@@ -526,8 +544,8 @@ class FolderNodeComparator {
 
 bool FolderHasAncestorInBookmarkNodes(const BookmarkNode* folder,
                                       const NodeSet& bookmarkNodes) {
-  DCHECK(folder);
-  DCHECK(folder->is_folder());
+  CHECK(folder, base::NotFatalUntil::M152);
+  CHECK(folder->is_folder(), base::NotFatalUntil::M152);
   for (const BookmarkNode* node : bookmarkNodes) {
     if (folder->HasAncestor(node)) {
       return true;
@@ -549,9 +567,10 @@ bool IsObstructed(const BookmarkNode* node, const NodeSet& obstructions) {
   return false;
 }
 
-void UpdateFoldersFromNode(const BookmarkNode* folder,
-                           NodeVector* results,
-                           const NodeSet& obstructions) {
+void UpdateFoldersFromNode(
+    const BookmarkNode* folder,
+    std::vector<raw_ptr<const bookmarks::BookmarkNode>>* results,
+    const NodeSet& obstructions) {
   std::vector<const BookmarkNode*> directDescendants;
   for (const auto& subfolder : folder->children()) {
     if (!IsObstructed(subfolder.get(), obstructions)) {
@@ -562,7 +581,7 @@ void UpdateFoldersFromNode(const BookmarkNode* folder,
   bookmark_utils_ios::SortFolders(&directDescendants);
 
   auto it = std::ranges::find(*results, folder);
-  DCHECK(it != results->end());
+  CHECK(it != results->end(), base::NotFatalUntil::M152);
   ++it;
   results->insert(it, directDescendants.begin(), directDescendants.end());
 
@@ -584,11 +603,13 @@ void SortFolders(NodeVector* vector) {
             FolderNodeComparator(collator.get()));
 }
 
-NodeVector VisibleNonDescendantNodes(const NodeSet& obstructions,
-                                     const bookmarks::BookmarkModel* model,
-                                     BookmarkStorageType type) {
+std::vector<raw_ptr<const bookmarks::BookmarkNode>> VisibleNonDescendantNodes(
+    const NodeSet& obstructions,
+    const bookmarks::BookmarkModel* model,
+    BookmarkStorageType type,
+    const std::vector<std::u16string>& search_terms) {
   NodeVector primary_nodes = PrimaryPermanentNodes(model, type);
-  NodeVector filtered_primary_nodes;
+  std::vector<raw_ptr<const bookmarks::BookmarkNode>> filtered_primary_nodes;
   for (auto* node : primary_nodes) {
     if (IsObstructed(node, obstructions)) {
       continue;
@@ -598,12 +619,23 @@ NodeVector VisibleNonDescendantNodes(const NodeSet& obstructions,
   }
 
   // Copy the results over.
-  NodeVector results = filtered_primary_nodes;
+  std::vector<raw_ptr<const bookmarks::BookmarkNode>> inner_results =
+      filtered_primary_nodes;
 
   // Iterate over a static copy of the filtered, root folders.
-  for (auto* node : filtered_primary_nodes) {
-    UpdateFoldersFromNode(node, &results, obstructions);
+  for (raw_ptr<const bookmarks::BookmarkNode> node : filtered_primary_nodes) {
+    UpdateFoldersFromNode(node.get(), &inner_results, obstructions);
   }
+
+  if (search_terms.empty()) {
+    return inner_results;
+  }
+  std::vector<raw_ptr<const bookmarks::BookmarkNode>> results;
+  std::copy_if(inner_results.begin(), inner_results.end(),
+               std::back_inserter(results), [search_terms](auto node) {
+                 return bookmarks::DoesBookmarkContainWords(
+                     node->GetTitle(), GURL(), search_terms);
+               });
 
   return results;
 }
@@ -633,7 +665,7 @@ BOOL IsSubvectorOfNodes(const NodeVector& vector1, const NodeVector& vector2) {
 std::vector<NodeVector::size_type> MissingNodesIndices(
     const NodeVector& vector1,
     const NodeVector& vector2) {
-  DCHECK(IsSubvectorOfNodes(vector1, vector2))
+  CHECK(IsSubvectorOfNodes(vector1, vector2), base::NotFatalUntil::M152)
       << "Can't compute missing nodes between nodes among which the first is "
          "not a subvector of the second.";
 
@@ -671,7 +703,7 @@ NSArray<NSNumber*>* CreateBookmarkPath(const bookmarks::BookmarkModel* model,
   while (!bookmark->is_root()) {
     [bookmarkPath addObject:[NSNumber numberWithLongLong:bookmark->id()]];
     bookmark = bookmark->parent();
-    DCHECK(bookmark);
+    CHECK(bookmark, base::NotFatalUntil::M152);
   }
   return [[bookmarkPath reverseObjectEnumerator] allObjects];
 }

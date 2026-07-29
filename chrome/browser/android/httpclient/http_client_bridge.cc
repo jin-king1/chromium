@@ -18,14 +18,14 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/browser/android/httpclient/jni_headers/SimpleHttpClient_jni.h"
 
-using jni_zero::JavaParamRef;
+using jni_zero::JavaRef;
 using jni_zero::ScopedJavaGlobalRef;
 using jni_zero::ScopedJavaLocalRef;
 
 namespace httpclient {
 
 // static
-jlong JNI_SimpleHttpClient_Init(JNIEnv* env, Profile* profile) {
+static int64_t JNI_SimpleHttpClient_Init(JNIEnv* env, Profile* profile) {
   return reinterpret_cast<intptr_t>(new HttpClientBridge(profile));
 }
 
@@ -43,12 +43,12 @@ void HttpClientBridge::Destroy(JNIEnv* env) {
 
 void HttpClientBridge::SendNetworkRequest(
     JNIEnv* env,
-    GURL& gurl,
-    std::string& request_type,
-    std::vector<uint8_t>& request_body,
-    std::map<std::string, std::string> headers,
-    jint j_network_annotation_hashcode,
-    const base::android::JavaParamRef<jobject>& j_callback) {
+    const GURL& gurl,
+    const std::string& request_type,
+    std::vector<uint8_t>&& request_body,
+    std::map<std::string, std::string>&& headers,
+    int32_t j_network_annotation_hashcode,
+    const base::android::JavaRef<jobject>& j_callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(gurl.is_valid());
   net::NetworkTrafficAnnotationTag tag =
@@ -77,3 +77,5 @@ void HttpClientBridge::OnResult(
 }
 
 }  // namespace httpclient
+
+DEFINE_JNI(SimpleHttpClient)

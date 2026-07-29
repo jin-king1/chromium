@@ -6,18 +6,23 @@
 
 #include <stdint.h>
 
+#include <limits>
 #include <optional>
 #include <utility>
 
+#include "base/notreached.h"
+#include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink.h"
+#include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_microtasks_scope.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_throw_dom_exception.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybuffer_arraybufferview.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_web_transport_close_info.h"
@@ -26,6 +31,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_web_transport_error.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_web_transport_hash.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_web_transport_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_web_transport_send_stream_options.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
@@ -48,6 +54,9 @@
 #include "third_party/blink/renderer/modules/webtransport/receive_stream.h"
 #include "third_party/blink/renderer/modules/webtransport/send_stream.h"
 #include "third_party/blink/renderer/modules/webtransport/web_transport_error.h"
+#include "third_party/blink/renderer/modules/webtransport/web_transport_receive_stream.h"
+#include "third_party/blink/renderer/modules/webtransport/web_transport_send_group.h"
+#include "third_party/blink/renderer/modules/webtransport/web_transport_send_stream.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
@@ -56,8 +65,11 @@
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
 #include "third_party/blink/renderer/platform/loader/fetch/unique_identifier.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/timer.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/hash_set.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
@@ -70,6 +82,21 @@ namespace {
 // The incoming max age to to be used when datagrams.incomingMaxAge is set to
 // null.
 constexpr base::TimeDelta kDefaultIncomingMaxAge = base::Seconds(60);
+
+// Converts the Blink congestion control enum to its Mojo equivalent for
+// renderer-to-browser IPC.
+network::mojom::blink::WebTransportCongestionControl
+BlinkCongestionControlToMojo(const V8WebTransportCongestionControl& cc) {
+  switch (cc.AsEnum()) {
+    case V8WebTransportCongestionControl::Enum::kDefault:
+      return network::mojom::blink::WebTransportCongestionControl::kDefault;
+    case V8WebTransportCongestionControl::Enum::kThroughput:
+      return network::mojom::blink::WebTransportCongestionControl::kThroughput;
+    case V8WebTransportCongestionControl::Enum::kLowLatency:
+      return network::mojom::blink::WebTransportCongestionControl::kLowLatency;
+  }
+  NOTREACHED();
+}
 
 // Creates a mojo DataPipe with the options we use for our stream data pipes. On
 // success, returns true. On failure, throws an exception and returns false.
@@ -94,7 +121,51 @@ bool CreateStreamDataPipe(mojo::ScopedDataPipeProducerHandle* producer,
   return true;
 }
 
+// Validates the conditions outlined in
+// https://w3c.github.io/webtransport/#webtransport-constructor and returns an
+// error message, or null string if the name is valid.
+[[nodiscard]] String ValidateProtocolName(StringView protocol) {
+  if (protocol.empty()) {
+    return "Protocol name cannot be empty.";
+  }
+  if (!VisitCharacters(protocol, [](auto span) {
+        for (const auto c : span) {
+          // Protocol names are sf-strings, which are defined as sequences of
+          // printable ASCII characters.
+          // See <https://www.rfc-editor.org/rfc/rfc8941.html#name-strings>.
+          if (c < 32 || c >= 127) {
+            return false;
+          }
+        }
+        return true;
+      })) {
+    return "Protocol name contains invalid characters.";
+  }
+  if (protocol.length() >= 512) {
+    return "Protocol name is longer than 512 bytes.";
+  }
+  return String();
+}
+
 }  // namespace
+
+// RecentlyForgottenStreamIdSet implementation
+void WebTransport::RecentlyForgottenStreamIdSet::Insert(uint32_t stream_id) {
+  auto result = id_set_.insert(stream_id);
+  CHECK(result.is_new_entry);  // Should always be new given our call sites.
+  if (id_set_.size() > kMaxSize) {
+    id_set_.RemoveFirst();
+  }
+}
+
+bool WebTransport::RecentlyForgottenStreamIdSet::Contains(
+    uint32_t stream_id) const {
+  return id_set_.Contains(stream_id);
+}
+
+void WebTransport::RecentlyForgottenStreamIdSet::Erase(uint32_t stream_id) {
+  id_set_.erase(stream_id);
+}
 
 // Sends a datagram on write().
 class WebTransport::DatagramUnderlyingSink final : public UnderlyingSinkBase {
@@ -156,8 +227,8 @@ class WebTransport::DatagramUnderlyingSink final : public UnderlyingSinkBase {
     for (const auto& datagram : pending_datagrams_) {
       web_transport_->transport_remote_->SendDatagram(
           base::span(datagram),
-          WTF::BindOnce(&DatagramUnderlyingSink::OnDatagramProcessed,
-                        WrapWeakPersistent(this)));
+          BindOnce(&DatagramUnderlyingSink::OnDatagramProcessed,
+                   WrapWeakPersistent(this)));
     }
     pending_datagrams_.clear();
   }
@@ -169,32 +240,33 @@ class WebTransport::DatagramUnderlyingSink final : public UnderlyingSinkBase {
     UnderlyingSinkBase::Trace(visitor);
   }
 
+  void RejectPendingResolvers(v8::Local<v8::Value> error) {
+    while (!pending_datagrams_resolvers_.empty()) {
+      pending_datagrams_resolvers_.TakeFirst()->Reject(error);
+    }
+    pending_datagrams_.clear();
+  }
+
  private:
   ScriptPromise<IDLUndefined> SendDatagram(base::span<const uint8_t> data) {
     auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(
         web_transport_->script_state_);
-    // This resolver is for the return value of this function. When the
-    // WebTransport is closed, the stream (for datagrams) is errored and
-    // resolvers in `pending_datagrams_resolvers_` are released without
-    // neither resolved nor rejected. That's fine, because the WritableStream
-    // takes care of the case and reject all the pending promises when the
-    // stream is errored. So we call SuppressDetachCheck here.
-    resolver->SuppressDetachCheck();
     pending_datagrams_resolvers_.push_back(resolver);
 
     if (web_transport_->transport_remote_.is_bound()) {
       web_transport_->transport_remote_->SendDatagram(
-          data, WTF::BindOnce(&DatagramUnderlyingSink::OnDatagramProcessed,
-                              WrapWeakPersistent(this)));
+          data, BindOnce(&DatagramUnderlyingSink::OnDatagramProcessed,
+                         WrapWeakPersistent(this)));
     } else {
       Vector<uint8_t> datagram;
-      datagram.AppendSpan(data);
+      datagram.append_range(data);
       pending_datagrams_.push_back(std::move(datagram));
     }
-    int high_water_mark = datagrams_->outgoingHighWaterMark();
-    DCHECK_GT(high_water_mark, 0);
+    uint32_t max_buffered_datagrams =
+        datagrams_->outgoingMaxBufferedDatagrams();
+    DCHECK_GT(max_buffered_datagrams, 0u);
     if (pending_datagrams_resolvers_.size() <
-        static_cast<wtf_size_t>(high_water_mark)) {
+        static_cast<wtf_size_t>(max_buffered_datagrams)) {
       // In this case we pretend that the datagram is processed immediately, to
       // get more requests from the stream.
       return ToResolvedUndefinedPromise(web_transport_->script_state_.Get());
@@ -387,17 +459,17 @@ class WebTransport::DatagramUnderlyingSource final
 
     DiscardExcessDatagrams();
 
-    auto high_water_mark = HighWaterMark();
+    auto max_buffered_datagrams = MaxBufferedDatagrams();
 
-    // A high water mark of 0 has the semantics that all datagrams are discarded
-    // unless there is read pending. This might be useful to someone, so support
-    // it.
-    if (high_water_mark == 0) {
+    // A max buffered datagram count of 0 has the semantics that all datagrams
+    // are discarded unless there is read pending. This might be useful to
+    // someone, so support it.
+    if (max_buffered_datagrams == 0) {
       DCHECK(queue_.empty());
       return;
     }
 
-    if (queue_.size() == high_water_mark) {
+    if (queue_.size() == max_buffered_datagrams) {
       // Need to get rid of an entry for the new one to replace.
       queue_.pop_front();
       ++dropped_datagram_count_;
@@ -435,11 +507,11 @@ class WebTransport::DatagramUnderlyingSource final
         << "DatagramUnderlyingSource::DiscardExcessDatagrams() queue_.size="
         << queue_.size();
 
-    wtf_size_t high_water_mark = HighWaterMark();
+    wtf_size_t max_buffered_datagrams = MaxBufferedDatagrams();
 
-    // The high water mark may have been set to a lower value, so the size can
-    // be greater.
-    while (queue_.size() > high_water_mark) {
+    // The max buffered datagram count may have been set to a lower value, so
+    // the size can be greater.
+    while (queue_.size() > max_buffered_datagrams) {
       // TODO(ricea): Maybe free the memory associated with the array
       // buffer?
       queue_.pop_front();
@@ -528,9 +600,9 @@ class WebTransport::DatagramUnderlyingSource final
     expiry_timer_.StartOneShot(time_until_next_expiry, FROM_HERE);
   }
 
-  wtf_size_t HighWaterMark() const {
+  wtf_size_t MaxBufferedDatagrams() const {
     return base::checked_cast<wtf_size_t>(
-        datagram_duplex_stream_->incomingHighWaterMark());
+        datagram_duplex_stream_->incomingMaxBufferedDatagrams());
   }
 
   const Member<ScriptState> script_state_;
@@ -575,8 +647,8 @@ class WebTransport::StreamVendingUnderlyingSource final
       return ToResolvedUndefinedPromise(script_state);
     }
 
-    vendor_->RequestStream(WTF::BindOnce(
-        &StreamVendingUnderlyingSource::Enqueue, WrapWeakPersistent(this)));
+    vendor_->RequestStream(BindOnce(&StreamVendingUnderlyingSource::Enqueue,
+                                    WrapWeakPersistent(this)));
 
     return ToResolvedUndefinedPromise(script_state);
   }
@@ -625,9 +697,10 @@ class WebTransport::ReceiveStreamVendor final
       : script_state_(script_state), web_transport_(web_transport) {}
 
   void RequestStream(EnqueueCallback enqueue) override {
-    web_transport_->transport_remote_->AcceptUnidirectionalStream(WTF::BindOnce(
-        &ReceiveStreamVendor::OnAcceptUnidirectionalStreamResponse,
-        WrapWeakPersistent(this), std::move(enqueue)));
+    web_transport_->transport_remote_->AcceptUnidirectionalStream(
+        blink::BindOnce(
+            &ReceiveStreamVendor::OnAcceptUnidirectionalStreamResponse,
+            WrapWeakPersistent(this), std::move(enqueue)));
   }
 
   void Trace(Visitor* visitor) const override {
@@ -642,14 +715,27 @@ class WebTransport::ReceiveStreamVendor final
       uint32_t stream_id,
       mojo::ScopedDataPipeConsumerHandle readable) {
     ScriptState::Scope scope(script_state_);
-    auto* receive_stream = MakeGarbageCollected<ReceiveStream>(
-        script_state_, web_transport_, stream_id, std::move(readable));
     auto* isolate = script_state_->GetIsolate();
-    v8::MicrotasksScope microtasks_scope(
-        isolate, ToMicrotaskQueue(script_state_),
-        v8::MicrotasksScope::kDoNotRunMicrotasks);
+    V8DoNotRunMicrotasksScope microtasks_scope(script_state_);
     v8::TryCatch try_catch(isolate);
-    receive_stream->Init(PassThroughException(isolate));
+
+    // TODO(crbug.com/510589920): Remove the legacy ReceiveStream path when
+    // WebTransportReceiveStream ships.
+    ReadableStream* stream_to_enqueue = nullptr;
+    IncomingStream* incoming_stream = nullptr;
+    auto init_stream = [&](auto* s) {
+      s->Init(PassThroughException(isolate));
+      stream_to_enqueue = s;
+      incoming_stream = s->GetIncomingStream();
+    };
+    if (RuntimeEnabledFeatures::WebTransportReceiveStreamEnabled(
+            ExecutionContext::From(script_state_))) {
+      init_stream(MakeGarbageCollected<WebTransportReceiveStream>(
+          script_state_, web_transport_, stream_id, std::move(readable)));
+    } else {
+      init_stream(MakeGarbageCollected<ReceiveStream>(
+          script_state_, web_transport_, stream_id, std::move(readable)));
+    }
 
     if (try_catch.HasCaught()) {
       // Abandon the stream.
@@ -658,8 +744,7 @@ class WebTransport::ReceiveStreamVendor final
 
     // 0xfffffffe and 0xffffffff are reserved values in stream_map_.
     CHECK_LT(stream_id, 0xfffffffe);
-    web_transport_->incoming_stream_map_.insert(
-        stream_id, receive_stream->GetIncomingStream());
+    web_transport_->incoming_stream_map_.insert(stream_id, incoming_stream);
 
     auto it =
         web_transport_->closed_potentially_pending_streams_.find(stream_id);
@@ -668,12 +753,15 @@ class WebTransport::ReceiveStreamVendor final
       const bool fin_received = it->value;
       web_transport_->closed_potentially_pending_streams_.erase(it);
 
-      // This can run JavaScript. This is safe because `receive_stream` hasn't
-      // been exposed yet.
-      receive_stream->GetIncomingStream()->OnIncomingStreamClosed(fin_received);
+      // This can run JavaScript. This is safe because the stream hasn't been
+      // exposed yet.
+      // Note: OnIncomingStreamClosed() will eventually trigger
+      // ForgetIncomingStream() via the on_abort_ callback, which handles
+      // removal from incoming_stream_map_.
+      incoming_stream->OnIncomingStreamClosed(fin_received);
     }
 
-    std::move(enqueue).Run(receive_stream);
+    std::move(enqueue).Run(stream_to_enqueue);
   }
 
   const Member<ScriptState> script_state_;
@@ -688,9 +776,10 @@ class WebTransport::BidirectionalStreamVendor final
       : script_state_(script_state), web_transport_(web_transport) {}
 
   void RequestStream(EnqueueCallback enqueue) override {
-    web_transport_->transport_remote_->AcceptBidirectionalStream(WTF::BindOnce(
-        &BidirectionalStreamVendor::OnAcceptBidirectionalStreamResponse,
-        WrapWeakPersistent(this), std::move(enqueue)));
+    web_transport_->transport_remote_->AcceptBidirectionalStream(
+        blink::BindOnce(
+            &BidirectionalStreamVendor::OnAcceptBidirectionalStreamResponse,
+            WrapWeakPersistent(this), std::move(enqueue)));
   }
 
   void Trace(Visitor* visitor) const override {
@@ -711,9 +800,7 @@ class WebTransport::BidirectionalStreamVendor final
         std::move(incoming_consumer));
 
     auto* isolate = script_state_->GetIsolate();
-    v8::MicrotasksScope microtasks_scope(
-        isolate, ToMicrotaskQueue(script_state_),
-        v8::MicrotasksScope::kDoNotRunMicrotasks);
+    V8DoNotRunMicrotasksScope microtasks_scope(script_state_);
     v8::TryCatch try_catch(isolate);
     bidirectional_stream->Init(PassThroughException(isolate));
     if (try_catch.HasCaught()) {
@@ -737,6 +824,9 @@ class WebTransport::BidirectionalStreamVendor final
 
       // This can run JavaScript. This is safe because `receive_stream` hasn't
       // been exposed yet.
+      // Note: OnIncomingStreamClosed() will eventually trigger
+      // ForgetIncomingStream() via the on_abort_ callback, which handles
+      // removal from incoming_stream_map_.
       bidirectional_stream->GetIncomingStream()->OnIncomingStreamClosed(
           fin_received);
     }
@@ -758,6 +848,7 @@ WebTransport* WebTransport::Create(ScriptState* script_state,
                     WebFeature::kWebTransport);
   auto* transport =
       MakeGarbageCollected<WebTransport>(PassKey(), script_state, url);
+  transport->UpdateStateIfNeeded();
   transport->Init(url, *options, exception_state);
   return transport;
 }
@@ -771,9 +862,9 @@ WebTransport::WebTransport(ScriptState* script_state,
                            const String& url,
                            ExecutionContext* context)
     : ActiveScriptWrappable<WebTransport>({}),
-      ExecutionContextLifecycleObserver(context),
+      ExecutionContextLifecycleStateObserver(context),
       script_state_(script_state),
-      url_(NullURL(), url),
+      url_(NullUrl(), url),
       connector_(context),
       transport_remote_(context),
       handshake_client_receiver_(this, context),
@@ -785,8 +876,10 @@ WebTransport::WebTransport(ScriptState* script_state,
 
 ScriptPromise<WritableStream> WebTransport::createUnidirectionalStream(
     ScriptState* script_state,
+    WebTransportSendStreamOptions* options,
     ExceptionState& exception_state) {
   DVLOG(1) << "WebTransport::createUnidirectionalStream() this=" << this;
+  CHECK(options);
 
   UseCounter::Count(GetExecutionContext(),
                     WebFeature::kQuicTransportStreamApis);
@@ -794,6 +887,11 @@ ScriptPromise<WritableStream> WebTransport::createUnidirectionalStream(
     // TODO(ricea): Should we wait if we're still connecting?
     exception_state.ThrowDOMException(DOMExceptionCode::kNetworkError,
                                       "No connection.");
+    return EmptyPromise();
+  }
+
+  auto stream_options = ExtractSendStreamOptions(options, exception_state);
+  if (!stream_options) {
     return EmptyPromise();
   }
 
@@ -808,11 +906,24 @@ ScriptPromise<WritableStream> WebTransport::createUnidirectionalStream(
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<WritableStream>>(
       script_state, exception_state.GetContext());
   create_stream_resolvers_.insert(resolver);
+  // Capture send_group via WrapPersistent so it survives the asynchronous
+  // Mojo round-trip (between CreateStream() and the callback). The
+  // transport's send_groups_ registry uses WeakMember, so without this
+  // strong reference the group could be garbage-collected if JS drops all
+  // references before the callback fires. nullptr is safe — Persistent<T>
+  // accepts null.
+  // Build a Mojo priority struct only when there is a non-default send_group
+  // or send_order.  Passing nullptr avoids a redundant SetPriority() call in
+  // the network service.
+  auto mojo_priority = BuildMojoPriority(*stream_options);
   transport_remote_->CreateStream(
       std::move(data_pipe_consumer), mojo::ScopedDataPipeProducerHandle(),
-      WTF::BindOnce(&WebTransport::OnCreateSendStreamResponse,
-                    WrapWeakPersistent(this), WrapWeakPersistent(resolver),
-                    std::move(data_pipe_producer)));
+      std::move(mojo_priority),
+      BindOnce(&WebTransport::OnCreateSendStreamResponse,
+               WrapWeakPersistent(this), WrapWeakPersistent(resolver),
+               std::move(data_pipe_producer),
+               WrapPersistent(stream_options->send_group),
+               stream_options->send_order));
 
   return resolver->Promise();
 }
@@ -825,8 +936,10 @@ ReadableStream* WebTransport::incomingUnidirectionalStreams() {
 
 ScriptPromise<BidirectionalStream> WebTransport::createBidirectionalStream(
     ScriptState* script_state,
+    WebTransportSendStreamOptions* options,
     ExceptionState& exception_state) {
   DVLOG(1) << "WebTransport::createBidirectionalStream() this=" << this;
+  CHECK(options);
 
   UseCounter::Count(GetExecutionContext(),
                     WebFeature::kQuicTransportStreamApis);
@@ -834,6 +947,11 @@ ScriptPromise<BidirectionalStream> WebTransport::createBidirectionalStream(
     // TODO(ricea): We should wait if we are still connecting.
     exception_state.ThrowDOMException(DOMExceptionCode::kNetworkError,
                                       "No connection.");
+    return EmptyPromise();
+  }
+
+  auto stream_options = ExtractSendStreamOptions(options, exception_state);
+  if (!stream_options) {
     return EmptyPromise();
   }
 
@@ -855,12 +973,17 @@ ScriptPromise<BidirectionalStream> WebTransport::createBidirectionalStream(
       MakeGarbageCollected<ScriptPromiseResolver<BidirectionalStream>>(
           script_state, exception_state.GetContext());
   create_stream_resolvers_.insert(resolver);
+  // See createUnidirectionalStream — send_group captured via WrapPersistent
+  // to survive the Mojo round-trip; the registry uses WeakMember.
+  auto mojo_priority = BuildMojoPriority(*stream_options);
   transport_remote_->CreateStream(
       std::move(outgoing_consumer), std::move(incoming_producer),
-      WTF::BindOnce(&WebTransport::OnCreateBidirectionalStreamResponse,
-                    WrapWeakPersistent(this), WrapWeakPersistent(resolver),
-                    std::move(outgoing_producer),
-                    std::move(incoming_consumer)));
+      std::move(mojo_priority),
+      BindOnce(&WebTransport::OnCreateBidirectionalStreamResponse,
+               WrapWeakPersistent(this), WrapWeakPersistent(resolver),
+               std::move(outgoing_producer), std::move(incoming_consumer),
+               WrapPersistent(stream_options->send_group),
+               stream_options->send_order));
 
   return resolver->Promise();
 }
@@ -960,8 +1083,8 @@ ScriptPromise<WebTransportConnectionStats> WebTransport::getStats(
   const bool request_already_sent = !pending_get_stats_resolvers_.empty();
   pending_get_stats_resolvers_.push_back(resolver);
   if (transport_remote_.is_bound() && !request_already_sent) {
-    transport_remote_->GetStats(WTF::BindOnce(&WebTransport::OnGetStatsResponse,
-                                              WrapWeakPersistent(this)));
+    transport_remote_->GetStats(
+        BindOnce(&WebTransport::OnGetStatsResponse, WrapWeakPersistent(this)));
   }
   return resolver->Promise();
 }
@@ -970,7 +1093,8 @@ void WebTransport::OnConnectionEstablished(
     mojo::PendingRemote<network::mojom::blink::WebTransport> web_transport,
     mojo::PendingReceiver<network::mojom::blink::WebTransportClient>
         client_receiver,
-    network::mojom::blink::HttpResponseHeadersPtr response_headers,
+    const scoped_refptr<net::HttpResponseHeaders>& response_headers,
+    const String& selected_application_protocol,
     network::mojom::blink::WebTransportStatsPtr initial_stats) {
   DVLOG(1) << "WebTransport::OnConnectionEstablished() this=" << this;
   connector_.reset();
@@ -983,8 +1107,8 @@ void WebTransport::OnConnectionEstablished(
       GetExecutionContext()->GetTaskRunner(TaskType::kNetworking);
 
   client_receiver_.Bind(std::move(client_receiver), task_runner);
-  client_receiver_.set_disconnect_handler(WTF::BindOnce(
-      &WebTransport::OnConnectionError, WrapWeakPersistent(this)));
+  client_receiver_.set_disconnect_handler(
+      BindOnce(&WebTransport::OnConnectionError, WrapWeakPersistent(this)));
 
   DCHECK(!transport_remote_.is_bound());
   transport_remote_.Bind(std::move(web_transport), task_runner);
@@ -994,6 +1118,9 @@ void WebTransport::OnConnectionEstablished(
         outgoing_datagram_expiration_duration_);
   }
 
+  if (!selected_application_protocol.IsNull()) {
+    selected_application_protocol_ = selected_application_protocol;
+  }
   latest_stats_ = ConvertStatsFromMojom(std::move(initial_stats));
 
   datagram_underlying_sink_->SendPendingDatagrams();
@@ -1013,6 +1140,11 @@ void WebTransport::OnConnectionEstablished(
 }
 
 WebTransport::~WebTransport() = default;
+
+void WebTransport::OnBeforeConnect(const net::IPEndPoint& server_address) {
+  // |server_address| should be invalid from security/privacy reasons.
+  DCHECK_EQ(server_address, net::IPEndPoint());
+}
 
 void WebTransport::OnHandshakeFailed(
     network::mojom::blink::WebTransportErrorPtr error) {
@@ -1036,6 +1168,18 @@ void WebTransport::OnIncomingStreamClosed(uint32_t stream_id,
                                           bool fin_received) {
   DVLOG(1) << "WebTransport::OnIncomingStreamClosed(" << stream_id << ", "
            << fin_received << ") this=" << this;
+  // 0xfffffffe and 0xffffffff are reserved values in stream_map_.
+  CHECK_LT(stream_id, 0xfffffffe);
+
+  if (recently_forgotten_incoming_stream_ids_.Contains(stream_id)) {
+    recently_forgotten_incoming_stream_ids_.Erase(stream_id);
+    DVLOG(1) << "WebTransport::OnIncomingStreamClosed() correctly ignoring "
+                "close on recently forgotten stream_id="
+             << stream_id;
+    DCHECK(incoming_stream_map_.find(stream_id) == incoming_stream_map_.end());
+    return;
+  }
+
   auto it = incoming_stream_map_.find(stream_id);
 
   if (it == incoming_stream_map_.end()) {
@@ -1053,7 +1197,15 @@ void WebTransport::OnIncomingStreamClosed(uint32_t stream_id,
   }
 
   IncomingStream* stream = it->value;
+  // Note: stream->OnIncomingStreamClosed() will eventually trigger
+  // ForgetIncomingStream() via the on_abort_ callback, which handles removal
+  // from incoming_stream_map_. We don't need to record this close because
+  // OnIncomingStreamClosed() won't be called again for the same stream_id.
   stream->OnIncomingStreamClosed(fin_received);
+}
+
+bool WebTransport::HasPendingClosedStreamForTesting(uint32_t stream_id) const {
+  return closed_potentially_pending_streams_.Contains(stream_id);
 }
 
 void WebTransport::OnReceivedResetStream(uint32_t stream_id,
@@ -1147,6 +1299,42 @@ void WebTransport::ContextDestroyed() {
   Dispose();
 }
 
+void WebTransport::ContextLifecycleStateChanged(
+    mojom::blink::FrameLifecycleState state) {
+  if (state == mojom::blink::FrameLifecycleState::kFrozen) {
+    if (!connector_.is_bound() && !transport_remote_.is_bound()) {
+      // This session has been closed or errored.
+      return;
+    }
+
+    if (transport_remote_.is_bound()) {
+      // The state is "connected".
+      transport_remote_->Close(nullptr);
+    }
+    DVLOG(1) << "WebTransport::ContextLifecycleStateChanged() frozen, closing "
+                "connection. this="
+             << this;
+    GetExecutionContext()
+        ->GetTaskRunner(TaskType::kNetworking)
+        ->PostTask(
+            FROM_HERE,
+            BindOnce(
+                [](WebTransport* transport) {
+                  if (!transport ||
+                      !transport->script_state_->ContextIsValid()) {
+                    return;
+                  }
+                  ScriptState::Scope scope(transport->script_state_);
+                  v8::Isolate* isolate = transport->script_state_->GetIsolate();
+                  v8::Local<v8::Value> error = WebTransportError::Create(
+                      isolate, std::nullopt, "Page entered back/forward cache.",
+                      V8WebTransportErrorSource::Enum::kSession);
+                  transport->Cleanup(nullptr, error, /*abruptly=*/true);
+                },
+                WrapWeakPersistent(this)));
+  }
+}
+
 bool WebTransport::HasPendingActivity() const {
   DVLOG(1) << "WebTransport::HasPendingActivity() this=" << this;
   return handshake_client_receiver_.is_bound() || client_receiver_.is_bound();
@@ -1170,10 +1358,18 @@ void WebTransport::StopSending(uint32_t stream_id, uint32_t code) {
   transport_remote_->StopSending(stream_id, code);
 }
 
-void WebTransport::ForgetIncomingStream(uint32_t stream_id) {
+void WebTransport::ForgetIncomingStream(uint32_t stream_id,
+                                        bool has_received_close) {
   DVLOG(1) << "WebTransport::ForgetIncomingStream() this=" << this
-           << ", stream_id=" << stream_id;
+           << ", stream_id=" << stream_id
+           << ", has_received_close=" << has_received_close;
   incoming_stream_map_.erase(stream_id);
+  // Only record if we haven't received OnIncomingStreamClosed() for this
+  // stream. If we have, we know it won't be called again, so no need to track
+  // it.
+  if (!has_received_close) {
+    recently_forgotten_incoming_stream_ids_.Insert(stream_id);
+  }
 }
 
 void WebTransport::ForgetOutgoingStream(uint32_t stream_id) {
@@ -1205,6 +1401,7 @@ void WebTransport::Trace(Visitor* visitor) const {
   visitor->Trace(received_streams_underlying_source_);
   visitor->Trace(received_bidirectional_streams_);
   visitor->Trace(received_bidirectional_streams_underlying_source_);
+  visitor->Trace(send_groups_);
   ScriptWrappable::Trace(visitor);
   ExecutionContextLifecycleObserver::Trace(visitor);
 }
@@ -1226,24 +1423,25 @@ void WebTransport::Init(const String& url_for_diagnostics,
     // original URL and not the canonicalized version stored in `url_`.
     exception_state.ThrowDOMException(
         DOMExceptionCode::kSyntaxError,
-        "The URL '" + url_for_diagnostics + "' is invalid.");
+        StrCat({"The URL '", url_for_diagnostics, "' is invalid."}));
     return;
   }
 
   if (!url_.ProtocolIs("https")) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kSyntaxError,
-                                      "The URL's scheme must be 'https'. '" +
-                                          url_.Protocol() +
-                                          "' is not allowed.");
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kSyntaxError,
+        StrCat({"The URL's scheme must be 'https'. '", url_.Protocol(),
+                "' is not allowed."}));
     return;
   }
 
   if (url_.HasFragmentIdentifier()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kSyntaxError,
-        "The URL contains a fragment identifier ('#" +
-            url_.FragmentIdentifier() +
-            "'). Fragment identifiers are not allowed in WebTransport URLs.");
+        StrCat({"The URL contains a fragment identifier ('#",
+                url_.FragmentIdentifier(),
+                "'). Fragment identifiers are not allowed in WebTransport "
+                "URLs."}));
     return;
   }
 
@@ -1257,8 +1455,9 @@ void WebTransport::Init(const String& url_for_diagnostics,
         WebTransportError::Create(
             script_state_->GetIsolate(),
             /*stream_error_code=*/std::nullopt,
-            "Refused to connect to '" + url_.ElidedString() +
-                "' because it violates the document's Content Security Policy",
+            StrCat({"Refused to connect to '", url_.ElidedString(),
+                    "' because it violates the document's Content Security "
+                    "Policy"}),
             V8WebTransportErrorSource::Enum::kSession));
 
     connection_pending_ = false;
@@ -1295,17 +1494,53 @@ void WebTransport::Init(const String& url_for_diagnostics,
         WebFeature::kWebTransportServerCertificateHashes);
   }
 
+  if (options.hasProtocols()) {
+    HashSet<String> encountered_protocols;
+    for (const String& protocol : options.protocols()) {
+      String validation_error = ValidateProtocolName(protocol);
+      if (!validation_error.IsNull()) {
+        exception_state.ThrowDOMException(DOMExceptionCode::kSyntaxError,
+                                          validation_error);
+        return;
+      }
+      HashSet<String>::AddResult add_result =
+          encountered_protocols.insert(protocol);
+      if (!add_result.is_new_entry) {
+        exception_state.ThrowDOMException(
+            DOMExceptionCode::kSyntaxError,
+            "Duplicate protocols are not allowed.");
+        return;
+      }
+    }
+  }
+
+  if (RuntimeEnabledFeatures::WebTransportCongestionControlEnabled(
+          execution_context) &&
+      options.hasCongestionControl()) {
+    congestion_control_ =
+        V8WebTransportCongestionControl(options.congestionControl());
+  }
+
+  if (RuntimeEnabledFeatures::
+          WebTransportAnticipatedConcurrentIncomingStreamsEnabled(
+              execution_context)) {
+    anticipated_concurrent_incoming_unidirectional_streams_ =
+        options.anticipatedConcurrentIncomingUnidirectionalStreams();
+    anticipated_concurrent_incoming_bidirectional_streams_ =
+        options.anticipatedConcurrentIncomingBidirectionalStreams();
+  }
+
   if (auto* scheduler = execution_context->GetScheduler()) {
-    // Two features are registered with `DisableBackForwardCache` policy here:
-    // - `kWebTransport`: a non-sticky feature that will disable BFCache for any
-    // page. It will be reset after the `WebTransport` is disposed.
+    // Two features are registered here:
+    // - `kWebTransport`: a non-sticky feature that will disable aggressive
+    // throttling for any page. It will be reset after the `WebTransport` is
+    // disposed.
     // - `kWebTransportSticky`: a sticky feature that will only disable BFCache
     // for the page containing "Cache-Control: no-store" header. It won't be
     // reset even if the `WebTransport` is disposed.
     feature_handle_for_scheduler_ = scheduler->RegisterFeature(
         SchedulingPolicy::Feature::kWebTransport,
-        SchedulingPolicy{SchedulingPolicy::DisableAggressiveThrottling(),
-                         SchedulingPolicy::DisableBackForwardCache()});
+        SchedulingPolicy{SchedulingPolicy::DisableAggressiveThrottling()});
     scheduler->RegisterStickyFeature(
         SchedulingPolicy::Feature::kWebTransportSticky,
         SchedulingPolicy{SchedulingPolicy::DisableBackForwardCache()});
@@ -1331,18 +1566,22 @@ void WebTransport::Init(const String& url_for_diagnostics,
 
     connector_->Connect(
         url_, std::move(fingerprints),
+        options.hasProtocols() ? options.protocols() : Vector<String>(),
+        BlinkCongestionControlToMojo(congestion_control_),
+        anticipated_concurrent_incoming_unidirectional_streams_,
+        anticipated_concurrent_incoming_bidirectional_streams_,
         handshake_client_receiver_.BindNewPipeAndPassRemote(
             execution_context->GetTaskRunner(TaskType::kNetworking)));
 
-    handshake_client_receiver_.set_disconnect_handler(WTF::BindOnce(
-        &WebTransport::OnConnectionError, WrapWeakPersistent(this)));
+    handshake_client_receiver_.set_disconnect_handler(
+        BindOnce(&WebTransport::OnConnectionError, WrapWeakPersistent(this)));
   }
 
   probe::WebTransportCreated(execution_context, inspector_transport_id_, url_);
 
-  int outgoing_datagrams_high_water_mark = 1;
+  uint32_t outgoing_max_buffered_datagrams = 1;
   datagrams_ = MakeGarbageCollected<DatagramDuplexStream>(
-      this, outgoing_datagrams_high_water_mark);
+      this, outgoing_max_buffered_datagrams);
 
   datagram_underlying_source_ =
       MakeGarbageCollected<DatagramUnderlyingSource>(script_state_, datagrams_);
@@ -1352,13 +1591,12 @@ void WebTransport::Init(const String& url_for_diagnostics,
       To<ReadableByteStreamController>(received_datagrams_->GetController());
 
   // We create a WritableStream with high water mark 1 and try to mimic the
-  // given high water mark in the Sink, from two reasons:
+  // given max buffered datagram count in the Sink, for two reasons:
   // 1. This is better because we can hide the RTT between the renderer and the
   //    network service.
   // 2. Keeping datagrams in the renderer would be confusing for the timer for
-  // the datagram
-  //    queue in the network service, because the timestamp is taken when the
-  //    datagram is added to the queue.
+  //    the datagram queue in the network service, because the timestamp is
+  //    taken when the datagram is added to the queue.
   datagram_underlying_sink_ =
       MakeGarbageCollected<DatagramUnderlyingSink>(this, datagrams_);
   outgoing_datagrams_ = WritableStream::CreateWithCountQueueingStrategy(
@@ -1393,6 +1631,11 @@ void WebTransport::Dispose() {
   probe::WebTransportClosed(GetExecutionContext(), inspector_transport_id_);
   incoming_stream_map_.clear();
   outgoing_stream_map_.clear();
+  // Note: recently_forgotten_incoming_stream_ids_ is not cleared explicitly;
+  // let the garbage collector free the memory.
+  // Clear pending close notifications.
+  closed_potentially_pending_streams_.clear();
+  send_groups_.clear();
   connector_.reset();
   transport_remote_.reset();
   handshake_client_receiver_.reset();
@@ -1412,6 +1655,7 @@ void WebTransport::Cleanup(WebTransportCloseInfo* info,
   HandlePendingGetStatsResolvers(error);
   ScriptValue error_value(isolate, error);
   datagram_underlying_source_->Error(received_datagrams_controller_, error);
+  datagram_underlying_sink_->RejectPendingResolvers(error);
   outgoing_datagrams_->Controller()->error(script_state_, error_value);
 
   // We use local variables to avoid re-entrant problems.
@@ -1492,6 +1736,8 @@ void WebTransport::HandlePendingGetStatsResolvers(v8::Local<v8::Value> error) {
 void WebTransport::OnCreateSendStreamResponse(
     ScriptPromiseResolver<WritableStream>* resolver,
     mojo::ScopedDataPipeProducerHandle producer,
+    WebTransportSendGroup* send_group,
+    int64_t send_order,
     bool succeeded,
     uint32_t stream_id) {
   DVLOG(1) << "WebTransport::OnCreateSendStreamResponse() this=" << this
@@ -1513,15 +1759,38 @@ void WebTransport::OnCreateSendStreamResponse(
     return;
   }
 
-  auto* send_stream = MakeGarbageCollected<SendStream>(
-      script_state_, this, stream_id, std::move(producer));
-
+  // TODO(crbug.com/487117768): Remove old SendStream path when
+  // WebTransportSendGroup ships.
+  WritableStream* writable_stream = nullptr;
+  OutgoingStream* outgoing_stream = nullptr;
   auto* isolate = script_state_->GetIsolate();
-  v8::MicrotasksScope microtasks_scope(
-      isolate, ToMicrotaskQueue(script_state_),
-      v8::MicrotasksScope::kDoNotRunMicrotasks);
+  V8DoNotRunMicrotasksScope microtasks_scope(script_state_);
   v8::TryCatch try_catch(isolate);
-  send_stream->Init(PassThroughException(isolate));
+  if (RuntimeEnabledFeatures::WebTransportSendGroupEnabled(
+          GetExecutionContext())) {
+    auto* send_stream = MakeGarbageCollected<WebTransportSendStream>(
+        script_state_, this, stream_id, std::move(producer));
+    send_stream->Init(PassThroughException(isolate));
+    // Apply options from createUnidirectionalStream(). setSendGroup() can
+    // throw (e.g. InvalidStateError if the group belongs to another
+    // transport), so this must be inside the try_catch scope.
+    if (!try_catch.HasCaught()) {
+      send_stream->ApplySendStreamOptions(send_group, send_order,
+                                          PassThroughException(isolate));
+    }
+    if (!try_catch.HasCaught()) {
+      outgoing_stream = send_stream->GetOutgoingStream();
+      writable_stream = send_stream;
+    }
+  } else {
+    auto* send_stream = MakeGarbageCollected<SendStream>(
+        script_state_, this, stream_id, std::move(producer));
+    send_stream->Init(PassThroughException(isolate));
+    if (!try_catch.HasCaught()) {
+      outgoing_stream = send_stream->GetOutgoingStream();
+      writable_stream = send_stream;
+    }
+  }
   if (try_catch.HasCaught()) {
     resolver->Reject(try_catch.Exception());
     return;
@@ -1529,15 +1798,17 @@ void WebTransport::OnCreateSendStreamResponse(
 
   // 0xfffffffe and 0xffffffff are reserved values in stream_map_.
   CHECK_LT(stream_id, 0xfffffffe);
-  outgoing_stream_map_.insert(stream_id, send_stream->GetOutgoingStream());
+  outgoing_stream_map_.insert(stream_id, outgoing_stream);
 
-  resolver->Resolve(send_stream);
+  resolver->Resolve(writable_stream);
 }
 
 void WebTransport::OnCreateBidirectionalStreamResponse(
     ScriptPromiseResolver<BidirectionalStream>* resolver,
     mojo::ScopedDataPipeProducerHandle outgoing_producer,
     mojo::ScopedDataPipeConsumerHandle incoming_consumer,
+    WebTransportSendGroup* send_group,
+    int64_t send_order,
     bool succeeded,
     uint32_t stream_id) {
   DVLOG(1) << "WebTransport::OnCreateBidirectionalStreamResponse() this="
@@ -1564,13 +1835,23 @@ void WebTransport::OnCreateBidirectionalStreamResponse(
       script_state_, this, stream_id, std::move(outgoing_producer),
       std::move(incoming_consumer));
 
-  v8::MicrotasksScope microtasks_scope(
-      isolate, ToMicrotaskQueue(script_state_),
-      v8::MicrotasksScope::kDoNotRunMicrotasks);
+  V8DoNotRunMicrotasksScope microtasks_scope(script_state_);
   v8::TryCatch try_catch(isolate);
   bidirectional_stream->Init(PassThroughException(isolate));
+
+  // Apply options from createBidirectionalStream(). Must be inside the
+  // try_catch scope to properly catch any exception from setSendGroup().
+  if (!try_catch.HasCaught()) {
+    if (auto* send_stream = DynamicTo<WebTransportSendStream>(
+            bidirectional_stream->writable())) {
+      send_stream->ApplySendStreamOptions(send_group, send_order,
+                                          PassThroughException(isolate));
+    }
+  }
+
   if (try_catch.HasCaught()) {
     resolver->Reject(try_catch.Exception());
+    // Don't insert into stream maps — the stream is in an inconsistent state.
     return;
   }
 
@@ -1616,6 +1897,93 @@ WebTransportConnectionStats* WebTransport::ConvertStatsFromMojom(
   }
   out->setDatagrams(datagram_stats);
   return out;
+}
+
+const String& WebTransport::protocol() {
+  return selected_application_protocol_;
+}
+
+V8WebTransportCongestionControl WebTransport::congestionControl() const {
+  // TODO(crbug.com/501268547): Per the W3C spec, this attribute should reflect
+  // whether the UA *satisfied* the application's congestion control preference.
+  // Currently, we always return the value that was set in the constructor
+  // options. This is correct when the per-connection hint is honored (the
+  // normal case), but if the global kWebTransportCongestionControl
+  // base::Feature overrides the hint in the network layer, this attribute would
+  // incorrectly report the original preference instead of what was actually
+  // applied. To fix this properly, the effective congestion control value
+  // should be plumbed back from the network service via
+  // OnConnectionEstablished.
+  return congestion_control_;
+}
+
+std::optional<uint16_t>
+WebTransport::anticipatedConcurrentIncomingUnidirectionalStreams() const {
+  return anticipated_concurrent_incoming_unidirectional_streams_;
+}
+
+void WebTransport::setAnticipatedConcurrentIncomingUnidirectionalStreams(
+    std::optional<uint16_t> value) {
+  anticipated_concurrent_incoming_unidirectional_streams_ = value;
+  // Per spec, the setter only updates the internal slot. The value is used
+  // during session establishment (via Connect()), not sent post-handshake.
+}
+
+std::optional<uint16_t>
+WebTransport::anticipatedConcurrentIncomingBidirectionalStreams() const {
+  return anticipated_concurrent_incoming_bidirectional_streams_;
+}
+
+void WebTransport::setAnticipatedConcurrentIncomingBidirectionalStreams(
+    std::optional<uint16_t> value) {
+  anticipated_concurrent_incoming_bidirectional_streams_ = value;
+  // Per spec, the setter only updates the internal slot. The value is used
+  // during session establishment (via Connect()), not sent post-handshake.
+}
+
+WebTransportSendGroup* WebTransport::createSendGroup(
+    ExceptionState& exception_state) {
+  if (next_send_group_id_ == std::numeric_limits<uint32_t>::max()) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kOperationError,
+                                      "Too many send groups.");
+    return nullptr;
+  }
+  uint32_t group_id = next_send_group_id_;
+  next_send_group_id_ = base::CheckAdd(next_send_group_id_, 1).ValueOrDie();
+  auto* group = MakeGarbageCollected<WebTransportSendGroup>(this, group_id);
+  send_groups_.insert(group);
+  return group;
+}
+
+// static
+network::mojom::blink::WebTransportStreamPriorityPtr
+WebTransport::BuildMojoPriority(const SendStreamOptions& options) {
+  if (!options.send_group && options.send_order == 0) {
+    return nullptr;
+  }
+  return network::mojom::blink::WebTransportStreamPriority::New(
+      options.send_group
+          ? std::make_optional<uint32_t>(options.send_group->group_id())
+          : std::nullopt,
+      options.send_order);
+}
+
+std::optional<WebTransport::SendStreamOptions>
+WebTransport::ExtractSendStreamOptions(
+    const WebTransportSendStreamOptions* options,
+    ExceptionState& exception_state) {
+  CHECK(options);
+  SendStreamOptions result;
+
+  result.send_group = options->sendGroup();
+  if (result.send_group && result.send_group->GetTransport() != this) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidStateError,
+        "The sendGroup belongs to a different WebTransport instance.");
+    return std::nullopt;
+  }
+  result.send_order = options->sendOrder();
+  return result;
 }
 
 }  // namespace blink

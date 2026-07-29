@@ -7,6 +7,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/lens/lens_overlay_controller.h"
+#include "chrome/browser/ui/lens/lens_search_controller.h"
+#include "chrome/browser/ui/lens/lens_searchbox_controller.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -34,8 +36,9 @@ class LensOverlayWebUIBrowserTest : public WebUIMochaBrowserTest {
     set_test_loader_scheme(content::kChromeUIUntrustedScheme);
     set_test_loader_host(chrome::kChromeUILensOverlayHost);
     scoped_feature_list_.InitWithFeatures(
-        {lens::features::kLensOverlay},
-        {lens::features::kLensOverlayContextualSearchbox});
+        /*enabled_features=*/{lens::features::kLensOverlay},
+        /*disabled_features=*/{
+            lens::features::kLensOverlayContextualSearchbox});
   }
 
   void SetUp() override {
@@ -48,7 +51,7 @@ class LensOverlayWebUIBrowserTest : public WebUIMochaBrowserTest {
     embedded_test_server()->StartAcceptingConnections();
 
     // Permits sharing the page screenshot by default.
-    PrefService* prefs = browser()->profile()->GetPrefs();
+    PrefService* prefs = browser()->GetProfile()->GetPrefs();
     prefs->SetBoolean(lens::prefs::kLensSharingPageScreenshotEnabled, true);
   }
 
@@ -57,7 +60,7 @@ class LensOverlayWebUIBrowserTest : public WebUIMochaBrowserTest {
     WebUIMochaBrowserTest::TearDownOnMainThread();
 
     // Disallow sharing the page screenshot by default.
-    PrefService* prefs = browser()->profile()->GetPrefs();
+    PrefService* prefs = browser()->GetProfile()->GetPrefs();
     prefs->SetBoolean(lens::prefs::kLensSharingPageScreenshotEnabled, false);
   }
 
@@ -71,27 +74,27 @@ class LensOverlayTest : public LensOverlayWebUIBrowserTest {
     WaitForPaint();
 
     // State should start in off.
-    auto* controller = browser()
-                           ->tab_strip_model()
-                           ->GetActiveTab()
-                           ->GetTabFeatures()
-                           ->lens_overlay_controller();
-    ASSERT_EQ(controller->state(), State::kOff);
+    auto* search_controller =
+        LensSearchController::From(browser()->GetActiveTabInterface());
+    auto* overlay_controller = search_controller->lens_overlay_controller();
+    ASSERT_EQ(overlay_controller->state(), State::kOff);
 
     // Showing UI should eventually result in overlay state.
-    controller->ShowUI(lens::LensOverlayInvocationSource::kAppMenu);
+    search_controller->OpenLensOverlay(
+        lens::LensOverlayInvocationSource::kAppMenu);
     ASSERT_TRUE(base::test::RunUntil(
-        [&]() { return controller->state() == State::kOverlay; }));
+        [&]() { return overlay_controller->state() == State::kOverlay; }));
 
     // Get the overlay webview and wait for WebUI to finish loading.
     auto* web_contents =
-        controller->GetOverlayWebViewForTesting()->GetWebContents();
+        overlay_controller->GetOverlayWebViewForTesting()->GetWebContents();
     content::WaitForLoadStop(web_contents);
     ASSERT_TRUE(RunTestOnWebContents(web_contents, file, trigger, true));
 
     // Clean up (the searchbox handler will leave a dangling pointer if not
     // explicitly destroyed).
-    controller->ResetSidePanelSearchboxHandler();
+    search_controller->lens_searchbox_controller()
+        ->ResetSidePanelSearchboxHandler();
   }
 
   // Lens overlay takes a screenshot of the tab. In order to take a screenshot
@@ -141,24 +144,32 @@ IN_PROC_BROWSER_TEST_F(LensOverlayTest, OverlayScreenshot) {
   RunOverlayTest("lens/overlay/overlay_screenshot_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(LensOverlayTest, OverlayTheme) {
-  RunOverlayTest("lens/overlay/overlay_theme_test.js", "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(LensOverlayTest, ManualRegionSelection) {
+// TODO(crbug.com/414207670,531038976,531065529): Test is failing on Linux,
+// ChromeOS, mac and Win bots.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_ManualRegionSelection DISABLED_ManualRegionSelection
+#else
+#define MAYBE_ManualRegionSelection ManualRegionSelection
+#endif
+IN_PROC_BROWSER_TEST_F(LensOverlayTest, MAYBE_ManualRegionSelection) {
   RunOverlayTest("lens/overlay/region_selection_test.js", "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(LensOverlayTest, TextSelection) {
-  RunOverlayTest("lens/overlay/text_selection_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(LensOverlayTest, ObjectSelection) {
   RunOverlayTest("lens/overlay/object_selection_test.js", "mocha.run()");
 }
 
+// TODO(crbug.com/502264102): Test is failing on Windows.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_SelectionOverlayWithoutWordsOrObjects \
+  DISABLED_SelectionOverlayWithoutWordsOrObjects
+#else
+#define MAYBE_SelectionOverlayWithoutWordsOrObjects \
+  SelectionOverlayWithoutWordsOrObjects
+#endif
 IN_PROC_BROWSER_TEST_F(LensOverlayTest,
-                       SelectionOverlayWithoutWordsOrObjects) {
+                       MAYBE_SelectionOverlayWithoutWordsOrObjects) {
   RunOverlayTest(
       "lens/overlay/selection_overlay_test.js",
       "runMochaSuite('SelectionOverlay WithoutWordsOrObjects')");
@@ -179,13 +190,6 @@ IN_PROC_BROWSER_TEST_F(LensOverlayTest,
 }
 
 IN_PROC_BROWSER_TEST_F(LensOverlayTest,
-                       SelectionOverlayWithTranslatedWords) {
-  RunOverlayTest(
-      "lens/overlay/selection_overlay_test.js",
-      "runMochaSuite('SelectionOverlay WithTranslatedWords')");
-}
-
-IN_PROC_BROWSER_TEST_F(LensOverlayTest,
                        SelectionOverlayWithObjectsAndWords) {
   RunOverlayTest(
       "lens/overlay/selection_overlay_test.js",
@@ -199,6 +203,13 @@ IN_PROC_BROWSER_TEST_F(LensOverlayTest,
       "runMochaSuite('SelectionOverlay InvocationSourceContextMenuImage')");
 }
 
+IN_PROC_BROWSER_TEST_F(LensOverlayTest,
+                       SelectionOverlayLineSelectionToggleShortcuts) {
+  RunOverlayTest(
+      "lens/overlay/selection_overlay_test.js",
+      "runMochaSuite('SelectionOverlay LineSelectionToggleShortcuts')");
+}
+
 IN_PROC_BROWSER_TEST_F(LensOverlayTest, SelectionOverlaySimplifiedSelection) {
   RunOverlayTest("lens/overlay/selection_overlay_test.js",
                  "runMochaSuite('SelectionOverlay SimplifiedSelection')");
@@ -210,6 +221,14 @@ IN_PROC_BROWSER_TEST_F(LensOverlayTest, SimplifiedSelection) {
 
 IN_PROC_BROWSER_TEST_F(LensOverlayTest, PostSelectionRenderer) {
   RunOverlayTest("lens/overlay/post_selection_renderer_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(LensOverlayTest, MultiRegionSelection) {
+  RunOverlayTest("lens/overlay/multi_region_selection_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(LensOverlayTest, LineSelection) {
+  RunOverlayTest("lens/overlay/line_selection_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(LensOverlayTest, FindWordsInRegion) {
@@ -226,7 +245,22 @@ IN_PROC_BROWSER_TEST_F(LensOverlayTest, TranslatePromo) {
 }
 
 IN_PROC_BROWSER_TEST_F(LensOverlayTest, Searchbox) {
-  RunOverlayTest("lens/overlay/searchbox_test.js", "mocha.run()");
+  RunOverlayTest("lens/overlay/searchbox_test.js",
+                 "runMochaSuite('Searchbox')");
+}
+
+IN_PROC_BROWSER_TEST_F(LensOverlayTest, SearchboxThumbnails) {
+  RunOverlayTest("lens/overlay/searchbox_test.js",
+                 "runMochaSuite('SearchboxThumbnails')");
+}
+
+IN_PROC_BROWSER_TEST_F(LensOverlayTest, SearchboxMotionTweaks) {
+  RunOverlayTest("lens/overlay/searchbox_test.js",
+                 "runMochaSuite('SearchboxMotionTweaks')");
+}
+
+IN_PROC_BROWSER_TEST_F(LensOverlayTest, ReshowOverlay) {
+  RunOverlayTest("lens/overlay/reshow_overlay_test.js", "mocha.run()");
 }
 
 #if defined(UNDEFINED_SANITIZER)

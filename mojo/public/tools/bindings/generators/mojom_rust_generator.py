@@ -1,19 +1,19 @@
-# Copyright 2024 The Chromium Authors
+# Copyright 2025 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
+"""Generates Rust source files from a mojom.Module."""
 
-import argparse
+import sys
 import json
-import pathlib
+import os
 
 import mojom.generate.generator as generator
 import mojom.generate.module as mojom
-import mojom.generate.pack as pack
-from mojom.generate.template_expander import UseJinja, UseJinjaForImportedTemplate
+from mojom.generate.template_expander import UseJinja
 
 GENERATOR_PREFIX = 'rust'
 
-_kind_to_rust_type = {
+_mojom_primitive_type_to_rust_type = {
     mojom.BOOL: "bool",
     mojom.INT8: "i8",
     mojom.INT16: "i16",
@@ -25,243 +25,337 @@ _kind_to_rust_type = {
     mojom.UINT64: "u64",
     mojom.FLOAT: "f32",
     mojom.DOUBLE: "f64",
+    mojom.STRING: "String",
+    mojom.HANDLE: "system::mojo_types::UntypedHandle",
+    mojom.MSGPIPE: "system::message_pipe::MessageEndpoint",
+    mojom.DCPIPE: "system::data_pipe::DataPipeConsumerHandle",
+    mojom.DPPIPE: "system::data_pipe::DataPipeProducerHandle",
+    # TODO(crbug.com/529331861): Support these for real
+    mojom.SHAREDBUFFER: "system::mojo_types::UntypedHandle",
+    # TODO(crbug.com/529329486): Support these for real
+    mojom.PLATFORMHANDLE: "system::mojo_types::UntypedHandle",
 }
+
+
+def _SameGNTarget(mod1: mojom.Module, mod2: mojom.Module,
+                  source_to_target_map: dict) -> bool:
+  return source_to_target_map[mod1.path] == source_to_target_map[mod2.path]
+
+
+# Determine the right path to use to refer to `ty` from the current module.
+#
+# Each `mojom` GN target gets its own crate, and each `.mojom` file gets its
+# own module within that crate. All the elements of a module appear at top
+# level (there are no submodules). In order to figure out how to refer to `ty`,
+# we need to determine if it was defined in the current file, the current crate,
+# or an external crate.
+#
+# IMPORTANT NOTE:
+# Mojom provides its own namespace mechanism using the `module` keyword. These
+# are meant to mimic C++ namespaces; items declared inside the same `module` can
+# be referred to using the same qualified path, regardless of what file they
+# were defined in.
+#
+# Unfortunately, we can't provide this in rust; if two files are in different
+# crates, there's no way we can automatically put them in the same `mod`.
+# Therefore, we _completely ignore_ the `module` keyword when generating Rust
+# code from a mojom file, and name things using _only_ the file system and GN
+# structure.
+def _GetLocalName(ty: mojom.Kind) -> str:
+  # If the type is nested inside another (like an enum in a struct), we prefix
+  # it with the parent's name to avoid collisions and match generated
+  # definitions.
+  #
+  # Note: ty.qualified_name also includes the parent name (e.g. Parent.Child),
+  # but it also includes the module namespace, and it's not stylized.
+  # Since we want a stylized name joined with underscores, we recurse here.
+  if hasattr(ty, 'parent_kind') and ty.parent_kind:
+    return f"{_GetLocalName(ty.parent_kind)}_{ty.name}"
+  return ty.name
+
+
+def _GetQualifiedName(ty: mojom.Kind, current_module: mojom.Module,
+                      source_to_target_map: dict) -> str:
+  local_name = _GetLocalName(ty)
+
+  # If the type was defined in this file, we can use its name unqualified
+  if ty.module.path == current_module.path:
+    return local_name
+
+  # The module has the same name as the file that defined it, sans extension
+  # Map foo/bar/baz.mojom -> baz
+  ty_module_name = ty.module.path.split('/')[-1].split('.')[0]
+
+  # If the type was defined as part of the same GN target as this file, then
+  # it's in the same crate.
+  if _SameGNTarget(ty.module, current_module, source_to_target_map):
+    return f"crate::{ty_module_name}::{local_name}"
+
+  # Otherwise, it was defined in a different crate, which has the same name as
+  # as the GN target that defined it.
+  extern_target_name = source_to_target_map[ty.module.path]
+  # Map //foo/bar:baz -> baz, and //foo/bar -> bar
+  extern_crate = extern_target_name.split(':')[-1].split('/')[-1]
+  return f"{extern_crate}::{ty_module_name}::{local_name}"
+
+
+def _MojomTypeToRustType(ty: mojom.Kind, current_module: mojom.Module,
+                         source_to_target_map: dict, typemap: dict) -> str:
+  '''Return the name of the input type in rust syntax'''
+  if hasattr(ty, 'qualified_name') and ty.qualified_name in typemap:
+    return typemap[ty.qualified_name]['typename']
+
+  if mojom.IsNullableKind(ty):
+    inner_ty = _MojomTypeToRustType(ty.MakeUnnullableKind(), current_module,
+                                    source_to_target_map, typemap)
+    return f"Option<{inner_ty}>"
+
+  if mojom.IsStructKind(ty) or mojom.IsEnumKind(ty) or mojom.IsUnionKind(ty):
+    return _GetQualifiedName(ty, current_module, source_to_target_map)
+
+  if mojom.IsArrayKind(ty):
+    elt_ty = _MojomTypeToRustType(ty.kind, current_module, source_to_target_map,
+                                  typemap)
+    if ty.length is not None:
+      return f"[{elt_ty}; {ty.length}]"
+    else:
+      return f"Vec<{elt_ty}>"
+
+  if mojom.IsMapKind(ty):
+    key_ty = _MojomTypeToRustType(ty.key_kind, current_module,
+                                  source_to_target_map, typemap)
+    # Rust requires comparison operators to use floats as keys in a map
+    if ty.key_kind == mojom.FLOAT or ty.key_kind == mojom.DOUBLE:
+      key_ty = f"OrderedFloat<{key_ty}>"
+    value_ty = _MojomTypeToRustType(ty.value_kind, current_module,
+                                    source_to_target_map, typemap)
+    return f"HashMap<{key_ty}, {value_ty}>"
+
+  if mojom.IsPendingRemoteKind(ty):
+    interface_ty = _GetQualifiedName(ty.kind, current_module,
+                                     source_to_target_map)
+    return f"bindings::remote::PendingRemote<dyn {interface_ty}>"
+
+  if mojom.IsPendingReceiverKind(ty):
+    interface_ty = _GetQualifiedName(ty.kind, current_module,
+                                     source_to_target_map)
+    return f"bindings::receiver::PendingReceiver<dyn {interface_ty}>"
+
+  if mojom.IsPendingAssociatedRemoteKind(ty):
+    interface_ty = _GetQualifiedName(ty.kind, current_module,
+                                     source_to_target_map)
+    return f"bindings::remote::PendingAssociatedRemote<dyn {interface_ty}>"
+
+  if mojom.IsPendingAssociatedReceiverKind(ty):
+    interface_ty = _GetQualifiedName(ty.kind, current_module,
+                                     source_to_target_map)
+    return f"bindings::receiver::PendingAssociatedReceiver<dyn {interface_ty}>"
+
+  if ty not in _mojom_primitive_type_to_rust_type:
+    # Raising from a jinja2 call won't display the error message
+    print(f"Mojom type {ty} is either undefined, "
+          "or not supported by the rust bindings")
+    sys.exit(1)
+
+  return _mojom_primitive_type_to_rust_type[ty]
+
+
+def _GetParseAsType(ty: mojom.Kind, current_module: mojom.Module,
+                    source_to_target_map: dict, typemap: dict) -> str:
+  '''Return the regular generated type name if ty is typemapped, else None'''
+  if hasattr(ty, 'qualified_name') and ty.qualified_name in typemap:
+    return _MojomTypeToRustType(ty, current_module, source_to_target_map, {})
+  return None
+
+
+def _ShouldDeriveClone(ty: mojom.Kind) -> bool:
+  '''We derive clone as a convenience to the user, but we can't do so if the
+     type contains any handles, since those can't be copied.'''
+  return not mojom.ContainsHandlesOrInterfaces(ty)
+
+
+# Note that _GetCanonicalEnumFields returns different results depending on the
+# order of the fields—so if you change the order they are processed here, you
+# MUST change how they're processed in _GetDuplicateEnumFields as well.
+def _GetCanonicalEnumFields(enum: mojom.Enum):
+  seen = set()
+  canonical = []
+  for field in enum.fields:
+    if field.numeric_value not in seen:
+      seen.add(field.numeric_value)
+      canonical.append(field)
+  return canonical
+
+
+# Note that _GetDuplicateEnumFields returns different results depending on the
+# order of the fields—so if you change the order they are processed here, you
+# MUST change how they're processed in _GetCanonicalEnumFields as well.
+def _GetDuplicateEnumFields(enum: mojom.Enum):
+  canonical_names = {}
+  duplicates = []
+  for field in enum.fields:
+    if field.numeric_value not in canonical_names:
+      canonical_names[field.numeric_value] = field.name
+    else:
+      duplicates.append({
+          "name": field.name,
+          "canonical_name": canonical_names[field.numeric_value],
+      })
+  return duplicates
+
+
+_ESCAPABLE_KEYWORDS = {
+    "as", "break", "const", "continue", "crate", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
+    "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct",
+    "super", "trait", "true", "type", "unsafe", "use", "where", "while",
+    "async", "await", "dyn", "abstract", "become", "box", "do", "final",
+    "macro", "override", "priv", "typeof", "unsized", "virtual", "yield",
+    "try",
+}
+
+# Path resolution keywords can't be escaped, the compiler simply won't have it.
+_NON_ESCAPABLE_KEYWORDS = {"self", "Self", "super", "crate"}
+
+
+def _EscapeRustKeyword(mojom_name: str) -> str:
+  if mojom_name in _NON_ESCAPABLE_KEYWORDS:
+    # We may use some other method to escape these in the future, but
+    # let's see if we can get away with just forbidding this.
+    raise Exception(f"This Rust keyword cannot be used as a name: {mojom_name}")
+  if mojom_name in _ESCAPABLE_KEYWORDS:
+    return f"r#{mojom_name}"
+  return mojom_name
+
+
+class RustStylizer(generator.Stylizer):
+
+  def StylizeConstant(self, mojom_name):
+    return _EscapeRustKeyword(mojom_name)
+
+  def StylizeField(self, mojom_name):
+    return _EscapeRustKeyword(mojom_name)
+
+  def StylizeStruct(self, mojom_name):
+    return _EscapeRustKeyword(mojom_name)
+
+  def StylizeUnion(self, mojom_name):
+    return _EscapeRustKeyword(mojom_name)
+
+  def StylizeParameter(self, mojom_name):
+    return _EscapeRustKeyword(mojom_name)
+
+  def StylizeMethod(self, mojom_name):
+    return _EscapeRustKeyword(mojom_name)
+
+  def StylizeEnumField(self, mojom_name):
+    return _EscapeRustKeyword(mojom_name)
+
+  def StylizeEnum(self, mojom_name):
+    return _EscapeRustKeyword(mojom_name)
 
 
 class Generator(generator.Generator):
 
   def __init__(self, *args, **kwargs):
     super(Generator, self).__init__(*args, **kwargs)
-
-    # Lists other generated bindings this module depends on. Unlike C++
-    # bindings, the generated Rust code must reference which GN target the
-    # bindings come from. Each entry has the GN target (e.g. foo_mojom_rust)
-    # and an arbitrary name to import it under.
-    self._imports = []
-
-    # Maps each mojom source file to the Rust name its GN target was imported
-    # under.
-    self._path_import_map = {}
-
-  def _GetNameForKind(self, kind, is_data=False):
-    ''' Get the full Rust type name to refer to a generated binding.
-
-    Args:
-      is_data: If true, get the name of the wire-format type.
-    '''
-    type_name = kind.name
-
-    # If the type is defined in another type (e.g. an Enum defined in a
-    # Struct), prepend the enclosing type name. Rust does not support nested
-    # type definitions, unlike C++.
-    if kind.parent_kind:
-      type_name = f"{kind.parent_kind.name}_{kind.name}"
-
-    if is_data:
-      type_name += "_Data"
-
-    # Use the name as is if it's defined in the current module.
-    if kind.module is self.module:
-      return type_name
-
-    # Construct the fully qualified path to the type if it's defined in another
-    # mojom module.
-    source_name = pathlib.Path(kind.module.path).stem
-    if kind.module.path in self._path_import_map:
-      imp_name = self._path_import_map[kind.module.path]
-      return f"{imp_name}::{source_name}::{type_name}"
-
-    return f"crate::{source_name}::{type_name}"
-
-  def _GetRustFieldType(self, kind):
-    if mojom.IsNullableKind(kind):
-      return f"Option<{self._GetRustFieldType(kind.MakeUnnullableKind())}>"
-    if mojom.IsEnumKind(kind):
-      return self._GetNameForKind(kind)
-    if mojom.IsStructKind(kind) or mojom.IsUnionKind(kind):
-      return f"Box<{self._GetNameForKind(kind)}>"
-    if mojom.IsArrayKind(kind):
-      return f"Vec<{self._GetRustFieldType(kind.kind)}>"
-    if mojom.IsMapKind(kind):
-      return (f"std::collections::HashMap<"
-              f"{self._GetRustFieldType(kind.key_kind)}, "
-              f"{self._GetRustFieldType(kind.value_kind)}>")
-    if mojom.IsStringKind(kind):
-      return "String"
-    if mojom.IsAnyHandleKind(kind):
-      return "::mojo::UntypedHandle"
-    if mojom.IsReferenceKind(kind):
-      return "usize"
-    if kind not in _kind_to_rust_type:
-      return "()"
-    return _kind_to_rust_type[kind]
-
-  def _GetRustDataFieldType(self, kind):
-    if mojom.IsEnumKind(kind):
-      return self._GetNameForKind(kind, is_data=True)
-    if mojom.IsStructKind(kind):
-      return (f"bindings::data::Pointer<"
-              f"{self._GetNameForKind(kind, is_data=True)}>")
-    if mojom.IsArrayKind(kind):
-      return (f"bindings::data::Pointer<bindings::data::Array<"
-              f"{self._GetRustDataFieldType(kind.kind)}>>")
-    if mojom.IsStringKind(kind):
-      return "bindings::data::Pointer<bindings::data::Array<u8>>"
-    if mojom.IsMapKind(kind):
-      return (f"bindings::data::Pointer<bindings::data::Map<"
-              f"{self._GetRustDataFieldType(kind.key_kind)}, "
-              f"{self._GetRustDataFieldType(kind.value_kind)}>>")
-    if mojom.IsUnionKind(kind):
-      return self._GetNameForKind(kind, is_data=True)
-    if mojom.IsInterfaceKind(kind) or mojom.IsPendingRemoteKind(kind):
-      return "bindings::data::InterfaceData"
-    if mojom.IsPendingReceiverKind(kind):
-      return "bindings::data::HandleRef"
-    if mojom.IsPendingAssociatedRemoteKind(kind):
-      return "bindings::data::InterfaceData"
-    if mojom.IsPendingAssociatedReceiverKind(kind):
-      return "bindings::data::HandleRef"
-    if mojom.IsAnyHandleKind(kind):
-      return "bindings::data::HandleRef"
-    if kind not in _kind_to_rust_type:
-      return "()"
-    return _kind_to_rust_type[kind]
-
-  def _GetRustUnionFieldType(self, kind):
-    if kind == mojom.BOOL:
-      return "u8"
-    if mojom.IsUnionKind(kind):
-      return (
-          f"bindings::data::Pointer<{self._GetNameForKind(kind, is_data=True)}>"
-      )
-    return self._GetRustDataFieldType(kind)
-
-  def _GetRustReferentDataType(self, kind):
-    if mojom.IsStructKind(kind):
-      return self._GetNameForKind(kind, is_data=True)
-    else:
-      print(kind.Repr())
-      raise Exception("Not implemented")
-
-  def _ToUpperSnakeCase(self, ident):
-    return generator.ToUpperSnakeCase(ident)
-
-  def _ToLowerSnakeCase(self, ident):
-    return generator.ToLowerSnakeCase(ident)
-
-  def _GetRustDataFields(self, packed_struct):
-    ''' Map pack.PackedStruct to a list of Rust fields.
-
-    Adjacent bitfield members are packed into u8 fields, and explicit padding is
-    added so that the resulting type has no possibly uninitialized bits.
-    '''
-    rust_fields = []
-    for i in range(len(packed_struct.packed_fields)):
-      packed_field = packed_struct.packed_fields[i]
-
-      # Compute padding needed, if any, between current and previous field.
-      if i > 0:
-        prev_pf = packed_struct.packed_fields[i - 1]
-        pad_start = prev_pf.offset + prev_pf.size
-        pad_size = packed_field.offset - pad_start
-        if pad_size > 0:
-          rust_fields.append({
-              "name": f"_pad_{pad_start}",
-              "type": f"[u8; {pad_size}]"
-          })
-
-      # Bitfields are packed together. Since Rust doesn't have C-style bitfields
-      # this must be done manually. On the first bool bit at a given offset,
-      # declare a unique u8 member. `packed_struct`'s fields are ordered by byte
-      # and bit offset so skip fields other than the first bit.
-      if packed_field.field.kind == mojom.BOOL:
-        if packed_field.bit == 0:
-          rust_fields.append({
-              "name": f"_packed_bits_{packed_field.offset}",
-              "type": "u8"
-          })
-        continue
-
-      # Pick the field name. If `pf.original_field` is present, this is a
-      # nullable primitive kind so its value component has a name which includes
-      # a special character; use the name from the original field. Otherwise use
-      # the name as-is.
-      if packed_field.original_field:
-        name = packed_field.original_field.name
-      else:
-        name = packed_field.field.name
-
-      rust_fields.append({
-          "name":
-          name,
-          "type":
-          self._GetRustDataFieldType(packed_field.field.kind)
-      })
-
-    # Create end padding, if needed.
-    if len(packed_struct.packed_fields) > 0:
-      last_pf = packed_struct.packed_fields[-1]
-      pad = pack.GetPad(last_pf.offset + last_pf.size, 8)
-      if pad > 0:
-        rust_fields.append({"name": "_pad_end", "type": f"[u8; {pad}]"})
-
-    return rust_fields
-
-  def _GetPackedBoolLocation(self, packed_field):
-    return {
-        "field_name": f"_packed_bits_{packed_field.offset}",
-        "bit_offset": f"{packed_field.bit}"
-    }
+    self.source_to_target_map = {}
 
   @staticmethod
   def GetTemplatePrefix():
+    '''Returns the name of the directory storing the rust jinja templates.'''
     return "rust_templates"
 
   def GetFilters(self):
-    rust_filters = {
-        "get_packed_bool_location": self._GetPackedBoolLocation,
-        "get_pad": pack.GetPad,
-        "get_rust_data_fields": self._GetRustDataFields,
-        "is_enum_kind": mojom.IsEnumKind,
-        "is_pointer_kind": mojom.IsPointerKind,
-        "is_nullable_kind": mojom.IsNullableKind,
-        "is_struct_kind": mojom.IsStructKind,
-        "rust_field_type": self._GetRustFieldType,
-        "rust_union_field_type": self._GetRustUnionFieldType,
-        "rust_referent_data_type": self._GetRustReferentDataType,
-        "to_upper_snake_case": self._ToUpperSnakeCase,
-        "to_lower_snake_case": self._ToLowerSnakeCase,
+    '''
+    Returns a dictionary of functions that will be callable when processing
+    the mojom template, using the syntax `arg|f` to mean `f(arg)`.
+
+    Called by the @UseJinja decorator.
+    '''
+    return {
+        "to_rust_type":
+        lambda ty: _MojomTypeToRustType(ty, self.module, self.
+                                        source_to_target_map, self.typemap),
+        "get_parse_as_type":
+        lambda ty: _GetParseAsType(ty, self.module, self.source_to_target_map,
+                                   self.typemap),
+        "should_derive_clone":
+        _ShouldDeriveClone,
+        "get_canonical_enum_fields":
+        _GetCanonicalEnumFields,
+        "get_duplicate_enum_fields":
+        _GetDuplicateEnumFields,
     }
-    return rust_filters
 
   @UseJinja("module.tmpl")
   def _GenerateModule(self):
-    return {"module": self.module, "imports": self._imports}
+    '''
+    After dectoration, returns the generated rust module as a string, using
+    with 'module.tmpl' as the root.
+
+    Before decoration, returns a dictionary of variables that will be bound at
+    the top level when processing the jinja template.
+    '''
+
+    # Take all our imports and determine the set of GN targets they come from
+    imported_targets = set([
+        self.source_to_target_map[imprt.path] for imprt in self.module.imports
+    ])
+    # Remove our own target, since we don't import ourselves
+    imported_targets -= {self.source_to_target_map[self.module.path]}
+
+    typemaps_to_include = []
+    seen_files = set()
+
+    source_root_abs = os.path.abspath(os.path.join(os.getcwd(), "../../"))
+    gen_file_dir = os.path.abspath(
+        os.path.join(os.getcwd(), "gen", os.path.dirname(self.module.path)))
+
+    for kind in self.module.structs + self.module.enums + self.module.unions:
+      if hasattr(kind,
+                 'qualified_name') and kind.qualified_name in self.typemap:
+        traits_file = self.typemap[kind.qualified_name].get('traits_file')
+        if traits_file and traits_file not in seen_files:
+          traits_file_abs = os.path.abspath(
+              os.path.join(source_root_abs, traits_file))
+          rel_path = os.path.relpath(traits_file_abs, gen_file_dir)
+          typemaps_to_include.append({
+              'path':
+              rel_path,
+              'name':
+              os.path.splitext(os.path.basename(traits_file))[0]
+          })
+          seen_files.add(traits_file)
+
+    return {
+        "module": self.module,
+        "imports": imported_targets,
+        "typemaps_to_include": typemaps_to_include,
+        "typemap": self.typemap,
+    }
 
   def GenerateFiles(self, unparsed_args):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--rust_dep_info')
-    args = parser.parse_args(unparsed_args)
+    '''
+    Main function, called by mojom_bindings_generator.py. Takes any arguments
+    that were marked as being destined for the rust generator (prefixed with
+    GENERATOR_PREFIX, i.e. 'rust').
+    '''
+    # Make sure all the AST nodes have pretty names
+    self.module.Stylize(RustStylizer())
 
-    # Load the list of mojom dependencies: each GN target and its list of
-    # mojom source files.
-    dep_info = []
-    with open(args.rust_dep_info) as dep_info_json:
-      dep_info = json.loads(dep_info_json.read())
-
-    import_ndx = 1
-    for dep in dep_info:
-      use_name = f"dep{import_ndx}"
-      self._imports.append({
-          "target": dep["target_name"],
-          "use_name": use_name,
-      })
-
-      for src in dep["mojom_sources"]:
-        self._path_import_map[src] = use_name
-
-      import_ndx += 1
-
-    self.module.Stylize(generator.Stylizer())
+    # When GN calls this script, it provides a JSON file with a list of GN
+    # targets, and their source files. It contains one entry for the mojom
+    # target we're generating now, and one for each of its dependencies.
+    # We want to convert it to a map from source files to GN targets.
+    for arg in unparsed_args:
+      if arg.startswith("--rust_dep_info="):
+        dep_info_path = arg.split('=')[1]
+        with open(dep_info_path, 'r') as f:
+          raw_dep_info = json.load(f)
+          for target in raw_dep_info:
+            target_name = target['target_name']
+            for source in target['mojom_sources']:
+              self.source_to_target_map[source] = target_name
 
     self.WriteWithComment(self._GenerateModule(), f"{self.module.path}.rs")

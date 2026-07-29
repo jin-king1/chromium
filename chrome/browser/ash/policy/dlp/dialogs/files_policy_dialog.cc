@@ -12,6 +12,8 @@
 
 #include "ash/style/typography.h"
 #include "base/files/file_path.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "chrome/browser/ash/policy/dlp/dialogs/files_policy_error_dialog.h"
 #include "chrome/browser/ash/policy/dlp/dialogs/files_policy_warn_dialog.h"
 #include "chrome/browser/ash/policy/dlp/files_policy_string_util.h"
@@ -150,10 +152,6 @@ bool FilesPolicyDialog::Info::operator==(const Info& other) const {
          learn_more_url_ == other.learn_more_url_ && files_ == other.files_ &&
          accessible_learn_more_link_name_ ==
              other.accessible_learn_more_link_name_;
-}
-
-bool FilesPolicyDialog::Info::operator!=(const Info& other) const {
-  return !(*this == other);
 }
 
 const std::vector<DlpConfidentialFile>& FilesPolicyDialog::Info::GetFiles()

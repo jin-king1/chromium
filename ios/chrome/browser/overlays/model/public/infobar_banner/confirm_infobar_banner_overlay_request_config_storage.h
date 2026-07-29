@@ -7,7 +7,7 @@
 
 #import <string>
 
-#import "base/memory/raw_ptr.h"
+#import "base/memory/weak_ptr.h"
 #import "ui/gfx/image/image.h"
 
 namespace infobars {
@@ -42,14 +42,20 @@ class ConfirmBannerRequestConfigStorage {
   // Whether to use a background tint for the icon image.
   bool use_icon_background_tint() const { return use_icon_background_tint_; }
 
-  infobars::InfoBar* infobar() const { return infobar_; }
+  // Whether the icon image colors should be ignored when the background tint
+  // is applied.
+  bool ignore_icon_color_with_tint() const {
+    return ignore_icon_color_with_tint_;
+  }
+
+  infobars::InfoBar* infobar() const { return infobar_.get(); }
 
  protected:
   explicit ConfirmBannerRequestConfigStorage(infobars::InfoBar* infobar);
 
  private:
   // The InfoBar causing this banner.
-  raw_ptr<infobars::InfoBar> infobar_ = nullptr;
+  base::WeakPtr<infobars::InfoBar> infobar_;
 
   // Configuration data extracted from `infobar_`'s confirm delegate.
   std::u16string title_text_;
@@ -58,6 +64,9 @@ class ConfirmBannerRequestConfigStorage {
   gfx::Image icon_image_;
   // True if the icon image should apply a background tint.
   bool use_icon_background_tint_ = true;
+  // True if the icon image colors should be ignored when the background tint
+  // is applied.
+  bool ignore_icon_color_with_tint_ = true;
   // True if the infobar's banner should be presented for a longer time.
   bool is_high_priority_ = false;
 };

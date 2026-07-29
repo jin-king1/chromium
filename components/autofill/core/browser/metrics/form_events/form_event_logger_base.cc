@@ -4,31 +4,44 @@
 
 #include "components/autofill/core/browser/metrics/form_events/form_event_logger_base.h"
 
-#include <cstddef>
-#include <cstdint>
+#include <stddef.h>
 
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "base/check.h"
 #include "base/check_deref.h"
-#include "base/feature_list.h"
+#include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
-#include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/time/time.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_type_utils.h"
+#include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/form_qualifiers.h"
 #include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
+#include "components/autofill/core/browser/metrics/form_events/form_events.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
-#include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/browser/studies/autofill_ablation_study.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
 #include "components/autofill/core/common/autofill_internals/log_message.h"
 #include "components/autofill/core/common/autofill_internals/logging_scope.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
+#include "components/autofill/core/common/dense_set.h"
+#include "components/autofill/core/common/logging/log_buffer.h"
+#include "components/autofill/core/common/logging/log_macros.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "components/metrics/profile_metrics_service.h"
 
 namespace autofill::autofill_metrics {
 
@@ -48,20 +61,14 @@ const char* AblationGroupToString(AblationGroup ablation_group) {
   return nullptr;
 }
 
-bool DetermineHeuristicOnlyEmailFormStatus(const FormStructure& form) {
+bool DetermineHeuristicOnlyEmailFormStatus(const FormStructure& form,
+                                           bool ignore_small_forms) {
   // First, check the prerequisites. The forms for which this classification is
-  // applicable must be inside a form tag (unless
-  // `kAutofillEnableEmailHeuristicOutsideForms` is enabled), must not run
-  // heuristics normally (i.e., their field count is below
-  // `kMinRequiredFieldsForHeuristics`), but must be eligible for single field
-  // form heuristics. Note that `kAutofillEnableEmailHeuristicOutsideForms`
-  // rolls out support for fields outside of form tags.
-  const bool form_tag_requirement_passed =
-      form.is_form_element() ||
-      base::FeatureList::IsEnabled(
-          features::kAutofillEnableEmailHeuristicOutsideForms);
-  if (!form_tag_requirement_passed || form.ShouldRunHeuristics() ||
-      !form.ShouldRunHeuristicsForSingleFields()) {
+  // applicable  must not run heuristics normally (i.e., their field count is
+  // below `kMinRequiredFieldsForHeuristics`), but must be eligible for single
+  // field form heuristics.
+  if (ShouldRunHeuristics(form, ignore_small_forms) ||
+      !ShouldRunHeuristicsForSingleFields(form)) {
     return false;
   }
   // Having met the prerequisites, now determine if there's a field whose
@@ -103,29 +110,31 @@ void FormEventLoggerBase::OnDidInteractWithAutofillableForm(
   }
 }
 
-void FormEventLoggerBase::OnDidPollSuggestions(FieldGlobalId field_id) {
-  // Record only one poll user action for consecutive polls of the same field.
-  // This is to avoid recording too many poll actions (for example when a user
-  // types in a field, triggering multiple queries) to make the analysis more
-  // simple.
-  if (field_id != last_polled_field_id_) {
-    RecordPollSuggestions();
-    last_polled_field_id_ = field_id;
+void FormEventLoggerBase::OnDidIdentifyForm(
+    const FormStructure& form,
+    FormIdentificationTime identification_time) {
+  DenseSet<FormTypeNameForLogging> form_types =
+      GetFormTypesForLogging(form, GetAcUnrecognizedBehavior(owner_->client()));
+  CHECK(!form_types.empty());
+  switch (identification_time) {
+    case FormIdentificationTime::kAfterLocalHeuristics:
+      identified_form_types_.insert_all(form_types);
+      Log(FORM_EVENT_DID_PARSE_FORM, form);
+      RecordParseForm();
+      break;
+    case FormIdentificationTime::kAfterServerPredictions:
+      identified_form_types_.insert_all(form_types);
+      break;
   }
-}
-
-void FormEventLoggerBase::OnDidParseForm(const FormStructure& form) {
-  parsed_form_types_.insert_all(GetFormTypesForLogging(form));
-  Log(FORM_EVENT_DID_PARSE_FORM, form);
-  RecordParseForm();
-  has_parsed_form_ = true;
 }
 
 void FormEventLoggerBase::OnDidShowSuggestions(
     const FormStructure& form,
     const AutofillField& field,
+    FieldType field_type,
     base::TimeTicks form_parsed_timestamp,
-    bool off_the_record) {
+    bool off_the_record,
+    base::span<const Suggestion> suggestions) {
   client().GetFormInteractionsUkmLogger().LogSuggestionsShown(
       driver().GetPageUkmSourceId(), form, field, form_parsed_timestamp,
       off_the_record);
@@ -139,7 +148,6 @@ void FormEventLoggerBase::OnDidShowSuggestions(
 
   has_logged_autocomplete_off_ |= field.autocomplete_attribute() == "off";
 
-  FieldType field_type = field.Type().GetStorableType();
   // Do not mark the field as shown if it was already accepted.
   if (!field_types_with_accepted_suggestions_.contains(field_type)) {
     field_types_with_shown_suggestions_.insert(field_type);
@@ -173,18 +181,22 @@ void FormEventLoggerBase::SetTimeFromInteractionToSubmission(
 
 void FormEventLoggerBase::OnWillSubmitForm(const FormStructure& form) {
   // Not logging this kind of form if we haven't logged a user interaction.
-  if (!has_logged_interacted_)
+  if (!has_logged_interacted_) {
     return;
+  }
 
   // Not logging twice.
   if (has_logged_will_submit_)
     return;
   has_logged_will_submit_ = true;
-  submitted_form_types_ = GetFormTypesForLogging(form);
+  submitted_form_types_ =
+      GetFormTypesForLogging(form, GetAcUnrecognizedBehavior(owner_->client()));
 
   // Determine whether logging of email-heuristic only metrics is required.
-  is_heuristic_only_email_form_ = (is_heuristic_only_email_form_ ||
-                                   DetermineHeuristicOnlyEmailFormStatus(form));
+  is_heuristic_only_email_form_ =
+      (is_heuristic_only_email_form_ ||
+       DetermineHeuristicOnlyEmailFormStatus(
+           form, /*ignore_small_forms=*/!owner_->client().IsTabInActorMode()));
 
   LogWillSubmitForm(form);
 
@@ -236,13 +248,6 @@ void FormEventLoggerBase::OnDestroyed() {
   RecordAblationMetrics();
 }
 
-void FormEventLoggerBase::OnFilledByFieldByFieldFilling(SuggestionType type) {
-  CHECK(type == SuggestionType::kAddressFieldByFieldFilling)
-      << base::to_underlying(type);
-  field_by_field_filled_form_types_.insert(
-      FormTypeNameForLogging::kAddressForm);
-}
-
 void FormEventLoggerBase::
     OnAutofilledFieldWasClearedByJavaScriptShortlyAfterFill(
         const FormStructure& form) {
@@ -255,11 +260,8 @@ void FormEventLoggerBase::
 void FormEventLoggerBase::Log(FormEvent event, const FormStructure& form) {
   DCHECK_LT(event, NUM_FORM_EVENTS);
   form_events_set_[form.global_id()].insert(event);
-  for (FormTypeNameForLogging form_type :
-       base::FeatureList::IsEnabled(
-           features::kAutofillEnableLogFormEventsToAllParsedFormTypes)
-           ? parsed_form_types_
-           : GetFormTypesForLogging(form)) {
+  for (FormTypeNameForLogging form_type : GetFormTypesForLogging(
+           form, GetAcUnrecognizedBehavior(owner_->client()))) {
     std::string name(
         base::StrCat({"Autofill.FormEvents.",
                       FormTypeNameForLoggingToStringView(form_type)}));
@@ -271,9 +273,11 @@ void FormEventLoggerBase::Log(FormEvent event, const FormStructure& form) {
   }
 
   // Log UKM metrics for only autofillable form events.
-  if (form.IsAutofillable()) {
+  if (IsAutofillable(form)) {
     client().GetFormInteractionsUkmLogger().LogFormEvent(
-        driver().GetPageUkmSourceId(), event, GetFormTypesForLogging(form),
+        driver().GetPageUkmSourceId(), event,
+        GetFormTypesForLogging(form,
+                               GetAcUnrecognizedBehavior(owner_->client())),
         form.form_parsed_timestamp());
   }
 }
@@ -300,9 +304,10 @@ void FormEventLoggerBase::RecordFunnelMetrics() {
     base::UmaHistogramBoolean(
         base::StrCat({"Autofill.Funnel.ParsedAsType.",
                       FormTypeNameForLoggingToStringView(form_type)}),
-        has_parsed_form_ && parsed_form_types_.contains(form_type));
+        !identified_form_types_.empty() &&
+            identified_form_types_.contains(form_type));
   }
-  if (!has_parsed_form_) {
+  if (identified_form_types_.empty()) {
     return;
   }
   LogBuffer logs(IsLoggingActive(client().GetCurrentLogManager()));
@@ -371,7 +376,7 @@ void FormEventLoggerBase::RecordSubmissionAfterFill(LogBuffer& logs) const {
 }
 
 void FormEventLoggerBase::RecordKeyMetrics() {
-  if (!has_parsed_form_) {
+  if (identified_form_types_.empty()) {
     return;
   }
 
@@ -396,8 +401,7 @@ void FormEventLoggerBase::RecordKeyMetrics() {
         driver().GetPageUkmSourceId(), submitted_form_types_,
         HasLoggedDataToFillAvailable(), has_logged_suggestions_shown_,
         has_logged_edited_autofilled_field_,
-        has_logged_form_filling_suggestion_filled_, form_interaction_counts_,
-        flow_id_, fast_checkout_run_id_);
+        has_logged_form_filling_suggestion_filled_, form_interaction_counts_);
   }
   if (has_logged_edited_non_filled_field_ ||
       has_logged_form_filling_suggestion_filled_) {
@@ -410,9 +414,12 @@ void FormEventLoggerBase::RecordKeyMetrics() {
 }
 
 void FormEventLoggerBase::RecordFillingReadiness(LogBuffer& logs) const {
-  bool has_logged_data_to_fill_available = HasLoggedDataToFillAvailable();
+  const bool has_logged_data_to_fill_available = HasLoggedDataToFillAvailable();
+  metrics::ProfileMetricsService* profile_metrics_service =
+      owner_->client().GetProfileMetricsService();
+  CHECK(profile_metrics_service);
   for (std::string_view form_type : GetParsedFormTypesAsStringViews()) {
-    base::UmaHistogramBoolean(
+    profile_metrics_service->UmaHistogramBoolean(
         base::StrCat({"Autofill.KeyMetrics.FillingReadiness.", form_type}),
         has_logged_data_to_fill_available);
   }
@@ -421,8 +428,11 @@ void FormEventLoggerBase::RecordFillingReadiness(LogBuffer& logs) const {
 }
 
 void FormEventLoggerBase::RecordFillingAcceptance(LogBuffer& logs) const {
+  metrics::ProfileMetricsService* profile_metrics_service =
+      owner_->client().GetProfileMetricsService();
+  CHECK(profile_metrics_service);
   for (std::string_view form_type : GetParsedFormTypesAsStringViews()) {
-    base::UmaHistogramBoolean(
+    profile_metrics_service->UmaHistogramBoolean(
         base::StrCat({"Autofill.KeyMetrics.FillingAcceptance.", form_type}),
         has_logged_form_filling_suggestion_filled_);
     base::UmaHistogramBoolean(
@@ -456,8 +466,11 @@ void FormEventLoggerBase::RecordFillingAcceptance(LogBuffer& logs) const {
 }
 
 void FormEventLoggerBase::RecordFillingCorrectness(LogBuffer& logs) const {
+  metrics::ProfileMetricsService* profile_metrics_service =
+      owner_->client().GetProfileMetricsService();
+  CHECK(profile_metrics_service);
   for (std::string_view form_type : GetParsedFormTypesAsStringViews()) {
-    base::UmaHistogramBoolean(
+    profile_metrics_service->UmaHistogramBoolean(
         base::StrCat({"Autofill.KeyMetrics.FillingCorrectness.", form_type}),
         !has_logged_edited_autofilled_field_);
   }
@@ -466,8 +479,11 @@ void FormEventLoggerBase::RecordFillingCorrectness(LogBuffer& logs) const {
 }
 
 void FormEventLoggerBase::RecordFillingAssistance(LogBuffer& logs) const {
+  metrics::ProfileMetricsService* profile_metrics_service =
+      owner_->client().GetProfileMetricsService();
+  CHECK(profile_metrics_service);
   for (std::string_view form_type : GetParsedFormTypesAsStringViews()) {
-    base::UmaHistogramBoolean(
+    profile_metrics_service->UmaHistogramBoolean(
         base::StrCat({"Autofill.KeyMetrics.FillingAssistance.", form_type}),
         has_logged_form_filling_suggestion_filled_);
   }
@@ -553,12 +569,7 @@ void FormEventLoggerBase::OnEditedField(FieldGlobalId field_id) {
   if (field_id != last_field_global_id_modified_by_user_) {
     ++form_interaction_counts_.form_element_user_modifications;
     last_field_global_id_modified_by_user_ = field_id;
-    UpdateFlowId();
   }
-}
-
-void FormEventLoggerBase::UpdateFlowId() {
-  flow_id_ = client().GetCurrentFormInteractionsFlowId();
 }
 
 FormInteractionsUkmLogger::FormEventSet FormEventLoggerBase::GetFormEvents(
@@ -569,17 +580,10 @@ FormInteractionsUkmLogger::FormEventSet FormEventLoggerBase::GetFormEvents(
 std::vector<std::string_view>
 FormEventLoggerBase::GetParsedFormTypesAsStringViews() const {
   std::vector<std::string_view> result;
-  for (FormTypeNameForLogging form_type : parsed_form_types_) {
+  for (FormTypeNameForLogging form_type : identified_form_types_) {
     result.push_back(FormTypeNameForLoggingToStringView(form_type));
   }
   return result;
-}
-
-DenseSet<FormTypeNameForLogging>
-FormEventLoggerBase::GetParsedAndFieldByFieldFormTypes() const {
-  DenseSet<FormTypeNameForLogging> all_form_types = parsed_form_types_;
-  all_form_types.insert_all(field_by_field_filled_form_types_);
-  return all_form_types;
 }
 
 }  // namespace autofill::autofill_metrics

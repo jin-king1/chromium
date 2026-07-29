@@ -2,17 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/browsing_data/counters/site_data_counting_helper.h"
+
 #include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_mock_clock_override.h"
-#include "chrome/browser/browsing_data/counters/site_data_counting_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/services/storage/public/mojom/local_storage_control.mojom.h"
@@ -55,7 +55,7 @@ class SiteDataCountingHelperTest : public testing::Test {
       GURL url(url_string);
       std::unique_ptr<net::CanonicalCookie> cookie =
           net::CanonicalCookie::CreateSanitizedCookie(
-              url, "name", "A=1", url.host(), url.path(), creation_time,
+              url, "name", "A=1", url.GetHost(), url.GetPath(), creation_time,
               base::Time(), creation_time, url.SchemeIsCryptographic(), false,
               net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT,
               std::nullopt, /*status=*/nullptr);
@@ -90,7 +90,8 @@ class SiteDataCountingHelperTest : public testing::Test {
       bool success = false;
       base::RunLoop put_run_loop;
       area->Put({'k', 'e', 'y'}, {'v', 'a', 'l', 'u', 'e'}, std::nullopt,
-                "source", base::BindLambdaForTesting([&](bool success_in) {
+                /*source=*/nullptr,
+                base::BindLambdaForTesting([&](bool success_in) {
                   success = success_in;
                   put_run_loop.Quit();
                 }));

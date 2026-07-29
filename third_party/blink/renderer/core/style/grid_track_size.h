@@ -33,6 +33,8 @@
 
 #include "third_party/blink/renderer/platform/geometry/length.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions.h"
+#include "third_party/blink/renderer/platform/wtf/hash_traits.h"
 
 namespace blink {
 
@@ -41,6 +43,22 @@ enum GridTrackSizeType {
   kMinMaxTrackSizing,
   kFitContentTrackSizing
 };
+
+static bool IsTrackSizeIntrinsic(const Length& length,
+                                 GridTrackSizeType track_size_type) {
+  switch (track_size_type) {
+    case kLengthTrackSizing:
+    case kMinMaxTrackSizing: {
+      const Length::Type type = length.GetType();
+      return type == Length::Type::kAuto || type == Length::Type::kMinContent ||
+             type == Length::Type::kMaxContent;
+    }
+    case kFitContentTrackSizing:
+      return true;
+    default:
+      NOTREACHED();
+  }
+}
 
 // This class represents a <track-size> from the spec. Althought there are 3
 // different types of <track-size> there is always an equivalent minmax()
@@ -70,7 +88,9 @@ class GridTrackSize {
         fit_content_track_breadth_(track_size_type == kFitContentTrackSizing
                                        ? length
                                        : Length::Fixed()),
-        type_(track_size_type) {
+        type_(track_size_type),
+        track_size_definition_is_intrinsic_(
+            IsTrackSizeIntrinsic(length, track_size_type)) {
     DCHECK(track_size_type == kLengthTrackSizing ||
            track_size_type == kFitContentTrackSizing);
     DCHECK(track_size_type == kLengthTrackSizing || !length.IsFlex());
@@ -82,9 +102,27 @@ class GridTrackSize {
       : min_track_breadth_(min_track_breadth),
         max_track_breadth_(max_track_breadth),
         fit_content_track_breadth_(Length::Fixed()),
-        type_(kMinMaxTrackSizing) {
+        type_(kMinMaxTrackSizing),
+        track_size_definition_is_intrinsic_(
+            IsTrackSizeIntrinsic(min_track_breadth, kMinMaxTrackSizing) &&
+            IsTrackSizeIntrinsic(max_track_breadth, kMinMaxTrackSizing)) {
     CacheMinMaxTrackBreadthTypes();
   }
+
+  static GridTrackSize DeletedTrackSize() {
+    GridTrackSize size(Length::Auto());
+    size.is_deleted_ = true;
+    return size;
+  }
+
+  static GridTrackSize EmptyTrackSize() {
+    GridTrackSize size(Length::Auto());
+    size.is_empty_ = true;
+    return size;
+  }
+
+  bool IsDeletedValue() const { return is_deleted_; }
+  bool IsEmptyValue() const { return is_empty_; }
 
   const Length& FitContentTrackBreadth() const {
     DCHECK(type_ == kFitContentTrackSizing);
@@ -129,18 +167,19 @@ class GridTrackSize {
     return type_ == other.type_ &&
            min_track_breadth_ == other.min_track_breadth_ &&
            max_track_breadth_ == other.max_track_breadth_ &&
-           fit_content_track_breadth_ == other.fit_content_track_breadth_;
+           fit_content_track_breadth_ == other.fit_content_track_breadth_ &&
+           is_deleted_ == other.is_deleted_ && is_empty_ == other.is_empty_;
   }
 
   void CacheMinMaxTrackBreadthTypes() {
     min_track_breadth_is_auto_ = min_track_breadth_.IsAuto();
-    min_track_breadth_is_fixed_ = min_track_breadth_.IsSpecified();
+    min_track_breadth_is_fixed_ = min_track_breadth_.HasOnlyFixedAndPercent();
     min_track_breadth_is_flex_ = min_track_breadth_.IsFlex();
     min_track_breadth_is_max_content_ = min_track_breadth_.IsMaxContent();
     min_track_breadth_is_min_content_ = min_track_breadth_.IsMinContent();
 
     max_track_breadth_is_auto_ = max_track_breadth_.IsAuto();
-    max_track_breadth_is_fixed_ = max_track_breadth_.IsSpecified();
+    max_track_breadth_is_fixed_ = max_track_breadth_.HasOnlyFixedAndPercent();
     max_track_breadth_is_flex_ = max_track_breadth_.IsFlex();
     max_track_breadth_is_max_content_ = max_track_breadth_.IsMaxContent();
     max_track_breadth_is_min_content_ = max_track_breadth_.IsMinContent();
@@ -204,6 +243,10 @@ class GridTrackSize {
            min_track_breadth_ == max_track_breadth_;
   }
 
+  bool IsTrackDefinitionIntrinsic() const {
+    return track_size_definition_is_intrinsic_;
+  }
+
  private:
   Length min_track_breadth_;
   Length max_track_breadth_;
@@ -222,6 +265,36 @@ class GridTrackSize {
   bool max_track_breadth_is_max_content_ : 1;
   bool min_track_breadth_is_min_content_ : 1;
   bool max_track_breadth_is_min_content_ : 1;
+  bool track_size_definition_is_intrinsic_ : 1;
+  bool is_deleted_ : 1 = false;
+  bool is_empty_ : 1 = false;
+};
+
+template <>
+struct HashTraits<GridTrackSize> : GenericHashTraits<GridTrackSize> {
+  STATIC_ONLY(HashTraits);
+
+  static unsigned GetHash(const GridTrackSize& key) {
+    unsigned type_hash = HashInt(static_cast<unsigned>(key.GetType()));
+    unsigned min_breadth_hash = key.MinTrackBreadth().GetHash();
+    unsigned max_breadth_hash = key.MaxTrackBreadth().GetHash();
+    unsigned fit_content_hash =
+        key.IsFitContent() ? key.FitContentTrackBreadth().GetHash() : 0;
+    unsigned intrinsic_hash =
+        HashInt(static_cast<unsigned>(key.IsTrackDefinitionIntrinsic()));
+
+    return HashInts(
+        HashInts(type_hash, min_breadth_hash),
+        HashInts(HashInts(max_breadth_hash, fit_content_hash), intrinsic_hash));
+  }
+
+  static constexpr bool kEmptyValueIsZero = false;
+
+  static GridTrackSize EmptyValue() { return GridTrackSize::EmptyTrackSize(); }
+
+  static GridTrackSize DeletedValue() {
+    return GridTrackSize::DeletedTrackSize();
+  }
 };
 
 }  // namespace blink

@@ -33,7 +33,6 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/common/content_switches.h"
 #include "gpu/ipc/client/gpu_channel_host.h"
-#include "ipc/ipc_sender.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -68,6 +67,18 @@ void EstablishGpuChannelToEstablishVizConnection() {
 }
 
 }  // namespace
+
+struct SynchronousCompositorHost::SharedMemoryWithSize {
+  base::WritableSharedMemoryMapping shared_memory;
+  const size_t stride;
+  const size_t buffer_size;
+
+  SharedMemoryWithSize(size_t stride, size_t buffer_size)
+      : stride(stride), buffer_size(buffer_size) {}
+
+  SharedMemoryWithSize(const SharedMemoryWithSize&) = delete;
+  SharedMemoryWithSize& operator=(const SharedMemoryWithSize&) = delete;
+};
 
 // This class runs on the IO thread and is destroyed when the renderer
 // side closes the mojo channel.
@@ -166,6 +177,8 @@ SynchronousCompositorHost::SynchronousCompositorHost(
       host_frame_sink_manager_(host_frame_sink_manager),
       use_in_process_zero_copy_software_draw_(use_in_proc_software_draw),
       bytes_limit_(0u),
+      allow_async_draw_(
+          base::FeatureList::IsEnabled(features::kWebViewAsyncDrawOnly)),
       renderer_param_version_(0u),
       need_invalidate_count_(0u),
       invalidate_needs_draw_(false),
@@ -237,14 +250,13 @@ SynchronousCompositorHost::DemandDrawHwAsync(
           transform_for_tile_priority,
           /*need_new_local_surface_id=*/was_evicted_);
 
-  was_evicted_ = false;
-
   blink::mojom::SynchronousCompositor* compositor = GetSynchronousCompositor();
   if (!bridge_->SetFrameFutureOnUIThread(frame_future)) {
     frame_future->SetFrame(nullptr);
   } else {
     DCHECK(compositor);
     compositor->DemandDrawHwAsync(std::move(params));
+    was_evicted_ = false;
   }
   return frame_future;
 }
@@ -372,18 +384,6 @@ class SynchronousCompositorHost::ScopedSendZeroMemory {
 
  private:
   const raw_ptr<SynchronousCompositorHost> host_;
-};
-
-struct SynchronousCompositorHost::SharedMemoryWithSize {
-  base::WritableSharedMemoryMapping shared_memory;
-  const size_t stride;
-  const size_t buffer_size;
-
-  SharedMemoryWithSize(size_t stride, size_t buffer_size)
-      : stride(stride), buffer_size(buffer_size) {}
-
-  SharedMemoryWithSize(const SharedMemoryWithSize&) = delete;
-  SharedMemoryWithSize& operator=(const SharedMemoryWithSize&) = delete;
 };
 
 bool SynchronousCompositorHost::DemandDrawSw(SkCanvas* canvas,
@@ -534,8 +534,7 @@ void SynchronousCompositorHost::OnCompositorFrameTransitionDirectiveProcessed(
 }
 
 void SynchronousCompositorHost::DidPresentCompositorFrames(
-    viz::FrameTimingDetailsMap timing_details,
-    uint32_t frame_token) {
+    viz::FrameTimingDetailsMap timing_details) {
   timing_details_.insert(timing_details.begin(), timing_details.end());
   if (!timing_details_.empty())
     AddBeginFrameRequest(BEGIN_FRAME);
@@ -765,9 +764,8 @@ void SynchronousCompositorHost::SendBeginFrame(viz::BeginFrameArgs args) {
     // case renderer receives no back pressure so reduce the frequency of begin
     // frames to avoid unnecessary work.
     if (num_begin_frames_to_skip_) {
-      TRACE_EVENT_INSTANT0("cc",
-                           "SynchronousCompositorHost::SendBeginFrame_skipped",
-                           TRACE_EVENT_SCOPE_THREAD);
+      TRACE_EVENT_INSTANT("cc",
+                          "SynchronousCompositorHost::SendBeginFrame_skipped");
       num_begin_frames_to_skip_--;
       return;
     } else {

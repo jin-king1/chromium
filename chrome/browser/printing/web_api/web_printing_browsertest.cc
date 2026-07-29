@@ -6,7 +6,6 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/test/gmock_callback_support.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/values_test_util.h"
 #include "chrome/browser/chromeos/printing/cups_wrapper.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -58,24 +57,26 @@ startxref
 %EOF`;
 
     const pdfBlob = new Blob([pdf], {type: 'application/pdf'});
-    const printers = await navigator.printing.getPrinters();
+    const printers = await printing.getPrinters();
 
-    const printJob = await printers[0].printJob("Title", { data: pdfBlob }, {
-      mediaCol: {
-        mediaSize: {
-          xDimension: 21000,
-          yDimension: 29700,
-        }
-      },
-      mediaSource: "tray-1",
-      printColorMode: "color",
-      multipleDocumentHandling: "separate-documents-collated-copies",
-      printerResolution: {
-        crossFeedDirectionResolution: 300,
-        feedDirectionResolution: 400,
-        units: "dots-per-inch",
-      },
-    });
+    const printJob = await printers[0].submitPrintJob("Title",
+      pdfBlob,
+      {
+        mediaCol: {
+          mediaSize: {
+            xDimension: 21000,
+            yDimension: 29700,
+          }
+        },
+        mediaSource: "tray-1",
+        printColorMode: "color",
+        multipleDocumentHandling: "separate-documents-collated-copies",
+        printerResolution: {
+          crossFeedDirectionResolution: 300,
+          feedDirectionResolution: 400,
+          units: "dots-per-inch",
+        },
+      });
     const printJobComplete = new Promise((resolve, reject) => {
       printJob.onjobstatechange = () => {
         if (printJob.attributes().jobState === $1) {
@@ -140,6 +141,8 @@ auto ValidatePrintSettings() {
                                       Pointee(Eq("tray-1")))))),
       // printColorMode:
       Property(&PrintSettings::color, Eq(mojom::ColorModel::kColorModeColor)),
+      // printQuality:
+      Property(&PrintSettings::quality, Eq(mojom::Quality::kUnknownQuality)),
       Property(&PrintSettings::title, Eq(u"Title")),
       // multipleDocumentHandling:
       Property(&PrintSettings::collate, Eq(true)),
@@ -203,8 +206,6 @@ class WebPrintingBrowserTestBase
   content::RenderFrameHost* app_frame() { return app_frame_; }
 
  private:
-  base::test::ScopedFeatureList feature_list_{blink::features::kWebPrinting};
-
   raw_ptr<content::RenderFrameHost> app_frame_ = nullptr;
 };
 
@@ -253,7 +254,7 @@ IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest, GetPrinters) {
   constexpr std::string_view kGetPrintersScript = R"(
     (async () => {
       try {
-        const printers = await navigator.printing.getPrinters();
+        const printers = await printing.getPrinters();
         if (printers.length !== 1 ||
             printers[0].cachedAttributes().printerName !== $1) {
           return false;
@@ -335,6 +336,8 @@ IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest, FetchAttributes) {
     }],
     "printColorModeDefault": "monochrome",
     "printColorModeSupported": [ "monochrome", "color" ],
+    "printQualityDefault": "draft",
+    "printQualitySupported": [ "draft", "normal" ],
     "printerName": "name",
     "printerState": "idle",
     "printerStateMessage": "Ready to Print!",
@@ -345,17 +348,16 @@ IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest, FetchAttributes) {
 
   constexpr std::string_view kFetchAttributesScript = R"(
     (async () => {
-      const printers = await navigator.printing.getPrinters();
+      const printers = await printing.getPrinters();
       return await printers[0].fetchAttributes();
     })();
   )";
 
   auto eval_result = EvalJs(app_frame(), kFetchAttributesScript);
-  ASSERT_THAT(eval_result, content::EvalJsResult::IsOk());
 
-  const auto& attributes = eval_result.value.GetDict();
-  EXPECT_THAT(attributes, base::test::DictionaryHasValues(
-                              base::test::ParseJsonDict(kExpectedAttributes)));
+  EXPECT_THAT(eval_result.ExtractDict(),
+              base::test::DictionaryHasValues(
+                  base::test::ParseJsonDict(kExpectedAttributes)));
 }
 
 IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest, Print) {
@@ -376,7 +378,7 @@ IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest, Print) {
 
   const auto script = content::JsReplace(kPrintScriptWithJobStatePlaceholder,
                                          /*job_state=*/"completed");
-  ASSERT_THAT(EvalJs(app_frame(), script), content::EvalJsResult::IsOk());
+  ASSERT_TRUE(content::ExecJs(app_frame(), script));
 }
 
 IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest, PrintFailure) {
@@ -390,10 +392,10 @@ IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest, PrintFailure) {
 
   const auto script = content::JsReplace(kPrintScriptWithJobStatePlaceholder,
                                          /*job_state=*/"aborted");
-  ASSERT_THAT(EvalJs(app_frame(), script), content::EvalJsResult::IsOk());
+  ASSERT_TRUE(content::ExecJs(app_frame(), script));
 }
 
-// Validate that call to `navigator.printing.getPrinters()` fails when content
+// Validate that call to `printing.getPrinters()` fails when content
 // setting is set to BLOCK.
 IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest,
                        GetPrintersUserPermissionDenied) {
@@ -403,17 +405,18 @@ IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest,
 
   constexpr std::string_view kGetPrintersScript = R"(
     (async () => {
-      const printers = await navigator.printing.getPrinters();
+      const printers = await printing.getPrinters();
     })();
   )";
 
-  ASSERT_THAT(EvalJs(app_frame(), kGetPrintersScript).error,
-              testing::HasSubstr("User denied access"));
+  ASSERT_THAT(
+      EvalJs(app_frame(), kGetPrintersScript),
+      content::EvalJsResult::ErrorIs(testing::HasSubstr("User denied access")));
 }
 
 // Validate that further calls to printer's methods fail when content setting
 // gets switched to BLOCK after a successful call to
-// `navigator.printing.getPrinters()`.
+// `printing.getPrinters()`.
 IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest,
                        FetchAndPrintUserPermissionDenied) {
 #if BUILDFLAG(IS_CHROMEOS)
@@ -421,15 +424,14 @@ IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest,
                              extensions::ConstructPrinterCapabilities());
 #endif
 
-  // Call `navigator.printing.getPrinters()` while the permission is active.
+  // Call `printing.getPrinters()` while the permission is active.
   constexpr std::string_view kGetPrintersScript = R"(
     (async () => {
-      const printers = await navigator.printing.getPrinters();
+      const printers = await printing.getPrinters();
       printer = printers[0];
     })();
   )";
-  ASSERT_THAT(EvalJs(app_frame(), kGetPrintersScript),
-              content::EvalJsResult::IsOk());
+  ASSERT_TRUE(content::ExecJs(app_frame(), kGetPrintersScript));
 
   HostContentSettingsMapFactory::GetForProfile(profile())
       ->SetDefaultContentSetting(ContentSettingsType::WEB_PRINTING,
@@ -441,10 +443,11 @@ IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest,
       await printer.fetchAttributes();
     })();
   )";
-  ASSERT_THAT(EvalJs(app_frame(), kFetchAttributesScript).error,
-              testing::HasSubstr("User denied access"));
+  ASSERT_THAT(
+      EvalJs(app_frame(), kFetchAttributesScript),
+      content::EvalJsResult::ErrorIs(testing::HasSubstr("User denied access")));
 
-  // Ensure that `printer.printJob()` reports access denied.
+  // Ensure that `printer.submitPrintJob()` reports access denied.
   constexpr std::string_view kPrintJobScript = R"(
     (async () => {
       const pdf = `%PDF-1.0
@@ -462,11 +465,12 @@ startxref
 149
 %EOF`;
       const pdfBlob = new Blob([pdf], {type: 'application/pdf'});
-      const printJob = await printer.printJob("Fail", { data: pdfBlob }, {});
+      const printJob = await printer.submitPrintJob("Fail", pdfBlob, {});
     })();
   )";
-  ASSERT_THAT(EvalJs(app_frame(), kPrintJobScript).error,
-              testing::HasSubstr("User denied access"));
+  ASSERT_THAT(
+      EvalJs(app_frame(), kPrintJobScript),
+      content::EvalJsResult::ErrorIs(testing::HasSubstr("User denied access")));
 }
 
 IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest, CancelImmediately) {
@@ -492,9 +496,9 @@ startxref
 %EOF`;
 
     const pdfBlob = new Blob([pdf], {type: 'application/pdf'});
-    const printers = await navigator.printing.getPrinters();
+    const printers = await printing.getPrinters();
 
-    const printJob = await printers[0].printJob("Title", { data: pdfBlob }, {});
+    const printJob = await printers[0].submitPrintJob("Title", pdfBlob, {});
     let phase = 0;
     const printJobCanceled = new Promise((resolve, reject) => {
       printJob.onjobstatechange = () => {
@@ -518,8 +522,7 @@ startxref
     await printJobCanceled;
    })();
   )";
-  ASSERT_THAT(EvalJs(app_frame(), kCancelEarlyScript),
-              content::EvalJsResult::IsOk());
+  ASSERT_TRUE(content::ExecJs(app_frame(), kCancelEarlyScript));
 }
 
 IN_PROC_BROWSER_TEST_F(WebPrintingBrowserTest, CancelHalfway) {
@@ -545,9 +548,9 @@ startxref
 %EOF`;
 
     const pdfBlob = new Blob([pdf], {type: 'application/pdf'});
-    const printers = await navigator.printing.getPrinters();
+    const printers = await printing.getPrinters();
 
-    const printJob = await printers[0].printJob("Title", { data: pdfBlob }, {});
+    const printJob = await printers[0].submitPrintJob("Title", pdfBlob, {});
     let phase = 0;
     const printJobProcessingThenCanceled = new Promise((resolve, reject) => {
       printJob.onjobstatechange = () => {
@@ -571,8 +574,7 @@ startxref
     await printJobProcessingThenCanceled;
    })();
   )";
-  ASSERT_THAT(EvalJs(app_frame(), kCancelHalfwayScript),
-              content::EvalJsResult::IsOk());
+  ASSERT_TRUE(content::ExecJs(app_frame(), kCancelHalfwayScript));
 }
 
 }  // namespace printing

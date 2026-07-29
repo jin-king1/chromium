@@ -2,16 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/image_decoder/image_decoder.h"
 
+#include "base/compiler_specific.h"
 #include "base/run_loop.h"
 #include "build/build_config.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/browser/browser_child_process_observer.h"
 #include "content/public/browser/browser_thread.h"
@@ -34,7 +29,8 @@ std::vector<uint8_t> GetValidPngData() {
       "\x00\x05\xfe\x02\xfe\xdc\xcc\x59\xe7\x00\x00\x00\x00\x49\x45\x4e"
       "\x44\xae\x42\x60\x82";
   // Need to specify the buffer size because it contains NULs.
-  return std::vector<uint8_t>(kPngData, kPngData + sizeof(kPngData) - 1);
+  return std::vector<uint8_t>(kPngData,
+                              UNSAFE_TODO(kPngData + sizeof(kPngData) - 1));
 }
 
 std::vector<uint8_t> GetValidJpgData() {
@@ -59,7 +55,8 @@ std::vector<uint8_t> GetValidJpgData() {
       "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xDA\x00\x0C\x03\x01"
       "\x00\x02\x11\x03\x11\x00\x3F\x00\xA0\x00\xFF\xD9";
   // Need to specify the buffer size because it contains NULs.
-  return std::vector<uint8_t>(kJpgData, kJpgData + sizeof(kJpgData) - 1);
+  return std::vector<uint8_t>(kJpgData,
+                              UNSAFE_TODO(kJpgData + sizeof(kJpgData) - 1));
 }
 
 class TestImageRequest : public ImageDecoder::ImageRequest {

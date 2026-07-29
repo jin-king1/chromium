@@ -5,17 +5,23 @@
 #include "chrome/browser/supervised_user/supervised_user_test_util.h"
 
 #include <string>
+#include <string_view>
 
 #include "base/check.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
-#include "chrome/browser/supervised_user/supervised_user_settings_service_factory.h"
+#include "chrome/browser/supervised_user/family_link_settings_service_factory.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/browser/permission_settings_registry.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/account_info.h"
-#include "components/supervised_user/core/browser/supervised_user_settings_service.h"
+#include "components/supervised_user/core/browser/family_link_settings_service.h"
+#include "components/supervised_user/core/browser/supervised_user_test_environment.h"
+#include "components/supervised_user/core/browser/supervised_user_utils.h"
 #include "components/supervised_user/core/common/pref_names.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 
@@ -37,11 +43,11 @@ void AddCustodians(Profile* profile) {
 
 void SetSupervisedUserExtensionsMayRequestPermissionsPref(Profile* profile,
                                                           bool enabled) {
-  supervised_user::SupervisedUserSettingsService* settings_service =
-      SupervisedUserSettingsServiceFactory::GetInstance()->GetForKey(
-          profile->GetProfileKey());
-  settings_service->SetLocalSetting(supervised_user::kGeolocationDisabled,
-                                    base::Value(!enabled));
+  supervised_user::FamilyLinkSettingsService* service =
+      supervised_user::FamilyLinkSettingsServiceFactory::GetInstance()
+          ->GetForKey(profile->GetProfileKey());
+  service->SetLocalSetting(supervised_user::kGeolocationDisabled,
+                           base::Value(!enabled));
   profile->GetPrefs()->SetBoolean(
       prefs::kSupervisedUserExtensionsMayRequestPermissions, enabled);
 
@@ -49,9 +55,14 @@ void SetSupervisedUserExtensionsMayRequestPermissionsPref(Profile* profile,
   // SupervisedUsePrefStore.
   content_settings::ProviderType provider;
   bool is_geolocation_allowed =
-      HostContentSettingsMapFactory::GetForProfile(profile)
-          ->GetDefaultContentSetting(ContentSettingsType::GEOLOCATION,
-                                     &provider) == CONTENT_SETTING_ALLOW;
+      content_settings::PermissionSettingsRegistry::GetInstance()
+          ->Get(content_settings::GeolocationContentSettingsType())
+          ->delegate()
+          .IsAnyPermissionAllowed(
+              HostContentSettingsMapFactory::GetForProfile(profile)
+                  ->GetDefaultPermissionSetting(
+                      content_settings::GeolocationContentSettingsType(),
+                      &provider));
   if (is_geolocation_allowed != enabled) {
     SetSupervisedUserGeolocationEnabledContentSetting(profile, enabled);
   }
@@ -62,10 +73,10 @@ void SetSkipParentApprovalToInstallExtensionsPref(Profile* profile,
   // TODO(b/324898798): Once the new extension handling mode is releaded, this
   // method replaces `SetSupervisedUserExtensionsMayRequestPermissionsPref` for
   // handling the Extensions behaviour.
-  supervised_user::SupervisedUserSettingsService* settings_service =
-      SupervisedUserSettingsServiceFactory::GetInstance()->GetForKey(
-          profile->GetProfileKey());
-  settings_service->SetLocalSetting(
+  supervised_user::FamilyLinkSettingsService* service =
+      supervised_user::FamilyLinkSettingsServiceFactory::GetInstance()
+          ->GetForKey(profile->GetProfileKey());
+  service->SetLocalSetting(
       supervised_user::kSkipParentApprovalToInstallExtensions,
       base::Value(enabled));
   profile->GetPrefs()->SetBoolean(prefs::kSkipParentApprovalToInstallExtensions,
@@ -75,49 +86,69 @@ void SetSkipParentApprovalToInstallExtensionsPref(Profile* profile,
 void SetSupervisedUserGeolocationEnabledContentSetting(Profile* profile,
                                                        bool enabled) {
   HostContentSettingsMapFactory::GetForProfile(profile)
-      ->SetDefaultContentSetting(
-          ContentSettingsType::GEOLOCATION,
-          enabled ? CONTENT_SETTING_ALLOW : CONTENT_SETTING_BLOCK);
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+      ->SetDefaultPermissionSetting(
+          content_settings::GeolocationContentSettingsType(),
+          content_settings::PermissionSettingsRegistry::GetInstance()
+              ->Get(content_settings::GeolocationContentSettingsType())
+              ->delegate()
+              .ToPermissionSetting(enabled ? CONTENT_SETTING_ALLOW
+                                           : CONTENT_SETTING_BLOCK));
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (profile->GetPrefs()->GetBoolean(
           prefs::kSupervisedUserExtensionsMayRequestPermissions) != enabled) {
     // Permissions preference is also set to the same value. See
     // SupervisedUsePrefStore.
     SetSupervisedUserExtensionsMayRequestPermissionsPref(profile, enabled);
   }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 }
 
-void PopulateAccountInfoWithName(AccountInfo& info,
-                                 const std::string& given_name) {
-  info.given_name = given_name;
-  info.full_name = "fullname";
-  info.hosted_domain = "example.com";
-  info.locale = "en";
-  info.picture_url = "https://example.com";
+AccountInfo PopulateAccountInfoWithName(const AccountInfo& info,
+                                        const std::string& given_name) {
+  AccountInfo populated_info = AccountInfo::Builder(info)
+                                   .SetFullName("fullname")
+                                   .SetGivenName(given_name)
+                                   .SetHostedDomain("example.com")
+                                   .SetAvatarUrl("https://example.com")
+                                   .SetLocale("en")
+                                   .Build();
+  AccountCapabilitiesTestMutator(&populated_info)
+      .set_is_subject_to_enterprise_features(true);
 
-  CHECK(info.IsValid());
+  CHECK(populated_info.IsValid());
+  return populated_info;
 }
 
 void SetManualFilterForHost(Profile* profile,
-                            const std::string& host,
+                            std::string_view host,
                             bool allowlist) {
-  supervised_user::SupervisedUserSettingsService* settings_service =
-      SupervisedUserSettingsServiceFactory::GetForKey(profile->GetProfileKey());
+  supervised_user::SupervisedUserTestEnvironment::SetManualFilterForHost(
+      host, allowlist,
+      *supervised_user::FamilyLinkSettingsServiceFactory::GetForKey(
+          profile->GetProfileKey()));
+}
 
-  const base::Value::Dict& local_settings =
-      settings_service->LocalSettingsForTest();
-  base::Value::Dict dict_to_insert;
+void SetManualFilterForUrl(Profile* profile,
+                           std::string_view url,
+                           bool allowlist) {
+  supervised_user::SupervisedUserTestEnvironment::SetManualFilterForUrl(
+      url, allowlist,
+      *supervised_user::FamilyLinkSettingsServiceFactory::GetForKey(
+          profile->GetProfileKey()));
+}
 
-  if (const base::Value::Dict* dict_value = local_settings.FindDict(
-          supervised_user::kContentPackManualBehaviorHosts)) {
-    dict_to_insert = dict_value->Clone();
-  }
-
-  dict_to_insert.Set(host, allowlist);
-  settings_service->SetLocalSetting(
-      supervised_user::kContentPackManualBehaviorHosts,
-      std::move(dict_to_insert));
+void SetWebFilterType(const Profile* profile,
+                      supervised_user::WebFilterType web_filter_type) {
+  supervised_user::FamilyLinkSettingsService* service =
+      supervised_user::FamilyLinkSettingsServiceFactory::GetForKey(
+          profile->GetProfileKey());
+  CHECK(service) << "Missing settings service might indicate misconfigured "
+                    "test environment. If this is a unittest, consider using "
+                    "SupervisedUserSyncDataFake";
+  CHECK(service->IsReady())
+      << "If settings service is not ready, the change will not be successful";
+  supervised_user::SupervisedUserTestEnvironment::SetWebFilterType(
+      web_filter_type, *service);
 }
 
 }  // namespace supervised_user_test_util

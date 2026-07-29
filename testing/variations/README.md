@@ -7,7 +7,7 @@ For each study, the first available experiment after platform filtering is used
 as the default experiment for Chromium builds. This experiment is also used for
 perf bots and various tests in the waterfall (browser tests, including those in
 browser_tests, components_browsertests, content_browsertests,
-extensions_browsertests, interactive_ui_tests, and sync_integration_tests, and
+interactive_ui_tests, and sync_integration_tests, and
 [web platform tests](/docs/testing/web_platform_tests.md)). It is not used by
 unit test targets.
 
@@ -67,9 +67,9 @@ array of *study configurations*. The study name in the configuration file
 Each *study configuration* is a dictionary containing `platforms` and
 `experiments`.
 
-`platforms` is an array of strings, indicating the targetted platforms. The
-strings may be `android`, `android_weblayer`, `android_webview`, `chromeos`,
-`chromeos_lacros`, `ios`, `linux`, `mac`, or `windows`.
+`platforms` is an array of strings, indicating the targeted platforms. The
+strings may be `android`, `android_webview`, `chromeos`, `ios`, `linux`, `mac`,
+or `windows`.
 
 `experiments` is an array containing the *experiments*.
 
@@ -108,7 +108,8 @@ the experiment group name.
 > config.
 
 The remaining keys -- `enable_features`, `disable_features`, `min_os_version`,
-and `params` -- are optional.
+`disable_benchmarking`, `params`, `hardware_classes`, and
+`exclude_hardware_classes` -- are optional.
 
 `enable_features` and `disable_features` indicate which features should be
 enabled and disabled, respectively, through the
@@ -119,7 +120,22 @@ the experiment. This string is decoded as a `base::Version`. The same version is
 applied to all platforms. If you need different versions for different
 platforms, you will need to use different studies.
 
+`disable_benchmarking` indicates that when the flag
+`--enable-benchmarking` is passed at start up this experiment should not be
+enabled. This should be used extremely sparingly.
+
+> Warning: `disable_benchmarking` works as described above on most platforms
+> however when using the
+> [fieldtrial_util.py](https://source.chromium.org/chromium/chromium/src/+/main:tools/variations/fieldtrial_util.py)
+> script we will always exclude `disable_benchmarking` experiments. This is
+> due to this script being primarily used for benchmarking, and because it
+> generates command lines flags to set state we don't know if
+> `--enable-benchmarking` will be passed or not.
+
 `params` is a dictionary mapping parameter name to parameter value.
+
+`hardware_classes` and `exclude_hardware_classes` indicate which hardware
+classes to include or exclude respectively when applying the experiment.
 
 > Reminder: The variations framework does not actually fetch any field trial
 > definitions from the server for Chromium builds, so any feature enabling or

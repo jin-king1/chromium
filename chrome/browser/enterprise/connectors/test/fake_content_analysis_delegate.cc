@@ -12,9 +12,12 @@
 #include "base/time/time.h"
 #include "chrome/browser/enterprise/connectors/analysis/page_print_request_handler.h"
 #include "chrome/browser/enterprise/connectors/common.h"
+#include "chrome/browser/enterprise/connectors/test/fake_clipboard_request_handler.h"
 #include "chrome/browser/enterprise/connectors/test/fake_files_request_handler.h"
-#include "chrome/browser/safe_browsing/cloud_content_scanning/binary_upload_service.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_request.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/clipboard_request_handler.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/deep_scanning_utils.h"
 
 namespace enterprise_connectors::test {
 
@@ -25,11 +28,10 @@ base::TimeDelta response_delay = base::Seconds(0);
 class FakePagePrintRequestHandler : public PagePrintRequestHandler {
  public:
   static std::unique_ptr<PagePrintRequestHandler> Create(
-      base::OnceCallback<
-          void(std::unique_ptr<safe_browsing::BinaryUploadService::Request>)>
+      base::OnceCallback<void(std::unique_ptr<BinaryUploadRequest>)>
           upload_callback,
       ContentAnalysisInfo* content_analysis_info,
-      safe_browsing::BinaryUploadService* upload_service,
+      BinaryUploadService* upload_service,
       Profile* profile,
       GURL url,
       const std::string& printer_name,
@@ -52,16 +54,14 @@ class FakePagePrintRequestHandler : public PagePrintRequestHandler {
   }
 
  private:
-  base::OnceCallback<void(
-      std::unique_ptr<safe_browsing::BinaryUploadService::Request>)>
+  base::OnceCallback<void(std::unique_ptr<BinaryUploadRequest>)>
       upload_callback_;
 };
 
 }  // namespace
 
-safe_browsing::BinaryUploadService::Result
-    FakeContentAnalysisDelegate::result_ =
-        safe_browsing::BinaryUploadService::Result::SUCCESS;
+ScanRequestUploadResult FakeContentAnalysisDelegate::result_ =
+    ScanRequestUploadResult::kSuccess;
 bool FakeContentAnalysisDelegate::dialog_shown_ = false;
 bool FakeContentAnalysisDelegate::dialog_canceled_ = false;
 int64_t FakeContentAnalysisDelegate::total_analysis_requests_count_ = 0;
@@ -72,11 +72,12 @@ FakeContentAnalysisDelegate::FakeContentAnalysisDelegate(
     std::string dm_token,
     content::WebContents* web_contents,
     Data data,
-    CompletionCallback callback)
+    CompletionCallback callback,
+    DeepScanAccessPoint access_point)
     : ContentAnalysisDelegate(web_contents,
                               std::move(data),
                               std::move(callback),
-                              safe_browsing::DeepScanAccessPoint::UPLOAD),
+                              access_point),
       delete_closure_(delete_closure),
       status_callback_(status_callback),
       dm_token_(std::move(dm_token)) {}
@@ -89,7 +90,7 @@ FakeContentAnalysisDelegate::~FakeContentAnalysisDelegate() {
 
 // static
 void FakeContentAnalysisDelegate::SetResponseResult(
-    safe_browsing::BinaryUploadService::Result result) {
+    ScanRequestUploadResult result) {
   result_ = result;
 }
 
@@ -122,10 +123,11 @@ std::unique_ptr<ContentAnalysisDelegate> FakeContentAnalysisDelegate::Create(
     std::string dm_token,
     content::WebContents* web_contents,
     Data data,
-    CompletionCallback callback) {
+    CompletionCallback callback,
+    DeepScanAccessPoint access_point) {
   auto ret = std::make_unique<FakeContentAnalysisDelegate>(
       delete_closure, status_callback, std::move(dm_token), web_contents,
-      std::move(data), std::move(callback));
+      std::move(data), std::move(callback), access_point);
   FilesRequestHandler::SetFactoryForTesting(base::BindRepeating(
       &FakeFilesRequestHandler::Create,
       base::BindRepeating(
@@ -136,6 +138,8 @@ std::unique_ptr<ContentAnalysisDelegate> FakeContentAnalysisDelegate::Create(
       base::BindRepeating(
           &FakeContentAnalysisDelegate::FakeUploadPageForDeepScanning,
           base::Unretained(ret.get()))));
+  ClipboardRequestHandler::SetFactoryForTesting(base::BindRepeating(
+      &FakeClipboardRequestHandler::Create, base::Unretained(ret.get())));
   return ret;
 }
 
@@ -215,29 +219,38 @@ ContentAnalysisResponse FakeContentAnalysisDelegate::MalwareAndDlpResponse(
   return response;
 }
 
+ContentAnalysisResponse FakeContentAnalysisDelegate::GetStatus(
+    const std::string& contents,
+    const base::FilePath& path) {
+  return status_callback_.Run(contents, path);
+}
+
 void FakeContentAnalysisDelegate::Response(
     std::string contents,
     base::FilePath path,
-    std::unique_ptr<safe_browsing::BinaryUploadService::Request> request,
+    std::unique_ptr<BinaryUploadRequest> request,
     std::optional<FakeFilesRequestHandler::FakeFileRequestCallback>
         file_request_callback,
     bool is_image_request) {
-  auto response =
-      (status_callback_.is_null() ||
-       result_ != safe_browsing::BinaryUploadService::Result::SUCCESS)
-          ? ContentAnalysisResponse()
-          : status_callback_.Run(contents, path);
+  auto response = (status_callback_.is_null() ||
+                   result_ != ScanRequestUploadResult::kSuccess)
+                      ? ContentAnalysisResponse()
+                      : status_callback_.Run(contents, path);
   if (request->IsAuthRequest()) {
-    StringRequestCallback(result_, response);
+    TextRequestCallback(CalculateRequestHandlerResult(
+        GetDataForTesting().settings, result_, response));
     return;
   }
 
   switch (request->analysis_connector()) {
     case AnalysisConnector::BULK_DATA_ENTRY:
+    case AnalysisConnector::DATA_COPIED:
       if (is_image_request) {
-        ImageRequestCallback(result_, response);
+        ImageRequestCallback(CalculateRequestHandlerResult(
+            GetDataForTesting().settings, result_, response));
       } else {
-        StringRequestCallback(result_, response);
+        TextRequestCallback(CalculateRequestHandlerResult(
+            GetDataForTesting().settings, result_, response));
       }
       break;
     case AnalysisConnector::FILE_ATTACHED:
@@ -250,69 +263,16 @@ void FakeContentAnalysisDelegate::Response(
           GetDataForTesting().settings, result_, response));
       break;
     case AnalysisConnector::FILE_TRANSFER:
+    case AnalysisConnector::NETWORK_REQUEST:
     case AnalysisConnector::ANALYSIS_CONNECTOR_UNSPECIFIED:
       NOTREACHED();
   }
 }
 
-void FakeContentAnalysisDelegate::UploadTextForDeepScanning(
-    std::unique_ptr<safe_browsing::BinaryUploadService::Request> request) {
-  if (GetDataForTesting()
-          .settings.cloud_or_local_settings.is_cloud_analysis()) {
-    DCHECK_EQ(dm_token_, request->device_token());
-  }
-
-  // For text requests, GetRequestData() is synchronous.
-  safe_browsing::BinaryUploadService::Request::Data data;
-  request->GetRequestData(base::BindLambdaForTesting(
-      [&data](safe_browsing::BinaryUploadService::Result,
-              safe_browsing::BinaryUploadService::Request::Data data_arg) {
-        data = std::move(data_arg);
-      }));
-
-  // Increment total analysis request count.
-  total_analysis_requests_count_++;
-
-  // Simulate a response.
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&FakeContentAnalysisDelegate::Response,
-                     weakptr_factory_.GetWeakPtr(), data.contents,
-                     base::FilePath(), std::move(request), std::nullopt, false),
-      response_delay);
-}
-
-void FakeContentAnalysisDelegate::UploadImageForDeepScanning(
-    std::unique_ptr<safe_browsing::BinaryUploadService::Request> request) {
-  if (GetDataForTesting()
-          .settings.cloud_or_local_settings.is_cloud_analysis()) {
-    DCHECK_EQ(dm_token_, request->device_token());
-  }
-
-  // For image requests, GetRequestData() is synchronous.
-  safe_browsing::BinaryUploadService::Request::Data data;
-  request->GetRequestData(base::BindLambdaForTesting(
-      [&data](safe_browsing::BinaryUploadService::Result,
-              safe_browsing::BinaryUploadService::Request::Data data_arg) {
-        data = std::move(data_arg);
-      }));
-
-  // Increment total analysis request count.
-  total_analysis_requests_count_++;
-
-  // Simulate a response.
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&FakeContentAnalysisDelegate::Response,
-                     weakptr_factory_.GetWeakPtr(), data.contents,
-                     base::FilePath(), std::move(request), std::nullopt, true),
-      response_delay);
-}
-
 void FakeContentAnalysisDelegate::FakeUploadFileForDeepScanning(
-    safe_browsing::BinaryUploadService::Result result,
+    ScanRequestUploadResult result,
     const base::FilePath& path,
-    std::unique_ptr<safe_browsing::BinaryUploadService::Request> request,
+    std::unique_ptr<BinaryUploadRequest> request,
     FakeFilesRequestHandler::FakeFileRequestCallback callback) {
   DCHECK(!path.empty());
   if (GetDataForTesting()
@@ -333,7 +293,7 @@ void FakeContentAnalysisDelegate::FakeUploadFileForDeepScanning(
 }
 
 void FakeContentAnalysisDelegate::FakeUploadPageForDeepScanning(
-    std::unique_ptr<safe_browsing::BinaryUploadService::Request> request) {
+    std::unique_ptr<BinaryUploadRequest> request) {
   if (GetDataForTesting()
           .settings.cloud_or_local_settings.is_cloud_analysis()) {
     DCHECK_EQ(dm_token_, request->device_token());
@@ -351,6 +311,34 @@ void FakeContentAnalysisDelegate::FakeUploadPageForDeepScanning(
       response_delay);
 }
 
+void FakeContentAnalysisDelegate::FakeUploadClipboardDataForDeepScanning(
+    ClipboardRequestHandler::Type type,
+    std::unique_ptr<BinaryUploadRequest> request) {
+  if (GetDataForTesting()
+          .settings.cloud_or_local_settings.is_cloud_analysis()) {
+    DCHECK_EQ(dm_token_, request->device_token());
+  }
+
+  // For text/image requests, GetRequestData() is synchronous.
+  BinaryUploadRequest::Data data;
+  request->GetRequestData(base::BindLambdaForTesting(
+      [&data](ScanRequestUploadResult, BinaryUploadRequest::Data data_arg) {
+        data = std::move(data_arg);
+      }));
+
+  // Increment total analysis request count.
+  total_analysis_requests_count_++;
+
+  // Simulate a response.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&FakeContentAnalysisDelegate::Response,
+                     weakptr_factory_.GetWeakPtr(), data.contents,
+                     base::FilePath(), std::move(request), std::nullopt,
+                     type == ClipboardRequestHandler::Type::kImage),
+      response_delay);
+}
+
 bool FakeContentAnalysisDelegate::ShowFinalResultInDialog() {
   dialog_shown_ = true;
   return ContentAnalysisDelegate::ShowFinalResultInDialog();
@@ -361,8 +349,7 @@ bool FakeContentAnalysisDelegate::CancelDialog() {
   return ContentAnalysisDelegate::CancelDialog();
 }
 
-safe_browsing::BinaryUploadService*
-FakeContentAnalysisDelegate::GetBinaryUploadService() {
+BinaryUploadService* FakeContentAnalysisDelegate::GetBinaryUploadService() {
   // This class overrides the upload service, so just return null here.
   return nullptr;
 }

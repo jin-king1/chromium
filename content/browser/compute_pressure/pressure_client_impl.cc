@@ -6,6 +6,7 @@
 
 #include "content/browser/compute_pressure/pressure_service_base.h"
 #include "services/device/public/mojom/pressure_update.mojom.h"
+#include "third_party/blink/public/mojom/compute_pressure/web_pressure_update.mojom.h"
 
 namespace content {
 
@@ -21,7 +22,17 @@ void PressureClientImpl::OnPressureUpdated(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (service_->ShouldDeliverUpdate()) {
-    client_associated_remote_->OnPressureUpdated(std::move(update));
+    device::mojom::PressureState state;
+    switch (update->source) {
+      case device::mojom::PressureSource::kCpu:
+        state = service_->CalculateState(update->data->cpu_utilization);
+        break;
+      default:
+        NOTREACHED();
+    }
+    client_associated_remote_->OnPressureUpdated(
+        blink::mojom::WebPressureUpdate::New(update->source, state,
+                                             update->timestamp));
   }
 }
 
@@ -60,7 +71,7 @@ PressureClientImpl::BindNewEndpointAndPassRemote() {
 
 // Bind PressureClient pendingRemote from Blink.
 void PressureClientImpl::BindPendingAssociatedRemote(
-    mojo::PendingAssociatedRemote<device::mojom::PressureClient>
+    mojo::PendingAssociatedRemote<blink::mojom::WebPressureClient>
         pending_associated_remote) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 

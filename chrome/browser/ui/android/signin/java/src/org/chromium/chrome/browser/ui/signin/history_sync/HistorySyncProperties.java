@@ -7,13 +7,13 @@ package org.chromium.chrome.browser.ui.signin.history_sync;
 import android.view.View;
 import android.view.View.OnClickListener;
 
-import androidx.annotation.StringRes;
-
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
 import org.chromium.chrome.browser.ui.signin.MinorModeHelper.ScreenMode;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
+@NullMarked
 class HistorySyncProperties {
     static final PropertyModel.WritableObjectPropertyKey<DisplayableProfileData> PROFILE_DATA =
             new PropertyModel.WritableObjectPropertyKey<>("profile_data");
@@ -26,11 +26,14 @@ class HistorySyncProperties {
     static final PropertyModel.WritableObjectPropertyKey<View.OnClickListener> ON_DECLINE_CLICKED =
             new PropertyModel.WritableObjectPropertyKey<>("on_decline_clicked");
 
-    static final PropertyModel.WritableIntPropertyKey TITLE_STRING_ID =
-            new PropertyModel.WritableIntPropertyKey("title_string_id");
+    static final PropertyModel.WritableObjectPropertyKey<String> TITLE_STRING =
+            new PropertyModel.WritableObjectPropertyKey<>("title_string");
 
-    static final PropertyModel.WritableIntPropertyKey SUBTITLE_STRING_ID =
-            new PropertyModel.WritableIntPropertyKey("subtitle_string_id");
+    static final PropertyModel.WritableObjectPropertyKey<String> SUBTITLE_STRING =
+            new PropertyModel.WritableObjectPropertyKey<>("subtitle_string");
+
+    static final PropertyModel.WritableObjectPropertyKey<String> DECLINE_STRING =
+            new PropertyModel.WritableObjectPropertyKey<>("decline_string");
 
     static final PropertyModel.WritableObjectPropertyKey<CharSequence> FOOTER_STRING =
             new PropertyModel.WritableObjectPropertyKey<>("footer_string");
@@ -46,8 +49,9 @@ class HistorySyncProperties {
                 PROFILE_DATA,
                 ON_ACCEPT_CLICKED,
                 ON_DECLINE_CLICKED,
-                TITLE_STRING_ID,
-                SUBTITLE_STRING_ID,
+                TITLE_STRING,
+                SUBTITLE_STRING,
+                DECLINE_STRING,
                 FOOTER_STRING,
                 MINOR_MODE_RESTRICTION_STATUS,
                 USE_LANDSCAPE_LAYOUT
@@ -59,16 +63,18 @@ class HistorySyncProperties {
             DisplayableProfileData profileData,
             OnClickListener onAcceptClicked,
             OnClickListener onDeclineClicked,
-            @StringRes int titleStringId,
-            @StringRes int subtitleStringId,
+            String titleString,
+            String subtitleString,
+            String declineString,
             String footerString,
             Boolean useLandscapeLayout) {
         return new PropertyModel.Builder(ALL_KEYS)
                 .with(PROFILE_DATA, profileData)
                 .with(ON_ACCEPT_CLICKED, onAcceptClicked)
                 .with(ON_DECLINE_CLICKED, onDeclineClicked)
-                .with(TITLE_STRING_ID, titleStringId)
-                .with(SUBTITLE_STRING_ID, subtitleStringId)
+                .with(TITLE_STRING, titleString)
+                .with(SUBTITLE_STRING, subtitleString)
+                .with(DECLINE_STRING, declineString)
                 .with(FOOTER_STRING, footerString)
                 .with(USE_LANDSCAPE_LAYOUT, useLandscapeLayout)
                 .with(MINOR_MODE_RESTRICTION_STATUS, ScreenMode.PENDING)

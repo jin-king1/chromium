@@ -7,9 +7,9 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -21,11 +21,14 @@
 #include "chrome/browser/prefs/chrome_pref_service_factory.h"
 #include "chrome/browser/profile_resetter/profile_resetter.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
+#include "components/search_engines/default_search_manager.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
+#include "extensions/browser/pref_names.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -118,6 +121,11 @@ void ResetSettingsHandler::RegisterMessages() {
       base::BindRepeating(&ResetSettingsHandler::HandleGetReportedSettings,
                           base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
+      "getTamperedPreferencePaths",
+      base::BindRepeating(
+          &ResetSettingsHandler::HandleGetTamperedPreferencePaths,
+          base::Unretained(this)));
+  web_ui()->RegisterMessageCallback(
       "onHideResetProfileDialog",
       base::BindRepeating(&ResetSettingsHandler::OnHideResetProfileDialog,
                           base::Unretained(this)));
@@ -139,13 +147,13 @@ void ResetSettingsHandler::RegisterMessages() {
 }
 
 void ResetSettingsHandler::HandleResetProfileSettings(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
 
   CHECK_EQ(3U, args.size());
   const std::string& callback_id = args[0].GetString();
   const bool& send_settings = args[1].GetBool();
-  std::string request_origin_string = args[2].GetString();
+  const std::string& request_origin_string = args[2].GetString();
   reset_report::ChromeResetReport::ResetRequestOrigin request_origin =
       ResetRequestOriginFromString(request_origin_string);
 
@@ -174,7 +182,7 @@ void ResetSettingsHandler::OnResetProfileSettingsDone(
 }
 
 void ResetSettingsHandler::HandleGetReportedSettings(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
 
   CHECK_EQ(1U, args.size());
@@ -185,29 +193,87 @@ void ResetSettingsHandler::HandleGetReportedSettings(
                      callback_weak_ptr_factory_.GetWeakPtr(), callback_id));
 }
 
+void ResetSettingsHandler::HandleGetTamperedPreferencePaths(
+    const base::ListValue& args) {
+  AllowJavascript();
+
+  // We check for expiration before sending the pref list to the UI.
+  const base::Time reset_time = chrome_prefs::GetResetTime(profile_);
+  if (!reset_time.is_null()) {
+    static constexpr base::TimeDelta kBannerShowTime = base::Days(5);
+    const base::TimeDelta since_reset = base::Time::Now() - reset_time;
+
+    if (since_reset >= kBannerShowTime) {
+      // The banner has expired. Clear both prefs.
+      chrome_prefs::ClearResetTime(profile_);
+      chrome_prefs::ClearTamperedPrefList(profile_);
+    }
+  }
+
+  CHECK_EQ(1U, args.size());
+  const base::Value& callback_id = args[0];
+
+  base::ListValue tampered_paths;
+  const base::ListValue& tampered_prefs =
+      chrome_prefs::GetTamperedPrefList(profile_);
+
+  // Using a flat_set to avoid duplicates.
+  base::flat_set<std::u16string> changed_settings;
+
+  for (const auto& pref_value : tampered_prefs) {
+    const std::string* pref_path = pref_value.GetIfString();
+    if (*pref_path ==
+        DefaultSearchManager::kDefaultSearchProviderDataPrefName) {
+      changed_settings.insert(
+          l10n_util::GetStringUTF16(IDS_SETTINGS_RESET_DSE));
+    } else if (*pref_path == prefs::kShowHomeButton) {
+      changed_settings.insert(
+          l10n_util::GetStringUTF16(IDS_SETTINGS_SHOW_HOME_BUTTON));
+    } else if (*pref_path == prefs::kHomePage) {
+      changed_settings.insert(
+          l10n_util::GetStringUTF16(IDS_SETTINGS_RESET_HOMEPAGE));
+    } else if (*pref_path == prefs::kPinnedTabs) {
+      changed_settings.insert(
+          l10n_util::GetStringUTF16(IDS_SETTINGS_RESET_PINNED_TABS));
+    } else if (base::StartsWith(*pref_path,
+                                extensions::pref_names::kExtensions)) {
+      changed_settings.insert(
+          l10n_util::GetStringUTF16(IDS_SETTINGS_RESET_EXTENSIONS));
+    }
+  }
+
+  base::ListValue result;
+  for (const auto& setting : changed_settings) {
+    result.Append(setting);
+  }
+
+  ResolveJavascriptCallback(callback_id, result);
+}
+
 void ResetSettingsHandler::OnGetReportedSettingsDone(std::string callback_id) {
-  base::Value::List list =
+  base::ListValue list =
       GetReadableFeedbackForSnapshot(profile_, *setting_snapshot_);
   ResolveJavascriptCallback(base::Value(callback_id), list);
 }
 
 void ResetSettingsHandler::OnShowResetProfileDialog(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   if (!GetResetter()->IsActive()) {
     setting_snapshot_ = std::make_unique<ResettableSettingsSnapshot>(profile_);
   }
 }
 
 void ResetSettingsHandler::OnHideResetProfileDialog(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   if (!GetResetter()->IsActive()) {
     setting_snapshot_.reset();
   }
 }
 
 void ResetSettingsHandler::OnHideResetProfileBanner(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   chrome_prefs::ClearResetTime(profile_);
+  chrome_prefs::ClearTamperedPrefList(profile_);
 }
 
 void ResetSettingsHandler::ResetProfile(
@@ -231,7 +297,7 @@ ProfileResetter* ResetSettingsHandler::GetResetter() {
 }
 
 void ResetSettingsHandler::HandleGetTriggeredResetToolName(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
 
   CHECK_EQ(1U, args.size());
@@ -263,7 +329,7 @@ void ResetSettingsHandler::HandleGetTriggeredResetToolName(
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
-void ResetSettingsHandler::OnShowSanitizeDialog(const base::Value::List& args) {
+void ResetSettingsHandler::OnShowSanitizeDialog(const base::ListValue& args) {
   // TODO(b/357057195) move sanitize functionality functions out of
   // ResetSettingsHandler and only leave the UI parts for ResetSettingsHandler.
   if (base::FeatureList::IsEnabled(ash::features::kSanitize)) {

@@ -32,6 +32,7 @@
 #include "media/audio/fake_audio_manager.h"
 #include "media/audio/mock_audio_debug_recording_manager.h"
 #include "media/audio/test_audio_thread.h"
+#include "media/base/audio_bus.h"
 #include "media/base/limits.h"
 #include "media/base/media_switches.h"
 #include "media/media_buildflags.h"
@@ -44,7 +45,6 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "media/audio/mac/audio_manager_mac.h"
-#include "media/base/mac/audio_latency_mac.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -368,10 +368,10 @@ TEST_F(AudioManagerTest, EnumerateInputDevicesAlsaWithInputDeviceSwitch) {
   AudioDeviceDescriptions device_descriptions;
   device_info_accessor_->GetAudioInputDeviceDescriptions(&device_descriptions);
   CheckDeviceDescriptions(device_descriptions);
-  EXPECT_TRUE(base::Contains(device_descriptions, "switch-input-device",
-                             [](const auto& device_description) {
-                               return device_description.unique_id;
-                             }));
+  EXPECT_TRUE(std::ranges::contains(device_descriptions, "switch-input-device",
+                                    [](const auto& device_description) {
+                                      return device_description.unique_id;
+                                    }));
 }
 
 TEST_F(AudioManagerTest, EnumerateOutputDevicesAlsa) {
@@ -393,10 +393,10 @@ TEST_F(AudioManagerTest, EnumerateOutputDevicesAlsaWithOutputDeviceSwitch) {
   AudioDeviceDescriptions device_descriptions;
   device_info_accessor_->GetAudioOutputDeviceDescriptions(&device_descriptions);
   CheckDeviceDescriptions(device_descriptions);
-  EXPECT_TRUE(base::Contains(device_descriptions, "switch-output-device",
-                             [](const auto& device_description) {
-                               return device_description.unique_id;
-                             }));
+  EXPECT_TRUE(std::ranges::contains(device_descriptions, "switch-output-device",
+                                    [](const auto& device_description) {
+                                      return device_description.unique_id;
+                                    }));
 }
 #endif  // defined(USE_ALSA)
 
@@ -468,20 +468,22 @@ class TestAudioManager : public FakeAudioManager {
   }
 
  private:
-  void GetAudioInputDeviceNames(AudioDeviceNames* device_names) override {
+  bool GetAudioInputDeviceNames(AudioDeviceNames* device_names) override {
     DCHECK(device_names->empty());
     device_names->emplace_back(AudioDeviceName::CreateDefault());
     device_names->emplace_back("Input 1", "input1");
     device_names->emplace_back("Input 2", "input2");
     device_names->emplace_back("Input 3", "input3");
+    return true;
   }
 
-  void GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override {
+  bool GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override {
     DCHECK(device_names->empty());
     device_names->emplace_back(AudioDeviceName::CreateDefault());
     device_names->emplace_back("Output 1", "output1");
     device_names->emplace_back("Output 2", "output2");
     device_names->emplace_back("Output 3", "output3");
+    return true;
   }
 };
 
@@ -609,9 +611,10 @@ TEST_F(AudioManagerTest, CheckMinMaxAudioBufferSizeCallbacks) {
 #if BUILDFLAG(IS_MAC)
   // On OSX the preferred output buffer size is higher than the minimum
   // but users may request the minimum size explicitly.
-  ASSERT_GT(default_params.frames_per_buffer(),
-            GetMinAudioBufferSizeMacOS(media::limits::kMinAudioBufferSize,
-                                       default_params.sample_rate()));
+  ASSERT_GT(
+      default_params.frames_per_buffer(),
+      AudioManagerMac::GetMinAudioBufferSizeMacOS(
+          media::limits::kMinAudioBufferSize, default_params.sample_rate()));
 #else
   static_assert(BUILDFLAG(USE_CRAS));
   // On CRAS the preferred output buffer size varies per board and may be as low

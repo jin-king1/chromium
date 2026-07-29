@@ -4,7 +4,9 @@
 
 module blink.mojom;
 
+import "mojo/public/mojom/base/values.mojom";
 import "services/on_device_model/public/mojom/on_device_model.mojom";
+import "skia/public/mojom/bitmap.mojom";
 import "third_party/blink/public/mojom/ai/ai_common.mojom";
 import "third_party/blink/public/mojom/ai/model_streaming_responder.mojom";
 
@@ -36,40 +38,108 @@ struct AILanguageModelInstanceInfo {
   // The maximum number of tokens that the AILanguageModel can hold in the
   // context. When the new prompt or response is being stored in the context,
   // the AILanguageModel will ensure the context stores no more than
-  // `max_tokens`, by optionally evicting some oldest entries.
-  uint64 max_tokens;
+  // `input_quota`, by optionally evicting some oldest entries.
+  uint64 input_quota;
   // The number of tokens that are already in the context.
-  uint64 current_tokens;
+  uint64 input_usage;
 
-  // The following values are the same as the one provided by the caller when
-  // creating the AILanguageModel.
+  // The sampling params provided by the caller when creating the instance.
   AILanguageModelSamplingParams sampling_params;
-  array<AILanguageCode>? expected_input_languages;
+
+  // Supported prompt input types for the session.
+  array<AILanguageModelPromptType>? input_types;
+
+  // Multimodal input format parameters for preprocessing.
+  int32? audio_sample_rate_hz;
+  int32? audio_channel_count;
+
+  // The sampling mode provided by the caller when creating the instance.
+  AILanguageModelSamplingMode? sampling_mode;
 };
 
-// The enum describes the possible roles in the initial prompt.
-enum AILanguageModelInitialPromptRole {
+// The role for a given prompt. See LanguageModelPromptRole in IDL.
+enum AILanguageModelPromptRole {
   kSystem = 0,
   kUser = 1,
   kAssistant = 2,
-
-  // Append new line here
 };
 
-// Each initial prompt contains a role and the actual content.
-struct AILanguageModelInitialPrompt {
-  AILanguageModelInitialPromptRole role;
-  // This can be any arbitrary string taken from the JavaScript API.
-  string content;
+// The type of data for a given prompt. See LanguageModelMessageType in IDL.
+enum AILanguageModelPromptType {
+  kText = 0,
+  kImage = 1,
+  kAudio = 2,
+  kToolCall = 3,
+  kToolResponse = 4,
+};
+
+// Categorical sampling modes for ongoing parameter control explorations.
+// See LanguageModelSamplingMode in IDL.
+enum AILanguageModelSamplingMode {
+  kMostPredictable = 0,
+  kPredictable = 1,
+  kBalanced = 2,
+  kCreative = 3,
+  kMostCreative = 4,
+};
+
+// The expected data type and languages specified with session creation.
+// See LanguageModelExpected in IDL.
+struct AILanguageModelExpected {
+  AILanguageModelPromptType type;
+  array<AILanguageCode>? languages;
+};
+
+// The supported prompt input content types. These each contain arbitrary data
+// provided via the JavaScript API. See LanguageModelPromptContent in IDL.
+union AILanguageModelPromptContent {
+  // Text provided as input.
+  string text;
+
+  // Bitmap provided as input.
+  skia.mojom.BitmapN32 bitmap;
+
+  // Audio provided as input.
+  on_device_model.mojom.AudioData audio;
+
+  // Tool call provided as input (from JavaScript LanguageModelToolCall).
+  // Format: {"callID": "...", "name": "...", "arguments": {...}}
+  mojo_base.mojom.DictionaryValue tool_call;
+
+  // Tool response provided as input (from JavaScript LanguageModelToolSuccess
+  // or LanguageModelToolError).
+  // Success format: {"callID": "...", "name": "...", "result": [...]}
+  // Error format: {"callID": "...", "name": "...", "errorMessage": "..."}
+  mojo_base.mojom.DictionaryValue tool_response;
+};
+
+// A prompt includes a role and content. See LanguageModelMessage in IDL.
+struct AILanguageModelPrompt {
+  AILanguageModelPromptRole role;
+  array<AILanguageModelPromptContent> content;
+  // Whether this prompt is an assistant response prefix.
+  bool is_prefix = false;
+};
+
+// Declares a tool that can be used by the language model.
+// See LanguageModelToolDeclaration in IDL.
+struct AILanguageModelToolDeclaration {
+  // Unique name identifying this tool.
+  string name;
+  // Human-readable description of what the tool does.
+  string description;
+  // JSON Schema defining the tool's input parameters as structured data.
+  mojo_base.mojom.DictionaryValue input_schema;
 };
 
 // This is used when creating a new AILanguageModel.
 struct AILanguageModelCreateOptions {
   AILanguageModelSamplingParams? sampling_params;
-  // This can be any arbitrary string taken from the JavaScript API.
-  string? system_prompt;
-  array<AILanguageModelInitialPrompt> initial_prompts;
-  array<AILanguageCode>? expected_input_languages;
+  array<AILanguageModelPrompt> initial_prompts;
+  array<AILanguageModelExpected>? expected_inputs;
+  array<AILanguageModelExpected>? expected_outputs;
+  array<AILanguageModelToolDeclaration>? tools;
+  AILanguageModelSamplingMode? sampling_mode;
 };
 
 // The client interface that receives an AILanguageModel or errors from an
@@ -80,48 +150,46 @@ interface AIManagerCreateLanguageModelClient {
   // AILanguageModel, this method is called with a null pending remote.
   // It also returns the language model info if the language model is created
   // successfully.
-  OnResult(
-    pending_remote<blink.mojom.AILanguageModel> language_model_remote,
-    AILanguageModelInstanceInfo info
-  );
+  OnResult(pending_remote<blink.mojom.AILanguageModel> language_model_remote,
+           AILanguageModelInstanceInfo info);
+
   // Called when the manager cannot create an AILanguageModel.
-  OnError(AIManagerCreateClientError error);
+  // `quota_error_info` may provide additional info for kInitialInputTooLarge.
+  OnError(AIManagerCreateClientError error, QuotaErrorInfo? quota_error_info);
 };
 
-// The client interface that receives the number of tokens counted by the
-// AIManager.
-interface AILanguageModelCountPromptTokensClient {
-  // Called with a created language model's mojo interface as a result for the
-  // CountPromptTokens() method of the AIManager.
-  OnResult(uint32 number_of_tokens);
-};
-
-// A session for a model that allows executing an input and streaming the
-// output.
+// A session for prompting a model with inputs to obtain streaming responses.
 interface AILanguageModel {
-  // Prompts the model on the given input which can be an arbitrary string
-  // from the JavaScript API.
-  Prompt(
-    on_device_model.mojom.Input input,
-    pending_remote<ModelStreamingResponder> pending_responder
-  );
+  // Prompts the model with arbitrary content provided via the JavaScript API.
+  // An optional JSON schema or regex can be provided to define structured
+  // output requirements for the response. Note that only one of the JSON schema
+  // or regex should be provided.
+  Prompt(array<AILanguageModelPrompt> prompts,
+         on_device_model.mojom.ResponseConstraint? constraint,
+         pending_remote<ModelStreamingResponder> pending_responder);
+
+  // Appends the prompts to the context, but they won't be processed yet until
+  // `Prompt()` is called. This method can be called multiple times before the
+  // `Prompt()`.
+  Append(array<AILanguageModelPrompt> prompts,
+         pending_remote<ModelStreamingResponder> client);
+
   // Creates a new session with the same configuration and existing context
   // as the current session.
-  // Note that this method is called by the `AILanguageModel.clone()` method from
-  // blink, but it is named as `Fork` instead of `Clone` to avoid confusion
+  // Note that this method is called by the `AILanguageModel.clone()` method
+  // from blink, but it is named as `Fork` instead of `Clone` to avoid confusion
   // with the "clone" term in mojo context (which indicates binding another
   // client to the same instance).
   // Similar to `AIManager.CreateLanguageModel()`, this method returns the
   // information of the created session.
-  Fork(
-    pending_remote<AIManagerCreateLanguageModelClient> client
-  );
+  Fork(pending_remote<AIManagerCreateLanguageModelClient> client);
+
   // Destroys the session.
   Destroy();
-  // Counts the number of token in the given prompt text `input` which can
-  // be an arbitrary string from the JavaScript API.
-  CountPromptTokens(
-    string input,
-    pending_remote<AILanguageModelCountPromptTokensClient> client
-  );
+
+  // Counts the number of token in the given prompt `input` which can
+  // be arbitrary strings or multimodal data from the JavaScript API. If it's
+  // unable to measure, the method will return null.
+  MeasureInputUsage(array<AILanguageModelPrompt> input)
+      => (uint32? number_of_tokens);
 };

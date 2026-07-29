@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ash/chromebox_for_meetings/xu_camera/xu_camera_service.h"
 
 #include <asm-generic/errno.h>
@@ -16,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
@@ -27,7 +23,6 @@
 #include "chromeos/services/chromebox_for_meetings/public/cpp/service_connection.h"
 #include "chromeos/services/chromebox_for_meetings/public/mojom/xu_camera.mojom.h"
 #include "content/public/test/browser_task_environment.h"
-#include "content/public/test/test_utils.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
@@ -60,8 +55,9 @@ const std::vector<uint8_t> kLen() {
 }                            // little-endian uint16
 const int32_t kValue = 123;  // Fake v4l2 value
 const std::vector<uint8_t> kValueAsUint8() {
-  return std::vector<uint8_t>((std::uint8_t*)&(kValue),
-                              (std::uint8_t*)&(kValue) + sizeof(std::int32_t));
+  return std::vector<uint8_t>(
+      (std::uint8_t*)&(kValue),
+      UNSAFE_TODO((std::uint8_t*)&(kValue) + sizeof(std::int32_t)));
 }
 
 mojom::WebcamIdPtr kDevPath() {
@@ -102,10 +98,10 @@ class TestDelegate : public XuCameraService::Delegate {
           static_cast<uvc_xu_control_query*>(query);
       if (UVC_GET_LEN == control_query->query) {
         control_query->data[0] = kLen()[0];
-        control_query->data[1] = kLen()[1];
+        UNSAFE_TODO(control_query->data[1]) = kLen()[1];
       } else if (UVC_GET_CUR == control_query->query) {
         control_query->data[0] = kData()[0];
-        control_query->data[1] = kData()[1];
+        UNSAFE_TODO(control_query->data[1]) = kData()[1];
       }
     }
     return 0;
@@ -178,13 +174,17 @@ class CfMXuCameraServiceTest
                 pending_adaptor_remote,
             chromeos::cfm::mojom::CfmServiceContext::ProvideAdaptorCallback
                 callback) {
-          ASSERT_EQ(interface_name, service_id);
+          EXPECT_EQ(interface_name, service_id);
           adaptor_remote_.Bind(std::move(pending_adaptor_remote));
           std::move(callback).Run(true);
+          run_loop.Quit();
         }));
 
-    EXPECT_TRUE(GetClient()->FakeEmitSignal(interface_name));
-    run_loop.RunUntilIdle();
+    const bool signal_emitted = GetClient()->FakeEmitSignal(interface_name);
+    EXPECT_TRUE(signal_emitted);
+    if (signal_emitted) {
+      run_loop.Run();
+    }
 
     EXPECT_TRUE(adaptor_remote_.is_connected());
 

@@ -26,8 +26,8 @@ DeviceSensorEntry::DeviceSensorEntry(DeviceSensorEventPump* event_pump,
 
 DeviceSensorEntry::~DeviceSensorEntry() = default;
 
-void DeviceSensorEntry::Start(
-    mojom::blink::WebSensorProvider* sensor_provider) {
+void DeviceSensorEntry::Start(mojom::blink::WebSensorProvider* sensor_provider,
+                              bool user_gesture) {
   // If sensor remote is not bound, reset to |kNotInitialized| state (in case
   // we're in some other state), unless we're currently being initialized (which
   // is indicated by either |kInitializing| or |kShouldSuspend| state).
@@ -38,9 +38,9 @@ void DeviceSensorEntry::Start(
 
   if (state_ == State::kNotInitialized) {
     state_ = State::kInitializing;
-    sensor_provider->GetSensor(
-        type_, WTF::BindOnce(&DeviceSensorEntry::OnSensorCreated,
-                             WrapWeakPersistent(this)));
+    sensor_provider->GetSensor(type_, user_gesture,
+                               BindOnce(&DeviceSensorEntry::OnSensorCreated,
+                                        WrapWeakPersistent(this)));
   } else if (state_ == State::kSuspended) {
     sensor_remote_->Resume();
     state_ = State::kActive;
@@ -150,13 +150,12 @@ void DeviceSensorEntry::OnSensorCreated(
       static_cast<double>(DeviceSensorEventPump::kDefaultPumpFrequencyHz),
       params->maximum_frequency);
 
-  sensor_remote_.set_disconnect_handler(WTF::BindOnce(
+  sensor_remote_.set_disconnect_handler(BindOnce(
       &DeviceSensorEntry::HandleSensorError, WrapWeakPersistent(this)));
   sensor_remote_->ConfigureReadingChangeNotifications(/*enabled=*/false);
   sensor_remote_->AddConfiguration(
-      std::move(config),
-      WTF::BindOnce(&DeviceSensorEntry::OnSensorAddConfiguration,
-                    WrapWeakPersistent(this)));
+      std::move(config), BindOnce(&DeviceSensorEntry::OnSensorAddConfiguration,
+                                  WrapWeakPersistent(this)));
 }
 
 void DeviceSensorEntry::OnSensorAddConfiguration(bool success) {

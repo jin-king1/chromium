@@ -2,12 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "gpu/command_buffer/service/raster_decoder.h"
+
+#include "cc/paint/paint_op_buffer.h"
 
 #include <limits>
 #include <memory>
@@ -15,6 +12,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
@@ -48,8 +46,9 @@ namespace {
 void CopyMailboxes(GLbyte (&output)[sizeof(Mailbox) * 2],
                    const Mailbox& source,
                    const Mailbox& dest) {
-  memcpy(output, source.name, sizeof(source.name));
-  memcpy(output + sizeof(source.name), dest.name, sizeof(dest.name));
+  UNSAFE_TODO(memcpy(output, source.name, sizeof(source.name)));
+  UNSAFE_TODO(
+      memcpy(output + sizeof(source.name), dest.name, sizeof(dest.name)));
 }
 
 }  // anonymous namespace
@@ -159,23 +158,6 @@ TEST_P(RasterDecoderTest, BeginEndQueryEXTCommandsIssuedCHROMIUM) {
   EXPECT_FALSE(query->IsActive());
 }
 
-TEST_P(RasterDecoderTest, QueryCounterEXTCommandsIssuedTimestampCHROMIUM) {
-  GenHelper<cmds::GenQueriesEXTImmediate>(kNewClientId);
-
-  cmds::QueryCounterEXT query_counter_cmd;
-  query_counter_cmd.Init(kNewClientId, GL_COMMANDS_ISSUED_TIMESTAMP_CHROMIUM,
-                         shared_memory_id_, kSharedMemoryOffset, 1);
-  EXPECT_EQ(error::kNoError, ExecuteCmd(query_counter_cmd));
-  EXPECT_EQ(GL_NO_ERROR, GetGLError());
-
-  QueryManager* query_manager = decoder_->GetQueryManager();
-  ASSERT_TRUE(query_manager != nullptr);
-  QueryManager::Query* query = query_manager->GetQuery(kNewClientId);
-  ASSERT_TRUE(query != nullptr);
-  EXPECT_FALSE(query->IsPending());
-  EXPECT_FALSE(query->IsActive());
-}
-
 TEST_P(RasterDecoderManualInitTest, GetCapabilitiesHalfFloatLinear) {
   InitState init;
   init.extensions.push_back("GL_OES_texture_half_float_linear");
@@ -212,15 +194,14 @@ class RasterDecoderOOPTest : public testing::Test, DecoderClient {
 
     gpu_feature_info_.status_values[GPU_FEATURE_TYPE_GPU_TILE_RASTERIZATION] =
         kGpuFeatureStatusEnabled;
-    auto feature_info = base::MakeRefCounted<gles2::FeatureInfo>(
-        workarounds, gpu_feature_info_);
 
     context_state_ = base::MakeRefCounted<SharedContextState>(
         std::move(share_group), std::move(surface), std::move(context),
         false /* use_virtualized_gl_contexts */, base::DoNothing(),
         GpuPreferences().gr_context_type);
     context_state_->InitializeSkia(GpuPreferences(), workarounds);
-    context_state_->InitializeGL(GpuPreferences(), feature_info);
+    context_state_->InitializeGL(GpuPreferences(), workarounds,
+                                 gpu_feature_info_);
 
     decoder_ = CreateDecoder();
 
@@ -228,8 +209,8 @@ class RasterDecoderOOPTest : public testing::Test, DecoderClient {
         command_buffer_service_->CreateTransferBufferHelper(kSharedBufferSize,
                                                             &shared_memory_id_);
     shared_memory_offset_ = kSharedMemoryOffset;
-    shared_memory_address_ =
-        static_cast<int8_t*>(buffer->memory()) + shared_memory_offset_;
+    shared_memory_address_ = UNSAFE_TODO(
+        static_cast<int8_t*>(buffer->memory()) + shared_memory_offset_);
 
     workarounds.webgl_or_caps_max_texture_size = INT_MAX - 1;
     shared_image_factory_ = std::make_unique<SharedImageFactory>(
@@ -262,7 +243,7 @@ class RasterDecoderOOPTest : public testing::Test, DecoderClient {
   }
 
   RasterDecoderOOPTest() : memory_tracker_(nullptr) {
-    memset(immediate_buffer_, 0xEE, sizeof(immediate_buffer_));
+    UNSAFE_TODO(memset(immediate_buffer_, 0xEE, sizeof(immediate_buffer_)));
   }
 
   // DecoderClient implementation.
@@ -275,20 +256,14 @@ class RasterDecoderOOPTest : public testing::Test, DecoderClient {
   void OnRescheduleAfterFinished() override {}
   void ScheduleGrContextCleanup() override {}
   void HandleReturnData(base::span<const uint8_t> data) override {}
-  bool ShouldYield() override { return false; }
 
   std::unique_ptr<RasterDecoder> CreateDecoder() {
     command_buffer_service_ = std::make_unique<FakeCommandBufferServiceBase>();
-    auto decoder = base::WrapUnique(RasterDecoder::Create(
+    auto decoder = RasterDecoder::Create(
         this, command_buffer_service_.get(), &outputter_, gpu_feature_info_,
-        GpuPreferences(), nullptr /* memory_tracker */, &shared_image_manager_,
-        context_state_, true /* is_privileged */));
-    ContextCreationAttribs attribs;
-    attribs.enable_gpu_rasterization = true;
-    attribs.enable_raster_interface = true;
-    CHECK_EQ(decoder->Initialize(context_state_->surface(),
-                                 context_state_->context(), true,
-                                 gles2::DisallowedFeatures(), attribs),
+        GpuPreferences(), /*memory_tracker=*/nullptr, &shared_image_manager_,
+        context_state_, /*is_privileged=*/true);
+    CHECK_EQ(decoder->Initialize(/*lose_context_when_out_of_memory=*/false),
              ContextResult::kSuccess);
     return decoder;
   }
@@ -304,10 +279,13 @@ class RasterDecoderOOPTest : public testing::Test, DecoderClient {
     // Via this function, this test creates mailboxes that are used as both the
     // sources of reads and destinations of writes via the raster interface.
     shared_image_factory_->CreateSharedImage(
-        mailbox, format, size, color_space, kTopLeft_GrSurfaceOrigin,
-        kPremul_SkAlphaType, gpu::kNullSurfaceHandle,
-        SHARED_IMAGE_USAGE_RASTER_READ | SHARED_IMAGE_USAGE_RASTER_WRITE,
-        "TestLabel");
+        mailbox,
+        SharedImageInfo(
+            format, size, color_space, kTopLeft_GrSurfaceOrigin,
+            kPremul_SkAlphaType,
+            SHARED_IMAGE_USAGE_RASTER_READ | SHARED_IMAGE_USAGE_RASTER_WRITE,
+            "TestLabel"),
+        gpu::kNullSurfaceHandle);
 
     if (cleared) {
       SharedImageRepresentationFactory repr_factory(shared_image_manager(),
@@ -400,7 +378,7 @@ TEST_F(RasterDecoderOOPTest, CopyTexSubImage2DSizeMismatch) {
   {
     // This will initialize the bottom right corner of destination.
     auto& cmd = *GetImmediateAs<cmds::CopySharedImageINTERNALImmediate>();
-    cmd.Init(1, 1, 0, 0, 1, 1, mailboxes);
+    cmd.Init(1, 1, 0, 0, 1, 1, 1, 1, mailboxes);
     EXPECT_EQ(error::kNoError, ExecuteImmediateCmd(cmd, sizeof(mailboxes)));
     EXPECT_EQ(GL_NO_ERROR, GetGLError());
     EXPECT_EQ(representation->ClearedRect(), gfx::Rect(1, 1, 1, 1));
@@ -409,7 +387,7 @@ TEST_F(RasterDecoderOOPTest, CopyTexSubImage2DSizeMismatch) {
   {
     // Dest rect outside of dest bounds
     auto& cmd = *GetImmediateAs<cmds::CopySharedImageINTERNALImmediate>();
-    cmd.Init(2, 2, 0, 0, 1, 1, mailboxes);
+    cmd.Init(2, 2, 0, 0, 1, 1, 1, 1, mailboxes);
     EXPECT_EQ(error::kNoError, ExecuteImmediateCmd(cmd, sizeof(mailboxes)));
     EXPECT_EQ(GL_INVALID_VALUE, GetGLError());
     EXPECT_EQ(representation->ClearedRect(), gfx::Rect(1, 1, 1, 1));
@@ -418,7 +396,7 @@ TEST_F(RasterDecoderOOPTest, CopyTexSubImage2DSizeMismatch) {
   {
     // Source rect outside of source bounds
     auto& cmd = *GetImmediateAs<cmds::CopySharedImageINTERNALImmediate>();
-    cmd.Init(0, 0, 0, 0, 2, 2, mailboxes);
+    cmd.Init(0, 0, 0, 0, 2, 2, 2, 2, mailboxes);
     EXPECT_EQ(error::kNoError, ExecuteImmediateCmd(cmd, sizeof(mailboxes)));
     EXPECT_EQ(GL_INVALID_VALUE, GetGLError());
     EXPECT_EQ(representation->ClearedRect(), gfx::Rect(1, 1, 1, 1));
@@ -444,7 +422,7 @@ TEST_F(RasterDecoderOOPTest, CopyTexSubImage2DTwiceClearsUnclearedTexture) {
   // This will initialize the top half of destination.
   {
     auto& cmd = *GetImmediateAs<cmds::CopySharedImageINTERNALImmediate>();
-    cmd.Init(0, 0, 0, 0, 2, 1, mailboxes);
+    cmd.Init(0, 0, 0, 0, 2, 1, 2, 1, mailboxes);
     EXPECT_EQ(error::kNoError, ExecuteImmediateCmd(cmd, sizeof(mailboxes)));
   }
   EXPECT_EQ(gfx::Rect(0, 0, 2, 1), representation->ClearedRect());
@@ -453,7 +431,7 @@ TEST_F(RasterDecoderOOPTest, CopyTexSubImage2DTwiceClearsUnclearedTexture) {
   // This will initialize bottom half of the destination.
   {
     auto& cmd = *GetImmediateAs<cmds::CopySharedImageINTERNALImmediate>();
-    cmd.Init(0, 1, 0, 0, 2, 1, mailboxes);
+    cmd.Init(0, 1, 0, 0, 2, 1, 2, 1, mailboxes);
     EXPECT_EQ(error::kNoError, ExecuteImmediateCmd(cmd, sizeof(mailboxes)));
   }
   EXPECT_TRUE(representation->IsCleared());
@@ -481,7 +459,7 @@ TEST_F(RasterDecoderOOPTest, CopyTexSubImage2DPartialFailsWithUnalignedRect) {
   // This will initialize the top half of destination.
   {
     auto& cmd = *GetImmediateAs<cmds::CopySharedImageINTERNALImmediate>();
-    cmd.Init(0, 0, 0, 0, 2, 1, mailboxes);
+    cmd.Init(0, 0, 0, 0, 2, 1, 2, 1, mailboxes);
     EXPECT_EQ(error::kNoError, ExecuteImmediateCmd(cmd, sizeof(mailboxes)));
   }
   EXPECT_EQ(gfx::Rect(0, 0, 2, 1), representation->ClearedRect());
@@ -492,7 +470,7 @@ TEST_F(RasterDecoderOOPTest, CopyTexSubImage2DPartialFailsWithUnalignedRect) {
   // this will fail.
   {
     auto& cmd = *GetImmediateAs<cmds::CopySharedImageINTERNALImmediate>();
-    cmd.Init(1, 1, 0, 0, 1, 1, mailboxes);
+    cmd.Init(1, 1, 0, 0, 1, 1, 1, 1, mailboxes);
     EXPECT_EQ(error::kNoError, ExecuteImmediateCmd(cmd, sizeof(mailboxes)));
     EXPECT_EQ(GL_INVALID_VALUE, GetGLError());
   }
@@ -525,6 +503,27 @@ TEST_F(RasterDecoderOOPTest, StateRestoreAcrossDecoders) {
 
   // Make sure the context is preserved across decoders.
   EXPECT_FALSE(context_state_->gr_context()->abandoned());
+}
+
+TEST_F(RasterDecoderOOPTest, SharedImageProviderRejectsActiveOutputMailbox) {
+  context_state_->set_need_context_state_reset(true);
+  gpu::Mailbox mailbox =
+      CreateMailbox(viz::SinglePlaneFormat::kRGBA_8888,
+                    /*width=*/2, /*height=*/2,
+                    /*cleared=*/true);
+
+  auto& cmd = *GetImmediateAs<cmds::BeginRasterCHROMIUMImmediate>();
+  cmd.Init(0.0f, 0.0f, 0.0f, 0.0f, false, 0, kNoMSAA, false, false, 1.0f,
+           mailbox.name);
+  EXPECT_EQ(error::kNoError, ExecuteImmediateCmd(cmd, sizeof(mailbox.name)));
+
+  cc::SharedImageProvider* provider = decoder_->GetSharedImageProviderForTest();
+  ASSERT_TRUE(provider);
+
+  cc::SharedImageProvider::Error error;
+  sk_sp<SkImage> image = provider->OpenSharedImageForRead(mailbox, error);
+  EXPECT_FALSE(image);
+  EXPECT_EQ(error, cc::SharedImageProvider::Error::kNoAccess);
 }
 
 }  // namespace raster

@@ -7,13 +7,21 @@
 #import "base/test/metrics/histogram_tester.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/prefs/testing_pref_service.h"
+#import "components/sync/test/test_sync_service.h"
+#import "ios/chrome/browser/download/model/browser_download_service_factory.h"
 #import "ios/chrome/browser/download/model/document_download_tab_helper_metrics.h"
 #import "ios/chrome/browser/download/model/download_manager_tab_helper.h"
 #import "ios/chrome/browser/download/model/download_mimetype_util.h"
 #import "ios/chrome/browser/drive/model/drive_policy.h"
+#import "ios/chrome/browser/drive/model/drive_tab_helper.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/fakes/fake_download_manager_tab_helper_delegate.h"
+#import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/download/download_controller.h"
 #import "ios/web/public/test/fakes/fake_download_controller_delegate.h"
 #import "ios/web/public/test/fakes/fake_download_task.h"
@@ -29,6 +37,15 @@ class DocumentDownloadTabHelperTest : public PlatformTest {
   void SetUp() override {
     PlatformTest::SetUp();
     TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(
+        AuthenticationServiceFactory::GetInstance(),
+        AuthenticationServiceFactory::GetFactoryWithDelegate(
+            std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
+    builder.AddTestingFactory(
+        BrowserDownloadServiceFactory::GetInstance(),
+        BrowserDownloadServiceFactory::GetDefaultFactory());
     profile_ = std::move(builder).Build();
 
     download_manager_delegate_ =
@@ -38,10 +55,13 @@ class DocumentDownloadTabHelperTest : public PlatformTest {
         ->SetDelegate(download_manager_delegate_);
 
     DocumentDownloadTabHelper::CreateForWebState(&web_state_);
+    DriveTabHelper::CreateForWebState(&web_state_);
     web_state_.SetBrowserState(profile_.get());
     web_state_.WasShown();
   }
 
+  // ScopedTestingLocalState needed for the authentication service.
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   FakeDownloadManagerTabHelperDelegate* download_manager_delegate_;
@@ -316,6 +336,7 @@ TEST_F(DocumentDownloadTabHelperTest, ConflictLoggingComplete) {
       DownloadManagerTabHelper::FromWebState(&web_state_);
   auto task = std::make_unique<web::FakeDownloadTask>(GURL("https://foo.bar"),
                                                       "text/html");
+  task->SetWebState(&web_state_);
   web::FakeDownloadTask* task_ptr = task.get();
   download_manager->SetCurrentDownload(std::move(task));
 
@@ -389,8 +410,11 @@ TEST_F(DocumentDownloadTabHelperTest, StateLogging) {
   histogram_tester.ExpectUniqueSample(
       kIOSDocumentDownloadConflictResolution,
       DocumentDownloadConflictResolution::kNoConflict, 1);
-  histogram_tester.ExpectUniqueSample(kIOSDocumentDownloadStateAtNavigation,
-                                      DocumentDownloadState::kInProgress, 1);
+  histogram_tester.ExpectBucketCount(kIOSDocumentDownloadStateAtNavigation,
+                                     DocumentDownloadState::kInProgress, 1);
+  histogram_tester.ExpectBucketCount(kIOSDocumentDownloadStateAtNavigation,
+                                     DocumentDownloadState::kCancelled, 1);
+  histogram_tester.ExpectTotalCount(kIOSDocumentDownloadStateAtNavigation, 2);
   histogram_tester.ExpectUniqueSample(kIOSDocumentDownloadFinalState,
                                       DocumentDownloadState::kCancelled, 1);
 }

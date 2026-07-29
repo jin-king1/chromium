@@ -13,6 +13,7 @@
 @protocol TabGridConsumer;
 @class TabGridModeHolder;
 @protocol TabGridPageMutator;
+@class TabGridState;
 
 namespace feature_engagement {
 class Tracker;
@@ -33,14 +34,15 @@ class PrefService;
 @property(nonatomic, weak) id<TabGridPageMutator> incognitoPageMutator;
 // Mutator for Tab Groups.
 @property(nonatomic, weak) id<TabGridPageMutator> tabGroupsPageMutator;
-// Mutator for remote Tabs.
-@property(nonatomic, weak) id<TabGridPageMutator> remotePageMutator;
 
 // Mutator to handle toolbars modification.
 @property(nonatomic, weak) id<GridToolbarsMutator> toolbarsMutator;
 
 // Consumer for state changes in tab grid.
 @property(nonatomic, weak) id<TabGridConsumer> consumer;
+
+// Tab grid state for page updates.
+@property(nonatomic, weak) TabGridState* tabGridState;
 
 - (instancetype)initWithIdentityManager:
                     (signin::IdentityManager*)identityManager
@@ -51,8 +53,10 @@ class PrefService;
 
 - (instancetype)init NS_UNAVAILABLE;
 
-// Set the active page (incognito, regular or remote).
-- (void)setActivePage:(TabGridPage)page;
+// Set the active page (incognito, regular, or tab groups) with desired scroll
+// `behavior`.
+- (void)setActivePage:(TabGridPage)page
+             behavior:(TabGridScrollBehavior)behavior;
 // Stops mediating and disconnects from backend models.
 - (void)disconnect;
 

@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/spellcheck/renderer/spellcheck_provider.h"
 
 #include <algorithm>
 #include <unordered_map>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -24,6 +20,7 @@
 #include "components/spellcheck/common/spellcheck_common.h"
 #include "components/spellcheck/common/spellcheck_features.h"
 #include "components/spellcheck/common/spellcheck_result.h"
+#include "components/spellcheck/common/spelling_marker.h"
 #include "components/spellcheck/renderer/spellcheck.h"
 #include "components/spellcheck/renderer/spellcheck_language.h"
 #include "components/spellcheck/renderer/spellcheck_renderer_metrics.h"
@@ -32,6 +29,7 @@
 #include "content/public/renderer/render_thread.h"
 #include "services/service_manager/public/cpp/local_interface_provider.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+#include "third_party/blink/public/web/web_console_message.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_element.h"
 #include "third_party/blink/public/web/web_local_frame.h"
@@ -46,12 +44,32 @@ using blink::WebTextCheckingCompletion;
 using blink::WebTextCheckingResult;
 using blink::WebTextDecorationType;
 
-static_assert(int(blink::kWebTextDecorationTypeSpelling) ==
-                  int(SpellCheckResult::SPELLING),
+static_assert(static_cast<int>(blink::kWebTextDecorationTypeSpelling) ==
+                  static_cast<int>(spellcheck::Decoration::SPELLING),
               "mismatching enums");
-static_assert(int(blink::kWebTextDecorationTypeGrammar) ==
-                  int(SpellCheckResult::GRAMMAR),
+static_assert(static_cast<int>(blink::kWebTextDecorationTypeGrammar) ==
+                  static_cast<int>(spellcheck::Decoration::GRAMMAR),
               "mismatching enums");
+
+namespace {
+
+spellcheck::Decoration MapToDecoration(
+    blink::WebSpellingMarker::SpellingMarkerType marker_type) {
+  switch (marker_type) {
+    case blink::WebSpellingMarker::SpellingMarkerType::kSpelling:
+      return spellcheck::Decoration::SPELLING;
+    case blink::WebSpellingMarker::SpellingMarkerType::kGrammar:
+      return spellcheck::Decoration::GRAMMAR;
+  }
+}
+
+spellcheck::SpellingMarker MapToSpellingMarker(
+    const blink::WebSpellingMarker& marker) {
+  return spellcheck::SpellingMarker(marker.start, marker.end,
+                                    MapToDecoration(marker.marker_type));
+}
+
+}  // namespace
 
 class SpellCheckProvider::DictionaryUpdateObserverImpl
     : public DictionaryUpdateObserver {
@@ -110,6 +128,9 @@ void SpellCheckProvider::ResetDictionaryUpdateObserverForTesting() {
 
 void SpellCheckProvider::RequestTextChecking(
     const std::u16string& text,
+    const std::vector<spellcheck::SpellingMarker>& spelling_markers,
+    blink::WebTextCheckClient::ShouldForceRefreshTextCheckService
+        should_force_refresh,
     std::unique_ptr<WebTextCheckingCompletion> completion) {
   // Ignore invalid requests.
   if (text.empty() || !HasWordCharacters(text, 0)) {
@@ -118,8 +139,11 @@ void SpellCheckProvider::RequestTextChecking(
   }
 
   // Try to satisfy check from cache.
-  if (SatisfyRequestFromCache(text, completion.get()))
+  if (should_force_refresh ==
+          blink::WebTextCheckClient::ShouldForceRefreshTextCheckService::kNo &&
+      SatisfyRequestFromCache(text, completion.get())) {
     return;
+  }
 
   // Send this text to a browser. A browser checks the user profile and send
   // this text to the Spelling service only if a user enables this feature.
@@ -130,9 +154,7 @@ void SpellCheckProvider::RequestTextChecking(
 #if BUILDFLAG(USE_BROWSER_SPELLCHECKER)
   if (spellcheck::UseBrowserSpellChecker()) {
 #if BUILDFLAG(IS_WIN)
-    if (base::FeatureList::IsEnabled(
-            spellcheck::kWinDelaySpellcheckServiceInit) &&
-        !dictionaries_loaded_) {
+    if (!dictionaries_loaded_) {
       // Initialize the spellcheck service on demand (this spellcheck request
       // could be the result of the first click in editable content), then
       // complete the text check request when the dictionaries are loaded.
@@ -150,7 +172,7 @@ void SpellCheckProvider::RequestTextChecking(
     }
 #endif  // BUILDFLAG(IS_WIN)
 
-    RequestTextCheckingFromBrowser(text);
+    RequestTextCheckingFromBrowser(text, spelling_markers);
   }
 #endif  // BUILDFLAG(USE_BROWSER_SPELLCHECKER)
 
@@ -166,7 +188,8 @@ void SpellCheckProvider::RequestTextChecking(
 
 #if BUILDFLAG(USE_BROWSER_SPELLCHECKER)
 void SpellCheckProvider::RequestTextCheckingFromBrowser(
-    const std::u16string& text) {
+    const std::u16string& text,
+    const std::vector<spellcheck::SpellingMarker>& spelling_markers) {
   DCHECK(spellcheck::UseBrowserSpellChecker());
 #if BUILDFLAG(IS_WIN)
 
@@ -204,8 +227,9 @@ void SpellCheckProvider::RequestTextCheckingFromBrowser(
   // available for browser process, so we ask the system spellchecker
   // over mojo or return an empty result if the checker is not available.
   GetSpellCheckHost().RequestTextCheck(
-      text, base::BindOnce(&SpellCheckProvider::OnRespondTextCheck,
-                           weak_factory_.GetWeakPtr(), last_identifier_, text));
+      text, spelling_markers,
+      base::BindOnce(&SpellCheckProvider::OnRespondTextCheck,
+                     weak_factory_.GetWeakPtr(), last_identifier_, text));
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -225,10 +249,24 @@ void SpellCheckProvider::OnRespondInitializeDictionaries(
   // the SpellChecker is initialized before performing a spellcheck.
   spellcheck_->Initialize(std::move(dictionaries), custom_words, enable);
 
-  RequestTextCheckingFromBrowser(text);
+  RequestTextCheckingFromBrowser(text, /*spelling_markers=*/{});
 }
 #endif  // BUILDFLAG(IS_WIN)
 #endif  // BUILDFLAG(USE_BROWSER_SPELLCHECKER)
+
+void SpellCheckProvider::DidCreateNewDocument() {
+  // SpellCheckCustomDictionary is document-scoped: a fresh document starts
+  // with no custom words. Record the outgoing document's word count for
+  // documents that actually used the API, so the per-document cap can be
+  // revisited with real-world data.
+  if (!document_custom_words_.empty()) {
+    UMA_HISTOGRAM_COUNTS_100000(
+        "Spellcheck.DocumentCustomDictionary.WordCount",
+        static_cast<int>(document_custom_words_.size()));
+  }
+  document_custom_words_.clear();
+  document_custom_dictionary_overflow_warned_ = false;
+}
 
 void SpellCheckProvider::FocusedElementChanged(
     const blink::WebElement& unused) {
@@ -280,6 +318,10 @@ void SpellCheckProvider::CheckSpelling(
     spellcheck::PerLanguageSuggestions per_language_suggestions;
     spellcheck_->SpellCheckWord(word, GetSpellCheckHost(), &offset, &length,
                                 &per_language_suggestions);
+    ApplyDocumentCustomWords(word, offset, length);
+    if (length == 0) {
+      per_language_suggestions.clear();
+    }
 
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(USE_BROWSER_SPELLCHECKER)
     spellcheck_renderer_metrics::RecordHunspellSuggestionDuration(
@@ -288,12 +330,13 @@ void SpellCheckProvider::CheckSpelling(
 
     std::vector<std::u16string> suggestions;
     spellcheck::FillSuggestions(per_language_suggestions, &suggestions);
-    *optional_suggestions = base::ToVector(suggestions, &WebString::FromUTF16);
+    *optional_suggestions = base::ToVector(suggestions, &WebString::FromUtf16);
     spellcheck_renderer_metrics::RecordCheckedTextLengthWithSuggestions(
         base::saturated_cast<int>(word.size()));
   } else {
     spellcheck_->SpellCheckWord(word, GetSpellCheckHost(), &offset, &length,
                                 /* optional suggestions vector */ nullptr);
+    ApplyDocumentCustomWords(word, offset, length);
     spellcheck_renderer_metrics::RecordCheckedTextLengthNoSuggestions(
         base::saturated_cast<int>(word.size()));
 
@@ -305,10 +348,75 @@ void SpellCheckProvider::CheckSpelling(
 
 void SpellCheckProvider::RequestCheckingOfText(
     const WebString& text,
+    const std::vector<blink::WebSpellingMarker>& spelling_markers,
+    blink::WebTextCheckClient::ShouldForceRefreshTextCheckService
+        should_force_refresh,
     std::unique_ptr<WebTextCheckingCompletion> completion) {
-  RequestTextChecking(text.Utf16(), std::move(completion));
+  RequestTextChecking(text.Utf16(),
+                      base::ToVector(spelling_markers, &MapToSpellingMarker),
+                      should_force_refresh, std::move(completion));
   spellcheck_renderer_metrics::RecordAsyncCheckedTextLength(
       base::saturated_cast<int>(text.length()));
+}
+
+void SpellCheckProvider::ApplyDocumentCustomWords(const std::u16string& word,
+                                                  size_t& offset,
+                                                  size_t& length) const {
+  // An optimization to avoid a substring allocation and set lookup
+  // on this per-word path; behavior is unchanged if it is removed.
+  if (length == 0 || document_custom_words_.empty()) {
+    return;
+  }
+  if (document_custom_words_.contains(word.substr(offset, length))) {
+    offset = 0;
+    length = 0;
+  }
+}
+
+void SpellCheckProvider::SpellCheckCustomDictionaryChanged(
+    const std::vector<std::string>& words_added,
+    const std::vector<std::string>& words_removed) {
+  // Enforce the per-document word-count cap and per-word length limit at the
+  // API entry point. document_custom_words_ is the live set, so the cap bounds
+  // the resident set rather than lifetime churn.
+  for (const std::string& word : words_removed) {
+    document_custom_words_.erase(base::UTF8ToUTF16(word));
+  }
+
+  std::vector<std::string> effective_added;
+  effective_added.reserve(words_added.size());
+  bool dropped_some = false;
+  for (const std::string& word : words_added) {
+    if (word.size() > spellcheck::kMaxDocumentCustomDictionaryWordBytes) {
+      dropped_some = true;
+      continue;
+    }
+    if (document_custom_words_.size() >=
+        spellcheck::kMaxDocumentCustomDictionaryWords) {
+      // Once the cap is reached every later word would be rejected.
+      dropped_some = true;
+      break;
+    }
+    // Below the cap: insert once and forward only words that were actually new.
+    if (document_custom_words_.insert(base::UTF8ToUTF16(word)).second) {
+      effective_added.push_back(word);
+    }
+  }
+
+  if (dropped_some && !document_custom_dictionary_overflow_warned_) {
+    if (auto* frame = render_frame()) {
+      frame->GetWebFrame()->AddMessageToConsole(blink::WebConsoleMessage(
+          blink::mojom::ConsoleMessageLevel::kWarning,
+          blink::WebString::FromAscii(
+              "SpellCheckCustomDictionary: per-document word limit reached "
+              "or a word exceeded the maximum length; some additions were "
+              "ignored.")));
+    }
+    document_custom_dictionary_overflow_warned_ = true;
+  }
+
+  spellcheck_->SpellCheckCustomDictionaryChanged(effective_added,
+                                                 words_removed);
 }
 
 #if BUILDFLAG(USE_RENDERER_SPELLCHECKER)
@@ -335,7 +443,8 @@ void SpellCheckProvider::OnRespondSpellingService(
   std::vector<blink::WebTextCheckingResult> textcheck_results;
   spellcheck_->CreateTextCheckingResults(
       SpellCheck::USE_HUNSPELL_FOR_GRAMMAR, GetSpellCheckHost(),
-      /*line_offset=*/0, line, results, &textcheck_results);
+      /*line_offset=*/0, line, results, &textcheck_results,
+      document_custom_words_.empty() ? nullptr : &document_custom_words_);
   completion->DidFinishCheckingText(textcheck_results);
 
   // Cache the request and the converted results.
@@ -350,7 +459,7 @@ bool SpellCheckProvider::HasWordCharacters(const std::u16string& text,
   size_t length = text.length();
   while (index < length) {
     uint32_t code = 0;
-    U16_NEXT(data, index, length, code);
+    UNSAFE_TODO(U16_NEXT(data, index, length, code));
     UErrorCode error = U_ZERO_ERROR;
     if (uscript_getScript(code, &error) != USCRIPT_COMMON)
       return true;
@@ -384,9 +493,10 @@ void SpellCheckProvider::OnRespondTextCheck(
   }
 #endif  // BUILDFLAG(IS_WIN) && BUILDFLAG(USE_BROWSER_SPELLCHECKER)
 
-  spellcheck_->CreateTextCheckingResults(result_filter, GetSpellCheckHost(),
-                                         /*line_offset=*/0, line, results,
-                                         &textcheck_results);
+  spellcheck_->CreateTextCheckingResults(
+      result_filter, GetSpellCheckHost(),
+      /*line_offset=*/0, line, results, &textcheck_results,
+      document_custom_words_.empty() ? nullptr : &document_custom_words_);
 
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(USE_BROWSER_SPELLCHECKER)
   if (request_info != hybrid_requests_info_.end()) {
@@ -448,5 +558,12 @@ bool SpellCheckProvider::SatisfyRequestFromCache(
 }
 
 void SpellCheckProvider::OnDestruct() {
+  // Capture the final word count for documents that used the API but were
+  // torn down without a follow-on navigation (e.g., the frame was removed).
+  if (!document_custom_words_.empty()) {
+    UMA_HISTOGRAM_COUNTS_100000(
+        "Spellcheck.DocumentCustomDictionary.WordCount",
+        static_cast<int>(document_custom_words_.size()));
+  }
   delete this;
 }

@@ -8,7 +8,7 @@ import 'chrome://os-feedback/share_data_page.js';
 import 'chrome://webui-test/chromeos/mojo_webui_test_support.js';
 
 import type {ConfirmationPageElement} from 'chrome://os-feedback/confirmation_page.js';
-import {fakeFeedbackContext, fakeFeedbackContextWithoutLinkedCrossDevicePhone, fakeInternalUserFeedbackContext, fakePngData, fakeSearchResponse} from 'chrome://os-feedback/fake_data.js';
+import {fakeFeedbackContext, fakeInternalUserFeedbackContext, fakePngData, fakeSearchResponse} from 'chrome://os-feedback/fake_data.js';
 import {FakeFeedbackServiceProvider} from 'chrome://os-feedback/fake_feedback_service_provider.js';
 import {FakeHelpContentProvider} from 'chrome://os-feedback/fake_help_content_provider.js';
 import type {FeedbackFlowButtonClickEvent, FeedbackFlowElement} from 'chrome://os-feedback/feedback_flow.js';
@@ -21,7 +21,6 @@ import {SearchPageElement} from 'chrome://os-feedback/search_page.js';
 import type {ShareDataPageElement} from 'chrome://os-feedback/share_data_page.js';
 import {CrButtonElement} from 'chrome://resources/ash/common/cr_elements/cr_button/cr_button.js';
 import {CrCheckboxElement} from 'chrome://resources/ash/common/cr_elements/cr_checkbox/cr_checkbox.js';
-import {loadTimeData} from 'chrome://resources/ash/common/load_time_data.m.js';
 import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict_query.js';
 import {getDeepActiveElement} from 'chrome://resources/ash/common/util.js';
 import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
@@ -115,43 +114,43 @@ suite('FeedbackFlowTestSuite', () => {
     setFeedbackServiceProviderForTesting(feedbackServiceProvider);
   }
 
-  function setupTestWithoutLinkedCrossDevicePhone() {
-    feedbackServiceProvider = new FakeFeedbackServiceProvider();
-    feedbackServiceProvider.setFakeFeedbackContext(
-        fakeFeedbackContextWithoutLinkedCrossDevicePhone);
-    setFeedbackServiceProviderForTesting(feedbackServiceProvider);
-  }
-
-  function setFromAssistantFlag(fromAssistant: boolean) {
-    if (fromAssistant) {
+  function setSettingsSearchDoNotRecordMetricsFlag(
+      settingsSearchDoNotRecordMetrics: boolean) {
+    if (settingsSearchDoNotRecordMetrics) {
       const queryParams = new URLSearchParams(window.location.search);
-      const fromAssistant = 'true';
+      const settingsSearchDoNotRecordMetrics = 'true';
       queryParams.set(
-          AdditionalContextQueryParam.FROM_ASSISTANT, fromAssistant);
+          AdditionalContextQueryParam.SETTINGS_SEARCH_DO_NOT_RECORD_METRICS,
+          settingsSearchDoNotRecordMetrics);
 
       window.history.replaceState(null, '', '?' + queryParams.toString());
     } else {
-      window.history.replaceState(
-          null, '',
-          '?' +
-              '');
+      window.history.replaceState(null, '', '?');
     }
   }
 
-  function setFromSettingsSearchFlag(fromSettingsSearch: boolean) {
-    if (fromSettingsSearch) {
-      const queryParams = new URLSearchParams(window.location.search);
-      const fromSettingsSearch = 'true';
-      queryParams.set(
-          AdditionalContextQueryParam.FROM_SETTINGS_SEARCH, fromSettingsSearch);
+  async function fillDescriptionAndClickContinue(): Promise<void> {
+    const activePage = getActivePage<SearchPageElement>();
+    strictQuery('textarea', activePage.shadowRoot, HTMLTextAreaElement).value =
+        'text';
+    strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
+        .click();
+    await flushTasks();
+  }
 
-      window.history.replaceState(null, '', '?' + queryParams.toString());
-    } else {
-      window.history.replaceState(
-          null, '',
-          '?' +
-              '');
-    }
+  function checkAndGetSysInfoAndMetricsCheckbox(): CrCheckboxElement {
+    const newActivePage = getActivePage<ShareDataPageElement>();
+    assertEquals('shareDataPage', newActivePage.id);
+
+    const sysInfoAndMetricsCheckboxContainer =
+        strictQuery('#sysInfoContainer', newActivePage.shadowRoot, HTMLElement);
+    assertTrue(!!sysInfoAndMetricsCheckboxContainer);
+
+    const sysInfoAndMetricsCheckbox = strictQuery(
+        '#sysInfoCheckbox', newActivePage.shadowRoot, CrCheckboxElement);
+    assertTrue(!!sysInfoAndMetricsCheckbox);
+
+    return sysInfoAndMetricsCheckbox;
   }
 
   // Test that the search page is shown by default.
@@ -167,13 +166,13 @@ suite('FeedbackFlowTestSuite', () => {
     const title =
         strictQuery('.page-title', activePage.shadowRoot, HTMLElement);
     assertTrue(!!title);
-    assertEquals('Send feedback', title.textContent!.trim());
+    assertEquals('Send feedback', title.textContent.trim());
 
     // Verify the continue button is in the page.
     const buttonContinue =
         strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement);
     assertTrue(!!buttonContinue);
-    assertEquals('Continue', buttonContinue.textContent!.trim());
+    assertEquals('Continue', buttonContinue.textContent.trim());
   });
 
 
@@ -190,19 +189,19 @@ suite('FeedbackFlowTestSuite', () => {
     const title =
         strictQuery('.page-title', activePage.shadowRoot, HTMLElement);
     assertTrue(!!title);
-    assertEquals('Send feedback', title.textContent!.trim());
+    assertEquals('Send feedback', title.textContent.trim());
 
     // Verify the back button is in the page.
     const buttonBack =
         strictQuery('#buttonBack', activePage.shadowRoot, CrButtonElement);
     assertTrue(!!buttonBack);
-    assertEquals('Back', buttonBack.textContent!.trim());
+    assertEquals('Back', buttonBack.textContent.trim());
 
     // Verify the send button is in the page.
     const buttonSend =
         strictQuery('#buttonSend', activePage.shadowRoot, CrButtonElement);
     assertTrue(!!buttonSend);
-    assertEquals('Send', buttonSend.textContent!.trim());
+    assertEquals('Send', buttonSend.textContent.trim());
   });
 
 
@@ -220,19 +219,19 @@ suite('FeedbackFlowTestSuite', () => {
     const title =
         strictQuery('.page-title', activePage.shadowRoot, HTMLElement);
     assertTrue(!!title);
-    assertEquals('Thanks for your feedback', title.textContent!.trim());
+    assertEquals('Thanks for your feedback', title.textContent.trim());
 
     // Verify the done button is in the page.
     const buttonDone =
         strictQuery('#buttonDone', activePage.shadowRoot, CrButtonElement);
     assertTrue(!!buttonDone);
-    assertEquals('Done', buttonDone.textContent!.trim());
+    assertEquals('Done', buttonDone.textContent.trim());
 
     // Verify the startNewReport button is in the page.
     const buttonNewReport = strictQuery(
         '#buttonNewReport', activePage.shadowRoot, CrButtonElement);
     assertTrue(!!buttonNewReport);
-    assertEquals('Send new report', buttonNewReport.textContent!.trim());
+    assertEquals('Send new report', buttonNewReport.textContent.trim());
   });
 
   // Test the navigation from search page to share data page.
@@ -508,373 +507,36 @@ suite('FeedbackFlowTestSuite', () => {
     assertTrue(page.getShouldShowWifiDebugLogsCheckboxForTesting());
   });
 
-  // Test the "Link Cross Device Dogfood Feedback" checkbox will show up if
-  // logged with internal account and input description is related.
+  // Test the sys info and metrics checkbox will not be checked if
+  // settingsSearchDoNotRecordMetrics flag has been passed.
   test(
-      'ShowLinkCrossDeviceDogfoodFeedbackCheckboxsWithRelatedDescription',
+      'SysinfoAndMetricsCheckboxIsUncheckedWhenFeedbackIsSentFromSettingsSearchAndQueryDoesNotContainFingerprint',
       async () => {
         testWithInternalAccount();
+        setSettingsSearchDoNotRecordMetricsFlag(true);
         await initializePage();
 
-        // Check the "Link Cross Device Dogfood Feedback" checkbox component is
-        // hidden when input is not related to cross device.
-        let activePage = getActivePage();
-        assertTrue(!!activePage);
-        assertEquals('searchPage', activePage.id);
+        await fillDescriptionAndClickContinue();
 
-        strictQuery('textarea', activePage.shadowRoot, HTMLTextAreaElement)
-            .value = 'abc';
-        strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        loadTimeData.overrideValues(
-            {'enableLinkCrossDeviceDogfoodFeedbackFlag': true});
-
-        activePage = getActivePage();
-        assertEquals('shareDataPage', activePage.id);
-        const linkCrossDeviceDogfoodFeedbackCheckbox =
-            activePage.shadowRoot!.querySelector(
-                '#linkCrossDeviceDogfoodFeedbackCheckboxContainer');
-        assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-        assertFalse(isVisible(linkCrossDeviceDogfoodFeedbackCheckbox));
-
-        strictQuery('#buttonBack', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        loadTimeData.overrideValues(
-            {'enableLinkCrossDeviceDogfoodFeedbackFlag': true});
-
-        // Go back to search page and set description input related to cross
-        // device.
-        activePage = getActivePage();
-        assertTrue(!!activePage);
-        assertEquals('searchPage', activePage.id);
-
-        // Testing tetherRegEx
-        let descriptionElement = strictQuery(
-            'textarea', activePage.shadowRoot, HTMLTextAreaElement);
-        descriptionElement.value = 'hotspot';
-
-        strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        activePage = getActivePage();
-        assertTrue(!!activePage);
-        assertEquals('shareDataPage', activePage.id);
-
-        assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-        assertTrue(isVisible(linkCrossDeviceDogfoodFeedbackCheckbox));
-
-        strictQuery('#buttonBack', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        loadTimeData.overrideValues(
-            {'enableLinkCrossDeviceDogfoodFeedbackFlag': true});
-
-        // Go back to search page and set description input related to cross
-        // device.
-        activePage = getActivePage();
-        assertTrue(!!activePage);
-        assertEquals('searchPage', activePage.id);
-
-        // Testing phoneHubRegEx
-        descriptionElement = strictQuery(
-            'textarea', activePage.shadowRoot, HTMLTextAreaElement);
-        descriptionElement.value = 'appstream';
-
-        strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        activePage = getActivePage();
-        assertTrue(!!activePage);
-        assertEquals('shareDataPage', activePage.id);
-
-        assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-        assertTrue(isVisible(linkCrossDeviceDogfoodFeedbackCheckbox));
-
-        strictQuery('#buttonBack', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        loadTimeData.overrideValues(
-            {'enableLinkCrossDeviceDogfoodFeedbackFlag': true});
-
-        // Go back to search page and set description input related to cross
-        // device.
-        activePage = getActivePage();
-        assertTrue(!!activePage);
-        assertEquals('searchPage', activePage.id);
-
-        // Testing phoneHubRegEx variation.
-        descriptionElement = strictQuery(
-            'textarea', activePage.shadowRoot, HTMLTextAreaElement);
-        descriptionElement.value = 'camera roll';
-
-        strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        activePage = getActivePage();
-        assertTrue(!!activePage);
-        assertEquals('shareDataPage', activePage.id);
-
-        assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-        assertTrue(isVisible(linkCrossDeviceDogfoodFeedbackCheckbox));
-      });
-
-  // Test the "Link Cross Device Dogfood Feedback" checkbox will not show up if
-  // not logged with an Internal google account.
-  test(
-      'LinkCrossDeviceDogfoodFeedbackHiddenWithoutInternalAccount',
-      async () => {
-        await initializePage();
-
-        // Enable flag.
-        loadTimeData.overrideValues(
-            {'enableLinkCrossDeviceDogfoodFeedbackFlag': true});
-
-        // Set input description related to cross device.
-        let activePage = getActivePage();
-        strictQuery('textarea', activePage.shadowRoot, HTMLTextAreaElement)
-            .value = 'phone';
-        strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        activePage = getActivePage();
-        assertEquals('shareDataPage', activePage.id);
-        const linkCrossDeviceDogfoodFeedbackCheckbox =
-            activePage.shadowRoot!.querySelector(
-                '#linkCrossDeviceDogfoodFeedbackCheckboxContainer');
-        assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-        assertFalse(isVisible(linkCrossDeviceDogfoodFeedbackCheckbox));
-      });
-
-  // Test the "Link Cross Device Dogfood Feedback" checkbox will not show up if
-  // the ChromeOs device is not linked to a phone.
-  test(
-      'LinkCrossDeviceDogfoodFeedbackHiddenWithoutLinkedCrossDevicePhone',
-      async () => {
-        setupTestWithoutLinkedCrossDevicePhone();
-
-        await initializePage();
-
-        // Enable flag.
-        loadTimeData.overrideValues(
-            {'enableLinkCrossDeviceDogfoodFeedbackFlag': true});
-
-        // Set input description related to cross device.
-        let activePage = getActivePage();
-
-        strictQuery('textarea', activePage.shadowRoot, HTMLTextAreaElement)
-            .value = 'phone';
-        strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        activePage = getActivePage();
-        assertEquals('shareDataPage', activePage.id);
-        const linkCrossDeviceDogfoodFeedbackCheckbox =
-            activePage.shadowRoot!.querySelector(
-                '#linkCrossDeviceDogfoodFeedbackCheckboxContainer');
-        assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-        assertFalse(isVisible(linkCrossDeviceDogfoodFeedbackCheckbox));
-      });
-
-  // Test the "Link Cross Device Dogfood Feedback" checkbox will only show up
-  // when 'enableLinkCrossDeviceDogfoodFeedbackFlag' is enabled.
-  test('LinkCrossDeviceDogfoodFeedbackTestingFlag', async () => {
-    testWithInternalAccount();
-    await initializePage();
-
-    // Enable flag and check that the checkbox appears.
-    loadTimeData.overrideValues(
-        {'enableLinkCrossDeviceDogfoodFeedbackFlag': true});
-
-    // Set input description related to cross device.
-    let activePage = getActivePage();
-
-    strictQuery('textarea', activePage.shadowRoot, HTMLTextAreaElement).value =
-        'phone';
-    strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-        .click();
-    await flushTasks();
-
-    activePage = getActivePage();
-    assertEquals('shareDataPage', activePage.id);
-    const linkCrossDeviceDogfoodFeedbackCheckbox =
-        activePage.shadowRoot!.querySelector(
-            '#linkCrossDeviceDogfoodFeedbackCheckboxContainer');
-    assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-    assertTrue(isVisible(linkCrossDeviceDogfoodFeedbackCheckbox));
-
-    strictQuery('#buttonBack', activePage.shadowRoot, CrButtonElement).click();
-    await flushTasks();
-
-    // Go back to search page and set description input related to cross device.
-    activePage = getActivePage();
-    assertTrue(!!activePage);
-    assertEquals('searchPage', activePage.id);
-
-    const descriptionElement =
-        strictQuery('textarea', activePage.shadowRoot, HTMLTextAreaElement);
-    descriptionElement.value = 'phone';
-
-    // Disable flag and check that the checkbox doesn't appear.
-    loadTimeData.overrideValues(
-        {'enableLinkCrossDeviceDogfoodFeedbackFlag': false});
-
-    strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-        .click();
-    await flushTasks();
-
-    activePage = getActivePage();
-    assertTrue(!!activePage);
-    assertEquals('shareDataPage', activePage.id);
-
-    assertTrue(!!linkCrossDeviceDogfoodFeedbackCheckbox);
-    assertFalse(isVisible(linkCrossDeviceDogfoodFeedbackCheckbox));
-  });
-
-  // Test the assistant logs will show up if logged with internal account and
-  // the fromAssistant flag is true.
-  test('ShowAssistantCheckboxWithInternalAccountAndFlagSetTrue', async () => {
-    // Replacing the query string to set the fromAssistant flag as true.
-    setFromAssistantFlag(true);
-    testWithInternalAccount();
-    await initializePage();
-    page.setCurrentStateForTesting(FeedbackFlowState.SHARE_DATA);
-
-    const feedbackContext = getFeedbackContext();
-    assertTrue(feedbackContext.isInternalAccount);
-    assertTrue(feedbackContext.fromAssistant);
-    // Check the assistant checkbox component visible when input is not
-    // related to bluetooth.
-    const activePage = getActivePage();
-    assertEquals('shareDataPage', activePage.id);
-
-    const assistantCheckbox = strictQuery(
-        '#assistantLogsContainer', activePage.shadowRoot, HTMLElement);
-
-    assertTrue(!!assistantCheckbox);
-    assertTrue(isVisible(assistantCheckbox));
-  });
-
-  // Test the assistant checkbox will not show up to external account user
-  // with fromAssistant flag passed.
-  test('AssistantCheckboxHiddenWithExternalAccount', async () => {
-    // Replacing the query string to set the fromAssistant flag as true.
-    setFromAssistantFlag(true);
-    await initializePage();
-    page.setCurrentStateForTesting(FeedbackFlowState.SHARE_DATA);
-
-    const feedbackContext = getFeedbackContext();
-    assertFalse(feedbackContext.isInternalAccount);
-    assertTrue(feedbackContext.fromAssistant);
-    let activePage = getActivePage();
-    activePage = getActivePage();
-
-    assertEquals('shareDataPage', activePage.id);
-    const assistantCheckbox = strictQuery(
-        '#assistantLogsContainer', activePage.shadowRoot, HTMLElement);
-    assertTrue(!!assistantCheckbox);
-    assertFalse(isVisible(assistantCheckbox));
-  });
-
-  // Test the assistant logs will not show up if fromAssistant flag is not
-  // passed but logged in with Internal google account.
-  test('AssistantCheckboxHiddenWithoutFlagPassed', async () => {
-    // Replace the current querystring back to default.
-    setFromAssistantFlag(false);
-    // Set Internal Account flag as true.
-    testWithInternalAccount();
-    await initializePage();
-    page.setCurrentStateForTesting(FeedbackFlowState.SHARE_DATA);
-
-    const feedbackContext = getFeedbackContext();
-    assertTrue(feedbackContext.isInternalAccount);
-    assertFalse(feedbackContext.fromAssistant);
-    // Set input description related to bluetooth.
-    let activePage = getActivePage();
-    activePage = getActivePage();
-
-    assertEquals('shareDataPage', activePage.id);
-    const assistantCheckbox = strictQuery(
-        '#assistantLogsContainer', activePage.shadowRoot, HTMLElement);
-    assertTrue(!!assistantCheckbox);
-    assertFalse(isVisible(assistantCheckbox));
-    // Set the flag back to true.
-    fakeInternalUserFeedbackContext.fromAssistant = true;
-  });
-
-  // Test the sys info and metrics checkbox will not be checked if
-  // fromSettingsSearch flag has been passed.
-  test(
-      'SysinfoAndMetricsCheckboxIsUncheckedWhenFeedbackIsSentFromSettingsSearch',
-      async () => {
-        // Replacing the query string to set the fromSettingsSearch flag as
-        // true.
-        setFromSettingsSearchFlag(true);
-        await initializePage();
-        const feedbackContext = getFeedbackContext();
-        assertTrue(feedbackContext.fromSettingsSearch);
-
-        const activePage = getActivePage<SearchPageElement>();
-        strictQuery('textarea', activePage.shadowRoot, HTMLTextAreaElement)
-            .value = 'text';
-        strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
-
-        // Check the sys info and metrics checkbox component is unchecked when
-        // the feedback app has opened through settings search
-        const newActivePage = getActivePage<ShareDataPageElement>();
-        assertEquals('shareDataPage', newActivePage.id);
-
-        const sysInfoAndMetricsCheckboxContainer = strictQuery(
-            '#sysInfoContainer', newActivePage.shadowRoot, HTMLElement);
-        assertTrue(!!sysInfoAndMetricsCheckboxContainer);
-
-        const sysInfoAndMetricsCheckbox = strictQuery(
-            '#sysInfoCheckbox', newActivePage.shadowRoot, CrCheckboxElement);
-        assertTrue(!!sysInfoAndMetricsCheckbox);
+        const sysInfoAndMetricsCheckbox =
+            checkAndGetSysInfoAndMetricsCheckbox();
         assertFalse(sysInfoAndMetricsCheckbox.checked);
       });
 
   // Test the sys info and metrics checkbox will be checked if
-  // fromSettingsSearch flag not passed.
+  // fromSettingsSearch flag has been passed and the search query contains the
+  // word "fingerprint".
   test(
-      'SysinfoAndMetricsCheckboxIsCheckedWhenFeedbackIsNotSentFromSettingsSearch',
+      'SysinfoAndMetricsCheckboxIsCheckedWhenFeedbackIsSentFromSettingsSearchAndQueryContainsFingerprint',
       async () => {
-        // Replacing the query string to set the fromSettingsSearch flag as
-        // false.
-        setFromSettingsSearchFlag(false);
+        testWithInternalAccount();
+        setSettingsSearchDoNotRecordMetricsFlag(false);
         await initializePage();
-        const feedbackContext = getFeedbackContext();
-        assertFalse(feedbackContext.fromSettingsSearch);
 
-        const activePage = getActivePage<SearchPageElement>();
-        strictQuery('textarea', activePage.shadowRoot, HTMLTextAreaElement)
-            .value = 'text';
-        strictQuery('#buttonContinue', activePage.shadowRoot, CrButtonElement)
-            .click();
-        await flushTasks();
+        await fillDescriptionAndClickContinue();
 
-        const newActivePage = getActivePage<ShareDataPageElement>();
-        assertEquals('shareDataPage', newActivePage.id);
-
-        const sysInfoAndMetricsContainer = strictQuery(
-            '#sysInfoContainer', newActivePage.shadowRoot, HTMLElement);
-        assertTrue(!!sysInfoAndMetricsContainer);
-
-        const sysInfoAndMetricsCheckbox = strictQuery(
-            '#sysInfoCheckbox', newActivePage.shadowRoot, CrCheckboxElement);
-        assertTrue(!!sysInfoAndMetricsCheckbox);
+        const sysInfoAndMetricsCheckbox =
+            checkAndGetSysInfoAndMetricsCheckbox();
         assertTrue(sysInfoAndMetricsCheckbox.checked);
       });
 
@@ -974,8 +636,9 @@ suite('FeedbackFlowTestSuite', () => {
     assertEquals(1, feedbackServiceProvider.getFeedbackContextCallCount());
   });
 
-  // Test that the extra diagnostics, category tag, page_url, fromAssistant
-  // and fromSettingsSearch flag get set when query parameter is non-empty.
+  // Test that the extra diagnostics, category tag, page_url
+  // and settingsSearchDoNotRecordMetrics flag get set when query parameter is
+  // non-empty.
   test(
       'AdditionalContextParametersProvidedInUrl_FeedbackContext_Matches',
       async () => {
@@ -996,13 +659,10 @@ suite('FeedbackFlowTestSuite', () => {
         queryParams.set(AdditionalContextQueryParam.CATEGORY_TAG, category_tag);
         const page_url = 'some%20page%20url';
         queryParams.set(AdditionalContextQueryParam.PAGE_URL, page_url);
-        const fromAssistant = 'true';
+        const settingsSearchDoNotRecordMetrics = 'true';
         queryParams.set(
-            AdditionalContextQueryParam.FROM_ASSISTANT, fromAssistant);
-        const fromSettingsSearch = 'true';
-        queryParams.set(
-            AdditionalContextQueryParam.FROM_SETTINGS_SEARCH,
-            fromSettingsSearch);
+            AdditionalContextQueryParam.SETTINGS_SEARCH_DO_NOT_RECORD_METRICS,
+            settingsSearchDoNotRecordMetrics);
         // Replace current querystring with the new one.
         window.history.replaceState(null, '', '?' + queryParams.toString());
         await initializePage();
@@ -1010,7 +670,7 @@ suite('FeedbackFlowTestSuite', () => {
         const descriptionElement = getDescriptionElement();
 
         const feedbackContext = getFeedbackContext();
-        assertEquals(page_url, feedbackContext.pageUrl!.url);
+        assertEquals(page_url, feedbackContext.pageUrl!);
         assertEquals(fakeFeedbackContext.email, feedbackContext.email);
         assertEquals(
             decodeURIComponent(extra_diagnostics),
@@ -1022,12 +682,11 @@ suite('FeedbackFlowTestSuite', () => {
             descriptionElement.placeholder);
         assertEquals(
             decodeURIComponent(category_tag), feedbackContext.categoryTag);
-        assertTrue(feedbackContext.fromAssistant);
-        assertTrue(feedbackContext.fromSettingsSearch);
+        assertTrue(feedbackContext.settingsSearchDoNotRecordMetrics);
 
         // Set the pageUrl in fake feedback context back to its origin value
         // because it's overwritten by the page_url passed from the app.
-        fakeFeedbackContext.pageUrl = {url: 'chrome://tab/'};
+        fakeFeedbackContext.pageUrl = 'chrome://tab/';
       });
 
   // Test that the extra diagnostics gets set, and pageUrl uses the one passed
@@ -1036,10 +695,7 @@ suite('FeedbackFlowTestSuite', () => {
       'AdditionalContextParametersNotProvidedInUrl_FeedbackContext_UsesDefault',
       async () => {
         // Replace current querystring with the new one.
-        window.history.replaceState(
-            null, '',
-            '?' +
-                '');
+        window.history.replaceState(null, '', '?');
         await initializePage();
         page.setCurrentStateForTesting(FeedbackFlowState.SEARCH);
         const descriptionElement =
@@ -1053,8 +709,7 @@ suite('FeedbackFlowTestSuite', () => {
         assertEquals('', feedbackContext.extraDiagnostics);
         assertEquals('', descriptionElement.value);
         assertEquals('', feedbackContext.categoryTag);
-        assertFalse(feedbackContext.fromAssistant);
-        assertFalse(feedbackContext.fromSettingsSearch);
+        assertFalse(feedbackContext.settingsSearchDoNotRecordMetrics);
       });
 
   /**
@@ -1286,10 +941,8 @@ suite('FeedbackFlowTestSuite', () => {
             '"categoryTag":"Login",' +
             '"description":"fake description",' +
             '"descriptionPlaceholder":"fake description placeholder",' +
-            '"fromAssistant": true, ' +
             '"fromAutofill": true, ' +
-            '"fromSettingsSearch": true, ' +
-            '"hasLinkedCrossDevicePhone": true, ' +
+            '"settingsSearchDoNotRecordMetrics": true, ' +
             '"isInternalAccount": true, ' +
             '"pageUrl":"chrome://flags/",' +
             '"systemInformation":[' +
@@ -1309,13 +962,11 @@ suite('FeedbackFlowTestSuite', () => {
     const feedbackContext = getFeedbackContext();
     assertEquals('Login', feedbackContext.categoryTag);
     assertEquals('fake extra log data', feedbackContext.extraDiagnostics);
-    assertEquals('chrome://flags/', feedbackContext.pageUrl!.url);
+    assertEquals('chrome://flags/', feedbackContext.pageUrl!);
     assertEquals(
         '{"fake key1":"fake value1"}', feedbackContext.autofillMetadata);
-    assertTrue(feedbackContext.fromAssistant);
     assertTrue(feedbackContext.fromAutofill);
-    assertTrue(feedbackContext.fromSettingsSearch);
-    assertTrue(feedbackContext.hasLinkedCrossDevicePhone);
+    assertTrue(feedbackContext.settingsSearchDoNotRecordMetrics);
     assertTrue(feedbackContext.isInternalAccount);
 
     assertEquals('fake description', page.getDescriptionTemplateForTesting());
@@ -1348,13 +999,11 @@ suite('FeedbackFlowTestSuite', () => {
         const feedbackContext = getFeedbackContext();
         assertEquals('', feedbackContext.categoryTag);
         assertEquals('', feedbackContext.extraDiagnostics);
-        assertEquals('', feedbackContext.pageUrl!.url);
+        assertEquals('', feedbackContext.pageUrl!);
         assertEquals('{}', feedbackContext.autofillMetadata);
-        assertFalse(feedbackContext.fromAssistant);
         assertFalse(feedbackContext.fromAutofill);
-        assertFalse(feedbackContext.fromSettingsSearch);
+        assertFalse(feedbackContext.settingsSearchDoNotRecordMetrics);
         assertFalse(feedbackContext.isInternalAccount);
-        assertFalse(feedbackContext.hasLinkedCrossDevicePhone);
 
         assertTrue(!page.getDescriptionTemplateForTesting());
         assertTrue(!page.getDescriptionPlaceholderTextForTesting());

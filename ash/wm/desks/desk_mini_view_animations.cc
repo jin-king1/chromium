@@ -21,7 +21,6 @@
 #include "ash/wm/overview/overview_utils.h"
 #include "ash/wm/overview/overview_window_drag_controller.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
@@ -281,7 +280,7 @@ void AnimateDeskIconButtonScale(DeskIconButton* button,
   auto* layer = button->layer();
   layer->SetRoundedCornerRadius(initial_radius);
   button->SetBackground(
-      views::CreateSolidBackground(button->background()->get_color()));
+      views::CreateSolidBackground(button->background()->color()));
 
   layer->SetTransform(scale_transform);
 
@@ -297,7 +296,7 @@ void AnimateDeskIconButtonScale(DeskIconButton* button,
         if (overview_controller->InOverviewSession()) {
           button->layer()->SetRoundedCornerRadius(gfx::RoundedCornersF());
           button->SetBackground(views::CreateRoundedRectBackground(
-              button->background()->get_color(),
+              button->background()->color(),
               DeskIconButton::GetCornerRadiusOnState(button->state())));
         }
       },

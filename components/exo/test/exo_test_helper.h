@@ -15,8 +15,8 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/size.h"
 
-namespace gfx {
-class GpuMemoryBuffer;
+namespace viz {
+class SharedImageFormat;
 }
 
 namespace exo {
@@ -42,6 +42,19 @@ class ClientControlledShellSurfaceDelegate
   ClientControlledShellSurfaceDelegate& operator=(
       const ClientControlledShellSurfaceDelegate&) = delete;
 
+  enum Operation {
+    kStateChange,
+    kBoundsChange,
+  };
+
+  // Set the callback that will be called when the operation's task is executed.
+  void set_operation_signal_callback(
+      base::RepeatingCallback<void(Operation)> callback) {
+    operation_signal_callback_ = callback;
+  }
+
+  int pending_task_count() const { return pending_task_count_; }
+
  protected:
   // ClientControlledShellSurface::Delegate:
   void OnGeometryChanged(const gfx::Rect& geometry) override;
@@ -49,8 +62,8 @@ class ClientControlledShellSurfaceDelegate
                       chromeos::WindowStateType new_state_type) override;
   void OnBoundsChanged(chromeos::WindowStateType current_state,
                        chromeos::WindowStateType requested_state,
-                       int64_t display_id,
-                       const gfx::Rect& bounds_in_display,
+                       int64_t requested_display_id,
+                       const gfx::Rect& requested_bounds_in_display,
                        bool is_resize,
                        int bounds_change,
                        bool is_adjusted_bounds) override;
@@ -59,8 +72,21 @@ class ClientControlledShellSurfaceDelegate
   void OnZoomLevelChanged(ZoomChange zoom_change) override;
   void Commit();
 
+ private:
+  void ApplyStateChange(chromeos::WindowStateType old_state_type,
+                        chromeos::WindowStateType new_state_type);
+  void ApplyBoundsChange(chromeos::WindowStateType current_state,
+                         chromeos::WindowStateType requested_state,
+                         int64_t requested_display_id,
+                         const gfx::Rect& requested_bounds_in_display,
+                         bool is_resize,
+                         int bounds_change,
+                         bool is_adjusted_bounds);
+
   raw_ptr<ClientControlledShellSurface> shell_surface_;
+  base::RepeatingCallback<void(Operation)> operation_signal_callback_;
   bool delay_commit_;
+  int pending_task_count_ = 0;
 };
 
 // A helper class that does common initialization required for Exosphere.
@@ -77,20 +103,19 @@ class ExoTestHelper {
   // shell surface.
   static std::unique_ptr<Buffer> CreateBuffer(
       ShellSurfaceBase* shell_surface,
-      gfx::BufferFormat format = gfx::BufferFormat::RGBA_8888);
+      viz::SharedImageFormat format = viz::SinglePlaneFormat::kRGBA_8888);
 
-  // Creates an exo::Buffer that will be backed by either GpuMemoryBuffer or
-  // MappableSI if enabled.
+  // Creates an exo::Buffer that will be backed by a MappableSharedImage.
   static std::unique_ptr<Buffer> CreateBuffer(
       gfx::Size buffer_size,
-      gfx::BufferFormat buffer_format = gfx::BufferFormat::RGBA_8888,
+      viz::SharedImageFormat format = viz::SinglePlaneFormat::kRGBA_8888,
       bool is_overlay_candidate = false);
 
   // Creates an exo::Buffer from GMBHandle.
   static std::unique_ptr<Buffer> CreateBufferFromGMBHandle(
       gfx::GpuMemoryBufferHandle handle,
       gfx::Size buffer_size,
-      gfx::BufferFormat buffer_format);
+      viz::SharedImageFormat format);
 
   std::unique_ptr<ClientControlledShellSurface>
   CreateClientControlledShellSurface(Surface* surface,

@@ -7,8 +7,9 @@
 
 #include "chrome/browser/ui/exclusive_access/exclusive_access_bubble_hide_callback.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_bubble_type.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_tab_params.h"
+#include "url/origin.h"
 
-class GURL;
 class Profile;
 
 namespace content {
@@ -33,9 +34,9 @@ class ExclusiveAccessContext {
   virtual void UpdateUIForTabFullscreen() {}
 
   // Enters fullscreen and updates the exclusive access bubble.
-  virtual void EnterFullscreen(const GURL& url,
+  virtual void EnterFullscreen(const url::Origin& origin,
                                ExclusiveAccessBubbleType bubble_type,
-                               const int64_t display_id) = 0;
+                               FullscreenTabParams fullscreen_tab_params) = 0;
 
   // Exits fullscreen and updates the exclusive access bubble.
   virtual void ExitFullscreen() = 0;

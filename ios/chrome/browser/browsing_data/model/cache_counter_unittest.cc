@@ -240,7 +240,7 @@ class CacheCounterTest : public PlatformTest {
 
   scoped_refptr<net::URLRequestContextGetter> context_getter_;
   raw_ptr<disk_cache::Backend> backend_;
-  raw_ptr<disk_cache::Entry> entry_;
+  raw_ptr<disk_cache::Entry, DanglingUntriaged> entry_;
 
   bool finished_ = false;
   browsing_data::BrowsingDataCounter::ResultInt result_;
@@ -249,9 +249,8 @@ class CacheCounterTest : public PlatformTest {
 // Tests that for the empty cache, the result is zero.
 TEST_F(CacheCounterTest, Empty) {
   CacheCounter counter(profile());
-  counter.Init(prefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-               base::BindRepeating(&CacheCounterTest::CountingCallback,
-                                   base::Unretained(this)));
+  counter.Init(prefs(), base::BindRepeating(&CacheCounterTest::CountingCallback,
+                                            base::Unretained(this)));
   counter.Restart();
 
   WaitForIOThread();
@@ -265,9 +264,8 @@ TEST_F(CacheCounterTest, BeforeAndAfterClearing) {
   CreateCacheEntry();
 
   CacheCounter counter(profile());
-  counter.Init(prefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-               base::BindRepeating(&CacheCounterTest::CountingCallback,
-                                   base::Unretained(this)));
+  counter.Init(prefs(), base::BindRepeating(&CacheCounterTest::CountingCallback,
+                                            base::Unretained(this)));
   counter.Restart();
 
   WaitForIOThread();
@@ -286,9 +284,8 @@ TEST_F(CacheCounterTest, PrefChanged) {
   SetCacheDeletionPref(false);
 
   CacheCounter counter(profile());
-  counter.Init(prefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-               base::BindRepeating(&CacheCounterTest::CountingCallback,
-                                   base::Unretained(this)));
+  counter.Init(prefs(), base::BindRepeating(&CacheCounterTest::CountingCallback,
+                                            base::Unretained(this)));
   SetCacheDeletionPref(true);
 
   WaitForIOThread();
@@ -303,9 +300,8 @@ TEST_F(CacheCounterTest, PeriodChanged) {
   CreateCacheEntry();
 
   CacheCounter counter(profile());
-  counter.Init(prefs(), browsing_data::ClearBrowsingDataTab::ADVANCED,
-               base::BindRepeating(&CacheCounterTest::CountingCallback,
-                                   base::Unretained(this)));
+  counter.Init(prefs(), base::BindRepeating(&CacheCounterTest::CountingCallback,
+                                            base::Unretained(this)));
 
   SetDeletionPeriodPref(browsing_data::TimePeriod::LAST_HOUR);
   WaitForIOThread();

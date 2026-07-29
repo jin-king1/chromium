@@ -15,6 +15,7 @@ WPT_GH_SSH_URL_TEMPLATE = 'https://{}@github.com/%s/%s.git' % \
     (WPT_GH_ORG, WPT_GH_REPO_NAME)
 WPT_REVISION_FOOTER = 'WPT-Export-Revision: '
 CHANGE_ID_FOOTER = 'Change-Id: '
+LINK_FOOTER = 'Link: '
 EXPORT_PR_LABEL = 'chromium-export'
 PROVISIONAL_PR_LABEL = 'do not merge yet'
 
@@ -25,7 +26,7 @@ DEFAULT_WPT_COMMITTER_NAME = 'Chromium WPT Sync'
 DEFAULT_WPT_COMMITTER_EMAIL = 'blink-w3c-test-autoroller@chromium.org'
 
 EXPORT_DENYLIST = {
-    'third_party/blink/web_tests/external/wpt/.config.json',
+    'third_party/blink/web_tests/external/wpt/config.tmpl.json',
     'third_party/blink/web_tests/external/wpt/config.json',
 }
 

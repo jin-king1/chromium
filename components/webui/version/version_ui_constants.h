@@ -87,9 +87,12 @@ extern const char kVariationsCmdName[];
 extern const char kCopyVariationsLabel[];
 extern const char kCopyVariationsNotice[];
 extern const char kVariationsName[];
+extern const char kVariationsSource[];
+extern const char kVariationsSourceName[];
 extern const char kVariationsSeed[];
 extern const char kVariationsSeedName[];
 extern const char kVersion[];
+extern const char kVersionSuffix[];
 extern const char kVersionModifier[];
 extern const char kVersionProcessorVariation[];
 

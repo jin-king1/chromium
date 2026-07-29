@@ -16,6 +16,8 @@ if (is_win) {
       "lzma_util.h",
       "self_cleaning_temp_dir.cc",
       "self_cleaning_temp_dir.h",
+      "unbuffered_file_writer.cc",
+      "unbuffered_file_writer.h",
     ]
     deps = [ "//third_party/lzma_sdk/google:seven_zip_reader" ]
     public_deps = [
@@ -28,8 +30,8 @@ if (is_win) {
     sources = [
       "callback_work_item.cc",
       "callback_work_item.h",
-      "conditional_work_item_list.cc",
-      "conditional_work_item_list.h",
+      "conditional_work_item.cc",
+      "conditional_work_item.h",
       "copy_tree_work_item.cc",
       "copy_tree_work_item.h",
       "create_dir_work_item.cc",
@@ -44,6 +46,8 @@ if (is_win) {
       "delete_tree_work_item.h",
       "duplicate_tree_detector.cc",
       "duplicate_tree_detector.h",
+      "file_conductor.cc",
+      "file_conductor.h",
       "install_service_work_item.cc",
       "install_service_work_item.h",
       "install_service_work_item_impl.cc",
@@ -100,10 +104,17 @@ if (is_win) {
 static_library("with_no_strings") {
   public_deps = [ ":constants" ]
 
+  sources = [
+    "client_id_backup_file_manager.cc",
+    "client_id_backup_file_manager.h",
+    "google_update_settings.h",
+  ]
+
   deps = [
     "//base",
     "//chrome:strings",
     "//chrome/common:constants",
+    "//components/metrics:client_info",
     "//components/variations",
     "//third_party/abseil-cpp:absl",
   ]
@@ -113,7 +124,7 @@ static_library("with_no_strings") {
   allow_circular_includes_from = [ "//chrome/common:constants" ]
 
   if (is_win) {
-    sources = [
+    sources += [
       "additional_parameters.cc",
       "additional_parameters.h",
       "advanced_firewall_manager_win.cc",
@@ -130,8 +141,7 @@ static_library("with_no_strings") {
       "delete_old_versions.h",
       "firewall_manager_win.cc",
       "firewall_manager_win.h",
-      "google_update_settings.cc",
-      "google_update_settings.h",
+      "google_update_settings_win.cc",
       "google_update_util.cc",
       "google_update_util.h",
       "helper.cc",
@@ -181,7 +191,6 @@ static_library("with_no_strings") {
       "//chrome/install_static:install_static_util",
       "//components/app_launch_prefetch",
       "//components/base32",
-      "//components/metrics:client_info",
       "//components/version_info:channel",
       "//crypto",
       "//rlz/buildflags",
@@ -195,10 +204,13 @@ static_library("with_no_strings") {
 
     configs += [ "//build/config:precompiled_headers" ]
   } else {
-    sources = [
+    sources += [
+      "google_update_settings_posix.cc",
       "initial_preferences.cc",
       "initial_preferences.h",
     ]
+
+    deps += [ "//components/crash/core/app" ]
   }
 }
 
@@ -243,7 +255,7 @@ source_set("strings") {
 source_set("constants") {
   public = [ "initial_preferences_constants.h" ]
 
-  sources = [ "initial_preferences_constants.cc" ]
+  sources = []
 
   if (is_win) {
     public += [
@@ -261,6 +273,16 @@ source_set("constants") {
 }
 
 if (is_win) {
+  source_set("isolation_support") {
+    public = [ "isolation_support.h" ]
+    sources = [ "isolation_support.cc" ]
+
+    deps = [
+      "//base",
+      "//chrome/install_static:install_static_util",
+    ]
+  }
+
   source_set("did_run_support") {
     public = [ "update_did_run_state.h" ]
 
@@ -296,19 +318,27 @@ if (is_win) {
     deps = [
       ":with_no_strings",
       "//base",
+      "//base/test:test_support",
       "//chrome/install_static:install_static_util",
       "//chrome/install_static/test:test_support",
+      "//testing/gmock",
       "//testing/gtest",
     ]
+
+    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+    # enable the diagnostic by removing this line.
+    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 
   test("installer_util_unittests") {
     sources = [
       "additional_parameters_unittest.cc",
       "advanced_firewall_manager_win_unittest.cc",
+      "auto_launch_util_unittest.cc",
       "beacons_unittest.cc",
       "callback_work_item_unittest.cc",
-      "conditional_work_item_list_unittest.cc",
+      "client_id_backup_file_manager_unittest.cc",
+      "conditional_work_item_unittest.cc",
       "copy_tree_work_item_unittest.cc",
       "create_dir_work_item_unittest.cc",
       "create_reg_key_work_item_unittest.cc",
@@ -318,11 +348,13 @@ if (is_win) {
       "delete_reg_value_work_item_unittest.cc",
       "delete_tree_work_item_unittest.cc",
       "duplicate_tree_detector_unittest.cc",
+      "file_conductor_unittest.cc",
       "google_update_settings_unittest.cc",
       "helper_unittest.cc",
       "initial_preferences_unittest.cc",
       "install_util_unittest.cc",
       "installation_state_unittest.cc",
+      "isolation_support_unittest.cc",
       "l10n_string_util_unittest.cc",
       "logging_installer_unittest.cc",
       "lzma_util_unittest.cc",
@@ -338,6 +370,7 @@ if (is_win) {
       "self_cleaning_temp_dir_unittest.cc",
       "set_reg_value_work_item_unittest.cc",
       "shell_util_unittest.cc",
+      "unbuffered_file_writer_unittest.cc",
       "work_item_list_unittest.cc",
       "work_item_mocks.cc",
       "work_item_mocks.h",
@@ -345,6 +378,7 @@ if (is_win) {
     ]
 
     deps = [
+      ":isolation_support",
       ":test_support",
       ":with_rc_strings",
       "//base",
@@ -367,4 +401,20 @@ if (is_win) {
       "//chrome/test/data/installer/",
     ]
   }
-}  # is_win
+}
+
+if (!is_win) {
+  test("installer_util_unittests") {
+    sources = [ "client_id_backup_file_manager_unittest.cc" ]
+
+    deps = [
+      ":with_no_strings",
+      "//base",
+      "//base/test:run_all_unittests",
+      "//base/test:test_support",
+      "//chrome/common:constants",
+      "//testing/gmock",
+      "//testing/gtest",
+    ]
+  }
+}

@@ -10,10 +10,13 @@ import android.webkit.GeolocationPermissions;
 import android.webkit.ServiceWorkerController;
 import android.webkit.WebStorage;
 
+import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
 import java.lang.reflect.InvocationHandler;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executor;
 
 /** Boundary interface for Profile. */
@@ -47,5 +50,79 @@ public interface ProfileBoundaryInterface {
             Executor callbackExecutor,
             /* PrefetchOperationCallback */ InvocationHandler callback);
 
+    void setMaxPrerenders(int maxPrerenders);
+
+    // Kept for compatibility. `int` version is going to be used moving forward.
+    void setMaxPrerenders(@Nullable Integer maxPrerenders);
+
+    void clearMaxPrerenders();
+
+    // Kept for compatibility. `int` version is going to be used moving forward.
+    void setMaxPrefetches(@Nullable Integer maxPrefetches);
+
+    // Kept for compatibility. `int` version is going to be used moving forward.
+    void setPrefetchTtlSeconds(@Nullable Integer prefetchTtlSeconds);
+
+    void setMaxPrefetches(int maxPrefetches);
+
+    void setPrefetchTtlSeconds(int prefetchTtlSeconds);
+
+    void clearMaxPrefetches();
+
+    void clearPrefetchTtl();
+
+    int getMaxPrerenders();
+
+    int getMaxPrefetches();
+
+    int getPrefetchTtlSeconds();
+
     void setSpeculativeLoadingConfig(/* SpeculativeLoadingConfig */ InvocationHandler config);
+
+    void warmUpRendererProcess();
+
+    /**
+     * @deprecated Can be removed along with {@link
+     *     org.chromium.support_lib_boundary.util.Features#EXTRA_HEADER_FOR_ORIGINS}
+     */
+    @Deprecated
+    void setOriginMatchedHeader(String headerName, String headerValue, Set<String> originRules);
+
+    void addOriginMatchedHeader(
+            @NonNull String name, @NonNull String value, @NonNull Set<String> rules);
+
+    boolean hasOriginMatchedHeader(String headerName);
+
+    @NonNull /* List<OriginMatchedBoundaryInterface> */
+            List<InvocationHandler> getOriginMatchedHeaders(
+                    @Nullable String headerName, @Nullable String headerValue);
+
+    /**
+     * @deprecated Can be removed along with {@link
+     *     org.chromium.support_lib_boundary.util.Features#EXTRA_HEADER_FOR_ORIGINS}
+     */
+    @Deprecated
+    void clearOriginMatchedHeader(String headerName);
+
+    void clearOriginMatchedHeader(@NonNull String headerName, @Nullable String headerValue);
+
+    void clearAllOriginMatchedHeaders();
+
+    void preconnect(String url);
+
+    /**
+     * Asynchronously enqueues a preconnect request for the given URL.
+     *
+     * <p>This method is non-blocking and does not force native Chromium startup. The request is
+     * queued and executed once native initialization completes.
+     */
+    void enqueuePreconnect(@NonNull String url);
+
+    void addQuicHints(Set<String> origins);
+
+    /* HttpCacheBoundaryInterface */ InvocationHandler getHttpCache();
+
+    void setCrossOriginIsolatedAllowList(@NonNull Set<String> originPatterns);
+
+    @NonNull Set<String> getCrossOriginIsolatedAllowList();
 }

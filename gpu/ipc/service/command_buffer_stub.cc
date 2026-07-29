@@ -23,7 +23,6 @@
 #include "gpu/command_buffer/common/constants.h"
 #include "gpu/command_buffer/common/sync_token.h"
 #include "gpu/command_buffer/service/decoder_context.h"
-#include "gpu/command_buffer/service/gpu_command_buffer_memory_tracker.h"
 #include "gpu/command_buffer/service/logger.h"
 #include "gpu/command_buffer/service/memory_tracking.h"
 #include "gpu/command_buffer/service/query_manager.h"
@@ -39,6 +38,7 @@
 #include "gpu/ipc/service/gpu_watchdog_thread.h"
 #include "gpu/ipc/service/image_transport_surface.h"
 #include "ipc/ipc_mojo_bootstrap.h"
+#include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_implementation.h"
@@ -84,9 +84,7 @@ class DevToolsChannelData : public base::trace_event::ConvertableToTraceFormat {
   ~DevToolsChannelData() override = default;
 
   void AppendAsTraceFormat(std::string* out) const override {
-    std::string tmp;
-    base::JSONWriter::Write(value_, &tmp);
-    *out += tmp;
+    *out += base::WriteJson(value_).value_or("");
   }
 
  private:
@@ -96,10 +94,22 @@ class DevToolsChannelData : public base::trace_event::ConvertableToTraceFormat {
 
 std::unique_ptr<base::trace_event::ConvertableToTraceFormat>
 DevToolsChannelData::CreateForChannel(GpuChannel* channel) {
-  base::Value::Dict res;
+  base::DictValue res;
   res.Set("renderer_pid", static_cast<int>(channel->client_pid()));
   res.Set("used_bytes", static_cast<double>(channel->GetMemoryUsage()));
   return base::WrapUnique(new DevToolsChannelData(base::Value(std::move(res))));
+}
+
+bool IsStateful(const mojom::ContextCreationAttribs& attribs) {
+  switch (attribs.which()) {
+    case mojom::ContextCreationAttribs::Tag::kWebgpu:
+      return true;
+    case mojom::ContextCreationAttribs::Tag::kGles:
+      return attribs.get_gles()->context_type == CONTEXT_TYPE_WEBGL1 ||
+             attribs.get_gles()->context_type == CONTEXT_TYPE_WEBGL2;
+    case mojom::ContextCreationAttribs::Tag::kRaster:
+      return false;
+  }
 }
 
 }  // namespace
@@ -112,7 +122,6 @@ CommandBufferStub::CommandBufferStub(
     int32_t stream_id,
     int32_t route_id)
     : channel_(channel),
-      context_type_(init_params.attribs.context_type),
       active_url_(init_params.active_url),
       context_label_(init_params.label),
       initialized_(false),
@@ -126,7 +135,8 @@ CommandBufferStub::CommandBufferStub(
       route_id_(route_id),
       last_flush_id_(0),
       previous_processed_num_(0),
-      wait_set_get_buffer_count_(0) {
+      wait_set_get_buffer_count_(0),
+      has_stateful_context_(IsStateful(*init_params.attribs)) {
   process_delayed_work_timer_.SetTaskRunner(channel_->task_runner());
 }
 
@@ -154,7 +164,7 @@ void CommandBufferStub::ExecuteDeferredRequest(
     return;
 
   if (!context_label_.empty()) {
-    TRACE_EVENT_BEGIN0("gpu", TRACE_STR_COPY(context_label_.c_str()));
+    TRACE_EVENT_BEGIN("gpu", TRACE_STR_COPY(context_label_.c_str()));
   }
 
   switch (params.which()) {
@@ -167,21 +177,10 @@ void CommandBufferStub::ExecuteDeferredRequest(
     case mojom::DeferredCommandBufferRequestParams::Tag::kDestroyTransferBuffer:
       OnDestroyTransferBuffer(params.get_destroy_transfer_buffer());
       break;
-
-    case mojom::DeferredCommandBufferRequestParams::Tag::
-        kSetDefaultFramebufferSharedImage: {
-      OnSetDefaultFramebufferSharedImage(
-          params.get_set_default_framebuffer_shared_image()->mailbox,
-          params.get_set_default_framebuffer_shared_image()->samples_count,
-          params.get_set_default_framebuffer_shared_image()->preserve,
-          params.get_set_default_framebuffer_shared_image()->needs_depth,
-          params.get_set_default_framebuffer_shared_image()->needs_stencil);
-      break;
-    }
   }
 
   if (!context_label_.empty()) {
-    TRACE_EVENT_END0("gpu", TRACE_STR_COPY(context_label_.c_str()));
+    TRACE_EVENT_END("gpu");
   }
 }
 
@@ -487,10 +486,8 @@ void CommandBufferStub::OnAsyncFlush(
 
   const uint64_t global_flush_id =
       GlobalFlushTracingId(channel_->client_id(), flush_id);
-  TRACE_EVENT_WITH_FLOW0(
-      "gpu,toplevel.flow", "CommandBuffer::Flush",
-      TRACE_ID_WITH_SCOPE("CommandBuffer::Flush", global_flush_id),
-      TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT);
+  TRACE_EVENT("gpu,toplevel.flow", "CommandBuffer::Flush",
+              perfetto::Flow::Global(global_flush_id, "CommandBuffer::Flush"));
 
   TRACE_EVENT1("gpu", "CommandBufferStub::OnAsyncFlush", "put_offset",
                put_offset);
@@ -517,10 +514,9 @@ void CommandBufferStub::OnAsyncFlush(
 #endif
 
   if (!HasUnprocessedCommands()) {
-    TRACE_EVENT_WITH_FLOW0(
-        "gpu,toplevel.flow", "CommandBuffer::FlushComplete",
-        TRACE_ID_WITH_SCOPE("CommandBuffer::Flush", global_flush_id),
-        TRACE_EVENT_FLAG_FLOW_IN);
+    TRACE_EVENT("gpu,toplevel.flow", "CommandBuffer::FlushComplete",
+                perfetto::TerminatingFlow::Global(global_flush_id,
+                                                  "CommandBuffer::Flush"));
   }
 }
 
@@ -637,10 +633,6 @@ void CommandBufferStub::HandleReturnData(base::span<const uint8_t> data) {
   client_->OnReturnData(std::vector<uint8_t>(data.begin(), data.end()));
 }
 
-bool CommandBufferStub::ShouldYield() {
-  return channel_->scheduler()->ShouldYield(sequence_id_);
-}
-
 void CommandBufferStub::OnConsoleMessage(int32_t id,
                                          const std::string& message) {
   client_->OnConsoleMessage(message);
@@ -661,15 +653,15 @@ void CommandBufferStub::RemoveDestructionObserver(
   destruction_observers_.RemoveObserver(observer);
 }
 
-std::unique_ptr<MemoryTracker> CommandBufferStub::CreateMemoryTracker() const {
+scoped_refptr<MemoryTracker> CommandBufferStub::CreateMemoryTracker() const {
   MemoryTrackerFactory current_factory = GetMemoryTrackerFactory();
   if (current_factory)
     return current_factory.Run();
 
-  return std::make_unique<GpuCommandBufferMemoryTracker>(
+  return base::MakeRefCounted<MemoryTracker>(
       command_buffer_id_, channel_->client_tracing_id(),
-      channel_->task_runner(),
-      channel_->gpu_channel_manager()->peak_memory_monitor());
+      channel_->gpu_channel_manager()->peak_memory_monitor(),
+      GpuPeakMemoryAllocationSource::COMMAND_BUFFER);
 }
 
 // static

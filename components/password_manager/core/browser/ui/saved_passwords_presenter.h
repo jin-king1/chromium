@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_UI_SAVED_PASSWORDS_PRESENTER_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_UI_SAVED_PASSWORDS_PRESENTER_H_
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "base/scoped_observation.h"
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/password_manager/core/browser/ui/actor_login_permission.h"
 #include "components/password_manager/core/browser/ui/affiliated_group.h"
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #include "components/password_manager/core/browser/ui/passwords_provider.h"
@@ -108,7 +110,7 @@ class SavedPasswordsPresenter : public PasswordStoreInterface::Observer,
   };
 
   using AddCredentialsCallback = base::OnceClosure;
-  using DuplicatePasswordsMap = std::multimap<std::string, PasswordForm>;
+  using DuplicatePasswordsMap = std::multimap<std::string, StoredCredential>;
 
   SavedPasswordsPresenter(affiliations::AffiliationService* affiliation_service,
                           scoped_refptr<PasswordStoreInterface> profile_store,
@@ -129,6 +131,9 @@ class SavedPasswordsPresenter : public PasswordStoreInterface::Observer,
   // Removes the credential and all its duplicates from the store.
   bool RemoveCredential(const CredentialUIEntry& credential);
 
+  // Removes the backup credential from the store.
+  bool RemoveBackupPassword(const CredentialUIEntry& credential);
+
   // Cancels the last removal operation.
   void UndoLastRemoval();
 
@@ -136,9 +141,11 @@ class SavedPasswordsPresenter : public PasswordStoreInterface::Observer,
   // was added, false if |credential|'s data is not valid (invalid url/empty
   // password), or an entry with such signon_realm and username already exists
   // in any (profile or account) store.
-  bool AddCredential(const CredentialUIEntry& credential,
-                     password_manager::PasswordForm::Type type =
-                         password_manager::PasswordForm::Type::kManuallyAdded);
+  // "completion" is called regardless of the operation result.
+  bool AddCredential(
+      const CredentialUIEntry& credential,
+      PasswordForm::Type type = PasswordForm::Type::kManuallyAdded,
+      base::OnceClosure completion = base::DoNothing());
 
   // Adds |credentials| to the specified store.
   // Credentials are expected to be valid according to `GetExpectedAddResult`
@@ -149,7 +156,7 @@ class SavedPasswordsPresenter : public PasswordStoreInterface::Observer,
   //
   // For a single credential the behaviour is identical to AddCredential method.
   void AddCredentials(const std::vector<CredentialUIEntry>& credentials,
-                      password_manager::PasswordForm::Type type,
+                      PasswordForm::Type type,
                       AddCredentialsCallback completion);
 
   // Deletes all saved credentials: passwords, passkeys, blocked entries.
@@ -170,19 +177,14 @@ class SavedPasswordsPresenter : public PasswordStoreInterface::Observer,
                                   const CredentialUIEntry& updated_credential);
 
   // Moves credential to an account by deleting them from profile password store
-  // and adding them to the account password store. `trigger` is used to record
-  // per entry point metrics.
+  // and adding them to the account password store.
   void MoveCredentialsToAccount(
-      const std::vector<CredentialUIEntry>& credentials,
-      metrics_util::MoveToAccountStoreTrigger trigger);
+      const std::vector<CredentialUIEntry>& credentials);
 
-  // Returns a list of unique passwords which includes normal credentials,
-  // federated credentials, passkeys, and blocked forms. If a same form is
-  // present both on account and profile stores it will be represented as a
-  // single entity. Uniqueness is determined using site name, username,
-  // password. For Android credentials package name is also taken into account
-  // and for Federated credentials federation origin.
+  // PasswordsProvider:
   std::vector<CredentialUIEntry> GetSavedCredentials() const override;
+  base::flat_set<ActorLoginPermission> GetActorLoginPermissions(
+      const syncer::SyncService* sync_service) const override;
 
   // Returns a list of affiliated groups for the Password Manager.
   std::vector<AffiliatedGroup> GetAffiliatedGroups();
@@ -193,6 +195,11 @@ class SavedPasswordsPresenter : public PasswordStoreInterface::Observer,
 
   // Returns a list of sites blocked by users for the Password Manager.
   std::vector<CredentialUIEntry> GetBlockedSites();
+
+  // Revokes actor login permission for all credentials stored for the given
+  // `signon_realm`.
+  void RevokeActorLoginPermission(const std::string& signon_realm,
+                                  const std::string& username);
 
   // Returns PasswordForms corresponding to |credential|.
   std::vector<PasswordForm> GetCorrespondingPasswordForms(
@@ -208,7 +215,7 @@ class SavedPasswordsPresenter : public PasswordStoreInterface::Observer,
                        const PasswordStoreChangeList& changes) override;
   void OnLoginsRetained(
       PasswordStoreInterface* store,
-      const std::vector<PasswordForm>& retained_passwords) override;
+      const std::vector<StoredCredential>& retained_credentials) override;
 
   // PasskeyModel::Observer:
   void OnPasskeysChanged(
@@ -217,11 +224,9 @@ class SavedPasswordsPresenter : public PasswordStoreInterface::Observer,
   void OnPasskeyModelIsReady(bool is_ready) override;
 
   // PasswordStoreConsumer:
-  void OnGetPasswordStoreResults(
-      std::vector<std::unique_ptr<PasswordForm>> results) override;
-  void OnGetPasswordStoreResultsFrom(
+  void OnGetPasswordStoreResultsOrErrorFrom(
       PasswordStoreInterface* store,
-      std::vector<std::unique_ptr<PasswordForm>> results) override;
+      LoginsResultOrError results_or_error) override;
 
   // Notify observers about changes in the compromised credentials.
   void NotifyEdited(const CredentialUIEntry& password);
@@ -241,10 +246,10 @@ class SavedPasswordsPresenter : public PasswordStoreInterface::Observer,
   // exist, the unblocklist operation is a no-op.
   void UnblocklistBothStores(const CredentialUIEntry& credential);
 
-  // Helper functions to update local cache of PasswordForms.
-  void RemoveForms(const std::vector<PasswordForm>& forms);
-  void AddForms(const std::vector<PasswordForm>& forms,
-                base::OnceClosure completion);
+  // Helper functions to update local cache of StoredCredentials.
+  void RemoveCredentials(const std::vector<StoredCredential>& credentials);
+  void AddCredentialsToCache(std::vector<StoredCredential> credentials,
+                             base::OnceClosure completion);
 
   // Collects credentials and groups them if there are no pending store updates.
   void MaybeGroupCredentials(base::OnceClosure completion);

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/debug/elf_reader.h"
 
 #include <dlfcn.h>
@@ -15,6 +10,7 @@
 #include <optional>
 #include <string_view>
 
+#include "base/compiler_specific.h"
 #include "base/debug/test_elf_image_builder.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/native_library.h"
@@ -186,14 +182,17 @@ TEST(ElfReaderTestWithCurrentElfImage, ReadElfBuildId) {
   ASSERT_NE(build_id_size, 0u);
 
 #if defined(OFFICIAL_BUILD)
-  constexpr size_t kExpectedBuildIdStringLength = 40;  // SHA1 hash in hex.
+  EXPECT_EQ(40, build_id_size);  // SHA1 hash in hex.
 #else
-  constexpr size_t kExpectedBuildIdStringLength = 16;  // 64-bit int in hex.
+  // Allow any common BuildId hash, since it depends on linker settings.
+  if (build_id_size != 16 && build_id_size != 40 && build_id_size != 64) {
+    // LLD's "fast", or sha1, or sha256.
+    EXPECT_EQ(16, build_id_size);
+  }
 #endif
 
-  EXPECT_EQ(kExpectedBuildIdStringLength, build_id_size);
   for (size_t i = 0; i < build_id_size; ++i) {
-    char c = build_id[i];
+    char c = UNSAFE_TODO(build_id[i]);
     EXPECT_TRUE(IsHexDigit(c));
     EXPECT_FALSE(IsAsciiLower(c));
   }

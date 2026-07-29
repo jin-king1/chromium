@@ -8,15 +8,15 @@
 
 #include "base/containers/map_util.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "components/gcm_driver/gcm_driver.h"
 #include "components/gcm_driver/instance_id/instance_id.h"
 #include "components/gcm_driver/instance_id/instance_id_driver.h"
 #include "components/invalidation/invalidation_listener.h"
-#include "components/invalidation/public/invalidation.h"
-#include "components/invalidation/public/invalidation_util.h"
 
 namespace invalidation {
 
@@ -73,7 +73,7 @@ DirectInvalidation ParseIncomingMessage(const gcm::IncomingMessage& message) {
 // Otherwise, the existing invalidation for the type will be replaced by
 // `invalidation` if and only if `invalidation` has a higher version than
 // `map.at(invalidation.type())`.
-void Upsert(std::map<Topic, DirectInvalidation>& map,
+void Upsert(std::map<std::string, DirectInvalidation>& map,
             const DirectInvalidation& invalidation) {
   const auto it = map.find(invalidation.type());
   if (it == map.end()) {
@@ -100,7 +100,10 @@ InvalidationListenerImpl::InvalidationListenerImpl(
           base::StrCat({kFmAppId, "-", base::NumberToString(project_number_)})),
       log_prefix_(base::StrCat(
           {log_prefix, "-", base::NumberToString(project_number_)})),
-      registration_retry_backoff_(&kRegistrationRetryBackoffPolicy) {}
+      registration_retry_backoff_(&kRegistrationRetryBackoffPolicy) {
+  CHECK(gcm_driver_);
+  CHECK(instance_id_driver_);
+}
 
 InvalidationListenerImpl::~InvalidationListenerImpl() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -108,9 +111,11 @@ InvalidationListenerImpl::~InvalidationListenerImpl() {
 
 // InvalidationListener overrides.
 void InvalidationListenerImpl::AddObserver(Observer* observer) {
-  const std::string type = observer->GetType();
-  CHECK(!type_to_handler_.contains(type));
-  CHECK(!observers_.HasObserver(observer));
+  const std::string& type = observer->GetType();
+  CHECK(!type_to_handler_.contains(type))
+      << "Observer already exists for type: " << type;
+  CHECK(!observers_.HasObserver(observer))
+      << "Observer already subscribed for type: " << observer;
 
   observers_.AddObserver(observer);
   type_to_handler_[type] = observer;
@@ -128,8 +133,10 @@ bool InvalidationListenerImpl::HasObserver(const Observer* observer) const {
 
 void InvalidationListenerImpl::RemoveObserver(const Observer* observer) {
   const std::string& type = observer->GetType();
-  CHECK(type_to_handler_.contains(type));
-  type_to_handler_.erase(type);
+  auto it = type_to_handler_.find(type);
+  CHECK(it != type_to_handler_.end())
+      << "Observer not found for type: " << type;
+  type_to_handler_.erase(it);
   observers_.RemoveObserver(observer);
 }
 

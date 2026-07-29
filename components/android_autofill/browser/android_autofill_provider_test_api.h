@@ -14,14 +14,41 @@ class AndroidAutofillProviderTestApi {
   explicit AndroidAutofillProviderTestApi(AndroidAutofillProvider* provider)
       : provider_(*provider) {}
 
-  const FormDataAndroid* form() && { return provider_->form_.get(); }
+  void StartNewSession(AndroidAutofillManager* manager,
+                       const FormData& form,
+                       const FormFieldData& field) {
+    provider_->StartNewSession(manager, form, field);
+  }
+
+  const FormDataAndroid* form() && {
+    return provider_->session_state_ ? provider_->session_state_->form.get()
+                                     : nullptr;
+  }
   const FieldGlobalId last_focused_field_id() && {
-    return provider_->current_field_.id;
+    return provider_->session_state_
+               ? provider_->session_state_->current_field.id
+               : FieldGlobalId{};
+  }
+  const url::Origin last_focused_field_origin() && {
+    return provider_->session_state_
+               ? provider_->session_state_->current_field.origin
+               : url::Origin{};
+  }
+  const content::GlobalRenderFrameHostId last_queried_field_rfh_id() && {
+    return provider_->session_state_
+               ? provider_->session_state_->last_queried_field_rfh_id
+               : content::GlobalRenderFrameHostId{};
+  }
+  bool is_credman_sheet_showing() && {
+    return provider_->credman_sheet_status_ ==
+           AndroidAutofillProvider::CredManBottomSheetLifecycle::kIsShowing;
   }
 
   TouchToFillKeyboardSuppressor& keyboard_suppressor() {
     return *provider_->keyboard_suppressor_;
   }
+
+  void OnTriggerPasskeyRequest() { provider_->OnTriggerPasskeyRequest(); }
 
  private:
   const raw_ref<AndroidAutofillProvider> provider_;

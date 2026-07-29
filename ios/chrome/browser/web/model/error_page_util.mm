@@ -13,11 +13,13 @@
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/values.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/error_page/common/error.h"
 #import "components/error_page/common/localized_error.h"
 #import "components/grit/components_resources.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/net/protocol_handler_util.h"
+#import "net/base/apple/url_conversions.h"
 #import "net/base/net_errors.h"
 #import "ui/base/resource/resource_bundle.h"
 #import "ui/base/resource/resource_scale_factor.h"
@@ -28,8 +30,8 @@ NSString* GetErrorPage(const GURL& url,
                        NSError* error,
                        bool is_post,
                        bool is_off_the_record) {
-  DCHECK_EQ(url, GURL(base::SysNSStringToUTF8(
-                     error.userInfo[NSURLErrorFailingURLStringErrorKey])));
+  DCHECK_EQ(url,
+            net::GURLWithNSURL(error.userInfo[NSURLErrorFailingURLErrorKey]));
   NSError* final_error = base::ios::GetFinalUnderlyingErrorFromError(error);
   if (!final_error) {
     final_error = error;
@@ -54,7 +56,7 @@ NSString* GetErrorPage(const GURL& url,
           /*can_show_network_diagnostics_dialog=*/false, is_off_the_record,
           /*auto_fetch_feature_enabled=*/false,
           /*is_kiosk_mode=*/false,
-          GetApplicationContext()->GetApplicationLocale(),
+          GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
           /*is_blocked_by_extension=*/false,
           /*error_page_params=*/nullptr);
 

@@ -128,11 +128,13 @@
 #include <utility>
 
 #include "base/callback_list.h"
+#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#include "base/metrics/histogram.h"
 #include "base/metrics/histogram_base.h"
-#include "base/metrics/histogram_flattener.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/histogram_macros_local.h"
@@ -150,6 +152,7 @@
 #include "base/trace_event/named_trigger.h"
 #include "build/build_config.h"
 #include "components/metrics/clean_exit_beacon.h"
+#include "components/metrics/drive_metrics_provider.h"
 #include "components/metrics/environment_recorder.h"
 #include "components/metrics/field_trials_provider.h"
 #include "components/metrics/metrics_features.h"
@@ -179,16 +182,19 @@ namespace metrics {
 namespace {
 
 // Used to write histogram data to a log. Does not take ownership of the log.
-class IndependentFlattener : public base::HistogramFlattener {
+class IndependentHistogramSnapshotManager
+    : public base::HistogramSnapshotManager {
  public:
-  explicit IndependentFlattener(MetricsLog* log) : log_(log) {}
+  explicit IndependentHistogramSnapshotManager(MetricsLog* log) : log_(log) {}
 
-  IndependentFlattener(const IndependentFlattener&) = delete;
-  IndependentFlattener& operator=(const IndependentFlattener&) = delete;
+  IndependentHistogramSnapshotManager(
+      const IndependentHistogramSnapshotManager&) = delete;
+  IndependentHistogramSnapshotManager& operator=(
+      const IndependentHistogramSnapshotManager&) = delete;
 
-  ~IndependentFlattener() override = default;
+  ~IndependentHistogramSnapshotManager() override = default;
 
-  // base::HistogramFlattener:
+  // base::HistogramSnapshotManager:
   void RecordDelta(const base::HistogramBase& histogram,
                    const base::HistogramSamples& snapshot) override {
     CHECK(histogram.HasFlags(base::HistogramBase::kUmaTargetedHistogramFlag));
@@ -201,15 +207,18 @@ class IndependentFlattener : public base::HistogramFlattener {
 
 // Used to mark histogram samples as reported so that they are not included in
 // the next log. A histogram's snapshot samples are simply discarded/ignored
-// when attempting to record them through this |HistogramFlattener|.
-class DiscardingFlattener : public base::HistogramFlattener {
+// when attempting to record them through this manager.
+class DiscardingHistogramSnapshotManager
+    : public base::HistogramSnapshotManager {
  public:
-  DiscardingFlattener() = default;
+  DiscardingHistogramSnapshotManager() = default;
 
-  DiscardingFlattener(const DiscardingFlattener&) = delete;
-  DiscardingFlattener& operator=(const DiscardingFlattener&) = delete;
+  DiscardingHistogramSnapshotManager(
+      const DiscardingHistogramSnapshotManager&) = delete;
+  DiscardingHistogramSnapshotManager& operator=(
+      const DiscardingHistogramSnapshotManager&) = delete;
 
-  ~DiscardingFlattener() override = default;
+  ~DiscardingHistogramSnapshotManager() override = default;
 
   void RecordDelta(const base::HistogramBase& histogram,
                    const base::HistogramSamples& snapshot) override {
@@ -217,7 +226,6 @@ class DiscardingFlattener : public base::HistogramFlattener {
   }
 };
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 // Emits a histogram upon instantiation, and on destruction. Used to measure how
 // often the browser is ungracefully killed between two different points. In
 // particular, currently, this is used on mobile to measure how often the
@@ -278,7 +286,6 @@ class ScopedTerminationChecker {
   // this object will do nothing.
   bool active_ = false;
 };
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 // The delay, in seconds, after starting recording before doing expensive
 // initialization work.
@@ -313,9 +320,9 @@ void RecordUserLogStoreState(UserLogStoreState state) {
 
 // static
 void MetricsService::RegisterPrefs(PrefRegistrySimple* registry) {
-  CleanExitBeacon::RegisterPrefs(registry);
   MetricsStateManager::RegisterPrefs(registry);
   MetricsLog::RegisterPrefs(registry);
+  DriveMetricsProvider::RegisterPrefs(registry);
   StabilityMetricsProvider::RegisterPrefs(registry);
   MetricsReportingService::RegisterPrefs(registry);
 
@@ -420,7 +427,7 @@ void MetricsService::InitializeMetricsRecordingState() {
       // MetricsRotationScheduler is tied to the lifetime of |this|.
       base::BindRepeating(&MetricsServiceClient::GetUploadInterval,
                           base::Unretained(client_)),
-      client_->ShouldStartUpFastForTesting());
+      client_->ShouldStartUpFast());
 
   // Init() has to be called after LogCrash() in order for LogCrash() to work.
   delegating_provider_.Init();
@@ -455,8 +462,9 @@ void MetricsService::Stop() {
 }
 
 void MetricsService::EnableReporting() {
-  if (reporting_service_.reporting_active())
+  if (reporting_service_.reporting_active()) {
     return;
+  }
   reporting_service_.EnableReporting();
   StartSchedulerIfNecessary();
 }
@@ -471,6 +479,11 @@ std::string MetricsService::GetClientId() const {
 
 int MetricsService::GetLowEntropySource() {
   return state_manager_->GetLowEntropySource();
+}
+
+void MetricsService::Purge() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  reporting_service_.metrics_log_store()->Purge();
 }
 
 int MetricsService::GetOldLowEntropySource() {
@@ -488,8 +501,9 @@ bool MetricsService::WasLastShutdownClean() const {
 void MetricsService::EnableRecording() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (recording_state_ == ACTIVE)
+  if (recording_state_ == ACTIVE) {
     return;
+  }
   recording_state_ = ACTIVE;
 
   state_manager_->ForceClientIdCreation();
@@ -559,8 +573,9 @@ void MetricsService::HandleIdleSinceLastTransmission(bool in_idle) {
   // If there wasn't a lot of action, maybe the computer was asleep, in which
   // case, the log transmissions should have stopped.  Here we start them up
   // again.
-  if (!in_idle && idle_since_last_transmission_)
+  if (!in_idle && idle_since_last_transmission_) {
     StartSchedulerIfNecessary();
+  }
   idle_since_last_transmission_ = in_idle;
 }
 
@@ -609,11 +624,14 @@ void MetricsService::ClearFgBgIdIfNeeded(
   current_log_->ClearFgBgId();
 }
 
-void MetricsService::OnAppEnterBackground(bool keep_recording_in_background) {
-  base::RecordAction(base::UserMetricsAction("UMA_OnBackgrounded"));
+void MetricsService::OnAppEnterBackground(bool keep_recording_in_background,
+                                          bool emit_uma_action) {
+  if (emit_uma_action) {
+    base::RecordAction(base::UserMetricsAction("UMA_OnBackgrounded"));
+  }
   std::optional<bool> previous_is_in_foreground = is_in_foreground_;
   is_in_foreground_ = false;
-  reporting_service_.SetIsInForegound(false);
+  reporting_service_.OnAppEnterBackground();
   if (!keep_recording_in_background) {
     rotation_scheduler_->Stop();
     reporting_service_.Stop();
@@ -663,11 +681,14 @@ void MetricsService::OnAppEnterBackground(bool keep_recording_in_background) {
   }
 }
 
-void MetricsService::OnAppEnterForeground(bool force_open_new_log) {
-  base::RecordAction(base::UserMetricsAction("UMA_OnForegrounded"));
+void MetricsService::OnAppEnterForeground(bool force_open_new_log,
+                                          bool emit_uma_action) {
+  if (emit_uma_action) {
+    base::RecordAction(base::UserMetricsAction("UMA_OnForegrounded"));
+  }
   std::optional<bool> previous_is_in_foreground = is_in_foreground_;
   is_in_foreground_ = true;
-  reporting_service_.SetIsInForegound(true);
+  reporting_service_.OnAppEnterForeground();
   state_manager_->LogHasSessionShutdownCleanly(false);
   StartSchedulerIfNecessary();
 
@@ -720,8 +741,7 @@ void MetricsService::ClearSavedStabilityMetrics() {
 }
 
 void MetricsService::MarkCurrentHistogramsAsReported() {
-  DiscardingFlattener flattener;
-  base::HistogramSnapshotManager snapshot_manager(&flattener);
+  DiscardingHistogramSnapshotManager snapshot_manager;
   base::StatisticsRecorder::PrepareDeltas(
       /*include_persistent=*/true, /*flags_to_set=*/base::Histogram::kNoFlags,
       /*required_flags=*/base::Histogram::kUmaTargetedHistogramFlag,
@@ -731,8 +751,9 @@ void MetricsService::MarkCurrentHistogramsAsReported() {
 #if BUILDFLAG(IS_CHROMEOS)
 void MetricsService::SetUserLogStore(
     std::unique_ptr<UnsentLogStore> user_log_store) {
-  if (log_store()->has_alternate_ongoing_log_store())
+  if (log_store()->has_alternate_ongoing_log_store()) {
     return;
+  }
 
   if (state_ >= SENDING_LOGS) {
     // Closes the current log so that a new log can be opened in the user log
@@ -776,8 +797,7 @@ void MetricsService::UnsetUserLogStore() {
   // TODO(crbug.com/40245274): Consider not flushing histograms here.
 
   // Discard histograms.
-  DiscardingFlattener flattener;
-  base::HistogramSnapshotManager histogram_snapshot_manager(&flattener);
+  DiscardingHistogramSnapshotManager histogram_snapshot_manager;
   delegating_provider_.RecordHistogramSnapshots(&histogram_snapshot_manager);
   base::StatisticsRecorder::PrepareDeltas(
       /*include_persistent=*/true, /*flags_to_set=*/base::Histogram::kNoFlags,
@@ -801,17 +821,16 @@ void MetricsService::InitPerUserMetrics() {
   client_->InitPerUserMetrics();
 }
 
-std::optional<bool> MetricsService::GetCurrentUserMetricsConsent() const {
-  return client_->GetCurrentUserMetricsConsent();
+std::optional<bool> MetricsService::GetCurrentUserMetricsChoice() const {
+  return client_->GetCurrentUserMetricsChoice();
 }
 
 std::optional<std::string> MetricsService::GetCurrentUserId() const {
   return client_->GetCurrentUserId();
 }
 
-void MetricsService::UpdateCurrentUserMetricsConsent(
-    bool user_metrics_consent) {
-  client_->UpdateCurrentUserMetricsConsent(user_metrics_consent);
+void MetricsService::UpdateCurrentUserMetricsChoice(bool user_choice) {
+  client_->UpdateCurrentUserMetricsChoice(user_choice);
 }
 
 void MetricsService::ResetClientId() {
@@ -832,7 +851,7 @@ MetricsService::GetSyntheticTrialRegistry() {
 
 base::TimeDelta MetricsService::GetInitializationDelay() {
   return base::Seconds(
-      client_->ShouldStartUpFastForTesting() ? 0 : kInitializationDelaySeconds);
+      client_->ShouldStartUpFast() ? 0 : kInitializationDelaySeconds);
 }
 
 base::TimeDelta MetricsService::GetUpdateLastAliveTimestampDelay() {
@@ -845,8 +864,9 @@ bool MetricsService::StageCurrentLogForTest() {
 
   MetricsLogStore* const log_store = reporting_service_.metrics_log_store();
   log_store->StageNextLog();
-  if (!log_store->has_staged_log())
+  if (!log_store->has_staged_log()) {
     return false;
+  }
 
   OpenNewLog();
   return true;
@@ -919,8 +939,9 @@ void MetricsService::InitializeMetricsState() {
   // number of different edge cases, such as if the last version crashed before
   // it could save off a system profile or if UMA reporting is disabled (which
   // normally results in stats being accumulated).
-  if (version_changed && !has_initial_stability_log)
+  if (version_changed && !has_initial_stability_log) {
     ClearSavedStabilityMetrics();
+  }
 
   // If the version changed, the system profile is obsolete and needs to be
   // cleared. This is to avoid the stability data misattribution that could
@@ -929,8 +950,9 @@ void MetricsService::InitializeMetricsState() {
   // stability log, an operation that requires the previous version's system
   // profile. At this point, stability metrics pertaining to the previous
   // version have been cleared.
-  if (version_changed)
+  if (version_changed) {
     recorder.ClearEnvironmentFromPrefs();
+  }
 
   // Update session ID.
   ++session_id_;
@@ -999,9 +1021,8 @@ MetricsService::MetricsLogHistogramWriter::MetricsLogHistogramWriter(
     MetricsLog* log,
     base::HistogramBase::Flags required_flags)
     : required_flags_(required_flags),
-      flattener_(std::make_unique<IndependentFlattener>(log)),
       histogram_snapshot_manager_(
-          std::make_unique<base::HistogramSnapshotManager>(flattener_.get())) {}
+          std::make_unique<IndependentHistogramSnapshotManager>(log)) {}
 
 MetricsService::MetricsLogHistogramWriter::~MetricsLogHistogramWriter() =
     default;
@@ -1016,10 +1037,7 @@ void MetricsService::MetricsLogHistogramWriter::
 }
 
 void MetricsService::MetricsLogHistogramWriter::NotifyLogBeingFinalized() {
-  // Since the `flattener_` references the `log`, make sure it is destroyed so
-  // the pointer doesn't become dangling.
-  histogram_snapshot_manager()->ResetFlattener();
-  flattener_.reset();
+  histogram_snapshot_manager_.reset();
 }
 
 MetricsService::IndependentMetricsLoader::IndependentMetricsLoader(
@@ -1027,9 +1045,8 @@ MetricsService::IndependentMetricsLoader::IndependentMetricsLoader(
     std::string app_version,
     std::string signing_key)
     : log_(std::move(log)),
-      flattener_(std::make_unique<IndependentFlattener>(log_.get())),
       snapshot_manager_(
-          std::make_unique<base::HistogramSnapshotManager>(flattener_.get())),
+          std::make_unique<IndependentHistogramSnapshotManager>(log_.get())),
       app_version_(std::move(app_version)),
       signing_key_(std::move(signing_key)) {
   CHECK(log_);
@@ -1058,10 +1075,9 @@ void MetricsService::IndependentMetricsLoader::FinalizeLog() {
   CHECK(!finalize_log_called_);
   finalize_log_called_ = true;
 
-  // Release |snapshot_manager_| and then |flattener_| to prevent dangling
-  // pointers, since |log_| will be released in MetricsService::FinalizeLog().
+  // Release |snapshot_manager_| since |log_| will be released in
+  // MetricsService::FinalizeLog().
   snapshot_manager_.reset();
-  flattener_.reset();
 
   // Note that the close_time param must not be set for independent logs.
   finalized_log_ = MetricsService::FinalizeLog(
@@ -1098,8 +1114,9 @@ void MetricsService::CloseCurrentLog(
   // as how much memory is being used) before reporting.
   base::PersistentHistogramAllocator* allocator =
       base::GlobalHistogramAllocator::Get();
-  if (allocator)
+  if (allocator) {
     allocator->UpdateTrackingHistograms();
+  }
 
   // Put incremental data (histogram deltas, and realtime stats deltas) at the
   // end of all log transmissions (initial log handles this separately).
@@ -1221,8 +1238,9 @@ void MetricsService::PushPendingLogsToPersistentStorage(
 
 void MetricsService::StartSchedulerIfNecessary() {
   // Never schedule cutting or uploading of logs in test mode.
-  if (test_mode_active_)
+  if (test_mode_active_) {
     return;
+  }
 
   // Even if reporting is disabled, the scheduler is needed to trigger the
   // creation of the first ongoing log, which must be done in order for any logs
@@ -1318,7 +1336,7 @@ void MetricsService::OnFinalLogInfoCollectionDone() {
   // 2. We only re-schedule the MetricsRotationScheduler after storing a
   //    periodic ongoing log.
   //
-  // TODO(crbug.com/40119012): Consider making it possible to have multiple
+  // TODO(crbug.com/466140652): Consider making it possible to have multiple
   // simultaneous async logs by having some queueing system (e.g., if we want
   // the log created when foregrounding Chrome to be async).
   DCHECK(!pending_ongoing_log_);
@@ -1603,7 +1621,7 @@ void MetricsService::OnClonedInstallDetected() {
   // since the cloned install detector works asynchronously, it is possible that
   // this is called after logs were already sent. However, practically speaking,
   // this should not happen, since logs are only sent late into the session.
-  reporting_service_.metrics_log_store()->Purge();
+  Purge();
 }
 
 // static
@@ -1634,8 +1652,8 @@ MetricsService::FinalizedLog MetricsService::FinalizeLog(
 
   FinalizedLog finalized_log;
   finalized_log.uncompressed_log_size = log_data.size();
-  finalized_log.log_info = std::make_unique<UnsentLogStore::LogInfo>();
-  finalized_log.log_info->Init(log_data, signing_key, log->log_metadata());
+  finalized_log.log_info = std::make_unique<UnsentLogStore::LogInfo>(
+      log_data, signing_key, log->log_metadata());
   return finalized_log;
 }
 

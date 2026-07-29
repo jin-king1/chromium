@@ -2,21 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/prefs/profile_pref_store_manager.h"
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 #include <vector>
 
 #include "base/compiler_specific.h"
-#include "base/containers/contains.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -64,8 +60,8 @@ class RegistryVerifier : public PrefStore::Observer {
 
   // PrefStore::Observer implementation
   void OnPrefValueChanged(std::string_view key) override {
-    EXPECT_TRUE(base::Contains(*pref_registry_, key,
-                               &PrefValueMap::Map::value_type::first))
+    EXPECT_TRUE(std::ranges::contains(*pref_registry_, key,
+                                      &PrefValueMap::Map::value_type::first))
         << "Unregistered key " << key << " was changed.";
   }
 
@@ -173,7 +169,7 @@ class ProfilePrefStoreManagerTest : public testing::Test,
 
   void ReloadConfiguration() {
     manager_ = std::make_unique<ProfilePrefStoreManager>(profile_dir_.GetPath(),
-                                                         seed_, "device_id");
+                                                         seed_);
   }
 
   void TearDown() override {
@@ -225,7 +221,7 @@ class ProfilePrefStoreManagerTest : public testing::Test,
         manager_->CreateProfilePrefStore(
             prefs::CloneTrackedConfiguration(configuration_), kReportingIdCount,
             base::SingleThreadTaskRunner::GetCurrentDefault(),
-            std::move(observer), std::move(validation_delegate));
+            std::move(observer), std::move(validation_delegate), nullptr);
     InitializePrefStore(pref_store.get());
     pref_store = nullptr;
   }
@@ -277,7 +273,7 @@ class ProfilePrefStoreManagerTest : public testing::Test,
     pref_store_ = manager_->CreateProfilePrefStore(
         prefs::CloneTrackedConfiguration(configuration_), kReportingIdCount,
         base::SingleThreadTaskRunner::GetCurrentDefault(), std::move(observer),
-        std::move(validation_delegate));
+        std::move(validation_delegate), nullptr);
     pref_store_->AddObserver(&registry_verifier_);
     PrefStoreReadObserver read_observer(pref_store_);
     read_observer.Read();
@@ -389,12 +385,12 @@ TEST_F(ProfilePrefStoreManagerTest, ProtectValues) {
 }
 
 TEST_F(ProfilePrefStoreManagerTest, InitializePrefsFromMasterPrefs) {
-  base::Value::Dict master_prefs;
+  base::DictValue master_prefs;
   master_prefs.Set(kTrackedAtomic, kFoobar);
   master_prefs.Set(kProtectedAtomic, kHelloWorld);
   EXPECT_TRUE(manager_->InitializePrefsFromMasterPrefs(
       prefs::CloneTrackedConfiguration(configuration_), kReportingIdCount,
-      std::move(master_prefs)));
+      std::move(master_prefs), nullptr));
 
   LoadExistingPrefs();
 

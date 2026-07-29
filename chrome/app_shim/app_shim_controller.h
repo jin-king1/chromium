@@ -44,6 +44,15 @@ class AppShimController
     : public chrome::mojom::AppShim,
       public mac_notifications::mojom::MacNotificationProvider {
  public:
+  class TestDelegate {
+   public:
+    virtual ~TestDelegate() = default;
+    virtual void PopulateChromeCommandLine(base::CommandLine& command_line) = 0;
+  };
+
+  static void SetDelegateForTesting(TestDelegate* delegate);
+  static void SetDisableNotificationServiceForTesting(bool disable);
+
   struct Params {
     Params();
     Params(const Params& other);
@@ -203,6 +212,7 @@ class AppShimController
       mac_notifications::mojom::PermissionStatus status);
 
   bool WebAppIsAdHocSigned() const;
+  bool ShouldCreateNotificationServiceUN() const;
 
   // Helper function to set up a connection to the AppShimListener at the given
   // Mach endpoint name.

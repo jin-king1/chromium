@@ -19,6 +19,7 @@
 #include "third_party/blink/renderer/core/timing/window_performance.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -29,15 +30,23 @@ PerformanceScriptTiming::PerformanceScriptTiming(
     ScriptTimingInfo* info,
     base::TimeTicks time_origin,
     bool cross_origin_isolated_capability,
-    DOMWindow* source)
-    : PerformanceEntry((info->EndTime() - info->StartTime()).InMilliseconds(),
+    DOMWindow* source,
+    uint64_t navigation_id)
+    : PerformanceEntry(0,
                        performance_entry_names::kScript,
                        Performance::MonotonicTimeToDOMHighResTimeStamp(
                            time_origin,
                            info->StartTime(),
                            false,
                            cross_origin_isolated_capability),
-                       source) {
+                       source,
+                       navigation_id),
+      cross_origin_isolated_capability_(cross_origin_isolated_capability) {
+  DOMHighResTimeStamp end_time =
+      Performance::MonotonicTimeToDOMHighResTimeStamp(
+          time_origin, info->EndTime(), false,
+          cross_origin_isolated_capability);
+  duration_ = end_time - startTime();
   info_ = info;
   if (!info_->Window() || !source) {
     window_attribution_ = V8ScriptWindowAttribution::Enum::kOther;
@@ -85,7 +94,7 @@ AtomicString PerformanceScriptTiming::invoker() const {
     }
     case ScriptTimingInfo::InvokerType::kEventHandler:
     case ScriptTimingInfo::InvokerType::kUserCallback: {
-      WTF::StringBuilder builder;
+      StringBuilder builder;
       if (info_->GetInvokerType() ==
           ScriptTimingInfo::InvokerType::kEventHandler) {
         builder.Append(info_->ClassLikeName());
@@ -98,7 +107,7 @@ AtomicString PerformanceScriptTiming::invoker() const {
 
     case ScriptTimingInfo::InvokerType::kPromiseResolve:
     case ScriptTimingInfo::InvokerType::kPromiseReject: {
-      WTF::StringBuilder builder;
+      StringBuilder builder;
       if (info_->PropertyLikeName().empty()) {
         return AtomicString(
             info_->GetInvokerType() ==
@@ -126,11 +135,24 @@ AtomicString PerformanceScriptTiming::invoker() const {
 
 DOMHighResTimeStamp PerformanceScriptTiming::forcedStyleAndLayoutDuration()
     const {
-  return (info_->StyleDuration() + info_->LayoutDuration()).InMilliseconds();
+  return Performance::ClampTimeResolution(
+      info_->StyleDuration() + info_->LayoutDuration(),
+      cross_origin_isolated_capability_);
+}
+
+DOMHighResTimeStamp PerformanceScriptTiming::forcedStyleDuration() const {
+  return Performance::ClampTimeResolution(info_->StyleDuration(),
+                                          cross_origin_isolated_capability_);
+}
+
+DOMHighResTimeStamp PerformanceScriptTiming::forcedLayoutDuration() const {
+  return Performance::ClampTimeResolution(info_->LayoutDuration(),
+                                          cross_origin_isolated_capability_);
 }
 
 DOMHighResTimeStamp PerformanceScriptTiming::pauseDuration() const {
-  return info_->PauseDuration().InMilliseconds();
+  return Performance::ClampTimeResolution(info_->PauseDuration(),
+                                          cross_origin_isolated_capability_);
 }
 
 LocalDOMWindow* PerformanceScriptTiming::window() const {
@@ -161,10 +183,10 @@ V8ScriptInvokerType PerformanceScriptTiming::invokerType() const {
   NOTREACHED();
 }
 
-WTF::String PerformanceScriptTiming::sourceURL() const {
+String PerformanceScriptTiming::sourceURL() const {
   return info_->GetSourceLocation().url;
 }
-WTF::String PerformanceScriptTiming::sourceFunctionName() const {
+String PerformanceScriptTiming::sourceFunctionName() const {
   return info_->GetSourceLocation().function_name;
 }
 int32_t PerformanceScriptTiming::sourceCharPosition() const {
@@ -186,11 +208,16 @@ PerformanceEntryType PerformanceScriptTiming::EntryTypeEnum() const {
 void PerformanceScriptTiming::BuildJSONValue(V8ObjectBuilder& builder) const {
   PerformanceEntry::BuildJSONValue(builder);
   builder.AddString("invoker", invoker());
-  builder.AddString("invokerType", invokerType().AsString());
-  builder.AddString("windowAttribution", windowAttribution().AsString());
+  builder.AddString("invokerType", invokerType().AsStringView());
+  builder.AddString("windowAttribution", windowAttribution().AsStringView());
   builder.AddNumber("executionStart", executionStart());
   builder.AddNumber("forcedStyleAndLayoutDuration",
                     forcedStyleAndLayoutDuration());
+  if (RuntimeEnabledFeatures::LongAnimationFrameStyleDurationEnabled(
+          ExecutionContext::From(builder.GetScriptState()))) {
+    builder.AddNumber("forcedStyleDuration", forcedStyleDuration());
+    builder.AddNumber("forcedLayoutDuration", forcedLayoutDuration());
+  }
   builder.AddNumber("pauseDuration", pauseDuration());
   builder.AddString("sourceURL", sourceURL());
   builder.AddString("sourceFunctionName", sourceFunctionName());

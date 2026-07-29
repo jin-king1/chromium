@@ -15,12 +15,16 @@ import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.DoNotInline;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -43,22 +47,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public abstract class AsyncTask<Result extends @Nullable Object> {
     private static final String TAG = "AsyncTask";
 
+    private static final @Nullable Set<AsyncTask<?>> sActiveTasks =
+            BuildConfig.IS_FOR_TEST ? Collections.synchronizedSet(new HashSet<>()) : null;
+
     private static final String GET_STATUS_UMA_HISTOGRAM =
             "Android.Jank.AsyncTaskGetOnUiThreadStatus";
 
     /**
-     * An {@link Executor} that can be used to execute tasks in parallel.
-     * We use the lowest task priority, and mayBlock = true since any user of this could
-     * block.
+     * An {@link Executor} that can be used to execute tasks in parallel. We use the lowest task
+     * priority, and mayBlock = true since any user of this could block.
      */
-    public static final Executor THREAD_POOL_EXECUTOR =
-            (Runnable r) -> PostTask.postTask(TaskTraits.BEST_EFFORT_MAY_BLOCK, r);
+    public static final LocationAwareExecutor THREAD_POOL_EXECUTOR =
+            new LocationAwareExecutor() {
+                @Override
+                public void execute(Runnable r, @Nullable Location location) {
+                    PostTask.postTask(TaskTraits.BEST_EFFORT_MAY_BLOCK, r, location);
+                }
+            };
 
     /**
-     * An {@link Executor} that executes tasks one at a time in serial
-     * order.  This serialization is global to a particular process.
+     * An {@link Executor} that executes tasks one at a time in serial order. This serialization is
+     * global to a particular process.
      */
-    public static final Executor SERIAL_EXECUTOR = new SerialExecutor();
+    public static final LocationAwareExecutor SERIAL_EXECUTOR = new SerialExecutor();
 
     private static final StealRunnableHandler STEAL_RUNNABLE_HANDLER = new StealRunnableHandler();
 
@@ -69,7 +80,7 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
 
     private final AtomicBoolean mCancelled = new AtomicBoolean();
     private final AtomicBoolean mTaskInvoked = new AtomicBoolean();
-    private int mIterationIdForTesting = PostTask.sTestIterationForTesting;
+    private final int mIterationIdForTesting = PostTask.sTestIterationForTesting;
 
     private static class StealRunnableHandler implements RejectedExecutionHandler {
         @Override
@@ -154,6 +165,9 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
         // We check if this task is of a type which does not require post-execution.
         if (this instanceof BackgroundOnlyAsyncTask) {
             mStatus = Status.FINISHED;
+            if (sActiveTasks != null) {
+                sActiveTasks.remove(this);
+            }
         } else if (mIterationIdForTesting == PostTask.sTestIterationForTesting) {
             ThreadUtils.postOnUiThread(
                     () -> {
@@ -189,7 +203,6 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
      * Override this method to perform a computation on a background thread.
      *
      * @return A result, defined by the subclass of this task.
-     *
      * @see #onPreExecute()
      * @see #onPostExecute
      */
@@ -391,6 +404,9 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
         }
 
         mStatus = Status.RUNNING;
+        if (sActiveTasks != null) {
+            sActiveTasks.add(this);
+        }
 
         onPreExecute();
     }
@@ -432,6 +448,26 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
         return this;
     }
 
+    @MainThread
+    public final AsyncTask<Result> executeOnExecutor(LocationAwareExecutor exec) {
+        return executeOnExecutor(exec, null);
+    }
+
+    /**
+     * Do not call this method directly unless forwarding a location object. Use {@link
+     * #executeOnExecutor(LocationAwareExecutor)} instead.
+     *
+     * <p>Overload of {@link #executeOnExecutor(LocationAwareExecutor)} for the Java location
+     * rewriter.
+     */
+    @MainThread
+    public final AsyncTask<Result> executeOnExecutor(
+            LocationAwareExecutor exec, @Nullable Location location) {
+        executionPreamble();
+        exec.execute(mFuture, location);
+        return this;
+    }
+
     /**
      * Executes an AsyncTask on the given TaskRunner.
      *
@@ -440,9 +476,19 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
      */
     @MainThread
     public final AsyncTask<Result> executeOnTaskRunner(TaskRunner taskRunner) {
-        executionPreamble();
-        taskRunner.execute(mFuture);
-        return this;
+        return executeOnTaskRunner(taskRunner, null);
+    }
+
+    /**
+     * Do not call this method directly unless forwarding a location object. Use {@link
+     * #executeOnTaskRunner(TaskRunner)} instead.
+     *
+     * <p>Overload of {@link #executeOnTaskRunner(TaskRunner)} for the Java location rewriter.
+     */
+    @MainThread
+    public final AsyncTask<Result> executeOnTaskRunner(
+            TaskRunner taskRunner, @Nullable Location location) {
+        return executeOnExecutor(taskRunner, location);
     }
 
     /**
@@ -454,8 +500,20 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
      */
     @MainThread
     public final AsyncTask<Result> executeWithTaskTraits(@TaskTraits int taskTraits) {
+        return executeWithTaskTraits(taskTraits, null);
+    }
+
+    /**
+     * Do not call this method directly unless forwarding a location object. Use {@link
+     * #executeWithTaskTraits(int)} instead.
+     *
+     * <p>Overload of {@link #executeWithTaskTraits(int)} for the Java location rewriter.
+     */
+    @MainThread
+    public final AsyncTask<Result> executeWithTaskTraits(
+            @TaskTraits int taskTraits, @Nullable Location location) {
         executionPreamble();
-        PostTask.postTask(taskTraits, mFuture);
+        PostTask.postTask(taskTraits, mFuture, location);
         return this;
     }
 
@@ -467,6 +525,9 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
             onPostExecute(result);
         }
         mStatus = Status.FINISHED;
+        if (sActiveTasks != null) {
+            sActiveTasks.remove(this);
+        }
     }
 
     class NamedFutureTask extends FutureTask<Result> {
@@ -511,5 +572,17 @@ public abstract class AsyncTask<Result extends @Nullable Object> {
                 postResultIfNotInvoked(null);
             }
         }
+    }
+
+    public static void cancelAllTasksForTesting() {
+        if (sActiveTasks == null) return;
+        AsyncTask<?>[] tasks;
+        synchronized (sActiveTasks) {
+            tasks = sActiveTasks.toArray(new AsyncTask<?>[0]);
+        }
+        for (AsyncTask<?> task : tasks) {
+            task.cancel(true);
+        }
+        sActiveTasks.clear();
     }
 }

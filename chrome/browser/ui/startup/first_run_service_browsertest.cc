@@ -7,7 +7,6 @@
 #include <optional>
 #include <string_view>
 
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/memory/raw_ref.h"
@@ -212,9 +211,8 @@ IN_PROC_BROWSER_TEST_F(FirstRunServiceBrowserTest, CloseProceeds) {
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 struct PolicyTestParam {
-  const std::string test_suffix;
-  const std::string key;
-  const std::string value;  // As JSON string, base::Value is not copy-friendly.
+  const char* key;
+  const char* value;  // As JSON string, base::Value is not copy-friendly.
   const bool should_open_fre = false;
 };
 
@@ -231,7 +229,7 @@ const PolicyTestParam kPolicyTestParams[] = {
 std::string PolicyParamToTestSuffix(
     const ::testing::TestParamInfo<PolicyTestParam>& info) {
   std::string force_signin_profile_picker_feature;
-  return info.param.key + "_" + info.param.value;
+  return std::string(info.param.key) + "_" + info.param.value;
 }
 
 class FirstRunServicePolicyBrowserTest
@@ -277,7 +275,7 @@ IN_PROC_BROWSER_TEST_P(FirstRunServicePolicyBrowserTest, OpenFirstRunIfNeeded) {
   SetPolicy(GetParam().key, GetParam().value);
 
   // The attempt to run the FRE should not be blocked
-  EXPECT_TRUE(ShouldOpenFirstRun(browser()->profile()));
+  EXPECT_TRUE(ShouldOpenFirstRun(browser()->GetProfile()));
   EXPECT_TRUE(IsProfileNameDefault());
 
   // However the FRE should be silently marked as finished due to policies

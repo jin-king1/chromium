@@ -4,6 +4,8 @@
 
 #include "ui/accessibility/platform/test_ax_platform_tree_manager_delegate.h"
 
+#include "base/functional/callback.h"
+
 namespace ui {
 
 TestAXPlatformTreeManagerDelegate::TestAXPlatformTreeManagerDelegate()
@@ -19,7 +21,7 @@ bool TestAXPlatformTreeManagerDelegate::AccessibilityViewHasFocus() {
 void TestAXPlatformTreeManagerDelegate::AccessibilityViewSetFocus() {}
 
 gfx::Rect TestAXPlatformTreeManagerDelegate::AccessibilityGetViewBounds() {
-  return gfx::Rect();
+  return view_bounds_;
 }
 
 float TestAXPlatformTreeManagerDelegate::AccessibilityGetDeviceScaleFactor() {
@@ -35,12 +37,12 @@ TestAXPlatformTreeManagerDelegate::AccessibilityGetAcceleratedWidget() {
 
 gfx::NativeViewAccessible
 TestAXPlatformTreeManagerDelegate::AccessibilityGetNativeViewAccessible() {
-  return nullptr;
+  return gfx::NativeViewAccessible();
 }
 
 gfx::NativeViewAccessible TestAXPlatformTreeManagerDelegate::
     AccessibilityGetNativeViewAccessibleForWindow() {
-  return nullptr;
+  return gfx::NativeViewAccessible();
 }
 
 void TestAXPlatformTreeManagerDelegate::AccessibilityHitTest(
@@ -68,12 +70,21 @@ bool TestAXPlatformTreeManagerDelegate::ShouldSuppressAXLoadComplete() {
 
 content::WebContentsAccessibility*
 TestAXPlatformTreeManagerDelegate::AccessibilityGetWebContentsAccessibility() {
-  return nullptr;
+  return web_contents_accessibility_;
 }
 
 bool TestAXPlatformTreeManagerDelegate::AccessibilityIsWebContentSource() {
-  // Currently only used in web content tests.
-  return true;
+  return is_web_content_source_;
+}
+
+ui::AXMode TestAXPlatformTreeManagerDelegate::GetScopedAccessibilityMode()
+    const {
+  return ax_mode_;
+}
+
+void TestAXPlatformTreeManagerDelegate::SetScopedAccessibilityMode(
+    ui::AXMode mode) {
+  ax_mode_ = mode;
 }
 
 }  // namespace ui

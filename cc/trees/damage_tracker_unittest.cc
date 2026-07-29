@@ -139,10 +139,11 @@ void ClearDamageForAllSurfaces(LayerImpl* root) {
 }
 
 void SetCopyRequest(LayerImpl* root) {
-  auto* root_node =
-      root->layer_tree_impl()->property_trees()->effect_tree_mutable().Node(
-          root->effect_tree_index());
-  root_node->has_copy_request = true;
+  auto& root_node = root->layer_tree_impl()
+                        ->property_trees()
+                        ->effect_tree_mutable()
+                        .MutableNode(root->effect_tree_index());
+  root_node.has_copy_request = true;
   root->layer_tree_impl()
       ->property_trees()
       ->effect_tree_mutable()
@@ -324,8 +325,8 @@ class DamageTrackerTest : public LayerTreeImplTestBase, public testing::Test {
     root->layer_tree_impl()
         ->property_trees()
         ->effect_tree_mutable()
-        .Node(child1_->effect_tree_index())
-        ->backdrop_filters.Append(
+        .MutableNode(child1_->effect_tree_index())
+        .backdrop_filters.Append(
             FilterOperation::CreateZoomFilter(2.f /* zoom */, 0 /* inset */));
 
     // Setup includes going past the first frame which always damages
@@ -381,8 +382,8 @@ class DamageTrackerTest : public LayerTreeImplTestBase, public testing::Test {
   // Store result of CreateTestTreeWithTwoSurfaces().
   raw_ptr<TestLayerImpl> child1_ = nullptr;
   raw_ptr<TestLayerImpl> child2_ = nullptr;
-  raw_ptr<TestLayerImpl, DanglingUntriaged> grand_child1_ = nullptr;
-  raw_ptr<TestLayerImpl, DanglingUntriaged> grand_child2_ = nullptr;
+  raw_ptr<TestLayerImpl> grand_child1_ = nullptr;
+  raw_ptr<TestLayerImpl> grand_child2_ = nullptr;
   raw_ptr<TestLayerImpl> grand_child3_ = nullptr;
   raw_ptr<TestLayerImpl> grand_child4_ = nullptr;
 };
@@ -1251,7 +1252,8 @@ TEST_F(DamageTrackerTest, VerifyDamageForAddingAndRemovingLayer) {
         host_impl()->active_tree()->DetachLayersKeepingRootLayerForTesting();
     ASSERT_EQ(3u, layers.size());
     ASSERT_EQ(child1, layers[1].get());
-    host_impl()->active_tree()->AddLayer(std::move(layers[2]));
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[2]->id()));
   }
   EmulateDrawingOneFrame(root);
 
@@ -1831,10 +1833,12 @@ TEST_F(DamageTrackerTest, VerifyDamageForMask) {
   auto layers =
       root->layer_tree_impl()->DetachLayersKeepingRootLayerForTesting();
   ASSERT_EQ(layers[1].get(), child);
-  root->layer_tree_impl()->AddLayer(std::move(layers[1]));
+  root->layer_tree_impl()->AddLayer(
+      layers.ReleaseLayerForTesting(layers[1]->id()));
   ASSERT_EQ(layers[2].get(), mask_layer);
   ASSERT_EQ(layers[3].get(), grand_child);
-  root->layer_tree_impl()->AddLayer(std::move(layers[3]));
+  root->layer_tree_impl()->AddLayer(
+      layers.ReleaseLayerForTesting(layers[3]->id()));
   CopyProperties(root, child);
   CreateEffectNode(child).render_surface_reason = RenderSurfaceReason::kTest;
   CopyProperties(child, grand_child);
@@ -2155,9 +2159,10 @@ TEST_F(DamageTrackerTest, DamageRectTooBigInRenderSurface) {
   EXPECT_TRUE(GetRenderSurface(root)
                   ->damage_tracker()
                   ->has_damage_from_contributing_content());
-  EXPECT_TRUE(GetRenderSurface(child1_)
-                  ->damage_tracker()
-                  ->has_damage_from_contributing_content());
+  // child1_'s damage is outside the visible layer.
+  EXPECT_FALSE(GetRenderSurface(child1_)
+                   ->damage_tracker()
+                   ->has_damage_from_contributing_content());
 }
 
 TEST_F(DamageTrackerTest, DamageRectTooBigInRenderSurfaceWithFilter) {
@@ -2245,9 +2250,10 @@ TEST_F(DamageTrackerTest, DamageRectTooBigInRenderSurfaceWithFilter) {
   EXPECT_TRUE(GetRenderSurface(root)
                   ->damage_tracker()
                   ->has_damage_from_contributing_content());
-  EXPECT_TRUE(GetRenderSurface(child1_)
-                  ->damage_tracker()
-                  ->has_damage_from_contributing_content());
+  // child1_'s damage is outside the visible layer.
+  EXPECT_FALSE(GetRenderSurface(child1_)
+                   ->damage_tracker()
+                   ->has_damage_from_contributing_content());
 }
 
 TEST_F(DamageTrackerTest, CanUseCachedBackdropFilterResultTest) {
@@ -2370,20 +2376,29 @@ TEST_F(DamageTrackerTest, CanUseCachedBackdropFilterResultTest) {
   // backdrop-filtered result. Removing grand_child1_ at 300,300 6x8 which
   // doesn't intersect 280,280 15x16.
   ClearDamageForAllSurfaces(root);
-  OwnedLayerImplList layers =
-      host_impl()->active_tree()->DetachLayersKeepingRootLayerForTesting();
-  ASSERT_EQ(7u, layers.size());
-  ASSERT_EQ(child1_, layers[1].get());
-  ASSERT_EQ(grand_child1_, layers[2].get());
-  ASSERT_EQ(grand_child2_, layers[3].get());
-  ASSERT_EQ(grand_child3_, layers[4].get());
-  ASSERT_EQ(grand_child4_, layers[5].get());
-  ASSERT_EQ(child2_, layers[6].get());
-  host_impl()->active_tree()->AddLayer(std::move(layers[1]));
-  host_impl()->active_tree()->AddLayer(std::move(layers[3]));
-  host_impl()->active_tree()->AddLayer(std::move(layers[4]));
-  host_impl()->active_tree()->AddLayer(std::move(layers[5]));
-  host_impl()->active_tree()->AddLayer(std::move(layers[6]));
+  {
+    OwnedLayerImplList layers =
+        host_impl()->active_tree()->DetachLayersKeepingRootLayerForTesting();
+    ASSERT_EQ(7u, layers.size());
+    ASSERT_EQ(child1_, layers[1].get());
+    ASSERT_EQ(grand_child1_, layers[2].get());
+    ASSERT_EQ(grand_child2_, layers[3].get());
+    ASSERT_EQ(grand_child3_, layers[4].get());
+    ASSERT_EQ(grand_child4_, layers[5].get());
+    ASSERT_EQ(child2_, layers[6].get());
+    // Prevent dangling pointer when `layers` is deleted.
+    grand_child1_ = nullptr;
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[1]->id()));
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[3]->id()));
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[4]->id()));
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[5]->id()));
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[6]->id()));
+  }
   EmulateDrawingOneFrame(root);
   EXPECT_FALSE(GetRenderSurface(grand_child4_)->intersects_damage_under());
 
@@ -2391,18 +2406,26 @@ TEST_F(DamageTrackerTest, CanUseCachedBackdropFilterResultTest) {
   // with the backdrop filter invalidates cached backdrop-filtered result.
   // Removing grand_child2_ at 290,290 6x8 which intersects 280,280 15x16.
   ClearDamageForAllSurfaces(root);
-  layers = host_impl()->active_tree()->DetachLayersKeepingRootLayerForTesting();
-  ASSERT_EQ(6u, layers.size());
-  ASSERT_EQ(child1_, layers[1].get());
-  ASSERT_EQ(grand_child2_, layers[2].get());
-  ASSERT_EQ(grand_child3_, layers[3].get());
-  ASSERT_EQ(grand_child4_, layers[4].get());
-  ASSERT_EQ(child2_, layers[5].get());
-  host_impl()->active_tree()->AddLayer(std::move(layers[1]));
-  host_impl()->active_tree()->AddLayer(std::move(layers[3]));
-  host_impl()->active_tree()->AddLayer(std::move(layers[4]));
-  host_impl()->active_tree()->AddLayer(std::move(layers[5]));
-
+  {
+    OwnedLayerImplList layers =
+        host_impl()->active_tree()->DetachLayersKeepingRootLayerForTesting();
+    ASSERT_EQ(6u, layers.size());
+    ASSERT_EQ(child1_, layers[1].get());
+    ASSERT_EQ(grand_child2_, layers[2].get());
+    ASSERT_EQ(grand_child3_, layers[3].get());
+    ASSERT_EQ(grand_child4_, layers[4].get());
+    ASSERT_EQ(child2_, layers[5].get());
+    // Prevent dangling pointer when `layers` is deleted.
+    grand_child2_ = nullptr;
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[1]->id()));
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[3]->id()));
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[4]->id()));
+    host_impl()->active_tree()->AddLayer(
+        layers.ReleaseLayerForTesting(layers[5]->id()));
+  }
   EmulateDrawingOneFrame(root);
   EXPECT_TRUE(GetRenderSurface(grand_child4_)->intersects_damage_under());
 

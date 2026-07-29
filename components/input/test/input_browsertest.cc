@@ -4,9 +4,10 @@
 
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/test_trace_processor.h"
+#include "base/test/tracing/test_trace_processor.h"
 #include "components/input/features.h"
 #include "components/input/utils.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
@@ -71,7 +72,7 @@ class AndroidInputBrowserTest : public InputBrowserTest,
 };
 
 IN_PROC_BROWSER_TEST_P(AndroidInputBrowserTest, RenderInputRouterCreation) {
-  const bool expected_creation = IsTransferInputToVizSupported();
+  const bool expected_creation = InputUtils::IsTransferInputToVizSupported();
   EXPECT_EQ(IsRenderInputRouterCreatedOnViz(), expected_creation);
 }
 
@@ -124,7 +125,7 @@ IN_PROC_BROWSER_TEST_P(AndroidInputBrowserTest,
   // `result.value()` would look something like this: {{"id"}, {"<num>"},
   // {"<num>"}}.
   EXPECT_EQ(result.value()[0].size(), 1u);
-  if (input::IsTransferInputToVizSupported()) {
+  if (InputUtils::IsTransferInputToVizSupported()) {
     EXPECT_EQ(result.value().size(), 2u);
     // Expect the distinct grouping_id count to be 2 for different WebContents.
     EXPECT_THAT(
@@ -155,7 +156,8 @@ IN_PROC_BROWSER_TEST_P(AndroidInputBrowserTest, AndroidInputReceiverCreated) {
   // well, and if an input receiver were to be created it should have been
   // since it happens when root compositor frame sink is created.
 
-  const int expected_count = IsTransferInputToVizSupported() ? 1 : 0;
+  const int expected_count =
+      InputUtils::IsTransferInputToVizSupported() ? 1 : 0;
   content::FetchHistogramsFromChildProcesses();
   histogram_tester.ExpectUniqueSample(
       "Android.InputOnViz.InputReceiverCreationResult",
@@ -194,7 +196,7 @@ IN_PROC_BROWSER_TEST_P(AndroidInputBrowserTest,
   EXPECT_EQ(result.value()[1].size(), 1u);
   const std::string slice_count = result.value()[1][0];
   const std::string expected_count =
-      IsTransferInputToVizSupported() ? "1" : "0";
+      InputUtils::IsTransferInputToVizSupported() ? "1" : "0";
   EXPECT_EQ(slice_count, expected_count);
 }
 
@@ -224,7 +226,8 @@ IN_PROC_BROWSER_TEST_P(AndroidInputBrowserTest,
     }
   }
 
-  const int expected_count = IsTransferInputToVizSupported() ? 1 : 0;
+  const int expected_count =
+      InputUtils::IsTransferInputToVizSupported() ? 1 : 0;
   content::FetchHistogramsFromChildProcesses();
   histogram_tester.ExpectBucketCount(
       "Android.InputOnViz.InputReceiverCreationResult",

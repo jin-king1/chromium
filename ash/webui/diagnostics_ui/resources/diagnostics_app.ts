@@ -26,8 +26,7 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 import {getTemplate} from './diagnostics_app.html.js';
 import {DiagnosticsBrowserProxyImpl} from './diagnostics_browser_proxy.js';
 import {getDiagnosticsIcon, getNavigationIcon} from './diagnostics_utils.js';
-import type {KeyboardInfo} from './input.mojom-webui.js';
-import type {InputDataProviderInterface, TouchDeviceInfo} from './input_data_provider.mojom-webui.js';
+import type {InputDataProviderInterface} from './input_data_provider.mojom-webui.js';
 import {ConnectedDevicesObserverReceiver} from './input_data_provider.mojom-webui.js';
 import {getInputDataProvider} from './mojo_interface_provider.js';
 
@@ -39,18 +38,15 @@ export interface DiagnosticsAppElement {
 }
 
 export type ShowToastEvent = CustomEvent<{message: string}>;
+export const SHOW_TOAST_EVENT_NAME = 'show-toast' as const;
 
 declare global {
-  interface HTMLElementEventMap {
-    'show-toast': ShowToastEvent;
+  interface WindowEventMap {
+    [SHOW_TOAST_EVENT_NAME]: ShowToastEvent;
   }
-}
-
-// TODO(michaelcheco): Update |InputDataProvider::GetConnectedDevices()| to
-// return a |ConnectedDevices| struct instead of defining one here.
-interface ConnectedDevices {
-  keyboards: KeyboardInfo[];
-  touchDevices: TouchDeviceInfo[];
+  interface HTMLElementEventMap {
+    [SHOW_TOAST_EVENT_NAME]: ShowToastEvent;
+  }
 }
 
 /**
@@ -103,10 +99,10 @@ export class DiagnosticsAppElement extends DiagnosticsAppElementBase {
     };
   }
 
-  protected bannerMessage: string;
-  protected isLoggedIn: boolean;
-  private saveSessionLogEnabled: boolean;
-  private toastText: string;
+  declare protected bannerMessage: string;
+  declare protected isLoggedIn: boolean;
+  declare private saveSessionLogEnabled: boolean;
+  declare private toastText: string;
   private browserProxy: DiagnosticsBrowserProxyImpl =
       DiagnosticsBrowserProxyImpl.getInstance();
   private inputDataProvider: InputDataProviderInterface =
@@ -178,19 +174,11 @@ export class DiagnosticsAppElement extends DiagnosticsAppElementBase {
     ];
 
     pages.push(this.createInputSelector());
-    const devices: ConnectedDevices =
-        await this.inputDataProvider.getConnectedDevices();
+    const {devices} = await this.inputDataProvider.getConnectedDevices();
     // Check the existing value of |numKeyboards| if |GetConnectedDevices|
     // returns no keyboards as it's possible |onKeyboardConnected| was called
     // prior.
     this.numKeyboards = devices.keyboards.length || this.numKeyboards;
-    const isTouchPadOrTouchScreenEnabled =
-        loadTimeData.getBoolean('isTouchpadEnabled') ||
-        loadTimeData.getBoolean('isTouchscreenEnabled');
-    if (this.numKeyboards === 0 && !isTouchPadOrTouchScreenEnabled) {
-      pages.pop();
-    }
-
     return pages;
   }
 
@@ -203,14 +191,12 @@ export class DiagnosticsAppElement extends DiagnosticsAppElementBase {
     ColorChangeUpdater.forDocument().start();
 
     this.createNavigationPanel();
-    window.addEventListener(
-        'show-toast', (e) => this.showToastHandler((e as ShowToastEvent)));
+    window.addEventListener(SHOW_TOAST_EVENT_NAME, this.showToastHandler);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    window.removeEventListener(
-        'show-toast', (e) => this.showToastHandler((e as ShowToastEvent)));
+    window.removeEventListener(SHOW_TOAST_EVENT_NAME, this.showToastHandler);
   }
 
   protected onSessionLogClick(): void {

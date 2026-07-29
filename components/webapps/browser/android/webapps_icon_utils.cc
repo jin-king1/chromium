@@ -4,10 +4,10 @@
 
 #include "components/webapps/browser/android/webapps_icon_utils.h"
 
-#include "base/android/build_info.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/threading/thread_restrictions.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/color_analysis.h"
@@ -17,7 +17,7 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "components/webapps/browser/android/webapps_jni_headers/WebappsIconUtils_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace webapps {
@@ -144,9 +144,14 @@ void WebappsIconUtils::FinalizeLauncherIconInBackground(
           env, java_url, SkColorGetR(mean_color), SkColorGetG(mean_color),
           SkColorGetB(mean_color));
 
-  SkBitmap result_bitmap =
-      result.obj() ? gfx::CreateSkBitmapFromJavaBitmap(gfx::JavaBitmap(result))
-                   : SkBitmap();
+  SkBitmap result_bitmap;
+  if (result.obj()) {
+    result_bitmap = gfx::CreateSkBitmapFromJavaBitmap(gfx::JavaBitmap(result));
+  } else {
+    int size = GetIdealHomescreenIconSizeInPx();
+    result_bitmap.allocN32Pixels(size, size);
+    result_bitmap.eraseColor(mean_color);
+  }
   ui_thread_task_runner->PostTask(
       FROM_HERE, base::BindOnce(std::move(callback), result_bitmap, true));
 }
@@ -201,3 +206,5 @@ void WebappsIconUtils::SetIconSizesForTesting(std::vector<int> sizes) {
 }
 
 }  // namespace webapps
+
+DEFINE_JNI(WebappsIconUtils)

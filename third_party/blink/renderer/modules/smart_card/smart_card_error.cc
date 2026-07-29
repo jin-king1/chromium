@@ -162,8 +162,10 @@ void SmartCardError::MaybeReject(
       break;
     // "NotAllowedError"
     case device::mojom::blink::SmartCardError::kPermissionDenied:
-      resolver->RejectWithDOMException(DOMExceptionCode::kNotAllowedError,
-                                       "The user has denied permission.");
+      resolver->RejectWithDOMException(
+          DOMExceptionCode::kNotAllowedError,
+          "The user has denied permission or the user attention requirement "
+          "was not fulfilled.");
       break;
     // "UnknownError"
     case device::mojom::blink::SmartCardError::kCommError:
@@ -185,10 +187,10 @@ void SmartCardError::MaybeReject(
           DOMExceptionCode::kUnknownError,
           "An unexpected card error has occurred.");
       break;
-    case device::mojom::blink::SmartCardError::kUnknownError:
+    case device::mojom::blink::SmartCardError::kUnknownCard:
       resolver->RejectWithDOMException(
           DOMExceptionCode::kUnknownError,
-          "An internal error has been detected, but the source is unknown.");
+          "The specified smart card name is not recognized.");
       break;
     case device::mojom::blink::SmartCardError::kUnknown:
       // NB: kUnknownError is an actual PC/SC error code returned from the

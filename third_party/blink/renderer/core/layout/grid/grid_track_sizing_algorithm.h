@@ -10,11 +10,11 @@
 #include "third_party/blink/renderer/core/layout/geometry/logical_size.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/grid_enums.h"
-#include "third_party/blink/renderer/platform/heap/member.h"
 
 namespace blink {
 
 class GridItems;
+class GridLayoutTrackCollection;
 class GridSizingTrackCollection;
 struct BoxStrut;
 struct GridItemData;
@@ -58,8 +58,14 @@ class GridTrackSizingAlgorithm {
   // Caches the track span properties necessary for the track sizing algorithm
   // to work based on the grid items' placement within the track collection.
   static void CacheGridItemsProperties(
-      const GridSizingTrackCollection& track_collection,
+      const GridLayoutTrackCollection& track_collection,
       GridItems* grid_items);
+
+  // Caches track span properties for explicitly placed subgrid items.
+  static void CacheSubgridItemsProperties(
+      const GridLayoutTrackCollection& track_collection,
+      GridItems* grid_items,
+      GridTrackSizingDirection track_direction);
 
   // Calculates the specified `[column|row]-gap` of the container.
   static LayoutUnit CalculateGutterSize(
@@ -77,11 +83,16 @@ class GridTrackSizingAlgorithm {
       const BoxStrut& container_border_scrollbar_padding);
 
   // Calculates the used track size from the min and max track sizing functions
-  // as defined in https://drafts.csswg.org/css-grid-2/#algo-track-sizing.
+  // as defined in https://drafts.csswg.org/css-grid-2/#algo-track-sizing. If
+  // `needs_intrinsic_track_size` is true, that means that we have a repeat()
+  // track definition with an intrinsic sized track, and we are in the first
+  // track sizing pass used to determine the size of such tracks per
+  // https://www.w3.org/TR/css-grid-3/#masonry-intrinsic-repeat.
   void ComputeUsedTrackSizes(
       const ContributionSizeFunctionRef& contribution_size,
       GridSizingTrackCollection* track_collection,
-      GridItems* grid_items) const;
+      GridItems* grid_items,
+      bool needs_intrinsic_track_size = false) const;
 
  private:
   // These methods implement the steps of the algorithm for intrinsic track size
@@ -102,6 +113,11 @@ class GridTrackSizingAlgorithm {
   void MaximizeTracks(GridSizingTrackCollection* track_collection) const;
 
   void StretchAutoTracks(GridSizingTrackCollection* track_collection) const;
+
+  void ExpandFlexibleTracks(
+      const ContributionSizeFunctionRef& contribution_size,
+      GridSizingTrackCollection* track_collection,
+      GridItems* grid_items) const;
 
   LayoutUnit DetermineFreeSpace(
       const GridSizingTrackCollection& track_collection) const;

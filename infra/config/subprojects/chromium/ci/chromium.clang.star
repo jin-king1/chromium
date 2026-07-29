@@ -3,30 +3,36 @@
 # found in the LICENSE file.
 """Definitions of builders in the chromium.clang builder group."""
 
-load("//lib/args.star", "args")
-load("//lib/branches.star", "branches")
-load("//lib/builder_config.star", "builder_config")
-load("//lib/builder_health_indicators.star", "health_spec")
-load("//lib/builders.star", "builders", "cpu", "gardener_rotations", "os", "siso")
-load("//lib/ci.star", "ci")
-load("//lib/consoles.star", "consoles")
-load("//lib/gn_args.star", "gn_args")
-load("//lib/html.star", "linkify_builder")
-load("//lib/targets.star", "targets")
+load("@chromium-luci//args.star", "args")
+load("@chromium-luci//branches.star", "branches")
+load("@chromium-luci//builder_config.star", "builder_config")
+load("@chromium-luci//builder_health_indicators.star", "health_spec")
+load("@chromium-luci//builders.star", "builders", "cpu", "os")
+load("@chromium-luci//ci.star", "ci")
+load("@chromium-luci//consoles.star", "consoles")
+load("@chromium-luci//gn_args.star", "gn_args")
+load("@chromium-luci//html.star", "linkify_builder")
+load("@chromium-luci//targets.star", "targets")
+load("//lib/ci_constants.star", "ci_constants")
+load("//lib/gardener_rotations.star", "gardener_rotations")
+load("//lib/siso.star", "siso")
 load("//lib/xcode.star", "xcode")
 
 ci.defaults.set(
-    executable = ci.DEFAULT_EXECUTABLE,
+    executable = ci_constants.DEFAULT_EXECUTABLE,
     builder_group = "chromium.clang",
-    pool = ci.DEFAULT_POOL,
+    pool = ci_constants.DEFAULT_POOL,
     builderless = True,
     cores = 32,
     os = os.LINUX_DEFAULT,
     gardener_rotations = gardener_rotations.CHROMIUM_CLANG,
     # Because these run ToT Clang, reclient is not used.
-    # Naturally the runtime will be ~4-8h on average, depending on config.
-    # CFI builds will take even longer - around 11h.
-    execution_timeout = 14 * time.hour,
+    # Naturally the runtime will be ~4-8h on average for basic builds.
+    # Complex (e.g. sanitizer), CFI builds can take much longer.
+    execution_timeout = 16 * time.hour,
+    experiments = {
+        "chromium_tests.resultdb_module": 100,
+    },
     health_spec = health_spec.modified_default({
         "Unhealthy": health_spec.unhealthy_thresholds(
             fail_rate = struct(),
@@ -37,10 +43,12 @@ ci.defaults.set(
     }),
     properties = {
         "perf_dashboard_machine_group": "ChromiumClang",
+        "$build/chromium": {
+            "fail_build_on_clang_warnings": True,
+        },
     },
-    service_account = ci.DEFAULT_SERVICE_ACCOUNT,
-    shadow_service_account = ci.DEFAULT_SHADOW_SERVICE_ACCOUNT,
-    siso_enabled = True,
+    service_account = ci_constants.DEFAULT_SERVICE_ACCOUNT,
+    shadow_service_account = ci_constants.DEFAULT_SHADOW_SERVICE_ACCOUNT,
     siso_project = siso.project.DEFAULT_TRUSTED,
 )
 
@@ -59,6 +67,7 @@ consoles.console_view(
             "ToT Mac",
             "ToT Windows",
             "ToT Code Coverage",
+            "Rust ToT",
         ],
         "ToT Linux": consoles.ordering(
             short_names = ["rel", "ofi", "dbg", "asn", "fuz", "msn", "tsn"],
@@ -89,22 +98,24 @@ consoles.console_view(
     ("clang-tot-device", "iOS|internal", "dev"),
 )]
 
-def clang_mac_builder(*, name, cores = 12, **kwargs):
+def tot_mac_builder(*, name, is_rust = False, **kwargs):
     if "gn_args" in kwargs:
         kwargs["gn_args"].configs.append("mac")
+    desc_tool = "Rust" if is_rust else "Clang"
     return ci.builder(
         name = name,
-        cores = cores,
         os = os.MAC_DEFAULT,
         ssd = True,
+        cores = None,
+        cpu = cpu.ARM64,
         properties = {
-            # The Chromium build doesn't need system Xcode, but the ToT clang
+            # The Chromium build doesn't need system Xcode, but the ToT
             # bots also build clang and llvm and that build does need system
             # Xcode.
             "xcode_build_version": "14c18",
         },
         contact_team_email = "lexan@google.com",
-        description_html = "Builder that builds ToT Clang and uses it to build Chromium",
+        description_html = "Builder that builds ToT " + desc_tool + " and uses it to build Chromium",
         **kwargs
     )
 
@@ -136,7 +147,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
         clusterfuzz_archive = builder_config.clusterfuzz_archive(
             archive_name_prefix = "cfi",
             gs_acl = "public-read",
@@ -158,7 +168,7 @@ ci.builder(
     ),
     targets = targets.bundle(
         additional_compile_targets = [
-            "chromium_builder_asan",
+            "blackbox_fuzzing_targets",
         ],
     ),
     console_view_entry = consoles.console_view_entry(
@@ -167,7 +177,6 @@ ci.builder(
     ),
     contact_team_email = "lexan@google.com",
     notifies = ["CFI Linux"],
-    siso_remote_jobs = siso.remote_jobs.DEFAULT,
 )
 
 ci.builder(
@@ -184,11 +193,11 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "cfi_full",
             "cfi_icall",
             "cfi_diag",
@@ -229,12 +238,12 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "asan",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "fuzzer",
             "release_builder",
             "v8_heap",
@@ -248,14 +257,14 @@ ci.builder(
             "clang_tot_gtests",
         ],
         additional_compile_targets = [
-            "chromium_builder_asan",
+            "blackbox_fuzzing_targets",
         ],
         mixins = [
             "x86-64",
             "win10",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
@@ -279,12 +288,12 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "asan",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "shared",
             "release",
             "v8_heap",
@@ -298,14 +307,14 @@ ci.builder(
             "clang_tot_gtests",
         ],
         additional_compile_targets = [
-            "chromium_builder_asan",
+            "blackbox_fuzzing_targets",
         ],
         mixins = [
             "x86-64",
             "win10",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
@@ -333,17 +342,19 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.ANDROID,
         ),
-        android_config = builder_config.android_config(config = "clang_builder_mb_x64"),
-        build_gs_bucket = "chromium-clang-archive",
+        android_config = builder_config.android_config(config = "base_config"),
     ),
     gn_args = gn_args.config(
         configs = [
             "android_builder",
+            "android_with_static_analysis",
             "release_builder",
             "minimal_symbols",
             "strip_debug_info",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "arm",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -354,13 +365,13 @@ ci.builder(
             "all",
         ],
         mixins = [
-            "chromium_pixel_2_pie",
+            "chromium_pixel_2_q",
             "has_native_resultdb_integration",
         ],
         per_test_modifications = {
             "base_unittests": targets.mixin(
                 args = [
-                    "--test-launcher-filter-file=../../testing/buildbot/filters/android.pie_tot.base_unittests.filter",
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/android.device_10.tot.base_unittests.filter",
                 ],
             ),
         },
@@ -393,16 +404,17 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.ANDROID,
         ),
-        android_config = builder_config.android_config(config = "clang_builder_mb_x64"),
-        build_gs_bucket = "chromium-clang-archive",
+        android_config = builder_config.android_config(config = "base_config"),
     ),
     gn_args = gn_args.config(
         configs = [
             "android_builder_without_codecs",
-            "clang_tot",
-            "shared",
+            "android_with_static_analysis",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "debug",
             "arm",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -435,17 +447,18 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.ANDROID,
         ),
-        android_config = builder_config.android_config(config = "clang_builder_mb_x64"),
-        build_gs_bucket = "chromium-clang-archive",
+        android_config = builder_config.android_config(config = "base_config"),
     ),
     gn_args = gn_args.config(
         configs = [
             "android_builder_without_codecs",
-            "clang_tot",
-            "shared",
+            "android_with_static_analysis",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "release",
             "x64",
             "dcheck_always_on",
+            "remoteexec",
         ],
     ),
     # TODO(crbug.com/41368235): Re-enable tests once there are devices to run them on.
@@ -489,17 +502,18 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.ANDROID,
         ),
-        android_config = builder_config.android_config(config = "clang_builder_mb_x64"),
-        build_gs_bucket = "chromium-clang-archive",
+        android_config = builder_config.android_config(config = "base_config"),
     ),
     gn_args = gn_args.config(
         configs = [
             "android_builder_without_codecs",
-            "clang_tot",
-            "shared",
+            "android_with_static_analysis",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "release",
             "x86",
             "dcheck_always_on",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -532,18 +546,19 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.ANDROID,
         ),
-        android_config = builder_config.android_config(config = "clang_builder_mb_x64"),
-        build_gs_bucket = "chromium-clang-archive",
+        android_config = builder_config.android_config(config = "base_config"),
     ),
     gn_args = gn_args.config(
         configs = [
             "android_builder_without_codecs",
-            "clang_tot",
-            "shared",
+            "android_with_static_analysis",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "release",
             "x86",
             "dcheck_always_on",
             "use_clang_coverage",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -576,21 +591,20 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.ANDROID,
         ),
-        android_config = builder_config.android_config(config = "clang_builder_mb_x64"),
-        build_gs_bucket = "chromium-clang-archive",
+        android_config = builder_config.android_config(config = "base_config"),
     ),
     gn_args = gn_args.config(
         configs = [
             "android_builder_without_codecs",
-            "clang_tot",
+            "android_with_static_analysis",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "release",
             "arm64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
-        targets = [
-            "chrome_sizes_android",
-        ],
         additional_compile_targets = [
             "all",
         ],
@@ -621,8 +635,7 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.ANDROID,
         ),
-        android_config = builder_config.android_config(config = "clang_builder_mb_x64"),
-        build_gs_bucket = "chromium-clang-archive",
+        android_config = builder_config.android_config(config = "base_config"),
     ),
     gn_args = gn_args.config(
         configs = [
@@ -630,14 +643,13 @@ ci.builder(
             "release_builder",
             "minimal_symbols",
             "official_optimize",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "arm64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
-        targets = [
-            "chrome_sizes_android",
-        ],
         additional_compile_targets = [
             "all",
         ],
@@ -666,14 +678,15 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.CHROMEOS,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "chromeos_on_linux",
             "release",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "x64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -705,14 +718,15 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.CHROMEOS,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "chromeos_on_linux",
             "debug",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "x64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -745,16 +759,18 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.FUCHSIA,
         ),
-        build_gs_bucket = "chromium-clang-archive",
         run_tests_serially = True,
     ),
     gn_args = gn_args.config(
         configs = [
             "fuchsia",
             "release_builder",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "cast_receiver_size_optimized",
             "x64",
+            "dcheck_always_on",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -836,7 +852,6 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.FUCHSIA,
         ),
-        build_gs_bucket = "chromium-clang-archive",
         run_tests_serially = True,
     ),
     gn_args = gn_args.config(
@@ -844,10 +859,13 @@ ci.builder(
             "official_optimize",
             "fuchsia",
             "arm64",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "static",
             "arm64_host",
             "cast_receiver_size_optimized",
+            "dcheck_always_on",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -861,7 +879,7 @@ ci.builder(
         mixins = [
             "arm64",
             "docker",
-            "linux-jammy-or-focal",
+            "linux-jammy",
         ],
     ),
     console_view_entry = [
@@ -888,23 +906,23 @@ clang_tot_linux_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         # Enable debug info, as on official builders, to catch issues with
         # optimized debug info.
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "full_symbols",
             "shared",
             "release",
             "x64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "chrome_sizes_suite",
         ],
         additional_compile_targets = [
             "all",
@@ -931,19 +949,19 @@ clang_tot_linux_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "shared",
             "debug",
             "x64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
         targets = [
-            "chrome_sizes_suite",
         ],
         additional_compile_targets = [
             "all",
@@ -953,6 +971,7 @@ clang_tot_linux_builder(
         ],
     ),
     short_name = "dbg",
+    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CI,
 )
 
 clang_tot_linux_builder(
@@ -970,15 +989,16 @@ clang_tot_linux_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "asan",
             "lsan",
             "release_builder",
             "x64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -997,6 +1017,7 @@ clang_tot_linux_builder(
             "linux-jammy",
         ],
     ),
+    free_space = builders.free_space.high,
     short_name = "asn",
 )
 
@@ -1015,13 +1036,14 @@ clang_tot_linux_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "libfuzzer",
             "asan",
-            "clang_tot",
+            "remoteexec",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "shared",
             "release",
             "chromeos_codecs",
@@ -1033,7 +1055,6 @@ clang_tot_linux_builder(
     ),
     targets = targets.bundle(
         targets = [
-            "chrome_sizes_suite",
         ],
         additional_compile_targets = [
             "all",
@@ -1052,11 +1073,13 @@ clang_tot_linux_builder(
     executable = "recipe:chromium_clang_coverage_tot",
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "use_clang_coverage",
             "minimal_symbols",
             "release",
             "x64",
+            "remoteexec",
         ],
     ),
     category = "ToT Code Coverage",
@@ -1078,29 +1101,30 @@ clang_tot_linux_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "msan",
             "release",
             "x64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "chrome_sizes_suite",
         ],
         additional_compile_targets = [
             "all",
         ],
         mixins = [
-            "linux-focal",
+            "linux-jammy",
         ],
     ),
-    os = os.LINUX_FOCAL,
+    builderless = False,
+    ssd = True,
     short_name = "msn",
 )
 
@@ -1119,15 +1143,16 @@ clang_tot_linux_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "official_optimize",
             "no_symbols",
             "pgo_phase_1",
             "x64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
@@ -1159,20 +1184,20 @@ clang_tot_linux_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "tsan",
             "release",
             "x64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "chrome_sizes_suite",
         ],
         additional_compile_targets = [
             "all",
@@ -1199,20 +1224,20 @@ clang_tot_linux_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "ubsan_vptr_no_recover_hack",
             "release_builder",
             "x64",
+            "remoteexec",
         ],
     ),
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "chrome_sizes_suite",
         ],
         additional_compile_targets = [
             "all",
@@ -1238,11 +1263,11 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "minimal_symbols",
             "release_builder",
             "x86",
@@ -1252,7 +1277,7 @@ ci.builder(
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "win_specific_isolated_scripts_and_sizes",
+            "win_specific_isolated_scripts",
         ],
         additional_compile_targets = [
             "all",
@@ -1261,7 +1286,7 @@ ci.builder(
             "win10",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
@@ -1269,6 +1294,11 @@ ci.builder(
         short_name = "rel",
     ),
     contact_team_email = "lexan@google.com",
+    # Clang ToT Win compiles get timeouts often.
+    siso_configs = [
+        "builder",
+        "no-remote-timeout",
+    ],
 )
 
 ci.builder(
@@ -1285,11 +1315,11 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "shared",
             "debug",
             "x86",
@@ -1301,7 +1331,6 @@ ci.builder(
             "clang_tot_gtests",
             # Doesn't run win_specific_isolated_scripts because the mini
             # installer isn't hooked up in 32-bit debug builds.
-            "chrome_sizes_suite",
         ],
         additional_compile_targets = [
             "all",
@@ -1310,9 +1339,9 @@ ci.builder(
             "win10",
         ],
     ),
-    builderless = False,
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
+    free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
         category = "ToT Windows",
         short_name = "dbg",
@@ -1334,11 +1363,11 @@ ci.builder(
             target_bits = 32,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "minimal_symbols",
             "shared",
             "release",
@@ -1350,7 +1379,7 @@ ci.builder(
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "win_specific_isolated_scripts_and_sizes",
+            "win_specific_isolated_scripts",
         ],
         additional_compile_targets = [
             "all",
@@ -1359,7 +1388,7 @@ ci.builder(
             "win10",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
@@ -1383,11 +1412,11 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "minimal_symbols",
             "release_builder",
             "win",
@@ -1397,7 +1426,7 @@ ci.builder(
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "win_specific_isolated_scripts_and_sizes",
+            "win_specific_isolated_scripts",
         ],
         additional_compile_targets = [
             "all",
@@ -1407,7 +1436,7 @@ ci.builder(
             "win10",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
@@ -1431,11 +1460,11 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "shared",
             "debug",
             "win",
@@ -1445,7 +1474,7 @@ ci.builder(
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "win_specific_isolated_scripts_and_sizes",
+            "win_specific_isolated_scripts",
         ],
         additional_compile_targets = [
             "all",
@@ -1455,7 +1484,7 @@ ci.builder(
             "win10",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
@@ -1479,11 +1508,11 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "shared",
             "release",
             "dcheck_always_on",
@@ -1494,7 +1523,7 @@ ci.builder(
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "win_specific_isolated_scripts_and_sizes",
+            "win_specific_isolated_scripts",
         ],
         additional_compile_targets = [
             "all",
@@ -1504,7 +1533,7 @@ ci.builder(
             "win10",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
@@ -1528,13 +1557,13 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "libfuzzer",
             "asan",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "release",
             "chrome_with_codecs",
             "pdf_xfa",
@@ -1551,9 +1580,9 @@ ci.builder(
             "win10",
         ],
     ),
-    builderless = False,
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
+    free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
         category = "ToT Windows|Asan",
         short_name = "fuz",
@@ -1580,11 +1609,11 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "official_optimize",
             "no_symbols",
             "pgo_phase_1",
@@ -1601,7 +1630,7 @@ ci.builder(
             "win11",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     gardener_rotations = args.ignore_default(None),
@@ -1617,7 +1646,8 @@ ci.builder(
     executable = "recipe:chromium_clang_coverage_tot",
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "use_clang_coverage",
             "minimal_symbols",
             "release",
@@ -1625,7 +1655,7 @@ ci.builder(
             "x64",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
@@ -1649,11 +1679,11 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.WIN,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "official_optimize",
             "no_symbols",
             "pgo_phase_1",
@@ -1673,7 +1703,7 @@ ci.builder(
             "win10",
         ],
     ),
-    cores = "32",
+    cores = "64",
     os = os.WINDOWS_DEFAULT,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
@@ -1705,11 +1735,11 @@ ci.builder(
             target_platform = builder_config.target_platform.WIN,
             host_platform = builder_config.host_platform.LINUX,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "win_cross",
             "minimal_symbols",
             "shared",
@@ -1753,13 +1783,13 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.IOS,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "ios_simulator",
-            "x64",
+            "arm64",
             "ios_disable_code_signing",
             "release_builder",
             "xctest",
@@ -1775,10 +1805,10 @@ ci.builder(
         mixins = [
             "expand-as-isolated-script",
             "has_native_resultdb_integration",
-            "mac_default_x64",
+            "mac_default_arm64",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_16_main",
+            "xcode_26_main",
             "xctest",
         ],
     ),
@@ -1812,11 +1842,11 @@ ci.builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.IOS,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "ios_device",
             "arm64",
             "release",
@@ -1836,6 +1866,7 @@ ci.builder(
             "gfx_unittests",
             "google_apis_unittests",
             "ios_chrome_unittests",
+            "ios_credential_provider_extension_unittests",
             "ios_net_unittests",
             "ios_web_inttests",
             "ios_web_unittests",
@@ -1851,10 +1882,9 @@ ci.builder(
             "has_native_resultdb_integration",
             "ios_restart_device",
             "limited_capacity_bot",
-            "mac_default_x64",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_16_main",
+            "xcode_26_main",
             "xctest",
         ],
     ),
@@ -1871,7 +1901,7 @@ ci.builder(
     xcode = xcode.xcode_default,
 )
 
-clang_mac_builder(
+tot_mac_builder(
     name = "ToTMac",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
@@ -1890,11 +1920,11 @@ clang_mac_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.MAC,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "minimal_symbols",
             "shared",
             "release",
@@ -1904,17 +1934,14 @@ clang_mac_builder(
     targets = targets.bundle(
         targets = [
             "clang_tot_gtests",
-            "chrome_sizes_suite",
         ],
         additional_compile_targets = [
             "all",
         ],
         mixins = [
-            "mac_default_x64",
+            "mac_15_x64",
         ],
     ),
-    cores = None,
-    cpu = cpu.ARM64,
     console_view_entry = consoles.console_view_entry(
         category = "ToT Mac",
         short_name = "rel",
@@ -1922,7 +1949,7 @@ clang_mac_builder(
     execution_timeout = 20 * time.hour,
 )
 
-clang_mac_builder(
+tot_mac_builder(
     name = "ToTMac (dbg)",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
@@ -1936,11 +1963,11 @@ clang_mac_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.MAC,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "shared",
             "debug",
             "x64",
@@ -1950,12 +1977,7 @@ clang_mac_builder(
         additional_compile_targets = [
             "all",
         ],
-        mixins = [
-            "mac_default_x64",
-        ],
     ),
-    cores = None,
-    cpu = cpu.ARM64,
     console_view_entry = consoles.console_view_entry(
         category = "ToT Mac",
         short_name = "dbg",
@@ -1963,7 +1985,7 @@ clang_mac_builder(
     execution_timeout = 20 * time.hour,
 )
 
-clang_mac_builder(
+tot_mac_builder(
     name = "ToTMacASan",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
@@ -1977,12 +1999,12 @@ clang_mac_builder(
             target_bits = 64,
             target_platform = builder_config.target_platform.MAC,
         ),
-        build_gs_bucket = "chromium-clang-archive",
     ),
     gn_args = gn_args.config(
         configs = [
             "asan",
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "minimal_symbols",
             "release_builder",
             "x64",
@@ -1993,7 +2015,7 @@ clang_mac_builder(
             "clang_tot_gtests",
         ],
         additional_compile_targets = [
-            "chromium_builder_asan",
+            "blackbox_fuzzing_targets",
         ],
         mixins = [
             targets.mixin(
@@ -2001,11 +2023,9 @@ clang_mac_builder(
                     "--test-launcher-print-test-stdio=always",
                 ],
             ),
-            "mac_default_x64",
+            "mac_15_x64",
         ],
     ),
-    cores = None,
-    cpu = cpu.ARM64,
     console_view_entry = consoles.console_view_entry(
         category = "ToT Mac",
         short_name = "asn",
@@ -2013,11 +2033,27 @@ clang_mac_builder(
     execution_timeout = 20 * time.hour,
 )
 
-clang_mac_builder(
+tot_mac_builder(
     name = "ToTMacPGO",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = [
+                "clang_tot",
+            ],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "clang_tot_mac",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.MAC,
+        ),
+    ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "official_optimize",
             "no_symbols",
             "pgo_phase_1",
@@ -2032,7 +2068,7 @@ clang_mac_builder(
             "all",
         ],
         mixins = [
-            "mac_default_x64",
+            "mac_15_x64",
         ],
     ),
     console_view_entry = consoles.console_view_entry(
@@ -2041,11 +2077,28 @@ clang_mac_builder(
     ),
 )
 
-clang_mac_builder(
+tot_mac_builder(
     name = "ToTMacArm64PGO",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = [
+                "clang_tot",
+            ],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "clang_tot_mac",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.ARM,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.MAC,
+        ),
+    ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "official_optimize",
             "no_symbols",
             "pgo_phase_1",
@@ -2056,9 +2109,6 @@ clang_mac_builder(
         additional_compile_targets = [
             "all",
         ],
-        mixins = [
-            "mac_default_x64",
-        ],
     ),
     console_view_entry = consoles.console_view_entry(
         category = "ToT Mac",
@@ -2066,11 +2116,28 @@ clang_mac_builder(
     ),
 )
 
-clang_mac_builder(
+tot_mac_builder(
     name = "ToTMacArm64",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = [
+                "clang_tot",
+            ],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "clang_tot_mac",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.RELEASE,
+            target_arch = builder_config.target_arch.ARM,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.MAC,
+        ),
+    ),
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "minimal_symbols",
             "arm64",
             "release",
@@ -2080,9 +2147,6 @@ clang_mac_builder(
         additional_compile_targets = [
             "all",
         ],
-        mixins = [
-            "mac_default_x64",
-        ],
     ),
     console_view_entry = consoles.console_view_entry(
         category = "ToT Mac",
@@ -2090,22 +2154,157 @@ clang_mac_builder(
     ),
 )
 
-clang_mac_builder(
+tot_mac_builder(
     name = "ToTMacCoverage",
     executable = "recipe:chromium_clang_coverage_tot",
     gn_args = gn_args.config(
         configs = [
-            "clang_tot",
+            "clang_tot_gn",
+            "no_treat_warnings_as_errors",
             "use_clang_coverage",
             "minimal_symbols",
             "release",
             "arm64",
         ],
     ),
-    cores = None,
-    cpu = cpu.ARM64,
     console_view_entry = consoles.console_view_entry(
         category = "ToT Code Coverage",
         short_name = "mac",
     ),
+)
+
+### Rust builders: These are also on the clang/lexan waterfall and watched by
+### the same gardening rotation
+
+ci.builder(
+    name = "ToTRustLinux(dbg)",
+    description_html = "Builder that builds and tests chromium using ToT Rust," +
+                       "built against ToT LLVM, on linux in debug mode.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = ["rust_tot"],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "rust_tot_linux",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.DEBUG,
+            target_arch = builder_config.target_arch.INTEL,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.LINUX,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "rust_tot_gn",
+            "no_treat_warnings_as_errors",
+            "shared",
+            "debug",
+            "x64",
+            "linux",
+            "remoteexec",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = [
+        ],
+        additional_compile_targets = [
+            "all",
+        ],
+        mixins = [
+            "linux-jammy",
+        ],
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "Rust ToT",
+        short_name = "lin",
+    ),
+    contact_team_email = "lexan@google.com",
+)
+
+ci.builder(
+    name = "ToTRustWin(dbg)",
+    description_html = "Builder that builds and tests chromium using ToT Rust," +
+                       "built against ToT LLVM, on windows in debug mode.",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = ["rust_tot"],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium_win_rust_tot",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.DEBUG,
+            target_bits = 32,
+            target_platform = builder_config.target_platform.WIN,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "rust_tot_gn",
+            "no_treat_warnings_as_errors",
+            "shared",
+            "debug",
+            "x86",
+            "win",
+        ],
+    ),
+    targets = targets.bundle(
+        targets = [
+            "clang_tot_gtests",
+            # Doesn't run win_specific_isolated_scripts because the mini
+            # installer isn't hooked up in 32-bit debug builds.
+        ],
+        additional_compile_targets = [
+            "all",
+        ],
+        mixins = [
+            "win10",
+        ],
+    ),
+    cores = "64",
+    os = os.WINDOWS_DEFAULT,
+    free_space = builders.free_space.high,
+    console_view_entry = consoles.console_view_entry(
+        category = "Rust ToT",
+        short_name = "win",
+    ),
+    contact_team_email = "lexan@google.com",
+)
+
+tot_mac_builder(
+    name = "ToTRustMac(dbg)",
+    builder_spec = builder_config.builder_spec(
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+            apply_configs = ["rust_tot"],
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "rust_tot_mac",
+            apply_configs = ["mb"],
+            build_config = builder_config.build_config.DEBUG,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.MAC,
+        ),
+    ),
+    gn_args = gn_args.config(
+        configs = [
+            "rust_tot_gn",
+            "no_treat_warnings_as_errors",
+            "shared",
+            "debug",
+            "x64",
+        ],  # "mac" is added automatically since this is a `tot_mac_builder` call
+    ),
+    targets = targets.bundle(
+        additional_compile_targets = [
+            "all",
+        ],
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "Rust ToT",
+        short_name = "mac",
+    ),
+    execution_timeout = 20 * time.hour,
+    is_rust = True,
 )

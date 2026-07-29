@@ -6,10 +6,10 @@
 
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
+#include "base/callback_list.h"
 #include "base/memory/singleton.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "ui/base/idle/idle_internal.h"
-
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "ui/base/ui_base_jni_headers/IdleDetector_jni.h"
 
@@ -18,6 +18,11 @@ using base::android::ScopedJavaLocalRef;
 using jni_zero::AttachCurrentThread;
 
 namespace ui {
+
+base::CallbackListSubscription AddScreenLockCallback(
+    base::RepeatingCallback<void(bool)> callback) {
+  return {};
+}
 
 namespace {
 
@@ -53,13 +58,13 @@ class AndroidIdleMonitor {
 
   int CalculateIdleTime() {
     JNIEnv* env = AttachCurrentThread();
-    jlong result = Java_IdleDetector_getIdleTime(env, j_idle_manager_);
+    int64_t result = Java_IdleDetector_getIdleTime(env, j_idle_manager_);
     return result;
   }
 
   bool CheckIdleStateIsLocked() {
     JNIEnv* env = AttachCurrentThread();
-    jboolean result = Java_IdleDetector_isScreenLocked(env, j_idle_manager_);
+    bool result = Java_IdleDetector_isScreenLocked(env, j_idle_manager_);
     return result;
   }
 
@@ -80,10 +85,6 @@ bool CheckIdleStateIsLocked() {
   return AndroidIdleMonitor::GetInstance()->CheckIdleStateIsLocked();
 }
 
-IdleState CalculateIdleState(int idle_threshold) {
-  // TODO(crbug.com/40591477): implementation pending.
-  NOTIMPLEMENTED();
-  return IdleState::IDLE_STATE_UNKNOWN;
-}
-
 }  // namespace ui
+
+DEFINE_JNI(IdleDetector)

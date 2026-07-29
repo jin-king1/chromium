@@ -4,6 +4,10 @@
 
 package org.chromium.chrome.browser.vr;
 
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeBookmarksUrl;
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeHistoryUrl;
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
+
 import android.os.Build;
 import android.view.View;
 
@@ -57,7 +61,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public abstract class XrTestFramework {
     public static final HashSet<String> OLD_DEVICE_BOARDS =
-            new HashSet(Arrays.asList("bullhead" /* Nexus 5X */, "marlin" /* Pixel 1 */));
+            new HashSet<>(Arrays.asList("bullhead" /* Nexus 5X */, "marlin" /* Pixel 1 */));
     public static final int PAGE_LOAD_TIMEOUT_S = 10;
     // These two were originally different values, but the short one was bumped up to increase
     // test harness reliability. The long version might also want to be bumped up at some point, or
@@ -74,10 +78,10 @@ public abstract class XrTestFramework {
     public static final String[] NATIVE_URLS_OF_INTEREST = {
         UrlConstants.BOOKMARKS_FOLDER_URL + "3",
         UrlConstants.BOOKMARKS_UNCATEGORIZED_URL,
-        UrlConstants.BOOKMARKS_URL,
+        getOriginalNativeBookmarksUrl(),
         UrlConstants.DOWNLOADS_URL,
-        UrlConstants.NATIVE_HISTORY_URL,
-        UrlConstants.NTP_URL,
+        getOriginalNativeHistoryUrl(),
+        getOriginalNativeNtpUrl(),
         UrlConstants.RECENT_TABS_URL
     };
 
@@ -93,7 +97,7 @@ public abstract class XrTestFramework {
         int FAILED = 2;
     }
 
-    private ChromeActivityTestRule mRule;
+    private final ChromeActivityTestRule mRule;
 
     static final int getShortPollTimeout() {
         return getPollTimeout(1000);
@@ -227,7 +231,7 @@ public abstract class XrTestFramework {
                     timeoutMs,
                     POLL_CHECK_INTERVAL_LONG_MS);
         } catch (CriteriaHelper.TimeoutException e) {
-            Log.d(TAG, "pollJavaScriptBoolean() timed out: " + e.toString());
+            Log.d(TAG, "pollJavaScriptBoolean() timed out", e);
             return false;
         }
         return true;
@@ -269,7 +273,7 @@ public abstract class XrTestFramework {
                     timeoutMs,
                     POLL_CHECK_INTERVAL_LONG_MS);
         } catch (CriteriaHelper.TimeoutException e) {
-            Log.d(TAG, "pollJavaScriptBooleanInFrame() timed out: " + e.toString());
+            Log.d(TAG, "pollJavaScriptBooleanInFrame() timed out", e);
             return false;
         }
         return true;
@@ -408,7 +412,7 @@ public abstract class XrTestFramework {
                         runJavaScriptOrFail("testPassed", POLL_TIMEOUT_SHORT_MS, webContents));
         if (testPassed) {
             return TestStatus.PASSED;
-        } else if (!testPassed && resultString.equals("\"\"")) {
+        } else if (resultString.equals("\"\"")) {
             return TestStatus.RUNNING;
         } else {
             // !testPassed && !resultString.equals("\"\"")
@@ -465,7 +469,7 @@ public abstract class XrTestFramework {
                                         WebContentsUtils.getFocusedFrame(webContents)));
         Assert.assertTrue("Did not get a focused frame", rfh != null);
         final CountDownLatch latch = new CountDownLatch(1);
-        final AtomicReference<String> result = new AtomicReference<String>();
+        final AtomicReference<String> result = new AtomicReference<>();
         // The JS execution needs to be started on the UI thread to avoid hitting a DCHECK.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -541,7 +545,11 @@ public abstract class XrTestFramework {
         // It is possible, particularly with multiple sessions and navigations within a single test,
         // for the page to get zoomed in on navigation. So, ensure that we are always zoomed out
         // enough to see all page content after we do a page load.
-        ThreadUtils.runOnUiThreadBlocking(() -> ZoomController.zoomReset(mRule.getWebContents()));
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        ZoomController.zoomReset(
+                                mRule.getWebContents(),
+                                mRule.getProfile(/* incognito= */ false).getOriginalProfile()));
         return result;
     }
 
@@ -664,7 +672,7 @@ public abstract class XrTestFramework {
     }
 
     public View getCurrentContentView() {
-        return mRule.getActivity().getActivityTab().getContentView();
+        return mRule.getActivityTab().getContentView();
     }
 
     public WebContents getCurrentWebContents() {
@@ -676,7 +684,7 @@ public abstract class XrTestFramework {
     }
 
     public void simulateRendererKilled() {
-        final Tab tab = getRule().getActivity().getActivityTab();
+        final Tab tab = getRule().getActivityTab();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> ChromeTabUtils.simulateRendererKilledForTesting(tab));
 

@@ -109,7 +109,7 @@ void ThrottlingP2PNetworkInterceptor::UpdateConditions(
 
 void ThrottlingP2PNetworkInterceptor::EnqueueSend(P2PPendingPacket packet,
                                                   P2PSocketUdp* socket) {
-  int64_t now = rtc::TimeMicros();
+  int64_t now = webrtc::TimeMicros();
   socket->SendCompletionFromInterceptor(P2PSendPacketMetrics{
       packet.id, static_cast<int32_t>(packet.packet_options.packet_id),
       now / 1000});
@@ -141,7 +141,7 @@ void ThrottlingP2PNetworkInterceptor::EnqueueSend(P2PPendingPacket packet,
 }
 
 void ThrottlingP2PNetworkInterceptor::OnSendNetworkTimer() {
-  int64_t now = rtc::TimeMicros();
+  int64_t now = webrtc::TimeMicros();
   std::vector<webrtc::PacketDeliveryInfo> packets =
       send_network_.DequeueDeliverablePackets(now);
   for (auto& packet : packets) {
@@ -152,12 +152,15 @@ void ThrottlingP2PNetworkInterceptor::OnSendNetworkTimer() {
       continue;
     }
     P2PSocketUdp* socket = packet_iterator->second.socket;
+    // Move `pending_packet` out of the iterator to avoid using an iterator that
+    // could be invalidated by SendFromInterceptor() below.
+    P2PPendingPacket pending_packet = std::move(packet_iterator->second.packet);
+    send_packets_.erase(packet_iterator);
 
     // Check for dropped packets
     if (packet.receive_time_us != webrtc::PacketDeliveryInfo::kNotReceived) {
-      socket->SendFromInterceptor(packet_iterator->second.packet);
+      socket->SendFromInterceptor(pending_packet);
     }
-    send_packets_.erase(packet_iterator);
   }
 
   // Schedule the next delivery timer
@@ -182,7 +185,7 @@ void ThrottlingP2PNetworkInterceptor::EnqueueReceive(
   }
 
   uint64_t packet_id = receive_packet_id_++;
-  int64_t now = rtc::TimeMicros();
+  int64_t now = webrtc::TimeMicros();
   webrtc::PacketInFlightInfo packet_info(packet->data.size(), now, packet_id);
 
   if (receive_network_.EnqueuePacket(packet_info)) {
@@ -203,7 +206,7 @@ void ThrottlingP2PNetworkInterceptor::EnqueueReceive(
 }
 
 void ThrottlingP2PNetworkInterceptor::OnReceiveNetworkTimer() {
-  int64_t now = rtc::TimeMicros();
+  int64_t now = webrtc::TimeMicros();
   std::vector<webrtc::PacketDeliveryInfo> packets =
       receive_network_.DequeueDeliverablePackets(now);
   for (auto& packet : packets) {
@@ -215,15 +218,19 @@ void ThrottlingP2PNetworkInterceptor::OnReceiveNetworkTimer() {
     }
 
     P2PSocketUdp* socket = packet_iterator->second.socket;
+    mojom::P2PReceivedPacketPtr pending_packet =
+        std::move(packet_iterator->second.packet);
+    scoped_refptr<net::IOBuffer> pending_buffer =
+        std::move(packet_iterator->second.buffer);
+    receive_packets_.erase(packet_iterator);
 
     // Check for dropped packets
     if (packet.receive_time_us != webrtc::PacketDeliveryInfo::kNotReceived) {
-      packet_iterator->second.packet->timestamp =
+      pending_packet->timestamp =
           base::TimeTicks() + base::Microseconds(packet.receive_time_us);
-      socket->ReceiveFromInterceptor(std::move(packet_iterator->second.packet),
-                                     std::move(packet_iterator->second.buffer));
+      socket->ReceiveFromInterceptor(std::move(pending_packet),
+                                     std::move(pending_buffer));
     }
-    receive_packets_.erase(packet_iterator);
   }
 
   // Schedule the next delivery timer

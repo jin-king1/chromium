@@ -9,12 +9,15 @@
 #include "base/functional/callback_helpers.h"
 #include "base/synchronization/waitable_event.h"
 #include "build/build_config.h"
+#include "gpu/command_buffer/service/feature_info.h"
 #include "gpu/command_buffer/service/scheduler.h"
 #include "gpu/command_buffer/service/service_utils.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/sync_point_manager.h"
+#include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "gpu/config/gpu_info_collector.h"
 #include "gpu/config/gpu_util.h"
+#include "ui/gl/gl_surface.h"
 #include "ui/gl/gl_utils.h"
 #include "ui/gl/init/gl_factory.h"
 
@@ -103,9 +106,8 @@ void InProcessGpuThreadHolder::InitializeOnGpuThread(
   context_state_ = base::MakeRefCounted<SharedContextState>(
       share_group_, surface_, context_, use_virtualized_gl_context,
       base::DoNothing(), gpu_preferences_.gr_context_type);
-  auto feature_info = base::MakeRefCounted<gles2::FeatureInfo>(
-      gpu_driver_bug_workarounds, gpu_feature_info_);
-  context_state_->InitializeGL(gpu_preferences_, feature_info);
+  context_state_->InitializeGL(gpu_preferences_, gpu_driver_bug_workarounds,
+                               gpu_feature_info_);
   context_state_->InitializeSkia(gpu_preferences_, gpu_driver_bug_workarounds);
 
   task_executor_ = std::make_unique<GpuInProcessThreadService>(

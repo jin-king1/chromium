@@ -11,19 +11,15 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.payments.mojom.PaymentComplete;
 import org.chromium.payments.mojom.PaymentDetails;
 import org.chromium.payments.mojom.PaymentItem;
-import org.chromium.payments.mojom.PaymentMethodData;
-import org.chromium.payments.mojom.PaymentOptions;
 import org.chromium.payments.mojom.PaymentRequest;
-import org.chromium.payments.mojom.PaymentResponse;
 import org.chromium.payments.mojom.PaymentValidationErrors;
 import org.chromium.url.GURL;
 
 import java.util.List;
-import java.util.Map;
 
 /**
- * The browser part of the PaymentRequest implementation. The browser here can be either the
- * Android Chrome browser or the WebLayer "browser".
+ * The browser part of the PaymentRequest implementation. The browser here is the Android Chrome
+ * browser but other content embedders may be supported in the future.
  */
 @NullMarked
 public interface BrowserPaymentRequest {
@@ -76,24 +72,8 @@ public interface BrowserPaymentRequest {
     void close();
 
     /**
-     * Performs extra validation for the given input and disconnects the mojo pipe if failed.
-     *
-     * @param webContents The WebContents that represents the merchant page.
-     * @param methodData A map of the method data specified for the request.
-     * @param details The payment details specified for the request.
-     * @param paymentOptions The payment options specified for the request.
-     * @return Whether this method has disconnected the mojo pipe.
-     */
-    default boolean disconnectIfExtraValidationFails(
-            WebContents webContents,
-            Map<String, PaymentMethodData> methodData,
-            PaymentDetails details,
-            PaymentOptions paymentOptions) {
-        return false;
-    }
-
-    /**
      * Called when the PaymentRequestSpec is validated.
+     *
      * @param spec The validated PaymentRequestSpec.
      */
     void onSpecValidated(PaymentRequestSpec spec);
@@ -146,15 +126,6 @@ public interface BrowserPaymentRequest {
         return null;
     }
 
-    /**
-     * Patches the given payment response if needed.
-     * @param response The payment response to be patched in place.
-     * @return Whether the patching is successful.
-     */
-    default boolean patchPaymentResponseIfNeeded(PaymentResponse response) {
-        return true;
-    }
-
     /** Called after retrieving payment details. */
     default void onInstrumentDetailsReady() {}
 
@@ -197,18 +168,13 @@ public interface BrowserPaymentRequest {
     }
 
     /**
-     * If needed, do extra parsing and validation for details.
-     * @param details The details specified by the merchant.
-     * @return True if the validation pass.
+     * @return The selected payment app.
      */
-    default boolean parseAndValidateDetailsFurtherIfNeeded(PaymentDetails details) {
-        return true;
-    }
+    @Nullable PaymentApp getSelectedPaymentApp();
 
-    /** @return The selected payment app. */
-    PaymentApp getSelectedPaymentApp();
-
-    /** @return All of the available payment apps. */
+    /**
+     * @return All of the available payment apps.
+     */
     List<PaymentApp> getPaymentApps();
 
     /**
@@ -243,6 +209,18 @@ public interface BrowserPaymentRequest {
      * @return The launcher for Android intent-based payment app.
      */
     AndroidIntentLauncher getAndroidIntentLauncher();
+
+    /**
+     * Used to check whether payment apps are required to handle shipping address and contact
+     * information, when merchant websites request that information. This information can be
+     * returned either from payment apps or from Chrome's autofill. Result of this method does not
+     * guarantee the payment. Even if this method returns true, there could be no payment apps to
+     * support providing shipping address or contact information.
+     *
+     * @return Whether payment apps are required to provide shipping address and contact
+     *     information.
+     */
+    boolean isFullDelegationRequired();
 
     /**
      * Send the given response to the renderer process to resolve the pending JavaScript promise for

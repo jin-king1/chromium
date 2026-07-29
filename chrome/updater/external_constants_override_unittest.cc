@@ -23,7 +23,7 @@ class ExternalConstantsOverriderTest : public ::testing::Test {};
 
 TEST_F(ExternalConstantsOverriderTest, TestEmptyDictValue) {
   auto overrider = base::MakeRefCounted<ExternalConstantsOverrider>(
-      base::Value::Dict(), CreateDefaultExternalConstants());
+      base::DictValue(), CreateDefaultExternalConstants());
 
   EXPECT_TRUE(overrider->UseCUP());
 
@@ -34,9 +34,6 @@ TEST_F(ExternalConstantsOverriderTest, TestEmptyDictValue) {
 
   EXPECT_EQ(overrider->CrashUploadURL(), GURL(CRASH_UPLOAD_URL));
   EXPECT_TRUE(overrider->CrashUploadURL().is_valid());
-  EXPECT_EQ(overrider->DeviceManagementURL(),
-            GURL(DEVICE_MANAGEMENT_SERVER_URL));
-  EXPECT_TRUE(overrider->DeviceManagementURL().is_valid());
   EXPECT_EQ(overrider->AppLogoURL(), GURL(APP_LOGO_URL));
   EXPECT_TRUE(overrider->AppLogoURL().is_valid());
 
@@ -47,11 +44,11 @@ TEST_F(ExternalConstantsOverriderTest, TestEmptyDictValue) {
 }
 
 TEST_F(ExternalConstantsOverriderTest, TestFullOverrides) {
-  base::Value::Dict overrides;
-  base::Value::List url_list;
+  base::DictValue overrides;
+  base::ListValue url_list;
   url_list.Append("https://localhost/1/www");
   url_list.Append("https://localhost/2/www");
-  base::Value::Dict dict_policies;
+  base::DictValue dict_policies;
   dict_policies.Set("a", 1);
   dict_policies.Set("b", 2);
 
@@ -59,7 +56,6 @@ TEST_F(ExternalConstantsOverriderTest, TestFullOverrides) {
   overrides.Set(kDevOverrideKeyUrl, std::move(url_list));
   overrides.Set(kDevOverrideKeyCrashUploadUrl,
                 "https://localhost/2/crash_test");
-  overrides.Set(kDevOverrideKeyDeviceManagementUrl, "https://localhost/2/dm");
   overrides.Set(kDevOverrideKeyAppLogoUrl, "https://localhost/2/applogo/");
   overrides.Set(kDevOverrideKeyInitialDelay, 137.1);
   overrides.Set(kDevOverrideKeyServerKeepAliveSeconds, 1);
@@ -82,8 +78,6 @@ TEST_F(ExternalConstantsOverriderTest, TestFullOverrides) {
   EXPECT_EQ(overrider->CrashUploadURL(),
             GURL("https://localhost/2/crash_test"));
   EXPECT_TRUE(overrider->CrashUploadURL().is_valid());
-  EXPECT_EQ(overrider->DeviceManagementURL(), GURL("https://localhost/2/dm"));
-  EXPECT_TRUE(overrider->DeviceManagementURL().is_valid());
   EXPECT_EQ(overrider->AppLogoURL(), GURL("https://localhost/2/applogo/"));
   EXPECT_TRUE(overrider->AppLogoURL().is_valid());
 
@@ -96,7 +90,7 @@ TEST_F(ExternalConstantsOverriderTest, TestFullOverrides) {
 }
 
 TEST_F(ExternalConstantsOverriderTest, TestOverrideUnwrappedURL) {
-  base::Value::Dict overrides;
+  base::DictValue overrides;
   overrides.Set(kDevOverrideKeyUrl, "https://localhost/1/www");
   auto overrider = base::MakeRefCounted<ExternalConstantsOverrider>(
       std::move(overrides), CreateDefaultExternalConstants());

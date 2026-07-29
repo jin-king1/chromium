@@ -20,9 +20,6 @@ const char kContextLossReason[] = "context-loss-reason";
 
 const char kSupportLibraryWebkitVersion[] = "androidx-webkit-version";
 
-extern const char kWeblayerWebViewCompatMode[] =
-    "WEBLAYER_WEB_VIEW_COMPAT_MODE";
-
 // clang-format off
 const char* const kWebViewCrashKeyAllowList[] = {
     kAppPackageName,
@@ -42,6 +39,7 @@ const char* const kWebViewCrashKeyAllowList[] = {
     "base-OpenApkAssetError",
 
     // gpu
+    "gl_method_no_context_key",
     "gpu-driver",
     "gpu-psver",
     "gpu-vsver",
@@ -164,14 +162,16 @@ const char* const kWebViewCrashKeyAllowList[] = {
     "num-experiments",
     "variations-seed-version",
 
+    // crash keys about check failures
+    "Logging-FATAL_MILESTONE",
+
     // CRX components
     "crx-components",
     "crx-components-cohort-hashes",
 
     // sandbox/linux
     "seccomp-sigsys",
-
-    kWeblayerWebViewCompatMode,
+    "seccomp-sigsys-ioctl",
 
     // Used to report switches/feature flags overridden in the DevUI
     "commandline-enabled-feature-*",
@@ -209,6 +209,25 @@ const char* const kWebViewCrashKeyAllowList[] = {
     "OriginCalc-origin_to_commit_local",
     "OriginCalc-origin_blcok",
     "OriginCalc-origin_to_commit_block",
+
+    // crbug.com/423037052
+    "SIFactory-DebugLabel",
+    "SIFactory-Format",
+    "SIFactory-GMBType",
+    "SIFactory-SharedBwThreads",
+    "SIFactory-Usage",
+    "SIFactory-Size",
+
+    // crbug.com/453113611
+    "SubprocessMetricsProvider-merge_result",
+    "SubprocessMetricsProvider-histogram",
+
+    // crbug.com/456871291
+    "BadHistogramArgs-name",
+    "BadHistogramArgs-validity",
+
+    // crbug.com/40260662
+    "PersistentSampleMap-corrupted",
 
     nullptr};
 // clang-format on

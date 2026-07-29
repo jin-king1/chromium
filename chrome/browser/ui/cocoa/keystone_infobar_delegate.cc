@@ -12,8 +12,9 @@
 #include "chrome/browser/infobars/confirm_infobar_creator.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/updater/browser_updater_client_util.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/updater/updater.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/branded_strings.h"
@@ -35,16 +36,17 @@ void ShowUpdaterPromotionInfoBarOnUISequence() {
   // it's likely that the set of users that don't want to be nagged about the
   // default browser also don't want to be nagged about the update check.
   // (Automated testers, I'm thinking of you...)
-  Browser* browser = chrome::FindLastActive();
-  if (!browser || !browser->profile() ||
-      !browser->profile()->GetPrefs()->GetBoolean(
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
+  if (!browser || !browser->GetProfile() ||
+      !browser->GetProfile()->GetPrefs()->GetBoolean(
           prefs::kShowUpdatePromotionInfoBar) ||
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kNoDefaultBrowserCheck)) {
     return;
   }
   KeystonePromotionInfoBarDelegate::Create(
-      browser->tab_strip_model()->GetActiveWebContents());
+      browser->GetTabStripModel()->GetActiveWebContents());
 }
 
 }  // namespace
@@ -104,7 +106,7 @@ std::u16string KeystonePromotionInfoBarDelegate::GetButtonLabel(
 }
 
 bool KeystonePromotionInfoBarDelegate::Accept() {
-  SetupSystemUpdater();
+  updater::SetUpSystemUpdater();
   return true;
 }
 

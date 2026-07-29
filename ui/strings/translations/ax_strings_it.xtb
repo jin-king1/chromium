@@ -37,7 +37,6 @@
 <translation id="2311842470354187719">interruzione di pagina</translation>
 <translation id="2335594187091864976">selettore di data e ora</translation>
 <translation id="2393030564806080191">Valore del colore esadecimale</translation>
-<translation id="2398813069815436052">finestra di dialogo aperta.</translation>
 <translation id="245932805758469625">numero di secondi di video rimanenti</translation>
 <translation id="248395913932153421">Giorno</translation>
 <translation id="2508569020611168319">elenco schede</translation>
@@ -213,7 +212,7 @@
 <translation id="8474886197722836894">dedica</translation>
 <translation id="8531739829932800271">errata corrige</translation>
 <translation id="8534579021159131403">Minuti</translation>
-<translation id="8541249477527128034">controllo contenuti multimediali</translation>
+<translation id="8541249477527128034">controllo multimediale</translation>
 <translation id="8550857728288566671">simbolo grafico</translation>
 <translation id="8583702881314752957">elenco di definizioni</translation>
 <translation id="8597182159515967513">intestazione</translation>
@@ -223,6 +222,7 @@
 <translation id="8634971699417195529">Mostra selettore mese</translation>
 <translation id="8711688047404765493">uscita</translation>
 <translation id="8808573423886751634">capitolo</translation>
+<translation id="8826423933757944500">didascalia</translation>
 <translation id="8851136666856101339">main</translation>
 <translation id="8861621546968757188">pulsante popup finestra di dialogo</translation>
 <translation id="8889402386540077796">Tonalità</translation>
@@ -238,7 +238,6 @@
 <translation id="9138385573473225930">avviso</translation>
 <translation id="9155987714137265666"><ph name="WEEK" />, a partire dal giorno <ph name="WEEK_START_DATE" /></translation>
 <translation id="9168329111483466115">piè di pagina</translation>
-<translation id="945780513535800434">Parzialmente selezionato</translation>
 <translation id="954003015749068518">attiva picture in picture</translation>
 <translation id="966787709310836684">menu</translation>
 </translationbundle>

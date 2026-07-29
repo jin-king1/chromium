@@ -6,6 +6,7 @@
 
 #include "base/check_deref.h"
 #include "base/no_destructor.h"
+#include "base/strings/stringprintf.h"
 #include "chrome/browser/android/persisted_tab_data/persisted_tab_data_config_android.h"
 #include "chrome/browser/android/persisted_tab_data/persisted_tab_data_storage_android.h"
 #include "chrome/browser/android/tab_android.h"
@@ -20,9 +21,9 @@ namespace {
 
 std::string GetCachedCallbackKey(const TabAndroid* tab_android,
                                  const void* user_data_key) {
-  const char* data_id =
-      PersistedTabDataConfigAndroid::Get(user_data_key, tab_android->profile())
-          ->data_id();
+  const char* data_id = PersistedTabDataConfigAndroid::Get(
+                            user_data_key, tab_android->GetProfile())
+                            ->data_id();
   return base::StringPrintf("%d-%s", tab_android->GetAndroidId(), data_id);
 }
 
@@ -39,10 +40,10 @@ PersistedTabDataAndroid::PersistedTabDataAndroid(TabAndroid* tab_android,
                                                  const void* user_data_key)
     : persisted_tab_data_storage_android_(
           PersistedTabDataConfigAndroid::Get(user_data_key,
-                                             tab_android->profile())
+                                             tab_android->GetProfile())
               ->persisted_tab_data_storage_android()),
       data_id_(PersistedTabDataConfigAndroid::Get(user_data_key,
-                                                  tab_android->profile())
+                                                  tab_android->GetProfile())
                    ->data_id()),
       tab_id_(tab_android->GetAndroidId()) {}
 
@@ -100,7 +101,7 @@ void PersistedTabDataAndroid::From(base::WeakPtr<TabAndroid> tab_android,
 
   std::unique_ptr<PersistedTabDataConfigAndroid>
       persisted_tab_data_config_android = PersistedTabDataConfigAndroid::Get(
-          user_data_key, tab_android->profile());
+          user_data_key, tab_android->GetProfile());
   std::string cached_callback_key =
       GetCachedCallbackKey(tab_android.get(), user_data_key);
   std::vector<FromCallback>& callbacks =
@@ -142,7 +143,7 @@ void PersistedTabDataAndroid::From(base::WeakPtr<TabAndroid> tab_android,
                 persisted_tab_data_android->RunCallbackOnUIThread(
                     tab_android.get(), user_data_key);
               },
-              tab_android->GetWeakPtr(), std::move(supplier_callback),
+              tab_android->GetTabAndroidWeakPtr(), std::move(supplier_callback),
               user_data_key));
 }
 
@@ -166,7 +167,7 @@ void PersistedTabDataAndroid::RemoveAll(int tab_id, Profile* profile) {
 
 void PersistedTabDataAndroid::OnTabClose(TabAndroid* tab_android) {
   // TODO(b/295219049) cleanup orphaned data
-  Profile* profile = tab_android->profile();
+  Profile* profile = tab_android->GetProfile();
   if (!profile || profile->IsOffTheRecord()) {
     return;
   }
@@ -212,7 +213,7 @@ void PersistedTabDataAndroid::ExistsForTesting(
     base::OnceCallback<void(bool)> exists_callback) {
   std::unique_ptr<PersistedTabDataConfigAndroid>
       persisted_tab_data_config_android = PersistedTabDataConfigAndroid::Get(
-          user_data_key, tab_android->profile());
+          user_data_key, tab_android->GetProfile());
   persisted_tab_data_config_android->persisted_tab_data_storage_android()
       ->Restore(tab_android->GetAndroidId(),
                 persisted_tab_data_config_android->data_id(),
@@ -259,11 +260,18 @@ PersistedTabDataAndroid::GetDeferredRequests() {
 
 bool PersistedTabDataAndroid::deferred_startup_complete_ = false;
 
+// Forward declarations
+static void JNI_PersistedTabData_OnTabClose(
+    JNIEnv* env,
+    const base::android::JavaRef<jobject>& j_tab);
+
+static void JNI_PersistedTabData_OnDeferredStartup(JNIEnv* env);
+
 class PersistedTabDataAndroidHelper {
  private:
   friend void ::JNI_PersistedTabData_OnTabClose(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& j_tab);
+      const base::android::JavaRef<jobject>& j_tab);
   friend void ::JNI_PersistedTabData_OnDeferredStartup(JNIEnv* env);
 
   static void OnTabClose(TabAndroid* tab_android) {
@@ -277,7 +285,7 @@ class PersistedTabDataAndroidHelper {
 
 static void JNI_PersistedTabData_OnTabClose(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& j_tab) {
+    const base::android::JavaRef<jobject>& j_tab) {
   TabAndroid* tab_android = TabAndroid::GetNativeTab(env, j_tab);
   PersistedTabDataAndroidHelper::OnTabClose(tab_android);
 }
@@ -287,3 +295,5 @@ static void JNI_PersistedTabData_OnDeferredStartup(JNIEnv* env) {
 }
 
 TAB_ANDROID_USER_DATA_KEY_IMPL(PersistedTabDataAndroid)
+
+DEFINE_JNI(PersistedTabData)

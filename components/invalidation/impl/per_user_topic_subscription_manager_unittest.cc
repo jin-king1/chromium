@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/barrier_callback.h"
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/json/json_writer.h"
@@ -24,6 +25,7 @@
 #include "components/invalidation/public/invalidation_util.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
@@ -47,7 +49,7 @@ using RequestType = PerUserTopicSubscriptionManager::RequestType;
 
 namespace {
 
-size_t kInvalidationTopicsCount = 5;
+constexpr size_t kInvalidationTopicsCount = 5;
 
 const char kInvalidationRegistrationScope[] =
     "https://firebaseperusertopics-pa.googleapis.com";
@@ -124,7 +126,7 @@ network::URLLoaderCompletionStatus CreateStatusForTest(
     int status,
     const std::string& response_body) {
   network::URLLoaderCompletionStatus response_status(status);
-  response_status.decoded_body_length = response_body.size();
+  response_status.decoded_body_length = base::ByteSize(response_body.size());
   return response_status;
 }
 
@@ -237,7 +239,7 @@ class PerUserTopicSubscriptionManagerTest : public testing::Test {
     PerUserTopicSubscriptionManager::RegisterProfilePrefs(
         pref_service_.registry());
     AccountInfo account = identity_test_env_.MakePrimaryAccountAvailable(
-        "example@gmail.com", signin::ConsentLevel::kSync);
+        "example@gmail.com", signin::ConsentLevel::kSignin);
     identity_test_env_.SetAutomaticIssueOfAccessTokens(true);
     identity_provider_ = std::make_unique<ProfileIdentityProvider>(
         identity_test_env_.identity_manager());
@@ -258,8 +260,8 @@ class PerUserTopicSubscriptionManagerTest : public testing::Test {
 
   TestingPrefServiceSimple* pref_service() { return &pref_service_; }
 
-  const base::Value::Dict& GetSubscribedTopics() const {
-    const base::Value::Dict* subscribed_topics =
+  const base::DictValue& GetSubscribedTopics() const {
+    const base::DictValue* subscribed_topics =
         pref_service_.GetDict(kTypeSubscribedForInvalidation)
             .FindDict(kProjectId);
     DCHECK(subscribed_topics);
@@ -292,7 +294,7 @@ class PerUserTopicSubscriptionManagerTest : public testing::Test {
       const std::string& private_topic = std::string(),
       const std::string& token = kFakeInstanceIdToken,
       int http_responce_code = net::HTTP_OK) {
-    base::Value::Dict value;
+    base::DictValue value;
     value.Set("privateTopicName",
               private_topic.empty() ? "test-pr" : private_topic.c_str());
     std::string serialized_response;
@@ -376,7 +378,7 @@ TEST_F(PerUserTopicSubscriptionManagerTest, ShouldUpdateSubscribedTopics) {
       per_user_topic_subscription_manager->HaveAllRequestsFinishedForTest());
 
   for (const auto& topic : topics) {
-    const base::Value::Dict& subscribed_topics = GetSubscribedTopics();
+    const base::DictValue& subscribed_topics = GetSubscribedTopics();
     const std::string* private_topic_value =
         subscribed_topics.FindString(topic.first);
     ASSERT_NE(private_topic_value, nullptr);
@@ -521,7 +523,7 @@ TEST_F(PerUserTopicSubscriptionManagerTest,
   per_user_topic_subscription_manager->UpdateSubscribedTopics(
       topics, kFakeInstanceIdToken);
   identity_test_env()->WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
-      GoogleServiceAuthError(GoogleServiceAuthError::CONNECTION_FAILED));
+      GoogleServiceAuthError::FromConnectionError(net::ERR_FAILED));
   testing::Mock::VerifyAndClearExpectations(&identity_observer);
 
   // Initial backoff is 2 seconds with 20% jitter, so the minimum possible delay
@@ -739,7 +741,7 @@ TEST_F(PerUserTopicSubscriptionManagerTest,
 
   // Topics were unsubscribed, check that they're not in the prefs.
   for (const auto& topic : unsubscribed_topics) {
-    const base::Value::Dict& subscribed_topics = GetSubscribedTopics();
+    const base::DictValue& subscribed_topics = GetSubscribedTopics();
     const base::Value* private_topic_value =
         subscribed_topics.Find(topic.first);
     ASSERT_EQ(private_topic_value, nullptr);
@@ -747,7 +749,7 @@ TEST_F(PerUserTopicSubscriptionManagerTest,
 
   // Check that still subscribed topics are still in the prefs.
   for (const auto& topic : still_subscribed_topics) {
-    const base::Value::Dict& subscribed_topics = GetSubscribedTopics();
+    const base::DictValue& subscribed_topics = GetSubscribedTopics();
     const std::string* private_topic_value =
         subscribed_topics.FindString(topic.first);
     ASSERT_NE(private_topic_value, nullptr);
@@ -770,7 +772,7 @@ TEST_F(PerUserTopicSubscriptionManagerTest,
   WaitForTopics(*per_user_topic_subscription_manager, topics);
 
   for (const auto& topic : topics) {
-    const base::Value::Dict& subscribed_topics = GetSubscribedTopics();
+    const base::DictValue& subscribed_topics = GetSubscribedTopics();
     const std::string* private_topic_value =
         subscribed_topics.FindString(topic.first);
     ASSERT_NE(private_topic_value, nullptr);
@@ -792,7 +794,7 @@ TEST_F(PerUserTopicSubscriptionManagerTest,
                         .FindString(kProjectId));
 
   for (const auto& topic : topics) {
-    const base::Value::Dict& subscribed_topics = GetSubscribedTopics();
+    const base::DictValue& subscribed_topics = GetSubscribedTopics();
     const std::string* private_topic_value =
         subscribed_topics.FindString(topic.first);
     ASSERT_NE(private_topic_value, nullptr);
@@ -829,7 +831,7 @@ TEST_F(PerUserTopicSubscriptionManagerTest,
   // Topics should be removed from prefs even though the unsubscribe requests
   // have not finished.
   for (const auto& topic : unsubscribed_topics) {
-    const base::Value::Dict& subscribed_topics = GetSubscribedTopics();
+    const base::DictValue& subscribed_topics = GetSubscribedTopics();
     const base::Value* private_topic_value =
         subscribed_topics.Find(topic.first);
     ASSERT_EQ(private_topic_value, nullptr);
@@ -837,7 +839,7 @@ TEST_F(PerUserTopicSubscriptionManagerTest,
 
   // Check that subscribed topics are still in the prefs.
   for (const auto& topic : still_subscribed_topics) {
-    const base::Value::Dict& subscribed_topics = GetSubscribedTopics();
+    const base::DictValue& subscribed_topics = GetSubscribedTopics();
     const std::string* private_topic_value =
         subscribed_topics.FindString(topic.first);
     ASSERT_NE(private_topic_value, nullptr);

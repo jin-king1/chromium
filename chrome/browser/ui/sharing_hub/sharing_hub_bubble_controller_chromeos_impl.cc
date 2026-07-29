@@ -5,17 +5,18 @@
 #include "chrome/browser/ui/sharing_hub/sharing_hub_bubble_controller_chromeos_impl.h"
 
 #include "base/functional/callback_helpers.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/share/share_metrics.h"
+#include "chrome/browser/sharesheet/sharesheet_controller.h"
 #include "chrome/browser/sharesheet/sharesheet_metrics.h"
 #include "chrome/browser/sharesheet/sharesheet_service.h"
 #include "chrome/browser/sharesheet/sharesheet_service_factory.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "components/services/app_service/public/cpp/intent.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "content/public/browser/web_contents.h"
@@ -54,7 +55,9 @@ void SharingHubBubbleControllerChromeOsImpl::HideBubble() {
 
 void SharingHubBubbleControllerChromeOsImpl::ShowBubble(
     share::ShareAttempt attempt) {
-  Browser* browser = chrome::FindBrowserWithTab(web_contents());
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+          web_contents());
 
   // Ignore subsequent calls to open the Sharesheet if it already is open. This
   // is especially for the Nearby Share dialog, where clicking outside of it
@@ -63,7 +66,8 @@ void SharingHubBubbleControllerChromeOsImpl::ShowBubble(
     return;
   }
   bubble_showing_ = true;
-  ShowSharesheet(browser->window()->GetSharingHubIconButton());
+  ShowSharesheet(BrowserElementsViews::From(browser)->GetViewAs<views::Button>(
+      kIconElementId));
 
   share::LogShareSourceDesktop(share::ShareSourceDesktop::kOmniboxSharingHub);
 }
@@ -101,7 +105,7 @@ void SharingHubBubbleControllerChromeOsImpl::ShowSharesheet(
   // Save the window in order to close the Sharesheet if the tab is closed. This
   // will return the incorrect window if called later.
   parent_window_ = GetWebContents().GetTopLevelNativeWindow();
-  parent_window_tracker_ = views::NativeWindowTracker::Create(parent_window_);
+  parent_window_tracker_ = ui::NativeWindowTracker::Create(parent_window_);
 }
 
 void SharingHubBubbleControllerChromeOsImpl::CloseSharesheet() {

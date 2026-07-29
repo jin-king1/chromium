@@ -27,7 +27,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_FRAME_SELECTION_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_FRAME_SELECTION_H_
 
+#include <unicode/ubidi.h>
+
 #include <memory>
+#include <optional>
 
 #include "base/check_op.h"
 #include "base/dcheck_is_on.h"
@@ -36,7 +39,9 @@
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/editing/set_selection_options.h"
 #include "third_party/blink/renderer/core/editing/visible_units.h"
+#include "third_party/blink/renderer/core/layout/inline/caret_rect.h"
 #include "third_party/blink/renderer/core/scroll/scroll_alignment.h"
+#include "third_party/blink/renderer/platform/geometry/physical_offset.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -65,7 +70,6 @@ enum class SelectionModifyAlteration;
 enum class SelectionModifyDirection;
 enum class SelectionState;
 struct PaintInvalidatorContext;
-struct PhysicalOffset;
 struct PhysicalRect;
 
 enum RevealExtentOption { kRevealExtent, kDoNotRevealExtent };
@@ -150,17 +154,17 @@ class CORE_EXPORT FrameSelection final
   // An implementation of |WebFrame::moveCaretSelection()|
   void MoveCaretSelection(const gfx::Point&);
 
-  VisibleSelection ComputeVisibleSelectionInDOMTree() const;
+  VisibleSelection ComputeVisibleSelectionInDomTree() const;
   VisibleSelectionInFlatTree ComputeVisibleSelectionInFlatTree() const;
 
   // TODO(editing-dev): We should replace
-  // |computeVisibleSelectionInDOMTreeDeprecated()| with update layout and
-  // |computeVisibleSelectionInDOMTree()| to increase places hoisting update
+  // |ComputeVisibleSelectionInDomTreeDeprecated()| with update layout and
+  // |ComputeVisibleSelectionInDomTree()| to increase places hoisting update
   // layout.
-  VisibleSelection ComputeVisibleSelectionInDOMTreeDeprecated() const;
+  VisibleSelection ComputeVisibleSelectionInDomTreeDeprecated() const;
 
-  void SetSelection(const SelectionInDOMTree&, const SetSelectionOptions&);
-  void SetSelectionAndEndTyping(const SelectionInDOMTree&);
+  void SetSelection(const SelectionInDomTree&, const SetSelectionOptions&);
+  void SetSelectionAndEndTyping(const SelectionInDomTree&);
   void SelectAll(SetSelectionBy, bool canonicalize_selection = false);
   void SelectAll();
   void SelectSubString(const Element&, int offset, int count);
@@ -172,11 +176,11 @@ class CORE_EXPORT FrameSelection final
   // functions.
   // setSelectionDeprecated() returns true if didSetSelectionDeprecated() should
   // be called.
-  bool SetSelectionDeprecated(const SelectionInDOMTree&,
+  bool SetSelectionDeprecated(const SelectionInDomTree&,
                               const SetSelectionOptions&);
-  void DidSetSelectionDeprecated(const SelectionInDOMTree&,
+  void DidSetSelectionDeprecated(const SelectionInDomTree&,
                                  const SetSelectionOptions&);
-  void SetSelectionForAccessibility(const SelectionInDOMTree&,
+  void SetSelectionForAccessibility(const SelectionInDomTree&,
                                     const SetSelectionOptions&);
 
   // Call this after doing user-triggered selections to make it easy to delete
@@ -209,6 +213,9 @@ class CORE_EXPORT FrameSelection final
   // Bounds of (possibly transformed) caret in absolute coords
   gfx::Rect AbsoluteCaretBounds() const;
 
+  // Returns the type of caret shape.
+  CaretShape GetCaretShape() const;
+
   // Returns anchor and focus bounds in absolute coords.
   // If the selection range is empty, returns the caret bounds.
   // Note: this updates styles and layout, use cautiously.
@@ -220,7 +227,12 @@ class CORE_EXPORT FrameSelection final
 
   void DidChangeFocus();
 
-  const SelectionInDOMTree& GetSelectionInDOMTree() const;
+  // Restores |element|'s text-overflow ellipsis as it loses or
+  // gains focus while the selection focus stays inside it. The caller guards on
+  // the feature flag (see SelectionEditor::SetContainsSelectionFocusFlag()).
+  void UpdateTextOverflowOfSelectionFocus(const Element& element, bool focused);
+
+  const SelectionInDomTree& GetSelectionInDomTree() const;
   bool IsDirectional() const;
 
   void DidAttachDocument(Document*);
@@ -238,6 +250,7 @@ class CORE_EXPORT FrameSelection final
   void EnsureInvalidationOfPreviousLayoutBlock();
 
   void PaintCaret(GraphicsContext&, const PhysicalOffset&);
+  const LayoutBlock* GetCaretLayoutBlock() const;
 
   // Used to suspend caret blinking while the mouse is down.
   void SetCaretBlinkingSuspended(bool);
@@ -251,6 +264,10 @@ class CORE_EXPORT FrameSelection final
   void PageActivationChanged();
 
   bool IsHandleVisible() const { return is_handle_visible_; }
+
+  // Bidi embedding level of the caret's current fragment. Used by FrameCaret
+  // for correct caret rendering at bidi boundaries.
+  std::optional<UBiDiLevel> CaretBidiLevel() const { return caret_bidi_level_; }
   void SetHandleVisibleForTesting() { is_handle_visible_ = true; }
   bool ShouldShrinkNextTap() const { return should_shrink_next_tap_; }
 
@@ -283,10 +300,13 @@ class CORE_EXPORT FrameSelection final
   void SetFocusedNodeIfNeeded();
   void NotifyTextControlOfSelectionChange(SetSelectionBy);
 
-  String SelectedHTMLForClipboard() const;
+  String SelectedHtmlForClipboard() const;
   String SelectedText(const TextIteratorBehavior&) const;
   String SelectedText() const;
   String SelectedTextForClipboard() const;
+  // Returns true if the current selection corresponds to a non-empty visible
+  // text range within this frame.
+  bool HasVisibleText() const;
 
   // This returns last layouted selection bounds of LayoutSelection rather than
   // SelectionEditor keeps.
@@ -320,6 +340,12 @@ class CORE_EXPORT FrameSelection final
   SelectionState ComputePaintingSelectionStateForCursor(
       const InlineCursorPosition& position) const;
 
+  // Returns the fragment-local character offset of the character covered by
+  // the block caret within |cursor|'s current text fragment, or std::nullopt
+  // if the block caret does not overlap this fragment.
+  std::optional<unsigned> ComputeBlockCaretCharacterOffset(
+      const InlineCursor& cursor) const;
+
   // Notifications from the Document.
   void ContextDestroyed();
   void DidChangeChildren(const ContainerNode::ChildrenChange& change);
@@ -347,14 +373,15 @@ class CORE_EXPORT FrameSelection final
   void NotifyEventHandlerForSelectionChange();
   void NotifyDisplayLockForSelectionChange(
       Document& document,
-      const SelectionInDOMTree& old_selection,
-      const SelectionInDOMTree& new_selection);
+      const SelectionInDomTree& old_selection,
+      const SelectionInDomTree& new_selection);
 
   void FocusedOrActiveStateChanged();
+  void MaybeNotifyEventHandlerForSelectionChange(const SetSelectionOptions&);
 
   GranularityStrategy* GetGranularityStrategy();
 
-  void MoveRangeSelectionInternal(const SelectionInDOMTree&, TextGranularity);
+  void MoveRangeSelectionInternal(const SelectionInDomTree&, TextGranularity);
 
   // Returns the range corresponding to a |text_granularity| selection around
   // the caret. Returns a null range if the selection failed, either because
@@ -374,6 +401,18 @@ class CORE_EXPORT FrameSelection final
 
   TextGranularity granularity_;
   LayoutUnit x_pos_for_vertical_arrow_navigation_;
+
+  // Bidi embedding level of the caret's current fragment. Persisted across
+  // consecutive keyboard-driven caret movements to disambiguate which side
+  // of a bidi boundary the caret belongs to. Reset to nullopt on mouse
+  // clicks and programmatic selection changes.
+  std::optional<UBiDiLevel> caret_bidi_level_;
+
+  // Whether the previous visual caret movement placed the caret at a bidi
+  // boundary entry point. When true, the next boundary crossing is an EXIT
+  // and should skip the shared-x entry point to produce visible movement.
+  // Persisted alongside caret_bidi_level_ across keystrokes.
+  bool entered_bidi_run_ = false;
 
   bool focused_ : 1;
 

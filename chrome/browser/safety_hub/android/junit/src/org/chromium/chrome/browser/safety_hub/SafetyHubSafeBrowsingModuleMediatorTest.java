@@ -18,7 +18,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
@@ -36,7 +35,7 @@ import org.chromium.ui.base.TestActivity;
 @Batch(Batch.UNIT_TESTS)
 public class SafetyHubSafeBrowsingModuleMediatorTest {
     private static final @DrawableRes int SAFE_ICON = R.drawable.material_ic_check_24dp;
-    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_business;
+    private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_domain;
     private static final @DrawableRes int WARNING_ICON = R.drawable.ic_error;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -50,8 +49,6 @@ public class SafetyHubSafeBrowsingModuleMediatorTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-
         mActivity = Robolectric.buildActivity(TestActivity.class).get();
 
         mPreference = new SafetyHubExpandablePreference(mActivity, null);
@@ -99,14 +96,12 @@ public class SafetyHubSafeBrowsingModuleMediatorTest {
         String expectedTitle = mActivity.getString(R.string.safety_hub_safe_browsing_on_title);
         String expectedManagedSummary =
                 mActivity.getString(R.string.safety_hub_safe_browsing_on_summary_managed);
-        String expectedSecondaryButtonText =
-                mActivity.getString(R.string.safety_hub_go_to_security_settings_button);
 
         assertEquals(expectedTitle, mPreference.getTitle().toString());
         assertEquals(expectedManagedSummary, mPreference.getSummary().toString());
         assertEquals(SAFE_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertNull(mPreference.getPrimaryButtonText());
-        assertEquals(expectedSecondaryButtonText, mPreference.getSecondaryButtonText());
+        assertNull(mPreference.getSecondaryButtonText());
     }
 
     @Test
@@ -139,14 +134,12 @@ public class SafetyHubSafeBrowsingModuleMediatorTest {
                 mActivity.getString(R.string.safety_hub_safe_browsing_enhanced_title);
         String expectedManagedSummary =
                 mActivity.getString(R.string.safety_hub_safe_browsing_enhanced_summary_managed);
-        String expectedSecondaryButtonText =
-                mActivity.getString(R.string.safety_hub_go_to_security_settings_button);
 
         assertEquals(expectedTitle, mPreference.getTitle().toString());
         assertEquals(expectedManagedSummary, mPreference.getSummary().toString());
         assertEquals(SAFE_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertNull(mPreference.getPrimaryButtonText());
-        assertEquals(expectedSecondaryButtonText, mPreference.getSecondaryButtonText());
+        assertNull(mPreference.getSecondaryButtonText());
     }
 
     @Test
@@ -178,13 +171,11 @@ public class SafetyHubSafeBrowsingModuleMediatorTest {
                 mActivity.getString(R.string.prefs_safe_browsing_no_protection_summary);
         String expectedManagedSummary =
                 mActivity.getString(R.string.safety_hub_safe_browsing_off_summary_managed);
-        String expectedSecondaryButtonText =
-                mActivity.getString(R.string.safety_hub_go_to_security_settings_button);
 
         assertEquals(expectedTitle, mPreference.getTitle().toString());
         assertEquals(expectedManagedSummary, mPreference.getSummary().toString());
         assertEquals(MANAGED_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertNull(mPreference.getPrimaryButtonText());
-        assertEquals(expectedSecondaryButtonText, mPreference.getSecondaryButtonText());
+        assertNull(mPreference.getSecondaryButtonText());
     }
 }

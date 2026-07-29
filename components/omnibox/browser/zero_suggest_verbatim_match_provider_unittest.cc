@@ -11,8 +11,12 @@
 #include "base/task/cancelable_task_tracker.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "build/android_buildflags.h"
+#include "components/dom_distiller/core/url_constants.h"
+#include "components/dom_distiller/core/url_utils.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
+#include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/fake_autocomplete_provider_client.h"
 #include "components/omnibox/browser/mock_autocomplete_provider_client.h"
 #include "components/omnibox/browser/test_scheme_classifier.h"
@@ -20,6 +24,7 @@
 #include "components/search_engines/search_engines_test_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "ui/base/device_form_factor.h"
 
 namespace {
 #if BUILDFLAG(IS_ANDROID)
@@ -43,7 +48,6 @@ class MockHistoryService : public history::HistoryService {
   MOCK_METHOD(base::CancelableTaskTracker::TaskId,
               QueryURL,
               (const GURL& url,
-               bool want_visits,
                history::HistoryService::QueryURLCallback callback,
                base::CancelableTaskTracker* tracker),
               (override));
@@ -76,15 +80,19 @@ bool ZeroSuggestVerbatimMatchProviderTest::IsVerbatimMatchEligible() const {
 }
 
 void ZeroSuggestVerbatimMatchProviderTest::SetUp() {
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+  GTEST_SKIP() << "No zero-suggest verbatim match on Android Desktop.";
+#else   // IS_DESKTOP_ANDROID
   provider_ = new ZeroSuggestVerbatimMatchProvider(&mock_client_);
   ON_CALL(mock_client_, IsOffTheRecord()).WillByDefault([] { return false; });
   ON_CALL(mock_client_, Classify)
       .WillByDefault(
-          [](const std::u16string& text, bool prefer_keyword,
+          [](const std::u16string& text, bool in_keyword_mode,
              bool allow_exact_keyword_match,
              metrics::OmniboxEventProto::PageClassification page_classification,
              AutocompleteMatch* match,
              GURL* alternate_nav_url) { match->destination_url = GURL(text); });
+#endif  // IS_DESKTOP_ANDROID
 }
 
 TEST_P(ZeroSuggestVerbatimMatchProviderTest,
@@ -281,6 +289,33 @@ TEST_P(ZeroSuggestVerbatimMatchProviderTest,
 }
 
 TEST_P(ZeroSuggestVerbatimMatchProviderTest,
+       UpdateFillIntoEditWhenUrlMatchesSearchResultsPageWithTrailingSpace) {
+  base::test::ScopedFeatureList features;
+
+  // Default TemplateURL to parse the URL.
+  std::unique_ptr<TemplateURLData> engine =
+      GenerateSimpleTemplateURLData("www.search.com");
+  mock_client_.GetTemplateURLService()->ApplyDefaultSearchChangeForTesting(
+      engine.get(), DefaultSearchManager::FROM_USER);
+
+  // Ensure URLs with trailing escaped whitespace (%20) are correctly sanitized
+  // upon search term extraction to avoid AutocompleteResult DCHECK crashes.
+  std::string url("https://www.search.com/q=abc%20");
+  AutocompleteInput input(std::u16string(),  // Note: empty input.
+                          GetParam(), TestSchemeClassifier());
+  input.set_current_title(u"title");
+  input.set_current_url(GURL(url));
+  input.set_focus_type(metrics::OmniboxFocusType::INTERACTION_FOCUS);
+  provider_->Start(input, false);
+  if (IsVerbatimMatchEligible()) {
+    ASSERT_FALSE(provider_->matches().empty());
+    ASSERT_EQ(u"abc", provider_->matches()[0].fill_into_edit);
+    ASSERT_EQ(u"abc", provider_->matches()[0].contents);
+    ASSERT_EQ(u"title", provider_->matches()[0].description);
+  }
+}
+
+TEST_P(ZeroSuggestVerbatimMatchProviderTest,
        DontUpdateFillIntoEditWhenUrlMatchesNonDefaultSearchEngine) {
   base::test::ScopedFeatureList features;
 
@@ -315,6 +350,34 @@ TEST_P(ZeroSuggestVerbatimMatchProviderTest,
   // `test_environment`, which is going out of scope here.
   // Destroy it to avoid dangling pointers.
   mock_client_.set_template_url_service(nullptr);
+}
+TEST_P(ZeroSuggestVerbatimMatchProviderTest,
+       UpdateFillIntoEditWhenUrlIsDistilledPage) {
+  GURL original_url("https://www.wired.com/article");
+
+  GURL distilled_url = dom_distiller::url_utils::GetDistillerViewUrlFromUrl(
+      dom_distiller::kDomDistillerScheme, original_url, "");
+
+  AutocompleteInput input(std::u16string(), GetParam(), TestSchemeClassifier());
+  input.set_current_title(u"title");
+  input.set_current_url(distilled_url);
+  input.set_focus_type(metrics::OmniboxFocusType::INTERACTION_FOCUS);
+
+  GURL extracted_original_url =
+      dom_distiller::url_utils::GetOriginalUrlFromDistillerUrl(distilled_url);
+
+  ASSERT_TRUE(extracted_original_url.is_valid());
+
+  provider_->Start(input, false);
+
+  if (IsVerbatimMatchEligible()) {
+    ASSERT_FALSE(provider_->matches().empty());
+    const auto& match = provider_->matches()[0];
+    EXPECT_EQ(base::UTF8ToUTF16(extracted_original_url.spec()),
+              match.fill_into_edit);
+    EXPECT_EQ(u"wired.com/article", match.contents);
+    EXPECT_EQ(u"title", match.description);
+  }
 }
 #endif
 
@@ -357,13 +420,11 @@ TEST_P(ZeroSuggestVerbatimMatchProviderTest,
 
   history::HistoryService::QueryURLCallback callback;
   {
-    EXPECT_CALL(mock_service, QueryURL(_, _, _, _))
-        .WillOnce([&](GURL url, bool want_visits,
-                      history::HistoryService::QueryURLCallback cb,
+    EXPECT_CALL(mock_service, QueryURL(_, _, _))
+        .WillOnce([&](GURL url, history::HistoryService::QueryURLCallback cb,
                       base::CancelableTaskTracker* tracker)
                       -> base::CancelableTaskTracker::TaskId {
           EXPECT_EQ("https://www.wired.com/", url.spec());
-          EXPECT_FALSE(want_visits);
           callback = std::move(cb);
           return {};
         });
@@ -408,7 +469,7 @@ TEST_P(ZeroSuggestVerbatimMatchProviderTest,
   }
 
   {
-    EXPECT_CALL(mock_service, QueryURL(_, _, _, _)).Times(0);
+    EXPECT_CALL(mock_service, QueryURL(_, _, _)).Times(0);
     provider_->Start(input, false);
 
     ASSERT_FALSE(provider_->matches().empty());
@@ -438,13 +499,11 @@ TEST_P(ZeroSuggestVerbatimMatchProviderTest,
 
   history::HistoryService::QueryURLCallback callback;
   {
-    EXPECT_CALL(mock_service, QueryURL(_, _, _, _))
-        .WillOnce([&](GURL url, bool want_visits,
-                      history::HistoryService::QueryURLCallback cb,
+    EXPECT_CALL(mock_service, QueryURL(_, _, _))
+        .WillOnce([&](GURL url, history::HistoryService::QueryURLCallback cb,
                       base::CancelableTaskTracker* tracker)
                       -> base::CancelableTaskTracker::TaskId {
           EXPECT_EQ("https://www.wired.com/", url.spec());
-          EXPECT_FALSE(want_visits);
           callback = std::move(cb);
           return {};
         });
@@ -456,7 +515,7 @@ TEST_P(ZeroSuggestVerbatimMatchProviderTest,
   }
 
   // Cancel action.
-  provider_->Stop(false, false);
+  provider_->Stop(AutocompleteStopReason::kInteraction);
 
   {
     // Resolve history service.
@@ -469,6 +528,52 @@ TEST_P(ZeroSuggestVerbatimMatchProviderTest,
     ASSERT_EQ(u"https://www.wired.com", provider_->matches()[0].fill_into_edit);
     ASSERT_EQ(u"", provider_->matches()[0].description);
   }
+}
+
+class ZeroSuggestVerbatimMatchProviderComposeboxTest : public testing::Test {
+ protected:
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::MainThreadType::UI};
+  FakeAutocompleteProviderClient mock_client_;
+  scoped_refptr<ZeroSuggestVerbatimMatchProvider> provider_;
+
+  void SetUp() override {
+    provider_ = new ZeroSuggestVerbatimMatchProvider(&mock_client_);
+  }
+};
+
+TEST_F(ZeroSuggestVerbatimMatchProviderComposeboxTest,
+       CreatesVerbatimMatchForComposeboxWithInputs) {
+  AutocompleteInput input(std::u16string(),
+                          metrics::OmniboxEventProto::NTP_COMPOSEBOX,
+                          TestSchemeClassifier());
+  input.set_current_url(GURL("https://www.wired.com/"));
+  input.set_focus_type(metrics::OmniboxFocusType::INTERACTION_FOCUS);
+
+  // Set lens overlay suggest inputs.
+  lens::proto::LensOverlaySuggestInputs suggest_inputs;
+  suggest_inputs.set_encoded_image_signals("test_signals");
+  input.set_lens_overlay_suggest_inputs(suggest_inputs);
+
+  provider_->Start(input, false);
+
+  ASSERT_EQ(1u, provider_->matches().size());
+  const auto& match = provider_->matches()[0];
+  EXPECT_TRUE(match.search_terms_args);
+}
+
+TEST_F(ZeroSuggestVerbatimMatchProviderComposeboxTest,
+       NoMatchForComposeboxWithoutInputs) {
+  std::string url("https://www.wired.com/");
+  AutocompleteInput input(std::u16string(),
+                          metrics::OmniboxEventProto::NTP_COMPOSEBOX,
+                          TestSchemeClassifier());
+  input.set_current_url(GURL(url));
+  input.set_focus_type(metrics::OmniboxFocusType::INTERACTION_FOCUS);
+
+  provider_->Start(input, false);
+
+  ASSERT_TRUE(provider_->matches().empty());
 }
 
 INSTANTIATE_TEST_SUITE_P(

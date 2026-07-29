@@ -16,7 +16,7 @@
 
 using base::android::AttachCurrentThread;
 using base::android::ConvertUTF16ToJavaString;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace content {
@@ -39,27 +39,20 @@ class UserData : public base::SupportsUserData::Data {
 };
 }
 
-jlong JNI_SmartSelectionClient_Init(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jobject>& jweb_contents) {
-  WebContents* web_contents = WebContents::FromJavaWebContents(jweb_contents);
+static int64_t JNI_SmartSelectionClient_Init(JNIEnv* env,
+                                             WebContents* web_contents) {
   CHECK(web_contents)
       << "A SmartSelectionClient should be created with a valid WebContents.";
 
-  if (web_contents->GetUserData(kSmartSelectionClientUDKey))
-    return reinterpret_cast<intptr_t>(
-        web_contents->GetUserData(kSmartSelectionClientUDKey));
+  if (auto* user_data = web_contents->GetUserData(kSmartSelectionClientUDKey)) {
+    return reinterpret_cast<intptr_t>(user_data);
+  }
 
-  return reinterpret_cast<intptr_t>(
-      new SmartSelectionClient(env, obj, web_contents));
+  return reinterpret_cast<intptr_t>(new SmartSelectionClient(web_contents));
 }
 
-SmartSelectionClient::SmartSelectionClient(
-    JNIEnv* env,
-    const base::android::JavaRef<jobject>& obj,
-    WebContents* web_contents)
-    : java_ref_(env, obj), web_contents_(web_contents) {
+SmartSelectionClient::SmartSelectionClient(WebContents* web_contents)
+    : web_contents_(web_contents) {
   DCHECK(!web_contents_->GetUserData(kSmartSelectionClientUDKey));
   web_contents_->SetUserData(kSmartSelectionClientUDKey,
                              std::make_unique<UserData>(this));
@@ -67,7 +60,7 @@ SmartSelectionClient::SmartSelectionClient(
 
 SmartSelectionClient::~SmartSelectionClient() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  ScopedJavaLocalRef<jobject> j_obj = java_ref_.get(env);
+  ScopedJavaLocalRef<jobject> j_obj = GetJavaObject(env);
   if (!j_obj.is_null()) {
     Java_SmartSelectionClient_onNativeSideDestroyed(
         env, j_obj, reinterpret_cast<intptr_t>(this));
@@ -76,7 +69,6 @@ SmartSelectionClient::~SmartSelectionClient() {
 
 void SmartSelectionClient::RequestSurroundingText(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
     int num_extra_characters,
     int callback_data) {
   RenderFrameHost* focused_frame = web_contents_->GetFocusedFrame();
@@ -91,9 +83,7 @@ void SmartSelectionClient::RequestSurroundingText(
       num_extra_characters);
 }
 
-void SmartSelectionClient::CancelAllRequests(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj) {
+void SmartSelectionClient::CancelAllRequests(JNIEnv* env) {
   weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
@@ -102,7 +92,7 @@ void SmartSelectionClient::OnSurroundingTextReceived(int callback_data,
                                                      uint32_t start,
                                                      uint32_t end) {
   JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jobject> obj = java_ref_.get(env);
+  ScopedJavaLocalRef<jobject> obj = GetJavaObject(env);
   if (!obj.is_null()) {
     ScopedJavaLocalRef<jstring> j_text = ConvertUTF16ToJavaString(env, text);
     Java_SmartSelectionClient_onSurroundingTextReceived(env, obj, callback_data,
@@ -110,4 +100,11 @@ void SmartSelectionClient::OnSurroundingTextReceived(int callback_data,
   }
 }
 
+base::android::ScopedJavaLocalRef<jobject> SmartSelectionClient::GetJavaObject(
+    JNIEnv* env) {
+  return Java_SmartSelectionClient_getFromWebContents(env, web_contents_);
+}
+
 }  // namespace content
+
+DEFINE_JNI(SmartSelectionClient)

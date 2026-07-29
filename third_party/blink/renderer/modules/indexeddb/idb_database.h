@@ -28,6 +28,7 @@
 
 #include <memory>
 
+#include "base/byte_size.h"
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable.h"
@@ -43,8 +44,11 @@
 #include "third_party/blink/renderer/modules/indexeddb/idb_transaction.h"
 #include "third_party/blink/renderer/modules/indexeddb/indexed_db.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
+#include "third_party/blink/renderer/platform/bindings/v8_external_memory_accounter.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/prefinalizer.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_associated_receiver.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_or_worker_scheduler.h"
 
@@ -54,12 +58,14 @@ class ExceptionState;
 class ExecutionContext;
 class ScriptState;
 class V8UnionStringOrStringSequence;
+class SharedIDBDatabaseConnection;
 
 class MODULES_EXPORT IDBDatabase final
     : public EventTarget,
       public ActiveScriptWrappable<IDBDatabase>,
       public ExecutionContextLifecycleStateObserver,
       public mojom::blink::IDBDatabaseCallbacks {
+  USING_PRE_FINALIZER(IDBDatabase, Dispose);
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -70,11 +76,20 @@ class MODULES_EXPORT IDBDatabase final
       mojo::PendingAssociatedRemote<mojom::blink::IDBDatabase> pending_database,
       int scheduling_priority);
 
+  // Feature-gated connection sharing constructor
+  IDBDatabase(ExecutionContext*,
+              SharedIDBDatabaseConnection* shared_connection,
+              int scheduling_priority);
+  ~IDBDatabase() override;
+
   void Trace(Visitor*) const override;
 
   // Overwrites the database metadata, including object store and index
   // metadata. Used to pass metadata to the database when it is opened.
   void SetMetadata(const IDBDatabaseMetadata&);
+  SharedIDBDatabaseConnection* shared_connection_for_testing() const {
+    return shared_connection_.Get();
+  }
   // Overwrites the database's own metadata, but does not change object store
   // and index metadata. Used to revert the database's metadata when a
   // versionchage transaction is aborted.
@@ -118,7 +133,7 @@ class MODULES_EXPORT IDBDatabase final
   void VersionChange(int64_t old_version, int64_t new_version) override;
   void Abort(int64_t transaction_id,
              mojom::blink::IDBException code,
-             const WTF::String& message) override;
+             const String& message) override;
   void Complete(int64_t transaction_id) override;
 
   // ScriptWrappable
@@ -166,13 +181,18 @@ class MODULES_EXPORT IDBDatabase final
   static const char kTransactionReadOnlyErrorMessage[];
   static const char kDatabaseClosedErrorMessage[];
 
-  static const int64_t kMinimumIndexId = 30;
+  // This connection indirectly retains memory in the browser process via Mojo
+  // endpoints (mostly internal Mojo structures for
+  // IndexedDBClientStateChecker, IDBDatabase, and DatabaseCallbacks). The
+  // size was derived empirically by measuring the browser process memory
+  // delta from retaining 100k connections in a renderer process.
+  static constexpr base::ByteSize kExternalMemorySize = base::KiBU(90);
 
   void RenameObjectStore(int64_t transaction_id,
                          int64_t object_store_id,
                          const String& new_name) {
-    database_remote_->RenameObjectStore(transaction_id, object_store_id,
-                                        new_name);
+    GetDatabaseRemote()->RenameObjectStore(transaction_id, object_store_id,
+                                           new_name);
   }
   void CreateTransaction(mojo::PendingAssociatedReceiver<
                              mojom::blink::IDBTransaction> transaction_receiver,
@@ -180,11 +200,11 @@ class MODULES_EXPORT IDBDatabase final
                          const Vector<int64_t>& object_store_ids,
                          mojom::blink::IDBTransactionMode mode,
                          mojom::blink::IDBTransactionDurability durability) {
-    database_remote_->CreateTransaction(std::move(transaction_receiver),
-                                        transaction_id, object_store_ids, mode,
-                                        durability);
+    GetDatabaseRemote()->CreateTransaction(std::move(transaction_receiver),
+                                           transaction_id, object_store_ids,
+                                           mode, durability);
   }
-  void VersionChangeIgnored() { database_remote_->VersionChangeIgnored(); }
+  void VersionChangeIgnored() { GetDatabaseRemote()->VersionChangeIgnored(); }
   void Get(
       int64_t transaction_id,
       int64_t object_store_id,
@@ -197,16 +217,9 @@ class MODULES_EXPORT IDBDatabase final
               int64_t index_id,
               const IDBKeyRange*,
               mojom::blink::IDBGetAllResultType result_type,
-              int64_t max_count,
+              uint32_t max_count,
               mojom::blink::IDBCursorDirection direction,
               IDBRequest*);
-  void SetIndexKeys(int64_t transaction_id,
-                    int64_t object_store_id,
-                    std::unique_ptr<IDBKey> primary_key,
-                    Vector<IDBIndexKeys>);
-  void SetIndexesReady(int64_t transaction_id,
-                       int64_t object_store_id,
-                       const Vector<int64_t>& index_ids);
   void OpenCursor(int64_t object_store_id,
                   int64_t index_id,
                   const IDBKeyRange*,
@@ -249,9 +262,12 @@ class MODULES_EXPORT IDBDatabase final
                    int64_t index_id,
                    const String& new_name);
   void Abort(int64_t transaction_id);
-  void DidBecomeInactive() { database_remote_->DidBecomeInactive(); }
+  void DidBecomeInactive() { GetDatabaseRemote()->DidBecomeInactive(); }
 
   bool IsConnectionOpen() const;
+  // Returns the Mojo remote to the database backend. If this connection is
+  // shared, this returns the remote owned by the shared connection wrapper.
+  mojom::blink::IDBDatabase* GetDatabaseRemote();
 
   int scheduling_priority() const { return scheduling_priority_; }
 
@@ -283,12 +299,19 @@ class MODULES_EXPORT IDBDatabase final
                                     bool auto_increment,
                                     ExceptionState&);
   void CloseConnection();
+  // Pre-finalizer called by cppgc when this object is about to be reclaimed.
+  // We must unregister this frontend from the shared connection if it hasn't
+  // been explicitly closed yet, to allow the shared connection to close.
+  void Dispose();
 
   void OnSchedulerLifecycleStateChanged(
       scheduler::SchedulingLifecycleState lifecycle_state);
 
+  void ClearExternalMemory();
+
   IDBDatabaseMetadata metadata_;
   HeapMojoAssociatedRemote<mojom::blink::IDBDatabase> database_remote_;
+  Member<SharedIDBDatabaseConnection> shared_connection_;
   Member<IDBTransaction> version_change_transaction_;
   HeapHashMap<int64_t, Member<IDBTransaction>> transactions_;
 
@@ -301,6 +324,12 @@ class MODULES_EXPORT IDBDatabase final
 
   HeapMojoAssociatedReceiver<mojom::blink::IDBDatabaseCallbacks, IDBDatabase>
       callbacks_receiver_;
+
+  // Accounts for browser-process memory retained by the
+  // `content::indexed_db::Connection` object kept-alive via `database_remote_`.
+  // This allows V8 to include this external memory cost in its garbage
+  // collection scheduling heuristics.
+  V8ExternalMemoryAccounter external_memory_accounter_;
 };
 
 }  // namespace blink

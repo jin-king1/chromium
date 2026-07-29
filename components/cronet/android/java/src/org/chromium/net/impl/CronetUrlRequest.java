@@ -103,8 +103,8 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
     private final int mTrafficStatsUid;
     private final VersionSafeCallbacks.RequestFinishedInfoListener mRequestFinishedListener;
     // See {@link org.chromium.net.UrlRequest.Builder#setRawCompressionDictionary}.
-    private byte[] mDictionarySha256Hash;
-    private ByteBuffer mDictionary;
+    private final byte[] mDictionarySha256Hash;
+    private final ByteBuffer mDictionary;
     private final String mDictionaryId;
     private final long mNetworkHandle;
     private final CronetLogger mLogger;
@@ -250,9 +250,9 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                                             mDictionaryId,
                                             mNetworkHandle);
                     mRequestContext.onRequestStarted();
+                    CronetPccAuditLogger.maybeWrite(mInitialUrl);
                     if (!CronetUrlRequestJni.get()
-                            .setHttpMethod(
-                                    mUrlRequestAdapter, CronetUrlRequest.this, mInitialMethod)) {
+                            .setHttpMethod(mUrlRequestAdapter, mInitialMethod)) {
                         throw new IllegalArgumentException("Invalid http method " + mInitialMethod);
                     }
 
@@ -264,10 +264,7 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                         }
                         if (!CronetUrlRequestJni.get()
                                 .addRequestHeader(
-                                        mUrlRequestAdapter,
-                                        CronetUrlRequest.this,
-                                        header.getKey(),
-                                        header.getValue())) {
+                                        mUrlRequestAdapter, header.getKey(), header.getValue())) {
                             throw new IllegalArgumentException(
                                     "Invalid header with headername: " + header.getKey());
                         }
@@ -315,7 +312,7 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
      */
     @GuardedBy("mUrlRequestAdapterLock")
     private void startInternalLocked() {
-        CronetUrlRequestJni.get().start(mUrlRequestAdapter, CronetUrlRequest.this);
+        CronetUrlRequestJni.get().start(mUrlRequestAdapter);
     }
 
     @Override
@@ -331,8 +328,7 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                     return;
                 }
 
-                CronetUrlRequestJni.get()
-                        .followDeferredRedirect(mUrlRequestAdapter, CronetUrlRequest.this);
+                CronetUrlRequestJni.get().followDeferredRedirect(mUrlRequestAdapter);
             }
         }
     }
@@ -353,12 +349,8 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                 }
 
                 if (!CronetUrlRequestJni.get()
-                        .readData(
-                                mUrlRequestAdapter,
-                                CronetUrlRequest.this,
-                                buffer,
-                                buffer.position(),
-                                buffer.limit())) {
+                        .readData(mUrlRequestAdapter, buffer, buffer.position(), buffer.limit())) {
+
                     // Still waiting on read. This is just to have consistent
                     // behavior with the other error cases.
                     mWaitingOnRead = true;
@@ -399,8 +391,7 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                 new VersionSafeCallbacks.UrlRequestStatusListener(unsafeListener);
         synchronized (mUrlRequestAdapterLock) {
             if (mUrlRequestAdapter != 0) {
-                CronetUrlRequestJni.get()
-                        .getStatus(mUrlRequestAdapter, CronetUrlRequest.this, listener);
+                CronetUrlRequestJni.get().getStatus(mUrlRequestAdapter, listener);
                 return;
             }
         }
@@ -509,7 +500,8 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
             boolean wasCached,
             String negotiatedProtocol,
             String proxyServer,
-            long receivedByteCount) {
+            long receivedByteCount,
+            boolean isProxied) {
         ArrayList<Map.Entry<String, String>> headersList = new ArrayList<>();
         for (int i = 0; i < headers.length; i += 2) {
             headersList.add(new AbstractMap.SimpleImmutableEntry<>(headers[i], headers[i + 1]));
@@ -522,7 +514,8 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                 wasCached,
                 negotiatedProtocol,
                 proxyServer,
-                receivedByteCount);
+                receivedByteCount,
+                isProxied);
     }
 
     private void checkNotStarted() {
@@ -533,9 +526,14 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
         }
     }
 
+    // The metrics are available once a terminal callback has started executing.
+    public CronetMetrics getFinishedRequestTimings() {
+        return mMetrics;
+    }
+
     /**
-     * Helper method to set final status of CronetUrlRequest and clean up the
-     * native request adapter.
+     * Helper method to set final status of CronetUrlRequest and clean up the native request
+     * adapter.
      */
     @GuardedBy("mUrlRequestAdapterLock")
     private void destroyRequestAdapterLocked(
@@ -548,10 +546,8 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
         mRequestContext.onRequestDestroyed();
         // Posts a task to destroy the native adapter.
         CronetUrlRequestJni.get()
-                .destroy(
-                        mUrlRequestAdapter,
-                        CronetUrlRequest.this,
-                        finishedReason == RequestFinishedInfo.CANCELED);
+                .destroy(mUrlRequestAdapter, finishedReason == RequestFinishedInfo.CANCELED);
+
         mUrlRequestAdapter = 0;
     }
 
@@ -628,11 +624,16 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                         wasCached,
                         negotiatedProtocol,
                         proxyServer,
-                        receivedByteCount);
+                        receivedByteCount,
+                        // It's okay not to populate this value correctly because this is used only
+                        // by Cronet's telemetry. Cronet's telemetry does not depend on the instance
+                        // of UrlResponseInfoImpl created here, but the one created in
+                        // onResponseStarted (where we correctly populate this value).
+                        /* isProxied= */ false);
 
         // Have to do this after creating responseInfo.
         mUrlChain.add(newLocation);
-
+        CronetPccAuditLogger.maybeWrite(newLocation);
         Runnable task =
                 new Runnable() {
                     @Override
@@ -669,7 +670,8 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
             boolean wasCached,
             String negotiatedProtocol,
             String proxyServer,
-            long receivedByteCount) {
+            long receivedByteCount,
+            boolean isProxied) {
         mResponseInfo =
                 prepareResponseInfoOnNetworkThread(
                         httpStatusCode,
@@ -678,7 +680,8 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                         wasCached,
                         negotiatedProtocol,
                         proxyServer,
-                        receivedByteCount);
+                        receivedByteCount,
+                        isProxied);
         Runnable task =
                 new Runnable() {
                     @Override
@@ -814,6 +817,15 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
     @SuppressWarnings("unused")
     @CalledByNative
     private void onCanceled() {
+        if (mMetrics == null) {
+            // It's possible for a race condition to happen where the user cancels the request
+            // before we've created the native adapter. This means that the native metrics
+            // does not even exist. So instead of not reporting anything, we'll report
+            // metrics with sentinel values.
+            //
+            // See crbug.com/328065446 for more details.
+            mMetrics = CronetMetrics.empty();
+        }
         Runnable task =
                 new Runnable() {
                     @Override
@@ -851,19 +863,19 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
     @SuppressWarnings("unused")
     @CalledByNative
     private void onMetricsCollected(
-            long requestStartMs,
-            long dnsStartMs,
-            long dnsEndMs,
-            long connectStartMs,
-            long connectEndMs,
-            long sslStartMs,
-            long sslEndMs,
-            long sendingStartMs,
-            long sendingEndMs,
-            long pushStartMs,
-            long pushEndMs,
-            long responseStartMs,
-            long requestEndMs,
+            long requestStartMicros,
+            long dnsStartMicros,
+            long dnsEndMicros,
+            long connectStartMicros,
+            long connectEndMicros,
+            long sslStartMicros,
+            long sslEndMicros,
+            long sendingStartMicros,
+            long sendingEndMicros,
+            long pushStartMicros,
+            long pushEndMicros,
+            long responseStartMicros,
+            long requestEndMicros,
             boolean socketReused,
             long sentByteCount,
             long receivedByteCount,
@@ -874,19 +886,19 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
         }
         mMetrics =
                 new CronetMetrics(
-                        requestStartMs,
-                        dnsStartMs,
-                        dnsEndMs,
-                        connectStartMs,
-                        connectEndMs,
-                        sslStartMs,
-                        sslEndMs,
-                        sendingStartMs,
-                        sendingEndMs,
-                        pushStartMs,
-                        pushEndMs,
-                        responseStartMs,
-                        requestEndMs,
+                        requestStartMicros,
+                        dnsStartMicros,
+                        dnsEndMicros,
+                        connectStartMicros,
+                        connectEndMicros,
+                        sslStartMicros,
+                        sslEndMicros,
+                        sendingStartMicros,
+                        sendingEndMicros,
+                        pushStartMicros,
+                        pushEndMicros,
+                        responseStartMicros,
+                        requestEndMicros,
                         socketReused,
                         sentByteCount,
                         receivedByteCount);
@@ -911,6 +923,14 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                 if (mException == null) {
                     return;
                 }
+            }
+            if (mMetrics == null) {
+                // there's no way to get the metrics once the native adapter has been destroyed.
+                // So if it was never reported from the native side which could happen for
+                // several reasons (e.g. failure before setting up the underlying request), then
+                // create the default empty sentinel valued metric object.
+                // See crbug.com/328065446 for more details.
+                mMetrics = CronetMetrics.empty();
             }
             Runnable task =
                     new Runnable() {
@@ -997,6 +1017,7 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
         final String negotiatedProtocol;
         final int httpStatusCode;
         final boolean wasCached;
+        final Boolean isProxied = mResponseInfo != null ? mResponseInfo.isProxied() : null;
         if (mResponseInfo != null) {
             responseHeaders = mResponseInfo.getAllHeaders();
             negotiatedProtocol = mResponseInfo.getNegotiatedProtocol();
@@ -1043,16 +1064,6 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
             responseBodySizeInBytes = max(0, responseTotalSizeInBytes - responseHeaderSizeInBytes);
         }
 
-        final Duration headersLatency;
-        if (mMetrics.getRequestStart() != null && mMetrics.getResponseStart() != null) {
-            headersLatency =
-                    Duration.ofMillis(
-                            mMetrics.getResponseStart().getTime()
-                                    - mMetrics.getRequestStart().getTime());
-        } else {
-            headersLatency = Duration.ofSeconds(0);
-        }
-
         final Duration totalLatency;
         if (mMetrics.getRequestStart() != null && mMetrics.getRequestEnd() != null) {
             totalLatency =
@@ -1087,17 +1098,39 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
             failureReason = CronetTrafficInfo.RequestFailureReason.OTHER;
         }
 
-        return new CronetTrafficInfo(requestHeaderSizeInBytes, requestBodySizeInBytes,
-                responseHeaderSizeInBytes, responseBodySizeInBytes, httpStatusCode, headersLatency,
-                totalLatency, negotiatedProtocol, mQuicConnectionMigrationAttempted,
+        return new CronetTrafficInfo(
+                requestHeaderSizeInBytes,
+                requestBodySizeInBytes,
+                responseHeaderSizeInBytes,
+                responseBodySizeInBytes,
+                httpStatusCode,
+                totalLatency,
+                negotiatedProtocol,
+                mQuicConnectionMigrationAttempted,
                 mQuicConnectionMigrationSuccessful,
                 CronetRequestCommon.finishedReasonToCronetTrafficInfoRequestTerminalState(
                         mFinishedReason),
-                mNonfinalUserCallbackExceptionCount, mReadCount,
+                mNonfinalUserCallbackExceptionCount,
+                mReadCount,
                 mUploadDataStream == null ? 0 : mUploadDataStream.getReadCount(),
-                /* isBidiStream= */ false, mFinalUserCallbackThrew, Process.myUid(),
-                networkInternalErrorCode, quicNetworkErrorCode, source, failureReason,
-                mMetrics.getSocketReused());
+                /* isBidiStream= */ false,
+                mFinalUserCallbackThrew,
+                Process.myUid(),
+                networkInternalErrorCode,
+                quicNetworkErrorCode,
+                source,
+                failureReason,
+                mMetrics.getSocketReused(),
+                ImplVersion.getCronetVersion(),
+                NativeCronetEngineBuilderImpl.getCronetSource(),
+                mMetrics.getDnsDurationInMicroseconds(),
+                mMetrics.getSSLDurationInMicroseconds(),
+                mMetrics.getConnectDurationInMicroseconds(),
+                mMetrics.getTimeToWriteFirstByteInMicroseconds(),
+                mMetrics.getTimeToReceiveHeaderLastByteMicroseconds(),
+                isProxied,
+                // go/cronet-cans currently only supports bidirectional streams.
+                /* isAdaptiveNetworkStream= */ false);
     }
 
     // Maybe report metrics. This method should only be called on Callback's executor thread and
@@ -1106,12 +1139,9 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
         final RefCountDelegate inflightCallbackCount =
                 new RefCountDelegate(() -> mRequestContext.onRequestFinished());
         try {
-            // If the native adapter was never started, onMetricsCollected() was not called and so
-            // we have no metrics to report.
-            // TODO: https://issuetracker.google.com/328065446 - we should really prevent this from
-            // happening because we will end up not logging the metrics, and the user may end up
-            // waiting forever for a request finished callback that will never come.
-            if (mMetrics == null) return;
+            if (mMetrics == null) {
+                throw new IllegalStateException("The metrics should have been initialized.");
+            }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 try {
@@ -1146,7 +1176,7 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
     @NativeMethods
     interface Natives {
         long createRequestAdapter(
-                CronetUrlRequest caller,
+                CronetUrlRequest self,
                 long urlRequestContextAdapter,
                 String url,
                 int priority,
@@ -1166,34 +1196,29 @@ public final class CronetUrlRequest extends ExperimentalUrlRequest {
                 long networkHandle);
 
         @NativeClassQualifiedName("CronetURLRequestAdapter")
-        boolean setHttpMethod(long nativePtr, CronetUrlRequest caller, String method);
+        boolean setHttpMethod(long nativePtr, String method);
 
         @NativeClassQualifiedName("CronetURLRequestAdapter")
-        boolean addRequestHeader(
-                long nativePtr, CronetUrlRequest caller, String name, String value);
+        boolean addRequestHeader(long nativePtr, String name, String value);
 
         @NativeClassQualifiedName("CronetURLRequestAdapter")
-        void start(long nativePtr, CronetUrlRequest caller);
+        void start(long nativePtr);
 
         @NativeClassQualifiedName("CronetURLRequestAdapter")
-        void followDeferredRedirect(long nativePtr, CronetUrlRequest caller);
+        void followDeferredRedirect(long nativePtr);
 
         @NativeClassQualifiedName("CronetURLRequestAdapter")
         boolean readData(
                 long nativePtr,
-                CronetUrlRequest caller,
                 ByteBuffer byteBuffer,
                 // TODO(b/358568022): Stop passing position and capacity via JNI.
                 int position,
                 int capacity);
 
         @NativeClassQualifiedName("CronetURLRequestAdapter")
-        void destroy(long nativePtr, CronetUrlRequest caller, boolean sendOnCanceled);
+        void destroy(long nativePtr, boolean sendOnCanceled);
 
         @NativeClassQualifiedName("CronetURLRequestAdapter")
-        void getStatus(
-                long nativePtr,
-                CronetUrlRequest caller,
-                VersionSafeCallbacks.UrlRequestStatusListener listener);
+        void getStatus(long nativePtr, VersionSafeCallbacks.UrlRequestStatusListener listener);
     }
 }

@@ -11,10 +11,14 @@
 #import "components/translate/core/browser/translate_pref_names.h"
 #import "components/translate/core/browser/translate_prefs.h"
 #import "ios/web_view/internal/autofill/cwv_autofill_prefs.h"
+#import "ios/web_view/internal/autofill/cwv_password_affiliation.h"
 #import "ios/web_view/internal/cwv_preferences_internal.h"
+#import "ios/web_view/internal/passwords/web_view_password_manager_client.h"
 
 @implementation CWVPreferences {
   PrefService* _prefService;
+  // In-memory only.
+  BOOL _triggerNonFatalCheck;
 }
 
 - (instancetype)initWithPrefService:(PrefService*)prefService {
@@ -64,6 +68,14 @@
   return ios_web_view::IsAutofillAddressSyncEnabled(_prefService);
 }
 
+- (void)setPasswordAffiliationEnabled:(BOOL)enabled {
+  ios_web_view::SetPasswordAffiliationEnabled(_prefService, enabled);
+}
+
+- (BOOL)isPasswordAffiliationEnabled {
+  return ios_web_view::IsPasswordAffiliationEnabled(_prefService);
+}
+
 - (void)setPasswordAutofillEnabled:(BOOL)enabled {
   _prefService->SetBoolean(password_manager::prefs::kCredentialsEnableService,
                            enabled);
@@ -84,6 +96,16 @@
       password_manager::prefs::kPasswordLeakDetectionEnabled);
 }
 
+- (void)setPasswordManagerSafeLifecycleEnabled:(BOOL)enabled {
+  _prefService->SetBoolean(ios_web_view::kPasswordManagerSafeLifecycleEnabled,
+                           enabled);
+}
+
+- (BOOL)isPasswordManagerSafeLifecycleEnabled {
+  return _prefService->GetBoolean(
+      ios_web_view::kPasswordManagerSafeLifecycleEnabled);
+}
+
 - (void)setSafeBrowsingEnabled:(BOOL)enabled {
   safe_browsing::SetSafeBrowsingState(
       _prefService,
@@ -94,6 +116,34 @@
 
 - (BOOL)isSafeBrowsingEnabled {
   return safe_browsing::IsSafeBrowsingEnabled(*_prefService);
+}
+
+- (void)setAutofillVCNUsageEnabled:(BOOL)enabled {
+  ios_web_view::SetAutofillVCNUsageEnabled(_prefService, enabled);
+}
+
+- (BOOL)isAutofillVCNUsageEnabled {
+  return ios_web_view::IsAutofillVCNUsageEnabled(_prefService);
+}
+
+- (void)setAutofillSafeLifecycleEnabled:(BOOL)enabled {
+  ios_web_view::SetAutofillSafeLifecycleEnabled(_prefService, enabled);
+}
+
+- (BOOL)isAutofillSafeLifecycleEnabled {
+  return ios_web_view::IsAutofillSafeLifecycleEnabled(_prefService);
+}
+
+- (void)setTriggerNonFatalCheck:(BOOL)enabled {
+  // TODO(crbug.com/503005390): Remove after release integration testing in
+  // stable.
+  _triggerNonFatalCheck = enabled;
+}
+
+- (BOOL)isTriggerNonFatalCheckEnabled {
+  // TODO(crbug.com/503005390): Remove after release integration testing in
+  // stable.
+  return _triggerNonFatalCheck;
 }
 
 - (void)commitPendingWrite:(void (^)(void))completionHandler {

@@ -15,6 +15,7 @@ import static org.chromium.components.browser_ui.widget.scrim.ScrimProperties.AL
 import static org.chromium.components.browser_ui.widget.scrim.ScrimProperties.ANCHOR_VIEW;
 import static org.chromium.components.browser_ui.widget.scrim.ScrimProperties.BACKGROUND_COLOR;
 import static org.chromium.components.browser_ui.widget.scrim.ScrimProperties.CLICK_DELEGATE;
+import static org.chromium.components.browser_ui.widget.scrim.ScrimProperties.CUSTOM_PARENT;
 import static org.chromium.components.browser_ui.widget.scrim.ScrimProperties.GESTURE_DETECTOR;
 import static org.chromium.components.browser_ui.widget.scrim.ScrimProperties.SHOW_IN_FRONT_OF_ANCHOR_VIEW;
 import static org.chromium.components.browser_ui.widget.scrim.ScrimProperties.TOP_MARGIN;
@@ -25,13 +26,13 @@ import android.app.Activity;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.view.GestureDetector;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.annotation.ColorInt;
-import androidx.annotation.NonNull;
 import androidx.core.graphics.ColorUtils;
 import androidx.test.filters.SmallTest;
 
@@ -53,8 +54,10 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.PayloadCallbackHelper;
 import org.chromium.components.browser_ui.widget.scrim.ScrimCoordinator.Observer;
+import org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 
@@ -109,20 +112,20 @@ public class ScrimTest {
                     mAnchorView = new View(sActivity);
                     sParent.addView(mAnchorView);
 
-                    mScrimManager = new ScrimManager(sActivity, sParent);
+                    mScrimManager = new ScrimManager(sActivity, sParent, ScrimClient.NONE);
                     mScrimManager
                             .getStatusBarColorSupplier()
-                            .addObserver(mStatusBarColorHelper::notifyCalled);
+                            .addSyncObserverAndPostIfNonNull(mStatusBarColorHelper::notifyCalled);
                     mScrimManager
                             .getNavigationBarColorSupplier()
-                            .addObserver(mNavBarColorHelper::notifyCalled);
+                            .addSyncObserverAndPostIfNonNull(mNavBarColorHelper::notifyCalled);
 
                     mDelegatedEventHelper = new CallbackHelper();
                     mCustomGestureDetector =
                             new GestureDetector(
                                     new GestureDetector.SimpleOnGestureListener() {
                                         @Override
-                                        public boolean onDown(@NonNull MotionEvent e) {
+                                        public boolean onDown(MotionEvent e) {
                                             mDelegatedEventHelper.notifyCalled();
                                             return true;
                                         }
@@ -156,6 +159,65 @@ public class ScrimTest {
                 () -> mScrimManager.hideScrim(model, /* animate= */ false));
         mVisibilityChangeCallbackHelper.waitForCallback(callCount, 1);
         assertScrimVisibility(false, model);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Scrim"})
+    public void testAbsorbsContextClicks() throws TimeoutException {
+        PropertyModel model = buildModel(false, true, Color.RED);
+        showScrim(model, /* animate= */ false);
+
+        assertTrue(
+                "The scrim view should be context clickable.",
+                mScrimManager.getViewForTesting().isContextClickable());
+
+        assertTrue(
+                "The scrim view should have a listener to absorb context clicks.",
+                mScrimManager.getViewForTesting().performContextClick());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Scrim"})
+    @EnableFeatures({"BlockMouseEventsOnView"})
+    public void testGenericMotionEventInterception() throws TimeoutException {
+        PropertyModel model = buildModel(false, true, Color.RED);
+        showScrim(model, /* animate= */ false);
+
+        ScrimView scrimView = mScrimManager.getViewForTesting();
+
+        MotionEvent.PointerProperties pp = new MotionEvent.PointerProperties();
+        pp.id = 0;
+        pp.toolType = MotionEvent.TOOL_TYPE_MOUSE;
+
+        MotionEvent.PointerCoords pc = new MotionEvent.PointerCoords();
+        pc.x = 0f;
+        pc.y = 0f;
+
+        MotionEvent mouseEvent =
+                MotionEvent.obtain(
+                        0,
+                        0,
+                        MotionEvent.ACTION_BUTTON_PRESS,
+                        1,
+                        new MotionEvent.PointerProperties[] {pp},
+                        new MotionEvent.PointerCoords[] {pc},
+                        0,
+                        MotionEvent.BUTTON_PRIMARY,
+                        1.0f,
+                        1.0f,
+                        0,
+                        0,
+                        InputDevice.SOURCE_MOUSE,
+                        0);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    assertTrue(
+                            "ScrimView should consume generic motion events for pointers",
+                            scrimView.dispatchGenericMotionEvent(mouseEvent));
+                });
     }
 
     @Test
@@ -507,6 +569,90 @@ public class ScrimTest {
 
         ThreadUtils.runOnUiThreadBlocking(() -> mScrimManager.showScrim(model4));
         assertStatusBarColor(ColorUtils.compositeColors(color4, Color.RED));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Scrim"})
+    public void testStackedScrims_withCustomParentsAndDepth() {
+        mScrimManager.disableAnimationForTesting(true);
+
+        ViewGroup childLayout1 = new FrameLayout(sActivity);
+        View anchorForScrim1 = new View(sActivity);
+        childLayout1.addView(anchorForScrim1);
+        ViewGroup childLayout2 = new FrameLayout(sActivity);
+        View anchorForScrim2 = new View(sActivity);
+        childLayout2.addView(anchorForScrim2);
+        View anchorForScrim3 = new View(sActivity);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    sParent.addView(childLayout1);
+                    sParent.addView(childLayout2);
+                    sParent.addView(anchorForScrim3);
+                });
+
+        PropertyModel model1 =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () ->
+                                new PropertyModel.Builder(ALL_KEYS)
+                                        .with(AFFECTS_STATUS_BAR, true)
+                                        .with(ANCHOR_VIEW, anchorForScrim1)
+                                        .with(CLICK_DELEGATE, mClickDelegate)
+                                        .with(VISIBILITY_CALLBACK, mVisibilityChangeCallback)
+                                        .with(BACKGROUND_COLOR, Color.RED)
+                                        .with(CUSTOM_PARENT, childLayout1)
+                                        .build());
+
+        PropertyModel model2 =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () ->
+                                new PropertyModel.Builder(ALL_KEYS)
+                                        .with(AFFECTS_STATUS_BAR, true)
+                                        .with(ANCHOR_VIEW, anchorForScrim2)
+                                        .with(CLICK_DELEGATE, mClickDelegate)
+                                        .with(VISIBILITY_CALLBACK, mVisibilityChangeCallback)
+                                        .with(BACKGROUND_COLOR, Color.BLUE)
+                                        .with(CUSTOM_PARENT, childLayout2)
+                                        .build());
+
+        PropertyModel model3 =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () ->
+                                new PropertyModel.Builder(ALL_KEYS)
+                                        .with(AFFECTS_STATUS_BAR, true)
+                                        .with(ANCHOR_VIEW, anchorForScrim3)
+                                        .with(CLICK_DELEGATE, mClickDelegate)
+                                        .with(VISIBILITY_CALLBACK, mVisibilityChangeCallback)
+                                        .with(BACKGROUND_COLOR, Color.GREEN)
+                                        .build());
+
+        assertStatusBarColor(Color.TRANSPARENT);
+
+        ThreadUtils.runOnUiThreadBlocking(() -> mScrimManager.showScrim(model1));
+        assertStatusBarColor(Color.RED);
+
+        ThreadUtils.runOnUiThreadBlocking(() -> mScrimManager.showScrim(model2));
+        assertStatusBarColor(Color.BLUE);
+
+        ThreadUtils.runOnUiThreadBlocking(() -> mScrimManager.showScrim(model3));
+        assertStatusBarColor(Color.GREEN);
+
+        ThreadUtils.runOnUiThreadBlocking(() -> mScrimManager.hideScrim(model2, false));
+        assertStatusBarColor(Color.GREEN);
+
+        ThreadUtils.runOnUiThreadBlocking(() -> mScrimManager.hideScrim(model3, false));
+        assertStatusBarColor(Color.RED);
+
+        ThreadUtils.runOnUiThreadBlocking(() -> mScrimManager.hideScrim(model1, false));
+        assertStatusBarColor(Color.TRANSPARENT);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    sParent.removeView(childLayout1);
+                    sParent.removeView(childLayout2);
+                    sParent.removeView(anchorForScrim3);
+                });
     }
 
     /**

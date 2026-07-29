@@ -36,6 +36,8 @@ class MODULES_EXPORT NDEFReader : public EventTarget,
                                   public ExecutionContextLifecycleObserver {
   DEFINE_WRAPPERTYPEINFO();
 
+  USING_PRE_FINALIZER(NDEFReader, Dispose);
+
  public:
   static NDEFReader* Create(ExecutionContext*);
 
@@ -70,6 +72,8 @@ class MODULES_EXPORT NDEFReader : public EventTarget,
       ExceptionState& exception_state);
 
   void Trace(Visitor*) const override;
+
+  void Dispose();
 
   // Called by NFCProxy for dispatching events.
   virtual void OnReading(const String& serial_number,
@@ -106,7 +110,7 @@ class MODULES_EXPORT NDEFReader : public EventTarget,
 
   // Read Permission handling
   void ReadOnRequestPermission(const NDEFScanOptions* options,
-                               mojom::blink::PermissionStatus status);
+                               mojom::blink::PermissionStatusWithDetailsPtr);
 
   // Write Permission handling
   void WriteOnRequestPermission(
@@ -114,14 +118,14 @@ class MODULES_EXPORT NDEFReader : public EventTarget,
       std::unique_ptr<ScopedAbortState> scoped_abort_state,
       const NDEFWriteOptions* options,
       device::mojom::blink::NDEFMessagePtr ndef_message,
-      mojom::blink::PermissionStatus status);
+      mojom::blink::PermissionStatusWithDetailsPtr);
 
   // Make read-only permission handling
   void MakeReadOnlyOnRequestPermission(
       ScriptPromiseResolver<IDLUndefined>* resolver,
       std::unique_ptr<ScopedAbortState> scoped_abort_state,
       const NDEFMakeReadOnlyOptions* options,
-      mojom::blink::PermissionStatus status);
+      mojom::blink::PermissionStatusWithDetailsPtr);
 
   Member<NFCProxy> nfc_proxy_;
 

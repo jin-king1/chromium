@@ -29,8 +29,6 @@ class InputDeviceEventObserver;
 class EVENTS_DEVICES_EXPORT DeviceDataManager
     : public DeviceHotplugEventObserver {
  public:
-  static const int kMaxDeviceNum = 128;
-
   DeviceDataManager(const DeviceDataManager&) = delete;
   DeviceDataManager& operator=(const DeviceDataManager&) = delete;
 
@@ -132,7 +130,13 @@ class EVENTS_DEVICES_EXPORT DeviceDataManager
   std::vector<InputDevice> uncategorized_devices_;
   bool device_lists_complete_ = false;
 
-  base::ObserverList<InputDeviceEventObserver>::Unchecked observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      InputDeviceEventObserver,
+      /*check_empty=*/false,
+      /*reentrancy=*/
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked
+      observers_;
 
   bool touch_screens_enabled_ = true;
 

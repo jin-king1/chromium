@@ -10,6 +10,7 @@ option java_outer_classname = "HintsProto";
 package optimization_guide.proto;
 
 import "components/optimization_guide/proto/common_types.proto";
+import "components/optimization_guide/proto/filter_execution_metadata.proto";
 import "components/optimization_guide/proto/loading_predictor_metadata.proto";
 
 // Information about the hint that the client already has for a host.
@@ -95,6 +96,8 @@ message RequestContextMetadata {
   oneof metadata {
     // Only filled in when RequestContext is CONTEXT_PAGE_INSIGHTS_HUB.
     PageInsightsHubRequestContextMetadata page_insights_hub_metadata = 1;
+    // Only filled in when RequestContext is CONTEXT_FILTER_EXECUTION.
+    FilterExecutionRequestContextMetadata filter_execution_metadata = 2;
   }
 }
 
@@ -141,9 +144,10 @@ message GetHintsResponse {
 // OptimizationType enum at http://shortn/_t8G1sv8yAS (Google-internal link).
 // Additionally, these values must be synchronized with the OptimizationType
 // enum in enums.xml and optimization/histograms.xml for metric recording.
+// Next ID: 134
 enum OptimizationType {
   // Values for obsolete optimizations.
-  reserved 11, 12, 16, 29, 32, 66, 72, 89;
+  reserved 11, 12, 16, 29, 32, 66, 68, 72, 73, 89, 94, 95, 96, 101;
 
   TYPE_UNSPECIFIED = 0;
   // This optimization blocks JavaScript on the page.
@@ -276,21 +280,15 @@ enum OptimizationType {
   // This optimization helps determine if this merchant page is a good candidate
   // for enabling price/amount extraction.
   AMOUNT_EXTRACTION_ALLOWLIST = 67;
-  // This optimization provides information about sites for which pages Autofill
-  // prediction improvements should be triggered on.
-  AUTOFILL_PREDICTION_IMPROVEMENTS_ALLOWLIST = 68;
   // This optimization helps determine if this merchant page is a good candidate
-  // for enabling buy now pay later flow with Affirm.
+  // for enabling buy now pay later flow with Affirm on desktop.
   BUY_NOW_PAY_LATER_ALLOWLIST_AFFIRM = 69;
   // This optimization helps determine if this merchant page is a good candidate
-  // for enabling buy now pay later flow with Zip.
+  // for enabling buy now pay later flow with Zip on desktop.
   BUY_NOW_PAY_LATER_ALLOWLIST_ZIP = 70;
   // Provides information about whether a URL can be synced across devices for
   // saved tab groups feature.
   SAVED_TAB_GROUP = 71;
-  // This optimization provides information about whether a URL is eligible for
-  // generating user annotations derived from forms.
-  FORMS_ANNOTATIONS = 73;
   // This optimization provides information about whether a page is eligible for
   // text classifier entity detection. This feature is iOS only.
   TEXT_CLASSIFIER_ENTITY_DETECTION = 74;
@@ -317,6 +315,117 @@ enum OptimizationType {
   BMO_CREDIT_CARD_WHOLESALE_CLUB_BENEFITS = 88;
   // Provides information about whether a page is eligible to cue for GLIC.
   GLIC_CONTEXTUAL_CUEING = 90;
+  // Provides information about the contextual zero state suggestions for a
+  // page.
+  GLIC_ZERO_STATE_SUGGESTIONS = 91;
+  // Provides information about whether GLIC may act on a page.
+  GLIC_ACTION_PAGE_BLOCK = 92;
+  // Provides information about FedCM API clickthrough rate aggregated across
+  // all users on the page.
+  FEDCM_CLICKTHROUGH_RATE = 93;
+  // Provides information about whether the page is eligible for Digital
+  // Credentials low friction.
+  DIGITAL_CREDENTIALS_LOW_FRICTION = 97;
+  // This optimization provides information about merchant URLs that are
+  // eligible for A2A payments.
+  A2A_MERCHANT_ALLOWLIST = 98;
+  // Provides information about whether a page is eligible for walletable pass
+  // detection.
+  WALLETABLE_PASS_DETECTION_ALLOWLIST = 99;
+  // Merchant blocklist for card flat rate benefits.
+  SHARED_CREDIT_CARD_FLAT_RATE_BENEFITS_BLOCKLIST = 100;
+
+  // TODO(crbug.com/423826272): Add enum 101 for READALOUD_AUDIO_OVERVIEWS.
+
+  // This optimization helps determine if this merchant page is a good candidate
+  // for enabling buy now pay later flow with Klarna on desktop.
+  BUY_NOW_PAY_LATER_ALLOWLIST_KLARNA = 102;
+
+  // This optimization helps determine if this merchant page should be blocked
+  // for the buy now pay later flow with Affirm on desktop.
+  BUY_NOW_PAY_LATER_BLOCKLIST_AFFIRM = 103;
+  // This optimization helps determine if this merchant page should be blocked
+  // for the buy now pay later flow with Zip on desktop.
+  BUY_NOW_PAY_LATER_BLOCKLIST_ZIP = 104;
+  // This optimization helps determine if this merchant page should be blocked
+  // for the buy now pay later flow with Klarna on desktop.
+  BUY_NOW_PAY_LATER_BLOCKLIST_KLARNA = 105;
+
+  // Blocklist for the Lens Overlay EDU action chip.
+  LENS_OVERLAY_EDU_ACTION_CHIP_BLOCKLIST = 106;
+  // Allowlist for the Lens Overlay EDU action chip.
+  LENS_OVERLAY_EDU_ACTION_CHIP_ALLOWLIST = 107;
+  // Provides information about whether a page is eligible for walletable
+  // loyalty pass detection.
+  WALLETABLE_PASS_DETECTION_LOYALTY_ALLOWLIST = 108;
+  // Provides information about whether a page is eligible for walletable
+  // boarding pass detection.
+  WALLETABLE_PASS_DETECTION_BOARDING_PASS_ALLOWLIST = 109;
+
+  // Blocklist for the NTP-Next deep dive action chip.
+  NTP_NEXT_DEEP_DIVE_ACTION_CHIP_BLOCKLIST = 110;
+  // Allowlist for the NTP-Next deep dive action chip.
+  NTP_NEXT_DEEP_DIVE_ACTION_CHIP_ALLOWLIST = 111;
+
+  // This optimization provides information about the eligibility of a URL
+  // for Reader Mode.
+  READER_MODE_ELIGIBLE = 112;
+
+  // This optimization helps determine if this merchant page is a good candidate
+  // for enabling buy now pay later flow with Affirm on Chrome Android.
+  BUY_NOW_PAY_LATER_ALLOWLIST_AFFIRM_ANDROID = 113;
+  // This optimization helps determine if this merchant page is a good candidate
+  // for enabling buy now pay later flow with Zip on Chrome Android.
+  BUY_NOW_PAY_LATER_ALLOWLIST_ZIP_ANDROID = 114;
+  // This optimization helps determine if this merchant page is a good candidate
+  // for enabling buy now pay later flow with Klarna on Chrome Android.
+  BUY_NOW_PAY_LATER_ALLOWLIST_KLARNA_ANDROID = 115;
+  // Provides information about whether we may trigger Autofill on a page
+  // element in an iframe with this origin during an actor task.
+  AUTOFILL_ACTOR_IFRAME_ORIGIN_ALLOWLIST = 116;
+
+  // Provides information about whether a page is eligible for walletable
+  // transit ticket pass detection.
+  WALLETABLE_PASS_DETECTION_TRANSIT_TICKET_ALLOWLIST = 117;
+  // Provides information about whether a page is eligible for walletable
+  // event pass detection.
+  WALLETABLE_PASS_DETECTION_EVENT_PASS_ALLOWLIST = 118;
+  // Provides the set of Skills to display on the current page.
+  SKILLS = 119;
+  // Provides information about whether the PSP hosts are eligible for Pix
+  // payments.
+  PIX_PSP_ALLOWLIST = 120;
+  // Provides information about whether the page is eligible for Indigo.
+  // Note: this enumerator name doesn't currently match the Google internal
+  // repository, but will be renamed to match later on.
+  INDIGO = 121;
+  // Provides information about the page theme for Finds.
+  FINDS_PAGE_THEME = 122;
+  // Provides information on if this merchant page is a good candidate for
+  // Omnibox-chip-triggered Autofill.
+  OMNIBOX_AUTOFILL_IFRAME_ALLOWLIST = 123;
+  // This optimization helps determine if this merchant page should be blocked
+  // for the buy now pay later flow with Affirm on Chrome Android.
+  BUY_NOW_PAY_LATER_BLOCKLIST_AFFIRM_ANDROID = 124;
+  // This optimization helps determine if this merchant page should be blocked
+  // for the buy now pay later flow with Zip on Chrome Android.
+  BUY_NOW_PAY_LATER_BLOCKLIST_ZIP_ANDROID = 125;
+  // This optimization helps determine if this merchant page should be blocked
+  // for the buy now pay later flow with Klarna on Chrome Android.
+  BUY_NOW_PAY_LATER_BLOCKLIST_KLARNA_ANDROID = 126;
+  // The below optimizations provide information about merchant URLs that only
+  // Curinos supports for credit card category benefits.
+  CURINOS_CREDIT_CARD_FLIGHT_BENEFITS = 127;
+  CURINOS_CREDIT_CARD_HOTEL_BENEFITS = 128;
+  CURINOS_CREDIT_CARD_CAR_RENTAL_BENEFITS = 129;
+  // The following optimizations provide information about URLs that support
+  // filtering based on semantic breakdown; see go/magic-filters:dd.
+  FILTER_TASKS_SUPPORTED = 130;
+  FILTER_EXTRACT_ATTRIBUTES = 131;
+  // This optimization helps determine if a page should be blocked for the
+  // Autofill AtMemory feature.
+  AUTOFILL_AT_MEMORY_BLOCKED = 132;
+  FILTER_EXECUTION_STRATEGY = 133;
 }
 
 // Presents semantics for how page load URLs should be matched.

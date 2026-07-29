@@ -43,27 +43,37 @@ std::unique_ptr<WebContentDecryptionModuleAccessImpl>
 WebContentDecryptionModuleAccessImpl::Create(
     const WebSecurityOrigin& security_origin,
     const WebMediaKeySystemConfiguration& configuration,
+    const WebString& requested_key_system,
     const media::CdmConfig& cdm_config,
     const base::WeakPtr<WebEncryptedMediaClientImpl>& client) {
   return std::make_unique<WebContentDecryptionModuleAccessImpl>(
-      security_origin, configuration, cdm_config, client);
+      security_origin, configuration, requested_key_system, cdm_config, client);
 }
 
 WebContentDecryptionModuleAccessImpl::WebContentDecryptionModuleAccessImpl(
     const WebSecurityOrigin& security_origin,
     const WebMediaKeySystemConfiguration& configuration,
+    const WebString& requested_key_system,
     const media::CdmConfig& cdm_config,
     const base::WeakPtr<WebEncryptedMediaClientImpl>& client)
     : security_origin_(security_origin),
       configuration_(configuration),
+      requested_key_system_(requested_key_system),
       cdm_config_(cdm_config),
       client_(client) {}
 
 WebContentDecryptionModuleAccessImpl::~WebContentDecryptionModuleAccessImpl() =
     default;
 
-WebString WebContentDecryptionModuleAccessImpl::GetKeySystem() {
-  return WebString::FromUTF8(cdm_config_.key_system);
+WebString WebContentDecryptionModuleAccessImpl::GetRequestedKeySystem() {
+  // crbug.com/421223928: Returns the originally requested key system
+  return requested_key_system_;
+}
+
+WebString WebContentDecryptionModuleAccessImpl::GetInternalKeySystem() {
+  // crbug.com/421223928: Returns the internal key system (base key system if
+  // exists)
+  return WebString::FromUtf8(cdm_config_.key_system);
 }
 
 WebMediaKeySystemConfiguration
@@ -80,8 +90,8 @@ void WebContentDecryptionModuleAccessImpl::CreateContentDecryptionModule(
   // gets garbage-collected.
   auto result_copy = std::make_unique<WebContentDecryptionModuleResult>(result);
   task_runner->PostTask(FROM_HERE,
-                        WTF::BindOnce(&CreateCdm, client_, security_origin_,
-                                      cdm_config_, std::move(result_copy)));
+                        blink::BindOnce(&CreateCdm, client_, security_origin_,
+                                        cdm_config_, std::move(result_copy)));
 }
 
 bool WebContentDecryptionModuleAccessImpl::UseHardwareSecureCodecs() const {

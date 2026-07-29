@@ -14,6 +14,8 @@
 #include "components/segmentation_platform/internal/database/ukm_types.h"
 #include "components/segmentation_platform/internal/database/ukm_url_table.h"
 #include "components/segmentation_platform/public/types/processed_value.h"
+#include "sql/database.h"
+#include "sql/statement.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -101,17 +103,9 @@ class UkmDatabaseBackendTest : public testing::Test {
   void CreateAndInitBackend() {
     backend_ = std::make_unique<UkmDatabaseBackend>(
         temp_dir_.GetPath().Append(FILE_PATH_LITERAL("ukm_database")),
-        /*in_memory=*/false, task_runner_);
-    base::RunLoop wait_for_init;
-    backend_->InitDatabase(base::BindOnce(
-        [](base::OnceClosure quit,
-           scoped_refptr<base::SequencedTaskRunner> task_runner, bool success) {
-          EXPECT_TRUE(task_runner->RunsTasksInCurrentSequence());
-          std::move(quit).Run();
-          ASSERT_TRUE(success);
-        },
-        wait_for_init.QuitClosure(), task_runner_));
-    wait_for_init.Run();
+        /*in_memory=*/false);
+    bool success = backend_->InitDatabase();
+    ASSERT_TRUE(success);
   }
 
   void TearDown() override {
@@ -123,19 +117,12 @@ class UkmDatabaseBackendTest : public testing::Test {
   void ExpectQueryResult(UkmDatabase::QueryList&& queries,
                          bool expect_success,
                          const processing::IndexedTensors& expected_values) {
-    base::RunLoop wait_for_query3;
-    backend_->RunReadOnlyQueries(
-        std::move(queries),
-        base::BindOnce(
-            [](base::OnceClosure quit, bool expect_success,
-               const processing::IndexedTensors& expected_values, bool success,
-               processing::IndexedTensors tensors) {
-              EXPECT_EQ(expect_success, success);
-              EXPECT_EQ(expected_values, tensors);
-              std::move(quit).Run();
-            },
-            wait_for_query3.QuitClosure(), expect_success, expected_values));
-    wait_for_query3.Run();
+    std::optional<processing::IndexedTensors> result =
+        backend_->RunReadOnlyQueries(std::move(queries));
+    EXPECT_EQ(expect_success, result.has_value());
+    if (expect_success) {
+      EXPECT_EQ(expected_values, result.value());
+    }
   }
 
  protected:
@@ -145,6 +132,17 @@ class UkmDatabaseBackendTest : public testing::Test {
   base::ScopedTempDir temp_dir_;
   std::unique_ptr<UkmDatabaseBackend> backend_;
 };
+
+// Checks that the database is always opened in exclusive locking mode. This is
+// required because functions doing only read statements do not use transactions
+// for performance reason. These function rely on the exclusive locking mode to
+// be atomic.
+TEST_F(UkmDatabaseBackendTest, DatabaseIsOpenedInExclusiveLockingMode) {
+  sql::Statement statement(
+      backend_->db().GetReadonlyStatement("PRAGMA locking_mode"));
+  ASSERT_TRUE(statement.Step());
+  EXPECT_EQ(statement.ColumnString(0), "exclusive");
+}
 
 TEST_F(UkmDatabaseBackendTest, EntriesWithoutUrls) {
   ukm::mojom::UkmEntryPtr entry1 = GetSampleUkmEntry();
@@ -478,7 +476,7 @@ TEST_F(UkmDatabaseBackendTest, DeleteAllUrls) {
   EXPECT_TRUE(backend_->has_transaction_for_testing());
 }
 
-TEST_F(UkmDatabaseBackendTest, DeleteOldEntries) {
+TEST_F(UkmDatabaseBackendTest, CleanupOldEntries) {
   const GURL kUrl1("https://www.url1.com");
   const GURL kUrl2("https://www.url2.com");
   const GURL kUrl3("https://www.url3.com");
@@ -522,11 +520,11 @@ TEST_F(UkmDatabaseBackendTest, DeleteOldEntries) {
                                });
   EXPECT_EQ(test_util::GetAllUmaMetrics(backend_->db()).size(), 3u);
 
-  backend_->DeleteEntriesOlderThan(base::Time::Max());
+  backend_->CleanupOldEntries(base::Time::Max(), base::Time::Max());
 
   test_util::AssertUrlsInTable(backend_->db(), {});
-  // UMA metrics are not deleted.
-  EXPECT_EQ(test_util::GetAllUmaMetrics(backend_->db()).size(), 3u);
+  // UMA metrics are also deleted.
+  EXPECT_EQ(test_util::GetAllUmaMetrics(backend_->db()).size(), 0u);
 
   EXPECT_TRUE(backend_->has_transaction_for_testing());
 }
@@ -662,17 +660,9 @@ class FailedUkmDatabaseTest : public UkmDatabaseBackendTest {
   void SetUp() override {
     task_runner_ = base::ThreadPool::CreateSequencedTaskRunner({});
     backend_ = std::make_unique<UkmDatabaseBackend>(
-        base::FilePath(kBadFilePath), /*in_memory=*/false, task_runner_);
-    base::RunLoop wait_for_init;
-    backend_->InitDatabase(base::BindOnce(
-        [](base::OnceClosure quit,
-           scoped_refptr<base::SequencedTaskRunner> task_runner, bool success) {
-          EXPECT_TRUE(task_runner->RunsTasksInCurrentSequence());
-          std::move(quit).Run();
-          ASSERT_FALSE(success);
-        },
-        wait_for_init.QuitClosure(), task_runner_));
-    wait_for_init.Run();
+        base::FilePath(kBadFilePath), /*in_memory=*/false);
+    bool success = backend_->InitDatabase();
+    ASSERT_FALSE(success);
   }
   void TearDown() override {
     backend_.reset();
@@ -688,7 +678,7 @@ TEST_F(FailedUkmDatabaseTest, QueriesAreNoop) {
   backend_->UpdateUrlForUkmSource(10, kUrl1, true, /*profile_id*/ "");
   backend_->RemoveUrls({kUrl1}, /*all_urls=*/false);
   backend_->RemoveUrls({kUrl1}, /*all_urls=*/true);
-  backend_->DeleteEntriesOlderThan(base::Time() - base::Seconds(10));
+  backend_->CleanupOldEntries(base::Time::Now(), base::Time::Now());
   backend_->AddUmaMetric("1", GetSampleMetricsRow());
   backend_->CleanupItems("",
                          {CleanupItem(1, 2, proto::SignalType::HISTOGRAM_ENUM,

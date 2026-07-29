@@ -51,8 +51,6 @@ component("user_manager") {
       "include_exclude_account_id_filter.h",
       "known_user.cc",
       "known_user.h",
-      "multi_user/multi_user_sign_in_policy_controller.cc",
-      "multi_user/multi_user_sign_in_policy_controller.h",
       "scoped_user_manager.cc",
       "scoped_user_manager.h",
       "user.cc",
@@ -65,11 +63,14 @@ component("user_manager") {
       "user_manager.h",
       "user_manager_impl.cc",
       "user_manager_impl.h",
+      "user_manager_policy_util.cc",
+      "user_manager_policy_util.h",
     ]
 
     deps += [
       "//ash/constants",
       "//chromeos/ash/components/install_attributes",
+      "//chromeos/ash/components/policy/device_local_account",
       "//chromeos/ash/components/settings",
       "//components/pref_registry",
       "//skia",
@@ -81,6 +82,23 @@ component("user_manager") {
 }
 
 if (is_chromeos) {
+  component("multi_user") {
+    sources = [
+      "multi_user/multi_user_sign_in_policy_controller.cc",
+      "multi_user/multi_user_sign_in_policy_controller.h",
+    ]
+
+    defines = [ "USER_MANAGER_IMPLEMENTATION" ]
+
+    deps = [
+      ":user_manager",
+      "//base",
+      "//components/account_id",
+      "//components/prefs",
+      "//components/session_manager/core",
+    ]
+  }
+
   source_set("test_support") {
     testonly = true
     sources = [
@@ -106,6 +124,7 @@ if (is_chromeos) {
       "//chromeos/ash/components/dbus/cryptohome",
       "//chromeos/ash/components/dbus/cryptohome:cryptohome_proto",
       "//chromeos/ash/components/dbus/userdataauth",
+      "//chromeos/ash/components/policy/device_local_account",
       "//chromeos/ash/components/settings",
       "//components/policy/core/common",
       "//components/prefs",
@@ -131,5 +150,9 @@ if (is_chromeos) {
       "//testing/gmock",
       "//testing/gtest",
     ]
+
+    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+    # enable the diagnostic by removing this line.
+    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 }

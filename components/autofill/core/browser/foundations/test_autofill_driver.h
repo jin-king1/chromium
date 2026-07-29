@@ -5,13 +5,15 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_FOUNDATIONS_TEST_AUTOFILL_DRIVER_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FOUNDATIONS_TEST_AUTOFILL_DRIVER_H_
 
+#include <algorithm>
 #include <concepts>
 #include <map>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "base/compiler_specific.h"
-#include "base/containers/flat_map.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
@@ -21,12 +23,18 @@
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "url/origin.h"
 
 #if !BUILDFLAG(IS_IOS)
 #include "components/webauthn/core/browser/internal_authenticator.h"
 #endif
+
+namespace autofill::mojom {
+class AutofillVisibilityObserver;
+}  // namespace autofill::mojom
 
 namespace autofill {
 
@@ -50,27 +58,32 @@ class TestAutofillDriverTemplate : public T {
 
   // AutofillDriver:
   LocalFrameToken GetFrameToken() const override { return frame_token_; }
-  TestAutofillDriverTemplate* GetParent() override { return parent_; }
   std::optional<LocalFrameToken> Resolve(FrameToken query) override {
-    if (auto* local_frame_token = absl::get_if<LocalFrameToken>(&query)) {
+    if (auto* local_frame_token = std::get_if<LocalFrameToken>(&query)) {
       return *local_frame_token;
     }
-    auto it = remote_frame_tokens_.find(absl::get<RemoteFrameToken>(query));
+    auto it = remote_frame_tokens_.find(std::get<RemoteFrameToken>(query));
     if (it != remote_frame_tokens_.end()) {
       return it->second;
     }
     return std::nullopt;
   }
+  TestAutofillDriverTemplate* GetParent() override { return parent_; }
   bool IsActive() const override { return is_active_; }
-  bool HasSharedAutofillPermission() const override { return shared_autofill_; }
+  bool IsEmbedded() const override { return is_embedded_; }
+  bool IsPolicyControlledFeatureAutofillEnabled() const override {
+    return policy_controlled_feature_autofill_enabled_;
+  }
+  bool IsPolicyControlledFeatureManualTextEnabled() const override {
+    return policy_controlled_feature_manual_text_enabled_;
+  }
   bool CanShowAutofillUi() const override { return true; }
   void ApplyFieldAction(mojom::FieldActionType action_type,
                         mojom::ActionPersistence action_persistence,
                         const FieldGlobalId& field,
                         const std::u16string& value) override {}
-  void SendTypePredictionsToRenderer(
-      base::span<const raw_ptr<FormStructure, VectorExperimental>> forms)
-      override {}
+  void SendTypePredictionsToRenderer(const FormStructure& form) override {}
+  void ExposeDomNodeIdsInAllFrames() override {}
   void RendererShouldAcceptDataListSuggestion(
       const FieldGlobalId& field,
       const std::u16string& value) override {}
@@ -96,9 +109,13 @@ class TestAutofillDriverTemplate : public T {
   void TriggerFormExtractionInAllFrames(
       base::OnceCallback<void(bool)> form_extraction_finished_callback)
       override {}
-  void ExtractForm(
-      FormGlobalId form,
+  void ExtractFormWithField(
+      FieldGlobalId field_id,
       AutofillDriver::BrowserFormHandler response_handler) override {}
+  void ObserveFieldVisibility(
+      const FieldGlobalId& field_id,
+      mojo::PendingRemote<mojom::AutofillVisibilityObserver> observer)
+      override {}
   void GetFourDigitCombinationsFromDom(
       base::OnceCallback<void(const std::vector<std::string>&)>
           potential_matches) override {}
@@ -108,29 +125,33 @@ class TestAutofillDriverTemplate : public T {
       uint32_t number_of_ancestor_levels_to_search,
       base::OnceCallback<void(const std::string& amount)> response_callback)
       override {}
+  void SendEmailVerificationToken(FieldGlobalId email_field_id,
+                                  const std::string& email,
+                                  FieldGlobalId token_field_id,
+                                  const std::string& token) override {}
+  void UpdateEmailVerificationState(
+      const FieldGlobalId& email_field_id,
+      mojom::EmailVerificationState state) override {}
+  void ScrollFieldIntoView(FieldGlobalId field_id) override {}
+  bool IsSafeToFill(const FormFieldData& field,
+                    FieldType filled_type,
+                    const url::Origin& main_origin,
+                    const url::Origin& trigger_origin) const override {
+    // Simplified security model which allows to filter (only) fields from the
+    // same origin.
+    return field.origin() == trigger_origin;
+  }
 
-  // The return value contains the FieldGlobalIds of all elements (field_id,
-  // type) of `field_type_map` for which
-  // `field_type_map_filter_.Run(triggered_origin, field, type)` is true and for
-  // which there's a corresponding field in `fields`.
   base::flat_set<FieldGlobalId> ApplyFormAction(
       mojom::FormActionType action_type,
       mojom::ActionPersistence action_persistence,
       base::span<const FormFieldData> fields,
+      const FillId& fill_id,
+      bool supports_refill,
       const url::Origin& triggered_origin,
-      const base::flat_map<FieldGlobalId, FieldType>& field_type_map) override {
-    if (action_type == mojom::FormActionType::kUndo) {
-      return {};
-    }
-    std::vector<FieldGlobalId> result;
-    for (const auto& [id, type] : field_type_map) {
-      if ((!field_type_map_filter_ ||
-           field_type_map_filter_.Run(triggered_origin, id, type)) &&
-          base::Contains(fields, id, &FormFieldData::global_id)) {
-        result.push_back(id);
-      }
-    }
-    return result;
+      const absl::flat_hash_map<FieldGlobalId, FieldType>& field_type_map,
+      const Section& section_for_clear_form_on_ios) override {
+    return base::ToVector(fields, &FormFieldData::global_id);
   }
 
   // Methods unique to TestAutofillDriver that tests can use to specialize
@@ -149,20 +170,20 @@ class TestAutofillDriverTemplate : public T {
 
   void SetIsActive(bool is_active) { is_active_ = is_active; }
 
-  void SetSharedAutofill(bool shared_autofill) {
-    shared_autofill_ = shared_autofill;
+  void SetIsEmbedded(bool is_embedded) { is_embedded_ = is_embedded; }
+
+  void SetPolicyControlledFeatureAutofillEnabled(bool enabled) {
+    policy_controlled_feature_autofill_enabled_ = enabled;
+  }
+
+  void SetPolicyControlledFeatureManualTextEnabled(bool enabled) {
+    policy_controlled_feature_manual_text_enabled_ = enabled;
   }
 
   void SetIsolationInfo(const net::IsolationInfo& isolation_info) {
     isolation_info_ = isolation_info;
   }
 
-  // The filter that determines the return value of FillOrPreviewForm().
-  void SetFieldTypeMapFilter(
-      base::RepeatingCallback<
-          bool(const url::Origin&, FieldGlobalId, FieldType)> callback) {
-    field_type_map_filter_ = callback;
-  }
 
   void SetSharedURLLoaderFactory(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
@@ -178,10 +199,10 @@ class TestAutofillDriverTemplate : public T {
   std::map<RemoteFrameToken, LocalFrameToken> remote_frame_tokens_;
   raw_ptr<TestAutofillDriverTemplate> parent_ = nullptr;
   bool is_active_ = true;
-  bool shared_autofill_ = false;
+  bool is_embedded_ = false;
+  bool policy_controlled_feature_autofill_enabled_ = false;
+  bool policy_controlled_feature_manual_text_enabled_ = false;
   net::IsolationInfo isolation_info_;
-  base::RepeatingCallback<bool(const url::Origin&, FieldGlobalId, FieldType)>
-      field_type_map_filter_;
 
 #if !BUILDFLAG(IS_IOS)
   std::unique_ptr<webauthn::InternalAuthenticator> test_authenticator_;

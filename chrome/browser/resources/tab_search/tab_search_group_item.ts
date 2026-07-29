@@ -38,10 +38,11 @@ export class TabSearchGroupItemElement extends TabSearchGroupItemBase {
   static override get properties() {
     return {
       data: {type: Object},
+      tabGroupColorRefresh_: {type: Boolean},
     };
   }
 
-  data: TabGroupData = new TabGroupData({
+  accessor data: TabGroupData = new TabGroupData({
     sessionId: -1,
     id: {high: 0n, low: 0n},
     color: Color.kGrey,
@@ -51,13 +52,19 @@ export class TabSearchGroupItemElement extends TabSearchGroupItemBase {
     lastActiveElapsedText: '',
   });
 
+  protected accessor tabGroupColorRefresh_: boolean =
+      loadTimeData.getBoolean('useTabGroupColorRefresh');
+
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
 
     if (changedProperties.has('data')) {
       this.style.setProperty(
           '--group-dot-color',
-          `var(--tab-group-color-${colorName(this.data.tabGroup.color)})`);
+          this.tabGroupColorRefresh_ ?
+              `var(--tab-group-refresh-color-${
+                  colorName(this.data.tabGroup.color)})` :
+              `var(--tab-group-color-${colorName(this.data.tabGroup.color)})`);
     }
   }
 

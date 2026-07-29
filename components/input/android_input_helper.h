@@ -5,9 +5,9 @@
 #ifndef COMPONENTS_INPUT_ANDROID_INPUT_HELPER_H_
 #define COMPONENTS_INPUT_ANDROID_INPUT_HELPER_H_
 
+#include "base/memory/weak_ptr.h"
 #include "components/input/render_widget_host_view_input.h"
 #include "ui/events/android/motion_event_android.h"
-#include "ui/events/gesture_detection/filtered_gesture_provider.h"
 
 namespace input {
 
@@ -19,7 +19,6 @@ class COMPONENT_EXPORT(INPUT) AndroidInputHelper {
    public:
     virtual ~Delegate() = default;
     virtual void SendGestureEvent(const blink::WebGestureEvent& event) = 0;
-    virtual ui::FilteredGestureProvider& GetGestureProvider() = 0;
   };
 
   explicit AndroidInputHelper(RenderWidgetHostViewInput* view,
@@ -35,6 +34,8 @@ class COMPONENT_EXPORT(INPUT) AndroidInputHelper {
 
   bool ShouldRouteEvents() const;
 
+  void ResetGestureDetection();
+
   void OnGestureEvent(const ui::GestureEventData& gesture);
   bool RequiresDoubleTapGestureEvents() const;
 
@@ -46,13 +47,17 @@ class COMPONENT_EXPORT(INPUT) AndroidInputHelper {
       gfx::PointF* transformed_point);
 
   void RecordToolTypeForActionDown(const ui::MotionEventAndroid& event);
-  void ComputeEventLatencyOSTouchHistograms(const ui::MotionEvent& event);
+  void ComputeEventLatencyOSTouchHistograms(
+      const ui::MotionEvent& event,
+      const base::TimeTicks& processing_time);
 
  private:
   // |view_| is supposed to outlive |this|.
   raw_ref<RenderWidgetHostViewInput> view_;
   // |delegate_| is supposed to outlive |this|.
   raw_ref<Delegate> delegate_;
+
+  base::WeakPtrFactory<AndroidInputHelper> weak_factory_{this};
 };
 
 }  // namespace input

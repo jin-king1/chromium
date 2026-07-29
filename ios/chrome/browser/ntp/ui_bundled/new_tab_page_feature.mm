@@ -12,55 +12,26 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-
-#pragma mark - Constants
-
-const char kDeprecateFeedHeaderParameterRemoveLabel[] = "remove-feed-label";
-const char kDeprecateFeedHeaderParameterTopPadding[] = "top-padding";
-const char kDeprecateFeedHeaderParameterEnlargeLogoAndFakebox[] =
-    "enlarge-logo-n-fakebox";
+#import "ui/base/device_form_factor.h"
 
 #pragma mark - Feature declarations
 
-BASE_FEATURE(kEnableDiscoverFeedStaticResourceServing,
-             "EnableDiscoverFeedStaticResourceServing",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kOverrideFeedSettings, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEnableDiscoverFeedDiscoFeedEndpoint,
-             "EnableDiscoFeedEndpoint",
+BASE_FEATURE(kNTPHeaderUseTransformsForAnimations,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEnableNTPViewHierarchyRepair,
-             "NTPViewHierarchyRepair",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kFeedSwipeInProductHelp, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kOverrideFeedSettings,
-             "OverrideFeedSettings",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUseFeedEligibilityService, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kWebFeedFeedbackReroute,
-             "WebFeedFeedbackReroute",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kEnableNTPBackgroundImageCache, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEnableSignedOutViewDemotion,
-             "EnableSignedOutViewDemotion",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kConsistentLogoDoodleHeight, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEnableiPadFeedGhostCards,
-             "EnableiPadFeedGhostCards",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kIdentityDiscAccountMenu,
-             "IdentityDiscAccountMenu",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kNewTabPageRedesign, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #pragma mark - Feature parameters
-
-const char kDiscoverFeedSRSReconstructedTemplatesEnabled[] =
-    "DiscoverFeedSRSReconstructedTemplatesEnabled";
-
-const char kDiscoverFeedSRSPreloadTemplatesEnabled[] =
-    "DiscoverFeedSRSPreloadTemplatesEnabled";
 
 // Feature parameters for `kOverrideFeedSettings`.
 const char kFeedSettingRefreshThresholdInSeconds[] =
@@ -74,15 +45,15 @@ const char kFeedSettingTimeoutThresholdAfterClearBrowsingData[] =
 const char kFeedSettingDiscoverReferrerParameter[] =
     "DiscoverReferrerParameter";
 
-// Feature parameter for `kIdentityDiscAccountMenu`.
-const char kDisableAccountMenuEllipsisParam[] =
-    "identity-disc-account-menu-without-ellipsis";
+const char kFeedSwipeInProductHelpArmParam[] = "feed-swipe-in-product-help-arm";
+
+BASE_FEATURE_PARAM(int,
+                   kFeedSwipeInProductHelpArmParamFeature,
+                   &kFeedSwipeInProductHelp,
+                   kFeedSwipeInProductHelpArmParam,
+                   static_cast<int>(FeedSwipeIPHVariation::kStaticAfterFRE));
 
 #pragma mark - Helpers
-
-bool IsNTPViewHierarchyRepairEnabled() {
-  return base::FeatureList::IsEnabled(kEnableNTPViewHierarchyRepair);
-}
 
 bool IsDiscoverFeedTopSyncPromoEnabled() {
   // Promo should not be shown on FRE, or for users in Great Britain for AADC
@@ -98,44 +69,40 @@ bool IsContentSuggestionsForSupervisedUserEnabled(PrefService* pref_service) {
       prefs::kNTPContentSuggestionsForSupervisedUserEnabled);
 }
 
-bool IsWebFeedFeedbackRerouteEnabled() {
-  return base::FeatureList::IsEnabled(kWebFeedFeedbackReroute);
-}
-
-bool IsSignedOutViewDemotionEnabled() {
-  return base::FeatureList::IsEnabled(kEnableSignedOutViewDemotion);
-}
-
-bool IsiPadFeedGhostCardsEnabled() {
-  return base::FeatureList::IsEnabled(kEnableiPadFeedGhostCards);
-}
-
-bool ShouldRemoveDiscoverLabel(bool is_google_default_search_engine) {
-  return is_google_default_search_engine && ShouldDeprecateFeedHeader() &&
-         base::GetFieldTrialParamByFeatureAsBool(
-             kDeprecateFeedHeader, kDeprecateFeedHeaderParameterRemoveLabel,
-             false);
-}
-
-bool ShouldEnlargeLogoAndFakebox() {
-  return ShouldDeprecateFeedHeader() &&
-         base::GetFieldTrialParamByFeatureAsBool(
-             kDeprecateFeedHeader,
-             kDeprecateFeedHeaderParameterEnlargeLogoAndFakebox, false);
-}
-
-double TopPaddingToNTP() {
-  return ShouldDeprecateFeedHeader()
-             ? base::GetFieldTrialParamByFeatureAsDouble(
-                   kDeprecateFeedHeader,
-                   kDeprecateFeedHeaderParameterTopPadding, 0)
-             : 0;
-}
-
-bool IdentityDiscAccountMenuEnabledWithoutEllipsis() {
-  if (base::FeatureList::IsEnabled(kIdentityDiscAccountMenu)) {
-    return base::GetFieldTrialParamByFeatureAsBool(
-        kIdentityDiscAccountMenu, kDisableAccountMenuEllipsisParam, false);
+FeedSwipeIPHVariation GetFeedSwipeIPHVariation() {
+  if (base::FeatureList::IsEnabled(kFeedSwipeInProductHelp)) {
+    return static_cast<FeedSwipeIPHVariation>(
+        kFeedSwipeInProductHelpArmParamFeature.Get());
   }
-  return false;
+  return FeedSwipeIPHVariation::kDisabled;
+}
+
+bool UseFeedEligibilityService() {
+  return base::FeatureList::IsEnabled(kUseFeedEligibilityService);
+}
+
+bool IsAimEnabledInNtp() {
+  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET &&
+      !base::FeatureList::IsEnabled(kAIMNTPEntrypointTablet)) {
+    return NO;
+  }
+
+  return YES;
+}
+
+bool IsNTPBackgroundImageCacheEnabled() {
+  return base::FeatureList::IsEnabled(kEnableNTPBackgroundImageCache);
+}
+
+bool IsConsistentLogoDoodleHeightEnabled() {
+  return base::FeatureList::IsEnabled(kConsistentLogoDoodleHeight);
+}
+
+bool IsNTPHeaderTransformsForAnimationsEnabled() {
+  return base::FeatureList::IsEnabled(kNTPHeaderUseTransformsForAnimations);
+}
+
+bool IsNTPRedesignEnabled() {
+  return base::FeatureList::IsEnabled(kNewTabPageRedesign) &&
+         ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET;
 }

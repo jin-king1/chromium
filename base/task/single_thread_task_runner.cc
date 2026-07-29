@@ -14,13 +14,20 @@
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
 #include "base/run_loop.h"
+#include "base/task/sequence_manager/sequence_manager_impl.h"
+#include "base/types/pass_key.h"
 
 namespace base {
 
 namespace {
 
+using SequenceManagerImpl = sequence_manager::internal::SequenceManagerImpl;
+
 constinit thread_local SingleThreadTaskRunner::CurrentDefaultHandle*
     current_default_handle = nullptr;
+
+constinit SingleThreadTaskRunner::MainThreadDefaultHandle*
+    main_thread_default_handle = nullptr;
 
 // This function can be removed, and the calls below replaced with direct
 // variable accesses, once the MSAN workaround is not necessary.
@@ -63,6 +70,24 @@ bool SingleThreadTaskRunner::HasCurrentDefault() {
          !!GetCurrentDefaultHandle()->task_runner_;
 }
 
+// static
+const scoped_refptr<SingleThreadTaskRunner>&
+SingleThreadTaskRunner::GetMainThreadDefault() {
+  const auto* const handle = main_thread_default_handle;
+  CHECK(handle && handle->task_runner_)
+      << "Error: The main thread's handle is not initialized yet. This "
+         "probably means that you're calling this function too early in the "
+         "process's lifetime. If you're in a test, you can use "
+         "base::test::TaskEnvironment";
+  return handle->task_runner_;
+}
+
+// static
+bool SingleThreadTaskRunner::HasMainThreadDefault() {
+  return !!main_thread_default_handle &&
+         !!main_thread_default_handle->task_runner_;
+}
+
 SingleThreadTaskRunner::CurrentDefaultHandle::CurrentDefaultHandle(
     scoped_refptr<SingleThreadTaskRunner> task_runner)
     : CurrentDefaultHandle(std::move(task_runner), MayAlreadyExist{}) {
@@ -98,5 +123,24 @@ SingleThreadTaskRunner::CurrentHandleOverrideForTesting::
 
 SingleThreadTaskRunner::CurrentHandleOverrideForTesting::
     ~CurrentHandleOverrideForTesting() = default;
+
+SingleThreadTaskRunner::MainThreadDefaultHandle::MainThreadDefaultHandle(
+    scoped_refptr<SingleThreadTaskRunner> task_runner)
+    : MainThreadDefaultHandle(std::move(task_runner), MayAlreadyExist{}) {
+  CHECK(!previous_handle_);
+}
+
+SingleThreadTaskRunner::MainThreadDefaultHandle::MainThreadDefaultHandle(
+    scoped_refptr<SingleThreadTaskRunner> task_runner,
+    MayAlreadyExist)
+    : task_runner_(std::move(task_runner)),
+      previous_handle_(main_thread_default_handle) {
+  main_thread_default_handle = this;
+}
+
+SingleThreadTaskRunner::MainThreadDefaultHandle::~MainThreadDefaultHandle() {
+  DCHECK_EQ(main_thread_default_handle, this);
+  main_thread_default_handle = previous_handle_;
+}
 
 }  // namespace base

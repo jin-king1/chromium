@@ -7,10 +7,10 @@
 
 #import "base/no_destructor.h"
 #import "components/pref_registry/pref_registry_syncable.h"
-#import "ios/chrome/browser/enterprise/model/idle/idle_service.h"
 #import "ios/chrome/browser/shared/model/profile/profile_keyed_service_factory_ios.h"
 
 namespace enterprise_idle {
+class IdleService;
 
 // Singleton that owns all IdleServices and associates them with
 // ProfileIOS.
@@ -25,11 +25,11 @@ class IdleServiceFactory : public ProfileKeyedServiceFactoryIOS {
   IdleServiceFactory();
   ~IdleServiceFactory() override;
 
-  // BrowserStateKeyedServiceFactory implementation.
+  // ProfileKeyedServiceFactoryIOS implementation.
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
+      ProfileIOS* profile) const override;
 
-  void RegisterBrowserStatePrefs(
+  void RegisterProfilePrefs(
       user_prefs::PrefRegistrySyncable* registry) override;
 };
 

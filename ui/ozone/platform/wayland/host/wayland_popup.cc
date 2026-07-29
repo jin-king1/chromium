@@ -6,6 +6,7 @@
 
 #include <optional>
 
+#include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ui/base/ui_base_types.h"
@@ -15,13 +16,13 @@
 #include "ui/gfx/geometry/transform.h"
 #include "ui/ozone/platform/wayland/common/wayland_object.h"
 #include "ui/ozone/platform/wayland/common/wayland_util.h"
-#include "ui/ozone/platform/wayland/host/shell_object_factory.h"
-#include "ui/ozone/platform/wayland/host/shell_popup_wrapper.h"
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_output.h"
 #include "ui/ozone/platform/wayland/host/wayland_output_manager.h"
 #include "ui/ozone/platform/wayland/host/wayland_subsurface.h"
+#include "ui/ozone/platform/wayland/host/xdg_popup.h"
+#include "ui/ozone/platform/wayland/host/xdg_surface.h"
 
 namespace ui {
 
@@ -42,7 +43,7 @@ WaylandPopup::WaylandPopup(PlatformWindowDelegate* delegate,
 WaylandPopup::~WaylandPopup() = default;
 
 bool WaylandPopup::CreateShellPopup() {
-  DCHECK(parent_window() && !shell_popup_);
+  DCHECK(parent_window() && !xdg_popup_);
 
   // Use `xdg_parent_window` and do appropriate origin transformations when
   // sending requests through Wayland.
@@ -56,7 +57,11 @@ bool WaylandPopup::CreateShellPopup() {
       parent_window()->applied_state().window_scale) {
     // If scale changed while this was hidden (when WaylandPopup hides, parent
     // window's child is reset), update buffer scale accordingly.
+    auto weak_this = AsWeakPtr();
     UpdateWindowScale(true);
+    if (!weak_this) {
+      return false;
+    }
   }
 
   auto bounds_dip =
@@ -65,14 +70,14 @@ bool WaylandPopup::CreateShellPopup() {
 
   // At this point, both `bounds` and `anchor_rect` parameters here are in
   // UI coordinates space (i.e ui_scale'd), as they have just been provided by
-  // upper UI layers. As they are going to be used to issue Wayland requests,
+  // upper UI layers. Since they are going to be used to issue Wayland requests,
   // eg: xdg_positioner, they must be reverse-transformed to Wayland DIP
   // coordinates space.
   const float ui_scale = applied_state().ui_scale;
-
-  ShellPopupParams params;
-  params.bounds = gfx::ScaleToEnclosingRectIgnoringError(bounds_dip, ui_scale);
-  params.anchor = delegate()->GetOwnedWindowAnchorAndRectInDIP();
+  XdgPopup::InitParams params{
+      .bounds = gfx::ScaleToEnclosingRectIgnoringError(bounds_dip, ui_scale),
+      .anchor = delegate()->GetOwnedWindowAnchorAndRectInDIP(),
+  };
   if (params.anchor.has_value()) {
     // The anchor rectangle must be relative to the window geometry, rather
     // than the root surface origin. See https://crbug.com/1292486.
@@ -97,10 +102,16 @@ bool WaylandPopup::CreateShellPopup() {
   wl_surface_attach(root_surface()->surface(), nullptr, 0, 0);
   root_surface()->Commit(false);
 
-  ShellObjectFactory factory;
-  shell_popup_ = factory.CreateShellPopupWrapper(connection(), this, params);
-  if (!shell_popup_) {
-    LOG(ERROR) << "Failed to create Wayland shell popup";
+  if (auto xdg_surface = std::make_unique<XdgSurface>(this, connection())) {
+    if (xdg_surface->Initialize()) {
+      auto xdg_popup = std::make_unique<XdgPopup>(std::move(xdg_surface));
+      if (xdg_popup && xdg_popup->Initialize(params)) {
+        xdg_popup_ = std::move(xdg_popup);
+      }
+    }
+  }
+  if (!xdg_popup_) {
+    LOG(ERROR) << "Failed to create XdgPopup";
     return false;
   }
 
@@ -109,17 +120,26 @@ bool WaylandPopup::CreateShellPopup() {
 }
 
 void WaylandPopup::Show(bool inactive) {
-  if (shell_popup_)
+  if (xdg_popup_) {
     return;
+  }
 
   // Map parent window as WaylandPopup cannot become a visible child of a
   // window that is not mapped.
   DCHECK(parent_window());
-  if (!parent_window()->IsVisible())
+  auto weak_this = AsWeakPtr();
+  if (!parent_window()->IsVisible()) {
     parent_window()->Show(false);
+  }
+  if (!weak_this) {
+    return;
+  }
 
-  if (!CreateShellPopup()) {
+  if (!CreateShellPopup() && weak_this) {
     Close();
+    return;
+  }
+  if (!weak_this) {
     return;
   }
 
@@ -128,29 +148,41 @@ void WaylandPopup::Show(bool inactive) {
 }
 
 void WaylandPopup::Hide() {
-  if (!shell_popup_)
+  if (!xdg_popup_) {
     return;
+  }
 
   if (child_popup()) {
     child_popup()->Hide();
   }
+
+  // Note that the xdg_popup object should be destroyed before we touch
+  // anything else in order to provide the compositor a good reference point
+  // when the window contents can be frozen in case a window closing animation
+  // needs to be played. Ideally, the xdg_popup object should also be
+  // destroyed before any subsurface is destroyed, otherwise the window may have
+  // missing contents when the compositor animates it.
+  //
+  // The xdg-shell spec provides another way to hide a window: attach a nil
+  // buffer to the root surface. However, compositors often get it wrong, and it
+  // makes sense only if the xdg_popup object is going to be reused, which is
+  // not the case here.
+  parent_window()->set_child_popup(nullptr);
+  xdg_popup_.reset();
+
   WaylandWindow::Hide();
   // Mutter compositor crashes if we don't reset subsurfaces when hiding.
   if (WaylandWindow::primary_subsurface()) {
     WaylandWindow::primary_subsurface()->ResetSubsurface();
   }
 
-  if (shell_popup_) {
-    parent_window()->set_child_popup(nullptr);
-    shell_popup_.reset();
-    ClearInFlightRequestsSerial();
-  }
+  ClearInFlightRequestsSerial();
 
   connection()->Flush();
 }
 
 bool WaylandPopup::IsVisible() const {
-  return !!shell_popup_;
+  return !!xdg_popup_;
 }
 
 void WaylandPopup::SetBoundsInDIP(const gfx::Rect& bounds_dip) {
@@ -160,11 +192,15 @@ void WaylandPopup::SetBoundsInDIP(const gfx::Rect& bounds_dip) {
   }
 
   auto old_bounds_dip = GetBoundsInDIP();
+  auto weak_this = AsWeakPtr();
   WaylandWindow::SetBoundsInDIP(bounds_dip);
+  if (!weak_this) {
+    return;
+  }
 
   // The shell popup can be null if bounds are being fixed during
   // the initialization. See WaylandPopup::CreateShellPopup.
-  if (shell_popup_ && old_bounds_dip != bounds_dip) {
+  if (xdg_popup_ && old_bounds_dip != bounds_dip) {
     auto bounds_dip_in_parent =
         wl::TranslateWindowBoundsToParentDIP(this, xdg_parent_window);
     bounds_dip_in_parent.Inset(
@@ -181,7 +217,7 @@ void WaylandPopup::SetBoundsInDIP(const gfx::Rect& bounds_dip) {
     // with new geometry applied. Availability of methods to move/resize popup
     // surfaces purely depends on a protocol. See implementations of ShellPopup
     // for more details.
-    if (!shell_popup_->SetBounds(bounds_dip_in_parent)) {
+    if (!xdg_popup_->SetBounds(bounds_dip_in_parent)) {
       // Always force redraw for recreated objects.
       schedule_redraw_ = true;
       // This will also close all the children windows...
@@ -226,15 +262,20 @@ void WaylandPopup::HandlePopupConfigure(const gfx::Rect& bounds_dip) {
 
 void WaylandPopup::HandleSurfaceConfigure(uint32_t serial) {
   if (schedule_redraw_) {
+    auto weak_this = AsWeakPtr();
     delegate()->OnDamageRect(gfx::Rect{applied_state().size_px});
+    if (!weak_this) {
+      return;
+    }
     schedule_redraw_ = false;
   }
   ProcessPendingConfigureState(serial);
 }
 
 void WaylandPopup::OnSequencePoint(int64_t seq) {
-  if (!shell_popup())
+  if (!xdg_popup()) {
     return;
+  }
 
   ProcessSequencePoint(seq);
   MaybeApplyLatestStateRequest(/*force=*/false);
@@ -253,9 +294,9 @@ base::WeakPtr<WaylandWindow> WaylandPopup::AsWeakPtr() {
 }
 
 void WaylandPopup::OnCloseRequest() {
-  // Before calling OnCloseRequest, the |shell_popup_| must become hidden and
+  // Before calling OnCloseRequest, the `xdg_popup_` must become hidden and
   // only then call OnCloseRequest().
-  DCHECK(!shell_popup_);
+  DCHECK(!xdg_popup_);
   WaylandWindow::OnCloseRequest();
 }
 
@@ -276,12 +317,12 @@ WaylandPopup* WaylandPopup::AsWaylandPopup() {
 }
 
 bool WaylandPopup::IsSurfaceConfigured() {
-  return shell_popup() ? shell_popup()->IsConfigured() : false;
+  return xdg_popup() ? xdg_popup()->IsConfigured() : false;
 }
 
 void WaylandPopup::SetWindowGeometry(
     const PlatformWindowDelegate::State& state) {
-  if (!shell_popup_) {
+  if (!xdg_popup_) {
     return;
   }
 
@@ -292,11 +333,12 @@ void WaylandPopup::SetWindowGeometry(
       gfx::Rect(state.bounds_dip.size()), state.ui_scale));
 
   geometry_dip.Inset(delegate()->CalculateInsetsInDIP(state.window_state));
-  shell_popup_->SetWindowGeometry(geometry_dip);
+  xdg_popup_->SetWindowGeometry(geometry_dip);
 }
 
 void WaylandPopup::AckConfigure(uint32_t serial) {
-  DCHECK(shell_popup_);
-  shell_popup_->AckConfigure(serial);
+  if (xdg_popup_) {
+    xdg_popup_->AckConfigure(serial);
+  }
 }
 }  // namespace ui

@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "chrome/browser/webauthn/authenticator_request_dialog_model.h"
-#include "device/fido/fido_constants.h"
+#include "device/fido/public/fido_constants.h"
 
 namespace webauthn::user_actions {
 
@@ -23,6 +23,10 @@ void RecordMultipleOptionsShown(
 // priority WebAuthn credential selector dialog.
 void RecordPriorityOptionShown(
     const AuthenticatorRequestDialogModel::Mechanism& mechanism);
+
+// Emits when the combined selector is shown. This is used for get() requests
+// with mediation "immediate".
+void RecordCombinedSelectorShown();
 
 void RecordHybridAndSecurityKeyDialogShown(
     device::FidoRequestType request_type);

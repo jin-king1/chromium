@@ -8,29 +8,21 @@
 #import <UIKit/UIKit.h>
 
 #include "base/supports_user_data.h"
+#include "ios/chrome/browser/shared/model/browser/browser_user_data.h"
 
-class Browser;
 @class ChromeBroadcaster;
 class FullscreenControllerObserver;
 @class ToolbarsSize;
+enum class FullscreenModeTransitionTrigger;
 
 // An object that observes scrolling events in the main content area and
 // calculates how much of the toolbar should be visible as a result.  When the
 // user scrolls down the screen, the toolbar should be hidden to allow more of
 // the page's content to be visible.
-class FullscreenController : public base::SupportsUserData::Data {
+class FullscreenController : public BrowserUserData<FullscreenController> {
  public:
-  explicit FullscreenController() = default;
-
-  // Retrieves the FullscreenController for `browser`. This should only be
-  // called with the kFullscreenControllerBrowserScoped turned on.
-  static FullscreenController* FromBrowser(Browser* browser);
-
   // The ChromeBroadcaster through the FullscreenController receives UI
   // information necessary to calculate fullscreen progress.
-  // TODO(crbug.com/41358770): Once FullscreenController is a BrowserUserData,
-  // remove this ad-hoc broadcaster and drive the animations via the Browser's
-  // ChromeBroadcaster.
   virtual ChromeBroadcaster* broadcaster() = 0;
 
   // Getter and setter for the ToolbarsSize.
@@ -80,30 +72,44 @@ class FullscreenController : public base::SupportsUserData::Data {
   // to 0.0.  Calling this function while fullscreen is disabled has no effect.
   virtual void EnterFullscreen() = 0;
 
+  // Needs to be cleanup.
+  virtual void ExitFullscreen() = 0;
+
   // Exits fullscreen mode, animating in toolbars and resetting the progress to
   // 1.0.
-  virtual void ExitFullscreen() = 0;
+  virtual void ExitFullscreen(
+      FullscreenModeTransitionTrigger fullscreen_exit_trigger) = 0;
 
   // Exits fullscreen without animation, resetting the progress to 1.0.
   virtual void ExitFullscreenWithoutAnimation() = 0;
 
   // Force fullscreen mode is used when the bottom omnibox is collapsed above
-  // the keyboard or find-in-page is triggered. When the mode is active:
+  // the keyboard or find-in-page is triggered or when the user manually enter
+  // in fullscreen. When the mode is active:
   // - Fullscreen progress is forced to 0 and should stay at 0.
   // - Updating browser insets if insets_update_enabled is true. (crbug/1490601)
   // When exiting the mode, fullscreen is reset.
   virtual bool IsForceFullscreenMode() const = 0;
-  virtual void EnterForceFullscreenMode(bool insets_update_enabled) = 0;
-  virtual void ExitForceFullscreenMode() = 0;
+  virtual void EnterForceFullscreenMode(
+      bool insets_update_enabled,
+      FullscreenModeTransitionTrigger trigger) = 0;
+  virtual void ExitForceFullscreenMode(
+      FullscreenModeTransitionTrigger trigger) = 0;
 
   // Force horizontal content resize, when content isn't tracking resize by
   // itself.
   virtual void ResizeHorizontalViewport() = 0;
 
  protected:
-  // Returns the key used to store the UserData. Protected so it can be used in
-  // tests.
-  static const void* UserDataKey();
+  FullscreenController(Browser* browser) : BrowserUserData(browser) {}
+
+ private:
+  friend class BrowserUserData<FullscreenController>;
+
+  // Overload BrowserUserData<FullscreenController>::Create() since
+  // FullscreenController is an abstract class and the factory needs
+  // to create an instance of a sub-class.
+  static std::unique_ptr<FullscreenController> Create(Browser* browser);
 };
 
 #endif  // IOS_CHROME_BROWSER_FULLSCREEN_UI_BUNDLED_FULLSCREEN_CONTROLLER_H_

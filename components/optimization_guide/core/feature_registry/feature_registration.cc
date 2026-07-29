@@ -10,19 +10,12 @@
 #include "components/optimization_guide/core/feature_registry/settings_ui_registry.h"
 #include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
-#include "components/optimization_guide/proto/features/tab_organization.pb.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/prefs/pref_registry_simple.h"
-#include "enterprise_policy_registry.h"
-#include "mqls_feature_registry.h"
 
 namespace optimization_guide {
 
 namespace prefs {
-
-const char kTabOrganizationEnterprisePolicyAllowed[] =
-    "optimization_guide.model_execution.tab_organization_enterprise_policy_"
-    "allowed";
 
 const char kComposeEnterprisePolicyAllowed[] =
     "optimization_guide.model_execution.compose_enterprise_policy_allowed";
@@ -42,46 +35,93 @@ const char kAutofillPredictionImprovementsEnterprisePolicyAllowed[] =
     "optimization_guide.model_execution.autofill_prediction_improvements_"
     "enterprise_policy_allowed";
 
-const char kPasswordChangeSubmissionEnterprisePolicyAllowed[] =
+const char kAutomatedPasswordChangeEnterprisePolicyAllowed[] =
     "optimization_guide.model_execution.password_change_submission_"
     "enterprise_policy_allowed";
+
+const char kNotificationContentDetectionEnterprisePolicyAllowed[] =
+    "optimization_guide.model_execution.notification_content_detection_"
+    "enterprise_policy_allowed";
+
+const char kBlingPrototypingEnterprisePolicyAllowed[] =
+    "optimization_guide.model_execution.bling_prototyping_enterprise_policy_"
+    "allowed";
+
+const char kContextualTasksContextEnterprisePolicyAllowed[] =
+    "optimization_guide.model_execution.contextual_tasks_context_enterprise_"
+    "policy_allowed";
+
+const char kGeminiAntiscamProtectionEnterprisePolicyAllowed[] =
+    "optimization_guide.model_execution.gemini_antiscam_protection_enterprise_"
+    "policy_allowed";
+
+const char kFindsEnterprisePolicyAllowed[] =
+    "optimization_guide.model_execution.finds_enterprise_policy_allowed";
+
+const char kChromeSuggestionsSettings[] =
+    "contextual_cueing.chrome_suggestions_settings";
+
+const char kGeminiSettings[] = "browser.gemini_settings";
+
+const char kFindAndFillWithGeminiSettings[] =
+    "autofill.personal_context.find_and_fill_with_gemini_settings";
 }  // namespace prefs
 
 namespace features {
-BASE_FEATURE(kComposeMqlsLogging,
-             "ComposeMqlsLogging",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kActorLoginMqlsLogging, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kTabOrganizationMqlsLogging,
-             "TabOrganizationMqlsLogging",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kComposeMqlsLogging, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kWallpaperSearchMqlsLogging,
-             "WallpaperSearchMqlsLogging",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kWallpaperSearchMqlsLogging, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kHistorySearchMqlsLogging,
-             "HistorySearchMqlsLogging",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kHistorySearchMqlsLogging, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kProductSpecificationsMqlsLogging,
-             "ProductSpecificationsMqlsLogging",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kFormsPredictionsMqlsLogging,
-             "FormsPredictionsMqlsLogging",
+BASE_FEATURE(kFormsClassificationsMqlsLogging,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPasswordChangeSubmissionMqlsLogging,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kNotificationContentDetectionMqlsLogging,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kBlingPrototypingMqlsLogging, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kContextualTasksContextMqlsLogging,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kFormsAnnotationsMqlsLogging,
-             "FormsAnnotationsMqlsLogging",
+BASE_FEATURE(kGeminiAntiscamProtectionMqlsLogging,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kFindsMqlsLogging, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kAtMemoryMqlsLogging, base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace features
 
 namespace {
 
+// Helper function that creates a `UserFeedbackCallback` for unspecified
+// feedback.
+UserFeedbackCallback FeedbackUnspecified() {
+  return base::BindRepeating([](proto::LogAiDataRequest&) {
+    return proto::UserFeedback::USER_FEEDBACK_UNSPECIFIED;
+  });
+}
+
+void RegisterActorLogin() {
+  MqlsFeatureRegistry::GetInstance().Register(
+      std::make_unique<MqlsFeatureMetadata>(
+          "ActorLogin", proto::LogAiDataRequest::FeatureCase::kActorLogin,
+          /*enterprise_policy=*/std::nullopt, &features::kActorLoginMqlsLogging,
+          FeedbackUnspecified()));
+}
+
 void RegisterCompose() {
-  const char* kComposeName = "Compose";
+  const char kComposeName[] = "Compose";
   EnterprisePolicyPref enterprise_policy =
       EnterprisePolicyRegistry::GetInstance().Register(
           prefs::kComposeEnterprisePolicyAllowed);
@@ -100,42 +140,8 @@ void RegisterCompose() {
   SettingsUiRegistry::GetInstance().Register(std::move(ui_metadata));
 }
 
-void RegisterTabOrganization() {
-  const char* kTabOrganizationName = "TabOrganization";
-  EnterprisePolicyPref enterprise_policy =
-      EnterprisePolicyRegistry::GetInstance().Register(
-          prefs::kTabOrganizationEnterprisePolicyAllowed);
-
-  UserFeedbackCallback logging_callback =
-      base::BindRepeating([](proto::LogAiDataRequest& request_proto) {
-        // If there is no tab organization, we don't have any user_feedback mark
-        // it as unspecified.
-        const proto::TabOrganizationQuality& quality =
-            request_proto.tab_organization().quality();
-        if (quality.organizations().empty()) {
-          return proto::UserFeedback::USER_FEEDBACK_UNSPECIFIED;
-        }
-        if (quality.user_feedback()) {
-          return quality.user_feedback();
-        }
-        // TODO(b/331852814): Remove this else case along with the multi tab
-        // organization flag.
-        return quality.organizations()[0].user_feedback();
-      });
-  auto mqls_metadata = std::make_unique<MqlsFeatureMetadata>(
-      kTabOrganizationName,
-      proto::LogAiDataRequest::FeatureCase::kTabOrganization, enterprise_policy,
-      &features::kTabOrganizationMqlsLogging, logging_callback);
-  MqlsFeatureRegistry::GetInstance().Register(std::move(mqls_metadata));
-
-  auto ui_metadata = std::make_unique<SettingsUiMetadata>(
-      kTabOrganizationName, UserVisibleFeatureKey::kTabOrganization,
-      enterprise_policy);
-  SettingsUiRegistry::GetInstance().Register(std::move(ui_metadata));
-}
-
 void RegisterWallpaperSearch() {
-  const char* kWallpaperSearchName = "WallpaperSearch";
+  const char kWallpaperSearchName[] = "WallpaperSearch";
   EnterprisePolicyPref enterprise_policy =
       EnterprisePolicyRegistry::GetInstance().Register(
           prefs::kWallpaperSearchEnterprisePolicyAllowed);
@@ -171,16 +177,10 @@ void RegisterHistorySearch() {
       logging_callback_query);
   MqlsFeatureRegistry::GetInstance().Register(std::move(mqls_metadata_query));
 
-  UserFeedbackCallback logging_callback_answer =
-      base::BindRepeating([](proto::LogAiDataRequest& request_proto) {
-        // There is no user feedback on history answer. It's recorded on history
-        // query.
-        return proto::UserFeedback::USER_FEEDBACK_UNSPECIFIED;
-      });
   auto mqls_metadata_answer = std::make_unique<MqlsFeatureMetadata>(
       "HistoryAnswer", proto::LogAiDataRequest::FeatureCase::kHistoryAnswer,
       enterprise_policy, &features::kHistorySearchMqlsLogging,
-      logging_callback_answer);
+      FeedbackUnspecified());
   MqlsFeatureRegistry::GetInstance().Register(std::move(mqls_metadata_answer));
 
   auto ui_metadata = std::make_unique<SettingsUiMetadata>(
@@ -190,15 +190,22 @@ void RegisterHistorySearch() {
 }
 
 void RegisterPasswordChangeSubmission() {
+  const char kPasswordChangeSubmissionName[] = "PasswordChangeSubmission";
   EnterprisePolicyPref enterprise_policy =
       EnterprisePolicyRegistry::GetInstance().Register(
-          prefs::kPasswordChangeSubmissionEnterprisePolicyAllowed);
+          prefs::kAutomatedPasswordChangeEnterprisePolicyAllowed);
 
   auto ui_metadata = std::make_unique<SettingsUiMetadata>(
       "PasswordChangeSubmission",
-      UserVisibleFeatureKey::kPasswordChangeSubmission,
-      std::move(enterprise_policy));
+      UserVisibleFeatureKey::kPasswordChangeSubmission, enterprise_policy);
   SettingsUiRegistry::GetInstance().Register(std::move(ui_metadata));
+
+  auto mqls_metadata = std::make_unique<MqlsFeatureMetadata>(
+      kPasswordChangeSubmissionName,
+      proto::LogAiDataRequest::FeatureCase::kPasswordChangeSubmission,
+      enterprise_policy, &features::kPasswordChangeSubmissionMqlsLogging,
+      FeedbackUnspecified());
+  MqlsFeatureRegistry::GetInstance().Register(std::move(mqls_metadata));
 }
 
 void RegisterProductSpecifications() {
@@ -218,49 +225,129 @@ void RegisterProductSpecifications() {
 }
 
 void RegisterAutofillPredictions() {
+  MqlsFeatureRegistry::GetInstance().Register(
+      std::make_unique<MqlsFeatureMetadata>(
+          "FormsClassifications",
+          proto::LogAiDataRequest::FeatureCase::kFormsClassifications,
+          EnterprisePolicyRegistry::GetInstance().Register(
+              prefs::kAutofillPredictionImprovementsEnterprisePolicyAllowed),
+          &features::kFormsClassificationsMqlsLogging, FeedbackUnspecified()));
+}
+
+void RegisterNotificationContentDetection() {
   EnterprisePolicyPref enterprise_policy =
       EnterprisePolicyRegistry::GetInstance().Register(
-          prefs::kAutofillPredictionImprovementsEnterprisePolicyAllowed);
-
-  UserFeedbackCallback fp_logging_callback =
+          prefs::kNotificationContentDetectionEnterprisePolicyAllowed);
+  UserFeedbackCallback logging_callback =
       base::BindRepeating([](proto::LogAiDataRequest& request_proto) {
-        return request_proto.forms_predictions().quality().user_feedback();
+        return request_proto.notification_content_detection()
+            .quality()
+            .user_feedback();
       });
-  auto fp_mqls_metadata = std::make_unique<MqlsFeatureMetadata>(
-      "FormsPredictions",
-      proto::LogAiDataRequest::FeatureCase::kFormsPredictions,
-      enterprise_policy, &features::kFormsPredictionsMqlsLogging,
-      fp_logging_callback);
-  MqlsFeatureRegistry::GetInstance().Register(std::move(fp_mqls_metadata));
+  auto metadata = std::make_unique<MqlsFeatureMetadata>(
+      "NotificationContentDetection",
+      proto::LogAiDataRequest::FeatureCase::kNotificationContentDetection,
+      enterprise_policy, &features::kNotificationContentDetectionMqlsLogging,
+      logging_callback);
+  MqlsFeatureRegistry::GetInstance().Register(std::move(metadata));
+}
 
-  // Forms annotations. In the same block as forms predictions since it
-  // leverages the same enterprise policy.
-  UserFeedbackCallback fa_logging_callback =
-      base::BindRepeating([](proto::LogAiDataRequest& request_proto) {
-        return request_proto.forms_annotations().quality().user_feedback();
-      });
-  auto fa_mqls_metadata = std::make_unique<MqlsFeatureMetadata>(
-      "FormsAnnotations",
-      proto::LogAiDataRequest::FeatureCase::kFormsAnnotations,
-      enterprise_policy, &features::kFormsAnnotationsMqlsLogging,
-      fa_logging_callback);
-  MqlsFeatureRegistry::GetInstance().Register(std::move(fa_mqls_metadata));
+void RegisterBlingPrototyping() {
+  MqlsFeatureRegistry::GetInstance().Register(
+      std::make_unique<MqlsFeatureMetadata>(
+          "BlingPrototyping",
+          proto::LogAiDataRequest::FeatureCase::kBlingPrototyping,
+          EnterprisePolicyRegistry::GetInstance().Register(
+              prefs::kBlingPrototypingEnterprisePolicyAllowed),
+          &features::kBlingPrototypingMqlsLogging, FeedbackUnspecified()));
+}
+
+void RegisterContextualTasksContext() {
+  MqlsFeatureRegistry::GetInstance().Register(
+      std::make_unique<MqlsFeatureMetadata>(
+          "ContextualTasksContext",
+          proto::LogAiDataRequest::FeatureCase::kContextualTasksContext,
+          EnterprisePolicyRegistry::GetInstance().Register(
+              prefs::kContextualTasksContextEnterprisePolicyAllowed),
+          &features::kContextualTasksContextMqlsLogging,
+          FeedbackUnspecified()));
+}
+
+void RegisterGeminiAntiscamProtection() {
+  MqlsFeatureRegistry::GetInstance().Register(
+      std::make_unique<MqlsFeatureMetadata>(
+          "GeminiAntiscamProtection",
+          proto::LogAiDataRequest::FeatureCase::kGeminiAntiscamProtection,
+          EnterprisePolicyRegistry::GetInstance().Register(
+              prefs::kGeminiAntiscamProtectionEnterprisePolicyAllowed),
+          &features::kGeminiAntiscamProtectionMqlsLogging,
+          FeedbackUnspecified()));
+}
+
+void RegisterFinds() {
+  const char kFindsName[] = "Finds";
+  EnterprisePolicyPref enterprise_policy =
+      EnterprisePolicyRegistry::GetInstance().Register(
+          prefs::kFindsEnterprisePolicyAllowed);
+
+  auto ui_metadata = std::make_unique<SettingsUiMetadata>(
+      kFindsName, UserVisibleFeatureKey::kFinds, enterprise_policy);
+  SettingsUiRegistry::GetInstance().Register(std::move(ui_metadata));
+
+  auto mqls_metadata = std::make_unique<MqlsFeatureMetadata>(
+      kFindsName, proto::LogAiDataRequest::FeatureCase::kFinds,
+      enterprise_policy, &features::kFindsMqlsLogging, FeedbackUnspecified());
+  MqlsFeatureRegistry::GetInstance().Register(std::move(mqls_metadata));
+}
+
+void RegisterContextualCueing() {
+  const char kContextualCueingName[] = "ContextualCueing";
+
+  auto ui_metadata = std::make_unique<SettingsUiMetadata>(
+      kContextualCueingName, UserVisibleFeatureKey::kContextualCueing,
+      EnterprisePolicyRegistry::GetInstance().Register(
+          prefs::kChromeSuggestionsSettings));
+  SettingsUiRegistry::GetInstance().Register(std::move(ui_metadata));
+}
+
+void RegisterAtMemory() {
+  const char kAtMemoryName[] = "AtMemory";
+
+  EnterprisePolicyPref enterprise_policy =
+      EnterprisePolicyRegistry::GetInstance().Register(
+          prefs::kFindAndFillWithGeminiSettings);
+
+  auto mqls_metadata = std::make_unique<MqlsFeatureMetadata>(
+      kAtMemoryName, proto::LogAiDataRequest::FeatureCase::kAtMemory,
+      enterprise_policy, &features::kAtMemoryMqlsLogging,
+      FeedbackUnspecified());
+  MqlsFeatureRegistry::GetInstance().Register(std::move(mqls_metadata));
 }
 
 }  // anonymous namespace
 
 void RegisterGenAiFeatures(PrefRegistrySimple* pref_registry) {
   static bool features_registered = false;
+  // When adding a value here, also update:
+  // - tools/metrics/histograms/metadata/optimization_guide/histogram.xml:
+  // <variants name="LogAiDataRequestFeature">
   if (!features_registered) {
     // The registries are static and so should only be populated once for the
     // program (rather than once per profile).
+    RegisterActorLogin();
     RegisterCompose();
-    RegisterTabOrganization();
     RegisterWallpaperSearch();
     RegisterHistorySearch();
     RegisterProductSpecifications();
     RegisterAutofillPredictions();
     RegisterPasswordChangeSubmission();
+    RegisterNotificationContentDetection();
+    RegisterBlingPrototyping();
+    RegisterContextualTasksContext();
+    RegisterGeminiAntiscamProtection();
+    RegisterFinds();
+    RegisterContextualCueing();
+    RegisterAtMemory();
     features_registered = true;
   }
   EnterprisePolicyRegistry::GetInstance().RegisterProfilePrefs(pref_registry);

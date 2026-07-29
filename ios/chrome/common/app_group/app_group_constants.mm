@@ -17,10 +17,19 @@ extern NSString* const kChromeCapabilitiesPreference = @"Chrome.Capabilities";
 
 extern NSString* const kChromeShowDefaultBrowserPromoCapability =
     @"ShowDefaultBrowserPromo";
+extern NSString* const kChromeSupportsAISummarizationCapability =
+    @"SupportsAISummarization";
+extern NSString* const kChromeUserIsEligibleForGeminiCapability =
+    @"UserIsEligibleForGemini";
+extern NSString* const kAppSwitcherHashedUserID = @"AppSwitcher.HashedUserID";
 extern NSString* const kChromeSupportOpenLinksParametersFromCapability =
     @"SupportOpenLinksParametersFrom";
+extern NSString* const kChromeSupportShareDefaultBrowserStatusCapability =
+    @"SupportShareDefaultBrowserStatus";
 
 const char kChromeAppGroupXCallbackCommand[] = "app-group-command";
+
+const char kGaiaIDQueryItemName[] = "gaia_id";
 
 NSString* const kChromeExtensionFieldTrialPreference = @"Extension.FieldTrial";
 
@@ -35,8 +44,13 @@ const char kChromeAppGroupCommandDataPreference[] = "Data";
 const char kChromeAppGroupCommandIndexPreference[] = "Index";
 
 const char kChromeAppGroupOpenURLCommand[] = "openurl";
+NSString* const kChromeAppGroupOpenURLInIcognitoCommand = @"openurlIncognito";
 const char kChromeAppGroupSearchTextCommand[] = "searchtext";
+NSString* const kChromeAppGroupIncognitoSearchTextCommand =
+    @"incognitosearchtext";
 const char kChromeAppGroupSearchImageCommand[] = "searchimage";
+NSString* const kChromeAppGroupIncognitoSearchImageCommand =
+    @"incognitosearchimage";
 const char kChromeAppGroupVoiceSearchCommand[] = "voicesearch";
 const char kChromeAppGroupNewTabCommand[] = "newtab";
 const char kChromeAppGroupFocusOmniboxCommand[] = "focusomnibox";
@@ -61,12 +75,10 @@ NSString* const kShareItemTitle = @"Title";
 NSString* const kShareItemDate = @"Date";
 NSString* const kShareItemCancel = @"Cancel";
 NSString* const kShareItemType = @"Type";
+NSString* const kShareItemGaiaID = @"GaiaID";
 
 NSString* const kShareItemSourceShareExtension = @"ChromeShareExtension";
 
-NSString* const kOpenCommandSourceTodayExtension = @"ChromeTodayExtension";
-NSString* const kOpenCommandSourceContentExtension = @"ChromeContentExtension";
-NSString* const kOpenCommandSourceSearchExtension = @"ChromeSearchExtension";
 NSString* const kOpenCommandSourceShareExtension = @"ChromeShareExtension";
 NSString* const kOpenCommandSourceCredentialsExtension =
     @"ChromeCredentialsExtension";
@@ -94,8 +106,22 @@ NSString* const kOpenExtensionOutcomeFailureUnsupportedScheme =
 
 NSString* const kAccountsOnDevice = @"ios.registered_accounts_on_device";
 NSString* const kEmail = @"email";
+NSString* const kFullName = @"fullName";
+NSString* const kNoAccount = @"No account";
+NSString* const kDefault = @"Default";
 
-NSString* const kYoutubeBundleID = @"com.google.youtube";
+NSString* const kYoutubeBundleID = @"com.google.ios.youtube";
+
+NSString* const kPrimaryAccount = @"ios.primary_account";
+
+NSString* const kChromeLikelyDefaultBrowser = @"ChromeLikelyDefaultBrowser";
+NSString* const kChromeLikelyDefaultBrowserUpdateTimestamp =
+    @"ChromeLikelyDefaultBrowserUpdateTimestamp";
+
+NSString* const kGMOSKOInstallAttribution = @"iGAStartedChromeInstall";
+
+NSString* const kAppPreviewInstallAttribution =
+    @"ChromeAppPreview_InstallAttribution";
 
 NSString* ApplicationGroup() {
   return [AppGroupHelper applicationGroup];
@@ -112,15 +138,6 @@ NSString* CommonApplicationGroup() {
   return group;
 }
 
-NSString* ApplicationName(AppGroupApplications application) {
-  switch (application) {
-    case APP_GROUP_CHROME:
-      return base::SysUTF8ToNSString(version_info::GetProductName());
-    case APP_GROUP_TODAY_EXTENSION:
-      return @"TodayExtension";
-  }
-}
-
 NSUserDefaults* GetCommonGroupUserDefaults() {
   NSString* applicationGroup = CommonApplicationGroup();
   if (applicationGroup) {
@@ -133,7 +150,7 @@ NSUserDefaults* GetCommonGroupUserDefaults() {
 
   // On a device, the entitlements should always provide an application group to
   // the application. This is not the case on simulator.
-  DCHECK(TARGET_IPHONE_SIMULATOR);
+  DCHECK(TARGET_OS_SIMULATOR);
   return [NSUserDefaults standardUserDefaults];
 }
 

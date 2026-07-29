@@ -4,12 +4,10 @@ include_rules = [
   "+ash",
   "+content/browser/speech",
   "+chrome/browser/profiles",
+  "+chrome/browser/ash/magic_boost",
   "+chrome/browser/ui/ash/read_write_cards",
-  "+chrome/browser/ui/settings_window_manager_chromeos.h",
-  "+chrome/browser/ui/ash/editor_menu/editor_menu_controller_impl.h",
   "+chrome/browser/ui/ash/editor_menu/utils/focus_search.h",
   "+chrome/browser/ui/ash/editor_menu/utils/pre_target_handler.h",
-  "+chrome/browser/ui/views/mahi/mahi_menu_controller.h",
 ]
 
 specific_include_rules = {
@@ -17,16 +15,11 @@ specific_include_rules = {
     "+chrome/browser/ash/accessibility",
     "+chrome/browser/ash/login/users",
     "+chrome/browser/ash/profiles",
+    "+chrome/browser/global_features.h",
     "+chrome/browser/notifications",
+    "+chrome/browser/ui/settings_window_manager_chromeos.h",
   ],
-  ".*pixeltest\.cc": [
+  ".*pixeltest\\.cc": [
     "+chrome/browser/ui/browser.h",
-  ],
-  "quick_answers_ui_controller\.cc": [
-    "+chrome/browser/ui/browser.h",
-  ],
-  "quick_answers_view\.cc": [
-    "+chrome/browser/browser_process.h",
-    "+chrome/browser/ui/color/chrome_color_id.h",
   ],
 }

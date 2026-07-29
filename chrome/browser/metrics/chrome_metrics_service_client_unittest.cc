@@ -28,13 +28,14 @@
 #include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/metrics/unsent_log_store.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/regional_capabilities/regional_capabilities_switches.h"
 #include "components/ukm/ukm_service.h"
 #include "components/variations/synthetic_trial_registry.h"
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
@@ -43,6 +44,9 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/dbus/power/power_manager_client.h"
+#elif BUILDFLAG(IS_WIN)
+#include "base/win/windows_version.h"
+#include "chrome/browser/metrics/system_pdh_metrics_provider_win.h"
 #endif
 
 class TestChromeMetricsServiceClient : public ChromeMetricsServiceClient {
@@ -96,15 +100,24 @@ class ChromeMetricsServiceClientTest : public testing::Test {
 #if BUILDFLAG(IS_CHROMEOS)
     scoped_feature_list_.InitWithFeatures(
         {features::kUmaStorageDimensions,
-         metrics::dwa::kDwaFeature},
+         features::kClassManagementEnabledMetricsProvider,
+         metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry},
         {});
 
     // ChromeOs Metrics Provider require g_login_state and power manager client
     // initialized before they can be instantiated.
     chromeos::PowerManagerClient::InitializeFake();
     ash::LoginState::Initialize();
+#elif BUILDFLAG(IS_WIN)
+    scoped_feature_list_.InitWithFeatures(
+        {metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry,
+         features::kSystemPdhMetrics},
+        {});
+#elif BUILDFLAG(IS_ANDROID)
+    scoped_feature_list_.InitWithFeatures({metrics::dwa::kDwaFeature}, {});
 #else
-    scoped_feature_list_.InitAndEnableFeature(metrics::dwa::kDwaFeature);
+    scoped_feature_list_.InitWithFeatures(
+        {metrics::dwa::kDwaFeature, switches::kDynamicProfileCountry}, {});
 #endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
@@ -113,10 +126,6 @@ class ChromeMetricsServiceClientTest : public testing::Test {
     ash::LoginState::Shutdown();
     chromeos::PowerManagerClient::Shutdown();
 #endif  // BUILDFLAG(IS_CHROMEOS)
-    // ChromeMetricsServiceClient::Initialize() initializes
-    // IdentifiabilityStudySettings as part of creating the
-    // PrivacyBudgetUkmEntryFilter. Reset them after the test.
-    blink::IdentifiabilityStudySettings::ResetStateForTesting();
   }
 
  protected:
@@ -169,11 +178,16 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterUKMProviders) {
   // Test that UKM service has initialized all its metrics providers listed in
   // ChromeMetricsServiceClient::RegisterUKMProviders, for all platform with one
   // exception on ChromeOS.
-  size_t expected_providers = 11;
+  size_t expected_providers = 10;
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOSMetricsProvider
   expected_providers++;
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_ANDROID)
+  // ChromeAndroidMetricsProvider
+  expected_providers++;
+#endif  // BUILDFLAG(IS_ANDROID)
 
   std::unique_ptr<ChromeMetricsServiceClient> chrome_metrics_service_client =
       TestChromeMetricsServiceClient::Create(metrics_state_manager_.get(),
@@ -201,7 +215,7 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
   size_t expected_providers = 2;
 
   // This is the number of metrics providers that are outside any #if macros.
-  expected_providers += 24;
+  expected_providers += 25;
 
   int sample_rate;
   if (ChromeMetricsServicesManagerClient::GetSamplingRatePerMille(
@@ -215,9 +229,10 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
   expected_providers++;
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-  expected_providers++;  // ExtensionsMetricsProvider.
-#endif                   // defined(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  // ExtensionsMetricsProvider.
+  expected_providers++;
+#endif  // defined(ENABLE_EXTENSIONS_CORE)
 
 #if BUILDFLAG(IS_ANDROID)
   // AndroidMetricsProvider, ChromeAndroidMetricsProvider,
@@ -229,28 +244,35 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN)
-  // GoogleUpdateMetricsProviderWin, AntiVirusMetricsProvider, and
-  // TPMMetricsProvider.
-  expected_providers += 3;
+  // GoogleUpdateMetricsProviderWin, AntiVirusMetricsProvider,
+  // TPMMetricsProvider, SystemMemoryListMetricsProvider.
+  expected_providers += 4;
+
+  // SystemPdhMetricsProvider is only supported on Win11.
+  if (base::win::GetVersion() >= base::win::Version::WIN11 &&
+      base::FeatureList::IsEnabled(features::kSystemPdhMetrics)) {
+    ++expected_providers;
+  }
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_CHROMEOS)
-  // AmbientModeMetricsProvider, AssistantServiceMetricsProvider,
+  // AmbientModeMetricsProvider,
   // CrosHealthdMetricsProvider, ChromeOSMetricsProvider,
   // ChromeOSHistogramMetricsProvider, ChromeShelfMetricsProvider,
-  // KeyboardBacklightColorMetricsProvider,
+  // ClassManagementEnabledMetricsProvider,
+  // K12AgeClassificationMetricsProvider, KeyboardBacklightColorMetricsProvider,
   // PersonalizationAppThemeMetricsProvider, PrinterMetricsProvider,
   // FamilyUserMetricsProvider, FamilyLinkUserMetricsProvider,
   // UpdateEngineMetricsProvider, OsSettingsMetricsProvider,
   // UserTypeByDeviceTypeMetricsProvider, WallpaperMetricsProvider,
   // and VmmMetricsProvider.
-  expected_providers += 16;
+  expected_providers += 17;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if !BUILDFLAG(IS_CHROMEOS)
   // ChromeSigninStatusMetricsProvider (for non ChromeOS).
-  // AccessibilityMetricsProvider, FamilyLinkUserMetricsProvider
-  expected_providers += 3;
+  // FamilyLinkUserMetricsProvider
+  expected_providers += 2;
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_MAC)
@@ -259,18 +281,27 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
 #endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  expected_providers++;  // DesktopPlatformFeaturesMetricsProvider
+  // DesktopPlatformFeaturesMetricsProvider
+  // DesktopSessionMetricsProvider
+  // UpdateMetricsProvider
+  expected_providers += 3;
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  // DesktopSessionMetricsProvider
-  expected_providers += 1;
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
+  // TabMetricsProvider
+  // SkillsMetricsProvider
+  expected_providers += 2;
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   // BluetoothMetricsProvider
   expected_providers += 1;
 #endif
+
+  // GlicMetricsProvider
+  expected_providers += 1;
 
   std::unique_ptr<TestChromeMetricsServiceClient>
       chrome_metrics_service_client = TestChromeMetricsServiceClient::Create(
@@ -285,7 +316,7 @@ TEST_F(ChromeMetricsServiceClientTest, TestRegisterMetricsServiceProviders) {
 // header files but those can't even be included if this build flag is not
 // set. This can't be in the anonymous namespace because it is a "friend" of
 // the ChromeMetricsServiceClient class.
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 TEST_F(ChromeMetricsServiceClientTest, IsWebstoreExtension) {
   static const char test_extension_id1[] = "abcdefghijklmnopqrstuvwxyzabcdef";
   static const char test_extension_id2[] = "bhcnanendmgjjeghamaccjnochlnhcgj";
@@ -312,7 +343,7 @@ TEST_F(ChromeMetricsServiceClientTest, IsWebstoreExtension) {
   EXPECT_TRUE(
       TestChromeMetricsServiceClient::IsWebstoreExtension(test_extension_id2));
 }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 TEST_F(ChromeMetricsServiceClientTest, GetUploadSigningKey_NotEmpty) {
   std::unique_ptr<TestChromeMetricsServiceClient>
@@ -333,17 +364,10 @@ TEST_F(ChromeMetricsServiceClientTest, GetUploadSigningKey_CanSignLogs) {
   const std::string signing_key =
       chrome_metrics_service_client->GetUploadSigningKey();
 
-  std::string signature;
-  bool sign_success = metrics::UnsentLogStore::ComputeHMACForLog(
-      "Test Log Data", signing_key, &signature);
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  // The signing key should be able to sign data for a Chrome-branded build.
-  EXPECT_TRUE(sign_success);
+  std::string signature =
+      metrics::UnsentLogStore::ComputeHMACForLog("Test Log Data", signing_key);
+  // This signature never fails, even if there is no signing key available:
+  // empty keys are padded with zero bytes to the requisite length.
   EXPECT_FALSE(signature.empty());
-#else
-  // In non-branded builds, we may still have a valid signing key if
-  // USE_OFFICIAL_GOOGLE_API_KEYS is true. However, that macro is not available
-  // in this file, so just check that success == a non-empty signature.
-  EXPECT_EQ(sign_success, !signature.empty());
-#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 }
+

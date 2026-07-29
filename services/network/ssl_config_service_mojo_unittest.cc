@@ -7,7 +7,6 @@
 #include <array>
 
 #include "base/feature_list.h"
-#include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/task_environment.h"
@@ -38,6 +37,7 @@
 #include "services/network/test/fake_test_cert_verifier_params_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/boringssl/src/include/openssl/ssl.h"
 
 namespace network {
 namespace {
@@ -95,6 +95,16 @@ class TestCertVerifierConfigObserver : public net::CertVerifier {
              const net::NetLogWithSource& net_log) override {
     ADD_FAILURE() << "Verify should not be called by tests";
     return net::ERR_FAILED;
+  }
+  void Verify2QwacBinding(
+      const std::string& binding,
+      const std::string& hostname,
+      const scoped_refptr<net::X509Certificate>& tls_cert,
+      base::OnceCallback<void(const scoped_refptr<net::X509Certificate>&)>
+          callback,
+      const net::NetLogWithSource& net_log) override {
+    ADD_FAILURE();
+    std::move(callback).Run(nullptr);
   }
   void SetConfig(const Config& config) override {
     set_config_call_.SetValue(config);
@@ -308,19 +318,6 @@ TEST_F(NetworkServiceSSLConfigServiceTest,
   RunCertConversionTests(*mojo_config, expected_net_config);
 }
 
-TEST_F(NetworkServiceSSLConfigServiceTest, Sha1LocalAnchorsEnabled) {
-  net::CertVerifier::Config expected_net_config;
-  // Use the opposite of the default value.
-  expected_net_config.enable_sha1_local_anchors =
-      !expected_net_config.enable_sha1_local_anchors;
-
-  mojom::SSLConfigPtr mojo_config = mojom::SSLConfig::New();
-  mojo_config->sha1_local_anchors_enabled =
-      expected_net_config.enable_sha1_local_anchors;
-
-  RunCertConversionTests(*mojo_config, expected_net_config);
-}
-
 TEST_F(NetworkServiceSSLConfigServiceTest, SSLVersion) {
   struct VersionTable {
     mojom::SSLVersion mojo_ssl_version;
@@ -430,6 +427,85 @@ TEST_F(NetworkServiceSSLConfigServiceTest, CanShareConnectionWithClientCerts) {
       config_service->CanShareConnectionWithClientCerts("example.com"));
   EXPECT_FALSE(
       config_service->CanShareConnectionWithClientCerts("example.net"));
+}
+
+TEST_F(NetworkServiceSSLConfigServiceTest, NamedGroupsDefaultPreset) {
+  mojom::NetworkContextParamsPtr network_context_params =
+      mojom::NetworkContextParams::New();
+  network_context_params->initial_ssl_config = mojom::SSLConfig::New();
+  EXPECT_EQ(network_context_params->initial_ssl_config->named_groups_preset,
+            network::mojom::SSLNamedGroupsPreset::kDefault);
+  SetUpNetworkContext(std::move(network_context_params));
+
+  net::SSLContextConfig net_config = GetSSLContextConfig();
+  std::vector<uint16_t> expected_supported_groups = {
+      SSL_GROUP_X25519_MLKEM768, SSL_GROUP_X25519, SSL_GROUP_SECP256R1,
+      SSL_GROUP_SECP384R1};
+  EXPECT_EQ(net_config.GetSupportedGroups(), expected_supported_groups);
+
+  std::vector<uint16_t> expected_key_shares = {SSL_GROUP_X25519_MLKEM768,
+                                               SSL_GROUP_X25519};
+  EXPECT_EQ(net_config.GetSupportedGroups(/*key_shares_only=*/true),
+            expected_key_shares);
+}
+
+TEST_F(NetworkServiceSSLConfigServiceTest, NamedGroupsCnsa2Preset) {
+  mojom::NetworkContextParamsPtr network_context_params =
+      mojom::NetworkContextParams::New();
+  network_context_params->initial_ssl_config = mojom::SSLConfig::New();
+  network_context_params->initial_ssl_config->named_groups_preset =
+      network::mojom::SSLNamedGroupsPreset::kCnsa2;
+  SetUpNetworkContext(std::move(network_context_params));
+
+  net::SSLContextConfig net_config = GetSSLContextConfig();
+  std::vector<uint16_t> expected_supported_groups = {
+      SSL_GROUP_MLKEM1024, SSL_GROUP_X25519_MLKEM768, SSL_GROUP_SECP384R1,
+      SSL_GROUP_SECP256R1, SSL_GROUP_X25519};
+  EXPECT_EQ(net_config.GetSupportedGroups(), expected_supported_groups);
+
+  std::vector<uint16_t> expected_key_shares = {SSL_GROUP_X25519_MLKEM768,
+                                               SSL_GROUP_X25519};
+  EXPECT_EQ(net_config.GetSupportedGroups(/*key_shares_only=*/true),
+            expected_key_shares);
+}
+
+TEST_F(NetworkServiceSSLConfigServiceTest, Tls13CipherPreferAes256) {
+  net::SSLContextConfig expected_net_config;
+  expected_net_config.tls13_cipher_prefer_aes_256 = true;
+
+  mojom::SSLConfigPtr mojo_config = mojom::SSLConfig::New();
+  mojo_config->tls13_cipher_prefer_aes_256 = true;
+
+  RunConversionTests(*mojo_config, expected_net_config);
+}
+
+TEST_F(NetworkServiceSSLConfigServiceTest, GetEchMode) {
+  // Test with default params (use_platform_ech_policy = false)
+  mojom::NetworkContextParamsPtr network_context_params =
+      mojom::NetworkContextParams::New();
+  network_context_params->initial_ssl_config = mojom::SSLConfig::New();
+  SetUpNetworkContext(std::move(network_context_params));
+
+  net::SSLConfigService* config_service =
+      network_context_->url_request_context()->ssl_config_service();
+  EXPECT_EQ(net::EchMode::kOpportunistic,
+            config_service->GetEchMode("example.com"));
+
+  // Test with use_platform_ech_policy = true
+  network_context_params = mojom::NetworkContextParams::New();
+  network_context_params->use_platform_ech_policy = true;
+  network_context_params->initial_ssl_config = mojom::SSLConfig::New();
+  SetUpNetworkContext(std::move(network_context_params));
+
+  config_service =
+      network_context_->url_request_context()->ssl_config_service();
+  net::EchMode mode = config_service->GetEchMode("example.com");
+
+  // Verify that the platform ECH query doesn't crash on any platform.
+  // The exact return value is not critical for this test.
+  EXPECT_TRUE(mode == net::EchMode::kDisabled ||
+              mode == net::EchMode::kOpportunistic ||
+              mode == net::EchMode::kStrict);
 }
 
 }  // namespace

@@ -9,20 +9,24 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/files/file_path.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/task/single_thread_task_runner.h"
+#include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
 #include "components/ui_devtools/devtools_client.h"
 #include "components/ui_devtools/devtools_export.h"
 #include "components/ui_devtools/dom.h"
 #include "components/ui_devtools/forward.h"
 #include "components/ui_devtools/protocol.h"
-#include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/server/http_server_request_info.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+
+namespace base {
+class SingleThreadTaskRunner;
+}
 
 namespace ui_devtools {
 
@@ -50,6 +54,7 @@ class UI_DEVTOOLS_EXPORT UiDevToolsServer {
       scoped_refptr<base::SingleThreadTaskRunner> io_thread_task_runner,
       int port,
       const base::FilePath& active_port_output_directory = base::FilePath());
+
 
   // Returns a list of attached UiDevToolsClient name + URL
   using NameUrlPair = std::pair<std::string, std::string>;
@@ -88,6 +93,8 @@ class UI_DEVTOOLS_EXPORT UiDevToolsServer {
   // Sets a callback that tests can use to wait for the server to be ready to
   // accept connections.
   void SetOnSocketConnectedForTesting(base::OnceClosure on_socket_connected);
+  // Sets a callback that tests can use to wait for a client to connect.
+  void SetOnClientConnectedForTesting(base::OnceClosure on_client_connected);
   // Allows calling OnWebSocketRequest() with unexpected connection IDs for
   // tests, bypassing the HttpServer.
   void OnWebSocketRequestForTesting(int connection_id,
@@ -149,6 +156,9 @@ class UI_DEVTOOLS_EXPORT UiDevToolsServer {
 
   // Invoked once the server has been started.
   base::OnceClosure on_socket_connected_ GUARDED_BY_CONTEXT(main_sequence_);
+
+  // Invoked when a client connects.
+  base::OnceClosure on_client_connected_ GUARDED_BY_CONTEXT(main_sequence_);
 
   // The server (owned by Chrome for now)
   static UiDevToolsServer* devtools_server_;

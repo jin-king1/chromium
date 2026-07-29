@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_WEBUI_SIDE_PANEL_CUSTOMIZE_CHROME_WALLPAPER_SEARCH_WALLPAPER_SEARCH_HANDLER_H_
 
 #include <optional>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -21,21 +22,17 @@
 #include "chrome/browser/search/background/wallpaper_search/wallpaper_search_background_manager_observer.h"
 #include "chrome/browser/search/background/wallpaper_search/wallpaper_search_data.h"
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/wallpaper_search/wallpaper_search.mojom.h"
-#include "components/optimization_guide/core/optimization_guide_model_executor.h"
+#include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 
 class Profile;
 class WallpaperSearchBackgroundManager;
 class WallpaperSearchStringMap;
-
-namespace data_decoder {
-class DataDecoder;
-}  // namespace data_decoder
 
 namespace gfx {
 class Image;
@@ -117,21 +114,17 @@ class WallpaperSearchHandler
   void DecodeHistoryImage(image_fetcher::ImageDecodedCallback callback,
                           std::string image);
   void OnDescriptorsRetrieved(GetDescriptorsCallback callback,
-                              std::unique_ptr<std::string> response_body);
-  void OnDescriptorsJsonParsed(GetDescriptorsCallback callback,
-                               data_decoder::DataDecoder::ValueOrError result);
+                              std::optional<std::string> response_body);
   void OnHistoryDecoded(std::vector<HistoryEntry> history,
                         std::vector<std::pair<SkBitmap, base::Token>> results);
   void OnInspirationImageDownloaded(const base::Token& id,
                                     base::ElapsedTimer timer,
-                                    std::unique_ptr<std::string> response_body);
+                                    std::optional<std::string> response_body);
   void OnInspirationImageDecoded(const base::Token& id,
                                  base::ElapsedTimer timer,
                                  const gfx::Image& image);
   void OnInspirationsRetrieved(GetInspirationsCallback callback,
-                               std::unique_ptr<std::string> response_body);
-  void OnInspirationsJsonParsed(GetInspirationsCallback callback,
-                                data_decoder::DataDecoder::ValueOrError result);
+                               std::optional<std::string> response_body);
   void OnWallpaperSearchResultsRetrieved(
       GetWallpaperSearchResultsCallback callback,
       base::ElapsedTimer request_timer,
@@ -153,7 +146,6 @@ class WallpaperSearchHandler
 
   raw_ptr<Profile> profile_;
   std::unique_ptr<network::SimpleURLLoader> descriptors_simple_url_loader_;
-  std::unique_ptr<data_decoder::DataDecoder> data_decoder_;
   const raw_ref<image_fetcher::ImageDecoder> image_decoder_;
   std::unique_ptr<network::SimpleURLLoader> inspirations_simple_url_loader_;
   std::unique_ptr<network::SimpleURLLoader> image_download_simple_url_loader_;

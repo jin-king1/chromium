@@ -23,10 +23,9 @@ ReportingReport::ReportingReport(
     const std::string& user_agent,
     const std::string& group,
     const std::string& type,
-    base::Value::Dict body,
+    base::DictValue body,
     int depth,
     base::TimeTicks queued,
-    int attempts,
     ReportingTargetType target_type)
     : reporting_source(reporting_source),
       network_anonymization_key(network_anonymization_key),
@@ -38,7 +37,6 @@ ReportingReport::ReportingReport(
       body(std::move(body)),
       depth(depth),
       queued(queued),
-      attempts(attempts),
       target_type(target_type) {
   // If |reporting_source| is present, it must not be empty.
   DCHECK(!(reporting_source.has_value() && reporting_source->is_empty()));

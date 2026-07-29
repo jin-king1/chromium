@@ -11,13 +11,14 @@ import android.util.Base64;
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
+import com.google.protobuf.InvalidProtocolBufferException;
+
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.ProfileManager;
@@ -77,12 +78,6 @@ public class OptimizationGuidePushNotificationManager {
      * @param payload the incoming payload.
      */
     public static void onPushNotification(HintNotificationPayload payload) {
-        if (!ChromeFeatureList.sOptimizationGuidePushNotifications.isEnabled()) {
-            // In case the feature has become disabled after once being enabled, clear everything.
-            clearCacheForAllTypes();
-            return;
-        }
-
         if (nativeIsInitialized()) {
             var optimizationGuideBridge =
                     OptimizationGuideBridgeFactory.getForProfile(
@@ -112,13 +107,6 @@ public class OptimizationGuidePushNotificationManager {
         ChromeSharedPreferences.getInstance().removeKey(cacheKey(optimizationType));
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    public static void clearCacheForAllTypes() {
-        for (OptimizationType type : OptimizationType.values()) {
-            clearCacheForOptimizationType(type);
-        }
-    }
-
     /**
      * Returns all cached notifications for the given Optimization Type. A null return value is
      * returned for overflowed caches. An empty array means that no notifications were cached.
@@ -130,20 +118,20 @@ public class OptimizationGuidePushNotificationManager {
         Set<String> cache = getStringCacheForOptimizationType(optimizationType);
         if (checkForOverflow(cache)) return null;
 
-        Iterator<String> cache_iter = cache.iterator();
+        Iterator<String> cacheIter = cache.iterator();
 
-        List<HintNotificationPayload> notifications = new ArrayList<HintNotificationPayload>();
+        List<HintNotificationPayload> notifications = new ArrayList<>();
         for (int i = 0; i < cache.size(); i++) {
             try {
                 HintNotificationPayload payload =
                         HintNotificationPayload.parseFrom(
-                                Base64.decode(cache_iter.next(), Base64.DEFAULT));
+                                Base64.decode(cacheIter.next(), Base64.DEFAULT));
                 notifications.add(payload);
                 RecordHistogram.recordEnumeratedHistogram(
                         READ_CACHE_RESULT_HISTOGRAM,
                         ReadCacheResult.SUCCESS,
                         ReadCacheResult.NUM_ENTRIES);
-            } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+            } catch (InvalidProtocolBufferException e) {
                 RecordHistogram.recordEnumeratedHistogram(
                         READ_CACHE_RESULT_HISTOGRAM,
                         ReadCacheResult.INVALID_PROTO_ERROR,
@@ -174,7 +162,7 @@ public class OptimizationGuidePushNotificationManager {
      * types with overflowed caches are not included.
      */
     public static List<OptimizationType> getOptTypesWithPushNotifications() {
-        List<OptimizationType> types = new ArrayList<OptimizationType>();
+        List<OptimizationType> types = new ArrayList<>();
         for (OptimizationType type : OptimizationType.values()) {
             Set<String> cache = ChromeSharedPreferences.getInstance().readStringSet(cacheKey(type));
             if (cache != null && cache.size() > 0 && !checkForOverflow(cache)) {
@@ -188,7 +176,7 @@ public class OptimizationGuidePushNotificationManager {
      * Returns a list of all the optimization types that overflowed their push notification caches.
      */
     public static List<OptimizationType> getOptTypesThatOverflowedPushNotifications() {
-        List<OptimizationType> overflows = new ArrayList<OptimizationType>();
+        List<OptimizationType> overflows = new ArrayList<>();
         for (OptimizationType type : OptimizationType.values()) {
             if (checkForOverflow(getStringCacheForOptimizationType(type))) {
                 overflows.add(type);
@@ -218,6 +206,9 @@ public class OptimizationGuidePushNotificationManager {
         return cache != null && cache.equals(OVERFLOW_SENTINEL_SET);
     }
 
+    // Public for testing.
+    public static final int OPTIMIZATION_GUIDE_PUSH_NOTIFICATIONS_MAX_CACHE_SIZE = 100;
+
     private static void persistNotificationPayload(HintNotificationPayload payload) {
         if (!payload.hasOptimizationType()) return;
         if (!payload.hasKeyRepresentation()) return;
@@ -229,20 +220,18 @@ public class OptimizationGuidePushNotificationManager {
         if (checkForOverflow(cache)) return;
 
         // Check if we would overflow the cache by writing the new element.
-        if (cache.size()
-                >= ChromeFeatureList.sOptimizationGuidePushNotificationsMaxCacheSize.getValue()
-                        - 1) {
+        if (cache.size() >= OPTIMIZATION_GUIDE_PUSH_NOTIFICATIONS_MAX_CACHE_SIZE - 1) {
             ChromeSharedPreferences.getInstance()
                     .writeStringSet(cacheKey(payload.getOptimizationType()), OVERFLOW_SENTINEL_SET);
             return;
         }
 
         // The notification's payload isn't used so it can be stripped to preserve memory space.
-        HintNotificationPayload slim_payload =
+        HintNotificationPayload slimPayload =
                 HintNotificationPayload.newBuilder(payload).clearPayload().build();
         ChromeSharedPreferences.getInstance()
                 .addToStringSet(
-                        cacheKey(slim_payload.getOptimizationType()),
-                        Base64.encodeToString(slim_payload.toByteArray(), Base64.DEFAULT));
+                        cacheKey(slimPayload.getOptimizationType()),
+                        Base64.encodeToString(slimPayload.toByteArray(), Base64.DEFAULT));
     }
 }

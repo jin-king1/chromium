@@ -17,8 +17,10 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
-#include "components/os_crypt/sync/os_crypt_switches.h"
+#include "components/os_crypt/common/os_crypt_switches.h"
 #include "components/password_manager/core/browser/password_manager_switches.h"
+#include "components/signin/public/base/signin_buildflags.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "content/public/common/content_switches.h"
 #include "ui/display/display_switches.h"
 
@@ -29,19 +31,15 @@
 namespace test_launcher_utils {
 
 void PrepareBrowserCommandLineForTests(base::CommandLine* command_line) {
-  // Don't show the first run ui.
+  // Don't show the first run ui and disable the default browser check.
   command_line->AppendSwitch(switches::kNoFirstRun);
-
-  // No default browser check, it would create an info-bar (if we are not the
-  // default browser) that could conflicts with some tests expectations.
-  command_line->AppendSwitch(switches::kNoDefaultBrowserCheck);
 
   // Enable info level logging to stderr by default so that we can see when bad
   // stuff happens, but honor the flags specified from the command line. Use the
   // default logging level (INFO) instead of explicitly passing
   // switches::kLoggingLevel. Passing the switch explicitly resulted in data
   // races in tests that start async operations (that use logging) prior to
-  // initializing the browser: https://crbug.com/749066.
+  // initializing the browser: https://crbug.com/40531880.
   if (!command_line->HasSwitch(switches::kEnableLogging))
     command_line->AppendSwitchASCII(switches::kEnableLogging, "stderr");
 
@@ -80,6 +78,14 @@ void PrepareBrowserCommandLineForTests(base::CommandLine* command_line) {
   command_line->AppendSwitchASCII(switches::kChangeStackGuardOnFork,
                                   switches::kChangeStackGuardOnForkDisabled);
 #endif
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  // Adding this argument allows to bypass the sign-in promo that expands the
+  // avatar pill for signed out profiles on startup. This is needed for most
+  // tests not to be impacted by this feature.
+  command_line->AppendSwitch(
+      switches::kDisableSigninPromoOnAvatarPillForTesting);
+#endif
 }
 
 void PrepareBrowserCommandLineForBrowserTests(base::CommandLine* command_line,
@@ -114,6 +120,8 @@ bool OverrideUserDataDir(const base::FilePath& user_data_dir) {
   // base::PathService::Override() is the best way to change the user data
   // directory. This matches what is done in ChromeMain().
   success = base::PathService::Override(chrome::DIR_USER_DATA, user_data_dir);
+  VLOG(1) << "chrome::DIR_USER_DATA is overridden to: "
+          << user_data_dir.value();
 
 #if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_MAC)
   // Make sure the cache directory is inside our clear profile. Otherwise

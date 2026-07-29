@@ -6,7 +6,8 @@
 
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
-#include "crypto/scoped_mock_unexportable_key_provider.h"
+#include "components/unexportable_keys/fake_unexportable_key_service.h"
+#include "crypto/scoped_fake_unexportable_key_provider.h"
 #include "net/device_bound_sessions/unexportable_key_service_factory.h"
 #include "net/test/test_with_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -46,26 +47,32 @@ class SessionStoreTest : public TestWithTaskEnvironment {
 };
 
 TEST_F(SessionStoreTest, HasStore) {
-  crypto::ScopedMockUnexportableKeyProvider scoped_mock_key_provider_;
-  auto store = SessionStore::Create(store_file_path());
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider_;
+  auto store = SessionStore::Create(store_file_path(), nullptr);
   EXPECT_TRUE(store);
 }
 
 TEST_F(SessionStoreTest, NoStore) {
   // Empty db path not allowed.
   {
-    crypto::ScopedMockUnexportableKeyProvider scoped_mock_key_provider_;
-    auto store = SessionStore::Create(base::FilePath());
+    crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider_;
+    auto store = SessionStore::Create(base::FilePath(), nullptr);
     EXPECT_FALSE(store);
   }
   // Null key service not allowed.
   {
     ScopedNullUnexportableKeyFactory null_factory;
-    auto store = SessionStore::Create(store_file_path());
+    auto store = SessionStore::Create(store_file_path(), nullptr);
     EXPECT_FALSE(store);
   }
 }
 
+TEST_F(SessionStoreTest, HasUnexportableKeyService) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider_;
+  auto uks = unexportable_keys::FakeUnexportableKeyService();
+  auto store = SessionStore::Create(store_file_path(), &uks);
+  EXPECT_TRUE(store);
+}
 }  // namespace
 
 }  // namespace net::device_bound_sessions

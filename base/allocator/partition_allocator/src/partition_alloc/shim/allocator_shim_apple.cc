@@ -10,6 +10,7 @@
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/partition_alloc_base/apple/mach_logging.h"
+#include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/shim/allocator_interception_apple.h"
 
@@ -27,6 +28,10 @@
 namespace allocator_shim {
 
 void TryFreeDefaultFallbackToFindZoneAndFree(void* ptr) {
+  if (!ptr) [[unlikely]] {
+    return;
+  }
+
   unsigned int zone_count = 0;
   vm_address_t* zones = nullptr;
   kern_return_t result =
@@ -40,7 +45,8 @@ void TryFreeDefaultFallbackToFindZoneAndFree(void* ptr) {
   // implementation in libmalloc/src/malloc.c for details.
   // https://github.com/apple-oss-distributions/libmalloc/blob/main/src/malloc.c
   for (unsigned int i = 0; i < zone_count; ++i) {
-    malloc_zone_t* zone = reinterpret_cast<malloc_zone_t*>(zones[i]);
+    malloc_zone_t* zone =
+        reinterpret_cast<malloc_zone_t*>(PA_UNSAFE_TODO(zones[i]));
     if (size_t size = zone->size(zone, ptr)) {
       if (zone->version >= 6 && zone->free_definite_size) {
         zone->free_definite_size(zone, ptr, size);
@@ -52,7 +58,8 @@ void TryFreeDefaultFallbackToFindZoneAndFree(void* ptr) {
   }
 
   // There must be an owner zone.
-  PA_CHECK(false);
+  PA_CHECK(false) << "Oops! No zone found for "
+                  << reinterpret_cast<uintptr_t>(ptr);
 }
 
 }  // namespace allocator_shim
@@ -96,9 +103,13 @@ void InitializeAllocatorShim() {
 
 }  // namespace allocator_shim
 
+#if PA_BUILDFLAG(SHIM_SUPPORTS_ALLOC_TOKEN)
+#include "partition_alloc/shim/allocator_shim_alloc_token_symbols_apple.h"
+#endif
+
 // Cross-checks.
 
-#if defined(MEMORY_TOOL_REPLACES_ALLOCATOR)
+#if PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR)
 #error The allocator shim should not be compiled when building for memory tools.
 #endif
 

@@ -39,7 +39,7 @@ export class SyncDisabledConfirmationAppElement extends CrLitElement {
     };
   }
 
-  protected signoutDisallowed_: boolean =
+  protected accessor signoutDisallowed_: boolean =
       loadTimeData.getBoolean('signoutDisallowed');
   private syncConfirmationBrowserProxy_: SyncConfirmationBrowserProxy =
       SyncConfirmationBrowserProxyImpl.getInstance();
@@ -51,7 +51,7 @@ export class SyncDisabledConfirmationAppElement extends CrLitElement {
         'keydown', e => this.onKeyDown_(/** @type {!KeyboardEvent} */ (e)));
   }
 
-  protected onConfirm_(e: Event) {
+  protected onConfirmClick_(e: Event) {
     this.syncConfirmationBrowserProxy_.confirm(
         this.getConsentDescription_(),
         this.getConsentConfirmation_(e.composedPath() as HTMLElement[]),
@@ -95,8 +95,14 @@ export class SyncDisabledConfirmationAppElement extends CrLitElement {
     }
   }
 
-  protected onUndo_() {
+  protected onUndoClick_() {
     this.syncConfirmationBrowserProxy_.undo(ScreenMode.UNSUPPORTED);
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'sync-disabled-confirmation-app': SyncDisabledConfirmationAppElement;
   }
 }
 

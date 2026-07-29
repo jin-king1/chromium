@@ -7,19 +7,29 @@
 #include <memory>
 
 #include "base/functional/bind.h"
-#include "chrome/browser/ui/views/page_action/page_action_controller.h"
+#include "chrome/browser/ui/page_action/page_action_controller.h"
+#include "chrome/browser/ui/page_action/page_action_icon_type.h"
+#include "chrome/browser/ui/page_action/page_action_properties_provider.h"
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view_params.h"
 #include "ui/actions/actions.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/layout/flex_layout.h"
+#include "ui/views/view_class_properties.h"
 
 namespace page_actions {
 
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageActionContainerView,
+                                      kPageActionContainerViewElementId);
+
 PageActionContainerView::PageActionContainerView(
     const std::vector<actions::ActionItem*>& action_items,
+    const PageActionPropertiesProviderInterface& properties_provider,
     const PageActionViewParams& params) {
+  SetProperty(views::kElementIdentifierKey, kPageActionContainerViewElementId);
+
   auto* layout = SetLayoutManager(std::make_unique<views::FlexLayout>());
   layout->SetMainAxisAlignment(views::LayoutAlignment::kEnd);
 
@@ -30,24 +40,35 @@ PageActionContainerView::PageActionContainerView(
                    gfx::Insets().set_right(params.between_icon_spacing))
       .SetIgnoreDefaultMainAxisMargins(!params.should_bridge_containers);
 
-  // Callback used to handle page action view chip state changes to ensure that
-  // the container reorder the page actions accordingly.
-  base::RepeatingCallback<void(actions::ActionId, bool)>
-      chip_state_changed_callback = base::BindRepeating(
-          &PageActionContainerView::OnPageActionSuggestionChipStateChanged,
-          base::Unretained(this));
-
-  int initial_index = 0;
+  size_t initial_index = 0;
   for (actions::ActionItem* action_item : action_items) {
+    const auto action_item_id = action_item->GetActionId().value();
+    const auto& properties = properties_provider.GetProperties(action_item_id);
+
+    // When the page action migration is not enabled, the view should not be
+    // created to avoid conflicting with the old framework version identifier.
+    if (!IsPageActionMigrated(properties.type)) {
+      continue;
+    }
+
     PageActionView* view = AddChildView(std::make_unique<PageActionView>(
-        action_item, params, chip_state_changed_callback));
-    page_action_views_[action_item->GetActionId().value()] = view;
+        action_item, params, properties.type, properties.element_identifier));
+
+    page_action_views_[action_item_id] = view;
+    chip_state_changed_callbacks_.push_back(
+        view->AddChipVisibilityChangedCallback(base::BindRepeating(
+            &PageActionContainerView::OnPageActionStateChanged,
+            base::Unretained(this))));
+
+    anchored_message_state_changed_callbacks_.push_back(
+        view->AddAnchoredMessageVisibilityChangedCallback(base::BindRepeating(
+            &PageActionContainerView::OnPageActionStateChanged,
+            base::Unretained(this))));
 
     // Record the original index for the page action view so that even if it
     // become a suggestion chip (move to index 0) we can bring it back later at
     // the exact same initial index.
-    page_action_view_initial_indices_[action_item->GetActionId().value()] =
-        initial_index++;
+    page_action_view_initial_indices_[action_item_id] = initial_index++;
 
     view->SetProperty(
         views::kFlexBehaviorKey,
@@ -73,20 +94,56 @@ PageActionView* PageActionContainerView::GetPageActionView(
   return id_to_view != page_action_views_.end() ? id_to_view->second : nullptr;
 }
 
-void PageActionContainerView::OnPageActionSuggestionChipStateChanged(
-    actions::ActionId action_id,
-    bool suggestion_chip_visible) {
-  PageActionView* child = GetPageActionView(action_id);
-  CHECK(child);
+void PageActionContainerView::OnPageActionStateChanged(PageActionView* view) {
+  NormalizePageActionViewOrder();
+}
 
-  if (suggestion_chip_visible) {
-    // Bring the suggestion chip to the front.
-    ReorderChildView(child, 0u);
-  } else {
-    // Restore the original order using the recorded index.
-    if (page_action_view_initial_indices_.contains(action_id)) {
-      ReorderChildView(child, page_action_view_initial_indices_.at(action_id));
+void PageActionContainerView::NormalizePageActionViewOrder() {
+  // Three possible states of page actions: chip, icon, anchored message. There
+  // can be multiple chips and/or icons, but at most one anchored message.
+  std::vector<std::pair<size_t /*initial_index*/, PageActionView*>>
+      chip_state_views;
+  std::vector<std::pair<size_t /*initial_index*/, PageActionView*>>
+      icon_state_views;
+  std::optional<PageActionView*> anchored_message_state_view;
+
+  chip_state_views.reserve(page_action_views_.size());
+  icon_state_views.reserve(page_action_views_.size());
+
+  for (const auto& [action_id, view] : page_action_views_) {
+    const auto it = page_action_view_initial_indices_.find(action_id);
+    CHECK(it != page_action_view_initial_indices_.end());
+    if (view->IsAnchoredMessageVisible()) {
+      anchored_message_state_view = view;
+      continue;
     }
+
+    const size_t initial_index = it->second;
+    (view->IsChipVisible() ? chip_state_views : icon_state_views)
+        .emplace_back(initial_index, view);
+  }
+
+  // Sort both groups by initial insertion index to keep stable, predictable
+  // order.
+  auto by_initial_index = [](const auto& a, const auto& b) {
+    return a.first < b.first;
+  };
+  std::sort(chip_state_views.begin(), chip_state_views.end(), by_initial_index);
+  std::sort(icon_state_views.begin(), icon_state_views.end(), by_initial_index);
+
+  size_t next_index = 0;
+  // Place the page action with an anchored message (if any) first.
+  if (anchored_message_state_view) {
+    ReorderChildView(anchored_message_state_view.value(), next_index++);
+  }
+  // Place all chips next, in initial-order.
+  for (const auto& entry : chip_state_views) {
+    ReorderChildView(entry.second, next_index++);
+  }
+
+  // Place the rest, offset by the number of chips.
+  for (const auto& entry : icon_state_views) {
+    ReorderChildView(entry.second, next_index++);
   }
 }
 

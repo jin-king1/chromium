@@ -164,6 +164,21 @@ class UnzipTest : public testing::Test {
     return bytes;
   }
 
+  bool DoDecodeXz(const base::FilePath& in_file,
+                  const base::FilePath& out_file) {
+    mojo::PendingRemote<mojom::Unzipper> unzipper;
+    receivers_.Add(&unzipper_, unzipper.InitWithNewPipeAndPassReceiver());
+    bool result = false;
+    base::RunLoop run_loop;
+    DecodeXz(std::move(unzipper), in_file, out_file,
+             base::BindLambdaForTesting([&](bool success) {
+               result = success;
+               run_loop.Quit();
+             }));
+    run_loop.Run();
+    return result;
+  }
+
  protected:
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
@@ -207,6 +222,33 @@ TEST_F(UnzipTest, UnzipGoodArchive) {
   // they are not empty.
   bool some_files_empty = false;
   EXPECT_EQ(8, CountFiles(unzip_dir_, &some_files_empty));
+  EXPECT_FALSE(some_files_empty);
+}
+
+TEST_F(UnzipTest, UnzipGoodArchiveWithExtraBytes) {
+  EXPECT_TRUE(DoUnzip(GetArchivePath("good_archive_prefixed.zip"), unzip_dir_));
+  bool some_files_empty = false;
+  EXPECT_EQ(8, CountFiles(unzip_dir_, &some_files_empty));
+  EXPECT_FALSE(some_files_empty);
+}
+
+TEST_F(UnzipTest, UnzipBadArchiveHang) {
+  // Don't hang trying to open this bad archive.
+  EXPECT_FALSE(DoUnzip(GetArchivePath("bad_archive_hang.zip"), unzip_dir_));
+  EXPECT_EQ(0, CountFiles(unzip_dir_));
+}
+
+TEST_F(UnzipTest, UnzipZip64) {
+  EXPECT_TRUE(DoUnzip(GetArchivePath("good_zip64.zip"), unzip_dir_));
+  bool some_files_empty = false;
+  EXPECT_EQ(1, CountFiles(unzip_dir_, &some_files_empty));
+  EXPECT_FALSE(some_files_empty);
+}
+
+TEST_F(UnzipTest, UnzipZip64WithExtraBytes) {
+  EXPECT_TRUE(DoUnzip(GetArchivePath("good_zip64_prefixed.zip"), unzip_dir_));
+  bool some_files_empty = false;
+  EXPECT_EQ(1, CountFiles(unzip_dir_, &some_files_empty));
   EXPECT_FALSE(some_files_empty);
 }
 
@@ -328,6 +370,154 @@ TEST_F(UnzipTest, DetectAESArchive) {
   mojom::Info result =
       DoGetExtractedInfo(GetArchivePath("DifferentEncryptions.zip"));
   EXPECT_TRUE(result.uses_aes_encryption);
+}
+
+TEST_F(UnzipTest, DecodeXz_Success) {
+  base::FilePath out = unzip_dir_.AppendASCII("out");
+  ASSERT_TRUE(DoDecodeXz(GetArchivePath("file1.xz"), out));
+  EXPECT_EQ(ReadFileToBytes(out), ReadFileToBytes(GetArchivePath("file1")));
+  ASSERT_TRUE(base::DeleteFile(out));
+  ASSERT_TRUE(DoDecodeXz(GetArchivePath("bd646.xz"), out));
+  EXPECT_EQ(ReadFileToBytes(out), ReadFileToBytes(GetArchivePath("bd646")));
+}
+
+TEST_F(UnzipTest, DecodeXz_DontReplaceExistingOutfile) {
+  base::FilePath out = unzip_dir_.AppendASCII("out");
+  ASSERT_TRUE(base::WriteFile(out, "data"));
+  ASSERT_FALSE(DoDecodeXz(GetArchivePath("file1.xz"), out));
+  std::string out_contents;
+  ASSERT_TRUE(base::ReadFileToString(out, &out_contents));
+  EXPECT_EQ(out_contents, "data");
+}
+
+TEST_F(UnzipTest, DecodeXz_MissingInput) {
+  base::FilePath out = unzip_dir_.AppendASCII("out");
+  EXPECT_FALSE(DoDecodeXz(GetArchivePath("doesnotexist"), out));
+  EXPECT_FALSE(base::PathExists(out));
+}
+
+TEST_F(UnzipTest, DecodeXz_BadFormat) {
+  base::FilePath out = unzip_dir_.AppendASCII("out");
+  EXPECT_FALSE(DoDecodeXz(GetArchivePath("file1"), out));
+  EXPECT_FALSE(base::PathExists(out));
+}
+
+TEST_F(UnzipTest, DecodeXz_Cancel) {
+  base::FilePath out = unzip_dir_.AppendASCII("out");
+  base::FilePath in = GetArchivePath("file1.xz");
+  mojo::PendingRemote<mojom::Unzipper> unzipper;
+  receivers_.Add(&unzipper_, unzipper.InitWithNewPipeAndPassReceiver());
+  base::RunLoop run_loop;
+  DecodeXz(std::move(unzipper), in, out,
+           base::BindLambdaForTesting([&](bool success) {
+             EXPECT_FALSE(success);
+             run_loop.Quit();
+           }))
+      .Run();
+  run_loop.Run();
+  EXPECT_FALSE(base::PathExists(out));
+}
+
+TEST_F(UnzipTest, DecodeXz_CancelAfterReturn) {
+  base::FilePath out = unzip_dir_.AppendASCII("out");
+  base::FilePath in = GetArchivePath("file1.xz");
+  base::OnceClosure cancellation;
+  int call_count = 0;
+  {
+    mojo::PendingRemote<mojom::Unzipper> unzipper;
+    receivers_.Add(&unzipper_, unzipper.InitWithNewPipeAndPassReceiver());
+    base::RunLoop run_loop;
+    cancellation = DecodeXz(std::move(unzipper), in, out,
+                            base::BindLambdaForTesting([&](bool success) {
+                              EXPECT_TRUE(success);
+                              ++call_count;
+                              run_loop.Quit();
+                            }));
+    run_loop.Run();
+    EXPECT_EQ(call_count, 1);
+  }
+  std::move(cancellation).Run();
+  base::RunLoop run_loop;
+  run_loop.RunUntilIdle();
+  EXPECT_EQ(call_count, 1);
+}
+
+TEST_F(UnzipTest, UnzipZip64InZip64) {
+  // Unzip outer ZIP.
+  EXPECT_TRUE(DoUnzip(GetArchivePath("zip64_in_zip64.zip"), unzip_dir_));
+  base::FilePath extracted_file = unzip_dir_.Append(FILE_PATH_LITERAL("-"));
+
+  // Confirm the extracted file is a ZIP. If the inner Zip64 is mistakenly
+  // unzipped, this will fail.
+  std::optional<std::vector<uint8_t>> contents =
+      base::ReadFileToBytes(extracted_file);
+  ASSERT_TRUE(contents);
+  ASSERT_TRUE(contents->size() >= 4);
+  ASSERT_EQ((*contents)[0], 0x50);
+  ASSERT_EQ((*contents)[1], 0x4b);
+  ASSERT_EQ((*contents)[2], 0x03);
+  ASSERT_EQ((*contents)[3], 0x04);
+
+  // Extract the inner ZIP.
+  base::FilePath inner_unzip_dir =
+      unzip_dir_.Append(FILE_PATH_LITERAL("inner_out"));
+  ASSERT_TRUE(base::CreateDirectory(inner_unzip_dir));
+  EXPECT_TRUE(DoUnzip(extracted_file, inner_unzip_dir));
+
+  // Confirm the inner file contents.
+  std::string inner_contents;
+  ASSERT_TRUE(base::ReadFileToString(
+      inner_unzip_dir.Append(FILE_PATH_LITERAL("-")), &inner_contents));
+  EXPECT_EQ(inner_contents, "innermost\n");
+}
+
+TEST_F(UnzipTest, UnzipZip64InZip) {
+  // Unzip outer ZIP.
+  EXPECT_TRUE(DoUnzip(GetArchivePath("zip64_in_zip.zip"), unzip_dir_));
+  base::FilePath extracted_file =
+      unzip_dir_.Append(FILE_PATH_LITERAL("zip64.zip"));
+
+  // Confirm the extracted file.
+  std::optional<std::vector<uint8_t>> contents =
+      base::ReadFileToBytes(extracted_file);
+  // If "-" exists but not "zip64.zip", the inner zip64 was unzipped.
+  ASSERT_TRUE(contents) << "Failed to read `zip64.zip`; does `-` exist? "
+                        << base::PathExists(
+                               unzip_dir_.Append(FILE_PATH_LITERAL("-")));
+  ASSERT_TRUE(contents->size() >= 4);
+
+  // Note: If this is instead 'i', the inner ZIP was unzipped.
+  ASSERT_EQ((*contents)[0], 0x50);
+  ASSERT_EQ((*contents)[1], 0x4b);
+  ASSERT_EQ((*contents)[2], 0x03);
+  ASSERT_EQ((*contents)[3], 0x04);
+
+  // Extract the inner ZIP.
+  base::FilePath inner_unzip_dir =
+      unzip_dir_.Append(FILE_PATH_LITERAL("inner_out"));
+  ASSERT_TRUE(base::CreateDirectory(inner_unzip_dir));
+  EXPECT_TRUE(DoUnzip(extracted_file, inner_unzip_dir));
+
+  // Confirm the inner file contents.
+  std::string inner_contents;
+  ASSERT_TRUE(base::ReadFileToString(
+      inner_unzip_dir.Append(FILE_PATH_LITERAL("-")), &inner_contents));
+  EXPECT_EQ(inner_contents, "innermost\n");
+}
+
+// zip_with_two_interesting_zip64s.zip is a non-zip64 zip that contains two
+// zip64s. The second zip64 has the interesting property that the "relative
+// offset" in its zip64 EoCDL, if interpreted as a relative offset in the
+// outer zip, happens to point at the (well-formed) zip64 EoCDR of the first
+// zip64. A parser that simply scans for zip64 EoCDLs is likely to get
+// confused by this.
+TEST_F(UnzipTest, UnzipZipWithInterestingZip64s) {
+  // Unzip outer ZIP.
+  EXPECT_TRUE(DoUnzip(GetArchivePath("zip_with_two_interesting_zip64s.zip"),
+                      unzip_dir_));
+  // Two inner ZIPs. If there's only one, it's probably the contents of the
+  // inner ZIP.
+  EXPECT_EQ(2, CountFiles(unzip_dir_));
 }
 
 }  // namespace

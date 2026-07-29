@@ -9,7 +9,6 @@
 
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/common/chrome_switches.h"
@@ -47,7 +46,7 @@ TabModalConfirmDialogViews::TabModalConfirmDialogViews(
   SetCloseCallback(base::BindOnce(&TabModalConfirmDialogDelegate::Close,
                                   base::Unretained(delegate_.get())));
   SetModalType(ui::mojom::ModalType::kChild);
-  SetOwnedByWidget(true);
+  SetOwnedByWidget(OwnedByWidgetPassKey());
 
   std::optional<int> default_button = delegate_->GetDefaultDialogButton();
   if (bool(default_button)) {

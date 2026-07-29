@@ -4,7 +4,8 @@
 
 #include "chrome/browser/media/cast_mirroring_service_host.h"
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
 #include "base/containers/flat_map.h"
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
@@ -17,7 +18,7 @@
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
@@ -28,6 +29,7 @@
 #include "components/mirroring/mojom/session_observer.mojom.h"
 #include "components/mirroring/mojom/session_parameters.mojom.h"
 #include "components/prefs/pref_service.h"
+#include "components/tabs/public/tab_alert.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -124,8 +126,8 @@ class MockVideoCaptureObserver final
     OnBufferDestroyedCall(buffer_id);
   }
 
-  void OnNewSubCaptureTargetVersion(
-      uint32_t sub_capture_target_version) override {}
+  void OnNewCaptureVersion(
+      const media::CaptureVersion& capture_version) override {}
 
   void OnStateChanged(media::mojom::VideoCaptureResultPtr result) override {
     if (result->which() == media::mojom::VideoCaptureResult::Tag::kState)
@@ -228,29 +230,29 @@ class CastMirroringServiceHostBrowserTest
 
     base::RunLoop run_loop;
     EXPECT_CALL(*outbound_channel_receiver_, OnMessage(_))
-        .WillOnce(
-            testing::Invoke([expected_delay_ms, &run_loop](
-                                mirroring::mojom::CastMessagePtr message) {
-              const std::optional<base::Value> root_or_error =
-                  base::JSONReader::Read(message->json_format_data);
-              ASSERT_TRUE(root_or_error);
-              const base::Value::Dict& root = root_or_error->GetDict();
-              const std::string* type = root.FindString("type");
-              ASSERT_TRUE(type);
-              if (*type == "OFFER") {
-                const base::Value::Dict* offer = root.FindDict("offer");
-                EXPECT_TRUE(offer);
-                const base::Value::List* streams =
-                    offer->FindList("supportedStreams");
-                for (auto& stream : *streams) {
-                  const base::Value::Dict& stream_dict = stream.GetDict();
-                  const int stream_target_delay =
-                      stream_dict.FindInt("targetDelay").value();
-                  EXPECT_EQ(stream_target_delay, expected_delay_ms);
-                }
-              }
-              run_loop.Quit();
-            }));
+        .WillOnce([expected_delay_ms,
+                   &run_loop](mirroring::mojom::CastMessagePtr message) {
+          const std::optional<base::Value> root_or_error =
+              base::JSONReader::Read(message->json_format_data,
+                                     base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+          ASSERT_TRUE(root_or_error);
+          const base::DictValue& root = root_or_error->GetDict();
+          const std::string* type = root.FindString("type");
+          ASSERT_TRUE(type);
+          if (*type == "OFFER") {
+            const base::DictValue* offer = root.FindDict("offer");
+            EXPECT_TRUE(offer);
+            const base::ListValue* streams =
+                offer->FindList("supportedStreams");
+            for (auto& stream : *streams) {
+              const base::DictValue& stream_dict = stream.GetDict();
+              const int stream_target_delay =
+                  stream_dict.FindInt("targetDelay").value();
+              EXPECT_EQ(stream_target_delay, expected_delay_ms);
+            }
+          }
+          run_loop.Quit();
+        });
     host_->Start(std::move(session_params), std::move(observer),
                  std::move(outbound_channel),
                  inbound_channel_.BindNewPipeAndPassReceiver(), "Sink Name");
@@ -351,6 +353,13 @@ class CastMirroringServiceHostBrowserTest
   // InProcessBrowserTest override.
   void SetUp() override { InProcessBrowserTest::SetUp(); }
 
+  std::vector<tabs::TabAlert> GetTabAlertStatesForContents(
+      content::WebContents* web_contents) {
+    return tabs::TabAlertController::From(
+               tabs::TabInterface::GetFromContents(web_contents))
+        ->GetAllActiveAlerts();
+  }
+
  private:
   // mojom::SessionObserver mocks.
   MOCK_METHOD(void, OnError, (mojom::SessionError));
@@ -413,9 +422,9 @@ IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest, TabIndicator) {
       browser_->tab_strip_model()->AddObserver(this);
     }
 
-    void TabChangedAt(content::WebContents* contents,
-                      int index,
-                      TabChangeType change_type) override {
+    void OnTabChangedAt(tabs::TabInterface* tab,
+                        int index,
+                        TabChangeType change_type) override {
       std::move(on_tab_changed_).Run();
     }
 
@@ -436,12 +445,12 @@ IN_PROC_BROWSER_TEST_F(CastMirroringServiceHostBrowserTest, TabIndicator) {
 
   // Run the browser until the indicator turns on.
   const base::TimeTicks start_time = base::TimeTicks::Now();
-  while (!base::Contains(GetTabAlertStatesForContents(contents),
-                         TabAlertState::TAB_CAPTURING)) {
+  while (!std::ranges::contains(GetTabAlertStatesForContents(contents),
+                                tabs::TabAlert::kTabCapturing)) {
     if (base::TimeTicks::Now() - start_time >
         TestTimeouts::action_max_timeout()) {
       EXPECT_THAT(GetTabAlertStatesForContents(contents),
-                  ::testing::Contains(TabAlertState::TAB_CAPTURING));
+                  ::testing::Contains(tabs::TabAlert::kTabCapturing));
       return;
     }
     observer.WaitForTabChange();

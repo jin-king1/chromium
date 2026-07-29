@@ -5,10 +5,10 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_ADDRESSES_AUTOFILL_STRUCTURED_ADDRESS_COMPONENT_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_ADDRESSES_AUTOFILL_STRUCTURED_ADDRESS_COMPONENT_H_
 
-#include <map>
-#include <memory>
 #include <optional>
+#include <ostream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -51,16 +51,19 @@ enum class VerificationStatus {
 std::optional<VerificationStatus> ToSafeVerificationStatus(
     std::underlying_type_t<VerificationStatus> raw_value);
 
-// Prints the string representation of |status| to |os|.
+// Prints the string representation of `status` to `os`.
 std::ostream& operator<<(std::ostream& os, VerificationStatus status);
 
-// Returns true if |left| has a less significant verification status compared to
-// |right|.
+// Returns a string view representation of the `status`.
+std::string_view VerificationStatusToStringView(VerificationStatus status);
+
+// Returns true if `left` has a less significant verification status compared to
+// `right`.
 bool IsLessSignificantVerificationStatus(VerificationStatus left,
                                          VerificationStatus right);
 
 // Returns the more significant verification status according to
-// |IsLessSignificantVerificationStatus|.
+// `IsLessSignificantVerificationStatus`.
 VerificationStatus GetMoreSignificantVerificationStatus(
     VerificationStatus left,
     VerificationStatus right);
@@ -68,10 +71,12 @@ VerificationStatus GetMoreSignificantVerificationStatus(
 // The merge mode defines if and how two components are merged.
 // The merge operations are applied in the order defined here.
 // If one merge operation succeeds, the subsequent ones are not tested.
-// Therefore, if |KUseBetterOrMoreRecentIfDifferent| is active,
-// |kMergeChildrenAndReformatIfNeeded| will not be applied because
-// |kUseBetterOrMostRecentIfDifferent| is always applicable.
+// Therefore, if `KUseBetterOrMoreRecentIfDifferent` is active,
+// `kMergeChildrenAndReformatIfNeeded` will not be applied because
+// `kUseBetterOrMostRecentIfDifferent` is always applicable.
 enum MergeMode {
+  // Unset merge mode (shouldn't ever be merged individually).
+  kNone = 0,
   // If one component has an empty value, use the non-empty one.
   kReplaceEmpty = 1,
   // Recursively merge two components that have the same tokens in arbitrary
@@ -80,27 +85,17 @@ enum MergeMode {
   // If both tokens have the same normalized value, use the one with the better
   // verification status. If both statuses are the same, use the newer one.
   kUseBetterOrNewerForSameValue = 1 << 2,
-  // If one component is a superset of the other, use the subset.
-  kReplaceSuperset = 1 << 3,
   // If one component is a subset of the other, use the superset.
-  kReplaceSubset = 1 << 4,
-  // If both components have a different value, is the newer one.
-  kUseNewerIfDifferent = 1 << 5,
-  // If the newer component contains one token more, apply a recursive strategy
-  // to merge the tokens.
-  kRecursivelyMergeSingleTokenSubset = 1 << 6,
+  kReplaceSubset = 1 << 3,
   // If one is a substring of the other use the most recent one.
-  kUseMostRecentSubstring = 1 << 7,
+  kUseMostRecentSubstring = 1 << 4,
   // If the tokens match or one is a subset of the other, pick the shorter one.
-  kPickShorterIfOneContainsTheOther = 1 << 8,
-  // If the normalized values are different, use the better one in terms
-  // of verification score or the most recent one if both scores are the same.
-  kUseBetterOrMostRecentIfDifferent = 1 << 9,
+  kPickShorterIfOneContainsTheOther = 1 << 5,
   // Merge the child nodes and reformat the node from its children after merge
   // if the value has changed.
-  kMergeChildrenAndReformatIfNeeded = 1 << 10,
+  kMergeChildrenAndReformatIfNeeded = 1 << 6,
   // Make a merge decision based on canonicalized values.
-  kMergeBasedOnCanonicalizedValues = 1 << 11,
+  kMergeBasedOnCanonicalizedValues = 1 << 7,
   // Defines the default merging behavior.
   kDefault = kRecursivelyMergeTokenEquivalentValues
 };
@@ -110,8 +105,8 @@ enum MergeMode {
 // have a set of children, each representing a more granular subtoken of the
 // component.
 //
-// An AddressComponent has a string representation stored in |value_| and a
-// VerificationStatus stored in |verification_status_|.
+// An AddressComponent has a string representation stored in `value_` and a
+// VerificationStatus stored in `verification_status_`.
 // The latter indicates if the value was user-verified, observed in a form
 // submission event, parsed from its parent component or was formatted from its
 // child components.
@@ -154,12 +149,15 @@ class AddressComponent {
   // AddressComponentsStore is being destroyed, the WipeRawPtrsForDestruction
   // function is used to clear the list of child pointers. This prevents
   // dangling pointers during the destruction process.
-  using SubcomponentsList = std::vector<AddressComponent*>;
+  using SubcomponentsList = std::vector<raw_ptr<AddressComponent>>;
 
   // Constructor for a compound child node.
   AddressComponent(FieldType storage_type,
                    SubcomponentsList subcomponents,
                    unsigned int merge_mode);
+
+  // Constructor for a child node with `kNone` merge mode.
+  AddressComponent(FieldType storage_type, SubcomponentsList subcomponents);
 
   // Disallows copies and direct assignments since they are not needed in the
   // current Autofill design.
@@ -172,23 +170,23 @@ class AddressComponent {
   // a status.
   virtual void MigrateLegacyStructure() {}
 
-  // Comparison operators are deleted in favor of and |SameAs()|.
+  // Comparison operators are deleted in favor of and `SameAs()`.
   bool operator==(const AddressComponent& right) const = delete;
   bool operator!=(const AddressComponent& right) const = delete;
 
-  // Compares the values and verification statuses with |other| recursively
+  // Compares the values and verification statuses with `other` recursively
   // down the tree. Returns true iff all values and verification statuses of
-  // this node and its subtree and |other| with its subtree are the same.
+  // this node and its subtree and `other` with its subtree are the same.
   virtual bool SameAs(const AddressComponent& other) const;
 
-  // Copies the values and verification statuses from |other| recursively down
+  // Copies the values and verification statuses from `other` recursively down
   // the tree.
   void CopyFrom(const AddressComponent& other);
 
-  // Returns the autofill storage type stored in |storage_type_|.
+  // Returns the autofill storage type stored in `storage_type_`.
   FieldType GetStorageType() const;
 
-  // Returns the string representation of |storage_type_|.
+  // Returns the string representation of `storage_type_`.
   std::string GetStorageTypeName() const;
 
   // Returns the value verification status of the component's value;
@@ -197,21 +195,22 @@ class AddressComponent {
   // Returns true if the component has no subcomponents.
   bool IsAtomic() const;
 
-  // Returns a constant reference to |value_.value()|. If the value is not
+  // Returns a constant reference to `value_.value()`. If the value is not
   // assigned, an empty string is returned.
   const std::u16string& GetValue() const;
 
-  // Returns the normalized value of this component for comparison. `other` is
-  // the component being compared against and is required for consistent
-  // application of rewriting rules.
-  std::u16string GetValueForComparison(const AddressComponent& other) const;
+  // Returns the normalized value of this component for comparison.
+  // `common_country_code` of this and the component it's being compared against
+  // is required for consistent application of rewriting rules.
+  std::u16string GetValueForComparison(
+      const AddressCountryCode& common_country_code) const;
 
-  // Returns a normalized version of `value` for comparison. `other` is the
-  // component being compared against and is required for consistent application
-  // of rewriting rules.
+  // Returns a normalized version of `value` for comparison.
+  // `common_country_code` of this and the component it's being compared against
+  // is required for consistent application of rewriting rules.
   virtual std::u16string GetValueForComparison(
       const std::u16string& value,
-      const AddressComponent& other) const;
+      const AddressCountryCode& common_country_code) const;
 
   // Returns a canonicalized version of the value or std::nullopt if
   // canonicalization is not possible or not implemented.
@@ -223,51 +222,49 @@ class AddressComponent {
   // Sets the value corresponding to the storage type of this AddressComponent.
   virtual void SetValue(std::u16string value, VerificationStatus status);
 
-  // Wrapper function around
-  // SetValueForTypeIfPossible(/*invalidate_child_nodes=*/false);
+  // Sets the value for the specified field type.
+  // - If `invalidate_child_nodes` is false (default), checks if the node is
+  //   read-only.
+  // - If `invalidate_child_nodes` is true, ignores read-only status and clears
+  //   child nodes after setting.
   bool SetValueForType(FieldType field_type,
-                       const std::u16string& value,
-                       const VerificationStatus& status);
-
-  // Wrapper function around
-  // SetValueForTypeIfPossible(/*invalidate_child_nodes=*/true);
-  // TODO(crbug.com/40266145): Remove and merge with SetValueForType.
-  bool SetValueForTypeAndResetSubstructure(FieldType field_type,
-                                           const std::u16string& value,
-                                           const VerificationStatus& status);
+                       std::u16string_view value,
+                       const VerificationStatus& status,
+                       bool invalidate_child_nodes = false);
 
   // Sets the value to an empty string, marks it unassigned and sets the
-  // verification status to |kNoStatus|.
+  // verification status to `kNoStatus`.
   virtual void UnsetValue();
 
-  // Convenience method to get the value of |field_type|.
-  // Returns an empty string if |field_type| is not supported.
+  // Convenience method to get the value of `field_type`.
+  // Returns an empty string if `field_type` is not supported.
   std::u16string GetValueForType(FieldType field_type) const;
 
   // Convenience method to get the value of `field_type` to be used for
-  // comparison with `other`. Returns an empty string if `field_type` is not
-  // supported.
+  // comparison. Returns an empty string if `field_type` is not
+  // supported. `common_country_code` of this and the component it's being
+  // compared against is required for consistent application of rewriting rules.
   std::u16string GetValueForComparisonForType(
       FieldType field_type,
-      const AddressComponent& other) const;
+      const AddressCountryCode& common_country_code) const;
 
   // Convenience method to get the verification status of `field_type`.
-  // Returns |VerificationStatus::kNoStatus| if `field_type` is not supported.
+  // Returns `VerificationStatus::kNoStatus` if `field_type` is not supported.
   VerificationStatus GetVerificationStatusForType(FieldType field_type) const;
 
-  // Returns true if the |value| and |verification_status| were successfully
-  // unset for |type|.
+  // Returns true if the `value` and `verification_status` were successfully
+  // unset for `type`.
   bool UnsetValueForTypeIfSupported(FieldType field_type);
 
-  // Parses |value_| to assign values to the subcomponents.
+  // Parses `value_` to assign values to the subcomponents.
   // The method uses 2 stages:
   //
-  // * Use |ParseValueAndAssignSubcomponentsByRegularExpressions()|. This stage
+  // * Use `ParseValueAndAssignSubcomponentsByRegularExpressions()`. This stage
   // uses a list of regular expressions acquired by the virtual method
-  // |GetParseRegularExpressionsByRelevance()|. This stage my fail.
+  // `GetParseRegularExpressionsByRelevance()`. This stage my fail.
   //
-  // * Use |ParseValueAndAssignSubcomponentsByFallbackMethod()| as the last
-  // resort to parse |value_|. This method must produce a valid result.
+  // * Use `ParseValueAndAssignSubcomponentsByFallbackMethod()` as the last
+  // resort to parse `value_`. This method must produce a valid result.
   void ParseValueAndAssignSubcomponents();
 
   // This methods populated the unassigned entries in the subtree of this node
@@ -276,7 +273,7 @@ class AddressComponent {
   // is virtual and can be reimplemented on the type level.
   virtual void RecursivelyCompleteTree();
 
-  // Completes the full tree by calling |RecursivelyCompleteTree()| starting
+  // Completes the full tree by calling `RecursivelyCompleteTree()` starting
   // form the root node. Returns true if the completion was successful.
   virtual bool CompleteFullTree();
 
@@ -291,7 +288,7 @@ class AddressComponent {
   bool IsTreeCompletable();
 
   // Recursively adds the supported types to the set. Calls
-  // |GetAdditionalSupportedFieldTypes()| to add field types.
+  // `GetAdditionalSupportedFieldTypes()` to add field types.
   FieldTypeSet GetSupportedTypes() const;
 
   // Recursively adds only the storable types to the set. No computed type is
@@ -305,7 +302,7 @@ class AddressComponent {
   // - Otherwise, if `type` is not a supported type of any node, return nullopt.
   std::optional<FieldType> GetStorableTypeOf(FieldType type) const;
 
-  // Adds the additional supported field types to |supported_types|.
+  // Adds the additional supported field types to `supported_types`.
   // The method should DCHECK that the added types are not part of the set yet.
   virtual const FieldTypeSet GetAdditionalSupportedFieldTypes() const;
 
@@ -320,19 +317,19 @@ class AddressComponent {
       const AddressComponent& newer_component) const;
 
   // Recursively updates the verification statuses to the higher one, for nodes
-  // in |newer_component| that have the same values as the nodes in |this|.
+  // in `newer_component` that have the same values as the nodes in `this`.
   virtual void MergeVerificationStatuses(
       const AddressComponent& newer_component);
 
-  // Merge |newer_component| into this AddressComponent.
+  // Merge `newer_component` into this AddressComponent.
   // Returns false if the merging is not possible.
   // The state of the component is not altered by a failed merging attempt.
-  // |newer_was_more_recently_used| indicates that the newer component was also
+  // `newer_was_more_recently_used` indicates that the newer component was also
   // more recently used for filling a form.
   virtual bool MergeWithComponent(const AddressComponent& newer_component,
-                                  bool newer_was_more_recently_used = true);
+                                  bool newer_was_more_recently_used);
 
-  // Merge |newer_component| into this AddressComponent.
+  // Merge `newer_component` into this AddressComponent.
   // The merging is possible iff the value of both root nodes is token
   // equivalent, meaning they contain the same tokens in an arbitrary order.
   // Returns false if the merging is not possible.
@@ -365,21 +362,23 @@ class AddressComponent {
   // Recursively unsets all subcomponents.
   void RecursivelyUnsetSubcomponents();
 
-  // Return if the value associated with |field_type| is valid.
-  // If |wipe_if_not|, the value is unset if invalid.
+  // Return if the value associated with `field_type` is valid.
+  // If `wipe_if_not`, the value is unset if invalid.
   bool IsValueForTypeValid(FieldType field_type, bool wipe_if_not = false);
 
   // While processing two structured addresses, if only one of them has their
   // country set, the other should assume the non-empty one while merging. This
   // is required to do consistent address rewriting.
-  // Returns the common country to be used.
-  AddressCountryCode GetCommonCountry(const AddressComponent& other) const;
+  // Returns the common country to be used. Empty string is returned if both
+  // countries are set and not equal.
+  static AddressCountryCode GetCommonCountry(const AddressCountryCode& c1,
+                                             const AddressCountryCode& c2);
 
   // If this node is a part of a tree that contains country code information,
   // this function retrieves it. Otherwise it returns an empty country code.
   AddressCountryCode GetCountryCode() const;
 
-  // Deletes the stored structure and returns true if |IsStructureValid()|
+  // Deletes the stored structure and returns true if `IsStructureValid()`
   // returns false.
   virtual bool WipeInvalidStructure();
 
@@ -408,7 +407,7 @@ class AddressComponent {
   // the AddressComponent tree.
   virtual bool IsValueReadOnly() const;
 
-  // Returns a vector containing the |storage_types_| of all direct
+  // Returns a vector containing the `storage_types_` of all direct
   // subcomponents.
   std::vector<FieldType> GetSubcomponentTypes() const;
 
@@ -423,7 +422,7 @@ class AddressComponent {
   virtual std::vector<const re2::RE2*> GetParseRegularExpressionsByRelevance()
       const;
 
-  // This method parses |value_| to assign values to the subcomponents.
+  // This method parses `value_` to assign values to the subcomponents.
   // The method is virtual and can be reimplemented per type.
   // It must succeed.
   virtual void ParseValueAndAssignSubcomponentsByFallbackMethod();
@@ -443,11 +442,6 @@ class AddressComponent {
 
   // Clears all parsed and formatted values.
   void ClearAllParsedAndFormattedValues();
-
-  // Merge a component that has exactly one token less.
-  bool MergeSubsetComponent(
-      const AddressComponent& subset_component,
-      const SortedTokenComparisonResult& token_comparison_result);
 
   // Consumes an additional token into the most appropriate subcomponent.
   // Can be implemented by the specific node types.
@@ -473,14 +467,14 @@ class AddressComponent {
   virtual bool HasNewerValuePrecedenceInMerging(
       const AddressComponent& newer_component) const;
 
-  // Parses |value| by using |parse_expressions| and assigns the values.
+  // Parses `value` by using `parse_expressions` and assigns the values.
   // Returns true on success.
   bool ParseValueAndAssignSubcomponentsByRegularExpression(
       const std::u16string& value,
       const re2::RE2* parse_expression);
 
   // Determines and sets a formatted value using
-  // |GetFormattedValueFromSubcomponents|.
+  // `GetFormattedValueFromSubcomponents`.
   void FormatValueFromSubcomponents();
 
   // Returns the maximum number of components with assigned values on the path
@@ -505,14 +499,14 @@ class AddressComponent {
   const AddressComponent* GetNodeForType(FieldType field_type) const;
 
   // Recursively adds the supported types to the set. If `!storable_only`, calls
-  // |GetAdditionalSupportedFieldTypes()| to add computed field types.
+  // `GetAdditionalSupportedFieldTypes()` to add computed field types.
   virtual FieldTypeSet GetTypes(bool storable_only) const;
-
- private:
-  friend class AddressComponentTestApi;
 
   // Unsets the node and all of its children.
   void UnsetAddressComponentAndItsSubcomponents();
+
+ private:
+  friend class AddressComponentTestApi;
 
   // Unsets the children of a node.
   void UnsetSubcomponents();
@@ -528,7 +522,7 @@ class AddressComponent {
   void FillTreeGaps();
 
   // Determines a value from the subcomponents by using the
-  // most suitable format string determined by |GetBestFormatString()|.
+  // most suitable format string determined by `GetBestFormatString()`.
   std::u16string GetFormattedValueFromSubcomponents();
 
   // Replaces placeholder values with the corresponding values.
@@ -536,23 +530,23 @@ class AddressComponent {
       std::u16string_view format) const;
 
   // This method uses i18n parsing instructions used by
-  // `ParseValueByI18nRegularExpression` to parse |value_| into the values of
+  // `ParseValueByI18nRegularExpression` to parse `value_` into the values of
   // the subcomponents. Returns true on success and is allowed to fail.
   bool ParseValueAndAssignSubcomponentsByI18nParsingRules();
 
   // This method uses regular expressions acquired by
-  // |GetParseRegularExpressionsByRelevance| to parse |value_| into the values
+  // `GetParseRegularExpressionsByRelevance` to parse `value_` into the values
   // of the subcomponents. Returns true on success and is allowed to fail.
   bool ParseValueAndAssignSubcomponentsByRegularExpressions();
 
   // This method uses regular expressions acquired by
-  // |GetParseRegularExpressionsByRelevance| to parse |value_| into the values
+  // `GetParseRegularExpressionsByRelevance` to parse `value_` into the values
   // of the subcomponents that are empty, components with non-empty values
   // remain unchanged. If parsing is not successful, the function does not
   // perform any modifications. Returns true if parsing was successful.
   void TryParseValueAndAssignSubcomponentsRespectingSetValues();
 
-  // Parses |value| by using |parse_expressions| and assigns values to empty
+  // Parses `value` by using `parse_expressions` and assigns values to empty
   // subcomponents only. The value assigned to each subcomponent is compatible
   // with the information growth invariant (i.e child information is always
   // contained on their ancestors). If parsing is not successful, the function
@@ -585,7 +579,7 @@ class AddressComponent {
   // The unstructured value of this component.
   std::optional<std::u16string> value_;
 
-  // The verification status of |value_| indicates the certainty of the value
+  // The verification status of `value_` indicates the certainty of the value
   // to be correct.
   VerificationStatus value_verification_status_;
 
@@ -603,12 +597,6 @@ class AddressComponent {
   // constituents are. Synthesized nodes, similarly as normal subcomponents are
   // stored in the AddressComponentsStore.
   SubcomponentsList synthesized_subcomponents_;
-
-  // A vector that contains the tokens of |value_| after normalization,
-  // meaning that it was converted to lower case and diacritics have been
-  // removed. |value_| is tokenized by splitting the string by white spaces and
-  // commas. It is calculated when |value_| is set.
-  std::optional<std::vector<AddressToken>> sorted_normalized_tokens_;
 
   // A pointer to the parent node. It is set to nullptr if the node is the root
   // node of the AddressComponent tree. Similarly to the `subcomponents_`, the

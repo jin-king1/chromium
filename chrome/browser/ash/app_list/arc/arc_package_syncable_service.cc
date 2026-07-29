@@ -4,25 +4,23 @@
 
 #include "chrome/browser/ash/app_list/arc/arc_package_syncable_service.h"
 
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "ash/constants/ash_pref_names.h"
-#include "base/containers/contains.h"
+#include "base/containers/flat_set.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/app_list/arc/arc_package_install_priority_handler.h"
 #include "chrome/browser/ash/app_list/arc/arc_package_syncable_service_factory.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
-#include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/arc/session/connection_holder.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/sync/model/sync_change_processor.h"
 #include "components/sync/model/sync_data.h"
 #include "components/sync/protocol/arc_package_specifics.pb.h"
+#include "components/sync/protocol/entity_data.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 
 namespace arc {
@@ -159,10 +157,8 @@ ArcPackageSyncableService::MergeDataAndStartSyncing(
   metrics_helper_.SetTimeSyncStarted();
   uint64_t num_expected_apps = 0;
 
-  const std::vector<std::string> local_packages =
-      prefs_->GetPackagesFromPrefs();
-  const std::unordered_set<std::string> local_package_set(
-      local_packages.begin(), local_packages.end());
+  const base::flat_set<std::string> local_package_set(
+      prefs_->GetPackagesFromPrefs());
 
   // Creates sync items from synced data.
   for (const syncer::SyncData& sync_data : initial_sync_data) {
@@ -173,14 +169,10 @@ ArcPackageSyncableService::MergeDataAndStartSyncing(
     if (!ShouldSyncPackage(package_name))
       continue;
 
-    if (!base::Contains(local_package_set, package_name)) {
+    if (!local_package_set.contains(package_name)) {
       pending_install_items_[package_name] = std::move(sync_item);
-      if (base::FeatureList::IsEnabled(arc::kSyncInstallPriority)) {
-        prefs_->GetInstallPriorityHandler()->InstallSyncedPacakge(
-            package_name, arc::mojom::InstallPriority::kLow);
-      } else {
-        InstallPendingPackage(package_name, arc::mojom::InstallPriority::kLow);
-      }
+      prefs_->GetInstallPriorityHandler()->InstallSyncedPacakge(
+          package_name, arc::mojom::InstallPriority::kLow);
       num_expected_apps++;
     } else {
       // TODO(lgcheng@) may need to handle update exsiting package here.
@@ -193,9 +185,10 @@ ArcPackageSyncableService::MergeDataAndStartSyncing(
 
   // Creates sync items for local unsynced packages.
   syncer::SyncChangeList change_list;
-  for (const auto& local_package_name : local_packages) {
-    if (base::Contains(sync_items_, local_package_name))
+  for (const auto& local_package_name : local_package_set) {
+    if (sync_items_.contains(local_package_name)) {
       continue;
+    }
 
     if (!ShouldSyncPackage(local_package_name))
       continue;
@@ -225,8 +218,9 @@ std::optional<syncer::ModelError> ArcPackageSyncableService::ProcessSyncChanges(
     const base::Location& from_here,
     const syncer::SyncChangeList& change_list) {
   if (!sync_processor_.get()) {
-    return syncer::ModelError(FROM_HERE,
-                              "ARC package syncable service is not started.");
+    return syncer::ModelError(
+        FROM_HERE,
+        syncer::ModelError::Type::kArcPackageSyncableServiceNotStarted);
   }
 
   for (const auto& change : change_list) {
@@ -255,6 +249,11 @@ std::optional<syncer::ModelError> ArcPackageSyncableService::ProcessSyncChanges(
 
 base::WeakPtr<syncer::SyncableService> ArcPackageSyncableService::AsWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
+}
+
+std::string ArcPackageSyncableService::GetClientTag(
+    const syncer::EntityData& entity_data) const {
+  return entity_data.specifics.arc_package().package_name();
 }
 
 bool ArcPackageSyncableService::SyncStarted() {
@@ -298,9 +297,7 @@ void ArcPackageSyncableService::InstallPendingPackage(
   package.last_backup_android_id = pending_item->last_backup_android_id;
   package.last_backup_time = pending_item->last_backup_time;
   package.sync = true;
-  if (base::FeatureList::IsEnabled(arc::kSyncInstallPriority)) {
-    package.priority = priority;
-  }
+  package.priority = priority;
   instance->InstallPackage(package.Clone());
 }
 
@@ -444,12 +441,8 @@ bool ArcPackageSyncableService::ProcessSyncItemSpecifics(
   std::unique_ptr<ArcSyncItem> sync_item(
       CreateSyncItemFromSyncSpecifics(specifics));
   pending_install_items_[package_name] = std::move(sync_item);
-  if (base::FeatureList::IsEnabled(arc::kSyncInstallPriority)) {
-    prefs_->GetInstallPriorityHandler()->InstallSyncedPacakge(
-        package_name, arc::mojom::InstallPriority::kLow);
-  } else {
-    InstallPendingPackage(package_name, arc::mojom::InstallPriority::kLow);
-  }
+  prefs_->GetInstallPriorityHandler()->InstallSyncedPacakge(
+      package_name, arc::mojom::InstallPriority::kLow);
   return true;
 }
 
@@ -497,7 +490,7 @@ void ArcPackageSyncableService::UninstallPackage(const ArcSyncItem* sync_item) {
   // Make a copy of the package name string instead of handing out a reference
   // to |sync_item->package_name|. The reason is that |sync_item| may get
   // destroyed as a result of this call, making any references to it invalid.
-  // See crbug.com/970063.
+  // See crbug.com/41462644.
   std::string package_name = sync_item->package_name;
   instance->UninstallPackage(package_name);
 }

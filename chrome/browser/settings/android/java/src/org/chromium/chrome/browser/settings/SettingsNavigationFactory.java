@@ -5,12 +5,17 @@
 package org.chromium.chrome.browser.settings;
 
 import org.chromium.base.ResettersForTesting;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 
 /** Factory for {@link SettingsNavigation}. Can be used from chrome/browser modules. */
-public class SettingsNavigationFactory {
-    private static SettingsNavigation sInstance = new SettingsNavigationImpl();
-    private static SettingsNavigation sInstanceForTesting;
+@NullMarked
+public final class SettingsNavigationFactory {
+    private static final SettingsNavigation sInstance = new SettingsNavigationImpl();
+    private static @Nullable SettingsNavigation sInstanceForTesting;
+
+    private SettingsNavigationFactory() {}
 
     /** Create a {@link SettingsNavigation}. */
     public static SettingsNavigation createSettingsNavigation() {

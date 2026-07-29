@@ -9,6 +9,7 @@
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/base/mime_sniffer.h"
@@ -162,9 +163,7 @@ void MimeSniffingURLLoader::OnComplete(
 }
 
 void MimeSniffingURLLoader::FollowRedirect(
-    const std::vector<std::string>& removed_headers,
-    const net::HttpRequestHeaders& modified_headers,
-    const net::HttpRequestHeaders& modified_cors_exempt_headers,
+    network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {
   // MimeSniffingURLLoader starts handling the request after
   // OnReceivedResponse(). A redirect response is not expected.
@@ -214,10 +213,10 @@ void MimeSniffingURLLoader::OnBodyReadable(MojoResult) {
   DCHECK_EQ(MOJO_RESULT_OK, result);
   buffered_body_.resize(start_size + read_bytes);
   std::string new_type;
-  bool made_final_decision = net::SniffMimeType(
-      std::string_view(buffered_body_.data(), buffered_body_.size()),
-      response_url_, response_head_->mime_type,
-      net::ForceSniffFileUrlsForHtml::kDisabled, &new_type);
+  bool made_final_decision =
+      net::SniffMimeType(base::as_string_view(buffered_body_), response_url_,
+                         response_head_->mime_type,
+                         net::ForceSniffFileUrlsForHtml::kDisabled, &new_type);
   response_head_->mime_type = new_type;
   response_head_->did_mime_sniff = true;
   if (made_final_decision) {

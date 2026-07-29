@@ -112,11 +112,20 @@ bool CanAccessWindow(const LocalDOMWindow* accessing_window,
                       kDomainNotRelevantAgentClusterMismatch) {
       // Assert that because the agent clusters are different than the
       // WindowAgentFactories must also be different unless they differ in
-      // being explicitly origin keyed.
+      // being explicitly origin keyed or they have different cross-origin
+      // isolation keys.
       SECURITY_CHECK(
           !IsSameWindowAgentFactory(accessing_window, local_target_window) ||
-          (accessing_window->GetAgent()->IsOriginKeyedForInheritance() !=
-           local_target_window->GetAgent()->IsOriginKeyedForInheritance()) ||
+          (accessing_window->GetAgent()->GetAgentClusterKey().IsOriginKeyed() !=
+           local_target_window->GetAgent()
+               ->GetAgentClusterKey()
+               .IsOriginKeyed()) ||
+          (accessing_window->GetAgent()
+               ->GetAgentClusterKey()
+               .GetCrossOriginIsolationKey() !=
+           local_target_window->GetAgent()
+               ->GetAgentClusterKey()
+               .GetCrossOriginIsolationKey()) ||
           (WebTestSupport::IsRunningWebTest() &&
            local_target_window->GetFrame()->PagePopupOwner()));
     }
@@ -233,14 +242,14 @@ bool BindingSecurity::ShouldAllowAccessToV8Context(
     return true;
   }
 
-  v8::Isolate* isolate = accessing_context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   return ShouldAllowAccessToV8ContextInternal(
       ScriptState::From(isolate, accessing_context),
       ScriptState::From(isolate, target_context));
 }
 
 void BindingSecurity::FailedAccessCheckFor(v8::Local<v8::Object> holder) {
-  v8::Isolate* isolate = holder->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   DOMWindow* target = FindWindow(isolate, holder);
   // Failing to find a target means something is wrong. Failing to throw an
   // exception could be a security issue, so just crash.

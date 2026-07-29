@@ -32,6 +32,7 @@
 #define THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_INPUT_ELEMENT_H_
 
 #include "build/build_config.h"
+#include "third_party/blink/public/common/webid/email_verification_state.h"
 #include "third_party/blink/public/platform/web_common.h"
 #include "third_party/blink/public/web/web_form_control_element.h"
 
@@ -43,7 +44,9 @@ class WebOptionElement;
 // Provides readonly access to some properties of a DOM input element node.
 class BLINK_EXPORT WebInputElement final : public WebFormControlElement {
  public:
-  WebInputElement() = default;
+  explicit WebInputElement(
+      cppgc::SourceLocation loc = BLINK_WEB_NODE_LOCATION_FROM_HERE)
+      : WebFormControlElement(loc) {}
   WebInputElement(const WebInputElement& element) = default;
 
   WebInputElement& operator=(const WebInputElement& element) {
@@ -57,9 +60,10 @@ class BLINK_EXPORT WebInputElement final : public WebFormControlElement {
   // Returns true for all of textfield-looking types such as text, password,
   // search, email, url, and number.
   bool IsTextField() const;
-  // Makes `FormControlType()` return `mojom::FormControlType::kInputPassword`
-  // for the rest of the element's life.
-  void SetHasBeenPasswordField();
+  // Makes `FormControlTypeForAutofill()` return
+  // `mojom::FormControlType::kInputPassword` as long as the element's type is a
+  // text type.
+  void MaybeSetHasBeenPasswordField();
   void SetActivatedSubmit(bool);
   int size() const;
   void SetChecked(bool,
@@ -81,8 +85,7 @@ class BLINK_EXPORT WebInputElement final : public WebFormControlElement {
   // Returns true if the text of the element should be visible.
   bool ShouldRevealPassword() const;
 
-  // Returns whether this is the last element within its form.
-  bool IsLastInputElementInForm();
+  void SetEmailVerificationState(EmailVerificationState state);
 
   // Triggers a form submission.
   void DispatchSimulatedEnter();

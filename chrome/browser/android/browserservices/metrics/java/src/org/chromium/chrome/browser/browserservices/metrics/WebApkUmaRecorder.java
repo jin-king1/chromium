@@ -13,8 +13,10 @@ import androidx.annotation.IntDef;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.util.ConversionUtils;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.webapps.WebApkDistributor;
 
 import java.io.File;
@@ -25,6 +27,7 @@ import java.lang.annotation.RetentionPolicy;
  * Centralizes UMA data collection for WebAPKs. NOTE: Histogram names and values are defined in
  * tools/metrics/histograms/histograms.xml. Please update that file if any change is made.
  */
+@NullMarked
 public class WebApkUmaRecorder {
     // This enum is used to back UMA histograms, and should therefore be treated as append-only.
     @IntDef({UpdateRequestSent.WHILE_WEBAPK_CLOSED})
@@ -136,20 +139,19 @@ public class WebApkUmaRecorder {
     }
 
     /** Records the notification permission status for a WebAPK. */
-    public static void recordNotificationPermissionStatus(@ContentSettingValues int settingValue) {
+    public static void recordNotificationPermissionStatus(@ContentSetting int settingValue) {
         RecordHistogram.recordEnumeratedHistogram(
                 "WebApk.Notification.Permission.Status2",
                 settingValue,
-                ContentSettingValues.NUM_SETTINGS);
+                ContentSetting.NUM_SETTINGS);
     }
 
     /** Records the notification permission request result for a WebAPK. */
-    public static void recordNotificationPermissionRequestResult(
-            @ContentSettingValues int settingValue) {
+    public static void recordNotificationPermissionRequestResult(@ContentSetting int settingValue) {
         RecordHistogram.recordEnumeratedHistogram(
                 "WebApk.Notification.PermissionRequestResult",
                 settingValue,
-                ContentSettingValues.NUM_SETTINGS);
+                ContentSetting.NUM_SETTINGS);
     }
 
     /**
@@ -224,7 +226,7 @@ public class WebApkUmaRecorder {
         RecordHistogram.recordCount100Histogram("WebApk.WebappRegistry.NumberOfOrigins", count);
     }
 
-    private static long getDirectorySizeInByte(File dir) {
+    private static long getDirectorySizeInByte(@Nullable File dir) {
         if (dir == null) return 0;
         if (!dir.isDirectory()) return dir.length();
 

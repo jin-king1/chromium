@@ -5,9 +5,12 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_STRIKE_DATABASES_AUTOFILL_AI_AUTOFILL_AI_SAVE_STRIKE_DATABASE_BY_ATTRIBUTE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_STRIKE_DATABASES_AUTOFILL_AI_AUTOFILL_AI_SAVE_STRIKE_DATABASE_BY_ATTRIBUTE_H_
 
+#include <stddef.h>
+
 #include <string_view>
 
-#include "components/autofill/core/browser/strike_databases/simple_autofill_strike_database.h"
+#include "base/time/time.h"
+#include "components/strike_database/simple_strike_database.h"
 
 namespace autofill {
 
@@ -24,7 +27,7 @@ struct AutofillAiSaveStrikeDatabaseByAttributeTraits {
 };
 
 using AutofillAiSaveStrikeDatabaseByAttribute =
-    autofill::SimpleAutofillStrikeDatabase<
+    strike_database::SimpleStrikeDatabase<
         AutofillAiSaveStrikeDatabaseByAttributeTraits>;
 
 }  // namespace autofill

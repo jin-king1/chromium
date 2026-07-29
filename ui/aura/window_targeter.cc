@@ -46,6 +46,13 @@ bool WindowTargeter::GetHitTestRects(Window* window,
     hit_test_rect_touch->Inset(touch_extend_);
   }
 
+  if (window->layer() && !window->layer()->clip_rect().IsEmpty()) {
+    gfx::Rect clip = window->layer()->clip_rect();
+    clip.Offset(window->bounds().OffsetFromOrigin());
+    hit_test_rect_mouse->Intersect(clip);
+    hit_test_rect_touch->Intersect(clip);
+  }
+
   return true;
 }
 
@@ -129,7 +136,7 @@ Window* WindowTargeter::FindTargetInRootWindow(Window* root_window,
     // If the initial touch is outside the window's display, target the root.
     // This is used for bezel gesture events (eg. swiping in from screen edge).
     display::Display display =
-        display::Screen::GetScreen()->GetDisplayNearestWindow(root_window);
+        display::Screen::Get()->GetDisplayNearestWindow(root_window);
     // The window target may be null, so use the root's ScreenPositionClient.
     gfx::Point screen_location = event.root_location();
     if (client::GetScreenPositionClient(root_window)) {

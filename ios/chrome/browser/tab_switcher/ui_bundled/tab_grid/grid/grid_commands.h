@@ -11,6 +11,7 @@
 
 #import "base/memory/weak_ptr.h"
 #import "components/saved_tab_groups/public/types.h"
+#import "ios/chrome/browser/shared/model/web_state_list/tab_utils.h"
 
 class TabGroup;
 
@@ -33,15 +34,6 @@ class WebStateID;
                     tabCount:(int)tabCount;
 // Tells the receiver to close all items.
 - (void)closeAllItems;
-// Tells the receiver to save all items for an undo operation, then close all
-// items.
-- (void)saveAndCloseAllItems;
-// Tells the receiver to restore saved closed items, and then discard the saved
-// items. If there are no saved closed items, this is a no-op.
-- (void)undoCloseAllItems;
-// Tells the receiver to discard saved closed items. If the consumer has saved
-// closed items, it will discard them. Otherwise, this is a no-op.
-- (void)discardSavedClosedItems;
 
 // Tells the receiver to perform a search using `searchText` and update the list
 // of visible items based on the result.
@@ -52,12 +44,12 @@ class WebStateID;
 - (void)resetToAllItems;
 
 // Tells the receiver to select the item with identifier `itemID`. If there is
-// no item with that identifier, no change in selection should be made. `pinned`
-// is `YES` If the selected item is a pinned item. `isFirstActionOnTabGrid` is
-// whether the itme selection is the first action that happens since the user
-// enters tab grid.
+// no item with that identifier, no change in selection should be made.
+// `pinnedState` is the selected item current pinned state.
+// `isFirstActionOnTabGrid` is whether the item selection is the first action
+// that happens since the user enters tab grid.
 - (void)selectItemWithID:(web::WebStateID)itemID
-                    pinned:(BOOL)pinned
+               pinnedState:(WebStateSearchCriteria::PinnedState)pinnedState
     isFirstActionOnTabGrid:(BOOL)isFirstActionOnTabGrid;
 
 // Tells the receiver to select the `tabGroup`.
@@ -66,6 +58,10 @@ class WebStateID;
 // Tells the receiver to close the item with identifier `itemID`. If there is
 // no item with that identifier, no item is closed.
 - (void)closeItemWithID:(web::WebStateID)itemID;
+
+// Tells the receiver to close all items except the one with identifier
+// `itemID`. Pinned items are also kept.
+- (void)closeTabsExceptID:(web::WebStateID)itemID;
 
 // Tells the receiver to delete the `group`. `sourceView` is the view that the
 // delete action originated from.

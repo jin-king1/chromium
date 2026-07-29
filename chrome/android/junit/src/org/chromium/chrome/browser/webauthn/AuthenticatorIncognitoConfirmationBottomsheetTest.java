@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.webauthn;
 
-import android.content.Context;
 import android.widget.Button;
 
 import org.junit.After;
@@ -21,8 +20,6 @@ import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.Implementation;
-import org.robolectric.annotation.Implements;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
@@ -34,12 +31,7 @@ import org.chromium.ui.base.WindowAndroid;
 import java.lang.ref.WeakReference;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {
-            AuthenticatorIncognitoConfirmationBottomsheetTest.ShadowBottomSheetControllerProvider
-                    .class
-        })
+@Config(manifest = Config.NONE)
 public class AuthenticatorIncognitoConfirmationBottomsheetTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.WARN);
 
@@ -53,26 +45,11 @@ public class AuthenticatorIncognitoConfirmationBottomsheetTest {
 
     private AuthenticatorIncognitoConfirmationBottomsheet mBottomsheet;
 
-    /** The shadow of BottomSheetControllerProvider. */
-    @Implements(BottomSheetControllerProvider.class)
-    static class ShadowBottomSheetControllerProvider {
-        private static BottomSheetController sBottomSheetController;
-
-        @Implementation
-        public static BottomSheetController from(WindowAndroid windowAndroid) {
-            return sBottomSheetController;
-        }
-
-        private static void setBottomSheetController(BottomSheetController controller) {
-            sBottomSheetController = controller;
-        }
-    }
-
     @Before
     public void setUp() {
         WindowAndroid windowAndroid = Mockito.mock(WindowAndroid.class);
         setWindowAndroid(windowAndroid, mWebContents);
-        Mockito.doReturn(new WeakReference<Context>(RuntimeEnvironment.application))
+        Mockito.doReturn(new WeakReference<>(RuntimeEnvironment.application))
                 .when(windowAndroid)
                 .getContext();
 
@@ -87,7 +64,7 @@ public class AuthenticatorIncognitoConfirmationBottomsheetTest {
                     mUserPositive = false;
                 };
 
-        ShadowBottomSheetControllerProvider.setBottomSheetController(
+        BottomSheetControllerProvider.setInstanceForTesting(
                 createBottomSheetController(/* requestShowContentResponse= */ true));
     }
 

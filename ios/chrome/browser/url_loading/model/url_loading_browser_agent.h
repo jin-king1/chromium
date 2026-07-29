@@ -7,16 +7,25 @@
 
 #import <Foundation/Foundation.h>
 
-#import <optional>
+#import <memory>
+#import <string>
+#import <unordered_map>
 
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "ios/chrome/browser/shared/model/browser/browser_user_data.h"
+#import "url/gurl.h"
 
 class SceneUrlLoadingService;
 class Browser;
 class UrlLoadingNotifierBrowserAgent;
 struct UrlLoadParams;
+namespace web {
+class WebState;
+class WebStateID;
+}  // namespace web
+
+class URLInterceptor;
 
 // A delegate for URL loading that can handle UI animations that are needed at
 // specific points in the loading cycle.
@@ -41,13 +50,36 @@ class UrlLoadingBrowserAgent : public BrowserUserData<UrlLoadingBrowserAgent> {
   void SetIncognitoLoader(UrlLoadingBrowserAgent* loader);
   void SetDelegate(id<URLLoadingDelegate> delegate);
 
+  // Adds an interceptor for the given URL.
+  // Returns false if an interceptor overlapping with `url` is already
+  // registered.
+  [[nodiscard]] bool AddInterceptor(
+      const GURL& url,
+      std::unique_ptr<URLInterceptor> interceptor);
+
+  // Removes the interceptor for the given URL.
+  void RemoveInterceptor(const GURL& url);
+
   // Applies load strategy then calls `Dispatch`.
   void Load(const UrlLoadParams& params);
+
+  // Loads URL representing the `query`.
+  void LoadURLForQuery(NSString* query);
+
+  // Loads a url based on `params` in `target_web_state`.
+  //
+  // `target_web_state` is not necessarily the active web state and calling
+  // this method will not make it active. `target_web_state` must also already
+  // be realized and belong to the same Browser as this agent.
+  void LoadUrlInTab(const UrlLoadParams& params,
+                    web::WebState* target_web_state);
+
+  // Provides a weak pointer to this instance.
+  base::WeakPtr<UrlLoadingBrowserAgent> AsWeakPtr();
 
  private:
   friend class BrowserUserData<UrlLoadingBrowserAgent>;
   friend class FakeUrlLoadingBrowserAgent;
-  BROWSER_USER_DATA_KEY_DECL();
 
   explicit UrlLoadingBrowserAgent(Browser* browser);
 
@@ -70,13 +102,14 @@ class UrlLoadingBrowserAgent : public BrowserUserData<UrlLoadingBrowserAgent> {
   // it to a separate function makes it safer not to capture state that can
   // become invalid when creating the asynchronous task).
   void LoadUrlInNewTabImpl(const UrlLoadParams& params,
-                           std::optional<void*> hint);
+                           web::WebStateID active_tab_id);
 
   __weak id<URLLoadingDelegate> delegate_;
-  raw_ptr<Browser> browser_;
-  raw_ptr<UrlLoadingNotifierBrowserAgent> notifier_ = nullptr;
-  raw_ptr<UrlLoadingBrowserAgent> incognito_loader_ = nullptr;
-  raw_ptr<SceneUrlLoadingService> scene_service_ = nullptr;
+  raw_ptr<UrlLoadingNotifierBrowserAgent, DanglingUntriaged> notifier_ =
+      nullptr;
+  raw_ptr<UrlLoadingBrowserAgent, DanglingUntriaged> incognito_loader_ =
+      nullptr;
+  raw_ptr<SceneUrlLoadingService, DanglingUntriaged> scene_service_ = nullptr;
 
   base::WeakPtrFactory<UrlLoadingBrowserAgent> weak_ptr_factory_{this};
 };

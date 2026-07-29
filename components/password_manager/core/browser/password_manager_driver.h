@@ -5,16 +5,19 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_MANAGER_DRIVER_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_PASSWORD_MANAGER_DRIVER_H_
 
-#include <map>
 #include <string>
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
+#include "base/types/id_type.h"
 #include "base/types/strong_alias.h"
 #include "components/autofill/core/common/aliases.h"
+#include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "components/password_manager/core/common/driver_id.h"
 #include "ui/accessibility/ax_tree_id.h"
+#include "url/origin.h"
 
 class GURL;
 
@@ -23,7 +26,13 @@ class FormData;
 struct ParsingResult;
 struct PasswordFormGenerationData;
 struct PasswordFormFillData;
+class AutofillDriver;
+class PasswordManagerDelegate;
 }  // namespace autofill
+
+namespace gfx {
+class RectF;
+}  // namespace gfx
 
 namespace password_manager {
 
@@ -43,16 +52,18 @@ class PasswordManagerDriver {
   virtual ~PasswordManagerDriver() = default;
 
   // Returns driver id which is unique in the current tab.
-  virtual int GetId() const = 0;
+  virtual DriverId GetId() const = 0;
 
-  // Fills forms matching `form_data`.
-  virtual void SetPasswordFillData(
+  // Propagates `form_data` to the renderer, in order to store values for
+  // filling on account select, or fill on pageload if appliccable.
+  virtual void PropagateFillDataOnParsingCompletion(
       const autofill::PasswordFormFillData& form_data) = 0;
 
   // Informs the driver that there are no saved credentials in the password
-  // store for the current page.
-  // TODO(crbug.com/41259715): Remove and observe FormFetcher instead.
-  virtual void InformNoSavedCredentials() {}
+  // store for the current page. In certain situations the password manager will
+  // show popups (e.g. promo UIs) when there are no saved credentials.
+  virtual void InformNoSavedCredentials(
+      bool should_show_popup_without_passwords) {}
 
   // Notifies the driver that a password can be generated on the fields
   // identified by `form`.
@@ -82,23 +93,31 @@ class PasswordManagerDriver {
   virtual void FocusNextFieldAfterPasswords() {}
 
   // Tells the renderer to fill the given `value` into the triggering field.
-  // Also includes the `suggestion_source`, used to update the
-  // `FieldPropertiesMask` of the filled field.
-  virtual void FillField(
-      const std::u16string& value,
-      autofill::AutofillSuggestionTriggerSource suggestion_source) {}
+  // Also includes the `FieldPropertiesFlags` used to update the
+  // `FieldPropertiesMask` of the filled field. It invokes `success_callback`
+  // with true if the filling could be performed and false otherwise.
+  virtual void FillField(autofill::FieldRendererId triggering_field_id,
+                         const std::u16string& value,
+                         autofill::FieldPropertiesFlags field_flags,
+                         base::OnceCallback<void(bool)> success_callback) {}
+
+  // Tells the renderer to open the suggestions popup on the login field
+  // specified in `field_id`.
+  virtual void TriggerPasswordRecoverySuggestions(
+      autofill::FieldRendererId field_id) {}
 
   // Tells the renderer to fill and submit a change password form, specifically
   // `password_element_id` with `old_password` and `new_password_element_id`,
   // `confirm_password_element_id` with `new_password`. Upon completion
   // asynchronously returns `form_data` with filled values.
-  virtual void SubmitChangePasswordForm(
+  virtual void FillChangePasswordForm(
       autofill::FieldRendererId password_element_id,
       autofill::FieldRendererId new_password_element_id,
       autofill::FieldRendererId confirm_password_element_id,
       const std::u16string& old_password,
       const std::u16string& new_password,
-      base::OnceCallback<void(const autofill::FormData&)> form_data_callback) {}
+      base::OnceCallback<void(const std::optional<autofill::FormData>&)>
+          form_data_callback) {}
 
   // Tells the driver to fill the currently focused form with the `username` and
   // `password`.
@@ -170,12 +189,30 @@ class PasswordManagerDriver {
   // Returns the PasswordAutofillManager associated with this instance.
   virtual PasswordAutofillManager* GetPasswordAutofillManager() = 0;
 
+  // Returns the PasswordManagerDelegate associated with this instance. Unlike
+  // `GetPasswordAutofillManager`, this method returns a less concrete class for
+  // the callers that do not need a full `PasswordAutofillManager`.
+  // TODO: crbug.com/519154771 - Try to find a better split between the
+  // `PasswordAutofillManager` and `PasswordManagerDelegate`.
+  virtual autofill::PasswordManagerDelegate* GetPasswordManagerDelegate() = 0;
+
   // Sends a message to the renderer whether logging to
   // chrome://password-manager-internals is available.
   virtual void SendLoggingAvailability() {}
 
+  // Returns true if the driver corresponds to a frame who's
+  // parent is in the main frame. If the frame has no parent
+  // it returns `false`.
+  // TODO(crbug.com/456636505): Refactor this code since it doesn't seem
+  // relevant to other password manager code.
+  virtual bool IsDirectChildOfPrimaryMainFrame() const = 0;
+
   // Return true iff the driver corresponds to the main frame.
   virtual bool IsInPrimaryMainFrame() const = 0;
+
+  // Return true if the driver corresponds to a fenced frame or to
+  // a frame nested in a fenced frame.
+  virtual bool IsNestedWithinFencedFrame() const = 0;
 
   // Returns true iff a popup can be shown on the behalf of the associated
   // frame.
@@ -187,10 +224,34 @@ class PasswordManagerDriver {
   // Returns the last committed URL of the frame.
   virtual const GURL& GetLastCommittedURL() const = 0;
 
+  // Returns the last committed origin of the frame.
+  virtual const url::Origin& GetLastCommittedOrigin() const = 0;
+
+  // Returns true if the frame has any ancestor that is cross-origin relative to
+  // this frame.
+  virtual bool HasCrossOriginAncestor() const = 0;
+
   // Annotate password related (username, password) DOM input elements with
   // corresponding HTML attributes. It is used only for debugging.
   virtual void AnnotateFieldsWithParsingResult(
       const autofill::ParsingResult& parsing_result) {}
+
+  virtual gfx::RectF TransformToRootCoordinates(
+      const gfx::RectF& bounds_in_frame_coordinates) = 0;
+
+  // Checks if the view area of the field is visible.
+  virtual void CheckViewAreaVisible(autofill::FieldRendererId field_id,
+                                    base::OnceCallback<void(bool)>) = 0;
+
+  // Checks if the current URL is safe to share password data with. Kills the
+  // current renderer process if the URL is not safe and `may_kill_renderer` is
+  // `true`.
+  virtual bool HasValidURL(bool may_kill_renderer) = 0;
+
+  // Performs a number of security checks for the current frame.
+  virtual bool IsRenderFrameHostSupported() = 0;
+
+  virtual autofill::AutofillDriver* GetAutofillDriver() const = 0;
 
   // Get a WeakPtr to the instance.
   virtual base::WeakPtr<PasswordManagerDriver> AsWeakPtr() = 0;

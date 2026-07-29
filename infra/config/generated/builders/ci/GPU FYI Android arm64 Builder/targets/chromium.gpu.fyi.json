@@ -8,6 +8,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
         "name": "angle_unittests",
         "resultdb": {
           "enable": true,
@@ -41,6 +43,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_passthrough",
         "resultdb": {
           "enable": true,
@@ -73,6 +77,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_validating",
         "resultdb": {
           "enable": true,
@@ -104,6 +110,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
         "name": "gl_unittests",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -139,6 +147,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
         "name": "gpu_unittests",
         "resultdb": {
           "enable": true,
@@ -171,7 +181,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -179,6 +189,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_ganesh_tests",
         "resultdb": {
           "enable": true,
@@ -210,7 +222,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -218,6 +230,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -257,6 +271,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "context_lost_validating_tests",
         "resultdb": {
           "enable": true,
@@ -288,7 +304,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -300,6 +316,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_ganesh_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -336,7 +354,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -348,6 +366,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_graphite_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -396,6 +416,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_validating_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -440,6 +462,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests",
         "resultdb": {
           "enable": true,
@@ -479,6 +503,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests",
         "resultdb": {
           "enable": true,
@@ -524,6 +550,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "info_collection_tests",
         "resultdb": {
           "enable": true,
@@ -555,7 +583,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -567,6 +595,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_ganesh_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -603,7 +633,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -615,6 +645,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_graphite_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -663,6 +695,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_validating_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -699,7 +733,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=1",
@@ -708,6 +742,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_ganesh_tests",
         "resultdb": {
           "enable": true,
@@ -739,7 +775,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=1",
@@ -748,6 +784,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -788,6 +826,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "screenshot_sync_validating_tests",
         "resultdb": {
           "enable": true,
@@ -827,6 +867,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "trace_test",
         "resultdb": {
           "enable": true,
@@ -858,7 +900,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -866,6 +908,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webcodecs_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -897,7 +941,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -905,6 +949,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webcodecs_tests",
         "resultdb": {
           "enable": true,
@@ -936,7 +982,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
@@ -945,6 +991,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gles_passthrough_ganesh_tests",
         "resultdb": {
           "enable": true,
@@ -977,7 +1025,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
@@ -986,6 +1034,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gles_passthrough_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -1018,7 +1068,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
@@ -1027,6 +1077,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_validating_ganesh_tests",
         "resultdb": {
           "enable": true,
@@ -1059,16 +1111,17 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
           "--initial-find-device-attempts=3"
         ],
-        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_validating_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -1092,21 +1145,137 @@
         },
         "test": "telemetry_gpu_integration_test_android_chrome",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
+      },
+      {
+        "args": [
+          "webrtc",
+          "--show-stdout",
+          "--browser=android-chromium",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-skia-graphite",
+          "--enforce-browser-version",
+          "--jobs=1",
+          "--initial-find-device-attempts=3"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "webrtc_graphite_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "device_os": "AP1A.240405.002",
+            "device_os_type": "userdebug",
+            "device_type": "oriole",
+            "os": "Android",
+            "pool": "chromium.tests.gpu"
+          },
+          "expiration": 21600,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test_android_chrome",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
+      },
+      {
+        "args": [
+          "webrtc",
+          "--show-stdout",
+          "--browser=android-chromium",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-skia-graphite",
+          "--enforce-browser-version",
+          "--jobs=1",
+          "--initial-find-device-attempts=3"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "webrtc_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "device_os": "AP1A.240405.002",
+            "device_os_type": "userdebug",
+            "device_type": "oriole",
+            "os": "Android",
+            "pool": "chromium.tests.gpu"
+          },
+          "expiration": 21600,
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test_android_chrome",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
       }
     ]
   },
-  "Android FYI Release (Nexus 5X)": {
+  "Android FYI Release (Pixel 10)": {
     "gtest_tests": [
+      {
+        "args": [
+          "-v"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
+        "name": "angle_unittests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "device_os": "CP1A.260405.005",
+            "device_os_type": "userdebug",
+            "device_type": "frankel",
+            "os": "Android",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "angle_unittests",
+        "test_id_prefix": "ninja://third_party/angle/src/tests:angle_unittests/",
+        "use_isolated_scripts_api": true
+      },
       {
         "args": [
           "--use-cmd-decoder=passthrough",
           "--use-gl=angle",
+          "--test-launcher-filter-file=../../testing/buildbot/filters/android.pixel_10.gl_tests_passthrough.filter",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_passthrough",
         "resultdb": {
           "enable": true,
@@ -1115,12 +1284,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "io_timeout": 1800,
@@ -1132,14 +1300,21 @@
       },
       {
         "args": [
-          "--use-cmd-decoder=validating",
+          "--git-revision=${got_revision}",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
-        "name": "gl_tests_validating",
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
+        "name": "gl_unittests",
+        "precommit_args": [
+          "--gerrit-issue=${patch_issue}",
+          "--gerrit-patchset=${patch_set}",
+          "--buildbucket-id=${buildbucket_build_id}"
+        ],
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1147,19 +1322,18 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
-        "test": "gl_tests",
-        "test_id_prefix": "ninja://gpu:gl_tests/"
+        "test": "gl_unittests",
+        "test_id_prefix": "ninja://ui/gl:gl_unittests/"
       },
       {
         "args": [
@@ -1169,6 +1343,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
         "name": "gpu_unittests",
         "resultdb": {
           "enable": true,
@@ -1177,12 +1353,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "io_timeout": 1800,
@@ -1213,6 +1388,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_webview",
+        "module_scheme": "flat",
         "name": "android_webview_pixel_skia_gold_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -1226,12 +1403,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -1249,7 +1425,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -1257,7 +1433,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "name": "context_lost_validating_tests",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "context_lost_passthrough_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1265,12 +1443,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -1288,7 +1465,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -1300,7 +1477,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "name": "expected_color_pixel_validating_test",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "expected_color_pixel_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
           "--gerrit-patchset=${patch_set}",
@@ -1313,12 +1492,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -1344,6 +1522,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests",
         "resultdb": {
           "enable": true,
@@ -1352,12 +1532,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -1383,6 +1562,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests",
         "resultdb": {
           "enable": true,
@@ -1391,12 +1572,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -1417,15 +1597,17 @@
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --force_high_performance_gpu",
           "--enforce-browser-version",
           "--expected-vendor-id",
-          "0",
+          "1010",
           "--expected-device-id",
-          "0",
+          "71061212",
           "--jobs=1",
           "--initial-find-device-attempts=3"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "info_collection_tests",
         "resultdb": {
           "enable": true,
@@ -1434,12 +1616,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -1457,7 +1638,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -1469,7 +1650,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "name": "pixel_skia_gold_validating_test",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "pixel_skia_gold_passthrough_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
           "--gerrit-patchset=${patch_set}",
@@ -1482,12 +1665,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -1505,7 +1687,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=1",
@@ -1514,7 +1696,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "name": "screenshot_sync_validating_tests",
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "screenshot_sync_passthrough_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1522,12 +1706,11 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
@@ -1553,6 +1736,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "trace_test",
         "resultdb": {
           "enable": true,
@@ -1561,18 +1746,16 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 2
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "telemetry_gpu_integration_test_android_chrome",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
@@ -1585,7 +1768,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -1593,6 +1776,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webcodecs_tests",
         "resultdb": {
           "enable": true,
@@ -1601,99 +1786,142 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
+            "device_os": "CP1A.260405.005",
             "device_os_type": "userdebug",
-            "device_type": "bullhead",
+            "device_type": "frankel",
             "os": "Android",
-            "pool": "chromium.tests"
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 9
+        },
+        "test": "telemetry_gpu_integration_test_android_chrome",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
+      },
+      {
+        "args": [
+          "webgl2_conformance",
+          "--show-stdout",
+          "--browser=android-chromium",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gles --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--webgl-conformance-version=2.0.1",
+          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl2_conformance_android_runtimes.json",
+          "--jobs=1",
+          "--initial-find-device-attempts=3"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "webgl2_conformance_gles_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "device_os": "CP1A.260405.005",
+            "device_os_type": "userdebug",
+            "device_type": "frankel",
+            "os": "Android",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 20
+        },
+        "test": "telemetry_gpu_integration_test_android_chrome",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
+      },
+      {
+        "args": [
+          "webgl1_conformance",
+          "--show-stdout",
+          "--browser=android-chromium",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --force_high_performance_gpu",
+          "--enforce-browser-version",
+          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
+          "--jobs=1",
+          "--initial-find-device-attempts=3"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "webgl_conformance_gles_passthrough_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "device_os": "CP1A.260405.005",
+            "device_os_type": "userdebug",
+            "device_type": "frankel",
+            "os": "Android",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
+          "shards": 6
+        },
+        "test": "telemetry_gpu_integration_test_android_chrome",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
+      },
+      {
+        "args": [
+          "webrtc",
+          "--show-stdout",
+          "--browser=android-chromium",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc",
+          "--enforce-browser-version",
+          "--jobs=1",
+          "--initial-find-device-attempts=3"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "webrtc_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "device_os": "CP1A.260405.005",
+            "device_os_type": "userdebug",
+            "device_type": "frankel",
+            "os": "Android",
+            "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
           "idempotent": false,
           "io_timeout": 1800,
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "telemetry_gpu_integration_test_android_chrome",
-        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
-      },
-      {
-        "args": [
-          "webgl1_conformance",
-          "--show-stdout",
-          "--browser=android-chromium",
-          "--passthrough",
-          "-v",
-          "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite --force_high_performance_gpu",
-          "--enforce-browser-version",
-          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
-          "--jobs=1",
-          "--initial-find-device-attempts=3"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "name": "webgl_conformance_gles_passthrough_ganesh_tests",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "containment_type": "AUTO",
-          "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
-            "device_os_type": "userdebug",
-            "device_type": "bullhead",
-            "os": "Android",
-            "pool": "chromium.tests"
-          },
-          "hard_timeout": 1800,
-          "idempotent": false,
-          "io_timeout": 1800,
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 6
-        },
-        "test": "telemetry_gpu_integration_test_android_chrome",
-        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
-      },
-      {
-        "args": [
-          "webgl1_conformance",
-          "--show-stdout",
-          "--browser=android-chromium",
-          "--passthrough",
-          "-v",
-          "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-features=SkiaGraphite --force_high_performance_gpu",
-          "--enforce-browser-version",
-          "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
-          "--jobs=1",
-          "--initial-find-device-attempts=3"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "name": "webgl_conformance_validating_ganesh_tests",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "containment_type": "AUTO",
-          "dimensions": {
-            "device_os": "OPR4.170623.020",
-            "device_os_flavor": "google",
-            "device_os_type": "userdebug",
-            "device_type": "bullhead",
-            "os": "Android",
-            "pool": "chromium.tests"
-          },
-          "hard_timeout": 1800,
-          "idempotent": false,
-          "io_timeout": 1800,
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 6
         },
         "test": "telemetry_gpu_integration_test_android_chrome",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
@@ -1709,6 +1937,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
         "name": "angle_unittests",
         "resultdb": {
           "enable": true,
@@ -1741,6 +1971,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_passthrough",
         "resultdb": {
           "enable": true,
@@ -1772,6 +2004,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_validating",
         "resultdb": {
           "enable": true,
@@ -1802,6 +2036,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
         "name": "gl_unittests",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -1836,6 +2072,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
         "name": "gpu_unittests",
         "resultdb": {
           "enable": true,
@@ -1867,7 +2105,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -1875,6 +2113,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_ganesh_tests",
         "resultdb": {
           "enable": true,
@@ -1905,7 +2145,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -1913,6 +2153,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "context_lost_passthrough_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -1951,6 +2193,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "context_lost_validating_tests",
         "resultdb": {
           "enable": true,
@@ -1981,7 +2225,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -1993,6 +2237,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_ganesh_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2028,7 +2274,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -2040,6 +2286,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_passthrough_graphite_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2087,6 +2335,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_validating_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2130,6 +2380,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests",
         "resultdb": {
           "enable": true,
@@ -2168,6 +2420,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests",
         "resultdb": {
           "enable": true,
@@ -2212,6 +2466,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "info_collection_tests",
         "resultdb": {
           "enable": true,
@@ -2242,7 +2498,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -2254,6 +2510,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_ganesh_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2289,7 +2547,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--git-revision=${got_revision}",
           "--dont-restore-color-profile-after-test",
@@ -2301,6 +2559,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_passthrough_graphite_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2348,6 +2608,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_validating_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2383,7 +2645,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=1",
@@ -2392,6 +2654,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_ganesh_tests",
         "resultdb": {
           "enable": true,
@@ -2422,7 +2686,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite --force-online-connection-state-for-indicator",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite --force-online-connection-state-for-indicator",
           "--enforce-browser-version",
           "--dont-restore-color-profile-after-test",
           "--jobs=1",
@@ -2431,6 +2695,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "screenshot_sync_passthrough_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -2470,6 +2736,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "screenshot_sync_validating_tests",
         "resultdb": {
           "enable": true,
@@ -2508,6 +2776,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "trace_test",
         "resultdb": {
           "enable": true,
@@ -2538,7 +2808,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -2546,6 +2816,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webcodecs_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -2576,7 +2848,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-features=SkiaGraphite",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-skia-graphite",
           "--enforce-browser-version",
           "--jobs=1",
           "--initial-find-device-attempts=3"
@@ -2584,6 +2856,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webcodecs_tests",
         "resultdb": {
           "enable": true,
@@ -2614,7 +2888,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --disable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --disable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
@@ -2623,6 +2897,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gles_passthrough_ganesh_tests",
         "resultdb": {
           "enable": true,
@@ -2654,7 +2930,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --enable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --enable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
@@ -2663,6 +2939,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_gles_passthrough_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -2694,7 +2972,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
@@ -2703,6 +2981,8 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_validating_ganesh_tests",
         "resultdb": {
           "enable": true,
@@ -2734,16 +3014,17 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-features=SkiaGraphite --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-skia-graphite --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
           "--initial-find-device-attempts=3"
         ],
-        "ci_only": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_validating_graphite_tests",
         "resultdb": {
           "enable": true,
@@ -2766,6 +3047,86 @@
         },
         "test": "telemetry_gpu_integration_test_android_chrome",
         "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
+      },
+      {
+        "args": [
+          "webrtc",
+          "--show-stdout",
+          "--browser=android-chromium",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --enable-skia-graphite",
+          "--enforce-browser-version",
+          "--jobs=1",
+          "--initial-find-device-attempts=3"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "webrtc_graphite_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "device_os": "TP1A.220624.021",
+            "device_os_type": "userdebug",
+            "device_type": "oriole",
+            "os": "Android",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test_android_chrome",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
+      },
+      {
+        "args": [
+          "webrtc",
+          "--show-stdout",
+          "--browser=android-chromium",
+          "--passthrough",
+          "-v",
+          "--stable-jobs",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=validating --disable-skia-graphite",
+          "--enforce-browser-version",
+          "--jobs=1",
+          "--initial-find-device-attempts=3"
+        ],
+        "merge": {
+          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
+        },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
+        "name": "webrtc_tests",
+        "resultdb": {
+          "enable": true,
+          "has_native_resultdb_integration": true
+        },
+        "swarming": {
+          "containment_type": "AUTO",
+          "dimensions": {
+            "device_os": "TP1A.220624.021",
+            "device_os_type": "userdebug",
+            "device_type": "oriole",
+            "os": "Android",
+            "pool": "chromium.tests.gpu"
+          },
+          "hard_timeout": 1800,
+          "idempotent": false,
+          "io_timeout": 1800,
+          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
+        },
+        "test": "telemetry_gpu_integration_test_android_chrome",
+        "test_id_prefix": "ninja://chrome/test:telemetry_gpu_integration_test_android_chrome/"
       }
     ]
   },
@@ -2773,11 +3134,14 @@
     "gtest_tests": [
       {
         "args": [
-          "-v"
+          "-v",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//third_party/angle/src/tests:angle_unittests",
+        "module_scheme": "gtest",
         "name": "angle_unittests",
         "resultdb": {
           "enable": true,
@@ -2786,7 +3150,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -2805,12 +3169,15 @@
         "args": [
           "--use-cmd-decoder=passthrough",
           "--use-gl=angle",
+          "--do-not-store-tombstones",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_passthrough",
         "resultdb": {
           "enable": true,
@@ -2819,7 +3186,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -2837,12 +3204,15 @@
       {
         "args": [
           "--use-cmd-decoder=validating",
+          "--do-not-store-tombstones",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gl_tests",
+        "module_scheme": "gtest",
         "name": "gl_tests_validating",
         "resultdb": {
           "enable": true,
@@ -2851,7 +3221,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -2868,12 +3238,15 @@
       {
         "args": [
           "--git-revision=${got_revision}",
+          "--do-not-store-tombstones",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//ui/gl:gl_unittests",
+        "module_scheme": "gtest",
         "name": "gl_unittests",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -2887,7 +3260,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -2903,12 +3276,15 @@
       },
       {
         "args": [
+          "--do-not-store-tombstones",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "module_name": "//gpu:gpu_unittests",
+        "module_scheme": "gtest",
         "name": "gpu_unittests",
         "resultdb": {
           "enable": true,
@@ -2917,7 +3293,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -2945,11 +3321,14 @@
           "--enforce-browser-version",
           "--jobs=1",
           "--compatibility-mode=dont-require-rooted-device",
-          "--initial-find-device-attempts=3"
+          "--initial-find-device-attempts=3",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "context_lost_validating_tests",
         "resultdb": {
           "enable": true,
@@ -2958,7 +3337,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -2989,11 +3368,14 @@
           "${buildername}",
           "--jobs=1",
           "--compatibility-mode=dont-require-rooted-device",
-          "--initial-find-device-attempts=3"
+          "--initial-find-device-attempts=3",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "expected_color_pixel_validating_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -3007,7 +3389,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -3034,11 +3416,14 @@
           "--enforce-browser-version",
           "--jobs=1",
           "--compatibility-mode=dont-require-rooted-device",
-          "--initial-find-device-attempts=3"
+          "--initial-find-device-attempts=3",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "gpu_process_launch_tests",
         "resultdb": {
           "enable": true,
@@ -3047,7 +3432,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -3074,11 +3459,14 @@
           "--enforce-browser-version",
           "--jobs=1",
           "--compatibility-mode=dont-require-rooted-device",
-          "--initial-find-device-attempts=3"
+          "--initial-find-device-attempts=3",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "hardware_accelerated_feature_tests",
         "resultdb": {
           "enable": true,
@@ -3087,7 +3475,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -3118,11 +3506,14 @@
           "0",
           "--jobs=1",
           "--compatibility-mode=dont-require-rooted-device",
-          "--initial-find-device-attempts=3"
+          "--initial-find-device-attempts=3",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "info_collection_tests",
         "resultdb": {
           "enable": true,
@@ -3131,7 +3522,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -3162,11 +3553,14 @@
           "${buildername}",
           "--jobs=1",
           "--compatibility-mode=dont-require-rooted-device",
-          "--initial-find-device-attempts=3"
+          "--initial-find-device-attempts=3",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "pixel_skia_gold_validating_test",
         "precommit_args": [
           "--gerrit-issue=${patch_issue}",
@@ -3180,7 +3574,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -3208,11 +3602,14 @@
           "--dont-restore-color-profile-after-test",
           "--jobs=1",
           "--compatibility-mode=dont-require-rooted-device",
-          "--initial-find-device-attempts=3"
+          "--initial-find-device-attempts=3",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "screenshot_sync_validating_tests",
         "resultdb": {
           "enable": true,
@@ -3221,7 +3618,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -3248,11 +3645,14 @@
           "--enforce-browser-version",
           "--jobs=1",
           "--compatibility-mode=dont-require-rooted-device",
-          "--initial-find-device-attempts=3"
+          "--initial-find-device-attempts=3",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "trace_test",
         "resultdb": {
           "enable": true,
@@ -3261,7 +3661,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",
@@ -3289,11 +3689,14 @@
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_android_runtimes.json",
           "--jobs=1",
           "--compatibility-mode=dont-require-rooted-device",
-          "--initial-find-device-attempts=3"
+          "--initial-find-device-attempts=3",
+          "--do-not-store-tombstones"
         ],
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
+        "module_name": "//chrome/test:telemetry_gpu_integration_test_android_chrome",
+        "module_scheme": "flat",
         "name": "webgl_conformance_validating_tests",
         "resultdb": {
           "enable": true,
@@ -3302,7 +3705,7 @@
         "swarming": {
           "containment_type": "AUTO",
           "dimensions": {
-            "device_os": "UP1A.231005.007",
+            "device_os": "AP3A.240905.015.A2",
             "device_os_type": "user",
             "device_type": "dm1q",
             "os": "Android",

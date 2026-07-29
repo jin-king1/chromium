@@ -5,12 +5,16 @@
 package org.chromium.chrome.browser.tab_group_sync;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
+
+import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -22,12 +26,13 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.Token;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
+import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.ui.base.PageTransition;
@@ -58,16 +63,24 @@ public class NavigationObserverUnitTest {
     private final GURL mTestUrl = new GURL("https://url1.com");
     private final GURL mTestUrl2 = new GURL("https://url2.com");
     private final String mTestTitle = new String("Some title");
+    private SavedTabGroup mSavedTabGroup;
 
     @Before
     public void setUp() {
         TabGroupSyncUtilsJni.setInstanceForTesting(mTabGroupSyncUtilsJni);
         mTabModels = new ArrayList<>();
         doReturn(mTabModels).when(mTabModelSelector).getModels();
+        doReturn(ObservableSuppliers.createMonotonic())
+                .when(mTabModelSelector)
+                .getCurrentTabModelSupplier();
 
         mNavigationTracker = new NavigationTracker();
         mNavigationObserver =
                 new NavigationObserver(mTabModelSelector, mTabGroupSyncService, mNavigationTracker);
+        mSavedTabGroup = new SavedTabGroup();
+        mSavedTabGroup.collaborationId = "colab";
+        doReturn(mSavedTabGroup).when(mTabGroupSyncService).getGroup(LOCAL_TAB_GROUP_ID_1);
+        when(mTabGroupSyncUtilsJni.isSaveableNavigation(anyBoolean(), anyLong())).thenReturn(true);
     }
 
     private void mockTab(
@@ -85,20 +98,15 @@ public class NavigationObserverUnitTest {
     }
 
     private void simulateNavigation(int transition) {
-        simulateNavigation(transition, /* isSaveableNavigation= */ true);
-    }
-
-    private void simulateNavigation(int transition, boolean isSaveableNavigation) {
         NavigationHandle navigation =
                 NavigationHandle.createForTesting(
                         new GURL("unused"),
                         /* isInPrimaryMainFrame= */ true,
-                        /*isSameDocument*/ false,
-                        /*isRendererInitiated*/ false,
+                        /* isSameDocument= */ false,
+                        /* isRendererInitiated= */ false,
                         transition,
                         /* hasUserGesture= */ false,
-                        /* isReload= */ false,
-                        isSaveableNavigation);
+                        /* isReload= */ false);
         mNavigationObserver.onDidFinishNavigationInPrimaryMainFrame(mTab, navigation);
     }
 
@@ -242,7 +250,7 @@ public class NavigationObserverUnitTest {
                 TAB_ID_1,
                 TOKEN_1,
                 mTestTitle,
-                new GURL(UrlConstants.NTP_URL),
+                new GURL(getOriginalNativeNtpUrl()),
                 /* isIncognito= */ false,
                 /* isGrouped= */ true);
         simulateNavigation(PageTransition.LINK);
@@ -272,15 +280,16 @@ public class NavigationObserverUnitTest {
                 NavigationHandle.createForTesting(
                         mTestUrl,
                         /* isInPrimaryMainFrame= */ true,
-                        /*isSameDocument*/ false,
-                        /*isRendererInitiated*/ false,
+                        /* isSameDocument= */ false,
+                        /* isRendererInitiated= */ false,
                         PageTransition.LINK,
                         /* hasUserGesture= */ false,
                         /* isReload= */ false);
         mNavigationTracker.setNavigationWasFromSync(navigation.getUserDataHost());
         mNavigationObserver.onDidFinishNavigationInPrimaryMainFrame(mTab, navigation);
 
-        verifyNoInteractions(mTabGroupSyncService);
+        verify(mTabGroupSyncService).getGroup(LOCAL_TAB_GROUP_ID_1);
+        verifyNoMoreInteractions(mTabGroupSyncService);
         verify(mTabGroupSyncUtilsJni)
                 .onDidFinishNavigation(any(), eq(LOCAL_TAB_GROUP_ID_1), eq(TAB_ID_1), anyLong());
     }
@@ -288,6 +297,7 @@ public class NavigationObserverUnitTest {
     @Test
     public void testNotSaveableNavigation() {
         mNavigationObserver.enableObservers(true);
+        when(mTabGroupSyncUtilsJni.isSaveableNavigation(anyBoolean(), anyLong())).thenReturn(false);
         mockTab(
                 TAB_ID_1,
                 TOKEN_1,
@@ -295,8 +305,9 @@ public class NavigationObserverUnitTest {
                 mTestUrl,
                 /* isIncognito= */ false,
                 /* isGrouped= */ true);
-        simulateNavigation(PageTransition.LINK, false);
-        verifyNoInteractions(mTabGroupSyncService);
+        simulateNavigation(PageTransition.LINK);
+        verify(mTabGroupSyncService).getGroup(LOCAL_TAB_GROUP_ID_1);
+        verifyNoMoreInteractions(mTabGroupSyncService);
         verify(mTabGroupSyncUtilsJni)
                 .onDidFinishNavigation(any(), eq(LOCAL_TAB_GROUP_ID_1), eq(TAB_ID_1), anyLong());
     }

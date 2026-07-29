@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/webui_bundled_code_cache_fetcher.h"
 
+#include "base/metrics/histogram_functions.h"
 #include "mojo/public/cpp/base/ref_counted_memory_mojom_traits.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
@@ -51,7 +52,7 @@ void WebUIBundledCodeCacheFetcher::Start() {
   if (RuntimeEnabledFeatures::WebUIBundledCodeCacheAsyncFetchEnabled()) {
     worker_pool::PostTask(
         FROM_HERE,
-        WTF::CrossThreadBindOnce(
+        CrossThreadBindOnce(
             [](int code_cache_resource_id,
                scoped_refptr<base::SequencedTaskRunner> host_task_runner,
                base::WeakPtr<WebUIBundledCodeCacheFetcher> weak_this) {
@@ -60,7 +61,7 @@ void WebUIBundledCodeCacheFetcher::Start() {
                       code_cache_resource_id);
               PostCrossThreadTask(
                   *host_task_runner, FROM_HERE,
-                  WTF::CrossThreadBindOnce(
+                  CrossThreadBindOnce(
                       &WebUIBundledCodeCacheFetcher::DidReceiveCachedCode,
                       std::move(weak_this),
                       buffer_data ? mojo_base::BigBuffer(*buffer_data)
@@ -70,18 +71,21 @@ void WebUIBundledCodeCacheFetcher::Start() {
     return;
   }
 
-  base::RefCountedMemory* buffer_data =
+  scoped_refptr<base::RefCountedMemory> buffer_data =
       Platform::Current()->GetDataResourceBytes(resource_id_);
   host_task_runner_->PostTask(
       FROM_HERE,
-      WTF::BindOnce(&WebUIBundledCodeCacheFetcher::DidReceiveCachedCode,
-                    weak_factory_.GetWeakPtr(),
-                    buffer_data ? mojo_base::BigBuffer(*buffer_data)
-                                : mojo_base::BigBuffer()));
+      blink::BindOnce(&WebUIBundledCodeCacheFetcher::DidReceiveCachedCode,
+                      weak_factory_.GetWeakPtr(),
+                      buffer_data ? mojo_base::BigBuffer(*buffer_data)
+                                  : mojo_base::BigBuffer()));
 }
 
 void WebUIBundledCodeCacheFetcher::DidReceiveCachedCode(
     mojo_base::BigBuffer data) {
+  base::UmaHistogramBoolean(
+      "Blink.ResourceRequest.WebUIBundledCodeCacheFetcher.DidReceiveCachedCode",
+      (data.size() > 0));
   if (data.size() > 0) {
     code_cache_data_ = std::move(data);
   }

@@ -13,7 +13,6 @@ import '../../components/buttons/oobe_text_button.js';
 import '../../components/common_styles/oobe_dialog_host_styles.css.js';
 import '../../components/dialogs/oobe_adaptive_dialog.js';
 
-import type {String16} from '//resources/mojo/mojo/public/mojom/base/string16.mojom-webui.js';
 import type {PolymerElementProperties} from '//resources/polymer/v3_0/polymer/interfaces.js';
 import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -129,15 +128,15 @@ export class EncryptionMigration extends EncryptionMigrationBase {
     };
   }
 
-  private progress: number;
-  private isResuming: boolean;
-  private batteryPercent: number;
-  private necessaryBatteryPercent: number;
-  private isEnoughBattery: boolean;
-  private isCharging: boolean;
-  private isSkipped: boolean;
-  private availableSpaceInString: string;
-  private necessarySpaceInString: string;
+  declare private progress: number;
+  declare private isResuming: boolean;
+  declare private batteryPercent: number;
+  declare private necessaryBatteryPercent: number;
+  declare private isEnoughBattery: boolean;
+  declare private isCharging: boolean;
+  declare private isSkipped: boolean;
+  declare private availableSpaceInString: string;
+  declare private necessarySpaceInString: string;
   private callbackRouter: EncryptionMigrationPageCallbackRouter;
   private handler: EncryptionMigrationPageHandlerRemote;
 
@@ -255,11 +254,9 @@ export class EncryptionMigration extends EncryptionMigrationBase {
    * space size.
    */
   setSpaceInfoInString(
-      availableSpaceSize: String16, necessarySpaceSize: String16): void {
-    this.availableSpaceInString =
-        String.fromCharCode(...availableSpaceSize.data);
-    this.necessarySpaceInString =
-        String.fromCharCode(...necessarySpaceSize.data);
+      availableSpaceSize: string, necessarySpaceSize: string): void {
+    this.availableSpaceInString = availableSpaceSize;
+    this.necessarySpaceInString = necessarySpaceSize;
   }
 
   /**

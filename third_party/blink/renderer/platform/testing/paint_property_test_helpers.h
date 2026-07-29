@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/platform/graphics/paint/property_tree_state.h"
 #include "third_party/blink/renderer/platform/graphics/paint/scroll_paint_property_node.h"
 #include "third_party/blink/renderer/platform/graphics/paint/transform_paint_property_node.h"
+#include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/transform.h"
 
 namespace blink {
@@ -114,7 +115,8 @@ inline EffectPaintPropertyNode* CreateFilterEffect(
   EffectPaintPropertyNode::State state;
   state.local_transform_space = &local_transform_space;
   state.output_clip = output_clip;
-  state.filter = std::move(filter);
+  state.filter_info = std::make_unique<EffectPaintPropertyNode::FilterInfo>(
+      filter, filter.MapRect(gfx::ToEnclosingRect(filter.ReferenceBox())));
   state.direct_compositing_reasons = compositing_reasons;
   state.compositor_element_id = CompositorElementIdFromUniqueObjectId(
       NewUniqueObjectId(), CompositorElementIdNamespace::kEffectFilter);
@@ -137,7 +139,8 @@ inline EffectPaintPropertyNode* CreateAnimatingFilterEffect(
   EffectPaintPropertyNode::State state;
   state.local_transform_space = &parent.Unalias().LocalTransformSpace();
   state.output_clip = output_clip;
-  state.filter = std::move(filter);
+  state.filter_info = std::make_unique<EffectPaintPropertyNode::FilterInfo>(
+      filter, filter.MapRect(gfx::ToEnclosingRect(filter.ReferenceBox())));
   state.direct_compositing_reasons = CompositingReason::kActiveFilterAnimation;
   state.compositor_element_id = CompositorElementIdFromUniqueObjectId(
       NewUniqueObjectId(), CompositorElementIdNamespace::kEffectFilter);
@@ -258,10 +261,10 @@ inline TransformPaintPropertyNode* CreateFixedPositionTranslation(
     const TransformPaintPropertyNodeOrAlias& parent,
     float offset_x,
     float offset_y,
-    const TransformPaintPropertyNode& scroll_translation_for_fixed) {
+    const TransformPaintPropertyNode& scroll_parent_scroll_translation) {
   TransformPaintPropertyNode::State state{
       {gfx::Transform::MakeTranslation(offset_x, offset_y)}};
-  state.scroll_translation_for_fixed = &scroll_translation_for_fixed;
+  state.scroll_parent_scroll_translation = &scroll_parent_scroll_translation;
   state.direct_compositing_reasons = CompositingReason::kFixedPosition;
   return TransformPaintPropertyNode::Create(parent, std::move(state));
 }
@@ -314,7 +317,8 @@ inline TransformPaintPropertyNode* CreateScrollTranslation(
         cc::MainThreadScrollingReason::kNotOpaqueForTextAndLCDText) {
   ScrollPaintPropertyNode::State scroll_state;
   scroll_state.container_rect = container_rect;
-  scroll_state.contents_size = contents_size;
+  scroll_state.contents_rect =
+      gfx::Rect(container_rect.origin(), contents_size);
   scroll_state.overflow_clip_node = overflow_clip;
   scroll_state.compositor_element_id = CompositorElementIdFromUniqueObjectId(
       NewUniqueObjectId(), CompositorElementIdNamespace::kScroll);

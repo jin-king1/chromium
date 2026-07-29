@@ -18,8 +18,8 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.test.util.Batch;
 import org.chromium.net.CronetEngine;
+import org.chromium.net.CronetTestFramework.CronetImplementation;
 import org.chromium.net.CronetTestRule;
-import org.chromium.net.CronetTestRule.CronetImplementation;
 import org.chromium.net.CronetTestRule.IgnoreFor;
 import org.chromium.net.CronetTestUtil;
 import org.chromium.net.QuicTestServer;
@@ -27,6 +27,7 @@ import org.chromium.net.QuicTestServer;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /** Tests HttpURLConnection upload using QUIC. */
@@ -86,7 +87,7 @@ public class QuicUploadTest {
         // Size is chosen so the last time mBuffer will be written 14831 bytes,
         // which is larger than the internal QUIC read buffer size of 14520.
         byte[] largeData = new byte[195055];
-        Arrays.fill(largeData, "a".getBytes("UTF-8")[0]);
+        Arrays.fill(largeData, "a".getBytes(StandardCharsets.UTF_8)[0]);
         connection.setFixedLengthStreamingMode(largeData.length);
         OutputStream out = connection.getOutputStream();
         // Write everything at one go, so the data is larger than the buffer

@@ -15,7 +15,6 @@
 #include "components/media_effects/test/fake_audio_service.h"
 #include "components/media_effects/test/fake_video_capture_service.h"
 #include "content/public/browser/audio_service.h"
-#include "content/public/browser/background_tracing_manager.h"
 #include "content/public/browser/video_capture_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_renderer_host.h"
@@ -75,8 +74,6 @@ class ActiveDevicesMediaCoordinatorTestParameterized
         content::OverrideAudioServiceForTesting(&fake_audio_service_);
     content::OverrideVideoCaptureServiceForTesting(
         &fake_video_capture_service_);
-    background_tracing_manager_ =
-        content::BackgroundTracingManager::CreateInstance();
     web_contents_ = content::WebContentsTester::CreateTestWebContents(
         &profile_, /*instance=*/nullptr);
     web_contents_tester_ = content::WebContentsTester::For(web_contents_.get());
@@ -105,8 +102,10 @@ class ActiveDevicesMediaCoordinatorTestParameterized
     web_contents_tester_->SetMediaCaptureRawDeviceIdsOpened(
         media_stream_type_,
         std::vector(open_device_ids_.begin(), open_device_ids_.end()));
-    coordinator_->OnRequestUpdate(rfh_id.child_id, rfh_id.frame_routing_id,
-                                  media_stream_type_, state);
+    // TODO(crbug.com/379869738) Remove GetUnsafeValue.
+    coordinator_->OnRequestUpdate(rfh_id.child_id.GetUnsafeValue(),
+                                  rfh_id.frame_routing_id, media_stream_type_,
+                                  state);
 
     // Wait until the coordinator actually gets the new list of active devices.
     WaitForGetMediaCaptureRawDeviceIdsOpened();
@@ -136,8 +135,6 @@ class ActiveDevicesMediaCoordinatorTestParameterized
   content::BrowserTaskEnvironment task_environment_;
   content::RenderViewHostTestEnabler rvh_test_enabler_;
   ChromeLayoutProvider layout_provider_;
-  std::unique_ptr<content::BackgroundTracingManager>
-      background_tracing_manager_;
   TestingProfile profile_;
   MediaView parent_view_;
   media_effects::FakeAudioService fake_audio_service_;

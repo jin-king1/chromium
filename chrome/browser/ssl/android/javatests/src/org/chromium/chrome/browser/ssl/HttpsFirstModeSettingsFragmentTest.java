@@ -4,16 +4,18 @@
 
 package org.chromium.chrome.browser.ssl;
 
+import androidx.preference.Preference;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
+import org.junit.Before;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -22,6 +24,7 @@ import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.util.AdvancedProtectionTestRule;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.components.browser_ui.widget.RadioButtonWithDescription;
 import org.chromium.components.browser_ui.widget.RadioButtonWithDescriptionLayout;
@@ -39,9 +42,18 @@ public class HttpsFirstModeSettingsFragmentTest {
             "Incorrect radio button checked state.";
     private static final String ASSERT_HFM_STATE_NATIVE = "Incorrect HFM state from native.";
 
+    @ClassRule
+    public static AdvancedProtectionTestRule sAdvancedProtectionRule =
+            new AdvancedProtectionTestRule();
+
     @Rule
     public SettingsActivityTestRule<HttpsFirstModeSettingsFragment> mSettingsTestRule =
             new SettingsActivityTestRule<>(HttpsFirstModeSettingsFragment.class);
+
+    @Before
+    public void setUp() {
+        sAdvancedProtectionRule.setIsAdvancedProtectionRequestedByOs(false);
+    }
 
     private HttpsFirstModeSettingsFragment mHttpsFirstModeSettingsFragment;
     private ChromeSwitchPreference mHttpsFirstModeTogglePref;
@@ -49,6 +61,7 @@ public class HttpsFirstModeSettingsFragmentTest {
     private RadioButtonWithDescriptionLayout mHttpsFirstModeVariantGroup;
     private RadioButtonWithDescription mHttpsFirstModeVariantStrict;
     private RadioButtonWithDescription mHttpsFirstModeVariantBalanced;
+    private Preference mEnforcedByAdvancedProtectionWarning;
 
     private void startSettings() {
         mSettingsTestRule.startSettingsActivity();
@@ -61,6 +74,10 @@ public class HttpsFirstModeSettingsFragmentTest {
                         HttpsFirstModeSettingsFragment.PREF_HTTPS_FIRST_MODE_VARIANT);
         Assert.assertNotNull("Switch preference should not be null.", mHttpsFirstModeTogglePref);
         Assert.assertNotNull("Variant preference should not be null.", mHttpsFirstModeVariantPref);
+
+        mEnforcedByAdvancedProtectionWarning =
+                mHttpsFirstModeSettingsFragment.findPreference(
+                        HttpsFirstModeSettingsFragment.PREF_ENFORCED_BY_ADVANCED_PROTECTION);
     }
 
     @HttpsFirstModeSetting
@@ -88,28 +105,27 @@ public class HttpsFirstModeSettingsFragmentTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     @HttpsFirstModeSetting int currentState = getHttpsFirstModeState();
-                    boolean strict_mode_checked =
-                            currentState == HttpsFirstModeSetting.ENABLED_FULL;
-                    boolean balanced_mode_checked =
+                    boolean strictModeChecked = currentState == HttpsFirstModeSetting.ENABLED_FULL;
+                    boolean balancedModeChecked =
                             (currentState == HttpsFirstModeSetting.ENABLED_BALANCED
                                     || currentState == HttpsFirstModeSetting.DISABLED);
-                    boolean toggle_on = currentState != HttpsFirstModeSetting.DISABLED;
+                    boolean toggleOn = currentState != HttpsFirstModeSetting.DISABLED;
                     Assert.assertEquals(
                             ASSERT_RADIO_BUTTON_CHECKED,
-                            strict_mode_checked,
+                            strictModeChecked,
                             getStrictModeButton().isChecked());
                     Assert.assertEquals(
                             ASSERT_RADIO_BUTTON_CHECKED,
-                            balanced_mode_checked,
+                            balancedModeChecked,
                             getBalancedModeButton().isChecked());
                     Assert.assertEquals(
                             ASSERT_RADIO_BUTTON_CHECKED,
-                            toggle_on,
+                            toggleOn,
                             mHttpsFirstModeTogglePref.isChecked());
                     // Variant pref is enabled if toggle is on.
                     Assert.assertEquals(
                             "Incorrect variant pref enabled state.",
-                            toggle_on,
+                            toggleOn,
                             mHttpsFirstModeVariantPref.isEnabled());
                 });
     }
@@ -117,12 +133,12 @@ public class HttpsFirstModeSettingsFragmentTest {
     @Test
     @SmallTest
     @Feature({"HttpsFirstMode"})
+    @EnableFeatures("HttpsFirstBalancedModeAutoEnable")
     public void testPreferenceControls() {
         startSettings();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    // Flip the main toggle on.
-                    mHttpsFirstModeTogglePref.onClick();
+                    // Toggle enabled and balanced mode selected by default.
                     Assert.assertTrue(ASSERT_SWITCH_ENABLED, mHttpsFirstModeTogglePref.isChecked());
                     Assert.assertTrue(
                             "Variant pref has incorrect enabled state.",
@@ -181,8 +197,9 @@ public class HttpsFirstModeSettingsFragmentTest {
     @Test
     @SmallTest
     @Feature({"HttpsFirstMode"})
-    @CommandLineFlags.Add({"safe-browsing-treat-user-as-advanced-protection"})
     public void testSetting_AdvancedProtectionEnabled() {
+        sAdvancedProtectionRule.setIsAdvancedProtectionRequestedByOs(true);
+
         startSettings();
         final String lockedSummaryText =
                 ApplicationProvider.getApplicationContext()
@@ -215,7 +232,19 @@ public class HttpsFirstModeSettingsFragmentTest {
                     Assert.assertFalse(
                             "Preference not correctly disabled.",
                             mHttpsFirstModeVariantPref.isEnabled());
+
+                    Assert.assertNotNull(mEnforcedByAdvancedProtectionWarning);
                 });
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"HttpsFirstMode"})
+    public void testSetting_AdvancedProtectionDisabled() {
+        sAdvancedProtectionRule.setIsAdvancedProtectionRequestedByOs(false);
+
+        startSettings();
+        Assert.assertNull(mEnforcedByAdvancedProtectionWarning);
     }
 
     @Test

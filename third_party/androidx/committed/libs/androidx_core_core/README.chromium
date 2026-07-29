@@ -1,7 +1,8 @@
 Name: Core
 Short Name: core
-URL: https://developer.android.com/jetpack/androidx/releases/core#1.16.0-SNAPSHOT
-Version: 1.16.0-SNAPSHOT
+URL: https://androidx.dev/snapshots/builds/15963504/artifacts/repository/androidx/core/core/1.20.0-SNAPSHOT/core-1.20.0-20260728.210420-1.aar
+Version: 1.20.0-SNAPSHOT
+Update Mechanism: Autoroll
 License: Apache-2.0
 License File: LICENSE
 CPEPrefix: unknown
@@ -11,6 +12,9 @@ License Android Compatible: yes
 
 Description:
 Provides backward-compatible implementations of Android platform APIs and features.
+
+See also: https://developer.android.com/jetpack/androidx/releases/core#1.20.0-SNAPSHOT
+
 
 Local Modifications:
 No modifications.

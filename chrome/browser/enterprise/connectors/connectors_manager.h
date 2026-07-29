@@ -20,9 +20,14 @@
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
-#include "chrome/browser/ui/browser_list_observer.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "base/scoped_observation.h"
+#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"  // nogncheck crbug.com/40147906
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"  // nogncheck crbug.com/40147906
+#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"  // nogncheck crbug.com/40147906
 #endif  // BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
+
+class BrowserWindowInterface;
+class GlobalBrowserCollection;
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "content/public/browser/browser_context.h"
@@ -39,28 +44,21 @@ namespace enterprise_connectors {
 // profile.
 #if BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
 class ConnectorsManager : public ConnectorsManagerBase,
-                          public BrowserListObserver,
+                          public BrowserCollectionObserver,
                           public TabStripModelObserver {
 #else
 class ConnectorsManager : public ConnectorsManagerBase {
 #endif  // BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
 
  public:
-  // Maps used to cache connectors settings.
-  using AnalysisConnectorsSettings =
-      std::map<AnalysisConnector, std::vector<AnalysisServiceSettings>>;
+  using ConnectorsManagerBase::AnalysisConnectorsSettings;
+  using ConnectorsManagerBase::GetAnalysisSettings;
 
   ConnectorsManager(PrefService* pref_service,
                     const ServiceProviderConfig* config,
                     bool observe_prefs = true);
   ~ConnectorsManager() override;
 
-  // Validates which settings should be applied to an analysis connector event
-  // against cached policies. This function will prioritize new connector
-  // policies over legacy ones if they are set.
-  std::optional<AnalysisSettings> GetAnalysisSettings(
-      const GURL& url,
-      AnalysisConnector connector);
 #if BUILDFLAG(IS_CHROMEOS)
   std::optional<AnalysisSettings> GetAnalysisSettings(
       content::BrowserContext* context,
@@ -69,41 +67,15 @@ class ConnectorsManager : public ConnectorsManagerBase {
       AnalysisConnector connector);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-  // Checks if the corresponding connector is enabled.
-  bool IsAnalysisConnectorEnabled(AnalysisConnector connector) const;
-
 #if BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
   // Check if the corresponding connector is enabled for any local agent.
   bool IsConnectorEnabledForLocalAgent(AnalysisConnector connector) const;
 #endif
 
-  bool DelayUntilVerdict(AnalysisConnector connector);
-  std::optional<std::u16string> GetCustomMessage(AnalysisConnector connector,
-                                                 const std::string& tag);
-  std::optional<GURL> GetLearnMoreUrl(AnalysisConnector connector,
-                                      const std::string& tag);
-  bool GetBypassJustificationRequired(AnalysisConnector connector,
-                                      const std::string& tag);
-
-  std::vector<std::string> GetAnalysisServiceProviderNames(
-      AnalysisConnector connector);
-
-  std::vector<const AnalysisConfig*> GetAnalysisServiceConfigs(
-      AnalysisConnector connector);
-
-  void SetTelemetryObserverCallback(base::RepeatingCallback<void()> callback);
-
-  // Public testing functions.
-  const AnalysisConnectorsSettings& GetAnalysisConnectorsSettingsForTesting()
-      const;
-  const base::RepeatingCallback<void()> GetTelemetryObserverCallbackForTesting()
-      const;
-
  private:
 #if BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
-  // BrowserListObserver overrides:
-  void OnBrowserAdded(Browser* browser) override;
-  void OnBrowserRemoved(Browser* browser) override;
+  // BrowserCollectionObserver overrides:
+  void OnBrowserCreated(BrowserWindowInterface* browser) override;
 
   // TabStripModelObserver overrides:
   void OnTabStripModelChanged(
@@ -112,34 +84,23 @@ class ConnectorsManager : public ConnectorsManagerBase {
       const TabStripSelectionChange& selection) override;
 #endif  // BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
 
-  // Read and cache the policy corresponding to |connector|.
-  void CacheAnalysisConnectorPolicy(AnalysisConnector connector) const;
+  void CacheAnalysisConnectorPolicy(AnalysisConnector connector) const override;
 
   // Get data location region from policy.
-  DataRegion GetDataRegion(AnalysisConnector connector) const;
+  DataRegion GetDataRegion(AnalysisConnector connector) const override;
 
 #if BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
   // Close connection with local agent if all the relevant connectors are turned
   // off for it.
   void MaybeCloseLocalContentAnalysisAgentConnection();
+
+  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
+      browser_collection_observation_{this};
 #endif  // BUILDFLAG(ENTERPRISE_LOCAL_CONTENT_ANALYSIS)
 
   // Re-cache analysis connector policy and update local agent connection if
   // needed.
-  void OnPrefChanged(AnalysisConnector connector);
-
-  // Sets up |pref_change_registrar_|. Used by the constructor and
-  // SetUpForTesting.
-  void StartObservingPref(AnalysisConnector connector);
-
-  // ConnectorsManagerBase overrides:
-  void StartObservingPrefs(PrefService* pref_service) override;
-
-  // Cached values of the connector policies. Updated when a connector is first
-  // used or when a policy is updated.  Analysis connectors settings are
-  // mutable because they maybe updated by a call to IsConnectorEnabled(),
-  // which is a const method.
-  mutable AnalysisConnectorsSettings analysis_connector_settings_;
+  void OnAnalysisPrefChanged(AnalysisConnector connector) override;
 };
 
 }  // namespace enterprise_connectors

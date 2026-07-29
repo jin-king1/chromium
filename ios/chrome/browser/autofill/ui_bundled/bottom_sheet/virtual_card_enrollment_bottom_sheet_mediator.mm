@@ -12,6 +12,7 @@
 #import "components/autofill/core/browser/payments/virtual_card_enroll_metrics_logger.h"
 #import "components/autofill/core/browser/ui/payments/virtual_card_enroll_ui_model.h"
 #import "ios/chrome/browser/autofill/model/credit_card/credit_card_data.h"
+#import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/bottom_sheet_constants.h"
 #import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/virtual_card_enrollment_bottom_sheet_data.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -44,10 +45,6 @@ class UiModelObserverBridge
                           UiModelObserverBridge>
       scoped_model_observation_{this};
 };
-
-// The delay between showing the confirmation and dismissing the virtual card
-// enrollment prompt.
-const base::TimeDelta kConfirmationDismissDelay = base::Seconds(1.5);
 
 }  // namespace
 
@@ -150,9 +147,6 @@ const base::TimeDelta kConfirmationDismissDelay = base::Seconds(1.5);
   switch (enrollmentProgress) {
     case autofill::VirtualCardEnrollUiModel::EnrollmentProgress::kEnrolled: {
       [self.consumer showConfirmationState];
-      autofill::LogVirtualCardEnrollmentConfirmationViewShown(
-          /*is_shown=*/true,
-          /*is_card_enrolled=*/true);
       __weak __typeof__(self) weakSelf = self;
       base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
           FROM_HERE, base::BindOnce(^{
@@ -165,9 +159,6 @@ const base::TimeDelta kConfirmationDismissDelay = base::Seconds(1.5);
       // Dismiss the virtual card enrollment bottom sheet. Failure messages are
       // expected to be initiated by the IOSChromePaymentsAutofillClient.
       [_browserCoordinatorHandler dismissVirtualCardEnrollmentBottomSheet];
-      autofill::LogVirtualCardEnrollmentConfirmationViewShown(
-          /*is_shown=*/true,
-          /*is_card_enrolled=*/false);
       break;
     case autofill::VirtualCardEnrollUiModel::EnrollmentProgress::kOffered:
       // The enrollment progress is set by IOSChromePaymentsAutofillClient to

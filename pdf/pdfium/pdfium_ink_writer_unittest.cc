@@ -14,6 +14,7 @@
 #include "base/files/file_path.h"
 #include "base/time/time.h"
 #include "pdf/pdf_ink_brush.h"
+#include "pdf/pdfium/pdfium_api_wrappers.h"
 #include "pdf/pdfium/pdfium_engine.h"
 #include "pdf/pdfium/pdfium_ink_reader.h"
 #include "pdf/pdfium/pdfium_page.h"
@@ -84,12 +85,12 @@ std::unique_ptr<PdfInkBrush> CreateTestBrush() {
 using PDFiumInkWriterTest = PDFiumTestBase;
 
 TEST_P(PDFiumInkWriterTest, BasicWriteAndRead) {
-  TestClient client;
+  TestClient client(/*use_skia_renderer=*/GetParam());
   std::unique_ptr<PDFiumEngine> engine =
       InitializeEngine(&client, FILE_PATH_LITERAL("blank.pdf"));
   ASSERT_TRUE(engine);
 
-  PDFiumPage& pdfium_page = GetPDFiumPageForTest(*engine, 0);
+  PDFiumPage& pdfium_page = GetPDFiumPage(*engine, 0);
   FPDF_PAGE page = pdfium_page.GetPage();
   ASSERT_TRUE(page);
 
@@ -99,8 +100,7 @@ TEST_P(PDFiumInkWriterTest, BasicWriteAndRead) {
       CreateInkInputBatch(kBasicInputs);
   ASSERT_TRUE(inputs.has_value());
   ink::Stroke stroke(brush->ink_brush(), inputs.value());
-  std::vector<FPDF_PAGEOBJECT> results =
-      WriteStrokeToPage(engine->doc(), page, stroke);
+  std::vector<FPDF_PAGEOBJECT> results = WriteStrokeToPage(page, stroke);
   EXPECT_EQ(1u, results.size());
 
   ASSERT_TRUE(FPDFPage_GenerateContent(page));
@@ -108,18 +108,19 @@ TEST_P(PDFiumInkWriterTest, BasicWriteAndRead) {
   std::vector<uint8_t> saved_pdf_data = engine->GetSaveData();
   ASSERT_TRUE(!saved_pdf_data.empty());
 
-  CheckPdfRendering(saved_pdf_data,
-                    /*page_index=*/0, gfx::Size(200, 200),
-                    GetInkTestDataFilePath("ink_writer_basic.png"));
+  CheckPdfRendering(
+      saved_pdf_data,
+      /*page_index=*/0, gfx::Size(200, 200),
+      GetInkTestDataFilePath(FILE_PATH_LITERAL("ink_writer_basic.png")));
 
   // Load `saved_pdf_data` into `saved_engine` and get a handle to the one and
   // only page.
-  TestClient saved_client;
+  TestClient saved_client(/*use_skia_renderer=*/GetParam());
   std::unique_ptr<PDFiumEngine> saved_engine =
       InitializeEngineFromData(&saved_client, std::move(saved_pdf_data));
   ASSERT_TRUE(saved_engine);
   ASSERT_EQ(saved_engine->GetNumberOfPages(), 1);
-  PDFiumPage& saved_pdfium_page = GetPDFiumPageForTest(*saved_engine, 0);
+  PDFiumPage& saved_pdfium_page = GetPDFiumPage(*saved_engine, 0);
   FPDF_PAGE saved_page = saved_pdfium_page.GetPage();
   ASSERT_TRUE(saved_page);
 
@@ -151,51 +152,114 @@ TEST_P(PDFiumInkWriterTest, BasicWriteAndRead) {
   // Points close to `shape`, that still do not intersect.
   EXPECT_FALSE(ink::Intersects(ink::Point{139, 51}, shape, no_transform));
   EXPECT_FALSE(ink::Intersects(ink::Point{139, 51}, saved_shape, no_transform));
-  EXPECT_FALSE(ink::Intersects(ink::Point{128, 63}, shape, no_transform));
-  EXPECT_FALSE(ink::Intersects(ink::Point{128, 63}, saved_shape, no_transform));
+  EXPECT_FALSE(ink::Intersects(ink::Point{127, 63}, shape, no_transform));
+  EXPECT_FALSE(ink::Intersects(ink::Point{127, 63}, saved_shape, no_transform));
 
   // Points that do intersect.
   EXPECT_TRUE(ink::Intersects(ink::Point{139, 53}, shape, no_transform));
   EXPECT_TRUE(ink::Intersects(ink::Point{139, 53}, saved_shape, no_transform));
-  EXPECT_TRUE(ink::Intersects(ink::Point{129, 63}, shape, no_transform));
-  EXPECT_TRUE(ink::Intersects(ink::Point{129, 63}, saved_shape, no_transform));
+  EXPECT_TRUE(ink::Intersects(ink::Point{128, 63}, shape, no_transform));
+  EXPECT_TRUE(ink::Intersects(ink::Point{128, 63}, saved_shape, no_transform));
+}
+
+TEST_P(PDFiumInkWriterTest, WriteToCroppedPage) {
+  TestClient client(/*use_skia_renderer=*/GetParam());
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("hello_world_cropped.pdf"));
+  ASSERT_TRUE(engine);
+
+  PDFiumPage& pdfium_page = GetPDFiumPage(*engine, 0);
+  FPDF_PAGE page = pdfium_page.GetPage();
+  ASSERT_TRUE(page);
+
+  auto brush = CreateTestBrush();
+
+  // `kBasicInputs` values range from (125.143, 49.7908) to (137.878, 61.301)
+  // in screen coordinates.  Converted to points, (125.143, 49.7908) becomes
+  // (93.75, 37).  So the upper-left corner of the captured stroke should be
+  // roughly starting at that location, minus a little bit for implementation
+  // details of how Ink draws strokes.
+  std::optional<ink::StrokeInputBatch> inputs =
+      CreateInkInputBatch(kBasicInputs);
+  ASSERT_TRUE(inputs.has_value());
+  ink::Stroke stroke(brush->ink_brush(), inputs.value());
+  std::vector<FPDF_PAGEOBJECT> results = WriteStrokeToPage(page, stroke);
+  EXPECT_EQ(results.size(), 1u);
+
+  ASSERT_TRUE(FPDFPage_GenerateContent(page));
+
+  std::vector<uint8_t> saved_pdf_data = engine->GetSaveData();
+  ASSERT_TRUE(!saved_pdf_data.empty());
+
+  base::FilePath expectation_path = GetInkTestDataFilePath(
+      GetTestDataPathWithPlatformSuffix("ink_writer_cropped.png"));
+  CheckFuzzyPdfRendering(saved_pdf_data, /*page_index=*/0, gfx::Size(135, 90),
+                         expectation_path);
+
+  // Load `saved_pdf_data` into `saved_engine` and get a handle to the one and
+  // only page.
+  TestClient saved_client(/*use_skia_renderer=*/GetParam());
+  std::unique_ptr<PDFiumEngine> saved_engine =
+      InitializeEngineFromData(&saved_client, std::move(saved_pdf_data));
+  ASSERT_TRUE(saved_engine);
+  ASSERT_EQ(saved_engine->GetNumberOfPages(), 1);
+  PDFiumPage& saved_pdfium_page = GetPDFiumPage(*saved_engine, 0);
+  FPDF_PAGE saved_page = saved_pdfium_page.GetPage();
+  ASSERT_TRUE(saved_page);
+
+  // Complete the round trip and read the written PDF data back into memory as
+  // an ink::PartitionedMesh. ReadV2InkPathsFromPageAsModeledShapes() is known
+  // to be good because its unit tests reads from a real, known to be good Ink
+  // PDF.
+  std::vector<ReadV2InkPathResult> saved_results =
+      ReadV2InkPathsFromPageAsModeledShapes(saved_page);
+  ASSERT_EQ(saved_results.size(), 1u);
+
+  const std::optional<PdfRect> maybe_bounds =
+      GetPageObjectBounds(saved_results[0].page_object);
+  ASSERT_TRUE(maybe_bounds.has_value());
+  const auto& bounds = maybe_bounds.value();
+
+  // While the cropped image shows the stroke on the visible page at an X coord
+  // of 92, that object's position in the PDF page is relative to the MediaBox,
+  // not the CropBox.  So its bounding box should be 55 points to the right of
+  // that.
+  EXPECT_NEAR(147.39908f, bounds.left(), 0.001f);
+  EXPECT_NEAR(49.52425f, bounds.bottom(), 0.001f);
+  EXPECT_NEAR(159.8443f, bounds.right(), 0.001f);
+  EXPECT_NEAR(61.155205f, bounds.top(), 0.001f);
 }
 
 TEST_P(PDFiumInkWriterTest, EmptyStroke) {
-  TestClient client;
+  TestClient client(/*use_skia_renderer=*/GetParam());
   std::unique_ptr<PDFiumEngine> engine =
       InitializeEngine(&client, FILE_PATH_LITERAL("blank.pdf"));
   ASSERT_TRUE(engine);
 
-  PDFiumPage& pdfium_page = GetPDFiumPageForTest(*engine, 0);
+  PDFiumPage& pdfium_page = GetPDFiumPage(*engine, 0);
   FPDF_PAGE page = pdfium_page.GetPage();
   ASSERT_TRUE(page);
 
   auto brush = CreateTestBrush();
   ink::Stroke unused_stroke(brush->ink_brush());
-  std::vector<FPDF_PAGEOBJECT> results =
-      WriteStrokeToPage(engine->doc(), page, unused_stroke);
+  std::vector<FPDF_PAGEOBJECT> results = WriteStrokeToPage(page, unused_stroke);
   EXPECT_TRUE(results.empty());
 }
 
-TEST_P(PDFiumInkWriterTest, NoDocumentNoPage) {
-  TestClient client;
+TEST_P(PDFiumInkWriterTest, NoPage) {
+  TestClient client(/*use_skia_renderer=*/GetParam());
   std::unique_ptr<PDFiumEngine> engine =
       InitializeEngine(&client, FILE_PATH_LITERAL("blank.pdf"));
   ASSERT_TRUE(engine);
 
-  PDFiumPage& pdfium_page = GetPDFiumPageForTest(*engine, 0);
+  PDFiumPage& pdfium_page = GetPDFiumPage(*engine, 0);
   FPDF_PAGE page = pdfium_page.GetPage();
   ASSERT_TRUE(page);
 
   auto brush = CreateTestBrush();
   ink::Stroke unused_stroke(brush->ink_brush());
   std::vector<FPDF_PAGEOBJECT> results =
-      WriteStrokeToPage(/*document=*/nullptr, /*page=*/nullptr, unused_stroke);
-  EXPECT_TRUE(results.empty());
-  results = WriteStrokeToPage(/*document=*/nullptr, page, unused_stroke);
-  EXPECT_TRUE(results.empty());
-  results = WriteStrokeToPage(engine->doc(), /*page=*/nullptr, unused_stroke);
+      WriteStrokeToPage(/*page=*/nullptr, unused_stroke);
   EXPECT_TRUE(results.empty());
 }
 

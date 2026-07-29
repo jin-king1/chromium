@@ -5,31 +5,44 @@
 #include "ui/android/delegated_frame_host_android.h"
 
 #include <iterator>
+#include <utility>
 
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #include "base/check_op.h"
+#include "base/containers/extend.h"
+#include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "cc/slim/layer.h"
 #include "cc/slim/layer_tree.h"
 #include "cc/slim/surface_layer.h"
 #include "components/viz/common/features.h"
+#include "components/viz/common/frame_sinks/blit_request.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
+#include "components/viz/common/gpu/raster_context_provider.h"
 #include "components/viz/common/quads/compositor_frame.h"
+#include "components/viz/common/resources/release_callback.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "components/viz/common/viz_utils.h"
 #include "components/viz/host/host_frame_sink_manager.h"
+#include "gpu/command_buffer/client/client_shared_image.h"
+#include "gpu/command_buffer/client/shared_image_interface.h"
+#include "gpu/command_buffer/common/shared_image_usage.h"
+#include "gpu/command_buffer/common/sync_token.h"
+#include "third_party/blink/public/common/page/content_to_visible_time_request.h"
 #include "ui/android/browser_controls_offset_tag_constraints.h"
 #include "ui/android/browser_controls_offset_tag_definitions.h"
+#include "ui/android/ui_android_features.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
 #include "ui/android/window_android_compositor.h"
-#include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/dip_util.h"
 
@@ -52,35 +65,6 @@ scoped_refptr<cc::slim::SurfaceLayer> CreateSurfaceLayer(
   layer->SetContentsOpaque(surface_opaque);
 
   return layer;
-}
-
-// From content::VisibleTimeRequestTrigger::ConsumeAndMergeRequests
-// TODO(crbug.com/40203057): Use separate start time for each event.
-blink::mojom::RecordContentToVisibleTimeRequestPtr ConsumeAndMergeRequests(
-    blink::mojom::RecordContentToVisibleTimeRequestPtr request1,
-    blink::mojom::RecordContentToVisibleTimeRequestPtr request2) {
-  if (!request1 && !request2)
-    return nullptr;
-
-  // Pick any non-null request to merge into.
-  blink::mojom::RecordContentToVisibleTimeRequestPtr to;
-  blink::mojom::RecordContentToVisibleTimeRequestPtr from;
-  if (request1) {
-    to = std::move(request1);
-    from = std::move(request2);
-  } else {
-    to = std::move(request2);
-    from = std::move(request1);
-  }
-
-  if (from) {
-    to->event_start_time =
-        std::min(to->event_start_time, from->event_start_time);
-    to->destination_is_loaded |= from->destination_is_loaded;
-    to->show_reason_tab_switching |= from->show_reason_tab_switching;
-    to->show_reason_bfcache_restore |= from->show_reason_bfcache_restore;
-  }
-  return to;
 }
 
 }  // namespace
@@ -109,7 +93,7 @@ DelegatedFrameHostAndroid::~DelegatedFrameHostAndroid() {
   EvictDelegatedFrame(frame_evictor_->CollectSurfaceIdsForEviction());
   DetachFromCompositor();
   if (owns_frame_sink_id_) {
-    host_frame_sink_manager_->InvalidateFrameSinkId(frame_sink_id_, this);
+    host_frame_sink_manager_->InvalidateFrameSinkId(frame_sink_id_, this, {});
   }
 }
 
@@ -181,9 +165,12 @@ const viz::FrameSinkId& DelegatedFrameHostAndroid::GetFrameSinkId() const {
 void DelegatedFrameHostAndroid::CopyFromCompositingSurface(
     const gfx::Rect& src_subrect,
     const gfx::Size& output_size,
-    base::OnceCallback<void(const SkBitmap&)> callback,
+    base::TimeDelta timeout,
+    base::OnceCallback<
+        void(const base::expected<viz::CopyOutputBitmapWithMetadata,
+                                  viz::CopyOutputResult::Error>&)> callback,
     bool capture_exact_surface_id,
-    viz::CopyOutputRequest::IpcPriority ipc_priority) {
+    base::TimeDelta ipc_delay) {
   DCHECK(CanCopyFromCompositingSurface());
 
   const viz::SurfaceId surface_id(frame_sink_id_, local_surface_id_);
@@ -201,7 +188,10 @@ void DelegatedFrameHostAndroid::CopyFromCompositingSurface(
           viz::CopyOutputRequest::ResultFormat::RGBA,
           viz::CopyOutputRequest::ResultDestination::kSystemMemory,
           base::BindOnce(
-              [](base::OnceCallback<void(const SkBitmap&)> copy_result,
+              [](base::OnceCallback<void(
+                     const base::expected<viz::CopyOutputBitmapWithMetadata,
+                                          viz::CopyOutputResult::Error>&)>
+                     copy_result,
                  ui::WindowAndroidCompositor::ScopedKeepSurfaceAliveCallback
                      keep_alive,
                  std::unique_ptr<viz::CopyOutputResult> result) {
@@ -209,27 +199,95 @@ void DelegatedFrameHostAndroid::CopyFromCompositingSurface(
                   std::move(keep_alive).Run();
                 }
                 auto scoped_bitmap = result->ScopedAccessSkBitmap();
-                std::move(copy_result).Run(scoped_bitmap.GetOutScopedBitmap());
+                std::move(copy_result)
+                    .Run(scoped_bitmap.GetOutScopedBitmapAndMetadata());
               },
               std::move(callback), std::move(keep_surface_alive)));
-  request->set_ipc_priority(ipc_priority);
+  request->set_send_result_delay(ipc_delay);
 
-  // `CopyOutputRequestCallback` holds a `ReadbackRefCallback` which must only
-  // be executed on the UI thread. Since the result callback can be dispatched
-  // on any thread by default, explicitly set the result task runner to the
-  // current thread.
+  // The callback must be executed on the UI thread. Since the result callback
+  // can be dispatched on any thread by default, explicitly set the result task
+  // runner to the current thread.
   request->set_result_task_runner(
       base::SequencedTaskRunner::GetCurrentDefault());
 
-  viz::SetCopyOutoutRequestResultSize(request.get(), src_subrect, output_size,
+  viz::SetCopyOutputRequestResultSize(request.get(), src_subrect, output_size,
                                       surface_size_in_pixels_);
 
-  host_frame_sink_manager_->RequestCopyOfOutput(surface_id, std::move(request),
-                                                capture_exact_surface_id);
+  host_frame_sink_manager_->RequestCopyOfOutput(
+      surface_id, std::move(request), capture_exact_surface_id, timeout);
 }
 
 bool DelegatedFrameHostAndroid::CanCopyFromCompositingSurface() const {
   return local_surface_id_.is_valid();
+}
+
+void DelegatedFrameHostAndroid::CopySharedImageFromCompositingSurface(
+    scoped_refptr<viz::RasterContextProvider> context_provider,
+    const gfx::Rect& src_subrect,
+    const gfx::Size& output_size,
+    base::OnceCallback<void(scoped_refptr<gpu::ClientSharedImage>,
+                            viz::ReleaseCallback)> callback,
+    bool capture_exact_surface_id) {
+  TRACE_EVENT(
+      "ui", "DelegatedFrameHostAndroid::CopySharedImageFromCompositingSurface");
+  DCHECK(context_provider);
+  DCHECK(CanCopyFromCompositingSurface());
+
+  auto* shared_image_interface = context_provider->SharedImageInterface();
+  CHECK(shared_image_interface);
+
+  gfx::Size image_size =
+      output_size.IsEmpty() ? surface_size_in_pixels_ : output_size;
+
+  const viz::SurfaceId surface_id(frame_sink_id_, local_surface_id_);
+  ui::WindowAndroidCompositor::ScopedKeepSurfaceAliveCallback
+      keep_surface_alive;
+  if (view_->GetWindowAndroid() && view_->GetWindowAndroid()->GetCompositor()) {
+    keep_surface_alive = view_->GetWindowAndroid()
+                             ->GetCompositor()
+                             ->TakeScopedKeepSurfaceAliveCallback(surface_id);
+  }
+
+  std::unique_ptr<viz::CopyOutputRequest> request =
+      std::make_unique<viz::CopyOutputRequest>(
+          viz::CopyOutputResult::Format::RGBA,
+          viz::CopyOutputResult::Destination::kSharedImage,
+          base::BindOnce(
+              [](base::OnceCallback<void(scoped_refptr<gpu::ClientSharedImage>,
+                                         viz::ReleaseCallback)> result_callback,
+                 ui::WindowAndroidCompositor::ScopedKeepSurfaceAliveCallback
+                     keep_alive,
+                 std::unique_ptr<viz::CopyOutputResult> result) {
+                if (keep_alive) {
+                  std::move(keep_alive).Run();
+                }
+                if (result->IsEmpty()) {
+                  // Report a null shared image in case there was a failure.
+                  std::move(result_callback)
+                      .Run(nullptr, viz::ReleaseCallback());
+                  return;
+                }
+                std::move(result_callback)
+                    .Run(result->GetSharedImage(),
+                         result->TakeSharedImageOwnership());
+              },
+              std::move(callback), std::move(keep_surface_alive)));
+
+  viz::SetCopyOutputRequestResultSize(request.get(), src_subrect, output_size,
+                                      surface_size_in_pixels_);
+  if (!request->has_result_selection()) {
+    request->set_result_selection(gfx::Rect(image_size));
+  }
+
+  // The callback must be executed on the UI thread. Since the result callback
+  // can be dispatched on any thread by default, explicitly set the result task
+  // runner to the current thread.
+  request->set_result_task_runner(
+      base::SequencedTaskRunner::GetCurrentDefault());
+
+  host_frame_sink_manager_->RequestCopyOfOutput(surface_id, std::move(request),
+                                                capture_exact_surface_id);
 }
 
 void DelegatedFrameHostAndroid::EvictDelegatedFrame(
@@ -246,8 +304,6 @@ void DelegatedFrameHostAndroid::EvictDelegatedFrame(
     return;
   }
 
-  UMA_HISTOGRAM_COUNTS_100("MemoryAndroid.EvictedTreeSize2",
-                           surface_ids.size());
   if (surface_ids.empty())
     return;
   host_frame_sink_manager_->EvictSurfaces(surface_ids);
@@ -354,11 +410,13 @@ void DelegatedFrameHostAndroid::AttachToCompositor(
   compositor->AddChildFrameSink(frame_sink_id_);
   registered_parent_compositor_ = compositor;
   if (content_to_visible_time_request_) {
+    // Only requests with saved frames should be sent to the DelegatedFrameHost.
+    CHECK(content_to_visible_time_request_
+              ->AllEventsAreTabSwitchesWithSavedFrame());
     registered_parent_compositor_
         ->PostRequestSuccessfulPresentationTimeForNextFrame(
             content_to_visible_time_recorder_.TabWasShown(
-                /*has_saved_frames=*/true,
-                std::move(content_to_visible_time_request_)));
+                std::move(*content_to_visible_time_request_)));
   }
   // If we are visible and embedded, then update the surface keep alive for
   // the newly attached compositor.
@@ -374,7 +432,7 @@ void DelegatedFrameHostAndroid::DetachFromCompositor() {
   registered_parent_compositor_->RemoveFrameSubmissionObserver(client_);
   registered_parent_compositor_->RemoveChildFrameSink(frame_sink_id_);
   registered_parent_compositor_ = nullptr;
-  content_to_visible_time_request_ = nullptr;
+  content_to_visible_time_request_.reset();
 }
 
 bool DelegatedFrameHostAndroid::IsPrimarySurfaceEvicted() const {
@@ -395,11 +453,11 @@ void DelegatedFrameHostAndroid::WasShown(
     const viz::LocalSurfaceId& new_local_surface_id,
     const gfx::Size& new_size_in_pixels,
     bool is_fullscreen,
-    blink::mojom::RecordContentToVisibleTimeRequestPtr
+    std::optional<blink::RecordContentToVisibleTimeRequest>
         content_to_visible_time_request) {
   if (content_to_visible_time_request) {
     PostRequestSuccessfulPresentationTimeForNextFrame(
-        std::move(content_to_visible_time_request));
+        std::move(*content_to_visible_time_request));
   }
   frame_evictor_->SetVisible(true);
 
@@ -488,8 +546,8 @@ void DelegatedFrameHostAndroid::EmbedSurface(
 
   if (!current_primary_surface_id.is_valid() ||
       current_primary_surface_id.local_surface_id() != local_surface_id_) {
-    if (base::android::BuildInfo::GetInstance()->sdk_int() <
-        base::android::SDK_VERSION_OREO) {
+    if (base::android::android_info::sdk_int() <
+        base::android::android_info::SDK_VERSION_OREO) {
       // On version of Android earlier than Oreo, we would like to produce new
       // content as soon as possible or the OS will create an additional black
       // gutter. We only reset the deadline on the first frame (no bounds yet
@@ -517,10 +575,9 @@ void DelegatedFrameHostAndroid::EmbedSurface(
 }
 
 void DelegatedFrameHostAndroid::RequestSuccessfulPresentationTimeForNextFrame(
-    blink::mojom::RecordContentToVisibleTimeRequestPtr
-        content_to_content_to_visible_time_request) {
+    blink::RecordContentToVisibleTimeRequest content_to_visible_time_request) {
   PostRequestSuccessfulPresentationTimeForNextFrame(
-      std::move(content_to_content_to_visible_time_request));
+      std::move(content_to_visible_time_request));
 }
 
 void DelegatedFrameHostAndroid::CancelSuccessfulPresentationTimeRequest() {
@@ -640,23 +697,30 @@ void DelegatedFrameHostAndroid::ActivatedOrEvictedFromBackForwardCache() {
 
 void DelegatedFrameHostAndroid::
     PostRequestSuccessfulPresentationTimeForNextFrame(
-        blink::mojom::RecordContentToVisibleTimeRequestPtr
+        blink::RecordContentToVisibleTimeRequest
             content_to_visible_time_request) {
+  // Only requests with saved frames should be sent to the DelegatedFrameHost.
+  CHECK(
+      content_to_visible_time_request.AllEventsAreTabSwitchesWithSavedFrame());
+
   // Since we could receive multiple requests while awaiting
   // `registered_parent_compositor_` we merge them.
-  auto request =
-      ConsumeAndMergeRequests(std::move(content_to_visible_time_request_),
-                              std::move(content_to_visible_time_request));
+  if (content_to_visible_time_request_) {
+    base::Extend(content_to_visible_time_request.events,
+                 std::move(content_to_visible_time_request_->events));
+    content_to_visible_time_request_.reset();
+  }
 
   if (!registered_parent_compositor_) {
-    content_to_visible_time_request_ = std::move(request);
+    content_to_visible_time_request_ =
+        std::move(content_to_visible_time_request);
     return;
   }
 
   registered_parent_compositor_
       ->PostRequestSuccessfulPresentationTimeForNextFrame(
           content_to_visible_time_recorder_.TabWasShown(
-              /*has_saved_frames=*/true, std::move(request)));
+              std::move(content_to_visible_time_request)));
 }
 
 void DelegatedFrameHostAndroid::UpdateCaptureKeepAlive() {

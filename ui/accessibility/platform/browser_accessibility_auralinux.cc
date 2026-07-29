@@ -4,9 +4,10 @@
 
 #include "ui/accessibility/platform/browser_accessibility_auralinux.h"
 
+#include "ui/accessibility/platform/ax_platform.h"
+#include "ui/accessibility/platform/ax_platform_node_auralinux.h"
 #include "ui/accessibility/platform/browser_accessibility_manager.h"
 #include "ui/accessibility/platform/browser_accessibility_manager_auralinux.h"
-#include "ui/accessibility/platform/ax_platform_node_auralinux.h"
 
 namespace ui {
 
@@ -26,7 +27,7 @@ BrowserAccessibilityAuraLinux::BrowserAccessibilityAuraLinux(
     BrowserAccessibilityManager* manager,
     AXNode* node)
     : BrowserAccessibility(manager, node),
-      platform_node_(AXPlatformNode::Create(this)) {}
+      platform_node_(AXPlatformNode::Create(*this)) {}
 
 BrowserAccessibilityAuraLinux::~BrowserAccessibilityAuraLinux() = default;
 

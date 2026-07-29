@@ -53,10 +53,19 @@ class FakeSyncableServiceBasedBridge : public DataTypeSyncBridge {
     NOTREACHED();
   }
   std::unique_ptr<DataBatch> GetAllDataForDebugging() override { NOTREACHED(); }
-  std::string GetClientTag(const EntityData& /*entity_data*/) override {
+  std::string GetClientTag(const EntityData& /*entity_data*/) const override {
     NOTREACHED();
   }
-  std::string GetStorageKey(const EntityData& /*entity_data*/) override {
+  std::string GetStorageKey(const EntityData& /*entity_data*/) const override {
+    NOTREACHED();
+  }
+  sync_pb::EntitySpecifics TrimAllSupportedFieldsFromRemoteSpecifics(
+      const sync_pb::EntitySpecifics& /*entity_specifics*/) const override {
+    // Clears all fields by default to avoid the memory and I/O overhead of an
+    // additional copy of the data.
+    return sync_pb::EntitySpecifics();
+  }
+  bool IsEntityDataValid(const EntityData& /*entity_data*/) const override {
     NOTREACHED();
   }
 };

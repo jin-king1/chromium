@@ -37,7 +37,7 @@ PingManager::~PingManager() {
 
 void PingManager::SendPing(const std::string& session_id,
                            const CrxComponent& component,
-                           std::vector<base::Value::Dict> events,
+                           std::vector<base::DictValue> events,
                            base::OnceClosure callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -74,8 +74,8 @@ void PingManager::SendPing(const std::string& session_id,
       send_install_id ? metadata.GetInstallId(component.app_id) : "",
       component.lang.empty() ? config_->GetLang() : component.lang,
       metadata.GetInstallDate(component.app_id), component.install_source,
-      component.install_location, component.fingerprint,
-      component.installer_attributes, metadata.GetCohort(component.app_id),
+      component.install_location, component.installer_attributes,
+      metadata.GetCohort(component.app_id),
       metadata.GetCohortHint(component.app_id),
       metadata.GetCohortName(component.app_id), component.channel,
       component.disabled_reasons, /*cached_hashes=*/{},

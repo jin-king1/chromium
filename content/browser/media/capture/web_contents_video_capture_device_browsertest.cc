@@ -37,6 +37,10 @@
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gl/gl_switches.h"
 
+#if BUILDFLAG(IS_ANDROID)
+#include "content/public/common/content_features.h"
+#endif
+
 #if BUILDFLAG(IS_WIN)
 #include "ui/aura/test/aura_test_utils.h"
 #include "ui/aura/window.h"
@@ -428,8 +432,9 @@ IN_PROC_BROWSER_TEST_F(WebContentsVideoCaptureDeviceBrowserTestAura,
 // MSAN is feasible or not
 // TODO(crbug.com/328658521): It is also flaky on macOS.
 // TODO(crbug.com/372481179): Failing on win-asan.
-#if defined(MEMORY_SANITIZER) || \
-    (BUILDFLAG(IS_WIN) && defined(ADDRESS_SANITIZER)) || BUILDFLAG(IS_MAC)
+// TODO(crbug.com/440535492): Flaky on Win dbg. Re-enable this test.
+#if defined(MEMORY_SANITIZER) || BUILDFLAG(IS_MAC) || \
+    (BUILDFLAG(IS_WIN) && (defined(ADDRESS_SANITIZER) || !defined(NDEBUG)))
 #define MAYBE_RecoversAfterRendererCrash DISABLED_RecoversAfterRendererCrash
 #else
 #define MAYBE_RecoversAfterRendererCrash RecoversAfterRendererCrash
@@ -651,11 +656,13 @@ INSTANTIATE_TEST_SUITE_P(
 // and whether the main document contains a cross-site iframe.
 // TODO(crbug.com/40947039): Fails with MSAN. Determine if enabling the test for
 // MSAN is feasible or not
-// TODO(crbug/328419809): Also flaky on Mac.
-// TODO(crbug/329654821): Also flaky for ChromeOS ASAN LSAN and debug.
+// TODO(crbug.com/328419809): Also flaky on Mac.
+// TODO(crbug.com/329654821): Also flaky for ChromeOS ASAN LSAN and debug.
+// TODO(crbug.com/540031290): Also flaky on Win ASAN.
 #if defined(MEMORY_SANITIZER) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
     (BUILDFLAG(IS_CHROMEOS) && defined(ADDRESS_SANITIZER)) ||                \
-    (BUILDFLAG(IS_CHROMEOS) && !defined(NDEBUG))
+    (BUILDFLAG(IS_CHROMEOS) && !defined(NDEBUG)) ||                          \
+    (BUILDFLAG(IS_WIN) && defined(ADDRESS_SANITIZER))
 #define MAYBE_CapturesContentChanges DISABLED_CapturesContentChanges
 #else
 #define MAYBE_CapturesContentChanges CapturesContentChanges

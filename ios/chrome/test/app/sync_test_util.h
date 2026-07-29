@@ -7,10 +7,12 @@
 
 #import <Foundation/Foundation.h>
 
+#include <map>
 #include <set>
 #include <string>
 
 #include "base/time/time.h"
+#include "components/sync/base/collaboration_id.h"
 #include "components/sync/base/data_type.h"
 #include "third_party/metrics_proto/user_demographics.pb.h"
 #include "url/gurl.h"
@@ -127,12 +129,26 @@ BOOL VerifyHistoryOnSyncServer(const std::multiset<GURL>& expected_urls,
 void AddTypedURLToClient(const GURL& url,
                          base::Time visitTimestamp = base::Time::Now());
 
+// Sets a page title for an item in the history.
+void SetPageTitle(const GURL& url, const std::u16string& title);
+
 // Injects a HISTORY visit into the fake sync server.
 void AddHistoryVisitToFakeSyncServer(const GURL& url);
 
 // Injects a device info into the fake sync server.
 void AddDeviceInfoToFakeSyncServer(const std::string& device_name,
                                    base::Time last_updated_timestamp);
+
+// Injects a Send Tab To Self entry into the fake sync server and returns its
+// GUID. If `target_device_cache_guid` is empty, the local device's cache GUID
+// is used instead.
+std::string AddSendTabToSelfEntryToFakeSyncServer(
+    const GURL& url,
+    const std::string& title,
+    const std::string& device_name,
+    const std::string& target_device_cache_guid = "",
+    const std::map<std::string, std::string>& form_fields = {},
+    const std::string& text_fragment = "");
 
 // Returns YES if the provided `url` is present (or not) if `expected_present`
 // is YES (or NO).
@@ -154,7 +170,7 @@ void AddSyncPassphrase(const std::string& sync_passphrase);
 
 // Adds the user to the collaboration for `collaboration_id`. No-op if the
 // user is already in this collaboration.
-void AddCollaboration(const std::string& collaboration_id);
+void AddCollaboration(const syncer::CollaborationId& collaboration_id);
 
 // Adds a group to the list of sync tabs on the server.
 void AddGroupToFakeServer(const tab_groups::SavedTabGroup& group);
@@ -162,14 +178,25 @@ void AddGroupToFakeServer(const tab_groups::SavedTabGroup& group);
 // Adds a tab to the list of sync tabs on the server.
 void AddTabToFakeServer(const tab_groups::SavedTabGroupTab& tab);
 
+// Adds a tab to the list of sync tabs on the server. The group where a `tab`
+// belongs to should be shared. The tab is always added by a member
+// (fakeIdentity3).
+void AddSharedTabToFakeServer(const tab_groups::SavedTabGroupTab& tab,
+                              const syncer::CollaborationId& collaboration_id);
+
 // Deletes a tab or a group with `uuid` on the server.
 void DeleteTabOrGroupFromFakeServer(const base::Uuid& uuid);
 
 // Adds the `collaboration_id` on the server.
-void AddCollaborationGroupToFakeServer(const std::string& collaboration_id);
+void AddCollaborationGroupToFakeServer(
+    const syncer::CollaborationId& collaboration_id);
 
 // Deletes the shared group with `uuid` on the server.
 void DeleteSharedGroupFromFakeServer(const base::Uuid& uuid);
+
+// Deletes all `data_type` entities from the server without creating
+// tombstones.
+void DeleteAllEntitiesForDataType(syncer::DataType data_type);
 
 }  // namespace chrome_test_util
 

@@ -16,6 +16,7 @@
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/elements/form_input_accessory_view.h"
 #import "ios/chrome/common/ui/elements/form_input_accessory_view_text_data.h"
+#import "ios/chrome/credential_provider_extension/generated_localized_strings.h"
 #import "ios/chrome/credential_provider_extension/metrics_util.h"
 #import "ios/chrome/credential_provider_extension/ui/new_password_footer_view.h"
 #import "ios/chrome/credential_provider_extension/ui/new_password_table_cell.h"
@@ -61,13 +62,13 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 @property(nonatomic, readonly) PasswordNoteCell* noteCell;
 
 // The value of the username text.
-@property(nonatomic, strong) NSString* usernameText;
+@property(nonatomic, copy) NSString* usernameText;
 
 // The value of the password text.
-@property(nonatomic, strong) NSString* passwordText;
+@property(nonatomic, copy) NSString* passwordText;
 
 // The value of the note text.
-@property(nonatomic, strong) NSString* noteText;
+@property(nonatomic, copy) NSString* noteText;
 
 // If yes, the footer informing about the max note length is shown.
 @property(nonatomic, assign) BOOL isNoteFooterShown;
@@ -101,9 +102,7 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
   [appearance configureWithDefaultBackground];
   appearance.backgroundColor = backgroundColor;
   self.navigationItem.scrollEdgeAppearance = appearance;
-  self.title =
-      NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_NEW_PASSWORD_TITLE",
-                        @"Title for add new password screen");
+  self.title = CredentialProviderNewPasswordTitleString();
   self.navigationItem.leftBarButtonItem = [self navigationCancelButton];
   self.navigationItem.rightBarButtonItem = [self navigationSaveButton];
 
@@ -286,19 +285,16 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 
   // Notify that the character limit has been reached via VoiceOver.
   if (!noteValid) {
-    NSString* tooLongNoteLocalizedString = NSLocalizedString(
-        @"IDS_IOS_CREDENTIAL_PROVIDER_TOO_LONG_NOTE",
-        @"Warning about the character limit for password notes");
+    NSString* tooLongNoteLocalizedString =
+        CredentialProviderTooLongNoteString();
     NSString* characterLimitString =
         base::SysUTF16ToNSString(base::NumberToString16(
             password_manager::constants::kMaxPasswordNoteLength));
     UIAccessibilityPostNotification(
         UIAccessibilityAnnouncementNotification,
-        NSLocalizedString(
-            [tooLongNoteLocalizedString
-                stringByReplacingOccurrencesOfString:@"$1"
-                                          withString:characterLimitString],
-            @"Warning about the character limit for password notes."));
+        [tooLongNoteLocalizedString
+            stringByReplacingOccurrencesOfString:@"$1"
+                                      withString:characterLimitString]);
   }
 
   // Update note footer based on note's length.
@@ -390,9 +386,8 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 
 - (NSString*)noteFooterText {
   if (self.isNoteFooterShown) {
-    NSString* tooLongNoteLocalizedString = NSLocalizedString(
-        @"IDS_IOS_CREDENTIAL_PROVIDER_TOO_LONG_NOTE",
-        @"Warning about the character limit for password notes");
+    NSString* tooLongNoteLocalizedString =
+        CredentialProviderTooLongNoteString();
     NSString* characterLimitString =
         base::SysUTF16ToNSString(base::NumberToString16(
             password_manager::constants::kMaxPasswordNoteLength));
@@ -411,7 +406,7 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
   passwordCell.textField.text = password;
   self.passwordText = password;
   // Move voiceover focus to the save button so the user knows that something
-  // has happend and the save button is now enabled.
+  // has happened and the save button is now enabled.
   UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification,
                                   self.navigationItem.rightBarButtonItem);
   [self updateSaveButtonState];
@@ -420,29 +415,21 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 // Alerts the user that saving their password failed.
 - (void)alertSavePasswordFailed {
   UIAlertController* alertController = [UIAlertController
-      alertControllerWithTitle:
-          NSLocalizedString(
-              @"IDS_IOS_CREDENTIAL_PROVIDER_NEW_PASSWORD_ERROR_TITLE",
-              @"Title for password save error")
-                       message:NSLocalizedString(
-                                   @"IDS_IOS_CREDENTIAL_PROVIDER_NEW_PASSWORD_"
-                                   @"ERROR_MESSAGE",
-                                   @"Message for password save error")
+      alertControllerWithTitle:CredentialProviderNewPasswordErrorTitleString()
+                       message:CredentialProviderNewPasswordErrorMessageString()
                 preferredStyle:UIAlertControllerStyleAlert];
-  UIAlertAction* defaultAction = [UIAlertAction
-      actionWithTitle:NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_OK",
-                                        @"OK")
-                style:UIAlertActionStyleDefault
-              handler:^(UIAlertAction* action){
-              }];
+  UIAlertAction* defaultAction =
+      [UIAlertAction actionWithTitle:CredentialProviderOkString()
+                               style:UIAlertActionStyleDefault
+                             handler:^(UIAlertAction* action){
+                             }];
   [alertController addAction:defaultAction];
   [self presentViewController:alertController animated:YES completion:nil];
 }
 
 - (void)alertUserCredentialExists {
-  NSString* messageBaseLocalizedString = NSLocalizedString(
-      @"IDS_IOS_CREDENTIAL_PROVIDER_NEW_PASSWORD_REPLACE_MESSAGE",
-      @"Message for password replace alert");
+  NSString* messageBaseLocalizedString =
+      CredentialProviderNewPasswordReplaceMessageString();
   NSString* username = self.usernameText;
   NSString* message = [[messageBaseLocalizedString
       stringByReplacingOccurrencesOfString:@"$2"
@@ -450,29 +437,22 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
       stringByReplacingOccurrencesOfString:@"$1"
                                 withString:username ?: @""];
   UIAlertController* alertController = [UIAlertController
-      alertControllerWithTitle:
-          NSLocalizedString(
-              @"IDS_IOS_CREDENTIAL_PROVIDER_NEW_PASSWORD_REPLACE_TITLE",
-              @"Replace password?")
+      alertControllerWithTitle:CredentialProviderNewPasswordReplaceTitleString()
                        message:message
                 preferredStyle:UIAlertControllerStyleAlert];
   __weak __typeof(self) weakSelf = self;
-  UIAlertAction* replaceAction = [UIAlertAction
-      actionWithTitle:NSLocalizedString(
-                          @"IDS_IOS_CREDENTIAL_PROVIDER_EXTENSION_REPLACE",
-                          @"Replace")
-                style:UIAlertActionStyleDestructive
-              handler:^(UIAlertAction* action) {
-                [weakSelf saveCredential:YES];
-              }];
+  UIAlertAction* replaceAction =
+      [UIAlertAction actionWithTitle:CredentialProviderExtensionReplaceString()
+                               style:UIAlertActionStyleDestructive
+                             handler:^(UIAlertAction* action) {
+                               [weakSelf saveCredential:YES];
+                             }];
   [alertController addAction:replaceAction];
-  UIAlertAction* cancelAction = [UIAlertAction
-      actionWithTitle:NSLocalizedString(
-                          @"IDS_IOS_CREDENTIAL_PROVIDER_EXTENSION_CANCEL",
-                          @"Cancel")
-                style:UIAlertActionStyleCancel
-              handler:^(UIAlertAction* action){
-              }];
+  UIAlertAction* cancelAction =
+      [UIAlertAction actionWithTitle:CredentialProviderExtensionCancelString()
+                               style:UIAlertActionStyleCancel
+                             handler:^(UIAlertAction* action){
+                             }];
   [alertController addAction:cancelAction];
   [self presentViewController:alertController animated:YES completion:nil];
 }
@@ -534,27 +514,20 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 
 - (FormInputAccessoryViewTextData*)textDataforFormInputAccessoryView:
     (FormInputAccessoryView*)sender {
-  return [[FormInputAccessoryViewTextData alloc]
-                          initWithCloseButtonTitle:
-                              NSLocalizedString(
-                                  @"IDS_IOS_CREDENTIAL_PROVIDER_DONE", @"Done")
+  return [[FormInputAccessoryViewTextData
+      alloc] initWithCloseButtonTitle:CredentialProviderDoneString()
                      closeButtonAccessibilityLabel:
-                         NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_NEW_"
-                                           @"PASSWORD_HIDE_KEYBOARD_HINT",
-                                           @"Hide Keyboard")
+                         CredentialProviderNewPasswordHideKeyboardHintString()
                       nextButtonAccessibilityLabel:
-                          NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_NEW_"
-                                            @"PASSWORD_NEXT_FIELD_HINT",
-                                            @"Next field")
+                          CredentialProviderNewPasswordNextFieldHintString()
                   previousButtonAccessibilityLabel:
-                      NSLocalizedString(@"IDS_IOS_CREDENTIAL_PROVIDER_NEW_"
-                                        @"PASSWORD_PREVIOUS_FIELD_HINT",
-                                        @"Previous field")
+                      CredentialProviderNewPasswordPreviousFieldHintString()
                              manualFillButtonTitle:nil
                 manualFillButtonAccessibilityLabel:nil
         passwordManualFillButtonAccessibilityLabel:nil
       creditCardManualFillButtonAccessibilityLabel:nil
-         addressManualFillButtonAccessibilityLabel:nil];
+         addressManualFillButtonAccessibilityLabel:nil
+        atMemoryManualFillButtonAccessibilityLabel:nil];
 }
 
 - (void)fromInputAccessoryViewDidTapOmniboxTypingShield:

@@ -26,17 +26,15 @@ class FontSizePrefsAndroid {
  public:
   FontSizePrefsAndroid(
       JNIEnv* env,
-      jobject obj,
-      const base::android::JavaParamRef<jobject>& jbrowser_context_handle);
+      const base::android::JavaRef<jobject>& obj,
+      const base::android::JavaRef<jobject>& jbrowser_context_handle);
 
   FontSizePrefsAndroid(const FontSizePrefsAndroid&) = delete;
   FontSizePrefsAndroid& operator=(const FontSizePrefsAndroid&) = delete;
 
   ~FontSizePrefsAndroid();
 
-  void SetFontScaleFactor(JNIEnv* env,
-                          const base::android::JavaRef<jobject>& obj,
-                          jfloat font_scale_factor);
+  void SetFontScaleFactor(JNIEnv* env, float font_scale_factor);
   void Destroy(JNIEnv* env);
 
  private:

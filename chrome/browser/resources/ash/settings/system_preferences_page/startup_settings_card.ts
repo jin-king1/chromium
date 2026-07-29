@@ -44,14 +44,6 @@ export class StartupSettingsCardElement extends StartupSettingsCardElementBase {
       },
 
       /**
-       * Used by DeepLinkingMixin to focus this element's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([Setting.kRestoreAppsAndPages]),
-      },
-
-      /**
        * List of options for the on startup dropdown menu.
        */
       onStartupDropdownOptions_: {
@@ -68,8 +60,14 @@ export class StartupSettingsCardElement extends StartupSettingsCardElementBase {
     };
   }
 
-  prefs: PrefsState;
-  private readonly onStartupDropdownOptions_:
+  declare prefs: PrefsState;
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kRestoreAppsAndPages,
+  ]);
+
+  declare private readonly onStartupDropdownOptions_:
       Array<{value: number, name: string}>;
 
   override currentRouteChanged(newRoute: Route): void {

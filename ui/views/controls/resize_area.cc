@@ -20,20 +20,26 @@ ResizeArea::ResizeArea(ResizeAreaDelegate* delegate) : delegate_(delegate) {
 ResizeArea::~ResizeArea() = default;
 
 ui::Cursor ResizeArea::GetCursor(const ui::MouseEvent& event) {
-  return GetEnabled() ? ui::Cursor(ui::mojom::CursorType::kEastWestResize)
-                      : ui::Cursor();
+  return GetEnabled()
+             ? ui::Cursor(axis_ == Axis::kHorizontal
+                              ? ui::mojom::CursorType::kEastWestResize
+                              : ui::mojom::CursorType::kNorthSouthResize)
+             : ui::Cursor();
 }
 
 void ResizeArea::OnGestureEvent(ui::GestureEvent* event) {
+  auto event_position = axis_ == Axis::kHorizontal ? event->x() : event->y();
   if (event->type() == ui::EventType::kGestureTapDown) {
-    SetInitialPosition(event->x());
+    SetInitialPosition(event_position);
     event->SetHandled();
   } else if (event->type() == ui::EventType::kGestureScrollBegin ||
              event->type() == ui::EventType::kGestureScrollUpdate) {
-    ReportResizeAmount(event->x(), false);
+    ReportResizeAmount(event_position, false);
     event->SetHandled();
   } else if (event->type() == ui::EventType::kGestureEnd) {
-    ReportResizeAmount(event->x(), true);
+    if (is_resizing_) {
+      ReportResizeAmount(event_position, true);
+    }
     event->SetHandled();
   }
 }
@@ -43,7 +49,7 @@ bool ResizeArea::OnMousePressed(const ui::MouseEvent& event) {
     return false;
   }
 
-  SetInitialPosition(event.x());
+  SetInitialPosition(axis_ == Axis::kHorizontal ? event.x() : event.y());
   return true;
 }
 
@@ -52,12 +58,15 @@ bool ResizeArea::OnMouseDragged(const ui::MouseEvent& event) {
     return false;
   }
 
-  ReportResizeAmount(event.x(), false);
+  ReportResizeAmount(axis_ == Axis::kHorizontal ? event.x() : event.y(), false);
   return true;
 }
 
 void ResizeArea::OnMouseReleased(const ui::MouseEvent& event) {
-  ReportResizeAmount(event.x(), true);
+  if (is_resizing_) {
+    ReportResizeAmount(axis_ == Axis::kHorizontal ? event.x() : event.y(),
+                       true);
+  }
 }
 
 void ResizeArea::OnMouseCaptureLost() {
@@ -65,17 +74,23 @@ void ResizeArea::OnMouseCaptureLost() {
 }
 
 void ResizeArea::ReportResizeAmount(int resize_amount, bool last_update) {
-  gfx::Point point(resize_amount, 0);
+  gfx::Point point = axis_ == Axis::kHorizontal ? gfx::Point(resize_amount, 0)
+                                                : gfx::Point(0, resize_amount);
   View::ConvertPointToScreen(this, &point);
-  resize_amount = point.x() - initial_position_;
-  delegate_->OnResize(base::i18n::IsRTL() ? -resize_amount : resize_amount,
+  resize_amount =
+      (axis_ == Axis::kHorizontal ? point.x() : point.y()) - initial_position_;
+  is_resizing_ = !last_update;
+  delegate_->OnResize((axis_ == Axis::kHorizontal && base::i18n::IsRTL())
+                          ? -resize_amount
+                          : resize_amount,
                       last_update);
 }
 
-void ResizeArea::SetInitialPosition(int event_x) {
-  gfx::Point point(event_x, 0);
+void ResizeArea::SetInitialPosition(int event_position) {
+  gfx::Point point = axis_ == Axis::kHorizontal ? gfx::Point(event_position, 0)
+                                                : gfx::Point(0, event_position);
   View::ConvertPointToScreen(this, &point);
-  initial_position_ = point.x();
+  initial_position_ = (axis_ == Axis::kHorizontal ? point.x() : point.y());
 }
 
 BEGIN_METADATA(ResizeArea)

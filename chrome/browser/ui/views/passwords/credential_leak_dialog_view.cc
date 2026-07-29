@@ -13,17 +13,16 @@
 #include "chrome/browser/ui/passwords/password_dialog_prompts.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/password_manager/core/browser/leak_detection_dialog_utils.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/bubble/tooltip_icon.h"
@@ -77,14 +76,25 @@ void CredentialLeakPromptImpl::ShowCredentialLeakPrompt() {
   auto* tab_interface = tabs::TabInterface::GetFromContents(
       credential_leak_dialog_view_->web_contents());
   CHECK(tab_interface);
-  if (tab_interface->CanShowModalUI()) {
-    credential_leak_dialog_view_->InitWindow();
-    dialog_ = tab_interface->GetTabFeatures()
-                  ->tab_dialog_manager()
-                  ->CreateShowDialogAndBlockTabInteraction(
-                      credential_leak_dialog_view_.release());
-    dialog_->MakeCloseSynchronous(base::BindOnce(
-        &CredentialLeakPromptImpl::CloseWidget, base::Unretained(this)));
+  if (!tab_interface->CanShowModalUI()) {
+    return;
+  }
+
+  credential_leak_dialog_view_->InitWindow();
+  CredentialLeakDialogView* dialog_view_ptr =
+      credential_leak_dialog_view_.get();
+  dialog_ = tab_interface->GetTabFeatures()
+                ->tab_dialog_manager()
+                ->CreateAndShowDialog(
+                    credential_leak_dialog_view_.release(),
+                    std::make_unique<tabs::TabDialogManager::Params>());
+  dialog_->MakeCloseSynchronous(base::BindOnce(
+      &CredentialLeakPromptImpl::CloseWidget, base::Unretained(this)));
+
+  // Workaround for crbug.com/451071356. More details in crrev.com/c/7502578.
+  views::View* focused_view = dialog_view_ptr->GetInitiallyFocusedView();
+  if (focused_view) {
+    focused_view->RequestFocus();
   }
 }
 
@@ -113,9 +123,8 @@ CredentialLeakDialogView::CredentialLeakDialogView(
 
   // Set the ownership of the delegate, not the View. The View is owned by the
   // Widget as a child view.
-  // TODO(crbug.com/338254375): Remove the following two lines once this is the
-  // default state for widgets and the delegates.
-  views::WidgetDelegate::SetOwnedByWidget(false);
+  // TODO(crbug.com/338254375): Remove the following line once this is the
+  // default state for widgets.
   SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
 
   SetButtons(controller->ShouldShowCancelButton()

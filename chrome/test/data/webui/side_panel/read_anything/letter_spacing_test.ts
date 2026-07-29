@@ -4,56 +4,106 @@
 
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import {flush} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {MetricsBrowserProxyImpl, ReadAnythingLogger, ReadAnythingSettingsChange, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import type {LetterSpacingMenu} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {DEFAULT_SETTINGS, ReadAnythingSettingsChange, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import type {LetterSpacingMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {eventToPromise, microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {emitEventForPolymer} from './common.js';
+import {assertCheckMarksForDropdown, assertTestSettingsAreNotDefaultSettings, mockMetrics, stubAnimationFrame, TEST_RANDOM_VALUE_SETTINGS} from './common.js';
 import {FakeReadingMode} from './fake_reading_mode.js';
-import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 
 suite('LetterSpacing', () => {
-  let letterSpacingMenu: LetterSpacingMenu;
+  let letterSpacingMenu: LetterSpacingMenuElement;
   let metrics: TestMetricsBrowserProxy;
+
+  suiteSetup(() => {
+    assertTestSettingsAreNotDefaultSettings();
+  });
 
   setup(() => {
     // Clearing the DOM should always be done first.
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const readingMode = new FakeReadingMode();
     chrome.readingMode = readingMode as unknown as typeof chrome.readingMode;
-
-    metrics = new TestMetricsBrowserProxy();
-    MetricsBrowserProxyImpl.setInstance(metrics);
-    ReadAnythingLogger.setInstance(new ReadAnythingLogger());
+    metrics = mockMetrics();
 
     letterSpacingMenu = document.createElement('letter-spacing-menu');
     document.body.appendChild(letterSpacingMenu);
-    flush();
   });
 
+  test('has checkmarks', () => {
+    assertCheckMarksForDropdown(letterSpacingMenu);
+  });
+
+
+
   test('spacing change', async () => {
+    const numberOfSpacings = 3;
+
     const veryWide = chrome.readingMode.veryWideLetterSpacing;
-    emitEventForPolymer(
-        letterSpacingMenu.$.menu, ToolbarEvent.LETTER_SPACING,
-        {detail: {data: veryWide}});
+    const closePromise1 =
+        eventToPromise(ToolbarEvent.CLOSE_ALL_MENUS, document);
+    letterSpacingMenu.$.menu.dispatchEvent(new CustomEvent(
+        ToolbarEvent.LETTER_SPACING, {detail: {data: veryWide}}));
+    await closePromise1;
     assertEquals(veryWide, chrome.readingMode.letterSpacing);
 
     const wide = chrome.readingMode.wideLetterSpacing;
-    emitEventForPolymer(
-        letterSpacingMenu.$.menu, ToolbarEvent.LETTER_SPACING,
-        {detail: {data: wide}});
+    const closePromise2 =
+        eventToPromise(ToolbarEvent.CLOSE_ALL_MENUS, document);
+    letterSpacingMenu.$.menu.dispatchEvent(
+        new CustomEvent(ToolbarEvent.LETTER_SPACING, {detail: {data: wide}}));
+    await closePromise2;
     assertEquals(wide, chrome.readingMode.letterSpacing);
 
     const standard = chrome.readingMode.standardLetterSpacing;
-    emitEventForPolymer(
-        letterSpacingMenu.$.menu, ToolbarEvent.LETTER_SPACING,
-        {detail: {data: standard}});
+    const closePromise3 =
+        eventToPromise(ToolbarEvent.CLOSE_ALL_MENUS, document);
+    letterSpacingMenu.$.menu.dispatchEvent(new CustomEvent(
+        ToolbarEvent.LETTER_SPACING, {detail: {data: standard}}));
+    await closePromise3;
     assertEquals(standard, chrome.readingMode.letterSpacing);
 
     assertEquals(
         ReadAnythingSettingsChange.LETTER_SPACING_CHANGE,
         await metrics.whenCalled('recordTextSettingsChange'));
-    assertEquals(3, metrics.getCallCount('recordTextSettingsChange'));
+    assertEquals(
+        numberOfSpacings, metrics.getCallCount('recordTextSettingsChange'));
+  });
+
+  test('restores saved spacing option', async () => {
+    const spacing = chrome.readingMode.veryWideLetterSpacing;
+    const startingIndex = letterSpacingMenu.$.menu.currentSelectedIndex;
+    assertNotEquals(spacing, startingIndex);
+
+    letterSpacingMenu.settingsPrefs = {
+      ...DEFAULT_SETTINGS,
+      letterSpacing: spacing,
+    };
+    await microtasksFinished();
+
+    assertNotEquals(
+        startingIndex, letterSpacingMenu.$.menu.currentSelectedIndex);
+  });
+
+  test('does nothing if saved spacing is the same', async () => {
+    const startingIndex = letterSpacingMenu.$.menu.currentSelectedIndex;
+
+    letterSpacingMenu.settingsPrefs = {
+      ...TEST_RANDOM_VALUE_SETTINGS,
+      letterSpacing: 0,
+    };
+    await microtasksFinished();
+
+    assertEquals(startingIndex, letterSpacingMenu.$.menu.currentSelectedIndex);
+  });
+
+  test('can be closed programatically', () => {
+    stubAnimationFrame();
+    letterSpacingMenu.open(document.body);
+    assertTrue(letterSpacingMenu.$.menu.$.lazyMenu.get().open);
+    letterSpacingMenu.close();
+    assertFalse(letterSpacingMenu.$.menu.$.lazyMenu.get().open);
   });
 });

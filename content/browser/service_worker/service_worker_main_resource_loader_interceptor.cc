@@ -11,6 +11,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
+#include "content/browser/preloading/prefetch/prefetch_features.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/navigation_request_info.h"
 #include "content/browser/service_worker/service_worker_client.h"
@@ -20,6 +21,7 @@
 #include "content/browser/service_worker/service_worker_main_resource_handle.h"
 #include "content/browser/service_worker/service_worker_object_host.h"
 #include "content/public/common/content_client.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/origin_util.h"
 #include "content/public/common/url_constants.h"
 #include "net/base/url_util.h"
@@ -38,8 +40,9 @@ bool SchemeMaySupportRedirectingToHTTPS(BrowserContext* browser_context,
   // specification requires that the registered URL is HTTPS.
   // https://html.spec.whatwg.org/multipage/system-state.html#normalize-protocol-handler-parameters
   if (GetContentClient()->browser()->HasCustomSchemeHandler(browser_context,
-                                                            url.scheme()))
+                                                            url.GetScheme())) {
     return true;
+  }
 
 #if BUILDFLAG(IS_CHROMEOS)
   return url.SchemeIs(kExternalFileScheme);
@@ -90,15 +93,91 @@ ServiceWorkerMainResourceLoaderInterceptor::CreateForNavigation(
       request_info.isolation_info);
 
   return base::WrapUnique(new ServiceWorkerMainResourceLoaderInterceptor(
-      std::move(navigation_handle),
-      request_info.begin_params->skip_service_worker));
+      std::move(navigation_handle)));
+}
+
+std::unique_ptr<ServiceWorkerMainResourceLoaderInterceptor>
+ServiceWorkerMainResourceLoaderInterceptor::CreateForPrefetch(
+    const network::ResourceRequest& resource_request,
+    base::WeakPtr<ServiceWorkerMainResourceHandle> navigation_handle,
+    scoped_refptr<network::SharedURLLoaderFactory> network_url_loader_factory) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(base::FeatureList::IsEnabled(features::kPrefetchServiceWorker));
+
+  if (!ShouldCreateForNavigation(
+          resource_request.url, resource_request.destination,
+          navigation_handle->context_wrapper()->browser_context())) {
+    return nullptr;
+  }
+
+  if (!navigation_handle->context_wrapper()->context()) {
+    return nullptr;
+  }
+
+  navigation_handle->set_service_worker_client(
+      navigation_handle->context_wrapper()
+          ->context()
+          ->service_worker_client_owner()
+          .CreateServiceWorkerClientForPrefetch(
+              std::move(network_url_loader_factory)),
+      resource_request.trusted_params->isolation_info);
+
+  return base::WrapUnique(new ServiceWorkerMainResourceLoaderInterceptor(
+      std::move(navigation_handle)));
+}
+
+std::unique_ptr<ServiceWorkerMainResourceLoaderInterceptor>
+ServiceWorkerMainResourceLoaderInterceptor::CreateForDownload(
+    const network::ResourceRequest& resource_request,
+    base::WeakPtr<ServiceWorkerMainResourceHandle> navigation_handle) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(
+      base::FeatureList::IsEnabled(features::kServiceWorkerInterceptDownloads));
+  // The caller must populate trusted_params with an IsolationInfo so the SW
+  // client can be created in the correct partition. The download pipeline
+  // builds its ResourceRequest via download::CreateResourceRequest which sets
+  // this; CHECK so a future caller that forgets fails loudly here instead of
+  // null-derefing inside set_service_worker_client below.
+  CHECK(resource_request.trusted_params.has_value());
+
+  if (!ShouldCreateForNavigation(
+          resource_request.url, resource_request.destination,
+          navigation_handle->context_wrapper()->browser_context())) {
+    return nullptr;
+  }
+
+  if (!navigation_handle->context_wrapper()->context()) {
+    return nullptr;
+  }
+
+  // Downloads don't have an associated FrameTreeNode, so pass an invalid
+  // FrameTreeNodeId. The client is used only for the fetch event dispatch
+  // and is never committed.
+  //
+  // TODO(crbug.com/40410035): Introduce a dedicated
+  // ServiceWorkerClientOwner::CreateServiceWorkerClientForDownload factory
+  // that constructs a frameless kWindow client without reusing the
+  // navigation-specific CreateServiceWorkerClientForWindow signature
+  // (which expects an ongoing_navigation_frame_tree_node_id) or the
+  // prefetch-specific CreateServiceWorkerClientForPrefetch signature
+  // (which carries a fallback network URLLoaderFactory we don't need).
+  navigation_handle->set_service_worker_client(
+      navigation_handle->context_wrapper()
+          ->context()
+          ->service_worker_client_owner()
+          .CreateServiceWorkerClientForWindow(
+              /*are_ancestors_secure=*/true, FrameTreeNodeId()),
+      resource_request.trusted_params->isolation_info);
+
+  return base::WrapUnique(new ServiceWorkerMainResourceLoaderInterceptor(
+      std::move(navigation_handle)));
 }
 
 std::unique_ptr<ServiceWorkerMainResourceLoaderInterceptor>
 ServiceWorkerMainResourceLoaderInterceptor::CreateForWorker(
     const network::ResourceRequest& resource_request,
     const net::IsolationInfo& isolation_info,
-    int process_id,
+    ChildProcessId process_id,
     const DedicatedOrSharedWorkerToken& worker_token,
     base::WeakPtr<ServiceWorkerMainResourceHandle> navigation_handle) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
@@ -143,7 +222,7 @@ ServiceWorkerMainResourceLoaderInterceptor::CreateForWorker(
   }
 
   return base::WrapUnique(new ServiceWorkerMainResourceLoaderInterceptor(
-      std::move(navigation_handle), resource_request.skip_service_worker));
+      std::move(navigation_handle)));
 }
 
 ServiceWorkerMainResourceLoaderInterceptor::
@@ -194,7 +273,11 @@ void ServiceWorkerMainResourceLoaderInterceptor::MaybeCreateLoader(
     }
   }
 
-  handle_->InitializeForRequest(tentative_resource_request);
+  CHECK(handle_->InitializeForRequest(
+      tentative_resource_request.url,
+      ServiceWorkerMainResourceHandle::TopFrameOriginForInitializeForRequest(
+          tentative_resource_request),
+      /*client_for_prefetch=*/nullptr));
 
   // If we know there's no service worker for the storage key, let's skip asking
   // the storage to check the existence.
@@ -203,11 +286,13 @@ void ServiceWorkerMainResourceLoaderInterceptor::MaybeCreateLoader(
   // the fake registration initially. If the URL is eligible for
   // SyntheticResponse, do not skip service worker.
   bool skip_service_worker =
-      skip_service_worker_ ||
+      tentative_resource_request.skip_service_worker ||
       !OriginCanAccessServiceWorkers(tentative_resource_request.url) ||
       !(handle_->context_wrapper()->MaybeHasRegistrationForStorageKey(
             handle_->service_worker_client()->key()) ||
         service_worker_loader_helpers::IsEligibleForSyntheticResponse(
+            handle_->context_wrapper()->browser_context(),
+            handle_->context_wrapper()->storage_partition(),
             tentative_resource_request.url));
 
   // Create and start the handler for this request. It will invoke the loader
@@ -237,9 +322,8 @@ void ServiceWorkerMainResourceLoaderInterceptor::CompleteWithoutLoader(
 
 ServiceWorkerMainResourceLoaderInterceptor::
     ServiceWorkerMainResourceLoaderInterceptor(
-        base::WeakPtr<ServiceWorkerMainResourceHandle> handle,
-        bool skip_service_worker)
-    : handle_(std::move(handle)), skip_service_worker_(skip_service_worker) {
+        base::WeakPtr<ServiceWorkerMainResourceHandle> handle)
+    : handle_(std::move(handle)) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   DCHECK(handle_);
   CHECK(handle_->scoped_service_worker_client());

@@ -18,11 +18,10 @@
 #include "chrome/browser/ui/webui/ntp/ntp_resource_cache.h"
 #include "chrome/browser/ui/webui/page_not_available_for_guest/page_not_available_for_guest_ui.h"
 #include "chrome/browser/ui/webui/theme_source.h"
-#include "chrome/browser/ui/webui/webui_util_desktop.h"
+#include "chrome/browser/ui/webui/util/webui_util_desktop.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/new_tab_page_third_party_resources.h"
 #include "chrome/grit/new_tab_page_third_party_resources_map.h"
@@ -71,10 +70,17 @@ void CreateAndAddNewTabPageThirdPartyUiHtmlSource(Profile* profile,
                                            undo_accelerator.GetShortcutText()));
   static constexpr webui::LocalizedString kStrings[] = {
       {"linkRemove", IDS_NTP_CUSTOM_LINKS_REMOVE},
+      {"linkRemoveA11y", IDS_NTP_MOST_VISITED_SITES_REMOVE},
       {"linkRemovedMsg", IDS_NTP_CONFIRM_MSG_SHORTCUT_REMOVED},
       {"restoreThumbnailsShort", IDS_NEW_TAB_RESTORE_THUMBNAILS_SHORT_LINK},
       {"title", IDS_NEW_TAB_TITLE},
       {"undo", IDS_NEW_TAB_UNDO_THUMBNAIL_REMOVE},
+      {"showMore", IDS_NTP_SHOW_MORE_BUTTON_LABEL},
+      {"showLess", IDS_NTP_SHOW_LESS_BUTTON_LABEL},
+      {"shortcutsInactivityRemovalMsg",
+       IDS_NTP_MOST_VISITED_SHORTCUTS_INACTIVITY_REMOVAL},
+      {"moduleInactivityRemovalMsg", IDS_NTP_MODULE_INACTIVITY_REMOVAL},
+      {"modulesInactivityRemovalMsg", IDS_NTP_MODULES_INACTIVITY_REMOVAL},
   };
 
   source->AddLocalizedStrings(kStrings);
@@ -115,19 +121,18 @@ void CreateAndAddNewTabPageThirdPartyUiHtmlSource(Profile* profile,
   }
 
   source->AddInteger(
-      "prerenderStartTimeThreshold",
-      features::kNewTabPagePrerenderStartDelayOnMouseHoverByMiliSeconds.Get());
-  source->AddInteger(
       "preconnectStartTimeThreshold",
-      features::kNewTabPagePreconnectStartDelayOnMouseHoverByMiliSeconds.Get());
+      features::kNewTabPagePreconnectStartDelayOnMouseHoverByMilliSeconds
+          .Get());
+  source->AddInteger(
+      "prefetchStartTimeThreshold",
+      features::kNewTabPagePrefetchStartDelayOnMouseHoverByMilliSeconds.Get());
+  source->AddBoolean(
+      "prefetchTriggerEnabled",
+      base::FeatureList::IsEnabled(features::kNewTabPageTriggerForPrefetch));
   source->AddBoolean(
       "prerenderOnPressEnabled",
-      base::FeatureList::IsEnabled(features::kNewTabPageTriggerForPrerender2) &&
-          features::kPrerenderNewTabPageOnMousePressedTrigger.Get());
-  source->AddBoolean(
-      "prerenderOnHoverEnabled",
-      base::FeatureList::IsEnabled(features::kNewTabPageTriggerForPrerender2) &&
-          features::kPrerenderNewTabPageOnMouseHoverTrigger.Get());
+      base::FeatureList::IsEnabled(features::kNewTabPageTriggerForPrerender2));
 
   // Needed by <cr-most-visited> but not used in
   // chrome://new-tab-page-third-party/.
@@ -158,7 +163,8 @@ NewTabPageThirdPartyUI::NewTabPageThirdPartyUI(content::WebUI* web_ui)
       most_visited_page_factory_receiver_(this),
       profile_(Profile::FromWebUI(web_ui)),
       web_contents_(web_ui->GetWebContents()),
-      navigation_start_time_(base::Time::Now()) {
+      navigation_start_time_(base::Time::Now()),
+      navigation_start_time_ticks_(base::TimeTicks::Now()) {
   CreateAndAddNewTabPageThirdPartyUiHtmlSource(profile_, web_contents_);
   content::URLDataSource::Add(
       profile_, std::make_unique<FaviconSource>(
@@ -218,6 +224,8 @@ void NewTabPageThirdPartyUI::CreatePageHandler(
   most_visited_page_handler_ = std::make_unique<MostVisitedHandler>(
       std::move(pending_page_handler), std::move(pending_page), profile_,
       web_contents_, GURL(chrome::kChromeUINewTabPageThirdPartyURL),
-      navigation_start_time_);
-  most_visited_page_handler_->EnableCustomLinks(false);
+      navigation_start_time_, navigation_start_time_ticks_);
+  most_visited_page_handler_->EnableTileTypes(
+      ntp_tiles::MostVisitedSites::EnableTileTypesOptions().with_top_sites(
+          true));
 }

@@ -11,15 +11,15 @@ import static androidx.browser.customtabs.CustomTabsCallback.ACTIVITY_LAYOUT_STA
 import static androidx.browser.customtabs.CustomTabsCallback.ACTIVITY_LAYOUT_STATE_SIDE_SHEET_MAXIMIZED;
 import static androidx.browser.customtabs.CustomTabsIntent.ACTIVITY_SIDE_SHEET_DECORATION_TYPE_DIVIDER;
 import static androidx.browser.customtabs.CustomTabsIntent.ACTIVITY_SIDE_SHEET_DECORATION_TYPE_NONE;
-import static androidx.browser.customtabs.CustomTabsIntent.ACTIVITY_SIDE_SHEET_DECORATION_TYPE_SHADOW;
 import static androidx.browser.customtabs.CustomTabsIntent.ACTIVITY_SIDE_SHEET_POSITION_START;
 import static androidx.browser.customtabs.CustomTabsIntent.ACTIVITY_SIDE_SHEET_ROUNDED_CORNERS_POSITION_NONE;
+
+import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.animation.ValueAnimator;
 import android.animation.ValueAnimator.AnimatorUpdateListener;
 import android.app.Activity;
 import android.graphics.drawable.GradientDrawable;
-import android.os.Build;
 import android.os.Handler;
 import android.view.Gravity;
 import android.view.View;
@@ -34,12 +34,16 @@ import androidx.annotation.VisibleForTesting;
 import androidx.browser.customtabs.CustomTabsCallback;
 import androidx.browser.customtabs.CustomTabsIntent;
 
-import org.chromium.base.MathUtils;
 import org.chromium.base.SysUtils;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
+import org.chromium.chrome.browser.customtabs.features.CustomTabDimensionUtils;
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbar;
+import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsCoordinator;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.base.LocalizationUtils;
@@ -48,11 +52,9 @@ import org.chromium.ui.base.LocalizationUtils;
  * CustomTabHeightStrategy for Partial Custom Tab Side-Sheet implementation. An instance of this
  * class should be owned by the CustomTabActivity.
  */
+@NullMarked
 public class PartialCustomTabSideSheetStrategy extends PartialCustomTabBaseStrategy {
-    private static final int WINDOW_WIDTH_EXPANDED_CUTOFF_DP = 840;
     private static final int SIDE_SHEET_UI_DELAY = 20;
-    private static final float MINIMAL_WIDTH_RATIO_EXPANDED = 0.33f;
-    private static final float MINIMAL_WIDTH_RATIO_MEDIUM = 0.5f;
     private static final NoAnimator NO_ANIMATOR = new NoAnimator();
 
     private final @Px int mUnclampedInitialWidth;
@@ -60,9 +62,18 @@ public class PartialCustomTabSideSheetStrategy extends PartialCustomTabBaseStrat
     private final int mRoundedCornersPosition;
 
     private boolean mIsMaximized;
-    private int mDecorationType;
+    private final int mDecorationType;
     private boolean mSlideDownAnimation; // Slide down to bottom when closing the sheet.
     private boolean mSheetOnRight;
+    private @Nullable CustomTabToolbarButtonsCoordinator mToolbarButtonsCoordinator;
+
+    /** Callback used to notify the maximize button on side sheet PCCT click event. */
+    public interface MaximizeButtonCallback {
+        /**
+         * @return {@code true} if the PCCT gets maximized. {@code false} if restored.
+         */
+        boolean onClick();
+    }
 
     public PartialCustomTabSideSheetStrategy(
             Activity activity,
@@ -145,18 +156,27 @@ public class PartialCustomTabSideSheetStrategy extends PartialCustomTabBaseStrat
     }
 
     @Override
+    @Initializer
     public void onToolbarInitialized(
-            View coordinatorView, CustomTabToolbar toolbar, @Px int toolbarCornerRadius) {
-        super.onToolbarInitialized(coordinatorView, toolbar, toolbarCornerRadius);
+            View coordinatorView,
+            CustomTabToolbar toolbar,
+            @Px int toolbarCornerRadius,
+            @Nullable CustomTabToolbarButtonsCoordinator toolbarButtonsCoordinator) {
+        super.onToolbarInitialized(
+                coordinatorView, toolbar, toolbarCornerRadius, toolbarButtonsCoordinator);
 
+        mToolbarButtonsCoordinator = toolbarButtonsCoordinator;
         if (mShowMaximizeButton) {
-            toolbar.initSideSheetMaximizeButton(mIsMaximized, () -> toggleMaximize(true));
+            assumeNonNull(mToolbarButtonsCoordinator);
+            mToolbarButtonsCoordinator.showSideSheetMaximizeButton(
+                    mIsMaximized, () -> toggleMaximize(true));
         }
-        toolbar.setMinimizeButtonEnabled(false);
+        assumeNonNull(mToolbarButtonsCoordinator);
+        mToolbarButtonsCoordinator.setMinimizeButtonEnabled(false);
         updateDragBarVisibility(/* dragHandlebarVisibility= */ View.GONE);
     }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @VisibleForTesting
     boolean toggleMaximize(boolean animate) {
         mIsMaximized = !mIsMaximized;
         if (mIsMaximized) {
@@ -234,7 +254,7 @@ public class PartialCustomTabSideSheetStrategy extends PartialCustomTabBaseStrat
     }
 
     private void maybeResetFocusForScreenReaders() {
-        if (AccessibilityState.isScreenReaderEnabled()) {
+        if (AccessibilityState.isComplexUserInteractionServiceEnabled()) {
             // After resizing the view, notify the window state change to let screen reader
             // focus navigation work as before.
             mToolbarView.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
@@ -429,11 +449,8 @@ public class PartialCustomTabSideSheetStrategy extends PartialCustomTabBaseStrat
     private int calculateWidth(int unclampedWidth) {
         int displayWidth = mVersionCompat.getDisplayWidth();
         int displayWidthDp = mVersionCompat.getDisplayWidthDp();
-        float minWidthRatio =
-                displayWidthDp < WINDOW_WIDTH_EXPANDED_CUTOFF_DP
-                        ? MINIMAL_WIDTH_RATIO_MEDIUM
-                        : MINIMAL_WIDTH_RATIO_EXPANDED;
-        return MathUtils.clamp(unclampedWidth, displayWidth, (int) (displayWidth * minWidthRatio));
+        return CustomTabDimensionUtils.getInitialWidth(
+                unclampedWidth, displayWidth, displayWidthDp);
     }
 
     private float calculateElevation() {
@@ -474,15 +491,17 @@ public class PartialCustomTabSideSheetStrategy extends PartialCustomTabBaseStrat
         // Elevation shadows are only rendered properly on devices >= Android Q
         return notMaxWidthSideSheet
                 && (SysUtils.isLowEndDevice()
-                        || mDecorationType == ACTIVITY_SIDE_SHEET_DECORATION_TYPE_DIVIDER
-                        || (mDecorationType == ACTIVITY_SIDE_SHEET_DECORATION_TYPE_SHADOW
-                                && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q));
+                        || mDecorationType == ACTIVITY_SIDE_SHEET_DECORATION_TYPE_DIVIDER);
     }
 
     @Override
     public void destroy() {
         super.destroy();
-        if (mShowMaximizeButton) ((CustomTabToolbar) mToolbarView).removeSideSheetMaximizeButton();
+        if (mShowMaximizeButton) {
+            if (mToolbarButtonsCoordinator != null) {
+                mToolbarButtonsCoordinator.removeSideSheetMaximizeButton();
+            }
+        }
     }
 
     void setSlideDownAnimationForTesting(boolean slideDown) {

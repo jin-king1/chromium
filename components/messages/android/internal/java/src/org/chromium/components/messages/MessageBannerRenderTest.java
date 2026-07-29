@@ -4,8 +4,7 @@
 
 package org.chromium.components.messages;
 
-import static org.chromium.base.test.util.Restriction.RESTRICTION_TYPE_LOW_END_DEVICE;
-import static org.chromium.base.test.util.Restriction.RESTRICTION_TYPE_NON_LOW_END_DEVICE;
+import static android.view.View.VISIBLE;
 
 import android.app.Activity;
 import android.graphics.Bitmap;
@@ -17,8 +16,11 @@ import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.StyleSpan;
 import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewGroup.LayoutParams;
 
+import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
 import org.junit.AfterClass;
@@ -29,7 +31,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ApiCompatibilityUtils;
-import org.chromium.base.BaseSwitches;
+import org.chromium.base.SysUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.params.BaseJUnit4RunnerDelegate;
@@ -38,9 +40,7 @@ import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Restriction;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
@@ -55,7 +55,7 @@ import java.util.List;
 @Batch(Batch.UNIT_TESTS)
 public class MessageBannerRenderTest {
     @ClassParameter
-    private static List<ParameterSet> sClassParams =
+    private static final List<ParameterSet> sClassParams =
             new NightModeTestUtils.NightModeParams().getParameters();
 
     @ClassRule
@@ -88,7 +88,6 @@ public class MessageBannerRenderTest {
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testBasic() throws Exception {
         Drawable drawable =
                 ApiCompatibilityUtils.getDrawable(
@@ -103,30 +102,24 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.DESCRIPTION, "Secondary Title")
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_basic");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_basic");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @CommandLineFlags.Add({BaseSwitches.ENABLE_LOW_END_DEVICE_MODE})
-    public void testBasicLowEndDevice() throws Exception {
+    public void testBasic_RTL() throws Exception {
         Drawable drawable =
                 ApiCompatibilityUtils.getDrawable(
                         sActivity.getResources(), android.R.drawable.ic_delete);
@@ -140,29 +133,56 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.DESCRIPTION, "Secondary Title")
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_basic_low_end");
+        View mainContent = getMainContent(view);
+        mainContent.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_basic_rtl");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
+    public void testBasicLowEndDevice() throws Exception {
+        SysUtils.setIsLowEndDeviceForTesting(true);
+        Drawable drawable =
+                ApiCompatibilityUtils.getDrawable(
+                        sActivity.getResources(), android.R.drawable.ic_delete);
+        PropertyModel model =
+                new PropertyModel.Builder(MessageBannerProperties.ALL_KEYS)
+                        .with(
+                                MessageBannerProperties.MESSAGE_IDENTIFIER,
+                                MessageIdentifier.TEST_MESSAGE)
+                        .with(MessageBannerProperties.ICON, drawable)
+                        .with(MessageBannerProperties.TITLE, "Primary Title")
+                        .with(MessageBannerProperties.DESCRIPTION, "Secondary Title")
+                        .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
+                        .build();
+        MessageBannerView view = inflateMessageViewOnUiThread();
+        PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
+        LayoutParams params =
+                new LayoutParams(
+                        LayoutParams.MATCH_PARENT,
+                        sActivity
+                                .getResources()
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
+
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_basic_low_end");
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"RenderTest", "Messages"})
     public void testBasic_withSecondaryIcon() throws Exception {
         Drawable drawable =
                 ApiCompatibilityUtils.getDrawable(
@@ -181,34 +201,28 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .with(MessageBannerProperties.SECONDARY_ICON, drawable2)
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_basic_with_secondary_icon");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_basic_with_secondary_icon");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testBasic_withSpannableDescription() throws Exception {
         Drawable drawable =
                 ApiCompatibilityUtils.getDrawable(
                         sActivity.getResources(), android.R.drawable.ic_delete);
-        SpannableString spannable = new SpannableString("Dummy Spannable Description!");
+        SpannableString spannable = new SpannableString("Placeholder Spannable Description!");
         StyleSpan boldSpan = new StyleSpan(Typeface.BOLD);
         spannable.setSpan(boldSpan, 0, spannable.length(), Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
         PropertyModel model =
@@ -221,29 +235,23 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.DESCRIPTION, spannable)
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_basic_with_spannable_description");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_basic_with_spannable_description");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testBasic_multilineDescriptionMaxLines() throws Exception {
         final String multilineDescription = "Line 1\nLine 2\nLine 3\nLine 4";
         PropertyModel model =
@@ -256,25 +264,19 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.DESCRIPTION_MAX_LINES, 2)
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_basic_with_multiline_description");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_basic_with_multiline_description");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testBasic_veryLongButtonText() throws Exception {
         final String veryLongButtonText =
                 "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 81 19 20 21"
@@ -289,25 +291,19 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.DESCRIPTION_MAX_LINES, 2)
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, veryLongButtonText)
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_basic_with_very_long_button_text");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_basic_with_very_long_button_text");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testBasic_resetPrimaryButtonText() throws Exception {
         MessageBannerView result =
                 ThreadUtils.runOnUiThreadBlocking(
@@ -346,13 +342,14 @@ public class MessageBannerRenderTest {
                             model.set(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Reset");
                             return view;
                         });
-        mRenderTestRule.render(result, "message_banner_basic_with_reset_primary_button_text");
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        View mainContent = getMainContent(result);
+        mRenderTestRule.render(mainContent, "message_banner_basic_with_reset_primary_button_text");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testLayoutAfterClearingDescription() throws Exception {
         Drawable drawable =
                 ApiCompatibilityUtils.getDrawable(
@@ -367,30 +364,24 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.DESCRIPTION, "Secondary Title")
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
         model.set(MessageBannerProperties.DESCRIPTION, null);
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_layout_after_clearing_description");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_layout_after_clearing_description");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testLargeIcon() throws Exception {
         Drawable drawable =
                 ApiCompatibilityUtils.getDrawable(
@@ -406,29 +397,23 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .with(MessageBannerProperties.LARGE_ICON, true)
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_large_icon");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_large_icon");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testLargeIconWithRadius() throws Exception {
         Bitmap.Config conf = Bitmap.Config.ARGB_8888;
         int w = sActivity.getResources().getDimensionPixelSize(R.dimen.message_icon_size_large);
@@ -448,29 +433,23 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.LARGE_ICON, true)
                         .with(MessageBannerProperties.ICON_ROUNDED_CORNER_RADIUS_PX, radius)
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_large_icon_with_radius");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_large_icon_with_radius");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testDescriptionIconWithDefaultSize() throws Exception {
         Drawable messageIcon =
                 ApiCompatibilityUtils.getDrawable(
@@ -488,29 +467,23 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.DESCRIPTION_ICON, descriptionIcon)
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_description_icon_with_default_size");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_description_icon_with_default_size");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testDescriptionIconWithResizing() throws Exception {
         Drawable messageIcon =
                 ApiCompatibilityUtils.getDrawable(
@@ -529,29 +502,23 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.RESIZE_DESCRIPTION_ICON, true)
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_description_icon_with_resizing");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_description_icon_with_resizing");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_NON_LOW_END_DEVICE})
     public void testDescriptionIconWithText() throws Exception {
         Drawable messageIcon =
                 ApiCompatibilityUtils.getDrawable(
@@ -571,30 +538,24 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.DESCRIPTION, "Secondary Title")
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_description_icon_with_text");
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_description_icon_with_text");
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "Messages"})
-    @Restriction({RESTRICTION_TYPE_LOW_END_DEVICE})
-    public void testBasic_lowEnd() throws Exception {
+    public void testCloseButton() throws Exception {
         Drawable drawable =
                 ApiCompatibilityUtils.getDrawable(
                         sActivity.getResources(), android.R.drawable.ic_delete);
@@ -608,22 +569,61 @@ public class MessageBannerRenderTest {
                         .with(MessageBannerProperties.DESCRIPTION, "Secondary Title")
                         .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
                         .build();
-        MessageBannerView view =
-                (MessageBannerView)
-                        LayoutInflater.from(sActivity)
-                                .inflate(R.layout.message_banner_view, null, false);
+        MessageBannerView view = inflateMessageViewOnUiThread();
+        PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
+        LayoutParams params =
+                new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    view.findViewById(R.id.message_close_button).setVisibility(VISIBLE);
+                    sActivity.setContentView(view, params);
+                });
+        mRenderTestRule.render(view, "message_banner_with_close_button");
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"RenderTest", "Messages"})
+    public void testNoTitle() throws Exception {
+        Drawable drawable =
+                ApiCompatibilityUtils.getDrawable(
+                        sActivity.getResources(), android.R.drawable.ic_delete);
+        PropertyModel model =
+                new PropertyModel.Builder(MessageBannerProperties.ALL_KEYS)
+                        .with(
+                                MessageBannerProperties.MESSAGE_IDENTIFIER,
+                                MessageIdentifier.TEST_MESSAGE)
+                        .with(MessageBannerProperties.ICON, drawable)
+                        .with(MessageBannerProperties.DESCRIPTION, "Description")
+                        .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
+                        .build();
+        MessageBannerView view = inflateMessageViewOnUiThread();
         PropertyModelChangeProcessor.create(model, view, MessageBannerViewBinder::bind);
         LayoutParams params =
                 new LayoutParams(
                         LayoutParams.MATCH_PARENT,
                         sActivity
                                 .getResources()
-                                .getDimensionPixelSize(R.dimen.message_banner_height));
+                                .getDimensionPixelSize(R.dimen.message_banner_main_content_height));
 
+        View mainContent = getMainContent(view);
+        ThreadUtils.runOnUiThreadBlocking(() -> sActivity.setContentView(mainContent, params));
+        mRenderTestRule.render(mainContent, "message_banner_no_title");
+    }
+
+    private View getMainContent(MessageBannerView message) {
+        View mainContent = message.getMainContentForTesting();
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    sActivity.setContentView(view, params);
-                });
-        mRenderTestRule.render(view, "message_banner_basic_low_end");
+                () -> ((ViewGroup) mainContent.getParent()).removeView(mainContent));
+        return mainContent;
+    }
+
+    private MessageBannerView inflateMessageViewOnUiThread() {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        (MessageBannerView)
+                                LayoutInflater.from(sActivity)
+                                        .inflate(R.layout.message_banner_view, null, false));
     }
 }

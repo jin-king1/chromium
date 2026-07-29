@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -24,6 +25,7 @@
 #include "media/base/audio_codecs.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/decoder_buffer.h"
+#include "media/base/media_serializers_base.h"
 #include "media/base/media_switches.h"
 #include "media/base/mime_util.h"
 #include "media/base/supported_types.h"
@@ -35,6 +37,7 @@
 #include "media/mojo/clients/mojo_audio_encoder.h"
 #include "media/mojo/clients/mojo_video_encoder_metrics_provider.h"
 #include "media/muxers/live_webm_muxer_delegate.h"
+#include "media/muxers/memory_webm_muxer_delegate.h"
 #include "media/muxers/mp4_muxer.h"
 #include "media/muxers/mp4_muxer_delegate.h"
 #include "media/muxers/muxer.h"
@@ -45,6 +48,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/modules/mediarecorder/media_recorder.h"
+#include "third_party/blink/renderer/modules/mediarecorder/video_track_recorder.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_video_track.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -67,9 +71,8 @@ using base::TimeTicks;
 
 namespace blink {
 
-BASE_FEATURE(kMediaRecorderEnableMp4Muxer,
-             "MediaRecorderEnableMp4Muxer",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kMediaRecorderSeekableWebm, base::FEATURE_ENABLED_BY_DEFAULT);
+
 namespace {
 
 constexpr double kDefaultVideoFrameRate = 30.0;
@@ -85,41 +88,6 @@ constexpr double kDefaultVideoFrameRate = 30.0;
 const float kNumPixelsPerSecondSmoothnessThresholdLow = 640 * 480 * 30.0;
 const float kNumPixelsPerSecondSmoothnessThresholdHigh = 1280 * 720 * 30.0;
 
-VideoTrackRecorder::CodecId CodecIdFromMediaVideoCodec(media::VideoCodec id) {
-  switch (id) {
-    case media::VideoCodec::kVP8:
-      return VideoTrackRecorder::CodecId::kVp8;
-    case media::VideoCodec::kVP9:
-      return VideoTrackRecorder::CodecId::kVp9;
-#if BUILDFLAG(USE_PROPRIETARY_CODECS)
-    case media::VideoCodec::kH264:
-      return VideoTrackRecorder::CodecId::kH264;
-#endif
-    case media::VideoCodec::kAV1:
-      return VideoTrackRecorder::CodecId::kAv1;
-#if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-    case media::VideoCodec::kHEVC:
-      return VideoTrackRecorder::CodecId::kHevc;
-#endif
-    default:
-      return VideoTrackRecorder::CodecId::kLast;
-  }
-}
-
-media::AudioCodec CodecIdToMediaAudioCodec(AudioTrackRecorder::CodecId id) {
-  switch (id) {
-    case AudioTrackRecorder::CodecId::kPcm:
-      return media::AudioCodec::kPCM;
-    case AudioTrackRecorder::CodecId::kOpus:
-      return media::AudioCodec::kOpus;
-    case AudioTrackRecorder::CodecId::kAac:
-      return media::AudioCodec::kAAC;
-    case AudioTrackRecorder::CodecId::kLast:
-      return media::AudioCodec::kUnknown;
-  }
-  NOTREACHED() << "Unsupported audio codec";
-}
-
 #if BUILDFLAG(USE_PROPRIETARY_CODECS) || \
     BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
 std::optional<VideoTrackRecorder::CodecProfile> VideoStringTagToCodecProfile(
@@ -127,20 +95,15 @@ std::optional<VideoTrackRecorder::CodecProfile> VideoStringTagToCodecProfile(
     const std::vector<StringView>& codecs_tags) {
   std::optional<VideoTrackRecorder::CodecProfile> codec_profile;
   for (auto& codecs_tag : codecs_tags) {
-    wtf_size_t codecs_start = codecs.Find(codecs_tag);
+    wtf_size_t codecs_start = codecs.find(codecs_tag);
     if (codecs_start != kNotFound) {
-      wtf_size_t codecs_end = codecs.Find(",");
+      wtf_size_t codecs_end = codecs.find(',');
       auto codec_id =
-          codecs
-              .Substring(codecs_start,
-                         codecs_end == kNotFound ? UINT_MAX : codecs_end)
-              .StripWhiteSpace()
-              .Ascii();
+          codecs.substr(codecs_start, codecs_end).StripWhiteSpace().Ascii();
       // Do not use lowercase `codecId` here, as `codecId` is case sensitive
       // when parsing.
       if (auto result = media::ParseCodec(codec_id)) {
-        codec_profile = {CodecIdFromMediaVideoCodec(result->codec),
-                         result->profile, result->level};
+        codec_profile = {result->codec, result->profile, result->level};
         break;
       }
     }
@@ -149,68 +112,53 @@ std::optional<VideoTrackRecorder::CodecProfile> VideoStringTagToCodecProfile(
 }
 #endif
 
-AudioTrackRecorder::CodecId AudioStringToCodecId(const String& codecs) {
-  String codecs_str = codecs.LowerASCII();
+media::AudioCodec AudioStringToAudioCodec(const String& codecs) {
+  String codecs_str = codecs.ToAsciiLower();
 
-  if (codecs_str.Find("opus") != kNotFound)
-    return AudioTrackRecorder::CodecId::kOpus;
-  if (codecs_str.Find("pcm") != kNotFound)
-    return AudioTrackRecorder::CodecId::kPcm;
+  if (codecs_str.contains("opus")) {
+    return media::AudioCodec::kOpus;
+  }
+  if (codecs_str.contains("pcm")) {
+    return media::AudioCodec::kPCM;
+  }
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
-  if (codecs_str.Find("mp4a.40.2") != kNotFound) {
-    return AudioTrackRecorder::CodecId::kAac;
+  if (codecs_str.contains("mp4a.40.2")) {
+    return media::AudioCodec::kAAC;
   }
 #endif
-  return AudioTrackRecorder::CodecId::kLast;
+  return media::AudioCodec::kUnknown;
 }
 
 bool CanSupportVideoType(const String& type) {
-  bool support = EqualIgnoringASCIICase(type, "video/webm") ||
-                 EqualIgnoringASCIICase(type, "video/x-matroska");
-  if (support) {
-    return true;
-  }
-
-  if (base::FeatureList::IsEnabled(kMediaRecorderEnableMp4Muxer)) {
-    return EqualStringView(type, "video/mp4");
-  }
-
-  return false;
+  return EqualIgnoringAsciiCase(type, "video/webm") ||
+         EqualIgnoringAsciiCase(type, "video/x-matroska") ||
+         EqualIgnoringAsciiCase(type, "video/matroska") ||
+         EqualStringView(type, "video/mp4");
 }
 
 bool CanSupportAudioType(const String& type) {
-  bool support = EqualIgnoringASCIICase(type, "audio/webm");
-  if (support) {
-    return true;
-  }
-
-  if (base::FeatureList::IsEnabled(kMediaRecorderEnableMp4Muxer)) {
-    return EqualStringView(type, "audio/mp4");
-  }
-
-  return false;
+  return EqualIgnoringAsciiCase(type, "audio/webm") ||
+         EqualIgnoringAsciiCase(type, "audio/x-matroska") ||
+         EqualIgnoringAsciiCase(type, "audio/matroska") ||
+         EqualStringView(type, "audio/mp4");
 }
 
 bool IsAllowedMp4Type(const String& type) {
-  return EqualIgnoringASCIICase(type, "video/mp4") ||
-         EqualIgnoringASCIICase(type, "audio/mp4");
+  return EqualIgnoringAsciiCase(type, "video/mp4") ||
+         EqualIgnoringAsciiCase(type, "audio/mp4");
 }
 
 bool IsMp4MuxerRequired(const String& type) {
   // The function should be called only after type and codecs are validated
   // by `CanSupportMimeType()` first in code path.
-  if (!base::FeatureList::IsEnabled(kMediaRecorderEnableMp4Muxer)) {
-    return false;
-  }
   return IsAllowedMp4Type(type);
 }
 
 bool ShouldAddParameterSetsToBitstream(const String& codecs) {
 #if BUILDFLAG(USE_PROPRIETARY_CODECS) || \
     BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-  String codecs_str = codecs.LowerASCII();
-  return codecs_str.Find("hev1") != kNotFound ||
-         codecs_str.Find("avc3") != kNotFound;
+  String codecs_str = codecs.ToAsciiLower();
+  return codecs_str.contains("hev1") || codecs_str.contains("avc3");
 #else
   return false;
 #endif  // BUILDFLAG(USE_PROPRIETARY_CODECS) ||
@@ -219,47 +167,24 @@ bool ShouldAddParameterSetsToBitstream(const String& codecs) {
 
 }  // anonymous namespace
 
-media::VideoCodec MediaVideoCodecFromCodecId(VideoTrackRecorder::CodecId id) {
-  switch (id) {
-    case VideoTrackRecorder::CodecId::kVp8:
-      return media::VideoCodec::kVP8;
-    case VideoTrackRecorder::CodecId::kVp9:
-      return media::VideoCodec::kVP9;
-#if BUILDFLAG(USE_PROPRIETARY_CODECS)
-    case VideoTrackRecorder::CodecId::kH264:
-      return media::VideoCodec::kH264;
-#endif
-    case VideoTrackRecorder::CodecId::kAv1:
-      return media::VideoCodec::kAV1;
-#if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-    case VideoTrackRecorder::CodecId::kHevc:
-      return media::VideoCodec::kHEVC;
-#endif
-    case VideoTrackRecorder::CodecId::kLast:
-      return media::VideoCodec::kUnknown;
-  }
-  NOTREACHED() << "Unsupported video codec";
-}
-
-// Extracts the first recognised CodecId of |codecs| or CodecId::LAST if none
-// of them is known. Sets codec profile and level if the information can be
-// parsed from codec suffix.
+// Parses |codecs| and returns the first recognized VideoCodec.
+// If profile/level can be parsed, they are included; otherwise, only the codec
+// type is returned.
 VideoTrackRecorder::CodecProfile VideoStringToCodecProfile(
     const String& codecs) {
-  String codecs_str = codecs.LowerASCII();
-  VideoTrackRecorder::CodecId codec_id = VideoTrackRecorder::CodecId::kLast;
+  String codecs_str = codecs.ToAsciiLower();
+  media::VideoCodec codec = media::VideoCodec::kUnknown;
 
-  if (codecs_str.Find("vp8") != kNotFound) {
-    codec_id = VideoTrackRecorder::CodecId::kVp8;
+  if (codecs_str.contains("vp8")) {
+    codec = media::VideoCodec::kVP8;
   }
-  if (codecs_str.Find("vp9") != kNotFound) {
-    codec_id = VideoTrackRecorder::CodecId::kVp9;
+  if (codecs_str.contains("vp9")) {
+    codec = media::VideoCodec::kVP9;
   }
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
-  if (codecs_str.Find("h264") != kNotFound ||
-      codecs_str.Find("avc1") != kNotFound ||
-      codecs_str.Find("avc3") != kNotFound) {
-    codec_id = VideoTrackRecorder::CodecId::kH264;
+  if (codecs_str.contains("h264") || codecs_str.contains("avc1") ||
+      codecs_str.contains("avc3")) {
+    codec = media::VideoCodec::kH264;
   }
   if (auto codec_profile =
           VideoStringTagToCodecProfile(codecs, {"avc1", "avc3"})) {
@@ -267,9 +192,8 @@ VideoTrackRecorder::CodecProfile VideoStringToCodecProfile(
   }
 #endif
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-  if (codecs_str.Find("hvc1") != kNotFound ||
-      codecs_str.Find("hev1") != kNotFound) {
-    codec_id = VideoTrackRecorder::CodecId::kHevc;
+  if (codecs_str.contains("hvc1") || codecs_str.contains("hev1")) {
+    codec = media::VideoCodec::kHEVC;
   }
   if (auto codec_profile =
           VideoStringTagToCodecProfile(codecs, {"hvc1", "hev1"})) {
@@ -278,21 +202,22 @@ VideoTrackRecorder::CodecProfile VideoStringToCodecProfile(
 #endif
   // TODO(crbug.com/40923648): Remove the wrong AV1 codecs string, "av1", once
   // we confirm nobody uses this in product.
-  if (codecs_str.Find("av01") != kNotFound ||
-      codecs_str.Find("av1") != kNotFound) {
-    codec_id = VideoTrackRecorder::CodecId::kAv1;
+  if (codecs_str.contains("av01") || codecs_str.contains("av1")) {
+    codec = media::VideoCodec::kAV1;
   }
-  return VideoTrackRecorder::CodecProfile(codec_id);
+  return VideoTrackRecorder::CodecProfile(codec);
 }
 
 MediaRecorderHandler::MediaRecorderHandler(
     scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner,
     KeyFrameRequestProcessor::Configuration key_frame_config)
     : key_frame_config_(key_frame_config),
-      main_thread_task_runner_(std::move(main_thread_task_runner)) {}
+      main_thread_task_runner_(std::move(main_thread_task_runner)),
+      media_stream_observer_(std::make_unique<MediaStreamObserver>(this)) {}
 
 bool MediaRecorderHandler::CanSupportMimeType(const String& type,
-                                              const String& web_codecs) {
+                                              const String& web_codecs,
+                                              CanSupportMimeTypeCaller caller) {
   DCHECK(main_thread_task_runner_->RunsTasksInCurrentSequence());
   // An empty |type| means MediaRecorderHandler can choose its preferred codecs.
   if (type.empty())
@@ -302,6 +227,49 @@ bool MediaRecorderHandler::CanSupportMimeType(const String& type,
   const bool audio = !video && CanSupportAudioType(type);
   if (!video && !audio)
     return false;
+
+  std::vector<std::string> codecs_list;
+  media::SplitCodecs(web_codecs.Utf8(), &codecs_list);
+
+  for (const auto& codec : codecs_list) {
+    const auto profile = VideoStringToCodecProfile(String(codec));
+    const bool can_support = CanSupportMimeTypeForCodec(type, codec);
+
+    Vector<String> uma_key_vector;
+    uma_key_vector.push_back("Media.MediaRecorder.Codec");
+    uma_key_vector.push_back(StringFromCanSupportMimeTypeCaller(caller));
+    uma_key_vector.push_back(can_support ? "Supported" : "Unsupported");
+    StringBuilder builder;
+    builder.AppendRange(uma_key_vector, ".");
+    String uma_handle = builder.ReleaseString();
+    base::UmaHistogramEnumeration(
+        uma_handle.Ascii(),
+        VideoTrackRecorder::CodecHistogramFromCodec(profile.codec));
+
+    if (!can_support) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const char* MediaRecorderHandler::StringFromCanSupportMimeTypeCaller(
+    CanSupportMimeTypeCaller caller) {
+  switch (caller) {
+    case CanSupportMimeTypeCaller::kMediaRecorderCtor:
+      return "MediaRecorderCtor";
+    case CanSupportMimeTypeCaller::kIsTypeSupported:
+      return "IsTypeSupported";
+    case CanSupportMimeTypeCaller::kEncodingInfo:
+      return "EncodingInfo";
+    default:
+      return "Test";
+  }
+}
+
+bool MediaRecorderHandler::CanSupportMimeTypeForCodec(const String& type,
+                                                      std::string_view codec) {
+  const bool video = CanSupportVideoType(type);
 
   // Both |video| and |audio| support empty |codecs|; |type| == "video" supports
   // vp8, vp9, h264, avc1, avc3, av01, av1, hvc1, hev1, opus, or pcm; |type| =
@@ -322,14 +290,14 @@ bool MediaRecorderHandler::CanSupportMimeType(const String& type,
       "opus", "pcm"};
   static const char* const kAudioCodecs[] = {"opus", "pcm"};
 
-  auto* const* relevant_codecs_begin =
-      video ? std::begin(kVideoCodecs) : std::begin(kAudioCodecs);
-  auto* const* relevant_codecs_end =
-      video ? std::end(kVideoCodecs) : std::end(kAudioCodecs);
+  base::span<const char* const> relevant_codecs;
+  if (video) {
+    relevant_codecs = kVideoCodecs;
+  } else {
+    relevant_codecs = kAudioCodecs;
+  }
 
-  bool mp4_mime_type = false;
-
-  mp4_mime_type = IsAllowedMp4Type(type);
+  const bool mp4_mime_type = IsAllowedMp4Type(type);
   if (mp4_mime_type) {
     static const char* const kVideoCodecsForMP4[] = {
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
@@ -346,152 +314,141 @@ bool MediaRecorderHandler::CanSupportMimeType(const String& type,
 #endif
         "opus"};
 
-    relevant_codecs_begin =
-        video ? std::begin(kVideoCodecsForMP4) : std::begin(kAudioCodecsForMp4);
-    relevant_codecs_end =
-        video ? std::end(kVideoCodecsForMP4) : std::end(kAudioCodecsForMp4);
+    if (video) {
+      relevant_codecs = kVideoCodecsForMP4;
+    } else {
+      relevant_codecs = kAudioCodecsForMp4;
+    }
   }
 
-  std::vector<std::string> codecs_list;
-  media::SplitCodecs(web_codecs.Utf8(), &codecs_list);
+  // For `video/x-matroska`, `video/webm`, and `audio/webm`, trim the content
+  // after first '.' to do the case insensitive match based on historical
+  // logic. For `video/mp4`, and `audio/mp4`, preserve the whole string to do
+  // the case sensitive match.
+  String codec_string = String::FromUtf8(codec);
+  if (!mp4_mime_type) {
+    auto str_index = codec.find_first_of('.');
+    if (str_index != std::string::npos) {
+      codec_string = String::FromUtf8(codec.substr(0, str_index));
+    }
+  }
 
-  for (const auto& codec : codecs_list) {
-    // For `video/x-matroska`, `video/webm`, and `audio/webm`, trim the content
-    // after first '.' to do the case insensitive match based on historical
-    // logic. For `video/mp4`, and `audio/mp4`, preserve the whole string to do
-    // the case sensitive match.
-    String codec_string = String::FromUTF8(codec);
-    if (!mp4_mime_type) {
-      auto str_index = codec.find_first_of('.');
-      if (str_index != std::string::npos) {
-        codec_string = String::FromUTF8(codec.substr(0, str_index));
+  bool match =
+      std::any_of(relevant_codecs.begin(), relevant_codecs.end(),
+                  [&codec_string, &mp4_mime_type](const char* name) {
+                    if (mp4_mime_type) {
+                      return EqualStringView(codec_string, name);
+                    } else {
+                      return EqualIgnoringAsciiCase(codec_string, name);
+                    }
+                  });
+
+  if (video) {
+    std::string mime_type = type.Ascii();
+    // It supports full qualified string for `avc1`, `avc3`, `hvc1`, `hev1`,
+    // and `av01` codecs, e.g.
+    //  `avc1.<profile>.<level>`,
+    //  `avc3.<profile>.<level>`,
+    //  `hvc1.<profile>.<profile_compatibility>.<tier and level>.*`,
+    //  `hev1.<profile>.<profile_compatibility>.<tier and level>.*`,
+    //  `av01.<profile>.<level>.<color depth>.*`.
+    auto parsed_result =
+        media::ParseVideoCodecString(mime_type, codec,
+                                     /*allow_ambiguous_matches=*/false);
+    if (!match && mp4_mime_type) {
+      match =
+          parsed_result && (parsed_result->codec == media::VideoCodec::kH264 ||
+                            parsed_result->codec == media::VideoCodec::kAV1);
+    }
+
+    if (codec_string.StartsWithIgnoringAsciiCase("h264") ||
+        codec_string.StartsWithIgnoringAsciiCase("avc1") ||
+        codec_string.StartsWithIgnoringAsciiCase("avc3")) {
+      // In the case of the `video/mp4` mimetype, when the profile can be
+      // parsed, make use of the parsed profile.
+      const media::VideoCodecProfile profile =
+          (mp4_mime_type && parsed_result)
+              ? parsed_result->profile
+              : media::VideoCodecProfile::H264PROFILE_BASELINE;
+
+      // If the profile is not any of the H.264 baseline, main, extended, and
+      // high profiles, reject it.
+      if (profile != media::VideoCodecProfile::H264PROFILE_BASELINE &&
+          profile != media::VideoCodecProfile::H264PROFILE_MAIN &&
+          profile != media::VideoCodecProfile::H264PROFILE_EXTENDED &&
+          profile != media::VideoCodecProfile::H264PROFILE_HIGH) {
+        match = false;
+      }
+
+      // If the profile is not supported by either the HW or the SW encoder,
+      // reject it.
+      if (!media::IsEncoderSupportedVideoType(
+              {media::VideoCodec::kH264, profile})) {
+        match = false;
       }
     }
 
-    bool match =
-        std::any_of(relevant_codecs_begin, relevant_codecs_end,
-                    [&codec_string, &mp4_mime_type](const char* name) {
-                      if (mp4_mime_type) {
-                        return EqualStringView(codec_string, name);
-                      } else {
-                        return EqualIgnoringASCIICase(codec_string, name);
-                      }
-                    });
+    if (codec_string.StartsWithIgnoringAsciiCase("av1") ||
+        codec_string.StartsWithIgnoringAsciiCase("av01")) {
+      // In the case of the `video/mp4` mimetype, when the profile can be
+      // parsed, make use of the parsed profile.
+      const media::VideoCodecProfile profile =
+          (mp4_mime_type && parsed_result)
+              ? parsed_result->profile
+              : media::VideoCodecProfile::AV1PROFILE_PROFILE_MAIN;
 
-    if (video) {
-      // Currently `video/x-matroska` is not supported by mime util, replace to
-      // `video/mp4` instead.
-      //
-      // TODO(crbug.com/40276507): rework MimeUtil such that clients can inject
-      // their own supported mime+codec types.
-      std::string mime_type = EqualIgnoringASCIICase(type, "video/x-matroska")
-                                  ? "video/mp4"
-                                  : type.Ascii();
-      // It supports full qualified string for `avc1`, `avc3`, `hvc1`, `hev1`,
-      // and `av01` codecs, e.g.
-      //  `avc1.<profile>.<level>`,
-      //  `avc3.<profile>.<level>`,
-      //  `hvc1.<profile>.<profile_compatibility>.<tier and level>.*`,
-      //  `hev1.<profile>.<profile_compatibility>.<tier and level>.*`,
-      //  `av01.<profile>.<level>.<color depth>.*`.
-      auto parsed_result =
-          media::ParseVideoCodecString(mime_type, codec,
-                                       /*allow_ambiguous_matches=*/false);
-      if (!match && mp4_mime_type) {
-        match = parsed_result &&
-                (parsed_result->codec == media::VideoCodec::kH264 ||
-                 parsed_result->codec == media::VideoCodec::kAV1);
+      // If the profile does not match the AV1 main profile, reject it.
+      if (profile != media::VideoCodecProfile::AV1PROFILE_PROFILE_MAIN) {
+        match = false;
       }
 
-      if (codec_string.StartsWith("h264", kTextCaseASCIIInsensitive) ||
-          codec_string.StartsWith("avc1", kTextCaseASCIIInsensitive) ||
-          codec_string.StartsWith("avc3", kTextCaseASCIIInsensitive)) {
-        // In the case of the `video/mp4` mimetype, when the profile can be
-        // parsed, make use of the parsed profile.
-        const media::VideoCodecProfile profile =
-            (mp4_mime_type && parsed_result)
-                ? parsed_result->profile
-                : media::VideoCodecProfile::H264PROFILE_BASELINE;
-
-        // If the profile is not any of the H.264 baseline, main, extended, and
-        // high profiles, reject it.
-        if (profile != media::VideoCodecProfile::H264PROFILE_BASELINE &&
-            profile != media::VideoCodecProfile::H264PROFILE_MAIN &&
-            profile != media::VideoCodecProfile::H264PROFILE_EXTENDED &&
-            profile != media::VideoCodecProfile::H264PROFILE_HIGH) {
-          match = false;
-        }
-
-        // If the profile is not supported by either the HW or the SW encoder,
-        // reject it.
-        if (!media::IsEncoderSupportedVideoType(
-                {media::VideoCodec::kH264, profile})) {
-          match = false;
-        }
+      if (match) {
+        base::UmaHistogramBoolean(
+            "Media.MediaRecorder.HasCorrectAV1CodecString",
+            codec_string.StartsWithIgnoringAsciiCase("av01"));
       }
 
-      if (codec_string.StartsWith("av1", kTextCaseASCIIInsensitive) ||
-          codec_string.StartsWith("av01", kTextCaseASCIIInsensitive)) {
-        // In the case of the `video/mp4` mimetype, when the profile can be
-        // parsed, make use of the parsed profile.
-        const media::VideoCodecProfile profile =
-            (mp4_mime_type && parsed_result)
-                ? parsed_result->profile
-                : media::VideoCodecProfile::AV1PROFILE_PROFILE_MAIN;
-
-        // If the profile does not match the AV1 main profile, reject it.
-        if (profile != media::VideoCodecProfile::AV1PROFILE_PROFILE_MAIN) {
-          match = false;
-        }
-
-        if (match) {
-          base::UmaHistogramBoolean(
-              "Media.MediaRecorder.HasCorrectAV1CodecString",
-              codec_string.StartsWith("av01", kTextCaseASCIIInsensitive));
-        }
-
-        // If the profile is not supported by either the HW or the SW encoder,
-        // reject it.
-        if (!media::IsEncoderSupportedVideoType(
-                {media::VideoCodec::kAV1, profile})) {
-          match = false;
-        }
+      // If the profile is not supported by either the HW or the SW encoder,
+      // reject it.
+      if (!media::IsEncoderSupportedVideoType(
+              {media::VideoCodec::kAV1, profile})) {
+        match = false;
       }
+    }
 
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-      // Support `hev1` tag as it allow parameter sets write into the bitstream,
-      // which is the only option if the MediaStream has dynamically changing
-      // resolution. Also support `hvc1` tag for better compatibility given the
-      // fact that QuickTime and Safari only support playing `hvc1` tag mp4
-      // videos, and Apple only recommend using `hvc1` for HLS.
-      // https://developer.apple.com/documentation/http-live-streaming/hls-authoring-specification-for-apple-devices#2969487
-      if (codec_string.StartsWith("hvc1", kTextCaseASCIIInsensitive) ||
-          codec_string.StartsWith("hev1", kTextCaseASCIIInsensitive)) {
-        match =
-            // If the profile can be parsed, ensure it must be HEVC main
-            // profile.
-            (parsed_result && parsed_result->profile ==
-                                  media::VideoCodecProfile::HEVCPROFILE_MAIN) &&
-            // Only if the feature is enabled.
-            base::FeatureList::IsEnabled(media::kMediaRecorderHEVCSupport) &&
-            // Only `mkv` and `mp4` are supported, `webm` is not supported.
-            !EqualIgnoringASCIICase(type, "video/webm") &&
-            // Only if there are platform HEVC main profile support.
-            media::IsEncoderSupportedVideoType(
-                {media::VideoCodec::kHEVC,
-                 media::VideoCodecProfile::HEVCPROFILE_MAIN});
-      }
+    // Support `hev1` tag as it allow parameter sets write into the bitstream,
+    // which is the only option if the MediaStream has dynamically changing
+    // resolution. Also support `hvc1` tag for better compatibility given the
+    // fact that QuickTime and Safari only support playing `hvc1` tag mp4
+    // videos, and Apple only recommend using `hvc1` for HLS.
+    // https://developer.apple.com/documentation/http-live-streaming/hls-authoring-specification-for-apple-devices#2969487
+    if (codec_string.StartsWithIgnoringAsciiCase("hvc1") ||
+        codec_string.StartsWithIgnoringAsciiCase("hev1")) {
+      match =
+          // If the profile can be parsed, ensure it must be HEVC main
+          // profile.
+          (parsed_result && parsed_result->profile ==
+                                media::VideoCodecProfile::HEVCPROFILE_MAIN) &&
+          // Only if the feature is enabled.
+          base::FeatureList::IsEnabled(media::kMediaRecorderHEVCSupport) &&
+          // Only `mkv` and `mp4` are supported, `webm` is not supported.
+          !EqualIgnoringAsciiCase(type, "video/webm") &&
+          // Only if there are platform HEVC main profile support.
+          media::IsEncoderSupportedVideoType(
+              {media::VideoCodec::kHEVC,
+               media::VideoCodecProfile::HEVCPROFILE_MAIN});
+    }
 #endif
-    }
+  }
 
-    if (!match) {
-      return false;
-    }
+  if (!match) {
+    return false;
+  }
 
-    if (codec_string == "mp4a.40.2" &&
-        !media::MojoAudioEncoder::IsSupported(media::AudioCodec::kAAC)) {
-      return false;
-    }
+  if (codec_string == "mp4a.40.2" &&
+      !media::MojoAudioEncoder::IsSupported(media::AudioCodec::kAAC)) {
+    return false;
   }
   return true;
 }
@@ -509,7 +466,8 @@ bool MediaRecorderHandler::Initialize(
 
   type_ = type;
 
-  if (!CanSupportMimeType(type_, codecs)) {
+  if (!CanSupportMimeType(type_, codecs,
+                          CanSupportMimeTypeCaller::kMediaRecorderCtor)) {
     DLOG(ERROR) << "Unsupported " << type.Utf8() << ";codecs=" << codecs.Utf8();
     return false;
   }
@@ -518,31 +476,29 @@ bool MediaRecorderHandler::Initialize(
 
   // Once established that we support the codec(s), hunt then individually.
   video_codec_profile_ = VideoStringToCodecProfile(codecs);
-  if (video_codec_profile_.codec_id == VideoTrackRecorder::CodecId::kLast) {
+  if (video_codec_profile_.codec == media::VideoCodec::kUnknown) {
     MediaTrackContainerType container_type =
         GetMediaContainerTypeFromString(type_);
-    video_codec_profile_.codec_id =
-        VideoTrackRecorderImpl::GetPreferredCodecId(container_type);
-    DVLOG(1) << "Falling back to preferred video codec id "
-             << static_cast<int>(video_codec_profile_.codec_id);
+    video_codec_profile_.codec =
+        VideoTrackRecorderImpl::GetPreferredCodec(container_type);
+    DVLOG(1) << "Falling back to preferred video codec "
+             << static_cast<int>(video_codec_profile_.codec);
   }
 
   add_parameter_sets_in_bitstream_ = ShouldAddParameterSetsToBitstream(codecs);
 
   // Do the same for the audio codec(s).
-  const AudioTrackRecorder::CodecId audio_codec_id =
-      AudioStringToCodecId(codecs);
-
-  if (audio_codec_id == AudioTrackRecorder::CodecId::kLast) {
+  media::AudioCodec audio_codec = AudioStringToAudioCodec(codecs);
+  if (audio_codec == media::AudioCodec::kUnknown) {
     MediaTrackContainerType container_type =
         GetMediaContainerTypeFromString(type_);
-    audio_codec_id_ = AudioTrackRecorder::GetPreferredCodecId(container_type);
+    audio_codec_id_ = AudioTrackRecorder::GetPreferredCodec(container_type);
   } else {
-    audio_codec_id_ = audio_codec_id;
+    audio_codec_id_ = audio_codec;
   }
 
-  DVLOG_IF(1, audio_codec_id == AudioTrackRecorder::CodecId::kLast)
-      << "Falling back to preferred audio codec id "
+  DVLOG_IF(1, audio_codec == media::AudioCodec::kUnknown)
+      << "Falling back to preferred audio codec "
       << static_cast<int>(audio_codec_id_);
 
   media_stream_ = media_stream;
@@ -568,10 +524,12 @@ bool MediaRecorderHandler::Start(int timeslice,
   DCHECK(!muxer_adapter_);
 
   DCHECK(!is_media_stream_observer_);
-  media_stream_->AddObserver(this);
+  media_stream_->AddObserver(media_stream_observer_->AsWeakPtr());
   is_media_stream_observer_ = true;
 
-  timeslice_ = base::Milliseconds(timeslice);
+  timeslice_ = timeslice == std::numeric_limits<int>::max()
+                   ? base::TimeDelta::Max()
+                   : base::Milliseconds(timeslice);
   slice_origin_timestamp_ = base::TimeTicks::Now();
 
   audio_bits_per_second_ = audio_bits_per_second;
@@ -611,29 +569,23 @@ bool MediaRecorderHandler::Start(int timeslice,
     if (use_audio_tracks && !(video_type_supported || audio_type_supported)) {
       return false;
     }
-
-    if (use_mp4_muxer &&
-        !base::FeatureList::IsEnabled(kMediaRecorderEnableMp4Muxer)) {
-      return false;
-    }
   }
 
   std::unique_ptr<media::Muxer> muxer;
-  media::AudioCodec audio_codec = CodecIdToMediaAudioCodec(audio_codec_id_);
+  media::AudioCodec audio_codec = audio_codec_id_;
   std::optional<base::TimeDelta> optional_timeslice;
   if (timeslice > 0) {
     optional_timeslice = timeslice_;
   }
 
   auto write_callback =
-      WTF::BindRepeating(&MediaRecorderHandler::WriteData,
-                         WrapPersistent(weak_factory_.GetWeakCell()));
+      blink::BindRepeating(&MediaRecorderHandler::WriteData,
+                           WrapPersistent(weak_factory_.GetWeakCell()));
   if (use_mp4_muxer) {
     muxer = std::make_unique<media::Mp4Muxer>(
         audio_codec, use_video_tracks, use_audio_tracks,
         std::make_unique<media::Mp4MuxerDelegate>(
-            audio_codec,
-            MediaVideoCodecFromCodecId(video_codec_profile_.codec_id),
+            audio_codec, video_codec_profile_.codec,
             video_codec_profile_.profile, video_codec_profile_.level,
             add_parameter_sets_in_bitstream_, write_callback),
         optional_timeslice);
@@ -647,6 +599,18 @@ bool MediaRecorderHandler::Start(int timeslice,
       recorder_->UpdateAudioBitrate(audio_bits_per_second_);
     }
 #endif
+  } else if (timeslice_.is_max() &&
+             base::FeatureList::IsEnabled(kMediaRecorderSeekableWebm)) {
+    // Write a seekable WebM instead of a live one.
+    auto delegate = std::make_unique<media::MemoryWebmMuxerDelegate>(
+        write_callback, BindOnce(&MediaRecorderHandler::OnStarted,
+                                 WrapPersistent(weak_factory_.GetWeakCell())));
+    // Hold on to a raw_ptr for the delegate so we can fall back to live mode
+    // if a requestData() call comes in.
+    memory_muxer_delegate_ = delegate.get();
+    muxer = std::make_unique<media::WebmMuxer>(
+        audio_codec, use_video_tracks, use_audio_tracks, std::move(delegate),
+        optional_timeslice);
   } else {
     muxer = std::make_unique<media::WebmMuxer>(
         audio_codec, use_video_tracks, use_audio_tracks,
@@ -714,11 +678,12 @@ void MediaRecorderHandler::Stop() {
 
   // Unregister from media stream notifications.
   if (media_stream_ && is_media_stream_observer_) {
-    media_stream_->RemoveObserver(this);
+    media_stream_->RemoveObserver(media_stream_observer_->AsWeakPtr());
   }
   is_media_stream_observer_ = false;
 
   // Ensure any stored data inside the muxer is flushed out before invalidation.
+  memory_muxer_delegate_ = nullptr;
   muxer_adapter_ = nullptr;
   weak_audio_factory_.Invalidate();
   weak_video_factory_.Invalidate();
@@ -756,6 +721,13 @@ void MediaRecorderHandler::Resume() {
   }
 }
 
+void MediaRecorderHandler::MaybeFlush() {
+  DCHECK(main_thread_task_runner_->RunsTasksInCurrentSequence());
+  if (memory_muxer_delegate_) {
+    memory_muxer_delegate_->FlushAndDisableSeeking();
+  }
+}
+
 void MediaRecorderHandler::EncodingInfo(
     const WebMediaConfiguration& configuration,
     OnMediaCapabilitiesEncodingInfoCallback callback) {
@@ -778,7 +750,8 @@ void MediaRecorderHandler::EncodingInfo(
     codec = configuration.audio_configuration->codec;
   }
 
-  info->supported = CanSupportMimeType(mime_type, codec);
+  info->supported = CanSupportMimeType(mime_type, codec,
+                                       CanSupportMimeTypeCaller::kEncodingInfo);
 
   if (configuration.video_configuration && info->supported) {
     VideoTrackRecorder::CodecProfile codec_profile =
@@ -830,10 +803,10 @@ String MediaRecorderHandler::ActualMimeType() {
     }
     mime_type.Append(";codecs=");
   } else {
-    switch (video_codec_profile_.codec_id) {
-      case VideoTrackRecorder::CodecId::kVp8:
-      case VideoTrackRecorder::CodecId::kVp9:
-      case VideoTrackRecorder::CodecId::kAv1:
+    switch (video_codec_profile_.codec) {
+      case media::VideoCodec::kVP8:
+      case media::VideoCodec::kVP9:
+      case media::VideoCodec::kAV1:
         if (passthrough_enabled_) {
           mime_type.Append("video/webm");
         } else {
@@ -842,12 +815,14 @@ String MediaRecorderHandler::ActualMimeType() {
         mime_type.Append(";codecs=");
         break;
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
-      case VideoTrackRecorder::CodecId::kH264:
+      case media::VideoCodec::kH264:
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-      case VideoTrackRecorder::CodecId::kHevc:
+      case media::VideoCodec::kHEVC:
 #endif
         if (!passthrough_enabled_ &&
-            EqualIgnoringASCIICase(type_, "video/mp4")) {
+            (EqualIgnoringAsciiCase(type_, "video/mp4") ||
+             EqualIgnoringAsciiCase(type_, "video/matroska") ||
+             EqualIgnoringAsciiCase(type_, "video/x-matroska"))) {
           mime_type.Append(type_.Span8());
         } else {
           mime_type.Append("video/x-matroska");
@@ -855,21 +830,21 @@ String MediaRecorderHandler::ActualMimeType() {
         mime_type.Append(";codecs=");
         break;
 #endif
-      case VideoTrackRecorder::CodecId::kLast:
+      default:
         // Do nothing.
         break;
     }
   }
   if (has_video_tracks) {
-    switch (video_codec_profile_.codec_id) {
-      case VideoTrackRecorder::CodecId::kVp8:
+    switch (video_codec_profile_.codec) {
+      case media::VideoCodec::kVP8:
         mime_type.Append("vp8");
         break;
-      case VideoTrackRecorder::CodecId::kVp9:
+      case media::VideoCodec::kVP9:
         mime_type.Append("vp9");
         break;
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
-      case VideoTrackRecorder::CodecId::kH264:
+      case media::VideoCodec::kH264:
         mime_type.Append(add_parameter_sets_in_bitstream_ ? "avc3" : "avc1");
         if (video_codec_profile_.profile && video_codec_profile_.level) {
           mime_type.Append(
@@ -879,38 +854,37 @@ String MediaRecorderHandler::ActualMimeType() {
         }
         break;
 #endif
-      case VideoTrackRecorder::CodecId::kAv1:
+      case media::VideoCodec::kAV1:
         mime_type.Append("av01");
         break;
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-      case VideoTrackRecorder::CodecId::kHevc:
+      case media::VideoCodec::kHEVC:
         mime_type.Append(add_parameter_sets_in_bitstream_ ? "hev1" : "hvc1");
         break;
 #endif
-      case VideoTrackRecorder::CodecId::kLast:
-        DCHECK_NE(audio_codec_id_, AudioTrackRecorder::CodecId::kLast);
+      default:
+        break;
     }
   }
   if (has_video_tracks && has_audio_tracks) {
-    if (video_codec_profile_.codec_id != VideoTrackRecorder::CodecId::kLast &&
-        audio_codec_id_ != AudioTrackRecorder::CodecId::kLast) {
+    if (video_codec_profile_.codec != media::VideoCodec::kUnknown &&
+        audio_codec_id_ != media::AudioCodec::kUnknown) {
       mime_type.Append(",");
     }
   }
   if (has_audio_tracks) {
     switch (audio_codec_id_) {
-      case AudioTrackRecorder::CodecId::kOpus:
+      case media::AudioCodec::kOpus:
         mime_type.Append("opus");
         break;
-      case AudioTrackRecorder::CodecId::kPcm:
+      case media::AudioCodec::kPCM:
         mime_type.Append("pcm");
         break;
-      case AudioTrackRecorder::CodecId::kAac:
+      case media::AudioCodec::kAAC:
         mime_type.Append("mp4a.40.2");
         break;
-      case AudioTrackRecorder::CodecId::kLast:
-        DCHECK_NE(video_codec_profile_.codec_id,
-                  VideoTrackRecorder::CodecId::kLast);
+      default:
+        break;
     }
   }
   return mime_type.ToString();
@@ -932,8 +906,8 @@ void MediaRecorderHandler::OnStreamChanged(const String& message) {
     // https://www.w3.org/TR/mediastream-recording/#dom-mediarecorder-start
     // step 14.4.
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, WTF::BindOnce(&MediaRecorder::OnStreamChanged,
-                                 WrapWeakPersistent(recorder_.Get()), message));
+        FROM_HERE, BindOnce(&MediaRecorder::OnStreamChanged,
+                            WrapWeakPersistent(recorder_.Get()), message));
   }
 }
 
@@ -954,8 +928,7 @@ void MediaRecorderHandler::OnEncodedVideo(
     BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
   // TODO(crbug.com/40266540): Once Encoder supports VideoEncoder, then the
   // below code could go away.
-  media::VideoCodec video_codec =
-      MediaVideoCodecFromCodecId(video_codec_profile_.codec_id);
+  media::VideoCodec video_codec = video_codec_profile_.codec;
   // Convert annex stream to avc/hevc bit stream for h264/h265.
   if ((video_codec == media::VideoCodec::kH264 ||
        video_codec == media::VideoCodec::kHEVC) &&
@@ -982,17 +955,17 @@ void MediaRecorderHandler::OnEncodedVideo(
     // `hev1` instead.
     if (!add_parameter_sets_in_bitstream_ &&
         !has_codec_description_changed_error_printed_ &&
-        EqualIgnoringASCIICase(type_, "video/mp4") &&
+        EqualIgnoringAsciiCase(type_, "video/mp4") &&
         last_seen_codec_description_.size() &&
         last_seen_codec_description_ != codec_description.value() &&
         recorder_) {
-      const String& message = String::Format(
+      const String& message = UNSAFE_TODO(String::Format(
           "When using \"%s\" for mp4 encoding, the codec description is not "
           "supposed to change during the entire recording. Normally, a change "
           "in the encoding resolution may lead to this situation. "
           "Consider switching to \"%s\" instead to resolve this problem",
           video_codec == media::VideoCodec::kH264 ? "avc1" : "hvc1",
-          video_codec == media::VideoCodec::kH264 ? "avc3" : "hev1");
+          video_codec == media::VideoCodec::kH264 ? "avc3" : "hev1"));
       auto* context = recorder_->GetExecutionContext();
       if (context && !context->IsContextDestroyed()) {
         context->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
@@ -1006,8 +979,7 @@ void MediaRecorderHandler::OnEncodedVideo(
 #endif
 
   auto params_with_codec = params;
-  params_with_codec.codec =
-      MediaVideoCodecFromCodecId(video_codec_profile_.codec_id);
+  params_with_codec.codec = video_codec_profile_.codec;
   if (!params_with_codec.frame_rate) {
     params_with_codec.frame_rate = kDefaultVideoFrameRate;
   }
@@ -1023,7 +995,7 @@ void MediaRecorderHandler::OnPassthroughVideo(
   DCHECK(main_thread_task_runner_->RunsTasksInCurrentSequence());
 
   // Update |video_codec_profile_| so that ActualMimeType() works.
-  video_codec_profile_.codec_id = CodecIdFromMediaVideoCodec(params.codec);
+  video_codec_profile_.codec = params.codec;
   HandleEncodedVideo(params, std::move(encoded_data), std::nullopt, timestamp);
 }
 
@@ -1077,7 +1049,8 @@ void MediaRecorderHandler::OnAudioEncodingError(
     media::EncoderStatus error_status) {
   DCHECK(main_thread_task_runner_->RunsTasksInCurrentSequence());
   recorder_->OnError(DOMExceptionCode::kEncodingError,
-                     String(media::EncoderStatusCodeToString(error_status)));
+                     String(media::EncoderStatusTraits::ReadableCodeName(
+                         error_status.code())));
 }
 
 std::unique_ptr<media::VideoEncoderMetricsProvider>
@@ -1130,12 +1103,29 @@ void MediaRecorderHandler::UpdateTrackLiveAndEnabled(
 }
 
 void MediaRecorderHandler::OnSourceReadyStateChanged() {
-  MediaStream* stream = ToMediaStream(media_stream_);
-  for (const auto& track : stream->getTracks()) {
-    if (track->readyState() != V8MediaStreamTrackState::Enum::kEnded) {
-      return;
+  for (const auto& track : video_tracks_) {
+    if (track->GetReadyState() == MediaStreamSource::kReadyStateEnded) {
+      muxer_adapter_->SetLiveAndEnabled(false, /*is_video=*/true);
+      muxer_adapter_->OnVideoEnded();
+      DVLOG(2) << __func__ << " ended video";
     }
   }
+
+  for (const auto& track : audio_tracks_) {
+    if (track->GetReadyState() == MediaStreamSource::kReadyStateEnded) {
+      muxer_adapter_->SetLiveAndEnabled(false, /*is_video=*/false);
+      DVLOG(2) << __func__ << " ended audio";
+    }
+  }
+
+  if (MediaStream* stream = ToMediaStream(media_stream_)) {
+    for (const auto& track : stream->getTracks()) {
+      if (track->readyState() != V8MediaStreamTrackState::Enum::kEnded) {
+        return;
+      }
+    }
+  }
+
   // All tracks are ended, so stop the recorder in accordance with
   // https://www.w3.org/TR/mediastream-recording/#mediarecorder-methods.
   recorder_->OnAllTracksEnded();
@@ -1144,32 +1134,66 @@ void MediaRecorderHandler::OnSourceReadyStateChanged() {
 void MediaRecorderHandler::OnVideoFrameForTesting(
     scoped_refptr<media::VideoFrame> frame,
     const TimeTicks& timestamp) {
-  for (const auto& recorder : video_recorders_) {
+  if (video_recorders_.empty()) {
+    return;
+  }
+  Vector<std::unique_ptr<VideoTrackRecorder>> recorders;
+  recorders.swap(video_recorders_);
+  for (const auto& recorder : recorders) {
     recorder->OnVideoFrameForTesting(frame, timestamp,
                                      /*allow_vea_encoder=*/true);
+  }
+  if (recording_ && video_recorders_.empty()) {
+    video_recorders_.swap(recorders);
   }
 }
 
 void MediaRecorderHandler::OnEncodedVideoFrameForTesting(
     scoped_refptr<EncodedVideoFrame> frame,
     const base::TimeTicks& timestamp) {
-  for (const auto& recorder : video_recorders_) {
+  if (video_recorders_.empty()) {
+    return;
+  }
+  Vector<std::unique_ptr<VideoTrackRecorder>> recorders;
+  recorders.swap(video_recorders_);
+  for (const auto& recorder : recorders) {
     recorder->OnEncodedVideoFrameForTesting(base::TimeTicks::Now(), frame,
                                             timestamp);
+  }
+  if (recording_ && video_recorders_.empty()) {
+    video_recorders_.swap(recorders);
   }
 }
 
 void MediaRecorderHandler::OnAudioBusForTesting(
     const media::AudioBus& audio_bus,
     const base::TimeTicks& timestamp) {
-  for (const auto& recorder : audio_recorders_)
+  if (audio_recorders_.empty()) {
+    return;
+  }
+  Vector<std::unique_ptr<AudioTrackRecorder>> recorders;
+  recorders.swap(audio_recorders_);
+  for (const auto& recorder : recorders) {
     recorder->OnData(audio_bus, timestamp);
+  }
+  if (recording_ && audio_recorders_.empty()) {
+    audio_recorders_.swap(recorders);
+  }
 }
 
 void MediaRecorderHandler::SetAudioFormatForTesting(
     const media::AudioParameters& params) {
-  for (const auto& recorder : audio_recorders_)
+  if (audio_recorders_.empty()) {
+    return;
+  }
+  Vector<std::unique_ptr<AudioTrackRecorder>> recorders;
+  recorders.swap(audio_recorders_);
+  for (const auto& recorder : recorders) {
     recorder->OnSetFormat(params);
+  }
+  if (recording_ && audio_recorders_.empty()) {
+    audio_recorders_.swap(recorders);
+  }
 }
 
 void MediaRecorderHandler::Trace(Visitor* visitor) const {
@@ -1183,10 +1207,26 @@ void MediaRecorderHandler::Trace(Visitor* visitor) const {
 }
 
 void MediaRecorderHandler::OnVideoEncodingError(
-    const media::EncoderStatus& error_status) {
+    media::EncoderStatus error_status) {
   if (recorder_) {
-    recorder_->OnError(DOMExceptionCode::kEncodingError,
-                       String(media::EncoderStatusCodeToString(error_status)));
+    // The MediaRecorder::OnError callback stops the MediaRecorderHandler,
+    // which in turn invalidates a reference to the calling VideoTrackRecorder
+    // instance. To avoid access to an unallocated object, this operation is
+    // deferred to a subsequent task.
+    // See https://crbug.com/441921804 for more details.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        blink::BindOnce(&MediaRecorder::OnError,
+                        WrapWeakPersistent(recorder_.Get()),
+                        DOMExceptionCode::kEncodingError,
+                        String(media::EncoderStatusTraits::ReadableCodeName(
+                            error_status.code()))));
+  }
+}
+
+void MediaRecorderHandler::OnStarted() {
+  if (recorder_) {
+    recorder_->MaybeEmitStartEvent();
   }
 }
 

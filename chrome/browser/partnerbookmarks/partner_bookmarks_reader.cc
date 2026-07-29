@@ -35,7 +35,6 @@ using base::android::CheckException;
 using base::android::ConvertJavaStringToUTF16;
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
 using base::android::JavaRef;
 using base::android::ScopedJavaGlobalRef;
 using bookmarks::BookmarkNode;
@@ -107,39 +106,34 @@ PartnerBookmarksReader::PartnerBookmarksReader(
 
 PartnerBookmarksReader::~PartnerBookmarksReader() = default;
 
-void PartnerBookmarksReader::PartnerBookmarksCreationComplete(
-    JNIEnv*,
-    const JavaParamRef<jobject>&) {
+void PartnerBookmarksReader::PartnerBookmarksCreationComplete(JNIEnv* env) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   partner_bookmarks_shim_->SetPartnerBookmarksRoot(
       std::move(wip_partner_bookmarks_root_));
   wip_next_available_id_ = 0;
 }
 
-void PartnerBookmarksReader::Destroy(JNIEnv* env,
-                                     const JavaParamRef<jobject>& obj) {
+void PartnerBookmarksReader::Destroy(JNIEnv* env) {
   delete this;
 }
 
-void PartnerBookmarksReader::Reset(JNIEnv* env,
-                                   const JavaParamRef<jobject>& obj) {
+void PartnerBookmarksReader::Reset(JNIEnv* env) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   wip_partner_bookmarks_root_.reset();
   wip_next_available_id_ = 0;
 }
 
-jlong PartnerBookmarksReader::AddPartnerBookmark(
+int64_t PartnerBookmarksReader::AddPartnerBookmark(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    const JavaParamRef<jstring>& jurl,
-    const JavaParamRef<jstring>& jtitle,
-    jboolean is_folder,
-    jlong parent_id,
-    const JavaParamRef<jbyteArray>& favicon,
-    const JavaParamRef<jbyteArray>& touchicon,
-    jboolean fetch_uncached_favicons_from_server,
-    jint desired_favicon_size_px,
-    const JavaParamRef<jobject>& j_callback) {
+    const JavaRef<jstring>& jurl,
+    const JavaRef<jstring>& jtitle,
+    bool is_folder,
+    int64_t parent_id,
+    const JavaRef<jbyteArray>& favicon,
+    const JavaRef<jbyteArray>& touchicon,
+    bool fetch_uncached_favicons_from_server,
+    int32_t desired_favicon_size_px,
+    const JavaRef<jobject>& j_callback) {
   std::u16string url;
   std::u16string title;
   if (jurl) {
@@ -150,7 +144,7 @@ jlong PartnerBookmarksReader::AddPartnerBookmark(
     title = ConvertJavaStringToUTF16(env, jtitle);
   }
 
-  jlong node_id = 0;
+  int64_t node_id = 0;
   if (wip_partner_bookmarks_root_.get()) {
     std::unique_ptr<BookmarkNode> node = std::make_unique<BookmarkNode>(
         wip_next_available_id_++, base::Uuid::GenerateRandomV4(), GURL(url));
@@ -158,12 +152,13 @@ jlong PartnerBookmarksReader::AddPartnerBookmark(
 
     // Handle favicon and touchicon
     if (profile_ != nullptr) {
-      if (favicon != nullptr || touchicon != nullptr) {
-        jbyteArray icon = (touchicon != nullptr) ? touchicon : favicon;
+      if (!favicon.is_null() || !touchicon.is_null()) {
+        jbyteArray icon =
+            (!touchicon.is_null()) ? touchicon.obj() : favicon.obj();
         const favicon_base::IconType icon_type =
             touchicon ? favicon_base::IconType::kTouchIcon
                       : favicon_base::IconType::kFavicon;
-        jbyte* icon_bytes = env->GetByteArrayElements(icon, nullptr);
+        int8_t* icon_bytes = env->GetByteArrayElements(icon, nullptr);
         if (icon_bytes) {
           const int icon_len = env->GetArrayLength(icon);
           // SAFETY: Pointer and length come from JNI; assume those are
@@ -405,9 +400,13 @@ static void JNI_PartnerBookmarksReader_DisablePartnerBookmarksEditing(
   PartnerBookmarksShim::DisablePartnerBookmarksEditing();
 }
 
-static jlong JNI_PartnerBookmarksReader_Init(JNIEnv* env, Profile* profile) {
+static int64_t JNI_PartnerBookmarksReader_Init(JNIEnv* env, Profile* profile) {
   PartnerBookmarksShim* partner_bookmarks_shim =
       PartnerBookmarksShim::BuildForBrowserContext(profile);
+  if (!partner_bookmarks_shim) {
+    return 0;
+  }
+
   PartnerBookmarksReader* reader =
       new PartnerBookmarksReader(partner_bookmarks_shim, profile);
   return reinterpret_cast<intptr_t>(reader);
@@ -415,6 +414,8 @@ static jlong JNI_PartnerBookmarksReader_Init(JNIEnv* env, Profile* profile) {
 
 static std::string JNI_PartnerBookmarksReader_GetNativeUrlString(
     JNIEnv* env,
-    std::string& url) {
+    const std::string& url) {
   return GURL(url).spec();
 }
+
+DEFINE_JNI(PartnerBookmarksReader)

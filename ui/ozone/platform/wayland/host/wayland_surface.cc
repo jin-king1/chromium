@@ -2,19 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "ui/ozone/platform/wayland/host/wayland_surface.h"
 
 #include <alpha-compositing-unstable-v1-client-protocol.h>
-#include <chrome-color-management-client-protocol.h>
 #include <content-type-v1-client-protocol.h>
 #include <fractional-scale-v1-client-protocol.h>
 #include <linux-drm-syncobj-v1-client-protocol.h>
-#include <linux-explicit-synchronization-unstable-v1-client-protocol.h>
 #include <overlay-prioritizer-client-protocol.h>
 #include <viewporter-client-protocol.h>
 
@@ -23,10 +16,11 @@
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/not_fatal_until.h"
+#include "base/notimplemented.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect.h"
@@ -35,7 +29,7 @@
 #include "ui/gfx/geometry/size_f.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/gpu_fence.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/overlay_priority_hint.h"
 #include "ui/ozone/platform/wayland/common/wayland_util.h"
 #include "ui/ozone/platform/wayland/host/fractional_scale_manager.h"
@@ -48,9 +42,8 @@
 #include "ui/ozone/platform/wayland/host/wayland_subsurface.h"
 #include "ui/ozone/platform/wayland/host/wayland_syncobj_timeline.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
-#include "ui/ozone/platform/wayland/host/wayland_zcr_color_management_output.h"
-#include "ui/ozone/platform/wayland/host/wayland_zcr_color_management_surface.h"
-#include "ui/ozone/platform/wayland/host/wayland_zcr_color_manager.h"
+#include "ui/ozone/platform/wayland/host/wayland_wp_color_management_surface.h"
+#include "ui/ozone/platform/wayland/host/wayland_wp_color_manager.h"
 
 namespace ui {
 
@@ -95,24 +88,6 @@ const wl_fixed_t kMinusOne = wl_fixed_from_int(-1);
 
 }  // namespace
 
-WaylandSurface::ExplicitReleaseInfoLegacy::ExplicitReleaseInfoLegacy(
-    wl::Object<zwp_linux_buffer_release_v1>&& linux_buffer_release,
-    wl_buffer* buffer,
-    ExplicitReleaseCallback explicit_release_callback)
-    : linux_buffer_release(std::move(linux_buffer_release)),
-      buffer(buffer),
-      explicit_release_callback(std::move(explicit_release_callback)) {}
-
-WaylandSurface::ExplicitReleaseInfoLegacy::~ExplicitReleaseInfoLegacy() =
-    default;
-
-WaylandSurface::ExplicitReleaseInfoLegacy::ExplicitReleaseInfoLegacy(
-    ExplicitReleaseInfoLegacy&&) = default;
-
-WaylandSurface::ExplicitReleaseInfoLegacy&
-WaylandSurface::ExplicitReleaseInfoLegacy::operator=(
-    ExplicitReleaseInfoLegacy&&) = default;
-
 WaylandSurface::WaylandSurface(WaylandConnection* connection,
                                WaylandWindow* root_window)
     : connection_(connection),
@@ -128,13 +103,7 @@ WaylandSurface::WaylandSurface(WaylandConnection* connection,
   }
 }
 
-WaylandSurface::~WaylandSurface() {
-  for (auto& release : linux_buffer_releases_legacy_) {
-    DCHECK(release.second.explicit_release_callback);
-    std::move(release.second.explicit_release_callback)
-        .Run(release.second.buffer.get(), base::ScopedFD());
-  }
-}
+WaylandSurface::~WaylandSurface() = default;
 
 void WaylandSurface::RequestExplicitRelease(ExplicitReleaseCallback callback) {
   DCHECK(!next_explicit_release_request_);
@@ -232,22 +201,17 @@ bool WaylandSurface::Initialize() {
     }
   }
 
-  if (auto* zcr_color_manager = connection_->zcr_color_manager()) {
-    zcr_color_management_surface_ =
-        std::make_unique<WaylandZcrColorManagementSurface>(
-            zcr_color_manager->CreateColorManagementSurface(surface())
-                .release(),
-            connection_);
-    if (!zcr_color_management_surface_) {
-      LOG(ERROR) << "Failed to create zcr_color_management_surface.";
-      return false;
-    }
-    zcr_color_management_surface_->SetDefaultColorSpace();
+  if (auto* wp_color_manager = connection_->wp_color_manager()) {
+    wp_color_management_surface_ =
+        std::make_unique<WaylandWpColorManagementSurface>(
+            this, connection_,
+            wp_color_manager->CreateColorManagementSurface(surface()),
+            wp_color_manager->CreateColorManagementFeedbackSurface(surface()));
   } else {
     static bool log_once = false;
     if (!log_once) {
       log_once = true;
-      LOG(WARNING) << "Server doesn't support zcr_color_management_surface.";
+      LOG(WARNING) << "Server doesn't support wp_color_management_surface_v1.";
     }
   }
 
@@ -292,8 +256,9 @@ bool WaylandSurface::AttachBuffer(WaylandBufferHandle* buffer_handle) {
   }
 
   pending_state_.buffer_size_px = buffer_handle->size();
-  pending_state_.buffer = buffer_handle->buffer();
+  pending_state_.buffer = buffer_handle->AsWeakPtr();
   pending_state_.buffer_id = buffer_handle->id();
+  pending_state_.sync_method = buffer_handle->sync_method();
 
   if (state_.buffer_id == pending_state_.buffer_id &&
       buffer_handle->released(this)) {
@@ -340,8 +305,10 @@ void WaylandSurface::set_surface_buffer_scale(float scale) {
       // It's safe to cast the result of GetWaylandScale to an integer here
       // because the buffer scale should always be integer when viewporter
       // surface scaling is disabled.
-      wl_surface_set_buffer_scale(
-          surface_.get(), static_cast<int32_t>(GetWaylandScale(state_)));
+      const float wayland_scale = GetWaylandScale(state_);
+      CHECK_GE(wayland_scale, 1.f);
+      wl_surface_set_buffer_scale(surface_.get(),
+                                  static_cast<int32_t>(wayland_scale));
     }
   }
 }
@@ -392,9 +359,9 @@ void WaylandSurface::set_input_region(
 }
 
 float WaylandSurface::GetWaylandScale(const State& state) {
-  return wl::ClampScale(use_viewporter_surface_scaling_
-                            ? state.buffer_scale_float
-                            : std::ceil(state.buffer_scale_float));
+  return use_viewporter_surface_scaling_
+             ? state.buffer_scale_float
+             : wl::ClampScale(std::ceil(state.buffer_scale_float));
 }
 
 bool WaylandSurface::IsViewportScaled(const State& state) {
@@ -431,54 +398,6 @@ wl::Object<wl_region> WaylandSurface::CreateAndAddRegion(
                   rect.height());
   }
   return region;
-}
-
-bool WaylandSurface::SetExplicitSyncLegacy() {
-  // The server needs to support the linux_explicit_synchronization protocol.
-  if (!connection_->linux_explicit_synchronization_v1()) {
-    NOTIMPLEMENTED_LOG_ONCE();
-    return false;
-  }
-
-  if (!surface_sync_legacy_) {
-    surface_sync_legacy_.reset(
-        zwp_linux_explicit_synchronization_v1_get_synchronization(
-            connection_->linux_explicit_synchronization_v1(), surface_.get()));
-  }
-  auto* surface_sync = surface_sync_legacy_.get();
-  if (!surface_sync) {
-    return false;
-  }
-
-  if (!pending_state_.acquire_fence.is_null()) {
-    zwp_linux_surface_synchronization_v1_set_acquire_fence(
-        surface_sync, pending_state_.acquire_fence.Peek());
-  }
-
-  if (!next_explicit_release_request_.is_null()) {
-    auto* linux_buffer_release =
-        zwp_linux_surface_synchronization_v1_get_release(surface_sync);
-    // This must be very unlikely to happen, but there is a bug for this.
-    // Thus, add a check for this object to ensure it's not null. See
-    // https://crbug.com/1382976
-    LOG_IF(FATAL, !linux_buffer_release)
-        << "Unable to get an explicit release object.";
-
-    static constexpr zwp_linux_buffer_release_v1_listener
-        kBufferReleaseListener = {
-            .fenced_release = &OnFencedRelease,
-            .immediate_release = &OnImmediateRelease,
-        };
-    zwp_linux_buffer_release_v1_add_listener(linux_buffer_release,
-                                             &kBufferReleaseListener, this);
-
-    linux_buffer_releases_legacy_.emplace(
-        linux_buffer_release,
-        ExplicitReleaseInfoLegacy(
-            wl::Object<zwp_linux_buffer_release_v1>(linux_buffer_release),
-            pending_state_.buffer, std::move(next_explicit_release_request_)));
-  }
-  return true;
 }
 
 void WaylandSurface::EnsureSurfaceSync() {
@@ -587,46 +506,52 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
   bool needs_commit = false;
 
   if (pending_state_.buffer_id != state_.buffer_id) {
-    std::optional<bool> explicit_sync_success;
     if (pending_state_.buffer) {
-      // We need to try setting explicit sync first so that we don't attach the
-      // buffer if there is a failure when setting explicit sync.
-      explicit_sync_success = SetExplicitSync();
-      if (!explicit_sync_success.has_value()) {
-        // There was a failure while trying to set explicit sync. So we need
-        // to early-out and discard this frame and show the previous frame.
-        AttachBuffer(nullptr);
-        pending_state_.damage_px.clear();
-        return std::nullopt;
+      switch (pending_state_.sync_method) {
+        case WaylandBufferHandle::SyncMethod::kSyncobj:
+          // We need to try setting explicit sync first so that we don't attach
+          // the buffer if there is a failure when setting explicit sync.
+          if (!SetExplicitSync().has_value()) {
+            // There was a failure while trying to set explicit sync. So we need
+            // to early-out and discard this frame and show the previous frame.
+            AttachBuffer(nullptr);
+            pending_state_.damage_px.clear();
+            return std::nullopt;
+          }
+          break;
+        case WaylandBufferHandle::SyncMethod::kDMAFence:
+          if (!pending_state_.acquire_fence.is_null()) {
+            connection_->buffer_manager_host()->InsertAcquireFence(
+                pending_state_.buffer_id, pending_state_.acquire_fence.Peek());
+          }
+          [[fallthrough]];
+        default:
+          // Remove the existing surface sync to avoid compositor throwing
+          // error.
+          surface_sync_.reset();
+          break;
       }
     }
     // The logic in DamageBuffer currently relies on attachment coordinates of
     // (0, 0). If this changes, then the calculation in DamageBuffer will also
     // need to be updated.
     // Note: should the offset be non-zero, use wl_surface_offset() to set it.
-    wl_surface_attach(surface_.get(), pending_state_.buffer, 0, 0);
+    wl_surface_attach(
+        surface_.get(),
+        pending_state_.buffer ? pending_state_.buffer->buffer() : nullptr, 0,
+        0);
     needs_commit = true;
-    // Do not call GetOrCreateSurfaceSync() if the buffer management doesn't
-    // happen with WaylandBufferManagerHost. That is, if Wayland EGL
-    // implementation is used, buffers are attached/swapped via eglSwapBuffers,
-    // which may internally (depends on the implementation) also create a
-    // surface sync. Creating a surface sync in this case is not necessary.
-    // Moreover, a Wayland protocol error will be raised as only one surface
-    // sync can exist.
-    if (pending_state_.buffer && !explicit_sync_success.value() &&
-        !SetExplicitSyncLegacy() && connection_->UseImplicitSyncInterop() &&
-        !pending_state_.acquire_fence.is_null()) {
-      connection_->buffer_manager_host()->InsertAcquireFence(
-          pending_state_.buffer_id, pending_state_.acquire_fence.Peek());
-    }
   }
   pending_state_.acquire_fence = gfx::GpuFenceHandle();
 
   // Setting Color Space of surface.
   // Should be called infrequently: only when color space is changing to a
-  // a different one.
-  if (pending_state_.color_space != state_.color_space) {
-    zcr_color_management_surface_->SetColorSpace(pending_state_.color_space);
+  // different one.
+  if (wp_color_management_surface_ &&
+      (pending_state_.color_space != state_.color_space ||
+       pending_state_.hdr_metadata != state_.hdr_metadata)) {
+    wp_color_management_surface_->SetColorSpace(pending_state_.color_space,
+                                                pending_state_.hdr_metadata);
     needs_commit = true;
   }
 
@@ -832,7 +757,7 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
   if (viewport() && !std::ranges::equal(src_to_set, src_set_)) {
     wp_viewport_set_source(viewport(), src_to_set[0], src_to_set[1],
                            src_to_set[2], src_to_set[3]);
-    memcpy(src_set_, src_to_set, 4 * sizeof(*src_to_set));
+    UNSAFE_TODO(memcpy(src_set_, src_to_set, 4 * sizeof(*src_to_set)));
     needs_commit = true;
   }
 
@@ -856,7 +781,7 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
                               : static_cast<int>(dst_to_set[1]));
       needs_commit = true;
     }
-    memcpy(dst_set_, dst_to_set, 2 * sizeof(*dst_to_set));
+    UNSAFE_TODO(memcpy(dst_set_, dst_to_set, 2 * sizeof(*dst_to_set)));
   }
 
   DCHECK_LE(pending_state_.damage_px.size(), 1u);
@@ -889,17 +814,6 @@ void WaylandSurface::ForceImmediateStateApplication() {
   apply_state_immediately_ = true;
 }
 
-void WaylandSurface::ExplicitRelease(
-    zwp_linux_buffer_release_v1* linux_buffer_release,
-    base::ScopedFD fence) {
-  auto iter = linux_buffer_releases_legacy_.find(linux_buffer_release);
-  CHECK(iter != linux_buffer_releases_legacy_.end(), base::NotFatalUntil::M130);
-  DCHECK(iter->second.buffer);
-  std::move(iter->second.explicit_release_callback)
-      .Run(iter->second.buffer.get(), std::move(fence));
-  linux_buffer_releases_legacy_.erase(iter);
-}
-
 WaylandSurface::State::State() = default;
 
 WaylandSurface::State::~State() = default;
@@ -910,6 +824,7 @@ WaylandSurface::State& WaylandSurface::State::operator=(
   opaque_region_px = other.opaque_region_px;
   input_region_px = other.input_region_px;
   color_space = other.color_space;
+  hdr_metadata = other.hdr_metadata;
   buffer_id = other.buffer_id;
   buffer = other.buffer;
   buffer_size_px = other.buffer_size_px;
@@ -1012,42 +927,17 @@ void WaylandSurface::RemoveEnteredOutput(uint32_t output_id) {
     root_window_->OnLeftOutput();
 }
 
-void WaylandSurface::set_color_space(gfx::ColorSpace color_space) {
-  if (!connection_->zcr_color_manager()) {
-    return;
-  }
-  if (!color_space.IsValid() && pending_state_.contains_video) {
+void WaylandSurface::SetImageDescription(const gfx::ColorSpace& color_space,
+                                         const gfx::HDRMetadata& hdr_metadata) {
+  if (color_space.IsValid() || !pending_state_.contains_video) {
+    pending_state_.color_space = color_space;
+  } else {
     // Not all video content contains colorspace information.
     // In this case, default to Rec709.
     // Maybe use Rec601 for SD video if it becomes an issue.
-    color_space = gfx::ColorSpace::CreateREC709();
+    pending_state_.color_space = gfx::ColorSpace::CreateREC709();
   }
-  if (!color_space.IsValid()) {
-    return;
-  }
-
-  auto wayland_zcr_color_space =
-      connection_->zcr_color_manager()->GetColorSpace(color_space);
-  if (wayland_zcr_color_space != nullptr)
-    pending_state_.color_space = wayland_zcr_color_space;
-}
-
-// static
-void WaylandSurface::OnFencedRelease(
-    void* data,
-    zwp_linux_buffer_release_v1* buffer_release,
-    int32_t fence) {
-  auto* self = static_cast<WaylandSurface*>(data);
-  auto fd = base::ScopedFD(fence);
-  self->ExplicitRelease(buffer_release, std::move(fd));
-}
-
-// static
-void WaylandSurface::OnImmediateRelease(
-    void* data,
-    zwp_linux_buffer_release_v1* buffer_release) {
-  auto* self = static_cast<WaylandSurface*>(data);
-  self->ExplicitRelease(buffer_release, base::ScopedFD());
+  pending_state_.hdr_metadata = hdr_metadata;
 }
 
 }  // namespace ui

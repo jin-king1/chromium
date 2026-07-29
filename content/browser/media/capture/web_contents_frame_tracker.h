@@ -27,7 +27,7 @@
 #include "media/capture/mojom/video_capture_types.mojom.h"
 #include "media/capture/video/video_capture_feedback.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace content {
 
@@ -101,6 +101,8 @@ class CONTENT_EXPORT WebContentsFrameTracker final
   void RenderFrameHostChanged(RenderFrameHost* old_host,
                               RenderFrameHost* new_host) override;
   void WebContentsDestroyed() override;
+  void OnVisibilityChanged(Visibility visibility) override;
+
   void CaptureTargetChanged() override;
 
   void SetWebContentsAndContextFromRoutingId(const GlobalRenderFrameHostId& id);
@@ -161,9 +163,7 @@ class CONTENT_EXPORT WebContentsFrameTracker final
   // UI thread. This is not guaranteed to be valid and must be checked before
   // use.
   // https://crbug.com/1480152
-#if !BUILDFLAG(IS_ANDROID)
   const base::WeakPtr<MouseCursorOverlayController> cursor_controller_;
-#endif
 
   // We may not have a frame sink ID target at all times.
   std::unique_ptr<Context> context_;

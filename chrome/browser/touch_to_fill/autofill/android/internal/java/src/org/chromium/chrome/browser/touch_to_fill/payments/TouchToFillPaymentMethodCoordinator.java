@@ -4,28 +4,47 @@
 
 package org.chromium.chrome.browser.touch_to_fill.payments;
 
-import static org.chromium.chrome.browser.autofill.AutofillUiUtils.getCardIcon;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.BACK_PRESS_HANDLER;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.CURRENT_SCREEN;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.DISMISS_HANDLER;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.FOCUSED_VIEW_ID_FOR_ACCESSIBILITY;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.ALL_LOYALTY_CARDS;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.BNPL;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.BNPL_ISSUER;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.BNPL_SELECTION_PROGRESS_HEADER;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.BNPL_SELECTION_PROGRESS_TERMS;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.BNPL_TOS_TEXT;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.CREDIT_CARD;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.ERROR_DESCRIPTION;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.FILL_BUTTON;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.FOOTER;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.HEADER;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.IBAN;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.LOYALTY_CARD;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.PROGRESS_ICON;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.TERMS_LABEL;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.TEXT_BUTTON;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.TOS_FOOTER;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.TOS_HEADER;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ItemType.WALLET_SETTINGS_BUTTON;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.SHEET_ITEMS;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.ScreenId.HOME_SCREEN;
+import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.TAB_SELECTION_HANDLER;
 import static org.chromium.chrome.browser.touch_to_fill.payments.TouchToFillPaymentMethodProperties.VISIBLE;
 
 import android.content.Context;
-import android.graphics.drawable.Drawable;
 
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.chrome.browser.autofill.PersonalDataManager;
-import org.chromium.chrome.browser.autofill.PersonalDataManager.CreditCard;
+import org.chromium.chrome.browser.autofill.AutofillImageFetcher;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.Iban;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.touch_to_fill.common.BottomSheetFocusHelper;
 import org.chromium.components.autofill.AutofillSuggestion;
-import org.chromium.components.autofill.ImageSize;
+import org.chromium.components.autofill.LoyaltyCard;
+import org.chromium.components.autofill.payments.BnplIssuerContext;
+import org.chromium.components.autofill.payments.BnplIssuerTosDetail;
+import org.chromium.components.autofill.payments.TouchToFillDisplayOptions;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -33,53 +52,92 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
 import java.util.List;
-import java.util.function.Function;
 
 /**
  * Implements the TouchToFillPaymentMethodComponent. It uses a bottom sheet to let the user select a
  * credit card to be filled into the focused form.
  */
 public class TouchToFillPaymentMethodCoordinator implements TouchToFillPaymentMethodComponent {
-    private final TouchToFillPaymentMethodMediator mMediator = new TouchToFillPaymentMethodMediator();
+    private final TouchToFillPaymentMethodMediator mMediator =
+            new TouchToFillPaymentMethodMediator();
     private PropertyModel mTouchToFillPaymentMethodModel;
-    private Function<TouchToFillPaymentMethodProperties.CardImageMetaData, Drawable>
-            mCardImageFunction;
+    private TouchToFillPaymentMethodView mView;
 
     @Override
     public void initialize(
             Context context,
-            PersonalDataManager personalDataManager,
+            Profile profile,
+            AutofillImageFetcher imageFetcher,
             BottomSheetController sheetController,
             Delegate delegate,
             BottomSheetFocusHelper bottomSheetFocusHelper) {
-                mTouchToFillPaymentMethodModel = createModel(mMediator);
-        mCardImageFunction =
-                (metaData) ->
-                        getCardIcon(
-                                context,
-                                personalDataManager,
-                                metaData.artUrl,
-                                metaData.iconId,
-                                ImageSize.LARGE,
-                                /* showCustomIcon= */ true);
-        mMediator.initialize(delegate, mTouchToFillPaymentMethodModel, bottomSheetFocusHelper);
+        mTouchToFillPaymentMethodModel = createModel(mMediator);
+        mMediator.initialize(
+                context,
+                profile,
+                imageFetcher,
+                delegate,
+                mTouchToFillPaymentMethodModel,
+                bottomSheetFocusHelper);
+        mView = new TouchToFillPaymentMethodView(context, sheetController);
         setUpModelChangeProcessors(
                 mTouchToFillPaymentMethodModel,
-                new TouchToFillPaymentMethodView(context, sheetController));
+                mView);
     }
 
     @Override
-    public void showSheet(
-            List<CreditCard> cards,
+    public void showPaymentMethods(
             List<AutofillSuggestion> suggestions,
-            boolean shouldShowScanCreditCard) {
-        assert mCardImageFunction != null : "Attempting to call showSheet before initialize.";
-        mMediator.showSheet(cards, suggestions, shouldShowScanCreditCard, mCardImageFunction);
+            TouchToFillDisplayOptions touchToFillDisplayOptions) {
+        mMediator.showPaymentMethods(suggestions, touchToFillDisplayOptions);
     }
 
     @Override
-    public void showSheet(List<Iban> ibans) {
-        mMediator.showSheet(ibans);
+    public void showIbans(List<Iban> ibans) {
+        mMediator.showIbans(ibans);
+    }
+
+    @Override
+    public void showAffiliatedLoyaltyCards(
+            List<LoyaltyCard> affiliatedLoyaltyCards,
+            List<LoyaltyCard> allLoyaltyCards,
+            boolean firstTimeUsage) {
+        mMediator.showAffiliatedLoyaltyCards(
+                affiliatedLoyaltyCards, allLoyaltyCards, firstTimeUsage);
+    }
+
+    @Override
+    public void showAllLoyaltyCards(List<LoyaltyCard> allLoyaltyCards) {
+        mMediator.showAllLoyaltyCards(allLoyaltyCards);
+    }
+
+    @Override
+    public void onPurchaseAmountExtracted(
+            List<BnplIssuerContext> bnplIssuerContexts,
+            Long extractedAmount,
+            boolean isAmountSupportedByAnyIssuer) {
+        mMediator.onPurchaseAmountExtracted(
+                bnplIssuerContexts, extractedAmount, isAmountSupportedByAnyIssuer);
+    }
+
+    @Override
+    public void showProgressScreen() {
+        mMediator.showProgressScreen();
+    }
+
+    @Override
+    public void showBnplIssuers(List<BnplIssuerContext> bnplIssuerContexts) {
+        mMediator.showBnplIssuers(bnplIssuerContexts);
+    }
+
+    @Override
+    public void showErrorScreen(String title, String description) {
+        mMediator.showErrorScreen(title, description);
+    }
+
+    @Override
+    public void showBnplIssuerTos(BnplIssuerTosDetail bnplIssuerTosDetail) {
+        mMediator.showBnplIssuerTos(bnplIssuerTosDetail);
     }
 
     @Override
@@ -87,8 +145,14 @@ public class TouchToFillPaymentMethodCoordinator implements TouchToFillPaymentMe
         mMediator.hideSheet();
     }
 
+    @Override
+    public void setVisible(boolean visible) {
+        mMediator.setVisible(visible);
+    }
+
     /**
      * Connects the given model with the given view using Model Change Processors.
+     *
      * @param model A {@link PropertyModel} built with {@link TouchToFillPaymentMethodProperties}.
      * @param view A {@link TouchToFillPaymentMethodView}.
      */
@@ -98,7 +162,7 @@ public class TouchToFillPaymentMethodCoordinator implements TouchToFillPaymentMe
                 model, view, TouchToFillPaymentMethodViewBinder::bindTouchToFillPaymentMethodView);
     }
 
-    static void setUpCardItems(PropertyModel model, TouchToFillPaymentMethodView view) {
+    static void setUpSheetItems(PropertyModel model, TouchToFillPaymentMethodView view) {
         SimpleRecyclerViewAdapter adapter = new SimpleRecyclerViewAdapter(model.get(SHEET_ITEMS));
         adapter.registerType(
                 CREDIT_CARD,
@@ -109,13 +173,25 @@ public class TouchToFillPaymentMethodCoordinator implements TouchToFillPaymentMe
                 TouchToFillPaymentMethodViewBinder::createIbanItemView,
                 TouchToFillPaymentMethodViewBinder::bindIbanItemView);
         adapter.registerType(
+                LOYALTY_CARD,
+                TouchToFillPaymentMethodViewBinder::createLoyaltyCardItemView,
+                TouchToFillPaymentMethodViewBinder::bindLoyaltyCardItemView);
+        adapter.registerType(
+                ALL_LOYALTY_CARDS,
+                TouchToFillPaymentMethodViewBinder::createAllLoyaltyCardsItemView,
+                TouchToFillPaymentMethodViewBinder::bindAllLoyaltyCardsItemView);
+        adapter.registerType(
                 HEADER,
                 TouchToFillPaymentMethodViewBinder::createHeaderItemView,
                 TouchToFillPaymentMethodViewBinder::bindHeaderView);
         adapter.registerType(
                 FILL_BUTTON,
                 TouchToFillPaymentMethodViewBinder::createFillButtonView,
-                TouchToFillPaymentMethodViewBinder::bindFillButtonView);
+                TouchToFillPaymentMethodViewBinder::bindButtonView);
+        adapter.registerType(
+                WALLET_SETTINGS_BUTTON,
+                TouchToFillPaymentMethodViewBinder::createWalletSettingsButtonView,
+                TouchToFillPaymentMethodViewBinder::bindButtonView);
         adapter.registerType(
                 FOOTER,
                 TouchToFillPaymentMethodViewBinder::createFooterItemView,
@@ -124,14 +200,58 @@ public class TouchToFillPaymentMethodCoordinator implements TouchToFillPaymentMe
                 TERMS_LABEL,
                 TouchToFillPaymentMethodViewBinder::createTermsLabelView,
                 TouchToFillPaymentMethodViewBinder::bindTermsLabelView);
+        adapter.registerType(
+                BNPL,
+                TouchToFillPaymentMethodViewBinder::createBnplItemView,
+                TouchToFillPaymentMethodViewBinder::bindBnplItemView);
+        adapter.registerType(
+                PROGRESS_ICON,
+                TouchToFillPaymentMethodViewBinder::createProgressIconView,
+                TouchToFillPaymentMethodViewBinder::bindProgressIconView);
+        adapter.registerType(
+                BNPL_SELECTION_PROGRESS_HEADER,
+                TouchToFillPaymentMethodViewBinder::createBnplSelectionProgressHeaderItemView,
+                TouchToFillPaymentMethodViewBinder::bindBnplSelectionProgressHeaderView);
+        adapter.registerType(
+                BNPL_ISSUER,
+                TouchToFillPaymentMethodViewBinder::createBnplIssuerItemView,
+                TouchToFillPaymentMethodViewBinder::bindBnplIssuerItemView);
+        adapter.registerType(
+                ERROR_DESCRIPTION,
+                TouchToFillPaymentMethodViewBinder::createErrorDescriptionView,
+                TouchToFillPaymentMethodViewBinder::bindErrorDescriptionView);
+        adapter.registerType(
+                BNPL_TOS_TEXT,
+                TouchToFillPaymentMethodViewBinder::createBnplIssuerTosItemView,
+                TouchToFillPaymentMethodViewBinder::bindBnplIssuerTosItemView);
+        adapter.registerType(
+                BNPL_SELECTION_PROGRESS_TERMS,
+                TouchToFillPaymentMethodViewBinder::createBnplSelectionProgressTermsItemView,
+                TouchToFillPaymentMethodViewBinder::bindBnplSelectionProgressTermsView);
+        adapter.registerType(
+                TOS_FOOTER,
+                TouchToFillPaymentMethodViewBinder::createLegalMessageItemView,
+                TouchToFillPaymentMethodViewBinder::bindLegalMessageItemView);
+        adapter.registerType(
+                TEXT_BUTTON,
+                TouchToFillPaymentMethodViewBinder::createTextButtonView,
+                TouchToFillPaymentMethodViewBinder::bindButtonView);
+        adapter.registerType(
+                TOS_HEADER,
+                TouchToFillPaymentMethodViewBinder::createBnplTosHeaderView,
+                TouchToFillPaymentMethodViewBinder::bindBnplTosHeaderView);
         view.setSheetItemListAdapter(adapter);
     }
 
     PropertyModel createModel(TouchToFillPaymentMethodMediator mediator) {
         return new PropertyModel.Builder(TouchToFillPaymentMethodProperties.ALL_KEYS)
                 .with(VISIBLE, false)
+                .with(CURRENT_SCREEN, HOME_SCREEN)
+                .with(FOCUSED_VIEW_ID_FOR_ACCESSIBILITY, 0)
                 .with(SHEET_ITEMS, new ModelList())
+                .with(BACK_PRESS_HANDLER, mediator::onBackButtonPressed)
                 .with(DISMISS_HANDLER, mediator::onDismissed)
+                .with(TAB_SELECTION_HANDLER, mediator::onTabSelected)
                 .build();
     }
 
@@ -141,5 +261,9 @@ public class TouchToFillPaymentMethodCoordinator implements TouchToFillPaymentMe
 
     TouchToFillPaymentMethodMediator getMediatorForTesting() {
         return mMediator;
+    }
+
+    TouchToFillPaymentMethodView getViewForTesting() {
+        return mView;
     }
 }

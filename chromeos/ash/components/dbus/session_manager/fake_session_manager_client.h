@@ -107,17 +107,11 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
   void StartDeviceWipe(chromeos::VoidDBusMethodCallback callback) override;
   void StartRemoteDeviceWipe(
       const enterprise_management::SignedData& signed_command) override;
-  void ClearForcedReEnrollmentVpd(
-      chromeos::VoidDBusMethodCallback callback) override;
+  void ClearBlockDevmodeVpd(chromeos::VoidDBusMethodCallback callback) override;
   void StartTPMFirmwareUpdate(const std::string& update_mode) override;
   void RequestLockScreen() override;
   void NotifyLockScreenShown() override;
   void NotifyLockScreenDismissed() override;
-  bool BlockingRequestBrowserDataMigration(
-      const cryptohome::AccountIdentifier& cryptohome_id,
-      const std::string& mode) override;
-  bool BlockingRequestBrowserDataBackwardMigration(
-      const cryptohome::AccountIdentifier& cryptohome_id) override;
   void RetrieveActiveSessions(ActiveSessionsCallback callback) override;
   void RetrievePolicy(const login_manager::PolicyDescriptor& descriptor,
                       RetrievePolicyCallback callback) override;
@@ -127,6 +121,7 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
   void StoreDevicePolicy(const std::string& policy_blob,
                          chromeos::VoidDBusMethodCallback callback) override;
   void StorePolicyForUser(const cryptohome::AccountIdentifier& cryptohome_id,
+                          login_manager::PolicyDomain domain,
                           const std::string& policy_blob,
                           chromeos::VoidDBusMethodCallback callback) override;
   void StoreDeviceLocalAccountPolicy(
@@ -225,8 +220,10 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
 
   // Accessors for user policy. Only available for PolicyStorageType::kInMemory.
   const std::string& user_policy(
-      const cryptohome::AccountIdentifier& cryptohome_id) const;
+      const cryptohome::AccountIdentifier& cryptohome_id,
+      login_manager::PolicyDomain domain) const;
   void set_user_policy(const cryptohome::AccountIdentifier& cryptohome_id,
+                       login_manager::PolicyDomain domain,
                        const std::string& policy_blob);
 
   // Accessors for device local account policy. Only available for
@@ -261,8 +258,8 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
     psm_device_active_secret_ = psm_device_active_secret;
   }
 
-  int clear_forced_re_enrollment_vpd_call_count() const {
-    return clear_forced_re_enrollment_vpd_call_count_;
+  int clear_block_devmode_vpd_call_count() const {
+    return clear_block_devmode_vpd_call_count_;
   }
 
   int unblock_dev_mode_enrollment_call_count() const {
@@ -340,22 +337,6 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
     return primary_user_id_;
   }
 
-  bool request_browser_data_migration_called() const {
-    return request_browser_data_migration_called_;
-  }
-
-  bool request_browser_data_migration_mode_called() const {
-    return request_browser_data_migration_mode_called_;
-  }
-
-  const std::string& request_browser_data_migration_mode_value() const {
-    return request_browser_data_migration_mode_value_;
-  }
-
-  bool request_browser_data_backward_migration_called() const {
-    return request_browser_data_backward_migration_called_;
-  }
-
  private:
   // Called in response to writing owner key file specified in new device
   // policy - used for in-memory fake only.
@@ -379,7 +360,7 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
   // Callback that will be run, if set, when StopSession() is called.
   base::OnceClosure stop_session_callback_;
 
-  base::ObserverList<Observer>::UncheckedAndDanglingUntriaged observers_{
+  base::ObserverList<Observer> observers_{
       SessionManagerClient::kObserverListPolicy};
   SessionManagerClient::ActiveSessionsMap user_sessions_;
   base::expected<std::vector<std::string>, StateKeyErrorType>
@@ -403,7 +384,7 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
   AdbSideloadResponseCode adb_sideload_response_ =
       AdbSideloadResponseCode::SUCCESS;
 
-  int clear_forced_re_enrollment_vpd_call_count_ = 0;
+  int clear_block_devmode_vpd_call_count_ = 0;
   int unblock_dev_mode_enrollment_call_count_ = 0;
   int unblock_dev_mode_init_state_call_count_ = 0;
   int unblock_dev_mode_carrier_lock_call_count_ = 0;
@@ -430,12 +411,6 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
   bool adb_sideload_enabled_ = false;
 
   std::string login_password_;
-
-  bool request_browser_data_migration_called_ = false;
-  bool request_browser_data_migration_mode_called_ = false;
-  std::string request_browser_data_migration_mode_value_ = "invalid";
-
-  bool request_browser_data_backward_migration_called_ = false;
 
   // Contains last request passed to StartArcMiniContainer
   arc::StartArcMiniInstanceRequest last_start_arc_mini_container_request_;

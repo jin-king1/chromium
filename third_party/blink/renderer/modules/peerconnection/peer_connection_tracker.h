@@ -11,7 +11,6 @@
 #include "base/types/pass_key.h"
 #include "base/values.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/receiver.h"
 #include "third_party/blink/public/mojom/peerconnection/peer_connection_tracker.mojom-blink.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream.h"
@@ -235,7 +234,11 @@ class MODULES_EXPORT PeerConnectionTracker
                                            const String& error_message);
   // Sends a new fragment on an RtcEventLog.
   virtual void TrackRtcEventLogWrite(RTCPeerConnectionHandler* pc_handler,
-                                     const WTF::Vector<uint8_t>& output);
+                                     const Vector<uint8_t>& output);
+
+  // Sends a sent/received DataChannel message.
+  virtual void TrackRtcDataChannelLogWrite(RTCPeerConnectionHandler* pc_handler,
+                                           const Vector<uint8_t>& output);
 
   void Trace(Visitor* visitor) const override {
     visitor->Trace(peer_connection_tracker_host_);
@@ -248,6 +251,25 @@ class MODULES_EXPORT PeerConnectionTracker
   FRIEND_TEST_ALL_PREFIXES(PeerConnectionTrackerTest, OnThermalStateChange);
   FRIEND_TEST_ALL_PREFIXES(PeerConnectionTrackerTest,
                            ReportInitialThermalState);
+  FRIEND_TEST_ALL_PREFIXES(PeerConnectionTrackerTest,
+                           StartDataChannelLogCalled);
+  FRIEND_TEST_ALL_PREFIXES(PeerConnectionTrackerTest, StopDataChannelLogCalled);
+  FRIEND_TEST_ALL_PREFIXES(
+      PeerConnectionTrackerTest,
+      StartDataChannelLogNotCalledIfMismatchBetweenLidAndPeerConnection);
+  FRIEND_TEST_ALL_PREFIXES(
+      PeerConnectionTrackerTest,
+      StopDataChannelLogNotCalledIfMismatchBetweenLidAndPeerConnection);
+  FRIEND_TEST_ALL_PREFIXES(PeerConnectionTrackerTest, DataChannelLoggingWrite);
+  FRIEND_TEST_ALL_PREFIXES(PeerConnectionTrackerTest, StartEventLogCalled);
+  FRIEND_TEST_ALL_PREFIXES(PeerConnectionTrackerTest, StopEventLogCalled);
+  FRIEND_TEST_ALL_PREFIXES(
+      PeerConnectionTrackerTest,
+      StartEventLogNotCalledIfMismatchBetweenLidAndPeerConnection);
+  FRIEND_TEST_ALL_PREFIXES(
+      PeerConnectionTrackerTest,
+      StopEventLogNotCalledIfMismatchBetweenLidAndPeerConnection);
+  FRIEND_TEST_ALL_PREFIXES(PeerConnectionTrackerTest, EventLoggingWrite);
 
   PeerConnectionTracker(
       mojo::PendingRemote<mojom::blink::PeerConnectionTrackerHost> host,
@@ -278,6 +300,8 @@ class MODULES_EXPORT PeerConnectionTracker
   void StartEventLog(int peer_connection_local_id,
                      int output_period_ms) override;
   void StopEventLog(int peer_connection_local_id) override;
+  void StartDataChannelLog(int peer_connection_local_id) override;
+  void StopDataChannelLog(int peer_connection_local_id) override;
   void GetStandardStats() override;
   void GetCurrentState() override;
 
@@ -296,10 +320,10 @@ class MODULES_EXPORT PeerConnectionTracker
                                 const String& callback_type,
                                 const String& value);
 
-  void AddStandardStats(int lid, base::Value::List value);
+  void AddStandardStats(int lid, base::ListValue value);
 
   // This map stores the local ID assigned to each RTCPeerConnectionHandler.
-  typedef WTF::HashMap<RTCPeerConnectionHandler*, int> PeerConnectionLocalIdMap;
+  typedef HashMap<RTCPeerConnectionHandler*, int> PeerConnectionLocalIdMap;
   PeerConnectionLocalIdMap peer_connection_local_id_map_;
   mojom::blink::DeviceThermalState current_thermal_state_ =
       mojom::blink::DeviceThermalState::kUnknown;

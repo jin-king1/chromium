@@ -6,6 +6,8 @@
 
 #include <array>
 
+#include "base/functional/callback.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/lens/lens_overlay_colors.h"
@@ -298,13 +300,77 @@ TEST_F(LensOverlayImageHelperTest,
   lens::mojom::CenterRotatedBoxPtr region;
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
-  std::optional<lens::ImageCrop> image_crop =
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
       lens::DownscaleAndEncodeBitmapRegionIfNeeded(
           bitmap, std::move(region), std::nullopt, ref_counted_logs);
-  ASSERT_FALSE(image_crop.has_value());
+  ASSERT_FALSE(image_crop_and_bitmap.has_value());
   ASSERT_EQ(
       0,
       ref_counted_logs->client_logs().phase_latencies_metadata().phase_size());
+}
+
+TEST_F(LensOverlayImageHelperTest,
+       DownscaleAndEncodeBitmapRegionPreservesZoomedCropMetadata) {
+  const SkBitmap bitmap = CreateNonEmptyBitmap(kImageMaxWidth, kImageMaxHeight);
+  gfx::Rect region(10, 10, 50, 50);
+  scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
+      base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
+
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
+      lens::DownscaleAndEncodeBitmapRegionIfNeeded(
+          bitmap, CenterBoxForRegion(region), std::nullopt, ref_counted_logs);
+
+  ASSERT_TRUE(image_crop_and_bitmap.has_value());
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
+
+  // Verify spatial context contract is fulfilled.
+  EXPECT_TRUE(image_crop.has_zoomed_crop());
+  EXPECT_EQ(kImageMaxWidth, image_crop.zoomed_crop().parent_width());
+  EXPECT_EQ(kImageMaxHeight, image_crop.zoomed_crop().parent_height());
+  EXPECT_GT(image_crop.zoomed_crop().zoom(), 0.0);
+
+  // Verify normalized region coordinates are populated.
+  EXPECT_TRUE(image_crop.zoomed_crop().has_crop());
+  EXPECT_GT(image_crop.zoomed_crop().crop().width(), 0.0);
+  EXPECT_GT(image_crop.zoomed_crop().crop().height(), 0.0);
+  EXPECT_EQ(lens::CoordinateType::NORMALIZED,
+            image_crop.zoomed_crop().crop().coordinate_type());
+}
+
+TEST_F(LensOverlayImageHelperTest,
+       DownscaleAndEncodeBitmapRegionPreservesMetadataOnEncodingFailure) {
+  // Create a bitmap with valid dimensions but without allocating pixels.
+  // This causes encoding to fail gracefully while satisfying spatial
+  // preconditions.
+  SkBitmap unallocated_bitmap;
+  unallocated_bitmap.setInfo(SkImageInfo::MakeN32Premul(100, 100));
+
+  gfx::Rect region(10, 10, 50, 50);
+  scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
+      base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
+
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
+      lens::DownscaleAndEncodeBitmapRegionIfNeeded(
+          unallocated_bitmap, CenterBoxForRegion(region), std::nullopt,
+          ref_counted_logs);
+
+  ASSERT_TRUE(image_crop_and_bitmap.has_value());
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
+
+  // Verify spatial context contract is still perfectly fulfilled.
+  EXPECT_TRUE(image_crop.has_zoomed_crop());
+  EXPECT_EQ(100, image_crop.zoomed_crop().parent_width());
+  EXPECT_EQ(100, image_crop.zoomed_crop().parent_height());
+  EXPECT_GE(image_crop.zoomed_crop().zoom(), 0.0);
+
+  // Verify normalized region coordinates are populated.
+  EXPECT_TRUE(image_crop.zoomed_crop().has_crop());
+  EXPECT_GT(image_crop.zoomed_crop().crop().width(), 0.0);
+  EXPECT_GT(image_crop.zoomed_crop().crop().height(), 0.0);
+
+  // Verify that the image payload wrapper remains unset due to encoding
+  // failure.
+  EXPECT_FALSE(image_crop.has_image());
 }
 
 TEST_F(LensOverlayImageHelperTest, DownscaleAndEncodeBitmapRegionMaxSize) {
@@ -312,27 +378,28 @@ TEST_F(LensOverlayImageHelperTest, DownscaleAndEncodeBitmapRegionMaxSize) {
   gfx::Rect region(0, 0, kImageMaxWidth, kImageMaxHeight);
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
-  std::optional<lens::ImageCrop> image_crop =
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
       lens::DownscaleAndEncodeBitmapRegionIfNeeded(
           bitmap, CenterBoxForRegion(region), std::nullopt, ref_counted_logs);
   std::string expected_output = GetJpegBytesForBitmap(bitmap);
 
-  ASSERT_EQ(kImageMaxWidth, image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(kImageMaxHeight, image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(1, image_crop->zoomed_crop().zoom());
-  ASSERT_EQ(kImageMaxWidth * .5, image_crop->zoomed_crop().crop().center_x() *
-                                     image_crop->zoomed_crop().parent_width());
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
+  ASSERT_EQ(kImageMaxWidth, image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(kImageMaxHeight, image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(1, image_crop.zoomed_crop().zoom());
+  ASSERT_EQ(kImageMaxWidth * .5, image_crop.zoomed_crop().crop().center_x() *
+                                     image_crop.zoomed_crop().parent_width());
   ASSERT_EQ(kImageMaxHeight * .5,
-            image_crop->zoomed_crop().crop().center_y() *
-                image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(kImageMaxWidth, image_crop->zoomed_crop().crop().width() *
-                                image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(kImageMaxHeight, image_crop->zoomed_crop().crop().height() *
-                                 image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(0, image_crop->zoomed_crop().crop().rotation_z());
+            image_crop.zoomed_crop().crop().center_y() *
+                image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(kImageMaxWidth, image_crop.zoomed_crop().crop().width() *
+                                image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(kImageMaxHeight, image_crop.zoomed_crop().crop().height() *
+                                 image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(0, image_crop.zoomed_crop().crop().rotation_z());
   ASSERT_EQ(lens::CoordinateType::NORMALIZED,
-            image_crop->zoomed_crop().crop().coordinate_type());
-  ASSERT_EQ(expected_output, image_crop->image().image_content());
+            image_crop.zoomed_crop().crop().coordinate_type());
+  ASSERT_EQ(expected_output, image_crop.image().image_content());
   ASSERT_EQ(
       2,
       ref_counted_logs->client_logs().phase_latencies_metadata().phase_size());
@@ -358,29 +425,30 @@ TEST_F(LensOverlayImageHelperTest, DownscaleAndEncodeBitmapRegionSmallSize) {
   gfx::Rect region(10, 10, 50, 50);
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
-  std::optional<lens::ImageCrop> image_crop =
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
       lens::DownscaleAndEncodeBitmapRegionIfNeeded(
           bitmap, CenterBoxForRegion(region), std::nullopt, ref_counted_logs);
 
   const SkBitmap region_bitmap =
       CreateNonEmptyBitmap(/*width=*/50, /*height=*/50);
   std::string expected_output = GetJpegBytesForBitmap(region_bitmap);
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
 
-  ASSERT_EQ(100, image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(100, image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(1, image_crop->zoomed_crop().zoom());
-  ASSERT_EQ(35, image_crop->zoomed_crop().crop().center_x() *
-                    image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(35, image_crop->zoomed_crop().crop().center_y() *
-                    image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(50, image_crop->zoomed_crop().crop().width() *
-                    image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(50, image_crop->zoomed_crop().crop().height() *
-                    image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(0, image_crop->zoomed_crop().crop().rotation_z());
+  ASSERT_EQ(100, image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(100, image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(1, image_crop.zoomed_crop().zoom());
+  ASSERT_EQ(35, image_crop.zoomed_crop().crop().center_x() *
+                    image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(35, image_crop.zoomed_crop().crop().center_y() *
+                    image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(50, image_crop.zoomed_crop().crop().width() *
+                    image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(50, image_crop.zoomed_crop().crop().height() *
+                    image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(0, image_crop.zoomed_crop().crop().rotation_z());
   ASSERT_EQ(lens::CoordinateType::NORMALIZED,
-            image_crop->zoomed_crop().crop().coordinate_type());
-  ASSERT_EQ(expected_output, image_crop->image().image_content());
+            image_crop.zoomed_crop().crop().coordinate_type());
+  ASSERT_EQ(expected_output, image_crop.image().image_content());
   ASSERT_EQ(
       2,
       ref_counted_logs->client_logs().phase_latencies_metadata().phase_size());
@@ -410,29 +478,30 @@ TEST_F(LensOverlayImageHelperTest,
   gfx::Rect region(10, 10, 50, 50);
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
-  std::optional<lens::ImageCrop> image_crop =
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
       lens::DownscaleAndEncodeBitmapRegionIfNeeded(
           bitmap, CenterBoxForRegion(region), std::nullopt, ref_counted_logs);
 
   const SkBitmap region_bitmap =
       CreateNonEmptyBitmap(/*width=*/50, /*height=*/50);
   std::string expected_output = GetJpegBytesForBitmap(region_bitmap);
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
 
-  ASSERT_EQ(kImageMaxWidth * scale, image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(kImageMaxHeight * scale, image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(1, image_crop->zoomed_crop().zoom());
-  ASSERT_EQ(35, image_crop->zoomed_crop().crop().center_x() *
-                    image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(35, image_crop->zoomed_crop().crop().center_y() *
-                    image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(50, image_crop->zoomed_crop().crop().width() *
-                    image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(50, image_crop->zoomed_crop().crop().height() *
-                    image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(0, image_crop->zoomed_crop().crop().rotation_z());
+  ASSERT_EQ(kImageMaxWidth * scale, image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(kImageMaxHeight * scale, image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(1, image_crop.zoomed_crop().zoom());
+  ASSERT_EQ(35, image_crop.zoomed_crop().crop().center_x() *
+                    image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(35, image_crop.zoomed_crop().crop().center_y() *
+                    image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(50, image_crop.zoomed_crop().crop().width() *
+                    image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(50, image_crop.zoomed_crop().crop().height() *
+                    image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(0, image_crop.zoomed_crop().crop().rotation_z());
   ASSERT_EQ(lens::CoordinateType::NORMALIZED,
-            image_crop->zoomed_crop().crop().coordinate_type());
-  ASSERT_EQ(expected_output, image_crop->image().image_content());
+            image_crop.zoomed_crop().crop().coordinate_type());
+  ASSERT_EQ(expected_output, image_crop.image().image_content());
   ASSERT_EQ(
       2,
       ref_counted_logs->client_logs().phase_latencies_metadata().phase_size());
@@ -465,34 +534,35 @@ TEST_F(LensOverlayImageHelperTest,
                    kImageMaxHeight * region_scale);
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
-  std::optional<lens::ImageCrop> image_crop =
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
       lens::DownscaleAndEncodeBitmapRegionIfNeeded(
           bitmap, CenterBoxForRegion(region), std::nullopt, ref_counted_logs);
 
   const SkBitmap region_bitmap =
       CreateNonEmptyBitmap(kImageMaxWidth, kImageMaxHeight);
   std::string expected_output = GetJpegBytesForBitmap(region_bitmap);
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
 
   ASSERT_EQ(kImageMaxWidth * full_image_scale,
-            image_crop->zoomed_crop().parent_width());
+            image_crop.zoomed_crop().parent_width());
   ASSERT_EQ(kImageMaxHeight * full_image_scale,
-            image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(.5, image_crop->zoomed_crop().zoom());
-  ASSERT_EQ(10 + kImageMaxWidth, image_crop->zoomed_crop().crop().center_x() *
-                                     image_crop->zoomed_crop().parent_width());
+            image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(.5, image_crop.zoomed_crop().zoom());
+  ASSERT_EQ(10 + kImageMaxWidth, image_crop.zoomed_crop().crop().center_x() *
+                                     image_crop.zoomed_crop().parent_width());
   ASSERT_EQ(10 + kImageMaxHeight,
-            image_crop->zoomed_crop().crop().center_y() *
-                image_crop->zoomed_crop().parent_height());
+            image_crop.zoomed_crop().crop().center_y() *
+                image_crop.zoomed_crop().parent_height());
   ASSERT_EQ(kImageMaxWidth * region_scale,
-            image_crop->zoomed_crop().crop().width() *
-                image_crop->zoomed_crop().parent_width());
+            image_crop.zoomed_crop().crop().width() *
+                image_crop.zoomed_crop().parent_width());
   ASSERT_EQ(kImageMaxHeight * region_scale,
-            image_crop->zoomed_crop().crop().height() *
-                image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(0, image_crop->zoomed_crop().crop().rotation_z());
+            image_crop.zoomed_crop().crop().height() *
+                image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(0, image_crop.zoomed_crop().crop().rotation_z());
   ASSERT_EQ(lens::CoordinateType::NORMALIZED,
-            image_crop->zoomed_crop().crop().coordinate_type());
-  ASSERT_EQ(expected_output, image_crop->image().image_content());
+            image_crop.zoomed_crop().crop().coordinate_type());
+  ASSERT_EQ(expected_output, image_crop.image().image_content());
   ASSERT_EQ(
       2,
       ref_counted_logs->client_logs().phase_latencies_metadata().phase_size());
@@ -525,33 +595,34 @@ TEST_F(LensOverlayImageHelperTest,
   gfx::Rect region(10, 10, kImageMaxWidth * region_scale, kImageMaxHeight);
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
-  std::optional<lens::ImageCrop> image_crop =
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
       lens::DownscaleAndEncodeBitmapRegionIfNeeded(
           bitmap, CenterBoxForRegion(region), std::nullopt, ref_counted_logs);
 
   const SkBitmap region_bitmap =
       CreateNonEmptyBitmap(kImageMaxWidth, kImageMaxHeight / region_scale);
   std::string expected_output = GetJpegBytesForBitmap(region_bitmap);
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
 
   ASSERT_EQ(kImageMaxWidth * full_image_scale,
-            image_crop->zoomed_crop().parent_width());
+            image_crop.zoomed_crop().parent_width());
   ASSERT_EQ(kImageMaxHeight * full_image_scale,
-            image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(.5, image_crop->zoomed_crop().zoom());
-  ASSERT_EQ(10 + kImageMaxWidth, image_crop->zoomed_crop().crop().center_x() *
-                                     image_crop->zoomed_crop().parent_width());
+            image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(.5, image_crop.zoomed_crop().zoom());
+  ASSERT_EQ(10 + kImageMaxWidth, image_crop.zoomed_crop().crop().center_x() *
+                                     image_crop.zoomed_crop().parent_width());
   ASSERT_EQ(10 + kImageMaxHeight / 2,
-            image_crop->zoomed_crop().crop().center_y() *
-                image_crop->zoomed_crop().parent_height());
+            image_crop.zoomed_crop().crop().center_y() *
+                image_crop.zoomed_crop().parent_height());
   ASSERT_EQ(kImageMaxWidth * region_scale,
-            image_crop->zoomed_crop().crop().width() *
-                image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(kImageMaxHeight, image_crop->zoomed_crop().crop().height() *
-                                 image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(0, image_crop->zoomed_crop().crop().rotation_z());
+            image_crop.zoomed_crop().crop().width() *
+                image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(kImageMaxHeight, image_crop.zoomed_crop().crop().height() *
+                                 image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(0, image_crop.zoomed_crop().crop().rotation_z());
   ASSERT_EQ(lens::CoordinateType::NORMALIZED,
-            image_crop->zoomed_crop().crop().coordinate_type());
-  ASSERT_EQ(expected_output, image_crop->image().image_content());
+            image_crop.zoomed_crop().crop().coordinate_type());
+  ASSERT_EQ(expected_output, image_crop.image().image_content());
   ASSERT_EQ(
       2,
       ref_counted_logs->client_logs().phase_latencies_metadata().phase_size());
@@ -585,34 +656,35 @@ TEST_F(LensOverlayImageHelperTest,
   gfx::Rect region(10, 10, kImageMaxWidth, kImageMaxHeight * region_scale);
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
-  std::optional<lens::ImageCrop> image_crop =
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
       lens::DownscaleAndEncodeBitmapRegionIfNeeded(
           bitmap, CenterBoxForRegion(region), std::nullopt, ref_counted_logs);
 
   const SkBitmap region_bitmap =
       CreateNonEmptyBitmap(kImageMaxWidth / region_scale, kImageMaxHeight);
   std::string expected_output = GetJpegBytesForBitmap(region_bitmap);
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
 
   ASSERT_EQ(kImageMaxWidth * full_image_scale,
-            image_crop->zoomed_crop().parent_width());
+            image_crop.zoomed_crop().parent_width());
   ASSERT_EQ(kImageMaxHeight * full_image_scale,
-            image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(.5, image_crop->zoomed_crop().zoom());
+            image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(.5, image_crop.zoomed_crop().zoom());
   ASSERT_EQ(10 + kImageMaxWidth / 2,
-            image_crop->zoomed_crop().crop().center_x() *
-                image_crop->zoomed_crop().parent_width());
+            image_crop.zoomed_crop().crop().center_x() *
+                image_crop.zoomed_crop().parent_width());
   ASSERT_EQ(10 + kImageMaxHeight,
-            image_crop->zoomed_crop().crop().center_y() *
-                image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(kImageMaxWidth, image_crop->zoomed_crop().crop().width() *
-                                image_crop->zoomed_crop().parent_width());
+            image_crop.zoomed_crop().crop().center_y() *
+                image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(kImageMaxWidth, image_crop.zoomed_crop().crop().width() *
+                                image_crop.zoomed_crop().parent_width());
   ASSERT_EQ(kImageMaxHeight * region_scale,
-            image_crop->zoomed_crop().crop().height() *
-                image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(0, image_crop->zoomed_crop().crop().rotation_z());
+            image_crop.zoomed_crop().crop().height() *
+                image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(0, image_crop.zoomed_crop().crop().rotation_z());
   ASSERT_EQ(lens::CoordinateType::NORMALIZED,
-            image_crop->zoomed_crop().crop().coordinate_type());
-  ASSERT_EQ(expected_output, image_crop->image().image_content());
+            image_crop.zoomed_crop().crop().coordinate_type());
+  ASSERT_EQ(expected_output, image_crop.image().image_content());
   ASSERT_EQ(
       2,
       ref_counted_logs->client_logs().phase_latencies_metadata().phase_size());
@@ -644,27 +716,28 @@ TEST_F(LensOverlayImageHelperTest,
   gfx::Rect region(0, 0, 100, 100);
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
-  std::optional<lens::ImageCrop> image_crop =
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
       lens::DownscaleAndEncodeBitmapRegionIfNeeded(
           image_bitmap, CenterBoxForRegion(region),
           std::make_optional<SkBitmap>(region_bitmap), ref_counted_logs);
   std::string expected_output = GetJpegBytesForBitmap(region_bitmap);
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
 
-  ASSERT_EQ(1000, image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(1000, image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(3, image_crop->zoomed_crop().zoom());
-  ASSERT_EQ(50, image_crop->zoomed_crop().crop().center_x() *
-                    image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(50, image_crop->zoomed_crop().crop().center_y() *
-                    image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(100, image_crop->zoomed_crop().crop().width() *
-                     image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(100, image_crop->zoomed_crop().crop().height() *
-                     image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(0, image_crop->zoomed_crop().crop().rotation_z());
+  ASSERT_EQ(1000, image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(1000, image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(3, image_crop.zoomed_crop().zoom());
+  ASSERT_EQ(50, image_crop.zoomed_crop().crop().center_x() *
+                    image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(50, image_crop.zoomed_crop().crop().center_y() *
+                    image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(100, image_crop.zoomed_crop().crop().width() *
+                     image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(100, image_crop.zoomed_crop().crop().height() *
+                     image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(0, image_crop.zoomed_crop().crop().rotation_z());
   ASSERT_EQ(lens::CoordinateType::NORMALIZED,
-            image_crop->zoomed_crop().crop().coordinate_type());
-  ASSERT_EQ(expected_output, image_crop->image().image_content());
+            image_crop.zoomed_crop().crop().coordinate_type());
+  ASSERT_EQ(expected_output, image_crop.image().image_content());
   ASSERT_EQ(
       1,
       ref_counted_logs->client_logs().phase_latencies_metadata().phase_size());
@@ -682,27 +755,28 @@ TEST_F(LensOverlayImageHelperTest,
   gfx::Rect region(0, 0, 100, 100);
   scoped_refptr<lens::RefCountedLensOverlayClientLogs> ref_counted_logs =
       base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
-  std::optional<lens::ImageCrop> image_crop =
+  std::optional<lens::ImageCropAndBitmap> image_crop_and_bitmap =
       lens::DownscaleAndEncodeBitmapRegionIfNeeded(
           image_bitmap, CenterBoxForRegion(region),
           std::make_optional<SkBitmap>(region_bitmap), ref_counted_logs);
   std::string expected_output = GetWebpBytesForBitmap(region_bitmap);
+  const auto& image_crop = image_crop_and_bitmap->image_crop;
 
-  ASSERT_EQ(1000, image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(1000, image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(3, image_crop->zoomed_crop().zoom());
-  ASSERT_EQ(50, image_crop->zoomed_crop().crop().center_x() *
-                    image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(50, image_crop->zoomed_crop().crop().center_y() *
-                    image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(100, image_crop->zoomed_crop().crop().width() *
-                     image_crop->zoomed_crop().parent_width());
-  ASSERT_EQ(100, image_crop->zoomed_crop().crop().height() *
-                     image_crop->zoomed_crop().parent_height());
-  ASSERT_EQ(0, image_crop->zoomed_crop().crop().rotation_z());
+  ASSERT_EQ(1000, image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(1000, image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(3, image_crop.zoomed_crop().zoom());
+  ASSERT_EQ(50, image_crop.zoomed_crop().crop().center_x() *
+                    image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(50, image_crop.zoomed_crop().crop().center_y() *
+                    image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(100, image_crop.zoomed_crop().crop().width() *
+                     image_crop.zoomed_crop().parent_width());
+  ASSERT_EQ(100, image_crop.zoomed_crop().crop().height() *
+                     image_crop.zoomed_crop().parent_height());
+  ASSERT_EQ(0, image_crop.zoomed_crop().crop().rotation_z());
   ASSERT_EQ(lens::CoordinateType::NORMALIZED,
-            image_crop->zoomed_crop().crop().coordinate_type());
-  ASSERT_EQ(expected_output, image_crop->image().image_content());
+            image_crop.zoomed_crop().crop().coordinate_type());
+  ASSERT_EQ(expected_output, image_crop.image().image_content());
   ASSERT_EQ(
       1,
       ref_counted_logs->client_logs().phase_latencies_metadata().phase_size());
@@ -747,189 +821,6 @@ TEST_F(LensOverlayImageHelperTest,
             result->coordinate_type);
 }
 
-TEST_F(LensOverlayImageHelperTest, ExtractVibrantOrDominantColorFromImage) {
-  SkBitmap bitmap;
-  // Larger than sample limit of ~10K pixels
-  bitmap.allocN32Pixels(200, 200);
-  // muted green for the whole image, #80C080
-  bitmap.eraseColor(SkColorSetRGB(128, 192, 128));
-  // vibrant green for 80x80, which is 16%
-  bitmap.erase(SK_ColorGREEN, {40, 40, 120, 120});
-
-  std::vector<color_utils::ColorProfile> profiles;
-  // vibrant color profile
-  profiles.emplace_back(color_utils::LumaRange::ANY,
-                        color_utils::SaturationRange::VIBRANT);
-  // any color profile
-  profiles.emplace_back(color_utils::LumaRange::ANY,
-                        color_utils::SaturationRange::ANY);
-
-  auto vibrantAndDominantColors = color_utils::CalculateProminentColorsOfBitmap(
-      bitmap, profiles, /*region=*/nullptr, color_utils::ColorSwatchFilter());
-
-  EXPECT_EQ(SK_ColorGREEN, vibrantAndDominantColors[0].color);
-  EXPECT_NEAR(0.16,
-              static_cast<float>(vibrantAndDominantColors[0].population) /
-                  color_utils::kMaxConsideredPixelsForSwatches,
-              0.001);
-  EXPECT_EQ(SkColorSetRGB(128, 192, 128), vibrantAndDominantColors[1].color);
-  EXPECT_NEAR(0.84,
-              static_cast<float>(vibrantAndDominantColors[1].population) /
-                  color_utils::kMaxConsideredPixelsForSwatches,
-              0.001);
-
-  // Happy path, green.
-  {
-    SkColor color = ExtractVibrantOrDominantColorFromImage(bitmap, 0.15f);
-    EXPECT_EQ(SK_ColorGREEN, color);
-  }
-
-  // Not enough pixels for green, muted green.
-  {
-    SkColor color = ExtractVibrantOrDominantColorFromImage(bitmap, 0.2f);
-    EXPECT_EQ(SkColorSetRGB(128, 192, 128) /* Muted green */, color);
-  }
-
-  // Not enough pixels for green, background dark gray is
-  // not colorful enough, extraction fails and returns
-  // transparent.
-  {
-    // dark gray for the whole image
-    bitmap.eraseColor(SK_ColorDKGRAY);
-    // vibrant green for 40x40, which is 16%
-    bitmap.erase(SK_ColorGREEN, {40, 40, 120, 120});
-
-    SkColor color = ExtractVibrantOrDominantColorFromImage(bitmap, 0.17f);
-    EXPECT_EQ(SK_ColorTRANSPARENT, color);
-  }
-
-  // No colors qualify for vibrant.
-  {
-    // Muted green for the whole image, #80C080, not vibrant, dominant.
-    bitmap.eraseColor(SkColorSetRGB(128, 192, 128));
-    // #73904b, HSL S value < 35%, not vibrant
-    bitmap.erase(SkColorSetRGB(115, 144, 75), {40, 40, 120, 120});
-
-    SkColor color = ExtractVibrantOrDominantColorFromImage(bitmap, 0.15f);
-    EXPECT_EQ(SkColorSetRGB(128, 192, 128), color);
-  }
-
-  // Colors qualify for vibrant.
-  {
-    // Muted green for the whole image, #80C080, not vibrant, dominant.
-    bitmap.eraseColor(SkColorSetRGB(128, 192, 128));
-    // #73a54b, HSL S value > 35%, considered vibrant
-    bitmap.erase(SkColorSetRGB(115, 165, 75), {40, 40, 120, 120});
-
-    SkColor color = ExtractVibrantOrDominantColorFromImage(bitmap, 0.15f);
-    EXPECT_EQ(SkColorSetRGB(115, 165, 75), color);
-  }
-
-  // Test small bitmap, fewer than sample limit of ~10K pixels
-  {
-    SkBitmap small_bitmap;
-    small_bitmap.allocN32Pixels(50, 50);
-    // muted green for the whole image, #80C080
-    small_bitmap.eraseColor(SkColorSetRGB(128, 192, 128));
-    // vibrant green for 80x80, which is 16%
-    small_bitmap.erase(SK_ColorGREEN, {10, 10, 30, 30});
-
-    SkColor color = ExtractVibrantOrDominantColorFromImage(small_bitmap, 0.15f);
-    EXPECT_EQ(SK_ColorGREEN, color);
-
-    color = ExtractVibrantOrDominantColorFromImage(small_bitmap, 0.17f);
-    EXPECT_EQ(SkColorSetRGB(128, 192, 128) /* Muted green */, color);
-  }
-}
-
-TEST_F(LensOverlayImageHelperTest, ConvertColorToLab) {
-  SkColor input_rgb[] = {SK_ColorBLACK, SK_ColorWHITE,  SK_ColorRED,
-                         SK_ColorGREEN, SK_ColorBLUE,   SK_ColorYELLOW,
-                         SK_ColorCYAN,  SK_ColorMAGENTA};
-
-  // Conversion values from
-  // https://colorjs.io/apps/convert/?color=magenta&precision=4
-  auto output_lab = std::to_array<std::tuple<float, float, float>>({
-      {0.0, 0.0, 0.0},
-      {100.0, 0.0, 0.0},
-      {54.29, 80.80, 69.89},
-      {87.82, -79.27, 80.99},
-      {29.57, 68.30, -112.03},
-      {97.61, -15.75, 93.39},
-      {90.67, -50.66, -14.96},
-      {60.17, 93.54, -60.50},
-  });
-
-  int index = 0;
-  for (auto rgb : input_rgb) {
-    auto [l, a, b] = ConvertColorToLab(rgb);
-    auto [expected_l, expected_a, expected_b] = output_lab[index];
-    EXPECT_NEAR(expected_l, l, 0.05);
-    EXPECT_NEAR(expected_a, a, 0.05);
-    EXPECT_NEAR(expected_b, b, 0.05);
-    index++;
-  }
-}
-
-TEST_F(LensOverlayImageHelperTest, ColorUtilityFunctions) {
-  EXPECT_NEAR(0.0, CalculateChroma(ConvertColorToLab(SK_ColorDKGRAY)), 1.0);
-  EXPECT_NEAR(111.4, CalculateChroma(ConvertColorToLab(SK_ColorMAGENTA)), 1.0);
-  EXPECT_NEAR(72.0,
-              CalculateChroma(ConvertColorToLab(SkColorSetRGB(80, 200, 80))),
-              1.0);
-
-  EXPECT_NEAR(0.71, CalculateHueAngle(ConvertColorToLab(SK_ColorRED)).value(),
-              0.01);
-  EXPECT_NEAR(-1.023,
-              CalculateHueAngle(ConvertColorToLab(SK_ColorBLUE)).value(), 0.01);
-  EXPECT_NEAR(-0.574,
-              CalculateHueAngle(ConvertColorToLab(SK_ColorMAGENTA)).value(),
-              0.01);
-
-  EXPECT_FALSE(CalculateHueAngle({100, 0, 0}).has_value());
-
-  EXPECT_FALSE(CalculateHueAngleDistance(ConvertColorToLab(SK_ColorRED),
-                                         {29.0f, 0.0f, 0.0f})
-                   .has_value());
-  EXPECT_FALSE(CalculateHueAngleDistance({29.0f, 0.0f, 0.0f},
-                                         ConvertColorToLab(SK_ColorCYAN))
-                   .has_value());
-  EXPECT_NEAR(1.028,
-              CalculateHueAngleDistance(ConvertColorToLab(SK_ColorRED),
-                                        ConvertColorToLab(SK_ColorYELLOW))
-                  .value(),
-              0.01);
-}
-
-TEST_F(LensOverlayImageHelperTest, FindBestMatchedColorOrTransparent) {
-  std::vector<SkColor> colors;
-  for (const auto& pair : kPalettes) {
-    colors.emplace_back(pair.first);
-  }
-  // No match for close to grayscale colors
-  EXPECT_EQ(SK_ColorTRANSPARENT,
-            FindBestMatchedColorOrTransparent(colors, SK_ColorWHITE, 3.0f));
-  EXPECT_EQ(SK_ColorTRANSPARENT,
-            FindBestMatchedColorOrTransparent(colors, SK_ColorGRAY, 3.0f));
-  EXPECT_EQ(SK_ColorTRANSPARENT,
-            FindBestMatchedColorOrTransparent(colors, SK_ColorBLACK, 3.0f));
-  EXPECT_EQ(SK_ColorTRANSPARENT,
-            FindBestMatchedColorOrTransparent(
-                colors, SkColorSetRGB(0x43, 0x46, 0x44), 3.0f));
-  // Closest matching colors.
-  EXPECT_EQ(kColorGrapePrimary,
-            FindBestMatchedColorOrTransparent(
-                colors, SkColorSetRGB(0x50, 0x12, 0xC4), 3.0f));
-  EXPECT_EQ(kColorTurquoisePrimary,
-            FindBestMatchedColorOrTransparent(colors, SK_ColorCYAN, 3.0f));
-  EXPECT_EQ(kColorTangerinePrimary,
-            FindBestMatchedColorOrTransparent(colors, SK_ColorRED, 3.0f));
-  EXPECT_EQ(kColorCactusPrimary,
-            FindBestMatchedColorOrTransparent(colors, SK_ColorGREEN, 3.0f));
-  EXPECT_EQ(kColorSchoolbusPrimary,
-            FindBestMatchedColorOrTransparent(
-                colors, SkColorSetRGB(0x48, 0x39, 0x12), 3.0f));
-}
 
 TEST_F(LensOverlayImageHelperTest, TieredDownscalingTier3) {
   EnableTieredDownscaling();

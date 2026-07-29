@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
@@ -161,11 +160,14 @@ class MLInstallabilityPromoter
                                const GURL& manifest_url) override;
   void DidUpdateFaviconURL(
       content::RenderFrameHost* render_frame_host,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override;
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override;
 
   // content::ServiceWorkerContextObserver overrides
   void OnRegistrationStored(int64_t registration_id,
-                            const GURL& scope) override;
+                            const GURL& scope,
+                            const content::ServiceWorkerRegistrationInformation&
+                                service_worker_info) override;
   void OnDestruct(content::ServiceWorkerContext* context) override;
 
   void ResetRunningStagesAndTasksMaybeReportResult();

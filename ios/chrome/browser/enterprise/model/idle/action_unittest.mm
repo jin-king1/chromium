@@ -12,6 +12,9 @@
 #import "base/time/time.h"
 #import "components/enterprise/idle/idle_pref_names.h"
 #import "components/prefs/pref_service.h"
+#import "components/signin/public/base/consent_level.h"
+#import "components/signin/public/identity_manager/identity_manager.h"
+#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/browsing_data/model/fake_browsing_data_remover.h"
 #import "ios/chrome/browser/enterprise/model/idle/action_runner_impl.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -27,6 +30,9 @@
 #import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
+#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -48,11 +54,14 @@ class IdleActionTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetFactoryWithDelegate(
             std::make_unique<FakeAuthenticationServiceDelegate>()));
+    builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
+                              base::BindRepeating(&CreateTestSyncService));
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
     main_browsing_data_remover_ = std::make_unique<FakeBrowsingDataRemover>();
     incognito_browsing_data_remover_ =
         std::make_unique<FakeBrowsingDataRemover>();
     action_factory_ = std::make_unique<ActionFactory>();
+    identity_manager_ = IdentityManagerFactory::GetForProfile(profile());
     histogram_tester_ = std::make_unique<base::HistogramTester>();
   }
 
@@ -76,7 +85,7 @@ class IdleActionTest : public PlatformTest {
             GetApplicationContext()->GetSystemIdentityManager());
     system_identity_manager->AddIdentity(identity);
     authentication_service_->SignIn(identity,
-                                    signin_metrics::AccessPoint::kUnknown);
+                                    signin_metrics::AccessPoint::kStartPage);
   }
 
   // Inserts WebStates into `browser` each one loading a new URL from `urls`
@@ -135,11 +144,12 @@ class IdleActionTest : public PlatformTest {
 
  protected:
   web::WebTaskEnvironment task_environment_;
-  raw_ptr<AuthenticationService> authentication_service_;
+  raw_ptr<AuthenticationService, DanglingUntriaged> authentication_service_;
   // ScopedTestingLocalState needed for the authentication service.
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
   std::unique_ptr<ActionFactory> action_factory_;
+  raw_ptr<signin::IdentityManager> identity_manager_;
   std::unique_ptr<FakeBrowsingDataRemover> main_browsing_data_remover_;
   std::unique_ptr<FakeBrowsingDataRemover> incognito_browsing_data_remover_;
   raw_ptr<TestProfileIOS> profile_;
@@ -158,7 +168,8 @@ TEST_F(IdleActionTest, ClearBrowsingHistory) {
             incognito_remover()->GetLastUsedRemovalMask());
   actions.pop();
   histogram_tester_->ExpectUniqueSample(
-      "Enterprise.IdleTimeoutPolicies.Success.ClearBrowsingData", true, 1);
+      "Enterprise.IdleTimeoutPolicies.ActionSuccess.ClearBrowsingData", true,
+      1);
 }
 
 TEST_F(IdleActionTest, ClearCookies) {
@@ -171,7 +182,8 @@ TEST_F(IdleActionTest, ClearCookies) {
             incognito_remover()->GetLastUsedRemovalMask());
   actions.pop();
   histogram_tester_->ExpectUniqueSample(
-      "Enterprise.IdleTimeoutPolicies.Success.ClearBrowsingData", true, 1);
+      "Enterprise.IdleTimeoutPolicies.ActionSuccess.ClearBrowsingData", true,
+      1);
 }
 
 TEST_F(IdleActionTest, ClearCache) {
@@ -184,7 +196,8 @@ TEST_F(IdleActionTest, ClearCache) {
             incognito_remover()->GetLastUsedRemovalMask());
   actions.pop();
   histogram_tester_->ExpectUniqueSample(
-      "Enterprise.IdleTimeoutPolicies.Success.ClearBrowsingData", true, 1);
+      "Enterprise.IdleTimeoutPolicies.ActionSuccess.ClearBrowsingData", true,
+      1);
 }
 
 TEST_F(IdleActionTest, ClearPasswordSignin) {
@@ -197,7 +210,8 @@ TEST_F(IdleActionTest, ClearPasswordSignin) {
             incognito_remover()->GetLastUsedRemovalMask());
   actions.pop();
   histogram_tester_->ExpectUniqueSample(
-      "Enterprise.IdleTimeoutPolicies.Success.ClearBrowsingData", true, 1);
+      "Enterprise.IdleTimeoutPolicies.ActionSuccess.ClearBrowsingData", true,
+      1);
 }
 
 TEST_F(IdleActionTest, ClearAutofill) {
@@ -211,7 +225,8 @@ TEST_F(IdleActionTest, ClearAutofill) {
             incognito_remover()->GetLastUsedRemovalMask());
   actions.pop();
   histogram_tester_->ExpectUniqueSample(
-      "Enterprise.IdleTimeoutPolicies.Success.ClearBrowsingData", true, 1);
+      "Enterprise.IdleTimeoutPolicies.ActionSuccess.ClearBrowsingData", true,
+      1);
 }
 
 TEST_F(IdleActionTest, MultipleTypesAndSuccess) {
@@ -227,7 +242,8 @@ TEST_F(IdleActionTest, MultipleTypesAndSuccess) {
             incognito_remover()->GetLastUsedRemovalMask());
   actions.pop();
   histogram_tester_->ExpectUniqueSample(
-      "Enterprise.IdleTimeoutPolicies.Success.ClearBrowsingData", true, 1);
+      "Enterprise.IdleTimeoutPolicies.ActionSuccess.ClearBrowsingData", true,
+      1);
 }
 
 TEST_F(IdleActionTest, MultipleTypesAndFailure) {
@@ -247,7 +263,8 @@ TEST_F(IdleActionTest, MultipleTypesAndFailure) {
   run_loop.Run();
   actions.pop();
   histogram_tester_->ExpectUniqueSample(
-      "Enterprise.IdleTimeoutPolicies.Success.ClearBrowsingData", false, 1);
+      "Enterprise.IdleTimeoutPolicies.ActionSuccess.ClearBrowsingData", false,
+      1);
 }
 
 TEST_F(IdleActionTest, SignOut) {
@@ -256,8 +273,8 @@ TEST_F(IdleActionTest, SignOut) {
   // Check that the right action is added.
   EXPECT_EQ(static_cast<int>(ActionType::kSignOut), actions.top()->priority());
   SignIn();
-  ASSERT_TRUE(authentication_service_->HasPrimaryIdentity(
-      signin::ConsentLevel::kSignin));
+  ASSERT_TRUE(
+      identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   base::RunLoop run_loop;
   // The test needs to wait for the call so that the action is not removed
   // before sign out completes.
@@ -265,11 +282,11 @@ TEST_F(IdleActionTest, SignOut) {
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
   actions.top()->Run(profile(), continuation.Get());
   run_loop.Run();
-  ASSERT_FALSE(authentication_service_->HasPrimaryIdentity(
-      signin::ConsentLevel::kSignin));
+  ASSERT_FALSE(
+      identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   actions.pop();
   histogram_tester_->ExpectUniqueSample(
-      "Enterprise.IdleTimeoutPolicies.Success.SignOut", true, 1);
+      "Enterprise.IdleTimeoutPolicies.ActionSuccess.SignOut", true, 1);
 }
 
 TEST_F(IdleActionTest, CloseTabs) {
@@ -290,7 +307,7 @@ TEST_F(IdleActionTest, CloseTabs) {
   EXPECT_EQ(GetTabsCount(incognito_browser_.get()), 0);
   actions.pop();
   histogram_tester_->ExpectUniqueSample(
-      "Enterprise.IdleTimeoutPolicies.Success.CloseTabs", true, 1);
+      "Enterprise.IdleTimeoutPolicies.ActionSuccess.CloseTabs", true, 1);
 }
 
 }  // namespace enterprise_idle

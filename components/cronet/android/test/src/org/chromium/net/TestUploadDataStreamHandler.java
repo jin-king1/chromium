@@ -15,6 +15,7 @@ import org.jni_zero.NativeClassQualifiedName;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.net.impl.CronetUrlRequestContext;
+import org.chromium.net.impl.NativeCronetProvider;
 
 /**
  * A wrapper class on top of the native net::UploadDataStream. This class is used in tests to drive
@@ -24,20 +25,24 @@ import org.chromium.net.impl.CronetUrlRequestContext;
 public final class TestUploadDataStreamHandler {
     private final CronetEngine mCronetEngine;
     private long mTestUploadDataStreamHandler;
-    private ConditionVariable mWaitInitCalled = new ConditionVariable();
-    private ConditionVariable mWaitInitComplete = new ConditionVariable();
-    private ConditionVariable mWaitReadComplete = new ConditionVariable();
-    private ConditionVariable mWaitResetComplete = new ConditionVariable();
+    private final ConditionVariable mWaitInitCalled = new ConditionVariable();
+    private final ConditionVariable mWaitInitComplete = new ConditionVariable();
+    private final ConditionVariable mWaitReadComplete = new ConditionVariable();
+    private final ConditionVariable mWaitResetComplete = new ConditionVariable();
     // Waits for checkIfInitCallbackInvoked() returns result asynchronously.
-    private ConditionVariable mWaitCheckInit = new ConditionVariable();
+    private final ConditionVariable mWaitCheckInit = new ConditionVariable();
     // Waits for checkIfReadCallbackInvoked() returns result asynchronously.
-    private ConditionVariable mWaitCheckRead = new ConditionVariable();
+    private final ConditionVariable mWaitCheckRead = new ConditionVariable();
     // If true, init completes synchronously.
     private boolean mInitCompletedSynchronously;
     private String mData = "";
 
     public TestUploadDataStreamHandler(Context context, final long uploadDataStream) {
-        mCronetEngine = new CronetEngine.Builder(context).build();
+        // The native handler requires a CronetEngine to access its network thread.
+        // We use NativeCronetProvider to ensure a native implementation because
+        // HttpEngine does not expose testing-specific APIs like getUrlRequestContextAdapter(),
+        // which is required for the JNI call below.
+        mCronetEngine = new NativeCronetProvider(context).createBuilder().build();
         CronetUrlRequestContext requestContext = (CronetUrlRequestContext) mCronetEngine;
         mTestUploadDataStreamHandler =
                 TestUploadDataStreamHandlerJni.get()
@@ -159,7 +164,7 @@ public final class TestUploadDataStreamHandler {
         mWaitCheckRead.open();
     }
 
-    @NativeMethods("cronet_tests")
+    @NativeMethods
     interface Natives {
         @NativeClassQualifiedName("TestUploadDataStreamHandler")
         void init(long nativePtr);

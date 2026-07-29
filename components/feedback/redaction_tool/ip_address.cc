@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 // This is a copy of net/base/ip_address.cc circa 2023. It should be used only
 // by components/feedback/redaction_tool/. We need a copy because the
 // components/feedback/redaction_tool source code is shared into ChromeOS and
@@ -19,6 +14,8 @@
 #include <string_view>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
@@ -41,7 +38,7 @@ constexpr uint8_t kIPv4MappedPrefix[] = {0, 0, 0, 0, 0,    0,
 // * |ip_address| is at least |prefix_length_in_bits| (bits) long;
 // * |ip_prefix| is at least |prefix_length_in_bits| (bits) long.
 bool IPAddressPrefixCheck(const IPAddressBytes& ip_address,
-                          const uint8_t* ip_prefix,
+                          base::span<const uint8_t> ip_prefix,
                           size_t prefix_length_in_bits) {
   // Compare all the bytes that fall entirely within the prefix.
   size_t num_entire_bytes_in_prefix = prefix_length_in_bits / 8;
@@ -74,7 +71,9 @@ bool ParseIPLiteralToBytes(std::string_view ip_literal, IPAddressBytes* bytes) {
 
     // Try parsing the hostname as an IPv6 literal.
     bytes->Resize(16);  // 128 bits.
-    return IPv6AddressToNumber(host_brackets.data(), host_comp, bytes->data());
+    return IPv6AddressToNumber(
+        host_brackets.data(), host_comp,
+        base::span(*bytes).to_fixed_extent<16u>().value());
   }
 
   // Otherwise the string is an IPv4 address.
@@ -82,7 +81,8 @@ bool ParseIPLiteralToBytes(std::string_view ip_literal, IPAddressBytes* bytes) {
   Component host_comp(0, ip_literal.size());
   int num_components;
   CanonHostInfo::Family family = IPv4AddressToNumber(
-      ip_literal.data(), host_comp, bytes->data(), &num_components);
+      ip_literal.data(), host_comp,
+      base::span(*bytes).to_fixed_extent<4u>().value(), &num_components);
   return family == CanonHostInfo::IPV4;
 }
 
@@ -113,10 +113,6 @@ bool IPAddressBytes::operator<(const IPAddressBytes& other) const {
 
 bool IPAddressBytes::operator==(const IPAddressBytes& other) const {
   return std::ranges::equal(*this, other);
-}
-
-bool IPAddressBytes::operator!=(const IPAddressBytes& other) const {
-  return !(*this == other);
 }
 
 // static
@@ -217,14 +213,6 @@ IPAddress IPAddress::IPv6AllZeros() {
   return AllZeros(kIPv6AddressSize);
 }
 
-bool IPAddress::operator==(const IPAddress& that) const {
-  return ip_address_ == that.ip_address_;
-}
-
-bool IPAddress::operator!=(const IPAddress& that) const {
-  return ip_address_ != that.ip_address_;
-}
-
 bool IPAddress::operator<(const IPAddress& that) const {
   // Sort IPv4 before IPv6.
   if (ip_address_.size() != that.ip_address_.size()) {
@@ -239,9 +227,11 @@ std::string IPAddress::ToString() const {
   StdStringCanonOutput output(&str);
 
   if (IsIPv4()) {
-    AppendIPv4Address(ip_address_.data(), &output);
+    AppendIPv4Address(base::span(ip_address_).to_fixed_extent<4u>().value(),
+                      &output);
   } else if (IsIPv6()) {
-    AppendIPv6Address(ip_address_.data(), &output);
+    AppendIPv6Address(base::span(ip_address_).to_fixed_extent<16u>().value(),
+                      &output);
   }
 
   output.Complete();
@@ -262,10 +252,8 @@ IPAddress ConvertIPv4ToIPv4MappedIPv6(const IPAddress& address) {
 IPAddress ConvertIPv4MappedIPv6ToIPv4(const IPAddress& address) {
   DCHECK(address.IsIPv4MappedIPv6());
 
-  absl::InlinedVector<uint8_t, 16> bytes;
-  bytes.insert(bytes.end(),
-               address.bytes().begin() + std::size(kIPv4MappedPrefix),
-               address.bytes().end());
+  auto bytes =
+      base::span(address.bytes()).subspan(std::size(kIPv4MappedPrefix));
   return IPAddress(bytes.data(), bytes.size());
 }
 
@@ -291,7 +279,7 @@ bool IPAddressMatchesPrefix(const IPAddress& ip_address,
                                   96 + prefix_length_in_bits);
   }
 
-  return IPAddressPrefixCheck(ip_address.bytes(), ip_prefix.bytes().data(),
+  return IPAddressPrefixCheck(ip_address.bytes(), ip_prefix.bytes(),
                               prefix_length_in_bits);
 }
 

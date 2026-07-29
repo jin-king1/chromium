@@ -39,7 +39,7 @@ function validateBid(bid) {
 }
 
 function validateAuctionConfig(auctionConfig) {
-  if (Object.keys(auctionConfig).length !== 15) {
+  if (Object.keys(auctionConfig).length !== 16) {
     throw 'Wrong number of auctionConfig fields ' +
         JSON.stringify(auctionConfig);
   }
@@ -53,16 +53,9 @@ function validateAuctionConfig(auctionConfig) {
     throw 'Wrong decisionLogicURL ' + auctionConfig.decisionLogicURL;
   }
 
-  if (auctionConfig.decisionLogicUrl !==
-      auctionConfig.seller + '/interest_group' +
-          '/component_auction_top_level_decision_argument_validator.js') {
-    throw 'Wrong decisionLogicUrl ' + auctionConfig.decisionLogicUrl;
-  }
-
-  if (auctionConfig.trustedScoringSignalsURL !==
-      auctionConfig.seller + '/interest_group/trusted_scoring_signals.json') {
-      throw 'Wrong trustedScoringSignalsURL ' +
-          auctionConfig.trustedScoringSignalsURL;
+  if (auctionConfig.executionMode !== 'compatibility') {
+    throw 'Wrong executionMode ' +
+    auctionConfig.executionMode;
   }
 
   if (auctionConfig.trustedScoringSignalsUrl !==
@@ -185,16 +178,12 @@ function validateBrowserSignals(browserSignals, isScoreAd) {
     throw 'Wrong renderURL ' + browserSignals.renderURL;
   if (browserSignals.renderUrl !== "https://example.com/render")
     throw 'Wrong renderUrl ' + browserSignals.renderUrl;
-  if (browserSignals.bidCurrency !== 'CAD')
-    throw 'Wrong bidCurrency ' + browserSignals.bidCurrency;
-  if (!(browserSignals.decodeUtf8 instanceof Function))
-    throw 'Wrong decodeUtf8';
-  if (!(browserSignals.encodeUtf8 instanceof Function))
-    throw 'Wrong encodeUtf8';
+    if (browserSignals.bidCurrency !== 'CAD')
+      throw 'Wrong bidCurrency ' + browserSignals.bidCurrency;
 
   // Fields that vary by method.
   if (isScoreAd) {
-    if (Object.keys(browserSignals).length !== 14) {
+    if (Object.keys(browserSignals).length !== 12) {
       throw 'Wrong number of browser signals fields ' +
           JSON.stringify(browserSignals);
     }
@@ -217,7 +206,7 @@ function validateBrowserSignals(browserSignals, isScoreAd) {
       throw 'Wrong forDebuggingOnlySampling ' +
           browserSignals.forDebuggingOnlySampling;
   } else {
-    if (Object.keys(browserSignals).length !== 13) {
+    if (Object.keys(browserSignals).length !== 11) {
       throw 'Wrong number of browser signals fields ' +
           JSON.stringify(browserSignals);
     }

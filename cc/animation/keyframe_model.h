@@ -9,11 +9,14 @@
 #include <string>
 
 #include "base/check.h"
-#include "base/time/time.h"
 #include "cc/animation/animation_export.h"
 #include "cc/paint/element_id.h"
 #include "cc/paint/paint_worklet_input.h"
 #include "ui/gfx/animation/keyframe/keyframe_model.h"
+
+namespace base {
+class TimeTicks;
+}  // namespace base
 
 namespace cc {
 
@@ -86,7 +89,7 @@ class CC_ANIMATION_EXPORT KeyframeModel : public gfx::KeyframeModel {
 
   int TargetProperty() const override;
 
-  void SetRunState(RunState run_state, base::TimeTicks monotonic_time) override;
+  void SetRunState(RunState run_state) override;
 
   ElementId element_id() const { return element_id_; }
   void set_element_id(ElementId element_id) { element_id_ = element_id; }

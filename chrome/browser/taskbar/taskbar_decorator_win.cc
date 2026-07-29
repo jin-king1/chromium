@@ -15,9 +15,9 @@
 
 #include "base/functional/bind.h"
 #include "base/location.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/win/scoped_gdi_object.h"
 #include "chrome/browser/browser_process.h"
@@ -38,8 +38,8 @@
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkRRect.h"
 #include "third_party/skia/include/core/SkStream.h"
-#include "ui/gfx/icon_util.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/win/icon_util.h"
 #include "ui/views/win/hwnd_util.h"
 
 namespace taskbar {
@@ -209,7 +209,7 @@ void UpdateTaskbarDecoration(Profile* profile, gfx::NativeWindow window) {
   // the relaunch details.
   // TODO(calamity): ideally this should not be necessary but due to issues
   // with the default shortcut being pinned, we add the runtime badge for
-  // safety. See crbug.com/313800.
+  // safety. See crbug.com/41070028.
   gfx::Image decoration;
   AvatarMenu::ImageLoadStatus status = AvatarMenu::GetImageForMenuButton(
       profile->GetPath(), &decoration, kOverlayIconSize);

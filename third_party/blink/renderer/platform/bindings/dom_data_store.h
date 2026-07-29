@@ -31,7 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_DOM_DATA_STORE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_DOM_DATA_STORE_H_
 
-#include "base/containers/contains.h"
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
@@ -213,7 +212,7 @@ class DOMDataStore final : public GarbageCollected<DOMDataStore> {
     return false;
   }
 
-  virtual void Trace(Visitor*) const;
+  void Trace(Visitor*) const;
 
  private:
   // We can use the inline storage in a ScriptWrappable when we're in the main
@@ -222,7 +221,7 @@ class DOMDataStore final : public GarbageCollected<DOMDataStore> {
   // other hand, if this method returns false, nothing is guaranteed (we might
   // be in the main world).
   static bool CanUseInlineStorageForWrapper() {
-    return !WTF::MayNotBeMainThread() &&
+    return !MayNotBeMainThread() &&
            !DOMWrapperWorld::NonMainWorldsExistInMainThread();
   }
 
@@ -428,7 +427,7 @@ bool DOMDataStore::Contains(const ScriptWrappable* object) const {
   if (can_use_inline_storage_) {
     return !GetUncheckedInlineStorage(object).IsEmpty();
   }
-  return base::Contains(wrapper_map_, object);
+  return wrapper_map_.Contains(object);
 }
 
 // static

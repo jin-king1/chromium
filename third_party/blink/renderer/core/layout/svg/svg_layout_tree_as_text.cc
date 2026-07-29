@@ -213,7 +213,7 @@ static StringBuilder& operator<<(StringBuilder& ts, LineJoin style) {
 static StringBuilder& operator<<(StringBuilder& ts,
                                  const SVGSpreadMethodType& type) {
   auto* name = GetEnumerationMap<SVGSpreadMethodType>().NameFromValue(type);
-  ts << String(name).UpperASCII();
+  ts << String(name).ToAsciiUpper();
   return ts;
 }
 
@@ -290,10 +290,10 @@ static void WriteStyle(StringBuilder& ts, const LayoutObject& object) {
       const SVGViewportResolver viewport_resolver(object);
       double dash_offset =
           ValueForLength(style.StrokeDashOffset(), viewport_resolver, style);
-      double stroke_width =
-          ValueForLength(style.StrokeWidth(), viewport_resolver);
+      double stroke_width = ValueForLength(
+          style.StrokeWidth(), viewport_resolver, style.EffectiveZoom());
       DashArray dash_array = SVGLayoutSupport::ResolveSVGDashArray(
-          *style.StrokeDashArray(), style, viewport_resolver);
+          style.StrokeDashArray(), style, viewport_resolver);
 
       WriteIfNotDefault(ts, "opacity", style.StrokeOpacity(), 1.0f);
       WriteIfNotDefault(ts, "stroke width", stroke_width, 1.0);
@@ -403,7 +403,7 @@ static StringBuilder& operator<<(StringBuilder& ts,
 }
 
 static StringBuilder& operator<<(StringBuilder& ts, const LayoutSVGRoot& root) {
-  ts << " " << PhysicalRect(root.PhysicalLocation(), root.Size());
+  ts << " " << PhysicalRect(root.PhysicalLocation(), root.StitchedSize());
   WriteStyle(ts, root);
   return ts;
 }
@@ -474,7 +474,8 @@ void WriteSVGResourceContainer(StringBuilder& ts,
                                                       Filter::kBoundingBox);
     SVGFilterBuilder builder(dummy_filter->GetSourceGraphic());
     builder.BuildGraph(dummy_filter,
-                       To<SVGFilterElement>(*filter->GetElement()), dummy_rect);
+                       To<SVGFilterElement>(*filter->GetElement()), dummy_rect,
+                       std::nullopt);
     if (FilterEffect* last_effect = builder.LastEffect())
       last_effect->ExternalRepresentation(ts, indent + 1);
   } else if (resource->ResourceType() == kClipperResourceType) {

@@ -15,6 +15,7 @@
 #include "base/time/time.h"
 #include "media/base/android/media_codec_bridge.h"
 #include "media/base/android/media_codec_direction.h"
+#include "media/base/android/media_format_color_space.h"
 #include "media/base/audio_decoder_config.h"
 #include "media/base/media_export.h"
 #include "media/base/video_decoder_config.h"
@@ -22,8 +23,6 @@
 #include "ui/gfx/hdr_metadata.h"
 
 namespace media {
-
-class VideoColorSpace;
 
 // Configuration info for MediaCodec.
 class MEDIA_EXPORT VideoCodecConfig {
@@ -53,11 +52,11 @@ class MEDIA_EXPORT VideoCodecConfig {
   std::vector<uint8_t> csd0;
   std::vector<uint8_t> csd1;
 
-  VideoColorSpace container_color_space;
+  MediaFormatColorSpace container_color_space;
 
   // VP9 HDR metadata is only embedded in the container. HDR10 metadata is
   // embedded in the video stream.
-  std::optional<gfx::HDRMetadata> hdr_metadata;
+  gfx::HDRMetadata hdr_metadata;
 
   // Enables the async MediaCodec.Callback API. |on_buffers_available_cb|
   // will be called when input or output buffers are available. This will be
@@ -71,6 +70,9 @@ class MEDIA_EXPORT VideoCodecConfig {
   // Enables Block Model (LinearBlock).
   bool use_block_model = false;
 
+  // Sets the low latency mode flag on the codec.
+  bool use_low_latency_mode = false;
+
   // The profile of decoder.
   VideoCodecProfile profile;
 };
@@ -82,16 +84,6 @@ class MEDIA_EXPORT MediaCodecBridgeImpl : public MediaCodecBridge {
   // nullptr on failure.
   static std::unique_ptr<MediaCodecBridge> CreateVideoDecoder(
       const VideoCodecConfig& config);
-
-  // Creates and starts a new MediaCodec configured for encoding. Returns
-  // nullptr on failure.
-  static std::unique_ptr<MediaCodecBridge> CreateVideoEncoder(
-      VideoCodec codec,       // e.g. media::VideoCodec::kVP8
-      const gfx::Size& size,  // input frame size
-      int bit_rate,           // bits/second
-      int frame_rate,         // frames/second
-      int i_frame_interval,   // count
-      int color_format);      // MediaCodecInfo.CodecCapabilities.
 
   // Creates and starts a new MediaCodec configured for decoding. Returns
   // nullptr on failure.
@@ -119,13 +111,12 @@ class MEDIA_EXPORT MediaCodecBridgeImpl : public MediaCodecBridge {
   // MediaCodecBridge implementation.
   void Stop() override;
   MediaCodecResult Flush() override;
-  MediaCodecResult GetOutputSize(gfx::Size* size) override;
+  MediaCodecResult GetOutputSizeAndCropRect(gfx::Size& size,
+                                            gfx::Rect& crop_rect) override;
   MediaCodecResult GetOutputSamplingRate(int* sampling_rate) override;
   MediaCodecResult GetOutputChannelCount(int* channel_count) override;
-  MediaCodecResult GetOutputColorSpace(gfx::ColorSpace* color_space) override;
-  MediaCodecResult GetInputFormat(int* stride,
-                                  int* slice_height,
-                                  gfx::Size* encoded_size) override;
+  MediaCodecResult GetOutputColorSpace(
+      MediaFormatColorSpace* color_space) override;
   MediaCodecResult QueueInputBuffer(int index,
                                     base::span<const uint8_t> data,
                                     base::TimeDelta presentation_time) override;
@@ -157,8 +148,6 @@ class MEDIA_EXPORT MediaCodecBridgeImpl : public MediaCodecBridge {
   std::string GetName() override;
   bool IsSoftwareCodec() override;
   bool SetSurface(const base::android::JavaRef<jobject>& surface) override;
-  void SetVideoBitrate(int bps, int frame_rate) override;
-  void RequestKeyFrameSoon() override;
   CodecType GetCodecType() const override;
   size_t GetMaxInputSize() override;
 
@@ -189,9 +178,7 @@ class MEDIA_EXPORT MediaCodecBridgeImpl : public MediaCodecBridge {
                                           const uint8_t** addr,
                                           size_t* capacity);
 
-  void OnBuffersAvailable(
-      JNIEnv* /* env */,
-      const base::android::JavaParamRef<jobject>& /* obj */) override;
+  void OnBuffersAvailable(JNIEnv* /* env */) override;
 
   void ReportAnyErrorToUMA(MediaCodecStatus status);
 

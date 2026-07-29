@@ -19,14 +19,13 @@
 #include "build/build_config.h"
 #include "content/browser/webauth/authenticator_environment.h"
 #include "device/fido/authenticator_get_assertion_response.h"
-#include "device/fido/cable/cable_discovery_data.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/fido_discovery_base.h"
 #include "device/fido/fido_discovery_factory.h"
 #include "device/fido/fido_request_handler_base.h"
-#include "device/fido/fido_types.h"
-#include "device/fido/public_key_credential_descriptor.h"
-#include "device/fido/public_key_credential_user_entity.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_types.h"
+#include "device/fido/public/public_key_credential_descriptor.h"
+#include "device/fido/public/public_key_credential_user_entity.h"
 #include "url/origin.h"
 
 namespace content {
@@ -60,6 +59,7 @@ void AuthenticatorRequestClientDelegate::RegisterActionCallbacks(
     AccountPreselectedCallback account_preselected_callback,
     PasswordSelectedCallback password_selected_callback,
     device::FidoRequestHandlerBase::RequestCallback request_callback,
+    base::OnceClosure cancel_ui_timeout_callback,
     base::RepeatingClosure bluetooth_adapter_power_on_callback,
     base::RepeatingCallback<
         void(device::FidoRequestHandlerBase::BlePermissionCallback)>
@@ -72,8 +72,8 @@ void AuthenticatorRequestClientDelegate::ConfigureDiscoveries(
     device::FidoRequestType request_type,
     std::optional<device::ResidentKeyRequirement> resident_key_requirement,
     device::UserVerificationRequirement user_verification_requirement,
+    bool cmtg_key_requested,
     std::optional<std::string_view> user_name,
-    base::span<const device::CableDiscoveryData> pairings_from_extension,
     bool is_enclave_authenticator_available,
     device::FidoDiscoveryFactory* fido_discovery_factory) {}
 
@@ -114,10 +114,11 @@ AuthenticatorRequestClientDelegate::CreatePlatformDiscoveries() {
   return {};
 }
 
-void AuthenticatorRequestClientDelegate::ProvideChallengeUrl(
-    const GURL& url,
-    base::OnceCallback<void(std::optional<base::span<const uint8_t>>)>
-        callback) {}
+void AuthenticatorRequestClientDelegate::StartObserving(
+    device::FidoRequestHandlerBase* request_handler) {}
+
+void AuthenticatorRequestClientDelegate::StopObserving(
+    device::FidoRequestHandlerBase* request_handler) {}
 
 void AuthenticatorRequestClientDelegate::OnTransportAvailabilityEnumerated(
     device::FidoRequestHandlerBase::TransportAvailabilityInfo data) {}

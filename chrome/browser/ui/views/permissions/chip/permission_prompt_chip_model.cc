@@ -6,10 +6,7 @@
 
 #include <algorithm>
 
-#include "base/check.h"
-#include "base/feature_list.h"
-#include "base/strings/utf_string_conversions.h"
-#include "components/permissions/permission_actions_history.h"
+#include "chrome/grit/generated_resources.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/permission_util.h"
 #include "components/permissions/request_type.h"
@@ -20,8 +17,8 @@
 namespace {
 
 bool ContainsAllRequestTypes(
-    const std::vector<
-        raw_ptr<permissions::PermissionRequest, VectorExperimental>>& requests,
+    const std::vector<std::unique_ptr<permissions::PermissionRequest>>&
+        requests,
     const std::vector<permissions::RequestType>& request_types) {
   if (requests.size() != request_types.size()) {
     return false;
@@ -39,8 +36,8 @@ bool ContainsAllRequestTypes(
 }
 
 bool IsMicAndCameraRequest(
-    const std::vector<raw_ptr<permissions::PermissionRequest,
-                              VectorExperimental>>& requests) {
+    const std::vector<std::unique_ptr<permissions::PermissionRequest>>&
+        requests) {
   return ContainsAllRequestTypes(requests,
                                  {permissions::RequestType::kCameraStream,
                                   permissions::RequestType::kMicStream});
@@ -48,8 +45,7 @@ bool IsMicAndCameraRequest(
 
 const gfx::VectorIcon& GetBlockedPermissionIconId(
     permissions::PermissionPrompt::Delegate* delegate) {
-  DCHECK(delegate);
-  auto requests = delegate->Requests();
+  const auto& requests = delegate->Requests();
 
   // We need to use the icon from the camera request when it's an request for
   // Microphone and Camera.
@@ -63,8 +59,7 @@ const gfx::VectorIcon& GetBlockedPermissionIconId(
 
 const gfx::VectorIcon& GetPermissionIconId(
     permissions::PermissionPrompt::Delegate* delegate) {
-  DCHECK(delegate);
-  auto requests = delegate->Requests();
+  const auto& requests = delegate->Requests();
 
   // We need to use the icon from the camera request when it's an request for
   // Microphone and Camera.
@@ -77,19 +72,7 @@ const gfx::VectorIcon& GetPermissionIconId(
 
 std::u16string GetQuietPermissionMessage(
     permissions::PermissionPrompt::Delegate* delegate) {
-  DCHECK(delegate);
-  DCHECK(delegate->ReasonForUsingQuietUi());
   auto chip_text_type = permissions::PermissionRequest::QUIET_REQUEST;
-  const auto quiet_ui_reason = delegate->ReasonForUsingQuietUi();
-  if (quiet_ui_reason == permissions::PermissionRequestManager::QuietUiReason::
-                             kServicePredictedVeryUnlikelyGrant ||
-      quiet_ui_reason == permissions::PermissionRequestManager::QuietUiReason::
-                             kOnDevicePredictedVeryUnlikelyGrant) {
-    chip_text_type = base::FeatureList::IsEnabled(
-                         permissions::features::kCpssQuietChipTextUpdate)
-                         ? permissions::PermissionRequest::LOUD_REQUEST
-                         : permissions::PermissionRequest::QUIET_REQUEST;
-  }
   auto quiet_request_text =
       delegate->Requests()[0]->GetRequestChipText(chip_text_type);
   return quiet_request_text.value_or(u"");
@@ -97,9 +80,8 @@ std::u16string GetQuietPermissionMessage(
 
 std::u16string GetLoudPermissionMessage(
     permissions::PermissionPrompt::Delegate* delegate) {
-  DCHECK(delegate);
 
-  auto requests = delegate->Requests();
+  const auto& requests = delegate->Requests();
   if (IsMicAndCameraRequest(requests)) {
     return l10n_util::GetStringUTF16(
         IDS_MEDIA_CAPTURE_VIDEO_AND_AUDIO_PERMISSION_CHIP);
@@ -118,7 +100,6 @@ std::u16string GetLoudPermissionMessage(
 bool ShouldPermissionBubbleExpand(
     permissions::PermissionPrompt::Delegate* delegate,
     PermissionPromptStyle prompt_style) {
-  DCHECK(delegate);
   if (PermissionPromptStyle::kQuietChip == prompt_style) {
     return !permissions::PermissionUiSelector::ShouldSuppressAnimation(
         delegate->ReasonForUsingQuietUi());
@@ -134,28 +115,14 @@ PermissionPromptChipModel::PermissionPromptChipModel(
     : delegate_(delegate),
       allowed_icon_(GetPermissionIconId(delegate.get())),
       blocked_icon_(GetBlockedPermissionIconId(delegate.get())) {
-  DCHECK(delegate_);
 
   if (delegate_->ShouldCurrentRequestUseQuietUI()) {
-    DCHECK(delegate_->ReasonForUsingQuietUi());
     prompt_style_ = PermissionPromptStyle::kQuietChip;
     should_bubble_start_open_ = false;
-    const auto quiet_ui_reason = delegate_->ReasonForUsingQuietUi();
-    if (quiet_ui_reason ==
-            permissions::PermissionRequestManager::QuietUiReason::
-                kOnDevicePredictedVeryUnlikelyGrant ||
-        quiet_ui_reason ==
-            permissions::PermissionRequestManager::QuietUiReason::
-                kServicePredictedVeryUnlikelyGrant) {
-      should_display_blocked_icon_ = !base::FeatureList::IsEnabled(
-          permissions::features::kCpssQuietChipTextUpdate);
-    } else {
-      should_display_blocked_icon_ = true;
-    }
+    should_display_blocked_icon_ = true;
     should_expand_ =
         ShouldPermissionBubbleExpand(delegate_.get(), prompt_style_) &&
-        (should_bubble_start_open_ ||
-         (!delegate_->WasCurrentRequestAlreadyDisplayed()));
+        (!delegate_->WasCurrentRequestAlreadyDisplayed());
 
     chip_text_ = GetQuietPermissionMessage(delegate_.get());
     chip_theme_ = PermissionChipTheme::kLowVisibility;
@@ -236,7 +203,7 @@ void PermissionPromptChipModel::UpdateWithUserDecision(
       NOTREACHED();
   }
 
-  auto requests = delegate_->Requests();
+  const auto& requests = delegate_->Requests();
   chip_text_ = requests[0]->GetRequestChipText(chip_text_type).value_or(u"");
   if (IsMicAndCameraRequest(requests)) {
     accessibility_chip_text_ =

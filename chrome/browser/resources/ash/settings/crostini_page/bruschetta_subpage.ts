@@ -23,7 +23,8 @@ import {Setting} from '../mojom-webui/setting.mojom-webui.js';
 import {Router, routes} from '../router.js';
 
 import {getTemplate} from './bruschetta_subpage.html.js';
-import {type CrostiniBrowserProxy, CrostiniBrowserProxyImpl} from './crostini_browser_proxy.js';
+import {CrostiniBrowserProxyImpl} from './crostini_browser_proxy.js';
+import type {CrostiniBrowserProxy} from './crostini_browser_proxy.js';
 
 const BruschettaSubpageElementBase =
     DeepLinkingMixin(RouteOriginMixin(PrefsMixin(PolymerElement)));
@@ -43,16 +44,6 @@ export class BruschettaSubpageElement extends BruschettaSubpageElementBase {
         type: Boolean,
         value: false,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kBruschettaMicAccess,
-        ]),
-      },
     };
   }
 
@@ -62,8 +53,13 @@ export class BruschettaSubpageElement extends BruschettaSubpageElementBase {
     ];
   }
 
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kBruschettaMicAccess,
+  ]);
+
   private browserProxy_: CrostiniBrowserProxy;
-  private showBruschettaMicPermissionDialog_: boolean;
+  declare private showBruschettaMicPermissionDialog_: boolean;
 
   constructor() {
     super();

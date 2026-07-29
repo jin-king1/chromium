@@ -33,33 +33,63 @@ found in the LICENSE file.
       android:layout_width="match_parent"
       android:layout_height="@dimen/toolbar_height_no_shadow">
 
-      <org.chromium.ui.widget.ButtonCompat
-        android:id="@+id/toolbar_action_button"
+      <LinearLayout
+        android:orientation="horizontal"
         android:layout_width="wrap_content"
         android:layout_height="match_parent"
-        android:layout_gravity="start"
-        android:minWidth="@dimen/min_touch_target_size"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:textAppearance="@style/TextAppearance.TextMediumThick.Primary"
-        android:visibility="gone"
-        app:buttonColor="@android:color/transparent"
-        app:buttonTextColor="@color/default_text_color_list"
-        app:rippleColor="?attr/globalTextButtonRippleColor"
-        app:verticalInset="0dp" />
+        android:layout_gravity="start|center_vertical">
 
-      <com.google.android.material.tabs.TabLayout
-        android:id="@+id/pane_switcher"
-        style="@style/ToolbarButton"
+        <!-- This is needed to keep the new tab button aligned with the first tab. -->
+        <Space
+          android:id="@+id/margin_spacer"
+          android:layout_width="@dimen/hub_toolbar_action_button_start_margin"
+          android:layout_height="match_parent"
+          android:visibility="visible"/>
+
+        <org.chromium.ui.widget.ChromeImageButton
+          android:id="@+id/toolbar_back_button"
+          android:src="@drawable/ic_arrow_back_24dp"
+          android:layout_width="@dimen/min_touch_target_size"
+          android:layout_height="@dimen/min_touch_target_size"
+          android:layout_gravity="center"
+          android:layout_marginStart="4dp"
+          android:contentDescription="@string/back"
+          android:tooltipText="@string/back"
+          android:visibility="gone"
+          style="@style/ToolbarMenuButton"
+          app:tint="@color/default_icon_color_tint_list"/>
+
+        <Button
+          android:id="@+id/toolbar_action_button"
+          android:layout_width="wrap_content"
+          android:layout_height="match_parent"
+          android:layout_gravity="start|center_vertical"
+          android:visibility="gone"
+          style="?attr/newTabButtonStyle"/>
+      </LinearLayout>
+
+      <FrameLayout
+        android:id="@+id/pane_switcher_card"
         android:layout_width="wrap_content"
         android:layout_height="match_parent"
         android:layout_gravity="center_horizontal|bottom"
-        android:visibility="gone"
+        android:background="@drawable/hub_pane_switcher_background"
         android:clipChildren="false"
-        android:clipToPadding="false"
-        app:tabIndicator="@drawable/m3_tabs_line_indicator"
-        app:tabIndicatorFullWidth="true"
-        app:tabUnboundedRipple="true" />
+        >
+
+        <com.google.android.material.tabs.TabLayout
+          android:id="@+id/pane_switcher"
+          style="@style/ToolbarButton"
+          android:layout_width="wrap_content"
+          android:layout_height="match_parent"
+          android:layout_gravity="center_horizontal|bottom"
+          android:visibility="gone"
+          android:clipChildren="false"
+          android:clipToPadding="false"
+          app:tabIndicator="@drawable/m3_tabs_line_indicator"
+          app:tabIndicatorFullWidth="true"
+          app:tabUnboundedRipple="true" />
+      </FrameLayout>
 
       <LinearLayout
         android:id="@+id/menu_button_container"
@@ -75,23 +105,34 @@ found in the LICENSE file.
             android:layout_width="44dp"
             android:layout_height="match_parent"
             android:contentDescription="@string/search"
-            android:src="@drawable/ic_search"
+            android:src="@drawable/ic_search_24dp"
+            android:tooltipText="@string/accessibility_search_loupe_tooltip_text"
             style="@style/ToolbarMenuButton"
             app:tint="@color/default_icon_color_tint_list"  />
-          <include layout="@layout/menu_button" />
+        <include layout="@layout/menu_button" />
+
+        <!-- On large form factor devices, a close button is shown. -->
+        <org.chromium.ui.widget.ChromeImageButton
+            android:id="@+id/toolbar_close_button"
+            style="@style/ToolbarHoverableButton.AdaptiveDensity"
+            android:src="@drawable/btn_close"
+            android:contentDescription="@string/close"
+            android:tooltipText="@string/close"
+            android:layout_gravity="center_vertical"
+            app:tint="@color/default_icon_color_tint_list"
+            android:visibility="gone" />
       </LinearLayout>
 
     </FrameLayout>
 
     <!-- Hub search is selectively hidden based on the feature flag. -->
-    <view
-      class="org.chromium.chrome.browser.ntp.search.SearchBoxContainerView"
+    <LinearLayout
       android:id="@+id/search_box"
       android:visibility="gone"
       android:layout_width="match_parent"
       android:layout_height="@dimen/hub_search_box_height"
       android:layout_marginHorizontal="16dp"
-      android:layout_marginVertical="8dp"
+      android:layout_marginVertical="@dimen/hub_search_box_vertical_margin"
       android:paddingHorizontal="16dp"
       android:orientation="horizontal"
       android:gravity="center_vertical"
@@ -107,8 +148,19 @@ found in the LICENSE file.
         android:ellipsize="end"
         android:focusableInTouchMode="false"
         android:focusable="false"
+        android:longClickable="false"
         android:inputType="text"
         android:singleLine="true" />
-    </view>
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/toolbar_bottom_hairline"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:src="@drawable/toolbar_hairline"
+        android:scaleType="fitXY"
+        android:gravity="top"
+        android:importantForAccessibility="no"
+        android:visibility="gone"/>
   </org.chromium.chrome.browser.hub.HubToolbarView>
 </FrameLayout>

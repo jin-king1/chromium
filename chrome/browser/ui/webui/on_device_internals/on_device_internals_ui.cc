@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/on_device_internals/on_device_internals_ui.h"
 
+#include "chrome/browser/optimization_guide/model_execution/optimization_guide_global_state.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -15,6 +16,8 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/webui/webui_util.h"
+
+namespace on_device_internals {
 
 bool OnDeviceInternalsUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
@@ -29,6 +32,12 @@ OnDeviceInternalsUI::OnDeviceInternalsUI(content::WebUI* web_ui)
       chrome::kChromeUIOnDeviceInternalsHost);
   webui::SetupWebUIDataSource(source, kOnDeviceInternalsResources,
                               IDR_ON_DEVICE_INTERNALS_ON_DEVICE_INTERNALS_HTML);
+
+  source->AddBoolean("isManifestBrokerEnabled",
+                     base::FeatureList::IsEnabled(
+                         optimization_guide::kOptimizationGuideManifestBroker));
+  source->AddBoolean("useChromeOSModelService",
+                     BUILDFLAG(USE_CHROMEOS_MODEL_SERVICE));
 }
 
 OnDeviceInternalsUI::~OnDeviceInternalsUI() = default;
@@ -36,15 +45,14 @@ OnDeviceInternalsUI::~OnDeviceInternalsUI() = default;
 WEB_UI_CONTROLLER_TYPE_IMPL(OnDeviceInternalsUI)
 
 void OnDeviceInternalsUI::BindInterface(
-    mojo::PendingReceiver<mojom::OnDeviceInternalsPageHandlerFactory>
-        receiver) {
+    mojo::PendingReceiver<mojom::PageHandlerFactory> receiver) {
   page_factory_receiver_.reset();
   page_factory_receiver_.Bind(std::move(receiver));
 }
 
 void OnDeviceInternalsUI::CreatePageHandler(
-    mojo::PendingRemote<mojom::OnDeviceInternalsPage> page,
-    mojo::PendingReceiver<mojom::OnDeviceInternalsPageHandler> receiver) {
+    mojo::PendingRemote<mojom::Page> page,
+    mojo::PendingReceiver<mojom::PageHandler> receiver) {
   CHECK(page);
 
   Profile* profile = Profile::FromWebUI(web_ui());
@@ -52,6 +60,8 @@ void OnDeviceInternalsUI::CreatePageHandler(
   if (!service) {
     return;
   }
-  page_handler_ = std::make_unique<OnDeviceInternalsPageHandler>(
-      std::move(receiver), std::move(page), service);
+  page_handler_ = std::make_unique<PageHandler>(std::move(receiver),
+                                                std::move(page), service);
 }
+
+}  // namespace on_device_internals

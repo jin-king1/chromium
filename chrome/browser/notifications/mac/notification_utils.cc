@@ -20,7 +20,6 @@
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/notifications/notification_constants.h"
 #include "chrome/common/notifications/notification_operation.h"
@@ -67,7 +66,8 @@ void DoProcessMacNotificationResponse(
                 static_cast<NotificationHandler::Type>(info->meta->type),
                 std::move(info->meta->origin_url),
                 std::move(info->meta->id->id), std::move(action_index),
-                std::move(info->reply), /*by_user=*/true, base::DoNothing());
+                std::move(info->reply), /*by_user=*/true,
+                /*is_suspicious=*/false, base::DoNothing());
   profile_manager->LoadProfile(
       NotificationPlatformBridge::GetProfileBaseNameFromProfileId(
           info->meta->id->profile->id),

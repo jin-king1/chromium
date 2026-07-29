@@ -26,7 +26,8 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.ui.base.TestActivity;
 
@@ -42,8 +43,8 @@ public class SimpleEdgeToEdgePadAdjusterUnitTest {
 
     @Mock private EdgeToEdgeController mEdgeToEdgeController;
     private TestActivity mActivity;
-    private final ObservableSupplierImpl<EdgeToEdgeController> mEdgeToEdgeControllerSupplier =
-            new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<EdgeToEdgeController>
+            mEdgeToEdgeControllerSupplier = ObservableSuppliers.createMonotonic();
 
     @Before
     public void setup() {
@@ -112,6 +113,18 @@ public class SimpleEdgeToEdgePadAdjusterUnitTest {
         padAdjuster.overrideBottomInset(0);
         assertEquals(0, view.getPaddingBottom());
         assertTrue("clipToPadding should not change.", view.getClipToPadding());
+    }
+
+    @Test
+    public void testCreateForViewWithController() {
+        View view = new View(mActivity);
+        var padAdjuster = EdgeToEdgeControllerFactory.createForView(view, mEdgeToEdgeController);
+
+        assertNotNull(padAdjuster);
+        verify(mEdgeToEdgeController).registerAdjuster(padAdjuster);
+
+        padAdjuster.destroy();
+        verify(mEdgeToEdgeController).unregisterAdjuster(padAdjuster);
     }
 
     @Test

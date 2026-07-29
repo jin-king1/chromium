@@ -319,12 +319,13 @@ if existing code uses the old one.
 * Tracking comments for future improvements: `// TODO(crbug.com/40781525): ...`,
   or, less optimally, `// TODO(knowledgeable_username): ...`.  Tracking bugs
   provide space to give background context and current status; a username might
-  at least provide a starting point for asking about an issue.
+  at least provide a starting point for asking about an issue. To help tools
+  linkify the bug URL, it can be prefixed with `http://` or `https://`.
 
 ```cpp
 // `FooImpl` implements the `FooBase` class.
 // `FooFunction()` modifies `foo_member_`.
-// TODO(crbug.com/40097047): Rename things to something more descriptive than "foo".
+// TODO(https://crbug.com/40097047): Rename things to something more descriptive than "foo".
 ```
 
 ## Named namespaces
@@ -434,3 +435,19 @@ cases:
   are `#ifdef`ed away. Don't unconditionally declare debug-only symbols just
   to use this technique -- only use it when it doesn't require additional
   tweaks to the surrounding code.
+
+## Use [[likely]] and [[unlikely]] sparingly
+
+C++20 adds the `[[likely]]` and `[[unlikely]]` attributes, which inform the
+compiler whether code is likely to be executed or not. Use these sparingly.
+
+* Intuition is often inaccurate, and branch predictors are very good. It's easy
+  to accidentally pessimize performance with these, so they should only be used
+  when the likelihood is well-known and the performance benefit is justified.
+* Future code changes can make these annotations inaccurate even if they were
+  accurate when first added. This is hard to notice.
+* PGO data overrides these annotations, so if they're reached during profiling,
+  official builds won't benefit from them anyway. Thus the primary benefit is
+  for non-PGO-optimized builds, e.g. making execution on bots faster or having
+  local developer builds behave more like an official build.
+* The added verbosity can marginally decrease readability.

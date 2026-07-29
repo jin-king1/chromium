@@ -19,6 +19,7 @@
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "net/android/cert_verify_result_android.h"
+#include "net/base/ech_mode.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/mime_util.h"
 #include "net/base/net_export.h"
@@ -53,6 +54,11 @@ void ClearTestRootCertificates();
 // Returns true if cleartext traffic to |host| is allowed by the app. Always
 // true on L and older.
 bool IsCleartextPermitted(std::string_view host);
+
+// Returns the ECH mode for `host` as determined by Android's
+// `NetworkSecurityPolicy.getDomainEncryptionMode`.
+// Always returns `kOpportunistic` on BAKLAVA and older.
+NET_EXPORT_PRIVATE EchMode GetEchMode(std::string_view host);
 
 // Returns true if it can determine that only loopback addresses are configured.
 // i.e. if only 127.0.0.1 and ::1 are routable.
@@ -152,6 +158,35 @@ NET_EXPORT_PRIVATE int GetAddrInfoForNetwork(handles::NetworkHandle network,
                                              const char* service,
                                              const struct addrinfo* hints,
                                              struct addrinfo** res);
+
+// Register a QUIC UDP socket and a UDP payload that can close a QUIC connection
+// to the Android system server.
+// When the app loses network access (e.g. due to a freezer or firewall chains),
+// the Android system server 1)destroys the registered UDP socket by sending a
+// SOCK_DESTROY netlink message and 2)sends the registered UDP payload to the
+// server.
+// This prevents unnecessary modem wakeups caused by packets from the server
+// after the app loses network access.
+// See ConnectivityManager#registerQuicConnectionClosePayload for further
+// detail.
+NET_EXPORT_PRIVATE void RegisterQuicConnectionClosePayload(
+    int fd,
+    base::span<uint8_t> payload);
+
+// Unregister the QUIC socket and its associated UDP payload that were
+// previously registered by RegisterQuicConnectionClosePayload
+NET_EXPORT_PRIVATE void UnregisterQuicConnectionClosePayload(int fd);
+
+// Temporary enum until the NDK rolls out and we can use the one from
+// <android/multinetwork.h>
+enum class NetworkBlockedReason {
+  kNone = 0,
+  kLnp = 1,
+};
+
+// Returns the reason why the network request was blocked.
+// Returns kNone if not blocked or if the API is not available.
+NET_EXPORT_PRIVATE NetworkBlockedReason GetNetworkBlockedReason(int fd);
 
 }  // namespace net::android
 

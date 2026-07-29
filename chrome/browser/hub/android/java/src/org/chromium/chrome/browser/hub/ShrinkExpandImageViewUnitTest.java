@@ -22,7 +22,6 @@ import android.graphics.drawable.Drawable;
 import android.util.DisplayMetrics;
 import android.widget.FrameLayout;
 
-import androidx.annotation.NonNull;
 import androidx.test.filters.SmallTest;
 
 import org.junit.After;
@@ -35,23 +34,22 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.android.controller.ActivityController;
-import org.robolectric.annotation.LooperMode;
-import org.robolectric.annotation.LooperMode.Mode;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.chrome.test.AutomotiveContextWrapperTestRule;
+import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 
-/** Tests for {@link RunOnNextLayoutDelegate}. */
+import java.util.concurrent.atomic.AtomicInteger;
+
+/** Tests for {@link ShrinkExpandImageView}. */
 // TODO(crbug.com/40286625): Move to hub/internal/ once TabSwitcherLayout no longer depends on this.
 @RunWith(BaseRobolectricTestRunner.class)
-@LooperMode(Mode.PAUSED)
 public class ShrinkExpandImageViewUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
-    public AutomotiveContextWrapperTestRule mAutomotiveContextWrapperTestRule =
-            new AutomotiveContextWrapperTestRule();
+    public OverrideContextWrapperTestRule mAutomotiveContextWrapperTestRule =
+            new OverrideContextWrapperTestRule();
 
     private ActivityController<Activity> mActivityController;
     private Activity mActivity;
@@ -287,18 +285,19 @@ public class ShrinkExpandImageViewUnitTest {
         // This validates that the runnable is cleared before invocation. If the runnable was not
         // cleared this implementation would recursively iterate until a timeout or the stack limit
         // was hit.
+        AtomicInteger callCount = new AtomicInteger();
         mShrinkExpandImageView.runOnNextLayout(
                 () -> {
-                    mRunnable1.run();
+                    callCount.incrementAndGet();
                     mShrinkExpandImageView.runOnNextLayoutRunnables();
                 });
-        verify(mRunnable1, never()).run();
+        assertEquals(0, callCount.get());
 
         mShrinkExpandImageView.runOnNextLayoutRunnables();
-        verify(mRunnable1, times(1)).run();
+        assertEquals(1, callCount.get());
 
         mShrinkExpandImageView.runOnNextLayoutRunnables();
-        verify(mRunnable1, times(1)).run();
+        assertEquals(1, callCount.get());
     }
 
     @Test
@@ -315,7 +314,7 @@ public class ShrinkExpandImageViewUnitTest {
                 testBitmap.getDensity());
     }
 
-    private void assertReset(@NonNull Rect rect, boolean keepingBitmap) {
+    private void assertReset(Rect rect, boolean keepingBitmap) {
         assertEquals(1.0f, mShrinkExpandImageView.getScaleX(), EPSILON);
         assertEquals(1.0f, mShrinkExpandImageView.getScaleY(), EPSILON);
         assertEquals(0.0f, mShrinkExpandImageView.getTranslationX(), EPSILON);

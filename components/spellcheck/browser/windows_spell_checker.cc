@@ -15,6 +15,7 @@
 #include <locale>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -32,6 +33,7 @@
 #include "components/spellcheck/browser/spellcheck_host_metrics.h"
 #include "components/spellcheck/browser/spellcheck_platform.h"
 #include "components/spellcheck/common/spellcheck_common.h"
+#include "components/spellcheck/common/spellcheck_decoration.h"
 #include "components/spellcheck/common/spellcheck_features.h"
 #include "components/spellcheck/common/spellcheck_result.h"
 #include "components/spellcheck/spellcheck_buildflags.h"
@@ -258,7 +260,7 @@ std::vector<SpellCheckResult> BackgroundHelper::RequestTextCheckForAllLanguages(
       spellcheck::FillSuggestions(/*suggestions_list=*/it->second,
                                   &evenly_filled_suggestions);
       final_results.push_back(SpellCheckResult(
-          SpellCheckResult::Decoration::SPELLING, std::get<0>(it->first),
+          spellcheck::Decoration::SPELLING, std::get<0>(it->first),
           std::get<1>(it->first), evenly_filled_suggestions));
       ++it;
     }
@@ -301,7 +303,7 @@ void BackgroundHelper::FillSuggestionList(
     hr = suggestions->Next(1, &suggestion, nullptr);
     if (hr == S_OK) {
       std::u16string utf16_suggestion;
-      if (base::WideToUTF16(suggestion.get(), wcslen(suggestion),
+      if (base::WideToUTF16(suggestion.get(), UNSAFE_TODO(wcslen(suggestion)),
                             &utf16_suggestion)) {
         optional_suggestions->push_back(utf16_suggestion);
       }

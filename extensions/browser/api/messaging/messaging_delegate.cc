@@ -5,7 +5,7 @@
 #include "extensions/browser/api/messaging/messaging_delegate.h"
 
 #include "base/functional/callback.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "extensions/common/extension_id.h"
 
 namespace extensions {
@@ -18,7 +18,7 @@ MessagingDelegate::IsNativeMessagingHostAllowed(
   return PolicyPermission::DISALLOW;
 }
 
-std::optional<base::Value::Dict> MessagingDelegate::MaybeGetTabInfo(
+std::optional<base::DictValue> MessagingDelegate::MaybeGetTabInfo(
     content::WebContents* web_contents) {
   NOTIMPLEMENTED();
   return std::nullopt;

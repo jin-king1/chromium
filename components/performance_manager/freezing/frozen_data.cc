@@ -8,6 +8,8 @@
 
 namespace performance_manager {
 
+FrozenData::FrozenData() = default;
+
 bool FrozenData::IsFrozen() const {
   return current_frame_count_ > 0 &&
          frozen_frame_count_ == current_frame_count_;
@@ -42,8 +44,8 @@ bool FrozenData::ChangeFrameCounts(int32_t current_frame_delta,
   return IsFrozen() != was_frozen;
 }
 
-base::Value::Dict FrozenData::Describe() {
-  base::Value::Dict ret;
+base::DictValue FrozenData::Describe() {
+  base::DictValue ret;
   ret.Set("current_frame_count", static_cast<int>(current_frame_count_));
   ret.Set("frozen_frame_count", static_cast<int>(frozen_frame_count_));
   return ret;

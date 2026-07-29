@@ -22,57 +22,31 @@ class JourneyLoggerAndroid {
   ~JourneyLoggerAndroid();
 
   // Message from Java to destroy this object.
-  void Destroy(JNIEnv* env,
-               const base::android::JavaParamRef<jobject>& jcaller);
+  void Destroy(JNIEnv* env);
 
-  void SetNumberOfSuggestionsShown(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& jcaller,
-      jint jsection,
-      jint jnumber,
-      jboolean jhas_complete_suggestion);
-  void SetOptOutOffered(JNIEnv* env,
-                        const base::android::JavaParamRef<jobject>& jcaller);
-  void SetActivationlessShow(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& jcaller);
-  void SetSkippedShow(JNIEnv* env,
-                      const base::android::JavaParamRef<jobject>& jcaller);
-  void SetShown(JNIEnv* env,
-                const base::android::JavaParamRef<jobject>& jcaller);
-  void SetPayClicked(JNIEnv* env,
-                     const base::android::JavaParamRef<jobject>& jcaller);
-  void SetSelectedMethod(JNIEnv* env,
-                         const base::android::JavaParamRef<jobject>& jcaller,
-                         jint jPaymentMethodCategory);
-  void SetRequestedInformation(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& jcaller,
-      jboolean requested_shipping,
-      jboolean requested_email,
-      jboolean requested_phone,
-      jboolean requested_name);
+  void SetNumberOfSuggestionsShown(JNIEnv* env,
+                                   int32_t jsection,
+                                   int32_t jnumber,
+                                   bool jhas_complete_suggestion);
+  void SetOptOutOffered(JNIEnv* env);
+  void SetActivationlessShow(JNIEnv* env);
+  void SetSkippedShow(JNIEnv* env);
+  void SetShown(JNIEnv* env);
+  void SetPayClicked(JNIEnv* env);
+  void SetSelectedMethod(JNIEnv* env, int32_t jPaymentMethodCategory);
+  void SetRequestedInformation(JNIEnv* env,
+                               bool requested_shipping,
+                               bool requested_email,
+                               bool requested_phone,
+                               bool requested_name);
   void SetRequestedPaymentMethods(
       JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& jcaller,
-      const base::android::JavaParamRef<jintArray>& jmethods);
-  void SetCompleted(JNIEnv* env,
-                    const base::android::JavaParamRef<jobject>& jcaller);
-  void SetAborted(JNIEnv* env,
-                  const base::android::JavaParamRef<jobject>& jcaller,
-                  jint jreason);
-  void SetNotShown(JNIEnv* env,
-                   const base::android::JavaParamRef<jobject>& jcaller);
-  void SetNoMatchingCredentialsShown(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& jcaller);
-  void RecordCheckoutStep(JNIEnv* env,
-                          const base::android::JavaParamRef<jobject>& jcaller,
-                          jint jstep);
-  void SetPaymentAppUkmSourceId(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& jcaller,
-      ukm::SourceId source_id);
+      const base::android::JavaRef<jintArray>& jmethods);
+  void SetCompleted(JNIEnv* env);
+  void SetAborted(JNIEnv* env, int32_t jreason);
+  void SetNotShown(JNIEnv* env);
+  void RecordCheckoutStep(JNIEnv* env, int32_t jstep);
+  void SetPaymentAppUkmSourceId(JNIEnv* env, ukm::SourceId source_id);
 
  private:
   JourneyLogger journey_logger_;

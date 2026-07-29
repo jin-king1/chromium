@@ -104,9 +104,11 @@ IN_PROC_BROWSER_TEST_F(DohHttpsProtocolUpgradeBrowserTest,
 
   // A, AAAA, and HTTPS for the initial resolution, and then again after the
   // protocol upgrade. Note that the AAAA query may be disabled based on IPv6
-  // connectivity.
+  // connectivity. The initial resolution may be cancelled as soon as the HTTPS
+  // record is received, so we may see as few as 3 queries (HTTPS for the
+  // initial resolution, and A/HTTPS for the upgraded resolution).
   EXPECT_THAT(doh_server_->QueriesServedForSubdomains(kHttpsOnlyDomain),
-              testing::AnyOf(4, 6));
+              testing::AllOf(testing::Ge(3), testing::Le(6)));
 }
 
 IN_PROC_BROWSER_TEST_F(DohHttpsProtocolUpgradeBrowserTest, NoProtocolUpgrade) {

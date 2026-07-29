@@ -26,21 +26,24 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
-import org.chromium.chrome.test.ChromeBrowserTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.components.browser_ui.widget.RadioButtonWithDescription;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
+import org.chromium.ui.base.DeviceFormFactor;
 
 /** Unit tests for {@link ImageDescriptionsSettings} */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -58,11 +61,11 @@ public class ImageDescriptionsSettingsTest {
     private static final String ONLY_ON_WIFI = "onlyOnWifi radio button ";
     private static final String USE_MOBILE_DATA = "useMobileData radio button ";
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public SettingsActivityTestRule<ImageDescriptionsSettings> mSettingsActivityTestRule =
             new SettingsActivityTestRule<>(ImageDescriptionsSettings.class);
-
-    @Rule public final ChromeBrowserTestRule mBrowserTestRule = new ChromeBrowserTestRule();
 
     @Mock private ImageDescriptionsControllerDelegate mDelegate;
 
@@ -70,7 +73,7 @@ public class ImageDescriptionsSettingsTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
+        NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         ImageDescriptionsController.getInstance().setDelegateForTesting(mDelegate);
     }
 
@@ -79,14 +82,14 @@ public class ImageDescriptionsSettingsTest {
 
     private void launchSettings() {
         mSettingsActivityTestRule.startSettingsActivity(new Bundle());
-        ImageDescriptionsSettings mImageDescriptionsSettings =
+        ImageDescriptionsSettings imageDescriptionsSettings =
                 mSettingsActivityTestRule.getFragment();
 
         mDescriptionsSwitch =
-                mImageDescriptionsSettings.findPreference(
+                imageDescriptionsSettings.findPreference(
                         ImageDescriptionsSettings.IMAGE_DESCRIPTIONS);
         mDataPolicyPreference =
-                mImageDescriptionsSettings.findPreference(
+                imageDescriptionsSettings.findPreference(
                         ImageDescriptionsSettings.IMAGE_DESCRIPTIONS_DATA_POLICY);
     }
 
@@ -263,6 +266,7 @@ public class ImageDescriptionsSettingsTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289279
     public void testUserTogglesSwitch_Off() {
         // When we toggle switch to Off, it should disable radio buttons and descriptions
         ThreadUtils.runOnUiThreadBlocking(

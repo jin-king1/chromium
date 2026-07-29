@@ -12,17 +12,18 @@
 #include <type_traits>
 
 #include "base/functional/bind.h"
-#include "base/functional/bind_internal.h"
 #include "base/functional/callback.h"
+#include "base/i18n/time_formatting.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/strings/to_string.h"
+#include "base/time/time.h"
 #include "base/types/pass_key.h"
 #include "base/values.h"
 #include "chrome/browser/web_applications/commands/command_result.h"
 #include "chrome/browser/web_applications/commands/internal/command_internal.h"
+#include "chrome/common/chrome_features.h"
 #include "components/webapps/common/web_app_id.h"
 
 namespace content {
@@ -114,8 +115,8 @@ class WebAppCommand : public internal::CommandWithLock<LockType> {
 
   // Special constructor if the callback doesn't take any arguments. There is no
   // need to specify an empty tuple.
-  template <std::size_t i = sizeof...(CallbackArgs),
-            std::enable_if_t<i == 0, int> = 0>
+  template <std::size_t i = sizeof...(CallbackArgs)>
+    requires(i == 0)
   WebAppCommand(const std::string& name,
                 LockDescription initial_lock_request,
                 CallbackType callback)
@@ -125,8 +126,8 @@ class WebAppCommand : public internal::CommandWithLock<LockType> {
     CHECK(!callback_.is_null());
   }
 
-  template <std::size_t i = sizeof...(CallbackArgs),
-            std::enable_if_t<i >= 1, int> = 0>
+  template <std::size_t i = sizeof...(CallbackArgs)>
+    requires(i >= 1)
   WebAppCommand(const std::string& name,
                 LockDescription initial_lock_request,
                 CallbackType callback,
@@ -140,6 +141,10 @@ class WebAppCommand : public internal::CommandWithLock<LockType> {
 
   ~WebAppCommand() override = default;
 
+  // Binds the `args_for_shutdown` provided in constructor with the callback,
+  // and returns the result. This is called from the WebAppCommandManager during
+  // shutdown to call all of the callbacks of uncompleted commands with the
+  // appropriate shutdown values.
   base::OnceClosure TakeCallbackWithShutdownArgs(
       base::PassKey<WebAppCommandManager>) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(
@@ -147,26 +152,11 @@ class WebAppCommand : public internal::CommandWithLock<LockType> {
     CHECK(!callback_.is_null());
     internal::CommandBase::GetMutableDebugValue().Set("!command_result",
                                                       "kShutdown");
-    if constexpr (sizeof...(CallbackArgs) == 0) {
-      return std::move(callback_);
-    } else {
-      internal::CommandBase::GetMutableDebugValue().Set(
-          "!result", base::ToString(args_for_shutdown_));
+    internal::CommandBase::GetMutableDebugValue().Set(
+        "!result", base::ToString(args_for_shutdown_));
 
-      // We need to call BindOnce with both the callback and the shutdown args,
-      // so they must be concatenated into a tuple with both before calling
-      // std::apply.
-      // The below code is the C++ equivalent of
-      // `callback_.bind(...args_used_on_shutdown_)` in JavaScript.
-      std::tuple<CallbackType, CallbackArgs...> bind_arguments =
-          std::tuple_cat<std::tuple<CallbackType>, std::tuple<CallbackArgs...>>(
-              /*tuple1=*/{std::move(callback_)},
-              /*tuple2=*/std::move(args_for_shutdown_));
-      return std::apply(
-          &base::BindOnce<base::OnceCallback<void(CallbackArgs...)>,
-                          CallbackArgs...>,
-          std::move(bind_arguments));
-    }
+    return internal::BindTupleToOnceClosure(std::move(callback_),
+                                            std::move(args_for_shutdown_));
   }
 
  protected:
@@ -182,17 +172,25 @@ class WebAppCommand : public internal::CommandWithLock<LockType> {
     DCHECK_CALLED_ON_VALID_SEQUENCE(
         internal::CommandBase::command_sequence_checker_);
 
-    base::Value::Dict* metadata =
+    base::DictValue* metadata =
         internal::CommandBase::GetMutableDebugValue().EnsureDict("!metadata");
     CHECK(internal::CommandBase::command_manager())
         << "Command was never given to the command manager: "
         << internal::CommandBase::GetMutableDebugValue().DebugString();
     metadata->Set("command_result",
                   result == CommandResult::kSuccess ? "kSuccess" : "kFailure");
-    metadata->Set(
-        "result",
-        base::ToString(std::tie<CallbackArgs&...>(args_for_callback...)));
+    if constexpr (sizeof...(CallbackArgs) == 1) {
+      metadata->Set("!result", base::ToString(args_for_callback...));
+    } else if constexpr (sizeof...(CallbackArgs) > 1) {
+      metadata->Set(
+          "!result",
+          base::ToString(std::tie<CallbackArgs&...>(args_for_callback...)));
+    }
     metadata->Set("completion_location", base::ToString(location));
+    if (base::FeatureList::IsEnabled(features::kRecordWebAppDebugInfo)) {
+      metadata->Set("completed_at", base::TimeFormatTimeOfDayWithMilliseconds(
+                                        base::Time::Now()));
+    }
 
     // Note: `BindOnce` should correctly handle copying any ref or move
     // arguments internally. This allows the callback arguments to contain ref

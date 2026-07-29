@@ -36,15 +36,14 @@ export class ViewerPageSelectorElement extends CrLitElement {
       /**
        * The current page being viewed (1-based). A change to pageNo is mirrored
        * immediately to the input field. A change to the input field is not
-       * mirrored back until pageNoCommitted() is called and change-page is
-       * fired.
+       * mirrored back until onChange_() is called and change-page is fired.
        */
       pageNo: {type: Number},
     };
   }
 
-  docLength: number = 1;
-  pageNo: number = 1;
+  accessor docLength: number = 1;
+  accessor pageNo: number = 1;
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -55,7 +54,7 @@ export class ViewerPageSelectorElement extends CrLitElement {
     }
   }
 
-  pageNoCommitted() {
+  protected onChange_() {
     const page = parseInt(this.$.pageSelector.value, 10);
 
     if (!isNaN(page) && page <= this.docLength && page > 0) {
@@ -67,6 +66,10 @@ export class ViewerPageSelectorElement extends CrLitElement {
       this.$.pageSelector.value = this.pageNo.toString();
     }
     this.$.pageSelector.blur();
+  }
+
+  protected onPointerup_() {
+    this.select();
   }
 
   select() {

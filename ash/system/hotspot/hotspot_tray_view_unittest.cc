@@ -13,6 +13,7 @@
 #include "ash/test/ash_test_helper.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "chromeos/ash/services/hotspot_config/public/cpp/cros_hotspot_config_test_helper.h"
@@ -24,6 +25,7 @@
 #include "ui/color/color_provider.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/widget/widget.h"
@@ -63,6 +65,7 @@ class HotspotTrayViewTest : public AshTestBase {
   }
 
   void TearDown() override {
+    hotspot_tray_view_ = nullptr;
     widget_.reset();
     AshTestBase::TearDown();
   }
@@ -89,10 +92,13 @@ class HotspotTrayViewTest : public AshTestBase {
  protected:
   base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<views::Widget> widget_;
-  raw_ptr<HotspotTrayView, DanglingUntriaged> hotspot_tray_view_;
+  raw_ptr<HotspotTrayView> hotspot_tray_view_;
 };
 
 TEST_F(HotspotTrayViewTest, HotspotIconImage) {
+  gfx::ScopedAnimationDurationScaleMode normal_duration(
+      gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+
   SetHotspotStateAndClientCount(HotspotState::kDisabled, 0);
   EXPECT_TRUE(AreImagesEqual(
       hotspot_tray_view_->image_view()->GetImage(),

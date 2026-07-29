@@ -54,7 +54,7 @@ struct SVGResourceTarget;
 //
 // Calling SVGResourceDocumentContent::Fetch() - the expected way of creating an
 // SVGResourceDocumentContent - will return an instance that has its lifetime
-// managed by the SVGResourceDocumentCache. The cache is responsible for
+// managed by the `SVGDocumentResourceTracker`. The tracker is responsible for
 // disposing the instance when it is unused. The criteria for "is unused" is
 // that no observers are registered with the SVGResourceDocumentContent
 // instance. _If_ an instance is created directly, Dispose() _must_ be called
@@ -100,6 +100,8 @@ class CORE_EXPORT SVGResourceDocumentContent final
   void NotifyObservers();
 
   SVGResourceTarget* GetResourceTarget(const AtomicString& element_id);
+  void UpdateLifecycleForUse();
+
   void Trace(Visitor*) const;
 
  private:
@@ -116,6 +118,7 @@ class CORE_EXPORT SVGResourceDocumentContent final
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   KURL url_;
   ResourceStatus status_ = ResourceStatus::kNotStarted;
+  bool inhibit_content_change_ = false;
   bool was_disposed_ = false;
 };
 

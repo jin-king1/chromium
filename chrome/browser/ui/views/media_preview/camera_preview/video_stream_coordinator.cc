@@ -240,6 +240,7 @@ void VideoStreamCoordinator::OnReceivedFirstFrame() {
       *video_stream_start_time_ - *video_stream_request_time_;
   media_preview_metrics::RecordPreviewDelayTime(metrics_context_,
                                                 preview_delay_time);
+
   video_stream_request_time_.reset();
 }
 

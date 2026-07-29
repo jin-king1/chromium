@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 import {BrowserBridge} from './browser_bridge.js';
-// <if expr="chromeos_ash">
+// <if expr="is_chromeos">
 import {CrosView} from './chromeos_view.js';
 // </if>
 import {DnsView} from './dns_view.js';
@@ -14,6 +14,7 @@ import {SharedDictionaryView} from './shared_dictionary_view.js';
 import {SocketsView} from './sockets_view.js';
 import {TabSwitcherView} from './tab_switcher_view.js';
 import {hasTouchScreen} from './util.js';
+import {UtilitiesView} from './utilities_view.js';
 import {WindowView} from './view.js';
 
 /** @type {?MainView} */
@@ -84,7 +85,8 @@ export class MainView extends WindowView {
     addTab(SocketsView);
     addTab(DomainSecurityPolicyView);
     addTab(SharedDictionaryView);
-    // <if expr="chromeos_ash">
+    addTab(UtilitiesView);
+    // <if expr="is_chromeos">
     addTab(CrosView);
     // </if>
   }
@@ -129,7 +131,7 @@ export class MainView extends WindowView {
       parsed.tabHash = EventsView.TAB_HASH;
     }
 
-    // <if expr="not chromeos_ash">
+    // <if expr="not is_chromeos">
     // Don't switch to the chromeos view if not on chromeos.
     if (parsed.tabHash === '#chromeos') {
       parsed.tabHash = EventsView.TAB_HASH;

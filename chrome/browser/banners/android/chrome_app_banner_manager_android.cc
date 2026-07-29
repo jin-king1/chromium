@@ -18,7 +18,6 @@
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/segmentation_platform/segmentation_platform_service_factory.h"
-#include "chrome/common/chrome_features.h"
 #include "components/site_engagement/content/site_engagement_service.h"
 #include "components/webapps/browser/android/app_banner_manager_android.h"
 #include "components/webapps/browser/android/bottomsheet/pwa_bottom_sheet_controller.h"
@@ -31,7 +30,7 @@
 using base::android::ConvertJavaStringToUTF16;
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 
 namespace webapps {
 
@@ -44,7 +43,7 @@ ChromeAppBannerManagerAndroid::~ChromeAppBannerManagerAndroid() = default;
 void ChromeAppBannerManagerAndroid::OnInstallableCheckedNoErrors(
     const ManifestId& manifest_id) const {
   // TODO(b/320681613): Maybe move this to components.
-  webapk::WebApkUkmRecorder::RecordWebApkableVisit(manifest_id);
+  webapk::WebApkUkmRecorder::RecordWebApkableVisit(manifest_id.value());
 }
 
 segmentation_platform::SegmentationPlatformService*
@@ -60,10 +59,10 @@ PrefService* ChromeAppBannerManagerAndroid::GetPrefService() {
 }
 
 void ChromeAppBannerManagerAndroid::RecordExtraMetricsForInstallEvent(
-    AddToHomescreenInstaller::Event event,
+    AddToHomescreenEvent event,
     const AddToHomescreenParams& a2hs_params) {
   if (a2hs_params.app_type == AddToHomescreenParams::AppType::WEBAPK &&
-      event == AddToHomescreenInstaller::Event::UI_CANCELLED) {
+      event == AddToHomescreenEvent::UI_CANCELLED) {
     // TODO(b/320681613): Maybe move this to components.
     webapk::TrackInstallEvent(
         webapk::ADD_TO_HOMESCREEN_DIALOG_DISMISSED_BEFORE_INSTALLATION);

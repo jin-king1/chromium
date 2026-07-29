@@ -123,13 +123,12 @@ suite('acceleratorViewTest', function() {
     assertEquals(3, keys.length);
 
     assertEquals(
-        'ctrl',
-        keys[0]!.shadowRoot!.querySelector('#key')!.textContent!.trim());
+        'ctrl', keys[0]!.shadowRoot!.querySelector('#key')!.textContent.trim());
     assertEquals(
         'shift',
-        keys[1]!.shadowRoot!.querySelector('#key')!.textContent!.trim());
+        keys[1]!.shadowRoot!.querySelector('#key')!.textContent.trim());
     assertEquals(
-        'g', keys[2]!.shadowRoot!.querySelector('#key')!.textContent!.trim());
+        'g', keys[2]!.shadowRoot!.querySelector('#key')!.textContent.trim());
   });
 
   test('EditableAccelerator', async () => {
@@ -163,7 +162,7 @@ suite('acceleratorViewTest', function() {
 
     const fakeResult: AcceleratorResultData = {
       result: AcceleratorConfigResult.kConflict,
-      shortcutName: {data: [1]},
+      shortcutName: '1',
     };
 
     provider.setFakeReplaceAcceleratorResult(fakeResult);
@@ -282,7 +281,7 @@ suite('acceleratorViewTest', function() {
 
     const fakeResult: AcceleratorResultData = {
       result: AcceleratorConfigResult.kConflict,
-      shortcutName: {data: [1]},
+      shortcutName: '1',
     };
 
     provider.setFakeReplaceAcceleratorResult(fakeResult);
@@ -470,7 +469,7 @@ suite('acceleratorViewTest', function() {
 
     const fakeResult: AcceleratorResultData = {
       result: AcceleratorConfigResult.kConflict,
-      shortcutName: {data: [1]},
+      shortcutName: '1',
     };
     provider.setFakeReplaceAcceleratorResult(fakeResult);
 
@@ -504,7 +503,7 @@ suite('acceleratorViewTest', function() {
     const keyIconElement =
         pendingKey.shadowRoot!.querySelector<IronIconElement>('#key-icon');
     assertTrue(!!keyIconElement);
-    assertEquals('shortcut-input-keys:overview', keyIconElement.icon);
+    assertEquals('shortcut-input-keys:overview-refresh', keyIconElement.icon);
 
     // Simulate SHIFT + BRIGHTNESS_UP, expect the key display to be
     // 'BrightnessUp' and the icon to be 'display-brightness-up'.
@@ -524,7 +523,7 @@ suite('acceleratorViewTest', function() {
         pendingKey.shadowRoot!.querySelector<IronIconElement>('#key-icon');
     assertTrue(!!keyIconElement2);
     assertEquals(
-        'shortcut-input-keys:display-brightness-up', keyIconElement2.icon);
+        'shortcut-input-keys:brightness-up-refresh', keyIconElement2.icon);
 
     // Simulate SHIFT + MUTE_MICROPHONE.
     const keyEvent4: KeyEvent = {

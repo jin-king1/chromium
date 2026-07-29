@@ -11,9 +11,10 @@
 #include <vector>
 
 #include "base/files/file_path.h"
-#include "base/i18n/time_formatting.h"
+#include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/time/time.h"
-#include "build/chromeos_buildflags.h"
+#include "build/build_config.h"
 #include "chrome/browser/feedback/system_logs/log_sources/chrome_internal_log_source.h"
 #include "chrome/browser/feedback/system_logs/log_sources/crash_ids_source.h"
 #include "chrome/browser/feedback/system_logs/log_sources/device_event_log_source.h"
@@ -24,9 +25,9 @@
 #include "chrome/browser/support_tool/signin_data_collector.h"
 #include "chrome/browser/support_tool/support_tool_handler.h"
 #include "chrome/browser/support_tool/system_log_source_data_collector_adaptor.h"
-#include "third_party/icu/source/i18n/unicode/timezone.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/ash/system_logs/app_service_log_source.h"
 #include "chrome/browser/ash/system_logs/bluetooth_log_source.h"
 #include "chrome/browser/ash/system_logs/command_line_log_source.h"
@@ -44,12 +45,17 @@
 #include "chrome/browser/support_tool/ash/system_state_data_collector.h"
 #include "chrome/browser/support_tool/ash/ui_hierarchy_data_collector.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
+#include "chromeos/components/kiosk/kiosk_utils.h"
 #include "components/user_manager/user_manager.h"
 
 #if BUILDFLAG(IS_CHROMEOS_WITH_HW_DETAILS)
 #include "chrome/browser/ash/system_logs/reven_log_source.h"
 #endif  // BUILDFLAG(IS_CHROMEOS_WITH_HW_DETAILS)
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+#include "chrome/browser/support_tool/updater_data_collector.h"
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 
 namespace {
 
@@ -77,13 +83,20 @@ constexpr support_tool::DataCollectorType kDataCollectorsChromeosAsh[] = {
     support_tool::CHROMEOS_TRAFFIC_COUNTERS,
     support_tool::CHROMEOS_VIRTUAL_KEYBOARD,
     support_tool::CHROMEOS_NETWORK_HEALTH,
-    support_tool::CHROMEOS_APP_SERVICE};
+    support_tool::CHROMEOS_APP_SERVICE,
+    support_tool::CHROMEOS_KIOSK_APP_LEVEL_LOGS,
+};
 
 // Data collector types that can only work on if IS_CHROMEOS_WITH_HW_DETAILS
 // flag is turned on. IS_CHROMEOS_WITH_HW_DETAILS flag will be turned on for
 // Chrome OS Flex devices.
 constexpr support_tool::DataCollectorType kDataCollectorsChromeosHwDetails[] = {
     support_tool::CHROMEOS_REVEN};
+
+// Data collector types that can only work on Linux, macOS, and Windows.
+constexpr support_tool::DataCollectorType kDataCollectorsLinuxMacWin[] = {
+    support_tool::CHROME_UPDATER,
+};
 
 }  // namespace
 
@@ -144,15 +157,15 @@ std::unique_ptr<SupportToolHandler> GetSupportToolHandler(
       case support_tool::SIGN_IN_STATE:
         // Sign-in data is not available when there's no signed-in user.
         if (profile
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
             && user_manager::UserManager::Get()->IsUserLoggedIn()
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
         ) {
           handler->AddDataCollector(
               std::make_unique<SigninDataCollector>(profile));
         }
         break;
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
       case support_tool::CHROMEOS_UI_HIERARCHY:
         handler->AddDataCollector(std::make_unique<UiHierarchyDataCollector>());
         break;
@@ -265,6 +278,17 @@ std::unique_ptr<SupportToolHandler> GetSupportToolHandler(
                 "running apps.",
                 std::make_unique<system_logs::AppServiceLogSource>()));
         break;
+      case support_tool::CHROMEOS_KIOSK_APP_LEVEL_LOGS: {
+        if (chromeos::IsKioskSession()) {
+          const std::set<base::FilePath> kioskAppLevelSystemLogs = {
+              base::FilePath("kiosk_apps.log"),
+              base::FilePath("kiosk_apps.1.log"),
+          };
+          handler->AddDataCollector(std::make_unique<SystemLogsDataCollector>(
+              kioskAppLevelSystemLogs));
+        }
+        break;
+      }
       case support_tool::CHROMEOS_REVEN:
 #if BUILDFLAG(IS_CHROMEOS_WITH_HW_DETAILS)
         handler->AddDataCollector(
@@ -274,7 +298,12 @@ std::unique_ptr<SupportToolHandler> GetSupportToolHandler(
                 std::make_unique<system_logs::RevenLogSource>()));
 #endif  // BUILDFLAG(IS_CHROMEOS_WITH_HW_DETAILS)
         break;
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+      case support_tool::CHROME_UPDATER:
+        handler->AddDataCollector(std::make_unique<UpdaterDataCollector>());
+        break;
+#endif
       default:
         break;
     }
@@ -293,6 +322,9 @@ std::vector<support_tool::DataCollectorType> GetAllDataCollectors() {
   for (const auto& type : kDataCollectorsChromeosHwDetails) {
     data_collectors.push_back(type);
   }
+  for (const auto& type : kDataCollectorsLinuxMacWin) {
+    data_collectors.push_back(type);
+  }
   return data_collectors;
 }
 
@@ -302,7 +334,7 @@ GetAllAvailableDataCollectorsOnDevice() {
   for (const auto& type : kDataCollectors) {
     data_collectors.push_back(type);
   }
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   for (const auto& type : kDataCollectorsChromeosAsh) {
     data_collectors.push_back(type);
   }
@@ -311,7 +343,12 @@ GetAllAvailableDataCollectorsOnDevice() {
     data_collectors.push_back(type);
   }
 #endif  // BUILDFLAG(IS_CHROMEOS_WITH_HW_DETAILS)
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+  for (const auto& type : kDataCollectorsLinuxMacWin) {
+    data_collectors.push_back(type);
+  }
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   return data_collectors;
 }
 
@@ -323,9 +360,12 @@ base::FilePath GetFilepathToExport(base::FilePath target_directory,
   if (!case_id.empty()) {
     filename += case_id + "_";
   }
-  return target_directory.AppendASCII(
-      filename + base::UnlocalizedTimeFormatWithPattern(
-                     timestamp, "'UTC'yyyyMMdd_HHmm", icu::TimeZone::getGMT()));
+  base::Time::Exploded exploded;
+  timestamp.UTCExplode(&exploded);
+  std::string timestamp_str = base::StringPrintf(
+      "UTC%04d%02d%02d_%02d%02d", exploded.year, exploded.month,
+      exploded.day_of_month, exploded.hour, exploded.minute);
+  return target_directory.AppendASCII(filename + timestamp_str);
 }
 
 std::string SupportToolErrorsToString(

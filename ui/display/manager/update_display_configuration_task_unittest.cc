@@ -2,17 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/display/manager/update_display_configuration_task.h"
 
 #include <stddef.h>
 
+#include <array>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
@@ -193,8 +190,9 @@ class UpdateDisplayConfigurationTaskTest : public testing::Test {
 
   void UpdateDisplays(size_t count) {
     std::vector<std::unique_ptr<DisplaySnapshot>> displays;
-    for (size_t i = 0; i < count; ++i)
+    for (size_t i = 0; i < count; ++i) {
       displays.push_back(displays_[i]->Clone());
+    }
 
     delegate_.SetOutputs(std::move(displays));
   }
@@ -226,7 +224,7 @@ class UpdateDisplayConfigurationTaskTest : public testing::Test {
   const DisplayMode small_mode_;
   const DisplayMode big_mode_;
 
-  std::unique_ptr<DisplaySnapshot> displays_[2];
+  std::array<std::unique_ptr<DisplaySnapshot>, 2> displays_;
 
   bool configured_ = false;
   bool configuration_status_ = false;

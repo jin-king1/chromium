@@ -11,17 +11,23 @@ import android.webkit.WebView;
 
 import androidx.annotation.GuardedBy;
 import androidx.annotation.IntDef;
+import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 
 import com.android.webview.chromium.CallbackConverter;
 import com.android.webview.chromium.ProfileStore;
 import com.android.webview.chromium.SharedStatics;
 import com.android.webview.chromium.SharedTracingControllerAdapter;
 import com.android.webview.chromium.WebViewChromiumAwInit;
+import com.android.webview.chromium.WebViewChromiumAwInit.CallSite;
+import com.android.webview.chromium.WebViewChromiumAwInit.WebViewStartUpDiagnostics;
 import com.android.webview.chromium.WebkitToSharedGlueConverter;
 
 import org.chromium.android_webview.AwProxyController;
 import org.chromium.android_webview.AwServiceWorkerController;
 import org.chromium.android_webview.AwTracingController;
+import org.chromium.android_webview.common.AwFeatures;
+import org.chromium.android_webview.common.WebViewCachedFlags;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.support_lib_boundary.StaticsBoundaryInterface;
@@ -33,8 +39,12 @@ import org.chromium.support_lib_boundary.util.Features;
 
 import java.lang.reflect.InvocationHandler;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 /** Support library glue version of WebViewChromiumFactoryProvider. */
 public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryBoundaryInterface {
@@ -92,33 +102,85 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
                 Features.ENTERPRISE_AUTHENTICATION_APP_LINK_POLICY,
                 Features.GET_COOKIE_INFO,
                 Features.WEB_MESSAGE_ARRAY_BUFFER,
-                Features.REQUESTED_WITH_HEADER_ALLOW_LIST,
                 Features.IMAGE_DRAG_DROP,
                 Features.USER_AGENT_METADATA,
                 Features.MULTI_PROFILE,
-                Features.ATTRIBUTION_BEHAVIOR,
                 Features.WEBVIEW_MEDIA_INTEGRITY_API_STATUS,
                 Features.MUTE_AUDIO,
                 Features.WEB_AUTHENTICATION,
                 Features.SPECULATIVE_LOADING,
                 Features.BACK_FORWARD_CACHE,
                 Features.PREFETCH_WITH_URL,
+                Features.PREFETCH_WITH_CALLBACK_RESULT_V1,
+                Features.PREFETCH_CACHE,
+                Features.SET_MAX_PRERENDERS,
                 Features.DEFAULT_TRAFFICSTATS_TAGGING,
                 Features.ASYNC_WEBVIEW_STARTUP,
                 Features.PRERENDER_WITH_URL,
                 Features.WEB_STORAGE_DELETE_BROWSING_DATA,
                 Features.SPECULATIVE_LOADING_CONFIG,
-                Features.SAVE_STATE + Features.DEV_SUFFIX,
-                Features.WEB_VIEW_NAVIGATION_CLIENT_BASIC_USAGE + Features.DEV_SUFFIX,
-                Features.ASYNC_SHOULD_INTERCEPT_REQUEST + Features.DEV_SUFFIX,
+                Features.SAVE_STATE,
+                Features.WEB_VIEW_NAVIGATION_CLIENT_BASIC_USAGE,
+                Features.PROVIDER_WEAKLY_REF_WEBVIEW,
+                Features.PAYMENT_REQUEST,
+                Features.WEBVIEW_BUILDER,
+                Features.COOKIE_INTERCEPT,
+                Features.WARM_UP_RENDERER_PROCESS,
+                Features.EXTRA_HEADER_FOR_ORIGINS,
+                Features.BACK_FORWARD_CACHE_SETTINGS,
+                Features.PRECONNECT,
+                Features.HYPERLINK_CONTEXT_MENU_ITEMS + Features.DEV_SUFFIX,
+                Features.ASYNC_WEBVIEW_STARTUP_ASYNC_STARTUP_LOCATIONS,
+                Features.CUSTOM_REQUEST_HEADERS,
+                Features.ASYNC_WEBVIEW_STARTUP_V2,
+                Features.WEB_VIEW_NAVIGATION_LISTENER_V1,
+                Features.ADD_QUIC_HINTS_V1,
+                Features.ON_NAVIGATION_COMPLETED_NON_COMMITTED,
+                Features.COMMITTED_NAVIGATION_GET_PAGE_NON_NULL,
+                Features.WEB_VIEW_NAVIGATION_LISTENER_V2,
+                Features.WEBVIEW_BUILDER_V2,
+                Features.BACK_FORWARD_CACHE_SETTINGS_V3,
+                Features.PAGE_GET_URL,
+                Features.JS_INJECTION_IN_FRAME_AND_WORLD,
+                Features.NAVIGATION_GET_WEB_RESOURCE_ERROR,
+                Features.BACK_FORWARD_CACHE_SETTINGS_V4,
+                Features.WEBVIEW_NAVIGATE_V1,
+                Features.DOWNLOAD_FAVICONS_ENABLED,
+                Features.HTTP_CACHE_MANAGER,
+                Features.CROSS_ORIGIN_ISOLATED_ALLOW_LIST + Features.DEV_SUFFIX,
                 // Add new features above. New features must include `+ Features.DEV_SUFFIX`
-                // when they're initially added (this can be removed in a future CL). The final
-                // feature should have a trailing comma for cleaner diffs.
+                // when they're initially added (this can be removed in a future CL). The one
+                // exception is when adding a new method to an interface that extends from
+                // FeatureFlagHolderBoundaryInterface - these may be added without the suffix.
+                // For more information, see:
+                // https://android.googlesource.com/platform/frameworks/support/+/androidx-main/webkit/webkit/CONTRIBUTING.md#feature-checking-callback-interfaces
+                //
+                // The final feature should have a trailing comma for cleaner diffs.
             };
+
+    // ENQUEUE_PRECONNECT schedules a preconnect task to run asynchronously once native Chromium
+    // startup completes. To invoke enqueuePreconnect(), an app must first obtain a Profile via
+    // ProfileStore. If WEBVIEW_PROFILE_STORE_NOT_TRIGGER_STARTUP is disabled, accessing the
+    // ProfileStore or Profile synchronously triggers Chromium startup. In that case,
+    // enqueuePreconnect() would be redundant as native init has already occurred. Thus, its
+    // availability is conditioned on the Lazy Profile flag.
+    private static final Map<String, String> sWebViewSupportedFeaturesWithCachedFlagConditions =
+            Map.of(
+                    Features.ENQUEUE_PRECONNECT,
+                    AwFeatures.WEBVIEW_PROFILE_STORE_NOT_TRIGGER_STARTUP);
+
+    // mAwInit.getLazyInitLock() guards access to fields that are lazily initialized.
+    // This lock is shared across WebViewChromiumAwInit, WebViewChromiumFactoryProvider,
+    // and SupportLibWebViewChromiumFactory. Sharing a single global lock instead of using
+    // local locks (e.g. synchronized(this)) prevents lock inversion deadlocks when lazy
+    // initializations cross the boundaries of these glue layers
+    @GuardedBy("mAwInit.getLazyInitLock()")
+    private String[] mSupportedFeaturesCache;
 
     // These values are persisted to logs. Entries should not be renumbered and
     // numeric values should never be reused.
     // LINT.IfChange(ApiCall)
+
     @IntDef({
         ApiCall.ADD_WEB_MESSAGE_LISTENER,
         ApiCall.CLEAR_PROXY_OVERRIDE,
@@ -214,8 +276,6 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         ApiCall.GET_PROFILE_SERVICE_WORKER_CONTROLLER,
         ApiCall.SET_WEBVIEW_PROFILE,
         ApiCall.GET_WEBVIEW_PROFILE,
-        ApiCall.SET_ATTRIBUTION_BEHAVIOR,
-        ApiCall.GET_ATTRIBUTION_BEHAVIOR,
         ApiCall.GET_WEBVIEW_MEDIA_INTEGRITY_API_DEFAULT_STATUS,
         ApiCall.GET_WEBVIEW_MEDIA_INTEGRITY_API_OVERRIDE_RULES,
         ApiCall.SET_WEBVIEW_MEDIA_INTEGRITY_API_STATUS,
@@ -243,14 +303,14 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         ApiCall.GET_WEBVIEW_NAVIGATION_CLIENT,
         ApiCall.SET_WEBVIEW_NAVIGATION_CLIENT,
         ApiCall.NAVIGATION_GET_URL,
-        ApiCall.NAVIGATION_IS_PAGE_INITIATED,
+        ApiCall.NAVIGATION_WAS_INITIATED_BY_PAGE,
         ApiCall.NAVIGATION_IS_SAME_DOCUMENT,
         ApiCall.NAVIGATION_IS_RELOAD,
         ApiCall.NAVIGATION_IS_HISTORY,
         ApiCall.NAVIGATION_IS_RESTORE,
         ApiCall.NAVIGATION_IS_BACK,
         ApiCall.NAVIGATION_IS_FORWARD,
-        ApiCall.NAVIGATION_HAS_COMMITTED,
+        ApiCall.NAVIGATION_DID_COMMIT,
         ApiCall.NAVIGATION_DID_COMMIT_ERROR_PAGE,
         ApiCall.NAVIGATION_GET_STATUS_CODE,
         ApiCall.CLEAR_ASYNC_SHOULD_INTERCEPT_REQUEST,
@@ -260,6 +320,61 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         ApiCall.WEB_RESPONSE_CALLBACK_DO_NOT_INTERCEPT,
         ApiCall.WEB_RESPONSE_CALLBACK_INTERCEPT,
         ApiCall.NAVIGATION_GET_PAGE,
+        ApiCall.SET_PAYMENT_REQUEST_ENABLED,
+        ApiCall.GET_PAYMENT_REQUEST_ENABLED,
+        ApiCall.SET_HAS_ENROLLED_INSTRUMENT_ENABLED,
+        ApiCall.GET_HAS_ENROLLED_INSTRUMENT_ENABLED,
+        ApiCall.GET_WEBVIEW_BUILDER,
+        ApiCall.SET_INCLUDE_COOKIES_ON_INTERCEPT,
+        ApiCall.GET_INCLUDE_COOKIES_ON_INTERCEPT,
+        ApiCall.SERVICE_WORKER_SET_INCLUDE_COOKIES_ON_INTERCEPT,
+        ApiCall.SERVICE_WORKER_GET_INCLUDE_COOKIES_ON_INTERCEPT,
+        ApiCall.PROFILE_WARM_UP_RENDERER_PROCESS,
+        ApiCall.SET_ORIGIN_MATCHED_HEADER,
+        ApiCall.HAS_ORIGIN_MATCHED_HEADER,
+        ApiCall.CLEAR_ORIGIN_MATCHED_HEADER,
+        ApiCall.CLEAR_ALL_ORIGIN_MATCHED_HEADERS,
+        ApiCall.SET_BACK_FORWARD_CACHE_SETTINGS,
+        ApiCall.GET_BACK_FORWARD_CACHE_SETTINGS,
+        ApiCall.BACK_FORWARD_CACHE_SETTINGS_GET_TIMEOUT_IN_SECONDS,
+        ApiCall.BACK_FORWARD_CACHE_SETTINGS_GET_MAX_PAGES_IN_CACHE,
+        ApiCall.PRECONNECT,
+        ApiCall.SET_HYPERLINK_CONTEXT_MENU_ITEMS,
+        ApiCall.ADD_ORIGIN_MATCHED_HEADER,
+        ApiCall.GET_ORIGIN_MATCHED_HEADERS,
+        ApiCall.SET_RENDERER_LIBRARY_PREFETCH_MODE,
+        ApiCall.GET_RENDERER_LIBRARY_PREFETCH_MODE,
+        ApiCall.BACK_FORWARD_CACHE_SETTINGS_SET_TIMEOUT_IN_SECONDS,
+        ApiCall.BACK_FORWARD_CACHE_SETTINGS_SET_MAX_PAGES_IN_CACHE,
+        ApiCall.ADD_NAVIGATION_LISTENER,
+        ApiCall.REMOVE_NAVIGATION_LISTENER,
+        ApiCall.ADD_QUIC_HINTS,
+        ApiCall.PAGE_GET_URL,
+        ApiCall.JS_REPLY_EXECUTE_JS,
+        ApiCall.NAVIGATION_GET_WEB_RESOURCE_ERROR,
+        ApiCall.ADD_JAVA_SCRIPT_ON_EVENT,
+        ApiCall.REMOVE_JAVA_SCRIPT_ON_EVENT,
+        ApiCall.ADD_WEB_MESSAGE_LISTENER_WITH_WORLD,
+        ApiCall.REMOVE_WEB_MESSAGE_LISTENER_WITH_WORLD,
+        ApiCall.GET_JAVA_SCRIPT_WORLD,
+        ApiCall.SET_MAX_PRERENDERS,
+        ApiCall.SET_MAX_PREFETCHES,
+        ApiCall.SET_PREFETCH_TTL_SECONDS,
+        ApiCall.BACK_FORWARD_CACHE_SETTINGS_GET_KEEP_FORWARD_ENTRIES,
+        ApiCall.BACK_FORWARD_CACHE_SETTINGS_SET_KEEP_FORWARD_ENTRIES,
+        ApiCall.GET_MAX_PRERENDERS,
+        ApiCall.CLEAR_MAX_PREFETCHES,
+        ApiCall.CLEAR_PREFETCH_TTL,
+        ApiCall.NAVIGATE,
+        ApiCall.SET_DOWNLOAD_FAVICONS_ENABLED,
+        ApiCall.GET_DOWNLOAD_FAVICONS_ENABLED,
+        ApiCall.GET_HTTP_CACHE,
+        ApiCall.HTTP_CACHE_GET_DEFAULT_QUOTA_BYTES,
+        ApiCall.HTTP_CACHE_IS_USING_DEFAULT_QUOTA,
+        ApiCall.HTTP_CACHE_USE_DEFAULT_QUOTA,
+        ApiCall.HTTP_CACHE_GET_QUOTA_BYTES,
+        ApiCall.HTTP_CACHE_SET_QUOTA_BYTES,
+        ApiCall.ENQUEUE_PRECONNECT,
         // Add new constants above. The final constant should have a trailing comma for cleaner
         // diffs.
         ApiCall.COUNT, // Added to suppress WrongConstant in #recordApiCall
@@ -333,10 +448,10 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         int WEB_MESSAGE_PAYLOAD_GET_TYPE = 65;
         int WEB_MESSAGE_PAYLOAD_GET_AS_STRING = 66;
         int WEB_MESSAGE_PAYLOAD_GET_AS_ARRAY_BUFFER = 67;
-        int WEB_SETTINGS_SET_REQUESTED_WITH_HEADER_ORIGIN_ALLOWLIST = 68;
-        int WEB_SETTINGS_GET_REQUESTED_WITH_HEADER_ORIGIN_ALLOWLIST = 69;
-        int SERVICE_WORKER_SETTINGS_SET_REQUESTED_WITH_HEADER_ORIGIN_ALLOWLIST = 70;
-        int SERVICE_WORKER_SETTINGS_GET_REQUESTED_WITH_HEADER_ORIGIN_ALLOWLIST = 71;
+        @Deprecated int WEB_SETTINGS_SET_REQUESTED_WITH_HEADER_ORIGIN_ALLOWLIST = 68;
+        @Deprecated int WEB_SETTINGS_GET_REQUESTED_WITH_HEADER_ORIGIN_ALLOWLIST = 69;
+        @Deprecated int SERVICE_WORKER_SETTINGS_SET_REQUESTED_WITH_HEADER_ORIGIN_ALLOWLIST = 70;
+        @Deprecated int SERVICE_WORKER_SETTINGS_GET_REQUESTED_WITH_HEADER_ORIGIN_ALLOWLIST = 71;
         int GET_IMAGE_DRAG_DROP_IMPLEMENTATION = 72;
         @Deprecated int RESTRICT_SENSITIVE_WEB_CONTENT = 73;
         int JS_REPLY_POST_MESSAGE_WITH_PAYLOAD = 74;
@@ -358,11 +473,10 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         int GET_PROFILE_WEB_STORAGE = 90;
         int GET_PROFILE_GEO_LOCATION_PERMISSIONS = 91;
         int GET_PROFILE_SERVICE_WORKER_CONTROLLER = 92;
-
         int SET_WEBVIEW_PROFILE = 93;
         int GET_WEBVIEW_PROFILE = 94;
-        int SET_ATTRIBUTION_BEHAVIOR = 95;
-        int GET_ATTRIBUTION_BEHAVIOR = 96;
+        @Deprecated int SET_ATTRIBUTION_BEHAVIOR = 95;
+        @Deprecated int GET_ATTRIBUTION_BEHAVIOR = 96;
         int GET_WEBVIEW_MEDIA_INTEGRITY_API_DEFAULT_STATUS = 97;
         int GET_WEBVIEW_MEDIA_INTEGRITY_API_OVERRIDE_RULES = 98;
         int SET_WEBVIEW_MEDIA_INTEGRITY_API_STATUS = 99;
@@ -376,7 +490,7 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         int GET_BACK_FORWARD_CACHE_ENABLED = 107;
         int PREFETCH_URL = 108;
         int PREFETCH_URL_WITH_PARAMS = 109;
-        int CLEAR_PREFETCH = 110;
+        @Deprecated int CLEAR_PREFETCH = 110;
         int CANCEL_PREFETCH = 111;
         int SET_DEFAULT_TRAFFICSTATS_TAG = 112;
         int SET_DEFAULT_TRAFFICSTATS_UID = 113;
@@ -385,31 +499,97 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         int PRERENDER_URL_WITH_PARAMS = 116;
         int WEB_STORAGE_DELETE_BROWSING_DATA = 117;
         int WEB_STORAGE_DELETE_BROWSING_DATA_FOR_SITE = 118;
-        int SET_SPECULATIVE_LOADING_CONFIG = 119;
+        @Deprecated int SET_SPECULATIVE_LOADING_CONFIG = 119;
         int SAVE_STATE = 120;
-        int GET_WEBVIEW_NAVIGATION_CLIENT = 121;
-        int SET_WEBVIEW_NAVIGATION_CLIENT = 122;
+        @Deprecated int GET_WEBVIEW_NAVIGATION_CLIENT = 121;
+        @Deprecated int SET_WEBVIEW_NAVIGATION_CLIENT = 122;
         int NAVIGATION_GET_URL = 123;
-        int NAVIGATION_IS_PAGE_INITIATED = 124;
+        int NAVIGATION_WAS_INITIATED_BY_PAGE = 124;
         int NAVIGATION_IS_SAME_DOCUMENT = 125;
         int NAVIGATION_IS_RELOAD = 126;
         int NAVIGATION_IS_HISTORY = 127;
         int NAVIGATION_IS_RESTORE = 128;
         int NAVIGATION_IS_BACK = 129;
         int NAVIGATION_IS_FORWARD = 130;
-        int NAVIGATION_HAS_COMMITTED = 131;
+        int NAVIGATION_DID_COMMIT = 131;
         int NAVIGATION_DID_COMMIT_ERROR_PAGE = 132;
         int NAVIGATION_GET_STATUS_CODE = 133;
+        @Deprecated // Never launched
         int CLEAR_ASYNC_SHOULD_INTERCEPT_REQUEST = 134;
+        @Deprecated // Never launched
         int SET_ASYNC_SHOULD_INTERCEPT_REQUEST = 135;
         int SERVICE_WORKER_CLEAR_ASYNC_SHOULD_INTERCEPT_REQUEST = 136;
         int SERVICE_WORKER_SET_ASYNC_SHOULD_INTERCEPT_REQUEST = 137;
         int WEB_RESPONSE_CALLBACK_DO_NOT_INTERCEPT = 138;
         int WEB_RESPONSE_CALLBACK_INTERCEPT = 139;
         int NAVIGATION_GET_PAGE = 140;
-
+        int SET_PAYMENT_REQUEST_ENABLED = 141;
+        int GET_PAYMENT_REQUEST_ENABLED = 142;
+        int SET_HAS_ENROLLED_INSTRUMENT_ENABLED = 143;
+        int GET_HAS_ENROLLED_INSTRUMENT_ENABLED = 144;
+        int GET_WEBVIEW_BUILDER = 145;
+        int SET_INCLUDE_COOKIES_ON_INTERCEPT = 146;
+        int GET_INCLUDE_COOKIES_ON_INTERCEPT = 147;
+        int SERVICE_WORKER_SET_INCLUDE_COOKIES_ON_INTERCEPT = 148;
+        int SERVICE_WORKER_GET_INCLUDE_COOKIES_ON_INTERCEPT = 149;
+        int PROFILE_WARM_UP_RENDERER_PROCESS = 150;
+        int SET_ORIGIN_MATCHED_HEADER = 151;
+        int HAS_ORIGIN_MATCHED_HEADER = 152;
+        int CLEAR_ORIGIN_MATCHED_HEADER = 153;
+        int CLEAR_ALL_ORIGIN_MATCHED_HEADERS = 154;
+        @Deprecated int SET_BACK_FORWARD_CACHE_SETTINGS = 155;
+        int GET_BACK_FORWARD_CACHE_SETTINGS = 156;
+        int BACK_FORWARD_CACHE_SETTINGS_GET_TIMEOUT_IN_SECONDS = 157;
+        int BACK_FORWARD_CACHE_SETTINGS_GET_MAX_PAGES_IN_CACHE = 158;
+        int PRECONNECT = 159;
+        int SET_HYPERLINK_CONTEXT_MENU_ITEMS = 160;
+        @Deprecated int PAGE_IS_PRERENDERING = 161;
+        int ADD_ORIGIN_MATCHED_HEADER = 162;
+        int GET_ORIGIN_MATCHED_HEADERS = 163;
+        @Deprecated int SET_RENDERER_LIBRARY_PREFETCH_MODE = 164;
+        @Deprecated int GET_RENDERER_LIBRARY_PREFETCH_MODE = 165;
+        int BACK_FORWARD_CACHE_SETTINGS_SET_TIMEOUT_IN_SECONDS = 166;
+        int BACK_FORWARD_CACHE_SETTINGS_SET_MAX_PAGES_IN_CACHE = 167;
+        int ADD_NAVIGATION_LISTENER = 168;
+        int REMOVE_NAVIGATION_LISTENER = 169;
+        int ADD_QUIC_HINTS = 170;
+        int PAGE_GET_URL = 171;
+        int JS_REPLY_EXECUTE_JS = 172;
+        int NAVIGATION_GET_WEB_RESOURCE_ERROR = 173;
+        int ADD_JAVA_SCRIPT_ON_EVENT = 174;
+        int REMOVE_JAVA_SCRIPT_ON_EVENT = 175;
+        int ADD_WEB_MESSAGE_LISTENER_WITH_WORLD = 176;
+        int REMOVE_WEB_MESSAGE_LISTENER_WITH_WORLD = 177;
+        int GET_JAVA_SCRIPT_WORLD = 178;
+        int SET_MAX_PRERENDERS = 179;
+        int SET_MAX_PREFETCHES = 180;
+        int SET_PREFETCH_TTL_SECONDS = 181;
+        int BACK_FORWARD_CACHE_SETTINGS_GET_KEEP_FORWARD_ENTRIES = 182;
+        int BACK_FORWARD_CACHE_SETTINGS_SET_KEEP_FORWARD_ENTRIES = 183;
+        @Deprecated int SET_IGNORE_DUPLICATE_NAV_ENABLED = 184;
+        @Deprecated int GET_IGNORE_DUPLICATE_NAV_ENABLED = 185;
+        @Deprecated int SET_IGNORE_DUPLICATE_NAV_THRESHOLD_MS = 186;
+        @Deprecated int GET_IGNORE_DUPLICATE_NAV_THRESHOLD_MS = 187;
+        int GET_MAX_PRERENDERS = 188;
+        int GET_MAX_PREFETCHES = 189;
+        int GET_PREFETCH_TTL_SECONDS = 190;
+        int CLEAR_MAX_PREFETCHES = 191;
+        int CLEAR_PREFETCH_TTL = 192;
+        int CLEAR_MAX_PRERENDERS = 193;
+        int NAVIGATE = 194;
+        int SET_DOWNLOAD_FAVICONS_ENABLED = 195;
+        int GET_DOWNLOAD_FAVICONS_ENABLED = 196;
+        int GET_HTTP_CACHE = 197;
+        int HTTP_CACHE_GET_DEFAULT_QUOTA_BYTES = 198;
+        int HTTP_CACHE_IS_USING_DEFAULT_QUOTA = 199;
+        int HTTP_CACHE_USE_DEFAULT_QUOTA = 200;
+        int HTTP_CACHE_GET_QUOTA_BYTES = 201;
+        int HTTP_CACHE_SET_QUOTA_BYTES = 202;
+        int ENQUEUE_PRECONNECT = 203;
+        int SET_CROSS_ORIGIN_ISOLATED_ALLOW_LIST = 204;
+        int GET_CROSS_ORIGIN_ISOLATED_ALLOW_LIST = 205;
         // Remember to update AndroidXWebkitApiCall in enums.xml when adding new values here
-        int COUNT = 141;
+        int COUNT = 206;
     }
 
     // LINT.ThenChange(/tools/metrics/histograms/metadata/android/enums.xml:AndroidXWebkitApiCall)
@@ -419,8 +599,7 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
                 "Android.WebView.AndroidX.ApiCall", apiCall, ApiCall.COUNT);
     }
 
-    @GuardedBy("mAwInit.getLazyInitLock()")
-    private InvocationHandler mStatics;
+    private final InvocationHandler mStatics;
 
     @GuardedBy("mAwInit.getLazyInitLock()")
     private InvocationHandler mServiceWorkerController;
@@ -442,6 +621,18 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
                 BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
                         new SupportLibWebkitToCompatConverterAdapter());
         mAwInit = WebkitToSharedGlueConverter.getGlobalAwInit();
+        mStatics =
+                BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
+                        new StaticsAdapter(mAwInit.getSharedStatics()));
+    }
+
+    @Override
+    public /* WebViewBuilderBoundaryInterface */ InvocationHandler getWebViewBuilder() {
+        try (TraceEvent event = TraceEvent.scoped("WebView.APICall.AndroidX.GET_WEBVIEW_BUILDER")) {
+            recordApiCall(ApiCall.GET_WEBVIEW_BUILDER);
+            return BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
+                    new SupportLibWebViewBuilderAdapter());
+        }
     }
 
     @Override
@@ -459,9 +650,9 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
     }
 
     private static class StaticsAdapter implements StaticsBoundaryInterface {
-        private SharedStatics mSharedStatics;
+        private final SharedStatics mSharedStatics;
 
-        public StaticsAdapter(SharedStatics sharedStatics) {
+        StaticsAdapter(SharedStatics sharedStatics) {
             mSharedStatics = sharedStatics;
         }
 
@@ -489,7 +680,7 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
         public void setSafeBrowsingWhitelist(List<String> hosts, ValueCallback<Boolean> callback) {
             try (TraceEvent event =
                     TraceEvent.scoped(
-                            "WebView.APICall.AndroidX.SET_SAFE_BROWSING_ALLOWLIST_DEPRECATED_NAME")) {
+                            "WebView.APICall.AndroidX.SET_SAFE_BROWSING_ALLOWLIST_DEPRECATED")) {
                 recordApiCall(ApiCall.SET_SAFE_BROWSING_ALLOWLIST_DEPRECATED_NAME);
                 mSharedStatics.setSafeBrowsingAllowlist(
                         hosts, CallbackConverter.fromValueCallback(callback));
@@ -547,26 +738,33 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
     public InvocationHandler getStatics() {
         try (TraceEvent event = TraceEvent.scoped("WebView.APICall.AndroidX.GET_STATICS")) {
             recordApiCall(ApiCall.GET_STATICS);
-            SharedStatics sharedStatics = mAwInit.getStatics();
-            synchronized (mAwInit.getLazyInitLock()) {
-                if (mStatics == null) {
-                    mStatics =
-                            BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
-                                    new StaticsAdapter(sharedStatics));
-                }
+            return mStatics;
+        }
+    }
 
-                return mStatics;
+    @VisibleForTesting
+    public static String[] assembleSupportedFeatures() {
+        List<String> features = new ArrayList<>();
+        Collections.addAll(features, sWebViewSupportedFeatures);
+
+        WebViewCachedFlags cachedFlags = WebViewCachedFlags.get();
+        for (Map.Entry<String, String> entry :
+                sWebViewSupportedFeaturesWithCachedFlagConditions.entrySet()) {
+            if (cachedFlags.isCachedFeatureEnabled(entry.getValue())) {
+                features.add(entry.getKey());
             }
         }
+        return features.toArray(new String[0]);
     }
 
     @Override
     public String[] getSupportedFeatures() {
-        return sWebViewSupportedFeatures;
-    }
-
-    public static String[] getSupportedFeaturesForTesting() {
-        return sWebViewSupportedFeatures;
+        synchronized (mAwInit.getLazyInitLock()) {
+            if (mSupportedFeaturesCache == null) {
+                mSupportedFeaturesCache = assembleSupportedFeatures();
+            }
+            return mSupportedFeaturesCache;
+        }
     }
 
     @Override
@@ -575,7 +773,9 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
                 TraceEvent.scoped("WebView.APICall.AndroidX.GET_SERVICE_WORKER_CONTROLLER")) {
             recordApiCall(ApiCall.GET_SERVICE_WORKER_CONTROLLER);
             AwServiceWorkerController serviceWorkerController =
-                    mAwInit.getDefaultServiceWorkerController();
+                    mAwInit.getDefaultProfile(CallSite.GET_DEFAULT_SERVICE_WORKER_CONTROLLER)
+                            .getBrowserContext()
+                            .getServiceWorkerController();
             synchronized (mAwInit.getLazyInitLock()) {
                 if (mServiceWorkerController == null) {
                     mServiceWorkerController =
@@ -648,14 +848,104 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
     public InvocationHandler getProfileStore() {
         try (TraceEvent event = TraceEvent.scoped("WebView.APICall.AndroidX.GET_PROFILE_STORE")) {
             recordApiCall(ApiCall.GET_PROFILE_STORE);
+            ProfileStore profileStore = mAwInit.getProfileStore();
             synchronized (mAwInit.getLazyInitLock()) {
                 if (mProfileStore == null) {
                     mProfileStore =
                             BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
-                                    new SupportLibProfileStore(ProfileStore.getInstance()));
+                                    new SupportLibProfileStore(profileStore));
                 }
 
                 return mProfileStore;
+            }
+        }
+    }
+
+    @Override
+    public void startUpWebView(
+            Consumer<BiConsumer<@StartUpConfigField Integer, Object>> config,
+            Consumer<Consumer<BiConsumer<@StartUpResultField Integer, Object>>> onSuccess,
+            Consumer<Consumer<BiConsumer<@StartupErrorType Integer, Object>>> onFailure) {
+        try (TraceEvent event = TraceEvent.scoped("WebView.APICall.AndroidX.START_UP_WEBVIEW")) {
+            recordApiCall(ApiCall.START_UP_WEBVIEW);
+
+            StartUpConfig startUpConfig = new StartUpConfig(config);
+
+            WebViewChromiumAwInit.WebViewStartUpCallback chromiumCallback =
+                    result -> handleStartupResult(onSuccess, result);
+
+            mAwInit.startUpWebView(
+                    chromiumCallback,
+                    startUpConfig.mShouldRunUiThreadStartUpTasks,
+                    startUpConfig.mProfileNamesToLoad);
+        }
+    }
+
+    private static void handleStartupResult(
+            Consumer<Consumer<BiConsumer<@StartUpResultField Integer, Object>>> callbackProvider,
+            WebViewStartUpDiagnostics result) {
+        // This is the "resultStream" consumer that we pass to the caller.
+        // Its job is to receive the final result-handling BiConsumer.
+        Consumer<BiConsumer<@StartUpResultField Integer, Object>> resultStream =
+                (finalResultHandler) -> {
+                    // Once we have the final handler, stream the results.
+                    finalResultHandler.accept(
+                            StartUpResultField.TOTAL_TIME_UI_THREAD_MILLIS,
+                            result.getTotalTimeUiThreadChromiumInitMillis());
+                    finalResultHandler.accept(
+                            StartUpResultField.MAX_TIME_PER_TASK_UI_THREAD_MILLIS,
+                            result.getMaxTimePerTaskUiThreadChromiumInitMillis());
+
+                    Throwable syncLoc = result.getSynchronousChromiumInitLocationOrNull();
+                    if (syncLoc != null) {
+                        finalResultHandler.accept(
+                                StartUpResultField.BLOCKING_START_UP_LOCATION, syncLoc);
+                    }
+
+                    Throwable providerLoc = result.getProviderInitOnMainLooperLocationOrNull();
+                    if (providerLoc != null) {
+                        finalResultHandler.accept(
+                                StartUpResultField.BLOCKING_START_UP_LOCATION, providerLoc);
+                    }
+
+                    Throwable asyncLoc = result.getAsynchronousChromiumInitLocationOrNull();
+                    if (asyncLoc != null) {
+                        finalResultHandler.accept(
+                                StartUpResultField.ASYNC_START_UP_LOCATION, List.of(asyncLoc));
+                    }
+                };
+
+        callbackProvider.accept(resultStream);
+    }
+
+    private static class StartUpConfig implements BiConsumer<@StartUpConfigField Integer, Object> {
+        private boolean mShouldRunUiThreadStartUpTasks = true;
+        private @Nullable Set<String> mProfileNamesToLoad;
+
+        public StartUpConfig(Consumer<BiConsumer<@StartUpConfigField Integer, Object>> consumer) {
+            consumer.accept(this);
+        }
+
+        @Override
+        @SuppressWarnings("unchecked") // Values cross the AndroidX boundary as raw Object.
+        public void accept(@StartUpConfigField Integer key, Object value) {
+            switch (key) {
+                case StartUpConfigField.BACKGROUND_EXECUTOR:
+                    // We don't use this value yet.
+                    break;
+                case StartUpConfigField.UI_THREAD_START_UP_TASKS:
+                    mShouldRunUiThreadStartUpTasks = (boolean) value;
+                    break;
+                case StartUpConfigField.PROFILE_NAMES_TO_LOAD:
+                    mProfileNamesToLoad = (Set<String>) value;
+                    break;
+                default:
+                    if (key < 0) {
+                        throw new UnsupportedOperationException(
+                                "The current WebView version doesn't support this config: " + key);
+                    }
+                    // If we get here then it means that there's an optional operation that the
+                    // current WebView version doesn't support and it's safe to ignore.
             }
         }
     }
@@ -673,34 +963,54 @@ public class SupportLibWebViewChromiumFactory implements WebViewProviderFactoryB
                     BoundaryInterfaceReflectionUtil.castToSuppLibClass(
                             WebViewStartUpCallbackBoundaryInterface.class, callbackInvoHandler);
             WebViewChromiumAwInit.WebViewStartUpCallback callback =
-                    new WebViewChromiumAwInit.WebViewStartUpCallback() {
-                        @Override
-                        public void onSuccess(
-                                WebViewChromiumAwInit.WebViewStartUpDiagnostics result) {
-                            SupportLibStartUpResult supportLibResult =
-                                    new SupportLibStartUpResult();
-                            supportLibResult.setTotalTimeInUiThreadMillis(
-                                    result.getTotalTimeUiThreadChromiumInitMillis());
-                            supportLibResult.setMaxTimePerTaskInUiThreadMillis(
-                                    result.getMaxTimePerTaskUiThreadChromiumInitMillis());
-                            Throwable syncChromiumInitLocation =
-                                    result.getSynchronousChromiumInitLocationOrNull();
-                            if (syncChromiumInitLocation != null) {
-                                supportLibResult.addBlockingStartUpLocation(
-                                        syncChromiumInitLocation);
-                            }
-                            Throwable providerInitOnMainLooperLocation =
-                                    result.getProviderInitOnMainLooperLocationOrNull();
-                            if (providerInitOnMainLooperLocation != null) {
-                                supportLibResult.addBlockingStartUpLocation(
-                                        providerInitOnMainLooperLocation);
-                            }
-                            webViewStartUpCallback.onSuccess(
-                                    BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
-                                            supportLibResult));
+                    result -> {
+                        SupportLibStartUpResult supportLibResult = new SupportLibStartUpResult();
+                        supportLibResult.setTotalTimeInUiThreadMillis(
+                                result.getTotalTimeUiThreadChromiumInitMillis());
+                        supportLibResult.setMaxTimePerTaskInUiThreadMillis(
+                                result.getMaxTimePerTaskUiThreadChromiumInitMillis());
+                        Throwable syncChromiumInitLocation =
+                                result.getSynchronousChromiumInitLocationOrNull();
+                        if (syncChromiumInitLocation != null) {
+                            supportLibResult.addBlockingStartUpLocation(syncChromiumInitLocation);
                         }
+                        Throwable providerInitOnMainLooperLocation =
+                                result.getProviderInitOnMainLooperLocationOrNull();
+                        if (providerInitOnMainLooperLocation != null) {
+                            supportLibResult.addBlockingStartUpLocation(
+                                    providerInitOnMainLooperLocation);
+                        }
+                        Throwable asyncChromiumInitLocation =
+                                result.getAsynchronousChromiumInitLocationOrNull();
+                        if (asyncChromiumInitLocation != null) {
+                            supportLibResult.addAsyncStartUpLocation(asyncChromiumInitLocation);
+                        }
+                        webViewStartUpCallback.onSuccess(
+                                BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
+                                        supportLibResult));
                     };
-            mAwInit.startUpWebView(callback, webViewStartUpConfig.shouldRunUiThreadStartUpTasks());
+
+            mAwInit.startUpWebView(
+                    callback,
+                    webViewStartUpConfig.shouldRunUiThreadStartUpTasks(),
+                    getProfilesToLoad(webViewStartUpConfig));
         }
+    }
+
+    // TODO(crbug.com/431984603): Remove and use the get method directly when any breaking change is
+    // done to startUpWebView API.
+    @Nullable
+    private static Set<String> getProfilesToLoad(
+            WebViewStartUpConfigBoundaryInterface webViewStartUpConfig) {
+        Set<String> profilesToLoad = null;
+        try {
+            profilesToLoad = webViewStartUpConfig.getProfileNamesToLoad();
+        } catch (RuntimeException e) {
+            // This is an ugly fix to make sure that we don't crash with older BoundaryInterface in
+            // AndroidX older versions. We should ideally fix that by making the
+            // WebViewStartUpCallbackBoundaryInterface implements FeatureFlagHolderBoundaryInterface
+            // or convert the Proxy way to use BiConsumer similar to WebViewBuilder.
+        }
+        return profilesToLoad;
     }
 }

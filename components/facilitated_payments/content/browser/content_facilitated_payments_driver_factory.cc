@@ -5,22 +5,20 @@
 #include "components/facilitated_payments/content/browser/content_facilitated_payments_driver_factory.h"
 
 #include "base/check_deref.h"
+#include "base/feature_list.h"
 #include "components/facilitated_payments/content/browser/security_checker.h"
 #include "components/facilitated_payments/core/browser/facilitated_payments_client.h"
 #include "components/facilitated_payments/core/features/features.h"
+#include "components/facilitated_payments/core/metrics/facilitated_payments_metrics.h"
 #include "content/public/browser/navigation_handle.h"
 
 namespace payments::facilitated {
 
 ContentFacilitatedPaymentsDriverFactory::
-    ContentFacilitatedPaymentsDriverFactory(
-        content::WebContents* web_contents,
-        FacilitatedPaymentsClient* client,
-        optimization_guide::OptimizationGuideDecider*
-            optimization_guide_decider)
+    ContentFacilitatedPaymentsDriverFactory(content::WebContents* web_contents,
+                                            FacilitatedPaymentsClient* client)
     : content::WebContentsObserver(web_contents),
-      client_(CHECK_DEREF(client)),
-      optimization_guide_decider_(optimization_guide_decider) {}
+      client_(CHECK_DEREF(client)) {}
 
 ContentFacilitatedPaymentsDriverFactory::
     ~ContentFacilitatedPaymentsDriverFactory() {
@@ -38,8 +36,7 @@ ContentFacilitatedPaymentsDriverFactory::GetOrCreateForFrame(
     return *iter->second;
   }
   driver = std::make_unique<ContentFacilitatedPaymentsDriver>(
-      &*client_, optimization_guide_decider_, render_frame_host,
-      std::make_unique<SecurityChecker>());
+      &*client_, render_frame_host, std::make_unique<SecurityChecker>());
   DCHECK_EQ(driver_map_.find(render_frame_host)->second.get(), driver.get());
   return *iter->second;
 }
@@ -86,22 +83,43 @@ void ContentFacilitatedPaymentsDriverFactory::DidFinishNavigation(
 void ContentFacilitatedPaymentsDriverFactory::OnTextCopiedToClipboard(
     content::RenderFrameHost* render_frame_host,
     const std::u16string& copied_text) {
-  // The Facilitated Payments infra is initiated for both Pix and eWallet,
-  // however the Pix payflow should only be initiated if its flag is enabled.
-  if (!base::FeatureList::IsEnabled(kEnablePixPayments)) {
+  // If the copy event occurred in iframe, only proceed if the iframe flag is
+  // enabled.
+  if (render_frame_host != render_frame_host->GetOutermostMainFrame() &&
+      !base::FeatureList::IsEnabled(kEnableIframeForPix)) {
+    LogPixFlowExitedReason(PixFlowExitedReason::kPixCodeInIFrame);
+    return;
+  }
+  if (!render_frame_host->IsActive()) {
+    LogPixFlowExitedReason(PixFlowExitedReason::kFrameNotActive);
     return;
   }
 
-  if (render_frame_host != render_frame_host->GetOutermostMainFrame() ||
-      !render_frame_host->IsActive()) {
-    return;
+  content::RenderFrameHost* main_frame =
+      render_frame_host->GetOutermostMainFrame();
+  std::optional<GURL> iframe_url;
+
+  // If the copy event occurred in an iframe, capture the iframe URL.
+  bool is_same_origin = false;
+  if (render_frame_host != main_frame) {
+    iframe_url = render_frame_host->GetLastCommittedURL();
+    is_same_origin =
+        render_frame_host->GetLastCommittedOrigin().IsSameOriginWith(
+            main_frame->GetLastCommittedOrigin());
   }
 
   auto& driver = GetOrCreateForFrame(render_frame_host);
 
-  driver.OnTextCopiedToClipboard(render_frame_host->GetLastCommittedURL(),
-                                 copied_text,
-                                 render_frame_host->GetPageUkmSourceId());
+  // Pass the main frame URL as the primary identifier for the merchant site,
+  // while providing the optional iframe URL for PSP allowlist verification.
+  // To ensure that the PixManager receives the main frame origin for account
+  // linking, the third parameter is now always the main frame origin.
+  driver.OnTextCopiedToClipboard(
+      /*main_frame_url=*/main_frame->GetLastCommittedURL(),
+      /*iframe_url=*/iframe_url,
+      /*main_frame_origin=*/main_frame->GetLastCommittedOrigin(), copied_text,
+      render_frame_host->GetPageUkmSourceId(),
+      /*is_same_origin=*/is_same_origin);
 }
 
 }  // namespace payments::facilitated

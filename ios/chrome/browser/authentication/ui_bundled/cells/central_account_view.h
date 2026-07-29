@@ -7,10 +7,7 @@
 
 #import <UIKit/UIKit.h>
 
-#import "base/ios/block_types.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_item.h"
-
-struct ManagementState;
 
 // View for the signed-in account, used in account settings page. Contains the
 // following subviews:
@@ -20,24 +17,35 @@ struct ManagementState;
 // In case the value is nil, the main label will show the email and there will
 // be no secondary label.
 // 3. Email subtitle displayed in secondary label. The value cannot be nil.
-// 4. Manage your account button, displayed optionally below the email.
 @interface CentralAccountView : UIView
 
 - (instancetype)initWithFrame:(CGRect)frame
-                      avatarImage:(UIImage*)avatarImage
-                             name:(NSString*)name
-                            email:(NSString*)email
-                  managementState:(ManagementState)managementState
-                  useLargeMargins:(BOOL)useLargeMargins
-       addManageYourAccountButton:(BOOL)addManageYourAccountButton
-    manageYourAccountButtonAction:
-        (ProceduralBlock)manageYourAccountButtonAction;
+                  avatarImage:(UIImage*)avatarImage
+              showsAITierRing:(BOOL)showsAITierRing
+               aiTierFullName:(NSString*)aiTierFullName
+                         name:(NSString*)name
+                        email:(NSString*)email
+        managementDescription:(NSString*)managementDescription
+              useLargeMargins:(BOOL)useLargeMargins;
 
-// Returns the view parameters.
+// Returns the avatar image.
 - (UIImage*)avatarImage;
+
+// Returns the avatar view container.
+- (UIView*)avatarView;
+
+// The name of the view. The name if it’s set otherwise the email.
 - (NSString*)name;
+
+// The email of the view. The email if the name is set, otherwise nil.
 - (NSString*)email;
+
+// The full name of the AI tier. May be nil.
+- (NSString*)aiTierFullName;
+
 - (BOOL)managed;
+
+- (NSString*)managementDescription;
 
 // update the top padding.
 - (void)updateTopPadding:(CGFloat)existingPadding;

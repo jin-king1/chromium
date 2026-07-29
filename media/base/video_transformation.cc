@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/base/video_transformation.h"
 
 #include <math.h>
@@ -15,10 +10,13 @@
 #include <array>
 #include <cmath>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/numerics/angle_conversions.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 
 namespace media {
 namespace {
@@ -51,7 +49,7 @@ bool operator==(const struct VideoTransformation& first,
 
 // static
 VideoTransformation VideoTransformation::FromFFmpegDisplayMatrix(
-    const int32_t* matrix3x3) {
+    base::span<const int32_t, 9> matrix3x3) {
   const int32_t matrix2x2[4] = {
       matrix3x3[0],
       matrix3x3[1],
@@ -61,7 +59,7 @@ VideoTransformation VideoTransformation::FromFFmpegDisplayMatrix(
   return VideoTransformation(matrix2x2);
 }
 
-std::array<int32_t, 4> VideoTransformation::GetMatrix() {
+std::array<int32_t, 4> VideoTransformation::GetMatrix() const {
   int32_t m = mirrored ? -1 : 1;
   int32_t fp1 = 1 << 16;
   switch (rotation) {
@@ -76,7 +74,7 @@ std::array<int32_t, 4> VideoTransformation::GetMatrix() {
   }
 }
 
-VideoTransformation::VideoTransformation(const int32_t matrix[4]) {
+VideoTransformation::VideoTransformation(base::span<const int32_t, 4> matrix) {
   // Promote to int64_t to avoid abs(int32_min) being undefined.
   const std::array<int64_t, 4> matrix64 = {
       matrix[0],
@@ -181,6 +179,12 @@ VideoTransformation VideoTransformation::add(VideoTransformation delta) const {
   int combined_rotation = (base_rotation + delta_rotation) % 360;
   return VideoTransformation(static_cast<VideoRotation>(combined_rotation),
                              delta.mirrored);
+}
+
+std::string VideoTransformation::ToString() const {
+  return base::StringPrintf("Rotation: %s, is mirrored: %s",
+                            VideoRotationToString(rotation),
+                            mirrored ? "true" : "false");
 }
 
 }  // namespace media

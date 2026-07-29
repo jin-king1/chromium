@@ -12,9 +12,10 @@ import android.graphics.BitmapFactory;
 import android.os.Build;
 
 import androidx.annotation.DrawableRes;
-import androidx.annotation.Nullable;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker.SystemNotificationType;
@@ -27,6 +28,7 @@ import org.chromium.components.browser_ui.notifications.NotificationWrapperBuild
 import org.chromium.components.browser_ui.notifications.PendingIntentProvider;
 
 /** Provides common functionality for handling sharing notifications. */
+@NullMarked
 public final class SharingNotificationUtil {
     /**
      * Shows a notification with a configuration common to all sharing notifications.
@@ -48,10 +50,10 @@ public final class SharingNotificationUtil {
             @SystemNotificationType int type,
             String group,
             int id,
-            PendingIntentProvider contentIntent,
-            PendingIntentProvider deleteIntent,
-            PendingIntentProvider confirmIntent,
-            PendingIntentProvider cancelIntent,
+            @Nullable PendingIntentProvider contentIntent,
+            @Nullable PendingIntentProvider deleteIntent,
+            @Nullable PendingIntentProvider confirmIntent,
+            @Nullable PendingIntentProvider cancelIntent,
             String contentTitle,
             String contentText,
             @DrawableRes int smallIconId,
@@ -94,7 +96,7 @@ public final class SharingNotificationUtil {
         }
         if (cancelIntent != null) {
             builder.addAction(
-                    R.drawable.ic_cancel_circle,
+                    R.drawable.ic_cancel_24dp,
                     resources.getString(R.string.cancel),
                     cancelIntent,
                     NotificationUmaTracker.ActionType.SHARING_CANCEL);
@@ -181,7 +183,7 @@ public final class SharingNotificationUtil {
         if (tryAgainIntent != null) {
             builder.setContentIntent(tryAgainIntent)
                     .addAction(
-                            R.drawable.ic_cancel_circle,
+                            R.drawable.ic_cancel_24dp,
                             resources.getString(R.string.try_again),
                             tryAgainIntent,
                             NotificationUmaTracker.ActionType.SHARING_TRY_AGAIN);

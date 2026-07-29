@@ -7,7 +7,6 @@
 
 #include <memory>
 #include <string>
-#include <variant>
 
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
@@ -21,8 +20,6 @@
 #include "chrome/browser/ash/policy/core/device_local_account_external_cache.h"
 #include "chrome/browser/ash/policy/core/device_local_account_policy_store.h"
 #include "chrome/browser/ash/policy/external_data/device_local_account_external_data_manager.h"
-#include "chrome/browser/ash/policy/invalidation/affiliated_cloud_policy_invalidator.h"
-#include "chrome/browser/ash/policy/invalidation/affiliated_invalidation_service_provider.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/extensions/external_loader.h"
 #include "chrome/browser/policy/cloud/cloud_policy_invalidator.h"
@@ -42,9 +39,11 @@ namespace invalidation {
 class InvalidationListener;
 }
 
-namespace policy {
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
 
-class AffiliatedInvalidationServiceProvider;
+namespace policy {
 
 // The main switching central that downloads, caches, refreshes, etc. policy for
 // a single device-local account.
@@ -52,13 +51,15 @@ class DeviceLocalAccountPolicyBroker
     : public CloudPolicyStore::Observer,
       public ComponentCloudPolicyService::Delegate {
  public:
-  // |invalidation_service_provider| must outlive |this|.
+  // `shared_url_loader_factory` must be non-null.
+  // |invalidation_listener| must outlive |this|.
   // |policy_update_callback| will be invoked to notify observers that the
   // policy for |account| has been updated.
   // |task_runner| is the runner for policy refresh tasks.
   // |resource_cache_task_runner| is the task runner used for file operations,
   // it must be sequenced together with other tasks running on the same files.
   DeviceLocalAccountPolicyBroker(
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       const DeviceLocalAccount& account,
       const base::FilePath& component_policy_cache_path,
       std::unique_ptr<DeviceLocalAccountPolicyStore> store,
@@ -68,9 +69,7 @@ class DeviceLocalAccountPolicyBroker
       const scoped_refptr<base::SequencedTaskRunner>& task_runner,
       const scoped_refptr<base::SequencedTaskRunner>&
           resource_cache_task_runner,
-      std::variant<AffiliatedInvalidationServiceProvider*,
-                   invalidation::InvalidationListener*>
-          invalidation_service_provider_or_listener);
+      invalidation::InvalidationListener* invalidation_listener);
 
   DeviceLocalAccountPolicyBroker(const DeviceLocalAccountPolicyBroker&) =
       delete;
@@ -109,10 +108,8 @@ class DeviceLocalAccountPolicyBroker
 
   // Fire up the cloud connection for fetching policy for the account from the
   // cloud if this is an enterprise-managed device.
-  void ConnectIfPossible(
-      ash::DeviceSettingsService* device_settings_service,
-      DeviceManagementService* device_management_service,
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+  void ConnectIfPossible(ash::DeviceSettingsService* device_settings_service,
+                         DeviceManagementService* device_management_service);
 
   // Reads the refresh delay from policy and configures the refresh scheduler.
   void UpdateRefreshDelay();
@@ -138,17 +135,17 @@ class DeviceLocalAccountPolicyBroker
   // Return whether the cache is currently running.
   bool IsCacheRunning() const;
 
-  // Returns all cached extensions, both the ones meant for Ash and the ones
-  // meant for Lacros.
-  base::Value::Dict GetCachedExtensionsForTesting() const;
+  // Returns the cached extensions.
+  base::DictValue GetCachedExtensionsForTesting() const;
 
  private:
   void CreateComponentCloudPolicyService(CloudPolicyClient* client);
   void UpdateExtensionListFromStore();
 
-  const std::variant<raw_ptr<AffiliatedInvalidationServiceProvider>,
-                     raw_ptr<invalidation::InvalidationListener>>
-      invalidation_service_provider_or_listener_;
+  const scoped_refptr<network::SharedURLLoaderFactory>
+      shared_url_loader_factory_;
+
+  const raw_ptr<invalidation::InvalidationListener> invalidation_listener_;
   const std::string account_id_;
   const std::string user_id_;
   const base::FilePath component_policy_cache_path_;
@@ -162,9 +159,7 @@ class DeviceLocalAccountPolicyBroker
   CloudPolicyCore core_;
   std::unique_ptr<ComponentCloudPolicyService> component_policy_service_;
   base::RepeatingClosure policy_update_callback_;
-  std::variant<std::unique_ptr<AffiliatedCloudPolicyInvalidator>,
-               std::unique_ptr<CloudPolicyInvalidator>>
-      invalidator_ = std::unique_ptr<AffiliatedCloudPolicyInvalidator>{nullptr};
+  std::unique_ptr<CloudPolicyInvalidator> invalidator_;
   const scoped_refptr<base::SequencedTaskRunner> resource_cache_task_runner_;
 };
 

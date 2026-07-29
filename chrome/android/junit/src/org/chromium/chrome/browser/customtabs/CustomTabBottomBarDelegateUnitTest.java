@@ -33,7 +33,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -44,7 +45,8 @@ import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntent
 import org.chromium.chrome.browser.browserservices.intents.CustomButtonParams;
 import org.chromium.chrome.browser.customtabs.content.CustomTabActivityTabProvider;
 import org.chromium.components.browser_ui.widget.gesture.SwipeGestureListener.ScrollDirection;
-import org.chromium.ui.base.ApplicationViewportInsetSupplier;
+import org.chromium.ui.KeyboardVisibilityDelegate;
+import org.chromium.ui.base.ApplicationViewportInsetTracker;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.base.WindowAndroid;
 
@@ -53,6 +55,8 @@ import org.chromium.ui.base.WindowAndroid;
 @Batch(Batch.UNIT_TESTS)
 @Config(manifest = Config.NONE)
 public class CustomTabBottomBarDelegateUnitTest {
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public ActivityScenarioRule<TestActivity> mActivityScenarioRule =
             new ActivityScenarioRule<>(TestActivity.class);
@@ -67,17 +71,17 @@ public class CustomTabBottomBarDelegateUnitTest {
     @Mock private RemoteViews mRemoteViews;
     @Mock private Intent mIntent;
     @Mock private PendingIntent mRemoteViewsPendingIntent;
-    @Mock private ApplicationViewportInsetSupplier mViewportInsetSupplier;
     @Mock private PendingIntent mSwipeUpPendingIntent;
     @Mock private ImageButton mButtonView;
 
+    private final ApplicationViewportInsetTracker mViewportInsetSupplier =
+            ApplicationViewportInsetTracker.createForTests();
     private Activity mActivity;
     private BrowserServicesIntentDataProvider mIntentDataProvider;
     private CustomTabBottomBarDelegate mBottomBarDelegate;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         mActivityScenarioRule.getScenario().onActivity(activity -> mActivity = activity);
         when(mIntent.getParcelableExtra(CustomTabsIntent.EXTRA_REMOTEVIEWS))
                 .thenReturn(mRemoteViews);
@@ -88,7 +92,9 @@ public class CustomTabBottomBarDelegateUnitTest {
         when(mIntent.getParcelableExtra(
                         CustomTabIntentDataProvider.EXTRA_SECONDARY_TOOLBAR_SWIPE_UP_ACTION))
                 .thenReturn(mSwipeUpPendingIntent);
-        when(mWindowAndroid.getApplicationBottomInsetSupplier()).thenReturn(mViewportInsetSupplier);
+        when(mWindowAndroid.getApplicationBottomInsetTracker()).thenReturn(mViewportInsetSupplier);
+        when(mWindowAndroid.getKeyboardDelegate())
+                .thenReturn(KeyboardVisibilityDelegate.getInstance());
         mIntentDataProvider =
                 new CustomTabIntentDataProvider(
                         mIntent, mActivity, CustomTabsIntent.COLOR_SCHEME_LIGHT);
@@ -107,13 +113,15 @@ public class CustomTabBottomBarDelegateUnitTest {
 
     @Test
     public void testIsSwipeEnabled() {
+        MotionEvent ev = MotionEvent.obtain(0, 0, MotionEvent.ACTION_MOVE, 0f, 0f, 0);
+
         // Swipe should only be enabled when the bottom bar is visible and the direction is up.
         when(mBottomBarView.getVisibility()).thenReturn(View.VISIBLE);
-        assertTrue(mBottomBarDelegate.isSwipeEnabled(ScrollDirection.UP));
-        assertFalse(mBottomBarDelegate.isSwipeEnabled(ScrollDirection.DOWN));
+        assertTrue(mBottomBarDelegate.isSwipeEnabled(ScrollDirection.UP, ev));
+        assertFalse(mBottomBarDelegate.isSwipeEnabled(ScrollDirection.DOWN, ev));
 
         when(mBottomBarView.getVisibility()).thenReturn(View.INVISIBLE);
-        assertFalse(mBottomBarDelegate.isSwipeEnabled(ScrollDirection.UP));
+        assertFalse(mBottomBarDelegate.isSwipeEnabled(ScrollDirection.UP, ev));
     }
 
     @Test
@@ -207,7 +215,7 @@ public class CustomTabBottomBarDelegateUnitTest {
     @Test
     public void testOnBottomControlsHeightChanged() {
         when(mBrowserControlsSizer.getBottomControlsMinHeightOffset()).thenReturn(100);
-        when(mBrowserControlsSizer.getBrowserControlHiddenRatio()).thenReturn(1f);
+        when(mBrowserControlsSizer.getBottomControlHiddenRatio()).thenReturn(1f);
         mBottomBarDelegate.onBottomControlsHeightChanged(
                 /* bottomControlsHeight= */ 50, /* bottomControlsMinHeight= */ 0);
 

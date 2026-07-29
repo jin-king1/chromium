@@ -27,6 +27,7 @@
 #include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/test/scoped_feature_list.h"
@@ -50,6 +51,7 @@
 #include "extensions/common/features/feature_channel.h"
 #include "net/base/file_stream.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/native_ui_types.h"
 
 #if BUILDFLAG(IS_POSIX)
 #include "base/files/file_descriptor_watcher_posix.h"
@@ -151,7 +153,8 @@ class NativeMessagingTest : public ::testing::Test,
     last_message_ = message;
 
     // Parse the message.
-    std::optional<base::Value> dict_value = base::JSONReader::Read(message);
+    std::optional<base::Value> dict_value =
+        base::JSONReader::Read(message, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     if (!dict_value || !dict_value->is_dict()) {
       LOG(ERROR) << "Failed to parse " << message;
       last_message_parsed_.reset();
@@ -159,14 +162,16 @@ class NativeMessagingTest : public ::testing::Test,
       last_message_parsed_ = std::move(*dict_value).TakeDict();
     }
 
-    if (run_loop_)
+    if (run_loop_) {
       run_loop_->Quit();
+    }
   }
 
   void CloseChannel(const std::string& error_message) override {
     channel_closed_ = true;
-    if (run_loop_)
+    if (run_loop_) {
       run_loop_->Quit();
+    }
   }
 
  protected:
@@ -177,12 +182,14 @@ class NativeMessagingTest : public ::testing::Test,
 
   base::FilePath CreateTempFileWithMessage(const std::string& message) {
     base::FilePath filename;
-    if (!base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &filename))
+    if (!base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &filename)) {
       return base::FilePath();
+    }
 
     std::string message_with_header = FormatMessage(message);
-    if (!base::WriteFile(filename, message_with_header))
+    if (!base::WriteFile(filename, message_with_header)) {
       return base::FilePath();
+    }
 
     return filename;
   }
@@ -196,7 +203,7 @@ class NativeMessagingTest : public ::testing::Test,
   TestingProfile profile_;
 
   std::string last_message_;
-  std::optional<base::Value::Dict> last_message_parsed_;
+  std::optional<base::DictValue> last_message_parsed_;
   bool channel_closed_ = false;
 };
 
@@ -280,8 +287,9 @@ TEST_F(NativeMessagingTest, SingleSendMessageWrite) {
   base::TimeTicks start_time = base::TimeTicks::Now();
   while (base::TimeTicks::Now() - start_time < TestTimeouts::action_timeout()) {
     ASSERT_TRUE(base::ReadFileToString(temp_output_file, &output));
-    if (!output.empty())
+    if (!output.empty()) {
       break;
+    }
     base::PlatformThread::YieldCurrentThread();
   }
 
@@ -295,7 +303,7 @@ TEST_F(NativeMessagingTest, EchoConnect) {
   ASSERT_NO_FATAL_FAILURE(test_host.RegisterTestHost(false));
   std::string error_message;
   native_message_host_ = NativeMessageProcessHost::Create(
-      &profile_, NULL, ScopedTestNativeMessagingHost::kExtensionId,
+      &profile_, gfx::NativeView(), ScopedTestNativeMessagingHost::kExtensionId,
       ScopedTestNativeMessagingHost::kHostName, false, &error_message);
   native_message_host_->Start(this);
   ASSERT_TRUE(native_message_host_);
@@ -359,7 +367,7 @@ TEST_F(NativeMessagingTest, ReconnectArgs) {
   ASSERT_NO_FATAL_FAILURE(test_host.RegisterTestHost(false));
   std::string error_message;
   native_message_host_ = NativeMessageProcessHost::Create(
-      &profile_, NULL, ScopedTestNativeMessagingHost::kExtensionId,
+      &profile_, gfx::NativeView(), ScopedTestNativeMessagingHost::kExtensionId,
       ScopedTestNativeMessagingHost::
           kSupportsNativeInitiatedConnectionsHostName,
       false, &error_message);
@@ -372,7 +380,7 @@ TEST_F(NativeMessagingTest, ReconnectArgs) {
   ASSERT_FALSE(last_message_.empty());
   ASSERT_TRUE(last_message_parsed_);
 
-  const base::Value::List* args_value = last_message_parsed_->FindList("args");
+  const base::ListValue* args_value = last_message_parsed_->FindList("args");
   ASSERT_TRUE(args_value);
   std::vector<base::CommandLine::StringType> args;
   args.reserve(args_value->size());
@@ -413,7 +421,7 @@ TEST_F(NativeMessagingTest, ReconnectArgs_Disabled) {
   ASSERT_NO_FATAL_FAILURE(test_host.RegisterTestHost(false));
   std::string error_message;
   native_message_host_ = NativeMessageProcessHost::Create(
-      &profile_, NULL, ScopedTestNativeMessagingHost::kExtensionId,
+      &profile_, gfx::NativeView(), ScopedTestNativeMessagingHost::kExtensionId,
       ScopedTestNativeMessagingHost::
           kSupportsNativeInitiatedConnectionsHostName,
       false, &error_message);
@@ -441,7 +449,7 @@ TEST_F(NativeMessagingTest, ReconnectArgsIfNativeConnectionDisallowed) {
   ASSERT_NO_FATAL_FAILURE(test_host.RegisterTestHost(false));
   std::string error_message;
   native_message_host_ = NativeMessageProcessHost::Create(
-      &profile_, NULL, ScopedTestNativeMessagingHost::kExtensionId,
+      &profile_, gfx::NativeView(), ScopedTestNativeMessagingHost::kExtensionId,
       ScopedTestNativeMessagingHost::
           kSupportsNativeInitiatedConnectionsHostName,
       false, &error_message);
@@ -470,7 +478,7 @@ TEST_F(NativeMessagingTest, UserLevel) {
 
   std::string error_message;
   native_message_host_ = NativeMessageProcessHost::Create(
-      &profile_, NULL, ScopedTestNativeMessagingHost::kExtensionId,
+      &profile_, gfx::NativeView(), ScopedTestNativeMessagingHost::kExtensionId,
       ScopedTestNativeMessagingHost::kHostName, true, &error_message);
   native_message_host_->Start(this);
   ASSERT_TRUE(native_message_host_);
@@ -488,7 +496,7 @@ TEST_F(NativeMessagingTest, DisallowUserLevel) {
 
   std::string error_message;
   native_message_host_ = NativeMessageProcessHost::Create(
-      &profile_, NULL, ScopedTestNativeMessagingHost::kExtensionId,
+      &profile_, gfx::NativeView(), ScopedTestNativeMessagingHost::kExtensionId,
       ScopedTestNativeMessagingHost::kHostName, false, &error_message);
   native_message_host_->Start(this);
   ASSERT_TRUE(native_message_host_);

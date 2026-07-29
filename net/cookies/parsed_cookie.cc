@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 // Portions of this code based on Mozilla:
 //   (netwerk/cookie/src/nsCookieService.cpp)
 /* ***** BEGIN LICENSE BLOCK *****
@@ -49,8 +44,12 @@
 
 #include "net/cookies/parsed_cookie.h"
 
-#include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
+#include <algorithm>
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include "base/containers/fixed_flat_set.h"
 #include "base/numerics/checked_math.h"
 #include "base/strings/string_util.h"
 #include "net/base/features.h"
@@ -60,26 +59,27 @@
 
 namespace {
 
-const char kPathTokenName[] = "path";
-const char kDomainTokenName[] = "domain";
-const char kExpiresTokenName[] = "expires";
-const char kMaxAgeTokenName[] = "max-age";
-const char kSecureTokenName[] = "secure";
-const char kHttpOnlyTokenName[] = "httponly";
-const char kSameSiteTokenName[] = "samesite";
-const char kPriorityTokenName[] = "priority";
-const char kPartitionedTokenName[] = "partitioned";
+constexpr std::string_view kPathTokenName = "path";
+constexpr std::string_view kDomainTokenName = "domain";
+constexpr std::string_view kExpiresTokenName = "expires";
+constexpr std::string_view kMaxAgeTokenName = "max-age";
+constexpr std::string_view kSecureTokenName = "secure";
+constexpr std::string_view kHttpOnlyTokenName = "httponly";
+constexpr std::string_view kSameSiteTokenName = "samesite";
+constexpr std::string_view kPriorityTokenName = "priority";
+constexpr std::string_view kPartitionedTokenName = "partitioned";
 
-const char kTerminator[] = "\n\r\0";
-const int kTerminatorLen = sizeof(kTerminator) - 1;
-const char kWhitespace[] = " \t";
-const char kValueSeparator = ';';
-const char kTokenSeparator[] = ";=";
+constexpr char kTerminatorRawString[] = "\n\r\0";
+constexpr std::string_view kTerminator(kTerminatorRawString,
+                                       sizeof(kTerminatorRawString) - 1);
+constexpr std::string_view kWhitespace = " \t";
+constexpr char kValueSeparator = ';';
+constexpr std::string_view kTokenSeparator = ";=";
 
 // Returns true if |c| occurs in |chars|
 // TODO(erikwright): maybe make this take an iterator, could check for end also?
-inline bool CharIsA(const char c, const char* chars) {
-  return strchr(chars, c) != nullptr;
+inline bool CharIsA(const char c, std::string_view chars) {
+  return chars.find(c) != std::string_view::npos;
 }
 
 // Seek the iterator to the first occurrence of |character|.
@@ -96,7 +96,7 @@ inline bool SeekToCharacter(std::string_view::iterator* it,
 // Returns true if it hit the end, false otherwise.
 inline bool SeekTo(std::string_view::iterator* it,
                    const std::string_view::iterator& end,
-                   const char* chars) {
+                   std::string_view chars) {
   for (; *it != end && !CharIsA(**it, chars); ++(*it)) {
   }
   return *it == end;
@@ -105,14 +105,14 @@ inline bool SeekTo(std::string_view::iterator* it,
 // Returns true if it hit the end, false otherwise.
 inline bool SeekPast(std::string_view::iterator* it,
                      const std::string_view::iterator& end,
-                     const char* chars) {
+                     std::string_view chars) {
   for (; *it != end && CharIsA(**it, chars); ++(*it)) {
   }
   return *it == end;
 }
 inline bool SeekBackPast(std::string_view::iterator* it,
                          const std::string_view::iterator& end,
-                         const char* chars) {
+                         std::string_view chars) {
   for (; *it != end && CharIsA(**it, chars); --(*it)) {
   }
   return *it == end;
@@ -129,6 +129,47 @@ std::string_view ValidStringPieceForValue(std::string_view value) {
   net::ParsedCookie::ParseValue(&it, end, &value_start, &value_end);
 
   return std::string_view(value_start, value_end);
+}
+
+// Returns the appropriate enum value (or nullopt) for a given cookie's initial
+// pair (i.e. its name and value). `had_token_value_separator` is whether there
+// was an "=" character between the name and value.
+std::optional<net::NamelessCookieLineParseType>
+GetNamelessParseTypeForInitialPair(std::string_view cookie_name,
+                                   std::string_view cookie_value,
+                                   bool had_token_value_separator) {
+  static constexpr auto kCookieAttributeNames =
+      base::MakeFixedFlatSet<std::string_view>({
+          kPathTokenName,
+          kDomainTokenName,
+          kExpiresTokenName,
+          kMaxAgeTokenName,
+          kSecureTokenName,
+          kHttpOnlyTokenName,
+          kSameSiteTokenName,
+          kPriorityTokenName,
+          kPartitionedTokenName,
+      });
+  static_assert(std::ranges::all_of(kCookieAttributeNames,
+                                    [](std::string_view str) constexpr {
+                                      return std::none_of(
+                                          str.begin(), str.end(),
+                                          base::IsAsciiUpper<char>);
+                                    }),
+                "Letters in cookie attribute names should be lowercase.");
+
+  if (!cookie_name.empty()) {
+    return std::nullopt;
+  }
+  if (had_token_value_separator) {
+    return cookie_value.contains('=')
+               ? net::NamelessCookieLineParseType::kNamelessWithAmbiguousValue
+               : net::NamelessCookieLineParseType::kEqualsPrecedingToken;
+  }
+  if (kCookieAttributeNames.contains(base::ToLowerASCII(cookie_value))) {
+    return net::NamelessCookieLineParseType::kBareTokenMatchingAttributeName;
+  }
+  return net::NamelessCookieLineParseType::kBareToken;
 }
 
 }  // namespace
@@ -161,16 +202,11 @@ bool ParsedCookie::IsValid() const {
   return !pairs_.empty();
 }
 
-CookieSameSite ParsedCookie::SameSite(
-    CookieSameSiteString* samesite_string) const {
-  CookieSameSite samesite = CookieSameSite::UNSPECIFIED;
+std::pair<CookieSameSite, CookieSameSiteString> ParsedCookie::SameSite() const {
   if (same_site_index_ != 0) {
-    samesite = StringToCookieSameSite(pairs_[same_site_index_].second,
-                                      samesite_string);
-  } else if (samesite_string) {
-    *samesite_string = CookieSameSiteString::kUnspecified;
+    return StringToCookieSameSite(pairs_[same_site_index_].second);
   }
-  return samesite;
+  return {CookieSameSite::UNSPECIFIED, CookieSameSiteString::kUnspecified};
 }
 
 CookiePriority ParsedCookie::Priority() const {
@@ -179,8 +215,9 @@ CookiePriority ParsedCookie::Priority() const {
              : StringToCookiePriority(pairs_[priority_index_].second);
 }
 
-bool ParsedCookie::SetName(const std::string& name) {
-  const std::string& value = pairs_.empty() ? "" : pairs_[0].second;
+bool ParsedCookie::SetName(std::string_view name) {
+  const std::string_view value =
+      pairs_.empty() ? std::string_view() : pairs_[0].second;
 
   // Ensure there are no invalid characters in `name`. This should be done
   // before calling ParseTokenString because we want terminating characters
@@ -198,7 +235,7 @@ bool ParsedCookie::SetName(const std::string& name) {
   }
 
   // Use the same whitespace trimming code as the constructor.
-  const std::string& parsed_name = ParseTokenString(name);
+  const std::string_view parsed_name = ParseTokenString(name);
 
   if (!IsValidCookieNameValuePair(parsed_name, value)) {
     return false;
@@ -211,8 +248,9 @@ bool ParsedCookie::SetName(const std::string& name) {
   return true;
 }
 
-bool ParsedCookie::SetValue(const std::string& value) {
-  const std::string& name = pairs_.empty() ? "" : pairs_[0].first;
+bool ParsedCookie::SetValue(std::string_view value) {
+  const std::string_view name =
+      pairs_.empty() ? std::string_view() : pairs_[0].first;
 
   // Ensure there are no invalid characters in `value`. This should be done
   // before calling ParseValueString because we want terminating characters
@@ -230,7 +268,7 @@ bool ParsedCookie::SetValue(const std::string& value) {
   }
 
   // Use the same whitespace trimming code as the constructor.
-  const std::string& parsed_value = ParseValueString(value);
+  std::string_view parsed_value = ParseValueString(value);
 
   if (!IsValidCookieNameValuePair(name, parsed_value)) {
     return false;
@@ -242,19 +280,19 @@ bool ParsedCookie::SetValue(const std::string& value) {
   return true;
 }
 
-bool ParsedCookie::SetPath(const std::string& path) {
+bool ParsedCookie::SetPath(std::string_view path) {
   return SetString(&path_index_, kPathTokenName, path);
 }
 
-bool ParsedCookie::SetDomain(const std::string& domain) {
+bool ParsedCookie::SetDomain(std::string_view domain) {
   return SetString(&domain_index_, kDomainTokenName, domain);
 }
 
-bool ParsedCookie::SetExpires(const std::string& expires) {
+bool ParsedCookie::SetExpires(std::string_view expires) {
   return SetString(&expires_index_, kExpiresTokenName, expires);
 }
 
-bool ParsedCookie::SetMaxAge(const std::string& maxage) {
+bool ParsedCookie::SetMaxAge(std::string_view maxage) {
   return SetString(&maxage_index_, kMaxAgeTokenName, maxage);
 }
 
@@ -266,11 +304,11 @@ bool ParsedCookie::SetIsHttpOnly(bool is_http_only) {
   return SetBool(&httponly_index_, kHttpOnlyTokenName, is_http_only);
 }
 
-bool ParsedCookie::SetSameSite(const std::string& same_site) {
+bool ParsedCookie::SetSameSite(std::string_view same_site) {
   return SetString(&same_site_index_, kSameSiteTokenName, same_site);
 }
 
-bool ParsedCookie::SetPriority(const std::string& priority) {
+bool ParsedCookie::SetPriority(std::string_view priority) {
   return SetString(&priority_index_, kPriorityTokenName, priority);
 }
 
@@ -301,8 +339,7 @@ std::string ParsedCookie::ToCookieLine() const {
 std::string_view::iterator ParsedCookie::FindFirstTerminator(
     std::string_view s) {
   std::string_view::iterator end = s.end();
-  size_t term_pos =
-      s.find_first_of(std::string_view(kTerminator, kTerminatorLen));
+  size_t term_pos = s.find_first_of(kTerminator);
   if (term_pos != std::string_view::npos) {
     // We found a character we should treat as an end of string.
     end = s.begin() + term_pos;
@@ -377,23 +414,23 @@ void ParsedCookie::ParseValue(std::string_view::iterator* it,
 }
 
 // static
-std::string ParsedCookie::ParseTokenString(std::string_view token) {
+std::string_view ParsedCookie::ParseTokenString(std::string_view token) {
   std::string_view::iterator it = token.begin();
   std::string_view::iterator end = FindFirstTerminator(token);
 
   std::string_view::iterator token_start, token_end;
   if (ParseToken(&it, end, &token_start, &token_end))
-    return std::string(token_start, token_end);
-  return std::string();
+    return std::string_view(token_start, token_end);
+  return std::string_view();
 }
 
 // static
-std::string ParsedCookie::ParseValueString(std::string_view value) {
-  return std::string(ValidStringPieceForValue(value));
+std::string_view ParsedCookie::ParseValueString(std::string_view value) {
+  return ValidStringPieceForValue(value);
 }
 
 // static
-bool ParsedCookie::ValueMatchesParsedValue(const std::string& value) {
+bool ParsedCookie::ValueMatchesParsedValue(std::string_view value) {
   // ValidStringPieceForValue() returns a valid substring of |value|.
   // If |value| can be fully parsed the result will have the same length
   // as |value|.
@@ -401,7 +438,7 @@ bool ParsedCookie::ValueMatchesParsedValue(const std::string& value) {
 }
 
 // static
-bool ParsedCookie::IsValidCookieName(const std::string& name) {
+bool ParsedCookie::IsValidCookieName(std::string_view name) {
   // IsValidCookieName() returns whether a string matches the following
   // grammar:
   //
@@ -427,7 +464,7 @@ bool ParsedCookie::IsValidCookieName(const std::string& name) {
 }
 
 // static
-bool ParsedCookie::IsValidCookieValue(const std::string& value) {
+bool ParsedCookie::IsValidCookieValue(std::string_view value) {
   // IsValidCookieValue() returns whether a string matches the following
   // grammar:
   //
@@ -453,22 +490,21 @@ bool ParsedCookie::IsValidCookieValue(const std::string& value) {
 }
 
 // static
-bool ParsedCookie::CookieAttributeValueHasValidCharSet(
-    const std::string& value) {
+bool ParsedCookie::CookieAttributeValueHasValidCharSet(std::string_view value) {
   // A cookie attribute value has the same character set restrictions as cookie
   // values, so re-use the validation function for that.
   return IsValidCookieValue(value);
 }
 
 // static
-bool ParsedCookie::CookieAttributeValueHasValidSize(const std::string& value) {
+bool ParsedCookie::CookieAttributeValueHasValidSize(std::string_view value) {
   return (value.size() <= kMaxCookieAttributeValueSize);
 }
 
 // static
 bool ParsedCookie::IsValidCookieNameValuePair(
-    const std::string& name,
-    const std::string& value,
+    std::string_view name,
+    std::string_view value,
     CookieInclusionStatus* status_out) {
   // Ignore cookies with neither name nor value.
   if (name.empty() && value.empty()) {
@@ -507,6 +543,18 @@ bool ParsedCookie::IsValidCookieNameValuePair(
   return true;
 }
 
+bool ParsedCookie::ForEachAttribute(
+    base::FunctionRef<bool(std::string_view, std::string_view)> functor) const {
+  // The first element in `pairs_` is the name and value, so skip that one.
+  for (const auto& [attribute, value] : base::span(pairs_).subspan(1u)) {
+    if (!functor(attribute, value)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 // Parse all token/value pairs and populate pairs_.
 void ParsedCookie::ParseTokenValuePairs(std::string_view cookie_line,
                                         CookieInclusionStatus& status_out) {
@@ -514,12 +562,12 @@ void ParsedCookie::ParseTokenValuePairs(std::string_view cookie_line,
 
   // Ok, here we go.  We should be expecting to be starting somewhere
   // before the cookie line, not including any header name...
-  std::string_view::iterator start = cookie_line.begin();
+  const std::string_view::iterator start = cookie_line.begin();
   std::string_view::iterator it = start;
 
   // TODO(erikwright): Make sure we're stripping \r\n in the network code.
   // Then we can log any unexpected terminators.
-  std::string_view::iterator end = FindFirstTerminator(cookie_line);
+  const std::string_view::iterator end = FindFirstTerminator(cookie_line);
 
   // Block cookies that were truncated by control characters.
   if (end < cookie_line.end()) {
@@ -535,8 +583,8 @@ void ParsedCookie::ParseTokenValuePairs(std::string_view cookie_line,
     return;
   }
 
-  for (int pair_num = 0; it != end; ++pair_num) {
-    TokenValuePair pair;
+  for (size_t pair_num = 0; it != end; ++pair_num) {
+    std::pair<std::string, std::string> pair;
 
     std::string_view::iterator token_start, token_end;
     if (!ParseToken(&it, end, &token_start, &token_end)) {
@@ -548,6 +596,7 @@ void ParsedCookie::ParseTokenValuePairs(std::string_view cookie_line,
       token_start = start;
     }
 
+    bool had_token_value_separator = false;
     if (it == end || *it != '=') {
       // We have a token-value, we didn't have any token name.
       if (pair_num == 0) {
@@ -569,6 +618,7 @@ void ParsedCookie::ParseTokenValuePairs(std::string_view cookie_line,
       // We have a TOKEN=VALUE.
       pair.first = std::string(token_start, token_end);
       ++it;  // Skip past the '='.
+      had_token_value_separator = true;
     }
 
     // OK, now try to parse a value.
@@ -626,6 +676,13 @@ void ParsedCookie::ParseTokenValuePairs(std::string_view cookie_line,
 
     if (!ignore_pair) {
       pairs_.emplace_back(std::move(pair));
+
+      // Record enum for metrics on nameless cookies.
+      if (pair_num == 0) {
+        nameless_parse_type_ = GetNamelessParseTypeForInitialPair(
+            pairs_.back().first, pairs_.back().second,
+            had_token_value_separator);
+      }
     }
 
     // We've processed a token/value pair, we're either at the end of
@@ -663,8 +720,8 @@ void ParsedCookie::SetupAttributes() {
 }
 
 bool ParsedCookie::SetString(size_t* index,
-                             const std::string& key,
-                             const std::string& untrusted_value) {
+                             std::string_view key,
+                             std::string_view untrusted_value) {
   // This function should do equivalent input validation to the
   // constructor. Otherwise, the Set* functions can put this ParsedCookie in a
   // state where parsing the output of ToCookieLine() produces a different
@@ -682,7 +739,7 @@ bool ParsedCookie::SetString(size_t* index,
     return false;
 
   // Use the same whitespace trimming code as the constructor.
-  const std::string parsed_value = ParseValueString(untrusted_value);
+  std::string_view parsed_value = ParseValueString(untrusted_value);
 
   if (!CookieAttributeValueHasValidSize(parsed_value))
     return false;
@@ -695,7 +752,7 @@ bool ParsedCookie::SetString(size_t* index,
   }
 }
 
-bool ParsedCookie::SetBool(size_t* index, const std::string& key, bool value) {
+bool ParsedCookie::SetBool(size_t* index, std::string_view key, bool value) {
   if (!value) {
     ClearAttributePair(*index);
     return true;
@@ -705,8 +762,8 @@ bool ParsedCookie::SetBool(size_t* index, const std::string& key, bool value) {
 }
 
 bool ParsedCookie::SetAttributePair(size_t* index,
-                                    const std::string& key,
-                                    const std::string& value) {
+                                    std::string_view key,
+                                    std::string_view value) {
   if (!HttpUtil::IsToken(key))
     return false;
   if (!IsValid())

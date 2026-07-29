@@ -45,11 +45,9 @@ import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.blink.mojom.RpContext;
 import org.chromium.blink.mojom.RpMode;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.ui.android.webid.AccountSelectionMediator.AccountChooserResult;
-import org.chromium.chrome.browser.ui.android.webid.AccountSelectionMediator.DisclosureDialogResult;
-import org.chromium.chrome.browser.ui.android.webid.AccountSelectionMediator.LoadingDialogResult;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.HeaderType;
 import org.chromium.chrome.browser.ui.android.webid.data.Account;
+import org.chromium.chrome.browser.ui.android.webid.data.RelyingPartyData;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
@@ -82,11 +80,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -98,15 +95,14 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
                 .check(matches(withText("Use a different account")));
 
         doAnswer(
-                        new Answer<Void>() {
+                        new Answer<>() {
                             @Override
                             public Void answer(InvocationOnMock invocation) {
                                 mAccountSelection.showAccounts(
-                                        EXAMPLE_ETLD_PLUS_ONE,
+                                        new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                                         Arrays.asList(
                                                 mNewBobWithAddAccount, mReturningAnaWithAddAccount),
                                         Arrays.asList(mIdpDataWithAddAccount),
-                                        /* isAutoReauthn= */ false,
                                         mNewAccountsReturningAna);
                                 mAccountSelection.getMediator().setComponentShowTime(-1000);
                                 return null;
@@ -135,11 +131,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -151,15 +146,14 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
                 .check(matches(withText("Use a different account")));
 
         doAnswer(
-                        new Answer<Void>() {
+                        new Answer<>() {
                             @Override
                             public Void answer(InvocationOnMock invocation) {
                                 mAccountSelection.showAccounts(
-                                        EXAMPLE_ETLD_PLUS_ONE,
+                                        new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                                         Arrays.asList(
                                                 mNewBobWithAddAccount, mReturningAnaWithAddAccount),
                                         Arrays.asList(mIdpDataWithAddAccount),
-                                        /* isAutoReauthn= */ false,
                                         mNewAccountsNewBob);
                                 mAccountSelection.getMediator().setComponentShowTime(-1000);
                                 return null;
@@ -207,20 +201,21 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
                         "Test",
                         "Test",
                         /* secondaryDescription= */ null,
-                        null,
-                        /* isSignIn= */ true,
+                        /* pictureBitmap= */ null,
+                        /* circledBadgedPictureBitmap= */ null,
+                        /* isIdpClaimedSignIn= */ true,
                         /* isBrowserTrustedSignIn= */ false,
                         /* isFilteredOut= */ false,
+                        new int[0],
                         mIdpDataWithAddAccount);
 
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -232,14 +227,13 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
                 .check(matches(withText("Use a different account")));
 
         doAnswer(
-                        new Answer<Void>() {
+                        new Answer<>() {
                             @Override
                             public Void answer(InvocationOnMock invocation) {
                                 mAccountSelection.showAccounts(
-                                        EXAMPLE_ETLD_PLUS_ONE,
+                                        new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                                         Arrays.asList(account, mReturningAnaWithAddAccount),
                                         Arrays.asList(mIdpDataWithAddAccount),
-                                        /* isAutoReauthn= */ false,
                                         Arrays.asList(account));
                                 mAccountSelection.getMediator().setComponentShowTime(-1000);
                                 return null;
@@ -276,11 +270,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -320,11 +313,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -348,11 +340,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -378,11 +369,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount, mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -401,7 +391,7 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
                 AccountSelectionProperties.ITEM_TYPE_ACCOUNT,
                 accountsList.getAdapter().getItemViewType(1));
         assertEquals(
-                AccountSelectionProperties.ITEM_TYPE_ADD_ACCOUNT,
+                AccountSelectionProperties.ITEM_TYPE_LOGIN,
                 accountsList.getAdapter().getItemViewType(2));
 
         // Check that secondary button is NOT displayed.
@@ -414,7 +404,9 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showLoadingDialog(
-                            EXAMPLE_ETLD_PLUS_ONE, TEST_ETLD_PLUS_ONE_2, RpContext.SIGN_IN);
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
+                            TEST_ETLD_PLUS_ONE_2,
+                            RpContext.SIGN_IN);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
 
@@ -430,7 +422,9 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showLoadingDialog(
-                            EXAMPLE_ETLD_PLUS_ONE, TEST_ETLD_PLUS_ONE_2, RpContext.SIGN_IN);
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
+                            TEST_ETLD_PLUS_ONE_2,
+                            RpContext.SIGN_IN);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
         BottomSheetTestSupport sheetSupport = new BottomSheetTestSupport(mBottomSheetController);
@@ -448,11 +442,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -481,11 +474,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -509,11 +501,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
-                            Arrays.asList(mNewBobWithAddAccount),
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
+                            Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -536,11 +527,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -567,11 +557,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -603,11 +592,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -620,7 +608,7 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
                 ((TextView) contentView.findViewById(R.id.header_title)).getText().toString();
         String expectedSubtitle =
                 ((TextView) contentView.findViewById(R.id.header_subtitle)).getText().toString();
-        onView(withId(R.id.header_idp_icon)).check(matches(isDisplayed()));
+        onView(withId(R.id.header_icon)).check(matches(isDisplayed()));
         onView(withId(R.id.header_rp_icon)).check(matches(not(isDisplayed())));
         onView(withId(R.id.arrow_range_icon)).check(matches(not(isDisplayed())));
 
@@ -633,7 +621,7 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         assertEquals(
                 expectedSubtitle,
                 ((TextView) contentView.findViewById(R.id.header_subtitle)).getText().toString());
-        onView(withId(R.id.header_idp_icon)).check(matches(isDisplayed()));
+        onView(withId(R.id.header_icon)).check(matches(isDisplayed()));
         onView(withId(R.id.header_rp_icon)).check(matches(not(isDisplayed())));
         onView(withId(R.id.arrow_range_icon)).check(matches(not(isDisplayed())));
     }
@@ -644,11 +632,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -667,7 +654,7 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
                 ((TextView) contentView.findViewById(R.id.header_title)).getText().toString();
         String expectedSubtitle =
                 ((TextView) contentView.findViewById(R.id.header_subtitle)).getText().toString();
-        onView(withId(R.id.header_idp_icon)).check(matches(isDisplayed()));
+        onView(withId(R.id.header_icon)).check(matches(isDisplayed()));
         onView(withId(R.id.header_rp_icon)).check(matches(isDisplayed()));
         onView(withId(R.id.arrow_range_icon)).check(matches(isDisplayed()));
 
@@ -680,7 +667,7 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         assertEquals(
                 expectedSubtitle,
                 ((TextView) contentView.findViewById(R.id.header_subtitle)).getText().toString());
-        onView(withId(R.id.header_idp_icon)).check(matches(isDisplayed()));
+        onView(withId(R.id.header_icon)).check(matches(isDisplayed()));
         onView(withId(R.id.header_rp_icon)).check(matches(isDisplayed()));
         onView(withId(R.id.arrow_range_icon)).check(matches(isDisplayed()));
     }
@@ -692,11 +679,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -717,11 +703,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -749,11 +734,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAna, mNewBob),
                             Arrays.asList(mIdpData),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
 
@@ -777,11 +761,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -802,11 +785,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -832,11 +814,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -862,11 +843,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -883,7 +863,7 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showErrorDialog(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             TEST_ETLD_PLUS_ONE_2,
                             IDP_METADATA,
                             RpContext.SIGN_IN,
@@ -911,11 +891,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
 
@@ -933,14 +912,15 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showLoadingDialog(
-                            EXAMPLE_ETLD_PLUS_ONE, TEST_ETLD_PLUS_ONE_2, RpContext.SIGN_IN);
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
+                            TEST_ETLD_PLUS_ONE_2,
+                            RpContext.SIGN_IN);
                     mAccountSelection.getMediator().onModalDialogClosed();
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mReturningAnaWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
 
@@ -953,7 +933,9 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showLoadingDialog(
-                            EXAMPLE_ETLD_PLUS_ONE, TEST_ETLD_PLUS_ONE_2, RpContext.SIGN_IN);
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
+                            TEST_ETLD_PLUS_ONE_2,
+                            RpContext.SIGN_IN);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
 
@@ -977,7 +959,9 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showLoadingDialog(
-                            EXAMPLE_ETLD_PLUS_ONE, TEST_ETLD_PLUS_ONE_2, RpContext.SIGN_IN);
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
+                            TEST_ETLD_PLUS_ONE_2,
+                            RpContext.SIGN_IN);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
 
@@ -997,7 +981,9 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showLoadingDialog(
-                            EXAMPLE_ETLD_PLUS_ONE, TEST_ETLD_PLUS_ONE_2, RpContext.SIGN_IN);
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
+                            TEST_ETLD_PLUS_ONE_2,
+                            RpContext.SIGN_IN);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
 
@@ -1022,7 +1008,9 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showLoadingDialog(
-                            EXAMPLE_ETLD_PLUS_ONE, TEST_ETLD_PLUS_ONE_2, RpContext.SIGN_IN);
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
+                            TEST_ETLD_PLUS_ONE_2,
+                            RpContext.SIGN_IN);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
 
@@ -1047,11 +1035,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -1077,11 +1064,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -1107,11 +1093,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -1133,11 +1118,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);
@@ -1165,11 +1149,10 @@ public class AccountSelectionButtonModeIntegrationTest extends AccountSelectionI
         runOnUiThreadBlocking(
                 () -> {
                     mAccountSelection.showAccounts(
-                            EXAMPLE_ETLD_PLUS_ONE,
+                            new RelyingPartyData(EXAMPLE_ETLD_PLUS_ONE, "", null),
                             Arrays.asList(mNewBobWithAddAccount),
                             Arrays.asList(mIdpDataWithAddAccount),
-                            /* isAutoReauthn= */ false,
-                            /* newAccounts= */ Collections.EMPTY_LIST);
+                            /* newAccounts= */ Collections.emptyList());
                     mAccountSelection.getMediator().setComponentShowTime(-1000);
                 });
         pollUiThread(() -> getBottomSheetState() == BottomSheetController.SheetState.HALF);

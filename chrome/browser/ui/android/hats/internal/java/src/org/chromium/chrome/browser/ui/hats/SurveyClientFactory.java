@@ -6,32 +6,33 @@ package org.chromium.chrome.browser.ui.hats;
 
 import android.text.TextUtils;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ServiceLoaderUtil;
-import org.chromium.base.supplier.ObservableSupplierImpl;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManager;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 
 /** Factory class used to create SurveyClient. */
+@NullMarked
 public class SurveyClientFactory {
-    private static SurveyClientFactory sInstance;
+    private static @Nullable SurveyClientFactory sInstance;
     private static boolean sHasInstanceForTesting;
 
-    protected final ObservableSupplierImpl<Boolean> mCrashUploadPermissionSupplier;
+    protected final SettableNonNullObservableSupplier<Boolean> mCrashUploadPermissionSupplier =
+            ObservableSuppliers.createNonNull(false);
 
     protected SurveyClientFactory(PrivacyPreferencesManager privacyPreferencesManager) {
-        mCrashUploadPermissionSupplier = new ObservableSupplierImpl<>(false);
-
         if (privacyPreferencesManager != null) {
             mCrashUploadPermissionSupplier.set(
                     privacyPreferencesManager.isUsageAndCrashReportingPermitted());
             privacyPreferencesManager
                     .getUsageAndCrashReportingPermittedObservableSupplier()
-                    .addObserver(mCrashUploadPermissionSupplier::set);
+                    .addSyncObserverAndPostIfNonNull(mCrashUploadPermissionSupplier::set);
         }
     }
 
@@ -77,7 +78,10 @@ public class SurveyClientFactory {
      * @return SurveyClient to display the given survey matching the config.
      */
     public @Nullable SurveyClient createClient(
-            @NonNull SurveyConfig config, @NonNull SurveyUiDelegate uiDelegate, Profile profile) {
+            SurveyConfig config,
+            SurveyUiDelegate uiDelegate,
+            Profile profile,
+            @Nullable TabModelSelector tabModelSelector) {
         if (config.mProbability == 0f || TextUtils.isEmpty(config.mTriggerId)) return null;
 
         SurveyController surveyController;
@@ -89,11 +93,16 @@ public class SurveyClientFactory {
             surveyController = new SurveyController() {};
         }
         return new SurveyClientImpl(
-                config, uiDelegate, surveyController, mCrashUploadPermissionSupplier, profile);
+                config,
+                uiDelegate,
+                surveyController,
+                mCrashUploadPermissionSupplier,
+                profile,
+                tabModelSelector);
     }
 
     /** Get the crash upload supplier initialized in this factory. */
-    public Supplier<Boolean> getCrashUploadPermissionSupplier() {
+    public NonNullObservableSupplier<Boolean> getCrashUploadPermissionSupplier() {
         return mCrashUploadPermissionSupplier;
     }
 }

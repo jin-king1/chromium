@@ -10,7 +10,6 @@
 
 #include <string_view>
 #include <tuple>
-#include <unordered_set>
 #include <vector>
 
 #include "base/lazy_instance.h"
@@ -42,7 +41,9 @@ enum class GamepadId : uint32_t {
   // Fake IDs for devices which report as 0x0000 0x0000
   kPowerALicPro = 0x0000ff00,
   // ID values for supported devices.
+  k8BitDoProduct301b = 0x2dc8301b,
   k8BitDoProduct3106 = 0x2dc83106,
+  k8BitDoProduct6012 = 0x2dc86012,
   kAcerProduct1304 = 0x05021304,
   kAcerProduct1305 = 0x05021305,
   kAcerProduct1316 = 0x05021316,
@@ -131,6 +132,13 @@ class DEVICE_GAMEPAD_EXPORT GamepadIdList {
   // Returns a singleton instance of the GamepadId list.
   static GamepadIdList& Get();
 
+#if BUILDFLAG(IS_WIN)
+  // Returns a unique product identifier for a given gamepad from the vendor and
+  // product id.
+  static std::string GetProductIdentifier(uint16_t vendor_id,
+                                          uint16_t product_id);
+#endif  // BUILDFLAG(IS_WIN)
+
   GamepadIdList(const GamepadIdList& entry) = delete;
   GamepadIdList& operator=(const GamepadIdList& entry) = delete;
 
@@ -152,6 +160,10 @@ class DEVICE_GAMEPAD_EXPORT GamepadIdList {
   // Returns true if the gamepad device identified by |gamepad_id| has haptic
   // actuators on its triggers. Returns false otherwise.
   bool HasTriggerRumbleSupport(GamepadId gamepad_id) const;
+
+  // Returns true if |gamepad_id| is a PlayStation 5 DualSense or DualSense
+  // Edge.
+  static bool IsPlayStation5Gamepad(GamepadId gamepad_id);
 
   // Returns the internal list of gamepad info for testing purposes.
   std::vector<std::tuple<uint16_t, uint16_t, XInputType>>

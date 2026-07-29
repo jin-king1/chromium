@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <cassert>
@@ -16,7 +17,7 @@ namespace util {
 
 bool utf8_valid(std::string::const_iterator start,
                 std::string::const_iterator end) {
-  return base::IsStringUTF8(base::MakeStringPiece(start, end));
+  return base::IsStringUTF8(std::string_view(start, end));
 }
 
 bool utf8_valid(const std::string & str) {
@@ -39,12 +40,11 @@ std::string reverse_string(const std::string & in) {
 template<class It>
 std::pair<char32_t, It> _utf8_decode(It it, It end) {
   assert(it != end);
-  const char* src = &*it;
-  size_t src_len = static_cast<size_t>(std::distance(it, end));
   size_t char_index = 0;
   base_icu::UChar32 code_point_out;
 
-  base::ReadUnicodeCharacter(src, src_len, &char_index, &code_point_out);
+  base::ReadUnicodeCharacter(std::string_view(it, end), &char_index,
+                             &code_point_out);
   return {code_point_out, it + ++char_index};
 }
 

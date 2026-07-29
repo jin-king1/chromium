@@ -80,12 +80,14 @@ ModelExecutorImpl::ModelExecutionTraceEvent::ModelExecutionTraceEvent(
     const ModelExecutorImpl::ExecutionState& state)
     : state(state) {
   TRACE_EVENT_BEGIN("segmentation_platform", perfetto::StaticString(event_name),
-                    perfetto::Track::FromPointer(&state));
+                    perfetto::NamedTrack::FromPointer(
+                        "segmentation_platform::ModelExecutorImpl", &state));
 }
 
 ModelExecutorImpl::ModelExecutionTraceEvent::~ModelExecutionTraceEvent() {
   TRACE_EVENT_END("segmentation_platform",
-                  perfetto::Track::FromPointer(&*state));
+                  perfetto::NamedTrack::FromPointer(
+                      "segmentation_platform::ModelExecutorImpl", &*state));
 }
 
 ModelExecutorImpl::ModelExecutorImpl(
@@ -273,6 +275,10 @@ void ModelExecutorImpl::RunModelExecutionCallback(
     const ExecutionState& state,
     ModelExecutionCallback callback,
     std::unique_ptr<ModelExecutionResult> result) {
+  VLOG(1) << "Model: " << proto::SegmentId_Name(state.segment_id)
+          << " version: " << state.model_version
+          << " execution status: " << static_cast<int>(result->status)
+          << ", output size: " << result->scores.size();
   stats::RecordModelExecutionDurationTotal(
       state.segment_id, result->status,
       clock_->Now() - state.total_execution_start_time);

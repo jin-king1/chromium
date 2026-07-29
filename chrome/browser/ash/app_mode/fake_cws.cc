@@ -21,7 +21,6 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
-#include "base/json/json_writer.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -29,15 +28,14 @@
 #include "base/strings/string_util.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
-#include "chrome/browser/extensions/cws_item_service.pb.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/initialize_extensions_client.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "crypto/sha2.h"
+#include "extensions/browser/cws_item_service.pb.h"
 #include "extensions/browser/scoped_ignore_content_verifier_for_test.h"
 #include "extensions/common/extension_urls.h"
-#include "extensions/common/extensions_client.h"
+#include "extensions/common/switches.h"
 #include "net/base/url_util.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -56,9 +54,6 @@ namespace {
 // Kiosk app crx file download path under web store site.
 constexpr std::string_view kCrxDownloadPath =
     "/chromeos/app_mode/webstore/downloads/";
-
-constexpr std::string_view kDetailsURLPrefix =
-    "/chromeos/app_mode/webstore/inlineinstall/detail/";
 
 constexpr std::string_view kItemSnippetsURLPrefix =
     "/chromeos/app_mode/webstore/itemsnippet/";
@@ -100,20 +95,19 @@ constexpr std::string_view kAppHasUpdateTemplateJSON =
     "  \"status\": \"ok\","
     "  \"updatecheck\": {"
     "    \"status\": \"ok\","
-    "    \"manifest\": {"
-    "      \"version\": \"$Version\","
-    "      \"packages\": {"
-    "        \"package\": ["
-    "          {"
-    "            \"fp\": \"1.$FP\","
-    "            \"size\": \"$Size\","
-    "            \"hash_sha256\": \"$FP\","
-    "            \"name\": \"\""
-    "          }"
-    "        ]"
-    "      }"
-    "    },"
-    "    \"urls\": { \"url\": [ { \"codebase\": \"$CrxDownloadUrl\"} ] }"
+    "    \"nextversion\": \"$Version\","
+    "    \"pipelines\": ["
+    "      {\"operations\": ["
+    "        {\"type\": \"download\","
+    "         \"urls\":[{\"url\":\"$CrxDownloadUrl\"}],"
+    "         \"size\":$Size,"
+    "         \"out\":{\"sha256\":\"$FP\"}"
+    "        },"
+    "        {\"type\": \"crx3\","
+    "         \"in\":{\"sha256\":\"$FP\"}"
+    "        }"
+    "      ]}"
+    "    ]"
     "  }"
     "}";
 
@@ -121,12 +115,12 @@ constexpr std::string_view kUpdateContentTemplateJSON =
     ")]}'\n"
     "{"
     "  \"response\": {"
-    "    \"protocol\": \"3.1\","
+    "    \"protocol\": \"4.0\","
     "    \"daystart\": {"
     "      \"elapsed_days\": 2569,"
     "      \"elapsed_seconds\": 36478"
     "    },"
-    "    \"app\": ["
+    "    \"apps\": ["
     "      $APPS"
     "    ]"
     "  }"
@@ -164,7 +158,7 @@ bool GetAppIdsFromUpdateUrl(const GURL& update_url,
 //
 //   {
 //      "request": {
-//         "app": [ {
+//         "apps": [ {
 //            "appid": "ilaggnhkinenadmhbbdgbddpaipgfomg",
 //            ...
 //         }, {
@@ -181,7 +175,8 @@ bool GetAppIdsFromUpdateUrl(const GURL& update_url,
 // false and does not change `ids`.
 bool GetAppIdsFromRequestBody(const std::string& request_body,
                               std::vector<std::string>* ids) {
-  const auto value = base::JSONReader::Read(request_body);
+  const auto value = base::JSONReader::Read(
+      request_body, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!value.has_value()) {
     return false;
   }
@@ -196,7 +191,7 @@ bool GetAppIdsFromRequestBody(const std::string& request_body,
     return false;
   }
 
-  const auto* app_list = request->FindList("app");
+  const auto* app_list = request->FindList("apps");
   if (app_list == nullptr) {
     return false;
   }
@@ -218,19 +213,6 @@ bool GetAppIdsFromRequestBody(const std::string& request_body,
 
   ids->insert(ids->end(), result.begin(), result.end());
   return true;
-}
-
-// The detail request has an URL in form of
-// https://<domain>/chromeos/app_mode/webstore/inlineinstall/detail/<id>.
-// Returns std::nullopt if the `request_path` doesn't look like request for
-// extension details.
-std::optional<std::string> GetAppIdFromDetailRequest(
-    const std::string& request_path) {
-  size_t prefix_length = kDetailsURLPrefix.size();
-  if (request_path.substr(0, prefix_length) != kDetailsURLPrefix) {
-    return std::nullopt;
-  }
-  return request_path.substr(prefix_length);
 }
 
 // Returns the app ID from `request_path` if the request's URL looks like one
@@ -438,20 +420,17 @@ void FakeCWS::OverrideGalleryCommandlineSwitches() {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
 
   command_line->AppendSwitchASCII(
-      ::switches::kAppsGalleryURL,
+      extensions::switches::kAppsGalleryURL,
       web_store_url_.Resolve("/chromeos/app_mode/webstore").spec());
 
   GURL downloads_url =
       web_store_url_.Resolve(base::StrCat({kCrxDownloadPath, "%s.crx"}));
-  command_line->AppendSwitchASCII(::switches::kAppsGalleryDownloadURL,
+  command_line->AppendSwitchASCII(extensions::switches::kAppsGalleryDownloadURL,
                                   downloads_url.spec());
 
   GURL update_url = web_store_url_.Resolve(update_check_end_point_);
   command_line->AppendSwitchASCII(::switches::kAppsGalleryUpdateURL,
                                   update_url.spec());
-
-  EnsureExtensionsClientInitialized();
-  extensions::ExtensionsClient::Get()->InitializeWebStoreUrls(command_line);
 }
 
 bool FakeCWS::GetUpdateCheckContent(const std::vector<std::string>& ids,
@@ -485,7 +464,7 @@ bool FakeCWS::GetUpdateCheckContent(const std::vector<std::string>& ids,
 std::unique_ptr<HttpResponse> FakeCWS::HandleRequest(
     const HttpRequest& request) {
   GURL request_url = GURL("http://localhost").Resolve(request.relative_url);
-  std::string request_path = request_url.path();
+  std::string request_path = request_url.GetPath();
   if (request_path.find(update_check_end_point_) != std::string::npos &&
       !id_to_update_check_content_map_.empty()) {
     std::vector<std::string> ids;
@@ -507,26 +486,6 @@ std::unique_ptr<HttpResponse> FakeCWS::HandleRequest(
         http_response->set_content(update_check_content);
         return std::move(http_response);
       }
-    }
-  }
-
-  std::optional<std::string> details_id =
-      GetAppIdFromDetailRequest(request_path);
-  if (details_id) {
-    auto it = id_to_details_map_.find(*details_id);
-    if (it != id_to_details_map_.end()) {
-      std::string details =
-          base::WriteJson(base::Value::Dict()
-                              .Set("id", *details_id)
-                              .Set("icon_url", it->second.icon_url)
-                              .Set("localized_name", it->second.localized_name)
-                              .Set("manifest", it->second.manifest_json))
-              .value();
-      auto http_response = std::make_unique<BasicHttpResponse>();
-      http_response->set_code(net::HTTP_OK);
-      http_response->set_content_type("application/json");
-      http_response->set_content(details);
-      return std::move(http_response);
     }
   }
 

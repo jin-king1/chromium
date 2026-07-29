@@ -8,13 +8,17 @@ import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
 
 import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertNotNull;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 import android.graphics.drawable.ColorDrawable;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+
+import androidx.core.content.ContextCompat;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -28,8 +32,12 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.omnibox.R;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
+import org.chromium.chrome.browser.omnibox.suggestions.SuggestionListViewBinder.SuggestionListViewHolder;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
-import org.chromium.components.browser_ui.styles.ChromeColors;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
+import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -47,10 +55,11 @@ public class SuggestionListViewBinderUnitTest {
     private @Mock DropdownItemViewInfo mDropdownItem;
 
     private PropertyModel mListModel;
-    private ViewGroup mContainer;
+    private OmniboxSuggestionsContainer mContainer;
     private OmniboxSuggestionsDropdown mDropdown;
     private ModelList mSuggestionModels;
-    private Activity mActivity = Robolectric.buildActivity(Activity.class).setup().get();
+    private OmniboxResourceProvider mResourceProvider;
+    private final Activity mActivity = Robolectric.buildActivity(Activity.class).setup().get();
 
     @Before
     public void setUp() {
@@ -59,15 +68,19 @@ public class SuggestionListViewBinderUnitTest {
                 new PropertyModel.Builder(SuggestionListProperties.ALL_KEYS)
                         .with(SuggestionListProperties.SUGGESTION_MODELS, mSuggestionModels)
                         .build();
+
         mContainer =
-                (ViewGroup)
+                (OmniboxSuggestionsContainer)
                         LayoutInflater.from(mActivity)
-                                .inflate(R.layout.omnibox_results_container, /* root= */ null);
-        mDropdown = mContainer.findViewById(R.id.omnibox_suggestions_dropdown);
+                                .inflate(R.layout.suggestions_result_container, /* root= */ null);
+        mDropdown = spy(mContainer.findViewById(R.id.omnibox_suggestions_dropdown));
+
+        mResourceProvider = new OmniboxResourceProvider(mActivity, BrandedColorScheme.APP_DEFAULT);
+
         PropertyModelChangeProcessor.create(
                 mListModel,
-                new SuggestionListViewBinder.SuggestionListViewHolder(mContainer, mDropdown),
-                SuggestionListViewBinder::bind);
+                new SuggestionListViewHolder(mContainer, mDropdown),
+                new SuggestionListViewBinder(mResourceProvider));
     }
 
     @Test
@@ -78,6 +91,7 @@ public class SuggestionListViewBinderUnitTest {
 
         mListModel.set(SuggestionListProperties.OMNIBOX_SESSION_ACTIVE, true);
         mListModel.set(SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE, true);
+        mListModel.set(SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED, true);
         assertEquals(View.VISIBLE, mContainer.getVisibility());
         assertEquals(View.GONE, mDropdown.getVisibility());
 
@@ -98,6 +112,7 @@ public class SuggestionListViewBinderUnitTest {
 
         mListModel.set(SuggestionListProperties.OMNIBOX_SESSION_ACTIVE, true);
         mListModel.set(SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE, false);
+        mListModel.set(SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED, true);
         assertEquals(View.VISIBLE, mContainer.getVisibility());
         assertEquals(View.VISIBLE, mDropdown.getVisibility());
 
@@ -107,34 +122,110 @@ public class SuggestionListViewBinderUnitTest {
     }
 
     @Test
+    public void suggestionsDropdownVisible_onTopResumedPosition() {
+        assertEquals(0, mSuggestionModels.size());
+        assertEquals(View.GONE, mContainer.getVisibility());
+        assertEquals(View.GONE, mDropdown.getVisibility());
+
+        mListModel.set(SuggestionListProperties.OMNIBOX_SESSION_ACTIVE, true);
+        mListModel.set(SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE, true);
+        mListModel.set(SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED, true);
+        assertEquals(View.VISIBLE, mContainer.getVisibility());
+        assertEquals(View.GONE, mDropdown.getVisibility());
+    }
+
+    @Test
+    public void suggestionsDropdownVisible_activityWindowFocused() {
+        List<ListItem> suggestionsList = new ArrayList<>();
+        suggestionsList.add(mDropdownItem);
+        mSuggestionModels.set(suggestionsList);
+
+        mListModel.set(SuggestionListProperties.OMNIBOX_SESSION_ACTIVE, true);
+        mListModel.set(SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED, true);
+        assertEquals(View.VISIBLE, mContainer.getVisibility());
+        assertEquals(View.VISIBLE, mDropdown.getVisibility());
+
+        mListModel.set(SuggestionListProperties.ACTIVITY_WINDOW_FOCUSED, false);
+        assertEquals(View.VISIBLE, mContainer.getVisibility());
+        assertEquals(View.GONE, mDropdown.getVisibility());
+    }
+
+    @Test
     public void suggestionsContainerNotVisible_colorScheme() {
+        mListModel.set(SuggestionListProperties.IS_LARGE_SCREEN, true);
+        mResourceProvider.setBrandedColorScheme(BrandedColorScheme.APP_DEFAULT);
         mListModel.set(SuggestionListProperties.COLOR_SCHEME, BrandedColorScheme.APP_DEFAULT);
         mListModel.set(SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE, false);
-        assertNull(mContainer.getBackground());
+        assertEquals(0, ((ColorDrawable) mContainer.getBackground()).getAlpha());
     }
 
     @Test
     public void suggestionsContainerVisible_incognitoColorScheme() {
+        mResourceProvider.setBrandedColorScheme(BrandedColorScheme.INCOGNITO);
         mListModel.set(SuggestionListProperties.COLOR_SCHEME, BrandedColorScheme.INCOGNITO);
         mListModel.set(SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE, true);
 
         assertThat(mContainer.getBackground(), instanceOf(ColorDrawable.class));
         ColorDrawable background = (ColorDrawable) mContainer.getBackground();
         assertEquals(
-                mActivity.getColor(R.color.default_bg_color_dark_elev_3_baseline),
-                background.getColor());
+                mActivity.getColor(R.color.omnibox_dropdown_bg_incognito), background.getColor());
     }
 
     @Test
     public void suggestionsContainerVisible_nonIncognitoColorScheme() {
+        mResourceProvider.setBrandedColorScheme(BrandedColorScheme.APP_DEFAULT);
         mListModel.set(SuggestionListProperties.COLOR_SCHEME, BrandedColorScheme.APP_DEFAULT);
         mListModel.set(SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE, true);
 
         assertThat(mContainer.getBackground(), instanceOf(ColorDrawable.class));
         ColorDrawable background = (ColorDrawable) mContainer.getBackground();
         assertEquals(
-                ChromeColors.getSurfaceColor(
-                        mActivity, R.dimen.omnibox_suggestion_dropdown_bg_elevation),
+                ContextCompat.getColor(mActivity, R.color.omnibox_suggestion_dropdown_bg),
                 background.getColor());
+    }
+
+    @Test
+    public void suggestionsContainerVisible_popoverLayoutMode() {
+        mListModel.set(
+                SuggestionListProperties.FUSEBOX_LAYOUT_MODE,
+                FuseboxLayoutMode.SUGGESTIONS_POPOVER);
+        mResourceProvider.setBrandedColorScheme(BrandedColorScheme.INCOGNITO);
+        mListModel.set(SuggestionListProperties.COLOR_SCHEME, BrandedColorScheme.INCOGNITO);
+        mListModel.set(SuggestionListProperties.CONTAINER_ALWAYS_VISIBLE, true);
+
+        assertThat(mContainer.getBackground(), instanceOf(ColorDrawable.class));
+        ColorDrawable background = (ColorDrawable) mContainer.getBackground();
+        assertEquals(
+                OmniboxResourceProvider.getPopoverSuggestionBackgroundColor(
+                        mActivity, BrandedColorScheme.INCOGNITO),
+                background.getColor());
+    }
+
+    @Test
+    public void suggestionList_resetSelectionWhenItemsInserted() {
+        List<ListItem> suggestionsList = new ArrayList<>();
+        suggestionsList.add(mDropdownItem);
+        mSuggestionModels.set(suggestionsList);
+        verify(mDropdown).resetSelection();
+    }
+
+    @Test
+    public void allowParkingAtSentinel() {
+        mListModel.set(SuggestionListProperties.ALLOW_PARKING_AT_SENTINEL, true);
+        verify(mDropdown).setAllowParkingAtSentinel(true);
+
+        mListModel.set(SuggestionListProperties.ALLOW_PARKING_AT_SENTINEL, false);
+        verify(mDropdown).setAllowParkingAtSentinel(false);
+    }
+
+    @Test
+    public void applyMarginForLeftSideBarProperty_updatesContainerMargin() {
+        mListModel.set(SuggestionListProperties.APPLY_MARGIN_FOR_LEFT_SIDE_BAR, true);
+        ViewGroup.MarginLayoutParams layoutParams =
+                (ViewGroup.MarginLayoutParams) mContainer.getLayoutParams();
+        assertNotNull(layoutParams);
+        assertEquals(
+                ViewUtils.dpToPx(mActivity, VerticalTabUtils.SIDE_UI_CONTAINER_WIDTH_DP),
+                layoutParams.leftMargin);
     }
 }

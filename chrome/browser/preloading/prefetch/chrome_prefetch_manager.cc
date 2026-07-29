@@ -5,28 +5,21 @@
 #include "chrome/browser/preloading/prefetch/chrome_prefetch_manager.h"
 
 #include "chrome/browser/preloading/chrome_preloading.h"
+#include "content/public/browser/preload_pipeline_info.h"
+#include "content/public/browser/preloading_data.h"
 #include "content/public/common/content_features.h"
+#include "net/http/http_no_vary_search_data.h"
 #include "third_party/blink/public/mojom/loader/referrer.mojom.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(IS_ANDROID)
+constexpr size_t kMaxNumberOfCCTPrefetches = 50;
+#endif  // BUILDFLAG(IS_ANDROID)
+
 ChromePrefetchManager::~ChromePrefetchManager() = default;
-
-// static
-ChromePrefetchManager* ChromePrefetchManager::GetOrCreateForWebContents(
-    content::WebContents* web_contents) {
-  auto* chrome_prefetch_manager =
-      ChromePrefetchManager::FromWebContents(web_contents);
-  if (!chrome_prefetch_manager) {
-    ChromePrefetchManager::CreateForWebContents(web_contents);
-    chrome_prefetch_manager =
-        ChromePrefetchManager::FromWebContents(web_contents);
-  }
-
-  return chrome_prefetch_manager;
-}
 
 #if BUILDFLAG(IS_ANDROID)
 void ChromePrefetchManager::StartPrefetchFromCCT(
@@ -34,9 +27,7 @@ void ChromePrefetchManager::StartPrefetchFromCCT(
     bool use_prefetch_proxy,
     const std::optional<url::Origin>& referring_origin) {
   if (!base::FeatureList::IsEnabled(
-          chrome::android::kCCTNavigationalPrefetch) ||
-      !base::FeatureList::IsEnabled(
-          features::kPrefetchBrowserInitiatedTriggers)) {
+          chrome::android::kCCTNavigationalPrefetch)) {
     return;
   }
   auto* preloading_data =
@@ -58,7 +49,8 @@ void ChromePrefetchManager::StartPrefetchFromCCT(
           content::PreloadingType::kPrefetch, std::move(matcher),
           /*triggering_primary_page_source_id=*/ukm::kInvalidSourceId);
 
-  std::optional<content::PreloadingHoldbackStatus> holdback_status_override;
+  content::PreloadingHoldbackStatus holdback_status_override =
+      content::PreloadingHoldbackStatus::kUnspecified;
   if (chrome::android::kCCTNavigationalPrefetchHoldback.Get()) {
     holdback_status_override = content::PreloadingHoldbackStatus::kHoldback;
   }
@@ -66,13 +58,20 @@ void ChromePrefetchManager::StartPrefetchFromCCT(
   // TODO(crbug.com/40288091): Specify appropriate referrer value that comes
   // from CCT.
   std::unique_ptr<content::PrefetchHandle> prefetch_handle =
-      GetWebContents().StartPrefetch(prefetch_url, use_prefetch_proxy,
-                                     blink::mojom::Referrer(), referring_origin,
-                                     preloading_attempt->GetWeakPtr(),
-                                     holdback_status_override);
-  // TODO(crbug.com/40288091): Clean up staled handles. Please see
-  // crrev.com/c/5534282/comment/cea1fdce_ada24c2b/ for more discussions,
+      GetWebContents().StartPrefetch(
+          prefetch_url, use_prefetch_proxy, kCCTMetricsSuffix,
+          blink::mojom::Referrer(), referring_origin,
+          /*no_vary_search_hint=*/std::nullopt,
+          /*priority=*/std::nullopt,
+          content::PreloadPipelineInfo::Create(
+              /*planned_max_preloading_type=*/content::PreloadingType::
+                  kPrefetch),
+          preloading_attempt->GetWeakPtr(), holdback_status_override,
+          /*ttl=*/std::nullopt);
   if (prefetch_handle) {
+    if (all_prefetches_.size() >= kMaxNumberOfCCTPrefetches) {
+      all_prefetches_.pop_front();
+    }
     all_prefetches_.push_back(std::move(prefetch_handle));
   }
 }

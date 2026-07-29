@@ -50,6 +50,10 @@
 #include "media/gpu/chromeos/vulkan_overlay_adaptor.h"
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
+#include "ui/gfx/android/surface_control_frame_rate.h"
+#endif
+
 namespace gfx {
 namespace mojom {
 class DelegatedInkPointRenderer;
@@ -69,7 +73,6 @@ class SharedImageFactory;
 }  // namespace gpu
 
 namespace skgpu::graphite {
-class Context;
 class Recording;
 }  // namespace skgpu::graphite
 
@@ -159,7 +162,6 @@ class SkiaOutputSurfaceImplOnGpu
       sk_sp<GrDeferredDisplayList> overdraw_ddl,
       std::unique_ptr<skgpu::graphite::Recording> graphite_recording,
       std::vector<raw_ptr<ImageContextImpl, VectorExperimental>> image_contexts,
-      std::vector<gpu::SyncToken> sync_tokens,
       base::OnceClosure on_finished,
       base::OnceCallback<void(gfx::GpuFenceHandle)> return_release_fence_cb);
   void SwapBuffers(OutputSurfaceFrame frame);
@@ -181,7 +183,6 @@ class SkiaOutputSurfaceImplOnGpu
       sk_sp<GrDeferredDisplayList> overdraw_ddl,
       std::unique_ptr<skgpu::graphite::Recording> graphite_recording,
       std::vector<raw_ptr<ImageContextImpl, VectorExperimental>> image_contexts,
-      std::vector<gpu::SyncToken> sync_tokens,
       base::OnceClosure on_finished,
       base::OnceCallback<void(gfx::GpuFenceHandle)> return_release_fence_cb,
       const gfx::Rect& update_rect,
@@ -194,7 +195,8 @@ class SkiaOutputSurfaceImplOnGpu
   void CopyOutput(const copy_output::RenderPassGeometry& geometry,
                   const gfx::ColorSpace& color_space,
                   std::unique_ptr<CopyOutputRequest> request,
-                  const gpu::Mailbox& mailbox);
+                  const gpu::Mailbox& mailbox,
+                  ReleaseCallback blit_release_callback);
 
   void BeginAccessImages(
       const std::vector<raw_ptr<ImageContextImpl, VectorExperimental>>&
@@ -212,9 +214,11 @@ class SkiaOutputSurfaceImplOnGpu
           image_contexts);
   void ScheduleOverlays(SkiaOutputSurface::OverlayList overlays);
 
-  void SetVSyncDisplayID(int64_t display_id);
+  void SetVSyncDisplayID(int64_t display_id, bool force_update);
 
-  void SetFrameRate(float frame_rate);
+#if BUILDFLAG(IS_ANDROID)
+  void SetFrameRate(gfx::SurfaceControlFrameRate frame_rate);
+#endif
 
   bool was_context_lost() { return context_state_->context_lost(); }
 
@@ -281,6 +285,10 @@ class SkiaOutputSurfaceImplOnGpu
     return context_state_.get();
   }
 
+  gpu::SharedImageFactory* shared_image_factory() const {
+    return shared_image_factory_.get();
+  }
+
 #if BUILDFLAG(ENABLE_VULKAN) && BUILDFLAG(IS_CHROMEOS) && \
     BUILDFLAG(USE_V4L2_CODEC)
   void DetileOverlay(gpu::Mailbox input,
@@ -317,7 +325,6 @@ class SkiaOutputSurfaceImplOnGpu
   bool InitializeForGL();
   bool InitializeForVulkan();
   bool InitializeForDawn();
-  bool InitializeForMetal();
 
   // Provided as a callback to |device_|.
   void DidSwapBuffersCompleteInternal(gpu::SwapBuffersCompleteParams params,
@@ -341,8 +348,8 @@ class SkiaOutputSurfaceImplOnGpu
 
   GrDirectContext* gr_context() const { return context_state_->gr_context(); }
 
-  skgpu::graphite::Context* graphite_context() const {
-    return context_state_->graphite_context();
+  gpu::GraphiteSharedContext* graphite_shared_context() const {
+    return context_state_->graphite_shared_context();
   }
 
   skgpu::graphite::Recorder* graphite_recorder() const {
@@ -365,7 +372,8 @@ class SkiaOutputSurfaceImplOnGpu
                       const SkIRect& src_rect,
                       SkSurface::RescaleMode rescale_mode,
                       bool is_downscale_or_identity_in_both_dimensions,
-                      std::unique_ptr<CopyOutputRequest> request);
+                      std::unique_ptr<CopyOutputRequest> request,
+                      ReleaseCallback blit_release_callback);
 
   void CopyOutputRGBAInMemory(SkSurface* surface,
                               copy_output::RenderPassGeometry geometry,
@@ -381,7 +389,8 @@ class SkiaOutputSurfaceImplOnGpu
                                const SkIRect& src_rect,
                                SkSurface::RescaleMode rescale_mode,
                                bool is_downscale_or_identity_in_both_dimensions,
-                               std::unique_ptr<CopyOutputRequest> request);
+                               std::unique_ptr<CopyOutputRequest> request,
+                               ReleaseCallback blit_release_callback);
 
   void CopyOutputNV12(SkSurface* surface,
                       copy_output::RenderPassGeometry geometry,
@@ -389,7 +398,8 @@ class SkiaOutputSurfaceImplOnGpu
                       const SkIRect& src_rect,
                       SkSurface::RescaleMode rescale_mode,
                       bool is_downscale_or_identity_in_both_dimensions,
-                      std::unique_ptr<CopyOutputRequest> request);
+                      std::unique_ptr<CopyOutputRequest> request,
+                      ReleaseCallback blit_release_callback);
 
   // Helper for `CopyOutputNV12()` & `CopyOutputRGBA()` methods:
   std::unique_ptr<gpu::SkiaImageRepresentation>
@@ -452,8 +462,7 @@ class SkiaOutputSurfaceImplOnGpu
   // by CreateAndStoreExternalSemaphoreVulkan(). May destroy VkSemaphore that
   // the |semaphore| stores if creation of a release fence fails. In this case,
   // invalid fence handle is returned.
-  gfx::GpuFenceHandle CreateReleaseFenceForVulkan(
-      const GrBackendSemaphore& semaphore);
+  gfx::GpuFenceHandle CreateReleaseFenceForVulkan(VkSemaphore semaphore);
   // Returns true if succeess.
   bool CreateAndStoreExternalSemaphoreVulkan(
       std::vector<GrBackendSemaphore>& end_semaphores);
@@ -602,11 +611,6 @@ class SkiaOutputSurfaceImplOnGpu
   // A cache of solid color image mailboxes so we can destroy them in the
   // destructor.
   base::flat_set<gpu::Mailbox> solid_color_images_;
-
-  // The format that will be used to CreateSolidColorSharedImage(). This should
-  // be either RGBA_8888 by default, or BGRA_8888 if the default is not
-  // supported on Linux.
-  SharedImageFormat solid_color_image_format_ = SinglePlaneFormat::kRGBA_8888;
 
   THREAD_CHECKER(thread_checker_);
 

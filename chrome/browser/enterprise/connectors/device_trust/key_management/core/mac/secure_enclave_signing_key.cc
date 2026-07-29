@@ -13,7 +13,6 @@
 
 #include "base/apple/scoped_cftyperef.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
 #include "base/containers/span.h"
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/mac/metrics_util.h"
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/mac/secure_enclave_client.h"
@@ -24,7 +23,8 @@ namespace enterprise_connectors {
 namespace {
 
 // An implementation of crypto::UnexportableSigningKey.
-class SecureEnclaveSigningKey : public crypto::UnexportableSigningKey {
+class SecureEnclaveSigningKey : public crypto::UnexportableSigningKey,
+                                public crypto::StatefulKey {
  public:
   SecureEnclaveSigningKey(base::apple::ScopedCFTypeRef<SecKeyRef> key,
                           std::unique_ptr<SecureEnclaveClient> client,
@@ -38,6 +38,11 @@ class SecureEnclaveSigningKey : public crypto::UnexportableSigningKey {
   std::optional<std::vector<uint8_t>> SignSlowly(
       base::span<const uint8_t> data) override;
   SecKeyRef GetSecKeyRef() const override;
+  const crypto::StatefulKey* AsStatefulKey() const override;
+
+  // crypto::StatefulKey:
+  std::string GetKeyTag() const override;
+  base::Time GetCreationTime() const override;
 
  private:
   base::apple::ScopedCFTypeRef<SecKeyRef> key_;
@@ -96,6 +101,26 @@ std::optional<std::vector<uint8_t>> SecureEnclaveSigningKey::SignSlowly(
 
 SecKeyRef SecureEnclaveSigningKey::GetSecKeyRef() const {
   return key_.get();
+}
+
+const crypto::StatefulKey* SecureEnclaveSigningKey::AsStatefulKey() const {
+  return this;
+}
+
+std::string SecureEnclaveSigningKey::GetKeyTag() const {
+  // For `crypto::UnexportableSigningKeyMac` this corresponds to the key's
+  // `kSecAttrApplicationTag` attribute. Since this is not set for
+  // `SecureEnclaveSigningKey`, we return the empty string here for consistency.
+  return "";
+}
+
+base::Time SecureEnclaveSigningKey::GetCreationTime() const {
+  // Reading the actual creation time from the keychain is an expensive
+  // operation, and not suitable for a synchronous method. Thus simply return
+  // Now() for the time being.
+  //
+  // TODO(crbug.com/319255700): Return the creation time.
+  return base::Time::Now();
 }
 
 }  // namespace

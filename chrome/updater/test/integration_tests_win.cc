@@ -21,7 +21,7 @@
 #include "base/base_paths.h"
 #include "base/command_line.h"
 #include "base/containers/adapters.h"
-#include "base/containers/contains.h"
+#include "base/containers/to_vector.h"
 #include "base/file_version_info.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
@@ -39,8 +39,8 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/task_traits.h"
@@ -51,8 +51,10 @@
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
+#include "base/types/expected_macros.h"
 #include "base/values.h"
 #include "base/version.h"
+#include "base/win/elevation_util.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_bstr.h"
 #include "base/win/scoped_variant.h"
@@ -65,6 +67,7 @@
 #include "chrome/updater/app/server/win/updater_idl.h"
 #include "chrome/updater/app/server/win/updater_internal_idl.h"
 #include "chrome/updater/app/server/win/updater_legacy_idl.h"
+#include "chrome/updater/branded_constants.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/external_constants_builder.h"
 #include "chrome/updater/persisted_data.h"
@@ -90,6 +93,7 @@
 #include "components/crx_file/crx_verifier.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "url/gurl.h"
 
 namespace updater::test {
@@ -158,26 +162,7 @@ HRESULT CreateLocalServer(GUID clsid,
 }
 
 [[nodiscard]] bool IsServiceGone(const std::wstring& service_name) {
-  ScopedScHandle scm(::OpenSCManager(
-      nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE));
-  if (!scm.IsValid()) {
-    return false;
-  }
-
-  ScopedScHandle service(
-      ::OpenService(scm.Get(), service_name.c_str(),
-                    SERVICE_QUERY_CONFIG | SERVICE_CHANGE_CONFIG));
-  bool is_service_gone = !service.IsValid();
-  if (!is_service_gone) {
-    if (!::ChangeServiceConfig(service.Get(), SERVICE_NO_CHANGE,
-                               SERVICE_NO_CHANGE, SERVICE_NO_CHANGE, nullptr,
-                               nullptr, nullptr, nullptr, nullptr, nullptr,
-                               nullptr)) {
-      is_service_gone = ::GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE;
-    }
-  }
-
-  return is_service_gone &&
+  return !IsServicePresent(service_name) &&
          !base::win::RegKey(HKEY_LOCAL_MACHINE, UPDATER_KEY, Wow6432(KEY_READ))
               .HasValue(service_name.c_str());
 }
@@ -214,14 +199,14 @@ void CheckInstallation(UpdaterScope scope,
                     root, GetAppClientsKey(kLegacyGoogleUpdateAppID).c_str(),
                     Wow6432(KEY_READ))
                     .ReadValue(kRegValuePV, &pv));
-      EXPECT_STREQ(kUpdaterVersionUtf16, pv.c_str());
+      EXPECT_EQ(kUpdaterVersionUtf16, pv);
       EXPECT_EQ(
           ERROR_SUCCESS,
           base::win::RegKey(
               root, GetAppClientStateKey(kLegacyGoogleUpdateAppID).c_str(),
               Wow6432(KEY_READ))
               .ReadValue(kRegValuePV, &pv));
-      EXPECT_STREQ(kUpdaterVersionUtf16, pv.c_str());
+      EXPECT_EQ(kUpdaterVersionUtf16, pv);
 
       std::wstring uninstall_cmd_line_string;
       EXPECT_EQ(ERROR_SUCCESS,
@@ -336,7 +321,7 @@ void CheckInstallation(UpdaterScope scope,
               ADD_FAILURE() << "Unexpected service found: " << service_name;
             }
           });
-      EXPECT_EQ(count_entries, is_installed);
+      EXPECT_EQ(count_entries > 0, is_installed);
     }
   }
 
@@ -413,7 +398,8 @@ base::Process LaunchOfflineInstallProcess(bool is_legacy_install,
                                           const std::wstring& app_id,
                                           const std::wstring& offline_dir_guid,
                                           bool is_silent_install,
-                                          const std::string& language) {
+                                          const std::string& language,
+                                          const std::string& install_source) {
   auto launch_legacy_offline_install = [&] {
     auto build_legacy_switch =
         [](const std::string& switch_name) -> std::wstring {
@@ -437,6 +423,11 @@ base::Process LaunchOfflineInstallProcess(bool is_legacy_install,
         base::CommandLine::QuoteForCommandLineToArgvW(offline_dir_guid),
 
         is_silent_install ? build_legacy_switch(updater::kSilentSwitch) : L"",
+
+        install_source.empty()
+            ? L""
+            : build_legacy_switch(updater::kInstallSourceSwitch),
+        base::UTF8ToWide(install_source),
     };
 
     return base::LaunchProcess(base::JoinString(install_cmd_args, L" "), {});
@@ -457,6 +448,11 @@ base::Process LaunchOfflineInstallProcess(bool is_legacy_install,
                                    offline_dir_guid);
     if (is_silent_install) {
       install_cmd.AppendSwitch(updater::kSilentSwitch);
+    }
+
+    if (!install_source.empty()) {
+      install_cmd.AppendSwitchUTF8(updater::kInstallSourceSwitch,
+                                   install_source);
     }
 
     return base::LaunchProcess(install_cmd, {});
@@ -480,13 +476,9 @@ void CallDispatchMethod(
     Microsoft::WRL::ComPtr<IDispatch> dispatch,
     const std::wstring& method_name,
     const std::vector<base::win::ScopedVariant>& variant_params) {
-  std::vector<VARIANT> params;
-  params.reserve(variant_params.size());
-
   // IDispatch::Invoke() expects the parameters in reverse order.
-  std::ranges::transform(base::Reversed(variant_params),
-                         std::back_inserter(params),
-                         &base::win::ScopedVariant::Copy);
+  std::vector<VARIANT> params = base::ToVector(base::Reversed(variant_params),
+                                               &base::win::ScopedVariant::Copy);
 
   DISPPARAMS dp = {};
   if (!params.empty()) {
@@ -534,7 +526,7 @@ bool BuildTestAppInstaller(const base::FilePath& installer_script,
   }
   const base::FilePath installer_dir = exe_path.Append(L"test_installer");
 #if defined(ADDRESS_SANITIZER)
-  static const char kAsanRuntime[] = "clang_rt.asan_dynamic-x86_64.dll";
+  static constexpr char kAsanRuntime[] = "clang_rt.asan_dynamic-x86_64.dll";
   const base::FilePath asan_runtime = exe_path.AppendUTF8(kAsanRuntime);
   EXPECT_TRUE(base::CopyFile(
       asan_runtime, output_installer.DirName().AppendUTF8(kAsanRuntime)));
@@ -550,6 +542,9 @@ bool BuildTestAppInstaller(const base::FilePath& installer_script,
 void RunOfflineInstallWithManifest(UpdaterScope scope,
                                    bool is_legacy_install,
                                    bool is_silent_install,
+                                   int installer_result,
+                                   int installer_error,
+                                   const std::string& install_source,
                                    base::cstring_view platform,
                                    int string_resource_id_to_find,
                                    const std::string& language,
@@ -604,25 +599,32 @@ void RunOfflineInstallWithManifest(UpdaterScope scope,
         IsElevatedWithUACOn() ? kTestEventToSignalIfMediumIntegrity
                               : kTestEventToSignal,
         event_holder.name);
-    std::vector<std::string> commands;
-    const struct {
+
+    struct RegItems {
       const std::string subkey;
       const char* value_name;
       const char* type;
       const std::string value;
-    } reg_items[] = {
-        {base::WideToUTF8(app_clients_key), "pv", "REG_SZ",
-         kTestPV.GetString()},
-        {app_client_state_key_utf8, "InstallerResult", "REG_DWORD", "0"},
-        {app_client_state_key_utf8, "InstallerError", "REG_DWORD", "0"},
+    };
+    std::vector<RegItems> reg_items = {
+        {app_client_state_key_utf8, "InstallerResult", "REG_DWORD",
+         base::ToString(installer_result)},
+        {app_client_state_key_utf8, "InstallerError", "REG_DWORD",
+         base::ToString(installer_error)},
         {app_client_state_key_utf8, "InstallerExtraCode1", "REG_DWORD", "0"},
         {app_client_state_key_utf8, "InstallerResultUIString", "REG_SZ",
          "CoolApp"},
         {app_client_state_key_utf8, "InstallerSuccessLaunchCmdLine", "REG_SZ",
          base::WideToUTF8(post_install_cmd.GetCommandLineString())},
     };
+    if (expect_success) {
+      reg_items.push_back({base::WideToUTF8(app_clients_key), "pv", "REG_SZ",
+                           kTestPV.GetString()});
+    }
+
+    std::vector<std::string> commands;
     for (const auto& reg_item : reg_items) {
-      commands.push_back(base::StringPrintf(
+      commands.push_back(absl::StrFormat(
           "REG.exe ADD \"%s\\%s\" /v %s /t %s /d %s /f /reg:32",
           reg_hive.c_str(), reg_item.subkey.c_str(), reg_item.value_name,
           reg_item.type,
@@ -661,7 +663,7 @@ void RunOfflineInstallWithManifest(UpdaterScope scope,
     </data>
   </app>
 </response>)";
-  const std::string manifest = base::StringPrintf(
+  const std::string manifest = absl::StrFormat(
       kManifestFormat, platform.c_str(), kTestAppID, /*pv=*/"",
       kAppInstallerName, app_installer_size.value(), kAppInstallerName);
   EXPECT_TRUE(base::WriteFile(manifest_path, manifest));
@@ -669,7 +671,7 @@ void RunOfflineInstallWithManifest(UpdaterScope scope,
   // Trigger offline install.
   ASSERT_TRUE(LaunchOfflineInstallProcess(
                   is_legacy_install, updater_exe.value(), scope, kTestAppID,
-                  offline_dir_guid, is_silent_install, language)
+                  offline_dir_guid, is_silent_install, language, install_source)
                   .IsValid());
 
   // * Silent installs do not show any UI.
@@ -693,21 +695,18 @@ void RunOfflineInstallWithManifest(UpdaterScope scope,
                                           nullptr)
           ->GetProductVersion(base::WideToUTF8(kTestAppID));
 
-  base::win::RegKey key;
-  LONG registry_result =
-      key.Open(root, app_client_state_key.c_str(), Wow6432(KEY_QUERY_VALUE));
-
+  EXPECT_EQ(expect_success, pv.IsValid() && pv > base::Version(kNullVersion));
   if (!expect_success) {
-    EXPECT_EQ(registry_result, ERROR_FILE_NOT_FOUND);
-    EXPECT_FALSE(pv.IsValid());
     return;
   }
 
-  EXPECT_EQ(registry_result, ERROR_SUCCESS);
-
   // Updater should have written "pv".
-  ASSERT_TRUE(pv.IsValid());
   EXPECT_EQ(pv, kTestPV);
+
+  base::win::RegKey key;
+  EXPECT_EQ(
+      key.Open(root, app_client_state_key.c_str(), Wow6432(KEY_QUERY_VALUE)),
+      ERROR_SUCCESS);
 
   // Check for expected installer result API reg values.
   base::win::RegKey updater_key(root, UPDATER_KEY, Wow6432(KEY_QUERY_VALUE));
@@ -731,6 +730,36 @@ void RunOfflineInstallWithManifest(UpdaterScope scope,
   EXPECT_TRUE(DeleteRegKey(root, app_client_state_key));
 }
 
+bool BuildMockOfflineMetaInstaller(const std::string& appid,
+                                   const base::FilePath& installer_path,
+                                   const base::FilePath& offline_manifest,
+                                   const base::FilePath& output_metainstaller) {
+  base::FilePath exe_path;
+  if (!base::PathService::Get(base::DIR_EXE, &exe_path)) {
+    return false;
+  }
+  const base::FilePath tools_dir = exe_path.Append(L"test_installer");
+  base::CommandLine create_meta_installer(tools_dir.Append(L"sign.py"));
+  create_meta_installer.AppendSwitchPath(
+      "--in_file", exe_path.Append(L"UpdaterSetup_test.exe"));
+  create_meta_installer.AppendSwitchPath("--installer_path", installer_path);
+  create_meta_installer.AppendSwitchUTF8("--appid", appid);
+  create_meta_installer.AppendSwitchPath("--manifest_path", offline_manifest);
+  create_meta_installer.AppendSwitchPath("--lzma_7z",
+                                         tools_dir.Append(L"7za.exe"));
+  create_meta_installer.AppendSwitch("--disable_tag_and_sign");
+  create_meta_installer.AppendSwitchPath("--out_file", output_metainstaller);
+
+  VLOG(0) << "Running " << create_meta_installer.GetCommandLineString();
+  return RunVPythonCommand(create_meta_installer) == 0;
+}
+
+void CleanUpdateClientTempDirectories(UpdaterScope scope) {
+  EnumerateUpdateClientTempDirectories(scope, [](const base::FilePath& dir) {
+    EXPECT_TRUE(base::DeletePathRecursively(dir));
+  });
+}
+
 }  // namespace
 
 base::FilePath GetSetupExecutablePath() {
@@ -745,6 +774,7 @@ void Clean(UpdaterScope scope) {
   VLOG(0) << __func__;
 
   CleanProcesses();
+  CleanUpdateClientTempDirectories(scope);
 
   const HKEY root = UpdaterScopeToHKeyRoot(scope);
   for (const wchar_t* key : {CLIENT_STATE_KEY, CLIENTS_KEY, UPDATER_KEY}) {
@@ -847,8 +877,16 @@ void ExpectInstalled(UpdaterScope scope) {
                     CheckInstallationVersions::kCheckSxSOnly);
 }
 
+void ExpectCleanUpdateClientTempDirectories(UpdaterScope scope) {
+  ASSERT_NO_FATAL_FAILURE(EnumerateUpdateClientTempDirectories(
+      scope, [](const base::FilePath& dir) {
+        ADD_FAILURE() << "Directory not cleaned up: " << dir;
+      }));
+}
+
 void ExpectClean(UpdaterScope scope) {
   ExpectCleanProcesses();
+
   CheckInstallation(scope, CheckInstallationStatus::kCheckIsNotInstalled,
                     CheckInstallationVersions::kCheckActiveAndSxS);
 
@@ -1288,7 +1326,7 @@ HRESULT DoUpdate(UpdaterScope scope,
         state->get_totalBytesToDownload(&total_bytes_to_download);
         LONG download_time_remaining_ms = 0;
         state->get_downloadTimeRemainingMs(&download_time_remaining_ms);
-        extra_data = base::UTF8ToWide(base::StringPrintf(
+        extra_data = base::UTF8ToWide(absl::StrFormat(
             "[Bytes downloaded: %lu][Bytes total: %lu][Time remaining: %ld]",
             bytes_downloaded, total_bytes_to_download,
             download_time_remaining_ms));
@@ -1310,8 +1348,8 @@ HRESULT DoUpdate(UpdaterScope scope,
         ULONG total_bytes_to_download = 0;
         state->get_totalBytesToDownload(&total_bytes_to_download);
         extra_data = base::UTF8ToWide(
-            base::StringPrintf("[Bytes downloaded: %lu][Bytes total: %lu]",
-                               bytes_downloaded, total_bytes_to_download));
+            absl::StrFormat("[Bytes downloaded: %lu][Bytes total: %lu]",
+                            bytes_downloaded, total_bytes_to_download));
         EXPECT_HRESULT_SUCCEEDED(bundle->install());
         break;
       }
@@ -1324,8 +1362,8 @@ HRESULT DoUpdate(UpdaterScope scope,
         LONG install_time_remaining_ms = 0;
         state->get_installTimeRemainingMs(&install_time_remaining_ms);
         extra_data = base::UTF8ToWide(
-            base::StringPrintf("[Install Progress: %ld][Time remaining: %ld]",
-                               install_progress, install_time_remaining_ms));
+            absl::StrFormat("[Install Progress: %ld][Time remaining: %ld]",
+                            install_progress, install_time_remaining_ms));
         break;
       }
 
@@ -1349,7 +1387,7 @@ HRESULT DoUpdate(UpdaterScope scope,
         LONG installer_result_code = 0;
         EXPECT_HRESULT_SUCCEEDED(
             state->get_installerResultCode(&installer_result_code));
-        extra_data = base::UTF8ToWide(base::StringPrintf(
+        extra_data = base::UTF8ToWide(absl::StrFormat(
             "[errorCode: %ld][completionMessage: %ls][installerResultCode: "
             "%ld]",
             error_code, completion_message.Get(), installer_result_code));
@@ -1490,12 +1528,41 @@ void ExpectLegacyProcessLauncherSucceeds(UpdaterScope scope) {
   DeleteAppClientKey(scope, kAppId1);
 }
 
+void ExpectProcessLauncherLaunchCmdLineSucceeds(UpdaterScope scope) {
+  // ProcessLauncher is only implemented for kSystem at the moment.
+  if (!IsSystemInstall(scope)) {
+    return;
+  }
+  const base::ProcessId explorer_pid = base::win::GetExplorerPid();
+  if (!explorer_pid) {
+    return;
+  }
+
+  Microsoft::WRL::ComPtr<IUnknown> unknown;
+  ASSERT_HRESULT_SUCCEEDED(
+      CreateLocalServer(__uuidof(ProcessLauncherClass), unknown));
+  Microsoft::WRL::ComPtr<IProcessLauncher> process_launcher;
+  EXPECT_HRESULT_SUCCEEDED(unknown.As(&process_launcher));
+  process_launcher.Reset();
+  EXPECT_HRESULT_SUCCEEDED(
+      unknown.CopyTo(__uuidof(IProcessLauncherSystem),
+                     IID_PPV_ARGS_Helper(&process_launcher)));
+
+  base::CommandLine test_process_cmd_line =
+      GetTestProcessCommandLine(scope, __func__);
+  ASSERT_EQ(process_launcher->LaunchCmdLine(
+                test_process_cmd_line.GetCommandLineString().c_str()),
+            base::win::IsProcessRunningAtMediumOrLower(explorer_pid)
+                ? S_OK
+                : E_ACCESSDENIED);
+}
+
 void ExpectLegacyAppCommandWebSucceeds(UpdaterScope scope,
                                        const std::string& app_id,
                                        const std::string& command_id,
-                                       const base::Value::List& parameters,
+                                       const base::ListValue& parameters,
                                        int expected_exit_code) {
-  const size_t kMaxParameters = 9;
+  constexpr size_t kMaxParameters = 9;
   ASSERT_LE(parameters.size(), kMaxParameters);
 
   base::ScopedTempDir temp_dir;
@@ -1529,13 +1596,11 @@ void ExpectLegacyAppCommandWebSucceeds(UpdaterScope scope,
                              : __uuidof(IAppCommandWebUser),
       IID_PPV_ARGS_Helper(&app_command_web)));
 
-  std::vector<base::win::ScopedVariant> variant_params;
-  variant_params.reserve(kMaxParameters);
-  std::ranges::transform(parameters, std::back_inserter(variant_params),
-                         [](const auto& param) {
-                           return base::win::ScopedVariant(
-                               base::UTF8ToWide(param.GetString()).c_str());
-                         });
+  std::vector<base::win::ScopedVariant> variant_params =
+      base::ToVector(parameters, [](const auto& param) {
+        return base::win::ScopedVariant(
+            base::UTF8ToWide(param.GetString()).c_str());
+      });
   for (size_t i = parameters.size(); i < kMaxParameters; ++i) {
     variant_params.emplace_back(base::win::ScopedVariant::kEmptyVariant);
   }
@@ -1594,7 +1659,9 @@ void ExpectPolicyStatusValues(
   EXPECT_EQ(has_conflict, expected_has_conflict);
 }
 
-void ExpectLegacyPolicyStatusSucceeds(UpdaterScope scope) {
+void ExpectLegacyPolicyStatusSucceeds(
+    UpdaterScope scope,
+    const base::Version& expected_updater_version) {
   Microsoft::WRL::ComPtr<IUnknown> policy_status_server;
   ASSERT_HRESULT_SUCCEEDED(CreateLocalServer(
       IsSystemInstall(scope) ? __uuidof(PolicyStatusSystemClass)
@@ -1611,7 +1678,8 @@ void ExpectLegacyPolicyStatusSucceeds(UpdaterScope scope) {
   base::win::ScopedBstr updater_version;
   ASSERT_HRESULT_SUCCEEDED(
       policy_status2->get_updaterVersion(updater_version.Receive()));
-  EXPECT_STREQ(updater_version.Get(), kUpdaterVersionUtf16);
+  EXPECT_EQ(updater_version.Get(),
+            base::UTF8ToWide(expected_updater_version.GetString()));
 
   DATE last_checked = 0;
   EXPECT_HRESULT_SUCCEEDED(policy_status2->get_lastCheckedTime(&last_checked));
@@ -1654,7 +1722,7 @@ void LegacyInstallApp(UpdaterScope scope,
 }
 
 void InvokeTestServiceFunction(const std::string& function_name,
-                               const base::Value::Dict& arguments) {
+                               const base::DictValue& arguments) {
   std::string arguments_json_string;
   EXPECT_TRUE(base::JSONWriter::Write(arguments, &arguments_json_string));
 
@@ -1699,10 +1767,8 @@ std::vector<TestUpdaterVersion> GetRealUpdaterLowerVersions(
 #endif
   path_suffix = path_suffix.Append(FILE_PATH_LITERAL("UpdaterSetup_test.exe"));
 
-  std::vector<TestUpdaterVersion> updater_versions;
-  std::ranges::transform(
-      supported_archs, std::back_inserter(updater_versions),
-      [&](const std::string& arch) -> TestUpdaterVersion {
+  return base::ToVector(
+      supported_archs, [&](const std::string& arch) -> TestUpdaterVersion {
         const base::FilePath updater_setup_path =
             old_updater_path.AppendUTF8(base::StrCat({arch, arch_suffix}))
                 .Append(path_suffix);
@@ -1711,7 +1777,6 @@ std::vector<TestUpdaterVersion> GetRealUpdaterLowerVersions(
                     FileVersionInfo::CreateFileVersionInfo(updater_setup_path)
                         ->file_version()))};
       });
-  return updater_versions;
 }
 
 void RunUninstallCmdLine(UpdaterScope scope) {
@@ -1932,16 +1997,16 @@ void CloseInstallCompleteDialog(const std::u16string& bundle_name,
           base::win::EnumerateChildWindows(
               ::GetDesktopWindow(), base::BindLambdaForTesting([&](HWND hwnd) {
                 if (!base::win::IsSystemDialog(hwnd) ||
-                    !base::Contains(base::win::GetWindowTextString(hwnd),
-                                    window_title)) {
+                    !base::win::GetWindowTextString(hwnd).contains(
+                        window_title)) {
                   return false;
                 }
                 // Enumerate the child windows to search for
                 // `child_window_text_to_find`. If found, close the dialog.
                 base::win::EnumerateChildWindows(
                     hwnd, base::BindLambdaForTesting([&](HWND hwnd) {
-                      if (!base::Contains(base::win::GetWindowTextString(hwnd),
-                                          child_window_text_to_find)) {
+                      if (!base::win::GetWindowTextString(hwnd).contains(
+                              child_window_text_to_find)) {
                         return false;
                       }
                       const HWND parent_hwnd = ::GetParent(hwnd);
@@ -2065,7 +2130,7 @@ void InstallApp(UpdaterScope scope,
             ERROR_SUCCESS);
   RegistrationRequest registration;
   registration.app_id = app_id;
-  registration.version = version;
+  registration.version = version.GetString();
   RegisterApp(scope, registration);
 }
 
@@ -2080,26 +2145,90 @@ void UninstallApp(UpdaterScope scope, const std::string& app_id) {
 
 void RunOfflineInstall(UpdaterScope scope,
                        bool is_legacy_install,
-                       bool is_silent_install) {
-  RunOfflineInstallWithManifest(scope, is_legacy_install, is_silent_install,
-                                "win", IDS_BUNDLE_INSTALLED_SUCCESSFULLY_BASE,
-                                "en", true);
+                       bool is_silent_install,
+                       int installer_result,
+                       int installer_error,
+                       const std::string& install_source) {
+  RunOfflineInstallWithManifest(
+      scope, is_legacy_install, is_silent_install, installer_result,
+      installer_error, install_source, "win",
+      IDS_BUNDLE_INSTALLED_SUCCESSFULLY_BASE, "en", !installer_result);
 }
 
 void RunOfflineInstallOsNotSupported(UpdaterScope scope,
                                      bool is_legacy_install,
                                      bool is_silent_install,
                                      const std::string& language) {
-  RunOfflineInstallWithManifest(scope, is_legacy_install, is_silent_install,
-                                "minix", IDS_UPDATER_OS_NOT_SUPPORTED_BASE,
-                                language, false);
+  RunOfflineInstallWithManifest(
+      scope, is_legacy_install, is_silent_install,
+      /*installer_result=*/0, /*installer_error=*/0, /*install_source=*/"",
+      "minix", IDS_UPDATER_OS_NOT_SUPPORTED_BASE, language, false);
+}
+
+void RunMockOfflineMetaInstall(UpdaterScope scope,
+                               const std::string& app_id,
+                               const base::Version& version,
+                               const std::string& tag,
+                               const base::FilePath& installer_path,
+                               const std::string& arguments,
+                               bool is_silent_install,
+                               const std::string& platform,
+                               const std::string& installer_text,
+                               const bool always_launch_cmd,
+                               const int expected_exit_code,
+                               bool expect_success) {
+  if (installer_path.MatchesExtension(L".msi")) {
+    ASSERT_EQ(scope, UpdaterScope::kSystem);
+  }
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath manifest_path =
+      temp_dir.GetPath().Append(L"OfflineManifest.gup");
+  ASSERT_TRUE(base::WriteFile(
+      manifest_path, absl::StrFormat(
+                         R"(<?xml version="1.0" encoding="UTF-8"?>
+<response protocol="3.0">
+  <systemrequirements platform="%s"/>
+  <app appid="${APP_ID}" status="ok">
+    <updatecheck status="ok">
+      <manifest version="%s">
+        <packages>
+          <package name="${INSTALLER_FILENAME}"
+                   hash_sha256="${INSTALLER_HASH_SHA256}"
+                   size="${INSTALLER_SIZE}"
+                   required="true"/>
+        </packages>
+        <actions>
+          <action event="install"
+                  run="${INSTALLER_FILENAME}"
+                  arguments="%s" />
+        </actions>
+      </manifest>
+    </updatecheck>
+  </app>
+</response>)",
+                         platform.c_str(), version.GetString(), arguments)));
+
+  const base::FilePath output_metainstaller =
+      temp_dir.GetPath().Append(L"StandaloneInstaller.exe");
+  ASSERT_TRUE(BuildMockOfflineMetaInstaller(
+      app_id, installer_path, manifest_path, output_metainstaller));
+
+  // Trigger offline install.
+  ASSERT_NO_FATAL_FAILURE(
+      InstallUpdaterAndApp(scope, app_id, is_silent_install,
+                           /*tag=*/tag, installer_text, always_launch_cmd,
+                           /*verify_app_logo_loaded=*/false, expect_success,
+                           /*wait_for_the_installer=*/true, expected_exit_code,
+                           /*additional_switches=*/{}, output_metainstaller));
+  ASSERT_TRUE(WaitForUpdaterExit());
 }
 
 base::CommandLine MakeElevated(base::CommandLine command_line) {
   return command_line;
 }
 
-void SetPlatformPolicies(const base::Value::Dict& values) {
+void SetPlatformPolicies(const base::DictValue& values) {
   base::win::RegKey policy_key;
   ASSERT_EQ(ERROR_SUCCESS,
             policy_key.Create(HKEY_LOCAL_MACHINE, UPDATER_POLICIES_KEY,
@@ -2108,8 +2237,8 @@ void SetPlatformPolicies(const base::Value::Dict& values) {
   for (const auto [app_id, policies] : values) {
     ASSERT_TRUE(policies.is_dict());
     for (const auto [name, value] : policies.GetDict()) {
-      const std::wstring& key = base::UTF8ToWide(
-          base::StringPrintf("%s%s", name.c_str(), app_id.c_str()));
+      const std::wstring& key =
+          base::UTF8ToWide(absl::StrFormat("%s%s", name, app_id));
       if (value.is_string()) {
         policy_key.WriteValue(key.c_str(),
                               base::UTF8ToWide(value.GetString()).c_str());
@@ -2139,6 +2268,54 @@ void ExpectAppVersion(UpdaterScope scope,
                         GetAppClientStateKey(app_id).c_str(), Wow6432(KEY_READ))
           .ReadValue(kRegValuePV, &pv));
   EXPECT_EQ(base::SysUTF8ToWide(version.GetString()), pv);
+}
+
+void SetAppAllowsUsageStats(UpdaterScope scope,
+                            const std::string& identifier,
+                            bool allowed) {
+  base::win::RegKey key;
+  ASSERT_EQ(
+      key.Create(UpdaterScopeToHKeyRoot(scope),
+                 GetAppClientStateKey(identifier).c_str(), Wow6432(KEY_WRITE)),
+      ERROR_SUCCESS);
+  EXPECT_EQ(key.WriteValue(L"usagestats", static_cast<DWORD>(allowed)),
+            ERROR_SUCCESS);
+}
+
+void ClearAppAllowsUsageStats(UpdaterScope scope,
+                              const std::string& identifier) {
+  ASSERT_TRUE(DeleteRegKey(UpdaterScopeToHKeyRoot(scope),
+                           GetAppClientStateKey(identifier).c_str()));
+}
+
+void InstallScheduledTask(const std::string& task_name,
+                          bool use_task_subfolders) {
+  scoped_refptr<TaskScheduler> task_scheduler =
+      TaskScheduler::CreateInstance(UpdaterScope::kUser, use_task_subfolders);
+  ASSERT_TRUE(task_scheduler);
+
+  EXPECT_TRUE(task_scheduler->RegisterTask(
+      base::UTF8ToWide(task_name), base::UTF8ToWide(task_name),
+      base::CommandLine::FromString(L"C:\\temp\\temp.exe"),
+      TaskScheduler::TriggerType::TRIGGER_TYPE_HOURLY, false));
+}
+
+void IsScheduledTaskRegistered(const std::string& task_name,
+                               bool use_task_subfolders) {
+  scoped_refptr<TaskScheduler> task_scheduler =
+      TaskScheduler::CreateInstance(UpdaterScope::kUser, use_task_subfolders);
+  ASSERT_TRUE(task_scheduler);
+
+  EXPECT_TRUE(task_scheduler->IsTaskRegistered(base::UTF8ToWide(task_name)));
+}
+
+void DeleteScheduledTask(const std::string& task_name,
+                         bool use_task_subfolders) {
+  scoped_refptr<TaskScheduler> task_scheduler =
+      TaskScheduler::CreateInstance(UpdaterScope::kUser, use_task_subfolders);
+  ASSERT_TRUE(task_scheduler);
+
+  EXPECT_TRUE(task_scheduler->DeleteTask(base::UTF8ToWide(task_name)));
 }
 
 }  // namespace updater::test

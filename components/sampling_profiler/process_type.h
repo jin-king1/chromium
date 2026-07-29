@@ -40,7 +40,14 @@ enum class ProfilerThreadType {
   // Thread pool worker thread.
   kThreadPoolWorker,
 
-  kMax = kThreadPoolWorker,
+  // Network thread. Only exists on Android.
+  kNetwork,
+
+  // Display Compositor GPU thread, which is used when DrDC is enabled.
+  kDisplayCompositorGpu,
+
+  kMin = kUnknown,
+  kMax = kDisplayCompositorGpu,
 };
 
 }  // namespace sampling_profiler

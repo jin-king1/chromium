@@ -14,6 +14,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 import static org.chromium.chrome.browser.keyboard_accessory.button_group_component.KeyboardAccessoryButtonGroupProperties.ACTIVE_TAB;
+import static org.chromium.chrome.browser.keyboard_accessory.button_group_component.KeyboardAccessoryButtonGroupProperties.AT_MEMORY_CALLBACK;
 import static org.chromium.chrome.browser.keyboard_accessory.button_group_component.KeyboardAccessoryButtonGroupProperties.TABS;
 
 import org.junit.Before;
@@ -25,7 +26,6 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
-import org.chromium.base.task.test.CustomShadowAsyncTask;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData;
 import org.chromium.ui.modelutil.ListObservable;
@@ -35,20 +35,19 @@ import org.chromium.ui.modelutil.PropertyObservable.PropertyObserver;
 
 /** Controller tests for the keyboard accessory tab layout component. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {CustomShadowAsyncTask.class})
+@Config(manifest = Config.NONE)
 public class KeyboardAccessoryButtonGroupControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private PropertyObserver<PropertyKey> mMockPropertyObserver;
     @Mock private ListObservable.ListObserver<Void> mMockTabListObserver;
+    @Mock private Runnable mMockAtMemoryCallback;
 
     @Mock
     private KeyboardAccessoryButtonGroupCoordinator.AccessoryTabObserver mMockAccessoryTabObserver;
 
     private final KeyboardAccessoryData.Tab mTestTab =
-            new KeyboardAccessoryData.Tab("Passwords", null, null, 0, 0, null);
+            new KeyboardAccessoryData.Tab("Passwords", 0, null, 0, 0, null);
 
     private KeyboardAccessoryButtonGroupCoordinator mCoordinator;
     private PropertyModel mModel;
@@ -63,6 +62,12 @@ public class KeyboardAccessoryButtonGroupControllerTest {
     }
 
     @Test
+    public void testSetsAtMemoryCallback() {
+        mCoordinator.setAtMemoryCallback(mMockAtMemoryCallback);
+        assertThat(mModel.get(AT_MEMORY_CALLBACK), is(mMockAtMemoryCallback));
+    }
+
+    @Test
     public void testCreatesValidSubComponents() {
         assertThat(mCoordinator, is(notNullValue()));
         assertThat(mMediator, is(notNullValue()));
@@ -74,7 +79,7 @@ public class KeyboardAccessoryButtonGroupControllerTest {
         mModel.get(TABS).addObserver(mMockTabListObserver);
 
         // Calling addTab on the coordinator should make the model propagate that it has a new tab.
-        mCoordinator.getTabSwitchingDelegate().addTab(mTestTab);
+        mCoordinator.getTabSwitchingDelegate().setTabs(new KeyboardAccessoryData.Tab[] {mTestTab});
         verify(mMockTabListObserver).onItemRangeInserted(mModel.get(TABS), 0, 1);
         assertThat(mModel.get(TABS).size(), is(1));
         assertThat(mModel.get(TABS).get(0), is(mTestTab));
@@ -130,9 +135,9 @@ public class KeyboardAccessoryButtonGroupControllerTest {
     public void testSetActiveTab() {
         mModel.addObserver(mMockPropertyObserver);
         assertThat(mModel.get(ACTIVE_TAB), is(nullValue()));
-        mCoordinator.getTabSwitchingDelegate().addTab(mTestTab);
+        mCoordinator.getTabSwitchingDelegate().setTabs(new KeyboardAccessoryData.Tab[] {mTestTab});
 
-        // Set the active tab type to 0 which is the recording_type of |mTestTab|.
+        // Set the active tab type to 0 which is the recording_type of `mTestTab`.
         mCoordinator.getTabSwitchingDelegate().setActiveTab(0);
 
         verify(mMockPropertyObserver).onPropertyChanged(mModel, ACTIVE_TAB);
@@ -143,9 +148,9 @@ public class KeyboardAccessoryButtonGroupControllerTest {
     public void testSetActiveTab_tabTypeNotFound_throwsException() {
         mModel.addObserver(mMockPropertyObserver);
         assertThat(mModel.get(ACTIVE_TAB), is(nullValue()));
-        mCoordinator.getTabSwitchingDelegate().addTab(mTestTab);
+        mCoordinator.getTabSwitchingDelegate().setTabs(new KeyboardAccessoryData.Tab[] {mTestTab});
 
-        // Set the active tab type to 1 which is different from the recording_type of |mTestTab|.
+        // Set the active tab type to 1 which is different from the recording_type of `mTestTab`.
         mCoordinator.getTabSwitchingDelegate().setActiveTab(1);
     }
 }

@@ -10,6 +10,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_bubble_base_view.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "content/public/test/browser_test.h"
@@ -17,6 +18,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/message_center/message_center.h"
+#include "ui/views/views_switches.h"
 
 namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
@@ -52,6 +54,13 @@ class GeolocationSwitchInteractiveTest : public InteractiveBrowserTest {
     https_server()->StartAcceptingConnections();
   }
 
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InteractiveBrowserTestMixin::SetUpCommandLine(command_line);
+    // Disables the disregarding of potentially unintended input events.
+    command_line->AppendSwitch(
+        views::switches::kDisableInputEventActivationProtectionForTesting);
+  }
+
   void TearDownOnMainThread() override {
     EXPECT_TRUE(https_server()->ShutdownAndWaitUntilComplete());
     InteractiveBrowserTest::TearDownOnMainThread();
@@ -65,7 +74,7 @@ class GeolocationSwitchInteractiveTest : public InteractiveBrowserTest {
   }
 
   void SetBrowserPermission(ContentSetting setting) {
-    HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+    HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
         ->SetContentSettingDefaultScope(
             GetURL(), GetURL(), ContentSettingsType::GEOLOCATION, setting);
   }
@@ -133,8 +142,6 @@ IN_PROC_BROWSER_TEST_F(GeolocationSwitchInteractiveTest,
   ExpectAndApproveBrowserPrompt(false);
   ExpectOSNotification(false);
 }
-
-// TODO(b/312485657): Enable the testcase.
 IN_PROC_BROWSER_TEST_F(GeolocationSwitchInteractiveTest,
                        BrowserBlockSystemBlock) {
   SetBrowserPermission(CONTENT_SETTING_BLOCK);

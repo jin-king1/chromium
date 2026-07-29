@@ -8,31 +8,32 @@
 namespace lens {
 
 // Histogram for recording ambient search queries.
-constexpr char kAmbientSearchQueryHistogramName[] = "Search.Ambient.Query";
+inline constexpr char kAmbientSearchQueryHistogramName[] =
+    "Search.Ambient.Query";
 
 // Histogram for recording camera open events.
-constexpr char kSearchCameraOpenHistogramName[] = "Search.Image.Camera.Open";
+inline constexpr char kSearchCameraOpenHistogramName[] =
+    "Search.Image.Camera.Open";
 
 // Histogram for recording camera result events.
-constexpr char kSearchCameraResultHistogramName[] =
+inline constexpr char kSearchCameraResultHistogramName[] =
     "Search.Image.Camera.Result";
 
 // Histogram for recording the capture result of Lens Region Search. See enum
 // below for types of results.
-constexpr char kLensRegionSearchCaptureResultHistogramName[] =
+inline constexpr char kLensRegionSearchCaptureResultHistogramName[] =
     "Search.RegionSearch.Lens.Result";
 
 // Histogram for recording the viewport proportion in relation to region
 // selected for the Lens Region Search feature.
-constexpr char kLensRegionSearchRegionViewportProportionHistogramName[] =
+inline constexpr char kLensRegionSearchRegionViewportProportionHistogramName[] =
     "Search.RegionSearch.Lens.RegionViewportProportion";
 
 // Histogram for recording the aspect ratio of the captured region.
-constexpr char kLensRegionSearchRegionAspectRatioHistogramName[] =
+inline constexpr char kLensRegionSearchRegionAspectRatioHistogramName[] =
     "Search.RegionSearch.Lens.RegionAspectRatio";
 
-// Needs to be kept in sync with CameraOpenEntryPoint enum in
-// tools/metrics/histograms/enums.xml.
+// LINT.IfChange(CameraOpenEntryPoint)
 enum class CameraOpenEntryPoint {
   OMNIBOX = 0,
   NEW_TAB_PAGE = 1,
@@ -47,11 +48,12 @@ enum class CameraOpenEntryPoint {
   INTENTS = 10,
   WEB_IMAGES_SEARCH_BAR = 11,
   WHATS_NEW_PROMO = 12,
-  kMaxValue = WHATS_NEW_PROMO
+  COMPOSE_BOX = 13,
+  kMaxValue = COMPOSE_BOX
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/search/enums.xml:CameraOpenEntryPoint)
 
-// Needs to be kept in sync with CameraResult enum in
-// tools/metrics/histograms/enums.xml.
+// LINT.IfChange(CameraResult)
 enum class CameraResult {
   SUCCESS_CAMERA = 0,
   SUCCESS_GALLERY_IMAGE = 1,
@@ -59,9 +61,9 @@ enum class CameraResult {
   DISMISSED = 3,
   kMaxValue = DISMISSED
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/search/enums.xml:CameraResult)
 
-// Needs to be kept in sync with AmbientSearchEntryPoint enum in
-// tools/metrics/histograms/enums.xml.
+// LINT.IfChange(AmbientSearchEntryPoint)
 enum class AmbientSearchEntryPoint {
   CONTEXT_MENU_SEARCH_IMAGE_WITH_GOOGLE_LENS = 0,
   CONTEXT_MENU_SEARCH_IMAGE_WITH_WEB = 1,
@@ -92,16 +94,18 @@ enum class AmbientSearchEntryPoint {
   CONTEXT_MENU_SEARCH_REGION_WITH_LENS_OVERLAY_ACCESSIBILITY_FALLBACK = 26,
   CONTEXT_MENU_SEARCH_VIDEO_WITH_LENS_OVERLAY_ACCESSIBILITY_FALLBACK = 27,
   LENS_OVERLAY_LOCATION_BAR_ACCESSIBILITY_FALLBACK = 28,
-  kMaxValue = LENS_OVERLAY_LOCATION_BAR_ACCESSIBILITY_FALLBACK
+  COMPOSE_BOX = 29,
+  kMaxValue = COMPOSE_BOX
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/search/enums.xml:AmbientSearchEntryPoint)
 
-// This should be kept in sync with the LensRegionSearchAspectRatio enum
-// in tools/metrics/histograms/enums.xml. The aspect ratios are defined as:
+// The aspect ratios are defined as:
 //  SQUARE: [0.8, 1.2]
 //  WIDE: (1.2, 1.7]
 //  VERY_WIDE: (1.7, infinity)
 //  TALL: [0.3, 0.8)
 //  VERY_TALL: [0, 0.3)
+// LINT.IfChange(LensRegionSearchAspectRatio)
 enum class LensRegionSearchAspectRatio {
   UNDEFINED = 0,
   SQUARE = 1,
@@ -111,9 +115,9 @@ enum class LensRegionSearchAspectRatio {
   VERY_TALL = 5,
   kMaxValue = VERY_TALL
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/search/enums.xml:LensRegionSearchAspectRatio)
 
-// This should be kept in sync with the LensRegionSearchCaptureResult enum
-// in tools/metrics/histograms/enums.xml.
+// LINT.IfChange(LensRegionSearchCaptureResult)
 enum class LensRegionSearchCaptureResult {
   SUCCESS = 0,
   FAILED_TO_OPEN_TAB = 1,
@@ -123,15 +127,16 @@ enum class LensRegionSearchCaptureResult {
   USER_NAVIGATED_FROM_CAPTURE = 5,
   kMaxValue = USER_NAVIGATED_FROM_CAPTURE
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/search/enums.xml:LensRegionSearchCaptureResult)
 
 // Record an ambient search query along with the entry point that initiated.
-extern void RecordAmbientSearchQuery(AmbientSearchEntryPoint entry_point);
+void RecordAmbientSearchQuery(AmbientSearchEntryPoint entry_point);
 
 // Record a camera open event with the entry point.
-extern void RecordCameraOpen(CameraOpenEntryPoint entry_point);
+void RecordCameraOpen(CameraOpenEntryPoint entry_point);
 
 // Record a camera result.
-extern void RecordCameraResult(CameraResult result);
+void RecordCameraResult(CameraResult result);
 
 }  // namespace lens
 

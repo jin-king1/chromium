@@ -17,6 +17,7 @@ enum class AppLaunchConfirmationRequestCause {
   kOpenFromIncognito,
   kNoUserInteraction,
   kAppLaunchFailed,
+  kShortcutsURL,
 };
 
 // Configuration object for OverlayRequests for alerts notifying the user that
@@ -30,7 +31,7 @@ class AppLaunchConfirmationRequest
   AppLaunchConfirmationRequestCause cause() const { return cause_; }
 
  private:
-  OVERLAY_USER_DATA_SETUP(AppLaunchConfirmationRequest);
+  friend class OverlayUserData<AppLaunchConfirmationRequest>;
   AppLaunchConfirmationRequest(AppLaunchConfirmationRequestCause cause);
 
   // OverlayUserData:

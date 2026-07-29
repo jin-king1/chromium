@@ -43,13 +43,6 @@ namespace ash {
 //
 // This class doesn't track preferences, package installation or audio status at
 // all; it is told to start/stop by the classes that actually do so.
-//
-// For the moment, this is prototype logic only: it processes the input device
-// stream (c.f. a not-yet-existing "non-web only" loopback) and processes the
-// stream even when no audio is being produced.
-//
-// TODO(b/253114860): Until these issues are addressed, this class can't be used
-//                    in production.
 class SystemLiveCaptionService
     : public KeyedService,
       public SpeechRecognizerDelegate,
@@ -108,6 +101,9 @@ class SystemLiveCaptionService
 
   void OnNonChromeOutputStopped() override;
 
+ protected:
+  virtual media::mojom::RecognizerClientType GetRecognizerClientType();
+
  private:
   void OnTranslationCallback(const std::string& cached_translation,
                              const std::string& original_transcription,
@@ -122,7 +118,7 @@ class SystemLiveCaptionService
   void BindToBrowserInterface();
   // Gets language code based on the preference this keyed_service
   // is listening to.
-  std::string GetPrimaryLanguageCode() const;
+  virtual std::string GetPrimaryLanguageCode() const;
   // The source language code of the audio stream.
   std::string source_language_;
   SpeechRecognizerStatus current_recognizer_status_ =

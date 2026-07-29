@@ -16,9 +16,11 @@
 #include <utility>
 #include <vector>
 
-#include "base/functional/callback_forward.h"
-#import "base/memory/raw_ptr.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "base/supports_user_data.h"
 #include "base/time/time.h"
 #include "build/blink_buildflags.h"
@@ -34,15 +36,12 @@
 
 class GURL;
 
-@class CRWSessionStorage;
-@protocol CRWScrollableContent;
 @protocol CRWWebViewDownload;
 @protocol CRWFindInteraction;
 @protocol CRWWebViewDownloadDelegate;
 @protocol CRWWebViewProxy;
 typedef id<CRWWebViewProxy> CRWWebViewProxyType;
 @class UIView;
-typedef UIView<CRWScrollableContent> CRWContentView;
 
 namespace web {
 namespace proto {
@@ -70,9 +69,17 @@ void IgnoreOverRealizationCheck();
 // Core interface for interaction with the web.
 class WebState : public base::SupportsUserData {
  public:
+  // Policy for realization.
+  enum class RealizationPolicy {
+    kRelaxed,
+    kEnforceNoAttachedData,
+    kDefault = kRelaxed,
+  };
+
   // Callback used to load the full information for the WebState when
   // it will become realized.
-  using WebStateStorageLoader = base::OnceCallback<proto::WebStateStorage()>;
+  using WebStateStorageLoader =
+      base::OnceCallback<std::optional<proto::WebStateStorage>()>;
 
   // Callback used to fetch the native session for the WebState.
   using NativeSessionFetcher = base::OnceCallback<NSData*()>;
@@ -135,6 +142,17 @@ class WebState : public base::SupportsUserData {
 
     // Whether this navigation is initiated by the renderer process.
     bool is_renderer_initiated;
+
+    // A text fragment selector (that uses the syntax defined in
+    // https://wicg.github.io/scroll-to-text-fragment/#syntax) to scroll the
+    // matched text into the viewport without applying the standard highlight
+    // styling. This is used for cross-device scroll restoration.
+    // This is named "internal" to match
+    // content::NavigationController::LoadURLParams, as it is passed through the
+    // navigation stack rather than being extracted from the URL's hash
+    // fragment. The string should contain only the selector value (the part
+    // after "text=" in a URL directive), not the "text=" prefix itself.
+    std::optional<std::string> internal_scroll_to_text_fragment;
   };
 
   // InterfaceBinder can be instantiated by subclasses of WebState and returned
@@ -166,6 +184,9 @@ class WebState : public base::SupportsUserData {
     // Removes a callback added by AddInterface.
     void RemoveInterface(std::string_view interface_name);
 
+    // Returns true if any interface is registered on this InterfaceBinder.
+    bool HasRegisteredInterfaces() const;
+
     // Attempts to bind `receiver` by matching its interface name against the
     // callbacks registered on this InterfaceBinder.
     void BindInterface(mojo::GenericPendingReceiver receiver);
@@ -185,17 +206,17 @@ class WebState : public base::SupportsUserData {
     std::map<std::string, Callback> callbacks_;
   };
 
+  class ScopedWebContentCoverer {
+   public:
+    explicit ScopedWebContentCoverer(WebState* web_state);
+    ~ScopedWebContentCoverer();
+
+   private:
+    base::WeakPtr<WebState> web_state_;
+  };
+
   // Creates a new WebState.
   static std::unique_ptr<WebState> Create(const CreateParams& params);
-
-  // Creates a new WebState from a serialized representation of the session.
-  // `session_storage` must not be nil.
-  // TODO(crbug.com/40245950): remove when the optimised serialisation feature
-  // has been fully launched.
-  static std::unique_ptr<WebState> CreateWithStorageSession(
-      const CreateParams& params,
-      CRWSessionStorage* session_storage,
-      NativeSessionFetcher session_fetcher);
 
   // Creates a new WebState from a serialized representation of the session.
   // The callbacks are used to load the complete serialized data from disk
@@ -234,10 +255,10 @@ class WebState : public base::SupportsUserData {
   // Returns whether the WebState is realized.
   //
   // What does "realized" mean? When creating a WebState from session storage
-  // with `CreateWithStorageSession()` or `CreateWithStorage()`, it may not
-  // yet have been fully created. Instead, it has all information to fully
-  // instantiate it and its history available, but the underlying objects
-  // (WKWebView, NavigationManager, ...) have not been created.
+  // `CreateWithStorage()`, it may not yet have been fully created. Instead,
+  // it has all information to fully instantiate it and its history available,
+  // but the underlying objects (WKWebView, NavigationManager, ...) have not
+  // been created.
   //
   // This is an optimisation to reduce the amount of memory consumed by tabs
   // that have been restored after the browser has been shutdown. If the user
@@ -258,11 +279,15 @@ class WebState : public base::SupportsUserData {
   // to call it as the WebState will lazily switch to "realized" state when
   // needed.
   //
+  // The parameter `policy` can be used to enforce that there are no objects
+  // attached to the WebState when it is realized. If the WebState is realized
+  // the `policy` is ignored.
+  //
   // Returns `this` so that the method can be chained such as:
   //
   //    WebState* web_state = ...;
-  //    web_state->ForceRealized()->SetDelegate(this);
-  virtual WebState* ForceRealized() = 0;
+  //    web_state->ForceRealizedWithPolicy(policy)->SetDelegate(this);
+  virtual WebState* ForceRealizedWithPolicy(RealizationPolicy policy) = 0;
 
   // Whether or not a web view is allowed to exist in this WebState. Defaults
   // to false; this should be enabled before attempting to access the view.
@@ -321,6 +346,17 @@ class WebState : public base::SupportsUserData {
   // Stops any pending navigation.
   virtual void Stop() = 0;
 
+  // Returns the user agent override, or std::nullopt if none is set.
+  // If set, this value takes precedence over the UserAgentType returned by
+  // the NavigationManager.
+  virtual std::optional<std::string> GetUserAgentOverride() const = 0;
+  // Sets the user agent override. If `ua_override` is `std::nullopt` or empty,
+  // the default user agent (as determined by UserAgentType) is used.
+  // `ua_override` must be a valid HTTP header value (e.g. it cannot contain
+  // control characters like newlines). If it is not valid, the call is ignored
+  // and the previous value is maintained.
+  virtual void SetUserAgentOverride(std::optional<std::string> ua_override) = 0;
+
   // Gets the NavigationManager associated with this WebState. Will return null
   // iff the WebState is unrealized. It doesn't force the realization.
   virtual const NavigationManager* GetNavigationManager() const = 0;
@@ -342,10 +378,6 @@ class WebState : public base::SupportsUserData {
   GetSessionCertificatePolicyCache() const = 0;
   virtual SessionCertificatePolicyCache* GetSessionCertificatePolicyCache() = 0;
 
-  // Creates a serializable representation of the session. The returned value
-  // is autoreleased.
-  virtual CRWSessionStorage* BuildSessionStorage() const = 0;
-
   // Loads `data` of type `mime_type` and replaces last committed URL with the
   // given `url`.
   virtual void LoadData(NSData* data, NSString* mime_type, const GURL& url) = 0;
@@ -353,16 +385,6 @@ class WebState : public base::SupportsUserData {
   // Asynchronously executes `javaScript` in the main frame's context,
   // registering user interaction.
   virtual void ExecuteUserJavaScript(NSString* javaScript) = 0;
-
-  // Returns a unique identifier for this WebState that is stable across
-  // restart of the application (and across "undo" after a tab is closed).
-  // It is local to the device and not synchronized. This can be used as a key
-  // to identify locally this WebState (e.g. can be used as part of the name
-  // of the file that is used to store a snapshot of the WebState, or it can
-  // be used as a key in an NSDictionary).
-  //
-  // DEPRECATED: use GetUniqueIdentifier() instead.
-  virtual NSString* GetStableIdentifier() const = 0;
 
   // Returns a unique identifier for this WebState that is stable across
   // restart of the application (and across "undo" after a tab is closed).
@@ -531,14 +553,42 @@ class WebState : public base::SupportsUserData {
   // UIActivityViewController to share the current URL.
   virtual id GetActivityItem() API_AVAILABLE(ios(16.4)) = 0;
 
+  // Returns whether the WebState supports a custom file open panel.
+  // If this returns true, the capability may still be overridden or disabled by
+  // `WebClient::CanRunOpenPanel()`.
+  // If both `IsCustomOpenPanelSupported()` and `WebClient::CanRunOpenPanel()`
+  // return true, then `WebClient::RunOpenPanel()` will be used to handle the
+  // open panel.
+  // Note: If the value returned by `WebClient::CanRunOpenPanel()` changes,
+  // `SetCustomOpenPanelSupported()` must be called to ensure the underlying
+  // WebView updates its delegate method cache.
+  virtual bool IsCustomOpenPanelSupported() const = 0;
+  // Sets whether the WebState supports a custom open panel.
+  virtual void SetCustomOpenPanelSupported(bool supports) = 0;
+
   // Returns the page theme color.
   virtual UIColor* GetThemeColor() = 0;
 
   // Returns the under page background color.
   virtual UIColor* GetUnderPageBackgroundColor() = 0;
 
+  // Helper that calls ForceRealizedWithPolicy() with default policy.
+  WebState* ForceRealized();
+
  protected:
   friend class WebStatePolicyDecider;
+
+  // A list of WebStateObservers, explicitly marked as re-entrant due to how
+  // it is used by client (which requests state change during notifications,
+  // changes that can require notifying observers again).
+  using WebStateObserverList =
+      base::ReentrantObserverList<WebStateObserver, true>;
+
+  // Helper function that call WebStateRealized(this) for pre-registered
+  // observers but not for any observers that are added while iterating.
+  // Those observers will already have observed the current WebState in
+  // the realized state and could be confused by the notification.
+  void NotifyWebStateRealized(WebStateObserverList& observers);
 
   // Adds and removes policy deciders for navigation actions. The order in which
   // deciders are called is undefined, and will stop on the first decider that

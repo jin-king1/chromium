@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <limits>
 #include <string>
 #include <string_view>
@@ -20,10 +15,8 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
+#include "base/test/test_future.h"
 #include "base/threading/thread_restrictions.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/apps/app_service/browser_app_launcher.h"
 #include "chrome/browser/apps/app_service/intent_util.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
@@ -35,9 +28,11 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sharesheet/sharesheet_service.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
+#include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -95,12 +90,15 @@ content::WebContents* LaunchWebAppWithIntent(Profile* profile,
       display::kDefaultDisplayId, apps::LaunchContainer::kLaunchContainerWindow,
       std::move(intent), profile);
 
-  content::WebContents* const web_contents =
-      apps::AppServiceProxyFactory::GetForProfile(profile)
-          ->BrowserAppLauncher()
-          ->LaunchAppWithParamsForTesting(std::move(params));
-  DCHECK(web_contents);
-  return web_contents;
+  web_app::WebAppProvider* provider =
+      web_app::WebAppProvider::GetForLocalAppsUnchecked(profile);
+  base::test::TestFuture<base::WeakPtr<BrowserWindowInterface>,
+                         base::WeakPtr<content::WebContents>,
+                         apps::LaunchContainer>
+      future;
+  provider->scheduler().LaunchAppWithCustomParams(std::move(params),
+                                                  future.GetCallback());
+  return future.template Get<1>().get();
 }
 
 content::EvalJsResult ReadTextContent(content::WebContents* web_contents,
@@ -114,13 +112,13 @@ content::EvalJsResult ReadTextContent(content::WebContents* web_contents,
 
 namespace web_app {
 
-class WebShareTargetBrowserTest : public WebAppBrowserTestBase,
-                                  public testing::WithParamInterface<
-                                      apps::test::LinkCapturingFeatureVersion> {
+class WebShareTargetBrowserTest : public WebAppBrowserTestBase {
  public:
   WebShareTargetBrowserTest() {
     scoped_feature_list_.InitWithFeaturesAndParameters(
-        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam()), {});
+        apps::test::GetFeaturesToEnableLinkCapturingUX(
+            apps::test::LinkCapturingFeatureVersion::kV2DefaultOn),
+        {});
   }
 
   GURL share_target_url() const {
@@ -170,7 +168,7 @@ class WebShareTargetBrowserTest : public WebAppBrowserTestBase,
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, ShareUsingFileURL) {
+IN_PROC_BROWSER_TEST_F(WebShareTargetBrowserTest, ShareUsingFileURL) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL app_url =
       embedded_test_server()->GetURL("/web_share_target/charts.html");
@@ -208,7 +206,7 @@ IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, ShareUsingFileURL) {
   EXPECT_EQ("1,2,3,4,5 6,7,8,9,0", ReadTextContent(web_contents, "records"));
 }
 
-IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, ShareImageWithText) {
+IN_PROC_BROWSER_TEST_F(WebShareTargetBrowserTest, ShareImageWithText) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL app_url =
       embedded_test_server()->GetURL("/web_share_target/charts.html");
@@ -241,7 +239,7 @@ IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, ShareImageWithText) {
   RemoveWebShareDirectory(directory);
 }
 
-IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, ShareAudio) {
+IN_PROC_BROWSER_TEST_F(WebShareTargetBrowserTest, ShareAudio) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL app_url =
       embedded_test_server()->GetURL("/web_share_target/charts.html");
@@ -275,7 +273,7 @@ IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, ShareAudio) {
   RemoveWebShareDirectory(directory);
 }
 
-IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, PostBlank) {
+IN_PROC_BROWSER_TEST_F(WebShareTargetBrowserTest, PostBlank) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL app_url =
       embedded_test_server()->GetURL("/web_share_target/poster.html");
@@ -294,14 +292,14 @@ IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, PostBlank) {
   EXPECT_EQ("N/A", ReadTextContent(web_contents, "link"));
 }
 
-IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, PostLink) {
+IN_PROC_BROWSER_TEST_F(WebShareTargetBrowserTest, PostLink) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL app_url =
       embedded_test_server()->GetURL("/web_share_target/poster.html");
   const webapps::AppId app_id =
       web_app::InstallWebAppFromManifest(browser(), app_url);
   const apps::ShareTarget* share_target =
-      WebAppProvider::GetForTest(browser()->profile())
+      WebAppProvider::GetForTest(browser()->GetProfile())
           ->registrar_unsafe()
           .GetAppShareTarget(app_id);
   EXPECT_EQ(share_target->method, apps::ShareTarget::Method::kPost);
@@ -326,14 +324,14 @@ IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, PostLink) {
   EXPECT_EQ(shared_link, ReadTextContent(web_contents, "link"));
 }
 
-IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, GetLink) {
+IN_PROC_BROWSER_TEST_F(WebShareTargetBrowserTest, GetLink) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL app_url =
       embedded_test_server()->GetURL("/web_share_target/gatherer.html");
   const webapps::AppId app_id =
       web_app::InstallWebAppFromManifest(browser(), app_url);
   const apps::ShareTarget* share_target =
-      WebAppProvider::GetForTest(browser()->profile())
+      WebAppProvider::GetForTest(browser()->GetProfile())
           ->registrar_unsafe()
           .GetAppShareTarget(app_id);
   EXPECT_EQ(share_target->method, apps::ShareTarget::Method::kGet);
@@ -358,12 +356,5 @@ IN_PROC_BROWSER_TEST_P(WebShareTargetBrowserTest, GetLink) {
   EXPECT_EQ("N/A", ReadTextContent(web_contents, "author"));
   EXPECT_EQ(shared_link, ReadTextContent(web_contents, "link"));
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    WebShareTargetBrowserTest,
-    testing::Values(apps::test::LinkCapturingFeatureVersion::kV1DefaultOff,
-                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOff),
-    apps::test::LinkCapturingVersionToString);
 
 }  // namespace web_app

@@ -59,8 +59,8 @@ public class ViewLookupCachingFrameLayout extends OptimizedFrameLayout {
             };
 
     /** Default constructor for use in XML. */
-    public ViewLookupCachingFrameLayout(Context context, AttributeSet atts) {
-        super(context, atts);
+    public ViewLookupCachingFrameLayout(Context context, @Nullable AttributeSet attrs) {
+        super(context, attrs);
         setOnHierarchyChangeListener(mListener);
     }
 
@@ -94,6 +94,7 @@ public class ViewLookupCachingFrameLayout extends OptimizedFrameLayout {
      * @param id The ID of the view to lookup.
      * @return The view if it exists.
      */
+    @SuppressWarnings("unchecked") // Cache stores View, must cast to T.
     public <T extends @Nullable View> T fastFindViewById(@IdRes int id) {
         WeakReference<View> ref = mCachedViews.get(id);
         T view = null;

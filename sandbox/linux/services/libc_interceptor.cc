@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "sandbox/linux/services/libc_interceptor.h"
 
 #include <dlfcn.h>
@@ -167,8 +162,8 @@ bool ReadTimeStruct(base::PickleIterator* iter,
     return false;
   if (timezone_out_len) {
     const size_t copy_len = std::min(timezone_out_len - 1, timezone.size());
-    memcpy(timezone_out, timezone.data(), copy_len);
-    timezone_out[copy_len] = 0;
+    UNSAFE_TODO(memcpy(timezone_out, timezone.data(), copy_len));
+    UNSAFE_TODO(timezone_out[copy_len]) = 0;
     output->tm_zone = timezone_out;
   } else {
     base::AutoLock lock(g_timezones_lock.Get());
@@ -204,19 +199,18 @@ void ProxyLocaltimeCallToBrowser(time_t input,
   request.WriteString(
       std::string(reinterpret_cast<char*>(&input), sizeof(input)));
 
-  memset(output, 0, sizeof(struct tm));
+  UNSAFE_TODO(memset(output, 0, sizeof(struct tm)));
 
   uint8_t reply_buf[512];
   const ssize_t r = base::UnixDomainSocket::SendRecvMsg(
-      g_backchannel_fd, reply_buf, sizeof(reply_buf), nullptr, request);
+      g_backchannel_fd, reply_buf, nullptr, request);
   if (r == -1)
     return;
 
-  base::Pickle reply = base::Pickle::WithUnownedBuffer(
-      base::span(reply_buf, base::checked_cast<size_t>(r)));
-  base::PickleIterator iter(reply);
+  base::PickleIterator iter = base::PickleIterator::WithData(
+      UNSAFE_TODO(base::span(reply_buf, base::checked_cast<size_t>(r))));
   if (!ReadTimeStruct(&iter, output, timezone_out, timezone_out_len)) {
-    memset(output, 0, sizeof(struct tm));
+    UNSAFE_TODO(memset(output, 0, sizeof(struct tm)));
   }
 }
 
@@ -229,7 +223,7 @@ bool HandleLocalTime(int fd,
     return false;
 
   time_t time;
-  memcpy(&time, time_string.data(), sizeof(time));
+  UNSAFE_TODO(memcpy(&time, time_string.data(), sizeof(time)));
   struct tm expanded_time = {};
   localtime_r(&time, &expanded_time);
 
@@ -237,7 +231,7 @@ bool HandleLocalTime(int fd,
   WriteTimeStruct(&reply, expanded_time);
 
   struct msghdr msg;
-  memset(&msg, 0, sizeof(msg));
+  UNSAFE_TODO(memset(&msg, 0, sizeof(msg)));
 
   struct iovec iov = {const_cast<uint8_t*>(reply.data()), reply.size()};
   msg.msg_iov = &iov;

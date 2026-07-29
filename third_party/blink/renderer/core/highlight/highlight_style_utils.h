@@ -8,7 +8,6 @@
 #include <optional>
 
 #include "base/containers/enum_set.h"
-#include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/markers/document_marker.h"
 #include "third_party/blink/renderer/core/paint/paint_flags.h"
@@ -75,6 +74,7 @@ class CORE_EXPORT HighlightStyleUtils {
                             PseudoId pseudo,
                             const CSSProperty& property,
                             std::optional<Color> current_color,
+                            bool preserve_privacy,
                             SearchTextIsActiveMatch);
   static std::optional<Color> MaybeResolveColor(
       const Document&,
@@ -82,17 +82,23 @@ class CORE_EXPORT HighlightStyleUtils {
       const ComputedStyle* pseudo_style,
       PseudoId pseudo,
       const CSSProperty& property,
+      bool preserve_privacy,
       SearchTextIsActiveMatch);
   static std::optional<AppliedTextDecoration> SelectionTextDecoration(
       const Document& document,
       const ComputedStyle& style,
       const ComputedStyle& pseudo_style);
-  static Color HighlightBackgroundColor(const Document&,
-                                        const ComputedStyle&,
-                                        Node*,
-                                        std::optional<Color>,
-                                        PseudoId,
-                                        SearchTextIsActiveMatch);
+  // `pseudo_argument` is the highlight name when `pseudo` is
+  // kPseudoIdHighlight; pass g_null_atom for other pseudos.
+  static Color HighlightBackgroundColor(
+      const Document&,
+      const ComputedStyle&,
+      Node*,
+      std::optional<Color>,
+      PseudoId,
+      bool preserve_privacy,
+      SearchTextIsActiveMatch,
+      const AtomicString& pseudo_argument = g_null_atom);
   static HighlightTextPaintStyle HighlightPaintingStyle(
       const Document&,
       const ComputedStyle& originating_style,
@@ -103,7 +109,6 @@ class CORE_EXPORT HighlightStyleUtils {
       const PaintInfo&,
       SearchTextIsActiveMatch);
   static const ComputedStyle* HighlightPseudoStyle(
-      Node* node,
       const ComputedStyle& style,
       PseudoId pseudo,
       const AtomicString& pseudo_argument = g_null_atom);

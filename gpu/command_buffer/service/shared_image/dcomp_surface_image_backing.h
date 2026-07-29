@@ -12,6 +12,7 @@
 #include <wrl/client.h>
 
 #include "base/memory/scoped_refptr.h"
+#include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/service/shared_image/dcomp_surface_image_representation.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_backing.h"
 #include "third_party/skia/include/core/SkSurfaceProps.h"
@@ -30,14 +31,8 @@ class GPU_GLES2_EXPORT DCompSurfaceImageBacking
  public:
   static std::unique_ptr<DCompSurfaceImageBacking> Create(
       const Mailbox& mailbox,
-      viz::SharedImageFormat format,
-      DXGI_FORMAT internal_format,
-      const gfx::Size& size,
-      const gfx::ColorSpace& color_space,
-      GrSurfaceOrigin surface_origin,
-      SkAlphaType alpha_type,
-      gpu::SharedImageUsageSet usage,
-      std::string debug_label);
+      const SharedImageInfo& si_info,
+      DXGI_FORMAT internal_format);
 
   DCompSurfaceImageBacking(const DCompSurfaceImageBacking&) = delete;
   DCompSurfaceImageBacking& operator=(const DCompSurfaceImageBacking&) = delete;
@@ -79,13 +74,7 @@ class GPU_GLES2_EXPORT DCompSurfaceImageBacking
  private:
   DCompSurfaceImageBacking(
       const Mailbox& mailbox,
-      viz::SharedImageFormat format,
-      const gfx::Size& size,
-      const gfx::ColorSpace& color_space,
-      GrSurfaceOrigin surface_origin,
-      SkAlphaType alpha_type,
-      gpu::SharedImageUsageSet usage,
-      std::string debug_label,
+      const SharedImageInfo& si_info,
       Microsoft::WRL::ComPtr<IDCompositionSurface> dcomp_surface);
 
   // For DCompSurfaceOverlayImageRepresentation implementation.
@@ -144,6 +133,8 @@ class GPU_GLES2_EXPORT DCompSurfaceImageBacking
   // |BeginDrawGraphite| and |EndDrawGraphite|. This |shared_texture_memory_|
   // wraps the ComPtr<ID3D11Texture> instead of creating from a share HANDLE.
   wgpu::SharedTextureMemory shared_texture_memory_;
+  wgpu::Texture cached_wgpu_texture_;
+  wgpu::TextureUsage cached_wgpu_texture_usage_ = wgpu::TextureUsage::None;
 
   // This is a number that increments once for every EndDraw on a surface, and
   // is used to determine when the contents have changed so Commit() needs to

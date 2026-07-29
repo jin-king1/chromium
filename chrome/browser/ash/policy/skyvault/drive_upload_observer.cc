@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ash/policy/skyvault/drive_upload_observer.h"
 
+#include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/file_manager/delete_io_task.h"
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
@@ -41,7 +43,7 @@ void OnUploadDone(scoped_refptr<DriveUploadObserver> drive_upload_observer,
 }  // namespace
 
 // static.
-void DriveUploadObserver::Observe(
+base::WeakPtr<DriveUploadObserver> DriveUploadObserver::Observe(
     Profile* profile,
     base::FilePath file_path,
     UploadTrigger trigger,
@@ -55,6 +57,7 @@ void DriveUploadObserver::Observe(
   // Keep `drive_upload_observer` alive until the upload is done.
   drive_upload_observer->Run(base::BindOnce(
       &OnUploadDone, drive_upload_observer, std::move(upload_callback)));
+  return drive_upload_observer->weak_ptr_factory_.GetWeakPtr();
 }
 
 DriveUploadObserver::DriveUploadObserver(
@@ -97,7 +100,7 @@ void DriveUploadObserver::Run(base::OnceCallback<void(bool)> upload_callback) {
   }
 
   // Observe Drive updates.
-  drive::DriveIntegrationService::Observer::Observe(drive_integration_service_);
+  drive_observation_.Observe(drive_integration_service_);
   drivefs::DriveFsHost::Observer::Observe(
       drive_integration_service_->GetDriveFsHost());
 
@@ -117,31 +120,33 @@ void DriveUploadObserver::Run(base::OnceCallback<void(bool)> upload_callback) {
   StartNoSyncUpdateTimer();
 }
 
+void DriveUploadObserver::Cancel() {
+  if (!observed_delete_task_id_.has_value()) {
+    auto* io_task_controller = GetIOTaskController(profile_);
+
+    DCHECK(io_task_controller);
+    DCHECK(!io_task_controller_observer_.IsObserving());
+
+    io_task_controller_observer_.Observe(io_task_controller);
+    storage::FileSystemURL file_url = FilePathToFileSystemURL(
+        profile_, file_system_context_, observed_local_path_);
+    std::unique_ptr<file_manager::io_task::IOTask> task =
+        std::make_unique<file_manager::io_task::DeleteIOTask>(
+            std::vector<storage::FileSystemURL>{file_url}, file_system_context_,
+            /*show_notification=*/false);
+    observed_delete_task_id_ = io_task_controller->Add(std::move(task));
+  }
+}
+
 void DriveUploadObserver::OnEndUpload(bool success) {
   if (no_sync_update_timeout_.IsRunning()) {
     no_sync_update_timeout_.Reset();
   }
 
-  // TODO(b/343879839): Error UMA.
   // If the file sync to to Drive was unsuccessful, delete the file from the
   // Local cache.
   if (!success) {
-    if (!observed_delete_task_id_.has_value()) {
-      auto* io_task_controller = GetIOTaskController(profile_);
-
-      DCHECK(io_task_controller);
-      DCHECK(!io_task_controller_observer_.IsObserving());
-
-      io_task_controller_observer_.Observe(io_task_controller);
-      storage::FileSystemURL file_url = FilePathToFileSystemURL(
-          profile_, file_system_context_, observed_local_path_);
-      std::unique_ptr<file_manager::io_task::IOTask> task =
-          std::make_unique<file_manager::io_task::DeleteIOTask>(
-              std::vector<storage::FileSystemURL>{file_url},
-              file_system_context_,
-              /*show_notification=*/false);
-      observed_delete_task_id_ = io_task_controller->Add(std::move(task));
-    }
+    Cancel();
   } else {
     std::move(upload_callback_).Run(success);
   }
@@ -211,6 +216,10 @@ void DriveUploadObserver::OnDriveConnectionStatusChanged(
   }
 }
 
+void DriveUploadObserver::OnDriveIntegrationServiceDestroyed() {
+  drive_observation_.Reset();
+}
+
 void DriveUploadObserver::OnIOTaskStatus(
     const ::file_manager::io_task::ProgressStatus& status) {
   if (status.task_id != observed_delete_task_id_) {
@@ -220,11 +229,13 @@ void DriveUploadObserver::OnIOTaskStatus(
   // Only log in case of final state.
   if (status.state == file_manager::io_task::State::kError) {
     policy::local_user_files::SkyVaultDeleteErrorHistogram(
-        trigger_, policy::local_user_files::CloudProvider::kGoogleDrive, true);
+        trigger_, policy::local_user_files::MigrationDestination::kGoogleDrive,
+        true);
   }
   if (status.state == file_manager::io_task::State::kSuccess) {
     policy::local_user_files::SkyVaultDeleteErrorHistogram(
-        trigger_, policy::local_user_files::CloudProvider::kGoogleDrive, false);
+        trigger_, policy::local_user_files::MigrationDestination::kGoogleDrive,
+        false);
   }
 
   switch (status.state) {

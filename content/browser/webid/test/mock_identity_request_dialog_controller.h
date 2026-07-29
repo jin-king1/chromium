@@ -6,14 +6,12 @@
 #define CONTENT_BROWSER_WEBID_TEST_MOCK_IDENTITY_REQUEST_DIALOG_CONTROLLER_H_
 
 #include "base/memory/scoped_refptr.h"
-#include "content/public/browser/identity_request_dialog_controller.h"
+#include "content/public/browser/webid/identity_credential_source.h"
+#include "content/public/browser/webid/identity_request_dialog_controller.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "url/origin.h"
 
 namespace content {
-
-using IdentityProviderDataPtr = scoped_refptr<IdentityProviderData>;
-using IdentityRequestAccountPtr = scoped_refptr<IdentityRequestAccount>;
 
 class MockIdentityRequestDialogController
     : public IdentityRequestDialogController {
@@ -29,12 +27,11 @@ class MockIdentityRequestDialogController
 
   MOCK_METHOD(bool,
               ShowAccountsDialog,
-              (const std::string&,
-               const std::vector<IdentityProviderDataPtr>&,
-               const std::vector<IdentityRequestAccountPtr>&,
-               IdentityRequestAccount::SignInMode,
+              (RelyingPartyData,
+               const std::vector<scoped_refptr<IdentityProviderData>>&,
+               const std::vector<scoped_refptr<IdentityRequestAccount>>&,
+               const std::vector<scoped_refptr<IdentityRequestAccount>>&,
                blink::mojom::RpMode,
-               const std::vector<IdentityRequestAccountPtr>&,
                AccountSelectionCallback,
                LoginToIdPCallback,
                DismissCallback,
@@ -43,38 +40,52 @@ class MockIdentityRequestDialogController
   MOCK_METHOD(void, DestructorCalled, ());
   MOCK_METHOD(bool,
               ShowFailureDialog,
-              (const std::string&,
+              (const RelyingPartyData&,
                const std::string&,
                blink::mojom::RpContext rp_context,
                blink::mojom::RpMode rp_mode,
-               const content::IdentityProviderMetadata&,
+               const IdentityProviderMetadata&,
+               const std::vector<scoped_refptr<IdentityRequestAccount>>&,
                DismissCallback,
                LoginToIdPCallback),
               (override));
   MOCK_METHOD(bool,
               ShowErrorDialog,
-              (const std::string&,
+              (const RelyingPartyData&,
                const std::string&,
                blink::mojom::RpContext rp_context,
                blink::mojom::RpMode rp_mode,
-               const content::IdentityProviderMetadata&,
+               const IdentityProviderMetadata&,
                const std::optional<IdentityCredentialTokenError>&,
                DismissCallback,
                MoreDetailsCallback),
               (override));
   MOCK_METHOD(bool,
               ShowLoadingDialog,
-              (const std::string&,
+              (const RelyingPartyData&,
                const std::string&,
                blink::mojom::RpContext rp_context,
                blink::mojom::RpMode rp_mode,
                DismissCallback),
               (override));
+  MOCK_METHOD(bool,
+              ShowVerifyingDialog,
+              (const RelyingPartyData&,
+               const scoped_refptr<IdentityProviderData>&,
+               const scoped_refptr<IdentityRequestAccount>&,
+               IdentityRequestAccount::SignInMode,
+               blink::mojom::RpMode,
+               AccountsDisplayedCallback),
+              (override));
   MOCK_METHOD(WebContents*,
               ShowModalDialog,
-              (const GURL&, blink::mojom::RpMode rp_mode, DismissCallback),
+              (const GURL&,
+               blink::mojom::RpMode rp_mode,
+               DismissCallback,
+               ShownModalAsyncCallback),
               (override));
   MOCK_METHOD(void, CloseModalDialog, (), (override));
+  MOCK_METHOD(void, NotifyAutofillSourceReadyForTesting, (), (override));
 
   // Request the IdP Registration permission.
   MOCK_METHOD(void,

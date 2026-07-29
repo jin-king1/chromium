@@ -5,9 +5,12 @@ package org.chromium.chrome.browser.feed.componentinterfaces;
 
 import androidx.annotation.IntDef;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.xsurface.feed.FeedUserInteractionReliabilityLogger.ClosedReason;
 
 /** Interface for referencing FeedSurfaceCoordinator in this library. */
+@NullMarked
 public interface SurfaceCoordinator {
     /** Observes the SurfaceCoordinator. */
     interface Observer {
@@ -29,8 +32,8 @@ public interface SurfaceCoordinator {
     void onActivityResumed();
 
     /** Enumeration of the possible selection options of feed tabs. */
-    @IntDef({StreamTabId.DEFAULT, StreamTabId.FOR_YOU, StreamTabId.FOLLOWING})
-    public @interface StreamTabId {
+    @IntDef({StreamTabId.DEFAULT, StreamTabId.FOR_YOU})
+    @interface StreamTabId {
         /**
          * Used for NTP restore operations, when it may be desirable to recover the previous tab
          * selection.
@@ -39,12 +42,9 @@ public interface SurfaceCoordinator {
 
         /** Selects the For you feed tab. */
         int FOR_YOU = 0;
-
-        /** Selects the Following feed tab. */
-        int FOLLOWING = 1;
     };
 
-    void restoreInstanceState(String state);
+    void restoreInstanceState(@Nullable String state);
 
     String getSavedInstanceStateString();
 

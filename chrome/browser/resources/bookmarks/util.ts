@@ -5,7 +5,7 @@
 import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 
-import {ACCOUNT_HEADING_NODE_ID, BOOKMARKS_BAR_ID, IncognitoAvailability, LOCAL_HEADING_NODE_ID, ROOT_NODE_ID} from './constants.js';
+import {ACCOUNT_HEADING_NODE_ID, IncognitoAvailability, LOCAL_HEADING_NODE_ID, ROOT_NODE_ID} from './constants.js';
 import type {BookmarkNode, BookmarksPageState, NodeMap, ObjectMap} from './types.js';
 
 /**
@@ -18,9 +18,36 @@ export function getDisplayedList(state: BookmarksPageState): string[] {
     return state.search.results;
   }
 
-  const children = state.nodes[state.selectedFolder].children;
+  const selectedNode = state.nodes[state.selectedFolder];
+  assert(selectedNode);
+  const children = selectedNode.children;
   assert(children);
   return children;
+}
+
+export function getDefaultSelectedFolder(nodes: NodeMap): string {
+  const selectedFolderParent =
+      nodes[ACCOUNT_HEADING_NODE_ID] || nodes[ROOT_NODE_ID];
+  assert(selectedFolderParent);
+  assert(selectedFolderParent.children);
+
+  let selectedFolder = '';
+  // Select the account bookmarks bar if it exists. If not, use the local
+  // bookmarks bar.
+  for (const id of selectedFolderParent.children) {
+    const node = nodes[id];
+    assert(node);
+    if (node.folderType === chrome.bookmarks.FolderType.BOOKMARKS_BAR) {
+      selectedFolder = id;
+      if (node.syncing) {
+        // If this is the account bookmarks bar, stop immediately so it
+        // takes precedence over the local counterpart.
+        break;
+      }
+    }
+  }
+  assert(selectedFolder);
+  return selectedFolder;
 }
 
 export function normalizeNode(treeNode: chrome.bookmarks.BookmarkTreeNode):
@@ -80,8 +107,6 @@ export function normalizeNodes(rootNode: chrome.bookmarks.BookmarkTreeNode):
 
   // If the user has both local and account bookmarks bars, insert heading nodes
   // to distinguish them.
-  // TODO(crbug.com/393105828): prune empty local permanent folders if the user
-  // has account folders.
   const addHeadingNodes =
       hasBothLocalAndAccountBookmarksBar(rootNode.children!);
 
@@ -99,18 +124,18 @@ export function normalizeNodes(rootNode: chrome.bookmarks.BookmarkTreeNode):
       if (node.id === rootNode.id) {
         // Clear the children set on the root node, and add the heading nodes as
         // children.
-        nodeMap[node.id].children = [];
+        nodeMap[node.id]!.children = [];
         for (const headingNode
                  of [buildAccountHeadingNode(), buildLocalHeadingNode()]) {
           nodeMap[headingNode.id] = headingNode;
-          nodeMap[node.id].children!.push(headingNode.id);
+          nodeMap[node.id]!.children!.push(headingNode.id);
         }
       } else if (node.parentId === rootNode.id) {
         // Replace the parent with the appropriate heading nodes.
-        const headingNode = node.syncing ? nodeMap[ACCOUNT_HEADING_NODE_ID] :
-                                           nodeMap[LOCAL_HEADING_NODE_ID];
-        nodeMap[node.id].parentId = headingNode.id;
-        headingNode.children!.push(node.id);
+        const headingNode = node.syncing ? nodeMap[ACCOUNT_HEADING_NODE_ID]! :
+                                           nodeMap[LOCAL_HEADING_NODE_ID]!;
+        nodeMap[node.id]!.parentId = headingNode.id;
+        headingNode.children!.unshift(node.id);
       }
     }
   }
@@ -121,7 +146,7 @@ export function normalizeNodes(rootNode: chrome.bookmarks.BookmarkTreeNode):
 export function createEmptyState(): BookmarksPageState {
   return {
     nodes: {},
-    selectedFolder: BOOKMARKS_BAR_ID,
+    selectedFolder: '',
     folderOpenState: new Map(),
     prefs: {
       canEdit: true,
@@ -151,7 +176,7 @@ export function isShowingSearch(state: BookmarksPageState): boolean {
  */
 export function canEditNode(
     state: BookmarksPageState, itemId: string): boolean {
-  return !isRootOrChildOfRoot(state, itemId) &&
+  return !isRootOrChildOfRoot(state, itemId) && !!state.nodes[itemId] &&
       !state.nodes[itemId].unmodifiable && state.prefs.canEdit;
 }
 
@@ -172,7 +197,7 @@ export function hasChildFolders(id: string, nodes: NodeMap): boolean {
 
   const children = nodes[id].children;
   for (let i = 0; i < children.length; i++) {
-    if (nodes[children[i]].children) {
+    if (nodes[children[i]!]?.children) {
       return true;
     }
   }

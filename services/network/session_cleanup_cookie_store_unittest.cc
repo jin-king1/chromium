@@ -4,7 +4,6 @@
 
 #include "services/network/session_cleanup_cookie_store.h"
 
-#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted.h"
@@ -71,7 +70,7 @@ class SessionCleanupCookieStoreTest : public testing::Test {
     store_->AddCookie(*net::CanonicalCookie::CreateUnsafeCookieForTesting(
         name, value, domain, path, creation, creation, base::Time(),
         base::Time(), false, false, net::CookieSameSite::NO_RESTRICTION,
-        net::COOKIE_PRIORITY_DEFAULT));
+        net::COOKIE_PRIORITY_DEFAULT, net::CookieSourceType::kOther));
   }
 
   void DestroyStore() {
@@ -139,7 +138,7 @@ TEST_F(SessionCleanupCookieStoreTest, TestNetLogIncludeCookies) {
 
   // Cookies from "nonpersistent.com" should be deleted.
   store_->DeleteSessionCookies(base::BindRepeating(
-      [](const std::string& domain, net::CookieSourceScheme scheme) {
+      [](std::string_view domain, net::CookieSourceScheme scheme) {
         return domain == "nonpersistent.com";
       }));
   DestroyStore();
@@ -166,7 +165,7 @@ TEST_F(SessionCleanupCookieStoreTest, TestNetLogDoNotIncludeCookies) {
   net_log_observer_.SetObserverCaptureMode(net::NetLogCaptureMode::kDefault);
   // Cookies from "nonpersistent.com" should be deleted.
   store_->DeleteSessionCookies(base::BindRepeating(
-      [](const std::string& domain, net::CookieSourceScheme scheme) {
+      [](std::string_view domain, net::CookieSourceScheme scheme) {
         return domain == "nonpersistent.com";
       }));
   DestroyStore();
@@ -211,7 +210,7 @@ TEST_F(SessionCleanupCookieStoreTest, TestDeleteSessionCookies) {
 
   // Cookies from "nonpersistent.com" should be deleted.
   store_->DeleteSessionCookies(base::BindRepeating(
-      [](const std::string& domain, net::CookieSourceScheme scheme) {
+      [](std::string_view domain, net::CookieSourceScheme scheme) {
         return domain == "nonpersistent.com";
       }));
   task_environment_.RunUntilIdle();
@@ -249,7 +248,7 @@ TEST_F(SessionCleanupCookieStoreTest, ForceKeepSessionState) {
   store_->SetForceKeepSessionState();
   // Cookies from "nonpersistent.com" should NOT be deleted.
   store_->DeleteSessionCookies(base::BindRepeating(
-      [](const std::string& domain, net::CookieSourceScheme scheme) {
+      [](std::string_view domain, net::CookieSourceScheme scheme) {
         return domain == "nonpersistent.com";
       }));
   task_environment_.RunUntilIdle();

@@ -17,7 +17,7 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/AutofillExpirationDateFixFlowBridge_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 
 namespace autofill {
@@ -29,21 +29,16 @@ CardExpirationDateFixFlowViewAndroid::CardExpirationDateFixFlowViewAndroid(
 
 void CardExpirationDateFixFlowViewAndroid::OnUserAccept(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
     const std::u16string& month,
     const std::u16string& year) {
   controller_->OnAccepted(month, year);
 }
 
-void CardExpirationDateFixFlowViewAndroid::OnUserDismiss(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+void CardExpirationDateFixFlowViewAndroid::OnUserDismiss(JNIEnv* env) {
   controller_->OnDismissed();
 }
 
-void CardExpirationDateFixFlowViewAndroid::PromptDismissed(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj) {
+void CardExpirationDateFixFlowViewAndroid::PromptDismissed(JNIEnv* env) {
   delete this;
 }
 
@@ -81,3 +76,5 @@ CardExpirationDateFixFlowViewAndroid::~CardExpirationDateFixFlowViewAndroid() {
 }
 
 }  // namespace autofill
+
+DEFINE_JNI(AutofillExpirationDateFixFlowBridge)

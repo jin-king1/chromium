@@ -5,7 +5,6 @@
 #include "ui/events/ozone/evdev/keyboard_evdev.h"
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
@@ -147,7 +146,7 @@ void KeyboardEvdev::SetSlowKeysDelay(base::TimeDelta delay) {
 
 void KeyboardEvdev::SetCurrentLayoutByName(
     const std::string& layout_name,
-    base::OnceCallback<void(bool)> callback) {
+    base::OnceCallback<void(bool success)> callback) {
   keyboard_layout_engine_->SetCurrentLayoutByName(layout_name,
                                                   std::move(callback));
   RefreshModifiers();
@@ -234,9 +233,11 @@ void KeyboardEvdev::DispatchKey(unsigned int key,
     }
   }
 
-  KeyEvent event(down ? EventType::kKeyPressed : EventType::kKeyReleased,
-                 key_code, dom_code, flags | modifiers_->GetModifierFlags(),
-                 dom_key, timestamp);
+  KeyEvent event(
+      down ? EventType::kKeyPressed : EventType::kKeyReleased, key_code,
+      dom_code,
+      flags | modifiers_->GetModifierFlags() | (repeat ? ui::EF_IS_REPEAT : 0),
+      dom_key, timestamp);
   event.set_scan_code(scan_code);
   event.set_source_device_id(device_id);
   callback_.Run(&event);

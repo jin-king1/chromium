@@ -8,24 +8,28 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.profiles.Profile;
 
 /**
  * Communicates between BrowsingDataCounter (C++ backend) and ClearBrowsingDataFragment (Java UI).
  */
+@NullMarked
 public class BrowsingDataCounterBridge {
     /** Can receive a callback from a BrowsingDataCounter. */
     public interface BrowsingDataCounterCallback {
         /**
-         * The callback to be called when a BrowsingDataCounter is finished.
-         * @param result A string describing how much storage space will be reclaimed by clearing
-         *      this data type.
+         * The callback to be called when a BrowsingDataCounter is finished and an update to the
+         * summary is required.
+         *
+         * @param result For example, a string describing how much storage space will be reclaimed
+         *     by clearing this data type.
          */
-        public void onCounterFinished(String result);
+        void onCounterFinished(String summary);
     }
 
     private long mNativeBrowsingDataCounterBridge;
-    private BrowsingDataCounterCallback mCallback;
+    private final BrowsingDataCounterCallback mCallback;
 
     /**
      * Initializes BrowsingDataCounterBridge.
@@ -43,50 +47,39 @@ public class BrowsingDataCounterBridge {
         mCallback = callback;
         mNativeBrowsingDataCounterBridge =
                 BrowsingDataCounterBridgeJni.get()
-                        .initWithoutPeriodPref(
-                                BrowsingDataCounterBridge.this,
-                                profile,
-                                selectedTimePeriod,
-                                dataType);
+                        .initWithoutPeriodPref(this, profile, selectedTimePeriod, dataType);
     }
 
     public void setSelectedTimePeriod(@TimePeriod int selectedTimePeriod) {
         if (mNativeBrowsingDataCounterBridge != 0) {
             BrowsingDataCounterBridgeJni.get()
-                    .setSelectedTimePeriod(
-                            mNativeBrowsingDataCounterBridge,
-                            BrowsingDataCounterBridge.this,
-                            selectedTimePeriod);
+                    .setSelectedTimePeriod(mNativeBrowsingDataCounterBridge, selectedTimePeriod);
         }
     }
 
     /** Destroys the native counterpart of this class. */
     public void destroy() {
         if (mNativeBrowsingDataCounterBridge != 0) {
-            BrowsingDataCounterBridgeJni.get()
-                    .destroy(mNativeBrowsingDataCounterBridge, BrowsingDataCounterBridge.this);
+            BrowsingDataCounterBridgeJni.get().destroy(mNativeBrowsingDataCounterBridge);
             mNativeBrowsingDataCounterBridge = 0;
         }
     }
 
     @CalledByNative
-    private void onBrowsingDataCounterFinished(@JniType("std::u16string") String result) {
-        mCallback.onCounterFinished(result);
+    private void onBrowsingDataCounterFinished(@JniType("std::u16string") String summary) {
+        mCallback.onCounterFinished(summary);
     }
 
     @NativeMethods
     interface Natives {
         long initWithoutPeriodPref(
-                BrowsingDataCounterBridge caller,
+                BrowsingDataCounterBridge self,
                 @JniType("Profile*") Profile profile,
                 int selectedTimePeriod,
                 int dataType);
 
-        void setSelectedTimePeriod(
-                long nativeBrowsingDataCounterBridge,
-                BrowsingDataCounterBridge caller,
-                int selectedTimePeriod);
+        void setSelectedTimePeriod(long nativeBrowsingDataCounterBridge, int selectedTimePeriod);
 
-        void destroy(long nativeBrowsingDataCounterBridge, BrowsingDataCounterBridge caller);
+        void destroy(long nativeBrowsingDataCounterBridge);
     }
 }

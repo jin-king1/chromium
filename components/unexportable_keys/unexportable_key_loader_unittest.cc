@@ -4,15 +4,20 @@
 
 #include "components/unexportable_keys/unexportable_key_loader.h"
 
+#include <optional>
+#include <variant>
+
 #include "base/check.h"
 #include "base/test/bind.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "components/unexportable_keys/background_task_origin.h"
 #include "components/unexportable_keys/background_task_priority.h"
 #include "components/unexportable_keys/service_error.h"
 #include "components/unexportable_keys/unexportable_key_service_impl.h"
 #include "components/unexportable_keys/unexportable_key_task_manager.h"
-#include "crypto/scoped_mock_unexportable_key_provider.h"
+#include "crypto/scoped_fake_unexportable_key_provider.h"
 #include "crypto/signature_verifier.h"
 #include "crypto/unexportable_key.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -21,29 +26,27 @@ namespace unexportable_keys {
 
 namespace {
 
+using ::base::test::ErrorIs;
+
 constexpr crypto::SignatureVerifier::SignatureAlgorithm
     kAcceptableAlgorithms[] = {crypto::SignatureVerifier::ECDSA_SHA256};
 constexpr BackgroundTaskPriority kTaskPriority =
     BackgroundTaskPriority::kUserVisible;
+constexpr BackgroundTaskOrigin kTaskOrigin =
+    BackgroundTaskOrigin::kDeviceBoundSessionCredentials;
 
 }  // namespace
 
 class UnexportableKeyLoaderTest : public testing::Test {
  public:
-  UnexportableKeyLoaderTest()
-      : task_manager_(std::make_unique<UnexportableKeyTaskManager>(
-            crypto::UnexportableKeyProvider::Config())),
-        service_(std::make_unique<UnexportableKeyServiceImpl>(*task_manager_)) {
-  }
-
   UnexportableKeyServiceImpl& service() { return *service_; }
 
   void RunBackgroundTasks() { task_environment_.RunUntilIdle(); }
 
   void ResetService() {
-    task_manager_ = std::make_unique<UnexportableKeyTaskManager>(
-        crypto::UnexportableKeyProvider::Config());
-    service_ = std::make_unique<UnexportableKeyServiceImpl>(*task_manager_);
+    task_manager_.emplace();
+    service_.emplace(*task_manager_, kTaskOrigin,
+                     crypto::UnexportableKeyProvider::Config());
   }
 
   void DisableKeyProvider() {
@@ -53,11 +56,12 @@ class UnexportableKeyLoaderTest : public testing::Test {
   }
 
   std::vector<uint8_t> GenerateNewKeyAndReturnWrappedKey() {
-    base::test::TestFuture<ServiceErrorOr<UnexportableKeyId>> generate_future;
+    base::test::TestFuture<ServiceErrorOr<UnexportableSigningKeyId>>
+        generate_future;
     service().GenerateSigningKeySlowlyAsync(
         kAcceptableAlgorithms, kTaskPriority, generate_future.GetCallback());
     RunBackgroundTasks();
-    ServiceErrorOr<UnexportableKeyId> key_id = generate_future.Get();
+    ServiceErrorOr<UnexportableSigningKeyId> key_id = generate_future.Get();
     CHECK(key_id.has_value());
 
     ServiceErrorOr<std::vector<uint8_t>> wrapped_key =
@@ -71,12 +75,14 @@ class UnexportableKeyLoaderTest : public testing::Test {
       base::test::TaskEnvironment::ThreadPoolExecutionMode::
           QUEUED};  // QUEUED - tasks don't run until `RunUntilIdle()` is
                     // called.
-  // Provides a mock key provider by default.
-  absl::variant<crypto::ScopedMockUnexportableKeyProvider,
-                crypto::ScopedNullUnexportableKeyProvider>
+  // Provides a fake key provider by default.
+  std::variant<crypto::ScopedFakeUnexportableKeyProvider,
+               crypto::ScopedNullUnexportableKeyProvider>
       scoped_key_provider_;
-  std::unique_ptr<UnexportableKeyTaskManager> task_manager_;
-  std::unique_ptr<UnexportableKeyServiceImpl> service_;
+  std::optional<UnexportableKeyTaskManager> task_manager_{std::in_place};
+  std::optional<UnexportableKeyServiceImpl> service_{
+      std::in_place, *task_manager_, kTaskOrigin,
+      crypto::UnexportableKeyProvider::Config()};
 };
 
 TEST_F(UnexportableKeyLoaderTest, CreateFromWrappedKeySync) {
@@ -88,9 +94,10 @@ TEST_F(UnexportableKeyLoaderTest, CreateFromWrappedKeySync) {
       service(), wrapped_key, kTaskPriority);
   EXPECT_EQ(key_loader->GetStateForTesting(),
             UnexportableKeyLoader::State::kReady);
-  EXPECT_TRUE(key_loader->GetKeyIdOrError().has_value());
+  EXPECT_OK(key_loader->GetKeyIdOrError());
 
-  base::test::TestFuture<ServiceErrorOr<UnexportableKeyId>> on_load_future;
+  base::test::TestFuture<ServiceErrorOr<UnexportableSigningKeyId>>
+      on_load_future;
   key_loader->InvokeCallbackAfterKeyLoaded(on_load_future.GetCallback());
   EXPECT_TRUE(on_load_future.IsReady());
   EXPECT_EQ(key_loader->GetKeyIdOrError(), on_load_future.Get());
@@ -106,17 +113,18 @@ TEST_F(UnexportableKeyLoaderTest, CreateFromWrappedKeyAsync) {
       service(), wrapped_key, kTaskPriority);
   EXPECT_EQ(key_loader->GetStateForTesting(),
             UnexportableKeyLoader::State::kLoading);
-  EXPECT_EQ(key_loader->GetKeyIdOrError(),
-            base::unexpected(ServiceError::kKeyNotReady));
+  EXPECT_THAT(key_loader->GetKeyIdOrError(),
+              ErrorIs(ServiceError::kKeyNotReady));
 
-  base::test::TestFuture<ServiceErrorOr<UnexportableKeyId>> on_load_future;
+  base::test::TestFuture<ServiceErrorOr<UnexportableSigningKeyId>>
+      on_load_future;
   key_loader->InvokeCallbackAfterKeyLoaded(on_load_future.GetCallback());
   EXPECT_FALSE(on_load_future.IsReady());
 
   RunBackgroundTasks();
   EXPECT_EQ(key_loader->GetStateForTesting(),
             UnexportableKeyLoader::State::kReady);
-  EXPECT_TRUE(key_loader->GetKeyIdOrError().has_value());
+  EXPECT_OK(key_loader->GetKeyIdOrError());
   EXPECT_TRUE(on_load_future.IsReady());
   EXPECT_EQ(key_loader->GetKeyIdOrError(), on_load_future.Get());
 }
@@ -130,7 +138,8 @@ TEST_F(UnexportableKeyLoaderTest, CreateFromWrappedKeyMultipleCallbacks) {
   auto key_loader = UnexportableKeyLoader::CreateFromWrappedKey(
       service(), wrapped_key, kTaskPriority);
 
-  std::array<base::test::TestFuture<ServiceErrorOr<UnexportableKeyId>>, 5>
+  std::array<base::test::TestFuture<ServiceErrorOr<UnexportableSigningKeyId>>,
+             5>
       on_load_futures;
   for (auto& future : on_load_futures) {
     key_loader->InvokeCallbackAfterKeyLoaded(future.GetCallback());
@@ -140,7 +149,7 @@ TEST_F(UnexportableKeyLoaderTest, CreateFromWrappedKeyMultipleCallbacks) {
   RunBackgroundTasks();
   EXPECT_EQ(key_loader->GetStateForTesting(),
             UnexportableKeyLoader::State::kReady);
-  EXPECT_TRUE(key_loader->GetKeyIdOrError().has_value());
+  EXPECT_OK(key_loader->GetKeyIdOrError());
   for (auto& future : on_load_futures) {
     EXPECT_TRUE(future.IsReady());
     EXPECT_EQ(key_loader->GetKeyIdOrError(), future.Get());
@@ -152,17 +161,18 @@ TEST_F(UnexportableKeyLoaderTest, CreateWithNewKey) {
       service(), kAcceptableAlgorithms, kTaskPriority);
   EXPECT_EQ(key_loader->GetStateForTesting(),
             UnexportableKeyLoader::State::kLoading);
-  EXPECT_EQ(key_loader->GetKeyIdOrError(),
-            base::unexpected(ServiceError::kKeyNotReady));
+  EXPECT_THAT(key_loader->GetKeyIdOrError(),
+              ErrorIs(ServiceError::kKeyNotReady));
 
-  base::test::TestFuture<ServiceErrorOr<UnexportableKeyId>> on_load_future;
+  base::test::TestFuture<ServiceErrorOr<UnexportableSigningKeyId>>
+      on_load_future;
   key_loader->InvokeCallbackAfterKeyLoaded(on_load_future.GetCallback());
   EXPECT_FALSE(on_load_future.IsReady());
 
   RunBackgroundTasks();
   EXPECT_EQ(key_loader->GetStateForTesting(),
             UnexportableKeyLoader::State::kReady);
-  EXPECT_TRUE(key_loader->GetKeyIdOrError().has_value());
+  EXPECT_OK(key_loader->GetKeyIdOrError());
   EXPECT_TRUE(on_load_future.IsReady());
   EXPECT_EQ(key_loader->GetKeyIdOrError(), on_load_future.Get());
 }
@@ -173,8 +183,8 @@ TEST_F(UnexportableKeyLoaderTest, CreateWithNewKeyFailure) {
       service(), kAcceptableAlgorithms, kTaskPriority);
   EXPECT_EQ(key_loader->GetStateForTesting(),
             UnexportableKeyLoader::State::kReady);
-  EXPECT_EQ(key_loader->GetKeyIdOrError(),
-            base::unexpected(ServiceError::kNoKeyProvider));
+  EXPECT_THAT(key_loader->GetKeyIdOrError(),
+              ErrorIs(ServiceError::kNoKeyProvider));
 }
 
 TEST_F(UnexportableKeyLoaderTest, SignDataAfterLoading) {
@@ -183,8 +193,8 @@ TEST_F(UnexportableKeyLoaderTest, SignDataAfterLoading) {
 
   base::test::TestFuture<ServiceErrorOr<std::vector<uint8_t>>> sign_future;
   key_loader->InvokeCallbackAfterKeyLoaded(base::BindLambdaForTesting(
-      [&](ServiceErrorOr<UnexportableKeyId> key_id_or_error) {
-        ASSERT_TRUE(key_id_or_error.has_value());
+      [&](ServiceErrorOr<UnexportableSigningKeyId> key_id_or_error) {
+        ASSERT_OK(key_id_or_error);
         service().SignSlowlyAsync(*key_id_or_error,
                                   std::vector<uint8_t>({1, 2, 3}),
                                   kTaskPriority, sign_future.GetCallback());
@@ -192,7 +202,26 @@ TEST_F(UnexportableKeyLoaderTest, SignDataAfterLoading) {
   EXPECT_FALSE(sign_future.IsReady());
   RunBackgroundTasks();
   EXPECT_TRUE(sign_future.IsReady());
-  EXPECT_TRUE(sign_future.Get().has_value());
+  EXPECT_OK(sign_future.Get());
+}
+
+TEST_F(UnexportableKeyLoaderTest, DeletionWhileLoading) {
+  auto key_loader = UnexportableKeyLoader::CreateWithNewKey(
+      service(), kAcceptableAlgorithms, kTaskPriority);
+  EXPECT_EQ(key_loader->GetStateForTesting(),
+            UnexportableKeyLoader::State::kLoading);
+
+  base::test::TestFuture<ServiceErrorOr<UnexportableSigningKeyId>>
+      on_load_future;
+  key_loader->InvokeCallbackAfterKeyLoaded(on_load_future.GetCallback());
+  EXPECT_FALSE(on_load_future.IsReady());
+
+  key_loader.reset();
+  EXPECT_TRUE(on_load_future.IsReady());
+  EXPECT_THAT(on_load_future.Get(), ErrorIs(ServiceError::kOperationCancelled));
+
+  // Run pending background tasks to avoid dangling references on test teardown.
+  RunBackgroundTasks();
 }
 
 }  // namespace unexportable_keys

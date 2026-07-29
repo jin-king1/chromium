@@ -9,8 +9,9 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "chromeos/ash/services/secure_channel/ble_scanner.h"
 #include "chromeos/ash/services/secure_channel/bluetooth_helper.h"
 #include "device/bluetooth/bluetooth_adapter.h"
@@ -132,6 +133,10 @@ class BleScannerImpl : public BleScanner,
       discovery_session_weak_ptr_factory_;
 
   std::unique_ptr<device::BluetoothLowEnergyScanSession> le_scan_session_;
+
+  base::ScopedObservation<device::BluetoothAdapter,
+                          device::BluetoothAdapter::Observer>
+      bluetooth_adapter_observation_{this};
 
   base::WeakPtrFactory<BleScannerImpl> weak_ptr_factory_{this};
 };

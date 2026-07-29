@@ -21,18 +21,13 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/platform_keys/key_permissions/arc_key_permissions_manager_delegate.h"
 #include "chrome/browser/ash/platform_keys/key_permissions/key_permissions_manager.h"
-#include "chrome/browser/chromeos/platform_keys/platform_keys.h"
+#include "chromeos/ash/components/platform_keys/platform_keys.h"
 
 class PrefRegistrySimple;
 class PrefService;
 class Profile;
 
 namespace ash::platform_keys {
-
-// The name of the histogram that counts the number of times the migration
-// started as well as the number of times it succeeded and failed.
-inline constexpr char kMigrationStatusHistogramName[] =
-    "ChromeOS.KeyPermissionsManager.Migration";
 
 class PlatformKeysService;
 
@@ -55,20 +50,6 @@ class KeyPermissionsManagerImpl : public KeyPermissionsManager,
       kUpdateArcUsageFlag
     };
 
-    // These values are logged to UMA. Entries should not be renumbered and
-    // numeric values should never be reused. Please keep in sync with
-    // MigrationStatus in src/tools/metrics/histograms/enums.xml.
-    enum class MigrationStatus {
-      kStarted = 0,
-      kSucceeded = 1,
-      kFailed = 2,
-      // Necessary key permission migrations are the ones that migrate
-      // permissions from prefs to Chaps for at least one key.
-      kNecessary = 3,
-      kFailedToUpdatePermissions = 4,
-      kMaxValue = kFailedToUpdatePermissions,
-    };
-
     // |key_permissions_manager| must not be null and must outlive the updater
     // instance.
     explicit KeyPermissionsInChapsUpdater(
@@ -81,26 +62,19 @@ class KeyPermissionsManagerImpl : public KeyPermissionsManager,
 
     // If the update operation has been done successfully, a success
     // |update_status| will be returned. An error |update_status| will be
-    // returned otherwise. |migration_was_necessary| indicates whether anything
-    // actually needed to be migrated.
+    // returned otherwise. In both cases |keys_updated| will contain how many
+    // keys were successfully updated.
     using UpdateCallback =
-        base::OnceCallback<void(bool migration_was_necessary,
+        base::OnceCallback<void(size_t keys_updated,
                                 chromeos::platform_keys::Status update_status)>;
     // Updates the key permissions in chaps according to |mode_|.
     void Update(UpdateCallback callback);
 
    private:
-    bool IsCorporateUsageAllowedByPrefs(
-        const std::vector<uint8_t>& public_key_spki_der) const;
-
     void UpdateWithAllKeys(
         std::vector<std::vector<uint8_t>> public_key_spki_der_list,
         chromeos::platform_keys::Status keys_retrieval_status);
     void UpdateNextKey();
-    void UpdateNextKeyWithExistingPermissions(
-        std::vector<uint8_t> public_key,
-        std::optional<std::vector<uint8_t>> permissions,
-        chromeos::platform_keys::Status permissions_retrieval_status);
     void UpdatePermissionsForKey(std::vector<uint8_t> public_key_spki_der);
     void UpdatePermissionsForKeyWithCorporateFlag(
         std::vector<uint8_t> public_key_spki_der,
@@ -109,12 +83,11 @@ class KeyPermissionsManagerImpl : public KeyPermissionsManager,
     void OnKeyPermissionsUpdated(
         chromeos::platform_keys::Status permissions_update_status);
 
-    // Tracks whether key permissions had to be migrated for at least one key.
-    bool migration_was_necessary_ = false;
     const Mode mode_;
     const raw_ptr<KeyPermissionsManagerImpl> key_permissions_manager_;
     base::queue<std::vector<uint8_t>> public_key_spki_der_queue_;
     bool update_started_ = false;
+    size_t keys_updated_ = 0;
     UpdateCallback callback_;
 
     base::WeakPtrFactory<KeyPermissionsInChapsUpdater> weak_ptr_factory_{this};
@@ -140,8 +113,10 @@ class KeyPermissionsManagerImpl : public KeyPermissionsManager,
 
   // Used by `ChromeBrowserMainPartsAsh` to create a system-wide key
   // permissions manager instance.
+  // `local_state` must be non-null, and must be valid until
+  // `KeyPermissionsManager::Shutdown` is called.
   static std::unique_ptr<KeyPermissionsManager>
-  CreateSystemTokenKeyPermissionsManager();
+  CreateSystemTokenKeyPermissionsManager(PrefService* local_state);
 
   // Registers system-wide prefs.
   static void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
@@ -190,7 +165,7 @@ class KeyPermissionsManagerImpl : public KeyPermissionsManager,
   void UpdateArcKeyPermissionsInChaps();
 
   void StartOneTimeMigration();
-  void OnOneTimeMigrationDone(bool migration_was_necessary,
+  void OnOneTimeMigrationDone(size_t keys_updated,
                               chromeos::platform_keys::Status migration_status);
   bool IsOneTimeMigrationDone() const;
 

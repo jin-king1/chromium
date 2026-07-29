@@ -32,6 +32,9 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_DOM_ELEMENT_DATA_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_DOM_ELEMENT_DATA_H_
 
+#include <concepts>
+
+#include "base/containers/span.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/core/dom/attribute.h"
 #include "third_party/blink/renderer/core/dom/attribute_collection.h"
@@ -50,7 +53,7 @@ class UniqueElementData;
 
 // ElementData represents very common, but not necessarily unique to an element,
 // data such as attributes, inline style, and parsed class names and ids.
-class ElementData : public GarbageCollected<ElementData> {
+class CORE_EXPORT ElementData : public GarbageCollected<ElementData> {
  public:
   // Override GarbageCollected's finalizeGarbageCollectedObject to
   // dispatch to the correct subclass destructor.
@@ -62,10 +65,10 @@ class ElementData : public GarbageCollected<ElementData> {
     class_names_.Set(class_names);
   }
   void SetClassFoldingCase(const AtomicString& class_names) const {
-    if (class_names.IsLowerASCII()) {
+    if (class_names.ContainsNoAsciiUpper()) {
       return SetClass(class_names);
     }
-    return SetClass(class_names.LowerASCII());
+    return SetClass(class_names.ToAsciiLower());
   }
   const SpaceSplitString& ClassNames() const { return class_names_; }
 
@@ -95,11 +98,11 @@ class ElementData : public GarbageCollected<ElementData> {
   void Trace(Visitor*) const;
 
  protected:
-  using BitField = WTF::ConcurrentlyReadBitField<uint32_t>;
+  using BitField = ConcurrentlyReadBitField<uint32_t>;
   using IsUniqueFlag =
-      BitField::DefineFirstValue<bool, 1, WTF::BitFieldValueConstness::kConst>;
+      BitField::DefineFirstValue<bool, 1, BitFieldValueConstness::kConst>;
   using ArraySize = IsUniqueFlag::
-      DefineNextValue<uint32_t, 28, WTF::BitFieldValueConstness::kConst>;
+      DefineNextValue<uint32_t, 28, BitFieldValueConstness::kConst>;
   using PresentationAttributeStyleIsDirty = ArraySize::DefineNextValue<bool, 1>;
   using StyleAttributeIsDirty =
       PresentationAttributeStyleIsDirty::DefineNextValue<bool, 1>;
@@ -155,7 +158,8 @@ class ElementData : public GarbageCollected<ElementData> {
 };
 
 template <typename T>
-struct ThreadingTrait<T, std::enable_if_t<std::is_base_of_v<ElementData, T>>> {
+  requires(std::derived_from<T, ElementData>)
+struct ThreadingTrait<T> {
   static constexpr ThreadAffinity kAffinity = kMainThreadOnly;
 };
 
@@ -169,7 +173,7 @@ struct ThreadingTrait<T, std::enable_if_t<std::is_base_of_v<ElementData, T>>> {
 // the parser during page load for elements that have identical attributes. This
 // is a memory optimization since it's very common for many elements to have
 // duplicate sets of attributes (ex. the same classes).
-class ShareableElementData final : public ElementData {
+class CORE_EXPORT ShareableElementData final : public ElementData {
  public:
   static ShareableElementData* CreateWithAttributes(
       const Vector<Attribute, kAttributePrealloc>&);
@@ -183,6 +187,20 @@ class ShareableElementData final : public ElementData {
   }
 
   AttributeCollection Attributes() const;
+
+  base::span<Attribute> AttributesSpan() {
+    // SAFETY: space for bit_field_.get<ArraySize>() Attributes are allocated
+    // after the main object (starting at attribute_array_) by the constructor.
+    return UNSAFE_BUFFERS(base::span(base::unchecked, attribute_array_,
+                                     bit_field_.get<ArraySize>()));
+  }
+
+  base::span<const Attribute> AttributesSpan() const {
+    // SAFETY: space for bit_field_.get<ArraySize>() Attributes are allocated
+    // after the main object (starting at attribute_array_) by the constructor.
+    return UNSAFE_BUFFERS(base::span(base::unchecked, attribute_array_,
+                                     bit_field_.get<ArraySize>()));
+  }
 
   Attribute attribute_array_[0];
 };
@@ -234,12 +252,11 @@ inline AttributeCollection ElementData::Attributes() const {
 }
 
 inline AttributeCollection ShareableElementData::Attributes() const {
-  return AttributeCollection(attribute_array_, bit_field_.get<ArraySize>());
+  return AttributeCollection(AttributesSpan());
 }
 
 inline AttributeCollection UniqueElementData::Attributes() const {
-  return AttributeCollection(attribute_vector_.data(),
-                             attribute_vector_.size());
+  return AttributeCollection(attribute_vector_);
 }
 
 inline MutableAttributeCollection UniqueElementData::Attributes() {

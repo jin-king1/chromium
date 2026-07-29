@@ -4,12 +4,8 @@
 
 #include "content/browser/preloading/prefetch/prefetch_network_context_client.h"
 
-#include <memory>
-
 #include "build/build_config.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/net_errors.h"
-#include "services/network/public/mojom/trust_tokens.mojom.h"
 
 namespace content {
 
@@ -17,7 +13,7 @@ PrefetchNetworkContextClient::PrefetchNetworkContextClient() = default;
 PrefetchNetworkContextClient::~PrefetchNetworkContextClient() = default;
 
 void PrefetchNetworkContextClient::OnFileUploadRequested(
-    int32_t process_id,
+    const network::OriginatingProcessId& process_id,
     bool async,
     const std::vector<base::FilePath>& file_paths,
     const GURL& destination_url,

@@ -4,9 +4,12 @@
 
 #include "chromeos/ash/services/recording/webm_encoder_muxer.h"
 
+#include "base/byte_size.h"
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
@@ -93,15 +96,15 @@ class RecordingMuxerDelegate : public media::FileWebmMuxerDelegate {
 
  protected:
   // media::FileWebmMuxerDelegate:
-  mkvmuxer::int32 DoWrite(const void* buf, mkvmuxer::uint32 len) override {
-    const auto result = FileWebmMuxerDelegate::DoWrite(buf, len);
+  mkvmuxer::int32 DoWrite(base::span<const uint8_t> buf) override {
+    const auto result = FileWebmMuxerDelegate::DoWrite(buf);
     if (result != 0) {
       file_io_helper_.delegate()->NotifyFailure(
           mojom::RecordingStatus::kIoError);
       return result;
     }
 
-    file_io_helper_.OnBytesWritten(len);
+    file_io_helper_.OnBytesWritten(base::ByteSize(buf.size()));
 
     return result;
   }

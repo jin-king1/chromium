@@ -94,13 +94,12 @@ struct CORE_EXPORT InvalidationSetDeleter {
 //
 // We avoid virtual functions to minimize space consumption.
 class CORE_EXPORT InvalidationSet
-    : public WTF::RefCounted<InvalidationSet, InvalidationSetDeleter> {
+    : public RefCounted<InvalidationSet, InvalidationSetDeleter> {
  public:
   InvalidationSet(const InvalidationSet&) = delete;
   InvalidationSet& operator=(const InvalidationSet&) = delete;
 
   bool operator==(const InvalidationSet&) const;
-  bool operator!=(const InvalidationSet& o) const { return !(*this == o); }
 
   InvalidationType GetType() const {
     return static_cast<InvalidationType>(type_);
@@ -116,11 +115,11 @@ class CORE_EXPORT InvalidationSet
   }
 
   bool InvalidatesElement(Element&) const;
-  bool InvalidatesTagName(Element&) const;
 
   void AddClass(const AtomicString& class_name);
   void AddId(const AtomicString& id);
   void AddTagName(const AtomicString& tag_name);
+  void AddCustomPseudoName(const AtomicString& custom_pseudo_name);
   void AddAttribute(const AtomicString& attribute_local_name);
 
   void SetInvalidationFlags(InvalidationFlags flags) {
@@ -155,13 +154,6 @@ class CORE_EXPORT InvalidationSet
     return invalidation_flags_.InsertionPointCrossing();
   }
 
-  void SetCustomPseudoInvalid() {
-    invalidation_flags_.SetInvalidateCustomPseudo(true);
-  }
-  bool CustomPseudoInvalid() const {
-    return invalidation_flags_.InvalidateCustomPseudo();
-  }
-
   void SetInvalidatesSlotted() {
     invalidation_flags_.SetInvalidatesSlotted(true);
   }
@@ -178,15 +170,20 @@ class CORE_EXPORT InvalidationSet
     return invalidation_flags_.InvalidatesParts();
   }
 
-  bool IsEmpty() const {
-    return HasEmptyBackings() &&
-           !invalidation_flags_.InvalidateCustomPseudo() &&
-           !invalidation_flags_.InsertionPointCrossing() &&
-           !invalidation_flags_.InvalidatesSlotted() &&
-           !invalidation_flags_.InvalidatesParts();
+  void SetInvalidatesTreeCounting() {
+    invalidation_flags_.SetInvalidatesTreeCounting(true);
+  }
+  bool InvalidatesTreeCounting() const {
+    return invalidation_flags_.InvalidatesTreeCounting();
   }
 
-  bool IsAlive() const { return is_alive_; }
+  bool IsEmpty() const {
+    return HasEmptyBackings() &&
+           !invalidation_flags_.InsertionPointCrossing() &&
+           !invalidation_flags_.InvalidatesSlotted() &&
+           !invalidation_flags_.InvalidatesParts() &&
+           !invalidation_flags_.InvalidatesTreeCounting();
+  }
 
   void WriteIntoTrace(perfetto::TracedValue context) const;
 
@@ -234,10 +231,25 @@ class CORE_EXPORT InvalidationSet
   // shadow-including descendants with part attributes.
   static InvalidationSet* PartInvalidationSet();
 
+  // Returns a singleton NthSiblingInvalidationSet which invalidates all
+  // siblings whose ComputedStyle depends on tree-counting functions such as
+  // sibling-count() and sibling-index(). It does so by setting
+  // invalidates_tree_counting_ along with invalidates_self_, making it
+  // equivalent to an imaginary ':nth-child(n):has-tree-counting-style'
+  // selector, where ':has-tree-counting-style' matches an element with a
+  // ComputedStyle that relies on the evaluation of tree-counting functions.
+  //
+  // This set is scheduled on ContainerNodes marked with
+  // ChildrenAffectedByForwardPositionalRules() or
+  // ChildrenAffectedByBackwardPositionalRules() when child elements are
+  // inserted, removed, or change target slot.
+  static InvalidationSet* TreeCountingInvalidationSet();
+
   enum class BackingType {
     kClasses,
     kIds,
     kTagNames,
+    kCustomPseudoNames,
     kAttributes
     // These values are used as bit-indices, and must be smaller than 8.
     // See Backing::GetMask.
@@ -319,7 +331,6 @@ class CORE_EXPORT InvalidationSet
         }
         return hash_set_iterator_ == other.hash_set_iterator_;
       }
-      bool operator!=(const Iterator& other) const { return !(*this == other); }
       void operator++() {
         if (type_ == Type::kString) {
           string_ = g_null_atom;
@@ -372,8 +383,6 @@ class CORE_EXPORT InvalidationSet
   explicit InvalidationSet(InvalidationType);
 
   ~InvalidationSet() {
-    CHECK(is_alive_);
-    is_alive_ = false;
     ClearAllBackings();
   }
 
@@ -387,6 +396,9 @@ class CORE_EXPORT InvalidationSet
   bool HasClasses() const { return !classes_.IsEmpty(backing_flags_); }
   bool HasIds() const { return !ids_.IsEmpty(backing_flags_); }
   bool HasTagNames() const { return !tag_names_.IsEmpty(backing_flags_); }
+  bool HasCustomPseudoNames() const {
+    return !custom_pseudo_names_.IsEmpty(backing_flags_);
+  }
   bool HasAttributes() const { return !attributes_.IsEmpty(backing_flags_); }
 
   bool HasId(const AtomicString& string) const {
@@ -395,6 +407,10 @@ class CORE_EXPORT InvalidationSet
 
   bool HasTagName(const AtomicString& string) const {
     return tag_names_.Contains(backing_flags_, string);
+  }
+
+  bool HasCustomPseudoName(const AtomicString& string) const {
+    return custom_pseudo_names_.Contains(backing_flags_, string);
   }
 
   Backing<BackingType::kClasses>::Range Classes() const {
@@ -409,6 +425,10 @@ class CORE_EXPORT InvalidationSet
     return tag_names_.Items(backing_flags_);
   }
 
+  Backing<BackingType::kCustomPseudoNames>::Range CustomPseudoNames() const {
+    return custom_pseudo_names_.Items(backing_flags_);
+  }
+
   Backing<BackingType::kAttributes>::Range Attributes() const {
     return attributes_.Items(backing_flags_);
   }
@@ -421,6 +441,7 @@ class CORE_EXPORT InvalidationSet
   Backing<BackingType::kClasses> classes_;
   Backing<BackingType::kIds> ids_;
   Backing<BackingType::kTagNames> tag_names_;
+  Backing<BackingType::kCustomPseudoNames> custom_pseudo_names_;
   Backing<BackingType::kAttributes> attributes_;
 
   InvalidationFlags invalidation_flags_;
@@ -436,9 +457,6 @@ class CORE_EXPORT InvalidationSet
   // (unless we know for sure no child can be affected by a
   // selector of the :nth-child type).
   unsigned invalidates_nth_ : 1;
-
-  // If true, the instance is alive and can be used.
-  unsigned is_alive_ : 1;
 };
 
 class CORE_EXPORT DescendantInvalidationSet final : public InvalidationSet {
@@ -501,9 +519,12 @@ class CORE_EXPORT SiblingInvalidationSet : public InvalidationSet {
 
 // For invalidation of :nth-* selectors on dom mutations we use a sibling
 // invalidation set which is scheduled on the parent node of the DOM mutation
-// affected by the :nth-* selectors.
+// affected by the :nth-* selectors. Similarly, we use another
+// NthSiblingInvalidationSet for invalidating style for elements whose style
+// rely on tree-counting functions such as sibling-index(). See
+// InvalidationSet::TreeCountingInvalidationSet() for further documentation.
 //
-// During invalidation, the set is pushed into the SiblingData used for
+// During invalidation, such sets are pushed into the SiblingData used for
 // invalidating the direct children.
 //
 // Features are collected into this set as if the selectors were preceded by a

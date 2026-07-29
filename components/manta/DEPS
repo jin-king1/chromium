@@ -1,4 +1,5 @@
 include_rules = [
+  "+chromeos/components/magic_boost/public/cpp/magic_boost_state.h",
   "+chromeos/constants/chromeos_features.h",
   "+components/endpoint_fetcher",
   "+components/account_id/account_id.h",
@@ -13,11 +14,11 @@ include_rules = [
 ]
 
 specific_include_rules = {
-  ".*_[a-z]*unittest\.cc": [
+  ".*_[a-z]*unittest\\.cc": [
     "+net/base/net_errors.h",
     "+services/network/test/test_url_loader_factory.h",
   ],
-  "base_provider_test_helper\.(cc|h)": [
+  "base_provider_test_helper\\.(cc|h)": [
     "+services/network/test/test_url_loader_factory.h",
   ],
 }

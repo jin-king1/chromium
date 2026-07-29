@@ -10,152 +10,99 @@
  */
 import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
 import '../controls/settings_toggle_button.js';
-import '../settings_page/settings_animated_pages.js';
-import '../settings_shared.css.js';
+import '../settings_page/settings_section.js';
+
+import {getCss as getSettingsSharedCss} from '../settings_shared_lit.css.js';
+
 // clang-format off
-// <if expr="not is_macosx and not is_chromeos">
-import './captions_subpage.js';
-import '../settings_page/settings_subpage.js';
-// </if>
 
 // <if expr="is_win or is_linux or is_macosx">
 import './ax_annotations_section.js';
 // </if>
-
 // <if expr="is_win or is_macosx">
-import './live_caption_section.js';
+import './live_caption.js';
 
 import {CaptionsBrowserProxyImpl} from '/shared/settings/a11y_page/captions_browser_proxy.js';
 // </if>
 // clang-format on
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
-import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
-import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {PrefService} from '/shared/settings/prefs2/pref_service.js';
+import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
+import {assert} from 'chrome://resources/js/assert.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import {BaseMixin} from '../base_mixin.js';
 import type {SettingsToggleButtonElement} from '../controls/settings_toggle_button.js';
 import {loadTimeData} from '../i18n_setup.js';
 import {routes} from '../route.js';
 import {Router} from '../router.js';
+import {SettingsViewMixinLit} from '../settings_page/settings_view_mixin_lit.js';
 
 import type {AccessibilityBrowserProxy} from './a11y_browser_proxy.js';
 import {AccessibilityBrowserProxyImpl} from './a11y_browser_proxy.js';
-import {getTemplate} from './a11y_page.html.js';
+import {getHtml} from './a11y_page.html.js';
 
-// clang-format off
-// <if expr="not is_chromeos">
-import type {LanguageHelper, LanguagesModel} from '../languages_page/languages_types.js';
 
-// </if>
-// clang-format on
+/**
+ * Must be kept in sync with the C++ enum of the same name in
+ * chrome/browser/ui/toasts/toast_metrics.h.
+ */
+export enum ToastAlertLevel {
+  ALL = 0,
+  ACTIONABLE = 1,
+  // Must be last.
+  COUNT = 1,
+}
 
 const SettingsA11yPageElementBase =
-    PrefsMixin(WebUiListenerMixin(BaseMixin(PolymerElement)));
+    SettingsViewMixinLit(WebUiListenerMixinLit(CrLitElement));
+
+// <if expr="not is_chromeos">
+export interface SettingsA11yPageElement {
+  $: {
+    toastToggle: SettingsToggleButtonElement,
+  };
+}
+// </if>
 
 export class SettingsA11yPageElement extends SettingsA11yPageElementBase {
   static get is() {
-    return 'settings-a11y-page' as const;
+    return 'settings-a11y-page';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return [
+      getSettingsSharedCss(),
+    ];
   }
 
-  static get properties() {
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
     return {
-      /**
-       * The current active route.
-       */
-      currentRoute: {
-        type: Object,
-        notify: true,
-      },
-
-      /**
-       * Preferences state.
-       */
-      prefs: {
-        type: Object,
-        notify: true,
-      },
-
       // <if expr="not is_chromeos">
-      /**
-       * Read-only reference to the languages model provided by the
-       * 'settings-languages' instance.
-       */
-      languages: {
-        type: Object,
-        notify: true,
-      },
-
-      languageHelper: Object,
-
-      enableLiveCaption_: {
-        type: Boolean,
-        value: function() {
-          return loadTimeData.getBoolean('enableLiveCaption');
-        },
-      },
+      enableLiveCaption_: {type: Boolean},
+      numericUncheckedToastAlertValues_: {type: Array},
       // </if>
 
       /**
        * Indicate whether a screen reader is enabled. Also, determine whether
        * to show accessibility labels settings.
        */
-      hasScreenReader_: {
-        type: Boolean,
-        value: false,
-      },
+      hasScreenReader_: {type: Boolean},
+
+      /**
+       * Whether to show the AxTreeFixing subpage.
+       */
+      showAxTreeFixingSection_: {type: Boolean},
 
       // <if expr="is_win or is_linux or is_macosx">
       /**
        * Whether to show the AxAnnotations subpage.
        */
-      showAxAnnotationsSection_: {
-        type: Boolean,
-        computed: 'computeShowAxAnnotationsSection_(hasScreenReader_)',
-      },
+      showAxAnnotationsSection_: {type: Boolean},
       // </if>
-
-      focusConfig_: {
-        type: Object,
-        value() {
-          const map = new Map();
-          if (routes.CAPTIONS) {
-            map.set(routes.CAPTIONS.path, '#captions');
-          }
-          return map;
-        },
-      },
-
-      /**
-       * Whether the caption settings link opens externally.
-       */
-      captionSettingsOpensExternally_: {
-        type: Boolean,
-        value() {
-          let opensExternally = false;
-          // <if expr="is_macosx or is_win">
-          opensExternally = true;
-          // </if>
-          return opensExternally;
-        },
-      },
-
-      /**
-       * Whether to show the overscroll history navigation setting.
-       */
-      showOverscrollHistoryNavigationToggle_: {
-        type: Boolean,
-        value: function() {
-          let showOverscroll = false;
-          // <if expr="is_win or is_linux or is_macosx">
-          showOverscroll = true;
-          // </if>
-          return showOverscroll;
-        },
-      },
     };
   }
 
@@ -163,17 +110,17 @@ export class SettingsA11yPageElement extends SettingsA11yPageElementBase {
       AccessibilityBrowserProxyImpl.getInstance();
 
   // <if expr="not is_chromeos">
-  languages: LanguagesModel;
-  languageHelper: LanguageHelper;
-
-  private enableLiveCaption_: boolean;
+  protected accessor enableLiveCaption_: boolean =
+      loadTimeData.getBoolean('enableLiveCaption');
+  protected accessor numericUncheckedToastAlertValues_: ToastAlertLevel[] =
+      [ToastAlertLevel.ACTIONABLE];
   // </if>
 
-  private captionSettingsOpensExternally_: boolean;
-  private hasScreenReader_: boolean;
-  private showOverscrollHistoryNavigationToggle_: boolean;
+  protected accessor hasScreenReader_: boolean = false;
+  protected accessor showAxTreeFixingSection_: boolean =
+      loadTimeData.getBoolean('axTreeFixingEnabled');
   // <if expr="is_win or is_linux or is_macosx">
-  private showAxAnnotationsSection_: boolean;
+  protected accessor showAxAnnotationsSection_: boolean = false;
   // </if>
 
   override connectedCallback() {
@@ -187,7 +134,19 @@ export class SettingsA11yPageElement extends SettingsA11yPageElementBase {
         'screen-reader-state-changed', updateScreenReaderState);
   }
 
-  private onA11yCaretBrowsingChange_(event: Event) {
+  // <if expr="is_win or is_linux or is_macosx">
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+
+    const changedPrivateProperties =
+        changedProperties as Map<PropertyKey, unknown>;
+    if (changedPrivateProperties.has('hasScreenReader_')) {
+      this.showAxAnnotationsSection_ = this.computeShowAxAnnotationsSection_();
+    }
+  }
+  // </if>
+
+  protected onA11yCaretBrowsingChange_(event: Event) {
     if ((event.target as SettingsToggleButtonElement).checked) {
       chrome.metricsPrivate.recordUserAction(
           'Accessibility.CaretBrowsing.EnableWithSettings');
@@ -197,7 +156,7 @@ export class SettingsA11yPageElement extends SettingsA11yPageElementBase {
     }
   }
 
-  private onA11yImageLabelsChange_(event: Event) {
+  protected onA11yImageLabelsChange_(event: Event) {
     const a11yImageLabelsOn =
         (event.target as SettingsToggleButtonElement).checked;
     if (a11yImageLabelsOn) {
@@ -218,10 +177,19 @@ export class SettingsA11yPageElement extends SettingsA11yPageElementBase {
         loadTimeData.getBoolean('mainNodeAnnotationsEnabled');
     return anyAxAnnotationsFeatureEnabled && this.hasScreenReader_;
   }
+
+  protected onCaptionsClick_() {
+    // <if expr="is_win or is_macosx">
+    CaptionsBrowserProxyImpl.getInstance().openSystemCaptionsDialog();
+    // </if>
+    // <if expr="is_linux">
+    Router.getInstance().navigateTo(routes.CAPTIONS);
+    // </if>
+  }
   // </if>
 
   // <if expr="not is_chromeos">
-  private onFocusHighlightChange_(event: Event) {
+  protected onFocusHighlightSettingBooleanControlChange_(event: Event) {
     chrome.metricsPrivate.recordBoolean(
         'Accessibility.FocusHighlight.ToggleEnabled',
         (event.target as SettingsToggleButtonElement).checked);
@@ -229,44 +197,65 @@ export class SettingsA11yPageElement extends SettingsA11yPageElementBase {
   // </if>
 
   // <if expr="is_chromeos">
-  private onManageSystemAccessibilityFeaturesClick_() {
+  protected onManageSystemAccessibilityFeaturesClick_() {
     window.location.href = 'chrome://os-settings/osAccessibility';
   }
   // </if>
 
   /** private */
-  private onMoreFeaturesLinkClick_() {
+  protected onMoreFeaturesLinkClick_() {
     window.open(
         'https://chrome.google.com/webstore/category/collection/3p_accessibility_extensions');
   }
 
-  private onCaptionsClick_() {
-    if (this.captionSettingsOpensExternally_) {
-      // <if expr="is_win or is_macosx">
-      CaptionsBrowserProxyImpl.getInstance().openSystemCaptionsDialog();
-      // </if>
-    } else {
-      Router.getInstance().navigateTo(routes.CAPTIONS);
-    }
-  }
-
   // <if expr="is_win or is_linux">
-  private onOverscrollHistoryNavigationChange_(event: Event) {
+  protected onOverscrollHistoryNavigationChange_(event: Event) {
     const enabled = (event.target as SettingsToggleButtonElement).checked;
     this.browserProxy_.recordOverscrollHistoryNavigationChanged(enabled);
   }
   // </if>
 
   // <if expr="is_macosx">
-  private onMacTrackpadGesturesLinkClick_() {
+  protected onMacTrackpadGesturesLinkClick_() {
     this.browserProxy_.openTrackpadGesturesSettings();
   }
   // </if>
-}
 
+  // <if expr="not is_chromeos">
+  protected onToastAlertLevelChange_() {
+    chrome.metricsPrivate.recordEnumerationValue(
+        'Toast.FrequencyPrefChanged',
+        PrefService.getInstance()
+            .getPref<number>('settings.toast.alert_level')
+            .value,
+        ToastAlertLevel.COUNT);
+  }
+  // </if>
+
+  // <if expr="is_linux">
+  // SettingsViewMixin implementation.
+  override getFocusConfig() {
+    const map = new Map();
+    if (routes.CAPTIONS) {
+      map.set(routes.CAPTIONS.path, '#captions');
+    }
+    return map;
+  }
+  // </if>
+
+  // SettingsViewMixin implementation.
+  override getAssociatedControlFor(childViewId: string): HTMLElement {
+    assert(childViewId === 'captions');
+    const control = this.shadowRoot.querySelector<HTMLElement>('#captions');
+    assert(
+        control,
+        `Failed to find associated control for child '${childViewId}'`);
+    return control;
+  }
+}
 declare global {
   interface HTMLElementTagNameMap {
-    [SettingsA11yPageElement.is]: SettingsA11yPageElement;
+    'settings-a11y-page': SettingsA11yPageElement;
   }
 }
 

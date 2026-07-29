@@ -49,9 +49,7 @@ void SqlFeatureProcessor::Process(
       feature_processor_state.SetError(
           stats::FeatureProcessingError::kSqlValidationError);
       base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-          FROM_HERE, base::BindOnce(std::move(callback_),
-
-                                    std::move(result_)));
+          FROM_HERE, base::BindOnce(std::move(callback_), IndexedTensors()));
       return;
     }
 
@@ -92,10 +90,12 @@ void SqlFeatureProcessor::OnCustomInputProcessed(
   }
 
   if (total_bind_values != result.size()) {
-    feature_processor_state->SetError(
-        stats::FeatureProcessingError::kSqlBindValuesError);
+    if (feature_processor_state) {
+      feature_processor_state->SetError(
+          stats::FeatureProcessingError::kSqlBindValuesError);
+    }
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback_), std::move(result_)));
+        FROM_HERE, base::BindOnce(std::move(callback_), IndexedTensors()));
     return;
   }
 
@@ -114,11 +114,12 @@ void SqlFeatureProcessor::OnCustomInputProcessed(
       // Validate the result tensor.
       if (result.count(std::make_pair(sql_feature_index, bind_value_index)) !=
           1) {
-        feature_processor_state->SetError(
-            stats::FeatureProcessingError::kResultTensorError);
+        if (feature_processor_state) {
+          feature_processor_state->SetError(
+              stats::FeatureProcessingError::kResultTensorError);
+        }
         base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-            FROM_HERE,
-            base::BindOnce(std::move(callback_), std::move(result_)));
+            FROM_HERE, base::BindOnce(std::move(callback_), IndexedTensors()));
         return;
       }
 
@@ -140,14 +141,12 @@ void SqlFeatureProcessor::OnCustomInputProcessed(
 
 void SqlFeatureProcessor::OnQueriesRun(
     base::WeakPtr<FeatureProcessorState> feature_processor_state,
-    bool success,
-    IndexedTensors result) {
-  if (!success) {
+    std::optional<IndexedTensors> result) {
+  if (!result.has_value() && feature_processor_state) {
     feature_processor_state->SetError(
         stats::FeatureProcessingError::kSqlQueryRunError);
   }
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(callback_), std::move(result)));
+  std::move(callback_).Run(std::move(result).value_or(IndexedTensors()));
 }
 
 }  // namespace segmentation_platform::processing

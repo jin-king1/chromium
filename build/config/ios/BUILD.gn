@@ -2,6 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/buildflag_header.gni")
+import("//build/config/apple/arch.gni")
 import("//build/config/apple/mobile_config.gni")
 import("//build/config/ios/config.gni")
 import("//build/config/ios/ios_sdk.gni")
@@ -18,15 +20,12 @@ config("compiler") {
   common_flags = []
 
   # CPU architecture.
-  if (current_cpu == "x64") {
-    triplet_cpu = "x86_64"
-  } else if (current_cpu == "x86") {
-    triplet_cpu = "i386"
-  } else if (current_cpu == "arm" || current_cpu == "armv7") {
-    triplet_cpu = "armv7"
-  } else if (current_cpu == "arm64") {
-    triplet_cpu = "arm64"
+  _archs_mapping_os = archs_mapping[current_os]
+  if (defined(_archs_mapping_os[current_cpu])) {
+    _archs_mapping_os_cpu = _archs_mapping_os[current_cpu]
+    triplet_cpu = _archs_mapping_os_cpu.clang_arch
   } else {
+    notneeded([ "_archs_mapping_os" ])
     assert(false, "unsupported cpu: $current_cpu")
   }
 
@@ -42,7 +41,11 @@ config("compiler") {
   }
 
   # OS.
-  triplet_os = "apple-ios"
+  if (target_platform == "iphoneos") {
+    triplet_os = "apple-ios"
+  } else if (target_platform == "tvos") {
+    triplet_os = "apple-tvos"
+  }
 
   # Set target.
   common_flags = [
@@ -53,7 +56,7 @@ config("compiler") {
   # This is here so that all files get recompiled after an Xcode update.
   # (defines are passed via the command line, and build system rebuild things
   # when their commandline changes). Nothing should ever read this define.
-  defines = [ "CR_XCODE_VERSION=$xcode_version" ]
+  defines = [ "CR_XCODE_BUILD=$xcode_build" ]
 
   asmflags = common_flags
   cflags = common_flags
@@ -61,7 +64,7 @@ config("compiler") {
 
   swiftflags += [
     "-swift-version",
-    "5",
+    "6",
   ]
 
   cflags_objcc = [
@@ -150,6 +153,17 @@ config("ios_executable_flags") {
   }
 
   ldflags += [ "-Wl,-rpath,@executable_path/Frameworks" ]
+
+  # TODO(crbug.com/424634516): Remove once Apple fixes the issue.
+  if (xcode_version_int >= 2600) {
+    framework_dirs = [ "$ios_sdk_path/System/Library/SubFrameworks" ]
+  }
+  if (xcode_version_int >= 2640 && use_lld) {
+    ldflags += [
+      "-Wl,--ignore-auto-link-option,UIUtilities",
+      "-Wl,--ignore-auto-link-option,CoreAudioTypes",
+    ]
+  }
 }
 
 config("ios_extension_executable_flags") {
@@ -167,6 +181,17 @@ config("ios_extension_executable_flags") {
   }
 
   ldflags += [ "-Wl,-rpath,@executable_path/../../Frameworks" ]
+
+  # TODO(crbug.com/424634516): Remove once Apple fixes the issue.
+  if (xcode_version_int >= 2600) {
+    framework_dirs = [ "$ios_sdk_path/System/Library/SubFrameworks" ]
+  }
+  if (xcode_version_int >= 2640 && use_lld) {
+    ldflags += [
+      "-Wl,--ignore-auto-link-option,UIUtilities",
+      "-Wl,--ignore-auto-link-option,CoreAudioTypes",
+    ]
+  }
 }
 
 config("ios_dynamic_flags") {
@@ -219,6 +244,17 @@ config("ios_shared_library_flags") {
     "-Wl,-rpath,@executable_path/Frameworks",
     "-Wl,-rpath,@loader_path/Frameworks",
   ]
+
+  # TODO(crbug.com/424634516): Remove once Apple fixes the issue.
+  if (xcode_version_int >= 2600) {
+    framework_dirs = [ "$ios_sdk_path/System/Library/SubFrameworks" ]
+  }
+  if (xcode_version_int >= 2640 && use_lld) {
+    ldflags += [
+      "-Wl,--ignore-auto-link-option,UIUtilities",
+      "-Wl,--ignore-auto-link-option,CoreAudioTypes",
+    ]
+  }
 }
 
 config("xctest_config") {
@@ -242,12 +278,53 @@ config("xctest_config") {
     "Foundation.framework",
     "XCTest.framework",
   ]
+
+  # TODO(crbug.com/424634516): Remove once Apple fixes the issue.
+  if (xcode_version_int >= 2600) {
+    framework_dirs = [ "$ios_sdk_path/System/Library/SubFrameworks" ]
+  }
+  if (xcode_version_int >= 2640) {
+    if (use_lld) {
+      ldflags += [
+        "-Wl,--ignore-auto-link-option,UIUtilities",
+        "-Wl,--ignore-auto-link-option,CoreAudioTypes",
+      ]
+    }
+    ldflags += [ "-Wl,-needed-lXCTestSwiftSupport,-lXCTestSwiftSupport" ]
+  }
 }
 
-# TODO(crbug.com/40911785): any target that uses this config will miscompile.
-# This needs to be fixed if we want to use Swift - C++ interop.
-config("enable_swift_cxx_interop") {
-  swiftflags = [ "-enable-experimental-cxx-interop" ]
+if (enable_swift_cxx_interop) {
+  config("swift_cxx_interop") {
+    swiftflags = [
+      "-cxx-interoperability-mode=default",
+
+      # Add a path to the bridging code. This is used for <swift/bridging>.
+      "-I",
+      rebase_path("$ios_toolchains_path/usr/include", root_build_dir),
+      "-Xcc=-fmodule-map-file=" + rebase_path(
+              "$ios_toolchains_path/usr/include/swift/bridging.modulemap",
+              root_build_dir),
+    ]
+
+    # TODO(crbug.com/451945291): Move the following compiler flags to
+    # build/config/compiler/BUILD.gn when Swift/C++ interop is enabled by
+    # default. The '-std=c++' flag is not allowed with 'Objective-C'.
+    if (use_cxx23) {
+      swiftflags += [ "-Xcc=-std=c++23" ]
+    } else {
+      swiftflags += [ "-Xcc=-std=c++20" ]
+    }
+  }
+}
+
+config("swift_cxx_interop_includes") {
+  if (swift_toolchain_path == "") {
+    _swift_compatibility_libs_prefix = ios_toolchains_path
+  } else {
+    _swift_compatibility_libs_prefix = swift_toolchain_path
+  }
+  include_dirs = [ "${_swift_compatibility_libs_prefix}/usr/lib/swift" ]
 }
 
 group("xctest") {
@@ -304,4 +381,22 @@ action("xctest_runner_without_arm64e") {
   if (ios_use_xcode_symlinks) {
     deps += [ ":copy_xctrunner_app" ]
   }
+}
+
+# Generates build flags to allow code to detect whether the target is an App
+# Extension (which cannot access APIs like UIApplication.sharedApplication).
+buildflag_header("buildflags") {
+  header = "buildflags.h"
+  flags = [ "IOS_IS_APP_EXTENSION=$ios_is_app_extension" ]
+}
+
+# Generates build flags to allow code to detect specific compilation contexts:
+# - Whether Swift/C++ interoperability is enabled.
+# - Whether Swift 6.3 (XCode 27.*) is supported.
+buildflag_header("swift_buildflags") {
+  header = "swift_buildflags.h"
+  flags = [
+    "ENABLE_SWIFT_CXX_INTEROP=$enable_swift_cxx_interop",
+    "HAS_SWIFT_6_3_SUPPORT=$has_swift_6_3_support",
+  ]
 }

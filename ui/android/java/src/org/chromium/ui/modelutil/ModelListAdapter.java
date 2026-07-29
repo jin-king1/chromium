@@ -49,7 +49,7 @@ public class ModelListAdapter extends BaseAdapter implements MVCListAdapter {
     public ModelListAdapter(ModelList data) {
         mModelList = data;
         mListObserver =
-                new ListObserver<Void>() {
+                new ListObserver<>() {
                     @Override
                     public void onItemRangeInserted(ListObservable source, int index, int count) {
                         notifyDataSetChanged();
@@ -101,7 +101,10 @@ public class ModelListAdapter extends BaseAdapter implements MVCListAdapter {
 
     @Override
     public int getItemViewType(int position) {
-        return mModelList.get(position).type;
+        int viewType = mModelList.get(position).type;
+        assert viewType >= 0 && viewType < getViewTypeCount()
+                : "View types must be contiguous and within the range of 0 to type count - 1";
+        return viewType;
     }
 
     @Override
@@ -201,7 +204,7 @@ public class ModelListAdapter extends BaseAdapter implements MVCListAdapter {
             PropertyModel newModel,
             @Nullable PropertyModel oldModel,
             View view,
-            PropertyModelChangeProcessor.ViewBinder binder) {
+            PropertyModelChangeProcessor.ViewBinder<PropertyModel, View, PropertyKey> binder) {
         Collection<PropertyKey> setProperties = newModel.getAllSetProperties();
         for (PropertyKey key : newModel.getAllProperties()) {
             if (oldModel != null) {

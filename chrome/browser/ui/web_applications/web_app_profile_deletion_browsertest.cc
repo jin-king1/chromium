@@ -121,8 +121,8 @@ class WebAppProfileDeletionBrowserTest : public WebAppBrowserTestBase {
 
     ProfileDestructionWaiter destruction_waiter(&profile_to_delete);
     profile_manager->GetDeleteProfileHelper().MaybeScheduleProfileForDeletion(
-        profile_to_delete.GetPath(), base::DoNothing(),
-        ProfileMetrics::DELETE_PROFILE_SETTINGS);
+        profile_path_to_delete, base::DoNothing(),
+        ProfileMetrics::DELETE_PROFILE_USER_MANAGER);
     destruction_waiter.Wait();
 
     return deleting_web_contents;
@@ -238,8 +238,7 @@ IN_PROC_BROWSER_TEST_F(WebAppProfileDeletionBrowserTest,
   base::test::TestFuture<bool> commands_not_scheduled_future;
   command_scheduler.ScheduleCallbackWithResult(
       "TestCommandPostProfileDeletion", web_app::NoopLockDescription(),
-      base::BindOnce(
-          [](web_app::NoopLock&, base::Value::Dict&) { return true; }),
+      base::BindOnce([](web_app::NoopLock&, base::DictValue&) { return true; }),
       commands_not_scheduled_future.GetCallback(), /*arg_for_shutdown=*/false);
 
   ASSERT_TRUE(commands_not_scheduled_future.Wait());
@@ -397,7 +396,7 @@ IN_PROC_BROWSER_TEST_F(WebAppProfileDeletionTest_WebContentsGracefulShutdown,
   icon_urls.insert(IconUrlWithSize::CreateForUnspecifiedSize(
       GURL("https://www.example.com/favicon.ico")));
   data_retriever.GetIcons(deleting_web_contents.get(), icon_urls,
-                          /*skip_page_favicons=*/false,
+                          /*download_page_favicons=*/true,
                           /*fail_all_if_any_fail=*/false,
                           icon_download_future.GetCallback());
   EXPECT_TRUE(icon_download_future.Wait());

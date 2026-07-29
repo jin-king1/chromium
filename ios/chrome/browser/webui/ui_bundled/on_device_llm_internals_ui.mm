@@ -29,7 +29,6 @@
 #import "components/optimization_guide/core/optimization_guide_features.h"  // nogncheck
 #import "components/optimization_guide/core/optimization_guide_switches.h"  // nogncheck
 #import "components/optimization_guide/core/optimization_guide_util.h"  // nogncheck
-#import "components/optimization_guide/machine_learning_tflite_buildflags.h"  // nogncheck
 #import "components/optimization_guide/proto/model_execution.pb.h"  // nogncheck
 #import "components/optimization_guide/proto/model_validation.pb.h"  // nogncheck
 #import "components/optimization_guide/proto/string_value.pb.h"  // nogncheck
@@ -61,8 +60,8 @@ class OnDeviceLlmInternalsHandler : public web::WebUIIOSMessageHandler {
   void RegisterMessages() override;
 
  private:
-  void HandleRequestModelInformation(const base::Value::List& args);
-  void InitAndGenerateResponse(const base::Value::List& args);
+  void HandleRequestModelInformation(const base::ListValue& args);
+  void InitAndGenerateResponse(const base::ListValue& args);
 
 #if BUILDFLAG(BUILD_WITH_INTERNAL_OPTIMIZATION_GUIDE)
   void OnServerModelExecuteResponse(
@@ -73,8 +72,7 @@ class OnDeviceLlmInternalsHandler : public web::WebUIIOSMessageHandler {
           result);
 
   // Retains the on-device session in memory.
-  std::unique_ptr<optimization_guide::OptimizationGuideModelExecutor::Session>
-      on_device_session_;
+  std::unique_ptr<optimization_guide::OnDeviceSession> on_device_session_;
 #endif
 
   // Used to get `weak_ptr_` to self.
@@ -100,7 +98,7 @@ void OnDeviceLlmInternalsHandler::RegisterMessages() {
 }
 
 void OnDeviceLlmInternalsHandler::HandleRequestModelInformation(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   // TODO(crbug.com/387510419): Load model name.
   std::string model_name = "";
   if (model_name.empty()) {
@@ -112,7 +110,7 @@ void OnDeviceLlmInternalsHandler::HandleRequestModelInformation(
 }
 
 void OnDeviceLlmInternalsHandler::InitAndGenerateResponse(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   CHECK(args.size() == 1);
 #if BUILDFLAG(BUILD_WITH_INTERNAL_OPTIMIZATION_GUIDE)
 
@@ -125,7 +123,7 @@ void OnDeviceLlmInternalsHandler::InitAndGenerateResponse(
     return;
   }
 
-  std::string input = args[0].GetString();
+  const std::string& input = args[0].GetString();
   VLOG(1) << "Init LLM and generate response...";
   VLOG(1) << "query: " << input;
 
@@ -139,7 +137,7 @@ void OnDeviceLlmInternalsHandler::InitAndGenerateResponse(
   VLOG(1) << "Executing server query";
   service->ExecuteModel(
       optimization_guide::ModelBasedCapabilityKey::kTest, request,
-      /*execution_timeout=*/std::nullopt,
+      /*options=*/{},
       base::BindOnce(&OnDeviceLlmInternalsHandler::OnServerModelExecuteResponse,
                      weak_ptr_factory_.GetWeakPtr()));
 #endif  // Server inference

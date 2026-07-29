@@ -16,6 +16,7 @@
 #include "components/optimization_guide/core/optimization_guide_permissions_util.h"
 #include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/proto/common_types.pb.h"
+#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/proto/models.pb.h"
 
@@ -56,9 +57,8 @@ bool IsHostValidToFetchFromRemoteOptimizationGuide(const std::string& host);
 
 // Validates that the metadata stored in |any_metadata_| is of the same type
 // and is parseable as |T|. Will return metadata if all checks pass.
-template <class T,
-          class = typename std::enable_if<
-              std::is_convertible<T*, google::protobuf::MessageLite*>{}>::type>
+template <class T>
+  requires(std::is_convertible_v<T*, google::protobuf::MessageLite*>)
 std::optional<T> ParsedAnyMetadata(const proto::Any& any_metadata) {
   // Verify type is the same - the Any type URL should be wrapped as:
   // "type.googleapis.com/com.foo.Name".
@@ -88,12 +88,11 @@ std::optional<T> ParsedAnyMetadata(const proto::Any& any_metadata) {
   return std::nullopt;
 }
 
-// Returns a debug string for OptimizationGuideDecision.
-std::string GetStringForOptimizationGuideDecision(
-    OptimizationGuideDecision decision);
-
 // Returns client's origin info, including platform and milestone.
 proto::OriginInfo GetClientOriginInfo();
+
+// Returns the Chrome platform the client is running on.
+proto::ChromePlatform GetChromePlatform();
 
 // Logs info about the common optimization guide feature flags.
 void LogFeatureFlagsInfo(OptimizationGuideLogger* optimization_guide_logger,

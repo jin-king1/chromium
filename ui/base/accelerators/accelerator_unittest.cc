@@ -103,18 +103,26 @@ TEST(AcceleratorTest, ConversionFromKeyEvent) {
 class AcceleratorTestMac : public testing::Test {
  public:
   AcceleratorTestMac() = default;
-  ~AcceleratorTestMac() override = default;
+  ~AcceleratorTestMac() override {
+    Accelerator::ClearMacKeyboardHasGlobeKeyForTesting();
+  }
 
-  // Returns a "short" string representation of the modifier flags in
+  // Returns a "short" vector representation of the modifier flags in
   // |modifier_mask|.
-  std::u16string ShortFormStringForModifiers(int modifier_flags) {
+  std::vector<std::u16string> ShortFormStringForModifiers(int modifier_flags) {
     ui::KeyEvent key_event(ui::EventType::kKeyPressed, ui::VKEY_F,
                            modifier_flags);
     Accelerator accelerator(key_event);
 
-    // Passing the empty string causes the method to return just the string
-    // representation of the modifier flags.
-    return accelerator.ApplyShortFormModifiers(std::u16string());
+    return accelerator.GetShortFormModifiers();
+  }
+
+  std::u16string ShortcutTextForModifiers(int modifier_flags) {
+    return Accelerator(ui::VKEY_F, modifier_flags).GetShortcutText();
+  }
+
+  void SetMacKeyboardHasGlobeKeyForTesting(bool has_globe_key) {
+    Accelerator::SetMacKeyboardHasGlobeKeyForTesting(has_globe_key);
   }
 };
 
@@ -132,6 +140,18 @@ TEST_F(AcceleratorTestMac, ModifierFlagsShortFormRepresentation) {
     }
     modifier_flag <<= 1;
   }
+}
+
+TEST_F(AcceleratorTestMac, FunctionModifierUsesFnWhenGlobeKeyUnavailable) {
+  SetMacKeyboardHasGlobeKeyForTesting(false);
+
+  EXPECT_EQ(u"(fn) F", ShortcutTextForModifiers(EF_FUNCTION_DOWN));
+}
+
+TEST_F(AcceleratorTestMac, FunctionModifierUsesGlobeWhenGlobeKeyAvailable) {
+  SetMacKeyboardHasGlobeKeyForTesting(true);
+
+  EXPECT_EQ(u"\U0001F310\uFE0EF", ShortcutTextForModifiers(EF_FUNCTION_DOWN));
 }
 #endif
 

@@ -4,10 +4,6 @@
 
 #include "components/autofill/core/browser/data_model/autofill_ai/country_info.h"
 
-#include <stddef.h>
-
-#include "components/autofill/core/browser/autofill_type.h"
-#include "components/autofill/core/browser/field_types.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill {
@@ -45,6 +41,14 @@ TEST(CountryInfoTest, SetCodeReadName) {
 TEST(CountryInfoTest, SetCodeReadCode) {
   CountryInfo country;
   country.SetCountryFromCountryCode(u"DE");
+  EXPECT_EQ(country.GetCountryCode(), "DE");
+}
+
+// Tests that we can construct an object with a lowercase country code, but
+// reading the country code would return the uppercase version of it.
+TEST(CountryInfoTest, SetCodeLowercaseReadCodeUppercase) {
+  CountryInfo country;
+  country.SetCountryFromCountryCode(u"de");
   EXPECT_EQ(country.GetCountryCode(), "DE");
 }
 

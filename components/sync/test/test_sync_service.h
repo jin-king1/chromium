@@ -34,6 +34,7 @@ namespace syncer {
 // the returned state. By default, everything returns "enabled"/"active".
 class TestSyncService : public SyncService {
  public:
+  // By default, the service is signed in, sync everything, and have no errors.
   TestSyncService();
 
   TestSyncService(const TestSyncService&) = delete;
@@ -69,6 +70,9 @@ class TestSyncService : public SyncService {
   // START_DEFERRED. Calling with DISABLED or PAUSED will crash.
   void SetMaxTransportState(TransportState max_transport_state);
 
+  // If `local_sync_enabled` is true, enables local sync, which also sets the
+  // account info to empty to mimic the behavior of the real SyncService.
+  // Disabling local sync will set the account info to a default value.
   void SetLocalSyncEnabled(bool local_sync_enabled);
 
   // Setters to mimic common auth error scenarios. Note that these functions
@@ -80,6 +84,7 @@ class TestSyncService : public SyncService {
   void SetInitialSyncFeatureSetupComplete(
       bool initial_sync_feature_setup_complete);
   void SetFailedDataTypes(const DataTypeSet& types);
+  void SetBookmarksLimitExceeded(bool exceeded);
 
   void SetLastCycleSnapshot(const SyncCycleSnapshot& snapshot);
   // Convenience versions of the above, for when the caller doesn't care about
@@ -105,7 +110,8 @@ class TestSyncService : public SyncService {
 
   // The passed callback (if non-null) will be called on TriggerRefresh().
   void SetTriggerRefreshCallback(
-      const base::RepeatingCallback<void(DataTypeSet)>& trigger_refresh_cb);
+      const base::RepeatingCallback<
+          void(TriggerRefreshSource, const DataTypeSet&)>& trigger_refresh_cb);
 
   void FireStateChanged();
   void FireSyncCycleCompleted();
@@ -120,7 +126,6 @@ class TestSyncService : public SyncService {
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject() override;
 #endif  // BUILDFLAG(IS_ANDROID)
 
-  void SetSyncFeatureRequested() override;
   TestSyncUserSettings* GetUserSettings() override;
   const TestSyncUserSettings* GetUserSettings() const override;
   DisableReasonSet GetDisableReasons() const override;
@@ -132,7 +137,6 @@ class TestSyncService : public SyncService {
   GoogleServiceAuthError GetAuthError() const override;
   base::Time GetAuthErrorTime() const override;
   bool HasCachedPersistentAuthErrorForMetrics() const override;
-  bool RequiresClientUpgrade() const override;
 
   std::unique_ptr<SyncSetupInProgressHandle> GetSetupInProgressHandle()
       override;
@@ -143,7 +147,8 @@ class TestSyncService : public SyncService {
   DataTypeSet GetActiveDataTypes() const override;
   DataTypeSet GetTypesWithPendingDownloadForInitialSync() const override;
   void OnDataTypeRequestsSyncStartup(DataType type) override;
-  void TriggerRefresh(const DataTypeSet& types) override;
+  void TriggerRefresh(TriggerRefreshSource source,
+                      const DataTypeSet& types) override;
   void DataTypePreconditionChanged(DataType type) override;
 
   void AddObserver(SyncServiceObserver* observer) override;
@@ -164,13 +169,14 @@ class TestSyncService : public SyncService {
   void AddProtocolEventObserver(ProtocolEventObserver* observer) override;
   void RemoveProtocolEventObserver(ProtocolEventObserver* observer) override;
   void GetAllNodesForDebugging(
-      base::OnceCallback<void(base::Value::List)> callback) override;
+      base::OnceCallback<void(base::ListValue)> callback) override;
   DataTypeDownloadStatus GetDownloadStatusFor(DataType type) const override;
   void SetInvalidationsForSessionsEnabled(bool enabled) override;
   void SendExplicitPassphraseToPlatformClient() override;
   void GetTypesWithUnsyncedData(
       DataTypeSet requested_types,
-      base::OnceCallback<void(DataTypeSet)> cb) const override;
+      base::OnceCallback<void(absl::flat_hash_map<DataType, size_t>)> cb)
+      const override;
   void GetLocalDataDescriptions(
       DataTypeSet types,
       base::OnceCallback<void(std::map<DataType, LocalDataDescription>)>
@@ -182,6 +188,8 @@ class TestSyncService : public SyncService {
   void SelectTypeAndMigrateLocalDataItemsWhenActive(
       DataType data_type,
       std::vector<LocalDataItemModel::DataId> items) override;
+  void AcknowledgeBookmarksLimitExceededError(
+      BookmarksLimitExceededHelpClickedSource source) override;
 
   // KeyedService implementation.
   void Shutdown() override;
@@ -200,6 +208,8 @@ class TestSyncService : public SyncService {
 
   DataTypeSet failed_data_types_;
 
+  bool bookmarks_limit_exceeded_ = false;
+
   std::map<DataType, DataTypeDownloadStatus> download_statuses_;
 
   bool detailed_sync_status_engine_available_ = false;
@@ -207,8 +217,7 @@ class TestSyncService : public SyncService {
 
   SyncCycleSnapshot last_cycle_snapshot_;
 
-  base::ObserverList<SyncServiceObserver>::UncheckedAndDanglingUntriaged
-      observers_;
+  base::ObserverList<SyncServiceObserver> observers_;
 
   GURL sync_service_url_;
 
@@ -220,7 +229,8 @@ class TestSyncService : public SyncService {
   base::RepeatingClosure send_passphrase_to_platform_client_cb_;
 
   // Nullable.
-  base::RepeatingCallback<void(syncer::DataTypeSet)> trigger_refresh_cb_;
+  base::RepeatingCallback<void(TriggerRefreshSource, const DataTypeSet&)>
+      trigger_refresh_cb_;
 
   base::WeakPtrFactory<TestSyncService> weak_factory_{this};
 };

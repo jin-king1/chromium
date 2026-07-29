@@ -5,26 +5,41 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_AUTOFILL_AI_ENTITY_INSTANCE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_AUTOFILL_AI_ENTITY_INSTANCE_H_
 
+#include <stdint.h>
+
+#include <optional>
 #include <ostream>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
 
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/time/time.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "base/types/optional_ref.h"
+#include "base/types/pass_key.h"
+#include "base/types/strong_alias.h"
 #include "base/uuid.h"
+#include "components/autofill/core/browser/autofill_format_string.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/addresses/contact_info.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/country_info.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/date_info.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/field_types.h"
-#include "components/autofill/core/common/dense_set.h"
-#include "components/autofill/core/common/is_required.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
-#include "url/gurl.h"
+
+namespace sync_pb {
+class AutofillValuableSpecifics;
+}
+
+namespace personal_context::proto {
+class Entity;
+}
 
 namespace autofill {
 
@@ -34,44 +49,25 @@ namespace autofill {
 // "name", "country", "issue date", "expiry date", etc.
 //
 // A specific passport is an entity instance, which has attribute instances with
-// values such "John Doe", "USA", "05/2019", "04/2029", etc.
+// values such as "John Doe", "USA", "05/2019", "04/2029", etc.
 //
-// Entity instances are loaded from a webdata table and exposed through
-// EntityDataManager.
+// Entity instances are loaded and exposed by EntityDataManager.
 class AttributeInstance;
+struct AutofillFormatString;
 class EntityInstance;
+class EntityInstanceTestApi;
 class EntityTable;
+class WalletPassAccessManagerImpl;
 
 // An attribute instance is a typed string value with additional metadata.
-// It is associated with an EntityInstance. Attributes are used in order to fill
-// fields with information of certain types.
 //
-// Note that there are two concepts of types that are relevant here:
-// - AttributeType: This is the type of the attribute itself and determines the
-//   structure of the attribute.
-// - FieldType: This is the type of data that can be requested by consumers from
-//   the attribute.
+// That string may be decomposed into finer grained pieces of information. For
+// example, a name like "John Doe" may consist of the given name "John" and the
+// family name "Doe". See GetInfo().
 //
-// `AutofillField` computes two types for the field: One is available through
-// `AutofillField::GetAutofillAiServerTypePredictions()` and represents the
-// type used in order to figure out the appropriate AttributeInstance to fill
-// the field. The other is available through `AutofillField::Type()` and
-// represents the general classification of the field (through Autofill server
-// and heuristic prediction logic).
-//
-// It could happen that these two types are totally unrelated (e.g., the former
-// returns PASSPORT_NAME_TAG and the latter returns PHONE_HOME_WHOLE_NUMBER)
-// or that the two types are equal (e.g., both return PASSPORT_NAME_TAG). This
-// is a small problem for setter/getter API that (1) assumes that the provided
-// field type to a given method is supported and (2) doesn't have support for
-// `FieldType`s of group `FieldTypeGroup::kAutofillAi`. See
-// `AttributeInstance::GetNormalizedType()` and the getter/setter methods for
-// how this problem is handled.
+// Every AttributeInstance is associated with an EntityInstance. Attributes are
+// used to fill fields with information of certain types.
 class AttributeInstance final {
-  // TODO(crbug.com/389625753): Also add support for states.
-  using InfoStructure =
-      absl::variant<CountryInfo, DateInfo, NameInfo, std::u16string>;
-
  public:
   // Transparent less-than relation based on the AttributeType.
   struct CompareByType;
@@ -92,67 +88,83 @@ class AttributeInstance final {
 
   const AttributeType& type() const { return type_; }
 
-  // In the functions below, `type` refers to the type of data we want to fetch
-  // from the attribute, and not the type of the attribute itself. The two might
-  // coincide for unstructured types but they are different for structured
-  // types. See `GetNormalizedType()` below for more information about the
-  // correlation between the needed data type and the type of the attribute.
-  // Also note that `type` below is mostly interesting for structured attributes
-  // and is assumed to be just the attribute-type-equivalent field type for
-  // unstructured ones.
-
-  // Returns the value stored in this attribute instance for a specific `type`,
-  // formatted according to a given `app_locale`.
+  // Returns a string that contains all information stored in this attribute
+  // instance, formatted according to the given `app_locale`.
   //
-  // If `format_string` is nullopt, it defaults to a format that contains all
-  // information. For dates, that is u"YYYY-MM-DD".
-  std::u16string GetInfo(FieldType type,
-                         const std::string& app_locale,
-                         base::optional_ref<const std::u16string>
-                             format_string = std::nullopt) const;
+  // For more control over the return value, see GetInfo().
+  std::u16string GetCompleteInfo(std::string_view app_locale) const {
+    return GetInfo(std::nullopt, app_locale, std::nullopt);
+  }
 
-  class GetRawInfoPassKey {
-    constexpr GetRawInfoPassKey() = default;
-    friend class AttributeInstance;
-    friend class EntityInstance;
-    friend class EntityTable;
-  };
+  // Returns a string that contains the raw information stored in this attribute
+  // instance.
+  //
+  // For more control over the return value, see GetRawInfo().
+  std::u16string GetCompleteRawInfo() const { return GetRawInfo(std::nullopt); }
+
+  // Returns the value or a part of it stored in this attribute instance.
+  //
+  // The `field_type`, `app_locale`, and `format_string` determine which part of
+  // the value is returned and its format.
+  //
+  // If `field_type` is std::nullopt, the full value of the AttributeInstance is
+  // returned. Pass any value from `type().field_subtypes()` to query subtypes
+  // for AttributeInstances. Values outside of `type().field_subtypes()` are
+  // gracefully treated like std::nullopt.
+  //
+  // The grammar of `format_string` is documented in `AutofillFormatString`.
+  //
+  // To get the complete value in default formatting, pass std::nullopt for both
+  // `field_type` and `format_string`.
+  // To get the value for an AutofillField `f`, the typical arguments are:
+  // - `f.Type().GetAutofillAiType(type().entity_type())` for `field_type`.
+  // - `f.format_string()` for `format_string`.
+  std::u16string GetInfo(
+      std::optional<FieldType> field_type,
+      std::string_view app_locale,
+      base::optional_ref<const AutofillFormatString> format_string) const;
 
   // Same as `GetInfo` but returns the value as stored with no formatting
   // whatsoever.
-  std::u16string GetRawInfo(GetRawInfoPassKey pass_key, FieldType type) const;
+  //
+  // See GetInfo() for the meaning of `field_type`.
+  std::u16string GetRawInfo(std::optional<FieldType> field_type) const;
 
   // Returns the verification status of a value stored in this attribute
   // instance for a specific `type`.
-  VerificationStatus GetVerificationStatus(FieldType type) const;
+  //
+  // See GetInfo() for the meaning of `field_type`.
+  VerificationStatus GetVerificationStatus(
+      std::optional<FieldType> field_type) const;
 
   // Populates the attribute with a value for a specific `type`, according to a
   // given `app_locale`.
-  void SetInfo(FieldType type,
+  //
+  // See GetInfo() for the meaning of `field_type`.
+  //
+  // Currently, the `format_string` only matters for dates. Dates are updated
+  // incrementally, e.g.,
+  //   SetInfo(..., u"16", ...,
+  //           AutofillFormatString::FromDateFormat(u"DD"), ...);
+  // only changes the day and does not reset the month or year. If `value`
+  // doesn't fully match the `format_string`, e.g.
+  //   SetInfo(..., u"16/12/2022", ...,
+  //           AutofillFormatString::FromDateFormat(u"DD"), ...);
+  // the function is a no-op.
+  // See AutofillField::format_string() for the grammar of format strings.
+  void SetInfo(std::optional<FieldType> field_type,
                const std::u16string& value,
-               const std::string& app_locale,
+               std::string_view app_locale,
+               base::optional_ref<const AutofillFormatString> format_string,
                VerificationStatus status);
 
-  // Same as `SetInfoWithVerificationStatus`, but for structured types this
-  // function does nothing but modify the information in `type`, while the other
-  // function might perform additional steps (e.g., name formatting). This
-  // function should only be used by database logic and settings page logic.
+  // Similar to SetInfo() but without canonicalization: It does not accept
+  // country names and does not format names. This function should only be used
+  // by database logic and settings page logic.
   // TODO(crbug.com/389625753): Investigate merging SetInfo* and SetRawInfo*.
-  void SetRawInfo(FieldType type,
+  void SetRawInfo(std::optional<FieldType> field_type,
                   const std::u16string& value,
                   VerificationStatus status);
-
-  // Returns the set of `FieldType`s for which the setter/getter functions above
-  // may be called.
-  FieldTypeSet GetSupportedTypes() const;
-
-  // Returns the types which are stored in the database for this attribute
-  // to be able to correctly reconstruct it at database loading time.
-  FieldTypeSet GetDatabaseStoredTypes() const;
-
-  // Returns the FieldType that represents the whole value stored in this
-  // attribute.
-  FieldType GetTopLevelType() const;
 
   // This is a no-op for unstructured attributes, and for structured attributes
   // the function propagates changes in a component to its subcomponents. This
@@ -161,17 +173,47 @@ class AttributeInstance final {
   // candidate).
   void FinalizeInfo();
 
+  // Returns whether the stored value is a mask of the full value, e.g., it
+  // contains the last four digits of the full value.
+  bool masked() const { return masked_; }
+
+  // Marks the attribute as masked.
+  //
+  // Since this does not perform any validation on the attribute value itself,
+  // it must only be called by code that is certain that the attribute value
+  // is indeed masked. The reason for not having a validation step is that
+  // masking happens purely on the server and the masking algorithm is not
+  // exposed to the client.
+  class MarkAsMaskedPasskey {
+   private:
+    MarkAsMaskedPasskey() = default;
+    friend class EntityTable;
+    friend class WalletPassAccessManagerImpl;
+    friend class FakeWalletPassAccessManager;
+    friend std::optional<EntityInstance> CreateEntityInstanceFromSpecifics(
+        const sync_pb::AutofillValuableSpecifics&);
+    friend std::optional<EntityInstance> PersonalContextEntityToEntityInstance(
+        const personal_context::proto::Entity&,
+        bool);
+  };
+  void mark_as_masked(MarkAsMaskedPasskey) { masked_ = true; }
+
   friend bool operator==(const AttributeInstance& lhs,
                          const AttributeInstance& rhs) = default;
 
  private:
-  // This function checks that `info_type` is supported by the attribute and
-  // otherwise tries to convert it into one that is. Returns the supported type
-  // if found and UNKNOWN_TYPE otherwise.
-  FieldType GetNormalizedType(FieldType info_type) const;
+  friend class AttributeInstanceTestApi;
+
+  using StateInfo = base::StrongAlias<class StateInfoTag, std::u16string>;
+  using InfoStructure =
+      std::variant<CountryInfo, DateInfo, NameInfo, StateInfo, std::u16string>;
+
+  FieldType GetNormalizedFieldType(
+      std::optional<FieldType> unnormalized_field_type) const;
 
   AttributeType type_;
   InfoStructure info_;
+  bool masked_ = false;
 };
 
 struct AttributeInstance::CompareByType {
@@ -192,7 +234,7 @@ struct AttributeInstance::CompareByType {
 
  private:
   bool lt(AttributeTypeName lhs, AttributeTypeName rhs) const {
-    return base::to_underlying(lhs) < base::to_underlying(rhs);
+    return std::to_underlying(lhs) < std::to_underlying(rhs);
   }
 };
 
@@ -200,13 +242,87 @@ struct AttributeInstance::CompareByType {
 // metadata. The type is an EntityType.
 class EntityInstance final {
  public:
+  // A globally unique identifier for entities.
+  // Use `base::Uuid` whenever you can for new entities, as it would be
+  // preferred to migrate from this to `base::Uuid`, which is currently not
+  // possible unfortunately because some legacy entities still have IDs with
+  // different formats.
+  struct EntityId : public base::StrongAlias<struct EntityIdTag, std::string> {
+   public:
+    using base::StrongAlias<struct EntityIdTag, std::string>::StrongAlias;
+    explicit EntityId(const base::Uuid uuid)
+        : EntityId(uuid.AsLowercaseString()) {}
+  };
+
+  // Contains information about an entity's metadata stored in the
+  // `entities_metadata` table.
+  struct EntityMetadata {
+    EntityInstance::EntityId guid;
+    base::Time date_modified;
+    int64_t use_count = 0;
+    base::Time use_date;
+
+    friend bool operator==(const EntityMetadata&,
+                           const EntityMetadata&) = default;
+  };
+
+  // Controls whether the attributes of the entity instance can be edited by the
+  // user.
+  using AreAttributesReadOnly =
+      base::StrongAlias<class AreAttributesReadOnlyTag, bool>;
+
+  // These values are persisted to a database. Entries should not be renumbered
+  // and numeric values should never be reused.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.autofill.autofill_ai
+  enum class RecordType {
+    // The entity was created/saved locally, it exists only in the local
+    // `EntityTable`.
+    kLocal = 0,
+    // The entity is stored in Wallet and the current instance is only a local
+    // copy. Changes happening locally or on the Wallet server are synced among
+    // all local storages sharing this entity.
+    kServerWallet = 1,
+    // The entity provided by Personal Context.
+    kPersonalContext = 2,
+    kMaxValue = kPersonalContext,
+  };
+
+  // Categorizes different types of Google Wallet passes.
+  enum class WalletPassType {
+    // The entity is not supported as a Wallet pass (e.g., local entities, or
+    // server types that are not supported by the Wallet integration).
+    kUnsupported,
+    // A private pass containing sensitive information (e.g. passport).
+    kPrivate,
+    // A public pass without sensitive information (e.g. flight reservation).
+    kPublic,
+  };
+
+  // Categorizes different types of personal context entities.
+  enum class PersonalContextSpiiType {
+    // The entity is not supported as a personal context type (e.g., local
+    // entities, or record types other than kPersonalContext).
+    kUnsupported,
+    // A personal context entity which might contain sensitive information
+    // (e.g. passport, drivers license, national ID).
+    kSpii,
+    // A personal context entity which cannot contain sensitive information
+    // (e.g. flight reservation, vehicle, order, shipment).
+    kNoSpii,
+  };
+
   // `attributes` must be non-empty and their type must be identical to `type`.
   EntityInstance(EntityType type,
                  base::flat_set<AttributeInstance,
                                 AttributeInstance::CompareByType> attributes,
-                 base::Uuid guid,
+                 EntityId guid,
                  std::string nickname,
-                 base::Time date_modified);
+                 base::Time date_modified,
+                 int64_t use_count,
+                 base::Time use_date,
+                 RecordType record_type,
+                 AreAttributesReadOnly are_attributes_read_only,
+                 std::string frecency_override);
 
   EntityInstance(const EntityInstance&);
   EntityInstance& operator=(const EntityInstance&);
@@ -217,10 +333,30 @@ class EntityInstance final {
   // Transparent less-than relation based on the the GUID.
   struct CompareByGuid;
 
+  // Comparator that returns the entity with the higher frecency score.
+  // If both entities have non-empty frecency override, the one with the lowest
+  // lexicographical order of the override string will be first.
+  // If one entity has a non-empty frecency override and the other does not,
+  // the entity with the override will be first.
+  struct FrecencyOrder {
+   public:
+    explicit FrecencyOrder(base::Time now);
+    bool operator()(const EntityInstance& lhs, const EntityInstance& rhs) const;
+
+   private:
+    const base::Time now_;
+  };
+
   // Comparator that ranks instances by their priority for import on form
   // submission.
   // `ImportOrder(x, y) == true` means `x` has higher priority than `y`.
   static bool ImportOrder(const EntityInstance& lhs, const EntityInstance& rhs);
+
+  // Comparator that ranks instances by their priority for server migration on
+  // form submission. `MigrationOrder(x, y) == true` means `x` has higher
+  // priority than `y`.
+  static bool MigrationOrder(const EntityInstance& lhs,
+                             const EntityInstance& rhs);
 
   const EntityType& type() const { return type_; }
 
@@ -233,19 +369,56 @@ class EntityInstance final {
   // Returns the instance of `a` if it is present.
   base::optional_ref<const AttributeInstance> attribute(AttributeType a) const
       LIFETIME_BOUND {
-    CHECK_EQ(a.entity_type(), type());
+    CHECK_EQ(a.entity_type(), type_);
     auto it = attributes_.find(a);
     return it != attributes_.end() ? &*it : nullptr;
   }
 
   // Globally unique identifier of this entity.
-  const base::Uuid& guid() const LIFETIME_BOUND { return guid_; }
+  const EntityId& guid() const LIFETIME_BOUND { return metadata_.guid; }
 
   // The nickname assigned to this instance by the user.
   const std::string& nickname() const LIFETIME_BOUND { return nickname_; }
 
   // The latest time the instance, including any of its attributes, was edited.
-  base::Time date_modified() const { return date_modified_; }
+  base::Time date_modified() const { return metadata_.date_modified; }
+
+  // Updates the last time an entity was used to fill a form and
+  // increases the entity use count.
+  void RecordEntityUsed(base::Time date);
+
+  // Returns the last time an entity was used to fill a form.
+  base::Time use_date() const { return metadata_.use_date; }
+
+  // Returns how many times an entity was used to fill a form.
+  int64_t use_count() const { return metadata_.use_count; }
+
+  // Returns the metadata for this instance.
+  const EntityMetadata& metadata() const { return metadata_; }
+
+  // Sets the metadata for this instance.
+  void set_metadata(EntityMetadata metadata) {
+    CHECK_EQ(guid(), metadata.guid);
+    metadata_ = std::move(metadata);
+  }
+
+  // Returns true if the attributes of this entity instance cannot be edited by
+  // the user.
+  AreAttributesReadOnly are_attributes_read_only() const {
+    return are_attributes_read_only_;
+  }
+
+  // Returns the type of storage used for the specific entity.
+  RecordType record_type() const { return record_type_; }
+
+  // Returns the ordering override for the specific entity.
+  const std::string& frecency_override(
+      base::PassKey<EntityTable> pass_key) const {
+    return frecency_override_;
+  }
+
+  // Whether the instance's `record_type` indicates server side storage.
+  bool IsServerInstance() const;
 
   struct EntityMergeability {
     EntityMergeability();
@@ -265,7 +438,7 @@ class EntityInstance final {
     bool is_subset = false;
   };
 
-  // - If `this` is a proper superset of `newer`,
+  // - If `newer` is a proper superset of `this`,
   //   `EntityMergeability::mergeable_attributes` contains the list of
   //   attributes that `newer` has, but `this` does not. These attributes can be
   //   set on `this` to update it.
@@ -281,29 +454,72 @@ class EntityInstance final {
   // dates.
   EntityMergeability GetEntityMergeability(const EntityInstance& newer) const;
 
+  // Returns true if `this` and `other` represent the same entity
+  // based on their merge constraints.
+  bool MatchesMergeConstraintsOf(const EntityInstance& other) const;
+
+  // Returns true if all attributes of `this` are present in `other` with the
+  // same values or if `this` is a proper subset of `other`.
+  // When a masked attribute is compared to an unmasked one, only their suffixes
+  // are compared.
+  bool IsSubsetOf(const EntityInstance& other) const;
+
+  // Returns whether any of the attributes is masked.
+  //
+  // Note that there can be entities for which
+  // `IsMaskedEntity() == IsUnmaskedEntity() == false`.
+  // These entities do not contain obfuscated attributes and can be safely
+  // persisted to disk. Examples include: vehicle information, flight
+  // reservation entities, passport entities without a saved number, etc.
+  bool IsMaskedEntity() const;
+
+  // Returns true if `this` has a maskable record type and contains at least
+  // one unmasked obfuscated attribute. Unmasked entities are transient and
+  // must never be persisted to disk.
+  bool IsUnmaskedEntity() const;
+
+  // Returns a copy of `this` with a new `id`.
+  EntityInstance CopyWithNewEntityId(EntityId id) const;
+
+  // Returns a copy of `this` with the given `record_type`.
+  EntityInstance CopyWithNewRecordType(RecordType record_type) const;
+
+  // Returns a copy of `this` where the attribute for `attribute.type()` is
+  // replaced by `attribute`.
+  EntityInstance CopyWithUpdatedAttribute(AttributeInstance attribute) const;
+
+  // Note that since operator== is defaulted, contrary to `IsSubsetOf()`,
+  // masked and unmasked attributes are considered distinct.
   friend bool operator==(const EntityInstance&,
                          const EntityInstance&) = default;
 
  private:
+  friend class EntityInstanceTestApi;
+
   EntityType type_;
   base::flat_set<AttributeInstance, AttributeInstance::CompareByType>
       attributes_;
-  base::Uuid guid_;
   std::string nickname_;
-  base::Time date_modified_;
+  EntityMetadata metadata_;
+  RecordType record_type_;
+  AreAttributesReadOnly are_attributes_read_only_;
+  std::string frecency_override_;
 };
 
+std::ostream& operator<<(std::ostream& os,
+                         const EntityInstance::EntityMetadata& m);
 std::ostream& operator<<(std::ostream& os, const AttributeInstance& a);
+std::ostream& operator<<(std::ostream& os, const EntityInstance::RecordType& t);
 std::ostream& operator<<(std::ostream& os, const EntityInstance& e);
 
 struct EntityInstance::CompareByGuid {
   using is_transparent = void;
 
-  bool operator()(const EntityInstance& lhs, const base::Uuid& rhs) const {
+  bool operator()(const EntityInstance& lhs, const EntityId& rhs) const {
     return lhs.guid() < rhs;
   }
 
-  bool operator()(const base::Uuid& lhs, const EntityInstance& rhs) const {
+  bool operator()(const EntityId& lhs, const EntityInstance& rhs) const {
     return lhs < rhs.guid();
   }
 
@@ -311,6 +527,60 @@ struct EntityInstance::CompareByGuid {
     return lhs.guid() < rhs.guid();
   }
 };
+
+// Returns the EntityInstance::WalletPassType of an entity with the given
+// (`type`, `record_type`) combination.
+constexpr EntityInstance::WalletPassType GetWalletPassType(
+    EntityType type,
+    EntityInstance::RecordType record_type) {
+  if (record_type != EntityInstance::RecordType::kServerWallet) {
+    return EntityInstance::WalletPassType::kUnsupported;
+  }
+
+  switch (type.name()) {
+    case EntityTypeName::kDriversLicense:
+    case EntityTypeName::kKnownTravelerNumber:
+    case EntityTypeName::kNationalIdCard:
+    case EntityTypeName::kPassport:
+    case EntityTypeName::kRedressNumber:
+      return EntityInstance::WalletPassType::kPrivate;
+    case EntityTypeName::kFlightReservation:
+    case EntityTypeName::kVehicle:
+      return EntityInstance::WalletPassType::kPublic;
+    case EntityTypeName::kOrder:
+    case EntityTypeName::kShipment:
+      return EntityInstance::WalletPassType::kUnsupported;
+  }
+
+  return EntityInstance::WalletPassType::kUnsupported;
+}
+
+// Returns the EntityInstance::PersonalContextSpiiType of an entity with the
+// given (`type`, `record_type`) combination.
+constexpr EntityInstance::PersonalContextSpiiType GetPersonalContextSpiiType(
+    EntityType type,
+    EntityInstance::RecordType record_type) {
+  if (record_type != EntityInstance::RecordType::kPersonalContext) {
+    return EntityInstance::PersonalContextSpiiType::kUnsupported;
+  }
+
+  switch (type.name()) {
+    case EntityTypeName::kDriversLicense:
+    case EntityTypeName::kNationalIdCard:
+    case EntityTypeName::kPassport:
+      return EntityInstance::PersonalContextSpiiType::kSpii;
+    case EntityTypeName::kFlightReservation:
+    case EntityTypeName::kVehicle:
+    case EntityTypeName::kOrder:
+    case EntityTypeName::kShipment:
+      return EntityInstance::PersonalContextSpiiType::kNoSpii;
+    case EntityTypeName::kKnownTravelerNumber:
+    case EntityTypeName::kRedressNumber:
+      return EntityInstance::PersonalContextSpiiType::kUnsupported;
+  }
+
+  return EntityInstance::PersonalContextSpiiType::kUnsupported;
+}
 
 }  // namespace autofill
 

@@ -2,20 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "media/base/container_names.h"
 
 #include <stdint.h>
 
 #include <optional>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_util.h"
+#include "base/numerics/safe_conversions.h"
 #include "media/base/test_data_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/fuzztest/src/fuzztest/fuzztest.h"
 
 namespace media {
 
@@ -53,11 +52,11 @@ TEST(ContainerNamesTest, CheckSmallBuffer) {
 
   // Try a large buffer all zeros.
   char buffer3[4096];
-  memset(buffer3, 0, sizeof(buffer3));
+  UNSAFE_TODO(memset(buffer3, 0, sizeof(buffer3)));
   VERIFY(buffer3, MediaContainerName::kContainerUnknown);
 
   // Reuse buffer, but all \n this time.
-  memset(buffer3, '\n', sizeof(buffer3));
+  UNSAFE_TODO(memset(buffer3, '\n', sizeof(buffer3)));
   VERIFY(buffer3, MediaContainerName::kContainerUnknown);
 }
 
@@ -278,6 +277,13 @@ TEST(ContainerNamesTest, FileCheckUNKNOWN) {
   TestFile(MediaContainerName::kContainerUnknown,
            GetTestDataFilePath("webm_vp8_track_entry"));
 }
+
+void DetermineContainerDoesNotCrash(base::span<const uint8_t> data) {
+  DetermineContainer(data.data(), base::checked_cast<int>(data.size()));
+}
+
+FUZZ_TEST(ContainerNamesTest, DetermineContainerDoesNotCrash)
+    .WithDomains(fuzztest::Arbitrary<std::vector<uint8_t>>().WithMinSize(1));
 
 }  // namespace container_names
 

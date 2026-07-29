@@ -26,8 +26,10 @@ InterpolableLength* MaybeConvertLength(const CSSPrimitiveValue* value) {
 InterpolableColor* MaybeConvertColor(const CSSValue* value,
                                      const StyleResolverState* state) {
   if (value) {
-    return CSSColorInterpolationType::MaybeCreateInterpolableColor(*value,
-                                                                   state);
+    // TODO(crbug.com/498954025): Support unresolved color-mix in shadow
+    // animations.
+    return DynamicTo<InterpolableColor>(
+        CSSColorInterpolationType::MaybeCreateInterpolableColor(*value, state));
   }
   mojom::blink::ColorScheme color_scheme =
       state ? state->StyleBuilder().UsedColorScheme()
@@ -68,7 +70,7 @@ InterpolableShadow* InterpolableShadow::Create(
   return MakeGarbageCollected<InterpolableShadow>(
       InterpolableLength::CreatePixels(shadow_data.X() / zoom),
       InterpolableLength::CreatePixels(shadow_data.Y() / zoom),
-      InterpolableLength::CreatePixels(shadow_data.Blur() / zoom),
+      InterpolableLength::CreatePixels(shadow_data.BlurValue() / zoom),
       InterpolableLength::CreatePixels(shadow_data.Spread() / zoom),
       CSSColorInterpolationType::CreateInterpolableColor(
           shadow_data.GetColor(), color_scheme, color_provider),
@@ -88,7 +90,7 @@ InterpolableShadow* InterpolableShadow::CreateNeutral() {
 // static
 InterpolableShadow* InterpolableShadow::MaybeConvertCSSValue(
     const CSSValue& value,
-    const StyleResolverState* state) {
+    const StyleResolverState& state) {
   const auto* shadow = DynamicTo<CSSShadowValue>(value);
   if (!shadow) {
     return nullptr;
@@ -106,7 +108,7 @@ InterpolableShadow* InterpolableShadow::MaybeConvertCSSValue(
   InterpolableLength* y = MaybeConvertLength(shadow->y.Get());
   InterpolableLength* blur = MaybeConvertLength(shadow->blur.Get());
   InterpolableLength* spread = MaybeConvertLength(shadow->spread.Get());
-  InterpolableColor* color = MaybeConvertColor(shadow->color, state);
+  InterpolableColor* color = MaybeConvertColor(shadow->color, &state);
 
   // If any of the conversations failed, we can't represent this CSSValue.
   if (!x || !y || !blur || !spread || !color) {
@@ -171,8 +173,8 @@ ShadowData InterpolableShadow::CreateShadowData(
   DCHECK(shadow_blur.IsFixed());
   DCHECK(shadow_spread.IsFixed());
   return ShadowData(
-      gfx::Vector2dF(shadow_x.Value(), shadow_y.Value()), shadow_blur.Value(),
-      shadow_spread.Value(), shadow_style_,
+      gfx::Vector2dF(shadow_x.Pixels(), shadow_y.Pixels()),
+      shadow_blur.Pixels(), shadow_spread.Pixels(), shadow_style_,
       StyleColor(
           CSSColorInterpolationType::ResolveInterpolableColor(*color_, state)));
 }

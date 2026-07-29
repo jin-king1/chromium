@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/webui/ash/extended_updates/extended_updates_ui.h"
 
+#include "ash/constants/url_constants.h"
+#include "ash/constants/webui_url_constants.h"
 #include "ash/webui/common/trusted_types_util.h"
 #include "base/containers/span.h"
 #include "chrome/browser/ash/extended_updates/extended_updates_controller.h"
@@ -11,12 +13,12 @@
 #include "chrome/browser/ui/webui/ash/extended_updates/extended_updates.mojom.h"
 #include "chrome/browser/ui/webui/ash/extended_updates/extended_updates_page_handler.h"
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
-#include "chrome/common/url_constants.h"
-#include "chrome/common/webui_url_constants.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/extended_updates_resources.h"
 #include "chrome/grit/extended_updates_resources_map.h"
 #include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -27,15 +29,16 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/devicetype_utils.h"
 #include "ui/web_dialogs/web_dialog_ui.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/webui_util.h"
 
 namespace ash::extended_updates {
 
 ExtendedUpdatesUI::ExtendedUpdatesUI(content::WebUI* web_ui)
     : ui::MojoWebDialogUI(web_ui) {
+  Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui), chrome::kChromeUIExtendedUpdatesDialogHost);
+      profile, ash::kChromeUIExtendedUpdatesDialogHost);
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
       {"dialogHeading", IDS_EXTENDED_UPDATES_DIALOG_DIALOG_HEADING},
@@ -56,10 +59,11 @@ ExtendedUpdatesUI::ExtendedUpdatesUI(content::WebUI* web_ui)
   };
   source->AddLocalizedStrings(kLocalizedStrings);
 
-  source->AddString("dialogDescriptionP2",
-                    l10n_util::GetStringFUTF16(
-                        IDS_EXTENDED_UPDATES_DIALOG_DIALOG_DESCRIPTION_P2,
-                        chrome::kDeviceExtendedUpdatesLearnMoreURL));
+  source->AddString(
+      "dialogDescriptionP2",
+      l10n_util::GetStringFUTF16(
+          IDS_EXTENDED_UPDATES_DIALOG_DIALOG_DESCRIPTION_P2,
+          ash::external_urls::kDeviceExtendedUpdatesLearnMoreURL));
   source->AddString(
       "popupDescription",
       l10n_util::GetStringFUTF16(IDS_EXTENDED_UPDATES_DIALOG_POPUP_DESCRIPTION,
@@ -85,12 +89,6 @@ void ExtendedUpdatesUI::BindInterface(
   page_factory_receiver_.Bind(std::move(receiver));
 }
 
-void ExtendedUpdatesUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
-}
-
 void ExtendedUpdatesUI::CreatePageHandler(
     mojo::PendingRemote<ash::extended_updates::mojom::Page> page,
     mojo::PendingReceiver<ash::extended_updates::mojom::PageHandler> receiver) {
@@ -98,12 +96,12 @@ void ExtendedUpdatesUI::CreatePageHandler(
   page_handler_ = std::make_unique<ExtendedUpdatesPageHandler>(
       std::move(page), std::move(receiver), web_ui(),
       base::BindOnce(&ExtendedUpdatesUI::CloseDialog, base::Unretained(this),
-                     base::Value::List()));
+                     base::ListValue()));
 }
 
 ExtendedUpdatesUIConfig::ExtendedUpdatesUIConfig()
     : DefaultWebUIConfig(content::kChromeUIScheme,
-                         chrome::kChromeUIExtendedUpdatesDialogHost) {}
+                         ash::kChromeUIExtendedUpdatesDialogHost) {}
 
 ExtendedUpdatesUIConfig::~ExtendedUpdatesUIConfig() = default;
 

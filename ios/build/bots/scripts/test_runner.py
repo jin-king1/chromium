@@ -20,6 +20,7 @@ import time
 from typing import List, Optional
 
 import constants
+import exception_utils
 import file_util
 import gtest_utils
 import mac_util
@@ -31,6 +32,12 @@ import test_runner_errors
 from xcode_log_parser import XcodeLogParser, Xcode16LogParser
 import xcode_util
 import xctest_utils
+
+THIS_DIR = os.path.abspath(os.path.dirname(__file__))
+CHROMIUM_SRC_DIR = os.path.abspath(os.path.join(THIS_DIR, '../../../..'))
+sys.path.append(
+    os.path.abspath(os.path.join(CHROMIUM_SRC_DIR, 'build/util/lib/proto')))
+import measures
 
 LOGGER = logging.getLogger(__name__)
 DERIVED_DATA = os.path.expanduser('~/Library/Developer/Xcode/DerivedData')
@@ -59,8 +66,7 @@ class AppLaunchError(TestRunnerError):
 class AppNotFoundError(TestRunnerError):
   """The requested app was not found."""
   def __init__(self, app_path):
-    super(AppNotFoundError, self).__init__(
-      'App does not exist: %s' % app_path)
+    super(AppNotFoundError, self).__init__(f'App does not exist: {app_path}')
 
 
 class SystemAlertPresentError(DeviceError):
@@ -73,8 +79,9 @@ class SystemAlertPresentError(DeviceError):
 class DeviceDetectionError(DeviceError):
   """Unexpected number of devices detected."""
   def __init__(self, udids):
+    joined_udids = '\n'.join(udids)
     super(DeviceDetectionError, self).__init__(
-      'Expected one device, found %s:\n%s' % (len(udids), '\n'.join(udids)))
+        f'Expected one device, found {len(udids)}:\n{joined_udids}')
 
 
 class DeviceRestartError(DeviceError):
@@ -86,15 +93,25 @@ class DeviceRestartError(DeviceError):
 class PlugInsNotFoundError(TestRunnerError):
   """The PlugIns directory was not found."""
   def __init__(self, plugins_dir):
-    super(PlugInsNotFoundError, self).__init__(
-      'PlugIns directory does not exist: %s' % plugins_dir)
+    super(PlugInsNotFoundError,
+          self).__init__(f'PlugIns directory does not exist: {plugins_dir}')
 
 
 class SimulatorNotFoundError(TestRunnerError):
   """The given simulator binary was not found."""
   def __init__(self, iossim_path):
-    super(SimulatorNotFoundError, self).__init__(
-        'Simulator does not exist: %s' % iossim_path)
+    super(SimulatorNotFoundError,
+          self).__init__(f'Simulator does not exist: {iossim_path}')
+
+
+class UnsupportedDeviceTypeError(TestRunnerError):
+  """A simulator device type corresponds to an unsupported platform (e.g.
+  Apple Vision).
+  """
+
+  def __init__(self, device_type):
+    super(UnsupportedDeviceTypeError,
+          self).__init__(f'Unsupported device type: {device_type}')
 
 
 class TestDataExtractionError(DeviceError):
@@ -106,8 +123,8 @@ class TestDataExtractionError(DeviceError):
 class XcodeVersionNotFoundError(TestRunnerError):
   """The requested version of Xcode was not found."""
   def __init__(self, xcode_version):
-    super(XcodeVersionNotFoundError, self).__init__(
-        'Xcode version not found: %s' % xcode_version)
+    super(XcodeVersionNotFoundError,
+          self).__init__(f'Xcode version not found: {xcode_version}')
 
 
 class XCTestConfigError(TestRunnerError):
@@ -115,14 +132,14 @@ class XCTestConfigError(TestRunnerError):
 
   def __init__(self, message):
     super(XCTestConfigError,
-          self).__init__('Incorrect config related with XCTest: %s' % message)
+          self).__init__(f'Incorrect config related with XCTest: {message}')
 
 
 class XCTestPlugInNotFoundError(TestRunnerError):
   """The .xctest PlugIn was not found."""
   def __init__(self, xctest_path):
-    super(XCTestPlugInNotFoundError, self).__init__(
-        'XCTest not found: %s' % xctest_path)
+    super(XCTestPlugInNotFoundError,
+          self).__init__(f'XCTest not found: {xctest_path}')
 
 
 class ParallelSimDisabledError(TestRunnerError):
@@ -156,7 +173,7 @@ def defaults_write(d, key, value):
     key: (str) A key.
     value: (str) A value.
   """
-  LOGGER.info('Run \'defaults write %s %s %s\'' % (d, key, value))
+  LOGGER.info(f"Run 'defaults write {d} {key} {value}'")
   subprocess.call(['defaults', 'write', d, key, value])
 
 
@@ -167,7 +184,7 @@ def defaults_delete(d, key):
     d: (str) A dictionary.
     key: (str) Key to delete.
   """
-  LOGGER.info('Run \'defaults delete %s %s\'' % (d, key))
+  LOGGER.info(f"Run 'defaults delete {d} {key}'")
   subprocess.call(['defaults', 'delete', d, key])
 
 
@@ -181,7 +198,7 @@ def terminate_process(proc, proc_name):
     proc_name: A name of process.
   """
   try:
-    LOGGER.info('Killing hung process %s' % proc.pid)
+    LOGGER.info(f'Killing hung process {proc.pid}')
     proc.terminate()
     attempts_to_kill = 3
     ps = psutil.Process(proc.pid)
@@ -198,8 +215,8 @@ def terminate_process(proc, proc_name):
         if not running_processes:
           LOGGER.debug('There are no running %s processes.', proc_name)
           break
-        LOGGER.debug('List of running %s processes: %s'
-                     % (proc_name, running_processes))
+        LOGGER.debug(
+            f'List of running {proc_name} processes: {running_processes}')
         # Killing running processes with proc_name
         for p in running_processes:
           p.send_signal(signal.SIGKILL)
@@ -208,14 +225,16 @@ def terminate_process(proc, proc_name):
         LOGGER.info('Process was killed!')
         break
   except OSError as ex:
-    LOGGER.info('Error while killing a process: %s' % ex)
+    LOGGER.info(f'Error while killing a process: {ex}')
 
 
 # TODO(crbug.com/40115765): Moved print_process_output to utils class.
-def print_process_output(proc,
-                         proc_name=None,
-                         parser=None,
-                         timeout=constants.READLINE_TIMEOUT):
+def print_process_output(
+    proc,
+    proc_name=None,
+    parser=None,
+    timeout=constants.READLINE_TIMEOUT,
+    exception_checker: exception_utils.ExceptionChecker = None):
   """Logs process messages in console and waits until process is done.
 
   Method waits until no output message and if no message for timeout seconds,
@@ -230,6 +249,7 @@ def print_process_output(proc,
       If proc_name is not specified, process name will be used to kill process.
     parser: A parser.
     timeout: A timeout(in seconds) to subprocess.stdout.readline method.
+    exception_checker: (ExceptionChecker) will check each line for exceptions.
   """
   out = []
   if not proc_name:
@@ -257,11 +277,15 @@ def print_process_output(proc,
     out.append(line)
     if parser:
       parser.ProcessLine(line)
+    if exception_checker:
+      exception_checker.check_line(line)
     LOGGER.info(line)
     sys.stdout.flush()
 
   if parser:
     parser.Finalize()
+  if exception_checker:
+    exception_checker.throw_first()
   LOGGER.debug('Finished print_process_output.')
   return out
 
@@ -323,7 +347,9 @@ class TestRunner(object):
       test_cases: List of tests to be included in the test run. None or [] to
         include all tests.
       xctest: Whether or not this is an XCTest.
-
+      exception_checker: (ExceptionChecker) An exception checker that will check
+        logs for infra related issues and raise them as exceptions. Default is
+        None.
     Raises:
       AppNotFoundError: If the given app does not exist.
       PlugInsNotFoundError: If the PlugIns directory does not exist for XCTests.
@@ -359,6 +385,8 @@ class TestRunner(object):
     self.readline_timeout = (
         kwargs.get('readline_timeout') or constants.READLINE_TIMEOUT)
     self.output_disabled_tests = kwargs.get('output_disabled_tests') or False
+
+    self.exception_checker = kwargs.get('exception_checker')
 
     self.test_results = init_test_result_defaults()
 
@@ -437,6 +465,32 @@ class TestRunner(object):
   def shutdown_and_restart(self):
     """Restart a device or relaunch a simulator."""
     pass
+
+  def delete_cached_simulator(self):
+    """Deletes the cached simulator for this run's ios version and device
+    type."""
+
+    # Only delete for simulator based runs
+    if not iossim_util.is_device_with_udid_simulator(self.udid):
+      return
+
+    # Only delete if caching enabled
+    if not self.use_simulator_cache:
+      return
+
+    LOGGER.info('Detected a possible bad state in cached simulator, '
+                'purging simulator from the cache.')
+
+    cache_udids = iossim_util.get_simulator_udids_by_platform_and_version(
+        self.platform,
+        self.version,
+        path=iossim_util.SIMULATOR_CACHE_PATH,
+    )
+
+    for cache_udid in cache_udids:
+      iossim_util.delete_simulator_by_udid(cache_udid,
+                                           iossim_util.SIMULATOR_CACHE_PATH)
+    measures.data_points('simulator_cache_purged').record(True)
 
   def set_up(self):
     """Performs setup actions which must occur prior to every test launch."""
@@ -577,7 +631,7 @@ class TestRunner(object):
         file_name = os.path.split(parser.compiled_tests_file_path)[1]
         pull_cmd = [
             'idevicefs', '--udid', self.udid, 'pull',
-            '@%s/Documents/%s' % (self.cfbundleid, file_name), self.out_dir
+            f'@{self.cfbundleid}/Documents/{file_name}', self.out_dir
         ]
         print_process_output(self.start_proc(pull_cmd))
         host_tests_file_path = os.path.join(self.out_dir, file_name)
@@ -603,8 +657,23 @@ class TestRunner(object):
     test_app = self.get_launch_test_app()
     out_dir = os.path.join(self.out_dir, 'TestResults')
     cmd = self.get_launch_command(test_app, out_dir, destination, self.clones)
+
+    # Preboot simulator and measure boot time
+    if iossim_util.is_device_with_udid_simulator(self.udid):
+      with measures.time_consumption('Simulator full boot', 'TestRunner',
+                                     'Pre launch for testing'):
+        iossim_util.ensure_simulator_fully_booted(self.udid)
+
     try:
       result = self._run(cmd=cmd, clones=self.clones or 1)
+
+      # If result represents a crash and simulator caching is enabled, purge the
+      # simulator from the cache to ensure the cached simulator's state is not
+      # the source of the crash.
+      if result.crashed and iossim_util.is_device_with_udid_simulator(
+          self.udid):
+        self.delete_cached_simulator()
+
       if (result.crashed and not result.spawning_test_launcher and
           not result.crashed_tests()):
         # If the app crashed but not during any particular test case, assume
@@ -633,13 +702,14 @@ class TestRunner(object):
           LOGGER.warning('Crashed during %s, resuming...\n',
                          list(result.crashed_tests()))
           test_app.excluded_tests = list(overall_result.all_test_names())
+          test_app.crashed_tests = list(result.crashed_tests())
           # Changing test filter will change selected gtests in this shard.
           # Thus, sharding env vars have to be cleared to ensure needed tests
           # are run. This means there might be duplicate same tests across
           # the shards.
           test_app.remove_gtest_sharding_env_vars()
-          retry_out_dir = os.path.join(
-              self.out_dir, 'retry_after_crash_%d' % int(time.time()))
+          retry_out_dir = os.path.join(self.out_dir,
+                                       f'retry_after_crash_{int(time.time())}')
           result = self._run(
               self.get_launch_command(test_app, retry_out_dir, destination))
           result.report_to_result_sink()
@@ -669,7 +739,7 @@ class TestRunner(object):
             # Thus, sharding env vars have to be cleared to ensure the test
             # runs when it's the only test in gtest_filter.
             test_app.remove_gtest_sharding_env_vars()
-            test_retry_sub_dir = '%s_retry_%d' % (test.replace('/', '_'), i)
+            test_retry_sub_dir = f'{test.replace("/", "_")}_retry_{i}'
             retry_out_dir = os.path.join(self.out_dir, test_retry_sub_dir)
             retry_result = self._run(
                 self.get_launch_command(test_app, retry_out_dir, destination))
@@ -726,7 +796,8 @@ class SimulatorTestRunner(TestRunner):
       test_cases: List of tests to be included in the test run. None or [] to
         include all tests.
       use_clang_coverage: Whether code coverage is enabled in this run.
-      wpr_tools_path: Path to pre-installed WPR-related tools
+      use_simulator_cache: Whether to use prelaunched simulators in the cache
+        for this run.
       xctest: Whether or not this is an XCTest.
 
     Raises:
@@ -747,7 +818,12 @@ class SimulatorTestRunner(TestRunner):
     self.start_time = None
     self.version = version
     self.clones = kwargs.get('clones') or 1
-    self.udid = iossim_util.get_simulator(self.platform, self.version)
+    self.use_simulator_cache = kwargs.get('use_simulator_cache') or False
+    self.udid = iossim_util.get_simulator(self.platform, self.version,
+                                          self.out_dir,
+                                          self.use_simulator_cache)
+    self.platform_type = iossim_util.get_platform_type_by_platform(
+        self.platform)
     self.use_clang_coverage = kwargs.get('use_clang_coverage') or False
 
   @staticmethod
@@ -789,10 +865,9 @@ class SimulatorTestRunner(TestRunner):
   def set_up(self):
     """Performs setup actions which must occur prior to every test launch."""
     self.remove_proxy_settings()
-    self.kill_simulators()
-    self.wipe_simulator()
     self.wipe_derived_data()
     self.disable_hw_keyboard()
+    self.kill_simulators()
     self.homedir = self.get_home_directory()
     # Crash reports have a timestamp in their file name, formatted as
     # YYYY-MM-DD-HHMMSS. Save the current time in the same format so
@@ -847,8 +922,7 @@ class SimulatorTestRunner(TestRunner):
         # a straight string comparison works.
         if report_time > self.start_time:
           with open(os.path.join(crash_reports_dir, crash_report)) as f:
-            self.logs['crash report (%s)' % report_time] = (
-                f.read().splitlines())
+            self.logs[f'crash report ({report_time})'] = (f.read().splitlines())
 
   def tear_down(self):
     """Performs cleanup actions which must occur after every test launch."""
@@ -939,6 +1013,7 @@ class SimulatorTestRunner(TestRunner):
     if not self.xctest:
       return test_apps.GTestsApp(
           self.app_path,
+          self.platform_type,
           included_tests=self.test_cases,
           env_vars=self.env_vars,
           repeat_count=self.repeat_count,
@@ -946,6 +1021,7 @@ class SimulatorTestRunner(TestRunner):
 
     return test_apps.SimulatorXCTestUnitTestsApp(
         self.app_path,
+        self.platform_type,
         included_tests=self.test_cases,
         env_vars=self.env_vars,
         repeat_count=self.repeat_count,
@@ -971,6 +1047,8 @@ class DeviceTestRunner(TestRunner):
       test_cases: List of tests to be included in the test run. None or [] to
         include all tests.
       xctest: Whether or not this is an XCTest.
+      exception_checker: (ExceptionChecker) an exception checker that checks
+        log lines for infra related issues and raises them as exceptions.
 
     Raises:
       AppNotFoundError: If the given app does not exist.
@@ -979,6 +1057,9 @@ class DeviceTestRunner(TestRunner):
       XCTestPlugInNotFoundError: If the .xctest PlugIn does not exist.
     """
     super(DeviceTestRunner, self).__init__(app_path, out_dir, **kwargs)
+
+    self.exception_checker = kwargs.get(
+        'exception_checker', exception_utils.DeviceExceptionChecker())
 
     self.udid = subprocess.check_output(['idevice_id',
                                          '--list']).decode('utf-8').rstrip()
@@ -1020,9 +1101,10 @@ class DeviceTestRunner(TestRunner):
     """Extracts data emitted by the test."""
     cmd = [
         'idevicefs',
-        '--udid', self.udid,
+        '--udid',
+        self.udid,
         'pull',
-        '@%s/Documents' % self.cfbundleid,
+        f'@{self.cfbundleid}/Documents',
         os.path.join(self.out_dir, 'Documents'),
     ]
     try:
@@ -1093,7 +1175,7 @@ class DeviceTestRunner(TestRunner):
     if test_app.included_tests or test_app.excluded_tests:
       gtest_filter = test_apps.get_gtest_filter(test_app.included_tests,
                                                 test_app.excluded_tests)
-      args.append('--gtest_filter=%s' % gtest_filter)
+      args.append(f'--gtest_filter={gtest_filter}')
 
     for env_var in self.env_vars:
       cmd.extend(['-D', env_var])

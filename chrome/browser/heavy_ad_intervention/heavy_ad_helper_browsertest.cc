@@ -5,13 +5,13 @@
 #include "components/heavy_ad_intervention/heavy_ad_helper.h"
 
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/heavy_ad_intervention/heavy_ad_service_factory.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -64,7 +64,7 @@ IN_PROC_BROWSER_TEST_F(HeavyAdHelperBrowserTest,
   content::WebContentsConsoleObserver console_observer(web_contents);
 
   content::TestNavigationObserver error_observer(web_contents);
-  controller.LoadPostCommitErrorPage(
+  controller.NavigateFrameToErrorPage(
       child, url,
       heavy_ad_intervention::PrepareHeavyAdPage(
           g_browser_process->GetApplicationLocale()));
@@ -92,7 +92,7 @@ IN_PROC_BROWSER_TEST_F(HeavyAdHelperBrowserTest,
       ChildFrameAt(web_contents->GetPrimaryMainFrame(), 0);
 
   content::TestNavigationObserver error_observer(web_contents);
-  controller.LoadPostCommitErrorPage(
+  controller.NavigateFrameToErrorPage(
       child, url,
       heavy_ad_intervention::PrepareHeavyAdPage(
           g_browser_process->GetApplicationLocale()));

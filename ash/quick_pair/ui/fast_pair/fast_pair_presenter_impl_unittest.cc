@@ -236,7 +236,6 @@ class FastPairPresenterImplTest : public AshTestBase {
   base::HistogramTester histogram_tester_;
   std::unique_ptr<signin::IdentityTestEnvironment> identity_test_environment_;
   std::unique_ptr<MockQuickPairBrowserDelegate> browser_delegate_;
-  signin::IdentityTestEnvironment identity_test_env_;
   raw_ptr<signin::IdentityManager> identity_manager_;
   DiscoveryAction discovery_action_;
   DiscoveryAction secondary_discovery_action_;
@@ -254,39 +253,13 @@ class FastPairPresenterImplTest : public AshTestBase {
   base::WeakPtrFactory<FastPairPresenterImplTest> weak_pointer_factory_{this};
 };
 
-TEST_F(FastPairPresenterImplTest,
-       ShowInitialDiscovery_User_OptedIn_FlagEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kFastPairSavedDevices,
-                            features::kFastPairSavedDevicesStrictOptIn},
-      /*disabled_features=*/{});
-  EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryUserNotificationId));
-
-  SetIdentityManager(identity_manager_);
-
-  Login(user_manager::UserType::kRegular);
-  repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  base::RunLoop().RunUntilIdle();
-  fast_pair_presenter_->ShowDiscovery(
-      initially_paired_device_,
-      base::BindRepeating(&FastPairPresenterImplTest::OnDiscoveryAction,
-                          weak_pointer_factory_.GetWeakPtr(),
-                          initially_paired_device_));
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_TRUE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryUserNotificationId));
-}
 
 TEST_F(FastPairPresenterImplTest,
        ShowInitialDiscovery_User_OptedIn_FlagDisabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
       kFastPairDiscoveryUserNotificationId));
 
@@ -311,7 +284,7 @@ TEST_F(FastPairPresenterImplTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{features::kFastPairSavedDevices},
-      /*disabled_features=*/{features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{});
   EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
       kFastPairDiscoveryUserNotificationId));
 
@@ -331,39 +304,13 @@ TEST_F(FastPairPresenterImplTest,
       kFastPairDiscoveryUserNotificationId));
 }
 
-TEST_F(FastPairPresenterImplTest,
-       ShowInitialDiscovery_User_OptedOut_FlagEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kFastPairSavedDevices,
-                            features::kFastPairSavedDevicesStrictOptIn},
-      /*disabled_features=*/{});
-  EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryGuestNotificationId));
-
-  SetIdentityManager(identity_manager_);
-
-  Login(user_manager::UserType::kRegular);
-  repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_OUT);
-  base::RunLoop().RunUntilIdle();
-  fast_pair_presenter_->ShowDiscovery(
-      initially_paired_device_,
-      base::BindRepeating(&FastPairPresenterImplTest::OnDiscoveryAction,
-                          weak_pointer_factory_.GetWeakPtr(),
-                          initially_paired_device_));
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_TRUE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryGuestNotificationId));
-}
 
 TEST_F(FastPairPresenterImplTest,
        ShowInitialDiscovery_User_OptedOut_FlagDisabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
       kFastPairDiscoveryUserNotificationId));
 
@@ -388,7 +335,7 @@ TEST_F(FastPairPresenterImplTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{features::kFastPairSavedDevices},
-      /*disabled_features=*/{features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{});
   EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
       kFastPairDiscoveryUserNotificationId));
 
@@ -431,8 +378,7 @@ TEST_F(FastPairPresenterImplTest, RemoveNotifications) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   SetIdentityManager(identity_manager_);
   Login(user_manager::UserType::kRegular);
   base::RunLoop().RunUntilIdle();
@@ -456,7 +402,7 @@ TEST_F(FastPairPresenterImplTest, ExtendNotification) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{features::kFastPairSavedDevices},
-      /*disabled_features=*/{features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{});
   SetIdentityManager(identity_manager_);
   Login(user_manager::UserType::kRegular);
   base::RunLoop().RunUntilIdle();
@@ -491,8 +437,7 @@ TEST_F(FastPairPresenterImplTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_OUT);
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(
@@ -518,7 +463,7 @@ TEST_F(FastPairPresenterImplTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{features::kFastPairSavedDevices},
-      /*disabled_features=*/{features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{});
   repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_OUT);
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(
@@ -532,64 +477,7 @@ TEST_F(FastPairPresenterImplTest,
       kFastPairDiscoveryUserNotificationId));
 }
 
-TEST_F(FastPairPresenterImplTest,
-       ShowInitialDiscovery_NoDeviceMetadata_FlagEnabled) {
-  EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryUserNotificationId));
 
-  SetIdentityManager(identity_manager_);
-  repository_->ClearFakeMetadata(kValidModelId);
-
-  Login(user_manager::UserType::kRegular);
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kFastPairSavedDevices,
-                            features::kFastPairSavedDevicesStrictOptIn},
-      /*disabled_features=*/{});
-  repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  base::RunLoop().RunUntilIdle();
-  fast_pair_presenter_->ShowDiscovery(
-      initially_paired_device_,
-      base::BindRepeating(&FastPairPresenterImplTest::OnDiscoveryAction,
-                          weak_pointer_factory_.GetWeakPtr(),
-                          initially_paired_device_));
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryUserNotificationId));
-}
-
-TEST_F(FastPairPresenterImplTest,
-       ShowInitialDiscovery_V1initially_paired_device_FlagEnabled) {
-  EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryUserNotificationId));
-
-  SetIdentityManager(identity_manager_);
-  repository_->ClearFakeMetadata(kValidModelId);
-
-  nearby::fastpair::Device metadata;
-  repository_->SetFakeMetadata(kValidModelId, metadata);
-  initially_paired_device_ = base::MakeRefCounted<Device>(
-      kValidModelId, kTestAddress, Protocol::kFastPairInitial);
-
-  Login(user_manager::UserType::kRegular);
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kFastPairSavedDevices,
-                            features::kFastPairSavedDevicesStrictOptIn},
-      /*disabled_features=*/{});
-  repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  base::RunLoop().RunUntilIdle();
-  fast_pair_presenter_->ShowDiscovery(
-      initially_paired_device_,
-      base::BindRepeating(&FastPairPresenterImplTest::OnDiscoveryAction,
-                          weak_pointer_factory_.GetWeakPtr(),
-                          initially_paired_device_));
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_TRUE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryUserNotificationId));
-}
 
 TEST_F(FastPairPresenterImplTest,
        ShowInitialDiscovery_V1initially_paired_device_FlagDisabled) {
@@ -608,8 +496,7 @@ TEST_F(FastPairPresenterImplTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_OUT);
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(
@@ -640,7 +527,7 @@ TEST_F(FastPairPresenterImplTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{features::kFastPairSavedDevices},
-      /*disabled_features=*/{features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{});
   repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_OUT);
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(
@@ -654,31 +541,6 @@ TEST_F(FastPairPresenterImplTest,
       kFastPairDiscoveryUserNotificationId));
 }
 
-TEST_F(FastPairPresenterImplTest,
-       ShowInitialDiscovery_Regular_NoIdentityManager_FlagEnabled) {
-  EXPECT_FALSE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryGuestNotificationId));
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{features::kFastPairSavedDevices,
-                            features::kFastPairSavedDevicesStrictOptIn},
-      /*disabled_features=*/{});
-
-  SetIdentityManager(nullptr);
-
-  Login(user_manager::UserType::kRegular);
-  repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
-  base::RunLoop().RunUntilIdle();
-  fast_pair_presenter_->ShowDiscovery(
-      initially_paired_device_,
-      base::BindRepeating(&FastPairPresenterImplTest::OnDiscoveryAction,
-                          weak_pointer_factory_.GetWeakPtr(),
-                          initially_paired_device_));
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_TRUE(test_message_center_.FindVisibleNotificationById(
-      kFastPairDiscoveryGuestNotificationId));
-}
 
 TEST_F(FastPairPresenterImplTest,
        ShowInitialDiscovery_Regular_NoIdentityManager_FlagDisabled) {
@@ -687,8 +549,7 @@ TEST_F(FastPairPresenterImplTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
 
   SetIdentityManager(nullptr);
 
@@ -713,7 +574,7 @@ TEST_F(FastPairPresenterImplTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{features::kFastPairSavedDevices},
-      /*disabled_features=*/{features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{});
 
   SetIdentityManager(nullptr);
 
@@ -737,8 +598,7 @@ TEST_F(FastPairPresenterImplTest, ShowInitialDiscovery_User_ConnectClicked) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(
       initially_paired_device_,
@@ -762,8 +622,7 @@ TEST_F(FastPairPresenterImplTest, ShowInitialDiscovery_User_LearnMoreClicked) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(
       initially_paired_device_,
@@ -787,8 +646,7 @@ TEST_F(FastPairPresenterImplTest, ShowInitialDiscovery_User_DismissedByUser) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(
       initially_paired_device_,
@@ -814,8 +672,7 @@ TEST_F(FastPairPresenterImplTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(
       initially_paired_device_,
@@ -838,8 +695,7 @@ TEST_F(FastPairPresenterImplTest, ShowInitialDiscovery_User_DismissedByOS) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(
       initially_paired_device_,
@@ -882,12 +738,11 @@ TEST_F(FastPairPresenterImplTest, ShowInitialDiscovery_KioskApp) {
 
   SetIdentityManager(identity_manager_);
 
-  Login(user_manager::UserType::kKioskApp);
+  Login(user_manager::UserType::kKioskChromeApp);
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{},
-      /*disabled_features=*/{features::kFastPairSavedDevices,
-                             features::kFastPairSavedDevicesStrictOptIn});
+      /*disabled_features=*/{features::kFastPairSavedDevices});
   repository_->SetOptInStatus(nearby::fastpair::OptInStatus::STATUS_OPTED_IN);
   base::RunLoop().RunUntilIdle();
   fast_pair_presenter_->ShowDiscovery(

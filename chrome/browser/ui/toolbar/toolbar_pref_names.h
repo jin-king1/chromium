@@ -29,6 +29,10 @@ inline constexpr char kPinnedChromeLabsMigrationComplete[] =
 inline constexpr char kPinnedCastMigrationComplete[] =
     "toolbar.pinned_cast_migration_complete";
 
+// Indicates whether tabs from other devices side panel has been auto-pinned.
+inline constexpr char kTabsFromOtherDevicesAutoPinnedMigration[] =
+    "toolbar.tabs_from_other_devices_auto_pinned_migration";
+
 }  // namespace prefs
 
 namespace toolbar {

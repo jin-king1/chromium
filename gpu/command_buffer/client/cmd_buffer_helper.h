@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 // This file contains the command buffer helper class.
 
 #ifndef GPU_COMMAND_BUFFER_CLIENT_CMD_BUFFER_HELPER_H_
@@ -17,16 +12,17 @@
 #include <string.h>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/functional/function_ref.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "base/trace_event/memory_dump_provider.h"
 #include "build/build_config.h"
+#include "gpu/command_buffer/client/gpu_command_buffer_client_export.h"
 #include "gpu/command_buffer/common/cmd_buffer_common.h"
 #include "gpu/command_buffer/common/command_buffer.h"
 #include "gpu/command_buffer/common/context_result.h"
-#include "gpu/gpu_export.h"
 
 namespace gpu {
 
@@ -56,7 +52,7 @@ const int kAutoFlushBig = 2;     // 1/2 of the buffer
 //
 // helper.WaitForToken(token);  // this doesn't return until the first two
 //                              // commands have been executed.
-class GPU_EXPORT CommandBufferHelper {
+class GPU_COMMAND_BUFFER_CLIENT_EXPORT CommandBufferHelper {
  public:
   explicit CommandBufferHelper(CommandBuffer* command_buffer);
 
@@ -157,7 +153,7 @@ class GPU_EXPORT CommandBufferHelper {
     DCHECK_LE(entries, immediate_entry_count_);
 
     // Allocate space and advance put_.
-    CommandBufferEntry* space = &entries_[put_];
+    CommandBufferEntry* space = UNSAFE_TODO(&entries_[put_]);
     put_ += entries;
     immediate_entry_count_ -= entries;
 
@@ -239,7 +235,7 @@ class GPU_EXPORT CommandBufferHelper {
         GetImmediateCmdSpace<cmd::SetBucketDataImmediate>(size);
     if (cmd) {
       cmd->Init(bucket_id, offset, size);
-      memcpy(ImmediateDataAddress(cmd), data, size);
+      UNSAFE_TODO(memcpy(ImmediateDataAddress(cmd), data, size));
     }
   }
 

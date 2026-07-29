@@ -10,11 +10,14 @@
 #include "base/android/jni_string.h"
 #include "base/containers/flat_map.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/stringprintf.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webid/account_selection_view.h"
-#include "content/public/browser/identity_request_dialog_controller.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom-shared.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom.h"
+#include "chrome/browser/ui/webid/identity_ui_utils.h"
+#include "content/public/browser/render_widget_host.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/webid/identity_request_dialog_controller.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "ui/android/color_utils_android.h"
 #include "ui/android/window_android.h"
 #include "ui/gfx/android/java_bitmap.h"
@@ -28,47 +31,73 @@
 #include "chrome/browser/ui/android/webid/jni_headers/IdentityCredentialTokenError_jni.h"
 #include "chrome/browser/ui/android/webid/jni_headers/IdentityProviderData_jni.h"
 #include "chrome/browser/ui/android/webid/jni_headers/IdentityProviderMetadata_jni.h"
+#include "chrome/browser/ui/android/webid/jni_headers/RelyingPartyData_jni.h"
 
 using base::android::AppendJavaStringArrayToStringVector;
 using base::android::AttachCurrentThread;
 using base::android::ConvertJavaStringToUTF8;
 using base::android::ConvertUTF8ToJavaString;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using DismissReason = content::IdentityRequestDialogController::DismissReason;
 
 namespace {
 
+// The size of the circle cropped avatar on Android, not including the offset
+// from badging.
+constexpr int kCircleCroppedBadgedAvatarSize = 40;
+
+inline ScopedJavaLocalRef<jintArray> ConvertFieldsToJavaArray(
+    JNIEnv* env,
+    const std::vector<content::IdentityRequestDialogDisclosureField>& fields) {
+  std::vector<int> int_array;
+  for (auto field : fields) {
+    int_array.push_back(static_cast<int>(field));
+  }
+  return base::android::ToJavaIntArray(env, int_array);
+}
+
 ScopedJavaLocalRef<jobject> ConvertToJavaAccount(
     JNIEnv* env,
     content::IdentityRequestAccount* account,
     bool is_multi_idp,
-    ScopedJavaLocalRef<jobject> identity_provider) {
+    ScopedJavaLocalRef<jobject> identity_provider,
+    float device_scale_factor) {
   ScopedJavaLocalRef<jobject> decoded_picture = nullptr;
   if (!account->decoded_picture.IsEmpty()) {
     decoded_picture =
         gfx::ConvertToJavaBitmap(*account->decoded_picture.ToSkBitmap());
   }
-  std::string display_name = account->given_name;
-  // We do this check here instead of in the Java code because checking flags
-  // is easier in C++.
-  if (display_name.empty() &&
-      !base::FeatureList::IsEnabled(features::kFedCmContinueWithoutName)) {
-    display_name = account->name;
+  ScopedJavaLocalRef<jobject> circle_cropped_badged_picture = nullptr;
+  if (is_multi_idp) {
+    circle_cropped_badged_picture = gfx::ConvertToJavaBitmap(
+        gfx::Image(webid::ComputeAccountCircleCroppedPicture(
+                       *account, /*avatar_size=*/kCircleCroppedBadgedAvatarSize,
+                       std::make_optional<gfx::ImageSkia>(
+                           account->identity_provider->idp_metadata
+                               .brand_decoded_icon.AsImageSkia()),
+                       device_scale_factor))
+            .AsBitmap());
   }
   return Java_Account_Constructor(
-      env, account->id, account->email, account->name, display_name,
+      env, account->id, account->display_identifier, account->display_name,
+      account->given_name,
       is_multi_idp ? std::make_optional<std::string>(
                          account->identity_provider->idp_for_display)
                    : std::nullopt,
-      decoded_picture, account->login_state == Account::LoginState::kSignIn,
+      // TODO(crbug.com/398001374): Pass the circle cropped image here to avoid
+      // duplication of code on Android.
+      decoded_picture, circle_cropped_badged_picture,
+      account->idp_claimed_login_state == Account::LoginState::kSignIn,
       account->browser_trusted_login_state == Account::LoginState::kSignIn,
-      account->is_filtered_out, identity_provider);
+      account->is_filtered_out, ConvertFieldsToJavaArray(env, account->fields),
+      identity_provider);
 }
 
 ScopedJavaLocalRef<jobject> ConvertToJavaIdentityProviderMetadata(
     JNIEnv* env,
-    const content::IdentityProviderMetadata& metadata) {
+    const content::IdentityProviderMetadata& metadata,
+    blink::mojom::RpMode rp_mode) {
   ScopedJavaLocalRef<jobject> decoded_picture = nullptr;
   if (!metadata.brand_decoded_icon.IsEmpty()) {
     decoded_picture =
@@ -78,9 +107,11 @@ ScopedJavaLocalRef<jobject> ConvertToJavaIdentityProviderMetadata(
       env, ui::OptionalSkColorToJavaColor(metadata.brand_text_color),
       ui::OptionalSkColorToJavaColor(metadata.brand_background_color),
       decoded_picture, metadata.config_url, metadata.idp_login_url,
-      // The UI code only cares about whether it should show the add account
-      // button so consider both options in the same boolean.
-      metadata.supports_add_account || metadata.has_filtered_out_account);
+      // We only support the add account feature on active mode. In both modes,
+      // we still show this button in the filtered out accounts case.
+      rp_mode == blink::mojom::RpMode::kPassive
+          ? metadata.has_filtered_out_account
+          : metadata.supports_add_account || metadata.has_filtered_out_account);
 }
 
 ScopedJavaLocalRef<jobject> ConvertToJavaIdentityCredentialTokenError(
@@ -103,14 +134,27 @@ ScopedJavaLocalRef<jobject> ConvertToJavaClientIdMetadata(
                                            brand_icon_bitmap);
 }
 
+ScopedJavaLocalRef<jobject> ConvertToJavaRelyingPartyData(
+    JNIEnv* env,
+    const content::RelyingPartyData& rp_data) {
+  ScopedJavaLocalRef<jobject> rp_icon_bitmap = nullptr;
+  if (!rp_data.rp_icon.IsEmpty()) {
+    rp_icon_bitmap = gfx::ConvertToJavaBitmap(*rp_data.rp_icon.ToSkBitmap());
+  }
+  return Java_RelyingPartyData_Constructor(
+      env, rp_data.rp_for_display, rp_data.iframe_for_display, rp_icon_bitmap,
+      rp_data.display_strings_may_change);
+}
+
 ScopedJavaLocalRef<jobjectArray> ConvertToJavaAccounts(
     JNIEnv* env,
     const std::vector<IdentityRequestAccountPtr>& accounts,
     const base::flat_map<IdentityProviderDataPtr, ScopedJavaLocalRef<jobject>>&
-        identity_providers_map) {
+        identity_providers_map,
+    float device_scale_factor) {
   ScopedJavaLocalRef<jclass> account_clazz = base::android::GetClass(
       env, "org/chromium/chrome/browser/ui/android/webid/data/Account");
-  ScopedJavaLocalRef<jobjectArray> array(
+  auto array = jni_zero::AdoptRef(
       env, env->NewObjectArray(accounts.size(), account_clazz.obj(), nullptr));
 
   base::android::CheckException(env);
@@ -119,30 +163,23 @@ ScopedJavaLocalRef<jobjectArray> ConvertToJavaAccounts(
   for (size_t i = 0; i < accounts.size(); ++i) {
     ScopedJavaLocalRef<jobject> item = ConvertToJavaAccount(
         env, accounts[i].get(), is_multi_idp,
-        identity_providers_map.at(accounts[i]->identity_provider));
+        identity_providers_map.at(accounts[i]->identity_provider),
+        device_scale_factor);
     env->SetObjectArrayElement(array.obj(), i, item.obj());
   }
   return array;
 }
 
-inline ScopedJavaLocalRef<jintArray> ConvertFieldsToJavaArray(
-    JNIEnv* env,
-    const std::vector<content::IdentityRequestDialogDisclosureField>& fields) {
-  std::vector<int> int_array;
-  for (auto field : fields) {
-    int_array.push_back(static_cast<int>(field));
-  }
-  return base::android::ToJavaIntArray(env, int_array);
-}
-
 ScopedJavaLocalRef<jobject> ConvertToJavaIdentityProviderData(
     JNIEnv* env,
-    content::IdentityProviderData* idp_data) {
+    content::IdentityProviderData* idp_data,
+    blink::mojom::RpMode rp_mode) {
   return Java_IdentityProviderData_Constructor(
       env, idp_data->idp_for_display,
-      ConvertToJavaIdentityProviderMetadata(env, idp_data->idp_metadata),
+      ConvertToJavaIdentityProviderMetadata(env, idp_data->idp_metadata,
+                                            rp_mode),
       ConvertToJavaClientIdMetadata(env, idp_data->client_metadata),
-      static_cast<jint>(idp_data->rp_context),
+      static_cast<int32_t>(idp_data->rp_context),
       ConvertFieldsToJavaArray(env, idp_data->disclosure_fields),
       idp_data->has_login_status_mismatch);
 }
@@ -150,12 +187,13 @@ ScopedJavaLocalRef<jobject> ConvertToJavaIdentityProviderData(
 base::flat_map<IdentityProviderDataPtr, ScopedJavaLocalRef<jobject>>
 ConvertToJavaIdentityProviderDataMap(
     JNIEnv* env,
-    const std::vector<IdentityProviderDataPtr>& identity_providers) {
+    const std::vector<IdentityProviderDataPtr>& identity_providers,
+    blink::mojom::RpMode rp_mode) {
   base::flat_map<IdentityProviderDataPtr, ScopedJavaLocalRef<jobject>> map;
 
   for (const auto& identity_provider : identity_providers) {
-    map[identity_provider] =
-        ConvertToJavaIdentityProviderData(env, identity_provider.get());
+    map[identity_provider] = ConvertToJavaIdentityProviderData(
+        env, identity_provider.get(), rp_mode);
   }
   return map;
 }
@@ -167,7 +205,7 @@ ScopedJavaLocalRef<jobjectArray> ConvertToJavaIdentityProvidersList(
   ScopedJavaLocalRef<jclass> identity_provider_clazz = base::android::GetClass(
       env,
       "org/chromium/chrome/browser/ui/android/webid/data/IdentityProviderData");
-  ScopedJavaLocalRef<jobjectArray> array(
+  auto array = jni_zero::AdoptRef(
       env, env->NewObjectArray(identity_providers_map.size(),
                                identity_provider_clazz.obj(), nullptr));
 
@@ -181,15 +219,18 @@ ScopedJavaLocalRef<jobjectArray> ConvertToJavaIdentityProvidersList(
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(FedCmJavaObjectCreationOutcome)
+
 enum class FedCmJavaObjectCreationOutcome {
   kNewObjectCreated = 0,
   kObjectReused = 1,
   kObjectCreationFailed = 2,
   kNoNativeView = 3,
   kNoWindow = 4,
-
   kMaxValue = kNoWindow
 };
+
+// LINT.ThenChange(//tools/metrics/histograms/metadata/blink/enums.xml:FedCmJavaObjectCreationOutcome)
 
 void RecordJavaObjectCreationOutcome(
     std::optional<blink::mojom::RpMode> rp_mode,
@@ -220,11 +261,12 @@ AccountSelectionViewAndroid::~AccountSelectionViewAndroid() {
   }
 }
 
+void AccountSelectionViewAndroid::OnPageActionClicked() {}
+
 bool AccountSelectionViewAndroid::Show(
-    const std::string& rp_for_display,
+    const content::RelyingPartyData& rp_data,
     const std::vector<IdentityProviderDataPtr>& idp_list,
     const std::vector<IdentityRequestAccountPtr>& accounts,
-    Account::SignInMode sign_in_mode,
     blink::mojom::RpMode rp_mode,
     const std::vector<IdentityRequestAccountPtr>& new_accounts) {
   if (!MaybeCreateJavaObject(rp_mode)) {
@@ -243,25 +285,28 @@ bool AccountSelectionViewAndroid::Show(
 
   base::flat_map<IdentityProviderDataPtr, ScopedJavaLocalRef<jobject>>
       identity_providers_map =
-          ConvertToJavaIdentityProviderDataMap(env, idp_list);
+          ConvertToJavaIdentityProviderDataMap(env, idp_list, rp_mode);
 
-  ScopedJavaLocalRef<jobjectArray> accounts_obj =
-      ConvertToJavaAccounts(env, accounts, identity_providers_map);
+  float device_scale_factor = delegate_->GetWebContents()
+                                  ->GetPrimaryMainFrame()
+                                  ->GetRenderWidgetHost()
+                                  ->GetDeviceScaleFactor();
+  ScopedJavaLocalRef<jobjectArray> accounts_obj = ConvertToJavaAccounts(
+      env, accounts, identity_providers_map, device_scale_factor);
 
-  ScopedJavaLocalRef<jobjectArray> new_accounts_obj =
-      ConvertToJavaAccounts(env, new_accounts, identity_providers_map);
+  ScopedJavaLocalRef<jobjectArray> new_accounts_obj = ConvertToJavaAccounts(
+      env, new_accounts, identity_providers_map, device_scale_factor);
 
   ScopedJavaLocalRef<jobjectArray> identity_providers_list =
       ConvertToJavaIdentityProvidersList(env, identity_providers_map);
 
   return Java_AccountSelectionBridge_showAccounts(
-      env, java_object_internal_, rp_for_display, accounts_obj,
-      identity_providers_list, sign_in_mode == Account::SignInMode::kAuto,
-      new_accounts_obj);
+      env, java_object_internal_, ConvertToJavaRelyingPartyData(env, rp_data),
+      accounts_obj, identity_providers_list, new_accounts_obj);
 }
 
 bool AccountSelectionViewAndroid::ShowFailureDialog(
-    const std::string& rp_for_display,
+    const content::RelyingPartyData& rp_data,
     const std::string& idp_for_display,
     blink::mojom::RpContext rp_context,
     blink::mojom::RpMode rp_mode,
@@ -279,14 +324,14 @@ bool AccountSelectionViewAndroid::ShowFailureDialog(
   }
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> idp_metadata_obj =
-      ConvertToJavaIdentityProviderMetadata(env, idp_metadata);
+      ConvertToJavaIdentityProviderMetadata(env, idp_metadata, rp_mode);
   return Java_AccountSelectionBridge_showFailureDialog(
-      env, java_object_internal_, rp_for_display, idp_for_display,
-      idp_metadata_obj, static_cast<jint>(rp_context));
+      env, java_object_internal_, ConvertToJavaRelyingPartyData(env, rp_data),
+      idp_for_display, idp_metadata_obj, static_cast<int32_t>(rp_context));
 }
 
 bool AccountSelectionViewAndroid::ShowErrorDialog(
-    const std::string& rp_for_display,
+    const content::RelyingPartyData& rp_data,
     const std::string& idp_for_display,
     blink::mojom::RpContext rp_context,
     blink::mojom::RpMode rp_mode,
@@ -301,15 +346,15 @@ bool AccountSelectionViewAndroid::ShowErrorDialog(
   }
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> idp_metadata_obj =
-      ConvertToJavaIdentityProviderMetadata(env, idp_metadata);
+      ConvertToJavaIdentityProviderMetadata(env, idp_metadata, rp_mode);
   return Java_AccountSelectionBridge_showErrorDialog(
-      env, java_object_internal_, rp_for_display, idp_for_display,
-      idp_metadata_obj, static_cast<jint>(rp_context),
+      env, java_object_internal_, ConvertToJavaRelyingPartyData(env, rp_data),
+      idp_for_display, idp_metadata_obj, static_cast<int32_t>(rp_context),
       ConvertToJavaIdentityCredentialTokenError(env, error));
 }
 
 bool AccountSelectionViewAndroid::ShowLoadingDialog(
-    const std::string& rp_for_display,
+    const content::RelyingPartyData& rp_data,
     const std::string& idp_for_display,
     blink::mojom::RpContext rp_context,
     blink::mojom::RpMode rp_mode) {
@@ -322,8 +367,37 @@ bool AccountSelectionViewAndroid::ShowLoadingDialog(
   }
   JNIEnv* env = AttachCurrentThread();
   return Java_AccountSelectionBridge_showLoadingDialog(
-      env, java_object_internal_, rp_for_display, idp_for_display,
-      static_cast<jint>(rp_context));
+      env, java_object_internal_, ConvertToJavaRelyingPartyData(env, rp_data),
+      idp_for_display, static_cast<int32_t>(rp_context));
+}
+
+bool AccountSelectionViewAndroid::ShowVerifyingDialog(
+    const content::RelyingPartyData& rp_data,
+    const IdentityProviderDataPtr& idp_data,
+    const IdentityRequestAccountPtr& account,
+    Account::SignInMode sign_in_mode,
+    blink::mojom::RpMode rp_mode) {
+  if (!MaybeCreateJavaObject(rp_mode)) {
+    // It's possible that the constructor cannot access the bottom sheet clank
+    // component.
+    return false;
+  }
+  JNIEnv* env = AttachCurrentThread();
+
+  ScopedJavaLocalRef<jobject> idp_obj =
+      ConvertToJavaIdentityProviderData(env, idp_data.get(), rp_mode);
+
+  float device_scale_factor = delegate_->GetWebContents()
+                                  ->GetPrimaryMainFrame()
+                                  ->GetRenderWidgetHost()
+                                  ->GetDeviceScaleFactor();
+  ScopedJavaLocalRef<jobject> account_obj = ConvertToJavaAccount(
+      env, account.get(),
+      /*is_multi_idp=*/false, idp_obj, device_scale_factor);
+
+  return Java_AccountSelectionBridge_showVerifyingDialog(
+      env, java_object_internal_, ConvertToJavaRelyingPartyData(env, rp_data),
+      account_obj, sign_in_mode == Account::SignInMode::kAuto);
 }
 
 std::string AccountSelectionViewAndroid::GetTitle() const {
@@ -344,7 +418,9 @@ void AccountSelectionViewAndroid::ShowUrl(LinkType link_type, const GURL& url) {
 
 content::WebContents* AccountSelectionViewAndroid::ShowModalDialog(
     const GURL& url,
-    blink::mojom::RpMode rp_mode) {
+    blink::mojom::RpMode rp_mode,
+    content::IdentityRequestDialogController::ShownModalAsyncCallback
+        on_shown_async) {
   if (!MaybeCreateJavaObject(rp_mode)) {
     // The Java object is tied to the bottomsheet availability, so if we hadn't
     // created one and the bottomsheet is not available then the CCT will not be
@@ -379,6 +455,23 @@ content::WebContents* AccountSelectionViewAndroid::GetRpWebContents() {
       Java_AccountSelectionBridge_getRpWebContents(env, java_object_internal_));
 }
 
+void AccountSelectionViewAndroid::SetCanShowUi(bool can_show_ui) {
+  if (can_show_ui_ == can_show_ui) {
+    return;
+  }
+  can_show_ui_ = can_show_ui;
+  // Only push the state to Java if the object already exists. Do not call
+  // MaybeCreateJavaObject() here to avoid premature bridge creation which can
+  // cache the wrong RpMode. The state will be synchronized when the object
+  // gets created.
+  if (!java_object_internal_) {
+    return;
+  }
+  JNIEnv* env = AttachCurrentThread();
+  Java_AccountSelectionBridge_setCanShowUi(env, java_object_internal_,
+                                           can_show_ui);
+}
+
 void AccountSelectionViewAndroid::OnAccountSelected(
     JNIEnv* env,
     const GURL& idp_config_url,
@@ -389,10 +482,11 @@ void AccountSelectionViewAndroid::OnAccountSelected(
       is_sign_in ? Account::LoginState::kSignIn : Account::LoginState::kSignUp);
   // The AccountSelectionViewAndroid may be destroyed.
   // AccountSelectionView::Delegate::OnAccountSelected() might delete this.
-  // See https://crbug.com/1393650 for details.
+  // See https://crbug.com/40248291 for details.
 }
 
-void AccountSelectionViewAndroid::OnDismiss(JNIEnv* env, jint dismiss_reason) {
+void AccountSelectionViewAndroid::OnDismiss(JNIEnv* env,
+                                            int32_t dismiss_reason) {
   delegate_->OnDismiss(static_cast<DismissReason>(dismiss_reason));
 }
 
@@ -432,7 +526,8 @@ bool AccountSelectionViewAndroid::MaybeCreateJavaObject(
       env, reinterpret_cast<intptr_t>(this),
       delegate_->GetWebContents()->GetJavaWebContents(),
       delegate_->GetNativeView()->GetWindowAndroid()->GetJavaObject(),
-      static_cast<jint>(rp_mode.value_or(blink::mojom::RpMode::kPassive)));
+      static_cast<int32_t>(rp_mode.value_or(blink::mojom::RpMode::kPassive)),
+      can_show_ui_);
 
   if (!!java_object_internal_) {
     RecordJavaObjectCreationOutcome(
@@ -454,11 +549,19 @@ std::unique_ptr<AccountSelectionView> AccountSelectionView::Create(
 int AccountSelectionView::GetBrandIconMinimumSize(
     blink::mojom::RpMode rp_mode) {
   return Java_AccountSelectionBridge_getBrandIconMinimumSize(
-      base::android::AttachCurrentThread(), static_cast<jint>(rp_mode));
+      base::android::AttachCurrentThread(), static_cast<int32_t>(rp_mode));
 }
 
 // static
 int AccountSelectionView::GetBrandIconIdealSize(blink::mojom::RpMode rp_mode) {
   return Java_AccountSelectionBridge_getBrandIconIdealSize(
-      base::android::AttachCurrentThread(), static_cast<jint>(rp_mode));
+      base::android::AttachCurrentThread(), static_cast<int32_t>(rp_mode));
 }
+
+DEFINE_JNI(AccountSelectionBridge)
+DEFINE_JNI(Account)
+DEFINE_JNI(ClientIdMetadata)
+DEFINE_JNI(IdentityCredentialTokenError)
+DEFINE_JNI(IdentityProviderData)
+DEFINE_JNI(IdentityProviderMetadata)
+DEFINE_JNI(RelyingPartyData)

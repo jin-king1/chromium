@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "third_party/blink/renderer/modules/payments/payment_response.h"
 
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
@@ -107,7 +103,8 @@ MATCHER_P(ArrayBufferEqualTo, other_buffer, "equal to") {
   }
 
   uint8_t* data = (uint8_t*)arg->Data();
-  return std::equal(data, data + arg->ByteLength(), std::begin(other_buffer));
+  return std::equal(data, UNSAFE_TODO(data + arg->ByteLength()),
+                    std::begin(other_buffer));
 }
 
 // Calls getClientExtensionResults on the given public_key_credential.
@@ -154,8 +151,8 @@ TEST(PaymentResponseTest, PaymentResponseDetailsContainsSpcExtensionsPRF) {
   input->get_assertion_authenticator_response->extensions->prf_results =
       mojom::blink::PRFValues::New(
           /*id=*/std::nullopt,
-          /*first=*/WTF::Vector<uint8_t>{1, 2, 3},
-          /*second=*/WTF::Vector<uint8_t>{4, 5, 6});
+          /*first=*/Vector<uint8_t>{1, 2, 3},
+          /*second=*/Vector<uint8_t>{4, 5, 6});
   MockPaymentStateResolver* complete_callback =
       MakeGarbageCollected<MockPaymentStateResolver>();
 
@@ -174,9 +171,9 @@ TEST(PaymentResponseTest, PaymentResponseDetailsContainsSpcExtensionsPRF) {
           .ToLocalChecked()
           .As<v8::Object>();
   EXPECT_THAT(GetArrayBuffer(scope, results, "first"),
-              ArrayBufferEqualTo(WTF::Vector{1, 2, 3}));
+              ArrayBufferEqualTo(Vector{1, 2, 3}));
   EXPECT_THAT(GetArrayBuffer(scope, results, "second"),
-              ArrayBufferEqualTo(WTF::Vector{4, 5, 6}));
+              ArrayBufferEqualTo(Vector{4, 5, 6}));
 }
 
 TEST(PaymentResponseTest,

@@ -4,14 +4,25 @@
 
 #include "components/autofill/core/browser/form_import/addresses/address_profile_save_manager.h"
 
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+
+#include "base/check.h"
 #include "base/check_deref.h"
+#include "base/functional/bind.h"
+#include "base/notreached.h"
+#include "base/types/optional_ref.h"
 #include "base/types/optional_util.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/form_import/addresses/autofill_profile_import_process.h"
 #include "components/autofill/core/browser/form_import/form_data_importer.h"
+#include "components/autofill/core/browser/form_import/form_data_importer_utils.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
-#include "components/autofill/core/common/autofill_features.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 
 namespace autofill {
 
@@ -22,10 +33,19 @@ namespace {
 // with additional optional information.
 // This function adds the imported profile as a candidate. This is only done
 // after the user decision to incorporate manual edits.
-void AddMultiStepComplementCandidate(FormDataImporter* form_data_importer,
-                                     const AutofillProfile& profile,
-                                     const url::Origin& origin) {
+void MaybeAddMultiStepComplementCandidate(FormDataImporter* form_data_importer,
+                                          const AutofillProfile& profile,
+                                          const url::Origin& origin) {
   if (!form_data_importer) {
+    return;
+  }
+  MultiStepImportMerger& import_merger =
+      form_data_importer->GetAddressFormDataImporter()
+          .multi_step_import_merger();
+  // Avoid adding profiles that don't match the currently tracked origin. It is
+  // possible that the user has navigated away since the import prompt was shown
+  // and submitted an (incomplete) address on the new origin in the meantime.
+  if (import_merger.origin().has_value() && import_merger.origin() != origin) {
     return;
   }
   // Metrics depending on `import_process.import_metadata()` are collected
@@ -35,8 +55,34 @@ void AddMultiStepComplementCandidate(FormDataImporter* form_data_importer,
   // The `import_metadata` is thus initialized to a neutral element.
   ProfileImportMetadata import_metadata;
   import_metadata.origin = origin;
-  form_data_importer->AddMultiStepImportCandidate(profile, import_metadata,
-                                                  /*is_imported=*/true);
+  import_merger.AddMultiStepImportCandidate(profile, import_metadata,
+                                            /*is_imported=*/true);
+}
+
+AutofillClient::SaveAddressBubbleType AutofillProfileImportTypeToBubbleType(
+    AutofillProfileImportType type) {
+  switch (type) {
+    case AutofillProfileImportType::kNewProfile:
+    case AutofillProfileImportType::kConfirmableMerge:
+    case AutofillProfileImportType::kConfirmableMergeAndSilentUpdate:
+    case AutofillProfileImportType::kNameEmailSuperset:
+    case AutofillProfileImportType::kHomeAndWorkSuperset:
+      return AutofillClient::SaveAddressBubbleType::kSave;
+    case AutofillProfileImportType::kProfileMigration:
+    case AutofillProfileImportType::kProfileMigrationAndSilentUpdate:
+      return AutofillClient::SaveAddressBubbleType::kMigrateToAccount;
+    case AutofillProfileImportType::kHomeWorkNameEmailMerge:
+      return AutofillClient::SaveAddressBubbleType::kHomeWorkNameEmailMerge;
+    // Those import types do not cause save/update/migrate/merge bubble to be
+    // displayed.
+    case AutofillProfileImportType::kDuplicateImport:
+    case AutofillProfileImportType::kSilentUpdate:
+    case AutofillProfileImportType::kSuppressedNewProfile:
+    case AutofillProfileImportType::kSuppressedConfirmableMergeAndSilentUpdate:
+    case AutofillProfileImportType::kSuppressedConfirmableMerge:
+    case AutofillProfileImportType::kImportTypeUnspecified:
+      NOTREACHED();
+  }
 }
 
 }  // namespace
@@ -62,39 +108,16 @@ void AddressProfileSaveManager::ImportProfileFromForm(
 
 void AddressProfileSaveManager::MaybeOfferSavePrompt(
     std::unique_ptr<ProfileImportProcess> import_process) {
-  switch (import_process->import_type()) {
-    // If the import was a duplicate, only results in silent updates or if the
-    // import of a new profile or a profile update is blocked, finish the
-    // process without initiating a user prompt
-    case AutofillProfileImportType::kDuplicateImport:
-    case AutofillProfileImportType::kSilentUpdate:
-    case AutofillProfileImportType::kSilentUpdateForIncompleteProfile:
-    case AutofillProfileImportType::kSuppressedNewProfile:
-    case AutofillProfileImportType::kSuppressedConfirmableMergeAndSilentUpdate:
-    case AutofillProfileImportType::kSuppressedConfirmableMerge:
-    case AutofillProfileImportType::kUnusableIncompleteProfile:
-      import_process->AcceptWithoutPrompt();
+  if (import_process->requires_user_prompt()) {
+    if (address_data_manager().auto_accept_address_imports_for_testing()) {
+      import_process->AcceptWithoutEdits();
       FinalizeProfileImport(std::move(import_process));
       return;
-
-    // The import of a new profile, a merge with an existing profile that
-    // changes a settings-visible value of an existing profile, or a profile
-    // migration triggers a user prompt.
-    case AutofillProfileImportType::kNewProfile:
-    case AutofillProfileImportType::kConfirmableMerge:
-    case AutofillProfileImportType::kConfirmableMergeAndSilentUpdate:
-    case AutofillProfileImportType::kProfileMigration:
-    case AutofillProfileImportType::kProfileMigrationAndSilentUpdate:
-      if (address_data_manager().auto_accept_address_imports_for_testing()) {
-        import_process->AcceptWithoutEdits();
-        FinalizeProfileImport(std::move(import_process));
-        return;
-      }
-      OfferSavePrompt(std::move(import_process));
-      return;
-
-    case AutofillProfileImportType::kImportTypeUnspecified:
-      NOTREACHED();
+    }
+    OfferSavePrompt(std::move(import_process));
+  } else {
+    import_process->AcceptWithoutPrompt();
+    FinalizeProfileImport(std::move(import_process));
   }
 }
 
@@ -111,7 +134,7 @@ void AddressProfileSaveManager::OfferSavePrompt(
   client_->ConfirmSaveAddressProfile(
       process_ptr->import_candidate().value(),
       base::OptionalToPtr(process_ptr->merge_candidate()),
-      process_ptr->is_migration(),
+      AutofillProfileImportTypeToBubbleType(process_ptr->import_type()),
       base::BindOnce(&AddressProfileSaveManager::OnUserDecision,
                      weak_ptr_factory_.GetWeakPtr(),
                      std::move(import_process)));
@@ -141,9 +164,9 @@ void AddressProfileSaveManager::FinalizeProfileImport(
     const std::optional<AutofillProfile>& confirmed_import_candidate =
         import_process->confirmed_import_candidate();
     DCHECK(confirmed_import_candidate);
-    AddMultiStepComplementCandidate(client_->GetFormDataImporter(),
-                                    *confirmed_import_candidate,
-                                    import_process->import_metadata().origin);
+    MaybeAddMultiStepComplementCandidate(
+        client_->GetFormDataImporter(), *confirmed_import_candidate,
+        import_process->import_metadata().origin);
   }
 
   ClearPendingImport(std::move(import_process));
@@ -164,11 +187,15 @@ void AddressProfileSaveManager::AdjustNewProfileStrikes(
 
 void AddressProfileSaveManager::AdjustUpdateProfileStrikes(
     ProfileImportProcess& import_process) {
-  if (!import_process.is_confirmable_update()) {
+  // Importing Home & Work superset profiles technically adds a new profile, but
+  // the user experience is designed to mimic an update flow.
+  if (!import_process.is_confirmable_update() &&
+      import_process.import_type() !=
+          AutofillProfileImportType::kHomeAndWorkSuperset) {
     return;
   }
   CHECK(import_process.merge_candidate().has_value());
-  const std::string& candidate_guid = import_process.import_candidate()->guid();
+  const std::string& candidate_guid = import_process.merge_candidate()->guid();
   if (import_process.UserDeclined()) {
     address_data_manager().AddStrikeToBlockProfileUpdate(candidate_guid);
   } else if (import_process.UserAccepted()) {

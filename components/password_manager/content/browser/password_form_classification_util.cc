@@ -8,6 +8,7 @@
 
 #include "base/containers/to_vector.h"
 #include "components/autofill/content/browser/renderer_forms_from_browser_form.h"
+#include "components/autofill/core/browser/autofill_server_prediction.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -49,9 +50,9 @@ autofill::PasswordFormClassification ClassifyAsPasswordForm(
   std::vector<autofill::FieldGlobalId> field_ids =
       base::ToVector(it->first.fields(), &autofill::FormFieldData::global_id);
   return ClassifyAsPasswordForm(
-      it->first, ConvertToFormPredictions(
-                     /*driver_id=*/0, it->first,
-                     manager.GetServerPredictionsForForm(form_id, field_ids)));
+      it->first,
+      ConvertToFormPredictions(
+          it->first, manager.GetServerPredictionsForForm(form_id, field_ids)));
 }
 
 }  // namespace password_manager

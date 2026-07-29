@@ -12,9 +12,7 @@
 
 #include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "components/services/storage/indexed_db/scopes/leveldb_scope_deletion_mode.h"
 #include "third_party/leveldatabase/src/include/leveldb/status.h"
@@ -41,13 +39,13 @@ class LevelDBWriteBatch;
 //   On destruction, if the transaction is not committed, it will be rolled
 //   back. In a single-sequence scopes setup, this can actually tear down the
 //   whole IndexedDBOriginState! So be careful when destroying this object.
-class TransactionalLevelDBTransaction
-    : public base::RefCounted<TransactionalLevelDBTransaction> {
+class TransactionalLevelDBTransaction {
  public:
   TransactionalLevelDBTransaction(const TransactionalLevelDBTransaction&) =
       delete;
   TransactionalLevelDBTransaction& operator=(
       const TransactionalLevelDBTransaction&) = delete;
+  virtual ~TransactionalLevelDBTransaction();
 
   [[nodiscard]] leveldb::Status Put(std::string_view key, std::string* value);
 
@@ -70,8 +68,6 @@ class TransactionalLevelDBTransaction
   std::unique_ptr<TransactionalLevelDBIterator> CreateIterator(
       leveldb::Status& status);
 
-  uint64_t GetTransactionSize() const;
-
   // Sets a callback that will be called after the undo log for this transaction
   // is cleaned up and any deferred deletions (from RemoveRange) are complete.
   // The callback will be called after this transaction is committed, or dropped
@@ -92,10 +88,8 @@ class TransactionalLevelDBTransaction
 
   TransactionalLevelDBTransaction(TransactionalLevelDBDatabase* db,
                                   std::unique_ptr<LevelDBScope> scope);
-  virtual ~TransactionalLevelDBTransaction();
 
  private:
-  friend class base::RefCounted<TransactionalLevelDBTransaction>;
   friend class TransactionalLevelDBIterator;
 
   // These methods are called from TransactionalLevelDBIterator.

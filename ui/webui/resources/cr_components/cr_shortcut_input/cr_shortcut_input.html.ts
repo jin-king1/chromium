@@ -18,11 +18,17 @@ export function getHtml(this: CrShortcutInputElement) {
       ?disabled="${this.inputDisabled}"
       .inputTabindex="${this.readonly_ ? -1 : 0}"
       .value="${this.computeText_()}">
-    <cr-icon-button id="edit" title="$i18n{edit}"
+    <cr-icon-button id="edit" title="${this.i18n('edit')}"
         aria-label="${this.editButtonAriaLabel}"
         slot="suffix" class="icon-edit no-overlap"
-        ?disabled="${this.inputDisabled}"
+        ?disabled="${this.inputDisabled || !this.readonly_}"
         @click="${this.onEditClick_}">
+    </cr-icon-button>
+    <cr-icon-button id="clear" title="${this.i18n('shortcutClear')}"
+        aria-label="${this.clearButtonAriaLabel}"
+        slot="suffix" class="icon-clear no-overlap"
+        ?disabled="${this.inputDisabled || !this.shortcut}"
+        @click="${this.onClearClick_}">
     </cr-icon-button>
   </cr-input>
 </div>

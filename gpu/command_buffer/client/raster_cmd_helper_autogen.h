@@ -51,18 +51,6 @@ void DeleteQueriesEXTImmediate(GLsizei n, const GLuint* queries) {
   }
 }
 
-void QueryCounterEXT(GLuint id,
-                     GLenum target,
-                     uint32_t sync_data_shm_id,
-                     uint32_t sync_data_shm_offset,
-                     GLuint submit_count) {
-  raster::cmds::QueryCounterEXT* c =
-      GetCmdSpace<raster::cmds::QueryCounterEXT>();
-  if (c) {
-    c->Init(id, target, sync_data_shm_id, sync_data_shm_offset, submit_count);
-  }
-}
-
 void BeginQueryEXT(GLenum target,
                    GLuint id,
                    uint32_t sync_data_shm_id,
@@ -131,6 +119,14 @@ void EndRasterCHROMIUM() {
   }
 }
 
+void FlushTileRasterGraphiteCommandsCHROMIUM() {
+  raster::cmds::FlushTileRasterGraphiteCommandsCHROMIUM* c =
+      GetCmdSpace<raster::cmds::FlushTileRasterGraphiteCommandsCHROMIUM>();
+  if (c) {
+    c->Init();
+  }
+}
+
 void CreateTransferCacheEntryINTERNAL(GLuint entry_type,
                                       GLuint entry_id,
                                       GLuint handle_shm_id,
@@ -183,6 +179,27 @@ void DeletePaintCachePathsINTERNAL(GLsizei n,
   }
 }
 
+void DeletePaintCacheEffectsINTERNALImmediate(GLsizei n, const GLuint* ids) {
+  const uint32_t size =
+      raster::cmds::DeletePaintCacheEffectsINTERNALImmediate::ComputeSize(n);
+  raster::cmds::DeletePaintCacheEffectsINTERNALImmediate* c =
+      GetImmediateCmdSpaceTotalSize<
+          raster::cmds::DeletePaintCacheEffectsINTERNALImmediate>(size);
+  if (c) {
+    c->Init(n, ids);
+  }
+}
+
+void DeletePaintCacheEffectsINTERNAL(GLsizei n,
+                                     uint32_t ids_shm_id,
+                                     uint32_t ids_shm_offset) {
+  raster::cmds::DeletePaintCacheEffectsINTERNAL* c =
+      GetCmdSpace<raster::cmds::DeletePaintCacheEffectsINTERNAL>();
+  if (c) {
+    c->Init(n, ids_shm_id, ids_shm_offset);
+  }
+}
+
 void ClearPaintCacheINTERNAL() {
   raster::cmds::ClearPaintCacheINTERNAL* c =
       GetCmdSpace<raster::cmds::ClearPaintCacheINTERNAL>();
@@ -195,8 +212,10 @@ void CopySharedImageINTERNALImmediate(GLint xoffset,
                                       GLint yoffset,
                                       GLint x,
                                       GLint y,
-                                      GLsizei width,
-                                      GLsizei height,
+                                      GLsizei src_width,
+                                      GLsizei src_height,
+                                      GLsizei dest_width,
+                                      GLsizei dest_height,
                                       const GLbyte* mailboxes) {
   const uint32_t size =
       raster::cmds::CopySharedImageINTERNALImmediate::ComputeSize();
@@ -204,7 +223,8 @@ void CopySharedImageINTERNALImmediate(GLint xoffset,
       GetImmediateCmdSpaceTotalSize<
           raster::cmds::CopySharedImageINTERNALImmediate>(size);
   if (c) {
-    c->Init(xoffset, yoffset, x, y, width, height, mailboxes);
+    c->Init(xoffset, yoffset, x, y, src_width, src_height, dest_width,
+            dest_height, mailboxes);
   }
 }
 
@@ -284,7 +304,11 @@ void ReadbackARGBImagePixelsINTERNALImmediate(GLint src_x,
   }
 }
 
-void ReadbackYUVImagePixelsINTERNALImmediate(GLuint dst_width,
+void ReadbackYUVImagePixelsINTERNALImmediate(GLuint src_x,
+                                             GLuint src_y,
+                                             GLuint src_width,
+                                             GLuint src_height,
+                                             GLuint dst_width,
                                              GLuint dst_height,
                                              GLint shm_id,
                                              GLuint shm_offset,
@@ -301,8 +325,9 @@ void ReadbackYUVImagePixelsINTERNALImmediate(GLuint dst_width,
       GetImmediateCmdSpaceTotalSize<
           raster::cmds::ReadbackYUVImagePixelsINTERNALImmediate>(size);
   if (c) {
-    c->Init(dst_width, dst_height, shm_id, shm_offset, y_offset, y_stride,
-            u_offset, u_stride, v_offset, v_stride, mailbox);
+    c->Init(src_x, src_y, src_width, src_height, dst_width, dst_height, shm_id,
+            shm_offset, y_offset, y_stride, u_offset, u_stride, v_offset,
+            v_stride, mailbox);
   }
 }
 

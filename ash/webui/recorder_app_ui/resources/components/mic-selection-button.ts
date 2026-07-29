@@ -20,7 +20,7 @@ import {
   useMicrophoneManager,
   usePlatformHandler,
 } from '../core/lit/context.js';
-import {MicrophoneInfo} from '../core/microphone_manager.js';
+import type {MicrophoneInfo} from '../core/microphone_manager.js';
 import {ReactiveLitElement} from '../core/reactive/lit.js';
 import {settings} from '../core/state/settings.js';
 import {assert} from '../core/utils/assert.js';
@@ -175,7 +175,7 @@ export class MicSelectionButton extends ReactiveLitElement {
     return html`
       <cros-menu-separator></cros-menu-separator>
       <cra-icon-dropdown-option
-        headline=${i18n.micSelectionMenuChromebookAudioOption}
+        headline=${i18n.micSelectionMenuSystemAudioOption}
         itemStart="icon"
         itemEnd="switch"
         .switchSelected=${live(includeSystemAudio)}

@@ -23,6 +23,7 @@
 #include "ash/wm/splitview/split_view_drag_indicators.h"
 #include "ash/wm/splitview/split_view_observer.h"
 #include "base/containers/flat_set.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -481,9 +482,9 @@ class ASH_EXPORT OverviewSession : public display::DisplayObserver,
   // because accessibility needs something focused for it to work and we cannot
   // use one of the overview windows otherwise wm::ActivateWindow will not
   // work.
-  // TODO(sammiequon): Focus the grid desks widget if it is always available, or
-  // we may be able to add some mechanism to trigger accessibility events
-  // without a focused window.
+  // TODO: Focus the grid desks widget if it is always available, or we may be
+  // able to add some mechanism to trigger accessibility events without a
+  // focused window.
   std::unique_ptr<views::Widget> overview_focus_widget_;
 
   // True when performing operations that may cause window activations. This is

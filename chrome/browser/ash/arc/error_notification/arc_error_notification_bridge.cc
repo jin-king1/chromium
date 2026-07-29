@@ -6,7 +6,7 @@
 
 #include "ash/public/cpp/notification_utils.h"
 #include "ash/resources/vector_icons/vector_icons.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/arc/error_notification/arc_error_notification_item.h"
 #include "chrome/browser/notifications/notification_display_service.h"
@@ -15,6 +15,7 @@
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/vector_icons/vector_icons.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_delegate.h"
 #include "ui/message_center/public/cpp/notification_types.h"
@@ -34,8 +35,12 @@ class ArcErrorNotificationBridgeFactory
   static constexpr const char* kName = "ArcErrorNotificationBridgeFactory";
 
   static ArcErrorNotificationBridgeFactory* GetInstance() {
-    return base::Singleton<ArcErrorNotificationBridgeFactory>::get();
+    static base::NoDestructor<ArcErrorNotificationBridgeFactory> instance;
+    return instance.get();
   }
+
+ private:
+  friend base::NoDestructor<ArcErrorNotificationBridgeFactory>;
 
   ArcErrorNotificationBridgeFactory() = default;
   ~ArcErrorNotificationBridgeFactory() override = default;

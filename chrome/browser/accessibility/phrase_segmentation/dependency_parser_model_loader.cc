@@ -7,7 +7,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/metrics/histogram_macros.h"
-#include "components/optimization_guide/core/optimization_guide_model_provider.h"
+#include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 
 namespace {
 
@@ -60,7 +60,7 @@ DependencyParserModelLoader::DependencyParserModelLoader(
     : opt_guide_(opt_guide), background_task_runner_(background_task_runner) {
   opt_guide_->AddObserverForOptimizationTargetModel(
       optimization_guide::proto::OPTIMIZATION_TARGET_PHRASE_SEGMENTATION,
-      /*model_metadata=*/std::nullopt, this);
+      /*model_metadata=*/std::nullopt, background_task_runner, this);
 }
 
 DependencyParserModelLoader::~DependencyParserModelLoader() {
@@ -113,7 +113,7 @@ void DependencyParserModelLoader::OnModelUpdated(
     return;
   }
   background_task_runner_->PostTaskAndReplyWithResult(
-      FROM_HERE, base::BindOnce(&LoadModelFile, model_info->GetModelFilePath()),
+      FROM_HERE, base::BindOnce(&LoadModelFile, model_info->model_file_path),
       base::BindOnce(&DependencyParserModelLoader::OnModelFileLoaded,
                      weak_ptr_factory_.GetWeakPtr()));
 }

@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/webui_url_constants.h"
 #include "ash/public/cpp/audio_config_service.h"
 #include "ash/public/cpp/bluetooth_config_service.h"
 #include "ash/public/cpp/connectivity_services.h"
@@ -22,6 +23,7 @@
 #include "ash/webui/personalization_app/search/search.mojom.h"
 #include "ash/webui/personalization_app/search/search_handler.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_number_conversions.h"
 #include "build/branding_buildflags.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ash/login/quick_unlock/pin_backend.h"
@@ -36,6 +38,8 @@
 #include "chrome/browser/nearby_sharing/nearby_share_settings.h"
 #include "chrome/browser/nearby_sharing/nearby_sharing_service_factory.h"
 #include "chrome/browser/nearby_sharing/nearby_sharing_service_impl.h"
+#include "chrome/browser/ui/webui/app_management/app_management_page_handler_base.h"
+#include "chrome/browser/ui/webui/app_management/app_management_page_handler_factory.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/apps/app_notification_handler.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/apps/app_parental_controls_handler.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/people/graduation_handler.h"
@@ -50,8 +54,8 @@
 #include "chrome/browser/ui/webui/ash/settings/services/settings_manager/os_settings_manager.h"
 #include "chrome/browser/ui/webui/ash/settings/services/settings_manager/os_settings_manager_factory.h"
 #include "chrome/browser/ui/webui/managed_ui_handler.h"
-#include "chrome/browser/ui/webui/sanitized_image_source.h"
-#include "chrome/common/webui_url_constants.h"
+#include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/os_settings_resources.h"
 #include "chrome/grit/os_settings_resources_map.h"
 #include "chromeos/ash/services/auth_factor_config/in_process_instances.h"
@@ -63,15 +67,15 @@
 #include "chromeos/components/in_session_auth/mojom/in_session_auth.mojom.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/base/ime/ash/input_method_manager.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/widget.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/webui_util.h"
 
 #if !BUILDFLAG(OPTIMIZE_WEBUI)
@@ -168,7 +172,8 @@ OSSettingsUI::OSSettingsUI(content::WebUI* web_ui)
   Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* html_source =
       content::WebUIDataSource::CreateAndAdd(profile,
-                                             chrome::kChromeUIOSSettingsHost);
+                                             ash::kChromeUIOSSettingsHost);
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
   html_source->SetRequestFilter(
       base::BindRepeating([](const std::string& path) {
         return ExtractJapaneseDictionaryExportIdParam(path).has_value();
@@ -387,12 +392,10 @@ void OSSettingsUI::BindInterface(
 
 void OSSettingsUI::BindInterface(
     mojo::PendingReceiver<mojom::InputDeviceSettingsProvider> receiver) {
-  DCHECK(features::IsInputDeviceSettingsSplitEnabled());
   auto* provider =
       OsSettingsManagerFactory::GetForProfile(Profile::FromWebUI(web_ui()))
           ->input_device_settings_provider();
-  if (features::IsPeripheralCustomizationEnabled() ||
-      ::features::IsAccessibilityFaceGazeEnabled()) {
+  if (features::IsPeripheralCustomizationEnabled()) {
     provider->Initialize(web_ui());
   }
   provider->BindInterface(std::move(receiver));
@@ -415,8 +418,7 @@ void OSSettingsUI::BindInterface(
 void OSSettingsUI::BindInterface(
     mojo::PendingReceiver<::ash::common::mojom::ShortcutInputProvider>
         receiver) {
-  CHECK(features::IsPeripheralCustomizationEnabled() ||
-        ::features::IsAccessibilityFaceGazeEnabled());
+  CHECK(features::IsPeripheralCustomizationEnabled());
   auto* shortcut_input_provider =
       OsSettingsManagerFactory::GetForProfile(Profile::FromWebUI(web_ui()))
           ->shortcut_input_provider();
@@ -426,12 +428,6 @@ void OSSettingsUI::BindInterface(
     shortcut_input_provider->TieProviderToWidget(widget);
   }
   shortcut_input_provider->BindInterface(std::move(receiver));
-}
-
-void OSSettingsUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
 }
 
 void OSSettingsUI::BindInterface(

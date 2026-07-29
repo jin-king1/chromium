@@ -27,12 +27,14 @@
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/icon_button.h"
-#include "ash/test/test_widget_builder.h"
+#include "base/strings/string_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/branding_buildflags.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
+#include "chrome/browser/ash/accessibility/chromevox_test_utils.h"
 #include "chrome/browser/ash/accessibility/speech_monitor.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/quick_insert/quick_insert_client_impl.h"
 #include "chrome/browser/ui/browser.h"
@@ -43,6 +45,7 @@
 #include "extensions/browser/browsertest_util.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/image/image_unittest_util.h"
@@ -51,6 +54,8 @@
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout_view.h"
+#include "ui/views/metadata/view_factory.h"
+#include "ui/views/test/test_widget_builder.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
@@ -62,58 +67,39 @@ namespace {
 // announcements.
 class QuickInsertAccessibilityBrowserTest : public InProcessBrowserTest {
  public:
-  QuickInsertAccessibilityBrowserTest() = default;
+  QuickInsertAccessibilityBrowserTest() {
+    // TODO(crbug.com/433771715): This test is forced to use ChromeVox in
+    // manifest v2 due to flakiness on MSAN. Parameterize this test on the
+    // manifest version and ensure the mv3 variants pass.
+    scoped_feature_list_.InitWithFeatureStates(
+        {{::features::kAccessibilityManifestV3ChromeVox, false}});
+  }
 
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
 
-    ash::AccessibilityManager::Get()->EnableSpokenFeedback(true);
-    // Ignore the intro.
-    sm_.ExpectSpeechPattern("ChromeVox*");
-    // Disable earcons which can be annoying in tests.
-    sm_.Call([this]() {
-      ImportJSModuleForChromeVox("ChromeVox",
-                                 "/chromevox/background/chromevox.js");
-      DisableEarcons();
-    });
+    chromevox_test_utils_ = std::make_unique<ash::ChromeVoxTestUtils>();
+    chromevox_test_utils_->EnableChromeVox();
 
     ash::QuickInsertController::DisableFeatureTourForTesting();
   }
 
   void TearDownOnMainThread() override {
-    ash::AccessibilityManager::Get()->EnableSpokenFeedback(false);
+    chromevox_test_utils_.reset();
     InProcessBrowserTest::TearDownOnMainThread();
   }
 
  protected:
-  ash::test::SpeechMonitor sm_;
+  ash::test::SpeechMonitor* sm() { return chromevox_test_utils_->sm(); }
 
- private:
-  void ImportJSModuleForChromeVox(std::string_view name,
-                                  std::string_view path) {
-    extensions::browsertest_util::ExecuteScriptInBackgroundPageDeprecated(
-        ash::AccessibilityManager::Get()->profile(),
-        extension_misc::kChromeVoxExtensionId,
-        base::ReplaceStringPlaceholders(
-            R"(import('$1').then(mod => {
-            globalThis.$2 = mod.$2;
-            window.domAutomationController.send('done');
-          }))",
-            {std::string(path), std::string(name)}, nullptr));
-  }
-
-  void DisableEarcons() {
-    extensions::browsertest_util::ExecuteScriptInBackgroundPageNoWait(
-        ash::AccessibilityManager::Get()->profile(),
-        extension_misc::kChromeVoxExtensionId,
-        "ChromeVox.earcons.playEarcon = function() {};");
-  }
+  std::unique_ptr<ash::ChromeVoxTestUtils> chromevox_test_utils_;
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingEmptySearchFieldAnnouncesPlaceholder) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::QuickInsertKeyEventHandler key_event_handler;
@@ -123,17 +109,17 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
           base::DoNothing(), base::DoNothing(), &key_event_handler, &metrics));
   view->SetPlaceholderText(u"cat");
 
-  sm_.Call([view]() { view->RequestFocus(); });
+  sm()->Call([view]() { view->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("cat");
-  sm_.ExpectSpeechPattern("Edit text");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("cat");
+  sm()->ExpectSpeechPattern("Edit text");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        SetDescendantAnnouncesDescendant) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::QuickInsertKeyEventHandler key_event_handler;
@@ -147,23 +133,23 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
       container_view->AddChildView(std::make_unique<views::Label>(u"test"));
   search_field_view->SetPlaceholderText(u"cat");
 
-  sm_.Call([search_field_view]() { search_field_view->RequestFocus(); });
+  sm()->Call([search_field_view]() { search_field_view->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("cat");
-  sm_.ExpectSpeechPattern("Edit text");
+  sm()->ExpectSpeechPattern("cat");
+  sm()->ExpectSpeechPattern("Edit text");
 
-  sm_.Call([search_field_view, other_view]() {
+  sm()->Call([search_field_view, other_view]() {
     search_field_view->SetTextfieldActiveDescendant(other_view);
   });
 
-  sm_.ExpectSpeechPattern("test");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("test");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        SetDescendantAnnouncesDescendantAfterKeyEvent) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::QuickInsertKeyEventHandler key_event_handler;
@@ -177,27 +163,27 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
       container_view->AddChildView(std::make_unique<views::Label>(u"test"));
   search_field_view->SetPlaceholderText(u"cat");
 
-  sm_.Call([search_field_view]() { search_field_view->RequestFocus(); });
+  sm()->Call([search_field_view]() { search_field_view->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("cat");
-  sm_.ExpectSpeechPattern("Edit text");
+  sm()->ExpectSpeechPattern("cat");
+  sm()->ExpectSpeechPattern("Edit text");
 
-  sm_.Call([search_field_view, other_view]() {
+  sm()->Call([search_field_view, other_view]() {
     ui::test::EventGenerator event_generator(
         ash::Shell::Get()->GetPrimaryRootWindow());
     event_generator.PressAndReleaseKey(ui::VKEY_A);
     search_field_view->SetTextfieldActiveDescendant(other_view);
   });
 
-  sm_.ExpectSpeechPattern("A");
-  sm_.ExpectSpeechPattern("test");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("A");
+  sm()->ExpectSpeechPattern("test");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        SetDescendantToTextfieldAnnouncesPlaceholder) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::QuickInsertKeyEventHandler key_event_handler;
@@ -211,25 +197,25 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
       container_view->AddChildView(std::make_unique<views::Label>(u"test"));
   search_field_view->SetPlaceholderText(u"cat");
 
-  sm_.Call([search_field_view]() { search_field_view->RequestFocus(); });
+  sm()->Call([search_field_view]() { search_field_view->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("cat");
-  sm_.ExpectSpeechPattern("Edit text");
+  sm()->ExpectSpeechPattern("cat");
+  sm()->ExpectSpeechPattern("Edit text");
 
-  sm_.Call([search_field_view, other_view]() {
+  sm()->Call([search_field_view, other_view]() {
     search_field_view->SetTextfieldActiveDescendant(other_view);
   });
 
-  sm_.ExpectSpeechPattern("test");
+  sm()->ExpectSpeechPattern("test");
 
-  sm_.Call([search_field_view]() {
+  sm()->Call([search_field_view]() {
     search_field_view->SetTextfieldActiveDescendant(
         search_field_view->textfield());
   });
 
-  sm_.ExpectSpeechPattern("cat");
-  sm_.ExpectSpeechPattern("Edit text");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("cat");
+  sm()->ExpectSpeechPattern("Edit text");
+  sm()->Replay();
 }
 
 // TODO(crbug.com/356567533): flaky on MSAN. Deflake and re-enable the test.
@@ -244,7 +230,7 @@ IN_PROC_BROWSER_TEST_F(
     QuickInsertAccessibilityBrowserTest,
     MAYBE_SetDescendantThenFocusingSearchFieldAnnouncesDescendant) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::QuickInsertKeyEventHandler key_event_handler;
@@ -258,21 +244,21 @@ IN_PROC_BROWSER_TEST_F(
       container_view->AddChildView(std::make_unique<views::Label>(u"test"));
   search_field_view->SetPlaceholderText(u"cat");
 
-  sm_.Call([search_field_view, other_view]() {
+  sm()->Call([search_field_view, other_view]() {
     search_field_view->SetTextfieldActiveDescendant(other_view);
     search_field_view->RequestFocus();
   });
 
-  sm_.ExpectSpeechPattern("cat");
-  sm_.ExpectSpeechPattern("Edit text");
-  sm_.ExpectSpeechPattern("test");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("cat");
+  sm()->ExpectSpeechPattern("Edit text");
+  sm()->ExpectSpeechPattern("test");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingNonEmptySearchFieldAnnouncesPlaceholder) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::QuickInsertKeyEventHandler key_event_handler;
@@ -283,17 +269,17 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
   view->SetPlaceholderText(u"cat");
   view->SetQueryText(u"query");
 
-  sm_.Call([view]() { view->RequestFocus(); });
+  sm()->Call([view]() { view->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("cat");
-  sm_.ExpectSpeechPattern("Edit text");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("cat");
+  sm()->ExpectSpeechPattern("Edit text");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingSearchFieldClearButtonAnnouncesTooltip) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::QuickInsertKeyEventHandler key_event_handler;
@@ -303,22 +289,22 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
           base::DoNothing(), base::DoNothing(), &key_event_handler, &metrics));
   view->SetPlaceholderText(u"placeholder");
 
-  sm_.Call([view]() {
+  sm()->Call([view]() {
     view->textfield_for_testing().InsertOrReplaceText(u"a");
     view->clear_button_for_testing().RequestFocus();
   });
 
-  sm_.ExpectSpeechPattern(
+  sm()->ExpectSpeechPattern(
       l10n_util::GetStringUTF8(IDS_APP_LIST_CLEAR_SEARCHBOX));
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingSearchFieldBackButtonAnnouncesTooltip) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::QuickInsertKeyEventHandler key_event_handler;
@@ -329,18 +315,18 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
   view->SetPlaceholderText(u"placeholder");
   view->SetBackButtonVisible(true);
 
-  sm_.Call([view]() { view->back_button_for_testing().RequestFocus(); });
+  sm()->Call([view]() { view->back_button_for_testing().RequestFocus(); });
 
-  sm_.ExpectSpeechPattern(l10n_util::GetStringUTF8(IDS_ACCNAME_BACK));
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern(l10n_util::GetStringUTF8(IDS_ACCNAME_BACK));
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingEmojiBarItemsAnnouncesGrid) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -353,40 +339,40 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
       ash::QuickInsertEmojiResult::Emoticon(u"(°□°)", u"surprise"),
   });
 
-  sm_.Call([view]() { view->GetItemsForTesting()[0]->RequestFocus(); });
+  sm()->Call([view]() { view->GetItemsForTesting()[0]->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("happy emoji");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("row 1 column 1");
-  sm_.ExpectSpeechPattern("Table Emojis and GIFs, 1 by 5");
+  sm()->ExpectSpeechPattern("happy emoji");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("row 1 column 1");
+  sm()->ExpectSpeechPattern("Table Emojis and GIFs, 1 by 5");
 
-  sm_.Call([view]() { view->GetItemsForTesting()[1]->RequestFocus(); });
+  sm()->Call([view]() { view->GetItemsForTesting()[1]->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("music");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("row 1 column 2");
+  sm()->ExpectSpeechPattern("music");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("row 1 column 2");
 
-  sm_.Call([view]() { view->GetItemsForTesting()[2]->RequestFocus(); });
+  sm()->Call([view]() { view->GetItemsForTesting()[2]->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("surprise emoticon");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("row 1 column 3");
+  sm()->ExpectSpeechPattern("surprise emoticon");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("row 1 column 3");
 
-  sm_.Call([view]() { view->gifs_button_for_testing()->RequestFocus(); });
+  sm()->Call([view]() { view->gifs_button_for_testing()->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("GIF");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("row 1 column 4");
+  sm()->ExpectSpeechPattern("GIF");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("row 1 column 4");
 
-  sm_.Call(
+  sm()->Call(
       [view]() { view->more_emojis_button_for_testing()->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern(l10n_util::GetStringUTF8(
+  sm()->ExpectSpeechPattern(l10n_util::GetStringUTF8(
       IDS_PICKER_MORE_EMOJIS_AND_GIFS_BUTTON_ACCESSIBLE_NAME));
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("row 1 column 5");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("row 1 column 5");
 
-  sm_.Replay();
+  sm()->Replay();
 }
 
 class QuickInsertAccessibilityWithGifsFlagDisabledBrowserTest
@@ -403,7 +389,7 @@ class QuickInsertAccessibilityWithGifsFlagDisabledBrowserTest
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityWithGifsFlagDisabledBrowserTest,
                        FocusingGifsButtonAnnouncesLabel) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -411,12 +397,12 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityWithGifsFlagDisabledBrowserTest,
           /*delegate=*/nullptr, /*quick_insert_width=*/100,
           /*is_gifs_enabled=*/true));
 
-  sm_.Call([view]() { view->gifs_button_for_testing()->RequestFocus(); });
+  sm()->Call([view]() { view->gifs_button_for_testing()->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("GIF");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("GIF");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 class QuickInsertAccessibilityWithGifsFlagEnabledBrowserTest
@@ -432,7 +418,7 @@ class QuickInsertAccessibilityWithGifsFlagEnabledBrowserTest
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityWithGifsFlagEnabledBrowserTest,
                        FocusingGifsToggleAnnouncesPressedState) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -440,66 +426,66 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityWithGifsFlagEnabledBrowserTest,
           /*delegate=*/nullptr, /*quick_insert_width=*/100,
           /*is_gifs_enabled=*/true));
 
-  sm_.Call([view]() { view->gifs_button_for_testing()->RequestFocus(); });
+  sm()->Call([view]() { view->gifs_button_for_testing()->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("GIF");
-  sm_.ExpectSpeechPattern("Toggle Button");
-  sm_.ExpectSpeechPattern("Not pressed");
-  sm_.ExpectSpeechPattern("Press * to toggle");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("GIF");
+  sm()->ExpectSpeechPattern("Toggle Button");
+  sm()->ExpectSpeechPattern("Not pressed");
+  sm()->ExpectSpeechPattern("Press * to toggle");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityWithGifsFlagEnabledBrowserTest,
                        TogglingGifsToggleAnnouncesPressedState) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
       widget->SetContentsView(std::make_unique<ash::QuickInsertEmojiBarView>(
           /*delegate=*/nullptr, /*quick_insert_width=*/100,
           /*is_gifs_enabled=*/true));
-  sm_.Call([view]() { view->gifs_button_for_testing()->RequestFocus(); });
-  sm_.ExpectSpeechPattern("Not pressed");
-  sm_.ExpectSpeechPattern("Press * to toggle");
+  sm()->Call([view]() { view->gifs_button_for_testing()->RequestFocus(); });
+  sm()->ExpectSpeechPattern("Not pressed");
+  sm()->ExpectSpeechPattern("Press * to toggle");
 
-  sm_.Call([]() {
+  sm()->Call([]() {
     ui::test::EventGenerator event_generator(
         ash::Shell::Get()->GetPrimaryRootWindow());
     event_generator.PressAndReleaseKey(ui::KeyboardCode::VKEY_RETURN);
   });
 
-  sm_.ExpectSpeechPattern("GIF");
-  sm_.ExpectSpeechPattern("Toggle Button");
-  sm_.ExpectSpeechPattern("Pressed");
-  sm_.ExpectSpeechPattern("Press * to toggle");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("GIF");
+  sm()->ExpectSpeechPattern("Toggle Button");
+  sm()->ExpectSpeechPattern("Pressed");
+  sm()->ExpectSpeechPattern("Press * to toggle");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingMoreEmojisAnnouncesTooltip) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
       widget->SetContentsView(std::make_unique<ash::QuickInsertEmojiBarView>(
           /*delegate=*/nullptr, /*quick_insert_width=*/100));
 
-  sm_.Call(
+  sm()->Call(
       [view]() { view->more_emojis_button_for_testing()->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern(
+  sm()->ExpectSpeechPattern(
       l10n_util::GetStringUTF8(IDS_PICKER_MORE_EMOJIS_BUTTON_ACCESSIBLE_NAME));
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        SectionsAnnouncesHeadings) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -511,29 +497,29 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
   ui::test::EventGenerator event_generator(
       ash::Shell::Get()->GetPrimaryRootWindow());
 
-  sm_.Call([view, &event_generator]() {
+  sm()->Call([view, &event_generator]() {
     view->RequestFocus();
     event_generator.PressAndReleaseKeyAndModifierKeys(ui::KeyboardCode::VKEY_H,
                                                       ui::EF_COMMAND_DOWN);
   });
 
-  sm_.ExpectSpeechPattern("Section1");
-  sm_.ExpectSpeechPattern("Heading");
+  sm()->ExpectSpeechPattern("Section1");
+  sm()->ExpectSpeechPattern("Heading");
 
-  sm_.Call([&event_generator]() {
+  sm()->Call([&event_generator]() {
     event_generator.PressAndReleaseKeyAndModifierKeys(ui::KeyboardCode::VKEY_H,
                                                       ui::EF_COMMAND_DOWN);
   });
 
-  sm_.ExpectSpeechPattern("Section2");
-  sm_.ExpectSpeechPattern("Heading");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("Section2");
+  sm()->ExpectSpeechPattern("Heading");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingSectionShowAllAnnounces) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -544,20 +530,20 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
   section_view->AddTitleLabel(u"Section");
   section_view->AddTitleTrailingLink(u"Show all", u"cat", base::DoNothing());
 
-  sm_.Call([section_view]() {
+  sm()->Call([section_view]() {
     section_view->title_trailing_link_for_testing()->RequestFocus();
   });
 
-  sm_.ExpectSpeechPattern("cat");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("cat");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        ListItemAnnouncesTextWithAction) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -574,19 +560,19 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
   item->SetBadgeAction(ash::QuickInsertActionType::kInsert);
   item->SetBadgeVisible(true);
 
-  sm_.Call([item]() { item->RequestFocus(); });
+  sm()->Call([item]() { item->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("Insert primary, secondary");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("Insert primary, secondary");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        ListItemAnnouncesPreviewMetadata) {
   ash::QuickInsertPreviewBubbleController preview_controller;
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -610,18 +596,18 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
       /*update_icon=*/true);
   ASSERT_TRUE(file_info_future.Wait());
 
-  sm_.Call([item]() { item->RequestFocus(); });
+  sm()->Call([item]() { item->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Edited · Dec 23");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Edited · Dec 23");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        ImageRowItemAnnouncesTitle) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -643,20 +629,20 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
           ui::ImageModel::FromImage(gfx::test::CreateImage(1))),
       u"title2", base::DoNothing()));
 
-  sm_.Call([item]() { item->RequestFocus(); });
+  sm()->Call([item]() { item->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("Insert title1");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("row 1 column 1");
-  sm_.ExpectSpeechPattern("Table Image Row, 1 by 3");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("Insert title1");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("row 1 column 1");
+  sm()->ExpectSpeechPattern("Table Image Row, 1 by 3");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        ImageRowMoreItemsButtonAnnouncesTooltip) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -672,22 +658,22 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
           ui::ImageModel::FromImage(gfx::test::CreateImage(1))),
       u"title", base::DoNothing()));
 
-  sm_.Call([section]() {
+  sm()->Call([section]() {
     section->GetImageRowMoreItemsButtonForTesting()->RequestFocus();
   });
 
-  sm_.ExpectSpeechPattern("More Items");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("row 1 column 2");
-  sm_.ExpectSpeechPattern("Table Image Row, 1 by 2");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("More Items");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("row 1 column 2");
+  sm()->ExpectSpeechPattern("Table Image Row, 1 by 2");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        SetDescendantToImageGridItemAnnouncesTitle) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::QuickInsertKeyEventHandler key_event_handler;
@@ -724,45 +710,45 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
               ui::ImageModel::FromImage(gfx::test::CreateImage(1))),
           u"title3", base::DoNothing()));
 
-  sm_.Call([search_field_view]() { search_field_view->RequestFocus(); });
+  sm()->Call([search_field_view]() { search_field_view->RequestFocus(); });
 
-  sm_.Call([search_field_view, item1]() {
+  sm()->Call([search_field_view, item1]() {
     search_field_view->SetTextfieldActiveDescendant(item1);
   });
 
-  sm_.ExpectSpeechPattern("Insert title1");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("List item");
-  sm_.ExpectSpeechPattern("1 of 3");
+  sm()->ExpectSpeechPattern("Insert title1");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("List item");
+  sm()->ExpectSpeechPattern("1 of 3");
 
-  sm_.Call([search_field_view, item2]() {
+  sm()->Call([search_field_view, item2]() {
     search_field_view->SetTextfieldActiveDescendant(item2);
   });
 
   // TODO: b/362129770 - item2 should not have "List end".
-  sm_.ExpectSpeechPattern("Open title2");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("List item");
-  sm_.ExpectSpeechPattern("3 of 3");
-  sm_.ExpectSpeechPattern("List end");
+  sm()->ExpectSpeechPattern("Open title2");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("List item");
+  sm()->ExpectSpeechPattern("3 of 3");
+  sm()->ExpectSpeechPattern("List end");
 
-  sm_.Call([search_field_view, item3]() {
+  sm()->Call([search_field_view, item3]() {
     search_field_view->SetTextfieldActiveDescendant(item3);
   });
 
   // TODO: b/362129770 - item3 should have "List end".
-  sm_.ExpectSpeechPattern("title3");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("List item");
-  sm_.ExpectSpeechPattern("2 of 3");
+  sm()->ExpectSpeechPattern("title3");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("List item");
+  sm()->ExpectSpeechPattern("2 of 3");
 
-  sm_.Replay();
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingItemInSectionListViewAnnouncesSizeAndPosition) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -781,38 +767,38 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
       std::make_unique<ash::QuickInsertListItemView>(base::DoNothing()));
   item3->SetPrimaryText(u"item3");
 
-  sm_.Call([item1]() { item1->RequestFocus(); });
+  sm()->Call([item1]() { item1->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("item1");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("List item");
-  sm_.ExpectSpeechPattern("1 of 2");
-  sm_.ExpectSpeechPattern("List");
-  sm_.ExpectSpeechPattern("with 2 items");
+  sm()->ExpectSpeechPattern("item1");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("List item");
+  sm()->ExpectSpeechPattern("1 of 2");
+  sm()->ExpectSpeechPattern("List");
+  sm()->ExpectSpeechPattern("with 2 items");
 
-  sm_.Call([item2]() { item2->RequestFocus(); });
+  sm()->Call([item2]() { item2->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("item2");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("List item");
-  sm_.ExpectSpeechPattern("2 of 2");
+  sm()->ExpectSpeechPattern("item2");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("List item");
+  sm()->ExpectSpeechPattern("2 of 2");
 
-  sm_.Call([item3]() { item3->RequestFocus(); });
+  sm()->Call([item3]() { item3->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("item3");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("List item");
-  sm_.ExpectSpeechPattern("1 of 1");
-  sm_.ExpectSpeechPattern("List");
-  sm_.ExpectSpeechPattern("with 1 item");
+  sm()->ExpectSpeechPattern("item3");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("List item");
+  sm()->ExpectSpeechPattern("1 of 1");
+  sm()->ExpectSpeechPattern("List");
+  sm()->ExpectSpeechPattern("with 1 item");
 
-  sm_.Replay();
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingItemWithSubmenuAnnouncesMenuRole) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view = widget->SetContentsView(
@@ -820,19 +806,19 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
   view->SetLeadingIcon(ui::ImageModel::FromImage(gfx::test::CreateImage(1)));
   view->SetText(u"meow");
 
-  sm_.Call([view]() { view->RequestFocus(); });
+  sm()->Call([view]() { view->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("meow");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("has pop up");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("meow");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("has pop up");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingEmojiResultButtonAnnouncesNameOfEmoji) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -840,18 +826,18 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
           /*delegate=*/nullptr, /*quick_insert_width=*/1000));
   view->SetSearchResults({ash::QuickInsertEmojiResult::Emoji(u"😊", u"happy")});
 
-  sm_.Call([view]() { view->GetItemsForTesting().front()->RequestFocus(); });
+  sm()->Call([view]() { view->GetItemsForTesting().front()->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("happy emoji");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("happy emoji");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingSymbolResultButtonAnnouncesNameOfSymbol) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -859,18 +845,18 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
           /*delegate=*/nullptr, /*quick_insert_width=*/1000));
   view->SetSearchResults({ash::QuickInsertEmojiResult::Symbol(u"♬", u"music")});
 
-  sm_.Call([view]() { view->GetItemsForTesting().front()->RequestFocus(); });
+  sm()->Call([view]() { view->GetItemsForTesting().front()->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("music");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("music");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        FocusingEmoticonResultButtonAnnouncesNameOfEmoticon) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* view =
@@ -879,18 +865,18 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
   view->SetSearchResults(
       {ash::QuickInsertEmojiResult::Emoticon(u"(°□°)", u"surprise")});
 
-  sm_.Call([view]() { view->GetItemsForTesting().front()->RequestFocus(); });
+  sm()->Call([view]() { view->GetItemsForTesting().front()->RequestFocus(); });
 
-  sm_.ExpectSpeechPattern("surprise emoticon");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.ExpectSpeechPattern("Press * to activate");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("surprise emoticon");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->ExpectSpeechPattern("Press * to activate");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        StoppingSearchAnnouncesEmojiResults) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::MockQuickInsertSearchResultsViewDelegate mock_delegate;
@@ -900,19 +886,19 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
           /*asset_fetcher=*/nullptr,
           /*submenu_controller=*/nullptr, /*preview_controller=*/nullptr));
 
-  sm_.Call([view]() {
+  sm()->Call([view]() {
     view->SetNumEmojiResultsForA11y(5);
     view->SearchStopped(/*illustration=*/{}, /*description=*/u"");
   });
-  sm_.ExpectSpeechPattern("5 emojis. No other results.");
-  sm_.ExpectSpeechPattern("Status");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("5 emojis. No other results.");
+  sm()->ExpectSpeechPattern("Status");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        StoppingSearchAnnouncesNoResults) {
   std::unique_ptr<views::Widget> widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   ash::MockQuickInsertSearchResultsViewDelegate mock_delegate;
@@ -922,64 +908,66 @@ IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
           /*asset_fetcher=*/nullptr,
           /*submenu_controller=*/nullptr, /*preview_controller=*/nullptr));
 
-  sm_.Call([view]() {
+  sm()->Call([view]() {
     view->SearchStopped(/*illustration=*/{}, /*description=*/u"");
   });
-  sm_.ExpectSpeechPattern(l10n_util::GetStringUTF8(IDS_PICKER_NO_RESULTS_TEXT));
-  sm_.ExpectSpeechPattern("Status");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern(
+      l10n_util::GetStringUTF8(IDS_PICKER_NO_RESULTS_TEXT));
+  sm()->ExpectSpeechPattern("Status");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        ShowingFeatureTourAnnouncesContents) {
   ash::QuickInsertFeatureTour feature_tour;
 
-  sm_.Call([this, &feature_tour]() {
+  sm()->Call([this, &feature_tour]() {
     feature_tour.MaybeShowForFirstUse(
-        browser()->profile()->GetPrefs(),
+        browser()->GetProfile()->GetPrefs(),
         ash::QuickInsertFeatureTour::EditorStatus::kEligible, base::DoNothing(),
         base::DoNothing());
   });
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  sm_.ExpectSpeechPattern("*insert content*");
+  sm()->ExpectSpeechPattern("*insert content*");
 #endif
-  sm_.ExpectSpeechPattern("Dialog");
-  sm_.ExpectSpeechPattern("Get started");
-  sm_.ExpectSpeechPattern("Button");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("Dialog");
+  sm()->ExpectSpeechPattern("Got it");
+  sm()->ExpectSpeechPattern("Button");
+  sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_F(QuickInsertAccessibilityBrowserTest,
                        InsertingAnnouncesInsertionBeforeTextfieldRefocus) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager::UserManager::Get());
+  QuickInsertClientImpl client(g_browser_process->local_state(), &controller,
+                               user_manager::UserManager::Get());
   std::unique_ptr<views::Widget> textfield_widget =
-      ash::TestWidgetBuilder()
+      views::test::TestWidgetBuilder()
           .SetWidgetType(views::Widget::InitParams::TYPE_WINDOW_FRAMELESS)
           .BuildClientOwnsWidget();
   auto* textfield =
       textfield_widget->SetContentsView(std::make_unique<views::Textfield>());
   textfield->GetViewAccessibility().SetName(u"textfield");
-  sm_.Call([&textfield]() { textfield->RequestFocus(); });
-  sm_.ExpectSpeechPattern("textfield");
-  sm_.ExpectSpeechPattern("Edit text");
+  sm()->Call([&textfield]() { textfield->RequestFocus(); });
+  sm()->ExpectSpeechPattern("textfield");
+  sm()->ExpectSpeechPattern("Edit text");
 
-  sm_.Call([&controller]() {
+  sm()->Call([&controller]() {
     controller.ToggleWidget();
     controller.CloseWidgetThenInsertResultOnNextFocus(
         ash::QuickInsertTextResult(u"abc"));
   });
 
-  sm_.ExpectSpeechPattern("Quick Insert");
-  sm_.ExpectSpeechPattern(", window");
-  sm_.ExpectSpeechPattern("Quick Insert");
-  sm_.ExpectSpeechPattern("Status");
-  sm_.ExpectSpeechPattern("Inserting selected result");
-  sm_.ExpectSpeechPattern("textfield");
-  sm_.ExpectSpeechPattern("abc");
-  sm_.ExpectSpeechPattern("Edit text");
-  sm_.Replay();
+  sm()->ExpectSpeechPattern("Quick Insert");
+  sm()->ExpectSpeechPattern(", window");
+  sm()->ExpectSpeechPattern("Quick Insert");
+  sm()->ExpectSpeechPattern("Status");
+  sm()->ExpectSpeechPattern("Inserting selected result");
+  sm()->ExpectSpeechPattern("textfield");
+  sm()->ExpectSpeechPattern("abc");
+  sm()->ExpectSpeechPattern("Edit text");
+  sm()->Replay();
 }
 
 }  // namespace

@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -17,7 +18,6 @@
 #include "base/types/pass_key.h"
 
 class TabGroup;
-class TabGroupController;
 class TabStripModel;
 namespace tab_groups {
 enum class TabGroupColorId;
@@ -32,7 +32,7 @@ class TabGroupId;
 // need to be reflected in the view.
 class TabGroupModel {
  public:
-  explicit TabGroupModel(TabGroupController* controller);
+  TabGroupModel();
   ~TabGroupModel();
 
   // Returns whether a tab group with the given |id| exists.
@@ -56,7 +56,16 @@ class TabGroupModel {
   // should be as distinct from the other groups as possible.
   tab_groups::TabGroupColorId GetNextColor(base::PassKey<TabStripModel>) const;
 
+  static std::vector<tab_groups::TabGroupColorId> GetColorOrdering();
+
   std::vector<tab_groups::TabGroupId> ListTabGroups() const;
+
+  // Returns the TabGroupId of the group that most recently contained the active
+  // tab. Returns std::nullopt if there are no groups.
+  std::optional<tab_groups::TabGroupId> GetMostRecentTabGroupId() const;
+
+  void OnTabGroupActivated(const tab_groups::TabGroupId& id,
+                           base::PassKey<TabStripModel>);
 
  private:
   std::map<tab_groups::TabGroupId, raw_ptr<TabGroup>> groups_;
@@ -65,7 +74,8 @@ class TabGroupModel {
   // TabGroupModel.
   std::vector<tab_groups::TabGroupId> group_ids_;
 
-  raw_ptr<TabGroupController> controller_;
+  // Container of groups ordered according to when they had the active tab.
+  std::list<tab_groups::TabGroupId> group_ids_by_activity_;
 };
 
 #endif  // CHROME_BROWSER_UI_TABS_TAB_GROUP_MODEL_H_

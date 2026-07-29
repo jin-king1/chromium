@@ -16,6 +16,7 @@
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
+#include "base/features.h"
 #include "base/functional/bind.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
@@ -115,7 +116,12 @@ UpgradeDetectorImpl::UpgradeDetectorImpl(const base::Clock* clock,
       is_auto_update_enabled_(true),
       simulating_outdated_(SimulatingOutdated()),
       is_testing_(simulating_outdated_ || IsTesting()),
-      build_date_(base::GetBuildTime()) {}
+      build_date_(base::GetBuildTime()) {
+  if (base::features::IsReducePPMsEnabled()) {
+    upgrade_notification_timer_.SetTaskRunner(
+        content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT}));
+  }
+}
 
 UpgradeDetectorImpl::~UpgradeDetectorImpl() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -160,8 +166,9 @@ void UpgradeDetectorImpl::DoCalculateThresholds() {
   base::TimeDelta notification_period = GetRelaunchNotificationPeriod();
   const std::optional<RelaunchWindow> relaunch_window =
       GetRelaunchWindowPolicyValue();
+  bool fast_relaunch = ShouldRelaunchFast();
 
-  if (notification_period.is_zero() && !relaunch_window) {
+  if (notification_period.is_zero() && !relaunch_window && !fast_relaunch) {
     // Use the default values when no override is set and we don't expect to
     // adjust the levels according to the relaunch time interval.
     stages_[kStagesIndexHigh] = kDefaultHighThreshold;
@@ -174,8 +181,13 @@ void UpgradeDetectorImpl::DoCalculateThresholds() {
     // fall within the relaunch time interval. The adjusted "high" level is
     // divided evenly to set the 'low' and 'elevated' levels.
     base::TimeDelta effective_notification_period = notification_period;
-    if (notification_period.is_zero())
+    if (notification_period.is_zero()) {
       effective_notification_period = kDefaultHighThreshold;
+    }
+    if (fast_relaunch) {
+      effective_notification_period =
+          std::min(effective_notification_period, base::Hours(2));
+    }
 
     const RelaunchWindow effective_relaunch_window =
         relaunch_window.value_or(GetDefaultRelaunchWindow());
@@ -208,8 +220,7 @@ void UpgradeDetectorImpl::DoCalculateThresholds() {
 
 void UpgradeDetectorImpl::StartOutdatedBuildDetector() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  static BASE_FEATURE(kOutdatedBuildDetector, "OutdatedBuildDetector",
-                      base::FEATURE_ENABLED_BY_DEFAULT);
+  static BASE_FEATURE(kOutdatedBuildDetector, base::FEATURE_ENABLED_BY_DEFAULT);
 
   if (!base::FeatureList::IsEnabled(kOutdatedBuildDetector))
     return;
@@ -244,18 +255,8 @@ void UpgradeDetectorImpl::StartOutdatedBuildDetector() {
 void UpgradeDetectorImpl::DetectOutdatedInstall() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   base::Time current_time;
-  base::TimeDelta uncertainty;
-  bool is_network_time = true;
-  if (g_browser_process->network_time_tracker()->GetNetworkTime(&current_time,
-                                                                &uncertainty) !=
-      network_time::NetworkTimeTracker::NETWORK_TIME_AVAILABLE) {
-    // When network time has not been initialized yet, simply rely on the
-    // machine's current time.
-    is_network_time = false;
-    current_time = base::Time::Now();
-  }
+  bool is_network_time = GetNetworkTimeWithFallback(current_time);
 
-  CHECK(!current_time.is_null());
   CHECK(!build_date_.is_null());
 
   if (!simulating_outdated_ && is_network_time && build_date_ > current_time) {
@@ -285,6 +286,11 @@ void UpgradeDetectorImpl::UpgradeDetected(UpgradeAvailable upgrade_available) {
   if (upgrade_available != UPGRADE_AVAILABLE_NONE ||
       critical_experiment_updates_available()) {
     StartUpgradeNotificationTimer();
+    if (ShouldFetchLastServedDate()) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(&UpgradeDetectorImpl::FetchLastServedDate,
+                                    weak_factory_.GetWeakPtr()));
+    }
   } else {
     // There is no longer anything to notify the user about, so stop the timer
     // and reset state.
@@ -397,7 +403,7 @@ UpgradeDetectorImpl::StageIndexToAnnoyanceLevel(size_t index) {
   return kIndexToLevel[index];
 }
 
-void UpgradeDetectorImpl::OnMonitoredPrefsChanged() {
+void UpgradeDetectorImpl::RecomputeSchedule() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Broadcast the appropriate notification if an upgrade has been detected.

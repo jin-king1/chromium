@@ -5,10 +5,10 @@
 #include "components/services/app_service/public/cpp/permission.h"
 
 #include <sstream>
+#include <variant>
 
 #include "base/containers/to_value_list.h"
 #include "base/strings/to_string.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace apps {
 
@@ -44,26 +44,17 @@ Permission::Permission(PermissionType permission_type,
 
 Permission::~Permission() = default;
 
-bool Permission::operator==(const Permission& other) const {
-  return permission_type == other.permission_type && value == other.value &&
-         is_managed == other.is_managed && details == other.details;
-}
-
-bool Permission::operator!=(const Permission& other) const {
-  return !(*this == other);
-}
-
 PermissionPtr Permission::Clone() const {
   return std::make_unique<Permission>(permission_type, value, is_managed,
                                       details);
 }
 
 bool Permission::IsPermissionEnabled() const {
-  if (absl::holds_alternative<bool>(value)) {
-    return absl::get<bool>(value);
+  if (std::holds_alternative<bool>(value)) {
+    return std::get<bool>(value);
   }
-  if (absl::holds_alternative<TriState>(value)) {
-    return absl::get<TriState>(value) == TriState::kAllow;
+  if (std::holds_alternative<TriState>(value)) {
+    return std::get<TriState>(value) == TriState::kAllow;
   }
   return false;
 }
@@ -71,10 +62,10 @@ bool Permission::IsPermissionEnabled() const {
 std::string Permission::ToString() const {
   std::stringstream out;
   out << " permission type: " << EnumToString(permission_type) << std::endl;
-  if (absl::holds_alternative<bool>(value)) {
-    out << " bool_value: " << base::ToString(absl::get<bool>(value));
-  } else if (absl::holds_alternative<TriState>(value)) {
-    out << " tristate_value: " << EnumToString(absl::get<TriState>(value));
+  if (std::holds_alternative<bool>(value)) {
+    out << " bool_value: " << base::ToString(std::get<bool>(value));
+  } else if (std::holds_alternative<TriState>(value)) {
+    out << " tristate_value: " << EnumToString(std::get<TriState>(value));
   }
   out << std::endl;
   if (details.has_value()) {
@@ -105,8 +96,8 @@ bool IsEqual(const Permissions& source, const Permissions& target) {
   return true;
 }
 
-base::Value::Dict ConvertPermissionToDict(const PermissionPtr& permission) {
-  base::Value::Dict dict;
+base::DictValue ConvertPermissionToDict(const PermissionPtr& permission) {
+  base::DictValue dict;
 
   if (!permission) {
     return dict;
@@ -114,11 +105,11 @@ base::Value::Dict ConvertPermissionToDict(const PermissionPtr& permission) {
 
   dict.Set(kPermissionTypeKey, static_cast<int>(permission->permission_type));
 
-  if (absl::holds_alternative<bool>(permission->value)) {
-    dict.Set(kValueKey, absl::get<bool>(permission->value));
-  } else if (absl::holds_alternative<TriState>(permission->value)) {
+  if (std::holds_alternative<bool>(permission->value)) {
+    dict.Set(kValueKey, std::get<bool>(permission->value));
+  } else if (std::holds_alternative<TriState>(permission->value)) {
     dict.Set(kValueKey,
-             static_cast<int>(absl::get<TriState>(permission->value)));
+             static_cast<int>(std::get<TriState>(permission->value)));
   }
 
   dict.Set(kIsManagedKey, permission->is_managed);
@@ -130,7 +121,7 @@ base::Value::Dict ConvertPermissionToDict(const PermissionPtr& permission) {
   return dict;
 }
 
-PermissionPtr ConvertDictToPermission(const base::Value::Dict& dict) {
+PermissionPtr ConvertDictToPermission(const base::DictValue& dict) {
   std::optional<int> permission_type = dict.FindInt(kPermissionTypeKey);
   if (!permission_type.has_value() ||
       permission_type.value() < static_cast<int>(PermissionType::kUnknown) ||
@@ -166,11 +157,11 @@ PermissionPtr ConvertDictToPermission(const base::Value::Dict& dict) {
       details ? std::optional<std::string>(*details) : std::nullopt);
 }
 
-base::Value::List ConvertPermissionsToList(const Permissions& permissions) {
+base::ListValue ConvertPermissionsToList(const Permissions& permissions) {
   return base::ToValueList(permissions, &ConvertPermissionToDict);
 }
 
-Permissions ConvertListToPermissions(const base::Value::List* list) {
+Permissions ConvertListToPermissions(const base::ListValue* list) {
   Permissions permissions;
 
   if (!list) {

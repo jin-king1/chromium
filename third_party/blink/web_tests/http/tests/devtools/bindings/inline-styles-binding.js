@@ -2,13 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TestRunner} from 'test_runner';
 import {BindingsTestRunner} from 'bindings_test_runner';
-
 import * as SDK from 'devtools/core/sdk/sdk.js';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
 import * as Bindings from 'devtools/models/bindings/bindings.js';
-import * as TextUtils from 'devtools/models/text_utils/text_utils.js';
 import * as Workspace from 'devtools/models/workspace/workspace.js';
+import {TestRunner} from 'test_runner';
 
 (async function() {
   TestRunner.addResult(`Editing inline styles should play nice with inline scripts.\n`);
@@ -16,7 +15,7 @@ import * as Workspace from 'devtools/models/workspace/workspace.js';
   await TestRunner.navigatePromise('./resources/inline-style.html');
   const uiSourceCode = await TestRunner.waitForUISourceCode('inline-style.html', Workspace.Workspace.projectTypes.Network);
 
-  await uiSourceCode.requestContent(); // prefetch content to fix flakiness
+  await uiSourceCode.requestContentData(); // prefetch content to fix flakiness
   const headers = TestRunner.cssModel.headersForSourceURL(uiSourceCode.url());
   // Sort headers in the order they appear in the file to avoid flakiness.
   headers.sort((a, b) => a.startLine - b.startLine);

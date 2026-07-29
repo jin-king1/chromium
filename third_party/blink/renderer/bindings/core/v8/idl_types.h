@@ -8,7 +8,6 @@
 #include <optional>
 #include <type_traits>
 
-#include "base/time/time.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types_base.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits.h"
 #include "third_party/blink/renderer/platform/heap/heap_traits.h"
@@ -172,35 +171,6 @@ using IDLStringLegacyNullToEmptyString =
 template <bindings::IDLStringConvMode mode>
 struct IDLUSVStringBase final : public IDLStringTypeBase {};
 using IDLUSVString = IDLUSVStringBase<bindings::IDLStringConvMode::kDefault>;
-
-// [StringContext=TrustedHTML] DOMString
-template <bindings::IDLStringConvMode mode>
-struct IDLStringStringContextTrustedHTMLBase final : public IDLStringTypeBase {
-};
-using IDLStringStringContextTrustedHTML = IDLStringStringContextTrustedHTMLBase<
-    bindings::IDLStringConvMode::kDefault>;
-using IDLStringLegacyNullToEmptyStringStringContextTrustedHTML =
-    IDLStringStringContextTrustedHTMLBase<
-        bindings::IDLStringConvMode::kLegacyNullToEmptyString>;
-
-// [StringContext=TrustedScript] DOMString
-template <bindings::IDLStringConvMode mode>
-struct IDLStringStringContextTrustedScriptBase final
-    : public IDLStringTypeBase {};
-using IDLStringStringContextTrustedScript =
-    IDLStringStringContextTrustedScriptBase<
-        bindings::IDLStringConvMode::kDefault>;
-using IDLStringLegacyNullToEmptyStringStringContextTrustedScript =
-    IDLStringStringContextTrustedScriptBase<
-        bindings::IDLStringConvMode::kLegacyNullToEmptyString>;
-
-// [StringContext=TrustedScriptURL] USVString
-template <bindings::IDLStringConvMode mode>
-struct IDLUSVStringStringContextTrustedScriptURLBase final
-    : public IDLStringTypeBase {};
-using IDLUSVStringStringContextTrustedScriptURL =
-    IDLUSVStringStringContextTrustedScriptURLBase<
-        bindings::IDLStringConvMode::kDefault>;
 
 // object
 struct IDLObject final : public IDLBaseHelper<ScriptObject> {};

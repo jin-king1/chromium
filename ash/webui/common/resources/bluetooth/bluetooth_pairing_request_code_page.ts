@@ -14,7 +14,6 @@ import '//resources/ash/common/cr_elements/cr_input/cr_input.js';
 
 import type {CrInputElement} from '//resources/ash/common/cr_elements/cr_input/cr_input.js';
 import {I18nMixin} from '//resources/ash/common/cr_elements/i18n_mixin.js';
-import {mojoString16ToString} from '//resources/js/mojo_type_util.js';
 import type {BluetoothDeviceProperties} from '//resources/mojo/chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom-webui.js';
 import {afterNextRender, PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -74,10 +73,10 @@ export class SettingsBluetoothRequestCodePageElement extends
     };
   }
 
-  device: BluetoothDeviceProperties|null;
-  authType: PairingAuthType|null;
-  private buttonBarState_: ButtonBarState;
-  private pinCode_: string;
+  declare device: BluetoothDeviceProperties|null;
+  declare authType: PairingAuthType|null;
+  declare private buttonBarState_: ButtonBarState;
+  declare private pinCode_: string;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -95,7 +94,7 @@ export class SettingsBluetoothRequestCodePageElement extends
       return '';
     }
 
-    return mojoString16ToString(this.device.publicName);
+    return this.device.publicName;
   }
 
   private computeButtonBarState_(): ButtonBarState {
@@ -111,7 +110,6 @@ export class SettingsBluetoothRequestCodePageElement extends
   private onPairClicked_(event: Event): void {
     event.stopPropagation();
 
-    // TODO(crbug.com/1010321): Show spinner while pairing.
     if (!this.pinCode_) {
       return;
     }

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/containers/flat_tree.h"
 
 // Following tests are ported and extended tests from libcpp for std::set.
@@ -42,10 +37,14 @@
 #include <string>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/adapters.h"
+#include "base/containers/span.h"
 #include "base/test/gtest_util.h"
 #include "base/test/move_only_int.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/hash/hash_testing.h"
 
 namespace base::internal {
 
@@ -76,12 +75,7 @@ class InputIterator {
     return tmp;
   }
 
-  friend bool operator==(const InputIterator& lhs, const InputIterator& rhs) {
-    return lhs.it_ == rhs.it_;
-  }
-  friend bool operator!=(const InputIterator& lhs, const InputIterator& rhs) {
-    return !(lhs == rhs);
-  }
+  friend bool operator==(const InputIterator&, const InputIterator&) = default;
 
  private:
   It it_;
@@ -323,8 +317,9 @@ TYPED_TEST_P(FlatTreeTest, CopyConstructor) {
 
 TEST(FlatTree, MoveConstructor) {
   int input_range[] = {1, 2, 3, 4};
+  auto span = base::span(input_range);
 
-  MoveOnlyTree original(std::begin(input_range), std::end(input_range));
+  MoveOnlyTree original(span.begin(), span.end());
   MoveOnlyTree moved(std::move(original));
 
   EXPECT_EQ(1U, moved.count(MoveOnlyInt(1)));
@@ -337,22 +332,48 @@ TEST(FlatTree, MoveConstructor) {
 //           InputIterator last,
 //           const Compare& comp = Compare())
 
-TEST(FlatTree, RangeConstructor) {
+TEST(FlatTree, IteratorConstructor) {
   {
     IntPair input_vals[] = {{1, 1}, {1, 2}, {2, 1}, {2, 2}, {1, 3},
                             {2, 3}, {3, 1}, {3, 2}, {3, 3}};
+    auto span = base::span(input_vals);
 
-    IntPairTree first_of(MakeInputIterator(std::begin(input_vals)),
-                         MakeInputIterator(std::end(input_vals)));
+    IntPairTree first_of(MakeInputIterator(span.begin()),
+                         MakeInputIterator(span.end()));
     EXPECT_THAT(first_of,
                 ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1)));
   }
   {
     TreeWithStrangeCompare::value_type input_vals[] = {1, 1, 1, 2, 2,
                                                        2, 3, 3, 3};
+    auto span = base::span(input_vals);
 
-    TreeWithStrangeCompare cont(MakeInputIterator(std::begin(input_vals)),
-                                MakeInputIterator(std::end(input_vals)),
+    TreeWithStrangeCompare cont(MakeInputIterator(span.begin()),
+                                MakeInputIterator(span.end()),
+                                NonDefaultConstructibleCompare(0));
+    EXPECT_THAT(cont, ElementsAre(1, 2, 3));
+  }
+}
+
+// flat_tree(const Range& range,
+//           const Compare& comp = Compare())
+
+TEST(FlatTree, RangeConstructor) {
+  {
+    IntPair input_vals[] = {{1, 1}, {1, 2}, {2, 1}, {2, 2}, {1, 3},
+                            {2, 3}, {3, 1}, {3, 2}, {3, 3}};
+    auto span = base::span(input_vals);
+
+    IntPairTree first_of(std::from_range, span);
+    EXPECT_THAT(first_of,
+                ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1)));
+  }
+  {
+    TreeWithStrangeCompare::value_type input_vals[] = {1, 1, 1, 2, 2,
+                                                       2, 3, 3, 3};
+    auto span = base::span(input_vals);
+
+    TreeWithStrangeCompare cont(std::from_range, span,
                                 NonDefaultConstructibleCompare(0));
     EXPECT_THAT(cont, ElementsAre(1, 2, 3));
   }
@@ -424,22 +445,46 @@ TYPED_TEST_P(FlatTreeTest, InitializerListConstructor) {
 //           InputIterator last,
 //           const Compare& comp = Compare())
 
-TEST(FlatTree, SortedUniqueRangeConstructor) {
+TEST(FlatTree, SortedUniqueIteratorConstructor) {
   {
     IntPair input_vals[] = {{1, 1}, {2, 1}, {3, 1}};
+    auto span = base::span(input_vals);
 
-    IntPairTree first_of(sorted_unique,
-                         MakeInputIterator(std::begin(input_vals)),
-                         MakeInputIterator(std::end(input_vals)));
+    IntPairTree first_of(sorted_unique, MakeInputIterator(span.begin()),
+                         MakeInputIterator(span.end()));
     EXPECT_THAT(first_of,
                 ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1)));
   }
   {
     TreeWithStrangeCompare::value_type input_vals[] = {1, 2, 3};
+    auto span = base::span(input_vals);
 
-    TreeWithStrangeCompare cont(sorted_unique,
-                                MakeInputIterator(std::begin(input_vals)),
-                                MakeInputIterator(std::end(input_vals)),
+    TreeWithStrangeCompare cont(sorted_unique, MakeInputIterator(span.begin()),
+                                MakeInputIterator(span.end()),
+                                NonDefaultConstructibleCompare(0));
+    EXPECT_THAT(cont, ElementsAre(1, 2, 3));
+  }
+}
+
+// flat_tree(std::from_range_t,
+//           sorted_unique_t,
+//           const Range& range,
+//           const Compare& comp = Compare())
+
+TEST(FlatTree, SortedUniqueRangeConstructor) {
+  {
+    IntPair input_vals[] = {{1, 1}, {2, 1}, {3, 1}};
+    auto span = base::span(input_vals);
+
+    IntPairTree first_of(std::from_range, sorted_unique, span);
+    EXPECT_THAT(first_of,
+                ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1)));
+  }
+  {
+    TreeWithStrangeCompare::value_type input_vals[] = {1, 2, 3};
+    auto span = base::span(input_vals);
+
+    TreeWithStrangeCompare cont(std::from_range, sorted_unique, span,
                                 NonDefaultConstructibleCompare(0));
     EXPECT_THAT(cont, ElementsAre(1, 2, 3));
   }
@@ -803,7 +848,8 @@ TEST(FlatTree, InsertIterIter) {
   {
     IntIntMap cont;
     IntPair int_pairs[] = {{3, 1}, {1, 1}, {4, 1}, {2, 1}};
-    UNSAFE_BUFFERS(cont.insert(std::begin(int_pairs), std::end(int_pairs)));
+    auto span = base::span(int_pairs);
+    cont.insert(span.begin(), span.end());
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1)));
   }
@@ -811,7 +857,8 @@ TEST(FlatTree, InsertIterIter) {
   {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     std::vector<IntPair> int_pairs;
-    UNSAFE_BUFFERS(cont.insert(std::begin(int_pairs), std::end(int_pairs)));
+    auto span = base::span(int_pairs);
+    cont.insert(span.begin(), span.end());
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1)));
   }
@@ -819,7 +866,8 @@ TEST(FlatTree, InsertIterIter) {
   {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     IntPair int_pairs[] = {{1, 1}};
-    UNSAFE_BUFFERS(cont.insert(std::begin(int_pairs), std::end(int_pairs)));
+    auto span = base::span(int_pairs);
+    cont.insert(span.begin(), span.end());
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1)));
   }
@@ -827,7 +875,8 @@ TEST(FlatTree, InsertIterIter) {
   {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     IntPair int_pairs[] = {{5, 1}};
-    UNSAFE_BUFFERS(cont.insert(std::begin(int_pairs), std::end(int_pairs)));
+    auto span = base::span(int_pairs);
+    cont.insert(span.begin(), span.end());
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1), IntPair(5, 1)));
   }
@@ -835,7 +884,8 @@ TEST(FlatTree, InsertIterIter) {
   {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     IntPair int_pairs[] = {{3, 2}, {1, 2}, {4, 2}, {2, 2}};
-    UNSAFE_BUFFERS(cont.insert(std::begin(int_pairs), std::end(int_pairs)));
+    auto span = base::span(int_pairs);
+    cont.insert(span.begin(), span.end());
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1)));
   }
@@ -844,7 +894,8 @@ TEST(FlatTree, InsertIterIter) {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     IntPair int_pairs[] = {{3, 2}, {1, 2}, {4, 2}, {2, 2}, {7, 2}, {6, 2},
                            {8, 2}, {5, 2}, {5, 3}, {6, 3}, {7, 3}, {8, 3}};
-    UNSAFE_BUFFERS(cont.insert(std::begin(int_pairs), std::end(int_pairs)));
+    auto span = base::span(int_pairs);
+    cont.insert(span.begin(), span.end());
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1), IntPair(5, 2), IntPair(6, 2),
                                   IntPair(7, 2), IntPair(8, 2)));
@@ -867,7 +918,7 @@ TEST(FlatTree, InsertRange) {
   {
     IntIntMap cont;
     IntPair int_pairs[] = {{3, 1}, {1, 1}, {4, 1}, {2, 1}};
-    cont.insert_range(int_pairs);
+    cont.insert_range(base::span(int_pairs));
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1)));
   }
@@ -875,7 +926,7 @@ TEST(FlatTree, InsertRange) {
   {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     std::vector<IntPair> int_pairs;
-    cont.insert_range(int_pairs);
+    cont.insert_range(base::span(int_pairs));
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1)));
   }
@@ -883,7 +934,7 @@ TEST(FlatTree, InsertRange) {
   {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     IntPair int_pairs[] = {{1, 1}};
-    cont.insert_range(int_pairs);
+    cont.insert_range(base::span(int_pairs));
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1)));
   }
@@ -891,7 +942,7 @@ TEST(FlatTree, InsertRange) {
   {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     IntPair int_pairs[] = {{5, 1}};
-    cont.insert_range(int_pairs);
+    cont.insert_range(base::span(int_pairs));
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1), IntPair(5, 1)));
   }
@@ -899,7 +950,7 @@ TEST(FlatTree, InsertRange) {
   {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     IntPair int_pairs[] = {{3, 2}, {1, 2}, {4, 2}, {2, 2}};
-    cont.insert_range(int_pairs);
+    cont.insert_range(base::span(int_pairs));
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1)));
   }
@@ -908,10 +959,20 @@ TEST(FlatTree, InsertRange) {
     IntIntMap cont({{1, 1}, {2, 1}, {3, 1}, {4, 1}});
     IntPair int_pairs[] = {{3, 2}, {1, 2}, {4, 2}, {2, 2}, {7, 2}, {6, 2},
                            {8, 2}, {5, 2}, {5, 3}, {6, 3}, {7, 3}, {8, 3}};
-    cont.insert_range(int_pairs);
+    cont.insert_range(base::span(int_pairs));
     EXPECT_THAT(cont, ElementsAre(IntPair(1, 1), IntPair(2, 1), IntPair(3, 1),
                                   IntPair(4, 1), IntPair(5, 2), IntPair(6, 2),
                                   IntPair(7, 2), IntPair(8, 2)));
+  }
+  {
+    std::list<MoveOnlyInt> list;
+    list.emplace_back(1);
+    list.emplace_back(2);
+
+    MoveOnlyTree tree;
+    tree.insert_range(base::RangeAsRvalues(std::move(list)));
+    EXPECT_EQ(1u, tree.count(MoveOnlyInt(1)));
+    EXPECT_EQ(1u, tree.count(MoveOnlyInt(2)));
   }
 }
 
@@ -1464,6 +1525,21 @@ TYPED_TEST_P(FlatTreeTest, Swap) {
   EXPECT_THAT(y, ElementsAre(4));
 }
 
+TYPED_TEST_P(FlatTreeTest, AbslHash) {
+  using Tree = TypedTree<TypeParam>;
+  EXPECT_TRUE(absl::VerifyTypeImplementsAbslHashCorrectly({
+      // These two are identical.
+      Tree({1, 2, 3, 4}),
+      Tree({1, 2, 3, 4}),
+      // `flat_tree` is ordered, so this is also identical.
+      Tree({4, 3, 2, 1}),
+      // Different content.
+      Tree({1, 2, 3}),
+      Tree({}),
+      Tree({0}),
+  }));
+}
+
 // bool operator==(const flat_tree& lhs, const flat_tree& rhs)
 // bool operator!=(const flat_tree& lhs, const flat_tree& rhs)
 // bool operator<(const flat_tree& lhs, const flat_tree& rhs)
@@ -1576,6 +1652,7 @@ REGISTER_TYPED_TEST_SUITE_P(FlatTreeTest,
                             LowerBound,
                             UpperBound,
                             Swap,
+                            AbslHash,
                             EraseIf,
                             SortedUniqueRangeConstructorDCHECKs,
                             SortedUniqueVectorCopyConstructorDCHECKs,

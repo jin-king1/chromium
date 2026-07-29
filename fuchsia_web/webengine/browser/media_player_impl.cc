@@ -10,6 +10,7 @@
 
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "content/public/browser/media_session.h"
@@ -64,6 +65,8 @@ fuchsia_media_sessions2::PlayerCapabilityFlags ActionToCapabilityFlag(
       return {};  // PlayerControl does not support going to next slide.
     case MediaSessionAction::kEnterAutoPictureInPicture:
       return {};  // PlayerControl does not support picture-in-picture.
+    case MediaSessionAction::kSaveVideoFrame:
+      return {};  // PlayerControl does not support saving video frames.
   }
 }
 
@@ -85,7 +88,7 @@ fuchsia_media_sessions2::PlayerState SessionStateToPlayerState(
       return fuchsia_media_sessions2::PlayerState::kIdle;
     case media_session::mojom::MediaSessionInfo::SessionState::kSuspended:
       return fuchsia_media_sessions2::PlayerState::kPaused;
-  };
+  }
 }
 
 }  // namespace

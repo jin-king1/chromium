@@ -38,6 +38,24 @@ inline constexpr char kAccountsPrefDeviceLocalAccountsKeyIwaKioskBundleId[] =
     "iwa_kiosk_web_bundle_id";
 inline constexpr char kAccountsPrefDeviceLocalAccountsKeyIwaKioskUpdateUrl[] =
     "iwa_kiosk_update_manifest_url";
+inline constexpr char
+    kAccountsPrefDeviceLocalAccountsKeyIwaKioskUpdateChannel[] =
+        "iwa_kiosk_update_channel";
+inline constexpr char
+    kAccountsPrefDeviceLocalAccountsKeyIwaKioskPinnedVersion[] =
+        "iwa_kiosk_pinned_version";
+inline constexpr char
+    kAccountsPrefDeviceLocalAccountsKeyIwaKioskAllowDowngrades[] =
+        "iwa_kiosk_allow_downgrades";
+inline constexpr char kAccountsPrefDeviceLocalAccountsKeyArcvmKioskPackage[] =
+    "arcvm_kiosk_package";
+inline constexpr char kAccountsPrefDeviceLocalAccountsKeyArcvmKioskClass[] =
+    "arcvm_kiosk_class";
+inline constexpr char kAccountsPrefDeviceLocalAccountsKeyArcvmKioskAction[] =
+    "arcvm_kiosk_action";
+inline constexpr char
+    kAccountsPrefDeviceLocalAccountsKeyArcvmKioskDisplayName[] =
+        "arcvm_kiosk_display_name";
 inline constexpr char kAccountsPrefDeviceLocalAccountsKeyWebKioskUrl[] =
     "web_kiosk_url";
 inline constexpr char kAccountsPrefDeviceLocalAccountsKeyWebKioskTitle[] =
@@ -358,6 +376,11 @@ inline constexpr char kDeviceDisabled[] = "cros.device_disabled";
 // the device is disabled.
 inline constexpr char kDeviceDisabledMessage[] = "cros.disabled_state.message";
 
+// A boolean pref that indicates whether location tracking is enabled when the
+// device is in disabled mode.
+inline constexpr char kDeviceDisabledLocationTrackingEnabled[] =
+    "cros.disabled_state.location_tracking_enabled";
+
 // A boolean pref that indicates whether the device automatically reboots when
 // the user initiates a shutdown via an UI element.  If set to true, all
 // shutdown buttons in the UI will be replaced by reboot buttons.
@@ -623,6 +646,11 @@ inline constexpr char kDevicePeripheralDataAccessEnabled[] =
 inline constexpr char kDeviceAllowedBluetoothServices[] =
     "cros.device.allowed_bluetooth_services";
 
+// Boolean pref indicating whether "Just Works" bluetooth pairing is enabled or
+// not.
+inline constexpr char kDeviceBluetoothJustWorksPairingEnabled[] =
+    "cros.device.bluetooth_just_works_pairing_enabled";
+
 // A dictionary pref specifying the recurring schedule for device reboot.
 inline constexpr char kDeviceScheduledReboot[] =
     "cros.device.device_scheduled_reboot";
@@ -658,6 +686,12 @@ inline constexpr char kDevicePrintingClientNameTemplate[] =
 // is available.
 inline constexpr char kDeviceHindiInscriptLayoutEnabled[] =
     "cros.device.hindi_inscript_layout_enabled";
+
+inline constexpr char kDeviceUserInitiatedFirmwareUpdatesEnabled[] =
+    "cros.device.user_initiated_firmware_updates_enabled";
+
+inline constexpr char kDeviceUserInitiatedFlexSystemFirmwareUpdatesEnabled[] =
+    "cros.device.user_initiated_flex_system_firmware_updates_enabled";
 
 // A list of strings representing DLC identifiers to be pre downloaded on the
 // device.

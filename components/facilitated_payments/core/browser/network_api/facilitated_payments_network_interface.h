@@ -1,15 +1,23 @@
-// Copyright 2024 The Chromium Authors
+// Copyright 2025 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #ifndef COMPONENTS_FACILITATED_PAYMENTS_CORE_BROWSER_NETWORK_API_FACILITATED_PAYMENTS_NETWORK_INTERFACE_H_
 #define COMPONENTS_FACILITATED_PAYMENTS_CORE_BROWSER_NETWORK_API_FACILITATED_PAYMENTS_NETWORK_INTERFACE_H_
 
+#include <cstdint>
 #include <memory>
+#include <vector>
 
+#include "base/memory/raw_ref.h"
+#include "base/types/strong_alias.h"
+#include "components/autofill/core/browser/payments/multiple_request_payments_network_interface_base.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
-#include "components/autofill/core/browser/payments/payments_network_interface_base.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+
+namespace autofill {
+class AccountInfoGetter;
+}  // namespace autofill
 
 namespace signin {
 class IdentityManager;
@@ -24,24 +32,28 @@ namespace payments::facilitated {
 class FacilitatedPaymentsInitiatePaymentRequestDetails;
 class FacilitatedPaymentsInitiatePaymentResponseDetails;
 
-// Billable service number is defined in Payments server to distinguish
-// different requests.
-inline constexpr int kFacilitatedPaymentsBillableServiceNumber = 70154;
-
 // Issues Payments RPCs and manages responses and failure conditions for
-// Facilitated Payments. Only one request may be active at a time. Initiating a
-// new request will cancel a pending request.
+// Facilitated Payments. Multiple request may be active at the same time.
+// Sending another request will not affect any pending requests.
 class FacilitatedPaymentsNetworkInterface
-    : public autofill::payments::PaymentsNetworkInterfaceBase {
+    : public autofill::payments::MultipleRequestPaymentsNetworkInterfaceBase {
  public:
   using InitiatePaymentResponseCallback = base::OnceCallback<void(
       autofill::payments::PaymentsAutofillClient::PaymentsRpcResult,
       std::unique_ptr<FacilitatedPaymentsInitiatePaymentResponseDetails>)>;
+  using GetDetailsForCreatePaymentInstrumentResponseCallback =
+      base::OnceCallback<void(
+          autofill::payments::PaymentsAutofillClient::PaymentsRpcResult,
+          bool,
+          const std::vector<uint8_t>&)>;
+  using RequestId =
+      base::StrongAlias<struct autofill::payments::RequestIdTag, std::string>;
 
+  // `identity_manager` and `account_info_getter` must outlive this.
   FacilitatedPaymentsNetworkInterface(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      signin::IdentityManager* identity_manager,
-      autofill::AccountInfoGetter* account_info_getter,
+      signin::IdentityManager& identity_manager,
+      autofill::AccountInfoGetter& account_info_getter,
       bool is_off_the_record = false);
 
   FacilitatedPaymentsNetworkInterface(
@@ -53,11 +65,22 @@ class FacilitatedPaymentsNetworkInterface
 
   // Makes a `FacilitatedPaymentsInitiatePaymentRequest` to the Payments server.
   // This method is virtual so it can be overridden in tests.
-  virtual void InitiatePayment(
+  virtual RequestId InitiatePayment(
       std::unique_ptr<FacilitatedPaymentsInitiatePaymentRequestDetails>
           request_details,
       InitiatePaymentResponseCallback response_callback,
       const std::string& app_locale);
+
+  // Makes a `GetDetailsForCreatePaymentInstrumentRequest` to the Payments
+  // server. This method is virtual so it can be overridden in tests.
+  virtual RequestId GetDetailsForCreatePaymentInstrument(
+      int64_t billing_customer_number,
+      const std::vector<uint8_t>& client_token,
+      GetDetailsForCreatePaymentInstrumentResponseCallback response_callback,
+      const std::string& app_locale);
+
+ private:
+  raw_ref<autofill::AccountInfoGetter> account_info_getter_;
 };
 
 }  // namespace payments::facilitated

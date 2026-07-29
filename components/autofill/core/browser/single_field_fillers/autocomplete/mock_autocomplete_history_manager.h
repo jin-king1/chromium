@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_SINGLE_FIELD_FILLERS_AUTOCOMPLETE_MOCK_AUTOCOMPLETE_HISTORY_MANAGER_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_SINGLE_FIELD_FILLERS_AUTOCOMPLETE_MOCK_AUTOCOMPLETE_HISTORY_MANAGER_H_
 
-#include "base/memory/weak_ptr.h"
 #include "components/autofill/core/browser/single_field_fillers/autocomplete/autocomplete_history_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -16,21 +15,28 @@ class MockAutocompleteHistoryManager : public AutocompleteHistoryManager {
   MockAutocompleteHistoryManager();
   ~MockAutocompleteHistoryManager() override;
 
-  MOCK_METHOD(bool,
+  MOCK_METHOD(void,
               OnGetSingleFieldSuggestions,
-              (const FormFieldData& field,
-               const AutofillClient& client,
-               SingleFieldFillRouter::OnSuggestionsReturnedCallback& callback),
+              (const FormData& form,
+               const FormStructure* form_structure,
+               const FormFieldData& field,
+               const AutofillField* autofill_field,
+               AutofillClient& client,
+               SingleFieldFillRouter::OnSuggestionsReturnedCallback callback),
               (override));
   MOCK_METHOD(void,
               OnWillSubmitFormWithFields,
               (const std::vector<FormFieldData>& fields,
+               const FormStructure* form,
                bool is_autocomplete_enabled),
               (override));
-  MOCK_METHOD(void, CancelPendingQueries, (), (override));
+  MOCK_METHOD(void, CancelPendingQuery, (), (override));
   MOCK_METHOD(void,
               OnRemoveCurrentSingleFieldSuggestion,
-              (const std::u16string&, const std::u16string&, SuggestionType),
+              (const std::u16string&,
+               const std::u16string&,
+               const std::u16string&,
+               SuggestionType),
               (override));
   MOCK_METHOD(void,
               OnSingleFieldSuggestionSelected,

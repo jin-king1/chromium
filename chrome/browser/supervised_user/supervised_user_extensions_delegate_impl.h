@@ -11,6 +11,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/supervised_user/supervised_user_extensions_manager.h"
+#include "chrome/browser/supervised_user/supervised_user_extensions_metrics_recorder.h"
 #include "extensions/browser/supervised_user_extensions_delegate.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -52,14 +53,10 @@ class SupervisedUserExtensionsDelegateImpl
       const Extension& extension,
       content::WebContents* web_contents,
       const gfx::ImageSkia& icon,
-      SupervisedUserExtensionParentApprovalEntryPoint
-          extension_approval_entry_point,
       ExtensionApprovalDoneCallback extension_approval_callback) override;
   void RequestToEnableExtensionOrShowError(
       const Extension& extension,
       content::WebContents* web_contents,
-      SupervisedUserExtensionParentApprovalEntryPoint
-          extension_approval_entry_point,
       ExtensionApprovalDoneCallback extension_approval_callback) override;
   void UpdateManagementPolicyRegistration() override;
   bool CanInstallExtensions() const override;
@@ -68,6 +65,17 @@ class SupervisedUserExtensionsDelegateImpl
       const extensions::Extension& extension) override;
   void RemoveExtensionApproval(const extensions::Extension& extension) override;
   void RecordExtensionEnablementUmaMetrics(bool enabled) const override;
+  bool CanSkipExtensionParentApprovals() override;
+  void RecordAskParentDialogUmaMetrics(AskParentDialogState state) override;
+  void RecordEnablementUmaMetrics(EnablementState state) override;
+  extensions::ExtensionInstallPromptClient::Observer* GetInstallPromptObserver()
+      override;
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Inject test instance for testing.
+  void SetParentAccessExtensionApprovalsManagerForTesting(
+      std::unique_ptr<ParentAccessExtensionApprovalsManager> manager);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
  private:
   // Shows a ParentPermissionDialog for |extension| and calls
@@ -76,9 +84,7 @@ class SupervisedUserExtensionsDelegateImpl
   void ShowParentPermissionDialogForExtension(
       const Extension& extension,
       content::WebContents* contents,
-      const gfx::ImageSkia& icon,
-      SupervisedUserExtensionParentApprovalEntryPoint
-          extension_approval_entry_point);
+      const gfx::ImageSkia& icon);
 
   // Shows ParentPermissionDialog indicating that |extension| has been blocked
   // and call |done_callback| when it completes. Depending on the blocked_action
@@ -101,8 +107,6 @@ class SupervisedUserExtensionsDelegateImpl
   void RequestExtensionApproval(
       const Extension& extension,
       std::optional<base::WeakPtr<content::WebContents>> contents,
-      SupervisedUserExtensionParentApprovalEntryPoint
-          extension_approval_entry_point,
       const gfx::ImageSkia& icon);
 
   // The ParentPermissionDialog pointer is only destroyed when a new dialog is
@@ -126,8 +130,9 @@ class SupervisedUserExtensionsDelegateImpl
   // is created or this delegate is destroyed.
   std::unique_ptr<ParentAccessExtensionApprovalsManager>
       extension_approvals_manager_;
-#endif
+#endif  // BUILDFLAG(IS_CHROMEOS)
   SupervisedUserExtensionsManager extensions_manager_;
+  SupervisedUserExtensionsMetricsRecorder metrics_recorder_;
 };
 
 }  // namespace extensions

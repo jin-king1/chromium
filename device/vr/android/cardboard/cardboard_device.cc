@@ -16,6 +16,7 @@
 #include "device/vr/android/cardboard/cardboard_render_loop.h"
 #include "device/vr/android/xr_activity_state_handler.h"
 #include "device/vr/public/cpp/features.h"
+#include "ipc/constants.mojom-forward.h"
 
 namespace device {
 
@@ -54,7 +55,7 @@ CardboardDevice::CardboardDevice(
 
   // Only support WebGPU sessions if the appropriate feature flag is enabled
   // and shared buffers will be used.
-  if (base::FeatureList::IsEnabled(features::kWebXrWebGpuBinding)) {
+  if (base::FeatureList::IsEnabled(features::kWebXRWebGPUBinding)) {
     device_features.emplace_back(mojom::XRSessionFeature::WEBGPU);
   }
 
@@ -81,8 +82,12 @@ void CardboardDevice::RequestSession(
 
   // Store these off since we'll potentially need to use them in the future
   // (after we've std::move'd the options object) as well as now.
-  int render_process_id = options->render_process_id;
-  int render_frame_id = options->render_frame_id;
+  network::RendererProcessId render_process_id;
+  int render_frame_id = IPC::mojom::kRoutingIdNone;
+  if (options->renderer_information) {
+    render_process_id = options->renderer_information->render_process_id;
+    render_frame_id = options->renderer_information->render_frame_id;
+  }
 
   base::android::ScopedJavaLocalRef<jobject> application_context =
       xr_java_coordinator_->GetActivityFrom(render_process_id, render_frame_id);
@@ -121,7 +126,7 @@ void CardboardDevice::RequestSession(
 
 void CardboardDevice::OnCardboardParametersAcquired(
     mojom::XRRuntimeSessionOptionsPtr options,
-    int render_process_id,
+    network::RendererProcessId render_process_id,
     int render_frame_id) {
   // Set HasExclusiveSession status to true. This lasts until OnSessionEnded.
   OnStartPresenting();

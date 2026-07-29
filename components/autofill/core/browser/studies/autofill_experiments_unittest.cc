@@ -53,9 +53,9 @@ class AutofillExperimentsTest : public testing::Test {
   bool IsCreditCardUploadEnabled(
       const std::string& user_country,
       const AutofillMetrics::PaymentsSigninState signin_state_for_metrics) {
-    return autofill::IsCreditCardUploadEnabled(
-        &sync_service_, pref_service_, user_country, signin_state_for_metrics,
-        log_manager_.get());
+    return autofill::IsCreditCardUploadEnabled(&sync_service_, user_country,
+                                               signin_state_for_metrics,
+                                               log_manager_.get());
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -79,10 +79,10 @@ TEST_F(AutofillExperimentsTest, IsCardUploadEnabled_FeatureEnabled) {
       "ZZ",
       AutofillMetrics::PaymentsSigninState::kSignedInAndSyncFeatureEnabled));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::kEnabledByFlag, 1);
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled.SignedInAndSyncFeatureEnabled",
+      "Autofill.CardUploadEnabled2.SignedInAndSyncFeatureEnabled",
       autofill_metrics::CardUploadEnabled::kEnabledByFlag, 1);
 }
 
@@ -92,10 +92,10 @@ TEST_F(AutofillExperimentsTest, IsCardUploadEnabled_UnsupportedCountry) {
       "ZZ",
       AutofillMetrics::PaymentsSigninState::kSignedInAndSyncFeatureEnabled));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::kUnsupportedCountry, 1);
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled.SignedInAndSyncFeatureEnabled",
+      "Autofill.CardUploadEnabled2.SignedInAndSyncFeatureEnabled",
       autofill_metrics::CardUploadEnabled::kUnsupportedCountry, 1);
 }
 
@@ -108,10 +108,10 @@ TEST_F(AutofillExperimentsTest, IsCardUploadEnabled_SupportedCountry) {
       "US",
       AutofillMetrics::PaymentsSigninState::kSignedInAndSyncFeatureEnabled));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::kEnabledForCountry, 1);
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled.SignedInAndSyncFeatureEnabled",
+      "Autofill.CardUploadEnabled2.SignedInAndSyncFeatureEnabled",
       autofill_metrics::CardUploadEnabled::kEnabledForCountry, 1);
 }
 
@@ -120,10 +120,10 @@ TEST_F(AutofillExperimentsTest, IsCardUploadEnabled_AuthError) {
   EXPECT_FALSE(IsCreditCardUploadEnabled(
       AutofillMetrics::PaymentsSigninState::kSyncPaused));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::kSyncServicePaused, 1);
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled.SyncPaused",
+      "Autofill.CardUploadEnabled2.SyncPaused",
       autofill_metrics::CardUploadEnabled::kSyncServicePaused, 1);
 }
 
@@ -135,12 +135,12 @@ TEST_F(AutofillExperimentsTest,
   EXPECT_FALSE(IsCreditCardUploadEnabled(
       AutofillMetrics::PaymentsSigninState::kSignedInAndSyncFeatureEnabled));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::
           kSyncServiceMissingAutofillWalletDataActiveType,
       1);
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled.SignedInAndSyncFeatureEnabled",
+      "Autofill.CardUploadEnabled2.SignedInAndSyncFeatureEnabled",
       autofill_metrics::CardUploadEnabled::
           kSyncServiceMissingAutofillWalletDataActiveType,
       1);
@@ -224,7 +224,7 @@ TEST_F(AutofillExperimentsTest, IsCardUploadEnabled_Syncing_AutofillDisabled) {
   EXPECT_FALSE(IsCreditCardUploadEnabled(
       AutofillMetrics::PaymentsSigninState::kSignedInAndSyncFeatureEnabled));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::
           kSyncServiceMissingAutofillSelectedType,
       1);
@@ -235,10 +235,6 @@ TEST_F(AutofillExperimentsTest, IsCardUploadEnabled_Syncing_AutofillDisabled) {
 // is among the UserSelectableTypes.
 TEST_F(AutofillExperimentsTest,
        IsCardUploadEnabled_TransportWithAddresses_AutofillSelected) {
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  // Migrate Dice users.
-  pref_service_.SetBoolean(::prefs::kExplicitBrowserSignin, true);
-#endif
   sync_service_.SetSignedIn(signin::ConsentLevel::kSignin);
   sync_service_.GetUserSettings()->SetSelectedTypes(
       /*sync_everything=*/false,
@@ -250,10 +246,6 @@ TEST_F(AutofillExperimentsTest,
 }
 TEST_F(AutofillExperimentsTest,
        IsCardUploadEnabled_TransportWithAddresses_AutofillDisabled) {
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  // Migrate Dice users.
-  pref_service_.SetBoolean(::prefs::kExplicitBrowserSignin, true);
-#endif
   sync_service_.SetSignedIn(signin::ConsentLevel::kSignin);
   sync_service_.GetUserSettings()->SetSelectedTypes(
       /*sync_everything=*/false,
@@ -262,27 +254,11 @@ TEST_F(AutofillExperimentsTest,
       IsCreditCardUploadEnabled(AutofillMetrics::PaymentsSigninState::
                                     kSignedInAndWalletSyncTransportEnabled));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::
           kSyncServiceMissingAutofillSelectedType,
       1);
 }
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-TEST_F(
-    AutofillExperimentsTest,
-    IsCardUploadEnabled_TransportWithAddresses_AutofillDisabled_DiceMigration) {
-  // Dice user not migrated to explicit signin.
-  ASSERT_FALSE(pref_service_.GetBoolean(::prefs::kExplicitBrowserSignin));
-  sync_service_.SetSignedIn(signin::ConsentLevel::kSignin);
-  sync_service_.GetUserSettings()->SetSelectedTypes(
-      /*sync_everything=*/false,
-      /*types=*/{syncer::UserSelectableType::kPayments});
-  EXPECT_TRUE(
-      IsCreditCardUploadEnabled(AutofillMetrics::PaymentsSigninState::
-                                    kSignedInAndWalletSyncTransportEnabled));
-}
-
-#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 TEST_F(AutofillExperimentsTest,
        IsCardUploadEnabled_SyncServiceUsingExplicitPassphrase) {
@@ -290,10 +266,10 @@ TEST_F(AutofillExperimentsTest,
   EXPECT_FALSE(IsCreditCardUploadEnabled(
       AutofillMetrics::PaymentsSigninState::kSignedInAndSyncFeatureEnabled));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::kUsingExplicitSyncPassphrase, 1);
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled.SignedInAndSyncFeatureEnabled",
+      "Autofill.CardUploadEnabled2.SignedInAndSyncFeatureEnabled",
       autofill_metrics::CardUploadEnabled::kUsingExplicitSyncPassphrase, 1);
 }
 
@@ -303,12 +279,12 @@ TEST_F(AutofillExperimentsTest, IsCardUploadEnabled_PaymentsTypeNotSelected) {
   EXPECT_FALSE(IsCreditCardUploadEnabled(
       AutofillMetrics::PaymentsSigninState::kSignedInAndSyncFeatureEnabled));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::
           kSyncServiceMissingAutofillWalletDataActiveType,
       1);
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled.SignedInAndSyncFeatureEnabled",
+      "Autofill.CardUploadEnabled2.SignedInAndSyncFeatureEnabled",
       autofill_metrics::CardUploadEnabled::
           kSyncServiceMissingAutofillWalletDataActiveType,
       1);
@@ -323,10 +299,10 @@ TEST_F(AutofillExperimentsTest, IsCardUploadEnabled_TransportModeOnly) {
       IsCreditCardUploadEnabled(AutofillMetrics::PaymentsSigninState::
                                     kSignedInAndWalletSyncTransportEnabled));
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled",
+      "Autofill.CardUploadEnabled2",
       autofill_metrics::CardUploadEnabled::kEnabledForCountry, 1);
   histogram_tester_.ExpectUniqueSample(
-      "Autofill.CardUploadEnabled.SignedInAndWalletSyncTransportEnabled",
+      "Autofill.CardUploadEnabled2.SignedInAndWalletSyncTransportEnabled",
       autofill_metrics::CardUploadEnabled::kEnabledForCountry, 1);
 }
 
@@ -356,146 +332,16 @@ TEST_F(
 #endif
 }
 
-// Tests that setting and getting the AutofillSyncTransportOptIn works as
-// expected.
-// On mobile, no dedicated opt-in is required for WalletSyncTransport - the
-// user is always considered opted-in and thus this test doesn't make sense.
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-TEST_F(AutofillExperimentsTest, WalletSyncTransportPref_GetAndSet) {
-  ASSERT_FALSE(pref_service_.GetBoolean(::prefs::kExplicitBrowserSignin));
-  const CoreAccountId account1 = CoreAccountId::FromGaiaId(GaiaId("account1"));
-  const CoreAccountId account2 = CoreAccountId::FromGaiaId(GaiaId("account2"));
-
-  // There should be no opt-in recorded at first.
-  ASSERT_FALSE(IsUserOptedInWalletSyncTransport(&pref_service_, account1));
-  ASSERT_FALSE(IsUserOptedInWalletSyncTransport(&pref_service_, account2));
-  // There should be no entry for the accounts in the dictionary.
-  EXPECT_TRUE(
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).empty());
-
-  // Set the opt-in for the first account.
-  SetUserOptedInWalletSyncTransport(&pref_service_, account1, true);
-  EXPECT_TRUE(IsUserOptedInWalletSyncTransport(&pref_service_, account1));
-  EXPECT_FALSE(IsUserOptedInWalletSyncTransport(&pref_service_, account2));
-  // There should only be one entry in the dictionary.
-  EXPECT_EQ(1U,
-            pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).size());
-
-  // Unset the opt-in for the first account.
-  SetUserOptedInWalletSyncTransport(&pref_service_, account1, false);
-  EXPECT_FALSE(IsUserOptedInWalletSyncTransport(&pref_service_, account1));
-  EXPECT_FALSE(IsUserOptedInWalletSyncTransport(&pref_service_, account2));
-  // There should be no entry for the accounts in the dictionary.
-  EXPECT_TRUE(
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).empty());
-
-  // Set the opt-in for the second account.
-  SetUserOptedInWalletSyncTransport(&pref_service_, account2, true);
-  EXPECT_FALSE(IsUserOptedInWalletSyncTransport(&pref_service_, account1));
-  EXPECT_TRUE(IsUserOptedInWalletSyncTransport(&pref_service_, account2));
-  // There should only be one entry in the dictionary.
-  EXPECT_EQ(1U,
-            pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).size());
-
-  // Set the opt-in for the first account too.
-  SetUserOptedInWalletSyncTransport(&pref_service_, account1, true);
-  EXPECT_TRUE(IsUserOptedInWalletSyncTransport(&pref_service_, account1));
-  EXPECT_TRUE(IsUserOptedInWalletSyncTransport(&pref_service_, account1));
-  // There should be tow entries in the dictionary.
-  EXPECT_EQ(2U,
-            pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).size());
-}
-
-TEST_F(AutofillExperimentsTest, WalletSyncTransportPrefExplicitSignin) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillRemovePaymentsButterDropdown};
-  ASSERT_FALSE(pref_service_.GetBoolean(::prefs::kExplicitBrowserSignin));
-
-  const CoreAccountId account1 = CoreAccountId::FromGaiaId(GaiaId("account1"));
-  // There should be no opt-in recorded at first.
-  ASSERT_FALSE(IsUserOptedInWalletSyncTransport(&pref_service_, account1));
-
-  // Explicit browser signin opts the user in.
-  pref_service_.SetBoolean(::prefs::kExplicitBrowserSignin, true);
-  EXPECT_TRUE(IsUserOptedInWalletSyncTransport(&pref_service_, account1));
-}
-
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-
-// Tests that AutofillSyncTransportOptIn is not stored using the plain text
-// account id.
-TEST_F(AutofillExperimentsTest, WalletSyncTransportPref_UsesHashAccountId) {
-  ASSERT_FALSE(pref_service_.GetBoolean(::prefs::kExplicitBrowserSignin));
-
-  const CoreAccountId account1 = CoreAccountId::FromGaiaId(GaiaId("account1"));
-
-  // There should be no opt-in recorded at first.
-  EXPECT_TRUE(
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).empty());
-
-  // Set the opt-in for the first account.
-  SetUserOptedInWalletSyncTransport(&pref_service_, account1, true);
-  EXPECT_FALSE(
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).empty());
-
-  // Make sure that the dictionary keys don't contain the account id.
-  const auto& dictionary =
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn);
-  EXPECT_EQ(std::nullopt, dictionary.FindInt(account1.ToString()));
-}
-
-// Tests that clearing the AutofillSyncTransportOptIn works as expected.
-TEST_F(AutofillExperimentsTest, WalletSyncTransportPref_Clear) {
-  ASSERT_FALSE(pref_service_.GetBoolean(::prefs::kExplicitBrowserSignin));
-
-  const CoreAccountId account1 = CoreAccountId::FromGaiaId(GaiaId("account1"));
-  const CoreAccountId account2 = CoreAccountId::FromGaiaId(GaiaId("account2"));
-
-  // There should be no opt-in recorded at first.
-  EXPECT_TRUE(
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).empty());
-
-  // Set the opt-in for the first account.
-  SetUserOptedInWalletSyncTransport(&pref_service_, account1, true);
-  EXPECT_FALSE(
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).empty());
-
-  // Set the opt-in for the second account.
-  SetUserOptedInWalletSyncTransport(&pref_service_, account2, true);
-  EXPECT_FALSE(
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).empty());
-
-  // Clear all opt-ins. The dictionary should be empty.
-  prefs::ClearSyncTransportOptIns(&pref_service_);
-  EXPECT_TRUE(
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).empty());
-}
-
-// Tests that the account id hash that we generate can be written and read from
-// JSON properly.
-TEST_F(AutofillExperimentsTest,
-       WalletSyncTransportPref_CanBeSetAndReadFromJSON) {
-  ASSERT_FALSE(pref_service_.GetBoolean(::prefs::kExplicitBrowserSignin));
-
-  const CoreAccountId account1 = CoreAccountId::FromGaiaId(GaiaId("account1"));
-
-  // Set the opt-in for the first account.
-  SetUserOptedInWalletSyncTransport(&pref_service_, account1, true);
-  EXPECT_FALSE(
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn).empty());
-
-  const base::Value::Dict& dictionary =
-      pref_service_.GetDict(prefs::kAutofillSyncTransportOptIn);
-
-  std::string output_js;
-  ASSERT_TRUE(base::JSONWriter::Write(dictionary, &output_js));
-  EXPECT_EQ(dictionary, *base::JSONReader::Read(output_js));
-}
-
 #if BUILDFLAG(IS_ANDROID)
 TEST_F(AutofillExperimentsTest,
        FacilitatedPaymentsPixPref_DefaultValueSetToTrue) {
   EXPECT_TRUE(pref_service_.GetBoolean(prefs::kFacilitatedPaymentsPix));
+}
+
+TEST_F(AutofillExperimentsTest,
+       FacilitatedPaymentsPixAccountLinkingPref_DefaultValueSetToTrue) {
+  EXPECT_TRUE(
+      pref_service_.GetBoolean(prefs::kFacilitatedPaymentsPixAccountLinking));
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 

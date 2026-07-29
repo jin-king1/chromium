@@ -11,15 +11,23 @@ namespace scheduler {
 
 using perfetto::protos::pbzero::RendererMainThreadTaskExecution;
 
-double TimeDeltaToMilliseconds(const base::TimeDelta& value) {
-  return value.InMillisecondsF();
+perfetto::StateTrack MakeStateTrack(perfetto::StaticString name,
+                                    const void* ptr,
+                                    perfetto::Track parent) {
+  return perfetto::StateTrack(name, reinterpret_cast<uintptr_t>(ptr), parent);
 }
 
-const char* YesNoStateToString(bool is_yes) {
+perfetto::CounterTrack MakeCounterTrack(perfetto::StaticString name,
+                                        const void* ptr,
+                                        perfetto::Track parent) {
+  return perfetto::CounterTrack(name, reinterpret_cast<uintptr_t>(ptr), parent);
+}
+
+perfetto::StaticString YesNoStateToString(bool is_yes) {
   if (is_yes) {
     return "yes";
   } else {
-    return "no";
+    return nullptr;
   }
 }
 
@@ -58,6 +66,9 @@ RendererMainThreadTaskExecution::TaskType TaskTypeToProto(TaskType task_type) {
       return RendererMainThreadTaskExecution::TASK_TYPE_WEB_SOCKET;
     case TaskType::kPostedMessage:
       return RendererMainThreadTaskExecution::TASK_TYPE_POSTED_MESSAGE;
+    case TaskType::kBackForwardCachePostedMessage:
+      return RendererMainThreadTaskExecution::
+          TASK_TYPE_BACK_FORWARD_CACHE_POSTED_MESSAGE;
     case TaskType::kUnshippedPortMessage:
       return RendererMainThreadTaskExecution::TASK_TYPE_UNSHIPPED_PORT_MESSAGE;
     case TaskType::kFileReading:

@@ -13,10 +13,13 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/unguessable_token.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_install_manager_observer.h"
+#include "chrome/browser/web_applications/web_app_launch_params_holder.h"
+#include "chrome/browser/web_applications/web_app_registrar_observer.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/webapps/common/web_app_id.h"
+#include "content/public/browser/page_manifest_manager.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 
@@ -24,15 +27,22 @@ namespace content {
 class WebContents;
 }
 
+namespace webapps {
+class LaunchQueue;
+class LaunchParams;
+}
+
 namespace web_app {
 
 class WebAppProvider;
-class WebAppLaunchQueue;
+class WebAppRegistrar;
+class WebAppBrowserController;
 
 // Per-tab web app helper. Allows to associate a tab (web page) with a web app.
 class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
                         public content::WebContentsObserver,
-                        public WebAppInstallManagerObserver {
+                        public WebAppInstallManagerObserver,
+                        public WebAppRegistrarObserver {
  public:
   // `contents` can be different from `tab->GetContents()` during tab discard.
   // TODO(https://crbug.com/347770670): This method can be simplified to not
@@ -43,6 +53,20 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
   // nullptr if there is no tab helper or app ID.
   static const webapps::AppId* GetAppId(
       const content::WebContents* web_contents);
+
+  // Returns the app ID of the web app that controls the given |url|.
+  // This is the algorithm used to determine if a given app_id controls
+  // WebContents both in an app window and as a browser tab.
+  //
+  // Nuance with IWAs: An Isolated Web App (IWA) can never exist in a regular
+  // browser tab. This method still checks for IWAs first because it is used
+  // for all tabs (including app windows).
+  // To prevent accidentally associating a regular browser tab (loading an https
+  // URL) with an IWA that has an https scope extension, this method explicitly
+  // EXCLUDES scope extensions when searching for IWAs.
+  static std::optional<webapps::AppId> FindAppIdForUrl(
+      WebAppRegistrar& registrar,
+      const GURL& url);
 
 #if BUILDFLAG(IS_MAC)
   // Like the above method, but also checks if notification attribution should
@@ -64,11 +88,14 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
   // explicitly from elsewhere.
   void SetAppId(std::optional<webapps::AppId> app_id);
 
-  // Called by `WebAppBrowserController` and `WebKioskBrowserControllerBase`'s
+  // Called by `WebAppBrowserController` and `KioskWebAppBrowserController`'s
   // `OnTabInserted` and `OnTabRemoved` methods to indicate if this web contents
   // is currently being displayed inside an app window. `window_app_id` is the
   // id of the app.
   void SetIsInAppWindow(std::optional<webapps::AppId> window_app_id);
+
+  void NotifyIsFirstWebContentsInAppWindow(
+      base::PassKey<WebAppBrowserController>);
 
   void SetCallbackToRunOnTabChanges(base::OnceClosure callback);
 
@@ -82,6 +109,20 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
                      tabs::TabInterface::DetachReason detach_reason);
 
   const base::UnguessableToken& GetAudioFocusGroupIdForTesting() const;
+
+  using OnManifestProcessedCallbackList =
+      base::RepeatingCallbackList<void(const webapps::ManifestId&)>;
+  base::CallbackListSubscription AddOnManifestProcessedCallbackForTesting(
+      OnManifestProcessedCallbackList::CallbackType callback);
+
+  bool manifest_processed_for_current_page() const {
+    return last_processed_manifest_id_for_current_page_.has_value();
+  }
+
+  const std::optional<webapps::ManifestId>&
+  last_processed_manifest_id_for_current_page() const {
+    return last_processed_manifest_id_for_current_page_;
+  }
 
   // Returns the installed web app that 'controls' the last committed url of
   // this tab. This is populated for this tab no matter where it is, whether in
@@ -101,6 +142,9 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
   // Note: If we are in an app window, this is not guaranteed to match
   // `window_app_id()` - for example, if the web contents of an app navigates
   // out of scope of the app, this will be std::nullopt.
+  //
+  // Note: Isolated Web Apps don't 'control' browser app tab
+  // even if they have scope extended url that includes this tab.
   const std::optional<webapps::AppId>& app_id() const { return app_id_; }
 
   // Returns the installed web app window that contains this tab, or
@@ -115,15 +159,28 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
   // window instead of in a browser tab.
   bool is_in_app_window() const { return window_app_id_.has_value(); }
 
-  bool is_pinned_home_tab() const { return is_pinned_home_tab_; }
-  void set_is_pinned_home_tab(bool is_pinned_home_tab) {
-    is_pinned_home_tab_ = is_pinned_home_tab;
+  base::WeakPtr<WebAppLaunchParamsHolder> pending_launch_params_holder() const {
+    return pending_launch_params_holder_;
   }
 
-  WebAppLaunchQueue& EnsureLaunchQueue();
+  // This is needed so that the web app launch navigation handle user data can
+  // be used to set the launch params, as there is no easy way to access the
+  // navigation handle from the web contents, apart from observing when a
+  // navigation started and finished.
+  void SetPendingLaunchParamsHolder(
+      base::WeakPtr<WebAppLaunchParamsHolder> holder) {
+    pending_launch_params_holder_ = std::move(holder);
+  }
+  std::optional<webapps::AppId> pending_launch_app_id() const;
+
+  webapps::LaunchQueue& EnsureLaunchQueue();
+  void EnqueueLaunchParams(webapps::LaunchParams launch_params);
 
   // content::WebContentsObserver:
+
   void ReadyToCommitNavigation(
+      content::NavigationHandle* navigation_handle) override;
+  void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
   void PrimaryPageChanged(content::Page& page) override;
   void DidFinishLoad(content::RenderFrameHost* render_frame_host,
@@ -135,6 +192,16 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
   // launch queue messages have been sent to the renderer.
   void FlushLaunchQueueForTesting() const;
 
+  // Returns if the current web contents can be used for the 'focus-existing'
+  // behavior of navigation capturing, where the tab is focused and a
+  // 'LaunchParams' is given to a javascript 'launch consumer' on the page. This
+  // returns if the current page can feasibly run javascript to actually set
+  // this launch consumer, as without that, any captured links would simply do
+  // nothing.
+  // Specifically, this turns `true` if the current page's mime-type is html or
+  // xhtml.
+  bool CanBeUsedForFocusExisting() const;
+
  private:
   friend class WebAppAudioFocusBrowserTest;
   friend class content::WebContentsUserData<WebAppTabHelper>;
@@ -145,13 +212,18 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
       const webapps::AppId& uninstalled_app_id) override;
   void OnWebAppInstallManagerDestroyed() override;
 
-  void ResetTabSubscriptions(tabs::TabInterface* tab);
+  // WebAppRegistrarObserver:
+  void OnWebAppPendingMigrationInfoChanged(const webapps::AppId& app_id,
+                                           bool has_pending_migration) override;
+  void OnAppRegistrarDestroyed() override;
 
   // Sets the state of this tab helper. This will call
   // `WebAppUiManager::OnAssociatedAppChanged` if the id has changed, and
   // `UpdateAudioFocusGroupId()` if either has changed.
   void SetState(std::optional<webapps::AppId> app_id,
                 std::optional<webapps::AppId> window_app_id);
+
+  void MaybeShowBlockedMigrationInfoBar();
 
   // Runs any logic when the associated app is added, changed or removed.
   void OnAssociatedAppChanged(
@@ -182,8 +254,16 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
   // happens only once.
   void MaybeRecordManifestAppliedUseCounter();
 
+  // Schedules a preinstall update if the current page is not in-scope of the
+  // app, and we are in the window of the preinstall app.
+  void MaybeSchedulePreinstallUpdate();
+
+  void OnManifestSpecifiedOnPrimaryPage(
+      const content::PageManifestManager::ManifestResult& result);
+
   std::optional<webapps::AppId> app_id_;
   std::optional<webapps::AppId> window_app_id_;
+  base::WeakPtr<WebAppLaunchParamsHolder> pending_launch_params_holder_;
 
   // True when this tab is the pinned home tab of a tabbed web app.
   bool is_pinned_home_tab_ = false;
@@ -194,7 +274,7 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
 
   // Use unique_ptr for lazy instantiation as most browser tabs have no need to
   // incur this memory overhead.
-  std::unique_ptr<WebAppLaunchQueue> launch_queue_;
+  std::unique_ptr<webapps::LaunchQueue> launch_queue_;
 
   // A callback that runs whenever the `tab` is destroyed, navigates or goes to
   // the background.
@@ -211,9 +291,20 @@ class WebAppTabHelper : public content::WebContentsUserData<WebAppTabHelper>,
   // Cache the information that an app launch `UseCounter` needs to be measured.
   bool meaure_manifest_applied_use_counter_ = false;
 
+  bool check_preinstall_for_update_on_next_navigation_ = false;
+
   base::ScopedObservation<WebAppInstallManager, WebAppInstallManagerObserver>
       observation_{this};
+  base::ScopedObservation<WebAppRegistrar, WebAppRegistrarObserver>
+      registrar_observation_{this};
   raw_ptr<WebAppProvider> provider_ = nullptr;
+
+  base::CallbackListSubscription get_all_specified_manifests_subscription_;
+
+  OnManifestProcessedCallbackList manifest_processed_callbacks_;
+
+  std::optional<webapps::ManifestId>
+      last_processed_manifest_id_for_current_page_;
 
   base::WeakPtrFactory<WebAppTabHelper> weak_factory_{this};
 

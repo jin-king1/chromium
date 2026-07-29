@@ -17,6 +17,7 @@ import android.hardware.usb.UsbManager;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.NativeClassQualifiedName;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
@@ -38,13 +39,13 @@ final class ChromeUsbService {
     private static final String TAG = "Usb";
     private static final String ACTION_USB_PERMISSION = "org.chromium.device.ACTION_USB_PERMISSION";
 
-    long mUsbServiceAndroid;
+    long mUsbServiceJniDelegate;
     UsbManager mUsbManager;
     @Nullable BroadcastReceiver mUsbPermissionReceiver;
     @Nullable BroadcastReceiver mUsbDeviceChangeReceiver;
 
-    private ChromeUsbService(long usbServiceAndroid) {
-        mUsbServiceAndroid = usbServiceAndroid;
+    private ChromeUsbService(long usbServiceJniDelegate) {
+        mUsbServiceJniDelegate = usbServiceJniDelegate;
         mUsbManager =
                 (UsbManager)
                         ContextUtils.getApplicationContext().getSystemService(Context.USB_SERVICE);
@@ -53,8 +54,8 @@ final class ChromeUsbService {
     }
 
     @CalledByNative
-    private static ChromeUsbService create(long usbServiceAndroid) {
-        return new ChromeUsbService(usbServiceAndroid);
+    private static ChromeUsbService create(long usbServiceJniDelegate) {
+        return new ChromeUsbService(usbServiceJniDelegate);
     }
 
     @CalledByNative
@@ -81,7 +82,7 @@ final class ChromeUsbService {
         if (mUsbManager.hasPermission(device)) {
             ChromeUsbServiceJni.get()
                     .devicePermissionRequestComplete(
-                            mUsbServiceAndroid, ChromeUsbService.this, device.getDeviceId(), true);
+                            mUsbServiceJniDelegate, device.getDeviceId(), true);
         } else {
             Context context = ContextUtils.getApplicationContext();
             Intent intent = new Intent(ACTION_USB_PERMISSION);
@@ -110,8 +111,7 @@ final class ChromeUsbService {
                                 assumeNonNull(intent.getParcelableExtra(UsbManager.EXTRA_DEVICE));
                         ChromeUsbServiceJni.get()
                                 .devicePermissionRequestComplete(
-                                        mUsbServiceAndroid,
-                                        ChromeUsbService.this,
+                                        mUsbServiceJniDelegate,
                                         device.getDeviceId(),
                                         intent.getBooleanExtra(
                                                 UsbManager.EXTRA_PERMISSION_GRANTED, false));
@@ -125,15 +125,11 @@ final class ChromeUsbService {
                                 assumeNonNull(intent.getParcelableExtra(UsbManager.EXTRA_DEVICE));
                         if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction())) {
                             ChromeUsbServiceJni.get()
-                                    .deviceAttached(
-                                            mUsbServiceAndroid, ChromeUsbService.this, device);
+                                    .deviceAttached(mUsbServiceJniDelegate, device);
                         } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(
                                 intent.getAction())) {
                             ChromeUsbServiceJni.get()
-                                    .deviceDetached(
-                                            mUsbServiceAndroid,
-                                            ChromeUsbService.this,
-                                            device.getDeviceId());
+                                    .deviceDetached(mUsbServiceJniDelegate, device.getDeviceId());
                         }
                     }
                 };
@@ -159,15 +155,13 @@ final class ChromeUsbService {
 
     @NativeMethods
     interface Natives {
-        void deviceAttached(
-                long nativeUsbServiceAndroid, ChromeUsbService caller, @Nullable UsbDevice device);
+        @NativeClassQualifiedName("UsbServiceAndroid::JniDelegate")
+        void deviceAttached(long nativePointer, @Nullable UsbDevice device);
 
-        void deviceDetached(long nativeUsbServiceAndroid, ChromeUsbService caller, int deviceId);
+        @NativeClassQualifiedName("UsbServiceAndroid::JniDelegate")
+        void deviceDetached(long nativePointer, int deviceId);
 
-        void devicePermissionRequestComplete(
-                long nativeUsbServiceAndroid,
-                ChromeUsbService caller,
-                int deviceId,
-                boolean granted);
+        @NativeClassQualifiedName("UsbServiceAndroid::JniDelegate")
+        void devicePermissionRequestComplete(long nativePointer, int deviceId, boolean granted);
     }
 }

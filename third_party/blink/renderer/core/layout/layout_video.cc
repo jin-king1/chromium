@@ -27,20 +27,23 @@
 
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
+#include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/video_painter.h"
 
 namespace blink {
 
-LayoutVideo::LayoutVideo(HTMLVideoElement* video)
-    : LayoutMedia(video),
-      natural_dimensions_(PhysicalNaturalSizingInfo::MakeFixed(DefaultSize())) {
-}
+LayoutVideo::LayoutVideo(HTMLVideoElement* video) : LayoutMedia(video) {}
 
 LayoutVideo::~LayoutVideo() = default;
 
-PhysicalSize LayoutVideo::DefaultSize() {
-  return PhysicalSize(LayoutUnit(kDefaultWidth), LayoutUnit(kDefaultHeight));
+bool LayoutVideo::IsReplacedNormalFlowStackingContext(
+    const ComputedStyle& style) const {
+  NOT_DESTROYED();
+  return RuntimeEnabledFeatures::StackingContextIsNotStackedEnabled() &&
+         style.GetPosition() == EPosition::kStatic &&
+         VideoElement()->FastHasAttribute(html_names::kControlsAttr);
 }
 
 void LayoutVideo::NaturalSizeChanged() {
@@ -105,10 +108,7 @@ PhysicalNaturalSizingInfo LayoutVideo::GetNaturalDimensions() const {
       break;
   }
 
-  // Natural dimensions are missing.
-  PhysicalSize default_size(DefaultSize());
-  default_size.Scale(StyleRef().EffectiveZoom());
-  return PhysicalNaturalSizingInfo::MakeFixed(default_size);
+  return PhysicalNaturalSizingInfo::None();
 }
 
 void LayoutVideo::ImageChanged(WrappedImagePtr new_image,
@@ -154,10 +154,12 @@ HTMLVideoElement* LayoutVideo::VideoElement() const {
   return To<HTMLVideoElement>(GetNode());
 }
 
-void LayoutVideo::StyleDidChange(StyleDifference diff,
-                                 const ComputedStyle* old_style) {
+void LayoutVideo::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutImage::StyleDidChange(diff, old_style);
+  LayoutImage::StyleDidChange(diff, old_style, style_change_context);
   VideoElement()->StyleDidChange(old_style, StyleRef());
 }
 

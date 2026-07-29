@@ -29,73 +29,243 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_SHAPING_NG_SHAPE_CACHE_H_
 
 #include "base/hash/hash.h"
-#include "base/memory/weak_ptr.h"
+#include "base/memory_coordinator/memory_consumer.h"
+#include "base/memory_coordinator/memory_consumer_registry.h"
+#include "base/memory_coordinator/traits.h"
+#include "base/task/single_thread_task_runner.h"
+#include "third_party/blink/renderer/platform/fonts/font_performance.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/heap/prefinalizer.h"
+#include "third_party/blink/renderer/platform/instrumentation/memory_coordinator/memory_consumer_registration.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/text_direction.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_functions.h"
 #include "third_party/blink/renderer/platform/wtf/hash_table_deleted_value_type.h"
+#include "third_party/blink/renderer/platform/wtf/hash_traits.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
 
-class NGShapeCache : public GarbageCollected<NGShapeCache> {
+// The `can_cache` flag is used to indicate if this shape-result can be
+// inserted into the cache.
+// In certain circumstances the shape call isn't guaranteed to be idempotent,
+// e.g. when reusing previous shape-results.
+struct ShaperResult {
+  STACK_ALLOCATED();
+
+ public:
+  const ShapeResult* shape_result;
+  bool can_cache;
+};
+
+// The key for the shape-cache. Contains:
+//  - The text to be shaped.
+//  - The start/end offset of the text.
+//
+// NOTE: We don't store a StringView or similar so we can reuse the hash of the
+//       text in multiple keys.
+struct ShapeCacheKey {
+  DISALLOW_NEW();
+
+ public:
+  ShapeCacheKey() = default;
+  ShapeCacheKey(const String& text,
+                unsigned start_offset,
+                unsigned end_offset,
+                const AtomicString& locale,
+                base::span<const FontFeatureRange> font_features,
+                TextDirection direction)
+      : text_(text),
+        start_offset_(start_offset),
+        end_offset_(end_offset),
+        locale_(locale),
+        font_features_(font_features),
+        direction_(direction) {
+    DCHECK_NE(text_, g_empty_string);
+  }
+
+  explicit ShapeCacheKey(HashTableDeletedValueType) : text_(g_empty_string) {}
+
+  bool IsHashTableDeletedValue() const { return text_ == g_empty_string; }
+
+  unsigned GetHash() const {
+    unsigned hash = blink::GetHash(text_);
+    AddIntToHash(hash, start_offset_);
+    AddIntToHash(hash, end_offset_);
+    AddIntToHash(hash, locale_ ? blink::GetHash(locale_) : 0);
+    AddIntToHash(
+        hash, StringHasher::HashMemory32(base::as_byte_span(font_features_)));
+    AddIntToHash(hash, static_cast<unsigned>(direction_));
+    return hash;
+  }
+
+  bool operator==(const ShapeCacheKey& other) const {
+    return text_ == other.text_ && start_offset_ == other.start_offset_ &&
+           end_offset_ == other.end_offset_ && locale_ == other.locale_ &&
+           font_features_ == other.font_features_ &&
+           direction_ == other.direction_;
+  }
+
+  const String& GetText() const { return text_; }
+
+ private:
+  String text_;
+  unsigned start_offset_ = 0u;
+  unsigned end_offset_ = 0u;
+  AtomicString locale_;
+  Vector<FontFeatureRange, 1> font_features_;
+  TextDirection direction_ = TextDirection::kLtr;
+};
+
+template <>
+struct HashTraits<ShapeCacheKey> : SimpleClassHashTraits<ShapeCacheKey> {};
+
+class NGShapeCache : public GarbageCollected<NGShapeCache>,
+                     public base::MemoryConsumer {
+  USING_PRE_FINALIZER(NGShapeCache, Dispose);
+
  public:
   static constexpr unsigned kMaxTextLengthOfEntries = 30;
   static constexpr unsigned kMaxSize = 2048;
 
   explicit NGShapeCache(const SimpleFontData* primary_font)
       : primary_font_(primary_font) {
-    DCHECK(RuntimeEnabledFeatures::LayoutNGShapeCacheEnabled());
+    if (RuntimeEnabledFeatures::MemoryConsumerForNGShapeCacheEnabled() &&
+        base::MemoryConsumerRegistry::Exists() &&
+        (!base::SingleThreadTaskRunner::HasMainThreadDefault() ||
+         base::SingleThreadTaskRunner::GetMainThreadDefault()
+             ->RunsTasksInCurrentSequence())) {
+      memory_consumer_registration_ =
+          std::make_unique<MemoryConsumerRegistration>(
+              kConsumerId, kNGShapeCacheTraits, this,
+              MemoryConsumerRegistration::CheckUnregister::kDisabled);
+    }
   }
   NGShapeCache(const NGShapeCache&) = delete;
   NGShapeCache& operator=(const NGShapeCache&) = delete;
 
   void Trace(Visitor* visitor) const {
-    visitor->Trace(ltr_string_map_);
-    visitor->Trace(rtl_string_map_);
+    visitor->Trace(weak_map_);
+    visitor->Trace(strong_map_);
     visitor->Trace(primary_font_);
   }
 
+  void Dispose() {
+    if (memory_consumer_registration_) {
+      memory_consumer_registration_->Dispose();
+    }
+  }
+
+  void OnUpdateMemoryLimit() override {}
+  void OnReleaseMemory() override {
+    weak_map_.clear();
+    strong_map_.clear();
+  }
+
   template <typename ShapeResultFunc>
-  const ShapeResult* GetOrCreate(const String& text,
-                                 TextDirection direction,
+  const ShapeResult* GetOrCreate(const ShapeCacheKey& key,
                                  const ShapeResultFunc& shape_result_func) {
-    if (text.length() > kMaxTextLengthOfEntries) {
-      return shape_result_func();
+    DCHECK(!key.GetText().empty());
+
+    if (key.GetText().length() > kMaxTextLengthOfEntries) {
+      return shape_result_func().shape_result;
     }
 
-    auto& map = IsLtr(direction) ? ltr_string_map_ : rtl_string_map_;
-    if (map.size() >= kMaxSize) [[unlikely]] {
-      const auto it = map.find(text);
-      return (it != map.end() && it->value) ? it->value.Get()
-                                            : shape_result_func();
+    if (RuntimeEnabledFeatures::MemoryConsumerForNGShapeCacheEnabled()) {
+      return GetOrCreateImpl(strong_map_, key, shape_result_func);
+    } else {
+      return GetOrCreateImpl(weak_map_, key, shape_result_func);
     }
-
-    const auto add_result = map.insert(text, nullptr);
-    if (add_result.stored_value->value) {
-      return add_result.stored_value->value;
-    }
-
-    const ShapeResult* result = shape_result_func();
-
-    // Only shape-results without font-fallback are valid, because the cache is
-    // in the `primary_font_`.
-    if (!result->HasFallbackFonts(primary_font_)) {
-      add_result.stored_value->value = result;
-    }
-
-    return result;
   }
 
  private:
-  typedef HeapHashMap<String, WeakMember<const ShapeResult>> SmallStringMap;
+  typedef HeapHashMap<ShapeCacheKey, WeakMember<const ShapeResult>> WeakMap;
+  typedef HeapHashMap<ShapeCacheKey, Member<const ShapeResult>> StrongMap;
 
-  SmallStringMap ltr_string_map_;
-  SmallStringMap rtl_string_map_;
+  static constexpr char kConsumerId[] = "NGShapeCache";
+  static constexpr base::MemoryConsumerTraits kNGShapeCacheTraits{
+      // Bounded entries of short strings; footprint under 10MB.
+      base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
+      // Clearing maps requires traversing hash map structures.
+      base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+      // Results can be shaped again if cleared.
+      base::MemoryConsumerTraits::InformationRetention::kLossless,
+      // Synchronously clears maps.
+      base::MemoryConsumerTraits::ExecutionType::kSynchronous,
+      // Fixed entry limit that is independent to memory pressure.
+      base::MemoryConsumerTraits::SupportsMemoryLimit::kNo,
+      // Shaping short text runs is fast.
+      base::MemoryConsumerTraits::RecreateMemoryCost::kCheap,
+      // Drops pointers allocated on the Oilpan heap.
+      base::MemoryConsumerTraits::ReleaseGCReferences::kYes,
+      // Performs a one-shot eviction of the whole cache when under pressure.
+      base::MemoryConsumerTraits::IsStateful::kNo};
+
+  template <typename StringMap, typename ShapeResultFunc>
+  const ShapeResult* GetOrCreateImpl(StringMap& map,
+                                     const ShapeCacheKey& key,
+                                     const ShapeResultFunc& shape_result_func) {
+    if (map.size() >= kMaxSize) [[unlikely]] {
+      const auto it = map.find(key);
+      if (it != map.end() && it->value) {
+        FontPerformance::AddShapeCacheHit();
+        return it->value.Get();
+      }
+      FontPerformance::AddShapeCacheMiss();
+      return shape_result_func().shape_result;
+    }
+
+    const auto add_result = map.insert(key, nullptr);
+    if (const auto* cached_result = add_result.stored_value->value.Get()) {
+      FontPerformance::AddShapeCacheHit();
+      // Verify that the cache is consistent.
+#if EXPENSIVE_DCHECKS_ARE_ON()
+      const auto [other_shape_result, can_cache_other] = shape_result_func();
+      const bool has_private_or_non_characters =
+          !key.GetText().Is8Bit() &&
+          std::ranges::any_of(key.GetText().Span16(), [](UChar32 c) {
+            return Character::IsPrivateUse(c) || Character::IsNonCharacter(c);
+          });
+      // The shape-result call might try and reuse previous shape-results, we
+      // can't check for equality in this case.
+      //
+      // TODO(crbug.com/486945341): We currently incorrectly cache shape-results
+      // which contain PUA or non-characters.
+      //
+      // Specifically `FontCache::FallbackFontForCharacter` has different
+      // fallback logic for these characters; for the same primary-font, and
+      // different fallback lists we may produce two different shape-results.
+      //
+      // We should avoid the cache for this case.
+      if (can_cache_other && !has_private_or_non_characters) {
+        DCHECK_EQ(*cached_result, *other_shape_result);
+      }
+#endif
+      return cached_result;
+    }
+
+    FontPerformance::AddShapeCacheMiss();
+    const auto [shape_result, can_cache] = shape_result_func();
+
+    // Only shape-results without font-fallback are valid, because the cache is
+    // in the `primary_font_`.
+    if (can_cache && !shape_result->HasFallbackFonts(primary_font_)) {
+      add_result.stored_value->value = shape_result;
+    }
+
+    return shape_result;
+  }
+
+  WeakMap weak_map_;
+  StrongMap strong_map_;
   Member<const SimpleFontData> primary_font_;
+
+  std::unique_ptr<MemoryConsumerRegistration> memory_consumer_registration_;
 };
 
 }  // namespace blink

@@ -9,7 +9,7 @@
 #import "base/no_destructor.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
-#import "ios/chrome/browser/supervised_user/model/list_family_members_service_factory.h"
+#import "ios/chrome/browser/supervised_user/model/supervised_user_service_factory.h"
 
 // static
 supervised_user::ChildAccountService* ChildAccountServiceFactory::GetForProfile(
@@ -28,18 +28,16 @@ ChildAccountServiceFactory* ChildAccountServiceFactory::GetInstance() {
 ChildAccountServiceFactory::ChildAccountServiceFactory()
     : ProfileKeyedServiceFactoryIOS("ChildAccountService") {
   DependsOn(IdentityManagerFactory::GetInstance());
-  DependsOn(ListFamilyMembersServiceFactory::GetInstance());
+  // Required to consume changes indicated by this service.
+  DependsOn(supervised_user::SupervisedUserServiceFactory::GetInstance());
 }
 
 std::unique_ptr<KeyedService>
-ChildAccountServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
+ChildAccountServiceFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {
+  CHECK(supervised_user::SupervisedUserServiceFactory::GetForProfile(profile));
   return std::make_unique<supervised_user::ChildAccountService>(
       CHECK_DEREF(profile->GetPrefs()),
       IdentityManagerFactory::GetForProfile(profile),
-      profile->GetSharedURLLoaderFactory(),
       // Callback relevant only for Chrome OS.
-      /*check_user_child_status_callback=*/base::DoNothing(),
-      CHECK_DEREF(ListFamilyMembersServiceFactory::GetForProfile(profile)));
+      /*check_user_child_status_callback=*/base::DoNothing());
 }

@@ -30,11 +30,14 @@ export class PageDisplayerElement extends PolymerElement {
         type: Number,
         reflectToAttribute: true,
       },
+
+      ariaLabel: String,
     };
   }
 
-  active: boolean;
-  section: Section;
+  declare ariaLabel: string;
+  declare active: boolean;
+  declare section: Section;
 
   override ready(): void {
     super.ready();
@@ -43,7 +46,9 @@ export class PageDisplayerElement extends PolymerElement {
   }
 
   override focus(): void {
-    this.shadowRoot!.getElementById('focusHost')!.focus();
+    // Since the focus host contains the whole page content, it should not cause
+    // a scroll jump when focused.
+    this.shadowRoot!.getElementById('focusHost')!.focus({preventScroll: true});
   }
 }
 

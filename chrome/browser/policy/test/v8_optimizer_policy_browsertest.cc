@@ -7,15 +7,21 @@
 #include <vector>
 
 #include "base/values.h"
+#include "chrome/browser/content_settings/generated_javascript_optimizer_pref.h"
 #include "chrome/browser/policy/policy_test_utils.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/test/base/ui_test_utils.h"
+#include "chrome/browser/safe_browsing/safe_browsing_service.h"
+#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
+#include "chrome/browser/site_protection/site_familiarity_utils.h"
+#include "chrome/test/base/chrome_test_utils.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/policy_constants.h"
+#include "components/prefs/pref_service.h"
+#include "components/safe_browsing/core/browser/db/fake_database_manager.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -46,10 +52,13 @@ class V8OptimizerPolicyTest
     // This is needed for this test to run properly on platforms where
     //  --site-per-process isn't the default, such as Android.
     content::IsolateAllSitesForTesting(command_line);
+
+    embedded_test_server()->SetCertHostnames(
+        {"foo.com", "bar.com", "unrelated.com"});
   }
 
   void SetPolicyValue(PolicyMap* map, const char* key, const char* value) {
-    base::Value::List value_list;
+    base::ListValue value_list;
     if (value) {
       value_list.Append(value);
     }
@@ -72,14 +81,26 @@ class V8OptimizerPolicyTest
   }
 
   void NavigateAndExpectPolicyResult(const char* hostname,
-                                     bool expect_disabled) {
-    auto* render_frame_host = ui_test_utils::NavigateToURL(
-        browser(), embedded_test_server()->GetURL(hostname, "/title1.html"));
-    EXPECT_EQ(expect_disabled,
-              render_frame_host->GetProcess()->AreV8OptimizationsDisabled());
+                                     bool expect_v8_disabled) {
+    ASSERT_TRUE(NavigateToUrl(
+        embedded_https_test_server().GetURL(hostname, "/title1.html"), this));
+    EXPECT_EQ(expect_v8_disabled,
+              current_frame_host()->GetProcess()->AreV8OptimizationsDisabled());
+  }
+
+  void NavigateToFreshBrowsingInstance() {
+    // Navigate to different origin so that the next navigation is in a
+    // different BrowsingInstance.
+    ASSERT_TRUE(NavigateToUrl(GURL("https://unrelated.com"), this));
+  }
+
+  content::RenderFrameHost* current_frame_host() {
+    return chrome_test_utils::GetActiveWebContents(this)->GetPrimaryMainFrame();
   }
 
  protected:
+  Profile* profile() { return chrome_test_utils::GetProfile(this); }
+
   void AddDefaultPolicy(PolicyMap* policies) {
     switch (GetParam()) {
       case DISABLED_BY_DEFAULT:
@@ -107,25 +128,30 @@ class V8OptimizerPolicyTest
 };
 
 IN_PROC_BROWSER_TEST_P(V8OptimizerPolicyTest, V8OptimizerAllowedAndDisallowed) {
+  // This test uses the non-https server so that URL names can be more
+  // descriptive of their use case.
   ASSERT_TRUE(embedded_test_server()->Start());
 
   ConfigurePolicy("optimizer-enabled.com", "optimizer-disabled.com");
 
   GURL disabled_url =
       embedded_test_server()->GetURL("optimizer-disabled.com", "/title1.html");
-  auto* render_frame_host =
-      ui_test_utils::NavigateToURL(browser(), disabled_url);
+  ASSERT_TRUE(NavigateToUrl(disabled_url, this));
+  auto* render_frame_host = current_frame_host();
   EXPECT_FALSE(render_frame_host->GetProcess()->IsJitDisabled());
   EXPECT_TRUE(render_frame_host->GetProcess()->AreV8OptimizationsDisabled());
 
   GURL enabled_url =
       embedded_test_server()->GetURL("optimizer-enabled.com", "/title1.html");
-  render_frame_host = ui_test_utils::NavigateToURL(browser(), enabled_url);
+  ASSERT_TRUE(NavigateToUrl(enabled_url, this));
+  render_frame_host = current_frame_host();
   EXPECT_FALSE(render_frame_host->GetProcess()->IsJitDisabled());
   EXPECT_FALSE(render_frame_host->GetProcess()->AreV8OptimizationsDisabled());
 
   GURL default_url = embedded_test_server()->GetURL("foo.com", "/title1.html");
-  render_frame_host = ui_test_utils::NavigateToURL(browser(), default_url);
+  ASSERT_TRUE(NavigateToUrl(default_url, this));
+
+  render_frame_host = current_frame_host();
 
   EXPECT_FALSE(render_frame_host->GetProcess()->IsJitDisabled());
   EXPECT_EQ(DetermineExpectedResultForDefault(),
@@ -135,26 +161,49 @@ IN_PROC_BROWSER_TEST_P(V8OptimizerPolicyTest, V8OptimizerAllowedAndDisallowed) {
 IN_PROC_BROWSER_TEST_P(V8OptimizerPolicyTest, V8OptimizerHostnameMatching) {
   // For brevity, this test only tests Deny rules, because Allow rules are
   // tested above.
-  ASSERT_TRUE(embedded_test_server()->Start());
+  //
+  // The https-server is used in this test so that we can verify behavior under
+  // OriginKeyedProcessesByDefault.
+  ASSERT_TRUE(embedded_https_test_server().Start());
+
+  const bool expected_for_default = DetermineExpectedResultForDefault();
 
   // Check subdomains work.
   ConfigurePolicy(nullptr, "foo.com");
   NavigateAndExpectPolicyResult("foo.com", true);
-  NavigateAndExpectPolicyResult("subdomain.foo.com", true);
-  ConfigurePolicy(nullptr, "[*.]foo.com");
-  NavigateAndExpectPolicyResult("subdomain.foo.com", true);
 
-  const bool expected = DetermineExpectedResultForDefault();
+  NavigateToFreshBrowsingInstance();
+  if (content::SiteIsolationPolicy::AreOriginKeyedProcessesEnabledByDefault(
+          chrome_test_utils::GetProfile(this))) {
+    // Under origin isolation, the origin is passed into
+    // AreV8OptimizationsDisabledForSite(), and the origin does not match the
+    // site-level policy.
+    NavigateAndExpectPolicyResult("subdomain.foo.com", expected_for_default);
+  } else {
+    // Under site isolation, the site is passed in to
+    // AreV8OptimizationsDisabledForSite() and so this navigation will match the
+    // policy.
+    NavigateAndExpectPolicyResult("subdomain.foo.com", true);
+  }
+
+  ConfigurePolicy(nullptr, "[*.]foo.com");
+  NavigateToFreshBrowsingInstance();
+  NavigateAndExpectPolicyResult("subdomain.foo.com", true);
 
   // Policy applies to different domain.
   ConfigurePolicy(nullptr, "foo.com");
-  NavigateAndExpectPolicyResult("bar.com", expected);
+  NavigateToFreshBrowsingInstance();
+  NavigateAndExpectPolicyResult("bar.com", expected_for_default);
 
-  // Here there is an invalid policy as the V8 optimizer policies only support
-  // eTLD+1 as origin.
+  // Policy applies to a subdomain.
   ConfigurePolicy(nullptr, "subdomain.foo.com");
-  NavigateAndExpectPolicyResult("foo.com", expected);
-  NavigateAndExpectPolicyResult("subdomain.foo.com", expected);
+  NavigateToFreshBrowsingInstance();
+  NavigateAndExpectPolicyResult("foo.com", expected_for_default);
+  // Since there is a specific rule for subdomain.foo.com that differs from the
+  // default policy, subdomain.foo.com will have origin isolation applied and
+  // will match the policy defined above.
+  NavigateToFreshBrowsingInstance();
+  NavigateAndExpectPolicyResult("subdomain.foo.com", true);
 }
 
 INSTANTIATE_TEST_SUITE_P(DefaultDisabled,
@@ -165,6 +214,62 @@ INSTANTIATE_TEST_SUITE_P(DefaultEnabled,
                          testing::Values(ENABLED_BY_DEFAULT));
 INSTANTIATE_TEST_SUITE_P(DefaultNotSet,
                          V8OptimizerPolicyTest,
+                         testing::Values(NOT_SET));
+
+class V8OptimizerPolicyTest_UseSiteFamiliarity : public V8OptimizerPolicyTest {
+ public:
+  V8OptimizerPolicyTest_UseSiteFamiliarity() {
+    feature_list_
+        .InitWithFeatures(/*enabled_features=*/
+                          {features::kProcessSelectionDeferringConditions},
+                          /*disabled_features=*/{});
+  }
+
+  void CreatedBrowserMainParts(
+      content::BrowserMainParts* browser_main_parts) override {
+    V8OptimizerPolicyTest::CreatedBrowserMainParts(browser_main_parts);
+    // Test UI manager and test database manager should be set before
+    // the browser is started but after threads are created.
+    factory_.SetTestDatabaseManager(
+        new safe_browsing::FakeSafeBrowsingDatabaseManager(
+            content::GetUIThreadTaskRunner({})));
+    safe_browsing::SafeBrowsingService::RegisterFactory(&factory_);
+  }
+
+  ~V8OptimizerPolicyTest_UseSiteFamiliarity() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+  safe_browsing::TestSafeBrowsingServiceFactory factory_;
+};
+
+// Test that the default v8-optimizer value set by enterprise policy takes
+// precedence over any heuristics related to "unfamiliar sites".
+// When there is no policy, v8-optimizers should be disabled because the site
+// has never been visited and is not on the
+// safe-browsing-high-confidence-allowlist.
+IN_PROC_BROWSER_TEST_P(V8OptimizerPolicyTest_UseSiteFamiliarity,
+                       PolicyTakesPrecedence) {
+  ASSERT_TRUE(embedded_https_test_server().Start());
+
+  profile()->GetPrefs()->SetBoolean(
+      prefs::kJavascriptOptimizerBlockedForUnfamiliarSites, true);
+  EXPECT_TRUE(
+      site_protection::AreV8OptimizationsDisabledOnUnfamiliarSites(profile()));
+
+  PolicyMap policies;
+  AddDefaultPolicy(&policies);
+  provider_.UpdateChromePolicy(policies);
+
+  bool expect_v8_disabled = (GetParam() == NOT_SET);
+  NavigateAndExpectPolicyResult("foo.com", expect_v8_disabled);
+}
+
+INSTANTIATE_TEST_SUITE_P(DefaultEnabled,
+                         V8OptimizerPolicyTest_UseSiteFamiliarity,
+                         testing::Values(ENABLED_BY_DEFAULT));
+INSTANTIATE_TEST_SUITE_P(DefaultNotSet,
+                         V8OptimizerPolicyTest_UseSiteFamiliarity,
                          testing::Values(NOT_SET));
 
 }  // namespace policy

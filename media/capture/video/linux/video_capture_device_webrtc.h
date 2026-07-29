@@ -9,8 +9,6 @@
 
 #include <optional>
 
-#include "base/task/single_thread_task_runner.h"
-#include "base/threading/thread.h"
 #include "base/time/time.h"
 #include "media/capture/video/video_capture_device_factory.h"
 #include "media/capture/video_capture_types.h"
@@ -31,7 +29,7 @@ class VideoCaptureDeviceWebRtc : public VideoCaptureDevice,
 
   explicit VideoCaptureDeviceWebRtc(
       webrtc::VideoCaptureOptions* options,
-      rtc::scoped_refptr<webrtc::VideoCaptureModule> capture_module);
+      webrtc::scoped_refptr<webrtc::VideoCaptureModule> capture_module);
 
   VideoCaptureDeviceWebRtc(const VideoCaptureDeviceWebRtc&) = delete;
   VideoCaptureDeviceWebRtc& operator=(const VideoCaptureDeviceWebRtc&) = delete;
@@ -56,7 +54,7 @@ class VideoCaptureDeviceWebRtc : public VideoCaptureDevice,
                      int64_t capture_time_ms) override;
 
  private:
-  rtc::scoped_refptr<webrtc::VideoCaptureModule> capture_module_;
+  webrtc::scoped_refptr<webrtc::VideoCaptureModule> capture_module_;
   raw_ptr<webrtc::VideoCaptureOptions> options_;
   VideoCaptureFormat capture_format_;
   std::optional<base::TimeDelta> base_time_;

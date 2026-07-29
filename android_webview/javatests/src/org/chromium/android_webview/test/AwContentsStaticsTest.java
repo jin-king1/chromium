@@ -103,9 +103,11 @@ public class AwContentsStaticsTest extends AwParameterizedTest {
         Assert.assertEquals(
                 "Incorrect network error code.",
                 WebviewErrorCode.ERROR_UNKNOWN,
-                errorHelper.getError().errorCode);
+                errorHelper.getError().getWebviewError());
         Assert.assertEquals(
-                "onReceivedError was called for the wrong URL.", url, errorHelper.getRequest().url);
+                "onReceivedError was called for the wrong URL.",
+                url,
+                errorHelper.getRequest().getUrl());
     }
 
     @Test

@@ -12,20 +12,24 @@
 @protocol AddPasswordDetailsConsumer;
 @protocol AddPasswordMediatorDelegate;
 class IOSChromePasswordCheckManager;
-class PrefService;
 
 namespace syncer {
 class SyncService;
 }  // namespace syncer
+
+namespace password_manager {
+class PasswordRequirementsService;
+}
 
 // This mediator stores logic for adding new password credentials.
 @interface AddPasswordMediator : NSObject <AddPasswordViewControllerDelegate>
 
 - (instancetype)initWithDelegate:(id<AddPasswordMediatorDelegate>)delegate
             passwordCheckManager:(IOSChromePasswordCheckManager*)manager
-                     prefService:(PrefService*)prefService
                      syncService:(syncer::SyncService*)syncService
-    NS_DESIGNATED_INITIALIZER;
+     passwordRequirementsService:
+         (password_manager::PasswordRequirementsService*)
+             passwordRequirementsService NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 

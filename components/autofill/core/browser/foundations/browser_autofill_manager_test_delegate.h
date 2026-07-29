@@ -7,6 +7,7 @@
 
 #include "base/scoped_multi_source_observation.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
+#include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 
 namespace autofill {
 
@@ -39,16 +40,21 @@ class BrowserAutofillManagerTestDelegate : public AutofillManager::Observer {
       AutofillManager::LifecycleState old_state,
       AutofillManager::LifecycleState new_state) override;
 
-  void OnFillOrPreviewDataModelForm(
+  void OnFillOrPreviewForm(
       AutofillManager& manager,
-      FormGlobalId form,
+      FormGlobalId form_id,
+      FieldGlobalId trigger_field_id,
       mojom::ActionPersistence action_persistence,
-      base::span<const FormFieldData* const> filled_fields,
+      const base::flat_set<FieldGlobalId>& filled_field_ids,
+      const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&
+          skip_reasons,
       const FillingPayload& filling_payload) override;
 
-  void OnSuggestionsShown(AutofillManager& manager) override;
+  void OnSuggestionsShown(AutofillManager& manager,
+                          base::span<const Suggestion> suggestions) override;
 
-  void OnSuggestionsHidden(AutofillManager& manager) override;
+  void OnSuggestionsHidden(AutofillManager& manager,
+                           SuggestionHidingReason reason) override;
 
   base::ScopedMultiSourceObservation<AutofillManager, AutofillManager::Observer>
       observations_{this};

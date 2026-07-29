@@ -9,20 +9,21 @@
 #include "chrome/browser/ui/autofill/payments/webauthn_dialog_state.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
-#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/webauthn/authenticator_request_sheet_view.h"
 #include "chrome/browser/ui/views/webauthn/sheet_view_factory.h"
+#include "chrome/browser/ui/webauthn/authenticator_request_sheet_model.h"
 #include "components/constrained_window/constrained_window_views.h"
-#include "components/web_modal/web_contents_modal_dialog_host.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
+#include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
-#include "ui/views/controls/button/label_button.h"
 
 namespace autofill {
+
+using AcceptButtonState = AuthenticatorRequestSheetModel::AcceptButtonState;
 
 WebauthnDialogView::WebauthnDialogView(WebauthnDialogController* controller,
                                        WebauthnDialogState dialog_state)
@@ -45,7 +46,7 @@ WebauthnDialogView::WebauthnDialogView(WebauthnDialogController* controller,
   SetButtonLabel(ui::mojom::DialogButton::kOk, model_->GetAcceptButtonLabel());
   SetButtonLabel(ui::mojom::DialogButton::kCancel,
                  model_->GetCancelButtonLabel());
-  SetButtons(model_->IsAcceptButtonVisible()
+  SetButtons(model_->GetAcceptButtonState() != AcceptButtonState::kNotVisible
                  ? static_cast<int>(ui::mojom::DialogButton::kOk) |
                        static_cast<int>(ui::mojom::DialogButton::kCancel)
                  : static_cast<int>(ui::mojom::DialogButton::kCancel));
@@ -68,7 +69,8 @@ WebauthnDialog* WebauthnDialog::CreateAndShow(
       tabs::TabInterface::GetFromContents(controller->GetWebContents());
   tab_interface->GetTabFeatures()
       ->tab_dialog_manager()
-      ->CreateShowDialogAndBlockTabInteraction(dialog_delegate)
+      ->CreateAndShowDialog(dialog_delegate,
+                            std::make_unique<tabs::TabDialogManager::Params>())
       .release();
   return dialog_delegate;
 }
@@ -112,7 +114,7 @@ bool WebauthnDialogView::Cancel() {
 bool WebauthnDialogView::IsDialogButtonEnabled(
     ui::mojom::DialogButton button) const {
   return button == ui::mojom::DialogButton::kOk
-             ? model_->IsAcceptButtonEnabled()
+             ? model_->GetAcceptButtonState() == AcceptButtonState::kEnabled
              : true;
 }
 
@@ -138,7 +140,7 @@ void WebauthnDialogView::RefreshContent() {
   SetButtonLabel(ui::mojom::DialogButton::kCancel,
                  model_->GetCancelButtonLabel());
   DCHECK(model_->IsCancelButtonVisible());
-  SetButtons(model_->IsAcceptButtonVisible()
+  SetButtons(model_->GetAcceptButtonState() != AcceptButtonState::kNotVisible
                  ? static_cast<int>(ui::mojom::DialogButton::kOk) |
                        static_cast<int>(ui::mojom::DialogButton::kCancel)
                  : static_cast<int>(ui::mojom::DialogButton::kCancel));
@@ -147,12 +149,13 @@ void WebauthnDialogView::RefreshContent() {
   DeprecatedLayoutImmediately();
 
   // Update the dialog's size.
-  if (GetWidget() && controller_->GetWebContents()) {
+  content::WebContents* const web_contents = controller_->GetWebContents();
+  if (GetWidget() && web_contents) {
     constrained_window::UpdateWebContentsModalDialogPosition(
-        GetWidget(), web_modal::WebContentsModalDialogManager::FromWebContents(
-                         controller_->GetWebContents())
-                         ->delegate()
-                         ->GetWebContentsModalDialogHost());
+        GetWidget(),
+        web_modal::WebContentsModalDialogManager::FromWebContents(web_contents)
+            ->delegate()
+            ->GetWebContentsModalDialogHost(web_contents));
   }
 }
 

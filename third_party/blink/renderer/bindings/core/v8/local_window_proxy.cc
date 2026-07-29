@@ -32,6 +32,7 @@
 
 #include <tuple>
 
+#include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -73,12 +74,85 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/runtime_feature_state/runtime_feature_state_override_context.h"
 #include "third_party/blink/renderer/platform/weborigin/reporting_disposition.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_operators.h"
 #include "v8/include/v8.h"
 
 namespace blink {
+
+namespace {
+
+// Direct Sockets is a conditional runtime-enabled feature whose exposure on the
+// window object is evaluated by V8 during the initial context creation (which
+// synchronously spawns an `about:blank` document).
+//
+// When a child window is opened in the same BrowsingContextGroup (reusing the
+// process), the initial `about:blank` document inherits the opener's origin but
+// does NOT inherit its browser-overridden RuntimeFeatureState. Since V8 reuses
+// this initial context when the window subsequently navigates same-origin, the
+// API exposure is never re-evaluated, leaving Direct Sockets permanently
+// disabled in the child window even after navigation commits.
+//
+// To prevent this state-loss, we synchronously inherit the `DirectSockets`
+// feature state from the same-origin opener context just before V8 generates
+// the bindings for the initial context.
+bool MaybeInheritDirectSocketsFromOpener(LocalFrame* frame) {
+  if (!frame) {
+    return false;
+  }
+  auto* opener_local_frame = DynamicTo<LocalFrame>(frame->Opener());
+  if (!opener_local_frame) {
+    return false;
+  }
+  LocalDOMWindow* opener_window = opener_local_frame->DomWindow();
+  LocalDOMWindow* window = frame->DomWindow();
+  if (!opener_window || !window) {
+    return false;
+  }
+
+  if (!window->GetSecurityOrigin()->IsSameOriginWith(
+          opener_window->GetSecurityOrigin())) {
+    return false;
+  }
+
+  if (RuntimeEnabledFeatures::DirectSocketsEnabled(opener_window)) {
+    if (auto* target_context =
+            window->GetRuntimeFeatureStateOverrideContext()) {
+      target_context->SetDirectSocketsForceEnabled();
+      return true;
+    }
+  }
+  return false;
+}
+
+// When a V8 context is created from a pre-compiled V8 Context Snapshot,
+// standard wrapper constructor objects (like Window) are retrieved as quick
+// cache-hits from V8's static PerContextData snapshot.
+//
+// Because V8 gets a cache hit, it entirely bypasses the slow compilation path
+// which would normally run standard properties-installation callbacks. As a
+// result, dynamically-enabled conditional properties (like Direct Sockets in an
+// IWA context) are never overlaid onto the restored global Window wrappers.
+//
+// To fix this omission, this helper manually retrieves the restored Window
+// prototype and constructor wrappers from the PerContextData cache, and forces
+// V8 to run the conditional bindings installation for the window.
+void ForceReinstallConditionalFeaturesForWindow(ScriptState* script_state) {
+  V8PerContextData* per_context_data = script_state->PerContextData();
+  v8::Local<v8::Function> interface_object =
+      per_context_data->ConstructorForType(V8Window::GetWrapperTypeInfo());
+  v8::Local<v8::Object> prototype_object =
+      per_context_data->PrototypeForType(V8Window::GetWrapperTypeInfo());
+
+  V8Window::GetWrapperTypeInfo()->InstallConditionalFeatures(
+      script_state->GetContext(), script_state->World(),
+      script_state->GetContext()->Global(), prototype_object, interface_object,
+      v8::Local<v8::Template>());
+}
+
+}  // namespace
 
 void LocalWindowProxy::Trace(Visitor* visitor) const {
   visitor->Trace(script_state_);
@@ -87,6 +161,9 @@ void LocalWindowProxy::Trace(Visitor* visitor) const {
 
 void LocalWindowProxy::DisposeContext(Lifecycle next_status,
                                       FrameReuseStatus frame_reuse_status) {
+  // Clear the deferred callback to prevent it from carrying over to a future
+  // context initialization.
+  abort_script_execution_callback_ = nullptr;
   DCHECK(next_status == Lifecycle::kV8MemoryIsForciblyPurged ||
          next_status == Lifecycle::kGlobalObjectIsDetached ||
          next_status == Lifecycle::kFrameIsDetached ||
@@ -121,9 +198,8 @@ void LocalWindowProxy::DisposeContext(Lifecycle next_status,
     v8::Local<v8::Object> global = context->Global();
     if (!global_proxy_.IsEmpty()) {
       CHECK(global_proxy_ == global);
-      CHECK_EQ(ToScriptWrappable<DOMWindow>(GetIsolate(), global),
-               ToScriptWrappable<DOMWindow>(
-                   GetIsolate(), global->GetPrototype().As<v8::Object>()));
+      CHECK(V8DOMWrapper::CheckNativeInfoForGlobal(
+          GetIsolate(), global, V8Window::GetWrapperTypeInfo()));
     }
     auto* window = GetFrame()->DomWindow();
     V8DOMWrapper::ClearNativeInfo(GetIsolate(), global,
@@ -169,6 +245,13 @@ void LocalWindowProxy::Initialize() {
 
   ScriptState::Scope scope(script_state_);
   v8::Local<v8::Context> context = script_state_->GetContext();
+
+  // If a script execution abort callback was deferred, register it now
+  // that the context is initialized.
+  if (abort_script_execution_callback_) {
+    context->SetAbortScriptExecution(abort_script_execution_callback_);
+  }
+
   if (global_proxy_.IsEmpty()) {
     global_proxy_.Reset(GetIsolate(), context->Global());
     CHECK(!global_proxy_.IsEmpty());
@@ -289,9 +372,24 @@ void LocalWindowProxy::InstallConditionalFeatures() {
     V8ContextSnapshot::InstallContextIndependentProps(script_state_);
   }
 
+  // Direct Sockets state must be inherited from the opener BEFORE the
+  // unconditional Window wrapper warmup compilation below so that non-snapshot
+  // builds (like ChromeOS) compile the constructor with Direct Sockets natively
+  // active.
+  bool direct_sockets_inherited =
+      MaybeInheritDirectSocketsFromOpener(GetFrame());
+
   V8PerContextData* per_context_data = script_state_->PerContextData();
   std::ignore =
       per_context_data->ConstructorForType(V8Window::GetWrapperTypeInfo());
+
+  // On snapshot-based builds, the warmup above gets a cache hit on the
+  // pre-compiled feature-less wrapper. We must force-reinstall the conditional
+  // features AFTER warmup.
+  if (context_was_created_from_snapshot_ && direct_sockets_inherited) {
+    ForceReinstallConditionalFeaturesForWindow(script_state_);
+  }
+
   // Inform V8 that origin trial information is now connected with the context,
   // and V8 can extend the context with origin trial features.
   script_state_->GetIsolate()->InstallConditionalFeatures(
@@ -304,7 +402,7 @@ void LocalWindowProxy::SetupWindowPrototypeChain() {
                "IsMainFrame", GetFrame()->IsMainFrame(), "IsOutermostMainFrame",
                GetFrame()->IsOutermostMainFrame());
 
-  // Associate the window wrapper object and its prototype chain with the
+  // Associate the global proxy and its prototype chain with the
   // corresponding native DOMWindow object.
   DOMWindow* window = GetFrame()->DomWindow();
   const WrapperTypeInfo* wrapper_type_info = window->GetWrapperTypeInfo();
@@ -313,23 +411,20 @@ void LocalWindowProxy::SetupWindowPrototypeChain() {
   // The global proxy object.  Note this is not the global object.
   v8::Local<v8::Object> global_proxy = context->Global();
   CHECK(global_proxy_ == global_proxy);
-  // Use the global proxy as window wrapper object.
-  V8DOMWrapper::SetNativeInfo(GetIsolate(), global_proxy, window);
+  // Set a link from both JSGlobalProxy and its hidden prototype
+  // (JSGlobalObject) to the native DOMWindow object.
+  V8DOMWrapper::SetNativeInfoForGlobal(GetIsolate(), global_proxy, window);
   CHECK(global_proxy_ == window->AssociateWithWrapper(GetIsolate(), world_,
                                                       wrapper_type_info,
                                                       global_proxy));
 
-  // The global object, aka window wrapper object.
-  v8::Local<v8::Object> window_wrapper =
-      global_proxy->GetPrototype().As<v8::Object>();
-  V8DOMWrapper::SetNativeInfo(GetIsolate(), window_wrapper, window);
-
-  // The prototype object of Window interface.
+  // The prototype object of Window interface (aka Window.prototype).
   v8::Local<v8::Object> window_prototype =
-      window_wrapper->GetPrototype().As<v8::Object>();
+      global_proxy->GetPrototype().As<v8::Object>();
   CHECK(!window_prototype.IsEmpty());
 
-  // The named properties object of Window interface.
+  // The named properties object of Window interface (aka WindowProperties)
+  // also needs a link to DOMWindow object.
   v8::Local<v8::Object> window_properties =
       window_prototype->GetPrototype().As<v8::Object>();
   CHECK(!window_properties.IsEmpty());
@@ -338,13 +433,13 @@ void LocalWindowProxy::SetupWindowPrototypeChain() {
   // [CachedAccessor=kWindowProxy]
   V8PrivateProperty::GetCachedAccessor(
       GetIsolate(), V8PrivateProperty::CachedAccessor::kWindowProxy)
-      .Set(window_wrapper, global_proxy);
+      .Set(global_proxy, global_proxy);
 
   if (GetFrame()->GetPage()->GetChromeClient().IsPopup()) {
     // TODO(yukishiino): Remove installPagePopupController and implement
     // PagePopupController in another way.
     V8PagePopupControllerBinding::InstallPagePopupController(context,
-                                                             window_wrapper);
+                                                             global_proxy);
   }
 }
 
@@ -427,7 +522,7 @@ void LocalWindowProxy::SetSecurityToken(const SecurityOrigin* origin) {
       context->UseDefaultSecurityToken();
       return;
     }
-    token = frame_security_token + token;
+    token = StrCat({frame_security_token, token});
   }
 
   // NOTE: V8 does identity comparison in fast path, must use a symbol
@@ -540,7 +635,7 @@ void Getter(v8::Local<v8::Name> property,
 
 void EmptySetter(v8::Local<v8::Name> name,
                  v8::Local<v8::Value> value,
-                 const v8::PropertyCallbackInfo<void>& info) {
+                 const v8::PropertyCallbackInfo<v8::Boolean>& info) {
   // Empty setter is required to keep the native data property in "accessor"
   // state even in case the value is updated by user code.
 }
@@ -608,7 +703,16 @@ void LocalWindowProxy::UpdateSecurityOrigin(const SecurityOrigin* origin) {
 
 void LocalWindowProxy::SetAbortScriptExecution(
     v8::Context::AbortScriptExecutionCallback callback) {
-  InitializeIfNeeded();
+  abort_script_execution_callback_ = callback;
+
+  // If the context is not yet initialized, defer registering the callback on
+  // the context until Initialize() is called. Forcing initialization here is
+  // unnecessary and can cause crashes during navigation (e.g. due to stale
+  // wrappers in inline storage).
+  if (lifecycle_ != Lifecycle::kContextIsInitialized) {
+    return;
+  }
+
   script_state_->GetContext()->SetAbortScriptExecution(callback);
 }
 

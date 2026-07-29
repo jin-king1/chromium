@@ -5,11 +5,17 @@
 #import "chrome/browser/ui/cocoa/main_menu_builder.h"
 
 #include "base/feature_list.h"
+#include "base/i18n/rtl.h"
 #include "base/mac/mac_util.h"
 #include "build/branding_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/browser_features.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/feedback/report_unsafe_site_dialog.h"
 #include "chrome/browser/ui/cocoa/accelerators_cocoa.h"
 #include "chrome/browser/ui/cocoa/history_menu_bridge.h"
+#include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/branded_strings.h"
@@ -21,6 +27,18 @@
 #import "ui/base/l10n/l10n_util_mac.h"
 #include "ui/strings/grit/ui_strings.h"
 
+@interface NSImage (SPI)
+
+// Creates a system symbol image from SF Symbols with the specified name and
+// value. Differs from +imageWithSystemSymbolName:accessibilityDescription: in
+// that it allows instantiation of private symbols, those intended for
+// Apple-only usage (see the SFSymbols.framework's bundles CoreGlyphs vs
+// CoreGlyphsPrivate).
++ (instancetype)imageWithPrivateSystemSymbolName:(NSString*)name
+                        accessibilityDescription:(NSString*)description;
+
+@end
+
 namespace chrome {
 namespace {
 
@@ -29,14 +47,15 @@ using Item = internal::MenuItemBuilder;
 NSMenuItem* BuildAppMenu(NSApplication* nsapp,
                          id app_delegate,
                          const std::u16string& product_name,
-                         bool is_pwa) {
+                         bool is_pwa,
+                         bool is_rtl) {
   // clang-format off
   NSMenuItem* item =
       // NB: The IDS_APP_MENU_PRODUCT_NAME string is not actually used to
       // determine what is displayed in bold in the menu bar as the app menu
       // title. The Info.plist's CFBundleName value is what is actually used.
       Item(IDS_APP_MENU_PRODUCT_NAME)
-          .tag(IDC_CHROME_MENU)
+          .tag(kMacChromeMenuId)
           .submenu({
               Item(IDS_ABOUT_MAC)
                   .string_format_1(product_name)
@@ -100,11 +119,12 @@ NSMenuItem* BuildAppMenu(NSApplication* nsapp,
 NSMenuItem* BuildFileMenu(NSApplication* nsapp,
                           id app_delegate,
                           const std::u16string& product_name,
-                          bool is_pwa) {
+                          bool is_pwa,
+                          bool is_rtl) {
   // clang-format off
   NSMenuItem* item =
       Item(IDS_FILE_MENU_MAC)
-          .tag(IDC_FILE_MENU)
+          .tag(kMacFileMenuId)
           .submenu({
               Item(IDS_NEW_TAB_MAC)
                   .command_id(IDC_NEW_TAB)
@@ -158,11 +178,12 @@ NSMenuItem* BuildFileMenu(NSApplication* nsapp,
 NSMenuItem* BuildEditMenu(NSApplication* nsapp,
                           id app_delegate,
                           const std::u16string& product_name,
-                          bool is_pwa) {
+                          bool is_pwa,
+                          bool is_rtl) {
   // clang-format off
   NSMenuItem* item =
       Item(IDS_EDIT_MENU_MAC)
-          .tag(IDC_EDIT_MENU)
+          .tag(kEditMenuId)
           .submenu({
               Item(IDS_EDIT_UNDO_MAC)
                   .tag(IDC_CONTENT_CONTEXT_UNDO)
@@ -196,7 +217,7 @@ NSMenuItem* BuildEditMenu(NSApplication* nsapp,
                   .action(@selector(selectAll:)),
               Item().is_separator(),
               Item(IDS_EDIT_FIND_SUBMENU_MAC)
-                  .tag(IDC_FIND_MENU)
+                  .tag(kFindMenuId)
                   .submenu({
                       Item(IDS_EDIT_SEARCH_WEB_MAC)
                           .command_id(IDC_FOCUS_SEARCH),
@@ -215,7 +236,7 @@ NSMenuItem* BuildEditMenu(NSApplication* nsapp,
                           .key_equivalent(@"j", NSEventModifierFlagCommand),
               }),
               Item(IDS_EDIT_SPELLING_GRAMMAR_MAC)
-                  .tag(IDC_SPELLCHECK_MENU)
+                  .tag(kSpellcheckMenuId)
                   .submenu({
                       Item(IDS_EDIT_SHOW_SPELLING_GRAMMAR_MAC)
                           .action(@selector(showGuessPanel:))
@@ -268,11 +289,12 @@ NSMenuItem* BuildEditMenu(NSApplication* nsapp,
 NSMenuItem* BuildViewMenu(NSApplication* nsapp,
                           id app_delegate,
                           const std::u16string& product_name,
-                          bool is_pwa) {
+                          bool is_pwa,
+                          bool is_rtl) {
   // clang-format off
   NSMenuItem* item =
       Item(IDS_VIEW_MENU_MAC)
-          .tag(IDC_VIEW_MENU)
+          .tag(kMacViewMenuId)
           .submenu({
               Item(IDS_BOOKMARK_BAR_ALWAYS_SHOW_MAC)
                   .command_id(IDC_SHOW_BOOKMARK_BAR)
@@ -283,6 +305,19 @@ NSMenuItem* BuildViewMenu(NSApplication* nsapp,
                   .command_id(IDC_SHOW_FULL_URLS),
               Item(IDS_CONTEXT_MENU_SHOW_GOOGLE_LENS_SHORTCUT)
                   .command_id(IDC_SHOW_GOOGLE_LENS_SHORTCUT),
+               Item(IDS_AI_MODE_ENTRYPOINT_CONTEXT_MENU_SHOW)
+                   .string_format_1(
+                       l10n_util::GetStringUTF16(IDS_AI_MODE_ENTRYPOINT_LABEL))
+                   .command_id(IDC_SHOW_AI_MODE_OMNIBOX_BUTTON),
+              Item(IDS_CONTEXT_MENU_SHOW_SEARCH_TOOLS)
+                  .command_id(IDC_SHOW_SEARCH_TOOLS),
+              Item(IDS_SWITCH_TO_VERTICAL_TAB)
+                  .command_id(IDC_TOGGLE_VERTICAL_TABS)
+                  .remove_if(!tabs::IsVerticalTabsFeatureEnabled()),
+              Item(IDS_VERTICAL_TABS_VIEW_MENU_TOGGLE_COLLAPSE)
+                  .command_id(IDC_TOGGLE_VERTICAL_TABS_COLLAPSE)
+                  .key_equivalent(@"L", NSEventModifierFlagCommand)
+                  .remove_if(!tabs::IsVerticalTabsFeatureEnabled()),
               Item(IDS_CUSTOMIZE_TOUCH_BAR)
                   .tag(IDC_CUSTOMIZE_TOUCH_BAR)
                   .action(@selector(toggleTouchBarCustomizationPalette:))
@@ -315,7 +350,7 @@ NSMenuItem* BuildViewMenu(NSApplication* nsapp,
                   .command_id(IDC_ROUTE_MEDIA),
               Item().is_separator(),
               Item(IDS_DEVELOPER_MENU_MAC)
-                  .tag(IDC_DEVELOPER_MENU)
+                  .tag(kDeveloperMenuId)
                   .submenu({
                       Item(IDS_VIEW_SOURCE_MAC)
                           .command_id(IDC_VIEW_SOURCE),
@@ -337,11 +372,12 @@ NSMenuItem* BuildViewMenu(NSApplication* nsapp,
 NSMenuItem* BuildHistoryMenu(NSApplication* nsapp,
                              id app_delegate,
                              const std::u16string& product_name,
-                             bool is_pwa) {
+                             bool is_pwa,
+                             bool is_rtl) {
   // clang-format off
   NSMenuItem* item =
       Item(IDS_HISTORY_MENU_MAC)
-          .tag(IDC_HISTORY_MENU)
+          .tag(kMacHistoryMenuId)
           .submenu({
               Item(IDS_HISTORY_HOME_MAC)
                   .command_id(IDC_HOME)
@@ -369,6 +405,8 @@ NSMenuItem* BuildHistoryMenu(NSApplication* nsapp,
                   .remove_if(is_pwa),
               Item(IDS_HISTORY_SHOWFULLHISTORY_LINK)
                   .command_id(IDC_SHOW_HISTORY)
+                  .sf_symbol(
+                      @"clock.arrow.trianglehead.counterclockwise.rotate.90")
                   .remove_if(is_pwa),
           })
           .Build();
@@ -379,17 +417,21 @@ NSMenuItem* BuildHistoryMenu(NSApplication* nsapp,
 NSMenuItem* BuildBookmarksMenu(NSApplication* nsapp,
                                id app_delegate,
                                const std::u16string& product_name,
-                               bool is_pwa) {
+                               bool is_pwa,
+                               bool is_rtl) {
   if (is_pwa) {
     return nil;
   }
 
+  const int bookmarks_manager_string_id =
+      features::IsMenuSimplificationEnabled() ? IDS_BOOKMARK_MANAGER_V2
+                                              : IDS_BOOKMARK_MANAGER;
   // clang-format off
   NSMenuItem* item =
       Item(IDS_BOOKMARKS_MENU)
-          .tag(IDC_BOOKMARKS_MENU)
+          .tag(AppMenuModel::kBookmarksMenuPlaceholder)
           .submenu({
-              Item(IDS_BOOKMARK_MANAGER)
+              Item(bookmarks_manager_string_id)
                   .command_id(IDC_SHOW_BOOKMARK_MANAGER),
               Item().is_separator()
                   .tag(IDC_BOOKMARK_THIS_TAB),
@@ -405,14 +447,16 @@ NSMenuItem* BuildBookmarksMenu(NSApplication* nsapp,
   return item;
 }
 
+
 NSMenuItem* BuildPeopleMenu(NSApplication* nsapp,
                             id app_delegate,
                             const std::u16string& product_name,
-                            bool is_pwa) {
+                            bool is_pwa,
+                            bool is_rtl) {
   // clang-format off
   NSMenuItem* item =
       Item(IDS_PROFILES_MENU_NAME)
-          .tag(IDC_PROFILE_MAIN_MENU)
+          .tag(kMacProfileMainMenuId)
           .submenu({})
           .Build();
   // clang-format on
@@ -422,11 +466,12 @@ NSMenuItem* BuildPeopleMenu(NSApplication* nsapp,
 NSMenuItem* BuildWindowMenu(NSApplication* nsapp,
                             id app_delegate,
                             const std::u16string& product_name,
-                            bool is_pwa) {
+                            bool is_pwa,
+                            bool is_rtl) {
   // clang-format off
   NSMenuItem* item =
       Item(IDS_WINDOW_MENU_MAC)
-          .tag(IDC_WINDOW_MENU)
+          .tag(kMacWindowMenuId)
           .submenu({
               Item(IDS_MINIMIZE_WINDOW_MAC)
                   .tag(IDC_MINIMIZE_WINDOW)
@@ -455,7 +500,7 @@ NSMenuItem* BuildWindowMenu(NSApplication* nsapp,
               Item().is_separator()
                   .remove_if(is_pwa),
               Item(IDS_ALL_WINDOWS_FRONT_MAC)
-                  .tag(IDC_ALL_WINDOWS_FRONT)
+                  .tag(kMacAllWindowsMenuId)
                   .action(@selector(arrangeInFront:)),
               Item().is_separator(),
           })
@@ -468,7 +513,8 @@ NSMenuItem* BuildWindowMenu(NSApplication* nsapp,
 NSMenuItem* BuildTabMenu(NSApplication* nsapp,
                          id app_delegate,
                          const std::u16string& product_name,
-                         bool is_pwa) {
+                         bool is_pwa,
+                         bool is_rtl) {
   if (is_pwa) {
     return nil;
   }
@@ -476,14 +522,18 @@ NSMenuItem* BuildTabMenu(NSApplication* nsapp,
   // clang-format off
   NSMenuItem* item =
       Item(IDS_TAB_MENU_MAC)
-          .tag(IDC_TAB_MENU)
+          .tag(kMacTabMenuId)
           .submenu({
-              Item(IDS_TAB_CXMENU_NEWTABTORIGHT)
+              Item(is_rtl ? IDS_TAB_CXMENU_NEWTABTOLEFT
+                          : IDS_TAB_CXMENU_NEWTABTORIGHT)
                   .command_id(IDC_NEW_TAB_TO_RIGHT),
+              Item(IDS_TAB_CXMENU_NEWTABBELOW)
+                  .command_id(IDC_NEW_TAB_TO_RIGHT)
+                  .set_hidden(true),
               Item(IDS_NEXT_TAB_MAC)
-                  .command_id(IDC_SELECT_NEXT_TAB),
+                  .command_id(IDC_CYCLE_TO_NEXT_TAB),
               Item(IDS_PREV_TAB_MAC)
-                  .command_id(IDC_SELECT_PREVIOUS_TAB),
+                  .command_id(IDC_CYCLE_TO_PREV_TAB),
               Item(IDS_DUPLICATE_TAB_MAC)
                   .command_id(IDC_DUPLICATE_TAB),
               Item(IDS_DUPLICATE_TARGET_TAB_MAC)
@@ -510,8 +560,12 @@ NSMenuItem* BuildTabMenu(NSApplication* nsapp,
                   .key_equivalent(@"", NSEventModifierFlagOption),
               Item(IDS_TAB_CXMENU_CLOSEOTHERTABS)
                   .command_id(IDC_WINDOW_CLOSE_OTHER_TABS),
-              Item(IDS_TAB_CXMENU_CLOSETABSTORIGHT)
+              Item(is_rtl ? IDS_TAB_CXMENU_CLOSETABSTOLEFT
+                          : IDS_TAB_CXMENU_CLOSETABSTORIGHT)
                   .command_id(IDC_WINDOW_CLOSE_TABS_TO_RIGHT),
+              Item(IDS_TAB_CXMENU_CLOSETABSBELOW)
+                  .command_id(IDC_WINDOW_CLOSE_TABS_TO_RIGHT)
+                  .set_hidden(true),
               Item(IDS_MOVE_TAB_TO_NEW_WINDOW)
                   .command_id(IDC_MOVE_TAB_TO_NEW_WINDOW),
               Item(IDS_SEARCH_TABS)
@@ -526,23 +580,32 @@ NSMenuItem* BuildTabMenu(NSApplication* nsapp,
 NSMenuItem* BuildHelpMenu(NSApplication* nsapp,
                           id app_delegate,
                           const std::u16string& product_name,
-                          bool is_pwa) {
+                          bool is_pwa,
+                          bool is_rtl) {
   if (is_pwa) {
     return nil;
   }
 
   // clang-format off
+  std::vector<Item> items = {};
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  items.push_back(Item(IDS_FEEDBACK_MAC).command_id(IDC_FEEDBACK));
+  bool is_profile_loaded =
+      g_browser_process && g_browser_process->profile_manager() &&
+      g_browser_process->profile_manager()->GetLastUsedProfileIfLoaded();
+  if (is_profile_loaded && feedback::ReportUnsafeSiteDialog::IsEnabled(
+                               *(g_browser_process->profile_manager()
+                                     ->GetLastUsedProfileIfLoaded()))) {
+    items.push_back(Item(IDS_REPORT_UNSAFE_SITE)
+                        .command_id(IDC_REPORT_UNSAFE_SITE));
+  }
+#endif
+  items.push_back(Item(IDS_HELP_MAC)
+                      .string_format_1(product_name)
+                      .command_id(IDC_HELP_PAGE_VIA_MENU));
   NSMenuItem* item =
       Item(IDS_HELP_MENU_MAC)
-          .submenu({
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-              Item(IDS_FEEDBACK_MAC)
-                  .command_id(IDC_FEEDBACK),
-#endif
-              Item(IDS_HELP_MAC)
-                  .string_format_1(product_name)
-                  .command_id(IDC_HELP_PAGE_VIA_MENU),
-          })
+          .submenu(items)
           .Build();
   // clang-format on
 
@@ -555,7 +618,8 @@ NSMenuItem* BuildHelpMenu(NSApplication* nsapp,
 NSMenu* BuildMainMenu(NSApplication* nsapp,
                       id<NSApplicationDelegate> app_delegate,
                       const std::u16string& product_name,
-                      bool is_pwa) {
+                      bool is_pwa,
+                      bool is_rtl) {
   AcceleratorsCocoa::CreateForPWA(is_pwa);
 
   NSMenu* main_menu = [[NSMenu alloc] initWithTitle:@""];
@@ -571,7 +635,7 @@ NSMenu* BuildMainMenu(NSApplication* nsapp,
            &BuildWindowMenu,
            &BuildHelpMenu,
        }) {
-    auto item = builder(nsapp, app_delegate, product_name, is_pwa);
+    auto item = builder(nsapp, app_delegate, product_name, is_pwa, is_rtl);
     if (item) {
       [main_menu addItem:item];
     }
@@ -583,7 +647,7 @@ NSMenu* BuildMainMenu(NSApplication* nsapp,
 }
 
 NSMenuItem* BuildFileMenuForTesting(bool is_pwa) {
-  NSMenu* mainMenu = BuildMainMenu(nil, nil, u"", is_pwa);
+  NSMenu* mainMenu = BuildMainMenu(nil, nil, u"", is_pwa, /*is_rtl=*/false);
 
   // First is the App menu, then the File menu.
   const int kFileMenuItemIndex = 1;
@@ -664,6 +728,14 @@ NSMenuItem* MenuItemBuilder::Build() const {
   item.keyEquivalentModifierMask = key_equivalent_flags;
   item.alternate = is_alternate_;
   item.hidden = is_hidden_;
+  if (@available(macOS 26, *)) {
+    if (sf_symbol_name_) {
+      // Some action images that macOS uses by default are private and aren't
+      // accessible via normal lookup, so use SPI.
+      item.image = [NSImage imageWithPrivateSystemSymbolName:sf_symbol_name_
+                                    accessibilityDescription:nil];
+    }
+  }
 
   if (submenu_.has_value()) {
     NSMenu* menu = [[NSMenu alloc] initWithTitle:title];

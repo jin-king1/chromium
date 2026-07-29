@@ -11,10 +11,12 @@
 #include "ash/system/extended_updates/extended_updates_metrics.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
+#include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/notifications/notification_handler.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
@@ -88,6 +90,7 @@ class ExtendedUpdatesNotificationTest : public testing::Test {
   }
 
   content::BrowserTaskEnvironment task_environment_;
+  ash::ScopedStubInstallAttributes install_attributes_;
   ScopedTestingCrosSettings cros_settings_;
   TestingProfile profile_;
   NotificationDisplayServiceTester notification_display_service_tester_{

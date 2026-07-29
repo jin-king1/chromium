@@ -4,23 +4,32 @@
 
 #include "chrome/browser/ui/views/media_picker_utils.h"
 
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extensions_container.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/view_type_utils.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
 
-bool MediaPickerCanShowAsWebModal(content::WebContents* web_contents) {
-  return web_contents &&
-         !web_contents->GetDelegate()->IsNeverComposited(web_contents) &&
-         web_modal::WebContentsModalDialogManager::FromWebContents(
-             web_contents);
+namespace {
+
+bool IsExtensionPopupWebContents(content::WebContents* web_contents) {
+  return extensions::GetViewType(web_contents) ==
+         extensions::mojom::ViewType::kExtensionPopup;
 }
 
-views::Widget* CreateMediaPickerDialogWidget(Browser* browser,
+}  // namespace
+
+bool MediaPickerCanShowAsWebModal(content::WebContents* web_contents) {
+  return web_contents && !web_contents->IsNeverComposited() &&
+         web_modal::WebContentsModalDialogManager::FromWebContents(
+             web_contents) &&
+         !IsExtensionPopupWebContents(web_contents);
+}
+
+views::Widget* CreateMediaPickerDialogWidget(BrowserWindowInterface* browser,
                                              content::WebContents* web_contents,
                                              views::DialogDelegate* delegate,
                                              gfx::NativeWindow context,
@@ -31,9 +40,11 @@ views::Widget* CreateMediaPickerDialogWidget(Browser* browser,
   views::Widget* widget = nullptr;
   if (MediaPickerCanShowAsWebModal(web_contents)) {
     // Close the extension popup to prevent spoofing.
-    if (browser && browser->window() &&
-        browser->window()->GetExtensionsContainer()) {
-      browser->window()->GetExtensionsContainer()->HideActivePopup();
+    if (browser) {
+      ExtensionsContainer* container = ExtensionsContainer::From(*browser);
+      if (container) {
+        container->HideActivePopup();
+      }
     }
     widget =
         constrained_window::ShowWebModalDialogViews(delegate, web_contents);
@@ -42,7 +53,15 @@ views::Widget* CreateMediaPickerDialogWidget(Browser* browser,
     // Top-level windows should usually be draggable.
     if (!parent) {
       delegate->set_draggable(true);
+#if BUILDFLAG(IS_CHROMEOS)
+      // kSystem is available only on CrOS and should be used here because the
+      // dimmer window is shown in front of the media picker dialog when the
+      // dialog is requested by an Android app. kSystem brings the dialog in
+      // front of the dimmer.
+      delegate->SetModalType(ui::mojom::ModalType::kSystem);
+#else
       delegate->SetModalType(ui::mojom::ModalType::kNone);
+#endif
     }
     widget =
         views::DialogDelegate::CreateDialogWidget(delegate, context, parent);

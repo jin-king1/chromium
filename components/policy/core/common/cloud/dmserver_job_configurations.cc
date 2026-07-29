@@ -4,7 +4,8 @@
 
 #include "components/policy/core/common/cloud/dmserver_job_configurations.h"
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/to_string.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
@@ -12,6 +13,7 @@
 #include "components/policy/core/common/cloud/device_management_service.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "components/policy/proto/device_management_backend.pb.h"
+#include "net/base/net_errors.h"
 #include "net/base/url_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
@@ -113,6 +115,9 @@ const char* JobTypeToRequestType(
     case DeviceManagementService::JobConfiguration::
         TYPE_DETERMINE_PROMOTION_ELIGIBILITY:
       return dm_protocol::kValueRequestDeterminePromotionEligibility;
+    case DeviceManagementService::JobConfiguration::
+        TYPE_GENERATE_CHROME_PROFILE_CHALLENGE:
+      return dm_protocol::kValueRequestGenerateChromeProfileChallenge;
   }
   NOTREACHED() << "Invalid job type " << type;
 }
@@ -182,6 +187,7 @@ DMServerJobConfiguration::DMServerJobConfiguration(CreateParams params)
     : JobConfigurationBase(params.type,
                            std::move(params.auth_data),
                            std::move(params.oauth_token),
+                           params.use_cookies,
                            params.factory),
       server_url_(params.service->configuration()->GetDMServerUrl()),
       callback_(std::move(params.callback)) {
@@ -276,8 +282,9 @@ DMServerJobConfiguration::MapNetErrorAndResponseToDMStatus(
       // statuses depending on the contents of the response body.
       em::DeviceManagementResponse response;
       if (response.ParseFromString(response_body) &&
-          base::Contains(response.error_detail(),
-                         em::CBCM_DELETION_POLICY_PREFERENCE_DELETE_TOKEN)) {
+          std::ranges::contains(
+              response.error_detail(),
+              em::CBCM_DELETION_POLICY_PREFERENCE_DELETE_TOKEN)) {
         return DM_STATUS_SERVICE_DEVICE_NEEDS_RESET;
       }
 #endif  // !BUILDFLAG(IS_CHROMEOS)

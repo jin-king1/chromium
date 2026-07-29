@@ -1,16 +1,21 @@
 // Copyright 2019 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+#import <TargetConditionals.h>
 
 #import "base/ios/ios_util.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
+#import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/earl_grey/matchers.h"
 
 using chrome_test_util::ButtonWithAccessibilityLabelId;
 using chrome_test_util::ContentSettingsButton;
@@ -20,6 +25,7 @@ using chrome_test_util::SettingsDoneButton;
 using chrome_test_util::SettingsMenuBackButton;
 using chrome_test_util::SettingsMenuPrivacyButton;
 using chrome_test_util::VoiceSearchButton;
+using testing::NavigationBarBackButton;
 
 namespace {
 
@@ -94,8 +100,12 @@ id<GREYMatcher> BandwidthSettingsButton() {
 
 // Closes a sub-settings menu, and then the general Settings menu.
 - (void)closeSubSettingsMenu {
-  [[EarlGrey selectElementWithMatcher:SettingsMenuBackButton()]
+  [[EarlGrey selectElementWithMatcher:NavigationBarBackButton()]
       performAction:grey_tap()];
+  // Disable EarlGrey synchronization to avoid infinite spinner loop.
+  // Tapping a settings done button triggers the layout update and the internal
+  // timer used by UIKit possibly gets stuck.
+  ScopedSynchronizationDisabler disabler;
   [[EarlGrey selectElementWithMatcher:SettingsDoneButton()]
       performAction:grey_tap()];
 }
@@ -160,7 +170,11 @@ id<GREYMatcher> BandwidthSettingsButton() {
   [[EarlGrey selectElementWithMatcher:BlockPopupsButton()]
       performAction:grey_tap()];
   [ChromeEarlGrey verifyAccessibilityForCurrentScreen];
-  [self closeSubSettingsMenu];
+  // Close settings menu.
+  [[EarlGrey selectElementWithMatcher:NavigationBarBackButton()]
+      performAction:grey_tap()];
+  [[EarlGrey selectElementWithMatcher:SettingsDoneButton()]
+      performAction:grey_tap()];
 }
 
 // Verifies the UI elements are accessible on the Privacy Settings page.
@@ -204,6 +218,14 @@ id<GREYMatcher> BandwidthSettingsButton() {
 // Verifies the UI elements are accessible on the Bandwidth Preload Webpages
 // Settings page.
 - (void)testAccessibilityOnBandwidthPreloadWebpagesSettingsPage {
+#if !TARGET_OS_SIMULATOR
+  // TODO(crbug.com/455701421): Re-enable this flaky test on iPhone device on
+  // iOS below 26.
+  if (![ChromeEarlGrey isIPadIdiom] && !base::ios::IsRunningOnIOS26OrLater()) {
+    EARL_GREY_TEST_DISABLED(@"Flaky on iPhone device on iOS below 26.");
+  }
+#endif
+
   [ChromeEarlGreyUI openSettingsMenu];
   [ChromeEarlGreyUI tapSettingsMenuButton:BandwidthSettingsButton()];
   [[EarlGrey selectElementWithMatcher:BandwidthPreloadWebpagesButton()]
@@ -224,7 +246,16 @@ id<GREYMatcher> BandwidthSettingsButton() {
 // Verifies the UI elements are accessible on the payment methods page.
 - (void)testAccessibilityOnPaymentMethods {
   [ChromeEarlGreyUI openSettingsMenu];
-  [ChromeEarlGreyUI tapSettingsMenuButton:PaymentMethodsButton()];
+  if ([ChromeEarlGrey isYourSavedInfoSettingsPageIosEnabled]) {
+    [ChromeEarlGreyUI
+        tapSettingsMenuButton:grey_accessibilityID(
+                                  kSettingsAutofillAndPasswordsCellId)];
+    [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                            kSettingsPaymentMethodsCellId)]
+        performAction:grey_tap()];
+  } else {
+    [ChromeEarlGreyUI tapSettingsMenuButton:PaymentMethodsButton()];
+  }
   [ChromeEarlGrey verifyAccessibilityForCurrentScreen];
   [self closeSubSettingsMenu];
 }
@@ -232,7 +263,16 @@ id<GREYMatcher> BandwidthSettingsButton() {
 // Verifies the UI elements are accessible on the addresses page.
 - (void)testAccessibilityOnAddresses {
   [ChromeEarlGreyUI openSettingsMenu];
-  [ChromeEarlGreyUI tapSettingsMenuButton:AddressesButton()];
+  if ([ChromeEarlGrey isYourSavedInfoSettingsPageIosEnabled]) {
+    [ChromeEarlGreyUI
+        tapSettingsMenuButton:grey_accessibilityID(
+                                  kSettingsAutofillAndPasswordsCellId)];
+    [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                            kSettingsAddressesAndMoreCellId)]
+        performAction:grey_tap()];
+  } else {
+    [ChromeEarlGreyUI tapSettingsMenuButton:AddressesButton()];
+  }
   [ChromeEarlGrey verifyAccessibilityForCurrentScreen];
   [self closeSubSettingsMenu];
 }

@@ -37,8 +37,6 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "services/network/public/mojom/content_security_policy.mojom-shared.h"
 #include "ui/web_dialogs/web_dialog_ui.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
 
 namespace ash {
 
@@ -176,9 +174,7 @@ ScannerFeedbackUntrustedUI::ScannerFeedbackUntrustedUI(content::WebUI* web_ui)
           browser_context, std::string(kScannerFeedbackUntrustedUrl));
 
   untrusted_source->AddResourcePaths(kAshScannerFeedbackUiResources);
-  // We intentionally do not use `SetDefaultResource` here as we do not want to
-  // serve index.html for non-HTML paths.
-  untrusted_source->AddResourcePath("", IDR_ASH_SCANNER_FEEDBACK_UI_INDEX_HTML);
+  untrusted_source->SetDefaultResource(IDR_ASH_SCANNER_FEEDBACK_UI_INDEX_HTML);
 
   ash::EnableTrustedTypesCSP(untrusted_source);
   untrusted_source->OverrideContentSecurityPolicy(
@@ -206,12 +202,6 @@ ScannerFeedbackUntrustedUI::ScannerFeedbackUntrustedUI(content::WebUI* web_ui)
 }
 
 ScannerFeedbackUntrustedUI::~ScannerFeedbackUntrustedUI() = default;
-
-void ScannerFeedbackUntrustedUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
-}
 
 void ScannerFeedbackUntrustedUI::BindInterface(
     mojo::PendingReceiver<mojom::scanner_feedback_ui::PageHandler> receiver) {

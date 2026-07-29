@@ -22,9 +22,9 @@
 #include "remoting/host/active_display_monitor.h"
 #include "remoting/host/audio_capturer.h"
 #include "remoting/host/base/desktop_environment_options.h"
+#include "remoting/host/curtain_mode.h"
+#include "remoting/host/delegating_desktop_display_info_monitor.h"
 #include "remoting/host/desktop_and_cursor_conditional_composer.h"
-#include "remoting/host/desktop_capturer_proxy.h"
-#include "remoting/host/desktop_capturer_wrapper.h"
 #include "remoting/host/desktop_display_info_loader.h"
 #include "remoting/host/desktop_display_info_monitor.h"
 #include "remoting/host/desktop_interaction_strategy.h"
@@ -33,7 +33,10 @@
 #include "remoting/host/input_monitor/local_input_monitor.h"
 #include "remoting/host/keyboard_layout_monitor.h"
 #include "remoting/host/mouse_cursor_monitor_proxy.h"
-#include "remoting/protocol/desktop_capturer.h"
+#include "remoting/host/webrtc_mouse_cursor_monitor_adaptor.h"
+#include "remoting/protocol/desktop_capturer_proxy.h"
+#include "remoting/protocol/desktop_capturer_wrapper.h"
+#include "remoting/protocol/mouse_cursor_monitor.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_options.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_types.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_capturer.h"
@@ -42,6 +45,10 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "remoting/host/chromeos/frame_sink_desktop_capturer.h"
 #include "remoting/host/chromeos/mouse_cursor_monitor_aura.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include "remoting/host/win/mouse_cursor_monitor_win.h"
 #endif
 
 namespace remoting {
@@ -88,8 +95,9 @@ std::unique_ptr<DesktopCapturer> LegacyInteractionStrategy::CreateVideoCapturer(
 #else   // !BUILDFLAG(IS_CHROMEOS)
   // The mouse cursor monitor runs on the |video_capture_task_runner_| so the
   // desktop capturer also needs to run on that task_runner for certain
-  // platforms. For example, if we run the desktop capturer on a different
-  // thread on Windows, the cursor shape won't be captured when in GDI mode.
+  // platforms.
+  // TODO: yuweih - The comment above is not valid for Windows. Validate it for
+  // other platforms.
   capture_task_runner = video_capture_task_runner_;
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
@@ -103,7 +111,8 @@ std::unique_ptr<DesktopCapturer> LegacyInteractionStrategy::CreateVideoCapturer(
 #endif  // REMOTING_USE_X11
 
   auto creator = base::BindOnce(
-      [](webrtc::DesktopCaptureOptions options, webrtc::ScreenId id) {
+      [](webrtc::DesktopCaptureOptions options,
+         webrtc::ScreenId id) -> std::unique_ptr<remoting::DesktopCapturer> {
         std::unique_ptr<webrtc::DesktopCapturer> capturer;
 #if BUILDFLAG(IS_CHROMEOS)
         capturer = std::make_unique<FrameSinkDesktopCapturer>();
@@ -112,16 +121,14 @@ std::unique_ptr<DesktopCapturer> LegacyInteractionStrategy::CreateVideoCapturer(
 #endif  // !BUILDFLAG(IS_CHROMEOS)
         if (capturer) {
           capturer->SelectSource(id);
+          return std::make_unique<DesktopCapturerWrapper>(std::move(capturer));
         }
-        return capturer;
+        return nullptr;
       },
       *options_.desktop_capture_options(), id);
-
   std::unique_ptr<DesktopCapturer> desktop_capturer;
   if (options_.capture_video_on_dedicated_thread()) {
-    auto desktop_capturer_wrapper = std::make_unique<DesktopCapturerWrapper>();
-    desktop_capturer_wrapper->CreateCapturer(std::move(creator));
-    desktop_capturer = std::move(desktop_capturer_wrapper);
+    desktop_capturer = std::move(creator).Run();
   } else {
     auto desktop_capturer_proxy =
         std::make_unique<DesktopCapturerProxy>(std::move(capture_task_runner));
@@ -141,28 +148,34 @@ std::unique_ptr<DesktopCapturer> LegacyInteractionStrategy::CreateVideoCapturer(
 
 std::unique_ptr<DesktopDisplayInfoMonitor>
 LegacyInteractionStrategy::CreateDisplayInfoMonitor() {
-  return std::make_unique<DesktopDisplayInfoMonitor>(
-      ui_task_runner_, DesktopDisplayInfoLoader::Create());
+  return std::make_unique<DelegatingDesktopDisplayInfoMonitor>(
+      display_info_monitor_.GetWeakPtr());
 }
 
-std::unique_ptr<webrtc::MouseCursorMonitor>
+std::unique_ptr<protocol::MouseCursorMonitor>
 LegacyInteractionStrategy::CreateMouseCursorMonitor() {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
+  auto display_monitor = std::make_unique<DelegatingDesktopDisplayInfoMonitor>(
+      display_info_monitor_.GetWeakPtr());
+#if BUILDFLAG(IS_WIN)
+  return std::make_unique<MouseCursorMonitorWin>(std::move(display_monitor));
+#else  // !BUILDFLAG(IS_WIN)
   auto creator = base::BindOnce(
       [](webrtc::DesktopCaptureOptions options)
           -> std::unique_ptr<webrtc::MouseCursorMonitor> {
 #if BUILDFLAG(IS_CHROMEOS)
         return std::make_unique<MouseCursorMonitorAura>();
 #else   // BUILDFLAG(IS_CHROMEOS)
-        return base::WrapUnique(webrtc::MouseCursorMonitor::CreateForScreen(
-            options, webrtc::kFullDesktopScreenId));
+        return webrtc::MouseCursorMonitor::Create(options);
 #endif  // BUILDFLAG(IS_CHROMEOS)
       },
       *options_.desktop_capture_options());
-
-  return std::make_unique<MouseCursorMonitorProxy>(video_capture_task_runner_,
-                                                   std::move(creator));
+  return std::make_unique<WebrtcMouseCursorMonitorAdaptor>(
+      std::make_unique<MouseCursorMonitorProxy>(video_capture_task_runner_,
+                                                std::move(creator)),
+      std::move(display_monitor));
+#endif  // !BUILDFLAG(IS_WIN)
 }
 
 std::unique_ptr<KeyboardLayoutMonitor>
@@ -189,6 +202,14 @@ LegacyInteractionStrategy::CreateLocalInputMonitor() {
                                    ui_task_runner_);
 }
 
+std::unique_ptr<CurtainMode> LegacyInteractionStrategy::CreateCurtainMode(
+    base::WeakPtr<ClientSessionControl> client_session_control) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  return CurtainMode::Create(caller_task_runner_, ui_task_runner_,
+                             client_session_control);
+}
+
 LegacyInteractionStrategy::LegacyInteractionStrategy(
     const DesktopEnvironmentOptions& options,
     scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,
@@ -199,7 +220,9 @@ LegacyInteractionStrategy::LegacyInteractionStrategy(
       caller_task_runner_(std::move(caller_task_runner)),
       ui_task_runner_(std::move(ui_task_runner)),
       video_capture_task_runner_(std::move(video_capture_task_runner)),
-      input_task_runner_(std::move(input_task_runner)) {}
+      input_task_runner_(std::move(input_task_runner)),
+      display_info_monitor_(ui_task_runner_,
+                            DesktopDisplayInfoLoader::Create()) {}
 
 LegacyInteractionStrategyFactory::LegacyInteractionStrategyFactory(
     scoped_refptr<base::SingleThreadTaskRunner> caller_task_runner,

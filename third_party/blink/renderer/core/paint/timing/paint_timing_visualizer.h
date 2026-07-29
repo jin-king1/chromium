@@ -17,8 +17,9 @@ class RectF;
 namespace blink {
 
 class LayoutObject;
-class LocalFrameView;
+class LocalFrame;
 class KURL;
+class PaintTimingDetector;
 
 // While Largest Contentful Paint only concerns about the largest contentful
 // rect, the smaller rects used in its computation are helpful for debugging
@@ -26,9 +27,7 @@ class KURL;
 // intermediate rects. These debugging events, as well as their intermediate
 // rects, can be visualized by third-party visualization tools.
 class CORE_EXPORT PaintTimingVisualizer
-    : public trace_event::EnabledStateObserver {
-  DISALLOW_NEW();
-
+    : public trace_event::TraceSessionObserver {
  public:
   PaintTimingVisualizer();
   ~PaintTimingVisualizer() override;
@@ -39,12 +38,11 @@ class CORE_EXPORT PaintTimingVisualizer
                               const gfx::RectF&,
                               bool is_loaded,
                               const KURL& url);
-  void RecordMainFrameViewport(LocalFrameView& frame_view);
+  void RecordMainFrameViewport(const PaintTimingDetector&, const LocalFrame&);
   inline void OnViewportChanged() { need_recording_viewport = true; }
 
-  // base::trace_event::TraceLog::EnabledStateObserver implementation:
-  void OnTraceLogEnabled() override;
-  void OnTraceLogDisabled() override;
+  // trace_event::TraceSessionObserver implementation:
+  void OnStart(const perfetto::DataSourceBase::StartArgs&) override;
 
  private:
   void RecordObject(const LayoutObject&, std::unique_ptr<TracedValue>&);

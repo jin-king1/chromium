@@ -36,6 +36,7 @@
 #include "chromeos/dbus/missive/missive_client_test_observer.h"
 #include "components/app_constants/constants.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/prefs/pref_service.h"
 #include "components/reporting/proto/synced/metric_data.pb.h"
 #include "components/reporting/proto/synced/record.pb.h"
 #include "components/reporting/proto/synced/record_constants.pb.h"
@@ -243,7 +244,7 @@ class AppUsageTelemetrySamplerBrowserTest
   }
 
   void SetAllowedAppReportingTypes(const std::vector<std::string>& app_types) {
-    base::Value::List allowed_app_types;
+    base::ListValue allowed_app_types;
     for (const auto& app_type : app_types) {
       allowed_app_types.Append(app_type);
     }
@@ -321,8 +322,9 @@ IN_PROC_BROWSER_TEST_F(AppUsageTelemetrySamplerBrowserTest,
   // PRE-condition.
 }
 
+// TODO(crbug.com/453903951): Re-enable the test after it is de-flaked.
 IN_PROC_BROWSER_TEST_F(AppUsageTelemetrySamplerBrowserTest,
-                       ReportUsageDataWhenSyncDisabled) {
+                       DISABLED_ReportUsageDataWhenSyncDisabled) {
   sync_service()->SetAllowedByEnterprisePolicy(false);
 
   // Install web app and simulate its usage.

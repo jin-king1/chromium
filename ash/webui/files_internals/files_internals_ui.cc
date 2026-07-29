@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ash/webui/files_internals/files_internals_ui.h"
 
@@ -15,6 +11,7 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "content/public/browser/web_contents.h"
 
 namespace ash {
@@ -31,7 +28,7 @@ FilesInternalsUI::FilesInternalsUI(
       content::WebUIDataSource::CreateAndAdd(
           web_ui->GetWebContents()->GetBrowserContext(),
           kChromeUIFilesInternalsHost);
-  data_source->AddResourcePath("", IDR_ASH_FILES_INTERNALS_INDEX_HTML);
+  data_source->SetDefaultResource(IDR_ASH_FILES_INTERNALS_INDEX_HTML);
   data_source->AddResourcePaths(kAshFilesInternalsResources);
   CallSetRequestFilter(data_source);
 }
@@ -93,20 +90,18 @@ void FilesInternalsUI::HandleRequest(
     return;
   }
 
-  if (base::StartsWith(url_path_query, kGetFileTasksHtmlQuestion)) {
+  std::optional<std::string_view> remainder =
+      base::RemovePrefix(url_path_query, kGetFileTasksHtmlQuestion);
+  if (remainder) {
     std::string file_system_url;
-
     base::StringPairs params;
-    if (base::SplitStringIntoKeyValuePairs(
-            url_path_query.substr(strlen(kGetFileTasksHtmlQuestion)), '=', '&',
-            &params)) {
+    if (base::SplitStringIntoKeyValuePairs(*remainder, '=', '&', &params)) {
       for (const auto& param : params) {
         if (param.first == "fsurl") {
           file_system_url = base::UnescapeBinaryURLComponent(param.second);
         }
       }
     }
-
     delegate_->GetFileTasks(file_system_url, std::move(string_callback));
     return;
   }

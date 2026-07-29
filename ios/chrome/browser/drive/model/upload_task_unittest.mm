@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/drive/model/upload_task.h"
 
+#import <MacTypes.h>
+
 #import "ios/chrome/browser/drive/model/test_upload_task_observer.h"
 #import "testing/platform_test.h"
 #import "url/gurl.h"
@@ -20,6 +22,7 @@ class TestUploadTask final : public UploadTask {
   State GetState() const final { return State::kNotStarted; }
   void Start() final {}
   void Cancel() final {}
+  void Fail(NSError* error, bool resumable) final {}
   id<SystemIdentity> GetIdentity() const final { return nil; }
   float GetProgress() const final { return 0; }
   std::optional<GURL> GetResponseLink(bool add_user_identifier) const final {

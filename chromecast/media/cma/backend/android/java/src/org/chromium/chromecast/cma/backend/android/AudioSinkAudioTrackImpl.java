@@ -26,7 +26,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.LinkedList;
+import java.util.ArrayDeque;
 import java.util.Queue;
 
 /**
@@ -276,7 +276,7 @@ class AudioSinkAudioTrackImpl {
         mLastUnderrunCount = 0;
         mTotalFramesWritten = 0;
         if (isApkAudio) {
-            mPendingFramesWithoutTimestamp = new LinkedList<>();
+            mPendingFramesWithoutTimestamp = new ArrayDeque<>();
         }
         mTotalPlayedFramesWithoutTimestamp = 0;
         init(castContentType, channelCount, sampleRateInHz, bytesPerBuffer, sessionId, useHwAvSync);
@@ -379,9 +379,12 @@ class AudioSinkAudioTrackImpl {
         mAudioTrackTimestampBuffer.putLong(8, 0);
         mAudioTrackTimestampBuffer.putLong(16, System.nanoTime());
 
-        AudioSinkAudioTrackImplJni.get().cacheDirectBufferAddress(mNativeAudioSinkAudioTrackImpl,
-                AudioSinkAudioTrackImpl.this, mPcmBuffer, mRenderingDelayBuffer,
-                mAudioTrackTimestampBuffer);
+        AudioSinkAudioTrackImplJni.get()
+                .cacheDirectBufferAddress(
+                        mNativeAudioSinkAudioTrackImpl,
+                        mPcmBuffer,
+                        mRenderingDelayBuffer,
+                        mAudioTrackTimestampBuffer);
     }
 
     @CalledByNative
@@ -837,8 +840,10 @@ class AudioSinkAudioTrackImpl {
 
     @NativeMethods
     interface Natives {
-        void cacheDirectBufferAddress(long nativeAudioSinkAndroidAudioTrackImpl,
-                AudioSinkAudioTrackImpl caller, ByteBuffer mPcmBuffer,
-                ByteBuffer mRenderingDelayBuffer, ByteBuffer mAudioTrackTimestampBuffer);
+        void cacheDirectBufferAddress(
+                long nativeAudioSinkAndroidAudioTrackImpl,
+                ByteBuffer mPcmBuffer,
+                ByteBuffer mRenderingDelayBuffer,
+                ByteBuffer mAudioTrackTimestampBuffer);
     }
 }

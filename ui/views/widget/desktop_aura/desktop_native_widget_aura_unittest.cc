@@ -12,6 +12,7 @@
 #include "base/run_loop.h"
 #include "base/scoped_multi_source_observation.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/client/cursor_client.h"
@@ -30,12 +31,14 @@
 #include "ui/events/event_processor.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/test/native_widget_factory.h"
 #include "ui/views/test/test_views.h"
 #include "ui/views/test/test_views_delegate.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view_constants_aura.h"
+#include "ui/views/views_features.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
 
@@ -45,6 +48,7 @@
 #include "ui/base/view_prop.h"
 #include "ui/base/win/window_event_target.h"
 #include "ui/views/win/hwnd_util.h"
+#include "ui/wm/core/window_properties.h"
 #endif
 
 namespace views::test {
@@ -163,6 +167,14 @@ TEST_F(DesktopNativeWidgetAuraTest, MAYBE_GlobalCursorState) {
   aura::client::CursorClient* cursor_client_b = aura::client::GetCursorClient(
       widget_b.GetNativeView()->GetHost()->window());
 
+#if BUILDFLAG(IS_WIN)
+  // The cursor might be considered invisible after initialization on some
+  // machines (e.g. mouse-less) as |CursorClient|s read the cursor visibility
+  // from OS info. So force the cursor to be visible here.
+  cursor_client_a->UpdateSystemCursorVisibilityForTest(true);
+  cursor_client_b->UpdateSystemCursorVisibilityForTest(true);
+#endif
+
   // Verify the cursor can be locked using one client and unlocked using
   // another.
   EXPECT_FALSE(cursor_client_a->IsCursorLocked());
@@ -261,11 +273,13 @@ TEST_F(DesktopNativeWidgetAuraTest, DontAccessContentWindowDuringDestruction) {
 
 namespace {
 
-std::unique_ptr<Widget> CreateAndShowControlWidget(aura::Window* parent) {
+std::unique_ptr<Widget> CreateAndShowControlWidget(aura::Window* parent,
+                                                   const std::string& name) {
   auto widget = std::make_unique<Widget>();
   Widget::InitParams params(Widget::InitParams::CLIENT_OWNS_WIDGET,
                             Widget::InitParams::TYPE_CONTROL);
   params.parent = parent;
+  params.name = name;
   params.native_widget =
       CreatePlatformNativeWidgetImpl(widget.get(), kStubCapture, nullptr);
   widget->Init(std::move(params));
@@ -275,21 +289,13 @@ std::unique_ptr<Widget> CreateAndShowControlWidget(aura::Window* parent) {
 
 }  // namespace
 
-#if BUILDFLAG(IS_CHROMEOS)
-// TODO(crbug.com/40607034): investigate fixing and enabling on Chrome OS.
-#define MAYBE_ReorderDoesntRecomputeOcclusion \
-  DISABLED_ReorderDoesntRecomputeOcclusion
-#else
-#define MAYBE_ReorderDoesntRecomputeOcclusion ReorderDoesntRecomputeOcclusion
-#endif
-
-TEST_F(DesktopNativeWidgetAuraTest, MAYBE_ReorderDoesntRecomputeOcclusion) {
+TEST_F(DesktopNativeWidgetAuraTest, ReorderDoesntRecomputeOcclusion) {
   // Create the parent widget.
   Widget parent;
   Widget::InitParams init_params = CreateParams(
       Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  init_params.bounds = gfx::Rect(0, 0, 400, 400);
   parent.Init(std::move(init_params));
-  parent.Show();
 
   aura::Window* parent_window = parent.GetNativeWindow();
   parent_window->TrackOcclusionState();
@@ -297,22 +303,28 @@ TEST_F(DesktopNativeWidgetAuraTest, MAYBE_ReorderDoesntRecomputeOcclusion) {
   View* contents_view = parent.GetContentsView();
 
   // Create child widgets.
-  std::unique_ptr<Widget> w1(CreateAndShowControlWidget(parent_window));
-  std::unique_ptr<Widget> w2(CreateAndShowControlWidget(parent_window));
-  std::unique_ptr<Widget> w3(CreateAndShowControlWidget(parent_window));
+  std::unique_ptr<Widget> w1(CreateAndShowControlWidget(parent_window, "w1"));
+  std::unique_ptr<Widget> w2(CreateAndShowControlWidget(parent_window, "w2"));
+  std::unique_ptr<Widget> w3(CreateAndShowControlWidget(parent_window, "w3"));
 
   // Create child views.
-  View* host_view1 = new View();
-  w1->GetNativeView()->SetProperty(kHostViewKey, host_view1);
-  contents_view->AddChildViewRaw(host_view1);
+  auto* host_view1 =
+      contents_view->AddChildView(std::make_unique<NativeViewHost>());
+  host_view1->SetBoundsRect(gfx::Rect(0, 0, 100, 100));
+  host_view1->Attach(w1->GetNativeView());
 
-  View* host_view2 = new View();
-  w2->GetNativeView()->SetProperty(kHostViewKey, host_view2);
-  contents_view->AddChildViewRaw(host_view2);
+  auto* host_view2 =
+      contents_view->AddChildView(std::make_unique<NativeViewHost>());
+  host_view2->SetBoundsRect(gfx::Rect(100, 0, 100, 100));
+  host_view2->Attach(w2->GetNativeView());
 
-  View* host_view3 = new View();
-  w3->GetNativeView()->SetProperty(kHostViewKey, host_view3);
-  contents_view->AddChildViewRaw(host_view3);
+  auto* host_view3 =
+      contents_view->AddChildView(std::make_unique<NativeViewHost>());
+  host_view3->SetBoundsRect(gfx::Rect(200, 0, 100, 100));
+  host_view3->Attach(w3->GetNativeView());
+
+  parent.Show();
+  RunPendingMessages();
 
   // Reorder child views. Expect occlusion to only be recomputed once.
   aura::test::WindowOcclusionTrackerTestApi window_occlusion_tracker_test_api(
@@ -690,8 +702,7 @@ TEST_F(DesktopNativeWidgetAuraTest, TopLevelOwnedPopupRepositionTest) {
 
   gfx::Rect new_pos(10, 10, 400, 400);
   popup_window.owned_window()->SetBoundsInScreen(
-      new_pos,
-      display::Screen::GetScreen()->GetDisplayNearestPoint(gfx::Point()));
+      new_pos, display::Screen::Get()->GetDisplayNearestPoint(gfx::Point()));
 
   EXPECT_EQ(new_pos,
             popup_window.top_level_widget()->GetWindowBoundsInScreen());
@@ -801,7 +812,7 @@ TEST_F(DesktopNativeWidgetAuraTest, MAYBE_WindowMouseModalityTest) {
   // Create a view and validate that a mouse moves makes it to the view.
   EventCountView* widget_view = new EventCountView();
   widget_view->SetBounds(0, 0, 10, 10);
-  top_level_widget.GetRootView()->AddChildView(widget_view);
+  top_level_widget.GetRootView()->AddChildViewRaw(widget_view);
 
   gfx::Point cursor_location_main(5, 5);
   ui::MouseEvent move_main(ui::EventType::kMouseMoved, cursor_location_main,
@@ -818,7 +829,8 @@ TEST_F(DesktopNativeWidgetAuraTest, MAYBE_WindowMouseModalityTest) {
   // the main view within the dialog.
 
   // This instance will be destroyed when the dialog is destroyed.
-  auto dialog_delegate = std::make_unique<DialogDelegateView>();
+  auto dialog_delegate =
+      std::make_unique<DialogDelegateView>(DialogDelegateView::CreatePassKey());
   dialog_delegate->SetModalType(ui::mojom::ModalType::kWindow);
 
   Widget* modal_dialog_widget = views::DialogDelegate::CreateDialogWidget(
@@ -826,7 +838,7 @@ TEST_F(DesktopNativeWidgetAuraTest, MAYBE_WindowMouseModalityTest) {
   modal_dialog_widget->SetBounds(gfx::Rect(100, 100, 200, 200));
   EventCountView* dialog_widget_view = new EventCountView();
   dialog_widget_view->SetBounds(0, 0, 50, 50);
-  modal_dialog_widget->GetRootView()->AddChildView(dialog_widget_view);
+  modal_dialog_widget->GetRootView()->AddChildViewRaw(dialog_widget_view);
   modal_dialog_widget->Show();
   EXPECT_TRUE(modal_dialog_widget->IsVisible());
 
@@ -873,7 +885,8 @@ TEST_F(DesktopNativeWidgetAuraTest, WindowModalityActivationTest) {
   // says no, when a modal dialog is active.
   widget_delegate.SetCanActivate(false);
 
-  auto dialog_delegate = std::make_unique<DialogDelegateView>();
+  auto dialog_delegate =
+      std::make_unique<DialogDelegateView>(DialogDelegateView::CreatePassKey());
   dialog_delegate->SetModalType(ui::mojom::ModalType::kWindow);
 
   Widget* modal_dialog_widget = views::DialogDelegate::CreateDialogWidget(
@@ -912,6 +925,56 @@ TEST_F(DesktopNativeWidgetAuraTest,
   target->HandleKeyboardMessage(WM_SYSCHAR, 0, 0, &handled);
   target->HandleKeyboardMessage(WM_SYSDEADCHAR, 0, 0, &handled);
   widget.CloseNow();
+}
+
+TEST_F(DesktopNativeWidgetAuraTest,
+       ExcludeFromScreenCaptureInheritedFromParent) {
+  Widget parent_widget;
+  Widget::InitParams parent_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  parent_widget.Init(std::move(parent_params));
+  parent_widget.SetExcludeFromScreenCapture(true);
+
+  Widget child_widget;
+  Widget::InitParams child_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  child_params.parent = parent_widget.GetNativeView();
+  // Ensure we use DesktopNativeWidgetAura.
+  child_params.native_widget = new DesktopNativeWidgetAura(&child_widget);
+  child_widget.Init(std::move(child_params));
+
+  EXPECT_TRUE(child_widget.GetNativeView()->GetProperty(
+      wm::kExcludeFromScreenCaptureKey));
+}
+
+TEST_F(DesktopNativeWidgetAuraTest, ExcludeFromScreenCaptureFromInitParams) {
+  Widget widget;
+  Widget::InitParams params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  params.init_properties_container.SetProperty(wm::kExcludeFromScreenCaptureKey,
+                                               true);
+  widget.Init(std::move(params));
+
+  EXPECT_TRUE(
+      widget.GetNativeView()->GetProperty(wm::kExcludeFromScreenCaptureKey));
+}
+
+TEST_F(DesktopNativeWidgetAuraTest,
+       SetExcludeFromScreenCaptureUpdatesProperty) {
+  Widget widget;
+  Widget::InitParams params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  widget.Init(std::move(params));
+
+  internal::NativeWidgetPrivate* native_widget = widget.native_widget_private();
+
+  native_widget->SetExcludeFromScreenCapture(true);
+  EXPECT_TRUE(
+      widget.GetNativeView()->GetProperty(wm::kExcludeFromScreenCaptureKey));
+
+  native_widget->SetExcludeFromScreenCapture(false);
+  EXPECT_FALSE(
+      widget.GetNativeView()->GetProperty(wm::kExcludeFromScreenCaptureKey));
 }
 
 #endif  // BUILDFLAG(IS_WIN)

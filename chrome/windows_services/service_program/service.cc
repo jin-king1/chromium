@@ -4,6 +4,7 @@
 
 #include "chrome/windows_services/service_program/service.h"
 
+#include <objidl.h>
 #include <sddl.h>
 #include <wrl/module.h>
 
@@ -19,6 +20,7 @@
 #include "base/command_line.h"
 #include "base/containers/heap_array.h"
 #include "base/debug/crash_logging.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/waitable_event.h"
@@ -226,8 +228,9 @@ int Service::RunAsService() {
     return error;
   }
 
-  // Take the lock both for the sake of accessing service_status_ and to wait
-  // for the thread in `OnModuleReleased()` to complete the call.
+  // Take the lock for the sake of accessing service_status_, and in the case
+  // where the delegate does not implement `Run()`, to wait for the thread in
+  // `OnModuleReleased()` to complete the call.
   base::AutoLock lock(lock_);
   return service_status_.dwWin32ExitCode;
 }
@@ -270,7 +273,7 @@ void Service::ServiceMainImpl(const base::CommandLine& command_line) {
     service_status_.dwServiceSpecificExitCode = hr;
     SetServiceStatus(SERVICE_STOPPED);
   } else if (delegate_implements_run_) {
-    // Shut down immediately if the service provided its own `Run()`.
+    // Shut down immediately if the delegate provided its own `Run()`.
     SetServiceStatus(SERVICE_STOPPED);
   }
 }
@@ -318,6 +321,11 @@ void WINAPI Service::ServiceMainEntry(DWORD argc, wchar_t* argv[]) {
   }
 }
 
+void Service::LockAndSetServiceStatus(DWORD state) {
+  base::AutoLock lock(lock_);
+  SetServiceStatus(state);
+}
+
 void Service::SetServiceStatus(DWORD state) {
   if (service_status_handle_) {
     service_status_.dwCurrentState = state;
@@ -334,12 +342,33 @@ HRESULT Service::Run(const base::CommandLine& command_line) {
     return hr;
   }
 
+  // Enable fast rundown so that COM stubs are run down (i.e., have their
+  // outstanding reference counts released) more quickly upon client
+  // termination. Testing shows that "fast" rundown still takes on the order of
+  // ten seconds, so it is not a substitute for the elevated tracing service's
+  // ProcessWatcher.
+  // https://learn.microsoft.com/nb-no/archive/blogs/distributedservices/com-server-cleanup-now-you-can-opt-for-a-fast-rundown
+  if (Microsoft::WRL::ComPtr<IGlobalOptions> options; SUCCEEDED(
+          ::CoCreateInstance(CLSID_GlobalOptions, nullptr, CLSCTX_INPROC_SERVER,
+                             IID_PPV_ARGS(&options)))) {
+    options->Set(COMGLB_RO_SETTINGS, COMGLB_FAST_RUNDOWN);
+  }
+
   // If `PreRun` returned `true`, the delegate's `Run` method is expected to do
   // all the logic of registering/unregistering classes and running the COM
   // server.
   if (delegate_implements_run_) {
+    // The `lock_` (acquired at the beginning of `ServiceMainImpl`) is released
+    // here.
     base::AutoUnlock unlock(lock_);
-    return delegate_->Run(command_line);
+
+    // `OnStopRequested()` will be called on the service control dispatcher
+    // thread if the service receives a stop request. The delegate should
+    // implement `OnServiceControlStop()` and stop itself (i.e., return from
+    // `delegate_->Run()`) when `OnStopRequested()` is called.
+    return delegate_->Run(
+        command_line, base::BindOnce(&Service::LockAndSetServiceStatus, this,
+                                     SERVICE_STOP_PENDING));
   }
 
   // Registering class objects is sufficient for the service to be running.
@@ -395,6 +424,8 @@ HRESULT Service::InitializeComSecurity() {
 }
 
 void Service::OnModuleReleased() {
+  CHECK(!delegate_implements_run_);
+
   base::AutoLock lock(lock_);
 
   // It is tempting to send a STOP_PENDING message to the service control
@@ -413,6 +444,11 @@ void Service::OnStopRequested() {
   // the exit routine, as that will cause the service control dispatcher to
   // return on the main thread.
   delegate_->OnServiceControlStop();
+  if (delegate_implements_run_) {
+    // `ServiceMainImpl()` notifies the SCM that the service has stopped when
+    // the delegate's `Run()` returns.
+    return;
+  }
 
   base::AutoLock lock(lock_);
 

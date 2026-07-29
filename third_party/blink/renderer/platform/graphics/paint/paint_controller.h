@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PAINT_PAINT_CONTROLLER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_PAINT_PAINT_CONTROLLER_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -13,8 +14,6 @@
 #include "base/dcheck_is_on.h"
 #include "base/memory/ptr_util.h"
 #include "cc/input/hit_test_opaqueness.h"
-#include "cc/input/layer_selection_bound.h"
-#include "cc/paint/element_id.h"
 #include "third_party/blink/renderer/platform/geometry/infinite_int_rect.h"
 #include "third_party/blink/renderer/platform/graphics/paint/display_item.h"
 #include "third_party/blink/renderer/platform/graphics/paint/display_item_list.h"
@@ -53,12 +52,12 @@ enum class PaintBenchmarkMode {
 struct FrameFirstPaint {
   DISALLOW_NEW();
   explicit FrameFirstPaint(const void* frame)
-      : frame(frame),
+      : frame(reinterpret_cast<uintptr_t>(frame)),
         first_painted(false),
         text_painted(false),
         image_painted(false) {}
 
-  const void* frame = nullptr;
+  uintptr_t frame = 0u;
   bool first_painted : 1;
   bool text_painted : 1;
   bool image_painted : 1;
@@ -155,6 +154,7 @@ class PLATFORM_EXPORT PaintController {
   const PropertyTreeStateOrAlias& CurrentPaintChunkProperties() const {
     return paint_chunker_.CurrentPaintChunkProperties();
   }
+
   void SetCurrentEffectivelyInvisible(bool invisible) {
     paint_chunker_.SetCurrentEffectivelyInvisible(invisible);
   }
@@ -177,6 +177,11 @@ class PLATFORM_EXPORT PaintController {
                                const RegionCaptureCropId& crop_id,
                                const gfx::Rect& rect);
 
+  void RecordTrackedElementData(
+      const DisplayItemClient& client,
+      const gfx::Rect& element_paint_rect,
+      const TrackedElementSubRects& tracked_element_sub_rects);
+
   void RecordScrollHitTestData(
       const DisplayItemClient&,
       DisplayItem::Type,
@@ -197,6 +202,9 @@ class PLATFORM_EXPORT PaintController {
   }
   const gfx::Rect& LastChunkBounds() const {
     return new_paint_artifact_->GetPaintChunks().back().bounds;
+  }
+  const TraceablePropertyTreeStateOrAlias& LastChunkProperties() const {
+    return new_paint_artifact_->GetPaintChunks().back().properties;
   }
 
   void MarkClientForValidation(const DisplayItemClient& client);

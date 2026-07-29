@@ -65,7 +65,7 @@ void TestPaymentsNetworkInterface::GetCardUploadDetails(
     const std::string& app_locale,
     base::OnceCallback<void(PaymentsRpcResult,
                             const std::u16string&,
-                            std::unique_ptr<base::Value::Dict>,
+                            std::unique_ptr<base::DictValue>,
                             std::vector<std::pair<int, int>>)> callback,
     const int billable_service_number,
     const int64_t billing_customer_number,
@@ -84,7 +84,7 @@ void TestPaymentsNetworkInterface::GetCardUploadDetails(
 }
 
 void TestPaymentsNetworkInterface::UploadCard(
-    const payments::UploadCardRequestDetails& request_details,
+    const UploadCardRequestDetails& request_details,
     base::OnceCallback<void(PaymentsRpcResult,
                             const UploadCardResponseDetails&)> callback) {
   upload_card_addresses_ = request_details.profiles;
@@ -92,16 +92,6 @@ void TestPaymentsNetworkInterface::UploadCard(
   std::move(callback).Run(PaymentsRpcResult::kSuccess,
                           upload_card_response_details_);
 }
-
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-void TestPaymentsNetworkInterface::MigrateCards(
-    const MigrationRequestDetails& details,
-    const std::vector<MigratableCreditCard>& migratable_credit_cards,
-    MigrateCardsCallback callback) {
-  std::move(callback).Run(PaymentsRpcResult::kSuccess, std::move(save_result_),
-                          "this is display text");
-}
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 void TestPaymentsNetworkInterface::SelectChallengeOption(
     const SelectChallengeOptionRequestDetails& details,
@@ -171,29 +161,23 @@ void TestPaymentsNetworkInterface::SetFidoRequestOptionsInUnmaskDetails(
   //       "authenticator_transport_support": ["INTERNAL"]
   // }]}
 
-  auto key_info =
-      base::Value::Dict().Set("authenticator_transport_support",
-                              base::Value::List().Append("INTERNAL"));
+  auto key_info = base::DictValue().Set("authenticator_transport_support",
+                                        base::ListValue().Append("INTERNAL"));
   if (!credential_id.empty()) {
     key_info.Set("credential_id", base::Value(credential_id));
   }
 
   unmask_details_.fido_request_options =
-      base::Value::Dict()
+      base::DictValue()
           .Set("challenge", base::Value(kTestChallenge))
           .Set("timeout_millis", base::Value(kTestTimeoutSeconds))
           .Set("relying_party_id", base::Value(relying_party_id))
-          .Set("key_info", base::Value::List().Append(std::move(key_info)));
+          .Set("key_info", base::ListValue().Append(std::move(key_info)));
 }
 
 void TestPaymentsNetworkInterface::SetUploadCardResponseDetailsForUploadCard(
     const UploadCardResponseDetails& upload_card_response_details) {
   upload_card_response_details_ = upload_card_response_details;
-}
-
-void TestPaymentsNetworkInterface::SetSaveResultForCardsMigration(
-    std::unique_ptr<std::unordered_map<std::string, std::string>> save_result) {
-  save_result_ = std::move(save_result);
 }
 
 void TestPaymentsNetworkInterface::SetSupportedBINRanges(
@@ -212,7 +196,7 @@ void TestPaymentsNetworkInterface::SetUseLegalMessageWithMultipleLinesInGetUploa
       use_legal_message_with_multiple_lines;
 }
 
-std::unique_ptr<base::Value::Dict> TestPaymentsNetworkInterface::LegalMessage() {
+std::unique_ptr<base::DictValue> TestPaymentsNetworkInterface::LegalMessage() {
   std::optional<base::Value> parsed_json;
   if (use_invalid_legal_message_) {
     // Legal message is invalid because it's missing the url.
@@ -224,7 +208,8 @@ std::unique_ptr<base::Value::Dict> TestPaymentsNetworkInterface::LegalMessage() 
         "        \"display_text\": \"bear\""
         "     } ]"
         "  } ]"
-        "}");
+        "}",
+        base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     DCHECK(parsed_json);
   } else if (use_legal_message_with_multiple_lines_) {
     parsed_json = base::JSONReader::Read(
@@ -257,7 +242,8 @@ std::unique_ptr<base::Value::Dict> TestPaymentsNetworkInterface::LegalMessage() 
         "      ]"
         "    }"
         "  ]"
-        "}");
+        "}",
+        base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     DCHECK(parsed_json);
   } else {
     parsed_json = base::JSONReader::Read(
@@ -272,12 +258,13 @@ std::unique_ptr<base::Value::Dict> TestPaymentsNetworkInterface::LegalMessage() 
         "        \"url\": \"http://www.example.com/pp\""
         "     } ]"
         "  } ]"
-        "}");
+        "}",
+        base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     DCHECK(parsed_json);
   }
   // TODO(crbug.com/40826246): Refactor when `base::JSONReader::Read` is updated
   // to return a Dict.
-  return std::make_unique<base::Value::Dict>(std::move(parsed_json->GetDict()));
+  return std::make_unique<base::DictValue>(std::move(parsed_json->GetDict()));
 }
 
 }  // namespace autofill::payments

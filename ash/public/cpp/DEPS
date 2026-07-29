@@ -2,12 +2,12 @@ include_rules = [
   "+chromeos/ash/services",
   "+chromeos/strings/grit/chromeos_strings.h",
   "+chromeos/services",
-  "+chromeos/crosapi/mojom",
   "+chromeos/ui/base/chromeos_ui_constants.h",
   "+cc/metrics",
   "+components/prefs",
   "+components/language/core/browser",
   "+components/tab_groups",
+  "+components/search_engines",
   "+components/sync_device_info",
   "+components/user_manager",
   "+services/data_decoder/public",
@@ -18,10 +18,10 @@ include_rules = [
 ]
 
 specific_include_rules = {
-  "saved_desk_delegate.h": [
+  "saved_desk_delegate\\.h": [
     "+components/favicon_base/favicon_callback.h"
   ],
-  "test_saved_desk_delegate.h": [
+  "test_saved_desk_delegate\\.h": [
     "+components/favicon_base/favicon_callback.h"
   ],
 }

@@ -13,37 +13,46 @@
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
-#include "chrome/browser/ui/autofill/autofill_bubble_base.h"
+#include "chrome/browser/metrics/desktop_session_duration/desktop_session_duration_tracker.h"
+#include "chrome/browser/ui/autofill/autofill_bubble_handler.h"
 #include "chrome/browser/ui/autofill/payments/save_card_ui.h"
 #include "chrome/browser/ui/autofill/payments/save_payment_icon_controller.h"
 #include "chrome/browser/ui/autofill/test/test_autofill_bubble_handler.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/hats/mock_trust_safety_sentiment_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
+#include "chrome/browser/ui/tabs/tab_activity_simulator.h"
+#include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
+#include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_manager/test_personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
+#include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics_desktop.h"
 #include "components/autofill/core/browser/metrics/payments/manage_cards_prompt_metrics.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/mock_navigation_handle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 using base::Bucket;
 using testing::ElementsAre;
@@ -52,13 +61,18 @@ namespace autofill {
 namespace {
 
 using CardSaveType = payments::PaymentsAutofillClient::CardSaveType;
+using SaveCardPromptOffer = autofill_metrics::SaveCardPromptOffer;
+using SaveCardPromptResultDesktop =
+    autofill_metrics::SaveCardPromptResultDesktop;
 using SaveCreditCardOptions =
     payments::PaymentsAutofillClient::SaveCreditCardOptions;
 
+constexpr std::string_view kSaveCardPromptResultDesktopBaseHistogram =
+    "Autofill.SaveCreditCardPromptResult.Desktop";
+
 std::unique_ptr<KeyedService> BuildTestPersonalDataManager(
     content::BrowserContext* context) {
-  auto personal_data_manager =
-      std::make_unique<autofill::TestPersonalDataManager>();
+  auto personal_data_manager = std::make_unique<TestPersonalDataManager>();
   personal_data_manager->test_payments_data_manager()
       .SetAutofillPaymentMethodsEnabled(true);
   return personal_data_manager;
@@ -85,6 +99,8 @@ class ObserveHideTestAutofillBubble : public AutofillBubbleBase {
 
     is_visible_ = false;
   }
+
+  bool IsMouseHovered() const override { return false; }
 
   bool is_visible() { return is_visible_; }
 
@@ -142,21 +158,22 @@ class ExposeBubbleAutofillBubbleHandler : public TestAutofillBubbleHandler {
   std::unique_ptr<ObserveHideTestAutofillBubble> confirmation_bubble_;
 };
 
-class TestBrowserWindowWithAutofillHandler : public TestBrowserWindow {
+class TestWebContentsDelegate : public content::WebContentsDelegate {
  public:
-  TestBrowserWindowWithAutofillHandler() = default;
-  ~TestBrowserWindowWithAutofillHandler() override = default;
-  TestBrowserWindowWithAutofillHandler(
-      const TestBrowserWindowWithAutofillHandler&) = delete;
-  TestBrowserWindowWithAutofillHandler& operator=(
-      const TestBrowserWindowWithAutofillHandler&) = delete;
+  explicit TestWebContentsDelegate(BrowserWindowInterface* browser_window)
+      : browser_window_(browser_window) {}
 
-  autofill::AutofillBubbleHandler* GetAutofillBubbleHandler() override {
-    return &handler_;
+  content::WebContents* OpenURLFromTab(
+      content::WebContents* source,
+      const content::OpenURLParams& params,
+      base::OnceCallback<void(content::NavigationHandle&)>
+          navigation_handle_callback) override {
+    browser_window_->OpenGURL(params.url, params.disposition);
+    return nullptr;
   }
 
  private:
-  ExposeBubbleAutofillBubbleHandler handler_;
+  raw_ptr<BrowserWindowInterface> browser_window_;
 };
 
 class TestSaveCardBubbleControllerImpl : public SaveCardBubbleControllerImpl {
@@ -179,25 +196,20 @@ class TestSaveCardBubbleControllerImpl : public SaveCardBubbleControllerImpl {
     handle.set_has_committed(true);
     DidFinishNavigation(&handle);
   }
-
  protected:
   bool IsPaymentsSyncTransportEnabledWithoutSyncFeature() const override {
     return false;
   }
 };
 
-class SaveCardBubbleControllerImplTest : public BrowserWithTestWindowTest {
+class SaveCardBubbleControllerImplTest
+    : public ChromeRenderViewHostTestHarness {
  public:
   SaveCardBubbleControllerImplTest()
-      : BrowserWithTestWindowTest(
-            base::test::TaskEnvironment::TimeSource::MOCK_TIME),
-        dependency_manager_subscription_(
-            BrowserContextDependencyManager::GetInstance()
-                ->RegisterCreateServicesCallbackForTesting(base::BindRepeating(
-                    &SaveCardBubbleControllerImplTest::SetTestingFactories,
-                    base::Unretained(this)))) {
+      : ChromeRenderViewHostTestHarness(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
     scoped_feature_list_.InitAndDisableFeature(
-        features::kAutofillEnableCvcStorageAndFilling);
+        features::kAutofillShowBubblesBasedOnPriorities);
   }
 
   SaveCardBubbleControllerImplTest(SaveCardBubbleControllerImplTest&) = delete;
@@ -205,38 +217,68 @@ class SaveCardBubbleControllerImplTest : public BrowserWithTestWindowTest {
       SaveCardBubbleControllerImplTest&) = delete;
 
   void SetUp() override {
-    BrowserWithTestWindowTest::SetUp();
-    AddTab(browser(), GURL("about:blank"));
-    TestSaveCardBubbleControllerImpl::CreateForTesting(active_web_contents());
+    ChromeRenderViewHostTestHarness::SetUp();
+
+    web_contents_delegate_ =
+        std::make_unique<TestWebContentsDelegate>(&mock_browser_window_);
+
+    // Configure mock browser window.
+    ON_CALL(mock_browser_window_, GetUnownedUserDataHost())
+        .WillByDefault(testing::ReturnRef(browser_unowned_user_data_host_));
+    ON_CALL(mock_browser_window_, GetProfile())
+        .WillByDefault(testing::Return(profile()));
+    ON_CALL(mock_browser_window_, GetTabStripModel())
+        .WillByDefault(testing::Return(tab_strip_model_.get()));
+    ON_CALL(mock_browser_window_, OpenGURL(testing::_, testing::_))
+        .WillByDefault(
+            [this](const GURL& url, WindowOpenDisposition disposition) {
+              if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) {
+                content::WebContents* new_contents = AddTab(url);
+                int new_index =
+                    tab_strip_model_->GetIndexOfWebContents(new_contents);
+                tab_activity_simulator_.SwitchToTabAt(tab_strip_model_.get(),
+                                                      new_index);
+              }
+            });
+
+    // Set up tab strip model.
+    tab_strip_model_delegate_.SetBrowserWindowInterface(&mock_browser_window_);
+    tab_strip_model_ =
+        std::make_unique<TabStripModel>(&tab_strip_model_delegate_, profile());
+
+    // Create the initial active tab.
+    AddTab(GURL("about:blank"));
+
+    // Attach test bubble handler to browser window host.
+    scoped_autofill_bubble_handler_ =
+        std::make_unique<ui::ScopedUnownedUserData<AutofillBubbleHandler>>(
+            browser_unowned_user_data_host_, test_autofill_bubble_handler_);
+
+    // Initialize a tracker for TrustSafetySentimentService to work properly.
+    metrics::DesktopSessionDurationTracker::Initialize();
     mock_sentiment_service_ = static_cast<MockTrustSafetySentimentService*>(
         TrustSafetySentimentServiceFactory::GetInstance()
             ->SetTestingFactoryAndUse(
                 profile(),
                 base::BindRepeating(&BuildMockTrustSafetySentimentService)));
 
-    // Set the visibility to VISIBLE as the web contents are initially hidden.
-    active_web_contents()->UpdateWebContentsVisibility(
-        content::Visibility::VISIBLE);
+    // Set the visibility to VISIBLE.
+    SimulateTabVisibilityChange(content::Visibility::VISIBLE);
   }
 
   void TearDown() override {
     mock_sentiment_service_ = nullptr;
     did_on_confirmation_closed_callback_run_ = false;
     personal_data_manager()->test_payments_data_manager().ClearCreditCards();
-    BrowserWithTestWindowTest::TearDown();
-  }
-
-  // BrowserWithTestWindowTest:
-  std::unique_ptr<BrowserWindow> CreateBrowserWindow() override {
-    std::unique_ptr<TestBrowserWindowWithAutofillHandler> window =
-        std::make_unique<TestBrowserWindowWithAutofillHandler>();
-    window->set_is_active(true);
-    return std::move(window);
+    scoped_autofill_bubble_handler_.reset();
+    tab_strip_model_.reset();
+    tab_strip_model_delegate_.SetBrowserWindowInterface(nullptr);
+    ChromeRenderViewHostTestHarness::TearDown();
+    metrics::DesktopSessionDurationTracker::CleanupForTesting();
   }
 
   ExposeBubbleAutofillBubbleHandler* GetAutofillBubbleHandler() {
-    return static_cast<ExposeBubbleAutofillBubbleHandler*>(
-        window()->GetAutofillBubbleHandler());
+    return &test_autofill_bubble_handler_;
   }
 
   bool IsSaveCardBubbleVisible() {
@@ -250,7 +292,8 @@ class SaveCardBubbleControllerImplTest : public BrowserWithTestWindowTest {
   void SetLegalMessage(const std::string& message_json,
                        SaveCreditCardOptions options =
                            SaveCreditCardOptions().with_show_prompt()) {
-    std::optional<base::Value> value(base::JSONReader::Read(message_json));
+    std::optional<base::Value> value(base::JSONReader::Read(
+        message_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS));
     ASSERT_TRUE(value);
     ASSERT_TRUE(value->is_dict());
     LegalMessageLines legal_message_lines;
@@ -287,7 +330,9 @@ class SaveCardBubbleControllerImplTest : public BrowserWithTestWindowTest {
   void ShowConfirmationBubbleView(bool card_saved) {
     controller()->ShowConfirmationBubbleView(
         /*card_saved=*/card_saved,
-        /*on_confirmation_closed_callback=*/base::BindOnce(
+        /*is_for_save_and_fill=*/false,
+        /*on_confirmation_closed_callback=*/
+        base::BindOnce(
             &SaveCardBubbleControllerImplTest::OnConfirmationClosedCallback,
             weak_ptr_factory_.GetWeakPtr()));
   }
@@ -323,6 +368,21 @@ class SaveCardBubbleControllerImplTest : public BrowserWithTestWindowTest {
   }
 
  protected:
+  void SimulateTabVisibilityChange(content::Visibility visibility) {
+    active_web_contents()->UpdateWebContentsVisibility(visibility);
+
+    // When BubbleManager is enabled, the framework destroys the widget on tab
+    // hide. Because a fake bubble is used that the framework doesn't track, it
+    // must manually simulate this destruction lifecycle.
+    if (visibility == content::Visibility::HIDDEN) {
+      controller()->HideSaveCardBubble();
+    } else if (visibility == content::Visibility::VISIBLE) {
+      if (controller()->ShouldReshowOnTabVisible()) {
+        controller()->ReshowBubble(/*is_user_gesture=*/false);
+      }
+    }
+  }
+
   TestSaveCardBubbleControllerImpl* controller() {
     return static_cast<TestSaveCardBubbleControllerImpl*>(
         TestSaveCardBubbleControllerImpl::FromWebContents(
@@ -330,7 +390,7 @@ class SaveCardBubbleControllerImplTest : public BrowserWithTestWindowTest {
   }
 
   content::WebContents* active_web_contents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return tab_strip_model_->GetActiveWebContents();
   }
 
   TestPersonalDataManager* personal_data_manager() {
@@ -339,11 +399,38 @@ class SaveCardBubbleControllerImplTest : public BrowserWithTestWindowTest {
   }
 
   tabs::TabInterface* active_tab() {
-    return browser()->tab_strip_model()->GetActiveTab();
+    return tab_strip_model_->GetTabForWebContents(active_web_contents());
+  }
+
+  content::WebContents* AddTab(const GURL& url) {
+    content::WebContents* new_contents =
+        tab_activity_simulator_.AddWebContentsAndNavigate(
+            tab_strip_model_.get(), url);
+    new_contents->SetDelegate(web_contents_delegate_.get());
+    TestSaveCardBubbleControllerImpl::CreateForTesting(new_contents);
+    return new_contents;
+  }
+
+  // ChromeRenderViewHostTestHarness:
+  TestingProfile::TestingFactories GetTestingFactories() const override {
+    return TestingProfile::TestingFactories({TestingProfile::TestingFactory(
+        PersonalDataManagerFactory::GetInstance(),
+        base::BindRepeating(&BuildTestPersonalDataManager))});
   }
 
   raw_ptr<MockTrustSafetySentimentService> mock_sentiment_service_ = nullptr;
   bool did_on_confirmation_closed_callback_run_ = false;
+
+  testing::NiceMock<MockBrowserWindowInterface> mock_browser_window_;
+  ui::UnownedUserDataHost browser_unowned_user_data_host_;
+
+  TestTabStripModelDelegate tab_strip_model_delegate_;
+  std::unique_ptr<TabStripModel> tab_strip_model_;
+  TabActivitySimulator tab_activity_simulator_;
+  const tabs::TabModel::PreventFeatureInitializationForTesting
+      prevent_features_;
+
+  std::unique_ptr<TestWebContentsDelegate> web_contents_delegate_;
 
  private:
   static void UploadSaveCardCallback(
@@ -356,12 +443,11 @@ class SaveCardBubbleControllerImplTest : public BrowserWithTestWindowTest {
   void OnConfirmationClosedCallback() {
     did_on_confirmation_closed_callback_run_ = true;
   }
-  void SetTestingFactories(content::BrowserContext* context) {
-    autofill::PersonalDataManagerFactory::GetInstance()->SetTestingFactory(
-        context, base::BindRepeating(&BuildTestPersonalDataManager));
-  }
 
-  base::CallbackListSubscription dependency_manager_subscription_;
+  ExposeBubbleAutofillBubbleHandler test_autofill_bubble_handler_;
+  std::unique_ptr<ui::ScopedUnownedUserData<AutofillBubbleHandler>>
+      scoped_autofill_bubble_handler_;
+
   base::test::ScopedFeatureList scoped_feature_list_;
 
   base::WeakPtrFactory<SaveCardBubbleControllerImplTest> weak_ptr_factory_{
@@ -411,7 +497,8 @@ TEST_F(SaveCardBubbleControllerImplTest,
 }
 
 using SaveCreditCardPromptResultMetricTestData =
-    std::tuple<PaymentsUiClosedReason, autofill_metrics::SaveCardPromptResult>;
+    std::tuple<PaymentsUiClosedReason,
+               autofill_metrics::LegacySaveCardPromptResult>;
 
 // Test fixture to ensure the correct reporting of UMA metric
 // Autofill.SaveCreditCardPromptResult{SaveDestination}.{UserGroup}.
@@ -427,27 +514,28 @@ class SaveCreditCardPromptResultMetricTest
 
  protected:
   const PaymentsUiClosedReason closed_reason_;
-  const autofill_metrics::SaveCardPromptResult prompt_result_;
+  const autofill_metrics::LegacySaveCardPromptResult prompt_result_;
 };
 
 INSTANTIATE_TEST_SUITE_P(
     ,
     SaveCreditCardPromptResultMetricTest,
-    testing::Values(SaveCreditCardPromptResultMetricTestData(
-                        PaymentsUiClosedReason::kAccepted,
-                        autofill_metrics::SaveCardPromptResult::kAccepted),
-                    SaveCreditCardPromptResultMetricTestData(
-                        PaymentsUiClosedReason::kCancelled,
-                        autofill_metrics::SaveCardPromptResult::kCancelled),
-                    SaveCreditCardPromptResultMetricTestData(
-                        PaymentsUiClosedReason::kClosed,
-                        autofill_metrics::SaveCardPromptResult::kClosed),
-                    SaveCreditCardPromptResultMetricTestData(
-                        PaymentsUiClosedReason::kNotInteracted,
-                        autofill_metrics::SaveCardPromptResult::kNotInteracted),
-                    SaveCreditCardPromptResultMetricTestData(
-                        PaymentsUiClosedReason::kLostFocus,
-                        autofill_metrics::SaveCardPromptResult::kLostFocus)));
+    testing::Values(
+        SaveCreditCardPromptResultMetricTestData(
+            PaymentsUiClosedReason::kAccepted,
+            autofill_metrics::LegacySaveCardPromptResult::kAccepted),
+        SaveCreditCardPromptResultMetricTestData(
+            PaymentsUiClosedReason::kCancelled,
+            autofill_metrics::LegacySaveCardPromptResult::kCancelled),
+        SaveCreditCardPromptResultMetricTestData(
+            PaymentsUiClosedReason::kClosed,
+            autofill_metrics::LegacySaveCardPromptResult::kClosed),
+        SaveCreditCardPromptResultMetricTestData(
+            PaymentsUiClosedReason::kNotInteracted,
+            autofill_metrics::LegacySaveCardPromptResult::kNotInteracted),
+        SaveCreditCardPromptResultMetricTestData(
+            PaymentsUiClosedReason::kLostFocus,
+            autofill_metrics::LegacySaveCardPromptResult::kLostFocus)));
 
 // Tests that after the user interacts with a "save *local* card" dialog and
 // *does not* have any card data on file, metrics
@@ -593,7 +681,7 @@ TEST_P(SaveCardBubbleSingletonTest, OnlyOneActiveBubble) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer" + suffix,
-      autofill_metrics::SaveCardPromptOffer::kShown, 1);
+      SaveCardPromptOffer::kShown, 1);
 }
 
 // Note that even though in prod the four options in the SaveCreditCardOptions
@@ -646,6 +734,20 @@ class SaveCardBubbleLoggingTest
   }
 
   ~SaveCardBubbleLoggingTest() override = default;
+
+  void SetUp() override {
+    SaveCardBubbleControllerImplTest::SetUp();
+
+    if (save_destination_ == "Local" &&
+        (GetSaveCreditCardOptions().has_multiple_legal_lines ||
+         GetSaveCreditCardOptions()
+             .has_same_last_four_as_server_card_but_different_expiration_date)) {
+      GTEST_SKIP()
+          << "Not applicable for local save, as legal lines or the "
+             "condition (same last four digits, different "
+             "expiration date) is only possible for server save scenarios.";
+    }
+  }
 
   void TriggerFlow(bool show_prompt = true) {
     if (save_destination_ == "Local") {
@@ -725,7 +827,7 @@ TEST_P(SaveCardBubbleLoggingTest, Metrics_ShowBubble) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer" + GetHistogramNameSuffix(),
-      autofill_metrics::SaveCardPromptOffer::kShown, 1);
+      SaveCardPromptOffer::kShown, 1);
 }
 
 TEST_P(SaveCardBubbleLoggingTest, Metrics_ShowIconOnly) {
@@ -739,10 +841,16 @@ TEST_P(SaveCardBubbleLoggingTest, Metrics_ShowIconOnly) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer" + GetHistogramNameSuffix(),
-      autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
+      SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
 }
 
-TEST_P(SaveCardBubbleLoggingTest, Metrics_SaveButton) {
+// TODO(https://crbug.com/448030345): Flaky on Linux ASan
+#if BUILDFLAG(IS_LINUX) && defined(ADDRESS_SANITIZER)
+#define MAYBE_Metrics_SaveButton DISABLED_Metrics_SaveButton
+#else
+#define MAYBE_Metrics_SaveButton Metrics_SaveButton
+#endif
+TEST_P(SaveCardBubbleLoggingTest, MAYBE_Metrics_SaveButton) {
   base::HistogramTester histogram_tester;
   TriggerFlow();
   controller()->OnSaveButton({});
@@ -756,27 +864,39 @@ TEST_P(SaveCardBubbleLoggingTest, Metrics_SaveButton) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult" + GetHistogramNameSuffix(),
-      autofill_metrics::SaveCardPromptResult::kAccepted, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kAccepted, 1);
 }
 
-TEST_P(SaveCardBubbleLoggingTest, Metrics_CancelButton) {
+// TODO(https://crbug.com/448030345): Flaky on Linux ASan
+#if BUILDFLAG(IS_LINUX) && defined(ADDRESS_SANITIZER)
+#define MAYBE_Metrics_CancelButton DISABLED_Metrics_CancelButton
+#else
+#define MAYBE_Metrics_CancelButton Metrics_CancleButton
+#endif
+TEST_P(SaveCardBubbleLoggingTest, MAYBE_Metrics_CancelButton) {
   base::HistogramTester histogram_tester;
   TriggerFlow();
   CloseBubble(PaymentsUiClosedReason::kCancelled);
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult" + GetHistogramNameSuffix(),
-      autofill_metrics::SaveCardPromptResult::kCancelled, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kCancelled, 1);
 }
 
-TEST_P(SaveCardBubbleLoggingTest, Metrics_Closed) {
+// TODO(https://crbug.com/448030345): Flaky on Linux ASan
+#if BUILDFLAG(IS_LINUX) && defined(ADDRESS_SANITIZER)
+#define MAYBE_Metrics_Closed DISABLED_Metrics_Closed
+#else
+#define MAYBE_Metrics_Closed Metrics_Closed
+#endif
+TEST_P(SaveCardBubbleLoggingTest, MAYBE_Metrics_Closed) {
   base::HistogramTester histogram_tester;
   TriggerFlow();
   CloseBubble(PaymentsUiClosedReason::kClosed);
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult" + GetHistogramNameSuffix(),
-      autofill_metrics::SaveCardPromptResult::kClosed, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kClosed, 1);
 }
 
 TEST_P(SaveCardBubbleLoggingTest, Metrics_NotInteracted) {
@@ -786,7 +906,7 @@ TEST_P(SaveCardBubbleLoggingTest, Metrics_NotInteracted) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult" + GetHistogramNameSuffix(),
-      autofill_metrics::SaveCardPromptResult::kNotInteracted, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kNotInteracted, 1);
 }
 
 TEST_P(SaveCardBubbleLoggingTest, Metrics_LostFocus) {
@@ -796,7 +916,7 @@ TEST_P(SaveCardBubbleLoggingTest, Metrics_LostFocus) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult" + GetHistogramNameSuffix(),
-      autofill_metrics::SaveCardPromptResult::kLostFocus, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kLostFocus, 1);
 }
 
 TEST_P(SaveCardBubbleLoggingTest, Metrics_Unknown) {
@@ -806,7 +926,7 @@ TEST_P(SaveCardBubbleLoggingTest, Metrics_Unknown) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult" + GetHistogramNameSuffix(),
-      autofill_metrics::SaveCardPromptResult::kUnknown, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kUnknown, 1);
 }
 
 TEST_P(SaveCardBubbleLoggingTest, Metrics_LegalMessageLinkedClicked) {
@@ -821,6 +941,471 @@ TEST_P(SaveCardBubbleLoggingTest, Metrics_LegalMessageLinkedClicked) {
 
   EXPECT_EQ(1, user_action_tester.GetActionCount(
                    "Autofill_CreditCardUpload_LegalMessageLinkClicked"));
+}
+
+// Test class to ensure that correct metric is logged when the save card bubble
+// is shown or not shown.
+class SaveCreditCardPromptOfferMetricTest
+    : public SaveCardBubbleControllerImplTest,
+      public ::testing::WithParamInterface</*is_upload_save*/ bool> {
+ public:
+  void TriggerFlow(bool show_prompt, SaveCreditCardOptions options = {}) {
+    if (IsUploadSave()) {
+      ShowUploadBubble(options.with_show_prompt(show_prompt));
+    } else {
+      ShowLocalBubble(/*card=*/nullptr, options.with_show_prompt(show_prompt));
+    }
+  }
+
+  std::string GetBaseHistogramName() {
+    return base::StrCat({"Autofill.SaveCreditCardPromptOffer.Desktop",
+                         IsUploadSave() ? ".Server" : ".Local"});
+  }
+
+  bool IsUploadSave() { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(,
+                         SaveCreditCardPromptOfferMetricTest,
+                         testing::Bool());
+
+TEST_P(SaveCreditCardPromptOfferMetricTest, LogsBubbleShown) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(/*show_prompt=*/true, SaveCreditCardOptions().with_card_save_type(
+                                        CardSaveType::kCardSaveOnly));
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_P(SaveCreditCardPromptOfferMetricTest,
+       LogsBubbleShown_WhenRequestingCardHolderName) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(
+      /*show_prompt=*/true,
+      SaveCreditCardOptions()
+          .with_should_request_name_from_user(true)
+          .with_card_save_type(CardSaveType::kCardSaveOnly));
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".RequestingCardholderName"}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_P(SaveCreditCardPromptOfferMetricTest,
+       LogsBubbleShown_WhenRequestingExpirationDate) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(
+      /*show_prompt=*/true,
+      SaveCreditCardOptions()
+          .with_should_request_expiration_date_from_user(true)
+          .with_card_save_type(CardSaveType::kCardSaveOnly));
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".RequestingExpirationDate"}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_P(SaveCreditCardPromptOfferMetricTest, LogsBubbleShown_WhenSavingWithCvc) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(
+      /*show_prompt=*/true, SaveCreditCardOptions().with_card_save_type(
+                                CardSaveType::kCardSaveWithCvc));
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".SavingWithCvc"}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_P(SaveCreditCardPromptOfferMetricTest,
+       LogsBubbleShown_ForPromptWithMultipleLegalLines) {
+  if (!IsUploadSave()) {
+    GTEST_SKIP() << "Not applicable for local save, as legal lines are "
+                    "present only in server save scenarios";
+  }
+
+  base::HistogramTester histogram_tester;
+  TriggerFlow(
+      /*show_prompt=*/true,
+      SaveCreditCardOptions()
+          .with_has_multiple_legal_lines(true)
+          .with_card_save_type(CardSaveType::kCardSaveOnly));
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".WithMultipleLegalLines"}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_P(SaveCreditCardPromptOfferMetricTest,
+       LogsBubbleShown_ForCardWithSameLastFourButDifferentExpiration) {
+  if (!IsUploadSave()) {
+    GTEST_SKIP() << "Not applicable for local save, as the condition (same "
+                    "last four digits, different expiration date) is only "
+                    "possible for server save scenarios.";
+  }
+
+  base::HistogramTester histogram_tester;
+  TriggerFlow(
+      /*show_prompt=*/true,
+      SaveCreditCardOptions()
+          .with_same_last_four_as_server_card_but_different_expiration_date(
+              true)
+          .with_card_save_type(CardSaveType::kCardSaveOnly));
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat(
+          {GetBaseHistogramName(), ".WithSameLastFourButDifferentExpiration"}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_P(SaveCreditCardPromptOfferMetricTest,
+       LogsBubbleShown_ForAllRelevantSubHistograms) {
+  if (!IsUploadSave()) {
+    GTEST_SKIP() << "Not applicable for local save, as legal lines are "
+                    "present only in server save scenarios.";
+  }
+
+  base::HistogramTester histogram_tester;
+  TriggerFlow(
+      /*show_prompt=*/true,
+      SaveCreditCardOptions()
+          .with_should_request_name_from_user(true)
+          .with_has_multiple_legal_lines(true)
+          .with_card_save_type(CardSaveType::kCardSaveOnly));
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".RequestingCardholderName"}),
+      SaveCardPromptOffer::kShown, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".WithMultipleLegalLines"}),
+      SaveCardPromptOffer::kShown, 1);
+}
+
+TEST_P(SaveCreditCardPromptOfferMetricTest, LogsBubbleNotShown) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(
+      /*show_prompt=*/false,
+      SaveCreditCardOptions().with_card_save_type(CardSaveType::kCardSaveOnly));
+
+  histogram_tester.ExpectUniqueSample(
+      GetBaseHistogramName(), SaveCardPromptOffer::kNotShownMaxStrikesReached,
+      1);
+}
+
+TEST_P(SaveCreditCardPromptOfferMetricTest, DoNotLogBubbleReshown) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(/*show_prompt=*/true, SaveCreditCardOptions().with_card_save_type(
+                                        CardSaveType::kCardSaveOnly));
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptOffer::kShown, 1);
+
+  CloseAndReshowBubble();
+  // Verify that `kShown` metrics is not logged again on reshow.
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptOffer::kShown, 1);
+}
+
+class SaveCreditCardPromptResultDesktopMetricTestWithUiCloseReasonParameterized
+    : public SaveCardBubbleControllerImplTest,
+      public testing::WithParamInterface<std::tuple<PaymentsUiClosedReason>> {
+ public:
+  SaveCardPromptResultDesktop GetExpectedSaveCardPromptResult() const {
+    switch (GetPaymentsUiClosedReason()) {
+      case PaymentsUiClosedReason::kUnknown:
+        return SaveCardPromptResultDesktop::kUnknown;
+      case PaymentsUiClosedReason::kAccepted:
+        return SaveCardPromptResultDesktop::kAccepted;
+      case PaymentsUiClosedReason::kCancelled:
+        return SaveCardPromptResultDesktop::kCancelled;
+      case PaymentsUiClosedReason::kClosed:
+        return SaveCardPromptResultDesktop::kClosed;
+      case PaymentsUiClosedReason::kNotInteracted:
+        return SaveCardPromptResultDesktop::kNotInteracted;
+      case PaymentsUiClosedReason::kLostFocus:
+        return SaveCardPromptResultDesktop::kLostFocus;
+    }
+  }
+
+  PaymentsUiClosedReason GetPaymentsUiClosedReason() const {
+    return std::get<0>(GetParam());
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    SaveCreditCardPromptResultDesktopMetricTestWithUiCloseReasonParameterized,
+    testing::Combine(testing::Values(PaymentsUiClosedReason::kUnknown,
+                                     PaymentsUiClosedReason::kAccepted,
+                                     PaymentsUiClosedReason::kCancelled,
+                                     PaymentsUiClosedReason::kClosed,
+                                     PaymentsUiClosedReason::kNotInteracted,
+                                     PaymentsUiClosedReason::kLostFocus)));
+
+// Tests that correct SaveCardPromptResultDesktop metric is logged based on the
+// PaymentsUiClosedReason for local save.
+TEST_P(
+    SaveCreditCardPromptResultDesktopMetricTestWithUiCloseReasonParameterized,
+    LogsLocalSaveCreditCardPromptResult) {
+  base::HistogramTester histogram_tester;
+  ShowLocalBubble(/*card=*/nullptr,
+                  SaveCreditCardOptions()
+                      .with_card_save_type(CardSaveType::kCardSaveOnly)
+                      .with_show_prompt(true));
+  CloseBubble(GetPaymentsUiClosedReason());
+
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({kSaveCardPromptResultDesktopBaseHistogram, ".Local"}),
+      GetExpectedSaveCardPromptResult(), 1);
+}
+
+// Tests that correct SaveCardPromptResultDesktop metric is logged based on the
+// PaymentsUiClosedReason for server save.
+TEST_P(
+    SaveCreditCardPromptResultDesktopMetricTestWithUiCloseReasonParameterized,
+    LogsServerSaveCreditCardPromptResult) {
+  base::HistogramTester histogram_tester;
+  ShowUploadBubble(SaveCreditCardOptions()
+                       .with_card_save_type(CardSaveType::kCardSaveOnly)
+                       .with_show_prompt(true));
+  if (GetPaymentsUiClosedReason() == PaymentsUiClosedReason::kAccepted) {
+    // `Upload` dialog shows loading on being accepted and doesn't close by
+    // itself. If the loading dialog is closed, user's acceptance should still
+    // be recorded and the closure will be recorded as loading prompt's result.
+    controller()->OnSaveButton({});
+    CloseBubble(PaymentsUiClosedReason::kClosed);
+  } else {
+    CloseBubble(GetPaymentsUiClosedReason());
+  }
+
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({kSaveCardPromptResultDesktopBaseHistogram, ".Server"}),
+      GetExpectedSaveCardPromptResult(), 1);
+}
+
+// Test class to verify that all relevant sub histograms are logged based on the
+// SaveCreditCardOptions for the SaveCardPromptResultDesktop metric.
+class SaveCreditCardPromptResultDesktopMetricTestParameterized
+    : public SaveCardBubbleControllerImplTest,
+      public ::testing::WithParamInterface</*is_upload_save*/ bool> {
+ public:
+  void TriggerFlow(SaveCreditCardOptions options = {}) {
+    if (IsUploadSave()) {
+      ShowUploadBubble(options.with_show_prompt(true));
+    } else {
+      ShowLocalBubble(/*card=*/nullptr, options.with_show_prompt(true));
+    }
+  }
+
+  std::string GetBaseHistogramName() {
+    return base::StrCat({kSaveCardPromptResultDesktopBaseHistogram,
+                         IsUploadSave() ? ".Server" : ".Local"});
+  }
+
+  bool IsUploadSave() { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    SaveCreditCardPromptResultDesktopMetricTestParameterized,
+    testing::Bool());
+
+TEST_P(SaveCreditCardPromptResultDesktopMetricTestParameterized,
+       LogsSaveCardResult_WhenRequestingCardHolderName) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(SaveCreditCardOptions()
+                  .with_should_request_name_from_user(true)
+                  .with_card_save_type(CardSaveType::kCardSaveOnly));
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".RequestingCardholderName"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+}
+
+TEST_P(SaveCreditCardPromptResultDesktopMetricTestParameterized,
+       LogsSaveCardResult_WhenRequestingExpirationDate) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(SaveCreditCardOptions()
+                  .with_should_request_expiration_date_from_user(true)
+                  .with_card_save_type(CardSaveType::kCardSaveOnly));
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".RequestingExpirationDate"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+}
+
+TEST_P(SaveCreditCardPromptResultDesktopMetricTestParameterized,
+       LogsSaveCardResult_WhenSavingWithCvc) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(SaveCreditCardOptions().with_card_save_type(
+      CardSaveType::kCardSaveWithCvc));
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".SavingWithCvc"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+}
+
+TEST_P(SaveCreditCardPromptResultDesktopMetricTestParameterized,
+       LogsSaveCardResult_ForPromptWithMultipleLegalLines) {
+  if (!IsUploadSave()) {
+    GTEST_SKIP() << "Not applicable for local save, as legal lines are "
+                    "present only in server save scenarios";
+  }
+
+  base::HistogramTester histogram_tester;
+  TriggerFlow(SaveCreditCardOptions()
+                  .with_has_multiple_legal_lines(true)
+                  .with_card_save_type(CardSaveType::kCardSaveOnly));
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".WithMultipleLegalLines"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+}
+
+TEST_P(SaveCreditCardPromptResultDesktopMetricTestParameterized,
+       LogsSaveCardResult_ForCardWithSameLastFourButDifferentExpiration) {
+  if (!IsUploadSave()) {
+    GTEST_SKIP() << "Not applicable for local save, as the condition (same "
+                    "last four digits, different expiration date) is only "
+                    "possible for server save scenarios.";
+  }
+
+  base::HistogramTester histogram_tester;
+  TriggerFlow(
+      SaveCreditCardOptions()
+          .with_same_last_four_as_server_card_but_different_expiration_date(
+              true)
+          .with_card_save_type(CardSaveType::kCardSaveOnly));
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat(
+          {GetBaseHistogramName(), ".WithSameLastFourButDifferentExpiration"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+}
+
+TEST_P(SaveCreditCardPromptResultDesktopMetricTestParameterized,
+       LogsSaveCardResult_WhenUserHasSavedCards) {
+  base::HistogramTester histogram_tester;
+  personal_data_manager()->test_payments_data_manager().ClearCreditCards();
+  AddCreditCard(test::GetCreditCard());
+  TriggerFlow(
+      SaveCreditCardOptions().with_card_save_type(CardSaveType::kCardSaveOnly));
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".UserHasSavedCards"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+}
+
+TEST_P(SaveCreditCardPromptResultDesktopMetricTestParameterized,
+       LogsSaveCardResult_WhenUserHasNoCards) {
+  base::HistogramTester histogram_tester;
+  TriggerFlow(
+      SaveCreditCardOptions().with_card_save_type(CardSaveType::kCardSaveOnly));
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".UserHasNoCards"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+}
+
+TEST_P(SaveCreditCardPromptResultDesktopMetricTestParameterized,
+       LogsSaveCardResult_ForAllRelevantSubHistograms) {
+  base::HistogramTester histogram_tester;
+
+  TriggerFlow(SaveCreditCardOptions()
+                  .with_card_save_type(CardSaveType::kCardSaveWithCvc)
+                  .with_should_request_name_from_user(true)
+                  .with_show_prompt(true));
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".SavingWithCvc"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".RequestingCardholderName"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+}
+
+TEST_P(SaveCreditCardPromptResultDesktopMetricTestParameterized,
+       LogsUploadSaveCardResult_ForAllRelevantSubHistograms) {
+  if (!IsUploadSave()) {
+    GTEST_SKIP() << "Not applicable for local save, as legal lines are "
+                    "present only in server save scenarios.";
+  }
+
+  base::HistogramTester histogram_tester;
+  TriggerFlow(SaveCreditCardOptions()
+                  .with_card_save_type(CardSaveType::kCardSaveWithCvc)
+                  .with_should_request_name_from_user(true)
+                  .with_has_multiple_legal_lines(true)
+                  .with_show_prompt(true));
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectUniqueSample(GetBaseHistogramName(),
+                                      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".SavingWithCvc"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".RequestingCardholderName"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({GetBaseHistogramName(), ".WithMultipleLegalLines"}),
+      SaveCardPromptResultDesktop::kClosed, 1);
+}
+
+// Tests that SaveCardPromptResultDesktop metric is not logged again when a
+// dialog is reshown.
+TEST_F(SaveCardBubbleControllerImplTest,
+       DoNotLogSaveCreditCardPromptResultOnReshow) {
+  base::HistogramTester histogram_tester;
+  ShowLocalBubble(/*card=*/nullptr,
+                  SaveCreditCardOptions()
+                      .with_card_save_type(CardSaveType::kCardSaveOnly)
+                      .with_show_prompt(true));
+  CloseAndReshowBubble();
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({kSaveCardPromptResultDesktopBaseHistogram, ".Local"}),
+      SaveCardPromptResultDesktop::kNotInteracted, 1);
+
+  CloseBubble(PaymentsUiClosedReason::kClosed);
+
+  histogram_tester.ExpectBucketCount(
+      base::StrCat({kSaveCardPromptResultDesktopBaseHistogram, ".Local"}),
+      SaveCardPromptResultDesktop::kClosed, 0);
 }
 
 // Param of the SaveCvcBubbleLoggingTest:
@@ -874,7 +1459,7 @@ TEST_P(SaveCvcBubbleLoggingTest, Metrics_ShowBubble) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCvcPromptOffer." + save_destination_ + "." + show_type_,
-      autofill_metrics::SaveCardPromptOffer::kShown, 1);
+      SaveCardPromptOffer::kShown, 1);
 }
 
 TEST_P(SaveCvcBubbleLoggingTest, Metrics_ShowIconOnly) {
@@ -888,7 +1473,7 @@ TEST_P(SaveCvcBubbleLoggingTest, Metrics_ShowIconOnly) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCvcPromptOffer." + save_destination_ + "." + show_type_,
-      autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
+      SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
 }
 
 TEST_P(SaveCvcBubbleLoggingTest, Metrics_SaveButton) {
@@ -899,7 +1484,7 @@ TEST_P(SaveCvcBubbleLoggingTest, Metrics_SaveButton) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCvcPromptResult." + save_destination_ + "." + show_type_,
-      autofill_metrics::SaveCardPromptResult::kAccepted, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kAccepted, 1);
 }
 
 TEST_P(SaveCvcBubbleLoggingTest, Metrics_CancelButton) {
@@ -909,7 +1494,7 @@ TEST_P(SaveCvcBubbleLoggingTest, Metrics_CancelButton) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCvcPromptResult." + save_destination_ + "." + show_type_,
-      autofill_metrics::SaveCardPromptResult::kCancelled, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kCancelled, 1);
 }
 
 TEST_P(SaveCvcBubbleLoggingTest, Metrics_Closed) {
@@ -919,7 +1504,7 @@ TEST_P(SaveCvcBubbleLoggingTest, Metrics_Closed) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCvcPromptResult." + save_destination_ + "." + show_type_,
-      autofill_metrics::SaveCardPromptResult::kClosed, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kClosed, 1);
 }
 
 TEST_P(SaveCvcBubbleLoggingTest, Metrics_NotInteracted) {
@@ -929,7 +1514,7 @@ TEST_P(SaveCvcBubbleLoggingTest, Metrics_NotInteracted) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCvcPromptResult." + save_destination_ + "." + show_type_,
-      autofill_metrics::SaveCardPromptResult::kNotInteracted, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kNotInteracted, 1);
 }
 
 TEST_P(SaveCvcBubbleLoggingTest, Metrics_LostFocus) {
@@ -939,7 +1524,7 @@ TEST_P(SaveCvcBubbleLoggingTest, Metrics_LostFocus) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCvcPromptResult." + save_destination_ + "." + show_type_,
-      autofill_metrics::SaveCardPromptResult::kLostFocus, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kLostFocus, 1);
 }
 
 TEST_P(SaveCvcBubbleLoggingTest, Metrics_Unknown) {
@@ -949,7 +1534,7 @@ TEST_P(SaveCvcBubbleLoggingTest, Metrics_Unknown) {
 
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCvcPromptResult." + save_destination_ + "." + show_type_,
-      autofill_metrics::SaveCardPromptResult::kUnknown, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kUnknown, 1);
 }
 
 TEST_F(SaveCardBubbleControllerImplTest, LocalCvcOnlySaveDialogContent) {
@@ -960,7 +1545,8 @@ TEST_F(SaveCardBubbleControllerImplTest, LocalCvcOnlySaveDialogContent) {
           .with_card_save_type(CardSaveType::kCvcSaveOnly)
           .with_show_prompt(true));
 
-  ASSERT_EQ(BubbleType::LOCAL_CVC_SAVE, controller()->GetBubbleType());
+  ASSERT_EQ(PaymentsBubbleType::kLocalCvcSave,
+            controller()->GetPaymentsBubbleType());
   ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
   EXPECT_EQ(controller()->GetWindowTitle(), u"Save security code?");
   EXPECT_EQ(controller()->GetExplanatoryMessage(),
@@ -968,19 +1554,63 @@ TEST_F(SaveCardBubbleControllerImplTest, LocalCvcOnlySaveDialogContent) {
             u"faster checkout");
 }
 
-TEST_F(SaveCardBubbleControllerImplTest, UploadCvcOnlySaveDialogContent) {
+class SaveCvcBubbleControllerImplTestWithWalletBranding
+    : public SaveCardBubbleControllerImplTest {
+ public:
+  SaveCvcBubbleControllerImplTestWithWalletBranding() {
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kAutofillEnableWalletBranding);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(SaveCvcBubbleControllerImplTestWithWalletBranding,
+       UploadCvcOnlySaveDialogContent) {
   // Show the server CVC save bubble.
   ShowUploadBubble(
       /*options=*/SaveCreditCardOptions()
           .with_card_save_type(CardSaveType::kCvcSaveOnly)
           .with_show_prompt(true));
 
-  ASSERT_EQ(BubbleType::UPLOAD_CVC_SAVE, controller()->GetBubbleType());
+  ASSERT_EQ(PaymentsBubbleType::kUploadCvcSave,
+            controller()->GetPaymentsBubbleType());
   ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
   EXPECT_EQ(controller()->GetWindowTitle(), u"Save security code?");
   EXPECT_EQ(controller()->GetExplanatoryMessage(),
-            u"This card's CVC will be encrypted and saved in your Google "
-            u"Account for faster checkout");
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CVC_TO_WALLET_PROMPT_EXPLANATION_UPLOAD));
+  EXPECT_TRUE(controller()->GetLegalMessageLines().empty());
+}
+
+class SaveCvcBubbleControllerImplTestWithoutWalletBranding
+    : public SaveCardBubbleControllerImplTest {
+ public:
+  SaveCvcBubbleControllerImplTestWithoutWalletBranding() {
+    scoped_feature_list_.InitAndDisableFeature(
+        features::kAutofillEnableWalletBranding);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(SaveCvcBubbleControllerImplTestWithoutWalletBranding,
+       UploadCvcOnlySaveDialogContent) {
+  // Show the server CVC save bubble.
+  ShowUploadBubble(
+      /*options=*/SaveCreditCardOptions()
+          .with_card_save_type(CardSaveType::kCvcSaveOnly)
+          .with_show_prompt(true));
+
+  ASSERT_EQ(PaymentsBubbleType::kUploadCvcSave,
+            controller()->GetPaymentsBubbleType());
+  ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
+  EXPECT_EQ(controller()->GetWindowTitle(), u"Save security code?");
+  EXPECT_EQ(controller()->GetExplanatoryMessage(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CVC_PROMPT_EXPLANATION_UPLOAD));
   EXPECT_TRUE(controller()->GetLegalMessageLines().empty());
 }
 
@@ -998,7 +1628,8 @@ TEST_F(SaveCardBubbleControllerImplTest,
   // After closing the sign-in promo, clicking the icon should bring up the
   // Manage cards bubble. Verify that the icon tooltip, the title for the
   // bubble, and the save animation reflect the correct info.
-  ASSERT_EQ(BubbleType::MANAGE_CARDS, controller()->GetBubbleType());
+  ASSERT_EQ(PaymentsBubbleType::kManageCards,
+            controller()->GetPaymentsBubbleType());
   ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
   EXPECT_EQ(controller()->GetWindowTitle(), u"Card saved");
   EXPECT_EQ(controller()->GetSavePaymentIconTooltipText(), u"Save card");
@@ -1020,7 +1651,8 @@ TEST_F(SaveCardBubbleControllerImplTest,
   // After closing the sign-in promo, clicking the icon should bring up the
   // Manage cards bubble. Verify that the icon tooltip, the title for the
   // bubble, and the save animation reflect the correct info.
-  ASSERT_EQ(BubbleType::MANAGE_CARDS, controller()->GetBubbleType());
+  ASSERT_EQ(PaymentsBubbleType::kManageCards,
+            controller()->GetPaymentsBubbleType());
   ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
   EXPECT_EQ(controller()->GetWindowTitle(), u"CVC saved");
   EXPECT_EQ(controller()->GetSavePaymentIconTooltipText(), u"Save CVC");
@@ -1035,7 +1667,8 @@ TEST_F(SaveCardBubbleControllerImplTest,
   ShowLocalBubble();
   ClickSaveButton();
   CloseAndReshowBubble();
-  ASSERT_EQ(BubbleType::MANAGE_CARDS, controller()->GetBubbleType());
+  ASSERT_EQ(PaymentsBubbleType::kManageCards,
+            controller()->GetPaymentsBubbleType());
 
   ClickSaveButton();
   EXPECT_THAT(
@@ -1115,23 +1748,27 @@ TEST_F(SaveCardBubbleControllerImplTest,
 TEST_F(SaveCardBubbleControllerImplTest,
        Upload_OnSave_ShowConfirmationBubbleView) {
   ShowUploadBubble();
-  EXPECT_EQ(controller()->GetBubbleType(), BubbleType::UPLOAD_SAVE);
+  EXPECT_EQ(controller()->GetPaymentsBubbleType(),
+            PaymentsBubbleType::kUploadSave);
   EXPECT_TRUE(controller()->IsIconVisible());
   EXPECT_TRUE(IsSaveCardBubbleVisible());
 
   controller()->OnSaveButton({});
-  EXPECT_EQ(controller()->GetBubbleType(), BubbleType::UPLOAD_IN_PROGRESS);
+  EXPECT_EQ(controller()->GetPaymentsBubbleType(),
+            PaymentsBubbleType::kUploadInProgress);
   EXPECT_TRUE(IsSaveCardBubbleVisible());
   EXPECT_FALSE(IsConfirmationBubbleVisible());
 
   ShowConfirmationBubbleView(/*card_saved=*/true);
-  EXPECT_EQ(controller()->GetBubbleType(), BubbleType::UPLOAD_COMPLETED);
+  EXPECT_EQ(controller()->GetPaymentsBubbleType(),
+            PaymentsBubbleType::kUploadComplete);
   EXPECT_FALSE(IsSaveCardBubbleVisible());
   EXPECT_TRUE(IsConfirmationBubbleVisible());
   EXPECT_TRUE(controller()->GetConfirmationUiParams().is_success);
 
   controller()->HideSaveCardBubble();
-  EXPECT_EQ(controller()->GetBubbleType(), BubbleType::INACTIVE);
+  EXPECT_EQ(controller()->GetPaymentsBubbleType(),
+            PaymentsBubbleType::kInactive);
   EXPECT_FALSE(IsConfirmationBubbleVisible());
   EXPECT_FALSE(controller()->IsIconVisible());
 }
@@ -1143,7 +1780,8 @@ TEST_F(SaveCardBubbleControllerImplTest,
   ShowConfirmationBubbleView(/*card_saved=*/false);
   EXPECT_FALSE(IsSaveCardBubbleVisible());
   EXPECT_TRUE(IsConfirmationBubbleVisible());
-  EXPECT_EQ(controller()->GetBubbleType(), BubbleType::UPLOAD_COMPLETED);
+  EXPECT_EQ(controller()->GetPaymentsBubbleType(),
+            PaymentsBubbleType::kUploadComplete);
   EXPECT_FALSE(controller()->GetConfirmationUiParams().is_success);
 }
 
@@ -1153,12 +1791,14 @@ TEST_F(SaveCardBubbleControllerImplTest,
 TEST_F(SaveCardBubbleControllerImplTest,
        Upload_OnShowConfirmationBubbleView_ThenShowUploadView) {
   ShowConfirmationBubbleView(/*card_saved=*/true);
-  EXPECT_EQ(controller()->GetBubbleType(), BubbleType::UPLOAD_COMPLETED);
+  EXPECT_EQ(controller()->GetPaymentsBubbleType(),
+            PaymentsBubbleType::kUploadComplete);
   EXPECT_TRUE(IsConfirmationBubbleVisible());
   EXPECT_TRUE(controller()->GetConfirmationUiParams().is_success);
 
   ShowUploadBubble();
-  EXPECT_EQ(controller()->GetBubbleType(), BubbleType::UPLOAD_SAVE);
+  EXPECT_EQ(controller()->GetPaymentsBubbleType(),
+            PaymentsBubbleType::kUploadSave);
   EXPECT_TRUE(IsSaveCardBubbleVisible());
   EXPECT_FALSE(IsConfirmationBubbleVisible());
   EXPECT_TRUE(controller()->IsIconVisible());
@@ -1175,8 +1815,11 @@ TEST_F(SaveCardBubbleControllerImplTest, Metrics_Upload_AfterSave_OnClose) {
   controller()->OnSaveButton({});
 
   histogram_tester.ExpectUniqueSample(
+      base::StrCat({kSaveCardPromptResultDesktopBaseHistogram, ".Server"}),
+      SaveCardPromptResultDesktop::kAccepted, 1);
+  histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.Upload.FirstShow",
-      autofill_metrics::SaveCardPromptResult::kAccepted, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kAccepted, 1);
 
   ShowConfirmationBubbleView(/*card_saved=*/true);
   CloseBubble();
@@ -1185,8 +1828,11 @@ TEST_F(SaveCardBubbleControllerImplTest, Metrics_Upload_AfterSave_OnClose) {
       "Autofill.CreditCardUpload.ConfirmationShown.CardUploaded", true, 1);
   histogram_tester.ExpectUniqueSample(
       "Autofill.CreditCardUpload.ConfirmationResult.CardUploaded",
-      autofill_metrics::SaveCardPromptResult::kNotInteracted, 1);
-  // Expect the metric not to change from the save button interaction.
+      autofill_metrics::LegacySaveCardPromptResult::kNotInteracted, 1);
+  // Expect that save card accepted metric is recorded just once from the save
+  // button interaction.
+  histogram_tester.ExpectTotalCount(
+      base::StrCat({kSaveCardPromptResultDesktopBaseHistogram, ".Server"}), 1);
   histogram_tester.ExpectTotalCount(
       "Autofill.SaveCreditCardPromptResult.Upload.FirstShow", 1);
 }
@@ -1207,7 +1853,7 @@ TEST_F(SaveCardBubbleControllerImplTest,
       "Autofill.CreditCardUpload.ConfirmationShown.CardNotUploaded", true, 1);
   histogram_tester.ExpectUniqueSample(
       "Autofill.CreditCardUpload.ConfirmationResult.CardNotUploaded",
-      autofill_metrics::SaveCardPromptResult::kNotInteracted, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kNotInteracted, 1);
 }
 
 // Test that the `Accepted` upload result metric is not recorded and the loading
@@ -1220,8 +1866,11 @@ TEST_F(SaveCardBubbleControllerImplTest, Metrics_Upload_DuringSave_OnClose) {
   controller()->OnSaveButton({});
 
   histogram_tester.ExpectUniqueSample(
+      base::StrCat({kSaveCardPromptResultDesktopBaseHistogram, ".Server"}),
+      SaveCardPromptResultDesktop::kAccepted, 1);
+  histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptResult.Upload.FirstShow",
-      autofill_metrics::SaveCardPromptResult::kAccepted, 1);
+      autofill_metrics::LegacySaveCardPromptResult::kAccepted, 1);
 
   CloseBubble();
 
@@ -1229,9 +1878,11 @@ TEST_F(SaveCardBubbleControllerImplTest, Metrics_Upload_DuringSave_OnClose) {
                                       true, 1);
   histogram_tester.ExpectUniqueSample(
       "Autofill.CreditCardUpload.LoadingResult",
-      autofill_metrics::SaveCardPromptResult::kNotInteracted, 1);
-  // Expect the upload result metric not to change from the save button
-  // interaction.
+      autofill_metrics::LegacySaveCardPromptResult::kNotInteracted, 1);
+  // Expect that save card accepted metric is recorded just once from the save
+  // button interaction.
+  histogram_tester.ExpectTotalCount(
+      base::StrCat({kSaveCardPromptResultDesktopBaseHistogram, ".Server"}), 1);
   histogram_tester.ExpectTotalCount(
       "Autofill.SaveCreditCardPromptResult.Upload.FirstShow", 1);
 }
@@ -1245,7 +1896,9 @@ TEST_F(SaveCardBubbleControllerImplTest, Metrics_Local_OnSave) {
   controller()->OnSaveButton({});
 
   histogram_tester.ExpectTotalCount(
-      "Autofill.SaveCreditCardPromptResult.Upload.FirstShow", 0);
+      base::StrCat({kSaveCardPromptResultDesktopBaseHistogram, ".Server"}), 0);
+  histogram_tester.ExpectTotalCount(
+      "Autofill.SaveCreditCardPromptResult.Local.FirstShow", 0);
 }
 
 // Test that after changing tabs, when returning to the tab with the save card,
@@ -1257,16 +1910,14 @@ TEST_F(SaveCardBubbleControllerImplTest, VisibilityChange_Upload_HideBubble) {
   EXPECT_TRUE(IsSaveCardBubbleVisible());
 
   // Simulate switching to a different tab.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::HIDDEN);
+  SimulateTabVisibilityChange(content::Visibility::HIDDEN);
   EXPECT_FALSE(IsSaveCardBubbleVisible());
 
   histogram_tester.ExpectTotalCount(
       "Autofill.SaveCreditCardPromptResult.Upload.FirstShow", 1);
 
   // Simulate returning to tab where bubble was previously shown.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::VISIBLE);
+  SimulateTabVisibilityChange(content::Visibility::VISIBLE);
 
   EXPECT_FALSE(IsSaveCardBubbleVisible());
   EXPECT_TRUE(controller()->IsIconVisible());
@@ -1283,58 +1934,47 @@ TEST_F(SaveCardBubbleControllerImplTest,
   EXPECT_TRUE(IsSaveCardBubbleVisible());
 
   controller()->OnLegalMessageLinkClicked(GURL("about:blank"));
-  // Change active web contents back to previous tab so that
-  // active_web_contents() and controller() return the correct object.
-  browser()->tab_strip_model()->ActivateTabAt(
-      browser()->tab_strip_model()->GetIndexOfTab(tab));
 
-  // Usually, the visibility changes when changing tabs but it doesn't in the
-  // test so it needs to be simulated.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::HIDDEN);
-  EXPECT_FALSE(IsSaveCardBubbleVisible());
+  // Reactivate the original tab.
+  int index = tab_strip_model_->GetIndexOfTab(tab);
+  tab_activity_simulator_.SwitchToTabAt(tab_strip_model_.get(), index);
 
   // Check that the bubble is shown when returning to the tab which previously
   // showed the bubble.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::VISIBLE);
   EXPECT_TRUE(IsSaveCardBubbleVisible());
   EXPECT_TRUE(controller()->IsIconVisible());
 
   // Check that the WebContents showing a subsequent time does not show the
   // bubble view.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::HIDDEN);
+  SimulateTabVisibilityChange(content::Visibility::HIDDEN);
   EXPECT_FALSE(IsSaveCardBubbleVisible());
 
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::VISIBLE);
-
+  SimulateTabVisibilityChange(content::Visibility::VISIBLE);
   EXPECT_FALSE(IsSaveCardBubbleVisible());
   EXPECT_TRUE(controller()->IsIconVisible());
 }
 
-// Test that while in the UPLOAD_IN_PROGRESS state, after changing tabs and
+// Test that while in the kUploadInProgress state, after changing tabs and
 // returning to the tab with the save card, the state will remain as
-// UPLOAD_IN_PROGRESS.
+// kUploadInProgress.
 TEST_F(SaveCardBubbleControllerImplTest,
        VisibilityChange_Upload_InProgressState_Retained) {
   ShowUploadBubble();
   controller()->OnSaveButton({});
   EXPECT_TRUE(IsSaveCardBubbleVisible());
-  EXPECT_EQ(controller()->GetBubbleType(), BubbleType::UPLOAD_IN_PROGRESS);
+  EXPECT_EQ(controller()->GetPaymentsBubbleType(),
+            PaymentsBubbleType::kUploadInProgress);
 
   // Simulate switching to a different tab and back to the original tab.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::HIDDEN);
+  SimulateTabVisibilityChange(content::Visibility::HIDDEN);
   EXPECT_FALSE(IsSaveCardBubbleVisible());
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::VISIBLE);
+  SimulateTabVisibilityChange(content::Visibility::VISIBLE);
 
-  EXPECT_EQ(controller()->GetBubbleType(), BubbleType::UPLOAD_IN_PROGRESS);
+  EXPECT_EQ(controller()->GetPaymentsBubbleType(),
+            PaymentsBubbleType::kUploadInProgress);
 }
 
-// Test that while in the UPLOAD_IN_PROGRESS state, if the tab is changed and
+// Test that while in the kUploadInProgress state, if the tab is changed and
 // the upload is completed, upon returning to the original tab with the save
 // card, the confirmation bubble will be showing.
 TEST_F(SaveCardBubbleControllerImplTest,
@@ -1351,24 +1991,23 @@ TEST_F(SaveCardBubbleControllerImplTest,
   TestSaveCardBubbleControllerImpl* save_card_controller = controller();
 
   // Switch to a different tab.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::HIDDEN);
-  AddTab(browser(), GURL("about:blank"));
+  content::WebContents* new_contents = AddTab(GURL("about:blank"));
+  int new_index = tab_strip_model_->GetIndexOfWebContents(new_contents);
+  tab_activity_simulator_.SwitchToTabAt(tab_strip_model_.get(), new_index);
   EXPECT_FALSE(IsSaveCardBubbleVisible());
 
   // Simulate that the upload is completed.
   save_card_controller->ShowConfirmationBubbleView(
       /*card_saved=*/true,
+      /*is_for_save_and_fill=*/false,
       /*on_confirmation_closed_callback=*/std::nullopt);
 
   // Expect that the confirmation bubble doesn't show up on the other tab.
   EXPECT_FALSE(IsConfirmationBubbleVisible());
 
   // Return to the original tab.
-  browser()->tab_strip_model()->ActivateTabAt(
-      browser()->tab_strip_model()->GetIndexOfTab(tab));
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::VISIBLE);
+  int index = tab_strip_model_->GetIndexOfTab(tab);
+  tab_activity_simulator_.SwitchToTabAt(tab_strip_model_.get(), index);
 
   // Expect that the confirmation bubble is visible.
   EXPECT_TRUE(IsConfirmationBubbleVisible());
@@ -1383,19 +2022,12 @@ TEST_F(SaveCardBubbleControllerImplTest,
   ShowUploadBubble();
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Upload.FirstShow",
-      autofill_metrics::SaveCardPromptOffer::kShown, 1);
+      SaveCardPromptOffer::kShown, 1);
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Upload.Reshows",
-      autofill_metrics::SaveCardPromptOffer::kShown, 0);
+      SaveCardPromptOffer::kShown, 0);
 
   controller()->OnLegalMessageLinkClicked(GURL("about:blank"));
-  browser()->tab_strip_model()->ActivateTabAt(
-      browser()->tab_strip_model()->GetIndexOfTab(tab));
-
-  // Usually, the visibility changes when changing tabs but it doesn't in the
-  // test so it needs to be simulated.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::HIDDEN);
 
   // Ensure that closing the bubble through clicking a link does not get logged
   // to the metrics.
@@ -1404,9 +2036,9 @@ TEST_F(SaveCardBubbleControllerImplTest,
   histogram_tester.ExpectTotalCount(
       "Autofill.SaveCreditCardPromptResult.Upload.Reshows", 0);
 
-  // Reshow bubble view.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::VISIBLE);
+  // Reactivate the original tab.
+  int index = tab_strip_model_->GetIndexOfTab(tab);
+  tab_activity_simulator_.SwitchToTabAt(tab_strip_model_.get(), index);
 
   // Expect the prompt metric not to change from the initial bubble showing
   // because this is a reshowing after returning to the original tab after a
@@ -1415,18 +2047,10 @@ TEST_F(SaveCardBubbleControllerImplTest,
   // metric) should be tracking this re-show.
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Upload.FirstShow",
-      autofill_metrics::SaveCardPromptOffer::kShown, 1);
+      SaveCardPromptOffer::kShown, 1);
   histogram_tester.ExpectUniqueSample(
       "Autofill.SaveCreditCardPromptOffer.Upload.Reshows",
-      autofill_metrics::SaveCardPromptOffer::kShown, 0);
-
-  // Ensure that metrics are recorded on a subsequent bubble close.
-  active_web_contents()->UpdateWebContentsVisibility(
-      content::Visibility::HIDDEN);
-  histogram_tester.ExpectTotalCount(
-      "Autofill.SaveCreditCardPromptResult.Upload.FirstShow", 0);
-  histogram_tester.ExpectTotalCount(
-      "Autofill.SaveCreditCardPromptResult.Upload.Reshows", 1);
+      SaveCardPromptOffer::kShown, 0);
 }
 
 // Test that `HideSaveCardBubble()` hides save card offer and confirmation
@@ -1466,10 +2090,78 @@ TEST_F(SaveCardBubbleControllerImplTest,
   EXPECT_EQ(controller()->GetPaymentBubbleView(), nullptr);
 }
 
+TEST_F(SaveCardBubbleControllerImplTest, ReturnsApplicableWindowTitle) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillEnableWalletBranding,
+       features::kAutofillEnableWalletBrandingV2},
+      /*disabled_features=*/{});
+
+  ShowUploadBubble();
+  EXPECT_EQ(l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CARD_IN_GOOGLE_WALLET_PROMPT_TITLE),
+            controller()->GetWindowTitle());
+}
+
+TEST_F(SaveCardBubbleControllerImplTest,
+       ReturnsApplicableWindowTitle_WalletBrandingV2Disabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableWalletBranding},
+      /*disabled_features=*/{features::kAutofillEnableWalletBrandingV2});
+
+  ShowUploadBubble();
+  EXPECT_EQ(l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CARD_PROMPT_TITLE_TO_CLOUD_SECURITY),
+            controller()->GetWindowTitle());
+}
+
+TEST_F(SaveCardBubbleControllerImplTest, ReturnsApplicableExplanatoryMessage) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillEnableWalletBranding,
+       features::kAutofillEnableWalletBrandingV2},
+      /*disabled_features=*/{});
+
+  ShowUploadBubble();
+  EXPECT_EQ(l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CARD_PROMPT_UPLOAD_TO_WALLET_V2_EXPLANATION),
+            controller()->GetExplanatoryMessage());
+}
+
+TEST_F(SaveCardBubbleControllerImplTest,
+       ReturnsApplicableExplanatoryMessage_WalletBrandingV2Disabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAutofillEnableWalletBranding},
+      /*disabled_features=*/{features::kAutofillEnableWalletBrandingV2});
+
+  ShowUploadBubble();
+  EXPECT_EQ(
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARD_PROMPT_UPLOAD_TO_WALLET_EXPLANATION_SECURITY),
+      controller()->GetExplanatoryMessage());
+}
+
+TEST_F(SaveCardBubbleControllerImplTest,
+       ReturnsApplicableExplanatoryMessage_WalletBrandingDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{},
+      /*disabled_features=*/{features::kAutofillEnableWalletBranding,
+                             features::kAutofillEnableWalletBrandingV2});
+
+  ShowUploadBubble();
+  EXPECT_EQ(l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CARD_PROMPT_UPLOAD_EXPLANATION_SECURITY),
+            controller()->GetExplanatoryMessage());
+}
+
 class SaveCardBubbleControllerImplTestWithCvCStorageAndFilling
     : public SaveCardBubbleControllerImplTest {
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kAutofillEnableCvcStorageAndFilling};
+
 };
 
 TEST_F(SaveCardBubbleControllerImplTestWithCvCStorageAndFilling,
@@ -1481,7 +2173,8 @@ TEST_F(SaveCardBubbleControllerImplTestWithCvCStorageAndFilling,
           .with_card_save_type(CardSaveType::kCardSaveOnly)
           .with_show_prompt(true));
 
-  ASSERT_EQ(BubbleType::LOCAL_SAVE, controller()->GetBubbleType());
+  ASSERT_EQ(PaymentsBubbleType::kLocalSave,
+            controller()->GetPaymentsBubbleType());
   ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
   EXPECT_EQ(controller()->GetWindowTitle(), u"Save card?");
   EXPECT_EQ(controller()->GetExplanatoryMessage(),
@@ -1497,7 +2190,8 @@ TEST_F(SaveCardBubbleControllerImplTestWithCvCStorageAndFilling,
           .with_card_save_type(CardSaveType::kCardSaveWithCvc)
           .with_show_prompt(true));
 
-  ASSERT_EQ(BubbleType::LOCAL_SAVE, controller()->GetBubbleType());
+  ASSERT_EQ(PaymentsBubbleType::kLocalSave,
+            controller()->GetPaymentsBubbleType());
   ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
   EXPECT_EQ(controller()->GetWindowTitle(), u"Save card?");
   EXPECT_EQ(controller()->GetExplanatoryMessage(),

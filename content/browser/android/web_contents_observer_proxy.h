@@ -24,14 +24,14 @@ class RenderFrameHost;
 // the calls it receives.
 class WebContentsObserverProxy : public WebContentsObserver {
  public:
-  WebContentsObserverProxy(JNIEnv* env, jobject obj, WebContents* web_contents);
+  explicit WebContentsObserverProxy(WebContents* web_contents);
 
   WebContentsObserverProxy(const WebContentsObserverProxy&) = delete;
   WebContentsObserverProxy& operator=(const WebContentsObserverProxy&) = delete;
 
   ~WebContentsObserverProxy() override;
 
-  void Destroy(JNIEnv* env, const base::android::JavaParamRef<jobject>& obj);
+  void Destroy(JNIEnv* env);
 
  private:
   void RenderFrameCreated(RenderFrameHost* render_frame_host) override;
@@ -58,7 +58,6 @@ class WebContentsObserverProxy : public WebContentsObserver {
   void DidFinishLoad(RenderFrameHost* render_frame_host,
                      const GURL& validated_url) override;
   void DOMContentLoaded(RenderFrameHost* render_frame_host) override;
-  void OnFirstContentfulPaintInPrimaryMainFrame() override;
   void NavigationEntryCommitted(
       const LoadCommittedDetails& load_details) override;
   void NavigationEntriesDeleted() override;
@@ -84,9 +83,10 @@ class WebContentsObserverProxy : public WebContentsObserver {
   void OnWebContentsFocused(RenderWidgetHost*) override;
   void OnWebContentsLostFocus(RenderWidgetHost*) override;
   void MediaSessionCreated(MediaSession* media_session) override;
+  void WasDiscarded() override;
 
-  base::android::ScopedJavaGlobalRef<jobject> java_observer_;
-  GURL base_url_of_last_started_data_url_;
+  base::android::ScopedJavaLocalRef<jobject> GetJavaObjectChecked(
+      JNIEnv* env) const;
 };
 
 }  // namespace content

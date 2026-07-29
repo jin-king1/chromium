@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <variant>
 #include <vector>
 
 #include "ash/constants/ash_features.h"
@@ -15,7 +16,6 @@
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
@@ -24,6 +24,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
@@ -40,53 +41,60 @@
 #include "chrome/browser/ash/login/demo_mode/demo_setup_controller.h"
 #include "chrome/browser/ash/login/oobe_screen.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/ash/policy/arc/fake_android_management_client.h"
-#include "chrome/browser/ash/settings/device_settings_cache.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/prefs/pref_service_syncable_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/ui/ash/login/fake_login_display_host.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
-#include "chromeos/ash/components/dbus/arc/arcvm_data_migrator_client.h"
-#include "chromeos/ash/components/dbus/arc/fake_arcvm_data_migrator_client.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
+#include "chromeos/ash/components/dbus/dlcservice/dlcservice_client.h"
+#include "chromeos/ash/components/dbus/dlcservice/fake_dlcservice_client.h"
 #include "chromeos/ash/components/dbus/resourced/fake_resourced_client.h"
 #include "chromeos/ash/components/dbus/resourced/resourced_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
+#include "chromeos/ash/components/dbus/upstart/fake_upstart_client.h"
 #include "chromeos/ash/components/dbus/upstart/upstart_client.h"
+#include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
 #include "chromeos/ash/components/login/auth/auth_events_recorder.h"
 #include "chromeos/ash/components/memory/swap_configuration.h"
+#include "chromeos/ash/components/settings/device_settings_cache.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
-#include "chromeos/ash/experiences/arc/dlc_installer/arc_dlc_install_hardware_checker.h"
-#include "chromeos/ash/experiences/arc/dlc_installer/arc_dlc_install_notification_manager.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
 #include "chromeos/ash/experiences/arc/session/arc_session_runner.h"
 #include "chromeos/ash/experiences/arc/test/arc_util_test_support.h"
-#include "chromeos/ash/experiences/arc/test/fake_arc_dlc_install_notification_delegate.h"
+#include "chromeos/ash/experiences/arc/test/fake_arc_platform_support.h"
 #include "chromeos/ash/experiences/arc/test/fake_arc_session.h"
-#include "chromeos/ash/experiences/arc/test/mock_arc_dlc_install_hardware_checker.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "components/account_id/account_id.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/services/app_service/public/cpp/app_service_registry.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
-#include "components/strings/grit/components_strings.h"
 #include "components/sync/test/fake_sync_change_processor.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/user_manager/fake_user_manager_delegate.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user_manager.h"
+#include "components/user_manager/user_manager_impl.h"
 #include "components/user_manager/user_names.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/test/browser_task_environment.h"
@@ -95,7 +103,6 @@
 #include "google_apis/gaia/gaia_urls.h"
 #include "net/http/http_status_code.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/l10n/l10n_util.h"
 
 // TODO(b/254819616): Replace base::RunLoop().RunUntilIdle() with
 // task_environment_.RunUntilIdle() or Run() & Quit() to make the tests less
@@ -104,6 +111,11 @@
 namespace arc {
 
 namespace {
+
+constexpr char kRegularUserEmailAddress[] = "user@example.com";
+constexpr char kPublicAccountEmailAddress[] =
+    "example@public-accounts.device-local.localhost";
+constexpr GaiaId::Literal kGaiaId("1234567890");
 
 class ArcInitialStartHandler : public ArcSessionManagerObserver {
  public:
@@ -181,15 +193,18 @@ class ArcSessionManagerInLoginScreenTest : public testing::Test {
   ArcSessionManagerInLoginScreenTest()
       : fake_user_manager_(std::make_unique<ash::FakeChromeUserManager>()) {
     ash::ConciergeClient::InitializeFake(/*fake_cicerone_client=*/nullptr);
+    ash::DlcserviceClient::InitializeFake();
     ash::SessionManagerClient::InitializeFakeInMemory();
 
     ArcSessionManager::SetUiEnabledForTesting(false);
     SetArcBlockedDueToIncompatibleFileSystemForTesting(false);
 
     arc_service_manager_ = std::make_unique<ArcServiceManager>();
-    arc_session_manager_ =
-        CreateTestArcSessionManager(std::make_unique<ArcSessionRunner>(
-            base::BindRepeating(FakeArcSession::Create)));
+    arc_dlc_installer_ = std::make_unique<ArcDlcInstaller>();
+    arc_session_manager_ = CreateTestArcSessionManager(
+        std::make_unique<ArcSessionRunner>(
+            base::BindRepeating(FakeArcSession::Create)),
+        arc_dlc_installer_.get());
   }
 
   ArcSessionManagerInLoginScreenTest(
@@ -200,8 +215,10 @@ class ArcSessionManagerInLoginScreenTest : public testing::Test {
   ~ArcSessionManagerInLoginScreenTest() override {
     arc_session_manager_->Shutdown();
     arc_session_manager_.reset();
+    arc_dlc_installer_.reset();
     arc_service_manager_.reset();
     ash::SessionManagerClient::Shutdown();
+    ash::DlcserviceClient::Shutdown();
     ash::ConciergeClient::Shutdown();
   }
 
@@ -219,6 +236,7 @@ class ArcSessionManagerInLoginScreenTest : public testing::Test {
  private:
   content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<ArcServiceManager> arc_service_manager_;
+  std::unique_ptr<ArcDlcInstaller> arc_dlc_installer_;
   std::unique_ptr<ArcSessionManager> arc_session_manager_;
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       fake_user_manager_;
@@ -282,9 +300,7 @@ class ArcSessionManagerTestBase : public testing::Test {
   ArcSessionManagerTestBase()
       : task_environment_(content::BrowserTaskEnvironment::IO_MAINLOOP,
                           base::test::TaskEnvironment::TimeSource::MOCK_TIME),
-        fake_user_manager_(std::make_unique<ash::FakeChromeUserManager>()) {
-    TestingBrowserProcess::GetGlobal()->SetLocalState(&test_local_state_);
-    RegisterLocalState(test_local_state_.registry());
+        profile_manager_(TestingBrowserProcess::GetGlobal()) {
     auth_events_recorder_ = ash::AuthEventsRecorder::CreateForTesting();
   }
 
@@ -292,13 +308,20 @@ class ArcSessionManagerTestBase : public testing::Test {
   ArcSessionManagerTestBase& operator=(const ArcSessionManagerTestBase&) =
       delete;
 
-  ~ArcSessionManagerTestBase() override {
-    TestingBrowserProcess::GetGlobal()->SetLocalState(nullptr);
-  }
+  ~ArcSessionManagerTestBase() override = default;
 
   void SetUp() override {
-    ash::ArcVmDataMigratorClient::InitializeFake();
+    ASSERT_TRUE(profile_manager_.SetUp());
+
+    session_manager_ = std::make_unique<session_manager::SessionManager>(
+        std::make_unique<session_manager::FakeSessionManagerDelegate>());
+    user_manager_.Reset(std::make_unique<user_manager::UserManagerImpl>(
+        std::make_unique<user_manager::FakeUserManagerDelegate>(),
+        TestingBrowserProcess::GetGlobal()->local_state()));
+    session_manager_->OnUserManagerCreated(user_manager_.Get());
+
     ash::ConciergeClient::InitializeFake(/*fake_cicerone_client=*/nullptr);
+    ash::DlcserviceClient::InitializeFake();
     chromeos::PowerManagerClient::InitializeFake();
     ash::SessionManagerClient::InitializeFakeInMemory();
     ash::UpstartClient::InitializeFake();
@@ -309,16 +332,28 @@ class ArcSessionManagerTestBase : public testing::Test {
     SetArcBlockedDueToIncompatibleFileSystemForTesting(false);
 
     arc_service_manager_ = std::make_unique<ArcServiceManager>();
-    arc_session_manager_ =
-        CreateTestArcSessionManager(std::make_unique<ArcSessionRunner>(
-            base::BindRepeating(FakeArcSession::Create)));
 
-    EXPECT_TRUE(temp_dir_.CreateUniqueTempDir());
-    TestingProfile::Builder profile_builder;
-    profile_builder.SetProfileName("user@example.com");
-    profile_builder.SetPath(temp_dir_.GetPath().AppendASCII("TestArcProfile"));
+    // Create the ArcDlcInstaller that will be passed to ArcSessionManager.
+    arc_dlc_installer_ = std::make_unique<ArcDlcInstaller>();
 
-    profile_ = profile_builder.Build();
+    arc_session_manager_ = CreateTestArcSessionManager(
+        std::make_unique<ArcSessionRunner>(
+            base::BindRepeating(FakeArcSession::Create)),
+        arc_dlc_installer_.get());
+
+    AccountId account_id = SimulateAddUser();
+    SimulateUserLogin(account_id);
+
+    ash::ScopedAccountIdAnnotator annotator(profile_manager_.profile_manager(),
+                                            account_id);
+
+    profile_ = profile_manager_.CreateTestingProfile(
+        account_id.GetUserEmail(),
+        std::unique_ptr<sync_preferences::PrefServiceSyncable>(),
+        base::UTF8ToUTF16(account_id.GetUserEmail()), 0 /* avatar_id */,
+        IdentityTestEnvironmentProfileAdaptor::
+            GetIdentityTestEnvironmentFactories());
+
     StartPreferenceSyncing();
 
     ASSERT_FALSE(arc_session_manager_->enable_requested());
@@ -326,24 +361,29 @@ class ArcSessionManagerTestBase : public testing::Test {
 
   void TearDown() override {
     arc_session_manager_->Shutdown();
-    profile_.reset();
+
+    profile_ = nullptr;
+    profile_manager_.DeleteAllTestingProfiles();
+
     arc_session_manager_.reset();
+    arc_dlc_installer_.reset();
     arc_service_manager_.reset();
     ash::UpstartClient::Shutdown();
     ash::SessionManagerClient::Shutdown();
     chromeos::PowerManagerClient::Shutdown();
+    ash::DlcserviceClient::Shutdown();
     ash::ConciergeClient::Shutdown();
-    ash::ArcVmDataMigratorClient::Shutdown();
-  }
-
-  ash::FakeChromeUserManager* GetFakeUserManager() const {
-    return fake_user_manager_.Get();
+    // UserManager is created after SessionManager, but destroyed after it.
+    session_manager_.reset();
+    user_manager_.Reset();
   }
 
  protected:
   content::BrowserTaskEnvironment& task_environment() {
     return task_environment_;
   }
+
+  user_manager::UserManager* user_manager() { return user_manager_.Get(); }
 
   TestingProfile* profile() { return profile_.get(); }
 
@@ -365,6 +405,22 @@ class ArcSessionManagerTestBase : public testing::Test {
     return true;
   }
 
+  // Simulates user addition. Returns AccountId for the user. This is
+  // virtual for testing.
+  virtual AccountId SimulateAddUser() {
+    const AccountId account_id(
+        AccountId::FromUserEmailGaiaId(kRegularUserEmailAddress, kGaiaId));
+    CHECK(user_manager::TestHelper(user_manager::UserManager::Get())
+              .AddRegularUser(account_id));
+    return account_id;
+  }
+
+  void SimulateUserLogin(const AccountId& account_id) {
+    session_manager_->CreateSession(
+        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id),
+        /*new_user=*/false, /*has_active_session=*/false);
+  }
+
  private:
   void StartPreferenceSyncing() const {
     PrefServiceSyncableFromProfile(profile_.get())
@@ -375,14 +431,16 @@ class ArcSessionManagerTestBase : public testing::Test {
   }
 
   content::BrowserTaskEnvironment task_environment_;
-  user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
-      fake_user_manager_;
-  session_manager::SessionManager session_manager_;
-  std::unique_ptr<TestingProfile> profile_;
+
+  apps::AppServiceRegistry app_service_registry_;
+  TestingProfileManager profile_manager_;
+  std::unique_ptr<session_manager::SessionManager> session_manager_;
+  user_manager::ScopedUserManager user_manager_;
+
+  raw_ptr<TestingProfile> profile_ = nullptr;
   std::unique_ptr<ArcServiceManager> arc_service_manager_;
+  std::unique_ptr<ArcDlcInstaller> arc_dlc_installer_;
   std::unique_ptr<ArcSessionManager> arc_session_manager_;
-  base::ScopedTempDir temp_dir_;
-  TestingPrefServiceSimple test_local_state_;
   std::unique_ptr<ash::AuthEventsRecorder> auth_events_recorder_;
 };
 
@@ -395,13 +453,7 @@ class ArcSessionManagerTest : public ArcSessionManagerTestBase {
 
   void SetUp() override {
     ArcSessionManagerTestBase::SetUp();
-    ash::DlcserviceClient::InitializeFake();
 
-    const AccountId account_id(AccountId::FromUserEmailGaiaId(
-        profile()->GetProfileUserName(), GaiaId("1234567890")));
-    ash::AnnotatedAccountId::Set(profile(), account_id);
-    GetFakeUserManager()->AddUser(account_id);
-    GetFakeUserManager()->LoginUser(account_id);
     resourced_client_ = ash::ResourcedClient::InitializeFake();
 
     ASSERT_EQ(ArcSessionManager::State::NOT_INITIALIZED,
@@ -410,7 +462,6 @@ class ArcSessionManagerTest : public ArcSessionManagerTestBase {
 
   void TearDown() override {
     resourced_client_ = nullptr;
-    ash::DlcserviceClient::Shutdown();
     ash::ResourcedClient::Shutdown();
     ArcSessionManagerTestBase::TearDown();
   }
@@ -503,6 +554,7 @@ TEST_F(ArcSessionManagerTest, SignedInWorkflowWithArcOnDemand) {
 
   // When signed-in, enabling ARC results in the READY state.
   arc_session_manager()->RequestEnable();
+  task_environment().RunUntilIdle();
   ASSERT_EQ(ArcSessionManager::State::READY, arc_session_manager()->state());
   ASSERT_TRUE(arc_session_manager()->IsActivationDelayed());
 
@@ -632,7 +684,7 @@ TEST_F(ArcSessionManagerTest,
   {
     // Emulate the situation that ARC is activated during user session start up
     // in recent three sessions, which exceeds the threshold.
-    base::Value::List history;
+    base::ListValue history;
     for (size_t i = 0; i < kHistoryThreshold; ++i) {
       history.Append(base::Value(true));
     }
@@ -1158,164 +1210,53 @@ TEST_F(ArcSessionManagerTest, RemoveDataDir_Restart) {
   arc_session_manager()->Shutdown();
 }
 
-TEST_F(ArcSessionManagerTest, ArcVmDataMigrationInProgress_RequestEnable) {
-  int restart_count = 0;
-  // Replace chrome::AttemptRestart() for testing.
-  arc_session_manager()->SetAttemptRestartCallbackForTesting(
-      base::BindLambdaForTesting([&restart_count]() { ++restart_count; }));
+TEST_F(ArcSessionManagerTest, ArcVmDataMigrationInProgress_WipeData) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kEnableArcVmDataMigration);
+
+  ash::FakeUpstartClient::Get()->StartRecordingUpstartOperations();
 
   PrefService* const prefs = profile()->GetPrefs();
   prefs->SetBoolean(prefs::kArcTermsAccepted, true);
   prefs->SetBoolean(prefs::kArcSignedIn, true);
   SetArcVmDataMigrationStatus(prefs, ArcVmDataMigrationStatus::kStarted);
 
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kEnableArcVmDataMigration);
-
-  EXPECT_EQ(prefs->GetInteger(prefs::kArcVmDataMigrationAutoResumeCount), 0);
-
   arc_session_manager()->SetProfile(profile());
   arc_session_manager()->Initialize();
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(prefs->GetInteger(prefs::kArcVmDataMigrationAutoResumeCount), 1);
-  EXPECT_EQ(restart_count, 1);
 
-  arc_session_manager()->RequestEnable();
-  base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(arc_session_manager()->state(), ArcSessionManager::State::STOPPED);
-  EXPECT_EQ(prefs->GetInteger(prefs::kArcVmDataMigrationAutoResumeCount), 1);
-  EXPECT_EQ(restart_count, 1);
-
-  arc_session_manager()->Shutdown();
-}
-
-TEST_F(ArcSessionManagerTest,
-       ArcVmDataMigrationInProgress_RequestArcDataRemoval) {
-  int restart_count = 0;
-  // Replace chrome::AttemptRestart() for testing.
-  arc_session_manager()->SetAttemptRestartCallbackForTesting(
-      base::BindLambdaForTesting([&restart_count]() { ++restart_count; }));
-
-  PrefService* const prefs = profile()->GetPrefs();
-  prefs->SetBoolean(prefs::kArcTermsAccepted, true);
-  prefs->SetBoolean(prefs::kArcSignedIn, true);
-  SetArcVmDataMigrationStatus(prefs, ArcVmDataMigrationStatus::kStarted);
-
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kEnableArcVmDataMigration);
-
-  EXPECT_EQ(prefs->GetInteger(prefs::kArcVmDataMigrationAutoResumeCount), 0);
-
-  arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
-  base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(prefs->GetInteger(prefs::kArcVmDataMigrationAutoResumeCount), 1);
-  EXPECT_EQ(restart_count, 1);
-
-  arc_session_manager()->RequestArcDataRemoval();
-  base::RunLoop().RunUntilIdle();
-  // /data removal request should persist, i.e., /data should not be removed.
-  EXPECT_TRUE(prefs->GetBoolean(prefs::kArcDataRemoveRequested));
-  EXPECT_EQ(arc_session_manager()->state(), ArcSessionManager::State::STOPPED);
-  EXPECT_EQ(prefs->GetInteger(prefs::kArcVmDataMigrationAutoResumeCount), 1);
-  EXPECT_EQ(restart_count, 1);
-
-  arc_session_manager()->Shutdown();
-}
-
-TEST_F(ArcSessionManagerTest, ArcVmDataMigration_MaxAutoResumeCountReached) {
-  int restart_count = 0;
-  // Replace chrome::AttemptRestart() for testing.
-  arc_session_manager()->SetAttemptRestartCallbackForTesting(
-      base::BindLambdaForTesting([&restart_count]() { ++restart_count; }));
-
-  PrefService* const prefs = profile()->GetPrefs();
-  prefs->SetBoolean(prefs::kArcTermsAccepted, true);
-  prefs->SetBoolean(prefs::kArcSignedIn, true);
-  SetArcVmDataMigrationStatus(prefs, ArcVmDataMigrationStatus::kStarted);
-  prefs->SetInteger(prefs::kArcVmDataMigrationAutoResumeCount,
-                    kArcVmDataMigrationMaxAutoResumeCount);
-
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kEnableArcVmDataMigration);
-
-  arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
-  base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(prefs->GetInteger(prefs::kArcVmDataMigrationAutoResumeCount),
-            kArcVmDataMigrationMaxAutoResumeCount + 1);
-
-  arc_session_manager()->RequestEnable();
-  base::RunLoop().RunUntilIdle();
-  // ARC should be blocked and auto-resume should not be triggered.
-  EXPECT_EQ(arc_session_manager()->state(), ArcSessionManager::State::STOPPED);
-  EXPECT_EQ(restart_count, 0);
-  EXPECT_EQ(prefs->GetInteger(prefs::kArcVmDataMigrationAutoResumeCount),
-            kArcVmDataMigrationMaxAutoResumeCount + 1);
-
-  arc_session_manager()->Shutdown();
-}
-
-TEST_F(ArcSessionManagerTest, ArcVmDataMigrationNecessityChecker_Necessary) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kEnableArcVmDataMigration);
-  SetArcVmDataMigrationStatus(profile()->GetPrefs(),
-                              ArcVmDataMigrationStatus::kUnnotified);
-  ash::FakeArcVmDataMigratorClient::Get()->set_has_data_to_migrate(true);
-
-  arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
-  arc_session_manager()->RequestEnable();
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_FALSE(arc_session_manager()
-                   ->GetArcSessionRunnerForTesting()
-                   ->use_virtio_blk_data());
-  EXPECT_EQ(GetArcVmDataMigrationStatus(profile()->GetPrefs()),
-            ArcVmDataMigrationStatus::kUnnotified);
-
-  arc_session_manager()->Shutdown();
-}
-
-TEST_F(ArcSessionManagerTest, ArcVmDataMigrationNecessityChecker_Unnecessary) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kEnableArcVmDataMigration);
-  SetArcVmDataMigrationStatus(profile()->GetPrefs(),
-                              ArcVmDataMigrationStatus::kUnnotified);
-  ash::FakeArcVmDataMigratorClient::Get()->set_has_data_to_migrate(false);
-
-  arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
-  arc_session_manager()->RequestEnable();
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_TRUE(arc_session_manager()
-                  ->GetArcSessionRunnerForTesting()
-                  ->use_virtio_blk_data());
-  EXPECT_EQ(GetArcVmDataMigrationStatus(profile()->GetPrefs()),
+  // The migration status should be reset to finished and data removal
+  // requested. Because the fake Upstart client handles the removal immediately
+  // in tests, the requested pref will automatically evaluate to false after
+  // completion.
+  EXPECT_EQ(GetArcVmDataMigrationStatus(prefs),
             ArcVmDataMigrationStatus::kFinished);
+  EXPECT_FALSE(prefs->GetBoolean(prefs::kArcDataRemoveRequested));
+
+  const auto ops =
+      ash::FakeUpstartClient::Get()->GetRecordedUpstartOperationsForJob(
+          "arc_2dremove_2ddata");
+  ASSERT_EQ(1u, ops.size());
+  EXPECT_EQ(ash::FakeUpstartClient::UpstartOperationType::START, ops[0].type);
 
   arc_session_manager()->Shutdown();
 }
 
-TEST_F(ArcSessionManagerTest, ArcVmDataMigrationNecessityChecker_Undetermined) {
+TEST_F(ArcSessionManagerTest, ArcVmDataMigration_Unprovisioned_ForcedFinished) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(kEnableArcVmDataMigration);
-  SetArcVmDataMigrationStatus(profile()->GetPrefs(),
-                              ArcVmDataMigrationStatus::kUnnotified);
-  ash::FakeArcVmDataMigratorClient::Get()->set_has_data_to_migrate(
-      std::nullopt);
+
+  PrefService* const prefs = profile()->GetPrefs();
+  EXPECT_FALSE(prefs->GetBoolean(prefs::kArcSignedIn));
+  SetArcVmDataMigrationStatus(prefs, ArcVmDataMigrationStatus::kUnnotified);
 
   arc_session_manager()->SetProfile(profile());
   arc_session_manager()->Initialize();
-  arc_session_manager()->RequestEnable();
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(arc_session_manager()
-                   ->GetArcSessionRunnerForTesting()
-                   ->use_virtio_blk_data());
-  EXPECT_EQ(GetArcVmDataMigrationStatus(profile()->GetPrefs()),
-            ArcVmDataMigrationStatus::kUnnotified);
+  // Migration status should be forced to finished for unprovisioned users.
+  EXPECT_EQ(GetArcVmDataMigrationStatus(prefs),
+            ArcVmDataMigrationStatus::kFinished);
 
   arc_session_manager()->Shutdown();
 }
@@ -1673,105 +1614,26 @@ TEST_F(ArcSessionManagerTest, RequestDisableWithArcDataRemoval) {
   arc_session_manager()->Shutdown();
 }
 
-// Hardware check enablement test case on the board that supports
-// the arcvm dlc method. (Only the reven board has arcvm dlc feature now).
-TEST_F(ArcSessionManagerTest, EnableHardwareCheck) {
-  cros_settings_test_helper_.ReplaceDeviceSettingsProviderWithStub();
-  cros_settings_test_helper_.InstallAttributes()->SetCloudManaged(
-      "example.com", "fake-device-id");
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      ash::switches::kRevenBranding);
-  // Add arcvm-dlc command flag.
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      ash::switches::kEnableArcVmDlc);
-  // Enable DeviceFlexArcPreloadEnabled policy.
-  cros_settings_test_helper_.SetBoolean(ash::kDeviceFlexArcPreloadEnabled,
-                                        true);
-  auto mock_hardware_checker_ =
-      std::make_unique<MockArcDlcInstallHardwareChecker>();
-  EXPECT_CALL(*mock_hardware_checker_, IsCompatible(::testing::_))
-      .WillOnce(
-          ::testing::Invoke([](base::OnceCallback<void(bool)> callback) {}));
-  // Inject the mock hardware checker into the ArcSessionManager.
-  arc_session_manager()->SetHardwareCheckerForTesting(
-      std::move(mock_hardware_checker_));
-  arc_session_manager()->ExpandPropertyFilesAndReadSalt();
-}
-
-// Verify that dlc_notification_manager_ will send any pending notifications
-// when the user profile is set.
-TEST_F(ArcSessionManagerTest, SendDlcInstallNotification) {
-  // Trigger it twice to test multi-pending-notification scenario.
-  arc_session_manager()->OnEnableArcOnRevenForTesting({}, true);
-  arc_session_manager()->OnEnableArcOnRevenForTesting({}, true);
-
-  auto fake_delegate =
-      std::make_unique<FakeArcDlcInstallNotificationDelegate>();
-  FakeArcDlcInstallNotificationDelegate* fake_delegate_ptr =
-      fake_delegate.get();
-  auto fake_dlc_notification_manager =
-      std::make_unique<ArcDlcInstallNotificationManager>(
-          std::move(fake_delegate), *ash::AnnotatedAccountId::Get(profile()));
-
-  // Check that no notifications are displayed before the profile is set.
-  EXPECT_TRUE(fake_delegate_ptr->displayed_notifications().empty());
-
-  arc_session_manager()->SetArcDlcInstallNotificationManagerForTesting(
-      std::move(fake_dlc_notification_manager));
-  SetArcvmDlcImageStatusForTesting(true);
-  profile()->GetProfilePolicyConnector()->OverrideIsManagedForTesting(true);
-
-  // Set the profile and initialize the session manager, which should process
-  // any pending notifications.
+TEST_F(ArcSessionManagerTest, TimerWithDefaultTimeoutWhenDlcDisabled) {
+  // Do not set kEnableArcVm switch. This makes IsArcVmDlcEnabled() return
+  // false.
   arc_session_manager()->SetProfile(profile());
   arc_session_manager()->Initialize();
+  arc_session_manager()->RequestEnable();
+  arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
 
-  const auto& notifications = fake_delegate_ptr->displayed_notifications();
-  ASSERT_EQ(2u, notifications.size());
-  EXPECT_EQ(notifications[0].title(),
-            l10n_util::GetStringUTF16(IDS_ARC_VM_PRELOAD_NOTIFICATION_TITLE));
-  EXPECT_EQ(notifications[0].message(),
-            l10n_util::GetStringUTF16(IDS_ARC_VM_PRELOAD_STARTED_MESSAGE));
-  EXPECT_EQ(notifications[1].title(),
-            l10n_util::GetStringUTF16(IDS_ARC_VM_PRELOAD_NOTIFICATION_TITLE));
-  EXPECT_EQ(notifications[1].message(),
-            l10n_util::GetStringUTF16(IDS_ARC_VM_PRELOAD_STARTED_MESSAGE));
-}
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+  EXPECT_FALSE(arc_session_manager()->sign_in_start_time().is_null());
 
-// Verify that the hardware check is not being run to install
-// the arcvm DLC image for unmanaged reven devices.
-TEST_F(ArcSessionManagerTest, NoArcVmInstallOnUnmanaged) {
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      ash::switches::kRevenBranding);
-  // Add arcvm-dlc command flag.
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      ash::switches::kEnableArcVmDlc);
-  auto mock_hardware_checker_ =
-      std::make_unique<MockArcDlcInstallHardwareChecker>();
-  EXPECT_CALL(*mock_hardware_checker_, IsCompatible(::testing::_)).Times(0);
-  arc_session_manager()->reset_property_files_expansion_result();
-  arc_session_manager()->ExpandPropertyFilesAndReadSalt();
-}
+  ShowErrorObserver observer(arc_session_manager());
+  EXPECT_FALSE(observer.error_info().has_value());
 
-// Verify that the hardware check is not being run to install
-// the arcvm DLC image when DeviceFlexArcPreloadEnabled policy is off.
-TEST_F(ArcSessionManagerTest, NoArcVmInstallWithPolicyOff) {
-  cros_settings_test_helper_.ReplaceDeviceSettingsProviderWithStub();
-  cros_settings_test_helper_.InstallAttributes()->SetCloudManaged(
-      "example.com", "fake-device-id");
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      ash::switches::kRevenBranding);
-  // Add arcvm-dlc command flag.
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      ash::switches::kEnableArcVmDlc);
-  // Disable DeviceFlexArcPreloadEnabled policy.
-  cros_settings_test_helper_.SetBoolean(ash::kDeviceFlexArcPreloadEnabled,
-                                        false);
-  auto mock_hardware_checker_ =
-      std::make_unique<MockArcDlcInstallHardwareChecker>();
-  EXPECT_CALL(*mock_hardware_checker_, IsCompatible(::testing::_)).Times(0);
-  arc_session_manager()->reset_property_files_expansion_result();
-  arc_session_manager()->ExpandPropertyFilesAndReadSalt();
+  // Fast forward time to trigger the timeout.
+  task_environment().FastForwardBy(base::Minutes(5));
+
+  EXPECT_TRUE(observer.error_info().has_value());
+  EXPECT_EQ(observer.error_info()->error,
+            ArcSupportHost::Error::SIGN_IN_UNKNOWN_ERROR);
 }
 
 class ArcSessionManagerArcAlwaysStartTest : public ArcSessionManagerTest {
@@ -1790,38 +1652,38 @@ class ArcSessionManagerArcAlwaysStartTest : public ArcSessionManagerTest {
 };
 
 ArcProvisioningResult CreateProvisioningResult(
-    const absl::variant<arc::mojom::GeneralSignInError,
-                        arc::mojom::GMSSignInError,
-                        arc::mojom::GMSCheckInError,
-                        arc::mojom::CloudProvisionFlowError,
-                        ArcStopReason,
-                        ChromeProvisioningTimeout>& error) {
-  if (absl::holds_alternative<arc::mojom::GeneralSignInError>(error)) {
+    const std::variant<arc::mojom::GeneralSignInError,
+                       arc::mojom::GMSSignInError,
+                       arc::mojom::GMSCheckInError,
+                       arc::mojom::CloudProvisionFlowError,
+                       ArcStopReason,
+                       ChromeProvisioningTimeout>& error) {
+  if (std::holds_alternative<arc::mojom::GeneralSignInError>(error)) {
     return ArcProvisioningResult(arc::mojom::ArcSignInResult::NewError(
         arc::mojom::ArcSignInError::NewGeneralError(
-            absl::get<arc::mojom::GeneralSignInError>(error))));
+            std::get<arc::mojom::GeneralSignInError>(error))));
   }
 
-  if (absl::holds_alternative<arc::mojom::GMSSignInError>(error)) {
+  if (std::holds_alternative<arc::mojom::GMSSignInError>(error)) {
     return ArcProvisioningResult(arc::mojom::ArcSignInResult::NewError(
         arc::mojom::ArcSignInError::NewSignInError(
-            absl::get<arc::mojom::GMSSignInError>(error))));
+            std::get<arc::mojom::GMSSignInError>(error))));
   }
 
-  if (absl::holds_alternative<arc::mojom::GMSCheckInError>(error)) {
+  if (std::holds_alternative<arc::mojom::GMSCheckInError>(error)) {
     return ArcProvisioningResult(arc::mojom::ArcSignInResult::NewError(
         arc::mojom::ArcSignInError::NewCheckInError(
-            absl::get<arc::mojom::GMSCheckInError>(error))));
+            std::get<arc::mojom::GMSCheckInError>(error))));
   }
 
-  if (absl::holds_alternative<arc::mojom::CloudProvisionFlowError>(error)) {
+  if (std::holds_alternative<arc::mojom::CloudProvisionFlowError>(error)) {
     return ArcProvisioningResult(arc::mojom::ArcSignInResult::NewError(
         arc::mojom::ArcSignInError::NewCloudProvisionFlowError(
-            absl::get<arc::mojom::CloudProvisionFlowError>(error))));
+            std::get<arc::mojom::CloudProvisionFlowError>(error))));
   }
 
-  if (absl::holds_alternative<ArcStopReason>(error)) {
-    return ArcProvisioningResult(absl::get<ArcStopReason>(error));
+  if (std::holds_alternative<ArcStopReason>(error)) {
+    return ArcProvisioningResult(std::get<ArcStopReason>(error));
   }
 
   return ArcProvisioningResult(ChromeProvisioningTimeout{});
@@ -1829,12 +1691,12 @@ ArcProvisioningResult CreateProvisioningResult(
 
 struct ProvisioningErrorDisplayTestParam {
   // The reason for arc instance stopping.
-  absl::variant<arc::mojom::GeneralSignInError,
-                arc::mojom::GMSSignInError,
-                arc::mojom::GMSCheckInError,
-                arc::mojom::CloudProvisionFlowError,
-                ArcStopReason,
-                ChromeProvisioningTimeout>
+  std::variant<arc::mojom::GeneralSignInError,
+               arc::mojom::GMSSignInError,
+               arc::mojom::GMSCheckInError,
+               arc::mojom::CloudProvisionFlowError,
+               ArcStopReason,
+               ChromeProvisioningTimeout>
       error;
 
   // The error sent to arc support host.
@@ -1925,11 +1787,6 @@ class ArcSessionManagerPolicyTest
  public:
   void SetUp() override {
     ArcSessionManagerTestBase::SetUp();
-    AccountId account_id;
-    account_id = AccountId(AccountId::FromUserEmailGaiaId(
-        profile()->GetProfileUserName(), GaiaId("1234567890")));
-    GetFakeUserManager()->AddUser(account_id);
-    GetFakeUserManager()->LoginUser(account_id);
     // Mocks OOBE environment so that IsArcOobeOptInActive() returns true.
     if (is_oobe_optin()) {
       CreateLoginDisplayHost();
@@ -1939,7 +1796,6 @@ class ArcSessionManagerPolicyTest
   void TearDown() override {
     if (is_oobe_optin()) {
       fake_login_display_host_.reset();
-      TestingBrowserProcess::GetGlobal()->SetLocalState(nullptr);
     }
     ArcSessionManagerTestBase::TearDown();
   }
@@ -2090,12 +1946,12 @@ class ArcSessionManagerPublicSessionTest : public ArcSessionManagerTestBase {
   ArcSessionManagerPublicSessionTest& operator=(
       const ArcSessionManagerPublicSessionTest&) = delete;
 
-  void SetUp() override {
-    ArcSessionManagerTestBase::SetUp();
+  AccountId SimulateAddUser() override {
     const AccountId account_id(
-        AccountId::FromUserEmail(profile()->GetProfileUserName()));
-    GetFakeUserManager()->AddPublicAccountUser(account_id);
-    GetFakeUserManager()->LoginUser(account_id);
+        AccountId::FromUserEmailGaiaId(kPublicAccountEmailAddress, kGaiaId));
+    CHECK(user_manager::TestHelper(user_manager::UserManager::Get())
+              .AddPublicAccountUser(account_id.GetUserEmail()));
+    return account_id;
   }
 };
 
@@ -2105,21 +1961,11 @@ TEST_F(ArcSessionManagerPublicSessionTest, AuthFailure) {
   arc_session_manager()->RequestEnable();
   EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
 
-  // Replace chrome::AttemptUserExit() for testing.
-  // At the end of test, leave the dangling pointer |terminated|,
-  // assuming the callback is never invoked in OnProvisioningFinished()
-  // and not invoked then, including TearDown().
-  bool terminated = false;
-  arc_session_manager()->SetAttemptUserExitCallbackForTesting(
-      base::BindRepeating([](bool* terminated) { *terminated = true; },
-                          &terminated));
-
   arc::mojom::ArcSignInResultPtr result = arc::mojom::ArcSignInResult::NewError(
       arc::mojom::ArcSignInError::NewGeneralError(
           arc::mojom::GeneralSignInError::CHROME_SERVER_COMMUNICATION_ERROR));
   arc_session_manager()->OnProvisioningFinished(
       ArcProvisioningResult(std::move(result)));
-  EXPECT_FALSE(terminated);
   EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
 }
 
@@ -2136,6 +1982,10 @@ class ArcSessionOobeOptInNegotiatorTest
   void SetUp() override {
     ArcSessionManagerTest::SetUp();
 
+    TestingBrowserProcess::GetGlobal()
+        ->platform_part()
+        ->InitializeComponentManager();
+
     ArcSessionManager::SetArcTermsOfServiceOobeNegotiatorEnabledForTesting(
         true);
 
@@ -2145,6 +1995,11 @@ class ArcSessionOobeOptInNegotiatorTest
     std::unique_ptr<ash::ConsolidatedConsentScreen>
         fake_consolidated_consent_screen =
             std::make_unique<ash::ConsolidatedConsentScreen>(
+                TestingBrowserProcess::GetGlobal()->local_state(),
+                TestingBrowserProcess::GetGlobal()
+                    ->GetFeatures()
+                    ->application_locale_storage(),
+                TestingBrowserProcess::GetGlobal()->metrics_service(),
                 std::make_unique<ash::ConsolidatedConsentScreenHandler>()
                     ->AsWeakPtr(),
                 base::DoNothing());
@@ -2176,7 +2031,10 @@ class ArcSessionOobeOptInNegotiatorTest
 
     ArcSessionManager::SetArcTermsOfServiceOobeNegotiatorEnabledForTesting(
         false);
-    TestingBrowserProcess::GetGlobal()->SetLocalState(nullptr);
+
+    TestingBrowserProcess::GetGlobal()
+        ->platform_part()
+        ->ShutdownComponentManager();
 
     ArcSessionManagerTest::TearDown();
   }
@@ -2271,12 +2129,12 @@ struct ArcSessionRetryTestParam {
   // Whether data is removed on error.
   bool data_removed;
 
-  absl::variant<arc::mojom::GeneralSignInError,
-                arc::mojom::GMSSignInError,
-                arc::mojom::GMSCheckInError,
-                arc::mojom::CloudProvisionFlowError,
-                ArcStopReason,
-                ChromeProvisioningTimeout>
+  std::variant<arc::mojom::GeneralSignInError,
+               arc::mojom::GMSSignInError,
+               arc::mojom::GMSCheckInError,
+               arc::mojom::CloudProvisionFlowError,
+               ArcStopReason,
+               ChromeProvisioningTimeout>
       error;
 };
 
@@ -2333,7 +2191,7 @@ class ArcSessionRetryTest
   void SetUp() override {
     ArcSessionManagerTest::SetUp();
 
-    GetFakeUserManager()->SetIsCurrentUserNew(true);
+    user_manager()->SetIsCurrentUserNew(true);
 
     // Make negotiation not needed by switching to managed flow with other
     // preferences under the policy, similar to google.com provisioning case.
@@ -2577,6 +2435,195 @@ INSTANTIATE_TEST_SUITE_P(
     All,
     ArcTransitionToManagedTest,
     testing::Bool());
+
+class ArcSessionManagerTimerTest : public ArcSessionManagerTest {
+ public:
+  ArcSessionManagerTimerTest() {
+    // This is needed for IsArcVmDlcEnabled() to return true.
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        ash::switches::kEnableArcVm);
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        ash::switches::kEnableArcVmDlc);
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        ash::switches::kArcVmDlcHardwareRequirementSatisfied);
+  }
+
+  void SetUp() override {
+    ArcSessionManagerTest::SetUp();
+    fake_arc_platform_support_ = std::make_unique<FakeArcPlatformSupport>();
+    fake_arc_platform_support_->SetDlcEnabled(true);
+
+    dlcservice_client_ =
+        static_cast<ash::FakeDlcserviceClient*>(ash::DlcserviceClient::Get());
+  }
+
+  void TearDown() override {
+    dlcservice_client_ = nullptr;
+    fake_arc_platform_support_.reset();
+    ArcSessionManagerTest::TearDown();
+  }
+
+ protected:
+  ash::FakeDlcserviceClient* dlcservice_client() { return dlcservice_client_; }
+  std::unique_ptr<FakeArcPlatformSupport> fake_arc_platform_support_;
+
+ private:
+  raw_ptr<ash::FakeDlcserviceClient> dlcservice_client_ = nullptr;
+};
+
+TEST_F(ArcSessionManagerTimerTest, TimerNotStartedWhenAlreadyProvisioned) {
+  profile()->GetPrefs()->SetBoolean(prefs::kArcSignedIn, true);
+
+  arc_session_manager()->SetProfile(profile());
+  arc_session_manager()->Initialize();
+  arc_session_manager()->RequestEnable();
+
+  arc_session_manager()->AllowActivation(
+      ArcSessionManager::AllowActivationReason::kUserLaunchAction);
+  // When already provisioned, ARC starts directly and MaybeStartTimer() should
+  // return early.
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+  EXPECT_TRUE(arc_session_manager()->sign_in_start_time().is_null());
+}
+
+TEST_F(ArcSessionManagerTimerTest,
+       TimerStartedWithDefaultTimeoutWhenDlcServiceNotAvailable) {
+  dlcservice_client()->set_service_availability(false);
+
+  ShowErrorObserver observer(arc_session_manager());
+  EXPECT_FALSE(observer.error_info().has_value());
+
+  arc_session_manager()->SetProfile(profile());
+  arc_session_manager()->Initialize();
+  arc_session_manager()->RequestEnable();
+  arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
+
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+
+  base::RunLoop run_loop;
+  arc_session_manager()->SetProvisioningTimerStartedCallbackForTesting(
+      run_loop.QuitClosure());
+  run_loop.Run();
+
+  EXPECT_FALSE(observer.error_info().has_value());
+
+  // Fast forward time to trigger the default timeout.
+  task_environment().FastForwardBy(base::Minutes(5));
+
+  EXPECT_TRUE(observer.error_info().has_value());
+  EXPECT_EQ(observer.error_info()->error,
+            ArcSupportHost::Error::SIGN_IN_UNKNOWN_ERROR);
+}
+TEST_F(ArcSessionManagerTimerTest,
+       TimerStartedWithDefaultTimeoutWhenGetDlcStateFails) {
+  dlcservice_client()->set_get_dlc_state_error("android-vm-dlc", "test_error");
+
+  ShowErrorObserver observer(arc_session_manager());
+  EXPECT_FALSE(observer.error_info().has_value());
+
+  arc_session_manager()->SetProfile(profile());
+  arc_session_manager()->Initialize();
+  arc_session_manager()->RequestEnable();
+  arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
+
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+
+  base::RunLoop run_loop;
+  arc_session_manager()->SetProvisioningTimerStartedCallbackForTesting(
+      run_loop.QuitClosure());
+  run_loop.Run();
+
+  EXPECT_FALSE(observer.error_info().has_value());
+
+  // OnDlcCheckDoneForTimer receives kError but falls back to the default
+  // timeout instead of aborting.
+  EXPECT_FALSE(observer.error_info().has_value());
+  // The timer itself should have been started.
+  EXPECT_FALSE(arc_session_manager()->sign_in_start_time().is_null());
+
+  // Fast forward time to trigger the default timeout.
+  task_environment().FastForwardBy(base::Minutes(5));
+
+  EXPECT_TRUE(observer.error_info().has_value());
+  EXPECT_EQ(observer.error_info()->error,
+            ArcSupportHost::Error::SIGN_IN_UNKNOWN_ERROR);
+}
+
+TEST_F(ArcSessionManagerTimerTest,
+       TimerStartedWithDefaultTimeoutWhenDlcInstalled) {
+  dlcservice::DlcState dlc_state;
+  dlc_state.set_id("android-vm-dlc");
+  dlc_state.set_state(dlcservice::DlcState::INSTALLED);
+  dlcservice_client()->set_dlc_state("android-vm-dlc", dlc_state);
+
+  ShowErrorObserver observer(arc_session_manager());
+  EXPECT_FALSE(observer.error_info().has_value());
+
+  arc_session_manager()->SetProfile(profile());
+  arc_session_manager()->Initialize();
+  arc_session_manager()->RequestEnable();
+  arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
+
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+
+  base::RunLoop run_loop;
+  arc_session_manager()->SetProvisioningTimerStartedCallbackForTesting(
+      run_loop.QuitClosure());
+  run_loop.Run();
+
+  EXPECT_FALSE(observer.error_info().has_value());
+  EXPECT_FALSE(arc_session_manager()->sign_in_start_time().is_null());
+  EXPECT_FALSE(observer.error_info().has_value());
+
+  // Fast forward kArcSignInTimeout to trigger the timeout.
+  task_environment().FastForwardBy(base::Minutes(5));
+
+  EXPECT_TRUE(observer.error_info().has_value());
+  EXPECT_EQ(observer.error_info()->error,
+            ArcSupportHost::Error::SIGN_IN_UNKNOWN_ERROR);
+}
+
+TEST_F(ArcSessionManagerTimerTest,
+       TimerStartedWithExtendedTimeoutWhenDlcNotInstalled) {
+  dlcservice::DlcState dlc_state;
+  dlc_state.set_id("android-vm-dlc");
+  dlc_state.set_state(dlcservice::DlcState::INSTALLING);
+  dlcservice_client()->set_dlc_state("android-vm-dlc", dlc_state);
+
+  ShowErrorObserver observer(arc_session_manager());
+  EXPECT_FALSE(observer.error_info().has_value());
+
+  arc_session_manager()->SetProfile(profile());
+  arc_session_manager()->Initialize();
+  arc_session_manager()->RequestEnable();
+  arc_session_manager()->EmulateRequirementCheckCompletionForTesting();
+
+  EXPECT_EQ(ArcSessionManager::State::ACTIVE, arc_session_manager()->state());
+
+  base::RunLoop run_loop;
+  arc_session_manager()->SetProvisioningTimerStartedCallbackForTesting(
+      run_loop.QuitClosure());
+  run_loop.Run();
+
+  EXPECT_FALSE(observer.error_info().has_value());
+  EXPECT_FALSE(arc_session_manager()->sign_in_start_time().is_null());
+  EXPECT_FALSE(observer.error_info().has_value());
+
+  // Fast forward past the *default* timeout (kArcSignInTimeout = 5 minutes).
+  // The extended timeout applies, so nothing should fire yet.
+  task_environment().FastForwardBy(base::Minutes(5));
+  EXPECT_FALSE(observer.error_info().has_value());
+
+  // Fast forward the *additional* window that extends the timeout on Reven
+  // devices while the ARC image is being fetched from the DLC server.
+  // 10 minutes == (kRevenArcSignInTimeout - kArcSignInTimeout)
+  // so total elapsed = 15 minutes.
+  task_environment().FastForwardBy(base::Minutes(10));
+
+  EXPECT_TRUE(observer.error_info().has_value());
+  EXPECT_EQ(observer.error_info()->error,
+            ArcSupportHost::Error::SIGN_IN_UNKNOWN_ERROR);
+}
 
 }  // namespace
 }  // namespace arc

@@ -132,13 +132,19 @@ declare global {
 export namespace mojo {
   namespace internal {
     namespace interfaceSupport {
-      interface Endpoint {}
+      interface Endpoint<T> {
+        // Branding field to discern between different types of Endpoints.
+        // For more information about why branding is neceessary, please see:
+        // https://www.learningtypescript.com/articles/branded-types#branding-values
+        __brand: T;
+      }
 
-      function getEndpointForReceiver(handle: MojoHandle|Endpoint): Endpoint;
-      function acceptBufferForTesting(endpoint: Endpoint, buffer: ArrayBuffer):
-          void;
+      function getEndpointForReceiver<T>(handle: MojoHandle|
+                                         Endpoint<T>): Endpoint<T>;
+      function acceptBufferForTesting<T>(
+          endpoint: Endpoint<T>, buffer: ArrayBuffer): void;
 
-      function bind(handle: Endpoint, name: string, scope: string): void;
+      function bind<T>(handle: Endpoint<T>, name: string, scope: string): void;
 
       interface ConnectionErrorEventRouter {
         addListener(listener: Function): number;
@@ -146,25 +152,27 @@ export namespace mojo {
         dispatchErrorEvent(): void;
       }
 
-      interface PendingReceiver {
-        readonly handle: Endpoint;
+      interface PendingReceiver<T> {
+        readonly handle: Endpoint<T>;
       }
 
-      type RequestType = new(handle: Endpoint) => PendingReceiver;
+      type RequestType<T> = new(handle: Endpoint<T>) => PendingReceiver<T>;
 
       class InterfaceRemoteBase<T> {
-        constructor(requestType: RequestType, handle: Endpoint|undefined);
-        get endpoint(): Endpoint;
-        bindNewPipeAndPassReceiver(): PendingReceiver;
-        bindHandle(handle: MojoHandle|Endpoint): void;
-        associateAndPassReceiver(): PendingReceiver;
+        constructor(
+            requestType: RequestType<T>,
+            handle: Endpoint<T>|MojoHandle|undefined);
+        get endpoint(): Endpoint<T>;
+        bindNewPipeAndPassReceiver(): PendingReceiver<T>;
+        bindHandle(handle: MojoHandle|Endpoint<T>): void;
+        associateAndPassReceiver(): PendingReceiver<T>;
         unbind(): void;
         close(): void;
         getConnectionErrorEventRouter(): ConnectionErrorEventRouter;
         sendMessage(
             ordinal: number, paramStruct: mojo.internal.MojomType,
-            maybeResponseStruct: mojo.internal.MojomType|null,
-            args: any[]): Promise<any>;
+            maybeResponseStruct: mojo.internal.MojomType|null, args: any[],
+            useResultResponse: boolean): Promise<any>;
       }
 
       class InterfaceRemoteBaseWrapper<T> {
@@ -181,30 +189,30 @@ export namespace mojo {
         removeListener(id: number): boolean;
       }
 
-      class InterfaceCallbackReceiver {
+      class InterfaceCallbackReceiver<Listener> {
         constructor(router: CallbackRouter);
-        addListener(listener: Function): number;
+        addListener(listener: Listener): number;
         createReceiverHandler(expectsResponse: boolean): Function;
       }
 
-      type RemoteType<T> = new(handle: MojoHandle|Endpoint) => T;
+      type RemoteType<T, E> = new(handle: MojoHandle|Endpoint<E>) => T;
 
-      class InterfaceReceiverHelperInternal<T> {
-        constructor(remoteType: RemoteType<T>);
+      class InterfaceReceiverHelperInternal<T, E> {
+        constructor(remoteType: RemoteType<T, E>);
         registerHandler(
             ordinal: number, paramStruct: mojo.internal.MojomType,
-            responseStruct: mojo.internal.MojomType|null,
-            handler: Function): void;
+            responseStruct: mojo.internal.MojomType|null, handler: Function,
+            useResultResponse: boolean): void;
         getConnectionErrorEventRouter(): ConnectionErrorEventRouter;
       }
 
-      class InterfaceReceiverHelper<T> {
-        constructor(helper: InterfaceReceiverHelperInternal<T>);
-        bindHandle(handle: MojoHandle|Endpoint): void;
+      class InterfaceReceiverHelper<T, E> {
+        constructor(helper: InterfaceReceiverHelperInternal<T, E>);
+        bindHandle(handle: MojoHandle|Endpoint<E>): void;
         bindNewPipeAndPassRemote(): T;
         associateAndPassRemote(): T;
         close(): void;
-        flushForTesting(): Promise<void>;
+        flush(): Promise<void>;
       }
     }
 

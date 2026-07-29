@@ -16,7 +16,16 @@
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/certificate_viewer.h"
+#include "chrome/browser/glic/host/guest_util.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/grit/generated_resources.h"
@@ -37,38 +46,18 @@
 #include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/certificate_provider/certificate_provider_service.h"
-#include "chrome/browser/certificate_provider/certificate_provider_service_factory.h"
+#include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
+#include "chrome/browser/ash/certificate_provider/certificate_provider_service_factory.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_factory.h"
 #endif
 
-#if BUILDFLAG(ENABLE_GLIC)
-#include "chrome/browser/glic/glic_enabling.h"
-#include "chrome/browser/glic/glic_keyed_service.h"
-#include "chrome/browser/glic/glic_keyed_service_factory.h"
-#include "chrome/browser/glic/glic_window_controller.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#endif
-
-#if BUILDFLAG(ENABLE_GLIC)
 namespace {
 
-// Checks that `contents` is for glic, and that glic is attached.
+// Checks that `contents` is for glic.
 bool IsForGlic(content::WebContents* contents) {
-  content::WebContents* outer = contents->GetOutermostWebContents();
-  glic::GlicKeyedService* glic_service =
-      glic::GlicKeyedServiceFactory::GetGlicKeyedService(
-          outer->GetBrowserContext(),
-          /*create=*/false);
-  if (glic_service) {
-    auto& window_controller = glic_service->window_controller();
-    return window_controller.attached_browser() &&
-           window_controller.GetWebContents() == outer;
-  }
-  return false;
+  return glic::IsGlicWebUI(contents) ||
+         glic::IsGlicWebUI(contents->GetOutermostWebContents());
 }
 
 // Combines IsForGlic with glic dev switch.
@@ -79,7 +68,6 @@ bool UseGlicDevFlow(content::WebContents* contents) {
 }
 
 }  // namespace
-#endif
 
 const int CertificateSelector::kTableViewWidth = 500;
 const int CertificateSelector::kTableViewHeight = 150;
@@ -119,8 +107,7 @@ CertificateSelector::CertificateTableModel::CertificateTableModel(
     row.issuer = base::UTF8ToUTF16(cert->issuer().GetDisplayName());
     row.provider = base::UTF8ToUTF16(provider_names[i]);
     if (cert->serial_number().size() < std::numeric_limits<size_t>::max() / 2) {
-      row.serial = base::UTF8ToUTF16(base::HexEncode(
-          cert->serial_number().data(), cert->serial_number().size()));
+      row.serial = base::UTF8ToUTF16(base::HexEncode(cert->serial_number()));
     }
     rows_.push_back(row);
   }
@@ -218,11 +205,9 @@ CertificateSelector::~CertificateSelector() {
 
 // static
 bool CertificateSelector::CanShow(content::WebContents* web_contents) {
-#if BUILDFLAG(ENABLE_GLIC)
   if (UseGlicDevFlow(web_contents)) {
     return true;
   }
-#endif
 
   content::WebContents* top_level_web_contents =
       constrained_window::GetTopLevelWebContents(web_contents);
@@ -231,28 +216,26 @@ bool CertificateSelector::CanShow(content::WebContents* web_contents) {
 }
 
 void CertificateSelector::Show() {
-#if BUILDFLAG(ENABLE_GLIC)
   // In the event that glic is showing and glic-dev is enabled, always show the
   // certificate picker on the glic window. This is not fully correct, but
   // satisfies the main dev use case with minimal overhead.
   if (UseGlicDevFlow(web_contents_)) {
-    glic::GlicKeyedService* glic_service =
-        glic::GlicKeyedServiceFactory::GetGlicKeyedService(
-            web_contents_->GetBrowserContext(),
-            /*create=*/false);
-    // Technically there can be a TOCTTOU bug, but this is a dev-only flow we
-    // want to error out quickly.
-    CHECK(glic_service);
-    auto& window_controller = glic_service->window_controller();
-    Browser* browser = window_controller.attached_browser();
-    CHECK(browser);
-    SetModalType(ui::mojom::ModalType::kWindow);
-    constrained_window::CreateBrowserModalDialogViews(
-        this, browser->GetBrowserView().GetNativeWindow())
-        ->Show();
+    Profile* profile =
+        Profile::FromBrowserContext(web_contents_->GetBrowserContext());
+    BrowserWindowInterface* const browser =
+        ProfileBrowserCollection::GetForProfile(profile)
+            ->GetLastActiveBrowser();
+    if (browser) {
+      SetModalType(ui::mojom::ModalType::kWindow);
+      constrained_window::CreateBrowserModalDialogViews(
+          this, browser->GetWindow()->GetNativeWindow())
+          ->Show();
+    } else {
+      LOG(ERROR) << "Dev error. Make sure there's a browser window of the "
+                    "matching profile open.";
+    }
     return;
   }
-#endif
 
   constrained_window::ShowWebModalDialogViews(this, web_contents_);
 

@@ -19,9 +19,12 @@ ProgrammaticScrollAnimator::ProgrammaticScrollAnimator(
     ScrollableArea* scrollable_area)
     : scrollable_area_(scrollable_area) {}
 
-ProgrammaticScrollAnimator::~ProgrammaticScrollAnimator() {
-  if (on_finish_)
+ProgrammaticScrollAnimator::~ProgrammaticScrollAnimator() = default;
+
+void ProgrammaticScrollAnimator::Dispose() {
+  if (on_finish_) {
     std::move(on_finish_).Run(ScrollableArea::ScrollCompletionMode::kFinished);
+  }
 }
 
 void ProgrammaticScrollAnimator::ResetAnimationState() {
@@ -37,16 +40,24 @@ mojom::blink::ScrollType ProgrammaticScrollAnimator::GetScrollType() const {
 }
 
 void ProgrammaticScrollAnimator::ScrollToOffsetWithoutAnimation(
-    const ScrollOffset& offset) {
+    const ScrollOffset& offset,
+    cc::ScrollSourceType source_type) {
+  if (on_finish_) {
+    std::move(on_finish_)
+        .Run(ScrollableArea::ScrollCompletionMode::kInterruptedByScroll);
+  }
   CancelAnimation();
-  ScrollOffsetChanged(offset, GetScrollType());
+  source_type_ = source_type;
+  ScrollOffsetChanged(offset, GetScrollType(), source_type);
 }
 
 void ProgrammaticScrollAnimator::AnimateToOffset(
     const ScrollOffset& offset,
+    cc::ScrollSourceType source_type,
     ScrollableArea::ScrollCallback on_finish) {
-  if (run_state_ == RunState::kPostAnimationCleanup)
+  if (run_state_ == RunState::kPostAnimationCleanup) {
     ResetAnimationState();
+  }
 
   if (on_finish_) {
     std::move(on_finish_)
@@ -65,14 +76,16 @@ void ProgrammaticScrollAnimator::AnimateToOffset(
   }
   start_time_ = base::TimeTicks();
   target_offset_ = offset;
+  source_type_ = source_type;
+
   animation_curve_ = cc::ScrollOffsetAnimationCurveFactory::CreateAnimation(
       CompositorOffsetFromBlinkOffset(target_offset_),
-      cc::ScrollOffsetAnimationCurveFactory::ScrollType::kProgrammatic);
+      cc::ScrollOffsetAnimationCurve::ScrollType::kProgrammatic);
 
   scrollable_area_->RegisterForAnimation();
   if (!scrollable_area_->ScheduleAnimation()) {
     ResetAnimationState();
-    ScrollOffsetChanged(offset, GetScrollType());
+    ScrollOffsetChanged(offset, GetScrollType(), source_type);
   }
   run_state_ = RunState::kWaitingToSendToCompositor;
 }
@@ -80,8 +93,10 @@ void ProgrammaticScrollAnimator::AnimateToOffset(
 void ProgrammaticScrollAnimator::CancelAnimation() {
   DCHECK_NE(run_state_, RunState::kRunningOnCompositorButNeedsUpdate);
   ScrollAnimatorCompositorCoordinator::CancelAnimation();
-  if (on_finish_)
-    std::move(on_finish_).Run(ScrollableArea::ScrollCompletionMode::kFinished);
+  if (on_finish_) {
+    std::move(on_finish_)
+        .Run(ScrollableArea::ScrollCompletionMode::kInterruptedByScroll);
+  }
 }
 
 void ProgrammaticScrollAnimator::TickAnimation(base::TimeTicks monotonic_time) {
@@ -94,7 +109,7 @@ void ProgrammaticScrollAnimator::TickAnimation(base::TimeTicks monotonic_time) {
   bool is_finished = (elapsed_time > animation_curve_->Duration());
   ScrollOffset offset =
       BlinkOffsetFromCompositorOffset(animation_curve_->GetValue(elapsed_time));
-  ScrollOffsetChanged(offset, GetScrollType());
+  ScrollOffsetChanged(offset, GetScrollType(), source_type_);
 
   if (is_finished) {
     run_state_ = RunState::kPostAnimationCleanup;
@@ -130,6 +145,9 @@ void ProgrammaticScrollAnimator::UpdateCompositorAnimations() {
   }
 
   if (run_state_ == RunState::kWaitingToSendToCompositor) {
+    // Compositor would not aware of scroll source type of this programmatic
+    // scroll, so we will use cached `source_type_` once we send info back to
+    // the main thread in `ScrollableArea::DidCompositorScroll`.
     if (!element_id_)
       ReattachCompositorAnimationIfNeeded(
           GetScrollableArea()->GetCompositorAnimationTimeline());
@@ -154,7 +172,7 @@ void ProgrammaticScrollAnimator::UpdateCompositorAnimations() {
       animation_curve_->SetInitialValue(
           CompositorOffsetFromBlinkOffset(scrollable_area_->GetScrollOffset()));
       if (!scrollable_area_->ScheduleAnimation()) {
-        ScrollOffsetChanged(target_offset_, GetScrollType());
+        ScrollOffsetChanged(target_offset_, GetScrollType(), source_type_);
         ResetAnimationState();
       }
     }
@@ -171,7 +189,7 @@ void ProgrammaticScrollAnimator::UpdateCompositorAnimations() {
     scrollable_area_->RegisterForAnimation();
     if (!scrollable_area_->ScheduleAnimation()) {
       ResetAnimationState();
-      ScrollOffsetChanged(target_offset_, GetScrollType());
+      ScrollOffsetChanged(target_offset_, GetScrollType(), source_type_);
     }
   }
 }

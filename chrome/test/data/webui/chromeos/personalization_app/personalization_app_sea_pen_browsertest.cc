@@ -10,13 +10,13 @@
 #include "ash/webui/personalization_app/test/personalization_app_mojom_banned_mocha_test_base.h"
 #include "base/containers/span.h"
 #include "base/functional/callback_helpers.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/gtest_tags.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_mocha_test_base.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/webui/feedback/feedback_dialog.h"
-#include "components/manta/features.h"
 #include "content/public/test/browser_test.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/codec/jpeg_codec.h"
@@ -53,8 +53,6 @@ class PersonalizationAppSeaPenBrowserTest
   PersonalizationAppSeaPenBrowserTest() {
     scoped_feature_list_.InitWithFeatures(
         {
-            ::manta::features::kMantaService,
-            ::ash::features::kSeaPen,
             ::ash::features::kFeatureManagementSeaPen,
         },
         {});
@@ -98,7 +96,7 @@ class PersonalizationAppSeaPenBrowserTest
                                    uint32_t image_id) {
     auto* sea_pen_wallpaper_manager = SeaPenWallpaperManager::GetInstance();
     DCHECK(sea_pen_wallpaper_manager);
-    const AccountId account_id = GetAccountId(browser()->profile());
+    const AccountId account_id = GetAccountId(browser()->GetProfile());
     const SeaPenImage sea_pen_image = {CreateJpgBytes(), image_id};
     base::test::TestFuture<bool> save_image_future;
     sea_pen_wallpaper_manager->SaveSeaPenImage(account_id, sea_pen_image,
@@ -111,8 +109,7 @@ class PersonalizationAppSeaPenBrowserTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-// TODO(crbug.com/382330541): Fix this flaky test.
-IN_PROC_BROWSER_TEST_F(PersonalizationAppSeaPenBrowserTest, DISABLED_SeaPen) {
+IN_PROC_BROWSER_TEST_F(PersonalizationAppSeaPenBrowserTest, SeaPen) {
   RunTestWithoutTestLoader(
       "chromeos/personalization_app/personalization_app_test.js",
       "runMochaSuite('sea pen')");

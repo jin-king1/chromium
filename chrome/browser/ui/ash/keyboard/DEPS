@@ -12,12 +12,10 @@ include_rules = [
   # Whenever possible, avoid adding new //chrome dependencies to this list.
   "+chrome/browser/apps/platform_apps",
   "+chrome/browser/ash/input_method",
-  "+chrome/browser/extensions/extension_service.h",
   "+chrome/browser/media/webrtc",
   "+chrome/browser/profiles",
   "+chrome/browser/ui/browser.h",
   "+chrome/browser/ui/browser_window.h",
   "+chrome/browser/ui/tabs/tab_strip_model.h",
-  "+chrome/common",
   "+chrome/test",
 ]

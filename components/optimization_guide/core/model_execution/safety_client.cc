@@ -4,8 +4,10 @@
 
 #include "components/optimization_guide/core/model_execution/safety_client.h"
 
+#include "base/metrics/histogram_macros_local.h"
 #include "base/task/thread_pool.h"
 #include "base/types/expected.h"
+#include "components/optimization_guide/core/model_execution/on_device_features.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 
 namespace optimization_guide {
@@ -22,27 +24,33 @@ void SafetyClient::SetLanguageDetectionModel(
     return;
   }
   remote_.reset();  // The remote's assets are outdated.
-  language_detection_model_path_ = model_info->GetModelFilePath();
+  language_detection_model_path_ = model_info->model_file_path;
 }
 
 void SafetyClient::MaybeUpdateSafetyModel(
-    base::optional_ref<const ModelInfo> model_info) {
-  auto new_info = SafetyModelInfo::Load(model_info);
-  if (!new_info) {
-    safety_model_info_.reset();
+    std::unique_ptr<SafetyModelInfo> safety_model_info) {
+  if (safety_model_info_ && safety_model_info &&
+      safety_model_info_->GetVersion() == safety_model_info->GetVersion()) {
+    // We could get duplicate update notifications because this object could
+    // receive model updates from multiple profiles.
+    LOCAL_HISTOGRAM_BOOLEAN(
+        "OptimizationGuide.ModelExecution.OnDeviceTextSafetyUpdateSkipped",
+        true);
     return;
   }
+  // New safety model means new configs, fail existing sessions.
+  weak_ptr_factory_.InvalidateWeakPtrs();
+
+  safety_model_info_.reset();
   remote_.reset();  // The remote's assets are outdated.
-  safety_model_info_ = std::move(new_info);
+  safety_model_info_ = std::move(safety_model_info);
 }
 
 base::expected<std::unique_ptr<SafetyChecker>, OnDeviceModelEligibilityReason>
-SafetyClient::MakeSafetyChecker(ModelBasedCapabilityKey feature,
-                                bool can_skip) {
+SafetyClient::MakeSafetyChecker(mojom::OnDeviceFeature feature, bool can_skip) {
   if (!features::ShouldUseTextSafetyClassifierModel() || can_skip) {
     // Construct a dummy checker that always passes all checks.
-    return std::make_unique<SafetyChecker>(
-        nullptr, on_device_model::TextSafetyLoaderParams(), SafetyConfig());
+    return std::make_unique<SafetyChecker>(nullptr, SafetyConfig());
   }
   if (!safety_model_info_) {
     return base::unexpected(
@@ -59,11 +67,13 @@ SafetyClient::MakeSafetyChecker(ModelBasedCapabilityKey feature,
         OnDeviceModelEligibilityReason::kLanguageDetectionModelNotAvailable);
   }
 
-  // TODO: crbug.com/375492234 - It's weird that we pass params here. Ideally
-  // this can change so that the SafetyChecker always runs checks with the
-  // latest config.
   return std::make_unique<SafetyChecker>(weak_ptr_factory_.GetWeakPtr(),
-                                         LoaderParams(), SafetyConfig(*config));
+                                         SafetyConfig(*config));
+}
+
+void SafetyClient::StartSession(
+    mojo::PendingReceiver<on_device_model::mojom::TextSafetySession> session) {
+  GetTextSafetyModelRemote()->StartSession(std::move(session));
 }
 
 on_device_model::TextSafetyLoaderParams SafetyClient::LoaderParams() const {
@@ -72,8 +82,7 @@ on_device_model::TextSafetyLoaderParams SafetyClient::LoaderParams() const {
   // feature, since the base model remote could be used for subsequent features.
   if (safety_model_info_) {
     params.ts_paths.emplace();
-    params.ts_paths->data = safety_model_info_->GetDataPath();
-    params.ts_paths->sp_model = safety_model_info_->GetSpModelPath();
+    params.ts_paths->model = safety_model_info_->GetDataPath();
   }
   if (language_detection_model_path_) {
     params.language_paths.emplace();
@@ -82,14 +91,13 @@ on_device_model::TextSafetyLoaderParams SafetyClient::LoaderParams() const {
   return params;
 }
 
-SafetyClient::Remote& SafetyClient::GetTextSafetyModelRemote(
-    const on_device_model::TextSafetyLoaderParams& params) {
+SafetyClient::Remote& SafetyClient::GetTextSafetyModelRemote() {
   if (remote_) {
     return remote_;
   }
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock()},
-      base::BindOnce(&on_device_model::LoadTextSafetyParams, params),
+      base::BindOnce(&on_device_model::LoadTextSafetyParams, LoaderParams()),
       base::BindOnce(
           [](base::WeakPtr<SafetyClient> self,
              mojo::PendingReceiver<on_device_model::mojom::TextSafetyModel>
@@ -100,6 +108,7 @@ SafetyClient::Remote& SafetyClient::GetTextSafetyModelRemote(
               base::ThreadPool::PostTask(
                   FROM_HERE, {base::MayBlock()},
                   base::DoNothingWithBoundArgs(std::move(params)));
+              return;
             }
             self->service_client_->Get()->LoadTextSafetyModel(std::move(params),
                                                               std::move(model));

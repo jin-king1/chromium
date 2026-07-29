@@ -11,7 +11,6 @@
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/strcat.h"
@@ -20,11 +19,11 @@
 #include "chrome/browser/image_editor/image_editor_component_info.h"
 #include "chrome/browser/image_editor/screenshot_flow.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
@@ -44,6 +43,7 @@
 #include "ui/views/controls/image_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/table_layout_view.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 
 namespace {
@@ -57,11 +57,11 @@ constexpr int kImageHeightPx = 252;
 namespace sharing_hub {
 
 ScreenshotCapturedBubble::ScreenshotCapturedBubble(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor,
     content::WebContents* web_contents,
     const gfx::Image& image,
     Profile* profile)
-    : LocationBarBubbleDelegateView(anchor_view, nullptr),
+    : LocationBarBubbleDelegateView(anchor, nullptr),
       image_(image),
       web_contents_(web_contents->GetWeakPtr()),
       profile_(profile) {
@@ -173,7 +173,7 @@ const std::u16string ScreenshotCapturedBubble::GetFilenameForURL(
   }
 
   return base::ASCIIToUTF16(
-      base::StrCat({"chrome_screenshot_", url.host(), ".png"}));
+      base::StrCat({"chrome_screenshot_", url.GetHost(), ".png"}));
 }
 
 void ScreenshotCapturedBubble::DownloadButtonPressed() {
@@ -186,9 +186,11 @@ void ScreenshotCapturedBubble::DownloadButtonPressed() {
     return;
   }
 
-  Browser* browser = chrome::FindBrowserWithTab(web_contents_.get());
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+          web_contents_.get());
   content::DownloadManager* download_manager =
-      browser->profile()->GetDownloadManager();
+      browser->GetProfile()->GetDownloadManager();
   // TODO(crbug.com/40753957): Update the annotation's |setting| and
   // |chrome_policy| fields once the Sharing Hub is landed.
   net::NetworkTrafficAnnotationTag traffic_annotation =

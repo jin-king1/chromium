@@ -15,7 +15,6 @@
 #include "components/app_restore/app_restore_data.h"
 #include "components/app_restore/app_restore_utils.h"
 #include "components/app_restore/full_restore_utils.h"
-#include "components/services/app_service/public/cpp/features.h"
 #include "ui/display/screen.h"
 #include "ui/events/event_constants.h"
 #include "ui/gfx/geometry/insets.h"
@@ -32,12 +31,11 @@ bool IsAppReadyForLaunch(Profile* profile, const std::string& app_id) {
 }
 
 float GetDisplayScaleFactor(int64_t display_id) {
-  auto* screen = display::Screen::GetScreen();
+  auto* screen = display::Screen::Get();
   float scale_factor = 1;
   if (screen) {
-    scale_factor =
-        display::Screen::GetScreen()->GetPrimaryDisplay().device_scale_factor();
-    for (auto disp : display::Screen::GetScreen()->GetAllDisplays()) {
+    scale_factor = screen->GetPrimaryDisplay().device_scale_factor();
+    for (auto disp : screen->GetAllDisplays()) {
       if (disp.id() == display_id)
         scale_factor = disp.device_scale_factor();
     }

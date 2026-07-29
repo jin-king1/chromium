@@ -215,11 +215,12 @@ export class ActivityLogHistoryElement extends CrLitElement {
     };
   }
 
-  extensionId: string = '';
-  delegate: ActivityLogDelegate = new DummyActivityLogDelegate();
-  protected activityData_: ActivityGroup[] = [];
-  private pageState_: ActivityLogPageState = ActivityLogPageState.LOADING;
-  private lastSearch_: string = '';
+  accessor extensionId: string = '';
+  accessor delegate: ActivityLogDelegate = new DummyActivityLogDelegate();
+  protected accessor activityData_: ActivityGroup[] = [];
+  private accessor pageState_: ActivityLogPageState =
+      ActivityLogPageState.LOADING;
+  private accessor lastSearch_: string = '';
 
   /**
    * A promise resolver for any external files waiting for the
@@ -235,6 +236,12 @@ export class ActivityLogHistoryElement extends CrLitElement {
    */
   private rawActivities_: string = '';
 
+  override connectedCallback() {
+    super.connectedCallback();
+    this.dataFetchedResolver_ = new PromiseResolver();
+    this.refreshActivities_();
+  }
+
   override firstUpdated() {
     this.addEventListener('delete-activity-log-item', e => this.deleteItem_(e));
   }
@@ -248,12 +255,6 @@ export class ActivityLogHistoryElement extends CrLitElement {
    */
   whenDataFetched(): Promise<void> {
     return this.dataFetchedResolver_!.promise;
-  }
-
-  override connectedCallback() {
-    super.connectedCallback();
-    this.dataFetchedResolver_ = new PromiseResolver();
-    this.refreshActivities_();
   }
 
   protected shouldShowEmptyActivityLogMessage_(): boolean {

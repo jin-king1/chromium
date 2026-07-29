@@ -50,6 +50,8 @@ class OverlayPresentationContextViewControllerTest : public PlatformTest {
     EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForUIElementTimeout, ^bool {
       return presentation_finished;
     }));
+    [root_view_controller_.view layoutIfNeeded];
+    [view_controller_.view layoutIfNeeded];
   }
   ~OverlayPresentationContextViewControllerTest() override {
     // Dismisses `view_controller_` and waits for the dismissal to finish.
@@ -76,6 +78,8 @@ class OverlayPresentationContextViewControllerTest : public PlatformTest {
 // Tests that `view_controller_`'s frame is CGRectZero when there is no overlay
 // UI presented upon it.
 TEST_F(OverlayPresentationContextViewControllerTest, NoPresentedUI) {
+  [view_controller_.view setNeedsLayout];
+  [view_controller_.view layoutIfNeeded];
   CGRect container_view_frame =
       view_controller_.presentationController.containerView.frame;
   EXPECT_TRUE(CGRectEqualToRect(container_view_frame, CGRectZero));
@@ -87,13 +91,6 @@ TEST_F(OverlayPresentationContextViewControllerTest, NoPresentedUI) {
 // showing overlay UI presented over its context.
 TEST_F(OverlayPresentationContextViewControllerTest,
        PresentedOverCurrentContext) {
-  if (@available(iOS 15.7.1, *)) {
-    if (@available(iOS 15.7.2, *)) {
-    } else {
-      // TODO(crbug.com/40254110): Failing on a few 15.7.1 devices.
-      return;
-    }
-  }
   // Create a fake overlay coordinator that presents its UI over
   // `view_controller_`.
   std::unique_ptr<OverlayRequest> request =
@@ -112,6 +109,8 @@ TEST_F(OverlayPresentationContextViewControllerTest,
     return overlay_view_controller.presentingViewController &&
            !overlay_view_controller.beingPresented;
   }));
+  [view_controller_.view setNeedsLayout];
+  [view_controller_.view layoutIfNeeded];
 
   // Verify that the presentation context is resized to
   // `root_view_controller_`'s view.
@@ -133,8 +132,8 @@ TEST_F(OverlayPresentationContextViewControllerTest,
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForUIElementTimeout, ^bool {
     return !overlay_view_controller.presentingViewController;
   }));
-  [container_view layoutIfNeeded];
-  [view layoutIfNeeded];
+  [view_controller_.view setNeedsLayout];
+  [view_controller_.view layoutIfNeeded];
 
   // Verify that the views are resized to CGRectZero when nothing is presented
   // upon it.
@@ -146,13 +145,6 @@ TEST_F(OverlayPresentationContextViewControllerTest,
 // container view if it is shown using custom UIViewController presentation that
 // resizes the contianer view.
 TEST_F(OverlayPresentationContextViewControllerTest, ResizingPresentedOverlay) {
-  if (@available(iOS 15.7.1, *)) {
-    if (@available(iOS 15.7.2, *)) {
-    } else {
-      // TODO(crbug.com/40254110): Failing on a few 15.7.1 devices.
-      return;
-    }
-  }
   // Create a fake overlay coordinator that presents its UI over
   // `view_controller_` and resizes its presentation container view to
   // kWindowFrame.
@@ -173,6 +165,8 @@ TEST_F(OverlayPresentationContextViewControllerTest, ResizingPresentedOverlay) {
     return overlay_view_controller.presentingViewController &&
            !overlay_view_controller.beingPresented;
   }));
+  [view_controller_.view setNeedsLayout];
+  [view_controller_.view layoutIfNeeded];
 
   // Verify that the presentation context is resized kWindowFrame.
   UIView* container_view =
@@ -198,8 +192,8 @@ TEST_F(OverlayPresentationContextViewControllerTest, ResizingPresentedOverlay) {
   ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForUIElementTimeout, ^bool {
     return !overlay_view_controller.presentingViewController;
   }));
-  [container_view layoutIfNeeded];
-  [view layoutIfNeeded];
+  [view_controller_.view setNeedsLayout];
+  [view_controller_.view layoutIfNeeded];
 
   // Verify that the views are resized to CGRectZero when nothing is presented
   // upon it.

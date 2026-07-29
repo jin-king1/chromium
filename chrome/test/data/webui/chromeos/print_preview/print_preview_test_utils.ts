@@ -128,9 +128,7 @@ export function getCddTemplate(
       },
     },
   };
-  // <if expr="is_chromeos">
   template.capabilities!.printer.pin = {supported: true};
-  // </if>
   return template;
 }
 
@@ -330,12 +328,7 @@ export function getExtensionDestinations(): ExtensionPrinters {
 export function getDestinations(localDestinations: LocalDestinationInfo[]):
     Destination[] {
   const destinations: Destination[] = [];
-  // <if expr="not is_chromeos">
-  const origin = DestinationOrigin.LOCAL;
-  // </if>
-  // <if expr="is_chromeos">
   const origin = DestinationOrigin.CROS;
-  // </if>
   // Five destinations. FooDevice is the system default.
   [{deviceName: 'ID1', printerName: 'One'},
    {deviceName: 'ID2', printerName: 'Two'},
@@ -385,7 +378,7 @@ export function getMediaSizeCapabilityWithCustomNames(): MediaSizeCapability {
  */
 export async function triggerInputEvent(
     inputElement: HTMLInputElement|CrInputElement, input: string,
-    parentElement: HTMLElement): Promise<void> {
+    parentElement: HTMLElement): Promise<Event> {
   inputElement.value = input;
   if (inputElement.tagName === 'CR-INPUT') {
     await (inputElement as CrInputElement).updateComplete;
@@ -419,7 +412,6 @@ export function createDestinationStore(): DestinationStore {
       testListenerElement.addWebUiListener.bind(testListenerElement));
 }
 
-// <if expr="is_chromeos">
 /**
  * @return The Google Drive destination.
  */
@@ -427,7 +419,6 @@ export function getGoogleDriveDestination(): Destination {
   return new Destination(
       'Save to Drive CrOS', DestinationOrigin.LOCAL, 'Save to Google Drive');
 }
-// </if>
 
 /** @return The Save as PDF destination. */
 export function getSaveAsPdfDestination(): Destination {
@@ -443,7 +434,7 @@ export function getSaveAsPdfDestination(): Destination {
  *     process-select-change event has fired.
  */
 export function selectOption(
-    section: HTMLElement, option: string): Promise<void> {
+    section: HTMLElement, option: string): Promise<Event> {
   const select = section.shadowRoot!.querySelector('select')!;
   select.value = option;
   select.dispatchEvent(new CustomEvent('change'));

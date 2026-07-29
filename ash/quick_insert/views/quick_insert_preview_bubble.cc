@@ -26,14 +26,13 @@
 #include "ui/views/controls/image_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 
 namespace ash {
 namespace {
 
-constexpr ui::ColorId kBackgroundColor =
-    cros_tokens::kCrosSysSystemBaseElevatedOpaque;
 constexpr int kBubbleOverlapOverPicker = 4;
 constexpr int kQuickInsertBubbleCornerRadius = 12;
 constexpr gfx::Insets kMargins(8);
@@ -49,9 +48,8 @@ class RoundedPreviewImageView : public views::ImageView {
     SetImageSize(image_size);
     SetBackground(views::CreateRoundedRectBackground(
         cros_tokens::kCrosSysSeparator, radius));
-    SkPath mask;
-    mask.addRoundRect(gfx::RectToSkRect(gfx::Rect(image_size)), radius, radius);
-    SetClipPath(mask);
+    SetClipPath(SkPath::RRect(SkRRect::MakeRectXY(
+        gfx::RectToSkRect(gfx::Rect(image_size)), radius, radius)));
   }
   RoundedPreviewImageView(const RoundedPreviewImageView&) = delete;
   RoundedPreviewImageView& operator=(const RoundedPreviewImageView&) = delete;
@@ -76,7 +74,7 @@ QuickInsertPreviewBubbleView::QuickInsertPreviewBubbleView(
                                views::BubbleBorder::LEFT_CENTER,
                                views::BubbleBorder::STANDARD_SHADOW,
                                /*autosize=*/true) {
-  set_background_color(kBackgroundColor);
+  SetBackgroundColor(cros_tokens::kCrosSysSystemBaseElevatedOpaque);
 
   // Configuration for this view.
   SetLayoutManager(

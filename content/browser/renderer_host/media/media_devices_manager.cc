@@ -14,9 +14,10 @@
 #include <vector>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/sequence_checker.h"
 #include "base/strings/stringprintf.h"
@@ -25,6 +26,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_checker.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "content/browser/media/media_devices_permission_checker.h"
 #include "content/browser/renderer_host/media/media_stream_manager.h"
@@ -61,13 +63,20 @@ namespace content {
 // Do not enable by default until https://crbug.com/377749384 is fixed.
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 BASE_FEATURE(kReleaseVideoSourceProviderIfNotInUse,
-             "ReleaseVideoSourceProviderIfNotInUse",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 const base::FeatureParam<base::TimeDelta> kReleaseVideoSourceProviderTimeout{
     &kReleaseVideoSourceProviderIfNotInUse,
     "release_video_source_provider_timeout", base::Seconds(60)};
 #endif
+
+BASE_FEATURE(kEnumerateDevicesRelaxedCache,
+#if BUILDFLAG(IS_WIN)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 namespace {
 using media::mojom::DeviceEnumerationResult;
@@ -99,17 +108,20 @@ const char* DeviceTypeToString(MediaDeviceType device_type) {
 }
 
 std::string GetDevicesEnumeratedLogString(
+    uint64_t request_id,
     MediaDeviceType device_type,
     const blink::WebMediaDeviceInfoArray& device_infos) {
-  std::string str = base::StringPrintf("DevicesEnumerated({type=%s}, ",
-                                       DeviceTypeToString(device_type));
+  std::string str =
+      base::StringPrintf("DevicesEnumerated({request_id=%llu}, {type=%s}, ",
+                         request_id, DeviceTypeToString(device_type));
   base::StringAppendF(&str, "{labels=[");
-  for (const auto& device_info : device_infos)
+  for (const auto& device_info : device_infos) {
     base::StringAppendF(&str, "%s, ", device_info.label.c_str());
-  if (!str.empty()) {
+  }
+  if (device_infos.size() > 0) {
     str.erase(str.end() - 2, str.end());
   }
-  str += "])";
+  str += "]})";
   return str;
 }
 
@@ -153,7 +165,7 @@ bool LabelHasUSBModel(const std::string& label) {
 }
 
 std::string GetUSBModelFromLabel(const std::string& label) {
-  DCHECK(LabelHasUSBModel(label));
+  CHECK(LabelHasUSBModel(label), base::NotFatalUntil::M152);
   return label.substr(label.size() - 10, 9);
 }
 
@@ -181,10 +193,11 @@ void ReplaceInvalidFrameRatesWithFallback(media::VideoCaptureFormats* formats) {
   }
 }
 
-void BindDeviceNotifierFromUIThread(
-    mojo::PendingReceiver<audio::mojom::DeviceNotifier> receiver) {
+void SendDeviceNotifierToAudioService(
+    mojo::PendingReceiver<audio::mojom::DeviceNotifier>
+        device_notifier_receiver) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  GetAudioService().BindDeviceNotifier(std::move(receiver));
+  GetAudioService().BindDeviceNotifier(std::move(device_notifier_receiver));
 }
 
 void ReportVideoEnumerationStart() {
@@ -309,6 +322,10 @@ std::string GuessVideoGroupID(const blink::WebMediaDeviceInfoArray& audio_infos,
   return video_info.device_id;
 }
 
+bool MediaDevicesManager::IsRelaxedCacheFeatureEnabled() {
+  return base::FeatureList::IsEnabled(kEnumerateDevicesRelaxedCache);
+}
+
 struct MediaDevicesManager::EnumerationRequest {
   EnumerationRequest(const BoolDeviceTypes& requested_types,
                      EnumerationCallback callback)
@@ -330,18 +347,50 @@ struct MediaDevicesManager::EnumerationRequest {
 // on each device change. The cost of performing multiple redundant
 // invalidations is significantly lower than the cost of issuing multiple
 // redundant enumerations.
+// In some rare cases, issuing an enumeration might also trigger (spurious)
+// system notifications. This can cause an infinite loop of
+// enumerations/notifications that can keep a cache invalid indefinitely
+// (see https://crbug.com/325590346) and leave the system consuming resources.
+// To prevent this, the cache enters a relaxed mode after multiple spurious
+// invalidations, such that further invalidations are ignored and the cache is
+// considered valid for some time after an enumeration.
 class MediaDevicesManager::CacheInfo {
  public:
-  CacheInfo() = default;
+  explicit CacheInfo(bool allow_relaxed_mode)
+      : allow_relaxed_mode_(allow_relaxed_mode) {}
 
   void InvalidateCache() {
     DCHECK(thread_checker_.CalledOnValidThread());
     seq_last_invalidation_ = NewEventSequence();
   }
 
+  // Returns true if the cached result is valid according to the cache policy
+  // after receiving a new value from the lower layers (as a result of a
+  // low-level enumeration request).
+  // In normal cache mode the result is considered invalid if a new invalidation
+  // was received after the low-level enumeration started.
+  // In relaxed mode the result is valid as long as it is recent enough,
+  // regardless of any invalidations.
   bool IsLastUpdateValid() const {
     DCHECK(thread_checker_.CalledOnValidThread());
-    return seq_last_update_ > seq_last_invalidation_ && !is_update_ongoing_;
+    return (seq_last_update_ > seq_last_invalidation_ && !is_update_ongoing_) ||
+           (IsRelaxedCacheFeatureEnabled() && is_in_relaxed_mode_ &&
+            !IsCacheExpired());
+  }
+
+  // Returns true if the current cached values need to be updated upon receiving
+  // an invalidation, depending on the cache policy.
+  // This is intended to be used to decide if a new low-level enumeration needs
+  // to be issued.
+  // In normal cache mode, the cache needs to be updated as soon as an
+  // invalidation is received.
+  // In relaxed mode if the cached value is recent enough, it does not need to
+  // be updated even if there is an invalidation.
+  bool NeedsUpdateUponInvalidation() const {
+    CHECK(IsRelaxedCacheFeatureEnabled());
+    return is_in_relaxed_mode_
+               ? seq_last_invalidation_ > seq_last_update_ && IsCacheExpired()
+               : seq_last_invalidation_ > seq_last_update_;
   }
 
   void UpdateStarted() {
@@ -355,6 +404,10 @@ class MediaDevicesManager::CacheInfo {
     DCHECK(thread_checker_.CalledOnValidThread());
     DCHECK(is_update_ongoing_);
     is_update_ongoing_ = false;
+    if (IsRelaxedCacheFeatureEnabled() && is_in_relaxed_mode_) {
+      seq_last_update_ = NewEventSequence();
+      time_last_update_ = base::TimeTicks::Now();
+    }
   }
 
   bool is_update_ongoing() const {
@@ -362,7 +415,37 @@ class MediaDevicesManager::CacheInfo {
     return is_update_ongoing_;
   }
 
+  // This should be called whenever a legitimate reason to allow a future
+  // low-level device enumeration is detected.
+  void ResetSpuriousInvalidations() {
+    DCHECK(thread_checker_.CalledOnValidThread());
+    CHECK(IsRelaxedCacheFeatureEnabled());
+    num_spurious_invalidations_ = 0;
+  }
+
+  // This should be called whenever a low-level enumeration does not result in
+  // changes to the cache.
+  void RecordSpuriousInvalidation() {
+    DCHECK(thread_checker_.CalledOnValidThread());
+    CHECK(IsRelaxedCacheFeatureEnabled());
+    if (is_in_relaxed_mode_ || !allow_relaxed_mode_) {
+      return;
+    }
+    if (++num_spurious_invalidations_ >= kMaxSpuriousInvalidations) {
+      is_in_relaxed_mode_ = true;
+      ResetSpuriousInvalidations();
+    }
+  }
+
+  bool allow_relaxed_mode() const { return allow_relaxed_mode_; }
+
  private:
+  bool IsCacheExpired() const {
+    CHECK(IsRelaxedCacheFeatureEnabled());
+    return (base::TimeTicks::Now() - time_last_update_) >=
+           kExpireTimeInRelaxedMode;
+  }
+
   int64_t NewEventSequence() {
     DCHECK(thread_checker_.CalledOnValidThread());
     return ++current_event_sequence_;
@@ -372,6 +455,16 @@ class MediaDevicesManager::CacheInfo {
   int64_t seq_last_update_ = 0;
   int64_t seq_last_invalidation_ = 0;
   bool is_update_ongoing_ = false;
+  int num_spurious_invalidations_ = 0;
+  const bool allow_relaxed_mode_;
+  // This is eventually set to true on systems where the normal cache policy
+  // can result in notification loops. Once set to true, it is never set back
+  // to false in order to avoid these loops. See https://crbug.com/325590346.
+  // An invariant that must be preserved at all times is that
+  // `is_in_relaxed_mode_` can be set to true only if `allow_relaxed_mode_` is
+  // true.
+  bool is_in_relaxed_mode_ = false;
+  base::TimeTicks time_last_update_;
   base::ThreadChecker thread_checker_;
 };
 
@@ -395,9 +488,11 @@ MediaDevicesManager::SubscriptionRequest::operator=(SubscriptionRequest&&) =
 class MediaDevicesManager::AudioServiceDeviceListener
     : public audio::mojom::DeviceListener {
  public:
-  AudioServiceDeviceListener(base::RepeatingClosure disconnect_cb)
-      : disconnect_cb_(std::move(disconnect_cb)) {
-    ConnectToService();
+  AudioServiceDeviceListener(base::RepeatingClosure invalidate_cache_cb,
+                             base::RepeatingClosure enumerate_system_devices_cb)
+      : invalidate_cache_cb_(std::move(invalidate_cache_cb)),
+        enumerate_system_devices_cb_(std::move(enumerate_system_devices_cb)) {
+    ConnectToService(/*is_reconnect=*/false);
   }
 
   AudioServiceDeviceListener(const AudioServiceDeviceListener&) = delete;
@@ -413,40 +508,49 @@ class MediaDevicesManager::AudioServiceDeviceListener
   }
 
  private:
-  void ConnectToService() {
+  void ConnectToService(bool is_reconnect) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     DCHECK(!mojo_audio_device_notifier_);
     DCHECK(!receiver_.is_bound());
+    CHECK(enumerate_system_devices_cb_);
+    mojo::PendingReceiver<audio::mojom::DeviceNotifier>
+        device_notifier_receiver =
+            mojo_audio_device_notifier_.BindNewPipeAndPassReceiver();
     GetUIThreadTaskRunner({})->PostTask(
-        FROM_HERE,
-        base::BindOnce(
-            &BindDeviceNotifierFromUIThread,
-            mojo_audio_device_notifier_.BindNewPipeAndPassReceiver()));
+        FROM_HERE, base::BindOnce(&SendDeviceNotifierToAudioService,
+                                  std::move(device_notifier_receiver)));
     mojo_audio_device_notifier_.set_disconnect_handler(base::BindOnce(
         &MediaDevicesManager::AudioServiceDeviceListener::OnConnectionError,
         weak_factory_.GetWeakPtr()));
     mojo_audio_device_notifier_->RegisterListener(
         receiver_.BindNewPipeAndPassRemote());
+
+    if (is_reconnect) {
+      enumerate_system_devices_cb_.Run();
+    }
   }
 
   void OnConnectionError() {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    CHECK(disconnect_cb_);
+    CHECK(invalidate_cache_cb_);
     mojo_audio_device_notifier_.reset();
     receiver_.reset();
-    disconnect_cb_.Run();
+    invalidate_cache_cb_.Run();
 
     // Resetting the error handler in a posted task since doing it synchronously
     // results in a browser crash. See https://crbug.com/845142.
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(&AudioServiceDeviceListener::ConnectToService,
-                                  weak_factory_.GetWeakPtr()));
+        FROM_HERE,
+        base::BindOnce(&AudioServiceDeviceListener::ConnectToService,
+                       weak_factory_.GetWeakPtr(), /*is_reconnect=*/true));
   }
 
-  // |disconnect_cb_| is a callback used to invalidate the cache and do a
-  // fresh enumeration to avoid losing out on the changes that might happen
-  // when the audio service is not active.
-  const base::RepeatingClosure disconnect_cb_;
+  // |invalidate_cache_cb_| is a callback used to invalidate the cache upon
+  // disconnection.
+  const base::RepeatingClosure invalidate_cache_cb_;
+  // |enumerate_system_devices_cb_| is a callback used to force a fresh
+  // enumeration upon successful reconnection.
+  const base::RepeatingClosure enumerate_system_devices_cb_;
   mojo::Receiver<audio::mojom::DeviceListener> receiver_{this};
   mojo::Remote<audio::mojom::DeviceNotifier> mojo_audio_device_notifier_;
 
@@ -467,7 +571,6 @@ MediaDevicesManager::MediaDevicesManager(
       stop_removed_input_device_cb_(std::move(stop_removed_input_device_cb)),
       ui_input_device_change_cb_(std::move(ui_input_device_change_cb)),
       permission_checker_(std::make_unique<MediaDevicesPermissionChecker>()),
-      cache_infos_(static_cast<size_t>(MediaDeviceType::kNumMediaDeviceTypes)),
       get_salt_and_origin_cb_(
           base::BindRepeating(&GetMediaDeviceSaltAndOrigin)) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
@@ -475,10 +578,22 @@ MediaDevicesManager::MediaDevicesManager(
   DCHECK(video_capture_manager_.get());
   DCHECK(!stop_removed_input_device_cb_.is_null());
   DCHECK(!ui_input_device_change_cb_.is_null());
-  SendLogMessage("MediaDevicesManager()");
+  // Enable relaxed mode only for cameras.
+  // Audio devices do not need relaxed mode and it can interfere with bluetooth
+  // notifications. See https://crbug.com/417256410
+  cache_infos_.emplace_back(/*allow_relaxed_mode=*/false);
+  cache_infos_.emplace_back(/*allow_relaxed_mode=*/true);
+  cache_infos_.emplace_back(/*allow_relaxed_mode=*/false);
+  CHECK_EQ(cache_infos_.size(),
+           static_cast<size_t>(MediaDeviceType::kNumMediaDeviceTypes));
+  CHECK(!cache_infos_[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)]
+             .allow_relaxed_mode());
+  CHECK(cache_infos_[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)]
+            .allow_relaxed_mode());
+  CHECK(!cache_infos_[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)]
+             .allow_relaxed_mode());
   cache_policies_.fill(CachePolicy::NO_CACHE);
 }
-
 MediaDevicesManager::~MediaDevicesManager() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
@@ -490,23 +605,40 @@ MediaDevicesManager::~MediaDevicesManager() {
 
 void MediaDevicesManager::EnumerateDevices(
     const BoolDeviceTypes& requested_types,
-    EnumerationCallback callback) {
+    EnumerationCallback callback,
+    uint64_t request_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  SendLogMessage(
+      base::StringPrintf("EnumerateDevices({request_id=%llu})", request_id));
   bool start_audio_monitoring =
       requested_types[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)] ||
       requested_types[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)];
   bool start_video_monitoring =
       requested_types[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)];
-  StartMonitoring(DeviceMonitoringMode(start_audio_monitoring),
-                  DeviceMonitoringMode(start_video_monitoring));
+
+  DeviceStartMonitoringMode start_mode = DeviceStartMonitoringMode::kNone;
+  if (start_audio_monitoring && start_video_monitoring) {
+    start_mode = DeviceStartMonitoringMode::kStartAudioAndVideo;
+  } else if (start_audio_monitoring) {
+    start_mode = DeviceStartMonitoringMode::kStartAudio;
+  } else if (start_video_monitoring) {
+    start_mode = DeviceStartMonitoringMode::kStartVideo;
+  }
+  StartMonitoringAndPopulateCache(request_id, start_mode);
 
   client_requests_.emplace_back(requested_types, std::move(callback));
   bool all_results_cached = true;
   for (size_t i = 0;
        i < static_cast<size_t>(MediaDeviceType::kNumMediaDeviceTypes); ++i) {
+    if (IsRelaxedCacheFeatureEnabled()) {
+      // Reset the spurious invalidation count in case of a new client request
+      // to reduce the probability of entering relaxed mode in the cache and
+      // returning potentially outdated results.
+      cache_infos_[i].ResetSpuriousInvalidations();
+    }
     if (requested_types[i] && cache_policies_[i] == CachePolicy::NO_CACHE) {
       all_results_cached = false;
-      DoEnumerateDevices(static_cast<MediaDeviceType>(i));
+      EnumerateSystemDevices(request_id, static_cast<MediaDeviceType>(i));
     }
   }
 
@@ -518,24 +650,29 @@ void MediaDevicesManager::EnumerateDevices(
 void MediaDevicesManager::EnumerateAndRankDevices(
     GlobalRenderFrameHostId render_frame_host_id,
     const BoolDeviceTypes& requested_types,
-    EnumerationCallback callback) {
+    EnumerationCallback callback,
+    uint64_t request_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  SendLogMessage(base::StringPrintf(
+      "EnumerateAndRankDevices({request_id=%llu})", request_id));
   EnumerateDevices(
       requested_types,
       base::BindPostTask(
           GetUIThreadTaskRunner(),
           base::BindOnce(
               &RankDevices, render_frame_host_id, requested_types,
-              base::BindPostTaskToCurrentDefault(std::move(callback)))));
+              base::BindPostTaskToCurrentDefault(std::move(callback)))),
+      request_id);
 }
 
-void MediaDevicesManager::EnumerateAndRankDevices(
+void MediaDevicesManager::HandleEnumerateDevicesRequest(
     GlobalRenderFrameHostId render_frame_host_id,
     const BoolDeviceTypes& requested_types,
     bool request_video_input_capabilities,
     bool request_audio_input_capabilities,
     EnumerateDevicesCallback callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(request_video_input_capabilities &&
              requested_types[static_cast<size_t>(
                  MediaDeviceType::kMediaVideoInput)] ||
@@ -544,12 +681,26 @@ void MediaDevicesManager::EnumerateAndRankDevices(
              requested_types[static_cast<size_t>(
                  MediaDeviceType::kMediaAudioInput)] ||
          !request_audio_input_capabilities);
+  uint64_t request_id = ++next_enumeration_request_id_;
   SendLogMessage(base::StringPrintf(
-      "EnumerateDevices({render_process_id=%d}, {render_frame_id=%d}, "
-      "{request_audio=%s}, {request_video=%s})",
-      render_frame_host_id.child_id, render_frame_host_id.frame_routing_id,
-      base::ToString(request_audio_input_capabilities),
-      base::ToString(request_video_input_capabilities)));
+      "HandleEnumerateDevicesRequest({request_id=%llu}, "
+      "{render_process_id=%d}, "
+      "{render_frame_id=%d}, {audio_input=%s}, {video_input=%s}, "
+      "{audio_output=%s}, {request_audio_capabilities=%s}, "
+      "{request_video_capabilities=%s})",
+      request_id, render_frame_host_id.child_id.value(),
+      render_frame_host_id.frame_routing_id,
+      requested_types[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)]
+          ? "true"
+          : "false",
+      requested_types[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)]
+          ? "true"
+          : "false",
+      requested_types[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)]
+          ? "true"
+          : "false",
+      base::ToString(request_audio_input_capabilities).c_str(),
+      base::ToString(request_video_input_capabilities).c_str()));
 
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
@@ -557,8 +708,8 @@ void MediaDevicesManager::EnumerateAndRankDevices(
           get_salt_and_origin_cb_, render_frame_host_id,
           base::BindPostTaskToCurrentDefault(base::BindOnce(
               &MediaDevicesManager::CheckPermissionsForEnumerateDevices,
-              weak_factory_.GetWeakPtr(), render_frame_host_id, requested_types,
-              request_video_input_capabilities,
+              weak_factory_.GetWeakPtr(), request_id, render_frame_host_id,
+              requested_types, request_video_input_capabilities,
               request_audio_input_capabilities, std::move(callback)))));
 }
 
@@ -579,7 +730,7 @@ bool MediaDevicesManager::IsAudioOutputDeviceExplicitlyAuthorized(
   }
   blink::WebMediaDeviceInfo device_info;
   device_info.device_id = raw_device_id;
-  return base::Contains(authorized_devices->second, device_info);
+  return authorized_devices->second.contains(device_info);
 }
 
 void MediaDevicesManager::GetSpeakerSelectionAndMicrophonePermissionState(
@@ -587,9 +738,10 @@ void MediaDevicesManager::GetSpeakerSelectionAndMicrophonePermissionState(
     base::OnceCallback<void(PermissionDeniedState, bool)> callback) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
+  // TODO(crbug.com/379869738) Remove GetUnsafeValue.
   permission_checker_->GetSpeakerSelectionAndMicrophonePermissionState(
-      render_frame_host_id.child_id, render_frame_host_id.frame_routing_id,
-      std::move(callback));
+      render_frame_host_id.child_id.GetUnsafeValue(),
+      render_frame_host_id.frame_routing_id, std::move(callback));
 }
 
 uint32_t MediaDevicesManager::SubscribeDeviceChangeNotifications(
@@ -602,8 +754,15 @@ uint32_t MediaDevicesManager::SubscribeDeviceChangeNotifications(
       subscribe_types[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)];
   bool start_video_monitoring =
       subscribe_types[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)];
-  StartMonitoring(DeviceMonitoringMode(start_audio_monitoring),
-                  DeviceMonitoringMode(start_video_monitoring));
+  DeviceStartMonitoringMode start_mode = DeviceStartMonitoringMode::kNone;
+  if (start_audio_monitoring && start_video_monitoring) {
+    start_mode = DeviceStartMonitoringMode::kStartAudioAndVideo;
+  } else if (start_audio_monitoring) {
+    start_mode = DeviceStartMonitoringMode::kStartAudio;
+  } else if (start_video_monitoring) {
+    start_mode = DeviceStartMonitoringMode::kStartVideo;
+  }
+  StartMonitoringAndPopulateCache(0, start_mode);
 
   uint32_t subscription_id = ++last_subscription_id_;
   mojo::Remote<blink::mojom::MediaDevicesListener> media_devices_listener;
@@ -658,7 +817,8 @@ void MediaDevicesManager::UnsubscribeDeviceChangeNotifications(
 }
 
 void MediaDevicesManager::SetCachePolicy(MediaDeviceType type,
-                                         CachePolicy policy) {
+                                         CachePolicy policy,
+                                         uint64_t request_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   DCHECK(blink::IsValidMediaDeviceType(type));
   if (cache_policies_[static_cast<size_t>(type)] == policy)
@@ -668,21 +828,29 @@ void MediaDevicesManager::SetCachePolicy(MediaDeviceType type,
   // If the new policy is SYSTEM_MONITOR, issue an enumeration to populate the
   // cache.
   if (policy == CachePolicy::SYSTEM_MONITOR) {
-    cache_infos_[static_cast<size_t>(type)].InvalidateCache();
-    DoEnumerateDevices(type);
+    InvalidateCache(type);
+    EnumerateSystemDevices(request_id, type);
   }
 }
 
-void MediaDevicesManager::StartMonitoring() {
+void MediaDevicesManager::StartMonitoringAndPopulateCache(uint64_t request_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   // Start monitoring all device types.
-  StartMonitoring(DeviceMonitoringMode(true), DeviceMonitoringMode(true));
+  StartMonitoringAndPopulateCache(
+      request_id, DeviceStartMonitoringMode::kStartAudioAndVideo);
 }
 
-void MediaDevicesManager::StartMonitoring(
-    DeviceMonitoringMode audio_device_monitoring_mode,
-    DeviceMonitoringMode video_device_monitoring_mode) {
+void MediaDevicesManager::StartMonitoringAndPopulateCache(
+    uint64_t request_id,
+    DeviceStartMonitoringMode start_monitoring_mode) {
+  bool start_audio_device_monitoring =
+      (start_monitoring_mode == DeviceStartMonitoringMode::kStartAudio) ||
+      (start_monitoring_mode == DeviceStartMonitoringMode::kStartAudioAndVideo);
+  bool start_video_device_monitoring_mode =
+      (start_monitoring_mode == DeviceStartMonitoringMode::kStartVideo) ||
+      (start_monitoring_mode == DeviceStartMonitoringMode::kStartAudioAndVideo);
+
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   if (monitoring_started_for_video_ &&
       base::FeatureList::IsEnabled(kReleaseVideoSourceProviderIfNotInUse)) {
@@ -697,7 +865,7 @@ void MediaDevicesManager::StartMonitoring(
     return;
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-  if (audio_device_monitoring_mode && !monitoring_started_for_audio_ &&
+  if (start_audio_device_monitoring && !monitoring_started_for_audio_ &&
       base::FeatureList::IsEnabled(features::kAudioServiceOutOfProcess)) {
     DCHECK(!audio_service_device_listener_);
 
@@ -705,12 +873,22 @@ void MediaDevicesManager::StartMonitoring(
     // |audio_service_device_listener_|.
     audio_service_device_listener_ =
         std::make_unique<AudioServiceDeviceListener>(
-            /*disconnect_cb=*/base::BindRepeating(
+            /*invalidate_cache_cb=*/base::BindRepeating(
+                &MediaDevicesManager::InvalidateCache, base::Unretained(this),
+                MediaDeviceType::kMediaAudioInput),
+            /*enumerate_system_devices_cb=*/base::BindRepeating(
                 &MediaDevicesManager::HandleDevicesChanged,
                 base::Unretained(this), MediaDeviceType::kMediaAudioInput));
   }
 #endif
-  SendLogMessage("StartMonitoring()");
+  if ((start_audio_device_monitoring && !monitoring_started_for_audio_) ||
+      (start_video_device_monitoring_mode && !monitoring_started_for_video_)) {
+    SendLogMessage(base::StringPrintf(
+        "StartMonitoringAndPopulateCache({request_id=%llu}, {audio=%s}, "
+        "{video=%s})",
+        request_id, start_audio_device_monitoring ? "true" : "false",
+        start_video_device_monitoring_mode ? "true" : "false"));
+  }
 
   if (!added_device_changed_observer_) {
     base::SystemMonitor::Get()->AddDevicesChangedObserver(this);
@@ -718,20 +896,20 @@ void MediaDevicesManager::StartMonitoring(
   }
 
   if (base::FeatureList::IsEnabled(features::kMediaDevicesSystemMonitorCache)) {
-    if (video_device_monitoring_mode && !monitoring_started_for_video_) {
+    if (start_video_device_monitoring_mode && !monitoring_started_for_video_) {
       SetCachePolicy(MediaDeviceType::kMediaVideoInput,
-                     CachePolicy::SYSTEM_MONITOR);
+                     CachePolicy::SYSTEM_MONITOR, request_id);
     }
 
-    if (audio_device_monitoring_mode && !monitoring_started_for_audio_) {
+    if (start_audio_device_monitoring && !monitoring_started_for_audio_) {
       SetCachePolicy(MediaDeviceType::kMediaAudioInput,
-                     CachePolicy::SYSTEM_MONITOR);
+                     CachePolicy::SYSTEM_MONITOR, request_id);
       SetCachePolicy(MediaDeviceType::kMediaAudioOutput,
-                     CachePolicy::SYSTEM_MONITOR);
+                     CachePolicy::SYSTEM_MONITOR, request_id);
     }
   }
 
-  if (video_device_monitoring_mode && !monitoring_started_for_video_) {
+  if (start_video_device_monitoring_mode && !monitoring_started_for_video_) {
 #if BUILDFLAG(IS_MAC)
     RegisterVideoCaptureDevicesChangedObserver();
 #endif
@@ -747,35 +925,46 @@ void MediaDevicesManager::StartMonitoring(
 #endif
   }
 
-  *monitoring_started_for_video_ |= *video_device_monitoring_mode;
-  *monitoring_started_for_audio_ |= *audio_device_monitoring_mode;
+  monitoring_started_for_video_ |= start_video_device_monitoring_mode;
+  monitoring_started_for_audio_ |= start_audio_device_monitoring;
 }
 
 void MediaDevicesManager::StopMonitoring() {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
 
   // Stop monitoring for the all device types.
-  StopMonitoring(DeviceMonitoringMode(true), DeviceMonitoringMode(true));
+  StopMonitoring(DeviceStopMonitoringMode::kStopAudioAndVideo);
 }
 
 void MediaDevicesManager::StopMonitoring(
-    DeviceMonitoringMode audio_device_monitoring_mode,
-    DeviceMonitoringMode video_device_monitoring_mode) {
-  if (audio_device_monitoring_mode && monitoring_started_for_audio_) {
+    DeviceStopMonitoringMode device_monitoring_mode) {
+  // Capture state before stopping
+  bool stopped_audio = monitoring_started_for_audio_;
+  bool stopped_video = monitoring_started_for_video_;
+
+  bool stop_audio_device_monitoring =
+      (device_monitoring_mode == DeviceStopMonitoringMode::kStopAudio) ||
+      (device_monitoring_mode == DeviceStopMonitoringMode::kStopAudioAndVideo);
+
+  bool stop_video_device_monitoring_mode =
+      (device_monitoring_mode == DeviceStopMonitoringMode::kStopVideo) ||
+      (device_monitoring_mode == DeviceStopMonitoringMode::kStopAudioAndVideo);
+
+  if (stop_audio_device_monitoring && monitoring_started_for_audio_) {
     audio_service_device_listener_.reset();
-    *monitoring_started_for_audio_ = false;
+    monitoring_started_for_audio_ = false;
     SetCachePolicy(MediaDeviceType::kMediaAudioInput, CachePolicy::NO_CACHE);
     SetCachePolicy(MediaDeviceType::kMediaAudioOutput, CachePolicy::NO_CACHE);
   }
 
-  if (video_device_monitoring_mode && monitoring_started_for_video_) {
+  if (stop_video_device_monitoring_mode && monitoring_started_for_video_) {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
     if (base::FeatureList::IsEnabled(kReleaseVideoSourceProviderIfNotInUse)) {
       disconnect_video_source_provider_timer_.Stop();
     }
 #endif
     video_capture_service_device_changed_observer_.reset();
-    *monitoring_started_for_video_ = false;
+    monitoring_started_for_video_ = false;
     SetCachePolicy(MediaDeviceType::kMediaVideoInput, CachePolicy::NO_CACHE);
   }
 
@@ -783,7 +972,9 @@ void MediaDevicesManager::StopMonitoring(
       added_device_changed_observer_) {
     base::SystemMonitor::Get()->RemoveDevicesChangedObserver(this);
     added_device_changed_observer_ = false;
-    SendLogMessage(base::StringPrintf("StopMonitoring([this=%p])", this));
+    SendLogMessage(base::StringPrintf("StopMonitoring({audio=%s}, {video=%s})",
+                                      stopped_audio ? "true" : "false",
+                                      stopped_video ? "true" : "false"));
   }
 }
 
@@ -863,6 +1054,7 @@ void MediaDevicesManager::SetPermissionChecker(
 }
 
 void MediaDevicesManager::CheckPermissionsForEnumerateDevices(
+    uint64_t request_id,
     GlobalRenderFrameHostId render_frame_host_id,
     const BoolDeviceTypes& requested_types,
     bool request_video_input_capabilities,
@@ -870,17 +1062,22 @@ void MediaDevicesManager::CheckPermissionsForEnumerateDevices(
     EnumerateDevicesCallback callback,
     const MediaDeviceSaltAndOrigin& salt_and_origin) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  SendLogMessage(base::StringPrintf(
+      "CheckPermissionsForEnumerateDevices({request_id=%llu})", request_id));
+  // TODO(crbug.com/379869738) Remove GetUnsafeValue.
   permission_checker_->CheckPermissions(
-      requested_types, render_frame_host_id.child_id,
+      requested_types, render_frame_host_id.child_id.GetUnsafeValue(),
       render_frame_host_id.frame_routing_id,
       base::BindOnce(&MediaDevicesManager::OnPermissionsCheckDone,
-                     weak_factory_.GetWeakPtr(), render_frame_host_id,
-                     requested_types, request_video_input_capabilities,
+                     weak_factory_.GetWeakPtr(), request_id,
+                     render_frame_host_id, requested_types,
+                     request_video_input_capabilities,
                      request_audio_input_capabilities, std::move(callback),
                      std::move(salt_and_origin)));
 }
 
 void MediaDevicesManager::OnPermissionsCheckDone(
+    uint64_t request_id,
     GlobalRenderFrameHostId render_frame_host_id,
     const MediaDevicesManager::BoolDeviceTypes& requested_types,
     bool request_video_input_capabilities,
@@ -889,6 +1086,33 @@ void MediaDevicesManager::OnPermissionsCheckDone(
     const MediaDeviceSaltAndOrigin& salt_and_origin,
     const MediaDevicesManager::BoolDeviceTypes& has_permissions) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  SendLogMessage(base::StringPrintf(
+      "OnPermissionsCheckDone({request_id=%llu}, {has_audio_permission=%s}, "
+      "{has_video_permission=%s})",
+      request_id,
+      base::ToString(has_permissions[static_cast<size_t>(
+          MediaDeviceType::kMediaAudioInput)]),
+      base::ToString(has_permissions[static_cast<size_t>(
+          MediaDeviceType::kMediaVideoInput)])));
+
+  if (requested_types[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)] &&
+      !has_permissions[static_cast<size_t>(
+          MediaDeviceType::kMediaAudioInput)]) {
+    SendLogMessage(
+        base::StringPrintf("OnPermissionsCheckDone({request_id=%llu}) => "
+                           "[WARNING: Audio permission denied by user/browser]",
+                           request_id));
+  }
+
+  if (requested_types[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)] &&
+      !has_permissions[static_cast<size_t>(
+          MediaDeviceType::kMediaVideoInput)]) {
+    SendLogMessage(
+        base::StringPrintf("OnPermissionsCheckDone({request_id=%llu}) => "
+                           "[WARNING: Video permission denied by user/browser]",
+                           request_id));
+  }
+
   // The video-capture subsystem currently does not support group IDs.
   // If video input devices are requested, also request audio input devices in
   // order to be able to use an heuristic that guesses group IDs for video
@@ -909,14 +1133,17 @@ void MediaDevicesManager::OnPermissionsCheckDone(
 
   EnumerateAndRankDevices(
       render_frame_host_id, internal_requested_types,
-      base::BindOnce(&MediaDevicesManager::OnDevicesEnumerated,
-                     weak_factory_.GetWeakPtr(), render_frame_host_id,
-                     requested_types, request_video_input_capabilities,
+      base::BindOnce(&MediaDevicesManager::OnDevicesEnumeratedAndRanked,
+                     weak_factory_.GetWeakPtr(), request_id,
+                     render_frame_host_id, requested_types,
+                     request_video_input_capabilities,
                      request_audio_input_capabilities, std::move(callback),
-                     std::move(salt_and_origin), has_permissions));
+                     std::move(salt_and_origin), has_permissions),
+      request_id);
 }
 
-void MediaDevicesManager::OnDevicesEnumerated(
+void MediaDevicesManager::OnDevicesEnumeratedAndRanked(
+    uint64_t request_id,
     GlobalRenderFrameHostId render_frame_host_id,
     const MediaDevicesManager::BoolDeviceTypes& requested_types,
     bool request_video_input_capabilities,
@@ -926,6 +1153,33 @@ void MediaDevicesManager::OnDevicesEnumerated(
     const MediaDevicesManager::BoolDeviceTypes& has_permissions,
     const MediaDeviceEnumeration& enumeration) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  SendLogMessage(
+      base::StringPrintf("OnDevicesEnumeratedAndRanked({request_id=%llu}, "
+                         "{has_audio_permission=%s}, "
+                         "{has_video_permission=%s})",
+                         request_id,
+                         base::ToString(has_permissions[static_cast<size_t>(
+                             MediaDeviceType::kMediaAudioInput)]),
+                         base::ToString(has_permissions[static_cast<size_t>(
+                             MediaDeviceType::kMediaVideoInput)])));
+
+  if (requested_types[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)] &&
+      !has_permissions[static_cast<size_t>(
+          MediaDeviceType::kMediaAudioInput)]) {
+    SendLogMessage(
+        base::StringPrintf("OnDevicesEnumeratedAndRanked({request_id=%llu}) => "
+                           "[WARNING: Audio permission denied by user/browser]",
+                           request_id));
+  }
+
+  if (requested_types[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)] &&
+      !has_permissions[static_cast<size_t>(
+          MediaDeviceType::kMediaVideoInput)]) {
+    SendLogMessage(
+        base::StringPrintf("OnDevicesEnumeratedAndRanked({request_id=%llu}) => "
+                           "[WARNING: Video permission denied by user/browser]",
+                           request_id));
+  }
 
   const bool video_input_capabilities_requested =
       has_permissions[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)] &&
@@ -966,7 +1220,7 @@ void MediaDevicesManager::OnDevicesEnumerated(
     if (authorized_devices != audio_device_origin_map_.end()) {
       for (const auto& enum_device : enumeration[static_cast<size_t>(
                MediaDeviceType::kMediaAudioOutput)]) {
-        if (base::Contains(authorized_devices->second, enum_device)) {
+        if (authorized_devices->second.contains(enum_device)) {
           translation[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)]
               .push_back(TranslateMediaDeviceInfo(
                   /*has_permission=*/true, salt_and_origin, enum_device));
@@ -975,12 +1229,13 @@ void MediaDevicesManager::OnDevicesEnumerated(
     }
   }
 
-  GetAudioInputCapabilities(video_input_capabilities_requested,
+  GetAudioInputCapabilities(request_id, video_input_capabilities_requested,
                             audio_input_capabilities_requested,
                             std::move(callback), enumeration, translation);
 }
 
 void MediaDevicesManager::GetAudioInputCapabilities(
+    uint64_t request_id,
     bool request_video_input_capabilities,
     bool request_audio_input_capabilities,
     EnumerateDevicesCallback callback,
@@ -991,6 +1246,7 @@ void MediaDevicesManager::GetAudioInputCapabilities(
 
   EnumerationState state;
   size_t state_id = next_enumeration_state_id_++;
+  state.request_id = request_id;
   state.video_input_capabilities_requested = request_video_input_capabilities;
   state.audio_input_capabilities_requested = request_audio_input_capabilities;
   state.completion_cb = std::move(callback);
@@ -1003,6 +1259,12 @@ void MediaDevicesManager::GetAudioInputCapabilities(
 
   if (!state.audio_input_capabilities_requested ||
       state.num_pending_audio_input_capabilities == 0) {
+    SendLogMessage(base::StringPrintf(
+        "GetAudioInputCapabilities({request_id=%llu}, {bypassing=true}, "
+        "{reason=%s})",
+        request_id,
+        !state.audio_input_capabilities_requested ? "not_requested"
+                                                  : "no_devices_found"));
     FinalizeDevicesEnumerated(std::move(state));
     return;
   }
@@ -1055,14 +1317,29 @@ void MediaDevicesManager::GotAudioInputCapabilities(
     size_t capabilities_index,
     const std::optional<media::AudioParameters>& parameters) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(base::Contains(enumeration_states_, state_id));
+  DCHECK(enumeration_states_.contains(state_id));
 
   auto& enumeration_state = enumeration_states_[state_id];
   DCHECK_GT(enumeration_state.num_pending_audio_input_capabilities, 0);
 
   AudioInputDeviceCapabilitiesPtr& capabilities =
       enumeration_state.audio_capabilities[capabilities_index];
+
+  const std::string& device_label =
+      enumeration_state
+          .hashed_enumeration_results[static_cast<size_t>(
+              MediaDeviceType::kMediaAudioInput)][capabilities_index]
+          .label;
+
   if (parameters) {
+    SendLogMessage(base::StringPrintf(
+        "GotAudioInputCapabilities({request_id=%llu}, "
+        "{label=[%s]}, {is_valid=%s}, {sample_rate=%d}, {channels=%d}, "
+        "{latency_ms=%lld})",
+        enumeration_state.request_id, device_label.c_str(),
+        parameters->IsValid() ? "true" : "false", parameters->sample_rate(),
+        parameters->channels(),
+        parameters->GetBufferDuration().InMilliseconds()));
     capabilities->parameters = *parameters;
     // Data from the |parameters| field is duplicated in the |channels|,
     // |sample_rate| and |latency| fields due to the lack of availability
@@ -1084,6 +1361,18 @@ void MediaDevicesManager::GotAudioInputCapabilities(
 
 void MediaDevicesManager::FinalizeDevicesEnumerated(
     EnumerationState enumeration_state) {
+  SendLogMessage(base::StringPrintf(
+      "FinalizeDevicesEnumerated({request_id=%llu}, {audio_count=%zu}, "
+      "{video_count=%zu})",
+      enumeration_state.request_id,
+      enumeration_state
+          .hashed_enumeration_results[static_cast<size_t>(
+              MediaDeviceType::kMediaAudioInput)]
+          .size(),
+      enumeration_state
+          .hashed_enumeration_results[static_cast<size_t>(
+              MediaDeviceType::kMediaVideoInput)]
+          .size()));
   std::move(enumeration_state.completion_cb)
       .Run(std::move(enumeration_state.hashed_enumeration_results),
            enumeration_state.video_input_capabilities_requested
@@ -1121,62 +1410,70 @@ MediaDevicesManager::ComputeVideoInputCapabilities(
   return video_input_capabilities;
 }
 
-void MediaDevicesManager::DoEnumerateDevices(MediaDeviceType type) {
+void MediaDevicesManager::EnumerateSystemDevices(uint64_t request_id,
+                                                 MediaDeviceType type) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   DCHECK(blink::IsValidMediaDeviceType(type));
   CacheInfo& cache_info = cache_infos_[static_cast<size_t>(type)];
   if (cache_info.is_update_ongoing()) {
+    SendLogMessage(base::StringPrintf(
+        "EnumerateSystemDevices({request_id=%llu}, {type=%s}) "
+        "=> [Joining ongoing scan]",
+        request_id, DeviceTypeToString(type)));
     return;
   }
-  SendLogMessage(base::StringPrintf("DoEnumerateDevices({type=%s})",
-                                    DeviceTypeToString(type)));
+  SendLogMessage(
+      base::StringPrintf("EnumerateSystemDevices({request_id=%llu}, {type=%s})",
+                         request_id, DeviceTypeToString(type)));
 
   cache_info.UpdateStarted();
   switch (type) {
     case MediaDeviceType::kMediaAudioInput:
-      EnumerateAudioDevices(true /* is_input */);
+      EnumerateAudioDevices(request_id, true /* is_input */);
       break;
     case MediaDeviceType::kMediaVideoInput:
       ReportVideoEnumerationStart();
       video_capture_manager_->EnumerateDevices(
           base::BindOnce(&MediaDevicesManager::VideoInputDevicesEnumerated,
-                         weak_factory_.GetWeakPtr()));
+                         weak_factory_.GetWeakPtr(), request_id));
       break;
     case MediaDeviceType::kMediaAudioOutput:
-      EnumerateAudioDevices(false /* is_input */);
+      EnumerateAudioDevices(request_id, false /* is_input */);
       break;
-    default:
+    case MediaDeviceType::kNumMediaDeviceTypes:
       NOTREACHED();
   }
 }
 
-void MediaDevicesManager::EnumerateAudioDevices(bool is_input) {
+void MediaDevicesManager::EnumerateAudioDevices(uint64_t request_id,
+                                                bool is_input) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   MediaDeviceType type = is_input ? MediaDeviceType::kMediaAudioInput
                                   : MediaDeviceType::kMediaAudioOutput;
   if (use_fake_devices_) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(&MediaDevicesManager::DevicesEnumerated,
-                                  weak_factory_.GetWeakPtr(), type,
+                                  weak_factory_.GetWeakPtr(), request_id, type,
                                   GetFakeAudioDevices(is_input)));
     return;
   }
 
   audio_system_->GetDeviceDescriptions(
       is_input, base::BindOnce(&MediaDevicesManager::AudioDevicesEnumerated,
-                               weak_factory_.GetWeakPtr(), type));
+                               weak_factory_.GetWeakPtr(), request_id, type));
 }
 
 void MediaDevicesManager::VideoInputDevicesEnumerated(
+    uint64_t request_id,
     DeviceEnumerationResult result_code,
     const media::VideoCaptureDeviceDescriptors& descriptors) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   ReportVideoEnumerationResult(result_code);
 
   if (result_code != DeviceEnumerationResult::kSuccess) {
-    std::string log_message =
-        base::StringPrintf("VideoInputDevicesEnumerated got error %d",
-                           static_cast<int>(result_code));
+    std::string log_message = base::StringPrintf(
+        "VideoInputDevicesEnumerated({request_id=%llu}) got error %d",
+        request_id, static_cast<int>(result_code));
     // Log to both WebRTC logs (for feedback reports) and text logs for
     // manually-collected chrome logs at customers.
     SendLogMessage(log_message);
@@ -1188,10 +1485,11 @@ void MediaDevicesManager::VideoInputDevicesEnumerated(
   for (const auto& descriptor : descriptors) {
     snapshot.emplace_back(descriptor);
   }
-  DevicesEnumerated(MediaDeviceType::kMediaVideoInput, snapshot);
+  DevicesEnumerated(request_id, MediaDeviceType::kMediaVideoInput, snapshot);
 }
 
 void MediaDevicesManager::AudioDevicesEnumerated(
+    uint64_t request_id,
     MediaDeviceType type,
     media::AudioDeviceDescriptions device_descriptions) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
@@ -1202,10 +1500,11 @@ void MediaDevicesManager::AudioDevicesEnumerated(
         description.unique_id, description.device_name, description.group_id,
         media::VideoCaptureControlSupport(), blink::mojom::FacingMode::kNone);
   }
-  DevicesEnumerated(type, snapshot);
+  DevicesEnumerated(request_id, type, snapshot);
 }
 
 void MediaDevicesManager::DevicesEnumerated(
+    uint64_t request_id,
     MediaDeviceType type,
     const blink::WebMediaDeviceInfoArray& snapshot) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
@@ -1213,7 +1512,7 @@ void MediaDevicesManager::DevicesEnumerated(
   UpdateSnapshot(type, snapshot);
   cache_infos_[static_cast<size_t>(type)].UpdateCompleted();
   cache_is_populated_[static_cast<size_t>(type)] = true;
-  SendLogMessage(GetDevicesEnumeratedLogString(type, snapshot));
+  SendLogMessage(GetDevicesEnumeratedLogString(request_id, type, snapshot));
 
   if (cache_policies_[static_cast<size_t>(type)] == CachePolicy::NO_CACHE) {
     for (auto& request : client_requests_) {
@@ -1225,7 +1524,7 @@ void MediaDevicesManager::DevicesEnumerated(
   if (cache_infos_[static_cast<size_t>(type)].IsLastUpdateValid()) {
     ProcessClientRequests();
   } else {
-    DoEnumerateDevices(type);
+    EnumerateSystemDevices(request_id, type);
   }
 }
 
@@ -1237,6 +1536,7 @@ void MediaDevicesManager::UpdateSnapshot(
   DCHECK(blink::IsValidMediaDeviceType(type));
 
   bool need_update_device_change_subscribers = false;
+  bool current_snapshot_changed = false;
   blink::WebMediaDeviceInfoArray& old_snapshot =
       current_snapshot_[static_cast<size_t>(type)];
 
@@ -1271,6 +1571,19 @@ void MediaDevicesManager::UpdateSnapshot(
         (type != MediaDeviceType::kMediaVideoInput ||
          is_video_with_good_group_ids);
     current_snapshot_[static_cast<size_t>(type)] = new_snapshot;
+    current_snapshot_changed = true;
+  }
+
+  if (IsRelaxedCacheFeatureEnabled() && !use_group_id) {
+    // `use_group_id` is true only to update group IDs for video devices before
+    // potentially sending a result to clients, and false when it is the result
+    // of an enumeration potentially triggered by an invalidation. Update the
+    // spurious invalidation counts only in the latter case.
+    if (!current_snapshot_changed) {
+      cache_infos_[static_cast<size_t>(type)].RecordSpuriousInvalidation();
+    } else {
+      cache_infos_[static_cast<size_t>(type)].ResetSpuriousInvalidations();
+    }
   }
 
   // Generate salts for each subscriber even if the device list hasn't changed,
@@ -1349,13 +1662,27 @@ bool MediaDevicesManager::IsEnumerationRequestReady(
 
 void MediaDevicesManager::HandleDevicesChanged(MediaDeviceType type) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(blink::IsValidMediaDeviceType(type));
+
+  uint64_t request_id = ++next_enumeration_request_id_;
+
   if (!cache_infos_[static_cast<size_t>(type)].is_update_ongoing()) {
-    SendLogMessage(base::StringPrintf("HandleDevicesChanged({type=%s}",
-                                      DeviceTypeToString(type)));
+    SendLogMessage(
+        base::StringPrintf("HandleDevicesChanged({type=%s}, {request_id=%llu})",
+                           DeviceTypeToString(type), request_id));
   }
+  InvalidateCache(type);
+  if (!IsRelaxedCacheFeatureEnabled() ||
+      cache_infos_[static_cast<size_t>(type)].NeedsUpdateUponInvalidation()) {
+    EnumerateSystemDevices(request_id, type);
+  }
+}
+
+void MediaDevicesManager::InvalidateCache(MediaDeviceType type) {
+  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  DCHECK(blink::IsValidMediaDeviceType(type));
   cache_infos_[static_cast<size_t>(type)].InvalidateCache();
-  DoEnumerateDevices(type);
 }
 
 void MediaDevicesManager::MaybeStopRemovedInputDevices(
@@ -1370,8 +1697,8 @@ void MediaDevicesManager::MaybeStopRemovedInputDevices(
        current_snapshot_[static_cast<size_t>(type)]) {
     // If a device was removed, notify the MediaStreamManager to stop all
     // streams using that device.
-    if (!base::Contains(new_snapshot, old_device_info.device_id,
-                        &blink::WebMediaDeviceInfo::device_id)) {
+    if (!std::ranges::contains(new_snapshot, old_device_info.device_id,
+                               &blink::WebMediaDeviceInfo::device_id)) {
       stop_removed_input_device_cb_.Run(type, old_device_info);
 
       if (type == MediaDeviceType::kMediaAudioInput) {
@@ -1424,6 +1751,12 @@ void MediaDevicesManager::OnSaltAndOriginForSubscription(
   bool salt_reset =
       request.last_seen_device_id_salt_ &&
       salt_and_origin.device_id_salt() != request.last_seen_device_id_salt_;
+  if (IsRelaxedCacheFeatureEnabled() && salt_reset) {
+    // Salt changes fire invalidations because the device IDs as seen by
+    // clients change. This means that if we see a new salt it may be due
+    // to a valid invalidation, so we reset the spurious count.
+    cache_infos_[static_cast<size_t>(type)].ResetSpuriousInvalidations();
+  }
 
   if (devices_changed || salt_reset) {
     MediaDevicesManager::CheckPermissionForDeviceChange(
@@ -1440,8 +1773,9 @@ void MediaDevicesManager::CheckPermissionForDeviceChange(
     const blink::WebMediaDeviceInfoArray& device_infos,
     const MediaDeviceSaltAndOrigin& salt_and_origin) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  // TODO(crbug.com/379869738) Remove GetUnsafeValue.
   permission_checker_->CheckPermission(
-      type, render_frame_host_id.child_id,
+      type, render_frame_host_id.child_id.GetUnsafeValue(),
       render_frame_host_id.frame_routing_id,
       base::BindOnce(&MediaDevicesManager::OnCheckedPermissionForDeviceChange,
                      weak_factory_.GetWeakPtr(), subscription_id,

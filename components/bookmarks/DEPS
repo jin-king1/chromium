@@ -2,6 +2,8 @@ include_rules = [
   "+components/bookmarks/common/android/bookmarks_jni_headers",
   "+components/favicon_base",
   "+components/keyed_service",
+  "+components/omnibox/common",
+  "+components/os_crypt/async",
   "+components/pref_registry",
   "+components/prefs",
   "+components/query_parser",
@@ -11,6 +13,7 @@ include_rules = [
   # cleaned up.
   "+components/sync/base/features.h",
   "+components/url_formatter",
+  "+crypto",
   "+net/base",
   "+ui",
 ]

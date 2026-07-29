@@ -10,7 +10,6 @@
 
 #include "base/check.h"
 #include "base/compiler_specific.h"
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -26,7 +25,6 @@
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
-#include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/chrome_features.h"
 #include "components/services/app_service/public/cpp/file_handler.h"
@@ -120,8 +118,8 @@ WebAppFileHandlerManager::GetMatchingFileHandlerUrls(
     for (const auto& file_handler : *file_handlers) {
       std::set<std::string> supported_file_extensions =
           apps::GetFileExtensionsFromFileHandlers({file_handler});
-      if (base::Contains(supported_file_extensions,
-                         base::ToLowerASCII(file_extension))) {
+      if (supported_file_extensions.contains(
+              base::ToLowerASCII(file_extension))) {
         launch_handlers[&file_handler].push_back(file_path);
         break;
       }

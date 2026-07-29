@@ -5,11 +5,9 @@
 #ifndef COMPONENTS_SYNC_MODEL_CLIENT_TAG_BASED_DATA_TYPE_PROCESSOR_H_
 #define COMPONENTS_SYNC_MODEL_CLIENT_TAG_BASED_DATA_TYPE_PROCESSOR_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -28,6 +26,8 @@
 #include "components/sync/model/metadata_change_list.h"
 #include "components/sync/model/model_error.h"
 #include "components/sync/model/processor_entity_tracker.h"
+#include "google_apis/gaia/gaia_id.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace sync_pb {
 class DataTypeState;
@@ -86,7 +86,7 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
   void OnModelStarting(DataTypeSyncBridge* bridge) override;
   void ModelReadyToSync(std::unique_ptr<MetadataBatch> batch) override;
   bool IsTrackingMetadata() const override;
-  std::string TrackedAccountId() const override;
+  GaiaId TrackedGaiaId() const override;
   std::string TrackedCacheGuid() const override;
   void ReportError(const ModelError& error) override;
   std::optional<ModelError> GetError() const override;
@@ -132,7 +132,7 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
   void OnSyncStarting(const DataTypeActivationRequest& request,
                       StartCallback callback) override;
   void OnSyncStopping(SyncStopMetadataFate metadata_fate) override;
-  void HasUnsyncedData(base::OnceCallback<void(bool)> callback) override;
+  void GetUnsyncedDataCount(base::OnceCallback<void(size_t)> callback) override;
   void GetAllNodesForDebugging(AllNodesCallback callback) override;
   void GetTypeEntitiesCountForDebugging(
       base::OnceCallback<void(const TypeEntitiesCount&)> callback)
@@ -159,7 +159,8 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
     kApplyIncrementalUpdates = 2,
     kApplyUpdatesOnCommitResponse = 3,
     kSupportsIncrementalUpdatesMismatch = 4,
-    kMaxValue = kSupportsIncrementalUpdatesMismatch,
+    kApplyIncrementalUpdatesWithClearAllDirective = 5,
+    kMaxValue = kApplyIncrementalUpdatesWithClearAllDirective,
   };
   // LINT.ThenChange(/tools/metrics/histograms/metadata/sync/enums.xml:SyncDataTypeErrorSite)
 
@@ -196,22 +197,34 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
   // Handle the first update received from the server after being enabled. If
   // the data type does not support incremental updates, this will be called for
   // any server update.
-  std::optional<ModelError> OnFullUpdateReceived(
+  [[nodiscard]]std::optional<ModelError> OnFullUpdateReceived(
       const sync_pb::DataTypeState& type_state,
       UpdateResponseDataList updates,
       std::optional<sync_pb::GarbageCollectionDirective> gc_directive);
 
   // Handle any incremental updates received from the server after being
   // enabled.
-  std::optional<ModelError> OnIncrementalUpdateReceived(
+  [[nodiscard]] std::optional<ModelError> OnIncrementalUpdateReceived(
       const sync_pb::DataTypeState& type_state,
       UpdateResponseDataList updates,
       std::optional<sync_pb::GarbageCollectionDirective> gc_directive);
 
+  // Overrides server metadata (IDs and versions) for all entities that have
+  // updates in `updates`. The version is overridden to `response_version - 1`
+  // so that the subsequent normal sync flow (including version checks and
+  // ID mismatch DCHECKs) passes naturally.
+  void OverrideAllServerMetadataToForceApplyUpdates(
+      const syncer::UpdateResponseDataList& updates);
+
+  // Tracks a newly received entity during a full update. Returns the tracked
+  // entity if the update is valid, or null otherwise.
+  ProcessorEntity* TrackEntityUponFullUpdate(const UpdateResponseData& update);
+
   // Caches EntityData from the `data_batch` in the entity and checks
-  // that every entity in `storage_keys_to_load` was successfully loaded (or is
-  // not tracked by the processor any more). Reports failed checks to UMA.
-  void ConsumeDataBatch(std::unordered_set<std::string> storage_keys_to_load,
+  // that every entity in `storage_keys_to_load` was successfully loaded (or
+  // is not tracked by the processor any more). Reports failed checks to
+  // UMA.
+  void ConsumeDataBatch(absl::flat_hash_set<std::string> storage_keys_to_load,
                         std::unique_ptr<DataBatch> data_batch);
 
   // Prepares Commit requests and passes them to the GetLocalChanges callback.
@@ -245,7 +258,7 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
 
   // Adds metadata to all data returned by the bridge.
   // TODO(jkrcal): Mark as const (together with functions it depends on such as
-  // GetEntityForStorageKey, GetEntityForTagHash and maybe more).
+  // GetEntityForStorageKey, GetEntityForClientTagHash and maybe more).
   void MergeDataWithMetadataForDebugging(AllNodesCallback callback,
                                          std::unique_ptr<DataBatch> batch);
 
@@ -254,19 +267,27 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
   // if it is invalid.
   void ClearPersistedMetadataIfInconsistentWithActivationRequest();
 
-  // Verifies that the passed-in metadata (DataTypeState plus entity metadata)
-  // is valid, and clears it (incl. the persisted data) if not. Returns whether
-  // the metadata was cleared.
-  bool ClearPersistedMetadataIfInvalid(const MetadataBatch& metadata);
+  // Returns whether the passed-in metadata should be cleared due to (a) being
+  // invalid, or (b) `pending_clear_metadata_`.
+  bool ShouldClearPersistedMetadata(const MetadataBatch& metadata) const;
 
   // Reports error and records a metric about `site` where the error occurred.
   void ReportErrorImpl(const ModelError& error, ErrorSite site);
+  void ReportIfError(const std::optional<ModelError>& error, ErrorSite site);
 
   // Generates some consistent unique position on best effort if it can't be
   // calculated. Unique positions are stored in sync metadata and loaded from
   // the disk on browser startup, so they should not be CHECKed for validness.
   sync_pb::UniquePosition GenerateFallbackUniquePosition(
       const ClientTagHash& client_tag_hash) const;
+
+  // Handles a full update as an incremental update. This is used for the
+  // bridges which support incremental updates but the server sends a full
+  // update.
+  [[nodiscard]] std::optional<ModelError> ApplyFullUpdateAsIncrementalUpdate(
+      const sync_pb::DataTypeState& type_state,
+      UpdateResponseDataList updates,
+      sync_pb::GarbageCollectionDirective gc_directive);
 
   /////////////////////
   // Processor state //

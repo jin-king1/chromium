@@ -20,4 +20,8 @@ void EmptyMetadataChangeList::UpdateMetadata(
 
 void EmptyMetadataChangeList::ClearMetadata(const std::string& storage_key) {}
 
+void EmptyMetadataChangeList::TransferChangesTo(MetadataChangeList* other) {}
+
+void EmptyMetadataChangeList::DropAllChanges() {}
+
 }  // namespace syncer

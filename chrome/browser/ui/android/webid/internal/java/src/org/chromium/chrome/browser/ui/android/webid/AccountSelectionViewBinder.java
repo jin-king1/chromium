@@ -21,6 +21,7 @@ import android.icu.text.ListFormatter;
 import android.text.SpannableString;
 import android.text.method.LinkMovementMethod;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.ImageView;
 import android.widget.TextView;
 
@@ -33,7 +34,6 @@ import org.chromium.blink.mojom.RpContext;
 import org.chromium.blink.mojom.RpMode;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.AccountProperties;
-import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.AddAccountButtonProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ButtonData;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ContinueButtonProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.DataSharingConsentProperties;
@@ -41,7 +41,9 @@ import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.E
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.IdpSignInProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ItemProperties;
+import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.LoginButtonProperties;
 import org.chromium.chrome.browser.ui.android.webid.data.Account;
+import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderData;
 import org.chromium.chrome.browser.ui.android.webid.data.IdentityProviderMetadata;
 import org.chromium.components.browser_ui.util.AvatarGenerator;
 import org.chromium.components.browser_ui.widget.RoundedIconGenerator;
@@ -126,45 +128,62 @@ class AccountSelectionViewBinder {
         return new BitmapDrawable(resources, output);
     }
 
+    static void updateAccountViewAvatar(PropertyModel model, View view) {
+        AccountProperties.Avatar avatarData = model.get(AccountProperties.AVATAR);
+        if (avatarData == null) return;
+        int avatarSize = avatarData.mAvatarSize;
+        Bitmap avatar = avatarData.mAvatar;
+        ImageView avatarView = view.findViewById(R.id.start_icon);
+        Resources resources = view.getContext().getResources();
+        if (model.get(AccountProperties.SHOW_IDP)) {
+            // Resize the image view and the margin to account for the badging.
+            ViewGroup.LayoutParams layoutParams = avatarView.getLayoutParams();
+            ViewGroup.MarginLayoutParams marginLayoutParams =
+                    (ViewGroup.MarginLayoutParams) layoutParams;
+            int marginEnd =
+                    resources.getDimensionPixelSize(
+                            R.dimen.account_selection_account_avatar_multi_idp_margin_end);
+            layoutParams.width = avatarSize;
+            layoutParams.height = avatarSize;
+            marginLayoutParams.setMarginEnd(marginEnd);
+
+            // In this case, we expect the image to be badged and cropped, so we set the image
+            // directly instead of using the monogram and invoking AvatarGenerator.makeRoundAvatar.
+            // The input bitmap is expected to be already badged and cropped to the correct size.
+            avatarView.setImageDrawable(new BitmapDrawable(resources, avatar));
+            return;
+        }
+
+        // Prepare avatar or its fallback monogram.
+        if (avatar == null) {
+            int avatarMonogramTextSize =
+                    view.getResources()
+                            .getDimensionPixelSize(
+                                    R.dimen.account_selection_account_avatar_monogram_text_size);
+            RoundedIconGenerator roundedIconGenerator =
+                    new RoundedIconGenerator(
+                            resources,
+                            /* iconWidthDp= */ avatarSize,
+                            /* iconHeightDp= */ avatarSize,
+                            /* cornerRadiusDp= */ avatarSize / 2,
+                            /* backgroundColor= */ Color.GRAY,
+                            avatarMonogramTextSize);
+            avatar = roundedIconGenerator.generateIconForText(avatarData.mDisplayName);
+        }
+        Drawable croppedAvatar = AvatarGenerator.makeRoundAvatar(resources, avatar, avatarSize);
+        avatarView.setImageDrawable(croppedAvatar);
+    }
+
     /**
      * Called whenever an account is bound to this view.
+     *
      * @param model The model containing the data for the view.
      * @param view The view to be bound.
      * @param key The key of the property to be bound.
      */
     static void bindAccountView(PropertyModel model, View view, PropertyKey key) {
         Account account = model.get(AccountProperties.ACCOUNT);
-        if (key == AccountProperties.AVATAR) {
-            AccountProperties.Avatar avatarData = model.get(AccountProperties.AVATAR);
-            int avatarSize = avatarData.mAvatarSize;
-            Bitmap avatar = avatarData.mAvatar;
-
-            Resources resources = view.getContext().getResources();
-
-            // Prepare avatar or its fallback monogram.
-            if (avatar == null) {
-                int avatarMonogramTextSize =
-                        view.getResources()
-                                .getDimensionPixelSize(
-                                        R.dimen
-                                                .account_selection_account_avatar_monogram_text_size);
-                // TODO(crbug.com/40214151): Consult UI team to determine the background color we
-                // need to use here.
-                RoundedIconGenerator roundedIconGenerator =
-                        new RoundedIconGenerator(
-                                resources,
-                                /* iconWidthDp= */ avatarSize,
-                                /* iconHeightDp= */ avatarSize,
-                                /* cornerRadiusDp= */ avatarSize / 2,
-                                /* backgroundColor= */ Color.GRAY,
-                                avatarMonogramTextSize);
-                avatar = roundedIconGenerator.generateIconForText(avatarData.mName);
-            }
-            Drawable croppedAvatar = AvatarGenerator.makeRoundAvatar(resources, avatar, avatarSize);
-
-            ImageView avatarView = view.findViewById(R.id.start_icon);
-            avatarView.setImageDrawable(croppedAvatar);
-        } else if (key == AccountProperties.ON_CLICK_LISTENER) {
+        if (key == AccountProperties.ON_CLICK_LISTENER) {
             Callback<ButtonData> clickCallback = model.get(AccountProperties.ON_CLICK_LISTENER);
             if (clickCallback == null) {
                 view.setOnClickListener(null);
@@ -175,6 +194,10 @@ class AccountSelectionViewBinder {
                                     new ButtonData(account, /* idpMetadata= */ null));
                         });
             }
+            return;
+        }
+        if (key == AccountProperties.AVATAR) {
+            updateAccountViewAvatar(model, view);
         } else if (key == AccountProperties.ACCOUNT) {
             if (account.isFilteredOut()) {
                 view.setAlpha(DISABLED_OPACITY);
@@ -183,59 +206,111 @@ class AccountSelectionViewBinder {
             // Name is not shown in the account chip of the request permission dialog. The name is
             // shown in the Continue button instead.
             if (title != null) {
-                title.setText(account.isFilteredOut() ? account.getEmail() : account.getName());
+                title.setText(
+                        account.isFilteredOut() && !account.getDisplayIdentifier().isEmpty()
+                                ? account.getDisplayIdentifier()
+                                : account.getDisplayName());
             }
             TextView description = view.findViewById(R.id.description);
-            description.setText(
+            String descriptionText =
                     account.isFilteredOut()
                             ? view.getContext().getString(R.string.filtered_account_message)
-                            : account.getEmail());
-            if (account.getSecondaryDescription() != null) {
-                TextView secondaryDescription = view.findViewById(R.id.secondary_description);
-                // The secondary description is not shown in the account chip of active mode's
-                // request permission dialog. In this case, the view is not present.
-                if (secondaryDescription != null) {
-                    secondaryDescription.setText(account.getSecondaryDescription());
-                    secondaryDescription.setVisibility(View.VISIBLE);
-                }
+                            : account.getDisplayIdentifier();
+            if (descriptionText.isEmpty() && title == null) {
+                // It is possible that the display identifier is empty.
+                // If we have no title, show the display name in the description.
+                descriptionText = account.getDisplayName();
             }
-        } else {
+            if (descriptionText.isEmpty()) {
+                // Hide the view so that we center the remaining view(s).
+                description.setVisibility(View.GONE);
+            } else {
+                description.setText(descriptionText);
+                description.setVisibility(View.VISIBLE);
+            }
+            TextView secondaryDescription = view.findViewById(R.id.secondary_description);
+            // The secondary description is not shown in the account chip of active mode's
+            // request permission dialog. In this case, the view is not present.
+            if (secondaryDescription == null) {
+                return;
+            }
+            if (model.get(AccountProperties.SHOW_IDP)
+                    && account.getSecondaryDescription() != null) {
+                if (account.isIdpClaimedSignIn() || account.isBrowserTrustedSignIn()) {
+                    // Include a hint that this is a returning account.
+                    secondaryDescription.setText(
+                            view.getContext()
+                                    .getString(
+                                            R.string.account_selection_returning_account_message,
+                                            account.getSecondaryDescription()));
+                } else {
+                    secondaryDescription.setText(account.getSecondaryDescription());
+                }
+                secondaryDescription.setVisibility(View.VISIBLE);
+            } else {
+                secondaryDescription.setVisibility(View.GONE);
+            }
+        } else if (key != AccountProperties.SHOW_IDP) {
             assert false : "Unhandled update to property:" + key;
         }
     }
 
     /**
-     * Called whenever an add account button is bound to this view.
+     * Called whenever a login button is bound to this view.
      *
      * @param model The model containing the data for the view.
      * @param view The view to be bound.
      * @param key The key of the property to be bound.
      */
     @SuppressWarnings("checkstyle:SetTextColorAndSetTextSizeCheck")
-    static void bindAddAccountView(PropertyModel model, View view, PropertyKey key) {
-        if (key == AddAccountButtonProperties.PROPERTIES) {
-            AddAccountButtonProperties.Properties properties =
-                    model.get(AddAccountButtonProperties.PROPERTIES);
+    static void bindLoginButtonView(PropertyModel model, View view, PropertyKey key) {
+        if (key == LoginButtonProperties.PROPERTIES) {
+            LoginButtonProperties.Properties properties =
+                    model.get(LoginButtonProperties.PROPERTIES);
             Context context = view.getContext();
 
-            // If iconView is available, the add account button is an account row at the end of the
-            // accounts list.
-            ImageView iconView = view.findViewById(R.id.start_icon);
-            IdentityProviderMetadata idpMetadata = properties.mIdpMetadata;
-            if (iconView != null) {
-                TintedDrawable plusIcon =
-                        TintedDrawable.constructTintedDrawable(
-                                context,
-                                properties.mRpMode == RpMode.ACTIVE
-                                        ? R.drawable.plus
-                                        : R.drawable.open_in_new_tab,
-                                properties.mRpMode == RpMode.ACTIVE
-                                        ? R.color.default_icon_color_accent1_tint_list
-                                        : R.color.default_icon_color_tint_list);
-                iconView.setImageDrawable(plusIcon);
+            // If startIconView is available, the add account button is an account row at the end of
+            // the accounts list.
+            ImageView startIconView = view.findViewById(R.id.start_icon);
+            IdentityProviderData identityProvider = properties.mIdentityProvider;
+            IdentityProviderMetadata idpMetadata = identityProvider.getIdpMetadata();
+            Boolean showIdp = properties.mShowIdp;
+            if (startIconView != null) {
+                Bitmap brandIcon = idpMetadata.getBrandIconBitmap();
+                ImageView endIconView = view.findViewById(R.id.end_icon);
+                if (!showIdp || brandIcon == null) {
+                    setDefaultLoginImage(context, properties, startIconView);
+                    if (endIconView != null) {
+                        endIconView.setVisibility(View.GONE);
+                    }
+                } else {
+                    Resources resources = view.getResources();
+                    int iconSize =
+                            resources.getDimensionPixelSize(
+                                    R.dimen.account_selection_login_brand_icon_size);
+                    Drawable croppedBrandIcon =
+                            createBitmapWithMaskableIconSafeZone(resources, brandIcon, iconSize);
+                    startIconView.setImageDrawable(croppedBrandIcon);
+
+                    if (endIconView != null) {
+                        setDefaultLoginImage(context, properties, endIconView);
+                        endIconView.setVisibility(View.VISIBLE);
+                    }
+                }
 
                 TextView subject = view.findViewById(R.id.title);
-                subject.setText(context.getString(R.string.account_selection_add_account));
+                String buttonText =
+                        showIdp
+                                ? context.getString(
+                                        R.string.account_selection_add_account_with_origin,
+                                        identityProvider.getIdpForDisplay())
+                                : context.getString(R.string.account_selection_add_account);
+                subject.setText(buttonText);
+                String buttonTextWithOpensInNewTab =
+                        context.getString(
+                                R.string.account_selection_add_account_opens_in_new_tab,
+                                buttonText);
+                subject.setContentDescription(buttonTextWithOpensInNewTab);
 
                 view.setOnClickListener(
                         clickedView -> {
@@ -245,8 +320,8 @@ class AccountSelectionViewBinder {
                 return;
             }
 
-            // Since iconView is not available, the add account button is a secondary button under
-            // the continue button at the bottom of the screen.
+            // Since startIconView is not available, the add account button is a secondary button
+            // under the continue button at the bottom of the screen.
             ButtonCompat button = view.findViewById(R.id.account_selection_add_account_btn);
             button.setOnClickListener(
                     clickedView -> {
@@ -266,6 +341,20 @@ class AccountSelectionViewBinder {
         } else {
             assert false : "Unhandled update to property:" + key;
         }
+    }
+
+    static void setDefaultLoginImage(
+            Context context, LoginButtonProperties.Properties properties, ImageView iconView) {
+        TintedDrawable plusIcon =
+                TintedDrawable.constructTintedDrawable(
+                        context,
+                        properties.mRpMode == RpMode.ACTIVE
+                                ? R.drawable.plus
+                                : R.drawable.open_in_new_tab,
+                        properties.mRpMode == RpMode.ACTIVE
+                                ? R.color.default_icon_color_accent1_tint_list
+                                : R.color.default_icon_color_tint_list);
+        iconView.setImageDrawable(plusIcon);
     }
 
     static SpanApplier.SpanInfo createLink(
@@ -295,7 +384,7 @@ class AccountSelectionViewBinder {
                     model.get(DataSharingConsentProperties.PROPERTIES);
 
             Context context = view.getContext();
-            ArrayList<String> fieldStrings = new ArrayList<String>();
+            ArrayList<String> fieldStrings = new ArrayList<>();
             for (@IdentityRequestDialogDisclosureField int field : properties.mDisclosureFields) {
                 switch (field) {
                     case IdentityRequestDialogDisclosureField.NAME:
@@ -582,6 +671,9 @@ class AccountSelectionViewBinder {
             HeaderProperties.HeaderType headerType = properties.mHeaderType;
             if (headerType == HeaderProperties.HeaderType.SIGN_IN_TO_IDP_STATIC) {
                 btnText = context.getString(R.string.signin_continue);
+                button.setContentDescription(
+                        context.getString(
+                                R.string.account_selection_add_account_opens_in_new_tab, btnText));
             } else if (headerType == HeaderProperties.HeaderType.SIGN_IN_ERROR) {
                 btnText = context.getString(R.string.signin_error_dialog_got_it_button);
             } else {
@@ -594,7 +686,7 @@ class AccountSelectionViewBinder {
                                     context.getString(R.string.account_selection_continue),
                                     givenName);
                 }
-                button.setContentDescription(btnText + ", " + account.getEmail());
+                button.setContentDescription(btnText + ", " + account.getDisplayIdentifier());
             }
 
             assert btnText != null;
@@ -614,6 +706,8 @@ class AccountSelectionViewBinder {
      * @param view The view to be bound.
      * @param key The key of the property to be bound.
      */
+    @SuppressWarnings(
+            "unchecked") // PropertyKey erases generics; item sub-models are PropertyModel.
     static void bindContentView(PropertyModel model, View view, PropertyKey key) {
         View itemView = null;
         if (key == ItemProperties.SPINNER_ENABLED) {
@@ -621,6 +715,12 @@ class AccountSelectionViewBinder {
             if (itemView == null) return;
             itemView.setVisibility(
                     model.get(ItemProperties.SPINNER_ENABLED) ? View.VISIBLE : View.GONE);
+            return;
+        }
+        if (key == ItemProperties.DRAGBAR_HANDLE_VISIBLE) {
+            itemView = view.findViewById(R.id.drag_handlebar);
+            itemView.setVisibility(
+                    model.get(ItemProperties.DRAGBAR_HANDLE_VISIBLE) ? View.VISIBLE : View.GONE);
             return;
         }
         PropertyModel itemModel = model.get((WritableObjectPropertyKey<PropertyModel>) key);
@@ -642,7 +742,7 @@ class AccountSelectionViewBinder {
             itemBinder = AccountSelectionViewBinder::bindErrorTextView;
         } else if (key == ItemProperties.ADD_ACCOUNT_BUTTON) {
             itemView = view.findViewById(R.id.account_selection_add_account_btn);
-            itemBinder = AccountSelectionViewBinder::bindAddAccountView;
+            itemBinder = AccountSelectionViewBinder::bindLoginButtonView;
         } else if (key == ItemProperties.ACCOUNT_CHIP) {
             itemView = view.findViewById(R.id.account_chip);
             itemBinder = AccountSelectionViewBinder::bindAccountView;
@@ -690,6 +790,7 @@ class AccountSelectionViewBinder {
         }
 
         if (key == HeaderProperties.RP_FOR_DISPLAY
+                || key == HeaderProperties.IFRAME_FOR_DISPLAY
                 || key == HeaderProperties.IDP_FOR_DISPLAY
                 || key == HeaderProperties.TYPE
                 || key == HeaderProperties.RP_CONTEXT
@@ -704,7 +805,9 @@ class AccountSelectionViewBinder {
             String subtitle =
                     computeHeaderSubtitle(
                             resources,
+                            model.get(HeaderProperties.TYPE),
                             model.get(HeaderProperties.RP_FOR_DISPLAY),
+                            model.get(HeaderProperties.IFRAME_FOR_DISPLAY),
                             model.get(HeaderProperties.RP_MODE),
                             model.get(HeaderProperties.IS_MULTIPLE_ACCOUNT_CHOOSER),
                             model.get(HeaderProperties.IS_MULTIPLE_IDPS));
@@ -717,6 +820,7 @@ class AccountSelectionViewBinder {
                 }
                 headerSubtitleText.setText(subtitle);
                 headerSubtitleText.setMovementMethod(LinkMovementMethod.getInstance());
+                headerSubtitleText.setVisibility(View.VISIBLE);
             } else {
                 headerSubtitleText.setVisibility(View.GONE);
             }
@@ -726,6 +830,7 @@ class AccountSelectionViewBinder {
                             resources,
                             headerType,
                             model.get(HeaderProperties.RP_FOR_DISPLAY),
+                            model.get(HeaderProperties.IFRAME_FOR_DISPLAY),
                             model.get(HeaderProperties.IDP_FOR_DISPLAY),
                             model.get(HeaderProperties.RP_CONTEXT),
                             model.get(HeaderProperties.RP_MODE),
@@ -769,36 +874,40 @@ class AccountSelectionViewBinder {
                 view.findViewById(R.id.header_divider)
                         .setVisibility(!progressBarVisible ? View.VISIBLE : View.GONE);
             }
-            if (key == HeaderProperties.IS_MULTIPLE_IDPS) {
-                // Do not reserve space for IDP icon if there are multiple IDPs.
-                ImageView headerIconView = (ImageView) view.findViewById(R.id.header_idp_icon);
-                if (model.get(HeaderProperties.IS_MULTIPLE_IDPS)) {
-                    headerIconView.setVisibility(View.GONE);
-                }
+        } else if (key == HeaderProperties.HEADER_ICON) {
+            Bitmap brandIcon = model.get(HeaderProperties.HEADER_ICON);
+            // Do not crop the header icon when it is the RP icon, e.g. when there are multiple IDPs
+            // in the current dialog.
+            boolean shouldCircleCrop = !model.get(HeaderProperties.IS_MULTIPLE_IDPS);
+            if (brandIcon == null) {
+                return;
             }
-        } else if (key == HeaderProperties.IDP_BRAND_ICON) {
-            // There should not be an IDP icon when multi IDPs are used.
-            if (model.get(HeaderProperties.IS_MULTIPLE_IDPS)) return;
-            Bitmap brandIcon = model.get(HeaderProperties.IDP_BRAND_ICON);
-            if (brandIcon != null) {
-                int iconSize =
-                        resources.getDimensionPixelSize(
-                                model.get(HeaderProperties.RP_MODE) == RpMode.ACTIVE
-                                        ? R.dimen.account_selection_active_mode_sheet_icon_size
-                                        : R.dimen.account_selection_sheet_icon_size);
+            int iconSize =
+                    resources.getDimensionPixelSize(
+                            model.get(HeaderProperties.RP_MODE) == RpMode.ACTIVE
+                                    ? R.dimen.account_selection_active_mode_sheet_icon_size
+                                    : R.dimen.account_selection_sheet_icon_size);
+            ImageView headerIconView = view.findViewById(R.id.header_icon);
+            if (shouldCircleCrop) {
                 Drawable croppedBrandIcon =
                         createBitmapWithMaskableIconSafeZone(resources, brandIcon, iconSize);
-                ImageView headerIconView = (ImageView) view.findViewById(R.id.header_idp_icon);
                 headerIconView.setImageDrawable(croppedBrandIcon);
-                headerIconView.setVisibility(View.VISIBLE);
+            } else {
+                Bitmap output = Bitmap.createBitmap(iconSize, iconSize, Config.ARGB_8888);
+                Canvas canvas = new Canvas(output);
+                Paint paint = new Paint();
+                paint.setAntiAlias(true);
+                canvas.drawBitmap(brandIcon, null, new Rect(0, 0, iconSize, iconSize), paint);
+                headerIconView.setImageDrawable(new BitmapDrawable(resources, output));
             }
+            headerIconView.setVisibility(View.VISIBLE);
         } else if (key == HeaderProperties.RP_BRAND_ICON) {
             // RP icon is not shown in passive mode.
             if (model.get(HeaderProperties.RP_MODE) == RpMode.PASSIVE) return;
 
             Bitmap brandIcon = model.get(HeaderProperties.RP_BRAND_ICON);
-            ImageView headerIconView = (ImageView) view.findViewById(R.id.header_rp_icon);
-            ImageView arrowRangeIcon = (ImageView) view.findViewById(R.id.arrow_range_icon);
+            ImageView headerIconView = view.findViewById(R.id.header_rp_icon);
+            ImageView arrowRangeIcon = view.findViewById(R.id.arrow_range_icon);
             if (brandIcon != null) {
                 int iconSize =
                         resources.getDimensionPixelSize(
@@ -809,7 +918,7 @@ class AccountSelectionViewBinder {
             }
             boolean isRpIconVisible =
                     brandIcon != null
-                            && model.get(HeaderProperties.IDP_BRAND_ICON) != null
+                            && model.get(HeaderProperties.HEADER_ICON) != null
                             && model.get(HeaderProperties.TYPE)
                                     == HeaderProperties.HeaderType.REQUEST_PERMISSION_MODAL;
             headerIconView.setVisibility(isRpIconVisible ? View.VISIBLE : View.GONE);
@@ -820,11 +929,19 @@ class AccountSelectionViewBinder {
 
             final Runnable closeOnClickRunnable =
                     (Runnable) model.get(HeaderProperties.CLOSE_ON_CLICK_LISTENER);
-            view.findViewById(R.id.close_button)
-                    .setOnClickListener(
-                            clickedView -> {
-                                closeOnClickRunnable.run();
-                            });
+            View closeButton = view.findViewById(R.id.close_button);
+            if (closeOnClickRunnable == null) {
+                // We remove the default close button if a floating 'X' is provided by the
+                // framework, which happens when the large form factor UI is active.
+                closeButton.setVisibility(View.GONE);
+                closeButton.setOnClickListener(null);
+            } else {
+                closeButton.setVisibility(View.VISIBLE);
+                closeButton.setOnClickListener(
+                        clickedView -> {
+                            closeOnClickRunnable.run();
+                        });
+            }
         } else {
             assert false : "Unhandled update to property:" + key;
         }
@@ -843,31 +960,57 @@ class AccountSelectionViewBinder {
     private static String computeHeaderTitle(
             Resources resources,
             HeaderProperties.HeaderType type,
-            String rpUrl,
+            String topLevelUrl,
+            String iframeUrl,
             String idpUrl,
             @RpContext.EnumType int rpContext,
             @RpMode.EnumType int rpMode,
             Boolean isMultipleIdps) {
+        if (topLevelUrl.isEmpty()) {
+            return "";
+        }
         @StringRes int titleStringId;
         // In single IDP active mode, show the title with RP and IDP.
-        if (rpMode == RpMode.ACTIVE && !isMultipleIdps) {
+        if (rpMode == RpMode.ACTIVE) {
+            // We do not currently support multiple IDPs in active mode.
+            assert !isMultipleIdps;
+            // If the iframe is not present, use only the IDP string in the title.
+            if (iframeUrl.isEmpty()) {
+                switch (rpContext) {
+                    case RpContext.SIGN_UP:
+                        titleStringId =
+                                R.string.account_selection_button_mode_sheet_title_explicit_signup;
+                        break;
+                    case RpContext.USE:
+                        titleStringId =
+                                R.string.account_selection_button_mode_sheet_title_explicit_use;
+                        break;
+                    case RpContext.CONTINUE:
+                        titleStringId =
+                                R.string
+                                        .account_selection_button_mode_sheet_title_explicit_continue;
+                        break;
+                    default:
+                        titleStringId =
+                                R.string.account_selection_button_mode_sheet_title_explicit_signin;
+                }
+                return String.format(resources.getString(titleStringId), idpUrl);
+            }
+            // Otherwise, use both IDP and iframe strings in the title.
             switch (rpContext) {
                 case RpContext.SIGN_UP:
-                    titleStringId =
-                            R.string.account_selection_button_mode_sheet_title_explicit_signup;
+                    titleStringId = R.string.account_selection_sheet_title_explicit_signup;
                     break;
                 case RpContext.USE:
-                    titleStringId = R.string.account_selection_button_mode_sheet_title_explicit_use;
+                    titleStringId = R.string.account_selection_sheet_title_explicit_use;
                     break;
                 case RpContext.CONTINUE:
-                    titleStringId =
-                            R.string.account_selection_button_mode_sheet_title_explicit_continue;
+                    titleStringId = R.string.account_selection_sheet_title_explicit_continue;
                     break;
                 default:
-                    titleStringId =
-                            R.string.account_selection_button_mode_sheet_title_explicit_signin;
+                    titleStringId = R.string.account_selection_sheet_title_explicit_signin;
             }
-            return String.format(resources.getString(titleStringId), idpUrl);
+            return String.format(resources.getString(titleStringId), iframeUrl, idpUrl);
         }
 
         // In passive mode, we change the title when signing in the user.
@@ -878,25 +1021,17 @@ class AccountSelectionViewBinder {
             return resources.getString(getVerifyHeaderAutoReauthnStringId());
         }
 
+        String rpUrl = iframeUrl.isEmpty() ? topLevelUrl : iframeUrl;
+
         // If there are multiple IDPs, show the title with just the RP.
         if (isMultipleIdps) {
-            switch (rpContext) {
-                case RpContext.SIGN_UP:
-                    titleStringId =
-                            R.string.account_selection_multi_idp_sheet_title_explicit_signup;
-                    break;
-                case RpContext.USE:
-                    titleStringId = R.string.account_selection_multi_idp_sheet_title_explicit_use;
-                    break;
-                case RpContext.CONTINUE:
-                    titleStringId =
-                            R.string.account_selection_multi_idp_sheet_title_explicit_continue;
-                    break;
-                default:
-                    titleStringId =
-                            R.string.account_selection_multi_idp_sheet_title_explicit_signin;
-            }
-            return String.format(resources.getString(titleStringId), rpUrl);
+            // The title does not change depending on RP context in a dialog involving multiple
+            // IDPs. Note that context is indeed shown when the dialog is transitioned to single
+            // IDP, e.g. once the user selects an account.
+            return String.format(
+                    resources.getString(
+                            R.string.account_selection_multi_idp_sheet_title_explicit_signin),
+                    rpUrl);
         }
 
         switch (rpContext) {
@@ -917,10 +1052,25 @@ class AccountSelectionViewBinder {
 
     private static String computeHeaderSubtitle(
             Resources resources,
+            HeaderProperties.HeaderType type,
             String rpUrl,
+            String iframeUrl,
             @RpMode.EnumType int rpMode,
             Boolean isMultipleAccountChooser,
             Boolean isMultipleIdps) {
+        if (type == HeaderProperties.HeaderType.VERIFY
+                || type == HeaderProperties.HeaderType.VERIFY_AUTO_REAUTHN) {
+            return "";
+        }
+        if (rpUrl.isEmpty()) {
+            return "";
+        }
+        if (!iframeUrl.isEmpty()) {
+            return String.format(
+                    resources.getString(R.string.account_selection_sheet_subtitle_for_embed),
+                    rpUrl,
+                    iframeUrl);
+        }
         if (rpMode == RpMode.PASSIVE || isMultipleIdps) return "";
 
         if (isMultipleAccountChooser) {

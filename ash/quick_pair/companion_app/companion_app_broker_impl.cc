@@ -35,8 +35,7 @@ bool IsLoggedIn(ash::LoginStatus status) {
 
 }  // namespace
 
-namespace ash {
-namespace quick_pair {
+namespace ash::quick_pair {
 
 CompanionAppBrokerImpl::CompanionAppBrokerImpl() {}
 
@@ -137,12 +136,11 @@ void CompanionAppBrokerImpl::LaunchCompanionApp(scoped_refptr<Device> device) {
                                  << ": No Play store link or installed app. "
                                     "Opening companion web page.";
 
-    NewWindowDelegate::GetPrimary()->OpenUrl(
+    NewWindowDelegate::GetInstance()->OpenUrl(
         GURL(ash::features::kFastPairPwaCompanionInstallUri.Get()),
         NewWindowDelegate::OpenUrlFrom::kUserInteraction,
         NewWindowDelegate::Disposition::kNewForegroundTab);
   }
 }
 
-}  // namespace quick_pair
-}  // namespace ash
+}  // namespace ash::quick_pair

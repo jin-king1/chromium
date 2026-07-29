@@ -5,23 +5,28 @@
 package org.chromium.chrome.browser.dom_distiller;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ObserverList;
 import org.chromium.base.UserData;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.dom_distiller.content.DistillablePageUtils;
 import org.chromium.components.dom_distiller.content.DistillablePageUtils.PageDistillableDelegate;
+import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** A mechanism for clients interested in the distillability of a page to receive updates. */
+@NullMarked
 public class TabDistillabilityProvider extends EmptyTabObserver
         implements PageDistillableDelegate, UserData {
     public static final Class<TabDistillabilityProvider> USER_DATA_KEY =
@@ -65,25 +70,44 @@ public class TabDistillabilityProvider extends EmptyTabObserver
     private boolean mDistillabilityDetermined;
 
     /** The last web contents that the distillability delegate was attached to. */
-    private WebContents mWebContents;
+    private @Nullable WebContents mWebContents;
 
     /** Cached results from the last result from native. */
     private boolean mIsDistillable;
+
+    /** Track the last result URL. Used to avoid resetting distillability data on the same page. */
+    private @Nullable GURL mDistillationResultUrl;
 
     private boolean mIsLast;
     private boolean mIsLongArticle;
     private boolean mIsMobileOptimized;
 
-    public static void createForTab(Tab tab) {
-        assert get(tab) == null;
-        tab.getUserDataHost().setUserData(USER_DATA_KEY, new TabDistillabilityProvider(tab));
+    /**
+     * Retrieves the {@link TabDistillabilityProvider} for the given {@link Tab}, creating it if it
+     * doesn't already exist.
+     *
+     * @param tab The Tab to get the helper for.
+     * @return The {@link TabDistillabilityProvider}, or null if UserDataHost is null.
+     */
+    public static @Nullable TabDistillabilityProvider from(Tab tab) {
+        if (tab.getUserDataHost() == null || tab.getWebContents() == null) return null;
+        TabDistillabilityProvider provider = get(tab);
+        if (provider == null) {
+            provider =
+                    tab.getUserDataHost()
+                            .setUserData(USER_DATA_KEY, new TabDistillabilityProvider(tab));
+        }
+        return provider;
     }
 
+    /** Returns the TabDistillabilityProvider for the given tab if it exists. */
     public static @Nullable TabDistillabilityProvider get(Tab tab) {
+        if (tab.getUserDataHost() == null) return null;
         return tab.getUserDataHost().getUserData(USER_DATA_KEY);
     }
 
-    private TabDistillabilityProvider(Tab tab) {
+    @VisibleForTesting
+    TabDistillabilityProvider(Tab tab) {
         mTab = tab;
         mObserverList = new ObserverList<>();
         resetState();
@@ -132,17 +156,27 @@ public class TabDistillabilityProvider extends EmptyTabObserver
     /**
      * Reset any of the cached values from native distiller and reattach the delegate if necessary.
      */
+    @SuppressWarnings("NullAway")
     private void resetState() {
         mDistillabilityDetermined = false;
+        mDistillationResultUrl = null;
         mIsDistillable = false;
         mIsLast = false;
         mIsLongArticle = false;
         mIsMobileOptimized = false;
 
-        if (mTab != null
-                && mTab.getWebContents() != null
-                && mTab.getWebContents() != mWebContents) {
-            mWebContents = mTab.getWebContents();
+        if (mTab == null) return;
+        WebContents webContents = mTab.getWebContents();
+        if (webContents == null) {
+            if (mWebContents != null) {
+                DistillablePageUtils.setDelegate(mWebContents, null);
+                mWebContents = null;
+            }
+        } else if (webContents != mWebContents) {
+            if (mWebContents != null) {
+                DistillablePageUtils.setDelegate(mWebContents, null);
+            }
+            mWebContents = webContents;
             DistillablePageUtils.setDelegate(mWebContents, this);
         }
     }
@@ -163,10 +197,12 @@ public class TabDistillabilityProvider extends EmptyTabObserver
 
     @Override
     public void onIsPageDistillableResult(
+            GURL url,
             boolean isDistillable,
             boolean isLast,
             boolean isLongArticle,
             boolean isMobileOptimized) {
+        mDistillationResultUrl = url;
         mIsDistillable = isDistillable;
         mIsLast = isLast;
         mIsLongArticle = isLongArticle;
@@ -177,11 +213,11 @@ public class TabDistillabilityProvider extends EmptyTabObserver
         for (DistillabilityObserver o : mObserverList) {
             o.onIsPageDistillableResult(mTab, mIsDistillable, mIsLast, mIsMobileOptimized);
         }
+        recordContentClassificationMetric();
     }
 
     @Override
     public void onContentChanged(Tab tab) {
-        recordContentClassificationMetric();
         resetState();
     }
 
@@ -192,17 +228,44 @@ public class TabDistillabilityProvider extends EmptyTabObserver
     }
 
     @Override
-    public void onDidFinishNavigationInPrimaryMainFrame(Tab tab, NavigationHandle navigation) {
-        recordContentClassificationMetric();
-        resetState();
+    public void onDidStartNavigationInPrimaryMainFrame(Tab tab, NavigationHandle navigation) {
+        resetStateIfUrlHasChanged(tab);
     }
 
     @Override
+    public void onDidFinishNavigationInPrimaryMainFrame(Tab tab, NavigationHandle navigation) {
+        resetStateIfUrlHasChanged(tab);
+    }
+
+    @Override
+    @SuppressWarnings("NullAway")
     public void destroy() {
         mObserverList.clear();
-        mTab.removeObserver(this);
+        if (mTab != null) {
+            mTab.removeObserver(this);
+        }
+        if (mWebContents != null) {
+            DistillablePageUtils.setDelegate(mWebContents, null);
+            mWebContents = null;
+        }
         mTab = null;
-        mWebContents = null;
+        resetState();
+    }
+
+    private void resetStateIfUrlHasChanged(Tab tab) {
+        // The distillation result remains fresh if navigating within the same article or entering
+        // its reader mode view.
+        if (mDistillationResultUrl != null) {
+            if (mDistillationResultUrl.equalsIgnoringRef(tab.getUrl())) {
+                return;
+            } else if (DomDistillerUrlUtils.isDistilledPage(tab.getUrl())) {
+                GURL originalUrl =
+                        DomDistillerUrlUtils.getOriginalUrlFromDistillerUrl(tab.getUrl());
+                if (originalUrl != null && mDistillationResultUrl.equalsIgnoringRef(originalUrl)) {
+                    return;
+                }
+            }
+        }
         resetState();
     }
 }

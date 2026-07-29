@@ -6,6 +6,8 @@
 
 #include <string_view>
 
+#include "services/device/public/mojom/hid.mojom.h"
+
 #define INITGUID
 
 #include <dbt.h>
@@ -15,12 +17,17 @@
 #include <wdmguid.h>
 #include <winioctl.h>
 
+// LogSeverity is both a macro in setupapi.h and an enum in absl, which is used
+// indirectly via //base.
+#undef LogSeverity
+
 #include <algorithm>
 #include <limits>
 #include <memory>
 #include <set>
 #include <utility>
 
+#include "base/command_line.h"
 #include "base/files/file.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -34,10 +41,13 @@
 #include "base/task/thread_pool.h"
 #include "base/win/scoped_devinfo.h"
 #include "base/win/win_util.h"
+#include "base/win/windows_handle_util.h"
 #include "components/device_event_log/device_event_log.h"
 #include "services/device/hid/hid_connection_win.h"
 #include "services/device/hid/hid_device_info.h"
 #include "services/device/hid/hid_preparsed_data.h"
+#include "services/device/public/cpp/hid/hid_switches.h"
+#include "services/device/public/proto/hid_gcpw.pb.h"
 
 namespace device {
 
@@ -413,6 +423,7 @@ HidServiceWin::PreparsedData::CreateHidCollectionInfo() const {
   auto collection_info = mojom::HidCollectionInfo::New();
   collection_info->usage =
       mojom::HidUsageAndPage::New(caps.Usage, caps.UsagePage);
+  collection_info->collection_type = mojom::kHIDCollectionTypeApplication;
   collection_info->input_reports = CreateReportDescriptions(*this, HidP_Input);
   collection_info->output_reports =
       CreateReportDescriptions(*this, HidP_Output);
@@ -497,7 +508,7 @@ void HidServiceWin::Connect(const std::string& device_guid,
   std::vector<std::unique_ptr<HidConnectionWin::HidDeviceEntry>> file_handles;
   for (const auto& entry : platform_device_id_map) {
     base::win::ScopedHandle file_handle(OpenDevice(entry.platform_device_id));
-    if (!file_handle.IsValid()) {
+    if (!file_handle.is_valid()) {
       HID_PLOG(DEBUG) << "Failed to open device with deviceId='"
                       << entry.platform_device_id << "'";
       continue;
@@ -570,6 +581,77 @@ void HidServiceWin::EnumerateBlocking(
       base::BindOnce(&HidServiceWin::FirstEnumerationComplete, service));
 }
 
+HANDLE HidServiceWin::OpenDeviceThroughGcpw(std::wstring_view device_path) {
+  HID_LOG(ERROR) << "Going to open device through GCPW. " << device_path;
+  // LINT.IfChange
+  HANDLE pipe_handle = GetStdHandle(STD_INPUT_HANDLE);
+  if (pipe_handle == INVALID_HANDLE_VALUE) {
+    return INVALID_HANDLE_VALUE;
+  }
+
+  gcpw::HidOpenDeviceGcpwRequest request;
+  request.set_device_path(base::WideToUTF8(device_path));
+  std::vector<uint8_t> request_buffer(request.ByteSizeLong());
+  request.SerializeToArray(request_buffer.data(), request_buffer.size());
+
+  // First write the size of the message, then the message itself.
+  DWORD buffer_size = request_buffer.size();
+  DWORD bytes_written;
+  if (!WriteFile(pipe_handle, &buffer_size, sizeof(buffer_size), &bytes_written,
+                 nullptr) ||
+      bytes_written != sizeof(buffer_size)) {
+    return INVALID_HANDLE_VALUE;
+  }
+  if (buffer_size > 0) {
+    if (!WriteFile(pipe_handle, request_buffer.data(), buffer_size,
+                   &bytes_written, nullptr) ||
+        bytes_written != buffer_size) {
+      return INVALID_HANDLE_VALUE;
+    }
+  }
+
+  DWORD response_size;
+  DWORD bytes_read;
+  if (!ReadFile(pipe_handle, &response_size, sizeof(response_size), &bytes_read,
+                nullptr) ||
+      bytes_read != sizeof(response_size)) {
+    return INVALID_HANDLE_VALUE;
+  }
+  std::vector<uint8_t> response_buffer(response_size);
+  if (response_size > 0) {
+    if (!ReadFile(pipe_handle, response_buffer.data(), response_size,
+                  &bytes_read, nullptr) ||
+        bytes_read != response_size) {
+      return INVALID_HANDLE_VALUE;
+    }
+  }
+
+  gcpw::HidOpenDeviceGcpwResponse response;
+  if (!response.ParseFromArray(response_buffer.data(),
+                               response_buffer.size())) {
+    return INVALID_HANDLE_VALUE;
+  }
+
+  if (response.has_device_handle()) {
+    return base::win::Uint32ToHandle(response.device_handle());
+  }
+
+  return INVALID_HANDLE_VALUE;
+  // LINT.ThenChange(//chrome/credential_provider/gaiacp/gaia_credential_base.cc)
+}
+
+uint16_t HidServiceWin::GetUsagePage(HANDLE device_handle) {
+  if (device_handle == INVALID_HANDLE_VALUE) {
+    return 0;
+  }
+  auto preparsed_data = HidPreparsedData::Create(device_handle);
+  if (!preparsed_data) {
+    HID_LOG(ERROR) << "GCPW: Failed to get preparsed data for handle.";
+    return 0;
+  }
+  return preparsed_data->GetCaps().UsagePage;
+}
+
 // static
 void HidServiceWin::AddDeviceBlocking(
     base::WeakPtr<HidServiceWin> service,
@@ -578,8 +660,9 @@ void HidServiceWin::AddDeviceBlocking(
     const std::string& physical_device_id,
     const std::wstring& interface_id) {
   base::win::ScopedHandle device_handle(OpenDevice(device_path));
-  if (!device_handle.IsValid())
+  if (!device_handle.is_valid()) {
     return;
+  }
 
   auto preparsed_data = HidPreparsedData::Create(device_handle.Get());
   if (!preparsed_data)
@@ -670,6 +753,22 @@ void HidServiceWin::OnDeviceRemoved(const GUID& class_guid,
 // static
 base::win::ScopedHandle HidServiceWin::OpenDevice(
     const std::wstring& device_path) {
+  base::win::ScopedHandle file;
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kGcpwSigninSwitch)) {
+    file.Set(OpenDeviceThroughGcpw(device_path));
+    // LINT.IfChange
+    if (file.is_valid()) {
+      uint16_t usage_page = GetUsagePage(file.Get());
+      if (usage_page != mojom::kPageFido) {
+        file.Close();
+      }
+    }
+    // LINT.ThenChange(//chrome/credential_provider/gaiacp/gcp_utils.cc)
+    return file;
+  }
+
+  // LINT.IfChange
   constexpr DWORD kDesiredAccessModes[] = {
       // Request read and write access.
       GENERIC_WRITE | GENERIC_READ,
@@ -678,17 +777,17 @@ base::win::ScopedHandle HidServiceWin::OpenDevice(
       // Don't request read or write access.
       0,
   };
-  base::win::ScopedHandle file;
   for (const auto& desired_access : kDesiredAccessModes) {
     file.Set(CreateFile(device_path.c_str(), desired_access,
                         FILE_SHARE_READ | FILE_SHARE_WRITE,
                         /*lpSecurityAttributes=*/nullptr, OPEN_EXISTING,
                         FILE_FLAG_OVERLAPPED, /*hTemplateFile=*/nullptr));
-    if (file.IsValid() || GetLastError() != ERROR_ACCESS_DENIED) {
+    if (file.is_valid() || GetLastError() != ERROR_ACCESS_DENIED) {
       break;
     }
   }
   return file;
+  // LINT.ThenChange(//chrome/credential_provider/gaiacp/os_device_manager.cc)
 }
 
 }  // namespace device

@@ -4,6 +4,7 @@
 
 #include "ash/clipboard/clipboard_history_menu_model_adapter.h"
 
+#include <algorithm>
 #include <string>
 
 #include "ash/clipboard/clipboard_history.h"
@@ -19,7 +20,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
-#include "chromeos/crosapi/mojom/clipboard_history.mojom.h"
+#include "chromeos/ui/clipboard_history/clipboard_history_types.h"
 #include "chromeos/ui/clipboard_history/clipboard_history_util.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -49,7 +50,7 @@ using ::testing::Values;
 using ::testing::ValuesIn;
 using ::testing::WithParamInterface;
 
-using crosapi::mojom::ClipboardHistoryControllerShowSource;
+using chromeos::clipboard_history::ShowSource;
 
 namespace {
 
@@ -59,14 +60,18 @@ ClipboardHistoryControllerImpl* GetClipboardHistoryController() {
   return Shell::Get()->clipboard_history_controller();
 }
 
-std::vector<ClipboardHistoryControllerShowSource>
-GetClipboardHistoryShowSources() {
-  std::vector<ClipboardHistoryControllerShowSource> sources;
-  for (int i =
-           static_cast<int>(ClipboardHistoryControllerShowSource::kMinValue);
-       i <= static_cast<int>(ClipboardHistoryControllerShowSource::kMaxValue);
-       ++i) {
-    sources.push_back(static_cast<ClipboardHistoryControllerShowSource>(i));
+std::vector<ShowSource> GetClipboardHistoryShowSources() {
+  constexpr std::array<ShowSource, 2> kDeprecated = {
+      ShowSource::kControlVLongpress,
+      ShowSource::kToast,
+  };
+  std::vector<ShowSource> sources;
+  for (int i = static_cast<int>(ShowSource::kMinValue);
+       i <= static_cast<int>(ShowSource::kMaxValue); ++i) {
+    // kControlVLongpress is deprecated.
+    if (!std::ranges::contains(kDeprecated, static_cast<ShowSource>(i))) {
+      sources.push_back(static_cast<ShowSource>(i));
+    }
   }
   return sources;
 }
@@ -133,8 +138,7 @@ TEST_F(ClipboardHistoryMenuModelAdapterRefreshTest, FirstItemShowsCtrlVLabel) {
   controller->set_initial_item_selected_callback_for_test(
       run_loop.QuitClosure());
   EXPECT_TRUE(controller->ShowMenu(
-      gfx::Rect(), ui::mojom::MenuSourceType::kNone,
-      ClipboardHistoryControllerShowSource::kDefaultValue));
+      gfx::Rect(), ui::mojom::MenuSourceType::kNone, ShowSource::kUnknown));
   run_loop.Run();
   EXPECT_TRUE(controller->IsMenuShowing());
 
@@ -188,8 +192,7 @@ TEST_F(ClipboardHistoryMenuModelAdapterRefreshTest,
   auto* const controller = GetClipboardHistoryController();
   ASSERT_TRUE(controller);
   EXPECT_TRUE(controller->ShowMenu(
-      gfx::Rect(), ui::mojom::MenuSourceType::kNone,
-      ClipboardHistoryControllerShowSource::kDefaultValue));
+      gfx::Rect(), ui::mojom::MenuSourceType::kNone, ShowSource::kUnknown));
   EXPECT_TRUE(controller->IsMenuShowing());
 
   // Verify the number of items in the menu.
@@ -227,16 +230,12 @@ TEST_F(ClipboardHistoryMenuModelAdapterRefreshTest,
 class ClipboardHistoryMenuModelAdapterMenuItemTest
     : public AshTestBase,
       public WithParamInterface<std::tuple<
-          ClipboardHistoryControllerShowSource,
+          ShowSource,
           /*time_since_menu_shown=*/std::optional<base::TimeDelta>,
           /*time_since_nudge_shown=*/std::optional<base::TimeDelta>>> {
  public:
   ClipboardHistoryMenuModelAdapterMenuItemTest()
-      : AshTestBase(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
-    scoped_feature_list_.InitWithFeatureStates(
-        {{features::kClipboardHistoryLongpress,
-          IsClipboardHistoryLongpressEnabled()}});
-  }
+      : AshTestBase(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
 
   // AshTestBase:
   void SetUp() override {
@@ -268,9 +267,7 @@ class ClipboardHistoryMenuModelAdapterMenuItemTest
     FlushMessageLoop();
   }
 
-  ClipboardHistoryControllerShowSource GetSource() const {
-    return std::get<0>(GetParam());
-  }
+  ShowSource GetSource() const { return std::get<0>(GetParam()); }
 
   const std::optional<base::TimeDelta>& GetTimeSinceMenuShown() const {
     return std::get<1>(GetParam());
@@ -279,14 +276,6 @@ class ClipboardHistoryMenuModelAdapterMenuItemTest
   const std::optional<base::TimeDelta>& GetTimeSinceNudgeShown() const {
     return std::get<2>(GetParam());
   }
-
-  bool IsClipboardHistoryLongpressEnabled() const {
-    return GetSource() ==
-           ClipboardHistoryControllerShowSource::kControlVLongpress;
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,
@@ -321,8 +310,7 @@ TEST_P(ClipboardHistoryMenuModelAdapterMenuItemTest,
       GetTimeSinceNudgeShown().value_or(base::TimeDelta::Max());
 
   const bool has_header = true;
-  const bool has_footer = IsClipboardHistoryLongpressEnabled() ||
-                          ((time_since_menu_shown >= base::Days(60)) ||
+  const bool has_footer = ((time_since_menu_shown >= base::Days(60)) ||
                            (time_since_nudge_shown <= base::Seconds(60)));
 
   // Verify the number of items in the menu model.
@@ -364,15 +352,10 @@ TEST_P(ClipboardHistoryMenuModelAdapterMenuItemTest,
       footer->GetViewByID(clipboard_history_util::kFooterContentV2ViewID),
       GetViewById<views::StyledLabel>(
           clipboard_history_util::kFooterContentV2LabelID,
-          Property(
-              &views::StyledLabel::GetText,
-              Conditional(
-                  IsClipboardHistoryLongpressEnabled(),
-                  l10n_util::GetStringUTF16(
-                      IDS_ASH_CLIPBOARD_HISTORY_CONTROL_V_LONGPRESS_FOOTER),
-                  l10n_util::GetStringFUTF16(
-                      IDS_ASH_CLIPBOARD_HISTORY_FOOTER,
-                      clipboard_history_util::GetShortcutKeyName())))));
+          Property(&views::StyledLabel::GetText,
+                   l10n_util::GetStringFUTF16(
+                       IDS_ASH_CLIPBOARD_HISTORY_FOOTER,
+                       clipboard_history_util::GetShortcutKeyName()))));
 }
 
 }  // namespace ash

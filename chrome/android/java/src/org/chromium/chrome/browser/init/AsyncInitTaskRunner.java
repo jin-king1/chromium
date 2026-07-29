@@ -6,16 +6,17 @@ package org.chromium.chrome.browser.init;
 
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.BuildInfo;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.library_loader.LibraryLoader;
-import org.chromium.base.library_loader.LibraryPrefetcher;
 import org.chromium.base.library_loader.ProcessInitException;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.version_info.VersionInfo;
+import org.chromium.build.annotations.MonotonicNonNull;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ChromeActivitySessionTracker;
 import org.chromium.components.variations.firstrun.VariationsSeedFetcher;
 import org.chromium.content_public.browser.ChildProcessLauncherHelper;
@@ -23,15 +24,14 @@ import org.chromium.content_public.browser.ChildProcessLauncherHelper;
 import java.util.concurrent.Executor;
 
 /**
- * Runs asynchronous startup task that need to be run before the native side is
- * started. Currently it runs two tasks:
- * - Native library loading
- * - Fetching the variations seed on first run
+ * Runs asynchronous startup task that need to be run before the native side is started. Currently
+ * it runs two tasks: - Native library loading - Fetching the variations seed on first run
  */
+@NullMarked
 public abstract class AsyncInitTaskRunner {
     private boolean mAllocateChildConnection;
 
-    private FetchSeedTask mFetchSeedTask;
+    private @MonotonicNonNull FetchSeedTask mFetchSeedTask;
 
     // Barrier counter to determine when all tasks have completed and are
     // successful. -1 indicates "terminal state".
@@ -40,11 +40,6 @@ public abstract class AsyncInitTaskRunner {
     @VisibleForTesting
     boolean shouldFetchVariationsSeedDuringFirstRun() {
         return VersionInfo.isOfficialBuild();
-    }
-
-    @VisibleForTesting
-    void prefetchLibrary() {
-        LibraryPrefetcher.asyncPrefetchLibrariesToMemory();
     }
 
     private class FetchSeedTask implements Runnable {
@@ -78,11 +73,6 @@ public abstract class AsyncInitTaskRunner {
             if (VersionInfo.isDevBuild()) {
                 return "dev";
             }
-            // TODO(crbug.com/389565104): Remove this if block when ready to move desktop to stable
-            // builds.
-            if (VersionInfo.isStableBuild() && BuildInfo.getInstance().isDesktop) {
-                return "dev";
-            }
             if (VersionInfo.isBetaBuild()) {
                 return "beta";
             }
@@ -111,7 +101,7 @@ public abstract class AsyncInitTaskRunner {
             ChromeActivitySessionTracker sessionTracker =
                     ChromeActivitySessionTracker.getInstance();
             sessionTracker.getVariationsRestrictModeValue(
-                    new Callback<String>() {
+                    new Callback<>() {
                         @Override
                         public void onResult(String restrictMode) {
                             mFetchSeedTask = new FetchSeedTask(restrictMode);
@@ -145,28 +135,17 @@ public abstract class AsyncInitTaskRunner {
      *
      * @return null if loading succeeds, or ProcessInitException if loading fails.
      */
-    private ProcessInitException loadNativeLibrary() {
+    private @Nullable ProcessInitException loadNativeLibrary() {
         try {
             LibraryLoader.getInstance().getMediator().ensureInitializedInMainProcess();
             LibraryLoader.getInstance().ensureInitialized();
-            // The prefetch is done after the library load for two reasons:
-            // - It is easier to know the library location after it has
-            // been loaded.
-            // - Testing has shown that this gives the best compromise,
-            // by avoiding performance regression on any tested
-            // device, and providing performance improvement on
-            // some. Doing it earlier delays UI inflation and more
-            // generally startup on some devices, most likely by
-            // competing for IO.
-            // For experimental results, see http://crbug.com/460438.
-            prefetchLibrary();
         } catch (ProcessInitException e) {
             return e;
         }
         return null;
     }
 
-    private void tasksPossiblyComplete(Exception failureCause) {
+    private void tasksPossiblyComplete(@Nullable Exception failureCause) {
         ThreadUtils.assertOnUiThread();
 
         if (mNumPendingSuccesses < 0) {

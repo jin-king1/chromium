@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/ash/printing/zeroconf_printer_detector.h"
 
@@ -15,9 +11,8 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_set.h"
-#include "base/hash/md5.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -26,8 +21,15 @@
 #include "chrome/browser/local_discovery/service_discovery_shared_client.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/device_event_log/device_event_log.h"
+#include "crypto/obsolete/md5.h"
 
 namespace ash {
+
+namespace printing {
+crypto::obsolete::Md5 MakeMd5HasherForZeroconf() {
+  return {};
+}
+}  // namespace printing
 
 // Supported service names for printers.
 const char ZeroconfPrinterDetector::kIppServiceName[] = "_ipp._tcp.local";
@@ -144,19 +146,15 @@ class ParsedMetadata {
 // all to be considered the same printer.
 std::string ZeroconfPrinterId(const ServiceDescription& service,
                               const ParsedMetadata& metadata) {
-  base::MD5Context ctx;
-  base::MD5Init(&ctx);
-  base::MD5Update(&ctx, service.instance_name());
-  base::MD5Update(&ctx, metadata.product);
-  base::MD5Update(&ctx, metadata.UUID);
-  base::MD5Update(&ctx, metadata.usb_MFG);
-  base::MD5Update(&ctx, metadata.usb_MDL);
-  base::MD5Update(&ctx, metadata.ty);
-  base::MD5Update(&ctx, metadata.rp);
-  base::MD5Digest digest;
-  base::MD5Final(&digest, &ctx);
-  return base::StringPrintf("zeroconf-%s",
-                            base::MD5DigestToBase16(digest).c_str());
+  auto md5 = ash::printing::MakeMd5HasherForZeroconf();
+  md5.Update(service.instance_name());
+  md5.Update(metadata.product);
+  md5.Update(metadata.UUID);
+  md5.Update(metadata.usb_MFG);
+  md5.Update(metadata.usb_MDL);
+  md5.Update(metadata.ty);
+  md5.Update(metadata.rp);
+  return base::StringPrintf("zeroconf-%s", base::HexEncodeLower(md5.Finish()));
 }
 
 // Attempt to fill |detected_printer| using the information in
@@ -394,7 +392,7 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
         this, discovery_client_.get(), service_type);
     lister->Start();
     lister->DiscoverNewDevices();
-    DCHECK(!base::Contains(device_listers_, service_type));
+    DCHECK(!device_listers_.contains(service_type));
     device_listers_[service_type] = std::move(lister);
   }
 
@@ -402,14 +400,14 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
   // Requires that printers_lock_ be held.
   std::vector<DetectedPrinter> GetPrintersLocked() {
     printers_lock_.AssertAcquired();
-    std::map<std::string, DetectedPrinter> unified;
+    std::map<std::string_view, DetectedPrinter> unified;
     // The order in which we look through these maps defines priority -- earlier
     // service types in this list will be used preferentially over later ones.
     // This depends on the fact that map::insert will fail if the entry already
     // exists.
     for (const char* service_type : kServiceNames) {
       for (const auto& entry : printers_[service_type]) {
-        unified.insert({entry.first, entry.second});
+        unified.emplace(entry.first, entry.second);
       }
     }
     std::vector<DetectedPrinter> ret;
@@ -432,7 +430,7 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
   bool IsPrintersEmpty() const {
     printers_lock_.AssertAcquired();
     for (const char* service_type : kServiceNames) {
-      DCHECK(base::Contains(printers_, service_type));
+      DCHECK(printers_.contains(service_type));
       if (!printers_.at(service_type).empty()) {
         return false;
       }

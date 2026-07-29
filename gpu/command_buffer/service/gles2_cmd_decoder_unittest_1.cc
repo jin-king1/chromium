@@ -40,7 +40,6 @@ class GLES3DecoderTest1 : public GLES2DecoderTest1 {
   void SetUp() override {
     InitState init;
     init.gl_version = "OpenGL ES 3.0";
-    init.bind_generates_resource = true;
     init.context_type = CONTEXT_TYPE_OPENGLES3;
     InitDecoder(init);
   }
@@ -111,6 +110,10 @@ void GLES2DecoderTestBase::SpecializedSetup<cmds::CopyTexSubImage2D, 0>(
     DoBindTexture(GL_TEXTURE_2D, client_texture_id_, kServiceTextureId);
     DoTexImage2D(GL_TEXTURE_2D, 2, GL_RGBA, 16, 16, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, shared_memory_id_, kSharedMemoryOffset);
+    EXPECT_CALL(*gl_, GetError())
+        .WillOnce(Return(GL_NO_ERROR))
+        .WillOnce(Return(GL_NO_ERROR))
+        .RetiresOnSaturation();
   }
 }
 
@@ -182,6 +185,20 @@ void GLES2DecoderTestBase::
     // up at the end of the test.
     EXPECT_CALL(*gl_, DeleteTransformFeedbacks(_, _))
         .Times(1)
+        .RetiresOnSaturation();
+  }
+}
+
+template <>
+void GLES2DecoderTestBase::SpecializedSetup<cmds::GetProgramiv, 0>(bool valid) {
+  if (valid) {
+    // GetProgramiv calls ClearGLError then GetError to make sure
+    // it actually got a value so it can report correctly to the client.
+    EXPECT_CALL(*gl_, GetError())
+        .WillOnce(Return(GL_NO_ERROR))
+        .RetiresOnSaturation();
+    EXPECT_CALL(*gl_, GetError())
+        .WillOnce(Return(GL_NO_ERROR))
         .RetiresOnSaturation();
   }
 }

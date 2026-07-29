@@ -11,10 +11,12 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "base/thread_annotations.h"
+#include "media/base/audio_bus.h"
 #include "media/base/audio_glitch_info.h"
 #include "media/base/audio_timestamp_helper.h"
 #include "media/base/media_log.h"
@@ -22,7 +24,6 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
-
 // TeeFilter is a RenderCallback implementation that allows for a client to get
 // a copy of the data being rendered by the |renderer_| on Render(). This class
 // also holds on to the necessary audio parameters.
@@ -149,7 +150,7 @@ void WebAudioSourceProviderImpl::SetClient(
     // The client will now take control by calling provideInput() periodically.
     client_ = client;
 
-    set_format_cb_ = base::BindPostTaskToCurrentDefault(WTF::BindRepeating(
+    set_format_cb_ = base::BindPostTaskToCurrentDefault(blink::BindRepeating(
         &WebAudioSourceProviderImpl::OnSetFormat, weak_factory_.GetWeakPtr()));
 
     // If |tee_filter_| is Initialize()d - then run |set_format_cb_| to send
@@ -175,7 +176,7 @@ void WebAudioSourceProviderImpl::SetClient(
 }
 
 void WebAudioSourceProviderImpl::ProvideInput(
-    const std::vector<float*>& audio_data,
+    base::span<const base::span<float>> audio_data,
     int number_of_frames) {
   if (!bus_wrapper_ ||
       static_cast<size_t>(bus_wrapper_->channels()) != audio_data.size()) {
@@ -185,11 +186,7 @@ void WebAudioSourceProviderImpl::ProvideInput(
 
   bus_wrapper_->set_frames(number_of_frames);
   for (size_t i = 0; i < audio_data.size(); ++i) {
-    // TODO(crbug.com/375449662): Spanify `audio_data` parameter.
-    bus_wrapper_->SetChannelData(
-        static_cast<int>(i),
-        UNSAFE_TODO(base::span(audio_data[i],
-                               base::checked_cast<size_t>(number_of_frames))));
+    bus_wrapper_->SetChannelData(static_cast<int>(i), audio_data[i]);
   }
 
   // Use a try lock to avoid contention in the real-time audio thread.
@@ -256,8 +253,9 @@ void WebAudioSourceProviderImpl::Start() {
 void WebAudioSourceProviderImpl::Stop() {
   base::AutoLock auto_lock(sink_lock_);
   state_ = kStopped;
-  if (!client_ && sink_)
+  if (sink_) {
     sink_->Stop();
+  }
 }
 
 void WebAudioSourceProviderImpl::Play() {
@@ -306,8 +304,8 @@ void WebAudioSourceProviderImpl::GetOutputDeviceInfoAsync(
   // underlying audio renderer will prefer the media parameters. See
   // IsOptimizedForHardwareParameters() for more details.
   base::BindPostTaskToCurrentDefault(
-      WTF::BindOnce(std::move(info_cb),
-                    media::OutputDeviceInfo(media::OUTPUT_DEVICE_STATUS_OK)))
+      blink::BindOnce(std::move(info_cb),
+                      media::OutputDeviceInfo(media::OUTPUT_DEVICE_STATUS_OK)))
       .Run();
 }
 

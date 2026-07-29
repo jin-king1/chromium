@@ -8,7 +8,6 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.build.annotations.Nullable;
 import org.chromium.cc.input.BrowserControlsState;
 
 import java.util.ArrayList;
@@ -21,16 +20,12 @@ public class ComposedBrowserControlsVisibilityDelegate extends BrowserControlsVi
     private final List<BrowserControlsVisibilityDelegate> mDelegates;
     private final Callback<@BrowserControlsState Integer> mConstraintsUpdatedCallback;
 
-    private boolean mSetDisabled;
-
     /**
      * Constructs a composed visibility delegate that will generate results based on the delegates
      * passed in.
      */
     public ComposedBrowserControlsVisibilityDelegate(
             BrowserControlsVisibilityDelegate... delegates) {
-        super(BrowserControlsState.BOTH);
-        mSetDisabled = true;
         mDelegates = new ArrayList<>(Arrays.asList(delegates));
         mConstraintsUpdatedCallback = (constraints) -> super.set(calculateVisibilityConstraints());
         // We start initially with no observers and we don't actively update the set() value here.
@@ -46,19 +41,16 @@ public class ComposedBrowserControlsVisibilityDelegate extends BrowserControlsVi
     public void addDelegate(BrowserControlsVisibilityDelegate delegate) {
         mDelegates.add(delegate);
         if (hasObservers()) {
-            delegate.addObserver(mConstraintsUpdatedCallback);
-            // Update the set() value now, so get() right after this call will return the right
-            // value.
-            super.set(calculateVisibilityConstraints());
+            delegate.addSyncObserverAndCallIfNonNull(mConstraintsUpdatedCallback);
         }
     }
 
     @Override
-    public @Nullable @BrowserControlsState Integer addObserver(
+    public @BrowserControlsState Integer addObserver(
             Callback<@BrowserControlsState Integer> obs, @NotifyBehavior int behavior) {
         if (!hasObservers()) {
-            for (int i = 0; i < mDelegates.size(); i++) {
-                mDelegates.get(i).addSyncObserverAndCall(mConstraintsUpdatedCallback);
+            for (BrowserControlsVisibilityDelegate delegate : mDelegates) {
+                delegate.addSyncObserver(mConstraintsUpdatedCallback);
             }
             // Since the observer is not added yet, we need to trigger an update manually.
             super.set(calculateVisibilityConstraints());
@@ -73,14 +65,14 @@ public class ComposedBrowserControlsVisibilityDelegate extends BrowserControlsVi
             // One of the delegates can be activity-scoped and live longer than e.g. a tab-scoped
             // observer. Unsubscribe when the last observer goes away, to keep the behavior
             // consistent with using the wrapped delegate directly, and to prevent memory leaks.
-            for (int i = 0; i < mDelegates.size(); i++) {
-                mDelegates.get(i).removeObserver(mConstraintsUpdatedCallback);
+            for (BrowserControlsVisibilityDelegate delegate : mDelegates) {
+                delegate.removeObserver(mConstraintsUpdatedCallback);
             }
         }
     }
 
     @Override
-    public @Nullable @BrowserControlsState Integer get() {
+    public @BrowserControlsState Integer get() {
         // When there are no observers, we don't actively update the set() value and calculate a
         // fresh value on demand.
         if (!hasObservers()) {
@@ -90,20 +82,16 @@ public class ComposedBrowserControlsVisibilityDelegate extends BrowserControlsVi
     }
 
     @Override
-    public void set(@BrowserControlsState Integer value) {
-        // Allow set(...) to only be called via the super constructor.  After initial construction,
-        // no client should be allowed to update the value through anything other than the
-        // attached delegates.
-        if (mSetDisabled) {
-            throw new IllegalStateException("Calling set on the composed delegate is not allowed.");
-        }
+    public void set(@BrowserControlsState int value) {
+        // Allow set(...) to be called only via super.set().
+        assert false : "Calling set on the composed delegate is not allowed.";
         super.set(value);
     }
 
     private @BrowserControlsState int calculateVisibilityConstraints() {
         boolean shouldBeShown = false;
-        for (int i = 0; i < mDelegates.size(); i++) {
-            @BrowserControlsState int delegateConstraints = assumeNonNull(mDelegates.get(i).get());
+        for (BrowserControlsVisibilityDelegate delegate : mDelegates) {
+            @BrowserControlsState int delegateConstraints = assumeNonNull(delegate.get());
             if (delegateConstraints == BrowserControlsState.HIDDEN) {
                 return BrowserControlsState.HIDDEN;
             }

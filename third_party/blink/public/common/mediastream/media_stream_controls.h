@@ -52,12 +52,12 @@ struct BLINK_COMMON_EXPORT StreamControls {
   TrackControls audio;
   TrackControls video;
 
-  // Hotword functionality (chromeos only)
-  // TODO(crbug.com/577627): this is now never set and needs to be removed.
-  bool hotword_enabled = false;
   bool disable_local_echo = false;
   bool suppress_local_audio_playback = false;
+  bool restrict_own_audio = false;
   bool exclude_system_audio = false;
+  mojom::WindowAudioPreference window_audio_preference =
+      mojom::WindowAudioPreference::kExclude;
   bool exclude_self_browser_surface = false;
   bool request_pan_tilt_zoom_permission = false;
   bool request_all_screens = false;
@@ -67,6 +67,7 @@ struct BLINK_COMMON_EXPORT StreamControls {
   // the target of the tab-capture to the other tab.
   bool dynamic_surface_switching_requested = true;
   bool exclude_monitor_type_surfaces = false;
+  bool audio_selection_preferred = false;
 };
 
 }  // namespace blink

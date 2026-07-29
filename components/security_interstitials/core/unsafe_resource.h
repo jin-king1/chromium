@@ -9,13 +9,13 @@
 #include <vector>
 
 #include "base/functional/callback.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/unguessable_token.h"
-#include "components/safe_browsing/core/browser/db/hit_report.h"
+#include "components/safe_browsing/core/browser/db/util.h"
 #include "components/safe_browsing/core/common/proto/realtimeapi.pb.h"
+#include "components/safe_browsing/core/common/threat_enums.h"
 #include "components/security_interstitials/core/unsafe_resource_locator.h"
-#include "services/network/public/mojom/fetch_api.mojom.h"
 #include "url/gurl.h"
 
 namespace web {
@@ -67,7 +67,8 @@ struct UnsafeResource {
   // Note: If async check is enabled, please call
   // AsyncCheckTracker::IsMainPageLoadPending instead.
   static bool IsMainPageLoadPendingWithSyncCheck(
-      safe_browsing::SBThreatType threat_type);
+      safe_browsing::SBThreatType threat_type,
+      safe_browsing::ThreatSource threat_source);
 
   // Checks if |callback| is not null and posts it to |callback_sequence|.
   void DispatchCallback(const base::Location& from_here,
@@ -81,6 +82,8 @@ struct UnsafeResource {
   GURL referrer_url;
   std::vector<GURL> redirect_urls;
   safe_browsing::SBThreatType threat_type;
+  safe_browsing::ThreatSubtype threat_subtype =
+      safe_browsing::ThreatSubtype::UNKNOWN;
   safe_browsing::ThreatMetadata threat_metadata;
   safe_browsing::RTLookupResponse rt_lookup_response;
   // A callback to deliver the |UrlCheckResult| back to the creator of the

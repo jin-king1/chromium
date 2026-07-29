@@ -4,30 +4,38 @@
 
 package org.chromium.chrome.browser.ui;
 
-import android.content.Context;
+import static org.chromium.build.NullUtil.assertNonNull;
 
-import androidx.annotation.Nullable;
+import android.app.Activity;
+import android.content.Context;
+import android.view.View;
+
 import androidx.appcompat.content.res.AppCompatResources;
 
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.CallbackUtils;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
-import org.chromium.chrome.browser.ai.AiAssistantService;
-import org.chromium.chrome.browser.ai.PageSummaryButtonController;
-import org.chromium.chrome.browser.bookmarks.AddToBookmarksToolbarButtonController;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
 import org.chromium.chrome.browser.commerce.CommerceBottomSheetContentController;
 import org.chromium.chrome.browser.commerce.CommerceBottomSheetContentCoordinator;
+import org.chromium.chrome.browser.commerce.CommerceBottomSheetContentProvider;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
+import org.chromium.chrome.browser.commerce.coupons.DiscountsBottomSheetContentCoordinator;
 import org.chromium.chrome.browser.commerce.coupons.DiscountsButtonController;
+import org.chromium.chrome.browser.dom_distiller.ReaderModeIphController;
 import org.chromium.chrome.browser.dom_distiller.ReaderModeToolbarButtonController;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.identity_disc.IdentityDiscController;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionHandler;
-import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionHandler.VoiceInteractionSource;
+import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler.VoiceInteractionSource;
+import org.chromium.chrome.browser.price_history.PriceHistoryBottomSheetContentCoordinator;
 import org.chromium.chrome.browser.price_insights.PriceInsightsButtonController;
 import org.chromium.chrome.browser.price_tracking.CurrentTabPriceTrackingStateSupplier;
 import org.chromium.chrome.browser.price_tracking.PriceTrackingBottomSheetContentCoordinator;
@@ -39,30 +47,39 @@ import org.chromium.chrome.browser.segmentation_platform.ContextualPageActionCon
 import org.chromium.chrome.browser.share.ShareButtonController;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.toolbar.ButtonDataProvider;
 import org.chromium.chrome.browser.toolbar.VoiceToolbarButtonController;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveButtonActionMenuCoordinator;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarBehavior;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonController;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.adaptive.TranslateToolbarButtonController;
+import org.chromium.chrome.browser.toolbar.optional_button.ButtonDataProvider;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.components.commerce.core.CommerceFeatureUtils;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Acts as a bridge between {@link RootUiCoordinator} and {@link AdaptiveToolbarButtonController}.
  */
+@NullMarked
 public class AdaptiveToolbarUiCoordinator {
     private final Context mContext;
+    // TODO(crbug.com/475144764): Use Context instead of Activity once sign-in launcher is
+    // refactored.
+    private final Activity mActivity;
     private final ActivityTabProvider mActivityTabProvider;
-    private final Supplier<ModalDialogManager> mModalDialogManagerSupplier;
+    private final NonNullObservableSupplier<ModalDialogManager> mModalDialogManagerSupplier;
 
     private List<ButtonDataProvider> mButtonDataProviders;
     private CurrentTabPriceTrackingStateSupplier mCurrentTabPriceTrackingStateSupplier;
@@ -70,57 +87,74 @@ public class AdaptiveToolbarUiCoordinator {
     private AdaptiveToolbarButtonController mAdaptiveToolbarButtonController;
     private VoiceToolbarButtonController mVoiceToolbarButtonController;
     private BottomSheetController mBottomSheetController;
-    private ObservableSupplier<Profile> mProfileSupplier;
+    private MonotonicObservableSupplier<Profile> mProfileSupplier;
     private Supplier<ScrimManager> mScrimSupplier;
-    private CommerceBottomSheetContentCoordinator mCommerceBottomSheetContentCoordinator;
+    private Supplier<@Nullable TabModelSelector> mTabModelSelectorSupplier;
+    private @Nullable CommerceBottomSheetContentCoordinator mCommerceBottomSheetContentCoordinator;
 
     /**
      * Constructor.
      *
-     * @param context {@link Context} object.
+     * @param activity {@link Activity} object.
      * @param activityTabProvider {@link ActivityTabProvider} instance.
      * @param modalDialogManagerSupplier Provides access to the modal dialog manager.
      */
     public AdaptiveToolbarUiCoordinator(
-            Context context,
+            Activity activity,
             ActivityTabProvider activityTabProvider,
-            Supplier<ModalDialogManager> modalDialogManagerSupplier) {
-        mContext = context;
+            NonNullObservableSupplier<ModalDialogManager> modalDialogManagerSupplier) {
+        mContext = activity;
+        mActivity = activity;
         mActivityTabProvider = activityTabProvider;
         mModalDialogManagerSupplier = modalDialogManagerSupplier;
         mButtonDataProviders = List.of();
     }
 
+    /**
+     * Note: {@link ButtonDataProvider} objects added here will be used for all surfaces. Consider
+     * adding a new one in {@link TabbedAdaptiveToolbarBehavior#registerPerSurfaceButtons()} if the
+     * button is only for BrApp, not for CustomTab.
+     */
+    @SuppressWarnings("NullAway.Init")
+    @Initializer
     void initialize(
             AdaptiveToolbarBehavior toolbarBehavior,
             ActivityLifecycleDispatcher activityLifecycleDispatcher,
-            Supplier<TabModelSelector> tabModelSelectorSupplier,
+            MonotonicObservableSupplier<TabModelSelector> tabModelSelectorSupplier,
             BottomSheetController bottomSheetController,
             Supplier<SnackbarManager> snackbarManagerSupplier,
             Supplier<TabBookmarker> tabBookmarkerSupplier,
-            ObservableSupplier<Profile> profileSupplier,
-            ObservableSupplier<BookmarkModel> bookmarkModelSupplier,
-            Supplier<ReadAloudController> readAloudControllerSupplier,
-            ObservableSupplier<ShareDelegate> shareDelegateSupplier,
+            MonotonicObservableSupplier<Profile> profileSupplier,
+            NullableObservableSupplier<BookmarkModel> bookmarkModelSupplier,
+            Supplier<@Nullable ReadAloudController> readAloudControllerSupplier,
+            MonotonicObservableSupplier<ShareDelegate> shareDelegateSupplier,
             Runnable onShareRunnable,
+            Runnable onSigninTapped,
             WindowAndroid windowAndroid,
-            Supplier<Tracker> trackerSupplier,
-            Supplier<ScrimManager> scrimSupplier) {
+            ActivityResultTracker activityResultTracker,
+            DeviceLockActivityLauncher deviceLockActivityLauncher,
+            Supplier<@Nullable Tracker> trackerSupplier,
+            Supplier<ScrimManager> scrimSupplier,
+            Supplier<@Nullable ReaderModeIphController> readerModeIphControllerSupplier,
+            View toolbarContainer) {
         if (!toolbarBehavior.shouldInitialize()) return;
+
         mBottomSheetController = bottomSheetController;
         mProfileSupplier = profileSupplier;
         mScrimSupplier = scrimSupplier;
-        IdentityDiscController identityDiscController =
-                new IdentityDiscController(mContext, activityLifecycleDispatcher, profileSupplier);
+        mTabModelSelectorSupplier = tabModelSelectorSupplier;
         mCurrentTabPriceTrackingStateSupplier =
-                new CurrentTabPriceTrackingStateSupplier(mActivityTabProvider, profileSupplier);
+                new CurrentTabPriceTrackingStateSupplier(
+                        mActivityTabProvider.asObservable(), profileSupplier);
 
         PriceInsightsButtonController priceInsightsButtonController =
                 new PriceInsightsButtonController(
                         mContext,
                         mActivityTabProvider,
                         tabModelSelectorSupplier,
-                        () -> ShoppingServiceFactory.getForProfile(profileSupplier.get()),
+                        () ->
+                                ShoppingServiceFactory.getForProfile(
+                                        assertNonNull(profileSupplier.get())),
                         mModalDialogManagerSupplier.get(),
                         bottomSheetController,
                         snackbarManagerSupplier.get(),
@@ -144,7 +178,7 @@ public class AdaptiveToolbarUiCoordinator {
                         mContext,
                         mActivityTabProvider,
                         mModalDialogManagerSupplier.get(),
-                        AppCompatResources.getDrawable(mContext, R.drawable.ic_mobile_friendly));
+                        readerModeIphControllerSupplier);
         ReadAloudToolbarButtonController readAloudButtonController =
                 new ReadAloudToolbarButtonController(
                         mContext,
@@ -152,7 +186,6 @@ public class AdaptiveToolbarUiCoordinator {
                         AppCompatResources.getDrawable(mContext, R.drawable.ic_play_circle),
                         readAloudControllerSupplier,
                         trackerSupplier);
-
         ShareButtonController shareButtonController =
                 new ShareButtonController(
                         mContext,
@@ -169,45 +202,28 @@ public class AdaptiveToolbarUiCoordinator {
                         AppCompatResources.getDrawable(mContext, R.drawable.ic_translate),
                         mContext.getString(R.string.menu_translate),
                         trackerSupplier);
-        AddToBookmarksToolbarButtonController addToBookmarksToolbarButtonController =
-                new AddToBookmarksToolbarButtonController(
-                        mActivityTabProvider,
-                        mContext,
-                        activityLifecycleDispatcher,
-                        tabBookmarkerSupplier,
-                        trackerSupplier,
-                        bookmarkModelSupplier);
         AdaptiveToolbarButtonController adaptiveToolbarButtonController =
                 new AdaptiveToolbarButtonController(
                         mContext,
                         activityLifecycleDispatcher,
                         profileSupplier,
-                        new AdaptiveButtonActionMenuCoordinator(),
+                        new AdaptiveButtonActionMenuCoordinator(toolbarBehavior.canShowSettings()),
                         toolbarBehavior,
-                        windowAndroid);
-        PageSummaryButtonController pageSummaryButtonController =
-                new PageSummaryButtonController(
-                        mContext,
-                        mModalDialogManagerSupplier.get(),
-                        mActivityTabProvider,
-                        new AiAssistantService());
+                        windowAndroid,
+                        toolbarContainer);
 
-        if (ChromeFeatureList.sEnableDiscountInfoApi.isEnabled()) {
-            DiscountsButtonController discountsButtonController =
-                    new DiscountsButtonController(
-                            mContext,
-                            mActivityTabProvider,
-                            mModalDialogManagerSupplier.get(),
-                            this::getCommerceBottomSheetContentController);
-            adaptiveToolbarButtonController.addButtonVariant(
-                    AdaptiveToolbarButtonVariant.DISCOUNTS, discountsButtonController);
-        }
+        DiscountsButtonController discountsButtonController =
+                new DiscountsButtonController(
+                        mContext,
+                        mActivityTabProvider,
+                        mModalDialogManagerSupplier.get(),
+                        mBottomSheetController,
+                        this::getCommerceBottomSheetContentController);
+        adaptiveToolbarButtonController.addButtonVariant(
+                AdaptiveToolbarButtonVariant.DISCOUNTS, discountsButtonController);
 
         adaptiveToolbarButtonController.addButtonVariant(
                 AdaptiveToolbarButtonVariant.SHARE, shareButtonController);
-        adaptiveToolbarButtonController.addButtonVariant(
-                AdaptiveToolbarButtonVariant.ADD_TO_BOOKMARKS,
-                addToBookmarksToolbarButtonController);
         adaptiveToolbarButtonController.addButtonVariant(
                 AdaptiveToolbarButtonVariant.TRANSLATE, translateToolbarButtonController);
         adaptiveToolbarButtonController.addButtonVariant(
@@ -218,29 +234,54 @@ public class AdaptiveToolbarUiCoordinator {
                 AdaptiveToolbarButtonVariant.READER_MODE, readerModeToolbarButtonController);
         adaptiveToolbarButtonController.addButtonVariant(
                 AdaptiveToolbarButtonVariant.READ_ALOUD, readAloudButtonController);
-        adaptiveToolbarButtonController.addButtonVariant(
-                AdaptiveToolbarButtonVariant.PAGE_SUMMARY, pageSummaryButtonController);
         mContextualPageActionController =
                 new ContextualPageActionController(
                         profileSupplier,
-                        mActivityTabProvider,
+                        mActivityTabProvider.asObservable(),
                         adaptiveToolbarButtonController,
-                        () -> ShoppingServiceFactory.getForProfile(profileSupplier.get()),
+                        () ->
+                                ShoppingServiceFactory.getForProfile(
+                                        assertNonNull(profileSupplier.get())),
                         bookmarkModelSupplier);
         mAdaptiveToolbarButtonController = adaptiveToolbarButtonController;
         toolbarBehavior.registerPerSurfaceButtons(adaptiveToolbarButtonController, trackerSupplier);
-        mButtonDataProviders = List.of(identityDiscController, adaptiveToolbarButtonController);
+
+        if (SigninFeatureMap.sSigninLevelUpButton.isEnabled()) {
+            mButtonDataProviders = List.of(adaptiveToolbarButtonController);
+        } else {
+            IdentityDiscController identityDiscController =
+                    new IdentityDiscController(
+                            mActivity,
+                            windowAndroid,
+                            activityResultTracker,
+                            deviceLockActivityLauncher,
+                            profileSupplier,
+                            bottomSheetController,
+                            mModalDialogManagerSupplier.get(),
+                            snackbarManagerSupplier.get(),
+                            onSigninTapped);
+            mButtonDataProviders = List.of(identityDiscController, adaptiveToolbarButtonController);
+        }
+    }
+
+    /**
+     * Called when native is initialized.
+     */
+    public void onFinishNativeInitialization() {
+        for (ButtonDataProvider provider : mButtonDataProviders) {
+            provider.onFinishNativeInitialization();
+        }
     }
 
     /**
      * Add voice search action button.
      *
-     * @param Supplies {@link VoiceRecognitionHandler} object.
-     * @param Supplies {@link Tracker} object.
+     * @param voiceRecognitionHandler Supplies {@link VoiceRecognitionHandler} object.
+     * @param trackerSupplier Supplies {@link Tracker} object.
      */
     public void addVoiceSearchAdaptiveButton(
-            Supplier<VoiceRecognitionHandler> voiceRecognitionHandler,
-            Supplier<Tracker> trackerSupplier) {
+            Supplier<@Nullable VoiceRecognitionHandler> voiceRecognitionHandler,
+            Supplier<@Nullable Tracker> trackerSupplier) {
         var voiceSearchDelegate =
                 new VoiceToolbarButtonController.VoiceSearchDelegate() {
                     @Override
@@ -254,7 +295,9 @@ public class AdaptiveToolbarUiCoordinator {
                         if (voiceRecognitionHandler.get() == null) return;
                         voiceRecognitionHandler
                                 .get()
-                                .startVoiceRecognition(VoiceInteractionSource.TOOLBAR);
+                                .startVoiceRecognition(
+                                        VoiceInteractionSource.TOOLBAR,
+                                        CallbackUtils.emptyRunnable());
                     }
                 };
         mVoiceToolbarButtonController =
@@ -279,12 +322,23 @@ public class AdaptiveToolbarUiCoordinator {
         return mButtonDataProviders;
     }
 
+    /** Returns {@link ContextualPageActionController} used for adaptive toolbar button. */
+    public ContextualPageActionController getContextualPageActionController() {
+        return mContextualPageActionController;
+    }
+
     /** Returns {@link VoiceToolbarButtonController} used for voice search button. */
     public VoiceToolbarButtonController getVoiceToolbarButtonController() {
         return mVoiceToolbarButtonController;
     }
 
+    /** Invokes Price Insights UI. */
+    public void runPriceInsightsAction() {
+        mAdaptiveToolbarButtonController.runPriceInsightsAction();
+    }
+
     /** Destroy internally used objects. */
+    @SuppressWarnings("NullAway")
     public void destroy() {
         if (mCurrentTabPriceTrackingStateSupplier != null) {
             mCurrentTabPriceTrackingStateSupplier.destroy();
@@ -309,20 +363,44 @@ public class AdaptiveToolbarUiCoordinator {
                 new PriceInsightsDelegateImpl(mContext, mCurrentTabPriceTrackingStateSupplier));
     }
 
-    @Nullable
-    private CommerceBottomSheetContentController getCommerceBottomSheetContentController() {
+    private DiscountsBottomSheetContentCoordinator createDiscountsContentProvider() {
+        return new DiscountsBottomSheetContentCoordinator(mContext, mActivityTabProvider);
+    }
+
+    private PriceHistoryBottomSheetContentCoordinator createPriceHistoryContentProvider() {
+        return new PriceHistoryBottomSheetContentCoordinator(
+                mContext,
+                mActivityTabProvider,
+                mTabModelSelectorSupplier,
+                new PriceInsightsDelegateImpl(mContext, mCurrentTabPriceTrackingStateSupplier));
+    }
+
+    private @Nullable
+            CommerceBottomSheetContentController getCommerceBottomSheetContentController() {
+        // This flag is for discounts and commerce bottom sheet as a feature together.
         if (mCommerceBottomSheetContentCoordinator == null
-                // This flag is for discounts and commerce bottom sheet as a feature together.
                 && CommerceFeatureUtils.isDiscountInfoApiEnabled(
-                        ShoppingServiceFactory.getForProfile(mProfileSupplier.get()))) {
+                        ShoppingServiceFactory.getForProfile(
+                                assertNonNull(mProfileSupplier.get())))) {
+
+            List<Supplier<CommerceBottomSheetContentProvider>> contentProviderSuppliers =
+                    new ArrayList<>();
+            contentProviderSuppliers.add(this::createPriceTrackingContentProvider);
+            contentProviderSuppliers.add(this::createDiscountsContentProvider);
+            contentProviderSuppliers.add(this::createPriceHistoryContentProvider);
+
             mCommerceBottomSheetContentCoordinator =
                     new CommerceBottomSheetContentCoordinator(
                             mContext,
                             mBottomSheetController,
                             mScrimSupplier,
-                            this::createPriceTrackingContentProvider);
+                            contentProviderSuppliers);
         }
 
         return mCommerceBottomSheetContentCoordinator;
+    }
+
+    public AdaptiveToolbarButtonController getAdaptiveToolbarButtonControllerForTesting() {
+        return mAdaptiveToolbarButtonController;
     }
 }

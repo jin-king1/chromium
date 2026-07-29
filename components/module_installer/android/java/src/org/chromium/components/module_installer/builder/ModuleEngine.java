@@ -8,6 +8,7 @@ import android.app.Activity;
 
 import org.chromium.base.BundleUtils;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.Log;
 import org.chromium.base.StrictModeContext;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -23,9 +24,11 @@ import org.chromium.components.module_installer.engine.InstallListener;
 @NullMarked
 class ModuleEngine implements InstallEngine {
     private @Nullable InstallEngine mInstallEngine;
-    private EngineFactory mEngineFactory;
+    private final EngineFactory mEngineFactory;
 
     private final String mImplClassName;
+
+    private static final String TAG = "ModuleEngine";
 
     public ModuleEngine(String implClassName) {
         this(implClassName, new EngineFactory());
@@ -54,6 +57,7 @@ class ModuleEngine implements InstallEngine {
             ContextUtils.getApplicationContext().getClassLoader().loadClass(mImplClassName);
             return true;
         } catch (ClassNotFoundException e) {
+            Log.i(TAG, "crbug.com/490145251", e);
             return false;
         }
     }
